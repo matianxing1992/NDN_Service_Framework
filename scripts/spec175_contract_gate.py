@@ -58,10 +58,20 @@ IN_SCOPE_DIRS = (
 )
 IN_SCOPE_FILES = {
     "wscript",
+    "scripts/analyze_spec175_conversation_residency.py",
+    "scripts/analyze_spec175_performance.py",
+    "scripts/build_spec175_functional_bundle.py",
+    "scripts/build_spec175_workload.py",
+    "scripts/collect_spec175_resources.py",
+    "scripts/run_spec175_python_gate.py",
     "scripts/spec175_contract_gate.py",
     "scripts/run_spec175_integration_gate.py",
-    "scripts/analyze_spec175_performance.py",
+    "scripts/seal_spec175_gate_prerequisite.py",
+    "scripts/spec175_g3_manifest.py",
+    "scripts/spec175_source_seal.py",
     "Experiments/NDNSF_DI_StreamedGeneration_Minindn.py",
+    "Experiments/NDNSF_DI_LlmPipeline_Minindn.py",
+    "Experiments/spec175_repo_bootstrap.py",
     "tests/wscript",
     "tests/python/test_streamed_invocation_api.py",
     "tests/python/test_ndnsf_di_core_contracts.py",
@@ -404,6 +414,246 @@ def check_source_contract(project_root: Path) -> list[dict[str, str]]:
             "deployed native Provider lacks " + ", ".join(missing_native),
             handler_relative,
         ))
+
+    assembly_relative = (
+        "NDNSF-DistributedInference/cpp/ndnsf-di/"
+        "NativeCanonicalOnnxAssembler.cpp")
+    assembly_path = project_root / assembly_relative
+    assembly_source = _read(assembly_path) if assembly_path.is_file() else ""
+    assembly_markers = (
+        "canonicalSourceDataName",
+        "DI_CANONICAL_SOURCE_METADATA_MISSING",
+        "DI_CANONICAL_SOURCE_SIZE_MISMATCH",
+    )
+    missing_assembly = tuple(
+        marker for marker in assembly_markers if marker not in assembly_source)
+    if missing_assembly:
+        issues.append(_issue(
+            "NATIVE_CANONICAL_SOURCE_CONTRACT_MISSING",
+            "native assembler lacks " + ", ".join(missing_assembly),
+            assembly_relative,
+        ))
+
+    wiring_markers = (
+        "config.runnerPreparationFactory",
+        "config.allowPreassembledV3Compatibility = false",
+        "prepareNativeCanonicalOnnxRole",
+    )
+    missing_wiring = tuple(
+        marker for marker in wiring_markers if marker not in executable_source)
+    if missing_wiring:
+        issues.append(_issue(
+            "NATIVE_POST_SELECTION_ASSEMBLY_NOT_WIRED",
+            "formal native serving path lacks " + ", ".join(missing_wiring),
+            executable_relative,
+        ))
+
+    # A formal Provider must never accept a ready-made role model or the
+    # repository materializer as its serving input.  Keep this separate from
+    # the handler compatibility guard: the launcher is the first boundary and
+    # must reject the bad input before startup can create any side effects.
+    formal_rejection_markers = (
+        "if (!options.artifactReferencesPath.empty())",
+        "serving rejects preassembled --artifact-references; use canonical",
+        "serving rejects ready-made role artifact for",
+    )
+    missing_formal_rejection = tuple(
+        marker for marker in formal_rejection_markers
+        if marker not in executable_source)
+    if missing_formal_rejection:
+        issues.append(_issue(
+            "NATIVE_FORMAL_PREASSEMBLED_INPUT_REJECTION_MISSING",
+            "formal serving launcher lacks fail-closed preassembled-input "
+            "rejection: " + ", ".join(missing_formal_rejection),
+            executable_relative,
+        ))
+
+    # T042 production-path mutations.  These are deliberately source-bound
+    # checks: a green test binary is not evidence when the formal serving path
+    # can still bypass the authenticated V3 contract or silently fall back to
+    # a weaker execution mode.
+    compatibility_guard = (
+        "!config.runnerPreparationFactory",
+        "!config.allowPreassembledV3Compatibility",
+        'DI_PROVIDER_ASSEMBLY_FACTORY_MISSING',
+    )
+    missing_compatibility_guard = tuple(
+        marker for marker in compatibility_guard if marker not in handler_source)
+    if missing_compatibility_guard:
+        issues.append(_issue(
+            "NATIVE_V3_COMPATIBILITY_GUARD_MISSING",
+            "post-Selection V3 path lacks fail-closed compatibility guard: " +
+            ", ".join(missing_compatibility_guard),
+            handler_relative,
+        ))
+
+    plan_json_relative = (
+        "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.cpp")
+    plan_json_path = project_root / plan_json_relative
+    plan_json_source = _read(plan_json_path) if plan_json_path.is_file() else ""
+    sampling_contract_markers = (
+        '"sampling_mode"', '"sampling_temperature"', '"sampling_top_k"',
+        '"sampling_top_p"', '"sampling_repetition_penalty"',
+        '"sampling_seed"', '"sampling_digest"',
+    )
+    missing_sampling_contract = tuple(
+        marker for marker in sampling_contract_markers if marker not in plan_json_source)
+    sampling_runtime_markers = (
+        "coordinatorConfig.samplingMode",
+        "coordinatorConfig.samplingTemperature",
+        "coordinatorConfig.samplingTopK",
+        "coordinatorConfig.samplingTopP",
+        "coordinatorConfig.samplingRepetitionPenalty",
+        "coordinatorConfig.samplingSeed",
+    )
+    # Match identifier markers at a token boundary.  A mutation such as
+    # ``samplingTemperature`` -> ``samplingTemperature_removed`` must not
+    # remain a false positive merely because the old marker is a substring of
+    # the new identifier.
+    missing_sampling_runtime = tuple(
+        marker for marker in sampling_runtime_markers
+        if not re.search(re.escape(marker) + r"(?![A-Za-z0-9_])", handler_source))
+    if missing_sampling_contract or missing_sampling_runtime:
+        issues.append(_issue(
+            "NATIVE_SAMPLING_AUTHORITY_MISSING",
+            "authenticated sampling parameters are incomplete: " + ", ".join(
+                missing_sampling_contract + missing_sampling_runtime),
+            plan_json_relative if missing_sampling_contract else handler_relative,
+        ))
+
+    epoch_relative = (
+        "NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.cpp")
+    epoch_path = project_root / epoch_relative
+    epoch_source = _read(epoch_path) if epoch_path.is_file() else ""
+    text_output_markers = (
+        "candidateText =",
+        "textDelta = candidateText.substr",
+        "requireTextOutput",
+        "textDelta",
+    )
+    missing_text_output = tuple(
+        marker for marker in text_output_markers if marker not in epoch_source)
+    if "requireGenerationTextOutput" not in handler_source:
+        missing_text_output += ("requireGenerationTextOutput",)
+    if "generationTextDecoderFactory" not in handler_source:
+        missing_text_output += ("generationTextDecoderFactory",)
+    if missing_text_output:
+        issues.append(_issue(
+            "NATIVE_TEXT_DELTA_CONTRACT_MISSING",
+            "terminal text output contract lacks " + ", ".join(missing_text_output),
+            epoch_relative,
+        ))
+    # Merely mentioning a text delta is insufficient: a digest-only or
+    # always-empty implementation can retain the field while discarding the
+    # newly decoded suffix.  Bind the delta to the exact previously emitted
+    # text length so a source mutation is caught before a broad run.
+    text_delta_semantics = "candidateText.substr(generatedText.size())"
+    if text_delta_semantics not in epoch_source:
+        issues.append(_issue(
+            "NATIVE_TEXT_DELTA_SEMANTICS_MISSING",
+            "terminal text delta is not derived from the committed text prefix",
+            epoch_relative,
+        ))
+
+    onnx_relative = (
+        "NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.cpp")
+    onnx_path = project_root / onnx_relative
+    onnx_source = _read(onnx_path) if onnx_path.is_file() else ""
+    runtime_relative = (
+        "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderRuntime.cpp")
+    runtime_path = project_root / runtime_relative
+    runtime_source = _read(runtime_path) if runtime_path.is_file() else ""
+    device_state_markers = (
+        "deviceStateBySession",
+        "stateHandleBySession",
+        "boundDeviceInputs",
+        "streamingStateExecution",
+        "stateDeviceToHostBytes",
+        "complete CUDA allocation must not cross",
+        "supportsOpaqueStateHandles",
+        "stateHandleSnapshot",
+        "PROVIDER_OPAQUE_STATE_HANDLE_MISSING",
+        "PROVIDER_OPAQUE_STATE_HANDLE_IDENTITY_MISMATCH",
+    )
+    missing_device_state = tuple(
+        marker for marker in device_state_markers
+        if marker not in onnx_source and marker not in runtime_source)
+    if missing_device_state:
+        issues.append(_issue(
+            "NATIVE_DEVICE_STATE_RESIDENCY_MISSING",
+            "CUDA streamed-state path lacks " + ", ".join(missing_device_state),
+            onnx_relative,
+        ))
+
+    conversation_relative = (
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/conversation.py")
+    conversation_path = project_root / conversation_relative
+    conversation_source = (
+        _read(conversation_path) if conversation_path.is_file() else "")
+    conversation_markers = (
+        "def pause_to_host(",
+        "def prefetch_to_gpu(",
+        "copy_state",
+        "transfer_bytes",
+        "ResidencyTier.HOST_RESIDENT",
+        "ResidencyTier.GPU_RESIDENT",
+    )
+    missing_conversation = tuple(
+        marker for marker in conversation_markers if marker not in conversation_source)
+    if missing_conversation:
+        issues.append(_issue(
+            "CONVERSATION_TIER_TRANSFER_MISSING",
+            "conversation state movement lacks " + ", ".join(missing_conversation),
+            conversation_relative,
+        ))
+
+    integration_relative = "tests/integration-tests/ndnsf-di-core-flow.t.cpp"
+    integration_path = project_root / integration_relative
+    integration_source = (
+        _read(integration_path) if integration_path.is_file() else "")
+    oracle_relative = "tests/python/test_spec175_native_oracle.py"
+    oracle_path = project_root / oracle_relative
+    oracle_source = _read(oracle_path) if oracle_path.is_file() else ""
+    oracle_markers = (
+        "def _run_native_case(",
+        "Spec175NativeTinyOnnxI01OneProvider",
+        "Spec175NativeTinyOnnxI03FourProviderEpochCoordinator",
+        "Spec175NativeTinyOnnxI16SeededUnicodeAndSplitStop",
+        '\"textDelta\":\"🙂\"',
+        '\"finishReason\":\"stop_sequence\"',
+    )
+    missing_oracle = tuple(
+        marker for marker in oracle_markers if marker not in oracle_source)
+    if missing_oracle:
+        issues.append(_issue(
+            "SPEC175_NATIVE_PYTHON_ORACLE_MISSING",
+            "native process oracle lacks " + ", ".join(missing_oracle),
+            oracle_relative,
+        ))
+    integration_markers = (
+        "ProductionIngressRunsNativePostSelectionAssignmentFetch",
+        "ProductionIngressRunsNativeFourRoleTwoDeviceAssignmentRequestResponse",
+        "Spec175NativeTinyOnnxI01OneProvider",
+        "Spec175NativeTinyOnnxI02TwoProviderEpochCoordinator",
+        "Spec175NativeTinyOnnxI03FourProviderEpochCoordinator",
+    )
+    minindn_relative = "Experiments/NDNSF_DI_StreamedGeneration_Minindn.py"
+    minindn_path = project_root / minindn_relative
+    minindn_source = _read(minindn_path) if minindn_path.is_file() else ""
+    minindn_markers = tuple(f'"M{index:02d}"' for index in range(1, 15))
+    missing_cases = tuple(
+        marker for marker in integration_markers if marker not in integration_source)
+    missing_cases += tuple(
+        marker for marker in minindn_markers if marker not in minindn_source)
+    if missing_cases:
+        issues.append(_issue(
+            "SPEC175_PRODUCTION_CASE_COVERAGE_MISSING",
+            "production 1/2/4-role or M01-M14 coverage is missing " +
+            ", ".join(missing_cases),
+            integration_relative if any(
+                marker in integration_markers for marker in missing_cases)
+            else minindn_relative,
+        ))
     return issues
 
 
@@ -427,10 +677,11 @@ def _expand_ids(text: str, prefix: str) -> set[str]:
 
 def validate_requirement_coverage(feature_dir: Path) -> dict[str, object]:
     spec = _read(feature_dir / "spec.md")
+    requirements = _read(feature_dir / "contracts/requirements-v1.md")
     tasks = _read(feature_dir / "tasks.md")
     traceability = _read(feature_dir / "traceability.md")
-    required_fr = _expand_ids(spec, "FR")
-    required_sc = _expand_ids(spec, "SC")
+    required_fr = _expand_ids(spec + "\n" + requirements, "FR")
+    required_sc = _expand_ids(spec + "\n" + requirements, "SC")
     task_ids = _expand_ids(tasks, "FR") | _expand_ids(tasks, "SC")
     trace_ids = _expand_ids(traceability, "FR") | _expand_ids(traceability, "SC")
     required = required_fr | required_sc
@@ -447,6 +698,7 @@ def check_documents(feature_dir: Path) -> list[dict[str, str]]:
     required = (
         "spec.md", "plan.md", "tasks.md", "traceability.md", "data-model.md",
         "research.md", "quickstart.md", "experiment-plan.md",
+        "contracts/requirements-v1.md",
         "contracts/api-contract.md", "contracts/wire-protocol-v1.md",
         "contracts/generation-state-machine-v1.md", "contracts/validation-contract.md",
     )
@@ -473,7 +725,10 @@ def check_documents(feature_dir: Path) -> list[dict[str, str]]:
         "maxEventWireBytes": "16384",
         "maxReplacements": "0",
     }
-    for relative in ("contracts/api-contract.md", "data-model.md", "plan.md"):
+    # Defaults are protocol/API contract values.  The active Spec175 plan is
+    # intentionally a short deployment route and must not repeat this table;
+    # requiring it there recreated the retired matrix/document loop.
+    for relative in ("contracts/api-contract.md", "data-model.md"):
         source = texts.get(relative, "")
         for name, value in defaults.items():
             if not re.search(rf"(?m)^.*\b{re.escape(name)}\b.*\b{value}\b", source):
@@ -500,6 +755,8 @@ def check_documents(feature_dir: Path) -> list[dict[str, str]]:
         "QWEN_SINGLE_TOKEN_DECODE_BOUNDARY": "decodeMode=single-token-autoregressive",
         "QWEN_MTP_DISABLED_BOUNDARY": "mtpEnabled=false",
         "QWEN_THINKING_DISABLED_BOUNDARY": "thinkingMode=disabled",
+        "DESIGN_CODE_CONVERGENCE_GATE": "design-to-code",
+        "CANONICAL_SOURCE_BINDING": "canonicalSourceDataName",
     }
     for code, marker in required_markers.items():
         if marker not in all_text:

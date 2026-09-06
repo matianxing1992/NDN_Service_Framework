@@ -1,0 +1,66 @@
+{
+  "schema": "spec180-profile-v1",
+  "profileId": "spec180-fixed-v1",
+  "fixed": {
+    "apptainerPath": "/opt/apptainer/1.5.3/bin/apptainer",
+    "apptainerVersion": "1.5.3",
+    "cwd": "/bundle",
+    "exportMode": "NONE",
+    "runtime": "onnxruntime",
+    "network": "host-nfd-checked-routes",
+    "identityIsolation": "per-process-home-pib-tpm",
+    "initialSvsSettleMs": 5000,
+    "ackTimeoutMs": 1500,
+    "requestTimeoutMs": 60000,
+    "admissionControl": false,
+    "logging": "bounded-ndn-log-redaction"
+  },
+  "gates": {
+    "yolo-functional": {
+      "job": "yolo-functional.sbatch",
+      "nodes": 1,
+      "ntasks": 1,
+      "gres": "gpu:rtx_6000:1",
+      "memory": "96G",
+      "time": "00:30:00",
+      "providerCount": 4,
+      "modelProviderCount": 3,
+      "mergeProviderCount": 1,
+      "gpuProviderDevices": [0],
+      "mergeCudaVisibleDevices": null,
+      "requestCount": 1,
+      "inputMode": "REPO_REF",
+      "decodePolicy": null,
+      "maxNewTokens": null
+    },
+    "qwen-functional": {
+      "job": "qwen-functional.sbatch",
+      "nodes": 1,
+      "ntasks": 1,
+      "gres": "gpu:rtx_6000:3",
+      "memory": "96G",
+      "time": "01:00:00",
+      "providerCount": 3,
+      "modelProviderCount": 3,
+      "mergeProviderCount": 0,
+      "gpuProviderDevices": [0, 1, 2],
+      "mergeCudaVisibleDevices": null,
+      "requestCount": 2,
+      "inputMode": "INLINE",
+      "decodePolicy": "greedy",
+      "maxNewTokens": 8
+    }
+  },
+  "allowedRunRecordFields": [
+    "schema",
+    "runId",
+    "gate",
+    "profileId",
+    "profileSha256",
+    "candidate",
+    "sif",
+    "model",
+    "workload",
+    "output"
+  ]
+}

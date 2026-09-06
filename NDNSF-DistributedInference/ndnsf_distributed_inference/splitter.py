@@ -479,12 +479,20 @@ class SplitCandidate:
                 if not set(values).issubset(set(self.artifacts_by_role[role])):
                     raise ValueError("hybrid rank artifact is absent from its role")
             from .core.hybrid_contracts import HybridPlan
-            if not isinstance(self.hybrid_plan, HybridPlan):
-                raise ValueError("hybrid candidate requires a sealed hybrid plan")
             expected_degrees = tuple(
                 self.tensor_degrees_by_role[role]
                 for role in self.execution_plan.roles)
-            if self.hybrid_plan.tensor_degrees != expected_degrees:
+            if self.hybrid_plan is None:
+                # Rank-one pre-split candidates use the ordinary Spec175 V3
+                # contract and deliberately carry no HybridPlan marker.
+                # Tensor-degree metadata remains useful for the candidate
+                # digest and resource checks, but a real hybrid plan is
+                # required as soon as any role has degree > 1.
+                if any(value != 1 for value in expected_degrees):
+                    raise ValueError("hybrid candidate requires a sealed hybrid plan")
+            elif not isinstance(self.hybrid_plan, HybridPlan):
+                raise ValueError("hybrid candidate requires a sealed hybrid plan")
+            elif self.hybrid_plan.tensor_degrees != expected_degrees:
                 raise ValueError("hybrid candidate degree vector mismatches its plan")
         elif self.rank_artifact_digests_by_role:
             raise ValueError("rank artifacts require explicit tensor degrees")

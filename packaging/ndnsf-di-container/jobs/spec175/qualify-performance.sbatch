@@ -5,6 +5,7 @@
 #SBATCH --ntasks=1
 # The frozen Qwen3.6-27B subject was qualified on three RTX 6000 GPUs.
 #SBATCH --gres=gpu:rtx_6000:3
+#SBATCH --mem=96G
 #SBATCH --time=02:00:00
 #SBATCH --output=%x-%j.out
 #SBATCH --error=%x-%j.err

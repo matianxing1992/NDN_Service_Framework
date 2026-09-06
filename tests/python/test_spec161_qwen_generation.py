@@ -619,6 +619,7 @@ class QwenGenerationTest(unittest.TestCase):
 
         class Handle:
             planning_timings_ms = {"planning": 1.0}
+            timing_summary = {"ttftMs": 1.0, "totalMs": 2.0}
             decision = types.SimpleNamespace(
                 artifact_preparation=types.SimpleNamespace(value="GENERATED"),
                 evidence_digest="sha256:" + "1" * 64,
@@ -650,6 +651,7 @@ class QwenGenerationTest(unittest.TestCase):
             _automatic_adapter=types.SimpleNamespace(task=TaskAdapter()),
             _automatic_model=object(),
             _automatic_task=object(),
+            _automatic_tokenizer_digest="sha256:" + "2" * 64,
             _qwen_model_type="qwen3",
         )
         result = self.user._run_qwen_transformer_generation_sample(
@@ -672,6 +674,109 @@ class QwenGenerationTest(unittest.TestCase):
             "TOKEN_STREAMING",
         )
         self.assertIn("on_event", captured["request"])
+
+    def test_automatic_streaming_forwards_conversation_authority(self) -> None:
+        captured = {}
+
+        class TaskAdapter:
+            @staticmethod
+            def encode_input(payload, _options):
+                captured["payload"] = payload
+                return b"application-input"
+
+        class Handle:
+            planning_timings_ms = {}
+            timing_summary = {}
+            decision = types.SimpleNamespace(
+                artifact_preparation=types.SimpleNamespace(value="CACHED"),
+                evidence_digest="sha256:" + "1" * 64)
+
+            @staticmethod
+            def response(_timeout_ms):
+                return types.SimpleNamespace(
+                    request_id="g6c-turn-2",
+                    payload=json.dumps({
+                        "schema": "NDNSF-DI-FINAL-V1",
+                        "finishHint": "token-limit",
+                        "tokenIds": [7],
+                    }).encode())
+
+        class Client:
+            @staticmethod
+            def request_streaming(**kwargs):
+                captured["request"] = kwargs
+                return Handle()
+
+        continuation = object()
+        payload = self.pipeline.encode_qwen_pipeline_context(
+            [[12]], attention_mask=[[1]], request_id="g6c-turn-2",
+            session_id="g6c-conversation-0001", context_epoch=1)
+        args = types.SimpleNamespace(
+            max_new_tokens=8, timeout_ms=1000, diagnostic_token_loop=False,
+            automatic_planning_manifest="/sealed/automatic-plan.json",
+            _automatic_adapter=types.SimpleNamespace(task=TaskAdapter()),
+            _automatic_model=object(), _automatic_task=object(),
+            _automatic_tokenizer_digest="sha256:" + "2" * 64,
+            _qwen_model_type="qwen3_5")
+        result = self.user._run_qwen_transformer_generation_sample(
+            Client(), args,
+            prompt_case={
+                "formattedInputIds": [12],
+                "referenceGeneratedTokenIds": [7], "eosTokenIds": [2]},
+            generation_id="g6c-conversation-0001-turn-2",
+            request_id="g6c-turn-2", decoder=lambda _values: "answer",
+            require_eos=False, conversation=continuation,
+            canonical_token_ids=(10, 11, 12, 7), request_payload=payload)
+        self.assertEqual(result.status, "OK")
+        self.assertIs(captured["request"]["conversation"], continuation)
+        self.assertEqual(
+            captured["request"]["canonical_token_ids"], (10, 11, 12, 7))
+        self.assertEqual(captured["payload"], payload)
+
+    def test_g6c_campaign_contract_requires_two_pairs_and_explicit_fallback(
+        self,
+    ) -> None:
+        def turn(first: bool):
+            return {
+                ("inputTokenIds" if first else "appendedInputTokenIds"): [10],
+                "referenceGeneratedTokenIds": [7],
+                "eosTokenIds": [2],
+            }
+
+        campaign = {
+            "schemaVersion": "ndnsf-di-spec175-conversation-residency-campaign-v1",
+            "campaignId": "g6c-candidate",
+            "generation": {
+                "strategy": "greedy", "maxNewTokens": 8, "maxEvents": 9,
+                "requestDeadlineMs": 120000, "useCache": True,
+                "thinkingMode": "disabled", "mtpEnabled": False},
+            "turnPairs": [
+                {"caseId": "two-turn", "conversationId": "g6c-two-turn-0001",
+                 "firstTurn": turn(True), "secondTurn": turn(False)},
+                {"caseId": "paused-pressure",
+                 "conversationId": "g6c-pressure-0001",
+                 "firstTurn": turn(True), "secondTurn": turn(False)},
+            ],
+            "unavailableRole": {
+                "conversationId": "g6c-unavailable-0001",
+                "role": "/LLM/Pipeline/Stage/1",
+                "expectedError": "CONVERSATION_STATE_UNAVAILABLE",
+                "firstTurn": turn(True), "secondTurn": turn(False),
+                "fallback": {
+                    "authorized": True, "fullInputTokenIds": [10, 10],
+                    "referenceGeneratedTokenIds": [7], "eosTokenIds": [2]},
+            },
+        }
+        self.assertIs(
+            self.user._validate_spec175_g6c_campaign(campaign), campaign)
+        bad = json.loads(json.dumps(campaign))
+        bad["turnPairs"] = bad["turnPairs"][:1]
+        with self.assertRaisesRegex(RuntimeError, "two turn pairs"):
+            self.user._validate_spec175_g6c_campaign(bad)
+        bad = json.loads(json.dumps(campaign))
+        bad["unavailableRole"]["fallback"]["authorized"] = False
+        with self.assertRaisesRegex(RuntimeError, "explicitly authorized"):
+            self.user._validate_spec175_g6c_campaign(bad)
 
     def test_requester_campaign_writes_one_warmup_and_five_measured_per_prompt(
         self,
@@ -772,6 +877,109 @@ class QwenGenerationTest(unittest.TestCase):
             self.analyzer.summarize_samples(rows)["successfulMeasuredCount"],
             25,
         )
+
+    def test_requester_campaign_v2_follows_explicit_schedule_order(self) -> None:
+        class Client:
+            def __init__(self):
+                self.request_ids = []
+
+            def distributed_inference(self, _service, payload, **kwargs):
+                document = self_outer.pipeline.decode_qwen_pipeline_context(payload)
+                self.request_ids.append(kwargs.get("request_id", ""))
+                token = 7 if int(document["contextEpoch"]) == 0 else 2
+                return types.SimpleNamespace(
+                    status=True,
+                    payload=json.dumps({
+                        "schema": "ndnsf-di-qwen-transformer-response-v1",
+                        "topToken": token,
+                        "stageCount": 3,
+                        "layerRanges": [[0, 21], [21, 42], [42, 64]],
+                    }).encode("utf-8"),
+                    error="",
+                    request_id=kwargs.get("request_id", ""),
+                )
+
+        class Tokenizer:
+            @staticmethod
+            def from_file(path):
+                self_outer.assertTrue(path.endswith("tokenizer.json"))
+                return Tokenizer()
+
+            @staticmethod
+            def decode(values, skip_special_tokens=True):
+                self_outer.assertTrue(skip_special_tokens)
+                return "answer" if values == [7, 2] else ""
+
+        self_outer = self
+        campaign = {
+            "schemaVersion": "ndnsf-di-qwen-generation-campaign-v2",
+            "campaignId": "spec175-schedule",
+            "generation": {"strategy": "greedy", "maxNewTokens": 64},
+            "prompts": [
+                {
+                    "promptId": prompt_id,
+                    "formattedInputIds": [10, 11],
+                    "referenceGeneratedTokenIds": [7, 2],
+                    "eosTokenIds": [2],
+                }
+                for prompt_id in ("P1", "P2")
+            ],
+            "schedule": [
+                {"promptId": "P1", "phase": "cold", "repetition": 0},
+                {"promptId": "P2", "phase": "measured", "repetition": 0},
+                {"promptId": "P1", "phase": "measured", "repetition": 0},
+                {"promptId": "P2", "phase": "measured", "repetition": 1},
+            ],
+        }
+        client = Client()
+        original_tokenizers = sys.modules.get("tokenizers")
+        sys.modules["tokenizers"] = types.SimpleNamespace(Tokenizer=Tokenizer)
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                tokenizer_dir = Path(tmp) / "tokenizer"
+                tokenizer_dir.mkdir()
+                (tokenizer_dir / "tokenizer.json").write_text(
+                    "{}", encoding="utf-8")
+                output = Path(tmp) / "samples.jsonl"
+                args = types.SimpleNamespace(
+                    max_new_tokens=64,
+                    generation_jsonl=str(output),
+                    qwen_tokenizer_dir=str(tokenizer_dir),
+                    deployment_revision="sha256:test",
+                    ack_timeout_ms=100,
+                    timeout_ms=1000,
+                    request_id="/spec175/scheduled-request",
+                )
+                rc = self.user._run_qwen_transformer_generation_campaign(
+                    client, args, campaign)
+                rows = [
+                    json.loads(line)
+                    for line in output.read_text(encoding="utf-8").splitlines()
+                ]
+        finally:
+            if original_tokenizers is None:
+                sys.modules.pop("tokenizers", None)
+            else:
+                sys.modules["tokenizers"] = original_tokenizers
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(
+            [(row["promptId"], row["phase"], row["repetition"])
+             for row in rows],
+            [
+                ("P1", "cold", 0),
+                ("P2", "measured", 0),
+                ("P1", "measured", 0),
+                ("P2", "measured", 1),
+            ],
+        )
+        self.assertEqual(len(client.request_ids), 8)
+        self.assertEqual(len(set(client.request_ids)), 8)
+        self.assertTrue(all(
+            request_id.startswith(
+                "/spec175%2Fscheduled-request--sample--spec175-schedule-")
+            for request_id in set(client.request_ids)
+        ))
 
     def test_analyzer_keeps_25_measured_records_and_excludes_warmup(self) -> None:
         samples = []

@@ -74,6 +74,13 @@ struct NativeGenerationExecutionContractV1
   std::vector<std::int64_t> eosTokenIds;
   std::string samplingDigest;
   std::string tokenizerDigest;
+  std::string samplingMode = "Greedy";
+  double samplingTemperature = 0.0;
+  std::uint64_t samplingTopK = 1;
+  double samplingTopP = 1.0;
+  double samplingRepetitionPenalty = 1.0;
+  std::uint64_t samplingSeed = 1'750'001;
+  std::vector<std::string> stopStrings;
   std::string generationId;
   std::vector<std::int64_t> committedPrefixTokenIds;
   std::uint64_t streamingOperationStride = 0;

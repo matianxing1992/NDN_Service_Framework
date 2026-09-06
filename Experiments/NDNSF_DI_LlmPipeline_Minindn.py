@@ -104,6 +104,15 @@ REPOSITORY_IDENTITY = APP_ROOT + "/repo"
 # misclassified as an M01 stream failure.
 SPEC175_REPO_ACK_TIMEOUT_MS = 5_000
 SPEC175_REPO_STORE_SERVICE = "/NDNSF/DistributedRepo/Artifact/v2/STORE"
+# NFD validates management Command Interests against a strictly increasing
+# timestamp per signing key, even when the MiniNDN demo configuration grants
+# ``certfile any``.  Each ``nfdc`` invocation creates a fresh InterestSigner,
+# so a rapid sequence of separate processes can be rejected as a replay.  A
+# small unconditional delay gives the next process a fresh millisecond; the
+# bounded retry is reserved for the exact 403 returned by that validator.
+SPEC175_NFDC_MAX_ATTEMPTS = 3
+SPEC175_NFDC_RETRY_DELAY_S = 0.005
+SPEC175_NFDC_RC_MARKER = "__SPEC175_NFDC_RC__"
 # The three-stage pipeline remains the compatibility default.  Spec175 uses
 # four distinct Provider nodes; the layout is selected once, immediately
 # after argument parsing, so no caller can silently reuse one Provider for two
@@ -492,6 +501,13 @@ def build_parser() -> argparse.ArgumentParser:
             "Deprecated compatibility input; must remain zero. Provider ready "
             "markers, ACK closure, preparation progress, and dependency data "
             "drive request execution."
+        ),
+    )
+    parser.add_argument(
+        "--initial-sync-settle-s", type=float, default=0.0,
+        help=(
+            "Measurement-excluded time after the User joins the SVS group and "
+            "before its first Request; Spec175 fixes this to 5 s."
         ),
     )
     parser.add_argument("--provider-start-timeout-s", type=float, default=20.0)
@@ -1048,18 +1064,107 @@ def start_process(ndn, host_name: str, label: str, cmd: str,
     return proc, log_path
 
 
-def stop_processes(processes: list[tuple[object, object, Path]]) -> None:
-    for proc, file, _ in reversed(processes):
+def stop_processes(processes: list[tuple[object, object, Path]]) -> set[str]:
+    forced_shutdown_logs: set[str] = set()
+    pending: list[tuple[object, object, Path]] = []
+    # Broadcast the graceful signal first.  Waiting for each child serially
+    # made a normal twelve-child teardown take 12 * 15 seconds.
+    for proc, file, log_path in reversed(processes):
         if proc.poll() is None:
             try:
                 proc.send_signal(signal.SIGINT)
-                proc.wait(timeout=3)
+                pending.append((proc, file, log_path))
             except Exception:
+                forced_shutdown_logs.add(log_path.name)
                 proc.kill()
+                try:
+                    proc.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    pass
+    deadline = time.monotonic() + 15.0
+    while pending and time.monotonic() < deadline:
+        pending = [item for item in pending if item[0].poll() is None]
+        if pending:
+            time.sleep(0.05)
+    for proc, _, log_path in pending:
+        forced_shutdown_logs.add(log_path.name)
+        proc.kill()
+        try:
+            proc.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            pass
+    for _, file, _ in processes:
         try:
             file.close()
         except Exception:
             pass
+    return forced_shutdown_logs
+
+
+def stop_processes_with_terminal_evidence(
+    processes: list[tuple[object, object, Path]],
+) -> dict[str, object]:
+    """Close every owned child before writing a Spec175 case result.
+
+    A result is not terminal evidence merely because the User returned.  The
+    provider/repository children must also be reaped, and their exit status is
+    recorded so a later manifest cannot mistake a surviving or crashed child
+    for a completed case.
+    """
+    forced_shutdown_logs = stop_processes(processes)
+    rows: dict[str, int | None] = {}
+    surviving: list[str] = []
+    signal_exits: dict[str, int] = {}
+    unexpected_signal_exits: dict[str, int] = {}
+    for process, _, log_path in processes:
+        returncode = process.poll()
+        rows[log_path.name] = None if returncode is None else int(returncode)
+        if returncode is None:
+            surviving.append(log_path.name)
+        elif returncode < 0:
+            signal_exits[log_path.name] = int(returncode)
+            # SIGINT is the explicit, bounded harness shutdown used by
+            # stop_processes; every other signal is an unclassified child
+            # failure and must block terminal acceptance.
+            if (returncode != -int(signal.SIGINT) and
+                    log_path.name not in forced_shutdown_logs):
+                unexpected_signal_exits[log_path.name] = int(returncode)
+            elif log_path.name in forced_shutdown_logs:
+                # A child that did not drain within the bounded graceful
+                # window is explicitly force-terminated by this harness.  It
+                # is retained as intentional teardown evidence, distinct from
+                # a process that self-aborted or received an external signal.
+                pass
+        elif returncode >= 128:
+            signal_number = int(returncode) - 128
+            signal_exits[log_path.name] = int(returncode)
+            if (signal_number != int(signal.SIGINT) and
+                    log_path.name not in forced_shutdown_logs):
+                unexpected_signal_exits[log_path.name] = int(returncode)
+    abort_observed = any(code in {-6, 134} for code in rows.values())
+    terminal_ok = (
+        not surviving
+        and not unexpected_signal_exits
+        and not abort_observed
+        and all(code is not None for code in rows.values())
+    )
+    return {
+        "schema": "ndnsf-di-spec175-terminal-evidence-v1",
+        "status": "PASS" if terminal_ok else "FAIL",
+        "resultWrittenAfterProcessExit": not bool(surviving),
+        "abortObserved": abort_observed,
+        "childExitCodes": rows,
+        "signalExits": signal_exits,
+        "intentionalShutdownSignals": {
+            name: code for name, code in signal_exits.items()
+            if name not in unexpected_signal_exits
+        },
+        "forcedShutdownSignals": {
+            name: rows.get(name) for name in sorted(forced_shutdown_logs)
+        },
+        "unexpectedSignalExits": unexpected_signal_exits,
+        "survivingOwnedProcesses": surviving,
+    }
 
 
 def spec168_process_rows(
@@ -1092,6 +1197,266 @@ def wait_log(path: Path, needle: str, timeout_s: float, proc=None) -> bool:
             return False
         time.sleep(0.25)
     return False
+
+
+def write_spec175_nfd_route_snapshot(
+        ndn, output_path: Path, required_prefixes: tuple[str, ...],
+        diagnostic_prefixes: tuple[str, ...] = (),
+        expected_next_hops: dict[str, dict[str, tuple[str, ...]]] | None = None,
+        ) -> dict:
+    """Record and verify the NFD control-plane needed by the SVS group.
+
+    A Provider marker proves that its local handler was installed. It does not
+    prove that the MiniNDN FIB can carry the SVS Sync Interest. Keep this
+    separate evidence so a missing route and a still-converging Sync group are
+    distinguishable failures.
+    """
+    observed_prefixes = tuple(dict.fromkeys(
+        [*required_prefixes, *diagnostic_prefixes]))
+    nodes: dict[str, dict[str, object]] = {}
+    missing: dict[str, list[str]] = {}
+    missing_next_hops: dict[str, dict[str, list[str]]] = {}
+    expected_next_hops = expected_next_hops or {}
+    for node in sorted(ndn.net.hosts, key=lambda item: item.name):
+        route_text = perf.node_cmd(node, "nfdc route list 2>&1")
+        fib_text = perf.node_cmd(node, "nfdc fib list 2>&1")
+        strategy_text = perf.node_cmd(node, "nfdc strategy list 2>&1")
+        observed = {
+            prefix: prefix in route_text or prefix in fib_text
+            for prefix in observed_prefixes
+        }
+        strategy_observed = {
+            prefix: prefix in strategy_text for prefix in observed_prefixes
+        }
+        absent = [
+            prefix for prefix in required_prefixes
+            if not observed[prefix] or not strategy_observed[prefix]
+        ]
+        nodes[node.name] = {
+            "route": route_text,
+            "fib": fib_text,
+            "strategy": strategy_text,
+            "prefixObserved": observed,
+            "strategyObserved": strategy_observed,
+        }
+        if absent:
+            missing[node.name] = absent
+        node_missing_next_hops: dict[str, list[str]] = {}
+        for prefix, face_ids in expected_next_hops.get(node.name, {}).items():
+            fib_line = next((
+                line for line in fib_text.splitlines()
+                if line.strip().startswith(prefix + " ") and
+                "nexthops={" in line
+            ), "")
+            absent_faces = [
+                str(face_id) for face_id in face_ids
+                if f"faceid={face_id} " not in fib_line and
+                f"faceid={face_id} (" not in fib_line
+            ]
+            if absent_faces:
+                node_missing_next_hops[prefix] = absent_faces
+        if node_missing_next_hops:
+            missing_next_hops[node.name] = node_missing_next_hops
+    payload = {
+        "schema": "ndnsf-di-spec175-nfd-route-snapshot-v1",
+        "status": "PASS" if not missing and not missing_next_hops else "FAIL",
+        "requiredPrefixes": list(required_prefixes),
+        "diagnosticPrefixes": list(diagnostic_prefixes),
+        "nodes": nodes,
+        "missing": missing,
+        "expectedNextHops": expected_next_hops,
+        "missingNextHops": missing_next_hops,
+    }
+    output_path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    if missing or missing_next_hops:
+        raise RuntimeError(
+            "SPEC175_NFD_ROUTE_OR_STRATEGY_MISSING:"
+            + json.dumps({
+                "prefixes": missing,
+                "nextHops": missing_next_hops,
+            }, sort_keys=True))
+    return payload
+
+
+def summarize_spec175_nfd_route_snapshot(
+        snapshot: dict, output_path: Path) -> dict:
+    """Reference the full NFD snapshot without duplicating raw command output."""
+    return {
+        "schema": "ndnsf-di-spec175-nfd-route-snapshot-reference-v1",
+        "path": str(output_path.resolve()),
+        "sha256": "sha256:" + hashlib.sha256(output_path.read_bytes()).hexdigest(),
+        "status": snapshot["status"],
+        "requiredPrefixes": snapshot["requiredPrefixes"],
+        "diagnosticPrefixes": snapshot["diagnosticPrefixes"],
+        "missing": snapshot["missing"],
+        "expectedNextHops": snapshot.get("expectedNextHops", {}),
+        "missingNextHops": snapshot.get("missingNextHops", {}),
+    }
+
+
+def run_spec175_nfdc_mutation(node, command: str) -> dict:
+    """Run one NFD mutation with observable, replay-safe retry semantics.
+
+    Permanent command/configuration failures are never retried.  Only NFD's
+    exact 403 authorization rejection is eligible because a fresh ``nfdc``
+    process re-signs the command with a later timestamp.  The caller still
+    verifies the resulting FIB, so a successful exit alone cannot qualify the
+    setup.
+    """
+    attempts: list[dict[str, object]] = []
+    authorization_retry_count = 0
+    marker_re = re.compile(
+        rf"(?m)^\s*{re.escape(SPEC175_NFDC_RC_MARKER)}=(\d+)\s*$")
+
+    for attempt_index in range(1, SPEC175_NFDC_MAX_ATTEMPTS + 1):
+        # Do not use Minindn.sleep(): it intentionally becomes a no-op when
+        # MiniNDN data-plane security is disabled, while NFD management replay
+        # validation remains active.
+        time.sleep(SPEC175_NFDC_RETRY_DELAY_S)
+        wrapped = (
+            f"{command}; spec175_nfdc_rc=$?; "
+            f"printf '\\n{SPEC175_NFDC_RC_MARKER}=%s\\n' "
+            '"$spec175_nfdc_rc"'
+        )
+        raw_output = perf.node_cmd(node, wrapped)
+        matches = list(marker_re.finditer(raw_output))
+        return_code = int(matches[-1].group(1)) if matches else None
+        output = marker_re.sub("", raw_output).strip()
+        lowered = output.lower()
+        authorization_rejected = (
+            "error 403" in lowered and "authorization rejected" in lowered)
+        success = (
+            return_code == 0
+            and "error" not in lowered
+            and "failed" not in lowered
+        )
+        attempts.append({
+            "attempt": attempt_index,
+            "returnCode": return_code,
+            "authorizationRejected": authorization_rejected,
+            "output": output[-1000:],
+        })
+        if success:
+            return {
+                "status": "PASS",
+                "attemptCount": len(attempts),
+                "authorizationRetryCount": authorization_retry_count,
+                "attempts": attempts,
+            }
+        if not authorization_rejected or attempt_index == SPEC175_NFDC_MAX_ATTEMPTS:
+            break
+        authorization_retry_count += 1
+
+    return {
+        "status": "FAIL",
+        "attemptCount": len(attempts),
+        "authorizationRetryCount": authorization_retry_count,
+        "attempts": attempts,
+    }
+
+
+def install_spec175_svs_group_fanout(ndn, output_path: Path) -> dict:
+    """Install and verify every frozen star-topology SVS group next hop.
+
+    MiniNDN's routing helper does not fail when an individual ``nfdc route
+    add`` command is rejected.  A group prefix can therefore exist while one
+    member face is absent.  Spec175 is a DI protocol gate, not an NLSR
+    convergence experiment, so close this setup ambiguity explicitly.
+    """
+    member_names = [USER_NODE, *STAGE_NODES]
+    if REPOSITORY_NODE:
+        member_names.append(REPOSITORY_NODE)
+    member_names = list(dict.fromkeys(member_names))
+    router = ndn.net[ROUTER_NODE]
+    router_neighbors = NdnRoutingHelper.getNeighborIP(router)
+    missing_neighbors = sorted(set(member_names) - set(router_neighbors))
+    if missing_neighbors:
+        raise RuntimeError(
+            "SPEC175_SVS_FANOUT_TOPOLOGY_MISMATCH:" +
+            ",".join(missing_neighbors))
+
+    expected: dict[str, dict[str, tuple[str, ...]]] = {
+        ROUTER_NODE: {GROUP_IDENTITY: ()},
+    }
+    rows: list[dict[str, object]] = []
+    router_faces: list[str] = []
+
+    def fail_route(edge: str, result: dict) -> None:
+        failure = {
+            "schema": "ndnsf-di-spec175-svs-group-fanout-v1",
+            "status": "FAIL",
+            "groupPrefix": GROUP_IDENTITY,
+            "routerNode": ROUTER_NODE,
+            "members": rows,
+            "failedEdge": edge,
+            "failedMutation": result,
+        }
+        output_path.write_text(
+            json.dumps(failure, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8")
+        last_output = ""
+        attempts = result.get("attempts", [])
+        if attempts:
+            last_output = str(attempts[-1].get("output", "")).strip()
+        raise RuntimeError(
+            f"SPEC175_SVS_FANOUT_ROUTE_FAILED:{edge}:{last_output}")
+
+    for member_name in member_names:
+        member = ndn.net[member_name]
+        router_face = Nfdc.createFace(
+            router, router_neighbors[member_name], Nfdc.PROTOCOL_UDP)
+        if str(router_face) == "-1":
+            raise RuntimeError(
+                f"SPEC175_SVS_FANOUT_FACE_FAILED:{ROUTER_NODE}->{member_name}")
+        router_face = str(router_face)
+        router_faces.append(router_face)
+        router_mutation = run_spec175_nfdc_mutation(
+            router,
+            f"nfdc route add {GROUP_IDENTITY} {router_face} "
+            "origin 255 cost 10 2>&1")
+        if router_mutation["status"] != "PASS":
+            fail_route(f"{ROUTER_NODE}->{member_name}", router_mutation)
+
+        member_neighbors = NdnRoutingHelper.getNeighborIP(member)
+        if ROUTER_NODE not in member_neighbors:
+            raise RuntimeError(
+                f"SPEC175_SVS_FANOUT_TOPOLOGY_MISMATCH:{member_name}->{ROUTER_NODE}")
+        member_face = Nfdc.createFace(
+            member, member_neighbors[ROUTER_NODE], Nfdc.PROTOCOL_UDP)
+        if str(member_face) == "-1":
+            raise RuntimeError(
+                f"SPEC175_SVS_FANOUT_FACE_FAILED:{member_name}->{ROUTER_NODE}")
+        member_face = str(member_face)
+        member_mutation = run_spec175_nfdc_mutation(
+            member,
+            f"nfdc route add {GROUP_IDENTITY} {member_face} "
+            "origin 255 cost 10 2>&1")
+        if member_mutation["status"] != "PASS":
+            fail_route(f"{member_name}->{ROUTER_NODE}", member_mutation)
+        expected[member_name] = {GROUP_IDENTITY: (member_face,)}
+        rows.append({
+            "member": member_name,
+            "routerFaceId": router_face,
+            "memberFaceId": member_face,
+            "routerMutation": router_mutation,
+            "memberMutation": member_mutation,
+        })
+    expected[ROUTER_NODE] = {GROUP_IDENTITY: tuple(router_faces)}
+    report = {
+        "schema": "ndnsf-di-spec175-svs-group-fanout-v1",
+        "status": "INSTALLED",
+        "groupPrefix": GROUP_IDENTITY,
+        "routerNode": ROUTER_NODE,
+        "members": rows,
+        "expectedNextHops": expected,
+    }
+    output_path.write_text(
+        json.dumps(report, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8")
+    return report
 
 
 def wait_any_log(paths: list[Path], needle: str, timeout_s: float) -> bool:
@@ -2445,6 +2810,12 @@ def main() -> int:
         raise SystemExit(
             "--provider-wait-s is no longer supported; provider readiness is "
             "event-driven")
+    if args.initial_sync_settle_s < 0.0:
+        raise SystemExit("--initial-sync-settle-s must be non-negative")
+    if args.spec175_case and args.initial_sync_settle_s != 5.0:
+        raise SystemExit(
+            "--spec175-case requires --initial-sync-settle-s 5.0; "
+            "the fixed post-User-join convergence window is part of G3/G4")
     try:
         if args.spec175_case:
             configure_spec175_host_layout()
@@ -2790,6 +3161,25 @@ def main() -> int:
         base_env["NDNSF_COLLAB_LARGE_FETCH_TIMING"] = "1"
     if args.runtime == "qwen-onnx-cpu-native" or args.spec175_case:
         base_env["NDNSF_DI_RUNTIME_TIMING"] = "1"
+    if args.spec175_case:
+        # The first periodic timer must be short enough to recover a lost
+        # cold-start Sync update inside the registered ACK windows. Core reads
+        # this value before constructing SVSPubSub.
+        base_env["NDNSF_SVS_PERIODIC_SYNC_MS"] = "1000"
+        # Record only request/control state transitions in routine gates. Full
+        # TimelineTrace DEBUG remains an explicit diagnostic option because it
+        # emits hundreds of records and can perturb startup scheduling.
+        base_env["NDNSF_CONTROL_TIMING"] = "1"
+        base_env["NDNSF_TIMELINE_TRACE_SAMPLE_RATE"] = "1"
+        # ndn-cxx processes filters from left to right.  Routine qualification
+        # keeps warnings from all components; the two required machine-readable
+        # channels are named explicitly so operators can refine this export
+        # without enabling noisy ServiceProvider/ServiceUser INFO output.
+        base_env["NDN_LOG"] = (
+            "*=WARN:"
+            "ndn_service_framework.TimelineTrace=WARN:"
+            "ndnsf.di.RuntimeEvidence=WARN"
+        )
     if args.spec107_diagnostic:
         base_env["NDNSF_TIMELINE_TRACE"] = "1"
         base_env["NDNSF_TIMELINE_TRACE_SAMPLE_RATE"] = str(
@@ -2845,6 +3235,10 @@ def main() -> int:
     else:
         ndn = Minindn(topoFile=args.topology_file)
     processes: list[tuple[object, object, Path]] = []
+    spec175_route_snapshot_path: Path | None = None
+    spec175_route_snapshot: dict | None = None
+    spec175_group_fanout_path: Path | None = None
+    spec175_group_fanout: dict | None = None
     fault_registry = (
         OwnedProcessRegistry(
             campaign_id=args.campaign_id,
@@ -2891,19 +3285,42 @@ def main() -> int:
                 [REPOSITORY_IDENTITY, REPOSITORY_IDENTITY + "/KEY",
                  "/NDNSF/DistributedRepo"],
             )
-        rh.addOrigin(ndn.net.hosts, [GROUP_IDENTITY])
+        # Only processes that actually join the SVS group are origins. The
+        # controller and anchor router must forward the group, not advertise
+        # themselves as application members.
+        svs_group_members = [
+            ndn.net[name]
+            for name in [USER_NODE, *STAGE_NODES,
+                         *( [REPOSITORY_NODE] if REPOSITORY_NODE else [] )]
+        ]
+        rh.addOrigin(svs_group_members, [GROUP_IDENTITY])
         rh.calculateRoutes()
         log(
             f"Waiting {args.nlsr_wait_s:.1f}s for "
             + ("static route settlement"
                if args.static_routing_only else "NLSR convergence"))
         time.sleep(args.nlsr_wait_s)
+        if args.spec175_case:
+            spec175_group_fanout_path = OUT / "spec175-svs-group-fanout.json"
+            spec175_group_fanout = install_spec175_svs_group_fanout(
+                ndn, spec175_group_fanout_path)
         for node in ndn.net.hosts:
             Nfdc.setStrategy(node, APP_ROOT, Nfdc.STRATEGY_MULTICAST)
             Nfdc.setStrategy(node, GROUP_IDENTITY, Nfdc.STRATEGY_MULTICAST)
             if args.selection_dataflow_v2 or args.selection_dataflow_v3:
                 Nfdc.setStrategy(
                     node, "/NDNSF/DistributedRepo", Nfdc.STRATEGY_MULTICAST)
+        if args.spec175_case:
+            spec175_route_snapshot_path = OUT / "spec175-nfd-route-snapshot.json"
+            required_route_prefixes = [APP_ROOT, GROUP_IDENTITY]
+            diagnostic_route_prefixes: list[str] = []
+            if args.selection_dataflow_v2 or args.selection_dataflow_v3:
+                diagnostic_route_prefixes.append("/NDNSF/DistributedRepo")
+            spec175_route_snapshot = write_spec175_nfd_route_snapshot(
+                ndn, spec175_route_snapshot_path,
+                tuple(required_route_prefixes),
+                tuple(diagnostic_route_prefixes),
+                spec175_group_fanout["expectedNextHops"])
 
         node_identities = [
             (CONTROLLER_NODE, CONTROLLER_IDENTITY),
@@ -3093,6 +3510,7 @@ def main() -> int:
                 token_file, USER_IDENTITY,
                 OUT / "spec175-repo-user-bootstrap.token")
             repo_registration = OUT / "spec175-repo-registration.json"
+            repo_route_probe = OUT / "spec175-repo-route-probe.json"
             repo_publication_barrier = OUT / "spec175-repo-publication.start"
             repo_publication_token = hashlib.sha256(
                 (f"{args.spec175_case}:{args.seed}:{time.time_ns()}").encode(
@@ -3112,10 +3530,14 @@ def main() -> int:
                 + " --bootstrap-token-file "
                 + perf.shell_quote(repo_user_bootstrap)
                 + " --registration " + perf.shell_quote(repo_registration)
+                + " --probe-output " + perf.shell_quote(repo_route_probe)
                 + " --stage-manifest "
                 + perf.shell_quote(selection_bundle["repoStageManifest"])
                 + " --ack-timeout-ms "
                 + str(SPEC175_REPO_ACK_TIMEOUT_MS)
+                + " --initial-sync-settle-s 5"
+                + " --probe-retries 2 --probe-retry-backoff-ms 250"
+                + " --probe-attempt-timeout-ms 10000"
                 + " --publication-start-barrier-file "
                 + perf.shell_quote(repo_publication_barrier)
                 + " --publication-start-barrier-token "
@@ -3143,6 +3565,30 @@ def main() -> int:
                 raise RuntimeError(
                     "Spec175 Repo Store service did not become ready; "
                     f"log={repo_log}")
+            if not wait_log(
+                    publisher_log,
+                    "NDNSF_DI_SPEC175_REPO_ROUTE_PROBE_PASS",
+                    args.provider_start_timeout_s, publisher_proc):
+                raise RuntimeError(
+                    "Spec175 Repo same-identity service route probe did not "
+                    f"pass; evidence={repo_route_probe} log={publisher_log}")
+            if not repo_route_probe.is_file():
+                raise RuntimeError(
+                    "Spec175 Repo route probe marker lacked evidence file: "
+                    f"{repo_route_probe}")
+            try:
+                route_probe = json.loads(
+                    repo_route_probe.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise RuntimeError(
+                    "Spec175 Repo route probe evidence is unreadable: "
+                    f"{repo_route_probe}") from exc
+            if (route_probe.get("schema") !=
+                    "ndnsf-di-spec175-repo-route-probe-v1" or
+                    route_probe.get("status") != "PASS"):
+                raise RuntimeError(
+                    "Spec175 Repo route probe evidence is not PASS: "
+                    f"{repo_route_probe}")
             release_file_barrier(
                 repo_publication_barrier, repo_publication_token)
             publisher_proc.wait(timeout=max(60.0, args.provider_start_timeout_s))
@@ -3465,7 +3911,6 @@ def main() -> int:
                     node_name, provider_command, node_env[node_name], ready_marker)
         log("Provider process readiness complete; the User Request now drives "
             "ACK closure, model preparation, and dataflow execution")
-
         user_log = OUT / "llm-pipeline-user.log"
         metrics_csv = OUT / "llm-pipeline-user-measured.csv"
         user_out = user_log.open("wb")
@@ -3573,6 +4018,8 @@ def main() -> int:
                 )
         spec175_user_args = (
             " --spec175-fault-case " + perf.shell_quote(args.spec175_case)
+            + " --initial-sync-settle-s "
+            + str(args.initial_sync_settle_s)
             if args.spec175_case else ""
         )
         user_command = (
@@ -3974,6 +4421,10 @@ def main() -> int:
                 *sorted(OUT.glob("spec175-repo-*.log")),
                 provider_timing_path,
             ]
+            if spec175_route_snapshot_path is not None:
+                spec175_evidence_paths.append(spec175_route_snapshot_path)
+            if spec175_group_fanout_path is not None:
+                spec175_evidence_paths.append(spec175_group_fanout_path)
             conversation_evidence_path = OUT / "spec175-conversation-evidence.json"
             conversation_evidence = None
             if conversation_evidence_path.is_file():
@@ -3994,6 +4445,19 @@ def main() -> int:
                     conversation_evidence["providerPrefetchMarkers"] = prefetch_markers
                 spec175_evidence_paths.append(conversation_evidence_path)
             spec175_evidence_paths = list(dict.fromkeys(spec175_evidence_paths))
+            # Freeze child lifecycle before recording the case result.  The
+            # outer finally remains idempotent cleanup, but it must not be the
+            # first place that reaps a process whose result is already marked
+            # PASS.
+            terminal_evidence = stop_processes_with_terminal_evidence(processes)
+            if terminal_evidence["status"] != "PASS":
+                terminal_path = OUT / "spec175-terminal-evidence.json"
+                terminal_path.write_text(
+                    json.dumps(terminal_evidence, indent=2, sort_keys=True) + "\n",
+                    encoding="utf-8")
+                raise RuntimeError(
+                    "Spec175 owned process closure failed: "
+                    f"{json.dumps(terminal_evidence, sort_keys=True)}")
             spec175_result = {
                 "schema": "ndnsf-di-spec175-minindn-case-result-v1",
                 "status": "PASS",
@@ -4003,6 +4467,20 @@ def main() -> int:
                 "requestId": args.request_id,
                 "runtime": args.runtime,
                 "providerCount": args.stages,
+                "initialSyncSettleSeconds": args.initial_sync_settle_s,
+                "svsPeriodicSyncMs": int(
+                    base_env["NDNSF_SVS_PERIODIC_SYNC_MS"]),
+                "nfdRouteSnapshot": summarize_spec175_nfd_route_snapshot(
+                    spec175_route_snapshot, spec175_route_snapshot_path),
+                "svsGroupFanout": {
+                    "path": str(spec175_group_fanout_path.resolve()),
+                    "sha256": "sha256:" + hashlib.sha256(
+                        spec175_group_fanout_path.read_bytes()).hexdigest(),
+                    "status": "VERIFIED",
+                    "groupPrefix": spec175_group_fanout["groupPrefix"],
+                    "routerNode": spec175_group_fanout["routerNode"],
+                    "memberCount": len(spec175_group_fanout["members"]),
+                },
                 "admissionControl": False,
                 "topology": {
                     "path": str(Path(args.topology_file).resolve()),
@@ -4029,6 +4507,7 @@ def main() -> int:
                    if args.spec175_case in {"M11", "M12", "M13", "M14"}
                    else {}),
                 "userReturnCode": int(user_proc.returncode or 0),
+                "terminalEvidence": terminal_evidence,
                 "artifacts": [evidence_row(path)
                               for path in spec175_evidence_paths],
             }

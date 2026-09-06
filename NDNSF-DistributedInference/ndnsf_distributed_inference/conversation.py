@@ -64,6 +64,7 @@ class ResidencyTier(str, Enum):
 
 class StateLifecycle(str, Enum):
     IDLE = "IDLE"
+    OFFLOADING = "OFFLOADING"
     PREFETCHING = "PREFETCHING"
     PINNED = "PINNED"
     COMMITTING = "COMMITTING"
@@ -1077,6 +1078,7 @@ class ProviderConversationStateManager:
         now_ms: int | None = None,
         deadline_ms: int | None = None,
         cancelled: Callable[[], bool] | None = None,
+        copy_state: Callable[[Any], Any] | None = None,
     ) -> ConversationStateEntryV1:
         """Acquire an exact conversation state for a *new* Request.
 
@@ -1134,7 +1136,7 @@ class ProviderConversationStateManager:
         if host_resident:
             if cancelled is not None and not callable(cancelled):
                 raise TypeError("cancelled must be callable")
-            future = self.prefetch_to_gpu(receipt)
+            future = self.prefetch_to_gpu(receipt, copy_state=copy_state)
             prefetch_key = (receipt.conversation_id,
                             receipt.successor_context_epoch,
                             receipt.role_name)
@@ -1435,8 +1437,20 @@ class ProviderConversationStateManager:
             self._conversation[key] = updated
             return updated
 
-    def pause_to_host(self, receipt: ProviderConversationStateReceiptV1,
-                      *, host_pool_id: str = "host:conversation") -> ConversationStateEntryV1:
+    def pause_to_host(
+        self,
+        receipt: ProviderConversationStateReceiptV1,
+        *,
+        host_pool_id: str = "host:conversation",
+        copy_state: Callable[[Any], Any] | None = None,
+    ) -> ConversationStateEntryV1:
+        """Move one idle committed state into host-owned storage.
+
+        ``copy_state`` is the adapter boundary for a real device-to-host copy.
+        The entry is fenced as ``OFFLOADING`` while the copy runs, so another
+        request cannot pin or prefetch a half-transitioned state.  Omitting the
+        callback preserves the metadata-only behavior used by CPU adapters.
+        """
         key = (receipt.conversation_id, receipt.successor_context_epoch,
                receipt.role_name)
         with self._lock:
@@ -1450,11 +1464,46 @@ class ProviderConversationStateManager:
             self._prefetch.pop(key, None)
             self._prefetch_waiters.pop(key, None)
             self._ensure_host_capacity(entry)
-            updated = replace(entry, residency_tier=ResidencyTier.HOST_RESIDENT,
-                              device_id="", host_pool_id=host_pool_id,
-                              last_access_sequence=self._next_sequence())
+            staged = replace(
+                entry, lifecycle=StateLifecycle.OFFLOADING,
+                last_access_sequence=self._next_sequence())
+            self._conversation[key] = staged
+        started = time.perf_counter()
+        try:
+            value = copy_state(staged.opaque_state) if copy_state else staged.opaque_state
+        except BaseException:
+            with self._lock:
+                current = self._conversation.get(key)
+                if (current is not None and current.receipt == receipt
+                        and current.lifecycle is StateLifecycle.OFFLOADING):
+                    self._conversation[key] = replace(
+                        current, lifecycle=StateLifecycle.IDLE)
+            raise
+        old_state: Any = None
+        with self._lock:
+            current = self._conversation.get(key)
+            if (current is None or current.receipt != receipt
+                    or current.lifecycle is not StateLifecycle.OFFLOADING):
+                if (value is not staged.opaque_state
+                        and not self._contains_identity(value, staged.opaque_state)):
+                    self._release_state(value)
+                raise ConversationStateUnavailable(
+                    "state offload was cancelled")
+            old_state = current.opaque_state
+            elapsed = max(0, int((time.perf_counter() - started) * 1000))
+            updated = replace(
+                current, residency_tier=ResidencyTier.HOST_RESIDENT,
+                lifecycle=StateLifecycle.IDLE, opaque_state=value,
+                device_id="", host_pool_id=host_pool_id,
+                transfer_bytes=current.logical_bytes,
+                transfer_latency_ms=elapsed,
+                last_used_at_ms=int(time.time() * 1000),
+                last_access_sequence=self._next_sequence())
             self._conversation[key] = updated
-            return updated
+        if (value is not old_state
+                and not self._contains_identity(value, old_state)):
+            self._release_state(old_state)
+        return updated
 
     def prefetch_to_gpu(
         self,
@@ -1621,6 +1670,40 @@ class ProviderConversationStateManager:
                 self._conversation.pop(entry.key, None)
                 self._evictions += 1
             return len(candidates) + self._evict_for_quota()
+
+    def invalidate_conversation_state(
+        self,
+        receipt: ProviderConversationStateReceiptV1,
+    ) -> bool:
+        """Invalidate exactly one committed Provider conversation state.
+
+        This is deliberately narrower than :meth:`invalidate_provider_boot`:
+        a failed or deliberately unavailable conversation must not evict other
+        conversations owned by the same long-lived Provider process.  The
+        exact signed receipt is the deletion authority.  Pinned or
+        transitional entries cannot be removed because doing so would race an
+        active request or a device/host transfer.
+        """
+        key = (receipt.conversation_id, receipt.successor_context_epoch,
+               receipt.role_name)
+        with self._lock:
+            entry = self._conversation.get(key)
+            if (entry is None or entry.receipt != receipt
+                    or entry.receipt.provider_boot_id != self.provider_boot_id
+                    or entry.receipt.cache_epoch != self.cache_epoch):
+                return False
+            if entry.pin_count or entry.lifecycle is not StateLifecycle.IDLE:
+                raise ConversationStateUnavailable(
+                    "active conversation state cannot be invalidated")
+            if key in self._prefetch:
+                raise ConversationStateUnavailable(
+                    "conversation state transfer is still in flight")
+            self._conversation.pop(key)
+            self._prefetch_waiters.pop(key, None)
+            self._evictions += 1
+            opaque_state = entry.opaque_state
+        self._release_state(opaque_state)
+        return True
 
     def invalidate_provider_boot(self, provider_boot_id: str) -> int:
         with self._lock:

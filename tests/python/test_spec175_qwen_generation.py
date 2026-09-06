@@ -126,6 +126,23 @@ class Spec175QwenGenerationTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 StandaloneQwenTokenizer.from_file(path, expected_digest="sha256:" + "0" * 64)
 
+    def test_checked_in_unicode_tokenizer_is_the_native_process_oracle(self) -> None:
+        path = (
+            ROOT / "tests/fixtures/spec175/tiny-causal-lm-v1/standalone/"
+            "unicode/tokenizer.json"
+        )
+        digest = (
+            "sha256:90db6ef1a0f74a22133269b170a5a4c08a5a4c0d5a76a746614f779e5b2f2404"
+        )
+        tokenizer = StandaloneQwenTokenizer.from_file(
+            path, expected_digest=digest)
+        self.assertEqual(tokenizer.decode((4, 5, 6, 7)), "你好🙂!")
+        decoder = IncrementalDetokenizer(tokenizer.decode, stop_strings=("好🙂",))
+        self.assertEqual(decoder.push(4), "你")
+        self.assertEqual(decoder.push(5), "好")
+        self.assertEqual(decoder.push(6), "🙂")
+        self.assertEqual(decoder.matched_stop, "好🙂")
+
     def test_deployed_generation_modules_do_not_import_transformers(self) -> None:
         source = (ROOT / "NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/qwen").glob("*.py")
         combined = "\n".join(path.read_text(encoding="utf-8") for path in source)

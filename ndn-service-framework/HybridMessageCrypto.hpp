@@ -54,6 +54,12 @@ public:
                          const std::string& epochId,
                          const ndn::Buffer& key);
 
+    /** Cache a received MessageKey with its service scope for revocation. */
+    void cacheReceiveKey(const ndn::Name& serviceName,
+                         const std::string& keyId,
+                         const std::string& epochId,
+                         const ndn::Buffer& key);
+
     bool findReceiveKey(const std::string& keyId,
                         ndn::Buffer& key,
                         HybridCryptoCounters& counters);
@@ -61,13 +67,25 @@ public:
     void markSendKeyWrapped(const std::string& keyId);
     void cacheWrappedSendKey(const std::string& keyId,
                              const ndn::Buffer& wrappedKey);
+    /** Cache wrapped key material with its service scope for revocation. */
+    void cacheWrappedSendKey(const ndn::Name& serviceName,
+                             const std::string& keyId,
+                             const ndn::Buffer& wrappedKey);
     bool getWrappedSendKey(const std::string& keyId,
                            ndn::Buffer& wrappedKey) const;
     bool shouldAttachWrappedKey(const std::string& keyId) const;
 
+    /**
+     * Evict all service-scoped send/receive/wrapped key material.  Unknown
+     * unscoped legacy entries are retained rather than over-invalidated.
+     * Returns the number of scoped entries removed.
+     */
+    size_t invalidateService(const ndn::Name& serviceName);
+
 private:
     struct CachedKey
     {
+        ndn::Name serviceName;
         std::string epochId;
         ndn::Buffer key;
         std::chrono::steady_clock::time_point createdAt;
@@ -81,8 +99,10 @@ private:
 
     mutable std::mutex m_mutex;
     std::map<std::string, HybridMessageKey> m_sendKeys;
+    std::map<std::string, ndn::Name> m_sendKeyServices;
     std::map<std::string, CachedKey> m_receiveKeys;
     std::map<std::string, ndn::Buffer> m_wrappedSendKeysById;
+    std::map<std::string, ndn::Name> m_wrappedSendKeyServices;
     std::set<std::string> m_wrappedSendKeys;
 };
 

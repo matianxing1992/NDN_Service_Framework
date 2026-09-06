@@ -41,6 +41,9 @@ struct NativeProviderHandlerConfig
     const std::string&, const NativeEpochCoordinatorResult&)>;
   using NativeFailureObserver = std::function<void(
     const std::string&, const std::string&)>;
+  using GenerationTextDecoderFactory = std::function<
+    std::function<std::string(const std::vector<std::int64_t>&)>(
+      const std::string& tokenizerDigest)>;
 
   NativeExecutionPlan plan;
   NativeProviderAssignment assignment;
@@ -74,6 +77,20 @@ struct NativeProviderHandlerConfig
   std::vector<std::string> generationStateOutputNames;
   std::set<std::int64_t> generationEosTokenIds;
   std::string generationSamplingDigest;
+  std::string generationSamplingMode = "Greedy";
+  double generationSamplingTemperature = 0.0;
+  std::size_t generationSamplingTopK = 1;
+  double generationSamplingTopP = 1.0;
+  double generationSamplingRepetitionPenalty = 1.0;
+  std::uint64_t generationSamplingSeed = 1'750'001;
+  std::vector<std::string> generationStopStrings;
+  // Provider-local standalone tokenizer callback.  It is intentionally
+  // injected by the adapter/deployment layer; Core never imports a model
+  // framework or exposes tokenizer paths on the wire.
+  std::function<std::string(const std::vector<std::int64_t>&)>
+    generationTextDecoder;
+  GenerationTextDecoderFactory generationTextDecoderFactory;
+  bool requireGenerationTextOutput = false;
   std::vector<std::int64_t> generationCommittedPrefixTokenIds;
   // User-generated request scope shared only with the selected Provider roles
   // and retained by the requester. Provider conversation Ready/receipt records
@@ -82,7 +99,7 @@ struct NativeProviderHandlerConfig
   std::string conversationStateKeyScope = "ndnsf-di-conversation-state-v1";
   bool requireExecutionAttemptBinding = false;
   int fetchTimeoutMs = 30000;
-  std::size_t maxSegmentSize = 7000;
+  std::size_t maxSegmentSize = 7600;
   int freshnessMs = 60000;
   // Optional request-scoped cross-Provider data-plane coordinator.  When
   // absent, dependencies retain the ordinary COLLAB-LARGE path.

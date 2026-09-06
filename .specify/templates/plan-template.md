@@ -1,5 +1,13 @@
 # Implementation Plan: [FEATURE]
 
+<!--
+  DOCUMENT LANGUAGE POLICY (constitution 1.4.0, 2026-09-05):
+  中文写叙述性内容：Summary、Architecture Decisions 的动机与取舍、修订历史、
+  诊断记录、迁移说明的正文。
+  保持英文：节标题、门名（G0/S0/T001 等）、状态词、契约 JSON、字段名、
+  文件路径、哈希、命令。旧 spec 不回译。
+-->
+
 **Branch**: `[###-feature-name]` | **Date**: [DATE] | **Spec**: [link]
 
 **Input**: Feature specification from `/specs/[###-feature-name]/spec.md`
@@ -45,6 +53,50 @@
 The plan MUST identify cohesive behavioral slices and their acceptance gates.
 It MUST NOT prescribe a future task for every file, function, test command, or
 evidence document when those actions jointly deliver one behavior.
+
+The plan MUST place one code-aware design-to-code convergence gate after
+implementation/focused repair tests and before any complete unit/integration
+suite, system/network qualification, benchmark, or experiment is accepted as
+evidence. It MUST identify the production entry points and effective
+configuration to inspect, the specification/contracts that control them, the
+required traceability report, the severity-to-verdict rule, and the changes
+that trigger re-audit. An unresolved semantic, architecture, security,
+production-wiring, or evidence-validity discrepancy MUST block formal
+validation.
+
+When the feature uses large artifacts, containers, remote staging, GPU/cluster
+allocation, or long campaigns, the plan MUST also define:
+
+- one immutable candidate tuple across source, runtime artifact, replay/test
+  harness, submit bundle, effective configuration, external artifacts, and the
+  validation contract;
+- a change-plane invalidation matrix with the earliest restart gate;
+- a repository-owned pre-dispatch closure gate whose rejected mutations make
+  zero upload, remote mutation, staging, scheduler, or campaign calls;
+- real-path readiness evidence where local markers are insufficient;
+- terminal acceptance requiring protocol/result/child-exit/cleanup agreement;
+- one active subject per candidate and gate, with no cross-candidate PASS reuse.
+
+## Pre-Qualification Design-Code Convergence
+
+**Design authority**: [exact spec/plan/contracts/invariants that implementation must match]
+
+**Production paths to inspect**: [public entry points, runtime callers, wiring,
+effective configuration, security owners, and evidence-producing paths]
+
+**Required audit artifact**: [path to code-aware gap report and traceability map]
+
+**Closure rule**: [all controlling gaps repaired with focused regressions;
+post-implementation audit verdict PASS]
+
+**Formal validation boundary**: [complete unit/integration, MiniNDN, SIF,
+cluster, benchmark, or experiment tasks that depend on the PASS verdict]
+
+**Re-audit triggers**: [behavior-affecting source, design, dependency,
+configuration, harness, or evidence-contract changes]
+
+Follow `.specify/memory/design-code-convergence.md`; feature-specific rules may
+be stricter but must not weaken its PASS/BLOCK boundary.
 
 ## Project Structure
 

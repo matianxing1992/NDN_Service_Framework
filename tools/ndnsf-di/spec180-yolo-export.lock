@@ -1,0 +1,11 @@
+# Spec180 offline YOLO26n canonical export lock (export host only)
+python==3.10
+torch==2.4.1
+ultralytics==8.4.56
+onnx==1.17.0
+onnxruntime==1.19.2
+numpy==1.26.4
+pyyaml==6.0.2
+
+# Runtime images must contain only the canonical ONNX/initializer package and
+# ONNX Runtime. PyTorch and Ultralytics are not deployment dependencies.

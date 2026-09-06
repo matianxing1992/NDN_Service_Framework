@@ -880,6 +880,19 @@ nativeSelectionProjectionV3FromJson(std::istream& input,
       "sampling_digest", "");
     contract.tokenizerDigest = generation->get<std::string>(
       "tokenizer_digest", "");
+    contract.samplingMode = generation->get<std::string>(
+      "sampling_mode", "Greedy");
+    contract.samplingTemperature = generation->get<double>(
+      "sampling_temperature", 0.0);
+    contract.samplingTopK = generation->get<std::uint64_t>(
+      "sampling_top_k", 1);
+    contract.samplingTopP = generation->get<double>(
+      "sampling_top_p", 1.0);
+    contract.samplingRepetitionPenalty = generation->get<double>(
+      "sampling_repetition_penalty", 1.0);
+    contract.samplingSeed = generation->get<std::uint64_t>(
+      "sampling_seed", 1'750'001);
+    contract.stopStrings = stringArrayFromJson(*generation, "stop_strings");
     contract.generationId = generation->get<std::string>(
       "generation_id", "");
     contract.committedPrefixTokenIds = int64ArrayFromJson(
@@ -895,6 +908,27 @@ nativeSelectionProjectionV3FromJson(std::istream& input,
       [] (const auto& dependency) {
         return dependency.operationKind == "TOKEN_FEEDBACK";
       });
+    const bool validSamplingMode =
+      contract.samplingMode == "Greedy" ||
+      contract.samplingMode == "SeededTopKTopP";
+    const bool validSampling = validSamplingMode &&
+      std::isfinite(contract.samplingTemperature) &&
+      std::isfinite(contract.samplingTopP) &&
+      std::isfinite(contract.samplingRepetitionPenalty) &&
+      contract.samplingTopK > 0 &&
+      contract.samplingTopP > 0.0 && contract.samplingTopP <= 1.0 &&
+      contract.samplingRepetitionPenalty >= 0.1 &&
+      contract.samplingRepetitionPenalty <= 2.0 &&
+      ((contract.samplingMode == "Greedy" &&
+        contract.samplingTemperature == 0.0) ||
+       (contract.samplingMode == "SeededTopKTopP" &&
+        contract.samplingTemperature > 0.0 &&
+        contract.samplingTemperature <= 5.0));
+    const bool validStops = contract.stopStrings.size() <= 16 &&
+      std::all_of(contract.stopStrings.begin(), contract.stopStrings.end(),
+                  [] (const auto& value) {
+                    return !value.empty() && value.size() <= 256;
+                  });
     if (contract.mode != "TOKEN_STREAMING" ||
         contract.maxGeneratedTokens == 0 || contract.maxGeneratedTokens > 64 ||
         contract.tokenInputName.empty() || contract.stateInputNames.empty() ||
@@ -906,6 +940,7 @@ nativeSelectionProjectionV3FromJson(std::istream& input,
                     [] (std::int64_t value) { return value < 0; }) ||
         !isSha256Digest(contract.samplingDigest) ||
         !isSha256Digest(contract.tokenizerDigest) ||
+        !validSampling || !validStops ||
         (!contract.generationId.empty() &&
          !isGenerationId(contract.generationId)) ||
         contract.streamingOperationStride != projection.plan.dependencies.size() ||

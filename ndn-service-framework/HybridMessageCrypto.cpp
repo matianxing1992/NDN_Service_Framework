@@ -109,7 +109,10 @@ HybridMessageCrypto::getOrCreateSendKey(const ndn::Name& serviceName,
                                                accessAttribute, key.epochId);
         key.keyId = key.keyName.toUri();
         it = m_sendKeys.insert_or_assign(scope, key).first;
+        m_sendKeyServices[scope] = serviceName;
         m_wrappedSendKeys.erase(key.keyId);
+        m_wrappedSendKeysById.erase(key.keyId);
+        m_wrappedSendKeyServices.erase(key.keyId);
         ++counters.hybrid_key_epoch_created;
     }
 
@@ -137,9 +140,18 @@ HybridMessageCrypto::cacheReceiveKey(const std::string& keyId,
                                      const std::string& epochId,
                                      const ndn::Buffer& key)
 {
+    cacheReceiveKey(ndn::Name(), keyId, epochId, key);
+}
+
+void
+HybridMessageCrypto::cacheReceiveKey(const ndn::Name& serviceName,
+                                     const std::string& keyId,
+                                     const std::string& epochId,
+                                     const ndn::Buffer& key)
+{
     std::lock_guard<std::mutex> lock(m_mutex);
     m_receiveKeys[hybridCompactKeyId(keyId)] =
-        CachedKey{epochId, key, std::chrono::steady_clock::now(), 0};
+        CachedKey{serviceName, epochId, key, std::chrono::steady_clock::now(), 0};
 }
 
 bool
@@ -177,9 +189,20 @@ void
 HybridMessageCrypto::cacheWrappedSendKey(const std::string& keyId,
                                          const ndn::Buffer& wrappedKey)
 {
+    cacheWrappedSendKey(ndn::Name(), keyId, wrappedKey);
+}
+
+void
+HybridMessageCrypto::cacheWrappedSendKey(const ndn::Name& serviceName,
+                                         const std::string& keyId,
+                                         const ndn::Buffer& wrappedKey)
+{
     std::lock_guard<std::mutex> lock(m_mutex);
     m_wrappedSendKeysById[keyId] = wrappedKey;
     m_wrappedSendKeys.insert(keyId);
+    if (!serviceName.empty()) {
+        m_wrappedSendKeyServices[keyId] = serviceName;
+    }
 }
 
 bool
@@ -200,6 +223,68 @@ HybridMessageCrypto::shouldAttachWrappedKey(const std::string& keyId) const
 {
     std::lock_guard<std::mutex> lock(m_mutex);
     return m_wrappedSendKeys.find(keyId) == m_wrappedSendKeys.end();
+}
+
+size_t
+HybridMessageCrypto::invalidateService(const ndn::Name& serviceName)
+{
+    if (serviceName.empty()) {
+        return 0;
+    }
+
+    std::lock_guard<std::mutex> lock(m_mutex);
+    size_t removed = 0;
+    for (auto it = m_sendKeys.begin(); it != m_sendKeys.end();) {
+        const auto serviceIt = m_sendKeyServices.find(it->first);
+        if (serviceIt == m_sendKeyServices.end() || serviceIt->second != serviceName) {
+            ++it;
+            continue;
+        }
+        const auto keyId = it->second.keyId;
+        std::fill(it->second.key.begin(), it->second.key.end(), 0);
+        it = m_sendKeys.erase(it);
+        m_sendKeyServices.erase(serviceIt);
+        m_wrappedSendKeys.erase(keyId);
+        auto wrappedIt = m_wrappedSendKeysById.find(keyId);
+        if (wrappedIt != m_wrappedSendKeysById.end()) {
+            std::fill(wrappedIt->second.begin(), wrappedIt->second.end(), 0);
+            m_wrappedSendKeysById.erase(wrappedIt);
+        }
+        m_wrappedSendKeyServices.erase(keyId);
+        ++removed;
+    }
+
+    for (auto it = m_receiveKeys.begin(); it != m_receiveKeys.end();) {
+        if (it->second.serviceName != serviceName) {
+            ++it;
+            continue;
+        }
+        std::fill(it->second.key.begin(), it->second.key.end(), 0);
+        it = m_receiveKeys.erase(it);
+        ++removed;
+    }
+
+    // Wrapped entries can outlive the corresponding rotating send-key scope.
+    // Remove only entries carrying an explicit matching service scope; leave
+    // legacy unscoped entries untouched to avoid collateral invalidation.
+    for (auto it = m_wrappedSendKeyServices.begin();
+         it != m_wrappedSendKeyServices.end();) {
+        if (it->second != serviceName) {
+            ++it;
+            continue;
+        }
+        const auto keyId = it->first;
+        m_wrappedSendKeys.erase(keyId);
+        auto wrappedIt = m_wrappedSendKeysById.find(keyId);
+        if (wrappedIt != m_wrappedSendKeysById.end()) {
+            std::fill(wrappedIt->second.begin(), wrappedIt->second.end(), 0);
+            m_wrappedSendKeysById.erase(wrappedIt);
+        }
+        it = m_wrappedSendKeyServices.erase(it);
+        ++removed;
+    }
+
+    return removed;
 }
 
 ndn::Name

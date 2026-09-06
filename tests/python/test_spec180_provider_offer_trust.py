@@ -95,7 +95,9 @@ def test_provider_offer_verifier_binds_policy_and_ack_provenance():
         request_id="req-1", deadline_ms=NOW + 30_000)
 
 
-def test_v3_factory_invokes_ack_aware_production_verifier():
+def test_v3_factory_invokes_ack_aware_production_verifier(monkeypatch):
+    monkeypatch.setattr("ndnsf_distributed_inference.app_sdk.placement.time.time",
+                        lambda: NOW / 1000)
     verifier, offer, ack, _, _ = _fixture()
     view = v3_provider_view_factory(verifier)(
         ack, MODEL, NOW + 30_000, GRAPH)

@@ -59,11 +59,11 @@ from ndnsf_distributed_inference.app_sdk.placement import (
     CatalogSnapshotArtifactPublisher,
     v2_provider_view_factory,
 )
+from ndnsf_distributed_inference.app_sdk.canonical_artifacts import (
+    CanonicalArtifactBinding,
+)
 from ndnsf_distributed_inference.planner.presplit_first import (
     PreSplitFirstStrategy,
-)
-from ndnsf_distributed_inference.planner.layer_reuse_first import (
-    LayerReuseFirstStrategy,
 )
 from ndnsf_distributed_inference.adapters.qwen.placement import (
     build_qwen_three_stage_adapter,
@@ -494,6 +494,7 @@ class _QwenDeferredRepoPublisher:
             raise ValueError("Qwen Repo registration role coverage mismatch")
         digests = {}
         names = {}
+        fetch_names = {}
         for role in roles:
             item = by_role[role]
             digest = _qwen_digest(item["fileSha256"])
@@ -505,12 +506,18 @@ class _QwenDeferredRepoPublisher:
             name = str(item.get("canonicalName") or item.get("objectName", ""))
             if not name.startswith("/"):
                 raise ValueError(f"Qwen Repo registration has invalid name for {role}")
+            fetch_name = str(item.get("objectName", ""))
+            if not fetch_name.startswith("/"):
+                raise ValueError(
+                    f"Qwen Repo registration has invalid transport name for {role}")
             digests[role] = digest
             names[role] = name
+            fetch_names[role] = fetch_name
         published = PublishedSplit(
             candidate_digest=candidate.candidate_digest,
             artifact_digests_by_role=digests,
             artifact_data_names_by_role=names,
+            artifact_fetch_data_names_by_role=fetch_names,
         )
         if self._activate_catalog_snapshot is not None:
             self._activate_catalog_snapshot(candidate, published, registration)
@@ -573,14 +580,7 @@ class _QwenDeferredRepoPublisher:
         return self._published(candidate, registration)
 
     def ensure(self, candidate, role_specs, *, deadline_ms: int) -> PublishedSplit:
-        """Ensure the selected V3 canonical stage objects after ACK_CLOSED.
-
-        ``role_specs`` is intentionally checked here even though the current
-        Qwen stage manifest has one object per pipeline range.  Future adapters
-        can replace this implementation with ONNX graph-layer publication
-        without changing the coordinator contract.
-        """
-
+        """Ensure the selected V3 canonical stage objects after ACK_CLOSED."""
         by_role = {str(item.role): item for item in role_specs}
         expected_roles = tuple(candidate.execution_plan.roles)
         if set(by_role) != set(expected_roles):
@@ -598,6 +598,136 @@ class _QwenDeferredRepoPublisher:
         if registration is None:
             raise RuntimeError("no deferred Qwen Repo registration exists")
         return self._published(candidate, registration)
+
+
+class _TinyCanonicalArtifactEnsurer:
+    """Publish the tiny V3 root/source through the authenticated large-data path.
+
+    The canonical root is the stable assigned-artifact identity.  Its encrypted
+    large-data name is a separate request-scoped transport reference carried in
+    Selection, so Providers do not attempt to fetch an unpublished canonical
+    URI.  The full one-role ONNX fixture is the canonical source; role bytes
+    remain candidate-bound digests and are assembled only after Selection.
+    """
+
+    def __init__(self, *, service_user, fixture_root: Path, service: str,
+                 model: ModelRef, graph, candidate) -> None:
+        self._service_user = service_user
+        self._fixture_root = fixture_root
+        self._service = str(service)
+        self._model = model
+        self._graph = graph
+        self._candidate = candidate
+        source_path = fixture_root / "one-role" / "role-0.onnx"
+        if not source_path.is_file():
+            raise FileNotFoundError(f"tiny canonical source is missing: {source_path}")
+        self._source = source_path.read_bytes()
+        self._source_digest = _qwen_digest(
+            hashlib.sha256(self._source).hexdigest())
+        from ndnsf_distributed_inference.adapters.onnx.graph import (
+            canonical_onnx_identity,
+        )
+        self._source_identity = canonical_onnx_identity(source_path)
+        self._profile_digest = canonical_digest({
+            "schema": "ndnsf-di-spec175-tiny-canonical-profile-v1",
+            "model": model.content_digest,
+            "graph": graph.graph_digest,
+            "adapter": graph.adapter.descriptor_digest,
+            "precision": "float32",
+        })
+        self._assembler_digest = _qwen_digest(hashlib.sha256(
+            b"ndnsf-di-certified-onnx-assembler-v1").hexdigest())
+        self._root_digest = ""
+        self._root_name = ""
+        self._source_name = ""
+
+    def describe(self, candidate=None) -> CanonicalArtifactBinding:
+        if candidate is not None and candidate.graph_digest != self._graph.graph_digest:
+            raise ValueError("tiny canonical candidate graph mismatch")
+        return CanonicalArtifactBinding(
+            model_manifest_digest=(self._root_digest or canonical_digest({
+                "model": self._model.content_digest,
+                "profile": self._profile_digest,
+                "graph": self._graph.graph_digest,
+            })),
+            artifact_profile_digest=self._profile_digest,
+            graph_digest=self._graph.graph_digest,
+            canonical_initializer_digest=(
+                self._source_identity.normalized_initializer_content_digest),
+            adapter_descriptor_digest=self._graph.adapter.descriptor_digest,
+            assembler_descriptor_digest=self._assembler_digest,
+            backend_abi="onnxruntime-runtime",
+            canonical_source_bytes=len(self._source),
+            # The encrypted transport name is generated by the User only
+            # during ensure().  Before publication, keep the binding's source
+            # reference intentionally incomplete; after ensure() both fields
+            # are available and the post-publication certification binds them.
+            canonical_source_digest=(
+                self._source_digest if self._root_digest else ""),
+            canonical_source_data_name=(self._source_name if self._root_digest else ""),
+        )
+
+    def ensure(self, candidate, role_specs, *, deadline_ms: int) -> PublishedSplit:
+        if int(time.time() * 1000) >= int(deadline_ms):
+            raise TimeoutError("tiny canonical publication deadline expired")
+        if candidate.candidate_digest != self._candidate.candidate_digest:
+            raise ValueError("tiny canonical candidate digest mismatch")
+        role_specs = tuple(role_specs)
+        if not role_specs:
+            raise ValueError("tiny canonical publication requires role specs")
+        binding = self.describe(candidate)
+        source_result = self._service_user.publish_encrypted_large_data(
+            self._service, self._source,
+            object_label="spec175-tiny-canonical-source", freshness_ms=60000)
+        if not source_result.success or not source_result.encrypted_data_name.startswith("/"):
+            raise RuntimeError(
+                f"tiny canonical source publication failed: {source_result.error}")
+        self._source_name = source_result.encrypted_data_name
+        root_payload = json.dumps({
+            "artifactProfileDigest": binding.artifact_profile_digest,
+            "layerManifestDigests": [str(spec.artifact_digest) for spec in role_specs],
+            "metadata": {
+                "canonicalSourceBytes": len(self._source),
+                "canonicalSourceDataName": source_result.encrypted_data_name,
+                "canonicalSourceDigest": self._source_digest,
+            },
+            "modelIdentityDigest": self._model.content_digest,
+            "modelName": self._model.model_name,
+            "schema": "ndnsf-di-canonical-model-manifest-v1",
+            "state": "ACTIVE",
+        }, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        root_digest = _qwen_digest(hashlib.sha256(root_payload).hexdigest())
+        root_name = (
+            "/ndnsf-di/NDNSF-DI/MODEL/v1/NAME/" +
+            self._model.model_name.strip("/") + "/MANIFEST/" + root_digest)
+        root_result = self._service_user.publish_encrypted_large_data(
+            self._service, root_payload,
+            object_label="spec175-tiny-canonical-root", freshness_ms=60000)
+        if not root_result.success or not root_result.encrypted_data_name.startswith("/"):
+            raise RuntimeError(
+                f"tiny canonical root publication failed: {root_result.error}")
+        self._root_digest = root_digest
+        self._root_name = root_name
+        counts = {spec.role: sum(item.role == spec.role for item in role_specs)
+                  for spec in role_specs}
+        digests = {}
+        identities = {}
+        fetch_names = {}
+        for spec in role_specs:
+            key = spec.role if counts[spec.role] == 1 else f"{spec.role}#{spec.rank}"
+            digests[key] = spec.artifact_digest
+            identities[key] = root_name
+            fetch_names[key] = root_result.encrypted_data_name
+        return PublishedSplit(
+            candidate_digest=candidate.candidate_digest,
+            artifact_digests_by_role=digests,
+            artifact_data_names_by_role=identities,
+            artifact_fetch_data_names_by_role=fetch_names,
+        )
+
+    def resolve_existing(self, candidate, *, deadline_ms: int) -> PublishedSplit:
+        del candidate, deadline_ms
+        raise RuntimeError("tiny V3 canonical publication is request-scoped")
 
 
 def _configure_qwen_automatic_planning(client, args) -> None:
@@ -765,12 +895,15 @@ def _configure_qwen_automatic_planning(client, args) -> None:
     configure_kwargs = dict(
         service_name=SERVICE,
         adapters=(adapter,),
-        strategy=(LayerReuseFirstStrategy()
-                  if v3_default else PreSplitFirstStrategy(
-                      at_ms=int(time.time() * 1000),
-                      maximum_cache_age_ms=args.selection_cache_max_age_ms,
-                      clock_ms=lambda: int(time.time() * 1000),
-                  )),
+        # Spec175 ordinary streamed generation has one rank-zero pipeline
+        # role per Provider.  Reuse remains a subordinate score inside the
+        # canonical PreSplitFirst policy; do not select the historical
+        # LayerReuseFirst compatibility name for this path.
+        strategy=PreSplitFirstStrategy(
+            at_ms=int(time.time() * 1000),
+            maximum_cache_age_ms=args.selection_cache_max_age_ms,
+            clock_ms=lambda: int(time.time() * 1000),
+        ),
         catalog_snapshot_provider=lambda: tuple(
             catalog_snapshots[key] for key in sorted(catalog_snapshots)),
         verify_offer_signature=verify_offer,
@@ -889,6 +1022,14 @@ def _configure_tiny_onnx_automatic_planning(client, args) -> None:
             key, offer.digest().encode("utf-8"), hashlib.sha256).hexdigest()
         return hmac.compare_digest(expected, offer.signature)
 
+    canonical_ensurer = _TinyCanonicalArtifactEnsurer(
+        service_user=client.service_user,
+        fixture_root=Path(args.tiny_onnx_fixture_root).expanduser().resolve(),
+        service=SERVICE,
+        model=model,
+        graph=graph,
+        candidate=candidate,
+    )
     client.configure_automatic_planning(
         service_name=SERVICE,
         adapters=(adapter,),
@@ -901,6 +1042,7 @@ def _configure_tiny_onnx_automatic_planning(client, args) -> None:
         verify_offer_signature=verify_offer,
         ack_timeout_ms=args.ack_timeout_ms,
         ack_coverage_roles=roles,
+        canonical_artifact_ensurer=canonical_ensurer,
     )
     args._automatic_adapter = adapter
     args._automatic_model = model
@@ -2550,6 +2692,9 @@ def _run_qwen_transformer_generation_sample(
     decoder,
     request_id: str = "",
     require_eos: bool = True,
+    conversation: ConversationContinuation | None = None,
+    canonical_token_ids: tuple[int, ...] | None = None,
+    request_payload: bytes | None = None,
 ):
     model_type = str(getattr(args, "_qwen_model_type", "qwen2"))
     input_token_ids = tuple(
@@ -2578,22 +2723,24 @@ def _run_qwen_transformer_generation_sample(
         or not hasattr(args, "diagnostic_token_loop"))
     if not use_token_diagnostic:
         def full_generation_call(context, max_new_tokens, request_id):
-            context_payload = encode_qwen_pipeline_context(
-                [list(context)],
-                attention_mask=[[1] * len(context)],
-                request_id=request_id,
-                session_id=generation_id,
-                context_epoch=0,
-                generation={
-                    "maxNewTokens": int(max_new_tokens),
-                    "eosTokenIds": list(eos_token_ids),
-                    "outputMode": (
-                        "TOKEN_STREAMING"
-                        if getattr(args, "automatic_planning_manifest", "")
-                        else "FULL"
-                    ),
-                },
-                model_type=model_type,
+            context_payload = bytes(request_payload) if request_payload is not None else (
+                encode_qwen_pipeline_context(
+                    [list(context)],
+                    attention_mask=[[1] * len(context)],
+                    request_id=request_id,
+                    session_id=generation_id,
+                    context_epoch=0,
+                    generation={
+                        "maxNewTokens": int(max_new_tokens),
+                        "eosTokenIds": list(eos_token_ids),
+                        "outputMode": (
+                            "TOKEN_STREAMING"
+                            if getattr(args, "automatic_planning_manifest", "")
+                            else "FULL"
+                        ),
+                    },
+                    model_type=model_type,
+                )
             )
             # Core's request-id argument is a single canonical component;
             # the wire Name gains its leading slash internally.  Generation
@@ -2622,6 +2769,8 @@ def _run_qwen_transformer_generation_sample(
                     on_event=lambda payload: stream_events.append(bytes(payload)),
                     on_complete=lambda _payload: None,
                     on_error=lambda error: stream_errors.append(dict(error)),
+                    conversation=conversation,
+                    canonical_token_ids=canonical_token_ids,
                 )
                 # ``AutomaticInferenceHandle.result`` returns the adapter-
                 # decoded application value (bytes for this Qwen adapter),
@@ -2871,13 +3020,352 @@ def _campaign_wire_request_id(
     return f"{base}--sample--{generation_id}"
 
 
+_SPEC175_G6C_SCHEMA = "ndnsf-di-spec175-conversation-residency-campaign-v1"
+
+
+def _validate_spec175_g6c_campaign(campaign: dict) -> dict:
+    if campaign.get("schemaVersion") != _SPEC175_G6C_SCHEMA:
+        raise RuntimeError("unsupported Spec175 conversation-residency schema")
+    generation = campaign.get("generation")
+    if not isinstance(generation, dict) or generation != {
+            "strategy": "greedy", "maxNewTokens": 8,
+            "maxEvents": 9, "requestDeadlineMs": 120000,
+            "useCache": True, "thinkingMode": "disabled",
+            "mtpEnabled": False}:
+        raise RuntimeError("G6C generation contract is not frozen")
+    pairs = campaign.get("turnPairs")
+    if not isinstance(pairs, list) or len(pairs) != 2:
+        raise RuntimeError("G6C requires exactly two turn pairs")
+    if {str(item.get("caseId", "")) for item in pairs if isinstance(item, dict)} \
+            != {"two-turn", "paused-pressure"}:
+        raise RuntimeError("G6C turn-pair cases are incomplete")
+    unavailable = campaign.get("unavailableRole")
+    if not isinstance(unavailable, dict):
+        raise RuntimeError("G6C unavailable-role control is missing")
+    if unavailable.get("role") not in {
+            "/LLM/Pipeline/Stage/0", "/LLM/Pipeline/Stage/1",
+            "/LLM/Pipeline/Stage/2"}:
+        raise RuntimeError("G6C unavailable role is invalid")
+    if unavailable.get("expectedError") != "CONVERSATION_STATE_UNAVAILABLE":
+        raise RuntimeError("G6C unavailable-role error oracle is not frozen")
+    fallback = unavailable.get("fallback")
+    if not isinstance(fallback, dict) or fallback.get("authorized") is not True:
+        raise RuntimeError("G6C full-prefill fallback is not explicitly authorized")
+
+    conversations = []
+    for item in (*pairs, unavailable):
+        if not isinstance(item, dict):
+            raise RuntimeError("G6C case must be an object")
+        conversation_id = str(item.get("conversationId", ""))
+        if len(conversation_id) < 16 or any(
+                character not in
+                "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-"
+                for character in conversation_id):
+            raise RuntimeError("G6C conversation ID is unsafe")
+        conversations.append(conversation_id)
+        for turn_name in ("firstTurn", "secondTurn"):
+            turn = item.get(turn_name)
+            if not isinstance(turn, dict):
+                raise RuntimeError(f"G6C {turn_name} is missing")
+            input_key = ("inputTokenIds" if turn_name == "firstTurn"
+                         else "appendedInputTokenIds")
+            for field in (input_key, "referenceGeneratedTokenIds", "eosTokenIds"):
+                values = turn.get(field)
+                if (not isinstance(values, list) or not values
+                        or any(isinstance(value, bool) or not isinstance(value, int)
+                               for value in values)):
+                    raise RuntimeError(f"G6C {turn_name}.{field} is invalid")
+            if len(turn["referenceGeneratedTokenIds"]) > 8:
+                raise RuntimeError("G6C turn exceeds maxGeneratedTokens=8")
+    if len(set(conversations)) != 3:
+        raise RuntimeError("G6C conversations must have distinct IDs")
+    full_input = fallback.get("fullInputTokenIds")
+    reference = fallback.get("referenceGeneratedTokenIds")
+    eos = fallback.get("eosTokenIds")
+    if any(not isinstance(values, list) or not values
+           for values in (full_input, reference, eos)):
+        raise RuntimeError("G6C fallback full-prefill oracle is incomplete")
+    if fallback.get("referenceGeneratedTokenIds") \
+            != unavailable["secondTurn"]["referenceGeneratedTokenIds"]:
+        raise RuntimeError("G6C fallback and delta output oracles differ")
+    return campaign
+
+
+def _spec175_g6c_result_evidence(result) -> dict[str, object]:
+    tokens = tuple(int(value) for value in result.generated_token_ids)
+    text = str(result.decoded_text).encode("utf-8")
+    return {
+        "status": result.status,
+        "stopReason": result.stop_reason,
+        "exactReferenceMatch": bool(result.exact_reference_match),
+        "tokenCount": len(tokens),
+        "tokenSha256": "sha256:" + hashlib.sha256(
+            json.dumps(tokens, separators=(",", ":")).encode()).hexdigest(),
+        "responseBytes": len(text),
+        "responseSha256": "sha256:" + hashlib.sha256(text).hexdigest(),
+        "totalMs": float(result.total_ms),
+    }
+
+
+def _run_spec175_g6c_campaign(client, args, campaign: dict) -> int:
+    """Run the frozen Qwen CUDA conversation-residency control."""
+    campaign = _validate_spec175_g6c_campaign(campaign)
+    if args.max_new_tokens != 8 or args.timeout_ms != 120000:
+        raise RuntimeError("G6C CLI and manifest generation bounds differ")
+    if not args.qwen_tokenizer_dir:
+        raise RuntimeError("G6C requires --qwen-tokenizer-dir")
+    from tokenizers import Tokenizer
+    tokenizer_path = Path(args.qwen_tokenizer_dir) / "tokenizer.json"
+    if not tokenizer_path.is_file():
+        raise RuntimeError("G6C tokenizer.json is missing")
+    tokenizer = Tokenizer.from_file(str(tokenizer_path))
+    decoder = lambda values: tokenizer.decode(
+        list(values), skip_special_tokens=True)
+    coordinator = client.conversation_coordinator
+    evidence: dict[str, object] = {
+        "schemaVersion": "ndnsf-di-spec175-g6c-evidence-v1",
+        "campaignId": str(campaign.get("campaignId", "")),
+        "status": "FAIL",
+        "roleCount": 3,
+        "stateTensorBytesOnNdn": 0,
+        "cpuModelFallbackCount": 0,
+        "incompatibleRunnerCalls": 0,
+        "turnPairs": [],
+    }
+
+    def run_turn_pair(case: dict) -> dict[str, object]:
+        case_id = str(case["caseId"])
+        conversation_id = str(case["conversationId"])
+        first = dict(case["firstTurn"])
+        second = dict(case["secondTurn"])
+        first_input = tuple(int(value) for value in first["inputTokenIds"])
+        first_expected = tuple(
+            int(value) for value in first["referenceGeneratedTokenIds"])
+        first_request_id = f"g6c-{case_id}-turn-1"
+        first_payload = encode_qwen_pipeline_context(
+            [list(first_input)], attention_mask=[[1] * len(first_input)],
+            request_id=first_request_id, session_id=conversation_id,
+            context_epoch=0,
+            generation={
+                "maxNewTokens": 8, "eosTokenIds": list(first["eosTokenIds"]),
+                "outputMode": "TOKEN_STREAMING", "useCache": True},
+            model_type=getattr(args, "_qwen_model_type", "qwen3_5"),
+        )
+        first_result = _run_qwen_transformer_generation_sample(
+            client, args,
+            prompt_case={
+                "formattedInputIds": list(first_input),
+                "referenceGeneratedTokenIds": list(first_expected),
+                "eosTokenIds": list(first["eosTokenIds"])},
+            generation_id=f"{conversation_id}-turn-1",
+            request_id=first_request_id, decoder=decoder,
+            require_eos=False,
+            conversation=ConversationContinuation(conversation_id),
+            canonical_token_ids=(*first_input, *first_expected),
+            request_payload=first_payload,
+        )
+        checkpoint = coordinator.checkpoint(conversation_id)
+        if checkpoint is None:
+            raise RuntimeError(f"G6C {case_id} first turn has no checkpoint")
+        first_checkpoint = ConversationCheckpointV1.from_bytes(checkpoint)
+        if first_checkpoint.context_epoch != 1:
+            raise RuntimeError(f"G6C {case_id} first checkpoint epoch mismatch")
+        appended = tuple(int(value) for value in second["appendedInputTokenIds"])
+        second_expected = tuple(
+            int(value) for value in second["referenceGeneratedTokenIds"])
+        committed_prefix = (*first_input, *first_expected)
+        second_request_id = f"g6c-{case_id}-turn-2"
+        second_payload = encode_qwen_pipeline_delta(
+            [list(appended)], delta_attention_mask=[[1] * len(appended)],
+            request_id=second_request_id, session_id=conversation_id,
+            base_context_epoch=1, context_epoch=1,
+        )
+        second_result = _run_qwen_transformer_generation_sample(
+            client, args,
+            prompt_case={
+                "formattedInputIds": list(appended),
+                "referenceGeneratedTokenIds": list(second_expected),
+                "eosTokenIds": list(second["eosTokenIds"])},
+            generation_id=f"{conversation_id}-turn-2",
+            request_id=second_request_id, decoder=decoder,
+            require_eos=False,
+            conversation=ConversationContinuation(
+                conversation_id, ConversationInputMode.APPEND_DELTA,
+                parent_checkpoint=bytes(checkpoint),
+                expected_parent_context_epoch=1),
+            canonical_token_ids=(
+                *committed_prefix, *appended, *second_expected),
+            request_payload=second_payload,
+        )
+        successor = coordinator.checkpoint(conversation_id)
+        if successor is None:
+            raise RuntimeError(f"G6C {case_id} second turn has no checkpoint")
+        successor_checkpoint = ConversationCheckpointV1.from_bytes(successor)
+        if (successor_checkpoint.context_epoch != 2
+                or successor_checkpoint.parent_context_epoch != 1):
+            raise RuntimeError(f"G6C {case_id} successor checkpoint mismatch")
+        return {
+            "caseId": case_id,
+            "conversationId": conversation_id,
+            "firstRequestId": first_request_id,
+            "secondRequestId": second_request_id,
+            "firstGenerationId": f"{conversation_id}-turn-1",
+            "secondGenerationId": f"{conversation_id}-turn-2",
+            "firstCheckpointEpoch": 1,
+            "successorCheckpointEpoch": 2,
+            "firstCheckpointDigest": first_checkpoint.checkpoint_digest,
+            "successorCheckpointDigest": successor_checkpoint.checkpoint_digest,
+            "deltaPrefillInputTokens": len(appended),
+            "firstResult": _spec175_g6c_result_evidence(first_result),
+            "secondResult": _spec175_g6c_result_evidence(second_result),
+        }
+
+    for pair in campaign["turnPairs"]:
+        evidence["turnPairs"].append(run_turn_pair(pair))
+
+    unavailable = dict(campaign["unavailableRole"])
+    # Commit its first turn by reusing the same exact pair routine shape, but
+    # expect the second APPEND_DELTA to fail after the selected Provider has
+    # invalidated only this conversation's role-local entry.
+    first_only = {
+        "caseId": "unavailable-role-bootstrap",
+        "conversationId": unavailable["conversationId"],
+        "firstTurn": unavailable["firstTurn"],
+        "secondTurn": unavailable["secondTurn"],
+    }
+    conversation_id = str(unavailable["conversationId"])
+    first = dict(first_only["firstTurn"])
+    first_input = tuple(int(value) for value in first["inputTokenIds"])
+    first_expected = tuple(int(value) for value in first["referenceGeneratedTokenIds"])
+    first_request_id = "g6c-unavailable-turn-1"
+    first_payload = encode_qwen_pipeline_context(
+        [list(first_input)], attention_mask=[[1] * len(first_input)],
+        request_id=first_request_id, session_id=conversation_id,
+        context_epoch=0,
+        generation={
+            "maxNewTokens": 8, "eosTokenIds": list(first["eosTokenIds"]),
+            "outputMode": "TOKEN_STREAMING", "useCache": True},
+        model_type=getattr(args, "_qwen_model_type", "qwen3_5"),
+    )
+    first_result = _run_qwen_transformer_generation_sample(
+        client, args,
+        prompt_case={
+            "formattedInputIds": list(first_input),
+            "referenceGeneratedTokenIds": list(first_expected),
+            "eosTokenIds": list(first["eosTokenIds"])},
+        generation_id=f"{conversation_id}-turn-1",
+        request_id=first_request_id, decoder=decoder, require_eos=False,
+        conversation=ConversationContinuation(conversation_id),
+        canonical_token_ids=(*first_input, *first_expected),
+        request_payload=first_payload,
+    )
+    checkpoint = coordinator.checkpoint(conversation_id)
+    if checkpoint is None:
+        raise RuntimeError("G6C unavailable-role bootstrap has no checkpoint")
+    second = dict(unavailable["secondTurn"])
+    appended = tuple(int(value) for value in second["appendedInputTokenIds"])
+    second_expected = tuple(int(value) for value in second["referenceGeneratedTokenIds"])
+    second_payload = encode_qwen_pipeline_delta(
+        [list(appended)], delta_attention_mask=[[1] * len(appended)],
+        request_id="g6c-unavailable-turn-2",
+        session_id=conversation_id, base_context_epoch=1, context_epoch=1,
+    )
+    unavailable_error = ""
+    try:
+        _run_qwen_transformer_generation_sample(
+            client, args,
+            prompt_case={
+                "formattedInputIds": list(appended),
+                "referenceGeneratedTokenIds": list(second_expected),
+                "eosTokenIds": list(second["eosTokenIds"])},
+            generation_id=f"{conversation_id}-unavailable",
+            request_id="g6c-unavailable-turn-2", decoder=decoder,
+            require_eos=False,
+            conversation=ConversationContinuation(
+                conversation_id, ConversationInputMode.APPEND_DELTA,
+                parent_checkpoint=bytes(checkpoint),
+                expected_parent_context_epoch=1),
+            canonical_token_ids=(
+                *first_input, *first_expected, *appended, *second_expected),
+            request_payload=second_payload,
+        )
+    except Exception as exc:
+        unavailable_error = str(exc)
+    if "CONVERSATION_STATE_UNAVAILABLE" not in unavailable_error.upper():
+        raise RuntimeError(
+            "G6C unavailable-role request did not fail with "
+            "CONVERSATION_STATE_UNAVAILABLE")
+    if ConversationCheckpointV1.from_bytes(
+            coordinator.checkpoint(conversation_id)).context_epoch != 1:
+        raise RuntimeError("G6C failed child changed the committed checkpoint")
+
+    fallback = dict(unavailable["fallback"])
+    fallback_input = tuple(int(value) for value in fallback["fullInputTokenIds"])
+    fallback_expected = tuple(
+        int(value) for value in fallback["referenceGeneratedTokenIds"])
+    fallback_payload = encode_qwen_pipeline_context(
+        [list(fallback_input)], attention_mask=[[1] * len(fallback_input)],
+        request_id="g6c-unavailable-full-prefill-fallback",
+        session_id=f"{conversation_id}-fallback", context_epoch=0,
+        generation={
+            "maxNewTokens": 8,
+            "eosTokenIds": list(fallback["eosTokenIds"]),
+            "outputMode": "TOKEN_STREAMING", "useCache": True},
+        model_type=getattr(args, "_qwen_model_type", "qwen3_5"),
+    )
+    fallback_result = _run_qwen_transformer_generation_sample(
+        client, args,
+        prompt_case={
+            "formattedInputIds": list(fallback_input),
+            "referenceGeneratedTokenIds": list(fallback_expected),
+            "eosTokenIds": list(fallback["eosTokenIds"])},
+        generation_id=f"{conversation_id}-fallback",
+        request_id="g6c-unavailable-full-prefill-fallback",
+        decoder=decoder, require_eos=False,
+        request_payload=fallback_payload,
+    )
+    evidence["unavailableRole"] = {
+        "role": unavailable["role"],
+        "conversationId": conversation_id,
+        "firstRequestId": first_request_id,
+        "firstGenerationId": f"{conversation_id}-turn-1",
+        "firstResult": _spec175_g6c_result_evidence(first_result),
+        "negativeRequestId": "g6c-unavailable-turn-2",
+        "negativeGenerationId": f"{conversation_id}-unavailable",
+        "negativeError": "CONVERSATION_STATE_UNAVAILABLE",
+        "checkpointPreservedAtEpoch": 1,
+        "checkpointDigest": ConversationCheckpointV1.from_bytes(
+            checkpoint).checkpoint_digest,
+        "fallbackAuthorized": True,
+        "fallbackMode": "FULL_CONTEXT",
+        "fallbackRequestId": "g6c-unavailable-full-prefill-fallback",
+        "fallbackGenerationId": f"{conversation_id}-fallback",
+        "fallbackResult": _spec175_g6c_result_evidence(fallback_result),
+    }
+    evidence["status"] = "PASS"
+    output_path = Path(args.conversation_evidence_json)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(
+        json.dumps(evidence, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8")
+    print(
+        "LLM_PIPELINE_SPEC175_G6C_PASS",
+        f"campaignId={evidence['campaignId']}",
+        "turnPairs=2", "unavailableRoleFailures=1",
+        "fullPrefillFallbacks=1", flush=True)
+    return 0
+
+
 def _run_qwen_transformer_generation_campaign(client, args, campaign: dict) -> int:
-    if campaign.get("schemaVersion") != "ndnsf-di-qwen-generation-campaign-v1":
+    schema_version = campaign.get("schemaVersion")
+    if schema_version not in {
+        "ndnsf-di-qwen-generation-campaign-v1",
+        "ndnsf-di-qwen-generation-campaign-v2",
+    }:
         raise RuntimeError("unsupported Qwen generation campaign schema")
     generation = dict(campaign.get("generation", {}))
     args._qwen_model_type = _qwen_model_type_from_documents(
         campaign.get("model", {}), campaign.get("modelProfile", ""))
-    repetitions = dict(campaign.get("repetitions", {}))
     if generation.get("strategy") != "greedy":
         raise RuntimeError("Qwen generation campaign must use greedy strategy")
     manifest_max = int(generation.get("maxNewTokens", 0))
@@ -2887,11 +3375,6 @@ def _run_qwen_transformer_generation_campaign(client, args, campaign: dict) -> i
     require_eos = generation.get("requireEos", True)
     if not isinstance(require_eos, bool):
         raise RuntimeError("campaign requireEos must be boolean")
-    warmup_count = int(repetitions.get("warmupPerPrompt", 0))
-    measured_count = int(repetitions.get("measuredPerPrompt", 0))
-    if warmup_count < 0 or measured_count < 1:
-        raise RuntimeError(
-            "generation campaign requires non-negative warmup and positive measured counts")
     prompts = list(campaign.get("prompts", []))
     if not prompts:
         raise RuntimeError("generation campaign requires at least one prompt")
@@ -2907,6 +3390,54 @@ def _run_qwen_transformer_generation_campaign(client, args, campaign: dict) -> i
         for prompt_id in prompt_ids
     ):
         raise RuntimeError("campaign prompt IDs contain unsafe characters")
+    prompts_by_id = {
+        str(prompt["promptId"]): prompt
+        for prompt in prompts
+    }
+
+    schedule: list[tuple[dict, str, int]] = []
+    if schema_version == "ndnsf-di-qwen-generation-campaign-v1":
+        repetitions = dict(campaign.get("repetitions", {}))
+        warmup_count = int(repetitions.get("warmupPerPrompt", 0))
+        measured_count = int(repetitions.get("measuredPerPrompt", 0))
+        if warmup_count < 0 or measured_count < 1:
+            raise RuntimeError(
+                "generation campaign requires non-negative warmup and positive measured counts")
+        for prompt_case in prompts:
+            schedule.extend(
+                (prompt_case, "warmup", index)
+                for index in range(warmup_count)
+            )
+            schedule.extend(
+                (prompt_case, "measured", index)
+                for index in range(measured_count)
+            )
+    else:
+        raw_schedule = campaign.get("schedule")
+        if not isinstance(raw_schedule, list) or not raw_schedule:
+            raise RuntimeError("generation campaign v2 requires a nonempty schedule")
+        seen_samples: set[tuple[str, str, int]] = set()
+        for index, sample in enumerate(raw_schedule):
+            if not isinstance(sample, dict):
+                raise RuntimeError(f"campaign schedule entry {index} must be an object")
+            prompt_id = str(sample.get("promptId", ""))
+            if prompt_id not in prompts_by_id:
+                raise RuntimeError(
+                    f"campaign schedule entry {index} references an unknown prompt")
+            phase = str(sample.get("phase", ""))
+            if phase not in {"cold", "warmup", "measured"}:
+                raise RuntimeError(
+                    f"campaign schedule entry {index} has an invalid phase")
+            repetition = sample.get("repetition")
+            if isinstance(repetition, bool) or not isinstance(repetition, int) \
+                    or repetition < 0:
+                raise RuntimeError(
+                    f"campaign schedule entry {index} has an invalid repetition")
+            identity = (prompt_id, phase, repetition)
+            if identity in seen_samples:
+                raise RuntimeError("campaign schedule entries must be unique")
+            seen_samples.add(identity)
+            schedule.append((prompts_by_id[prompt_id], phase, repetition))
     if not args.generation_jsonl:
         raise RuntimeError(
             "--generation-jsonl is required for a generation campaign")
@@ -2937,96 +3468,97 @@ def _run_qwen_transformer_generation_campaign(client, args, campaign: dict) -> i
     if any(character not in safe_characters for character in campaign_id):
         raise RuntimeError("campaignId contains unsafe characters")
 
-    sample_count = len(prompts) * (warmup_count + measured_count)
+    sample_count = len(schedule)
+    phase_counts = {
+        phase: sum(1 for _, scheduled_phase, _ in schedule
+                   if scheduled_phase == phase)
+        for phase in ("cold", "warmup", "measured")
+    }
     with output_path.open("x", encoding="utf-8") as output:
-        for prompt_case in prompts:
+        for prompt_case, phase, repetition in schedule:
             prompt_id = str(prompt_case["promptId"])
-            phases = (
-                [("warmup", index) for index in range(warmup_count)]
-                + [("measured", index) for index in range(measured_count)]
+            marker = {"cold": "c", "warmup": "w", "measured": "m"}[phase]
+            generation_id = (
+                f"{campaign_id}-{prompt_id}-{marker}{repetition}")
+            request_id = _campaign_wire_request_id(
+                getattr(args, "request_id", ""),
+                generation_id,
+                sample_count,
             )
-            for phase, repetition in phases:
-                marker = "w" if phase == "warmup" else "m"
-                generation_id = (
-                    f"{campaign_id}-{prompt_id}-{marker}{repetition}")
-                request_id = _campaign_wire_request_id(
-                    getattr(args, "request_id", ""),
-                    generation_id,
-                    sample_count,
-                )
-                result = _run_qwen_transformer_generation_sample(
-                    client,
-                    args,
-                    prompt_case=prompt_case,
-                    generation_id=generation_id,
-                    request_id=request_id,
-                    decoder=decoder,
-                    require_eos=require_eos,
-                )
-                row = {
-                    **result.to_dict(),
-                    "schemaVersion": "ndnsf-di-qwen-generation-sample-v1",
-                    "campaignId": campaign_id,
-                    "promptId": prompt_id,
-                    "phase": phase,
-                    "repetition": repetition,
-                    "inputTokenCount": len(
-                        prompt_case["formattedInputIds"]),
-                    "workloadDigest": getattr(args, "workload_digest", ""),
-                    "modelIdentityDigest": getattr(
-                        args, "model_identity_digest", ""),
-                    "planId": args.deployment_revision,
-                }
-                output.write(
-                    json.dumps(row, sort_keys=True, separators=(",", ":"))
-                    + "\n")
-                output.flush()
-                response_text = str(result.decoded_text)
-                response_digest = hashlib.sha256(
-                    response_text.encode("utf-8")).hexdigest()
+            result = _run_qwen_transformer_generation_sample(
+                client,
+                args,
+                prompt_case=prompt_case,
+                generation_id=generation_id,
+                request_id=request_id,
+                decoder=decoder,
+                require_eos=require_eos,
+            )
+            row = {
+                **result.to_dict(),
+                "schemaVersion": "ndnsf-di-qwen-generation-sample-v1",
+                "campaignId": campaign_id,
+                "promptId": prompt_id,
+                "phase": phase,
+                "repetition": repetition,
+                "inputTokenCount": len(
+                    prompt_case["formattedInputIds"]),
+                "workloadDigest": getattr(args, "workload_digest", ""),
+                "modelIdentityDigest": getattr(
+                    args, "model_identity_digest", ""),
+                "planId": args.deployment_revision,
+            }
+            output.write(
+                json.dumps(row, sort_keys=True, separators=(",", ":"))
+                + "\n")
+            output.flush()
+            response_text = str(result.decoded_text)
+            response_digest = hashlib.sha256(
+                response_text.encode("utf-8")).hexdigest()
+            print(
+                "LLM_PIPELINE_GENERATION_FINAL_RESPONSE",
+                f"campaignId={campaign_id}",
+                f"promptId={prompt_id}",
+                f"phase={phase}",
+                f"repetition={repetition}",
+                f"generationId={generation_id}",
+                f"status={result.status}",
+                f"stopReason={result.stop_reason}",
+                f"tokenCount={len(result.generated_token_ids)}",
+                f"responseBytes={len(response_text.encode('utf-8'))}",
+                f"responseSha256={response_digest}",
+                flush=True,
+            )
+            print(
+                "LLM_PIPELINE_GENERATION_SAMPLE",
+                f"campaignId={campaign_id}",
+                f"promptId={prompt_id}",
+                f"phase={phase}",
+                f"repetition={repetition}",
+                f"generationId={generation_id}",
+                f"status={result.status}",
+                f"stopReason={result.stop_reason}",
+                f"tokenCount={len(result.generated_token_ids)}",
+                f"totalMs={result.total_ms:.3f}",
+                flush=True,
+            )
+            if result.status != "OK":
                 print(
-                    "LLM_PIPELINE_GENERATION_FINAL_RESPONSE",
+                    "LLM_PIPELINE_GENERATION_CAMPAIGN_FAIL",
                     f"campaignId={campaign_id}",
                     f"promptId={prompt_id}",
                     f"phase={phase}",
                     f"repetition={repetition}",
-                    f"generationId={generation_id}",
-                    f"status={result.status}",
-                    f"stopReason={result.stop_reason}",
-                    f"tokenCount={len(result.generated_token_ids)}",
-                    f"responseBytes={len(response_text.encode('utf-8'))}",
-                    f"responseSha256={response_digest}",
                     flush=True,
                 )
-                print(
-                    "LLM_PIPELINE_GENERATION_SAMPLE",
-                    f"campaignId={campaign_id}",
-                    f"promptId={prompt_id}",
-                    f"phase={phase}",
-                    f"repetition={repetition}",
-                    f"generationId={generation_id}",
-                    f"status={result.status}",
-                    f"stopReason={result.stop_reason}",
-                    f"tokenCount={len(result.generated_token_ids)}",
-                    f"totalMs={result.total_ms:.3f}",
-                    flush=True,
-                )
-                if result.status != "OK":
-                    print(
-                        "LLM_PIPELINE_GENERATION_CAMPAIGN_FAIL",
-                        f"campaignId={campaign_id}",
-                        f"promptId={prompt_id}",
-                        f"phase={phase}",
-                        f"repetition={repetition}",
-                        flush=True,
-                    )
-                    return 2
+                return 2
     print(
         "LLM_PIPELINE_GENERATION_CAMPAIGN_PASS",
         f"campaignId={campaign_id}",
         f"promptCount={len(prompts)}",
-        f"warmupSamples={len(prompts) * warmup_count}",
-        f"measuredSamples={len(prompts) * measured_count}",
+        f"coldSamples={phase_counts['cold']}",
+        f"warmupSamples={phase_counts['warmup']}",
+        f"measuredSamples={phase_counts['measured']}",
         flush=True,
     )
     return 0
@@ -3052,6 +3584,8 @@ def main() -> int:
     )
     parser.add_argument("--generation-campaign-manifest", default="")
     parser.add_argument("--generation-jsonl", default="")
+    parser.add_argument("--conversation-residency-manifest", default="")
+    parser.add_argument("--conversation-evidence-json", default="")
     parser.add_argument("--qwen-tokenizer-dir", default="")
     parser.add_argument(
         "--diagnostic-token-loop",
@@ -3094,6 +3628,12 @@ def main() -> int:
     )
     parser.add_argument("--ack-timeout-ms", type=int, default=1500)
     parser.add_argument("--timeout-ms", type=int, default=60000)
+    parser.add_argument(
+        "--initial-sync-settle-s", type=float, default=0.0,
+        help=(
+            "Measurement-excluded wait after this User joins the SVS group "
+            "and before its first Request. Spec175 fixes this to 5 s."),
+    )
     parser.add_argument("--warmup-requests", type=int, default=0)
     parser.add_argument("--measured-requests", type=int, default=1)
     parser.add_argument("--measured-duration-s", type=float, default=0.0)
@@ -3206,6 +3746,18 @@ def main() -> int:
             "automatic planning requires both manifest and offer key map")
     if args.startup_barrier_timeout_s <= 0:
         raise SystemExit("--startup-barrier-timeout-s must be positive")
+    if args.initial_sync_settle_s < 0.0:
+        raise SystemExit("--initial-sync-settle-s must be non-negative")
+    if args.generation_campaign_manifest and args.conversation_residency_manifest:
+        raise SystemExit(
+            "select generation campaign or conversation-residency campaign")
+    if bool(args.conversation_residency_manifest) != bool(
+            args.conversation_evidence_json):
+        raise SystemExit(
+            "conversation-residency requires manifest and evidence output")
+    if args.spec175_fault_case and args.initial_sync_settle_s != 5.0:
+        raise SystemExit(
+            "--spec175-fault-case requires --initial-sync-settle-s 5.0")
 
     qwen_summary = {}
     tiny_fixture = {}
@@ -3223,11 +3775,19 @@ def main() -> int:
             raise SystemExit(
                 "generation campaigns require a real Qwen runtime "
                 "(qwen-transformers or qwen-onnx)")
+    conversation_campaign = {}
+    if args.conversation_residency_manifest:
+        conversation_campaign = _validate_spec175_g6c_campaign(json.loads(
+            Path(args.conversation_residency_manifest).read_text(
+                encoding="utf-8")))
+        if args.runtime != QWEN_ONNX_RUNTIME:
+            raise SystemExit(
+                "conversation-residency requires the Qwen ONNX runtime")
     if args.runtime in (QWEN_TRANSFORMERS_RUNTIME, QWEN_ONNX_RUNTIME) and args.qwen_runtime_summary:
         qwen_summary = json.loads(Path(args.qwen_runtime_summary).read_text(encoding="utf-8"))
     if args.runtime in (QWEN_TRANSFORMERS_RUNTIME, QWEN_ONNX_RUNTIME):
         args._qwen_model_type = _qwen_model_type_from_documents(
-            qwen_summary, generation_campaign,
+            qwen_summary, generation_campaign, conversation_campaign,
             getattr(args, "qwen_service_manifest", ""),
         )
     if args.runtime == QWEN_ONNX_RUNTIME:
@@ -3235,14 +3795,20 @@ def main() -> int:
         # decoding exists only inside the library as a labeled comparison fixture.
         print("LLM_PIPELINE_TENSOR_TRANSPORT typed-tensor-bundle", flush=True)
     if args.runtime in (QWEN_TRANSFORMERS_RUNTIME, QWEN_ONNX_RUNTIME):
-        if not qwen_summary and not generation_campaign:
+        if not qwen_summary and not generation_campaign and not conversation_campaign:
             raise SystemExit(
-                "--qwen-runtime-summary or --generation-campaign-manifest "
-                "is required for Qwen runtimes")
+                "a Qwen runtime/campaign manifest is required for Qwen runtimes")
         first_prompt = (
             list(generation_campaign.get("prompts", [{}]))[0]
             if generation_campaign else {}
         )
+        if conversation_campaign:
+            first_turn = conversation_campaign["turnPairs"][0]["firstTurn"]
+            first_prompt = {
+                "formattedInputIds": first_turn["inputTokenIds"],
+                "referenceGeneratedTokenIds": first_turn[
+                    "referenceGeneratedTokenIds"],
+            }
         campaign_input_ids = first_prompt.get("formattedInputIds")
         input_ids = (
             [list(campaign_input_ids)]
@@ -3346,6 +3912,18 @@ def main() -> int:
             _configure_tiny_onnx_automatic_planning(client, args)
         else:
             _configure_qwen_automatic_planning(client, args)
+    if args.initial_sync_settle_s:
+        # Provider READY markers prove local handler installation, while the
+        # NFD snapshot proves forwarding. Neither proves that this newly
+        # constructed User has exchanged initial SVS state with every Provider.
+        # Settle only after APPClient/ServiceUser joined the group and before
+        # any Request or measured interval begins.
+        time.sleep(args.initial_sync_settle_s)
+        print(
+            "NDNSF_DI_USER_SVS_SETTLED",
+            f"seconds={args.initial_sync_settle_s:.1f}",
+            flush=True,
+        )
     if not args.deployment_revision:
         args.deployment_revision = "sha256:" + hashlib.sha256(
             Path(args.config).read_bytes()).hexdigest()
@@ -3379,6 +3957,12 @@ def main() -> int:
         try:
             return _run_qwen_transformer_generation_campaign(
                 client, args, generation_campaign)
+        finally:
+            client.shutdown(wait=False)
+    if conversation_campaign:
+        try:
+            return _run_spec175_g6c_campaign(
+                client, args, conversation_campaign)
         finally:
             client.shutdown(wait=False)
     local_qwen_onnx = None
@@ -3789,26 +4373,31 @@ def main() -> int:
                 json.dumps(response, sort_keys=True),
             )
             index += 1
+        if measured_latencies:
+            print(
+                "LLM_PIPELINE_USER_SUMMARY",
+                f"count={len(measured_latencies)}",
+                f"local_ms={local.elapsed_ms:.2f}",
+                f"avg_ms={statistics.fmean(measured_latencies):.2f}",
+                f"p50_ms={statistics.median(measured_latencies):.2f}",
+                f"p95_ms={_percentile(measured_latencies, 0.95):.2f}",
+                f"min_ms={min(measured_latencies):.2f}",
+                f"max_ms={max(measured_latencies):.2f}",
+                f"runtime={args.runtime}",
+                f"metrics_csv={metrics_path or ''}",
+            )
+        if deployment_workflow is not None:
+            _finish_deployment_workflow(client, deployment_workflow, args)
     finally:
         if metrics_file:
             metrics_file.close()
         if timing_writer:
             timing_writer.close()
-    if measured_latencies:
-        print(
-            "LLM_PIPELINE_USER_SUMMARY",
-            f"count={len(measured_latencies)}",
-            f"local_ms={local.elapsed_ms:.2f}",
-            f"avg_ms={statistics.fmean(measured_latencies):.2f}",
-            f"p50_ms={statistics.median(measured_latencies):.2f}",
-            f"p95_ms={_percentile(measured_latencies, 0.95):.2f}",
-            f"min_ms={min(measured_latencies):.2f}",
-            f"max_ms={max(measured_latencies):.2f}",
-            f"runtime={args.runtime}",
-            f"metrics_csv={metrics_path or ''}",
-        )
-    if deployment_workflow is not None:
-        _finish_deployment_workflow(client, deployment_workflow, args)
+        # Keep the native Face/ServiceUser lifetime inside the request
+        # owner's try/finally.  Normal responses and early failures must not
+        # defer native teardown to Python interpreter destruction: that can
+        # race pending callbacks and abort after a valid Response was logged.
+        client.shutdown(wait=True)
     return 0
 
 

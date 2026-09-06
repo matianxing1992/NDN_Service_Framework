@@ -34,6 +34,9 @@ class _FakeRepoStore:
     def inventory(self) -> list[str]:
         return list(self.objects)
 
+    def migration_diagnostics(self) -> dict:
+        return {"state": "complete", "artifactWritesEnabled": True}
+
 
 class AppCoreEnvelopeMigrationTest(unittest.TestCase):
     def test_repo_ack_carries_only_core_provider_capability_hint(self) -> None:
@@ -56,6 +59,7 @@ class AppCoreEnvelopeMigrationTest(unittest.TestCase):
         repo._cache_bytes = 256
         repo._db = None
         repo._store = _FakeRepoStore()
+        repo._persistence = repo._store
         repo._has_manifest = lambda _name: False
         repo._has_object = lambda _name: False
         repo._capability = lambda: repo.capability
@@ -79,7 +83,7 @@ class AppCoreEnvelopeMigrationTest(unittest.TestCase):
         self.assertEqual(set(fields), {"providerCapabilityHint"})
         self.assertEqual(hint.provider_name, "/repo/A")
         self.assertEqual(hint.service_payload["freeBytes"], 1024)
-        self.assertEqual(hint.service_payload_schema, "ndnsf-repo-capability-v1")
+        self.assertEqual(hint.service_payload_schema, "ndnsf-repo-capability-v2")
 
     def test_network_repo_client_parses_core_capability_hint_from_ack(self) -> None:
         repo = RepoNodeApp.__new__(RepoNodeApp)
@@ -91,6 +95,7 @@ class AppCoreEnvelopeMigrationTest(unittest.TestCase):
         repo._cache_bytes = 0
         repo._db = None
         repo._store = _FakeRepoStore()
+        repo._persistence = repo._store
         repo._has_manifest = lambda _name: False
         repo._has_object = lambda _name: False
         repo._capability = lambda: repo.capability

@@ -1,5 +1,6 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/DiTimelineTrace.hpp"
 #ifdef NDNSF_DI_EXPERIMENT_FAULTS
@@ -12,7 +13,6 @@
 #include <exception>
 #include <future>
 #include <iomanip>
-#include <iostream>
 #include <sstream>
 #include <stdexcept>
 #include <utility>
@@ -438,20 +438,24 @@ ProviderRoleWorker::scheduleWhenInputsReady(WorkItem item,
         return;
       }
       const auto reason = result.reason.empty() ? toString(result.status) : result.reason;
-      std::cout << "\nNDNSF_DI_PROVIDER_WAIT_TERMINAL"
-                << " session=" << state->item.sessionId
-                << " role=" << state->item.role.role
-                << " status=" << toString(result.status)
-                << " reason=" << reason << std::endl;
+      std::ostringstream record;
+      record << "NDNSF_DI_PROVIDER_WAIT_TERMINAL"
+             << " session=" << state->item.sessionId
+             << " role=" << state->item.role.role
+             << " status=" << toString(result.status)
+             << " reason=" << reason;
+      logRuntimeWarn(record.str());
       failPromise(state->item.promise,
                   std::make_exception_ptr(std::runtime_error(
                     "dependency wait failed: " + reason)));
-    });
+  });
   if (submitted != DependencyWaitSubmitResult::Accepted) {
-    std::cout << "\nNDNSF_DI_PROVIDER_WAIT_ADMISSION"
-              << " session=" << state->item.sessionId
-              << " role=" << state->item.role.role
-              << " status=" << toString(submitted) << std::endl;
+    std::ostringstream record;
+    record << "NDNSF_DI_PROVIDER_WAIT_ADMISSION"
+           << " session=" << state->item.sessionId
+           << " role=" << state->item.role.role
+           << " status=" << toString(submitted);
+    logRuntimeWarn(record.str());
     failPromise(state->item.promise,
                 std::make_exception_ptr(std::runtime_error(
                   std::string("dependency wait admission failed: ") +
@@ -490,7 +494,7 @@ ProviderRoleWorker::enqueueReady(WorkItem item)
     m_queue.push_back(std::move(item));
   }
   if (std::getenv("NDNSF_DI_RUNTIME_TIMING") != nullptr) {
-    std::cout << "NDNSF_DI_WORKER event=enqueue_ready" << std::endl;
+    logRuntimeTrace("NDNSF_DI_WORKER event=enqueue_ready");
   }
   m_cv.notify_one();
 }
@@ -763,8 +767,7 @@ ProviderRoleWorker::runReadyRole(const WorkItem& item)
 {
   if (item.executionGuard) item.executionGuard();
   if (std::getenv("NDNSF_DI_RUNTIME_TIMING") != nullptr) {
-    std::cout << "NDNSF_DI_WORKER event=run_ready role=" << item.role.role
-              << std::endl;
+    logRuntimeTrace("NDNSF_DI_WORKER event=run_ready role=" + item.role.role);
   }
   if (item.collective.has_value()) {
     const auto& binding = *item.collective;
@@ -817,6 +820,7 @@ ProviderRoleWorker::runReadyRole(const WorkItem& item)
   ctx.requestId = item.role.requestId;
   ctx.attemptEpoch = item.role.attemptEpoch;
   ctx.inferenceEpoch = item.role.inferenceEpoch;
+  ctx.streamingStateExecution = item.role.streamingStateExecution;
   ctx.generationLineage = item.role.generationLineage;
   if (item.role.candidateDecodeStateIdentity) {
     const auto current =
@@ -853,15 +857,13 @@ ProviderRoleWorker::runReadyRole(const WorkItem& item)
     ctx.inputEdgesByScope.emplace(edge.scope, edge);
   }
   if (std::getenv("NDNSF_DI_RUNTIME_TIMING") != nullptr) {
-    std::cout << "NDNSF_DI_WORKER event=inputs_validated role=" << item.role.role
-              << std::endl;
+    logRuntimeTrace("NDNSF_DI_WORKER event=inputs_validated role=" + item.role.role);
   }
 
   result.exactForwardCacheKey = exactForwardCacheKeyFor(
     item, runner.get(), inputsByScope);
   if (std::getenv("NDNSF_DI_RUNTIME_TIMING") != nullptr) {
-    std::cout << "NDNSF_DI_WORKER event=cache_key role=" << item.role.role
-              << std::endl;
+    logRuntimeTrace("NDNSF_DI_WORKER event=cache_key role=" + item.role.role);
   }
   // A streamed terminal runner has an externally visible side effect: it
   // submits token/event payloads through the sink. Reusing only its Tensor
@@ -892,8 +894,7 @@ ProviderRoleWorker::runReadyRole(const WorkItem& item)
     const bool coordinatorOwnsStreaming = item.role.generationLineage.has_value();
     if (hasStreamSideEffect && !coordinatorOwnsStreaming) {
       if (std::getenv("NDNSF_DI_RUNTIME_TIMING") != nullptr) {
-        std::cout << "NDNSF_DI_WORKER event=runner_streamed role=" << item.role.role
-                  << std::endl;
+        logRuntimeTrace("NDNSF_DI_WORKER event=runner_streamed role=" + item.role.role);
       }
       if (item.executionGuard) item.executionGuard();
       const auto streamedOutputs = runner->runStreamed(ctx);
@@ -903,15 +904,13 @@ ProviderRoleWorker::runReadyRole(const WorkItem& item)
     }
     else {
       if (std::getenv("NDNSF_DI_RUNTIME_TIMING") != nullptr) {
-        std::cout << "NDNSF_DI_WORKER event=runner_run role=" << item.role.role
-                  << std::endl;
+        logRuntimeTrace("NDNSF_DI_WORKER event=runner_run role=" + item.role.role);
       }
       if (item.executionGuard) item.executionGuard();
       result.outputsByScope = runner->run(ctx);
     }
     if (std::getenv("NDNSF_DI_RUNTIME_TIMING") != nullptr) {
-      std::cout << "NDNSF_DI_WORKER event=runner_done role=" << item.role.role
-                << std::endl;
+      logRuntimeTrace("NDNSF_DI_WORKER event=runner_done role=" + item.role.role);
     }
     logDiTimelineTrace(
       "di-provider", "role_compute_done", requestId,
@@ -925,6 +924,23 @@ ProviderRoleWorker::runReadyRole(const WorkItem& item)
   }
   if (item.executionGuard) item.executionGuard();
   result.executionEvidence = runner->executionEvidenceSnapshot();
+  if (result.executionEvidence) {
+    bindExecutionObservation(*result.executionEvidence,
+                             item.role.requestId, item.role.attemptEpoch,
+                             result.exactForwardCacheHit);
+  }
+  result.runtimeMetrics = runner->runtimeMetricsSnapshot();
+  if (item.role.streamingStateExecution &&
+      runner->supportsOpaqueStateHandles()) {
+    if (const auto handle = runner->stateHandleSnapshot(item.sessionId)) {
+      handle->validate();
+      if (handle->sessionId != item.sessionId || handle->role != item.role.role) {
+        throw std::runtime_error(
+          "PROVIDER_OPAQUE_STATE_HANDLE_BINDING_MISMATCH");
+      }
+      result.stateHandle = *handle;
+    }
+  }
 
   const auto outputReadyAt = std::chrono::steady_clock::now();
   std::vector<std::pair<DependencyEdge, TensorBundle>> stagedOutputs;

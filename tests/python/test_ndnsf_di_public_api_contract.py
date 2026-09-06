@@ -43,7 +43,11 @@ class PublicApiContractTest(unittest.TestCase):
 
         signature = inspect.signature(InferenceApplication.request)
         self.assertIn("generation", signature.parameters)
-        self.assertNotIn("timeout_ms", signature.parameters)
+        # Generic tasks now accept an explicit budget; None leaves generation
+        # options in charge and does not choose a request mode by a number.
+        self.assertIsNone(signature.parameters["timeout_ms"].default)
+        self.assertEqual(signature.parameters["timeout_ms"].kind,
+                         inspect.Parameter.KEYWORD_ONLY)
         self.assertNotIn("deployment_revision", signature.parameters)
         self.assertNotIn("service", signature.parameters)
 

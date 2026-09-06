@@ -1,0 +1,38 @@
+name /example/hello/controller/NDNSF/ControllerPolicy/v1
+
+provider-policies
+{
+    provider-policy
+    {
+        for /example/hello/provider/A
+        allow
+        {
+            /HELLO
+        }
+    }
+    provider-policy
+    {
+        for /example/hello/provider/B
+        allow
+        {
+            /HELLO
+        }
+    }
+}
+
+user-policies
+{
+    user-policy
+    {
+        for /example/hello/user/A
+        allow
+        {
+            /HELLO
+        }
+    }
+}
+
+; Grant-only advance fixture: user/B is deliberately absent from the
+; wave-1 user policies so the campaign Controller can issue user/B's first
+; /HELLO grant deterministically at --grant-additional-after-ms while the
+; global ABE pair stays byte-identical (Spec179 T011 grant-only scenario).

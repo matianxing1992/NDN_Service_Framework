@@ -1,13 +1,14 @@
 #ifndef NDNSF_DISTRIBUTED_INFERENCE_DI_TIMELINE_TRACE_HPP
 #define NDNSF_DISTRIBUTED_INFERENCE_DI_TIMELINE_TRACE_HPP
 
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
+
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <initializer_list>
-#include <iostream>
-#include <mutex>
+#include <sstream>
 #include <string>
 #include <utility>
 
@@ -73,18 +74,17 @@ logDiTimelineTrace(const std::string& role,
                    DiTimelineFields fields = {})
 {
   if (!diTimelineEnvEnabled() || !diTimelineSampleAllows(requestId)) return;
-  static std::mutex outputMutex;
-  std::lock_guard<std::mutex> lock(outputMutex);
-  std::cout << "NDNSF_TIMELINE"
-            << " role=" << role
-            << " event=" << event
-            << " steady_us=" << diTimelineSteadyMicroseconds()
-            << " timestamp_us=" << diTimelineWallMicroseconds()
-            << " requestId=" << requestId;
+  std::ostringstream record;
+  record << "NDNSF_TIMELINE"
+         << " role=" << role
+         << " event=" << event
+         << " steady_us=" << diTimelineSteadyMicroseconds()
+         << " timestamp_us=" << diTimelineWallMicroseconds()
+         << " requestId=" << requestId;
   for (const auto& field : fields) {
-    std::cout << " " << field.first << "=" << field.second;
+    record << " " << field.first << "=" << field.second;
   }
-  std::cout << std::endl;
+  logRuntimeEvidence(record.str());
 }
 
 } // namespace ndnsf::di

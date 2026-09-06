@@ -1,7 +1,8 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/DependencyWaitScheduler.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
 
 #include <exception>
-#include <iostream>
+#include <sstream>
 #include <stdexcept>
 #include <utility>
 
@@ -102,22 +103,25 @@ DependencyWaitScheduler::submit(std::string waitId,
     std::lock_guard<std::mutex> lock(m_mutex);
     if (m_stopping) {
       ++m_rejected;
-      std::cout << "\nNDNSF_DI_DEPENDENCY_WAIT_ADMISSION status=SHUTTING_DOWN"
-                << std::endl;
+      logRuntimeWarn("NDNSF_DI_DEPENDENCY_WAIT_ADMISSION status=SHUTTING_DOWN");
       return DependencyWaitSubmitResult::ShuttingDown;
     }
     if (m_jobs.count(job->waitId) != 0) {
       ++m_rejected;
-      std::cout << "\nNDNSF_DI_DEPENDENCY_WAIT_ADMISSION status=DUPLICATE"
-                << " waitId=" << job->waitId << std::endl;
+      std::ostringstream record;
+      record << "NDNSF_DI_DEPENDENCY_WAIT_ADMISSION status=DUPLICATE"
+             << " waitId=" << job->waitId;
+      logRuntimeWarn(record.str());
       return DependencyWaitSubmitResult::Duplicate;
     }
     if (m_queue.size() >= m_queueCapacity) {
       ++m_rejected;
-      std::cout << "\nNDNSF_DI_DEPENDENCY_WAIT_ADMISSION"
-                << " status=DEPENDENCY_WAIT_SCHEDULER_OVERLOAD"
-                << " waitId=" << job->waitId
-                << " queueCapacity=" << m_queueCapacity << std::endl;
+      std::ostringstream record;
+      record << "NDNSF_DI_DEPENDENCY_WAIT_ADMISSION"
+             << " status=DEPENDENCY_WAIT_SCHEDULER_OVERLOAD"
+             << " waitId=" << job->waitId
+             << " queueCapacity=" << m_queueCapacity;
+      logRuntimeWarn(record.str());
       return DependencyWaitSubmitResult::QueueFull;
     }
     m_jobs.emplace(job->waitId, job);
@@ -233,11 +237,12 @@ DependencyWaitScheduler::finish(const std::shared_ptr<Job>& job,
                                 std::string reason) noexcept
 {
   if (status != DependencyWaitStatus::Completed) {
-    std::cout << "\nNDNSF_DI_DEPENDENCY_WAIT_TERMINAL"
-              << " waitId=" << job->waitId
-              << " status=" << toString(status)
-              << " reason=" << (reason.empty() ? toString(status) : reason)
-              << std::endl;
+    std::ostringstream record;
+    record << "NDNSF_DI_DEPENDENCY_WAIT_TERMINAL"
+           << " waitId=" << job->waitId
+           << " status=" << toString(status)
+           << " reason=" << (reason.empty() ? toString(status) : reason);
+    logRuntimeWarn(record.str());
   }
   {
     std::lock_guard<std::mutex> lock(m_mutex);

@@ -37,6 +37,7 @@ def test_native_streaming_surface_is_bound() -> None:
     assert hasattr(ndnsf_native.StreamWriter, "finish_stream")
     assert hasattr(ndnsf_native.StreamWriter, "fail")
     assert hasattr(ndnsf_native.NativeServiceProvider, "add_streaming_service")
+    assert hasattr(ndnsf_native.NativeServiceProvider, "start")
     assert hasattr(ndnsf_native.NativeServiceProvider,
                    "add_streaming_context_service")
     assert hasattr(ndnsf_native.NativeServiceUser, "request_service_streaming")
@@ -243,6 +244,37 @@ def test_provider_run_accepts_streaming_only_registration() -> None:
     assert called == ["run"]
 
 
+def test_provider_start_registers_handlers_before_native_start() -> None:
+    events = []
+
+    class FakeNative:
+        def add_service(self, *args):
+            events.append(("add_service", args[0]))
+
+        def start(self):
+            events.append(("start",))
+
+        def wait_until_ready(self, timeout_ms):
+            assert timeout_ms == 15000
+            events.append(("ready",))
+            return True
+
+    provider = object.__new__(ServiceProvider)
+    provider._native = FakeNative()
+    provider._handlers = {"/LLM/Test": lambda payload: payload}
+    provider._context_handlers = set()
+    provider._ack_handlers = {}
+    provider._ack_context_handlers = set()
+    provider._collaboration_services = set()
+    provider._streaming_services = set()
+    provider._registered_services = set()
+    provider.start()
+    assert events == [("add_service", "/LLM/Test"), ("start",), ("ready",)]
+    provider.start()
+    assert events == [("add_service", "/LLM/Test"), ("start",), ("ready",),
+                      ("start",), ("ready",)]
+
+
 def test_user_facade_has_single_normal_request_shape() -> None:
     calls = []
 
@@ -395,6 +427,9 @@ def test_automatic_streaming_replacement_uses_fresh_attempt_and_continuation() -
         options_schema_digest="sha256:" + "2" * 64,
         payload=b"original prompt",
         options=b"{}",
+        transport_mode="INLINE",
+        logical_input_digest="sha256:" + hashlib.sha256(b"original prompt").hexdigest(),
+        repo_reference=None,
     )
     handle = coordinator.request_streaming(
         model=SimpleNamespace(intent_digest="sha256:" + "3" * 64),

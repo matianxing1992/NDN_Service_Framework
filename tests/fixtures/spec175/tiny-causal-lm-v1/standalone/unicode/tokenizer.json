@@ -1,0 +1,33 @@
+{
+  "version": "1.0",
+  "truncation": null,
+  "padding": null,
+  "added_tokens": [],
+  "normalizer": null,
+  "pre_tokenizer": {
+    "type": "Whitespace"
+  },
+  "post_processor": null,
+  "decoder": {
+    "type": "WordPiece",
+    "prefix": "",
+    "cleanup": false
+  },
+  "model": {
+    "type": "WordLevel",
+    "vocab": {
+      "[UNK]": 0,
+      "token-1": 1,
+      "token-2": 2,
+      "token-3": 3,
+      "你": 4,
+      "好": 5,
+      "🙂": 6,
+      "!": 7,
+      "token-8": 8,
+      "token-9": 9,
+      "token-10": 10
+    },
+    "unk_token": "[UNK]"
+  }
+}

@@ -1,8 +1,9 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeFaultInjection.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
 
 #include <chrono>
-#include <iostream>
 #include <set>
+#include <sstream>
 #include <stdexcept>
 #include <thread>
 
@@ -80,10 +81,12 @@ NativeFaultInjection::checkpoint(NativeFaultPoint point,
   if (!m_injected.compare_exchange_strong(expected, true)) {
     return;
   }
-  std::cout << "NDNSF_DI_EXPERIMENT_FAULT_INJECTED"
-            << " type=" << active.type
-            << " role=" << role
-            << " session=" << sessionId << std::endl;
+  std::ostringstream record;
+  record << "NDNSF_DI_EXPERIMENT_FAULT_INJECTED"
+         << " type=" << active.type
+         << " role=" << role
+         << " session=" << sessionId;
+  logRuntimeWarn(record.str());
   if (active.type == "straggler" || active.type == "late-old-output") {
     std::this_thread::sleep_for(std::chrono::milliseconds(active.delayMs));
     return;

@@ -185,6 +185,19 @@ public:
                  TensorBundle state,
                  std::uint64_t nowMs);
 
+  /**
+   * Stage an adapter-owned state transaction.  Unlike the legacy overload,
+   * this path stores only an opaque reference and byte accounting; the
+   * runner remains the sole owner of the actual device/host buffers.
+   */
+  bool
+  stageAdapterPromotion(std::string originRequestId,
+                        std::string role,
+                        ConversationStateBinding binding,
+                        NativeConversationStateHandleV1 state,
+                        std::shared_ptr<NativeModelRunner> runner,
+                        std::uint64_t nowMs);
+
   bool
   commitStagedPromotion(const ConversationStateBinding& binding);
 
@@ -200,6 +213,10 @@ public:
   std::optional<TensorBundle>
   lookup(const ConversationStateBinding& binding,
          std::uint64_t nowMs);
+
+  std::optional<NativeConversationStateHandleV1>
+  adapterHandle(const ConversationStateBinding& binding,
+                std::uint64_t nowMs) const;
 
   /** Resolve a Selection's compact commitment to the Provider-owned exact
    * binding. The Selection cannot inject a DecodeStateIdentityV1. */
@@ -253,6 +270,8 @@ private:
   {
     ConversationStateBinding binding;
     TensorBundle state;
+    std::optional<NativeConversationStateHandleV1> adapterState;
+    std::shared_ptr<NativeModelRunner> adapterRunner;
     ConversationStateResidency residency = ConversationStateResidency::GPU_RESIDENT;
     ConversationStateLifecycle lifecycle = ConversationStateLifecycle::IDLE;
     std::size_t logicalBytes = 0;

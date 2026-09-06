@@ -122,6 +122,25 @@ def validate_run(run: Path, case: str) -> dict[str, Any]:
             f"actual={result.get('campaignId')}: {result_path}")
     if result.get("expectedTerminal") is not EXPECTED[case]:
         raise ValueError(f"expected terminal mismatch: {result_path}")
+    terminal = result.get("terminalEvidence")
+    if not isinstance(terminal, dict):
+        raise ValueError(f"missing terminal process evidence: {result_path}")
+    if terminal.get("schema") != "ndnsf-di-spec175-terminal-evidence-v1":
+        raise ValueError(f"wrong terminal evidence schema: {result_path}")
+    if terminal.get("status") != "PASS":
+        raise ValueError(f"terminal process closure is not PASS: {result_path}")
+    if terminal.get("resultWrittenAfterProcessExit") is not True:
+        raise ValueError(f"result was not written after child exit: {result_path}")
+    if terminal.get("abortObserved") is not False:
+        raise ValueError(f"abort was observed before result: {result_path}")
+    if terminal.get("unexpectedSignalExits") != {}:
+        raise ValueError(f"unexpected child signal exit: {result_path}")
+    if terminal.get("survivingOwnedProcesses") != []:
+        raise ValueError(f"owned process survived case result: {result_path}")
+    child_exit_codes = terminal.get("childExitCodes")
+    if (not isinstance(child_exit_codes, dict) or not child_exit_codes or
+            any(not isinstance(value, int) for value in child_exit_codes.values())):
+        raise ValueError(f"child exit codes are incomplete: {result_path}")
     if case in {"M11", "M12", "M13", "M14"}:
         conversation = result.get("conversationEvidence")
         if not isinstance(conversation, dict):
@@ -148,6 +167,25 @@ def validate_run(run: Path, case: str) -> dict[str, Any]:
     for key, value in TOPOLOGY.items():
         if key in topology and topology[key] != value:
             raise ValueError(f"topology mismatch {key}: {result_path}")
+    fanout = result.get("svsGroupFanout")
+    if (not isinstance(fanout, dict) or
+            fanout.get("status") != "VERIFIED" or
+            fanout.get("groupPrefix") != "/example/llm-pipeline/group" or
+            fanout.get("routerNode") != "a" or
+            fanout.get("memberCount") != 6):
+        raise ValueError(f"SVS group fanout is not verified: {result_path}")
+    route = result.get("nfdRouteSnapshot")
+    expected = route.get("expectedNextHops", {}) if isinstance(route, dict) else {}
+    anchor_faces = expected.get("a", {}).get(
+        "/example/llm-pipeline/group", [])
+    required_members = {"u", "p0", "p1", "p2", "p3", "repo"}
+    if (not isinstance(route, dict) or route.get("status") != "PASS" or
+            route.get("missing") != {} or route.get("missingNextHops") != {} or
+            len(anchor_faces) != 6 or len(set(anchor_faces)) != 6 or
+            any(len(expected.get(member, {}).get(
+                "/example/llm-pipeline/group", [])) != 1
+                for member in required_members)):
+        raise ValueError(f"SVS group next-hop closure is incomplete: {result_path}")
     if not runner_log.is_file():
         raise ValueError(f"missing runner log: {runner_log}")
     user_log = run / "llm-pipeline-user.log"
@@ -161,6 +199,21 @@ def validate_run(run: Path, case: str) -> dict[str, Any]:
         "artifacts": artifact_records(run, result),
         "markers": marker_counts(user_log),
     }
+
+
+def resolve_repetition_dir(base: Path, index: int) -> Path:
+    """Resolve one repetition from a template, parent, or legacy sibling root."""
+    repetition = f"r{index}"
+    formatted = Path(str(base).format(rep=repetition, index=index))
+    if formatted.is_dir() and formatted != base:
+        return formatted
+    nested = base / repetition
+    if nested.is_dir():
+        return nested
+    sibling = base.parent / f"{base.name}-{repetition}"
+    if sibling.is_dir():
+        return sibling
+    return formatted
 
 
 def main() -> int:
@@ -196,10 +249,7 @@ def main() -> int:
         for index in range(1, 4):
             # A run-root may be a printf-style template or a directory that
             # contains r1/r2/r3 subdirectories.
-            run = Path(str(base).format(rep=f"r{index}", index=index))
-            if not run.is_dir():
-                candidate = base.parent / f"{base.name}-r{index}"
-                run = candidate if candidate.is_dir() else run
+            run = resolve_repetition_dir(base, index)
             repetitions.append(validate_run(run, case))
     matrix = [{
         "case": item["caseResult"]["case"],

@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <condition_variable>
 #include <cstdlib>
@@ -144,7 +145,10 @@ makeSelectionInputKeyOffer(const ndn::security::Certificate& certificate,
   offer.setField("recipient", certificate.getIdentity().toUri());
   offer.setField("recipientCertName", certificate.getName().toUri());
   offer.setField("recipientPublicKey", selectionGatedHex(publicKey));
-  offer.setField("recipientCertDigest", "sha256:" + digest.toString());
+  auto hex = digest.toString();
+  std::transform(hex.begin(), hex.end(), hex.begin(),
+                 [] (unsigned char value) { return static_cast<char>(std::tolower(value)); });
+  offer.setField("recipientCertDigest", "sha256:" + hex);
   offer.setField("providerBootEpoch", bootEpoch);
   return offer;
 }
@@ -733,6 +737,18 @@ public:
     std::lock_guard<std::mutex> lock(m_pendingRequestMutex);
     m_targetedProviderTokens[tokenHash] =
       TargetedProviderTokenState{requesterName, serviceName, userToken};
+  }
+
+  bool
+  hasTargetedProviderTokenForTest(const ndn::Name& requesterName,
+                                  const ndn::Name& serviceName,
+                                  const std::string& providerToken) const
+  {
+    const auto tokenHash =
+      makeProviderTokenHashForTest(requesterName, serviceName, providerToken);
+    std::lock_guard<std::mutex> lock(m_pendingRequestMutex);
+    return m_targetedProviderTokens.find(tokenHash) !=
+           m_targetedProviderTokens.end();
   }
 };
 

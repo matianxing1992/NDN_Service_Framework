@@ -311,6 +311,8 @@ def build_parser() -> argparse.ArgumentParser:
                  "mapped-live-v1-future-off"),
         help="Core LiveStream receiver policy used by matched experiments.")
     parser.add_argument("--output-dir", default=str(REPO / "results/uav_gui_minindn"))
+    parser.add_argument("--minindn-work-dir", default="/tmp/minindn",
+                        help="Per-run MiniNDN/Mininet work directory; isolate it from other campaigns.")
     parser.add_argument("--nfd-log-level", default="WARN")
     parser.add_argument("--experiment-netem-enable", action="store_true",
                         help="Apply the frozen experiment-only netem profile before NFD starts")
@@ -410,6 +412,10 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Have the GS verify authority alert audit entries are queryable through NDNSF.")
     parser.add_argument("--auto-patrol-test", action="store_true",
                         help="Run the GS patrol compensation smoke test instead of the video GUI smoke.")
+    parser.add_argument("--auto-spec176-sitl-test", action="store_true",
+                        help="Run the complete Spec176 two-lifecycle sequence with PX4/jMAVSim.")
+    parser.add_argument("--spec176-timeout-seconds", type=int, default=60,
+                        help="Measured deadline for the Spec176 PX4/SITL sequence.")
     parser.add_argument("--auto-single-mission-test", action="store_true",
                         help="Run a one-drone mission upload smoke test instead of the video GUI smoke.")
     parser.add_argument("--auto-single-mission-start-test", action="store_true",
@@ -490,7 +496,8 @@ def app_config_path(args: argparse.Namespace, filename: str) -> str:
 
 def active_drones(args: argparse.Namespace) -> list[tuple[str, str]]:
     interactive_default = not args.no_cli
-    if not (args.auto_patrol_test or args.auto_loaded_mission_plan_test or
+    if not (args.auto_patrol_test or args.auto_spec176_sitl_test or
+            args.auto_loaded_mission_plan_test or
             args.auto_two_drone_switch_test or
             args.auto_video_selection_test or
             args.auto_mission_controls_test or
@@ -907,7 +914,10 @@ def start_jmavsim(ndn, args: argparse.Namespace, drone_node: str,
     px4_build = px4_dir / "build/px4_sitl_default"
     px4_bin = px4_build / "bin/px4"
     px4_etc = px4_build / "etc"
-    instance_dir = px4_build / f"instance_{instance}"
+    # Keep mutable PX4 rootfs state inside this campaign.  The build tree is
+    # often owned by a previous privileged run, and PX4 recreates an ``etc``
+    # symlink in each instance directory at startup.
+    instance_dir = output_dir / "px4-instances" / f"instance_{instance}"
     simulator_port = 4560 + instance
     status_file = output_dir / f"jmavsim-{drone_id}.status"
     status_file.write_text("starting\n", encoding="utf-8")
@@ -1152,7 +1162,7 @@ def main() -> int:
     Minindn.cleanUp()
     Minindn.verifyDependencies()
     try:
-        ndn = Minindn(topoFile=args.topology_file)
+        ndn = Minindn(topoFile=args.topology_file, workDir=args.minindn_work_dir)
         ndn.start()
         if args.experiment_netem_enable:
             apply_experiment_netem(ndn, args, output_dir)
@@ -1259,7 +1269,8 @@ def main() -> int:
                  args.auto_telemetry_test or
                  args.auto_manual_control_test or args.auto_two_drone_switch_test or
                  args.auto_recording_playback_test or
-                 args.auto_patrol_test or args.auto_single_mission_test or
+                 args.auto_patrol_test or args.auto_spec176_sitl_test or
+                 args.auto_single_mission_test or
                  args.auto_loaded_mission_plan_test)):
                 if not wait_log_any(jmavsim_log, JMAVSIM_READY_MARKERS,
                                     args.jmavsim_ready_timeout_seconds,
@@ -1490,6 +1501,14 @@ def main() -> int:
                 "--ack-timeout-ms", "700",
                 "--timeout-ms", patrol_timeout_ms,
             ]
+        if args.auto_spec176_sitl_test:
+            gs_argv += [
+                "--auto-spec176-sitl-test",
+                "--incident-collaboration-timeout-seconds",
+                str(args.spec176_timeout_seconds),
+                "--ack-timeout-ms", "1000",
+                "--timeout-ms", "30000",
+            ]
         if args.auto_single_mission_test:
             gs_argv += [
                 "--auto-single-mission-test",
@@ -1513,7 +1532,8 @@ def main() -> int:
             output_dir,
             pit_monitor_stop,
         )
-        if not (args.auto_patrol_test or args.auto_single_mission_test or
+        if not (args.auto_patrol_test or args.auto_spec176_sitl_test or
+                args.auto_single_mission_test or
                 args.auto_loaded_mission_plan_test or
                 args.auto_repo_catalog_browse_test or
                 args.auto_parameter_cache_test or
@@ -1580,6 +1600,28 @@ def main() -> int:
                 require_log(gs_log, "attempt=2 part=part0 provider=B")
                 require_log(drone_logs[drones[0][0]], "mission response delayed")
                 print("NDNSF_UAV_PATROL_MININDN_SMOKE_OK")
+        elif args.auto_spec176_sitl_test and args.no_cli:
+            try:
+                gs_proc.wait(timeout=args.spec176_timeout_seconds + 90)
+            except subprocess.TimeoutExpired as e:
+                raise RuntimeError(
+                    f"Spec176 PX4/SITL sequence did not finish; see {gs_log}") from e
+            if gs_proc.returncode != 0:
+                raise RuntimeError(
+                    f"ground station Spec176 SITL sequence exited with "
+                    f"{gs_proc.returncode}; see {gs_log}")
+            require_log(gs_log, "SPEC176_SITL_STAGE stage=stream result=true")
+            require_log(gs_log, "SPEC176_SITL_STAGE stage=patrol result=true")
+            require_log(gs_log, "SPEC176_SITL_STAGE stage=incident-success result=true")
+            require_log(gs_log, "SPEC176_SITL_STAGE stage=incident-failure result=true")
+            require_log(gs_log, "SPEC176_SITL_STAGE stage=command-reconciliation result=true")
+            require_log(gs_log, "SPEC176_SITL_RESULT ok=true")
+            require_log(gs_log, "GS_SPEC176_SITL_EXIT ok=true")
+            for drone_id, _ in drones[:2]:
+                require_log(drone_logs[drone_id],
+                            "UDP_FC_MISSION_ACK drone=" + drone_id +
+                            " result=accepted")
+            print("NDNSF_UAV_SPEC176_PX4_SITL_OK")
         elif args.auto_single_mission_test and args.no_cli:
             try:
                 gs_proc.wait(timeout=45)

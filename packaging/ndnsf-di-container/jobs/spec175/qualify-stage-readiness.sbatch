@@ -8,7 +8,7 @@
 # Qwen3.6-27B stage artifacts require the RTX 6000 capacity used by the
 # validated T025 job; RTX 5000 is not an interchangeable target here.
 #SBATCH --gres=gpu:rtx_6000:3
-#SBATCH --time=00:20:00
+#SBATCH --time=00:45:00
 #SBATCH --output=%x-%j.out
 #SBATCH --error=%x-%j.err
 set -euo pipefail
@@ -22,7 +22,12 @@ export SPEC175_OUTPUT="${SPEC175_OUTPUT:-$PWD/spec175-stage-$SLURM_JOB_ID}"
 : "${SPEC175_REMOTE_MODEL_ROOT:?set SPEC175_REMOTE_MODEL_ROOT to the external model root}"
 
 runner="$SPEC175_JOB_ROOT/run-qwen-stage-readiness.py"
+repo_root=$(cd "$SPEC175_JOB_ROOT/../../../.." && pwd)
+oracle_runner="$repo_root/specs/175-ndnsf-di-streamed-invocation/jobs/generate-qwen-onnx-reference.py"
+workload="$SPEC175_JOB_ROOT/workload.json"
 [[ -f "$runner" ]] || { echo SPEC175_STAGE_RUNNER_MISSING >&2; exit 4; }
+[[ -f "$oracle_runner" ]] || { echo SPEC175_ORACLE_RUNNER_MISSING >&2; exit 4; }
+[[ -f "$workload" ]] || { echo SPEC175_WORKLOAD_MISSING >&2; exit 4; }
 [[ -f "$SPEC175_MODEL_MANIFEST" ]] || {
   echo SPEC175_MODEL_MANIFEST_MISSING >&2
   exit 4
@@ -31,6 +36,11 @@ runner="$SPEC175_JOB_ROOT/run-qwen-stage-readiness.py"
   echo SPEC175_REMOTE_MODEL_ROOT_MISSING >&2
   exit 4
 }
+# The profile transports device IDs with ':' because Slurm's --export list is
+# comma-delimited.  Decode only after the profile and bundle have passed the
+# local semantic checks.
+stage_device_ids="${SPEC175_STAGE_DEVICE_IDS:-0:1:2}"
+stage_device_ids="${stage_device_ids//:/,}"
 
 actual=$(sha256sum "$SPEC175_SIF" | awk '{print $1}')
 [[ "$actual" == "${SPEC175_SIF_SHA256#sha256:}" ]] || {
@@ -65,10 +75,30 @@ apptainer exec --nv --cleanenv \
     --model-root /model \
     --cache-root /cache \
     --output /evidence/tiger-stage-readiness.json \
-    --stage-device-ids "${SPEC175_STAGE_DEVICE_IDS:-0,1,2}" \
+    --stage-device-ids "$stage_device_ids" \
     --max-new-tokens 8
 status=$?
 set -e
+if [[ "$status" -eq 0 ]]; then
+  set +e
+  apptainer exec --nv --cleanenv \
+    --bind "$SPEC175_REMOTE_MODEL_ROOT:/model:ro" \
+    --bind "$SPEC175_MODEL_MANIFEST:/manifest.json:ro" \
+    --bind "$oracle_runner:/verify/generate-qwen-onnx-reference.py:ro" \
+    --bind "$workload:/workload.json:ro" \
+    --bind "$SPEC175_OUTPUT:/evidence:rw" \
+    "$SPEC175_SIF" python3 /verify/generate-qwen-onnx-reference.py \
+      --service-manifest /manifest.json \
+      --artifact-root /model \
+      --workload /workload.json \
+      --tokenizer-dir /model/qwen-onnx-tokenizer \
+      --output /evidence/g5-oracle.json \
+      --stage-device-ids "$stage_device_ids" \
+      --max-new-tokens 64 \
+      --execution-provider cuda
+  status=$?
+  set -e
+fi
 printf '{"schemaVersion":"spec175-stage-readiness-v1","gate":"stage-readiness","exitCode":%d,"status":"%s"}\n' \
   "$status" "$([[ $status -eq 0 ]] && echo PASS || echo FAIL)" \
   >"$SPEC175_OUTPUT/spec175-gate-terminal.json"

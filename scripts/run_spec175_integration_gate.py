@@ -148,6 +148,77 @@ def _run_case(binary: Path, case_id: str, test_name: str, *, seed: int,
     }
 
 
+def _probe_native_binary(binary: Path, cases: Iterable[str]) -> dict[str, object]:
+    """Verify the G2 executable before starting any registered case.
+
+    ``unit-tests`` may expose similarly named registration text but reject
+    integration filters at runtime. Probe the exact integration executable and
+    its registered test inventory first so an operator mistake becomes a
+    deterministic, side-effect-free blocker instead of a misleading matrix of
+    exit-code-200 failures.
+    """
+    selected = tuple(cases)
+    expected = tuple(REGISTERED[case] for case in selected if case in REGISTERED)
+    if not expected:
+        return {"status": "NOT_REQUIRED", "missingTests": [], "command": []}
+    if binary.name != "integration-tests":
+        return {
+            "status": "BLOCKED_BINARY_KIND",
+            "expectedName": "integration-tests",
+            "actualName": binary.name,
+            "missingTests": list(expected),
+            "command": [],
+        }
+    command = [str(binary), "--list_content"]
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=binary.parent.parent,
+            env=dict(os.environ),
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=30.0,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        return {
+            "status": "BLOCKED_BINARY_PROBE",
+            "missingTests": list(expected),
+            "command": command,
+            "error": str(error),
+        }
+    listing = completed.stdout + completed.stderr
+    listed_tests: set[str] = set()
+    suite = ""
+    for line in listing.splitlines():
+        stripped = line.strip().rstrip("*")
+        if not stripped:
+            continue
+        if line[0].isspace():
+            if suite:
+                listed_tests.add(f"{suite}/{stripped}")
+        else:
+            suite = stripped
+    missing = [test for test in expected if test not in listed_tests]
+    listing_hash = "sha256:" + hashlib.sha256(
+        listing.encode("utf-8", errors="replace")).hexdigest()
+    if completed.returncode != 0 or missing:
+        return {
+            "status": "BLOCKED_BINARY_REGISTRY",
+            "returnCode": completed.returncode,
+            "missingTests": missing,
+            "command": command,
+            "listingSha256": listing_hash,
+        }
+    return {
+        "status": "PASS",
+        "returnCode": completed.returncode,
+        "missingTests": [],
+        "command": command,
+        "listingSha256": listing_hash,
+    }
+
+
 def _run_python_case(case_id: str, test_name: str, *, seed: int,
                      repetition: int, log_dir: Path,
                      timeout_seconds: float = 120.0) -> dict[str, object]:
@@ -242,6 +313,13 @@ def run_gate(*, binary: Path, cases: Iterable[str], healthy_repeats: int,
                if case not in REGISTERED and case not in PYTHON_REGISTERED]
     native_selected = tuple(case for case in selected if case in REGISTERED)
     binary_available = binary.is_file() and os.access(binary, os.X_OK)
+    binary_probe = (_probe_native_binary(binary, native_selected)
+                    if binary_available else {
+                        "status": "BLOCKED_BINARY_UNAVAILABLE",
+                        "missingTests": [REGISTERED[case]
+                                         for case in native_selected],
+                        "command": [],
+                    })
     generated_at = dt.datetime.now(dt.timezone.utc).isoformat()
     run_id = generated_at.replace(":", "").replace("+", "-")
     log_dir = output.expanduser().resolve().parent / "logs" / run_id
@@ -250,28 +328,31 @@ def run_gate(*, binary: Path, cases: Iterable[str], healthy_repeats: int,
     # missing.  A missing case still blocks the gate, but suppressing healthy
     # registered evidence would make a mixed audit request unable to show
     # which part is actually passing.
-    for case in selected:
-        if case in REGISTERED and not binary_available:
-            continue
-        if case not in REGISTERED and case not in PYTHON_REGISTERED:
-            continue
-        repetitions = healthy_repeats if case in HEALTHY_CASES else 1
-        for repetition in range(repetitions):
-            if case in REGISTERED:
-                result = _run_case(
-                    binary, case, REGISTERED[case], seed=seed,
-                    repetition=repetition + 1, log_dir=log_dir,
-                    timeout_seconds=case_timeout_seconds)
-            else:
-                result = _run_python_case(
-                    case, PYTHON_REGISTERED[case], seed=seed,
-                    repetition=repetition + 1, log_dir=log_dir,
-                    timeout_seconds=case_timeout_seconds)
-            results.append(result)
+    if not native_selected or binary_probe["status"] == "PASS":
+        for case in selected:
+            if case in REGISTERED and not binary_available:
+                continue
+            if case not in REGISTERED and case not in PYTHON_REGISTERED:
+                continue
+            repetitions = healthy_repeats if case in HEALTHY_CASES else 1
+            for repetition in range(repetitions):
+                if case in REGISTERED:
+                    result = _run_case(
+                        binary, case, REGISTERED[case], seed=seed,
+                        repetition=repetition + 1, log_dir=log_dir,
+                        timeout_seconds=case_timeout_seconds)
+                else:
+                    result = _run_python_case(
+                        case, PYTHON_REGISTERED[case], seed=seed,
+                        repetition=repetition + 1, log_dir=log_dir,
+                        timeout_seconds=case_timeout_seconds)
+                results.append(result)
     if missing:
         status = "BLOCKED_MISSING_CASES"
     elif native_selected and not binary_available:
         status = "BLOCKED_BINARY_UNAVAILABLE"
+    elif native_selected and binary_probe["status"] != "PASS":
+        status = str(binary_probe["status"])
     elif any(item.get("runner") == "python" and item.get("metricsMissing")
              for item in results):
         status = "FAIL_MISSING_METRICS"
@@ -287,6 +368,7 @@ def run_gate(*, binary: Path, cases: Iterable[str], healthy_repeats: int,
         "binary": str(binary),
         "binaryAvailable": binary_available,
         "binarySha256": _sha256(binary) if binary_available else None,
+        "binaryProbe": binary_probe,
         "pythonExecutable": sys.executable,
         "sourceSeal": {
             "path": str(source_seal),

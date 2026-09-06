@@ -1658,6 +1658,16 @@ struct NativeAuthenticatedGenerationConfig
   std::vector<std::string> stateOutputNames;
   std::set<std::int64_t> eosTokenIds;
   std::string samplingDigest;
+  std::string samplingMode = "Greedy";
+  double samplingTemperature = 0.0;
+  std::size_t samplingTopK = 1;
+  double samplingTopP = 1.0;
+  double samplingRepetitionPenalty = 1.0;
+  std::uint64_t samplingSeed = 1'750'001;
+  std::vector<std::string> stopStrings;
+  std::function<std::string(const std::vector<std::int64_t>&)> textDecoder;
+  NativeProviderHandlerConfig::GenerationTextDecoderFactory textDecoderFactory;
+  bool requireTextOutput = false;
   std::vector<std::int64_t> committedPrefixTokenIds;
 };
 
@@ -1674,6 +1684,16 @@ generationConfigFromAuthenticatedRequest(
     base.generationStateOutputNames,
     base.generationEosTokenIds,
     base.generationSamplingDigest,
+    base.generationSamplingMode,
+    base.generationSamplingTemperature,
+    base.generationSamplingTopK,
+    base.generationSamplingTopP,
+    base.generationSamplingRepetitionPenalty,
+    base.generationSamplingSeed,
+    base.generationStopStrings,
+    base.generationTextDecoder,
+    base.generationTextDecoderFactory,
+    base.requireGenerationTextOutput,
     base.generationCommittedPrefixTokenIds,
   };
   if (projection && projection->generationContract.enabled) {
@@ -1686,6 +1706,16 @@ generationConfigFromAuthenticatedRequest(
     result.eosTokenIds = std::set<std::int64_t>(
       sealed.eosTokenIds.begin(), sealed.eosTokenIds.end());
     result.samplingDigest = sealed.samplingDigest;
+    result.samplingMode = sealed.samplingMode;
+    result.samplingTemperature = sealed.samplingTemperature;
+    result.samplingTopK = static_cast<std::size_t>(sealed.samplingTopK);
+    result.samplingTopP = sealed.samplingTopP;
+    result.samplingRepetitionPenalty = sealed.samplingRepetitionPenalty;
+    result.samplingSeed = sealed.samplingSeed;
+    result.stopStrings = sealed.stopStrings;
+    if (result.textDecoderFactory) {
+      result.textDecoder = result.textDecoderFactory(sealed.tokenizerDigest);
+    }
     result.committedPrefixTokenIds = sealed.committedPrefixTokenIds;
   }
   return result;
@@ -2511,7 +2541,8 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
             }
             completeExecutionLease();
             ctx.fail("DI_INPUT_FETCH_ROLE_MISMATCH");
-            std::cout << "SPEC180_YN_NEGATIVE_RESULT status=PASS"
+            std::ostringstream record;
+            record << "SPEC180_YN_NEGATIVE_RESULT status=PASS"
                     << " subcase=Y-N-I"
                     << " boundary=PROVIDER_EXECUTION_STARTED"
                     << " reason=NON_INGRESS_INPUT_REJECTED"
@@ -2520,8 +2551,8 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
                     << " observedPhase=PROVIDER_EXECUTION_STARTED"
                     << " provider=" << ctx.localProvider().toUri()
                     << " planDigest=" << selectionProjection->planDigest
-                    << " errorCode=DI_INPUT_FETCH_ROLE_MISMATCH"
-                    << std::endl;
+                    << " errorCode=DI_INPUT_FETCH_ROLE_MISMATCH";
+            logRuntimeEvidence(record.str());
             return;
           }
           completeExecutionLease();
@@ -2647,6 +2678,18 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
         coordinatorConfig.positionPolicyDigest = trustedState.positionPolicyDigest;
         coordinatorConfig.eosTokenIds = authenticatedGeneration.eosTokenIds;
         coordinatorConfig.samplingDigest = authenticatedGeneration.samplingDigest;
+        coordinatorConfig.samplingMode = authenticatedGeneration.samplingMode;
+        coordinatorConfig.samplingTemperature =
+          authenticatedGeneration.samplingTemperature;
+        coordinatorConfig.samplingTopK = authenticatedGeneration.samplingTopK;
+        coordinatorConfig.samplingTopP = authenticatedGeneration.samplingTopP;
+        coordinatorConfig.samplingRepetitionPenalty =
+          authenticatedGeneration.samplingRepetitionPenalty;
+        coordinatorConfig.samplingSeed = authenticatedGeneration.samplingSeed;
+        coordinatorConfig.stopStrings = authenticatedGeneration.stopStrings;
+        coordinatorConfig.textDecoder = authenticatedGeneration.textDecoder;
+        coordinatorConfig.requireTextOutput =
+          authenticatedGeneration.requireTextOutput;
         coordinatorConfig.checkpointFinalize =
           selectionProjection->conversationTurnBinding.has_value();
         coordinatorConfig.maxCheckpointFinalizeTokens = 32;

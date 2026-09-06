@@ -61,15 +61,24 @@ def build(bld):
         'ndn-service-framework/CertificatePublisher.cpp',
         'ndn-service-framework/ConfigManager.cpp',
         'ndn-service-framework/PolicyParser.cpp',
+        'ndn-service-framework/CertificateBootstrap.cpp',
         'ndn-service-framework/ServiceProvider.cpp',
         'ndn-service-framework/ServiceUser.cpp',
+        'ndn-service-framework/ServiceController.cpp',
+        'ndn-service-framework/RuntimeStatusStore.cpp',
         'ndn-service-framework/Stream.cpp',
         'ndn-service-framework/StreamFacade.cpp',
         'ndn-service-framework/HybridMessageCrypto.cpp',
+        'ndn-service-framework/RequestConfidentiality.cpp',
         'ndn-service-framework/ExecutionLease.cpp',
         'ndn-service-framework/NetworkTelemetry.cpp',
         'ndn-service-framework/TimelineTrace.cpp',
         'ndn-service-framework/GenericSelectionTxnStore.cpp',
+        'ndn-service-framework/ControllerVersion.cpp',
+        'ndn-service-framework/PolicyStatus.cpp',
+        'ndn-service-framework/ControllerGenerationStore.cpp',
+        'ndn-service-framework/RevocationState.cpp',
+        'ndn-service-framework/PolicyRefreshCoordinator.cpp',
         'ndn-service-framework/common.cpp',
         'ndn-service-framework/utils.cpp',
     ])
@@ -87,6 +96,7 @@ def build(bld):
         'NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.cpp',
         'NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloMergeRunner.cpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.cpp',
+        'NDNSF-DistributedInference/cpp/ndnsf-di/NativeStandaloneTokenizer.cpp',
         # The integration target exercises the real CPU ONNX adapter when
         # NDNSF_DI_TEST_ONNX_MODEL is set; keep the adapter object in the same
         # target rather than accidentally testing only the fake runner.
@@ -159,18 +169,33 @@ def build(bld):
                             'ndn-service-framework/CertificatePublisher.cpp',
                             'ndn-service-framework/ConfigManager.cpp',
                             'ndn-service-framework/PolicyParser.cpp',
+                            'ndn-service-framework/CertificateBootstrap.cpp',
                             'ndn-service-framework/ServiceProvider.cpp',
                             'ndn-service-framework/ServiceUser.cpp',
+                            'ndn-service-framework/RuntimeStatusStore.cpp',
                             'ndn-service-framework/Stream.cpp',
                             'ndn-service-framework/StreamFacade.cpp',
                             'ndn-service-framework/HybridMessageCrypto.cpp',
+                            'ndn-service-framework/RequestConfidentiality.cpp',
                             'ndn-service-framework/ExecutionLease.cpp',
                             'ndn-service-framework/NetworkTelemetry.cpp',
                             'ndn-service-framework/TimelineTrace.cpp',
                             'ndn-service-framework/GenericSelectionTxnStore.cpp',
+                            'ndn-service-framework/ControllerVersion.cpp',
+                            'ndn-service-framework/PolicyStatus.cpp',
+                            'ndn-service-framework/ControllerGenerationStore.cpp',
+                            'ndn-service-framework/RevocationState.cpp',
+                            'ndn-service-framework/PolicyRefreshCoordinator.cpp',
                             'ndn-service-framework/common.cpp',
                             'ndn-service-framework/utils.cpp',
                             'NDNSF-UAV-APP/shared/UavProtocol.cpp',
+                            'NDNSF-UAV-APP/shared/UavMissionSession.cpp',
+                            'NDNSF-UAV-APP/shared/UavCollaborationPolicy.cpp',
+                            'NDNSF-UAV-APP/shared/UavDetectorProvider.cpp',
+                            'NDNSF-UAV-APP/shared/UavMultiViewRecognition.cpp',
+                            'NDNSF-UAV-APP/shared/UavDiagnostics.cpp',
+                            'NDNSF-UAV-APP/ground-station/UavIncidentCoordinator.cpp',
+                            'NDNSF-UAV-APP/drone/UavCollaborationParticipant.cpp',
                             'NDNSF-UAV-APP/shared/UavVideoPipeline.cpp',
                             'NDNSF-UAV-APP/shared/UavSensorStreams.cpp',
                             'NDNSF-DistributedRepo/src/ArtifactManifest.cpp',
@@ -190,7 +215,16 @@ def build(bld):
                 includes=['..', '../ndn-service-framework',
                           '../NDNSF-DistributedRepo/include'],
                 use='NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL ONNXRUNTIME GSTREAMER GMODULE FFI PCRE DL',
-                cxxflags=['-fPIC'],
+                # NAC-ABE exposes its test-only authority state under
+                # HAVE_TESTS.  The framework's generated config header does
+                # not propagate that macro into NAC-ABE's CMake-style public
+                # headers, so define it explicitly for the test executable.
+                defines=['HAVE_TESTS'],
+                # GCC 9 can ICE during inlining while compiling the large UAV
+                # protocol and SVS translation units. Tests do not depend on
+                # optimization or debug info, so use a low-memory deterministic
+                # test build while leaving production flags unchanged.
+                cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
                 # GNU ld can incorrectly relax a GOTPCREL push of an
                 # address-taken inline constexpr into a direct call.  The
                 # monolithic test binary exercises many such constants.
@@ -211,10 +245,34 @@ def build(bld):
                         bld.path.find_node('integration-tests/ndnsf-di-native-assembly.t.cpp'),
                         bld.path.find_node('integration-tests/spec181-exact-tensor-transport.t.cpp'),
                         bld.path.find_node('integration-tests/invocation-stream-flow.t.cpp'),
+                        bld.path.find_node('integration-tests/uav-collaboration-flow.t.cpp'),
+                        bld.path.find_node('integration-tests/uav-multiview-flow.t.cpp'),
+                        bld.path.find_node('integration-tests/controller-revocation-flow.t.cpp'),
+                        bld.path.find_node('integration-tests/controller-version-refresh.t.cpp'),
+                        bld.path.find_node('integration-tests/request-scoped-selection.t.cpp'),
+                        bld.path.find_node('integration-tests/request-scoped-response-confidentiality.t.cpp'),
+                        bld.path.parent.find_node('NDNSF-UAV-APP/shared/UavProtocol.cpp'),
+                        bld.path.parent.find_node('NDNSF-UAV-APP/shared/UavMissionSession.cpp'),
+                        bld.path.parent.find_node('NDNSF-UAV-APP/shared/UavDetectorProvider.cpp'),
+                        bld.path.parent.find_node('NDNSF-UAV-APP/shared/UavMultiViewRecognition.cpp'),
+                        bld.path.parent.find_node('NDNSF-UAV-APP/shared/UavDiagnostics.cpp'),
+                        bld.path.parent.find_node('NDNSF-UAV-APP/ground-station/UavIncidentCoordinator.cpp'),
+                        bld.path.parent.find_node('NDNSF-UAV-APP/drone/UavCollaborationParticipant.cpp'),
                         bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp')] +
                        framework_sources + di_integration_sources,
                 includes=framework_includes,
                 use=framework_use + ' ONNXRUNTIME',
-                cxxflags=['-fPIC'],
+                # Keep NAC-ABE's test visibility contract enabled for the
+                # integration target as well as the unit-test target.
+                defines=['HAVE_TESTS'],
+                # Keep the same GCC-9 ICE guard for the integration target.
+                cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
                 linkflags=['-Wl,--no-relax'],
                 install_path=None)
+
+    bld.program(target='../service-controller-readiness',
+                name='service-controller-readiness',
+                source=[bld.path.find_node('standalone/service-controller-readiness.cpp')],
+                includes=['..', '../ndn-service-framework'],
+                use='ndn-service-framework NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL',
+                rpath=[bld.bldnode.abspath()], install_path=None)

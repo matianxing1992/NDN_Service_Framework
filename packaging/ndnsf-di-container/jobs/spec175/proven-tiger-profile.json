@@ -1,0 +1,147 @@
+{
+  "schema": "ndnsf-di-spec175-proven-tiger-profile-v1",
+  "profileId": "spec170-d0-r23-ndnsf175",
+  "common": {
+    "submitEntry": "packaging/ndnsf-di-container/jobs/spec175/submit.sh",
+    "jobRoot": "packaging/ndnsf-di-container/jobs/spec175",
+    "runner": "packaging/ndnsf-di-container/jobs/spec175/run-streamed-generation.sh",
+    "cwd": "/bundle",
+    "apptainer": {
+      "path": "/opt/apptainer/1.5.3/bin/apptainer",
+      "version": "1.5.3",
+      "args": ["exec", "--cleanenv"]
+    },
+    "exportMode": "NONE",
+    "fixedEnvironment": [
+      "SPEC175_GATE", "SPEC175_CANDIDATE_GATE", "SPEC175_CHECKLIST_GATE",
+      "SPEC175_PROFILE_ID", "SPEC175_PROFILE_SHA256",
+      "SPEC175_CLOSURE_MANIFEST", "SPEC175_LOCAL_SIF",
+      "SPEC175_LOCAL_SIF_SHA256", "SPEC175_REMOTE_SIF",
+      "SPEC175_REMOTE_SIF_SHA256", "SPEC175_WORKLOAD", "SPEC175_BUNDLE",
+      "SPEC175_OUTPUT", "SPEC175_PRE_TIGER_CHECKLIST",
+      "SPEC175_PRE_TIGER_CHECKLIST_VALIDATION", "SPEC175_PROFILE_DELTA",
+      "SPEC175_RUN_ID", "SPEC175_MODEL_MANIFEST",
+      "SPEC175_REMOTE_MODEL_ROOT"
+    ],
+    "fixedConfig": {
+      "runtime": "exact-local-sif",
+      "networkOwner": "host-minindn-or-tiger-nfd",
+      "imageBuildOwner": "local-apptainer",
+      "bundleCwd": "/bundle",
+      "identityIsolation": "per-process-home-pib-tpm",
+      "readiness": "controller-provider-user-route-and-protocol",
+      "retryPolicy": "registered-gate-only",
+      "modelRuntime": "onnxruntime-only"
+    }
+  },
+  "gates": {
+    "control": {
+      "job": "qualify-control.sbatch",
+      "checklistGate": "control",
+      "candidateGate": "G4T",
+      "allowlist": [
+        "candidate.id", "candidate.sif", "candidate.sifSha256",
+        "candidate.remoteSif", "candidate.remoteSifSha256", "runId",
+        "output", "bundle", "workload", "checklist", "checklistValidation",
+        "profileDelta"
+      ],
+      "fixedConfig": {
+        "providerCount": 4,
+        "gpuCount": 0,
+        "seed": 1750001,
+        "resourceEnvelope": "nodes=1;ntasks=1;gres=gpu:0;time=00:20:00",
+        "jobName": "ndnsf175-control"
+      }
+    },
+    "stage-readiness": {
+      "job": "qualify-stage-readiness.sbatch",
+      "checklistGate": "stage-readiness",
+      "candidateGate": "G5",
+      "allowlist": [
+        "candidate.id", "candidate.sif", "candidate.sifSha256",
+        "candidate.remoteSif", "candidate.remoteSifSha256", "runId",
+        "output", "bundle", "workload", "checklist", "checklistValidation",
+        "profileDelta", "parameters.stageDeviceIds", "model.manifest", "model.remoteRoot"
+      ],
+      "fixedConfig": {
+        "providerCount": 3,
+        "gpuCount": 3,
+        "seed": 1750001,
+        "resourceEnvelope": "nodes=1;ntasks=1;gres=gpu:rtx_6000:3;time=00:45:00",
+        "jobName": "ndnsf175-stage",
+        "stageDeviceIds": [0, 1, 2]
+      }
+    },
+    "multi-provider": {
+      "job": "qualify-multiprovider.sbatch",
+      "checklistGate": "functional",
+      "candidateGate": "G6",
+      "allowlist": [
+        "candidate.id", "candidate.sif", "candidate.sifSha256",
+        "candidate.remoteSif", "candidate.remoteSifSha256", "runId",
+        "output", "bundle", "workload", "checklist", "checklistValidation",
+        "profileDelta", "model.manifest", "model.remoteRoot"
+      ],
+      "fixedConfig": {
+        "providerCount": 3,
+        "gpuCount": 3,
+        "seed": 1750001,
+        "resourceEnvelope": "nodes=1;ntasks=1;gres=gpu:rtx_6000:3;mem=96G;time=01:00:00",
+        "jobName": "ndnsf175-multi"
+      }
+    },
+    "conversation-residency": {
+      "job": "qualify-conversation-residency.sbatch",
+      "checklistGate": "functional",
+      "candidateGate": "G6C",
+      "allowlist": [
+        "candidate.id", "candidate.sif", "candidate.sifSha256",
+        "candidate.remoteSif", "candidate.remoteSifSha256", "runId",
+        "output", "bundle", "workload", "checklist", "checklistValidation",
+        "profileDelta", "model.manifest", "model.remoteRoot"
+      ],
+      "fixedConfig": {
+        "providerCount": 3,
+        "gpuCount": 3,
+        "seed": 1750001,
+        "resourceEnvelope": "nodes=1;ntasks=1;gres=gpu:rtx_6000:3;mem=96G;time=01:00:00",
+        "jobName": "ndnsf175-g6c"
+      }
+    },
+    "performance": {
+      "job": "qualify-performance.sbatch",
+      "checklistGate": "performance",
+      "candidateGate": "G7",
+      "allowlist": [
+        "candidate.id", "candidate.sif", "candidate.sifSha256",
+        "candidate.remoteSif", "candidate.remoteSifSha256", "runId",
+        "output", "bundle", "workload", "checklist", "checklistValidation",
+        "profileDelta", "model.manifest", "model.remoteRoot"
+      ],
+      "fixedConfig": {
+        "providerCount": 3,
+        "gpuCount": 3,
+        "seed": 1750001,
+        "resourceEnvelope": "nodes=1;ntasks=1;gres=gpu:rtx_6000:3;mem=96G;time=02:00:00",
+        "jobName": "ndnsf175-perf"
+      }
+    }
+  },
+  "trackedFiles": [
+    {"path": "scripts/run_spec175_g3_matrix.py", "sha256": "sha256:d3b558cd31283152c7993ad959585c34cfe726ccae022bbaf670d9a764b39787"},
+    {"path": "packaging/ndnsf-di-container/jobs/spec175/submit.sh", "sha256": "sha256:3c3a2b98c516fbd8720f54ac69c78fbe2c9c67494c499629a5d2df781335f839"},
+    {"path": "packaging/ndnsf-di-container/jobs/spec175/submit_profile.py", "sha256": "sha256:a984bdb5ba76eabc90840ce0e87ed6cabbc79f0073bc068e9aa49c17ce9f6c37"},
+    {"path": "packaging/ndnsf-di-container/jobs/spec175/run-streamed-generation.sh", "sha256": "sha256:a68e896d2b2f0f208d08dc71c3843528b9d3d96ddf2cad9ae0e0fdf600de2930"},
+    {"path": "packaging/ndnsf-di-container/jobs/spec175/qualify-control.sbatch", "sha256": "sha256:574c84a53c53535ce8e2b777b878ce7bc39aee0a61b8725180aa3db4614532fe"},
+    {"path": "packaging/ndnsf-di-container/jobs/spec175/qualify-stage-readiness.sbatch", "sha256": "sha256:da8c8ef5c8d83508aea961036913af048903e4edc1c9a1b60634606b542adf1f"},
+    {"path": "packaging/ndnsf-di-container/jobs/spec175/qualify-multiprovider.sbatch", "sha256": "sha256:6930af9950f6bffc1f7b14c56798837928c1f91d9b2d257c90220c730a6c109d"},
+    {"path": "packaging/ndnsf-di-container/jobs/spec175/qualify-conversation-residency.sbatch", "sha256": "sha256:fa05d835f190abe8cf69cf7e297d12aa4bdffc3b32ada54a39d7036261fd61aa"},
+    {"path": "packaging/ndnsf-di-container/jobs/spec175/qualify-performance.sbatch", "sha256": "sha256:0f64e9fed47d6258abe2a65c45ac794c41b6fb583fc56702e3693ea281d0581c"},
+    {"path": "packaging/ndnsf-di-container/bin/spec175-candidate-closure", "sha256": "sha256:7b35c1ecd9619e57703fe8dd45c8be80a4eadfc498641c38de56aea5d15fa918"},
+    {"path": "packaging/ndnsf-di-container/bin/spec175-gate-prerequisites", "sha256": "sha256:49ffdde98ccf7239382d9118f9cd2df7cf0997c7c2426c7f7ef1c6545525df84"},
+    {"path": "packaging/ndnsf-di-container/bin/ndnsf-di-pre-tiger-checklist", "sha256": "sha256:268e4467f706abe09c80b9593ffcaf64c15c35563075de606d2e4dc32257ad47"},
+    {"path": "packaging/ndnsf-di-container/bin/ndnsf-di-spec175-model-preflight", "sha256": "sha256:9ea39dd7d788cc487389828dc3d36d3647ef51f81c31ff45087dcbc03026c42d"},
+    {"path": "packaging/ndnsf-di-container/bin/ndnsf-di-spec175-functional-preflight", "sha256": "sha256:b6919592360c28a96652770ddea61044de3905fd08f15961ed5ae3ce55f756a2"},
+    {"path": "packaging/ndnsf-di-container/lib/spec175_tiger_profile.py", "sha256": "sha256:9967f9ed0ee0b67891f5a3365dee805555fec796ebe4739defc96a756448aaaa"}
+  ]
+}

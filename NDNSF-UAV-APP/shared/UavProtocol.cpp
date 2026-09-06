@@ -196,6 +196,9 @@ assignConfigValue(UavRuntimeConfig& config, const std::string& key, const std::s
   else if (key == "service-gs-object-detection") {
     config.serviceGsObjectDetection = ndn::Name(value);
   }
+  else if (key == "service-incident-analyze") {
+    config.serviceIncidentAnalyze = ndn::Name(value);
+  }
   else if (key == "service-gs-operator-authority-lease") {
     config.serviceGsOperatorAuthorityLease = ndn::Name(value);
   }
@@ -239,6 +242,407 @@ uint64FieldOr(const Fields& fields, const std::string& key, uint64_t fallback)
 }
 
 } // namespace
+
+const char*
+to_string(UavMissionSessionState state) noexcept
+{
+  switch (state) {
+  case UavMissionSessionState::Planned: return "PLANNED";
+  case UavMissionSessionState::Starting: return "STARTING";
+  case UavMissionSessionState::Active: return "ACTIVE";
+  case UavMissionSessionState::Degraded: return "DEGRADED";
+  case UavMissionSessionState::Compensating: return "COMPENSATING";
+  case UavMissionSessionState::Cancelling: return "CANCELLING";
+  case UavMissionSessionState::Recovering: return "RECOVERING";
+  case UavMissionSessionState::Completed: return "COMPLETED";
+  case UavMissionSessionState::Cancelled: return "CANCELLED";
+  case UavMissionSessionState::Failed: return "FAILED";
+  }
+  return "FAILED";
+}
+
+std::optional<UavMissionSessionState>
+parseUavMissionSessionState(const std::string& value)
+{
+  static const std::map<std::string, UavMissionSessionState> values = {
+    {"PLANNED", UavMissionSessionState::Planned},
+    {"STARTING", UavMissionSessionState::Starting},
+    {"ACTIVE", UavMissionSessionState::Active},
+    {"DEGRADED", UavMissionSessionState::Degraded},
+    {"COMPENSATING", UavMissionSessionState::Compensating},
+    {"CANCELLING", UavMissionSessionState::Cancelling},
+    {"RECOVERING", UavMissionSessionState::Recovering},
+    {"COMPLETED", UavMissionSessionState::Completed},
+    {"CANCELLED", UavMissionSessionState::Cancelled},
+    {"FAILED", UavMissionSessionState::Failed},
+  };
+  const auto it = values.find(value);
+  return it == values.end() ? std::nullopt : std::optional<UavMissionSessionState>(it->second);
+}
+
+const char*
+to_string(UavMissionPartState state) noexcept
+{
+  switch (state) {
+  case UavMissionPartState::Pending: return "PENDING";
+  case UavMissionPartState::Accepted: return "ACCEPTED";
+  case UavMissionPartState::Executing: return "EXECUTING";
+  case UavMissionPartState::Completed: return "COMPLETED";
+  case UavMissionPartState::Missing: return "MISSING";
+  case UavMissionPartState::Compensated: return "COMPENSATED";
+  }
+  return "MISSING";
+}
+
+std::optional<UavMissionPartState>
+parseUavMissionPartState(const std::string& value)
+{
+  static const std::map<std::string, UavMissionPartState> values = {
+    {"PENDING", UavMissionPartState::Pending},
+    {"ACCEPTED", UavMissionPartState::Accepted},
+    {"EXECUTING", UavMissionPartState::Executing},
+    {"COMPLETED", UavMissionPartState::Completed},
+    {"MISSING", UavMissionPartState::Missing},
+    {"COMPENSATED", UavMissionPartState::Compensated},
+  };
+  const auto it = values.find(value);
+  return it == values.end() ? std::nullopt : std::optional<UavMissionPartState>(it->second);
+}
+
+const char*
+to_string(UavCollaborationJobState state) noexcept
+{
+  switch (state) {
+  case UavCollaborationJobState::Created: return "CREATED";
+  case UavCollaborationJobState::AckCollecting: return "ACK_COLLECTING";
+  case UavCollaborationJobState::AckClosed: return "ACK_CLOSED";
+  case UavCollaborationJobState::PlanCommitted: return "PLAN_COMMITTED";
+  case UavCollaborationJobState::Selected: return "SELECTED";
+  case UavCollaborationJobState::EvidenceReady: return "EVIDENCE_READY";
+  case UavCollaborationJobState::Executing: return "EXECUTING";
+  case UavCollaborationJobState::Reporting: return "REPORTING";
+  case UavCollaborationJobState::Succeeded: return "SUCCEEDED";
+  case UavCollaborationJobState::Failed: return "FAILED";
+  case UavCollaborationJobState::TimedOut: return "TIMED_OUT";
+  case UavCollaborationJobState::Cancelled: return "CANCELLED";
+  }
+  return "FAILED";
+}
+
+std::optional<UavCollaborationJobState>
+parseUavCollaborationJobState(const std::string& value)
+{
+  static const std::map<std::string, UavCollaborationJobState> values = {
+    {"CREATED", UavCollaborationJobState::Created},
+    {"ACK_COLLECTING", UavCollaborationJobState::AckCollecting},
+    {"ACK_CLOSED", UavCollaborationJobState::AckClosed},
+    {"PLAN_COMMITTED", UavCollaborationJobState::PlanCommitted},
+    {"SELECTED", UavCollaborationJobState::Selected},
+    {"EVIDENCE_READY", UavCollaborationJobState::EvidenceReady},
+    {"EXECUTING", UavCollaborationJobState::Executing},
+    {"REPORTING", UavCollaborationJobState::Reporting},
+    {"SUCCEEDED", UavCollaborationJobState::Succeeded},
+    {"FAILED", UavCollaborationJobState::Failed},
+    {"TIMED_OUT", UavCollaborationJobState::TimedOut},
+    {"CANCELLED", UavCollaborationJobState::Cancelled},
+  };
+  const auto it = values.find(value);
+  return it == values.end() ? std::nullopt : std::optional<UavCollaborationJobState>(it->second);
+}
+
+namespace {
+
+std::string
+validationError(std::string* reason, const std::string& value)
+{
+  if (reason != nullptr) {
+    *reason = value;
+  }
+  return value;
+}
+
+bool
+hasComponentAt(const ndn::Name& name, size_t index, const std::string& value)
+{
+  return index < name.size() && name[index].toUri() == value;
+}
+
+bool
+containsTransportEndpoint(const ndn::Name& name)
+{
+  for (const auto& component : name) {
+    auto value = component.toUri();
+    std::transform(value.begin(), value.end(), value.begin(),
+                   [] (unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    if (value.find("://") != std::string::npos ||
+        value.find("%3a") != std::string::npos ||
+        value.find("host=") != std::string::npos ||
+        value.find("port=") != std::string::npos ||
+        value.find("socket") != std::string::npos) {
+      return true;
+    }
+    const auto dots = std::count(value.begin(), value.end(), '.');
+    if (dots == 3 && value.find(':') != std::string::npos &&
+        std::all_of(value.begin(), value.end(), [] (unsigned char ch) {
+          return (ch >= '0' && ch <= '9') || ch == '.' || ch == ':';
+        })) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool
+isSha256Digest(const std::string& value)
+{
+  if (value.size() != 71 || value.compare(0, 7, "sha256:") != 0) {
+    return false;
+  }
+  return std::all_of(value.begin() + 7, value.end(), [] (unsigned char ch) {
+    return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f') ||
+           (ch >= 'A' && ch <= 'F');
+  });
+}
+
+}
+
+ndn::Name
+makeUavEvidenceName(const ndn::Name& producerIdentity,
+                    const std::string& missionId,
+                    const std::string& incidentId,
+                    const std::string& evidenceId,
+                    uint64_t version)
+{
+  if (producerIdentity.empty() || missionId.empty() || incidentId.empty() ||
+      evidenceId.empty() || version == 0) {
+    throw std::invalid_argument("UAV evidence name requires non-empty IDs and a positive version");
+  }
+  ndn::Name name = producerIdentity;
+  name.append("UAV").append("MISSION").append(missionId)
+    .append("INCIDENT").append(incidentId).append("EVIDENCE")
+    .append(evidenceId).append(ndn::name::Component::fromVersion(version));
+  return name;
+}
+
+ndn::Name
+makeUavReportName(const ndn::Name& producerIdentity,
+                  const std::string& missionId,
+                  const std::string& incidentId,
+                  const std::string& attemptId,
+                  uint64_t version)
+{
+  if (producerIdentity.empty() || missionId.empty() || incidentId.empty() ||
+      attemptId.empty() || version == 0) {
+    throw std::invalid_argument("UAV report name requires non-empty IDs and a positive version");
+  }
+  ndn::Name name = producerIdentity;
+  name.append("UAV").append("MISSION").append(missionId)
+    .append("INCIDENT").append(incidentId).append("REPORT")
+    .append(attemptId).append(ndn::name::Component::fromVersion(version));
+  return name;
+}
+
+ndn::Name
+makeUavMultiViewResultName(const ndn::Name& providerIdentity,
+                           const std::string& missionSessionId,
+                           const std::string& jobId,
+                           uint64_t attempt,
+                           uint64_t version)
+{
+  if (providerIdentity.empty() || missionSessionId.empty() || jobId.empty() ||
+      attempt == 0 || version == 0) {
+    throw std::invalid_argument("multi-view result name requires non-empty IDs and positive version");
+  }
+  ndn::Name name = providerIdentity;
+  return name.append("UAV").append("MULTIVIEW").append("MISSION")
+    .append(missionSessionId).append("JOB").append(jobId).append("RESULT")
+    .append(ndn::name::Component::fromNumber(attempt))
+    .append(ndn::name::Component::fromVersion(version));
+}
+
+ndn::Name
+makeUavMultiViewAnnotationName(const ndn::Name& providerIdentity,
+                               const std::string& missionSessionId,
+                               const std::string& jobId,
+                               uint64_t attempt,
+                               const std::string& viewId,
+                               uint64_t version)
+{
+  if (providerIdentity.empty() || missionSessionId.empty() || jobId.empty() ||
+      attempt == 0 || viewId.empty() || version == 0) {
+    throw std::invalid_argument("multi-view annotation name requires non-empty IDs and positive version");
+  }
+  ndn::Name name = providerIdentity;
+  return name.append("UAV").append("MULTIVIEW").append("MISSION")
+    .append(missionSessionId).append("JOB").append(jobId).append("ANNOTATION")
+    .append(viewId).append(ndn::name::Component::fromNumber(attempt))
+    .append(ndn::name::Component::fromVersion(version));
+}
+
+bool
+isUavProviderMultiViewDataName(const ndn::Name& providerIdentity,
+                               const ndn::Name& objectName,
+                               const std::string& objectKind,
+                               const std::string& missionSessionId,
+                               const std::string& jobId)
+{
+  if (providerIdentity.empty() || missionSessionId.empty() || jobId.empty() ||
+      (objectKind != "RESULT" && objectKind != "ANNOTATION") ||
+      !providerIdentity.isPrefixOf(objectName) ||
+      containsTransportEndpoint(providerIdentity) || containsTransportEndpoint(objectName)) {
+    return false;
+  }
+  const auto suffix = objectName.getSubName(providerIdentity.size());
+  if (objectKind == "RESULT") {
+    return suffix.size() == 9 && hasComponentAt(suffix, 0, "UAV") &&
+           hasComponentAt(suffix, 1, "MULTIVIEW") && hasComponentAt(suffix, 2, "MISSION") &&
+           hasComponentAt(suffix, 3, missionSessionId) && hasComponentAt(suffix, 4, "JOB") &&
+           hasComponentAt(suffix, 5, jobId) && hasComponentAt(suffix, 6, "RESULT") &&
+           !suffix[7].empty() && !suffix[8].empty() && suffix[8].isVersion();
+  }
+  return suffix.size() == 10 && hasComponentAt(suffix, 0, "UAV") &&
+         hasComponentAt(suffix, 1, "MULTIVIEW") && hasComponentAt(suffix, 2, "MISSION") &&
+         hasComponentAt(suffix, 3, missionSessionId) && hasComponentAt(suffix, 4, "JOB") &&
+         hasComponentAt(suffix, 5, jobId) && hasComponentAt(suffix, 6, "ANNOTATION") &&
+         !suffix[7].empty() && !suffix[8].empty() && !suffix[9].empty() && suffix[9].isVersion();
+}
+
+bool
+isUavProducerDataName(const ndn::Name& producerIdentity,
+                      const ndn::Name& objectName,
+                      const std::string& objectKind)
+{
+  if (producerIdentity.empty() || !producerIdentity.isPrefixOf(objectName) ||
+      (objectKind != "EVIDENCE" && objectKind != "REPORT") ||
+      containsTransportEndpoint(producerIdentity) || containsTransportEndpoint(objectName)) {
+    return false;
+  }
+  const auto suffix = objectName.getSubName(producerIdentity.size());
+  return suffix.size() == 8 && hasComponentAt(suffix, 0, "UAV") &&
+         hasComponentAt(suffix, 1, "MISSION") &&
+         hasComponentAt(suffix, 3, "INCIDENT") &&
+         hasComponentAt(suffix, 5, objectKind) &&
+         !suffix[2].empty() && !suffix[4].empty() && !suffix[6].empty() &&
+         suffix[7].isVersion();
+}
+
+bool
+isUavProducerDataNameForContext(const ndn::Name& producerIdentity,
+                                const ndn::Name& objectName,
+                                const std::string& objectKind,
+                                const std::string& missionId,
+                                const std::string& incidentId)
+{
+  if (missionId.empty() || incidentId.empty() ||
+      !isUavProducerDataName(producerIdentity, objectName, objectKind)) {
+    return false;
+  }
+  const auto suffix = objectName.getSubName(producerIdentity.size());
+  return suffix[2].toUri() == missionId && suffix[4].toUri() == incidentId;
+}
+
+bool
+UavEvidenceReference::isValid(std::string* reason) const
+{
+  if (producerIdentity.empty()) return validationError(reason, "missing producer identity"), false;
+  if (streamId.empty()) return validationError(reason, "missing stream id"), false;
+  if (streamSessionEpoch == 0) return validationError(reason, "missing stream session"), false;
+  if (firstSequence > lastSequence) return validationError(reason, "invalid sequence range"), false;
+  if (windowStartMs > windowEndMs) return validationError(reason, "invalid time window"), false;
+  if (version == 0 || !isUavProducerDataName(producerIdentity, exactDataName, "EVIDENCE")) {
+    return validationError(reason, "evidence name is not producer-owned/versioned"), false;
+  }
+  if (contentType.empty()) {
+    return validationError(reason, "missing evidence content type"), false;
+  }
+  if (exactDataName.empty() || exactDataName[-1].toVersion() != version) {
+    return validationError(reason, "evidence version does not match exact name"), false;
+  }
+  if (!isSha256Digest(contentDigest)) {
+    return validationError(reason, "missing sha256 content digest"), false;
+  }
+  if (retentionDeadlineMs < windowEndMs) {
+    return validationError(reason, "retention expires before evidence window"), false;
+  }
+  return true;
+}
+
+Fields
+UavEvidenceReference::toFields(const std::string& prefix) const
+{
+  const auto p = prefix.empty() ? std::string() : prefix + ".";
+  return {
+    {p + "producer", producerIdentity.toUri()},
+    {p + "stream_id", streamId},
+    {p + "stream_session", std::to_string(streamSessionEpoch)},
+    {p + "first_sequence", std::to_string(firstSequence)},
+    {p + "last_sequence", std::to_string(lastSequence)},
+    {p + "window_start_ms", std::to_string(windowStartMs)},
+    {p + "window_end_ms", std::to_string(windowEndMs)},
+    {p + "exact_name", exactDataName.toUri()},
+    {p + "version", std::to_string(version)},
+    {p + "content_digest", contentDigest},
+    {p + "content_type", contentType},
+    {p + "retention_deadline_ms", std::to_string(retentionDeadlineMs)},
+  };
+}
+
+ndn::Buffer
+makeUavIncidentEvidenceContent(const std::string& missionId,
+                               const std::string& incidentId,
+                               const UavEvidenceReference& evidence)
+{
+  if (missionId.empty() || incidentId.empty() || !evidence.isValid() ||
+      !isUavProducerDataNameForContext(evidence.producerIdentity,
+                                       evidence.exactDataName, "EVIDENCE",
+                                       missionId, incidentId)) {
+    throw std::invalid_argument("incident evidence content requires valid lineage");
+  }
+  const auto encoded = encodeFields({
+    {"content_type", evidence.contentType},
+    {"evidence_name", evidence.exactDataName.toUri()},
+    {"first_sequence", std::to_string(evidence.firstSequence)},
+    {"incident_id", incidentId},
+    {"last_sequence", std::to_string(evidence.lastSequence)},
+    {"mission_id", missionId},
+    {"producer", evidence.producerIdentity.toUri()},
+    {"stream_id", evidence.streamId},
+    {"stream_session", std::to_string(evidence.streamSessionEpoch)},
+    {"version", std::to_string(evidence.version)},
+    {"window_end_ms", std::to_string(evidence.windowEndMs)},
+    {"window_start_ms", std::to_string(evidence.windowStartMs)},
+    {"schema", "uav-incident-evidence-manifest-v1"},
+  });
+  return ndn::Buffer(reinterpret_cast<const uint8_t*>(encoded.data()), encoded.size());
+}
+
+bool
+UavTerminalReport::isValid(std::string* reason) const
+{
+  if (missionId.empty() || incidentId.empty() || attemptId.empty() || requestId.empty()) {
+    return validationError(reason, "missing report lineage"), false;
+  }
+  if (planDigest.empty() || terminalOwner.empty() || selectedProvider.empty() ||
+      modelId.empty() || modelDigest.empty() || resultDigest.rfind("sha256:", 0) != 0) {
+    return validationError(reason, "missing report provenance"), false;
+  }
+  if (status != "success" && status != "failure") {
+    return validationError(reason, "invalid terminal status"), false;
+  }
+  for (const auto& ref : evidence) {
+    std::string evidenceReason;
+    if (!ref.isValid(&evidenceReason)) {
+      return validationError(reason, evidenceReason), false;
+    }
+  }
+  if (!reportName.empty() &&
+      !isUavProducerDataNameForContext(terminalOwner, reportName, "REPORT",
+                                       missionId, incidentId)) {
+    return validationError(reason,
+                           "report name is not bound to the mission and incident"), false;
+  }
+  return true;
+}
 
 Fields
 loadKeyValueConfig(const std::string& path)
@@ -471,14 +875,29 @@ decodeFields(const std::string& payload)
       if (equal != std::string::npos) {
         std::string value;
         for (size_t i = equal + 1; i < part.size(); ++i) {
-          if (part[i] == '%' && i + 2 < part.size()) {
-            const auto byte = std::stoi(part.substr(i + 1, 2), nullptr, 16);
-            value.push_back(static_cast<char>(byte));
-            i += 2;
+          if (part[i] == '%') {
+            // Application field payloads are intentionally lenient: a literal
+            // percent or a malformed escape must not tear down the NDN face
+            // thread.  encodeFields() emits canonical %HH escapes, but values
+            // can also come from external providers and may contain a literal
+            // percent.  Preserve malformed input verbatim and decode only
+            // well-formed hexadecimal escapes.
+            if (i + 2 < part.size() &&
+                std::isxdigit(static_cast<unsigned char>(part[i + 1])) != 0 &&
+                std::isxdigit(static_cast<unsigned char>(part[i + 2])) != 0) {
+              const auto high = static_cast<unsigned char>(part[i + 1]);
+              const auto low = static_cast<unsigned char>(part[i + 2]);
+              const auto hexValue = [] (unsigned char ch) {
+                if (ch >= '0' && ch <= '9') return static_cast<unsigned char>(ch - '0');
+                if (ch >= 'a' && ch <= 'f') return static_cast<unsigned char>(ch - 'a' + 10);
+                return static_cast<unsigned char>(ch - 'A' + 10);
+              };
+              value.push_back(static_cast<char>((hexValue(high) << 4) | hexValue(low)));
+              i += 2;
+              continue;
+            }
           }
-          else {
-            value.push_back(part[i]);
-          }
+          value.push_back(part[i]);
         }
         fields[part.substr(0, equal)] = value;
       }
@@ -6815,6 +7234,25 @@ buildMavlinkMissionCountFrame(uint16_t count, const Fields& params)
   payload.push_back(targetSystem);
   payload.push_back(targetComponent);
   return buildMavlinkV1Frame(missionCountMsgId, missionCountCrcExtra,
+                             sourceSystem, sourceComponent, std::move(payload));
+}
+
+std::vector<uint8_t>
+buildMavlinkMissionClearAllFrame(const Fields& params)
+{
+  constexpr uint8_t missionClearAllMsgId = 45;
+  constexpr uint8_t missionClearAllCrcExtra = 232;
+  const auto targetSystem = fieldUint8Or(params, "target_system", 1);
+  const auto targetComponent = fieldUint8Or(params, "target_component", 1);
+  const auto sourceSystem = fieldUint8Or(params, "source_system", 255);
+  const auto sourceComponent = fieldUint8Or(params, "source_component", 190);
+
+  std::vector<uint8_t> payload;
+  payload.reserve(3);
+  payload.push_back(targetSystem);
+  payload.push_back(targetComponent);
+  payload.push_back(fieldUint8Or(params, "mission_type", 0));
+  return buildMavlinkV1Frame(missionClearAllMsgId, missionClearAllCrcExtra,
                              sourceSystem, sourceComponent, std::move(payload));
 }
 

@@ -532,6 +532,7 @@ class AutomaticCollaborationPlanTest(unittest.TestCase):
 
     def test_model_task_first_request_plans_after_signed_ack_snapshot(self):
         service_user = _AutomaticServiceUser(self.events)
+        lifecycle_events = []
         adapter = build_object_detection_adapter()
         task = InferenceTaskRef.from_adapter(adapter)
         application_input = adapter.task.encode_input(
@@ -569,6 +570,8 @@ class AutomaticCollaborationPlanTest(unittest.TestCase):
             artifact_publisher=_Publisher(self.events),
             budget=CandidateBudget(max_candidates=4, max_policy_ms=100),
             ack_timeout_ms=100,
+            lifecycle_observer=lambda milestone, fields: lifecycle_events.append(
+                (milestone, dict(fields))),
         )
         model = ModelRef(
             "example/detector",
@@ -618,6 +621,17 @@ class AutomaticCollaborationPlanTest(unittest.TestCase):
             commit["ack_closed_digest"],
             service_user.collaboration.closed.digest,
         )
+        self.assertEqual(
+            [item[0] for item in lifecycle_events],
+            ["REQUEST_SENT", "ACK_CLOSED", "GRAPH_READY",
+             "PLACEMENT_DECISION", "ARTIFACTS_READY", "PLAN_SEALED",
+             "SELECTION_COMMITTED"],
+        )
+        self.assertTrue(all(
+            fields["_requestId"] == "/request%2Fautomatic-1"
+            and fields["_attemptId"] == "attempt-1"
+            for _, fields in lifecycle_events
+        ))
         assignment_payloads = commit["assignment_payloads_by_role"]
         self.assertEqual(
             assignment_payloads["stage-0"],

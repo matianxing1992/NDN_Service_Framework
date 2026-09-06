@@ -1,4 +1,6 @@
 # Visual Studio Code
+# Isolated, matched NAC dependency for Spec179 official-merge qualification.
+.deps/nac-abe-spec179-official/
 .vscode/
 
 # Waf build system
@@ -23,6 +25,8 @@ docs/
 !docs/
 docs/*
 !docs/README.md
+!docs/architecture.md
+!docs/failure-log.md
 !docs/ndnsf-core-app-boundary.md
 !docs/NDNSF-DI-runtime-workflow.md
 !docs/NDNSF-REPO/
@@ -63,6 +67,15 @@ examples/python/NDNSF-DistributedInference/native_di_tracer/artifacts/qwen-nativ
 
 # Local experiment virtual environments
 Experiments/pythonEnv/
+
+# Local waf build output trees (clang/gcc/spec179 variants)
+/build-clang*/
+/build-gcc*/
+/build-spec179*/
+
+# Local experiment results (MiniNDN run keys are generated per campaign —
+# never commit; redacted evidence lives under specs/<n>/evidence/)
+/results/
 
 # Local Chinese README translations
 README_ch.md

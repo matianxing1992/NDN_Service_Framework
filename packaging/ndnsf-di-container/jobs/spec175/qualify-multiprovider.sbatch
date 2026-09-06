@@ -5,6 +5,11 @@
 #SBATCH --ntasks=1
 # The frozen Qwen3.6-27B subject was qualified on three RTX 6000 GPUs.
 #SBATCH --gres=gpu:rtx_6000:3
+# The three Qwen stages plus NFD/Controller/User/Provider processes have a
+# qualified 96-GiB host-memory envelope.  Do not fall back to Slurm's small
+# per-CPU default: that previously produced a memory-cgroup OOM before model
+# readiness.
+#SBATCH --mem=96G
 #SBATCH --time=01:00:00
 #SBATCH --output=%x-%j.out
 #SBATCH --error=%x-%j.err

@@ -309,6 +309,23 @@ BOOST_AUTO_TEST_CASE(StatefulTinyOnnxRunsTwoRolesWithPersistentState)
       secondOutputs, "convolution_state_out");
     token = expectedToken;
   }
+
+  const auto stage0Metrics = stage0.runtimeMetricsSnapshot();
+  const auto stage1Metrics = stage1.runtimeMetricsSnapshot();
+  BOOST_REQUIRE(stage0Metrics);
+  BOOST_REQUIRE(stage1Metrics);
+  BOOST_CHECK_GT(stage0Metrics->activationInputBytes, 0U);
+  BOOST_CHECK_GT(stage0Metrics->activationOutputBytes, 0U);
+  BOOST_CHECK_GT(stage1Metrics->activationInputBytes, 0U);
+  BOOST_CHECK_GT(stage1Metrics->activationOutputBytes, 0U);
+  BOOST_CHECK_EQUAL(stage0Metrics->stateRecomputes, expected.size());
+  BOOST_CHECK_EQUAL(stage1Metrics->stateRecomputes, expected.size());
+  BOOST_CHECK_EQUAL(stage0Metrics->stateInputHits, 0U);
+  BOOST_CHECK_EQUAL(stage1Metrics->stateInputHits, 0U);
+  BOOST_CHECK_EQUAL(stage0Metrics->stateDeviceToHostBytes, 0U);
+  BOOST_CHECK_EQUAL(stage0Metrics->stateHostToDeviceBytes, 0U);
+  BOOST_CHECK_EQUAL(stage1Metrics->stateDeviceToHostBytes, 0U);
+  BOOST_CHECK_EQUAL(stage1Metrics->stateHostToDeviceBytes, 0U);
 }
 
 BOOST_AUTO_TEST_CASE(StatefulTinyOnnxRunsWithCoordinatorMetadataAndMissingState)

@@ -42,6 +42,13 @@ def test_source_archive_excludes_host_binaries_and_build_output(tmp_path):
     assert "libndn-service-framework.pc.in" in names
     assert "packaging/ndnsf-di-container/jobs/spec175/workload.json" in names
     assert "scripts/build_spec175_workload.py" in names
+    assert "scripts/run_spec180_case.py" in names
+    assert "tests/fixtures/spec180/yolo26n/fixed-fixture.ppm" in names
+    assert "NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/yolo/reference.py" in names
+    assert "NDNSF-DistributedInference/cpp/adapters/onnx/CudaDeviceIdentity.hpp" in names
+    assert "tests/fixtures/spec180/fake-cuda-identity.cpp" not in names
+    assert "tests/fixtures/spec180/native-evidence-probe.cpp" not in names
+    assert "Experiments/NDNSF_DI_YoloAckDriven_Minindn.py" in names
     assert "examples/trust-schema.conf" in names
     assert "examples/python/NDNSF-DistributedInference/llm_pipeline/user.py" in names
     assert "examples/python/NDNSF-DistributedInference/llm_pipeline/provider.py" in names
@@ -49,6 +56,7 @@ def test_source_archive_excludes_host_binaries_and_build_output(tmp_path):
     assert not any(name.endswith((".so", ".a", ".o", ".pyc")) for name in names)
     assert not any("/build/" in f"/{name}/" for name in names)
     assert not any("/__pycache__/" in f"/{name}/" for name in names)
+
 
 
 def test_source_sealer_does_not_define_host_substrate_dependency_archives():

@@ -137,10 +137,17 @@ class QwenThreeStageSplitter:
         object.__setattr__(self, "tensor_degrees", degrees)
         object.__setattr__(self, "rank_artifact_digests_by_role", rank_artifacts)
         object.__setattr__(self, "redistributions", tuple(self.redistributions))
-        hybrid_plan = seal_qwen_hybrid_plan(
-            tensor_degrees=degrees,
-            redistributions=self.redistributions,
-        )
+        # A rank-one pre-split pipeline is the ordinary Spec175 V3 contract,
+        # not a hybrid plan.  Keep the richer HybridPlan only when the
+        # candidate actually has tensor parallel ranks or redistribution
+        # edges; otherwise its presence makes the downstream V3 boundary
+        # reject an otherwise valid one-Provider-per-role proposal.
+        hybrid_plan = None
+        if any(value != 1 for value in degrees) or self.redistributions:
+            hybrid_plan = seal_qwen_hybrid_plan(
+                tensor_degrees=degrees,
+                redistributions=self.redistributions,
+            )
         object.__setattr__(self, "_hybrid_plan", hybrid_plan)
 
     def enumerate_candidates(

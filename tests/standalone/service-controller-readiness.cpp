@@ -151,11 +151,12 @@ struct Environment
 
 // A deliberately small NFD protocol fixture. The production Faces use real
 // separate Unix streams; the fixture supplies RIB responses and forwards only
-// PUBPARAMS Interests/Data. It cannot accidentally satisfy same-Face Interests.
+// readiness/PUBPARAMS Interests/Data. It cannot satisfy same-Face Interests.
 class Forwarder
 {
 public:
-  enum class Mode { Normal, Silent, CachedData, BadSignature, WrongHop, RejectRegistration };
+  enum class Mode { Normal, Silent, CachedData, BadSignature, WrongHop,
+                    BadParameters, RejectRegistration, RejectPolicyStatusRegistration };
 
   struct Peer : std::enable_shared_from_this<Peer>
   {
@@ -255,7 +256,9 @@ public:
         const bool isRoot = params.getName() == cert.getIdentity();
         auto respond = [this, source, name, params, isRoot] {
           ndn::nfd::ControlResponse response;
-          const bool reject = mode == Mode::RejectRegistration && !isRoot;
+          const bool reject = (mode == Mode::RejectRegistration && !isRoot) ||
+            (mode == Mode::RejectPolicyStatusRegistration &&
+             params.getName() == ndn::Name(cert.getIdentity()).append("NDNSF").append("POLICY-STATUS"));
           response.setCode(reject ? 403 : 200).setText(reject ? "test registration denied" : "OK");
           response.setBody(params.wireEncode());
           ndn::Data data(name);
@@ -275,12 +278,15 @@ public:
         }
         return;
       }
-      require(ndn::Name(cert.getIdentity()).append("PUBPARAMS").isPrefixOf(name),
+      const bool parameters = ndn::Name(cert.getIdentity()).append("PUBPARAMS").isPrefixOf(name);
+      require(parameters || ndn::Name(cert.getIdentity()).append("NDNSF")
+                            .append("READINESS").isPrefixOf(name),
               "unexpected fixture Interest");
       ++probeInterests;
       require(source != controllerPeer, "probe was expressed on the authority connection");
       require(interest.getHopLimit() == 1, "probe must stop at the local NFD");
-      require(interest.getMustBeFresh() && interest.getCanBePrefix(), "wrong probe selectors");
+      require(interest.getMustBeFresh() && interest.getCanBePrefix() == !parameters,
+              "wrong probe selectors");
       if (mode == Mode::Silent) {
         return;
       }
@@ -309,6 +315,11 @@ public:
     else if (packet.type() == ndn::tlv::Data) {
       require(source == controllerPeer && probePeer != nullptr, "unexpected fixture Data");
       ndn::Data data(packet);
+      if (mode == Mode::BadParameters &&
+          ndn::Name(cert.getIdentity()).append("PUBPARAMS").isPrefixOf(data.getName())) {
+        data.setContent("wrong bytes under the current generation");
+        keys.sign(data, ndn::security::signingByCertificate(cert));
+      }
       if (mode == Mode::BadSignature) {
         keys.sign(data, ndn::security::signingWithSha256());
       }
@@ -492,7 +503,7 @@ void realNfd(Environment& env)
   ndn::Face face(nullptr, keys);
   ndn::ValidatorConfig validator(face);
   Controller controller(face, cert, validator, env.root + "/empty.policies");
-  const auto prefix = ndn::Name(cert.getIdentity()).append("PUBPARAMS").append("readiness");
+  const auto prefix = ndn::Name(cert.getIdentity()).append("NDNSF").append("READINESS");
   std::set<ndn::Name> receivedNames;
   ndn::ScopedInterestFilterHandle observed = face.setInterestFilter(prefix,
     [&](const ndn::InterestFilter&, const ndn::Interest& interest) {
@@ -527,7 +538,11 @@ void realNfd(Environment& env)
           requesters.insert(match[1].str());
         if (std::regex_search(line, match, outInterest)) authorities.insert(match[1].str());
       }
-      if (line.find("data=" + name.toUri() + "/") != std::string::npos) {
+      const auto dataMarker = "data=" + name.toUri();
+      const auto dataOffset = line.find(dataMarker);
+      const auto dataEnd = dataOffset == std::string::npos ? 0 : dataOffset + dataMarker.size();
+      if (dataOffset != std::string::npos &&
+          (dataEnd == line.size() || std::isspace(static_cast<unsigned char>(line[dataEnd])))) {
         if (std::regex_search(line, match, inData)) dataSenders.insert(match[1].str());
         if (std::regex_search(line, match, outData)) dataReceivers.insert(match[1].str());
       }
@@ -645,6 +660,11 @@ int main(int argc, char** argv)
       contains(failure(*f.controller), "prefix registration failed");
       f.drain();
     }},
+    {"policy-status-registration-rejected", [&] {
+      Fixture f(env, Mode::RejectPolicyStatusRegistration);
+      contains(failure(*f.controller), "prefix registration failed");
+      f.drain();
+    }},
     {"cached-data-without-authority", [&] {
       Fixture f(env, Mode::CachedData);
       contains(failure(*f.controller), "did not reach the authority Face");
@@ -659,6 +679,11 @@ int main(int argc, char** argv)
     {"wrong-hop", [&] {
       Fixture f(env, Mode::WrongHop);
       contains(failure(*f.controller), "did not reach the authority Face");
+      f.drain();
+    }},
+    {"wrong-current-parameters", [&] {
+      Fixture f(env, Mode::BadParameters);
+      contains(failure(*f.controller), "invalid current parameters");
       f.drain();
     }},
     {"timeout-without-hot-loop", [&] {

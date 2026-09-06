@@ -11,6 +11,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "Experiments/spec175_repo_bootstrap.py"
+NATIVE_BINDING = ROOT / "pythonWrapper/src/ndnsf/_ndnsf.cpp"
 
 
 def _module():
@@ -113,3 +114,53 @@ def test_publication_start_barrier_arguments_are_atomic():
 
     with pytest.raises(ValueError, match="provided together"):
         helper.wait_for_publication_start(args)
+
+
+def test_initial_sync_wait_occurs_after_backend_creation(monkeypatch):
+    helper = _module()
+    events = []
+    monkeypatch.setattr(helper.time, "sleep", lambda value: events.append(value))
+
+    helper.wait_for_initial_sync(
+        SimpleNamespace(initial_sync_settle_s=5.0))
+
+    assert events == [5.0]
+
+
+@pytest.mark.parametrize("value", (-0.1, 60.1))
+def test_initial_sync_wait_rejects_unbounded_values(value):
+    helper = _module()
+
+    with pytest.raises(ValueError, match="between 0 and 60"):
+        helper.wait_for_initial_sync(
+            SimpleNamespace(initial_sync_settle_s=value))
+
+
+def test_commit_plan_completion_state_cannot_dangle_after_timeout():
+    """The asynchronous native commit must own its wait state past the call."""
+
+    source = NATIVE_BINDING.read_text(encoding="utf-8")
+    start = source.index("commitCollaborationPlan(")
+    end = source.index("\n  py::list\n  waitForVerifiedCollaborationData", start)
+    method = source[start:end]
+
+    assert "struct CommitState" in method
+    assert "std::make_shared<CommitState>()" in method
+    assert "state]() mutable" in method
+    assert "&mutex, &cv, &done, &result, &error" not in method
+
+
+def test_commit_plan_completion_state_publishes_result_under_state_lock():
+    """Result/error publication must share the wait predicate's mutex."""
+
+    source = NATIVE_BINDING.read_text(encoding="utf-8")
+    start = source.index("commitCollaborationPlan(")
+    end = source.index("\n  py::list\n  waitForVerifiedCollaborationData", start)
+    method = source[start:end]
+    callback_start = method.index("state]() mutable")
+    callback = method[callback_start:]
+
+    lock_start = callback.index("std::lock_guard<std::mutex> lock(state->mutex)")
+    lock_body = callback[lock_start:callback.index("state->cv.notify_one()", lock_start)]
+    assert "state->result =" in lock_body
+    assert "state->error =" in lock_body

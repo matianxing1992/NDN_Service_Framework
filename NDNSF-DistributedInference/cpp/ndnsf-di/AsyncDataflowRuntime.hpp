@@ -164,6 +164,10 @@ struct RoleSpec
   // coordinator defers this commit until its token/feedback publication has
   // also been accepted.
   bool deferStateCommit = false;
+  // Request-scoped native streamed execution. CUDA adapters retain state in
+  // their own device bindings and expose only an opaque Provider-local handle;
+  // CPU adapters continue to use the ordinary host-tensor representation.
+  bool streamingStateExecution = false;
 };
 
 struct RoleExecutionContext

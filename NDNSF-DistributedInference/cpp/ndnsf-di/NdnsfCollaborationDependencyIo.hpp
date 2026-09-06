@@ -22,7 +22,7 @@ public:
   explicit NdnsfCollaborationDependencyIo(
     ndn_service_framework::ServiceProvider::CollaborationContext& ctx,
     int fetchTimeoutMs = 30000,
-    std::size_t maxSegmentSize = 7000,
+    std::size_t maxSegmentSize = 7600,
     int freshnessMs = 60000,
     std::shared_ptr<ProviderGroupCoordinator> groupCoordinator = nullptr,
     std::shared_ptr<ProtectedRuntime> protectedRuntime = nullptr);
@@ -44,7 +44,7 @@ public:
 private:
   ndn_service_framework::ServiceProvider::CollaborationContext& m_ctx;
   int m_fetchTimeoutMs = 30000;
-  std::size_t m_maxSegmentSize = 7000;
+  std::size_t m_maxSegmentSize = 7600;
   int m_freshnessMs = 60000;
   std::shared_ptr<ProviderGroupCoordinator> m_groupCoordinator;
   std::shared_ptr<ProtectedRuntime> m_protectedRuntime;

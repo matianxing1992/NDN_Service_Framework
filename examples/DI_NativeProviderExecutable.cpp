@@ -6,6 +6,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedProvider.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedArtifactStore.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderOfferV3.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeStandaloneTokenizer.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeYoloMergeRunner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ExecutionLeaseService.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderReadiness.hpp"
@@ -96,6 +97,10 @@ struct Options
   std::string roles = "all";
   std::string artifactReferencesPath;
   std::string artifactCacheDir = "/tmp/ndnsf-di-native-artifacts";
+  // Deployment-local standalone tokenizer.  It is deliberately configured
+  // outside the Selection wire contract and bound to the authenticated
+  // tokenizer digest only after Selection.
+  std::string tokenizerJson;
   std::string repoServiceName = "/NDNSF/DistributedRepo";
   int repoFetchTimeoutMs = 30000;
   int repoAckTimeoutMs = 500;
@@ -708,6 +713,9 @@ parseArgs(int argc, char** argv)
     else if (arg == "--artifact-cache-dir") {
       options.artifactCacheDir = readValue();
     }
+    else if (arg == "--tokenizer-json") {
+      options.tokenizerJson = readValue();
+    }
     else if (arg == "--repo-service") {
       options.repoServiceName = readValue();
     }
@@ -794,6 +802,12 @@ parseArgs(int argc, char** argv)
   if (options.manifestPath.empty()) {
     throw std::invalid_argument("--manifest is required");
   }
+  if (options.tokenizerJson.empty()) {
+    if (const char* tokenizer = std::getenv("NDNSF_DI_TOKENIZER_JSON");
+        tokenizer != nullptr && *tokenizer != '\0') {
+      options.tokenizerJson = tokenizer;
+    }
+  }
   if (options.wiringCheckOnly && !options.checkOnly) {
     throw std::invalid_argument("--wiring-check-only requires --check-only");
   }
@@ -846,7 +860,6 @@ withExecutionEvidenceContext(std::map<std::string, NativeModelRunnerSpec> specs,
   const auto planDigest = sha256File(options.planPath);
   const auto manifestDigest = sha256File(options.manifestPath);
   const auto* profileRoot = std::getenv("NDNSF_DI_ORT_PROFILE_PREFIX");
-  const auto* gpuUuid = std::getenv("NDNSF_DI_GPU_UUID");
   for (auto& item : specs) {
     auto& spec = item.second;
     spec.metadata["evidence.providerName"] = options.providerName;
@@ -858,9 +871,6 @@ withExecutionEvidenceContext(std::map<std::string, NativeModelRunnerSpec> specs,
     std::ifstream artifact(spec.path, std::ios::binary);
     spec.metadata["evidence.artifactDigest"] =
       spec.path.empty() || !artifact.good() ? manifestDigest : sha256File(spec.path);
-    if (gpuUuid != nullptr && *gpuUuid != '\0') {
-      spec.metadata["evidence.gpuUuid"] = gpuUuid;
-    }
     if (profileRoot != nullptr && *profileRoot != '\0') {
       auto provider = options.providerName;
       std::replace_if(provider.begin(), provider.end(), [] (unsigned char ch) {
@@ -947,6 +957,16 @@ aggregateExecutionEvidence(const std::vector<ExecutionEvidence>& items)
   std::sort(aggregate.roles.begin(), aggregate.roles.end());
   aggregate.roles.erase(std::unique(aggregate.roles.begin(), aggregate.roles.end()),
                         aggregate.roles.end());
+  if (items.size() > 1) {
+    // Readiness aggregation may contain different requests or old role
+    // snapshots. It is not one per-request/per-profile execution observation.
+    aggregate.executionCompleted = false;
+    aggregate.exactForwardCacheHit = false;
+    aggregate.requestId.clear();
+    aggregate.attemptEpoch = 0;
+    aggregate.profileRequestId.clear();
+    aggregate.profileAttemptEpoch = 0;
+  }
   aggregate.validate();
   return aggregate;
 }
@@ -1131,6 +1151,7 @@ printUsage(const char* program)
     << "[--trust-schema <path>] [--bootstrap-token <token>] "
     << "[--artifact-references <json>] "
     << "[--artifact-cache-dir <dir>] [--repo-service <service>] "
+    << "[--tokenizer-json <path>] "
     << "[--repo-fetch-timeout-ms <ms>] [--repo-ack-timeout-ms <ms>] "
     << "[--repo-permission-wait-ms <ms>] [--wiring-check-only] "
     << "[--permission-wait-ms <ms>] "
@@ -1636,6 +1657,17 @@ main(int argc, char** argv)
             // Serving prepares a runner only after authenticated Selection.
             // Model adapters supply a spec; observations are bound once below.
             config.allowPreassembledV3Compatibility = false;
+            config.requireGenerationTextOutput = true;
+            if (!options.tokenizerJson.empty()) {
+              const auto tokenizerPath = options.tokenizerJson;
+              config.generationTextDecoderFactory =
+                [tokenizerPath](const std::string& tokenizerDigest) {
+                  NativeStandaloneTokenizerOptions tokenizerOptions;
+                  tokenizerOptions.tokenizerPath = tokenizerPath;
+                  return makeNativeStandaloneTokenizerDecoder(
+                    std::move(tokenizerOptions), tokenizerDigest);
+                };
+            }
             const auto assemblyCacheDir = options.artifactCacheDir;
             const auto assemblyProviderIdentity = options.providerName;
             config.runnerPreparationFactory =

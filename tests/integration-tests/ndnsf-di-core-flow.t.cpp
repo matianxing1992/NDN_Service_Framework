@@ -4,8 +4,10 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/DependencyWaitScheduler.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ExecutionEvidence.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/OnnxRuntimeModelRunner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeStandaloneTokenizer.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderGroupCoordinator.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
 #include "ndn-service-framework/HybridMessageCrypto.hpp"
@@ -28,6 +30,7 @@
 #include <map>
 #include <mutex>
 #include <set>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -709,27 +712,8 @@ runNativeIngressCase(bool mismatch)
                         encryptedDataName.toUri() + ";";
         assignment.opaquePayload = ndn::Buffer(
           reinterpret_cast<const uint8_t*>(text.data()), text.size());
-        ServiceSelectionMessage selection;
-        selection.setRequestIDs({requestId.toUri()});
-        selection.setAttempt(1);
-        SelectionProviderEntry entry;
-        entry.providerName = providerName;
-        entry.assignmentPayload = encodeCollaborationAssignmentEnvelope(assignment);
-        selection.addProviderEntry(entry);
-        const auto selectionName = makeServiceSelectionNameV2(
-          requesterName, providerName, serviceName, requestId);
-        const auto selectionBlock = selection.WireEncode();
-        const auto encryptedSelection = makeTestHybridPublication(
-          selectionName, serviceName, requestId, requesterName, "SELECTION",
-          ndn::Buffer(selectionBlock.data(), selectionBlock.size()));
-        environment.provider().cacheHybridReceiveKeyForTest(
-          encryptedSelection.key.keyId,
-          encryptedSelection.key.epochId,
-          encryptedSelection.key.key);
-        environment.userPubSub().publish(
-          selectionName,
-          ndn::span<const uint8_t>(encryptedSelection.wire.data(),
-                                   encryptedSelection.wire.size()));
+        BOOST_REQUIRE(environment.user().setSelectionAssignmentPayloadForRequest(
+          requestId, providerName, encodeCollaborationAssignmentEnvelope(assignment)));
         return candidates;
       }),
     // Leave enough global deadline for assignment segmentation, native
@@ -1244,7 +1228,8 @@ public:
           false,
           0,
           std::move(payload),
-          candidate});
+          candidate,
+          {}});
     }
     return selected;
   }
@@ -1287,7 +1272,8 @@ public:
           false,
           0,
           std::move(payload),
-          candidate});
+          candidate,
+          {}});
     }
     return selected;
   }
@@ -1342,7 +1328,8 @@ public:
           false,
           0,
           assignmentIt->second,
-          *candidateIt});
+          *candidateIt,
+          {}});
     }
     return selected;
   }
@@ -1423,7 +1410,8 @@ public:
           0,
           assignment == m_selectionAssignmentByProvider.end()
             ? payload : assignment->second,
-          *candidateIt});
+          *candidateIt,
+          {}});
     }
     return selected;
   }
@@ -1543,21 +1531,42 @@ makeV3SelectionRoleJson(const std::string& logicalRole,
                         const std::string& recipeDigest,
                         const std::string& backend = "onnxruntime",
                         const std::string& device = "cpu:0",
-                        const std::string& roleKind = "TENSOR_RANK")
+                        const std::string& roleKind = "TENSOR_RANK",
+                        bool completeAssembly = false)
 {
   const auto deviceSet = (backend == "cpu" ||
                           (backend.size() > 4 &&
                            backend.compare(backend.size() - 4, 4, "-cpu") == 0))
     ? std::string("[]")
     : std::string("[\"") + device + "\"]";
-  return std::string("{\"adapter_id\":\"qwen-test\",") +
+  auto result = std::string("{\"adapter_id\":\"qwen-test\",") +
     "\"adapter_version\":\"1\",\"artifact_digest\":\"" +
     artifactDigest + "\",\"backend\":\"" + backend +
     "\",\"device_set\":" + deviceSet +
-    ",\"layer_begin\":0,\"layer_end\":1,\"rank\":" +
+    (roleKind == "COMPONENT_SET"
+      ? ",\"layer_begin\":0,\"layer_end\":0,\"rank\":"
+      : ",\"layer_begin\":0,\"layer_end\":1,\"rank\":") +
     std::to_string(rank) + ",\"recipe_digest\":\"" + recipeDigest +
     "\",\"role\":\"" + logicalRole +
-    "\",\"role_kind\":\"" + roleKind + "\"}";
+    "\",\"role_kind\":\"" + roleKind + "\"";
+  if (roleKind == "COMPONENT_SET" && !completeAssembly) {
+    result += ",\"node_indices\":[0]";
+  }
+  if (completeAssembly) {
+    result +=
+      ",\"model_manifest_digest\":\"sha256:" + std::string(64, '1') +
+      "\",\"artifact_profile_digest\":\"sha256:" + std::string(64, '2') +
+      "\",\"graph_digest\":\"sha256:" + std::string(64, '3') +
+      "\",\"canonical_initializer_digest\":\"sha256:" + std::string(64, '4') +
+      "\",\"adapter_descriptor_digest\":\"sha256:" + std::string(64, '5') +
+      "\",\"assembler_descriptor_digest\":\"sha256:" + std::string(64, '6') +
+      "\",\"backend_abi\":\"onnxruntime-cpu-v1\",\"node_indices\":[0]"
+      ",\"expected_inputs\":[{\"name\":\"x\",\"dtype\":\"float32\",\"shape\":[\"1\",\"3\"]}]"
+      ",\"expected_outputs\":[{\"name\":\"y\",\"dtype\":\"float32\",\"shape\":[\"1\",\"1\"]}]"
+      ",\"precision\":\"float32\",\"quantization\":\"none\",\"layout\":\"NCHW\",\"padding\":\"none\""
+      ",\"resource_envelope\":{\"maxSourceBytes\":1048576,\"maxAssembledBytes\":1048576,\"maxNodes\":64}";
+  }
+  return result + "}";
 }
 
 std::string
@@ -1600,6 +1609,34 @@ makeV3TensorEndpointJson(const std::string& producerNamespace,
     "\"source_kind\":\"ROLE\",\"target_layout_digest\":\"" +
     targetLayoutDigest + "\",\"tensor_digest\":\"" + tensorDigest +
     "\",\"tensor_id\":\"" + tensorId + "\"}";
+}
+
+// Fixtures declare ingress permission explicitly, just as the V3 sealer does.
+// A role-to-role edge, including TOKEN_FEEDBACK, never grants request input.
+std::string
+withApplicationInput(std::string dataflow, const std::string& requester,
+                     const std::string& requestId, const std::string& planDigest,
+                     const std::string& role, std::uint64_t attempt = 1)
+{
+  const auto identity = "APPLICATION_INPUT|" + requester + "|" + requestId +
+    "|" + planDigest + "|" + role + "|" + std::to_string(attempt);
+  const auto endpointDigest = sha256TensorBytes(
+    std::vector<std::uint8_t>(identity.begin(), identity.end()));
+  auto endpoint = makeV3TensorEndpointJson(
+    requester, requester, requestId, planDigest, "request-input", 0, "", 0,
+    role, "\"" + role + "\"", "request-input", planDigest, planDigest,
+    planDigest, "APPLICATION_INPUT", endpointDigest, planDigest, attempt);
+  const std::string source = "\"source_kind\":\"ROLE\"";
+  endpoint.replace(endpoint.find(source), source.size(),
+                   "\"source_kind\":\"APPLICATION_INPUT\"");
+  const std::string marker = "\"must_fetch\":[";
+  const auto offset = dataflow.find(marker);
+  if (offset == std::string::npos) {
+    throw std::invalid_argument("fixture dataflow has no must_fetch array");
+  }
+  const auto first = offset + marker.size();
+  dataflow.insert(first, endpoint + (dataflow[first] == ']' ? "" : ","));
+  return dataflow;
 }
 
 [[maybe_unused]] std::string
@@ -1694,6 +1731,51 @@ std::string
 spec175Digest(char value)
 {
   return "sha256:" + std::string(64, value);
+}
+
+std::string
+spec175JsonQuote(const std::string& value)
+{
+  std::string result;
+  result.reserve(value.size() + 2);
+  result.push_back('"');
+  for (const auto character : value) {
+    switch (character) {
+      case '\\': result += "\\\\"; break;
+      case '"': result += "\\\""; break;
+      case '\b': result += "\\b"; break;
+      case '\f': result += "\\f"; break;
+      case '\n': result += "\\n"; break;
+      case '\r': result += "\\r"; break;
+      case '\t': result += "\\t"; break;
+      default:
+        if (static_cast<unsigned char>(character) < 0x20) {
+          const char hex[] = "0123456789abcdef";
+          result += "\\u00";
+          result.push_back(hex[(static_cast<unsigned char>(character) >> 4) & 0x0f]);
+          result.push_back(hex[static_cast<unsigned char>(character) & 0x0f]);
+        }
+        else {
+          result.push_back(character);
+        }
+        break;
+    }
+  }
+  result.push_back('"');
+  return result;
+}
+
+std::string
+spec175EventOracle(const std::vector<std::string>& events)
+{
+  std::ostringstream result;
+  for (std::size_t index = 0; index < events.size(); ++index) {
+    if (index != 0) {
+      result << '|';
+    }
+    result << events[index];
+  }
+  return result.str();
 }
 
 std::string
@@ -1812,12 +1894,26 @@ makeSpec175GenerationContractJson(std::size_t maxGeneratedTokens,
                                   std::size_t operationStride,
                                   const std::string& samplingDigest,
                                   const std::string& tokenizerDigest,
-                                  const std::vector<std::int64_t>& committedPrefix = {})
+                                  const std::vector<std::int64_t>& committedPrefix = {},
+                                  const std::string& samplingMode = "Greedy",
+                                  double samplingTemperature = 0.0,
+                                  std::size_t samplingTopK = 1,
+                                  double samplingTopP = 1.0,
+                                  double samplingRepetitionPenalty = 1.0,
+                                  std::uint64_t samplingSeed = 1'750'001,
+                                  const std::vector<std::string>& stopStrings = {})
 {
   std::string committed;
   for (const auto token : committedPrefix) {
     if (!committed.empty()) committed += ',';
     committed += std::to_string(token);
+  }
+  std::string stops;
+  for (const auto& stop : stopStrings) {
+    if (!stops.empty()) {
+      stops += ',';
+    }
+    stops += spec175JsonQuote(stop);
   }
   return std::string("{\"mode\":\"TOKEN_STREAMING\",") +
     "\"max_generated_tokens\":" + std::to_string(maxGeneratedTokens) +
@@ -1827,7 +1923,15 @@ makeSpec175GenerationContractJson(std::size_t maxGeneratedTokens,
     "\"attention_kv_out\",\"recurrent_state_out\",\"convolution_state_out\"]," +
     "\"eos_token_ids\":[2],\"sampling_digest\":\"" + samplingDigest +
     "\",\"tokenizer_digest\":\"" + tokenizerDigest +
-    "\",\"committed_prefix_token_ids\":[" + committed +
+    "\",\"sampling_mode\":" + spec175JsonQuote(samplingMode) +
+    ",\"sampling_temperature\":" + std::to_string(samplingTemperature) +
+    ",\"sampling_top_k\":" + std::to_string(samplingTopK) +
+    ",\"sampling_top_p\":" + std::to_string(samplingTopP) +
+    ",\"sampling_repetition_penalty\":" +
+      std::to_string(samplingRepetitionPenalty) +
+    ",\"sampling_seed\":" + std::to_string(samplingSeed) +
+    ",\"stop_strings\":[" + stops +
+    "],\"committed_prefix_token_ids\":[" + committed +
     "],\"streaming_operation_stride\":" + std::to_string(operationStride) + "}";
 }
 
@@ -2688,7 +2792,7 @@ BOOST_AUTO_TEST_CASE(PreconfiguredEnvironmentRunsThreeProviderCustomSelection)
     }
     environment.userPubSub().subscribeToProducer(
         providerNode,
-        [&, index] (const ndn::svs::SVSPubSub::SubscriptionData& publication) {
+        [&] (const ndn::svs::SVSPubSub::SubscriptionData& publication) {
           if (auto parsedAck = parseRequestAckNameV2(publication.name)) {
             if (parsedAck->serviceName.equals(serviceName)) {
               ndn::Block ackBlock(publication.data);
@@ -3072,26 +3176,9 @@ BOOST_AUTO_TEST_CASE(ProductionIngressRunsEndToEndSelectionAssignmentResponse)
                   encodeCollaborationAssignmentEnvelope(assignment));
             }
 
-            ServiceSelectionMessage selection;
-            selection.setRequestIDs({requestId.toUri()});
-            selection.setAttempt(1);
-            SelectionProviderEntry entry;
-            entry.providerName = providerName;
-            entry.assignmentPayload = encodeOpaqueAssignmentSet(assignmentItems);
-            selection.addProviderEntry(entry);
-            const auto selectionName = makeServiceSelectionNameV2(
-                requesterName, providerName, serviceName, requestId);
+            BOOST_REQUIRE(environment.user().setSelectionAssignmentPayloadForRequest(
+              requestId, providerName, encodeOpaqueAssignmentSet(assignmentItems)));
             selectionObserved = true;
-            const auto selectionBlock = selection.WireEncode();
-            const auto encrypted = makeTestHybridPublication(
-                selectionName, serviceName, requestId, requesterName,
-                "SELECTION",
-                ndn::Buffer(selectionBlock.data(), selectionBlock.size()));
-            environment.provider().cacheHybridReceiveKeyForTest(
-                encrypted.key.keyId, encrypted.key.epochId, encrypted.key.key);
-            environment.userPubSub().publish(
-                selectionName,
-                ndn::span<const uint8_t>(encrypted.wire.data(), encrypted.wire.size()));
             return candidates;
           }),
       3000,
@@ -3295,22 +3382,8 @@ BOOST_AUTO_TEST_CASE(ProductionIngressRunsD2aAssignmentIntoTwoDeviceRuntime)
               assignmentItems.push_back(
                   encodeCollaborationAssignmentEnvelope(assignment));
             }
-            ServiceSelectionMessage selection;
-            selection.setRequestIDs({requestId.toUri()});
-            selection.setAttempt(1);
-            selection.addProviderEntry(SelectionProviderEntry{
-                providerName, {}, encodeOpaqueAssignmentSet(assignmentItems)});
-            const auto selectionName = makeServiceSelectionNameV2(
-                requesterName, providerName, serviceName, requestId);
-            const auto selectionBlock = selection.WireEncode();
-            const auto encrypted = makeTestHybridPublication(
-                selectionName, serviceName, requestId, requesterName, "SELECTION",
-                ndn::Buffer(selectionBlock.data(), selectionBlock.size()));
-            environment.provider().cacheHybridReceiveKeyForTest(
-                encrypted.key.keyId, encrypted.key.epochId, encrypted.key.key);
-            environment.userPubSub().publish(
-                selectionName,
-                ndn::span<const uint8_t>(encrypted.wire.data(), encrypted.wire.size()));
+            BOOST_REQUIRE(environment.user().setSelectionAssignmentPayloadForRequest(
+              requestId, providerName, encodeOpaqueAssignmentSet(assignmentItems)));
             return candidates;
           }),
       1000,
@@ -3803,7 +3876,8 @@ BOOST_AUTO_TEST_CASE(ProductionIngressReordersD2bSvsDataV1)
  */
 void
 runProductionNativeD2bCase(bool tamperCapability,
-                            bool streamed = false)
+                            bool streamed = false,
+                            bool usePostSelectionAssembly = false)
 {
   test::BootstrapProfile profile;
   profile.serviceName = ndn::Name("/Inference/D2bNativeE2e");
@@ -3901,6 +3975,7 @@ runProductionNativeD2bCase(bool tamperCapability,
   auto observedEvidence = std::make_shared<
     std::map<std::string, ExecutionEvidence>>();
   std::array<std::string, 2> selectionDigests;
+  std::array<std::atomic<size_t>, 2> preparationFactoryCalls{};
   std::mutex responseNamesMutex;
   std::set<std::string> responseNames;
   std::atomic<size_t> uniqueResponsePublications{0};
@@ -3926,15 +4001,43 @@ runProductionNativeD2bCase(bool tamperCapability,
     spec.role = role;
     spec.kind = "onnx-model";
     spec.backend = "onnxruntime";
-    spec.path = useRealOnnx
+    spec.path = usePostSelectionAssembly
+      ? "/integration-test/model.onnx"
+      : useRealOnnx
       ? std::string(realOnnxModel)
       : "/integration-test/d2b-native.onnx";
     spec.metadata["test.providerName"] = environment.provider(index).getName().toUri();
     spec.metadata["test.providerBootId"] = "d2b-native-boot-" + std::to_string(index);
     spec.metadata["test.planDigest"] = planDigest;
-    spec.metadata["test.artifactDigest"] =
+    const auto artifactDigest =
       "sha256:" + std::string(64, index == 0 ? 'a' : 'b');
+    const auto recipeDigest =
+      "sha256:" + std::string(64, index == 0 ? 'c' : 'e');
+    spec.metadata["test.artifactDigest"] = artifactDigest;
     spec.metadata["test.deviceId"] = "0";
+    if (usePostSelectionAssembly) {
+      spec.metadata["fragmentDigest"] = artifactDigest;
+      spec.metadata["recipeDigest"] = recipeDigest;
+      spec.metadata["modelManifestDigest"] =
+        "sha256:" + std::string(64, '1');
+      spec.metadata["artifactProfileDigest"] =
+        "sha256:" + std::string(64, '2');
+      spec.metadata["graphDigest"] = "sha256:" + std::string(64, '3');
+      spec.metadata["canonicalInitializerDigest"] =
+        "sha256:" + std::string(64, '4');
+      spec.metadata["adapterDescriptorDigest"] =
+        "sha256:" + std::string(64, '5');
+      spec.metadata["assemblerDescriptorDigest"] =
+        "sha256:" + std::string(64, '6');
+      spec.metadata["backendAbi"] = "onnxruntime-cpu-v1";
+      spec.metadata["precision"] = "float32";
+      spec.metadata["quantization"] = "none";
+      spec.metadata["layout"] = "NCHW";
+      spec.metadata["padding"] = "none";
+      spec.metadata["maxSourceBytes"] = "1048576";
+      spec.metadata["maxAssembledBytes"] = "1048576";
+      spec.metadata["maxNodes"] = "64";
+    }
     if (useRealOnnx) {
       spec.metadata["executionProvider"] = "cpu";
       spec.metadata["inputNames"] = "x";
@@ -3985,7 +4088,33 @@ runProductionNativeD2bCase(bool tamperCapability,
     config.fetchTimeoutMs = 3000;
     config.maxSegmentSize = 4096;
     config.freshnessMs = 60000;
-    config.allowPreassembledV3Compatibility = true;
+    config.allowPreassembledV3Compatibility = !usePostSelectionAssembly;
+    if (usePostSelectionAssembly) {
+      config.runnerPreparationFactory =
+        [&, index] (ServiceProvider::CollaborationContext& context,
+                    const NativeSelectionProjectionV3& projection,
+                    const std::shared_ptr<ProtectedRuntime>&) {
+          ++preparationFactoryCalls[index];
+          if (projection.canonicalArtifactName.empty() ||
+              projection.canonicalArtifactName !=
+                context.assignment().assignedArtifact.toUri() ||
+              projection.provider != context.localProvider().toUri() ||
+              projection.requestId != context.sessionId()) {
+            throw std::runtime_error(
+              "post-selection assembly factory received unbound projection");
+          }
+          const auto role = projection.executionRole.roleId;
+          if (role.empty() || role != context.role()) {
+            throw std::runtime_error(
+              "post-selection assembly factory received wrong local role");
+          }
+          // This deterministic factory stands in for the adapter's canonical
+          // source fetch/assembly helper.  The production implementation is
+          // the same runnerPreparationFactory seam; this gate proves that a
+          // V3 Selection cannot execute the startup preassembled runner.
+          return makeRunnerSpec(index, role);
+        };
+    }
     config.groupCoordinatorFactory =
       [&, index, localProvider = provider.getName().toUri()] (
           ServiceProvider::CollaborationContext& context,
@@ -4151,7 +4280,7 @@ runProductionNativeD2bCase(bool tamperCapability,
         ? "COMPONENT_SET" : "TENSOR_RANK";
       const auto roleJson = makeV3SelectionRoleJson(
         assignedRole, 0, artifactDigest, recipeDigest, "onnxruntime",
-        deviceSet, roleKind);
+        deviceSet, roleKind, usePostSelectionAssembly);
       const auto isProducer = assignedRole == "/Backbone";
       const auto isConsumer = assignedRole == "/Head/Shard/0";
       const auto dataflow = std::string("{\"attempt\":1,\"dataflow_digest\":\"") +
@@ -4168,7 +4297,10 @@ runProductionNativeD2bCase(bool tamperCapability,
       const auto text = makeV3SelectionProjectionJson(
         roleJson, assignedRole, assignedRole, 0, providerName.toUri(),
         requestId.toUri(), planDigest, selectionCapabilityHex,
-        dependenciesJson, dataflow, artifactDigest, deviceSet);
+        dependenciesJson, (isProducer || assignedRole == "/Aux")
+          ? withApplicationInput(dataflow, requesterName.toUri(), requestId.toUri(),
+                                 planDigest, assignedRole) : dataflow,
+        artifactDigest, deviceSet, {}, 0, assignedRole == "/Aux" ? 0 : 1);
       CollaborationAssignmentEnvelope envelope;
       envelope.role = assignedRole;
       envelope.assignedArtifact = ndn::Name("/artifact").append(assignedRole);
@@ -4471,6 +4603,10 @@ runProductionNativeD2bCase(bool tamperCapability,
     BOOST_CHECK(observedEvidence->count(
       provider1Name.toUri() + ":/Head/Shard/0") != 0);
   }
+  if (!tamperCapability && usePostSelectionAssembly) {
+    BOOST_CHECK_EQUAL(preparationFactoryCalls[0].load(), streamed ? 1U : 2U);
+    BOOST_CHECK_EQUAL(preparationFactoryCalls[1].load(), 1U);
+  }
 }
 
 struct Spec175NativeTinyStreamResult
@@ -4498,6 +4634,7 @@ struct Spec175NativeTinyStreamResult
   std::size_t unselectedProviderExecutions = 0;
   std::size_t providerCoordinatorCompletions = 0;
   std::size_t providerFailures = 0;
+  std::vector<SelectionExecutionStatus> coreDeadlineFailures;
   bool permutedRoleProviderMap = false;
   std::vector<std::string> events;
   std::string finalPayload;
@@ -4549,6 +4686,15 @@ struct Spec175NativeTinyCaseOptions
   bool allowReplacement = false;
   bool suppressProviderPeerSyncAfterCommit = false;
   Spec175NativeTinyFault fault = Spec175NativeTinyFault::None;
+  std::string samplingMode = "Greedy";
+  double samplingTemperature = 0.0;
+  std::size_t samplingTopK = 1;
+  double samplingTopP = 1.0;
+  double samplingRepetitionPenalty = 1.0;
+  std::uint64_t samplingSeed = 1'750'001;
+  std::vector<std::string> stopStrings;
+  std::filesystem::path tokenizerPath;
+  std::string tokenizerDigest;
 };
 
 std::filesystem::path
@@ -4608,6 +4754,38 @@ findSpec175TinyRoleFixture(std::size_t providerCount)
   return {};
 }
 
+std::filesystem::path
+findSpec175TinyStandaloneTokenizer()
+{
+  const auto relative = std::filesystem::path(
+    "tests/fixtures/spec175/tiny-causal-lm-v1/standalone/tokenizer.json");
+  for (const auto& root : {std::filesystem::current_path(),
+                           std::filesystem::current_path().parent_path(),
+                           std::filesystem::current_path().parent_path().parent_path()}) {
+    const auto candidate = root / relative;
+    if (std::filesystem::is_regular_file(candidate)) {
+      return candidate;
+    }
+  }
+  return {};
+}
+
+std::filesystem::path
+findSpec175TinyUnicodeTokenizer()
+{
+  const auto relative = std::filesystem::path(
+    "tests/fixtures/spec175/tiny-causal-lm-v1/standalone/unicode/tokenizer.json");
+  for (const auto& root : {std::filesystem::current_path(),
+                           std::filesystem::current_path().parent_path(),
+                           std::filesystem::current_path().parent_path().parent_path()}) {
+    const auto candidate = root / relative;
+    if (std::filesystem::is_regular_file(candidate)) {
+      return candidate;
+    }
+  }
+  return {};
+}
+
 ndn::Buffer
 makeSpec175TinyRequestPayload()
 {
@@ -4645,6 +4823,8 @@ runSpec175NativeTinyOneRoleCase()
     result.error = "Spec175 tiny one-role ONNX fixture is unavailable";
     return result;
   }
+  const auto tokenizerPath = findSpec175TinyStandaloneTokenizer();
+  BOOST_REQUIRE(!tokenizerPath.empty());
   ScopedSpec175CertifiedModels certifiedModels("i01");
   const auto certifiedModel = certifiedModels.materialize(fixture, 0);
 
@@ -4665,7 +4845,8 @@ runSpec175NativeTinyOneRoleCase()
   const std::string recipeDigest = "sha256:" + std::string(64, '4');
   const std::string samplingDigest =
     "sha256:1750001000000000000000000000000000000000000000000000000000000000";
-  const std::string tokenizerDigest = spec175Digest('8');
+  const std::string tokenizerDigest =
+    "sha256:bf0f0fa65dc5aafe690ee497b4c8e2abe408fb4788c5ef035964dc94f15ca5a6";
   const std::string providerBootId = "spec175-native-tiny-i01-boot";
   const auto makeCapabilityAssignment = [&] {
     return std::string("role=") + role +
@@ -4788,7 +4969,9 @@ runSpec175NativeTinyOneRoleCase()
     "\",\"terminal_response_owner\":true,\"wait_for\":[]}";
   const auto projectionJson = makeV3SelectionProjectionJson(
     roleJson, role, role, 0, providerName.toUri(), requestId.toUri(), planDigest,
-    providerCapabilityHex, dependenciesJson, dataflowJson, artifactDigest, "cpu:0",
+    providerCapabilityHex, dependenciesJson,
+    withApplicationInput(dataflowJson, requesterName.toUri(), requestId.toUri(),
+                         planDigest, role), artifactDigest, "cpu:0",
     makeSpec175GenerationContractJson(
       8, 1, samplingDigest, tokenizerDigest), 0, 4);
   std::map<std::string, ndn::Buffer> selectionAssignmentByProvider;
@@ -4820,6 +5003,13 @@ runSpec175NativeTinyOneRoleCase()
   handlerConfig.generationEosTokenIds = {2};
   handlerConfig.generationSamplingDigest =
     runnerSpec.metadata.at("samplingDigest");
+  handlerConfig.generationTextDecoderFactory =
+    [tokenizerPath] (const std::string& digest) {
+      NativeStandaloneTokenizerOptions options;
+      options.tokenizerPath = tokenizerPath.string();
+      return makeNativeStandaloneTokenizerDecoder(std::move(options), digest);
+    };
+  handlerConfig.requireGenerationTextOutput = true;
   handlerConfig.allowPreassembledV3Compatibility = true;
   auto cacheObservations = std::make_shared<
     std::vector<NativeEpochCoordinatorResult::CacheObservation>>();
@@ -5124,6 +5314,10 @@ runSpec175NativeTinyMultiProviderCase(std::size_t providerCount,
     result.error = "Spec175 tiny role ONNX fixture is unavailable";
     return result;
   }
+  const auto defaultTokenizerPath = findSpec175TinyStandaloneTokenizer();
+  const auto tokenizerPath = caseOptions.tokenizerPath.empty()
+    ? defaultTokenizerPath : caseOptions.tokenizerPath;
+  BOOST_REQUIRE(!tokenizerPath.empty());
   ScopedSpec175CertifiedModels certifiedModels(caseOptions.caseId);
 
   test::BootstrapProfile profile;
@@ -5285,7 +5479,10 @@ runSpec175NativeTinyMultiProviderCase(std::size_t providerCount,
   }
   const auto samplingDigest = std::string("sha256:") +
     "1750001000000000000000000000000000000000000000000000000000000000";
-  const auto tokenizerDigest = spec175Digest('8');
+  const auto defaultTokenizerDigest = std::string(
+    "sha256:bf0f0fa65dc5aafe690ee497b4c8e2abe408fb4788c5ef035964dc94f15ca5a6");
+  const auto tokenizerDigest = caseOptions.tokenizerDigest.empty()
+    ? defaultTokenizerDigest : caseOptions.tokenizerDigest;
 
   std::vector<GroupOperationV1> operations;
   // The multi-Provider tiny fixture uses a four-token causal run.  The
@@ -5513,10 +5710,16 @@ runSpec175NativeTinyMultiProviderCase(std::size_t providerCount,
       roleJson, role, role, roleIndex,
       environment.provider(providerIndex).getName().toUri(),
       projectionRequestId.toUri(), planDigest, projectedCapabilityHex,
-      dependenciesJson, dataflowJson, artifactDigest, "cpu:0",
+      dependenciesJson, roleIndex == 0
+        ? withApplicationInput(dataflowJson, requesterName.toUri(),
+                               projectionRequestId.toUri(), planDigest, role, attempt)
+        : dataflowJson, artifactDigest, "cpu:0",
       makeSpec175GenerationContractJson(
         maxGenerationEpochs, providerCount, samplingDigest,
-        tokenizerDigest, committedPrefix),
+        tokenizerDigest, committedPrefix, caseOptions.samplingMode,
+        caseOptions.samplingTemperature, caseOptions.samplingTopK,
+        caseOptions.samplingTopP, caseOptions.samplingRepetitionPenalty,
+        caseOptions.samplingSeed, caseOptions.stopStrings),
       roleIndex * stateRows, (roleIndex + 1) * stateRows, attempt);
     return ndn::Buffer(
       reinterpret_cast<const std::uint8_t*>(projection.data()),
@@ -5555,6 +5758,21 @@ runSpec175NativeTinyMultiProviderCase(std::size_t providerCount,
       "attention_kv_out", "recurrent_state_out", "convolution_state_out"};
     handlerConfig.generationEosTokenIds = {2};
     handlerConfig.generationSamplingDigest = samplingDigest;
+    handlerConfig.generationSamplingMode = caseOptions.samplingMode;
+    handlerConfig.generationSamplingTemperature = caseOptions.samplingTemperature;
+    handlerConfig.generationSamplingTopK = caseOptions.samplingTopK;
+    handlerConfig.generationSamplingTopP = caseOptions.samplingTopP;
+    handlerConfig.generationSamplingRepetitionPenalty =
+      caseOptions.samplingRepetitionPenalty;
+    handlerConfig.generationSamplingSeed = caseOptions.samplingSeed;
+    handlerConfig.generationStopStrings = caseOptions.stopStrings;
+    handlerConfig.generationTextDecoderFactory =
+      [tokenizerPath] (const std::string& digest) {
+        NativeStandaloneTokenizerOptions options;
+        options.tokenizerPath = tokenizerPath.string();
+        return makeNativeStandaloneTokenizerDecoder(std::move(options), digest);
+      };
+    handlerConfig.requireGenerationTextOutput = true;
     handlerConfig.allowPreassembledV3Compatibility = true;
     handlerConfig.epochCoordinatorCompletionObserver =
       std::make_shared<NativeProviderHandlerConfig::EpochCoordinatorCompletionObserver>(
@@ -5628,7 +5846,7 @@ runSpec175NativeTinyMultiProviderCase(std::size_t providerCount,
           ackCapabilityOffer.size());
         return decision;
       },
-      [nativeHandler = std::move(nativeHandler), &result, roleIndex,
+      [nativeHandler = std::move(nativeHandler), roleIndex,
        streamedContextByRole, streamedContextMutex] (
           ServiceProvider::CollaborationContext& context,
           const RequestMessage& request) mutable {
@@ -5671,6 +5889,21 @@ runSpec175NativeTinyMultiProviderCase(std::size_t providerCount,
         "attention_kv_out", "recurrent_state_out", "convolution_state_out"};
       handlerConfig.generationEosTokenIds = {2};
       handlerConfig.generationSamplingDigest = samplingDigest;
+      handlerConfig.generationSamplingMode = caseOptions.samplingMode;
+      handlerConfig.generationSamplingTemperature = caseOptions.samplingTemperature;
+      handlerConfig.generationSamplingTopK = caseOptions.samplingTopK;
+      handlerConfig.generationSamplingTopP = caseOptions.samplingTopP;
+      handlerConfig.generationSamplingRepetitionPenalty =
+        caseOptions.samplingRepetitionPenalty;
+      handlerConfig.generationSamplingSeed = caseOptions.samplingSeed;
+      handlerConfig.generationStopStrings = caseOptions.stopStrings;
+      handlerConfig.generationTextDecoderFactory =
+        [tokenizerPath] (const std::string& digest) {
+          NativeStandaloneTokenizerOptions options;
+          options.tokenizerPath = tokenizerPath.string();
+          return makeNativeStandaloneTokenizerDecoder(std::move(options), digest);
+        };
+      handlerConfig.requireGenerationTextOutput = true;
       handlerConfig.generationCommittedPrefixTokenIds = {4, 5, 6};
       handlerConfig.allowPreassembledV3Compatibility = true;
       handlerConfig.epochCoordinatorCompletionObserver =
@@ -5812,8 +6045,7 @@ runSpec175NativeTinyMultiProviderCase(std::size_t providerCount,
     finalProvider.setStreamPublicationInterceptorForTest(
       [fault = caseOptions.fault, publicationSuppressions,
        publicationReorders, publicationDuplicates,
-       providerTransportDetachments, heldPublication, &environment,
-       finalProviderIndex,
+       providerTransportDetachments, heldPublication,
        heldPublicationMutex, &finalProviderPubSub,
        &finalProviderIo] (const ndn::Data& data) {
         const auto parsed = parseInvocationEventName(data.getName());
@@ -5994,6 +6226,7 @@ runSpec175NativeTinyMultiProviderCase(std::size_t providerCount,
   }
   bool replacementStarted = false;
   std::size_t recoveryEvents = 0;
+  std::map<std::string, std::string> committedSelectionDigests;
   const auto commitPlan = [&] (const CollaborationAckClosure& closure) {
     trace("ack-closure request=" + closure.requestId.toUri() +
           " candidates=" + std::to_string(closure.candidates.size()));
@@ -6048,6 +6281,13 @@ runSpec175NativeTinyMultiProviderCase(std::size_t providerCount,
     try {
       result.planCommitted = environment.user().CommitCollaborationPlan(
         closure.requestId, closure.digest, std::move(collaborationPlan));
+      if (result.planCommitted &&
+          caseOptions.fault == Spec175NativeTinyFault::ExpiredDeadline) {
+        for (const auto& status :
+             environment.user().GetCollaborationStatusSnapshot(closure.requestId)) {
+          committedSelectionDigests[status.providerName.toUri()] = status.selectionDigest;
+        }
+      }
       if (result.planCommitted &&
           caseOptions.suppressProviderPeerSyncAfterCommit) {
         suppressProviderPeerSync->store(true, std::memory_order_release);
@@ -6188,9 +6428,25 @@ runSpec175NativeTinyMultiProviderCase(std::size_t providerCount,
     });
   BOOST_REQUIRE_EQUAL(returnedRequestId, requestId);
   const auto terminal = [&] {
+    // An already-expired request is rejected by Core before the native handler
+    // runs. Observe each committed Selection's real Provider terminal status;
+    // nativeFailureObserver must stay silent at this earlier boundary.
+    if (caseOptions.fault == Spec175NativeTinyFault::ExpiredDeadline) {
+      result.coreDeadlineFailures.clear();
+      for (std::size_t index = 0; index < providerCount; ++index) {
+        auto& provider = environment.provider(index);
+        const auto digest = committedSelectionDigests.find(provider.getName().toUri());
+        if (digest == committedSelectionDigests.end()) continue;
+        const auto status = provider.getSelectionExecutionStatus(digest->second);
+        if (status && status->state == SelectionExecutionState::Failed) {
+          result.coreDeadlineFailures.push_back(*status);
+        }
+      }
+    }
     const auto providerDone =
       providerFailures->load(std::memory_order_relaxed) +
-      providerCoordinatorCompletions->load(std::memory_order_relaxed) >= providerCount;
+      providerCoordinatorCompletions->load(std::memory_order_relaxed) +
+      result.coreDeadlineFailures.size() >= providerCount;
     if (caseOptions.fault == Spec175NativeTinyFault::ExpiredDeadline) {
       return providerDone &&
         (result.timedOut || result.failed || result.cancelled || result.completed);
@@ -6314,6 +6570,11 @@ BOOST_AUTO_TEST_CASE(ProductionNativeHandlersRunStreamedD2bRequestToFinalRespons
   runProductionNativeD2bCase(false, true);
 }
 
+BOOST_AUTO_TEST_CASE(ProductionNativeHandlersPrepareRolesAfterSelection)
+{
+  runProductionNativeD2bCase(false, false, true);
+}
+
 BOOST_AUTO_TEST_CASE(Spec175NativeTinyOnnxI01OneProvider)
 {
   const auto result = runSpec175NativeTinyOneRoleCase();
@@ -6331,6 +6592,12 @@ BOOST_AUTO_TEST_CASE(Spec175NativeTinyOnnxI01OneProvider)
                     << " failed=" << result.failed
                     << " timedOut=" << result.timedOut
                     << " events=" << result.events.size()
+                    << " oracleFinal=" << result.finalPayload
+                    << " oracleFirstEvent="
+                    << (result.events.empty() ? std::string() : result.events.front())
+                    << " oracleLastEvent="
+                    << (result.events.empty() ? std::string() : result.events.back())
+                    << " oracleEvents=" << spec175EventOracle(result.events)
                     << " error=" << result.error);
   BOOST_REQUIRE(result.ackClosed);
   BOOST_REQUIRE(result.planCommitted);
@@ -6354,6 +6621,11 @@ BOOST_AUTO_TEST_CASE(Spec175NativeTinyOnnxI01OneProvider)
               std::string::npos);
   BOOST_CHECK(result.finalPayload.find(
     "\"tokenIds\":[4,5,6,7,8,9,10,2]") != std::string::npos);
+  BOOST_CHECK(result.events.front().find(
+    "\"textDelta\":\"token-4\"") != std::string::npos);
+  BOOST_CHECK(result.finalPayload.find(
+    "\"text\":\"token-4 token-5 token-6 token-7 token-8 token-9 token-10 token-2\"") !=
+              std::string::npos);
 
   const std::vector<std::int64_t> expectedTokens{4, 5, 6, 7, 8, 9, 10, 2};
   std::vector<std::int64_t> cachedTokens;
@@ -6453,6 +6725,12 @@ BOOST_AUTO_TEST_CASE(Spec175NativeTinyOnnxI03FourProviderEpochCoordinator)
                     << result.providerCoordinatorCompletions
                     << " providerFailures=" << result.providerFailures
                     << " events=" << result.events.size()
+                    << " oracleFinal=" << result.finalPayload
+                    << " oracleFirstEvent="
+                    << (result.events.empty() ? std::string() : result.events.front())
+                    << " oracleLastEvent="
+                    << (result.events.empty() ? std::string() : result.events.back())
+                    << " oracleEvents=" << spec175EventOracle(result.events)
                     << " error=" << result.error);
   BOOST_REQUIRE_EQUAL(result.ackCandidates, 4U);
   BOOST_REQUIRE(result.ackClosed);
@@ -6478,6 +6756,11 @@ BOOST_AUTO_TEST_CASE(Spec175NativeTinyOnnxI03FourProviderEpochCoordinator)
   BOOST_CHECK(result.events.back().find("\"tokenId\":2") != std::string::npos);
   BOOST_CHECK(result.finalPayload.find(
     "\"tokenIds\":[4,5,6,7,8,9,10,2]") != std::string::npos);
+  BOOST_CHECK(result.events.front().find(
+    "\"textDelta\":\"token-4\"") != std::string::npos);
+  BOOST_CHECK(result.finalPayload.find(
+    "\"text\":\"token-4 token-5 token-6 token-7 token-8 token-9 token-10 token-2\"") !=
+              std::string::npos);
 }
 
 BOOST_AUTO_TEST_CASE(Spec175NativeTinyOnnxI04ReordersEventThreeAfterFour)
@@ -6657,10 +6940,15 @@ BOOST_AUTO_TEST_CASE(Spec175NativeTinyOnnxExpiredDeadlineCleansProviderState)
   BOOST_REQUIRE(result.planCommitted);
   BOOST_REQUIRE(!result.completed);
   BOOST_REQUIRE(result.timedOut || result.failed);
-  BOOST_REQUIRE_EQUAL(result.providerFailures, 2U);
+  BOOST_REQUIRE_EQUAL(result.providerFailures, 0U);
+  BOOST_REQUIRE_EQUAL(result.providerCoordinatorCompletions, 0U);
+  BOOST_REQUIRE_EQUAL(result.coreDeadlineFailures.size(), 2U);
+  for (const auto& status : result.coreDeadlineFailures) {
+    BOOST_CHECK_EQUAL(status.runningAtUs, 0U);
+    BOOST_CHECK(!status.selectionDigest.empty());
+    BOOST_CHECK(status.message.find("REQUEST_DEADLINE") != std::string::npos);
+  }
   BOOST_REQUIRE(result.events.empty());
-  BOOST_REQUIRE(result.providerFailureError.find("REQUEST_DEADLINE") !=
-                std::string::npos);
   BOOST_REQUIRE_EQUAL(result.decodeStateSnapshots.size(), 2U);
   for (const auto& state : result.decodeStateSnapshots) {
     BOOST_CHECK_EQUAL(state.commits, 0U);
@@ -6787,6 +7075,65 @@ BOOST_AUTO_TEST_CASE(Spec175NativeTinyOnnxI12ProviderUnavailableAfterEvent3WithR
   BOOST_REQUIRE_GE(result.publicationSuppressions, 1U);
   BOOST_CHECK(result.finalPayload.find(
     "\"tokenIds\":[4,5,6,7]") != std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(Spec175NativeTinyOnnxI16SeededUnicodeAndSplitStop)
+{
+  Spec175NativeTinyCaseOptions options;
+  options.caseId = "i16-seeded-unicode-stop";
+  options.samplingMode = "SeededTopKTopP";
+  options.samplingTemperature = 1.0;
+  options.samplingTopK = 3;
+  options.samplingTopP = 0.95;
+  options.samplingRepetitionPenalty = 1.0;
+  options.samplingSeed = 42;
+  options.stopStrings = {"好🙂"};
+  options.tokenizerPath = findSpec175TinyUnicodeTokenizer();
+  options.tokenizerDigest =
+    "sha256:90db6ef1a0f74a22133269b170a5a4c08a5a4c0d5a76a746614f779e5b2f2404";
+  BOOST_REQUIRE(!options.tokenizerPath.empty());
+
+  const auto result = runSpec175NativeTinyMultiProviderCase(4, std::move(options));
+  BOOST_TEST_MESSAGE("Spec175 I16 seeded-unicode-stop completed=" << result.completed
+                    << " failed=" << result.failed
+                    << " timedOut=" << result.timedOut
+                    << " providerCompletions="
+                    << result.providerCoordinatorCompletions
+                    << " providerFailures=" << result.providerFailures
+                    << " events=" << result.events.size()
+                    << " oracleFinal=" << result.finalPayload
+                    << " oracleFirstEvent="
+                    << (result.events.empty() ? std::string() : result.events.front())
+                    << " oracleLastEvent="
+                    << (result.events.empty() ? std::string() : result.events.back())
+                    << " oracleEvents=" << spec175EventOracle(result.events)
+                    << " error=" << result.error);
+  BOOST_REQUIRE(result.ackClosed);
+  BOOST_REQUIRE(result.planCommitted);
+  BOOST_REQUIRE(result.streamedContext);
+  BOOST_REQUIRE(!result.failed);
+  BOOST_REQUIRE(!result.timedOut);
+  BOOST_REQUIRE(result.completed);
+  BOOST_REQUIRE_EQUAL(result.providerCoordinatorCompletions, 4U);
+  BOOST_REQUIRE_EQUAL(result.providerFailures, 0U);
+  BOOST_REQUIRE_EQUAL(result.events.size(), 3U);
+  BOOST_CHECK(result.events[0].find("\"tokenId\":4") != std::string::npos);
+  BOOST_CHECK(result.events[0].find("\"textDelta\":\"你\"") !=
+              std::string::npos);
+  BOOST_CHECK(result.events[1].find("\"tokenId\":5") != std::string::npos);
+  BOOST_CHECK(result.events[1].find("\"textDelta\":\"好\"") !=
+              std::string::npos);
+  BOOST_CHECK(result.events[2].find("\"tokenId\":6") != std::string::npos);
+  BOOST_CHECK(result.events[2].find("\"textDelta\":\"🙂\"") !=
+              std::string::npos);
+  BOOST_CHECK(result.events[2].find("\"finishHint\":\"STOP_SEQUENCE\"") !=
+              std::string::npos);
+  BOOST_CHECK(result.finalPayload.find(
+    "\"tokenIds\":[4,5,6]") != std::string::npos);
+  BOOST_CHECK(result.finalPayload.find(
+    "\"finishReason\":\"stop_sequence\"") != std::string::npos);
+  BOOST_CHECK(result.finalPayload.find("\"text\":\"你好🙂\"") !=
+              std::string::npos);
 }
 
 BOOST_AUTO_TEST_CASE(Spec175NativeTinyOnnxI13ProviderUnavailableAfterEvent3NoReplacement)
@@ -7251,7 +7598,10 @@ BOOST_AUTO_TEST_CASE(ProductionNativeHandlersRunD2h121ToOracleResponse)
         const auto text = makeV3SelectionProjectionJson(
           roleJson, role, role, roleRank, providerNames[provider].toUri(),
           requestId.toUri(), planDigest, selectionCapabilityHex,
-          dependenciesJson, dataflow, artifactDigest(provider), "cpu:0");
+          dependenciesJson, role.rfind("S0R", 0) == 0
+          ? withApplicationInput(dataflow, requesterName.toUri(), requestId.toUri(),
+                                 planDigest, role) : dataflow,
+        artifactDigest(provider), "cpu:0");
         CollaborationAssignmentEnvelope envelope;
         envelope.role = role;
         envelope.assignedArtifact = ndn::Name("/artifact").append(role);
@@ -7759,7 +8109,10 @@ BOOST_AUTO_TEST_CASE(ProductionNativeHandlersRunD2h212ToCompleteOracleResponse)
       const auto text = makeV3SelectionProjectionJson(
         roleJson, role, role, roleRank, providerNames[provider].toUri(),
         requestId.toUri(), planDigest, selectionCapabilityHex,
-        dependenciesJson, dataflow, artifactDigest(provider), "cpu:0");
+        dependenciesJson, role.rfind("S0R", 0) == 0
+          ? withApplicationInput(dataflow, requesterName.toUri(), requestId.toUri(),
+                                 planDigest, role) : dataflow,
+        artifactDigest(provider), "cpu:0");
       CollaborationAssignmentEnvelope envelope;
       envelope.role = role;
       envelope.assignedArtifact = ndn::Name("/artifact").append(role);
@@ -7868,6 +8221,8 @@ BOOST_AUTO_TEST_CASE(ProductionIngressRunsD2hFrozenHeterogeneousMappings)
   }};
 
   for (const auto& [mappingLabel, mapping] : mappings) {
+    const auto mappingCopy = mapping;
+    const std::string mappingLabelCopy(mappingLabel);
     test::BootstrapProfile profile;
     profile.serviceName = ndn::Name("/Inference/D2hHybrid");
     profile.providerCount = 2;
@@ -7894,12 +8249,12 @@ BOOST_AUTO_TEST_CASE(ProductionIngressRunsD2hFrozenHeterogeneousMappings)
       environment.provider(index).setUseTokens(false);
       environment.provider(index).addCollaborationHandler(
           serviceName,
-          [&, index] (ServiceProvider::CollaborationContext& context,
+          [&, index, mappingCopy] (ServiceProvider::CollaborationContext& context,
                       const RequestMessage& request) {
             if (request.getPayload().size() != 11) {
               return;
             }
-            const auto& localRoles = mapping[index];
+            const auto& localRoles = mappingCopy[index];
             const auto& roleProviders = context.assignment().roleProviders;
             {
               std::lock_guard<std::mutex> lock(observedMutex);
@@ -7969,40 +8324,26 @@ BOOST_AUTO_TEST_CASE(ProductionIngressRunsD2hFrozenHeterogeneousMappings)
         std::vector<ndn::Name>{provider0Name, provider1Name}, serviceName,
         request, 200,
         ServiceUser::AckCandidatesHandler(
-            [&] (const std::vector<AckSelectionCandidate>& candidates) {
+            [&, mappingCopy, mappingLabelCopy] (const std::vector<AckSelectionCandidate>& candidates) {
               ackObserved = true;
               if (candidates.size() != 2) {
                 return candidates;
               }
               for (size_t index = 0; index < environment.providerCount(); ++index) {
                 std::vector<ndn::Buffer> assignmentItems;
-                for (const auto& role : mapping[index]) {
+                for (const auto& role : mappingCopy[index]) {
                   CollaborationAssignmentEnvelope assignment;
                   assignment.role = role;
                   assignment.assignedArtifact = ndn::Name("/artifact").append(role);
                   const std::string opaque = std::string("mapping=") +
-                                             mappingLabel + ";rank=" + role + ";";
+                                             mappingLabelCopy + ";rank=" + role + ";";
                   assignment.opaquePayload = ndn::Buffer(
                       reinterpret_cast<const uint8_t*>(opaque.data()), opaque.size());
                   assignmentItems.push_back(
                       encodeCollaborationAssignmentEnvelope(assignment));
                 }
-                ServiceSelectionMessage selection;
-                selection.setRequestIDs({requestId.toUri()});
-                selection.setAttempt(1);
-                selection.addProviderEntry(SelectionProviderEntry{
-                    providerNames[index], {}, encodeOpaqueAssignmentSet(assignmentItems)});
-                const auto selectionName = makeServiceSelectionNameV2(
-                    requesterName, providerNames[index], serviceName, requestId);
-                const auto selectionBlock = selection.WireEncode();
-                const auto encrypted = makeTestHybridPublication(
-                    selectionName, serviceName, requestId, requesterName,
-                    "SELECTION", ndn::Buffer(selectionBlock.data(), selectionBlock.size()));
-                environment.provider(index).cacheHybridReceiveKeyForTest(
-                    encrypted.key.keyId, encrypted.key.epochId, encrypted.key.key);
-                environment.userPubSub().publish(
-                    selectionName,
-                    ndn::span<const uint8_t>(encrypted.wire.data(), encrypted.wire.size()));
+                BOOST_REQUIRE(environment.user().setSelectionAssignmentPayloadForRequest(
+                  requestId, providerNames[index], encodeOpaqueAssignmentSet(assignmentItems)));
               }
               return candidates;
             }),
@@ -8182,27 +8523,9 @@ BOOST_AUTO_TEST_CASE(ProductionIngressRunsFourProviderRoleSplitRequestSelectionR
                   reinterpret_cast<const uint8_t*>(assignmentText.data()),
                   assignmentText.size());
 
-              ServiceSelectionMessage selection;
-              selection.setRequestIDs({requestId.toUri()});
-              selection.setAttempt(1);
-              SelectionProviderEntry entry;
-              entry.providerName = candidate.providerName;
-              entry.assignmentPayload =
-                  encodeCollaborationAssignmentEnvelope(assignment);
-              selection.addProviderEntry(entry);
-              const auto selectionName = makeServiceSelectionNameV2(
-                  requesterName, candidate.providerName, serviceName, requestId);
-              const auto selectionBlock = selection.WireEncode();
-              const auto encrypted = makeTestHybridPublication(
-                  selectionName, serviceName, requestId, requesterName,
-                  "SELECTION",
-                  ndn::Buffer(selectionBlock.data(), selectionBlock.size()));
-              environment.provider(providerIndex).cacheHybridReceiveKeyForTest(
-                  encrypted.key.keyId, encrypted.key.epochId, encrypted.key.key);
-              environment.userPubSub().publish(
-                  selectionName,
-                  ndn::span<const uint8_t>(encrypted.wire.data(),
-                                           encrypted.wire.size()));
+              BOOST_REQUIRE(environment.user().setSelectionAssignmentPayloadForRequest(
+                requestId, candidate.providerName,
+                encodeCollaborationAssignmentEnvelope(assignment)));
             }
             selectionPublished = true;
             return candidates;
@@ -8421,7 +8744,7 @@ BOOST_AUTO_TEST_CASE(PreconfiguredEnvironmentRunsFourProviderRoleSplitCollaborat
     }
     environment.userPubSub().subscribeToProducer(
         providerNode,
-        [&, index] (const ndn::svs::SVSPubSub::SubscriptionData& publication) {
+        [&] (const ndn::svs::SVSPubSub::SubscriptionData& publication) {
           if (const auto parsedAck = parseRequestAckNameV2(publication.name)) {
             if (parsedAck->serviceName.equals(serviceName)) {
               ndn::Block ackBlock(publication.data);

@@ -7,6 +7,7 @@
 #include <ndn-cxx/security/key-chain.hpp>
 #include <ndn-cxx/security/key-params.hpp>
 #include <ndn-cxx/util/logger.hpp>
+#include <ndn-cxx/util/scheduler.hpp>
 
 #include <algorithm>
 #include <atomic>
@@ -223,12 +224,22 @@ main(int argc, char** argv)
 {
   try {
     ndn::Face face;
+    ndn::Scheduler scheduler(face.getIoContext());
     const auto keyChainLockPath = userScopedLockPath("/tmp/ndnsf-keychain-init");
     KeyChainInitLock keyChainInitLock(keyChainLockPath.c_str());
     ndn::KeyChain keyChain;
 
     const std::string providerId = getOption(argc, argv, "--provider-id", "");
+    const std::string trustSchema = getOption(
+      argc, argv, "--trust-schema", "examples/trust-schema.conf");
+    const ndn::Name groupPrefix(
+      getOption(argc, argv, "--group-prefix", GROUP_PREFIX.toUri()));
+    const ndn::Name controllerPrefix(
+      getOption(argc, argv, "--controller-prefix", CONTROLLER_PREFIX.toUri()));
+    const ndn::Name providerRoot(
+      getOption(argc, argv, "--provider-root", PROVIDER_IDENTITY.toUri()));
     const bool benchmark = hasFlag(argc, argv, "--benchmark");
+    const bool streamBenchmark = hasFlag(argc, argv, "--stream");
     const bool performanceMode = hasFlag(argc, argv, "--performance-mode");
     auto perfLogGate = std::make_shared<SampledLogGate>(10);
     const bool useTokens = !hasFlag(argc, argv, "--disable-tokens");
@@ -240,8 +251,8 @@ main(int argc, char** argv)
     const bool expectLargeDataFailure = hasFlag(argc, argv, "--expect-large-data-failure");
     const std::string providerLabel = providerId.empty() ? "default" : providerId;
     const ndn::Name providerIdentity = providerId.empty()
-      ? PROVIDER_IDENTITY
-      : ndn::Name(PROVIDER_IDENTITY).append(providerId);
+      ? providerRoot
+      : ndn::Name(providerRoot).append(providerId);
     const std::string largeDataNameText =
       getOption(argc, argv, "--large-data-name", "");
     const std::string expectedLargeDataPlaintext =
@@ -274,10 +285,10 @@ main(int argc, char** argv)
       getOption(argc, argv, "--bootstrap-name", providerIdentity.toUri()));
 
     auto providerCert = getOrCreateIdentity(keyChain, providerIdentity);
-    auto controllerCert = getOrCreateIdentity(keyChain, CONTROLLER_PREFIX);
+    auto controllerCert = getOrCreateIdentity(keyChain, controllerPrefix);
     if (!bootstrapToken.empty()) {
       providerCert = ndn_service_framework::ensureControllerSignedCertificate(
-        face, keyChain, CONTROLLER_PREFIX, providerIdentity, bootstrapName, bootstrapToken);
+        face, keyChain, controllerPrefix, providerIdentity, bootstrapName, bootstrapToken);
     }
     keyChain.setDefaultIdentity(keyChain.getPib().getIdentity(providerIdentity));
     keyChainInitLock.unlock();
@@ -286,6 +297,7 @@ main(int argc, char** argv)
               << providerIdentity.toUri()
               << " providerId=" << providerLabel
               << " benchmark=" << benchmark
+              << " streamBenchmark=" << streamBenchmark
               << " performanceMode=" << performanceMode
               << " tokenMode=" << (useTokens ? "enabled" : "disabled")
               << " hybridMessageCrypto=enabled"
@@ -313,10 +325,10 @@ main(int argc, char** argv)
     }
     ndn_service_framework::ServiceProvider provider(
       face,
-      GROUP_PREFIX,
+      groupPrefix,
       providerCert,
       controllerCert,
-      "examples/trust-schema.conf");
+      trustSchema);
     provider.setPerformanceMode(performanceMode);
     provider.setUseTokens(useTokens);
     provider.setTimelineTrace(timelineTrace);
@@ -499,8 +511,74 @@ main(int argc, char** argv)
           return response;
         }),
       ndn_service_framework::ServiceProvider::ServiceInvocationMode::NormalAndTargeted);
+    if (streamBenchmark) {
+      provider.addStreamingHandler(
+        ndn::Name("/HELLO"),
+        ndn_service_framework::ServiceProvider::StreamingHandler(
+          [providerLabel](const ndn::Name&,
+                          const ndn::Name&,
+                          const ndn::Name&,
+                          const ndn::Name& requestId,
+                          const ndn_service_framework::RequestMessage& request,
+                          ndn_service_framework::StreamedResponseWriter<ndn::Buffer,
+                            ndn::Buffer>& writer) {
+            const auto payload = request.getPayload();
+            const std::string requestText(
+              reinterpret_cast<const char*>(payload.data()), payload.size());
+            if (requestText != "HELLO") {
+              writer.fail(ndn_service_framework::StreamedInvocationErrorCode::InvalidOptions,
+                          "unexpected streamed request payload");
+              return;
+            }
+            // Keep the stream active long enough for the scheduled Controller
+            // withdrawal to intersect publication and delivery.  Each event
+            // is committed through the real StreamedResponseWriter, so the
+            // user-side revocation fence—not a synthetic log—is observable.
+            for (int sequence = 1; sequence <= 20; ++sequence) {
+              if (writer.isCancelled()) return;
+              const std::string eventText =
+                "spec179-stream-event-" + std::to_string(sequence);
+              const ndn::Buffer event(
+                reinterpret_cast<const uint8_t*>(eventText.data()), eventText.size());
+              if (!writer.publish(event)) return;
+              NDN_LOG_INFO("SPEC179_STREAM_EVENT_PUBLISHED provider=" << providerLabel
+                           << " requestId=" << requestId.toUri()
+                           << " sequence=" << sequence);
+              std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            }
+            const std::string resultText = "spec179-stream-complete";
+            const ndn::Buffer result(
+              reinterpret_cast<const uint8_t*>(resultText.data()), resultText.size());
+            writer.finish(result, ndn_service_framework::StreamFinishReason::ApplicationComplete);
+            NDN_LOG_INFO("SPEC179_STREAM_COMPLETE provider=" << providerLabel
+                         << " requestId=" << requestId.toUri());
+          }));
+    }
     provider.init();
-    provider.fetchPermissionsFromController(CONTROLLER_PREFIX);
+    provider.fetchPermissionsFromController(controllerPrefix);
+
+    // Permission discovery is application-owned, including online grants
+    // after the initial bounded fetch has exhausted its retries.
+    const auto permissionRefetchAfterMs =
+        envSizeOption("NDNSF_PERMISSION_REFETCH_AFTER_MS", 0);
+    if (permissionRefetchAfterMs > 0) {
+      scheduler.schedule(ndn::time::milliseconds(permissionRefetchAfterMs),
+          [&provider, controllerPrefix] {
+        NDN_LOG_INFO("NDNSF_APP_PERMISSION_REFETCH");
+        provider.fetchPermissionsFromController(controllerPrefix);
+      });
+    }
+
+    const int runForMs = parseIntOption(argc, argv, "--run-for-ms", 0);
+    if (runForMs < 0) {
+      std::cerr << "--run-for-ms must be non-negative" << std::endl;
+      return 2;
+    }
+    if (runForMs > 0 && !largeDataFetchTest) {
+      scheduler.schedule(ndn::time::milliseconds(runForMs), [&face] {
+        face.getIoContext().stop();
+      });
+    }
 
     if (largeDataFetchTest) {
       if (largeDataNameText.empty()) {

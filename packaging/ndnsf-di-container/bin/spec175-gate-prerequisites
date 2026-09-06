@@ -1,0 +1,124 @@
+#!/usr/bin/env python3
+"""Fail-closed validation of cumulative Spec175 Tiger prerequisites."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+from pathlib import Path
+
+
+SCHEMA = "ndnsf-di-spec175-gate-prerequisite-v1"
+REQUIRED = {
+    "G4T": (),
+    "G5": ("G4T",),
+    "G6": ("G5",),
+    "G6C": ("G6",),
+    "G7": ("G5", "G6", "G6C"),
+}
+
+
+def sha256(path: Path) -> str:
+    return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _load(path: Path, label: str, errors: list[str]) -> dict:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        errors.append(f"{label}: unreadable: {exc}")
+        return {}
+    if not isinstance(value, dict):
+        errors.append(f"{label}: root must be an object")
+        return {}
+    return value
+
+
+def validate(closure_path: Path, gate: str,
+             prerequisite_values: list[str]) -> dict:
+    errors: list[str] = []
+    closure_path = closure_path.expanduser().resolve()
+    closure = _load(closure_path, "candidate closure", errors)
+    candidate_tuple = closure.get("candidateTuple", {})
+    if (closure.get("schema") != "ndnsf-di-spec175-candidate-closure-v1"
+            or closure.get("status") not in {"PASS", "PROMOTABLE"}
+            or closure.get("selectedGate") != gate
+            or not isinstance(candidate_tuple, dict)):
+        errors.append("candidate closure does not authorize this gate")
+    expected_identity = {
+        "sourceSealSha256": candidate_tuple.get("sourceSeal"),
+        "sifSha256": candidate_tuple.get("exactSif"),
+        "workloadSha256": candidate_tuple.get("workloadConfig"),
+        "modelManifestSha256": candidate_tuple.get("modelArtifacts"),
+    }
+    paths = {}
+    for value in prerequisite_values:
+        if "=" not in value:
+            errors.append("prerequisite must use GATE=PATH")
+            continue
+        name, raw_path = value.split("=", 1)
+        if name in paths:
+            errors.append(f"duplicate prerequisite: {name}")
+            continue
+        paths[name] = Path(raw_path).expanduser().resolve()
+    required = REQUIRED.get(gate)
+    if required is None:
+        errors.append(f"unknown selected gate: {gate}")
+        required = ()
+    if set(paths) != set(required):
+        errors.append(
+            f"{gate} requires exactly these prerequisites: {','.join(required)}")
+    records = {}
+    for name in required:
+        path = paths.get(name, Path("/missing-prerequisite"))
+        record = _load(path, f"{name} prerequisite", errors)
+        if (record.get("schemaVersion") != SCHEMA
+                or record.get("status") != "PASS"
+                or record.get("gate") != name
+                or record.get("candidateId") != closure.get("candidateId")):
+            errors.append(f"{name} prerequisite is not a candidate-bound PASS")
+        for field, expected in expected_identity.items():
+            if record.get(field) != expected:
+                errors.append(f"{name} prerequisite {field} mismatch")
+        evidence_path = Path(str(record.get("evidencePath", ""))).expanduser()
+        if not evidence_path.is_absolute():
+            evidence_path = path.parent / evidence_path
+        evidence_path = evidence_path.resolve()
+        expected_evidence = record.get("evidenceSha256")
+        if (not evidence_path.is_file() or not isinstance(expected_evidence, str)
+                or sha256(evidence_path) != expected_evidence):
+            errors.append(f"{name} prerequisite evidence is missing or changed")
+        records[name] = {
+            "path": str(path),
+            "sha256": sha256(path) if path.is_file() else "",
+            "evidencePath": str(evidence_path),
+        }
+    return {
+        "schemaVersion": "ndnsf-di-spec175-prerequisite-validation-v1",
+        "status": "PASS" if not errors else "FAIL", "gate": gate,
+        "candidateId": closure.get("candidateId"), "prerequisites": records,
+        "errors": errors,
+    }
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--candidate-closure", required=True, type=Path)
+    parser.add_argument("--gate", required=True)
+    parser.add_argument("--prerequisite", action="append", default=[])
+    parser.add_argument("--output", type=Path)
+    args = parser.parse_args()
+    result = validate(
+        args.candidate_closure, args.gate, list(args.prerequisite))
+    rendered = json.dumps(result, indent=2, sort_keys=True) + "\n"
+    if args.output is not None:
+        output = args.output.expanduser().resolve()
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(rendered, encoding="utf-8")
+    print(rendered, end="")
+    return 0 if result["status"] == "PASS" else 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

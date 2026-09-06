@@ -1,6 +1,8 @@
 #include "tests/unit-tests/generic-dynamic-api-fixture.hpp"
 
 #include <set>
+#include <future>
+#include <thread>
 
 namespace ndn_service_framework::test {
 
@@ -8,6 +10,70 @@ BOOST_AUTO_TEST_SUITE(GenericDynamicApi)
 BOOST_AUTO_TEST_SUITE(CollaborationStatus)
 
 namespace {
+
+class FencedCollaborationProvider : public LocalServiceProvider
+{
+public:
+  using LocalServiceProvider::LocalServiceProvider;
+
+  std::shared_ptr<std::promise<void>> holdFetchWorkers()
+  {
+    auto release = std::make_shared<std::promise<void>>();
+    const auto released = release->get_future().share();
+    for (int i = 0; i < 2; ++i) {
+      auto entered = std::make_shared<std::promise<void>>();
+      auto ready = entered->get_future();
+      BOOST_REQUIRE(m_fetchPool.post([entered, released] {
+        entered->set_value();
+        released.wait();
+      }));
+      BOOST_REQUIRE(ready.wait_for(std::chrono::seconds(1)) == std::future_status::ready);
+    }
+    return release;
+  }
+
+  bool hasScopeKeys(const ndn::Name& requestId)
+  {
+    std::lock_guard<std::mutex> lock(m_collaborationMutex);
+    return m_collaborationScopeKeysByRequest.count(requestId) != 0;
+  }
+
+  std::shared_ptr<std::promise<void>> holdHandlerWorker()
+  {
+    setHandlerThreads(1);
+    auto release = std::make_shared<std::promise<void>>();
+    const auto released = release->get_future().share();
+    auto entered = std::make_shared<std::promise<void>>();
+    auto ready = entered->get_future();
+    BOOST_REQUIRE(m_handlerPool.post([entered, released] {
+      entered->set_value();
+      released.wait();
+    }));
+    BOOST_REQUIRE(ready.wait_for(std::chrono::seconds(1)) == std::future_status::ready);
+    return release;
+  }
+
+  void dispatchForTest(const RequestMessage& request, CollaborationAssignment assignment)
+  {
+    const auto service = assignment.service;
+    BOOST_REQUIRE(dispatchCollaborationExecutionAsync(
+        ndn::Name("/user/fenced"), identity, service, ndn::Name("/request/fenced"),
+        request, std::move(assignment), "selection-fenced"));
+  }
+
+  void drainHandlerWorker()
+  {
+    auto drained = std::make_shared<std::promise<void>>();
+    auto ready = drained->get_future();
+    BOOST_REQUIRE(m_handlerPool.post([drained] { drained->set_value(); }));
+    BOOST_REQUIRE(ready.wait_for(std::chrono::seconds(1)) == std::future_status::ready);
+  }
+
+  std::shared_ptr<std::atomic<bool>> stoppingForTest() const
+  {
+    return m_fetchStopping;
+  }
+};
 
 class FixedDeferredSelection final : public ParticipantSelectionPolicy
 {
@@ -33,6 +99,7 @@ public:
       0,
       std::move(payload),
       candidate,
+      {},
     }};
   }
 };
@@ -68,6 +135,7 @@ public:
         0,
         std::move(payload),
         candidates[i],
+        {},
       });
     }
     return selected;
@@ -325,6 +393,232 @@ BOOST_AUTO_TEST_CASE(ExternalCollaborationAssignmentReferenceFailsClosedOnInvali
   BOOST_CHECK(!accepted);
   BOOST_CHECK_EQUAL(error,
                     "invalid external collaboration assignment reference");
+}
+
+BOOST_AUTO_TEST_CASE(ProviderDestructionCancelsQueuedAndActiveAssignmentFetches)
+{
+  for (const bool dispatch : {false, true}) {
+    ndn::security::KeyChain keyChain("pib-memory:", "tpm-memory:");
+    ndn::DummyClientFace face(keyChain);
+    const auto providerCert = makeRsaIdentity(keyChain, ndn::Name("/provider/cancel"));
+    const auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa"));
+    auto provider = std::make_unique<LocalServiceProvider>(
+      face, ndn::Name("/test/group"), providerCert, aaCert, "examples/trust-any.conf");
+    ServiceProvider::CollaborationAssignment assignment;
+    assignment.role = "stage-0";
+    assignment.service = ndn::Name("/generic/work");
+    for (int i = 0; i < 8; ++i) {
+      assignment.scopeKeyDataNames["missing-" + std::to_string(i)] =
+        ndn::Name("/missing/key").appendNumber(i);
+    }
+    bool callbackCalled = false;
+    provider->prepareCollaborationAssignmentForTest(
+      ndn::Name("/user/cancel"), ndn::Name("/request/cancel"), assignment,
+      [&](bool, std::string, ServiceProvider::CollaborationAssignment) {
+        callbackCalled = true;
+      });
+    if (dispatch) {
+      face.processEvents(ndn::time::milliseconds(100));
+      BOOST_REQUIRE(std::any_of(face.sentInterests.begin(), face.sentInterests.end(),
+        [](const auto& interest) {
+          return ndn::Name("/missing/key").isPrefixOf(interest.getName());
+        }));
+    }
+    const auto started = std::chrono::steady_clock::now();
+    provider.reset();
+    BOOST_CHECK(std::chrono::steady_clock::now() - started < std::chrono::seconds(1));
+    // Dispatch posted work after destruction, when raw Provider pointers are invalid.
+    face.processEvents(ndn::time::milliseconds(100));
+    BOOST_CHECK(!callbackCalled);
+  }
+}
+
+BOOST_AUTO_TEST_CASE(QueuedAssignmentFetchDoesNotResumeAfterAcceptedRevocation)
+{
+  ndn::security::KeyChain keyChain("pib-memory:", "tpm-memory:");
+  ndn::DummyClientFace face(keyChain);
+  const auto cert = makeRsaIdentity(keyChain, ndn::Name("/provider/fenced"));
+  const auto aa = makeRsaIdentity(keyChain, ndn::Name("/test/aa"));
+  FencedCollaborationProvider provider(face, ndn::Name("/test/group"), cert, aa,
+                                       "examples/trust-any.conf");
+  const ndn::Name service("/generic/work");
+  const ndn::Name requestId("/request/fenced");
+  const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::system_clock::now().time_since_epoch()).count();
+  PolicyStatusData status;
+  status.setServiceName(service);
+  status.setControllerVersion(ControllerVersion{1000, 1});
+  status.setValidity(now - 1, now + 60000);
+  status.setPolicyDigest("sha256:" + std::string(64, 'a'));
+  status.setControllerCertificate(aa.getName());
+  status.setSignature(ndn::Buffer{1});
+  BOOST_REQUIRE(provider.installControllerStatus(status));
+  auto release = provider.holdFetchWorkers();
+  struct ReleaseOnExit {
+    std::shared_ptr<std::promise<void>> signal;
+    ~ReleaseOnExit() { if (signal) signal->set_value(); }
+  } cleanup{release};
+  ServiceProvider::CollaborationAssignment assignment;
+  assignment.role = "stage-0";
+  assignment.service = service;
+  for (int i = 0; i < 4; ++i)
+    assignment.scopeKeyDataNames["key-" + std::to_string(i)] =
+        ndn::Name("/must-not-fetch/revoked").appendNumber(i);
+  size_t callbacks = 0;
+  bool accepted = true;
+  provider.prepareCollaborationAssignmentForTest(
+      ndn::Name("/user/fenced"), requestId, assignment,
+      [&](bool ready, std::string, ServiceProvider::CollaborationAssignment) {
+        ++callbacks;
+        accepted = ready;
+      });
+  RevocationTarget target;
+  target.kind = RevocationKind::IDENTITY;
+  target.targetIdentity = cert.getIdentity();
+  status.setControllerVersion(ControllerVersion{1000, 2});
+  status.addRevocation(target);
+  BOOST_REQUIRE(provider.installControllerStatus(status));
+  release->set_value();
+  cleanup.signal.reset();
+  face.processEvents(ndn::time::milliseconds(200));
+  BOOST_CHECK_EQUAL(callbacks, 1);
+  BOOST_CHECK(!accepted);
+  BOOST_CHECK(!provider.hasScopeKeys(requestId));
+  BOOST_CHECK(std::none_of(face.sentInterests.begin(), face.sentInterests.end(),
+      [](const auto& interest) {
+        return ndn::Name("/must-not-fetch/revoked").isPrefixOf(interest.getName());
+      }));
+}
+
+BOOST_AUTO_TEST_CASE(QueuedCollaborationHandlerRejectsChangedControllerVersion)
+{
+  ndn::security::KeyChain keyChain("pib-memory:", "tpm-memory:");
+  ndn::DummyClientFace face(keyChain);
+  const auto cert = makeRsaIdentity(keyChain, ndn::Name("/provider/fenced"));
+  const auto aa = makeRsaIdentity(keyChain, ndn::Name("/test/aa"));
+  FencedCollaborationProvider provider(face, ndn::Name("/test/group"), cert, aa,
+                                       "examples/trust-any.conf");
+  const ndn::Name service("/generic/work");
+  const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::system_clock::now().time_since_epoch()).count();
+  PolicyStatusData status;
+  status.setServiceName(service);
+  status.setControllerVersion(ControllerVersion{1000, 1});
+  status.setValidity(now - 1, now + 60000);
+  status.setPolicyDigest("sha256:" + std::string(64, 'a'));
+  status.setControllerCertificate(aa.getName());
+  status.setSignature(ndn::Buffer{1});
+  BOOST_REQUIRE(provider.installControllerStatus(status));
+  std::atomic<size_t> executions{0};
+  provider.addCollaborationHandler(service,
+      [&](ServiceProvider::CollaborationContext&, const RequestMessage&) { ++executions; });
+  auto release = provider.holdHandlerWorker();
+  struct ReleaseOnExit {
+    std::shared_ptr<std::promise<void>> signal;
+    ~ReleaseOnExit() { if (signal) signal->set_value(); }
+  } cleanup{release};
+  RequestMessage request;
+  request.setControllerVersion(ControllerVersion{1000, 1});
+  ServiceProvider::CollaborationAssignment assignment;
+  assignment.role = "stage-0";
+  assignment.service = service;
+  provider.dispatchForTest(request, assignment);
+  BOOST_REQUIRE_EQUAL(provider.getHandlerQueueDepth(), 1);
+  // Even a grant-only status advance invalidates the old request version.
+  status.setControllerVersion(ControllerVersion{1000, 2});
+  BOOST_REQUIRE(provider.installControllerStatus(status));
+  release->set_value();
+  cleanup.signal.reset();
+  provider.drainHandlerWorker();
+  BOOST_CHECK_EQUAL(executions.load(), 0);
+}
+
+BOOST_AUTO_TEST_CASE(ProviderDestructionFencesQueuedActiveAndPostedCollaborationHandlers)
+{
+  // 0: still queued; 1: running when destruction joins; 2: completed with its
+  // Face callback already queued when the Provider is destroyed; 3: rejected
+  // on dequeue with its failure publication callback already queued.
+  for (int mode = 0; mode < 4; ++mode) {
+    ndn::security::KeyChain keyChain("pib-memory:", "tpm-memory:");
+    ndn::DummyClientFace face(keyChain);
+    const auto cert = makeRsaIdentity(keyChain, ndn::Name("/provider/fenced"));
+    const auto aa = makeRsaIdentity(keyChain, ndn::Name("/test/aa"));
+    auto provider = std::make_unique<FencedCollaborationProvider>(
+        face, ndn::Name("/test/group"), cert, aa, "examples/trust-any.conf");
+    provider->setHandlerThreads(1);
+    const bool queued = mode == 0 || mode == 3;
+    auto release = queued ? provider->holdHandlerWorker() :
+        std::make_shared<std::promise<void>>();
+    struct ReleaseOnExit {
+      std::shared_ptr<std::promise<void>> signal;
+      ~ReleaseOnExit() {
+        try { signal->set_value(); }
+        catch (const std::future_error&) {} // The normal release already ran.
+      }
+    } cleanup{release};
+    std::shared_future<void> released;
+    if (mode == 1) released = release->get_future().share();
+    auto entered = std::make_shared<std::promise<void>>();
+    auto started = entered->get_future();
+    std::atomic<size_t> executions{0};
+    size_t lifecycleCallbacks = 0;
+    provider->setProviderRequestLifecycleCallback(
+        [&](const auto&) { ++lifecycleCallbacks; });
+    const ndn::Name service("/generic/work");
+    provider->addCollaborationHandler(service,
+        [&, entered, released](ServiceProvider::CollaborationContext&, const RequestMessage&) {
+          ++executions;
+          entered->set_value();
+          if (released.valid()) released.wait();
+        });
+    ServiceProvider::CollaborationAssignment assignment;
+    assignment.role = "stage-0";
+    assignment.service = service;
+    provider->dispatchForTest(RequestMessage{}, assignment);
+    if (queued) {
+      BOOST_REQUIRE_EQUAL(provider->getHandlerQueueDepth(), 1);
+    }
+    else {
+      BOOST_REQUIRE(started.wait_for(std::chrono::seconds(1)) == std::future_status::ready);
+    }
+    if (mode == 3) {
+      const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::system_clock::now().time_since_epoch()).count();
+      PolicyStatusData status;
+      status.setServiceName(service);
+      status.setControllerVersion(ControllerVersion{1000, 1});
+      status.setValidity(now - 1, now + 60000);
+      status.setPolicyDigest("sha256:" + std::string(64, 'a'));
+      status.setControllerCertificate(aa.getName());
+      status.setSignature(ndn::Buffer{1});
+      BOOST_REQUIRE(provider->installControllerStatus(status));
+      release->set_value();
+      provider->drainHandlerWorker();
+      provider.reset();
+    }
+    else if (mode == 2) {
+      provider->drainHandlerWorker();
+      provider.reset();
+    }
+    else {
+      const auto stopping = provider->stoppingForTest();
+      std::atomic<bool> observedStop{false};
+      std::thread unblock([stopping, release, &observedStop] {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        while (!stopping->load() && std::chrono::steady_clock::now() < deadline)
+          std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        observedStop = stopping->load();
+        release->set_value();
+      });
+      provider.reset();
+      unblock.join();
+      BOOST_CHECK(observedStop.load());
+    }
+    const auto callbacksBeforePump = lifecycleCallbacks;
+    face.processEvents(ndn::time::milliseconds(100));
+    BOOST_CHECK_EQUAL(lifecycleCallbacks, callbacksBeforePump);
+    BOOST_CHECK_EQUAL(executions.load(), queued ? 0 : 1);
+  }
 }
 
 BOOST_AUTO_TEST_CASE(DeferredCollaborationTracksAckDecryptBeforeClosure)
