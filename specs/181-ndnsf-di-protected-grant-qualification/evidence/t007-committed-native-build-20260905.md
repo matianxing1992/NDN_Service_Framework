@@ -61,3 +61,25 @@ Qwen 模型资格或 SIF 结果。源码闭包单元可以提交；随后必须�
 文档检查最初误用不存在的 `scripts/audit_speckit_structure.py`，只产生
 路径错误；维护入口为 speckit-audit skill 的 `scripts/` 下同名脚本。
 这不影响编译/测试结果，不构成协议尝试。
+
+## Committed Source Retry R4
+
+源码单元提交为 `6c7a0b23`。从该提交新建
+`spec181-candidate-checkout-20260905-r2/`，原 R1 检出保留；无主工作区
+dirty 源复制。configure PASS（7.049s），维护 native build 已越过 Waf
+建图，但在 `ServiceUser.cpp` 编译失败（退出 1）：首个错误为缺失
+`AckAuthenticationEvidence` 类型，随后包括未声明的
+`registerInterestFilterWithRetry`、`LargeDataPublishResult` 缺少
+`plaintextSize/contentDigest/authorizationScope` 等成员。原始日志位于
+`spec181-candidate-audit-20260905-r4/`；检出 tracked source 无修改。
+
+这确认提交的实现仍依赖主工作区未提交的 framework 声明/配套实现，
+不是协议结果，也不能用主工作区编译 PASS 覆盖。下一单元逐项核对
+编译错误对应的声明和实现依赖，定向补齐后再从新提交验证；T007 BLOCK。
+
+初步 diff 将该边界定位到 `ServiceUser.hpp`（ACK 认证来源与发布
+结果字段/方法签名）、`InvocationStream.hpp`（cancelFence）、
+`utils.hpp/.cpp`（注册重试声明/实现）；这些是预存工作区修改，尚未
+整体吸收入提交。后续必须核对配套调用链与定向验收，不能批量提交
+全部 dirty 文件。旧候选工具的 S1/SIF 平面绑定顺序仍属 A05 后续
+核查事项，本轮没有变更候选 schema 或运行封印/资格步骤。

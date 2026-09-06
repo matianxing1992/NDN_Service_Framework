@@ -74,6 +74,10 @@ R3 修复旧 fixture 将数字维度写为字符串的摘要构造，生产验�
 严格；定向集成 **7 cases / 160 assertions PASS**，增量构建 PASS。
 缺失 assembly 测试与 identity 修复完成定向验证；下一步从新提交
 重建干净 native 源，继续 A05 候选/有效配置闭包，整体仍为 5/12。
+该单元已提交 `6c7a0b23`。R4 干净检出 configure PASS 并越过 Waf
+建图，但 `ServiceUser.cpp` 编译暴露未提交的 framework 类型/函数
+声明依赖（首个为 AckAuthenticationEvidence）。已保留退出 1 的构建
+日志与检出；下一单元补齐精确源码依赖，T007 仍 BLOCK。
 下列较早的 4/12 与 partial 记载保留为修复过程，不覆盖本检查点。
 三种 grant 变异完成实际发布、Provider 拒绝与身份绑定；有效 grant
 仍完成 native Y-B 推理。正向控制发现并修复冷装配期间的固定 10 s

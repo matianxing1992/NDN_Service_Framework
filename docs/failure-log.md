@@ -19,6 +19,14 @@ failure's controlling boundary and invalidation effect are understood.
 
 ## Current failure index
 
+**Spec181 committed native build R4 (2026-09-05): BLOCK at C++ source closure.**
+Clean 6c7a0b23 passes configuration and Waf graph creation, then ServiceUser.cpp
+fails to compile: AckAuthenticationEvidence is missing, followed by missing
+registration and publish-result declarations. The implementation depends on
+uncommitted framework declarations/companions. Preserve R4 and close those
+exact dependencies before the next clean build; no protocol result exists.
+See [committed native closure](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t007-committed-native-build-20260905.md).
+
 **Spec181 committed native build (2026-09-05): BLOCK at Waf graph creation.**
 Detached d67de87a configures successfully, but tests/wscript references an
 untracked native assembly integration source. find_node returns None and Waf
