@@ -77,13 +77,19 @@ class CertifiedOnnxAssemblyRecipe:
             _require_sha256(getattr(self, field_name), field_name)
         if (self.schema != "ndnsf-di-certified-onnx-assembly-v1"
                 or not self.backend_abi or not self.role_kind
-                or self.layer_begin < 0 or self.layer_end <= self.layer_begin
+                or self.layer_begin < 0 or self.layer_end < 0
                 or not self.input_names or not self.output_names
                 or len(set(self.input_names)) != len(self.input_names)
                 or len(set(self.output_names)) != len(self.output_names)
                 or self.max_source_bytes <= 0 or self.max_assembled_bytes <= 0
                 or self.max_nodes <= 0):
             raise ValueError("invalid certified ONNX assembly recipe")
+        if self.role_kind == "COMPONENT_SET":
+            if self.layer_begin != 0 or self.layer_end != 0:
+                raise ValueError(
+                    "COMPONENT_SET recipe must not use a layer interval")
+        elif self.layer_end <= self.layer_begin:
+            raise ValueError("range/rank recipe requires a non-empty layer interval")
         indices = tuple(int(index) for index in self.node_indices)
         if (not indices or any(index < 0 for index in indices)
                 or indices != tuple(sorted(set(indices)))):
@@ -138,13 +144,21 @@ class CertifiedOnnxAssemblyRecipe:
         return "sha256:" + hashlib.sha256(wire).hexdigest()
 
     def validate_role_spec(self, role_spec) -> None:
-        if (role_spec.recipe_digest != self.digest
-                or role_spec.layer_begin != self.layer_begin
-                or role_spec.layer_end != self.layer_end
-                or role_spec.role_kind != self.role_kind
-                or tuple(getattr(role_spec, "node_indices", ()))
-                != self.node_indices):
-            raise ValueError("RoleAssemblySpec does not match certified recipe")
+        identity_mismatches = []
+        if role_spec.recipe_digest != self.digest:
+            identity_mismatches.append("recipe_digest")
+        if role_spec.layer_begin != self.layer_begin:
+            identity_mismatches.append("layer_begin")
+        if role_spec.layer_end != self.layer_end:
+            identity_mismatches.append("layer_end")
+        if role_spec.role_kind != self.role_kind:
+            identity_mismatches.append("role_kind")
+        if tuple(getattr(role_spec, "node_indices", ())) != self.node_indices:
+            identity_mismatches.append("node_indices")
+        if identity_mismatches:
+            raise ValueError(
+                "RoleAssemblySpec does not match certified recipe: "
+                + ",".join(identity_mismatches))
         exact_bindings = {
             "model_manifest_digest": self.model_manifest_digest,
             "artifact_profile_digest": self.artifact_profile_digest,
@@ -207,14 +221,26 @@ class CertifiedOnnxAssembly:
 def assemble_certified_onnx_model(
     canonical_model: bytes,
     *,
+    canonical_initializer: bytes | None = None,
     role_spec,
     recipe: CertifiedOnnxAssemblyRecipe,
 ) -> CertifiedOnnxAssembly:
-    """Extract, check, and load one certified role from canonical ONNX bytes."""
+    """Extract, check, and load one certified role from canonical ONNX bytes.
+
+    Canonical packages may keep initializers in the separately addressable
+    ``model.onnx.data`` object.  The graph and initializer bytes are supplied
+    independently so the caller can authenticate both objects before this
+    provider-local assembly boundary.
+    """
     recipe.validate_role_spec(role_spec)
     source = bytes(canonical_model)
     if not source or len(source) > recipe.max_source_bytes:
         raise ValueError("canonical ONNX source exceeds its resource envelope")
+    initializer_source = (None if canonical_initializer is None
+                          else bytes(canonical_initializer))
+    if (initializer_source is not None
+            and len(initializer_source) > recipe.max_source_bytes):
+        raise ValueError("canonical ONNX initializer exceeds its resource envelope")
     try:
         import onnx
     except ImportError as exc:  # pragma: no cover - deployment gate covers this
@@ -223,20 +249,60 @@ def assemble_certified_onnx_model(
     with tempfile.TemporaryDirectory(prefix="ndnsf-onnx-assembly-") as directory:
         root = Path(directory)
         source_path = root / "canonical.onnx"
+        initializer_path = root / "model.onnx.data"
         output_path = root / "assembled.onnx"
         source_path.write_bytes(source)
         try:
             encoded_model = onnx.load_model_from_string(source)
+            has_external_initializers = False
+            external_locations: set[str] = set()
+            for initializer in encoded_model.graph.initializer:
+                if initializer.data_location == onnx.TensorProto.EXTERNAL:
+                    has_external_initializers = True
+                    locations = [
+                        item.value for item in initializer.external_data
+                        if item.key == "location"
+                    ]
+                    if len(locations) != 1:
+                        raise ValueError("unsafe ONNX external-data location")
+                    location = Path(locations[0])
+                    if (location.is_absolute() or ".." in location.parts
+                            or not location.name):
+                        raise ValueError("unsafe ONNX external-data location")
+                    external_locations.add(locations[0])
+            if len(external_locations) > 1:
+                raise ValueError(
+                    "canonical ONNX uses multiple external-data locations")
+            # The transport contract carries one separately addressable
+            # initializer object. Normalize the exporter-specific filename to
+            # the fixed staging name expected by the helper; packing filenames
+            # are intentionally excluded from canonical identity.
             for initializer in encoded_model.graph.initializer:
                 if initializer.data_location == onnx.TensorProto.EXTERNAL:
                     locations = [
                         item.value for item in initializer.external_data
                         if item.key == "location"
                     ]
-                    if (len(locations) != 1 or locations[0] != "model.onnx.data"
-                            or Path(locations[0]).is_absolute()
-                            or ".." in Path(locations[0]).parts):
-                        raise ValueError("unsafe ONNX external-data location")
+                    if locations and locations[0] != "model.onnx.data":
+                        for item in initializer.external_data:
+                            if item.key == "location":
+                                item.value = "model.onnx.data"
+            if has_external_initializers:
+                try:
+                    normalized_source = encoded_model.SerializeToString(
+                        deterministic=True)
+                except TypeError:  # pragma: no cover - old protobuf compatibility
+                    normalized_source = encoded_model.SerializeToString()
+                source_path.write_bytes(normalized_source)
+            if has_external_initializers and initializer_source is None:
+                raise ValueError(
+                    "canonical ONNX external initializer bytes are required")
+            if (not has_external_initializers
+                    and initializer_source is not None):
+                raise ValueError(
+                    "canonical ONNX initializer supplied for inline model")
+            if initializer_source is not None:
+                initializer_path.write_bytes(initializer_source)
             model = onnx.load(str(source_path), load_external_data=True)
             onnx.checker.check_model(model, full_check=True)
         except ValueError:
@@ -291,6 +357,22 @@ def assemble_certified_onnx_model(
                 "shape": shape,
             }
 
+        def normalize_shape_dimension(value: object) -> object:
+            # Native C++ projection JSON carries shape dimensions as strings
+            # (the same representation used for symbolic dimensions), while
+            # ONNX Runtime reports concrete dimensions as integers.  Keep the
+            # recipe digest bound to its original wire bytes but compare the
+            # two representations semantically at this validation boundary.
+            if isinstance(value, str):
+                try:
+                    return int(value)
+                except ValueError:
+                    return value
+            return int(value) if isinstance(value, (int, np.integer)) else value
+
+        def normalized_shape(values) -> list[object]:
+            return [normalize_shape_dimension(value) for value in values]
+
         actual_inputs = {item.name: contract(item) for item in assembled.graph.input}
         actual_outputs = {item.name: contract(item) for item in assembled.graph.output}
         for expected, actual, field_name in (
@@ -305,7 +387,8 @@ def assemble_certified_onnx_model(
                     int(item["dtype"]), str(item["dtype"])) \
                     if str(item["dtype"]).isdigit() else str(item["dtype"])
                 if (expected_dtype != str(observed["dtype"])
-                        or list(item["shape"]) != list(observed["shape"])):
+                        or normalized_shape(item["shape"])
+                        != normalized_shape(observed["shape"])):
                     raise ValueError(f"assembled ONNX {field_name} dtype/shape mismatch")
         try:
             wire = assembled.SerializeToString(deterministic=True)

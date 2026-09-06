@@ -85,7 +85,10 @@ class CanonicalCatalogEnsurer:
 
     def __init__(self, catalog, publish_object, *, publisher: str,
                  assembler_descriptor_digest: str = "",
-                 backend_abi: str = "onnxruntime-runtime") -> None:
+                 backend_abi: str = "onnxruntime-runtime",
+                 require_canonical_source: bool = False,
+                 canonical_source_payload: bytes | None = None,
+                 canonical_initializer_payload: bytes | None = None) -> None:
         from .app_sdk.canonical_artifacts import CanonicalLayerCatalog
         if not isinstance(catalog, CanonicalLayerCatalog):
             raise TypeError("canonical ensurer requires a CanonicalLayerCatalog")
@@ -103,16 +106,50 @@ class CanonicalCatalogEnsurer:
                 or not backend_abi):
             raise ValueError("canonical ensurer assembler identity is invalid")
         self._backend_abi = str(backend_abi)
+        self._require_canonical_source = bool(require_canonical_source)
+        self._canonical_source_payload = (
+            None if canonical_source_payload is None
+            else bytes(canonical_source_payload))
+        self._canonical_initializer_payload = (
+            None if canonical_initializer_payload is None
+            else bytes(canonical_initializer_payload))
         self._lock = threading.Lock()
         self._published_root_name = ""
         self._published_root_digest = ""
+        self._published_source_name = ""
+        self._published_initializer_name = ""
 
     def describe(self, candidate=None):
         """Return immutable catalog facts without publishing or mutating it."""
-        from .app_sdk.canonical_artifacts import CanonicalArtifactBinding
+        from .app_sdk.canonical_artifacts import (
+            CanonicalArtifactBinding, canonical_initializer_reference,
+            canonical_source_reference,
+        )
         root = self._catalog.active_manifest
         if candidate is not None and candidate.graph_digest != root.model_identity.graph_digest:
             raise ValueError("candidate graph does not match canonical model root")
+        source_name, source_digest, source_bytes = canonical_source_reference(
+            root.metadata, require=self._require_canonical_source)
+        if self._canonical_source_payload is not None:
+            payload_digest = "sha256:" + hashlib.sha256(
+                self._canonical_source_payload).hexdigest()
+            if source_name == "" or source_digest != payload_digest:
+                raise ValueError(
+                    "canonical source payload does not match ACTIVE root")
+            if source_bytes != len(self._canonical_source_payload):
+                raise ValueError(
+                    "canonical source payload size does not match ACTIVE root")
+        initializer_name, initializer_digest, initializer_bytes = (
+            canonical_initializer_reference(root.metadata, require=False))
+        if self._canonical_initializer_payload is not None:
+            payload_digest = "sha256:" + hashlib.sha256(
+                self._canonical_initializer_payload).hexdigest()
+            if initializer_name == "" or initializer_digest != payload_digest:
+                raise ValueError(
+                    "canonical initializer payload does not match ACTIVE root")
+            if initializer_bytes != len(self._canonical_initializer_payload):
+                raise ValueError(
+                    "canonical initializer payload size does not match ACTIVE root")
         return CanonicalArtifactBinding(
             model_manifest_digest=root.digest,
             artifact_profile_digest=root.artifact_profile.digest,
@@ -123,7 +160,12 @@ class CanonicalCatalogEnsurer:
             adapter_descriptor_digest=root.artifact_profile.adapter_descriptor_digest,
             assembler_descriptor_digest=self._assembler_descriptor_digest,
             backend_abi=self._backend_abi,
-            canonical_source_bytes=self._catalog.total_object_bytes,
+            canonical_source_bytes=(source_bytes or self._catalog.total_object_bytes),
+            canonical_source_data_name=source_name,
+            canonical_source_digest=source_digest,
+            canonical_initializer_data_name=initializer_name,
+            canonical_initializer_object_digest=initializer_digest,
+            canonical_initializer_bytes=initializer_bytes,
         )
 
     def ensure(self, candidate, role_specs, *, deadline_ms: int):
@@ -160,6 +202,56 @@ class CanonicalCatalogEnsurer:
                     raise ValueError("canonical ensurer root changed after publication")
                 root_name = self._published_root_name
             else:
+                source_name, source_digest, source_bytes = (
+                    self._source_reference(root.metadata))
+                if self._canonical_source_payload is not None:
+                    payload_digest = "sha256:" + hashlib.sha256(
+                        self._canonical_source_payload).hexdigest()
+                    if source_digest != payload_digest or source_bytes != len(
+                            self._canonical_source_payload):
+                        raise ValueError(
+                            "canonical source payload does not match ACTIVE root")
+                    if not self._published_source_name:
+                        result = self._publish_object(
+                            name=source_name,
+                            payload=self._canonical_source_payload,
+                            manifest={
+                                "schema": "ndnsf-di-canonical-source-v1",
+                                "sourceDigest": source_digest,
+                                "sourceBytes": source_bytes,
+                            },
+                            idempotency_key=source_digest)
+                        if str(result) != source_name:
+                            raise ValueError(
+                                "Repo publisher returned a different canonical source name")
+                        self._published_source_name = source_name
+                from .app_sdk.canonical_artifacts import canonical_initializer_reference
+                initializer_name, initializer_digest, initializer_bytes = (
+                    canonical_initializer_reference(root.metadata, require=False))
+                if initializer_name:
+                    if self._canonical_initializer_payload is None:
+                        raise ValueError(
+                            "canonical initializer payload is required for publication")
+                    payload_digest = "sha256:" + hashlib.sha256(
+                        self._canonical_initializer_payload).hexdigest()
+                    if (payload_digest != initializer_digest
+                            or len(self._canonical_initializer_payload) != initializer_bytes):
+                        raise ValueError(
+                            "canonical initializer payload does not match ACTIVE root")
+                    if not self._published_initializer_name:
+                        result = self._publish_object(
+                            name=initializer_name,
+                            payload=self._canonical_initializer_payload,
+                            manifest={
+                                "schema": "ndnsf-di-canonical-initializer-v1",
+                                "objectDigest": initializer_digest,
+                                "objectBytes": initializer_bytes,
+                            },
+                            idempotency_key=initializer_digest)
+                        if str(result) != initializer_name:
+                            raise ValueError(
+                                "Repo publisher returned a different canonical initializer name")
+                        self._published_initializer_name = initializer_name
                 root_name = self._catalog.publish_via(
                     self._publish_object, publisher=self._publisher,
                     deadline_ms=deadline_ms)
@@ -170,6 +262,11 @@ class CanonicalCatalogEnsurer:
             artifact_digests_by_role=digests,
             artifact_data_names_by_role={key: root_name for key in digests},
         )
+
+    def _source_reference(self, metadata: Mapping[str, Any]) -> tuple[str, str, int]:
+        from .app_sdk.canonical_artifacts import canonical_source_reference
+        return canonical_source_reference(
+            metadata, require=self._require_canonical_source)
 
 
 def assemble_onnx_role_v3(

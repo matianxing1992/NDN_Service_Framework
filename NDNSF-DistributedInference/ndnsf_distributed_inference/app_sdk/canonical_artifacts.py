@@ -95,6 +95,103 @@ def _ndn_identity(value: str, field: str) -> str:
     return "/" + "/".join(_token(part, field) for part in parts)
 
 
+def canonical_source_reference(
+    metadata: Mapping[str, Any], *, require: bool = False,
+) -> tuple[str, str, int]:
+    """Validate the full canonical ONNX source reference in root metadata.
+
+    Layer-object bytes are not a substitute for the canonical source model.
+    A V3 Provider needs one stable Data name, its content digest, and an upper
+    bound for the bytes it may fetch.  The reference is optional for legacy
+    Spec170 catalogs, but Spec175 callers pass ``require=True``.
+    """
+
+    values = dict(metadata)
+    name = str(values.get("canonicalSourceDataName", "")
+               or values.get("canonical_source_data_name", "")
+               or values.get("sourceDataName", "")
+               or values.get("source_data_name", ""))
+    digest = str(values.get("canonicalSourceDigest", "")
+                 or values.get("canonical_source_digest", "")
+                 or values.get("sourceDigest", "")
+                 or values.get("source_digest", ""))
+    raw_bytes = values.get("canonicalSourceBytes", "")
+    if raw_bytes in ("", None):
+        raw_bytes = values.get("canonical_source_bytes", "")
+    if raw_bytes in ("", None):
+        raw_bytes = values.get("sourceBytes", "")
+    if raw_bytes in ("", None):
+        raw_bytes = values.get("source_bytes", "")
+
+    present = bool(name or digest or raw_bytes not in ("", None))
+    if not present:
+        if require:
+            raise ValueError("canonical model root lacks canonical source reference")
+        return "", "", 0
+    if not name or not name.startswith("/") or any(
+            char in name for char in ("\x00", "\n", "\r")):
+        raise ValueError("canonical source Data name is invalid")
+    _require_digest(digest, "canonical source digest")
+    try:
+        size = int(raw_bytes)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("canonical source bytes must be a positive integer") from exc
+    if size <= 0:
+        raise ValueError("canonical source bytes must be positive")
+    return name, digest, size
+
+
+def canonical_initializer_reference(
+    metadata: Mapping[str, Any], *, require: bool = False,
+) -> tuple[str, str, int]:
+    """Validate the signed root reference for an external ONNX initializer.
+
+    External initializer bytes are a separate content-addressed object.  The
+    root must carry its NDN Data name, raw-object digest, and byte bound as one
+    complete tuple; a graph-local filename or a size-only hint is not enough
+    for Provider assembly.
+    """
+
+    values = dict(metadata)
+    name = str(values.get("canonicalInitializerDataName", "")
+               or values.get("canonical_initializer_data_name", "")
+               or values.get("initializerDataName", "")
+               or values.get("initializer_data_name", ""))
+    digest = str(values.get("canonicalInitializerObjectDigest", "")
+                 or values.get("canonical_initializer_object_digest", "")
+                 or values.get("initializerObjectDigest", "")
+                 or values.get("initializer_object_digest", ""))
+    raw_bytes = values.get("canonicalInitializerBytes", "")
+    if raw_bytes in ("", None):
+        raw_bytes = values.get("canonical_initializer_bytes", "")
+    if raw_bytes in ("", None):
+        raw_bytes = values.get("initializerBytes", "")
+    if raw_bytes in ("", None):
+        raw_bytes = values.get("initializer_bytes", "")
+
+    # The binding dataclass uses zero as its optional-field default.  Treat an
+    # all-empty/zero tuple as absent, while still rejecting a zero size when a
+    # name or digest is supplied.
+    present = bool(name or digest or raw_bytes not in ("", None, 0))
+    if not present:
+        if require:
+            raise ValueError(
+                "canonical model root lacks canonical initializer reference")
+        return "", "", 0
+    if not name or not name.startswith("/") or any(
+            char in name for char in ("\x00", "\n", "\r")):
+        raise ValueError("canonical initializer Data name is invalid")
+    _require_digest(digest, "canonical initializer object digest")
+    try:
+        size = int(raw_bytes)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            "canonical initializer bytes must be a positive integer") from exc
+    if size <= 0:
+        raise ValueError("canonical initializer bytes must be positive")
+    return name, digest, size
+
+
 @dataclass(frozen=True)
 class ModelIdentity:
     """Placement-independent identity of one normalized source model.
@@ -244,6 +341,15 @@ class CanonicalArtifactBinding:
     assembler_descriptor_digest: str
     backend_abi: str
     canonical_source_bytes: int
+    canonical_source_data_name: str = ""
+    canonical_source_digest: str = ""
+    canonical_initializer_data_name: str = ""
+    canonical_initializer_object_digest: str = ""
+    canonical_initializer_bytes: int = 0
+    # The assembler verifies the canonical ONNX identity (normalized graph
+    # digest), which can differ from the planning-space graph-port digest in
+    # ``graph_digest``.  When empty, the recipe reuses ``graph_digest``.
+    canonical_graph_digest: str = ""
 
     def __post_init__(self) -> None:
         for field_name in (
@@ -252,10 +358,26 @@ class CanonicalArtifactBinding:
             "assembler_descriptor_digest",
         ):
             _require_digest(getattr(self, field_name), field_name)
+        if self.canonical_graph_digest:
+            _require_digest(self.canonical_graph_digest,
+                            "canonical_graph_digest")
         if not self.backend_abi:
             raise ValueError("canonical artifact binding requires backend ABI")
         if self.canonical_source_bytes <= 0:
             raise ValueError("canonical artifact binding requires source bytes")
+        if self.canonical_source_data_name or self.canonical_source_digest:
+            if not self.canonical_source_data_name.startswith("/"):
+                raise ValueError("canonical source Data name is invalid")
+            _require_digest(self.canonical_source_digest,
+                            "canonical source digest")
+        canonical_initializer_reference({
+            "canonicalInitializerDataName": self.canonical_initializer_data_name,
+            "canonicalInitializerObjectDigest": self.canonical_initializer_object_digest,
+            "canonicalInitializerBytes": self.canonical_initializer_bytes,
+        }, require=bool(
+            self.canonical_initializer_data_name
+            or self.canonical_initializer_object_digest
+            or self.canonical_initializer_bytes))
 
 
 def canonical_layer_name(*, publisher: str, model_name: str, model_digest: str,
@@ -653,6 +775,12 @@ class CanonicalLayerCatalog:
         signer: str,
         signature: str,
         metadata: Mapping[str, Any],
+        canonical_source_data_name: str = "",
+        canonical_source_digest: str = "",
+        canonical_source_bytes: int = 0,
+        canonical_initializer_data_name: str = "",
+        canonical_initializer_object_digest: str = "",
+        canonical_initializer_bytes: int = 0,
         verify_origin: Callable[[ModelIdentity, str], bool],
         verify_transformation: Callable[[ModelIdentity, CanonicalArtifactProfile,
                                          str], bool],
@@ -665,6 +793,51 @@ class CanonicalLayerCatalog:
                     or layer.profile_digest != artifact_profile.digest
                     or layer.graph_digest != model_identity.graph_digest):
                 raise ValueError("canonical root/layer identity cover mismatch")
+        root_metadata = dict(metadata)
+        source_args_present = bool(
+            canonical_source_data_name or canonical_source_digest
+            or int(canonical_source_bytes or 0))
+        if source_args_present:
+            if not canonical_source_data_name or not canonical_source_digest:
+                raise ValueError(
+                    "canonical source name and digest must be supplied together")
+            if int(canonical_source_bytes or 0) <= 0:
+                raise ValueError("canonical source bytes must be positive")
+            source_metadata = {
+                "canonicalSourceDataName": str(canonical_source_data_name),
+                "canonicalSourceDigest": str(canonical_source_digest),
+                "canonicalSourceBytes": int(canonical_source_bytes),
+            }
+            for key, value in source_metadata.items():
+                if key in root_metadata and root_metadata[key] != value:
+                    raise ValueError(
+                        f"canonical source metadata conflict for {key}")
+                root_metadata[key] = value
+        canonical_source_reference(root_metadata, require=False)
+        initializer_args_present = bool(
+            canonical_initializer_data_name
+            or canonical_initializer_object_digest
+            or int(canonical_initializer_bytes or 0))
+        if initializer_args_present:
+            if (not canonical_initializer_data_name
+                    or not canonical_initializer_object_digest):
+                raise ValueError(
+                    "canonical initializer name and digest must be supplied together")
+            if int(canonical_initializer_bytes or 0) <= 0:
+                raise ValueError("canonical initializer bytes must be positive")
+            initializer_metadata = {
+                "canonicalInitializerDataName": str(
+                    canonical_initializer_data_name),
+                "canonicalInitializerObjectDigest": str(
+                    canonical_initializer_object_digest),
+                "canonicalInitializerBytes": int(canonical_initializer_bytes),
+            }
+            for key, value in initializer_metadata.items():
+                if key in root_metadata and root_metadata[key] != value:
+                    raise ValueError(
+                        f"canonical initializer metadata conflict for {key}")
+                root_metadata[key] = value
+        canonical_initializer_reference(root_metadata, require=False)
         root = CanonicalModelManifest(
             model_name=model_name,
             model_identity=model_identity,
@@ -675,7 +848,7 @@ class CanonicalLayerCatalog:
             activation_epoch=activation_epoch,
             signer=signer,
             signature=signature,
-            metadata=metadata,
+            metadata=root_metadata,
         )
         root.verify(
             verify_origin=verify_origin,
@@ -956,5 +1129,6 @@ __all__ = [
     "ALLOWED_ENTRIES", "AssembledOnnxArtifactV1", "CanonicalArtifactBinding",
     "CanonicalArtifactProfile", "CanonicalLayerCatalog", "CanonicalLayerManifest",
     "CanonicalModelManifest", "CanonicalObjectSlice", "ModelIdentity",
-    "canonical_layer_name",
+    "canonical_layer_name", "canonical_source_reference",
+    "canonical_initializer_reference",
 ]
