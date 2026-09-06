@@ -323,6 +323,13 @@ plus its rationale comment; (2) the API-contract extension
 Spec179 requirement. Rebuild-and-rerun of RV-U20/RV-U21 happens only after
 the upstream commit exists (external gate).
 
+Current package: `evidence/nac-abe-delivery-20260905.md` includes all four
+commits through85547eb, mandatory T019/T020 repairs and ABI migration guidance.
+The two sections are review descriptions, not independently qualified branches.
+The tested base is the personal fork master; original master lacks12 prerequisite
+commits. A verified standalone bundle preserves the exact local source/history.
+Publication target and upstream prerequisite review remain explicit external steps.
+
 ### T021 — Controller grants for both runtime roles
 
 The user's permission scope is Controller-authorized service use (User,

@@ -627,6 +627,11 @@ FR-041 acceptance additionally re-runs the existing RV-U20/RV-U21 rows on a
 prefix rebuilt from the upstream-merged commit (external gate: upstream
 maintainer review).
 
+T014 local delivery update: `evidence/nac-abe-delivery-20260905.md` pins the
+complete NAC85547eb range and verified standalone bundle. Fresh clone, exact
+head/tree and fsck checks pass. The fork/original-project base distinction is
+explicit; no upstream merge or rebuilt RV-U20/RV-U21 execution is claimed.
+
 ## Online authorization follow-up rows (2026-09-05, T017/T018)
 
 | Row | Level | Covers | Evidence / cases | Status |

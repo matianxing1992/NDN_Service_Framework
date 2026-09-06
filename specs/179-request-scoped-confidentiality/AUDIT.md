@@ -1,5 +1,17 @@
 # Spec179 Audit — Controller Revocation Test Coverage
 
+## 2026-09-05 T014 delivery package (local PASS; external acceptance pending)
+
+The current package pins all four NAC commits through85547eb, maps the authority
+and runtime APIs, and includes a reviewable fork PR draft plus a standalone
+bundle verified by fresh clone, exact head/tree comparison and fsck. The prior
+split draft is superseded: its base was the personal fork master, it omitted
+T019/T020, and its no-API-change section included new APIs. Original-project
+master lacks12 prerequisite commits from the tested base. No runtime code
+changed, no publication occurred, and no upstream rebuild gate is claimed.
+See `evidence/nac-abe-delivery-20260905.md`. T014 remains open until explicit
+publication authorization, upstream acceptance and the prescribed rebuilt gates.
+
 ## 2026-09-05 Controller grants for both roles (current; T021 local PASS)
 
 Controller service-use grants to Users and service-offering grants to Providers

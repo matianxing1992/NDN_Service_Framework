@@ -703,14 +703,16 @@ executed evidence; none changes the 2026-09-04 release claim.
 - **FR-041**: The Spec179 NAC-ABE dependency contract — DKEY segments with
   `FreshnessPeriod=0` (grant-only replacement cannot be hidden by a fresh
   Content Store copy), `Consumer::clearCache`/`refreshDecryptionKey`/
-  `getPublicParams{Name,Digest}`, `CacheProducer::refreshPublicParameters`
+  `getPublicParams{DataName,Digest}`, `CacheProducer::refreshPublicParameters`
   — MUST be accepted into the upstream NAC-ABE repository through
   maintainer review, and the NDNSF build prefix MUST then be rebuilt from the
   upstream commit with the RV-U20/RV-U21 gate re-run on that rebuild. Failure
   mode: the contract surface exists only on the local, unpushed NAC-ABE
-  `Experimental` branch (`b1c9c4f`), so any clean environment fails the
-  NDNSF build (compile-contract evidence `RV-U22`,
-  `evidence/nac-abe-unpatched-contract-20260905.md`) and the dependency is
-  one lost local branch away from unbuildable. Row: RV-U22 (compile
+  `Experimental` branch (initial `b1c9c4f`, repaired through `85547eb`), so a
+  clean environment using the unpatched fork base fails the NDNSF build
+  (compile-contract evidence `RV-U22`,
+  `evidence/nac-abe-unpatched-contract-20260905.md`). A verified local bundle
+  now protects source recovery, but does not establish off-host availability
+  or upstream acceptance (`evidence/nac-abe-delivery-20260905.md`). Row: RV-U22 (compile
   contract, executed 2026-09-05) plus re-execution of RV-U20/RV-U21 on the
   upstream-pinned rebuild as the acceptance step.

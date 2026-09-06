@@ -1,5 +1,9 @@
 # T014 — NAC-ABE upstreaming package (split-PR description)
 
+> Historical draft, superseded by [verified delivery](nac-abe-delivery-20260905.md).
+> It omits T019/T020, incorrectly calls the personal fork master upstream,
+> and mixes API changes into PR-1. Do not use its split/application instructions.
+
 Date: 2026-09-05 (CDT).  Purpose: hand-off material for promoting the local
 Spec179 dependency patches into the upstream NAC-ABE repository.  Everything
 here is already verified and frozen in the paired evidence:

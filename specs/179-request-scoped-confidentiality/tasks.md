@@ -71,6 +71,12 @@ The 2026-09-04 release claim and its rows are unaffected.
   freshness fix vs the API-contract extension, mapping each patched symbol
   to its Spec179 use), compile-contract evidence row RV-U22 (executed
   2026-09-05, `evidence/nac-abe-unpatched-contract-20260905.md`).
+  Current delivery: `evidence/nac-abe-delivery-20260905.md` and
+  `evidence/nac-abe-pr-draft-20260905.md`; complete four-commit range through
+  `85547eb`, standalone bundle verified by fresh clone/tree comparison/fsck.
+  The tested `1cc17d9` base is the personal fork master; original-project
+  master has12 prerequisite commits fewer. Local package complete;
+  destination-specific push/PR authorization and upstream acceptance pending.
   Acceptance: upstream maintainer merges the contract (external gate —
   push/PR require the NDNSF maintainer's explicit go), then the rebuilt
   prefix from the upstream commit passes RV-U20/RV-U21. Owner: NDNSF
