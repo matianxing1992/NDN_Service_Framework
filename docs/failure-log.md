@@ -19,6 +19,13 @@ failure's controlling boundary and invalidation effect are understood.
 
 ## Current failure index
 
+**Tiger review sync R1 (2026-09-06): 58/58 tool checks PASS.**
+Adopted the reviewed supervisor fixture expectation for the existing
+collector-before-terminal-validation order, retaining FAILED/cleanup checks,
+and restored sys.path after profile-test import. The 51 prior checks plus
+7 collector positive/negative checks pass; the migration R1 assertion failure
+is closed. No production runtime or cluster was run. See [review sync evidence](../specs/182-native-di-python-bindings/evidence/tiger-directory-migration-20260906.md#review-sync-r1).
+
 **Tiger directory migration unit R1 (2026-09-06): 50 PASS / 1 FAIL.**
 The supervisor no-result unit expects TERMINAL_RESULT_MISSING but receives
 CollectionError from the collector that now runs first. All 64 moved files

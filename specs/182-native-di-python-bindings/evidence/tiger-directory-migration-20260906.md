@@ -1,7 +1,7 @@
 # Tiger Directory Migration
 
 **Date**: 2026-09-06 | **Scope**: directory layout; no native implementation
-**Status**: COMPLETE for relocation; existing tool-suite failure remains OPEN
+**Status**: COMPLETE for relocation; tool-suite failure CLOSED by Review Sync R1 below
 
 ## Subject And Review
 
@@ -41,4 +41,21 @@ manifest中的哈希描述本轮实际工作区输入，不宣称该checkpoint�
 ## Next
 
 Spec182原生实现仍0/17；SIF构建、MiniNDN及集群执行NOT_RUN。
-继续合并审查，将该工作树后续的旧路径修复映射至manifest目标；工具owner修复已确认基线断言后运行相关回归。
+继续合并审查，将该工作树后续的旧路径修复映射至manifest目标；下方记录本次已同步范围。
+
+## Review Sync R1
+
+2026-09-06继续核对合并审查工作树：64个迁移文件、共享lib/bin及四个相关根目录发布/校验脚本均与本机一致，不重复覆盖。
+两份测试存在已审修正，已逐字同步到本机：
+
+- `tests/python/test_spec180_tiger_supervision.py`：无证据producer的fixture先被collector拒绝，因此预期原生异常类名CollectionError；仍严格断言返回失败、terminal FAILED、各readiness屏障与清理。没有修改生产异常处理或放宽通过条件。同步文件SHA-256为`10d4406986c9bf0e5ff9ed7cb73e46c90d280ea474a2f1d0266c550374492793`。
+- `tests/python/test_spec175_tiger_profile.py`：临时添加共享库路径后在finally恢复sys.path，避免污染后续测试。同步文件SHA-256为`12a1a2f2c549819372f7b31c112b7bd0fc8049c09ff303f0faccd5f7a80b8cd0`。
+
+静态审查对照execute→collect_terminal_result→validate_terminal顺序和collector负例的精确原因码断言后执行：
+
+`python3 -m pytest -q tests/python/test_prepare_local_sif_source.py tests/python/test_spec180_release_workflow.py tests/python/test_spec180_tiger_contract.py tests/python/test_spec180_tiger_supervision.py tests/python/test_spec175_tiger_profile.py tests/python/test_spec180_terminal_collector.py`
+
+结果 **58 passed in 8.11 s，exit0**。原始日志为`.local-tmp/tiger-review-sync-20260906-r1/unit.log`。
+覆盖前轮51项和额外7项collector正负例；原失败记录保留，当前原因码断言已关闭。
+本次提交包含这两份此前未跟踪的测试及同步记录；未提交Tiger作业和其他合并修复仍由原owner交付。
+该结果仅是工具单测，不能升级为SIF/MiniNDN/Tiger或整个合并验收PASS；独立审查工作树未改动。
