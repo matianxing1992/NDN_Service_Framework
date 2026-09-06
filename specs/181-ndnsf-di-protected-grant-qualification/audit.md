@@ -53,6 +53,12 @@ R = `Experiments/NDNSF_DI_YoloAckDriven_Minindn.py`。
 
 ## Readiness Scorecard
 
+配置外部输入的清单/执行稳定性已修复：72 focused checks PASS
+（8.40 s），模型、映射及引用 key 变化会阻止资格通过并保留已有
+结果；C++/Python discovery 消费同一显式环境。见
+[输入身份证据](evidence/t007-local-input-identity-20260906.md)。
+实际 import/runtime 核查与新 native receipt 仍待收口，T007 BLOCK。
+
 显式配置根被默认 HOME 路径覆盖的问题已修复，24 focused checks
 PASS（0.85 s）；绝对/相对目录实际传入 child，显式缺 key 不回退。
 见 [配置选择证据](evidence/t007-explicit-config-root-20260906.md)。

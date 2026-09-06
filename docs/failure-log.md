@@ -19,6 +19,23 @@ failure's controlling boundary and invalidation effect are understood.
 
 ## Current failure index
 
+**Spec181 local input identity R3 (2026-09-06): BLOCK at new fixture import.**
+After R2 66 PASS, new input tests yield 3 failed / 69 passed (7.68 s): three
+tests reference json without importing it, before the identity owner runs.
+Real-child drift/collection checks pass. Preserve R3, repair the fixture import,
+then rerun. See [local input identity](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t007-local-input-identity-20260906.md#focused-r2-and-fixture-failure-r3).
+R4 fixes the missing import: 72 PASS (8.40 s). Actual fixture children preserve
+completed results and reject input drift before network cases or at final
+aggregation. Both CLI discovery paths consume the explicit environment.
+Configured input identity unit CLOSED; actual runtime audit remains T007 work.
+
+**Spec181 local input identity R1 (2026-09-06): BLOCK at external input bytes.**
+Model/map/referenced-key replacement and package additions reach the forbidden
+child boundary after inventory creation (4 failed); launch configuration binds
+path strings only. No qualification child ran. Preserve R1 and bind the actual
+external inputs in the shared inventory/gate owner. See
+[local input identity](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t007-local-input-identity-20260906.md).
+
 **Spec181 explicit config root R1 (2026-09-06): BLOCK at protected launch selection.**
 The runner overwrites explicit NDNSF_SPEC180_CONFIG_ROOT with the HOME default.
 Absolute/relative overrides and missing-key rejection fail (3 failed / 1 passed,

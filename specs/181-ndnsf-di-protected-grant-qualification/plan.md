@@ -89,6 +89,15 @@ WAFDIR，并在构建/校验前后核对；该字段也控制 binding reuse。
 绝对路径。显式目录缺少 authority key 时失败关闭，不回退其他
 目录。见 [explicit root](evidence/t007-explicit-config-root-20260906.md)。
 
+本地清单另含必填 `inputIdentity`/`inputDigest`，按显式配置绑定
+模型目录全部文件、registry/trust/config/topology、key map 及其
+引用文件、保护 authority key 和 native receipt。仅存文件身份，
+不保存秘密内容；未配置项由实际案例的既有必需输入校验拒绝。
+生成清单前后、gate 输出/执行前、各网络案例前和整体结束后重算，
+漂移保留已执行记录、列出未执行 ID 并使整体 UNQUALIFIED。
+两类 selector discovery 使用与执行一致的显式环境；旧清单缺
+输入字段时拒绝。见 [local inputs](evidence/t007-local-input-identity-20260906.md)。
+
 1. **In-process authority**。权威宿主为 requester/user 进程，保持
    requester 与 authority 逻辑身份和密钥区分。签发者身份、公钥摘要
    与策略来自 `artifactPolicyAuthority`；不把发布路由身份自动视为

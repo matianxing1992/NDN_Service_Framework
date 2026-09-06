@@ -78,6 +78,12 @@ receipt；本轮没有 native build、模型或网络资格运行。
 在 child HOME/cwd 改写前解析绝对路径；显式目录缺 key 时直接
 拒绝，即使默认目录有 key。R1 RED 保留。本轮未启动正式网络；
 下一步继续外部输入字节/import 核查与 native receipt 刷新。
+[输入身份单元](evidence/t007-local-input-identity-20260906.md) R4
+**72 项定向检查 PASS（8.40 s）**：模型目录、配置、映射及引用
+key 的实际字节由 inventory/gate 共同绑定；变化时保留已执行
+结果并阻止后续网络案例/资格通过。C++/Python 选择器发现也使用
+同一显式环境。R1--R3 历史保留；剩余为实际 import/runtime 核查
+与 native receipt 刷新，本轮未运行正式矩阵，完成数仍为 5/10。
 
 **Execution order**：T007 PASS → T005 七子用例同源矩阵 → T008 完整
 本地清单与 Y-A/Y-B/Y-N → T009 开发交付封存 → T012 本地关闭。
