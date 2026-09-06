@@ -19,12 +19,12 @@ Spec 170 `artifact-assembly-v1` 契约。
 ## Current Checkpoint (revision 5)
 
 **Status**: `IN_PROGRESS / BLOCK`。2026-09-05 初次复核恢复未完成标记；
-本轮 T003/T004/T006 的定向验收已闭合并勾选。其余任务仍按完整验收判断，
+T001/T003/T004/T006 的定向验收已闭合并勾选。其余任务仍按完整验收判断，
 未勾选不抹去已实现的代码与 unit 结果。
 
 | Task | Implemented / executed | Remaining acceptance |
 |---|---|---|
-| T001 | grant 摘要、租约/存储及注册表策略修复已有 unit 证据；维护进程测试覆盖真实发布/获取、错误收件人、磁盘密文变异/错误密钥与清理，见 [进程集成](evidence/t001-t002-process-integration-20260905.md) | 资源上界、全部封印绑定及取消/过期验收 |
+| T001 | PASS：真实发布/消费与受保护装配、全部绑定、inline/external 清理及请求/排队生命周期；最终 151 项定向回归、6 个真实进程用例 PASS，见 [请求生命周期与完成审查](evidence/t001-request-lifecycle-20260905.md) | 本任务验收完成；正式 MiniNDN 归 T005/T008 |
 | T002 | native Ed25519/P-256 正向链和实际负例已有证据；维护进程集成、EC 泄漏修复及 10 次 ASAN 调用 PASS，见 [进程集成](evidence/t001-t002-process-integration-20260905.md) | 完整资源/异常路径验收及剩余 handler 源码闭包；完整生产运行前刷新统一构建 |
 | T003 | PASS：3 项 grant parity 检查消费 9 个向量；8 个装配向量分别走 Python/C++ 生产入口，16 项检查通过，含实际 ORT CPU 结果和 initializer/recipe/ABI 拒绝，见 [装配证据](evidence/t003-assembly-parity-20260905.md) | 本任务定向验收已闭合；native 格式操作共用生产 Python helper，后续同源资格仍归 T005/T008 |
 | T004 | PASS：7 项 Python seam、6 项 Core 定向检查；重建后真实 Provider 等待约 83 ms、Controller 12.39 s 就绪、等待中取消约 2.3 ms 且无热转；全部线程/网络清理，见 [生命周期证据](evidence/t004-lifecycle-acceptance-20260905.md) | 本任务定向验收已闭合；后续同源正式资格仍归 T005/T008 |
@@ -34,7 +34,7 @@ Spec 170 `artifact-assembly-v1` 契约。
 | T008 | native 受保护 Y-B 定向正向控制已有证据 | T007 PASS 后执行同源本地资格清单与 Y-A/Y-B/Y-N 正式矩阵 |
 | T009--T012 | 继承工具链 | 本 Spec 候选、SIF、Tiger、终局均未闭合 |
 
-**Latest progress (2026-09-05)**：T003/T004/T006 已完成（3/12 个 T 任务）。
+**Latest progress (2026-09-05)**：T001/T003/T004/T006 已完成（4/12 个 T 任务）。
 三种 grant 变异完成实际发布、Provider 拒绝与身份绑定；有效 grant
 仍完成 native Y-B 推理。正向控制发现并修复冷装配期间的固定 10 s
 依赖等待上界，改用调用者请求预算且保留硬截止/取消。所有失败保留，
@@ -66,8 +66,14 @@ Merge、终端数值匹配、7 个子进程退出收集及空 staging，见
 `NativeProtected*,ProtectedRuntime*,NativeGrantVerifier*`，28 个用例、
 126 条断言全部 PASS，未运行完整资格套件。
 Selection metadata 为 fixture 输入，不替代 Core Selection 全链路；
-下一步继续 T001/T002 全部异常/资源边界与 handler 源码闭包，完整
-生产控制前刷新统一 native 构建。仍 3/12，T007 BLOCK。
+T001 请求生命周期新增 12 项回归先失败：取消或 Selection 截止后仍
+进入受保护 handler。修复后连同排队、grant 过期与 handler 异常清理，
+67 项 handler/密码学、80 项绑定/注册表/租约回归及 6 个真实 Python
+网络用例通过。提交前另补 4 项策略快照替换失败回归并修复遗漏；
+最终 151 项定向回归、6 个真实 Python 网络用例通过，24 个进程退出
+均已收集。T001 逐项验收已关闭，见 [请求生命周期](evidence/t001-request-lifecycle-20260905.md)。
+下一步完成 T002 的 native handler 源码闭包与剩余边界核对，完整
+生产控制前刷新统一 native 构建。当前 4/12，T007 BLOCK。
 
 历史 6/7、7/7 与 `CONDITIONAL PASS` 不再作为当前状态；以
 [audit.md](audit.md) 与 [修正证据](evidence/audit-repair-20260905.md) 为准。
@@ -151,7 +157,7 @@ T 任务完成定向修复；在生产验收前保持失败关闭，并禁止晋
 
 ## Phase 1: Protected Artifact Execution (Priority: P1)
 
-- [ ] T001 [US1] **Python Grant Publication and Consumption**。`provider.py`
+- [x] T001 [US1] **Python Grant Publication and Consumption**。`provider.py`
   装配入口（`_assemble_certified_role_execution` 之前）在
   `protection_epoch != "plaintext-v1"` 时：按规范名**精确获取** grant
   Data（使用既有精确名 Data 获取原语，禁止 `ValidatorNull`）→

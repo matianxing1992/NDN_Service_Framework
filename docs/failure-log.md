@@ -19,6 +19,16 @@ failure's controlling boundary and invalidation effect are understood.
 
 ## Current failure index
 
+**Spec181 T001 request lifecycle (2026-09-05): CLOSED.** Twelve registered-handler
+regressions show that cancellation or Selection deadline expiry before/during
+grant fetch or after preparation still reaches model execution. Grant expiry
+alone does not enforce request lifetime. Preserve the first red run before
+repair. Four final regressions also expose a missing comparison between the
+grant-reference and Selection policy snapshot. Both repairs pass 151 focused
+regressions and six real Python process cases (24 exits collected). All red
+runs are preserved. T001 acceptance is complete; T002/T007 remain open. See
+[request lifecycle](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t001-request-lifecycle-20260905.md).
+
 **Spec181 T001/T002 maintained process integration (2026-09-05): focused defects CLOSED.**
 R1 native fixtures build, but NFD's own management FIB registration fails
 because the test configuration omits management authorization. The requester

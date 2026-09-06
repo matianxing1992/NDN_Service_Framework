@@ -1,8 +1,8 @@
 # Spec181 Design-code Convergence Audit
 
 **Date**: 2026-09-05 | **Revision**: 5 | **Task**: T007
-**Source identity**: 初审基线 `67194dc2`；当前检查点父提交 `f2304ba9`
-与本轮进程集成/EC 资源修复差异。历史运行仅对应各自证据中的源/构建。
+**Source identity**: 初审基线 `67194dc2`；当前检查点父提交 `0f73998b`
+与本轮 Python 请求生命周期修复差异。历史运行仅对应各自证据中的源/构建。
 **Layer**: proposed（设计）+ implemented（源码核查）+ executed（定向 unit / live control）。
 **Verdict**: **BLOCK**。本审查取代旧 `CONDITIONAL PASS / no HIGH` 结论。
 
@@ -16,19 +16,19 @@ R = `Experiments/NDNSF_DI_YoloAckDriven_Minindn.py`。行号对应本轮源码�
 | ID | Severity | Location | Finding and evidence boundary | Disposition / closing action |
 |---|---|---|---|---|
 | A01 | HIGH | N/ProtectedRuntime.cpp；N/NativeProviderHandler.cpp；R；evidence/t001-t002-process-integration-20260905.md | 初审发现 runtime 无条件拒绝、缺 factory、保护 Y-B 使用 Python Provider。现有 native Ed25519/P-256 正向链、T006 实际负例、helper 生命周期修复，以及维护进程集成与 EC 泄漏修复的 ASAN 证据。 | PARTIAL — T002 仍需全部资源/异常路径验收及剩余 handler 源码闭包。 |
-| A02 | HIGH | P；evidence/t001-t002-process-integration-20260905.md | 初审发现授权顺序、独立模型绑定、磁盘读取及清理缺口。修复后生产授权先于装配，维护进程测试验证错误收件人提前拒绝、磁盘密文/错误内容密钥在 AEAD 层拒绝，Python 内容密钥零化且 canonical 保留。 | PARTIAL — 已有装配/存储修复与真实进程定向证据；全部 external-data、准备失败、取消/过期与资源上界仍需核查。 |
+| A02 | HIGH | P；evidence/t001-request-lifecycle-20260905.md | 授权顺序、独立模型/策略绑定、实际磁盘读取与两类明文清理已修复。12 项失败回归定位请求取消/截止漏检，4 项失败回归定位策略快照替换；修复覆盖准备及实际 worker 排队后的重新校验。 | CLOSED — T001 逐项验收 PASS：最终 151 项定向回归、6 个真实 Python 进程用例；inline/external、成功/异常/取消/过期均有检查。 |
 | A03 | HIGH | P:1445；tests/python/test_spec181_provider_grant.py:445 | 原实现未核对 Selection grant 摘要，权威另签的同上下文 grant 可替换选中密钥。新回归实测 `ProtectedGrantRejected not raised`。 | CLOSED — `ff7b5c3b` 增加封印摘要比对；RED 1 failed，GREEN 34 passed，见专项证据。 |
 | A04 | HIGH | U；R；ProtectedRuntime.cpp；evidence/t006-production-repair-20260905.md | 初审发现 User 内部 probe 冒充 Provider 拒绝。现已移除该成功判据，记录并核对实际发布、Provider verifier、请求/attempt/Provider 与封印计划；三种真实变异和有效 grant 控制通过。 | CLOSED — T006 定向生产验收 PASS；正式同源矩阵仍归 T005/T008。 |
 | A05 | HIGH | scripts/run_spec181_y_n_matrix_retry.py；R；evidence/t005-evidence-repair-20260905.md | 旧 driver 删除 attempt、重试任意异常并取首个 PASS，已停用；维护矩阵改为首个失败即停止，保留原始结果。新增 5 项失败回归，修复后相关 118 项检查 PASS。 | PARTIAL — 证据覆盖/跨运行挑选入口已移除；完整源/构建/配置闭包审查仍归 T007，正式同源矩阵待 T005/T008。 |
 | A06 | HIGH | plan.md revision 4 Summary / Ownership / Gate order；spec.md SC-001 | 计划同时指定 user 与 Controller 权威，已延期撤销仍写入成功条件；审计依赖后续资格，而资格又依赖审计。 | CLOSED（设计）— revision 5 统一进程内权威、保留延期边界，T007 PASS 先于 T005/T008；不扩大范围。 |
 | A07 | HIGH | tests/python/test_spec181_assembly_parity.py；tests/fixtures/spec181/assembly-vectors-v1.json；evidence/t003-assembly-parity-20260905.md | 初审发现 grant parity 冒充装配覆盖。现已添加 8 个固定装配向量，分别经过 Python 直接入口和真实 C++ 入口/正常 helper，验证字节、摘要、ORT CPU 结果与变异拒绝。 | CLOSED — 16 项装配检查 + 3 项 grant parity PASS；格式算法共用 Python 实现，不声称独立 C++ 算法或网络资格。 |
-| A08 | HIGH | U；security/registry_keys.py；evidence/t001-registry-repair-20260905.md | 初审发现硬编码发布身份和空模型白名单。当前接线校验注册表算法、公钥摘要、模型/epoch，区分 requester 与 authority，并绑定最终发布 root；100 项定向 unit 通过。 | PARTIAL — 注册表与逻辑身份修复已接线；T006 三种生产变异已验收，T001 策略与发布/消费完整验收仍开放；冻结注册表保持不变。 |
+| A08 | HIGH | U；security/registry_keys.py；evidence/t001-request-lifecycle-20260905.md | 注册表算法、公钥摘要、模型/epoch、独立逻辑身份与最终 root 允许列表已接线；实际 user/native 控制和维护 Python 消费链有证据，本轮注册表与 seam 回归通过。 | CLOSED — T001 任务验收完成；冻结注册表保持不变，正式同源资格仍归后续任务。 |
 | A09 | MEDIUM | tasks.md revision 4；T001/T002/T004/T006 证据；旧 audit.md | 五项任务打勾但缺其约定生产 integration；T004 测试明确使用 fake native；声称的 provider integration 文件不存在。任务加粗语法还导致扫描器解析为 0 tasks。 | CLOSED（进度/设计）— 恢复未完成标记并列出已有实现，规范 12 个 T 任务、4 个故事与三层证据。真实验收仍归所属任务。 |
 | A10 | MEDIUM | active-context health；failure index | 活动 feature 已为 181，但托管 plan 链接仍指 180；failure index 未指向当前 181 失败。 | CLOSED — 链接、索引已修复；project/active health 均 exit 0，当前文件来源 fresh。 |
 
 ## Traceability Gaps
 
-- FR-002/003/013：T001/T002 已有真实 grant 接线、维护进程集成和定向清理证据，全部异常/资源边界及 handler 源码闭包仍开放。
+- FR-002/003/013：T001 的任务验收已完成；T002 已有真实 grant 接线、维护进程集成和定向清理证据，native handler 源码闭包及剩余边界核对仍开放。
 - FR-004：T006 实际 Provider 拒绝网络证据已关闭 A04；正式同源矩阵由 T005/T008 验收。
 - FR-012：T003 固定装配向量已完成双入口字节/摘要与 ORT CPU 检查，A07 CLOSED。
 - FR-005/011：T004 真实启动/取消验收已完成，依赖图保留；后续源变更需按影响重新验证。
@@ -46,14 +46,14 @@ R = `Experiments/NDNSF_DI_YoloAckDriven_Minindn.py`。行号对应本轮源码�
 | 2 Necessity and Occam | PASS（修复规划） | 复用既有机制，不新增协议；grant 与装配各自有验收价值。 |
 | 3 Architecture and ownership | BLOCK | native 生产链与注册表消费已接线并有定向证据，剩余 handler 源码闭包和完整异常验收未闭合。 |
 | 4 Cross-document consistency | PASS（修订后设计） | 统一权威、撤销边界、七子用例、验收依赖与映射。 |
-| 5 Code fact verification | BLOCK | A07 装配 parity 已验收；A01/A02 的完整生产闭包仍未完成。 |
+| 5 Code fact verification | BLOCK | A02 Python 和 A07 装配 parity 已验收；A01 native 的完整源码闭包仍未完成。 |
 | 6 Security and distributed correctness | BLOCK | 摘要替换已修复；前置授权、存储、清理、策略仍有缺口。 |
 | 7 Task executability | PASS（修订后计划） | 12 个内聚任务；定向修复→审计→资格，包含 T004。 |
 | 8 Validation design | BLOCK（当前实现） | Y-N-E production oracle 已验收；旧重试器已停用，维护矩阵首个失败即停止；其余生产覆盖与同源闭包仍待闭合。 |
 | 9 Evidence integrity | BLOCK（资格） | 旧 PASS 降为诊断，34 项回归严格为 unit；没有新矩阵。 |
 | 10 Frozen evidence protection | PASS（本轮变更边界） | 未修改 Spec180 冻结证据；不认可重试器覆盖行为。 |
 | 11 Migration and rollback | CONDITIONAL PASS | 延期与临时路径 owner/删除条件明确，删除验收仍待执行。 |
-| 12 Verdict gate | BLOCK | A01/A02/A05/A08 未闭合，禁止资格晋升。 |
+| 12 Verdict gate | BLOCK | A01/A05 的当前源/构建/配置闭包未闭合，禁止资格晋升。 |
 
 ## Metrics and Task Cohesion
 
@@ -82,7 +82,8 @@ R = `Experiments/NDNSF_DI_YoloAckDriven_Minindn.py`。行号对应本轮源码�
 通过，见 `evidence/t001-provider-repair-20260905.md`。这不是重新审计
 PASS。后续 A08 注册表公钥/策略、逻辑身份和最终 root 允许列表已接线，
 100 项定向 unit 通过，见 `evidence/t001-registry-repair-20260905.md`。
-真实网络验收及其他控制性缺口仍开放。
+后续维护真实进程集成与请求生命周期验收已完成 T001，见
+[T001 完成审查](evidence/t001-request-lifecycle-20260905.md)。其他控制性缺口仍开放。
 T002 的 `ProtectedRuntime` 已接入真实 verifier 和受管内容密钥，
 18 项定向 C++ 用例通过，见 `evidence/t002-runtime-repair-20260905.md`；
 后续 native store 与私有目录清理已有实现，20 项 C++ 和 55 项 Python/
@@ -96,15 +97,14 @@ factory 的 P-256 凭据入口缺口已由实际失败回归确认并修复，8 
 `835f20f9` 修复 Python loader、recipient map 与实际 EC 信封创建，
 134 项检查及重建后的四收件人 P-256 Y-B 控制 PASS，见
 [P-256 生产链](evidence/t002-p256-production-20260905.md)。任务指定的
-维护 integration 测试、剩余 handler 源码闭包和全部资源/异常路径
-验收仍未完成，A01 未整体关闭；
+维护 integration 与 P-256 ASAN 已通过，见 [维护进程集成](evidence/t001-t002-process-integration-20260905.md)。
+剩余 native handler 源码闭包与边界核对仍未完成，A01 未整体关闭；
 这些更新不改变本审计 BLOCK 裁决。
 
-1. T001：在装配前完成独立绑定与授权；补注册表消费、模型/weights 密文
-   读取及全错误路径清理，建立真实发布/获取的定向进程测试。
+1. T001 已完成；后续相关源变更按影响复验已有注册 handler 与真实
+   进程测试，不把当前完成状态当作未来候选的资格证据。
 2. T002：native Ed25519/P-256 正向链与 T006 负例已有证据，继续
-   完成维护 integration 测试、全部取消/过期和资源上界验收及剩余
-   handler 源码提交。T003 已完成 grant 与装配两组 parity。
+   核对剩余边界并完成 handler 源码提交。T003 已完成 grant 与装配两组 parity。
    T004 已补当前 build 的真实就绪/取消/无热转证据并完成定向验收，
    见 [生命周期验收](evidence/t004-lifecycle-acceptance-20260905.md)；
    此项关闭不改变整体 BLOCK 裁决。

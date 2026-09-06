@@ -37,7 +37,7 @@ Spec 180 的矩阵冻结为历史，未来证据路径不表示文件已存在�
 |---|---|---|---|
 | `core/protected_artifacts.py`、`security/*` | T001, T006 | existing（Spec 180 提交 `d36438c2` + 2026-09-05 撤销清理：规范编码 + 进程内权威 + seam + 注册表，无撤销账本） | 签发/发布/获取/解包的生产连线；29 个编码测试作为回归基线 |
 | `app_sdk/placement.py` grant seam、`sdk/placement.py` grant view | T001, T002 | existing（seam 已扩展，`AuthorityBackedGrantProvider` 就绪） | 真实资格路径使用非 `plaintext-v1` 纪元并通过 seam |
-| `provider.py` 装配入口 | T001 | partial（维护进程测试验证真实 grant 获取/装配、错误收件人、磁盘变异/错误密钥拒绝及清理；全部异常/资源边界仍待补）| `evidence/t001-t002-process-integration-20260905.md`；保护纪元下规范名获取 + 解包 + 租约 + 零化 |
+| `provider.py` 装配入口 | T001 | PASS（任务验收）：真实获取/装配与负例、独立策略绑定、inline/external 清理、请求/排队取消与过期；151 项定向回归、6 个真实进程用例通过 | `evidence/t001-request-lifecycle-20260905.md`；正式 MiniNDN 资格仍由 T005/T008 验收 |
 | `cpp/ndnsf-di/NativeProviderHandler.cpp`、`NativeProtectedProvider.{hpp,cpp}`、`NativeProtectedGrantCredentials.cpp`、`NativeProtectedGrantTransport.cpp`、`ProtectedRuntime.{hpp,cpp}`、`NativeGrantVerifier.{hpp,cpp}`、`_ndnsf.cpp` | T002, T003 | partial（native Ed25519/P-256 正向链和 T006 负例已有真实证据；维护进程集成与 P-256 ASAN PASS；剩余 handler 源码及全部资源/异常验收仍待闭合）| `evidence/t001-t002-process-integration-20260905.md`；grant 精确名获取、权威校验、KeyChain 解包、parity |
 | `ServiceUser.publish_signed_app_data` 发布路径 | T001 | existing（runner 目录发布已使用）| grant Data 经此路径发布并被 Provider 精确名获取 |
 | `Experiments/NDNSF_DI_YoloAckDriven_Minindn.py` | T005, T006, T008 | existing（barriered runner + 语义判定已修复）| Y-N 全矩阵语义重跑 + Y-A/Y-B 资格 |
@@ -51,8 +51,8 @@ Spec 180 的矩阵冻结为历史，未来证据路径不表示文件已存在�
 
 | Criterion | Tasks | Required evidence and current status |
 |---|---|---|
-| SC-001 | T001/T002/T003/T005/T006 | 真实 production 往返/负例已有定向证据；完整资源/异常边界及正式同源 MiniNDN 未闭合；撤销延期 |
-| SC-002 | T001/T002/T004/T005/T006/T007 | T004/T006 的真实入口/边界验收完成；维护集成补 Python/native grant 链，全部异常与 T007 审计仍开放 |
+| SC-001 | T001/T002/T003/T005/T006 | T001 Python 与 T003/T006 验收完成；T002 native 源码闭包及正式同源 MiniNDN 未闭合；撤销延期 |
+| SC-002 | T001/T002/T004/T005/T006/T007 | T001/T004/T006 的任务边界验收完成；T002 剩余源码/边界与 T007 审计仍开放 |
 | SC-003 | T005/T008 | planned: `evidence/local-qualification.md`；同源 Y-A/Y-B/Y-N 与全部退出/清理 |
 | SC-004 | T007/T008 | `audit.md`、`evidence/post-implementation-audit.md` 当前 BLOCK；local-suite inventory 待执行 |
 | SC-005 | T009/T010/T011 | planned: SIF/replay/Tiger 证据；不得以 Python 诊断替代 native |

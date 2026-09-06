@@ -1398,6 +1398,24 @@ class DistributedInferenceProvider:
             ),
         )
 
+    @staticmethod
+    def _require_protected_request_active(ctx, projection, grant_expires_at_ms=None):
+        """Fence protected consumption using Core cancellation and sealed time bounds."""
+        from .core import ProtectedGrantRejected
+        if getattr(ctx, "is_streamed", False):
+            cancelled = getattr(ctx, "stream_cancelled", False)
+            if callable(cancelled):
+                cancelled = cancelled()
+            if cancelled:
+                raise ProtectedGrantRejected("protected request cancelled")
+        now_ms = int(time() * 1000)
+        deadline_ms = int(getattr(projection, "deadline_ms", 0) or 0)
+        if deadline_ms and now_ms >= deadline_ms:
+            raise ProtectedGrantRejected("protected request deadline expired")
+        if grant_expires_at_ms is not None and now_ms >= grant_expires_at_ms:
+            raise ProtectedGrantRejected("grant expired before protected consumption")
+        return deadline_ms - now_ms if deadline_ms else None
+
     def _verify_protected_grant(
         self, ctx, v3_projection, v3_role_spec, lease_registry,
         *, _fetch_grant_data=None,
@@ -1413,7 +1431,9 @@ class DistributedInferenceProvider:
         binding = v3_projection.grant_binding
         if binding is None:
             raise ProtectedGrantRejected("protected V3 Selection carries no Provider grant binding")
+        registered_key = False
         try:
+            self._require_protected_request_active(ctx, v3_projection)
             # The name is authenticated by Selection, independently of the
             # returned payload. This also supplies Merge's model commitment.
             components = binding.grant_name.split("/MODEL/")
@@ -1431,13 +1451,19 @@ class DistributedInferenceProvider:
                     or binding.request_id != v3_projection.request_id
                     or binding.attempt != v3_projection.attempt
                     or binding.plan_core_digest != v3_projection.plan_core_digest
+                    or binding.security_policy_snapshot_digest
+                    != v3_projection.security_policy_snapshot_digest
                     or binding.protection_epoch != v3_role_spec.protection_epoch):
                 raise ValueError("grant reference binding mismatch")
             hints = [value.strip() for value in os.environ.get(
                 "SPEC181_GRANT_FORWARDING_HINT", "").split(",") if value.strip()]
+            remaining_ms = self._require_protected_request_active(ctx, v3_projection)
+            timeout_ms = min(self._grant_fetch_timeout_ms, remaining_ms) \
+                if remaining_ms is not None else self._grant_fetch_timeout_ms
             fetch = _fetch_grant_data or (lambda name: fetch_exact_data_packet(
-                name, timeout_ms=self._grant_fetch_timeout_ms, forwarding_hints=hints))
+                name, timeout_ms=timeout_ms, forwarding_hints=hints))
             packet = fetch(binding.grant_name)
+            self._require_protected_request_active(ctx, v3_projection)
             grant = grant_from_wire(packet.content)
             if grant.policy_authority != self._grant_authority_identity:
                 raise ValueError("grant policy authority differs from configured issuer")
@@ -1465,11 +1491,15 @@ class DistributedInferenceProvider:
                 expected_model_manifest_digest=expected_manifest,
                 expected_protection_epoch=v3_role_spec.protection_epoch,
                 now_ms=int(time() * 1000))
+            key = lease_registry.register_secret("protected-content-key", content_key)
+            registered_key = True
             if "DISK_CIPHERTEXT_ASSEMBLED" not in grant.allowed_residency_tiers:
                 raise ValueError("grant forbids assembled ciphertext residency")
-            key = lease_registry.register_secret("protected-content-key", content_key)
+            self._require_protected_request_active(ctx, v3_projection, grant.expires_at_ms)
             return key, expected_manifest, grant.expires_at_ms
         except Exception as exc:
+            if registered_key:
+                lease_registry.zeroize("protected-content-key")
             raise ProtectedGrantRejected(f"grant verifier rejected: {exc}") from exc
 
     def _qualify_protected_assembly(
@@ -1486,8 +1516,7 @@ class DistributedInferenceProvider:
             key, manifest, expires_at_ms = _verified_grant or self._verify_protected_grant(
                 ctx, v3_projection, v3_role_spec, registry,
                 _fetch_grant_data=_fetch_grant_data)
-            if int(time() * 1000) >= expires_at_ms:
-                raise ValueError("grant expired before protected assembly")
+            self._require_protected_request_active(ctx, v3_projection, expires_at_ms)
             model_path = Path(str(execution.artifact_paths.get("model", "")))
             if not model_path.is_file() or model_path.is_symlink():
                 raise ValueError("protected assembly has no regular model artifact")
@@ -1546,6 +1575,7 @@ class DistributedInferenceProvider:
             profile_digest = canonical_digest(_PROTECTED_ASSEMBLY_STORAGE_PROFILE)
             sealed_paths = []
             for kind, basename, plaintext in entries:
+                self._require_protected_request_active(ctx, v3_projection, expires_at_ms)
                 sealed = encrypt_assembled_entry(
                     key, plaintext, entry_kind=kind,
                     model_manifest_digest=manifest,
@@ -1557,6 +1587,7 @@ class DistributedInferenceProvider:
             registry.zeroize("assembly-input")
             registry.zeroize("assembly-external-input")
             for kind, basename, cipher_path in sealed_paths:
+                self._require_protected_request_active(ctx, v3_projection, expires_at_ms)
                 # Load from disk, not the in-memory object used for sealing.
                 stored = AssembledCiphertextV1.from_bytes(cipher_path.read_bytes())
                 if (stored.model_manifest_digest != manifest
@@ -1565,8 +1596,7 @@ class DistributedInferenceProvider:
                     raise ValueError("assembled entry authentication context mismatch")
                 plaintext = decrypt_assembled_entry(key, stored, entry_kind=kind)
                 registry.register("loaded-" + kind, work_dir / basename, plaintext)
-            if int(time() * 1000) >= expires_at_ms:
-                raise ValueError("grant expired before protected model exposure")
+            self._require_protected_request_active(ctx, v3_projection, expires_at_ms)
             return replace(execution, artifact_paths={
                 **dict(execution.artifact_paths),
                 "model": work_dir / "assembled-role.onnx",
@@ -2600,6 +2630,8 @@ class DistributedInferenceProvider:
                     raise RuntimeError(
                         "collaboration assignment has no artifact and provider "
                         "was not registered with has_model=True")
+                if verified_grant is not None:
+                    self._require_protected_request_active(ctx, v3_projection, verified_grant[2])
                 if (v3_role_spec is not None
                         and v3_role_spec.role_kind == "COMPONENT_SET"
                         and v3_role_spec.node_indices
@@ -2726,6 +2758,8 @@ class DistributedInferenceProvider:
                     if sequence == 1:
                         report("LOADING", 0.70)
                     report("WARMING", 0.90)
+                if verified_grant is not None:
+                    self._require_protected_request_active(ctx, v3_projection, verified_grant[2])
             except ProtectedGrantRejected as exc:
                 sequence += 1
                 self._report_preparation(
@@ -2749,8 +2783,13 @@ class DistributedInferenceProvider:
                 execution=execution, attempt=preparation_attempt)
 
             prefetcher = DependencyPrefetcher(ctx)
+            def protected_handler(runtime_context):
+                # A worker may wait in the executor after preparation succeeds.
+                self._require_protected_request_active(ctx, v3_projection, verified_grant[2])
+                return handler(runtime_context)
             try:
-                self._run_handler(handler, ProviderRuntimeContext(
+                self._run_handler(protected_handler if verified_grant is not None else handler,
+                    ProviderRuntimeContext(
                     ndnsf=terminal_context,
                     execution=execution,
                     request=request,
@@ -2773,6 +2812,8 @@ class DistributedInferenceProvider:
                     terminal_response_owner=v3_terminal_response_owner,
                     enforce_dataflow_ownership=(v3_projection is not None),
                 ))
+            except ProtectedGrantRejected as exc:
+                ctx.fail(f"DI_PROTECTED_GRANT_REJECTED: {exc}")
             finally:
                 prefetcher.shutdown()
                 release_selection_reservation("ROLE_HANDLER_RETURNED")

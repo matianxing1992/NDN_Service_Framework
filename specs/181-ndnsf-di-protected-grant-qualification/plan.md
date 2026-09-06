@@ -9,8 +9,8 @@
 同一候选的本地 YOLO 功能资格、exact-SIF replay 与一次 Tiger Y-B。
 当前停在 G0：Python/native 授权链已接线，native Ed25519/P-256
 定向正向控制和真实负例已有证据；维护的进程集成与 P-256 资源检查
-已通过。T001/T002 的全部异常/资源边界及 handler 源码闭包仍未完成，
-T007 保持 BLOCK，后续门保持关闭。
+已通过。T001 的请求生命周期与完整任务验收已关闭；T002 的 native
+handler 源码闭包及剩余边界核对仍未完成。T007 保持 BLOCK，后续门保持关闭。
 
 ## Gate Order
 
@@ -80,6 +80,9 @@ T008 保留当前源身份与全部平面摘要；T009 只能封印这些相同�
 4. **Protected storage**。`MODEL_PROTO` 与 `EXTERNAL_DATA` 均使用
    FR-013 既有 HKDF/AES-256-GCM 契约；暂存限定在 role workdir，
    明文全部登记租约，覆盖正常、取消和异常清理，保留 canonical 源。
+   Python 消费路径以 Core 取消状态及认证 Selection 截止时间约束
+   grant 获取预算，在准备、明文暴露与实际排队 worker 开始前复验，
+   并同时受 grant 自身有效期约束；拒绝通过既有租约作用域清理。
    密文变异与错误密钥须到达生产解密读取边界；helper 自加密/解密
    往返不证明实际加载路径具备该拒绝能力。
 5. **Independent parity claims**。T003 分别锁定 grant 解包向量与
