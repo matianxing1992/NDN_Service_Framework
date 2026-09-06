@@ -2637,6 +2637,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
         coordinatorConfig.localProvider = ctx.localProvider().toUri();
         coordinatorConfig.role = role;
         coordinatorConfig.initialInputs = std::move(initialInputs);
+        coordinatorConfig.executionGuard = executionGuard;
         coordinatorConfig.finalResponseScope = config.finalResponseScope;
         coordinatorConfig.maxEpochs = authenticatedGeneration.maxEpochs;
         coordinatorConfig.tokenInputName = authenticatedGeneration.tokenInputName;

@@ -2,6 +2,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedArtifactStore.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderRuntime.hpp"
 
 #include <boost/property_tree/json_parser.hpp>
 #include <fstream>
@@ -127,6 +128,61 @@ BOOST_FIXTURE_TEST_CASE(ProtectedRuntimeWorkerRejectsExpiryDuringCompute, BoundG
 
 BOOST_FIXTURE_TEST_CASE(ProtectedRuntimeWorkerRejectsCancellationDuringCompute, BoundGrantFixture)
 { checkWorkerFence(*this, true, true); }
+
+static void
+checkRegisteredRunnerFence(BoundGrantFixture& fixture, bool cancelRequest, bool cached)
+{
+  bool cancelled = false;
+  bool cleared = false;
+  fixture.config.shouldCancel = [&] { return cancelled; };
+  ProtectedRuntime authority(fixture.binding, fixture.config);
+  authority.verifyGrant(fixture.binding, fixture.now);
+  authority.registerHostPlaintextLease("model", [&] { cleared = true; });
+  const auto invalidate = [&] {
+    if (cancelRequest) cancelled = true;
+    else fixture.now = fixture.binding.expiresAtMs;
+  };
+  int executions = 0;
+  NativeProviderRuntime runtime(1);
+  runtime.registerRunner("stage0", [&] (const RoleExecutionContext&) {
+    ++executions;
+    if (!cached) invalidate();
+    TensorBundle output;
+    output.payload = {1, 2, 3};
+    return std::map<std::string, TensorBundle>{{"result", output}};
+  });
+  const auto execute = [&] {
+    return runtime.executeRoleAsync("registered-worker", RoleSpec{"stage0", {}, {}},
+      std::make_shared<NoDependencyIo>(), {}, {},
+      [&] { authority.withContentKey(fixture.now, [] (const auto&) {}); });
+  };
+  if (cached) {
+    for (int attempt = 0; attempt < 2; ++attempt) {
+      const auto result = execute().get();
+      BOOST_CHECK_EQUAL(result.exactForwardCacheHit, attempt == 1);
+      BOOST_CHECK(!cleared);
+    }
+    invalidate();
+  }
+  BOOST_CHECK_EXCEPTION(execute().get(), std::runtime_error, [] (const auto& error) {
+    return std::string(error.what()).find("DI_PROTECTED_GRANT_REJECTED") != std::string::npos;
+  });
+  BOOST_CHECK_EQUAL(executions, 1);
+  BOOST_CHECK(cleared);
+  BOOST_CHECK(authority.state() == ProtectedRuntimeState::Zeroized);
+}
+
+BOOST_FIXTURE_TEST_CASE(ProtectedRuntimeRegisteredRunnerRejectsExpiryDuringCompute, BoundGrantFixture)
+{ checkRegisteredRunnerFence(*this, false, false); }
+
+BOOST_FIXTURE_TEST_CASE(ProtectedRuntimeRegisteredRunnerRejectsCancellationDuringCompute, BoundGrantFixture)
+{ checkRegisteredRunnerFence(*this, true, false); }
+
+BOOST_FIXTURE_TEST_CASE(ProtectedRuntimeRegisteredRunnerRejectsExpiredCachedResult, BoundGrantFixture)
+{ checkRegisteredRunnerFence(*this, false, true); }
+
+BOOST_FIXTURE_TEST_CASE(ProtectedRuntimeRegisteredRunnerRejectsCancelledCachedResult, BoundGrantFixture)
+{ checkRegisteredRunnerFence(*this, true, true); }
 
 BOOST_FIXTURE_TEST_CASE(ProtectedRuntimeWorkerAcceptsValidRequestAndCachedResult, BoundGrantFixture)
 {
