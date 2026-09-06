@@ -1,0 +1,1186 @@
+{
+  "artifacts": {
+    "case/subcases/Y-N-C/lifecycle.jsonl": "sha256:65c0e9bc3f2fda6d0a38e82a25f2be6f447313eb6e433c20cce92506915a5ab7",
+    "case/subcases/Y-N-C/negative-evidence.json": "sha256:fac7e22750fc40121aab355e2c3b4e2f962f9b9e99f297168d6dd5f3d20ae3f2",
+    "case/subcases/Y-N-C/provider-BackboneNeck.log": "sha256:779153eaa6f17ec9ac5939e0de6d3a7e4288c09b08d10e26b4734617008fd185",
+    "case/subcases/Y-N-C/provider-DetectShard0.log": "sha256:c80680c88ebdcaa632e6df12b26221899bd1d3eb2ee692cad31b730f87818c56",
+    "case/subcases/Y-N-C/provider-DetectShard1.log": "sha256:7b4027a400a4961545a3f7b82588bb399ffcbcb96d426f580e0570baa4937cb9",
+    "case/subcases/Y-N-C/provider-Merge.log": "sha256:f9426dfafea7ca2655a0c298e6ffbbae2815e0935e1c4ea6bdd5496dbf4ecd1c",
+    "case/subcases/Y-N-C/subcase-result.json": "sha256:5a226a263a71f01b4a043598ddd71a146765ba5da9a352b8375b3b8d2b86472f",
+    "case/subcases/Y-N-E/EXPIRED/lifecycle.jsonl": "sha256:3bed49cf3743767e61ef829073d0814f44f544a99a4594c9045136356c3efc2d",
+    "case/subcases/Y-N-E/EXPIRED/negative-evidence.json": "sha256:3bd0c381bbdb85460599b9dcea14837ed2f5b94a436d69ee1f84c0c5a76142b8",
+    "case/subcases/Y-N-E/EXPIRED/provider-BackboneNeck.log": "sha256:1963445db86ed181e21cec2329df13c65fb6ba8797c0e6c896e7b0b9b883025b",
+    "case/subcases/Y-N-E/EXPIRED/provider-DetectShard0.log": "sha256:e7c995e46bd644369782252f5b400f92a8cc2b796db990ccedd2901d28044bea",
+    "case/subcases/Y-N-E/EXPIRED/provider-DetectShard1.log": "sha256:6f73db56d60de88c7da6ed62f73019ebae92e226b53ce83dfb0c4da8e638529e",
+    "case/subcases/Y-N-E/EXPIRED/provider-Merge.log": "sha256:c3f4de8855e5b963c21b4c22df17af43f01077e1c36f35c181493c1b3b3d246b",
+    "case/subcases/Y-N-E/EXPIRED/subcase-result.json": "sha256:a95875224274708d453525c51765ae2b01dd04a20a07cafdaf16c1c3883a594f",
+    "case/subcases/Y-N-E/FORGED_AUTHORITY/lifecycle.jsonl": "sha256:72abcbc56ea74ecae185b9bba2ed5e228132ec17a6b151d8614555dce3cc5ecb",
+    "case/subcases/Y-N-E/FORGED_AUTHORITY/negative-evidence.json": "sha256:0321249aa3552a50855179027fddb1b832b4a76a95b114df316c70da4c950c6c",
+    "case/subcases/Y-N-E/FORGED_AUTHORITY/provider-BackboneNeck.log": "sha256:46ed245db18128ecb9921ab0903b9e448b04f8f17ee2a9e5c5a437a2d740fb41",
+    "case/subcases/Y-N-E/FORGED_AUTHORITY/provider-DetectShard0.log": "sha256:e7780316895321549d4c7785cd3372cf46a9d61323b6fcd10f4b1c52151f302e",
+    "case/subcases/Y-N-E/FORGED_AUTHORITY/provider-DetectShard1.log": "sha256:312a4f2860add814e979f49f008bb6709b600785cf831a7def1b5e29f010a04d",
+    "case/subcases/Y-N-E/FORGED_AUTHORITY/provider-Merge.log": "sha256:04822b09f4dfd9804e76f4da1d85afd8de2a0ccc199ededa499fb1806019299a",
+    "case/subcases/Y-N-E/FORGED_AUTHORITY/subcase-result.json": "sha256:a95875224274708d453525c51765ae2b01dd04a20a07cafdaf16c1c3883a594f",
+    "case/subcases/Y-N-E/WRONG_RECIPIENT/lifecycle.jsonl": "sha256:8a5b72290164a9861d94cd79e25b8f49ec6d72f0265aeb42775745ea2f29b888",
+    "case/subcases/Y-N-E/WRONG_RECIPIENT/negative-evidence.json": "sha256:0cbccfdc42b94567222ef6a32cd6142bd5a00084cdf0f73c6f1abf660ac476ba",
+    "case/subcases/Y-N-E/WRONG_RECIPIENT/provider-BackboneNeck.log": "sha256:2d2f87f1d40dd6050b4d69f7b7085cc2badb52e53897f7d5b092e84012909289",
+    "case/subcases/Y-N-E/WRONG_RECIPIENT/provider-DetectShard0.log": "sha256:52c34d619d5193f11a319f29562ce2488343ebd47b2dc51b9c45368ed66cd27f",
+    "case/subcases/Y-N-E/WRONG_RECIPIENT/provider-DetectShard1.log": "sha256:adf0e83b1456a6c5e30ebc0de7b0a4da2134cb7cea9ecc6c5963877035dc0219",
+    "case/subcases/Y-N-E/WRONG_RECIPIENT/provider-Merge.log": "sha256:03d503ac3c169263fdfafe2b8fe05707d27cd6e05bb4be6c6de174474b323695",
+    "case/subcases/Y-N-E/WRONG_RECIPIENT/subcase-result.json": "sha256:a95875224274708d453525c51765ae2b01dd04a20a07cafdaf16c1c3883a594f",
+    "case/subcases/Y-N-E/grant-mutation-matrix.json": "sha256:9dc9f438757129f1056581c1f7886cffcbd295dbd41262a5d7a6a60d0987fdc3",
+    "case/subcases/Y-N-I/lifecycle.jsonl": "sha256:187d78520c3e9ffbc997f4e0e2e1ea5614c8302250264868af651591198aac6c",
+    "case/subcases/Y-N-I/negative-evidence.json": "sha256:4d2b43e13eb44bb146f50e69c6ac072ecebddc1acbf1829b41202aa47ed8a3e7",
+    "case/subcases/Y-N-I/provider-BackboneNeck.log": "sha256:036ec537bde0ae916947b7636334532df03b7726f88ff7eebffd109882585ded",
+    "case/subcases/Y-N-I/provider-DetectShard0.log": "sha256:df963483688a47d55f39333905cc8789e08f07b3de1880269012323f6497e4fc",
+    "case/subcases/Y-N-I/provider-DetectShard1.log": "sha256:27474c7e2922f62447cc4a240e4a74617be47a6705eb4e3a77099a108e34b601",
+    "case/subcases/Y-N-I/provider-Merge.log": "sha256:e780b5efbab87e77ea498486ff807fd1ea0262fe67de43278d0ad0aa1b247ff3",
+    "case/subcases/Y-N-I/subcase-result.json": "sha256:4adc251a6c19c894b9e486bab2efa19d373c6081bea21c5ff7f520f2ac135689",
+    "case/subcases/Y-N-L/lifecycle.jsonl": "sha256:f43fa33169f0ce615db90781608985e51eebca49e959494cf6e59e7cd0b62833",
+    "case/subcases/Y-N-L/negative-evidence.json": "sha256:860cff2a9b732864d253d6ad085c5342890c73da9c724faf195421465d3b3290",
+    "case/subcases/Y-N-L/provider-BackboneNeck.log": "sha256:f04d94c6f7077e9c1eb76d19fd1b0451f11665596fa142fe2efebfe4a7d92dd8",
+    "case/subcases/Y-N-L/provider-DetectShard0.log": "sha256:f756ba8791ebcfff00f9554ed9c213020db33320b273869faaec56c56ac30ae7",
+    "case/subcases/Y-N-L/provider-DetectShard1.log": "sha256:a239870ae9ec4fadf2b0c65cc7869b0e2d5db65e990c16f03f5105465c87245e",
+    "case/subcases/Y-N-L/provider-Merge.log": "sha256:fba5b44a99d0df9b1df1f8f6b6e3e9d9d30651b73c82f7a08b2100ca452b0fcf",
+    "case/subcases/Y-N-L/subcase-result.json": "sha256:37da10dc89c3375b72b8fc7990baeb7ad88c00d55825f5c850d1b7ff64db6bfb",
+    "case/subcases/Y-N-O/child-exits.json": "sha256:10fde819087ddacf6d36f75ae2c9acbd51f903d0ef073b0ce51a2149f1515847",
+    "case/subcases/Y-N-O/lifecycle.jsonl": "sha256:38c3b3cfa0e40f8dad604bc90ff7a205bdcbbe573c507eaa7c536c72fcf6b601",
+    "case/subcases/Y-N-O/provider-BackboneNeck.log": "sha256:a7561147c924d352e87074f47ee3920e784a9296e5e042c7cb78c7560fd9a367",
+    "case/subcases/Y-N-O/provider-DetectShard0.log": "sha256:1d68b5a7de783009245ddbf97f08071485e98020cb726768528cc5155938de7c",
+    "case/subcases/Y-N-O/provider-DetectShard1.log": "sha256:00f0c8293b72fda658b77afe303d9bd12df9619f2108a452fffd676356c6d499",
+    "case/subcases/Y-N-O/provider-Merge.log": "sha256:3e1897d52f11bfecda75b4d2fe5d128badee6ad71e34df9747def50e139a7c32",
+    "case/subcases/Y-N-O/subcase-result.json": "sha256:eae0214541a6c0df72d9aa14924a162384e26341558b94747282e4edfb002241",
+    "case/subcases/Y-N-O/yolo-numerical.json": "sha256:4c2015c8be95df15d5dfcdf20f96abe78c144c1e19d0ce3f7098bc19e41f336f",
+    "case/subcases/Y-N-P/lifecycle.jsonl": "sha256:841a27f34b00a4930037d2bc469a3240123b1d512a77c110b6ae36658f4fe734",
+    "case/subcases/Y-N-P/negative-evidence.json": "sha256:fbc8a52805dec5e0d3de5459f3602d628e116bbb0d0c44850c29afaab30227dd",
+    "case/subcases/Y-N-P/provider-BackboneNeck.log": "sha256:d66cfde00e8bb384930db82b062babaeb24c24e15bda211e3a4079d4d39fd979",
+    "case/subcases/Y-N-P/provider-DetectShard0.log": "sha256:c641b0c2a5077a10b134dc23c7c97ae3dc768be6742ca678b301544c9bdccd1c",
+    "case/subcases/Y-N-P/provider-DetectShard1.log": "sha256:7a919b5e9e70e702e8091247762d1ba134593390294180c5f6bb9cffe14f0628",
+    "case/subcases/Y-N-P/provider-Merge.log": "sha256:13d6bc8738feae2c76d4328076ac5dd6a2d2b46b863159e610a15a3b96f41e65",
+    "case/subcases/Y-N-P/subcase-result.json": "sha256:ce051ac54ffae9e32fc4d8132e0bc7392dcc0bad187f9bd2787e3216d74f823b",
+    "case/subcases/Y-N-R/lifecycle.jsonl": "sha256:0a2a527d9c16df0fbe16f25da5ccaea36eb9128505444f9903ac5db17a51ada9",
+    "case/subcases/Y-N-R/negative-evidence.json": "sha256:485c7b2f77c73390617b26aa06296d78797a43e51ce5d62098ee1814931588f9",
+    "case/subcases/Y-N-R/provider-BackboneNeck.log": "sha256:b150908b832e6b120a60946b01e63af033e19b4226c127665f89d814b0e67a4d",
+    "case/subcases/Y-N-R/provider-DetectShard0.log": "sha256:1abf4571bbd71a7f1551fd0fe6704f9868c7566d2f2e58bc4034b9a4f417ca5a",
+    "case/subcases/Y-N-R/provider-DetectShard1.log": "sha256:765241126c43e4c25ad2d6cf655687ee723f72cf392d608f81da26042c003467",
+    "case/subcases/Y-N-R/provider-Merge.log": "sha256:f3a1e582dc569010c227cd86b4baae8fb57620281034c052483beacfb61718a7",
+    "case/subcases/Y-N-R/subcase-result.json": "sha256:fe9ceca04281950110a939db8bda90e1c4edfcf37d1a89928b9b21450c455679",
+    "case/y-n-matrix-result.json": "sha256:009e07d68a766f1545312b87261884e789cbb207db4404432f1ac3729161215a",
+    "launch-record.json": "sha256:832bf89093859c043be5c59b5f4925c7f5c6405a42671ac3c5272b0badac05ca",
+    "launch-result.json": "sha256:83b47c1f1fd57a4117cae1aa71680ff807571b7c5e49a438893712a5a9f26aff"
+  },
+  "cleanup": {
+    "applicationChildCount": 63,
+    "cleanupErrors": 0,
+    "liveApplicationPidsAtReview": 0,
+    "liveNfdProcessesAtReview": 0,
+    "protectedGrantVariantModelFiles": 0,
+    "remainingStateFiles": 0,
+    "uncollectedApplicationChildren": 0
+  },
+  "environmentDigest": "sha256:a26c8ff3f69e5fd6604912df3bd2d565a37bc089f731ef342c334db0ddb37a17",
+  "inputDigest": "sha256:f18117a882f852de9dde2ad5a917c08ea6443abb35ce8c5c71224d6b25db1b23",
+  "inputIdentityUnchanged": true,
+  "launcherExit": 0,
+  "matrix": {
+    "aggregate": "PASS",
+    "caseId": "Y-N",
+    "schema": "spec180-yolo-yn-matrix-result-v1",
+    "subcases": [
+      {
+        "boundary": "TERMINAL_RESPONSE",
+        "id": "Y-N-O",
+        "outcome": "CONTROL",
+        "status": "PASS"
+      },
+      {
+        "boundary": "PLACEMENT_DECISION",
+        "id": "Y-N-C",
+        "outcome": "FAIL_CLOSED",
+        "status": "PASS"
+      },
+      {
+        "boundary": "ACK_CLOSED",
+        "id": "Y-N-P",
+        "outcome": "FAIL_CLOSED",
+        "status": "PASS"
+      },
+      {
+        "boundary": "PLAN_SEALED",
+        "id": "Y-N-R",
+        "outcome": "FAIL_CLOSED",
+        "status": "PASS"
+      },
+      {
+        "boundary": "PROVIDER_EXECUTION_STARTED",
+        "id": "Y-N-I",
+        "outcome": "FAIL_CLOSED",
+        "status": "PASS"
+      },
+      {
+        "boundary": "PROVIDER_GRANT_VERIFICATION",
+        "id": "Y-N-E",
+        "outcome": "FAIL_CLOSED",
+        "status": "PASS"
+      },
+      {
+        "boundary": "EVIDENCE_ACCEPTANCE",
+        "id": "Y-N-L",
+        "outcome": "FAIL_CLOSED",
+        "status": "PASS"
+      }
+    ]
+  },
+  "nativeBuildReceiptSha256": "sha256:2f4d7e61c6b0406b667af0048d582b5e91165f1823276b691191d1961ee48bd2",
+  "numericalControl": {
+    "atol": 0.001,
+    "attemptId": "attempt-1",
+    "case": "Y-N-O",
+    "expectedShape": [
+      1,
+      50,
+      6
+    ],
+    "fixtureDigest": "sha256:7edf1f524ef450be6ee2304b3c0b47b70c3d72610c18f2f2fa28157d7b8a113c",
+    "inputTensorDigest": "sha256:5a56c22102ec1caa3409b30a10a33d586cbd7b305c90dcd3b99b39b44598ca7f",
+    "manifestDigest": "sha256:9c92d7526f19903a7cfd0acc0e764a466dd4b6d648fbab3a5f0eb640b07edf6d",
+    "matched": true,
+    "maxAbsError": 0.0005340576171875,
+    "oracleDigest": "sha256:ed5a23d73e3cda04677bfc9d895732b44e1455f20d9dc433ae5462eb7b9b7175",
+    "planDigest": "sha256:059b8047109f210a5b4c944fe7aa474096ad88d8c2d13e2aa39af5e995235424",
+    "requestId": "/spec180-y-n-o-cf7ae95cc94b454e",
+    "responseDigest": "sha256:4051addc95ad48e5865bc91c2d29d9fe307dad55bb90740020848aede16d649e",
+    "rtol": 0.0001,
+    "schemaVersion": "spec180-yolo-numerical-v1",
+    "shape": [
+      1,
+      50,
+      6
+    ]
+  },
+  "rawRunId": "spec181-t005-formal-20260906-r19",
+  "runs": [
+    {
+      "children": [
+        {
+          "exitStatus": -2,
+          "name": "controller",
+          "pid": 2129811,
+          "terminationRequested": true
+        },
+        {
+          "exitStatus": 130,
+          "name": "repo",
+          "pid": 2129979,
+          "terminationRequested": true
+        },
+        {
+          "exitStatus": -2,
+          "name": "provider-BackboneNeck",
+          "pid": 2130008,
+          "terminationRequested": true
+        },
+        {
+          "exitStatus": -2,
+          "name": "provider-DetectShard0",
+          "pid": 2130011,
+          "terminationRequested": true
+        },
+        {
+          "exitStatus": -2,
+          "name": "provider-DetectShard1",
+          "pid": 2130013,
+          "terminationRequested": true
+        },
+        {
+          "exitStatus": -2,
+          "name": "provider-Merge",
+          "pid": 2130021,
+          "terminationRequested": true
+        },
+        {
+          "exitStatus": 91,
+          "name": "user",
+          "pid": 2130097,
+          "terminationRequested": false
+        }
+      ],
+      "id": "Y-N-C",
+      "negativeEvidence": {
+        "attemptId": "attempt-1",
+        "boundary": "PLACEMENT_DECISION",
+        "children": [
+          {
+            "exitStatus": -2,
+            "name": "controller",
+            "pid": 2129811,
+            "terminationRequested": true
+          },
+          {
+            "exitStatus": 130,
+            "name": "repo",
+            "pid": 2129979,
+            "terminationRequested": true
+          },
+          {
+            "exitStatus": -2,
+            "name": "provider-BackboneNeck",
+            "pid": 2130008,
+            "terminationRequested": true
+          },
+          {
+            "exitStatus": -2,
+            "name": "provider-DetectShard0",
+            "pid": 2130011,
+            "terminationRequested": true
+          },
+          {
+            "exitStatus": -2,
+            "name": "provider-DetectShard1",
+            "pid": 2130013,
+            "terminationRequested": true
+          },
+          {
+            "exitStatus": -2,
+            "name": "provider-Merge",
+            "pid": 2130021,
+            "terminationRequested": true
+          },
+          {
+            "exitStatus": 91,
+            "name": "user",
+            "pid": 2130097,
+            "terminationRequested": false
+          }
+        ],
+        "lifecycleSha256": "sha256:65c0e9bc3f2fda6d0a38e82a25f2be6f447313eb6e433c20cce92506915a5ab7",
+        "observedPhase": "GRAPH_READY",
+        "reason": "NO_FEASIBLE_CANDIDATE",
+        "requestId": "/spec180-y-n-c-ae6107765d214ac0",
+        "schema": "spec180-negative-evidence-v1",
+        "status": "PASS",
+        "subcase": "Y-N-C"
+      },
+      "result": {
+        "boundary": "PLACEMENT_DECISION",
+        "caseId": "Y-N",
+        "childCount": 7,
+        "expected": "FAIL_CLOSED",
+        "outcome": "FAIL_CLOSED",
+        "reason": "NO_FEASIBLE_CANDIDATE",
+        "schema": "spec180-yolo-subcase-result-v1",
+        "status": "PASS",
+        "subcaseId": "Y-N-C",
+        "terminalResponse": false
+      }
+    },
+    {
+      "children": [
+        {
+          "exitStatus": -2,
+          "name": "controller",
+          "pid": 2137291,
+          "terminationRequested": true
+        },
+        {
+          "exitStatus": 130,
+          "name": "repo",
+          "pid": 2137452,
+          "terminationRequested": true
+        },
+        {
+          "exitStatus": -2,
+          "name": "provider-BackboneNeck",
+          "pid": 2137478,
+          "terminationRequested": true
+        },
+        {
+          "exitStatus": -2,
+          "name": "provider-DetectShard0",
+          "pid": 2137480,
+          "terminationRequested": true
+        },
+        {
+          "exitStatus": -2,
+          "name": "provider-DetectShard1",
+          "pid": 2137483,
+          "terminationRequested": true
+        },
+        {
+          "exitStatus": -2,
+          "name": "provider-Merge",
+          "pid": 2137497,
+          "terminationRequested": true
+        },
+        {
+          "exitStatus": 91,
+          "name": "user",
+          "pid": 2137557,
+          "terminationRequested": false
+        }
+      ],
+      "id": "Y-N-E/EXPIRED",
+      "negativeEvidence": {
+        "attemptId": "attempt-1",
+        "boundary": "PROVIDER_GRANT_VERIFICATION",
+        "children": [
+          {
+            "exitStatus": -2,
+            "name": "controller",
+            "pid": 2137291,
+            "terminationRequested": true
+          },
+          {
+            "exitStatus": 130,
+            "name": "repo",
+            "pid": 2137452,
+            "terminationRequested": true
+          },
+          {
+            "exitStatus": -2,
+            "name": "provider-BackboneNeck",
+            "pid": 2137478,
+            "terminationRequested": true
+          },
+          {
+            "exitStatus": -2,
+            "name": "provider-DetectShard0",
+            "pid": 2137480,
+            "terminationRequested": true
+          },
+          {
+            "exitStatus": -2,
+            "name": "provider-DetectShard1",
+            "pid": 2137483,
+            "terminationRequested": true
+          },
+          {
+            "exitStatus": -2,
+            "name": "provider-Merge",
+            "pid": 2137497,
+            "terminationRequested": true
+          },
+          {
+            "exitStatus": 91,
+            "name": "user",
+            "pid": 2137557,
+            "terminationRequested": false
+          }
+        ],
+        "grantDigest": "sha256:129fc4c5637520f77c2fcaf7b11840a4977dcdfce6f2bb28294de5582211dbeb",
+        "lifecycleSha256": "sha256:3bed49cf3743767e61ef829073d0814f44f544a99a4594c9045136356c3efc2d",
+        "observedPhase": "PROVIDER_EXECUTION_STARTED",
+        "planDigest": "sha256:843d7b220a5c147ffb6dee99217a2ebf93ca0984f23da73f7b8a0b7edf3e9725",
+        "provider": "/example/provider/BackboneNeck",
+        "reason": "DI_PROTECTED_GRANT_REJECTED",
+        "requestId": "/spec180-y-n-e-d09b89e4a5f83b1b",
+        "schema": "spec180-negative-evidence-v1",
+        "status": "PASS",
+        "subcase": "Y-N-E",
+        "variant": "EXPIRED"
+      },
+      "providerGrantRejection": {
+        "attemptId": "attempt-1",
+        "boundary": "BEFORE_ASSEMBLY",
+        "grantDigest": "sha256:129fc4c5637520f77c2fcaf7b11840a4977dcdfce6f2bb28294de5582211dbeb",
+        "planCoreDigest": "sha256:9ddc68029db8ae995457d2425b3f968f15ab4e15782a118b0e0d917da5fa6c33",
+        "planDigest": "sha256:843d7b220a5c147ffb6dee99217a2ebf93ca0984f23da73f7b8a0b7edf3e9725",
+        "provider": "/example/provider/BackboneNeck",
+        "reason": "DI_PROTECTED_GRANT_REJECTED: key grant is expired",
+        "requestId": "/spec180-y-n-e-d09b89e4a5f83b1b",
+        "status": "REJECTED"
+      },
+      "result": {
+        "boundary": "PROVIDER_GRANT_VERIFICATION",
+        "caseId": "Y-N",
+        "childCount": 7,
+        "expected": "FAIL_CLOSED",
+        "outcome": "FAIL_CLOSED",
+        "reason": "DI_PROTECTED_GRANT_REJECTED",
+        "schema": "spec180-yolo-subcase-result-v1",
+        "status": "PASS",
+        "subcaseId": "Y-N-E",
+        "terminalResponse": false
+      }
+    },
+    {
+      "children": [
+        {
+          "exitStatus": -2,
+          "name": "controller",
+          "pid": 2140667,
+          "terminationRequested": true
+        },
+        {
+          "exitStatus": 130,
+          "name": "repo",
+          "pid": 2140796,
+          "terminationRequested": true
+        },
+        {
+          "exitStatus": -2,
+          "name": "provider-BackboneNeck",
+          "pid": 2140829,
+          "terminationRequested": true
+        },
+        {
+          "exitStatus": -2,
+          "name": "provider-DetectShard0",
+          "pid": 2140831,
+          "terminationRequested": true
+        },
+        {
+          "exitStatus": -2,
+          "name": "provider-DetectShard1",
+          "pid": 2140834,
+          "terminationRequested": true
+        },
+        {
+          "exitStatus": -2,
+          "name": "provider-Merge",
+          "pid": 2140845,
+          "terminationRequested": true
+        },
+        {
+          "exitStatus": 91,
+          "name": "user",
+          "pid": 2140912,
+          "terminationRequested": false
+        }
+      ],
+      "id": "Y-N-E/FORGED_AUTHORITY",
+      "negativeEvidence": {
+        "attemptId": "attempt-1",
+        "boundary": "PROVIDER_GRANT_VERIFICATION",
+        "children": [
+          {
+            "exitStatus": -2,
+            "name": "controller",
+            "pid": 2140667,
+            "terminationRequested": true
+          },
+          {
+            "exitStatus": 130,
+            "name": "repo",
+            "pid": 2140796,
+            "terminationRequested": true
+          },
+          {
+            "exitStatus": -2,
+            "name": "provider-BackboneNeck",
+            "pid": 2140829,
+            "terminationRequested": true
+          },
+          {
+            "exitStatus": -2,
+            "name": "provider-DetectShard0",
+            "pid": 2140831,
+            "terminationRequested": true
+          },
+          {
+            "exitStatus": -2,
+            "name": "provider-DetectShard1",
+            "pid": 2140834,
+            "terminationRequested": true
+          },
+          {
+            "exitStatus": -2,
+            "name": "provider-Merge",
+            "pid": 2140845,
+            "terminationRequested": true
+          },
+          {
+            "exitStatus": 91,
+            "name": "user",
+            "pid": 2140912,
+            "terminationRequested": false
+          }
+        ],
+        "grantDigest": "sha256:e151e53f07309a6e7e2cb01f735f076462dc861d6afff521a3edfb8727c65fed",
+        "lifecycleSha256": "sha256:72abcbc56ea74ecae185b9bba2ed5e228132ec17a6b151d8614555dce3cc5ecb",
+        "observedPhase": "PROVIDER_EXECUTION_STARTED",
+        "planDigest": "sha256:e2776292d81f22b783e3439fdb6e3d2409e23baf83afdf1eaa0c8eed7689b192",
+        "provider": "/example/provider/BackboneNeck",
+        "reason": "DI_PROTECTED_GRANT_REJECTED",
+        "requestId": "/spec180-y-n-e-855b7b321095bdab",
+        "schema": "spec180-negative-evidence-v1",
+        "status": "PASS",
+        "subcase": "Y-N-E",
+        "variant": "FORGED_AUTHORITY"
+      },
+      "providerGrantRejection": {
+        "attemptId": "attempt-1",
+        "boundary": "BEFORE_ASSEMBLY",
+        "grantDigest": "sha256:e151e53f07309a6e7e2cb01f735f076462dc861d6afff521a3edfb8727c65fed",
+        "planCoreDigest": "sha256:fe3291889b9380968aeca05d54e7f40a58a7a573e3d0c636b14b9a15a79fb504",
+        "planDigest": "sha256:e2776292d81f22b783e3439fdb6e3d2409e23baf83afdf1eaa0c8eed7689b192",
+        "provider": "/example/provider/BackboneNeck",
+        "reason": "DI_PROTECTED_GRANT_REJECTED: key grant authority signature is invalid",
+        "requestId": "/spec180-y-n-e-855b7b321095bdab",
+        "status": "REJECTED"
+      },
+      "result": {
+        "boundary": "PROVIDER_GRANT_VERIFICATION",
+        "caseId": "Y-N",
+        "childCount": 7,
+        "expected": "FAIL_CLOSED",
+        "outcome": "FAIL_CLOSED",
+        "reason": "DI_PROTECTED_GRANT_REJECTED",
+        "schema": "spec180-yolo-subcase-result-v1",
+        "status": "PASS",
+        "subcaseId": "Y-N-E",
+        "terminalResponse": false
+      }
+    },
+    {
+      "children": [
+        {
+          "exitStatus": -2,
+          "name": "controller",
+          "pid": 2138911,
+          "terminationRequested": true
+        },
+        {
+          "exitStatus": 130,
+          "name": "repo",
+          "pid": 2139095,
+          "terminationRequested": true
+        },
+        {
+          "exitStatus": -2,
+          "name": "provider-BackboneNeck",
+          "pid": 2139127,
+          "terminationRequested": true
+        },
+        {
+          "exitStatus": -2,
+          "name": "provider-DetectShard0",
+          "pid": 2139130,
+          "terminationRequested": true
+        },
+        {
+          "exitStatus": -2,
+          "name": "provider-DetectShard1",
+          "pid": 2139135,
+          "terminationRequested": true
+        },
+        {
+          "exitStatus": -2,
+          "name": "provider-Merge",
+          "pid": 2139145,
+          "terminationRequested": true
+        },
+        {
+          "exitStatus": 91,
+          "name": "user",
+          "pid": 2139218,
+          "terminationRequested": false
+        }
+      ],
+      "id": "Y-N-E/WRONG_RECIPIENT",
+      "negativeEvidence": {
+        "attemptId": "attempt-1",
+        "boundary": "PROVIDER_GRANT_VERIFICATION",
+        "children": [
+          {
+            "exitStatus": -2,
+            "name": "controller",
+            "pid": 2138911,
+            "terminationRequested": true
+          },
+          {
+            "exitStatus": 130,
+            "name": "repo",
+            "pid": 2139095,
+            "terminationRequested": true
+          },
+          {
+            "exitStatus": -2,
+            "name": "provider-BackboneNeck",
+            "pid": 2139127,
+            "terminationRequested": true
+          },
+          {
+            "exitStatus": -2,
+            "name": "provider-DetectShard0",
+            "pid": 2139130,
+            "terminationRequested": true
+          },
+          {
+            "exitStatus": -2,
+            "name": "provider-DetectShard1",
+            "pid": 2139135,
+            "terminationRequested": true
+          },
+          {
+            "exitStatus": -2,
+            "name": "provider-Merge",
+            "pid": 2139145,
+            "terminationRequested": true
+          },
+          {
+            "exitStatus": 91,
+            "name": "user",
+            "pid": 2139218,
+            "terminationRequested": false
+          }
+        ],
+        "grantDigest": "sha256:6aee8d32dfea52cc855899f59a6f0deb3df752f4545acadb7f745fb0bb9124b8",
+        "lifecycleSha256": "sha256:8a5b72290164a9861d94cd79e25b8f49ec6d72f0265aeb42775745ea2f29b888",
+        "observedPhase": "PROVIDER_EXECUTION_STARTED",
+        "planDigest": "sha256:4f6edf734d2619204655e6a0ac86fd146624a7f2f6210231426df09b2db42be8",
+        "provider": "/example/provider/BackboneNeck",
+        "reason": "DI_PROTECTED_GRANT_REJECTED",
+        "requestId": "/spec180-y-n-e-1c957cb4bab59b4f",
+        "schema": "spec180-negative-evidence-v1",
+        "status": "PASS",
+        "subcase": "Y-N-E",
+        "variant": "WRONG_RECIPIENT"
+      },
+      "providerGrantRejection": {
+        "attemptId": "attempt-1",
+        "boundary": "BEFORE_ASSEMBLY",
+        "grantDigest": "sha256:6aee8d32dfea52cc855899f59a6f0deb3df752f4545acadb7f745fb0bb9124b8",
+        "planCoreDigest": "sha256:5d61d004ba332060563149238b1863517dded4511fc980a2416e35a4776a788c",
+        "planDigest": "sha256:4f6edf734d2619204655e6a0ac86fd146624a7f2f6210231426df09b2db42be8",
+        "provider": "/example/provider/BackboneNeck",
+        "reason": "DI_PROTECTED_GRANT_REJECTED: content-key envelope failed authentication",
+        "requestId": "/spec180-y-n-e-1c957cb4bab59b4f",
+        "status": "REJECTED"
+      },
+      "result": {
+        "boundary": "PROVIDER_GRANT_VERIFICATION",
+        "caseId": "Y-N",
+        "childCount": 7,
+        "expected": "FAIL_CLOSED",
+        "outcome": "FAIL_CLOSED",
+        "reason": "DI_PROTECTED_GRANT_REJECTED",
+        "schema": "spec180-yolo-subcase-result-v1",
+        "status": "PASS",
+        "subcaseId": "Y-N-E",
+        "terminalResponse": false
+      }
+    },
+    {
+      "children": [
+        {
+          "exitStatus": -2,
+          "name": "controller",
+          "pid": 2135542,
+          "terminationRequested": true
+        },
+        {
+          "exitStatus": 130,
+          "name": "repo",
+          "pid": 2135766,
+          "terminationRequested": true
+        },
+        {
+          "exitStatus": -2,
+          "name": "provider-BackboneNeck",
+          "pid": 2135816,
+          "terminationRequested": true
+        },
+        {
+          "exitStatus": -2,
+          "name": "provider-DetectShard0",
+          "pid": 2135821,
+          "terminationRequested": true
+        },
+        {
+          "exitStatus": -2,
+          "name": "provider-DetectShard1",
+          "pid": 2135828,
+          "terminationRequested": true
+        },
+        {
+          "exitStatus": -2,
+          "name": "provider-Merge",
+          "pid": 2135845,
+          "terminationRequested": true
+        },
+        {
+          "exitStatus": 91,
+          "name": "user",
+          "pid": 2135929,
+          "terminationRequested": false
+        }
+      ],
+      "id": "Y-N-I",
+      "negativeEvidence": {
+        "attemptId": "attempt-1",
+        "boundary": "PROVIDER_EXECUTION_STARTED",
+        "children": [
+          {
+            "exitStatus": -2,
+            "name": "controller",
+            "pid": 2135542,
+            "terminationRequested": true
+          },
+          {
+            "exitStatus": 130,
+            "name": "repo",
+            "pid": 2135766,
+            "terminationRequested": true
+          },
+          {
+            "exitStatus": -2,
+            "name": "provider-BackboneNeck",
+            "pid": 2135816,
+            "terminationRequested": true
+          },
+          {
+            "exitStatus": -2,
+            "name": "provider-DetectShard0",
+            "pid": 2135821,
+            "terminationRequested": true
+          },
+          {
+            "exitStatus": -2,
+            "name": "provider-DetectShard1",
+            "pid": 2135828,
+            "terminationRequested": true
+          },
+          {
+            "exitStatus": -2,
+            "name": "provider-Merge",
+            "pid": 2135845,
+            "terminationRequested": true
+          },
+          {
+            "exitStatus": 91,
+            "name": "user",
+            "pid": 2135929,
+            "terminationRequested": false
+          }
+        ],
+        "errorCode": "DI_INPUT_FETCH_ROLE_MISMATCH",
+        "lifecycleSha256": "sha256:187d78520c3e9ffbc997f4e0e2e1ea5614c8302250264868af651591198aac6c",
+        "observedPhase": "PROVIDER_EXECUTION_STARTED",
+        "planDigest": "sha256:ef1acc3cf6a7eaa663f8ef86c6b8a73a14b6a022d5f2c5deb3fe154ba0af13cc",
+        "provider": "/example/provider/Merge",
+        "reason": "NON_INGRESS_INPUT_REJECTED",
+        "requestId": "/spec180-y-n-i-f1dc0776fc5de8b5",
+        "schema": "spec180-negative-evidence-v1",
+        "status": "PASS",
+        "subcase": "Y-N-I"
+      },
+      "result": {
+        "boundary": "PROVIDER_EXECUTION_STARTED",
+        "caseId": "Y-N",
+        "childCount": 7,
+        "expected": "FAIL_CLOSED",
+        "outcome": "FAIL_CLOSED",
+        "reason": "NON_INGRESS_INPUT_REJECTED",
+        "schema": "spec180-yolo-subcase-result-v1",
+        "status": "PASS",
+        "subcaseId": "Y-N-I",
+        "terminalResponse": false
+      }
+    },
+    {
+      "children": [
+        {
+          "exitStatus": -2,
+          "name": "controller",
+          "pid": 2142296,
+          "terminationRequested": true
+        },
+        {
+          "exitStatus": 130,
+          "name": "repo",
+          "pid": 2142520,
+          "terminationRequested": true
+        },
+        {
+          "exitStatus": -2,
+          "name": "provider-BackboneNeck",
+          "pid": 2142546,
+          "terminationRequested": true
+        },
+        {
+          "exitStatus": -2,
+          "name": "provider-DetectShard0",
+          "pid": 2142548,
+          "terminationRequested": true
+        },
+        {
+          "exitStatus": -2,
+          "name": "provider-DetectShard1",
+          "pid": 2142552,
+          "terminationRequested": true
+        },
+        {
+          "exitStatus": -2,
+          "name": "provider-Merge",
+          "pid": 2142565,
+          "terminationRequested": true
+        },
+        {
+          "exitStatus": 91,
+          "name": "user",
+          "pid": 2142636,
+          "terminationRequested": false
+        }
+      ],
+      "id": "Y-N-L",
+      "negativeEvidence": {
+        "attemptId": "attempt-1",
+        "boundary": "EVIDENCE_ACCEPTANCE",
+        "children": [
+          {
+            "exitStatus": -2,
+            "name": "controller",
+            "pid": 2142296,
+            "terminationRequested": true
+          },
+          {
+            "exitStatus": 130,
+            "name": "repo",
+            "pid": 2142520,
+            "terminationRequested": true
+          },
+          {
+            "exitStatus": -2,
+            "name": "provider-BackboneNeck",
+            "pid": 2142546,
+            "terminationRequested": true
+          },
+          {
+            "exitStatus": -2,
+            "name": "provider-DetectShard0",
+            "pid": 2142548,
+            "terminationRequested": true
+          },
+          {
+            "exitStatus": -2,
+            "name": "provider-DetectShard1",
+            "pid": 2142552,
+            "terminationRequested": true
+          },
+          {
+            "exitStatus": -2,
+            "name": "provider-Merge",
+            "pid": 2142565,
+            "terminationRequested": true
+          },
+          {
+            "exitStatus": 91,
+            "name": "user",
+            "pid": 2142636,
+            "terminationRequested": false
+          }
+        ],
+        "lifecycleSha256": "sha256:f43fa33169f0ce615db90781608985e51eebca49e959494cf6e59e7cd0b62833",
+        "observedPhase": "INPUT_REFERENCE_PUBLISHED",
+        "reason": "REDACTION_REJECTED",
+        "requestId": "/spec180-y-n-l-17b4782be24d1290",
+        "schema": "spec180-negative-evidence-v1",
+        "status": "PASS",
+        "subcase": "Y-N-L"
+      },
+      "result": {
+        "boundary": "EVIDENCE_ACCEPTANCE",
+        "caseId": "Y-N",
+        "childCount": 7,
+        "expected": "FAIL_CLOSED",
+        "outcome": "FAIL_CLOSED",
+        "reason": "REDACTION_REJECTED",
+        "schema": "spec180-yolo-subcase-result-v1",
+        "status": "PASS",
+        "subcaseId": "Y-N-L",
+        "terminalResponse": false
+      }
+    },
+    {
+      "children": [
+        {
+          "exitStatus": -2,
+          "name": "controller",
+          "pid": 2127722,
+          "terminationRequested": true
+        },
+        {
+          "exitStatus": 130,
+          "name": "repo",
+          "pid": 2128114,
+          "terminationRequested": true
+        },
+        {
+          "exitStatus": -2,
+          "name": "provider-BackboneNeck",
+          "pid": 2128148,
+          "terminationRequested": true
+        },
+        {
+          "exitStatus": -2,
+          "name": "provider-DetectShard0",
+          "pid": 2128150,
+          "terminationRequested": true
+        },
+        {
+          "exitStatus": -2,
+          "name": "provider-DetectShard1",
+          "pid": 2128154,
+          "terminationRequested": true
+        },
+        {
+          "exitStatus": -2,
+          "name": "provider-Merge",
+          "pid": 2128162,
+          "terminationRequested": true
+        },
+        {
+          "exitStatus": 0,
+          "name": "user",
+          "pid": 2128239,
+          "terminationRequested": false
+        }
+      ],
+      "id": "Y-N-O",
+      "result": {
+        "boundary": "TERMINAL_RESPONSE",
+        "caseId": "Y-N",
+        "childCount": 7,
+        "expected": "CONTROL",
+        "outcome": "CONTROL",
+        "reason": "TERMINAL_RESPONSE_VERIFIED",
+        "schema": "spec180-yolo-subcase-result-v1",
+        "status": "PASS",
+        "subcaseId": "Y-N-O",
+        "terminalResponse": true
+      }
+    },
+    {
+      "children": [
+        {
+          "exitStatus": -2,
+          "name": "controller",
+          "pid": 2131692,
+          "terminationRequested": true
+        },
+        {
+          "exitStatus": 130,
+          "name": "repo",
+          "pid": 2131891,
+          "terminationRequested": true
+        },
+        {
+          "exitStatus": -2,
+          "name": "provider-BackboneNeck",
+          "pid": 2131925,
+          "terminationRequested": true
+        },
+        {
+          "exitStatus": -2,
+          "name": "provider-DetectShard0",
+          "pid": 2131927,
+          "terminationRequested": true
+        },
+        {
+          "exitStatus": -2,
+          "name": "provider-DetectShard1",
+          "pid": 2131930,
+          "terminationRequested": true
+        },
+        {
+          "exitStatus": -2,
+          "name": "provider-Merge",
+          "pid": 2131944,
+          "terminationRequested": true
+        },
+        {
+          "exitStatus": 91,
+          "name": "user",
+          "pid": 2132014,
+          "terminationRequested": false
+        }
+      ],
+      "id": "Y-N-P",
+      "negativeEvidence": {
+        "attemptId": "attempt-1",
+        "boundary": "ACK_CLOSED",
+        "children": [
+          {
+            "exitStatus": -2,
+            "name": "controller",
+            "pid": 2131692,
+            "terminationRequested": true
+          },
+          {
+            "exitStatus": 130,
+            "name": "repo",
+            "pid": 2131891,
+            "terminationRequested": true
+          },
+          {
+            "exitStatus": -2,
+            "name": "provider-BackboneNeck",
+            "pid": 2131925,
+            "terminationRequested": true
+          },
+          {
+            "exitStatus": -2,
+            "name": "provider-DetectShard0",
+            "pid": 2131927,
+            "terminationRequested": true
+          },
+          {
+            "exitStatus": -2,
+            "name": "provider-DetectShard1",
+            "pid": 2131930,
+            "terminationRequested": true
+          },
+          {
+            "exitStatus": -2,
+            "name": "provider-Merge",
+            "pid": 2131944,
+            "terminationRequested": true
+          },
+          {
+            "exitStatus": 91,
+            "name": "user",
+            "pid": 2132014,
+            "terminationRequested": false
+          }
+        ],
+        "lifecycleSha256": "sha256:841a27f34b00a4930037d2bc469a3240123b1d512a77c110b6ae36658f4fe734",
+        "observedPhase": "GRAPH_READY",
+        "reason": "ACK_PROVENANCE_REJECTED",
+        "requestId": "/spec180-y-n-p-58a07e8d45523ad7",
+        "schema": "spec180-negative-evidence-v1",
+        "status": "PASS",
+        "subcase": "Y-N-P"
+      },
+      "result": {
+        "boundary": "ACK_CLOSED",
+        "caseId": "Y-N",
+        "childCount": 7,
+        "expected": "FAIL_CLOSED",
+        "outcome": "FAIL_CLOSED",
+        "reason": "ACK_PROVENANCE_REJECTED",
+        "schema": "spec180-yolo-subcase-result-v1",
+        "status": "PASS",
+        "subcaseId": "Y-N-P",
+        "terminalResponse": false
+      }
+    },
+    {
+      "children": [
+        {
+          "exitStatus": -2,
+          "name": "controller",
+          "pid": 2133579,
+          "terminationRequested": true
+        },
+        {
+          "exitStatus": 130,
+          "name": "repo",
+          "pid": 2133873,
+          "terminationRequested": true
+        },
+        {
+          "exitStatus": -2,
+          "name": "provider-BackboneNeck",
+          "pid": 2133900,
+          "terminationRequested": true
+        },
+        {
+          "exitStatus": -2,
+          "name": "provider-DetectShard0",
+          "pid": 2133902,
+          "terminationRequested": true
+        },
+        {
+          "exitStatus": -2,
+          "name": "provider-DetectShard1",
+          "pid": 2133906,
+          "terminationRequested": true
+        },
+        {
+          "exitStatus": -2,
+          "name": "provider-Merge",
+          "pid": 2133910,
+          "terminationRequested": true
+        },
+        {
+          "exitStatus": 91,
+          "name": "user",
+          "pid": 2134030,
+          "terminationRequested": false
+        }
+      ],
+      "id": "Y-N-R",
+      "negativeEvidence": {
+        "attemptId": "attempt-1",
+        "boundary": "PLAN_SEALED",
+        "children": [
+          {
+            "exitStatus": -2,
+            "name": "controller",
+            "pid": 2133579,
+            "terminationRequested": true
+          },
+          {
+            "exitStatus": 130,
+            "name": "repo",
+            "pid": 2133873,
+            "terminationRequested": true
+          },
+          {
+            "exitStatus": -2,
+            "name": "provider-BackboneNeck",
+            "pid": 2133900,
+            "terminationRequested": true
+          },
+          {
+            "exitStatus": -2,
+            "name": "provider-DetectShard0",
+            "pid": 2133902,
+            "terminationRequested": true
+          },
+          {
+            "exitStatus": -2,
+            "name": "provider-DetectShard1",
+            "pid": 2133906,
+            "terminationRequested": true
+          },
+          {
+            "exitStatus": -2,
+            "name": "provider-Merge",
+            "pid": 2133910,
+            "terminationRequested": true
+          },
+          {
+            "exitStatus": 91,
+            "name": "user",
+            "pid": 2134030,
+            "terminationRequested": false
+          }
+        ],
+        "lifecycleSha256": "sha256:0a2a527d9c16df0fbe16f25da5ccaea36eb9128505444f9903ac5db17a51ada9",
+        "observedPhase": "PLACEMENT_DECISION",
+        "reason": "ROLE_KIND_REJECTED",
+        "requestId": "/spec180-y-n-r-8934530e6bdcdb2a",
+        "schema": "spec180-negative-evidence-v1",
+        "status": "PASS",
+        "subcase": "Y-N-R"
+      },
+      "result": {
+        "boundary": "PLAN_SEALED",
+        "caseId": "Y-N",
+        "childCount": 7,
+        "expected": "FAIL_CLOSED",
+        "outcome": "FAIL_CLOSED",
+        "reason": "ROLE_KIND_REJECTED",
+        "schema": "spec180-yolo-subcase-result-v1",
+        "status": "PASS",
+        "subcaseId": "Y-N-R",
+        "terminalResponse": false
+      }
+    }
+  ],
+  "schema": "spec181-t005-matrix-evidence-v1",
+  "sourceIdentityUnchanged": true,
+  "sourceRevision": "ce6a4ba0f07bbdbc954a667f7846e5348c8861da"
+}

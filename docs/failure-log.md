@@ -19,6 +19,14 @@ failure's controlling boundary and invalidation effect are understood.
 
 ## Current failure index
 
+**Spec181 formal Y-N R19 (2026-09-06): PASS; T008 preflight remains open.**
+The maintained CLI completes all seven subcases, including three real grant
+variants, on ce6a4ba0. All 63 application child exits are collected; source and
+input identities remain unchanged, and no recorded PID or NFD remains.
+See [R19 qualification](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t005-y-n-matrix-current.md#current-r19-qualification).
+The next complete local gate needs case-specific configuration binding and
+test-source closure; see [T008 preflight](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t008-local-suite-preflight-20260906.md).
+
 **Spec181 exact-wire native R1 (2026-09-06): PASS.**
 Committed ce6a4ba0 passes maintained native build and independent verify.
 Both focused regressions also pass against the refreshed Core (21 and 270

@@ -1,7 +1,14 @@
 # Formal Local Y-N Matrix
 
-**Status**: BLOCK (R18 exact dependency transfer; BackboneNeck real CPU execution completed)
-**Evidence layer**: implemented / executed (formal network startup and focused regression)
+**Status**: PASS (R19 complete matrix; R1–R18 retained as historical failures)
+**Evidence layer**: implemented / executed (same-source formal network matrix)
+
+## Current R19 Result
+
+`ce6a4ba0` 的 R19 完整七子用例与三 grant 变异均 PASS，63 个应用
+子进程退出完整、源码/输入一致。当前验收与可入库结果见
+[T005 R19 qualification](t005-y-n-matrix-current.md#current-r19-qualification)。
+以下保留 R1–R18 的失败定位、修复和各自限定的复审结果，不覆盖旧记录。
 
 ## Subject and Launch R1
 

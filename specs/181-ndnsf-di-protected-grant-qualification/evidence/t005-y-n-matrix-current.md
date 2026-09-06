@@ -1,10 +1,56 @@
 # T005 — Y-N 全矩阵语义重跑（MiniNDN）
 
-> **Current status: BLOCK / NOT PROVEN (2026-09-05)**。下文 6/7、7/7 和不同提交的追加记录均为历史诊断，不构成同源矩阵。T006 后续真实 Provider 变异已定向验收，见 [生产修复](t006-production-repair-20260905.md)。旧重试入口已停用，维护矩阵首个失败即停止，见 [证据保留修复](t005-evidence-repair-20260905.md)。T007 新 PASS 前不得重跑完整矩阵；新 run 保留全部失败、唯一目录与源/配置身份。
+**Status**: PASS (T005 R19, 2026-09-06; source ce6a4ba0)
+**Layer**: implemented / wired / executed (same-source MiniNDN Y-N matrix)
 
-**Layer**: implemented（runner 语义 + Y-N-E 真实变异 + 矩阵收集器
-T006 吸收）;executed（2026-09-05 三次矩阵尝试，状态如下）;无
-measured 声明。
+## Current R19 Qualification
+
+在 [native identity and convergence PASS](t005-exact-data-wire-repair-20260906.md#native-identity-r1-and-convergence-review)
+之后，以 `ce6a4ba0f07bbdbc954a667f7846e5348c8861da` 干净隔离源码运行
+维护 CLI `Experiments/NDNSF_DI_YoloAckDriven_Minindn.py --case Y-N`。
+原始目录为 ignored workspace temporary directory 下
+`spec181-t005-formal-20260906-r19/`，命令
+`sudo -n /usr/bin/python3 <R19>/launch.py`。只启动一次，无子用例重试。
+父 launcher 和维护 runner 均 exit 0；源码、输入前后摘要一致。
+
+| Subcase | Actual result | Registered boundary / reason |
+|---|---|---|
+| Y-N-O | PASS / CONTROL | TERMINAL_RESPONSE / TERMINAL_RESPONSE_VERIFIED |
+| Y-N-C | PASS / FAIL_CLOSED | PLACEMENT_DECISION / NO_FEASIBLE_CANDIDATE |
+| Y-N-P | PASS / FAIL_CLOSED | ACK_CLOSED / ACK_PROVENANCE_REJECTED |
+| Y-N-R | PASS / FAIL_CLOSED | PLAN_SEALED / ROLE_KIND_REJECTED |
+| Y-N-I | PASS / FAIL_CLOSED | PROVIDER_EXECUTION_STARTED / NON_INGRESS_INPUT_REJECTED；实际 errorCode 为 DI_INPUT_FETCH_ROLE_MISMATCH |
+| Y-N-E | PASS / FAIL_CLOSED | PROVIDER_GRANT_VERIFICATION / DI_PROTECTED_GRANT_REJECTED |
+| Y-N-L | PASS / FAIL_CLOSED | EVIDENCE_ACCEPTANCE / REDACTION_REJECTED |
+
+E 的 EXPIRED、WRONG_RECIPIENT、FORGED_AUTHORITY 三次独立运行全部
+由选定 BackboneNeck Provider 的真实 verifier 在 BEFORE_ASSEMBLY
+拒绝；分别为 expired、content-key envelope authentication、authority
+signature 错误。证据绑定 request/attempt/plan/grant/provider，未用
+User probe 或其他异常替代。总计九次运行、63 个应用子进程，全部
+收集退出：control User 为 0，八个拒绝 User 为约定的 91；其他进程
+按显式 terminationRequested 受控退出。复核无存活记录 PID、无 NFD、
+无 cleanup-error、共享 state 目录无残留文件。
+
+O 的真实数值 oracle matched=true，shape=[1,50,6]，maxAbsError=
+0.0005340576171875，atol=0.001、rtol=0.0001。这是 CPU 功能结果，
+没有性能含义。按既定 runner 契约，O/C/P/R/I/L 使用 plaintext-v1
+控制环境，E 使用受保护纪元；O/I 保留的普通模型缓存不冒充受保护
+存储结果，E 三目录无装配模型残留。受保护正向 Y-B 仍由 T008 验收。
+
+已保存可入库的原始结果字段、63 个退出记录、三个 Provider 拒绝
+记录、数值结果与 68 个原始文件摘要：
+[R19 machine-readable evidence](t005-r19-matrix-result.json)。秘密及大日志
+仍留在原始目录；本记录不宣称进程结束后的内存取证或远端资格。
+
+T005 在此源身份下完成。T008 必须在最终交付源码上重跑完整
+Y-A/Y-B/Y-N 和完整测试清单，不能把此单独矩阵替代总 gate。
+下一步见 [T008 preflight review](t008-local-suite-preflight-20260906.md)。
+
+## Historical Evidence Boundary
+
+下文 2026-09-05 的 6/7、7/7 与不同提交追加记录均保留为历史诊断，
+不构成 R19 的证据。旧重试入口仍停用；R1–R18 的失败均未覆盖。
 
 Date: 2026-09-05. Source HEAD: `2f835386` 起（含 drain 修复 `28a91f47`）。
 

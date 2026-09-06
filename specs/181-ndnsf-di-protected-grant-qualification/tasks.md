@@ -1,5 +1,20 @@
 # Tasks: NDNSF-DI Protected-Grant Local Development and Delivery
 
+## Current Checkpoint (revision 7)
+
+**Latest progress R19 (2026-09-06)**：`ce6a4ba0` 同源正式 Y-N 七子用例
+全部 PASS，E 三真实 grant 变异全部在 Provider verifier 拒绝；九次
+运行、63 个应用子进程退出均收集，零记录 PID/NFD 残留，source/input
+前后不变。T005 完成，本机 **7/10**。见
+[T005 current evidence](evidence/t005-y-n-matrix-current.md#current-r19-qualification)。
+
+下一步 T008：按 [preflight review](evidence/t008-local-suite-preflight-20260906.md)
+修复三案例共用配置的缺口，处置 19 个预存测试来源差异，构建完整
+unit/integration，复审后以同一最终源码运行完整 gate。T008/T009/T012
+仍未完成；T010/T011 保持 TRANSFERRED。以下旧检查点仅保留历史。
+
+## Historical Wire Repair Checkpoints
+
 **Wire native identity R1 (2026-09-06)**：`ce6a4ba0` 完整 native
 build/verify 均 PASS；刷新后的 Core 上 21/21 与 270/270 断言
 重跑通过，受影响 12 维度复审/A05 PASS。下一步 R19 同源正式
@@ -102,7 +117,7 @@ Spec 170 `artifact-assembly-v1` 契约。
   路径（main 分支的明文路径证明"无网络服务"可工作，本切片不新增
   网络角色与前缀）。集成条件见 spec.md Out of Scope。
 
-## Current Checkpoint (revision 7)
+## Historical A05 Execution Checkpoints (revision 7)
 
 **Latest diagnosis R16 (2026-09-06)**：Core INFO 日志定位四 Provider
 在外部 assignment 准备阶段 size/digest mismatch，尚未执行模型。
@@ -519,7 +534,7 @@ T 任务完成定向修复；在生产验收前保持失败关闭，并禁止晋
 
 ## Phase 2: Registered Negative Outcomes (Priority: P1)
 
-- [ ] T005 [US2] **Y-N Matrix Qualification [MiniNDN]**。在 MiniNDN 小模型
+- [x] T005 [US2] **Y-N Matrix Qualification [MiniNDN]**。在 MiniNDN 小模型
   CPU 上按注册语义重跑七子用例：Y-N-O（目录序无关）、Y-N-C（双候选
   不可行）、Y-N-P（ACK 签名/来源/绑定篡改）、Y-N-R（组件角色非法
   区间）、Y-N-I（非 ingress 获取，`DI_INPUT_FETCH_ROLE_MISMATCH`）、
