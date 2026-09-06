@@ -19,6 +19,40 @@ failure's controlling boundary and invalidation effect are understood.
 
 ## Current failure index
 
+**Spec181 backend repair R4 (2026-09-06): focused PASS.**
+The maintained native Provider rebuilds (35.522 s); five real executable
+checks pass (1.02 s). Legacy/public CPU names load and warm a real ONNX
+model; unknown names and invalid execution-provider metadata still reject.
+Commit only registration blocks and tests, then refresh native identity and
+re-audit before the next matrix. See
+[formal matrix](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t005-formal-matrix-20260906.md#backend-registration-repair-r4).
+
+**Spec181 backend probe R3 (2026-09-06): semantic RED reproduced.**
+With corrected evidence assertions, legacy CPU load/warmup and unknown-backend
+rejection pass; three public-name checks fail at missing registration. Adopt
+only the two registration blocks, rebuild the maintained Provider and repeat
+the real executable checks. See
+[formal matrix](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t005-formal-matrix-20260906.md#backend-registration-regression-r3).
+
+**Spec181 backend probe R2 (2026-09-06): registration RED and assertion correction.**
+Three checks reach missing public backend registration. The legacy backend
+actually loads/warms the model, but its test misreads existing string-valued
+evidence and nested device fields. Unknown-backend rejection passes. Correct
+the schema assertion before the next focused run. See
+[formal matrix](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t005-formal-matrix-20260906.md#backend-registration-probe-r2).
+
+**Spec181 backend probe R1 (2026-09-06): BLOCK at test collection.**
+An extra parenthesis in the new test prevents collection (0.36 s); no native
+process ran. Correct the test syntax and retain R1 before a fresh R2 probe.
+See [formal matrix](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t005-formal-matrix-20260906.md#backend-registration-probe-r1).
+
+**Spec181 T005 formal R17 (2026-09-06): BLOCK at backend registration.**
+All four Providers pass external assignment validation and enter their handler.
+BackboneNeck then fails with no NativeModelRunner backend registered:
+onnxruntime-cpu; dependent-role fetch deadlines follow. Preserve that first
+boundary, repair actual backend registration and re-audit before retry. See
+[formal matrix](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t005-formal-matrix-20260906.md#native-backend-boundary-r17).
+
 **Spec181 digest native rebuild R1 (2026-09-06): PASS.**
 Committed e6f44b65 rebuilds the Core library, native Provider and Python
 extension; maintained build and independent verify both report native identity

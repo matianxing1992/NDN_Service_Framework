@@ -7,7 +7,14 @@ local gate 提交/源码身份修复为 `2628e3d2`。最终审计对象为
 `6b9bb51c43a597bf36ca62f304fee5f71c17fa58` 的隔离源码和 R13 runtime；
 `8c231493` 仅补记证据，主工作区其余预存改动不在该审计对象内。
 **Layer**: proposed / implemented / wired / executed（限定在各记录的检查范围）。
-**Verdict**: **PASS**（Provider digest repaired and native identity verified）。
+**Verdict**: **BLOCK**（backend focused PASS；native identity refresh pending）。
+仅补齐两处 backend 注册后，维护 Provider 重建及五项真实 CLI
+检查 PASS：CPU load/warmup 与非法设备/未知 backend 拒绝均验证。
+待提交后刷新维护 runtime 身份，再恢复正式矩阵。
+真实网络已证明四 Provider 越过 assignment 校验；BackboneNeck
+随后拒绝未注册的 onnxruntime-cpu。先闭合公共 backend 名与实际
+factory 注册/设备选择，再复审 A05。下述 digest 修复证据仍有效，
+但不能替代当前全路径就绪裁决。
 R16 首次失败为 external assignment 校验；两端实际 C++ helper 的
 4 项 RED 确认 Provider 大写摘要与既定小写格式不一致。仅投影
 既有规范化 hunk 后 4 项 PASS（1.73 s），保留精确大小/摘要拒绝。

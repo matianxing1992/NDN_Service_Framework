@@ -1,6 +1,6 @@
 # Formal Local Y-N Matrix
 
-**Status**: IN_PROGRESS (digest repair / native rebuild / affected re-audit PASS; formal matrix pending)
+**Status**: BLOCK (backend focused repair PASS; native identity refresh/re-audit pending)
 **Evidence layer**: implemented / executed (formal network startup and focused regression)
 
 ## Subject and Launch R1
@@ -405,3 +405,60 @@ SPEC180_NATIVE_IDENTITY_OK；实际 DSO/SVS/provider 依赖映射通过。
 复审 PASS。没有弱化 grant 或校验，也未纳入其他预存 Provider
 改动。下一步 R17 验证真实获取后 assignment 处理，不能以当前
 环境/构建 PASS 代替矩阵或本地资格。
+
+## Native Backend Boundary R17
+
+源码 `359f57e1e0f652a82c85572917f747fc22c40f55`，原始目录
+`spec181-t005-formal-20260906-r17/`。四 Provider 均越过 external
+assignment 大小/摘要校验并进入 collaboration handler running，
+真实传输证实摘要修复有效。BackboneNeck 首先失败：
+`no NativeModelRunner backend registered: onnxruntime-cpu`；其余
+角色等待该上游输出后超时，是后续症状。矩阵 exit 2，Y-N-O
+CONTROL_NOT_PROVEN；source/input 前后不变，NFD 全部退出。
+已提交 registerOnnxRuntimeBackend 仅注册 onnxruntime，实际
+Selection 使用既定公共 backend 名 onnxruntime-cpu。主工作区已有
+相关注册修改，先检查其 CPU/设备选择语义和依赖，再限定修复单元。
+重开受影响 A05，不降低验收或将依赖超时误记为预期负例。
+
+## Backend Registration Probe R1
+
+`spec181-backend-registration-20260906-r1/red.log`：新增测试多写
+一个右括号，collection error（0.36 s），未启动 native 进程。
+修正语法后新 R2 使用真实 di-native-provider --check-only 与小型
+ONNX 模型，区分注册缺失、CPU 实际加载/warmup、非法设备请求
+和未知 backend；不使用 wiring-only 或模拟 runner。
+
+## Backend Registration Probe R2
+
+`spec181-backend-registration-20260906-r2/`：4 failed / 1 passed
+（1.02 s）。三项明确在实际 factory 缺少 cpu/cuda 公共名称处失败。
+legacy onnxruntime 已真实加载/warmup、CHECK_OK，但测试将既有
+字符串布尔证据当作 JSON bool，并误用顶层 deviceKind。修正测试
+为真实 schema 的字符串 true 和 device.kind；不修改生产证据。
+unknown-backend 的严格拒绝通过。原始每进程 stdout/stderr 保留。
+
+## Backend Registration Regression R3
+
+`spec181-backend-registration-20260906-r3/`：修正 schema 断言后，
+legacy CPU 实际加载/warmup 与未知 backend 拒绝均通过；三个公共
+名称检查仅在缺少注册处失败。接下来只投影 enabled/disabled 两个
+registerOnnxRuntimeBackend 函数的既有名称注册修改。backend 名
+与 metadata 中的 executionProvider 分工保持不变；当前设备选择
+函数在主工作区和隔离提交中相同，不纳入其他 ONNX/KV/生成改动。
+
+## Backend Registration Repair R4
+
+`spec181-backend-registration-20260906-r4/`：维护 Waf 的
+di-native-provider 目标编译/链接 PASS（35.522 s），五项真实
+可执行程序检查 **5 passed（1.02 s）**。此前 R3 为 3 failed /
+2 passed（0.91 s），首次语义失败均是缺少公共名称注册。
+legacy onnxruntime 与 onnxruntime-cpu 均以真实小型 Add ONNX
+模型完成 load/warmup，输出 realCompute=true、runnerKind=
+onnxruntime-cpu、device.kind=cpu；没有 wiring-only 替身。
+未知 backend 仍拒绝；cpu/cuda 公共名称面对 invalid-provider
+metadata 均进入既有 provider validation 并拒绝，未启动 GPU，
+不声称 CUDA 可执行或资格。测试不证明完整数值/网络矩阵。
+
+只纳入 enabled/disabled 两个注册函数（16 added / 10 removed）
+与真实 CLI 回归，设备选择和其他预存 ONNX/生成改动保留原状。
+下一步提交该单元，刷新维护 native identity，再复审与新矩阵。

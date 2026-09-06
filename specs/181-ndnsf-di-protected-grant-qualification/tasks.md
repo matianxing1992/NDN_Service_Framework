@@ -1,5 +1,17 @@
 # Tasks: NDNSF-DI Protected-Grant Local Development and Delivery
 
+**Latest backend repair R4 (2026-09-06)**：仅补齐公共 backend
+名称注册，维护 Provider 重建后 5 项真实 CLI 检查 PASS（1.02 s），
+包含 CPU 实际 load/warmup、未知名称与非法设备 metadata 拒绝。
+下一步提交、刷新 native identity 并复审；T005 未完成，本机仍
+6/10。见 [backend repair](evidence/t005-formal-matrix-20260906.md#backend-registration-repair-r4)。
+
+**Latest attempt R17 (2026-09-06)**：四 Provider 已通过真实外部
+assignment 校验并运行 handler；首个失败为 BackboneNeck 缺少
+onnxruntime-cpu backend 注册。矩阵 exit 2，身份不变、NFD 清理
+完成；A05 暂 BLOCK，先修复注册/消费边界。T005 未完成，本机
+仍 6/10。见 [R17](evidence/t005-formal-matrix-20260906.md#native-backend-boundary-r17)。
+
 **Latest native checkpoint (2026-09-06)**：`e6f44b65` 完成维护 native
 重建及独立 verify，均 SPEC180_NATIVE_IDENTITY_OK；T007 受影响项
 复审 PASS。下一步 R17 正式矩阵，T005 未完成，本机仍 6/10。见
