@@ -37,6 +37,12 @@ T001/T002/T003/T004/T006 的任务验收已闭合并勾选（5/12）。其余任
 **Latest progress (2026-09-05)**：T001/T002/T003/T004/T006 已完成（5/12 个 T 任务）。
 T002 完成裁决见 [验收映射](evidence/t002-acceptance-20260905.md)；
 G0 已闭合，当前进入 G1/T007 剩余源码/配置与证据收敛审查。
+T007 R003 当前清单核对发现旧记录仍称 Spec181 无证据文件，实际有
+37 个，其中 4 个缺头部层声明；旧审计正文仍描述已关闭的 T002 缺口。
+已补层声明、重写当前审计并加入 [完整清单](evidence/t007-evidence-inventory-20260905.md)
+与漂移检查。145 个条目完整列出（含两份根级 audit 和报告 SELF 行）；
+清单/结构检查 PASS，105 个 Spec180 evidence 文件哈希与修复前一致。
+冻结原文和已有原始测试结果保持原范围；T007 仍待 A05 源/配置闭包。
 下列较早的 4/12 与 partial 记载保留为修复过程，不覆盖本检查点。
 三种 grant 变异完成实际发布、Provider 拒绝与身份绑定；有效 grant
 仍完成 native Y-B 推理。正向控制发现并修复冷装配期间的固定 10 s
@@ -180,14 +186,14 @@ T 任务完成定向修复；在生产验收前保持失败关闭，并禁止晋
   GrantVerified）；integration（native provider 真实保护纪元投影被
   拒）。吸收关系：T002 落地后由真实 grant 验证取代该失败关闭路径。
 
-- **R003 Evidence Invalidation Inventory**（partial；T007 负责补齐）。审计 Spec 180/181 全部
+- **R003 Evidence Invalidation Inventory**（PASS，document inventory only；T007 剩余 A05 未闭合）。审计 Spec 180/181 全部
   证据文件：任何声称 PASS 但被后续修订失效的文件必须带失效横幅
   （t016/s1 已确认有；核查其余）；每个证据文件头部必须声明证据层
   （implemented/wired/executed/measured）。验收：完整清单 + 每文件
   层声明；当前修订不修改 Spec180 冻结文件，在本 Spec 的完整清单中
   记录其失效范围与替代证据。原 R003 记录的历史修改不在本轮重做。
 
-- **R004 Protected-case Admission Guard**（partial；T001/T002 负责生产验收）。runner 的 Y-B 保护纪元子用例
+- **R004 Protected-case Admission Guard**（absorbed；T001/T002 生产验收已完成，以下保留先行门原要求）。runner 的 Y-B 保护纪元子用例
   在 grant 接线（T001/T002）完成前必须失败关闭
   （`DI_PROTECTED_GRANT_UNAVAILABLE`），不得以明文路径冒充保护纪元
   执行、不得产出 PASS 记录。文件：

@@ -1,6 +1,6 @@
 # R003 — 证据失效声明完整性审计（Evidence Banner Audit）
 
-> **Current scope correction (revision 5, 2026-09-05)**: 历史 R003 清单保留；其中仍有“无层声明”项，原 PASS 不能代表逐文件层声明要求全部满足。当前 Spec181 的限定层声明已补齐；Spec180 冻结文件不在本輪修改。
+> **Current scope correction (revision 6, 2026-09-05)**: 以下为历史 R003 记录，旧“Spec181 0 files / PASS”不描述当前树。当前完整覆盖、每文件哈希、头部层声明及适用范围见 [complete inventory](t007-evidence-inventory-20260905.md)。已补 4 个活动记录的头部层声明；Spec180 冻结内容保持原样，其缺失层声明和历史限定用途由新清单显式承接。旧表的省略行和原 PASS 不再充当完整覆盖证明。
 > 当前裁决与下一步以 [audit.md](../audit.md) 为准，以下保留为原始范围记录。
 
 **Layer**: implemented（横幅修正落地）+ executed（对 spec 180 冻结树的

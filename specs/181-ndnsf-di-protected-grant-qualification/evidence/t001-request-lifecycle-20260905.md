@@ -1,6 +1,7 @@
 # T001 Protected Request Lifecycle
 
 **Status**: PASS (T001 acceptance)
+**Evidence layer**: implemented / wired / executed (focused checks and real process integration)
 
 ## First Boundary
 

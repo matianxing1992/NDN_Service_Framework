@@ -1,17 +1,18 @@
 # Spec181 Design-code Convergence Audit
 
 **Date**: 2026-09-05 | **Revision**: 6 | **Task**: T007
-**Source identity**: 初审基线 `67194dc2`；当前公共准备/worker 检查点
-`0a3a79c3`、`cf15fa0c`。历史运行仅对应各自证据中的源/构建。
-**Layer**: proposed（设计）+ implemented（源码核查）+ executed（定向 unit / live control）。
-**Verdict**: **BLOCK**。本审查取代旧 `CONDITIONAL PASS / no HIGH` 结论。
+**Source identity**: 初审基线 `67194dc2`；当前 G0 完成检查点 `453f6990`，
+公共准备与 worker 修复为 `0a3a79c3`、`cf15fa0c`。
+**Layer**: proposed / implemented / wired / executed（限定在各记录的检查范围）。
+**Verdict**: **BLOCK**。G0 已完成，T007 的 A05 源/配置闭包尚待核查。
 
 ## Findings
 
 路径缩写：P = `NDNSF-DistributedInference/ndnsf_distributed_inference/provider.py`；
 N = `NDNSF-DistributedInference/cpp/ndnsf-di/`；
 U = `examples/python/NDNSF-DistributedInference/yolo_2x2/user.py`；
-R = `Experiments/NDNSF_DI_YoloAckDriven_Minindn.py`。行号对应本轮源码。
+R = `Experiments/NDNSF_DI_YoloAckDriven_Minindn.py`。
+初审位置用于保留发现来源；当前修复位置与测试边界见对应 evidence 链接。
 
 | ID | Severity | Location | Finding and evidence boundary | Disposition / closing action |
 |---|---|---|---|---|
@@ -25,105 +26,55 @@ R = `Experiments/NDNSF_DI_YoloAckDriven_Minindn.py`。行号对应本轮源码�
 | A08 | HIGH | U；security/registry_keys.py；evidence/t001-request-lifecycle-20260905.md | 注册表算法、公钥摘要、模型/epoch、独立逻辑身份与最终 root 允许列表已接线；实际 user/native 控制和维护 Python 消费链有证据，本轮注册表与 seam 回归通过。 | CLOSED — T001 任务验收完成；冻结注册表保持不变，正式同源资格仍归后续任务。 |
 | A09 | MEDIUM | tasks.md revision 4；T001/T002/T004/T006 证据；旧 audit.md | 五项任务打勾但缺其约定生产 integration；T004 测试明确使用 fake native；声称的 provider integration 文件不存在。任务加粗语法还导致扫描器解析为 0 tasks。 | CLOSED（进度/设计）— 恢复未完成标记并列出已有实现，规范 12 个 T 任务、4 个故事与三层证据。真实验收仍归所属任务。 |
 | A10 | MEDIUM | active-context health；failure index | 活动 feature 已为 181，但托管 plan 链接仍指 180；failure index 未指向当前 181 失败。 | CLOSED — 链接、索引已修复；project/active health 均 exit 0，当前文件来源 fresh。 |
+| A11 | HIGH | N/NativeEpochCoordinator.cpp；N/NativeProviderRuntime.cpp；N/ProviderRoleWorker.cpp；evidence/t007-generation-worker-20260905.md | 生成协调器的 stopCheck 未传入排队 worker；两个 RED 用例在取消/截止后仍调用模型。 | CLOSED — `cf15fa0c` 沿同一 guard/回滚 owner 修复，重建 48 cases / 366 assertions PASS；不声称 Qwen 模型资格。 |
+| A12 | MEDIUM | evidence/r003-evidence-banner-audit-current.md；scripts/spec181_evidence_inventory.py | 旧清单省略记录、称 Spec181 无证据文件；实际已有 37 个，其中 4 个缺头部层声明；旧正文仍列出已关闭的 T002 缺口。 | CLOSED（文档覆盖）— 补层声明、完整逐文件哈希/范围清单及漂移检查；Spec180 冻结原文未改，见 `evidence/t007-evidence-inventory-20260905.md`。 |
 
-## Traceability Gaps
+## Traceability and Current Boundaries
 
-**A11 / HIGH / CLOSED (focused repair) — Shared Generation Worker Authority**：
-`NativeEpochCoordinator` 到 registered runtime/worker 未传递公共 guard；
-排队取消/截止两个实际回归进入模型 1 次（预期 0），1/3 cases PASS。
-修复沿原执行/状态回滚 owner 传递授权，重建后 48 cases /
-366 assertions PASS；源码行号、完整 RED/GREEN 与资格边界见
-[generation worker authority](evidence/t007-generation-worker-20260905.md)。
-
-- FR-015：用户要求共用 YOLO/Qwen 已有执行机制。当前共用接口已存在，
-  native 准备分支仍重复证据初始化、YOLO 算法位于通用 runtime 目录；
-  多轮授权与清理一致性仍待核对。T002/T007 按
-  [共享路径核对](evidence/shared-runtime-reuse-20260905.md) 收口；维持 BLOCK。
-
-- FR-002/003/013：T001 的任务验收已完成；T002 已有真实 grant 接线、维护进程集成和定向清理证据，native handler 源码闭包及剩余边界核对仍开放。
-- FR-004：T006 实际 Provider 拒绝网络证据已关闭 A04；正式同源矩阵由 T005/T008 验收。
-- FR-012：T003 固定装配向量已完成双入口字节/摘要与 ORT CPU 检查，A07 CLOSED。
-- FR-005/011：T004 真实启动/取消验收已完成，依赖图保留；后续源变更需按影响重新验证。
-- SC-003--006：没有本 Spec 同源完整矩阵、local-suite inventory、SIF/Tiger
-  或唯一 closure；未来 evidence 路径均明确标记 planned。
-- R003 的清单记录旧文件“无层声明”却给 PASS，不能解释为逐文件要求已
-  全满足。本轮保护 Spec180，历史覆盖缺口由 T007 的当前清单承接。
-- 未发现需新增模型、网络服务或撤销任务的依据；现有 T 任务可承接修复。
+- FR-001/002/003/013：T001/T002 的真实 grant、内容密钥消费、清理及请求生命周期验收已完成；[T002 acceptance](evidence/t002-acceptance-20260905.md) 汇总具体入口与证据。
+- FR-004：T006 三种实际 Provider grant 拒绝和正向控制已通过；T005 正式同源七子用例矩阵仍待 T007 PASS。
+- FR-005/011：T004 真实进程启动、取消及无热转检查已通过；后续行为变更按影响复验。
+- FR-012：T003 grant 与装配向量分别验收，装配经过 Python/C++ 生产入口与 ORT CPU，未以 grant parity 替代。
+- FR-014：R001/R002/R004 的未接线路径已由对应生产验收吸收，缺失授权仍失败关闭。R003 的当前完整清单显式限制每个历史文件的使用范围，不改冻结原文。
+- FR-015：公共准备只保留一个 context owner，YOLO 算法已归 adapter；生成和普通 worker 共用授权边界。[共享路径核对](evidence/shared-runtime-reuse-20260905.md) 列出差异 owner 和定向回归。
+- SC-003--006：本 Spec 尚无同源完整矩阵、local-suite inventory 执行、候选/SIF/Tiger 或唯一 closure。这些是 T007 PASS 后的任务，缺失后续资格结果本身不构成审计依赖环。
+- A05 剩余的是生产入口、构建源清单、有效配置和资格收集入口的同源闭包核查；T005 的正式网络矩阵不移入 T007。
 
 ## Readiness Scorecard
 
 | Principle | Status | Rationale |
 |---|---|---|
-| 1 Intent fidelity | PASS（设计范围） | 保留 YOLO 功能闭环及既定延期，不扩展性能结论。 |
-| 2 Necessity and Occam | PASS（修复规划） | 复用既有机制，不新增协议；grant 与装配各自有验收价值。 |
-| 3 Architecture and ownership | BLOCK | native 生产链与注册表消费已接线并有定向证据，剩余 handler 源码闭包和完整异常验收未闭合。 |
-| 4 Cross-document consistency | PASS（修订后设计） | 统一权威、撤销边界、七子用例、验收依赖与映射。 |
-| 5 Code fact verification | BLOCK | A02 Python 和 A07 装配 parity 已验收；A01 native 的完整源码闭包仍未完成。 |
-| 6 Security and distributed correctness | BLOCK | 摘要替换已修复；前置授权、存储、清理、策略仍有缺口。 |
-| 7 Task executability | PASS（修订后计划） | 12 个内聚任务；定向修复→审计→资格，包含 T004。 |
-| 8 Validation design | BLOCK（当前实现） | Y-N-E production oracle 已验收；旧重试器已停用，维护矩阵首个失败即停止；其余生产覆盖与同源闭包仍待闭合。 |
-| 9 Evidence integrity | BLOCK（资格） | 旧 PASS 降为诊断，34 项回归严格为 unit；没有新矩阵。 |
-| 10 Frozen evidence protection | PASS（本轮变更边界） | 未修改 Spec180 冻结证据；不认可重试器覆盖行为。 |
-| 11 Migration and rollback | CONDITIONAL PASS | 延期与临时路径 owner/删除条件明确，删除验收仍待执行。 |
-| 12 Verdict gate | BLOCK | A01/A05 的当前源/构建/配置闭包未闭合，禁止资格晋升。 |
+| 1 Intent fidelity | PASS | 保留一个 YOLO 不可变候选、本地矩阵、exact-SIF 和一次 Tiger 功能请求；延期边界不变。 |
+| 2 Necessity and scope | PASS | 复用公共协议和运行时；grant、parity、真实负例及资格阶段各有独立验收目的。 |
+| 3 Architecture and ownership | PASS（G0 检查范围） | requester 内逻辑权威、Core 生命周期、DI 授权/装配/worker、模型 adapter 所有权已有调用链及定向证据。 |
+| 4 Cross-artifact consistency | PASS（当前映射） | G0 5/12、G1/T007、FR-015、R safeguards 与资格依赖已同步。 |
+| 5 Code reality | BLOCK | A05 的候选源/构建/有效配置完整闭包尚未核查，不能用工作区定向 PASS 替代。 |
+| 6 Security and distributed correctness | BLOCK（A05） | G0 的授权、绑定、取消/过期、存储和清理缺口已修复；候选实际配置与同源消费仍须闭包核查。 |
+| 7 Task executability | PASS | 12 个内聚任务，明确 owner、路径、前置门及验收；不机械拆分测试/实现/证据。 |
+| 8 Validation design | PASS（设计） | 先定向 RED/GREEN 与审计，再正式矩阵；维护矩阵首个失败即停，保留所有运行。 |
+| 9 Evidence integrity | PASS（清单范围） | 每文件层声明或历史缺口明确，旧 PASS 不晋升；清单检查覆盖集合、哈希和头部漂移，不判运行资格。 |
+| 10 Migration and rollback | PASS（已提交单元） | 明确临时门吸收条件，冻结文件未改，本地 checkpoint 只纳入已验证单元，其他预存修改保留。 |
+| 11 Performance and operations | PASS（功能范围） | 不作性能/扩展性结论；已记录启动、绝对截止、子进程退出、资源清理，后续资格继续绑定实际运行。 |
+| 12 Documentation quality | PASS（当前结构） | 15 FR、6 SC、4 stories、12 tasks、5 complete；完整清单替代省略表，文档健康不是资格证据。 |
+
+## Evidence and Tool Limits
+
+- 本审查使用各修复记录及其原始日志，不把历史不同源的测试数相加成一次同源套件。
+- 最近公共准备控制是隔离 P-256 Y-B，四 Provider grant 验证、数值匹配和七个子进程退出已收集；随后 worker 修复仅刷新 unit target。下一次 native live 前须刷新统一 native manifest。
+- 本轮 R003 只审计文档。没有因此启动完整网络矩阵、SIF 或 Tiger，也不重跑未变的模型测试。
+- Context Mode project/active health 通过，权威来源明确命中当前 tasks.md；统计中的跨宿主汇总不作为当前项目或资格证明。
+- CodeGraph 泛化检索在 20 s 超时；改用精确 `scripts/spec180_inventory.py` 节点成功，再按当前文件核对。没有把检索超时当作运行失败。
+- 原工作区的大量预存修改尚未整体封印。后续必须审查候选实际纳入的源/配置，而非将 dirty tree 全部提交或忽略。
 
 ## Metrics and Task Cohesion
 
-4 user stories；14 FR；6 SC；12 T tasks，4 个历史 R safeguards 独立记录。
-本次 10 个发现：8 HIGH、2 MEDIUM；4 个文档/代码/上下文发现已关闭，
-其他按表中状态执行。T001/T002 因 Python/native owner 与验收边界不同
-保留；T003 负责跨语言等价性；T006 构造与生产拒绝，T005 同源矩阵。
-未发现需要机械拆分“测试/实现/跑测试”的理由。
-
-## Evidence Limits
-
-- 文档声称：revision 5 规定待完成行为；不是实现 PASS。
-- 代码实现：CodeGraph 首查后用工作区精确路径核对；其初次结果混入
-  临时历史副本，已排除，不能用索引健康代替生产事实。
-- 测试执行：本轮仅重跑 grant 引用修复的 34 项 unit/seam 回归；旧
-  2682、143、9-vector 等记录未在本轮重新执行，不作当前通过声明。
-- 实验测量：本轮未启动 MiniNDN、SIF 或 Tiger。当前原始
-  `/tmp/spec181-y-n-run/yb39.log` 六次 `control` startup 失败，
-  包装脚本 `EXIT=0` 不是 Y-B PASS，也不足以归因 OOM/transport 竞态。
-- 工作区起始 775 条预存变更，不是已封印候选；提交只包含本轮明确路径。
+4 user stories；15 FR；6 SC；12 T tasks（5 complete），另有 4 个先行 safeguards。
+12 个发现（9 HIGH、3 MEDIUM），A05 PARTIAL，其余在表述的限定范围闭合。
+T001/T002 保留 Python/native owner 与验收边界；T003 保留跨入口 parity；
+T006 构造与生产拒绝，T005 执行同源矩阵。没有新增模型、网络权威服务或撤销任务。
 
 ## Next Actions
 
-**Implementation checkpoint (2026-09-05)**：A02 的前置授权、独立模型名
-绑定、落盘密文读取与已登记明文清理已有定向修复；70 项 unit 回归
-通过，见 `evidence/t001-provider-repair-20260905.md`。这不是重新审计
-PASS。后续 A08 注册表公钥/策略、逻辑身份和最终 root 允许列表已接线，
-100 项定向 unit 通过，见 `evidence/t001-registry-repair-20260905.md`。
-后续维护真实进程集成与请求生命周期验收已完成 T001，见
-[T001 完成审查](evidence/t001-request-lifecycle-20260905.md)。其他控制性缺口仍开放。
-T002 的 `ProtectedRuntime` 已接入真实 verifier 和受管内容密钥，
-18 项定向 C++ 用例通过，见 `evidence/t002-runtime-repair-20260905.md`；
-后续 native store 与私有目录清理已有实现，20 项 C++ 和 55 项 Python/
-跨语言存储检查通过，见 `evidence/t002-storage-repair-20260905.md`。
-后续真实 native Y-B 与 grant 负例已有定向证据；helper 的超时、
-并发取消、过期、输出限制及取消后目录重建问题已修复，27 项检查
-通过，见 [helper 生命周期](evidence/t002-helper-lifecycle-20260905.md)。
-factory 的 P-256 凭据入口缺口已由实际失败回归确认并修复，8 项
-定向检查通过；factory/header 纳入 `35e1c6d5`，见
-[凭据入口](evidence/t002-recipient-credentials-20260905.md)。后续
-`835f20f9` 修复 Python loader、recipient map 与实际 EC 信封创建，
-134 项检查及重建后的四收件人 P-256 Y-B 控制 PASS，见
-[P-256 生产链](evidence/t002-p256-production-20260905.md)。任务指定的
-维护 integration 与 P-256 ASAN 已通过，见 [维护进程集成](evidence/t001-t002-process-integration-20260905.md)。
-worker 另发现准备后或计算期间取消/过期仍成功返回；4 项失败回归
-修复后，加上缓存正例和流事件拒绝，共 51 cases / 280 assertions PASS，
-见 [worker 授权](evidence/t002-worker-authority-20260905.md)。
-剩余 native handler 源码闭包与边界核对仍未完成，A01 未整体关闭；
-这些更新不改变本审计 BLOCK 裁决。
-
-1. T001 已完成；后续相关源变更按影响复验已有注册 handler 与真实
-   进程测试，不把当前完成状态当作未来候选的资格证据。
-2. T002：native Ed25519/P-256 正向链与 T006 负例已有证据，继续
-   核对剩余边界并完成 handler 源码提交。T003 已完成 grant 与装配两组 parity。
-   T004 已补当前 build 的真实就绪/取消/无热转证据并完成定向验收，
-   见 [生命周期验收](evidence/t004-lifecycle-acceptance-20260905.md)；
-   此项关闭不改变整体 BLOCK 裁决。
-3. T006 已关闭 User probe 资格漏洞并完成真实变异验收；T005 旧
-   重试入口已停用，维护矩阵首个失败即停止；正式矩阵仍等待 T007。
-4. T007 对同一源/构建/有效配置重新审计；只有新 PASS 才执行 T005/T008。
-5. 本地资格通过后按 T009→T010→T011→T012 晋升；历史结果不得拼接。
+1. 核对 A05 的生产源码、构建依赖、有效配置、候选封印与资格结果收集入口，必要时定向修复。
+2. 按实际变更刷新 source/native identity，更新本审计的逐项证据并作 T007 裁决；不是先跑正式矩阵再补审计。
+3. T007 PASS 后执行 T005/T008 同源完整本地资格，再按 T009→T010→T011→T012 晋升。

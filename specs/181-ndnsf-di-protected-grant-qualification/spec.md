@@ -6,7 +6,7 @@
 
 **Created**: 2026-09-05
 
-**Status**: `IN_PROGRESS / BLOCK`（修订 6：明确共用运行时与 adapter 边界，G0 尚未闭合；
+**Status**: `IN_PROGRESS / BLOCK`（修订 6：共用运行时与 adapter 边界已收口，G0 已完成，当前为 G1/T007；
 Spec 180 已按所有者决定关闭，其契约、冻结证据与失效声明保持权威。）
 
 **Input**: Spec 180 修订 125 的迁移清单；Spec 170

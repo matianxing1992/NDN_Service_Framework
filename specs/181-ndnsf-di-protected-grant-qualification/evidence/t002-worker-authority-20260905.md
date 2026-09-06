@@ -1,6 +1,7 @@
 # T002 Native Worker Authority
 
 **Status**: PASS (focused repair); T002 PARTIAL
+**Evidence layer**: implemented / wired / executed (focused runtime and worker unit checks)
 
 ## First Boundary
 

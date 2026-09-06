@@ -1,6 +1,7 @@
 # T001/T002 Maintained Process Integration
 
 **Status**: PASS (focused process integration and P-256 resource repair)
+**Evidence layer**: implemented / wired / executed (focused process integration and ASAN)
 
 ## Scope
 

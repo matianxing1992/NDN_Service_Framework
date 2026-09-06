@@ -19,6 +19,17 @@ failure's controlling boundary and invalidation effect are understood.
 
 ## Current failure index
 
+**Spec181 T007 evidence inventory (2026-09-05): CLOSED within document inventory scope.**
+The R003 record reports zero Spec181 evidence files, while the current tree
+contains 37. Four active evidence records lack an explicit header layer, and
+the audit body still describes already-closed T002/shared-runtime gaps. This
+invalidates the old completeness claim, not the linked raw test results.
+Four layer headers are repaired; the current inventory covers 145 entries,
+including both audit roots and one explicit SELF row. Drift/structure checks
+PASS, and all 105 Spec180 evidence-file hashes match the before-scan. Raw scan:
+ignored workspace temporary directory `spec181-evidence-inventory-20260905-r1/`.
+See [complete inventory](../specs/181-ndnsf-di-protected-grant-qualification/evidence/t007-evidence-inventory-20260905.md).
+
 **Spec181 shared generation worker (2026-09-05): CLOSED by focused repair.**
 Two queued coordinator regressions entered the model after cancellation or
 deadline. The existing pre-run cancellation check passed (1/3 cases PASS,
