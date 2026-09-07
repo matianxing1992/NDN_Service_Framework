@@ -60,6 +60,7 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 后续原生构建默认 -j4，已同步 AGENTS/CLAUDE、plan 与当前执行/验证指引。
 现场构建已在用 -j4；只读短样本未见持续换页，未做加速比/全程峰值验收，也未另启构建。
 资源快照、使用范围和降档规则见 [build policy](../../docs/native-build-parallelism.md)。
+文档 validator 与 diff 检查 PASS；新增说明已显式解除 docs 默认忽略规则，随仓库保存。
 本单元为工作流文档更新，不改产品任务状态；下一步由现有构建执行者记录结果和资源，再继续当前验收。
 
 2026-09-07 T006-B Certified Extraction and Wire / **T006-B DONE（父 T006 待
