@@ -71,11 +71,25 @@ def test_real_provider_name_not_hardcoded_to_example_prefix():
     assert validate(observation())['qualification'] == 'NATIVE_OBSERVATION_COMPONENT_ONLY'
 
 
+def certified_graph(backend='CUDAExecutionProvider'):
+    """Synthetic certified graph; provenance claims are fixture values only."""
+    role = 'BackboneNeck'
+    return {'schema': 'tiger-yolo-certified-graph-v1', 'graphDigest': 'sha256:'+'c'*64,
+        'roles': {role: {'modelManifestDigest': 'sha256:'+'a'*64,
+            'artifactDigest': 'sha256:'+'b'*64, 'backend': backend,
+            'optimizedNodeNames': ['conv_kernel_time']}},
+        'referenceProvenance': {role: {'schema': 'tiger-yolo-role-reference-v1',
+            'qualification': 'ORT_GRAPH_PREPARATION_COMPONENT_ONLY',
+            'ortVersion': 'fixture-ort-version',
+            'optimizedModelDigest': 'sha256:'+'d'*64,
+            'sessionOptions': {'intraOpThreads': 1,
+                'graphOptimization': 'ORT_ENABLE_BASIC',
+                'allowCpuFallback': False, 'deviceId': 0},
+            'backend': backend}}}
+
+
 def test_certified_graph_uses_optimized_node_mapping_not_raw_node_count():
-    graph = {'schema': 'tiger-yolo-certified-graph-v1', 'graphDigest': 'sha256:'+'c'*64,
-        'roles': {'BackboneNeck': {'modelManifestDigest': 'sha256:'+'a'*64,
-            'artifactDigest': 'sha256:'+'b'*64, 'backend': 'CUDAExecutionProvider',
-            'optimizedNodeNames': ['conv_kernel_time']}}}
+    graph = certified_graph()
     row = observation()
     row['nodeProviderAssignments'][0]['nodeName'] = 'conv_kernel_time'
     row['nodeProviderAssignments'][0]['modelNode'] = True
@@ -88,10 +102,7 @@ def test_certified_graph_uses_optimized_node_mapping_not_raw_node_count():
 @pytest.mark.parametrize('mutation', ['digest', 'node', 'backend', 'role'])
 def test_certified_graph_rejects_self_consistent_or_wrong_coverage(mutation):
     graph_digest = 'sha256:'+'c'*64
-    graph = {'schema': 'tiger-yolo-certified-graph-v1', 'graphDigest': graph_digest,
-        'roles': {'BackboneNeck': {'modelManifestDigest': 'sha256:'+'a'*64,
-            'artifactDigest': 'sha256:'+'b'*64, 'backend': 'CUDAExecutionProvider',
-            'optimizedNodeNames': ['conv_kernel_time']}}}
+    graph = certified_graph()
     row = observation()
     row['nodeProviderAssignments'][0]['modelNode'] = True
     if mutation == 'digest':
@@ -100,6 +111,7 @@ def test_certified_graph_rejects_self_consistent_or_wrong_coverage(mutation):
         graph['roles']['BackboneNeck']['optimizedNodeNames'] = ['different']
     elif mutation == 'backend':
         graph['roles']['BackboneNeck']['backend'] = 'CPUExecutionProvider'
+        graph['referenceProvenance']['BackboneNeck']['backend'] = 'CPUExecutionProvider'
     else:
         row['nodeProviderAssignments'][0]['role'] = 'Other'
     with pytest.raises(result.EvidenceError):

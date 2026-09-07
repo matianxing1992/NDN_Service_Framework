@@ -92,3 +92,49 @@ partially implemented, not closed. CUDA behavior remains unverified here.
 Reference: [ORT graph optimizations](https://onnxruntime.ai/docs/performance/model-optimizations/graph-optimizations.html)
 documents initialization-time export and the need for matching target options
 and hardware. Do not reuse a host CPU reference as a target GPU reference.
+
+## Connected certified-graph document owner
+
+`runtime/yolo_graph_reference.py` now owns the certified-graph document as well
+as the per-role component:
+
+- `serialize_certified_graph(role_references, *, graph_digest)` is the
+  production serializer for `tiger-yolo-certified-graph-v1`, the only shape the
+  retained comparator accepts. It consumes role-reference records exactly as
+  `prepare_role_reference` returns them and never reads execution observations.
+  All three ONNX roles must be present (a document silently dropping one role
+  would let a missing head evade coverage), and one backend is required across
+  roles because the optimized node vocabulary is backend-specific. Each
+  reference record must carry its producer schema/qualification, exact ORT
+  version, optimizer-export digest and the canonical session options.
+- The returned document embeds `referenceProvenance` (per-role producer
+  schema/qualification, ORT version, `optimizedModelDigest`, session options,
+  backend) alongside the comparator-shaped role expectations.
+- `validate_certified_graph_provenance` rechecks that provenance for every
+  covered role. `validate_certified_graph_coverage` now invokes it before any
+  coverage comparison, so an expected graph fabricated at collection time or
+  stripped of its producer identity is rejected instead of trusted
+  (CERTIFIED_GRAPH_PROVENANCE_*). Re-deriving the optimized node vocabulary
+  from the export digest still requires re-running preparation offline; that
+  remains an audit/mutation activity, not an inference from the document.
+- Role-boundary parity is regression-guarded: `_ORT_ROLES` equals
+  `yolo_result._ORT_ROLES` and `yolo_worker.MODEL_ROLES`.
+
+New tests: real tiny Add-only ONNX role models for all three roles, real CPU
+references, serializer document shape and provenance embedding, comparator
+join with synthetic retained observations matched only after the expected
+names were fixed by ORT preparation, provenance-required comparator gate,
+role-coverage gaps/extras, tampered reference identity/provenance, mixed or
+unknown backends, node-vocabulary mutations, graph-digest rejection and
+deterministic provenance digest. 33 graph-reference tests passed; full
+TigerCluster suite 895 passed in 43.27s. Old comparator fixtures are now
+explicitly labeled synthetic provenance.
+
+Still open on this gap (unchanged for T005/T006/T007): the real invocation
+point that reads role model bytes from a signed candidate package and calls
+`prepare_role_reference` on the execution target (CPU locally, CUDA on the
+allocated device, never the login node), binds its records with the actual
+graph digest after catalogue publication, and carries the serialized document
+through preparation/run/collection. That wiring awaits the T001 signed
+candidate model manifest and the SIF/GPU gates; no runtime or qualification
+claim is made here.

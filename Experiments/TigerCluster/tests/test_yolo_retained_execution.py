@@ -71,7 +71,15 @@ def test_four_role_join_uses_three_ort_graphs_and_retains_native_merge(monkeypat
     binding = dict(modelManifestDigest='sha256:'+'a'*64, artifactDigest='sha256:'+'b'*64)
     graph = dict(schema='tiger-yolo-certified-graph-v1', graphDigest='sha256:'+'c'*64,
         roles={role: dict(binding, backend='CPUExecutionProvider',
-                         optimizedNodeNames=['conv_kernel_time']) for role in names[:-1]})
+                         optimizedNodeNames=['conv_kernel_time']) for role in names[:-1]},
+        # Synthetic producer provenance: fixture values only; the real document
+        # is produced by serialize_certified_graph from ORT reference records.
+        referenceProvenance={role: dict(schema='tiger-yolo-role-reference-v1',
+            qualification='ORT_GRAPH_PREPARATION_COMPONENT_ONLY',
+            ortVersion='fixture-ort-version', optimizedModelDigest='sha256:'+'d'*64,
+            sessionOptions={'intraOpThreads': 1, 'graphOptimization': 'ORT_ENABLE_BASIC',
+                            'allowCpuFallback': False, 'deviceId': 0},
+            backend='CPUExecutionProvider') for role in names[:-1]})
     checked_roles = []
 
     def read_role(*args, role, **kwargs):

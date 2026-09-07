@@ -551,3 +551,22 @@ envelope，不能直接作为 shared-backbone Spec183 dispatch 输入。该残�
 [input-inventory.md](evidence/input-inventory.md) 和
 [spec180-candidate-reuse-audit.md](evidence/spec180-candidate-reuse-audit.md)；T004/T007/T008+
 仍未完成，未提交任何 Tiger 作业。
+
+2026-09-07 certified-graph document owner checkpoint：`runtime/yolo_graph_reference.py`
+新增 `serialize_certified_graph(role_references, *, graph_digest)` 作为
+`tiger-yolo-certified-graph-v1` 的唯一生产 serializer——消费 `prepare_role_reference`
+原样返回的三角色记录（缺一即拒、跨角色单一 backend），在文档中嵌入
+`referenceProvenance`（producer schema/qualification、确切 ORT 版本、optimizer
+export digest、canonical session options、backend）。`validate_certified_graph_provenance`
+逐角色重检 provenance，`validate_certified_graph_coverage` 在任何覆盖率比较前先调用
+它：收集阶段伪造或剥离 producer 身份的 expected graph 直接拒绝
+（CERTIFIED_GRAPH_PROVENANCE_*），不再被当作 trust 接受。角色边界由回归测试锁定：
+`_ORT_ROLES` == `yolo_result._ORT_ROLES` == `yolo_worker.MODEL_ROLES`。测试：三个真实
+小 ONNX 角色模型 → 真实 CPU 参考 → serializer 文档 → comparator join（expected 先由
+ORT 准备独立固定，synthetic retained observations 只准随后匹配），另覆盖缺/多角色、
+伪造 reference 身份/provenance、backend 混用/未知、node 词表与 graph digest 突变；
+graph-reference 33 项通过，完整 TigerCluster **895 passed in 39.45s**。旧 comparator
+fixture 已加明确标注 synthetic provenance。此 checkpoint 未改变证据分级：真实调用点
+（从 signed candidate package 读 role model bytes、在 CPU 本机/已分配 GPU 上 prepare、
+绑定 catalogue 发布后的真实 graph digest、经 preparation/run/collection 携带文档）仍
+等待 T001 signed model manifest 与 SIF/GPU 门，T005/T006/T007 保持 open。

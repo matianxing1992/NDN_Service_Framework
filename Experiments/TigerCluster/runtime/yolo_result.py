@@ -1237,11 +1237,14 @@ def validate_certified_graph_coverage(observations, model_bindings, certified_gr
     """Compare native/ORT assignments with an independently certified graph.
 
     The caller must supply independently established ``optimizedNodeNames``
-    from a graph/ORT preparation owner. This comparator does not authenticate
-    that input or establish its provenance; the production owner is not yet
-    connected (Spec183 T005/T006). It represents the post-optimization vocabulary;
-    raw ONNX node counts are not used as an execution proof. This function
-    never derives the expected graph or model identities from observations.
+    from a graph/ORT preparation owner. The document must be produced by
+    ``runtime.yolo_graph_reference.serialize_certified_graph`` from role
+    reference records; before any comparison this comparator rechecks the
+    embedded reference provenance and rejects documents fabricated at
+    collection time or stripped of their producer identity (Spec183 T005/T006).
+    It represents the post-optimization vocabulary; raw ONNX node counts are
+    not used as an execution proof. This function never derives the expected
+    graph or model identities from observations.
     """
     if (not isinstance(observations, Mapping) or not isinstance(model_bindings, Mapping)
             or not isinstance(certified_graph, Mapping)
@@ -1252,6 +1255,11 @@ def validate_certified_graph_coverage(observations, model_bindings, certified_gr
             or certified_graph.get('graphDigest') != graph_digest
             or not isinstance(certified_graph.get('roles'), Mapping)):
         raise EvidenceError('CERTIFIED_GRAPH_SCHEMA')
+    try:
+        from runtime.yolo_graph_reference import validate_certified_graph_provenance
+        validate_certified_graph_provenance(certified_graph)
+    except ValueError as exc:
+        raise EvidenceError(str(exc)) from exc
     roles = certified_graph['roles']
     if (not roles or not set(roles) <= _ORT_ROLES
             or set(roles) != set(model_bindings) or set(roles) != set(observations)):
