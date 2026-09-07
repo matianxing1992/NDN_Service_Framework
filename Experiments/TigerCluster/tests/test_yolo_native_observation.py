@@ -70,6 +70,22 @@ def test_real_provider_name_not_hardcoded_to_example_prefix():
     assert validate(observation())['qualification'] == 'NATIVE_OBSERVATION_COMPONENT_ONLY'
 
 
+@pytest.mark.parametrize('kind', ['onnxruntime-cpu', 'native-yolo-postprocess'])
+def test_cpu_and_merge_execution_component(kind):
+    row = observation()
+    row.update(runnerKind=kind, gpuUuid='', cudaVisibleDevices='')
+    if kind == 'onnxruntime-cpu':
+        row['nodeProviderAssignments'][0]['provider'] = 'CPUExecutionProvider'
+        role = 'BackboneNeck'
+    else:
+        role = 'Merge'
+        row.update(roles=[role], realCompute='false', nodeProviderAssignments='')
+    value = result.validate_native_observation(json.dumps(row), provider='/app/worker-a',
+        role=role, request_id='/app/request/1', attempt=1,
+        plan_digest='sha256:'+'1'*64, pid=123, runner_kind=kind)
+    assert value['qualification'] == 'NATIVE_OBSERVATION_COMPONENT_ONLY'
+
+
 @pytest.mark.parametrize('key,value', [('providerName', '/example/provider/BackboneNeck'),
     ('attemptEpoch', '2'), ('processId', '124'), ('requestId', '/other'),
     ('executionCompleted', 'false'), ('exactForwardCacheHit', 'true'),
@@ -80,3 +96,20 @@ def test_failed_or_unrelated_execution_cannot_pass(key, value):
     row[key] = value
     with pytest.raises(result.EvidenceError):
         validate(row)
+
+
+@pytest.mark.parametrize('count', [0, 1, 2])
+def test_bounded_log_selects_one_actual_request(tmp_path, count):
+    prefix = 'NDNSF_DI_EXECUTION_EVIDENCE_OBSERVED '
+    unrelated = observation()
+    unrelated['requestId'] = '/other'
+    path = tmp_path / 'provider.log'
+    path.write_text('READY\n' + prefix + json.dumps(unrelated) + '\n' +
+                    (prefix + json.dumps(observation()) + '\n') * count)
+    binding = dict(provider='/app/worker-a', role='BackboneNeck', request_id='/app/request/1',
+                   attempt=1, plan_digest='sha256:'+'1'*64, pid=123, runner_kind='onnxruntime-cuda')
+    if count == 1:
+        assert result.read_native_observation(path, **binding)['observation']['requestId'] == '/app/request/1'
+    else:
+        with pytest.raises(result.EvidenceError, match='OBSERVATION_COUNT'):
+            result.read_native_observation(path, **binding)

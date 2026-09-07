@@ -33,6 +33,39 @@ combine lifecycle, numerical and native components under frozen candidate
 inputs. CPU and Merge acceptance need dedicated positive regressions as well.
 T006/T007 and real local/SIF/Tiger gates remain open.
 
+## ORT/profile and log follow-up
+
+`read_native_observation` now selects exactly one configured role/request from
+the launcher's bounded non-symlink log, rejects malformed observation JSON or
+duplicates, validates its binding and retains a log hash. Missing or duplicate
+observations never become PASS.
+
+`validate_ort_profile` independently parses bounded non-symlink profile bytes,
+extracts model Node events using the production applyOnnxRuntimeProviderProfile
+rules (ignore non-node events and provider-free fence events; reject kernels
+without provider identity), checks exact backend and ordered assignments
+against the normalized native record, and returns a profile hash. Current
+request/attempt must match profile lineage; status is ORT_PROFILE_COMPONENT_ONLY.
+File reads use the existing 4 MiB harness reader limit, and JSON event counts
+are additionally bounded. Caller must map the native container path into that
+Provider's owned output, not accept arbitrary host paths from logs.
+
+Added positive CPU/Merge record tests, CPU profile/fence test, GPU profile
+matching, stale-request/attempt/missing/extra/misnamed-node/fallback/symlink
+negative tests and log cardinality tests. Combined profile/native subset:
+46 passed. All profiles are synthetic test data, not real ORT execution proof.
+
+Source caution: OnnxRuntimeModelRunner captures profiling once per session
+(`profilingCaptured`), and binds profileRequestId to that run. Do not assert
+that every subsequent request has fresh profiling. The actual session reuse
+path must be checked before warm qualification; until then the collector
+rejects stale profile lineage rather than claiming current execution from it.
+Full model-node coverage against the certified assembled graph, physical GPU
+allocation, dependency transfers, complete cleanup and orchestration remain.
+
+ORT/log follow-up expanded regression: 536 passed in 42.22s with the same six
+selectors; JUnit `Experiments/TigerCluster/results/t006-ort-profile-r1/junit.xml`.
+
 Initial expanded regression: 517 passed/1 failed (missing-peer test received
 Python 3.8 asyncio.TimeoutError rather than built-in TimeoutError). Normalized
 that API boundary and added deterministic outer-timeout injection coverage.

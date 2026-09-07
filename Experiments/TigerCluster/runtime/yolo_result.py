@@ -7,6 +7,102 @@ from collections.abc import Mapping
 import re
 
 
+def read_native_observation(path, **binding):
+    """Select exactly one role/request observation from an owned bounded log.
+
+    Caller supplies the actual launcher's log path and process binding. This
+    does not establish host/GPU identity or replace independent ORT evidence.
+    """
+    import hashlib
+    from pathlib import Path
+    from runtime.yolo_bundle import _bytes
+    path = Path(path)
+    if any(p.is_symlink() for p in (path, *path.parents)):
+        raise EvidenceError('NATIVE_LOG_SYMLINK')
+    payload = _bytes(path)
+    prefix = 'NDNSF_DI_EXECUTION_EVIDENCE_OBSERVED '
+    selected = []
+    try:
+        lines = payload.decode('utf-8').splitlines()
+    except UnicodeError as exc:
+        raise EvidenceError('NATIVE_LOG_ENCODING') from exc
+    for line in lines:
+        if not line.startswith(prefix):
+            continue
+        encoded = line[len(prefix):]
+        row = decode_native_observation(encoded)
+        if row.get('requestId') == binding.get('request_id') and row.get('roles') == [binding.get('role')]:
+            selected.append(encoded)
+    if len(selected) != 1:
+        raise EvidenceError('NATIVE_LOG_OBSERVATION_COUNT')
+    result = validate_native_observation(selected[0], **binding)
+    return dict(result, logDigest='sha256:' + hashlib.sha256(payload).hexdigest())
+
+
+def validate_ort_profile(path, observation):
+    """Cross-check profile bytes against one already-bound native record.
+
+    Caller resolves the container profile path inside that Provider's owned
+    output and binds the observation first. Model coverage, allocation/GPU,
+    dependency and cleanup checks are separate; this is not inference PASS.
+    """
+    import hashlib
+    import json
+    from pathlib import Path
+    from runtime.yolo_bundle import _bytes
+    path = Path(path)
+    if any(p.is_symlink() for p in (path, *path.parents)):
+        raise EvidenceError('ORT_PROFILE_SYMLINK')
+    roles = observation.get('roles')
+    kind = observation.get('runnerKind')
+    if (not isinstance(roles, list) or len(roles) != 1 or not isinstance(roles[0], str)
+            or not roles[0] or kind not in ('onnxruntime-cpu', 'onnxruntime-cuda')
+            or not isinstance(observation.get('requestId'), str) or not observation['requestId']
+            or observation.get('profileRequestId') != observation['requestId']
+            or type(observation.get('attemptEpoch')) is not int or observation['attemptEpoch'] <= 0
+            or type(observation.get('profileAttemptEpoch')) is not int
+            or observation['profileAttemptEpoch'] != observation['attemptEpoch']):
+        raise EvidenceError('ORT_PROFILE_REQUEST_BINDING')
+    payload = _bytes(path)
+    def pairs(items):
+        value = {}
+        for key, item in items:
+            if key in value:
+                raise EvidenceError('ORT_PROFILE_DUPLICATE_KEY')
+            value[key] = item
+        return value
+    def constant(value):
+        raise EvidenceError('ORT_PROFILE_NONFINITE')
+    try:
+        events = json.loads(payload, object_pairs_hook=pairs, parse_constant=constant)
+    except (ValueError, UnicodeError, RecursionError) as exc:
+        raise EvidenceError('ORT_PROFILE_JSON') from exc
+    if not isinstance(events, list) or not events or len(events) > 100000:
+        raise EvidenceError('ORT_PROFILE_EVENTS')
+    assignments = []
+    expected_backend = 'CUDAExecutionProvider' if kind == 'onnxruntime-cuda' else 'CPUExecutionProvider'
+    for event in events:
+        if not isinstance(event, dict):
+            raise EvidenceError('ORT_PROFILE_EVENT')
+        if event.get('cat') != 'Node':
+            continue
+        name, args = event.get('name'), event.get('args', {})
+        if not isinstance(name, str) or not name or not isinstance(args, dict):
+            raise EvidenceError('ORT_PROFILE_NODE')
+        backend = args.get('provider', '')
+        if backend == '':
+            if name.endswith('_kernel_time'):
+                raise EvidenceError('ORT_PROFILE_KERNEL_PROVIDER_MISSING')
+            continue
+        if backend != expected_backend:
+            raise EvidenceError('ORT_PROFILE_BACKEND')
+        assignments.append(dict(role=roles[0], nodeName=name, provider=backend, modelNode=True))
+    if not assignments or assignments != observation.get('nodeProviderAssignments'):
+        raise EvidenceError('ORT_PROFILE_ASSIGNMENT_MISMATCH')
+    return dict(profileDigest='sha256:' + hashlib.sha256(payload).hexdigest(),
+        modelNodeEvents=len(assignments), qualification='ORT_PROFILE_COMPONENT_ONLY')
+
+
 def decode_native_observation(payload):
     """Decode ExecutionEvidence.cpp JSON, NOT validate execution success.
 
