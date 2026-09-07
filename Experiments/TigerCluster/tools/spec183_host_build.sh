@@ -13,9 +13,12 @@ SVS=/home/tianxing/NDN/ndn-svs
 SD=/home/tianxing/NDN/NDNSD
 NS=/home/tianxing/NDN/ndn-service-framework
 J=2
+# The pinned Experimental ndn-svs checks for Boost >= 1.71 (its 1.74 gate
+# exists only on other lines); Ubuntu 20.04 ships 1.71, so the system Boost
+# is the matching toolchain -- no isolated Boost prefix.
 
 mkdir -p "$LOG"
-rm -rf "$ROOT"
+rm -rf "$ROOT" /tmp/t008-nac-build
 mkdir -p "$ROOT/lib/pkgconfig" "$ROOT/bin" "$ROOT/include"
 export PKG_CONFIG_PATH="$ROOT/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
 export CXXFLAGS="-O2 -fPIC"
@@ -31,16 +34,22 @@ cmake --build /tmp/t008-nac-build --parallel $J
 cmake --install /tmp/t008-nac-build
 
 step "ndn-svs waf"
-( cd "$SVS" && ./waf configure --prefix="$ROOT" && ./waf build -j$J && ./waf install )
+( cd "$SVS" && ./waf configure --prefix="$ROOT" \
+  && ./waf build -j$J && ./waf install )
 
 step "ndnsd waf"
 ( cd "$SD" && ./waf configure --prefix="$ROOT" && ./waf build -j$J && ./waf install )
 
 step "ndnsf core waf"
-( cd "$NS" && ./waf configure --prefix="$ROOT" && ./waf build -j$J )
+( cd "$NS" && ./waf configure --prefix="$ROOT" \
+  --nac-abe-prefix="$ROOT" --disable-local-dependency-prefix \
+  && ./waf build -j$J )
 
 step "pythonWrapper extension"
-( cd "$NS/pythonWrapper" && python3 setup.py build_ext --inplace )
+# The pybind11 translation unit is too large for GCC 9.4's debug emission
+# (leb128 assembler error); distutils reads CFLAGS, not CXXFLAGS, and -g0
+# overrides the sysconfig -g.
+( cd "$NS/pythonWrapper" && CFLAGS="-O2 -fPIC -g0" python3 setup.py build_ext --inplace )
 
 step "entrypoint smoke"
 "$NS/build/App_ServiceController" --help >/dev/null 2>&1 || true
