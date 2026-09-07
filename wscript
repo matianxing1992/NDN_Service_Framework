@@ -619,7 +619,8 @@ def build(bld):
 
     bld.install_files(
         '${INCLUDEDIR}/NDNSF-DistributedInference/cpp/ndnsf-di',
-        bld.path.ant_glob('NDNSF-DistributedInference/cpp/ndnsf-di/*.hpp'))
+        bld.path.ant_glob('NDNSF-DistributedInference/cpp/ndnsf-di/*.hpp',
+                          excl=['NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp']))
     # NativeOnnxAssemblyWorker.hpp is a DI-private protocol header (T006-C):
     # it is deliberately not installed as an application header.
     bld.install_files(
