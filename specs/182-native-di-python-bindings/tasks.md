@@ -25,7 +25,7 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 | [T003-B Yolo Split Candidates](contracts/execution-units.md#t003-b-yolo-split-candidates) | DONE | T003-A | [acceptance](evidence/t003-b-yolo-split-20260907.md)；CPP(Spec182YoloSplit/*) 7 cases 全绿（固定 cover、错误 component/图/外来模型拒绝、确定性 + budget 截断），expected 对照冻结 `Yolo26Splitter`/`RegisteredYoloCandidate`；新增 2 case 于 di-native-planning.t.cpp | 2026-09-07 |
 | [T003-C Placement and Registry](contracts/execution-units.md#t003-c-placement-and-registry) | DONE | T003-A, T003-B | [acceptance](evidence/t003-c-placement-20260907.md)；CPP(Spec182Placement/*) 9 cases 全绿（residency→freeBytes→provider 稳定序、budget/ref tie-break、同输入同结果、非法向量/全拒），对照冻结 `propose_v3` 共享语义区间；新增 2 case 于 di-native-planning.t.cpp | 2026-09-07 |
 | [T004-A Canonical Plan Sealing](contracts/execution-units.md#t004-a-canonical-plan-sealing) | DONE | T003-C | [acceptance](evidence/t004-a-plan-sealer-20260907.md)；CPP(Spec182PlanSealer/*) 7 cases 全绿（canonical 封印 + M22 单源投影、encode 固定 7-key 片段字节一致 + 独立 JSON oracle、逐维度篡改敏感、错误 endpoint/缺 grant/错 ACK digest 首边界拒绝、plaintext 无 grant 封面）；planned suite 登记于新文件 di-native-plan-sealer.t.cpp；真实 Core commit/Provider parser 对照留 T016 | 2026-09-07 |
-| [T005-A InProcess Authority](contracts/execution-units.md#t005-a-inprocess-authority) | NOT_STARTED | T004-A | [baseline](evidence/task-progress-registry-20260907.md)；无本卡独立执行/验收记录；按依赖领取 | 2026-09-07 |
+| [T005-A InProcess Authority](contracts/execution-units.md#t005-a-inprocess-authority) | DONE | T004-A | [acceptance](evidence/t005-a-inprocess-authority-20260907.md)；CPP(Spec182GrantAuthority/*) 6 cases 全绿（固定 request/时钟向量、expiry/自授/issuer 不完整/wrong-key-recipient 面原因码族拒绝、secret 生命周期无 key 驻留、注入 policy 传播）；issue() 补 requester==provider 拒绝（Python frozen 对照）；planned 独立文件拆分由既有同文件切片取代 | 2026-09-07 |
 | [T005-B Requester Grant Publication](contracts/execution-units.md#t005-b-requester-grant-publication) | PARTIAL | T005-A | [baseline](evidence/task-progress-registry-20260907.md)；已有相关源码切片；完整卡验收未完成 | 2026-09-07 |
 | [T006-A Canonical Source Identity](contracts/execution-units.md#t006-a-canonical-source-identity) | PARTIAL | T002-A | [baseline](evidence/task-progress-registry-20260907.md)；已有相关源码切片；完整卡验收未完成 | 2026-09-07 |
 | [T006-B Certified Extraction and Wire](contracts/execution-units.md#t006-b-certified-extraction-and-wire) | PARTIAL | T006-A | [baseline](evidence/task-progress-registry-20260907.md)；已有相关源码切片；完整卡验收未完成 | 2026-09-07 |
@@ -55,6 +55,20 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 | [T017-A Development Handoff](contracts/execution-units.md#t017-a-development-handoff) | NOT_STARTED | T016-A | [baseline](evidence/task-progress-registry-20260907.md)；无本卡独立执行/验收记录；按依赖领取 | 2026-09-07 |
 
 ## Current Checkpoint
+
+2026-09-07 T005-A InProcess Authority / **T005-A DONE（父 T005 待 T005-B）**：
+按 T005-A 卡 Verify（CPP(Spec182GrantAuthority/*)）在 planned 文件
+`tests/unit-tests/di-native-grant.t.cpp` 登记 suite `Spec182GrantAuthority`
+6 cases 全绿（固定 request/时钟向量、expiry/自授/身份不完整/issuer
+不完整原因码族拒绝、注入 policy 拒绝原样传播、空 issue port 构造拒绝）；
+issue() 补 requester==provider 自授权限拒绝（Python frozen issue 对照，
+Steps"拒绝 caller 自授权限"）；crypto 面经注入 IssuePort，未新增网络
+authority/自写密码算法。NativeArtifactPolicyAuthority 为既有切片
+（NativeGrantClient.hpp/.cpp 同文件、T002-A 已安装），planned 独立文件
+拆分按 registry 复用约定不重做。回归（grant-client 2 cases +
+Spec182PlanSealer + Spec182NativePlanning）全绿。evidence
+[t005-a](evidence/t005-a-inprocess-authority-20260907.md)。下一步：T005-B
+（Requester Grant Publication，依赖已满足）。
 
 2026-09-07 T004-A Canonical Plan Sealing / **T004-A DONE、父 T004 DONE**：
 按 T004-A 卡 Verify（CPP(Spec182PlanSealer/*)）在 planned 文件
