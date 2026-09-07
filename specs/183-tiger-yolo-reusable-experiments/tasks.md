@@ -80,6 +80,13 @@ T001–T004形成 profile/launcher 实现骨架；可操作 MVP 还要求 T006 �
 
 ## Current Checkpoint
 
+2026-09-07 canonical Sync and component regression checkpoint：`applicationName + '/sync'`
+（例如 `/appname` → `/appname/sync`）已由 profile、projection、NFD route 和 startup
+validation 共用；不得从 Provider prefix 或旧 `/group` 推导。重新运行完整
+`Experiments/TigerCluster/tests`：806 passed（32.84s）；仍为 component-only，未改变
+T007 的 BLOCKED/NOT READY 状态。当前仍等待 candidate-bound signed model manifest、
+Spec183 profile、native/SIF 和真实 MiniNDN/Tiger 证据。
+
 2026-09-07 输入接收推进：四个锁定源码已在隔离 `/tmp/ndnsf-spec183-src` 工作树按
 `development-handoff.lock.json` 精确 checkout，五个锁定 wheel 已下载并逐一校验，
 `prepare-development-handoff.py verify` 返回 `SOURCE_READY`，source seal 为
