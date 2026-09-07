@@ -21,6 +21,21 @@ failure-log，记录 identity b6710fd6 稳定正确。deferred：远端 storage
 site roots 与 oracle 数值契约待 T005/T006/T012 wiring 验证；release.gates
 仍空，local-cpu 运行资格待真实 prepare+local 执行 receipt。
 
+2026-09-07 T011 启动条件与输入演进：source seal 已成功
+（prepare-local-sif-source.py：workspace.tar 455 文件 + nacAbe/ndnSvs/ndnSd
+三个依赖归档，sealDigest 3603c895）。prepare-development-handoff.py
+prepare 被 HANDOFF_CHECKOUT_REVISION 拒绝：committed
+development-handoff.lock.json（= .cache 同名依赖锁）pin 的 ndnsf revision
+是 Experimental@447f7584（development-20260906 冻结），当前工作分支
+TigerClusterExperiments HEAD becf5550 含 Spec183 harness 修复
+（apps/yolo.py 预绑定、identities.py 副作用清理等）。T011 构建必须包含
+这些修复，否则新 SIF 仍带 controller 接口漂移。下一步：生成
+development-20260907 新锁（release 字段 + 四个仓库 revision 重 pin 当前
+HEAD，旧锁作为 spec180 冻结输入保留），inputs plane SOURCES 改指新锁并
+重新 render 全链（identity 演进，fail-closed 重算），再重跑 T011
+prepare → verify → render → build-local-sif.sh。wheels 已在
+.cache/handoff/development-20260906/wheels/（5 个，与锁 sha 匹配）。
+
 2026-09-07 T007 审计（report-only）：产出
 [design-code-convergence.md](evidence/design-code-convergence.md)，判定
 BLOCK (HIGH)。四层证据逐项核实（文档/CodeGraph file:line/913 测试/真实
