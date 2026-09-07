@@ -119,12 +119,25 @@ wait/readiness 使用 monotonic deadline，并检查 child 和 peer failure。Co
 
 ### T004 implemented interface checkpoint
 
-当前 `jobs/yolo/submit.py` 仅开放 `check`，`--profile` 必需，`--stage` 默认
-`dispatch`。可同时传 `--run-id/--output/--case` 三项查看确定性运行预览；不传
-则只做当前阶段内容检查。未知字段、错 manifest/hash、缺阶段以 exit 2 拒绝。
-内容匹配仍返回 exit 78、`status=INCOMPLETE`、`qualification=NOT_EVALUATED`：
-source/model 专属校验、生产调用/挂载和真实 receipt 尚未接入，不能构建或提交。
-`prepare/local/submit/collect` 暂不开放，而不是提供能绕过门槛的占位执行器。
+`jobs/yolo/submit.py` 暴露五个公开命令：`check`、`prepare`、`local`、
+`submit` 和 `collect`。另外有一个仅由 `jobs/yolo/run.sbatch` 调用的隐藏
+`run` 命令。所有命令都要求显式 profile、run ID 和 output；运行 case 还必须
+显式指定 `local-cpu`、`single-node-gpu`、`two-node-gpu` 或
+`negative-dependency`。未知字段、错 manifest/hash、缺阶段、路径越界以 exit 2
+拒绝。
+
+命令的门控是 fail-closed：内容或收据尚未达到真实资格时返回 exit 78、
+`status=INCOMPLETE`、`qualification=NOT_EVALUATED`，不创建 run 目录、不冻结
+bundle、不调用 Apptainer、SSH 或 Slurm。`prepare` 只有在 dispatch gate 已被
+独立 receipt 标记为合格时才会冻结不可变 harness 和 run-plan；`local` 还要求
+local-SIF gate；`submit` 还要求远端 staging/allocated-run owner。当前这些真实
+receipt 尚未产生，因此命令不会把结构性 profile 当成可执行候选。`collect` 只
+读取并绑定已有 verdict，不会启动缺失步骤或把旧失败改成成功。
+
+`check` 仍可同时传 `--run-id/--output/--case` 查看确定性运行预览；不传则只
+做当前阶段内容检查。隐藏 `run` 必须存在 `SLURM_JOB_ID`，且在 T012 的真实
+worker 接线完成前固定拒绝执行。这个接口存在是为了让 Slurm 边界明确，而不是
+提供绕过 T005/T006/T007 的占位执行器。
 
 `check` 的内容检查范围为当前及前驱 I/R/E 平面，先核对 profile 对平面清单的
 bytes/hash，再调用原 `check_chain`，最后再次核对清单引用。它不把最低文件

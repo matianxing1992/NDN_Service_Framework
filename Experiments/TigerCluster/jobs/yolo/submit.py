@@ -1,21 +1,245 @@
 #!/usr/bin/env python3
-"""Spec183 operator entrypoint; no execution until genuine gates are wired.
+"""Spec183 operator entrypoint.
 
-`check` is read-only. Exit 78 means incomplete qualification, not a launchable
-candidate. The remaining contract commands are deliberately unavailable until
-their real application and receipt consumers exist; there is no force bypass.
+The five public actions are deliberately fail-closed.  A structurally valid
+profile is not a release: ``prepare`` needs a qualified dispatch receipt,
+``local`` needs a prepared immutable run, and ``submit`` needs the corresponding
+allocation gate.  Missing or stale evidence returns 78 without creating a run,
+calling Apptainer, or calling Slurm.  The private ``run`` action is used only by
+the checked-in Slurm wrapper after an allocation has been granted.
 """
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import os
 from pathlib import Path
+import re
 import sys
 
 sys.dont_write_bytecode = True
 BUNDLE = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(BUNDLE))
-from runtime.yolo_profile import ClosureError, check_operator_profile, resolve_run_plan
+from runtime.yolo_profile import (ClosureError, HASH, _file_identity, _operator_path,
+                                  _read_plane, check_operator_profile, resolve_run_plan)
+
+
+INCOMPLETE = 78
+
+
+def _json_digest(value):
+    return "sha256:" + hashlib.sha256(json.dumps(
+        value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
+
+
+def _safe_output(path: Path) -> Path:
+    """Resolve an operator output without following a pre-existing symlink."""
+    path = Path(path)
+    if any(part.is_symlink() for part in (path, *path.parents)):
+        raise ClosureError("RUN_OUTPUT_SYMLINK")
+    path = Path(os.path.abspath(str(path)))
+    if path == Path(path.anchor):
+        raise ClosureError("RUN_OUTPUT_ROOT")
+    return path
+
+
+def _write_readonly(path: Path, value: dict) -> None:
+    """Write a small receipt atomically; never overwrite a run artifact."""
+    path = Path(path)
+    if path.exists() or path.is_symlink():
+        raise ClosureError("RUN_ARTIFACT_EXISTS")
+    if path.parent.exists():
+        if path.parent.is_symlink() or not path.parent.is_dir():
+            raise ClosureError("RUN_ARTIFACT_PARENT")
+    else:
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=False)
+    payload = json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+    temporary = path.with_name(path.name + ".tmp")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+    fd = os.open(str(temporary), flags, 0o600)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(str(temporary), str(path))
+        path.chmod(0o444)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+
+
+def _file_ref(profile_path: Path, name: str, row: dict) -> Path:
+    if not isinstance(row, dict) or set(row) != {"path", "bytes", "sha256"}:
+        raise ClosureError("GATE_REFERENCE")
+    target = Path(_operator_path(row["path"], profile_path.parent, local=True))
+    _file_identity(target.parent, name, dict(row, path=target.name))
+    return target
+
+
+def _gate_receipt(profile_path: Path, profile: dict, gate: str) -> dict:
+    """Read a signed/owned prerequisite receipt without treating its hash as PASS."""
+    gates = profile.get("release", {}).get("gates", {})
+    row = gates.get(gate)
+    if row is None:
+        raise ClosureError("GATE_MISSING:" + gate)
+    path = _file_ref(profile_path, gate, row)
+    value = _read_plane(path)
+    if (not isinstance(value, dict)
+            or value.get("status") not in ("PASS", "READY")
+            or value.get("qualification") not in ("PASS", "READY", "QUALIFIED")):
+        raise ClosureError("GATE_NOT_QUALIFIED:" + gate)
+    return {"name": gate, "path": str(path), "sha256": row["sha256"], "receipt": value}
+
+
+def _dispatch_report(profile: Path) -> tuple[dict, dict]:
+    report = check_operator_profile(profile, stage="dispatch")
+    loaded = report.get("profile")
+    # check_operator_profile intentionally does not return the mutable profile;
+    # load it again only after the content check, anchored to the profile path.
+    from runtime.yolo_profile import load_operator_profile
+    loaded = load_operator_profile(profile, stage="dispatch")["profile"]
+    return report, loaded
+
+
+def _prepared_path(output: Path, run_id: str) -> Path:
+    if not isinstance(run_id, str) or not re.fullmatch(r"[a-z][a-z0-9-]{1,47}", run_id):
+        raise ClosureError("RUN_ID")
+    return _safe_output(output) / run_id / "prepare.json"
+
+
+def _load_prepared(output: Path, run_id: str) -> dict:
+    path = _prepared_path(output, run_id)
+    if not path.is_file() or path.is_symlink():
+        raise ClosureError("RUN_NOT_PREPARED")
+    value = _read_plane(path)
+    fields = {"schema", "status", "qualification", "runId", "case", "candidateDigest",
+              "profileDigest", "plan", "bundle", "harnessManifestSha256"}
+    if (set(value) != fields or value["schema"] != "tiger-yolo-prepared-run-v1"
+            or value["status"] != "PREPARED" or value["qualification"] != "NOT_EVALUATED"
+            or value["runId"] != run_id or not HASH.fullmatch(value["candidateDigest"])
+            or not HASH.fullmatch(value["profileDigest"])
+            or not isinstance(value["plan"], dict)
+            or value["plan"].get("runId") != run_id
+            or not isinstance(value["bundle"], str)
+            or not HASH.fullmatch(value["harnessManifestSha256"])):
+        raise ClosureError("RUN_PREPARATION_RECEIPT")
+    bundle = Path(value["bundle"])
+    if any(p.is_symlink() for p in (bundle, *bundle.parents)):
+        raise ClosureError("RUN_BUNDLE_SYMLINK")
+    return value
+
+
+def _not_ready(action: str, reason: str, report: dict | None = None) -> int:
+    value = {"status": "INCOMPLETE", "action": action,
+             "qualification": "NOT_EVALUATED", "reason": reason}
+    if report is not None:
+        value["check"] = report
+    print(json.dumps(value, sort_keys=True))
+    return INCOMPLETE
+
+
+def _prepare(args) -> int:
+    profile = Path(args.profile)
+    report, value = _dispatch_report(profile)
+    if report.get("qualification") != "READY":
+        return _not_ready("prepare", "DISPATCH_GATE", report)
+    plan = resolve_run_plan(profile, stage="dispatch", case=args.case,
+                            run_id=args.run_id, output=args.output)
+    from runtime.yolo_bundle import freeze_harness
+    manifest_ref = value["evidence"]["harnessManifest"]
+    manifest = _file_ref(profile, "harnessManifest", manifest_ref)
+    run_root = _safe_output(args.output) / args.run_id
+    if run_root.exists() or run_root.is_symlink():
+        raise ClosureError("RUN_ARTIFACT_EXISTS")
+    run_root.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    bundle = run_root / "bundle"
+    frozen = freeze_harness(manifest, bundle,
+                            expected_manifest_sha256=manifest_ref["sha256"],
+                            source_root=manifest.parent)
+    # The source manifest is copied into the sealed bundle; the temporary source
+    # path is never an execution input and is removed only after freezing.
+    candidate = _json_digest({"profile": report["documentDigest"], "plan": plan,
+                              "harness": frozen["manifestSha256"]})
+    receipt = {"schema": "tiger-yolo-prepared-run-v1", "status": "PREPARED",
+               "qualification": "NOT_EVALUATED", "runId": args.run_id,
+               "case": args.case, "candidateDigest": candidate,
+               "profileDigest": report["documentDigest"], "plan": plan,
+               "bundle": str(bundle), "harnessManifestSha256": frozen["manifestSha256"]}
+    _write_readonly(run_root / "prepare.json", receipt)
+    print(json.dumps(receipt, sort_keys=True))
+    return INCOMPLETE
+
+
+def _local(args) -> int:
+    report, value = _dispatch_report(Path(args.profile))
+    if report.get("qualification") != "READY":
+        return _not_ready("local", "DISPATCH_GATE", report)
+    prepared = _load_prepared(args.output, args.run_id)
+    if args.case != "local-cpu" or prepared["case"] != args.case:
+        raise ClosureError("LOCAL_CASE")
+    _gate_receipt(Path(args.profile), value, "localSif")
+    # The real SIF worker is intentionally enabled only after T008/T009/T010
+    # produce the local gate receipt.  This branch prevents a structural profile
+    # from silently becoming a fake local qualification.
+    return _not_ready("local", "LOCAL_WORKER_NOT_WIRED", {"prepared": prepared["candidateDigest"]})
+
+
+def _submit(args) -> int:
+    profile_path = Path(args.profile)
+    report, value = _dispatch_report(profile_path)
+    if report.get("qualification") != "READY":
+        return _not_ready("submit", "DISPATCH_GATE", report)
+    prepared = _load_prepared(args.output, args.run_id)
+    gate_name = {"single-node-gpu": "singleNodeGpu", "two-node-gpu": "singleNodeGpu",
+                 "negative-dependency": "singleNodeGpu"}[args.case]
+    _gate_receipt(profile_path, value, gate_name)
+    # No staging/remote bundle owner exists until T012.  Refuse before opening
+    # the shared journal or calling sbatch; this is the important no-side-effect
+    # boundary for incomplete candidates.
+    return _not_ready("submit", "REMOTE_STAGING_NOT_WIRED",
+                      {"prepared": prepared["candidateDigest"], "case": args.case})
+
+
+def _collect(args) -> int:
+    prepared = _load_prepared(args.output, args.run_id)
+    root = _safe_output(args.output) / args.run_id
+    verdict = root / "verdict.json"
+    if not verdict.is_file() or verdict.is_symlink():
+        return _not_ready("collect", "VERDICT_MISSING",
+                          {"prepared": prepared["candidateDigest"]})
+    value = _read_plane(verdict)
+    if (not isinstance(value, dict) or value.get("runId") != args.run_id
+            or value.get("candidateDigest") != prepared["candidateDigest"]):
+        raise ClosureError("VERDICT_BINDING")
+    print(json.dumps(value, sort_keys=True))
+    return 0
+
+
+def _run(args) -> int:
+    if not os.environ.get("SLURM_JOB_ID"):
+        raise ClosureError("ALLOCATION_REQUIRED")
+    # The Slurm wrapper reaches this private action only after submit has a
+    # qualified staged bundle.  Until T012 wires the real worker, fail closed;
+    # never turn a job allocation into an unvalidated inference claim.
+    raise ClosureError("RUNNER_NOT_WIRED")
+
+
+def _common(parser, *, case=False):
+    parser.add_argument("--profile", type=Path, required=True)
+    parser.add_argument("--run-id", required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    if case:
+        parser.add_argument("--case", choices=("local-cpu", "single-node-gpu",
+                                                 "two-node-gpu", "negative-dependency"),
+                            required=True)
+
+
+def _error(exc):
+    print(json.dumps({"status": "REJECTED", "qualification": "NOT_EVALUATED",
+                      "reason": str(exc)}, sort_keys=True))
+    return 2
 
 
 def main(argv=None):
@@ -27,24 +251,42 @@ def main(argv=None):
     check.add_argument("--run-id", help="optional run preview; requires --output and --case")
     check.add_argument("--output", type=Path)
     check.add_argument("--case", choices=("local-cpu", "single-node-gpu", "two-node-gpu", "negative-dependency"))
+    prepare = commands.add_parser("prepare", help="freeze a qualified local run bundle")
+    _common(prepare, case=True)
+    local = commands.add_parser("local", help="run the qualified local-cpu gate")
+    _common(local, case=True)
+    submit = commands.add_parser("submit", help="submit one qualified Slurm case")
+    _common(submit, case=True)
+    collect = commands.add_parser("collect", help="recompute a retained verdict")
+    _common(collect)
+    runner = commands.add_parser("run", help=argparse.SUPPRESS)
+    _common(runner, case=True)
     args = parser.parse_args(argv)
     try:
-        preview = (args.run_id is not None, args.output is not None, args.case is not None)
-        if any(preview) and not all(preview):
-            raise ClosureError("RUN_PREVIEW_OPTIONS")
-        plan = (resolve_run_plan(args.profile, stage=args.stage, case=args.case,
-                                 run_id=args.run_id, output=args.output) if all(preview) else None)
-        report = check_operator_profile(args.profile, stage=args.stage)
-        if plan is not None:
-            if plan["documentDigest"] != report["documentDigest"]:
-                raise ClosureError("PROFILE_CHANGED_DURING_CHECK")
-            report["runPlan"] = plan
+        if args.action == "check":
+            preview = (args.run_id is not None, args.output is not None, args.case is not None)
+            if any(preview) and not all(preview):
+                raise ClosureError("RUN_PREVIEW_OPTIONS")
+            plan = (resolve_run_plan(args.profile, stage=args.stage, case=args.case,
+                                     run_id=args.run_id, output=args.output) if all(preview) else None)
+            report = check_operator_profile(args.profile, stage=args.stage)
+            if plan is not None:
+                if plan["documentDigest"] != report["documentDigest"]:
+                    raise ClosureError("PROFILE_CHANGED_DURING_CHECK")
+                report["runPlan"] = plan
+            print(json.dumps(report, sort_keys=True))
+            return INCOMPLETE
+        if args.action == "prepare":
+            return _prepare(args)
+        if args.action == "local":
+            return _local(args)
+        if args.action == "submit":
+            return _submit(args)
+        if args.action == "collect":
+            return _collect(args)
+        return _run(args)
     except ClosureError as exc:
-        print(json.dumps({"status": "REJECTED", "qualification": "NOT_EVALUATED",
-                          "reason": str(exc)}, sort_keys=True))
-        return 2
-    print(json.dumps(report, sort_keys=True))
-    return 78
+        return _error(exc)
 
 
 if __name__ == "__main__":

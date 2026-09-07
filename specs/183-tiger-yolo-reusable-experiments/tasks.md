@@ -398,3 +398,13 @@ selectors 后 **885 passed in 55.18s**。这是 routing-integrity/component evid
 **BLOCKED / NOT READY**：组件边界和 885 项回归记录为 component-only，真实
 profile、`run.sbatch`、五命令、候选 artifact、native/SIF/MiniNDN/Tiger 执行仍缺；
 因此不提前关闭 T007，也不授权提交集群作业。
+
+2026-09-07 T004 operator boundary checkpoint：`jobs/yolo/submit.py` 现在暴露
+`check/prepare/local/submit/collect`，并由严格的隐藏 `run` 接收
+`jobs/yolo/run.sbatch` 的 allocation。入口统一要求显式 profile、run-id、output
+和 case；结构完整但缺少真实 dispatch/local-SIF/staging receipt 时只返回
+`INCOMPLETE/NOT_EVALUATED`，不创建 run、不冻结 bundle、不调用 Apptainer/Slurm。
+`prepare` 已接通未来 qualified dispatch 下的不可变 harness/run-plan 冻结路径，
+`collect` 只绑定已有 verdict；当前真实 application/collector/worker 仍未接线，
+因此 T004 继续 unchecked。相关边界回归与 journal/bundle 测试 **57 passed**；
+`run.sbatch` 已加入 harness 清单，但无 allocation 或未完成 T012 时 fail-closed。

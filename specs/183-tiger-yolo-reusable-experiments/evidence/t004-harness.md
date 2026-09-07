@@ -46,6 +46,23 @@ T004仍unchecked，未生成真实enabled profile或完整生产bundle。T005/T0
 否则要求T004所有命令完全可执行后才实现被它调用的应用/collector会产生循环。
 T007仍须一次审查完整生产路径；所有正式环境资格仍NOT_RUN。
 
+## Follow-up operator boundary
+
+The five public `submit.py` commands now exist with explicit profile/run/output
+arguments and registered case values.  `prepare` can freeze the sealed harness
+and deterministic run-plan only after a qualified dispatch receipt; `local` and
+`submit` stop before any SIF, shared-journal, or Slurm side effect when their
+receipts are absent.  `collect` only reads a verdict bound to the prepared
+candidate.  `jobs/yolo/run.sbatch` is the checked-in allocation boundary and
+requires `SLURM_JOB_ID`, five positional values, absolute paths, and a registered
+case before invoking the hidden runner.
+
+The current profile and real dispatch/local-SIF/staging receipts are still
+missing, so this is an interface and fail-closed boundary, not a qualification.
+The focused bundle/journal/operator regression set is **57 passed**.  The
+hidden runner deliberately returns `RUNNER_NOT_WIRED` until T012 connects the
+real allocated worker and collector; no Tiger job was submitted.
+
 Context active guard通过，CodeGraph先定位既有bundle owner，Spec Kit采用当前
 任务/合同；GSD沿用已记录的degraded/W019仓库handoff，不恢复旧Spec168。没有新
 统计实验或ARS结果结论。

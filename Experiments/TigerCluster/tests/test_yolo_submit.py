@@ -67,11 +67,25 @@ def test_cli_rejects_before_any_external_command_or_write(tmp_path, mutation, re
     assert before == after
 
 
-def test_no_execution_command_is_exposed_before_wiring(tmp_path):
-    for action in ("submit", "local", "prepare", "collect"):
+def test_contract_commands_are_exposed_but_require_explicit_binding(tmp_path):
+    # The public commands exist now, but argparse must not invent defaults for
+    # a profile/run/output/case.  This keeps an incomplete candidate from
+    # reaching any filesystem, Apptainer, or Slurm boundary.
+    for action in ("submit", "local", "prepare"):
         result = cli(action, cwd=tmp_path)
         assert result.returncode == 2
-        assert "invalid choice" in result.stderr
+        assert "required" in result.stderr
+    result = cli("collect", cwd=tmp_path)
+    assert result.returncode == 2
+    assert "required" in result.stderr
+
+
+def test_private_slurm_runner_requires_allocation(tmp_path):
+    result = cli("run", "--profile", tmp_path / "profile.json", "--run-id",
+                 "test-run", "--output", tmp_path / "results", "--case", "local-cpu",
+                 cwd=tmp_path)
+    assert result.returncode == 2
+    assert json.loads(result.stdout)["reason"] == "ALLOCATION_REQUIRED"
 
 
 def test_deterministic_run_plan_has_four_provider_roles_and_four_requests(tmp_path):
