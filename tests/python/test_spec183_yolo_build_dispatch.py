@@ -110,7 +110,7 @@ def test_spec183_dispatch_rejects_legacy_host_gate_argument(tmp_path):
     assert "usage:" in result.stderr
 
 
-def test_valid_component_receipt_cannot_bypass_missing_sif_preflight(tmp_path):
+def test_valid_component_receipt_cannot_bypass_unsealed_yolo_harness(tmp_path):
     _host_source, receipt, value = _host_tests.write_receipt(tmp_path)
     source_seal = _source_seal(tmp_path / "build-source")
     source_body = json.loads(source_seal.read_text(encoding="utf-8"))
@@ -145,5 +145,8 @@ def test_valid_component_receipt_cannot_bypass_missing_sif_preflight(tmp_path):
         "--expected-apptainer", "1.3.4",
     ], cwd=ROOT, capture_output=True, text=True)
     assert result.returncode == 4
-    assert "SPEC183_PREFLIGHT_MISSING" in result.stderr
+    # The real two-phase preflight exists now.  It must reject an old/minimal
+    # source seal before any Apptainer call instead of falling through to a
+    # build or accepting the component receipt as sufficient evidence.
+    assert "SPEC183_HARNESS_NOT_SEALED" in result.stderr
     assert not invocation_log.exists()

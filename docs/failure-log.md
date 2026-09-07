@@ -1,5 +1,17 @@
 # Failure Log and Evidence Index
 
+## 2026-09-07 — Spec183 preflight boundary test expected an obsolete missing-script error
+
+- Symptom: the first regression after adding the real two-phase Spec183
+  preflight expected `SPEC183_PREFLIGHT_MISSING`.
+- Cause: the preflight script was now present, so the minimal fixture correctly
+  failed earlier with `SPEC183_HARNESS_NOT_SEALED`.
+- Fix: rename the test to assert rejection of an incomplete source seal and
+  retain the zero-Apptainer-call assertion.
+- Lesson: when a fail-closed gate becomes real, update the boundary test to the
+  earliest authoritative rejection reason; do not preserve an obsolete
+  placeholder-absence expectation.
+
 ## 2026-09-07 — Pure YOLO reanalysis imported native runtime eagerly
 
 - Numerical reanalysis test collection failed while importing adapters.yolo.reference: adapters package initializers eagerly loaded runtime contracts and the missing `_ndnsf` extension. The traceback's partial-initialization wording did not mean the NumPy oracle itself required native code.

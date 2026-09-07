@@ -46,13 +46,23 @@ T010 MiniNDN receipt、T011 完整 SIF、T007 生产审计尚未完成，因此 
 
 后续审查发现不能把 Spec175 preflight 标成 Spec183 的
 `NOT_APPLICABLE`：这会留下未检查的 native/ldd/import 边界。现已要求真实
-`ndnsf-di-spec183-preflight` 在输入和最终 SIF 两阶段执行；该文件当前尚未
-由 T011 交付，因此有效 receipt 也会 fail closed，不能构建或记录为最终
-资格。
+`ndnsf-di-spec183-preflight` 在输入和最终 SIF 两阶段执行；缺少该脚本时
+有效 receipt 仍会 fail closed，不能构建或记录为最终资格。
+
+本轮已交付 `packaging/ndnsf-di-container/bin/ndnsf-di-spec183-preflight`
+（经 `Experiments/TigerCluster/bin` 暴露）：`inputs` 阶段复用
+archive-backed source seal 并要求完整的 Spec183 harness 闭包；`sif` 阶段
+要求精确候选 SIF digest、build-boundary/source-seal labels，并在 SIF 内执行
+Python import、ORT CPU provider、native binary `--help` 及 `ldd` 检查。缺少
+harness、SIF 参数、label、import、entrypoint 或 DSO 时均拒绝。新回归覆盖
+完整输入、缺 `run.sbatch`、缺 SIF 参数和精确候选调用；相关
+dispatch/preflight/build 选择器 **26 passed in 7.06s**。这仍是组件和命令
+边界证据，不是实际 SIF、MiniNDN 或 Tiger 资格；T010/T011/T007 继续保持
+未完成。
 
 将该 dispatch 与既有 TigerCluster/Spec183 focused selectors 合并复跑，
-结果 **874 passed in 51.75s**（JUnit：
-`results/t002-yolo-dispatch-r3/full-junit.xml`）；同样不包含 native/SIF/
+结果 **878 passed in 51.67s**（JUnit：
+`results/t002-yolo-dispatch-r5/full-junit.xml`）；同样不包含 native/SIF/
 MiniNDN/Tiger 实际运行。
 
 预实施结构审计18 FR/6 SC/17 tasks、覆盖18 FR，PASS；既有接口缺口已分派T002/T005，未改变目标。无新架构未决，允许focused实现；完整生产收敛T007仍未完成。T002保持unchecked，正式集群资格不开放。

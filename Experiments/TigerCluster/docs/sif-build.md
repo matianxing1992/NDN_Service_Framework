@@ -46,7 +46,8 @@ receipt。Spec183 receipt 会在 Apptainer version/build 调用前校验；无�
 旧参数必须零 Apptainer 调用。入口还要求真实的
 `Experiments/TigerCluster/bin/ndnsf-di-spec183-preflight`：它必须先验证
 sealed inputs，再验证最终 SIF 的 Python/native import、DSO/`ldd` 和实际
-entrypoints；该 preflight 尚待 T011 交付时，Spec183 构建会 fail closed。
+entrypoints。preflight 脚本已交付，但真实 source seal、完整 harness、SIF
+及 T011 的运行证据仍未齐全；任何缺口都会让 Spec183 构建 fail closed。
 旧 Spec175 路径和其命令顺序保持不变。
 
 ## Existing Images

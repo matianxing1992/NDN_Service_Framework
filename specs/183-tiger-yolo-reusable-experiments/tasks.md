@@ -364,5 +364,15 @@ schema/workload/source/receipt 或混用旧参数时，在 Apptainer version/bui
 builder 回归 **22 passed**；仍为 component-only/side-effect-boundary
 证据，真实 T010 receipt、T011 SIF 与 T007 生产审计未完成，T002 继续
 unchecked。
-合并既有 focused selectors 后为 **874 passed in 51.75s**；JUnit 仍只记录
-本地组件/命令边界，不能替代实际 MiniNDN 或 Tiger 运行。
+此前 r3 合并 focused selectors 为 **874 passed in 51.75s**；JUnit 仍只记录
+本地组件/命令边界，不能替代实际 MiniNDN 或 Tiger 运行。最新 r5 结果见
+下方 preflight checkpoint。
+
+2026-09-07 T002 preflight checkpoint：新增真实的两阶段
+`ndnsf-di-spec183-preflight`。输入阶段验证 archive-backed source seal 和
+完整 Spec183 harness（包括实际 `jobs/yolo/run.sbatch`）；SIF 阶段验证精确
+digest/labels，并在候选 SIF 内检查 Python/native imports、ORT CPU provider、
+entrypoints 和 `ldd`。缺失 harness、参数或运行时闭包时 fail closed；26 项
+新增/相关边界测试通过。合并 focused selectors 后 **878 passed in 51.67s**
+（`results/t002-yolo-dispatch-r5/full-junit.xml`）。这没有制造 SIF 或集群
+证据；T002、T007、T010、T011 仍未闭合。

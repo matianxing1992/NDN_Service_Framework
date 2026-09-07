@@ -1,0 +1,261 @@
+#!/usr/bin/env python3
+"""Fail-closed source and exact-SIF preflight for Spec183 YOLO.
+
+This is a host-side gate used by the local Apptainer builder.  ``inputs``
+validates the archive-backed source seal and the maintained Spec183 harness
+closure.  ``sif`` inspects and executes the exact candidate SIF; it never
+accepts a host Python extension or an OCI artifact as a substitute.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import importlib.util
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import sys
+
+
+ROOT = Path(__file__).resolve().parents[3]
+SOURCE_VALIDATOR = (
+    ROOT / "Experiments/TigerCluster/adapters/slurm-apptainer/scripts"
+    / "validate-local-sif-source.py"
+)
+SOURCE_SCHEMA = "spec170-local-sif-source-v1"
+HASH = re.compile(r"sha256:[0-9a-f]{64}\Z")
+REQUIRED_HARNESS = frozenset({
+    "Experiments/TigerCluster/apps/yolo.py",
+    "Experiments/TigerCluster/apps/yolo_network.py",
+    "Experiments/TigerCluster/runtime/yolo_worker.py",
+    "Experiments/TigerCluster/runtime/yolo_result.py",
+    "Experiments/TigerCluster/runtime/yolo_bundle.py",
+    "Experiments/TigerCluster/runtime/yolo_profile.py",
+    "Experiments/TigerCluster/jobs/yolo/submit.py",
+    "Experiments/TigerCluster/jobs/yolo/run.sbatch",
+    "Experiments/TigerCluster/schemas/tiger-yolo-v1.schema.json",
+})
+RUNTIME_BINARIES = (
+    "nfd", "nfdc", "App_ServiceController", "di-native-provider",
+    "di-native-fault-provider",
+)
+RUNTIME_IMPORTS = (
+    "ndnsf",
+    "ndnsf._ndnsf",
+    "ndnsf_distributed_inference",
+    "onnxruntime",
+    "ndn",
+)
+
+
+class PreflightError(RuntimeError):
+    pass
+
+
+def fail(code: str, detail: object = "") -> None:
+    suffix = f":{detail}" if detail else ""
+    raise PreflightError(code + suffix)
+
+
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return "sha256:" + digest.hexdigest()
+
+
+def load_source_validator():
+    spec = importlib.util.spec_from_file_location(
+        "spec183_source_validator", SOURCE_VALIDATOR)
+    if spec is None or spec.loader is None:
+        fail("SPEC183_SOURCE_VALIDATOR_UNAVAILABLE")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def load_json(path: Path) -> dict:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        fail("SPEC183_SOURCE_SEAL_DOCUMENT", type(exc).__name__)
+    if not isinstance(value, dict):
+        fail("SPEC183_SOURCE_SEAL_ROOT")
+    return value
+
+
+def validate_inputs(source_seal: Path) -> dict:
+    source_seal = source_seal.resolve()
+    value = load_json(source_seal)
+    if value.get("schemaVersion") != SOURCE_SCHEMA:
+        fail("SPEC183_SOURCE_SCHEMA")
+    validator = load_source_validator()
+    try:
+        source = validator.validate(source_seal)
+    except Exception as exc:
+        fail("SPEC183_SOURCE_SEAL_INVALID", str(exc))
+    if source.get("status") != "PASS":
+        fail("SPEC183_SOURCE_SEAL_NOT_PASS")
+    rows = value.get("files")
+    if not isinstance(rows, list):
+        fail("SPEC183_SOURCE_FILES")
+    names = {row.get("path") for row in rows if isinstance(row, dict)}
+    missing = sorted(REQUIRED_HARNESS - names)
+    if missing:
+        fail("SPEC183_HARNESS_NOT_SEALED", ",".join(missing))
+    digest = value.get("sealDigest")
+    if not isinstance(digest, str) or HASH.fullmatch(digest) is None:
+        fail("SPEC183_SOURCE_SEAL_DIGEST")
+    return {
+        "schema": "tiger-yolo-input-preflight-v1",
+        "status": "PASS",
+        "sourceSeal": {
+            "path": str(source_seal),
+            "sha256": sha256(source_seal),
+            "sealDigest": digest,
+            "sourceRevision": value.get("sourceRevision"),
+        },
+        "requiredHarness": sorted(REQUIRED_HARNESS),
+        "qualification": "SPEC183_INPUTS_COMPONENT_ONLY",
+    }
+
+
+_SIF_PROBE = r'''
+import importlib
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+
+errors = []
+imports = {}
+for name in %r:
+    try:
+        module = importlib.import_module(name)
+        imports[name] = str(getattr(module, "__file__", "present"))
+    except Exception as exc:
+        errors.append("IMPORT:" + name + ":" + type(exc).__name__)
+
+ortProviders = []
+try:
+    import onnxruntime as ort
+    ortProviders = list(ort.get_available_providers())
+    if "CPUExecutionProvider" not in ortProviders:
+        errors.append("ORT_CPU_PROVIDER_MISSING")
+except Exception:
+    pass
+
+binaries = {}
+for name in %r:
+    path = shutil.which(name)
+    if not path or not os.access(path, os.X_OK):
+        errors.append("BINARY:" + name)
+        continue
+    binaries[name] = path
+
+ldd = {}
+for label, path in {**binaries, "nativeExtension": imports.get("ndnsf._ndnsf", "")}.items():
+    if not path:
+        continue
+    result = subprocess.run(["ldd", path], text=True, capture_output=True, check=False)
+    missing = [line.strip() for line in result.stdout.splitlines() if "not found" in line]
+    ldd[label] = {"path": path, "returncode": result.returncode,
+                  "missing": missing}
+    if result.returncode != 0 or missing:
+        errors.append("LDD:" + label)
+
+entrypoints = {}
+for name, path in binaries.items():
+    result = subprocess.run([path, "--help"], text=True, capture_output=True,
+                            timeout=5, check=False)
+    entrypoints[name] = {"path": path, "returncode": result.returncode}
+    if result.returncode not in (0, 2):
+        errors.append("ENTRYPOINT:" + name)
+
+print(json.dumps({"status": "PASS" if not errors else "FAIL",
+                  "python": sys.version.split()[0], "imports": imports,
+                  "ortProviders": ortProviders, "binaries": binaries,
+                  "ldd": ldd, "entrypoints": entrypoints,
+                  "errors": errors}, sort_keys=True))
+sys.exit(0 if not errors else 4)
+''' % (RUNTIME_IMPORTS, RUNTIME_BINARIES)
+
+
+def validate_sif(source_info: dict, sif: Path, apptainer: Path,
+                 expected_sif_sha256: str) -> dict:
+    sif = sif.resolve()
+    apptainer = apptainer.resolve()
+    if not sif.is_file() or sif.stat().st_size == 0:
+        fail("SPEC183_SIF_MISSING")
+    observed_sif = sha256(sif)
+    if expected_sif_sha256 not in (observed_sif, observed_sif.split(":", 1)[1]):
+        fail("SPEC183_SIF_DIGEST_MISMATCH", observed_sif)
+    if not apptainer.is_file() or not os.access(apptainer, os.X_OK):
+        fail("SPEC183_APPTAINER_UNAVAILABLE")
+    inspected = subprocess.run([str(apptainer), "inspect", "--json", str(sif)],
+                               text=True, capture_output=True, check=False)
+    if inspected.returncode:
+        fail("SPEC183_SIF_INSPECT", inspected.stderr.strip())
+    try:
+        labels = json.loads(inspected.stdout).get("data", {}).get("attributes", {}).get("labels", {})
+    except (TypeError, json.JSONDecodeError):
+        fail("SPEC183_SIF_LABELS")
+    if (not isinstance(labels, dict)
+            or labels.get("org.ndnsf.di.build-boundary") != "container-runtime-in-sif"
+            or labels.get("org.ndnsf.di.source-seal") != source_info["sourceSeal"]["sealDigest"]):
+        fail("SPEC183_SIF_LABEL_BINDING")
+    command = [str(apptainer), "exec", "--cleanenv", "--containall", "--no-home",
+               "--pwd", "/", "--env", "HOME=/tmp,NDNSF_ALLOW_CPU_FALLBACK=0",
+               str(sif), "python3", "-c", _SIF_PROBE]
+    probe = subprocess.run(command, text=True, capture_output=True, check=False)
+    if probe.returncode:
+        fail("SPEC183_SIF_RUNTIME_PROBE", probe.stderr.strip() or probe.stdout.strip())
+    try:
+        runtime = json.loads(probe.stdout)
+    except json.JSONDecodeError:
+        fail("SPEC183_SIF_RUNTIME_DOCUMENT")
+    if runtime.get("status") != "PASS":
+        fail("SPEC183_SIF_RUNTIME_INVALID", runtime.get("errors"))
+    return {
+        "schema": "tiger-yolo-sif-preflight-v1",
+        "status": "PASS",
+        "sif": {"path": str(sif), "sha256": observed_sif, "bytes": sif.stat().st_size},
+        "labels": labels,
+        "runtime": runtime,
+        "qualification": "SPEC183_SIF_RUNTIME_COMPONENT_ONLY",
+    }
+
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--phase", choices=("inputs", "sif"), required=True)
+    parser.add_argument("--source-seal", type=Path, required=True)
+    parser.add_argument("--sif", type=Path)
+    parser.add_argument("--apptainer", type=Path)
+    parser.add_argument("--expected-sif-sha256")
+    args = parser.parse_args(argv)
+    try:
+        inputs = validate_inputs(args.source_seal)
+        if args.phase == "inputs":
+            result = inputs
+        else:
+            if not args.sif or not args.apptainer or not args.expected_sif_sha256:
+                fail("SPEC183_SIF_OPTIONS")
+            result = validate_sif(inputs, args.sif, args.apptainer,
+                                  args.expected_sif_sha256)
+    except (PreflightError, OSError, subprocess.TimeoutExpired) as exc:
+        print(str(exc), file=sys.stderr)
+        return 4
+    print(json.dumps(result, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
