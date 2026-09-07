@@ -827,6 +827,51 @@ namespace ndn_service_framework{
             /// Meta is read from the internal dict (updated via updateNdnsdMeta).
             void startNdnsdPeriodicPublish(int intervalSeconds);
 
+            /**
+             * Opaque move-only RAII handle for a scoped registration.  The
+             * handle keeps the registration generation alive; close() (also
+             * run on destruction) atomically closes the generation so no new
+             * ACK/Selection dispatch and no queued execution can observe it,
+             * then schedules Core entry cleanup on the Face event loop.
+             * Closing a handle after the Provider has been destroyed is a
+             * harmless no-op.  Handles are created only by the addScoped*
+             * registration APIs below.
+             */
+            class ServiceRegistration;
+
+            /**
+             * Register a service under exclusive scoped ownership: the
+             * returned handle's generation is bound to every authenticated
+             * Request this service accepts, so closing the handle stops late
+             * ACK completion, Selection dispatch and queued execution from
+             * publishing results for that generation.  The name must not be
+             * occupied by any other registration (legacy or active scoped);
+             * closed generations are drained before the check.  All legacy
+             * addService/addCollaborationHandler signatures and behavior are
+             * unchanged; legacy adds refuse to overwrite an active scoped
+             * registration.  Like the legacy registration APIs, these may be
+             * called only on the Face event thread or before the event loop
+             * starts.
+             */
+            ServiceRegistration addScopedService(const ndn::Name& serviceName,
+                                                 AckStrategyHandler ackHandler,
+                                                 RequestHandler requestHandler,
+                                                 ServiceInvocationMode invocationMode);
+            ServiceRegistration addScopedService(const ndn::Name& serviceName,
+                                                 AckStrategyHandler ackHandler,
+                                                 RequestHandler requestHandler,
+                                                 ServiceMode mode);
+
+            /**
+             * Scoped variant of addCollaborationHandler with the same
+             * generation binding and exclusivity rules as addScopedService.
+             */
+            ServiceRegistration addScopedCollaborationHandler(
+                const ndn::Name& serviceName,
+                std::vector<CollaborationRole> allowedRoles,
+                AckStrategyHandler ackHandler,
+                CollaborationHandler handler);
+
             void OnRequest(const ndn::svs::SVSPubSub::SubscriptionData &subscription);
 
             // After receiving service selection message, this function is called to consumeRequest.
@@ -1214,6 +1259,62 @@ namespace ndn_service_framework{
             onMissingData(const std::vector<ndn::svs::MissingDataInfo> &);
 
         protected:
+            // ---- spec182 scoped registration ----
+            // Each addScoped* registration allocates a non-zero generation and
+            // a RegistrationState shared by the Core entry, pending-request
+            // binds and collaboration-selection binds.  The public
+            // ServiceRegistration handle is the only RAII that keeps a state
+            // alive; close() flips the atomic closed flag and schedules
+            // Core-entry cleanup on the Face event thread, and a closed state
+            // is detached (never removed) only when it still owns its map
+            // entry -- so an old handle can never delete a newer generation.
+            struct RegistrationState
+            {
+                RegistrationState(ndn::Name name, uint64_t gen)
+                    : serviceName(std::move(name)), generation(gen) {}
+
+                ndn::Name serviceName;
+                uint64_t generation = 0;
+                std::atomic<bool> closed{false};
+            };
+
+            struct RegistrationControl
+            {
+                // Serializes ownership hand-off between the Face event thread
+                // (registration and cleanup) and the Provider destructor.
+                std::mutex mutex;
+                ServiceProvider* owner = nullptr;
+            };
+
+        public:
+            // Public so the opaque handle can be held by value and its
+            // methods called; construction stays private to ServiceProvider.
+            class ServiceRegistration
+            {
+            public:
+                ServiceRegistration() noexcept = default;
+                ServiceRegistration(ServiceRegistration&& other) noexcept;
+                ServiceRegistration& operator=(ServiceRegistration&& other) noexcept;
+                ServiceRegistration(const ServiceRegistration&) = delete;
+                ServiceRegistration& operator=(const ServiceRegistration&) = delete;
+                ~ServiceRegistration();
+
+                void close() noexcept;
+                bool closed() const noexcept;
+                bool valid() const noexcept;
+                uint64_t generation() const noexcept;
+                ndn::Name serviceName() const;
+
+            private:
+                friend class ServiceProvider;
+                ServiceRegistration(std::shared_ptr<RegistrationState> state,
+                                    std::weak_ptr<RegistrationControl> control);
+
+                std::shared_ptr<RegistrationState> m_state;
+                std::weak_ptr<RegistrationControl> m_control;
+            };
+
+        protected:
             struct RegisteredService
             {
                 AckStrategyHandler ackHandler;
@@ -1224,6 +1325,11 @@ namespace ndn_service_framework{
                 bool selectionStatusQueryable = false;
                 bool genericAdmissionLeaseRequired = false;
                 GenericAdmissionLeaseValidator genericAdmissionLeaseValidator;
+                // Non-null exactly for entries owned by an active or closed
+                // scoped registration.  A closed state kept in the map means
+                // cleanup has not been drained yet; legacy registration may
+                // take the entry over by clearing the pointer.
+                std::shared_ptr<RegistrationState> registrationState;
             };
 
             struct RegisteredCollaborationService
@@ -1231,7 +1337,41 @@ namespace ndn_service_framework{
                 AckStrategyHandler ackHandler;
                 CollaborationHandler handler;
                 std::vector<CollaborationRole> allowedRoles;
+                // Same ownership rules as RegisteredService::registrationState.
+                std::shared_ptr<RegistrationState> registrationState;
             };
+
+            // Face-serialized helpers for scoped registration.  These run on
+            // the Face event thread (registration calls or posted cleanup
+            // closures), never concurrently with each other; the destructor
+            // additionally serializes against them with
+            // m_registrationControl->mutex.
+            uint64_t allocateRegistrationGeneration();
+            // Legacy-registration guard: refuses (returns false) when the
+            // service name in m_services is owned by a live scoped
+            // registration, and clears a closed parked state (legacy
+            // takeover) when the name is free.  Callers must hold
+            // m_registrationControl->mutex.
+            bool allowLegacyServiceTakeover(const ndn::Name& serviceName);
+            // True when the m_services record already carries registration
+            // content (scoped state, legacy handlers, stream sentinels, the
+            // collaboration shell flag, or admission-lease settings).
+            static bool serviceEntryBusy(const RegisteredService& entry);
+            // Removes every map entry that parks a closed registration state
+            // and appends the retired handler owners to the out-vectors, so
+            // callers destroy them only after the control lock is released.
+            // Callers must hold m_registrationControl->mutex.
+            void drainClosedRegistrations(
+                std::vector<RegisteredService>& retiredServices,
+                std::vector<RegisteredCollaborationService>& retiredCollaborations);
+            // Removes map entries still owned by the given closed state and
+            // moves their handler owners into the out-parameters, so callers
+            // destroy them only after releasing any held lock.
+            void detachClosedRegistration(
+                const std::shared_ptr<RegistrationState>& state,
+                RegisteredService& retiredService,
+                RegisteredCollaborationService& retiredCollaboration);
+            void closeAllRegistrationStates();
 
             struct PendingEncryptedCollaborationData
             {
@@ -1278,7 +1418,8 @@ namespace ndn_service_framework{
             CollaborationWorkFence makeCollaborationWorkFence(
                 const ndn::Name& requesterName, const ndn::Name& requestId,
                 const ndn::Name& serviceName,
-                std::optional<ControllerVersion> version);
+                std::optional<ControllerVersion> version,
+                std::shared_ptr<RegistrationState> registrationState = nullptr);
             LargeDataFetchResult fetchAndDecryptLargeDataUntil(
                 const ndn::Name& encryptedDataName, const std::string& serviceName,
                 std::chrono::steady_clock::time_point deadline,
@@ -1286,6 +1427,32 @@ namespace ndn_service_framework{
 
             void cleanupPendingRequestState(const ndn::Name& pendingKey,
                                             bool preserveReplayTombstone = false);
+            // spec182: execution-side generation fence.  Under
+            // m_pendingRequestMutex, binds pendingKey to the registration
+            // state of the entry the dispatcher chose unless the request was
+            // already bound to a different (earlier) generation.  Returns an
+            // empty string when execution may proceed, else the refusal
+            // reason.  Callers pass a null state only for legacy entries,
+            // which always pass.
+            std::string fencePendingRegistrationExecution(
+                const ndn::Name& pendingKey,
+                const std::shared_ptr<RegistrationState>& entryState);
+            // spec182: inline (pool-0) execution fence.  Resolves the current
+            // m_services entry for serviceName and refuses (publishing the
+            // failure on the caller's behalf) when a scoped registration
+            // retired or the pending binding names an earlier generation.
+            // On success, *registrationState carries the state to forward to
+            // finishRequestExecutionOnEventLoop (null for legacy entries).
+            // Face-thread only.  Returns true when inline execution may
+            // proceed.
+            bool gateInlineRequestExecution(
+                const ndn::Name& requesterName,
+                const ndn::Name& providerName,
+                const ndn::Name& serviceName,
+                const ndn::Name& requestId,
+                const RequestMessage& requestMessage,
+                std::string selectionDigest,
+                std::shared_ptr<RegistrationState>& registrationState);
 
             bool expirePendingRequestState(const ndn::Name& pendingKey);
 
@@ -1319,18 +1486,28 @@ namespace ndn_service_framework{
             static SelectionExecutionStatus makeUnknownSelectionExecutionStatus(
                 const ndn::Name& providerName,
                 const std::string& selectionDigest);
+            // registrationState (spec182): non-null when the ack decision was
+            // taken against a scoped registration; the worker fences against
+            // it and forwards it to finishAckDecisionOnEventLoop.
             bool dispatchAckDecisionAsync(
                 const ndn::Name& requesterIdentity,
                 const ndn::Name& serviceName,
                 const ndn::Name& requestId,
                 RequestMessage requestMessage,
-                AckStrategyHandler ackHandler);
+                AckStrategyHandler ackHandler,
+                std::shared_ptr<RegistrationState> registrationState = nullptr);
+            // registrationState (spec182): the scoped registration the
+            // pending acceptance was bound to; when it closed or was
+            // superseded before the decision finished, the positive decision
+            // degrades to the negative path (no pending store, no positive
+            // ACK).  Null for legacy acceptances.
             void finishAckDecisionOnEventLoop(
                 const ndn::Name& requesterIdentity,
                 const ndn::Name& serviceName,
                 const ndn::Name& requestId,
                 RequestMessage requestMessage,
-                AckDecision decision);
+                AckDecision decision,
+                std::shared_ptr<RegistrationState> registrationState = nullptr);
             GenericLeaseValidationResult validateGenericAdmissionLeaseForSelection(
                 const ndn::Name& requesterName,
                 const ndn::Name& providerName,
@@ -1357,13 +1534,18 @@ namespace ndn_service_framework{
                                           const ndn::Name& serviceName,
                                           const RequestMessage& requestMessage,
                                           ResponseMessage& response) const;
+            // registrationStateOut (spec182): when non-null and the dispatch
+            // resolved a scoped registration entry, receives the entry's
+            // registration state (legacy entries leave it null).  Inline
+            // fallback callers use it to fence a pool-0 dispatch.
             bool dispatchRequestExecutionAsync(
                 const ndn::Name& requesterName,
                 const ndn::Name& providerName,
                 const ndn::Name& serviceName,
                 const ndn::Name& requestId,
                 RequestMessage requestMessage,
-                std::string selectionDigest = "");
+                std::string selectionDigest = "",
+                std::shared_ptr<RegistrationState>* registrationStateOut = nullptr);
             bool initializeStreamPublisher(
                 const ndn::Name& requesterName,
                 const ndn::Name& providerName,
@@ -1384,12 +1566,20 @@ namespace ndn_service_framework{
                 RequestMessage requestMessage,
                 CollaborationAssignment assignment,
                 std::string selectionDigest = "");
+            // registrationState (spec182): the scoped collaboration
+            // registration the request was accepted against; bound under
+            // m_collaborationMutex next to m_collaborationServiceNamesByRequest.
             void prepareCollaborationAssignmentAsync(
                 const ndn::Name& requesterName,
                 const ndn::Name& requestId,
                 CollaborationAssignment assignment,
                 std::function<void(bool, std::string,
-                                   CollaborationAssignment)> onReady);
+                                   CollaborationAssignment)> onReady,
+                std::shared_ptr<RegistrationState> registrationState = nullptr);
+            // registrationState (spec182): non-null when the executing
+            // request was bound to a scoped registration; a positive response
+            // whose registration closed meanwhile degrades to an error (the
+            // retired registration must never commit work in its name).
             void finishRequestExecutionOnEventLoop(
                 const ndn::Name& requesterName,
                 const ndn::Name& providerName,
@@ -1397,7 +1587,8 @@ namespace ndn_service_framework{
                 const ndn::Name& requestId,
                 const RequestMessage& requestMessage,
                 ResponseMessage response,
-                std::string selectionDigest = "");
+                std::string selectionDigest = "",
+                std::shared_ptr<RegistrationState> registrationState = nullptr);
             void fetchRequestScopedInputAndDispatch(
                 const ndn::Name& requesterName,
                 const ndn::Name& providerName,
@@ -1623,6 +1814,13 @@ namespace ndn_service_framework{
                 (/<requesterName>/<serviceName>/<requestID> -> RequestMessage)
             */
             std::map<ndn::Name,std::shared_ptr<RequestMessage>> pendingRequests;
+            // spec182: registration-generation binding per pending request.
+            // Mirrors pendingRequests (same key space, same lock
+            // m_pendingRequestMutex, same lifetime); non-null only when the
+            // request was accepted against a scoped registration (legacy
+            // acceptances leave no binding).
+            std::map<ndn::Name, std::shared_ptr<RegistrationState>>
+                m_pendingRegistrationStates;
             std::map<ndn::Name,std::string> pendingProviderTokens;
             // Keyed by the existing requester/service/request-id pending key.
             // Stream attachment never creates a second request identity.
@@ -1698,6 +1896,13 @@ namespace ndn_service_framework{
             std::map<ndn::Name, std::map<KeyScope, ndn::Buffer>> m_collaborationScopeKeysByRequest;
             std::map<ndn::Name, std::map<KeyScope, ndn::Name>> m_collaborationScopeKeyDataNamesByRequest;
             std::map<ndn::Name, ndn::Name> m_collaborationServiceNamesByRequest;
+            // spec182: registration-generation binding per collaboration
+            // request.  Mirrors m_collaborationServiceNamesByRequest (same
+            // requestId key space, same lock m_collaborationMutex, same
+            // lifetime); non-null only when the collaboration request was
+            // accepted against a scoped collaboration registration.
+            std::map<ndn::Name, std::shared_ptr<RegistrationState>>
+                m_collaborationRegistrationStates;
             std::set<std::string> m_collaborationScopeKeyFetchesInFlight;
             std::map<ndn::Name, std::vector<PendingEncryptedCollaborationData>> m_pendingEncryptedCollaborationData;
             std::map<std::string, ndn::Buffer> m_collaborationArtifacts;
@@ -1757,6 +1962,14 @@ namespace ndn_service_framework{
             std::map<ndn::Name, int> m_sessionIDMap;
 
             std::mutex svs_mutex;
+
+            // spec182 scoped registration bookkeeping.  All registration-path
+            // code runs on the Face event thread, so m_registrationGeneration
+            // needs no extra lock; m_registrationControl->mutex serializes
+            // only against the Provider destructor.  m_registrationControl is
+            // null only if construction never completed.
+            std::shared_ptr<RegistrationControl> m_registrationControl;
+            uint64_t m_registrationGeneration = 0;
 
             std::map<ServiceKey, RegisteredService> m_services;
     };

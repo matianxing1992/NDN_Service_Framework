@@ -1213,12 +1213,22 @@ namespace ndn_service_framework
         prepared.activated = true;
         prepared.activationDigest = activation.computeDigest();
         RequestMessage requestCopy = prepared.request;
+        std::shared_ptr<RegistrationState> inlineRegistrationState;
         if (dispatchRequestExecutionAsync(prepared.requesterName,
                                           prepared.providerName,
                                           prepared.serviceName,
                                           prepared.requestId,
                                           requestCopy,
-                                          prepared.selectionDigest)) {
+                                          prepared.selectionDigest,
+                                          &inlineRegistrationState)) {
+            return true;
+        }
+        // spec182: a pool-0 inline dispatch applies the same generation
+        // fence as the async path; refusal already published its failure.
+        if (!gateInlineRequestExecution(
+                prepared.requesterName, prepared.providerName,
+                prepared.serviceName, prepared.requestId, requestCopy,
+                prepared.selectionDigest, inlineRegistrationState)) {
             return true;
         }
         auto response = dispatchRequest(prepared.requesterName,
@@ -1232,7 +1242,8 @@ namespace ndn_service_framework
                                           prepared.requestId,
                                           requestCopy,
                                           std::move(response),
-                                          prepared.selectionDigest);
+                                          prepared.selectionDigest,
+                                          inlineRegistrationState);
         return true;
     }
 
@@ -1363,6 +1374,11 @@ namespace ndn_service_framework
         // retrieve an event after its advertised retention window.
         m_IMS(m_face.getIoContext(), 50000)
     {
+        // spec182 scoped registrations hand ownership to this provider; the
+        // destructor serializes against the Face-side cleanup through this
+        // control object.
+        m_registrationControl = std::make_shared<RegistrationControl>();
+        m_registrationControl->owner = this;
         ensureSameIdentity(encryptionCert, signingCert, "ServiceProvider");
         if (!isRsaCertificate(encryptionCert)) {
             throw std::invalid_argument("ServiceProvider encryptionCert must be RSA for NAC-ABE");
@@ -1649,6 +1665,8 @@ namespace ndn_service_framework
         m_IMS(m_face.getIoContext(), 50000),
         m_configManager("/tmp/ndnsf-service-provider-local-mock.conf")
     {
+        m_registrationControl = std::make_shared<RegistrationControl>();
+        m_registrationControl->owner = this;
         m_isLocalMock = true;
         ensureSameIdentity(encryptionCert, signingCert, "ServiceProvider");
         if (!isRsaCertificate(encryptionCert)) {
@@ -1845,6 +1863,18 @@ namespace ndn_service_framework
 
     ServiceProvider::~ServiceProvider()
     {
+        // spec182: sever scoped-registration ownership first.  Under the
+        // registration control lock the owner is cleared so a posted cleanup
+        // closure can no longer reach this provider, and every owned state is
+        // atomically closed so late dispatches observe a closed generation.
+        // Only the atomic flags are touched here -- handler owners are not
+        // destroyed under the lock, and the pool shutdowns below drain work
+        // that can no longer publish through a live registration.
+        {
+            const std::lock_guard<std::mutex> lock(m_registrationControl->mutex);
+            m_registrationControl->owner = nullptr;
+            closeAllRegistrationStates();
+        }
         m_fetchStopping->store(true);
         m_fetchPool.shutdown();
         if (m_svsps != nullptr) {
@@ -1900,6 +1930,13 @@ namespace ndn_service_framework
     void ServiceProvider::addStreamingHandler(const ndn::Name& serviceName,
                                                StreamingHandler handler)
     {
+        std::lock_guard<std::mutex> regLock(m_registrationControl->mutex);
+        if (!allowLegacyServiceTakeover(serviceName)) {
+            NDN_LOG_WARN("[ServiceProvider] legacy stream registration refused "
+                         "over active scoped registration service="
+                         << serviceName.toUri());
+            return;
+        }
         auto& service = m_services[serviceName];
         service.streamingHandler = std::move(handler);
         // A Normal streamed request still needs to pass the existing ACK
@@ -1949,6 +1986,13 @@ namespace ndn_service_framework
                                      RequestHandler requestHandler,
                                      ServiceMode mode)
     {
+        std::lock_guard<std::mutex> regLock(m_registrationControl->mutex);
+        if (!allowLegacyServiceTakeover(serviceName)) {
+            NDN_LOG_WARN("[ServiceProvider] legacy service registration refused "
+                         "over active scoped registration service="
+                         << serviceName.toUri());
+            return;
+        }
         auto& service = m_services[serviceName];
         if (mode == ServiceMode::Targeted) {
             service.targetedRequestHandler = std::move(requestHandler);
@@ -1978,6 +2022,13 @@ namespace ndn_service_framework
                                      RequestHandler requestHandler,
                                      ServiceInvocationMode invocationMode)
     {
+        std::lock_guard<std::mutex> regLock(m_registrationControl->mutex);
+        if (!allowLegacyServiceTakeover(serviceName)) {
+            NDN_LOG_WARN("[ServiceProvider] legacy service registration refused "
+                         "over active scoped registration service="
+                         << serviceName.toUri());
+            return;
+        }
         auto& service = m_services[serviceName];
         if (invocationMode == ServiceInvocationMode::NormalOnly ||
             invocationMode == ServiceInvocationMode::NormalAndTargeted) {
@@ -2806,6 +2857,13 @@ namespace ndn_service_framework
     void ServiceProvider::addTargetedService(const ndn::Name& serviceName,
                                              RequestHandler requestHandler)
     {
+        std::lock_guard<std::mutex> regLock(m_registrationControl->mutex);
+        if (!allowLegacyServiceTakeover(serviceName)) {
+            NDN_LOG_WARN("[ServiceProvider] legacy targeted registration refused "
+                         "over active scoped registration service="
+                         << serviceName.toUri());
+            return;
+        }
         auto& service = m_services[serviceName];
         service.targetedRequestHandler = std::move(requestHandler);
         if (!service.requestHandler) {
@@ -2851,8 +2909,33 @@ namespace ndn_service_framework
                                                   AckStrategyHandler ackHandler,
                                                   CollaborationHandler handler)
     {
+        std::lock_guard<std::mutex> regLock(m_registrationControl->mutex);
+        // A live scoped registration of either kind owns this service name;
+        // legacy collaboration registration must not overwrite it.  A closed
+        // parked state is taken over by the whole-value replacement below
+        // (the state pointer is dropped from the new record).
+        auto& collaboration = m_collaborationServices[serviceName];
+        if (collaboration.registrationState != nullptr &&
+            !collaboration.registrationState->closed) {
+            NDN_LOG_WARN("[ServiceProvider] legacy collaboration registration "
+                         "refused over active scoped registration service="
+                         << serviceName.toUri());
+            return;
+        }
+        {
+            auto servicesIt = m_services.find(serviceName);
+            if (servicesIt != m_services.end() &&
+                servicesIt->second.registrationState != nullptr &&
+                !servicesIt->second.registrationState->closed) {
+                NDN_LOG_WARN("[ServiceProvider] legacy collaboration registration "
+                             "refused over active scoped service service="
+                             << serviceName.toUri());
+                return;
+            }
+        }
         m_collaborationServices[serviceName] =
-            {std::move(ackHandler), std::move(handler), std::move(allowedRoles)};
+            {std::move(ackHandler), std::move(handler), std::move(allowedRoles),
+             nullptr};
         // Collaboration work is long-running by design. Registration therefore
         // enables the existing signed SELECTION-STATUS path by default.
         m_services[serviceName].selectionStatusQueryable = true;
@@ -2880,6 +2963,359 @@ namespace ndn_service_framework
                                 std::move(allowedRoles),
                                 AckStrategyHandler{},
                                 std::move(handler));
+    }
+
+    // ---- spec182 scoped registration ----
+    //
+    // A scoped registration binds a non-zero generation to the Core entry
+    // through a RegistrationState shared with pending-request and
+    // collaboration-selection binds (added by later lifecycle tasks).  All
+    // registration-path code below runs on the Face event thread and
+    // serializes against the Provider destructor through
+    // m_registrationControl->mutex.  Handler owners moved out of the maps
+    // during cleanup are destroyed only after that lock is released, so
+    // application-side destructors may safely re-enter registration or
+    // close().
+
+    ServiceProvider::ServiceRegistration::ServiceRegistration(
+        std::shared_ptr<RegistrationState> state,
+        std::weak_ptr<RegistrationControl> control)
+        : m_state(std::move(state)), m_control(std::move(control))
+    {
+    }
+
+    ServiceProvider::ServiceRegistration::ServiceRegistration(
+        ServiceRegistration&& other) noexcept
+        : m_state(std::move(other.m_state)), m_control(std::move(other.m_control))
+    {
+    }
+
+    ServiceProvider::ServiceRegistration&
+    ServiceProvider::ServiceRegistration::operator=(
+        ServiceRegistration&& other) noexcept
+    {
+        if (this != &other) {
+            close();
+            m_state = std::move(other.m_state);
+            m_control = std::move(other.m_control);
+        }
+        return *this;
+    }
+
+    ServiceProvider::ServiceRegistration::~ServiceRegistration()
+    {
+        close();
+    }
+
+    void
+    ServiceProvider::ServiceRegistration::close() noexcept
+    {
+        auto state = std::move(m_state);
+        m_state.reset();
+        if (state == nullptr) {
+            return;
+        }
+        // Closing becomes observable by any dispatch thread the moment the
+        // atomic flips; only the Core-entry cleanup below is Face-bound.
+        state->closed.store(true);
+        auto control = m_control.lock();
+        if (control == nullptr) {
+            return; // provider is gone; its destructor already closed the state
+        }
+        std::lock_guard<std::mutex> lock(control->mutex);
+        if (control->owner == nullptr) {
+            return; // provider destruction closed the state and is tearing
+                    // down its own entries; no post is possible or needed
+        }
+        // The cleanup closure re-checks ownership under the same lock, so a
+        // provider destroyed before the post runs turns the closure into a
+        // no-op instead of a use-after-free.
+        ServiceProvider* owner = control->owner;
+        boost::asio::post(owner->m_face.getIoContext(),
+                          [control, state]() {
+                              RegisteredService retiredService;
+                              RegisteredCollaborationService retiredCollaboration;
+                              {
+                                  std::lock_guard<std::mutex> lock(control->mutex);
+                                  if (control->owner == nullptr) {
+                                      return;
+                                  }
+                                  control->owner->detachClosedRegistration(
+                                      state, retiredService, retiredCollaboration);
+                              }
+                              // Handler owners are destroyed here, strictly
+                              // after the control lock is released.
+                          });
+    }
+
+    bool
+    ServiceProvider::ServiceRegistration::closed() const noexcept
+    {
+        // An empty (moved-from or already closed) handle reports closed.
+        return m_state == nullptr || m_state->closed.load();
+    }
+
+    bool
+    ServiceProvider::ServiceRegistration::valid() const noexcept
+    {
+        return m_state != nullptr && !m_state->closed.load();
+    }
+
+    uint64_t
+    ServiceProvider::ServiceRegistration::generation() const noexcept
+    {
+        return m_state == nullptr ? 0 : m_state->generation;
+    }
+
+    ndn::Name
+    ServiceProvider::ServiceRegistration::serviceName() const
+    {
+        return m_state == nullptr ? ndn::Name() : m_state->serviceName;
+    }
+
+    uint64_t
+    ServiceProvider::allocateRegistrationGeneration()
+    {
+        if (m_registrationGeneration == std::numeric_limits<uint64_t>::max()) {
+            throw std::runtime_error(
+                "scoped registration generation space exhausted");
+        }
+        return ++m_registrationGeneration;
+    }
+
+    bool
+    ServiceProvider::allowLegacyServiceTakeover(const ndn::Name& serviceName)
+    {
+        auto it = m_services.find(serviceName);
+        if (it == m_services.end() || it->second.registrationState == nullptr) {
+            return true;
+        }
+        auto& state = it->second.registrationState;
+        if (!state->closed) {
+            return false;
+        }
+        // The closed record's cleanup post either already ran or will never
+        // run (loop stopped / provider gone).  Legacy registration takes the
+        // entry over by dropping the parked state; the state-identity check
+        // in detachClosedRegistration keeps a late cleanup from erasing this
+        // legacy record.
+        state.reset();
+        return true;
+    }
+
+    void
+    ServiceProvider::closeAllRegistrationStates()
+    {
+        for (auto& item : m_services) {
+            if (item.second.registrationState != nullptr) {
+                item.second.registrationState->closed.store(true);
+            }
+        }
+        for (auto& item : m_collaborationServices) {
+            if (item.second.registrationState != nullptr) {
+                item.second.registrationState->closed.store(true);
+            }
+        }
+    }
+
+    void
+    ServiceProvider::drainClosedRegistrations(
+        std::vector<RegisteredService>& retiredServices,
+        std::vector<RegisteredCollaborationService>& retiredCollaborations)
+    {
+        // Collect first: detach erases map entries while it runs.  The same
+        // state can appear twice (collaboration shell + collaboration
+        // record); detach is idempotent per state.
+        std::vector<std::shared_ptr<RegistrationState>> closedStates;
+        for (const auto& item : m_services) {
+            if (item.second.registrationState != nullptr &&
+                item.second.registrationState->closed) {
+                closedStates.push_back(item.second.registrationState);
+            }
+        }
+        for (const auto& item : m_collaborationServices) {
+            if (item.second.registrationState != nullptr &&
+                item.second.registrationState->closed) {
+                closedStates.push_back(item.second.registrationState);
+            }
+        }
+        for (const auto& state : closedStates) {
+            RegisteredService retiredService;
+            RegisteredCollaborationService retiredCollaboration;
+            detachClosedRegistration(state, retiredService, retiredCollaboration);
+            // Moving (possibly empty) records into the out-vectors destroys
+            // nothing; the caller releases the lock before the vectors do.
+            retiredServices.push_back(std::move(retiredService));
+            retiredCollaborations.push_back(std::move(retiredCollaboration));
+        }
+    }
+
+    void
+    ServiceProvider::detachClosedRegistration(
+        const std::shared_ptr<RegistrationState>& state,
+        RegisteredService& retiredService,
+        RegisteredCollaborationService& retiredCollaboration)
+    {
+        // Runs Face-serialized with the control lock held (drain or a posted
+        // close closure).  An entry is erased only while it still owns this
+        // very state object, so a stale handle from an old generation can
+        // never delete the successor registration that reused the name, and
+        // the m_serviceNames entry is dropped only when no other record
+        // (legacy or scoped) still owns the name.
+        auto serviceIt = m_services.find(state->serviceName);
+        if (serviceIt != m_services.end() &&
+            serviceIt->second.registrationState.get() == state.get()) {
+            retiredService = std::move(serviceIt->second);
+            m_services.erase(serviceIt);
+        }
+        auto collabIt = m_collaborationServices.find(state->serviceName);
+        if (collabIt != m_collaborationServices.end() &&
+            collabIt->second.registrationState.get() == state.get()) {
+            retiredCollaboration = std::move(collabIt->second);
+            m_collaborationServices.erase(collabIt);
+        }
+        if (m_services.find(state->serviceName) == m_services.end() &&
+            m_collaborationServices.find(state->serviceName) ==
+                m_collaborationServices.end()) {
+            const auto serviceUri = state->serviceName.toUri();
+            const auto nameIt = std::find(m_serviceNames.begin(),
+                                          m_serviceNames.end(), serviceUri);
+            if (nameIt != m_serviceNames.end()) {
+                m_serviceNames.erase(nameIt);
+            }
+        }
+    }
+
+    bool
+    ServiceProvider::serviceEntryBusy(const RegisteredService& entry)
+    {
+        return entry.registrationState != nullptr || entry.ackHandler ||
+               entry.requestHandler || entry.targetedRequestHandler ||
+               entry.streamingHandler || entry.selectionStatusQueryable ||
+               entry.genericAdmissionLeaseRequired ||
+               entry.genericAdmissionLeaseValidator != nullptr;
+    }
+
+    ServiceProvider::ServiceRegistration
+    ServiceProvider::addScopedService(const ndn::Name& serviceName,
+                                      AckStrategyHandler ackHandler,
+                                      RequestHandler requestHandler,
+                                      ServiceInvocationMode invocationMode)
+    {
+        if (m_registrationControl == nullptr) {
+            throw std::logic_error(
+                "scoped service registration requires a constructed provider");
+        }
+        std::vector<RegisteredService> retiredServices;
+        std::vector<RegisteredCollaborationService> retiredCollaborations;
+        std::shared_ptr<RegistrationState> state;
+        {
+            std::lock_guard<std::mutex> lock(m_registrationControl->mutex);
+            drainClosedRegistrations(retiredServices, retiredCollaborations);
+            const auto it = m_services.find(serviceName);
+            if ((it != m_services.end() && serviceEntryBusy(it->second)) ||
+                m_collaborationServices.find(serviceName) !=
+                    m_collaborationServices.end()) {
+                throw std::logic_error(
+                    "scoped service name is already registered: " +
+                    serviceName.toUri());
+            }
+            state = std::make_shared<RegistrationState>(
+                serviceName, allocateRegistrationGeneration());
+            auto& service = m_services[serviceName];
+            // Mirror the legacy addService(ServiceInvocationMode) field
+            // layout exactly; the busy check above guarantees a fresh record.
+            if (invocationMode == ServiceInvocationMode::NormalOnly ||
+                invocationMode == ServiceInvocationMode::NormalAndTargeted) {
+                service.ackHandler = std::move(ackHandler);
+                service.requestHandler = requestHandler;
+                service.mode = ServiceMode::Normal;
+            }
+            if (invocationMode == ServiceInvocationMode::TargetedOnly ||
+                invocationMode == ServiceInvocationMode::NormalAndTargeted) {
+                service.targetedRequestHandler = std::move(requestHandler);
+                if (invocationMode == ServiceInvocationMode::TargetedOnly) {
+                    service.mode = ServiceMode::Targeted;
+                }
+            }
+            service.registrationState = state;
+            const auto serviceUri = serviceName.toUri();
+            if (std::find(m_serviceNames.begin(), m_serviceNames.end(),
+                          serviceUri) == m_serviceNames.end()) {
+                m_serviceNames.push_back(serviceUri);
+            }
+            NDN_LOG_WARN("[ServiceProvider] registered scoped service prefix="
+                         << serviceUri
+                         << " generation=" << state->generation);
+        }
+        return ServiceRegistration(std::move(state), m_registrationControl);
+    }
+
+    ServiceProvider::ServiceRegistration
+    ServiceProvider::addScopedService(const ndn::Name& serviceName,
+                                      AckStrategyHandler ackHandler,
+                                      RequestHandler requestHandler,
+                                      ServiceMode mode)
+    {
+        // A scoped registration is guaranteed fresh, so the legacy
+        // ServiceMode field merge collapses onto the two invocation modes.
+        return addScopedService(
+            serviceName, std::move(ackHandler), std::move(requestHandler),
+            mode == ServiceMode::Targeted ? ServiceInvocationMode::TargetedOnly
+                                          : ServiceInvocationMode::NormalOnly);
+    }
+
+    ServiceProvider::ServiceRegistration
+    ServiceProvider::addScopedCollaborationHandler(
+        const ndn::Name& serviceName,
+        std::vector<CollaborationRole> allowedRoles,
+        AckStrategyHandler ackHandler,
+        CollaborationHandler handler)
+    {
+        if (m_registrationControl == nullptr) {
+            throw std::logic_error(
+                "scoped collaboration registration requires a constructed "
+                "provider");
+        }
+        std::vector<RegisteredService> retiredServices;
+        std::vector<RegisteredCollaborationService> retiredCollaborations;
+        std::shared_ptr<RegistrationState> state;
+        {
+            std::lock_guard<std::mutex> lock(m_registrationControl->mutex);
+            drainClosedRegistrations(retiredServices, retiredCollaborations);
+            const auto it = m_services.find(serviceName);
+            if (m_collaborationServices.find(serviceName) !=
+                    m_collaborationServices.end() ||
+                (it != m_services.end() && serviceEntryBusy(it->second))) {
+                throw std::logic_error(
+                    "scoped collaboration service name is already registered: "
+                    + serviceName.toUri());
+            }
+            state = std::make_shared<RegistrationState>(
+                serviceName, allocateRegistrationGeneration());
+            RegisteredCollaborationService record;
+            record.ackHandler = std::move(ackHandler);
+            record.handler = std::move(handler);
+            record.allowedRoles = std::move(allowedRoles);
+            record.registrationState = state;
+            m_collaborationServices[serviceName] = std::move(record);
+            // The collaboration record shares its name with the m_services
+            // shell used by the Selection path; the shell mirrors the state
+            // so one scoped close cleans up both records in a single detach.
+            auto& shell = m_services[serviceName];
+            shell.registrationState = state;
+            shell.selectionStatusQueryable = true;
+            const auto serviceUri = serviceName.toUri();
+            if (std::find(m_serviceNames.begin(), m_serviceNames.end(),
+                          serviceUri) == m_serviceNames.end()) {
+                m_serviceNames.push_back(serviceUri);
+            }
+            NDN_LOG_WARN("[ServiceProvider] registered scoped collaboration "
+                         "service prefix="
+                         << serviceUri
+                         << " generation=" << state->generation);
+        }
+        return ServiceRegistration(std::move(state), m_registrationControl);
     }
 
     ServiceProvider::CollaborationContext::CollaborationContext(
@@ -4179,7 +4615,8 @@ namespace ndn_service_framework
         const ndn::Name& serviceName,
         const ndn::Name& requestId,
         RequestMessage requestMessage,
-        AckStrategyHandler ackHandler)
+        AckStrategyHandler ackHandler,
+        std::shared_ptr<RegistrationState> registrationState)
     {
         if (m_ackPool.getThreadCount() == 0 || !ackHandler) {
             return false;
@@ -4191,7 +4628,8 @@ namespace ndn_service_framework
              serviceName,
              requestId,
              requestMessage,
-             ackHandler = std::move(ackHandler)]() mutable {
+             ackHandler = std::move(ackHandler),
+             registrationState]() mutable {
                 if (m_timelineTrace) {
                     logTimelineTrace("provider", "ack_handler_start", requestId,
                                      {{"providerName", identity.toUri()},
@@ -4207,20 +4645,29 @@ namespace ndn_service_framework
                                   {"queueDepth", std::to_string(
                                        m_ackPool.getQueueSize())}});
                 AckDecision decision;
-                try {
-                    decision = ackHandler(requestMessage);
-                    if (decision.message.empty()) {
-                        decision.message =
-                            decision.status ? "Permission Granted" : "Permission Denied";
+                if (registrationState && registrationState->closed) {
+                    // spec182: the scoped registration retired while the ack
+                    // decision was queued; never commit a positive decision
+                    // in its name.
+                    decision.status = false;
+                    decision.message = "Service registration closed before ACK committed";
+                }
+                else {
+                    try {
+                        decision = ackHandler(requestMessage);
+                        if (decision.message.empty()) {
+                            decision.message =
+                                decision.status ? "Permission Granted" : "Permission Denied";
+                        }
                     }
-                }
-                catch (const std::exception& e) {
-                    decision.status = false;
-                    decision.message = std::string("ACK handler failed: ") + e.what();
-                }
-                catch (...) {
-                    decision.status = false;
-                    decision.message = "ACK handler failed";
+                    catch (const std::exception& e) {
+                        decision.status = false;
+                        decision.message = std::string("ACK handler failed: ") + e.what();
+                    }
+                    catch (...) {
+                        decision.status = false;
+                        decision.message = "ACK handler failed";
+                    }
                 }
 
                 if (m_timelineTrace) {
@@ -4240,12 +4687,14 @@ namespace ndn_service_framework
                      serviceName,
                      requestId,
                      requestMessage,
-                     decision = std::move(decision)]() mutable {
+                     decision = std::move(decision),
+                     registrationState]() mutable {
                         finishAckDecisionOnEventLoop(requesterIdentity,
                                                      serviceName,
                                                      requestId,
                                                      std::move(requestMessage),
-                                                     std::move(decision));
+                                                     std::move(decision),
+                                                     std::move(registrationState));
                     });
                 if (m_timelineTrace) {
                     logTimelineTrace("provider", "ack_finish_posted", requestId,
@@ -4265,7 +4714,8 @@ namespace ndn_service_framework
                                          serviceName,
                                          requestId,
                                          std::move(requestMessage),
-                                         std::move(decision));
+                                         std::move(decision),
+                                         std::move(registrationState));
         }
         return true;
     }
@@ -4275,7 +4725,8 @@ namespace ndn_service_framework
         const ndn::Name& serviceName,
         const ndn::Name& requestId,
         RequestMessage requestMessage,
-        AckDecision decision)
+        AckDecision decision,
+        std::shared_ptr<RegistrationState> registrationState)
     {
         if (m_timelineTrace) {
             logTimelineTrace("provider", "ack_finish_enter", requestId,
@@ -4315,11 +4766,25 @@ namespace ndn_service_framework
             decision.status = false;
             decision.message = "DI_RESERVATION_REQUIRED";
         }
+        if (decision.status && registrationState && registrationState->closed) {
+            // spec182: the scoped registration retired before the decision
+            // landed on the Face thread.  Degrade to the negative path so no
+            // pending state is stored and no positive ACK is published in the
+            // retired registration's name.
+            decision.status = false;
+            decision.message = "Service registration closed before ACK committed";
+        }
         std::string providerToken;
         if (decision.status) {
             std::lock_guard<std::mutex> lock(m_pendingRequestMutex);
             pendingRequests[pendingKey] =
                 std::make_shared<RequestMessage>(requestMessage);
+            // spec182: bind the pending acceptance to the registration the
+            // decision was taken against.  Like pendingRequests itself, a
+            // newer acceptance for the same pendingKey supersedes the earlier
+            // binding.
+            if (registrationState)
+                m_pendingRegistrationStates[pendingKey] = registrationState;
             if (decision.reservationLease)
                 pendingReservationLeases[pendingKey] = *decision.reservationLease;
             NDN_LOG_TRACE("[NDNSF_TRACE] role=provider event=PENDING_REQUEST_STORED timestamp_us="
@@ -4521,11 +4986,42 @@ namespace ndn_service_framework
                   << " providerName=" << identity.toUri()
                   << " requestId=" << requestId.toUri()
                   << " serviceName=" << serviceName.toUri());
+        // spec182: fence the targeted acceptance against the registration
+        // this entry carried.  A retired (closed) registration refuses
+        // execution outright; the pool-0 inline path additionally binds the
+        // request so a later re-registration cannot run a successor handler
+        // for this acceptance.
+        auto registrationState = service->second.registrationState;
+        if (registrationState && registrationState->closed) {
+            publishExecutionFailureOnEventLoop(requesterIdentity,
+                                               identity,
+                                               serviceName,
+                                               requestId,
+                                               requestMessage,
+                                               "Service registration closed before execution");
+            return true;
+        }
         if (!dispatchRequestExecutionAsync(requesterIdentity,
                                            identity,
                                            serviceName,
                                            requestId,
-                                           requestMessage)) {
+                                           requestMessage,
+                                           "",
+                                           &registrationState)) {
+            const ndn::Name pendingKey = ndn::Name(requesterIdentity)
+                                             .append(serviceName).append(requestId);
+            const std::string fenceError = registrationState
+                ? fencePendingRegistrationExecution(pendingKey, registrationState)
+                : std::string();
+            if (!fenceError.empty()) {
+                publishExecutionFailureOnEventLoop(requesterIdentity,
+                                                   identity,
+                                                   serviceName,
+                                                   requestId,
+                                                   requestMessage,
+                                                   fenceError);
+                return true;
+            }
             ResponseMessage response;
             try {
                 response = service->second.targetedRequestHandler(requesterIdentity,
@@ -4546,7 +5042,9 @@ namespace ndn_service_framework
                                               serviceName,
                                               requestId,
                                               requestMessage,
-                                              std::move(response));
+                                              std::move(response),
+                                              "",
+                                              registrationState);
         }
         return true;
     }
@@ -4557,7 +5055,8 @@ namespace ndn_service_framework
         const ndn::Name& serviceName,
         const ndn::Name& requestId,
         RequestMessage requestMessage,
-        std::string selectionDigest)
+        std::string selectionDigest,
+        std::shared_ptr<RegistrationState>* registrationStateOut)
     {
         if (m_handlerPool.getThreadCount() == 0) {
             return false;
@@ -4581,6 +5080,43 @@ namespace ndn_service_framework
         }
         auto streamingHandler = service->second.streamingHandler;
 
+        // spec182: fence the execution dispatch against the registration the
+        // entry carried.  A retired registration refuses execution; the
+        // pending binding (established at acceptance for request/selection
+        // flows) refuses execution against a successor registration.  Pool-0
+        // inline fallback callers receive the state through
+        // registrationStateOut so they can apply the same fence.
+        auto registrationState = service->second.registrationState;
+        if (registrationStateOut) {
+            *registrationStateOut = registrationState;
+        }
+        if (registrationState && registrationState->closed) {
+            publishExecutionFailureOnEventLoop(requesterName,
+                                               providerName,
+                                               serviceName,
+                                               requestId,
+                                               requestMessage,
+                                               "Service registration closed before execution",
+                                               std::move(selectionDigest));
+            return true;
+        }
+        if (registrationState) {
+            const ndn::Name pendingKey = ndn::Name(requesterName)
+                                             .append(serviceName).append(requestId);
+            const std::string fenceError =
+                fencePendingRegistrationExecution(pendingKey, registrationState);
+            if (!fenceError.empty()) {
+                publishExecutionFailureOnEventLoop(requesterName,
+                                                   providerName,
+                                                   serviceName,
+                                                   requestId,
+                                                   requestMessage,
+                                                   fenceError,
+                                                   std::move(selectionDigest));
+                return true;
+            }
+        }
+
         const bool queued = m_handlerPool.post(
             [this,
              requesterName,
@@ -4592,7 +5128,19 @@ namespace ndn_service_framework
              streamingHandler = std::move(streamingHandler),
              targetedMode,
              streamedMode,
-             selectionDigest]() mutable {
+             selectionDigest,
+             registrationState]() mutable {
+                if (registrationState && registrationState->closed) {
+                    // spec182: the scoped registration retired while this
+                    // task was queued; the worker never runs a retired
+                    // registration's handler.
+                    publishExecutionFailureOnEventLoop(
+                        requesterName, providerName, serviceName, requestId,
+                        requestMessage,
+                        "Service registration closed before execution",
+                        std::move(selectionDigest));
+                    return;
+                }
                 updateSelectionExecutionStatus(selectionDigest,
                                                SelectionExecutionState::Running,
                                                providerName,
@@ -4656,7 +5204,7 @@ namespace ndn_service_framework
                             return true;
                         },
                         [this, publisher, requesterName, providerName, serviceName,
-                         requestId, requestMessage, selectionDigest]
+                         requestId, requestMessage, selectionDigest, registrationState]
                         (const ndn::Buffer& payload, StreamFinishReason reason) {
                             const auto completion = publisher->finish(
                                 payload, reason, std::chrono::steady_clock::now() +
@@ -4670,11 +5218,11 @@ namespace ndn_service_framework
                             boost::asio::post(m_face.getIoContext(),
                                 [this, requesterName, providerName, serviceName,
                                  requestId, requestMessage, response = std::move(response),
-                                 selectionDigest]() mutable {
+                                 selectionDigest, registrationState]() mutable {
                                     finishRequestExecutionOnEventLoop(
                                         requesterName, providerName, serviceName,
                                         requestId, requestMessage, std::move(response),
-                                        selectionDigest);
+                                        selectionDigest, registrationState);
                                 });
                             return true;
                         },
@@ -4745,14 +5293,16 @@ namespace ndn_service_framework
                      requestId,
                      requestMessage,
                      selectionDigest,
-                     response = std::move(response)]() mutable {
+                     response = std::move(response),
+                     registrationState]() mutable {
                         finishRequestExecutionOnEventLoop(requesterName,
                                                           providerName,
                                                           serviceName,
                                                           requestId,
                                                           requestMessage,
                                                           std::move(response),
-                                                          std::move(selectionDigest));
+                                                          std::move(selectionDigest),
+                                                          std::move(registrationState));
                     });
             });
 
@@ -4780,6 +5330,30 @@ namespace ndn_service_framework
         auto service = m_collaborationServices.find(serviceName);
         if (service == m_collaborationServices.end() || !service->second.handler) {
             return false;
+        }
+
+        // spec182: a scoped collaboration registration that retired refuses
+        // dispatch (never run a successor handler for an acceptance made
+        // against an earlier generation, and never run a retired handler).
+        const auto registrationState = service->second.registrationState;
+        if (registrationState && registrationState->closed) {
+            publishExecutionFailureOnEventLoop(requesterName, providerName, serviceName,
+                requestId, requestMessage,
+                "collaboration registration closed before execution",
+                selectionDigest);
+            return true;
+        }
+        if (registrationState) {
+            std::lock_guard<std::mutex> lock(m_collaborationMutex);
+            const auto boundIt = m_collaborationRegistrationStates.find(requestId);
+            if (boundIt != m_collaborationRegistrationStates.end() &&
+                boundIt->second != registrationState) {
+                publishExecutionFailureOnEventLoop(requesterName, providerName, serviceName,
+                    requestId, requestMessage,
+                    "collaboration registration generation changed before execution",
+                    selectionDigest);
+                return true;
+            }
         }
 
         const auto handler = service->second.handler;
@@ -4835,7 +5409,8 @@ namespace ndn_service_framework
             requesterName, requestId, serviceName,
             requestMessage.hasControllerVersion()
                 ? std::optional<ControllerVersion>(requestMessage.getControllerVersion())
-                : std::nullopt);
+                : std::nullopt,
+            registrationState);
         const auto current = [workFence, requestMessage] {
             return workFence.current() &&
                 (!requestMessage.hasStreamRequestOptions() ||
@@ -4999,7 +5574,8 @@ namespace ndn_service_framework
                         "Collaboration handler queue full",
                         selectionDigest);
                 }
-            });
+            },
+            registrationState);
         return true;
     }
 
@@ -5141,7 +5717,8 @@ namespace ndn_service_framework
         const ndn::Name& requestId,
         const RequestMessage& requestMessage,
         ResponseMessage response,
-        std::string selectionDigest)
+        std::string selectionDigest,
+        std::shared_ptr<RegistrationState> registrationState)
     {
         auto releaseR1Reservation = [this, &requesterName, &serviceName,
                                      &requestId](const std::string& cause) {
@@ -5181,6 +5758,15 @@ namespace ndn_service_framework
         updateProviderRequestLifecycleState(
             requestId, serviceName,
             ProviderRequestLifecycleState::EXECUTION_DONE);
+        if (registrationState && registrationState->closed &&
+            response.getStatus()) {
+            // spec182: the scoped registration retired while the handler ran
+            // or the response was in flight.  A retired registration must
+            // never commit positive work in its name; degrade to the same
+            // error the negative paths publish.
+            response = makeErrorResponse(
+                "Service registration closed before response committed");
+        }
         if (m_useTokens) {
             response.setUserToken(requestMessage.getUserToken());
         }
@@ -5590,9 +6176,22 @@ namespace ndn_service_framework
                                         return;
                                     }
                                 }
+                                std::shared_ptr<RegistrationState>
+                                    inlineRegistrationState;
                                 if (dispatchRequestExecutionAsync(
                                         requesterName, providerName, serviceName,
-                                        requestId, readyRequest, selectionDigest)) {
+                                        requestId, readyRequest, selectionDigest,
+                                        &inlineRegistrationState)) {
+                                    return;
+                                }
+                                // spec182: a pool-0 inline dispatch applies
+                                // the same generation fence as the async
+                                // path; refusal already published its
+                                // failure.
+                                if (!gateInlineRequestExecution(
+                                        requesterName, providerName, serviceName,
+                                        requestId, readyRequest, selectionDigest,
+                                        inlineRegistrationState)) {
                                     return;
                                 }
                                 auto response = dispatchRequest(
@@ -5601,7 +6200,7 @@ namespace ndn_service_framework
                                 finishRequestExecutionOnEventLoop(
                                     requesterName, providerName, serviceName,
                                     requestId, readyRequest, std::move(response),
-                                    selectionDigest);
+                                    selectionDigest, inlineRegistrationState);
                             });
                     },
                     [finishFailure](const ndn::Data&,
@@ -7605,7 +8204,8 @@ namespace ndn_service_framework
     ServiceProvider::CollaborationWorkFence
     ServiceProvider::makeCollaborationWorkFence(
         const ndn::Name& requesterName, const ndn::Name& requestId,
-        const ndn::Name& serviceName, std::optional<ControllerVersion> version)
+        const ndn::Name& serviceName, std::optional<ControllerVersion> version,
+        std::shared_ptr<RegistrationState> registrationState)
     {
         const auto pendingKey = ndn::Name(requesterName).append(serviceName).append(requestId);
         const auto queuedAt = std::chrono::steady_clock::now();
@@ -7621,8 +8221,13 @@ namespace ndn_service_framework
             }
         }
         const auto stopping = m_fetchStopping;
-        return {deadline, [this, stopping, requestId, serviceName, version, deadline] {
+        return {deadline,
+                [this, stopping, requestId, serviceName, version, deadline,
+                 registrationState] {
             if (stopping->load() || std::chrono::steady_clock::now() >= deadline ||
+                // spec182: a retired scoped registration fences all work
+                // queued against it.
+                (registrationState && registrationState->closed) ||
                 !isAcceptableControllerVersion(serviceName, version) ||
                 !authorizeControllerTransition(serviceName,
                                                ProtectedTransition::PROVIDER_EXECUTION)) {
@@ -7646,7 +8251,8 @@ namespace ndn_service_framework
         const ndn::Name& requestId,
         CollaborationAssignment assignment,
         std::function<void(bool, std::string,
-                           CollaborationAssignment)> onReady)
+                           CollaborationAssignment)> onReady,
+        std::shared_ptr<RegistrationState> registrationState)
     {
         struct FetchState
         {
@@ -7711,6 +8317,11 @@ namespace ndn_service_framework
             std::lock_guard<std::mutex> lock(m_collaborationMutex);
             m_collaborationServiceNamesByRequest[requestId] =
                 state->assignment.service;
+            // spec182: bind the collaboration request to the registration
+            // generation the dispatch was accepted against (scoped only);
+            // sibling roles share the requestId and therefore the binding.
+            if (registrationState)
+                m_collaborationRegistrationStates[requestId] = registrationState;
             auto& scopeKeys = m_collaborationScopeKeysByRequest[requestId];
             for (const auto& entry : state->assignment.scopeKeys) {
                 scopeKeys[entry.first] = entry.second;
@@ -7731,7 +8342,8 @@ namespace ndn_service_framework
 
         state->fence = makeCollaborationWorkFence(
             requesterName, requestId, state->assignment.service,
-            getControllerVersion(state->assignment.service));
+            getControllerVersion(state->assignment.service),
+            registrationState);
 
         std::map<KeyScope, ndn::Name> keysToFetch;
         bool needsArtifactFetch = false;
@@ -8599,6 +9211,78 @@ namespace ndn_service_framework
         return decision;
     }
 
+    std::string ServiceProvider::fencePendingRegistrationExecution(
+        const ndn::Name& pendingKey,
+        const std::shared_ptr<RegistrationState>& entryState)
+    {
+        if (!entryState) {
+            return std::string();
+        }
+        std::lock_guard<std::mutex> lock(m_pendingRequestMutex);
+        const auto boundIt = m_pendingRegistrationStates.find(pendingKey);
+        if (boundIt == m_pendingRegistrationStates.end()) {
+            // No acceptance-time binding (targeted acceptances, or a
+            // Selection whose pending entry was already consumed): the
+            // request carries no earlier generation claim, so the current
+            // entry generation governs.
+            return std::string();
+        }
+        if (boundIt->second != entryState) {
+            // The acceptance was bound to an earlier generation than the
+            // entry the dispatcher resolved now; refuse and drop the stale
+            // binding (execution will not happen for this acceptance).
+            m_pendingRegistrationStates.erase(boundIt);
+            return "registration generation changed before execution";
+        }
+        // Claim the binding: this is the first execution dispatch for the
+        // accepted request.  Execution from here on fences via the captured
+        // registration state, so the pendingKey binding is released.
+        m_pendingRegistrationStates.erase(boundIt);
+        return std::string();
+    }
+
+    bool ServiceProvider::gateInlineRequestExecution(
+        const ndn::Name& requesterName,
+        const ndn::Name& providerName,
+        const ndn::Name& serviceName,
+        const ndn::Name& requestId,
+        const RequestMessage& requestMessage,
+        std::string selectionDigest,
+        std::shared_ptr<RegistrationState>& registrationState)
+    {
+        registrationState.reset();
+        const auto service = m_services.find(serviceName);
+        if (service == m_services.end() || !service->second.registrationState) {
+            return true;
+        }
+        registrationState = service->second.registrationState;
+        if (registrationState->closed) {
+            publishExecutionFailureOnEventLoop(requesterName,
+                                               providerName,
+                                               serviceName,
+                                               requestId,
+                                               requestMessage,
+                                               "Service registration closed before execution",
+                                               std::move(selectionDigest));
+            return false;
+        }
+        const ndn::Name pendingKey = ndn::Name(requesterName)
+                                         .append(serviceName).append(requestId);
+        const std::string fenceError =
+            fencePendingRegistrationExecution(pendingKey, registrationState);
+        if (!fenceError.empty()) {
+            publishExecutionFailureOnEventLoop(requesterName,
+                                               providerName,
+                                               serviceName,
+                                               requestId,
+                                               requestMessage,
+                                               fenceError,
+                                               std::move(selectionDigest));
+            return false;
+        }
+        return true;
+    }
+
     void ServiceProvider::cleanupPendingRequestState(const ndn::Name& pendingKey,
                                                      bool preserveReplayTombstone)
     {
@@ -8617,6 +9301,9 @@ namespace ndn_service_framework
             m_pendingRequestTokenHashes.erase(tokenHashIt);
         }
         pendingRequests.erase(pendingKey);
+        // spec182: the registration-generation binding shares the pending
+        // request's lifetime exactly; release it together.
+        m_pendingRegistrationStates.erase(pendingKey);
         pendingProviderTokens.erase(pendingKey);
         auto streamIt = m_streamLifecycles.find(pendingKey);
         if (streamIt != m_streamLifecycles.end()) {
@@ -8696,6 +9383,9 @@ namespace ndn_service_framework
             m_pendingRequestTokenHashes.erase(tokenHashIt);
         }
         pendingRequests.erase(pendingKey);
+        // spec182: expire the registration-generation binding with the
+        // pending request it mirrors.
+        m_pendingRegistrationStates.erase(pendingKey);
         pendingProviderTokens.erase(pendingKey);
         auto requestScopedIt = m_requestScopedInvocations.find(pendingKey);
         if (requestScopedIt != m_requestScopedInvocations.end()) {
@@ -9965,6 +10655,17 @@ void ServiceProvider::finishDecodedRequestOnEventLoop(
 
         auto service = m_services.find(serviceName);
         auto collabService = m_collaborationServices.find(serviceName);
+        // spec182: remember the scoped registration (if any) this acceptance
+        // is being taken against, so a positive decision binds the pending
+        // request to exactly that generation.  Legacy entries carry no
+        // registration state.
+        std::shared_ptr<RegistrationState> ackRegistrationState;
+        if (service != m_services.end()) {
+            ackRegistrationState = service->second.registrationState;
+        }
+        else if (collabService != m_collaborationServices.end()) {
+            ackRegistrationState = collabService->second.registrationState;
+        }
         if (service != m_services.end() &&
             requestMessage.getRequestMode() == tlv::TargetedBootstrapRequest) {
             if (!service->second.targetedRequestHandler) {
@@ -10019,7 +10720,8 @@ void ServiceProvider::finishDecodedRequestOnEventLoop(
                                          serviceName,
                                          requestId,
                                          requestMessage,
-                                         std::move(asyncAckHandler))) {
+                                         std::move(asyncAckHandler),
+                                         ackRegistrationState)) {
                 return;
             }
             decision = ackHandler(requestMessage);
@@ -10037,7 +10739,8 @@ void ServiceProvider::finishDecodedRequestOnEventLoop(
                                      serviceName,
                                      requestId,
                                      std::move(requestMessage),
-                                     std::move(decision));
+                                     std::move(decision),
+                                     ackRegistrationState);
         return;
     }
 
@@ -12632,6 +13335,9 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
             }
             for (const auto& requestId : collaborationRequests) {
                 m_collaborationServiceNamesByRequest.erase(requestId);
+                // spec182: the collaboration registration binding shares the
+                // request-identity lifetime of the names map.
+                m_collaborationRegistrationStates.erase(requestId);
                 m_collaborationDataByRequest.erase(requestId);
                 m_collaborationScopeKeysByRequest.erase(requestId);
                 m_collaborationScopeKeyDataNamesByRequest.erase(requestId);
@@ -14316,12 +15022,21 @@ opaque_selection_committed:
                     continue;
                 }
             }
+            std::shared_ptr<RegistrationState> inlineRegistrationState;
             if (dispatchRequestExecutionAsync(requesterName,
                                               providerName,
                                               serviceName,
                                               requestId,
                                               requestCopy,
-                                              selectionDigest)) {
+                                              selectionDigest,
+                                              &inlineRegistrationState)) {
+                continue;
+            }
+            // spec182: a pool-0 inline dispatch applies the same generation
+            // fence as the async path; refusal already published its failure.
+            if (!gateInlineRequestExecution(
+                    requesterName, providerName, serviceName, requestId,
+                    requestCopy, selectionDigest, inlineRegistrationState)) {
                 continue;
             }
 
@@ -14342,7 +15057,8 @@ opaque_selection_committed:
                                               requestId,
                                               requestCopy,
                                               std::move(response),
-                                              selectionDigest);
+                                              selectionDigest,
+                                              inlineRegistrationState);
         }
     }
 
