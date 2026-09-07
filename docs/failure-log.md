@@ -1,5 +1,14 @@
 # Failure Log and Evidence Index
 
+## 2026-09-07 — Spec182 T004 native Selection wire incompatible
+
+最小 native codec 诊断中，NativePlanSealer::encode 接受字段并输出 386 字节，
+生产 nativeSelectionProjectionV3FromJson 在第一 schema 门拒绝。首边界是 DI wire
+构造，不是 Core 网络或运行环境。T004-A/父 T004 重开，禁止把旧 7-case PASS 当完整
+Selection 证明；修复完整 canonical wire 和真实工件/grant 绑定后再继续 T010。
+原始 `.codex-tmp/spec182-t004-wire-audit-r1/` 保留；见
+[A8-01 evidence](../specs/182-native-di-python-bindings/evidence/t004-wire-reopened-20260907.md)。
+
 ## 2026-09-07 — Spec182 T010-A unit selector rejected
 
 两个 Boost.Test suite 误用逗号组合，exit200，`no test cases matching filter or all

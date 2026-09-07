@@ -24,9 +24,9 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 | [T003-A Qwen Split Candidates](contracts/execution-units.md#t003-a-qwen-split-candidates) | DONE | T002-A | [acceptance](evidence/t003-a-qwen-split-20260907.md)；CPP(Spec182QwenSplit/*) 5 cases 全绿（合法 cover、边界 budget、非法 rank/图输入），expected 逐条对照冻结 `QwenThreeStageSplitter`，支持范围保持 rank-one；新增 2 case 于 di-native-planning.t.cpp | 2026-09-07 |
 | [T003-B Yolo Split Candidates](contracts/execution-units.md#t003-b-yolo-split-candidates) | DONE | T003-A | [acceptance](evidence/t003-b-yolo-split-20260907.md)；CPP(Spec182YoloSplit/*) 7 cases 全绿（固定 cover、错误 component/图/外来模型拒绝、确定性 + budget 截断），expected 对照冻结 `Yolo26Splitter`/`RegisteredYoloCandidate`；新增 2 case 于 di-native-planning.t.cpp | 2026-09-07 |
 | [T003-C Placement and Registry](contracts/execution-units.md#t003-c-placement-and-registry) | DONE | T003-A, T003-B | [acceptance](evidence/t003-c-placement-20260907.md)；CPP(Spec182Placement/*) 9 cases 全绿（residency→freeBytes→provider 稳定序、budget/ref tie-break、同输入同结果、非法向量/全拒），对照冻结 `propose_v3` 共享语义区间；新增 2 case 于 di-native-planning.t.cpp | 2026-09-07 |
-| [T004-A Canonical Plan Sealing](contracts/execution-units.md#t004-a-canonical-plan-sealing) | DONE | T003-C | [acceptance](evidence/t004-a-plan-sealer-20260907.md)；CPP(Spec182PlanSealer/*) 7 cases 全绿（canonical 封印 + M22 单源投影、encode 固定 7-key 片段字节一致 + 独立 JSON oracle、逐维度篡改敏感、错误 endpoint/缺 grant/错 ACK digest 首边界拒绝、plaintext 无 grant 封面）；planned suite 登记于新文件 di-native-plan-sealer.t.cpp；真实 Core commit/Provider parser 对照留 T016 | 2026-09-07 |
-| [T005-A InProcess Authority](contracts/execution-units.md#t005-a-inprocess-authority) | DONE | T004-A | [acceptance](evidence/t005-a-inprocess-authority-20260907.md)；CPP(Spec182GrantAuthority/*) 6 cases 全绿（固定 request/时钟向量、expiry/自授/issuer 不完整/wrong-key-recipient 面原因码族拒绝、secret 生命周期无 key 驻留、注入 policy 传播）；issue() 补 requester==provider 拒绝（Python frozen 对照）；planned 独立文件拆分由既有同文件切片取代 | 2026-09-07 |
-| [T005-B Requester Grant Publication](contracts/execution-units.md#t005-b-requester-grant-publication) | DONE | T005-A | [acceptance](evidence/t005-b-requester-grant-20260907.md)；CPP(Spec182GrantClient/*) 8 cases 全绿（构造门、view 完整性先于端口副作用、过期 deadline 在副作用前 fence、过期 grant 于 authority 边界拒绝、canonical exact-name/回落与 determinism、错名 publication 恰好一次消费且不复活）+ 集成 Spec182GrantClientFlow 1 case（真实 ServiceUser::publishSignedAppData + exact-name fetch，KeyLocator/content 校验）；生产代码本卡无改动（既有切片语义经测试确认）；真实 Provider crypto 消费 T016 | 2026-09-07 |
+| [T004-A Canonical Plan Sealing](contracts/execution-units.md#t004-a-canonical-plan-sealing) | PARTIAL | T003-C | [REOPENED audit](evidence/t004-wire-reopened-20260907.md)：真实 encode→parser 诊断确认 schema mismatch；伪工件摘要、自定义 core digest、不完整 grantView/device/多角色待修复；旧 7-case 局部 PASS 不证明整卡完成 | 2026-09-07 |
+| [T005-A InProcess Authority](contracts/execution-units.md#t005-a-inprocess-authority) | PARTIAL | T004-A | [旧局部验收](evidence/t005-a-inprocess-authority-20260907.md) 6 cases PASS 保留；依赖 T004-A 因 [A8-01](evidence/t004-wire-reopened-20260907.md) 重开，修复真实 grantView/core identity 后需复核，不能维持整卡 DONE | 2026-09-07 |
+| [T005-B Requester Grant Publication](contracts/execution-units.md#t005-b-requester-grant-publication) | PARTIAL | T005-A | [旧局部验收](evidence/t005-b-requester-grant-20260907.md) 8 cases + publication/fetch 证据保留；随 T004-A/T005-A 依赖闭合回退，待真实 grantView 输入和 Provider 消费链复核；见 [A8-01](evidence/t004-wire-reopened-20260907.md) | 2026-09-07 |
 | [T006-A Canonical Source Identity](contracts/execution-units.md#t006-a-canonical-source-identity) | DONE | T002-A | [acceptance](evidence/t006-a-canonical-source-identity-20260907.md)；CPP(Spec182OnnxIdentity/*) 11 cases 全绿（24 v1 + 14 accepted extended 全模型 golden 逐字段、typed/raw pair 摘要恒等、v2 per-tensor 12 accepted 逐字节 + 5 拒绝、bf16 两编码归一、revision 分类、v2 descriptor binding 门、external/function-attr 内联等价、overflow/非法路径/限额拒绝） | 2026-09-07 |
 | [T006-B Certified Extraction and Wire](contracts/execution-units.md#t006-b-certified-extraction-and-wire) | DONE | T006-A | [acceptance](evidence/t006-b-certified-extraction-wire-20260907.md)；CPP(Spec182OnnxExtraction/*) 11 cases 全绿（4 accept 逐字节 parity + 独立 sha256 交叉检查，7 reject 精确 reason family）+ Spec182NativeAssembly 3 cases + Spec182OnnxIdentity 11 cases 回归；官方 ONNX 1.17 full-pb 统一（--onnx-prefix）；data_location proto3-optional presence 奇点修正 byteParity（frozen sha 77300e13，diff 唯一 delta）；完整回归 5 个环境性失败（TPM/NFD）与本卡无关 | 2026-09-07 |
 | [T006-C Bounded Native Worker](contracts/execution-units.md#t006-c-bounded-native-worker) | DONE | T006-B | [acceptance](evidence/t006-c-bounded-native-worker-20260907.md)；CPP(Spec182OnnxWorkerProtocol/*) 27 cases 全绿（frame 截断/溢出/重复帧逐字节状态机、compose/finalize 语义、metadata envelope 规范往返与 poison、真子进程 cancel 1304ms TERM→KILL escalation、信号死亡/静默/垃圾 stdout、PREFLIGHT 族）+ 842 cases 完整回归（除环境性 StreamFacade）；修复 isSha256Digest 长度门 66→71 root cause（failure-log 2026-09-07）；L0 staged install 链接验证（libexec/ndnsf-di，ELF/ldd clean，pythonWrapper 消息为设计内路径） | 2026-09-07 |
@@ -55,6 +55,14 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 | [T017-A Development Handoff](contracts/execution-units.md#t017-a-development-handoff) | NOT_STARTED | T016-A | [baseline](evidence/task-progress-registry-20260907.md)；无本卡独立执行/验收记录；按依赖领取 | 2026-09-07 |
 
 ## Current Checkpoint
+
+2026-09-07 T004 actual wire audit / **REOPENED / PARTIAL**：原生 encode→生产 parser
+最小诊断重现 schema mismatch；另发现工件摘要来自角色名、core digest 为自定义字符串、
+grantView 缺 request/身份/有效期、projection 硬编码 CPU 与单 role。见
+[A8-01 evidence](evidence/t004-wire-reopened-20260907.md)。T004-A DONE 回退，父 T004
+取消勾选；T005-A/B 随依赖回退 PARTIAL、父 T005 取消勾选，局部测试结果保持历史有效。
+当前 18/36 子卡 DONE、父任务 3/17，不重写旧局部测试证据。下一步先按既有
+wire/认证工件/完整角色契约修复 T004，再继续 T010；不是给无效片段简单补 schema 标记。
 
 2026-09-07 T010-A Core I/O / **PARTIAL**：已提供原 Face 调度入口，并禁止在 Core
 I/O 线程阻塞 result；operation 保持 user 寿命，client close 不关闭共享 Core。
@@ -441,11 +449,11 @@ T015在全部实现后补审整体接线；T016执行完整unit→integration→
   Design: FR-003,FR-009,FR-016; CD-002。Proof: PO-002。
   [T003 contract](contracts/work-units.md#t003-native-split-and-placement-decisions)。
 
-- [x] T004 [US1] **Canonical Native Plan Sealing**。合法 proposal 转成可被真实 Core/Provider 接受的规范计划；非法投影在首边界拒绝。Dependencies: T003。
+- [ ] T004 [US1] **Canonical Native Plan Sealing**。合法 proposal 转成可被真实 Core/Provider 接受的规范计划；非法投影在首边界拒绝。Dependencies: T003。
   Design: FR-002,FR-004; CD-003。Proof: PO-003。
   [T004 contract](contracts/work-units.md#t004-canonical-native-plan-sealing)。
 
-- [x] T005 [US1] **Native Requester Grant Path**。原生 requester 签名/申请/发布 grant，实际 Provider 验证并消费密钥。Dependencies: T004。
+- [ ] T005 [US1] **Native Requester Grant Path**。原生 requester 签名/申请/发布 grant，实际 Provider 验证并消费密钥。Dependencies: T004。
   Design: FR-005; CD-004。Proof: PO-004。
   [T005 contract](contracts/work-units.md#t005-native-requester-grant-path)。
 

@@ -29,6 +29,11 @@ T001允许有界依赖探针；产品构建按设计门和各任务的验证范�
 
 ## Gate Order
 
+2026-09-07 implementation audit：T004-A 因真实 Selection wire/identity 不兼容重开，
+见 [A8-01](evidence/t004-wire-reopened-20260907.md)。在继续 T010 完整请求提交前，
+先修复 T004 的完整 canonical wire、真实工件和 grant 输入，并复核受影响前置值契约；
+不得将七字段片段包装为可执行计划。其余阶段及 T016 正式运行顺序保持。
+
 1. G0 / T001：复用已关闭O-001的源码身份与181承接，关闭O-002--005，冻结schema/调用方/依赖与单测、集成、实验选择器。181旧完整资格不作为前置门；源码基线关闭不表示新依赖组合运行PASS。
 2. G1 / T002--009：库、策略、sealer/grant、assembler/tokenizer、准备/admission和Provider host；每任务实现→静态审查→相关单测及必要构建。
 3. G2 / T010--012：requester、会话/恢复与绑定；完成接线、相关单测，同时编写注册后续集成用例。

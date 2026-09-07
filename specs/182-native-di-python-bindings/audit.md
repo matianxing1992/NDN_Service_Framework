@@ -7,6 +7,17 @@
 
 ## Current Findings
 
+### Implementation Audit 2026-09-07
+
+以下 revision7 设计审计保留为历史；当前执行状态以 tasks 为准，不再以旧的 T001
+未完成/全局 implementation BLOCK 推断现状。基线 8e86bca5，新增 **A8-01 / CRITICAL /
+OPEN**：[T004 wire/identity audit](evidence/t004-wire-reopened-20260907.md)。真实
+NativePlanSealer::encode 输出不满足生产 parser，且伪工件摘要、非规范 core digest、
+不完整 grantView 和硬编码 projection 不能支撑完整请求。T004-A/父 T004 重开，
+T010 继续完整接线前必须修复；不以本轮 13 个 Core I/O/handle 单测关闭这些义务。
+
+### Prior Revision 7 Findings
+
 2026-09-06追加[native capability reuse review](evidence/native-reuse-review-20260906.md)，审查源码`5239b229`。2026-09-07以[native generation contract](contracts/native-generation-design.md)补齐复用比较和采样修复语义，并移除plan旧授权句：A7-10/A7-11 CLOSED。A7-08 HIGH/OPEN仍需stream状态算法；A7-09 HIGH/OPEN已有算法处置但native修复/测试未运行，新增Top-K校验、Greedy校验与float32→double差异纳入同一T011。产品实现继续BLOCK，T001/O-004未完成；reference诊断不证明native修复。
 
 revision 7审计已按最新源码修订文档；用户随后授权在Experimental完成182，当前T001设计收口中。已停止管理已接收交付的实验机器。

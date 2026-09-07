@@ -6,6 +6,11 @@ source review 只证明 baseline 所述实现存在，不证明新实现或资�
 
 ## Requirement-to-task Map
 
+2026-09-07 A8-01：FR-002/004、CD-003、PO-003 的 T004 完成证明已撤回；
+[wire/identity diagnosis](evidence/t004-wire-reopened-20260907.md) 重现真实 parser 拒绝。
+T010 的 FLOW-001/4--6 依赖该修复；T005 已有局部授权检查不等于 grantView 生产接线完整。
+T005-A/B 随前置闭合回退 PARTIAL，FR-005/PO-004 的完整路径仍未证明，历史局部测试保留。
+
 | Requirement | Success criteria | Design | Tasks | Proof obligations | Flow |
 | --- | --- | --- | --- | --- | --- |
 | FR-001 | SC-001,SC-007 | CD-001,CD-009,CD-011,CD-013,CD-014 | T002,T008,T009,T010,T014,T016 | PO-001,PO-011,PO-013,PO-014 | FLOW-001 |
