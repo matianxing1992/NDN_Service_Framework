@@ -32,6 +32,92 @@ MAX_TOTAL_BYTES = 16 * 1024 * 1024
 PRIVATE_PEM = re.compile(rb"^-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY-----\r?$", re.M)
 
 
+def preparation_inventory(root: Path, plan: dict, *, receipt_present: bool = False) -> dict:
+    """Exact public preparation inventory; integrity only, not authentication."""
+    from .identities import identity_inventory
+    root = Path(_operator_path(str(root), Path.cwd(), local=True))
+    if any(p.is_symlink() for p in (root, *root.parents)) or not root.is_dir():
+        raise ClosureError('PREPARATION_ROOT')
+    roles = identity_inventory(plan['namespace'], plan['identities'])
+    providers = {'BackboneNeck', 'DetectShard0', 'DetectShard1', 'Merge'}
+    if not {'user', 'controller', 'repo', *providers}.issubset(roles):
+        raise ClosureError('PREPARATION_ROLES')
+    # Verify the directory boundary before reading even the registry.
+    contracts = root / 'contracts'
+    if contracts.is_symlink() or not contracts.is_dir():
+        raise ClosureError('PREPARATION_CONTRACTS')
+    registry = json.loads(_bytes(contracts / 'trust-root-registry-v1.json'), object_pairs_hook=_object)
+    if not isinstance(registry, dict):
+        raise ClosureError('PREPARATION_REGISTRY')
+    expected = {'root.cert', 'wrong-root.cert', 'identities.json',
+        'recipient-public-keys.json', 'offer-public-key-map.json', 'offer-trust-root.json',
+        'case-policy.json', 'case.json', 'trust-schema.conf', 'controller.policies',
+        'service-manifest.json', 'service-manifest.json.sha256',
+        'native-execution-plan.json', 'native-execution-plan.json.sha256',
+        'runtime-publication.json', 'contracts/trust-root-registry-v1.json', 'contracts/authority.pub'}
+    expected.update(role + '.cert' for role in roles)
+    expected.update(directory + '/' + role + '.pub' for role in providers for directory in ('recipients', 'offers'))
+    for owner in ('catalogue', 'modelManifest', 'artifactPolicyAuthority'):
+        entry = registry.get(owner)
+        if not isinstance(entry, dict):
+            raise ClosureError('PREPARATION_REGISTRY')
+        path = entry.get('publicKeyPath')
+        if not isinstance(path, str) or not re.fullmatch(r'contracts/[A-Za-z0-9_-][A-Za-z0-9_.-]*\.pub', path):
+            raise ClosureError('PREPARATION_REGISTRY_PATH')
+        expected.add(path)
+    allowed = expected | ({'preparation.json'} if receipt_present else set())
+    directories = {str(parent) for name in allowed for parent in Path(name).parents}
+    found, pending = set(), [root]
+    while pending:
+        directory = pending.pop()
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                path = Path(entry.path)
+                relative = path.relative_to(root).as_posix()
+                if entry.is_symlink():
+                    raise ClosureError('PREPARATION_SYMLINK')
+                if entry.is_dir(follow_symlinks=False):
+                    if relative not in directories:
+                        raise ClosureError('PREPARATION_EXTRA_DIRECTORY')
+                    pending.append(path)
+                elif entry.is_file(follow_symlinks=False) and relative in allowed:
+                    found.add(relative)
+                else:
+                    raise ClosureError('PREPARATION_EXTRA_OR_SPECIAL_FILE')
+    if found != allowed:
+        raise ClosureError('PREPARATION_MISSING_FILE')
+    records, total = {}, 0
+    for name in sorted(expected):
+        wire = _bytes(root / name)
+        if PRIVATE_PEM.search(wire):
+            raise ClosureError('PREPARATION_PRIVATE_KEY')
+        total += len(wire)
+        if total > MAX_TOTAL_BYTES:
+            raise ClosureError('PREPARATION_TOO_LARGE')
+        records[name] = {'bytes': len(wire), 'sha256': 'sha256:' + hashlib.sha256(wire).hexdigest()}
+    return records
+
+
+def verify_preparation(root: Path, plan: dict, *, expected_receipt_digest: str,
+                       candidate_digest: str) -> dict:
+    """Recompute public bytes against an externally pinned preparation receipt."""
+    root = Path(_operator_path(str(root), Path.cwd(), local=True))
+    if any(p.is_symlink() for p in (root, *root.parents)):
+        raise ClosureError('PREPARATION_ROOT')
+    raw = _bytes(root / 'preparation.json')
+    if (not isinstance(expected_receipt_digest, str) or not HASH.fullmatch(expected_receipt_digest)
+            or 'sha256:' + hashlib.sha256(raw).hexdigest() != expected_receipt_digest):
+        raise ClosureError('PREPARATION_RECEIPT_DIGEST')
+    receipt = json.loads(raw, object_pairs_hook=_object)
+    if (not isinstance(receipt, dict) or receipt.get('schema') != 'tiger-yolo-preparation-v1'
+            or receipt.get('status') != 'PREPARED' or receipt.get('qualification') != 'NOT_EVALUATED'
+            or receipt.get('runId') != plan['runId'] or receipt.get('candidateDigest') != candidate_digest):
+        raise ClosureError('PREPARATION_RECEIPT_BINDING')
+    if receipt.get('publicFiles') != preparation_inventory(root, plan, receipt_present=True):
+        raise ClosureError('PREPARATION_PUBLIC_BYTES')
+    return receipt
+
+
 def _bytes(path):
     try:
         fd = os.open(str(path), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)

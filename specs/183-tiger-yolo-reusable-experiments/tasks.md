@@ -78,6 +78,8 @@ T001–T004形成 profile/launcher 实现骨架；可操作 MVP 还要求 T006 �
 
 ## Current Checkpoint
 
+2026-09-07公开准备清单已写入receipt：精确文件集合/逐文件hash，拒绝未知目录、特殊文件、symlink、private PEM和缺失；verify_preparation绑定外部receipt hash及run/candidate再重算。10项文件fixture测试，总360 focused（20.85s），最终类型收紧后10项再次通过。外层operator/worker消费仍待接线，完整SIF准备及身份/模型资格未执行；T005/T007仍未完成。
+
 2026-09-07内部prepare CLI/固定输入descriptor已接通，共享容器启动器只允许离线准备挂载/inputs，禁止普通worker/网络/GPU带入私有输入。处理Apptainer预建空root HOME，仍拒绝旧内容；7项边界测试通过。正式submit.py prepare资格入口、public manifest inventory/readiness/T006仍待闭合，完整native准备未执行。详见t005-public-recipients.md。
 
 2026-09-07内部prepare编排已接入apps/yolo.py：固定空挂载、输入hash、原adapter签名图校验、真实issuer与各类材料、原Y-B policy/Repo权限/native plan和catalogue batch生成器。5项配置投影测试通过，总343 focused（20.50s）。完整prepare尚未实际执行，最终CLI/public manifest绑定/readiness/T006仍未闭合；不能根据代码接线宣称PREPARED或T005完成，T007须审调用边界、T008/T011实跑。

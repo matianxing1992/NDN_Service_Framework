@@ -33,6 +33,31 @@ ran. No fake extension or skip was used. Both must pass after T008 native build.
 
 ## Remaining controlling work
 
+### Public preparation inventory and receipt verification
+
+`runtime/yolo_bundle.py::preparation_inventory` enumerates the exact public
+output set: issued certificates, referenced public trust files, recipient and
+offer public maps/keys, policy/native-plan/service-manifest files and catalogue
+publication input. It rejects unknown files/directories before traversal,
+symlinks, special files, missing output, oversized content and private PEMs.
+Each expected file gets a byte count and SHA-256. `prepare_in_container` records
+this set in `preparation.json` only after all preparation owners return.
+
+`verify_preparation` requires an externally pinned receipt digest and exact
+run/candidate binding, then recomputes the public inventory. It returns the
+PREPARED / NOT_EVALUATED receipt, not a qualification verdict. The outer
+operator/worker boundary must still call it and enforce frozen/readonly mounts;
+that final consumer integration remains pending. Inventory integrity does not
+authenticate arbitrary certificate bytes or prove model/permission readiness.
+
+Ten tests use explicit non-cryptographic public-file fixtures to exercise
+receipt recomputation and missing/extra/private-PEM/symlink/changed/wrong-run/
+wrong-candidate rejection. **10 passed in 0.36s**; full focused **360 passed
+in 20.85s**, JUnit `results/spec183-public-inventory-r1/junit.xml`. After stricter
+malformed registry/digest type rejection, the same ten tests passed in **0.30s**.
+No real SIF preparation or inference has run; T005 and all formal gates remain
+incomplete.
+
 ### Internal prepare command and input mount scope
 
 The actual internal entry is now `python -m apps.yolo prepare --descriptor

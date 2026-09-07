@@ -140,12 +140,14 @@ def prepare_in_container(plan: dict, *, template_path: Path, template_digest: st
         {'package': Path(package), 'manifest': manifest,
          'registry': public / 'contracts/trust-root-registry-v1.json',
          'descriptor': {'catalogueDataName': catalogue_name, 'catalogueSigner': names['controller']}})
+    from runtime.yolo_bundle import preparation_inventory
     receipt = {'schema': 'tiger-yolo-preparation-v1', 'status': 'PREPARED',
                'qualification': 'NOT_EVALUATED', 'runId': plan['runId'],
                'candidateDigest': candidate_digest, 'protectionEpoch': protection_epoch,
                'catalogueDataName': catalogue_name, 'catalogueSigner': names['controller'],
                'templateDigest': template_digest, 'packageManifestDigest': manifest_digest,
-               'registryDigest': registry_digest}
+               'registryDigest': registry_digest,
+               'publicFiles': preparation_inventory(public, plan)}
     _credential_document(public / 'preparation.json', receipt)
     return receipt
 
