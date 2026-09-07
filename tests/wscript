@@ -55,7 +55,7 @@ def build(bld):
                            'NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedArtifactStore.cpp',
                        ]),
                 includes=['..', '../ndn-service-framework'],
-                use='ndn-service-framework NDN_CXX NDN_SVS NAC-ABE NDNSD BOOST OPENSSL DL',
+                use='ndn-service-framework NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL',
                 rpath=[bld.bldnode.abspath()],
                 install_path=None)
 
