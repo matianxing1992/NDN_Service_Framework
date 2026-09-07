@@ -10,6 +10,34 @@
 
 复现：`python3 specs/182-native-di-python-bindings/checklists/export_inventory.py --namespace api`，sdk/root同理；无namespace输出全部。按(namespace,export)键比较结果，JSON对象/条目顺序不构成API语义。分namespace读取避免工具输出截断；初次全集输出被工具长度限制截断，不是源码扫描失败，不能将截断内容当完整snapshot。
 
+## Machine-readable Compatibility Manifest
+
+由 `checklists/build_api_migration_manifest.py` 从当前源码 AST 生成的
+`compatibility-manifest.json` 是本审查的机器可读辅助物，不是实现或兼容性证明。
+本次生成绑定 source commit `cc4c6046308c62a42fe6475dc4b33a3c1f858391`，覆盖显式
+api/sdk/root `277` 项、动态 `app_sdk` 导出 `67` 项，共 `344` 项。每项保留 source
+path/line/hash、类方法签名、字段、assignment expression、保守 token caller inventory、
+mapping status 和 verification selector；caller 仍须由 owner 做语义分类。
+
+formal `api` 的当前静态映射状态为：`PARTIAL_EXISTING_TYPE 8`、`PLANNED_TYPE 1`、
+`UNREVIEWED 18`。已有类型但仍需字段/错误/状态闭环的八项是：
+`ArtifactReference→NativeArtifactBinding`、`GenerationInput→NativeApplicationInput`、
+`InferenceClient→NativeInferenceClient`、`InferenceProvider→NativeInferenceProvider`、
+`InferenceRequestHandle→NativeInferenceHandle`、`InferenceResult→NativeInferenceResult`、
+`InferenceOptions→NativeRequestOptions`、`ModelRef→NativeModelRef`。`GenerationConfig`
+只记录为 planned `NativeGenerationOptions`。`RequestRef` 和 `RequestableDeployment` 的
+Python assignment expression 已保留，不能再按独立 native type 猜测。上述状态只表示
+静态映射入口已记录，不能关闭 O-004、T001 或任何产品任务。
+
+复现命令：
+
+```bash
+python3 specs/182-native-di-python-bindings/checklists/build_api_migration_manifest.py
+```
+
+生成物变更必须与当前 source commit、审查结论和 `tasks.md` checkpoint 一起审阅；不得
+因为生成成功或计数完整就把 `UNREVIEWED` 批量改成 `BOUND`。
+
 ## Current API Mapping Gaps
 
 以code-design.md、symbol-design.md、value-contracts.md、runtime-boundaries.md四份主契约检查正式api导出：23个导出名称尚无精确名称映射。仅名称缺失不是功能必然不存在，但说明当前48个planned方法/137个字段表不能证明完整Python兼容。下表冻结下一轮逐行为核对入口，不增加新的产品目标或直接宣布全部旧导出都必须重写C++。

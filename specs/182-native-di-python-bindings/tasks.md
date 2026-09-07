@@ -1,6 +1,6 @@
 # Tasks: Native NDNSF-DI with Optional Python Bindings
 
-**Revision**: 8 | **Status**: DRAFT / T001 IN_PROGRESS
+**Revision**: 9 | **Status**: DRAFT / T001 IN_PROGRESS
 **Input**: [spec](spec.md), [code design](contracts/code-design.md),
 [proof](contracts/proof-design.md), [work units](contracts/work-units.md)
 
@@ -18,7 +18,7 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 | Unit / Details | Status | Depends | Evidence / Remaining | Updated |
 | --- | --- | --- | --- | --- |
 | [T001-A Identity and Dependency Closure](contracts/execution-units.md#t001-a-identity-and-dependency-closure) | PARTIAL | — | [baseline](evidence/task-progress-registry-20260907.md)；已有身份设计；完整关闭待核对 | 2026-09-07 |
-| [T001-B Lifecycle and Capability Closure](contracts/execution-units.md#t001-b-lifecycle-and-capability-closure) | PARTIAL | — | [baseline](evidence/task-progress-registry-20260907.md)；已有生命周期设计；O-004 公开 API 映射仍 OPEN | 2026-09-07 |
+| [T001-B Lifecycle and Capability Closure](contracts/execution-units.md#t001-b-lifecycle-and-capability-closure) | PARTIAL | — | [baseline](evidence/task-progress-registry-20260907.md)；已有生命周期设计；manifest 已补签名/别名表达式；O-004 公开 API 映射仍 OPEN | 2026-09-07 |
 | [T001-C Dispatch and Selector Freeze](contracts/execution-units.md#t001-c-dispatch-and-selector-freeze) | BLOCKED | T001-A, T001-B | [baseline](evidence/task-progress-registry-20260907.md)；T001-A/B 与 O-004 未关闭；selector release 待完成 | 2026-09-07 |
 | [T002-A Installed Library Boundary](contracts/execution-units.md#t002-a-installed-library-boundary) | BLOCKED | T001-C | [baseline](evidence/task-progress-registry-20260907.md)；已有库/consumer 边界；NAC-ABE API 闭包阻塞构建 | 2026-09-07 |
 | [T003-A Qwen Split Candidates](contracts/execution-units.md#t003-a-qwen-split-candidates) | PARTIAL | T002-A | [baseline](evidence/task-progress-registry-20260907.md)；已有相关源码切片；完整卡验收未完成 | 2026-09-07 |
@@ -109,6 +109,8 @@ request/stream 接线后再做 T015 静态收敛审查。
 T007/O-004。
 
 2026-09-07 Public export inventory / **T001 IN_PROGRESS**：新增[API migration review](contracts/public-api-migration-review.md)和可复现AST snapshot，覆盖api27/sdk76/root174，共277导出，264定义/10assignment/3外部owner。发现正式api中23个名称尚无四份主契约的精确映射；部署catalog、请求handle和provenance不能由现有request概述替代。snapshot逐条UNREVIEWED，动态wildcard/继承/实例字段仍需核对；不是迁移完成。下一步逐行为完成正式api映射及动态层清单，O-004/T001保持OPEN，产品0/17。未修改产品源码、未运行native产品测试。
+
+2026-09-07 Compatibility manifest source review / **T001 IN_PROGRESS**：`build_api_migration_manifest.py` 已改为保留类方法的参数注解/默认值、顶层函数签名和 assignment expression；`RequestRef` 明确解析为 `InferenceRequestHandle`，`RequestableDeployment` 明确保留其 `Union` 表达式。生成物覆盖显式277、动态67、总计344项；formal api 当前静态状态为 `PARTIAL_EXISTING_TYPE 8`、`PLANNED_TYPE 1`、`UNREVIEWED 18`。这只补足 O-004 的机器可读审阅入口，不等价于字段、错误、状态、caller 或 native 行为闭环；未关闭 O-004/T001，未修改产品源码，未运行 native 产品测试。已完成 `py_compile`、manifest invariant check 和 `git diff --check`；下一步继续逐项补齐 O-004 后才释放 T001-C。
 
 ### Prior Provider Lifetime
 
