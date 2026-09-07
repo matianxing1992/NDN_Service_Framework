@@ -205,11 +205,9 @@ def collect_trace(case: dict[str, Any], run: dict[str, Any]) -> dict[str, Any]:
 
 def evaluate_case(case: dict[str, Any], run: dict[str, Any], observation: dict[str, Any]) -> dict[str, Any]:
     required = set(case["isolation"]["requiredEvidence"])
-    evidence = {"identity", "process-tree", "namespace", "exec-map", "endpoints",
-                "business-oracle", "cleanup"}
+    evidence = set(run.get("evidence", [])) | set(observation.get("evidence", []))
     failures = []
-    if required - evidence:
-        failures.append("EVIDENCE_DECLARATION_INCOMPLETE")
+    failures.extend("MISSING_EVIDENCE:" + item for item in sorted(required - evidence))
     if run.get("timedOut"):
         failures.append("RUN_TIMEOUT")
     if run.get("returncode") != int(case.get("expectedExit", 0)):
