@@ -96,6 +96,10 @@ Spec183 输入门：`model-manifest.json` 仅绑定 `atomic-v1` 且没有 signat
 - `/opt/apptainer/1.5.3/bin/apptainer` 已对锁定的历史 base SIF 完成 `sif list`、label
   检查和 `/bin/true` 执行；这只证明本机匹配工具能够读取该 base，不证明 Spec183
   runtime 或最终 SIF 已构建。
+- `prepare-development-handoff.py verify` 返回 `SOURCE_READY`，source seal 为
+  `sha256:9129d07298f5754823f3bc2bf9c10fea7416adbb1e4168ced3dc82750948612c`；用该
+  handoff 和锁定 base 只渲染了临时 definition（`sha256:27d787dc8b583b3ee4814af22cb07ab3a0fd0df16bc98274bd6f2f900fe148cb`）。
+  尚未调用 `apptainer build`，因为 Spec183 dispatch/model gate 仍未闭合。
 
 ## Build And Test Selector Registry
 
