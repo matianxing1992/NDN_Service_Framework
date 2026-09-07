@@ -343,7 +343,7 @@ def build(bld):
                             'ndn-service-framework/RevocationState.cpp',
                         ])),
                 includes= ['..','../ndn-service-framework'],
-                use='BOOST NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD OPENSSL DL',
+                use='BOOST NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD OPENSSL DL TOKENIZER_BRIDGE',
                 cxxflags=['-fPIC'],
                 install_path=None)
 
@@ -406,7 +406,7 @@ def build(bld):
                             'ndn-service-framework/RevocationState.cpp',
                         ])),
                 includes=['..', '../ndn-service-framework'],
-                use='BOOST NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD OPENSSL DL',
+                use='BOOST NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD OPENSSL DL TOKENIZER_BRIDGE',
                 cxxflags=['-fPIC'],
                 install_path=None)
 
@@ -416,7 +416,7 @@ def build(bld):
                         di_native_session_sources +
                         di_native_message_crypto_sources),
                 includes=['..', '../ndn-service-framework'],
-                use='BOOST NDN_CXX NDN_SVS OPENSSL DL',
+                use='BOOST NDN_CXX NDN_SVS OPENSSL DL TOKENIZER_BRIDGE',
                 cxxflags=['-fPIC', '-pthread'],
                 linkflags=['-pthread'],
                 install_path=None)
@@ -427,7 +427,7 @@ def build(bld):
                         di_native_session_sources +
                         di_native_message_crypto_sources),
                 includes=['..', '../ndn-service-framework'],
-                use='BOOST NDN_CXX NDN_SVS OPENSSL DL',
+                use='BOOST NDN_CXX NDN_SVS OPENSSL DL TOKENIZER_BRIDGE',
                 cxxflags=['-fPIC', '-pthread'],
                 linkflags=['-pthread'],
                 install_path=None)
@@ -446,7 +446,7 @@ def build(bld):
                 # The shared ONNX assembly TU (compiled below) binds the
                 # Provider-owned CollaborationContext overload, whose symbols
                 # live in the framework library; link it like the test targets.
-                use='BOOST ONNXRUNTIME ONNX NDN_CXX NDN_SVS PROTOBUF OPENSSL DL ndn-service-framework',
+                use='BOOST ONNXRUNTIME ONNX NDN_CXX NDN_SVS PROTOBUF OPENSSL DL ndn-service-framework TOKENIZER_BRIDGE',
                 cxxflags=['-fPIC', '-pthread'],
                 linkflags=['-pthread'],
                 install_path=None)
@@ -489,7 +489,7 @@ def build(bld):
                         ])),
                 includes=['..', '../ndn-service-framework', '../NDNSF-DistributedRepo/include',
                           '../NDNSF-DistributedInference/cpp/adapters/onnx'],
-                use='BOOST ONNXRUNTIME ONNX NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD OPENSSL DL',
+                use='BOOST ONNXRUNTIME ONNX NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD OPENSSL DL TOKENIZER_BRIDGE',
                 cxxflags=['-fPIC', '-pthread'],
                 linkflags=['-pthread'],
                 install_path=None)
@@ -533,7 +533,7 @@ def build(bld):
                         ])),
                 includes=['..', '../ndn-service-framework', '../NDNSF-DistributedRepo/include',
                           '../NDNSF-DistributedInference/cpp/adapters/onnx'],
-                use='BOOST ONNXRUNTIME ONNX NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD OPENSSL DL',
+                use='BOOST ONNXRUNTIME ONNX NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD OPENSSL DL TOKENIZER_BRIDGE',
                 cxxflags=['-fPIC', '-pthread', '-DNDNSF_DI_EXPERIMENT_FAULTS=1'],
                 linkflags=['-pthread'],
                 install_path=None)
@@ -547,7 +547,7 @@ def build(bld):
                             'NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.cpp',
                         ])),
                 includes=['..', '../ndn-service-framework'],
-                use='BOOST ONNXRUNTIME NDN_CXX NDN_SVS OPENSSL DL',
+                use='BOOST ONNXRUNTIME NDN_CXX NDN_SVS OPENSSL DL TOKENIZER_BRIDGE',
                 cxxflags=['-fPIC', '-pthread'],
                 linkflags=['-pthread'],
                 install_path=None)

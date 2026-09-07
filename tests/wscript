@@ -88,7 +88,7 @@ def build(bld):
     framework_includes = ['..', '../ndn-service-framework',
                           '../NDNSF-DistributedRepo/include',
                           '../NDNSF-DistributedInference/cpp/adapters/onnx']
-    framework_use = 'NDN_CXX NDN_SVS PROTOBUF ONNX NAC-ABE NDNSD BOOST OPENSSL DL'
+    framework_use = 'NDN_CXX NDN_SVS PROTOBUF ONNX NAC-ABE NDNSD BOOST OPENSSL DL TOKENIZER_BRIDGE'
 
     # Link a clean external-style consumer against the installable DI library
     # boundary.  The program performs no network work; it only proves that the
@@ -255,7 +255,7 @@ def build(bld):
                 includes=['..', '../ndn-service-framework',
                           '../NDNSF-DistributedRepo/include',
                           '../NDNSF-DistributedInference/cpp/adapters/onnx'],
-                use='NDN_CXX NDN_SVS PROTOBUF ONNX NAC-ABE NDNSD BOOST OPENSSL ONNXRUNTIME GSTREAMER GMODULE FFI PCRE DL',
+                use='NDN_CXX NDN_SVS PROTOBUF ONNX NAC-ABE NDNSD BOOST OPENSSL ONNXRUNTIME GSTREAMER GMODULE FFI PCRE DL TOKENIZER_BRIDGE',
                 # NAC-ABE exposes its test-only authority state under
                 # HAVE_TESTS.  The framework's generated config header does
                 # not propagate that macro into NAC-ABE's CMake-style public

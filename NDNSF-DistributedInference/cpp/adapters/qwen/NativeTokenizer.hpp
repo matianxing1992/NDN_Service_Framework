@@ -10,16 +10,17 @@ namespace ndnsf::di::qwen {
 
 /**
  * Digest-bound, read-only tokenizer backed by the pinned Rust tokenizers
- * bridge.  The object owns the bridge handle and serializes calls into it;
- * callers may share it between decoder callbacks but must keep it alive while
+ * engine (spec182 T007).  The engine is statically linked into the DI
+ * library; this object owns one engine handle, verifies the tokenizer
+ * artifact digest before creating it, and serializes calls into it.  Callers
+ * may share it between decoder callbacks but must keep it alive while
  * callbacks are in flight.
  */
 class NativeTokenizer
 {
 public:
   NativeTokenizer(const std::string& tokenizerPath,
-                  const std::string& expectedDigest,
-                  const std::string& bridgeLibrary = {});
+                  const std::string& expectedDigest);
   ~NativeTokenizer();
 
   NativeTokenizer(const NativeTokenizer&) = delete;

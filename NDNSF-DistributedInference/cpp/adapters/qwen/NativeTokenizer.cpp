@@ -1,9 +1,7 @@
 #include "NDNSF-DistributedInference/cpp/adapters/qwen/NativeTokenizer.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/qwen/tokenizer-bridge/tokenizer-abi.h"
 
-#include <dlfcn.h>
 #include <array>
-#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <iomanip>
@@ -12,17 +10,9 @@
 #include <openssl/sha.h>
 #include <sstream>
 #include <stdexcept>
-#include <unistd.h>
 
 namespace ndnsf::di::qwen {
 namespace {
-
-using CreateFn = NdiTokenResult (*)(const uint8_t*, size_t, void**);
-using EncodeFn = NdiTokenResult (*)(const void*, const uint8_t*, size_t, uint8_t);
-using DecodeFn = NdiTokenResult (*)(const void*, const uint32_t*, size_t, uint8_t);
-using StableFn = NdiTokenResult (*)(const void*, const uint32_t*, size_t, uint8_t, uint8_t);
-using FreeFn = void (*)(uint8_t*, size_t);
-using DestroyFn = void (*)(void*);
 
 std::string
 sha256File(const std::string& path)
@@ -79,118 +69,53 @@ readBytes(const std::string& path)
 }
 
 std::string
-errorText(const NdiTokenResult& result, FreeFn freeFn)
+errorText(const NdiTokenResult& result)
 {
   std::string message;
   if (result.data != nullptr && result.size != 0) {
     message.assign(reinterpret_cast<const char*>(result.data), result.size);
   }
-  if (freeFn != nullptr) {
-    freeFn(result.data, result.size);
-  }
-  return message.empty() ? "tokenizer bridge returned an error" : message;
+  ndi_token_free(result.data, result.size);
+  return message.empty() ? "tokenizer engine returned an error" : message;
 }
-
-struct Bridge
-{
-  void* library = nullptr;
-  CreateFn create = nullptr;
-  EncodeFn encode = nullptr;
-  DecodeFn decode = nullptr;
-  StableFn decodeStable = nullptr;
-  FreeFn free = nullptr;
-  DestroyFn destroy = nullptr;
-
-  explicit Bridge(const std::string& requested)
-  {
-    std::vector<std::string> candidates;
-    if (!requested.empty()) {
-      candidates.push_back(requested);
-    }
-    if (const auto* value = std::getenv("NDNSF_TOKENIZER_BRIDGE_LIB")) {
-      if (*value != '\0') candidates.emplace_back(value);
-    }
-    candidates.emplace_back("libndnsf_tokenizer_bridge.so");
-    std::string executable(4096, '\0');
-    const auto length = ::readlink("/proc/self/exe", executable.data(), executable.size() - 1);
-    if (length > 0) {
-      executable.resize(static_cast<std::size_t>(length));
-      const auto slash = executable.find_last_of('/');
-      if (slash != std::string::npos) {
-        candidates.push_back(executable.substr(0, slash) + "/libndnsf_tokenizer_bridge.so");
-      }
-    }
-    for (const auto& candidate : candidates) {
-      library = ::dlopen(candidate.c_str(), RTLD_NOW | RTLD_LOCAL);
-      if (library != nullptr) break;
-    }
-    if (library == nullptr) {
-      throw std::runtime_error("native tokenizer bridge library is unavailable");
-    }
-    create = reinterpret_cast<CreateFn>(::dlsym(library, "ndi_token_create"));
-    encode = reinterpret_cast<EncodeFn>(::dlsym(library, "ndi_token_encode"));
-    decode = reinterpret_cast<DecodeFn>(::dlsym(library, "ndi_token_decode"));
-    decodeStable = reinterpret_cast<StableFn>(::dlsym(library, "ndi_token_decode_stable"));
-    free = reinterpret_cast<FreeFn>(::dlsym(library, "ndi_token_free"));
-    destroy = reinterpret_cast<DestroyFn>(::dlsym(library, "ndi_token_destroy"));
-    if (!create || !encode || !decode || !decodeStable || !free || !destroy) {
-      ::dlclose(library);
-      library = nullptr;
-      throw std::runtime_error("native tokenizer bridge ABI is incomplete");
-    }
-  }
-
-  ~Bridge()
-  {
-    if (library != nullptr) {
-      ::dlclose(library);
-    }
-  }
-
-  Bridge(const Bridge&) = delete;
-  Bridge& operator=(const Bridge&) = delete;
-};
 
 } // namespace
 
 struct NativeTokenizer::Impl
 {
   std::string digest;
-  std::unique_ptr<Bridge> bridge;
   void* handle = nullptr;
   mutable std::mutex mutex;
 
-  Impl(const std::string& path, const std::string& expected,
-       const std::string& library)
+  Impl(const std::string& path, const std::string& expected)
     : digest(sha256File(path))
   {
     if (expected.empty() || digest != expected) {
       throw std::invalid_argument("tokenizer digest mismatch");
     }
-    // Verify the authenticated tokenizer bytes before loading any deployment
-    // supplied code.  This keeps an identity failure deterministic even when
-    // the bridge is unavailable and prevents a wrong artifact from reaching
-    // the Rust owner.
-    bridge = std::make_unique<Bridge>(library);
+    // Verify the authenticated tokenizer bytes before constructing any Rust
+    // engine.  This keeps an identity failure deterministic and prevents a
+    // wrong artifact from ever reaching the engine.
     const auto bytes = readBytes(path);
-    const auto result = bridge->create(bytes.data(), bytes.size(), &handle);
+    const auto result = ndi_token_create(bytes.data(), bytes.size(), &handle);
     if (result.code != 0) {
-      const auto detail = errorText(result, bridge->free);
-      if (handle != nullptr) bridge->destroy(handle);
+      const auto detail = errorText(result);
+      if (handle != nullptr) ndi_token_destroy(handle);
       handle = nullptr;
       throw std::runtime_error("native tokenizer create failed: " + detail);
     }
     if (handle == nullptr) {
       throw std::runtime_error("native tokenizer create returned no handle");
     }
-    // The bridge only borrows `bytes`; no tokenizer bytes remain aliased here.
+    // ndi_token_create only borrows `bytes`; no tokenizer bytes remain
+    // aliased here.
   }
 
   ~Impl()
   {
     std::lock_guard<std::mutex> lock(mutex);
     if (handle != nullptr) {
-      bridge->destroy(handle);
+      ndi_token_destroy(handle);
       handle = nullptr;
     }
   }
@@ -217,12 +142,12 @@ struct NativeTokenizer::Impl
     const auto checked = checkedIds(ids);
     std::lock_guard<std::mutex> lock(mutex);
     const auto result = stable
-      ? bridge->decodeStable(handle, checked.data(), checked.size(), skip ? 1 : 0,
-                             final ? 1 : 0)
-      : bridge->decode(handle, checked.data(), checked.size(), skip ? 1 : 0);
+      ? ndi_token_decode_stable(handle, checked.data(), checked.size(),
+                                skip ? 1 : 0, final ? 1 : 0)
+      : ndi_token_decode(handle, checked.data(), checked.size(), skip ? 1 : 0);
     if (result.code != 0) {
       throw std::runtime_error("native tokenizer decode failed: " +
-                               errorText(result, bridge->free));
+                               errorText(result));
     }
     if (result.size != 0 && result.data == nullptr) {
       throw std::runtime_error("native tokenizer returned a null output buffer");
@@ -231,15 +156,14 @@ struct NativeTokenizer::Impl
     if (result.size != 0) {
       text.assign(reinterpret_cast<const char*>(result.data), result.size);
     }
-    bridge->free(result.data, result.size);
+    ndi_token_free(result.data, result.size);
     return text;
   }
 };
 
 NativeTokenizer::NativeTokenizer(const std::string& tokenizerPath,
-                                 const std::string& expectedDigest,
-                                 const std::string& bridgeLibrary)
-  : m_impl(std::make_unique<Impl>(tokenizerPath, expectedDigest, bridgeLibrary))
+                                 const std::string& expectedDigest)
+  : m_impl(std::make_unique<Impl>(tokenizerPath, expectedDigest))
 {
 }
 
@@ -252,15 +176,15 @@ NativeTokenizer::encode(const std::string& text, bool addSpecialTokens) const
     throw std::invalid_argument("tokenizer input is too large");
   }
   std::lock_guard<std::mutex> lock(m_impl->mutex);
-  const auto result = m_impl->bridge->encode(
+  const auto result = ndi_token_encode(
     m_impl->handle, reinterpret_cast<const uint8_t*>(text.data()), text.size(),
     addSpecialTokens ? 1 : 0);
   if (result.code != 0) {
     throw std::runtime_error("native tokenizer encode failed: " +
-                             errorText(result, m_impl->bridge->free));
+                             errorText(result));
   }
   if (result.size % sizeof(std::uint32_t) != 0) {
-    const auto detail = errorText(result, m_impl->bridge->free);
+    const auto detail = errorText(result);
     throw std::runtime_error("native tokenizer returned malformed IDs: " + detail);
   }
   std::vector<std::int64_t> ids;
@@ -270,7 +194,7 @@ NativeTokenizer::encode(const std::string& text, bool addSpecialTokens) const
     std::memcpy(&id, result.data + offset, sizeof(id));
     ids.push_back(static_cast<std::int64_t>(id));
   }
-  m_impl->bridge->free(result.data, result.size);
+  ndi_token_free(result.data, result.size);
   return ids;
 }
 

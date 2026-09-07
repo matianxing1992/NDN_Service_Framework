@@ -24,7 +24,7 @@ makeNativeStandaloneTokenizerDecoders(
     throw std::invalid_argument("standalone tokenizer path/digest is required");
   }
   auto tokenizer = std::make_shared<qwen::NativeTokenizer>(
-    options.tokenizerPath, expectedDigest, options.bridgeLibrary);
+    options.tokenizerPath, expectedDigest);
   NativeGenerationTextDecoders result;
   result.full = [tokenizer](const std::vector<std::int64_t>& ids) {
     return tokenizer->decode(ids, true);
