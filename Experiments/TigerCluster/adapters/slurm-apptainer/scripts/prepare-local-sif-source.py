@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import ast
 import hashlib
+import io
 import json
 import os
 import subprocess
@@ -72,6 +73,14 @@ NDN_SVS_FILES = (
     ".waf-tools",
     "ndn-svs",
 )
+NAC_ABE_FILES = (
+    "CMakeLists.txt",
+    "cmake-pkgconfig.pc.in",
+    "src",
+    "tests",
+    "examples",
+)
+NDNSD_FILES = ("waf", "wscript", "ndnsd.pc.in", "logger.hpp", "ndnsd", ".waf-tools")
 EXCLUDED_DIRS = {"build", "__pycache__", "node_modules"}
 EXCLUDED_SUFFIXES = {".so", ".a", ".o", ".pyc", ".pyo"}
 
@@ -131,6 +140,10 @@ def selected_files(workspace: Path) -> list[Path]:
                 continue
             child = build_file.parent / node.args[0].value / "wscript"
             pending.append(child.resolve())
+    # Keep legacy in-image paths and their canonical repository identities.
+    # Host preflight resolves compatibility symlinks before checking the seal.
+    for relative in tuple(selected):
+        selected.add((workspace / relative).resolve().relative_to(workspace))
     return sorted(selected, key=lambda value: value.as_posix())
 
 
@@ -193,8 +206,32 @@ def canonical_seal_body(body: dict) -> dict:
     return canonical
 
 
+def svs_version_bytes(workspace: Path) -> bytes:
+    """Export Waf's Git-derived version without reading a stale VERSION.info."""
+    constants = {}
+    for node in ast.parse((workspace / "wscript").read_text()).body:
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    constants[target.id] = node.value.value
+    base, prefix = constants.get("VERSION"), constants.get("GIT_TAG_PREFIX")
+    if not isinstance(base, str) or not isinstance(prefix, str):
+        raise SystemExit("LOCAL_SIF_SVS_VERSION_RULE_UNSUPPORTED")
+    described = subprocess.check_output([
+        "git", "describe", "--abbrev=8", "--always", "--match", prefix + "*",
+    ], cwd=workspace, text=True).strip()
+    if prefix and described.startswith(prefix):
+        version = described[len(prefix):]
+    elif not prefix and ("." in described or "-" in described):
+        version = described
+    else:
+        version = base + "+git." + described
+    return version.encode("utf-8")
+
+
 def seal_dependency(output: Path, workspace: Path, name: str,
-                    archive_name: str, entries: tuple[str, ...]) -> dict:
+                    archive_name: str, entries: tuple[str, ...],
+                    generated: dict[str, bytes] | None = None) -> dict:
     """Seal one source-only deployment dependency into the candidate subject."""
     dependency_workspace = workspace.resolve()
     dependency_archive = output / archive_name
@@ -203,6 +240,12 @@ def seal_dependency(output: Path, workspace: Path, name: str,
                       format=tarfile.PAX_FORMAT) as archive:
         for relative in dependency_files:
             add_file(archive, dependency_workspace / relative, relative)
+        for relative, content in sorted((generated or {}).items()):
+            info = tarfile.TarInfo(relative)
+            info.size = len(content)
+            info.mode = 0o644
+            info.uname = info.gname = "root"
+            archive.addfile(info, io.BytesIO(content))
     dependency_rows = [
         {
             "path": relative.as_posix(),
@@ -211,6 +254,12 @@ def seal_dependency(output: Path, workspace: Path, name: str,
         }
         for relative in dependency_files
     ]
+    for relative, content in sorted((generated or {}).items()):
+        dependency_rows.append({
+            "path": relative, "bytes": len(content),
+            "sha256": "sha256:" + hashlib.sha256(content).hexdigest(),
+            "derivation": "wscript-version-and-git-describe",
+        })
     return {
         "sourceRevision": subprocess.check_output(
             ["git", "rev-parse", "HEAD"], cwd=dependency_workspace,
@@ -232,6 +281,9 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--workspace", required=True, type=Path)
     parser.add_argument("--ndn-svs-workspace", type=Path)
+    parser.add_argument("--nac-abe-workspace", type=Path)
+    parser.add_argument("--ndnsd-workspace", type=Path)
+    parser.add_argument("--derive-ndn-svs-version", action="store_true")
     parser.add_argument("--output-dir", required=True, type=Path)
     args = parser.parse_args()
 
@@ -277,9 +329,21 @@ def main() -> int:
     }
     dependency_reports: dict[str, dict] = {}
     if args.ndn_svs_workspace is not None:
+        svs_entries = NDN_SVS_FILES
+        generated = None
+        if args.derive_ndn_svs_version:
+            svs_entries = tuple(entry for entry in NDN_SVS_FILES if entry != "VERSION.info")
+            generated = {"VERSION.info": svs_version_bytes(args.ndn_svs_workspace.resolve())}
         dependency_reports["ndnSvs"] = seal_dependency(
             output, args.ndn_svs_workspace, "ndnSvs", "ndn-svs.tar",
-            NDN_SVS_FILES)
+            svs_entries, generated)
+    if args.nac_abe_workspace is not None:
+        dependency_reports["nacAbe"] = seal_dependency(
+            output, args.nac_abe_workspace, "nacAbe", "nacAbe.tar",
+            NAC_ABE_FILES)
+    if args.ndnsd_workspace is not None:
+        dependency_reports["ndnSd"] = seal_dependency(
+            output, args.ndnsd_workspace, "ndnSd", "ndnSd.tar", NDNSD_FILES)
     if dependency_reports:
         body["dependencies"] = dependency_reports
     body["sealDigestBasis"] = SEAL_DIGEST_BASIS

@@ -3,7 +3,10 @@ import json
 import os
 import subprocess
 import tarfile
+import tempfile
 from pathlib import Path
+
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -12,7 +15,52 @@ BUILD_LOCAL_SIF = (
     / "packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts"
     / "build-local-sif.sh"
 )
-HOST_GATE = ROOT / "results/spec175/g3/spec175-g3-post-repo-readiness-r5-20260827.json"
+
+
+@pytest.fixture
+def host_gate():
+    """Synthetic unit input, never a recorded MiniNDN qualification.
+
+    The real validator confines subject paths to the repository. Keep these
+    disposable fixture files under ignored scratch and delete them on teardown;
+    do not read or rewrite historical results to make a unit test pass.
+    """
+    scratch = ROOT / ".codex-tmp"
+    scratch.mkdir(exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="unit-build-record-", dir=scratch) as directory:
+        folder = Path(directory)
+        source = folder / "unit-source-seal.json"
+        source.write_text(json.dumps({
+            "schemaVersion": "spec175-source-seal-v1",
+            "sourceRevision": "0" * 40,
+            "dirtyFiles": {},
+            "unitTestOnly": True,
+        }), encoding="utf-8")
+        fixture = folder / "unit-fixture.json"
+        fixture.write_text('{"unitTestOnly": true}\n', encoding="utf-8")
+        payload = {
+            "schema": "spec175-host-minindn-manifest-v2",
+            "status": "PASS",
+            "unitTestOnly": True,
+            "subject": {
+                "runtime": "tiny-onnx", "providerCount": 4,
+                "admissionControl": False, "targetedPrefetch": False,
+                "workloadSeed": 1750001,
+                "sourceSealPath": str(source.relative_to(ROOT)),
+                "sourceSealSha256": "sha256:" + hashlib.sha256(source.read_bytes()).hexdigest(),
+                "fixtureManifestPath": str(fixture.relative_to(ROOT)),
+                "fixtureManifestSha256": "sha256:" + hashlib.sha256(fixture.read_bytes()).hexdigest(),
+            },
+            "matrix": {
+                "cases": ["M01"], "repetitionsPerCase": 1,
+                "entries": [{"case": "M01", "repetition": 1, "status": "PASS",
+                             "campaignId": "spec175-M01-1750001",
+                             "workloadSeed": 1750001, "expectedTerminal": False}],
+            },
+        }
+        manifest = folder / "host-gate.unit.json"
+        manifest.write_text(json.dumps(payload), encoding="utf-8")
+        yield manifest
 
 
 def valid_definition(base: Path, source: Path, extra_labels: str = "") -> str:
@@ -63,11 +111,11 @@ def write_source_seal(root: Path, *, source_revision: str = "test-revision") -> 
     source = root / "sealed-source.txt"
     source.write_text("sealed source\n", encoding="utf-8")
     archive = root / "workspace.tar"
+    workload = (ROOT / "packaging/ndnsf-di-container/jobs/spec175/workload.json").resolve()
+    workload_relative = workload.relative_to(ROOT).as_posix()
     with tarfile.open(archive, "w") as stream:
         stream.add(source, arcname="sealed-source.txt")
-        workload = ROOT / "packaging/ndnsf-di-container/jobs/spec175/workload.json"
-        stream.add(workload, arcname="packaging/ndnsf-di-container/jobs/spec175/workload.json")
-    workload = ROOT / "packaging/ndnsf-di-container/jobs/spec175/workload.json"
+        stream.add(workload, arcname=workload_relative)
     row = [
         {
             "path": "sealed-source.txt",
@@ -75,7 +123,7 @@ def write_source_seal(root: Path, *, source_revision: str = "test-revision") -> 
             "sha256": "sha256:" + hashlib.sha256(source.read_bytes()).hexdigest(),
         },
         {
-            "path": "packaging/ndnsf-di-container/jobs/spec175/workload.json",
+            "path": workload_relative,
             "bytes": workload.stat().st_size,
             "sha256": "sha256:" + hashlib.sha256(workload.read_bytes()).hexdigest(),
         },
@@ -103,7 +151,7 @@ def write_source_seal(root: Path, *, source_revision: str = "test-revision") -> 
     return seal
 
 
-def test_localimage_base_is_hash_bound_in_build_record(tmp_path):
+def test_localimage_base_is_hash_bound_in_build_record(tmp_path, host_gate):
     tools = tmp_path / "tools"
     tools.mkdir()
     apptainer = tools / "apptainer"
@@ -160,7 +208,7 @@ def test_localimage_base_is_hash_bound_in_build_record(tmp_path):
             "--source-seal",
             str(source_seal),
             "--host-gate-manifest",
-            str(HOST_GATE),
+            str(host_gate),
             "--apptainer",
             str(apptainer),
             "--expected-apptainer",
@@ -188,7 +236,7 @@ def test_localimage_base_is_hash_bound_in_build_record(tmp_path):
         "6a9e13bd6fc8f0983b9b99948120bc37f49c13e9")
 
 
-def test_r13_style_host_binaries_are_rejected_before_apptainer_build(tmp_path):
+def test_r13_style_host_binaries_are_rejected_before_apptainer_build(tmp_path, host_gate):
     tools = tmp_path / "tools"
     tools.mkdir()
     invocation_log = tmp_path / "apptainer-invocations.log"
@@ -229,7 +277,7 @@ def test_r13_style_host_binaries_are_rejected_before_apptainer_build(tmp_path):
             "--source-seal",
             str(source_seal),
             "--host-gate-manifest",
-            str(HOST_GATE),
+            str(host_gate),
             "--apptainer",
             str(apptainer),
             "--expected-apptainer",
@@ -247,7 +295,7 @@ def test_r13_style_host_binaries_are_rejected_before_apptainer_build(tmp_path):
     assert not record.exists()
 
 
-def test_final_definition_must_remove_functorch_residue(tmp_path):
+def test_final_definition_must_remove_functorch_residue(tmp_path, host_gate):
     """Do not rebuild a candidate that the Spec175 runtime probe will reject."""
     tools = tmp_path / "tools"
     tools.mkdir()
@@ -280,7 +328,7 @@ def test_final_definition_must_remove_functorch_residue(tmp_path):
             str(BUILD_LOCAL_SIF), "--definition", str(definition),
             "--sif", str(tmp_path / "runtime.sif"),
             "--record", str(tmp_path / "build-record.json"),
-            "--source-seal", str(source_seal), "--host-gate-manifest", str(HOST_GATE),
+            "--source-seal", str(source_seal), "--host-gate-manifest", str(host_gate),
             "--apptainer", str(apptainer),
             "--expected-apptainer", "1.3.4-1.el9",
         ],
@@ -291,7 +339,7 @@ def test_final_definition_must_remove_functorch_residue(tmp_path):
     assert invocation_log.read_text(encoding="utf-8").splitlines() == ["version"]
 
 
-def test_declared_release_label_mismatch_rejects_candidate(tmp_path):
+def test_declared_release_label_mismatch_rejects_candidate(tmp_path, host_gate):
     tools = tmp_path / "tools"
     tools.mkdir()
     apptainer = tools / "apptainer"
@@ -338,7 +386,7 @@ def test_declared_release_label_mismatch_rejects_candidate(tmp_path):
             "--source-seal",
             str(source_seal),
             "--host-gate-manifest",
-            str(HOST_GATE),
+            str(host_gate),
             "--apptainer",
             str(apptainer),
             "--expected-apptainer",
@@ -356,7 +404,7 @@ def test_declared_release_label_mismatch_rejects_candidate(tmp_path):
     assert not record.exists()
 
 
-def test_stale_declared_source_seal_label_is_rejected_before_build(tmp_path):
+def test_stale_declared_source_seal_label_is_rejected_before_build(tmp_path, host_gate):
     tools = tmp_path / "tools"
     tools.mkdir()
     invocation_log = tmp_path / "apptainer-invocations.log"
@@ -392,7 +440,7 @@ def test_stale_declared_source_seal_label_is_rejected_before_build(tmp_path):
             "--sif", str(tmp_path / "runtime.sif"),
             "--record", str(tmp_path / "build-record.json"),
             "--source-seal", str(source_seal),
-            "--host-gate-manifest", str(HOST_GATE),
+            "--host-gate-manifest", str(host_gate),
             "--apptainer", str(apptainer),
             "--expected-apptainer", "1.3.4-1.el9",
         ],
@@ -406,7 +454,7 @@ def test_stale_declared_source_seal_label_is_rejected_before_build(tmp_path):
     assert invocation_log.read_text(encoding="utf-8").splitlines() == ["version"]
 
 
-def test_spec175_strict_host_source_identity_rejects_stale_g3(tmp_path):
+def test_spec175_strict_host_source_identity_rejects_stale_g3(tmp_path, host_gate):
     """A 30/30 result from an older runner must not unlock a new SIF build."""
     tools = tmp_path / "tools"
     tools.mkdir()
@@ -429,7 +477,7 @@ def test_spec175_strict_host_source_identity_rejects_stale_g3(tmp_path):
             "--sif", str(tmp_path / "runtime.sif"),
             "--record", str(tmp_path / "build-record.json"),
             "--source-seal", str(source_seal),
-            "--host-gate-manifest", str(HOST_GATE),
+            "--host-gate-manifest", str(host_gate),
             "--strict-host-source-seal",
             "--apptainer", str(apptainer), "--expected-apptainer", "1.3.4-1.el9",
         ],
@@ -437,4 +485,34 @@ def test_spec175_strict_host_source_identity_rejects_stale_g3(tmp_path):
     )
     assert result.returncode == 4
     assert "LOCAL_SIF_HOST_GATE_SOURCE_SEAL_INVALID" in result.stderr
+    assert "code=SOURCE_SEAL_REVISION " in result.stderr
     assert invocation_log.read_text(encoding="utf-8").splitlines() == ["version"]
+
+
+@pytest.mark.parametrize("field,value,reason", [
+    ("campaignId", "spec175-M01-7", "HOST_GATE_WORKLOAD_SEED_MISMATCH"),
+    ("case", "M02", "HOST_GATE_ENTRY_CASE_INVALID"),
+])
+def test_host_gate_mismatch_still_rejects_before_build(tmp_path, host_gate, field, value, reason):
+    payload = json.loads(host_gate.read_text())
+    payload["matrix"]["entries"][0][field] = value
+    host_gate.write_text(json.dumps(payload))
+    invocation_log = tmp_path / "apptainer-invocations.log"
+    apptainer = tmp_path / "apptainer"
+    apptainer.write_text(
+        "#!/bin/sh\n" + f"printf '%s\\n' \"$*\" >> {invocation_log}\n"
+        "if [ \"$1\" = version ]; then echo 1.3.4; exit 0; fi\nexit 97\n")
+    apptainer.chmod(0o755)
+    definition = tmp_path / "candidate.def"
+    definition.write_text("Bootstrap: localimage\nFrom: /missing/base.sif\n")
+    source_seal = write_source_seal(tmp_path)
+    candidate, record = tmp_path / "runtime.sif", tmp_path / "build-record.json"
+    result = subprocess.run([
+        str(BUILD_LOCAL_SIF), "--definition", str(definition), "--sif", str(candidate),
+        "--record", str(record), "--source-seal", str(source_seal),
+        "--host-gate-manifest", str(host_gate), "--apptainer", str(apptainer),
+        "--expected-apptainer", "1.3.4-1.el9",
+    ], cwd=ROOT, capture_output=True, text=True)
+    assert result.returncode == 4 and reason in result.stderr
+    assert invocation_log.read_text().splitlines() == ["version"]
+    assert not candidate.exists() and not record.exists()

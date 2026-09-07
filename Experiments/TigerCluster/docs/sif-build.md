@@ -3,6 +3,9 @@
 构建入口：`Experiments/TigerCluster/adapters/slurm-apptainer/scripts/build-local-sif.sh`。
 构建前准备源码seal并核对definition、依赖和工具链，沿用 [runtime package](../../../packaging/ndnsf-di-container/README.md) 的原生ABI与候选规则。
 
+当前三库源码固定、可迁移definition和接收机器步骤见 [source handoff](source-handoff.md)。
+共享操作skill在仓库根 [skills/](../../../skills/README.md)；实际构建仍使用上述唯一入口。
+
 ## Output Layout
 
 新构建显式选择新目录，例如：

@@ -30,6 +30,7 @@ bash Experiments/TigerCluster/jobs/spec180/submit.sh <gate> <profile.json> <run-
 ```
 
 构建与新镜像输出见 [SIF build](docs/sif-build.md)。
+三库固定与接收操作见 [source handoff](docs/source-handoff.md)；共享维护的技能见根目录 [skills/](../../skills/README.md)。
 模型准备与运行证据见 [Qwen models](docs/itiger-qwen-models.md)、[Qwen evidence](docs/itiger-qwen-evidence.md)。
 Spec180既定用例见 [quickstart](../../specs/180-ack-driven-cross-model-qualification/quickstart.md)；其历史阶段/状态以相应Spec为准，不作为启动旧资格流程的指令。
 

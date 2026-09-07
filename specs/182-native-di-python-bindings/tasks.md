@@ -6,6 +6,8 @@
 
 ## Current Checkpoint
 
+2026-09-06 Source Handoff IN_PROGRESS：三主库及必要传递依赖NDNSD已固定源码；可迁移输入/模板与root skills已完成D002/D003。相关工具28/28 PASS、真实包搬迁/渲染PASS、五项skill检查PASS；D001等待新ABI消费者fresh编译验证，D004等待GitHub Experimental发布。设计/命令/证据统一记在 [source handoff](../../Experiments/TigerCluster/docs/source-handoff.md)，Spec182仍0/17，不计T001--T017完成。
+
 2026-09-06 Existing Presentation Checkpoint：补存此前未跟踪的`docs/NDNSF-UAV/slides/UPDATES.tex`及对应4页PDF；标题和全部命名frame的PDF文本核对PASS。旧版`UPDATES_UAV.pdf`、LaTeX缓存、原始实验输出及本地助手状态继续保留为本地产物，不计源码或182进度。活动指针/managed plan均指182，最终索引刷新后project与active健康检查PASS。
 
 2026-09-06 Branch Closure：`Experimental` 已快进至整合提交 `e91ecc91`，本地只保留 `main`、`Experimental`；原生验证工作树改为detached并保留二进制/raw，临时分支已删除。主工作区原426项源码/文档状态保存在具名恢复stash `4bb5e0a5`，实际成果已归并，不能直接pop旧测试覆盖修复。未push。另将用户既有UAV slides源文件/PDF单独checkpoint：30个frame与30页PDF、标题/日期和两个新增Geo-Capture页的文本对应检查PASS；这是既有演示文档保存，不计182产品验收。
