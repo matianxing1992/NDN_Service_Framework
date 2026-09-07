@@ -1,5 +1,12 @@
 # Failure Log and Evidence Index
 
+## 2026-09-06 — Spec183 cleanup budget, identity layout and finite deadlines
+
+- Symptom: per-child shutdown could multiply the job cleanup budget; finite application had its own cleanup path and accepted unbounded deadlines. Identity helpers failed import on host Python3.8 (`list[Path]`), and distinct role directories alone did not rule out shared PIB/private-key inodes.
+- Cause: CPU-era helpers lacked a group deadline and prepared-layout gate; duplicated lifecycle code and eagerly evaluated annotations escaped earlier tests.
+- Fix: shared monotonic-budget close with retained unreaped owners and continued cleanup after OS errors; finite entrypoint reuses it and validates deadlines/cwd before launch. Add deferred annotations and read-only inode/path layout checks, called by the original issuer before peer certificate import. Focused red/green and final 115 passed in 4.00s are recorded in Spec183 evidence/t003-lifecycle.md.
+- Limits: filesystem fixtures do not prove crypto/identity correctness, and shared-helper tests do not prove the planned YOLO worker is wired. T003 remains partial, actual issuer/SIF/GPU checks remain pending. No runtime gate was relaxed.
+
 ## 2026-09-06 — Spec183 gate dependency cycle and launch isolation gaps
 
 - Symptom: T002 final acceptance needs the T004 external command boundary and T006 result validator, but the task chain required T002 complete before implementing either. Focused launcher tests also exposed missing GPU/model/cwd arguments, unchecked optional bind paths and ambient GPU settings (25 failed / 1 passed before repair).

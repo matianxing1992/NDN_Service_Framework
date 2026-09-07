@@ -3,13 +3,67 @@
 Each role keeps only its own private key. The issuer handles certificate
 requests and returns public certificates, without exporting its root key.
 """
+from __future__ import annotations
+
 import base64
 import json
 import os
 from pathlib import Path
+import re
+import stat
 import subprocess
 
 from runtime.baseline import ROLE_RANK, write_json, digest
+
+
+def validate_role_homes(homes: dict[str, Path]) -> dict[str, Path]:
+    """Check prepared HOME/PIB isolation without opening SQLite or private keys.
+
+    This is a filesystem check, not certificate validation or a concurrency
+    lease. The worker must keep these run-private paths stable after checking.
+    """
+    if not isinstance(homes, dict) or not homes:
+        raise ValueError("ROLE_HOMES")
+    checked, pib_inodes, private_inodes = {}, set(), set()
+    for role, value in homes.items():
+        if not isinstance(role, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", role):
+            raise ValueError("ROLE_NAME")
+        if not isinstance(value, (str, Path)):
+            raise ValueError("ROLE_HOME_PATH:" + role)
+        home = Path(value)
+        if not home.is_absolute() or ".." in home.parts or home.name != role:
+            raise ValueError("ROLE_HOME_PATH:" + role)
+        pib = home / ".ndn/pib.db"
+        if any(path.is_symlink() for path in (pib, *pib.parents)):
+            raise ValueError("ROLE_HOME_SYMLINK:" + role)
+        if not home.is_dir() or not pib.is_file():
+            raise ValueError("ROLE_PIB_MISSING:" + role)
+        info = pib.stat()
+        if not stat.S_ISREG(info.st_mode):
+            raise ValueError("ROLE_PIB_TYPE:" + role)
+        inode = (info.st_dev, info.st_ino)
+        if inode in pib_inodes:
+            raise ValueError("SHARED_PIB:" + role)
+        if any(home == other or home in other.parents or other in home.parents
+               for other in checked.values()):
+            raise ValueError("SHARED_HOME:" + role)
+        tpm = home / ".ndn/ndnsec-key-file"
+        if tpm.is_symlink() or not tpm.is_dir():
+            raise ValueError("ROLE_TPM_PATH:" + role)
+        keys = list(tpm.glob("*.privkey"))
+        if not keys:
+            raise ValueError("ROLE_TPM_MISSING:" + role)
+        for key in keys:
+            info = key.lstat()
+            if not stat.S_ISREG(info.st_mode):
+                raise ValueError("ROLE_PRIVATE_KEY_TYPE:" + role)
+            key_inode = (info.st_dev, info.st_ino)
+            if key_inode in private_inodes:
+                raise ValueError("SHARED_PRIVATE_KEY:" + role)
+            private_inodes.add(key_inode)
+        checked[role] = home
+        pib_inodes.add(inode)
+    return checked
 
 
 def install_public(home: Path, certificates: list[Path], own_identity: str) -> None:
@@ -87,6 +141,7 @@ def issue(namespace: str) -> None:
         # identity or import issuer keys into a role's PIB/TPM.
         records[role] = {"identity": identity, "certificateSha256": digest(cert_path)}
         (homes / role / "session.conf").write_text("")
+    validate_role_homes({role: homes / role for role in roles})
     peer_certificates = [public / (role + ".cert") for role in ROLE_RANK] + [public / "root.cert"]
     for role in ("controller", "provider", "user", "denied"):
         install_public(homes / role, peer_certificates, namespace + "/" + role)

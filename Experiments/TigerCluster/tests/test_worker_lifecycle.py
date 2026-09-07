@@ -93,3 +93,32 @@ def test_timeout_remains_failure_after_application_is_reaped(tmp_path):
     row, = result["cleanup"]
     assert result["failure"].startswith("TimeoutExpired:")
     assert row["reaped"] and not row["forced"]
+
+
+def test_finite_application_uses_cwd_and_custom_log_with_shared_cleanup(tmp_path):
+    sys.path.insert(0, str(ROOT))
+    from runtime.worker import run_finite_application
+    work = tmp_path / "bundle"
+    work.mkdir()
+    (work / "input.txt").write_text("bounded-finite-input")
+    cleanup = []
+    logfile = tmp_path / "request-0001.stdout"
+    assert run_finite_application("user", [sys.executable, "-c",
+        "from pathlib import Path; print(Path('input.txt').read_text())"], logfile,
+        cleanup, seconds=3, cwd=work, cleanup_seconds=0.5) == 0
+    assert logfile.read_text().strip() == "bounded-finite-input"
+    assert cleanup[0]["name"] == "user" and cleanup[0]["kind"] == "finite"
+    assert cleanup[0]["reaped"] and not cleanup[0]["forced"]
+    assert not cleanup[0]["exitedBeforeCleanup"]
+
+
+@pytest.mark.parametrize("seconds", [None, True, 0, -1, float("nan"), float("inf")])
+def test_finite_application_requires_bounded_deadline_before_launch(tmp_path, seconds):
+    sys.path.insert(0, str(ROOT))
+    from runtime.worker import run_finite_application
+    cleanup = []
+    logfile = tmp_path / "should-not-exist.log"
+    with pytest.raises(ValueError, match="APP_DEADLINE"):
+        run_finite_application("user", [sys.executable, "-c", "pass"],
+                               logfile, cleanup, seconds=seconds)
+    assert not logfile.exists() and cleanup == []

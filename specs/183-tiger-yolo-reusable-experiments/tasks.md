@@ -78,3 +78,5 @@ T001–T004形成 profile/launcher 实现骨架；可操作 MVP 还要求 T006 �
 ## Current Checkpoint
 
 2026-09-06：T001完成；T002内容完整性子层21项focused通过。T003共享启动参数/挂载/cwd已补，新增及既有聚焦回归84项通过，见[evidence/t003-launch.md](evidence/t003-launch.md)。T002/T003仍未完成；按上面的无环依赖先继续生命周期/worker/profile接线，再闭合原builder receipt与真实命令门控。签名模型包/锁定依赖/本地base仍待接收，T007与所有正式运行门未通过。VPN及SSH已确认恢复；未编译或提交Slurm，原历史结果未改写。
+
+后续checkpoint：[evidence/t003-lifecycle.md](evidence/t003-lifecycle.md)。共享Processes实现整组30秒默认预算，finite入口复用同一清理逻辑；PIB/TPM布局检查接入原issuer，修复本机Python3.8导入注解问题。最新focused **115 passed in 4.00s**。真实YOLO worker/并发role lease/peer与profile绑定仍待完成，T003保持unchecked；无SIF或GPU资格变化。

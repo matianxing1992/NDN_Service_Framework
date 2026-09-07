@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 from pathlib import Path
 import shutil
@@ -18,46 +19,32 @@ from runtime.baseline import (BIN, PYTHON, Processes, bundle_files, configure_ro
 
 
 def run_finite_application(name, argv, log_path, cleanup, seconds=60,
-                           allowed_exits=(0,), env=None):
+                           allowed_exits=(0,), env=None, *, cwd=None,
+                           cleanup_seconds=30):
     """Wait for an owned application and record cleanup of its entire group.
 
     A finite application's expected exit is not a premature service death.
     Descendants surviving that exit must be killed and prevent qualification.
     Timeout, cancellation, and unexpected exits retain their original failure.
     """
-    with Path(log_path).open("wb") as log:
-        proc = subprocess.Popen(argv, stdout=log, stderr=subprocess.STDOUT,
-                                start_new_session=True, env=env)
-        forced = False
-        try:
-            rc = proc.wait(timeout=seconds)
-        finally:
-            try:
-                if proc.poll() is None:
-                    # Let Apptainer forward TERM before removing its mounts.
-                    proc.terminate()
-                    try:
-                        proc.wait(timeout=5)
-                    except subprocess.TimeoutExpired:
-                        forced = True
-                        os.killpg(proc.pid, signal.SIGKILL)
-                        proc.wait(timeout=5)
-                # Waiting for the leader does not wait for its descendants.
-                # This check also covers successful and permitted abort exits.
-                try:
-                    os.killpg(proc.pid, 0)
-                    os.killpg(proc.pid, signal.SIGKILL)
-                    forced = True
-                except ProcessLookupError:
-                    pass
-            finally:
-                cleanup.append({"name": name, "kind": "finite", "pid": proc.pid,
-                                "exitCode": proc.poll(), "forced": forced,
-                                "reaped": proc.poll() is not None,
-                                "exitedBeforeCleanup": False})
-        if rc not in allowed_exits:
-            raise RuntimeError("APP_EXIT:" + name + ":" + str(rc))
-        return rc
+    if (isinstance(seconds, bool) or not isinstance(seconds, (int, float))
+            or not math.isfinite(seconds) or seconds <= 0):
+        raise ValueError("APP_DEADLINE")
+    if (isinstance(cleanup_seconds, bool) or not isinstance(cleanup_seconds, (int, float))
+            or not math.isfinite(cleanup_seconds) or cleanup_seconds <= 0):
+        raise ValueError("CLEANUP_BUDGET")
+    owned = Processes(Path(log_path).parent)
+    proc = owned.start(name, argv, env, cwd=cwd, log_path=Path(log_path))
+    try:
+        rc = proc.wait(timeout=seconds)
+    finally:
+        rows = owned.close(seconds=cleanup_seconds)
+        for row in rows:
+            row.update(kind="finite", exitedBeforeCleanup=False)
+        cleanup.extend(rows)
+    if rc not in allowed_exits:
+        raise RuntimeError("APP_EXIT:" + name + ":" + str(rc))
+    return rc
 
 
 def execute(run_path: Path, rank: int) -> int:

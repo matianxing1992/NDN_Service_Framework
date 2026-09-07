@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import ipaddress
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -153,8 +154,8 @@ class Processes:
         self.children = []
 
     def start(self, name: str, argv: list[str], env: dict | None = None, *,
-              cwd: Path | None = None):
-        log = (self.log_dir / (name + ".log")).open("wb")
+              cwd: Path | None = None, log_path: Path | None = None):
+        log = (Path(log_path) if log_path is not None else self.log_dir / (name + ".log")).open("wb")
         try:
             child = subprocess.Popen(argv, stdout=log, stderr=subprocess.STDOUT,
                                      start_new_session=True, env=env, cwd=cwd)
@@ -169,11 +170,25 @@ class Processes:
             if child.poll() is not None:
                 raise RuntimeError(f"CHILD_EXIT:{name}:{child.returncode}")
 
-    def close(self) -> list[dict]:
-        result = []
-        for name, child, log in reversed(self.children):
-            before = child.poll()
-            forced = False
+    def close(self, *, seconds: float = 30) -> list[dict]:
+        """Stop owned groups within one budget, retaining unreaped owners.
+
+        Stop services in reverse startup order. All groups get a stop/kill
+        attempt even if an earlier group uses the grace budget or raises an
+        OS error. Reserve part of the *same* deadline for reaping; never grant
+        each child a new cleanup budget. A stuck kernel process is reported
+        unreaped, not forgotten or represented as clean shutdown.
+        """
+        if (isinstance(seconds, bool) or not isinstance(seconds, (int, float))
+                or not math.isfinite(seconds) or seconds <= 0):
+            raise ValueError("CLEANUP_BUDGET")
+        deadline = time.monotonic() + seconds
+        grace_deadline = deadline - min(1.0, seconds / 2)
+        owned = list(reversed(self.children))
+        result = [{"name": name, "pid": child.pid,
+                   "exitedBeforeCleanup": child.poll() is not None, "forced": False}
+                  for name, child, _ in owned]
+        for (_, child, _), row in zip(owned, result):
             try:
                 # Let Apptainer forward TERM to its application before it
                 # unmounts FUSE. TERM of the whole group can tear down the
@@ -181,24 +196,37 @@ class Processes:
                 child.terminate()
             except ProcessLookupError:
                 pass
+            except OSError as exc:
+                row["cleanupError"] = type(exc).__name__
+                row["forced"] = True
             try:
-                child.wait(timeout=5)
+                child.wait(timeout=min(5, max(0, grace_deadline - time.monotonic())))
             except subprocess.TimeoutExpired:
-                forced = True
-                os.killpg(child.pid, signal.SIGKILL)
-                child.wait(timeout=5)
+                row["forced"] = True
             # A child may exit while a grandchild survives in its group.
             try:
                 os.killpg(child.pid, 0)
                 os.killpg(child.pid, signal.SIGKILL)
-                forced = True
+                row["forced"] = True
             except ProcessLookupError:
                 pass
-            log.close()
-            result.append({"name": name, "pid": child.pid, "exitCode": child.returncode,
-                           "exitedBeforeCleanup": before is not None, "forced": forced,
-                           "reaped": child.poll() is not None})
-        self.children.clear()
+            except OSError as exc:
+                row["cleanupError"] = type(exc).__name__
+                row["forced"] = True
+        remaining = []
+        for (name, child, log), row in zip(owned, result):
+            try:
+                child.wait(timeout=max(0, deadline - time.monotonic()))
+            except subprocess.TimeoutExpired:
+                pass
+            exit_code = child.poll()
+            row.update(exitCode=exit_code, reaped=exit_code is not None)
+            if row["reaped"]:
+                log.close()
+            else:
+                row["cleanupTimedOut"] = True
+                remaining.append((name, child, log))
+        self.children = list(reversed(remaining))
         return result
 
 
