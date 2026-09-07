@@ -7,6 +7,18 @@
 每行包含稳定 ID、详细说明链接、状态、依赖、证据/剩余项、更新时间；按依赖排序。
 父任务保留其验收，子任务详情可在同文件或链接契约；不要复制契约，也不要另建模型专用进度表。
 
+## Generation and Regeneration
+
+每次生成或修订 tasks.md 都必须包含该表，不能只在用户指定某个模型时启用。
+使用 `.specify/templates/tasks-template.md` 的字段顺序：
+`Unit / Details | Status | Depends | Evidence / Remaining | Updated`。
+若模板被 preset/override 替代，生成者仍应补齐此标准。
+单层任务直接用 T001；只有确需拆分时才使用 T001-A 等子任务 ID。
+逐行链接可执行详情：成果、阅读入口、修改范围、步骤、验收；同文件和契约链接均可。
+重新生成先读取旧表，保留 ID、状态、证据和 checkpoint；仅重新打开实际受影响的单元。
+生成后核对任务/子任务覆盖、唯一 ID、依赖存在且无环、详情与证据链接、状态和父任务勾选。
+缺少进度行不能视为任务未开始或已完成；先补齐真实状态再交付。
+
 ## Status
 
 使用 NOT_STARTED、READY、IN_PROGRESS、PARTIAL、BLOCKED、DONE。

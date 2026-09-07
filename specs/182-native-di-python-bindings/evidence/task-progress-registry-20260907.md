@@ -44,6 +44,18 @@ Context Mode active health 报告索引过期，本次状态取实际 tasks、Gi
 两个本机 Spec Kit router 的 YAML 与通用进度入口检查 PASS。
 预存依赖/生成设计与 failure-log 改动属于其他工作单元。
 
+## Spec Kit Default
+
+用户进一步要求所有后续 tasks.md 默认遵守该标准。本单元将表结构和维护约定纳入
+`.specify/templates/tasks-template.md`，共享技能补充生成/重生成规则，
+本机 speckit-tasks 与 speckit-implement 补充生成覆盖检查和执行更新步骤。
+支持单层 T001 与必要时的 T001-A，避免为表格机械拆分任务；重新生成保留既有状态和证据。
+模板 override 同样须满足该标准。旧冻结 Spec 不批量回填；活动旧清单接手时增量补齐。
+仅工作流文档更新，未构建或验收产品。
+实际 `setup-tasks.sh --json` 解析到本仓库已更新模板；共享 skill quick_validate 与
+`git diff --check` PASS。本机技能保留既有 Spec Kit compatibility metadata，使用 YAML 解析核对。
+两个本机技能 YAML 检查 PASS；Spec182 design validator PASS，36 行覆盖不变、父任务仍 0/17。
+
 ## Next
 
 关闭 T001 未决公开 API/设计与 selector release；修复既有构建依赖边界。

@@ -56,6 +56,11 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 
 ## Current Checkpoint
 
+2026-09-07 Spec Kit default / **PASS**：通用 tasks-template 默认包含 Execution Progress 和
+Current Checkpoint；任务生成/执行技能增加覆盖检查、增量更新及保留既有状态规则。
+仅工作流文档更新，不改变上表产品状态。检查见 [registry evidence](evidence/task-progress-registry-20260907.md#spec-kit-default)。
+下一步所有新任务清单沿此模板生成，Spec182 继续按现有 T001 缺口推进。
+
 2026-09-07 Progress registry / **PASS**：36 个执行单元统一登记到上表，详细卡改为通用执行契约。
 旧 Spark 路径保留历史入口；本次仅整理进度和规则，未实现或验收产品，不改变父任务勾选。
 检查和状态来源见 [registry evidence](evidence/task-progress-registry-20260907.md)。
