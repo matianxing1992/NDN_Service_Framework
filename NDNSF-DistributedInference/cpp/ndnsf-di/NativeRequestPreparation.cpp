@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <openssl/sha.h>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 
@@ -18,6 +19,19 @@ bool digest(const std::string& value)
 bool contains(const std::vector<std::string>& values, const std::string& value)
 {
   return std::find(values.begin(), values.end(), value) != values.end();
+}
+
+// Canonical catalog data names are absolute NDN names: a leading '/',
+// non-empty components, no control characters.
+bool ndnName(const std::string& value)
+{
+  if (value.size() < 2 || value.front() != '/') return false;
+  for (std::size_t i = 0; i < value.size(); ++i) {
+    const auto c = static_cast<unsigned char>(value[i]);
+    if (c < 0x21 || c == 0x7f) return false;
+    if (c == '/' && (i + 1 == value.size() || value[i + 1] == '/')) return false;
+  }
+  return true;
 }
 
 std::string hashBytes(const std::vector<std::uint8_t>& bytes)
@@ -64,6 +78,9 @@ void NativeArtifactBinding::validate() const
     if (item.first.empty() || item.second.empty() ||
         !digest(artifactDigestByRole.at(item.first))) {
       throw std::invalid_argument("native artifact binding role identity is invalid");
+    }
+    if (!ndnName(item.second)) {
+      throw std::invalid_argument("native artifact binding source is not an NDN name");
     }
   }
 }
@@ -140,10 +157,34 @@ NativeArtifactBinding NativeRequestPreparation::ensureArtifacts(
 {
   model.validate();
   control.requireActive();
+  // Publication must be driven by the placement of this very request/attempt
+  // over the inspected model; a stale or foreign proposal must never reach
+  // the catalog port.
+  if (proposal.requestId != control.requestId || proposal.attempt != control.attempt ||
+      proposal.modelDigest != model.descriptor.contentDigest ||
+      proposal.graphDigest != model.graph.graphDigest) {
+    throw std::runtime_error("DI_NATIVE_ARTIFACT_BINDING_MISMATCH");
+  }
+  const auto& roles = proposal.executionPlan.roles;
+  if (roles.empty() ||
+      std::set<std::string>(roles.begin(), roles.end()).size() != roles.size()) {
+    throw std::runtime_error("DI_NATIVE_ARTIFACT_BINDING_MISMATCH");
+  }
   if (!m_artifacts) throw std::runtime_error("DI_NATIVE_ARTIFACT_PORT_NOT_CONFIGURED");
   auto result = m_artifacts(model, proposal, control);
   control.requireActive();
   result.validate();
+  // The binding must cover exactly the roles the placed plan requires: a
+  // missing role leaves a provider unassemblable, an extra role would smuggle
+  // provider-side assembly into requester preparation.
+  if (result.sourceByRole.size() != roles.size()) {
+    throw std::runtime_error("DI_NATIVE_ARTIFACT_BINDING_MISMATCH");
+  }
+  for (const auto& role : roles) {
+    if (result.sourceByRole.find(role) == result.sourceByRole.end()) {
+      throw std::runtime_error("DI_NATIVE_ARTIFACT_BINDING_MISMATCH");
+    }
+  }
   return result;
 }
 
