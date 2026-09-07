@@ -320,7 +320,7 @@ See `evidence/t006-dependency-pairs.md`.
 
 最终复核：timestamp巨大整数负例补齐后25项lifecycle测试，完整focused集合480 passed / 45.24s（results/t006-lifecycle-r2/junit.xml）；未执行真实native/inference，候选身份缺口仍待修复。
 
-2026-09-07 T006新增bounded lifecycle组件：按维护中journal的10个事件严格核对外部case/request/attempt/candidate绑定、字段/顺序/计数/digest/有限时间，拒绝duplicate JSON、symlink与超限输入；24 focused用例通过。保持LIFECYCLE_COMPONENT_ONLY，不能证明Provider执行/edge/cleanup。发现V3 planner的PLACEMENT_DECISION把candidate_digest写入candidateId，而prepared offer/numerical使用catalogue名称；尚未修复，必须追踪adapter候选与签名catalogue的映射后修正，不能放宽collector。T006/T007继续unchecked；见evidence/t006-lifecycle-component.md。
+2026-09-07 T006新增bounded lifecycle组件：按维护中journal的10个事件严格核对外部case/request/attempt/candidate绑定、字段/顺序/计数/digest/有限时间，拒绝duplicate JSON、symlink与超限输入；24 focused用例通过。保持LIFECYCLE_COMPONENT_ONLY，不能证明Provider执行/edge/cleanup。此前发现的 V3 planner `PLACEMENT_DECISION` candidateId/candidateDigest 混淆已由 adapter 的 `describe_candidate_identity` 解析器修复，并由 `tests/python/test_spec183_candidate_identity.py` 覆盖；相关回归 **34 passed**。T006/T007继续unchecked；见evidence/t006-lifecycle-component.md。
 
 2026-09-07 T006数值重分析组件已实现：User显式opt-in保留0600/≤1MiB响应bin并记录digest，Spec183启用且绑定prepared candidate env；离线重算真实响应而非信任matched flag。共用纯NumPy tensor decoder，adapter exports按需加载使oracle/codec不依赖_ndnsf导入；operator NumPy锁定1.24.4。扩展focused455 passed（35.86s），包括实际producer函数/codec/数学/文件和独立import进程，但参考值为fixture、无模型/native/SIF/Tiger运行。T006完整lifecycle/role/node/GPU/edge/cleanup及operator/T007待完成；见evidence/t006-numerical-reanalysis.md。
 

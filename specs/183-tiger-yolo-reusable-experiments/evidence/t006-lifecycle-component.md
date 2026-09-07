@@ -97,19 +97,19 @@ Catalogue follow-up regression: 489 passed in 42.77s using the same expanded
 six-selector command; JUnit at
 `Experiments/TigerCluster/results/t006-catalogue-r1/junit.xml`.
 
-`app_sdk/placement.py` V3 PLACEMENT_DECISION emits
-`candidateId=str(selected_candidate.candidate_digest)`. The V3 SplitCandidate
-has no catalogue candidate-id field. The maintained User lifecycle observer
-forwards this unmodified. In contrast, prepared offer trust and numerical
-records bind the catalogue candidate name. The new collector rejects this
-mismatch. Do not blindly substitute an environment-supplied label in the
-journal: establish a digest-bound catalogue-to-candidate mapping first.
+The earlier V3 `PLACEMENT_DECISION` mismatch is resolved in the current source:
+`Yolo26Splitter.describe_candidate_identity` maps the selected runtime split
+digest back to exactly one registered catalogue candidate, and the lifecycle
+emitter records that candidate ID together with the registered candidate digest.
+The runtime split digest remains distinct. `tests/python/test_spec183_candidate_identity.py`
+and the lifecycle reader tests cover missing/ambiguous mappings and preserve
+the fail-closed behavior; the focused pair currently reports **34 passed**.
 
 ## Still required
 
-- Resolve the candidate identity mismatch without silently changing candidate
-  digest semantics or accepting arbitrary candidate labels (source fixed;
-  real adapter/planner integration verification remains).
+- Verify the candidate identity resolver through a full native adapter/planner
+  import and a signed catalogue at T008/T009; component mapping coverage does
+  not prove a live model run.
 - Verify Selection digest and Provider role/plan/ACK bindings using production
   canonicalization; cross-check numerical reanalysis against this lineage.
 - Collect independent native role/node/GPU/edge observations and cleanup/reap
