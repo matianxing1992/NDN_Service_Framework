@@ -339,9 +339,9 @@ def resolve_run_plan(path: Path, *, stage: str, case: str, run_id: str, output: 
     schedule = ({"warmup": 0, "measured": 1} if case == "negative-dependency" else
                 profile["schedule"]["singleNode" if count == 1 else "twoNode"])
     requests = [{"index": n, "warmup": n < schedule["warmup"],
-                 "requestId": hashlib.sha256(("tiger-yolo-request-v1:" + namespace
-                                               + "/" + str(n)).encode()).hexdigest()[:32],
-                 "output": str(output / run_id / "requests" / str(n))}
+                 "requestId": namespace + "/requests/" + hashlib.sha256(
+                     ("tiger-yolo-request-v1:" + namespace + "/" + str(n)).encode()).hexdigest()[:32],
+                 "output": str(output / run_id / "node0" / "user" / "requests" / str(n))}
                 for n in range(schedule["warmup"] + schedule["measured"])]
 
     def logical(item):

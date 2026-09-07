@@ -122,3 +122,20 @@ def test_finite_application_requires_bounded_deadline_before_launch(tmp_path, se
         run_finite_application("user", [sys.executable, "-c", "pass"],
                                logfile, cleanup, seconds=seconds)
     assert not logfile.exists() and cleanup == []
+
+
+def test_finite_user_aborts_on_service_failure_and_retains_cleanup(tmp_path):
+    sys.path.insert(0, str(ROOT))
+    from runtime.worker import run_finite_application
+    cleanup, calls = [], []
+
+    def check():
+        calls.append(1)
+        if len(calls) == 3:
+            raise RuntimeError('PROVIDER_DIED')
+
+    with pytest.raises(RuntimeError, match='PROVIDER_DIED'):
+        run_finite_application('user', [sys.executable, '-c', 'import time; time.sleep(60)'],
+                               tmp_path / 'user.log', cleanup, seconds=5, check=check,
+                               cleanup_seconds=0.5)
+    assert cleanup[0]['reaped'] and cleanup[0]['kind'] == 'finite'

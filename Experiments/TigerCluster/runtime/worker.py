@@ -20,7 +20,7 @@ from runtime.baseline import (BIN, PYTHON, Processes, bundle_files, configure_ro
 
 def run_finite_application(name, argv, log_path, cleanup, seconds=60,
                            allowed_exits=(0,), env=None, *, cwd=None,
-                           cleanup_seconds=30):
+                           cleanup_seconds=30, check=None, owner=None):
     """Wait for an owned application and record cleanup of its entire group.
 
     A finite application's expected exit is not a premature service death.
@@ -33,10 +33,29 @@ def run_finite_application(name, argv, log_path, cleanup, seconds=60,
     if (isinstance(cleanup_seconds, bool) or not isinstance(cleanup_seconds, (int, float))
             or not math.isfinite(cleanup_seconds) or cleanup_seconds <= 0):
         raise ValueError("CLEANUP_BUDGET")
-    owned = Processes(Path(log_path).parent)
+    if check is not None and not callable(check):
+        raise ValueError("APP_CHECK")
+    owned = owner if owner is not None else Processes(Path(log_path).parent)
+    if owned.children:
+        raise ValueError("APP_OWNER_BUSY")
+    if check is not None:
+        check()
     proc = owned.start(name, argv, env, cwd=cwd, log_path=Path(log_path))
     try:
-        rc = proc.wait(timeout=seconds)
+        deadline = time.monotonic() + seconds
+        while True:
+            if check is not None:
+                check()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(argv, seconds)
+            try:
+                rc = proc.wait(timeout=min(0.1, remaining))
+                break
+            except subprocess.TimeoutExpired:
+                continue
+        if check is not None:
+            check()
     finally:
         rows = owned.close(seconds=cleanup_seconds)
         for row in rows:

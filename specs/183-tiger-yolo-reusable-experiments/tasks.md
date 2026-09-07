@@ -78,6 +78,8 @@ T001–T004形成 profile/launcher 实现骨架；可操作 MVP 还要求 T006 �
 
 ## Current Checkpoint
 
+2026-09-07追加User接线：apps/yolo.py复用真实one-shot入口，NodeRuntime顺序持有User HOME并保留Provider，修正裸requestId与错误output预览路径。两节点1+3、单节点1+1均经进程边界聚焦测试；首失败停止。见[evidence/t005-user-schedule.md](evidence/t005-user-schedule.md)。T005仍partial；下一步准备signed material、Controller/Repo和真实permission/catalogue readiness，再T006。不得把测试validator替代正式collector；negative-dependency暂拒绝普通scheduler。
+
 2026-09-07追加：T005 partial已将安装版native Provider启动参数接入NodeRuntime，四角色CPU/GPU与启动前拒错共15项新增测试；完整Tiger focused集合 **275 passed in 16.18s**。见[evidence/t005-native-launch.md](evidence/t005-native-launch.md)。下一步仍为真实应用coordinator、Controller/Repo/User准备与安全readiness、逐请求执行，然后T006；T005未完成，不放行T007/Slurm。
 
 2026-09-07：T001/T003完成（2/17），T004 partial新增脚本bundle freeze/verify并接入dispatch真实入口，最新 **260 passed in 17.17s**，见[evidence/t004-harness.md](evidence/t004-harness.md)。下一步转T005实际应用/argv/cache/安全模型传输，再T006，回填T004完整五命令和T002资格。生产bundle缺真实应用/collector/run.sbatch，不制造占位文件；不新增Provider模型旁路挂载。三依赖精确commit已隔离接收，原工作树未改；source封装、签名模型包和本地base仍待完成。T007及全部正式环境门未通过，无构建/上传/Slurm/模型执行。

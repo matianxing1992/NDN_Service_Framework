@@ -11,10 +11,10 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 
-def prepared(tmp_path, rank=0):
+def prepared(tmp_path, rank=0, mode="two-node-gpu"):
     from runtime.yolo_worker import assigned_roles
     homes = {role: tmp_path / "private" / role
-             for role in assigned_roles("two-node-gpu", rank)}
+             for role in assigned_roles(mode, rank)}
     for home in homes.values():
         (home / ".ndn/ndnsec-key-file").mkdir(parents=True)
         (home / ".ndn/pib.db").write_bytes(b"not-a-pib-layout-fixture")
@@ -29,9 +29,9 @@ def prepared(tmp_path, rank=0):
     for name in ("bundle", "public", "node"):
         (tmp_path / name).mkdir()
     return dict(profile={"apptainer": str(launcher), "sif": str(tmp_path / "fixture.sif")},
-                mode="two-node-gpu", rank=rank, bundle=tmp_path / "bundle", homes=homes,
+                mode=mode, rank=rank, bundle=tmp_path / "bundle", homes=homes,
                 public=tmp_path / "public", output=tmp_path / "output", node=tmp_path / "node",
-                gpu_device="0", cleanup_seconds=1)
+                gpu_device=None if mode == "local-cpu" else "0", cleanup_seconds=1)
 
 
 def test_real_child_is_started_by_role_launcher_and_cleaned_up(tmp_path):

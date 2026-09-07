@@ -1,5 +1,11 @@
 # Failure Log and Evidence Index
 
+## 2026-09-07 — Spec183 User preview incompatible with real entrypoint
+
+- Source inspection found run-plan requestId was a bare hash while the maintained ACK-driven User requires an absolute NDN name. The plan also predicted a different output directory from the role-isolated mount. Corrected both and added command/plan assertions and bad-ID/output negatives.
+- The User's APPClient always writes generated policy; direct reuse of read-only public policy as its output would fail. It now writes under its exclusive invocation output and consumes the immutable case config separately.
+- Real one-shot Users require separate processes; legacy sequential flags do not repeat the ACK-driven path. Added the actual scheduler component and shared finite wait service/peer checks. Focused tests use synthetic model/config and OS-boundary substitution, not inference evidence. See Spec183 evidence/t005-user-schedule.md.
+
 ## 2026-09-07 — Spec183 native launcher acceptance scope
 
 - Implemented the previously missing actual native Provider argv path in NodeRuntime rather than copying the old Spec180 renderer's hardcoded identities/private model-root layout. Role keys belong in isolated HOME, generated public configuration in /config, and model assembly cache in each /output.

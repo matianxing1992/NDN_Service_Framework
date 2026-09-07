@@ -9,6 +9,7 @@ from __future__ import annotations
 import math
 import os
 from pathlib import Path
+import re
 import signal
 import stat
 import threading
@@ -16,6 +17,7 @@ import time
 
 from runtime.baseline import BIN, Processes, container_command, container_env, nfd_config
 from runtime.identities import RoleHomeLease, validate_role_homes
+from runtime.worker import run_finite_application
 
 
 MODEL_ROLES = frozenset(("BackboneNeck", "DetectShard0", "DetectShard1"))
@@ -77,6 +79,78 @@ class NodeRuntime:
         self.leases = {}
         self.closed = False
         self.cleanup_records = {}
+        self.finite_children = Processes(self.output / "logs")
+        self.invocations = set()
+
+    def run_user(self, invocation: str, argv: list[str], *, package: Path,
+                 seconds: float, peer_failure: Path | None = None):
+        """One finite User, retaining persistent Providers and User state.
+
+        Invocation output directories are exclusive; a failed or completed
+        invocation cannot be overwritten/retried under the same name.
+        This is process completion only, never an inference verdict.
+        """
+        if self.closed or 'user' not in self.roles:
+            raise ValueError('WORKER_USER_ROLE')
+        if not isinstance(invocation, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,64}', invocation):
+            raise ValueError('WORKER_INVOCATION')
+        if invocation in self.invocations:
+            raise ValueError('WORKER_INVOCATION_REUSED')
+        if (isinstance(seconds, bool) or not isinstance(seconds, (int, float))
+                or not math.isfinite(seconds) or seconds <= 0):
+            raise ValueError('WORKER_USER_BUDGET')
+        if not argv or not all(isinstance(arg, str) and '\x00' not in arg for arg in argv):
+            raise ValueError('WORKER_ARGV')
+        package = _directory(package)
+        role_output = _directory(self.output / 'user', may_create=True)
+        if package == role_output or package in role_output.parents or role_output in package.parents:
+            raise ValueError('WORKER_OUTPUT_OVERLAP')
+
+        def check():
+            self.check()
+            if peer_failure is not None and peer_failure.exists():
+                raise RuntimeError('PEER_FAILED')
+
+        check()
+        lease = RoleHomeLease(self.homes['user'])
+        tag, rows = 'user-' + invocation, []
+        record = {'role': 'user', 'invocation': invocation, 'pid': None}
+        try:
+            for name in ('state', 'requests'):
+                _directory(role_output / name, may_create=True).mkdir(parents=True, exist_ok=True, mode=0o700)
+            (role_output / 'requests' / invocation).mkdir(mode=0o700)
+            self.invocations.add(invocation)
+            command = container_command(
+                self.profile, self.bundle, self.homes['user'], self.public,
+                role_output, ['/usr/bin/env', 'NDNSF_DI_STATE_ROOT=/output/state', *argv],
+                node=self.node, artifacts=package)
+            record['argv'] = command
+            self.launches.append(record)
+            rc = run_finite_application(tag, command, self.output / 'logs' / (tag + '.log'),
+                rows, seconds=seconds, env=container_env(), cwd=self.bundle,
+                cleanup_seconds=self.cleanup_seconds, check=check, owner=self.finite_children)
+            if any(row['forced'] or not row['reaped'] or row.get('cleanupError') for row in rows):
+                raise RuntimeError('WORKER_USER_CLEANUP')
+            return rc
+        finally:
+            if rows:
+                record['pid'] = rows[-1]['pid']
+                self.cleanup_records[tag] = dict(rows[-1])
+                self.leases[tag] = (lease, rows[-1]['pid'])
+                try:
+                    os.killpg(rows[-1]['pid'], 0)
+                except ProcessLookupError:
+                    lease.close()
+                    del self.leases[tag]
+                except OSError as exc:
+                    # Unknown group state must retain the HOME owner and
+                    # cleanup error, not mask an earlier application failure.
+                    self.cleanup_records[tag]['leaseError'] = type(exc).__name__
+            elif self.finite_children.children:
+                # Preserve ownership if interrupted while recording cleanup.
+                self.leases[tag] = (lease, self.finite_children.children[-1][1].pid)
+            else:
+                lease.close()
 
     def start_service(self, role: str, argv: list[str]):
         return self._start_service(role, argv)
@@ -216,13 +290,19 @@ class NodeRuntime:
 
     def _close(self):
         self.closed = True
+        deadline = time.monotonic() + self.cleanup_seconds
         rows = self.children.close(seconds=self.cleanup_seconds)
+        if self.finite_children.children:
+            finite_rows = self.finite_children.close(seconds=max(0.001, deadline - time.monotonic()))
+            for row in finite_rows:
+                row['kind'] = 'finite'
+            rows += finite_rows
         for row in rows:
             self.cleanup_records[row["name"]] = dict(row)
         current = {row["name"] for row in rows}
-        for role in self.leases:
+        for role, record in self.cleanup_records.items():
             if role not in current:
-                rows.append(dict(self.cleanup_records[role]))
+                rows.append(dict(record))
         # Reaping a leader does not prove that its group no longer exists.
         # Keep the HOME lease while a descendant or unreaped group survives.
         lease_errors = {}
