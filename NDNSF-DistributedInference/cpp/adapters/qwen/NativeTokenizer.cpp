@@ -162,11 +162,16 @@ struct NativeTokenizer::Impl
 
   Impl(const std::string& path, const std::string& expected,
        const std::string& library)
-    : digest(sha256File(path)), bridge(std::make_unique<Bridge>(library))
+    : digest(sha256File(path))
   {
     if (expected.empty() || digest != expected) {
       throw std::invalid_argument("tokenizer digest mismatch");
     }
+    // Verify the authenticated tokenizer bytes before loading any deployment
+    // supplied code.  This keeps an identity failure deterministic even when
+    // the bridge is unavailable and prevents a wrong artifact from reaching
+    // the Rust owner.
+    bridge = std::make_unique<Bridge>(library);
     const auto bytes = readBytes(path);
     const auto result = bridge->create(bytes.data(), bytes.size(), &handle);
     if (result.code != 0) {
@@ -219,7 +224,13 @@ struct NativeTokenizer::Impl
       throw std::runtime_error("native tokenizer decode failed: " +
                                errorText(result, bridge->free));
     }
-    std::string text(reinterpret_cast<const char*>(result.data), result.size);
+    if (result.size != 0 && result.data == nullptr) {
+      throw std::runtime_error("native tokenizer returned a null output buffer");
+    }
+    std::string text;
+    if (result.size != 0) {
+      text.assign(reinterpret_cast<const char*>(result.data), result.size);
+    }
     bridge->free(result.data, result.size);
     return text;
   }
