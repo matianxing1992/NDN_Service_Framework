@@ -79,10 +79,10 @@
 }
 
 \title{NDNSF-UAV-APP}
-\subtitle{Named Services for Secure Control, Adaptive Video, and Multi-Drone Operations}
+\subtitle{Named Services for Secure Control, Adaptive Video, and Multi-UAV Collaboration}
 \author{Tianxing Ma}
 \institute{Department of Computer Science\\University of Memphis}
-\date{July 2026}
+\date{August 2026}
 
 \begin{document}
 
@@ -919,6 +919,79 @@ Decode $\rightarrow$ widget p95 & 4.076 ms \\
 \evidence{installObjectDetectionService; startObjectDetectionLoop; yolo\_detect\_worker.py}
 \end{frame}
 
+\begin{frame}{Operator-Initiated Multi-UAV Geo-Capture}
+\scriptsize
+\begin{columns}[T]
+\begin{column}{0.43\textwidth}
+\begin{center}
+\begin{tikzpicture}[scale=0.78,transform shape]
+  \node[circle,draw=AccentRed,fill=AccentRed!9,minimum size=1.35cm,align=center,font=\tiny\bfseries] (target) at (0,0) {Target GPS\\+ radius};
+  \node[strongbox,text width=1.55cm] (a) at (-2.15,1.45) {View A\\north-west};
+  \node[orangebox,text width=1.55cm] (b) at (2.15,1.35) {View B\\north-east};
+  \node[greenbox,text width=1.55cm] (c) at (0,-2.0) {View C\\south};
+  \draw[dashflow] (a)--(target);
+  \draw[dashflow] (b)--(target);
+  \draw[dashflow] (c)--(target);
+  \node[box,text width=2.25cm] (map) at (-2.25,-1.25) {Ground-station map\\operator clicks one point};
+  \draw[flow] (map)--(target);
+\end{tikzpicture}
+\end{center}
+\end{column}
+\begin{column}{0.54\textwidth}
+\textbf{Concrete task}
+\begin{enumerate}
+  \item The operator marks a fixed ground location on a map or georeferenced image.
+  \item A protected \texttt{GeoCaptureRequest} discovers reachable UAVs; after ACK closure, the plan assigns complementary view sectors and capture slots.
+  \item Selected UAVs publish signed images; an Assembler publishes one \texttt{MultiViewImageSet} manifest.
+\end{enumerate}
+\begin{alertblock}{Deliberate MVP boundary}
+The GPS point identifies a place, not a moving object's identity. No cross-camera Re-ID or target triangulation is required.
+\end{alertblock}
+\end{column}
+\end{columns}
+\vspace{0.18em}
+\bluebox{Request Data defines the GPS point, time, view, and quality requirements; ACK Data offers pose quality, ETA, battery, sensor capability, and willingness. The closed ACK set drives the plan.}
+\evidence{Generic collaboration API in ServiceUser/ServiceProvider; MAVLink ROI and camera-capture messages}
+\end{frame}
+
+\begin{frame}{The Plan Becomes Named Geo-Capture Policy}
+\scriptsize
+\begin{center}
+\begin{tikzpicture}[node distance=0.10cm,scale=0.91,transform shape]
+  \node[box,font=\tiny,text width=1.62cm,minimum height=.90cm] (request) {GeoCapture Request\\GPS + quality + deadline};
+  \node[box,font=\tiny,right=of request,text width=1.52cm,minimum height=.90cm] (offer) {Offer ACKs\\feasibility + view};
+  \node[orangebox,font=\tiny,right=of offer,text width=1.45cm,minimum height=.90cm] (plan) {Capture Plan\\role $\leftrightarrow$ Provider};
+  \node[orangebox,font=\tiny,right=of plan,text width=1.52cm,minimum height=.90cm] (selection) {View\\Assignment\\waypoint + slot};
+  \node[greenbox,font=\tiny,right=of selection,text width=1.52cm,minimum height=.90cm] (photo) {Geo-tagged Image\\pose + time + digest};
+  \node[strongbox,font=\tiny,right=of photo,text width=1.55cm,minimum height=.90cm] (set) {Image-set Manifest\\names + failures};
+  \draw[flow] (request)--(offer); \draw[flow] (offer)--(plan); \draw[flow] (plan)--(selection); \draw[flow] (selection)--(photo); \draw[flow] (photo)--(set);
+\end{tikzpicture}
+\end{center}
+
+\vspace{0.16em}
+\begin{columns}[T]
+\begin{column}{0.48\textwidth}
+\textbf{Data-plane acceptance checks}
+\begin{itemize}
+  \item current request/plan/attempt, assigned role, selected Provider signature, and authorized name/key scope
+  \item capture inside the assigned slot and region, with frame-bound time, pose, gimbal attitude, calibration ID, and digest
+  \item explicit failure Data for unsafe flight, occlusion, or missed quality threshold
+\end{itemize}
+\end{column}
+\begin{column}{0.48\textwidth}
+\textbf{Responsibility boundary}
+\begin{itemize}
+  \item NDNSF owns discovery, ACK closure, role assignment, named dependencies, authorization, and assembly.
+  \item The UAV application owns viewpoint generation, path planning, gimbal aim, and image-quality tests.
+  \item The autopilot retains final authority over geofence, collision, readiness, and safety rejection.
+\end{itemize}
+\end{column}
+\end{columns}
+
+\bluebox{The result is a verifiable image set for one geographic point; recognition or 3-D reconstruction is a separate downstream service.}
+\evidence{BeginCollaboration $\rightarrow$ ACK\_CLOSED $\rightarrow$ CommitCollaborationPlan; MAV\_CMD\_DO\_SET\_ROI\_LOCATION and CAMERA\_IMAGE\_CAPTURED}
+\end{frame}
+
 \begin{frame}{One Runtime, GUI or Headless}
 \footnotesize
 \begin{columns}[T]
@@ -973,20 +1046,21 @@ Decode $\rightarrow$ widget p95 & 4.076 ms \\
 \end{itemize}
 \end{column}
 \begin{column}{0.47\textwidth}
-\textbf{Not yet a production ground station}
+\textbf{Current boundary and work in progress}
 \begin{itemize}
-  \item complete calibration and firmware setup
-  \item full survey/geofence/altitude-profile editing
-  \item hardened lost-link and autopilot fail-safe policy
-  \item long-duration outdoor and hardware-breadth evidence
-  \item certified operator workflow and safety assurance
+  \item map-selected \texttt{GeoCaptureRequest}
+  \item ACK-derived viewpoint/Assembler role planning
+  \item \texttt{CaptureOffer}, \texttt{ViewAssignment}, \texttt{GeoTaggedImage}, and \texttt{MultiViewImageSet} schemas
+  \item safety-valid capture execution and named result assembly
+  \item end-to-end completion, view diversity, latency, bytes, mobility, and loss evaluation
+  \item production flight-safety assurance remains out of scope
 \end{itemize}
 \end{column}
 \end{columns}
 
 \vspace{0.25em}
-\bluebox{Next: run paired zero-loss and realistic loss/jitter matrices before promoting the corrected future-prefetch profile to the runtime default.}
-\evidence{NDNSF-UAV-APP/README.md; Spec 118/119 contracts; Spec 123 completion summary and audit}
+\bluebox{Next: implement map-triggered multi-UAV geo-capture, then measure valid-view completion, angular diversity, latency, communication cost, and resilience to mobility and Data loss.}
+\evidence{NDNSF-UAV-APP/README.md; Spec 118/119 contracts; generic collaboration API; proposed UAV workflow}
 \end{frame}
 
 \end{document}
