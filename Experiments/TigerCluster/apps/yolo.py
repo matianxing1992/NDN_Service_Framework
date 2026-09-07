@@ -771,6 +771,10 @@ def run_normal_node(worker, startup, *, completion_factory, endpoints,
                     pass
     try:
         try:
+            if worker.mode != 'local-cpu':
+                peer = (startup.directory / ('failed-' + str(1-worker.rank) + '.json')
+                        if len(startup.ranks) == 2 else None)
+                worker.probe_gpu_device(seconds=startup.remaining(), peer_failure=peer)
             configure_network(worker, startup, endpoints=endpoints)
             start_workload(worker, startup, **startup_options)
             completion = completion_factory()

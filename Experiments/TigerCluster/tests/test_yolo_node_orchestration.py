@@ -43,6 +43,27 @@ def test_normal_owner_orders_start_requests_cleanup_receipt(tmp_path, monkeypatc
     assert events[-2:] == ['close','receipt']
 
 
+@pytest.mark.parametrize('failure', [False, True])
+def test_gpu_probe_precedes_network_and_provider_start(tmp_path, monkeypatch, failure):
+    state, startup, completion, events = setup(tmp_path, monkeypatch)
+    state.mode = state._preparation_binding[0]['case'] = 'single-node-gpu'
+    startup.remaining = lambda: 7
+    def probe(**kwargs):
+        assert kwargs['seconds'] == 7
+        events.append('gpu-probe')
+        if failure: raise ValueError('GPU unavailable')
+    state.probe_gpu_device = probe
+    def run():
+        return yolo.run_normal_node(state, startup, completion_factory=lambda: completion,
+            endpoints=[], startup_options={}, request_options={}, accept_request=lambda *a: None)
+    if failure:
+        with pytest.raises(ValueError, match='GPU unavailable'): run()
+        assert events == ['gpu-probe', 'close']
+    else:
+        run()
+        assert events[:3] == ['gpu-probe', 'network', 'startup']
+
+
 def test_failure_still_closes_notifies_and_preserves_local_record(tmp_path, monkeypatch):
     state, startup, completion, events = setup(tmp_path, monkeypatch, fail=True)
     startup.publish = lambda *args: events.append(('startup-failed', args))
@@ -88,7 +109,8 @@ def test_two_rank_real_barriers_keep_peer_alive_and_propagate_failure(tmp_path, 
             seconds=5, check=lambda: None)
     def state(rank):
         return NS(mode='two-node-gpu', rank=rank, output=tmp_path/('node'+str(rank)),
-            _preparation_binding=(plan,None,None), close=lambda: closed[rank].set() or [])
+            _preparation_binding=(plan,None,None), close=lambda: closed[rank].set() or [],
+            probe_gpu_device=lambda **kwargs: None)
     monkeypatch.setattr(yolo, 'configure_network', lambda *a, **k: None)
     monkeypatch.setattr(yolo, 'start_workload', lambda *a, **k: None)
     def requests(worker, plan, **kwargs):

@@ -78,6 +78,19 @@ T001–T004形成 profile/launcher 实现骨架；可操作 MVP 还要求 T006 �
 
 ## Current Checkpoint
 
+2026-09-07 independent CUDA probe: run_normal_node now runs the finite
+NodeRuntime.probe_gpu_device before network/Provider startup in GPU cases.
+The frozen runtime/yolo_gpu_probe.py queries CUDA runtime count=1 and maps
+ordinal0 through PCI to a driver UUID; no NVML-index shortcut. The same
+container_command/selector/HOME/cleanup owner is reused, with a fresh nonce,
+bounded startup budget and exclusive gpu-probe.json/log. A failed child cannot
+qualify even if it prints matching JSON. This is CUDA visibility evidence,
+not Slurm allocation attestation. Actual job/step/node receipt binding and
+offline trusted consumption remain pending. No native/SIF/GPU test run.
+Also fixed node receipts incorrectly requiring native Provider PID witnesses
+for finite management/probe commands borrowing Provider HOMEs; actual
+persistent Provider witness checks remain mandatory. T006 remains partial.
+
 2026-09-07 retained device collection: the retained request -> dependency ->
 role path now invokes validate_device_binding. GPU node entries require an
 externally supplied gpuBinding {uuid, visible}; model roles receive their

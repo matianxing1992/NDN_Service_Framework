@@ -334,7 +334,7 @@ def write_worker_receipt(worker, rows):
             raise EvidenceError('NODE_RECEIPT_ARGV')
         invocation = row.get('invocation')
         nonce = row.get('launchNonce')
-        if row['role'] in ('BackboneNeck', 'DetectShard0', 'DetectShard1', 'Merge'):
+        if invocation is None and row['role'] in ('BackboneNeck', 'DetectShard0', 'DetectShard1', 'Merge'):
             if not isinstance(nonce, str) or re.fullmatch(r'[0-9a-f]{64}', nonce) is None:
                 raise EvidenceError('NODE_RECEIPT_LAUNCH_NONCE')
         elif nonce is not None:
@@ -427,7 +427,7 @@ def read_node_log_receipt(root, *, receipt_digest, plan, preparation_digest, can
         payload = _bytes(path)
         if len(payload) != launch['logBytes'] or digest(payload) != launch['logDigest']:
             raise EvidenceError('NODE_LOG_CONTENT')
-        if launch['role'] in ('BackboneNeck', 'DetectShard0', 'DetectShard1', 'Merge'):
+        if launch['invocation'] is None and launch['role'] in ('BackboneNeck', 'DetectShard0', 'DetectShard1', 'Merge'):
             from runtime.yolo_launch_witness import namespace_pid_from_log
             namespace_pid_from_log(payload, nonce=launch['launchNonce'], role=launch['role'])
         elif launch['launchNonce'] is not None:

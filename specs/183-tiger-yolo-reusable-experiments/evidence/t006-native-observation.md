@@ -1,5 +1,48 @@
 # Native execution observation component
 
+## Latest: independent container CUDA probe (2026-09-07)
+
+`runtime/yolo_gpu_probe.py` calls the CUDA 12 runtime through ctypes, requires
+exactly one visible device and resolves runtime ordinal0 via PCI to the CUDA
+driver UUID. It rejects all-zero identities and query errors. There is no
+model import, caller-provided UUID, nvidia-smi indexing, or fallback to CPU.
+Its bounded JSON output is matched to a fresh launcher nonce and the exact
+configured CUDA_VISIBLE_DEVICES. This is independent of Provider reporting,
+not independent proof that Slurm allocated that physical GPU.
+
+`NodeRuntime.probe_gpu_device` uses the same container_command and finite
+process ownership as real role launches. It borrows an idle model-role HOME,
+passes --nv and the node GPU selector, and records the finite child in cleanup.
+Only exit0 plus exactly one bound result creates exclusive gpu-probe.json.
+The record contains rank, borrowed role, nonce, observed UUID/selector, relative
+log path/hash and CUDA_VISIBILITY_COMPONENT_ONLY. It contains no credentials.
+The runtime module is in the required frozen harness inventory.
+
+`run_normal_node` invokes this before network and Provider startup for both GPU
+cases, under the existing remaining startup budget and peer-failure checks.
+CPU cases skip it. Failure reaches the existing notification/cleanup path;
+there is no retry or alternative GPU selection. The probe is not a public
+submission bypass: external candidate gates and actual allocation verification
+are still required before entering this internal node runner.
+
+Tests use explicit CUDA ABI doubles (including a runtime0 to driver7 mapping),
+actual CLI argument rejection and real finite subprocess ownership with a fake
+Apptainer boundary. They do NOT execute CUDA or ORT. Model/graph verification,
+Slurm job/step/hostname binding, immutable probe-receipt transfer/consumption
+and live/retained allocation joins remain pending. T006/T007 are not complete.
+
+Prerequisite bug found: finite nfdc/network probes borrow a Provider HOME but
+do not exec the native Provider, so they have no Provider PID witness. Both
+node receipt writer and reader now require that witness only for persistent
+Provider launches (invocation=None), and reject unexpected witnesses on finite
+commands. The first finite-management receipt regression failed with
+NODE_RECEIPT_LAUNCH_NONCE before this fix; persistent-role validation is intact.
+
+Expanded focused regression: 760 passed in 47.25s, with the same six Python
+selectors plus TigerCluster/tests. JUnit:
+Experiments/TigerCluster/results/t006-gpu-probe-r1/junit.xml.
+No native build, SIF construction, transfer, or Slurm job was started.
+
 ## Latest: retained collector device enforcement (2026-09-07)
 
 The retained request/dependency/role chain now calls validate_device_binding;

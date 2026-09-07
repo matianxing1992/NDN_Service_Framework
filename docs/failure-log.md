@@ -1933,3 +1933,16 @@ code path and focused regression, not the full runtime qualification.
   reject CPU exposure and missing/mismatched GPU bindings. Synthetic records
   do not prove a physical allocation; preflight producer remains pending.
 - Lesson: test rejection at the consuming boundary, not just helper behavior.
+
+# 2026-09-07 Spec183 finite command confused with native Provider
+
+- Symptom: a valid finite nfdc command borrowing BackboneNeck HOME fails node
+  receipt creation with NODE_RECEIPT_LAUNCH_NONCE. Reproduced before GPU probe
+  wiring, using the actual receipt writer and cleanup record contract.
+- Cause: witness checks keyed only on role name, not persistent vs finite
+  invocation. Only the persistent native Provider exec emits that witness.
+- Fix: writer and reader require witnesses for persistent Provider processes;
+  finite commands keep their owned PID/exit/log/cleanup bindings without a
+  fictitious Provider witness. Unexpected finite launchNonce is rejected.
+- Lesson: identity/HOME ownership does not identify the executable lifecycle;
+  include management and readiness invocations in receipt regressions.

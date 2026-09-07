@@ -56,6 +56,23 @@ def test_receipt_is_exclusive_and_not_inference_pass(tmp_path):
         result.write_worker_receipt(state, rows)
 
 
+def test_finite_management_borrowing_provider_home_is_not_a_provider_process(tmp_path):
+    """Management uses a Provider HOME, but never executes the native Provider."""
+    import hashlib
+    state, rows = worker(tmp_path)
+    state.launches.append(dict(role='BackboneNeck', invocation='nfd-route',
+        pid=300, argv=['fixture', 'nfdc']))
+    rows.append(dict(name='BackboneNeck-nfd-route', pid=300, kind='finite',
+        exitedBeforeCleanup=False, forced=False, reaped=True, leaseReleased=True, exitCode=0))
+    (state.output/'logs/BackboneNeck-nfd-route.log').write_text('route installed\n')
+    result.write_worker_receipt(state, rows)
+    digest = 'sha256:'+hashlib.sha256((state.output/'node-receipt.json').read_bytes()).hexdigest()
+    plan, prep, candidate = state._preparation_binding
+    receipt = result.read_node_log_receipt(state.output, receipt_digest=digest,
+        plan=plan, preparation_digest=prep, candidate_digest=candidate, rank=0)
+    assert receipt['logs']['BackboneNeck-nfd-route']['launchNonce'] is None
+
+
 @pytest.mark.parametrize('fault', ['unprepared', 'changed-preparation', 'missing-service',
     'missing-request', 'duplicate-request', 'wrong-case', 'wrong-output', 'failed-cleanup'])
 def test_partial_or_unbound_worker_never_gets_receipt(tmp_path, fault):

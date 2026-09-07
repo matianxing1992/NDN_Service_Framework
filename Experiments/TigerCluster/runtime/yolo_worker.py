@@ -202,6 +202,7 @@ class NodeRuntime:
         self.cleanup_records = {}
         self.finite_children = Processes(self.output / "logs")
         self.invocations = set()
+        self.gpu_probe = None
 
     def run_user(self, invocation: str, argv: list[str], *, package: Path | None,
                  seconds: float, peer_failure: Path | None = None):
@@ -223,6 +224,35 @@ class NodeRuntime:
         return self._run_finite_role(role, 'network-readiness', argv, package=None,
                                      seconds=seconds, peer_failure=peer_failure)
 
+    def probe_gpu_device(self, *, seconds: float, peer_failure: Path | None = None):
+        """Measure CUDA identity in this exact container before Provider launch.
+
+        This observes the configured selector, not Slurm allocation authority.
+        The outer operator must supply that selector from the actual task and
+        retain the probe's nonce/log with its allocation record.
+        """
+        from runtime.yolo_gpu_probe import read_probe
+        from runtime.yolo_bundle import _bytes
+        from runtime.identities import _credential_document
+        import hashlib
+        if self.mode == 'local-cpu' or self.started & PROVIDER_ROLES:
+            raise ValueError('WORKER_GPU_PROBE_SCOPE')
+        role = 'BackboneNeck' if self.rank == 0 else 'DetectShard0'
+        nonce = secrets.token_hex(32)
+        self._run_finite_role(role, 'gpu-device', ['/usr/bin/python3', '-m',
+            'runtime.yolo_gpu_probe', '--nonce', nonce], package=None, seconds=seconds,
+            peer_failure=peer_failure, gpu=True)
+        path = self.output/'logs'/(role+'-gpu-device.log')
+        content = _bytes(path)
+        binding = read_probe(content, nonce=nonce, visible=self.gpu_device)
+        receipt = dict(schema='tiger-yolo-gpu-probe-v1', rank=self.rank, role=role,
+            nonce=nonce, binding=dict(binding), logPath='logs/'+path.name,
+            logDigest='sha256:'+hashlib.sha256(content).hexdigest(),
+            qualification='CUDA_VISIBILITY_COMPONENT_ONLY')
+        _credential_document(self.output/'gpu-probe.json', receipt)
+        self.gpu_probe = dict(nonce=nonce, role=role, logPath=str(path), binding=dict(binding))
+        return binding
+
     def run_management(self, invocation: str, arguments: list[str], *, seconds: float,
                        peer_failure: Path | None = None):
         """Execute exact-SIF nfdc with a borrowed, otherwise idle Provider HOME.
@@ -238,7 +268,7 @@ class NodeRuntime:
         return self._run_finite_role(role, invocation, [BIN + '/nfdc', *arguments], package=None,
                                      seconds=seconds, peer_failure=peer_failure)
 
-    def _run_finite_role(self, role, invocation, argv, *, package, seconds, peer_failure):
+    def _run_finite_role(self, role, invocation, argv, *, package, seconds, peer_failure, gpu=False):
         if self.closed or role not in self.roles or role in self.started:
             raise ValueError('WORKER_USER_ROLE')
         self._verify_prepared_boundary()
@@ -274,7 +304,8 @@ class NodeRuntime:
             command = container_command(
                 self.profile, self.bundle, self.homes[role], self.public,
                 role_output, ['/usr/bin/env', 'NDNSF_DI_STATE_ROOT=/output/state', *argv],
-                node=self.node, artifacts=package)
+                node=self.node, artifacts=package, gpu=gpu,
+                gpu_device=self.gpu_device if gpu else None)
             record['argv'] = command
             self.launches.append(record)
             rc = run_finite_application(tag, command, self.output / 'logs' / (tag + '.log'),
