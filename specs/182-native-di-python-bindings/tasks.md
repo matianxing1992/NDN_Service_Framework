@@ -26,7 +26,7 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 | [T003-C Placement and Registry](contracts/execution-units.md#t003-c-placement-and-registry) | DONE | T003-A, T003-B | [acceptance](evidence/t003-c-placement-20260907.md)；CPP(Spec182Placement/*) 9 cases 全绿（residency→freeBytes→provider 稳定序、budget/ref tie-break、同输入同结果、非法向量/全拒），对照冻结 `propose_v3` 共享语义区间；新增 2 case 于 di-native-planning.t.cpp | 2026-09-07 |
 | [T004-A Canonical Plan Sealing](contracts/execution-units.md#t004-a-canonical-plan-sealing) | DONE | T003-C | [acceptance](evidence/t004-a-plan-sealer-20260907.md)；CPP(Spec182PlanSealer/*) 7 cases 全绿（canonical 封印 + M22 单源投影、encode 固定 7-key 片段字节一致 + 独立 JSON oracle、逐维度篡改敏感、错误 endpoint/缺 grant/错 ACK digest 首边界拒绝、plaintext 无 grant 封面）；planned suite 登记于新文件 di-native-plan-sealer.t.cpp；真实 Core commit/Provider parser 对照留 T016 | 2026-09-07 |
 | [T005-A InProcess Authority](contracts/execution-units.md#t005-a-inprocess-authority) | DONE | T004-A | [acceptance](evidence/t005-a-inprocess-authority-20260907.md)；CPP(Spec182GrantAuthority/*) 6 cases 全绿（固定 request/时钟向量、expiry/自授/issuer 不完整/wrong-key-recipient 面原因码族拒绝、secret 生命周期无 key 驻留、注入 policy 传播）；issue() 补 requester==provider 拒绝（Python frozen 对照）；planned 独立文件拆分由既有同文件切片取代 | 2026-09-07 |
-| [T005-B Requester Grant Publication](contracts/execution-units.md#t005-b-requester-grant-publication) | PARTIAL | T005-A | [baseline](evidence/task-progress-registry-20260907.md)；已有相关源码切片；完整卡验收未完成 | 2026-09-07 |
+| [T005-B Requester Grant Publication](contracts/execution-units.md#t005-b-requester-grant-publication) | DONE | T005-A | [acceptance](evidence/t005-b-requester-grant-20260907.md)；CPP(Spec182GrantClient/*) 8 cases 全绿（构造门、view 完整性先于端口副作用、过期 deadline 在副作用前 fence、过期 grant 于 authority 边界拒绝、canonical exact-name/回落与 determinism、错名 publication 恰好一次消费且不复活）+ 集成 Spec182GrantClientFlow 1 case（真实 ServiceUser::publishSignedAppData + exact-name fetch，KeyLocator/content 校验）；生产代码本卡无改动（既有切片语义经测试确认）；真实 Provider crypto 消费 T016 | 2026-09-07 |
 | [T006-A Canonical Source Identity](contracts/execution-units.md#t006-a-canonical-source-identity) | PARTIAL | T002-A | [baseline](evidence/task-progress-registry-20260907.md)；已有相关源码切片；完整卡验收未完成 | 2026-09-07 |
 | [T006-B Certified Extraction and Wire](contracts/execution-units.md#t006-b-certified-extraction-and-wire) | PARTIAL | T006-A | [baseline](evidence/task-progress-registry-20260907.md)；已有相关源码切片；完整卡验收未完成 | 2026-09-07 |
 | [T006-C Bounded Native Worker](contracts/execution-units.md#t006-c-bounded-native-worker) | NOT_STARTED | T006-B | [baseline](evidence/task-progress-registry-20260907.md)；无本卡独立执行/验收记录；按依赖领取 | 2026-09-07 |
@@ -55,6 +55,28 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 | [T017-A Development Handoff](contracts/execution-units.md#t017-a-development-handoff) | NOT_STARTED | T016-A | [baseline](evidence/task-progress-registry-20260907.md)；无本卡独立执行/验收记录；按依赖领取 | 2026-09-07 |
 
 ## Current Checkpoint
+
+2026-09-07 T005-B Requester Grant Publication / **T005-B DONE、父 T005 DONE**：
+按 T005-B 卡 Verify（CPP(Spec182GrantClient/*)）在 manifest 登记文件
+`tests/unit-tests/di-native-grant-client.t.cpp` 建 suite `Spec182GrantClient`：
+既有 2 个 module-level cases 迁入（名不变）+ 6 个新 cases 全绿 —— 构造门；
+view 完整性先于任何端口副作用（issue/publish 计数 0）；已过 deadline 在
+fence（原因码族、零副作用，cancel/expired-wait 不复活）；已过期 grant 在
+authority expiry 边界拒绝（deadline 仍在未来 → 族前缀只能来自 issue 前检查、
+policy port 未运行）；canonical exact-name 字面组件布局 + model-manifest→
+model digest 回落 + 同向量 determinism（issue=2/publish=2 恰好一次各）；
+错名 publication 族拒绝且恰好消费一次、重试为全新尝试、无 pending 状态可
+复活（runtime-boundaries"只消费/忽略，不复活"行为面）。生产代码本卡无改动
+（既有切片语义与测试一致）；issue 后二次 deadline 复检无时钟注入不可确定性
+触发（T010/T016 executor 层覆盖）。集成：`Spec182GrantClientFlow`（
+tests/integration-tests/di-native-requester-grant.t.cpp，wscript 注册 +
+di_integration_sources 补 NativeGrantClient.cpp）1 case 全绿 —— 真实
+ServiceUser::publishSignedAppData 发布 + exact-name fetch replay，KeyLocator==
+requester 证书、content 逐字节一致；authority crypto 真验证/Provider 消费 T016。
+execution-units U/di-native-grant.t.cpp 与 manifest 文件差异按 registry 约定
+留档。回归（Spec182GrantAuthority/PlanSealer/NativePlanning）全绿。
+evidence [t005-b](evidence/t005-b-requester-grant-20260907.md)。下一步：T006-A
+（Canonical Source Identity，依赖 T002-A 已满足）。
 
 2026-09-07 T005-A InProcess Authority / **T005-A DONE（父 T005 待 T005-B）**：
 按 T005-A 卡 Verify（CPP(Spec182GrantAuthority/*)）在 planned 文件
@@ -350,7 +372,7 @@ T015在全部实现后补审整体接线；T016执行完整unit→integration→
   Design: FR-002,FR-004; CD-003。Proof: PO-003。
   [T004 contract](contracts/work-units.md#t004-canonical-native-plan-sealing)。
 
-- [ ] T005 [US1] **Native Requester Grant Path**。原生 requester 签名/申请/发布 grant，实际 Provider 验证并消费密钥。Dependencies: T004。
+- [x] T005 [US1] **Native Requester Grant Path**。原生 requester 签名/申请/发布 grant，实际 Provider 验证并消费密钥。Dependencies: T004。
   Design: FR-005; CD-004。Proof: PO-004。
   [T005 contract](contracts/work-units.md#t005-native-requester-grant-path)。
 
