@@ -398,3 +398,11 @@ loaded/assembled exact reuse、设备兼容性或 lease 授权证据。
 完整 residency 证明、backend/device、rank 与 canonical wire DTO 仍待统一补齐；T003-C PARTIAL。
 定向验证使用真实 Spec182NativePlanning suite，覆盖双角色→独立 Provider→sealer/grantView、
 输入顺序变化、Provider 不足、伪分配、无关 residency、非法和溢出预算。
+## Canonical JSON Type Preservation
+
+2026-09-07：完整 Selection 与 core identity 编码复用 nlohmann/json v3.11.3 原生头文件，
+冻结源文件哈希和 MIT license，避免 PropertyTree 丢失 scalar 类型与空容器类型。
+NativeCanonicalJson.hpp 是内部编码 helper，不把第三方类型放入公开 DTO；复用库的解析、
+UTF-8 检查与 ASCII escaping。Python json.dumps 的浮点指数边界/最短回转表示单独适配，
+拒绝 nonfinite；冻结 stdlib oracle 覆盖 Unicode、整数边界、容器类型、负零、subnormal、
+极大值和固定种子的随机 binary64。此为 wire 修复前置步骤，未接入完整 sealer 前不关闭 T004。

@@ -1,5 +1,17 @@
 {
   "schema": "spec182-native-dependencies-v1",
+  "typedJson": {
+    "name": "nlohmann/json",
+    "version": "3.11.3",
+    "license": "MIT",
+    "header": "NDNSF-DistributedInference/cpp/vendor/nlohmann/json.hpp",
+    "sha256": "9bea4c8066ef4a1c206b2be5a36302f8926f7fdc6087af5d20b417d0cf103ea6",
+    "runtimeNetwork": false,
+    "sharedLibrary": false,
+    "scope": "Internal typed JSON parsing and escaping; Python-compatible canonical formatting in NativeCanonicalJson.hpp",
+    "oracle": "tests/fixtures/spec182/canonical-json-vectors.json",
+    "oracleSha256": "419df7743abfb43ff14268e6b441e2fc5b70b1e7fdbec404520a8783080de8d9"
+  },
   "status": "DESIGN_LOCK_WITH_BOUNDED_PROBES",
   "productQualification": "NOT_RUN",
   "sourceBaseline": "81e251a4ef1d8e6a394dc5f0c38bc44e44bfc973",

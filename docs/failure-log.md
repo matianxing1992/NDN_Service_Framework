@@ -1,5 +1,11 @@
 # Failure Log and Evidence Index
 
+## 2026-09-07 — Spec182 canonical float overflow probe
+
+typed canonical JSON r1 的 DBL_MAX 对照失败：stream 解析溢出后饱和值误判为回转成功，
+输出 2e+308。已定位为 helper 缺少 failbit 检查；保留 oracle，修复后独立 r2 重试。
+见 [canonical JSON evidence](../specs/182-native-di-python-bindings/evidence/t004-canonical-json-20260907.md)。
+
 ## 2026-09-07 — Spec182 T003 placement repair fixture failures
 
 r1 定向测试 exit 201：sealer fixture 依赖无关 residency 排序；新双角色 fixture 少传一个

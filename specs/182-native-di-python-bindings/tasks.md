@@ -56,6 +56,11 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 
 ## Current Checkpoint
 
+2026-09-07 T004 canonical JSON foundation / **PARTIAL**：新增固定原生 typed JSON 库和内部 helper；
+r1 DBL_MAX stream failbit 缺陷已修复，r2 构建 PASS，冻结 Python 对照 2/2 cases、2028 assertions PASS。
+见 [canonical evidence](evidence/t004-canonical-json-20260907.md)。
+完整 core/Selection encoder 尚未接入，不计整卡完成。
+
 2026-09-07 T003 placement repair / **PARTIAL**：逐角色独立 Provider 与目标工件提示排序已实现。
 r1 fixture 失败已修复；r2 -j4 构建 PASS（14.68s），37/37 cases、290/290 assertions PASS。
 首边界、原始记录与剩余义务见 [placement evidence](evidence/t003-role-placement-20260907.md)。
