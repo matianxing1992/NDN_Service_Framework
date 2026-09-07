@@ -107,7 +107,7 @@ T001冻结新unit selectors，不能执行整份混合测试文件而意外启�
 
 - **Outcome**: 独立 C++ requester 从模型/输入到真实 Response，cancel/deadline/late callbacks 保持单一终态。
 - **Design**: FR-001,FR-002,FR-008; CD-001,CD-013,CD-014; INV-001,INV-002,INV-003,INV-005; FLOW-001, FLOW-002。
-- **Changes**: NativeInferenceClient 头/源和 DI_NativeRequester.cpp，di-native-request
+- **Changes**: NativeInferenceClient 头/源和 DI_NativeRequester.cpp，di-native-request；NativeInferenceOperation的stream accept/replacement/final校验按[token stream recovery](native-token-stream-design.md#requester-acceptance-and-recovery-resolution)实现。
 - **ForbiddenChanges**: 在 Face 线程阻塞规划或 result；以低层 preplanned 调用代替完整 model request。
 - **LocalChecks**: client状态机、cancel/deadline/late callback单测；完整真实Core/Provider请求在T016。
 - **FinalProof**: PO-001,PO-003,PO-007。 本任务只完成局部单测；其余运行证据由T016统一产生。

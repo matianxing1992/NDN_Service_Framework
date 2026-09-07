@@ -6,6 +6,12 @@
 
 ## Current Checkpoint
 
+2026-09-07 Stream caller/recovery closure / **T001 IN_PROGRESS**：补齐[token stream contract](contracts/native-token-stream-design.md#production-caller-inventory)的paired factory、认证摘要绑定、唯一生产CLI注入点及三个integration consumers；定义NativeInferenceOperation的accept/replacement/final检查。源码确认现有AutomaticStreamingHandle接受前缀只在内存，runtime journal不在逐token接受链；保留进程内replacement与已提交conversation恢复各自边界，禁止终止token后重启生成，新增final text一致性义务。A7-08相关设计已定义，产品修复/测试仍OPEN；O-004其余公开API/schema/Provider注册生命周期仍需关闭，T001未完成、产品0/17。
+
+本轮仅源码核对与契约修订，没有native构建或运行测试。strict structure、design validator（180本地链接）及diff whitespace检查PASS。下一步统一收口O-004剩余注册生命周期及完整公开类型/调用清单，避免再重复已关闭的tokenizer算法问题。
+
+### Prior Qwen Stream Design
+
 2026-09-07 Qwen stream design / **T001 IN_PROGRESS**：读取交付清单固定revision的tokenizer.json，12,807,982 bytes及SHA256完全匹配，确认ByteLevel decoder；本地另一Qwen工件身份单独记录，不混用。新增[token stream design](contracts/native-token-stream-design.md)，定义stable API/第六私有ABI、所有权、ByteLevel与ByteFallback不同算法、终止flush及epoch候选/提交接线。A7-08剩余完整调用方和journal接受边界仍OPEN，T001未完成、产品0/17。
 
 独立`/usr/bin/python3 tests/fixtures/spec182/dependency-probes/check-bytelevel-stream.py`实际exit0：65,536个two-byte序列、9个长/非法/截断序列和3个whole-token fallback检查PASS；Python标准库增量UTF-8结果与固定HF0.20.3完整decode对照。strict structure、design validator（178本地链接）和diff whitespace检查PASS。仅reference诊断，不执行新增ABI/native产品。下一步关闭事件接受/恢复与全部factory调用方，随后统一收口O-004。
