@@ -1,0 +1,512 @@
+Bootstrap: localimage
+From: @BASE_SIF@
+Stage: builder
+
+# Portable development runtime; rendered inputs are checked by the delivery tool.
+# The pinned base is a dependency input, not current application evidence.
+# APT requires network access. This recipe does not promise offline APT reproduction.
+
+%files
+    @BUNDLE@/source/workspace.tar /build-input/workspace.tar
+    @BUNDLE@/source/ndn-svs.tar /build-input/ndn-svs.tar
+    @BUNDLE@/source/nacAbe.tar /build-input/nacAbe.tar
+    @BUNDLE@/source/ndnSd.tar /build-input/ndnSd.tar
+    @BUNDLE@/source/source-seal.json /build-input/source-seal.json
+    @BUNDLE@/wheels /build-input/wheels
+
+%post
+    set -eu
+    unset PYTHONOPTIMIZE PYTHONHOME PYTHONPATH
+    export NDNSF_CONTAINER_BUILD=1
+    export PATH=/usr/bin:/bin:/usr/sbin:/sbin:/opt/venv/bin:/opt/ndnsf-di/current/bin
+    export CC=/usr/bin/gcc
+    export CXX=/usr/bin/g++
+    export CXXFLAGS="-B/usr/bin -DBOOST_PHOENIX_DONT_USE_PREPROCESSED_FILES"
+    export LDFLAGS="-B/usr/bin"
+    export PYTHONNOUSERSITE=1
+    export LD_LIBRARY_PATH=/opt/ndnsf-di/current/lib:/opt/onnxruntime/lib
+    # Drop inherited application objects and build trees before using the base.
+    rm -rf /src/ndnsf /src/ndn-svs /src/nac-abe /src/ndn-sd /tmp/nac-abe-build /tmp/ndnsf-build-python /tmp/ndnsf-pc
+    rm -rf /opt/ndnsf-stage /opt/ndnsf-candidate /opt/ndnsf-di/replay
+    rm -rf /opt/ndnsf-di/current/include/nac-abe /opt/ndnsf-di/current/include/ndn-svs /opt/ndnsf-di/current/include/ndn-service-framework
+    rm -f /opt/ndnsf-di/current/lib/libnac-abe.so* /opt/ndnsf-di/current/lib/libndn-svs.so* /opt/ndnsf-di/current/lib/libndn-service-framework.so*
+    rm -f /opt/ndnsf-di/current/lib/pkgconfig/libnac-abe.pc /opt/ndnsf-di/current/lib/pkgconfig/libndn-svs.pc /opt/ndnsf-di/current/lib/pkgconfig/libndn-service-framework.pc
+    rm -rf /opt/ndnsf-di/current/include/ndnsd /usr/local/include/ndnsd
+    rm -f /opt/ndnsf-di/current/lib/libndnsd.so* /usr/local/lib/libndnsd.so*
+    rm -f /opt/ndnsf-di/current/lib/pkgconfig/ndnsd.pc /usr/local/lib/pkgconfig/ndnsd.pc
+    rm -f /opt/ndnsf-di/current/bin/di-native-provider /opt/ndnsf-di/current/bin/di-native-fault-provider /opt/ndnsf-di/current/bin/App_ServiceController
+    rm -rf /opt/venv/lib/python3.10/site-packages/ndnsf /opt/venv/lib/python3.10/site-packages/py_repoclient /opt/venv/lib/python3.10/site-packages/ndnsf_distributed_inference
+    rm -rf /opt/venv/lib/python3.10/site-packages/ndnsf-*.dist-info /opt/venv/lib/python3.10/site-packages/py_repoclient-*.dist-info /opt/venv/lib/python3.10/site-packages/ndnsf_di*.dist-info /opt/venv/lib/python3.10/site-packages/ndnsf_distributed_inference-*.dist-info
+    export DEBIAN_FRONTEND=noninteractive
+    sed -i 's|http://archive.ubuntu.com|https://archive.ubuntu.com|g; s|http://security.ubuntu.com|https://security.ubuntu.com|g' /etc/apt/sources.list
+    apt-get -o Acquire::Retries=3 update
+    apt-get install -y --no-install-recommends build-essential cmake pkg-config libgmp-dev libssl-dev libsqlite3-dev libboost-all-dev libpcap-dev protobuf-compiler libprotobuf-dev libgtkmm-3.0-dev ca-certificates python3.10-dev
+    rm -rf /var/lib/apt/lists/*
+    install -d /src/ndnsf /src/ndn-svs /src/nac-abe /src/ndn-sd /opt/ndnsf-stage/bin /opt/ndnsf-stage/include /opt/ndnsf-stage/lib/pkgconfig /opt/ndnsf-stage/python /opt/ndnsf-stage/manifest /opt/ndnsf-stage/replay/repo /tmp/ndnsf-pc /tmp/ndnsf-build-python
+    /opt/venv/bin/python - <<'PY'
+import hashlib
+import json
+import sys
+import sysconfig
+from pathlib import Path
+
+assert sys.version_info[:2] == (3, 10), 'PYTHON_ABI_REQUIRES_3_10'
+assert sysconfig.get_paths()['purelib'] == '/opt/venv/lib/python3.10/site-packages', 'PYTHON_PREFIX_MISMATCH'
+assert Path(sysconfig.get_paths()['include'], 'Python.h').is_file(), 'CONTAINER_PYTHON_HEADERS_MISSING'
+seal = json.loads(Path('/build-input/source-seal.json').read_text())
+assert seal['sealDigest'] == '@SEAL_DIGEST@', 'SOURCE_SEAL_IDENTITY_MISMATCH'
+canonical = json.loads(json.dumps(seal))
+canonical.pop('sealDigest', None)
+canonical['workspace'] = '<workspace>'
+canonical['sealDigestBasis'] = 'path-independent-content-v1'
+canonical['archive']['path'] = '<archive:workspace>'
+for name, dependency in canonical.get('dependencies', {}).items():
+    dependency['workspace'] = '<workspace:' + name + '>'
+    dependency['archive']['path'] = '<archive:' + name + '>'
+assert 'sha256:' + hashlib.sha256(json.dumps(canonical, sort_keys=True, separators=(',', ':')).encode()).hexdigest() == '@SEAL_DIGEST@', 'SOURCE_SEAL_CONTENT_MISMATCH'
+for name, row in [('workspace.tar', seal['archive']),
+                  ('ndn-svs.tar', seal['dependencies']['ndnSvs']['archive']),
+                  ('nacAbe.tar', seal['dependencies']['nacAbe']['archive']),
+                  ('ndnSd.tar', seal['dependencies']['ndnSd']['archive'])]:
+    h = hashlib.sha256()
+    with Path('/build-input', name).open('rb') as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+            h.update(chunk)
+    assert 'sha256:' + h.hexdigest() == row['sha256'], 'SOURCE_ARCHIVE_CHANGED:' + name
+PY
+    tar -xf /build-input/workspace.tar -C /src/ndnsf
+    tar -xf /build-input/ndn-svs.tar -C /src/ndn-svs
+    tar -xf /build-input/nacAbe.tar -C /src/nac-abe
+    tar -xf /build-input/ndnSd.tar -C /src/ndn-sd
+
+    export PKG_CONFIG_PATH=/opt/ndnsf-di/current/lib/pkgconfig
+    /usr/bin/cmake -S /src/nac-abe -B /tmp/nac-abe-build \
+      -DCMAKE_BUILD_TYPE=Release -DHAVE_TESTS=OFF -DBUILD_EXAMPLES=OFF \
+      -DCMAKE_CXX_COMPILER=/usr/bin/g++ -DCMAKE_CXX_FLAGS="$CXXFLAGS" \
+      -DCMAKE_INSTALL_PREFIX=/opt/ndnsf-di/current -DCMAKE_INSTALL_LIBDIR=lib \
+      -DCMAKE_PREFIX_PATH=/opt/ndnsf-di/current \
+      -DCMAKE_LIBRARY_PATH=/opt/ndnsf-di/current/lib
+    /usr/bin/cmake --build /tmp/nac-abe-build --parallel 2 --verbose
+    /usr/bin/cmake --install /tmp/nac-abe-build
+    test "$(pkg-config --variable=includedir libnac-abe)" = /opt/ndnsf-di/current/include
+    test "$(pkg-config --variable=libdir libnac-abe)" = /opt/ndnsf-di/current/lib
+    test -f /opt/ndnsf-di/current/include/nac-abe/consumer.hpp
+    install -m 0755 /opt/ndnsf-di/current/lib/libnac-abe.so /opt/ndnsf-stage/lib/libnac-abe.so
+    cp -a /opt/ndnsf-di/current/include/nac-abe /opt/ndnsf-stage/include/
+    install -m 0644 /opt/ndnsf-di/current/lib/pkgconfig/libnac-abe.pc /opt/ndnsf-stage/lib/pkgconfig/libnac-abe.pc
+
+    export PATH=/usr/bin:/bin:/usr/sbin:/sbin:/opt/venv/bin:/opt/ndnsf-di/current/bin
+    export LD_LIBRARY_PATH=/opt/ndnsf-di/current/lib:/opt/onnxruntime/lib
+    export PKG_CONFIG_PATH=/tmp/ndnsf-pc:/opt/ndnsf-di/current/lib/pkgconfig:/opt/onnxruntime/lib/pkgconfig
+    cd /src/ndn-svs
+    ./waf configure --prefix=/opt/ndnsf-di/current --libdir=/opt/ndnsf-di/current/lib --boost-includes=/usr/include --boost-libs=/usr/lib/x86_64-linux-gnu
+    ./waf -j2 -v
+    ./waf install -j2
+    cp -a /opt/ndnsf-di/current/include/ndn-svs /opt/ndnsf-stage/include/
+    install -m 0755 /opt/ndnsf-di/current/lib/libndn-svs.so.0.1.0 /opt/ndnsf-stage/lib/libndn-svs.so.0.1.0
+    ln -s libndn-svs.so.0.1.0 /opt/ndnsf-stage/lib/libndn-svs.so
+    install -m 0644 /opt/ndnsf-di/current/lib/pkgconfig/libndn-svs.pc /opt/ndnsf-stage/lib/pkgconfig/libndn-svs.pc
+
+    # NDNSD owns SVSPubSub objects and must follow the selected SVS ABI.
+    # Its pkg-config metadata must come from the pinned, repaired source.
+    export CPLUS_INCLUDE_PATH=/opt/ndnsf-di/current/include
+    export LIBRARY_PATH=/opt/ndnsf-di/current/lib
+    export CXX="/usr/bin/g++ -B/usr/bin"
+    export CPPFLAGS="-I/opt/ndnsf-di/current/include"
+    export LINKFLAGS="-L/opt/ndnsf-di/current/lib -Wl,-rpath,/opt/ndnsf-di/current/lib"
+    export LDFLAGS="-B/usr/bin -L/opt/ndnsf-di/current/lib -Wl,-rpath,/opt/ndnsf-di/current/lib"
+    test "$(pkg-config --variable=includedir libndn-svs)" = /opt/ndnsf-di/current/include
+    test "$(pkg-config --variable=libdir libndn-svs)" = /opt/ndnsf-di/current/lib
+    cd /src/ndn-sd
+    ./waf configure --prefix=/opt/ndnsf-di/current --libdir=/opt/ndnsf-di/current/lib --boost-includes=/usr/include --boost-libs=/usr/lib/x86_64-linux-gnu
+    ./waf -j2 -v
+    ./waf install -j2
+    test "$(pkg-config --cflags-only-I ndnsd | tr -d '[:space:]')" = '-I/opt/ndnsf-di/current/include'
+    test "$(pkg-config --variable=libdir ndnsd)" = /opt/ndnsf-di/current/lib
+    install -m 0755 /opt/ndnsf-di/current/lib/libndnsd.so.0.1.0 /opt/ndnsf-stage/lib/libndnsd.so.0.1.0
+    ln -s libndnsd.so.0.1.0 /opt/ndnsf-stage/lib/libndnsd.so
+    cp -a /opt/ndnsf-di/current/include/ndnsd /opt/ndnsf-stage/include/
+    install -m 0644 /opt/ndnsf-di/current/lib/pkgconfig/ndnsd.pc /opt/ndnsf-stage/lib/pkgconfig/ndnsd.pc
+
+    export CPLUS_INCLUDE_PATH=/opt/ndnsf-di/current/include
+    export LD_LIBRARY_PATH=/opt/ndnsf-stage/lib:/opt/ndnsf-di/current/lib:/opt/onnxruntime/lib
+    export PKG_CONFIG_PATH=/opt/ndnsf-stage/lib/pkgconfig:/tmp/ndnsf-pc:/opt/ndnsf-di/current/lib/pkgconfig:/opt/onnxruntime/lib/pkgconfig
+    for package in libndn-cxx libndn-svs libnac-abe ndnsd openssl protobuf gtkmm-3.0 onnxruntime; do pkg-config --exists "$package"; done
+    test -x /usr/bin/c++
+    test -x /usr/bin/protoc
+    test -f /usr/include/boost/version.hpp
+    python3 - <<'PY'
+import json
+import os
+import subprocess
+from pathlib import Path
+
+packages = ['libndn-cxx', 'libndn-svs', 'libnac-abe', 'ndnsd',
+            'openssl', 'protobuf', 'gtkmm-3.0', 'onnxruntime']
+body = {
+    'schemaVersion': 'spec170-container-configure-closure-v1',
+    'status': 'PASS',
+    'pkgConfigPath': os.environ['PKG_CONFIG_PATH'],
+    'packages': {
+        package: subprocess.check_output(
+            ['pkg-config', '--modversion', package], text=True).strip()
+        for package in packages
+    },
+    'compiler': subprocess.check_output(['/usr/bin/c++', '--version'], text=True).splitlines()[0],
+    'protoc': subprocess.check_output(['/usr/bin/protoc', '--version'], text=True).strip(),
+}
+Path('/opt/ndnsf-stage/manifest/container-configure-closure.json').write_text(
+    json.dumps(body, indent=2, sort_keys=True) + '\n', encoding='utf-8')
+PY
+    cd /src/ndnsf
+    ./waf configure --prefix=/opt/ndnsf-di/current --libdir=/opt/ndnsf-di/current/lib --with-examples --disable-local-dependency-prefix \
+      --nac-abe-prefix=/opt/ndnsf-di/current \
+      --ndn-svs-source-tree=/src/ndn-svs --ndn-svs-build-tree=/src/ndn-svs/build \
+      --boost-includes=/usr/include --boost-libs=/usr/lib/x86_64-linux-gnu
+    ./waf -j2 -v --targets=ndn-service-framework,libndn-service-framework.pc,App_ServiceController,di-native-provider,di-native-fault-provider
+
+    install -m 0755 build/libndn-service-framework.so /opt/ndnsf-stage/lib/libndn-service-framework.so.0.1.0
+    ln -s libndn-service-framework.so.0.1.0 /opt/ndnsf-stage/lib/libndn-service-framework.so
+    install -m 0644 build/libndn-service-framework.pc /opt/ndnsf-stage/lib/pkgconfig/libndn-service-framework.pc
+    install -m 0755 build/examples/App_ServiceController /opt/ndnsf-stage/bin/App_ServiceController
+    install -m 0755 build/examples/di-native-provider /opt/ndnsf-stage/bin/di-native-provider
+    install -m 0755 build/examples/di-native-fault-provider /opt/ndnsf-stage/bin/di-native-fault-provider
+
+    rm -f /opt/ndnsf-di/current/lib/libndn-service-framework.so*
+    cp -a /opt/ndnsf-stage/lib/libndn-service-framework.so.0.1.0 /opt/ndnsf-di/current/lib/
+    ln -s libndn-service-framework.so.0.1.0 /opt/ndnsf-di/current/lib/libndn-service-framework.so
+    install -m 0644 build/libndn-service-framework.pc /opt/ndnsf-di/current/lib/pkgconfig/libndn-service-framework.pc
+    /usr/bin/python3 - <<'PY'
+import shutil
+from pathlib import Path
+source = Path('/src/ndnsf')
+target = Path('/opt/ndnsf-stage/include')
+for path in (source / 'ndn-service-framework').rglob('*.hpp'):
+    dest = target / path.relative_to(source)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(path, dest)
+shutil.copy2(source / 'build/config.hpp', target / 'ndn-service-framework/config.hpp')
+PY
+    cp -a /opt/ndnsf-stage/include/ndn-service-framework /opt/ndnsf-di/current/include/
+    # Ensure setup.py cannot select a previous local build directory.
+    rm -rf /src/ndnsf/build /src/ndnsf/pythonWrapper/build /src/ndnsf/NDNSF-DistributedRepo/pythonWrapper/build
+    export NDNSF_NAC_ABE_PREFIX=/opt/ndnsf-di/current
+    export NDNSF_NDN_SVS_SOURCE_TREE=/src/ndn-svs
+    export NDNSF_NDN_SVS_BUILD_TREE=/src/ndn-svs/build
+
+    /opt/venv/bin/pip install --no-index --no-deps --target=/tmp/ndnsf-build-python /build-input/wheels/pybind11-2.13.6-py3-none-any.whl
+    PYTHONPATH=/tmp/ndnsf-build-python CPLUS_INCLUDE_PATH=/opt/ndnsf-di/current/include NDNSF_LIBRARY_DIR=/opt/ndnsf-di/current/lib /opt/venv/bin/pip install --no-index --no-deps --no-build-isolation --target=/opt/ndnsf-stage/python /src/ndnsf/pythonWrapper
+    PYTHONPATH=/tmp/ndnsf-build-python CPLUS_INCLUDE_PATH=/opt/ndnsf-di/current/include NDNSF_LIBRARY_DIR=/opt/ndnsf-di/current/lib /opt/venv/bin/pip install --no-index --no-deps --no-build-isolation --target=/opt/ndnsf-stage/python /src/ndnsf/NDNSF-DistributedRepo/pythonWrapper
+    /opt/venv/bin/pip install --no-index --find-links=/build-input/wheels --target=/opt/ndnsf-stage/python 'python-ndn==0.3'
+    rm -rf /src/ndnsf/pythonWrapper/build /src/ndnsf/NDNSF-DistributedRepo/pythonWrapper/build
+    cp -a /src/ndnsf/NDNSF-DistributedInference/ndnsf_distributed_inference /opt/ndnsf-stage/python/
+    # The Spec180 replay repo mirrors the sealed source for the exact-SIF
+    # runner and its maintained YOLO application.  Host checkout paths are
+    # never referenced by in-image child commands.
+    install -d \
+      /opt/ndnsf-stage/replay/repo/NDNSF-DistributedRepo \
+      /opt/ndnsf-stage/replay/repo/tools \
+      /opt/ndnsf-stage/replay/repo/tests \
+      /opt/ndnsf-stage/replay/repo/examples \
+      /opt/ndnsf-stage/replay/repo/specs
+    cp -a /src/ndnsf/Experiments /opt/ndnsf-stage/replay/repo/
+    cp -a /src/ndnsf/tools/ndnsf-di /opt/ndnsf-stage/replay/repo/tools/
+    cp -a /src/ndnsf/tests/fixtures /opt/ndnsf-stage/replay/repo/tests/
+    cp -a /src/ndnsf/NDNSF-DistributedInference /opt/ndnsf-stage/replay/repo/
+    cp -a /src/ndnsf/NDNSF-DistributedRepo/pythonWrapper /opt/ndnsf-stage/replay/repo/NDNSF-DistributedRepo/
+    cp -a /src/ndnsf/pythonWrapper /opt/ndnsf-stage/replay/repo/
+    cp -a /src/ndnsf/examples/trust-schema.conf /opt/ndnsf-stage/replay/repo/examples/
+    cp -a /src/ndnsf/examples/python /opt/ndnsf-stage/replay/repo/examples/
+    cp -a /src/ndnsf/packaging/ndnsf-di-container/jobs/spec180 \
+      /opt/ndnsf-stage/replay/repo/packaging-jobs-spec180
+    cp /build-input/source-seal.json /opt/ndnsf-stage/replay/source-seal.json
+    # Strip the host .codex-tmp scratch from the sealed replay repo; the
+    # replay driver binds the candidate inputs at run time.
+    rm -rf /opt/ndnsf-stage/replay/repo/.codex-tmp
+    chmod 0755 /opt/ndnsf-stage/replay/repo/Experiments/NDNSF_DI_YoloAckDriven_Minindn.py
+
+    cat > /opt/ndnsf-stage/manifest/verify-native.py <<'PY'
+import hashlib
+import importlib
+import importlib.metadata
+import json
+import os
+from pathlib import Path
+import platform
+import re
+import subprocess
+import sys
+import sysconfig
+
+mode = sys.argv[1]
+assert mode in ('builder', 'final'), 'NATIVE_CHECK_MODE'
+assert platform.machine() == 'x86_64', 'BASE_ARCHITECTURE_REQUIRES_X86_64'
+assert sys.version_info[:2] == (3, 10), 'PYTHON_ABI_REQUIRES_3_10'
+assert sysconfig.get_paths()['purelib'] == '/opt/venv/lib/python3.10/site-packages', 'PYTHON_PREFIX_MISMATCH'
+base = Path('/opt/ndnsf-stage' if mode == 'builder' else '/opt/ndnsf-di/current')
+site = Path('/opt/ndnsf-stage/python' if mode == 'builder' else sysconfig.get_paths()['purelib'])
+manifest_path = base / 'manifest/container-native-build.json'
+
+def digest(path):
+    h = hashlib.sha256()
+    with Path(path).open('rb') as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+            h.update(chunk)
+    return 'sha256:' + h.hexdigest()
+
+extensions = {}
+for package, stem in [('ndnsf', '_ndnsf'), ('py_repoclient', '_py_repoclient')]:
+    paths = list((site / package).glob(stem + '*.so'))
+    assert len(paths) == 1, 'EXTENSION_COUNT:' + package
+    assert paths[0].name.endswith(sysconfig.get_config_var('EXT_SUFFIX')), 'EXTENSION_SOABI:' + package
+    loaded = Path(importlib.import_module(package + '.' + stem).__file__).resolve()
+    assert loaded == paths[0].resolve(), 'EXTENSION_SHADOWED:' + package
+    extensions[package] = paths[0]
+
+runtime = Path('/opt/ndnsf-di/current')
+artifacts = [('provider', base / 'bin/di-native-provider', runtime / 'bin/di-native-provider'),
+             ('faultProvider', base / 'bin/di-native-fault-provider', runtime / 'bin/di-native-fault-provider'),
+             ('controller', base / 'bin/App_ServiceController', runtime / 'bin/App_ServiceController')]
+for name, file in [('framework', 'libndn-service-framework.so.0.1.0'),
+                   ('ndn-svs', 'libndn-svs.so.0.1.0'), ('nac-abe', 'libnac-abe.so'),
+                   ('ndn-sd', 'libndnsd.so.0.1.0')]:
+    artifacts.append((name, base / 'lib' / file, runtime / 'lib' / file))
+for name, package in [('extension', 'ndnsf'), ('repoExtension', 'py_repoclient')]:
+    artifacts.append((name, extensions[package], Path(sysconfig.get_paths()['purelib']) / package / extensions[package].name))
+selected = {path.name: (path, destination) for _, path, destination in artifacts if path.parent == base / 'lib'}
+
+# Verify actual mappings after importing both extensions, not just their ldd text.
+mapped = set()
+for line in Path('/proc/self/maps').read_text().splitlines():
+    value = line.split()[-1]
+    if not value.startswith('/'):
+        continue
+    path = Path(value)
+    for name, (expected, _) in selected.items():
+        if path.name == name:
+            assert digest(path) == digest(expected), 'LOADED_LIBRARY_MISMATCH:' + name
+            mapped.add(name)
+assert mapped == set(selected), 'REQUIRED_NATIVE_MAPPING_MISSING'
+
+def closure(path):
+    output = subprocess.check_output(['/usr/bin/ldd', str(path)], text=True, stderr=subprocess.STDOUT)
+    assert 'not found' not in output, 'NATIVE_DEPENDENCY_MISSING:' + str(path)
+    dependencies = {}
+    for line in output.splitlines():
+        match = re.search(r'(?:=>\s+)?(/[^\s]+)', line)
+        if not match:
+            continue
+        actual = Path(match.group(1))
+        logical = actual
+        if actual.name in selected:
+            expected, logical = selected[actual.name]
+            assert digest(actual) == digest(expected), 'LINKED_LIBRARY_MISMATCH:' + str(actual)
+        dependencies[str(logical)] = digest(actual)
+    return {'ldd': output, 'dependencies': dependencies}
+
+rows = [{'name': name, 'builderPath': str(path), 'runtimePath': str(destination),
+         'bytes': path.stat().st_size, 'sha256': digest(path), **closure(path)}
+        for name, path, destination in artifacts]
+if mode == 'builder':
+    python_packages = {name: importlib.metadata.version(name)
+                       for name in ('python-ndn', 'tokenizers', 'onnx', 'numpy')}
+    ort_distributions = {}
+    for name in ('onnxruntime', 'onnxruntime-gpu'):
+        try:
+            ort_distributions[name] = importlib.metadata.version(name)
+        except importlib.metadata.PackageNotFoundError:
+            pass
+    assert ort_distributions, 'ONNXRUNTIME_DISTRIBUTION_MISSING'
+    python_packages.update(ort_distributions)
+    # Record the runtime packages owning selected system DSOs for the final APT stage.
+    apt_packages = {}
+    for path in {path for row in rows for path in row['dependencies']}:
+        if not path.startswith(('/lib/', '/usr/lib/')):
+            continue
+        candidates = [path, path[4:] if path.startswith('/usr/') else '/usr' + path]
+        owner = None
+        for candidate in candidates:
+            query = subprocess.run(['dpkg-query', '-S', candidate], capture_output=True, text=True)
+            if query.returncode == 0:
+                owner = query.stdout.splitlines()[0].rsplit(': ', 1)[0]
+                break
+        assert owner, 'SYSTEM_LIBRARY_PACKAGE_UNKNOWN:' + path
+        apt_packages[owner] = subprocess.check_output(['dpkg-query', '-W', '-f=${Version}', owner], text=True)
+    body = {'schemaVersion': 'spec170-container-native-build-v1', 'status': 'PASS',
+            'buildBoundary': 'container-runtime-in-sif',
+            'sourceSealSha256': digest('/build-input/source-seal.json'),
+            'configureClosureSha256': digest(base / 'manifest/container-configure-closure.json'),
+            'python': {'executable': sys.executable, 'version': platform.python_version(),
+                       'soabi': sysconfig.get_config_var('SOABI'), 'extSuffix': sysconfig.get_config_var('EXT_SUFFIX'),
+                       'include': sysconfig.get_paths()['include']},
+            'compiler': subprocess.check_output(['/usr/bin/g++', '--version'], text=True).splitlines()[0],
+            'linker': subprocess.check_output(['/usr/bin/ld', '--version'], text=True).splitlines()[0],
+            'glibc': platform.libc_ver(), 'runtimeAptPackages': apt_packages,
+            'pythonPackages': python_packages,
+            'artifacts': rows}
+else:
+    body = json.loads(manifest_path.read_text())
+    assert body['buildBoundary'] == 'container-runtime-in-sif', 'FINAL_BUILD_BOUNDARY_MISMATCH'
+    assert body['python']['soabi'] == sysconfig.get_config_var('SOABI'), 'FINAL_SOABI_MISMATCH'
+    assert body['pythonPackages'] == {name: importlib.metadata.version(name) for name in body['pythonPackages']}, 'FINAL_PYTHON_PACKAGES_CHANGED'
+    expected = {row['name']: row for row in body['artifacts']}
+    assert len(expected) == len(rows) == len(body['artifacts']), 'FINAL_ARTIFACT_SET_MISMATCH'
+    assert set(expected) == {row['name'] for row in rows}, 'FINAL_ARTIFACT_SET_MISMATCH'
+    for row in rows:
+        before = expected[row['name']]
+        assert (row['sha256'], row['bytes'], row['runtimePath'], row['dependencies']) == (before['sha256'], before['bytes'], before['runtimePath'], before['dependencies']), 'FINAL_ARTIFACT_OR_CLOSURE_MISMATCH:' + row['name']
+        before['finalSha256'] = row['sha256']
+        before['finalLdd'] = row['ldd']
+    assert digest('/opt/ndnsf-di/replay/source-seal.json') == body['sourceSealSha256'], 'FINAL_SOURCE_SEAL_CHANGED'
+    assert digest(base / 'manifest/container-configure-closure.json') == body['configureClosureSha256'], 'FINAL_CONFIGURE_CLOSURE_CHANGED'
+    body['finalVerification'] = 'PASS'
+    body['finalPython'] = {'executable': sys.executable, 'version': platform.python_version(),
+                           'soabi': sysconfig.get_config_var('SOABI')}
+manifest_path.write_text(json.dumps(body, indent=2, sort_keys=True) + '\n')
+PY
+    PYTHONPATH=/opt/ndnsf-stage/python /opt/venv/bin/python /opt/ndnsf-stage/manifest/verify-native.py builder
+
+    PYTHONPATH=/opt/ndnsf-stage/python /opt/venv/bin/python -c 'import ndnsf._ndnsf, ndnsf_distributed_inference, py_repoclient, ndn, tokenizers, onnx, numpy, onnxruntime; import ndnsf_distributed_inference.native_assembly_helper, ndnsf_distributed_inference.native_token_decode_helper'
+    if ldd /opt/ndnsf-stage/bin/di-native-provider | grep -q 'not found'; then
+      exit 1
+    fi
+    extension_path=$(find /opt/ndnsf-stage/python/ndnsf -maxdepth 1 -name '_ndnsf*.so' -type f)
+    if ldd "$extension_path" | grep -q 'not found'; then
+      exit 1
+    fi
+    # The Spec180 maintained application must import inside the builder.
+    PYTHONPATH=/opt/ndnsf-stage/python:/opt/ndnsf-stage/replay/repo/examples/python/NDNSF-DistributedInference/yolo_2x2 \
+      /opt/venv/bin/python -c 'import yolo_2x2_lib'
+
+    rm -rf /src/ndnsf /src/ndn-svs /src/nac-abe /src/ndn-sd /build-input /tmp/nac-abe-build /tmp/ndnsf-build-python /tmp/ndnsf-pc
+
+Bootstrap: localimage
+From: @BASE_SIF@
+Stage: final
+
+%files from builder
+    /opt/ndnsf-stage/bin/di-native-provider /opt/ndnsf-candidate/bin/di-native-provider
+    /opt/ndnsf-stage/bin/di-native-fault-provider /opt/ndnsf-candidate/bin/di-native-fault-provider
+    /opt/ndnsf-stage/bin/App_ServiceController /opt/ndnsf-candidate/bin/App_ServiceController
+    /opt/ndnsf-stage/lib/libndn-service-framework.so.0.1.0 /opt/ndnsf-candidate/lib/libndn-service-framework.so.0.1.0
+    /opt/ndnsf-stage/lib/libndn-svs.so.0.1.0 /opt/ndnsf-candidate/lib/libndn-svs.so.0.1.0
+    /opt/ndnsf-stage/lib/libnac-abe.so /opt/ndnsf-candidate/lib/libnac-abe.so
+    /opt/ndnsf-stage/lib/libndnsd.so.0.1.0 /opt/ndnsf-candidate/lib/libndnsd.so.0.1.0
+    /opt/ndnsf-stage/lib/pkgconfig/libndn-service-framework.pc /opt/ndnsf-candidate/lib/pkgconfig/libndn-service-framework.pc
+    /opt/ndnsf-stage/lib/pkgconfig/libnac-abe.pc /opt/ndnsf-candidate/lib/pkgconfig/libnac-abe.pc
+    /opt/ndnsf-stage/lib/pkgconfig/libndn-svs.pc /opt/ndnsf-candidate/lib/pkgconfig/libndn-svs.pc
+    /opt/ndnsf-stage/lib/pkgconfig/ndnsd.pc /opt/ndnsf-candidate/lib/pkgconfig/ndnsd.pc
+    /opt/ndnsf-stage/include /opt/ndnsf-candidate/include
+    /opt/ndnsf-stage/manifest/verify-native.py /opt/ndnsf-candidate/manifest/verify-native.py
+    /opt/ndnsf-stage/python /opt/ndnsf-candidate/python
+    /opt/ndnsf-stage/manifest/container-configure-closure.json /opt/ndnsf-candidate/manifest/container-configure-closure.json
+    /opt/ndnsf-stage/manifest/container-native-build.json /opt/ndnsf-candidate/manifest/container-native-build.json
+    /opt/ndnsf-stage/replay /opt/ndnsf-candidate/replay
+
+%post
+    set -eu
+    unset PYTHONOPTIMIZE PYTHONHOME PYTHONPATH
+    export DEBIAN_FRONTEND=noninteractive
+    sed -i 's|http://archive.ubuntu.com|https://archive.ubuntu.com|g; s|http://security.ubuntu.com|https://security.ubuntu.com|g' /etc/apt/sources.list
+    # Online APT repositories must still provide these builder-selected versions.
+    apt-get -o Acquire::Retries=3 update
+    /opt/venv/bin/python - <<'PY'
+import json
+from pathlib import Path
+import subprocess
+body = json.loads(Path('/opt/ndnsf-candidate/manifest/container-native-build.json').read_text())
+packages = [name + '=' + version for name, version in sorted(body['runtimeAptPackages'].items())]
+if packages:
+    subprocess.check_call(['apt-get', 'install', '-y', '--no-install-recommends', *packages])
+PY
+    rm -rf /var/lib/apt/lists/*
+    export PATH=/usr/bin:/bin:/usr/sbin:/sbin:/opt/venv/bin:/opt/ndnsf-di/current/bin
+    export LD_LIBRARY_PATH=/opt/ndnsf-di/current/lib:/opt/onnxruntime/lib
+    export PYTHONNOUSERSITE=1
+    unset PYTHONPATH
+    export NDNSF_REPLACE_STALE_NATIVE=1
+    rm -f /opt/ndnsf-di/current/bin/di-native-provider
+    rm -f /opt/ndnsf-di/current/bin/di-native-fault-provider
+    rm -f /opt/ndnsf-di/current/bin/App_ServiceController
+    rm -f /opt/ndnsf-di/current/lib/libndn-service-framework.so*
+    rm -f /opt/ndnsf-di/current/lib/libndn-svs.so*
+    rm -f /opt/ndnsf-di/current/lib/libnac-abe.so*
+    rm -f /opt/ndnsf-di/current/lib/libndnsd.so* /usr/local/lib/libndnsd.so*
+    rm -f /usr/local/lib/pkgconfig/ndnsd.pc
+    rm -rf /opt/ndnsf-di/current/include/ndnsd /usr/local/include/ndnsd
+    rm -f /opt/venv/lib/python3.10/site-packages/ndnsf/_ndnsf*.so
+    rm -rf /opt/venv/lib/python3.10/site-packages/ndnsf
+    rm -rf /opt/venv/lib/python3.10/site-packages/ndnsf_distributed_inference
+    rm -rf /opt/venv/lib/python3.10/site-packages/py_repoclient
+    rm -rf /opt/venv/lib/python3.10/site-packages/ndnsf-*.dist-info /opt/venv/lib/python3.10/site-packages/py_repoclient-*.dist-info /opt/venv/lib/python3.10/site-packages/ndnsf_di*.dist-info /opt/venv/lib/python3.10/site-packages/ndnsf_distributed_inference-*.dist-info
+    rm -rf /opt/ndnsf-di/replay /opt/ndnsf-di/current/include/nac-abe /opt/ndnsf-di/current/include/ndn-svs /opt/ndnsf-di/current/include/ndn-service-framework
+
+    install -d /opt/ndnsf-di/current/bin /opt/ndnsf-di/current/lib/pkgconfig /opt/ndnsf-di/current/manifest /opt/ndnsf-di/replay /opt/venv/lib/python3.10/site-packages
+    install -m 0755 /opt/ndnsf-candidate/bin/di-native-provider /opt/ndnsf-di/current/bin/di-native-provider
+    install -m 0755 /opt/ndnsf-candidate/bin/di-native-fault-provider /opt/ndnsf-di/current/bin/di-native-fault-provider
+    install -m 0755 /opt/ndnsf-candidate/bin/App_ServiceController /opt/ndnsf-di/current/bin/App_ServiceController
+    install -m 0755 /opt/ndnsf-candidate/lib/libndn-service-framework.so.0.1.0 /opt/ndnsf-di/current/lib/libndn-service-framework.so.0.1.0
+    ln -s libndn-service-framework.so.0.1.0 /opt/ndnsf-di/current/lib/libndn-service-framework.so
+    install -m 0755 /opt/ndnsf-candidate/lib/libndn-svs.so.0.1.0 /opt/ndnsf-di/current/lib/libndn-svs.so.0.1.0
+    ln -s libndn-svs.so.0.1.0 /opt/ndnsf-di/current/lib/libndn-svs.so
+    install -m 0755 /opt/ndnsf-candidate/lib/libnac-abe.so /opt/ndnsf-di/current/lib/libnac-abe.so
+    install -m 0755 /opt/ndnsf-candidate/lib/libndnsd.so.0.1.0 /opt/ndnsf-di/current/lib/libndnsd.so.0.1.0
+    ln -s libndnsd.so.0.1.0 /opt/ndnsf-di/current/lib/libndnsd.so
+    install -m 0644 /opt/ndnsf-candidate/lib/pkgconfig/libndn-service-framework.pc /opt/ndnsf-di/current/lib/pkgconfig/libndn-service-framework.pc
+    install -d /opt/ndnsf-di/current/include
+    cp -a /opt/ndnsf-candidate/include/. /opt/ndnsf-di/current/include/
+    install -m 0644 /opt/ndnsf-candidate/lib/pkgconfig/libnac-abe.pc /opt/ndnsf-di/current/lib/pkgconfig/libnac-abe.pc
+    install -m 0644 /opt/ndnsf-candidate/lib/pkgconfig/libndn-svs.pc /opt/ndnsf-di/current/lib/pkgconfig/libndn-svs.pc
+    install -m 0644 /opt/ndnsf-candidate/lib/pkgconfig/ndnsd.pc /opt/ndnsf-di/current/lib/pkgconfig/ndnsd.pc
+    install -m 0644 /opt/ndnsf-candidate/manifest/verify-native.py /opt/ndnsf-di/current/manifest/verify-native.py
+    cp -a /opt/ndnsf-candidate/python/. /opt/venv/lib/python3.10/site-packages/
+    cp -a /opt/ndnsf-candidate/replay/. /opt/ndnsf-di/replay/
+    install -m 0644 /opt/ndnsf-candidate/manifest/container-native-build.json /opt/ndnsf-di/current/manifest/container-native-build.json
+    install -m 0644 /opt/ndnsf-candidate/manifest/container-configure-closure.json /opt/ndnsf-di/current/manifest/container-configure-closure.json
+    install -m 0755 /opt/ndnsf-candidate/replay/repo/packaging-jobs-spec180/run-ndnsf-yolo.sh /opt/ndnsf/bin/run-ndnsf-yolo.sh
+    for path in /opt/venv/lib/python3.10/site-packages/torch* \
+                /opt/venv/lib/python3.10/site-packages/transformers* \
+                /opt/venv/lib/python3.10/site-packages/functorch*; do
+        if [ -e "$path" ]; then rm -rf "$path"; fi
+    done
+    rm -f /opt/venv/bin/torchrun /opt/venv/bin/transformers
+    ldconfig
+
+    extension_count=$(find /opt/venv/lib/python3.10/site-packages/ndnsf -maxdepth 1 -name '_ndnsf*.so' -type f | wc -l)
+    test "$extension_count" -eq 1
+    extension_path=$(find /opt/venv/lib/python3.10/site-packages/ndnsf -maxdepth 1 -name '_ndnsf*.so' -type f)
+    repo_extension_count=$(find /opt/venv/lib/python3.10/site-packages/py_repoclient -maxdepth 1 -name '_py_repoclient*.so' -type f | wc -l)
+    test "$repo_extension_count" -eq 1
+    repo_extension_path=$(find /opt/venv/lib/python3.10/site-packages/py_repoclient -maxdepth 1 -name '_py_repoclient*.so' -type f)
+    sha256sum /opt/ndnsf-di/current/lib/libndnsd.so.0.1.0 /opt/ndnsf-di/current/lib/libnac-abe.so "$repo_extension_path" /opt/ndnsf-di/current/bin/di-native-provider /opt/ndnsf-di/current/bin/di-native-fault-provider /opt/ndnsf-di/current/bin/App_ServiceController /opt/ndnsf-di/current/lib/libndn-service-framework.so.0.1.0 /opt/ndnsf-di/current/lib/libndn-svs.so.0.1.0 "$extension_path" > /opt/ndnsf-di/current/manifest/final-native-sha256.txt
+
+    /opt/venv/bin/python /opt/ndnsf-di/current/manifest/verify-native.py final
+
+    PYTHONNOUSERSITE=1 /opt/venv/bin/python -c 'import ndnsf._ndnsf, ndnsf_distributed_inference, py_repoclient, ndn, tokenizers, onnx, numpy, onnxruntime; import ndnsf_distributed_inference.native_assembly_helper, ndnsf_distributed_inference.native_token_decode_helper'
+    test -x /opt/ndnsf-di/replay/repo/Experiments/NDNSF_DI_YoloAckDriven_Minindn.py
+    test -f /opt/ndnsf-di/replay/source-seal.json
+    for command in nfd nfdc ndnsec; do
+      command -v "$command"
+    done
+    if ldd /opt/ndnsf-di/current/bin/di-native-provider | grep -q 'not found'; then
+      exit 1
+    fi
+    if ldd /opt/ndnsf-di/current/bin/di-native-fault-provider | grep -q 'not found'; then
+      exit 1
+    fi
+    if ldd "$extension_path" | grep -q 'not found'; then
+      exit 1
+    fi
+    rm -rf /opt/ndnsf-candidate /opt/ndnsf-stage /src/ndnsf /src/ndn-svs /src/nac-abe /src/ndn-sd /build-input
+
+%environment
+    export PATH=/opt/venv/bin:/opt/ndnsf-di/current/bin:$PATH
+    export LD_LIBRARY_PATH=/opt/ndnsf-di/current/lib:/opt/onnxruntime/lib
+    export PKG_CONFIG_PATH=/opt/ndnsf-di/current/lib/pkgconfig:/opt/onnxruntime/lib/pkgconfig
+    export PYTHONNOUSERSITE=1
+
+%labels
+    org.ndnsf.di.build-boundary container-runtime-in-sif
+    org.ndnsf.di.native-build-manifest /opt/ndnsf-di/current/manifest/container-native-build.json
+    org.ndnsf.di.release @RELEASE@
+    org.ndnsf.di.source-seal @SEAL_DIGEST@

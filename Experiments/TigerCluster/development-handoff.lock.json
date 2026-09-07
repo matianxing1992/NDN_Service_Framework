@@ -1,0 +1,80 @@
+{
+  "schema": "ndnsf-development-lock-v1",
+  "release": "development-20260906",
+  "repositories": {
+    "ndnsf": {
+      "url": "https://github.com/matianxing1992/NDN_Service_Framework.git",
+      "branch": "Experimental",
+      "revision": "447f7584072142edea8c8e2ae3ed4ffdc5fbd0c5"
+    },
+    "nacAbe": {
+      "url": "https://github.com/matianxing1992/NAC-ABE.git",
+      "branch": "Experimental",
+      "revision": "5ed23e68520fb9c4ef747c51d6d18c915ff88fc4"
+    },
+    "ndnSvs": {
+      "url": "https://github.com/matianxing1992/ndn-svs.git",
+      "branch": "Experimental",
+      "revision": "9f2d8a47cd2a25a5f9ade661c9dbe8acd6416a20"
+    },
+    "ndnSd": {
+      "url": "https://github.com/matianxing1992/NDNSD.git",
+      "branch": "Experimental",
+      "revision": "375a35c5706d5a6b6f176cd98b72d63dcb7f5b10"
+    }
+  },
+  "baseSif": {
+    "filename": "spec180-runtime.sif",
+    "sha256": "sha256:b6710fd696a7f962f67f67a54278d92a15babb856c4af428a3f04ba54dc83285",
+    "bytes": 3525861376,
+    "recordedClusterPath": "/project/tma1/ndnsf-di/candidates/spec180-runtime-b6710fd6/spec180-runtime.sif",
+    "role": "external-dependency-base-only",
+    "delivery": "not-in-git; reuse or transfer exact existing SIF and verify SHA256"
+  },
+  "wheels": [
+    {
+      "filename": "pybind11-2.13.6-py3-none-any.whl",
+      "sha256": "sha256:237c41e29157b962835d356b370ededd57594a26d5894a795960f0047cb5caf5",
+      "url": "https://files.pythonhosted.org/packages/13/2f/0f24b288e2ce56f51c920137620b4434a38fd80583dbbe24fc2a1656c388/pybind11-2.13.6-py3-none-any.whl"
+    },
+    {
+      "filename": "python_ndn-0.3-py3-none-any.whl",
+      "sha256": "sha256:194bcb9de98c16f8c8bd0e6fa5001f3830dbc7d88f5d821b771653cec12aa13b",
+      "url": "https://files.pythonhosted.org/packages/dd/62/5f16c2f711812ed86729a0f34192d05f3eae93ecf561f11f109d40f91884/python_ndn-0.3-py3-none-any.whl"
+    },
+    {
+      "filename": "pygtrie-2.5.0-py3-none-any.whl",
+      "sha256": "sha256:8795cda8105493d5ae159a5bef313ff13156c5d4d72feddefacaad59f8c8ce16",
+      "url": "https://files.pythonhosted.org/packages/ec/cd/bd196b2cf014afb1009de8b0f05ecd54011d881944e62763f3c1b1e8ef37/pygtrie-2.5.0-py3-none-any.whl"
+    },
+    {
+      "filename": "aenum-3.1.17-py3-none-any.whl",
+      "sha256": "sha256:8b883a37a04e74cc838ac442bdd28c266eae5bbf13e1342c7ef123ed25230139",
+      "url": "https://files.pythonhosted.org/packages/48/8d/1fe30c6fd8999b9d462547c4a1bb6690bda24af38f2913c4bec7decb81f2/aenum-3.1.17-py3-none-any.whl"
+    },
+    {
+      "filename": "pycryptodomex-3.23.0-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "sha256": "sha256:f489c4765093fb60e2edafdf223397bc716491b2b69fe74367b70d6999257a5c",
+      "url": "https://files.pythonhosted.org/packages/c8/a9/8862616a85cf450d2822dbd4fff1fcaba90877907a6ff5bc2672cafe42f8/pycryptodomex-3.23.0-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl"
+    }
+  ],
+  "requirements": {
+    "architecture": "x86_64",
+    "containerPython": "CPython 3.10",
+    "maxBuildJobs": 2,
+    "buildBoundary": "container-native",
+    "apt": "online Ubuntu repositories; final stage installs builder-selected runtime package versions; not a fully offline APT lock",
+    "baseProvidedDependencies": [
+      "NDN-CXX",
+      "NFD and ndn-tools",
+      "ONNX Runtime native SDK",
+      "container Python venv and scientific packages"
+    ],
+    "externalExperimentInputs": [
+      "current-source host qualification manifest required by build-local-sif.sh",
+      "qualified Apptainer executable/version",
+      "model, tokenizer, adapter, workload config and oracle manifests",
+      "role-specific identities provisioned separately; no private keys in delivery"
+    ]
+  }
+}

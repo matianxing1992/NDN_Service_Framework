@@ -92,7 +92,12 @@ def validate_archive(root: Path, record: object, rows: object,
         fail(f"LOCAL_SIF_SOURCE_ARCHIVE_RECORD_INVALID:{label}")
     archive = root / expected_name
     recorded_path = record.get("path")
-    if not isinstance(recorded_path, str) or Path(recorded_path).resolve() != archive.resolve():
+    if not isinstance(recorded_path, str):
+        fail(f"LOCAL_SIF_SOURCE_ARCHIVE_PATH_MISMATCH:{label}")
+    declared = Path(recorded_path)
+    if not declared.is_absolute():
+        declared = root / declared
+    if declared.resolve() != archive.resolve():
         fail(f"LOCAL_SIF_SOURCE_ARCHIVE_PATH_MISMATCH:{label}")
     if not archive.is_file():
         fail(f"LOCAL_SIF_SOURCE_ARCHIVE_MISSING:{label}")

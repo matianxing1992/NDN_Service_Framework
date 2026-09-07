@@ -1,0 +1,6 @@
+interface:
+  display_name: "Spec Kit Code Design"
+  short_description: "Design code, execution boundaries, and behavioral proof"
+  default_prompt: "使用 $speckit-code-design 编写下一份 Spec：明确文件与符号改动、架构和决策边界、预期 diff、行为证明及完成证据，并逐工作单元审查实施就绪条件。"
+policy:
+  allow_implicit_invocation: true
