@@ -1,8 +1,58 @@
 # Failure Log and Evidence Index
 
+## 2026-09-07 — T002-A L0 consumer aborts: freeze() rejects an empty native adapter registry
+- **Area**: spec182 T002-A Installed Library Boundary
+- **Symptom**: installed-library consumer
+  `tests/standalone/spec182-installed-consumer.cpp` (T001-C-frozen L0 carrier)
+  ran against the staged prefix and aborted before printing its OK marker:
+  `terminate called after throwing an instance of 'std::invalid_argument'`,
+  `what(): native adapter registry is empty`, RUN_RC=134 (core dumped).
+- **Root cause**: intra-spec182 contradiction. Commit `3afa7492`
+  (2026-09-07 01:50, “spec182: add native assembly grants preparation and
+  bindings”) *introduced* `NativeAdapterRegistry::freeze()` together with an
+  empty-registry precondition, eight minutes before commit `aba90194`
+  (01:58) froze `spec182-installed-consumer.cpp` as the L0 carrier, whose
+  probe semantics require an empty registry to be freezable
+  (`frozen()==true`, `find("missing")==nullptr`). No production caller
+  depends on the throw today; the only prior freeze caller
+  (`tests/unit-tests/di-native-preparation.t.cpp:51-52`) registers an
+  adapter first. At the T002-A stage the installed library deliberately has
+  no concrete adapter class yet (T003-A/B add them later), so rejecting the
+  empty state makes the installable boundary unusable by any consumer.
+- **Fix**: `freeze()` now latches unconditionally; the “at least one
+  adapter” precondition, where a caller needs it (e.g. a provider), is
+  enforced at the use site by a `find()`-null check, not by the registry
+  latch. Evidence records the re-run under the frozen L0 command.
+- **Ref**: NDNSF commit `3afa7492` / `aba90194`; run dir
+  `.codex-tmp/spec182-t002a-l0-r1/` retained.
+- **Lesson**: a frozen executable carrier and its own feature's earlier
+  implementation commits can disagree; the later process freeze wins, and
+  every frozen carrier must actually be executed once before closure.
+
+## 2026-09-07 — Spec182 tokenizer bridge toolchain unavailable
+
+尝试在本机对固定 Rust tokenizer bridge 做 release 构建时，首边界为
+`cargo: command not found`（exit127）；未进入 Cargo 解析、编译或链接，不能把
+bridge/ABI 记为通过。保留原始目录 `.codex-tmp/spec182-tokenizer-r1/`；现有
+C++ tokenizer 包装和静态检查继续作为源码证据，实际 bridge 构建需在安装了
+Rust1.90/Cargo 的同源工具链上重跑。
+
+同一诊断目录的首次手工 Boost.Test 链接遗漏 `-pthread`，`libcrypto` 因此出现
+`pthread_*` 未解析；补齐线程库后同一 3 个负例用例 **3/3 PASS**。该次失败是
+命令边界，不是 tokenizer 实现或测试失败，原始摘要见
+`.codex-tmp/spec182-tokenizer-r1/link-r1.json`。
+
 ## 2026-09-07 — Spec182 skill validator schema mismatch
 
 Spark执行包检查时，通用skill quick_validate拒绝两个既有Spec Kit入口的顶层`compatibility`字段；首边界为校验器schema，不是任务执行或native产品失败。保留原格式，YAML/必需字段/profile路由检查PASS；仓库code-design通用校验PASS。实际检查和fallback见[执行包记录](../specs/182-native-di-python-bindings/evidence/spark-execution-preparation.md#validation)。未启动产品构建/测试。
+
+## 2026-09-07 — Spec182 installable DI library build blocked at NAC-ABE ABI
+
+构建 `ndnsf-distributed-inference` 在既有 `ndn-service-framework` 编译边界失败，exit1；`ServiceUser.cpp`/`ServiceProvider.cpp` 调用 `getPublicParamsDataName`、`getPublicParamsDigest`、`clearCache`、`refreshPublicParameters`、`refreshDecryptionKey`，当前安装的 NAC-ABE 头文件没有这些成员。该失败发生在 DI 新对象编译前，不能归因于 Spec182 代码，也不能把本次构建当作库或产品 PASS。原始命令/首边界记录在 `.codex-tmp/spec182-native-build-20260907-r1/`；下一步先固定匹配的 NAC-ABE 头/库工具链，再重跑同一目标。
+
+## 2026-09-06 — Spec182 typed-complex reference conversion
+
+扩展initializer参考提取R1在complex64-typed失败：ONNX1.17 `_to_array`先组合complex值，再以float storage dtype调用np.asarray，抛`TypeError: can't convert complex to float`，exit1。此前模型full checker已通过，尚未产生identity；不是C++算法失败。raw `.codex-tmp/spec182-t001-identity-extended-r1/boundary.json`。下一R2分别提取其他表示并将typed-complex单独记为旧转换缺陷，不把它标成已支持稳定oracle或降低普通numeric验收范围。
 
 ## 2026-09-06 — Spec182 native reuse review boundaries
 

@@ -54,7 +54,8 @@ def build(bld):
                            'NDNSF-DistributedInference/cpp/ndnsf-di/NativeGrantVerifier.cpp',
                            'NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedArtifactStore.cpp',
                        ]),
-                includes=['..', '../ndn-service-framework'],
+                includes=['..', '../ndn-service-framework',
+                          '../NDNSF-DistributedInference/cpp/adapters/onnx'],
                 use='ndn-service-framework NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL',
                 rpath=[bld.bldnode.abspath()],
                 install_path=None)
@@ -87,7 +88,8 @@ def build(bld):
         'ndn-service-framework/utils.cpp',
     ])
     framework_includes = ['..', '../ndn-service-framework',
-                          '../NDNSF-DistributedRepo/include']
+                          '../NDNSF-DistributedRepo/include',
+                          '../NDNSF-DistributedInference/cpp/adapters/onnx']
     framework_use = 'NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL'
 
     # Link a clean external-style consumer against the installable DI library
@@ -240,7 +242,8 @@ def build(bld):
                             'NDNSF-DistributedInference/cpp/adapters/qwen/*.cpp',
                         ])),
                 includes=['..', '../ndn-service-framework',
-                          '../NDNSF-DistributedRepo/include'],
+                          '../NDNSF-DistributedRepo/include',
+                          '../NDNSF-DistributedInference/cpp/adapters/onnx'],
                 use='NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL ONNXRUNTIME GSTREAMER GMODULE FFI PCRE DL',
                 # NAC-ABE exposes its test-only authority state under
                 # HAVE_TESTS.  The framework's generated config header does

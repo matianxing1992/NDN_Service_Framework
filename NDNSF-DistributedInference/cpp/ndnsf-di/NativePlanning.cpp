@@ -226,7 +226,9 @@ void NativeAdapterRegistry::registerAdapter(std::shared_ptr<const NativeModelAda
 
 void NativeAdapterRegistry::freeze()
 {
-  if (m_adapters.empty()) throw std::invalid_argument("native adapter registry is empty");
+  // Latching an empty registry is legal: a consumer may hold no concrete
+  // adapter yet (the spec182 installed-library boundary at T002-A). Callers
+  // that need at least one adapter enforce it at the use site via find().
   m_frozen = true;
 }
 
