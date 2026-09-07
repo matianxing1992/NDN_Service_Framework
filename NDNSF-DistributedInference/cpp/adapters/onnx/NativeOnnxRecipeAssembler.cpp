@@ -1,6 +1,13 @@
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp"
 
-#include "NDNSF-DistributedInference/cpp/adapters/onnx/onnx/onnx-ml.pb.h"
+// Spec 182 unifies the DI ONNX world on the official 1.17 full-protobuf
+// headers (ONNX_USE_LITE_PROTO=OFF) installed by the configured ONNX prefix;
+// the previous vendored lite trio no longer exists in this tree.
+#include <onnx/checker.h>
+#include <onnx/onnx_pb.h>
+#include <onnx/shape_inference/implementation.h>
+
+#include <onnxruntime_cxx_api.h>
 
 #include <google/protobuf/io/coded_stream.h>
 #include <google/protobuf/io/zero_copy_stream_impl_lite.h>
@@ -8,11 +15,15 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <set>
 #include <sstream>
 #include <stdexcept>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
 
 namespace ndnsf::di {
 namespace {
@@ -99,7 +110,7 @@ void inlineExternal(onnx::TensorProto& tensor,
   const auto offset = offsetText.empty() ? 0 : parseUint(offsetText, "OFFSET");
   if (offset > bytes.size()) fail("EXTERNAL_RANGE");
   const auto length = lengthText.empty() ? bytes.size() - offset : parseUint(lengthText, "LENGTH");
-  if (length > bytes.size() - offset || length > std::numeric_limits<int>::max())
+  if (length > bytes.size() - offset || length > static_cast<std::uint64_t>(std::numeric_limits<int>::max()))
     fail("EXTERNAL_RANGE");
   tensor.set_raw_data(bytes.data() + offset, static_cast<int>(length));
   tensor.clear_external_data();
@@ -162,39 +173,11 @@ void validateContracts(const std::vector<NativeAssemblyTensorContractV3>& contra
   }
 }
 
-int
-onnxElementType(const std::string& dtype)
-{
-  std::string value;
-  value.reserve(dtype.size());
-  for (const auto ch : dtype) {
-    if (std::isalnum(static_cast<unsigned char>(ch))) {
-      value.push_back(static_cast<char>(std::toupper(static_cast<unsigned char>(ch))));
-    }
-  }
-  if (value == "FLOAT" || value == "FLOAT32" || value == "F32" ||
-      value == "TENSORFLOAT") return onnx::TensorProto::FLOAT;
-  if (value == "FLOAT16" || value == "F16" || value == "HALF")
-    return onnx::TensorProto::FLOAT16;
-  if (value == "BFLOAT16" || value == "BF16")
-    return onnx::TensorProto::BFLOAT16;
-  if (value == "DOUBLE" || value == "FLOAT64" || value == "F64")
-    return onnx::TensorProto::DOUBLE;
-  if (value == "INT64" || value == "I64") return onnx::TensorProto::INT64;
-  if (value == "INT32" || value == "I32") return onnx::TensorProto::INT32;
-  if (value == "INT16" || value == "I16") return onnx::TensorProto::INT16;
-  if (value == "INT8" || value == "I8") return onnx::TensorProto::INT8;
-  if (value == "UINT8" || value == "U8") return onnx::TensorProto::UINT8;
-  if (value == "BOOL") return onnx::TensorProto::BOOL;
-  fail("IO_DTYPE");
-  return onnx::TensorProto::UNDEFINED;
-}
-
 std::vector<std::uint8_t> deterministicWire(const onnx::ModelProto& model,
                                             std::uint64_t limit)
 {
   const auto size = model.ByteSizeLong();
-  if (size == 0 || size > limit || size > std::numeric_limits<int>::max())
+  if (size == 0 || size > limit || size > static_cast<std::uint64_t>(std::numeric_limits<int>::max()))
     fail("SERIALIZE_LIMIT");
   std::vector<std::uint8_t> bytes(static_cast<std::size_t>(size));
   google::protobuf::io::ArrayOutputStream array(bytes.data(), static_cast<int>(bytes.size()));
@@ -202,6 +185,245 @@ std::vector<std::uint8_t> deterministicWire(const onnx::ModelProto& model,
   coded.SetSerializationDeterministic(true);
   if (!model.SerializeToCodedStream(&coded) || coded.HadError()) fail("SERIALIZE");
   return bytes;
+}
+
+// ---------------------------------------------------------------------------
+// S5/S6 certified extraction (OA07/OA08).  This port mirrors onnx 1.17
+// python utils.py::Extractor running on an InferShapes copy of the inlined
+// source, plus executor.py::assemble_certified_onnx_model S6 cover and io
+// comparisons.  All failures stay in the registered DI_NATIVE_ONNX_* family.
+// ---------------------------------------------------------------------------
+
+std::string deterministicMessageBytes(const google::protobuf::MessageLite& message)
+{
+  const auto size = message.ByteSizeLong();
+  if (size > static_cast<std::uint64_t>(std::numeric_limits<int>::max()))
+    fail("SERIALIZE_LIMIT");
+  std::vector<std::uint8_t> bytes(static_cast<std::size_t>(size));
+  google::protobuf::io::ArrayOutputStream array(bytes.data(), static_cast<int>(bytes.size()));
+  google::protobuf::io::CodedOutputStream coded(&array);
+  coded.SetSerializationDeterministic(true);
+  if (!message.SerializeToCodedStream(&coded) || coded.HadError()) fail("SERIALIZE");
+  return std::string(bytes.begin(), bytes.end());
+}
+
+// Reverse DFS from one requested output tensor, stopping at graph input
+// names; node producers are exact matches on the node output list, exactly
+// like utils.py _dfs_search_reachable_nodes.  Every recursion either stops
+// or moves at least one index from `unreachable` into `reachable`, so the
+// depth is bounded by the (recipe-capped) node count even on cyclic graphs.
+void
+dfsReachNodes(const std::string& outputName,
+              const std::unordered_set<std::string>& graphInputNames,
+              const google::protobuf::RepeatedPtrField<onnx::NodeProto>& nodes,
+              std::unordered_set<std::size_t>& unreachable,
+              std::unordered_set<std::size_t>& reachable)
+{
+  if (graphInputNames.count(outputName) != 0) return;  // extraction boundary
+  std::vector<std::size_t> producers;
+  for (const std::size_t index : unreachable) {
+    const auto& outs = nodes.Get(static_cast<int>(index)).output();
+    if (std::find(outs.begin(), outs.end(), outputName) != outs.end())
+      producers.push_back(index);
+  }
+  for (const std::size_t index : producers) {
+    reachable.insert(index);
+    unreachable.erase(index);
+  }
+  for (const std::size_t index : producers) {
+    for (const auto& input : nodes.Get(static_cast<int>(index)).input())
+      dfsReachNodes(input, graphInputNames, nodes, unreachable, reachable);
+  }
+}
+
+// Local functions reachable from the selected nodes, in first-reference
+// order, including functions referenced from function bodies
+// (utils.py _collect_referred_local_functions).  A node refers the first
+// model function whose name/domain pair matches its op_type/domain.
+std::vector<const onnx::FunctionProto*>
+referredLocalFunctions(const onnx::ModelProto& model,
+                       const std::vector<std::size_t>& reachable,
+                       const google::protobuf::RepeatedPtrField<onnx::NodeProto>& nodes)
+{
+  std::vector<const onnx::FunctionProto*> referred;
+  std::vector<const onnx::NodeProto*> frontier;
+  frontier.reserve(reachable.size());
+  for (const std::size_t index : reachable)
+    frontier.push_back(&nodes.Get(static_cast<int>(index)));
+  while (!frontier.empty()) {
+    std::vector<const onnx::NodeProto*> children;
+    for (const onnx::NodeProto* node : frontier) {
+      const onnx::FunctionProto* match = nullptr;
+      for (const auto& fn : model.functions()) {
+        if (fn.name() == node->op_type() && fn.domain() == node->domain()) {
+          match = &fn;
+          break;
+        }
+      }
+      if (match == nullptr ||
+          std::find(referred.begin(), referred.end(), match) != referred.end())
+        continue;
+      referred.push_back(match);
+      for (int i = 0; i < match->node_size(); ++i)
+        children.push_back(&match->node(i));
+    }
+    frontier.swap(children);
+  }
+  return referred;
+}
+
+// Boundary value_infos in the requested order: a name that is an original
+// graph io keeps that entry, an internal name comes from the shape-inferred
+// value_info, and a name in neither is an extraction failure (the python
+// reference hits a KeyError there; both reject).
+std::vector<const onnx::ValueInfoProto*>
+collectBoundaryIo(const google::protobuf::RepeatedPtrField<onnx::ValueInfoProto>& originalIo,
+                  const google::protobuf::RepeatedPtrField<onnx::ValueInfoProto>& inferredValueInfo,
+                  const std::vector<NativeAssemblyTensorContractV3>& requested)
+{
+  std::unordered_map<std::string, const onnx::ValueInfoProto*> original;
+  for (const auto& value : originalIo) original[value.name()] = &value;
+  std::unordered_map<std::string, const onnx::ValueInfoProto*> inferred;
+  for (const auto& value : inferredValueInfo) inferred[value.name()] = &value;
+  std::vector<const onnx::ValueInfoProto*> result;
+  result.reserve(requested.size());
+  for (const auto& contract : requested) {
+    const auto* value = original.count(contract.name) != 0
+      ? original[contract.name]
+      : (inferred.count(contract.name) != 0 ? inferred[contract.name] : nullptr);
+    if (value == nullptr) fail("GRAPH");
+    result.push_back(value);
+  }
+  return result;
+}
+
+// Rebuild of the extractor metadata, field set exactly like the python
+// 1.17 make_model(graph, ...) call: ir_version, opset_import copies,
+// producer_name, then a graph holding name, selected nodes in original
+// order, referenced initializers and inferred value_info in original order,
+// and the boundary io; sparse initializers and quantization annotations are
+// rejections (python _collect_reachable_tensors).  No other source metadata
+// is copied.
+onnx::ModelProto
+makeExtractedModel(const onnx::ModelProto& inferredSource,
+                   const std::vector<std::size_t>& reachable,
+                   const std::vector<const onnx::ValueInfoProto*>& inputs,
+                   const std::vector<const onnx::ValueInfoProto*>& outputs,
+                   const std::vector<const onnx::FunctionProto*>& functions)
+{
+  const auto& graph = inferredSource.graph();
+  std::unordered_set<std::string> keepNames;
+  for (const std::size_t index : reachable) {
+    const auto& node = graph.node(static_cast<int>(index));
+    for (const auto& input : node.input()) keepNames.insert(input);
+    for (const auto& output : node.output()) keepNames.insert(output);
+  }
+  if (graph.sparse_initializer_size() != 0 ||
+      graph.quantization_annotation_size() != 0)
+    fail("GRAPH");
+  onnx::ModelProto result;
+  result.set_ir_version(inferredSource.ir_version());
+  result.set_producer_name("onnx.utils.extract_model");
+  for (const auto& opset : inferredSource.opset_import())
+    *result.add_opset_import() = opset;
+  auto* outGraph = result.mutable_graph();
+  outGraph->set_name("Extracted from {" + graph.name() + "}");
+  for (const std::size_t index : reachable)
+    *outGraph->add_node() = graph.node(static_cast<int>(index));
+  for (const auto& initializer : graph.initializer())
+    if (keepNames.count(initializer.name()) != 0)
+      *outGraph->add_initializer() = initializer;
+  for (const auto& value : graph.value_info())
+    if (keepNames.count(value.name()) != 0)
+      *outGraph->add_value_info() = value;
+  for (const auto* value : inputs) *outGraph->add_input() = *value;
+  for (const auto* value : outputs) *outGraph->add_output() = *value;
+  for (const auto* fn : functions) *result.add_functions() = *fn;
+  return result;
+}
+
+// executor.py S6 dtype label: the pinned _ONNX_DTYPE_NAMES table; element
+// types outside the table compare as their decimal string, so the label
+// helper returns nullptr and the caller falls back to to_string.
+const char*
+onnxDtypeLabel(std::int32_t elemType)
+{
+  switch (elemType) {
+    case 1: return "float32";
+    case 2: return "uint8";
+    case 3: return "int8";
+    case 4: return "uint16";
+    case 5: return "int16";
+    case 6: return "int32";
+    case 7: return "int64";
+    case 9: return "bool";
+    case 10: return "float16";
+    case 11: return "float64";
+    case 12: return "uint32";
+    case 13: return "uint64";
+    case 16: return "bfloat16";
+    default: return nullptr;
+  }
+}
+
+std::string normalizeShapeDimText(const std::string& value)
+{
+  // python normalize_shape_dimension: int-parseable decimal text compares
+  // numerically with ints; symbolic text stays raw.
+  if (!value.empty()) {
+    std::size_t consumed = 0;
+    try {
+      const long long parsed = std::stoll(value, &consumed);
+      if (consumed == value.size())
+        return std::to_string(parsed);
+    }
+    catch (const std::exception&) {}
+  }
+  return value;
+}
+
+// S6 io semantic comparison against the recipe contracts, with the python
+// dtype normalization (_ONNX_DTYPE_NAMES + decimal fallback) and the
+// normalize_shape_dimension dimension semantics.  A missing expected name
+// is an IO_CONTRACT rejection; any dtype/shape difference is IO_DTYPE.
+void
+compareBoundaryContracts(const std::vector<NativeAssemblyTensorContractV3>& expected,
+                         const google::protobuf::RepeatedPtrField<onnx::ValueInfoProto>& assembledIo)
+{
+  std::unordered_map<std::string, const onnx::ValueInfoProto*> byName;
+  for (const auto& value : assembledIo) byName[value.name()] = &value;
+  for (const auto& contract : expected) {
+    const auto found = byName.find(contract.name);
+    if (found == byName.end()) fail("IO_CONTRACT");
+    const auto& typeProto = found->second->type();
+    if (!typeProto.has_tensor_type()) fail("IO_DTYPE");
+    const auto& tensorType = typeProto.tensor_type();
+    std::string expectedDtype = contract.dtype;
+    if (!expectedDtype.empty() &&
+        std::all_of(expectedDtype.begin(), expectedDtype.end(),
+                    [](char c) { return c >= '0' && c <= '9'; })) {
+      char* end = nullptr;
+      const long parsed = std::strtol(expectedDtype.c_str(), &end, 10);
+      if (end != nullptr && *end == '\0' && parsed >= 0 &&
+          static_cast<std::uint64_t>(parsed) <=
+            static_cast<std::uint64_t>(std::numeric_limits<int>::max())) {
+        const char* label = onnxDtypeLabel(static_cast<int>(parsed));
+        if (label != nullptr) expectedDtype = label;
+      }
+    }
+    const char* observedLabel = onnxDtypeLabel(tensorType.elem_type());
+    const std::string observedDtype = observedLabel != nullptr
+      ? std::string(observedLabel) : std::to_string(tensorType.elem_type());
+    if (observedDtype != expectedDtype) fail("IO_DTYPE");
+    const auto& dims = tensorType.shape().dim();
+    if (static_cast<std::size_t>(dims.size()) != contract.shape.size()) fail("IO_DTYPE");
+    for (int i = 0; i < dims.size(); ++i) {
+      const std::string observedDim = dims.Get(i).has_dim_value()
+        ? std::to_string(dims.Get(i).dim_value()) : dims.Get(i).dim_param();
+      if (normalizeShapeDimText(observedDim) != normalizeShapeDimText(contract.shape[i]))
+        fail("IO_DTYPE");
+    }
+  }
 }
 
 } // namespace
@@ -214,12 +436,13 @@ assembleNativeCertifiedOnnxModel(const NativeCanonicalSource& source,
   checkActive(control);
   if (control.maxSourceBytes == 0 || control.maxAssembledBytes == 0 ||
       source.modelBytes.empty() || source.modelBytes.size() > control.maxSourceBytes ||
-      source.modelBytes.size() > std::numeric_limits<int>::max())
+      source.modelBytes.size() > static_cast<std::uint64_t>(std::numeric_limits<int>::max()))
     fail("SOURCE_LIMIT");
   if (source.initializerBytes &&
       (source.initializerBytes->empty() ||
        source.initializerBytes->size() > control.maxSourceBytes ||
-       source.initializerBytes->size() > std::numeric_limits<int>::max() ||
+       source.initializerBytes->size() >
+         static_cast<std::uint64_t>(std::numeric_limits<int>::max()) ||
        checkedAdd(source.modelBytes.size(), source.initializerBytes->size()) >
          checkedAdd(control.maxSourceBytes, control.maxSourceBytes)))
     fail("INITIALIZER_LIMIT");
@@ -249,49 +472,108 @@ assembleNativeCertifiedOnnxModel(const NativeCanonicalSource& source,
   }
   if (recipe.roleKind == "COMPONENT_SET" && selected.size() !=
       static_cast<std::size_t>(original.graph().node_size())) fail("NODE_COVER");
-  if (recipe.roleKind != "COMPONENT_SET" && recipe.layerEnd <= recipe.layerBegin)
+  if (recipe.roleKind != "COMPONENT_SET" &&
+      (recipe.layerEnd <= recipe.layerBegin ||
+       recipe.layerEnd > static_cast<std::uint64_t>(original.graph().node_size())))
     fail("LAYER_RANGE");
 
-  onnx::ModelProto assembled = original;
-  auto* graph = assembled.mutable_graph();
-  std::vector<onnx::NodeProto> selectedNodes;
-  selectedNodes.reserve(selected.size());
-  for (int i = 0; i < graph->node_size(); ++i) {
-    if (selected.count(static_cast<std::uint64_t>(i)) != 0) selectedNodes.push_back(graph->node(i));
+  // S3: the inlined original must pass the full checker before any
+  // certificate comparison (executor.py check_model(model, full_check=True));
+  // checker rejections map to the semantic-model GRAPH family.
+  try {
+    onnx::checker::check_model(original, true);
   }
-  graph->clear_node();
-  for (const auto& node : selectedNodes) *graph->add_node() = node;
-  graph->clear_input();
-  for (const auto& contract : recipe.expectedInputs) {
-    auto* value = graph->add_input();
-    value->set_name(contract.name);
-    value->mutable_type()->mutable_tensor_type()->set_elem_type(
-      onnxElementType(contract.dtype));
-    for (const auto& dimension : contract.shape) {
-      auto* dim = value->mutable_type()->mutable_tensor_type()->mutable_shape()->add_dim();
-      try { dim->set_dim_value(std::stoll(dimension)); }
-      catch (...) { dim->set_dim_param(dimension); }
-    }
+  catch (const std::exception&) {
+    fail("GRAPH");
   }
-  graph->clear_output();
-  for (const auto& contract : recipe.expectedOutputs) {
-    auto* value = graph->add_output();
-    value->set_name(contract.name);
-    value->mutable_type()->mutable_tensor_type()->set_elem_type(
-      onnxElementType(contract.dtype));
-    for (const auto& dimension : contract.shape) {
-      auto* dim = value->mutable_type()->mutable_tensor_type()->mutable_shape()->add_dim();
-      try { dim->set_dim_value(std::stoll(dimension)); }
-      catch (...) { dim->set_dim_param(dimension); }
-    }
+
+  // S4: the certified identity of the post-inline original must equal the
+  // recipe digests; a mismatch means the recipe was sealed for different
+  // source bytes (executor.py canonical ONNX digest mismatch errors).
+  const auto identity = canonicalOnnxSourceIdentity(source, control);
+  if (identity.graphDigest != recipe.graphDigest ||
+      identity.initializerDigest != recipe.canonicalInitializerDigest)
+    fail("RECIPE");
+  checkActive(control);
+
+  // S5: infer shapes on a copy (never mutating the parsed original), walk
+  // the certified output boundary backwards, and rebuild the extractor
+  // metadata with referred local functions and referenced tensors.
+  onnx::ModelProto inferred = original;
+  try {
+    onnx::shape_inference::InferShapes(inferred);
+  }
+  catch (const std::exception&) {
+    fail("GRAPH");
   }
   checkActive(control);
+  const auto& inferredGraph = inferred.graph();
+  std::unordered_set<std::string> graphInputNames;
+  for (const auto& input : inferredGraph.input()) graphInputNames.insert(input.name());
+  std::unordered_set<std::size_t> unreachable;
+  for (int i = 0; i < inferredGraph.node_size(); ++i)
+    unreachable.insert(static_cast<std::size_t>(i));
+  std::unordered_set<std::size_t> reachable;
+  for (const auto& contract : recipe.expectedOutputs)
+    dfsReachNodes(contract.name, graphInputNames, inferredGraph.node(),
+                  unreachable, reachable);
+  std::vector<std::size_t> selectedNodes;
+  selectedNodes.reserve(reachable.size());
+  for (const std::size_t index : reachable) selectedNodes.push_back(index);
+  std::sort(selectedNodes.begin(), selectedNodes.end());  // original order
+  const auto inputs = collectBoundaryIo(inferredGraph.input(),
+                                        inferredGraph.value_info(),
+                                        recipe.expectedInputs);
+  const auto outputs = collectBoundaryIo(inferredGraph.output(),
+                                         inferredGraph.value_info(),
+                                         recipe.expectedOutputs);
+  const auto functions = referredLocalFunctions(inferred, selectedNodes,
+                                                inferredGraph.node());
+  onnx::ModelProto assembled = makeExtractedModel(inferred, selectedNodes,
+                                                  inputs, outputs, functions);
+
+  // S6: the assembled model passes the full checker again, its node cover
+  // equals the certified indices with byte-identical nodes, and its io
+  // matches the recipe contracts semantically (executor.py S6 block).
+  try {
+    onnx::checker::check_model(assembled, true);
+  }
+  catch (const std::exception&) {
+    fail("GRAPH");
+  }
+  checkActive(control);
+  if (assembled.graph().node_size() != static_cast<int>(recipe.nodeIndices.size()))
+    fail("NODE_COVER");
+  for (std::size_t i = 0; i < recipe.nodeIndices.size(); ++i) {
+    const auto expectedBytes = deterministicMessageBytes(
+      original.graph().node(static_cast<int>(recipe.nodeIndices[i])));
+    const auto assembledBytes = deterministicMessageBytes(
+      assembled.graph().node(static_cast<int>(i)));
+    if (expectedBytes != assembledBytes) fail("NODE_COVER");
+  }
+  compareBoundaryContracts(recipe.expectedInputs, assembled.graph().input());
+  compareBoundaryContracts(recipe.expectedOutputs, assembled.graph().output());
+  checkActive(control);
+
+  // S7: deterministic wire within the resource envelope, then a real CPU
+  // session load of exactly these bytes; the session is destroyed before the
+  // result leaves this function.
   auto bytes = deterministicWire(assembled, control.maxAssembledBytes);
+  checkActive(control);
+  try {
+    Ort::Env env(ORT_LOGGING_LEVEL_WARNING, "ndnsf-certified-assembly");
+    Ort::SessionOptions options;
+    options.SetGraphOptimizationLevel(ORT_ENABLE_ALL);
+    Ort::Session session(env, bytes.data(), static_cast<int>(bytes.size()), options);
+  }
+  catch (const std::exception&) {
+    fail("GRAPH");
+  }
   checkActive(control);
   NativeCertifiedAssembly result;
   result.modelDigest = digest(bytes);
   result.modelBytes = std::move(bytes);
-  result.nodeCount = selected.size();
+  result.nodeCount = recipe.nodeIndices.size();
   for (const auto& contract : recipe.expectedInputs) result.inputNames.push_back(contract.name);
   for (const auto& contract : recipe.expectedOutputs) result.outputNames.push_back(contract.name);
   return result;
@@ -860,7 +1142,7 @@ void inlineValidatedExternals(const std::vector<onnx::TensorProto*>& tensors,
     if (!lengthText.empty()) {
       length = parseUint(lengthText, "LENGTH");
       if (length == 0) length = bytes.size() - offset;  // 1.17 loader rule
-      if (length > bytes.size() - offset || length > std::numeric_limits<int>::max())
+      if (length > bytes.size() - offset || length > static_cast<std::uint64_t>(std::numeric_limits<int>::max()))
         fail("EXTERNAL_RANGE");
     }
     tensor->set_raw_data(reinterpret_cast<const char*>(bytes.data() + offset),
@@ -878,12 +1160,13 @@ onnx::ModelProto ownedSourceModel(const NativeCanonicalSource& source,
   checkActive(control);
   if (control.maxSourceBytes == 0 ||
       source.modelBytes.empty() || source.modelBytes.size() > control.maxSourceBytes ||
-      source.modelBytes.size() > std::numeric_limits<int>::max())
+      source.modelBytes.size() > static_cast<std::uint64_t>(std::numeric_limits<int>::max()))
     fail("SOURCE_LIMIT");
   if (source.initializerBytes &&
       (source.initializerBytes->empty() ||
        source.initializerBytes->size() > control.maxSourceBytes ||
-       source.initializerBytes->size() > std::numeric_limits<int>::max() ||
+       source.initializerBytes->size() >
+         static_cast<std::uint64_t>(std::numeric_limits<int>::max()) ||
        checkedAdd(source.modelBytes.size(), source.initializerBytes->size()) >
          checkedAdd(control.maxSourceBytes, control.maxSourceBytes)))
     fail("INITIALIZER_LIMIT");
@@ -950,7 +1233,7 @@ void jsonString(std::string& out, const std::string& value)
 std::string protoHex(const google::protobuf::MessageLite& message)
 {
   const auto size = message.ByteSizeLong();
-  if (size > std::numeric_limits<int>::max()) fail("SERIALIZE_LIMIT");
+  if (size > static_cast<std::uint64_t>(std::numeric_limits<int>::max())) fail("SERIALIZE_LIMIT");
   std::vector<std::uint8_t> bytes(static_cast<std::size_t>(size));
   google::protobuf::io::ArrayOutputStream array(bytes.data(), static_cast<int>(bytes.size()));
   google::protobuf::io::CodedOutputStream coded(&array);

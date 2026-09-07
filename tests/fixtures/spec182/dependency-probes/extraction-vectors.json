@@ -1,0 +1,670 @@
+{
+  "schema": "spec182-extraction-vectors-v1",
+  "referenceOnnx": "1.17.0",
+  "referenceOrt": "1.19.2",
+  "referenceNumpy": "1.24.4",
+  "referenceExecutorSha256": "d65c37e01914d69d3615b2333b285f92784d6198eb1481ad46aae96d7d81b50d",
+  "referenceGraphSha256": "e5532328e8752bd626b5a668de8e4b826ee9d336367a091fdd7016f48480734d",
+  "cases": [
+    {
+      "id": "chain-whole-inline",
+      "modelHex": "08083a85010a100a01580a0257311202543122034164640a0d0a025431120159220452656c75121a737065633138322d65787472616374696f6e2d636861696e2d612a1c080208021001420257314a100000003f0000803f0000803f0000003f5a130a0158120e0a0c080112080a0208020a02080262130a0159120e0a0c080112080a0208020a02080242040a00100d",
+      "recipe": {
+        "schema": "ndnsf-di-certified-onnx-assembly-v1",
+        "modelManifestDigest": "sha256:f7e68826f1ec9ed55c6353873c5f8aaf15f073ccd06e3bcdabe9855f9c416536",
+        "artifactProfileDigest": "sha256:0fd96faa18054754625706418707d4f5a36f16f69bc3accbf232df7f08e613a9",
+        "graphDigest": "sha256:b5199a674ffa8be96deb80b2ebbd58fa87d7154e7fb3d2d1bfc2a779a5fed8cf",
+        "canonicalInitializerDigest": "sha256:d17ebe52d251b61d49de569296970d42b619897ab6db0ea52921ab554ba07d82",
+        "adapterDescriptorDigest": "sha256:3250e1a246b6474dcb63701a2151cae53fa996e1e9216ec75319dcef8f38fe94",
+        "assemblerDescriptorDigest": "sha256:0c7081c4868b524c2f8ad010508a96cb4a782057afece2f884e21f031fc6bb9f",
+        "backendAbi": "onnxruntime",
+        "roleKind": "COMPONENT_SET",
+        "layerBegin": 0,
+        "layerEnd": 0,
+        "nodeIndices": [
+          0,
+          1
+        ],
+        "inputNames": [
+          "X"
+        ],
+        "outputNames": [
+          "Y"
+        ],
+        "expectedInputs": [
+          {
+            "name": "X",
+            "dtype": "float32",
+            "shape": [
+              2,
+              2
+            ]
+          }
+        ],
+        "expectedOutputs": [
+          {
+            "name": "Y",
+            "dtype": "float32",
+            "shape": [
+              2,
+              2
+            ]
+          }
+        ],
+        "precision": "fp32",
+        "quantization": "none",
+        "layout": "native",
+        "padding": "none",
+        "maxSourceBytes": 8589934592,
+        "maxAssembledBytes": 8589934592,
+        "maxNodes": 1000000
+      },
+      "byteParity": true,
+      "rejected": false,
+      "expectedModelHex": "080812186f6e6e782e7574696c732e657874726163745f6d6f64656c3aac010a100a01580a0257311202543122034164640a0d0a025431120159220452656c75122b4578747261637465642066726f6d207b737065633138322d65787472616374696f6e2d636861696e2d617d2a1c080208021001420257314a100000003f0000803f0000803f0000003f5a130a0158120e0a0c080112080a0208020a02080262130a0159120e0a0c080112080a0208020a0208026a140a025431120e0a0c080112080a0208020a02080242040a00100d",
+      "expectedModelDigest": "sha256:59269bc795b453dcc15fcb34dd6c9b1625070bc094f32361fcd236c3b6600383",
+      "expectedNodeCount": 2,
+      "inputNames": [
+        "X"
+      ],
+      "outputNames": [
+        "Y"
+      ]
+    },
+    {
+      "id": "chain-external-equivalent",
+      "modelHex": "08083aad010a100a01580a0257311202543122034164640a0d0a025431120159220452656c75121a737065633138322d65787472616374696f6e2d636861696e2d612a44080208021001420257316a1b0a086c6f636174696f6e120f6d6f64656c2e6f6e6e782e646174616a0b0a066f66667365741201306a0c0a066c656e6774681202313670015a130a0158120e0a0c080112080a0208020a02080262130a0159120e0a0c080112080a0208020a02080242040a00100d",
+      "initializerHex": "0000003f0000803f0000803f0000003f",
+      "recipe": {
+        "schema": "ndnsf-di-certified-onnx-assembly-v1",
+        "modelManifestDigest": "sha256:f7e68826f1ec9ed55c6353873c5f8aaf15f073ccd06e3bcdabe9855f9c416536",
+        "artifactProfileDigest": "sha256:0fd96faa18054754625706418707d4f5a36f16f69bc3accbf232df7f08e613a9",
+        "graphDigest": "sha256:b5199a674ffa8be96deb80b2ebbd58fa87d7154e7fb3d2d1bfc2a779a5fed8cf",
+        "canonicalInitializerDigest": "sha256:d17ebe52d251b61d49de569296970d42b619897ab6db0ea52921ab554ba07d82",
+        "adapterDescriptorDigest": "sha256:3250e1a246b6474dcb63701a2151cae53fa996e1e9216ec75319dcef8f38fe94",
+        "assemblerDescriptorDigest": "sha256:0c7081c4868b524c2f8ad010508a96cb4a782057afece2f884e21f031fc6bb9f",
+        "backendAbi": "onnxruntime",
+        "roleKind": "COMPONENT_SET",
+        "layerBegin": 0,
+        "layerEnd": 0,
+        "nodeIndices": [
+          0,
+          1
+        ],
+        "inputNames": [
+          "X"
+        ],
+        "outputNames": [
+          "Y"
+        ],
+        "expectedInputs": [
+          {
+            "name": "X",
+            "dtype": "float32",
+            "shape": [
+              2,
+              2
+            ]
+          }
+        ],
+        "expectedOutputs": [
+          {
+            "name": "Y",
+            "dtype": "float32",
+            "shape": [
+              2,
+              2
+            ]
+          }
+        ],
+        "precision": "fp32",
+        "quantization": "none",
+        "layout": "native",
+        "padding": "none",
+        "maxSourceBytes": 8589934592,
+        "maxAssembledBytes": 8589934592,
+        "maxNodes": 1000000
+      },
+      "rejected": false,
+      "expectedModelHex": "080812186f6e6e782e7574696c732e657874726163745f6d6f64656c3aae010a100a01580a0257311202543122034164640a0d0a025431120159220452656c75122b4578747261637465642066726f6d207b737065633138322d65787472616374696f6e2d636861696e2d617d2a1e080208021001420257314a100000003f0000803f0000803f0000003f70005a130a0158120e0a0c080112080a0208020a02080262130a0159120e0a0c080112080a0208020a0208026a140a025431120e0a0c080112080a0208020a02080242040a00100d",
+      "expectedModelDigest": "sha256:f9fb15fd4403906f667de752caa70ed35182a922acc7f25fbccb28b3c55697b8",
+      "expectedNodeCount": 2,
+      "inputNames": [
+        "X"
+      ],
+      "outputNames": [
+        "Y"
+      ],
+      "byteParity": true
+    },
+    {
+      "id": "branch-subset-rank",
+      "modelHex": "08083ac9010a100a01580a0257311202543122034164640a100a01580a0257321202543222034d756c0a200a0254310a0254321201592206436f6e6361742a0b0a04617869731801a00102121b737065633138322d65787472616374696f6e2d6272616e63682d622a1c080208021001420257314a100000803f00000000000000000000803f2a1c080208021001420257324a10000000400000000000000000000000405a130a0158120e0a0c080112080a0208020a02080262130a0159120e0a0c080112080a0208020a02080442040a00100d",
+      "recipe": {
+        "schema": "ndnsf-di-certified-onnx-assembly-v1",
+        "modelManifestDigest": "sha256:f7e68826f1ec9ed55c6353873c5f8aaf15f073ccd06e3bcdabe9855f9c416536",
+        "artifactProfileDigest": "sha256:0fd96faa18054754625706418707d4f5a36f16f69bc3accbf232df7f08e613a9",
+        "graphDigest": "sha256:5c32efdb15e5cea0aacb1385aaf9402c85c26fba1c9e5cae549e9b5e95d9ed16",
+        "canonicalInitializerDigest": "sha256:adfc0e2427dca045288dfb6a88fee2a56e2eb435eee5d2a10806edbc7fae339d",
+        "adapterDescriptorDigest": "sha256:3250e1a246b6474dcb63701a2151cae53fa996e1e9216ec75319dcef8f38fe94",
+        "assemblerDescriptorDigest": "sha256:0c7081c4868b524c2f8ad010508a96cb4a782057afece2f884e21f031fc6bb9f",
+        "backendAbi": "onnxruntime",
+        "roleKind": "RANK",
+        "layerBegin": 0,
+        "layerEnd": 1,
+        "nodeIndices": [
+          0
+        ],
+        "inputNames": [
+          "X"
+        ],
+        "outputNames": [
+          "T1"
+        ],
+        "expectedInputs": [
+          {
+            "name": "X",
+            "dtype": "float32",
+            "shape": [
+              2,
+              2
+            ]
+          }
+        ],
+        "expectedOutputs": [
+          {
+            "name": "T1",
+            "dtype": "float32",
+            "shape": [
+              2,
+              2
+            ]
+          }
+        ],
+        "precision": "fp32",
+        "quantization": "none",
+        "layout": "native",
+        "padding": "none",
+        "maxSourceBytes": 8589934592,
+        "maxAssembledBytes": 8589934592,
+        "maxNodes": 1000000
+      },
+      "byteParity": true,
+      "rejected": false,
+      "expectedModelHex": "080812186f6e6e782e7574696c732e657874726163745f6d6f64656c3a9f010a100a01580a025731120254312203416464122c4578747261637465642066726f6d207b737065633138322d65787472616374696f6e2d6272616e63682d627d2a1c080208021001420257314a100000803f00000000000000000000803f5a130a0158120e0a0c080112080a0208020a02080262140a025431120e0a0c080112080a0208020a0208026a140a025431120e0a0c080112080a0208020a02080242040a00100d",
+      "expectedModelDigest": "sha256:354001a306647b226b3aef19a592630678eea02ea50a8ba34722e9da9d7bc12f",
+      "expectedNodeCount": 1,
+      "inputNames": [
+        "X"
+      ],
+      "outputNames": [
+        "T1"
+      ]
+    },
+    {
+      "id": "function-local-domain",
+      "modelHex": "080a3a8a010a300a015812025431220d537175617265537065633138323a186e646e73662e737065633138322e65787472616374696f6e0a0d0a025431120159220452656c75121d737065633138322d65787472616374696f6e2d66756e6374696f6e2d645a130a0158120e0a0c080112080a0208020a02080262130a0159120e0a0c080112080a0208020a02080242040a001015421c0a186e646e73662e737065633138322e65787472616374696f6e1001ca01450a0d537175617265537065633138322201782a01793a0e0a01780a017812017922034d756c4a040a00101552186e646e73662e737065633138322e65787472616374696f6e",
+      "recipe": {
+        "schema": "ndnsf-di-certified-onnx-assembly-v1",
+        "modelManifestDigest": "sha256:f7e68826f1ec9ed55c6353873c5f8aaf15f073ccd06e3bcdabe9855f9c416536",
+        "artifactProfileDigest": "sha256:0fd96faa18054754625706418707d4f5a36f16f69bc3accbf232df7f08e613a9",
+        "graphDigest": "sha256:75d13c99ebcdbfe4ce6195dfd9e4a92bc31094e4ba4efabeb86ac778367260a9",
+        "canonicalInitializerDigest": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "adapterDescriptorDigest": "sha256:3250e1a246b6474dcb63701a2151cae53fa996e1e9216ec75319dcef8f38fe94",
+        "assemblerDescriptorDigest": "sha256:0c7081c4868b524c2f8ad010508a96cb4a782057afece2f884e21f031fc6bb9f",
+        "backendAbi": "onnxruntime",
+        "roleKind": "COMPONENT_SET",
+        "layerBegin": 0,
+        "layerEnd": 0,
+        "nodeIndices": [
+          0,
+          1
+        ],
+        "inputNames": [
+          "X"
+        ],
+        "outputNames": [
+          "Y"
+        ],
+        "expectedInputs": [
+          {
+            "name": "X",
+            "dtype": "float32",
+            "shape": [
+              2,
+              2
+            ]
+          }
+        ],
+        "expectedOutputs": [
+          {
+            "name": "Y",
+            "dtype": "float32",
+            "shape": [
+              2,
+              2
+            ]
+          }
+        ],
+        "precision": "fp32",
+        "quantization": "none",
+        "layout": "native",
+        "padding": "none",
+        "maxSourceBytes": 8589934592,
+        "maxAssembledBytes": 8589934592,
+        "maxNodes": 1000000
+      },
+      "byteParity": true,
+      "rejected": false,
+      "expectedModelHex": "080a12186f6e6e782e7574696c732e657874726163745f6d6f64656c3ab1010a300a015812025431220d537175617265537065633138323a186e646e73662e737065633138322e65787472616374696f6e0a0d0a025431120159220452656c75122e4578747261637465642066726f6d207b737065633138322d65787472616374696f6e2d66756e6374696f6e2d647d5a130a0158120e0a0c080112080a0208020a02080262130a0159120e0a0c080112080a0208020a0208026a140a025431120e0a0c080112080a0208020a02080242040a001015421c0a186e646e73662e737065633138322e65787472616374696f6e1001ca01450a0d537175617265537065633138322201782a01793a0e0a01780a017812017922034d756c4a040a00101552186e646e73662e737065633138322e65787472616374696f6e",
+      "expectedModelDigest": "sha256:0d45e5672918a85e348e0c35805fd2f781a34c97e85cdb52556821ddf39abbad",
+      "expectedNodeCount": 2,
+      "inputNames": [
+        "X"
+      ],
+      "outputNames": [
+        "Y"
+      ]
+    },
+    {
+      "id": "reject-identity-digest",
+      "modelHex": "08083a85010a100a01580a0257311202543122034164640a0d0a025431120159220452656c75121a737065633138322d65787472616374696f6e2d636861696e2d612a1c080208021001420257314a100000003f0000803f0000803f0000003f5a130a0158120e0a0c080112080a0208020a02080262130a0159120e0a0c080112080a0208020a02080242040a00100d",
+      "recipe": {
+        "schema": "ndnsf-di-certified-onnx-assembly-v1",
+        "modelManifestDigest": "sha256:f7e68826f1ec9ed55c6353873c5f8aaf15f073ccd06e3bcdabe9855f9c416536",
+        "artifactProfileDigest": "sha256:0fd96faa18054754625706418707d4f5a36f16f69bc3accbf232df7f08e613a9",
+        "graphDigest": "sha256:1cb939da2b1c03dcab96925188ba0a829be0acbc5f1aa2071a6b02b551f1b96e",
+        "canonicalInitializerDigest": "sha256:d17ebe52d251b61d49de569296970d42b619897ab6db0ea52921ab554ba07d82",
+        "adapterDescriptorDigest": "sha256:3250e1a246b6474dcb63701a2151cae53fa996e1e9216ec75319dcef8f38fe94",
+        "assemblerDescriptorDigest": "sha256:0c7081c4868b524c2f8ad010508a96cb4a782057afece2f884e21f031fc6bb9f",
+        "backendAbi": "onnxruntime",
+        "roleKind": "COMPONENT_SET",
+        "layerBegin": 0,
+        "layerEnd": 0,
+        "nodeIndices": [
+          0,
+          1
+        ],
+        "inputNames": [
+          "X"
+        ],
+        "outputNames": [
+          "Y"
+        ],
+        "expectedInputs": [
+          {
+            "name": "X",
+            "dtype": "float32",
+            "shape": [
+              2,
+              2
+            ]
+          }
+        ],
+        "expectedOutputs": [
+          {
+            "name": "Y",
+            "dtype": "float32",
+            "shape": [
+              2,
+              2
+            ]
+          }
+        ],
+        "precision": "fp32",
+        "quantization": "none",
+        "layout": "native",
+        "padding": "none",
+        "maxSourceBytes": 8589934592,
+        "maxAssembledBytes": 8589934592,
+        "maxNodes": 1000000
+      },
+      "rejected": true,
+      "pythonError": "canonical ONNX graph digest mismatch"
+    },
+    {
+      "id": "reject-ghost-output-io",
+      "modelHex": "08083a85010a100a01580a0257311202543122034164640a0d0a025431120159220452656c75121a737065633138322d65787472616374696f6e2d636861696e2d612a1c080208021001420257314a100000003f0000803f0000803f0000003f5a130a0158120e0a0c080112080a0208020a02080262130a0159120e0a0c080112080a0208020a02080242040a00100d",
+      "recipe": {
+        "schema": "ndnsf-di-certified-onnx-assembly-v1",
+        "modelManifestDigest": "sha256:f7e68826f1ec9ed55c6353873c5f8aaf15f073ccd06e3bcdabe9855f9c416536",
+        "artifactProfileDigest": "sha256:0fd96faa18054754625706418707d4f5a36f16f69bc3accbf232df7f08e613a9",
+        "graphDigest": "sha256:b5199a674ffa8be96deb80b2ebbd58fa87d7154e7fb3d2d1bfc2a779a5fed8cf",
+        "canonicalInitializerDigest": "sha256:d17ebe52d251b61d49de569296970d42b619897ab6db0ea52921ab554ba07d82",
+        "adapterDescriptorDigest": "sha256:3250e1a246b6474dcb63701a2151cae53fa996e1e9216ec75319dcef8f38fe94",
+        "assemblerDescriptorDigest": "sha256:0c7081c4868b524c2f8ad010508a96cb4a782057afece2f884e21f031fc6bb9f",
+        "backendAbi": "onnxruntime",
+        "roleKind": "COMPONENT_SET",
+        "layerBegin": 0,
+        "layerEnd": 0,
+        "nodeIndices": [
+          0,
+          1
+        ],
+        "inputNames": [
+          "X"
+        ],
+        "outputNames": [
+          "Y",
+          "ghost_out"
+        ],
+        "expectedInputs": [
+          {
+            "name": "X",
+            "dtype": "float32",
+            "shape": [
+              2,
+              2
+            ]
+          }
+        ],
+        "expectedOutputs": [
+          {
+            "name": "Y",
+            "dtype": "float32",
+            "shape": [
+              2,
+              2
+            ]
+          },
+          {
+            "name": "ghost_out",
+            "dtype": "float32",
+            "shape": [
+              2,
+              2
+            ]
+          }
+        ],
+        "precision": "fp32",
+        "quantization": "none",
+        "layout": "native",
+        "padding": "none",
+        "maxSourceBytes": 8589934592,
+        "maxAssembledBytes": 8589934592,
+        "maxNodes": 1000000
+      },
+      "rejected": true,
+      "pythonError": "adapter-certified ONNX extraction failed"
+    },
+    {
+      "id": "reject-cover-short",
+      "modelHex": "08083a85010a100a01580a0257311202543122034164640a0d0a025431120159220452656c75121a737065633138322d65787472616374696f6e2d636861696e2d612a1c080208021001420257314a100000003f0000803f0000803f0000003f5a130a0158120e0a0c080112080a0208020a02080262130a0159120e0a0c080112080a0208020a02080242040a00100d",
+      "recipe": {
+        "schema": "ndnsf-di-certified-onnx-assembly-v1",
+        "modelManifestDigest": "sha256:f7e68826f1ec9ed55c6353873c5f8aaf15f073ccd06e3bcdabe9855f9c416536",
+        "artifactProfileDigest": "sha256:0fd96faa18054754625706418707d4f5a36f16f69bc3accbf232df7f08e613a9",
+        "graphDigest": "sha256:b5199a674ffa8be96deb80b2ebbd58fa87d7154e7fb3d2d1bfc2a779a5fed8cf",
+        "canonicalInitializerDigest": "sha256:d17ebe52d251b61d49de569296970d42b619897ab6db0ea52921ab554ba07d82",
+        "adapterDescriptorDigest": "sha256:3250e1a246b6474dcb63701a2151cae53fa996e1e9216ec75319dcef8f38fe94",
+        "assemblerDescriptorDigest": "sha256:0c7081c4868b524c2f8ad010508a96cb4a782057afece2f884e21f031fc6bb9f",
+        "backendAbi": "onnxruntime",
+        "roleKind": "RANK",
+        "layerBegin": 0,
+        "layerEnd": 2,
+        "nodeIndices": [
+          0
+        ],
+        "inputNames": [
+          "X"
+        ],
+        "outputNames": [
+          "Y"
+        ],
+        "expectedInputs": [
+          {
+            "name": "X",
+            "dtype": "float32",
+            "shape": [
+              2,
+              2
+            ]
+          }
+        ],
+        "expectedOutputs": [
+          {
+            "name": "Y",
+            "dtype": "float32",
+            "shape": [
+              2,
+              2
+            ]
+          }
+        ],
+        "precision": "fp32",
+        "quantization": "none",
+        "layout": "native",
+        "padding": "none",
+        "maxSourceBytes": 8589934592,
+        "maxAssembledBytes": 8589934592,
+        "maxNodes": 1000000
+      },
+      "rejected": true,
+      "pythonError": "assembled ONNX node cover differs from the certificate"
+    },
+    {
+      "id": "reject-io-contract-coverage",
+      "modelHex": "08083a85010a100a01580a0257311202543122034164640a0d0a025431120159220452656c75121a737065633138322d65787472616374696f6e2d636861696e2d612a1c080208021001420257314a100000003f0000803f0000803f0000003f5a130a0158120e0a0c080112080a0208020a02080262130a0159120e0a0c080112080a0208020a02080242040a00100d",
+      "recipe": {
+        "schema": "ndnsf-di-certified-onnx-assembly-v1",
+        "modelManifestDigest": "sha256:f7e68826f1ec9ed55c6353873c5f8aaf15f073ccd06e3bcdabe9855f9c416536",
+        "artifactProfileDigest": "sha256:0fd96faa18054754625706418707d4f5a36f16f69bc3accbf232df7f08e613a9",
+        "graphDigest": "sha256:b5199a674ffa8be96deb80b2ebbd58fa87d7154e7fb3d2d1bfc2a779a5fed8cf",
+        "canonicalInitializerDigest": "sha256:d17ebe52d251b61d49de569296970d42b619897ab6db0ea52921ab554ba07d82",
+        "adapterDescriptorDigest": "sha256:3250e1a246b6474dcb63701a2151cae53fa996e1e9216ec75319dcef8f38fe94",
+        "assemblerDescriptorDigest": "sha256:0c7081c4868b524c2f8ad010508a96cb4a782057afece2f884e21f031fc6bb9f",
+        "backendAbi": "onnxruntime",
+        "roleKind": "COMPONENT_SET",
+        "layerBegin": 0,
+        "layerEnd": 0,
+        "nodeIndices": [
+          0,
+          1
+        ],
+        "inputNames": [
+          "X"
+        ],
+        "outputNames": [
+          "Y"
+        ],
+        "expectedInputs": [
+          {
+            "name": "ghost_in",
+            "dtype": "float32",
+            "shape": [
+              2,
+              2
+            ]
+          }
+        ],
+        "expectedOutputs": [
+          {
+            "name": "Y",
+            "dtype": "float32",
+            "shape": [
+              2,
+              2
+            ]
+          }
+        ],
+        "precision": "fp32",
+        "quantization": "none",
+        "layout": "native",
+        "padding": "none",
+        "maxSourceBytes": 8589934592,
+        "maxAssembledBytes": 8589934592,
+        "maxNodes": 1000000
+      },
+      "rejected": true,
+      "pythonError": "expected_inputs does not cover exact ONNX names"
+    },
+    {
+      "id": "reject-io-dtype",
+      "modelHex": "08083a85010a100a01580a0257311202543122034164640a0d0a025431120159220452656c75121a737065633138322d65787472616374696f6e2d636861696e2d612a1c080208021001420257314a100000003f0000803f0000803f0000003f5a130a0158120e0a0c080112080a0208020a02080262130a0159120e0a0c080112080a0208020a02080242040a00100d",
+      "recipe": {
+        "schema": "ndnsf-di-certified-onnx-assembly-v1",
+        "modelManifestDigest": "sha256:f7e68826f1ec9ed55c6353873c5f8aaf15f073ccd06e3bcdabe9855f9c416536",
+        "artifactProfileDigest": "sha256:0fd96faa18054754625706418707d4f5a36f16f69bc3accbf232df7f08e613a9",
+        "graphDigest": "sha256:b5199a674ffa8be96deb80b2ebbd58fa87d7154e7fb3d2d1bfc2a779a5fed8cf",
+        "canonicalInitializerDigest": "sha256:d17ebe52d251b61d49de569296970d42b619897ab6db0ea52921ab554ba07d82",
+        "adapterDescriptorDigest": "sha256:3250e1a246b6474dcb63701a2151cae53fa996e1e9216ec75319dcef8f38fe94",
+        "assemblerDescriptorDigest": "sha256:0c7081c4868b524c2f8ad010508a96cb4a782057afece2f884e21f031fc6bb9f",
+        "backendAbi": "onnxruntime",
+        "roleKind": "COMPONENT_SET",
+        "layerBegin": 0,
+        "layerEnd": 0,
+        "nodeIndices": [
+          0,
+          1
+        ],
+        "inputNames": [
+          "X"
+        ],
+        "outputNames": [
+          "Y"
+        ],
+        "expectedInputs": [
+          {
+            "name": "X",
+            "dtype": "int64",
+            "shape": [
+              2,
+              2
+            ]
+          }
+        ],
+        "expectedOutputs": [
+          {
+            "name": "Y",
+            "dtype": "float32",
+            "shape": [
+              2,
+              2
+            ]
+          }
+        ],
+        "precision": "fp32",
+        "quantization": "none",
+        "layout": "native",
+        "padding": "none",
+        "maxSourceBytes": 8589934592,
+        "maxAssembledBytes": 8589934592,
+        "maxNodes": 1000000
+      },
+      "rejected": true,
+      "pythonError": "assembled ONNX input dtype/shape mismatch"
+    },
+    {
+      "id": "reject-io-shape",
+      "modelHex": "08083a85010a100a01580a0257311202543122034164640a0d0a025431120159220452656c75121a737065633138322d65787472616374696f6e2d636861696e2d612a1c080208021001420257314a100000003f0000803f0000803f0000003f5a130a0158120e0a0c080112080a0208020a02080262130a0159120e0a0c080112080a0208020a02080242040a00100d",
+      "recipe": {
+        "schema": "ndnsf-di-certified-onnx-assembly-v1",
+        "modelManifestDigest": "sha256:f7e68826f1ec9ed55c6353873c5f8aaf15f073ccd06e3bcdabe9855f9c416536",
+        "artifactProfileDigest": "sha256:0fd96faa18054754625706418707d4f5a36f16f69bc3accbf232df7f08e613a9",
+        "graphDigest": "sha256:b5199a674ffa8be96deb80b2ebbd58fa87d7154e7fb3d2d1bfc2a779a5fed8cf",
+        "canonicalInitializerDigest": "sha256:d17ebe52d251b61d49de569296970d42b619897ab6db0ea52921ab554ba07d82",
+        "adapterDescriptorDigest": "sha256:3250e1a246b6474dcb63701a2151cae53fa996e1e9216ec75319dcef8f38fe94",
+        "assemblerDescriptorDigest": "sha256:0c7081c4868b524c2f8ad010508a96cb4a782057afece2f884e21f031fc6bb9f",
+        "backendAbi": "onnxruntime",
+        "roleKind": "COMPONENT_SET",
+        "layerBegin": 0,
+        "layerEnd": 0,
+        "nodeIndices": [
+          0,
+          1
+        ],
+        "inputNames": [
+          "X"
+        ],
+        "outputNames": [
+          "Y"
+        ],
+        "expectedInputs": [
+          {
+            "name": "X",
+            "dtype": "float32",
+            "shape": [
+              1,
+              1
+            ]
+          }
+        ],
+        "expectedOutputs": [
+          {
+            "name": "Y",
+            "dtype": "float32",
+            "shape": [
+              2,
+              2
+            ]
+          }
+        ],
+        "precision": "fp32",
+        "quantization": "none",
+        "layout": "native",
+        "padding": "none",
+        "maxSourceBytes": 8589934592,
+        "maxAssembledBytes": 8589934592,
+        "maxNodes": 1000000
+      },
+      "rejected": true,
+      "pythonError": "assembled ONNX input dtype/shape mismatch"
+    },
+    {
+      "id": "reject-layer-escape",
+      "modelHex": "08083a85010a100a01580a0257311202543122034164640a0d0a025431120159220452656c75121a737065633138322d65787472616374696f6e2d636861696e2d612a1c080208021001420257314a100000003f0000803f0000803f0000003f5a130a0158120e0a0c080112080a0208020a02080262130a0159120e0a0c080112080a0208020a02080242040a00100d",
+      "recipe": {
+        "schema": "ndnsf-di-certified-onnx-assembly-v1",
+        "modelManifestDigest": "sha256:f7e68826f1ec9ed55c6353873c5f8aaf15f073ccd06e3bcdabe9855f9c416536",
+        "artifactProfileDigest": "sha256:0fd96faa18054754625706418707d4f5a36f16f69bc3accbf232df7f08e613a9",
+        "graphDigest": "sha256:b5199a674ffa8be96deb80b2ebbd58fa87d7154e7fb3d2d1bfc2a779a5fed8cf",
+        "canonicalInitializerDigest": "sha256:d17ebe52d251b61d49de569296970d42b619897ab6db0ea52921ab554ba07d82",
+        "adapterDescriptorDigest": "sha256:3250e1a246b6474dcb63701a2151cae53fa996e1e9216ec75319dcef8f38fe94",
+        "assemblerDescriptorDigest": "sha256:0c7081c4868b524c2f8ad010508a96cb4a782057afece2f884e21f031fc6bb9f",
+        "backendAbi": "onnxruntime",
+        "roleKind": "RANK",
+        "layerBegin": 0,
+        "layerEnd": 9,
+        "nodeIndices": [
+          0,
+          1
+        ],
+        "inputNames": [
+          "X"
+        ],
+        "outputNames": [
+          "Y"
+        ],
+        "expectedInputs": [
+          {
+            "name": "X",
+            "dtype": "float32",
+            "shape": [
+              2,
+              2
+            ]
+          }
+        ],
+        "expectedOutputs": [
+          {
+            "name": "Y",
+            "dtype": "float32",
+            "shape": [
+              2,
+              2
+            ]
+          }
+        ],
+        "precision": "fp32",
+        "quantization": "none",
+        "layout": "native",
+        "padding": "none",
+        "maxSourceBytes": 8589934592,
+        "maxAssembledBytes": 8589934592,
+        "maxNodes": 1000000
+      },
+      "rejected": true,
+      "pythonError": "certified ONNX node cover escapes the graph"
+    }
+  ]
+}

@@ -28,7 +28,7 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 | [T005-A InProcess Authority](contracts/execution-units.md#t005-a-inprocess-authority) | DONE | T004-A | [acceptance](evidence/t005-a-inprocess-authority-20260907.md)；CPP(Spec182GrantAuthority/*) 6 cases 全绿（固定 request/时钟向量、expiry/自授/issuer 不完整/wrong-key-recipient 面原因码族拒绝、secret 生命周期无 key 驻留、注入 policy 传播）；issue() 补 requester==provider 拒绝（Python frozen 对照）；planned 独立文件拆分由既有同文件切片取代 | 2026-09-07 |
 | [T005-B Requester Grant Publication](contracts/execution-units.md#t005-b-requester-grant-publication) | DONE | T005-A | [acceptance](evidence/t005-b-requester-grant-20260907.md)；CPP(Spec182GrantClient/*) 8 cases 全绿（构造门、view 完整性先于端口副作用、过期 deadline 在副作用前 fence、过期 grant 于 authority 边界拒绝、canonical exact-name/回落与 determinism、错名 publication 恰好一次消费且不复活）+ 集成 Spec182GrantClientFlow 1 case（真实 ServiceUser::publishSignedAppData + exact-name fetch，KeyLocator/content 校验）；生产代码本卡无改动（既有切片语义经测试确认）；真实 Provider crypto 消费 T016 | 2026-09-07 |
 | [T006-A Canonical Source Identity](contracts/execution-units.md#t006-a-canonical-source-identity) | DONE | T002-A | [acceptance](evidence/t006-a-canonical-source-identity-20260907.md)；CPP(Spec182OnnxIdentity/*) 11 cases 全绿（24 v1 + 14 accepted extended 全模型 golden 逐字段、typed/raw pair 摘要恒等、v2 per-tensor 12 accepted 逐字节 + 5 拒绝、bf16 两编码归一、revision 分类、v2 descriptor binding 门、external/function-attr 内联等价、overflow/非法路径/限额拒绝） | 2026-09-07 |
-| [T006-B Certified Extraction and Wire](contracts/execution-units.md#t006-b-certified-extraction-and-wire) | PARTIAL | T006-A | [baseline](evidence/task-progress-registry-20260907.md)；已有相关源码切片；完整卡验收未完成 | 2026-09-07 |
+| [T006-B Certified Extraction and Wire](contracts/execution-units.md#t006-b-certified-extraction-and-wire) | DONE | T006-A | [acceptance](evidence/t006-b-certified-extraction-wire-20260907.md)；CPP(Spec182OnnxExtraction/*) 11 cases 全绿（4 accept 逐字节 parity + 独立 sha256 交叉检查，7 reject 精确 reason family）+ Spec182NativeAssembly 3 cases + Spec182OnnxIdentity 11 cases 回归；官方 ONNX 1.17 full-pb 统一（--onnx-prefix）；data_location proto3-optional presence 奇点修正 byteParity（frozen sha 77300e13，diff 唯一 delta）；完整回归 5 个环境性失败（TPM/NFD）与本卡无关 | 2026-09-07 |
 | [T006-C Bounded Native Worker](contracts/execution-units.md#t006-c-bounded-native-worker) | NOT_STARTED | T006-B | [baseline](evidence/task-progress-registry-20260907.md)；无本卡独立执行/验收记录；按依赖领取 | 2026-09-07 |
 | [T006-D Protected Provider Activation](contracts/execution-units.md#t006-d-protected-provider-activation) | PARTIAL | T006-C | [baseline](evidence/task-progress-registry-20260907.md)；已有相关源码切片；完整卡验收未完成 | 2026-09-07 |
 | [T007-A Full Tokenizer Ownership](contracts/execution-units.md#t007-a-full-tokenizer-ownership) | PARTIAL | T002-A | [baseline](evidence/task-progress-registry-20260907.md)；已有相关源码切片；完整卡验收未完成 | 2026-09-07 |
@@ -55,6 +55,26 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 | [T017-A Development Handoff](contracts/execution-units.md#t017-a-development-handoff) | NOT_STARTED | T016-A | [baseline](evidence/task-progress-registry-20260907.md)；无本卡独立执行/验收记录；按依赖领取 | 2026-09-07 |
 
 ## Current Checkpoint
+
+2026-09-07 T006-B Certified Extraction and Wire / **T006-B DONE（父 T006 待
+T006-C/D）**：按 T006-B 卡 Verify（CPP(Spec182OnnxExtraction/*)）在 planned
+文件 `tests/unit-tests/di-native-onnx-recipe.t.cpp`（case-manifest 登记）建
+suite `Spec182OnnxExtraction` 11 cases 全绿：4 accept 逐字节复现冻结 python
+wire（inline/external/rank-subset/function-local-domain）+ 独立
+sha256(modelBytes)==modelDigest 交叉检查；7 reject 逐字面 exact reason
+family（RECIPE/GRAPH/NODE_COVER/IO_DTYPE/LAYER_RANGE，r7 ghost-input 的
+python 构造期 IO_CONTRACT 与 native S5 GRAPH 差异已留档）。驱动
+NativeOnnxRecipeAssembler 的 S3–S7 certified pipeline：官方 ONNX 1.17
+full-protobuf 统一（--onnx-prefix，含 --with-tests/--nac-abe/--ndn-svs 完整
+configure）。关键修正：(1) data_location proto3-optional presence 奇点——
+external 源行与 python 冻结 wire 逐字节相同，byteParity False→True 重新冻结
+（sha 6f289a01→77300e13，11 行 diff 仅该标志），suite 断言升级 byte equality；
+(2) If fixture 需 set_type(GRAPH) + cond 零维 shape（full checker 要求）；
+(3) 既有 Spec182NativeAssembly 3 cases（含 nested-external If）与
+Spec182OnnxIdentity 11 cases 回归全绿；完整回归 5 失败为 TPM/NFD 环境性、
+与 ONNX 改动不可达。evidence
+[t006-b](evidence/t006-b-certified-extraction-wire-20260907.md)。
+下一步：T006-C（Bounded Native Worker，依赖 T006-B 已满足）。
 
 2026-09-07 T006-A Canonical Source Identity / **T006-A DONE（父 T006 待
 T006-B/C/D）**：按 T006-A 卡 Verify（CPP(Spec182OnnxIdentity/*)）在 manifest
