@@ -1,5 +1,11 @@
 # Failure Log and Evidence Index
 
+## 2026-09-07 — YOLO V3 backend alternatives collapsed before ACK placement
+
+- Actual adapter allowed CPU and CUDA, but coordinator initial RoleAssemblySpec retained only the first backend. Pure production-kernel reproduction rejected CUDA BackboneNeck with CPU-first ordering and CPU Merge with CUDA-first ordering despite complete role coverage/resources.
+- Normalize only the explicitly declared ONNX CPU/CUDA pair to its portable family until the existing signed-offer strategy selects a concrete backend/device. Keep single-backend requirements strict. Tests cover both orders, mixed/all-CPU placement, missing role, insufficient memory and wrong engine.
+- Host has no current `_ndnsf` yet; ordinary planner import failed at the missing binding. Focused tests use verbatim AST-selected production kernels with real SDK types, not a fake native module. T008 must repeat with SPEC183_REQUIRE_NATIVE_PLANNER_IMPORT=1 after rebuilding. This is not CUDA/model evidence. New source seal/SIF required; see Spec183 evidence/t005-backend-selection.md.
+
 ## 2026-09-07 — Spec183 User preview incompatible with real entrypoint
 
 - Source inspection found run-plan requestId was a bare hash while the maintained ACK-driven User requires an absolute NDN name. The plan also predicted a different output directory from the role-isolated mount. Corrected both and added command/plan assertions and bad-ID/output negatives.

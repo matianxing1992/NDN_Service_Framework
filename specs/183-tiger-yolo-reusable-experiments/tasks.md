@@ -78,6 +78,8 @@ T001–T004形成 profile/launcher 实现骨架；可操作 MVP 还要求 T006 �
 
 ## Current Checkpoint
 
+2026-09-07源码发现：YOLO声明CPU/CUDA备选，但_v3_role_specs只取首项，GPU-only模型Provider或CPU Merge无法同时满足。已在原DI coordinator保留明确的ONNX CPU/CUDA family后再由ACK选择；9个kernel测试复现/修复并保留资源/角色/CPU-only负例，见[evidence/t005-backend-selection.md](evidence/t005-backend-selection.md)。T008必须在原生绑定构建后以`SPEC183_REQUIRE_NATIVE_PLANNER_IMPORT=1`重跑该文件，禁止AST模式代替完整import。该源码变化使旧runtime/source seal失效；handoff交付SHA只作provenance，新SIF必须含修复。T005仍partial，Controller/Repo准备和T006未完成。
+
 2026-09-07追加User接线：apps/yolo.py复用真实one-shot入口，NodeRuntime顺序持有User HOME并保留Provider，修正裸requestId与错误output预览路径。两节点1+3、单节点1+1均经进程边界聚焦测试；首失败停止。见[evidence/t005-user-schedule.md](evidence/t005-user-schedule.md)。T005仍partial；下一步准备signed material、Controller/Repo和真实permission/catalogue readiness，再T006。不得把测试validator替代正式collector；negative-dependency暂拒绝普通scheduler。
 
 2026-09-07追加：T005 partial已将安装版native Provider启动参数接入NodeRuntime，四角色CPU/GPU与启动前拒错共15项新增测试；完整Tiger focused集合 **275 passed in 16.18s**。见[evidence/t005-native-launch.md](evidence/t005-native-launch.md)。下一步仍为真实应用coordinator、Controller/Repo/User准备与安全readiness、逐请求执行，然后T006；T005未完成，不放行T007/Slurm。

@@ -4138,6 +4138,14 @@ class AutomaticPlanningCoordinator:
         specs = []
         for role in candidate.execution_plan.roles:
             requirement = candidate.requirements_by_role[role]
+            # These are device alternatives for the same portable ONNX
+            # execution engine, not a CPU-only request. Keep the family
+            # unresolved until the signed ACK topology selects CPU or CUDA.
+            # A single-backend requirement (or another backend set) remains
+            # exact; never widen CPU-only or CUDA-only constraints.
+            initial_backend = str(requirement.backends[0])
+            if set(requirement.backends) == {"onnxruntime-cpu", "onnxruntime-cuda"}:
+                initial_backend = "onnxruntime"
             kind = _v3_role_kind(role)
             begin, end = AutomaticPlanningCoordinator._role_layer_range(candidate, role)
             owned = [
@@ -4195,7 +4203,7 @@ class AutomaticPlanningCoordinator:
                     role=role, rank=rank, layer_begin=int(begin),
                     layer_end=int(end), recipe_digest=recipe_digest,
                     artifact_digest=rank_artifacts[rank],
-                    backend=str(requirement.backends[0]),
+                    backend=initial_backend,
                     protection_epoch=protection_epoch,
                     required_device_memory_mb=int(math.ceil(
                         (requirement.estimated_peak_gpu_memory_bytes or 0)
