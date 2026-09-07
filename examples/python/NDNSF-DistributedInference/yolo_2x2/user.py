@@ -244,7 +244,7 @@ def _retain_public_assignments(args, handle, attempt_id):
         if public['role'] != str(role):
             raise ValueError('PUBLIC_ASSIGNMENT_ROLE_BINDING')
         projections.append(public)
-    record = dict(schema='yolo-public-assignments-v1', assignments=projections)
+    record = dict(schema='yolo-public-assignments-v2', assignments=projections)
     wire = json.dumps(record, sort_keys=True, allow_nan=False).encode('utf-8')
     if len(wire) > 1024 * 1024:
         raise ValueError('PUBLIC_ASSIGNMENT_OUTPUT_SIZE')

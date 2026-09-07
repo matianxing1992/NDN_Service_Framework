@@ -1974,3 +1974,17 @@ code path and focused regression, not the full runtime qualification.
   independently bind signed model/assembly identities before final PASS.
 - Lesson: fixtures must preserve actual required native fields; matching two
   self-reported logs does not independently prove complete graph execution.
+
+# 2026-09-07 Spec183 public model binding was not carried into retained files
+
+- Symptom: the typed projection emitted role/model identity only internally;
+  the retained User envelope remained v1 and the collector had no model binding.
+- Cause: the projection and collector evolved independently, so an old envelope
+  could be treated as a complete dependency contract.
+- Fix: version the envelope as v2, emit per-role modelManifestDigest and
+  artifactDigest, reject incomplete identity at the User boundary, and require
+  exact canonical digests and role ownership at collection.
+- Boundary: this remains structural evidence. Signed package verification and
+  optimized graph coverage are separate gates and remain open.
+- Lesson: every evidence field must be carried through producer, retained file,
+  reader, and external expected identity before it can support a final verdict.

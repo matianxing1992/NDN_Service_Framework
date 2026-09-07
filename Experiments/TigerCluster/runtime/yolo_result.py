@@ -46,23 +46,30 @@ def read_public_dependency_contract(path, *, request_id, attempt, plan_digest, p
     except (UnicodeError, RecursionError, json.JSONDecodeError) as exc:
         raise EvidenceError('PUBLIC_DEPENDENCY_JSON') from exc
     if (not isinstance(document, dict) or set(document) != {'schema', 'assignments'}
-            or document['schema'] != 'yolo-public-assignments-v1'
+            or document['schema'] != 'yolo-public-assignments-v2'
             or not isinstance(document['assignments'], list)
             or len(document['assignments']) != len(providers_by_role)):
         raise EvidenceError('PUBLIC_DEPENDENCY_SCHEMA')
-    fields = {'schema', 'requestId', 'attempt', 'planDigest', 'sessionId', 'provider', 'role', 'inputs', 'outputs'}
+    fields = {'schema', 'requestId', 'attempt', 'planDigest', 'sessionId', 'provider', 'role', 'inputs', 'outputs', 'model'}
     edge_fields = ('scope', 'producer', 'consumer', 'planned_name')
     session = request_id.strip('/') + '/attempt/' + str(attempt)
     inputs, outputs, application_inputs, roles = {}, {}, [], set()
+    model_bindings = {}
     for row in document['assignments']:
         if (not isinstance(row, dict) or set(row) != fields
                 or not isinstance(row['role'], str) or row['role'] not in providers_by_role
-                or row['role'] in roles or row['schema'] != 'tiger-yolo-public-assignment-v1'
+                or row['role'] in roles or row['schema'] != 'tiger-yolo-public-assignment-v2'
                 or row['requestId'] != request_id or type(row['attempt']) is not int
                 or row['attempt'] != attempt or row['planDigest'] != plan_digest
                 or row['sessionId'] != session or row['provider'] != providers_by_role[row['role']]):
             raise EvidenceError('PUBLIC_DEPENDENCY_ROLE_BINDING')
         roles.add(row['role'])
+        model = row['model']
+        if (not isinstance(model, dict) or set(model) != {'modelManifestDigest', 'artifactDigest'}
+                or any(not isinstance(v, str) or re.fullmatch(r'sha256:[0-9a-f]{64}', v) is None
+                       for v in model.values())):
+            raise EvidenceError('PUBLIC_DEPENDENCY_MODEL_BINDING')
+        model_bindings[row['role']] = model
         for direction, collection in (('inputs', inputs), ('outputs', outputs)):
             if not isinstance(row[direction], list) or len(row[direction]) > 64:
                 raise EvidenceError('PUBLIC_DEPENDENCY_EDGE_COUNT')
@@ -85,6 +92,7 @@ def read_public_dependency_contract(path, *, request_id, attempt, plan_digest, p
     if not outputs or outputs.keys() != paired_inputs.keys() or len(outputs) > 64:
         raise EvidenceError('PUBLIC_DEPENDENCY_PAIR_MISMATCH')
     return dict(sessionId=session, edges=[outputs[key] for key in sorted(outputs)],
+        modelBindings=model_bindings,
         applicationInputs=application_inputs, sourceDigest='sha256:'+hashlib.sha256(payload).hexdigest(),
         qualification='PUBLIC_DEPENDENCY_COMPONENT_ONLY')
 
@@ -102,6 +110,7 @@ def collect_dependency_result(path, logs_by_role, *, request_id, attempt, plan_d
         raise EvidenceError('DEPENDENCY_LOG_ROLE_COVERAGE')
     result = validate_dependency_edges(logs_by_role, contract['edges'], session_id=contract['sessionId'])
     return dict(result, publicContractDigest=contract['sourceDigest'],
+        modelBindings=contract['modelBindings'],
         applicationInputCount=len(contract['applicationInputs']))
 
 

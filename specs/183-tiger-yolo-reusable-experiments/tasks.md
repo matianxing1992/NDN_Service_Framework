@@ -94,6 +94,16 @@ and the six registered Python backend/public-recipient/numerical/identity files;
 JUnit: `Experiments/TigerCluster/results/t006-native-model-identity-r1/junit.xml`.
 Synthetic observation mutations are not actual native model execution evidence.
 
+Follow-up checkpoint: public retained assignments now use envelope
+`yolo-public-assignments-v2`; each role carries canonical model-manifest and
+artifact digests from the typed Selection assembly. The User writer rejects an
+incomplete identity before creating the retained file, and the collector rejects
+old/malformed envelopes or wrong-role model bindings. The complete focused suite
+passed **824 tests in 47.42s**; JUnit:
+`Experiments/TigerCluster/results/t006-model-binding-r1/junit.xml`.
+This remains structural evidence, not an independent signed-package or
+optimized-graph comparison.
+
 2026-09-07 retained allocation/GPU join: collect_retained_request now forwards
 the external journal/profile allocation expectations to the dependency
 collector. GPU node entries require trusted allocationDigest/gpuProbeDigest,

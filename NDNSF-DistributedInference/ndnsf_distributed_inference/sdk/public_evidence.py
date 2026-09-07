@@ -4,6 +4,11 @@ This projection is not authenticated execution evidence. The caller must bind
 it to the sealed User request and separately verify native observations.
 """
 
+import re
+
+
+_DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
+
 
 def public_assignment_projection(wire, *, request_id, attempt, plan_digest, provider):
     """Decode the production contract and expose names, not grants or keys.
@@ -21,6 +26,14 @@ def public_assignment_projection(wire, *, request_id, attempt, plan_digest, prov
     if (projection.request_id != request_id or projection.attempt != attempt
             or projection.plan_digest != plan_digest or projection.provider != provider):
         raise ValueError('PUBLIC_ASSIGNMENT_BINDING')
+    assembly = projection.assembly
+    model_manifest = assembly.model_manifest_digest
+    artifact_digest = assembly.artifact_digest
+    if (not _DIGEST.fullmatch(model_manifest)
+            or not _DIGEST.fullmatch(artifact_digest)):
+        # A public retained assignment without certified model identity cannot
+        # be joined to the native runner or signed dispatch package.
+        raise ValueError('PUBLIC_ASSIGNMENT_MODEL_IDENTITY')
     if not request_id.strip('/') or any(c.isspace() for c in request_id):
         raise ValueError('PUBLIC_ASSIGNMENT_SESSION')
     flow = projection.dataflow
@@ -45,9 +58,10 @@ def public_assignment_projection(wire, *, request_id, attempt, plan_digest, prov
         return dict(scope=scope, producer=endpoint.producer_role,
                     consumer=endpoint.consumer_role, planned_name=endpoint.name_prefix)
 
-    return dict(schema='tiger-yolo-public-assignment-v1', requestId=request_id,
+    return dict(schema='tiger-yolo-public-assignment-v2', requestId=request_id,
         attempt=attempt, planDigest=plan_digest,
         sessionId=request_id.strip('/') + '/attempt/' + str(attempt),
         provider=provider, role=flow.role,
+        model=dict(modelManifestDigest=model_manifest, artifactDigest=artifact_digest),
         inputs=[edge(endpoint) for endpoint in flow.must_fetch],
         outputs=[edge(endpoint) for endpoint in flow.may_publish])

@@ -21,7 +21,13 @@ def assignment():
         'BackboneNeck', 0, 'DetectShard0', 'p3', digest, digest, 0, 1,
         digest, 'NDNSF_DATA_V1', 1000, 5000)
     endpoint2 = replace(endpoint, tensor_id='p4', endpoint_digest='')
-    role = RoleAssemblySpec('BackboneNeck', 0, 0, 2, digest, digest, 'cpu', ())
+    role = RoleAssemblySpec('BackboneNeck', 0, 0, 2, digest, digest, 'cpu', (),
+        model_manifest_digest=digest, artifact_profile_digest=digest,
+        graph_digest=digest, canonical_initializer_digest=digest,
+        adapter_descriptor_digest=digest, assembler_descriptor_digest=digest,
+        backend_abi='onnxruntime-cpu-test', node_indices=(0, 1),
+        expected_inputs=({'name': 'input'},), expected_outputs=({'name': 'output'},),
+        precision='float32', resource_envelope={'memory_mb': 1})
     flow = RoleDataflowContract('/request/1/', 2, digest, 'BackboneNeck',
         may_publish=(endpoint, endpoint2))
     return ProviderSelectionProjectionV3('/provider/a', '/request/1/', 2,
@@ -45,7 +51,9 @@ def test_public_projection_uses_actual_typed_names_scopes_and_attempt():
     assert 'PRIVATE-CAPABILITY' not in json.dumps(public)
     assert source.group_capability_v1 not in json.dumps(public)
     assert set(public) == {'schema', 'requestId', 'attempt', 'planDigest',
-        'sessionId', 'provider', 'role', 'inputs', 'outputs'}
+        'sessionId', 'provider', 'role', 'inputs', 'outputs', 'model'}
+    assert public['model'] == dict(modelManifestDigest=source.assembly.model_manifest_digest,
+                                   artifactDigest=source.assembly.artifact_digest)
 
 
 @pytest.mark.parametrize('field,value', [('attempt', 1), ('attempt', True),
@@ -58,6 +66,27 @@ def test_public_projection_rejects_external_binding_mismatch(field, value):
     binding[field] = value
     with pytest.raises(ValueError):
         public_assignment_projection(source.to_bytes(), **binding)
+
+
+def test_public_projection_rejects_missing_certified_model_identity(monkeypatch):
+    from types import SimpleNamespace
+    from ndnsf_distributed_inference.sdk.public_evidence import public_assignment_projection
+    from ndnsf_distributed_inference.sdk.placement import ProviderSelectionProjectionV3
+    source = assignment()
+    class Incomplete:
+        request_id = source.request_id
+        attempt = source.attempt
+        plan_digest = source.plan_digest
+        provider = source.provider
+        assembly = SimpleNamespace(model_manifest_digest='',
+                                   artifact_digest=source.assembly.artifact_digest)
+        dataflow = source.dataflow
+        roles = source.roles
+    monkeypatch.setattr(ProviderSelectionProjectionV3, 'from_bytes',
+                        staticmethod(lambda _wire: Incomplete()))
+    with pytest.raises(ValueError, match='PUBLIC_ASSIGNMENT_MODEL_IDENTITY'):
+        public_assignment_projection(source.to_bytes(), request_id=source.request_id,
+            attempt=2, plan_digest=source.plan_digest, provider=source.provider)
 
 
 @pytest.mark.parametrize('mode,expected', [
@@ -167,7 +196,7 @@ def test_public_cross_role_join(tmp_path, fault):
     if fault == 'duplicate': rows.append(rows[0])
     if fault == 'secret-field': rows[0]['group_capability_v1'] = 'secret'
     path = tmp_path/'public.json'
-    path.write_text(json.dumps(dict(schema='yolo-public-assignments-v1', assignments=rows)))
+    path.write_text(json.dumps(dict(schema='yolo-public-assignments-v2', assignments=rows)))
     if fault == 'symlink':
         link = tmp_path/'link.json'
         link.symlink_to(path)
@@ -180,6 +209,7 @@ def test_public_cross_role_join(tmp_path, fault):
         contract = run()
         assert len(contract['edges']) == 2
         assert contract['sessionId'] == 'request/1/attempt/2'
+        assert contract['modelBindings']['BackboneNeck'] == rows[0]['model']
         assert len(contract['applicationInputs']) == int(fault == 'application-input')
         # Pair against source-format logs; these are not a transport run.
         from runtime.yolo_result import collect_dependency_result

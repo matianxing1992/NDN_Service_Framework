@@ -249,3 +249,15 @@ physical host agreement and final operator integration remain pending.
 
 Expanded focused regression: 729 passed in 55.70s; JUnit
 `Experiments/TigerCluster/results/t006-device-binding-r1/junit.xml`.
+
+# Model identity follow-up (2026-09-07)
+
+The retained public assignment envelope is now `yolo-public-assignments-v2`.
+Each role records `modelManifestDigest` and `artifactDigest` from the typed V3
+assembly. The User writer rejects incomplete identity; the offline reader
+requires the v2 envelope, canonical digests, and exact role ownership. The
+expanded focused suite recorded 824 passing tests in
+`results/t006-model-binding-r1/junit.xml`. This establishes a fail-closed
+identity boundary only. It does not authenticate the model package by itself,
+and it does not prove every certified graph node ran: ORT optimization can fuse
+nodes, so coverage must use a separately certified optimized-node mapping.
