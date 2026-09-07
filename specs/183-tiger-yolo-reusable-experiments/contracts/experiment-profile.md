@@ -11,12 +11,12 @@
 | Command | Semantics |
 | --- | --- |
 | `check` | 本地只读校验及 resolved argv/mounts/缺口报告；不创建远端目录、上传或调用 Slurm |
-| `prepare` | 检查 input closure 后产生新的本地不可变 bundle/run-plan；不执行模型或 sbatch |
+| `prepare` | 检查 dispatch 内容闭包后冻结新的本地 bundle/run-plan；不生成凭证、不执行容器/模型或 sbatch |
 | `local --case local-cpu` | 已满足 gate 后运行精确 SIF CPU 诊断；不等于 Slurm PASS |
 | `submit --case single-node-gpu|two-node-gpu|negative-dependency` | 登记 candidate/gate 独占、重新验证当前 bundle 并提交一次；不能隐式自动进入下一 case |
 | `collect` | 读取绑定的 `collection-input.json`，经 authoritative collector 重算 verdict；不启动缺失步骤、不覆盖旧失败 |
 
-验证阶段参数 `--stage inputs|runtime|dispatch` 仅用于 check/prepare；不允许借较早 stage 绕过 submit 所需 dispatch gate。凭证路径引用可配，内容不进入 argv/环境 dump。应用参数禁止 `eval`，构造 argv 数组；路径以 profile 文件目录为基准解析。
+验证阶段参数 `--stage inputs|runtime|dispatch` 仅用于 check；prepare 固定检查 dispatch 内容。不得借较早 stage 绕过 submit 所需运行资格。凭证路径引用可配，内容不进入 argv/环境 dump。应用参数禁止 `eval`，构造 argv 数组；路径以 profile 文件目录为基准解析。
 
 ## Profile Fields
 
@@ -92,7 +92,7 @@ I = digest(四库 exact revisions+source seals、依赖/工具链/base/build def
 
 每平面最低文件角色：inputs为sourceLock/sourceSeal/buildDefinition/baseSif；runtime为sif/nativeManifest/libraryLock；dispatch为effectiveProfile/harnessManifest/modelManifest/oracle/fixture/trustPolicy/validationContract。完整的源码archive/wheels/所有harness文件等仍须由各专属validator解析并验证，最低集合不能代替传递依赖完整性。文件在其清单根下；接收工具应在包含CAS与bundle的共同artifact根生成清单，不为此按run复制大文件。
 
-返回`integrity=VERIFIED, qualification=NOT_EVALUATED`；不检查证据是否真实执行、有效字段是否被launcher消费、模型签名或库ABI。因此该返回值不能授权prepare/build/submit。原source-sealer/handoff validator、后续YOLO receipt/配置解析与所有外部操作前重新检查仍是T002/T004的未完成部分；这里没有宣称零副作用生产入口测试完成。receipt不得进入自身候选摘要而产生循环引用。
+返回`integrity=VERIFIED, qualification=NOT_EVALUATED`；不检查证据是否真实执行、有效字段是否被launcher消费、模型签名或库ABI。因此该返回值不能授权build/运行/submit；prepare仅可冻结已校验字节，不产生运行资格。原source-sealer/handoff validator、后续YOLO receipt/配置解析与所有外部操作前重新检查仍是T002/T004的未完成部分。receipt不得进入自身候选摘要而产生循环引用。
 
 ## Topology And Data Rules
 
@@ -137,12 +137,13 @@ wait/readiness 使用 monotonic deadline，并检查 child 和 peer failure。Co
 `negative-dependency`。未知字段、错 manifest/hash、缺阶段、路径越界以 exit 2
 拒绝。
 
-命令的门控是 fail-closed：内容或收据尚未达到真实资格时返回 exit 78、
-`status=INCOMPLETE`、`qualification=NOT_EVALUATED`，不创建 run 目录、不冻结
-bundle、不调用 Apptainer、SSH 或 Slurm。`prepare` 只有在 dispatch gate 已被
-独立 receipt 标记为合格时才会冻结不可变 harness 和 run-plan；`local` 还要求
+命令区分文件准备和运行资格：`prepare` 经完整 dispatch 内容及 harness
+完整性校验后，只创建不可变 harness、run-plan 和 prepare.json；返回 exit 78、
+`status=PREPARED`、`qualification=NOT_EVALUATED`。它不执行复制的脚本、不生成
+凭证、不调用 Apptainer、SSH 或 Slurm，也不写入任何运行 PASS。重复 run ID
+拒绝，部分失败目录保留。内容检查不能产生运行资格；`local` 还要求
 host-MiniNDN gate，并由此次执行产生 local-SIF gate；`submit` 还要求远端 staging/allocated-run owner。当前这些真实
-receipt 尚未产生，因此命令不会把结构性 profile 当成可执行候选。`collect` 只
+receipt 尚未产生，因此执行命令不会把冻结成功当成可执行候选。`collect` 只
 读取与 prepared run 绑定的 `collection-input.json`，经 authoritative collector
 重算 verdict；不会启动缺失步骤或把旧失败改成成功。
 

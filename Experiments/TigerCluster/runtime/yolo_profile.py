@@ -279,8 +279,8 @@ def check_operator_profile(path: Path, *, stage: str) -> dict:
     """Inspect the current stage's bytes, without granting execution authority.
 
     Workload/source owner validation and actual gate evidence are separate from
-    these minimum content-plane records. Until wired, no successful hash check
-    is sufficient for preparing an executable bundle or submitting a job.
+    these minimum content-plane records. A successful hash check permits an
+    offline frozen copy, but never executing that copy or submitting a job.
     """
     loaded = load_operator_profile(path, stage=stage)
     profile = loaded["profile"]

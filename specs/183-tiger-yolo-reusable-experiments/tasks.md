@@ -4,6 +4,16 @@
 **Branch**: `TigerClusterExperiments`
 **Status**: 2/17 tasks complete (T001 inventory and T003 focused component acceptance); IN_PROGRESS, no runtime PASS.
 
+2026-09-07 real prepare path: removed the impossible dependency on READY from
+the content-only checker, which always reports NOT_EVALUATED. prepare now
+freezes verified dispatch/harness bytes and an unqualified plan, with no
+container, credential generation or remote command. The first unmocked CLI
+test then exposed a missing run-directory creation; fixed with exclusive
+creation before freezing. Runtime qualification gates are unchanged.
+T004 remains open for actual credential preparation and allocation execution.
+Focused command/bundle regression: 56 passed in 11.03s; synthetic artifact
+fixtures only, no native, model, SIF or Tiger execution.
+
 2026-09-07 actual model-input owner check: signed catalogue verification,
 four-role catalogue registration, graph/initializer hashes and fixed
 640x640/[1,50,6] reference validation passed on the existing local package.

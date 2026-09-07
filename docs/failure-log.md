@@ -2181,3 +2181,24 @@ tests failed before the fix. The focused operator/startup suite now passes
 
 Lesson: invocation identity belongs to the coordinator, not individual ranks;
 validate static budgets before creating resources.
+
+# 2026-09-07 — Spec183 prepare could never reach its freezer
+
+Symptom: a valid dispatch fixture passed the real content checks but prepare
+always returned INCOMPLETE before freezing. After correcting that condition,
+the same real CLI failed with HARNESS_DESTINATION_PARENT.
+
+Cause: prepare demanded READY from check_operator_profile, an integrity-only
+checker that always returns NOT_EVALUATED. READY-mocked tests hid this mismatch
+and the missing run-root creation before freeze_harness.
+
+Fix: separate offline byte freezing from execution qualification. Require
+VERIFIED content, preserve NOT_EVALUATED and exit 78, reject a changed profile,
+and exclusively create the run root. Local/submit/run execution gates remain
+closed. The real CLI regression uses an audit hook prohibiting subprocesses
+(except Python 3.8's uname -p import probe) and network connections; it verifies
+the actual frozen bundle, refusal to run, and duplicate-run preservation.
+Mutation cases reject a changed/unbound/writable source before output creation.
+
+Lesson: test public commands without mocking qualification, and do not demand
+runtime qualification merely to copy checked bytes for later qualification.

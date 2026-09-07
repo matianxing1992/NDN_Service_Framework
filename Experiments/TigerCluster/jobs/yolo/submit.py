@@ -2,10 +2,10 @@
 """Spec183 operator entrypoint.
 
 The five public actions are deliberately fail-closed.  A structurally valid
-profile is not a release: ``prepare`` needs a qualified dispatch receipt,
+profile is not a release: ``prepare`` freezes content-verified inputs only,
 ``local`` needs a prepared immutable run, and ``submit`` needs the corresponding
-allocation gate.  Missing or stale evidence returns 78 without creating a run,
-calling Apptainer, or calling Slurm.  The private ``run`` action is used only by
+allocation gate. Freezing alone returns 78/NOT_EVALUATED; execution without
+qualified evidence remains disabled. The private ``run`` action is used only by
 the checked-in Slurm wrapper after an allocation has been granted.
 """
 from __future__ import annotations
@@ -298,10 +298,14 @@ def _submission_command(profile_path: Path, profile: dict, args, prepared: dict,
 def _prepare(args) -> int:
     profile = Path(args.profile)
     report, value = _dispatch_report(profile)
-    if report.get("qualification") != "READY":
-        return _not_ready("prepare", "DISPATCH_GATE", report)
+    # Freezing checked bytes is not executing them. Runtime qualification is
+    # consumed by local/submit, not produced by this offline preparation step.
+    if report.get("integrity") != "VERIFIED":
+        return _not_ready("prepare", "DISPATCH_INTEGRITY", report)
     plan = resolve_run_plan(profile, stage="dispatch", case=args.case,
                             run_id=args.run_id, output=args.output)
+    if plan["documentDigest"] != report["documentDigest"]:
+        raise ClosureError("PROFILE_CHANGED_DURING_PREPARE")
     from runtime.yolo_bundle import freeze_harness
     manifest_ref = value["evidence"]["harnessManifest"]
     manifest = _file_ref(profile, "harnessManifest", manifest_ref)
@@ -309,12 +313,16 @@ def _prepare(args) -> int:
     if run_root.exists() or run_root.is_symlink():
         raise ClosureError("RUN_ARTIFACT_EXISTS")
     run_root.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    try:
+        run_root.mkdir(mode=0o700, exist_ok=False)
+    except FileExistsError as exc:
+        raise ClosureError("RUN_ARTIFACT_EXISTS") from exc
     bundle = run_root / "bundle"
     frozen = freeze_harness(manifest, bundle,
                             expected_manifest_sha256=manifest_ref["sha256"],
                             source_root=manifest.parent)
-    # The source manifest is copied into the sealed bundle; the temporary source
-    # path is never an execution input and is removed only after freezing.
+    # Preserve the source; the frozen copy is bound independently so subsequent
+    # source edits cannot silently change this run's harness.
     candidate = _json_digest({"profile": report["documentDigest"], "plan": plan,
                               "harness": frozen["manifestSha256"]})
     receipt = {"schema": "tiger-yolo-prepared-run-v1", "status": "PREPARED",
@@ -474,7 +482,7 @@ def main(argv=None):
     check.add_argument("--run-id", help="optional run preview; requires --output and --case")
     check.add_argument("--output", type=Path)
     check.add_argument("--case", choices=("local-cpu", "single-node-gpu", "two-node-gpu", "negative-dependency"))
-    prepare = commands.add_parser("prepare", help="freeze a qualified local run bundle")
+    prepare = commands.add_parser("prepare", help="freeze content-verified inputs; not runtime qualification")
     _common(prepare, case=True)
     local = commands.add_parser("local", help="run the qualified local-cpu gate")
     _common(local, case=True)

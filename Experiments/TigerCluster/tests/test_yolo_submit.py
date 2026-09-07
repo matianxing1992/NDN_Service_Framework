@@ -315,12 +315,55 @@ def test_dispatch_check_binds_and_verifies_frozen_harness(tmp_path):
     assert report["qualification"] == "NOT_EVALUATED"
 
 
+def test_real_prepare_freezes_without_runtime_qualification(tmp_path):
+    path, value, _ = dispatch_profile(tmp_path)
+    output = tmp_path / "runs"
+    args = ("prepare", "--profile", path, "--run-id", "prepare-test",
+            "--output", output, "--case", "two-node-gpu")
+    wrapper = """
+import runpy, sys
+def audit(event, args):
+    if event == 'subprocess.Popen' and args[0] == 'uname' and tuple(args[1]) == ('uname', '-p'):
+        return
+    if (event.startswith(('subprocess.', 'os.exec', 'os.spawn', 'os.posix_spawn'))
+            or event in ('os.system', 'socket.connect')):
+        raise AssertionError('PREPARE_LAUNCHED:' + event)
+sys.addaudithook(audit)
+sys.argv = sys.argv[1:]
+runpy.run_path(sys.argv[0], run_name='__main__')
+"""
+    result = subprocess.run([sys.executable, "-B", "-c", wrapper, str(CLI), *map(str, args)],
+                            cwd=tmp_path.parent, capture_output=True, text=True, timeout=10)
+    assert result.returncode == 78, result.stderr
+    receipt = json.loads(result.stdout)
+    assert receipt["status"] == "PREPARED"
+    assert receipt["qualification"] == "NOT_EVALUATED"
+    assert receipt == json.loads((output / "prepare-test/prepare.json").read_text())
+    from runtime.yolo_bundle import verify_harness
+    verify_harness(Path(receipt["bundle"]),
+                   expected_manifest_sha256=value["evidence"]["harnessManifest"]["sha256"])
+    assert receipt["plan"]["allocation"] is None
+    assert set(p.name for p in (output / "prepare-test").iterdir()) == {"prepare.json", "bundle"}
+    # No runtime/gate receipt exists and neither local nor remote execution is
+    # authorized by a successful freeze. Use the actual CLI, no READY mocks.
+    for action, case in (("local", "local-cpu"), ("submit", "two-node-gpu")):
+        rejected = cli(action, "--profile", path, "--run-id", "prepare-test",
+                       "--output", output, "--case", case, cwd=tmp_path)
+        assert rejected.returncode == 78
+        assert json.loads(rejected.stdout)["qualification"] == "NOT_EVALUATED"
+    duplicate = cli(*args, cwd=tmp_path)
+    assert duplicate.returncode == 2
+    assert json.loads(duplicate.stdout)["reason"] == "RUN_ARTIFACT_EXISTS"
+    assert receipt == json.loads((output / "prepare-test/prepare.json").read_text())
+
+
 @pytest.mark.parametrize("mutation,reason", [
     ("unbound", "HARNESS_DISPATCH_BINDING"),
     ("injected", "HARNESS_EXTRA_CONTENT"),
     ("writable", "HARNESS_NOT_SEALED"),
 ])
-def test_dispatch_rejects_unbound_or_changed_bundle(tmp_path, mutation, reason):
+@pytest.mark.parametrize("action", ["check", "prepare"])
+def test_dispatch_rejects_unbound_or_changed_bundle(tmp_path, mutation, reason, action):
     path, value, frozen = dispatch_profile(tmp_path)
     if mutation == "unbound":
         plane = Path(value["release"]["dispatch"]["path"])
@@ -338,9 +381,12 @@ def test_dispatch_rejects_unbound_or_changed_bundle(tmp_path, mutation, reason):
         frozen.chmod(0o555)
     else:
         (frozen / "runtime/baseline.py").chmod(0o644)
-    result = cli("check", "--stage", "dispatch", "--profile", path, cwd=tmp_path)
+    extra = (("--stage", "dispatch") if action == "check" else
+             ("--run-id", "rejected-run", "--output", tmp_path / "runs", "--case", "two-node-gpu"))
+    result = cli(action, *extra, "--profile", path, cwd=tmp_path)
     assert result.returncode == 2, result.stderr
     assert json.loads(result.stdout)["reason"] == reason
+    assert not (tmp_path / "runs").exists()
 
 
 def _negative_collection_input(prepared, *, valid=True):
