@@ -19,6 +19,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -211,10 +212,17 @@ def validate_sif(source_info: dict, sif: Path, apptainer: Path,
             or labels.get("org.ndnsf.di.build-boundary") != "container-runtime-in-sif"
             or labels.get("org.ndnsf.di.source-seal") != source_info["sourceSeal"]["sealDigest"]):
         fail("SPEC183_SIF_LABEL_BINDING")
-    command = [str(apptainer), "exec", "--cleanenv", "--containall", "--no-home",
-               "--pwd", "/", "--env", "HOME=/tmp,NDNSF_ALLOW_CPU_FALLBACK=0",
-               str(sif), "python3", "-c", _SIF_PROBE]
-    probe = subprocess.run(command, text=True, capture_output=True, check=False)
+    # ndn-cxx initializes its security home during ``import ndnsf``.  A
+    # ``--no-home`` probe therefore fails even when the SIF's native closure
+    # is correct, because the default passwd home is read-only.  Give every
+    # probe a fresh private home instead of exposing the host home or sharing
+    # state across candidates.
+    with tempfile.TemporaryDirectory(prefix="spec183-sif-home-") as home:
+        command = [str(apptainer), "exec", "--cleanenv", "--containall",
+                   "--home", home, "--pwd", "/",
+                   "--env", "NDNSF_ALLOW_CPU_FALLBACK=0",
+                   str(sif), "python3", "-c", _SIF_PROBE]
+        probe = subprocess.run(command, text=True, capture_output=True, check=False)
     if probe.returncode:
         fail("SPEC183_SIF_RUNTIME_PROBE", probe.stderr.strip() or probe.stdout.strip())
     try:

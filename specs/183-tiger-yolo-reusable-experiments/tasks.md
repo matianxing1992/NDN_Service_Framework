@@ -87,6 +87,10 @@ validation 共用；不得从 Provider prefix 或旧 `/group` 推导。重新运
 T007 的 BLOCKED/NOT READY 状态。当前仍等待 candidate-bound signed model manifest、
 Spec183 profile、native/SIF 和真实 MiniNDN/Tiger 证据。
 
+2026-09-07 exact-SIF probe 修复：历史 base SIF 的 `ndnsf` 导入证明默认只读 home
+会失败；preflight 现在为每次 probe 提供临时隔离 `--home`，相关 12 项 builder/
+preflight 回归通过。该修复不改变历史 base 的资格，也不关闭 T008/T011。
+
 2026-09-07 输入接收推进：四个锁定源码已在隔离 `/tmp/ndnsf-spec183-src` 工作树按
 `development-handoff.lock.json` 精确 checkout，五个锁定 wheel 已下载并逐一校验，
 `prepare-development-handoff.py verify` 返回 `SOURCE_READY`，source seal 为

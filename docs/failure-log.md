@@ -2071,6 +2071,19 @@ code path and focused regression, not the full runtime qualification.
 - Lesson: a new workload gate must add a separate command-boundary contract;
   it must not silently rewrite an established release path.
 
+# 2026-09-07 Spec183 SIF probe used a read-only home
+
+- Symptom: importing `ndnsf` inside the historical base SIF aborted with a
+  filesystem error while creating `/home/tianxing/.ndn`; the same native
+  import succeeded when the container received a temporary writable home.
+- Cause: the Spec183 exact-SIF probe used `--no-home` and only attempted to
+  override `HOME` through the environment. Apptainer preserved the passwd
+  home, so ndn-cxx initialization could not create its security directory.
+- Fix: run each SIF probe with a fresh private `--home` directory and no host
+  home exposure; add a command-boundary regression for the isolated home.
+- Lesson: native import/ldd probes must provide the same writable per-role home
+  contract as the real worker, not merely set an environment variable.
+
 # 2026-09-07 Spec183 builder test used a host receipt as a source seal
 
 - Symptom: the valid component-receipt dispatch test stopped at

@@ -96,6 +96,11 @@ Spec183 输入门：`model-manifest.json` 仅绑定 `atomic-v1` 且没有 signat
 - `/opt/apptainer/1.5.3/bin/apptainer` 已对锁定的历史 base SIF 完成 `sif list`、label
   检查和 `/bin/true` 执行；这只证明本机匹配工具能够读取该 base，不证明 Spec183
   runtime 或最终 SIF 已构建。
+- 同一 base 的实际 `/opt/venv/bin/python3` 入口已确认；直接用 `--no-home` 导入
+  `ndnsf` 会因 ndn-cxx 尝试创建只读 `/home/tianxing/.ndn` 而失败。改用每次 probe
+  新建的临时 `--home` 后，`import ndnsf` 成功。Spec183 exact-SIF preflight 已按
+  此修正，worker 仍使用其隔离 role HOME；该检查只修复 probe 闭包，不把历史 base
+  当作 Spec183 runtime 资格。
 - `prepare-development-handoff.py verify` 返回 `SOURCE_READY`，source seal 为
   `sha256:9129d07298f5754823f3bc2bf9c10fea7416adbb1e4168ced3dc82750948612c`；用该
   handoff 和锁定 base 只渲染了临时 definition（`sha256:27d787dc8b583b3ee4814af22cb07ab3a0fd0df16bc98274bd6f2f900fe148cb`）。

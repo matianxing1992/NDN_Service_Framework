@@ -116,5 +116,6 @@ def test_sif_preflight_binds_label_and_runs_exact_candidate(tmp_path):
     assert value["qualification"] == "SPEC183_SIF_RUNTIME_COMPONENT_ONLY"
     invocation = invocation_log.read_text(encoding="utf-8")
     assert "inspect --json " + str(sif) in invocation
-    assert "exec --cleanenv --containall --no-home --pwd / --env" in invocation
+    assert "exec --cleanenv --containall --home " in invocation
+    assert "--pwd / --env NDNSF_ALLOW_CPU_FALLBACK=0" in invocation
     assert str(sif) + " python3 -c" in invocation
