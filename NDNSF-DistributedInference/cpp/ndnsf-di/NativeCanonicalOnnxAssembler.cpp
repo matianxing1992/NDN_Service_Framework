@@ -1,6 +1,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedArtifactStore.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp"
 
 #include <ndn-cxx/util/sha256.hpp>
 
@@ -221,6 +222,9 @@ prepareNativeCanonicalOnnxRole(
   if (options.providerIdentity.empty() || !options.signManifest) {
     throw std::runtime_error("DI_PROVIDER_ASSEMBLY_SIGNER_MISSING");
   }
+  if (options.workerLocation.path.empty()) {
+    throw std::runtime_error("DI_PROVIDER_ASSEMBLY_WORKER_LOCATION_MISSING");
+  }
   const bool protectedRole = projection.assembly.protectionEpoch != "plaintext-v1";
   if (protectedRole) {
     if (!options.protectedRuntime || options.roleAssemblySpecDigest.empty()) {
@@ -385,8 +389,12 @@ prepareNativeCanonicalOnnxRole(
     assemblyControl.requireActive = [&] {
       requireActiveAssembly(options, projection.deadlineMs);
     };
-    auto assembled = assembleNativeCertifiedOnnxModel(
-      canonicalSource, projection.assembly, assemblyControl);
+    // OA02 worker transport: the certified recipe and the source bytes cross
+    // the pipe, and the child's PASS claim is accepted only after the parent
+    // revalidated the model bytes against the certified digest below.
+    auto assembled = runNativeOnnxAssemblyWorkerAt(
+      options.workerLocation, canonicalSource, projection.assembly,
+      assemblyControl);
     auto modelBytes = std::move(assembled.modelBytes);
     NativePlaintextBufferGuard modelGuard{modelBytes};
     if (modelBytes.empty() || sha256Hex(modelBytes) != assembled.modelDigest) {

@@ -55,6 +55,32 @@ readBytes(const std::filesystem::path& path)
                                   std::istreambuf_iterator<char>());
 }
 
+// OA02 worker used by every post-Selection assembly in this suite.  The
+// integration binary is not a shell of the worker: the spawned child is the
+// real installed DI_NativeOnnxAssemblyWorker from the build root (or the
+// NDNSF_SPEC182_BIN_DIR override).  sha256 stays empty here (no rehash
+// pinning); the Spec182OnnxActivation suite covers pinned preflight.
+NativeOnnxWorkerLocation
+testWorkerLocation()
+{
+  std::vector<std::string> candidates;
+  const char* dir = std::getenv("NDNSF_SPEC182_BIN_DIR");
+  if (dir != nullptr && *dir != '\0') {
+    candidates.push_back(std::string(dir) + "/DI_NativeOnnxAssemblyWorker");
+  }
+  candidates.push_back("build-nac182/DI_NativeOnnxAssemblyWorker");
+  candidates.push_back("build/DI_NativeOnnxAssemblyWorker");
+  candidates.push_back("../build-nac182/DI_NativeOnnxAssemblyWorker");
+  candidates.push_back("examples/DI_NativeOnnxAssemblyWorker");
+  for (const auto& path : candidates) {
+    if (std::filesystem::is_regular_file(path)) {
+      return NativeOnnxWorkerLocation{path, ""};
+    }
+  }
+  BOOST_FAIL("DI_NativeOnnxAssemblyWorker binary not found: run the full waf "
+             "build (with examples) before the integration suites");
+}
+
 std::string
 digest(const std::vector<std::uint8_t>& bytes)
 {
@@ -316,6 +342,7 @@ runRegisteredProviderAssemblyCase(std::size_t providerCount)
   };
 
   NativeCanonicalOnnxAssemblerOptions options;
+  options.workerLocation = testWorkerLocation();
   options.signManifest = [] (const std::string& manifestBytes) {
     return "fixture-signature-" + digest(manifestBytes);
   };
@@ -413,6 +440,7 @@ BOOST_AUTO_TEST_CASE(AssignmentBoundRootSourceAndCachePath)
   };
 
   NativeCanonicalOnnxAssemblerOptions options;
+  options.workerLocation = testWorkerLocation();
   options.cacheDir = cacheDir.string();
   options.providerIdentity = "/provider/p0";
   options.signManifest = [] (const std::string&) {
@@ -525,6 +553,7 @@ BOOST_AUTO_TEST_CASE(CollaborationContextBindsAssignmentRootBeforeSourceFetch)
   BOOST_REQUIRE(context.fetchArtifact(assignment.assignedArtifact, 1));
 
   NativeCanonicalOnnxAssemblerOptions options;
+  options.workerLocation = testWorkerLocation();
   options.cacheDir = (std::filesystem::temp_directory_path() /
                       "spec175-native-context-wiring").string();
   options.providerIdentity = environment.provider().getName().toUri();

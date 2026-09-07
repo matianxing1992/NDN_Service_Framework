@@ -4,14 +4,54 @@
 
 #include <boost/property_tree/json_parser.hpp>
 #include <filesystem>
+#include <array>
 #include <chrono>
+#include <cstdlib>
 #include <future>
 #include <thread>
 #include <iostream>
 #include <stdexcept>
+#include <unistd.h>
+#include <vector>
 
 using boost::property_tree::ptree;
 using namespace ndnsf::di;
+
+// OA02 worker for the production post-Selection path (spec182 T006-D): the
+// frozen rows assemble through the real worker subprocess, never in-process.
+// Resolution honors NDNSF_DI_WORKER_BINARY / NDNSF_SPEC182_BIN_DIR, then the
+// invocation-directory and build-root siblings.
+std::string
+workerBinaryPath()
+{
+  std::vector<std::string> candidates;
+  const char* pinned = std::getenv("NDNSF_DI_WORKER_BINARY");
+  if (pinned != nullptr && *pinned != '\0') {
+    candidates.push_back(pinned);
+  }
+  const char* binDir = std::getenv("NDNSF_SPEC182_BIN_DIR");
+  if (binDir != nullptr && *binDir != '\0') {
+    candidates.push_back(std::string(binDir) + "/DI_NativeOnnxAssemblyWorker");
+  }
+  std::array<char, 4096> selfPath{};
+  const auto linkCount = ::readlink("/proc/self/exe", selfPath.data(),
+                                    selfPath.size() - 1);
+  if (linkCount > 0) {
+    selfPath[linkCount] = '\0';
+    const std::string invocationDir =
+      std::filesystem::path(selfPath.data()).parent_path().string();
+    candidates.push_back(invocationDir + "/DI_NativeOnnxAssemblyWorker");
+  }
+  for (const char* base : {"build-nac182/", "build/", "../build-nac182/",
+                           "../build/"}) {
+    candidates.push_back(std::string(base) + "DI_NativeOnnxAssemblyWorker");
+  }
+  for (const auto& path : candidates) {
+    if (std::filesystem::is_regular_file(path)) return path;
+  }
+  throw std::runtime_error("DI_NativeOnnxAssemblyWorker binary not found; the "
+                           "spec181 assembly parity now runs the OA02 worker");
+}
 
 ndn::Buffer decodeHex(const std::string& hex)
 {
@@ -109,6 +149,7 @@ int main(int argc, char** argv)
     NativeCanonicalOnnxAssemblerOptions options;
     options.cacheDir = argv[2];
     options.providerIdentity = projection.provider;
+    options.workerLocation = NativeOnnxWorkerLocation{workerBinaryPath(), ""};
     projection.deadlineMs = row.get<std::uint64_t>("controls.deadlineMs", 0);
     // The spec181 python-helper mode was retired by the spec182 native worker;
     // keep accepting the frozen row key as the assembly-timeout bound.

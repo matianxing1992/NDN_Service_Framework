@@ -1816,3 +1816,38 @@ part of task context. Format per entry:
 - **Ref**: Spec179 baseline fixes.
 - **Lesson**: any segmented Data served to a SegmentFetcher must carry a
   terminal marker or the fetch is unbounded.
+
+## 2026-09-07 — Spec182 T006-D: worker child catch mislabels every chain rejection as DI_NATIVE_ONNX_WORKER_INTERNAL
+- **Area**: spec182 T006-C/T006-D native worker wire protocol (frozen in
+  T006-C); child side of `runNativeOnnxAssemblyWorkerMain`.
+- **Symptom**: focused `Spec182OnnxActivation` case
+  `ActivationRejectsCertifiedGraphPoisonThroughWorker` failed while T006-D
+  verified the real worker binary: the frozen `reject-identity-digest`
+  vector (poisoned `recipe.graphDigest`) surfaced from the parent transport
+  as `DI_NATIVE_ONNX_WORKER_INTERNAL` instead of the required chain
+  rejection code `DI_NATIVE_ONNX_RECIPE`.
+- **Root cause**: off-by-one in the child catch of
+  `NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.cpp`
+  (shipped in the T006-C commit). The guard was
+  `what.compare(0, 14, "DI_NATIVE_ONNX_") == 0`, but the family literal is
+  15 bytes; the three-argument `compare()` treats the whole literal as the
+  right side, so it compared a 14-byte prefix of `what` against the whole
+  15-byte literal — never equal. Every chain rejection (`fail(code)` →
+  `"DI_NATIVE_ONNX_" + code`, S1-S7 of the certified chain) was therefore
+  reclassified as `DI_NATIVE_ONNX_WORKER_INTERNAL`, and the parent
+  transport (which propagates the worker error code verbatim when it
+  carries the `DI_NATIVE_ONNX_` family prefix) relayed the wrong reason.
+  The frozen suites had never pushed a reject row through the real worker
+  child, so the defect only surfaced during T006-D activation coverage.
+- **Fix**: bound 14 → 15 (`what.compare(0, 15, "DI_NATIVE_ONNX_") == 0`),
+  restoring verbatim family-code propagation. A new frozen-lock case
+  `Spec182OnnxWorkerProtocol/SubprocessChainRejectionPropagatesItsOwnCode`
+  spawns the real worker with the frozen reject row and asserts the parent
+  sees exactly `DI_NATIVE_ONNX_RECIPE`; registered in
+  `tests/fixtures/spec182/case-manifest.json`.
+- **Ref**: run dirs retained under `.codex-tmp/` (`t006d-*` logs);
+  manifests `tests/fixtures/spec182/case-manifest.json`.
+- **Lesson**: a protocol invariant ("reason-family code must arrive
+  verbatim at the caller") needs at least one end-to-end lock that drives
+  a real subprocess with a frozen reject vector; unit mocks of the child
+  catch could not expose the string-compare bug.

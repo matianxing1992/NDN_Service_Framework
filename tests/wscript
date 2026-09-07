@@ -47,6 +47,7 @@ def build(bld):
                        bld.path.parent.ant_glob([
                            'NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.cpp',
                            'NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.cpp',
+                           'NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.cpp',
                            'NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.cpp',
                            'NDNSF-DistributedInference/cpp/ndnsf-di/NativeGrantVerifier.cpp',
                            'NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedArtifactStore.cpp',
@@ -126,6 +127,9 @@ def build(bld):
         'NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloPlanner.cpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.cpp',
         'NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.cpp',
+        # prepareNativeCanonicalOnnxRole now activates through the OA02 worker
+        # subprocess transport, which lives in this TU.
+        'NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.cpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/DistributedExecutionConsistency.cpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.cpp',
         'NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloMergeRunner.cpp',

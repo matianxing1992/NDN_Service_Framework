@@ -30,6 +30,7 @@
 
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp"
 
 // Official ONNX 1.17 full-protobuf headers via the configured ONNX prefix.
 // onnx_pb.h defines ONNX_API (visibility) before it pulls in the generated
@@ -45,8 +46,12 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <functional>
+#include <iterator>
+#include <memory>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -534,6 +539,180 @@ spec182RequireBinary(const std::string& basename)
                         "build (--targets=unit-tests,di-native-assembly-worker,"
                         "spec182-worker-tool-*) first (" << basename << ")");
   return path;
+}
+
+// ---------------------------------------------------------------------------
+// T006-D activation fixtures (Spec182OnnxActivation): the production
+// post-Selection path (fetch -> staging -> OA02 worker subprocess -> parent
+// revalidation -> signature) driven over one frozen vector row's real source
+// bytes, with a synthetic signed root manifest bound to those bytes.  The
+// frozen expectedModelDigest of the assembled model is the external anchor
+// that the real worker subprocess must reproduce byte-for-byte.
+// ---------------------------------------------------------------------------
+
+const std::string kActivationRootName = "/spec182/activation/root";
+const std::string kActivationSourceName = "/spec182/activation/source";
+const std::string kActivationServiceName = "/LLM/Qwen";
+const std::string kActivationModelName = "spec182-activation-chain-inline";
+const std::string kActivationProvider = "/provider/spec182-activation";
+
+// One synthetic ndnsf-di-canonical-model-manifest-v1 root over the given
+// source bytes; the vector row supplies the certified artifact profile.
+std::vector<std::uint8_t>
+activationRootPayload(const boost::property_tree::ptree& row,
+                      const std::vector<std::uint8_t>& sourceBytes)
+{
+  const auto& recipe = row.get_child("recipe");
+  std::ostringstream root;
+  root << "{\"artifactProfileDigest\":\""
+       << recipe.get<std::string>("artifactProfileDigest")
+       << "\",\"metadata\":{\"canonicalSourceBytes\":" << sourceBytes.size()
+       << ",\"canonicalSourceDataName\":\"" << kActivationSourceName
+       << "\",\"canonicalSourceDigest\":\"" << sha256HexOf(sourceBytes)
+       << "\"},\"modelIdentityDigest\":\"sha256:"
+       << std::string(64, 'a') << "\",\"modelName\":\"" << kActivationModelName
+       << "\",\"schema\":\"ndnsf-di-canonical-model-manifest-v1\",\"state\":"
+       << "\"ACTIVE\"}";
+  const auto text = root.str();
+  return std::vector<std::uint8_t>(text.begin(), text.end());
+}
+
+NativeSelectionProjectionV3
+activationProjection(const boost::property_tree::ptree& row,
+                     const std::vector<std::uint8_t>& rootPayload)
+{
+  NativeSelectionProjectionV3 projection;
+  projection.provider = kActivationProvider;
+  projection.requestId = "/request/spec182-activation";
+  projection.canonicalArtifactName = kActivationRootName;
+  projection.plan.serviceName = kActivationServiceName;
+  projection.plan.modelName = kActivationModelName;
+  projection.assembly = recipeFromVector(row);
+  // The root manifest is synthesized per case; its digest is the assignment.
+  projection.assembly.modelManifestDigest = sha256HexOf(rootPayload);
+  projection.deadlineMs = 0;
+  return projection;
+}
+
+struct ActivationFetchCounters
+{
+  std::shared_ptr<std::size_t> rootFetches = std::make_shared<std::size_t>(0);
+  std::shared_ptr<std::size_t> sourceFetches = std::make_shared<std::size_t>(0);
+};
+
+NativeCanonicalOnnxFetchers
+activationFetchers(const std::string& rootName,
+                   const std::vector<std::uint8_t>& rootPayload,
+                   const std::string& sourceName,
+                   const std::vector<std::uint8_t>& sourceBytes,
+                   const ActivationFetchCounters& counters = {})
+{
+  NativeCanonicalOnnxFetchers fetchers;
+  fetchers.getArtifact = [rootName, rootPayload, counters] (const ndn::Name& name)
+    -> std::optional<ndn::Buffer> {
+    if (name != ndn::Name(rootName)) return std::nullopt;
+    if (counters.rootFetches) ++*counters.rootFetches;
+    return ndn::Buffer(rootPayload.data(), rootPayload.size());
+  };
+  fetchers.fetchEncryptedLargeData =
+    [sourceName, sourceBytes, counters] (const ndn::Name& name,
+                                         const ndn::Name& service)
+    -> std::optional<ndn::Buffer> {
+    if (name != ndn::Name(sourceName) ||
+        service != ndn::Name(kActivationServiceName)) {
+      return std::nullopt;
+    }
+    if (counters.sourceFetches) ++*counters.sourceFetches;
+    return ndn::Buffer(sourceBytes.data(), sourceBytes.size());
+  };
+  return fetchers;
+}
+
+std::vector<std::uint8_t>
+activationReadFile(const std::string& path)
+{
+  std::ifstream in(path, std::ios::binary);
+  return std::vector<std::uint8_t>(std::istreambuf_iterator<char>(in),
+                                   std::istreambuf_iterator<char>());
+}
+
+std::string
+activationFileText(const std::string& path)
+{
+  const auto bytes = activationReadFile(path);
+  return std::string(bytes.begin(), bytes.end());
+}
+
+std::shared_ptr<std::vector<std::string>>
+activationSignLog()
+{
+  return std::make_shared<std::vector<std::string>>();
+}
+
+// Per-case fresh cache namespace, never reused across cases so a leftover
+// artifact cannot satisfy an assertion.
+std::filesystem::path
+activationCacheDir(const std::string& tag)
+{
+  const auto dir = std::filesystem::temp_directory_path() /
+                   std::filesystem::path("spec182-activation-" + tag);
+  std::error_code ignored;
+  std::filesystem::remove_all(dir, ignored);
+  return dir;
+}
+
+NativeCanonicalOnnxAssemblerOptions
+activationOptions(const std::string& cacheDir,
+                  const NativeOnnxWorkerLocation& location,
+                  const std::shared_ptr<std::vector<std::string>>& signLog,
+                  std::uint64_t assemblyTimeoutMs = 30000)
+{
+  NativeCanonicalOnnxAssemblerOptions options;
+  options.cacheDir = cacheDir;
+  options.providerIdentity = kActivationProvider;
+  options.assemblyTimeoutMs = assemblyTimeoutMs;
+  options.signManifest = [signLog] (const std::string& manifestBytes) {
+    signLog->push_back(manifestBytes);
+    return "spec182-activation-signature-v1";
+  };
+  options.workerLocation = location;
+  return options;
+}
+
+NativeOnnxWorkerLocation
+activationRealWorkerLocation()
+{
+  return {spec182RequireBinary("DI_NativeOnnxAssemblyWorker"), ""};
+}
+
+std::string
+expectActivationReject(const std::function<NativeModelRunnerSpec()>& prepare)
+{
+  try {
+    (void)prepare();
+  }
+  catch (const std::exception& error) {
+    return error.what();
+  }
+  BOOST_FAIL("prepare unexpectedly activated an artifact");
+}
+
+void
+checkNothingActivated(const std::filesystem::path& cacheDir,
+                      const std::shared_ptr<std::vector<std::string>>& signLog)
+{
+  BOOST_CHECK(signLog->empty());
+  std::error_code error;
+  if (!std::filesystem::exists(cacheDir, error) || error) return;
+  for (auto it = std::filesystem::recursive_directory_iterator(
+         cacheDir, std::filesystem::directory_options::skip_permission_denied,
+         error), end = std::filesystem::recursive_directory_iterator();
+       it != end && !error; it.increment(error)) {
+    const auto leaf = it->path().filename().string();
+    BOOST_CHECK_MESSAGE(leaf != "model.onnx" && leaf != "manifest.json" &&
+                        leaf != "manifest.signature",
+                        "activation must not leave " + it->path().string());
+  }
 }
 
 } // namespace
@@ -1110,6 +1289,27 @@ BOOST_AUTO_TEST_CASE(SubprocessUnregisteredThenRegisteredMatchesInProcess)
   BOOST_CHECK(viaWorker.outputNames == inProcess.outputNames);
 }
 
+BOOST_AUTO_TEST_CASE(SubprocessChainRejectionPropagatesItsOwnCode)
+{
+  // Regression lock: a chain rejection in the real worker child must arrive
+  // under its own DI_NATIVE_ONNX_* family code.  The child catch used to
+  // compare only 14 bytes against the 15-byte family literal, so every
+  // chain rejection (S1-S7 fail() sites) was mislabeled
+  // DI_NATIVE_ONNX_WORKER_INTERNAL and the parent propagated the wrong
+  // family.
+  const std::string worker = spec182RequireBinary("DI_NativeOnnxAssemblyWorker");
+  registerNativeOnnxWorkerLocation({worker, ""});
+  const auto root = loadExtractionVectors();
+  const auto& row = caseRow(root.get_child("cases"), "pythonError",
+                            "canonical ONNX graph digest mismatch");
+  BOOST_CHECK_EQUAL(
+    expectWorkerThrow([&] {
+      runNativeOnnxAssemblyWorker(sourceFromRow(row), recipeFromVector(row),
+                                  extractionControl());
+    }),
+    "DI_NATIVE_ONNX_RECIPE");
+}
+
 BOOST_AUTO_TEST_CASE(SubprocessCrashBySignalReported)
 {
   const std::string tool =
@@ -1257,6 +1457,309 @@ BOOST_AUTO_TEST_CASE(PreflightRejectsMissingAndRehashedLocations)
                                     extractionControl());
     }),
     "DI_NATIVE_ONNX_WORKER_PREFLIGHT");
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+BOOST_AUTO_TEST_SUITE(Spec182OnnxActivation)
+
+// T006-D: post-Selection activation runs through the pinned OA02 worker.
+// The worker's own PASS claim is accepted only after the parent revalidated
+// the model bytes against the certified digest and re-checked the request
+// gate; the signed manifest is the only observable activation.  Every
+// negative case asserts the exact reject code, that signManifest was never
+// invoked, and that no activated artifact survived under a fresh cache
+// namespace.  Worker cases spawn the real installed DI_NativeOnnxAssemblyWorker
+// and the frozen chain-whole-inline digest anchors the result bytes.
+
+BOOST_AUTO_TEST_CASE(ActivationRefusesToAssembleWithoutWorkerLocation)
+{
+  const auto& row = workerAcceptRow();
+  const auto source = sourceFromRow(row);
+  const auto rootPayload = activationRootPayload(row, source.modelBytes);
+  const auto projection = activationProjection(row, rootPayload);
+  const auto fetches = ActivationFetchCounters{};
+  const auto fetchers = activationFetchers(kActivationRootName, rootPayload,
+                                           kActivationSourceName,
+                                           source.modelBytes, fetches);
+  const auto cacheDir = activationCacheDir("missing-location");
+  const auto signLog = activationSignLog();
+  const auto options = activationOptions(cacheDir.string(), {}, signLog);
+
+  const auto code = expectActivationReject([&] {
+    return prepareNativeCanonicalOnnxRole(fetchers, projection, options);
+  });
+  BOOST_CHECK_EQUAL(code, "DI_PROVIDER_ASSEMBLY_WORKER_LOCATION_MISSING");
+  // The guard fires before any fetch, staging, or worker spawn.
+  BOOST_CHECK_EQUAL(*fetches.rootFetches, 0U);
+  BOOST_CHECK_EQUAL(*fetches.sourceFetches, 0U);
+  BOOST_CHECK(!std::filesystem::exists(cacheDir));
+  checkNothingActivated(cacheDir, signLog);
+}
+
+BOOST_AUTO_TEST_CASE(ActivationAssemblesRealModelThroughWorkerFixedManifest)
+{
+  const auto& row = workerAcceptRow();
+  const auto source = sourceFromRow(row);
+  const auto rootPayload = activationRootPayload(row, source.modelBytes);
+  const auto projection = activationProjection(row, rootPayload);
+  const auto location = activationRealWorkerLocation();
+  const auto cacheDir = activationCacheDir("worker-accept");
+  const auto signLog = activationSignLog();
+  const auto options = activationOptions(cacheDir.string(), location, signLog);
+  const auto fetches = ActivationFetchCounters{};
+  const auto fetchers = activationFetchers(kActivationRootName, rootPayload,
+                                           kActivationSourceName,
+                                           source.modelBytes, fetches);
+
+  const auto spec = prepareNativeCanonicalOnnxRole(fetchers, projection, options);
+
+  // Parent revalidation before publication: the on-disk model bytes must
+  // reproduce the frozen python-wire digest, not merely the child's claim.
+  BOOST_REQUIRE_EQUAL(signLog->size(), 1U);
+  const auto modelBytes = activationReadFile(spec.path);
+  BOOST_CHECK(!modelBytes.empty());
+  BOOST_CHECK_EQUAL(sha256HexOf(modelBytes),
+                    "sha256:59269bc795b453dcc15fcb34dd6c9b1625070bc094f32361fcd236c3b6600383");
+  BOOST_CHECK_EQUAL(spec.metadata.at("assembledModelDigest"),
+                    sha256HexOf(modelBytes));
+  BOOST_CHECK_EQUAL(spec.metadata.at("assembledFrom"),
+                    "canonical-root-post-selection");
+  BOOST_CHECK_EQUAL(spec.metadata.at("modelManifestDigest"),
+                    projection.assembly.modelManifestDigest);
+  BOOST_CHECK_EQUAL(spec.metadata.at("assemblySignature"),
+                    "spec182-activation-signature-v1");
+  BOOST_CHECK_EQUAL(*fetches.rootFetches, 1U);
+  BOOST_CHECK_EQUAL(*fetches.sourceFetches, 1U);
+
+  // The fixed manifest is exactly what signManifest saw, and it is stored
+  // next to the activated model with its signature.
+  const auto finalDir = std::filesystem::path(spec.path).parent_path();
+  const auto manifestText =
+    activationFileText((finalDir / "manifest.json").string());
+  BOOST_CHECK(!manifestText.empty());
+  BOOST_CHECK_EQUAL(manifestText, signLog->at(0));
+  BOOST_CHECK_EQUAL(
+    activationFileText((finalDir / "manifest.signature").string()),
+    "spec182-activation-signature-v1");
+  BOOST_CHECK_EQUAL(
+    spec.metadata.at("assemblyManifestDigest"),
+    sha256HexOf(std::vector<std::uint8_t>(manifestText.begin(),
+                                          manifestText.end())));
+
+  boost::property_tree::ptree manifest;
+  std::istringstream manifestInput(manifestText);
+  boost::property_tree::read_json(manifestInput, manifest);
+  BOOST_CHECK_EQUAL(manifest.get<std::string>("schema"),
+                    "ndnsf-di-assembled-onnx-v1");
+  BOOST_CHECK_EQUAL(manifest.get<std::string>("assembledModelDigest"),
+                    "sha256:59269bc795b453dcc15fcb34dd6c9b1625070bc094f32361fcd236c3b6600383");
+  BOOST_CHECK_EQUAL(manifest.get<std::string>("modelManifestDigest"),
+                    projection.assembly.modelManifestDigest);
+  BOOST_CHECK_EQUAL(manifest.get<std::string>("modelName"), kActivationModelName);
+  BOOST_CHECK_EQUAL(manifest.get<std::string>("signer"), kActivationProvider);
+  BOOST_CHECK_EQUAL(manifest.get<std::string>("role"), "/role/0");
+  BOOST_CHECK_EQUAL(manifest.get<std::string>("onnxRuntimeLoad"),
+                    "PENDING_NATIVE_PROVIDER");
+  BOOST_CHECK_EQUAL(manifest.get<std::string>("onnxChecker"),
+                    "NATIVE_STRUCTURAL_CHECK");
+  BOOST_CHECK_EQUAL(manifest.get<std::uint64_t>("nodeCount"),
+                    projection.assembly.nodeIndices.size());
+  BOOST_CHECK_EQUAL(manifest.get<std::string>("recipeDigest"), "");
+
+  // Determinism across cold caches: a second assembly spawns the worker
+  // again and signs byte-identical manifest bytes (fixed manifest).
+  const auto secondCache = activationCacheDir("worker-accept-second");
+  const auto secondOptions =
+    activationOptions(secondCache.string(), location, signLog);
+  const auto second =
+    prepareNativeCanonicalOnnxRole(fetchers, projection, secondOptions);
+  BOOST_REQUIRE_EQUAL(signLog->size(), 2U);
+  BOOST_CHECK_EQUAL(signLog->at(1), signLog->at(0));
+  BOOST_CHECK_EQUAL(sha256HexOf(activationReadFile(second.path)),
+                    spec.metadata.at("assembledModelDigest"));
+  BOOST_CHECK_EQUAL(
+    activationFileText((std::filesystem::path(second.path).parent_path() /
+                        "manifest.json").string()),
+    signLog->at(1));
+  BOOST_CHECK_EQUAL(*fetches.rootFetches, 2U);
+  BOOST_CHECK_EQUAL(*fetches.sourceFetches, 2U);
+}
+
+BOOST_AUTO_TEST_CASE(ActivationRejectsRootDigestMismatchBeforeAnySign)
+{
+  const auto& row = workerAcceptRow();
+  const auto source = sourceFromRow(row);
+  const auto realRoot = activationRootPayload(row, source.modelBytes);
+  auto poisonedRoot = realRoot;
+  poisonedRoot.back() ^= 0x01;  // same length, digest no longer matches
+  const auto projection = activationProjection(row, realRoot);
+  const auto fetchers = activationFetchers(kActivationRootName, poisonedRoot,
+                                           kActivationSourceName,
+                                           source.modelBytes);
+  const auto cacheDir = activationCacheDir("root-digest-mismatch");
+  const auto signLog = activationSignLog();
+  const auto options =
+    activationOptions(cacheDir.string(), activationRealWorkerLocation(), signLog);
+
+  const auto code = expectActivationReject([&] {
+    return prepareNativeCanonicalOnnxRole(fetchers, projection, options);
+  });
+  BOOST_CHECK_EQUAL(code, "DI_CANONICAL_ROOT_DIGEST_MISMATCH");
+  // The digest check precedes staging, so the cache namespace stays absent.
+  BOOST_CHECK(!std::filesystem::exists(cacheDir));
+  checkNothingActivated(cacheDir, signLog);
+}
+
+BOOST_AUTO_TEST_CASE(ActivationRejectsSourceDigestMismatchBeforeAnySign)
+{
+  const auto& row = workerAcceptRow();
+  const auto source = sourceFromRow(row);
+  const auto rootPayload = activationRootPayload(row, source.modelBytes);
+  const auto projection = activationProjection(row, rootPayload);
+  auto poisonedSource = source.modelBytes;
+  poisonedSource.back() ^= 0x01;
+  const auto fetchers = activationFetchers(kActivationRootName, rootPayload,
+                                           kActivationSourceName,
+                                           poisonedSource);
+  const auto cacheDir = activationCacheDir("source-digest-mismatch");
+  const auto signLog = activationSignLog();
+  const auto options =
+    activationOptions(cacheDir.string(), activationRealWorkerLocation(), signLog);
+
+  const auto code = expectActivationReject([&] {
+    return prepareNativeCanonicalOnnxRole(fetchers, projection, options);
+  });
+  BOOST_CHECK_EQUAL(code, "DI_CANONICAL_SOURCE_DIGEST_MISMATCH");
+  // The parent rejects before the worker is ever asked to assemble.
+  checkNothingActivated(cacheDir, signLog);
+}
+
+BOOST_AUTO_TEST_CASE(ActivationRejectsCertifiedGraphPoisonThroughWorker)
+{
+  // The frozen reject-identity-digest row carries the real source but a
+  // certified recipe whose graphDigest does not match it.  Through the worker
+  // the child chain refuses with its exact code; the parent never signs.
+  const auto root = loadExtractionVectors();
+  const auto& row = caseRow(root.get_child("cases"), "pythonError",
+                            "canonical ONNX graph digest mismatch");
+  const auto source = sourceFromRow(row);
+  const auto rootPayload = activationRootPayload(row, source.modelBytes);
+  const auto projection = activationProjection(row, rootPayload);
+  const auto fetchers = activationFetchers(kActivationRootName, rootPayload,
+                                           kActivationSourceName,
+                                           source.modelBytes);
+  const auto cacheDir = activationCacheDir("graph-poison");
+  const auto signLog = activationSignLog();
+  const auto options =
+    activationOptions(cacheDir.string(), activationRealWorkerLocation(), signLog);
+
+  const auto code = expectActivationReject([&] {
+    return prepareNativeCanonicalOnnxRole(fetchers, projection, options);
+  });
+  BOOST_CHECK_EQUAL(code, "DI_NATIVE_ONNX_RECIPE");
+  checkNothingActivated(cacheDir, signLog);
+}
+
+BOOST_AUTO_TEST_CASE(ActivationCancelledAtEntryGateNeverFetchesOrSigns)
+{
+  const auto& row = workerAcceptRow();
+  const auto source = sourceFromRow(row);
+  const auto rootPayload = activationRootPayload(row, source.modelBytes);
+  const auto projection = activationProjection(row, rootPayload);
+  const auto fetches = ActivationFetchCounters{};
+  const auto fetchers = activationFetchers(kActivationRootName, rootPayload,
+                                           kActivationSourceName,
+                                           source.modelBytes, fetches);
+  const auto cacheDir = activationCacheDir("entry-cancel");
+  const auto signLog = activationSignLog();
+  auto options =
+    activationOptions(cacheDir.string(), activationRealWorkerLocation(), signLog);
+  options.shouldCancel = [] { return true; };
+
+  const auto code = expectActivationReject([&] {
+    return prepareNativeCanonicalOnnxRole(fetchers, projection, options);
+  });
+  BOOST_CHECK_EQUAL(code, "DI_NATIVE_ASSEMBLY_CANCELLED");
+  BOOST_CHECK_EQUAL(*fetches.rootFetches, 0U);
+  BOOST_CHECK_EQUAL(*fetches.sourceFetches, 0U);
+  BOOST_CHECK(!std::filesystem::exists(cacheDir));
+  checkNothingActivated(cacheDir, signLog);
+}
+
+BOOST_AUTO_TEST_CASE(ActivationTimesOutBlockingWorkerAndNeverSigns)
+{
+  const auto& row = workerAcceptRow();
+  const auto source = sourceFromRow(row);
+  const auto rootPayload = activationRootPayload(row, source.modelBytes);
+  const auto projection = activationProjection(row, rootPayload);
+  const auto tool = spec182RequireBinary("spec182-worker-tool-block");
+  const auto fetchers = activationFetchers(kActivationRootName, rootPayload,
+                                           kActivationSourceName,
+                                           source.modelBytes);
+  const auto cacheDir = activationCacheDir("worker-timeout");
+  const auto signLog = activationSignLog();
+  const auto options =
+    activationOptions(cacheDir.string(), {tool, ""}, signLog, 250);
+  const auto started = std::chrono::steady_clock::now();
+
+  // The blocking tool ignores SIGTERM, so the transport spends its full 1s
+  // TERM window and escalates to SIGKILL before returning the timeout.
+  const auto code = expectActivationReject([&] {
+    return prepareNativeCanonicalOnnxRole(fetchers, projection, options);
+  });
+  const auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+    std::chrono::steady_clock::now() - started).count();
+  BOOST_CHECK_EQUAL(code, "DI_NATIVE_ONNX_ASSEMBLY_TIMEOUT");
+  BOOST_CHECK(elapsedMs >= 1000);
+  BOOST_CHECK(elapsedMs < 10000);
+  checkNothingActivated(cacheDir, signLog);
+}
+
+BOOST_AUTO_TEST_CASE(ActivationRejectsTamperedPinnedWorkerHashBeforeSign)
+{
+  const auto& row = workerAcceptRow();
+  const auto source = sourceFromRow(row);
+  const auto rootPayload = activationRootPayload(row, source.modelBytes);
+  const auto projection = activationProjection(row, rootPayload);
+  const auto location = activationRealWorkerLocation();
+  // The binary is real but its pinned hash is not: the per-spawn preflight
+  // probe must refuse to spawn before any assembly can happen.
+  const NativeOnnxWorkerLocation tampered{
+    location.path, "sha256:" + std::string(64, '0')};
+  const auto fetchers = activationFetchers(kActivationRootName, rootPayload,
+                                           kActivationSourceName,
+                                           source.modelBytes);
+  const auto cacheDir = activationCacheDir("tampered-pin");
+  const auto signLog = activationSignLog();
+  const auto options = activationOptions(cacheDir.string(), tampered, signLog);
+
+  const auto code = expectActivationReject([&] {
+    return prepareNativeCanonicalOnnxRole(fetchers, projection, options);
+  });
+  BOOST_CHECK_EQUAL(code, "DI_NATIVE_ONNX_WORKER_PREFLIGHT");
+  checkNothingActivated(cacheDir, signLog);
+}
+
+BOOST_AUTO_TEST_CASE(ActivationRejectsCrashBySignalBeforeAnySign)
+{
+  const auto& row = workerAcceptRow();
+  const auto source = sourceFromRow(row);
+  const auto rootPayload = activationRootPayload(row, source.modelBytes);
+  const auto projection = activationProjection(row, rootPayload);
+  const auto tool = spec182RequireBinary("spec182-worker-tool-sigkill");
+  const auto fetchers = activationFetchers(kActivationRootName, rootPayload,
+                                           kActivationSourceName,
+                                           source.modelBytes);
+  const auto cacheDir = activationCacheDir("worker-sigkill");
+  const auto signLog = activationSignLog();
+  const auto options = activationOptions(cacheDir.string(), {tool, ""}, signLog);
+
+  const auto code = expectActivationReject([&] {
+    return prepareNativeCanonicalOnnxRole(fetchers, projection, options);
+  });
+  BOOST_CHECK_EQUAL(code, "DI_NATIVE_ONNX_WORKER_SIGNALED");
+  checkNothingActivated(cacheDir, signLog);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

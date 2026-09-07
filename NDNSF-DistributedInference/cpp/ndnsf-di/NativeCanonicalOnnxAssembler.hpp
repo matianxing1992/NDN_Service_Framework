@@ -4,6 +4,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp"
 
 #include "ndn-service-framework/ServiceProvider.hpp"
 
@@ -17,8 +18,11 @@ namespace ndnsf::di {
  * Options for the production post-Selection ONNX assembly bridge.
  *
  * The C++ Provider remains the owner of the authenticated assignment and
- * cache.  Format validation and graph assembly are performed by the native
- * ONNX adapter; this options object carries only Provider-owned policy.
+ * cache.  Graph assembly is performed by the pinned native ONNX worker
+ * (OA02 subprocess transport, per-location preflight on every spawn); this
+ * options object carries only Provider-owned policy plus the worker
+ * location it trusts.  The worker's own PASS claim never bypasses the
+ * parent digest/identity revalidation in prepareNativeCanonicalOnnxRole.
  */
 struct NativeCanonicalOnnxAssemblerOptions
 {
@@ -29,6 +33,10 @@ struct NativeCanonicalOnnxAssemblerOptions
   std::function<std::string(const std::string& manifestBytes)> signManifest;
   std::shared_ptr<ProtectedRuntime> protectedRuntime;
   std::string roleAssemblySpecDigest;
+  // OA02 worker to run every assembly through.  Empty path fails the request
+  // up front (DI_PROVIDER_ASSEMBLY_WORKER_LOCATION_MISSING) before any fetch;
+  // a non-empty sha256 is re-probed against the pinned binary on every spawn.
+  NativeOnnxWorkerLocation workerLocation;
 };
 
 /**
