@@ -743,7 +743,7 @@ def run_requests(worker, plan: dict, *, package: Path, catalog_data_name: str,
 
 
 def run_normal_node(worker, startup, *, completion_factory, endpoints,
-                    startup_options, request_options, accept_request):
+                    startup_options, request_options, accept_request, allocation_expected=None):
     """Own the normal node lifecycle behind the external qualification gates.
 
     Both ranks call this. The completion barrier is created only after startup
@@ -772,6 +772,7 @@ def run_normal_node(worker, startup, *, completion_factory, endpoints,
     try:
         try:
             if worker.mode != 'local-cpu':
+                worker.verify_allocation(allocation_expected, seconds=startup.remaining())
                 peer = (startup.directory / ('failed-' + str(1-worker.rank) + '.json')
                         if len(startup.ranks) == 2 else None)
                 worker.probe_gpu_device(seconds=startup.remaining(), peer_failure=peer)

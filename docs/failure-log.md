@@ -1946,3 +1946,15 @@ code path and focused regression, not the full runtime qualification.
   fictitious Provider witness. Unexpected finite launchNonce is rejected.
 - Lesson: identity/HOME ownership does not identify the executable lifecycle;
   include management and readiness invocations in receipt regressions.
+
+# 2026-09-07 Spec183 Slurm exit0 does not imply an existing allocation
+
+- Observation: live read-only `scontrol --json show job 999999999` and
+  `show step 999999999.0` returned exit0, errors=[], warnings=[], but jobs=[]
+  and steps=null on iTiger Slurm24.05.2. No job was launched for this check.
+- Risk: a command-status-only allocation gate could accept a nonexistent job.
+- Guard: the new task binding reader requires exactly one matching running
+  job/step with correct owner, submission comment and topology; fixtures test
+  both observed empty forms and verify capture stops before downstream work.
+- Lesson: validate scheduler payload semantics and expected identity, not only
+  process exit status. Positive source-shaped fixtures are not live acceptance.

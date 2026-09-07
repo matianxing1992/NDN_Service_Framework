@@ -203,6 +203,7 @@ class NodeRuntime:
         self.finite_children = Processes(self.output / "logs")
         self.invocations = set()
         self.gpu_probe = None
+        self.allocation = None
 
     def run_user(self, invocation: str, argv: list[str], *, package: Path | None,
                  seconds: float, peer_failure: Path | None = None):
@@ -248,10 +249,39 @@ class NodeRuntime:
         receipt = dict(schema='tiger-yolo-gpu-probe-v1', rank=self.rank, role=role,
             nonce=nonce, binding=dict(binding), logPath='logs/'+path.name,
             logDigest='sha256:'+hashlib.sha256(content).hexdigest(),
+            allocationDigest=self.allocation['digest'] if self.allocation else None,
             qualification='CUDA_VISIBILITY_COMPONENT_ONLY')
         _credential_document(self.output/'gpu-probe.json', receipt)
         self.gpu_probe = dict(nonce=nonce, role=role, logPath=str(path), binding=dict(binding))
         return binding
+
+    def verify_allocation(self, expected, *, seconds):
+        """Check the journal's job and frozen resources, not an env-selected job."""
+        from runtime.yolo_allocation import capture_task_allocation
+        from runtime.identities import _credential_document
+        import hashlib
+        if (self._preparation_binding is None or self.mode == 'local-cpu' or self.closed
+                or self.started or self.allocation is not None
+                or not isinstance(expected, dict)
+                or set(expected) != {'job_id', 'submission_key', 'partition', 'gpu_type'}):
+            raise ValueError('WORKER_ALLOCATION_SCOPE')
+        self._verify_prepared_boundary()
+        observed = capture_task_allocation(**expected, rank=self.rank,
+            node_count=1 if self.mode == 'single-node-gpu' else 2, seconds=seconds)
+        if observed['receipt']['visible'] != self.gpu_device:
+            raise ValueError('WORKER_ALLOCATION_SELECTOR')
+        plan, preparation, candidate = self._preparation_binding
+        record = dict(schema='tiger-yolo-allocation-v1', runId=plan['runId'],
+            preparationDigest=preparation, candidateDigest=candidate,
+            expected=dict(expected), receipt=observed['receipt'], task=observed['task'],
+            # Preserve exact scheduler bytes for offline hash/semantic recheck.
+            sources={name: observed[name].decode('utf-8') for name in ('job', 'step', 'hosts', 'stepHosts')})
+        path = self.output/'slurm-allocation.json'
+        _credential_document(path, record)
+        from runtime.yolo_bundle import _bytes
+        self.allocation = dict(receipt=observed['receipt'],
+            digest='sha256:'+hashlib.sha256(_bytes(path)).hexdigest())
+        return dict(self.allocation)
 
     def run_management(self, invocation: str, arguments: list[str], *, seconds: float,
                        peer_failure: Path | None = None):

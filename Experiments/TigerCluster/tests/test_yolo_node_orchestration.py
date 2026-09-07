@@ -48,6 +48,7 @@ def test_gpu_probe_precedes_network_and_provider_start(tmp_path, monkeypatch, fa
     state, startup, completion, events = setup(tmp_path, monkeypatch)
     state.mode = state._preparation_binding[0]['case'] = 'single-node-gpu'
     startup.remaining = lambda: 7
+    state.verify_allocation = lambda *a, **k: events.append('allocation')
     def probe(**kwargs):
         assert kwargs['seconds'] == 7
         events.append('gpu-probe')
@@ -58,10 +59,10 @@ def test_gpu_probe_precedes_network_and_provider_start(tmp_path, monkeypatch, fa
             endpoints=[], startup_options={}, request_options={}, accept_request=lambda *a: None)
     if failure:
         with pytest.raises(ValueError, match='GPU unavailable'): run()
-        assert events == ['gpu-probe', 'close']
+        assert events == ['allocation', 'gpu-probe', 'close']
     else:
         run()
-        assert events[:3] == ['gpu-probe', 'network', 'startup']
+        assert events[:4] == ['allocation', 'gpu-probe', 'network', 'startup']
 
 
 def test_failure_still_closes_notifies_and_preserves_local_record(tmp_path, monkeypatch):
@@ -73,6 +74,21 @@ def test_failure_still_closes_notifies_and_preserves_local_record(tmp_path, monk
     assert 'close' in events and 'receipt' not in events
     assert (tmp_path/'node-failure.json').is_file()
     assert any(isinstance(e, tuple) and e[0] == 'publish' and e[1][0] == 'failed' for e in events)
+
+
+def test_allocation_failure_prevents_even_gpu_probe(tmp_path, monkeypatch):
+    state, startup, completion, events = setup(tmp_path, monkeypatch)
+    state.mode = state._preparation_binding[0]['case'] = 'single-node-gpu'
+    startup.remaining = lambda: 7
+    def reject(*args, **kwargs):
+        events.append('allocation')
+        raise ValueError('wrong allocation')
+    state.verify_allocation = reject
+    state.probe_gpu_device = lambda **k: events.append('GPU MUST NOT RUN')
+    with pytest.raises(ValueError, match='wrong allocation'):
+        yolo.run_normal_node(state, startup, completion_factory=lambda: completion,
+            endpoints=[], startup_options={}, request_options={}, accept_request=lambda *a: None)
+    assert events == ['allocation', 'close']
 
 
 def test_completion_lane_cannot_reuse_startup_directory(tmp_path, monkeypatch):
@@ -110,7 +126,7 @@ def test_two_rank_real_barriers_keep_peer_alive_and_propagate_failure(tmp_path, 
     def state(rank):
         return NS(mode='two-node-gpu', rank=rank, output=tmp_path/('node'+str(rank)),
             _preparation_binding=(plan,None,None), close=lambda: closed[rank].set() or [],
-            probe_gpu_device=lambda **kwargs: None)
+            probe_gpu_device=lambda **kwargs: None, verify_allocation=lambda *a, **k: None)
     monkeypatch.setattr(yolo, 'configure_network', lambda *a, **k: None)
     monkeypatch.setattr(yolo, 'start_workload', lambda *a, **k: None)
     def requests(worker, plan, **kwargs):

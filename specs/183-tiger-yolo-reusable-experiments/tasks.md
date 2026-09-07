@@ -78,6 +78,16 @@ T001–T004形成 profile/launcher 实现骨架；可操作 MVP 还要求 T006 �
 
 ## Current Checkpoint
 
+2026-09-07 Slurm task binding: read-only site queries confirmed 24.05.2,
+/usr/bin/scontrol and data_parser/v0.0.41. No active user job. Nonexistent job
+and step queries return exit0 with empty/null records, so new validation
+requires exactly one matching running record. capture_task_allocation and
+NodeRuntime.verify_allocation check journal job/comment, uid, partition/GPU
+type, hosts/ranks/tasks and selector before GPU probe or Provider launch.
+Allocation JSON is candidate/run-bound; GPU probe links its digest. Actual
+positive allocation test, trusted offline receipt join and final operator
+inputs remain pending. See evidence/t006-slurm-allocation.md. No task closed.
+
 2026-09-07 independent CUDA probe: run_normal_node now runs the finite
 NodeRuntime.probe_gpu_device before network/Provider startup in GPU cases.
 The frozen runtime/yolo_gpu_probe.py queries CUDA runtime count=1 and maps
