@@ -247,6 +247,8 @@ def wait_json(path: Path, seconds: int, children: Processes | None = None,
 
 def nfd_config(port: int) -> str:
     """Job-scoped TCP forwarder; app trust is enforced separately by probes."""
+    if type(port) is not int or not 1024 <= port <= 65535:
+        raise ValueError("NFD_PORT")
     return f'''log
 {{
   default_level WARN

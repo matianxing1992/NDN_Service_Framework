@@ -1,0 +1,205 @@
+"""Per-node YOLO role execution over the shared Tiger lifecycle primitives.
+
+This module does not authorize a run or perform placement. The coordinator
+must validate the frozen candidate and resolve application commands first.
+The ACK-driven application remains responsible for the execution plan.
+"""
+from __future__ import annotations
+
+import math
+import os
+from pathlib import Path
+import signal
+import stat
+import threading
+import time
+
+from runtime.baseline import BIN, Processes, container_command, container_env, nfd_config
+from runtime.identities import RoleHomeLease, validate_role_homes
+
+
+MODEL_ROLES = frozenset(("BackboneNeck", "DetectShard0", "DetectShard1"))
+PROVIDER_ROLES = MODEL_ROLES | {"Merge"}
+
+
+def _directory(value, *, may_create=False):
+    if not isinstance(value, (str, Path)):
+        raise ValueError("WORKER_DIRECTORY")
+    path = Path(value)
+    if (not path.is_absolute() or ".." in path.parts
+            or any(c in str(path) for c in ":,\x00\n\r")
+            or any(p.is_symlink() for p in (path, *path.parents))
+            or (not path.is_dir() and (not may_create or path.exists()))):
+        raise ValueError("WORKER_DIRECTORY")
+    return path
+
+
+def assigned_roles(mode: str, rank: int) -> tuple[str, ...]:
+    """Physical startup layout, never a replacement for runtime Selection."""
+    if type(rank) is not int:
+        raise ValueError("WORKER_RANK")
+    primary = ("nfd0", "controller", "repo", "user", "BackboneNeck", "Merge")
+    heads = ("DetectShard0", "DetectShard1")
+    if mode in ("local-cpu", "single-node-gpu") and rank == 0:
+        return primary + heads
+    if mode in ("two-node-gpu", "negative-dependency") and rank in (0, 1):
+        return primary if rank == 0 else ("nfd1", *heads)
+    raise ValueError("WORKER_MODE_OR_RANK")
+
+
+class NodeRuntime:
+    """Own this node's role processes, role-scoped mounts and cleanup evidence."""
+
+    def __init__(self, *, profile: dict, mode: str, rank: int, bundle: Path,
+                 homes: dict[str, Path], public: Path, output: Path, node: Path,
+                 model_artifacts: dict[str, Path], gpu_device: str | None,
+                 cleanup_seconds: float):
+        self.roles = assigned_roles(mode, rank)
+        if set(homes) != set(self.roles):
+            raise ValueError("WORKER_ROLE_HOMES")
+        if set(model_artifacts) != MODEL_ROLES.intersection(self.roles):
+            raise ValueError("WORKER_MODEL_MOUNTS")
+        if (mode == "local-cpu") != (gpu_device is None):
+            raise ValueError("WORKER_GPU_MODE")
+        self.homes = validate_role_homes(homes)
+        self.profile, self.mode, self.rank = dict(profile), mode, rank
+        self.bundle, self.public = _directory(bundle), _directory(public)
+        self.output, self.node = _directory(output, may_create=True), _directory(node)
+        # Each entry must be a candidate-verified role-only model projection,
+        # not a package containing a reference oracle or input activations.
+        self.model_artifacts = {role: _directory(path) for role, path in model_artifacts.items()}
+        for source in (self.bundle, self.public, *self.homes.values(), *self.model_artifacts.values()):
+            if self.output == source or self.output in source.parents or source in self.output.parents:
+                raise ValueError("WORKER_OUTPUT_OVERLAP")
+        self.gpu_device, self.cleanup_seconds = gpu_device, cleanup_seconds
+        self.children = Processes(self.output / "logs")
+        self.children.close(seconds=cleanup_seconds)  # Validate before any spawn.
+        self.launches = []
+        self.started = set()
+        self.leases = {}
+        self.closed = False
+        self.cleanup_records = {}
+
+    def start_service(self, role: str, argv: list[str]):
+        return self._start_service(role, argv)
+
+    def start_forwarder(self, port: int):
+        config = nfd_config(port)
+        role = "nfd" + str(self.rank)
+        return self._start_service(role, [BIN + "/nfd", "--config", "/output/nfd.conf"],
+                                   initial_files=(("nfd.conf", config),))
+
+    def _start_service(self, role, argv, initial_files=()):
+        if self.closed:
+            raise ValueError("WORKER_CLOSED")
+        if role not in self.roles or role == "user":
+            raise ValueError("WORKER_SERVICE_ROLE")
+        if role in self.started:
+            raise ValueError("WORKER_ROLE_ALREADY_STARTED")
+        if not argv or not all(isinstance(arg, str) and "\x00" not in arg for arg in argv):
+            raise ValueError("WORKER_ARGV")
+        role_output = _directory(self.output / role, may_create=True)
+        gpu = self.mode != "local-cpu" and role in MODEL_ROLES
+        application = ["/usr/bin/env", "NDNSF_DI_STATE_ROOT=/output/state",
+                       "NDNSF_DI_ORT_PROFILE_PREFIX=/output/ort/session", *argv]
+        command = container_command(
+            self.profile, self.bundle, self.homes[role], self.public, role_output,
+            application, node=self.node, artifacts=self.model_artifacts.get(role),
+            gpu=gpu, gpu_device=self.gpu_device if gpu else None)
+        lease = RoleHomeLease(self.homes[role])
+        try:
+            for name in ("state", "ort"):
+                _directory(role_output / name, may_create=True).mkdir(parents=True, exist_ok=True, mode=0o700)
+            for name, content in initial_files:
+                fd = os.open(str(role_output / name), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+                with os.fdopen(fd, "w") as stream:
+                    stream.write(content)
+            record = {"role": role, "rank": self.rank, "argv": command, "pid": None}
+            self.launches.append(record)
+            child = self.children.start(role, command, container_env(), cwd=self.bundle)
+        except BaseException as exc:
+            if self.launches and self.launches[-1]["role"] == role:
+                self.launches[-1]["startError"] = type(exc).__name__
+            lease.close()
+            raise
+        record["pid"] = child.pid
+        self.started.add(role)
+        self.leases[role] = (lease, child.pid)
+        return child
+
+    def check(self):
+        self.children.check()
+
+    def wait_marker(self, role: str, marker: str, *, seconds: float,
+                    peer_failure: Path | None = None):
+        """Bounded stdout observation; a marker alone is not runtime readiness.
+
+        The coordinator also verifies Controller/Provider permissions and
+        signed publication receipts before requests. Read incrementally so a
+        chatty process does not turn readiness into repeated full-log scans.
+        """
+        if (role not in self.started or not isinstance(marker, str) or not marker
+                or len(marker.encode()) > 4096):
+            raise ValueError("WORKER_MARKER")
+        if (isinstance(seconds, bool) or not isinstance(seconds, (int, float))
+                or not math.isfinite(seconds) or seconds <= 0):
+            raise ValueError("WORKER_WAIT_BUDGET")
+        deadline = time.monotonic() + seconds
+        needle, tail = marker.encode(), b""
+        fd = os.open(str(self.children.log_dir / (role + ".log")),
+                     os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise ValueError("WORKER_LOG_TYPE")
+            while time.monotonic() < deadline:
+                self.check()
+                if peer_failure is not None and peer_failure.exists():
+                    raise RuntimeError("PEER_FAILED")
+                chunk = os.read(fd, 65536)
+                if needle in tail + chunk:
+                    self.check()
+                    return
+                tail = (tail + chunk)[-len(needle):]
+                if not chunk:
+                    time.sleep(min(0.05, max(0, deadline - time.monotonic())))
+            raise TimeoutError("WORKER_MARKER_TIMEOUT:" + role)
+        finally:
+            os.close(fd)
+
+    def close(self):
+        # The Slurm worker runs on the main thread. Preserve a first failure
+        # and complete its bounded teardown despite another TERM/INT arriving.
+        handlers = ({sig: signal.signal(sig, signal.SIG_IGN)
+                     for sig in (signal.SIGINT, signal.SIGTERM)}
+                    if threading.current_thread() is threading.main_thread() else {})
+        try:
+            return self._close()
+        finally:
+            for sig, handler in handlers.items():
+                signal.signal(sig, handler)
+
+    def _close(self):
+        self.closed = True
+        rows = self.children.close(seconds=self.cleanup_seconds)
+        for row in rows:
+            self.cleanup_records[row["name"]] = dict(row)
+        current = {row["name"] for row in rows}
+        for role in self.leases:
+            if role not in current:
+                rows.append(dict(self.cleanup_records[role]))
+        # Reaping a leader does not prove that its group no longer exists.
+        # Keep the HOME lease while a descendant or unreaped group survives.
+        lease_errors = {}
+        for role, (lease, pid) in list(self.leases.items()):
+            try:
+                os.killpg(pid, 0)
+            except ProcessLookupError:
+                lease.close()
+                del self.leases[role]
+            except OSError as exc:
+                lease_errors[role] = type(exc).__name__
+        for row in rows:
+            row["leaseReleased"] = row["name"] not in self.leases
+            if row["name"] in lease_errors:
+                row["leaseError"] = lease_errors[row["name"]]
+        return rows

@@ -88,3 +88,23 @@ def test_tpm_must_be_local_to_role_and_contain_private_regular_files(tmp_path, k
             key.symlink_to(homes["BackboneNeck"] / ".ndn/ndnsec-key-file/fake.privkey")
     with pytest.raises(ValueError, match="ROLE_TPM|ROLE_PRIVATE_KEY"):
         identities.validate_role_homes(homes)
+
+
+def test_issuer_supports_yolo_role_identities_without_changing_cpu_defaults():
+    defaults = identities.identity_inventory("/test/run")
+    assert defaults["provider"] == "/test/run/provider"
+    requested = {"controller": "/test/run/controller", "user": "/test/run/user",
+                 "BackboneNeck": "/test/run/provider/BackboneNeck",
+                 "DetectShard0": "/test/run/provider/DetectShard0",
+                 "DetectShard1": "/test/run/provider/DetectShard1",
+                 "Merge": "/test/run/provider/Merge"}
+    assert identities.identity_inventory("/test/run", requested) == requested
+
+
+@pytest.mark.parametrize("roles", [{}, {"root": "/test/run/root"},
+    {"a": "/outside/a"}, {"a": "/test/run/shared", "b": "/test/run/shared"},
+    {"../a": "/test/run/a"}, {"a": "/test/run/%75ser"},
+    {"a": "/test/run/a\n--help"}])
+def test_issuer_rejects_ambiguous_or_out_of_run_identity_map(roles):
+    with pytest.raises(ValueError, match="IDENTITY_"):
+        identities.identity_inventory("/test/run", roles)

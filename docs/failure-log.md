@@ -1,5 +1,12 @@
 # Failure Log and Evidence Index
 
+## 2026-09-06 — Spec183 worker ownership, path aliases and repeated TERM
+
+- Symptom: focused production-launcher tests found two workers could acquire the same Provider HOME, missing/misbound directories could launch, role-output symlinks could write into the bundle, and a second TERM killed the cleanup owner (outer process exit -15). The old issuer supported only the CPU role list, while YOLO app source requires explicit state-root and ORT-profile locations.
+- Fix: NodeRuntime combines the existing shared launcher/Processes with real HOME leases, role-scoped state/model/output bindings, bounded incremental marker observation and NFD port/config validation. Reject directory overlap/symlinks; protect bounded teardown from repeated TERM/INT. Parameterize the original issuer's derived identity map while preserving CPU defaults and public-only peer certificates.
+- Evidence: Spec183 evidence/t003-worker.md; 171 focused tests passed in 5.87s, with real processes/locks/signals and a declared fake Apptainer boundary. Actual SIF issuer/CUDA/YOLO remains NOT_RUN; T004/T005 must wire the component and T007 must audit it before formal gates.
+- Lesson: per-role paths and source-derived env fields must be consumed by the actual launcher, not just listed in a profile. Never stage a whole oracle-containing package into a Provider; derive role-only model projections from the frozen inventory.
+
 ## 2026-09-06 — Spec183 cleanup budget, identity layout and finite deadlines
 
 - Symptom: per-child shutdown could multiply the job cleanup budget; finite application had its own cleanup path and accepted unbounded deadlines. Identity helpers failed import on host Python3.8 (`list[Path]`), and distinct role directories alone did not rule out shared PIB/private-key inodes.

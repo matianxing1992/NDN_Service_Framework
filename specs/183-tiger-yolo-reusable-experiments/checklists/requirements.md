@@ -13,7 +13,7 @@
 - [x] CHK007 tasks/validation/traceability 覆盖需求，测试与实现不机械拆分。
 - [x] CHK008 正式 gate 顺序与设计代码收敛明确；CPU/单机/双机/复用分开。
 - [x] CHK009 有限作业、原失败、独占提交、缓存、容量、隐私和回退已定义。
-- [x] CHK010 本轮只规划，runtime tasks 全未完成；历史 PASS/FAIL 未改写。
+- [x] CHK010 规划检查与后续实现checkpoint、实际runtime资格明确区分；历史 PASS/FAIL 未改写。
 
 ## Notes
 

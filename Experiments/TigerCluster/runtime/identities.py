@@ -6,6 +6,7 @@ requests and returns public certificates, without exporting its root key.
 from __future__ import annotations
 
 import base64
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -14,6 +15,38 @@ import stat
 import subprocess
 
 from runtime.baseline import ROLE_RANK, write_json, digest
+
+
+class RoleHomeLease:
+    """Cooperating worker exclusion for one prepared HOME, held until teardown.
+
+    This is not an authorization credential or a lock understood by ndn-cxx.
+    Allocation/process ownership still handles worker crashes and uncooperative
+    applications; the run coordinator must not reuse private run directories.
+    """
+    def __init__(self, home: Path):
+        self.fd = None
+        home = Path(home)
+        validate_role_homes({home.name: home})
+        flags = os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK
+        fd = os.open(str(home / ".ndn/.runtime.lock"), flags, 0o600)
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                raise ValueError("ROLE_LEASE_FILE")
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as exc:
+                raise ValueError("ROLE_HOME_IN_USE:" + home.name) from exc
+        except BaseException:
+            os.close(fd)
+            raise
+        self.fd = fd
+
+    def close(self):
+        if self.fd is not None:
+            os.close(self.fd)
+            self.fd = None
 
 
 def validate_role_homes(homes: dict[str, Path]) -> dict[str, Path]:
@@ -99,11 +132,40 @@ def install_public(home: Path, certificates: list[Path], own_identity: str) -> N
         raise RuntimeError("PEER_PRIVATE_KEY_DISTRIBUTION")
 
 
-def issue(namespace: str) -> None:
+def identity_inventory(namespace: str, role_identities: dict[str, str] | None = None) -> dict[str, str]:
+    """Resolve a run's plain-component identity names before invoking ndnsec.
+
+    Experiment-generated names intentionally exclude URI escapes/typed-name
+    aliases, so two role strings cannot identify the same PIB identity.
+    This is an experiment naming restriction, not an NDNSF protocol rule.
+    """
+    name_pattern = r"/(?:[A-Za-z0-9_-][A-Za-z0-9_.-]*)(?:/[A-Za-z0-9_-][A-Za-z0-9_.-]*)*"
+    if not isinstance(namespace, str) or not re.fullmatch(name_pattern, namespace):
+        raise ValueError("IDENTITY_NAMESPACE")
+    identities = ({role: namespace + "/" + role for role in ROLE_RANK}
+                  if role_identities is None else role_identities)
+    if not isinstance(identities, dict) or not identities:
+        raise ValueError("IDENTITY_INVENTORY")
+    seen = set()
+    for role, identity in identities.items():
+        if (not isinstance(role, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", role)
+                or role in ("root", "wrong-root")):
+            raise ValueError("IDENTITY_ROLE")
+        if (not isinstance(identity, str) or not re.fullmatch(name_pattern, identity)
+                or not identity.startswith(namespace + "/") or identity in seen):
+            raise ValueError("IDENTITY_NAME:" + role)
+        seen.add(identity)
+    return dict(identities)
+
+
+def issue(namespace: str, role_identities: dict[str, str] | None = None) -> None:
     """Create new isolated identities and reject pre-existing PIB state."""
+    identity_map = identity_inventory(namespace, role_identities)
+    peer_roles = (tuple(identity_map) if role_identities is not None else
+                  ("controller", "provider", "user", "denied"))
     homes = Path("/identities")
     public = Path("/config")
-    roles = ["root", "wrong-root", *ROLE_RANK]
+    roles = ["root", "wrong-root", *identity_map]
     for role in roles:
         home = homes / role
         if (home / ".ndn").exists():
@@ -114,7 +176,7 @@ def issue(namespace: str) -> None:
         # ndnsec's default TPM locator is now identical during setup and run.
         completed = subprocess.run(["ndnsec", *arguments], input=stdin,
                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                   env=env, check=False)
+                                   env=env, check=False, timeout=15)
         if completed.returncode:
             raise RuntimeError("NDNSEC_FAILED:" + role + ":" + arguments[0] + ":" +
                                completed.stderr.decode(errors="replace")[-800:])
@@ -125,8 +187,7 @@ def issue(namespace: str) -> None:
     (public / "wrong-root.cert").write_bytes(invoke(
         "wrong-root", ["key-gen", "-t", "r", namespace + "-untrusted"]))
     records = {}
-    for role in ROLE_RANK:
-        identity = namespace + "/" + role
+    for role, identity in identity_map.items():
         request = invoke(role, ["key-gen", "-t", "r", identity])
         request_path = homes / "root" / "request.cert"
         request_path.write_bytes(request)
@@ -142,12 +203,12 @@ def issue(namespace: str) -> None:
         records[role] = {"identity": identity, "certificateSha256": digest(cert_path)}
         (homes / role / "session.conf").write_text("")
     validate_role_homes({role: homes / role for role in roles})
-    peer_certificates = [public / (role + ".cert") for role in ROLE_RANK] + [public / "root.cert"]
-    for role in ("controller", "provider", "user", "denied"):
-        install_public(homes / role, peer_certificates, namespace + "/" + role)
+    peer_certificates = [public / (role + ".cert") for role in identity_map] + [public / "root.cert"]
+    for role in peer_roles:
+        install_public(homes / role, peer_certificates, identity_map[role])
         # Verify with the same ndn-cxx CLI the runtime consumes, not SQL alone.
-        for peer in ("controller", "provider", "user", "denied"):
-            observed = invoke(role, ["cert-dump", "-i", namespace + "/" + peer])
+        for peer in peer_roles:
+            observed = invoke(role, ["cert-dump", "-i", identity_map[peer]])
             if base64.b64decode(observed) != base64.b64decode((public / (peer + ".cert")).read_bytes()):
                 raise RuntimeError("PUBLIC_PIB_CERT_MISMATCH")
     (homes / "root" / "request.cert").unlink()
@@ -156,5 +217,10 @@ def issue(namespace: str) -> None:
 
 
 if __name__ == "__main__":
-    import sys
-    issue(sys.argv[1])
+    import argparse
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("namespace")
+    parser.add_argument("--roles-json", type=Path,
+                        help="Derived role-to-identity map from the frozen run plan")
+    args = parser.parse_args()
+    issue(args.namespace, json.loads(args.roles_json.read_text()) if args.roles_json else None)
