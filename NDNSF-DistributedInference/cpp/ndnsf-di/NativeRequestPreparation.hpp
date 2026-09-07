@@ -2,11 +2,11 @@
 #define NDNSF_DI_NATIVE_REQUEST_PREPARATION_HPP
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
-#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanSealer.hpp"
 
 #include <chrono>
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -89,53 +89,6 @@ private:
   std::shared_ptr<const NativeAdapterRegistry> m_adapters;
   InspectPort m_inspect;
   ArtifactPort m_artifacts;
-};
-
-struct NativeAckEvidence
-{
-  bool coreAuthenticated = false;
-  std::string requestId;
-  std::uint64_t attempt = 0;
-  std::string provider;
-  std::string serviceName;
-  std::string signerIdentity;
-  std::string controllerVersion;
-  std::string offerDigest;
-  std::string modelDigest;
-  std::string graphDigest;
-  std::uint64_t expiresAtMs = 0;
-};
-
-struct NativeOfferPolicySnapshot
-{
-  std::string policyDigest;
-  std::vector<std::string> acceptedSignerIdentities;
-  std::vector<std::string> acceptedProviders;
-  std::vector<std::string> acceptedServices;
-  std::vector<std::string> acceptedRoles;
-  std::vector<std::string> backends;
-  std::vector<std::string> residencyDigests;
-  std::uint64_t freeBytes = 0;
-  std::uint64_t resourceSequence = 0;
-  std::uint64_t expiresAtMs = 0;
-};
-
-struct NativeOfferBindingContext
-{
-  std::string requestId;
-  std::uint64_t attempt = 0;
-  std::string serviceName;
-  std::string modelDigest;
-  std::string graphDigest;
-};
-
-class NativeOfferAdmission
-{
-public:
-  NativeProviderPlanningView verify(const NativeAckEvidence& ack,
-                                    const NativeOfferPolicySnapshot& policy,
-                                    const NativeOfferBindingContext& context,
-                                    std::uint64_t nowMs) const;
 };
 
 } // namespace ndnsf::di

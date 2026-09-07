@@ -741,28 +741,4 @@ BOOST_AUTO_TEST_CASE(PreparationCleanupBoundaryReleasesRequestState)
 
 BOOST_AUTO_TEST_SUITE_END()
 
-// Resident case until T008-B splits NativeOfferAdmission into its own suite:
-// an unauthenticated ACK can never produce a planning view.
-BOOST_AUTO_TEST_CASE(NativeOfferAdmissionRejectsUnauthenticatedAck)
-{
-  NativeOfferAdmission admission;
-  NativeOfferPolicySnapshot policy;
-  policy.policyDigest = digest("policy");
-  policy.acceptedProviders = {"/provider"};
-  policy.acceptedServices = {"/service"};
-  policy.acceptedSignerIdentities = {"/controller"};
-  policy.acceptedRoles = {"role"};
-  policy.backends = {"onnxruntime"};
-  policy.resourceSequence = 1;
-  policy.expiresAtMs = 100;
-  NativeOfferBindingContext context{"/request", 1, "/service", digest("model"), digest("graph")};
-  NativeAckEvidence ack;
-  ack.requestId = context.requestId;
-  ack.attempt = context.attempt;
-  ack.serviceName = context.serviceName;
-  ack.modelDigest = context.modelDigest;
-  ack.graphDigest = context.graphDigest;
-  BOOST_CHECK_THROW(admission.verify(ack, policy, context, 1), std::runtime_error);
-}
-
 } // namespace ndnsf::di
