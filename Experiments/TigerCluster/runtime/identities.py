@@ -6,6 +6,7 @@ requests and returns public certificates, without exporting its root key.
 from __future__ import annotations
 
 import base64
+from contextlib import ExitStack
 import fcntl
 import json
 import os
@@ -214,6 +215,73 @@ def issue(namespace: str, role_identities: dict[str, str] | None = None) -> None
     (homes / "root" / "request.cert").unlink()
     write_json(public / "identities.json", {"root": namespace, "roles": records,
                                              "rootCertificateSha256": digest(public / "root.cert")})
+
+
+def issue_yolo_recipients(namespace: str, homes: dict[str, Path], public: Path,
+                          role_identities: dict[str, str]) -> None:
+    """Generate fresh per-run grant keys after NDN identity preparation.
+
+    Run offline under the candidate SIF before workers start. Public outputs
+    still require binding in the prepared-run manifest. This does not issue
+    policy authority credentials, authorize a model, or prove NDN readiness.
+    Partial failure leaves evidence and cannot be retried over existing files.
+    """
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ed25519
+
+    providers = ('BackboneNeck', 'DetectShard0', 'DetectShard1', 'Merge')
+    roles = (*providers, 'user')
+    identities = identity_inventory(namespace, role_identities)
+    if any(role not in identities or role not in homes for role in roles):
+        raise ValueError('YOLO_RECIPIENT_ROLES')
+    checked = validate_role_homes({role: homes[role] for role in roles})
+    public = Path(public)
+    if (not public.is_absolute() or '..' in public.parts or not public.is_dir()
+            or any(p.is_symlink() for p in (public, *public.parents))
+            or any(public == h or public in h.parents or h in public.parents
+                   for h in checked.values())):
+        raise ValueError('YOLO_RECIPIENT_PUBLIC_ROOT')
+    targets = [public / 'recipients', public / 'recipient-public-keys.json',
+               checked['user'] / 'requester.key']
+    for role in providers:
+        targets.extend(checked[role] / name for name in ('recipient.pem', 'recipient-map.json'))
+    if any(p.exists() or p.is_symlink() for p in targets):
+        raise ValueError('YOLO_RECIPIENT_REUSE')
+
+    def create(path, payload):
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, 'wb') as stream:
+            os.fchmod(stream.fileno(), 0o600)
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+
+    def document(path, value):
+        create(path, (json.dumps(value, sort_keys=True) + '\n').encode())
+
+    with ExitStack() as leases:
+        for role in sorted(roles):
+            lease = RoleHomeLease(checked[role])
+            leases.callback(lease.close)
+        (public / 'recipients').mkdir(mode=0o700)
+        recipients = {}
+        for role in providers:
+            key = ed25519.Ed25519PrivateKey.generate()
+            create(checked[role] / 'recipient.pem', key.private_bytes(
+                serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                serialization.NoEncryption()))
+            key_path = public / 'recipients' / (role + '.pub')
+            create(key_path, key.public_key().public_bytes(
+                serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo))
+            document(checked[role] / 'recipient-map.json', {
+                identities[role]: '/identities/' + role + '/recipient.pem'})
+            recipients[identities[role]] = {
+                'path': 'recipients/' + role + '.pub', 'sha256': 'sha256:' + digest(key_path)}
+        requester = ed25519.Ed25519PrivateKey.generate()
+        create(checked['user'] / 'requester.key', requester.private_bytes(
+            serialization.Encoding.Raw, serialization.PrivateFormat.Raw,
+            serialization.NoEncryption()))
+        document(public / 'recipient-public-keys.json', recipients)
 
 
 if __name__ == "__main__":

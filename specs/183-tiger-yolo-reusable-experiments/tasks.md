@@ -78,6 +78,8 @@ T001–T004形成 profile/launcher 实现骨架；可操作 MVP 还要求 T006 �
 
 ## Current Checkpoint
 
+2026-09-07真实recipient生成组件已加入既有identities.py：每Provider独立密钥/私有map，User独立requester seed和public map；独占写入及HOME lease，拒绝覆盖/身份重复。4项真实crypto测试通过，总321 focused（21.13s）。尚未接最终prepare；模型/authority/offer材料认证、readiness及T006仍待实现，T005不关闭。详见t005-public-recipients.md。
+
 2026-09-07 native recipient启动接线已按真实C++环境变量完成，私钥map精确限定单Provider自身HOME；User和Provider共用`/config/contracts/trust-root-registry-v1.json`，publicKeyPath契约为`contracts/authority.pub`。新增6项拒错，317 focused通过（20.91s），证据追加于t005-public-recipients.md。下一步生成并认证这些真实材料及readiness；不能把fixture路径检查当作native grant通过。T005仍partial。
 
 2026-09-07公共recipient接线：User支持public-only map，Spec183启动强制显式protected epoch及自身requester/authority密钥；311 focused通过。真实User seam新增两项测试因缺少`_ndnsf`在setup失败，未证明grant集成通过；T008须完整重跑。见[evidence/t005-public-recipients.md](evidence/t005-public-recipients.md)。下一步signed准备/registry布局/native Provider recipient/readiness，再T006；T005/T007保持未完成。

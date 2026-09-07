@@ -33,6 +33,26 @@ ran. No fake extension or skip was used. Both must pass after T008 native build.
 
 ## Remaining controlling work
 
+### Real recipient preparation component
+
+`runtime/identities.py::issue_yolo_recipients` now generates four independent
+Ed25519 recipient key pairs and a separate User request-signing seed after
+role HOME preparation. It reuses identity-name validation, HOME isolation and
+leases; rejects existing outputs before generation, uses exclusive 0600 file
+writes, emits one private map per Provider and one public-only map for User.
+An interrupted preparation is retained and cannot overwrite/reuse its partial
+keys. The component is intended to run offline inside the candidate SIF; it
+has not yet been connected to the final prepare command.
+
+Real cryptography tests load generated PEMs through the maintained private and
+public loaders, compare each pair, check distinct keys/permissions and reject
+reuse, missing roles and duplicate identities. PIBs in these tests are explicitly
+layout fixtures, not ndnsec-issued identity evidence. **4 passed in 0.71s**;
+complete focused regression **321 passed in 21.13s**, JUnit in
+`results/spec183-recipient-preparation-r1/junit.xml`. Tests do not generate or
+silently replace catalogue/model policy trust roots. These still require
+authenticated preparation and model-package verification.
+
 ### Native launcher follow-up
 
 The native owner `NativeProtectedGrantCredentials.cpp::credentials` was checked:
