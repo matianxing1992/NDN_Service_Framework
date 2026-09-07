@@ -382,3 +382,9 @@ setup 与 startup validation 共享校验 `applicationName + '/sync'`；拒绝�
 尾部斜杠、重复分隔符和 `/group` 退化。相关回归 71 项通过；合并注册 focused
 selectors 后 **885 passed in 55.18s**。这是 routing-integrity/component evidence，
 不是 native/SIF/MiniNDN/Tiger qualification；T005/T006/T007 仍未闭合。
+
+2026-09-07 T007 production-wiring audit：新增
+[design-code-convergence.md](evidence/design-code-convergence.md)。审计结果为
+**BLOCKED / NOT READY**：组件边界和 885 项回归记录为 component-only，真实
+profile、`run.sbatch`、五命令、候选 artifact、native/SIF/MiniNDN/Tiger 执行仍缺；
+因此不提前关闭 T007，也不授权提交集群作业。
