@@ -56,6 +56,13 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 
 ## Current Checkpoint
 
+2026-09-07 Skill surface / **PASS**：按用户要求精简共享个人技能 105→18，GSD 69 个技能、
+34 个 agent 注册和 4 个 hook 退出活动配置，原文件留本机归档；项目 12 个 Spec Kit 技能保持。
+constitution 1.5.0 改由 Spec Kit 进度/证据负责多阶段恢复，历史 `.planning` 保留。
+配置语义核对通过；已运行客户端需重启才能卸载旧 agent/hook，未声称本会话已刷新。
+产品状态不变；详见 [registry evidence](evidence/task-progress-registry-20260907.md#skill-surface)。
+下一步重启客户端核对精简目录，然后继续 T001 收口。
+
 2026-09-07 Native boundary follow-up / **T001 IN_PROGRESS**：补齐 ONNX
 protobuf 生成源到 provider、fault-provider、assembly-parity、smoke 和
 integration 的 Waf 闭包（`76d074af`），移除装配器废弃 JSON/路径 helper

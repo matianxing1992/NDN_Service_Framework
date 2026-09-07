@@ -56,6 +56,24 @@ Context Mode active health 报告索引过期，本次状态取实际 tasks、Gi
 `git diff --check` PASS。本机技能保留既有 Spec Kit compatibility metadata，使用 YAML 解析核对。
 两个本机技能 YAML 检查 PASS；Spec182 design validator PASS，36 行覆盖不变、父任务仍 0/17。
 
+## Skill Surface
+
+2026-09-07，用户要求精简共享技能并移除 GSD。实查 Claude 的 skills 根链接到 Codex，
+105 个个人技能含 69 个 GSD；本次保留 18 个与当前工作相关的技能（包括相互引用的辅助技能），
+其余 87 个整体移到本机 `~/.codex/skills-archive/20260907-current-work/`，
+manifest 保存 87 个入口 SHA256，完整性检查 PASS；无真实逐技能使用频率统计。
+项目 12 个 Spec Kit 技能、系统技能和插件保持。
+
+GSD 曾用于旧阶段：`.planning/STATE.md` 的最后更新时间为 2026-09-01，指向 Spec175。
+当前 Spec182 以 `.specify/feature.json` 和 tasks 为权威。
+本机额外移除 34 个 GSD agent 注册、4 个 hook 和 Claude GSD_HOME；68 个 agent 文件、
+2 个 hook 文件、引擎及安装记录留在上述归档的 gsd-runtime 中，配置原件同处保留，不入 Git。
+TOML/JSON 语义对照 PASS，非 GSD 配置及 hook 保持。首轮 TOML 比较因删除最后一个 agent
+后空父表自然消失而断言失败；核对差异仅为该空表，规范化空表后比较 PASS。
+保留项目 `.planning` 历史；constitution 1.5.0 解除 GSD 要求，改用既有 Spec Kit 进度标准。
+当前运行 host 可能仍缓存旧 agent/hook，需重启后核对，未宣称 host 已卸载。
+Spec182 design validator 与 `git diff --check` PASS，36 行覆盖及父任务 0/17 保持；无产品测试。
+
 ## Next
 
 关闭 T001 未决公开 API/设计与 selector release；修复既有构建依赖边界。
