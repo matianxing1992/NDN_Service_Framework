@@ -113,6 +113,16 @@ node-name set; it never derives expected coverage from Provider logs. Four-role
 coverage tests passed in the 120-test retained/projection subset. Final operator
 wiring must make this document mandatory before T006 can close.
 
+Follow-up checkpoint: `finalize_expected_rejection` now provides a separate
+fail-closed terminal boundary for the registered `negative-dependency` case.
+It requires one committed Selection, zero reselection, a bound
+`DEPENDENCY_DATA_MISSING` or `PEER_FAILURE` edge after Selection, no response,
+and bounded non-forced cleanup. The focused retained-execution suite passed
+**53 tests** and the complete registered focused suite passed **852 tests**;
+JUnit: `Experiments/TigerCluster/results/t006-negative-rejection-r1/full-junit.xml`.
+This is still component-only evidence: no real negative runtime was executed,
+the operator collector is not wired to it, and T006/T007 remain unchecked.
+
 The public component collector now owns the complete normal request loop via
 `collect_normal_verdict`; it requires the registered warmup/measured reference
 schedule and a certified graph before calling the fail-closed final boundary.

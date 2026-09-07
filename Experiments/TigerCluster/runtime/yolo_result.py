@@ -411,6 +411,110 @@ def finalize_normal_verdict(request_results, *, plan, graph_digest):
                 requestIndices=sorted(seen))
 
 
+def finalize_expected_rejection(rejection, *, plan, request_id, attempt,
+                                candidate_digest, request_deadline_ms):
+    """Validate the terminal boundary for the registered negative case.
+
+    This is deliberately separate from :func:`finalize_normal_verdict`.  A
+    negative dependency run passes only when a real Selection was committed,
+    the required post-Selection edge failed, no response or reselection was
+    observed, and every owned child was reaped without forced cleanup.  The
+    collector never infers these facts from a timeout or from a missing output
+    directory; the caller must retain the exact, bound record.
+    """
+    if (not isinstance(rejection, Mapping) or not isinstance(plan, Mapping)
+            or plan.get('case') != 'negative-dependency'
+            or not isinstance(request_id, str) or not request_id.startswith('/')
+            or not isinstance(candidate_digest, str)
+            or re.fullmatch(r'sha256:[0-9a-f]{64}', candidate_digest) is None
+            or type(attempt) is not int or not 0 < attempt < 2**64
+            or type(request_deadline_ms) is not int
+            or not 1501 <= request_deadline_ms <= 60000):
+        raise EvidenceError('EXPECTED_REJECTION_INPUT')
+
+    requests = plan.get('requests')
+    if (not isinstance(requests, list) or len(requests) != 1
+            or not isinstance(requests[0], Mapping)
+            or set(requests[0]) != {'index', 'warmup', 'requestId', 'output'}
+            or requests[0].get('index') != 0
+            or requests[0].get('warmup') is not False
+            or requests[0].get('requestId') != request_id):
+        raise EvidenceError('EXPECTED_REJECTION_PLAN_SCHEDULE')
+
+    expected_fields = {
+        'schema', 'status', 'qualification', 'case', 'runId', 'requestId',
+        'attempt', 'candidateDigest', 'selection', 'failure', 'response',
+        'cleanup', 'elapsedMs', 'deadlineMs',
+    }
+    if set(rejection) != expected_fields:
+        raise EvidenceError('EXPECTED_REJECTION_SCHEMA')
+    if (rejection['schema'] != 'tiger-yolo-expected-rejection-v1'
+            or rejection['status'] != 'REJECTED'
+            or rejection['qualification'] != 'EXPECTED_REJECTION_COMPONENT_ONLY'
+            or rejection['case'] != 'negative-dependency'
+            or rejection['runId'] != plan.get('runId')
+            or rejection['requestId'] != request_id
+            or type(rejection['attempt']) is not int
+            or rejection['attempt'] != attempt
+            or rejection['candidateDigest'] != candidate_digest
+            or rejection['deadlineMs'] != request_deadline_ms
+            or type(rejection['elapsedMs']) is not int
+            or not 1 <= rejection['elapsedMs'] <= request_deadline_ms):
+        raise EvidenceError('EXPECTED_REJECTION_BINDING')
+
+    selection = rejection['selection']
+    if (not isinstance(selection, Mapping)
+            or set(selection) != {'status', 'selectedProvider', 'selectionCount', 'reselectionCount'}
+            or selection['status'] != 'COMMITTED'
+            or not isinstance(selection['selectedProvider'], str)
+            or not selection['selectedProvider'].startswith('/')
+            or selection['selectedProvider'] == '/'
+            or type(selection['selectionCount']) is not int
+            or selection['selectionCount'] != 1
+            or type(selection['reselectionCount']) is not int
+            or selection['reselectionCount'] != 0):
+        raise EvidenceError('EXPECTED_REJECTION_SELECTION')
+
+    failure = rejection['failure']
+    edge_fields = {'producer', 'consumer', 'plannedName'}
+    if (not isinstance(failure, Mapping)
+            or set(failure) != {'boundary', 'edge', 'observedAfterSelection', 'reselected'}
+            or failure['boundary'] not in {'DEPENDENCY_DATA_MISSING', 'PEER_FAILURE'}
+            or not isinstance(failure['edge'], Mapping)
+            or set(failure['edge']) != edge_fields
+            or any(not isinstance(failure['edge'][key], str)
+                   or not failure['edge'][key] for key in edge_fields)
+            or failure['edge']['producer'] == failure['edge']['consumer']
+            or not failure['edge']['plannedName'].startswith('/')
+            or failure['observedAfterSelection'] is not True
+            or failure['reselected'] is not False):
+        raise EvidenceError('EXPECTED_REJECTION_FAILURE_BOUNDARY')
+
+    response = rejection['response']
+    if (not isinstance(response, Mapping)
+            or set(response) != {'present', 'success'}
+            or response['present'] is not False
+            or response['success'] is not False):
+        raise EvidenceError('EXPECTED_REJECTION_RESPONSE')
+
+    cleanup = rejection['cleanup']
+    if (not isinstance(cleanup, Mapping)
+            or set(cleanup) != {'qualification', 'allChildrenReaped', 'forced',
+                                 'remainingChildren', 'deadlineSatisfied'}
+            or cleanup['qualification'] != 'CLEANUP_COMPONENT_ONLY'
+            or cleanup['allChildrenReaped'] is not True
+            or cleanup['forced'] is not False
+            or cleanup['remainingChildren'] != 0
+            or cleanup['deadlineSatisfied'] is not True):
+        raise EvidenceError('EXPECTED_REJECTION_CLEANUP')
+
+    return dict(schema='tiger-yolo-expected-rejection-v1', status='PASS',
+                qualification='EXPECTED_REJECTION_PASS',
+                case='negative-dependency', requestId=request_id,
+                attempt=attempt, candidateDigest=candidate_digest,
+                failureBoundary=failure['boundary'], elapsedMs=rejection['elapsedMs'])
+
+
 def write_worker_receipt(worker, rows):
     """Persist prepared-run ownership after normal-case service/User cleanup.
 

@@ -146,6 +146,20 @@ runId、物理路径、profileId 标签、release/未来 receipt 引用不进入
 角色/请求名。换行为参数会改变摘要。实际 argv、mount、signed material、
 allocation 和 qualification 继续明确列为 unresolved，不宣称已消费全部字段。
 
+### Expected-rejection terminal record
+
+The `negative-dependency` case has a separate terminal contract; it MUST NOT be
+reported through the normal success verdict. `runtime/yolo_result.py::finalize_expected_rejection`
+requires a retained `tiger-yolo-expected-rejection-v1` record bound to the exact
+run, request, attempt, candidate digest, and request deadline. The record must
+show one committed Selection with `reselectionCount=0`, a specific planned edge
+that failed after Selection (`DEPENDENCY_DATA_MISSING` or `PEER_FAILURE`), no
+successful response, and a `CLEANUP_COMPONENT_ONLY` record proving all owned
+children were reaped without forced cleanup. A timeout, missing file, generic
+nonzero exit, or an operator-supplied PASS marker is insufficient. The helper
+returns `EXPECTED_REJECTION_PASS` only for this exact component contract; a
+real MiniNDN/Tiger negative run and the production collector remain required.
+
 `runtime/yolo_submission.py::SubmissionJournal` 只管理共享提交记录，不调用
 sbatch，也不验证模型。所有操作者必须用同一已验证共享目录；本机 flock 测试
 不能证明 Tiger 共享文件系统语义。每 candidate/gate 记录通过有界 2 秒 flock、

@@ -131,6 +131,70 @@ def test_collect_normal_verdict_rejects_incomplete_inputs(references, certified_
             providers_by_role={}, certified_graph=certified_graph)
 
 
+def _expected_rejection():
+    candidate = 'sha256:' + 'a' * 64
+    request = '/run/negative/requests/0'
+    return dict(
+        schema='tiger-yolo-expected-rejection-v1', status='REJECTED',
+        qualification='EXPECTED_REJECTION_COMPONENT_ONLY',
+        case='negative-dependency', runId='run-1', requestId=request,
+        attempt=1, candidateDigest=candidate,
+        selection=dict(status='COMMITTED', selectedProvider='/run/provider/BackboneNeck',
+                       selectionCount=1, reselectionCount=0),
+        failure=dict(boundary='DEPENDENCY_DATA_MISSING',
+                     edge=dict(producer='BackboneNeck', consumer='DetectShard0',
+                               plannedName='/run/data/backbone-to-head0'),
+                     observedAfterSelection=True, reselected=False),
+        response=dict(present=False, success=False), cleanup=dict(
+            qualification='CLEANUP_COMPONENT_ONLY', allChildrenReaped=True,
+            forced=False, remainingChildren=0, deadlineSatisfied=True),
+        elapsedMs=812, deadlineMs=60000)
+
+
+def test_finalize_expected_rejection_requires_selection_failure_and_cleanup():
+    value = result.finalize_expected_rejection(
+        _expected_rejection(),
+        plan={'case': 'negative-dependency', 'runId': 'run-1', 'requests': [
+            {'index': 0, 'warmup': False, 'requestId': '/run/negative/requests/0',
+             'output': '/run/output/0'}]},
+        request_id='/run/negative/requests/0', attempt=1,
+        candidate_digest='sha256:' + 'a' * 64, request_deadline_ms=60000)
+    assert value['qualification'] == 'EXPECTED_REJECTION_PASS'
+    assert value['failureBoundary'] == 'DEPENDENCY_DATA_MISSING'
+
+
+@pytest.mark.parametrize('mutation', [
+    'wrong-case', 'no-selection', 'reselection', 'early-failure',
+    'response', 'forced-cleanup', 'unbounded', 'wrong-candidate',
+])
+def test_finalize_expected_rejection_rejects_false_negative_pass(mutation):
+    value = _expected_rejection()
+    if mutation == 'wrong-case':
+        value['case'] = 'two-node-gpu'
+    elif mutation == 'no-selection':
+        value['selection']['status'] = 'MISSING'
+    elif mutation == 'reselection':
+        value['selection']['reselectionCount'] = 1
+    elif mutation == 'early-failure':
+        value['failure']['observedAfterSelection'] = False
+    elif mutation == 'response':
+        value['response']['present'] = True
+    elif mutation == 'forced-cleanup':
+        value['cleanup']['forced'] = True
+    elif mutation == 'unbounded':
+        value['elapsedMs'] = 60001
+    else:
+        value['candidateDigest'] = 'sha256:' + 'b' * 64
+    with pytest.raises(ValueError):
+        result.finalize_expected_rejection(
+            value,
+            plan={'case': 'negative-dependency', 'runId': 'run-1', 'requests': [
+                {'index': 0, 'warmup': False, 'requestId': '/run/negative/requests/0',
+                 'output': '/run/output/0'}]},
+            request_id='/run/negative/requests/0', attempt=1,
+            candidate_digest='sha256:' + 'a' * 64, request_deadline_ms=60000)
+
+
 @pytest.mark.parametrize('fault', ['none', 'pid', 'request', 'execution-plan', 'old-profile',
     'cpu-assignment', 'profile-symlink', 'changed-log', 'wrong-role', 'cpu-gpu-exposure'])
 def test_retained_execution_uses_receipt_pid_and_scoped_profile(tmp_path, fault):
