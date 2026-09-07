@@ -2,7 +2,7 @@
 
 **Input**: [spec.md](spec.md), [plan.md](plan.md), [profile contract](contracts/experiment-profile.md), [validation matrix](validation-matrix.md)
 **Branch**: `TigerClusterExperiments`
-**Status**: 1/17 tasks complete (T001 inventory only); IN_PROGRESS, no runtime PASS.
+**Status**: 2/17 tasks complete (T001 inventory and T003 focused component acceptance); IN_PROGRESS, no runtime PASS.
 
 任务按行为闭环组织，每项包含必要失败例→实现→聚焦回归→证据，不拆成“写测试/改代码/跑命令”三个机械任务。正式 broad suites/实验必须等 T007；focused red/green 可在实现中执行。所有 Tiger 文件以下用完整仓库相对路径。
 
@@ -77,5 +77,7 @@ T001–T004形成 profile/launcher 实现骨架；可操作 MVP 还要求 T006 �
 合并了“测试→实现→局部验收→证据”机械链；各任务边界来自配置、生命周期、业务接线、判定、生产审计和独立环境验收。
 
 ## Current Checkpoint
+
+2026-09-07追加：T005 partial已将安装版native Provider启动参数接入NodeRuntime，四角色CPU/GPU与启动前拒错共15项新增测试；完整Tiger focused集合 **275 passed in 16.18s**。见[evidence/t005-native-launch.md](evidence/t005-native-launch.md)。下一步仍为真实应用coordinator、Controller/Repo/User准备与安全readiness、逐请求执行，然后T006；T005未完成，不放行T007/Slurm。
 
 2026-09-07：T001/T003完成（2/17），T004 partial新增脚本bundle freeze/verify并接入dispatch真实入口，最新 **260 passed in 17.17s**，见[evidence/t004-harness.md](evidence/t004-harness.md)。下一步转T005实际应用/argv/cache/安全模型传输，再T006，回填T004完整五命令和T002资格。生产bundle缺真实应用/collector/run.sbatch，不制造占位文件；不新增Provider模型旁路挂载。三依赖精确commit已隔离接收，原工作树未改；source封装、签名模型包和本地base仍待完成。T007及全部正式环境门未通过，无构建/上传/Slurm/模型执行。

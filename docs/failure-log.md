@@ -1,5 +1,11 @@
 # Failure Log and Evidence Index
 
+## 2026-09-07 — Spec183 native launcher acceptance scope
+
+- Implemented the previously missing actual native Provider argv path in NodeRuntime rather than copying the old Spec180 renderer's hardcoded identities/private model-root layout. Role keys belong in isolated HOME, generated public configuration in /config, and model assembly cache in each /output.
+- The CPU test extension initially created new role directories without PIB files; existing validation rejected all four cases. Completed the synthetic fixture rather than weakening role isolation. This is a test-fixture error, not a production SIF failure.
+- 275 focused tests pass; subprocess-boundary substitution proves command wiring and rejection/cleanup, not model execution. T005 coordinator/readiness/User flow and all formal gates remain pending. See Spec183 evidence/t005-native-launch.md.
+
 ## 2026-09-07 — Spec183 frozen harness bounded verification and dependency order
 
 - Initial harness verification recursively enumerated unexpected directories before rejecting them, risking needless traversal of injected large model/result trees. A real Python audit-event test reproduced the traversal; verification now scans only the finite registered directories and rejects an unknown subtree immediately. Patching os.scandir alone did not instrument Python3.8 pathlib's cached accessor and was replaced by the actual audit observation.

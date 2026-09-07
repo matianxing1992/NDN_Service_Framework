@@ -81,6 +81,44 @@ class NodeRuntime:
     def start_service(self, role: str, argv: list[str]):
         return self._start_service(role, argv)
 
+    def start_provider(self, role: str, *, identity: str, service: str,
+                       group: str, controller: str, permission_wait_ms: int):
+        """Launch the installed native YOLO handler, not a synthetic handler.
+
+        The coordinator supplies validated policy identities and generates the
+        three public configuration files. Cryptographic/hash validation and
+        permission readiness remain mandatory coordinator gates; existence
+        here is only a final mount/path check. Offer keys stay in the role HOME.
+        """
+        if role not in PROVIDER_ROLES or role not in self.roles:
+            raise ValueError("WORKER_PROVIDER_ROLE")
+        for name in (identity, service, group, controller):
+            if (not isinstance(name, str) or not name.startswith('/') or name == '/'
+                    or any(ord(c) < 33 or ord(c) == 127 for c in name)):
+                raise ValueError("WORKER_PROVIDER_NAME")
+        if type(permission_wait_ms) is not int or not 1 <= permission_wait_ms <= 120000:
+            raise ValueError("WORKER_PERMISSION_BUDGET")
+        files = [self.public / name for name in
+                 ('native-execution-plan.json', 'service-manifest.json', 'trust-schema.conf')]
+        files.append(self.homes[role] / 'offer.pem')
+        for path in files:
+            if any(p.is_symlink() for p in (path, *path.parents)) or not path.is_file():
+                raise ValueError("WORKER_PROVIDER_INPUT:" + path.name)
+        gpu = self.mode != 'local-cpu' and role in MODEL_ROLES
+        argv = [BIN + '/di-native-provider', '--serve',
+                '--plan', '/config/native-execution-plan.json',
+                '--manifest', '/config/service-manifest.json',
+                '--trust-schema', '/config/trust-schema.conf',
+                '--provider', identity, '--service', service,
+                '--group', group, '--controller', controller, '--roles', role,
+                '--workers', '1', '--handler-threads', '1', '--ack-threads', '1',
+                '--artifact-cache-dir', '/output/artifact-cache',
+                '--selection-offer-key-file', '/identities/' + self.homes[role].name + '/offer.pem',
+                '--offer-backend', 'onnxruntime-cuda' if gpu else 'onnxruntime-cpu',
+                '--offer-device', 'cuda:0' if gpu else 'cpu',
+                '--offer-can-provision', '--permission-wait-ms', str(permission_wait_ms)]
+        return self._start_service(role, argv)
+
     def start_forwarder(self, port: int):
         config = nfd_config(port)
         role = "nfd" + str(self.rank)
