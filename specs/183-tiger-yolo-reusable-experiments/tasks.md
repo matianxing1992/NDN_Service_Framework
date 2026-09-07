@@ -4,6 +4,16 @@
 **Branch**: `TigerClusterExperiments`
 **Status**: 2/17 tasks complete (T001 inventory and T003 focused component acceptance); IN_PROGRESS, no runtime PASS.
 
+2026-09-07 actual model-input owner check: signed catalogue verification,
+four-role catalogue registration, graph/initializer hashes and fixed
+640x640/[1,50,6] reference validation passed on the existing local package.
+The external legacy model-manifest summary is not the runtime-generated
+canonical manifest; waiting for a replacement signature on that summary was
+not justified by the YOLO runtime source. Full adapter import instead fails
+on the missing host ndnsf._ndnsf extension. Dispatch manifest ownership and
+native/runtime qualification remain open. See
+[yolo-input-validation.md](evidence/yolo-input-validation.md).
+
 2026-09-07 T006 retained-verdict regression: collect previously returned an
 existing PASS without reopening evidence. Five mutation tests reproduced
 false success for missing/invalid/changed handoff, forged qualification and

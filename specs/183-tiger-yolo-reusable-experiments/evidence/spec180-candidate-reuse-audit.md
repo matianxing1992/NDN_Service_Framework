@@ -3,6 +3,12 @@
 **Date**: 2026-09-07 (America/Chicago)
 **Status**: INPUT-ONLY / NOT A SPEC183 QUALIFIED CANDIDATE
 
+Update: [current input validation](yolo-input-validation.md) supersedes the
+missing-package/signature inference below. The local registered catalogue
+signature and oracle now pass their actual readers. The old external summary
+is distinct from the canonical manifest produced by the runtime publisher.
+Historical observations below are retained; they are not current input blockers.
+
 This note records a read-only inspection of the existing TigerCluster candidate
 at `/project/tma1/ndnsf-di/candidates/spec180-runtime-b6710fd6`. No remote file
 was changed and no job was submitted.
