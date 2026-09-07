@@ -17,8 +17,13 @@ Provider host registration seam，以及 `pythonWrapper` 的单一薄 pybind11 D
 显式 `NDNSF_LIBRARY_DIR` 现在同时要求 Core 和 DI shared library，避免链接回退。
 ONNX protobuf 生成源已纳入 Waf；全量 Waf/native qualification 仍受既有
 NAC-ABE ABI mismatch 阻断，不能据此关闭 T002/T006/T009/T010 或 T012。
-T001/O-004保持OPEN，产品任务仍 **0/17**；下一步清理 Waf 源闭包并对新增
-focused C++ cases 做可运行链接检查，再进行 T015 静态收敛审查。
+新增 installed-consumer Waf 目标（checkpoint `aba90194`），其公共头语法检查
+通过；Spec182 相关 Python 门禁 **29/29 PASS**，设计校验 `errors=[]`。
+Rust tokenizer bridge 的本机 release 构建在 `cargo: command not found`
+（exit127）处未开始，原始边界见 `.codex-tmp/spec182-tokenizer-r1/`，不能
+替代真实 bridge/ABI 验证。T001/O-004保持OPEN，产品任务仍 **0/17**；下一步
+在可用同源 Cargo 工具链上完成 bridge/consumer 检查，并继续 T010/T011 的真实
+request/stream 接线后再做 T015 静态收敛审查。
 
 2026-09-07 Public export inventory / **T001 IN_PROGRESS**：新增[API migration review](contracts/public-api-migration-review.md)和可复现AST snapshot，覆盖api27/sdk76/root174，共277导出，264定义/10assignment/3外部owner。发现正式api中23个名称尚无四份主契约的精确映射；部署catalog、请求handle和provenance不能由现有request概述替代。snapshot逐条UNREVIEWED，动态wildcard/继承/实例字段仍需核对；不是迁移完成。下一步逐行为完成正式api映射及动态层清单，O-004/T001保持OPEN，产品0/17。未修改产品源码、未运行native产品测试。
 
