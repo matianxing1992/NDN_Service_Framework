@@ -4,6 +4,14 @@
 **Branch**: `TigerClusterExperiments`
 **Status**: 2/17 tasks complete (T001 inventory and T003 focused component acceptance); IN_PROGRESS, no runtime PASS.
 
+2026-09-07 T005/T006 独立参考生成组件：新增 prepare_role_reference，检查
+组装模型字节摘要、ORT 版本/后端，以 BASIC/1-thread 创建独立 session 导出
+优化图，不调用 run、不读被测 profile；只返回摘要/节点名，临时明文在私有目录
+清理。真实小型 Add+Identity ONNX/CPU 测试核对独立执行 profile，测试环境为
+onnx 1.17.0 / ORT 1.19.2，不代表目标 SIF/CUDA。相关 118 测试通过（1.38s）。
+尚未接入实际 certified assembler/publication owner，返回值仅 COMPONENT_ONLY，
+不能由调用者提供的 manifest 摘要推断其真实性；T005/T006/T007 保持 open。
+
 2026-09-07 T006 判定修复：实际 Merge 是 native-yolo-postprocess，不能要求
 ORT 图节点。曾复现 local/single/two 三种正常判定全部失败；现四角色执行/
 依赖/数值要求不变，独立 ORT coverage 仅对应 BackboneNeck 和两个 DetectShard。

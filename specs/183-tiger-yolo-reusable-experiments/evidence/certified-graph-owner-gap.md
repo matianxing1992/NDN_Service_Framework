@@ -65,3 +65,30 @@ observation, collection and CLI). The new join tests use synthetic retained
 readers with the real comparator; no real inference was run. The independent
 producer gap above is still open. Its optimized-node reference concerns only
 the three ONNX roles, not the native Merge postprocessor.
+
+## Independent ORT preparation component
+
+`runtime/yolo_graph_reference.py::prepare_role_reference` now derives optimized
+node expectations from digest-checked inline assembled model bytes without
+executing inference or reading observations. It requires an exact ORT version
+and explicit CPU/CUDA backend; BASIC optimization, one intra-op thread and
+CUDA fallback disabling mirror the native runner (source-parity regression).
+Private temporary optimized models are removed, including failure paths;
+external-data tensors and control-flow subgraphs are rejected rather than
+implicitly traversed. Only digests and node names are returned.
+
+A real Add+Identity CPU test under onnx 1.17.0 / ORT 1.19.2 independently
+executed the model after reference preparation and matched the profiler
+vocabulary, including removal of Identity. Ten new tests plus existing
+observation/retained tests: 118 passed in 1.38s. This is a tiny-model component
+test, not the workload, C++/Python ABI parity, SIF or GPU qualification.
+
+The output is deliberately ORT_GRAPH_PREPARATION_COMPONENT_ONLY. Actual
+certified-assembly and publication consumers are still not wired: the caller
+must establish input/manifest provenance, target runtime/backend/hardware
+equivalence and retained reference binding. The missing producer seam is
+partially implemented, not closed. CUDA behavior remains unverified here.
+
+Reference: [ORT graph optimizations](https://onnxruntime.ai/docs/performance/model-optimizations/graph-optimizations.html)
+documents initialization-time export and the need for matching target options
+and hardware. Do not reuse a host CPU reference as a target GPU reference.
