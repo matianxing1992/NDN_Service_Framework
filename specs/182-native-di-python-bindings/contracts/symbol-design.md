@@ -110,7 +110,7 @@ client/provider 不可复制；handle/registration 通过 shared internal record
 | M44 NativeInferenceProvider(provider,adapters) | 保存现有Core/provider和native registry；不触发另一Face | bootstrap/binding；配置未闭合拒绝 |
 | M45 serve(service,config) → NativeServiceRegistration | 验证native runner/角色/能力，调用既有注册/handler/runtime工厂 | CLI/binding；重复service拒绝，不接受Python callable |
 | M46 stop() → void | 停止本host新admission，关闭自有registration，保留sharedCore；在途按guard/deadline清理 | 应用shutdown；不得停另一服务 |
-| M47 NativeServiceRegistration::close() / destructor | 一次关闭自身注册，解除新callback入口，已有callback持有记录至安全释放 | RAII/host.stop；Core真实注销接口由O-004核对，不能发明 |
+| M47 NativeServiceRegistration::close() / destructor | 幂等关闭自身Core scoped registration，立即fence新工作，Face序列清理所属entry；旧callback持有安全owner | RAII/host.stop；新增Core API、代次和存活锁见[provider lifecycle](native-provider-lifecycle-design.md)，当前planned而非既有unregister |
 | M48 NativeInferenceProvider destructor | 调幂等stop，释放本host对象，不抛异常/同步等待Core事件 | RAII；关闭证据来自真实registration/runtime |
 
 M10/M11 覆盖C04/C07/C08；M10/M12覆盖C05/C06；virtual destructor默认释放

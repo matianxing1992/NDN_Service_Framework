@@ -6,6 +6,12 @@
 
 ## Current Checkpoint
 
+2026-09-07 Provider lifetime design / **T001 IN_PROGRESS**：在[lifecycle contract](contracts/native-provider-lifecycle-design.md#provider-lifetime-control)定义受mutex保护的RegistrationControl、close/post/析构互斥、锁外释放capture及post失败后续清理；补齐ACK同步/异步、Selection、普通lease执行fallback、完成发布检查。源码确认pending cleanup可能早于兄弟role结束，因此Selection将代次转入协作生命周期，work fence不依赖pending表。M47同步指向新增Core scoped接口；不是包装不存在的unregister。Provider生命周期设计范围已明确，O-004其余公开类型/调用及整体T001仍未完成，产品0/17。下一步归并设计清单并核对剩余缺项，不重启已闭合算法研究。
+
+### Prior Registration Generation
+
+上述lifetime设计单元strict structure、design validator（186本地链接）及diff whitespace检查PASS。未构建/运行native产品；新增生命周期单测仍NOT_RUN，文档检查不计T009完成。
+
 2026-09-07 Registration generation / **T001 IN_PROGRESS**：源码确认ACK复制旧handler异步执行、Selection重新查当前service handler，单独DI closed包装不能隔离重注册旧请求。已在[lifecycle contract](contracts/native-provider-lifecycle-design.md#registration-generation-decision)定义Core scoped registration、pending代次绑定、ACK完成/Selection/work fence检查及幂等close清理范围；不增加wire或授权owner，不删除legacy API。尚需补齐Provider存活控制与同步fallback位置，T009仍BLOCK、T001/O-004未完成、产品0/17。本轮无native产品构建/测试；下一步沿新增Core范围完成可实施设计，不重新讨论已确定的代次机制。
 
 ### Prior Shared Lease Design

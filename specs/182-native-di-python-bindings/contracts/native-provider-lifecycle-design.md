@@ -54,10 +54,38 @@ router中每个target记录active/draining状态。close立即停止该target的
 
 close首先原子关闭state，使新ACK/Selection和排队执行立即无效，再在Face序列化清理所属entry。清理只能删除仍指向同一state的entry；旧handle不能删除新代。只有该服务名没有其他合法entry时才移除m_serviceNames项；不能修改其他服务或停止共享Face。Core entry和已排队任务各持有必要shared state/handler至安全释放，避免裸DI host指针；callback仅weak引用host注册记录，进入执行时取得shared owner并检查closed。
 
-新增registration API沿Core现有注册线程约束：只能在Face事件线程或event loop启动前调用。DI `serve`执行同样约束，错误线程明确拒绝；不在Face上等待同步post，也不从析构线程直接改map。close可从任意线程触发，但posted清理必须使用Provider存活控制，不能只捕获裸this。Provider析构先使存活控制失效，再排空既有worker；关闭handle在Provider销毁后是无害操作。这一存活控制的具体实现复用/扩展现有shared stopping机制前，T009静态审查须证明无检查后析构竞争；不能只凭一个atomic检查声称无UAF。
+新增registration API沿Core现有注册线程约束：只能在Face事件线程或event loop启动前调用。DI `serve`文档明确相同调用前提；不声称能仅凭thread ID或io_context::stopped自动判断外部是否已启动event loop。不在Face上等待同步post，也不从析构线程直接改map。close可从任意线程触发，posted清理采用下文受锁保护的Provider存活控制，不只捕获裸this。Provider析构先使存活控制失效，再排空既有worker；关闭handle在Provider销毁后是无害操作。
 
 重新serve等待旧代Core entry清理完成，而不是等待所有旧模型执行不可取消调用同步返回；旧执行始终持旧closed fence并在可控边界退出，资源由原owner清理。同名新代仍不得继承旧lease或正在执行的槽。close不承诺立即终止第三方不可取消调用，硬超时/worker收束按现有runtime契约。运行中的其他服务保持自己的state、pending和资源。
 
-以上已确定隔离机制及Core改动范围；具体Provider存活控制、host配置线程判定与全部同步fallback位置仍需T001按源码补齐，故T009继续BLOCK，不能仅凭本节提前实施。
+以下冻结存活控制和同步路径；T009仍依赖T001/O-004其余设计及整体就绪门，本契约不是产品实现证明。
+
+### Provider Lifetime Control
+
+`ServiceProvider.hpp`新增private `RegistrationControl { mutex mutex; ServiceProvider* owner; }`及`shared_ptr<RegistrationControl> m_registrationControl`。正常与LocalMock constructor均初始化owner=this；handle只weak引用control和shared引用自身RegistrationState。state不反向强持有Provider/Face或DI host，不形成cycle。已有m_fetchStopping继续承担原fetch/worker shutdown，不能代替这个posted清理的存活互斥。
+
+`ServiceRegistration::close`先exchange closed=true，重复调用直接返回。若control可锁定，取得control mutex；owner为空则结束，否则在锁保护下向owner的Face io_context post清理闭包，闭包只捕获control/state。Provider析构入口首先取得同一mutex将owner置null并关闭所有owned registration states，随后解锁再执行原m_fetchStopping/pool shutdown顺序。close线程在持锁期间读取Face/post时，Provider析构不能销毁owner；posted闭包取得同一mutex重新检查owner，cleanup期间析构不能越过置null边界，不存在atomic检查后访问失效this的窗口。
+
+清理helper `detachClosedRegistration(state)`只在Face序列、control锁内修改所属entry/serviceNames并把被移除的handler owners移到局部retired容器；解锁后才析构这些owners，避免任意callback capture的析构重入close导致死锁。不得在control锁内执行应用handler、observer、网络发布、等待pool或销毁DI runtime。Provider析构同样先detach控制关系再排空worker，不持control锁join。
+
+post分配失败时close保持closed且不抛异常，记录诊断；下次scoped注册前调用`drainClosedRegistrations`完成已关闭entry清理，Provider析构也释放全部entry。不能因post失败重新开放服务。新serve只在Face序列执行drain和重名检查，旧closed handle清理不会删除新state。所有这些方法限定在ServiceProvider.hpp/.cpp，不为此新增后台线程或全局raw-pointer registry。
+
+### Request and Collaboration State Ownership
+
+pendingKey→RegistrationState与pendingRequests同锁管理，认证Request开始scoped ACK决策前绑定并设置既有有界cleanup deadline；重传沿用已有state，过期/关闭后不重新绑定新代。普通legacy请求保持null语义，但曾scoped的旧pending记录不得因缺失state退入legacy。ACK任务显式捕获state；finish函数检查该捕获和pending state身份，过期结果不复活记录。
+
+Selection通过pending/current注册state匹配后，在既有m_collaborationMutex下建立requestId→RegistrationState的`m_collaborationRegistrationStates`，与m_collaborationServiceNamesByRequest共同生存；所有写入/清理该服务绑定的位置同步维护新map。`makeCollaborationWorkFence`从协作map捕获shared state，current只读其closed与原controller/deadline/binding条件，不依赖pending map。现有源码明确一个role完成会清除pending而兄弟role可仍排队，因此pending cleanup不得使协作代次失效。最后协作清理释放map引用；在途fence持有到任务完成。
+
+| Existing path | Required check / propagation |
+| --- | --- |
+| dynamic Request ACK分支，dispatchAckDecisionAsync与同步ackHandler调用 | 相同state绑定；worker调用前、调用后返回Face时都拒绝closed；空ACK pool不得跳过 |
+| finishAckDecisionOnEventLoop | 发布positive ACK前再次验证捕获state与pending身份，保持原权限/TTL/重放校验 |
+| Selection handler查m_collaborationServices、准备assignment | 先核对pending/current generation，再将state转入协作寿命；异步准备完成回调也核对捕获state |
+| dispatchCollaborationExecutionAsync | 当前handler对应state须等于已绑定协作state；queued worker复用扩展后的workFence，不重新选择新代handler |
+| dispatchRequestExecutionAsync / dispatchRequest inline | scoped普通lease入口也有generation检查；线程池关闭/满队列不能作为fallback绕过理由 |
+| finishRequestExecutionOnEventLoop与collaboration完成路径 | generation关闭后不发布新成功结果；已有失败/status清理照常，不清理其他代或其他服务 |
+| cleanupPendingRequestState / 协作绑定cleanup | 各自只释放所属生命周期引用；保留重放tombstone和兄弟role运行语义 |
+
+T009新增unit selector `Spec182RegistrationCloseBeforeAckFinish`、`Spec182RegistrationOldSelectionAfterReregister`、`Spec182RegistrationInlineDispatchFence`、`Spec182RegistrationSiblingAfterPendingCleanup`、`Spec182RegistrationCloseAfterProviderDestruction`、`Spec182RegistrationCleanupDoesNotEraseSuccessor`；通过实际ServiceProvider注册/worker/Face dispatch验证，不只测独立bool。close-before-post、析构先于posted cleanup、重入capture析构和post异常路径均纳入局部静态审查与定向测试；T016再证明PO-014双服务行为。当前NOT_RUN。
 
 T009新增真实ExecutionLeaseService/Core table单测：两个targets争同一槽只允许一个Prepare；另一target不能Commit/Abort/Renew/Release前者lease；关闭A后B继续Prepare/执行；A只允许清理原lease，关闭不能提前释放执行中槽；重复serve不覆盖固定lease handler。保留原单target constructor全部测试。拟新增选择器`Spec182SharedLeaseCrossServiceConflict`、`Spec182SharedLeaseTargetBinding`、`Spec182ClosingServicePreservesSharedLeaseOwner`；T009绑定到现有execution lease unit注册，T016执行真实双服务PO-014。当前均NOT_RUN。
