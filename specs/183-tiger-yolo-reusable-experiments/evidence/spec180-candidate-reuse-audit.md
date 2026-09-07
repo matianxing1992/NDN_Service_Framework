@@ -46,6 +46,14 @@ dependency revisions. Its SIF hash is recorded only as historical evidence:
 sha256:b6710fd696a7f962f67f67a54278d92a15babb856c4af428a3f04ba54dc83285
 ```
 
+The remote trust registry further references
+`contracts/model-manifest-authority.pub`, but that file was not present in the
+candidate's `models/contracts` directory. Consequently the package's model
+manifest signature cannot be independently checked from the retained
+candidate directory. The candidate also contains private offer keys and a
+request-envelope key; those files must not be copied into the Spec183 public
+input bundle.
+
 Therefore it cannot satisfy T007, T008, T011, or any later TigerCluster gate.
 The old SIF/profile/run record must not be used as a shortcut or mixed with a
 new Spec183 source/runtime identity.
