@@ -1,5 +1,6 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedArtifactStore.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp"
 
 #include <ndn-cxx/util/sha256.hpp>
 
@@ -35,7 +36,7 @@ namespace ndnsf::di {
 
 namespace {
 
-constexpr std::uint64_t MaxHelperMetadataBytes = 65536;
+constexpr std::uint64_t MaxAssemblyMetadataBytes = 65536;
 
 std::uint64_t nowMs()
 {
@@ -49,7 +50,7 @@ sha256Hex(const std::vector<std::uint8_t>& bytes)
   ndn::util::Sha256 digest;
   digest.update(ndn::span<const std::uint8_t>(bytes.data(), bytes.size()));
   auto hex = digest.toString();
-  // ndn-cxx formats this helper's hexadecimal text in uppercase, while the
+  // ndn-cxx formats this digest helper's hexadecimal text in uppercase, while the
   // cross-language assembly contract requires canonical lowercase SHA-256.
   std::transform(hex.begin(), hex.end(), hex.begin(), [] (unsigned char ch) {
     return static_cast<char>(std::tolower(ch));
@@ -190,8 +191,8 @@ jsonContracts(const std::vector<NativeAssemblyTensorContractV3>& contracts)
       const auto& dimension = contract.shape[shapeIndex];
       // NativeExecutionPlanJson stores dimensions as text because a tensor
       // shape may contain symbolic names.  Re-emit canonical integer
-      // dimensions as JSON numbers so the helper reconstructs the exact
-      // Python recipe digest; symbolic dimensions remain JSON strings.
+      // dimensions as JSON numbers so the native recipe digest remains exact;
+      // symbolic dimensions remain JSON strings.
       if (isCanonicalJsonInteger(dimension)) {
         output << dimension;
       }
@@ -328,7 +329,7 @@ assemblyRequestJson(const NativeSelectionProjectionV3& projection,
 }
 
 boost::property_tree::ptree
-readJson(const std::filesystem::path& path, std::uint64_t maxBytes = MaxHelperMetadataBytes)
+readJson(const std::filesystem::path& path, std::uint64_t maxBytes = MaxAssemblyMetadataBytes)
 {
   boost::property_tree::ptree root;
   const auto bytes = readFile(path, maxBytes);
@@ -379,75 +380,6 @@ checkedChildPath(const std::filesystem::path& parent,
   return child;
 }
 
-// A zombie leader pins the process-group identity until descendants have been
-// killed. Never signal a process/group after reaping and releasing that PID.
-class OwnedAssemblyHelper
-{
-public:
-  void start(const NativeCanonicalOnnxAssemblerOptions& options,
-             const std::filesystem::path& request, const std::filesystem::path& outputDir,
-             int stdoutFd, int stderrFd, std::uint64_t fileLimit)
-  {
-    m_pid = ::fork();
-    if (m_pid < 0) throw std::runtime_error("cannot fork native assembly helper");
-    if (m_pid == 0) {
-      const rlimit limit{static_cast<rlim_t>(fileLimit), static_cast<rlim_t>(fileLimit)};
-      if (::setpgid(0, 0) != 0 || ::setrlimit(RLIMIT_FSIZE, &limit) != 0 ||
-          ::dup2(stdoutFd, STDOUT_FILENO) < 0 || ::dup2(stderrFd, STDERR_FILENO) < 0) _exit(126);
-      ::close(stdoutFd);
-      ::close(stderrFd);
-      ::execlp(options.pythonExecutable.c_str(), options.pythonExecutable.c_str(),
-               "-m", options.pythonModule.c_str(), "--input", request.c_str(),
-               "--output-dir", outputDir.c_str(), static_cast<char*>(nullptr));
-      _exit(127);
-    }
-    // The child also establishes its group before exec; EACCES/ESRCH here
-    // simply means that it already advanced or exited.
-    if (::setpgid(m_pid, m_pid) < 0 && errno != EACCES && errno != ESRCH)
-      throw std::runtime_error("cannot isolate native assembly helper");
-  }
-
-  bool poll()
-  {
-    std::lock_guard<std::mutex> lock(m_mutex);
-    if (m_pid <= 0) return true;
-    siginfo_t info{};
-    if (::waitid(P_PID, m_pid, &info, WEXITED | WNOHANG | WNOWAIT) < 0) {
-      if (errno == EINTR) return false;
-      // If another reaper consumed the child, this PID is no longer ours.
-      if (errno == ECHILD) m_pid = -1;
-      throw std::runtime_error("DI_NATIVE_ASSEMBLY_WAIT_FAILED");
-    }
-    if (info.si_pid == 0) return false;
-    ::kill(-m_pid, SIGKILL);
-    reapLocked();
-    return true;
-  }
-
-  void stop()
-  {
-    std::lock_guard<std::mutex> lock(m_mutex);
-    if (m_pid <= 0) return;
-    ::kill(-m_pid, SIGKILL);
-    ::kill(m_pid, SIGKILL);
-    reapLocked();
-  }
-
-  int status() const { return m_status; }
-
-private:
-  void reapLocked()
-  {
-    pid_t reaped;
-    do { reaped = ::waitpid(m_pid, &m_status, 0); } while (reaped < 0 && errno == EINTR);
-    m_pid = -1;
-    if (reaped < 0) throw std::runtime_error("DI_NATIVE_ASSEMBLY_REAP_FAILED");
-  }
-  std::mutex m_mutex;
-  pid_t m_pid = -1;
-  int m_status = 0;
-};
-
 void requireActiveAssembly(const NativeCanonicalOnnxAssemblerOptions& options,
                            std::uint64_t requestDeadlineMs)
 {
@@ -457,81 +389,6 @@ void requireActiveAssembly(const NativeCanonicalOnnxAssemblerOptions& options,
     throw std::runtime_error("DI_NATIVE_ASSEMBLY_CANCELLED");
   if (options.protectedRuntime)
     options.protectedRuntime->withContentKey(nowMs(), [] (const auto&) {});
-}
-
-void
-runPythonHelper(const NativeCanonicalOnnxAssemblerOptions& options,
-                std::uint64_t requestDeadlineMs, std::uint64_t maxAssembledBytes,
-                const std::filesystem::path& request,
-                const std::filesystem::path& outputDir,
-                const std::filesystem::path& stdoutPath,
-                const std::filesystem::path& stderrPath)
-{
-  requireActiveAssembly(options, requestDeadlineMs);
-  const auto deadline = std::chrono::steady_clock::now() +
-    std::chrono::milliseconds(options.helperTimeoutMs);
-  auto child = std::make_shared<OwnedAssemblyHelper>();
-  const auto stdoutFd = ::open(stdoutPath.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
-  const auto stderrFd = ::open(stderrPath.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
-  if (stdoutFd < 0 || stderrFd < 0) {
-    if (stdoutFd >= 0) ::close(stdoutFd);
-    if (stderrFd >= 0) ::close(stderrFd);
-    throw std::runtime_error("cannot open native assembly helper logs");
-  }
-
-  try {
-    child->start(options, request, outputDir, stdoutFd, stderrFd,
-                 std::max(maxAssembledBytes, MaxHelperMetadataBytes));
-  }
-  catch (...) {
-    ::close(stdoutFd);
-    ::close(stderrFd);
-    child->stop();
-    throw;
-  }
-  ::close(stdoutFd);
-  ::close(stderrFd);
-  try {
-    if (options.protectedRuntime) {
-      // Registered after the staging lease: reverse-order draining reaps the
-      // process before removing any plaintext that it can still access.
-      options.protectedRuntime->registerHostPlaintextLease(
-        "helper-" + request.parent_path().filename().string(), [child] { child->stop(); });
-    }
-    while (!child->poll()) {
-      requireActiveAssembly(options, requestDeadlineMs);
-      if (std::chrono::steady_clock::now() >= deadline)
-        throw std::runtime_error("DI_NATIVE_ASSEMBLY_TIMEOUT: helper budget exhausted");
-      if (std::filesystem::file_size(stdoutPath) > MaxHelperMetadataBytes ||
-          std::filesystem::file_size(stderrPath) > MaxHelperMetadataBytes)
-        throw std::runtime_error("DI_NATIVE_ASSEMBLY_FILE_TOO_LARGE: helper logs");
-      std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
-    requireActiveAssembly(options, requestDeadlineMs);
-    // Completion can race the last poll or a scheduler pause. Success must
-    // still satisfy the budget and metadata limits at the return boundary.
-    if (std::chrono::steady_clock::now() >= deadline)
-      throw std::runtime_error("DI_NATIVE_ASSEMBLY_TIMEOUT: helper budget exhausted");
-    if (std::filesystem::file_size(stdoutPath) > MaxHelperMetadataBytes ||
-        std::filesystem::file_size(stderrPath) > MaxHelperMetadataBytes)
-      throw std::runtime_error("DI_NATIVE_ASSEMBLY_FILE_TOO_LARGE: helper logs");
-  }
-  catch (...) {
-    child->stop();
-    throw;
-  }
-  const auto status = child->status();
-  if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
-    std::string detail;
-    try {
-      const auto bytes = readFile(stderrPath, MaxHelperMetadataBytes);
-      detail.assign(reinterpret_cast<const char*>(bytes.data()), bytes.size());
-    }
-    catch (...) {
-      detail = "helper stderr unavailable or exceeds metadata limit";
-    }
-    throw std::runtime_error("native certified ONNX assembly helper failed: " + detail);
-  }
 }
 
 std::filesystem::path
@@ -568,9 +425,9 @@ prepareNativeCanonicalOnnxRole(
   const NativeSelectionProjectionV3& projection,
   const NativeCanonicalOnnxAssemblerOptions& options)
 {
-  if (options.helperTimeoutMs == 0 || options.helperTimeoutMs > 3600000 ||
+  if (options.assemblyTimeoutMs == 0 || options.assemblyTimeoutMs > 3600000 ||
       projection.assembly.maxSourceBytes == 0 || projection.assembly.maxAssembledBytes == 0 ||
-      projection.assembly.maxAssembledBytes > std::numeric_limits<std::uint64_t>::max() - MaxHelperMetadataBytes)
+      projection.assembly.maxAssembledBytes > std::numeric_limits<std::uint64_t>::max() - MaxAssemblyMetadataBytes)
     throw std::runtime_error("DI_NATIVE_ASSEMBLY_LIMITS_INVALID");
   requireActiveAssembly(options, projection.deadlineMs);
   if (options.providerIdentity.empty() || !options.signManifest) {
@@ -619,11 +476,7 @@ prepareNativeCanonicalOnnxRole(
                                        "assembly-" + rootPath.filename().string());
     }
     const auto rootFile = rootPath / "root.json";
-    const auto requestFile = rootPath / "request.json";
     const auto sourceFile = rootPath / "canonical.onnx";
-    const auto resultDir = rootPath / "result";
-    const auto helperStdout = rootPath / "helper.stdout";
-    const auto helperStderr = rootPath / "helper.stderr";
     storeWhileAuthorized([&] {
       writeFileAtomic(rootFile,
                       std::vector<std::uint8_t>(rootPayload->begin(), rootPayload->end()));
@@ -697,7 +550,7 @@ prepareNativeCanonicalOnnxRole(
       : 0;
     const bool anyInitializerMetadata = !initializerName.empty() ||
       !initializerDigest.empty() || expectedInitializerBytes != 0;
-    std::filesystem::path initializerFile;
+    std::optional<std::vector<std::uint8_t>> initializerBytes;
     if (anyInitializerMetadata) {
       if (initializerName.empty() || initializerDigest.empty() ||
           expectedInitializerBytes == 0) {
@@ -714,14 +567,13 @@ prepareNativeCanonicalOnnxRole(
         }
         throw std::runtime_error("DI_CANONICAL_INITIALIZER_UNAVAILABLE");
       }
-      auto initializerBytes = std::vector<std::uint8_t>(
+      auto fetchedInitializerBytes = std::vector<std::uint8_t>(
         initializer->begin(), initializer->end());
-      NativePlaintextBufferGuard initializerGuard{initializerBytes};
-      if (sha256Hex(initializerBytes) != initializerDigest) {
+      NativePlaintextBufferGuard initializerGuard{fetchedInitializerBytes};
+      if (sha256Hex(fetchedInitializerBytes) != initializerDigest) {
         throw std::runtime_error("DI_CANONICAL_INITIALIZER_DIGEST_MISMATCH");
       }
-      initializerFile = rootPath / "model.onnx.data";
-      storeWhileAuthorized([&] { writeFileAtomic(initializerFile, initializerBytes); });
+      initializerBytes = std::move(fetchedInitializerBytes);
     }
 
     const auto modelName = root.get<std::string>("modelName", projection.plan.modelName);
@@ -729,35 +581,59 @@ prepareNativeCanonicalOnnxRole(
     if (modelName.empty() || modelDigest.empty()) {
       throw std::runtime_error("DI_CANONICAL_ROOT_MODEL_IDENTITY_MISSING");
     }
-    const auto requestJson = assemblyRequestJson(
-      projection, sourceFile, initializerFile, modelName, modelDigest, rootProfile,
-      options.providerIdentity);
-    storeWhileAuthorized([&] {
-      writeFileAtomic(requestFile,
-                      std::vector<std::uint8_t>(requestJson.begin(), requestJson.end()));
-      std::filesystem::create_directories(resultDir);
-    });
-    runPythonHelper(options, projection.deadlineMs, projection.assembly.maxAssembledBytes,
-                    requestFile, resultDir, helperStdout, helperStderr);
-    const auto result = readJson(helperStdout);
-    if (result.get<std::string>("schema", "") !=
-          "ndnsf-di-native-assembly-result-v1") {
-      throw std::runtime_error("DI_NATIVE_ASSEMBLY_RESULT_SCHEMA_MISMATCH");
-    }
-    const auto modelPath = checkedChildPath(resultDir,
-      result.get<std::string>("model_path", ""), "model path");
-    const auto manifestPath = checkedChildPath(resultDir,
-      result.get<std::string>("manifest_path", ""), "manifest path");
-    auto modelBytes = readFile(modelPath, projection.assembly.maxAssembledBytes);
+    NativeCanonicalSource canonicalSource;
+    canonicalSource.modelBytes = sourceBytes;
+    canonicalSource.initializerBytes = initializerBytes;
+    NativeAssemblyControl assemblyControl;
+    const auto wallNow = nowMs();
+    const auto remainingRequestMs = projection.deadlineMs == 0 ?
+      options.assemblyTimeoutMs :
+      (projection.deadlineMs > wallNow ? projection.deadlineMs - wallNow : 0);
+    assemblyControl.deadline = std::chrono::steady_clock::now() +
+      std::chrono::milliseconds(std::min<std::uint64_t>(
+        options.assemblyTimeoutMs, remainingRequestMs));
+    assemblyControl.maxSourceBytes = projection.assembly.maxSourceBytes;
+    assemblyControl.maxAssembledBytes = projection.assembly.maxAssembledBytes;
+    assemblyControl.requireActive = [&] {
+      requireActiveAssembly(options, projection.deadlineMs);
+    };
+    auto assembled = assembleNativeCertifiedOnnxModel(
+      canonicalSource, projection.assembly, assemblyControl);
+    auto modelBytes = std::move(assembled.modelBytes);
     NativePlaintextBufferGuard modelGuard{modelBytes};
-    const auto manifestBytes = readFile(manifestPath, MaxHelperMetadataBytes);
-    if (modelBytes.empty() || sha256Hex(modelBytes) !=
-        result.get<std::string>("model_digest", "")) {
+    if (modelBytes.empty() || sha256Hex(modelBytes) != assembled.modelDigest) {
       throw std::runtime_error("DI_NATIVE_ASSEMBLY_MODEL_DIGEST_MISMATCH");
     }
-    if (manifestBytes.empty() || sha256Hex(manifestBytes) !=
-        result.get<std::string>("manifest_digest", "")) {
-      throw std::runtime_error("DI_NATIVE_ASSEMBLY_MANIFEST_DIGEST_MISMATCH");
+    std::ostringstream manifest;
+    manifest << "{\"schema\":\"ndnsf-di-assembled-onnx-v1\",\"modelName\":"
+             << jsonEscape(modelName) << ",\"modelDigest\":"
+             << jsonEscape(modelDigest) << ",\"assembledModelDigest\":"
+             << jsonEscape(assembled.modelDigest) << ",\"modelManifestDigest\":"
+             << jsonEscape(projection.assembly.modelManifestDigest)
+             << ",\"artifactProfileDigest\":" << jsonEscape(rootProfile)
+             << ",\"graphDigest\":" << jsonEscape(projection.assembly.graphDigest)
+             << ",\"role\":" << jsonEscape(projection.assembly.selectedRole)
+             << ",\"roleKind\":" << jsonEscape(projection.assembly.roleKind)
+             << ",\"rank\":" << projection.assembly.rank
+             << ",\"layerBegin\":" << projection.assembly.layerBegin
+             << ",\"layerEnd\":" << projection.assembly.layerEnd
+             << ",\"recipeDigest\":" << jsonEscape(projection.assembly.recipeDigest)
+             << ",\"adapterDescriptorDigest\":"
+             << jsonEscape(projection.assembly.adapterDescriptorDigest)
+             << ",\"assemblerDescriptorDigest\":"
+             << jsonEscape(projection.assembly.assemblerDescriptorDigest)
+             << ",\"backendAbi\":" << jsonEscape(projection.assembly.backendAbi)
+             << ",\"precision\":" << jsonEscape(projection.assembly.precision)
+             << ",\"quantization\":" << jsonEscape(projection.assembly.quantization)
+             << ",\"layout\":" << jsonEscape(projection.assembly.layout)
+             << ",\"padding\":" << jsonEscape(projection.assembly.padding)
+             << ",\"nodeCount\":" << assembled.nodeCount
+             << ",\"onnxChecker\":\"NATIVE_STRUCTURAL_CHECK\",\"onnxRuntimeLoad\":\"PENDING_NATIVE_PROVIDER\",\"signer\":"
+             << jsonEscape(options.providerIdentity) << "}";
+    const auto manifestText = manifest.str();
+    std::vector<std::uint8_t> manifestBytes(manifestText.begin(), manifestText.end());
+    if (manifestBytes.empty() || manifestBytes.size() > MaxAssemblyMetadataBytes) {
+      throw std::runtime_error("DI_NATIVE_ASSEMBLY_MANIFEST_TOO_LARGE");
     }
     requireActiveAssembly(options, projection.deadlineMs);
     const auto signature = options.signManifest(
@@ -766,7 +642,7 @@ prepareNativeCanonicalOnnxRole(
       throw std::runtime_error("DI_PROVIDER_ASSEMBLY_SIGNATURE_EMPTY");
     }
 
-    const auto digest = result.get<std::string>("model_digest", "");
+    const auto digest = assembled.modelDigest;
     if (digest.rfind("sha256:", 0) != 0 || digest.size() != 71) {
       throw std::runtime_error("DI_NATIVE_ASSEMBLY_MODEL_IDENTITY_INVALID");
     }
@@ -779,7 +655,7 @@ prepareNativeCanonicalOnnxRole(
     const auto finalManifest = finalDir / "manifest.json";
     const auto finalSignature = finalDir / "manifest.signature";
     if (protectedRole) {
-      // Source/helper files are already owned by the staging-directory lease.
+      // Source and native assembly buffers are already owned by the staging-directory lease.
       // Ciphertext alone is retained in the final cache; ORT reads a fresh
       // authenticated plaintext allocation under that same private lease.
       const std::string profile = "\"ndnsf-di-provider-workdir-scratch-v1\"";
@@ -792,7 +668,7 @@ prepareNativeCanonicalOnnxRole(
       });
       const auto cipherPath = finalDir / "model.onnx.cipher";
       writeFileAtomic(cipherPath, sealed);
-      const auto stored = readFile(cipherPath, projection.assembly.maxAssembledBytes + MaxHelperMetadataBytes);
+      const auto stored = readFile(cipherPath, projection.assembly.maxAssembledBytes + MaxAssemblyMetadataBytes);
       std::vector<std::uint8_t> plaintext;
       NativePlaintextBufferGuard plaintextGuard{plaintext};
       options.protectedRuntime->withContentKey(nowMs(), [&] (const auto& key) {
@@ -812,7 +688,7 @@ prepareNativeCanonicalOnnxRole(
       writeFileAtomic(finalModel, modelBytes);
     }
     if (std::filesystem::exists(finalManifest) &&
-        readFile(finalManifest, MaxHelperMetadataBytes) != manifestBytes) {
+        readFile(finalManifest, MaxAssemblyMetadataBytes) != manifestBytes) {
       throw std::runtime_error("DI_NATIVE_ASSEMBLY_MANIFEST_CACHE_CONFLICT");
     }
     if (!std::filesystem::exists(finalManifest)) {
@@ -820,7 +696,7 @@ prepareNativeCanonicalOnnxRole(
     }
     const std::vector<std::uint8_t> signatureBytes(signature.begin(), signature.end());
     if (std::filesystem::exists(finalSignature) &&
-        readFile(finalSignature, MaxHelperMetadataBytes) != signatureBytes) {
+        readFile(finalSignature, MaxAssemblyMetadataBytes) != signatureBytes) {
       throw std::runtime_error("DI_NATIVE_ASSEMBLY_SIGNATURE_CACHE_CONFLICT");
     }
     if (!std::filesystem::exists(finalSignature)) {

@@ -6,6 +6,20 @@
 
 ## Current Checkpoint
 
+2026-09-07 Native component and binding implementation slice / **T001 IN_PROGRESS**：
+已加入原生 ONNX recipe assembler（protobuf structural assembly、external
+initializer digest binding、deterministic serialization）、grant issue/publish
+ports、request preparation/admission ports、conversation journal coordinator、
+Provider host registration seam，以及 `pythonWrapper` 的单一薄 pybind11 DI
+入口。新增 C++ focused tests 均完成语法检查；Python binding/build-boundary
+测试 **17/17 PASS**。绑定只映射 native DTO/错误/句柄/策略类型，`NativeServiceUser`
+通过生命周期保持创建 native client，不在 Python 复制 planner 或状态机。
+显式 `NDNSF_LIBRARY_DIR` 现在同时要求 Core 和 DI shared library，避免链接回退。
+ONNX protobuf 生成源已纳入 Waf；全量 Waf/native qualification 仍受既有
+NAC-ABE ABI mismatch 阻断，不能据此关闭 T002/T006/T009/T010 或 T012。
+T001/O-004保持OPEN，产品任务仍 **0/17**；下一步清理 Waf 源闭包并对新增
+focused C++ cases 做可运行链接检查，再进行 T015 静态收敛审查。
+
 2026-09-07 Public export inventory / **T001 IN_PROGRESS**：新增[API migration review](contracts/public-api-migration-review.md)和可复现AST snapshot，覆盖api27/sdk76/root174，共277导出，264定义/10assignment/3外部owner。发现正式api中23个名称尚无四份主契约的精确映射；部署catalog、请求handle和provenance不能由现有request概述替代。snapshot逐条UNREVIEWED，动态wildcard/继承/实例字段仍需核对；不是迁移完成。下一步逐行为完成正式api映射及动态层清单，O-004/T001保持OPEN，产品0/17。未修改产品源码、未运行native产品测试。
 
 ### Prior Provider Lifetime
@@ -62,11 +76,13 @@
 
 2026-09-07 Stream boundary / **T001 IN_PROGRESS**：新增可移植[reference checker](../../tests/fixtures/spec182/dependency-probes/check-stream-boundaries.py)，固定tokenizers0.20.3及既有fixture哈希，7个边界输入实际PASS/exit0。确认完整UTF-8的byte run仍会被后续无效byte改写；合法U+FFFD不能删除，skip special不构成run边界。算法与新版HF原生stream能力比较写入[generation contract](contracts/native-generation-design.md#verified-boundary-and-planned-bytefallback-algorithm)。本轮没有native产品构建/测试。
 
+A7-08 的本轮收口原则：完整decode仅用于完整文本验收，不可替代stream边界；`decodeStable`与`eventSink`恢复边界仍是T007/T011/O-004闭环项。
+
 A7-08仍OPEN：ByteFallback适配选择已明确，但真实Qwen decoder pipeline、完整调用/字段与事件接受后失败的恢复边界尚未关闭。源码确认eventSink接受后仍执行反馈发布与runtime commit，不能承诺靠decoder局部rollback撤回事件。T001未完成、产品0/17；下一步从实际Qwen工件和既有journal/commit路径关闭这些剩余设计，不重跑已固定reference用例。本单元strict structure、design validator（173本地链接）及diff whitespace检查PASS；参考运行命令为`/usr/bin/python3 tests/fixtures/spec182/dependency-probes/check-stream-boundaries.py`。
 
 ### Prior Generation Design
 
-2026-09-07 Generation design / **T001 IN_PROGRESS**：[native generation contract](contracts/native-generation-design.md)补齐GenAI/HF/ORT复用比较与现有sampler的参数、double精度、去重惩罚、截断后归一化及旧会话兼容处置。A7-10 已按复用边界清单闭环：GenAI仅作能力对照，默认不作为默认生产路径；A7-11 CLOSED。A7-09的采样数学仍只定义设计，不等于实现/通过；A7-08的stream状态与完整O-004清单仍OPEN，T001未完成、产品0/17。修订plan旧授权句；不新增生成引擎或产品依赖，不操作实验机器。
+2026-09-07 Generation design / **T001 IN_PROGRESS**：[native generation contract](contracts/native-generation-design.md)补齐GenAI/HF/ORT复用比较与现有sampler的参数、double精度、去重惩罚、截断后归一化及旧会话兼容处置。A7-10 已按复用边界清单闭环：GenAI仅作能力对照，不作为默认生产路径；A7-11 CLOSED。A7-08 的完整decode/stream边界与A7-09 的采样数学均为设计约束，不等于实现/通过；A7-08/A7-09与O-004仍OPEN，T001未完成、产品0/17。修订plan旧授权句；不新增生成引擎或产品依赖，不操作实验机器。
 
 本单元检查 **PASS**：prerequisites、strict structure、design validator和diff whitespace。独立Python reference源SHA256 `3affb6f438a4134bb8e69222d79b3f2ec5a6b256bf0022af636b065627397c11`；将log概率按`struct.pack/unpack('<f')`量化后输入`[-0.5108256340026855,-1.2039728164672852,-2.3025851249694824]`，seed8/top_k3/top_p0.8/temperature1/step0实际选0；重复惩罚例也实际选0，assert通过/exit0。仅运行标准库reference，不构建native或运行产品测试。已有ONNX normalization草稿与failure-log修改保留，不在本单元宣称O-002关闭。
 

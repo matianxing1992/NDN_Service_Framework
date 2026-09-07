@@ -445,8 +445,13 @@ def build(bld):
     bld.objects(
         target='ndnsf-di-adapter-onnx-objects',
         source=bld.path.ant_glob(
-            'NDNSF-DistributedInference/cpp/adapters/onnx/*.cpp'),
-        includes=['.', 'ndn-service-framework'],
+            'NDNSF-DistributedInference/cpp/adapters/onnx/*.cpp') +
+            bld.path.ant_glob(
+                'NDNSF-DistributedInference/cpp/adapters/onnx/onnx/*.cpp') +
+            bld.path.ant_glob(
+                'NDNSF-DistributedInference/cpp/adapters/onnx/onnx/*.cc'),
+        includes=['.', 'ndn-service-framework',
+                  'NDNSF-DistributedInference/cpp/adapters/onnx'],
         use='NDN_CXX BOOST ONNXRUNTIME', cxxflags=['-fPIC'])
     bld.objects(
         target='ndnsf-di-adapter-yolo-objects',
@@ -467,6 +472,10 @@ def build(bld):
     # while the shared library owns no Python runtime.
     di_library_sources = di_core_sources + bld.path.ant_glob(
         'NDNSF-DistributedInference/cpp/adapters/onnx/*.cpp') + \
+        bld.path.ant_glob(
+            'NDNSF-DistributedInference/cpp/adapters/onnx/onnx/*.cpp') + \
+        bld.path.ant_glob(
+            'NDNSF-DistributedInference/cpp/adapters/onnx/onnx/*.cc') + \
         bld.path.ant_glob('NDNSF-DistributedInference/cpp/adapters/yolo/*.cpp') + \
         bld.path.ant_glob('NDNSF-DistributedInference/cpp/adapters/qwen/*.cpp')
     di_library_use = 'ndn-service-framework NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL'
@@ -477,7 +486,8 @@ def build(bld):
                   target='ndnsf-distributed-inference',
                   source=di_library_sources,
                   use=di_library_use,
-                  includes=['.', 'ndn-service-framework'],
+                  includes=['.', 'ndn-service-framework',
+                            'NDNSF-DistributedInference/cpp/adapters/onnx'],
                   export_includes=['.', 'ndn-service-framework',
                                    'NDNSF-DistributedInference/cpp'],
                   install_path='${LIBDIR}',
@@ -489,7 +499,8 @@ def build(bld):
                   if bld.env.enable_shared else 'ndnsf-distributed-inference',
                   source=di_library_sources,
                   use=di_library_use,
-                  includes=['.', 'ndn-service-framework'],
+                  includes=['.', 'ndn-service-framework',
+                            'NDNSF-DistributedInference/cpp/adapters/onnx'],
                   export_includes=['.', 'ndn-service-framework',
                                    'NDNSF-DistributedInference/cpp'],
                   install_path='${LIBDIR}')

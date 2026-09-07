@@ -61,6 +61,7 @@ def test_explicit_ndnsf_library_dir_is_an_exclusive_runtime_closure(
     candidate = (tmp_path / "candidate-lib").resolve()
     candidate.mkdir()
     (candidate / "libndn-service-framework.so").touch()
+    (candidate / "libndnsf-distributed-inference.so").touch()
     captured: dict[str, object] = {}
 
     monkeypatch.setenv("NDNSF_LIBRARY_DIR", str(candidate))

@@ -97,6 +97,8 @@ def build(bld):
         'NDNSF-DistributedInference/cpp/adapters/qwen/NativeQwenPlanner.cpp',
         'NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloPlanner.cpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.cpp',
+        'NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.cpp',
+        'NDNSF-DistributedInference/cpp/adapters/onnx/onnx/onnx-ml.pb.cc',
         'NDNSF-DistributedInference/cpp/ndnsf-di/DistributedExecutionConsistency.cpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.cpp',
         'NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloMergeRunner.cpp',
@@ -215,6 +217,7 @@ def build(bld):
                         bld.path.parent.ant_glob([
                             'NDNSF-DistributedInference/cpp/ndnsf-di/*.cpp',
                             'NDNSF-DistributedInference/cpp/adapters/onnx/*.cpp',
+                            'NDNSF-DistributedInference/cpp/adapters/onnx/onnx/*.cc',
                             'NDNSF-DistributedInference/cpp/adapters/yolo/*.cpp',
                             'NDNSF-DistributedInference/cpp/adapters/qwen/*.cpp',
                         ])),

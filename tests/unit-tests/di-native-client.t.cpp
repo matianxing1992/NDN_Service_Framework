@@ -21,4 +21,13 @@ BOOST_AUTO_TEST_CASE(EmptyHandleFailsClosedAndErrorKeepsStructuredIdentity)
   BOOST_CHECK_EQUAL(error.attempt(), 1U);
 }
 
+BOOST_AUTO_TEST_CASE(ClientRejectsMissingCoreOwner)
+{
+  auto adapters = std::make_shared<NativeAdapterRegistry>();
+  BOOST_CHECK_THROW(
+    NativeInferenceClient(nullptr, adapters), NativeDiError);
+  BOOST_CHECK_THROW(
+    NativeInferenceClient(nullptr, nullptr), NativeDiError);
+}
+
 BOOST_AUTO_TEST_SUITE_END()

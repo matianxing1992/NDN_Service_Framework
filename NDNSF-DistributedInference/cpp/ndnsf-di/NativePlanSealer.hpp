@@ -24,6 +24,8 @@ struct NativeGrantBinding
   std::string grantName;
   std::string grantDigest;
   std::string recipient;
+  std::string wireJson;
+  std::uint64_t expiresAtMs = 0;
 };
 
 struct NativePlacementPlanCore
@@ -37,6 +39,7 @@ struct NativePlacementPlanCore
   NativeStrategyIdentity strategy;
   NativeExecutionPlan executionPlan;
   NativeProviderAssignment assignment;
+  std::map<std::string, std::string> offerDigestByProvider;
   std::map<std::string, std::string> artifactDigestByRole;
   std::string coreDigest;
 
@@ -52,6 +55,12 @@ struct NativeProviderGrantView
   std::string modelDigest;
   std::string graphDigest;
   std::string artifactDigest;
+  std::string requesterIdentity;
+  std::string requestId;
+  std::uint64_t attempt = 0;
+  std::string modelManifestDigest;
+  std::string protectionEpoch;
+  std::uint64_t expiresAtMs = 0;
 };
 
 struct NativeSealedPlan

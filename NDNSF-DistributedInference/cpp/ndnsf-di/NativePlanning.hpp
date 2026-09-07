@@ -201,10 +201,13 @@ class NativeAdapterRegistry
 {
 public:
   void registerAdapter(std::shared_ptr<const NativeModelAdapter> adapter);
+  void freeze();
+  bool frozen() const noexcept { return m_frozen; }
   std::shared_ptr<const NativeModelAdapter> find(const std::string& adapterId) const;
 
 private:
   std::map<std::string, std::shared_ptr<const NativeModelAdapter>> m_adapters;
+  bool m_frozen = false;
 };
 
 std::string nativePlanningDigest(const std::string& canonical);

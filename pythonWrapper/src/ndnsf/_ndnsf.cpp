@@ -7,6 +7,9 @@
 #include "ndn-service-framework/ServiceUser.hpp"
 #include "ndn-service-framework/Stream.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGrantVerifier.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
+#include "di_bindings.hpp"
 
 #include <ndn-cxx/face.hpp>
 #include <ndn-cxx/security/key-chain.hpp>
@@ -4212,6 +4215,22 @@ public:
     stop();
   }
 
+  std::shared_ptr<ndnsf::di::NativeInferenceClient>
+  nativeInferenceClient(std::shared_ptr<const ndnsf::di::NativeAdapterRegistry> adapters)
+  {
+    if (!m_user) {
+      throw std::runtime_error("user is not initialized");
+    }
+    // NativeInferenceClient does not own the Face or ServiceUser.  The
+    // binding's keep_alive policy below keeps this NativeServiceUser alive
+    // for the client lifetime; the aliasing shared_ptr only expresses the
+    // non-owning boundary to the native client.
+    auto user = std::shared_ptr<nsf::ServiceUser>(m_user.get(),
+                                                  [] (nsf::ServiceUser*) {});
+    return std::make_shared<ndnsf::di::NativeInferenceClient>(
+      std::move(user), std::move(adapters));
+  }
+
   void
   cancelStreamRequest(const std::string& requestId)
   {
@@ -6058,6 +6077,7 @@ bindDeploymentControlMessage(py::module_& m, const char* name)
 
 PYBIND11_MODULE(_ndnsf, m)
 {
+  bindDistributedInference(m);
   bindDeploymentControlMessage<nsf::DeploymentIntent>(m, "NativeDeploymentIntent");
   bindDeploymentControlMessage<nsf::ProviderCapabilityOffer>(m, "NativeProviderCapabilityOffer");
   bindDeploymentControlMessage<nsf::DeploymentPlan>(m, "NativeDeploymentPlan");
@@ -7844,6 +7864,8 @@ PYBIND11_MODULE(_ndnsf, m)
          py::arg("adaptive_admission") = false,
          py::arg("serve_certificates") = true,
          py::arg("bootstrap_token") = "")
+	    .def("native_inference_client", &NativeServiceUser::nativeInferenceClient,
+         py::arg("adapters"), py::keep_alive<0, 1>())
 	    .def("open_live_stream", &NativeServiceUser::openLiveStream,
          py::arg("descriptor"), py::arg("on_item"),
          py::arg("start") = "latest",
