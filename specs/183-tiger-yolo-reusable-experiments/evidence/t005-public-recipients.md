@@ -33,6 +33,26 @@ ran. No fake extension or skip was used. Both must pass after T008 native build.
 
 ## Remaining controlling work
 
+### Controller receipt output repair
+
+Preparation-path review found `_publish_spec180_runtime` always wrote its
+receipt beside publication input. Spec183 binds `/config` read-only, so this
+would fail after successful APP publication. The maintained Controller now
+accepts `--spec180-runtime-receipt-file`; Spec183 passes
+`/output/runtime-publication-receipt.json`. The original default remains for
+existing MiniNDN runners. Explicit output rejects input aliasing, symlinks,
+traversal and existing receipt before creating the publication User, and uses
+exclusive creation. It does not make `/config` writable.
+
+A verbatim-function test with fake transport verifies real filesystem writes,
+unchanged read-only input directory and no overwrite; launcher tests verify
+the real argv boundary. **40 passed in 2.39s**; full focused set **338 passed
+in 20.61s**, JUnit `results/spec183-controller-receipt-r1/junit.xml`. Added
+overwrite/input-alias assertions passed in a focused rerun (**1 in 0.11s**).
+This is not authenticated APP publication evidence. The changed installed
+Controller must be included in the next source seal and local SIF. T005 remains
+partial: final prepare/runtime publication/readiness and T006 are not complete.
+
 ### Pinned trust material import
 
 `identities.install_yolo_trust` imports the existing configured registry only

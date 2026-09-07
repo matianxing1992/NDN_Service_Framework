@@ -78,6 +78,8 @@ T001–T004形成 profile/launcher 实现骨架；可操作 MVP 还要求 T006 �
 
 ## Current Checkpoint
 
+2026-09-07准备路径审查发现Controller会向只读/config写publication receipt；已增加显式receipt参数，Spec183改写/output/runtime-publication-receipt.json，输入保持只读且拒绝覆盖。338 focused通过（20.61s），文件行为测试使用真实函数体+模拟传输，不代表签名发布通过。Controller源码变化要求新source seal/SIF。准备主流程及readiness仍待完成，T005 partial。
+
 2026-09-07 pinned trust导入组件完成：保留registry原始bytes和catalogue/model/authority公钥，校验candidate digest、public hash、epoch及authority私钥匹配，只将私钥放User HOME。`authority.pub`是native定位别名，不再要求重写registry的publicKeyPath；此前checkpoint该措辞已被修正。6项真实crypto/加载测试，总337 focused（21.89s），类型收紧后6项再次通过。尚需最终prepare接线、完整模型签名验证、runtime publication/readiness与T006；T005仍partial。
 
 2026-09-07 offer准备组件已实现：四个独立Ed25519签名密钥，实际certificateName/keyLocator、Provider/service、candidate和Trust Schema绑定；复用独占写入和HOME lease。5项新增测试，总331 focused（20.04s）。尚未接最终prepare或真实ACK验证；下一步authority/catalogue输入认证和完整准备/readiness，后续T006。T005仍partial，详见t005-public-recipients.md。

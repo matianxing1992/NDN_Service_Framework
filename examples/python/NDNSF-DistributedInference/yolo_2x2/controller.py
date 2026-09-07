@@ -113,6 +113,8 @@ def main() -> int:
               "signs and reads back every APP record before publishing the "
               "readiness marker."),
     )
+    parser.add_argument('--spec180-runtime-receipt-file', default='',
+                        help='Writable receipt output; defaults beside publication input for legacy runners.')
     args = parser.parse_args()
     if args.deploy_only:
         if not args.deploy_to_repo_manifest:
@@ -164,6 +166,7 @@ def main() -> int:
                 args.config,
                 args.generated_policy_dir,
                 args.spec180_runtime_publication_file,
+                receipt_path=args.spec180_runtime_receipt_file,
             )
             print("SPEC180_RUNTIME_CATALOGUE_PUBLISHED", flush=True)
             # Keep the publishing ServiceUser alive for the whole case: it
@@ -189,7 +192,7 @@ def main() -> int:
 
 
 def _publish_spec180_runtime(config: str, generated_policy_dir: str,
-                             publication_path: str) -> ServiceUser:
+                             publication_path: str, *, receipt_path: str = '') -> ServiceUser:
     """Publish and exact-readback the candidate-bound Spec180 APP batch.
 
     The returned ServiceUser must stay alive for the remainder of the case:
@@ -198,6 +201,12 @@ def _publish_spec180_runtime(config: str, generated_policy_dir: str,
     APP Data from its InMemoryStorage.
     """
     publication_file = Path(publication_path).expanduser().resolve()
+    receipt_output = (Path(receipt_path).expanduser().absolute() if receipt_path else
+                      publication_file.with_name("runtime-publication-receipt.json"))
+    if (receipt_output == publication_file or '..' in receipt_output.parts
+            or any(p.is_symlink() for p in (receipt_output, *receipt_output.parents))
+            or not receipt_output.parent.is_dir() or receipt_path and receipt_output.exists()):
+        raise RuntimeError('unsafe runtime publication receipt path')
     try:
         document = json.loads(publication_file.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -253,9 +262,8 @@ def _publish_spec180_runtime(config: str, generated_policy_dir: str,
         "cataloguePayloadDigest": "sha256:" + hashlib.sha256(catalogue_payload).hexdigest(),
         "artifacts": receipts,
     }
-    receipt_path = publication_file.with_name("runtime-publication-receipt.json")
-    receipt_path.write_text(json.dumps(receipt, sort_keys=True, indent=2) + "\n",
-                            encoding="utf-8")
+    with receipt_output.open('x' if receipt_path else 'w', encoding='utf-8') as stream:
+        stream.write(json.dumps(receipt, sort_keys=True, indent=2) + "\n")
     return user
 
 

@@ -36,7 +36,8 @@ def start_controller(worker):
     return worker.start_service('controller', [
         PYTHON, APP_DIR + '/controller.py', '--config', '/config/case.json',
         '--generated-policy-dir', '/output/generated-policy',
-        '--spec180-runtime-publication-file', '/config/runtime-publication.json'])
+        '--spec180-runtime-publication-file', '/config/runtime-publication.json',
+        '--spec180-runtime-receipt-file', '/output/runtime-publication-receipt.json'])
 
 
 def start_repo(worker, *, identity: str, free_bytes: int):

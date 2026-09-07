@@ -1769,6 +1769,16 @@ part of task context. Format per entry:
 
 ## 2026-09-07 — Spec183 public-recipient seam native import gate
 
+## 2026-09-07 — Controller receipt conflicted with read-only configuration mount
+
+- Symptom: source audit found the maintained publication function writes `runtime-publication-receipt.json` beside its input; Spec183 passes `/config/runtime-publication.json` under a read-only mount. Real deployment would fail after publication.
+- Cause: an old MiniNDN writable-directory assumption crossed into the SIF launch contract; process-argv tests alone did not exercise receipt I/O.
+- Fix: explicit optional receipt-output CLI on the original Controller; Tiger launch passes `/output/runtime-publication-receipt.json`. Explicit paths reject overwrite/input alias/symlink/traversal; legacy default remains for older runners. New source seal/SIF required.
+- Evidence: verbatim function with simulated transport tests actual filesystem receipt writes; 338 focused tests passed. No real signed publication or SIF gate is claimed.
+- Lesson: review output side effects of every invoked application, not only argv/input mounts; immutable config and writable evidence must be separate.
+
+### Public-recipient native import details
+
 - Symptom: two new actual User-seam tests failed during setup, before grant execution.
 - Cause: the maintained User imports the host `ndnsf._ndnsf` extension, which is unavailable in this checkout/runtime; the Python partially-initialized-module text is not evidence of a newly introduced circular dependency.
 - Resolution/status: preserved both tests without skip or fake extension. T008 native build must rerun the full seam suite. Public-key decoding and launch-boundary checks pass in the 311-test focused suite, but do not close this native integration requirement.

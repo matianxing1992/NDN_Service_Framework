@@ -242,6 +242,7 @@ def test_controller_and_repo_use_real_entrypoints_and_role_writable_outputs(tmp_
             assert '--nv' not in argv
             assert not any(':/artifacts:' in a for a in argv)
         assert calls[0][calls[0].index('--spec180-runtime-publication-file') + 1] == '/config/runtime-publication.json'
+        assert calls[0][calls[0].index('--spec180-runtime-receipt-file') + 1] == '/output/runtime-publication-receipt.json'
         assert calls[1][calls[1].index('--provider-id') + 1] == 'repo'
         assert calls[1][calls[1].index('--storage-dir') + 1] == '/output/repo-store'
         assert calls[1][calls[1].index('--free-bytes') + 1] == '1000000'
