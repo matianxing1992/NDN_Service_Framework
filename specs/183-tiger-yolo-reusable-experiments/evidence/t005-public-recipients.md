@@ -33,6 +33,30 @@ ran. No fake extension or skip was used. Both must pass after T008 native build.
 
 ## Remaining controlling work
 
+### Offer preparation component
+
+`identities.issue_yolo_offers` generates one independent Ed25519 offer key in
+each Provider HOME and public keys under `/config/offers`. It generates the
+existing `spec180-provider-offer-trust-v1` policy and the User's existing
+key-ID-to-public-file map. Key IDs are SHA-256 of raw Ed25519 public bytes,
+matching the maintained verifier. Provider/service, certificate name, key
+locator, candidate ID/digest and Trust Schema identity are explicit bindings.
+Certificate names are parsed from each actual certificate input, not guessed.
+
+Existing output/private keys, invalid candidate inputs, missing/foreign
+certificates are rejected before key generation. It reuses the exclusive 0600
+credential writer and HOME leases. It does not authenticate certificates or
+replace ACK Trust Schema validation; the final prepare owner must bind these
+generated public outputs to the run manifest and validate issued identities.
+
+Five new tests exercise actual Ed25519 sign/verify, exact public key IDs and
+certificate fields, plus pre-mutation rejection. Together with recipient tests,
+**9 passed in 1.15s**. Complete focused suite: **331 passed in 20.04s**, JUnit
+`results/spec183-offer-preparation-r1/junit.xml`. These tests still use layout
+PIBs and synthetic certificate Data, not a running SIF or authenticated ACK.
+Final prepare integration, full native User verifier test, policy-authority/
+catalogue material authentication, readiness and T006 remain pending.
+
 ### Certificate binding prerequisite for offer preparation
 
 The maintained ProviderOfferTrustVerifier requires the actual certificate name

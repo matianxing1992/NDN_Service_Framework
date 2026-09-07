@@ -8,6 +8,7 @@ from __future__ import annotations
 import base64
 from contextlib import ExitStack
 import fcntl
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -241,6 +242,19 @@ def certificate_binding(encoded: bytes, identity: str) -> dict[str, str]:
         raise ValueError('IDENTITY_CERTIFICATE_NAME') from exc
 
 
+def _create_credential(path: Path, payload: bytes) -> None:
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, 'wb') as stream:
+        os.fchmod(stream.fileno(), 0o600)
+        stream.write(payload)
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
+def _credential_document(path: Path, value: dict) -> None:
+    _create_credential(path, (json.dumps(value, sort_keys=True) + '\n').encode())
+
+
 def issue_yolo_recipients(namespace: str, homes: dict[str, Path], public: Path,
                           role_identities: dict[str, str]) -> None:
     """Generate fresh per-run grant keys after NDN identity preparation.
@@ -272,17 +286,6 @@ def issue_yolo_recipients(namespace: str, homes: dict[str, Path], public: Path,
     if any(p.exists() or p.is_symlink() for p in targets):
         raise ValueError('YOLO_RECIPIENT_REUSE')
 
-    def create(path, payload):
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-        with os.fdopen(fd, 'wb') as stream:
-            os.fchmod(stream.fileno(), 0o600)
-            stream.write(payload)
-            stream.flush()
-            os.fsync(stream.fileno())
-
-    def document(path, value):
-        create(path, (json.dumps(value, sort_keys=True) + '\n').encode())
-
     with ExitStack() as leases:
         for role in sorted(roles):
             lease = RoleHomeLease(checked[role])
@@ -291,21 +294,85 @@ def issue_yolo_recipients(namespace: str, homes: dict[str, Path], public: Path,
         recipients = {}
         for role in providers:
             key = ed25519.Ed25519PrivateKey.generate()
-            create(checked[role] / 'recipient.pem', key.private_bytes(
+            _create_credential(checked[role] / 'recipient.pem', key.private_bytes(
                 serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
                 serialization.NoEncryption()))
             key_path = public / 'recipients' / (role + '.pub')
-            create(key_path, key.public_key().public_bytes(
+            _create_credential(key_path, key.public_key().public_bytes(
                 serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo))
-            document(checked[role] / 'recipient-map.json', {
+            _credential_document(checked[role] / 'recipient-map.json', {
                 identities[role]: '/identities/' + role + '/recipient.pem'})
             recipients[identities[role]] = {
                 'path': 'recipients/' + role + '.pub', 'sha256': 'sha256:' + digest(key_path)}
         requester = ed25519.Ed25519PrivateKey.generate()
-        create(checked['user'] / 'requester.key', requester.private_bytes(
+        _create_credential(checked['user'] / 'requester.key', requester.private_bytes(
             serialization.Encoding.Raw, serialization.PrivateFormat.Raw,
             serialization.NoEncryption()))
-        document(public / 'recipient-public-keys.json', recipients)
+        _credential_document(public / 'recipient-public-keys.json', recipients)
+
+
+def issue_yolo_offers(namespace: str, homes: dict[str, Path], public: Path,
+                       role_identities: dict[str, str], *, service: str,
+                       candidate_id: str, candidate_digest: str, trust_schema: str) -> None:
+    """Prepare offer keys and policy from actual per-run certificate Data.
+
+    Caller must bind these outputs to the prepared run and validate certificate
+    trust. No root is issued here; offer signatures do not replace ACK Trust
+    Schema validation. Partial outputs are retained and cannot be overwritten.
+    """
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ed25519
+
+    roles = ('BackboneNeck', 'DetectShard0', 'DetectShard1', 'Merge')
+    names = identity_inventory(namespace, role_identities)
+    if any(role not in names or role not in homes for role in roles):
+        raise ValueError('YOLO_OFFER_ROLES')
+    if (not isinstance(candidate_id, str) or not re.fullmatch(r'[A-Za-z0-9_.-]{1,128}', candidate_id)
+            or not isinstance(candidate_digest, str)
+            or not re.fullmatch(r'sha256:[0-9a-f]{64}', candidate_digest)
+            or any(not isinstance(n, str) or not re.fullmatch(
+                r'/(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+', n) for n in (service, trust_schema))):
+        raise ValueError('YOLO_OFFER_POLICY')
+    checked = validate_role_homes({role: homes[role] for role in roles})
+    public = Path(public)
+    if (not public.is_absolute() or '..' in public.parts or not public.is_dir()
+            or any(p.is_symlink() for p in (public, *public.parents))
+            or any(public == h or public in h.parents or h in public.parents for h in checked.values())):
+        raise ValueError('YOLO_OFFER_PUBLIC_ROOT')
+    targets = [public / 'offers', public / 'offer-public-key-map.json', public / 'offer-trust-root.json']
+    targets.extend(checked[role] / 'offer.pem' for role in roles)
+    if any(p.exists() or p.is_symlink() for p in targets):
+        raise ValueError('YOLO_OFFER_REUSE')
+    bindings = {}
+    for role in roles:
+        path = public / (role + '.cert')
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, 'rb') as stream:
+            info = os.fstat(stream.fileno())
+            if not stat.S_ISREG(info.st_mode) or not 0 < info.st_size <= 65536:
+                raise ValueError('YOLO_OFFER_CERTIFICATE')
+            bindings[role] = certificate_binding(stream.read(65537), names[role])
+    with ExitStack() as leases:
+        for role in sorted(roles):
+            lease = RoleHomeLease(checked[role])
+            leases.callback(lease.close)
+        (public / 'offers').mkdir(mode=0o700)
+        entries, public_map = [], {}
+        for role in roles:
+            key = ed25519.Ed25519PrivateKey.generate()
+            raw = key.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+            key_id = 'sha256:' + hashlib.sha256(raw).hexdigest()
+            _create_credential(checked[role] / 'offer.pem', key.private_bytes(
+                serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
+            _create_credential(public / 'offers' / (role + '.pub'), key.public_key().public_bytes(
+                serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo))
+            public_map[key_id] = '/config/offers/' + role + '.pub'
+            entries.append({'provider': names[role], 'service': service,
+                            'signerKeyId': key_id, **bindings[role]})
+        _credential_document(public / 'offer-public-key-map.json', public_map)
+        _credential_document(public / 'offer-trust-root.json', {
+            'schema': 'spec180-provider-offer-trust-v1', 'candidateId': candidate_id,
+            'candidateDigest': candidate_digest, 'trustSchema': trust_schema, 'entries': entries})
 
 
 if __name__ == "__main__":
