@@ -14,10 +14,11 @@
 
 由 `checklists/build_api_migration_manifest.py` 从当前源码 AST 生成的
 `compatibility-manifest.json` 是本审查的机器可读辅助物，不是实现或兼容性证明。
-本次生成绑定 source commit `cc4c6046308c62a42fe6475dc4b33a3c1f858391`，覆盖显式
+本次生成绑定的 source snapshot commit 记录在 manifest 的 `sourceCommit` 字段中，覆盖显式
 api/sdk/root `277` 项、动态 `app_sdk` 导出 `67` 项，共 `344` 项。每项保留 source
-path/line/hash、类方法签名、字段、assignment expression、保守 token caller inventory、
-mapping status 和 verification selector；caller 仍须由 owner 做语义分类。
+path/line/hash、类方法签名、字段、assignment expression、保守 token caller inventory，
+并将 caller token 按 `maintainedCandidates`、`tests`、`generatedCopies`、`other` 分组；
+mapping status 和 verification selector 仍须由 owner 做语义审阅。
 
 formal `api` 的当前静态映射状态为：`PARTIAL_EXISTING_TYPE 8`、`PLANNED_TYPE 1`、
 `UNREVIEWED 18`。已有类型但仍需字段/错误/状态闭环的八项是：

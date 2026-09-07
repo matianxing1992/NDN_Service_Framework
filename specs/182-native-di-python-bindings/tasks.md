@@ -1,6 +1,6 @@
 # Tasks: Native NDNSF-DI with Optional Python Bindings
 
-**Revision**: 9 | **Status**: DRAFT / T001 IN_PROGRESS
+**Revision**: 10 | **Status**: DRAFT / T001 IN_PROGRESS
 **Input**: [spec](spec.md), [code design](contracts/code-design.md),
 [proof](contracts/proof-design.md), [work units](contracts/work-units.md)
 
@@ -111,6 +111,8 @@ T007/O-004。
 2026-09-07 Public export inventory / **T001 IN_PROGRESS**：新增[API migration review](contracts/public-api-migration-review.md)和可复现AST snapshot，覆盖api27/sdk76/root174，共277导出，264定义/10assignment/3外部owner。发现正式api中23个名称尚无四份主契约的精确映射；部署catalog、请求handle和provenance不能由现有request概述替代。snapshot逐条UNREVIEWED，动态wildcard/继承/实例字段仍需核对；不是迁移完成。下一步逐行为完成正式api映射及动态层清单，O-004/T001保持OPEN，产品0/17。未修改产品源码、未运行native产品测试。
 
 2026-09-07 Compatibility manifest source review / **T001 IN_PROGRESS**：`build_api_migration_manifest.py` 已改为保留类方法的参数注解/默认值、顶层函数签名和 assignment expression；`RequestRef` 明确解析为 `InferenceRequestHandle`，`RequestableDeployment` 明确保留其 `Union` 表达式。生成物覆盖显式277、动态67、总计344项；formal api 当前静态状态为 `PARTIAL_EXISTING_TYPE 8`、`PLANNED_TYPE 1`、`UNREVIEWED 18`。这只补足 O-004 的机器可读审阅入口，不等价于字段、错误、状态、caller 或 native 行为闭环；未关闭 O-004/T001，未修改产品源码，未运行 native 产品测试。已完成 `py_compile`、manifest invariant check 和 `git diff --check`；下一步继续逐项补齐 O-004 后才释放 T001-C。
+
+2026-09-07 Compatibility caller classification / **T001 IN_PROGRESS**：manifest 继续保留全部 token mention，并新增 `maintainedCandidates`、`tests`、`generatedCopies`、`other` 分组；`packaging/*/build` 副本不再与维护入口混为一谈。分组仍是静态审阅辅助，不替代 owner 的真实调用语义判断，也不改变 `UNREVIEWED`/O-004 状态。已完成生成物 invariant、`py_compile` 和 `git diff --check`；未修改产品源码，未运行 native 产品测试。
 
 ### Prior Provider Lifetime
 

@@ -246,6 +246,23 @@ def source_callers(symbol: str, definition_path: str | None) -> list[str]:
             if path != definition_path]
 
 
+def classify_callers(callers: list[str]) -> dict[str, list[str]]:
+    """Partition token mentions for review without claiming call semantics."""
+    groups = {"maintainedCandidates": [], "tests": [], "generatedCopies": [], "other": []}
+    for path in callers:
+        if "/build/" in path or path.startswith("build/"):
+            groups["generatedCopies"].append(path)
+        elif (path.startswith("tests/") or "/tests/" in path):
+            groups["tests"].append(path)
+        elif path.startswith((
+                "NDNSF-DistributedInference/ndnsf_distributed_inference/",
+                "pythonWrapper/", "examples/", "Experiments/")):
+            groups["maintainedCandidates"].append(path)
+        else:
+            groups["other"].append(path)
+    return groups
+
+
 NATIVE_TYPES = {
     "InferenceApplication": ("NativeInferenceClient / NativeConversationCoordinator", "T012-B"),
     "InferenceClient": ("NativeInferenceClient", "T012-B"),
@@ -400,6 +417,7 @@ def main() -> None:
         task = mapping.get("ownerTask", task)
         native_owner = mapping.get("nativeOwner", native_owner)
         callers = source_callers(export, path)
+        caller_groups = classify_callers(callers)
         method_names = [method["name"] for method in definition.get("methods", [])]
         field_names = [field["name"] for field in definition.get("annotatedFields", [])]
         manifest_entries.append({
@@ -409,6 +427,7 @@ def main() -> None:
             "export": export,
             "source": definition,
             "callers": callers,
+            "callerInventory": caller_groups,
             "externalUseStatus": "repository_callers_found" if callers else "external_use_unknown",
             "disposition": disp,
             "nativeOwner": native_owner,
