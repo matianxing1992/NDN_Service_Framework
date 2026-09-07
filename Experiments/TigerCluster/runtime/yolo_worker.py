@@ -25,6 +25,93 @@ MODEL_ROLES = frozenset(("BackboneNeck", "DetectShard0", "DetectShard1"))
 PROVIDER_ROLES = MODEL_ROLES | {"Merge"}
 
 
+class StartupBarrier:
+    """Bounded run-bound control records, never a data/activation transport.
+
+    The operator creates an exclusive shared directory before launching ranks.
+    Records are atomically published without overwrite; payloads are evidence
+    references/results already validated by their stage owner, not authority
+    to bypass SIF, model or credential verification.
+    """
+    STAGES = frozenset(('routes-ready', 'network-ready', 'control-ready', 'providers-ready', 'failed'))
+
+    def __init__(self, directory, *, run_id, probe_id, candidate_digest, ranks, rank, seconds, check):
+        self.directory = _directory(Path(directory))
+        if (not isinstance(run_id, str) or not re.fullmatch(r'[a-z][a-z0-9-]{1,47}', run_id)
+                or not isinstance(probe_id, str) or not re.fullmatch(r'[a-f0-9]{32}', probe_id)
+                or not isinstance(candidate_digest, str) or not re.fullmatch(r'sha256:[a-f0-9]{64}', candidate_digest)
+                or not isinstance(ranks, tuple) or ranks not in ((0,), (0, 1))
+                or any(type(r) is not int for r in ranks) or type(rank) is not int or rank not in ranks
+                or isinstance(seconds, bool) or not isinstance(seconds, (int, float))
+                or not math.isfinite(seconds) or seconds <= 0 or not callable(check)):
+            raise ValueError('STARTUP_BARRIER_ARGUMENTS')
+        self.binding = dict(schema='tiger-yolo-startup-v1', runId=run_id,
+                            probeId=probe_id, candidateDigest=candidate_digest)
+        self.ranks, self.rank, self.check = ranks, rank, check
+        self.deadline = time.monotonic() + seconds
+
+    def remaining(self):
+        self.check()
+        for rank in self.ranks:
+            if self._read('failed', rank) is not None:
+                raise RuntimeError('STARTUP_PEER_FAILED:' + str(rank))
+        remaining = self.deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError('STARTUP_DEADLINE')
+        return remaining
+
+    def _read(self, stage, rank):
+        from runtime.yolo_profile import _read_plane
+        _directory(self.directory)
+        if stage not in self.STAGES or rank not in self.ranks:
+            raise ValueError('STARTUP_STAGE_OR_RANK')
+        path = self.directory / (stage + '-' + str(rank) + '.json')
+        if path.is_symlink():
+            raise ValueError('STARTUP_RECORD_SYMLINK')
+        if not path.exists():
+            return None
+        record = _read_plane(path)
+        expected = dict(self.binding, rank=rank, stage=stage)
+        if (set(record) != set(expected) | {'payload'} or type(record.get('rank')) is not int
+                or not isinstance(record['payload'], dict)
+                or any(record.get(k) != v for k, v in expected.items())):
+            raise ValueError('STARTUP_RECORD_BINDING')
+        return record['payload']
+
+    def publish(self, stage, payload):
+        import tempfile
+        _directory(self.directory)
+        if stage not in self.STAGES or not isinstance(payload, dict):
+            raise ValueError('STARTUP_STAGE_OR_PAYLOAD')
+        if stage != 'failed':
+            self.remaining()
+        encoded = json.dumps(dict(self.binding, rank=self.rank, stage=stage, payload=payload),
+                             allow_nan=False, sort_keys=True).encode()
+        if len(encoded) > 64 * 1024:
+            raise ValueError('STARTUP_RECORD_TOO_LARGE')
+        # Readers see the complete fsynced record or no record at all.
+        with tempfile.NamedTemporaryFile(dir=self.directory, prefix='.stage-', delete=False) as tmp:
+            temporary = Path(tmp.name)
+            try:
+                tmp.write(encoded)
+                tmp.flush()
+                os.fsync(tmp.fileno())
+                os.link(temporary, self.directory / (stage + '-' + str(self.rank) + '.json'))
+            finally:
+                temporary.unlink()
+
+    def wait(self, stage, ranks=None):
+        ranks = self.ranks if ranks is None else ranks
+        if not ranks or any(rank not in self.ranks for rank in ranks):
+            raise ValueError('STARTUP_WAIT_RANKS')
+        while True:
+            remaining = self.remaining()
+            values = {rank: self._read(stage, rank) for rank in ranks}
+            if all(value is not None for value in values.values()):
+                return values
+            time.sleep(min(0.1, remaining))
+
+
 def _directory(value, *, may_create=False):
     if not isinstance(value, (str, Path)):
         raise ValueError("WORKER_DIRECTORY")

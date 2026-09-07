@@ -27,7 +27,8 @@ def test_repo_probe_actual_api_contract_and_cleanup(monkeypatch, fault):
     names = {role: '/run/test/' + role for role in ('user', 'controller', 'repo')}
     config = dict(group='/run/test/sync', controller=names['controller'],
                   trust={'anchor_file': '/config/root.cert'}, runtime=dict(
-                      provider_prefix='/run/test', user_identity=names['user'], identities=names))
+                      application_name='/run/test', provider_prefix='/run/test',
+                      user_identity=names['user'], identities=names))
     monkeypatch.setattr(yolo_profile, '_read_plane', lambda path: config)
     events, documents = [], []
     monkeypatch.setattr(identities, '_credential_document', lambda path, value: documents.append(value))

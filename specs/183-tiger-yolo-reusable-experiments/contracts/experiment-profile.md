@@ -160,7 +160,31 @@ sbatch，也不验证模型。所有操作者必须用同一已验证共享目�
 上层先核对同一 job 真正终止和 collector verdict；jobId 不匹配、改写终态、
 未知提交直接 finish 均拒绝。正式提交入口未实现，所以这些组件不构成 T004 完成。
 
-### Frozen harness integrity
+### Application Sync name and startup coordination
+
+The canonical rule is `/<appName>/sync`, where `appName` is the application's
+NDN instance namespace, not a Provider identity or the template's display label.
+The resolved plan records `applicationName`; preparation records the same value
+as `runtime.application_name` and sets `group = applicationName + '/sync'`.
+For isolated Spec183 runs the default application name is the unique run
+namespace. Provider identities and `provider_prefix` remain separate inputs.
+Controller, User, Provider and NFD Sync forwarding must consume this exact
+`group`. Do not infer it from Provider names or copy the legacy CPU baseline's
+hard-coded `/group` route. The future network setup must install the actual
+application Sync prefix; this is not yet an executed forwarding gate.
+
+`StartupBarrier` coordinates only control/readiness records in an exclusively
+created run directory. Each record binds run ID, candidate digest, probe ID,
+stage and rank; atomic no-overwrite publication prevents partial/stale reads.
+All waits share one monotonic startup budget and check owned-process/peer
+failure. `start_workload` requires route-ready records with the exact namespace
+and application Sync prefix, then two directional signed network receipts,
+Controller publication/Repo readiness, and the complete native Provider set.
+It never fabricates route-ready records. Single-node cases skip only the
+two-node network probe. The outer worker still owns NFD setup, final cleanup,
+requests and full result collection. RUNTIME_READY is not inference PASS.
+
+### Frozen harness file contract
 
 `runtime/yolo_bundle.py` 实现小型脚本 bundle 的 freeze/verify。清单格式为
 `schema=tiger-yolo-harness-v1, files={relative-name:{bytes,sha256}}`，明确登记

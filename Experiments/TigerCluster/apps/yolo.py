@@ -60,9 +60,15 @@ def configuration_for_run(template: dict, plan: dict) -> dict:
     service['users'] = [names['user']]
     service['providers'] = [{'identity': names[role], 'roles': [role]}
                             for role in sorted(PROVIDER_ROLES)]
-    config['controller'], config['group'] = names['controller'], namespace + '/sync'
+    # The run namespace names this application instance, not a Provider.
+    # Older plan fixtures omit the explicit alias; prepared runtime always
+    # records it, and downstream routing must consume the resulting group.
+    app_name = plan.get('applicationName', namespace)
+    if app_name != namespace:
+        identity_inventory(namespace, {'application': app_name})
+    config['controller'], config['group'] = names['controller'], app_name + '/sync'
     config['runtime'] = {**config.get('runtime', {}), 'user_identity': names['user'],
-                         'provider_prefix': namespace, 'identities': {
+                         'application_name': app_name, 'provider_prefix': namespace, 'identities': {
                              **names, 'group': config['group']}}
     config['trust'] = {**config.get('trust', {}), 'app_roots': [namespace],
                        'anchor_file': '/config/root.cert'}
@@ -330,7 +336,7 @@ def probe_repo_in_container(probe_id: str, seconds: float):
     runtime = config['runtime']
     names = identity_inventory(runtime['provider_prefix'], runtime['identities'])
     if (config['controller'] != names['controller'] or runtime['user_identity'] != names['user']
-            or config['group'] != runtime['provider_prefix'] + '/sync'
+            or config['group'] != runtime['application_name'] + '/sync'
             or config['trust']['anchor_file'] != '/config/root.cert'):
         raise ValueError('YOLO_REPO_PROBE_IDENTITIES')
     # Imports intentionally remain inside the container-only command.
@@ -440,6 +446,96 @@ def wait_network_ready(worker, *, probe_id: str, seconds: float,
     worker._verify_prepared_boundary()
     worker.check()
     return receipt
+
+
+def start_workload(worker, barrier, *, repo_free_bytes: int, permission_wait_ms: int,
+                   network_probe_seconds: float):
+    """Join prepared/routed workers and start actual Controller/Repo/Providers.
+
+    Caller still owns candidate qualification, NFD/route setup, requests and
+    final teardown. This function does not invent routing-readiness records.
+    Both ranks execute it; returned readiness does not establish inference.
+    """
+    from runtime.yolo_profile import _read_plane
+    from runtime.yolo_worker import PROVIDER_ROLES, StartupBarrier
+    if worker._preparation_binding is None or not isinstance(barrier, StartupBarrier):
+        raise ValueError('YOLO_STARTUP_PREPARATION')
+    if (type(permission_wait_ms) is not int or not 1 <= permission_wait_ms <= 120000
+            or type(repo_free_bytes) is not int or not 0 < repo_free_bytes <= 2**63 - 1
+            or isinstance(network_probe_seconds, bool) or not isinstance(network_probe_seconds, (int, float))
+            or not math.isfinite(network_probe_seconds) or not 0 < network_probe_seconds <= 120):
+        raise ValueError('YOLO_STARTUP_BUDGET')
+    plan, _, candidate = worker._preparation_binding
+    if (barrier.binding['runId'] != plan['runId'] or barrier.binding['candidateDigest'] != candidate
+            or barrier.rank != worker.rank or barrier.ranks != tuple(n['rank'] for n in plan['nodes'])):
+        raise ValueError('YOLO_STARTUP_BINDING')
+    config = _read_plane(worker.public / 'case.json')
+    services = [s for s in config['services'] if not s['name'].startswith('/NDNSF/DistributedRepo/')]
+    if (len(services) != 1 or set(services[0]['roles']) != PROVIDER_ROLES
+            or config['controller'] != plan['identities']['controller']
+            or config['group'] != config['runtime']['application_name'] + '/sync'
+            or config['runtime']['application_name'] != plan['applicationName']):
+        raise ValueError('YOLO_STARTUP_CONFIG')
+    try:
+        peer_failure = (barrier.directory / ('failed-' + str(1 - worker.rank) + '.json')
+                        if len(barrier.ranks) == 2 else None)
+        # A single budget covers all subsequent waits; no fresh timeout per stage.
+        routes = barrier.wait('routes-ready')
+        if any(r != {'namespace': plan['namespace'], 'syncPrefix': config['group']} for r in routes.values()):
+            raise ValueError('YOLO_STARTUP_ROUTES')
+        if len(barrier.ranks) == 2:
+            if barrier.remaining() <= network_probe_seconds + worker.cleanup_seconds:
+                raise TimeoutError('YOLO_STARTUP_NETWORK_BUDGET')
+            receipt = wait_network_ready(worker, probe_id=barrier.binding['probeId'], seconds=network_probe_seconds,
+                                         peer_failure=peer_failure)
+            barrier.publish('network-ready', receipt)
+            paired = barrier.wait('network-ready')
+            roles = ('BackboneNeck', 'DetectShard0')
+            for rank, value in paired.items():
+                peer = plan['identities'][roles[1 - rank]]
+                expected = dict(schema='tiger-yolo-network-readiness-v1',
+                    probeId=barrier.binding['probeId'], producer=plan['identities'][roles[rank]], peer=peer,
+                    receivedName=peer + '/SPEC183-NETWORK/' + barrier.binding['probeId'] + '/data',
+                    status='READY', qualification='NOT_EVALUATED')
+                if value != expected:
+                    raise ValueError('YOLO_STARTUP_NETWORK_PAIR')
+        if worker.rank == 0:
+            start_controller(worker)
+            publication = wait_controller_publication(worker, seconds=barrier.remaining(), peer_failure=peer_failure)
+            start_repo(worker, identity=plan['identities']['repo'], free_bytes=repo_free_bytes)
+            repo_budget = min(300, barrier.remaining() - worker.cleanup_seconds)
+            if repo_budget <= 0:
+                raise TimeoutError('YOLO_STARTUP_REPO_BUDGET')
+            repo = wait_repo_ready(worker, seconds=repo_budget, peer_failure=peer_failure)
+            barrier.publish('control-ready', {'publication': publication, 'repo': repo})
+        control = barrier.wait('control-ready', ranks=(0,))[0]
+        expected_publication = _read_plane(worker.public / 'runtime-publication.json')
+        from runtime.yolo_result import validate_runtime_publication_receipt
+        validate_runtime_publication_receipt(expected_publication, control['publication'])
+        if (control['repo'].get('status') != 'READY'
+                or control['repo'].get('repo') != plan['identities']['repo']):
+            raise ValueError('YOLO_STARTUP_REPO')
+        own_roles = sorted(PROVIDER_ROLES.intersection(worker.roles))
+        for role in own_roles:
+            barrier.remaining()
+            worker.start_provider(role, identity=plan['identities'][role], service=services[0]['name'],
+                group=config['group'], controller=config['controller'], permission_wait_ms=permission_wait_ms)
+        for role in own_roles:
+            wait_provider_ready(worker, role, seconds=barrier.remaining(), peer_failure=peer_failure)
+        barrier.publish('providers-ready', {r: plan['identities'][r] for r in own_roles})
+        ready = barrier.wait('providers-ready')
+        for node in plan['nodes']:
+            expected = {r: plan['identities'][r] for r in node['roles'] if r in PROVIDER_ROLES}
+            if ready[node['rank']] != expected:
+                raise ValueError('YOLO_STARTUP_PROVIDER_SET')
+        return {'status': 'RUNTIME_READY', 'qualification': 'NOT_EVALUATED',
+                'control': control, 'providers': ready}
+    except BaseException as exc:
+        try:
+            barrier.publish('failed', {'errorType': type(exc).__name__})
+        except Exception as publication_error:
+            raise exc from publication_error  # Preserve both errors; outer owner tears down.
+        raise
 
 
 def run_requests(worker, plan: dict, *, package: Path, catalog_data_name: str,

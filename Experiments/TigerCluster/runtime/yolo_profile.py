@@ -365,7 +365,7 @@ def resolve_run_plan(path: Path, *, stage: str, case: str, run_id: str, output: 
             "qualification": "NOT_EVALUATED", "runId": run_id, "case": case,
             "caseBehaviorDigest": "sha256:" + hashlib.sha256(basis).hexdigest(),
             "documentDigest": loaded["documentDigest"], "effectiveBehavior": case_behavior,
-            "namespace": namespace, "identities": identities, "nodes": nodes,
+            "namespace": namespace, "applicationName": namespace, "identities": identities, "nodes": nodes,
             "requests": requests, "output": str(output / run_id), "allocation": None,
             "unresolved": ["APPLICATION_ARGV", "IMMUTABLE_BINDINGS", "SIGNED_ROLE_MATERIAL",
                            "ACTUAL_ALLOCATION", "QUALIFIED_CANDIDATE"]}

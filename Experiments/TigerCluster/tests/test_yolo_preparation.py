@@ -34,9 +34,20 @@ def test_run_projection_preserves_model_graph_and_limits_capabilities():
         '/new/run/' + r: [r] for r in template['services'][0]['roles']}
     assert output['controller'] == '/new/run/controller'
     assert output['runtime']['provider_prefix'] == '/new/run'
+    assert output['runtime']['application_name'] == '/new/run'
+    assert output['group'] == '/new/run/sync'
     assert output['trust']['anchor_file'] == '/config/root.cert'
     assert output['trust']['app_roots'] == ['/new/run']
     assert 'authorization_summary' not in output
+
+
+def test_sync_prefix_uses_application_name_not_provider_prefix():
+    template, plan = inputs()
+    plan['applicationName'] = '/new/run/yolo-app'
+    output = configuration_for_run(template, plan)
+    assert output['group'] == '/new/run/yolo-app/sync'
+    assert output['runtime']['provider_prefix'] == '/new/run'
+    assert output['runtime']['application_name'] == '/new/run/yolo-app'
 
 
 @pytest.mark.parametrize('fault', ['missing-role', 'foreign-identity', 'local-model', 'extra-service'])
