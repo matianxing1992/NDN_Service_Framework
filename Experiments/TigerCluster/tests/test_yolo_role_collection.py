@@ -43,6 +43,7 @@ def test_real_launcher_pid_and_output_join(tmp_path, mode, role):
     row = observation()
     row.update(roles=[role], profileRequestId='/app/request/1',
                providerProfilePath='/output/ort/profile.json')
+    row['artifactDigests'] = {role: 'sha256:'+'b'*64}
     if role == 'Merge':
         row.update(runnerKind='native-yolo-postprocess', realCompute='false',
                    nodeProviderAssignments='', gpuUuid='', cudaVisibleDevices='')

@@ -962,6 +962,16 @@ def validate_native_observation(payload, *, provider, role, request_id, attempt,
         realCompute=runner_kind != 'native-yolo-postprocess')
     if any(row.get(k) != v for k,v in expected.items()):
         raise EvidenceError('NATIVE_EXECUTION_BINDING_OR_STATUS')
+    # These fields come from the native Selection assembly. Require their
+    # presence even in component evidence; this is not an independent match
+    # against the certified package (modelDigest can be a legacy plan digest).
+    artifacts = row.get('artifactDigests')
+    if (not isinstance(row.get('modelDigest'), str)
+            or re.fullmatch(r'sha256:[0-9a-f]{64}', row['modelDigest']) is None
+            or not isinstance(artifacts, dict) or set(artifacts) != {role}
+            or not isinstance(artifacts[role], str)
+            or re.fullmatch(r'sha256:[0-9a-f]{64}', artifacts[role]) is None):
+        raise EvidenceError('NATIVE_MODEL_IDENTITY')
     assignments = row['nodeProviderAssignments']
     if runner_kind == 'native-yolo-postprocess':
         if assignments or row.get('gpuUuid') != '' or row.get('cudaVisibleDevices') != '':

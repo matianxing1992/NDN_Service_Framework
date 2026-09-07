@@ -10,6 +10,7 @@ from runtime import yolo_result as result
 
 def observation():
     return dict(schema='ndnsf-di-execution-evidence-v1', providerName='/app/worker-a',
+        modelDigest='sha256:'+'a'*64, artifactDigests={'BackboneNeck': 'sha256:'+'b'*64},
         roles=['BackboneNeck'], requestId='/app/request/1', planDigest='sha256:'+'1'*64,
         processId='123', attemptEpoch='1', evidenceEpoch='1', createdAtMs='100',
         profileAttemptEpoch='1', realCompute='true', cpuFallbackUsed='false',
@@ -79,6 +80,7 @@ def test_cpu_and_merge_execution_component(kind):
         role = 'BackboneNeck'
     else:
         role = 'Merge'
+        row['artifactDigests'] = {role: 'sha256:'+'b'*64}
         row.update(roles=[role], realCompute='false', nodeProviderAssignments='')
     value = result.validate_native_observation(json.dumps(row), provider='/app/worker-a',
         role=role, request_id='/app/request/1', attempt=1,
@@ -95,6 +97,20 @@ def test_failed_or_unrelated_execution_cannot_pass(key, value):
     row = observation()
     row[key] = value
     with pytest.raises(result.EvidenceError):
+        validate(row)
+
+
+@pytest.mark.parametrize('key,value', [
+    ('modelDigest', None), ('modelDigest', ''), ('modelDigest', 'sha256:bad'),
+    ('artifactDigests', None), ('artifactDigests', ''), ('artifactDigests', {}),
+    ('artifactDigests', {'OtherRole': 'sha256:'+'b'*64}),
+    ('artifactDigests', {'BackboneNeck': ''}),
+    ('artifactDigests', {'BackboneNeck': 'sha256:'+'b'*64, 'OtherRole': 'sha256:'+'c'*64}),
+])
+def test_native_model_identity_is_required(key, value):
+    row = observation()
+    row[key] = value
+    with pytest.raises(result.EvidenceError, match='NATIVE_MODEL_IDENTITY'):
         validate(row)
 
 

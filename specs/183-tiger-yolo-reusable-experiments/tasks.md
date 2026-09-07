@@ -78,6 +78,22 @@ T001–T004形成 profile/launcher 实现骨架；可操作 MVP 还要求 T006 �
 
 ## Current Checkpoint
 
+T006 native identity checkpoint: the actual native reader now rejects missing,
+malformed or wrong-role `modelDigest`/`artifactDigests`; nine negative mutations
+first passed incorrectly and now reject. This is structural evidence, not a
+certified-package comparison. Source audit found ORT_ENABLE_BASIC and
+`session.disable_cpu_ep_fallback=1` unless explicitly allowed, but these settings
+still need real runtime qualification. `bindNativeRunnerPreparationContext`
+falls back from absent modelManifestDigest to planDigest: do not equate a valid
+SHA-shaped modelDigest with independent model identity. Raw ONNX node counts
+must not be compared directly with optimized ORT profile event counts.
+T006 remains open for independently bound model/graph coverage and final operator
+wiring; no build/SIF/Tiger inference gate is closed by these checks.
+Focused checkpoint: **823 passed in 54.82s** across TigerCluster component tests
+and the six registered Python backend/public-recipient/numerical/identity files;
+JUnit: `Experiments/TigerCluster/results/t006-native-model-identity-r1/junit.xml`.
+Synthetic observation mutations are not actual native model execution evidence.
+
 2026-09-07 retained allocation/GPU join: collect_retained_request now forwards
 the external journal/profile allocation expectations to the dependency
 collector. GPU node entries require trusted allocationDigest/gpuProbeDigest,

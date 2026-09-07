@@ -1958,3 +1958,19 @@ code path and focused regression, not the full runtime qualification.
   both observed empty forms and verify capture stops before downstream work.
 - Lesson: validate scheduler payload semantics and expected identity, not only
   process exit status. Positive source-shaped fixtures are not live acceptance.
+
+# 2026-09-07 Spec183 native collector accepted absent model identity
+
+- Symptom: nine malformed/missing/wrong-role model and artifact identity
+  mutations were accepted by validate_native_observation (red regression).
+- Cause: the collector checked execution/request/backend fields but omitted
+  fields emitted by executionEvidenceFromRunnerSpec. Its shared synthetic
+  observation fixture likewise omitted modelDigest/artifactDigests.
+- Fix: require canonical SHA256 model and role artifact fields in the real
+  native observation reader, with exact single-role artifact ownership; update
+  the fixture including the native Merge role.
+- Boundary: shape validation is not certified-model binding. Current native
+  preparation can use planDigest when modelManifestDigest is absent. T006 must
+  independently bind signed model/assembly identities before final PASS.
+- Lesson: fixtures must preserve actual required native fields; matching two
+  self-reported logs does not independently prove complete graph execution.
