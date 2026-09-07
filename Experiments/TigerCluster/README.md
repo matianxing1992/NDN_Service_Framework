@@ -2,6 +2,14 @@
 
 Tiger分布式推理、SIF构建及Slurm配置的统一入口。当前生产/合并审查不因目录迁移暂停；本目录不声称现有候选满足当前源码资格。
 
+当前实验机计划为 [Spec183](../../specs/183-tiger-yolo-reusable-experiments/spec.md)：
+在 `TigerClusterExperiments` 上固定可复用 YOLO profile/launcher，完成本地验证、
+单节点 GPU、两节点分布式推理及独立 allocation 复跑。
+详见 [tasks](../../specs/183-tiger-yolo-reusable-experiments/tasks.md)。
+状态为 PLANNED / NOT_RUN；`jobs/yolo/submit.py` 和 `profiles/yolo-two-node.json`
+是计划交付文件，尚不能运行。新 Tiger 专用脚本、配置、schema、测试工具和操作说明
+都放本目录，复用现有 runtime；通用 Core/DI/Repo 源码仍归原 owner。
+
 ## Layout And Ownership
 
 实验机当前工作分支为 `TigerClusterExperiments`，从 `Experimental` 的交付提交

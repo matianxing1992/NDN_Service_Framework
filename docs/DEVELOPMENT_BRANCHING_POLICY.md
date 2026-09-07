@@ -21,6 +21,11 @@ work on `UAV-Experimental` and does not authorize starting Spec182. Build
 parallelism must not exceed `-j2`. Receiving source does not establish a test
 PASS or SIF qualification; follow the existing handoff lock and validation gates.
 
+Spec183 owns the reusable YOLO experiment profile and launcher. All Tiger-only
+scripts, configurations, schemas, experiment tests, and operating instructions
+must live under `Experiments/TigerCluster`; generic Core/DI/Repo implementation
+and tests remain with their existing owners. Planning artifacts stay in `specs/`.
+
 The required lifecycle is:
 
 1. Create a temporary branch for a Spec or bounded task when isolation is
@@ -57,6 +62,10 @@ been left only in an untracked worktree.
 改动再合回 `Experimental`。此规定替代旧 UAV 分支要求，不启动 Spec182。
 编译并行度最多 `-j2`；接收源码不代表测试或 SIF 验收通过，仍须遵守交付锁文件
 及现有验证门槛。
+
+Spec183 负责可复用 YOLO 实验配置与启动器。所有 Tiger 专用脚本、配置、schema、
+实验测试工具及操作说明统一位于 `Experiments/TigerCluster`；通用 Core/DI/Repo
+实现和测试保留原 owner，规格规划文档仍在 `specs/`。
 
 规定的生命周期是：
 
