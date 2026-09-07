@@ -1889,3 +1889,42 @@ part of task context. Format per entry:
   at a module-level boundary (blank-line pair); after any structural waf
   edit, re-run configure before building. Assert `std::vector` equality in
   boost 1.71 with `EQUAL_COLLECTIONS`, never `REQUIRE_EQUAL`.
+
+## 2026-09-07 — Spec182 T007-B: stale Rust staticlib silently kept old ABI; python codec vs Rust-std surrogate prefix divergence
+- **Area**: spec182 T007-B stable-prefix decode; `wscript`
+  `_ensure_tokenizer_bridge`, `tests/unit-tests/distributed-inference-tokenizer.t.cpp`.
+- **Symptom**: after rewriting `tokenizer-bridge/src/lib.rs`, the focused
+  `Spec182TokenizerStable/*` run still failed with the *old* behavior
+  (ByteLevel prefix `[a != a�]`, reject-Fuse stable calls not throwing).
+  A reconfigure rebuilt the archive (`13:03:24`) but `./waf build` finished
+  in 17 s having relinked nothing: both `libndnsf-distributed-inference.so`
+  (12:59) and `unit-tests` (13:01) predated the new archive, and a second
+  failure signature then appeared (surrogate cut `[�� != ]`).
+- **Root cause**: (1) the archive lives *outside* the build dir
+  (`.codex-tmp/spec182-t001-dependencies/tokenizer-bridge-target/...`);
+  waf links it by path and does not signature-track external STLIB files, so
+  a changed archive alone never dirties the link task — and waf is
+  content-hash based, so `touch`ing a source does not help either.
+  (2) Authoring-proxy divergence: the frozen ByteLevel row expectations came
+  from python's incremental UTF-8 codec (`errors=replace`), which *defers*
+  a 3-byte-lead decision until its third byte; Rust std rejects `ED A0`
+  eagerly (second byte must be 80..9F), so the surrogate row's mid-prefix
+  cuts diverged (`""` vs `"��"`).
+- **Fix**: (1) delete `build-nac182/libndnsf-distributed-inference.so` and
+  `build-nac182/unit-tests`, then rebuild — outputs missing forces the link
+  task to rerun against the new archive (verify with
+  `ls --time-style` after every T007-class lib.rs change). (2) rewrote
+  `author-stable-vectors.py`'s per-cut model as an explicit mirror of
+  `std::str::from_utf8` error attribution (tight E0/ED/F0/F4 second-byte
+  ranges, continuation consumption, trailing-incomplete `None`); HF decode
+  stays the independent cross-check at full length for every row.
+- **Ref**: ABI probes retained at `/tmp/t007b-abi-probe/` (probe.cpp,
+  probe2.cpp) and `/tmp/t007b-surrogate-check/` (std-semantics micro
+  checks); frozen vectors regenerated, whole-file sha256
+  `a80597b3c96833a61a4dd22606b014715f62e2111e0bd7b3325cc97665bc6254`;
+  fixture tokenizer shas unchanged.
+- **Lesson**: after any `tokenizer-bridge/src/*.rs` change, delete the
+  `build-nac182` `.so`/`unit-tests` link products (or run a second
+  configure + build and verify mtimes) before trusting a test run; frozen
+  per-prefix expectations for ByteLevel must be authored with Rust-std
+  utf-8 semantics, not python codec semantics.

@@ -45,7 +45,7 @@ struct NativeProviderHandlerConfig
   using GenerationTextDecoderFactory = std::function<
     std::function<std::string(const std::vector<std::int64_t>&)>(
       const std::string& tokenizerDigest)>;
-  using GenerationTextDecodersFactory = std::function<
+  using GenerationDecodersFactory = std::function<
     NativeGenerationTextDecoders(const std::string& tokenizerDigest)>;
 
   NativeExecutionPlan plan;
@@ -93,7 +93,7 @@ struct NativeProviderHandlerConfig
   std::function<std::string(const std::vector<std::int64_t>&)>
     generationTextDecoder;
   GenerationTextDecoderFactory generationTextDecoderFactory;
-  GenerationTextDecodersFactory generationTextDecodersFactory;
+  GenerationDecodersFactory generationDecodersFactory;
   bool requireGenerationTextOutput = false;
   std::vector<std::int64_t> generationCommittedPrefixTokenIds;
   // User-generated request scope shared only with the selected Provider roles
