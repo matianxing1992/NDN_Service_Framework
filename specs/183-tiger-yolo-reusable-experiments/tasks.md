@@ -78,6 +78,16 @@ T001–T004形成 profile/launcher 实现骨架；可操作 MVP 还要求 T006 �
 
 ## Current Checkpoint
 
+2026-09-07 retained device collection: the retained request -> dependency ->
+role path now invokes validate_device_binding. GPU node entries require an
+externally supplied gpuBinding {uuid, visible}; model roles receive their
+owner node's binding, while Merge/CPU require no GPU binding and empty device
+claims. A red real-reader fixture demonstrated CPU visibility was previously
+accepted; corrected and covered alongside missing/mismatched CUDA bindings.
+These are source-shaped records, not executed GPU evidence. The actual
+allocation receipt producer and trusted staging are STILL PENDING, as are
+live-Worker device join, certified graph and final operator. No task closed.
+
 2026-09-07 device identity component: validate_device_binding compares native
 CUDA UUID/list, CUDA_VISIBLE_DEVICES and runtime device ordinal against
 independently resolved allocation/launch expectations; requires the native

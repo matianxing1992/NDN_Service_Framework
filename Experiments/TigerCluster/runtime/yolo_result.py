@@ -459,8 +459,10 @@ def collect_retained_dependencies(nodes, public_path, *, plan, candidate_digest,
                                    providers_by_role, request_id, attempt, execution_plan_digest):
     """Cross-process four-role join; node digests come from trusted staging.
 
-    Each node entry has root, receiptDigest and preparationDigest. Does not
-    establish physical allocation/GPU or complete experiment qualification.
+    Each node entry has root, receiptDigest and preparationDigest. GPU cases
+    additionally require gpuBinding from independent allocation preflight and
+    the actual launch selector. Never derive it from the collected native log.
+    This join checks device agreement, not allocation provenance or full PASS.
     """
     from runtime.yolo_worker import assigned_roles
     expected = {'BackboneNeck', 'DetectShard0', 'DetectShard1', 'Merge'}
@@ -471,14 +473,18 @@ def collect_retained_dependencies(nodes, public_path, *, plan, candidate_digest,
         raise EvidenceError('RETAINED_NODE_COVERAGE')
     roles, logs = {}, {}
     for rank, node in sorted(nodes.items()):
-        if not isinstance(node, dict) or set(node) != {'root', 'receiptDigest', 'preparationDigest'}:
+        fields = {'root', 'receiptDigest', 'preparationDigest'}
+        if plan['case'] != 'local-cpu':
+            fields.add('gpuBinding')
+        if not isinstance(node, dict) or set(node) != fields:
             raise EvidenceError('RETAINED_NODE_ENTRY')
         for role in sorted(set(assigned_roles(plan['case'], rank)) & expected):
             roles[role] = collect_retained_role_execution(node['root'],
                 receipt_digest=node['receiptDigest'], plan=plan,
                 preparation_digest=node['preparationDigest'], candidate_digest=candidate_digest,
                 rank=rank, role=role, provider=providers_by_role[role], request_id=request_id,
-                attempt=attempt, execution_plan_digest=execution_plan_digest)
+                attempt=attempt, execution_plan_digest=execution_plan_digest,
+                gpu_binding=node.get('gpuBinding') if role != 'Merge' else None)
             logs[role] = roles[role]['logPath']
     dependencies = collect_dependency_result(public_path, logs, request_id=request_id,
         attempt=attempt, plan_digest=execution_plan_digest, providers_by_role=providers_by_role)
@@ -489,12 +495,15 @@ def collect_retained_dependencies(nodes, public_path, *, plan, candidate_digest,
 
 def collect_retained_role_execution(root, *, receipt_digest, plan, preparation_digest,
                                     candidate_digest, rank, role, provider,
-                                    request_id, attempt, execution_plan_digest):
+                                    request_id, attempt, execution_plan_digest,
+                                    gpu_binding=None):
     """Offline role execution check anchored to a trusted node receipt identity.
 
     No reconstructed Worker is used. Provider and execution-plan bindings come
     from verified runtime Selection, independently of the node configuration.
-    Full allocation, graph, cleanup and result qualification is still required.
+    gpu_binding is the independently resolved allocation UUID and actual launch
+    selector, never copied from the Provider observation. Its provenance is
+    established by the caller. Graph and full result qualification remain.
     """
     from pathlib import Path
     node = read_node_log_receipt(root, receipt_digest=receipt_digest, plan=plan,
@@ -510,11 +519,20 @@ def collect_retained_role_execution(root, *, receipt_digest, plan, preparation_d
         pid=launch['pid'], runner_kind=runner, launch_nonce=launch['launchNonce'])
     if native['logDigest'] != launch['logDigest']:
         raise EvidenceError('RETAINED_ROLE_LOG_CHANGED')
+    if runner == 'onnxruntime-cuda':
+        if not isinstance(gpu_binding, dict) or set(gpu_binding) != {'uuid', 'visible'}:
+            raise EvidenceError('RETAINED_ROLE_GPU_BINDING')
+        device = validate_device_binding(native['observation'],
+            expected_uuid=gpu_binding['uuid'], expected_visible=gpu_binding['visible'])
+    else:
+        if gpu_binding is not None:
+            raise EvidenceError('RETAINED_ROLE_CPU_BINDING')
+        device = validate_device_binding(native['observation'])
     profile = None
     if role != 'Merge':
         profile_path = resolve_role_output(Path(root)/role, native['observation'].get('providerProfilePath'))
         profile = validate_ort_profile(profile_path, native['observation'])
-    return dict(native=native, profile=profile, rank=rank, logPath=launch['path'],
+    return dict(native=native, profile=profile, device=device, rank=rank, logPath=launch['path'],
         receiptDigest=receipt_digest, qualification='RETAINED_ROLE_COMPONENT_ONLY')
 
 

@@ -1920,3 +1920,16 @@ code path and focused regression, not the full runtime qualification.
   pending. Do not loosen PID validation or remove containment to hide it.
 - Lesson: test the namespace boundary explicitly; host process ownership and
   native process identity are distinct facts that need an observed link.
+
+# 2026-09-07 Spec183 device validator not called by retained collector
+
+- Symptom: a CPU record claiming CUDA_VISIBLE_DEVICES=0 passed the actual
+  retained receipt/native/profile reader, despite a standalone device checker.
+- Root cause: the device check had focused tests but was not wired into the
+  consuming role collector; native/profile agreement alone did not check it.
+- Fix: retained request/dependency/role path now validates device claims and
+  requires independent per-node UUID/launch selector inputs for CUDA roles.
+- Evidence: cpu-gpu-exposure first failed DID NOT RAISE; reader regressions now
+  reject CPU exposure and missing/mismatched GPU bindings. Synthetic records
+  do not prove a physical allocation; preflight producer remains pending.
+- Lesson: test rejection at the consuming boundary, not just helper behavior.

@@ -1,5 +1,46 @@
 # Native execution observation component
 
+## Latest: retained collector device enforcement (2026-09-07)
+
+The retained request/dependency/role chain now calls validate_device_binding;
+it no longer stops at native status and ORT profile agreement. GPU node entries
+must carry external gpuBinding {uuid, visible}, dispatched to the model roles
+on that rank only. Merge remains CPU even on a GPU node. Local CPU rejects a
+node GPU binding; all CPU/Merge records must have empty GPU identity/visibility.
+
+First red: test_retained_execution_uses_receipt_pid_and_scoped_profile with
+cpu-gpu-exposure failed DID NOT RAISE, proving the real receipt/native/profile
+reader accepted a contradictory CPU/CVD record. Fixed by invoking the device
+validator in that consumer. Additional real-reader fixtures compare CUDA
+UUID, selector and ordinal to external expectations, including missing and
+mismatched bindings. They use synthetic GPU records, not GPU hardware.
+
+Expanded focused regression: 738 passed in 47.90s. JUnit:
+Experiments/TigerCluster/results/t006-device-collection-r1/junit.xml.
+Selectors: TigerCluster/tests plus the six existing Python tests for V3 backend
+selection, public recipients, YOLO numerical contract/reanalysis, candidate
+identity and execution-plan identity. No native build or model execution.
+
+Independent allocation receipt generation, its trusted transfer, the live
+Worker collector's device join, certified graph coverage and final operator
+remain incomplete. gpuBinding is an internal collector argument, NOT an
+operator-supplied proof of allocation; no public command may manufacture it
+from the same Provider log being verified. No Slurm/SIF/native qualification
+was run for this change. T006/T007 remain open.
+
+Allocation implementation constraint: Slurm's documented cgroup remapping can
+make a task's CUDA_VISIBLE_DEVICES=0 refer to a device whose Prolog selector
+was 1. NVML index and Linux device minor also need not coincide. Do not resolve
+the task selector by indexing host nvidia-smi output. Measure the CUDA device
+UUID in the actual allocated task context before launching Providers, and
+bind it to the independently known job/step/node and container launch.
+Reference: https://slurm.schedmd.com/gres.html#GPU_Management (GPU Management).
+
+Workflow checks: Context Mode project/active health passed; CodeGraph index
+current; Spec Kit pointer/prerequisites valid. GSD health has no errors but
+warns that .planning/spec183-handoff.md is noncanonical (W019); the Spec183
+tasks/evidence remain authoritative, not the older global GSD phase state.
+
 Source audit: `ExecutionEvidence.cpp::executionEvidenceToJson` writes through
 Boost PropertyTree `write_json`; scalar booleans/uint64 values are strings and
 empty array trees serialize as `""`. `DI_NativeProviderExecutable.cpp` prints
