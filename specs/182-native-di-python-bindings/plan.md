@@ -56,6 +56,15 @@ T003--011 中的大算法迁移为设计批次，超过工作单元阈值时按 
 不机械按文件拆分、不授权并行 agent 自动实施。
 用户已授权在Experimental完成Spec182；当前按T001关闭设计，再按上述门执行实现与本地验证。SIF/Tiger仍由实验机器负责。Static review PASS != Behavior PASS。
 
+## Bounded Executor Profile
+
+用户指定 Codex Spark 为实施执行者；使用 [execution cards](contracts/spark-execution.md)
+展开现有17个父任务，按一张就绪卡的 Read/Write/Steps/Verify 分派，沿稳定行为边界拆分。
+T001由设计者关闭未决契约与选择器；设计冻结后的实现可交 Spark，ABI、安全、生命周期和整体收敛由相应审查者复核。
+每卡记录实际源码身份与证据；依赖或设计变化只重新检查受影响卡。卡完成不提前关闭父任务或T016。
+执行卡覆盖与链接检查不证明 Spark 实测能力；产品实现和 Spark trial 状态分别记录。
+原 G0--G6 顺序与上方父任务依赖保持。本文件引用的共享设计技能为本仓库版本。
+
 ## Migration and Compatibility
 
 在本地候选版本中将Python默认入口一次切换到同库；独立消费者的完整运行与迁移正确性由T016统一验收后交付。

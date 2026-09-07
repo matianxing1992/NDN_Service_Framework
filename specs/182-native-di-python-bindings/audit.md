@@ -46,6 +46,15 @@ T016收齐真实运行证据，T017交付。验收标准满足即结束；变化
 
 文档检查使用`check-prerequisites.sh --json --require-tasks --include-tasks`、`audit_speckit_structure.py ... --strict`、`checklists/validate_design.py`及`git diff --check`；实际结果记tasks的当前checkpoint。它们不是产品测试，也不能关闭O-002--005。
 
+## Bounded Executor Review
+
+用户要求使Spec182可由Spark执行；新增[执行卡](contracts/spark-execution.md)与共享技能模式，
+保留17个父任务及全部FR/SC/CD/PO。未决设计继续由T001收口，Spark只领取满足依赖与设计冻结条件的实现卡。
+本轮发现最新Host契约包含Core scoped registration/ExecutionLeaseService，已展开T009-A/B/C及精确源路径，
+避免执行者只改DI facade而漏掉真正的代次/共享资源owner。
+T006真实worker反例统一由T016执行；T006仍须交付case及纯unit，父契约和proof同步。
+文档结构/路径检查不证明Spark运行效果，实际检查与边界见[spark preparation evidence](evidence/spark-execution-preparation.md)。
+
 ## History
 
 既有审计发现的历史理由与证据保留在Git及

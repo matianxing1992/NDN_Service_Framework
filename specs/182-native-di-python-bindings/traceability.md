@@ -60,6 +60,10 @@ C01--C21 / M01--M48 位于 [symbol design](contracts/symbol-design.md)；V01--V1
 
 ## Static Review Traceability
 
+[Spark execution cards](contracts/spark-execution.md)继承各自Parent的FR/CD/PO与依赖，
+不新增产品要求或替代本矩阵。T009的Core scoped registration与shared lease分别映射到T009-A/T009-B，
+host接线为T009-C；T006真实worker进程证明显式保留在T016，局部unit不冒充该证明。
+
 FR-018/SC-010/PO-015由 [validation workflow](contracts/pre-test-static-review.md)定义：T002--T014局部读码+unit；T015补整体接线审查，不另建重复报告。
 
 ## Adversarial Closure Traceability

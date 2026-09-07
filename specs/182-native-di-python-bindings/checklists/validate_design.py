@@ -12,6 +12,7 @@ normative = [
     "contracts/code-design.md", "contracts/proof-design.md",
     "contracts/work-units.md", "contracts/runtime-boundaries.md",
     "checklists/requirements.md", "contracts/symbol-design.md", "contracts/value-contracts.md", "contracts/pre-test-static-review.md",
+    "contracts/spark-execution.md",
 ]
 texts = {name: (feature / name).read_text() for name in normative}
 errors = []
@@ -117,6 +118,49 @@ for i in range(2, 15):
 for marker in ["PostTestReview**:", "StaticReview**:", "AllowedTestScope", "TestEntryChecks"]:
     require(marker not in texts["contracts/work-units.md"], f"duplicate workflow form: {marker}")
 links = 0
+# Validate dispatch coverage and dependency edges, not model capability or readiness.
+card_text = texts["contracts/spark-execution.md"]
+cards = {}
+for match in re.finditer(r"^### (T\d{3}-[A-Z]) [^\n]+\n(.*?)(?=^### |^## |\Z)",
+                         card_text, re.M | re.S):
+    card, body = match.groups()
+    require(card not in cards, f"duplicate execution card: {card}")
+    cards[card] = body
+card_dependencies = {}
+for card, body in cards.items():
+    parent = re.search(r"\*\*Parent\*\*: (T\d{3})", body)
+    require(parent is not None and parent[1] == card[:4] and parent[1] in ids,
+            f"invalid card parent: {card}")
+    for key in ["Depends", "Reviewer", "Read", "Write", "Steps", "Verify"]:
+        require(f"**{key}**:" in body, f"{card} missing {key}")
+    dep = re.search(r"\*\*Depends\*\*: ([^;\n]+)", body)
+    card_dependencies[card] = re.findall(r"T\d{3}-[A-Z]", dep[1] if dep else "")
+    for other in card_dependencies[card]:
+        require(other in cards, f"unknown card dependency {card}: {other}")
+    write = re.search(r"\*\*Write\*\*: ([^\n]+)", body)
+    require(write is not None and '*' not in write[1] and '/' in write[1],
+            f"missing exact write paths: {card}")
+require(all(any(card.startswith(task + '-') for card in cards) for task in ids),
+        "parent task missing execution cards")
+card_visiting, card_visited = set(), set()
+def visit_card(card):
+    if card in card_visiting:
+        errors.append(f"execution card dependency cycle: {card}")
+        return
+    if card in card_visited:
+        return
+    card_visiting.add(card)
+    for other in card_dependencies.get(card, []):
+        if other in cards:
+            visit_card(other)
+    card_visiting.remove(card)
+    card_visited.add(card)
+for card in cards:
+    visit_card(card)
+for name in ["tasks.md", "plan.md", "contracts/work-units.md"]:
+    require("spark-execution.md" in texts[name], f"dispatch entry missing: {name}")
+require("Spark trial NOT_RUN" in card_text, "missing model trial evidence boundary")
+links = 0
 for path in list(feature.rglob("*.md")):
     content = path.read_text()
     for label, raw_target in re.findall(r"\[([^\]]+)\]\(([^)]+)\)", content):
@@ -140,6 +184,7 @@ for path in (feature / "evidence").glob("*.json"):
 report = {"schema": "spec182-document-validation-v2",
           "ok": not errors, "tasks": len(ids),
           "tasks_complete": sum(state.lower() == "x" for state, _ in task_rows),
+          "execution_cards": len(cards), "card_dependencies": card_dependencies,
           "fr": 19, "sc": 11, "cd": 14, "po": 16,
           "source_types": len(coverage["records"]), "source_fields": field_count,
           "classes_or_modules": 21, "methods": 48, "design_readiness": "DRAFT",

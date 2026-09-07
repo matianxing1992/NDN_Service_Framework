@@ -12,6 +12,24 @@
 
 上述inventory单元277个导出键无重复，36个定义文件SHA256与当前源码一致；strict structure、design validator（214本地链接）及diff whitespace检查PASS。AST扫描不导入运行依赖，分namespace生成均exit0；初次全集工具输出截断后改为分namespace读取并合并，未把截断结果作为snapshot。
 
+2026-09-07 Spark execution preparation / **DISPATCH_DESIGNED**：用户指定Spark为后续实现执行者。
+已增加[execution cards](contracts/spark-execution.md)，保留17个父任务，补齐定向Read、精确Write、步骤、依赖和planned selector；
+共享设计技能及本机tasks/implement入口支持bounded-executor。T001设计关闭与selector release仍是产品前置门，
+本轮不替其他设计工作宣告关闭O项，也不勾选任何产品任务。36卡/17父任务覆盖、依赖、211链接、strict structure及三项validator拒绝反例PASS；
+技能通用校验器与既有Spec Kit metadata的schema差异及替代检查见[spark preparation](evidence/spark-execution-preparation.md)。
+下一步由T001-C汇总已有设计关闭证据、冻结实际选择器和构建入口，再从T002-A按依赖交给Spark执行。
+**Spark trial NOT_RUN；产品仍0/17。**下方Provider等记录保留各自设计范围与历史验证事实。
+
+### Spark Checkpoint
+
+| Card | Status | Baseline | Evidence | Remaining |
+| --- | --- | --- | --- | --- |
+| execution-profile | DISPATCH_DESIGNED | 见同一evidence的实际源码基线 | [preparation checks](evidence/spark-execution-preparation.md) | T001 release、Spark实际实现试用、全部产品验收 |
+
+实施时在本表逐卡添加真实状态与证据；未列卡不表示完成。原父任务勾选规则及T016验收不变。
+
+### Prior Provider Lifetime Design
+
 2026-09-07 Provider lifetime design / **T001 IN_PROGRESS**：在[lifecycle contract](contracts/native-provider-lifecycle-design.md#provider-lifetime-control)定义受mutex保护的RegistrationControl、close/post/析构互斥、锁外释放capture及post失败后续清理；补齐ACK同步/异步、Selection、普通lease执行fallback、完成发布检查。源码确认pending cleanup可能早于兄弟role结束，因此Selection将代次转入协作生命周期，work fence不依赖pending表。M47同步指向新增Core scoped接口；不是包装不存在的unregister。Provider生命周期设计范围已明确，O-004其余公开类型/调用及整体T001仍未完成，产品0/17。下一步归并设计清单并核对剩余缺项，不重启已闭合算法研究。
 
 ### Prior Registration Generation

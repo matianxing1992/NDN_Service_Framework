@@ -49,6 +49,10 @@ description: Define reviewable code design and coherent implementation tasks, th
 
 ## Implementation And Validation
 
+用户要求 Spark 或有限范围执行时，应用 [bounded executor](references/bounded-executor.md)：
+设计者冻结决策，按行为提供定向阅读/精确写入范围/检查命令，执行者一次完成一张就绪卡。
+已有上层任务与正式验收保持；执行卡不自动表示设计已就绪。
+
 唯一执行规则见 [pre-test-static-review.md](references/pre-test-static-review.md)。
 每个实现任务读源码对照设计后做必要构建和相关单测；集成测试与真实实验在全部实现完成后统一执行。
 Static review PASS != Behavior PASS。

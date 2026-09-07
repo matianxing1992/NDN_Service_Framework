@@ -4,6 +4,9 @@
 
 ## Common Boundary
 
+Spark分派使用[execution cards](spark-execution.md)。本文件保留父任务的成果/验收，
+卡提供精确Read/Write与局部步骤；卡完成不代表父任务或完整PO完成。
+
 O-001已按当前源码与181承接范围关闭；T001仍需关闭O-002--005并冻结可执行接口/依赖/测试选择器后开始实现。
 每任务的具体文件与符号由其CD定义，类/方法与字段解释分别引用
 [symbol design](symbol-design.md)和[value contracts](value-contracts.md)，不重复抄表。
@@ -73,7 +76,7 @@ T001冻结新unit selectors，不能执行整份混合测试文件而意外启�
 - **Design**: FR-006,FR-016; CD-005; INV-003,INV-004,INV-006,INV-007; FLOW-001, FLOW-002。
 - **Changes**: NativeCanonicalOnnxAssembler、NativeOnnxRecipeAssembler、NativeOnnxAssemblyWorker头/源、DI_NativeOnnxAssemblyWorker.cpp及Waf安装目标、di-native-onnx-recipe；精确OA函数/类型/协议按[native ONNX assembly design](native-onnx-assembly-design.md)。
 - **ForbiddenChanges**: 全部提前离线切分；临时明文绕过授权；改 recipe digest。
-- **LocalChecks**: 固定recipe/identity/manifest字节、inline/external/local function及错误输入；通过安装原生worker验证cancel/超时/crash/partial frame，必要编译属于本任务；Selection后真实Provider装配在T016。
+- **LocalChecks**: 固定recipe/identity/manifest字节、inline/external/local function及错误输入；worker framing/取消状态机纯unit与必要安装链接属于本任务；真实worker子进程cancel/超时/crash/partial frame和Selection后Provider装配由T016执行，T006必须编写注册这些用例。
 - **FinalProof**: PO-005。 本任务只完成局部单测；其余运行证据由T016统一产生。
 
 ## T007 Native Tokenizer Execution

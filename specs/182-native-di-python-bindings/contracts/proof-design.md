@@ -95,6 +95,18 @@ C++ focused selector 由 T001 从实际 Boost/Waf target 注册中固定，不�
 默认每 focused unit supervisor 上限 120s；初始网络 case 上限 180s，cleanup 15s；
 若既有 case 需要不同值，T001 按已有有效 deadline 固定，禁止运行中延长到 PASS。
 
+## Bounded Executor Selectors
+
+[execution cards](spark-execution.md#verification-commands)将上表文件进一步映射到planned suite与行为卡。
+T001-C冻结实际runner/build身份和选择器，所属实现卡注册后用list_content确认非空；未注册命令不算existing。
+新增stream unit路径为`tests/unit-tests/distributed-inference-tokenizer.t.cpp`（T007-B）与
+`tests/unit-tests/distributed-inference-stream-recovery.t.cpp`（T010-C/T011-B）；
+sampler四个具名case归`tests/unit-tests/di-native-conversation.t.cpp`的`Spec182Sampling` suite。
+T009-A/B/C分别覆盖Core scoped registration、共享lease与公共host，六个Registration及三个SharedLease/Closing具名case
+保留在`tests/unit-tests/di-native-provider-host.t.cpp`的对应suite，不以拆卡删除旧义务。
+真实worker进程cancel/timeout/crash/partial frame归T006编写、T016运行；纯协议/状态unit归T006。
+本段明确执行归属，不减少任何负例或允许mock替代真实进程资格。
+
 ## Runtime Without Python
 
 运行隔离覆盖 requester、所有 Providers、进程内 authority 及其后代：
