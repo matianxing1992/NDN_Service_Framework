@@ -49,6 +49,67 @@ assembleNativeCertifiedOnnxModel(const NativeCanonicalSource& source,
                                  const NativeCertifiedRecipe& recipe,
                                  const NativeAssemblyControl& control);
 
+/** Canonical content of one ONNX initializer per the normalization rules. */
+struct NormalizedInitializerPayload
+{
+  std::string dtype;                   // numpy-1.24 label (structured for
+                                       // BFLOAT16/FLOAT8/INT4/UINT4)
+  std::vector<std::int64_t> shape;     // TensorProto.dims 原序
+  std::string byteOrder;               // "little" when itemsize > 1, else "na"
+  std::vector<std::uint8_t> content;   // canonical bytes (request-scoped owner)
+};
+
+/** Graph and normalized-initializer identity of an un-shape-inferred model. */
+struct NativeOnnxIdentity
+{
+  std::string graphDigest;
+  std::string initializerDigest;
+};
+
+/**
+ * Normalize one serialized ONNX TensorProto into its canonical payload, or
+ * throw DI_ONNX_INITIALIZER_ENCODING_INVALID when the shape, field, or
+ * encoding violates the normalization rules.  The seam takes serialized
+ * bytes so no ONNX/protobuf type is installed in this public header; the
+ * implementation stays private in the module TU.
+ */
+NormalizedInitializerPayload
+normalizedOnnxInitializerPayload(const std::vector<std::uint8_t>& serializedTensorProto);
+
+/**
+ * Owned-source canonical identity of one source model (OA05 + OA06 seam):
+ * parse the given bytes, validate and inline external tensors strictly from
+ * the passed memory (never from paths declared in the model), then compute
+ * the graph digest and the ordered normalized-initializer digest on the
+ * original, not shape-inferred, graph.  The model is not full-checked here;
+ * checker and extractor runs arrive with the certified-extraction cards.
+ */
+NativeOnnxIdentity
+canonicalOnnxSourceIdentity(const NativeCanonicalSource& source,
+                            const NativeAssemblyControl& control);
+
+/**
+ * Initializer-normalization revision (1 or 2) of a source model after
+ * external inlining, classified from top-level graph initializers only:
+ * STRING, BFLOAT16 raw (incl. external, which inlines to raw), and COMPLEX
+ * typed select revision 2; everything else stays 1.
+ */
+std::uint32_t
+onnxInitializerNormalizationRevision(const NativeCanonicalSource& source,
+                                     const NativeAssemblyControl& control);
+
+/**
+ * Descriptor-revision binding gate: a model whose inlined initializers need
+ * normalization revision 2 must be bound to a recipe that declares the exact
+ * v2 assembler descriptor digest; otherwise DI_ONNX_NORMALIZATION_REVISION_
+ * REQUIRED.  Revision-1 sources keep the legacy descriptor rules (no extra
+ * rejection of existing legal adapter descriptors).
+ */
+void
+checkOnnxAssemblerDescriptorBinding(const std::string& assemblerDescriptorDigest,
+                                    const NativeCanonicalSource& source,
+                                    const NativeAssemblyControl& control);
+
 } // namespace ndnsf::di
 
 #endif // NDNSF_DI_NATIVE_ONNX_RECIPE_ASSEMBLER_HPP
