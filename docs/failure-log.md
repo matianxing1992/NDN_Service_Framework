@@ -154,6 +154,64 @@ R2 的临时环境来源断言仍失败，说明共享第三方 site 的环境�
 
 GDB 捕获旧 Provider assignment worker 在销毁后调用 `Face::getIoContext()`；不是当前 targeted-stream 用例的独立失败。改为 Provider 所有的有界 fetch pool，关闭时取消等待、join，排队回调先检查共享关闭标志。原始 `.codex-tmp/merge-20260906/integration-r2/output.log`，完整记录见 [integration evidence](../specs/182-native-di-python-bindings/evidence/integration-20260906.md#resolution-design)。
 
+## 2026-09-07 — Spec182 T006-C: worker digest gate rejects every valid sha256 digest
+
+- **Area**: spec182 T006-C Bounded Native Worker
+- **Symptom**: Spec182OnnxWorkerProtocol suite — 16 failures across
+  `MetadataAcceptsCanonicalEnvelopeRoundtrip`,
+  `MetadataRejectsDigestFormatAndPayloadMismatch`, and
+  `SubprocessUnregisteredThenRegisteredMatchesInProcess`. The roundtrip case
+  showed `check.ok` false with `failureCode = DI_NATIVE_ONNX_WORKER_METADATA`,
+  failureMessage `request metadata recipeDigest is invalid`; the child worker
+  rejected the same envelope that the in-process validate call produced.
+- **Root cause**: `isSha256Digest()` in
+  `NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.cpp`
+  required `value.size() == 66` and only checked 7+64 = 71 bytes would be
+  valid; every canonical digest (`sha256:` prefix + 64 hex) is 71 bytes, so
+  the format gate rejected every digest before the payload-digest compare
+  could ever run, and the parsed certified slice was never populated.
+  Symptom cluster was one root cause: (a) envelope gate METADATA instead of
+  ok; (b) digest-payload mismatch classified METADATA instead of RECIPE;
+  (c) the real worker child (stale binary, pre-fix digest gate) rejecting
+  the envelope with a METADATA error frame.
+- **Fix**: size gate corrected to 71 with a comment
+  (`"sha256:" (7) + 64 hex`). Diagnostic staging was added and later removed
+  from the failing test; after the fix all 21 Spec182OnnxWorkerProtocol cases
+  pass against a rebuilt worker binary.
+- **Ref**: re-run command
+  `./build-nac182/unit-tests --run_test=Spec182OnnxWorkerProtocol
+  --log_level=test_suite`; run dirs retained under the suite output.
+- **Lesson**: a format gate with a wrong length constant fails every valid
+  input silently as "invalid", so an always-rejecting validator can look
+  like a roundtrip/envelope bug; assert length against `prefix + N hex`
+  rather than a magic total.
+
+## 2026-09-07 — Spec182 T006-C: spec181-assembly-parity fails full rebuild on missing onnxruntime include
+
+- **Area**: spec182 T006-C Bounded Native Worker (full-build regression path)
+- **Symptom**: the first full `./waf build` after editing tests/wscript
+  recompiled all 635 tasks; `spec181-assembly-parity` (tests/wscript) failed
+  compiling `NativeOnnxRecipeAssembler.cpp` with
+  `onnxruntime_cxx_api.h: No such file or directory`, because its `use=`
+  closure was `... ONNX ...` without `ONNXRUNTIME` while its compile line
+  carried `-DNDNSF_DI_ENABLE_ONNXRUNTIME_CPP` and the ONNX prefix include
+  (`repo/.codex-tmp/spec182-t001-dependencies/onnx-install/include`) only
+  ships ONNX 1.17, not the runtime headers (`/opt/onnxruntime/include`).
+- **Root cause**: the spec181-era target predates the spec182 unified
+  runtime closure; every sibling DI target
+  (`spec181-protected-runtime-closure`, `spec182-installed-consumer`,
+  unit-tests) already lists `ONNXRUNTIME`. The target had not rebuilt since
+  the runtime include became mandatory, so the failure surfaced only when a
+  wscript change forced a full re-signature.
+- **Fix**: add `ONNXRUNTIME` to the `spec181-assembly-parity` `use=` string
+  in tests/wscript (closure drift, no behavior change). Full build green in
+  11m51s at `-j2`.
+- **Ref**: re-run command `./waf -o build-nac182 build -j2`.
+- **Lesson**: waf content signatures mean an obsolete target stays green
+  until any wscript change forces a full re-signature; after configuring on
+  the unified dependency closure, audit remaining targets that compile
+  adapter sources without `ONNXRUNTIME`.
+
 ## 2026-09-06 — Python collection and generation fixture R2
 
 Python collection 缺 Repo binding 和三个既有辅助源脚本；integration 多 Provider generation fixture 的新 input endpoint digest 与旧常量冲突。分别补构建闭合/输入脚本和独立 endpoint identity，保留首边界证据。见 [integration evidence](../specs/182-native-di-python-bindings/evidence/integration-20260906.md#resolution-design)。
