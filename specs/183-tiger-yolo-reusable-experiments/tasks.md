@@ -84,8 +84,9 @@ T001–T004形成 profile/launcher 实现骨架；可操作 MVP 还要求 T006 �
 `sha256:9129d07298f5754823f3bc2bf9c10fea7416adbb1e4168ced3dc82750948612c`。
 远端 Spec180 YOLO 包虽含匹配历史 graph/weights/oracle，但缺少 registry 引用的
 `model-manifest-authority.pub`，且含私钥材料；仅保留为输入审计，不得进入 Spec183
-公共 bundle。锁定 base SIF 正在只读传输到本地 ignored cache，传输完成后仍须按
-SHA 验证，不能替代 Spec183 本地构建或 T007/T008/T011 资格。
+公共 bundle。锁定 base SIF 已只读传输到本地 ignored cache，并按完整内容校验为
+`sha256:b6710fd696a7f962f67f67a54278d92a15babb856c4af428a3f04ba54dc83285`；它仍
+不能替代 Spec183 本地构建或 T007/T008/T011 资格。
 
 T006 native identity checkpoint: the actual native reader now rejects missing,
 malformed or wrong-role `modelDigest`/`artifactDigests`; nine negative mutations

@@ -16,8 +16,9 @@ ignored bare caches under `Experiments/TigerCluster/.cache/source-git/`:
 `git fsck --full --no-reflogs` checks returned 0 (unborn bare HEAD notice only).
 Total allocated cache size was 2,875,392 bytes. The original dependency
 worktrees, including dirty NDNSD, were not changed. This supersedes only the
-missing-source-object finding below: sealed source archives/build inputs,
-signed model package and local base SIF are still outstanding. SSH login was
+missing-source-object finding below: sealed source archives/build inputs and
+signed model package are still outstanding. The locked base SIF was transferred
+read-only into the ignored local cache and verified below. SSH login was
 reconfirmed as itiger/tma1; no job was submitted. Historical observations below
 remain unchanged for provenance.
 
@@ -63,9 +64,12 @@ remain unchanged for provenance.
 - SSH实测itiger/tma1可达，squeue无本用户job；未提交新job。
 - 登录Apptainer1.3.4-1.el9，本地/usr/local/bin/apptainer为1.3.4；compute版本NOT_RUN，T007后独立substrate探测。
 - bigTiger up，公布GRES rtx_6000/rtx_5000/h100_80gb；账号devs/QOS normal。不是两节点同时可分配证明。
-- 远端base锁定路径存在，stat为3,525,861,376 bytes；未重新hash。期望摘要取lock的b6710fd6…，不能从大小推定。
+- 远端base锁定路径存在，stat为3,525,861,376 bytes；本地
+  `Experiments/TigerCluster/.cache/base-sif/spec180-runtime.sif` 已按完整内容校验为
+  `sha256:b6710fd696a7f962f67f67a54278d92a15babb856c4af428a3f04ba54dc83285`，与 lock 一致。
+  该文件仍是历史 Spec180 基础输入，不是 Spec183 最终 SIF，也不替代 T007/T008/T011。
 - 本机`Experiments/TigerCluster/images/spec180-runtime-r119.sif`、`.local-tmp/spec180-candidate-r119/spec180-runtime.sif`均不存在。
-- 本地free23,323,541,504 bytes；远端df显示共享文件系统空间，不能替代用户quota。未取得quota/compute scratch写入和构建峰值，不批准大传输/构建。
+- 本地最近检查可用约18,433,155,072 bytes；远端df显示共享文件系统空间，不能替代用户quota。未取得quota/compute scratch写入和构建峰值，不批准大构建。
 - 远端models/artifacts/candidates三个已知父目录未匹配yolo命名直接子目录；不能断言整个集群无模型。
 - 15分钟初始预算内startup120+4×request60+cleanup30=390秒，余510秒仍须覆盖stage/hash等实际耗时；未实测，不据此自动提交。
 
