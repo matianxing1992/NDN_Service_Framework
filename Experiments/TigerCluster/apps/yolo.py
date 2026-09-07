@@ -9,10 +9,134 @@ from __future__ import annotations
 from pathlib import Path
 import math
 import re
+import json
+import hashlib
+import os
 
 from runtime.baseline import PYTHON
 
 APP_DIR = '/opt/ndnsf-di/replay/repo/examples/python/NDNSF-DistributedInference/yolo_2x2'
+
+
+def configuration_for_run(template: dict, plan: dict) -> dict:
+    """Bind authorization identities, retaining the frozen model graph.
+
+    Role capabilities constrain eligible Providers; no request assignment or
+    synthetic ACK is produced. The policy loader remains the schema authority.
+    """
+    from runtime.identities import identity_inventory
+    from runtime.yolo_worker import PROVIDER_ROLES
+    if plan.get('schema') != 'tiger-yolo-run-plan-v1':
+        raise ValueError('YOLO_PREPARE_RUN_PLAN')
+    namespace = plan['namespace']
+    names = identity_inventory(namespace, plan['identities'])
+    if not {'user', 'controller', 'repo', *PROVIDER_ROLES}.issubset(names):
+        raise ValueError('YOLO_PREPARE_IDENTITIES')
+    config = json.loads(json.dumps(template, allow_nan=False))
+    services = config.get('services')
+    if not isinstance(services, list):
+        raise ValueError('YOLO_PREPARE_SERVICES')
+    inference = [s for s in services if isinstance(s, dict)
+                 and not str(s.get('name', '')).startswith('/NDNSF/DistributedRepo/')]
+    if len(inference) != 1 or set(inference[0].get('roles', [])) != set(PROVIDER_ROLES):
+        raise ValueError('YOLO_PREPARE_ROLE_GRAPH')
+    service = inference[0]
+    if not isinstance(service.get('name'), str) or not service['name'].startswith('/'):
+        raise ValueError('YOLO_PREPARE_SERVICE_NAME')
+    if service.get('artifacts'):
+        raise ValueError('YOLO_PREPARE_LOCAL_MODEL_BYPASS')
+    service['users'] = [names['user']]
+    service['providers'] = [{'identity': names[role], 'roles': [role]}
+                            for role in sorted(PROVIDER_ROLES)]
+    config['controller'], config['group'] = names['controller'], namespace + '/sync'
+    config['runtime'] = {**config.get('runtime', {}), 'user_identity': names['user'],
+                         'provider_prefix': namespace, 'identities': {
+                             **names, 'group': config['group']}}
+    config['trust'] = {**config.get('trust', {}), 'app_roots': [namespace],
+                       'anchor_file': '/config/root.cert'}
+    config.pop('authorization_summary', None)  # Recomputed by maintained policy generation.
+    # The maintained materializer regenerates the complete Repo service set.
+    config['services'] = [service]
+    return config
+
+
+def prepare_in_container(plan: dict, *, template_path: Path, template_digest: str,
+                         package: Path, manifest_digest: str, registry: Path,
+                         registry_digest: str, authority_private: Path,
+                         protection_epoch: str, candidate_id: str,
+                         candidate_digest: str) -> dict:
+    """Offline preparation using installed owners, never a qualification gate.
+
+    Invoked only by the audited prepare entrypoint in the exact SIF. Inputs
+    are already candidate-bound and read-only. /config and /identities are
+    private, initially empty writable preparation mounts; runtime gets only
+    public config and each role's own HOME. No NFD, RPC or model execution is
+    started here. A failure retains partial output and prohibits in-place retry.
+    """
+    import importlib.util
+    import sys
+    from types import SimpleNamespace
+    from runtime.identities import (issue, issue_yolo_recipients, issue_yolo_offers,
+        install_yolo_trust, _read_credential, _create_credential, _credential_document)
+    from runtime.yolo_profile import _read_plane
+
+    public, private = Path('/config'), Path('/identities')
+    for root in (public, private):
+        if root.is_symlink() or not root.is_dir() or any(root.iterdir()):
+            raise ValueError('YOLO_PREPARE_OUTPUT_NOT_EMPTY')
+    template_wire = _read_credential(Path(template_path))
+    if 'sha256:' + hashlib.sha256(template_wire).hexdigest() != template_digest:
+        raise ValueError('YOLO_PREPARE_TEMPLATE_DIGEST')
+    if 'sha256:' + hashlib.sha256(_read_credential(Path(registry))).hexdigest() != registry_digest:
+        raise ValueError('YOLO_PREPARE_REGISTRY_DIGEST')
+    manifest_path = Path(package) / 'manifest.json'
+    # Manifest may exceed the small credential limit; reuse the bounded plane reader.
+    from runtime.baseline import digest
+    manifest = _read_plane(manifest_path)
+    if 'sha256:' + digest(manifest_path) != manifest_digest:
+        raise ValueError('YOLO_PREPARE_MANIFEST_DIGEST')
+    config = configuration_for_run(_read_plane(template_path), plan)
+    # Only the installed source owner is imported, never a host checkout.
+    runner_path = Path(APP_DIR).parents[3] / 'Experiments/NDNSF_DI_YoloAckDriven_Minindn.py'
+    module_name = '_spec183_installed_yolo_owner'
+    spec = importlib.util.spec_from_file_location(module_name, runner_path)
+    owner = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = owner
+    spec.loader.exec_module(owner)
+    from ndnsf_distributed_inference.adapters.yolo import build_yolo26n_adapter
+    from ndnsf_distributed_inference.policy import write_policy_bundle
+    build_yolo26n_adapter(package, registry_path=registry)  # Signed catalogue and actual graph digest.
+    owner._validate_policy_loader_compatibility(config)
+
+    namespace, names = plan['namespace'], plan['identities']
+    issue(namespace, names)
+    homes = {role: private / role for role in names}
+    install_yolo_trust(registry, expected_registry_digest=registry_digest,
+        authority_private=authority_private, user_home=homes['user'], public=public,
+        protection_epoch=protection_epoch)
+    issue_yolo_recipients(namespace, homes, public, names)
+    service = config['services'][0]['name']
+    issue_yolo_offers(namespace, homes, public, names, service=service,
+        candidate_id=candidate_id, candidate_digest=candidate_digest,
+        trust_schema=namespace + '/trust')
+    _create_credential(homes['user'] / 'request-envelope.key', os.urandom(32))
+    policy_path = owner._materialize_case_config('Y-B', config, public)
+    _create_credential(public / 'case.json', policy_path.read_bytes())
+    write_policy_bundle(public / 'case.json', public)
+    catalogue_name = names['controller'] + '/NDNSF/DI/catalogue/v1'
+    owner.build_runtime_publication_file(
+        SimpleNamespace(case='Y-B', output=public, identities={'controller': names['controller']}),
+        {'package': Path(package), 'manifest': manifest,
+         'registry': public / 'contracts/trust-root-registry-v1.json',
+         'descriptor': {'catalogueDataName': catalogue_name, 'catalogueSigner': names['controller']}})
+    receipt = {'schema': 'tiger-yolo-preparation-v1', 'status': 'PREPARED',
+               'qualification': 'NOT_EVALUATED', 'runId': plan['runId'],
+               'candidateDigest': candidate_digest, 'protectionEpoch': protection_epoch,
+               'catalogueDataName': catalogue_name, 'catalogueSigner': names['controller'],
+               'templateDigest': template_digest, 'packageManifestDigest': manifest_digest,
+               'registryDigest': registry_digest}
+    _credential_document(public / 'preparation.json', receipt)
+    return receipt
 
 
 def _control_config(worker, role):

@@ -1767,8 +1767,6 @@ part of task context. Format per entry:
 - **Lesson**: every deferred async retry needs a bounded schedule or an
   idle-face test can deadlock the whole suite.
 
-## 2026-09-07 — Spec183 public-recipient seam native import gate
-
 ## 2026-09-07 — Controller receipt conflicted with read-only configuration mount
 
 - Symptom: source audit found the maintained publication function writes `runtime-publication-receipt.json` beside its input; Spec183 passes `/config/runtime-publication.json` under a read-only mount. Real deployment would fail after publication.
@@ -1777,7 +1775,7 @@ part of task context. Format per entry:
 - Evidence: verbatim function with simulated transport tests actual filesystem receipt writes; 338 focused tests passed. No real signed publication or SIF gate is claimed.
 - Lesson: review output side effects of every invoked application, not only argv/input mounts; immutable config and writable evidence must be separate.
 
-### Public-recipient native import details
+## 2026-09-07 — Spec183 public-recipient seam native import gate
 
 - Symptom: two new actual User-seam tests failed during setup, before grant execution.
 - Cause: the maintained User imports the host `ndnsf._ndnsf` extension, which is unavailable in this checkout/runtime; the Python partially-initialized-module text is not evidence of a newly introduced circular dependency.

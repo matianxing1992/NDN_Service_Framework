@@ -78,6 +78,8 @@ T001–T004形成 profile/launcher 实现骨架；可操作 MVP 还要求 T006 �
 
 ## Current Checkpoint
 
+2026-09-07内部prepare编排已接入apps/yolo.py：固定空挂载、输入hash、原adapter签名图校验、真实issuer与各类材料、原Y-B policy/Repo权限/native plan和catalogue batch生成器。5项配置投影测试通过，总343 focused（20.50s）。完整prepare尚未实际执行，最终CLI/public manifest绑定/readiness/T006仍未闭合；不能根据代码接线宣称PREPARED或T005完成，T007须审调用边界、T008/T011实跑。
+
 2026-09-07准备路径审查发现Controller会向只读/config写publication receipt；已增加显式receipt参数，Spec183改写/output/runtime-publication-receipt.json，输入保持只读且拒绝覆盖。338 focused通过（20.61s），文件行为测试使用真实函数体+模拟传输，不代表签名发布通过。Controller源码变化要求新source seal/SIF。准备主流程及readiness仍待完成，T005 partial。
 
 2026-09-07 pinned trust导入组件完成：保留registry原始bytes和catalogue/model/authority公钥，校验candidate digest、public hash、epoch及authority私钥匹配，只将私钥放User HOME。`authority.pub`是native定位别名，不再要求重写registry的publicKeyPath；此前checkpoint该措辞已被修正。6项真实crypto/加载测试，总337 focused（21.89s），类型收紧后6项再次通过。尚需最终prepare接线、完整模型签名验证、runtime publication/readiness与T006；T005仍partial。

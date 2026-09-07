@@ -33,6 +33,41 @@ ran. No fake extension or skip was used. Both must pass after T008 native build.
 
 ## Remaining controlling work
 
+### Preparation orchestration wiring
+
+`apps/yolo.py::prepare_in_container` now connects the actual existing owners
+for an audited offline invocation inside the exact candidate SIF:
+
+1. Require initially empty `/config` and `/identities`; compare input template,
+   registry and package-manifest digests against caller-supplied candidate pins.
+2. Project only run authorization identities into the frozen four-role policy;
+   retain model/dependency declarations and prohibit local model artifacts.
+3. Invoke `build_yolo26n_adapter` for signed catalogue/graph verification and
+   the maintained policy loader before identity-generation side effects.
+4. Issue actual NDN identities, import pinned trust material, create isolated
+   recipient/offer keys and a fresh User request-envelope key.
+5. Reuse the installed MiniNDN owner's `_materialize_case_config('Y-B', ...)`
+   to include the canonical Repo service permissions; reuse `write_policy_bundle`
+   for native execution plan, service manifest and Trust Schema.
+6. Reuse `build_runtime_publication_file` for the Controller-owned Y-B batch.
+   This is metadata preparation, not host-side APP publication. Runtime User
+   still publishes encrypted graph/weights and Providers fetch them over NDN.
+
+The normal/single-node/CPU modes all use the same Y-B workload; mode changes
+placement/backend, not the catalogue graph. Output `preparation.json` says
+PREPARED / NOT_EVALUATED, never PASS. Public manifest binding, final five-command
+entrypoint, native import qualification, actual execution and readiness remain
+unclosed. Do not invoke this internal function outside the audited prepare
+boundary or claim it has run merely because the code is connected.
+
+Five new tests cover real configuration projection, unchanged source template/
+dependencies, exact role capabilities and rejection of foreign identities,
+missing roles and local-model bypass. **5 passed in 0.12s**; complete focused
+suite **343 passed in 20.50s**, JUnit
+`results/spec183-prepare-wiring-r1/junit.xml`. These do NOT execute the full
+preparation function, real ndnsec issuer or native model adapter. T008/T011
+must exercise the complete installed path; T007 must audit all command callers.
+
 ### Controller receipt output repair
 
 Preparation-path review found `_publish_spec180_runtime` always wrote its
