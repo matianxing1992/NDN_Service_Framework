@@ -14,7 +14,7 @@
 | `prepare` | 检查 input closure 后产生新的本地不可变 bundle/run-plan；不执行模型或 sbatch |
 | `local --case local-cpu` | 已满足 gate 后运行精确 SIF CPU 诊断；不等于 Slurm PASS |
 | `submit --case single-node-gpu|two-node-gpu|negative-dependency` | 登记 candidate/gate 独占、重新验证当前 bundle 并提交一次；不能隐式自动进入下一 case |
-| `collect` | 从该 run 已有证据重算 verdict；不启动缺失步骤、不将原失败覆盖为成功 |
+| `collect` | 读取绑定的 `collection-input.json`，经 authoritative collector 重算 verdict；不启动缺失步骤、不覆盖旧失败 |
 
 验证阶段参数 `--stage inputs|runtime|dispatch` 仅用于 check/prepare；不允许借较早 stage 绕过 submit 所需 dispatch gate。凭证路径引用可配，内容不进入 argv/环境 dump。应用参数禁止 `eval`，构造 argv 数组；路径以 profile 文件目录为基准解析。
 
@@ -132,7 +132,8 @@ bundle、不调用 Apptainer、SSH 或 Slurm。`prepare` 只有在 dispatch gate
 独立 receipt 标记为合格时才会冻结不可变 harness 和 run-plan；`local` 还要求
 local-SIF gate；`submit` 还要求远端 staging/allocated-run owner。当前这些真实
 receipt 尚未产生，因此命令不会把结构性 profile 当成可执行候选。`collect` 只
-读取并绑定已有 verdict，不会启动缺失步骤或把旧失败改成成功。
+读取与 prepared run 绑定的 `collection-input.json`，经 authoritative collector
+重算 verdict；不会启动缺失步骤或把旧失败改成成功。
 
 `check` 仍可同时传 `--run-id/--output/--case` 查看确定性运行预览；不传则只
 做当前阶段内容检查。隐藏 `run` 必须存在 `SLURM_JOB_ID`，且在 T012 的真实
@@ -144,6 +145,22 @@ bytes/hash，再调用原 `check_chain`，最后再次核对清单引用。它�
 集合当作完整传递依赖清单。读取过程中不创建 output/cache/日志目录，不操作
 SSH、Slurm、容器或模型。Python3.8 的 JSON Schema 导入可能执行 stdlib 的
 只读 `uname -p`；回归明确允许这一个探测，不放开实验启动/网络/文件修改。
+
+`collect` 要求该 handoff 与 prepared run 使用同一 profile digest，并交给
+`runtime.yolo_result`：正常 case 调用 `collect_normal_verdict`，负例调用
+`finalize_expected_rejection`。只有完整的 request/attempt/plan/role/node/GPU/
+edge/numerical/cleanup 证据全部重新验证后，才以不可覆盖方式写入
+`verdict.json`；失败只保留首个 `collection-failure.json`，不会把超时或缺文件
+提升为成功。已有 verdict 必须带 `collectorSchema=tiger-yolo-collector-v1`，并
+重新核对 run/candidate 绑定。
+
+`collection-input.json` 的 schema 为 `tiger-yolo-collection-input-v1`。normal
+handoff 固定携带 runtime/placement candidate digest、四个 Provider identity、
+节点 receipt/preparation（GPU case 另有 allocation/probe）digest、每个注册请求
+的 reference package/repository、certified graph 及 catalogue/graph digest；
+negative handoff 固定携带 request/attempt/deadline 和独立的
+`tiger-yolo-expected-rejection-v1` record。收集器拒绝符号链接、缺失/重复字段、
+错误 case coverage 和不匹配的 prepared candidate。
 
 运行预览是 `PLANNED`，不是冻结 bundle 或 DI Selection。它复用 `assigned_roles`，
 包含独立 role identity 名、4 Provider 的预期 rank/device、逐请求 ID/输出和未解决项；

@@ -111,7 +111,9 @@ def _prepared_path(output: Path, run_id: str) -> Path:
 
 def _load_prepared(output: Path, run_id: str) -> dict:
     path = _prepared_path(output, run_id)
-    if not path.is_file() or path.is_symlink():
+    if any(p.is_symlink() for p in (path, *path.parents)):
+        raise ClosureError("RUN_PREPARATION_SYMLINK")
+    if not path.is_file():
         raise ClosureError("RUN_NOT_PREPARED")
     value = _read_plane(path)
     fields = {"schema", "status", "qualification", "runId", "case", "candidateDigest",
@@ -129,6 +131,115 @@ def _load_prepared(output: Path, run_id: str) -> dict:
     if any(p.is_symlink() for p in (bundle, *bundle.parents)):
         raise ClosureError("RUN_BUNDLE_SYMLINK")
     return value
+
+
+def _collection_file(root: Path) -> Path:
+    """Return the one worker-owned collection input, without following links."""
+    path = root / "collection-input.json"
+    if any(p.is_symlink() for p in (path, *path.parents)):
+        raise ClosureError("COLLECTION_INPUT_SYMLINK")
+    if not path.is_file():
+        raise ClosureError("COLLECTION_INPUT_MISSING")
+    return path
+
+
+def _collection_path(root: Path, value, *, label: str, directory: bool = False) -> Path:
+    """Resolve a retained evidence path and reject symlink/path ambiguity."""
+    if not isinstance(value, str) or not value or "\x00" in value:
+        raise ClosureError("COLLECTION_PATH:" + label)
+    path = Path(value)
+    if not path.is_absolute():
+        path = root / path
+    path = Path(os.path.abspath(str(path)))
+    if any(p.is_symlink() for p in (path, *path.parents)):
+        raise ClosureError("COLLECTION_PATH_SYMLINK:" + label)
+    if (directory and not path.is_dir()) or (not directory and not path.is_file()):
+        raise ClosureError("COLLECTION_PATH_MISSING:" + label)
+    return path
+
+
+def _digest_field(value, label: str) -> str:
+    if not isinstance(value, str) or not HASH.fullmatch(value):
+        raise ClosureError("COLLECTION_DIGEST:" + label)
+    return value
+
+
+def _load_collection_input(path: Path, *, root: Path, prepared: dict) -> tuple[dict, str]:
+    """Validate the worker-to-collector handoff before importing the oracle."""
+    payload = path.read_bytes()
+    digest = "sha256:" + hashlib.sha256(payload).hexdigest()
+    value = _read_plane(path)
+    common = {"schema", "status", "runId", "candidateDigest", "case", "kind"}
+    if (not isinstance(value, dict) or not common.issubset(value)
+            or value["schema"] != "tiger-yolo-collection-input-v1"
+            or value["status"] != "READY"
+            or value["runId"] != prepared["runId"]
+            or value["candidateDigest"] != prepared["candidateDigest"]
+            or value["case"] != prepared["case"]
+            or value["kind"] not in ("normal", "expected-rejection")):
+        raise ClosureError("COLLECTION_INPUT_BINDING")
+    if value["kind"] == "normal":
+        required = common | {"runtimeCandidateDigest", "placementCandidateId",
+                             "placementCandidateDigest", "graphDigest", "catalogueDigest",
+                             "providersByRole", "nodes", "references", "certifiedGraph"}
+        if set(value) not in (required, required | {"allocationExpected"}):
+            raise ClosureError("COLLECTION_INPUT_SCHEMA")
+        for key in ("runtimeCandidateDigest", "placementCandidateDigest", "graphDigest",
+                    "catalogueDigest"):
+            _digest_field(value[key], key)
+        if (not isinstance(value["placementCandidateId"], str)
+                or not re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", value["placementCandidateId"])):
+            raise ClosureError("COLLECTION_PLACEMENT_CANDIDATE")
+        roles = {"BackboneNeck", "DetectShard0", "DetectShard1", "Merge"}
+        if (not isinstance(value["providersByRole"], dict)
+                or set(value["providersByRole"]) != roles
+                or any(not isinstance(v, str) or not v for v in value["providersByRole"].values())):
+            raise ClosureError("COLLECTION_PROVIDER_ROLES")
+        expected_nodes = 2 if value["case"] == "two-node-gpu" else 1
+        if (not isinstance(value["nodes"], dict)
+                or set(value["nodes"]) != {str(i) for i in range(expected_nodes)}):
+            raise ClosureError("COLLECTION_NODE_COVERAGE")
+        nodes = {}
+        node_fields = {"root", "receiptDigest", "preparationDigest"}
+        if value["case"] != "local-cpu":
+            node_fields |= {"allocationDigest", "gpuProbeDigest"}
+        for key, row in value["nodes"].items():
+            if not isinstance(row, dict) or set(row) != node_fields:
+                raise ClosureError("COLLECTION_NODE_SCHEMA")
+            nodes[int(key)] = {
+                field: (_collection_path(root, row[field], label=f"node-{key}-{field}",
+                                         directory=(field == "root"))
+                        if field == "root" else _digest_field(row[field], f"node-{key}-{field}"))
+                for field in row
+            }
+        expected_requests = 4 if value["case"] == "two-node-gpu" else 2
+        if (not isinstance(value["references"], list)
+                or len(value["references"]) != expected_requests):
+            raise ClosureError("COLLECTION_REFERENCE_COVERAGE")
+        references = []
+        for index, row in enumerate(value["references"]):
+            if (not isinstance(row, dict) or set(row) != {"package", "repository", "inputSize"}
+                    or type(row["inputSize"]) is not int or row["inputSize"] <= 0):
+                raise ClosureError("COLLECTION_REFERENCE_SCHEMA")
+            references.append({"package": _collection_path(root, row["package"], label=f"reference-{index}-package", directory=True),
+                               "repository": _collection_path(root, row["repository"], label=f"reference-{index}-repository", directory=True),
+                               "inputSize": row["inputSize"]})
+        if not isinstance(value["certifiedGraph"], dict):
+            raise ClosureError("COLLECTION_CERTIFIED_GRAPH")
+        value = dict(value, nodes=nodes, references=references)
+        return value, digest
+    required = common | {"requestId", "attempt", "candidateDigestForRequest",
+                         "requestDeadlineMs", "rejection"}
+    if set(value) != required:
+        raise ClosureError("COLLECTION_REJECTION_SCHEMA")
+    if (not isinstance(value["requestId"], str) or not value["requestId"].startswith("/")
+            or type(value["attempt"]) is not int or not 0 < value["attempt"] < 2**64
+            or not HASH.fullmatch(value["candidateDigestForRequest"])
+            or type(value["requestDeadlineMs"]) is not int
+            or not 1501 <= value["requestDeadlineMs"] <= 60000
+            or not isinstance(value["rejection"], dict)):
+        raise ClosureError("COLLECTION_REJECTION_BINDING")
+    return value, digest
 
 
 def _not_ready(action: str, reason: str, report: dict | None = None) -> int:
@@ -203,18 +314,71 @@ def _submit(args) -> int:
 
 
 def _collect(args) -> int:
+    profile_path = Path(args.profile)
+    report, _ = _dispatch_report(profile_path)
+    if report.get("qualification") != "READY":
+        return _not_ready("collect", "DISPATCH_GATE", report)
     prepared = _load_prepared(args.output, args.run_id)
+    if report["documentDigest"] != prepared["profileDigest"]:
+        raise ClosureError("PROFILE_CHANGED_AFTER_PREPARE")
     root = _safe_output(args.output) / args.run_id
     verdict = root / "verdict.json"
-    if not verdict.is_file() or verdict.is_symlink():
-        return _not_ready("collect", "VERDICT_MISSING",
-                          {"prepared": prepared["candidateDigest"]})
-    value = _read_plane(verdict)
-    if (not isinstance(value, dict) or value.get("runId") != args.run_id
-            or value.get("candidateDigest") != prepared["candidateDigest"]):
-        raise ClosureError("VERDICT_BINDING")
-    print(json.dumps(value, sort_keys=True))
-    return 0
+    if any(p.is_symlink() for p in (verdict, *verdict.parents)):
+        raise ClosureError("VERDICT_SYMLINK")
+    if verdict.is_file():
+        value = _read_plane(verdict)
+        if (not isinstance(value, dict) or value.get("runId") != args.run_id
+                or value.get("candidateDigest") != prepared["candidateDigest"]
+                or value.get("collectorSchema") != "tiger-yolo-collector-v1"
+                or value.get("status") != "PASS"):
+            raise ClosureError("VERDICT_BINDING")
+        print(json.dumps(value, sort_keys=True))
+        return 0
+    collection_path = _collection_file(root)
+    try:
+        collection, collection_digest = _load_collection_input(
+            collection_path, root=root, prepared=prepared)
+        from runtime import yolo_result
+        if collection["kind"] == "normal":
+            from ndnsf_distributed_inference.adapters.yolo.reference import load_reference
+            references = [load_reference(row["package"], row["repository"], row["inputSize"])
+                          for row in collection["references"]]
+            final = yolo_result.collect_normal_verdict(
+                collection["nodes"], references, plan=prepared["plan"],
+                runtime_candidate_digest=collection["runtimeCandidateDigest"],
+                placement_candidate_id=collection["placementCandidateId"],
+                placement_candidate_digest=collection["placementCandidateDigest"],
+                graph_digest=collection["graphDigest"],
+                catalogue_digest=collection["catalogueDigest"],
+                providers_by_role=collection["providersByRole"],
+                allocation_expected=collection.get("allocationExpected"),
+                certified_graph=collection["certifiedGraph"])
+        else:
+            request = prepared["plan"].get("requests", [{}])[0]
+            if request.get("requestId") != collection["requestId"]:
+                raise ClosureError("COLLECTION_REJECTION_REQUEST")
+            final = yolo_result.finalize_expected_rejection(
+                collection["rejection"], plan=prepared["plan"],
+                request_id=collection["requestId"], attempt=collection["attempt"],
+                candidate_digest=collection["candidateDigestForRequest"],
+                request_deadline_ms=collection["requestDeadlineMs"])
+        final = dict(final, runId=args.run_id,
+                     candidateDigest=prepared["candidateDigest"],
+                     collectorSchema="tiger-yolo-collector-v1",
+                     collectionInputDigest=collection_digest)
+        _write_readonly(verdict, final)
+        print(json.dumps(final, sort_keys=True))
+        return 0
+    except (ClosureError, ValueError, OSError, ImportError) as exc:
+        reason = str(exc) if isinstance(exc, ClosureError) else "COLLECTION_REJECTED"
+        failure = {"schema": "tiger-yolo-collection-failure-v1", "status": "FAIL",
+                   "runId": args.run_id, "candidateDigest": prepared["candidateDigest"],
+                   "collectionInputDigest": "sha256:" + hashlib.sha256(
+                       collection_path.read_bytes()).hexdigest(), "reason": reason}
+        failure_path = root / "collection-failure.json"
+        if not failure_path.exists() and not failure_path.is_symlink():
+            _write_readonly(failure_path, failure)
+        return _not_ready("collect", "COLLECTION_REJECTED", {"reason": reason})
 
 
 def _run(args) -> int:

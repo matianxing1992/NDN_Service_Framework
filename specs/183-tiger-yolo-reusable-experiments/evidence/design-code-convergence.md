@@ -22,7 +22,7 @@ started.
 | SIF dispatch preflight | Spec183 host receipt and exact-SIF preflight fail closed before Apptainer/build calls and inspect imports/entrypoints/`ldd` when a real SIF is supplied. | PASS (negative/fixture boundary only) |
 
 The direct full `Experiments/TigerCluster/tests` run currently reports
-**798 passed in 33.44s**. A prior broader registered selector reported 885
+**800 passed in 32.53s**. A prior broader registered selector reported 885
 tests; that historical count is not reused as current evidence. Neither count
 is a runtime qualification result: the tests use doubles or source-shaped
 receipts where the physical inputs are unavailable.

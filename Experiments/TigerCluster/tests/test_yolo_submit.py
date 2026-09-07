@@ -1,9 +1,11 @@
 """Run the operator CLI itself; synthetic artifacts never qualify a model."""
 import hashlib
+import importlib.util
 import json
 from pathlib import Path
 import subprocess
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -12,6 +14,13 @@ from test_yolo_closure import input_plane
 
 ROOT = Path(__file__).resolve().parents[1]
 CLI = ROOT / "jobs/yolo/submit.py"
+
+
+def submit_module():
+    spec = importlib.util.spec_from_file_location("spec183_yolo_submit", CLI)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def file_ref(path):
@@ -253,3 +262,97 @@ def test_dispatch_rejects_unbound_or_changed_bundle(tmp_path, mutation, reason):
     result = cli("check", "--stage", "dispatch", "--profile", path, cwd=tmp_path)
     assert result.returncode == 2, result.stderr
     assert json.loads(result.stdout)["reason"] == reason
+
+
+def _negative_collection_input(prepared, *, valid=True):
+    candidate = "sha256:" + "a" * 64
+    request_id = prepared["plan"]["requests"][0]["requestId"]
+    rejection = {
+        "schema": "tiger-yolo-expected-rejection-v1", "status": "REJECTED",
+        "qualification": "EXPECTED_REJECTION_COMPONENT_ONLY",
+        "case": "negative-dependency", "runId": prepared["runId"],
+        "requestId": request_id, "attempt": 1, "candidateDigest": candidate,
+        "selection": {"status": "COMMITTED", "selectedProvider": "/run/provider/BackboneNeck",
+                       "selectionCount": 1, "reselectionCount": 0},
+        "failure": {"boundary": "DEPENDENCY_DATA_MISSING",
+                    "edge": {"producer": "BackboneNeck", "consumer": "DetectShard0",
+                             "plannedName": "/run/data/backbone-to-head0"},
+                    "observedAfterSelection": True, "reselected": False},
+        "response": {"present": False, "success": False},
+        "cleanup": {"qualification": "CLEANUP_COMPONENT_ONLY", "allChildrenReaped": True,
+                     "forced": False, "remainingChildren": 0, "deadlineSatisfied": True},
+        "elapsedMs": 812, "deadlineMs": 60000,
+    }
+    if not valid:
+        rejection.pop("response")
+    return {
+        "schema": "tiger-yolo-collection-input-v1", "status": "READY",
+        "runId": prepared["runId"], "candidateDigest": prepared["candidateDigest"],
+        "case": "negative-dependency", "kind": "expected-rejection",
+        "requestId": request_id, "attempt": 1,
+        "candidateDigestForRequest": candidate, "requestDeadlineMs": 60000,
+        "rejection": rejection,
+    }
+
+
+def test_collect_runs_expected_rejection_oracle_and_writes_immutable_verdict(tmp_path, monkeypatch, capsys):
+    module = submit_module()
+    run_id = "negative-run"
+    request_id = "/test/spec183/negative-run/requests/0"
+    prepared = {
+        "runId": run_id, "case": "negative-dependency",
+        "candidateDigest": "sha256:" + "b" * 64,
+        "profileDigest": "sha256:" + "c" * 64,
+        "plan": {"schema": "tiger-yolo-run-plan-v1", "runId": run_id,
+                 "case": "negative-dependency", "requests": [
+                     {"index": 0, "warmup": False, "requestId": request_id,
+                      "output": str(tmp_path / "results" / run_id / "node0")}]},
+    }
+    root = tmp_path / "results" / run_id
+    root.mkdir(parents=True)
+    (root / "prepare.json").write_text("unused")
+    (root / "collection-input.json").write_text(json.dumps(_negative_collection_input(prepared)))
+    monkeypatch.setattr(module, "_dispatch_report",
+                        lambda path: ({"qualification": "READY",
+                                       "documentDigest": prepared["profileDigest"]}, {}))
+    monkeypatch.setattr(module, "_load_prepared", lambda output, value: prepared)
+    args = SimpleNamespace(profile=tmp_path / "profile.json", run_id=run_id,
+                           output=tmp_path / "results")
+    assert module._collect(args) == 0
+    verdict = json.loads((root / "verdict.json").read_text())
+    assert verdict["qualification"] == "EXPECTED_REJECTION_PASS"
+    assert verdict["collectorSchema"] == "tiger-yolo-collector-v1"
+    assert json.loads(capsys.readouterr().out)["status"] == "PASS"
+    mode = (root / "verdict.json").stat().st_mode & 0o777
+    assert mode == 0o444
+    assert module._collect(args) == 0
+
+
+def test_collect_retains_first_rejection_without_promoting_bad_handoff(tmp_path, monkeypatch):
+    module = submit_module()
+    run_id = "negative-run"
+    prepared = {
+        "runId": run_id, "case": "negative-dependency",
+        "candidateDigest": "sha256:" + "b" * 64,
+        "profileDigest": "sha256:" + "c" * 64,
+        "plan": {"schema": "tiger-yolo-run-plan-v1", "runId": run_id,
+                 "case": "negative-dependency", "requests": [
+                     {"index": 0, "warmup": False,
+                      "requestId": "/test/spec183/negative-run/requests/0",
+                      "output": str(tmp_path / "results" / run_id / "node0")}]},
+    }
+    root = tmp_path / "results" / run_id
+    root.mkdir(parents=True)
+    (root / "collection-input.json").write_text(
+        json.dumps(_negative_collection_input(prepared, valid=False)))
+    monkeypatch.setattr(module, "_dispatch_report",
+                        lambda path: ({"qualification": "READY",
+                                       "documentDigest": prepared["profileDigest"]}, {}))
+    monkeypatch.setattr(module, "_load_prepared", lambda output, value: prepared)
+    args = SimpleNamespace(profile=tmp_path / "profile.json", run_id=run_id,
+                           output=tmp_path / "results")
+    assert module._collect(args) == module.INCOMPLETE
+    failure = json.loads((root / "collection-failure.json").read_text())
+    assert failure["schema"] == "tiger-yolo-collection-failure-v1"
+    assert failure["status"] == "FAIL"
+    assert not (root / "verdict.json").exists()

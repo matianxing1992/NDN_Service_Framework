@@ -407,6 +407,14 @@ profile、`run.sbatch`、五命令、候选 artifact、native/SIF/MiniNDN/Tiger 
 和 case；结构完整但缺少真实 dispatch/local-SIF/staging receipt 时只返回
 `INCOMPLETE/NOT_EVALUATED`，不创建 run、不冻结 bundle、不调用 Apptainer/Slurm。
 `prepare` 已接通未来 qualified dispatch 下的不可变 harness/run-plan 冻结路径，
-`collect` 只绑定已有 verdict；当前真实 application/collector/worker 仍未接线，
+`collect` 当时只绑定已有 verdict；当前真实 application/worker 仍未接线，
 因此 T004 继续 unchecked。相关边界回归与 journal/bundle 测试 **57 passed**；
 `run.sbatch` 已加入 harness 清单，但无 allocation 或未完成 T012 时 fail-closed。
+
+2026-09-07 T006 collector handoff checkpoint：`collect` 不再只读取任意外部
+`verdict.json`；它要求与 prepared run 绑定的 `collection-input.json`，严格解析
+normal/expected-rejection 两种 handoff，并分别调用 `collect_normal_verdict` /
+`finalize_expected_rejection`。成功结果带 `collectorSchema` 且原子不可覆盖写入；
+收集失败只保留首个 `collection-failure.json`。新增 2 个命令边界回归，
+`test_yolo_submit.py` 23 passed；这仍是 worker/fixture handoff 证据，没有真实
+native、GPU、MiniNDN 或 Tiger receipt，因此 T006/T007 继续 unchecked。

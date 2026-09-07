@@ -1,7 +1,9 @@
-"""Shared YOLO evidence checks. Publication readiness is NOT inference PASS.
+"""Shared YOLO evidence checks and final collection oracles.
 
-Numerical reanalysis is a component only. Full lifecycle/role/edge/cleanup
-collection is still pending in T006.
+The collection entrypoint accepts only a sealed worker handoff and joins
+independently retained lifecycle, numerical, role, edge, device, and cleanup
+evidence. Component qualifications remain distinct from native/Tiger runtime
+qualification.
 """
 from collections.abc import Mapping
 import re
