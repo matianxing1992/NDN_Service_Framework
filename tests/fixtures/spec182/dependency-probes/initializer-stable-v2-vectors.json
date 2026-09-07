@@ -1,0 +1,350 @@
+{
+  "schema": "spec182-initializer-stable-v2-vectors",
+  "normalizationRevision": "ndnsf-di-initializer-normalization-v2",
+  "oracle": "Manually encoded IEEE bit patterns and specified UTF-8 framing; no production normalizer invoked.",
+  "cases": [
+    {
+      "name": "bfloat16-raw",
+      "tensor": {
+        "dataType": "BFLOAT16",
+        "dims": [
+          2
+        ],
+        "rawDataHex": "803f0040"
+      },
+      "accepted": true,
+      "expected": {
+        "dtype": "(numpy.uint16, [('bfloat16', '<u2')])",
+        "shape": [
+          2
+        ],
+        "byteOrder": "little",
+        "payloadHex": "803f0040",
+        "byteLength": 4,
+        "contentDigest": "sha256:54114f538801f6678fbd079c23daf4084457385ab206deba2abd70d219cde832"
+      }
+    },
+    {
+      "name": "bfloat16-typed",
+      "tensor": {
+        "dataType": "BFLOAT16",
+        "dims": [
+          2
+        ],
+        "int32Data": [
+          16256,
+          16384
+        ]
+      },
+      "accepted": true,
+      "expected": {
+        "dtype": "(numpy.uint16, [('bfloat16', '<u2')])",
+        "shape": [
+          2
+        ],
+        "byteOrder": "little",
+        "payloadHex": "803f0040",
+        "byteLength": 4,
+        "contentDigest": "sha256:54114f538801f6678fbd079c23daf4084457385ab206deba2abd70d219cde832"
+      }
+    },
+    {
+      "name": "bfloat16-bit-patterns",
+      "tensor": {
+        "dataType": "BFLOAT16",
+        "dims": [
+          2
+        ],
+        "rawDataHex": "0080c17f"
+      },
+      "accepted": true,
+      "expected": {
+        "dtype": "(numpy.uint16, [('bfloat16', '<u2')])",
+        "shape": [
+          2
+        ],
+        "byteOrder": "little",
+        "payloadHex": "0080c17f",
+        "byteLength": 4,
+        "contentDigest": "sha256:906bd8134a9978be0083aa357de7cefcefffaa69370778a42e6674ae0cdf7273"
+      }
+    },
+    {
+      "name": "complex64-typed",
+      "tensor": {
+        "dataType": "COMPLEX64",
+        "dims": [
+          2
+        ],
+        "floatData": [
+          1.25,
+          -2.5,
+          -3,
+          4
+        ]
+      },
+      "accepted": true,
+      "expected": {
+        "dtype": "complex64",
+        "shape": [
+          2
+        ],
+        "byteOrder": "little",
+        "payloadHex": "0000a03f000020c0000040c000008040",
+        "byteLength": 16,
+        "contentDigest": "sha256:4f837ba8ed17ad9dc0a467fa1cb0d0e1785c3de55087bde32c6fcc00804c16b2"
+      }
+    },
+    {
+      "name": "complex128-typed",
+      "tensor": {
+        "dataType": "COMPLEX128",
+        "dims": [
+          2
+        ],
+        "doubleData": [
+          1.25,
+          -2.5,
+          -3,
+          4
+        ]
+      },
+      "accepted": true,
+      "expected": {
+        "dtype": "complex128",
+        "shape": [
+          2
+        ],
+        "byteOrder": "little",
+        "payloadHex": "000000000000f43f00000000000004c000000000000008c00000000000001040",
+        "byteLength": 32,
+        "contentDigest": "sha256:ace7e42703e2dbc8be91d55ace292d531d98d760ce167a309dc4f4d204613929"
+      }
+    },
+    {
+      "name": "string-alpha-unicode",
+      "tensor": {
+        "dataType": "STRING",
+        "dims": [
+          2
+        ],
+        "stringDataHex": [
+          "616c706861",
+          "e4bda0"
+        ]
+      },
+      "accepted": true,
+      "expected": {
+        "dtype": "string",
+        "shape": [
+          2
+        ],
+        "byteOrder": "na",
+        "payloadHex": "4e444e53462d4f4e4e582d535452494e472d76320002000000000000000500000000000000616c7068610300000000000000e4bda0",
+        "byteLength": 53,
+        "contentDigest": "sha256:0955a566d788fef0ecbc20b470f01b2b93a3373d821240b396104de5382c7c83"
+      }
+    },
+    {
+      "name": "string-a-bc",
+      "tensor": {
+        "dataType": "STRING",
+        "dims": [
+          2
+        ],
+        "stringDataHex": [
+          "61",
+          "6263"
+        ]
+      },
+      "accepted": true,
+      "expected": {
+        "dtype": "string",
+        "shape": [
+          2
+        ],
+        "byteOrder": "na",
+        "payloadHex": "4e444e53462d4f4e4e582d535452494e472d763200020000000000000001000000000000006102000000000000006263",
+        "byteLength": 48,
+        "contentDigest": "sha256:6042e2d54503d37b6108404fc33777285bc01be3f012e1bfb3b3bda5e8445734"
+      }
+    },
+    {
+      "name": "string-ab-c",
+      "tensor": {
+        "dataType": "STRING",
+        "dims": [
+          2
+        ],
+        "stringDataHex": [
+          "6162",
+          "63"
+        ]
+      },
+      "accepted": true,
+      "expected": {
+        "dtype": "string",
+        "shape": [
+          2
+        ],
+        "byteOrder": "na",
+        "payloadHex": "4e444e53462d4f4e4e582d535452494e472d763200020000000000000002000000000000006162010000000000000063",
+        "byteLength": 48,
+        "contentDigest": "sha256:edc1452039e3379942fd0300438e02aa26635eef6d40586fc1c91d7482a03921"
+      }
+    },
+    {
+      "name": "string-empty-tensor",
+      "tensor": {
+        "dataType": "STRING",
+        "dims": [
+          0
+        ],
+        "stringDataHex": []
+      },
+      "accepted": true,
+      "expected": {
+        "dtype": "string",
+        "shape": [
+          0
+        ],
+        "byteOrder": "na",
+        "payloadHex": "4e444e53462d4f4e4e582d535452494e472d7632000000000000000000",
+        "byteLength": 29,
+        "contentDigest": "sha256:492d0ad6b99e2d7dfcb3c03fca96f5847e110f7c0f37f228110e81609679063b"
+      }
+    },
+    {
+      "name": "string-empty-scalar",
+      "tensor": {
+        "dataType": "STRING",
+        "dims": [],
+        "stringDataHex": [
+          ""
+        ]
+      },
+      "accepted": true,
+      "expected": {
+        "dtype": "string",
+        "shape": [],
+        "byteOrder": "na",
+        "payloadHex": "4e444e53462d4f4e4e582d535452494e472d76320001000000000000000000000000000000",
+        "byteLength": 37,
+        "contentDigest": "sha256:ee2f4f40816bce2087bb2c53758890428f770f98a4c2deb780337ce4f1feeb01"
+      }
+    },
+    {
+      "name": "string-embedded-nul",
+      "tensor": {
+        "dataType": "STRING",
+        "dims": [
+          1
+        ],
+        "stringDataHex": [
+          "610062"
+        ]
+      },
+      "accepted": true,
+      "expected": {
+        "dtype": "string",
+        "shape": [
+          1
+        ],
+        "byteOrder": "na",
+        "payloadHex": "4e444e53462d4f4e4e582d535452494e472d76320001000000000000000300000000000000610062",
+        "byteLength": 40,
+        "contentDigest": "sha256:9f6941290036243e546f4c58c48afaa129fa0912f983fb76e78aac7ec5a5f694"
+      }
+    },
+    {
+      "name": "string-no-unicode-normalization",
+      "tensor": {
+        "dataType": "STRING",
+        "dims": [
+          2
+        ],
+        "stringDataHex": [
+          "c3a9",
+          "65cc81"
+        ]
+      },
+      "accepted": true,
+      "expected": {
+        "dtype": "string",
+        "shape": [
+          2
+        ],
+        "byteOrder": "na",
+        "payloadHex": "4e444e53462d4f4e4e582d535452494e472d76320002000000000000000200000000000000c3a9030000000000000065cc81",
+        "byteLength": 50,
+        "contentDigest": "sha256:6c45e48d314215267281bd50f133d14ce8e0881857591b5c512ab61d7d5d5f83"
+      }
+    },
+    {
+      "name": "bfloat16-short-raw",
+      "tensor": {
+        "dataType": "BFLOAT16",
+        "dims": [
+          2
+        ],
+        "rawDataHex": "803f"
+      },
+      "accepted": false,
+      "expectedError": "DI_ONNX_INITIALIZER_ENCODING_INVALID"
+    },
+    {
+      "name": "bfloat16-short-typed",
+      "tensor": {
+        "dataType": "BFLOAT16",
+        "dims": [
+          2
+        ],
+        "int32Data": [
+          16256
+        ]
+      },
+      "accepted": false,
+      "expectedError": "DI_ONNX_INITIALIZER_ENCODING_INVALID"
+    },
+    {
+      "name": "string-invalid-utf8",
+      "tensor": {
+        "dataType": "STRING",
+        "dims": [
+          1
+        ],
+        "stringDataHex": [
+          "ff"
+        ]
+      },
+      "accepted": false,
+      "expectedError": "DI_ONNX_INITIALIZER_ENCODING_INVALID"
+    },
+    {
+      "name": "string-count-mismatch",
+      "tensor": {
+        "dataType": "STRING",
+        "dims": [
+          2
+        ],
+        "stringDataHex": [
+          "61"
+        ]
+      },
+      "accepted": false,
+      "expectedError": "DI_ONNX_INITIALIZER_ENCODING_INVALID"
+    },
+    {
+      "name": "packed-int4-short",
+      "tensor": {
+        "dataType": "INT4",
+        "dims": [
+          3
+        ],
+        "rawDataHex": "7d"
+      },
+      "accepted": false,
+      "expectedError": "DI_ONNX_INITIALIZER_ENCODING_INVALID"
+    }
+  ]
+}
