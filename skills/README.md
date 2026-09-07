@@ -21,6 +21,7 @@
 各skill引用的仓库文件从目标 checkout 的 `git rev-parse --show-toplevel` 解析；
 `references/` 等skill内相对链接从该skill文件所在目录解析。因此复制到个人目录后仍须在目标repo工作。
 仓库 `AGENTS.md`、当前用户授权及活动feature决定范围，不恢复旧Spec固定实验目标。
+若干净clone没有本机专用的`AGENTS.md`，按当前用户要求及仓库constitution、架构文档执行；不要求复制另一台机器的个人规则或路径。
 
 ## Optional Installation Without Overwrite
 

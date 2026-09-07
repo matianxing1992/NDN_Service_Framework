@@ -32,7 +32,7 @@ description: Prepare or review NDNSF source and SIF delivery, diagnose container
 
 ## Delivery And Native Boundary
 
-- 固定 NDNSF、NAC-ABE、NDN-SVS 的实际版本；未提交改动须显式纳入来源身份，不能只记录 HEAD。
+- 固定 NDNSF、NAC-ABE、NDN-SVS 及NDNSD等直接ABI消费者的实际版本；未提交改动须显式纳入来源身份，不能只记录 HEAD。
   交付 definition、source archives、依赖 manifest 与校验说明；所有输入使用可迁移布局和摘要。
 - builder 在容器内重新编译选定依赖、Core 和两个 Python 扩展；禁止把宿主 `.so`、venv 或 Python.h 当成容器运行闭包。
   ABI变化后清理依赖对象，核对 include/lib/pkg-config、实际 loaded libraries、SOABI、RPATH 和版本。
