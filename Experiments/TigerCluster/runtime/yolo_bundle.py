@@ -23,7 +23,7 @@ REQUIRED_HARNESS_FILES = frozenset({
     "runtime/__init__.py", "runtime/baseline.py", "runtime/identities.py",
     "runtime/worker.py", "runtime/yolo_worker.py", "runtime/yolo_profile.py",
     "runtime/yolo_submission.py", "runtime/yolo_bundle.py", "runtime/yolo_result.py",
-    "apps/yolo.py", "jobs/yolo/submit.py", "jobs/yolo/run.sbatch",
+    "apps/yolo.py", "apps/yolo_network.py", "jobs/yolo/submit.py", "jobs/yolo/run.sbatch",
     "schemas/tiger-yolo-v1.schema.json", "requirements-operator.txt",
 })
 MANIFEST = "harness-manifest.json"

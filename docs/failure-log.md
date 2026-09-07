@@ -1,5 +1,11 @@
 # Failure Log and Evidence Index
 
+## 2026-09-07 — Network probe negative test must reject for the intended reason
+
+- The first in-memory Face fixture passed the corrupted-signature negative under a broad Exception assertion, but a stricter check exposed an incorrect ValidationFailure constructor (TypeError, not signature rejection).
+- Fixed the fixture to use the installed python-ndn constructor and require the exact expected exception class for signature/certificate/payload/timeout cases. Actual RSA verification is retained; no production protocol failure was found here.
+- Lesson: a negative security test must establish the rejection reason, not merely observe an exception. Evidence: Spec183 evidence/t005-network-readiness.md, final full focused 402 passed.
+
 ## 2026-09-07 — Spec183 protected grant material absent from launcher closure
 
 - Read-only audit of the maintained User found missing SPEC181_PROTECTION_EPOCH silently selects plaintext-v1, and its protected branch reads Provider private-key paths to derive public recipients. That historical fixture arrangement is incompatible with role-private HOME mounts.

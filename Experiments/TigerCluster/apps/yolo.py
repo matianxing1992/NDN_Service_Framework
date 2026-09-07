@@ -407,6 +407,41 @@ def wait_repo_ready(worker, *, seconds: float, peer_failure: Path | None = None)
     return receipt
 
 
+def wait_network_ready(worker, *, probe_id: str, seconds: float,
+                       peer_failure: Path | None = None):
+    """Run on both ranks concurrently; caller must accept BOTH fresh receipts."""
+    from runtime.yolo_profile import _read_plane
+    if (worker._preparation_binding is None or worker.mode not in ('two-node-gpu', 'negative-dependency')
+            or worker.rank not in (0, 1) or not isinstance(probe_id, str)
+            or not re.fullmatch(r'[a-f0-9]{32}', probe_id)
+            or isinstance(seconds, bool) or not isinstance(seconds, (int, float))
+            or not math.isfinite(seconds) or not 0 < seconds <= 120):
+        raise ValueError('YOLO_NETWORK_PROBE_SCOPE')
+    worker._verify_prepared_boundary()
+    plan = worker._preparation_binding[0]
+    roles = ('BackboneNeck', 'DetectShard0')
+    own, peer = roles[worker.rank], roles[1 - worker.rank]
+    expected = dict(schema='tiger-yolo-network-readiness-v1', probeId=probe_id,
+        producer=plan['identities'][own], peer=plan['identities'][peer],
+        receivedName=plan['identities'][peer] + '/SPEC183-NETWORK/' + probe_id + '/data',
+        status='READY', qualification='NOT_EVALUATED')
+    if worker.run_network_probe([PYTHON, '-m', 'apps.yolo_network',
+        '--namespace', plan['namespace'], '--role', own, '--probe-id', probe_id,
+        '--identity', plan['identities'][own], '--peer-identity', plan['identities'][peer],
+        '--seconds', str(seconds)], seconds=seconds + worker.cleanup_seconds,
+        peer_failure=peer_failure) != 0:
+        raise RuntimeError('YOLO_NETWORK_PROBE_EXIT')
+    path = worker.output / own / 'requests/network-readiness/receipt.json'
+    if any(p.is_symlink() for p in (path, *path.parents)):
+        raise ValueError('YOLO_NETWORK_PROBE_OUTPUT')
+    receipt = _read_plane(path)
+    if receipt != expected:
+        raise ValueError('YOLO_NETWORK_PROBE_RECEIPT')
+    worker._verify_prepared_boundary()
+    worker.check()
+    return receipt
+
+
 def run_requests(worker, plan: dict, *, package: Path, catalog_data_name: str,
                  catalog_signer: str, permission_wait_ms: int,
                  request_deadline_ms: int, process_timeout_seconds: float,

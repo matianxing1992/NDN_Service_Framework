@@ -164,7 +164,7 @@ sbatch，也不验证模型。所有操作者必须用同一已验证共享目�
 
 `runtime/yolo_bundle.py` 实现小型脚本 bundle 的 freeze/verify。清单格式为
 `schema=tiger-yolo-harness-v1, files={relative-name:{bytes,sha256}}`，明确登记
-14个运行脚本/schema/operator-lock 文件，不递归复制仓库。清单生成物可放在
+15个运行脚本/schema/operator-lock 文件（包含实际跨节点探测apps/yolo_network.py），不递归复制仓库。清单生成物可放在
 工作树外，通过显式source_root查找同一批已绑定字节；不会为了清单改源码目录。
 缺少真实 `apps/yolo.py`、`yolo_result.py`、`run.sbatch` 时仍不得构造生产 bundle，
 不得写假实现来填清单。清单完整性不能代替T007实际import/调用闭包审查。

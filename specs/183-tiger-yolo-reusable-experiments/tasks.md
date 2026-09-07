@@ -78,6 +78,8 @@ T001–T004形成 profile/launcher 实现骨架；可操作 MVP 还要求 T006 �
 
 ## Current Checkpoint
 
+2026-09-07 双向签名Data readiness组件已实现：apps/yolo_network.py，两rank并行、同一新probeId、真实RSA验签、精确name/payload、独立有限窗口；复用finite-role进程/HOME管理，探测不挂载model/GPU，退出后允许真正Provider启动。身份从prepared plan传入，不假设等于role名字。父层校验精确回执与退出，正式operator仍须同时接受两个方向；harness清单更新15文件。13项新增组件测试，总402 passed（25.00s），其中加密真实但Face是内存double。实际NFD/SIF/Tiger仍NOT_RUN；T005/T006/T007未闭合。详见evidence/t005-network-readiness.md；下一步完整worker协调/启动barrier及请求collector，不扩大实验。
+
 2026-09-07 Repo readiness组件已接入真实NetworkDistributedRepoClient.capability()接口，normal/FirstResponding、禁用Targeted fallback；有限User独占HOME且不挂载模型。启动probe有独立nonce/回执/调用目录、monotonic预算及外层进程deadline，拒绝过期/异Repo/非零退出/symlink证据，cleanup完成才写READY。18项新增测试，总389 focused（22.60s）；native RPC仍为测试double，真实SIF/NDN运行NOT_RUN。跨节点readiness、完整operator和T006仍待完成；T005/T007保持unchecked，不提交Tiger作业。
 
 2026-09-07 Controller publication readiness接入真实receipt共享校验器，MiniNDN和Tiger复用runtime/yolo_result.py，拒绝重复artifact行；宿主校验不导入SIF-only路径。Provider readiness绑定精确identity/单role READY，source已确认在权限安装之后，不代表model/CUDA ready。8项新增测试，总371 focused（22.30s）。yolo_result.py仅完成publication检查，T006完整collector仍待实现；正式operator、Repo/跨节点readiness及T005/T007仍未闭合。

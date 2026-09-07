@@ -123,7 +123,20 @@ class NodeRuntime:
         invocation cannot be overwritten/retried under the same name.
         This is process completion only, never an inference verdict.
         """
-        if self.closed or 'user' not in self.roles:
+        return self._run_finite_role('user', invocation, argv, package=package,
+                                     seconds=seconds, peer_failure=peer_failure)
+
+    def run_network_probe(self, argv: list[str], *, seconds: float,
+                          peer_failure: Path | None = None):
+        """Borrow one not-yet-started Provider HOME for a finite CPU-only probe."""
+        if self.mode not in ('two-node-gpu', 'negative-dependency') or self._preparation_binding is None:
+            raise ValueError('WORKER_NETWORK_PROBE_SCOPE')
+        role = 'BackboneNeck' if self.rank == 0 else 'DetectShard0'
+        return self._run_finite_role(role, 'network-readiness', argv, package=None,
+                                     seconds=seconds, peer_failure=peer_failure)
+
+    def _run_finite_role(self, role, invocation, argv, *, package, seconds, peer_failure):
+        if self.closed or role not in self.roles or role in self.started:
             raise ValueError('WORKER_USER_ROLE')
         self._verify_prepared_boundary()
         if not isinstance(invocation, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,64}', invocation):
@@ -136,7 +149,7 @@ class NodeRuntime:
         if not argv or not all(isinstance(arg, str) and '\x00' not in arg for arg in argv):
             raise ValueError('WORKER_ARGV')
         package = _directory(package) if package is not None else None
-        role_output = _directory(self.output / 'user', may_create=True)
+        role_output = _directory(self.output / role, may_create=True)
         if package is not None and (package == role_output or package in role_output.parents
                                     or role_output in package.parents):
             raise ValueError('WORKER_OUTPUT_OVERLAP')
@@ -147,16 +160,16 @@ class NodeRuntime:
                 raise RuntimeError('PEER_FAILED')
 
         check()
-        lease = RoleHomeLease(self.homes['user'])
-        tag, rows = 'user-' + invocation, []
-        record = {'role': 'user', 'invocation': invocation, 'pid': None}
+        lease = RoleHomeLease(self.homes[role])
+        tag, rows = role + '-' + invocation, []
+        record = {'role': role, 'invocation': invocation, 'pid': None}
         try:
             for name in ('state', 'requests'):
                 _directory(role_output / name, may_create=True).mkdir(parents=True, exist_ok=True, mode=0o700)
             (role_output / 'requests' / invocation).mkdir(mode=0o700)
             self.invocations.add(invocation)
             command = container_command(
-                self.profile, self.bundle, self.homes['user'], self.public,
+                self.profile, self.bundle, self.homes[role], self.public,
                 role_output, ['/usr/bin/env', 'NDNSF_DI_STATE_ROOT=/output/state', *argv],
                 node=self.node, artifacts=package)
             record['argv'] = command
