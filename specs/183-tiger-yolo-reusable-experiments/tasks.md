@@ -4,6 +4,12 @@
 **Branch**: `TigerClusterExperiments`
 **Status**: 2/17 tasks complete (T001 inventory and T003 focused component acceptance); IN_PROGRESS, no runtime PASS.
 
+2026-09-07 profile→issuer 输入映射及小文件 staging：明确模板/package/registry/
+私钥 locator/epoch/SIF/placement 摘要来源，生成 prepare-input-v2；重验公开
+摘要、0600 私钥和独占目标目录，不复制模型或执行外部程序。8 项新真实文件
+读写测试连同相关 profile/CLI/provision 回归 83 passed in 16.60s（合成 artifact，
+不是真实密钥或 SIF）。最终 local/run 调用和运行资格仍未接通，T004 保持 open。
+
 2026-09-07 准备接线审查：拆分放置候选摘要与运行候选摘要。内部 prepare-input-v2
 分别传递 placementCandidateDigest/runtimeCandidateDigest，前者用于 offers，
 后者用于 preparation receipt/worker。旧 v1 描述拒绝猜测转换；T004/T005 仍未关闭。

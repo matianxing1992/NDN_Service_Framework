@@ -130,6 +130,23 @@ wait/readiness 使用 monotonic deadline，并检查 child 和 peer failure。Co
 
 ### T004 implemented interface checkpoint
 
+准备输入映射的唯一来源：`workload.descriptor` 指向现有服务 JSON 模板，
+`workload.packageManifest` 指向 package 根的 manifest.json，`security.trustPolicy`
+指向 YOLO 的 contracts/trust-root-registry-v1.json。NDN trust-schema 仍由现有
+模板/策略 owner 生成，不由 launcher 重建。开发中的 profile schema 明确要求
+`security.authorityPrivateKey`（仅私钥文件 locator）和 `security.protectionEpoch`；
+不采用环境变量或猜测默认值。前者按 profile 所在目录解析，要求当前用户所有的
+非公开普通文件；不把路径计入 caseBehaviorDigest，公开 key 身份由 registry 绑定。
+后者必须包含于 registry 的 artifactPolicyAuthority.protectionEpochs。
+
+`resolve_provision_inputs` 从已校验的 runtime plane 读取 SIF 路径/hash，从
+package catalogue 读取 shared-backbone-two-shard-v1 的放置摘要，生成内部描述；
+不自行宣称 catalogue 签名、私钥匹配或运行资格通过。`stage_provision_inputs`
+重验公开文件摘要后仅复制小型模板/信任文件、0600 私钥及描述到私有 issuer
+目录，不复制模型，不把该目录加入公开 harness。真正的签名/私钥匹配仍由
+容器内现有 owner 完成。此映射和 staging 是内部边界，公开 prepare 仍只冻结
+非敏感脚本/计划；local/run 接线和资格门尚未完成。
+
 内部离线准备描述采用 `tiger-yolo-prepare-input-v2`，明确区分：
 `placementCandidateId/placementCandidateDigest` 来自已签名 YOLO catalogue，
 仅用于 Provider offer 的候选声明；`runtimeCandidateDigest` 来自本次已冻结的

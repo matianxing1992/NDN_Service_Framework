@@ -52,6 +52,48 @@ def _finite(value, code: str, *, minimum: float = 0.0, maximum: float = 3600.0) 
     return float(value)
 
 
+def stage_provision_inputs(resolved: dict, destination: Path) -> str:
+    """Stage only small issuer inputs, including a private 0600 key copy.
+
+    This is not the public byte-freezing prepare command. Call only at the
+    qualified local/allocation preparation boundary; never publish this private
+    input directory as part of the public harness or a result bundle.
+    """
+    import hashlib
+    from .identities import _read_credential, _create_credential, _credential_document
+    destination = Path(destination)
+    if (not destination.is_absolute() or ".." in destination.parts
+            or any(p.is_symlink() for p in (destination, *destination.parents))
+            or destination.exists() or not destination.parent.is_dir()):
+        raise OperatorError("OPERATOR_INPUT_DESTINATION")
+    rows = resolved["publicInputs"]
+    required = {"template.json", "trust/contracts/trust-root-registry-v1.json"}
+    if not isinstance(rows, dict) or not required.issubset(rows):
+        raise OperatorError("OPERATOR_INPUT_INVENTORY")
+    payloads = {}
+    for name, row in rows.items():
+        if name not in required and re.fullmatch(r"trust/contracts/[A-Za-z0-9_-][A-Za-z0-9_.-]*\.pub", name) is None:
+            raise OperatorError("OPERATOR_INPUT_PATH")
+        payload = _read_credential(Path(row["path"]))
+        if len(payload) != row["bytes"] or "sha256:" + hashlib.sha256(payload).hexdigest() != row["sha256"]:
+            raise OperatorError("OPERATOR_INPUT_CHANGED")
+        payloads[name] = payload
+    secret = _read_credential(Path(resolved["authorityPrivateKey"]), private=True)
+    destination.mkdir(mode=0o700, exist_ok=False)
+    for name, payload in payloads.items():
+        target = destination / name
+        target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        _create_credential(target, payload)
+    (destination / "private").mkdir(mode=0o700)
+    _create_credential(destination / "private/artifact-policy-authority.key", secret)
+    descriptor = destination / "prepare.json"
+    _credential_document(descriptor, resolved["descriptor"])
+    descriptor_digest = "sha256:" + hashlib.sha256(_read_credential(descriptor)).hexdigest()
+    from apps.yolo import preparation_arguments
+    preparation_arguments(descriptor, descriptor_digest)
+    return descriptor_digest
+
+
 def provision_run(*, runtime_profile: dict, bundle: Path, harness_digest: str,
                   inputs: Path, descriptor_digest: str, package: Path,
                   public: Path, private: Path, output: Path,

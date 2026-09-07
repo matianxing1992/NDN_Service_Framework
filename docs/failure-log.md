@@ -2219,3 +2219,19 @@ substitution even after exit 0. No real cluster failure or runtime PASS claimed.
 
 Lesson: fixtures must distinguish identities from different protocol layers;
 reusing a single digest can hide a broken producer/consumer contract.
+
+# 2026-09-07 — Spec183 operator profile lacked issuer input locators
+
+Symptom: provision_run existed but its authority key, protection epoch and
+public-input layout could not be derived from the concrete profile schema.
+The prose contract mentioned private locators without defining their fields.
+
+Fix: require the key locator and epoch explicitly; resolve the existing
+template/package/registry references, runtime-plane SIF and catalogue candidate
+into one v2 descriptor. Stage only rechecked small files and a 0600 key copy.
+The installed issuer still owns signature/key matching. Eight synthetic-input
+filesystem regressions cover mapping, private layout, stale bytes and rejection;
+no production key or runtime launch occurred.
+
+Lesson: a runtime function is not connected until every argument has a
+documented, consumed source. Do not fill missing values with wrapper defaults.

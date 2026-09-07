@@ -266,6 +266,8 @@ def load_operator_profile(path: Path, *, stage: str) -> dict:
 
     resolve_refs(value)
     value["runtime"]["apptainer"] = _operator_path(value["runtime"]["apptainer"], path.parent, local=True)
+    value["security"]["authorityPrivateKey"] = _operator_path(
+        value["security"]["authorityPrivateKey"], path.parent, local=True)
     for key in ("localArtifactRoot", "remoteArtifactRoot", "sharedRunRoot", "sharedLockRoot", "scratchRoot"):
         value["storage"][key] = _operator_path(value["storage"][key], path.parent,
                                               local=key == "localArtifactRoot")
@@ -323,6 +325,92 @@ def check_operator_profile(path: Path, *, stage: str) -> dict:
     return result
 
 
+def resolve_provision_inputs(path: Path, *, plan: dict, runtime_candidate_digest: str) -> dict:
+    """Resolve the offline issuer inputs without copying keys or launching.
+
+    trustPolicy is the pinned YOLO trust-root registry; descriptor is the
+    maintained service configuration template. Catalogue authentication and
+    private/public key matching remain with the installed issuer/adapter.
+    This mapping is NOT runtime qualification.
+    """
+    report = check_operator_profile(path, stage="dispatch")
+    loaded = load_operator_profile(path, stage="dispatch")
+    profile = loaded["profile"]
+    if (loaded["documentDigest"] != report["documentDigest"]
+            or plan.get("documentDigest") != report["documentDigest"]):
+        raise ClosureError("PROVISION_PROFILE_CHANGED")
+    if not isinstance(runtime_candidate_digest, str) or not HASH.fullmatch(runtime_candidate_digest):
+        raise ClosureError("PROVISION_RUNTIME_CANDIDATE")
+
+    def checked(row, name):
+        file = Path(row["path"])
+        _file_identity(file.parent, name, dict(row, path=file.name))
+        return file
+
+    template = checked(profile["workload"]["descriptor"], "template")
+    package_manifest = checked(profile["workload"]["packageManifest"], "packageManifest")
+    registry_path = checked(profile["security"]["trustPolicy"], "trustPolicy")
+    if package_manifest.name != "manifest.json" or registry_path.parent.name != "contracts":
+        raise ClosureError("PROVISION_INPUT_LAYOUT")
+    registry = _read_plane(registry_path)
+    epoch = profile["security"]["protectionEpoch"]
+    policy = registry.get("artifactPolicyAuthority") if isinstance(registry, dict) else None
+    if (not isinstance(policy, dict) or not isinstance(policy.get("protectionEpochs"), list)
+            or epoch not in policy["protectionEpochs"]):
+        raise ClosureError("PROVISION_POLICY_EPOCH")
+    public_inputs = {"template.json": dict(profile["workload"]["descriptor"]),
+                     "trust/contracts/trust-root-registry-v1.json": dict(profile["security"]["trustPolicy"])}
+    for owner in ("catalogue", "modelManifest", "artifactPolicyAuthority"):
+        row = registry.get(owner)
+        if not isinstance(row, dict):
+            raise ClosureError("PROVISION_TRUST_OWNER")
+        relative = row.get("publicKeyPath", "")
+        if not isinstance(relative, str) or not re.fullmatch(r"contracts/[A-Za-z0-9_-][A-Za-z0-9_.-]*\.pub", relative):
+            raise ClosureError("PROVISION_PUBLIC_KEY_PATH")
+        key = registry_path.parent.parent / relative
+        if (any(p.is_symlink() for p in (key, *key.parents)) or not key.is_file()
+                or key.stat().st_size > 65536):
+            raise ClosureError("PROVISION_PUBLIC_KEY_FILE")
+        identity = _file_identity(key.parent, owner, {"path": key.name, "bytes": key.stat().st_size,
+                                                    "sha256": row.get("publicKeySha256")})
+        public_inputs["trust/" + relative] = dict(identity, path=str(key))
+    private_key = Path(profile["security"]["authorityPrivateKey"])
+    try:
+        info = private_key.stat()
+    except OSError as exc:
+        raise ClosureError("PROVISION_PRIVATE_KEY_UNAVAILABLE") from exc
+    if (not stat.S_ISREG(info.st_mode) or info.st_mode & 0o077
+            or info.st_uid != os.getuid() or not 0 < info.st_size <= 65536):
+        raise ClosureError("PROVISION_PRIVATE_KEY_PERMISSIONS")
+    manifest = _read_plane(package_manifest)
+    catalogue = manifest.get("catalogue") if isinstance(manifest, dict) else None
+    if not isinstance(catalogue, dict) or not isinstance(catalogue.get("candidates"), list):
+        raise ClosureError("PROVISION_PLACEMENT_CANDIDATE")
+    candidates = catalogue["candidates"]
+    candidate_id = "shared-backbone-two-shard-v1"
+    candidates = [c for c in candidates if isinstance(c, dict) and c.get("candidateId") == candidate_id]
+    if (len(candidates) != 1 or not isinstance(candidates[0].get("candidateDigest"), str)
+            or not HASH.fullmatch(candidates[0]["candidateDigest"])):
+        raise ClosureError("PROVISION_PLACEMENT_CANDIDATE")
+    runtime_path = checked(profile["release"]["runtime"], "runtime")
+    image = _read_plane(runtime_path)["files"]["sif"]
+    # The runtime plane has already validated relative file membership.
+    sif = runtime_path.parent / image["path"]
+    descriptor = {"schema": "tiger-yolo-prepare-input-v2", "plan": plan,
+        "templateDigest": profile["workload"]["descriptor"]["sha256"],
+        "manifestDigest": profile["workload"]["packageManifest"]["sha256"],
+        "registryDigest": profile["security"]["trustPolicy"]["sha256"],
+        "protectionEpoch": epoch, "placementCandidateId": candidate_id,
+        "placementCandidateDigest": candidates[0]["candidateDigest"],
+        "runtimeCandidateDigest": runtime_candidate_digest}
+    return {"qualification": "NOT_EVALUATED", "descriptor": descriptor,
+            "publicInputs": public_inputs, "authorityPrivateKey": str(private_key),
+            "package": str(package_manifest.parent),
+            "runtimeProfile": {"apptainer": profile["runtime"]["apptainer"],
+                               "apptainerVersion": profile["runtime"]["apptainerVersion"],
+                               "sif": str(sif), "sifSha256": image["sha256"][7:]}}
+
+
 def resolve_run_plan(path: Path, *, stage: str, case: str, run_id: str, output: Path) -> dict:
     """Resolve a deterministic, non-executable run description for review.
 
@@ -372,6 +460,9 @@ def resolve_run_plan(path: Path, *, stage: str, case: str, run_id: str, output: 
     behavior.pop("release")
     behavior.pop("profileId")
     behavior["runtime"].pop("apptainer")
+    # The trusted public key is content-bound through trustPolicy. A private
+    # key locator is physical deployment data, not another policy identity.
+    behavior["security"].pop("authorityPrivateKey")
     behavior["storage"] = {key: profile["storage"][key] for key in ("peakBytes", "marginBytes")}
     case_behavior = {"profile": behavior, "case": case, "nodes": nodes,
                      "schedule": schedule}

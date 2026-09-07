@@ -80,10 +80,12 @@
     }},
     "security": {
       "type": "object", "additionalProperties": false,
-      "required": ["identityNamespace", "trustPolicy"],
+      "required": ["identityNamespace", "trustPolicy", "authorityPrivateKey", "protectionEpoch"],
       "properties": {
         "identityNamespace": {"type": "string", "pattern": "^/[A-Za-z0-9_-][A-Za-z0-9_./-]*$"},
-        "trustPolicy": {"$ref": "#/definitions/file"}
+        "trustPolicy": {"$ref": "#/definitions/file"},
+        "authorityPrivateKey": {"$ref": "#/definitions/path"},
+        "protectionEpoch": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$", "not": {"const": "plaintext-v1"}}
       }
     },
     "timing": {
