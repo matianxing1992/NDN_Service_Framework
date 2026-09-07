@@ -176,8 +176,10 @@ sbatch，也不验证模型。所有操作者必须用同一已验证共享目�
 
 ### Application Sync name and startup coordination
 
-The canonical rule is `/<appName>/sync`, where `appName` is the application's
-NDN instance namespace, not a Provider identity or the template's display label.
+The canonical rule is `applicationName + "/sync"`, where `applicationName` is
+already the application's absolute NDN instance namespace (for example,
+`/appname` becomes `/appname/sync`). It is not a Provider identity or the
+template's display label.
 The resolved plan records `applicationName`; preparation records the same value
 as `runtime.application_name` and sets `group = applicationName + '/sync'`.
 For isolated Spec183 runs the default application name is the unique run

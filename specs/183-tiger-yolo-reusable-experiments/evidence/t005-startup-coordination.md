@@ -12,8 +12,9 @@ Repo capability readiness; the full per-node Provider set must be ready before
 returning RUNTIME_READY. Errors are published without replacing the first
 exception, and the outer owner must always tear down its children.
 
-Application naming follows the user's correction: `/<appName>/sync`. The plan
-records applicationName and the prepared config records runtime.application_name;
+Application naming follows the user's correction: `applicationName + "/sync"`
+(`/appname` becomes `/appname/sync`). The plan records applicationName and
+the prepared config records runtime.application_name;
 group is derived from it, not provider_prefix. The default Spec183 appName is
 its isolated run namespace; the old template's application display label is
 not an NDN routing prefix. Custom application subnames remain separate from
