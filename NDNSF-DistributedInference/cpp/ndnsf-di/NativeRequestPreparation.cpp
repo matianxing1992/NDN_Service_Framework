@@ -167,6 +167,10 @@ NativeArtifactBinding NativeRequestPreparation::ensureArtifacts(
       throw std::runtime_error("DI_NATIVE_ARTIFACT_BINDING_MISMATCH");
     }
   }
+  result.requestId = control.requestId;
+  result.attempt = control.attempt;
+  result.modelDigest = model.descriptor.contentDigest;
+  result.graphDigest = model.graph.graphDigest;
   return result;
 }
 

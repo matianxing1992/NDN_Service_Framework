@@ -79,6 +79,14 @@ std::string canonicalCore(const NativePlacementPlanCore& core)
 
 void NativePlacementPlanCore::validate() const
 {
+  artifacts.validate();
+  if (artifacts.requestId != requestId || artifacts.attempt != attempt ||
+      artifacts.modelDigest != modelDigest || artifacts.graphDigest != graphDigest ||
+      artifacts.artifactDigestByRole != artifactDigestByRole ||
+      requesterIdentity.empty() || requesterIdentity.front() != '/' ||
+      protectionEpoch.empty() || expiresAtMs == 0) {
+    throw std::invalid_argument("native sealed artifact/request binding is incomplete");
+  }
   if (requestId.empty() || attempt == 0 || !isDigest(modelDigest) ||
       !isDigest(graphDigest) || !isDigest(ackClosedDigest) ||
       !isDigest(candidateDigest) || executionPlan.roles.empty() ||
@@ -87,6 +95,7 @@ void NativePlacementPlanCore::validate() const
   }
   strategy.validate();
   std::set<std::string> roles(executionPlan.roles.begin(), executionPlan.roles.end());
+  std::set<std::string> providers;
   if (roles.size() != executionPlan.roles.size() ||
       assignment.providerByRole.size() != roles.size() ||
       artifactDigestByRole.size() != roles.size() ||
@@ -103,6 +112,9 @@ void NativePlacementPlanCore::validate() const
     const auto offer = offerDigestByProvider.find(provider->second);
     if (offer == offerDigestByProvider.end() || !isDigest(offer->second)) {
       throw std::invalid_argument("native placement plan core offer binding is invalid");
+    }
+    if (!providers.insert(provider->second).second) {
+      throw std::invalid_argument("native plan requires one role per Provider");
     }
   }
 }
@@ -132,7 +144,8 @@ void NativeSealedPlan::validate() const
 
 NativePlacementPlanCore NativePlanSealer::sealCore(
   const NativePlanningSnapshot& snapshot,
-  const NativePlacementProposal& proposal)
+  const NativePlacementProposal& proposal,
+  const NativePlanSealingInputs& inputs)
 {
   snapshot.validate();
   proposal.strategy.validate();
@@ -147,6 +160,11 @@ NativePlacementPlanCore NativePlanSealer::sealCore(
   }
   if (proposal.assignment.providerByRole.size() != proposal.executionPlan.roles.size()) {
     throw std::invalid_argument("placement proposal does not cover plan roles");
+  }
+  const auto nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+    std::chrono::system_clock::now().time_since_epoch()).count();
+  if (nowMs < 0 || inputs.expiresAtMs <= static_cast<std::uint64_t>(nowMs)) {
+    throw std::invalid_argument("native sealing request expiry is not active");
   }
   for (const auto& item : proposal.assignment.providerByRole) {
     const auto found = std::find_if(snapshot.offers.begin(), snapshot.offers.end(),
@@ -177,9 +195,11 @@ NativePlacementPlanCore NativePlanSealer::sealCore(
       core.offerDigestByProvider.emplace(offer.provider, offer.offerDigest);
     }
   }
-  for (const auto& role : core.executionPlan.roles) {
-    core.artifactDigestByRole.emplace(role, nativePlanningDigest("role-artifact|" + role));
-  }
+  core.artifacts = inputs.artifacts;
+  core.artifactDigestByRole = inputs.artifacts.artifactDigestByRole;
+  core.requesterIdentity = inputs.requesterIdentity;
+  core.protectionEpoch = inputs.protectionEpoch;
+  core.expiresAtMs = inputs.expiresAtMs;
   core.coreDigest = nativePlanningDigest(canonicalCore(core));
   core.validate();
   return core;
@@ -203,8 +223,16 @@ NativeProviderGrantView NativePlanSealer::grantView(
   if (role == core.assignment.providerByRole.end()) {
     throw std::invalid_argument("provider is not assigned by the plan");
   }
+  if (core.offerDigestByProvider.at(provider.provider) != provider.offerDigest) {
+    throw std::invalid_argument("grant view offer differs from the sealed ACK offer");
+  }
+  if (security.requireProtectedArtifacts == (core.protectionEpoch == "plaintext-v1")) {
+    throw std::invalid_argument("grant view protection epoch disagrees with policy");
+  }
   return {provider.provider, role->first, core.coreDigest, security.policyDigest,
-          core.modelDigest, core.graphDigest, core.artifactDigestByRole.at(role->first)};
+          core.modelDigest, core.graphDigest, core.artifactDigestByRole.at(role->first),
+          core.requesterIdentity, core.requestId, core.attempt, core.artifacts.manifestDigest,
+          core.protectionEpoch, core.expiresAtMs};
 }
 
 NativeSealedPlan NativePlanSealer::finalizeSecurity(

@@ -3,6 +3,7 @@
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp"
 
 #include <cstdint>
 #include <map>
@@ -42,8 +43,23 @@ struct NativePlacementPlanCore
   std::map<std::string, std::string> offerDigestByProvider;
   std::map<std::string, std::string> artifactDigestByRole;
   std::string coreDigest;
+  NativeArtifactBinding artifacts;
+  std::string requesterIdentity;
+  std::string protectionEpoch;
+  std::uint64_t expiresAtMs = 0;
 
   void validate() const;
+};
+
+/** Authenticated publication output and request-owner security context.
+ * The requester passes its original wire expiry, never a new relative TTL.
+ * No artifact identity is synthesized from a role or Provider name. */
+struct NativePlanSealingInputs
+{
+  NativeArtifactBinding artifacts;
+  std::string requesterIdentity;
+  std::string protectionEpoch;
+  std::uint64_t expiresAtMs = 0;
 };
 
 struct NativeProviderGrantView
@@ -79,7 +95,8 @@ class NativePlanSealer final
 public:
   static NativePlacementPlanCore sealCore(
     const NativePlanningSnapshot& snapshot,
-    const NativePlacementProposal& proposal);
+    const NativePlacementProposal& proposal,
+    const NativePlanSealingInputs& inputs);
 
   static NativeProviderGrantView grantView(
     const NativePlacementPlanCore& core,
