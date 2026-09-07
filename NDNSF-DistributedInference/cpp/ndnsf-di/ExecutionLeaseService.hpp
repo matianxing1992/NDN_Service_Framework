@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -73,16 +74,40 @@ encodeLeaseOperationResponse(const LeaseOperationResponse& response);
 LeaseOperationResponse
 decodeLeaseOperationResponse(const std::string& wire);
 
+/// Per-host shared lease state: one Core table and one prepare mutex shared
+/// by every target ExecutionLeaseService instance of the same provider host.
+/// All targets serialize slot selection through the same mutex so one target
+/// cannot bypass reservations made by another; the table epoch is the host
+/// boot epoch and is not resettable per target.
+class SharedExecutionLeaseState
+{
+public:
+  explicit
+  SharedExecutionLeaseState(std::string providerEpoch = {});
+
+  ndn_service_framework::ProviderExecutionLeaseTable table;
+  std::mutex prepareMutex;
+};
+
 class ExecutionLeaseService
 {
 public:
   using ConflictKeyResolver = std::function<std::vector<std::string>(
     const LeaseOperationRequest&, const ExecutionLeaseRequestContext&)>;
 
+  /// Retained legacy constructor: owns a private shared state, so every
+  /// instance keeps the exact single-target semantics of the pre-T009-B API.
   ExecutionLeaseService(std::string providerName,
                         std::string targetServiceName,
                         ConflictKeyResolver conflictKeyResolver,
                         std::string providerEpoch = {});
+
+  /// Host constructor: routes this target through the host-wide shared
+  /// state (table + prepare mutex) instead of a private one.
+  ExecutionLeaseService(std::string providerName,
+                        std::string targetServiceName,
+                        ConflictKeyResolver conflictKeyResolver,
+                        std::shared_ptr<SharedExecutionLeaseState> sharedState);
 
   std::string
   handle(const ExecutionLeaseRequestContext& context,
@@ -101,8 +126,7 @@ private:
   std::string m_providerName;
   std::string m_targetServiceName;
   ConflictKeyResolver m_conflictKeyResolver;
-  ndn_service_framework::ProviderExecutionLeaseTable m_table;
-  std::mutex m_prepareMutex;
+  std::shared_ptr<SharedExecutionLeaseState> m_sharedState;
 };
 
 } // namespace ndnsf::di

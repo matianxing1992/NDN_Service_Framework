@@ -244,16 +244,33 @@ decodeLeaseOperationResponse(const std::string& wire)
   return response;
 }
 
+SharedExecutionLeaseState::SharedExecutionLeaseState(std::string providerEpoch)
+  : table(std::move(providerEpoch))
+{
+}
+
 ExecutionLeaseService::ExecutionLeaseService(
   std::string providerName, std::string targetServiceName,
   ConflictKeyResolver conflictKeyResolver,
   std::string providerEpoch)
+  : ExecutionLeaseService(std::move(providerName), std::move(targetServiceName),
+                          std::move(conflictKeyResolver),
+                          std::make_shared<SharedExecutionLeaseState>(
+                            std::move(providerEpoch)))
+{
+}
+
+ExecutionLeaseService::ExecutionLeaseService(
+  std::string providerName, std::string targetServiceName,
+  ConflictKeyResolver conflictKeyResolver,
+  std::shared_ptr<SharedExecutionLeaseState> sharedState)
   : m_providerName(std::move(providerName))
   , m_targetServiceName(std::move(targetServiceName))
   , m_conflictKeyResolver(std::move(conflictKeyResolver))
-  , m_table(std::move(providerEpoch))
+  , m_sharedState(std::move(sharedState))
 {
-  if (m_providerName.empty() || m_targetServiceName.empty() || !m_conflictKeyResolver) {
+  if (m_providerName.empty() || m_targetServiceName.empty() || !m_conflictKeyResolver ||
+      !m_sharedState) {
     throw std::invalid_argument("execution lease service requires provider and resolver");
   }
 }
@@ -286,9 +303,27 @@ ExecutionLeaseService::handle(const ExecutionLeaseRequestContext& context,
     return encodeLeaseOperationResponse(response);
   }
 
+  if (request.operation != LeaseOperation::Prepare) {
+    // Shared table: the non-Prepare wire ops carry only leaseId/epoch/
+    // requester/idempotency, so an existing row must first be pinned to this
+    // target. A cross-target row is refused here before Core sees it (a
+    // replayed result of another service's lease must never be returned
+    // through this route); an unknown lease keeps Core's missing/expired
+    // handling and Core still owns requester/epoch/state/replay checks.
+    const auto existing = m_sharedState->table.find(request.leaseId);
+    if (existing && existing->serviceName != m_targetServiceName) {
+      LeaseOperationResponse response;
+      response.operation = request.operation;
+      response.reasonCode = "LEASE_SERVICE_MISMATCH";
+      return encodeLeaseOperationResponse(response);
+    }
+  }
+
   ndn_service_framework::ExecutionLeaseResult result;
   if (request.operation == LeaseOperation::Prepare) {
-    std::lock_guard<std::mutex> lock(m_prepareMutex);
+    // All targets of the host serialize resolver+prepare on the shared mutex,
+    // so slot selection cannot race across services of the same host.
+    std::lock_guard<std::mutex> lock(m_sharedState->prepareMutex);
     ndn_service_framework::GenericExecutionLease lease;
     lease.providerName = m_providerName;
     lease.requesterName = context.requesterIdentity;
@@ -306,24 +341,28 @@ ExecutionLeaseService::handle(const ExecutionLeaseRequestContext& context,
     }
     lease.expiresAtMs = request.expiresAtMs;
     lease.idempotencyKey = request.idempotencyKey;
-    result = m_table.prepare(std::move(lease), nowMs);
+    result = m_sharedState->table.prepare(std::move(lease), nowMs);
   }
   else if (request.operation == LeaseOperation::Commit) {
-    result = m_table.commit(request.leaseId, request.providerEpoch,
-                            context.requesterIdentity, request.idempotencyKey, nowMs);
+    result = m_sharedState->table.commit(request.leaseId, request.providerEpoch,
+                                         context.requesterIdentity,
+                                         request.idempotencyKey, nowMs);
   }
   else if (request.operation == LeaseOperation::Abort) {
-    result = m_table.abort(request.leaseId, request.providerEpoch,
-                           context.requesterIdentity, request.idempotencyKey, nowMs);
+    result = m_sharedState->table.abort(request.leaseId, request.providerEpoch,
+                                        context.requesterIdentity,
+                                        request.idempotencyKey, nowMs);
   }
   else if (request.operation == LeaseOperation::Renew) {
-    result = m_table.renew(request.leaseId, request.providerEpoch,
-                           context.requesterIdentity, request.idempotencyKey,
-                           nowMs, request.expiresAtMs);
+    result = m_sharedState->table.renew(request.leaseId, request.providerEpoch,
+                                        context.requesterIdentity,
+                                        request.idempotencyKey, nowMs,
+                                        request.expiresAtMs);
   }
   else {
-    result = m_table.release(request.leaseId, request.providerEpoch,
-                             context.requesterIdentity, request.idempotencyKey, nowMs);
+    result = m_sharedState->table.release(request.leaseId, request.providerEpoch,
+                                          context.requesterIdentity,
+                                          request.idempotencyKey, nowMs);
   }
   return encodeLeaseOperationResponse(fromCore(request.operation, result));
 }
@@ -331,7 +370,7 @@ ExecutionLeaseService::handle(const ExecutionLeaseRequestContext& context,
 ndn_service_framework::ProviderExecutionLeaseTable&
 ExecutionLeaseService::table() noexcept
 {
-  return m_table;
+  return m_sharedState->table;
 }
 
 LeaseOperationResponse
