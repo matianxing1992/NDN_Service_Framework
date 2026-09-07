@@ -162,6 +162,12 @@ negative handoff 固定携带 request/attempt/deadline 和独立的
 `tiger-yolo-expected-rejection-v1` record。收集器拒绝符号链接、缺失/重复字段、
 错误 case coverage 和不匹配的 prepared candidate。
 
+正常 handoff 只能由外层 coordinator 在所有 rank 返回后调用
+`runtime.yolo_operator.finalize_normal_collection()`；该函数要求完整 rank
+receipt，再由 `runtime.yolo_collection.publish_normal_handoff()` 重新读取实际
+`node-receipt.json` 并以 exclusive create 发布。worker 不得提前写 partial
+handoff，collector 也不得从退出码、READY marker 或缺失文件推断 PASS。
+
 运行预览是 `PLANNED`，不是冻结 bundle 或 DI Selection。它复用 `assigned_roles`，
 包含独立 role identity 名、4 Provider 的预期 rank/device、逐请求 ID/输出和未解决项；
 真实 allocation 留为 null。local-cpu 和 single-node-gpu 使用 1 warmup+1 measured；
@@ -250,7 +256,8 @@ numerical-component acceptance is not an end-to-end or GPU verdict.
 
 `runtime/yolo_bundle.py` 实现小型脚本 bundle 的 freeze/verify。清单格式为
 `schema=tiger-yolo-harness-v1, files={relative-name:{bytes,sha256}}`，明确登记
-15个运行脚本/schema/operator-lock 文件（包含实际跨节点探测apps/yolo_network.py），不递归复制仓库。清单生成物可放在
+16个运行脚本/schema/operator-lock 文件（包含实际跨节点探测apps/yolo_network.py和
+worker-to-collector handoff），不递归复制仓库。清单生成物可放在
 工作树外，通过显式source_root查找同一批已绑定字节；不会为了清单改源码目录。
 缺少真实 `apps/yolo.py`、`yolo_result.py`、`run.sbatch` 时仍不得构造生产 bundle，
 不得写假实现来填清单。清单完整性不能代替T007实际import/调用闭包审查。

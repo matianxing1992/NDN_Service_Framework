@@ -191,6 +191,46 @@ def run_rank(*, plan: dict, profile: dict, mode: str, rank: int, bundle: Path,
         allocation_expected=allocation_expected)
 
 
+def finalize_normal_collection(*, plan: dict, rank_results: dict, node_roots: dict,
+                               collection_path: Path, references: list[dict],
+                               runtime_candidate_digest: str,
+                               placement_candidate_id: str,
+                               placement_candidate_digest: str, graph_digest: str,
+                               catalogue_digest: str, providers_by_role: dict,
+                               certified_graph: dict,
+                               allocation_expected: dict | None = None) -> dict:
+    """Join completed rank returns and publish the collector handoff.
+
+    This is the outer coordinator boundary for a future ``srun`` owner.  It
+    runs only after every expected rank has returned a clean worker receipt;
+    the handoff writer then re-reads each retained ``node-receipt.json`` and
+    binds its bytes and preparation digest.  No result or verdict is inferred
+    from a rank exit code or from an incomplete rank map.
+    """
+    if not isinstance(plan, dict) or plan.get("case") not in {
+            "local-cpu", "single-node-gpu", "two-node-gpu"}:
+        raise OperatorError("OPERATOR_COLLECTION_CASE")
+    expected = {0, 1} if plan["case"] == "two-node-gpu" else {0}
+    if (not isinstance(rank_results, dict) or set(rank_results) != expected
+            or any(type(rank) is not int for rank in rank_results)):
+        raise OperatorError("OPERATOR_COLLECTION_RANKS")
+    for rank, result in rank_results.items():
+        if (not isinstance(result, dict) or result.get("rank") != rank
+                or result.get("runId") != plan.get("runId")
+                or result.get("case") != plan.get("case")
+                or result.get("qualification") != "NODE_CLEANUP_COMPONENT_ONLY"):
+            raise OperatorError("OPERATOR_COLLECTION_RECEIPT")
+    from .yolo_collection import publish_normal_handoff
+    return publish_normal_handoff(
+        collection_path, plan=plan, node_roots=node_roots, references=references,
+        runtime_candidate_digest=runtime_candidate_digest,
+        placement_candidate_id=placement_candidate_id,
+        placement_candidate_digest=placement_candidate_digest,
+        graph_digest=graph_digest, catalogue_digest=catalogue_digest,
+        providers_by_role=providers_by_role, certified_graph=certified_graph,
+        allocation_expected=allocation_expected)
+
+
 def descriptor_digest(descriptor: dict) -> str:
     """Return a stable digest for an operator descriptor without reading paths."""
     if not isinstance(descriptor, dict):

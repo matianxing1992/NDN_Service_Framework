@@ -418,3 +418,14 @@ normal/expected-rejection 两种 handoff，并分别调用 `collect_normal_verdi
 收集失败只保留首个 `collection-failure.json`。新增 2 个命令边界回归，
 `test_yolo_submit.py` 23 passed；这仍是 worker/fixture handoff 证据，没有真实
 native、GPU、MiniNDN 或 Tiger receipt，因此 T006/T007 继续 unchecked。
+
+2026-09-07 T006 handoff wiring checkpoint：新增
+`runtime.yolo_operator.finalize_normal_collection()` 与
+`runtime.yolo_collection.publish_normal_handoff()`。外层 coordinator 只有在完整
+rank 返回后才能发布 `collection-input.json`；发布器重新读取并绑定每个真实
+`node-receipt.json`，固定 node root、reference 目录、candidate/preparation digest，
+GPU case 还要求 allocation/probe 文件和期望字段。6 个新增边界测试通过，随后
+`test_yolo_submit.py` 23 passed；详见
+[t006-collector-handoff.md](evidence/t006-collector-handoff.md)。这仍未连接实际
+Slurm worker/collector，不能关闭 T006/T007，也不能声称有 native/GPU/MiniNDN/Tiger
+证据。

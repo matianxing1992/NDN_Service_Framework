@@ -32,7 +32,7 @@ The operator still must require BOTH directional receipts before proceeding.
 This demonstrates only the diagnostic component's contract, not permissions,
 model assembly, CUDA or full inference readiness.
 
-The frozen harness now contains 15 explicit required files, including the
+The frozen harness now contains 16 explicit required files, including the
 real `apps/yolo_network.py`; missing `run.sbatch` continues to prevent release.
 
 ## Evidence and limits

@@ -23,7 +23,7 @@ REQUIRED_HARNESS_FILES = frozenset({
     "runtime/__init__.py", "runtime/baseline.py", "runtime/identities.py",
     "runtime/worker.py", "runtime/yolo_worker.py", "runtime/yolo_profile.py",
     "runtime/yolo_submission.py", "runtime/yolo_bundle.py", "runtime/yolo_result.py",
-    "runtime/yolo_operator.py",
+    "runtime/yolo_operator.py", "runtime/yolo_collection.py",
     "runtime/yolo_launch_witness.py",
     "runtime/yolo_gpu_probe.py",
     "runtime/yolo_allocation.py",

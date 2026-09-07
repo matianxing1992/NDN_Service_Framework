@@ -7,7 +7,8 @@ Tiger分布式推理、SIF构建及Slurm配置的统一入口。当前生产/合
 单节点 GPU、两节点分布式推理及独立 allocation 复跑。
 详见 [tasks](../../specs/183-tiger-yolo-reusable-experiments/tasks.md)。
 状态为 PLANNED / NOT_RUN；`jobs/yolo/submit.py` 和 `profiles/yolo-two-node.json`
-是计划交付文件，尚不能运行。新 Tiger 专用脚本、配置、schema、测试工具和操作说明
+是计划交付文件，尚不能运行。当前 rank→collector handoff 已有 fail-closed
+组件接线，但没有替代真实 worker/SIF/Tiger 资格。新 Tiger 专用脚本、配置、schema、测试工具和操作说明
 都放本目录，复用现有 runtime；通用 Core/DI/Repo 源码仍归原 owner。
 
 ## Layout And Ownership
