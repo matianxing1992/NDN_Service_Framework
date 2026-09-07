@@ -21,6 +21,18 @@ failure-log，记录 identity b6710fd6 稳定正确。deferred：远端 storage
 site roots 与 oracle 数值契约待 T005/T006/T012 wiring 验证；release.gates
 仍空，local-cpu 运行资格待真实 prepare+local 执行 receipt。
 
+2026-09-07 T011 构建前置推进：生成 development-20260907 锁（四仓库
+revision 重 pin 当前 HEAD；20260906 锁作为 spec180 冻结输入不动）。修两处
+构建前置：sealer 排除 NAC-ABE 未跟踪示例证书（examples/example-trust-anchor.cert，
+不参与构建）；NDNSD 仓库提交其未提交的 pkg-config Cflags 修复（57d7431）。
+prepare-development-handoff 现 SOURCE_READY（sourceSealDigest 2aea8a0e），
+development definition 渲染完成（definitionSha256 c4f33beb）。build-local-sif.sh
+的 Spec183 路径要求 --spec183-host-gate（lib/spec183_yolo_host_gate.py 验证
+tiger-yolo-host-minindn-manifest-v1 PASS）——即 T010 MiniNDN 真实 host
+receipt。T008 构建链（NAC-ABE+NDN-SVS → NDNSD → NDNSF → 两个 Python
+扩展，-j2 干净根）是下一个实现块；host gate 不可伪造，T011 构建保持
+NOT_RUN 直到 T008→T009→T010 闭合。
+
 2026-09-07 T011 启动条件与输入演进：source seal 已成功
 （prepare-local-sif-source.py：workspace.tar 455 文件 + nacAbe/ndnSvs/ndnSd
 三个依赖归档，sealDigest 3603c895）。prepare-development-handoff.py

@@ -2397,3 +2397,28 @@ Lesson: a development driver can prove the infrastructure layer of a sealed
 image immediately; application-layer interface drift between an old sealed
 image and current harness sources is a rebuild trigger, not something to
 paper over with runtime file injection.
+
+# 2026-09-07 — T011 source handoff: revision cycle and cross-repo obstacles
+
+Symptom: prepare-development-handoff rejected the checkout three ways in
+sequence: HANDOFF_CHECKOUT_REVISION (frozen 20260906 lock pins
+Experimental@447f7584 while the working branch carries the Spec183 fixes),
+HANDOFF_SOURCE_UNTRACKED:examples/example-trust-anchor.cert (untracked
+residue in the NAC-ABE checkout, not referenced by its build), and
+HANDOFF_CHECKOUT_DIRTY on NDNSD (an uncommitted pkg-config Cflags fix).
+
+Cause: the 20260906 lock is a frozen Spec180 input and must not be edited;
+the sealer's clean-tree gate intentionally refuses dirty checkouts, and the
+NAC-ABE file is not part of the built library.
+
+Fix: generated a development-20260907 lock re-pinning all four repository
+revisions to their current HEADs (old lock untouched); excluded the
+untracked NAC-ABE example cert in the Spec183 sealer; committed the NDNSD
+Cflags fix in its own repository (57d7431) and re-pinned it.  The handoff
+bundle now seals SOURCE_READY (sourceSealDigest 2aea8a0e) and the
+development definition renders (definitionSha256 c4f33beb).
+
+Lesson: a frozen lock is an input identity, not a live pin; build-time
+re-pinning is a new release with its own lock, and cross-repository dirt
+must be resolved in the owning repository (or excluded when provably not
+part of the build).
