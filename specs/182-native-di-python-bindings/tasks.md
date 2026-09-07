@@ -25,6 +25,12 @@ Rust tokenizer bridge 的本机 release 构建在 `cargo: command not found`
 在可用同源 Cargo 工具链上完成 bridge/consumer 检查，并继续 T010/T011 的真实
 request/stream 接线后再做 T015 静态收敛审查。
 
+2026-09-07 Tokenizer identity guard / **T001 IN_PROGRESS**：修正
+`NativeTokenizer` 在加载动态 bridge 前校验 tokenizer 文件摘要，并拒绝空输出
+缓冲区；新增 3 个身份/工厂负例单测，独立 Boost.Test **3/3 PASS**（commit
+`54595eee`）。Cargo 缺失仍使 Rust bridge 的真实构建保持 **NOT_RUN**，不关闭
+T007/O-004。
+
 2026-09-07 Public export inventory / **T001 IN_PROGRESS**：新增[API migration review](contracts/public-api-migration-review.md)和可复现AST snapshot，覆盖api27/sdk76/root174，共277导出，264定义/10assignment/3外部owner。发现正式api中23个名称尚无四份主契约的精确映射；部署catalog、请求handle和provenance不能由现有request概述替代。snapshot逐条UNREVIEWED，动态wildcard/继承/实例字段仍需核对；不是迁移完成。下一步逐行为完成正式api映射及动态层清单，O-004/T001保持OPEN，产品0/17。未修改产品源码、未运行native产品测试。
 
 ### Prior Provider Lifetime
