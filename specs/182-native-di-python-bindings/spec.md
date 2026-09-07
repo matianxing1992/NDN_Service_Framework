@@ -3,14 +3,14 @@
 **Feature Branch**: `Experimental`
 **Feature Directory**: `182-native-di-python-bindings`
 **Created**: 2026-09-06
-**Revision**: 6
+**Revision**: 7
 **Status**: DRAFT
 **Execution Status**: NOT_STARTED
-**Activation**: active design; merged baseline stabilization in progress
+**Activation**: active design; source baseline audited; dependency and interface design closure pending
 
 **Input**: 所有者要求 C++ 自身完成完整 NDNSF-DI 调用；Python 只作为可选兼容外壳。
 Python 可以传入原生策略对象或配置，但默认策略执行、切分决策、运行时装配和协作调用
-必须在原生实现中完成。当前已经进入合并修复阶段；本轮仅更新设计技能与182文档，不执行原生迁移或实验。
+必须在原生实现中完成。合并与源码交付已结束，用户确认实验机器已接收；本轮只审计并修订182文档，不执行原生迁移、构建或运行验证，不管理实验机器。
 
 ## Goal
 
@@ -26,9 +26,9 @@ ACK 驱动规划、选定 Provider 独立验证、受保护工件、按需装配
 
 - 用户已调整顺序：先完成合并修复与必要基线检查，再开展182；不再要求先完成181全部旧资格实验。
 - 182 不宣布181完成。T001 记录已交付能力、保留回归、待迁移验证及外部实验的承接表，冻结合并后的源码与依赖身份。
-- 合并工作区的 unit/integration 仍有失败。文档可现在修订；实现从已确认的合并 checkpoint 和关闭的设计门开始。旧 PASS 不替代182验收。
+- 合并时的 unit/integration 失败已修复；759/759 与154/154是旧依赖组合的历史 PASS。随后更新的 SVS/NDNSD 组合尚无完整运行资格，不能沿用旧二进制或把交付成功当作182验收。
 - 本机负责代码、unit/integration/MiniNDN 与开发交付；实验机器负责 SIF/Tiger，外部执行标 TRANSFERRED。
-- 当前 source-of-truth 与未提交合并身份见 [merged baseline](evidence/merged-source-baseline-r3.json)；活动指针已经指向182，旧 managed plan 需同步。
+- 当前源码、四库身份及证据边界见 [integrated baseline](contracts/integrated-baseline.md)。旧revision3工作树快照只作历史；活动指针与managed plan均已指向182。
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -200,7 +200,7 @@ Python 绑定可选构建，禁止依赖主工作区未提交文件。
 | INV-006 | 冷动态装配仍在 Selection 后；模型差异归 adapter | NativeCanonicalOnnxAssembler；现有 recipe | 冷缓存、多不同切分和权限先行 |
 | INV-007 | 运行时零 Python，不要求离线训练/导出或构建工具零 Python | 本次用户目标；Waf 为构建工具 | 生产进程树/动态库检查 |
 | INV-008 | 设计、实现、定向检查、本地验收、外部实验分离 | constitution V/VII/VIII；Spec181 handoff | audit + 同源证据 |
-| INV-009 | 本轮只更新设计技能/182文档和相关上下文；不干扰合并代码修复 | 本次用户授权 | 明确路径 diff 与工作区边界 |
+| INV-009 | 本轮只审计/修订182文档和相关上下文；后续开发仍按既定分工 | 本次用户授权 | 明确路径 diff；不构建、不运行产品测试、不管理外部实验 |
 
 ## Code Design Index
 
@@ -257,8 +257,8 @@ Python 不成为 flow 中间的 planner、grant authority、每 token callback �
 
 ## Assumptions
 
-- 本轮分析以 [baseline](evidence/design-baseline.json) 的 committed/workspace-existing 分类为准，
-  不假定未提交代码已交付另一台机器。
+- 本轮以 [integrated baseline](contracts/integrated-baseline.md) 的已提交源码为准；
+  用户确认另一台机器已接收，接收事实不证明其构建或实验通过。
 - “完整”覆盖迁移清单中的现有生产能力及本 Spec 的 YOLO/Qwen 验收；不要求实现从未支持的新模型。
 - 离线 Python 导出和 Python 实验 harness 允许；被测 requester、Providers、授权及运行时依赖不允许 Python。
 - 181 修复的 Data wire-size 问题不被语言迁移自动解决，T001 必须核对其最终处置。
@@ -267,9 +267,9 @@ Python 不成为 flow 中间的 planner、grant authority、每 token callback �
 ## Design Readiness
 
 **DRAFT / BLOCK for implementation**。用户目标与职责选择已明确，公开 API/行为和证明框架见附件；
-O-001（合并修复基线及181承接）、O-002（ONNX 原生字节契约）、O-003（tokenizer 原生依赖 ABI）
+O-001（合并源码身份及181承接）已按源码范围 CLOSED；O-002（ONNX 原生字节契约）、O-003（tokenizer 原生依赖 ABI）
 、O-004（完整旧能力/调用方清单）与 O-005（隔离设计可行性）在 [code-design](contracts/code-design.md#open-questions)
-中保留有界关闭条件。不得把尚未冻结的叶子接口交给实现者临场补全。
+中保留有界关闭条件。T001仍未完成；新依赖组合的运行资格另列NOT_RUN，不把它混入已关闭的源码身份核对。不得把尚未冻结的叶子接口交给实现者临场补全。
 
 本轮可以完成设计文档交付；它不是 READY_FOR_IMPLEMENTATION 或代码完成。
 详细参数/状态、工作单元边界、PO 和自审分别见：
@@ -287,6 +287,10 @@ T016统一执行完整unit→integration→MiniNDN和必要负例，T017核对�
 ## Symbol Documentation Contract
 
 [Symbol design](contracts/symbol-design.md) 定义类/方法/状态/注释/用法；[value contracts](contracts/value-contracts.md) 对照合并源码的12类137字段，逐项解释含义；[coverage inventory](contracts/source-field-coverage.json) 保留机器可查来源。嵌套 schema、原生依赖 ABI、注册/取消接线等未决项必须在T001关闭，禁止跳过到实现。
+
+## Revision 7 Source Alignment
+
+本轮核对`81e251a4ef1d8e6a394dc5f0c38bc44e44bfc973`：修正已完成合并与历史失败的混淆，固定SVS/NDNSD依赖及ABI失效范围，明确现有Provider接线和缺失的逐服务注销接口，保留原生requester/装配/tokenizer为planned。12类137字段与当前源码一致，但不表示嵌套类型、兼容清单或依赖设计已完成。结论与后续工作见[audit](audit.md)。
 
 ## Revision History
 

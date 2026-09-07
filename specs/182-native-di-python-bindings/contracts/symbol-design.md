@@ -1,9 +1,9 @@
 # Symbol Design and Usage Contracts
 
-**Revision**: 6 | **Status**: DRAFT / PARTIAL
+**Revision**: 7 | **Status**: DRAFT / PARTIAL
 **Authority**: 本文补充 [code design](code-design.md) 与 [runtime boundaries](runtime-boundaries.md)。
 本文定义 planned 代码结果；不是运行实现。完整 merged source baseline 见
-[baseline](../evidence/merged-source-baseline-r3.json)。未决依赖/嵌套 schema 在
+[baseline](integrated-baseline.md)。revision3工作树快照仅作历史。未决依赖/嵌套 schema 在
 [value contracts](value-contracts.md) 中逐项可定位，受影响实现不得标 READY。
 
 ## Coverage and Documentation Rules
@@ -256,7 +256,7 @@ policy snapshot仅提供计算输入，受保护转换仍由Core/Provider重新�
 
 本文使类职责/方法行为/状态/注释和用法可审查；它不是“所有叶子API已冻结”的声明。
 value-contracts列出的nested类型、O-002/003原生依赖、O-004的注销/错误/持久化字段，
-以及合并integration失败尚未闭合。T001必须逐条关闭，不能跳过进入T002。
+以及O-005隔离方案尚未闭合。历史合并integration失败已修复，当前SVS/NDNSD组合仍未获完整运行资格；不得把两个状态混淆。Core没有公开逐服务注销接口，M47须按[runtime boundary](runtime-boundaries.md#current-registration-boundary)补齐设计。T001必须逐条关闭设计缺口，不能跳过进入T002。
 
 ## Static Review Use
 

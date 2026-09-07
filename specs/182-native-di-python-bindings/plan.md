@@ -1,13 +1,13 @@
 # Implementation Plan: Native NDNSF-DI with Optional Python Bindings
 
-**Branch**: Experimental | **Revision**: 6 | **Date**: 2026-09-06
+**Branch**: Experimental | **Revision**: 7 | **Date**: 2026-09-06
 **Status**: DRAFT / NOT_STARTED
 **Spec**: [spec.md](spec.md)
 
 ## Summary
 
 完整C++ DI复用Core协作/安全原语、Provider runtime和原生model adapters；
-Python只作同库兼容绑定，旧默认控制路径退出。O-001--005关闭前不开始迁移。
+Python只作同库兼容绑定，旧默认控制路径退出。O-001源码基线已核对关闭；O-002--005关闭前不开始迁移。
 详细接口与字段仅在contracts定义；本文件安排实施和验证阶段。
 
 ## Technical Context
@@ -15,7 +15,7 @@ Python只作同库兼容绑定，旧默认控制路径退出。O-001--005关闭�
 建立可安装ndnsf-distributed-inference库与独立C++ consumer，Python绑定可选。
 沿用Waf、C++/Boost/ndn-cxx/ORT；ONNX/tokenizer依赖及ABI锁由T001冻结。
 原生构建使用核对后的system compiler/binutils、匹配Boost headers/libs、
-NAC-ABE prefix与NDN-SVS build；ABI变化重建依赖对象与绑定并核对实际加载路径/hash。
+NAC-ABE prefix与NDN-SVS source/build pair，并包含直接消费SVS ABI的NDNSD；ABI变化重建全部传递消费者与绑定并核对实际加载路径/hash。四库版本及旧证据失效边界见[integrated baseline](contracts/integrated-baseline.md#current-source-identity)。
 默认至多-j2，不并发操作同一Waf树。本轮只改文档，不构建产品。
 
 ## Constitution Check
@@ -25,7 +25,7 @@ NAC-ABE prefix与NDN-SVS build；ABI变化重建依赖对象与绑定并核对�
 
 ## Gate Order
 
-1. G0 / T001：核对合并修复和181承接，关闭O-001--005，冻结schema/调用方/依赖与单测、集成、实验选择器。181旧完整资格不作为前置门。
+1. G0 / T001：复用已关闭O-001的源码身份与181承接，关闭O-002--005，冻结schema/调用方/依赖与单测、集成、实验选择器。181旧完整资格不作为前置门；源码基线关闭不表示新依赖组合运行PASS。
 2. G1 / T002--009：库、策略、sealer/grant、assembler/tokenizer、准备/admission和Provider host；每任务实现→静态审查→相关单测及必要构建。
 3. G2 / T010--012：requester、会话/恢复与绑定；完成接线、相关单测，同时编写注册后续集成用例。
 4. G3 / T013--014：迁移旧入口、实现隔离gate和MiniNDN harness/collector；完成静态审查与本地单测，真实跨进程/no-Python用例尚不运行。
@@ -87,5 +87,7 @@ T017 的 evidence/development-handoff.md 包含 exact commit、clean source clos
 
 ## Current Planning Result
 
-本轮为revision 6文档简化和验证分层，产品实现与运行均NOT_RUN。
-O-001--005仍控制实施就绪，下一步T001核对稳定合并基线并关闭其设计缺口。
+本轮为revision 7源码对照审计，产品实现仍NOT_STARTED，构建与运行均NOT_RUN。
+O-001源码核对已关闭；下一步T001关闭O-002--005。实验机器已接收上一轮交付，本轮不继续管理它，也不恢复被用户停止的ABI构建。
+后续182开发仍按G1--G6执行本地开发验证；上一轮delivery-only的TRANSFERRED不是永久移走182的T016义务。
+使用仓库[shared design skill](../../skills/speckit-code-design/SKILL.md)及其相对引用，避免依赖开发机个人技能路径。T017复用现有[handoff tooling](../../Experiments/TigerCluster/docs/source-handoff.md)，另生成182身份与依赖清单；旧锁包含Python运行包且不含planned原生DI库，不能直接称为182 no-Python交付。

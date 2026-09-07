@@ -1,16 +1,16 @@
 # Code Design Contract
 
-**Revision**: 6 | **Status**: DRAFT
+**Revision**: 7 | **Status**: DRAFT
 **Normative parent**: [spec.md](../spec.md)
-**Baseline**: [integrated baseline](integrated-baseline.md)；旧revision快照保留历史意义，当前结果见 [merge validation](../evidence/merge-validation-20260906.json)。
+**Baseline**: [integrated baseline](integrated-baseline.md)；旧revision快照和[merge validation](../evidence/merge-validation-20260906.json)保留历史意义，不证明新SVS/NDNSD组合的运行资格。
 
 ## Baseline and Evidence
 
 existing 表示合并基线已实现代码，不代表182 qualification PASS。原生修复已提交为 `c770f18bb7bf42c3b8a8274b5c029b4883141f60`，实际包含本机 DI 和远端 `4391af81cd24ff5510aa52b48ab9cec0fdec1ebb` 的历史；开发统一在 `Experimental`。revision3工作树快照不再代表最终修复状态。现有Core接口、参数意义、生命周期修复及181承接见 [integrated baseline](integrated-baseline.md)。
 
-已核对 ServiceUser 的 BeginCollaboration / CommitCollaborationPlan、RequestConfidentiality / RevocationState / RuntimeStatusStore、现有 Provider runtime、Python requester/planner/DTO 及 ONNX/tokenizer helper。独立验证工作区无索引目录，因此按仓库规则跳过 CodeGraph，使用精确路径、头文件与 AST。revision3曾因主工作区managed plan仍指181导致active Context Mode health失败；当前活动指针与文档归182，检索健康必须按最终索引重新核对，持久文档和源码继续作为authority。
+revision7在主工作区使用CodeGraph与精确生产源码重新核对ServiceUser、Provider接线、Python requester/planner/DTO及ONNX/tokenizer helper。宽泛图查询包含`.codex-tmp/compare-*`旧副本，已排除，改按生产文件路径与源码核对；不能引用旧副本行号作为当前事实。当前活动指针与managed plan归182；历史独立工作树跳过CodeGraph和旧检索故障只保留历史意义。
 
-合并已带入请求级加密、ControllerVersion、撤销/权限刷新及持久运行状态。这些是 existing Core 机制，182 必须复用；原生 requester、无 Python 冷装配/分词仍 planned。修复后NAC-ABE46/46、NDNSF unit759/759、integration154/154、current Python2171 passed/22 skipped及三个真实MiniNDN撤销/授权场景PASS。早期失败保留历史记录；本次结果不替代182最终同源unit/integration/YOLO/Qwen/no-Python验收。
+合并已带入请求级加密、ControllerVersion、撤销/权限刷新及持久运行状态。这些是 existing Core 机制，182 必须复用；原生 requester、无 Python 冷装配/分词仍 planned。历史修复后NAC-ABE46/46、NDNSF unit759/759、integration154/154、current Python2171 passed/22 skipped及三个真实MiniNDN撤销/授权场景PASS；其依赖身份与当前组合不同。早期失败保留历史记录；不能沿用旧二进制证明当前依赖，也不替代182最终同源unit/integration/YOLO/Qwen/no-Python验收。
 
 [Symbol design](symbol-design.md) 和 [value contracts](value-contracts.md) 是本 CD 的规范性补充：逐类/逐方法/逐字段解释职责、注释、用法与未决边界。所有新签名均为 DESIGN_EXAMPLE / NOT_COMPILED；T001 必须冻结剩余叶子 schema/ABI 后才允许实现对应单元。
 
@@ -280,11 +280,13 @@ Python extension 本身依赖 Python 是允许的，不混淆检查范围。
 | ADD | NDNSF-DistributedInference/ndnsf-distributed-inference.pc.in | pkg-config 导出 include/link 信息；不导出 Python 依赖 |
 | MODIFY | examples/wscript; tests/wscript | requester/provider 与测试链接同一 DI 库，退出复制源文件列表 |
 | MODIFY | pythonWrapper/setup.py | 绑定链接已构建库，runtime source/ABI identity 一致 |
+| REUSE / verify transitive ABI | NDNSF-DistributedRepo/pythonWrapper/setup.py; pythonWrapper/setup.py; wscript | 保留显式NAC前缀和SVS source/build pair；两wrapper均为ABI消费者，NDNSD须从锁定源码重建；不因本轮DI绑定新增而另造一套依赖选择规则 |
 | ADD | specs/182-native-di-python-bindings/contracts/native-dependencies.json | T001/O-002/O-003 关闭后冻结 ONNX/protobuf/tokenizer/ORT 版本与校验和，当前尚不存在，不编造锁 |
 
 Waf、测试驱动或离线导出可以使用 Python；“runtime 无 Python”不等于“构建工具无 Python”。
 O-002/O-003 冻结后必须记录原生工具链、include/lib、RPATH、license、build/runtime hash；
 禁止从 host venv 搬 .so 充当容器 ABI 闭合。SIF 构建不在本轮执行范围。
+现有examples/wscript仍按`di_native_session_sources`和`di_native_collaboration_sources`把原生源编入程序，根wscript尚无独立DI库；CD-009是提取/安装已有实现和新增库边界，不是再复制一份runtime。原生库、normal/fault Provider、测试与可选绑定必须使用同一组实现。旧交付模板依赖Python helper，只有182依赖/运行树/测试契约完成后才可复用工具生成新的交付身份。
 
 ## CD-010 Migration
 
@@ -328,10 +330,10 @@ CD-013/014、取消/通知队列及旧路径回退完整定义于
 
 | Open ID | Unknown / impact | Bounded investigation and acceptable result | Owner / blocked units |
 | --- | --- | --- | --- |
-| O-001 | 已提供合并commit、验证及181承接表；T001仍需核对最终Experimental差异 | 读取 [integrated baseline](integrated-baseline.md) 与实际提交，确认Core/UAV机制和181责任均保留，不要求先跑完181旧完整资格 | T001；全部实现 |
+| O-001 / CLOSED | 源身份、最终合并差异及181承接已核对 | 审计HEAD `81e251a4`，生产路径与`c770f18b`及交付源`447f7584`无diff；四库pin和旧验证失效范围见[integrated baseline](integrated-baseline.md)。只关闭源码核对，不声称当前依赖运行PASS | T001部分完成；不再阻塞源码核对，O-002--005仍阻塞实现 |
 | O-002 | 原生 ONNX extraction/checker/protobuf 是否复现既有精确字节 | 在固定 inline/external-data 与两种 role recipe 上比较；列出 native 调用、版本、许可、依赖和差异。精确相等或经明确版本化设计修订后才能关闭；最多两个候选方案 | T001；T002/T006 |
 | O-003 | 可复用 native tokenizer 库/ABI/线程安全尚未验证 | 固定 tokenizer.json 的 ASCII、Unicode、special/byte fallback 向量，比较完整 ids/text；证明无 Python。冻结一种 ABI/依赖及内存所有权；最多两个候选方案 | T001；T002/T007 |
-| O-004 | 所有旧公开 API/策略/会话持久化与调用方尚未穷举 | 有索引时 CodeGraph，否则精确源码 + AST/import/config inventory；按 runtime-boundaries 的 NATIVE_REQUIRED/BINDING_ONLY/OFFLINE_REFERENCE/UNSUPPORTED_EXTENSION 分类，补完整 types、状态、Core cancel/observer 接线和错误映射；不允许遗漏调用方或以未验证分支做基线 | T001；T002--T013 |
+| O-004 | 所有旧公开 API/策略/会话持久化与调用方尚未穷举；Core无公开逐服务注销接口，Provider host的共享服务关闭语义未闭合 | 12类137字段已匹配当前源码，但仍须按runtime-boundaries分类并补嵌套types、状态、cancel/observer、错误映射和完整inventory。CD-014必须明确registration fence或具名Core改动及PO-014负例；禁止假设removeService存在或用全局stop替代 | T001；T002--T013 |
 | O-005 | native runtime 隔离设计可行性 | 核对 Linux mount/process observation 能阻断解释器、libpython、旁路服务，同时允许 harness 在外部；T001 冻结工具、权限和白名单设计后关闭此 OPEN；T014 实现并用故意 helper 验证有效性 | T001 设计；T014 实现；T016 资格 |
 
 每项 OPEN 是具体设计边界，不能宣称 READY 后留给实现 improvisation。
@@ -340,7 +342,7 @@ T001 的交付是关闭表、叶子签名、lock/compatibility manifest 和修�
 
 ## Change Control
 
-当前签名和 manifest 是设计 revision 2；OPEN 影响范围为 BLOCK。
+当前契约为revision 7；未改变的历史附件保留其原revision，OPEN影响范围仍为BLOCK。
 新增原生依赖/公有字段/状态 owner/wire format/调用方必须先修订 CD、T、PO。
 Private helper 只可实现已描述职责，不能用 helper 名义增加 subsystem。
 完整单元边界见 [work-units](work-units.md)，证明见 [proof-design](proof-design.md)。

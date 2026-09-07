@@ -1,8 +1,8 @@
 # Spec182 Traceability Matrix
 
-**Revision**: 6 | **Status**: DRAFT / NOT_STARTED
+**Revision**: 7 | **Status**: DRAFT / NOT_STARTED
 source review 只证明 baseline 所述实现存在，不证明新实现或资格。
-任务运行证据均为planned；本轮文档检查见 [workflow simplification](evidence/workflow-simplification.md)。历史证据不改写。
+任务运行证据均为planned；本轮源码对照与文档检查见[audit](audit.md)和[tasks checkpoint](tasks.md#current-checkpoint)。历史证据不改写。
 
 ## Requirement-to-task Map
 
@@ -52,7 +52,7 @@ source review 只证明 baseline 所述实现存在，不证明新实现或资�
 T001 关闭 OPEN 并刷新 baseline 后补足叶子签名、精确默认值、legacy callers 和 dependency lock；
 本矩阵覆盖设计目标，不将其称为已可直接实施。
 本机实现、unit/integration/MiniNDN 和交付；实验机器 SIF/Tiger 为 TRANSFERRED。
-当前182活动设计不改写181历史任务；合并源码持续修复，必须用最终checkpoint刷新快照。DRAFT不能替代实施验收。
+当前182活动设计不改写181历史任务；合并及交付已完成，源码身份按[integrated baseline](contracts/integrated-baseline.md)。O-001源码范围CLOSED，O-002--005仍阻塞实现；新SVS/NDNSD组合未获完整运行资格。DRAFT不能替代实施验收。
 
 ## Symbol Coverage
 

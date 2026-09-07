@@ -1,10 +1,20 @@
 # Tasks: Native NDNSF-DI with Optional Python Bindings
 
-**Revision**: 6 | **Status**: DRAFT / NOT_STARTED
+**Revision**: 7 | **Status**: DRAFT / NOT_STARTED
 **Input**: [spec](spec.md), [code design](contracts/code-design.md),
 [proof](contracts/proof-design.md), [work units](contracts/work-units.md)
 
 ## Current Checkpoint
+
+2026-09-06 revision 7 / SOURCE_ALIGNMENT_COMPLETE：用户确认另一台机器已接收，本轮只审计/修订Spec182。以Experimental `81e251a4ef1d8e6a394dc5f0c38bc44e44bfc973`核对代码，修正未提交合并/旧integration失败的过时表述；固定NAC/SVS/NDNSD身份与旧运行证据失效范围。O-001按源码身份和181承接范围CLOSED；O-002--005仍OPEN，T001未勾选，实现仍 **0/17**。当前SVS/NDNSD组合 **UNQUALIFIED**，接收不等于实验通过。审计发现与关闭责任见[audit](audit.md)，具体版本见[integrated baseline](contracts/integrated-baseline.md)。
+
+本轮未构建或执行产品unit/integration/MiniNDN/SIF/Tiger，未管理接收机器，未恢复已停止的ABI构建。下一步只继续T001的ONNX/tokenizer依赖、兼容/字段/注册寿命及隔离设计关闭；后续182开发验证仍按下方任务分工，上一轮delivery-only移交不取消T016义务。
+
+本轮实际文档检查 **PASS**：Spec Kit prerequisites、strict structure、`checklists/validate_design.py`（136链接、17任务/0完成、依赖无环、19 FR/11 SC/14 CD/16 PO）、`git diff --check`；12类137字段AST名称/类型/默认值一致，19 FR/11 SC/16 PO/14负例/48方法/137字段条目相对审计输入未删改。以上不计产品验收；O-002--005保持OPEN。改动仅12份Spec182文档，历史evidence及产品源码不变。
+
+## Historical Checkpoints
+
+以下为各时点事实；其旧“下一步”、失败、未push及验证结果均不覆盖上方当前checkpoint。旧结果只适用于当时身份。
 
 2026-09-06 Source Handoff COMPLETE / SOURCE_READY：用户明确本轮只交付，编译与测试在另一台机器执行。本机额外构建已停止并确认无遗留编译进程；后续NDNSD/全部ABI消费者构建、unit/integration、两wrapper验证、MiniNDN、SIF/Tiger全部TRANSFERRED，不再作为本机交付条件。D001范围修订为固定版本及ABI要求移交，D001--D004已完成；四库Experimental、可迁移输入/模板与root skills已发布。已有检查与中断事实保留，不冒称完整验证PASS。接收步骤及证据见 [source handoff](../../Experiments/TigerCluster/docs/source-handoff.md)。Spec182仍0/17，不计T001--T017完成。
 

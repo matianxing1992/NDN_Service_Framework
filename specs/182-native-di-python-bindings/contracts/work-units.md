@@ -1,10 +1,10 @@
 # Work Unit Contracts
 
-**Revision**: 6 | **Status**: planned, all implementation NOT_STARTED
+**Revision**: 7 | **Status**: planned, all implementation NOT_STARTED
 
 ## Common Boundary
 
-T001关闭O-001--005并冻结可执行接口/依赖/测试选择器后开始实现。
+O-001已按当前源码与181承接范围关闭；T001仍需关闭O-002--005并冻结可执行接口/依赖/测试选择器后开始实现。
 每任务的具体文件与符号由其CD定义，类/方法与字段解释分别引用
 [symbol design](symbol-design.md)和[value contracts](value-contracts.md)，不重复抄表。
 新增/变更公开API提供英文Doxygen/docstring；重要字段、寿命与安全边界解释含义，
@@ -28,7 +28,7 @@ T001冻结新unit selectors，不能执行整份混合测试文件而意外启�
 - **Design**: FR-015,FR-016,FR-017; CD-001--014; INV-001,INV-004,INV-008,INV-009; FLOW-001, FLOW-002。
 - **Changes**: spec182 文档、native-dependencies.json、compatibility-manifest.json、冻结 fixture 元数据
 - **ForbiddenChanges**: 修改 Spec181 状态；无最终 baseline 就启动迁移；把 Python helper 保留为默认。
-- **LocalChecks**: 设计/基线核对，冻结unit/integration selectors；如需依赖可行性探针，单独记实际结果，不计产品验收。
+- **LocalChecks**: 复用revision7源码核对，冻结unit/integration selectors；本轮审计不运行依赖探针。后续设计工作如需可行性探针，单独记实际结果，不计产品验收；动态证据未取得时保持相应OPEN。
 - **FinalProof**: PO-012。
 
 ## T002 Installable Native Library Contract
@@ -98,7 +98,7 @@ T001冻结新unit selectors，不能执行整份混合测试文件而意外启�
 
 - **Outcome**: executable 与独立 consumer 共用宿主及同一 NativeProviderRuntime。
 - **Design**: FR-001,FR-009,FR-010,FR-012; CD-014; INV-001,INV-002,INV-003,INV-005; FLOW-001,FLOW-004。
-- **Changes**: NativeInferenceProvider头/源与DI_NativeProviderExecutable接线，删除重复宿主逻辑。
+- **Changes**: NativeInferenceProvider头/源与DI_NativeProviderExecutable接线，删除重复宿主逻辑；完整提取ACK/lease/readiness/权限与runtime.handler，范围及注册寿命缺口见[CD-014 source boundary](runtime-boundaries.md#current-registration-boundary)。O-004关闭前不得实施。
 - **ForbiddenChanges**: 重写 Provider runtime、把管理权限合并进 serving facade、销毁共享 Face、Python runner trampoline。
 - **LocalChecks**: host配置、重复注册、stop/共享资源所有权单测；真实NFD注册/ACK/Selection及多入口协作在T016。
 - **FinalProof**: PO-014。 本任务只完成局部单测；其余运行证据由T016统一产生。
@@ -170,7 +170,7 @@ T001冻结新unit selectors，不能执行整份混合测试文件而意外启�
 
 - **Outcome**: 唯一开发交付版本、维护文档与两个入口示例；外部实验单列 TRANSFERRED。
 - **Design**: FR-014,FR-015; CD-012; INV-001,INV-002,INV-007,INV-008,INV-009; FLOW-001, FLOW-002。
-- **Changes**: 三个 CD-012 docs 和 evidence/development-handoff.md、closure-record.md
+- **Changes**: 三个CD-012 docs和evidence/development-handoff.md；复用Experiments/TigerCluster现有交付工具及root skills，只生成182的新身份/依赖/运行树清单，不另建并行SIF工具或重复closure报告。若现有模板不支持新库/原生依赖，先在CD-009/CD-012登记精确模板/脚本修改，外部owner构建与实验。
 - **ForbiddenChanges**: 把 SIF/Tiger/GPU 未运行写 PASS；改冻结历史/181 关闭状态。
 - **LocalChecks**: 核对交付版本、既有T016结果、链接和可复现命令；无行为变化不重新运行套件。
 - **FinalProof**: PO-012。

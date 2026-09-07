@@ -1,21 +1,45 @@
 # Integrated Baseline and Successor Transfer
 
-**Revision**: 6
-**Source Status**: VALIDATED / COMMITTED
-**Baseline Commit**: `c770f18bb7bf42c3b8a8274b5c029b4883141f60`
+**Revision**: 7
+**Source Status**: AUDITED / COMMITTED
+**Baseline Commit**: `81e251a4ef1d8e6a394dc5f0c38bc44e44bfc973`
+**Current Dependency Qualification**: UNQUALIFIED
 **Implementation Status**: NOT_STARTED
 
-## Source Identity
+## Current Source Identity
 
-本基线整合本机 DI 与远端 UAV 成果，替代“先完成181最终关闭”的激活前提。NDNSF 两个父提交为 `d4a5e39ce5b4a023f6e55d2440c60aa998983f8f` 和 `4391af81cd24ff5510aa52b48ab9cec0fdec1ebb`；NAC-ABE 为 `5ed23e6`（含 Experimental `c3aafa6ec5a566879942107c7b20855659c9dfb9`）。本机未提交开发源码已纳入整合审查，不能只按两个分支的 committed diff 判断功能。
+本轮只核对源码与文档；以下是审计输入身份，不是构建或运行PASS。
+
+| Repository / role | Exact revision | Evidence boundary |
+| --- | --- | --- |
+| NDNSF / audited Experimental | `81e251a4ef1d8e6a394dc5f0c38bc44e44bfc973` | 包含main及UAV-Experimental历史；本轮审计前tracked tree clean |
+| NDNSF / prior delivery runtime source | `447f7584072142edea8c8e2ae3ed4ffdc5fbd0c5` | 到审计HEAD仅交付工具、模板、测试、技能及文档变化；生产Core/DI/Repo/UAV、examples、wrapper、wscript无diff |
+| NAC-ABE | `5ed23e68520fb9c4ef747c51d6d18c915ff88fc4` | 已交付源码；保留DKEY刷新与pkg-config修复 |
+| NDN-SVS | `9f2d8a47cd2a25a5f9ade661c9dbe8acd6416a20` | 合并catch-up/cancellation与远端变更；ABI布局变化，SONAME不能证明兼容 |
+| NDNSD | `375a35c5706d5a6b6f176cd98b72d63dcb7f5b10` | pkg-config include修复；直接构造SVSPubSub，是必须重建的ABI消费者 |
+
+依赖身份与[已交付锁](../../../Experiments/TigerCluster/development-handoff.lock.json)一致。
+该锁固定的是上一轮源码交付；不得为追随文档HEAD改写其冻结身份，也不能用它替代182 planned ONNX/protobuf/tokenizer依赖锁。
+用户确认实验机器已接收；本轮不查询远端实验结果、不恢复旧构建。
+
+### ABI Evidence Invalidation
+
+SVS变更后需要在将来被验证的同一环境内重建SVS、NDNSD、Core、原生DI程序/库、相关测试及Core/Repo两套Python扩展，并核对实际加载路径与hash；只链接到新SVS不证明间接消费者已重建。NAC前缀与系统Boost/compiler/binutils同样属于身份。
+下方历史unit/integration/MiniNDN结果只适用于各自记录的旧依赖组合，不能提升为本表组合PASS。
+上一轮额外ABI构建在用户指令后停止：R1总体timeout，R3普通Provider选择性构建通过，R4 fault Provider中断；NDNSD重建、unit/integration、两wrapper及MiniNDN未执行。详见[交付记录](../../../Experiments/TigerCluster/docs/source-handoff.md)。这些是构建/范围边界，不是协议失败。
+本轮O-001关闭仅表示源身份、合并内容与181承接可确认；182依赖闭合由T001/CD-009设计，后续必要构建按实施任务进行，最终完整同源运行由T015审查后T016验收。
+
+## Historical Merge Identity
+
+历史merge `c770f18bb7bf42c3b8a8274b5c029b4883141f60` 整合本机 DI 与远端 UAV 成果，替代“先完成181最终关闭”的激活前提。NDNSF 两个父提交为 `d4a5e39ce5b4a023f6e55d2440c60aa998983f8f` 和 `4391af81cd24ff5510aa52b48ab9cec0fdec1ebb`；NAC-ABE 为 `5ed23e6`（含 Experimental `c3aafa6ec5a566879942107c7b20855659c9dfb9`）。当时未提交开发源码已纳入整合审查。
 
 已形成上述真实双亲 merge commit；随后同步 `2e7865c7a031f677e1ff382cf999392cf0aacd0a` 的 Spec182 revision6 与 Tiger 目录迁移，保留原生生产源字节。最终开发分支为 `Experimental`，`main` 保持稳定基线；`UAV-Experimental` 的提交历史必须为其祖先。源码/工件证据保留在原验证目录，不把未完成的 Tiger 双节点实验当成本次验证。
 
-O-001 的合并提交与本页181承接表已提供；T001 仍须对最终 Experimental 树确认调用方/依赖/叶子契约，并关闭 O-002--005。修订本 Spec 不授权 push 或原生功能迁移。
+O-001 的合并提交、当前源差异与本页181承接表已核对 CLOSED；T001 仍须完成调用方/原生新依赖/叶子契约并关闭 O-002--005。修订本 Spec 不授权 push 或原生功能迁移。
 
-## Verified Local Evidence
+## Historical Verified Local Evidence
 
-精确原始目录、退出码、范围与 SHA256 见 [validation record](../evidence/merge-validation-20260906.json)；诊断与修复见 [integration](../evidence/integration-20260906.md) 和 [static review](../evidence/static-review-20260906.md)。
+以下是SVS/NDNSD更新前的历史结果。精确原始目录、退出码、范围与 SHA256 见 [validation record](../evidence/merge-validation-20260906.json)；诊断与修复见 [integration](../evidence/integration-20260906.md) 和 [static review](../evidence/static-review-20260906.md)。
 
 | Gate | Result | Boundary |
 | --- | --- | --- |
@@ -79,6 +103,6 @@ Core Spec179 在线撤销与 DI KeyGrant 撤销是不同能力。原181 FR-003/O
 
 ## Readiness and Recovery
 
-O-001 的源身份与证据已落实；T001 开始时须核对最终 Experimental 提交相对该原生基线的差异，不再要求独立关闭181。O-002/003/004/005 继续 OPEN：原生 ONNX 字节契约、tokenizer ABI、完整兼容/调用方清单、no-Python 隔离设计尚未完成。T001仍未勾选；G0不满足时不得开始T002及后续实现。
+O-001 的源身份、合并差异与承接已核对关闭，不再要求独立关闭181。以后行为相关源码或依赖变化须更新本表和受影响证据，不能把本次静态审计当成永久PASS。O-002/003/004/005 继续 OPEN：原生 ONNX 字节契约、tokenizer ABI、完整兼容/调用方清单、no-Python 隔离设计尚未完成。T001仍未勾选；G0不满足时不得开始T002及后续实现。
 
 恢复以本契约所列基线和最新任务 checkpoint 为准，不重启181最终实验。发现新差异先修订受影响文件/类/方法/字段、参数意义、调用链、PO和任务；不以扩大超时、删除负例、放宽授权或只验 warm path 消除失败。旧 revision1/2 JSON 与冻结历史保持原字节。

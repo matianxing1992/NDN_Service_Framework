@@ -1,6 +1,6 @@
 # Runtime Boundary Completion
 
-**Revision**: 6 | **Status**: DRAFT / BLOCK for implementation
+**Revision**: 7 | **Status**: DRAFT / BLOCK for implementation
 **Normative parent**: [spec](../spec.md), [code design](code-design.md)
 本附件补齐 revision 1 的中间调用缺口；所有 Native* 新接口均 planned。
 O-002/O-003 依赖锁和 O-004 完整字段/兼容清单未关闭，不宣称可直接编译。
@@ -98,6 +98,12 @@ NativeServiceRegistration 持有该 registration 与在途 handler 的共享寿�
 Core 是否支持逐服务注销及 exact config 类型由 O-004 映射已有 API；缺少能力时保持 BLOCK，
 不能实现为全局 stop 他人服务或发明 Core 方法。
 
+### Current Registration Boundary
+
+在审计基线中，`ndn-service-framework/ServiceProvider.hpp`提供`addService(serviceName, ackHandler, requestHandler, ServiceInvocationMode)`和`addCollaborationHandler(serviceName, allowedRoles, ackHandler, handler)`及重载，没有公开逐服务remove/unregister方法。`examples/DI_NativeProviderExecutable.cpp::main`分别注册execution lease服务与推理collaboration handler；其ACK路径调用`issueNativeProviderOfferV3`，准备路径注入`runnerPreparationFactory`及`generationTextDecoderFactory`，就绪后安装`makeNativeProviderCollaborationRuntime(...).handler`。这些接线必须整体提取复用，不能仅移动最终handler而丢失ACK、lease、readiness和权限检查。
+
+因此`NativeServiceRegistration::close`目前是planned设计缺口，而不是现有Core方法包装。T001/O-004需冻结registration记录的owner、closed/generation fence、晚到ACK/Selection处理、重复注册及共享lease服务寿命；如需新Core API，先补精确文件/签名/字段/调用链与PO，不能临场扩写。PO-014必须证明关闭一个registration后不再接收新工作且共享服务继续可用，并核对已接收工作的清理；T009在此之前保持BLOCK。
+
 InferenceProvider 是 least-authority serving facade。ProviderAdminPort 的 stage/activate/
 drain/delete、带凭证的修订生命周期与普通 serve 分开；T001 清单必须判断真实支持的管理
 调用是否需原生替代并追加设计，不能悄悄合并权限或删除既有能力。
@@ -112,6 +118,7 @@ drain/delete、带凭证的修订生命周期与普通 serve 分开；T001 清�
 CD-001/FLOW-002 的 cancel 不代表已向远端发送取消或已完成清理。
 现有 ServiceUser::cancelStreamRequest(requestId) 只改变 requester stream 消费/终态，
 其实现没有通用 remote role-abort。必须在原生串行 owner 上调用；不使用 ForTest 入口。
+另有existing `ServiceUser::publishCollaborationData(targetProvider, requestId, keyScope, topic, payload) -> bool`，用于请求密钥保护的协作commit/rollback记录；它不是通用remote-abort。O-004应按现有调用方与Provider控制解码器映射具体控制，不把该bool当远端执行/清理完成的证明。
 
 | Trigger | Required behavior | Explicit limit / proof |
 | --- | --- | --- |

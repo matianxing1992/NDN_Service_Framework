@@ -1,10 +1,10 @@
 # Value and Field Contracts
 
-**Revision**: 3 | **Status**: DRAFT / PARTIAL
+**Revision**: 7 | **Status**: DRAFT / PARTIAL
 
 ## Scope and Ownership
 
-本表逐字段记录合并工作区的 12 个既有 Python 值类型；它们是迁移的语义来源，不是假称已经存在的 C++ 声明。源码身份见 [merged baseline](../evidence/merged-source-baseline-r3.json)。原声明保留实际默认值；未设默认的必填字段不得在 C++ 中静默初始化为零值。所有 planned native DTO 均为值所有权：复制/移动拥有字符串、字节和容器；不能借用 Python 对象、span 或短命回调栈。认证快照构造后只读；密钥不得进入这些 DTO。
+本表逐字段记录12个既有Python值类型；它们是迁移的语义来源，不是假称已经存在的C++声明。源码身份见[integrated baseline](integrated-baseline.md)。revision7已将137字段的名称、类型及默认值与当前源码AST逐项核对；来源字段不变，嵌套类型仍需O-004关闭。原声明保留实际默认值；未设默认的必填字段不得在C++中静默初始化为零值。所有planned native DTO均为值所有权：复制/移动拥有字符串、字节和容器；不能借用Python对象、span或短命回调栈。认证快照构造后只读；密钥不得进入这些DTO。
 
 每行字段的英文 Doxygen 注释必须覆盖下表中文含义，并写明单位、来源、空值和消费者。Python docstring 说明兼容名称及值转换；不得把输入转换描述为授权或规划。容器字段在构造边界检查大小、唯一性和引用；所有 digest 复用既有规范算法/编码，无效值在 Request/commit 前拒绝。下列 mapping 仅保留来源字段语义；`Any`、嵌套 schema、精确 C++ 整数宽度及上限未闭合的行由 O-004 阻塞序列化，不能从名字猜测 ABI。
 

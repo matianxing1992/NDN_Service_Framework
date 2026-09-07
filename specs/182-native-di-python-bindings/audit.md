@@ -1,27 +1,46 @@
 # Spec182 Design Audit
 
-**Revision**: 6 | **Mode**: workflow simplification / pre-implementation
+**Revision**: 7 | **Mode**: source alignment / pre-implementation
 **Verdict**: DRAFT / BLOCK for implementation
-**Evidence**: [workflow simplification](evidence/workflow-simplification.md)
+**Source**: `81e251a4ef1d8e6a394dc5f0c38bc44e44bfc973` / Experimental
+**Evidence**: [current source and dependency baseline](contracts/integrated-baseline.md)
 
 ## Current Findings
 
-本轮将重复审查、固定风险配额和独立前后报告合并为一次读码审查与一份结果记录。
-实现任务只做相关unit，全部实现后由T016统一执行integration/MiniNDN；
-具体PO、负例、模型oracle和C++职责边界保留。阶段完成不等于完整PO或feature验收。
-文档结构检查只能验证ID、链接和分层约定，不能确认产品逻辑正确。
+本轮用户授权审计182并与最新源码对齐；已停止管理已接收交付的实验机器。
+源码身份与历史状态的文档漂移已修订；未实现功能继续planned，未闭合设计继续BLOCK。
+不构建、不执行unit/integration/MiniNDN/SIF/Tiger，也不把本次审计当成T015产品收敛审查。
+
+| Finding / severity | Source evidence / controlling requirement | Correction / owner / closing proof |
+| --- | --- | --- |
+| A7-01 / HIGH / RESOLVED | spec Relationship/Assumptions与symbol readiness仍写未提交合并、integration失败；实际HEAD包含整合历史，生产路径与merge及交付源无diff；FR-015 | 更新当前baseline、分离历史checkpoint，O-001仅按源码范围CLOSED；T001仍未完成 |
+| A7-02 / HIGH / RESOLVED | baseline原标VALIDATED却未包含SVS `9f2d8a47` / NDNSD `375a35c5`；当前lock和停止记录明确ABI消费者未全验证；FR-012/014，INV-008 | 固定四库pin与ABI失效范围；旧759/154结果保持历史，当前组合UNQUALIFIED；CD-009设计、T015审查、T016运行证明 |
+| A7-03 / HIGH / OPEN | ServiceProvider.hpp公开addService/addCollaborationHandler，无逐服务注销；CD-014/M47需要共享宿主close语义；FR-008/010/017 | runtime-boundaries补确切接线及缺口；T001/O-004冻结registration/ACK/Selection fence、lease共享和重复注册，T009实施，PO-014检出误停共享服务与晚到工作 |
+| A7-04 / MEDIUM / RESOLVED | requester仍在app_sdk/placement.py::_request_v3；NativeCanonicalOnnxAssembler.cpp::runPythonHelper与NativeStandaloneTokenizer.cpp::makeNativeStandaloneTokenizerDecoder仍启动Python；独立DI库/新facade不存在；FR-001/006/007/012 | 保持CD-001/005/006/009为planned，复用现有Provider/安全/epoch机制；T002/006/007/010及PO-001/005/006负责目标实现与证明 |
+| A7-05 / MEDIUM / RESOLVED | 旧baseline链接、revision2现行声明、交付任务混入Current Checkpoint；当前root skills与Tiger交付工具已存在；FR-014/017 | 当前authority统一指integrated-baseline，旧checkpoint标历史，plan/T017复用共享技能和工具；旧Python交付模板不冒称182 no-Python成果 |
 
 | Open item | Controlling gap | Owner |
 | --- | --- | --- |
-| O-001 | merge c770f18b、验证及181承接已记录；最终Experimental差异待T001核对 | T001 |
+| O-001 / CLOSED | 当前源身份、合并差异及181承接已核对；不等于当前依赖运行PASS | T001部分完成 |
 | O-002 | ONNX原生装配字节契约与依赖锁 | T001 |
 | O-003 | tokenizer原生依赖、ABI及固定向量 | T001 |
-| O-004 | 完整旧能力、调用方与测试selector清单 | T001 |
+| O-004 | 12类137字段与当前源一致；完整旧能力/调用方/selectors、嵌套schema及A7-03注册寿命仍缺 | T001 |
 | O-005 | 无Python隔离方案可行性与边界 | T001 |
 
-上述未决项沿用 [code-design](contracts/code-design.md#open-questions)，本轮没有关闭。
+O-002--005的有界关闭条件见[code-design](contracts/code-design.md#open-questions)，本轮不虚构依赖试验或完整兼容清单。
 T002--T014的各项实现、测试工具编写、静态审查、局部单测完成后，T015补审整体接线，
 T016收齐真实运行证据，T017交付。验收标准满足即结束；变化或具体缺陷才触发受影响回归。
+
+## Source Checks and Limits
+
+- `git diff --name-only c770f18b HEAD -- ndn-service-framework NDNSF-DistributedInference NDNSF-DistributedRepo NDNSF-UAV-APP examples pythonWrapper wscript`与同范围`447f7584..HEAD`均无差异；读取四仓库HEAD与交付lock，核对祖先关系。tracked源码无预存改动，本地未跟踪日志/构建目录不纳入审计或提交。
+- CodeGraph先查生产符号，再精确读取ServiceUser.hpp、ServiceProvider.hpp、DI_NativeProviderExecutable.cpp、两helper、examples/wscript及Python requester。宽泛结果混入`.codex-tmp/compare-*`，拒绝其作为当前源码证据，不重建索引或扫描整个临时树。
+- source-field-coverage.json的12类137字段按当前Python AST核对名称/类型/默认值；这只覆盖已有表，不证明全部嵌套schema或公开调用方穷尽。现有137字段表保留，不重复建立第二份DTO权威。
+- 原生Provider接线必须保留execution lease服务、V3 offer、provisioning/readiness、permission、protected preparation、epoch与结果路径；纯C++host不是只包装最终runtime.handler。Core控制publication不是通用remote-abort。
+- 任务仍为17个行为单元，未因审计机械拆分。FR-001--019、SC-001--011、CD-001--014、PO-001--016及既定负例保留；实施相关unit与T016完整集成/MiniNDN的分工不变。
+- Context Mode project/active健康检查通过；宽泛`status` timeline查询被guard拒绝，改用精确file-backed active tasks的relevance检索并对照源码文档。持久文件为authority，不用旧session状态裁决。
+
+文档检查使用`check-prerequisites.sh --json --require-tasks --include-tasks`、`audit_speckit_structure.py ... --strict`、`checklists/validate_design.py`及`git diff --check`；实际结果记tasks的当前checkpoint。它们不是产品测试，也不能关闭O-002--005。
 
 ## History
 
@@ -35,5 +54,5 @@ T016收齐真实运行证据，T017交付。验收标准满足即结束；变化
 
 ## Next Action
 
-T001核对最终合并源码，关闭O-001--005并冻结unit/integration的独立选择器。
-产品实现 **0/17**，产品审查及unit/integration/MiniNDN **NOT_RUN**。
+T001继续关闭O-002--005：固定ONNX/protobuf字节契约、tokenizer ABI、完整兼容/注册/状态设计与独立测试selector、no-Python隔离方案。无需重开合并或续跑181资格；需要动态证据的设计项保留OPEN，本轮不启动探针。
+产品实现 **0/17**；本轮源码对照完成，T015产品收敛审查及构建/unit/integration/MiniNDN **NOT_RUN**。

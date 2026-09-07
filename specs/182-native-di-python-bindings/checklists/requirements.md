@@ -1,6 +1,6 @@
 # Specification Quality Checklist
 
-**Revision**: 6
+**Revision**: 7
 **Feature**: [spec.md](../spec.md)
 
 ## Design And Workflow
@@ -16,11 +16,12 @@
 
 ## Implementation And Acceptance
 
+- [x] O-001仅按当前合并源码身份与181承接关闭，当前依赖组合UNQUALIFIED和历史运行PASS分开。
 - [ ] T001关闭O-001--005，冻结实际基线、依赖与具体selector。
 - [ ] T002--T014实现、静态审查、相关unit及必要构建完成。
 - [ ] T015整体生产接线、测试/oracle/harness审查无控制性缺陷。
 - [ ] T016完整unit→integration→MiniNDN/no-Python和既定负例全部通过。
 - [ ] T017核对最终diff、交付身份与同源证据；外部实验单独TRANSFERRED。
 
-本轮文档检查见 [workflow simplification](../evidence/workflow-simplification.md)，
+本轮文档与源码对照见[audit](../audit.md)及[tasks checkpoint](../tasks.md#current-checkpoint)，
 以上产品检查尚未执行。没有新变化、失败或具体缺口时不追加重复全量验证。
