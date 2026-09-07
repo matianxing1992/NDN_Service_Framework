@@ -69,11 +69,11 @@ T001冻结新unit selectors，不能执行整份混合测试文件而意外启�
 
 ## T006 Native Cold ONNX Assembly
 
-- **Outcome**: Selection 后原生装配与既有固定 bytes 一致，消除生产 helper IPC。
+- **Outcome**: Selection后原生装配与既有固定bytes一致，删除Python helper及其文件IPC；原生worker保留有界取消/清理。
 - **Design**: FR-006,FR-016; CD-005; INV-003,INV-004,INV-006,INV-007; FLOW-001, FLOW-002。
-- **Changes**: NativeCanonicalOnnxAssembler 与 NativeOnnxRecipeAssembler 头/源、di-native-onnx-recipe
+- **Changes**: NativeCanonicalOnnxAssembler、NativeOnnxRecipeAssembler、NativeOnnxAssemblyWorker头/源、DI_NativeOnnxAssemblyWorker.cpp及Waf安装目标、di-native-onnx-recipe；精确OA函数/类型/协议按[native ONNX assembly design](native-onnx-assembly-design.md)。
 - **ForbiddenChanges**: 全部提前离线切分；临时明文绕过授权；改 recipe digest。
-- **LocalChecks**: 固定recipe字节、inline/external-data和错误输入单测，可直接调用原生ONNX库；Selection后真实Provider装配在T016。
+- **LocalChecks**: 固定recipe/identity/manifest字节、inline/external/local function及错误输入；通过安装原生worker验证cancel/超时/crash/partial frame，必要编译属于本任务；Selection后真实Provider装配在T016。
 - **FinalProof**: PO-005。 本任务只完成局部单测；其余运行证据由T016统一产生。
 
 ## T007 Native Tokenizer Execution

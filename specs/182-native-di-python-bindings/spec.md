@@ -214,7 +214,7 @@ NDNSF-DistributedInference/cpp/adapters。仅本表使用前缀缩写，附件�
 | CD-002 | ADD D/NativePlanning.{hpp,cpp}, NativeModelAdapter；A/qwen/NativeQwenPlanner.{hpp,cpp}, A/yolo/NativeYoloPlanner.{hpp,cpp} | 原生 split/placement、模型差异 | [Strategies](contracts/code-design.md#cd-002-strategies) |
 | CD-003 | ADD D/NativePlanSealer.{hpp,cpp}；MODIFY NativeExecutionPlanJson.{hpp,cpp} | 计划/依赖/摘要/投影唯一语义 | [Plan semantics](contracts/code-design.md#cd-003-plan-semantics) |
 | CD-004 | ADD D/NativeGrantClient.{hpp,cpp}, NativeArtifactPolicyAuthority.{hpp,cpp}；REUSE NativeGrantVerifier / ProtectedRuntime | 原生授权闭合 | [Grant](contracts/code-design.md#cd-004-grant) |
-| CD-005 | MODIFY D/NativeCanonicalOnnxAssembler.{hpp,cpp}；ADD A/onnx/NativeOnnxRecipeAssembler.{hpp,cpp} | 替换 runtime Python 装配 helper | [Assembly](contracts/code-design.md#cd-005-assembly) |
+| CD-005 | MODIFY D/NativeCanonicalOnnxAssembler.{hpp,cpp}及Waf目标；ADD A/onnx/NativeOnnxRecipeAssembler.{hpp,cpp}、NativeOnnxAssemblyWorker.{hpp,cpp}、examples/DI_NativeOnnxAssemblyWorker.cpp | 原生格式算法及具名worker保留deadline/cleanup；移除Python helper | [Assembly](contracts/code-design.md#cd-005-assembly) |
 | CD-006 | MODIFY D/NativeStandaloneTokenizer.{hpp,cpp}；ADD A/qwen/NativeTokenizer.{hpp,cpp} | 原生 encode/decode，移除解释器调用 | [Tokenizer](contracts/code-design.md#cd-006-tokenizer) |
 | CD-007 | ADD D/NativeConversationCoordinator.{hpp,cpp}；REUSE NativeEpochCoordinator / ConversationStateStore | requester 续接/恢复与 Provider 状态协作 | [Lifecycle](contracts/code-design.md#cd-007-lifecycle) |
 | CD-008 | ADD pythonWrapper/src/ndnsf/di_bindings.cpp；MODIFY P/app_sdk/application.py, client.py, provider.py, P/__init__.py, P/app_sdk/__init__.py | Python 绑定同一库 | [Bindings](contracts/code-design.md#cd-008-bindings) |

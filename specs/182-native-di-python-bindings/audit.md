@@ -18,6 +18,8 @@ T001有界依赖探针见[native dependency design](contracts/native-dependency-
 | A7-03 / HIGH / OPEN | ServiceProvider.hpp公开addService/addCollaborationHandler，无逐服务注销；CD-014/M47需要共享宿主close语义；FR-008/010/017 | runtime-boundaries补确切接线及缺口；T001/O-004冻结registration/ACK/Selection fence、lease共享和重复注册，T009实施，PO-014检出误停共享服务与晚到工作 |
 | A7-04 / MEDIUM / RESOLVED | requester仍在app_sdk/placement.py::_request_v3；NativeCanonicalOnnxAssembler.cpp::runPythonHelper与NativeStandaloneTokenizer.cpp::makeNativeStandaloneTokenizerDecoder仍启动Python；独立DI库/新facade不存在；FR-001/006/007/012 | 保持CD-001/005/006/009为planned，复用现有Provider/安全/epoch机制；T002/006/007/010及PO-001/005/006负责目标实现与证明 |
 | A7-05 / MEDIUM / RESOLVED | 旧baseline链接、revision2现行声明、交付任务混入Current Checkpoint；当前root skills与Tiger交付工具已存在；FR-014/017 | 当前authority统一指integrated-baseline，旧checkpoint标历史，plan/T017复用共享技能和工具；旧Python交付模板不冒称182 no-Python成果 |
+| A7-06 / HIGH / DESIGN_RESOLVED | 原Python helper有进程超时回收；ONNX checker/shape inference无取消接口，直接进程内替换会削弱deadline/cleanup；FR-008 | CD-005细化具名native worker、owned FD/进程组、steady deadline、部分输出拒绝与Provider激活fence；T006实施、T016真实证明，设计见native-onnx-assembly-design |
+| A7-07 / HIGH / OPEN / CONFIRMED | 原版本独立探针：BFLOAT16 raw摘要与已知bits不符、typed正确；STRING相同模型跨进程摘要不同；FR-006/016 | 24个普通numeric稳定向量已冻结，见[identity evidence](evidence/identity-reference-20260906.json)；O-002/O-004补稳定规范和兼容处置，不复制错误/进程指针字节，未修改产品Python或原oracle |
 
 | Open item | Controlling gap | Owner |
 | --- | --- | --- |

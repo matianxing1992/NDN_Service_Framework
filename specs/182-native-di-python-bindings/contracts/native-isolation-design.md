@@ -51,6 +51,7 @@ probe不复制宿主Python或依赖包，不挂载宿主proc，不启动长驻�
 | `isolation.schema: string` | 固定`spec182-native-isolation-v1`，其他版本拒绝 |
 | `isolation.artifacts: list<object>` | 每项`source`、`target`、`sha256`、`kind`（executable/shared-library/data/config）、`mode`；source为受控输入、target是根内规范绝对路径且唯一。ELF根据实际header分类，扩展名不作为可信分类；不把模型数据声明为executable |
 | `isolation.processes: list<object>` | 每项`id`、`role`（requester/provider/authority/nfd/repo/controller）、`executable`、`argv`、`env`、`node`；id唯一，executable必须指向已封存artifact。env只允许显式HOME、TMPDIR、LC_ALL和该case已登记的NDN配置；拒绝LD_PRELOAD、LD_AUDIT、PYTHON*、host PATH/venv |
+| `isolation.childProcesses: list<object>` | 只登记具名原生子角色：每项`role=assembly-worker`、`executable`（已封存worker artifact）、`parentProcessIds`（具名Provider）、`maxConcurrentPerParent`（case按实际Provider配置冻结）。不允许通配任意exec；collector从clone/exec关系建立实际child PID/starttime身份；没有endpoint权限 |
 | `isolation.endpoints: list<object>` | 每项`ownerProcess`、`transport`、`address`、`peerProcessIds`、`purpose`；owner必须在processes中，默认应用只允许独立network namespace中的私有NFD filesystem UNIX socket。无host DBus/X11/SSH-agent/abstract socket、HTTP helper或外部planner |
 | `isolation.tools: object` | bwrap/strace/readelf/nsenter的版本及SHA256，实际命令和支持选项；工具位于隔离外。T016固定实际机器值；不把0.4.0/5.5工具探针当所有平台通用资格 |
 | `isolation.limits: object` | `runSeconds`取case冻结deadline（默认180）、`cleanupSeconds`默认15、`traceBytes`默认268435456。到期/超量停止并UNQUALIFIED，不截断后判PASS，不运行中加时 |
@@ -69,6 +70,8 @@ probe不复制宿主Python或依赖包，不挂载宿主proc，不启动长驻�
 - 父supervisor拥有新process group，deadline/异常时先TERM再在cleanup预算内KILL；bwrap的PID namespace回收其后代。等待全部owned PID退出并确认trace结束；不执行全局pkill/mn-c或停止他人服务。私钥与完整原始trace留本地，Git只保存脱敏摘要与hash。
 
 ## Required Detector Counterexamples
+
+CD-005的具名[native assembly worker](native-onnx-assembly-design.md)是允许的原生子角色，必须同时满足已封存binary、Provider父身份、固定argv模式和childProcesses策略；它不是Python helper豁免。worker不能连接网络/服务或再exec；I01正例覆盖合法worker，I02/I08覆盖错误binary/parent及超时、晚到child回收。完整产品仍须在T016验证。
 
 | Case | Injection / discriminator | Required outcome |
 | --- | --- | --- |

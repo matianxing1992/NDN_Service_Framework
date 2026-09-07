@@ -1,0 +1,536 @@
+{
+  "schema": "spec182-onnx-identity-reference-v1",
+  "referenceOnnx": "1.17.0",
+  "referenceNumpy": "1.24.4",
+  "referenceSourceSha256": "e5532328e8752bd626b5a668de8e4b826ee9d336367a091fdd7016f48480734d",
+  "cases": [
+    {
+      "modelHex": "08083a7a0a190a05696e70757412066f757470757422084964656e74697479121a737065633138322d6964656e746974792d7265666572656e63652a160802100122080000a03f000020c042067765696768745a130a05696e707574120a0a08080112040a02080262140a066f7574707574120a0a08080112040a02080242040a00100d",
+      "modelDigest": "sha256:094b628c9394ebf54d22b5ce0c3426f1fa6f9d457c7498435ca810ebdc9ec26f",
+      "graphDigest": "sha256:59b482a1454ac3e15c142fec790db8028378ac0835a8e37991d682d665140f74",
+      "initializerDigest": "sha256:3c8f421f8658191ca74863e7929037c003a504fcc5e4ac0fcaad87dd2d8638f5",
+      "tensorIndex": [
+        {
+          "tensorName": "weight",
+          "dtype": "float32",
+          "shape": [
+            2
+          ],
+          "byteOrder": "little",
+          "contentDigest": "sha256:3ba8f8c83cc4783e8a2da62d18f5e629e2a9134da28834c798cd4529234bb5c0",
+          "byteLength": 8,
+          "sharedReference": ""
+        }
+      ],
+      "name": "float32-typed",
+      "encoding": "typed",
+      "contentDigest": "sha256:3ba8f8c83cc4783e8a2da62d18f5e629e2a9134da28834c798cd4529234bb5c0"
+    },
+    {
+      "modelHex": "08083a7a0a190a05696e70757412066f757470757422084964656e74697479121a737065633138322d6964656e746974792d7265666572656e63652a160802100142067765696768744a080000a03f000020c05a130a05696e707574120a0a08080112040a02080262140a066f7574707574120a0a08080112040a02080242040a00100d",
+      "modelDigest": "sha256:149bdd8cba3c5653c76e9673291602ce5b9c5bb28408dceacb345c6ffd5f3a09",
+      "graphDigest": "sha256:59b482a1454ac3e15c142fec790db8028378ac0835a8e37991d682d665140f74",
+      "initializerDigest": "sha256:3c8f421f8658191ca74863e7929037c003a504fcc5e4ac0fcaad87dd2d8638f5",
+      "tensorIndex": [
+        {
+          "tensorName": "weight",
+          "dtype": "float32",
+          "shape": [
+            2
+          ],
+          "byteOrder": "little",
+          "contentDigest": "sha256:3ba8f8c83cc4783e8a2da62d18f5e629e2a9134da28834c798cd4529234bb5c0",
+          "byteLength": 8,
+          "sharedReference": ""
+        }
+      ],
+      "name": "float32-raw",
+      "encoding": "raw",
+      "contentDigest": "sha256:3ba8f8c83cc4783e8a2da62d18f5e629e2a9134da28834c798cd4529234bb5c0"
+    },
+    {
+      "modelHex": "08083a770a190a05696e70757412066f757470757422084964656e74697479121a737065633138322d6964656e746974792d7265666572656e63652a130802100a2a05807a80820342067765696768745a130a05696e707574120a0a08080112040a02080262140a066f7574707574120a0a08080112040a02080242040a00100d",
+      "modelDigest": "sha256:fe5609abee841c58335b625965e6a172c33db332c90cb8d3fc7410a91e9ded44",
+      "graphDigest": "sha256:71bd26d2f3ea9326c50d65a766eea2155282f28c4bdf2000fab0fbdba51e994c",
+      "initializerDigest": "sha256:789f97e2a962f3c2c1e064ce06be01f18cf5056870166f103cf0787fe6fb4e24",
+      "tensorIndex": [
+        {
+          "tensorName": "weight",
+          "dtype": "float16",
+          "shape": [
+            2
+          ],
+          "byteOrder": "little",
+          "contentDigest": "sha256:b721a2a06e145360b5038891d736ef25dd97fb445a5eafa7134666c723998436",
+          "byteLength": 4,
+          "sharedReference": ""
+        }
+      ],
+      "name": "float16-typed",
+      "encoding": "typed",
+      "contentDigest": "sha256:b721a2a06e145360b5038891d736ef25dd97fb445a5eafa7134666c723998436"
+    },
+    {
+      "modelHex": "08083a760a190a05696e70757412066f757470757422084964656e74697479121a737065633138322d6964656e746974792d7265666572656e63652a120802100a42067765696768744a04003d00c15a130a05696e707574120a0a08080112040a02080262140a066f7574707574120a0a08080112040a02080242040a00100d",
+      "modelDigest": "sha256:bd65de2420597f3e0556286d3baf83a8d712ca44ac19f0fc6980cc78f26f5739",
+      "graphDigest": "sha256:71bd26d2f3ea9326c50d65a766eea2155282f28c4bdf2000fab0fbdba51e994c",
+      "initializerDigest": "sha256:789f97e2a962f3c2c1e064ce06be01f18cf5056870166f103cf0787fe6fb4e24",
+      "tensorIndex": [
+        {
+          "tensorName": "weight",
+          "dtype": "float16",
+          "shape": [
+            2
+          ],
+          "byteOrder": "little",
+          "contentDigest": "sha256:b721a2a06e145360b5038891d736ef25dd97fb445a5eafa7134666c723998436",
+          "byteLength": 4,
+          "sharedReference": ""
+        }
+      ],
+      "name": "float16-raw",
+      "encoding": "raw",
+      "contentDigest": "sha256:b721a2a06e145360b5038891d736ef25dd97fb445a5eafa7134666c723998436"
+    },
+    {
+      "modelHex": "08083a82010a190a05696e70757412066f757470757422084964656e74697479121a737065633138322d6964656e746974792d7265666572656e63652a1e0802100b42067765696768745210000000000000f43f00000000000004c05a130a05696e707574120a0a08080112040a02080262140a066f7574707574120a0a08080112040a02080242040a00100d",
+      "modelDigest": "sha256:6d1553358ed392ea90ecbf373b82c94c7933ba7d6611b73ebede79330b2de46d",
+      "graphDigest": "sha256:38f712e2c7c6b6fa6ac228b3198f01e65951e8ac9400ce880e6915947ca6c278",
+      "initializerDigest": "sha256:0a1d917ef161e8842ff084a53c2905b76086b8b93df6621f8f6fd284f3e8828c",
+      "tensorIndex": [
+        {
+          "tensorName": "weight",
+          "dtype": "float64",
+          "shape": [
+            2
+          ],
+          "byteOrder": "little",
+          "contentDigest": "sha256:acaaa2a5087f58533e66ab572c9e9c0eda82dc13a0f6212ac02eca71c98f0033",
+          "byteLength": 16,
+          "sharedReference": ""
+        }
+      ],
+      "name": "float64-typed",
+      "encoding": "typed",
+      "contentDigest": "sha256:acaaa2a5087f58533e66ab572c9e9c0eda82dc13a0f6212ac02eca71c98f0033"
+    },
+    {
+      "modelHex": "08083a82010a190a05696e70757412066f757470757422084964656e74697479121a737065633138322d6964656e746974792d7265666572656e63652a1e0802100b42067765696768744a10000000000000f43f00000000000004c05a130a05696e707574120a0a08080112040a02080262140a066f7574707574120a0a08080112040a02080242040a00100d",
+      "modelDigest": "sha256:0a046c38e9fca9b261ea7b6e3f0554b0ca1c4653afaad3e75bbd19b6ddaf9c94",
+      "graphDigest": "sha256:38f712e2c7c6b6fa6ac228b3198f01e65951e8ac9400ce880e6915947ca6c278",
+      "initializerDigest": "sha256:0a1d917ef161e8842ff084a53c2905b76086b8b93df6621f8f6fd284f3e8828c",
+      "tensorIndex": [
+        {
+          "tensorName": "weight",
+          "dtype": "float64",
+          "shape": [
+            2
+          ],
+          "byteOrder": "little",
+          "contentDigest": "sha256:acaaa2a5087f58533e66ab572c9e9c0eda82dc13a0f6212ac02eca71c98f0033",
+          "byteLength": 16,
+          "sharedReference": ""
+        }
+      ],
+      "name": "float64-raw",
+      "encoding": "raw",
+      "contentDigest": "sha256:acaaa2a5087f58533e66ab572c9e9c0eda82dc13a0f6212ac02eca71c98f0033"
+    },
+    {
+      "modelHex": "08083a7d0a190a05696e70757412066f757470757422084964656e74697479121a737065633138322d6964656e746974792d7265666572656e63652a19080210073a0bfdffffffffffffffff010742067765696768745a130a05696e707574120a0a08080112040a02080262140a066f7574707574120a0a08080112040a02080242040a00100d",
+      "modelDigest": "sha256:46231690b1d46781030655bd22afe2c1e264aa3490d51647329d739429ad5a19",
+      "graphDigest": "sha256:fd9aad0fc08ca9729b84d7895785abbeba157dc2c72190e6ba03d2d31dc10b5a",
+      "initializerDigest": "sha256:361e767a7f023f3fa15792619ecf24893e8c06749b84034454062967da093a29",
+      "tensorIndex": [
+        {
+          "tensorName": "weight",
+          "dtype": "int64",
+          "shape": [
+            2
+          ],
+          "byteOrder": "little",
+          "contentDigest": "sha256:b7a41024a65c89ed6ab4bfa5c778ebb5ed022dcb78f66015bfabbddd1a17a5a3",
+          "byteLength": 16,
+          "sharedReference": ""
+        }
+      ],
+      "name": "int64-typed",
+      "encoding": "typed",
+      "contentDigest": "sha256:b7a41024a65c89ed6ab4bfa5c778ebb5ed022dcb78f66015bfabbddd1a17a5a3"
+    },
+    {
+      "modelHex": "08083a82010a190a05696e70757412066f757470757422084964656e74697479121a737065633138322d6964656e746974792d7265666572656e63652a1e0802100742067765696768744a10fdffffffffffffff07000000000000005a130a05696e707574120a0a08080112040a02080262140a066f7574707574120a0a08080112040a02080242040a00100d",
+      "modelDigest": "sha256:7dae83ff3f52102c12a50faebc33db4b6c311af34d678dcb7d97deff60c0e552",
+      "graphDigest": "sha256:fd9aad0fc08ca9729b84d7895785abbeba157dc2c72190e6ba03d2d31dc10b5a",
+      "initializerDigest": "sha256:361e767a7f023f3fa15792619ecf24893e8c06749b84034454062967da093a29",
+      "tensorIndex": [
+        {
+          "tensorName": "weight",
+          "dtype": "int64",
+          "shape": [
+            2
+          ],
+          "byteOrder": "little",
+          "contentDigest": "sha256:b7a41024a65c89ed6ab4bfa5c778ebb5ed022dcb78f66015bfabbddd1a17a5a3",
+          "byteLength": 16,
+          "sharedReference": ""
+        }
+      ],
+      "name": "int64-raw",
+      "encoding": "raw",
+      "contentDigest": "sha256:b7a41024a65c89ed6ab4bfa5c778ebb5ed022dcb78f66015bfabbddd1a17a5a3"
+    },
+    {
+      "modelHex": "08083a7d0a190a05696e70757412066f757470757422084964656e74697479121a737065633138322d6964656e746974792d7265666572656e63652a19080210062a0bfdffffffffffffffff010742067765696768745a130a05696e707574120a0a08080112040a02080262140a066f7574707574120a0a08080112040a02080242040a00100d",
+      "modelDigest": "sha256:724da557478f07e7d49118ade86e0cc043953d83b381a298bcf6a1e5f3bf98ba",
+      "graphDigest": "sha256:24e2356d2e0e754c15cd502e18bc21b4010df13697f533884c5ffeb227d8e27f",
+      "initializerDigest": "sha256:aec5d2eb40f55b3c5b557f35cd4b1b8c93b4de5ca08561a8d23a8782fc3d066c",
+      "tensorIndex": [
+        {
+          "tensorName": "weight",
+          "dtype": "int32",
+          "shape": [
+            2
+          ],
+          "byteOrder": "little",
+          "contentDigest": "sha256:689affc9f6b33163140786f841d23336b9a2b9a0eef56fc06adf51b8ee61d6ed",
+          "byteLength": 8,
+          "sharedReference": ""
+        }
+      ],
+      "name": "int32-typed",
+      "encoding": "typed",
+      "contentDigest": "sha256:689affc9f6b33163140786f841d23336b9a2b9a0eef56fc06adf51b8ee61d6ed"
+    },
+    {
+      "modelHex": "08083a7a0a190a05696e70757412066f757470757422084964656e74697479121a737065633138322d6964656e746974792d7265666572656e63652a160802100642067765696768744a08fdffffff070000005a130a05696e707574120a0a08080112040a02080262140a066f7574707574120a0a08080112040a02080242040a00100d",
+      "modelDigest": "sha256:aecf044890b496be6b24b752ed2dde5d2dd886ebf5e74fc0ac28aff7ff1fefbc",
+      "graphDigest": "sha256:24e2356d2e0e754c15cd502e18bc21b4010df13697f533884c5ffeb227d8e27f",
+      "initializerDigest": "sha256:aec5d2eb40f55b3c5b557f35cd4b1b8c93b4de5ca08561a8d23a8782fc3d066c",
+      "tensorIndex": [
+        {
+          "tensorName": "weight",
+          "dtype": "int32",
+          "shape": [
+            2
+          ],
+          "byteOrder": "little",
+          "contentDigest": "sha256:689affc9f6b33163140786f841d23336b9a2b9a0eef56fc06adf51b8ee61d6ed",
+          "byteLength": 8,
+          "sharedReference": ""
+        }
+      ],
+      "name": "int32-raw",
+      "encoding": "raw",
+      "contentDigest": "sha256:689affc9f6b33163140786f841d23336b9a2b9a0eef56fc06adf51b8ee61d6ed"
+    },
+    {
+      "modelHex": "08083a7d0a190a05696e70757412066f757470757422084964656e74697479121a737065633138322d6964656e746974792d7265666572656e63652a19080210052a0bfdffffffffffffffff010742067765696768745a130a05696e707574120a0a08080112040a02080262140a066f7574707574120a0a08080112040a02080242040a00100d",
+      "modelDigest": "sha256:63ec8f7aa84030631da06299bdb881df91549bd70d9e7cb90feff82dd95139c1",
+      "graphDigest": "sha256:fc7e2ef1415189c2c3505957cbac85f34c902c45914c62dbb7967a5a51472365",
+      "initializerDigest": "sha256:07372c69b339479e6e569807dd34eb4a8eebe22f9192f1dc1bd626286e696671",
+      "tensorIndex": [
+        {
+          "tensorName": "weight",
+          "dtype": "int16",
+          "shape": [
+            2
+          ],
+          "byteOrder": "little",
+          "contentDigest": "sha256:70559c2c40cb9035e80201806b3082b21839b1ae41ee088a0db6b46dff4c56f7",
+          "byteLength": 4,
+          "sharedReference": ""
+        }
+      ],
+      "name": "int16-typed",
+      "encoding": "typed",
+      "contentDigest": "sha256:70559c2c40cb9035e80201806b3082b21839b1ae41ee088a0db6b46dff4c56f7"
+    },
+    {
+      "modelHex": "08083a760a190a05696e70757412066f757470757422084964656e74697479121a737065633138322d6964656e746974792d7265666572656e63652a120802100542067765696768744a04fdff07005a130a05696e707574120a0a08080112040a02080262140a066f7574707574120a0a08080112040a02080242040a00100d",
+      "modelDigest": "sha256:eced5d8aeabd9555ad57f9dc7c16caf3e0459a961c24b948721a009bbc4507b0",
+      "graphDigest": "sha256:fc7e2ef1415189c2c3505957cbac85f34c902c45914c62dbb7967a5a51472365",
+      "initializerDigest": "sha256:07372c69b339479e6e569807dd34eb4a8eebe22f9192f1dc1bd626286e696671",
+      "tensorIndex": [
+        {
+          "tensorName": "weight",
+          "dtype": "int16",
+          "shape": [
+            2
+          ],
+          "byteOrder": "little",
+          "contentDigest": "sha256:70559c2c40cb9035e80201806b3082b21839b1ae41ee088a0db6b46dff4c56f7",
+          "byteLength": 4,
+          "sharedReference": ""
+        }
+      ],
+      "name": "int16-raw",
+      "encoding": "raw",
+      "contentDigest": "sha256:70559c2c40cb9035e80201806b3082b21839b1ae41ee088a0db6b46dff4c56f7"
+    },
+    {
+      "modelHex": "08083a7d0a190a05696e70757412066f757470757422084964656e74697479121a737065633138322d6964656e746974792d7265666572656e63652a19080210032a0bfdffffffffffffffff010742067765696768745a130a05696e707574120a0a08080112040a02080262140a066f7574707574120a0a08080112040a02080242040a00100d",
+      "modelDigest": "sha256:a7f1370776f62e187d90e3ca4e47928cdd32560a5faa2b5f15357140a3f29783",
+      "graphDigest": "sha256:c9f4297f82bf071c1b38b12304a143493467ef1acf343be9385bd4db6edef1b6",
+      "initializerDigest": "sha256:a975a3eb7bc8835322a6c4cc61c86a0ff55bb94d483cb4b1d9645a2fdd810e50",
+      "tensorIndex": [
+        {
+          "tensorName": "weight",
+          "dtype": "int8",
+          "shape": [
+            2
+          ],
+          "byteOrder": "na",
+          "contentDigest": "sha256:91b720949bf7054f96e0fb4f40c9c61e4f76f692b52c1a9d305a61b18ab6a9de",
+          "byteLength": 2,
+          "sharedReference": ""
+        }
+      ],
+      "name": "int8-typed",
+      "encoding": "typed",
+      "contentDigest": "sha256:91b720949bf7054f96e0fb4f40c9c61e4f76f692b52c1a9d305a61b18ab6a9de"
+    },
+    {
+      "modelHex": "08083a740a190a05696e70757412066f757470757422084964656e74697479121a737065633138322d6964656e746974792d7265666572656e63652a100802100342067765696768744a02fd075a130a05696e707574120a0a08080112040a02080262140a066f7574707574120a0a08080112040a02080242040a00100d",
+      "modelDigest": "sha256:ebedc97fee494a3352f324afeae915466512ad5448f09a8744c64ec68e323aa5",
+      "graphDigest": "sha256:c9f4297f82bf071c1b38b12304a143493467ef1acf343be9385bd4db6edef1b6",
+      "initializerDigest": "sha256:a975a3eb7bc8835322a6c4cc61c86a0ff55bb94d483cb4b1d9645a2fdd810e50",
+      "tensorIndex": [
+        {
+          "tensorName": "weight",
+          "dtype": "int8",
+          "shape": [
+            2
+          ],
+          "byteOrder": "na",
+          "contentDigest": "sha256:91b720949bf7054f96e0fb4f40c9c61e4f76f692b52c1a9d305a61b18ab6a9de",
+          "byteLength": 2,
+          "sharedReference": ""
+        }
+      ],
+      "name": "int8-raw",
+      "encoding": "raw",
+      "contentDigest": "sha256:91b720949bf7054f96e0fb4f40c9c61e4f76f692b52c1a9d305a61b18ab6a9de"
+    },
+    {
+      "modelHex": "08083a740a190a05696e70757412066f757470757422084964656e74697479121a737065633138322d6964656e746974792d7265666572656e63652a100802100d42067765696768745a0203075a130a05696e707574120a0a08080112040a02080262140a066f7574707574120a0a08080112040a02080242040a00100d",
+      "modelDigest": "sha256:57e93cfda0fc7075b8a41d6bc8c36705b55deeb6e86e4909e6755daae5ee6e01",
+      "graphDigest": "sha256:2f29efcc2d3fe9aa6bfb8e3834a82385c72c71627b0c5106e8ae4a84d7982626",
+      "initializerDigest": "sha256:9aab8aadb40ca469aaab5c70f396b48ff89c0dce6252fa2266a0a76a5a729782",
+      "tensorIndex": [
+        {
+          "tensorName": "weight",
+          "dtype": "uint64",
+          "shape": [
+            2
+          ],
+          "byteOrder": "little",
+          "contentDigest": "sha256:761b59d486d929d4d242938b94eeae7ee280c78da753bba0c9af46ad5e4bef4b",
+          "byteLength": 16,
+          "sharedReference": ""
+        }
+      ],
+      "name": "uint64-typed",
+      "encoding": "typed",
+      "contentDigest": "sha256:761b59d486d929d4d242938b94eeae7ee280c78da753bba0c9af46ad5e4bef4b"
+    },
+    {
+      "modelHex": "08083a82010a190a05696e70757412066f757470757422084964656e74697479121a737065633138322d6964656e746974792d7265666572656e63652a1e0802100d42067765696768744a10030000000000000007000000000000005a130a05696e707574120a0a08080112040a02080262140a066f7574707574120a0a08080112040a02080242040a00100d",
+      "modelDigest": "sha256:be7c6709abab6902c46cf8ea78aa3ef08acba190e4cfabe8b97d398f413be7e9",
+      "graphDigest": "sha256:2f29efcc2d3fe9aa6bfb8e3834a82385c72c71627b0c5106e8ae4a84d7982626",
+      "initializerDigest": "sha256:9aab8aadb40ca469aaab5c70f396b48ff89c0dce6252fa2266a0a76a5a729782",
+      "tensorIndex": [
+        {
+          "tensorName": "weight",
+          "dtype": "uint64",
+          "shape": [
+            2
+          ],
+          "byteOrder": "little",
+          "contentDigest": "sha256:761b59d486d929d4d242938b94eeae7ee280c78da753bba0c9af46ad5e4bef4b",
+          "byteLength": 16,
+          "sharedReference": ""
+        }
+      ],
+      "name": "uint64-raw",
+      "encoding": "raw",
+      "contentDigest": "sha256:761b59d486d929d4d242938b94eeae7ee280c78da753bba0c9af46ad5e4bef4b"
+    },
+    {
+      "modelHex": "08083a740a190a05696e70757412066f757470757422084964656e74697479121a737065633138322d6964656e746974792d7265666572656e63652a100802100c42067765696768745a0203075a130a05696e707574120a0a08080112040a02080262140a066f7574707574120a0a08080112040a02080242040a00100d",
+      "modelDigest": "sha256:5b3612d6ec3448804f479a7aec971a90da43b7683fe2ceee07a40421ab256d2b",
+      "graphDigest": "sha256:984a8236994c3a179b915d448706572facab9216a2cfd4444a38da3ddb0142f4",
+      "initializerDigest": "sha256:2eb826eb1f4cb67d133fbeb984e4d5dfcaf88d4d1a672a27e3fef35f5adcfef1",
+      "tensorIndex": [
+        {
+          "tensorName": "weight",
+          "dtype": "uint32",
+          "shape": [
+            2
+          ],
+          "byteOrder": "little",
+          "contentDigest": "sha256:d1a01f2820956d6d18fcc029dca33b6c1513c97451fc9d29ad00dbefab11b787",
+          "byteLength": 8,
+          "sharedReference": ""
+        }
+      ],
+      "name": "uint32-typed",
+      "encoding": "typed",
+      "contentDigest": "sha256:d1a01f2820956d6d18fcc029dca33b6c1513c97451fc9d29ad00dbefab11b787"
+    },
+    {
+      "modelHex": "08083a7a0a190a05696e70757412066f757470757422084964656e74697479121a737065633138322d6964656e746974792d7265666572656e63652a160802100c42067765696768744a0803000000070000005a130a05696e707574120a0a08080112040a02080262140a066f7574707574120a0a08080112040a02080242040a00100d",
+      "modelDigest": "sha256:fabfe90ecf513626d5bdb57278512ae0f261d761a6c46fbb6c1b22a1fb6e26d6",
+      "graphDigest": "sha256:984a8236994c3a179b915d448706572facab9216a2cfd4444a38da3ddb0142f4",
+      "initializerDigest": "sha256:2eb826eb1f4cb67d133fbeb984e4d5dfcaf88d4d1a672a27e3fef35f5adcfef1",
+      "tensorIndex": [
+        {
+          "tensorName": "weight",
+          "dtype": "uint32",
+          "shape": [
+            2
+          ],
+          "byteOrder": "little",
+          "contentDigest": "sha256:d1a01f2820956d6d18fcc029dca33b6c1513c97451fc9d29ad00dbefab11b787",
+          "byteLength": 8,
+          "sharedReference": ""
+        }
+      ],
+      "name": "uint32-raw",
+      "encoding": "raw",
+      "contentDigest": "sha256:d1a01f2820956d6d18fcc029dca33b6c1513c97451fc9d29ad00dbefab11b787"
+    },
+    {
+      "modelHex": "08083a740a190a05696e70757412066f757470757422084964656e74697479121a737065633138322d6964656e746974792d7265666572656e63652a10080210042a02030742067765696768745a130a05696e707574120a0a08080112040a02080262140a066f7574707574120a0a08080112040a02080242040a00100d",
+      "modelDigest": "sha256:f8e59278dc5b13a06cdfbee5f867d62aabf9621fbaea1e26228280e6e9f18724",
+      "graphDigest": "sha256:845e4089da1a58b8a575bb46c0fb3ec327ea561546172f40706e58d6235446c2",
+      "initializerDigest": "sha256:9c8caedd6e9d66696185b303dba4cf64b7c3c6a7bebe3721cc740955d34a2ea5",
+      "tensorIndex": [
+        {
+          "tensorName": "weight",
+          "dtype": "uint16",
+          "shape": [
+            2
+          ],
+          "byteOrder": "little",
+          "contentDigest": "sha256:cbd6cbb89194d9741f03aebd649e58ab8aa62e73fb8ce914e2aaa102045c11dd",
+          "byteLength": 4,
+          "sharedReference": ""
+        }
+      ],
+      "name": "uint16-typed",
+      "encoding": "typed",
+      "contentDigest": "sha256:cbd6cbb89194d9741f03aebd649e58ab8aa62e73fb8ce914e2aaa102045c11dd"
+    },
+    {
+      "modelHex": "08083a760a190a05696e70757412066f757470757422084964656e74697479121a737065633138322d6964656e746974792d7265666572656e63652a120802100442067765696768744a04030007005a130a05696e707574120a0a08080112040a02080262140a066f7574707574120a0a08080112040a02080242040a00100d",
+      "modelDigest": "sha256:44702985df3e7f88c60dbfce2d2a814fced9f712dda80290d5e3091562529d49",
+      "graphDigest": "sha256:845e4089da1a58b8a575bb46c0fb3ec327ea561546172f40706e58d6235446c2",
+      "initializerDigest": "sha256:9c8caedd6e9d66696185b303dba4cf64b7c3c6a7bebe3721cc740955d34a2ea5",
+      "tensorIndex": [
+        {
+          "tensorName": "weight",
+          "dtype": "uint16",
+          "shape": [
+            2
+          ],
+          "byteOrder": "little",
+          "contentDigest": "sha256:cbd6cbb89194d9741f03aebd649e58ab8aa62e73fb8ce914e2aaa102045c11dd",
+          "byteLength": 4,
+          "sharedReference": ""
+        }
+      ],
+      "name": "uint16-raw",
+      "encoding": "raw",
+      "contentDigest": "sha256:cbd6cbb89194d9741f03aebd649e58ab8aa62e73fb8ce914e2aaa102045c11dd"
+    },
+    {
+      "modelHex": "08083a740a190a05696e70757412066f757470757422084964656e74697479121a737065633138322d6964656e746974792d7265666572656e63652a10080210022a02030742067765696768745a130a05696e707574120a0a08080112040a02080262140a066f7574707574120a0a08080112040a02080242040a00100d",
+      "modelDigest": "sha256:df1690d12222d3c70f760ea3b2de00dc9edad5f99637c635f79bb17263fd8a5b",
+      "graphDigest": "sha256:3f86dc266d62c7cb5f25f7a439d9a99e113e8b3ab1568f6d966df525a2ce9afc",
+      "initializerDigest": "sha256:4b38ebee63c1193b4eaca73078054862d9f602d27fae8e8d9e6e1cdadcd56c77",
+      "tensorIndex": [
+        {
+          "tensorName": "weight",
+          "dtype": "uint8",
+          "shape": [
+            2
+          ],
+          "byteOrder": "na",
+          "contentDigest": "sha256:48986d85f8c0a0601ef7c44afc939dd0a8b0ed7bc309c7e373cb0fe94e30c7aa",
+          "byteLength": 2,
+          "sharedReference": ""
+        }
+      ],
+      "name": "uint8-typed",
+      "encoding": "typed",
+      "contentDigest": "sha256:48986d85f8c0a0601ef7c44afc939dd0a8b0ed7bc309c7e373cb0fe94e30c7aa"
+    },
+    {
+      "modelHex": "08083a740a190a05696e70757412066f757470757422084964656e74697479121a737065633138322d6964656e746974792d7265666572656e63652a100802100242067765696768744a0203075a130a05696e707574120a0a08080112040a02080262140a066f7574707574120a0a08080112040a02080242040a00100d",
+      "modelDigest": "sha256:5a7898c1d393b433e90ec5acf99daaf7f9937cf91984147485429842a21585e1",
+      "graphDigest": "sha256:3f86dc266d62c7cb5f25f7a439d9a99e113e8b3ab1568f6d966df525a2ce9afc",
+      "initializerDigest": "sha256:4b38ebee63c1193b4eaca73078054862d9f602d27fae8e8d9e6e1cdadcd56c77",
+      "tensorIndex": [
+        {
+          "tensorName": "weight",
+          "dtype": "uint8",
+          "shape": [
+            2
+          ],
+          "byteOrder": "na",
+          "contentDigest": "sha256:48986d85f8c0a0601ef7c44afc939dd0a8b0ed7bc309c7e373cb0fe94e30c7aa",
+          "byteLength": 2,
+          "sharedReference": ""
+        }
+      ],
+      "name": "uint8-raw",
+      "encoding": "raw",
+      "contentDigest": "sha256:48986d85f8c0a0601ef7c44afc939dd0a8b0ed7bc309c7e373cb0fe94e30c7aa"
+    },
+    {
+      "modelHex": "08083a740a190a05696e70757412066f757470757422084964656e74697479121a737065633138322d6964656e746974792d7265666572656e63652a10080210092a02010042067765696768745a130a05696e707574120a0a08080112040a02080262140a066f7574707574120a0a08080112040a02080242040a00100d",
+      "modelDigest": "sha256:a87ce4d538976b9a1643fd63bef4418f22222988137d3cf02c0d21cc9dcd1e4c",
+      "graphDigest": "sha256:9ca588e6d9e77937c03cad551b3f64841921df596cb0851c5eae7eab36039759",
+      "initializerDigest": "sha256:cf4b1855829c7d9754487702e09511bf8e9e2255effc4887703777509599f9f0",
+      "tensorIndex": [
+        {
+          "tensorName": "weight",
+          "dtype": "bool",
+          "shape": [
+            2
+          ],
+          "byteOrder": "na",
+          "contentDigest": "sha256:47dc540c94ceb704a23875c11273e16bb0b8a87aed84de911f2133568115f254",
+          "byteLength": 2,
+          "sharedReference": ""
+        }
+      ],
+      "name": "bool-typed",
+      "encoding": "typed",
+      "contentDigest": "sha256:47dc540c94ceb704a23875c11273e16bb0b8a87aed84de911f2133568115f254"
+    },
+    {
+      "modelHex": "08083a740a190a05696e70757412066f757470757422084964656e74697479121a737065633138322d6964656e746974792d7265666572656e63652a100802100942067765696768744a0201005a130a05696e707574120a0a08080112040a02080262140a066f7574707574120a0a08080112040a02080242040a00100d",
+      "modelDigest": "sha256:ff7a7dcb965bba125d14c9fe251c3cba534f0fd1cee7f0864b75c8b0ebcb17fd",
+      "graphDigest": "sha256:9ca588e6d9e77937c03cad551b3f64841921df596cb0851c5eae7eab36039759",
+      "initializerDigest": "sha256:cf4b1855829c7d9754487702e09511bf8e9e2255effc4887703777509599f9f0",
+      "tensorIndex": [
+        {
+          "tensorName": "weight",
+          "dtype": "bool",
+          "shape": [
+            2
+          ],
+          "byteOrder": "na",
+          "contentDigest": "sha256:47dc540c94ceb704a23875c11273e16bb0b8a87aed84de911f2133568115f254",
+          "byteLength": 2,
+          "sharedReference": ""
+        }
+      ],
+      "name": "bool-raw",
+      "encoding": "raw",
+      "contentDigest": "sha256:47dc540c94ceb704a23875c11273e16bb0b8a87aed84de911f2133568115f254"
+    }
+  ]
+}

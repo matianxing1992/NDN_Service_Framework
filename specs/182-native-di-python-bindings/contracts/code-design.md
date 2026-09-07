@@ -189,7 +189,8 @@ key 只能经已有安全原语消费和零化；不自写替代密码算法。�
 | Operation | Exact paths | Symbols |
 | --- | --- | --- |
 | ADD | NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp; NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.cpp | assembleNativeCertifiedOnnxModel |
-| MODIFY | NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp; NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.cpp | prepareNativeCanonicalOnnxRole 两个重载；NativeCanonicalOnnxAssemblerOptions 移除 pythonExecutable/pythonModule/helperTimeoutMs；保留请求 deadline/cancel |
+| ADD | NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp; NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.cpp; examples/DI_NativeOnnxAssemblyWorker.cpp | 私有原生worker协议、main、超时回收；库内算法与已安装worker共享，不引入网络服务 |
+| MODIFY | NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp; NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.cpp | prepareNativeCanonicalOnnxRole 两个重载；NativeCanonicalOnnxAssemblerOptions 移除 pythonExecutable/pythonModule/helperTimeoutMs，增加assemblyTimeoutMs=30000；保留请求 deadline/cancel |
 | DELETE from production path | 同上 NativeCanonicalOnnxAssembler.cpp | OwnedAssemblyHelper、runPythonHelper、helper request/result IPC；路径安全/资源检查由原生 adapter 保留 |
 | KEEP reference only | NDNSF-DistributedInference/ndnsf_distributed_inference/native_assembly_helper.py; NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py | 原独立对照及离线工具；不安装到 native runtime |
 
@@ -197,7 +198,7 @@ planned assembleNativeCertifiedOnnxModel(const NativeCanonicalSource&, const Nat
 const NativeAssemblyControl&) → NativeCertifiedAssembly。
 source 拥有认证 graph 和可选 external initializer bytes；recipe 来自 sealed role；
 control 只传当前请求的授权/取消检查和资源预算，不传可绕过保护的 bool。
-结果含装配字节、external entries 和身份；C++ Provider 继续拥有缓存、密钥消费与激活。
+结果含装配字节、I/O、nodeCount和摘要；INLINE_ONNX仍只有model.onnx条目。C++ Provider继续拥有缓存、密钥消费与激活。确切types/字段、OA01--OA09、算法S1--S8、manifest和worker协议见[native ONNX assembly design](native-onnx-assembly-design.md)。不可中断的ONNX/ORT操作在具名原生worker内执行，父进程负责取消/超时终止；没有Python执行依赖。
 
 保留 node extraction、输入输出修整、external-data 单位置/相对路径限制、initializer 命名归一化、
 确定性 protobuf 序列化、source/assembled/node 上限及 model checker 语义。
@@ -330,9 +331,9 @@ CD-013/014、取消/通知队列及旧路径回退完整定义于
 
 | Open ID | Unknown / impact | Bounded investigation and acceptable result | Owner / blocked units |
 | --- | --- | --- | --- |
-| O-001 / CLOSED | 源身份、最终合并差异及181承接已核对 | 审计HEAD `81e251a4`，生产路径与`c770f18b`及交付源`447f7584`无diff；四库pin和旧验证失效范围见[integrated baseline](integrated-baseline.md)。只关闭源码核对，不声称当前依赖运行PASS | T001部分完成；不再阻塞源码核对，O-002--005仍阻塞实现 |
+| O-001 / CLOSED | 源身份、最终合并差异及181承接已核对 | 审计HEAD `81e251a4`，生产路径与`c770f18b`及交付源`447f7584`无diff；四库pin和旧验证失效范围见[integrated baseline](integrated-baseline.md)。只关闭源码核对，不声称当前依赖运行PASS | T001部分完成；当前O-002/O-004仍阻塞实现 |
 | O-002 | 原生 ONNX extraction/checker/protobuf 是否复现既有精确字节 | 在固定 inline/external-data 与两种 role recipe 上比较；列出 native 调用、版本、许可、依赖和差异。精确相等或经明确版本化设计修订后才能关闭；最多两个候选方案 | T001；T002/T006 |
-| O-003 / CLOSED | tokenizers0.20.3/Rust1.90.0与C ABI、RAII/串行寿命设计已固定 | 三种fixture84个ids/text对照及14个非法输入PASS；ldd无Python；lock、许可、私有安装/构建/释放规则见native-dependency-design。不计T007产品或T016隔离验收 | T001依赖设计完成；T002/T007仍受O-002/O-004/O-005阻塞 |
+| O-003 / CLOSED | tokenizers0.20.3/Rust1.90.0与C ABI、RAII/串行寿命设计已固定 | 三种fixture84个ids/text对照及14个非法输入PASS；ldd无Python；lock、许可、私有安装/构建/释放规则见native-dependency-design。不计T007产品或T016隔离验收 | T001依赖设计完成；T002/T007仍受O-002/O-004阻塞 |
 | O-004 | 所有旧公开 API/策略/会话持久化与调用方尚未穷举；Core无公开逐服务注销接口，Provider host的共享服务关闭语义未闭合 | 12类137字段已匹配当前源码，但仍须按runtime-boundaries分类并补嵌套types、状态、cancel/observer、错误映射和完整inventory。CD-014必须明确registration fence或具名Core改动及PO-014负例；禁止假设removeService存在或用全局stop替代 | T001；T002--T013 |
 | O-005 / CLOSED | native runtime隔离工具可用，权限、最小root、进程/映射/服务白名单和反例已冻结 | 见[native isolation design](native-isolation-design.md)：bwrap/strace最小正例exit0，缺解释器反例在exec边界ENOENT；T014仍须实现完整detector，T016运行I01--I08与业务case，不计最终no-Python PASS | T001设计完成；T014实现；T016资格 |
 

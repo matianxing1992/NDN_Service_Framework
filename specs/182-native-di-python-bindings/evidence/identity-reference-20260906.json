@@ -1,0 +1,100 @@
+{
+  "schema": "spec182-identity-reference-evidence-v1",
+  "sourceCommit": "11e8d750",
+  "productionGraphSourceSha256": "e5532328e8752bd626b5a668de8e4b826ee9d336367a091fdd7016f48480734d",
+  "reference": {
+    "onnx": "1.17.0",
+    "numpy": "1.24.4"
+  },
+  "command": "timeout --kill-after=5s 15s /usr/bin/python3 tests/fixtures/spec182/dependency-probes/generate-identity-vectors.py <kind>",
+  "rawRoot": ".codex-tmp/spec182-t001-identity-r1",
+  "stableVectors": {
+    "path": "tests/fixtures/spec182/dependency-probes/identity-vectors.json",
+    "cases": 24,
+    "pairs": 12,
+    "status": "PASS_REFERENCE_EXTRACTION"
+  },
+  "diagnostics": [
+    {
+      "kind": "bfloat16-typed",
+      "run": 1,
+      "exitCode": 0,
+      "contentDigest": "sha256:54114f538801f6678fbd079c23daf4084457385ab206deba2abd70d219cde832",
+      "dtype": "(numpy.uint16, [('bfloat16', '<u2')])",
+      "expectedContentDigest": "sha256:54114f538801f6678fbd079c23daf4084457385ab206deba2abd70d219cde832",
+      "matchesDeclaredBits": true,
+      "modelDigest": "sha256:8c2d2948aa37db09e20cff22eb6f05d0da3fc49a1194309e0e15ad6e9579422d",
+      "name": "bfloat16-typed"
+    },
+    {
+      "kind": "bfloat16-typed",
+      "run": 2,
+      "exitCode": 0,
+      "contentDigest": "sha256:54114f538801f6678fbd079c23daf4084457385ab206deba2abd70d219cde832",
+      "dtype": "(numpy.uint16, [('bfloat16', '<u2')])",
+      "expectedContentDigest": "sha256:54114f538801f6678fbd079c23daf4084457385ab206deba2abd70d219cde832",
+      "matchesDeclaredBits": true,
+      "modelDigest": "sha256:8c2d2948aa37db09e20cff22eb6f05d0da3fc49a1194309e0e15ad6e9579422d",
+      "name": "bfloat16-typed"
+    },
+    {
+      "kind": "bfloat16-raw",
+      "run": 1,
+      "exitCode": 0,
+      "contentDigest": "sha256:df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+      "dtype": "(numpy.uint16, [('bfloat16', '<u2')])",
+      "expectedContentDigest": "sha256:54114f538801f6678fbd079c23daf4084457385ab206deba2abd70d219cde832",
+      "matchesDeclaredBits": false,
+      "modelDigest": "sha256:ce371d9d004a47993e63a195b6d479b5e591cd7796f57d76d206c7c9e4b4d548",
+      "name": "bfloat16-raw"
+    },
+    {
+      "kind": "bfloat16-raw",
+      "run": 2,
+      "exitCode": 0,
+      "contentDigest": "sha256:df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+      "dtype": "(numpy.uint16, [('bfloat16', '<u2')])",
+      "expectedContentDigest": "sha256:54114f538801f6678fbd079c23daf4084457385ab206deba2abd70d219cde832",
+      "matchesDeclaredBits": false,
+      "modelDigest": "sha256:ce371d9d004a47993e63a195b6d479b5e591cd7796f57d76d206c7c9e4b4d548",
+      "name": "bfloat16-raw"
+    },
+    {
+      "kind": "string",
+      "run": 1,
+      "exitCode": 0,
+      "contentDigest": "sha256:e16d2426c3b9a542d9b05b4d73b5a89bd2119a0658cbf0a4ba836e29110cf3f3",
+      "dtype": "object",
+      "expectedContentDigest": null,
+      "matchesDeclaredBits": null,
+      "modelDigest": "sha256:cc552adc52ce41eccaa5323ecfcf04820c0e9bf6706f220e673c5000bfe93f6f",
+      "name": "string"
+    },
+    {
+      "kind": "string",
+      "run": 2,
+      "exitCode": 0,
+      "contentDigest": "sha256:fcda83c5149489ba24ccc301ef4567a5c1f45a1146d13a6f86f882d82717f10c",
+      "dtype": "object",
+      "expectedContentDigest": null,
+      "matchesDeclaredBits": null,
+      "modelDigest": "sha256:cc552adc52ce41eccaa5323ecfcf04820c0e9bf6706f220e673c5000bfe93f6f",
+      "name": "string"
+    }
+  ],
+  "findings": [
+    {
+      "id": "A7-07a",
+      "boundary": "legacy canonical initializer normalization",
+      "status": "CONFIRMED_CONTENT_MISMATCH",
+      "detail": "BFLOAT16 raw digest differs from declared bit pattern in both runs; typed encoding matches. The two raw observations alone do not establish nondeterminism."
+    },
+    {
+      "id": "A7-07b",
+      "boundary": "legacy canonical initializer normalization",
+      "status": "CONFIRMED_NONDETERMINISTIC_IDENTITY",
+      "detail": "Identical STRING model bytes yield different content digests in separate processes; legacy NumPy object-array byte encoding includes process-specific pointers."
+    }
+  ],
+  "qualification": "NOT_RUN; diagnostic reference evidence only; O-002/O-004 remain OPEN"
+}

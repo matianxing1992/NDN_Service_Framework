@@ -6,6 +6,12 @@
 
 ## Current Checkpoint
 
+2026-09-06 T001 ONNX contract / IN_PROGRESS：补齐[native ONNX assembly design](contracts/native-onnx-assembly-design.md)的owned类型、9个函数、8步算法、recipe/manifest字节与native worker生命周期；修复直接进程内替换会丢失硬超时回收的设计缺口。原始Python实现仍未修改；独立reference提取24个普通numeric raw/typed向量PASS。额外诊断确认BFLOAT16 raw摘要内容错误、STRING跨进程摘要不稳定，见[identity evidence](evidence/identity-reference-20260906.json)及failure index。**O-002/O-004仍OPEN，T001未完成，产品实现0/17**。下一步冻结这两种表示的稳定身份/兼容处置，并继续完整能力和Provider注册清单；不复制错误oracle、不以I/O dtype代替initializer能力范围。
+
+本单元检查 **PASS**：strict structure、design validator（160本地链接、17任务/0完成）、diff whitespace；24个model hash、12对identity、6条诊断及未修改reference源hash核对一致。generator锁定原onnx/numpy/source版本，补锁后typed诊断仍通过。Context Mode健康检查PASS，但relevance检索返回了较早的Dependency Design子节，checkpoint以实际tasks顶部为准；CodeGraph的临时副本结果仍剔除，算法按精确生产路径核对。未构建/测试产品，不把发现旧缺陷或补全设计计作T006完成。
+
+### Isolation Design Checkpoint
+
 2026-09-06 T001 isolation design：**O-005 CLOSED**。已冻结[native isolation design](contracts/native-isolation-design.md)的最小root/namespace、权限与服务白名单、逐进程exec/映射/endpoint观测、harness函数/字段和I01--I08反例。bwrap0.4.0/strace5.5工具正例exit0且CapEff=0/NoNewPrivs=1，缺解释器反例在exec边界ENOENT/exit1，均符合预期；raw `.codex-tmp/spec182-t001-isolation-r1/`。没有运行NDNSF、MiniNDN、SIF/Tiger，也未实现T014 detector。当前O-001/O-003/O-005按各自设计范围CLOSED，**O-002/O-004仍OPEN，T001仍未完成**；下一步补完整ONNX算法和迁移/注册/状态清单。
 
 本隔离设计单元检查 **PASS**：strict structure、design validator（149本地链接、17任务/0完成）、`git diff --check`。已静态核对工具选项、namespace/文件根与外部harness分界；最小工具正反例不外推NFD/Repo/Controller或全部后代观测的运行证明。此前依赖设计单元已本地提交`5187e733`，tracked tree随该单元清理，原始构建/日志未入Git；未push。
@@ -91,7 +97,7 @@ T015在全部实现后补审整体接线；T016执行完整unit→integration→
   Design: FR-005; CD-004。Proof: PO-004。
   [T005 contract](contracts/work-units.md#t005-native-requester-grant-path)。
 
-- [ ] T006 [US1] **Native Cold ONNX Assembly**。Selection 后原生装配与既有固定 bytes 一致，消除生产 helper IPC。Dependencies: T002；O-002 closed。
+- [ ] T006 [US1] **Native Cold ONNX Assembly**。Selection后原生装配与既有固定bytes一致；原生worker保留有界取消/清理，删除Python helper及其文件IPC。Dependencies: T002；O-002 closed。
   Design: FR-006,FR-016; CD-005。Proof: PO-005。
   [T006 contract](contracts/work-units.md#t006-native-cold-onnx-assembly)。
 

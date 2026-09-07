@@ -1,5 +1,9 @@
 # Failure Log and Evidence Index
 
+## 2026-09-06 — Spec182 legacy ONNX initializer identity boundary
+
+T001独立reference探针（ONNX1.17.0/NumPy1.24.4，未修改graph.py）确认：BFLOAT16 raw_data两次计算的content digest均不等于声明权重位模式，而typed表示正确；STRING相同model digest在两个独立进程产生不同initializer content digest。首边界是旧numpy_helper/object-array归一化，不是网络、授权或原生装配结果。普通12种数值类型的24个raw/typed向量通过。raw `.codex-tmp/spec182-t001-identity-r1/diagnostics.json`，脱敏[durable evidence](../specs/182-native-di-python-bindings/evidence/identity-reference-20260906.json)。O-002/O-004继续冻结稳定身份与兼容处置；不把错误摘要写为正确oracle、不以未运行的C++测试关闭此缺陷。
+
 ## 2026-09-06 — Spec182 tokenizer toolchain download transport
 
 R2改为rustc/cargo/rust-std最小组件，首个rustc归档仍在Python3.8 urllib TLS读取阶段以同样错误exit1；保留`rust-r2/boundary.json`与部分归档。R3只切换Node22 HTTPS传输，保持官方来源、TLS验证及SHA256检查，最多一次有界重试；依赖设计与其他T001工作继续，不把下载失败升格为产品阻塞。
