@@ -24,6 +24,7 @@ pythonWrapper/*.egg-info/
 docs/
 !docs/
 docs/*
+!docs/native-build-parallelism.md
 !docs/README.md
 !docs/architecture.md
 !docs/failure-log.md
