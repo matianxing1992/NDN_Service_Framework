@@ -46,6 +46,13 @@ dependency revisions. Its SIF hash is recorded only as historical evidence:
 sha256:b6710fd696a7f962f67f67a54278d92a15babb856c4af428a3f04ba54dc83285
 ```
 
+The locally inspected SIF labels reinforce that boundary: the image identifies
+itself as `org.ndnsf.di.release=spec174-local-candidate-r24-b0bbca30`, with
+`org.ndnsf.di.foundation.revision=8beaa9cda500f52626d47d85c90e98533f84ba29`
+and image Apptainer build label `1.5.3`; the host tool is 1.3.4. These labels
+are not the locked Spec183 source/runtime identity and the version mismatch is
+not silently accepted as a build or execution proof.
+
 The remote trust registry further references
 `contracts/model-manifest-authority.pub`, but that file was not present in the
 candidate's `models/contracts` directory. Consequently the package's model
