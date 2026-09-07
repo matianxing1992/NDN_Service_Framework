@@ -2,7 +2,7 @@
 
 **Feature Branch**: `TigerClusterExperiments`
 **Created**: 2026-09-06
-**Status**: PLANNED / NOT_IMPLEMENTED / NOT_RUN
+**Status**: IN_PROGRESS / runtime NOT_RUN
 **Input**: 固定可复用的配置文件与实验脚本，在 TigerCluster 验证 NDNSF-DI + YOLO 分布式推理；Tiger 专用脚本和配置集中于 `Experiments/TigerCluster`。
 
 ## Scope And Evidence Boundary
@@ -105,4 +105,4 @@
 ## Assumptions
 
 使用交付 YOLO26n 固定小样本，不训练/扩大模型、不扩展 Qwen/性能矩阵。四 Provider 是四个进程身份，正式双节点每节点一张 GPU，同节点角色可显式共享 GPU；不声称四 GPU 并行。
-沿用正常 ACK 驱动协作，不改 Targeted、不增加重试掩盖错误。GPU 型号、partition/account、内存及 Apptainer 实值在 T001 登记，提交前必须核实；当前只规划不探测集群。
+沿用正常 ACK 驱动协作，不改 Targeted、不增加重试掩盖错误。GPU 型号、partition/account、内存及 Apptainer 实值在 T001 登记；未获得的物理输入保留WAITING_EXTERNAL_INPUT，allocation相关值按T007后的substrate例外核实。用户已授权完成全部任务，当前只有接收清点，不代表模型或集群运行资格。

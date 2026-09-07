@@ -2,19 +2,23 @@
 
 **Input**: [spec.md](spec.md), [plan.md](plan.md), [profile contract](contracts/experiment-profile.md), [validation matrix](validation-matrix.md)
 **Branch**: `TigerClusterExperiments`
-**Status**: 0/17 implementation/qualification tasks complete; PLANNED, no runtime PASS.
+**Status**: 1/17 tasks complete (T001 inventory only); IN_PROGRESS, no runtime PASS.
 
 任务按行为闭环组织，每项包含必要失败例→实现→聚焦回归→证据，不拆成“写测试/改代码/跑命令”三个机械任务。正式 broad suites/实验必须等 T007；focused red/green 可在实现中执行。所有 Tiger 文件以下用完整仓库相对路径。
 
 ## Phase 1: Setup
 
-- [ ] T001 Freeze receiving inputs and unresolved inventory in `Experiments/TigerCluster/docs/yolo-reusable.md` and `specs/183-tiger-yolo-reusable-experiments/evidence/input-inventory.md`: reconcile four repository revisions against `Experiments/TigerCluster/development-handoff.lock.json`, delivery-vs-runtime source, nine native outputs, actual public YOLO APIs, model/package/oracle hashes, local/compute Apptainer and proposed partition/GPU/resources/capacity. Register exact build and test selectors and expected errors from current code; keep missing items WAITING_EXTERNAL_INPUT and historical failures intact. No large build/download or model job. Read-only local inspection first; bounded substrate probe only under the reviewed exception in plan.md.
+- [x] T001 Freeze receiving inputs and unresolved inventory in `Experiments/TigerCluster/docs/yolo-reusable.md` and `specs/183-tiger-yolo-reusable-experiments/evidence/input-inventory.md`: reconcile four repository revisions against `Experiments/TigerCluster/development-handoff.lock.json`, delivery-vs-runtime source, nine native outputs, actual public YOLO APIs, model/package/oracle hashes, local/compute Apptainer and proposed partition/GPU/resources/capacity. Register exact build and test selectors and expected errors from current code; keep missing items WAITING_EXTERNAL_INPUT and historical failures intact. No large build/download or model job. Read-only local inspection first; bounded substrate probe only under the reviewed exception in plan.md.
+
+T001 evidence: [input-inventory.md](evidence/input-inventory.md)。完成清点而非物理输入资格；三依赖精确对象、本地base、签名package/oracle仍缺，compute探测按T007后例外执行。现有host gate绑定旧tiny-onnx、User正常路径一次请求的问题已分派下列任务。
 
 ## Phase 2: Foundational
 
 - [ ] T002 Implement phase-specific candidate closure in `Experiments/TigerCluster/runtime/yolo_profile.py` and `Experiments/TigerCluster/tests/test_yolo_closure.py`: test wrong/changed hash, incomplete inventory, path escape, stale receipt, unbound script/env and stage bypass before implementation; enforce I/R/E identities and invalidation with no self-reference, inputs-before-build/runtime-before-execution/dispatch-before-upload gates. Prove rejected inputs make zero build/upload/staging/sbatch calls with spies at the real command boundary. Depends on T001 interface inventory; gates may report missing physical input without pretending it is present.
 
 ## Phase 3: User Story 1 - Reusable Launch Configuration
+
+T002追加接收审查修复：在既有`build-local-sif.sh`与host-gate owner增加显式Spec183 workload dispatch；校验实际YOLO日志/数值/源seal的receipt，保留Spec175 v1/v2。新增回归要求未知schema、错workload/源/receipt或失败证据使Apptainer调用数为零。T010产生真实receipt，T011消费；不得填M01假清单，也不得绕过已有source/ABI门。
 
 **Independent Test**: deterministic resolved config from another cwd; fail-before-side-effects; two concurrent submit attempts cannot both launch.
 
@@ -29,6 +33,8 @@
 - [ ] T006 [US2] Implement authoritative collection and failure oracles in `Experiments/TigerCluster/runtime/yolo_result.py` and `tests/test_yolo_result.py`: associate every request/attempt/plan/role/node/GPU/edge digest, validate numeric output via the existing contract, require all finite child exit0 plus controlled service shutdown/reap, and separate local/single-node/two-node/expected-rejection verdicts. Reject stale/forged PASS, missing role/response/CUDA, shape/class/tolerance mismatch, timeout-as-auth-rejection, nonzero worker, forced cleanup or corrupt output. Retain first failure and immutable reanalysis. Depends on T005.
 
 ## Phase 5: Design-Code Convergence
+
+T005/T006追加调用次数约束：正常ACK-driven User一次只执行一请求。warmup/measured用独立User调用、request/attempt/输出目录及数值文件，Provider持续运行；focused test从生产入口证明实际调用次数，不能仅检查legacy sequential参数存在。
 
 - [ ] T007 Audit production wiring before formal validation in `specs/183-tiger-yolo-reusable-experiments/evidence/design-code-convergence.md`: compare accepted spec/contract to actual submit→worker→application→Core/DI/Repo→collector and all effective fields through CodeGraph and exact source; register severity, owner and focused regression for each discrepancy. Review all wrappers/helpers and local/remote paths once as a closure, including scripts used by later substrate probes. Close only on PASS with zero controlling semantic/security/wiring/evidence gaps; actual changes reopen this task. Depends on T002–T006. This task is not satisfied by the planning audit.
 
@@ -68,4 +74,4 @@ MVP 为 T001–T004：一份可解释、拒错且不会误提交的 profile/laun
 
 ## Current Checkpoint
 
-2026-09-06：仅完成规划与文档结构检查。T001 尚未执行，不把旧 Spec179/180 或 base-SIF 结果填入本 Spec。新任务从 T001 输入/接口清点开始，遵守当前用户仅编写 Spec 和任务的范围。
+2026-09-06：用户已授权完成全部Spec183任务。T001清点完成，T002为下一项；签名模型包/锁定依赖/本地base仍待接收，T007生产审计及所有运行门未通过。本轮只读核对、修正规划中的host-gate/请求次数缺口，未编译或提交Slurm；原历史结果未改写。

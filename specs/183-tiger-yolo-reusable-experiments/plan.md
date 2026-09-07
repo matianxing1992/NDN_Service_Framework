@@ -1,7 +1,7 @@
 # Implementation Plan: Reusable TigerCluster YOLO Distributed Inference
 
 **Branch**: `TigerClusterExperiments` | **Date**: 2026-09-06 | **Spec**: [spec.md](spec.md)
-**Status**: PLANNED / NOT_RUN
+**Status**: IN_PROGRESS / runtime NOT_RUN
 
 ## Summary
 
@@ -40,6 +40,8 @@ I/II：沿用动态 API 和现有鉴权/请求级密钥，不新建框架协议�
 表中省略前缀的 Tiger 路径均相对 `Experiments/TigerCluster/`。
 
 ## Gate Order
+
+T001已完成接收清点（见evidence/input-inventory.md），发现两个必须在T007前闭合的实际接口差异：现有builder绑定Spec175 tiny-onnx门，T002须扩展原owner接受严格Spec183 YOLO receipt且保留旧行为；正常ACK-driven User为一次请求入口，T005按请求分别调用、独立证据，不用legacy sequential参数假定实现批量。缺物理输入保持WAITING_EXTERNAL_INPUT，不妨碍离线focused实现。
 
 1. G0 / T001：当前源码/交付锁/接口/输入清点。未知环境值列清单；不启动模型或下载大 artifact。
 2. G1 / T002–T006：实现配置闭包、launcher/生命周期、YOLO 适配/collector 及 focused 红绿回归。可做小型合成 child-process 测试。

@@ -1,5 +1,12 @@
 # Failure Log and Evidence Index
 
+## 2026-09-06 — Spec183 pre-execution workload and repetition gaps
+
+- Symptom: receiving-source audit found `build-local-sif.sh` only accepts Spec175 tiny-onnx host qualification, while Spec183 requires actual YOLO qualification. The maintained ACK-driven YOLO User also executes one request despite exposing legacy sequential options.
+- Cause: old workload-specific validation remained inside the reusable builder; command-line availability was not equivalent to active-path consumption.
+- Resolution: recorded the exact source contracts and assigned T002 explicit workload-specific receipt dispatch, T010 real YOLO receipt production, and T005/T006 separate request invocations with independent evidence. These code repairs remain pending; no fake M01, timeout change or cluster job was used.
+- Lesson: verify both the builder's accepted evidence schema and the application's actual request count before expensive execution. Inventory: `specs/183-tiger-yolo-reusable-experiments/evidence/input-inventory.md`.
+
 ## 2026-09-06 — Spec183 receiving-context authority drift
 
 - Symptom: after receiving Experimental, `.specify/feature.json` selected Spec182 while local `AGENTS.md` still referenced Spec179; project Context Mode health passed but strict active health failed.
