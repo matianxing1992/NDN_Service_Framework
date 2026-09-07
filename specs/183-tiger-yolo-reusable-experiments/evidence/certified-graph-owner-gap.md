@@ -44,6 +44,39 @@ This is part of the existing task scope, not an additional campaign or a
 reason to wait for a replacement signed legacy model-summary document.
 G2/T007 remains unqualified until this and the other production seams close.
 
+## 2026-09-07 wiring map (T007 audit follow-up)
+
+The open invocation point above now has a located component chain (all
+CodeGraph-verified in the current sources):
+
+1. **Role-spec producer**: `app_sdk/placement.py::_certify_v3_role_specs`
+   (placement.py:4269) and `_v3_role_specs` (placement.py:4122) certify the
+   per-role `RoleAssemblySpec` records (role_kind/layer_begin/layer_end/
+   node_indices) against the registered candidate.  This is the placement
+   owner's internal certification; the Spec183 side must call it through the
+   public placement API, never reconstruct specs from graph metadata.
+2. **Role model bytes**: `adapters/onnx/executor.py::assemble_certified_onnx_model`
+   (executor.py:222) extracts/checks/serializes one role slice from the
+   canonical ONNX + separately addressed initializer bytes (package
+   `canonical/yolo26n.onnx` + the weights file named by manifest.weights.path).
+   It takes the CertifiedOnnxAssemblyRecipe from
+   `YoloCanonicalArtifactBinding.describe()` (adapters/yolo/adapter.py:383).
+3. **Independent ORT reference**: `runtime/yolo_graph_reference.py::
+   prepare_role_reference` on the assembled bytes (backend
+   CPUExecutionProvider locally; CUDA only on the allocated device), with the
+   exact in-image ORT version.
+4. **Document**: `serialize_certified_graph(role_references, graph_digest=`
+   catalogue graphDigest) → `tiger-yolo-certified-graph-v1`, written as
+   `public/certified-graph.json` inside the containerized prepare step and
+   bound into the preparation inventory/collector path.
+
+Container-side call order in `prepare_in_container` (apps/yolo.py): after
+`issue_yolo_offers`, before the preparation receipt.  Inputs are already
+candidate-bound and read-only there; the temporary optimized models stay in
+the private scratch and only digests/names leave.  The receipt gains one
+`certifiedGraphDigest` row so `verify_preparation` and the collection path
+can bind the document without trusting a caller-supplied copy.
+
 ## Corrected model/postprocess boundary
 
 Further source tracing found a separate impossible acceptance condition:
