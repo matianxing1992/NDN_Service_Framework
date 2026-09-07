@@ -100,7 +100,15 @@ I = digest(四库 exact revisions+source seals、依赖/工具链/base/build def
 Node A：NFD、Controller、User、Repo 发布/取用入口、BackboneNeck、Merge。
 Node B：NFD、DetectShard0、DetectShard1。
 Backbone 结果到 B 的两 head；head 结果到 A 的 merge；边名称/生产者/消费者及 plain tensor digest 由现有合法执行记录关联，不能把密文 hash 当成数值内容 hash。私有 tensor 不写到公开日志。
-脚本设置 network substrate，不在 shell 中实现 DI 调度或假冒 runtime Selection。模型工件允许预暂存但必须如实计为 warm/prestaged，不宣称冷 Repo 获取。原始输入与依赖激活仍经实际安全 NDN 路径。
+脚本设置 network substrate，不在 shell 中实现 DI 调度或假冒 runtime Selection。
+本 Spec 的正常路径沿用当前 YOLO User 的 encrypted canonical publisher 和 native
+Provider 的 canonical assembler：模型源包只供发布方读取，Provider 经 NDN 获取
+模型对象并在各自可写 cache 中组装。新 worker 不要求、不挂载 Provider `/artifacts`
+或人工预切分模型目录；`--artifact-cache-dir` 由实际应用参数 owner 绑定到该角色
+的 `/output/artifact-cache`。共享 bundle 只含审核后的代码/配置/公开材料，不能
+夹带模型参考输出。原始输入、依赖激活和结果仍走实际安全 NDN 路径。warmup 后
+Provider 缓存命中必须如实记录，不能称每请求都冷获取。未来若增加预暂存 case，
+需显式变更行为、失效证据并重验，不能临时挂目录。
 
 ## Runtime And Submission State
 

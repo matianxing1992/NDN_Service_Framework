@@ -3,6 +3,10 @@
 Date: 2026-09-06
 Status: IMPLEMENTATION_AND_FOCUSED_GATE_COMPLETE / runtime qualification NOT_RUN
 
+后续设计修正见[native-model-route.md](native-model-route.md)：真实native YOLO
+经NDN获取模型，worker已移除强制model_artifacts和Provider `/artifacts`挂载。
+下文是原checkpoint历史，不再要求T004创建role-only model projection。
+
 ## Task Boundary And Coverage
 
 T003实现可供T004/T005使用的节点角色运行组件，不声称已完成operator入口、YOLO业务参数生成、实际证书签发或SIF/GPU资格。原先两个partial checkpoint见`t003-launch.md`和`t003-lifecycle.md`；本checkpoint关闭T003代码及聚焦验收，后续生产接线仍由T004/T005和T007负责。

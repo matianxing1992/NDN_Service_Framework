@@ -77,4 +77,4 @@ T001–T004形成 profile/launcher 实现骨架；可操作 MVP 还要求 T006 �
 
 ## Current Checkpoint
 
-2026-09-06：T001和T003完成（2/17）；T004 partial新增真实只读check入口、确定性case/run预览及SubmissionJournal组件，最新 **235 passed in 12.16s**，见[evidence/t004-cli-journal.md](evidence/t004-cli-journal.md)。新增owner为`runtime/yolo_submission.py`、测试`test_yolo_submission_journal.py`；其他CLI在真实接线前不开放。下一步完成prepare不可变bundle/角色专属模型projection、实际argv/env，再Slurm/journal外部调用边界；T005/T006提供业务和receipt判定，T002最终接线仍unchecked。三依赖精确commit已在独立忽略cache接收且fsck通过，原工作树未改；source封装、签名模型包和本地base仍待完成。T007及全部正式环境门未通过；未构建/上传/提交Slurm。历史checkpoint保留，不以组件测试替代运行资格。
+2026-09-06：T001和T003完成（2/17）；源审查纠正了无用的Provider模型挂载要求，移除新worker的model_artifacts参数，保留既有User经NDN发布/Provider本地组装路径，见[evidence/native-model-route.md](evidence/native-model-route.md)。最新 **239 passed in 12.09s**。下一步T004准备仅含代码/配置/公开材料的不可变bundle及发布方专属输入位置，T005实际argv/cache/安全模型传输接线，再接Slurm/journal与T006真实判定；不再额外创建role-only模型projection。check/预览/journal为partial，其他CLI未开放，T002最终校验仍unchecked。三依赖精确commit已隔离接收，原工作树未改；source封装、签名模型包和本地base仍待完成。T007及全部正式环境门未通过，未构建/上传/提交Slurm。

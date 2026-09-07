@@ -11,10 +11,10 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 
-def prepared(tmp_path):
+def prepared(tmp_path, rank=0):
     from runtime.yolo_worker import assigned_roles
     homes = {role: tmp_path / "private" / role
-             for role in assigned_roles("two-node-gpu", 0)}
+             for role in assigned_roles("two-node-gpu", rank)}
     for home in homes.values():
         (home / ".ndn/ndnsec-key-file").mkdir(parents=True)
         (home / ".ndn/pib.db").write_bytes(b"not-a-pib-layout-fixture")
@@ -26,12 +26,11 @@ def prepared(tmp_path):
                         " os.execv(sys.executable,[sys.executable,'-c','import time;time.sleep(60)'])\n"
                         "os.execv('/usr/bin/env',args[i:])\n")
     launcher.chmod(0o700)
-    for name in ("bundle", "public", "node", "backbone-model"):
+    for name in ("bundle", "public", "node"):
         (tmp_path / name).mkdir()
     return dict(profile={"apptainer": str(launcher), "sif": str(tmp_path / "fixture.sif")},
-                mode="two-node-gpu", rank=0, bundle=tmp_path / "bundle", homes=homes,
+                mode="two-node-gpu", rank=rank, bundle=tmp_path / "bundle", homes=homes,
                 public=tmp_path / "public", output=tmp_path / "output", node=tmp_path / "node",
-                model_artifacts={"BackboneNeck": tmp_path / "backbone-model"},
                 gpu_device="0", cleanup_seconds=1)
 
 
@@ -45,13 +44,25 @@ def test_real_child_is_started_by_role_launcher_and_cleaned_up(tmp_path):
         assert launch["role"] == "BackboneNeck"
         argv = launch["argv"]
         assert "--nv" in argv
-        assert str(tmp_path / "backbone-model") + ":/artifacts:ro" in argv
+        assert not any(":/artifacts:" in arg for arg in argv)
         assert "NDNSF_DI_STATE_ROOT=/output/state" in argv
         assert "NDNSF_DI_ORT_PROFILE_PREFIX=/output/ort/session" in argv
         assert not any(":/identities:rw" in item for item in argv)
     finally:
         rows = worker.close()
     assert rows[0]["reaped"] and not rows[0]["forced"]
+
+
+@pytest.mark.parametrize("role,rank", [("BackboneNeck", 0), ("Merge", 0), ("DetectShard0", 1), ("DetectShard1", 1)])
+def test_provider_starts_without_out_of_band_model_mount(tmp_path, role, rank):
+    from runtime.yolo_worker import NodeRuntime
+    inputs = prepared(tmp_path, rank=rank)
+    worker = NodeRuntime(**inputs)
+    try:
+        worker.start_service(role, [sys.executable, "-c", "import time;time.sleep(60)"])
+        assert not any(":/artifacts:" in arg for arg in worker.launches[0]["argv"])
+    finally:
+        worker.close()
 
 
 def test_second_worker_cannot_open_the_same_provider_pib(tmp_path):
@@ -211,14 +222,19 @@ def test_invalid_port_fails_before_forwarder_spawn(tmp_path, port):
         worker.close()
 
 
-@pytest.mark.parametrize("field", ["bundle", "public", "node", "model_artifacts"])
+@pytest.mark.parametrize("field", ["bundle", "public", "node"])
 def test_missing_working_directory_or_mount_rejected_before_spawn(tmp_path, field):
     from runtime.yolo_worker import NodeRuntime
     inputs = prepared(tmp_path)
-    inputs[field] = ({"BackboneNeck": tmp_path / "missing"} if field == "model_artifacts"
-                     else tmp_path / "missing")
+    inputs[field] = tmp_path / "missing"
     with pytest.raises(ValueError, match="WORKER_DIRECTORY"):
         NodeRuntime(**inputs)
+
+
+def test_out_of_band_model_parameter_is_not_a_supported_launch_path(tmp_path):
+    from runtime.yolo_worker import NodeRuntime
+    with pytest.raises(TypeError, match="model_artifacts"):
+        NodeRuntime(**dict(prepared(tmp_path), model_artifacts={"BackboneNeck": tmp_path}))
 
 
 def test_output_cannot_overwrite_immutable_bundle(tmp_path):

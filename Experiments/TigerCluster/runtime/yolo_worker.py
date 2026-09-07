@@ -52,23 +52,21 @@ class NodeRuntime:
 
     def __init__(self, *, profile: dict, mode: str, rank: int, bundle: Path,
                  homes: dict[str, Path], public: Path, output: Path, node: Path,
-                 model_artifacts: dict[str, Path], gpu_device: str | None,
+                 gpu_device: str | None,
                  cleanup_seconds: float):
         self.roles = assigned_roles(mode, rank)
         if set(homes) != set(self.roles):
             raise ValueError("WORKER_ROLE_HOMES")
-        if set(model_artifacts) != MODEL_ROLES.intersection(self.roles):
-            raise ValueError("WORKER_MODEL_MOUNTS")
         if (mode == "local-cpu") != (gpu_device is None):
             raise ValueError("WORKER_GPU_MODE")
         self.homes = validate_role_homes(homes)
         self.profile, self.mode, self.rank = dict(profile), mode, rank
         self.bundle, self.public = _directory(bundle), _directory(public)
         self.output, self.node = _directory(output, may_create=True), _directory(node)
-        # Each entry must be a candidate-verified role-only model projection,
-        # not a package containing a reference oracle or input activations.
-        self.model_artifacts = {role: _directory(path) for role, path in model_artifacts.items()}
-        for source in (self.bundle, self.public, *self.homes.values(), *self.model_artifacts.values()):
+        # Native YOLO obtains encrypted canonical artifacts over NDN and
+        # assembles them in its own /output cache. Do not mount a source
+        # package (especially an oracle) into the Provider as a shortcut.
+        for source in (self.bundle, self.public, *self.homes.values()):
             if self.output == source or self.output in source.parents or source in self.output.parents:
                 raise ValueError("WORKER_OUTPUT_OVERLAP")
         self.gpu_device, self.cleanup_seconds = gpu_device, cleanup_seconds
@@ -104,7 +102,7 @@ class NodeRuntime:
                        "NDNSF_DI_ORT_PROFILE_PREFIX=/output/ort/session", *argv]
         command = container_command(
             self.profile, self.bundle, self.homes[role], self.public, role_output,
-            application, node=self.node, artifacts=self.model_artifacts.get(role),
+            application, node=self.node,
             gpu=gpu, gpu_device=self.gpu_device if gpu else None)
         lease = RoleHomeLease(self.homes[role])
         try:

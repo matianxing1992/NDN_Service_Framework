@@ -1,5 +1,11 @@
 # Failure Log and Evidence Index
 
+## 2026-09-07 — Spec183 unnecessary Provider model staging
+
+- Source audit found the new NodeRuntime required a model_artifacts mount that the actual YOLO native Provider never consumes. The existing User publishes encrypted graph/weights/root over NDN; the Provider assembles them in its own artifact cache. Designing a role-only filesystem projection would add a second unnecessary deployment path.
+- Removed the new worker-only parameter/mount and corrected the current contract/plan; retain generic baseline helpers. Four role/rank launch regressions verify no out-of-band model mount. 239 Tiger tests passed; real application wiring remains T004/T005, and no SIF/GPU qualification is claimed.
+- Lesson: trace producer→artifact reference→native consumer before adding deployment directories. Passing fixtures for a proposed mount do not prove the production application uses it. See Spec183 evidence/native-model-route.md.
+
 ## 2026-09-06 — Spec183 CLI cold-import audit and journal recovery validation
 
 - Fresh-interpreter auditing found jsonschema imports uuid/platform on Python3.8, which runs the read-only `uname -p` helper and opens `/dev/null`. The initial test overclaimed no subprocess at all. Scope the audit to forbidden launch/network/filesystem mutations, permitting only that exact standard-library probe; no experiment operation is exempted.

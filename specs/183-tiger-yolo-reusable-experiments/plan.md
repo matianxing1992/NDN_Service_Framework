@@ -59,6 +59,11 @@ Apptainer 版本探测可能在 T011 前必要。只允许先通过 G2 且 probe
 
 正式放置由 [profile contract](contracts/experiment-profile.md) 冻结：A 上 Controller/User/Repo 发布方/BackboneNeck/Merge，B 上 DetectShard0/1；A/B 各一 NFD。四 Provider 的证书、PIB/TPM、cache 和 role ID 均独立。两个 DetectShard 在 B 的同一 GPU 上工作不等于两 GPU 并行。
 单节点诊断把相同角色投影到一个节点并显式标记 SINGLE_NODE_GPU_PASS；本地 CPU case 标记 LOCAL_CPU_PASS。两个模式不得伪造两个实际 hostname。
+当前 YOLO publisher 经 NDN 发布加密 graph/weights/root，native Provider 在角色
+cache 内 materialize/assemble；不新增人工 role-only model projection 或 `/artifacts`
+Provider mount。发布方的 canonical package 与通用脚本 bundle 分离，Provider 不可
+见 oracle。T004只准备代码/配置和发布方输入位置，T005实际连接既有发布/获取 owner；
+这是源代码核对后的计划修正，见evidence/native-model-route.md。
 图结构和输入生产仍由现有 ACK-driven DI 路径决定；job 层约束允许候选/放置，不自行伪造 ACK 或跳过 plan sealing。下游只依赖真实选定/本地模型 ready/直接前驱 Data，不增加全局“所有阶段就绪后才能发数据”的屏障。
 
 ## Candidate And Change Invalidation
