@@ -1888,3 +1888,15 @@ added a deterministic outer-wait expiry regression. Initial full run was
   Native integration remains pending.
 - Lesson: identify what each digest covers before joining evidence; similarly
   named plan fields are not interchangeable.
+# 2026-09-07 Spec183 retained receipt semantics gap
+
+- Symptom: seven focused mutations of a hash-consistent retained node receipt
+  were accepted despite invalid cleanup or incomplete request coverage. This
+  was a component audit before any native/SIF/Tiger qualification.
+- Root cause: the initial offline reader checked receipt/log content binding
+  and services, but relied on producer-side cleanup/request checks and did not
+  recompute the stored cleanup summary.
+- Fix: share validate_cleanup_records between live and offline paths, preserve
+  live ownership checks, and revalidate the frozen request inventory offline.
+- Lesson: a matching artifact hash proves content identity, not validity of
+  the reported execution; validate semantics at the final consuming boundary.

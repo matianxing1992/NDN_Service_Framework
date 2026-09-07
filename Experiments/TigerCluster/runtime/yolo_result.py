@@ -305,7 +305,8 @@ def read_node_log_receipt(root, *, receipt_digest, plan, preparation_digest, can
 
     Does not recreate a Worker or prove a receipt truthful by its own hash.
     Caller authenticates expected receipt/plan identities and separately checks
-    allocation, cleanup semantics and execution results.
+    allocation, runtime ownership provenance and execution results. Cleanup
+    record semantics and frozen invocation coverage are rechecked here.
     """
     import hashlib
     import json
@@ -370,6 +371,21 @@ def read_node_log_receipt(root, *, receipt_digest, plan, preparation_digest, can
             services.add(launch['role'])
     if services != roles - {'user'}:
         raise EvidenceError('NODE_LOG_SERVICE_COVERAGE')
+    cleanup = validate_cleanup_records(receipt['launches'], receipt['cleanup'])
+    if receipt['cleanupSummary'] != cleanup:
+        raise EvidenceError('NODE_LOG_CLEANUP_SUMMARY')
+    count = 4 if plan['case'] == 'two-node-gpu' else 2
+    requests = plan.get('requests')
+    if (not isinstance(requests, list) or len(requests) != count
+            or any(not isinstance(row, dict) or type(row.get('index')) is not int or row['index'] != i
+                   or not isinstance(row.get('requestId'), str) or not row['requestId']
+                   for i, row in enumerate(requests))
+            or len({row['requestId'] for row in requests}) != count):
+        raise EvidenceError('NODE_LOG_REQUEST_PLAN')
+    actual = {row['invocation'] for row in receipt['launches']
+              if row['role'] == 'user' and row['invocation'] != 'repo-readiness'}
+    if actual != ({str(i) for i in range(count)} if rank == 0 else set()):
+        raise EvidenceError('NODE_LOG_REQUEST_COVERAGE')
     return dict(receipt=receipt, logs=logs, qualification='NODE_LOG_COMPONENT_ONLY')
 
 
@@ -492,8 +508,17 @@ def validate_worker_cleanup(worker, rows):
     if (worker.closed is not True or worker.leases or worker.children.children
             or worker.finite_children.children):
         raise EvidenceError('CLEANUP_OWNERS_REMAIN')
+    return validate_cleanup_records(worker.launches, rows)
+
+
+def validate_cleanup_records(launches, rows):
+    """Shared live/offline record semantics; does not prove OS ownership alone."""
+    if not isinstance(launches, list):
+        raise EvidenceError('CLEANUP_LAUNCH_INVENTORY')
     expected = {}
-    for launch in worker.launches:
+    for launch in launches:
+        if not isinstance(launch, dict):
+            raise EvidenceError('CLEANUP_LAUNCH_INCOMPLETE')
         role = launch.get('role')
         invocation = launch.get('invocation')
         if (not isinstance(role, str) or not role or launch.get('startError')

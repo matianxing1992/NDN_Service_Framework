@@ -78,6 +78,14 @@ T001–T004形成 profile/launcher 实现骨架；可操作 MVP 还要求 T006 �
 
 ## Current Checkpoint
 
+2026-09-07 retained cleanup semantics: offline receipt reading now invokes
+shared validate_cleanup_records (also used by live Worker cleanup), recomputes
+cleanupSummary and verifies every frozen User invocation and unique request ID.
+Seven red cases previously accepted hash-consistent but semantically invalid
+receipts; now rejected. Sixty affected tests passed, including real OS cleanup
+boundaries. This closes an offline composition gap, not final experiment
+qualification; trusted staging, GPU/graph and complete operator remain pending.
+
 2026-09-07 retained execution join: collect_retained_role_execution reads
 verified node receipts, uses their PID/log binding, enforces request/attempt/
 execution-plan identity and role-local current ORT profile. No reconstructed

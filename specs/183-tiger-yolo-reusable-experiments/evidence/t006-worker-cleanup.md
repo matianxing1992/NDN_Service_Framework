@@ -76,6 +76,27 @@ Expanded node receipt regression: 569 passed in 42.91s; JUnit
 `Experiments/TigerCluster/results/t006-node-receipt-r1/junit.xml` (same six selectors).
 # Node log receipt v2 (2026-09-07)
 
+## Retained cleanup semantics
+
+Offline receipt reading now recomputes cleanup from launch records using the
+same validate_cleanup_records function as the live Worker validator (which
+still separately checks actual closed state/owned children/leases). It rejects
+missing/duplicate rows, PID mismatch, unreaped/forced/failed cleanup, finite
+nonzero exit and premature service exit. Stored cleanupSummary must equal the
+recomputed result. It also checks the frozen count/order/unique request IDs
+and complete User invocation index coverage for rank zero; other ranks must
+not claim User requests. This is record consistency, not OS liveness proof
+from an arbitrary untrusted receipt. Trusted receipt identity remains required.
+
+Seven hash-consistent negative receipts previously passed the incomplete
+reader and now fail: forced termination, missing/duplicate cleanup, finite
+failure, false summary, missing invocation, duplicate planned request ID.
+The combined receipt/retained/live-cleanup suites passed 60 tests.
+
+Expanded focused regression: 671 passed in 48.36s; JUnit
+`Experiments/TigerCluster/results/t006-retained-cleanup-r1/junit.xml`.
+No native/SIF/Tiger workload was run at this checkpoint.
+
 ## Offline role and dependency consumers
 
 `collect_retained_role_execution` consumes the trusted receipt identity and

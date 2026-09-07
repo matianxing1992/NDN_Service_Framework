@@ -112,3 +112,33 @@ def test_retained_receipt_binds_logs_without_recreating_worker(tmp_path, fault):
         assert evidence['qualification'] == 'NODE_LOG_COMPONENT_ONLY'
     else:
         with pytest.raises(ValueError): read()
+
+
+@pytest.mark.parametrize('fault', ['forced', 'missing-cleanup', 'duplicate-cleanup',
+    'finite-exit', 'false-summary', 'missing-request', 'duplicate-plan-request'])
+def test_reader_rechecks_receipt_semantics_not_only_hash(tmp_path, fault):
+    import hashlib
+    import json
+    state, rows = worker(tmp_path)
+    receipt = result.write_worker_receipt(state, rows)
+    plan, prep, candidate = state._preparation_binding
+    if fault == 'forced': receipt['cleanup'][0]['forced'] = True
+    if fault == 'missing-cleanup': receipt['cleanup'].pop()
+    if fault == 'duplicate-cleanup': receipt['cleanup'][-1] = dict(receipt['cleanup'][0])
+    if fault == 'finite-exit': receipt['cleanup'][-1]['exitCode'] = 1
+    if fault == 'false-summary': receipt['cleanupSummary']['childCount'] = 999
+    if fault == 'missing-request':
+        receipt['launches'].pop()
+        receipt['cleanup'].pop()
+        receipt['cleanupSummary']['childCount'] -= 1
+    if fault == 'duplicate-plan-request':
+        plan['requests'][1]['requestId'] = plan['requests'][0]['requestId']
+        receipt['planDigest'] = 'sha256:'+hashlib.sha256(json.dumps(plan, sort_keys=True,
+            separators=(',', ':'), allow_nan=False).encode()).hexdigest()
+    path = state.output/'node-receipt.json'
+    path.write_text(json.dumps(receipt))
+    digest = 'sha256:'+hashlib.sha256(path.read_bytes()).hexdigest()
+    # A matching staging hash is necessary, not a substitute for semantics.
+    with pytest.raises(ValueError):
+        result.read_node_log_receipt(state.output, receipt_digest=digest, plan=plan,
+            preparation_digest=prep, candidate_digest=candidate, rank=0)
