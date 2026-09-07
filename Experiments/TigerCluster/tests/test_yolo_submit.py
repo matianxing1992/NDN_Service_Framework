@@ -144,15 +144,35 @@ def test_submit_rejects_local_case_before_reading_or_launching(tmp_path):
 
 def test_local_sif_first_run_requires_host_gate_not_its_own_result(tmp_path, monkeypatch):
     module = submit_module()
-    monkeypatch.setattr(module, "_dispatch_report", lambda _: ({"qualification": "READY"}, {}))
+    profile_digest = "sha256:" + "b" * 64
+    monkeypatch.setattr(module, "_dispatch_report", lambda _: (
+        {"qualification": "READY", "documentDigest": profile_digest}, {}))
     monkeypatch.setattr(module, "_load_prepared", lambda *_: {
-        "case": "local-cpu", "candidateDigest": "sha256:" + "a" * 64})
+        "case": "local-cpu", "candidateDigest": "sha256:" + "a" * 64,
+        "profileDigest": profile_digest})
     seen = []
     monkeypatch.setattr(module, "_gate_receipt", lambda path, profile, gate: seen.append(gate))
     args = SimpleNamespace(profile=tmp_path / "profile", output=tmp_path / "output",
                            run_id="test-local", case="local-cpu")
     assert module._local(args) == module.INCOMPLETE
     assert seen == ["hostMinindn"]
+    assert not args.output.exists()
+
+
+def test_local_rejects_different_profile_before_using_host_receipt(tmp_path, monkeypatch):
+    module = submit_module()
+    monkeypatch.setattr(module, "_dispatch_report", lambda _: (
+        {"qualification": "READY", "documentDigest": "sha256:" + "a" * 64}, {}))
+    monkeypatch.setattr(module, "_load_prepared", lambda *_: {
+        "case": "local-cpu", "profileDigest": "sha256:" + "b" * 64,
+        "candidateDigest": "sha256:" + "c" * 64})
+    def forbidden(*args, **kwargs):
+        pytest.fail("a different profile must not supply a host gate for this prepared run")
+    monkeypatch.setattr(module, "_gate_receipt", forbidden)
+    args = SimpleNamespace(profile=tmp_path / "profile", output=tmp_path / "output",
+                           run_id="test-local", case="local-cpu")
+    with pytest.raises(module.ClosureError, match="PROFILE_CHANGED_AFTER_PREPARE"):
+        module._local(args)
     assert not args.output.exists()
 
 

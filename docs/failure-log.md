@@ -2489,3 +2489,27 @@ The actual producer/request binding remains open; no runtime PASS is claimed.
 Lesson: use source-derived identities in test fixtures and distinguish logical,
 serialized and request-publication digests before wiring a distributed oracle.
 Avoid broad reruns while its producer is still disconnected.
+
+# 2026-09-07 — local operator omitted the prepared profile identity check
+
+Symptom: a focused mutation supplied different current and prepared profile
+digests; `_local` still tried to read the current profile's hostMinindn receipt.
+The test failed at that forbidden boundary before any external command.
+
+Cause: `_submit` and `_collect` compared profile identities, but `_local`
+omitted the same check. Its currently disconnected worker prevented execution,
+not the future cross-profile evidence mix once the worker is connected.
+
+Fix: reject PROFILE_CHANGED_AFTER_PREPARE before reading the host receipt.
+All 40 CLI tests passed in 33.80s; JUnit is retained under
+Experiments/TigerCluster/results/spec183-local-profile-binding-20260907/.
+The worker/staging wiring remains unfinished. No runtime qualification claimed.
+
+Lesson: validate the same frozen candidate at every public execution boundary;
+test mismatched identities before enabling expensive side effects.
+
+Continuation tooling: project Context Mode health passed, while strict active
+health reported NO_REAL_SESSION_EVENTS on this continuation. The repository
+tasks/audit remained authoritative; no fabricated prompt marker or manual hook
+fixture was used. Source edits were verified with CodeGraph sync and focused
+tests. The live external build was polled by exact PID and left undisturbed.

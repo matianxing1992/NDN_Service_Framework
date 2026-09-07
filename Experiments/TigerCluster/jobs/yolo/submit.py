@@ -342,6 +342,8 @@ def _local(args) -> int:
     prepared = _load_prepared(args.output, args.run_id)
     if args.case != "local-cpu" or prepared["case"] != args.case:
         raise ClosureError("LOCAL_CASE")
+    if report["documentDigest"] != prepared["profileDigest"]:
+        raise ClosureError("PROFILE_CHANGED_AFTER_PREPARE")
     _gate_receipt(Path(args.profile), value, "hostMinindn")
     # The real SIF worker is intentionally enabled only after T008/T009/T010
     # produce the local gate receipt.  This branch prevents a structural profile

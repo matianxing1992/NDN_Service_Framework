@@ -56,3 +56,23 @@ Context active health通过，CodeGraph已先定位 owner；Spec Kit prerequisit
 requirements checklist 10/10通过。GSD仍degraded/W019，旧phase35不是Spec183
 权威，使用tasks/handoff；本轮非统计实验，不新增ARS结果结论。无编译、SIF、
 上传、Slurm作业或模型执行。
+
+## 2026-09-07 local prepared-profile binding
+
+当前源码审查发现 `_local` 比 `_submit` / `_collect` 少了 profile digest 比较：
+它可能给 profile B 冻结的 prepared run 读取 profile A 的 hostMinindn receipt。
+虽然 worker 仍未接线，此遗漏会在启用真实执行时造成跨配置证据混用。
+
+新增测试在两个摘要不同的情况下禁止读取 gate receipt；修改前确实触发了
+被禁止的调用（1 failed）。`_local` 现先比较 `report.documentDigest` 与
+`prepared.profileDigest`，不一致立即报 `PROFILE_CHANGED_AFTER_PREPARE`。
+既有 hostMinindn→localSif 顺序和零文件副作用行为保留。
+
+```bash
+python3 -m pytest -q Experiments/TigerCluster/tests/test_yolo_submit.py \
+  --junitxml=Experiments/TigerCluster/results/spec183-local-profile-binding-20260907/focused.xml
+```
+
+**40 passed in 33.80s**；只跑受影响 CLI 文件，JUnit 保留在本地 ignored results。
+这关闭的是 T004 的 profile 绑定遗漏，不关闭实际 local/run/staging 接线；
+T004/T007 仍未验收，不代表 MiniNDN、SIF 或 GPU PASS。
