@@ -353,3 +353,16 @@ See `evidence/t006-dependency-pairs.md`.
 2026-09-07追加：T005 partial已将安装版native Provider启动参数接入NodeRuntime，四角色CPU/GPU与启动前拒错共15项新增测试；完整Tiger focused集合 **275 passed in 16.18s**。见[evidence/t005-native-launch.md](evidence/t005-native-launch.md)。下一步仍为真实应用coordinator、Controller/Repo/User准备与安全readiness、逐请求执行，然后T006；T005未完成，不放行T007/Slurm。
 
 2026-09-07：T001/T003完成（2/17），T004 partial新增脚本bundle freeze/verify并接入dispatch真实入口，最新 **260 passed in 17.17s**，见[evidence/t004-harness.md](evidence/t004-harness.md)。下一步转T005实际应用/argv/cache/安全模型传输，再T006，回填T004完整五命令和T002资格。生产bundle缺真实应用/collector/run.sbatch，不制造占位文件；不新增Provider模型旁路挂载。三依赖精确commit已隔离接收，原工作树未改；source封装、签名模型包和本地base仍待完成。T007及全部正式环境门未通过，无构建/上传/Slurm/模型执行。
+
+2026-09-07 T002 dispatch checkpoint：新增 Spec183 专用 host-gate receipt
+validator，固定 `/appName/sync` 所属应用标识、四 Provider、shared-backbone
+图和 normal/permission-rejection/negative-dependency 三类 case，并绑定
+source seal 与 evidence 文件 hash。`build-local-sif.sh` 通过
+`--workload-kind spec183-yolo --spec183-host-gate` 进入该路径；无效
+schema/workload/source/receipt 或混用旧参数时，在 Apptainer version/build
+之前拒绝。Spec175 原有入口与 version 命令顺序保持不变。host-gate 与
+builder 回归 **21 passed**；仍为 component-only/side-effect-boundary
+证据，真实 T010 receipt、T011 SIF 与 T007 生产审计未完成，T002 继续
+unchecked。
+合并既有 focused selectors 后为 **873 passed in 51.47s**；JUnit 仍只记录
+本地组件/命令边界，不能替代实际 MiniNDN 或 Tiger 运行。

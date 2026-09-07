@@ -24,6 +24,26 @@ bash Experiments/TigerCluster/adapters/slurm-apptainer/scripts/build-local-sif.s
 这是需替换占位值的路径示例，本轮未构建；原脚本的`--help`打印用法并返回2，沿用既有行为。
 SIF、缓存、私有身份、模型和大日志不入Git。镜像在容器builder内编译原生组件；宿主驱动构建，不提供宿主.so或venv作为运行依赖。
 
+Spec183 YOLO 不得把旧 Spec175 清单冒充 host receipt。它使用显式 dispatch：
+
+```bash
+bash Experiments/TigerCluster/adapters/slurm-apptainer/scripts/build-local-sif.sh \
+  --workload-kind spec183-yolo \
+  --definition /absolute/path/to/sealed-runtime.def \
+  --sif /absolute/path/to/Experiments/TigerCluster/images/<candidate>/runtime.sif \
+  --record /absolute/path/to/Experiments/TigerCluster/images/<candidate>/build-record.json \
+  --source-seal /absolute/path/to/source-seal.json \
+  --spec183-host-gate /absolute/path/to/tiger-yolo-host-minindn-manifest.json \
+  --apptainer /absolute/path/to/qualified/apptainer \
+  --expected-apptainer <qualified-compute-version>
+```
+
+该 receipt 必须由真实 CPU/MiniNDN qualification 产生，并绑定同一 source
+seal、`/<applicationName>/sync` 应用组、四 Provider 及三类注册 case；当前
+validator 只提供 `YOLO_HOST_GATE_COMPONENT_ONLY` 边界，不替代 T010 的真实
+receipt。Spec183 receipt 会在 Apptainer version/build 调用前校验；无效或混用
+旧参数必须零 Apptainer 调用。旧 Spec175 路径和其命令顺序保持不变。
+
 ## Existing Images
 
 本机较新历史候选为 `.local-tmp/spec180-candidate-r119/spec180-runtime.sif`；

@@ -2035,3 +2035,26 @@ code path and focused regression, not the full runtime qualification.
   SIF, allocation, or Tiger execution is implied.
 - Lesson: terminal aggregation must validate both identity coverage and the
   qualification of every child component.
+
+# 2026-09-07 Spec183 host-gate evidence kind rejected valid receipt
+
+- Symptom: the first positive host-gate validator test failed with
+  `YOLO_HOST_GATE_FILE_RECORD:evidence.cleanup`.
+- Cause: the evidence wrapper's semantic `kind` field was passed into the
+  lower-level exact `{path, bytes, sha256}` file-record validator.
+- Fix: validate `kind` at the case layer and remove it before binding the
+  evidence file.
+- Lesson: layered receipt validators must separate semantic wrapper fields
+  from content-identity fields.
+
+# 2026-09-07 Spec183 dispatch changed the legacy Apptainer command boundary
+
+- Symptom: moving the Apptainer version probe after all validation made four
+  established Spec175 builder tests fail because they intentionally require
+  the legacy `version` probe before the later definition/host rejection.
+- Cause: the new zero-side-effect requirement was applied to the old
+  Spec175 dispatch instead of only the new Spec183 receipt path.
+- Fix: preserve the Spec175 probe order and defer the version probe only for
+  `spec183-yolo`, after source/receipt/definition/preflight validation.
+- Lesson: a new workload gate must add a separate command-boundary contract;
+  it must not silently rewrite an established release path.

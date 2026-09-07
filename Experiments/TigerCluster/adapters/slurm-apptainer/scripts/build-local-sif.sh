@@ -11,7 +11,8 @@ usage() {
   cat >&2 <<'EOF'
 usage: build-local-sif.sh \
   --definition PATH --sif PATH --record PATH --source-seal PATH \
-  --host-gate-manifest PATH \
+  (--host-gate-manifest PATH | --spec183-host-gate PATH) \
+  [--workload-kind spec175|spec183-yolo] \
   [--strict-host-source-seal] \
   --apptainer PATH --expected-apptainer VERSION
 
@@ -28,6 +29,8 @@ sif=''
 record=''
 source_seal=''
 host_gate_manifest=''
+spec183_host_gate=''
+workload_kind='spec175'
 strict_host_source_seal=0
 apptainer_bin=''
 expected_version=''
@@ -39,6 +42,8 @@ while (($#)); do
     --record) record=${2:-}; shift 2 ;;
     --source-seal) source_seal=${2:-}; shift 2 ;;
     --host-gate-manifest) host_gate_manifest=${2:-}; shift 2 ;;
+    --spec183-host-gate) spec183_host_gate=${2:-}; shift 2 ;;
+    --workload-kind) workload_kind=${2:-}; shift 2 ;;
     --strict-host-source-seal) strict_host_source_seal=1; shift ;;
     --apptainer) apptainer_bin=${2:-}; shift 2 ;;
     --expected-apptainer) expected_version=${2:-}; shift 2 ;;
@@ -48,11 +53,22 @@ done
 
 [ -n "$definition" ] && [ -n "$sif" ] && [ -n "$record" ] && \
   [ -n "$source_seal" ] && [ -n "$apptainer_bin" ] && \
-  [ -n "$host_gate_manifest" ] && \
   [ -n "$expected_version" ] || usage
+[ "$workload_kind" = spec175 ] || [ "$workload_kind" = spec183-yolo ] || usage
+if [ "$workload_kind" = spec175 ]; then
+  [ -n "$host_gate_manifest" ] || usage
+  [ -z "$spec183_host_gate" ] || usage
+else
+  [ -n "$spec183_host_gate" ] || usage
+  [ -z "$host_gate_manifest" ] || usage
+fi
 [ -f "$definition" ] || { echo LOCAL_SIF_DEFINITION_MISSING >&2; exit 4; }
 [ -f "$source_seal" ] || { echo LOCAL_SIF_SOURCE_SEAL_MISSING >&2; exit 4; }
-[ -f "$host_gate_manifest" ] || { echo LOCAL_SIF_HOST_GATE_MANIFEST_MISSING >&2; exit 4; }
+if [ "$workload_kind" = spec175 ]; then
+  [ -f "$host_gate_manifest" ] || { echo LOCAL_SIF_HOST_GATE_MANIFEST_MISSING >&2; exit 4; }
+else
+  [ -f "$spec183_host_gate" ] || { echo LOCAL_SIF_SPEC183_HOST_GATE_MISSING >&2; exit 4; }
+fi
 [ ! -e "$sif" ] || { echo LOCAL_SIF_OUTPUT_EXISTS >&2; exit 4; }
 [ ! -e "$record" ] || { echo LOCAL_SIF_RECORD_EXISTS >&2; exit 4; }
 [ -x "$apptainer_bin" ] || { echo LOCAL_SIF_APPTAINER_NOT_EXECUTABLE >&2; exit 4; }
@@ -62,19 +78,36 @@ normalize_version() {
   printf '%s\n' "$1" | sed -E 's/[^0-9]*([0-9]+\.[0-9]+\.[0-9]+).*/\1/'
 }
 
-local_version=$("$apptainer_bin" version)
-[ "$(normalize_version "$local_version")" = "$(normalize_version "$expected_version")" ] || {
-  echo "LOCAL_SIF_APPTAINER_VERSION_MISMATCH local=$local_version compute=$expected_version" >&2
-  exit 4
+check_apptainer_version() {
+  local observed
+  observed=$("$apptainer_bin" version)
+  [ "$(normalize_version "$observed")" = "$(normalize_version "$expected_version")" ] || {
+    echo "LOCAL_SIF_APPTAINER_VERSION_MISMATCH local=$observed compute=$expected_version" >&2
+    return 4
+  }
+  local_version=$observed
 }
+
+local_version=''
+# Preserve the established Spec175 command-boundary behavior.  Spec183 is
+# intentionally checked below, after its receipt validation, so a bad receipt
+# cannot even trigger an Apptainer version probe.
+if [ "$workload_kind" = spec175 ]; then
+  check_apptainer_version || exit 4
+fi
+
 apptainer_sha256=$(sha256sum "$apptainer_bin" | awk '{print $1}')
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 repository_root=$(CDPATH= cd -- "$script_dir/../../../../.." && pwd)
 boundary_validator="$script_dir/../../../lib/spec170_sif_build_boundary.py"
 host_gate_validator="$script_dir/../../../lib/spec175_host_gate.py"
+spec183_host_gate_validator="$script_dir/../../../lib/spec183_yolo_host_gate.py"
 source_validator="$script_dir/validate-local-sif-source.py"
 spec175_preflight="$script_dir/../../../bin/ndnsf-di-spec175-preflight"
 spec175_workload="$script_dir/../../../jobs/spec175/workload.json"
+# Keep the record-generator argument defined on the legacy path as well; the
+# Spec175 record deliberately does not retain a Spec183 receipt.
+yolo_host_gate_json='{}'
 [ -f "$boundary_validator" ] || {
   echo LOCAL_SIF_BUILD_BOUNDARY_VALIDATOR_MISSING >&2
   exit 4
@@ -83,20 +116,54 @@ spec175_workload="$script_dir/../../../jobs/spec175/workload.json"
   echo LOCAL_SIF_SOURCE_VALIDATOR_MISSING >&2
   exit 4
 }
-[ -f "$host_gate_validator" ] || {
-  echo SPEC175_HOST_GATE_VALIDATOR_MISSING >&2
-  exit 4
-}
-[ -x "$spec175_preflight" ] || {
-  echo SPEC175_PREFLIGHT_MISSING >&2
-  exit 4
-}
-[ -f "$spec175_workload" ] || {
-  echo SPEC175_WORKLOAD_MISSING >&2
-  exit 4
-}
+if [ "$workload_kind" = spec175 ]; then
+  [ -f "$host_gate_validator" ] || {
+    echo SPEC175_HOST_GATE_VALIDATOR_MISSING >&2
+    exit 4
+  }
+  [ -x "$spec175_preflight" ] || {
+    echo SPEC175_PREFLIGHT_MISSING >&2
+    exit 4
+  }
+  [ -f "$spec175_workload" ] || {
+    echo SPEC175_WORKLOAD_MISSING >&2
+    exit 4
+  }
+else
+  [ -f "$spec183_host_gate_validator" ] || {
+    echo SPEC183_HOST_GATE_VALIDATOR_MISSING >&2
+    exit 4
+  }
+fi
 if ! source_validation_json=$(python3 "$source_validator" --source-seal "$source_seal"); then
   exit 4
+fi
+if [ "$workload_kind" = spec183-yolo ]; then
+  # Validate the actual receipt before querying Apptainer.  This is deliberately
+  # the first workload-specific side-effect boundary: a stale/foreign/failed
+  # receipt must cause zero version/build/exec calls.
+  if ! yolo_host_gate_json=$(python3 - "$spec183_host_gate_validator" "$spec183_host_gate" "$source_seal" <<'PY'
+import importlib.util
+import json
+import sys
+from pathlib import Path
+
+module_path, receipt_path, source_path = sys.argv[1:]
+spec = importlib.util.spec_from_file_location("spec183_yolo_host_gate", module_path)
+if spec is None or spec.loader is None:
+    raise SystemExit("SPEC183_HOST_GATE_VALIDATOR_IMPORT_FAILED")
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+try:
+    value = module.validate_yolo_host_gate(Path(receipt_path), source_seal_path=Path(source_path))
+except Exception as exc:
+    print(str(exc), file=sys.stderr)
+    raise SystemExit(4)
+print(json.dumps(value, sort_keys=True))
+PY
+  ); then
+    exit 4
+  fi
 fi
 if ! python3 - "$definition" "$source_seal" <<'PY'
 import json
@@ -131,6 +198,7 @@ PY
 then
   exit 4
 fi
+if [ "$workload_kind" = spec175 ]; then
 if ! host_gate_json=$(python3 - "$host_gate_validator" "$host_gate_manifest" "$repository_root" <<'PY'
 import importlib.util
 import sys
@@ -152,6 +220,11 @@ print(json.dumps(result, sort_keys=True))
 PY
 ); then
   exit 4
+fi
+else
+  # Keep the complete validated receipt in the common hostGate field; do not
+  # replace it with a synthetic PASS summary.
+  host_gate_json="$yolo_host_gate_json"
 fi
 # The host G3 manifest is a qualification of the exact source identity being
 # built.  A structurally valid 30/30 manifest from an older source seal must
@@ -259,9 +332,20 @@ PY
 then
   exit 4
 fi
-if ! spec175_input_preflight_json=$(python3 "$spec175_preflight" \
-    --source-seal "$source_seal" --workload "$spec175_workload"); then
-  exit 4
+if [ "$workload_kind" = spec175 ]; then
+  if ! spec175_input_preflight_json=$(python3 "$spec175_preflight" \
+      --source-seal "$source_seal" --workload "$spec175_workload"); then
+    exit 4
+  fi
+else
+  spec175_input_preflight_json='{"status":"NOT_APPLICABLE","reason":"spec183-yolo-dispatch"}'
+fi
+
+# Do not invoke Apptainer until every source, host receipt, definition, and
+# workload-specific preflight has passed.  In particular, a malformed or
+# source-mismatched Spec183 receipt must have zero Apptainer calls.
+if [ "$workload_kind" = spec183-yolo ]; then
+  check_apptainer_version || exit 4
 fi
 if ! boundary_json=$(python3 "$boundary_validator" --definition "$definition"); then
   exit 4
@@ -364,11 +448,15 @@ sif_sha256=$(sha256sum "$sif" | awk '{print $1}')
 # native ABI/ONNX probe inside it.  This is the boundary that rejects stale
 # host-built extensions, missing ldd dependencies, CPU-only ORT wheels, and
 # deployment-time PyTorch/Transformers residue.
-if ! spec175_preflight_json=$(python3 "$spec175_preflight" \
-    --source-seal "$source_seal" --workload "$spec175_workload" \
-    --sif "$sif" --apptainer "$apptainer_bin" \
-    --expected-sif-sha256 "$sif_sha256"); then
-  exit 4
+if [ "$workload_kind" = spec175 ]; then
+  if ! spec175_preflight_json=$(python3 "$spec175_preflight" \
+      --source-seal "$source_seal" --workload "$spec175_workload" \
+      --sif "$sif" --apptainer "$apptainer_bin" \
+      --expected-sif-sha256 "$sif_sha256"); then
+    exit 4
+  fi
+else
+  spec175_preflight_json='{"status":"NOT_APPLICABLE","reason":"spec183-yolo-dispatch"}'
 fi
 
 python3 - "$record_partial" "$definition" "$definition_sha256" "$source_seal" \
@@ -376,7 +464,7 @@ python3 - "$record_partial" "$definition" "$definition_sha256" "$source_seal" \
   "$base_sif" "$base_sif_sha256" "$base_sif_bytes" "$ndnsf_labels_json" \
   "$apptainer_bin" "$apptainer_sha256" "$boundary_json" \
   "$source_validation_json" "$host_gate_json" "$spec175_input_preflight_json" \
-  "$spec175_preflight_json" <<'PY'
+  "$spec175_preflight_json" "$workload_kind" "$yolo_host_gate_json" <<'PY'
 import hashlib
 import json
 import os
@@ -387,7 +475,7 @@ import sys
  base_sif, base_sif_sha, base_sif_bytes, labels_json,
  apptainer_bin, apptainer_sha, boundary_json, source_validation_json,
  host_gate_json, spec175_input_preflight_json,
- spec175_preflight_json) = sys.argv[1:]
+ spec175_preflight_json, workload_kind, yolo_host_gate_json) = sys.argv[1:]
 build_input = {
     "definition": {"path": definition, "sha256": "sha256:" + definition_sha},
     "method": "local-apptainer-definition",
@@ -399,14 +487,14 @@ if base_sif:
         "bytes": int(base_sif_bytes),
     }
 body = {
-    "schemaVersion": "ndnsf-local-sif-build-v3",
+    "schemaVersion": ("ndnsf-local-sif-build-v3" if workload_kind == "spec175"
+                       else "ndnsf-local-sif-build-spec183-v1"),
     "status": "PASS",
+    "workloadKind": workload_kind,
     "buildInput": build_input,
     "sourceSeal": {"path": source_seal, "sha256": "sha256:" + source_sha},
     "sourceValidation": json.loads(source_validation_json),
     "hostGate": json.loads(host_gate_json),
-    "spec175InputPreflight": json.loads(spec175_input_preflight_json),
-    "spec175Preflight": json.loads(spec175_preflight_json),
     "sif": {"path": sif, "sha256": "sha256:" + sif_sha,
             "bytes": os.path.getsize(sif)},
     "labels": json.loads(labels_json),
@@ -421,6 +509,11 @@ body = {
     "containerNativeBuild": json.loads(boundary_json),
     "tigerAction": "verify-hash-and-execute-only",
 }
+if workload_kind == "spec183-yolo":
+    body["yoloHostGate"] = json.loads(yolo_host_gate_json)
+else:
+    body["spec175InputPreflight"] = json.loads(spec175_input_preflight_json)
+    body["spec175Preflight"] = json.loads(spec175_preflight_json)
 body["recordDigest"] = "sha256:" + hashlib.sha256(
     json.dumps(body, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 with open(path, "x", encoding="utf-8") as stream:
