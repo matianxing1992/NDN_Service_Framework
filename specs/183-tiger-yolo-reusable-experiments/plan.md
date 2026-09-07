@@ -27,10 +27,11 @@ I/II：沿用动态 API 和现有鉴权/请求级密钥，不新建框架协议�
 | Owner/path | Existing or planned | Responsibility |
 | --- | --- | --- |
 | `Experiments/TigerCluster/runtime/baseline.py`, `identities.py` | existing; narrow extension | 公共进程/容器/身份/路由原语；保持已有 CPU v1 schema 及历史结果语义 |
-| `runtime/yolo_profile.py` | planned | `tiger-yolo-v1` 唯一字段校验、解析和阶段化 candidate closure；不复制 baseline loader |
+| `runtime/yolo_profile.py` | partial implementation | `tiger-yolo-v1` 字段/内容检查和确定性case/run预览；实际qualified closure与冻结bundle待接线 |
+| `runtime/yolo_submission.py` | partial implementation | 共享根下candidate/gate提交状态和未知job恢复；只管理记录，不执行Slurm或验证模型 |
 | `runtime/yolo_worker.py`, `yolo_result.py` | planned | 每节点角色启动/结果；调用共享 runtime，收集 YOLO 专属 DAG/GPU/数值证据 |
 | `apps/yolo.py` | planned | 薄封装已有 ACK-driven YOLO User/准备接口；无模型规划/密钥新 owner |
-| `jobs/yolo/submit.py`, `run.sbatch` | planned | 唯一 `check/prepare/local/submit/collect`，CPU/single-GPU/two-GPU 是注册 case |
+| `jobs/yolo/submit.py`, `run.sbatch` | check implemented; execution planned | 唯一 `check/prepare/local/submit/collect`，CPU/single-GPU/two-GPU 是注册 case；当前只开放check，其余等待真实接线 |
 | `profiles/yolo-two-node.json`, `schemas/tiger-yolo-v1.schema.json` | planned | 一份操作者配置及验证格式；图/模型等外部输入仅以 immutable 引用出现 |
 | `adapters/slurm-apptainer/scripts/build-local-sif.sh`, `prepare-development-handoff.py` | existing | 原构建/打包入口，不新增另一个构建器 |
 | `examples/python/NDNSF-DistributedInference/yolo_2x2/user.py`, `Experiments/NDNSF_DI_YoloAckDriven_Minindn.py` | existing | 当前实际应用/本地网络路径，适配层传参数而不复制 |

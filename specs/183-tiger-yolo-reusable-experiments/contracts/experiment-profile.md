@@ -1,8 +1,8 @@
 # Experiment Profile And Run Contract
 
-**Status**: T004 partial — schema and read-only structural loader implemented;
-the five-command operator entrypoint, frozen run plan and actual enabled profile
-are not yet delivered. No launch qualification is implied.
+**Status**: T004 partial — schema、只读 `check`、确定性运行预览和提交记录组件已实现；
+完整五命令、合格不可变 bundle、实际 enabled profile 和生产提交接线尚未完成。
+没有启动资格。
 
 ## Operator Interface
 
@@ -108,3 +108,46 @@ Backbone 结果到 B 的两 head；head 结果到 A 的 merge；边名称/生产
 提交前原子建立 candidate/gate 活动记录；两并发启动仅一个可到 sbatch。sbatch 返回后网络断开导致 job ID 未知时进入 `SUBMISSION_UNKNOWN`，恢复按唯一 comment/run ID 查询已有 job，未确认无提交前不重试。终态只写一次，reanalysis 是独立文件。
 共享锁位置由 profile 指定，必须对所有操作者共享可见；纯本机锁不能声称阻止另一机器重复提交。allocation 阶段身份/路径校验失败不得启动 Provider。
 wait/readiness 使用 monotonic deadline，并检查 child 和 peer failure。Controller/Provider 长期进程正常受控 stop 与异常提前退出分开记录；client/numeric checker 必须正常 exit0，cleanup 必须 reap 且无残留进程。强制 kill/写盘失败不得给 clean PASS。
+
+### T004 implemented interface checkpoint
+
+当前 `jobs/yolo/submit.py` 仅开放 `check`，`--profile` 必需，`--stage` 默认
+`dispatch`。可同时传 `--run-id/--output/--case` 三项查看确定性运行预览；不传
+则只做当前阶段内容检查。未知字段、错 manifest/hash、缺阶段以 exit 2 拒绝。
+内容匹配仍返回 exit 78、`status=INCOMPLETE`、`qualification=NOT_EVALUATED`：
+source/model 专属校验、生产调用/挂载和真实 receipt 尚未接入，不能构建或提交。
+`prepare/local/submit/collect` 暂不开放，而不是提供能绕过门槛的占位执行器。
+
+`check` 的内容检查范围为当前及前驱 I/R/E 平面，先核对 profile 对平面清单的
+bytes/hash，再调用原 `check_chain`，最后再次核对清单引用。它不把最低文件
+集合当作完整传递依赖清单。读取过程中不创建 output/cache/日志目录，不操作
+SSH、Slurm、容器或模型。Python3.8 的 JSON Schema 导入可能执行 stdlib 的
+只读 `uname -p`；回归明确允许这一个探测，不放开实验启动/网络/文件修改。
+
+运行预览是 `PLANNED`，不是冻结 bundle 或 DI Selection。它复用 `assigned_roles`，
+包含独立 role identity 名、4 Provider 的预期 rank/device、逐请求 ID/输出和未解决项；
+真实 allocation 留为 null。local-cpu 和 single-node-gpu 使用 1 warmup+1 measured；
+正常 two-node-gpu 使用 1+3；negative-dependency 只运行一个独立负例请求，不计入
+正常成功样本。请求 ID 由版本化 domain、run namespace 和请求序号的 SHA-256
+前 128 位确定性生成；runId 不重复，命名不依赖随机线程/机器状态。
+
+`caseBehaviorDigest` 绑定配置行为、注册 case/角色/schedule；不等于 candidate E。
+runId、物理路径、profileId 标签、release/未来 receipt 引用不进入该摘要；父 R 与
+实际 I/R/E 关联仍由内容链负责。`documentDigest` 另外绑定原 profile 文档。
+从不同 cwd 查看相同 run 得到同一预览；更换 run 不改变行为摘要，但生成不同
+角色/请求名。换行为参数会改变摘要。实际 argv、mount、signed material、
+allocation 和 qualification 继续明确列为 unresolved，不宣称已消费全部字段。
+
+`runtime/yolo_submission.py::SubmissionJournal` 只管理共享提交记录，不调用
+sbatch，也不验证模型。所有操作者必须用同一已验证共享目录；本机 flock 测试
+不能证明 Tiger 共享文件系统语义。每 candidate/gate 记录通过有界 2 秒 flock、
+同目录临时文件、fsync、原子 replace 和目录 fsync 更新。重复 runId 不复用；
+旧终态保留。将 `SUBMITTING` 持久化成功后才能进入唯一 sbatch 调用。
+
+进程在 SUBMITTING 崩溃或响应丢失时不能重提；按唯一 submissionKey/comment
+查询，零匹配仍为 SUBMISSION_UNKNOWN，单一 jobId 才接回 SUBMITTED，多匹配
+明确报错并继续占用。query transport 和真实 Slurm 输出解析仍待接线。
+尚处 PREPARED 可原子转为 `CANCELLED_BEFORE_SUBMIT` 释放预留；这是提交记录的
+终态，不是模型结果。进入 SUBMITTING 后禁止此取消出口。正常 finish 必须由
+上层先核对同一 job 真正终止和 collector verdict；jobId 不匹配、改写终态、
+未知提交直接 finish 均拒绝。正式提交入口未实现，所以这些组件不构成 T004 完成。

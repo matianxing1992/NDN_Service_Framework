@@ -258,3 +258,100 @@ def load_operator_profile(path: Path, *, stage: str) -> dict:
             "qualification": "NOT_EVALUATED", "stage": stage,
             "documentDigest": "sha256:" + hashlib.sha256(encoded).hexdigest(),
             "minimumWallTimeSeconds": minimum, "profile": value}
+
+
+def check_operator_profile(path: Path, *, stage: str) -> dict:
+    """Inspect the current stage's bytes, without granting execution authority.
+
+    Workload/source owner validation and actual gate evidence are separate from
+    these minimum content-plane records. Until wired, no successful hash check
+    is sufficient for preparing an executable bundle or submitting a job.
+    """
+    loaded = load_operator_profile(path, stage=stage)
+    profile = loaded["profile"]
+    order = tuple(REQUIRED_FILES)
+    needed = order[:order.index(stage) + 1]
+    paths = {}
+
+    def verify_reference(name, row):
+        file = Path(_operator_path(row["path"], Path(path).absolute().parent, local=True))
+        _file_identity(file.parent, name, dict(row, path=file.name))
+        return file
+
+    for plane in needed:
+        paths[plane] = verify_reference(plane, profile["release"][plane])
+    checked = check_chain(paths, through=stage)
+    # The reference must still bind the manifest parsed by check_chain.
+    for plane in needed:
+        verify_reference(plane, profile["release"][plane])
+    return {"status": "INCOMPLETE", "stage": stage,
+            "structure": loaded["structure"], "integrity": checked["integrity"],
+            "integrityScope": "declared-content-planes",
+            "qualification": "NOT_EVALUATED", "identities": checked["identities"],
+            "documentDigest": loaded["documentDigest"],
+            "minimumWallTimeSeconds": loaded["minimumWallTimeSeconds"],
+            "pending": ["TRANSITIVE_OWNER_VALIDATION", "FROZEN_EXECUTION_WIRING",
+                        "WORKLOAD_GATE_VALIDATION"]}
+
+
+def resolve_run_plan(path: Path, *, stage: str, case: str, run_id: str, output: Path) -> dict:
+    """Resolve a deterministic, non-executable run description for review.
+
+    Candidate E and a qualified immutable bundle are NOT produced here. Node
+    placement is an allowed startup layout, never a fabricated DI Selection.
+    Runtime argv, mounts and signed material are supplied by downstream owners.
+    """
+    if not isinstance(run_id, str) or not re.fullmatch(r"[a-z][a-z0-9-]{1,47}", run_id):
+        raise ClosureError("RUN_ID")
+    loaded = load_operator_profile(path, stage=stage)
+    profile = loaded["profile"]
+    if case not in profile["cases"]:
+        raise ClosureError("RUN_CASE")
+    output = Path(_operator_path(str(output), Path(path).absolute().parent, local=True))
+    if output == Path(output.anchor):
+        raise ClosureError("RUN_OUTPUT_ROOT")
+    from .identities import identity_inventory
+    from .yolo_worker import assigned_roles, PROVIDER_ROLES, MODEL_ROLES
+    namespace = profile["security"]["identityNamespace"] + "/" + run_id
+    nodes = []
+    count = 1 if case in ("local-cpu", "single-node-gpu") else 2
+    for rank in range(count):
+        roles = assigned_roles(case, rank)
+        nodes.append({"rank": rank, "roles": list(roles),
+                      "providerRoles": {role: "cuda:0" if role in MODEL_ROLES and case != "local-cpu"
+                                        else "cpu" for role in roles if role in PROVIDER_ROLES}})
+    identities = identity_inventory(namespace, {role: namespace + "/" + role
+                                   for node in nodes for role in node["roles"]})
+    schedule = ({"warmup": 0, "measured": 1} if case == "negative-dependency" else
+                profile["schedule"]["singleNode" if count == 1 else "twoNode"])
+    requests = [{"index": n, "warmup": n < schedule["warmup"],
+                 "requestId": hashlib.sha256(("tiger-yolo-request-v1:" + namespace
+                                               + "/" + str(n)).encode()).hexdigest()[:32],
+                 "output": str(output / run_id / "requests" / str(n))}
+                for n in range(schedule["warmup"] + schedule["measured"])]
+
+    def logical(item):
+        if isinstance(item, dict):
+            if set(item) == {"path", "bytes", "sha256"}:
+                return {"bytes": item["bytes"], "sha256": item["sha256"]}
+            return {key: logical(entry) for key, entry in item.items()}
+        return item
+
+    behavior = logical(profile)
+    # R binds the input/runtime chain; E cannot contain its own manifest or
+    # future gate receipts. Site paths and run identity are ResolvedRun fields.
+    behavior.pop("release")
+    behavior.pop("profileId")
+    behavior["runtime"].pop("apptainer")
+    behavior["storage"] = {key: profile["storage"][key] for key in ("peakBytes", "marginBytes")}
+    case_behavior = {"profile": behavior, "case": case, "nodes": nodes,
+                     "schedule": schedule}
+    basis = json.dumps(case_behavior, sort_keys=True, separators=(",", ":")).encode()
+    return {"schema": "tiger-yolo-run-plan-v1", "status": "PLANNED",
+            "qualification": "NOT_EVALUATED", "runId": run_id, "case": case,
+            "caseBehaviorDigest": "sha256:" + hashlib.sha256(basis).hexdigest(),
+            "documentDigest": loaded["documentDigest"], "effectiveBehavior": case_behavior,
+            "namespace": namespace, "identities": identities, "nodes": nodes,
+            "requests": requests, "output": str(output / run_id), "allocation": None,
+            "unresolved": ["APPLICATION_ARGV", "IMMUTABLE_BINDINGS", "SIGNED_ROLE_MATERIAL",
+                           "ACTUAL_ALLOCATION", "QUALIFIED_CANDIDATE"]}

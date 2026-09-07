@@ -1,12 +1,18 @@
 # Quickstart: Planned Operator Workflow
 
-**Status**: PLANNED. 下列 YOLO 命令是 T004 的接口目标，文件尚未实现；现在不要执行 submit。本轮只写 Spec。
+**Status**: PARTIAL。T004 已提供只读 `check`；其余命令仍是接口目标，不可执行。
+尚无真实 enabled profile、合格 bundle 或模型运行结果，不能提交实验。
+
+当前可以对已接收的 profile 运行 `check --stage inputs --profile PATH`；缺/错输入
+返回 2。最低内容链通过仍返回 78（INCOMPLETE/NOT_EVALUATED），不代表允许执行。
+同时提供 `--run-id/--output/--case` 可查看运行预览；不会创建输出目录。
+完整边界见 [profile contract](contracts/experiment-profile.md#t004-implemented-interface-checkpoint)。
 
 ## Starting Point
 
 工作分支 `TigerClusterExperiments`，`Experimental` 交付 `81e251a4`；运行源码锁仍为 `Experiments/TigerCluster/development-handoff.lock.json`，不自动随分支最新 commit 漂移。先读本 Spec tasks T001 和 `Experiments/TigerCluster/docs/source-handoff.md`、`docs/sif-build.md`。
 
-## Operator Commands After Implementation
+## Operator Commands After Full Implementation
 
 从仓库根执行；一份填写完整、已检查的 profile，run ID 每次新建：
 

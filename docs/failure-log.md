@@ -1,5 +1,11 @@
 # Failure Log and Evidence Index
 
+## 2026-09-06 — Spec183 CLI cold-import audit and journal recovery validation
+
+- Fresh-interpreter auditing found jsonschema imports uuid/platform on Python3.8, which runs the read-only `uname -p` helper and opens `/dev/null`. The initial test overclaimed no subprocess at all. Scope the audit to forbidden launch/network/filesystem mutations, permitting only that exact standard-library probe; no experiment operation is exempted.
+- Journal mutation tests found unhashable state values escaped as TypeError and RUNNING with no jobId was accepted by the reader. Strict state type and job/state consistency now reject both without rewriting the record. Checking only a new reservation would have masked the second defect behind ACTIVE_RUN; the regression reads the corrupted active record directly.
+- Real process and injected-I/O tests establish one reservation winner, crash/unknown no-resubmit, terminal preservation and fail-closed directory-fsync ambiguity. These are local filesystem component evidence, not proof of Slurm submission, remote locking or model qualification. See Spec183 evidence/t004-cli-journal.md.
+
 ## 2026-09-06 — Context hook output overflow during Spec183
 
 - Symptom: a context hook emitted a truncated report originally exceeding one million tokens; the preceding tool result was lost from the conversation although its file edits persisted.
