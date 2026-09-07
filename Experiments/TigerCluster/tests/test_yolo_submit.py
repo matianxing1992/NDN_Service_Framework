@@ -174,3 +174,65 @@ runpy.run_path(sys.argv[0], run_name='__main__')
                             cwd=tmp_path, capture_output=True, text=True, timeout=10)
     assert result.returncode == 78, result.stderr
     assert json.loads(result.stdout)["integrity"] == "VERIFIED"
+
+
+def dispatch_profile(tmp_path):
+    from runtime.yolo_bundle import freeze_harness
+    from runtime.yolo_profile import check_plane
+    from test_yolo_bundle import fixture_manifest
+    from test_yolo_closure import next_plane
+    path, value = input_profile(tmp_path)
+    manifest, expected = fixture_manifest(tmp_path / "source")
+    frozen = tmp_path / "frozen"
+    freeze_harness(manifest, frozen, expected_manifest_sha256=expected)
+    inputs = Path(value["release"]["inputs"]["path"])
+    iid = check_plane(inputs, expected_stage="inputs")["id"]
+    runtime, _ = next_plane(tmp_path / "runtime", "runtime", iid)
+    rid = check_plane(runtime, expected_stage="runtime", parent_id=iid)["id"]
+    dispatch, doc = next_plane(tmp_path / "dispatch", "dispatch", rid)
+    harness = dispatch.parent / "harnessManifest"
+    harness.write_bytes(manifest.read_bytes())
+    doc["files"]["harnessManifest"] = dict(file_ref(harness), path=harness.name)
+    dispatch.write_text(json.dumps(doc))
+    value["release"].update(runtime=file_ref(runtime), dispatch=file_ref(dispatch))
+    value["evidence"]["harnessManifest"] = file_ref(frozen / "harness-manifest.json")
+    path.write_text(json.dumps(value))
+    return path, value, frozen
+
+
+def test_dispatch_check_binds_and_verifies_frozen_harness(tmp_path):
+    path, _, _ = dispatch_profile(tmp_path)
+    result = cli("check", "--stage", "dispatch", "--profile", path, cwd=tmp_path)
+    assert result.returncode == 78, result.stderr
+    report = json.loads(result.stdout)
+    assert report["harness"]["integrity"] == "VERIFIED"
+    assert report["harness"]["qualification"] == "NOT_EVALUATED"
+    assert report["qualification"] == "NOT_EVALUATED"
+
+
+@pytest.mark.parametrize("mutation,reason", [
+    ("unbound", "HARNESS_DISPATCH_BINDING"),
+    ("injected", "HARNESS_EXTRA_CONTENT"),
+    ("writable", "HARNESS_NOT_SEALED"),
+])
+def test_dispatch_rejects_unbound_or_changed_bundle(tmp_path, mutation, reason):
+    path, value, frozen = dispatch_profile(tmp_path)
+    if mutation == "unbound":
+        plane = Path(value["release"]["dispatch"]["path"])
+        doc = json.loads(plane.read_text())
+        replacement = plane.parent / "harnessManifest"
+        replacement.write_text("another manifest")
+        doc["files"]["harnessManifest"] = dict(file_ref(replacement), path=replacement.name)
+        plane.write_text(json.dumps(doc))
+        value["release"]["dispatch"] = file_ref(plane)
+        path.write_text(json.dumps(value))
+    elif mutation == "injected":
+        frozen.chmod(0o755)
+        (frozen / "oracle.npy").write_bytes(b"fixture forbidden extra")
+        (frozen / "oracle.npy").chmod(0o444)
+        frozen.chmod(0o555)
+    else:
+        (frozen / "runtime/baseline.py").chmod(0o644)
+    result = cli("check", "--stage", "dispatch", "--profile", path, cwd=tmp_path)
+    assert result.returncode == 2, result.stderr
+    assert json.loads(result.stdout)["reason"] == reason

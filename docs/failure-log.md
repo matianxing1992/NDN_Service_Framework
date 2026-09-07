@@ -1,5 +1,11 @@
 # Failure Log and Evidence Index
 
+## 2026-09-07 — Spec183 frozen harness bounded verification and dependency order
+
+- Initial harness verification recursively enumerated unexpected directories before rejecting them, risking needless traversal of injected large model/result trees. A real Python audit-event test reproduced the traversal; verification now scans only the finite registered directories and rejects an unknown subtree immediately. Patching os.scandir alone did not instrument Python3.8 pathlib's cached accessor and was replaced by the actual audit observation.
+- T004 complete CLI/frozen production inventory depends on the T005 application and T006 collector. Requiring T004 fully closed before implementing those consumers would be another implementation dependency cycle. Use the implemented T004 interfaces to implement consumers, then close T004/T002 before T007; never fill missing production files with stubs or relax qualification.
+- Evidence: Spec183 evidence/t004-harness.md, 260 focused tests. Small synthetic harness integrity is not source approval or model/runtime PASS; no Slurm/model execution occurred.
+
 ## 2026-09-07 — Spec183 unnecessary Provider model staging
 
 - Source audit found the new NodeRuntime required a model_artifacts mount that the actual YOLO native Provider never consumes. The existing User publishes encrypted graph/weights/root over NDN; the Provider assembles them in its own artifact cache. Designing a role-only filesystem projection would add a second unnecessary deployment path.

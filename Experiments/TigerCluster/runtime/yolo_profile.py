@@ -284,7 +284,18 @@ def check_operator_profile(path: Path, *, stage: str) -> dict:
     # The reference must still bind the manifest parsed by check_chain.
     for plane in needed:
         verify_reference(plane, profile["release"][plane])
-    return {"status": "INCOMPLETE", "stage": stage,
+    harness = None
+    if stage == "dispatch":
+        from .yolo_bundle import verify_harness, MANIFEST
+        reference = profile["evidence"]["harnessManifest"]
+        manifest = verify_reference("harnessManifest", reference)
+        declared = _read_plane(paths["dispatch"])["files"]["harnessManifest"]
+        if (manifest.name != MANIFEST or
+                any(declared[key] != reference[key] for key in ("bytes", "sha256"))):
+            raise ClosureError("HARNESS_DISPATCH_BINDING")
+        harness = verify_harness(manifest.parent, expected_manifest_sha256=reference["sha256"])
+        verify_reference("dispatch", profile["release"]["dispatch"])
+    result = {"status": "INCOMPLETE", "stage": stage,
             "structure": loaded["structure"], "integrity": checked["integrity"],
             "integrityScope": "declared-content-planes",
             "qualification": "NOT_EVALUATED", "identities": checked["identities"],
@@ -292,6 +303,9 @@ def check_operator_profile(path: Path, *, stage: str) -> dict:
             "minimumWallTimeSeconds": loaded["minimumWallTimeSeconds"],
             "pending": ["TRANSITIVE_OWNER_VALIDATION", "FROZEN_EXECUTION_WIRING",
                         "WORKLOAD_GATE_VALIDATION"]}
+    if harness is not None:
+        result["harness"] = harness
+    return result
 
 
 def resolve_run_plan(path: Path, *, stage: str, case: str, run_id: str, output: Path) -> dict:

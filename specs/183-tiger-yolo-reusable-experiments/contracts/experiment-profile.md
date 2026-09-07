@@ -159,3 +159,29 @@ sbatch，也不验证模型。所有操作者必须用同一已验证共享目�
 终态，不是模型结果。进入 SUBMITTING 后禁止此取消出口。正常 finish 必须由
 上层先核对同一 job 真正终止和 collector verdict；jobId 不匹配、改写终态、
 未知提交直接 finish 均拒绝。正式提交入口未实现，所以这些组件不构成 T004 完成。
+
+### Frozen harness integrity
+
+`runtime/yolo_bundle.py` 实现小型脚本 bundle 的 freeze/verify。清单格式为
+`schema=tiger-yolo-harness-v1, files={relative-name:{bytes,sha256}}`，明确登记
+14个运行脚本/schema/operator-lock 文件，不递归复制仓库。清单生成物可放在
+工作树外，通过显式source_root查找同一批已绑定字节；不会为了清单改源码目录。
+缺少真实 `apps/yolo.py`、`yolo_result.py`、`run.sbatch` 时仍不得构造生产 bundle，
+不得写假实现来填清单。清单完整性不能代替T007实际import/调用闭包审查。
+
+冻结前先验证全部输入，单文件最多4MiB、合计16MiB，仅用于小型脚本边界，
+不是SIF/model容量阈值。拒绝未知路径、链接、hash错误、非文本/NUL和可识别
+的PEM私钥块；内容检查不是通用秘密检测，仍必须审查清单来源和脚本内容。
+模型/输入/oracle、私有角色材料、宿主.so/venv都不在此清单或共享目录中。
+公开配置/证书与发布方包继续由其既有owner管理并单独绑定，不靠全仓复制夹带。
+
+将核对过的字节复制到新目录，不用指向可变工作树的hardlink；源之后变化不
+影响冻结副本。文件fsync、manifest最后写入，文件置0444/目录0555并再验证。
+已有目标绝不覆盖；部分失败保留原目录，不能当作有效bundle或在原目录重试。
+verify仅扫描已登记目录，未知子目录当场拒绝，不先遍历其中可能巨大的内容。
+权限位不是对目录所有者的密码学保护，实际worker仍须在使用前复核并只读挂载。
+
+`check --stage dispatch` 已验证profile中的harnessManifest与E平面同一bytes/hash，
+并检查冻结树的完整内容、无额外文件和只读模式。成功只增加
+`harness.integrity=VERIFIED`；整体仍INCOMPLETE/NOT_EVALUATED，因为业务/源/模型/
+ABI/receipt等生产门未完成。此实现不开放prepare/submit的资格绕过入口。

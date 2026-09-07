@@ -29,6 +29,7 @@ I/II：沿用动态 API 和现有鉴权/请求级密钥，不新建框架协议�
 | `Experiments/TigerCluster/runtime/baseline.py`, `identities.py` | existing; narrow extension | 公共进程/容器/身份/路由原语；保持已有 CPU v1 schema 及历史结果语义 |
 | `runtime/yolo_profile.py` | partial implementation | `tiger-yolo-v1` 字段/内容检查和确定性case/run预览；实际qualified closure与冻结bundle待接线 |
 | `runtime/yolo_submission.py` | partial implementation | 共享根下candidate/gate提交状态和未知job恢复；只管理记录，不执行Slurm或验证模型 |
+| `runtime/yolo_bundle.py` | integrity implemented; production bundle pending | 显式小型脚本清单冻结/验证，dispatch已调用；不含模型/私钥/宿主库，不替代源/运行资格 |
 | `runtime/yolo_worker.py`, `yolo_result.py` | planned | 每节点角色启动/结果；调用共享 runtime，收集 YOLO 专属 DAG/GPU/数值证据 |
 | `apps/yolo.py` | planned | 薄封装已有 ACK-driven YOLO User/准备接口；无模型规划/密钥新 owner |
 | `jobs/yolo/submit.py`, `run.sbatch` | check implemented; execution planned | 唯一 `check/prepare/local/submit/collect`，CPU/single-GPU/two-GPU 是注册 case；当前只开放check，其余等待真实接线 |
@@ -46,7 +47,7 @@ T001已完成接收清点（见evidence/input-inventory.md），发现两个必�
 
 1. G0 / T001：当前源码/交付锁/接口/输入清点。未知环境值列清单；不启动模型或下载大 artifact。
 2. G1 / T002–T006：实现配置闭包、launcher/生命周期、YOLO 适配/collector 及 focused 红绿回归。可做小型合成 child-process 测试。
-   内部先完成T002内容完整性接口，再实现T003–T006，最后回填T002真实命令边界及builder receipt dispatch测试。T002的最终验收依赖T004/T006，不再要求在消费者存在前完成；所有任务仍须在G2前关闭，测试fixture不能冒充T010真实host receipt。
+   内部先完成T002内容完整性接口，再T003、T004配置/冻结/提交状态接口、T005/T006，回填T004实际五命令和T002真实命令边界及builder receipt dispatch测试。T004最终可执行命令需要T005应用和T006 collector，不能要求这些消费者存在前关闭T004；T002最终验收同样依赖T004/T006。所有任务仍须在G2前关闭，测试fixture不能冒充T010真实host receipt。
 3. G2 / T007：实现到生产调用路径收敛审计，必须 PASS。检查实际 argv/env、角色路由、secure grant/selection、harness/oracle、清理、数据路径。未接线不能算实现。
 4. G3 / T008–T010：按锁干净构建（`NAC-ABE + NDN-SVS → NDNSD → NDNSF → Apps/两个 Python 扩展`），unit→真实集成→CPU 小模型 MiniNDN。宿主库路径和编译/链接工具闭包要实测。
 5. G4 / T011：合格 host-gate manifest 后通过原入口本地构建完整 SIF，容器内九原生产物/所有 DSO/import/help/CPU 小模型验证。

@@ -67,7 +67,8 @@ T005/T006追加调用次数约束：正常ACK-driven User一次只执行一请�
 
 ## Dependencies And Execution Strategy
 
-实现顺序：`T001 → T002 内容完整性接口 → T003 → T004 → T005 → T006 → T002 集成验收 → T007 → T008 → T009 → T010 → T011 → T012 → T013 → T014 → T015 → T016 → T017`。
+实现顺序：`T001 → T002 内容完整性接口 → T003 → T004 配置/冻结/提交状态接口 → T005 → T006 → T004 五命令最终接线/验收 → T002 集成验收 → T007 → T008 → T009 → T010 → T011 → T012 → T013 → T014 → T015 → T016 → T017`。
+T005依赖T004已有输入/运行接口，不要求其尚待T005/T006才能实现的实际argv和collect提前完成。T004保持unchecked，最终生产bundle必须包含真实应用/collector/run.sbatch；禁止生成占位文件让冻结检查假通过。T007仍同时要求T002–T006全部闭合，不减少任何资格门。
 T002 的真实启动边界来自 T004，receipt 语义校验来自 T006；原先要求 T002 全部完成才实现消费者会造成循环依赖。允许先实现消费者不等于放开资格门：T002保持unchecked，T007必须同时验收T002–T006。T010才产生真实host receipt；之前仅可用明确标注的测试fixture验证拒错逻辑。
 T001 中的缺 artifact/GPU 访问不阻止使用已知接口进行 focused 实现，但所有实际 build/run 的输入必须齐全；不能跳过 T007 或伪造后续 qualification。
 
@@ -77,4 +78,4 @@ T001–T004形成 profile/launcher 实现骨架；可操作 MVP 还要求 T006 �
 
 ## Current Checkpoint
 
-2026-09-06：T001和T003完成（2/17）；源审查纠正了无用的Provider模型挂载要求，移除新worker的model_artifacts参数，保留既有User经NDN发布/Provider本地组装路径，见[evidence/native-model-route.md](evidence/native-model-route.md)。最新 **239 passed in 12.09s**。下一步T004准备仅含代码/配置/公开材料的不可变bundle及发布方专属输入位置，T005实际argv/cache/安全模型传输接线，再接Slurm/journal与T006真实判定；不再额外创建role-only模型projection。check/预览/journal为partial，其他CLI未开放，T002最终校验仍unchecked。三依赖精确commit已隔离接收，原工作树未改；source封装、签名模型包和本地base仍待完成。T007及全部正式环境门未通过，未构建/上传/提交Slurm。
+2026-09-07：T001/T003完成（2/17），T004 partial新增脚本bundle freeze/verify并接入dispatch真实入口，最新 **260 passed in 17.17s**，见[evidence/t004-harness.md](evidence/t004-harness.md)。下一步转T005实际应用/argv/cache/安全模型传输，再T006，回填T004完整五命令和T002资格。生产bundle缺真实应用/collector/run.sbatch，不制造占位文件；不新增Provider模型旁路挂载。三依赖精确commit已隔离接收，原工作树未改；source封装、签名模型包和本地base仍待完成。T007及全部正式环境门未通过，无构建/上传/Slurm/模型执行。
