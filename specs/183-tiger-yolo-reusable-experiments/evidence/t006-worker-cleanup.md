@@ -52,3 +52,25 @@ a double; no actual native execution or CUDA behavior is qualified.
 
 Expanded role-output regression: 560 passed in 42.46s; JUnit
 `Experiments/TigerCluster/results/t006-role-output-r1/junit.xml` (same six selectors).
+
+## Prepared node receipt
+
+`write_worker_receipt` revalidates the existing preparation binding, matches
+case/rank/output/assigned roles, validates actual cleanup, requires all expected
+persistent services and normal-case User invocation indices, then writes an
+exclusive mode-0600 node-receipt.json through the existing credential writer.
+It records run/case/rank, plan/preparation/candidate digests, launch PID and
+argv digests (not raw command text), and cleanup rows. An existing receipt is
+never overwritten. Negative-dependency is deliberately not accepted by this
+normal-case helper until its specific verdict path is implemented.
+
+Nine contract tests use explicit Worker/preparation doubles and verify that
+unprepared/changed/misbound/partial/unclean runs do not write a receipt. These
+are not an executed native node. Status NODE_CLEANUP_COMPONENT_ONLY: management
+and readiness probe completeness, actual request IDs in lifecycle evidence,
+cross-node allocation, inference and dependency checks remain mandatory.
+The final operator must call this after close() and bind receipt hashes into
+the complete result. No public execution/submit bypass was added.
+
+Expanded node receipt regression: 569 passed in 42.91s; JUnit
+`Experiments/TigerCluster/results/t006-node-receipt-r1/junit.xml` (same six selectors).

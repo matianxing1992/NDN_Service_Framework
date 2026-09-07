@@ -7,6 +7,61 @@ from collections.abc import Mapping
 import re
 
 
+def write_worker_receipt(worker, rows):
+    """Persist prepared-run ownership after normal-case service/User cleanup.
+
+    This is not a final experiment receipt: management/probe completeness,
+    inference, allocation and edges are still independently qualified.
+    """
+    import hashlib
+    import json
+    from pathlib import Path
+    from runtime.identities import _credential_document
+    from runtime.yolo_worker import assigned_roles
+    if worker._preparation_binding is None:
+        raise EvidenceError('NODE_RECEIPT_PREPARATION_REQUIRED')
+    worker._verify_prepared_boundary()
+    plan, preparation_digest, candidate_digest = worker._preparation_binding
+    if (worker.mode not in ('local-cpu', 'single-node-gpu', 'two-node-gpu')
+            or plan.get('case') != worker.mode
+            or worker.output != Path(plan['output']) / ('node' + str(worker.rank))
+            or set(worker.roles) != set(assigned_roles(worker.mode, worker.rank))):
+        raise EvidenceError('NODE_RECEIPT_RUN_SCOPE')
+    cleanup = validate_worker_cleanup(worker, rows)
+    services = [r['role'] for r in worker.launches if r.get('invocation') is None]
+    if set(services) != set(worker.roles) - {'user'}:
+        raise EvidenceError('NODE_RECEIPT_SERVICE_COVER')
+    requests = plan.get('requests')
+    count = 4 if worker.mode == 'two-node-gpu' else 2
+    if (not isinstance(requests, list) or len(requests) != count
+            or any(not isinstance(r, dict) or type(r.get('index')) is not int or r['index'] != i
+                   or not isinstance(r.get('requestId'), str) or not r['requestId']
+                   for i,r in enumerate(requests))
+            or len({r['requestId'] for r in requests}) != count):
+        raise EvidenceError('NODE_RECEIPT_REQUEST_PLAN')
+    actual = {r['invocation'] for r in worker.launches
+              if r.get('role') == 'user' and r.get('invocation') != 'repo-readiness'}
+    expected = {str(i) for i in range(count)} if worker.rank == 0 else set()
+    if actual != expected:
+        raise EvidenceError('NODE_RECEIPT_REQUEST_COVER')
+    def digest(value):
+        return 'sha256:' + hashlib.sha256(json.dumps(value, sort_keys=True,
+            separators=(',', ':'), allow_nan=False).encode()).hexdigest()
+    launches = []
+    for row in worker.launches:
+        if (not isinstance(row.get('argv'), list) or not row['argv']
+                or any(not isinstance(v, str) for v in row['argv'])):
+            raise EvidenceError('NODE_RECEIPT_ARGV')
+        launches.append(dict(role=row['role'], invocation=row.get('invocation'),
+                             pid=row['pid'], argvDigest=digest(row['argv'])))
+    receipt = dict(schema='tiger-yolo-node-receipt-v1', runId=plan['runId'], case=worker.mode,
+        rank=worker.rank, planDigest=digest(plan), preparationDigest=preparation_digest,
+        candidateDigest=candidate_digest, launches=launches, cleanup=rows,
+        cleanupSummary=cleanup, qualification='NODE_CLEANUP_COMPONENT_ONLY')
+    _credential_document(worker.output / 'node-receipt.json', receipt)
+    return receipt
+
+
 def resolve_role_output(root, container_path):
     """Translate only an exact /output descendant into an owned role output."""
     from pathlib import Path

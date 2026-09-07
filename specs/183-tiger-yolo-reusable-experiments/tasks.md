@@ -78,6 +78,8 @@ T001–T004形成 profile/launcher 实现骨架；可操作 MVP 还要求 T006 �
 
 ## Current Checkpoint
 
+2026-09-07 node回执组件：复核preparation、case/rank/output、全部persistent service与normal User index覆盖，cleanup通过后exclusive0600写run/plan/prep/candidate/launch argv hash与cleanup。9 contract测试通过；Worker/prep为double，完整probe/management/requestId/推理/edge/allocation仍须验证。NODE_CLEANUP_COMPONENT_ONLY，negative-dependency未放行；最终operator待接线。
+
 2026-09-07 T006角色路径/启动关联：仅将/output子路径映射到role-owned输出，拒绝traversal/symlink/任意host路径；collect_role_execution从已关闭Worker唯一launch PID与日志接native+ORT校验，CPU/GPU/Merge三种分支。12 focused通过（真实OS PID/log/cleanup，合成execution/profile，非模型运行）。节点回执/完整inventory/物理GPU/edge/最终collector继续待办。
 
 2026-09-07 cleanup校验对接真实NodeRuntime launch/close清单，不信任外部childCount；拒绝缺失/重复/PID错/forced/unreaped/lease残留/服务提前退出，有限请求必须exit0。12新用例且三种模式已有真实OS schedule测试接入，相关54通过（Apptainer仍double）。完整planned inventory/节点回执/最终collector待接线，T006未完成；见evidence/t006-worker-cleanup.md。
