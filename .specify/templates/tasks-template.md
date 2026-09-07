@@ -23,6 +23,31 @@ them.
 **Organization**: Tasks are grouped by user story and expressed as cohesive,
 reviewable behavioral outcomes. Do not optimize for a high task count.
 
+## Execution Progress
+
+本表是所有模型和执行者共用的当前执行进度入口，必须列全所有可执行单元。
+生成时用真实任务替换示例行；每行包含详情链接、状态、依赖、证据/剩余项和更新时间。
+未拆分任务直接使用 T001 等 ID；需要拆分的父任务使用 T001-A 等稳定子任务 ID，
+所有子任务逐行展示，父任务保留下方阶段验收，不强迫每个任务增加一层子任务。
+详细说明至少明确成果、阅读入口、修改范围、步骤与验收，可放本文件或链接契约。
+
+| Unit / Details | Status | Depends | Evidence / Remaining | Updated |
+| --- | --- | --- | --- | --- |
+| [UNIT-ID and title](DETAIL-LINK) | NOT_STARTED | — | 待执行及验收 | YYYY-MM-DD |
+
+状态：NOT_STARTED、READY、IN_PROGRESS、PARTIAL、BLOCKED、DONE。
+READY 必须满足依赖和阶段门禁；DONE 必须有完整单元验收证据。
+每个单元开始时标 IN_PROGRESS，成功、失败或阻塞后更新结果，提交及回复前核对。
+新增、拆分、修复和验证工作先登记再执行；重新生成任务时保留稳定 ID、既有进度和证据。
+父任务全部子任务 DONE 且自身验收满足后才勾选；正式资格验收独立，不能由局部测试替代。
+生成后检查执行单元与进度行一一对应、链接/依赖有效、无重复 ID、无提前完成标记。
+完整规则见 [task progress registry](../../skills/speckit-code-design/references/task-progress.md)。
+
+## Current Checkpoint
+
+记录最近工作单元的实际结果、持久证据与下一步；当前状态以 Execution Progress 为准。
+生成时用实际已知情况替换说明，不将生成任务本身计为产品完成，也不重置已有 checkpoint。
+
 ## Format: `[ID] [P?] [Story] Description`
 
 - **[P]**: Can run in parallel (different files, no dependencies)
