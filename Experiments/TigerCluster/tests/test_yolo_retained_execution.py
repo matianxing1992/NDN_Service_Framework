@@ -50,6 +50,41 @@ def test_retained_gpu_role_compares_external_device_expectation(tmp_path, fault)
         with pytest.raises(ValueError): collect()
 
 
+def _final_component(case='local-cpu', count=2, *, graph='sha256:'+'c'*64):
+    roles = {name: {} for name in ('BackboneNeck', 'DetectShard0', 'DetectShard1', 'Merge')}
+    devices = {} if case == 'local-cpu' else ({0} if case == 'single-node-gpu' else {0, 1})
+    return [dict(requestIndex=i, qualification='RETAINED_REQUEST_COMPONENT_ONLY',
+        request=dict(lifecycle={'qualification': 'LIFECYCLE_COMPONENT_ONLY'},
+                     numerical={'matched': True, 'qualification': 'NUMERICAL_COMPONENT_ONLY'}),
+        execution=dict(qualification='RETAINED_DEPENDENCY_COMPONENT_ONLY',
+            certifiedGraph={'graphDigest': graph, 'roles': roles}, roles=roles,
+            devices={rank: {} for rank in devices})) for i in range(count)]
+
+
+@pytest.mark.parametrize('case,count', [('local-cpu', 2), ('single-node-gpu', 2),
+                                        ('two-node-gpu', 4)])
+def test_finalize_normal_verdict_requires_all_components(case, count):
+    plan = {'case': case, 'requests': [dict(index=i, warmup=i == 0) for i in range(count)]}
+    verdict = result.finalize_normal_verdict(_final_component(case, count), plan=plan,
+                                             graph_digest='sha256:'+'c'*64)
+    assert verdict['status'] == 'PASS' and verdict['requestCount'] == count
+
+
+@pytest.mark.parametrize('mutation', ['missing', 'numerical', 'graph', 'roles', 'devices'])
+def test_finalize_normal_verdict_rejects_partial_component(mutation):
+    graph = 'sha256:'+'c'*64
+    plan = {'case': 'two-node-gpu',
+            'requests': [dict(index=i, warmup=i == 0) for i in range(4)]}
+    rows = _final_component('two-node-gpu', 4, graph=graph)
+    if mutation == 'missing': rows.pop()
+    elif mutation == 'numerical': rows[0]['request']['numerical']['matched'] = False
+    elif mutation == 'graph': rows[0]['execution']['certifiedGraph']['graphDigest'] = 'sha256:'+'d'*64
+    elif mutation == 'roles': rows[0]['execution']['roles'].pop('Merge')
+    else: rows[0]['execution']['devices'] = {0: {}}
+    with pytest.raises(ValueError):
+        result.finalize_normal_verdict(rows, plan=plan, graph_digest=graph)
+
+
 @pytest.mark.parametrize('fault', ['none', 'pid', 'request', 'execution-plan', 'old-profile',
     'cpu-assignment', 'profile-symlink', 'changed-log', 'wrong-role', 'cpu-gpu-exposure'])
 def test_retained_execution_uses_receipt_pid_and_scoped_profile(tmp_path, fault):

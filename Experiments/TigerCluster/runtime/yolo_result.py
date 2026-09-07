@@ -297,6 +297,66 @@ def collect_retained_request(nodes, reference, *, plan, request_index,
         qualification='RETAINED_REQUEST_COMPONENT_ONLY')
 
 
+def finalize_normal_verdict(request_results, *, plan, graph_digest):
+    """Issue the final normal-case verdict only after every component joins.
+
+    All inputs are already independently retained/verified component results;
+    this function only performs the final completeness and agreement boundary.
+    It intentionally has no fallback, retry, or inferred PASS path.
+    """
+    if (not isinstance(plan, Mapping) or plan.get('case') not in
+            ('local-cpu', 'single-node-gpu', 'two-node-gpu')
+            or not isinstance(request_results, (list, tuple))
+            or not isinstance(graph_digest, str)
+            or re.fullmatch(r'sha256:[0-9a-f]{64}', graph_digest) is None):
+        raise EvidenceError('FINAL_VERDICT_INPUT')
+    expected_count = 4 if plan['case'] == 'two-node-gpu' else 2
+    if len(request_results) != expected_count:
+        raise EvidenceError('FINAL_VERDICT_REQUEST_COUNT')
+    request_plan = plan.get('requests')
+    if (not isinstance(request_plan, list) or len(request_plan) != expected_count
+            or any(not isinstance(row, Mapping) or row.get('index') != i
+                   or type(row.get('warmup')) is not bool
+                   or (row['warmup'] != (i == 0)) for i, row in enumerate(request_plan))):
+        raise EvidenceError('FINAL_VERDICT_PLAN_SCHEDULE')
+    seen = set()
+    graph_roles = {'BackboneNeck', 'DetectShard0', 'DetectShard1', 'Merge'}
+    for index, result in enumerate(request_results):
+        if (not isinstance(result, Mapping) or result.get('requestIndex') != index
+                or result.get('qualification') != 'RETAINED_REQUEST_COMPONENT_ONLY'
+                or result.get('requestIndex') in seen):
+            raise EvidenceError('FINAL_VERDICT_REQUEST_BINDING')
+        seen.add(result['requestIndex'])
+        request = result.get('request')
+        lifecycle = request.get('lifecycle') if isinstance(request, Mapping) else None
+        numerical = request.get('numerical') if isinstance(request, Mapping) else None
+        execution = result.get('execution')
+        if (not isinstance(lifecycle, Mapping) or lifecycle.get('qualification') != 'LIFECYCLE_COMPONENT_ONLY'
+                or not isinstance(numerical, Mapping) or numerical.get('matched') is not True
+                or numerical.get('qualification') != 'NUMERICAL_COMPONENT_ONLY'
+                or not isinstance(execution, Mapping)
+                or execution.get('qualification') != 'RETAINED_DEPENDENCY_COMPONENT_ONLY'
+                or execution.get('certifiedGraph') is None):
+            raise EvidenceError('FINAL_VERDICT_COMPONENT_MISSING')
+        graph = execution['certifiedGraph']
+        if (graph.get('graphDigest') != graph_digest
+                or set(graph.get('roles', {})) != graph_roles):
+            raise EvidenceError('FINAL_VERDICT_GRAPH_BINDING')
+        roles = execution.get('roles')
+        if not isinstance(roles, Mapping) or set(roles) != graph_roles:
+            raise EvidenceError('FINAL_VERDICT_ROLE_COVERAGE')
+        devices = execution.get('devices')
+        if plan['case'] == 'local-cpu':
+            if devices != {}:
+                raise EvidenceError('FINAL_VERDICT_CPU_DEVICE_BINDING')
+        elif not isinstance(devices, Mapping) or set(devices) != ({0} if plan['case'] == 'single-node-gpu' else {0, 1}):
+            raise EvidenceError('FINAL_VERDICT_GPU_DEVICE_BINDING')
+    return dict(schema='tiger-yolo-final-verdict-v1', status='PASS',
+                qualification='NORMAL_EXPERIMENT_PASS', case=plan['case'],
+                requestCount=expected_count, graphDigest=graph_digest,
+                requestIndices=sorted(seen))
+
+
 def write_worker_receipt(worker, rows):
     """Persist prepared-run ownership after normal-case service/User cleanup.
 

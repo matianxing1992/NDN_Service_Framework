@@ -257,8 +257,8 @@ Each role records `modelManifestDigest` and `artifactDigest` from the typed V3
 assembly. The User writer rejects incomplete identity; the offline reader
 requires the v2 envelope, canonical digests, and exact role ownership. The
 expanded focused suite recorded 824 passing tests in
-`results/t006-model-binding-r1/junit.xml`; the subsequent 829-test suite also
-passed in 54.39 seconds (`results/t006-graph-coverage-r1/junit.xml`). This
+`results/t006-model-binding-r1/junit.xml`; the subsequent 837-test suite also
+passed in 52.03 seconds (`results/t006-graph-coverage-r1/junit.xml`). This
 establishes a fail-closed
 identity boundary only. It does not authenticate the model package by itself,
 and it does not prove every certified graph node ran: ORT optimization can fuse
@@ -269,3 +269,10 @@ The collector now has a fail-closed optional join for
 binds each role's model/artifact digests, backend, and optimized node names.
 Provider logs cannot create or extend this expected set. The final operator must
 require this join (rather than leaving it optional) before T006 is complete.
+
+The component-only path now also has a fail-closed final boundary through
+`finalize_normal_verdict`. It accepts only the registered request schedule
+after lifecycle, numerical, execution, four-role certified-graph, and
+case-specific device checks all pass, and emits
+`tiger-yolo-final-verdict-v1`. The helper is not yet called by the public
+collector/operator; this is a regression guard, not native or Tiger evidence.

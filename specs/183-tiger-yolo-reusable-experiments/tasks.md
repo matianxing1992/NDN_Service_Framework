@@ -99,7 +99,7 @@ Follow-up checkpoint: public retained assignments now use envelope
 artifact digests from the typed Selection assembly. The User writer rejects an
 incomplete identity before creating the retained file, and the collector rejects
 old/malformed envelopes or wrong-role model bindings. The complete focused suite
-passed **829 tests in 54.39s**; JUnit:
+passed **837 tests in 52.03s**; JUnit:
 `Experiments/TigerCluster/results/t006-graph-coverage-r1/junit.xml` (ignored
 runtime output retained locally; the durable model-binding JUnit remains
 `Experiments/TigerCluster/results/t006-model-binding-r1/junit.xml`).
@@ -112,6 +112,14 @@ per-role model/artifact bindings, backend, and the certified post-optimization
 node-name set; it never derives expected coverage from Provider logs. Four-role
 coverage tests passed in the 120-test retained/projection subset. Final operator
 wiring must make this document mandatory before T006 can close.
+
+The final normal-verdict helper now provides a fail-closed completeness
+boundary for component evidence: it requires the registered warmup/measured
+request count, lifecycle, numerical, execution, four-role certified-graph, and
+case-specific device checks before returning `tiger-yolo-final-verdict-v1`.
+It is intentionally not yet wired into the public collector/operator, so this
+closes a validation gap but does not close T006 or authorize native/SIF/Tiger
+execution.
 
 2026-09-07 retained allocation/GPU join: collect_retained_request now forwards
 the external journal/profile allocation expectations to the dependency

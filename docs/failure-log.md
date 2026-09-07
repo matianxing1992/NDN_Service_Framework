@@ -2002,3 +2002,18 @@ code path and focused regression, not the full runtime qualification.
   operator must supply it and reject absence before declaring T006 PASS.
 - Lesson: optimization-aware coverage requires a separately certified expected
   vocabulary, not a count inferred from runtime events.
+
+# 2026-09-07 Spec183 had no final normal-verdict completeness boundary
+
+- Symptom: component readers could validate individual lifecycle, numerical,
+  execution, and graph records without proving that every registered request
+  in a normal case had passed all required checks.
+- Cause: evidence collection grew incrementally and had no final request-count,
+  role-set, and case-specific device gate.
+- Fix: add `finalize_normal_verdict`, requiring the exact warmup/measured
+  schedule, four certified roles, matching graph digest, and expected device
+  set before emitting `tiger-yolo-final-verdict-v1`.
+- Boundary: the helper is not yet wired into the public collector/operator;
+  T006/T007 and real native/SIF/Tiger validation remain open.
+- Lesson: component validators need an explicit final completeness gate before
+  any normal experiment can be reported as PASS.
