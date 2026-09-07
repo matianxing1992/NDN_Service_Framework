@@ -18,6 +18,8 @@ T001 evidence: [input-inventory.md](evidence/input-inventory.md)。完成清点�
 
 ## Phase 3: User Story 1 - Reusable Launch Configuration
 
+T002 partial checkpoint：[内容完整性实现/21项focused回归](evidence/t002-integrity.md)。check_plane/check_chain已实现，但旧builder dispatch、真实receipt和实际命令边界零副作用测试未完成；保持unchecked，不作为正式资格。
+
 T002追加接收审查修复：在既有`build-local-sif.sh`与host-gate owner增加显式Spec183 workload dispatch；校验实际YOLO日志/数值/源seal的receipt，保留Spec175 v1/v2。新增回归要求未知schema、错workload/源/receipt或失败证据使Apptainer调用数为零。T010产生真实receipt，T011消费；不得填M01假清单，也不得绕过已有source/ABI门。
 
 **Independent Test**: deterministic resolved config from another cwd; fail-before-side-effects; two concurrent submit attempts cannot both launch.
@@ -74,4 +76,4 @@ MVP 为 T001–T004：一份可解释、拒错且不会误提交的 profile/laun
 
 ## Current Checkpoint
 
-2026-09-06：用户已授权完成全部Spec183任务。T001清点完成，T002为下一项；签名模型包/锁定依赖/本地base仍待接收，T007生产审计及所有运行门未通过。本轮只读核对、修正规划中的host-gate/请求次数缺口，未编译或提交Slurm；原历史结果未改写。
+2026-09-06：T001完成；T002内容完整性子层已实现，21项focused回归通过；T002仍未完成，下一步修原builder的Spec183 host-receipt dispatch与真实外部命令门控。签名模型包/锁定依赖/本地base仍待接收，T007与所有正式运行门未通过。未编译或提交Slurm；原历史结果未改写。

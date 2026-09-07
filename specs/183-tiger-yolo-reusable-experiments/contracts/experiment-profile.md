@@ -46,6 +46,14 @@ I = digest(四库 exact revisions+source seals、依赖/工具链/base/build def
 身份私钥每 run 单独生成不属于可复用候选；trust-policy 与生成规则固定，公开证书摘要属于 ResolvedRun。分配的 host/IP/GPU UUID、run ID、物理 artifact 位置进入 ResolvedRun，不改变 E；物理文件内容必须仍匹配 E。任何超时/角色/容差/GPU class/env 行为变更都改变 E。
 检查后执行必须使用只读/不可变 bundle；提交前核对 bundle inventory，worker 再验证关键输入。路径别名不能让 checks 检 A、exec 跑 B。
 
+## Content Plane Integrity Format (T002 partial implementation)
+
+`runtime/yolo_profile.py::check_plane`与`check_chain`实现内容完整性子层；输入是生成的只读清单，不新增操作者配置，也不返回运行PASS。格式为`schema=tiger-yolo-plane-v1`，精确字段`stage,parentId,files,parameters`；stage为inputs/runtime/dispatch。每个files行包含相对path、整数bytes、sha256摘要，parameters全量参与摘要。文件路径不参与ID，允许同字节输入搬迁；行为参数、文件逻辑名/字节数/hash参与ID。拒绝重复JSON键、NaN、未知顶层/行字段、非普通文件、符号链接、路径越界和文件变化。每次check_chain重新校验前驱并核对parentId，不信任调用者记忆的I/R。
+
+每平面最低文件角色：inputs为sourceLock/sourceSeal/buildDefinition/baseSif；runtime为sif/nativeManifest/libraryLock；dispatch为effectiveProfile/harnessManifest/modelManifest/oracle/fixture/trustPolicy/validationContract。完整的源码archive/wheels/所有harness文件等仍须由各专属validator解析并验证，最低集合不能代替传递依赖完整性。文件在其清单根下；接收工具应在包含CAS与bundle的共同artifact根生成清单，不为此按run复制大文件。
+
+返回`integrity=VERIFIED, qualification=NOT_EVALUATED`；不检查证据是否真实执行、有效字段是否被launcher消费、模型签名或库ABI。因此该返回值不能授权prepare/build/submit。原source-sealer/handoff validator、后续YOLO receipt/配置解析与所有外部操作前重新检查仍是T002/T004的未完成部分；这里没有宣称零副作用生产入口测试完成。receipt不得进入自身候选摘要而产生循环引用。
+
 ## Topology And Data Rules
 
 两计算节点 hostname 必须不同，GPU UUID 各自取 allocation/container 实测。四 Provider 身份各不相同；同节点多个角色可以共享一个 GPU，但各自内存/ready/exec 证据独立。

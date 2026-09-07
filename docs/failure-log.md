@@ -1,5 +1,9 @@
 # Failure Log and Evidence Index
 
+## 2026-09-06 — Spec183 integrity preflight ambiguous and blocking inputs
+
+Focused red/green found inventory omissions, unknown fields and escaped paths accepted by the initial integrity tracer bullet (7 failures), then an unimplemented ancestor chain (1 failure). A separate FIFO-manifest probe timed out after 2 s: ordinary open could block even before validation. Strict metadata/path/JSON checks, recomputed parent identities and nonblocking regular-file opens resolve these focused cases; final 21 tests pass. Full T002 launch/receipt gating remains pending. See `specs/183-tiger-yolo-reusable-experiments/evidence/t002-integrity.md`; these fixture passes are not build/GPU qualification.
+
 ## 2026-09-06 — Spec183 pre-execution workload and repetition gaps
 
 - Symptom: receiving-source audit found `build-local-sif.sh` only accepts Spec175 tiny-onnx host qualification, while Spec183 requires actual YOLO qualification. The maintained ACK-driven YOLO User also executes one request despite exposing legacy sequential options.
