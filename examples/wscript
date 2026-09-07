@@ -277,9 +277,6 @@ def build(bld):
     di_native_onnx_assembly_sources = bld.path.parent.ant_glob([
         'NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.cpp',
         'NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.cpp',
-        'NDNSF-DistributedInference/cpp/adapters/onnx/onnx/onnx-data.pb.cc',
-        'NDNSF-DistributedInference/cpp/adapters/onnx/onnx/onnx-ml.pb.cc',
-        'NDNSF-DistributedInference/cpp/adapters/onnx/onnx/onnx-operators-ml.pb.cc',
     ])
 
     # NDNSF_DATA_V1 seals through the framework's authenticated envelope
@@ -422,7 +419,7 @@ def build(bld):
                 # The shared ONNX assembly TU (compiled below) binds the
                 # Provider-owned CollaborationContext overload, whose symbols
                 # live in the framework library; link it like the test targets.
-                use='BOOST ONNXRUNTIME NDN_CXX NDN_SVS PROTOBUF OPENSSL DL ndn-service-framework',
+                use='BOOST ONNXRUNTIME ONNX NDN_CXX NDN_SVS PROTOBUF OPENSSL DL ndn-service-framework',
                 cxxflags=['-fPIC', '-pthread'],
                 linkflags=['-pthread'],
                 install_path=None)
@@ -465,7 +462,7 @@ def build(bld):
                         ])),
                 includes=['..', '../ndn-service-framework', '../NDNSF-DistributedRepo/include',
                           '../NDNSF-DistributedInference/cpp/adapters/onnx'],
-                use='BOOST ONNXRUNTIME NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD OPENSSL DL',
+                use='BOOST ONNXRUNTIME ONNX NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD OPENSSL DL',
                 cxxflags=['-fPIC', '-pthread'],
                 linkflags=['-pthread'],
                 install_path=None)
@@ -509,7 +506,7 @@ def build(bld):
                         ])),
                 includes=['..', '../ndn-service-framework', '../NDNSF-DistributedRepo/include',
                           '../NDNSF-DistributedInference/cpp/adapters/onnx'],
-                use='BOOST ONNXRUNTIME NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD OPENSSL DL',
+                use='BOOST ONNXRUNTIME ONNX NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD OPENSSL DL',
                 cxxflags=['-fPIC', '-pthread', '-DNDNSF_DI_EXPERIMENT_FAULTS=1'],
                 linkflags=['-pthread'],
                 install_path=None)

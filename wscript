@@ -117,6 +117,8 @@ def options(opt):
                       help='Do not add the repository .local-boost171 prefix to dependency discovery')
     optgrp.add_option('--nac-abe-prefix', default='',
                       help='Explicit NAC-ABE prefix; keeps headers and library on one build')
+    optgrp.add_option('--onnx-prefix', default='',
+                      help='Explicit ONNX 1.17 full-protobuf prefix (headers and libs)')
 
 
 def configure(conf):
@@ -191,6 +193,30 @@ def configure(conf):
             conf.fatal(f'Explicit NAC-ABE library is missing: {nac_library}')
         if os.path.isdir(nac_pc):
             pkg_config_paths.insert(0, nac_pc)
+    # Spec 182 unified the DI ONNX world on the official 1.17 full-protobuf
+    # build (ONNX_USE_LITE_PROTO=OFF).  The vendored lite trio is gone, so the
+    # onnx adapter sources always need these headers and archives; fail early
+    # with the same explicitness as the NAC-ABE prefix instead of letting
+    # every later target die on a missing header.
+    onnx_prefix = os.path.realpath(conf.options.onnx_prefix) \
+        if conf.options.onnx_prefix else ''
+    if not onnx_prefix:
+        conf.fatal('Official ONNX 1.17 full-protobuf prefix is required '
+                   '(--onnx-prefix)')
+    onnx_checker = os.path.join(onnx_prefix, 'include', 'onnx', 'checker.h')
+    onnx_shape_inference = os.path.join(
+        onnx_prefix, 'include', 'onnx', 'shape_inference', 'implementation.h')
+    onnx_lib = os.path.join(onnx_prefix, 'lib', 'libonnx.a')
+    onnx_proto_lib = os.path.join(onnx_prefix, 'lib', 'libonnx_proto.a')
+    for onnx_required in [onnx_checker, onnx_shape_inference,
+                          onnx_lib, onnx_proto_lib]:
+        if not os.path.isfile(onnx_required):
+            conf.fatal(f'Explicit ONNX file is missing: {onnx_required}')
+    conf.env.INCLUDES_ONNX = [os.path.join(onnx_prefix, 'include')]
+    conf.env.LIBPATH_ONNX = [os.path.join(onnx_prefix, 'lib')]
+    conf.env.LIB_ONNX = ['onnx', 'onnx_proto']
+    conf.env.CXXFLAGS_ONNX = ['-DONNX_ML=1', '-DONNX_NAMESPACE=onnx']
+    conf.msg('ONNX full-protobuf prefix', onnx_prefix)
     pkg_config_path = os.pathsep.join(pkg_config_paths)
 
     conf.check_cfg(package='libndn-cxx', args=['libndn-cxx >= 0.8.0', '--cflags', '--libs'],
@@ -445,14 +471,10 @@ def build(bld):
     bld.objects(
         target='ndnsf-di-adapter-onnx-objects',
         source=bld.path.ant_glob(
-            'NDNSF-DistributedInference/cpp/adapters/onnx/*.cpp') +
-            bld.path.ant_glob(
-                'NDNSF-DistributedInference/cpp/adapters/onnx/onnx/*.cpp') +
-            bld.path.ant_glob(
-                'NDNSF-DistributedInference/cpp/adapters/onnx/onnx/*.cc'),
+            'NDNSF-DistributedInference/cpp/adapters/onnx/*.cpp'),
         includes=['.', 'ndn-service-framework',
                   'NDNSF-DistributedInference/cpp/adapters/onnx'],
-        use='NDN_CXX BOOST PROTOBUF ONNXRUNTIME', cxxflags=['-fPIC'])
+        use='NDN_CXX BOOST PROTOBUF ONNX ONNXRUNTIME', cxxflags=['-fPIC'])
     bld.objects(
         target='ndnsf-di-adapter-yolo-objects',
         source=bld.path.ant_glob(
@@ -472,13 +494,9 @@ def build(bld):
     # while the shared library owns no Python runtime.
     di_library_sources = di_core_sources + bld.path.ant_glob(
         'NDNSF-DistributedInference/cpp/adapters/onnx/*.cpp') + \
-        bld.path.ant_glob(
-            'NDNSF-DistributedInference/cpp/adapters/onnx/onnx/*.cpp') + \
-        bld.path.ant_glob(
-            'NDNSF-DistributedInference/cpp/adapters/onnx/onnx/*.cc') + \
         bld.path.ant_glob('NDNSF-DistributedInference/cpp/adapters/yolo/*.cpp') + \
         bld.path.ant_glob('NDNSF-DistributedInference/cpp/adapters/qwen/*.cpp')
-    di_library_use = 'ndn-service-framework NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL'
+    di_library_use = 'ndn-service-framework NDN_CXX NDN_SVS PROTOBUF ONNX NAC-ABE NDNSD BOOST OPENSSL DL'
     if bld.env.HAVE_ONNXRUNTIME_CPP:
         di_library_use += ' ONNXRUNTIME'
     if bld.env.enable_shared:

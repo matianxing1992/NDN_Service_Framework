@@ -1,5 +1,10 @@
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp"
-#include "NDNSF-DistributedInference/cpp/adapters/onnx/onnx/onnx-ml.pb.h"
+
+// Official ONNX 1.17 full-protobuf headers via the configured ONNX prefix.
+// onnx_pb.h defines ONNX_API (visibility) before it pulls in the generated
+// onnx-ml.pb.h; including the pb header directly leaves ONNX_API undefined
+// and breaks the generated TableStruct declarations.
+#include <onnx/onnx_pb.h>
 
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/property_tree/ptree.hpp>
@@ -61,40 +66,117 @@ std::vector<std::uint8_t> modelBytes()
   return bytes;
 }
 
+// One branch graph carries an EXTERNAL initializer consumed by an Identity
+// node; the other carries the same structure inline.  The model is full-
+// checker valid (bool scalar condition, both If branches, typed io and
+// branch outputs), so the certified S3 full check, S5 InferShapes and the S7
+// ORT CPU session load all accept it once external tensors are inlined.
 std::vector<std::uint8_t> modelBytesWithNestedExternal()
 {
   onnx::ModelProto model;
   model.set_ir_version(8);
+  auto* opset = model.add_opset_import();
+  opset->set_domain("");
+  opset->set_version(13);
   auto* graph = model.mutable_graph();
   graph->set_name("spec182-native-nested-external");
   auto* input = graph->add_input();
-  input->set_name("x");
-  input->mutable_type()->mutable_tensor_type()->set_elem_type(onnx::TensorProto::FLOAT);
+  input->set_name("cond");
+  input->mutable_type()->mutable_tensor_type()->set_elem_type(onnx::TensorProto::BOOL);
+  // Scalar (zero-dim) shape: the full checker requires the type shape field on
+  // io values even when the value is a rank-0 scalar condition.
+  input->mutable_type()->mutable_tensor_type()->mutable_shape();
   auto* output = graph->add_output();
   output->set_name("y");
   output->mutable_type()->mutable_tensor_type()->set_elem_type(onnx::TensorProto::FLOAT);
+  output->mutable_type()->mutable_tensor_type()->mutable_shape()->add_dim()->set_dim_value(1);
+  output->mutable_type()->mutable_tensor_type()->mutable_shape()->add_dim()->set_dim_value(1);
   auto* node = graph->add_node();
   node->set_op_type("If");
-  node->add_input("x");
+  node->add_input("cond");
   node->add_output("y");
-  auto* nested = node->add_attribute()->mutable_g();
-  nested->set_name("then_branch");
-  auto* initializer = nested->add_initializer();
-  initializer->set_name("nested-weight");
-  initializer->set_data_location(onnx::TensorProto::EXTERNAL);
-  auto* location = initializer->add_external_data();
-  location->set_key("location");
-  location->set_value("weights.bin");
-  auto* offset = initializer->add_external_data();
-  offset->set_key("offset");
-  offset->set_value("0");
-  auto* length = initializer->add_external_data();
-  length->set_key("length");
-  length->set_value("4");
+
+  const auto addBranch = [](onnx::NodeProto* ifNode, const char* name,
+                            bool external) {
+    auto* attribute = ifNode->add_attribute();
+    attribute->set_name(name);
+    attribute->set_type(onnx::AttributeProto::GRAPH);
+    auto* nested = attribute->mutable_g();
+    nested->set_name(name);
+    auto* weight = nested->add_initializer();
+    weight->set_name(external ? "nested-weight" : "else-weight");
+    weight->set_data_type(onnx::TensorProto::FLOAT);
+    weight->add_dims(1);
+    weight->add_dims(1);
+    if (external) {
+      weight->set_data_location(onnx::TensorProto::EXTERNAL);
+      auto* location = weight->add_external_data();
+      location->set_key("location");
+      location->set_value("weights.bin");
+      auto* offset = weight->add_external_data();
+      offset->set_key("offset");
+      offset->set_value("0");
+      auto* length = weight->add_external_data();
+      length->set_key("length");
+      length->set_value("4");
+    }
+    else {
+      weight->set_raw_data("\x00\x00\x00\x40", 4);
+    }
+    auto* identity = nested->add_node();
+    identity->set_op_type("Identity");
+    identity->set_name(std::string(name) + "_id");
+    identity->add_input(weight->name());
+    identity->add_output("y");
+    auto* branchOutput = nested->add_output();
+    branchOutput->set_name("y");
+    branchOutput->mutable_type()->mutable_tensor_type()->set_elem_type(
+      onnx::TensorProto::FLOAT);
+    branchOutput->mutable_type()->mutable_tensor_type()->mutable_shape()
+      ->add_dim()->set_dim_value(1);
+    branchOutput->mutable_type()->mutable_tensor_type()->mutable_shape()
+      ->add_dim()->set_dim_value(1);
+  };
+  addBranch(node, "then_branch", true);
+  addBranch(node, "else_branch", false);
   const auto size = model.ByteSizeLong();
   std::vector<std::uint8_t> bytes(static_cast<std::size_t>(size));
   BOOST_REQUIRE(model.SerializeToArray(bytes.data(), static_cast<int>(bytes.size())));
   return bytes;
+}
+
+NativeAssemblyControl identityControl(std::uint64_t maxSourceBytes = 8 * 1024 * 1024)
+{
+  return NativeAssemblyControl{
+    std::chrono::steady_clock::now() + std::chrono::seconds(5), [] {}, maxSourceBytes,
+    maxSourceBytes};
+}
+
+// These fixtures predate the certified S3-S7 gates, which reject any recipe
+// whose digests do not match the canonical identity of the exact source
+// bytes (S4).  Fill the digests from the runtime identity of the source the
+// case assembles so the case exercises the certified pipeline instead of
+// tripping the certificate gate.
+void fillCertifiedIdentity(NativeCertifiedRecipe& recipe,
+                           const NativeCanonicalSource& source)
+{
+  const auto identity = canonicalOnnxSourceIdentity(source, identityControl());
+  recipe.graphDigest = identity.graphDigest;
+  recipe.canonicalInitializerDigest = identity.initializerDigest;
+}
+
+// Assert the exact registered DI_NATIVE_ONNX_* reason family, never a
+// textual expectation produced by this implementation.
+void expectReason(const std::function<void()>& call, const std::string& code)
+{
+  try {
+    call();
+  }
+  catch (const std::runtime_error& error) {
+    BOOST_CHECK_EQUAL(std::string(error.what()), "DI_NATIVE_ONNX_" + code);
+    return;
+  }
+  BOOST_FAIL("expected DI_NATIVE_ONNX_" + code + " but the call succeeded");
 }
 
 } // namespace
@@ -104,9 +186,11 @@ BOOST_AUTO_TEST_SUITE(Spec182NativeAssembly)
 BOOST_AUTO_TEST_CASE(AssemblesComponentSetWithoutInterpreter)
 {
   NativeCanonicalSource source{modelBytes(), std::nullopt};
+  auto certified = recipe();
+  fillCertifiedIdentity(certified, source);
   const auto control = NativeAssemblyControl{
     std::chrono::steady_clock::now() + std::chrono::seconds(2), [] {}, 64 * 1024, 64 * 1024};
-  const auto result = assembleNativeCertifiedOnnxModel(source, recipe(), control);
+  const auto result = assembleNativeCertifiedOnnxModel(source, certified, control);
   BOOST_CHECK_EQUAL(result.nodeCount, 1);
   BOOST_CHECK_EQUAL(result.inputNames.at(0), "x");
   BOOST_CHECK_EQUAL(result.outputNames.at(0), "y");
@@ -120,29 +204,44 @@ BOOST_AUTO_TEST_CASE(RejectsDuplicateNodeCover)
   invalid.nodeIndices = {0, 0};
   const NativeAssemblyControl control{
     std::chrono::steady_clock::now() + std::chrono::seconds(2), [] {}, 64 * 1024, 64 * 1024};
-  BOOST_CHECK_THROW(assembleNativeCertifiedOnnxModel(
-                     NativeCanonicalSource{modelBytes(), std::nullopt}, invalid, control),
-                   std::runtime_error);
+  expectReason([&] {
+    assembleNativeCertifiedOnnxModel(NativeCanonicalSource{modelBytes(), std::nullopt},
+                                     invalid, control);
+  }, "NODE_COVER");
 }
 
 BOOST_AUTO_TEST_CASE(InlinesNestedGraphExternalInitializers)
 {
+  NativeCanonicalSource source{modelBytesWithNestedExternal(),
+                               std::vector<std::uint8_t>{1, 2, 3, 4}};
+  auto certified = recipe();
+  certified.expectedInputs = {{"cond", "bool", {}}};
+  certified.expectedOutputs = {{"y", "float32", {"1", "1"}}};
+  fillCertifiedIdentity(certified, source);
   const NativeAssemblyControl control{
     std::chrono::steady_clock::now() + std::chrono::seconds(2), [] {}, 64 * 1024, 64 * 1024};
-  const auto result = assembleNativeCertifiedOnnxModel(
-    NativeCanonicalSource{modelBytesWithNestedExternal(), std::vector<std::uint8_t>{1, 2, 3, 4}},
-    recipe(), control);
+  const auto result = assembleNativeCertifiedOnnxModel(source, certified, control);
   onnx::ModelProto assembled;
   BOOST_REQUIRE(assembled.ParseFromArray(result.modelBytes.data(),
                                           static_cast<int>(result.modelBytes.size())));
   BOOST_REQUIRE_EQUAL(assembled.graph().node_size(), 1);
   const auto& attributes = assembled.graph().node(0).attribute();
-  BOOST_REQUIRE_EQUAL(attributes.size(), 1);
-  BOOST_REQUIRE(attributes.Get(0).has_g());
-  BOOST_REQUIRE_EQUAL(attributes.Get(0).g().initializer_size(), 1);
-  const auto& initializer = attributes.Get(0).g().initializer(0);
+  // The If node keeps both branch graphs (node cover is per-node and its
+  // deterministic bytes must equal the original node), so locate the branch
+  // that carried the EXTERNAL tensor by name instead of by position.
+  BOOST_REQUIRE_EQUAL(attributes.size(), 2);
+  const onnx::AttributeProto* thenBranch = nullptr;
+  for (const auto& attribute : attributes) {
+    if (attribute.name() == "then_branch") thenBranch = &attribute;
+  }
+  BOOST_REQUIRE(thenBranch != nullptr);
+  BOOST_REQUIRE(thenBranch->has_g());
+  BOOST_REQUIRE_EQUAL(thenBranch->g().initializer_size(), 1);
+  const auto& initializer = thenBranch->g().initializer(0);
+  BOOST_CHECK_EQUAL(initializer.name(), "nested-weight");
   BOOST_CHECK_EQUAL(initializer.data_location(), onnx::TensorProto::DEFAULT);
-  BOOST_CHECK_EQUAL(initializer.raw_data().size(), 4U);
+  BOOST_CHECK_EQUAL(initializer.raw_data(),
+                    std::string("\x01\x02\x03\x04", 4));  // side payload {1,2,3,4}
 }
 
 BOOST_AUTO_TEST_SUITE_END()
@@ -201,13 +300,6 @@ boost::property_tree::ptree loadFixture(const std::string& fileName)
     }
   }
   throw std::runtime_error("fixture not found: " + fileName);
-}
-
-NativeAssemblyControl identityControl(std::uint64_t maxSourceBytes = 8 * 1024 * 1024)
-{
-  return NativeAssemblyControl{
-    std::chrono::steady_clock::now() + std::chrono::seconds(5), [] {}, maxSourceBytes,
-    maxSourceBytes};
 }
 
 // JSON arrays parse to children with empty keys, so rows are found by
