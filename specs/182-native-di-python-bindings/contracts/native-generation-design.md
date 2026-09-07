@@ -46,6 +46,8 @@ T011新增选择器`Spec182SamplingTopPRetainedMass`、`Spec182SamplingPenaltyOn
 
 ## Streaming Closure Required
 
+当前ByteLevel工件身份、stable API、两类byte算法及epoch接线细节见[token stream design](native-token-stream-design.md)。下方反例保留为算法依据；接口定义已有具体方案，但完整注册/恢复清单仍由O-004关闭。
+
 ### Verified Boundary and Planned ByteFallback Algorithm
 
 2026-09-07新增[独立参考检查](../../../tests/fixtures/spec182/dependency-probes/check-stream-boundaries.py)，固定既有tokenizer JSON SHA及tokenizers0.20.3。`<0x61>`解出`a`，追加`<0xFF>`或未完成的`<0xE5>`后，完整decode变成两个U+FFFD；即使当前文本没有replacement，也不代表可提交。合法U+FFFD的三个byte token最终必须保留一个U+FFFD，不能用删除该字符作为修复。普通非byte token结束byte run；skipSpecialTokens=true时被过滤的special token不结束run，false时保留的非byte special才结束run。

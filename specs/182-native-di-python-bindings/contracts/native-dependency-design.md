@@ -95,6 +95,8 @@ Rust ABI source review：repr(C)字段顺序与C头一致；Box<[u8]>与free恢�
 
 ### Frozen Production Integration
 
+原五函数是完整encode/decode已验证基线。T007按[token stream design](native-token-stream-design.md)追加第六个私有`ndi_token_decode_stable`及C++方法；新增ABI须单独验证，不使用旧84+14结果证明stream。Rust核心版本/已有ABI所有权保持。
+
 T007新增`NDNSF-DistributedInference/cpp/adapters/qwen/tokenizer-bridge/{Cargo.toml,Cargo.lock,src/lib.rs,tokenizer-abi.h}`，保留上表五个C ABI函数、结果结构和所有权。crate命名`ndnsf-tokenizer-bridge`、静态库`ndnsf_tokenizer_bridge`，迁移probe代码前按CD-006复审，依赖版本/features及registry校验和不变。package重命名只改变lock中本地package项，不能重新解析/升级依赖。许可证：tokenizers Apache-2.0，完整传递依赖及各自license随源码交付保留。
 
 T002在DI构建配置中声明Rust compiler/Cargo及该静态库输入；T007接入实际构建。Cargo使用独立target目录、`--locked`、至多-j2；C ABI是DI库的私有实现，桥接header/Rust crate不作为应用public API安装。静态库链接进安装的DI shared library，T016验证其真实依赖；应用只安装/包含NativeTokenizer.hpp。不得把测试probe库安装成产品库。

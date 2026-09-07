@@ -6,6 +6,12 @@
 
 ## Current Checkpoint
 
+2026-09-07 Qwen stream design / **T001 IN_PROGRESS**：读取交付清单固定revision的tokenizer.json，12,807,982 bytes及SHA256完全匹配，确认ByteLevel decoder；本地另一Qwen工件身份单独记录，不混用。新增[token stream design](contracts/native-token-stream-design.md)，定义stable API/第六私有ABI、所有权、ByteLevel与ByteFallback不同算法、终止flush及epoch候选/提交接线。A7-08剩余完整调用方和journal接受边界仍OPEN，T001未完成、产品0/17。
+
+独立`/usr/bin/python3 tests/fixtures/spec182/dependency-probes/check-bytelevel-stream.py`实际exit0：65,536个two-byte序列、9个长/非法/截断序列和3个whole-token fallback检查PASS；Python标准库增量UTF-8结果与固定HF0.20.3完整decode对照。strict structure、design validator（178本地链接）和diff whitespace检查PASS。仅reference诊断，不执行新增ABI/native产品。下一步关闭事件接受/恢复与全部factory调用方，随后统一收口O-004。
+
+### Prior Stream Boundary
+
 2026-09-07 Stream boundary / **T001 IN_PROGRESS**：新增可移植[reference checker](../../tests/fixtures/spec182/dependency-probes/check-stream-boundaries.py)，固定tokenizers0.20.3及既有fixture哈希，7个边界输入实际PASS/exit0。确认完整UTF-8的byte run仍会被后续无效byte改写；合法U+FFFD不能删除，skip special不构成run边界。算法与新版HF原生stream能力比较写入[generation contract](contracts/native-generation-design.md#verified-boundary-and-planned-bytefallback-algorithm)。本轮没有native产品构建/测试。
 
 A7-08仍OPEN：ByteFallback适配选择已明确，但真实Qwen decoder pipeline、完整调用/字段与事件接受后失败的恢复边界尚未关闭。源码确认eventSink接受后仍执行反馈发布与runtime commit，不能承诺靠decoder局部rollback撤回事件。T001未完成、产品0/17；下一步从实际Qwen工件和既有journal/commit路径关闭这些剩余设计，不重跑已固定reference用例。本单元strict structure、design validator（173本地链接）及diff whitespace检查PASS；参考运行命令为`/usr/bin/python3 tests/fixtures/spec182/dependency-probes/check-stream-boundaries.py`。
