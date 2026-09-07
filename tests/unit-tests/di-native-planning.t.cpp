@@ -228,6 +228,116 @@ BOOST_AUTO_TEST_CASE(YoloComponentSplitRejectsUncoveredGraphAndSortsPriority)
                     std::invalid_argument);
 }
 
+BOOST_AUTO_TEST_CASE(YoloComponentSplitRejectsInvalidComponentsAndForeignModel)
+{
+  const auto graphDigest = digest("yolo-invalid-graph");
+  auto graphSnapshot = graph(graphDigest, {"backbone", "neck", "detect", "output"});
+  auto yoloModel = model("yolo26n", "YOLO26n", graphDigest);
+  const yolo::NativeYoloComponentSpec atomic{
+    "atomic-v1", 10, {"FullModel"}, {}, "FullModel", "FullModel", "", {}};
+
+  // Invalid construction: no candidates, duplicate ids, empty roles,
+  // duplicate roles, undeclared ingress/egress, malformed candidate digest.
+  BOOST_CHECK_THROW(yolo::NativeYoloComponentSplit({}), std::invalid_argument);
+  BOOST_CHECK_THROW(yolo::NativeYoloComponentSplit({atomic, atomic}),
+                    std::invalid_argument);
+  yolo::NativeYoloComponentSpec emptyRoles{
+    "e", 1, {}, {}, "FullModel", "FullModel", "", {}};
+  BOOST_CHECK_THROW(yolo::NativeYoloComponentSplit({emptyRoles}),
+                    std::invalid_argument);
+  yolo::NativeYoloComponentSpec dupRoles{
+    "d", 1, {"A", "A"}, {{"A", {"backbone"}}}, "A", "A", "", {}};
+  BOOST_CHECK_THROW(yolo::NativeYoloComponentSplit({dupRoles}),
+                    std::invalid_argument);
+  yolo::NativeYoloComponentSpec noIngress{
+    "n", 1, {"A"}, {{"A", {"backbone"}}}, "", "A", "", {}};
+  BOOST_CHECK_THROW(yolo::NativeYoloComponentSplit({noIngress}),
+                    std::invalid_argument);
+  yolo::NativeYoloComponentSpec badDigest{
+    "b", 1, {"A"}, {{"A", {"backbone"}}}, "A", "A", "", "not-a-digest"};
+  BOOST_CHECK_THROW(yolo::NativeYoloComponentSplit({badDigest}),
+                    std::invalid_argument);
+
+  // Enumerate rejects a foreign model before any candidate work.
+  auto qwenModel = model("qwen-three-stage-pipeline", "QwenFixture", graphDigest);
+  yolo::NativeYoloComponentSplit splitter({atomic});
+  BOOST_CHECK_THROW(splitter.enumerate(qwenModel, graphSnapshot, {}),
+                    std::invalid_argument);
+
+  // Component-level defects that survive construction are rejected per
+  // candidate during enumerate: undeclared ingress/egress, an empty semantic
+  // node set, a node assigned twice, and a partition whose names do not match
+  // the graph.
+  const std::vector<std::string> rolesA = {"A", "B"};
+  yolo::NativeYoloComponentSpec undeclared{
+    "u", 1, rolesA, {{"A", {"backbone"}}, {"B", {"neck"}}}, "C", "B", "", {}};
+  BOOST_CHECK_THROW(yolo::NativeYoloComponentSplit({undeclared})
+                      .enumerate(yoloModel, graphSnapshot, {}),
+                    std::invalid_argument);
+  yolo::NativeYoloComponentSpec emptySet{
+    "s", 1, rolesA, {{"A", {}}, {"B", {"neck"}}}, "A", "B", "", {}};
+  BOOST_CHECK_THROW(yolo::NativeYoloComponentSplit({emptySet})
+                      .enumerate(yoloModel, graphSnapshot, {}),
+                    std::invalid_argument);
+  yolo::NativeYoloComponentSpec doubleAssign{
+    "t", 1, rolesA,
+    {{"A", {"backbone", "neck"}}, {"B", {"neck", "detect"}}},
+    "A", "B", "", {}};
+  BOOST_CHECK_THROW(yolo::NativeYoloComponentSplit({doubleAssign})
+                      .enumerate(yoloModel, graphSnapshot, {}),
+                    std::invalid_argument);
+  yolo::NativeYoloComponentSpec wrongNames{
+    "w", 1, rolesA,
+    {{"A", {"backbone", "neck"}}, {"B", {"detect", "extra"}}},
+    "A", "B", "", {}};
+  BOOST_CHECK_THROW(yolo::NativeYoloComponentSplit({wrongNames})
+                      .enumerate(yoloModel, graphSnapshot, {}),
+                    std::invalid_argument);
+  // The same legal component still enumerates after all rejections.
+  BOOST_CHECK_EQUAL(splitter.enumerate(yoloModel, graphSnapshot, {}).size(), 1U);
+}
+
+BOOST_AUTO_TEST_CASE(YoloComponentSplitIsDeterministicAndBudgetTruncates)
+{
+  const auto graphDigest = digest("yolo-order-graph");
+  auto graphSnapshot = graph(graphDigest, {"backbone", "neck", "detect", "output"});
+  auto yoloModel = model("yolo26n", "YOLO26n", graphDigest);
+  const auto atomic = [] (std::string id, int priority) {
+    return yolo::NativeYoloComponentSpec{
+      std::move(id), priority, {"FullModel"}, {}, "FullModel", "FullModel", "", {}};
+  };
+  yolo::NativeYoloComponentSplit splitter({atomic("z", 9), atomic("a", 1),
+                                           atomic("m", 5), atomic("b", 1),
+                                           atomic("k", 3)});
+
+  // Stable order: priority ascending, then candidateId ascending.
+  const auto full = splitter.enumerate(yoloModel, graphSnapshot,
+                                       NativeCandidateBudget{1024, 100, 16});
+  BOOST_REQUIRE_EQUAL(full.size(), 5U);
+  std::vector<std::string> fullDigests;
+  for (const auto& candidate : full) fullDigests.push_back(candidate.candidateDigest);
+
+  // Repeated calls are byte-identical (deterministic candidate digest).
+  const auto again = splitter.enumerate(yoloModel, graphSnapshot,
+                                        NativeCandidateBudget{1024, 100, 16});
+  BOOST_REQUIRE_EQUAL(again.size(), 5U);
+  for (std::size_t i = 0; i < full.size(); ++i) {
+    BOOST_CHECK_EQUAL(again[i].candidateDigest, fullDigests[i]);
+  }
+
+  // Budget truncation keeps the head of the same stable order.
+  const auto head = splitter.enumerate(yoloModel, graphSnapshot,
+                                       NativeCandidateBudget{3, 100, 1});
+  BOOST_REQUIRE_EQUAL(head.size(), 3U);
+  for (std::size_t i = 0; i < head.size(); ++i) {
+    BOOST_CHECK_EQUAL(head[i].candidateDigest, fullDigests[i]);
+  }
+  const auto one = splitter.enumerate(yoloModel, graphSnapshot,
+                                      NativeCandidateBudget{1, 100, 1});
+  BOOST_REQUIRE_EQUAL(one.size(), 1U);
+  BOOST_CHECK_EQUAL(one.front().candidateDigest, fullDigests.front());
+}
+
 BOOST_AUTO_TEST_CASE(PreSplitPlacementFiltersAndDeterministicallyBindsOneProvider)
 {
   const auto graphDigest = digest("placement-graph");
