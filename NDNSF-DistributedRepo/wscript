@@ -1,5 +1,6 @@
 top = '..'
 
+import os
 import subprocess
 import sys
 
@@ -10,15 +11,27 @@ def _install_py_repoclient(bld):
     wrapper = bld.path.find_dir('pythonWrapper')
     if wrapper is None:
         return
+    # Development convenience only: an editable pip install into the caller's
+    # Python environment must never fail a staged-prefix install (its setup.py
+    # links against the current Waf build dir, which is config-specific).
+    # Skip it explicitly with NDNSF_SKIP_DEV_PIP_INSTALL=1.
+    if os.environ.get('NDNSF_SKIP_DEV_PIP_INSTALL') == '1':
+        bld.to_log('Skipping dev pip install of pythonWrapper '
+                   '(NDNSF_SKIP_DEV_PIP_INSTALL=1)\n')
+        return
     bld.to_log('Installing py_repoclient with pip\n')
-    subprocess.check_call([
-        sys.executable,
-        '-m',
-        'pip',
-        'install',
-        '-e',
-        wrapper.abspath(),
-    ])
+    try:
+        subprocess.check_call([
+            sys.executable,
+            '-m',
+            'pip',
+            'install',
+            '-e',
+            wrapper.abspath(),
+        ])
+    except subprocess.CalledProcessError as error:
+        bld.to_log('Dev pip install of pythonWrapper failed (rc=%s); '
+                   'continuing staged install\n' % error.returncode)
 
 
 def build(bld):

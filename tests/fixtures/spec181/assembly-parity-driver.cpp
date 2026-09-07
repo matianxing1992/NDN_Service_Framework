@@ -42,7 +42,7 @@ int main(int argc, char** argv)
   std::shared_ptr<ProtectedRuntime> runtime;
   std::future<void> cancellation;
   try {
-    if (argc != 4) throw std::runtime_error("usage: driver case.json cache python");
+    if (argc != 3) throw std::runtime_error("usage: driver case.json cache");
     ptree row;
     boost::property_tree::read_json(argv[1], row);
     const auto& input = row.get_child("role");
@@ -108,10 +108,12 @@ int main(int argc, char** argv)
     };
     NativeCanonicalOnnxAssemblerOptions options;
     options.cacheDir = argv[2];
-    options.pythonExecutable = argv[3];
     options.providerIdentity = projection.provider;
     projection.deadlineMs = row.get<std::uint64_t>("controls.deadlineMs", 0);
-    options.helperTimeoutMs = row.get<std::uint64_t>("controls.helperTimeoutMs", 30000);
+    // The spec181 python-helper mode was retired by the spec182 native worker;
+    // keep accepting the frozen row key as the assembly-timeout bound.
+    options.assemblyTimeoutMs = row.get<std::uint64_t>(
+      "controls.assemblyTimeoutMs", row.get<std::uint64_t>("controls.helperTimeoutMs", 30000));
     const auto start = std::chrono::steady_clock::now();
     const auto cancelAfter = row.get<std::uint64_t>("controls.cancelAfterMs", 0);
     options.shouldCancel = [start, cancelAfter] {

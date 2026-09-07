@@ -347,7 +347,8 @@ def build(bld):
                             'ndn-service-framework/RequestConfidentiality.cpp',
                             'ndn-service-framework/RevocationState.cpp',
                         ])),
-                includes=['..', '../ndn-service-framework', '../NDNSF-DistributedRepo/include'],
+                includes=['..', '../ndn-service-framework', '../NDNSF-DistributedRepo/include',
+                          '../NDNSF-DistributedInference/cpp/adapters/onnx'],
                 use='NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD OPENSSL DL',
                 cxxflags=['-fPIC'],
                 install_path=None)
@@ -416,8 +417,12 @@ def build(bld):
                         bld.path.parent.ant_glob([
                             'NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.cpp',
                         ])),
-                includes=['..', '../ndn-service-framework'],
-                use='BOOST ONNXRUNTIME NDN_CXX NDN_SVS PROTOBUF OPENSSL DL',
+                includes=['..', '../ndn-service-framework',
+                          '../NDNSF-DistributedInference/cpp/adapters/onnx'],
+                # The shared ONNX assembly TU (compiled below) binds the
+                # Provider-owned CollaborationContext overload, whose symbols
+                # live in the framework library; link it like the test targets.
+                use='BOOST ONNXRUNTIME NDN_CXX NDN_SVS PROTOBUF OPENSSL DL ndn-service-framework',
                 cxxflags=['-fPIC', '-pthread'],
                 linkflags=['-pthread'],
                 install_path=None)
@@ -458,7 +463,8 @@ def build(bld):
                             'ndn-service-framework/CertificateBootstrap.cpp',
                             'ndn-service-framework/CertificatePublisher.cpp',
                         ])),
-                includes=['..', '../ndn-service-framework', '../NDNSF-DistributedRepo/include'],
+                includes=['..', '../ndn-service-framework', '../NDNSF-DistributedRepo/include',
+                          '../NDNSF-DistributedInference/cpp/adapters/onnx'],
                 use='BOOST ONNXRUNTIME NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD OPENSSL DL',
                 cxxflags=['-fPIC', '-pthread'],
                 linkflags=['-pthread'],
@@ -501,7 +507,8 @@ def build(bld):
                             'ndn-service-framework/CertificateBootstrap.cpp',
                             'ndn-service-framework/CertificatePublisher.cpp',
                         ])),
-                includes=['..', '../ndn-service-framework', '../NDNSF-DistributedRepo/include'],
+                includes=['..', '../ndn-service-framework', '../NDNSF-DistributedRepo/include',
+                          '../NDNSF-DistributedInference/cpp/adapters/onnx'],
                 use='BOOST ONNXRUNTIME NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD OPENSSL DL',
                 cxxflags=['-fPIC', '-pthread', '-DNDNSF_DI_EXPERIMENT_FAULTS=1'],
                 linkflags=['-pthread'],
@@ -521,4 +528,4 @@ def build(bld):
                 linkflags=['-pthread'],
                 install_path=None)
 
-    bld.install_files('/usr/local/bin', ['trust-schema.conf', 'trust-any.conf', 'example_muas.policies'])
+    bld.install_files('${BINDIR}', ['trust-schema.conf', 'trust-any.conf', 'example_muas.policies'])
