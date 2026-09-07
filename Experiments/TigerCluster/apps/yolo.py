@@ -222,6 +222,31 @@ def preparation_arguments(descriptor: Path, expected_digest: str) -> dict:
         placement_candidate_digest=value['placementCandidateDigest'], runtime_candidate_digest=value['runtimeCandidateDigest'])
 
 
+def run_user_with_reference(argv, *, backend, run_id, request_id,
+                            candidate_digest, output):
+    """Compose the installed User with a bounded independent reference owner."""
+    import importlib.util
+    import sys
+    from runtime.yolo_graph_reference import RequestReferenceBinding
+    # Bind installed extensions before the example's own path setup, just as
+    # the offline issuer does. Never import a replay copy of an absent .so.
+    if str(APP_DIR).startswith('/opt/ndnsf-di'):
+        import ndnsf
+        import py_repoclient
+    script = Path(APP_DIR) / 'user.py'
+    sys.path.insert(0, str(script.parent))
+    spec = importlib.util.spec_from_file_location('_spec183_installed_user', script)
+    owner = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(owner)
+
+    def factory(**kwargs):
+        return RequestReferenceBinding(owner.YoloCanonicalArtifactBinding(**kwargs),
+            package=kwargs['package_dir'], output=Path(output), backend=backend,
+            run_id=run_id, request_id=request_id, runtime_candidate_digest=candidate_digest)
+
+    return owner.main(argv, canonical_binding_factory=factory)
+
+
 def main(argv=None):
     """Internal container command. Operator qualification belongs to submit.py."""
     import argparse
@@ -233,11 +258,31 @@ def main(argv=None):
     probe = commands.add_parser('repo-probe')
     probe.add_argument('--probe-id', required=True)
     probe.add_argument('--seconds', type=float, required=True)
+    user = commands.add_parser('user')
+    user.add_argument('--reference-backend', choices=('CPUExecutionProvider', 'CUDAExecutionProvider'), required=True)
+    user.add_argument('--reference-run-id', required=True)
+    user.add_argument('--reference-request-id', required=True)
+    user.add_argument('--reference-candidate-digest', required=True)
+    user.add_argument('--reference-output', type=Path, required=True)
+    user.add_argument('user_args', nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
     try:
         if args.action == 'prepare':
             options = preparation_arguments(args.descriptor, args.descriptor_sha256)
             receipt = prepare_in_container(**options)
+        elif args.action == 'user':
+            forwarded = args.user_args[1:] if args.user_args[:1] == ['--'] else args.user_args
+            # Duplicate binding flags could make the User execute a different
+            # request than the reference. Validate exact single values first.
+            for flag, expected in (('--request-id', args.reference_request_id),
+                                   ('--lifecycle-output-dir', str(args.reference_output))):
+                if (forwarded.count(flag) != 1 or forwarded.index(flag) + 1 >= len(forwarded)
+                        or forwarded[forwarded.index(flag) + 1] != expected
+                        or any(item.startswith(flag + '=') for item in forwarded)):
+                    raise ValueError('REFERENCE_USER_ARGUMENT_BINDING')
+            return run_user_with_reference(forwarded, backend=args.reference_backend,
+                run_id=args.reference_run_id, request_id=args.reference_request_id,
+                candidate_digest=args.reference_candidate_digest, output=args.reference_output)
         else:
             receipt = probe_repo_in_container(args.probe_id, args.seconds)
     except Exception as exc:
@@ -749,7 +794,11 @@ def run_requests(worker, plan: dict, *, package: Path, catalog_data_name: str,
                 'NDNSF_DI_RECIPIENT_PUBLIC_KEY_MAP=/config/recipient-public-keys.json',
                 'SPEC181_REQUESTER_PRIVATE_KEY=/identities/user/requester.key',
                 'NDNSF_SPEC180_CONFIG_ROOT=/identities/user/authority',
-                PYTHON, APP_DIR + '/user.py', '--config', '/config/case.json',
+                PYTHON, '-m', 'apps.yolo', 'user',
+                '--reference-backend', ('CPUExecutionProvider' if worker.mode == 'local-cpu' else 'CUDAExecutionProvider'),
+                '--reference-run-id', plan['runId'], '--reference-request-id', request['requestId'],
+                '--reference-candidate-digest', worker._preparation_binding[2],
+                '--reference-output', output, '--', '--config', '/config/case.json',
                 '--generated-policy-dir', output + '/generated-policy',
                 '--canonical-package', '/artifacts',
                 '--catalogue-registry', '/config/contracts/trust-root-registry-v1.json',
@@ -769,7 +818,7 @@ def run_requests(worker, plan: dict, *, package: Path, catalog_data_name: str,
             if not math.isfinite(seconds) or seconds <= 0:
                 raise TimeoutError('YOLO_WORKLOAD_BUDGET')
         worker.run_user(i, argv, package=package, seconds=seconds,
-                        peer_failure=peer_failure)
+                        peer_failure=peer_failure, reference_gpu=worker.mode != 'local-cpu')
         accept_request(request, Path(request['output']))
 
 

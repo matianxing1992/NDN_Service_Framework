@@ -348,3 +348,21 @@ and the CPU/GPU allocation contract. It constructs `NodeRuntime` through
 model outputs, or verdicts. Its focused tests use a lifecycle double only;
 actual SIF/native/Provider/MiniNDN/GPU evidence remains required before T005 or
 T007 can close.
+
+### T005/T006 per-request reference handoff
+
+The User's trusted canonical-owner factory receives the coordinator's certified
+role specs after ACK planning and before Selection. It independently assembles
+the three model roles and initializes ORT references without inference or
+Provider observations. After the real canonical publisher returns, it binds
+the actual MODELROOT manifest identity. Static offline package identity cannot
+stand in for this per-request identity.
+
+Each `user/requests/<index>/graph-reference.json` has exactly `schema`
+(`tiger-yolo-request-reference-v1`), `runId`, `requestId`,
+`runtimeCandidateDigest`, `placementCandidateDigest`, and `certifiedGraph`.
+The collector reads that invocation's retained file, verifies its expected
+identities/provenance and joins it with native evidence. The shared handoff
+graph field is only an expected graph identity anchor; it cannot supply
+missing role references. Reference preparation is component evidence, never
+execution proof. CUDA preparation requires allocated-node GPU preflight.

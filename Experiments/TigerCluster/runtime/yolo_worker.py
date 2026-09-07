@@ -206,15 +206,19 @@ class NodeRuntime:
         self.allocation = None
 
     def run_user(self, invocation: str, argv: list[str], *, package: Path | None,
-                 seconds: float, peer_failure: Path | None = None):
+                 seconds: float, peer_failure: Path | None = None,
+                 reference_gpu: bool = False):
         """One finite User, retaining persistent Providers and User state.
 
         Invocation output directories are exclusive; a failed or completed
         invocation cannot be overwritten/retried under the same name.
         This is process completion only, never an inference verdict.
         """
+        if type(reference_gpu) is not bool or (reference_gpu and (
+                self.mode == 'local-cpu' or self.allocation is None or self.gpu_probe is None)):
+            raise ValueError('WORKER_REFERENCE_GPU_NOT_QUALIFIED')
         return self._run_finite_role('user', invocation, argv, package=package,
-                                     seconds=seconds, peer_failure=peer_failure)
+                                     seconds=seconds, peer_failure=peer_failure, gpu=reference_gpu)
 
     def run_network_probe(self, argv: list[str], *, seconds: float,
                           peer_failure: Path | None = None):

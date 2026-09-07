@@ -2513,3 +2513,29 @@ health reported NO_REAL_SESSION_EVENTS on this continuation. The repository
 tasks/audit remained authoritative; no fabricated prompt marker or manual hook
 fixture was used. Source edits were verified with CodeGraph sync and focused
 tests. The live external build was polled by exact PID and left undisturbed.
+
+# 2026-09-07 — per-request reference wiring exposed native import coupling
+
+Symptom: real assembler reference test imported graph/plan through type-only
+dependencies and reached an unusable host native extension. The generic native
+application test independently failed collection with undefined NDNSD symbol
+`_ZN5ndnsd9discovery16ServiceDiscoveryD1Ev` from the installed framework DSO.
+
+Cause: offline assembler/graph values imported native-dependent classes eagerly;
+the concurrently rebuilt host dependency closure is not yet qualified. Initial
+schedule fixtures also omitted real runId/preflight fields newly required by
+the connected User launcher, and compared tuple/list representations instead
+of the canonical recipe digest.
+
+Fix: defer annotation-only imports; retain a real local runtime import where
+graph edges become InferenceDependency objects. Update explicit boundary
+fixtures with run identity and declared preflight stand-ins. Compare canonical
+recipe digests. The connected component selection passed 176 tests in 18.51s;
+the native application check remains blocked, not skipped-as-PASS. Retain both
+failed and passing JUnit files under results/spec183-request-reference-wiring-20260907.
+The other client's build was not modified, restarted or claimed as qualification.
+
+Lesson: test actual assembly bytes before runtime qualification; do not let
+annotation imports force offline checks through stale DSOs. Reuse the same
+prepared reference for identity mutations and rerun native checks only after
+the loader closure changes. See evidence/t005-request-reference-wiring.md.

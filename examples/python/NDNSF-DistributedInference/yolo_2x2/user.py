@@ -418,7 +418,7 @@ def _build_grant_seam(client, *, registry_path, model_manifest_digest,
     return provider, epoch
 
 
-def _load_yolo_ack_driven(client, args) -> int:
+def _load_yolo_ack_driven(client, args, *, canonical_binding_factory=None) -> int:
     """Run the maintained model-first YOLO path.
 
     This path deliberately accepts only a canonical package, an authenticated
@@ -567,7 +567,8 @@ def _load_yolo_ack_driven(client, args) -> int:
         model.model_name, model.content_digest, model.semantics_digest,
         source_revision=model.source_revision)
     yolo_graph = adapter.graph.inspect(canonical_model_descriptor)
-    canonical_binding = YoloCanonicalArtifactBinding(
+    binding_factory = canonical_binding_factory or YoloCanonicalArtifactBinding
+    canonical_binding = binding_factory(
         package_dir=package,
         adapter=adapter,
         model=canonical_model_descriptor,
@@ -694,8 +695,15 @@ def _load_yolo_ack_driven(client, args) -> int:
     return 0
 
 
-def main() -> int:
+def main(argv=None, *, canonical_binding_factory=None) -> int:
+    """Run the CLI or a trusted in-process application composition.
+
+    The optional factory decorates the existing canonical artifact owner;
+    it is supplied only by Python callers, never by wire data or a CLI import.
+    """
     parser = parse_args_with_common("Run YOLO 2x2 user")
+    # Keep explicit argument identity when an application composes this CLI.
+    parser.allow_abbrev = False
     parser.add_argument("--ack-timeout-ms", type=int, default=1500)
     parser.add_argument("--timeout-ms", type=int, default=30000)
     parser.add_argument(
@@ -770,7 +778,7 @@ def main() -> int:
                         help="signed catalogue APP Data fetch timeout")
     parser.add_argument("--catalog-snapshot-file", default="",
                         help="offline-oracle fixture only; never used by ACK-driven mode")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     if args.dry_run:
         print("Run YOLO 2x2 user")
         print("config:", args.config)
@@ -791,7 +799,8 @@ def main() -> int:
             print("NDNSF_DI_INIT_TRACE stage=user_after_client", flush=True)
         if not args.offline_oracle:
             try:
-                return _load_yolo_ack_driven(client, args)
+                return _load_yolo_ack_driven(
+                    client, args, canonical_binding_factory=canonical_binding_factory)
             finally:
                 client.shutdown()
         service = yolo_inference_service(client.deployment)

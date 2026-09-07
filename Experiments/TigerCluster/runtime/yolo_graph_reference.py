@@ -13,10 +13,146 @@ import json
 from pathlib import Path
 import re
 import tempfile
+import time
 
 
 def _digest(payload):
     return 'sha256:' + hashlib.sha256(payload).hexdigest()
+
+
+class RequestReferenceBinding:
+    """Decorate the real User's post-ACK canonical owner before Selection.
+
+    The owner receives exactly the real planner's certified role specs.
+    Reference sessions never execute inference or inspect Provider observations.
+    Publication remains the wrapped owner's responsibility; its resulting
+    MODELROOT digest is bound only after ensure succeeds.
+    """
+
+    def __init__(self, binding, *, package: Path, output: Path, backend: str,
+                 run_id: str, request_id: str, runtime_candidate_digest: str):
+        self.binding, self.package, self.output = binding, Path(package), Path(output)
+        self.backend = backend
+        self.run_id, self.request_id = run_id, request_id
+        self.runtime_candidate_digest = runtime_candidate_digest
+        self.started = False
+        if (backend not in ('CPUExecutionProvider', 'CUDAExecutionProvider')
+                or not isinstance(run_id, str) or not run_id
+                or not isinstance(request_id, str) or not request_id.startswith('/')
+                or not isinstance(runtime_candidate_digest, str)
+                or re.fullmatch(r'sha256:[0-9a-f]{64}', runtime_candidate_digest) is None):
+            raise ValueError('REQUEST_REFERENCE_BINDING')
+        for path in (self.package, self.output):
+            if (not path.is_absolute() or not path.is_dir()
+                    or any(p.is_symlink() for p in (path, *path.parents))):
+                raise ValueError('REQUEST_REFERENCE_DIRECTORY')
+        if self.package == self.output or self.package in self.output.parents or self.output in self.package.parents:
+            raise ValueError('REQUEST_REFERENCE_DIRECTORY')
+        if (self.output / 'graph-reference.json').exists():
+            raise ValueError('REQUEST_REFERENCE_EXISTS')
+
+    @property
+    def model_manifest_digest(self):
+        return self.binding.model_manifest_digest
+
+    def describe(self, candidate):
+        return self.binding.describe(candidate)
+
+    def ensure(self, candidate, role_specs, *, deadline_ms):
+        if self.started:
+            raise ValueError('REQUEST_REFERENCE_REUSED')
+        self.started = True
+
+        def budget():
+            if time.time() * 1000 >= deadline_ms:
+                raise TimeoutError('REQUEST_REFERENCE_DEADLINE')
+
+        budget()
+        specs = tuple(role_specs)
+        by_role = {spec.role: spec for spec in specs}
+        if len(by_role) != len(specs) or set(by_role) != _ORT_ROLES | {'Merge'}:
+            raise ValueError('REQUEST_REFERENCE_ROLE_COVERAGE')
+        if any(spec.rank != 0 or candidate.fragments_by_role.get(spec.role) != spec.artifact_digest
+               for spec in specs):
+            raise ValueError('REQUEST_REFERENCE_ROLE_BINDING')
+        from ndnsf_distributed_inference.adapters.onnx.executor import (
+            CertifiedOnnxAssemblyRecipe, assemble_certified_onnx_model)
+        import onnxruntime as ort
+        from .yolo_profile import _read_plane
+        manifest = _read_plane(self.package / 'manifest.json')
+
+        def read_model(relative, expected):
+            path = Path(relative)
+            if path.is_absolute() or '..' in path.parts or not path.parts:
+                raise ValueError('REQUEST_REFERENCE_MODEL_PATH')
+            path = self.package / path
+            if (any(p.is_symlink() for p in (path, *path.parents)) or not path.is_file()
+                    or not 0 < path.stat().st_size <= 32 * 1024 * 1024):
+                raise ValueError('REQUEST_REFERENCE_MODEL_PATH')
+            payload = path.read_bytes()
+            if _digest(payload) != expected:
+                raise ValueError('REQUEST_REFERENCE_MODEL_DIGEST')
+            return payload
+
+        source = read_model('canonical/yolo26n.onnx', manifest['graph']['graphDigest'])
+        weights = read_model(manifest['weights']['path'], manifest['weights']['digest'])
+        records = {}
+        for role in sorted(_ORT_ROLES):
+            budget()
+            spec = by_role[role]
+            recipe = CertifiedOnnxAssemblyRecipe.from_role_spec(spec)
+            assembled = assemble_certified_onnx_model(source,
+                canonical_initializer=weights, role_spec=spec, recipe=recipe)
+            records[role] = prepare_role_reference(assembled.model_bytes,
+                artifact_digest=spec.artifact_digest, assembled_model_digest=assembled.model_digest,
+                model_manifest_digest=spec.model_manifest_digest, role=role,
+                backend=self.backend, ort_version=ort.__version__, scratch=self.output)
+        budget()
+        published = self.binding.ensure(candidate, specs, deadline_ms=deadline_ms)
+        actual = self.binding.describe(candidate)
+        # This is the canonical owner's post-publication identity, not a value
+        # copied from an observed execution or the offline package manifest.
+        if (actual.graph_digest != candidate.graph_digest
+                or not isinstance(actual.model_manifest_digest, str)
+                or re.fullmatch(r'sha256:[0-9a-f]{64}', actual.model_manifest_digest) is None
+                or published.candidate_digest != candidate.candidate_digest):
+            raise ValueError('REQUEST_REFERENCE_PUBLICATION_BINDING')
+        budget()
+        for record in records.values():
+            record['expected']['modelManifestDigest'] = actual.model_manifest_digest
+        graph = serialize_certified_graph(records, graph_digest=candidate.graph_digest)
+        value = dict(schema='tiger-yolo-request-reference-v1', runId=self.run_id,
+            requestId=self.request_id, runtimeCandidateDigest=self.runtime_candidate_digest,
+            placementCandidateDigest=candidate.candidate_digest, certifiedGraph=graph)
+        from .identities import _credential_document
+        _credential_document(self.output / 'graph-reference.json', value)
+        return published
+
+
+def read_request_reference(path: Path, *, run_id: str, request_id: str,
+                           runtime_candidate_digest: str,
+                           placement_candidate_digest: str, graph_digest: str) -> dict:
+    """Read the User-owned record for this invocation, never Provider traces.
+
+    The enclosing collection boundary authenticates the retained node tree.
+    This record is provenance, not a signature or proof of execution.
+    """
+    from .yolo_profile import _read_plane
+    path = Path(path)
+    if (not path.is_absolute() or any(p.is_symlink() for p in (path, *path.parents))):
+        raise ValueError('REQUEST_REFERENCE_PATH')
+    value = _read_plane(path)
+    expected = dict(schema='tiger-yolo-request-reference-v1', runId=run_id,
+        requestId=request_id, runtimeCandidateDigest=runtime_candidate_digest,
+        placementCandidateDigest=placement_candidate_digest)
+    if (not isinstance(value, dict) or set(value) != set(expected) | {'certifiedGraph'}
+            or any(value[key] != item for key, item in expected.items())):
+        raise ValueError('REQUEST_REFERENCE_IDENTITY')
+    graph = value['certifiedGraph']
+    if not isinstance(graph, dict) or graph.get('graphDigest') != graph_digest:
+        raise ValueError('REQUEST_REFERENCE_GRAPH')
+    validate_certified_graph_provenance(graph)
+    return graph
 
 
 def prepare_role_reference(model_bytes: bytes, *, artifact_digest: str,

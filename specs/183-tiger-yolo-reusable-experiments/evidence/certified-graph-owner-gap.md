@@ -1,9 +1,15 @@
 # Certified graph producer gap — 2026-09-07
 
-Status: OPEN, implementation finding; not a runtime failure or qualification.
+Status: PARTIALLY ADDRESSED; source wiring implemented, native qualification OPEN.
 Source inspected: `bef847ef` on `TigerClusterExperiments`.
 
-Latest correction (2026-09-07): [reference identity repair](t005-reference-identities.md)
+Latest checkpoint: [per-request source wiring](t005-request-reference-wiring.md)
+connects the User canonical-owner factory, assembler/reference producer and
+per-request reader (176 component passes). The historical offline prepare
+proposal below is superseded: final MODELROOT only exists after publication.
+Native User integration remains unverified because the host loader fails.
+
+Earlier correction (2026-09-07): [reference identity repair](t005-reference-identities.md)
 separates the Selection role-contract digest from assembled ONNX bytes (145
 focused passes). The wiring map below is a located component chain, not a
 completed or directly executable producer: offline package manifest and the

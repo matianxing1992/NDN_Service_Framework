@@ -13,9 +13,10 @@ import hashlib
 import json
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Mapping
+from typing import TYPE_CHECKING, Any, Mapping
 
-from .plan import InferenceDependency
+if TYPE_CHECKING:
+    from .plan import InferenceDependency
 
 
 def _canonical_bytes(value: Any) -> bytes:

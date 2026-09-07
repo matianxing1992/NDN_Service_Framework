@@ -9,6 +9,26 @@ from test_yolo_worker import prepared
 from runtime.yolo_worker import NodeRuntime
 
 
+def test_reference_cli_forwards_bound_user_arguments(monkeypatch, tmp_path):
+    import apps.yolo as app
+    observed = []
+    monkeypatch.setattr(app, 'run_user_with_reference',
+        lambda argv, **kwargs: observed.append((argv, kwargs)) or 0)
+    prefix = ['user', '--reference-backend', 'CPUExecutionProvider',
+        '--reference-run-id', 'run', '--reference-request-id', '/run/0',
+        '--reference-candidate-digest', 'sha256:'+'a'*64,
+        '--reference-output', str(tmp_path), '--']
+    forwarded = ['--request-id', '/run/0', '--lifecycle-output-dir', str(tmp_path)]
+    assert app.main(prefix + forwarded) == 0
+    assert observed[0][0] == forwarded
+    assert observed[0][1]['request_id'] == '/run/0'
+    for bad in [forwarded + ['--request-id', '/different'],
+                forwarded + ['--request-id=/different'],
+                ['--request-id', '/different', '--lifecycle-output-dir', str(tmp_path)]]:
+        assert app.main(prefix + bad) != 0
+    assert len(observed) == 1
+
+
 def application_inputs(tmp_path, rank, mode='two-node-gpu'):
     inputs = prepared(tmp_path, rank=rank, mode=mode)
     for name in ('native-execution-plan.json', 'service-manifest.json', 'trust-schema.conf'):
@@ -123,7 +143,7 @@ def scheduled_inputs(tmp_path, mode='two-node-gpu'):
     package.mkdir()
     worker = NodeRuntime(**inputs)
     count = 4 if mode == 'two-node-gpu' else 2
-    plan = {'case': mode, 'requests': [
+    plan = {'runId': 'run', 'case': mode, 'requests': [
         dict(index=i, warmup=i == 0, requestId='/run/request/' + str(i),
              output=str(worker.output / 'user' / 'requests' / str(i))) for i in range(count)]}
     worker._preparation_binding = (plan, 'receipt-fixture', 'sha256:' + 'c' * 64)
@@ -131,6 +151,9 @@ def scheduled_inputs(tmp_path, mode='two-node-gpu'):
         'candidateDigest': 'sha256:' + 'c' * 64,
         'placementCandidateId': 'test-candidate', 'placementCandidateDigest': 'sha256:' + 'a' * 64}))
     worker._verify_prepared_boundary = lambda: None  # Not a qualified SIF/credential fixture.
+    if mode != 'local-cpu':
+        worker.allocation = {'fixture': True}
+        worker.gpu_probe = {'fixture': True}
     return worker, plan, dict(package=package, catalog_data_name='/run/catalog/v=1',
         catalog_signer='/run/controller', permission_wait_ms=1000,
         request_deadline_ms=5000, process_timeout_seconds=10, protection_epoch='spec183-test-v1')
@@ -199,6 +222,10 @@ def test_schedule_runs_finite_users_preserving_live_provider(tmp_path, monkeypat
         assert all('SPEC180_CANDIDATE_DIGEST=sha256:' + 'a' * 64 in a for a in calls)
         assert all('--retain-numerical-response' in a for a in calls)
         assert all('--retain-public-assignments' in a for a in calls)
+        assert all(a[a.index('--reference-run-id') + 1] == plan['runId'] for a in calls)
+        assert all(a[a.index('--reference-request-id') + 1] == a[a.index('--request-id') + 1] for a in calls)
+        assert all(a[a.index('--reference-output') + 1] == a[a.index('--lifecycle-output-dir') + 1] for a in calls)
+        assert all(('--nv' in a) == (mode != 'local-cpu') for a in calls)
         assert all('NDNSF_DI_RECIPIENT_PUBLIC_KEY_MAP=/config/recipient-public-keys.json' in a for a in calls)
         assert not any(any(arg.startswith('SPEC181_PROVIDER_RECIPIENT_KEY_MAP=') for arg in a) for a in calls)
         assert all(a[a.index('--generated-policy-dir') + 1].startswith('/output/requests/') for a in calls)
@@ -211,6 +238,18 @@ def test_schedule_runs_finite_users_preserving_live_provider(tmp_path, monkeypat
         from runtime.yolo_result import validate_worker_cleanup
         assert validate_worker_cleanup(worker, rows)['childCount'] == count + 1
         assert all(r['reaped'] and not r['forced'] for r in rows)
+
+
+def test_gpu_reference_requires_preflight_before_user_launch(tmp_path):
+    worker, _, options = scheduled_inputs(tmp_path, 'single-node-gpu')
+    worker.gpu_probe = None
+    try:
+        with pytest.raises(ValueError, match='WORKER_REFERENCE_GPU_NOT_QUALIFIED'):
+            worker.run_user('0', ['unused'], package=options['package'], seconds=1,
+                            reference_gpu=True)
+        assert not worker.launches
+    finally:
+        worker.close()
 
 
 @pytest.mark.parametrize('failure', ['process', 'evidence', 'peer'])

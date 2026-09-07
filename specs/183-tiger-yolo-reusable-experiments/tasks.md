@@ -6,9 +6,10 @@
 
 ## Detailed Execution Progress
 
-更新：2026-09-07；文档/源码核对基线 `d1f1504a`，另见工作区已有的
-`Experiments/TigerCluster/tools/spec183_host_build.sh` 修改及未跟踪的
-`evidence/host-unit.md`。本轮只核对与整理进度，没有启动构建、模型或集群测试。
+更新：2026-09-07；进度表初始审计基线 `d1f1504a`，最新接线证据见
+[request reference wiring](evidence/t005-request-reference-wiring.md)。工作区另有
+其他客户端维护的 `Experiments/TigerCluster/tools/spec183_host_build.sh` 和
+`evidence/host-unit.md`；不将其正在运行的构建归入本表已验收证据。
 下表是当前执行入口；后文 checkpoint 是历史证据，不应把旧“下一步”当作当前指令。
 `VERIFIED` 仅指该行声明的范围；历史组件测试记录未在本轮重跑，不能证明当前候选
 的 runtime PASS。`IMPLEMENTED` 表示代码/脚本存在；`BLOCKED` 表示仍有明确前置缺口。
@@ -26,11 +27,11 @@
 | T004.b | T004 | `jobs/yolo/submit.py` 的 local、staging、run 接真实 worker | BLOCKED | 当前源码仍有 `LOCAL_WORKER_NOT_WIRED`、`REMOTE_STAGING_NOT_WIRED`、`RUNNER_NOT_WIRED` | 连接实际 owner，保留 gate 检查；在 T007 前完成接线验证 | 先跑真实调用边界的 focused 回归，不重复全部组件测试 |
 | T004.c | T004 | `local` 拒绝其他 profile 冻结的 prepared run | VERIFIED | [CLI binding](evidence/t004-cli-journal.md#2026-09-07-local-prepared-profile-binding)；40 CLI passed，先于 host receipt 检查拒绝 | 绑定修复已完成；T004.b 的生产 worker 接线仍待完成 | 相同源码无需重复 CLI suite；本项不触发 SIF/GPU 验证 |
 | T005.a | T005 | 真实 User/Provider 参数、权限材料、准备与 readiness | IMPLEMENTED | [public recipients](evidence/t005-public-recipients.md)、[normal owner](evidence/t005-normal-node-owner.md) | 尚未证明完整真实 YOLO request→response | 未变安全组件证据复用；变更只重测影响边界 |
-| T005.b | T005 | 实际模型角色→独立 ORT reference→certified graph producer 接线 | BLOCKED | [owner gap](evidence/certified-graph-owner-gap.md)；serializer 已有，`apps/yolo.py` 无生产调用 | 通过既有 DI owner 取得实际 role bytes，接入 prepare 和真实 graph identity | 新接线的正例/篡改 focused 测试；不新增 campaign |
+| T005.b | T005 | User post-ACK role specs→DI assembler→独立 ORT reference→发布后 MODELROOT | IMPLEMENTED | [request wiring](evidence/t005-request-reference-wiring.md)；176 组件通过，含真实小 ONNX assembler/CPU ORT；原生应用测试收集失败 | 生产调用已接；需修复 native loader 后验证真实 YOLO request，T007 仍 BLOCK | 组件证据复用；native 测试待 loader 修复后再跑，不为 identity mutation 重建模型 |
 | T005.d | T005 | 独立参考区分角色逻辑摘要与组装 ONNX 字节摘要 | VERIFIED | [reference identities](evidence/t005-reference-identities.md)；145 focused passed，CPU ONNX/组件范围 | 后续 producer 传入两个身份，并在发布后绑定实际 MODELROOT manifest；T005.b 未关闭 | 仅重跑 reference/相关 comparator，不触发 native build 或历史 suite |
 | T005.c | T005 | 新 SIF 内 Controller 写真实 publication receipt | BLOCKED | [audit G2](evidence/design-code-convergence.md)；旧 base 缺当前参数 | T007 检查源码调用契约；T011 新 SIF 执行验证 | 旧 base 不反复尝试同一不支持参数 |
 | T006.a | T006 | `yolo_result.py` 数值、角色、边、GPU、退出与负例判定 | IMPLEMENTED | [native observation](evidence/t006-native-observation.md)、[numerical reanalysis](evidence/t006-numerical-reanalysis.md) | 组件证据不能代替生产数据来源和真实运行 | 仅重测变化的 oracle/collector 行为 |
-| T006.b | T006 | producer 文档经 preparation/run/collection 进入最终判定 | BLOCKED | [collector handoff](evidence/t006-collector-handoff.md)、[owner gap](evidence/certified-graph-owner-gap.md) | 依赖 T005.b 和 T004.b；拒绝 synthetic expected graph 代替生产输入 | 同一次接线验收覆盖生产者与消费者 |
+| T006.b | T006 | collector 读取每次 User 留存的独立 graph-reference.json | IMPLEMENTED | [request wiring](evidence/t005-request-reference-wiring.md)；核验 run/request/runtime/placement/graph，缺文件拒绝共享图替代 | 仍依赖 T004.b 实际调度和完整 retained-native 验收；不以 helper 关闭父任务 | 与 T005.b 共用 176 项证据，不单独启动 GPU 采集 |
 | T007.a | T007 | 生产路径设计—代码审计报告 | VERIFIED | [design-code-convergence](evidence/design-code-convergence.md)；报告结果为 BLOCK，非 PASS | 保留原发现；实际 wiring 修复后重审 | 纯排版不触发全套验证 |
 | T007.b | T007 | T002/T004/T005/T006 生产接线收敛为 PASS | BLOCKED | 同上；已定位 certified graph 与 launcher 缺口 | 先关闭源码语义缺口；T010/T011 runtime receipts 留在后续验收，不倒置依赖 | 按变更范围重审，未 PASS 不开展正式 T008+ 验收 |
 

@@ -335,6 +335,21 @@ def collect_normal_verdict(nodes, references, *, plan, runtime_candidate_digest,
         ordered_references = list(references)
     else:
         raise EvidenceError('NORMAL_VERDICT_REFERENCE_COVERAGE')
+    from pathlib import Path
+    from runtime.yolo_graph_reference import read_request_reference
+    # MODELROOT is published per User invocation. An operator-supplied shared
+    # graph cannot replace the producer's independently prepared role records.
+    graphs = []
+    try:
+        for index, row in enumerate(requests):
+            graphs.append(read_request_reference(
+                Path(nodes[0]['root']) / 'user' / 'requests' / str(index) / 'graph-reference.json',
+                run_id=plan['runId'], request_id=row['requestId'],
+                runtime_candidate_digest=runtime_candidate_digest,
+                placement_candidate_digest=placement_candidate_digest,
+                graph_digest=graph_digest))
+    except (KeyError, TypeError, ValueError, OSError) as exc:
+        raise EvidenceError('NORMAL_VERDICT_REQUEST_REFERENCE') from exc
     results = []
     for index, reference in enumerate(ordered_references):
         results.append(collect_retained_request(
@@ -344,7 +359,7 @@ def collect_normal_verdict(nodes, references, *, plan, runtime_candidate_digest,
             placement_candidate_digest=placement_candidate_digest,
             graph_digest=graph_digest, catalogue_digest=catalogue_digest,
             providers_by_role=providers_by_role, allocation_expected=allocation_expected,
-            certified_graph=certified_graph))
+            certified_graph=graphs[index]))
     verdict = finalize_normal_verdict(results, plan=plan, graph_digest=graph_digest)
     return dict(verdict, requestResults=results)
 

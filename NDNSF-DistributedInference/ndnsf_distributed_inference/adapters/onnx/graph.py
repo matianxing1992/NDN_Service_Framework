@@ -13,9 +13,10 @@ import json
 import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
-from ...plan import InferenceDependency
+if TYPE_CHECKING:
+    from ...plan import InferenceDependency
 from ...core.ports import CandidateBudget, PlanCandidate, PlanCandidateSet
 from ...splitter import (
     AdapterDescriptor,
@@ -331,6 +332,8 @@ class OnnxChunkDependency:
     unknown_size_tensors: tuple[str, ...] = ()
 
     def to_inference_dependency(self) -> InferenceDependency:
+        from ...plan import InferenceDependency
+
         expected_bytes = int(self.known_boundary_bytes or 0)
         # Tensor bundles are NPZ-encoded and then encrypted into a collaboration
         # large-data envelope. Keep this estimate conservative; it is a prefetch

@@ -17,12 +17,13 @@ import re
 import tempfile
 from threading import Lock
 from time import perf_counter, time
-from typing import Mapping, Sequence
+from typing import TYPE_CHECKING, Mapping, Sequence
 
 import numpy as np
 import onnxruntime as ort
 
-from ...app_sdk.facades import ProviderRuntimeContext
+if TYPE_CHECKING:
+    from ...app_sdk.facades import ProviderRuntimeContext
 
 
 _SESSION_CACHE_LOCK = Lock()
@@ -143,6 +144,35 @@ class CertifiedOnnxAssemblyRecipe:
             self.to_dict(), sort_keys=True, separators=(",", ":"),
             ensure_ascii=False).encode("utf-8")
         return "sha256:" + hashlib.sha256(wire).hexdigest()
+
+    @classmethod
+    def from_role_spec(cls, role_spec):
+        """Reconstruct and verify the recipe already certified in a role.
+
+        This consumes a real certified RoleAssemblySpec; it does not plan a
+        role, infer node ownership or issue a new certificate.
+        """
+        recipe = cls(
+            model_manifest_digest=role_spec.model_manifest_digest,
+            artifact_profile_digest=role_spec.artifact_profile_digest,
+            graph_digest=role_spec.graph_digest,
+            canonical_initializer_digest=role_spec.canonical_initializer_digest,
+            adapter_descriptor_digest=role_spec.adapter_descriptor_digest,
+            assembler_descriptor_digest=role_spec.assembler_descriptor_digest,
+            backend_abi=role_spec.backend_abi, role_kind=role_spec.role_kind,
+            layer_begin=role_spec.layer_begin, layer_end=role_spec.layer_end,
+            node_indices=tuple(role_spec.node_indices),
+            input_names=tuple(item['name'] for item in role_spec.expected_inputs),
+            output_names=tuple(item['name'] for item in role_spec.expected_outputs),
+            expected_inputs=tuple(role_spec.expected_inputs),
+            expected_outputs=tuple(role_spec.expected_outputs),
+            precision=role_spec.precision, quantization=role_spec.quantization,
+            layout=role_spec.layout, padding=role_spec.padding,
+            max_source_bytes=role_spec.resource_envelope['maxSourceBytes'],
+            max_assembled_bytes=role_spec.resource_envelope['maxAssembledBytes'],
+            max_nodes=role_spec.resource_envelope['maxNodes'])
+        recipe.validate_role_spec(role_spec)
+        return recipe
 
     def validate_role_spec(self, role_spec) -> None:
         identity_mismatches = []

@@ -169,16 +169,20 @@ def test_finalize_normal_verdict_rejects_partial_component(mutation):
 
 def test_collect_normal_verdict_owns_complete_request_loop(monkeypatch):
     graph = 'sha256:'+'c'*64
-    plan = {'case': 'local-cpu',
-            'requests': [dict(index=0, warmup=True), dict(index=1, warmup=False)]}
+    plan = {'runId': 'run', 'case': 'local-cpu',
+            'requests': [dict(index=i, warmup=i == 0, requestId='/run/' + str(i)) for i in range(2)]}
     providers = {name: '/app/' + name for name in ('BackboneNeck', 'DetectShard0', 'DetectShard1', 'Merge')}
     calls = []
 
     def retained(nodes, reference, **kwargs):
+        assert kwargs['certified_graph']['requestIndex'] == kwargs['request_index']
         calls.append((reference, kwargs['request_index']))
         return _final_component('local-cpu', 2, graph=graph)[kwargs['request_index']]
 
     monkeypatch.setattr(result, 'collect_retained_request', retained)
+    import runtime.yolo_graph_reference as producer
+    monkeypatch.setattr(producer, 'read_request_reference',
+        lambda path, **kwargs: {'graphDigest': graph, 'requestIndex': int(path.parent.name)})
     verdict = result.collect_normal_verdict(
         {0: {'root': '/node0'}}, ['warmup-reference', 'measured-reference'],
         plan=plan, runtime_candidate_digest='sha256:'+'a'*64,
@@ -204,6 +208,18 @@ def test_collect_normal_verdict_rejects_incomplete_inputs(references, certified_
             placement_candidate_id='yolo-v1', placement_candidate_digest='sha256:'+'b'*64,
             graph_digest='sha256:'+'c'*64, catalogue_digest='sha256:'+'d'*64,
             providers_by_role={}, certified_graph=certified_graph)
+
+
+def test_normal_verdict_rejects_shared_graph_without_user_record(tmp_path):
+    plan = {'runId': 'run', 'case': 'local-cpu',
+            'requests': [dict(index=i, warmup=i == 0, requestId='/run/' + str(i)) for i in range(2)]}
+    with pytest.raises(ValueError, match='NORMAL_VERDICT_REQUEST_REFERENCE'):
+        result.collect_normal_verdict(
+            {0: {'root': str(tmp_path)}}, ['warmup', 'measured'], plan=plan,
+            runtime_candidate_digest='sha256:'+'a'*64, placement_candidate_id='yolo',
+            placement_candidate_digest='sha256:'+'b'*64, graph_digest='sha256:'+'c'*64,
+            catalogue_digest='sha256:'+'d'*64, providers_by_role={},
+            certified_graph={'graphDigest': 'sha256:'+'c'*64, 'roles': {'callerSupplied': 'not authority'}})
 
 
 def _expected_rejection():
