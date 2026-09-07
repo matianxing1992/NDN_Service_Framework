@@ -68,6 +68,27 @@ Spec183 输入门：`model-manifest.json` 仅绑定 `atomic-v1` 且没有 signat
 而 Spec183 需要 `shared-backbone-two-shard-v1` 的 candidate-bound model manifest。
 需要重新签发或由权威方明确绑定该 manifest 后，才能进入 dispatch/profile。
 
+Resolved 2026-09-07 (Spec183 fixed experiment authority, commit 7cbed99f +
+follow-up): the `shared-backbone-two-shard-v1`-bound model manifest is now
+re-issued by the Spec183 model-manifest authority
+(`spec183-model-manifest-ed25519-20260907`, contract
+`contracts/experiment-authority-v1.md`; registry status CONFIGURED). The
+variant keeps every verified Spec180 field (`canonicalModelSha256`,
+`canonicalInitializerSha256`, `packageManifestSha256`) and binds
+`candidateDigest sha256:3fd5fb9d9c46bd46240cf6cca132b940659ffccfffb634101c79139acd5dc891`
+(`shared-backbone-two-shard-v1`, matching the four-role catalogue used by
+Spec183 offers). Held as a received input under the ignored CAS
+`Experiments/TigerCluster/.cache/model/spec180-public/`
+(`model-manifest-shared-backbone-two-shard-v1.json` payload sha256
+`1255d95b…`, signed document sha256 `02f7dabc…`); only the public key set is
+committed. The detached envelope is accepted by both the Spec183 tool
+verifier and the shared `scripts/spec180_contract_gate.py` against the
+committed Spec183 registry, and a digest tamper is rejected
+(`MANIFEST_SIGNATURE_INVALID`). The original atomic-v1-bound file is left
+untouched for provenance. Dispatch/profile wiring of this input remains the
+T004/T005/T006 work recorded in tasks.md; the input gate that blocked it is
+closed.
+
 ## Site And Capacity
 
 - SSH实测itiger/tma1可达，squeue无本用户job；未提交新job。

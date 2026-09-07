@@ -168,6 +168,21 @@ T001–T004形成 profile/launcher 实现骨架；可操作 MVP 还要求 T006 �
 
 ## Current Checkpoint
 
+2026-09-07 Spec183 输入门关闭 checkpoint：T001 evidence（input-inventory.md）所列
+缺口 —— `model-manifest.json` 仅绑定 atomic-v1 且无 signature envelope —— 已关闭。
+现按同一固定权威重签 `shared-backbone-two-shard-v1`-bound model manifest
+（candidateDigest `sha256:3fd5fb9d…dc891`，与四 role catalogue/offers 绑定；
+`canonicalModelSha256`/`canonicalInitializerSha256`/`packageManifestSha256` 保留
+Spec180 已核实的字段值，原始 atomic 文件未动）。签发用
+`tools/spec183_authority.py sign`（model-manifest 权威
+`spec183-model-manifest-ed25519-20260907`），产物作为接收输入放 ignored CAS
+`Experiments/TigerCluster/.cache/model/spec180-public/`（payload 变体
+`model-manifest-shared-backbone-two-shard-v1.json` sha256 `1255d95b…`，签名文档
+`…signed.json` sha256 `02f7dabc…`；仅公钥/registry 提交）。签名经工具 verify 与
+共享门 `scripts/spec180_contract_gate.py` 双通道验证通过，篡改 digest 被拒
+（MANIFEST_SIGNATURE_INVALID）。该输入进入 dispatch/profile 的真实接线仍属
+T004/T005/T006 任务，继续按 tasks.md 顺序推进。
+
 2026-09-07 Spec183 experiment authority 修复 checkpoint（修整裁决已执行）：按用户
 裁决，Spec183 不再等待丢失的 Spec180 离机私钥（原位于
 `~/.config/ndnsf/spec180/*.key`，已不存在），改为自建固定 experiment-only 权威
