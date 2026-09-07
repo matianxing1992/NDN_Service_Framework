@@ -29,6 +29,16 @@ receipts where the physical inputs are unavailable.
 
 ## Blocking production findings
 
+2026-09-07 follow-up: the interrupted submission patch contained self-dependent
+gate requirements, seconds emitted as bare Slurm minutes, a fixed two-node
+allocation for single-node mode, untyped GPU allocation and a mutable-checkout
+wrapper path. These are corrected and covered by 74 focused operator/profile/
+journal tests (9.66s). The proposed live submission was withheld because
+`_gate_receipt` only checks generic status strings: it still needs exact
+candidate, case, source/runtime and retained-evidence binding. The shared
+remote staging/runner/reconciliation path remains unimplemented. No task
+or runtime qualification is closed by these tests.
+
 | ID | Requirement | Finding | Owner / earliest gate |
 | --- | --- | --- | --- |
 | T007-B1 | FR-002, FR-018 | `Experiments/TigerCluster/profiles/yolo-two-node.json` is absent. No real partition/account/GPU/memory/SIF/model/oracle references can be checked. | T001 external inputs, then T004 |

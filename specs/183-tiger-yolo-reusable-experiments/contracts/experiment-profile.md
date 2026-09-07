@@ -112,6 +112,17 @@ Provider 缓存命中必须如实记录，不能称每请求都冷获取。未�
 
 ## Runtime And Submission State
 
+Prerequisites are acyclic: hostMinindn → local-cpu/localSif →
+single-node-gpu/singleNodeGpu → two-node-gpu/twoNodeGpu →
+negative-dependency. Each case consumes the preceding result; its own result
+is produced after execution. The second normal allocation reuses the same
+singleNodeGpu prerequisite and must separately satisfy T015 ordering.
+
+Submission argv uses HH:MM:SS (900 seconds = 00:15:00), one task/node for
+single-node-gpu and two for distributed cases, typed GPU GRES from gpuClass,
+and run.sbatch from the frozen bundle. This renderer supports review;
+staging, receipt semantics and the allocated runner must close before dispatch.
+
 `PREPARED → SUBMITTING → SUBMITTED(jobId) → RUNNING → PASS|FAIL|INCOMPLETE`。
 提交前原子建立 candidate/gate 活动记录；两并发启动仅一个可到 sbatch。sbatch 返回后网络断开导致 job ID 未知时进入 `SUBMISSION_UNKNOWN`，恢复按唯一 comment/run ID 查询已有 job，未确认无提交前不重试。终态只写一次，reanalysis 是独立文件。
 共享锁位置由 profile 指定，必须对所有操作者共享可见；纯本机锁不能声称阻止另一机器重复提交。allocation 阶段身份/路径校验失败不得启动 Provider。
@@ -130,7 +141,7 @@ wait/readiness 使用 monotonic deadline，并检查 child 和 peer failure。Co
 `status=INCOMPLETE`、`qualification=NOT_EVALUATED`，不创建 run 目录、不冻结
 bundle、不调用 Apptainer、SSH 或 Slurm。`prepare` 只有在 dispatch gate 已被
 独立 receipt 标记为合格时才会冻结不可变 harness 和 run-plan；`local` 还要求
-local-SIF gate；`submit` 还要求远端 staging/allocated-run owner。当前这些真实
+host-MiniNDN gate，并由此次执行产生 local-SIF gate；`submit` 还要求远端 staging/allocated-run owner。当前这些真实
 receipt 尚未产生，因此命令不会把结构性 profile 当成可执行候选。`collect` 只
 读取与 prepared run 绑定的 `collection-input.json`，经 authoritative collector
 重算 verdict；不会启动缺失步骤或把旧失败改成成功。

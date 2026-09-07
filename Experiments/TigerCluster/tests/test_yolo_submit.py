@@ -97,6 +97,85 @@ def test_private_slurm_runner_requires_allocation(tmp_path):
     assert json.loads(result.stdout)["reason"] == "ALLOCATION_REQUIRED"
 
 
+@pytest.mark.parametrize("case,gate,nodes", [
+    ("single-node-gpu", "localSif", 1),
+    ("two-node-gpu", "singleNodeGpu", 2),
+    ("negative-dependency", "twoNodeGpu", 2),
+])
+def test_submission_prerequisites_and_allocation_contract(tmp_path, monkeypatch, case, gate, nodes):
+    module = submit_module()
+    path, profile = profile_fixture(tmp_path)
+    bundle = tmp_path / "frozen"
+    wrapper = bundle / "jobs/yolo/run.sbatch"
+    wrapper.parent.mkdir(parents=True)
+    wrapper.write_bytes((ROOT / "jobs/yolo/run.sbatch").read_bytes())
+    wrapper.chmod(0o555)
+    prepared = {"case": case, "bundle": str(bundle),
+                "candidateDigest": "sha256:" + "a" * 64,
+                "profileDigest": "sha256:" + "b" * 64}
+    args = SimpleNamespace(profile=path, run_id="test-submit", case=case,
+                           output=tmp_path / "output")
+    command = module._submission_command(path, profile, args, prepared, "spec183-test")
+    assert "--time=00:15:00" in command
+    assert "--nodes=" + str(nodes) in command
+    assert "--ntasks=" + str(nodes) in command
+    assert "--gres=gpu:rtx_6000:1" in command
+    assert command[-6] == str(wrapper)
+    seen = []
+    monkeypatch.setattr(module, "_dispatch_report",
+                        lambda _: ({"qualification": "READY",
+                                    "documentDigest": prepared["profileDigest"]}, profile))
+    monkeypatch.setattr(module, "_load_prepared", lambda *_: prepared)
+    monkeypatch.setattr(module, "_gate_receipt",
+                        lambda path, profile, name: seen.append(name))
+    def forbidden(*args, **kwargs):
+        pytest.fail("unwired staging must not launch Slurm")
+    monkeypatch.setattr(subprocess, "run", forbidden)
+    assert module._submit(args) == module.INCOMPLETE
+    assert seen == [gate]
+    assert not args.output.exists()
+
+
+def test_submit_rejects_local_case_before_reading_or_launching(tmp_path):
+    module = submit_module()
+    with pytest.raises(module.ClosureError, match="SUBMIT_CASE"):
+        module._submit(SimpleNamespace(case="local-cpu"))
+
+
+def test_local_sif_first_run_requires_host_gate_not_its_own_result(tmp_path, monkeypatch):
+    module = submit_module()
+    monkeypatch.setattr(module, "_dispatch_report", lambda _: ({"qualification": "READY"}, {}))
+    monkeypatch.setattr(module, "_load_prepared", lambda *_: {
+        "case": "local-cpu", "candidateDigest": "sha256:" + "a" * 64})
+    seen = []
+    monkeypatch.setattr(module, "_gate_receipt", lambda path, profile, gate: seen.append(gate))
+    args = SimpleNamespace(profile=tmp_path / "profile", output=tmp_path / "output",
+                           run_id="test-local", case="local-cpu")
+    assert module._local(args) == module.INCOMPLETE
+    assert seen == ["hostMinindn"]
+    assert not args.output.exists()
+
+
+@pytest.mark.parametrize("mutation,reason", [
+    ("case", "SUBMIT_CASE"), ("profile", "PROFILE_CHANGED_AFTER_PREPARE"),
+])
+def test_submit_rejects_changed_preparation_before_receipts(tmp_path, monkeypatch, mutation, reason):
+    module = submit_module()
+    prepared = {"case": "two-node-gpu", "profileDigest": "sha256:" + "a" * 64}
+    if mutation == "case":
+        prepared["case"] = "single-node-gpu"
+    monkeypatch.setattr(module, "_dispatch_report", lambda _: (
+        {"qualification": "READY", "documentDigest": "sha256:" + ("b" if mutation == "profile" else "a") * 64}, {}))
+    monkeypatch.setattr(module, "_load_prepared", lambda *_: prepared)
+    def forbidden(*args, **kwargs):
+        pytest.fail("changed preparation must be rejected before receipt checks")
+    monkeypatch.setattr(module, "_gate_receipt", forbidden)
+    args = SimpleNamespace(profile=tmp_path / "profile", run_id="test-submit",
+                           output=tmp_path / "output", case="two-node-gpu")
+    with pytest.raises(module.ClosureError, match=reason):
+        module._submit(args)
+
+
 def test_deterministic_run_plan_has_four_provider_roles_and_four_requests(tmp_path):
     path, _ = input_profile(tmp_path)
     result = cli("check", "--stage", "inputs", "--profile", path,

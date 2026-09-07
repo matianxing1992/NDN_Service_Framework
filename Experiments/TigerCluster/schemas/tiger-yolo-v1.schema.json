@@ -32,7 +32,8 @@
           "properties": {
             "hostMinindn": {"$ref": "#/definitions/file"},
             "localSif": {"$ref": "#/definitions/file"},
-            "singleNodeGpu": {"$ref": "#/definitions/file"}
+            "singleNodeGpu": {"$ref": "#/definitions/file"},
+            "twoNodeGpu": {"$ref": "#/definitions/file"}
           }
         }
       }

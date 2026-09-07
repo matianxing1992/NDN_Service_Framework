@@ -2108,3 +2108,22 @@ code path and focused regression, not the full runtime qualification.
   closed with zero Apptainer calls.
 - Lesson: a new workload dispatch may not disable an existing release gate
   unless an equivalent workload-specific gate is present.
+# 2026-09-07 — Spec183 interrupted Slurm dispatch review
+
+Symptom: an uncommitted launcher patch had passing mocked submission tests,
+but requested a case's own success receipt before first execution; emitted
+900 seconds as bare Slurm time 900 (minutes); fixed every case at two nodes;
+and selected the working-checkout wrapper without a typed GPU request.
+The proposed staging gate accepted generic PASS/READY fields without binding
+the actual promoted files. No Slurm job was launched.
+
+Cause: tests mocked qualification and asserted successful submission without
+checking the case sequence, Slurm units or frozen runtime boundary.
+
+Fix: use preceding-gate prerequisites, explicit HH:MM:SS, case node counts,
+typed GPU GRES, and the frozen wrapper. Keep actual dispatch closed pending
+semantic staging/receipt validation and runner/reconciliation implementation.
+74 focused operator/profile/journal tests passed in 9.66s.
+
+Lesson: test the first execution of each gate and exact allocation semantics;
+mocked PASS fields cannot establish staging or permit a real sbatch call.

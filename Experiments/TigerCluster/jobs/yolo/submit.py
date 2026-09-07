@@ -27,6 +27,12 @@ from runtime.yolo_profile import (ClosureError, HASH, _file_identity, _operator_
 
 INCOMPLETE = 78
 
+CASE_GATE = {
+    "single-node-gpu": "localSif",
+    "two-node-gpu": "singleNodeGpu",
+    "negative-dependency": "twoNodeGpu",
+}
+
 
 def _json_digest(value):
     return "sha256:" + hashlib.sha256(json.dumps(
@@ -251,6 +257,44 @@ def _not_ready(action: str, reason: str, report: dict | None = None) -> int:
     return INCOMPLETE
 
 
+def _submission_command(profile_path: Path, profile: dict, args, prepared: dict,
+                        submission_key: str) -> list[str]:
+    """Render allocation argv for review; this does not authorize dispatch."""
+    cluster = profile["cluster"]
+    output = _safe_output(args.output)
+    bundle = Path(prepared["bundle"])
+    if (not bundle.is_dir() or bundle.is_symlink()
+            or any(parent.is_symlink() for parent in bundle.parents)):
+        raise ClosureError("RUN_BUNDLE_SYMLINK")
+    if args.case not in CASE_GATE or prepared["case"] != args.case:
+        raise ClosureError("SUBMIT_CASE")
+    nodes = 1 if args.case == "single-node-gpu" else 2
+    seconds = cluster["wallTimeSeconds"]
+    walltime = f"{seconds // 3600:02d}:{seconds % 3600 // 60:02d}:{seconds % 60:02d}"
+    wrapper = bundle / "jobs/yolo/run.sbatch"
+    if not wrapper.is_file() or wrapper.is_symlink() or not os.access(wrapper, os.X_OK):
+        raise ClosureError("RUN_WRAPPER")
+    command = [
+        "sbatch", "--parsable", "--export=NONE",
+        "--partition=" + cluster["partition"],
+        "--account=" + cluster["account"],
+        "--nodes=" + str(nodes), "--ntasks=" + str(nodes), "--ntasks-per-node=1",
+        "--gres=gpu:" + cluster["gpuClass"] + ":1",
+        "--cpus-per-task=" + str(cluster["cpusPerNode"]),
+        "--mem=" + str(cluster["memoryGiB"]) + "G",
+        "--time=" + walltime,
+        "--job-name=tiger-yolo-" + args.case,
+        "--comment=" + submission_key,
+        "--output=" + str(output / (args.run_id + "-slurm-%j.log")),
+        str(wrapper), str(bundle), str(profile_path.resolve()), str(output),
+        args.run_id, args.case,
+    ]
+    constraint = cluster.get("constraint", "")
+    if constraint:
+        command.insert(5, "--constraint=" + constraint)
+    return command
+
+
 def _prepare(args) -> int:
     profile = Path(args.profile)
     report, value = _dispatch_report(profile)
@@ -290,7 +334,7 @@ def _local(args) -> int:
     prepared = _load_prepared(args.output, args.run_id)
     if args.case != "local-cpu" or prepared["case"] != args.case:
         raise ClosureError("LOCAL_CASE")
-    _gate_receipt(Path(args.profile), value, "localSif")
+    _gate_receipt(Path(args.profile), value, "hostMinindn")
     # The real SIF worker is intentionally enabled only after T008/T009/T010
     # produce the local gate receipt.  This branch prevents a structural profile
     # from silently becoming a fake local qualification.
@@ -298,17 +342,22 @@ def _local(args) -> int:
 
 
 def _submit(args) -> int:
+    if args.case not in CASE_GATE:
+        raise ClosureError("SUBMIT_CASE")
     profile_path = Path(args.profile)
     report, value = _dispatch_report(profile_path)
     if report.get("qualification") != "READY":
         return _not_ready("submit", "DISPATCH_GATE", report)
     prepared = _load_prepared(args.output, args.run_id)
-    gate_name = {"single-node-gpu": "singleNodeGpu", "two-node-gpu": "singleNodeGpu",
-                 "negative-dependency": "singleNodeGpu"}[args.case]
+    if prepared["case"] != args.case:
+        raise ClosureError("SUBMIT_CASE")
+    if report["documentDigest"] != prepared["profileDigest"]:
+        raise ClosureError("PROFILE_CHANGED_AFTER_PREPARE")
+    gate_name = CASE_GATE[args.case]
     _gate_receipt(profile_path, value, gate_name)
-    # No staging/remote bundle owner exists until T012.  Refuse before opening
-    # the shared journal or calling sbatch; this is the important no-side-effect
-    # boundary for incomplete candidates.
+    # A generic PASS marker cannot establish remote staging or allocation
+    # readiness. T012 must validate the promoted bundle and wire the runner
+    # before any journal mutation or sbatch call is enabled.
     return _not_ready("submit", "REMOTE_STAGING_NOT_WIRED",
                       {"prepared": prepared["candidateDigest"], "case": args.case})
 

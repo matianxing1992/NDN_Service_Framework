@@ -4,6 +4,16 @@
 **Branch**: `TigerClusterExperiments`
 **Status**: 2/17 tasks complete (T001 inventory and T003 focused component acceptance); IN_PROGRESS, no runtime PASS.
 
+2026-09-07 interrupted-dispatch review: corrected acyclic prerequisites
+(hostMinindn → localSif → singleNodeGpu → twoNodeGpu), explicit HH:MM:SS,
+case-specific node/task counts, typed GPU GRES and frozen-bundle wrapper path.
+Rejected the unfinished sbatch enablement: generic PASS/READY receipt fields
+do not validate staging or candidate identity. The command renderer is tested
+but not dispatched; submit still stops before journal writes and Slurm.
+Focused operator/profile/journal tests: 74 passed in 9.66s.
+T004/T007 remain open for semantic receipts, shared-root staging, allocation
+runner and unknown-job reconciliation; no native/SIF/Tiger run occurred.
+
 任务按行为闭环组织，每项包含必要失败例→实现→聚焦回归→证据，不拆成“写测试/改代码/跑命令”三个机械任务。正式 broad suites/实验必须等 T007；focused red/green 可在实现中执行。所有 Tiger 文件以下用完整仓库相对路径。
 
 ## Phase 1: Setup
