@@ -39,7 +39,8 @@ bash Experiments/TigerCluster/adapters/slurm-apptainer/scripts/build-local-sif.s
 ```
 
 该 receipt 必须由真实 CPU/MiniNDN qualification 产生，并绑定同一 source
-seal、`/<applicationName>/sync` 应用组、四 Provider 及三类注册 case；当前
+seal、`applicationName + '/sync'`（applicationName 自带前导 `/`）应用组、四
+Provider 及三类注册 case；当前
 validator 只提供 `YOLO_HOST_GATE_COMPONENT_ONLY` 边界，不替代 T010 的真实
 receipt。Spec183 receipt 会在 Apptainer version/build 调用前校验；无效或混用
 旧参数必须零 Apptainer 调用。旧 Spec175 路径和其命令顺序保持不变。
