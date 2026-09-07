@@ -27,7 +27,7 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 | [T004-A Canonical Plan Sealing](contracts/execution-units.md#t004-a-canonical-plan-sealing) | DONE | T003-C | [acceptance](evidence/t004-a-plan-sealer-20260907.md)；CPP(Spec182PlanSealer/*) 7 cases 全绿（canonical 封印 + M22 单源投影、encode 固定 7-key 片段字节一致 + 独立 JSON oracle、逐维度篡改敏感、错误 endpoint/缺 grant/错 ACK digest 首边界拒绝、plaintext 无 grant 封面）；planned suite 登记于新文件 di-native-plan-sealer.t.cpp；真实 Core commit/Provider parser 对照留 T016 | 2026-09-07 |
 | [T005-A InProcess Authority](contracts/execution-units.md#t005-a-inprocess-authority) | DONE | T004-A | [acceptance](evidence/t005-a-inprocess-authority-20260907.md)；CPP(Spec182GrantAuthority/*) 6 cases 全绿（固定 request/时钟向量、expiry/自授/issuer 不完整/wrong-key-recipient 面原因码族拒绝、secret 生命周期无 key 驻留、注入 policy 传播）；issue() 补 requester==provider 拒绝（Python frozen 对照）；planned 独立文件拆分由既有同文件切片取代 | 2026-09-07 |
 | [T005-B Requester Grant Publication](contracts/execution-units.md#t005-b-requester-grant-publication) | DONE | T005-A | [acceptance](evidence/t005-b-requester-grant-20260907.md)；CPP(Spec182GrantClient/*) 8 cases 全绿（构造门、view 完整性先于端口副作用、过期 deadline 在副作用前 fence、过期 grant 于 authority 边界拒绝、canonical exact-name/回落与 determinism、错名 publication 恰好一次消费且不复活）+ 集成 Spec182GrantClientFlow 1 case（真实 ServiceUser::publishSignedAppData + exact-name fetch，KeyLocator/content 校验）；生产代码本卡无改动（既有切片语义经测试确认）；真实 Provider crypto 消费 T016 | 2026-09-07 |
-| [T006-A Canonical Source Identity](contracts/execution-units.md#t006-a-canonical-source-identity) | PARTIAL | T002-A | [baseline](evidence/task-progress-registry-20260907.md)；已有相关源码切片；完整卡验收未完成 | 2026-09-07 |
+| [T006-A Canonical Source Identity](contracts/execution-units.md#t006-a-canonical-source-identity) | DONE | T002-A | [acceptance](evidence/t006-a-canonical-source-identity-20260907.md)；CPP(Spec182OnnxIdentity/*) 11 cases 全绿（24 v1 + 14 accepted extended 全模型 golden 逐字段、typed/raw pair 摘要恒等、v2 per-tensor 12 accepted 逐字节 + 5 拒绝、bf16 两编码归一、revision 分类、v2 descriptor binding 门、external/function-attr 内联等价、overflow/非法路径/限额拒绝） | 2026-09-07 |
 | [T006-B Certified Extraction and Wire](contracts/execution-units.md#t006-b-certified-extraction-and-wire) | PARTIAL | T006-A | [baseline](evidence/task-progress-registry-20260907.md)；已有相关源码切片；完整卡验收未完成 | 2026-09-07 |
 | [T006-C Bounded Native Worker](contracts/execution-units.md#t006-c-bounded-native-worker) | NOT_STARTED | T006-B | [baseline](evidence/task-progress-registry-20260907.md)；无本卡独立执行/验收记录；按依赖领取 | 2026-09-07 |
 | [T006-D Protected Provider Activation](contracts/execution-units.md#t006-d-protected-provider-activation) | PARTIAL | T006-C | [baseline](evidence/task-progress-registry-20260907.md)；已有相关源码切片；完整卡验收未完成 | 2026-09-07 |
@@ -55,6 +55,31 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 | [T017-A Development Handoff](contracts/execution-units.md#t017-a-development-handoff) | NOT_STARTED | T016-A | [baseline](evidence/task-progress-registry-20260907.md)；无本卡独立执行/验收记录；按依赖领取 | 2026-09-07 |
 
 ## Current Checkpoint
+
+2026-09-07 T006-A Canonical Source Identity / **T006-A DONE（父 T006 待
+T006-B/C/D）**：按 T006-A 卡 Verify（CPP(Spec182OnnxIdentity/*)）在 manifest
+登记文件 `tests/unit-tests/di-native-assembly.t.cpp`（existingSuite
+Spec182NativeAssembly 3 cases 原样回归）建 suite `Spec182OnnxIdentity`
+11 cases 全绿：24 v1 + 14 extended accepted 全模型 golden（graphDigest/
+initializerDigest/contentDigest/modelDigest/modelHex）逐字段复现、2 rejected
+逐字面一致；typed/raw pair 摘要恒等（packing 恒等冻结）；v2 per-tensor
+12 accepted payloadHex/byteLength 逐字节 + 5 拒绝；bf16 两编码归一；revision
+分类（STRING/BF16-raw/typed-complex→2，external 先内联再分类）与 v2
+descriptor binding 门（rev-2 缺 v2 descriptor 拒绝、rev-1 legacy 兼容）；
+external S2 规则（同相对 location、offset 有界、无 length/length "0"
+rest-from-offset、绝对/../双向 binding/双 location 拒绝）+ function
+attribute 深度扫描内联等价；overflow/负 dim/限额/垃圾 parse 边界拒绝。
+生产 seam：canonicalOnnxSourceIdentity（owned source + 内存 external
+校验 + 原图 identity——parse 后无任何 shape inference）+ 版本化
+normalization（normalizedOnnxInitializerPayload/onnxInitializerNormalization
+Revision/checkOnnxAssemblerDescriptorBinding，hpp 无 onnx/protobuf 类型）。
+实现期三处修正均有绿测兜底：graphFactsJson hex 缺 JSON 引号（python
+reference quoted-string 对照，修后 38 全模型 graphDigest 全对）、INT4/UINT4
+raw 展开（low-nibble-first、INT4 符号扩展，generator 位型为证）、两测试侧
+构造（18-byte weights；initializer-limit 用例过 source 门后精确触发）。
+execution-units U 路径差异按 registry 约定留档；无 wscript 改动。
+evidence [t006-a](evidence/t006-a-canonical-source-identity-20260907.md)。
+下一步：T006-B（Certified Extraction and Wire，依赖 T006-A 已满足）。
 
 2026-09-07 T005-B Requester Grant Publication / **T005-B DONE、父 T005 DONE**：
 按 T005-B 卡 Verify（CPP(Spec182GrantClient/*)）在 manifest 登记文件
