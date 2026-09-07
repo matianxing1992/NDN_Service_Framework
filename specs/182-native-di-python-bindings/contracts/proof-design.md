@@ -97,7 +97,7 @@ C++ focused selector 由 T001 从实际 Boost/Waf target 注册中固定，不�
 
 ## Bounded Executor Selectors
 
-[execution cards](spark-execution.md#verification-commands)将上表文件进一步映射到planned suite与行为卡。
+[execution cards](execution-units.md#verification-commands)将上表文件进一步映射到planned suite与行为卡。
 T001-C冻结实际runner/build身份和选择器，所属实现卡注册后用list_content确认非空；未注册命令不算existing。
 新增stream unit路径为`tests/unit-tests/distributed-inference-tokenizer.t.cpp`（T007-B）与
 `tests/unit-tests/distributed-inference-stream-recovery.t.cpp`（T010-C/T011-B）；

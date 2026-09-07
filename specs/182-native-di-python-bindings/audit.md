@@ -69,3 +69,10 @@ T006真实worker反例统一由T016执行；T006仍须交付case及纯unit，父
 
 T001继续关闭O-002--005：固定ONNX/protobuf字节契约、tokenizer ABI、完整兼容/注册/状态设计与独立测试selector、no-Python隔离方案。无需重开合并或续跑181资格；各设计项满足其完整关闭条件后才关闭。
 任务完成 **0/17**；T001依赖探针单独记录，T015产品收敛审查及产品构建/unit/integration/MiniNDN **NOT_RUN**。
+
+## Progress Registry Amendment
+
+2026-09-07：执行状态统一到 [Execution Progress](tasks.md#execution-progress)，
+全部执行单元使用 [generic cards](contracts/execution-units.md)，不依赖 Spark。
+旧 Spark 设计/试用记录保留历史含义；本次不改变 FR/SC、父任务验收或 Gate Order。
+逐行状态为保守迁移，相关实现未经过本单元验收；检查见 [registry evidence](evidence/task-progress-registry-20260907.md)。

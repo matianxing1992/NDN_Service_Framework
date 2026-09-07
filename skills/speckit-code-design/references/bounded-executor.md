@@ -43,3 +43,7 @@
 存在执行卡、结构检查通过、模型已被选择，均不证明该模型实测可胜任。
 先选有固定设计和独立 oracle 的代表卡，依据实际首次完成、审查修正和越界修改记录调整粒度；
 不把执行卡数量、token 用量或速度作为正确性验收。
+
+## Shared Progress
+
+所有模式和执行者统一遵守 [task progress registry](task-progress.md)，不另建 Spark 状态表。

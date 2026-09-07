@@ -1,10 +1,65 @@
 # Tasks: Native NDNSF-DI with Optional Python Bindings
 
-**Revision**: 7 | **Status**: DRAFT / T001 IN_PROGRESS
+**Revision**: 8 | **Status**: DRAFT / T001 IN_PROGRESS
 **Input**: [spec](spec.md), [code design](contracts/code-design.md),
 [proof](contracts/proof-design.md), [work units](contracts/work-units.md)
 
+## Execution Progress
+
+本表是所有执行者共同维护的**当前子任务进度唯一入口**；点击任务查看 Read、Write、Steps、Verify。
+父任务清单保留阶段验收；Current Checkpoint 保存摘要与历史，不作为第二张状态表。
+状态：NOT_STARTED（无独立执行记录）、READY（依赖及门禁满足）、IN_PROGRESS（正在执行）、
+PARTIAL（已有工作但验收不全）、BLOCKED（已确认阻塞）、DONE（该卡完整验收通过）。
+PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执行。
+本次按持久 checkpoint 保守登记，未逐卡重跑验收，不以文件存在或结构检查计算完成百分比。
+每个工作单元成功/失败/阻塞后、commit 和回复前更新对应行及证据；新增工作先补卡和进度行。
+维护规则见 [task progress](../../skills/speckit-code-design/references/task-progress.md)。
+
+| Unit / Details | Status | Depends | Evidence / Remaining | Updated |
+| --- | --- | --- | --- | --- |
+| [T001-A Identity and Dependency Closure](contracts/execution-units.md#t001-a-identity-and-dependency-closure) | PARTIAL | — | [baseline](evidence/task-progress-registry-20260907.md)；已有身份设计；完整关闭待核对 | 2026-09-07 |
+| [T001-B Lifecycle and Capability Closure](contracts/execution-units.md#t001-b-lifecycle-and-capability-closure) | PARTIAL | — | [baseline](evidence/task-progress-registry-20260907.md)；已有生命周期设计；O-004 公开 API 映射仍 OPEN | 2026-09-07 |
+| [T001-C Dispatch and Selector Freeze](contracts/execution-units.md#t001-c-dispatch-and-selector-freeze) | BLOCKED | T001-A, T001-B | [baseline](evidence/task-progress-registry-20260907.md)；T001-A/B 与 O-004 未关闭；selector release 待完成 | 2026-09-07 |
+| [T002-A Installed Library Boundary](contracts/execution-units.md#t002-a-installed-library-boundary) | BLOCKED | T001-C | [baseline](evidence/task-progress-registry-20260907.md)；已有库/consumer 边界；NAC-ABE API 闭包阻塞构建 | 2026-09-07 |
+| [T003-A Qwen Split Candidates](contracts/execution-units.md#t003-a-qwen-split-candidates) | PARTIAL | T002-A | [baseline](evidence/task-progress-registry-20260907.md)；已有相关源码切片；完整卡验收未完成 | 2026-09-07 |
+| [T003-B Yolo Split Candidates](contracts/execution-units.md#t003-b-yolo-split-candidates) | PARTIAL | T003-A | [baseline](evidence/task-progress-registry-20260907.md)；已有相关源码切片；完整卡验收未完成 | 2026-09-07 |
+| [T003-C Placement and Registry](contracts/execution-units.md#t003-c-placement-and-registry) | PARTIAL | T003-A, T003-B | [baseline](evidence/task-progress-registry-20260907.md)；已有相关源码切片；完整卡验收未完成 | 2026-09-07 |
+| [T004-A Canonical Plan Sealing](contracts/execution-units.md#t004-a-canonical-plan-sealing) | PARTIAL | T003-C | [baseline](evidence/task-progress-registry-20260907.md)；已有相关源码切片；完整卡验收未完成 | 2026-09-07 |
+| [T005-A InProcess Authority](contracts/execution-units.md#t005-a-inprocess-authority) | NOT_STARTED | T004-A | [baseline](evidence/task-progress-registry-20260907.md)；无本卡独立执行/验收记录；按依赖领取 | 2026-09-07 |
+| [T005-B Requester Grant Publication](contracts/execution-units.md#t005-b-requester-grant-publication) | PARTIAL | T005-A | [baseline](evidence/task-progress-registry-20260907.md)；已有相关源码切片；完整卡验收未完成 | 2026-09-07 |
+| [T006-A Canonical Source Identity](contracts/execution-units.md#t006-a-canonical-source-identity) | PARTIAL | T002-A | [baseline](evidence/task-progress-registry-20260907.md)；已有相关源码切片；完整卡验收未完成 | 2026-09-07 |
+| [T006-B Certified Extraction and Wire](contracts/execution-units.md#t006-b-certified-extraction-and-wire) | PARTIAL | T006-A | [baseline](evidence/task-progress-registry-20260907.md)；已有相关源码切片；完整卡验收未完成 | 2026-09-07 |
+| [T006-C Bounded Native Worker](contracts/execution-units.md#t006-c-bounded-native-worker) | NOT_STARTED | T006-B | [baseline](evidence/task-progress-registry-20260907.md)；无本卡独立执行/验收记录；按依赖领取 | 2026-09-07 |
+| [T006-D Protected Provider Activation](contracts/execution-units.md#t006-d-protected-provider-activation) | PARTIAL | T006-C | [baseline](evidence/task-progress-registry-20260907.md)；已有相关源码切片；完整卡验收未完成 | 2026-09-07 |
+| [T007-A Full Tokenizer Ownership](contracts/execution-units.md#t007-a-full-tokenizer-ownership) | PARTIAL | T002-A | [baseline](evidence/task-progress-registry-20260907.md)；已有相关源码切片；完整卡验收未完成 | 2026-09-07 |
+| [T007-B Stable Text Decoder Pair](contracts/execution-units.md#t007-b-stable-text-decoder-pair) | PARTIAL | T007-A | [baseline](evidence/task-progress-registry-20260907.md)；已有相关源码切片；完整卡验收未完成 | 2026-09-07 |
+| [T008-A Native Input and Artifact Preparation](contracts/execution-units.md#t008-a-native-input-and-artifact-preparation) | PARTIAL | T003-C, T006-D, T007-B | [baseline](evidence/task-progress-registry-20260907.md)；已有相关源码切片；完整卡验收未完成 | 2026-09-07 |
+| [T008-B Authenticated Offer Admission](contracts/execution-units.md#t008-b-authenticated-offer-admission) | NOT_STARTED | T008-A | [baseline](evidence/task-progress-registry-20260907.md)；无本卡独立执行/验收记录；按依赖领取 | 2026-09-07 |
+| [T009-A Core Scoped Registration](contracts/execution-units.md#t009-a-core-scoped-registration) | NOT_STARTED | T006-D, T007-B | [baseline](evidence/task-progress-registry-20260907.md)；无本卡独立执行/验收记录；按依赖领取 | 2026-09-07 |
+| [T009-B Shared Execution Lease State](contracts/execution-units.md#t009-b-shared-execution-lease-state) | NOT_STARTED | T009-A | [baseline](evidence/task-progress-registry-20260907.md)；无本卡独立执行/验收记录；按依赖领取 | 2026-09-07 |
+| [T009-C Shared Provider Host Wiring](contracts/execution-units.md#t009-c-shared-provider-host-wiring) | PARTIAL | T009-B | [baseline](evidence/task-progress-registry-20260907.md)；已有相关源码切片；完整卡验收未完成 | 2026-09-07 |
+| [T010-A Request Operation Terminal State](contracts/execution-units.md#t010-a-request-operation-terminal-state) | PARTIAL | T005-B, T008-B, T009-C | [baseline](evidence/task-progress-registry-20260907.md)；已有相关源码切片；完整卡验收未完成 | 2026-09-07 |
+| [T010-B Complete Request Orchestration](contracts/execution-units.md#t010-b-complete-request-orchestration) | PARTIAL | T010-A | [baseline](evidence/task-progress-registry-20260907.md)；request 仍返回 NATIVE_REQUEST_PIPELINE_NOT_READY；编排未接通 | 2026-09-07 |
+| [T010-C Stream Acceptance and Replacement](contracts/execution-units.md#t010-c-stream-acceptance-and-replacement) | NOT_STARTED | T010-B | [baseline](evidence/task-progress-registry-20260907.md)；无本卡独立执行/验收记录；按依赖领取 | 2026-09-07 |
+| [T011-A Sampling Parity Repair](contracts/execution-units.md#t011-a-sampling-parity-repair) | PARTIAL | T010-C | [baseline](evidence/task-progress-registry-20260907.md)；已有相关源码切片；完整卡验收未完成 | 2026-09-07 |
+| [T011-B Stable Epoch Emission](contracts/execution-units.md#t011-b-stable-epoch-emission) | PARTIAL | T011-A | [baseline](evidence/task-progress-registry-20260907.md)；已有相关源码切片；完整卡验收未完成 | 2026-09-07 |
+| [T011-C Conversation Journal and Continuation](contracts/execution-units.md#t011-c-conversation-journal-and-continuation) | PARTIAL | T011-B | [baseline](evidence/task-progress-registry-20260907.md)；已有相关源码切片；完整卡验收未完成 | 2026-09-07 |
+| [T012-A Native Binding Types and Lifetime](contracts/execution-units.md#t012-a-native-binding-types-and-lifetime) | PARTIAL | T011-C | [baseline](evidence/task-progress-registry-20260907.md)；已有 Python focused 17/17 记录；native 验收未完成 | 2026-09-07 |
+| [T012-B Compatible Python Facades](contracts/execution-units.md#t012-b-compatible-python-facades) | NOT_STARTED | T012-A | [baseline](evidence/task-progress-registry-20260907.md)；无本卡独立执行/验收记录；按依赖领取 | 2026-09-07 |
+| [T013-A Maintained Caller Migration](contracts/execution-units.md#t013-a-maintained-caller-migration) | NOT_STARTED | T012-B | [baseline](evidence/task-progress-registry-20260907.md)；无本卡独立执行/验收记录；按依赖领取 | 2026-09-07 |
+| [T013-B Legacy Runtime Retirement](contracts/execution-units.md#t013-b-legacy-runtime-retirement) | NOT_STARTED | T013-A | [baseline](evidence/task-progress-registry-20260907.md)；无本卡独立执行/验收记录；按依赖领取 | 2026-09-07 |
+| [T014-A Isolation Collector Semantics](contracts/execution-units.md#t014-a-isolation-collector-semantics) | PARTIAL | T013-B | [baseline](evidence/task-progress-registry-20260907.md)；已有相关源码切片；完整卡验收未完成 | 2026-09-07 |
+| [T014-B Qualification Harness Registration](contracts/execution-units.md#t014-b-qualification-harness-registration) | PARTIAL | T014-A | [baseline](evidence/task-progress-registry-20260907.md)；已有相关源码切片；完整卡验收未完成 | 2026-09-07 |
+| [T015-A CrossTask Convergence](contracts/execution-units.md#t015-a-crosstask-convergence) | NOT_STARTED | T014-B | [baseline](evidence/task-progress-registry-20260907.md)；无本卡独立执行/验收记录；按依赖领取 | 2026-09-07 |
+| [T016-A Local Qualification](contracts/execution-units.md#t016-a-local-qualification) | NOT_STARTED | T015-A | [baseline](evidence/task-progress-registry-20260907.md)；无本卡独立执行/验收记录；按依赖领取 | 2026-09-07 |
+| [T017-A Development Handoff](contracts/execution-units.md#t017-a-development-handoff) | NOT_STARTED | T016-A | [baseline](evidence/task-progress-registry-20260907.md)；无本卡独立执行/验收记录；按依赖领取 | 2026-09-07 |
+
 ## Current Checkpoint
+
+2026-09-07 Progress registry / **PASS**：36 个执行单元统一登记到上表，详细卡改为通用执行契约。
+旧 Spark 路径保留历史入口；本次仅整理进度和规则，未实现或验收产品，不改变父任务勾选。
+检查和状态来源见 [registry evidence](evidence/task-progress-registry-20260907.md)。
+下一步关闭 T001 公开 API/设计 release 缺口，并处理已记录的构建依赖边界，再按 Gate Order 推进。
 
 2026-09-07 Native component and binding implementation slice / **T001 IN_PROGRESS**：
 已加入原生 ONNX recipe assembler（protobuf structural assembly、external
@@ -47,11 +102,8 @@ T007/O-004。
 
 ### Spark Checkpoint
 
-| Card | Status | Baseline | Evidence | Remaining |
-| --- | --- | --- | --- | --- |
-| execution-profile | DISPATCH_DESIGNED | 见同一evidence的实际源码基线 | [preparation checks](evidence/spark-execution-preparation.md) | T001 release、Spark实际实现试用、全部产品验收 |
-
-实施时在本表逐卡添加真实状态与证据；未列卡不表示完成。原父任务勾选规则及T016验收不变。
+历史准备见 [preparation checks](evidence/spark-execution-preparation.md)。
+当前状态统一到 [Execution Progress](#execution-progress)，此处不再维护第二张表。
 
 ### Prior Provider Lifetime Design
 

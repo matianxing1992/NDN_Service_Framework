@@ -12,7 +12,7 @@ normative = [
     "contracts/code-design.md", "contracts/proof-design.md",
     "contracts/work-units.md", "contracts/runtime-boundaries.md",
     "checklists/requirements.md", "contracts/symbol-design.md", "contracts/value-contracts.md", "contracts/pre-test-static-review.md",
-    "contracts/spark-execution.md",
+    "contracts/execution-units.md",
 ]
 texts = {name: (feature / name).read_text() for name in normative}
 errors = []
@@ -119,7 +119,7 @@ for marker in ["PostTestReview**:", "StaticReview**:", "AllowedTestScope", "Test
     require(marker not in texts["contracts/work-units.md"], f"duplicate workflow form: {marker}")
 links = 0
 # Validate dispatch coverage and dependency edges, not model capability or readiness.
-card_text = texts["contracts/spark-execution.md"]
+card_text = texts["contracts/execution-units.md"]
 cards = {}
 for match in re.finditer(r"^### (T\d{3}-[A-Z]) [^\n]+\n(.*?)(?=^### |^## |\Z)",
                          card_text, re.M | re.S):
@@ -158,8 +158,44 @@ def visit_card(card):
 for card in cards:
     visit_card(card)
 for name in ["tasks.md", "plan.md", "contracts/work-units.md"]:
-    require("spark-execution.md" in texts[name], f"dispatch entry missing: {name}")
-require("Spark trial NOT_RUN" in card_text, "missing model trial evidence boundary")
+    require("execution-units.md" in texts[name], f"dispatch entry missing: {name}")
+# The current registry is complete and consistent with the executable inventory.
+progress_block = re.search(r"^## Execution Progress\n(.*?)(?=^## |\Z)",
+                           texts["tasks.md"], re.M | re.S)
+require(progress_block is not None, "missing Execution Progress")
+progress = {}
+for line in (progress_block[1] if progress_block else "").splitlines():
+    cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+    if not cells or not re.match(r"\[T\d{3}-[A-Z] ", cells[0]):
+        continue
+    card = re.match(r"\[(T\d{3}-[A-Z]) ", cells[0])[1]
+    require(card not in progress, f"duplicate progress row: {card}")
+    require(len(cells) == 5, f"invalid progress columns: {card}")
+    if len(cells) != 5:
+        continue
+    _, state, deps, evidence, updated = cells
+    require(state in {"NOT_STARTED", "READY", "IN_PROGRESS", "PARTIAL", "BLOCKED", "DONE"},
+            f"invalid progress status: {card}")
+    require(re.findall(r"T\d{3}-[A-Z]", deps) == card_dependencies.get(card),
+            f"progress dependencies differ: {card}")
+    require(re.fullmatch(r"\d{4}-\d{2}-\d{2}", updated) is not None,
+            f"missing progress date: {card}")
+    require("execution-units.md#" + card.lower() + "-" in cells[0],
+            f"wrong progress detail link: {card}")
+    if state == "DONE":
+        require(bool(re.search(r"\[[^]]+\]\([^)]*evidence/[^)]+\)", evidence))
+                and "task-progress-registry-20260907.md" not in evidence,
+                f"DONE requires actual unit acceptance evidence: {card}")
+    progress[card] = state
+require(set(progress) == set(cards), "progress/card coverage differs")
+for card, state in progress.items():
+    if state in {"READY", "IN_PROGRESS", "DONE"}:
+        require(all(progress.get(dep) == "DONE" for dep in card_dependencies.get(card, [])),
+                f"progress dependencies not DONE: {card}")
+for state, parent in task_rows:
+    if state.lower() == "x":
+        require(all(progress.get(card) == "DONE" for card in cards if card.startswith(parent + "-")),
+                f"parent complete before children: {parent}")
 links = 0
 for path in list(feature.rglob("*.md")):
     content = path.read_text()
@@ -184,7 +220,8 @@ for path in (feature / "evidence").glob("*.json"):
 report = {"schema": "spec182-document-validation-v2",
           "ok": not errors, "tasks": len(ids),
           "tasks_complete": sum(state.lower() == "x" for state, _ in task_rows),
-          "execution_cards": len(cards), "card_dependencies": card_dependencies,
+          "execution_cards": len(cards), "progress_units": len(progress),
+          "progress_status_counts": {state: list(progress.values()).count(state) for state in sorted(set(progress.values()))}, "card_dependencies": card_dependencies,
           "fr": 19, "sc": 11, "cd": 14, "po": 16,
           "source_types": len(coverage["records"]), "source_fields": field_count,
           "classes_or_modules": 21, "methods": 48, "design_readiness": "DRAFT",

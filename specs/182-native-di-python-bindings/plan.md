@@ -58,11 +58,11 @@ T003--011 中的大算法迁移为设计批次，超过工作单元阈值时按 
 
 ## Bounded Executor Profile
 
-用户指定 Codex Spark 为实施执行者；使用 [execution cards](contracts/spark-execution.md)
+所有执行者统一使用 [execution cards](contracts/execution-units.md)
 展开现有17个父任务，按一张就绪卡的 Read/Write/Steps/Verify 分派，沿稳定行为边界拆分。
-T001由设计者关闭未决契约与选择器；设计冻结后的实现可交 Spark，ABI、安全、生命周期和整体收敛由相应审查者复核。
+T001由设计者关闭未决契约与选择器；设计冻结后的实现按依赖分派，ABI、安全、生命周期和整体收敛由相应审查者复核。
 每卡记录实际源码身份与证据；依赖或设计变化只重新检查受影响卡。卡完成不提前关闭父任务或T016。
-执行卡覆盖与链接检查不证明 Spark 实测能力；产品实现和 Spark trial 状态分别记录。
+执行卡覆盖与链接检查不证明产品完成；当前子任务状态统一记录在 tasks.md 的 Execution Progress。
 原 G0--G6 顺序与上方父任务依赖保持。本文件引用的共享设计技能为本仓库版本。
 
 ## Migration and Compatibility

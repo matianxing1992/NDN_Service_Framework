@@ -4,7 +4,7 @@
 
 ## Common Boundary
 
-Spark分派使用[execution cards](spark-execution.md)。本文件保留父任务的成果/验收，
+执行分派使用[execution cards](execution-units.md)。本文件保留父任务的成果/验收，
 卡提供精确Read/Write与局部步骤；卡完成不代表父任务或完整PO完成。
 
 O-001已按当前源码与181承接范围关闭；T001仍需关闭O-002--005并冻结可执行接口/依赖/测试选择器后开始实现。
