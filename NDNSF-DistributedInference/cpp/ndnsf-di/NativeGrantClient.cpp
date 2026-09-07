@@ -44,6 +44,13 @@ NativeKeyGrant NativeArtifactPolicyAuthority::issue(
   if (request.expiresAtMs <= nowMs) {
     throw std::runtime_error("DI_PROTECTED_GRANT_REJECTED: grant request is expired");
   }
+  // A requester cannot authorize a grant to itself: the request must be
+  // signed and issued for a distinct Provider identity (Python frozen
+  // "grant requester cannot be the selected Provider").
+  if (request.providerIdentity == request.requesterIdentity) {
+    throw std::runtime_error(
+      "DI_PROTECTED_GRANT_REJECTED: grant requester cannot be the selected Provider");
+  }
   auto result = m_issuePort(request);
   if (result.grantName.empty() || !digest(result.grantDigest) ||
       result.recipient.empty() || result.wireJson.empty() ||
