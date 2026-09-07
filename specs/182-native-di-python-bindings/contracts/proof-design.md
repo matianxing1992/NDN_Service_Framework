@@ -1,7 +1,10 @@
 # Proof Design
 
-**Revision**: 6 | **Status**: planned; behavioral verification NOT_RUN
+**Revision**: 7 | **Status**: planned; behavioral verification NOT_RUN
 本契约定义将来证明，不记录虚构测试结果。source review 不等于行为通过。
+Revision 7 由 T001-C（2026-09-07）冻结实际 runner/build 身份、L0 命令与每卡
+planned suite/case selector，总表见 [case-manifest](../../../tests/fixtures/spec182/case-manifest.json)；
+frozen 不改写本契约的 planned 性质，所有命令与用例在对应实现卡执行前仍 NOT_RUN。
 
 ## Proof Obligations
 
@@ -58,11 +61,15 @@
   工作流PO-015/016无需为了报告额外制造mutant。
 
 T002--T014不提前执行L3/L4；T015整体静态检查后，T016执行完整unit→integration→MiniNDN。
-测试编写与执行分开；同一文件有不同层级时使用T001冻结的独立selector。
+测试编写与执行分开；同一文件有不同层级时使用 T001-C 冻结的独立 selector
+（case-manifest 的 `selector` 字段，2026-09-07 冻结）。
 
 ## Planned Test and Build Inventory
 
-下列文件/命令是 planned，当前未创建/运行；T001/O-004 将冻结旧 selectors 和新增 case 名称。
+下列文件/命令是 planned，当前未创建/运行；旧 selectors 与新增 case 名称已由
+T001-C 冻结于 [case-manifest](../../../tests/fixtures/spec182/case-manifest.json)
+（2026-09-07，23 cppSuites + 6 python kexpr + 3 system entries，全部带 author
+owner/executeOwner）。
 新增 tests/wscript 的注册必须与同一任务生产改动一起交付。
 下表Owner负责编写和单测；所有L3/L4及系统级L5/L6的执行owner统一为T016。
 目录名不决定层级。为仅列integration文件的任务补独立unit入口，避免为通过任务而提前跑服务协作。
@@ -91,14 +98,39 @@ planned command contract，cwd=repo root；--output 必须新建 run-id 目录�
 - python3 -m pytest tests/python/test_spec182_native_bindings.py tests/python/test_spec182_legacy_exclusion.py
 - ./waf build --targets=ndnsf-distributed-inference,di-native-requester,di-native-provider
   （targets planned；当前 native Provider 已有，新增库/requester 由 CD-009 注册。）
-C++ focused selector 由 T001 从实际 Boost/Waf target 注册中固定，不编造当前存在的测试命令。
+
+### L0 Installed-Library Command（T001-C 冻结，2026-09-07）
+
+consumer：`tests/standalone/spec182-installed-consumer.cpp`（已有，T002-A 卡 Verify）。
+T002-A 交付 wscript 安装段与 `ndnsf-distributed-inference.pc.in` 后的稳定形式：
+waf install 到 fresh staging prefix（新 run-id 目录，非空即拒绝），
+`PKG_CONFIG_PATH=<staging>/lib/pkgconfig` 下用 `/usr/bin/g++ -B/usr/bin -std=c++17`
+编译 consumer 并链接 `ndnsf-distributed-inference`，随后依赖/文件检查证明无
+libpython、无 DI 源码副本。具体 configure/staging 参数由 T002-A 按当时 Waf 配置
+实记录，不提前编造；executor T002-A。gate：NAC-ABE ABI（getPublicParamsDataName、
+getPublicParamsDigest、clearCache、refreshPublicParameters、refreshDecryptionKey
+5 符号）closure 是首次成功 L0 的前置（见 [failure-log](../../../docs/failure-log.md)）。
+
+C++ focused selector 已由 T001-C 从实际 Waf 注册固定（2026-09-07）：
+tests/wscript 的 `unit-tests` program（`name='unit-tests'`，
+`source=[main.cpp] + ant_glob('unit-tests/**/*.cpp', excl=['unit-tests/sanitizer/**']) +
+框架生产源`）编译为 `build/unit-tests`；Boost.Test 直接以
+`build/unit-tests --run_test=<CaseName>[,<CaseName>...]` 选择具名 case（文档化用法，
+见 docs/build-and-test.md），suite 名由各实现卡在 owning 测试文件注册后以
+`build/unit-tests --list_content` 确认非空。构建命令为 `./waf build --targets=unit-tests -j2`
+（默认至多 -j2，不并发操作同一 Waf 树）。
 默认每 focused unit supervisor 上限 120s；初始网络 case 上限 180s，cleanup 15s；
-若既有 case 需要不同值，T001 按已有有效 deadline 固定，禁止运行中延长到 PASS。
+若既有 case 需要不同值，T001-C 按已有有效 deadline 固定（case-manifest
+`buildIdentity`），禁止运行中延长到 PASS。
 
 ## Bounded Executor Selectors
 
 [execution cards](execution-units.md#verification-commands)将上表文件进一步映射到planned suite与行为卡。
-T001-C冻结实际runner/build身份和选择器，所属实现卡注册后用list_content确认非空；未注册命令不算existing。
+T001-C 已于 2026-09-07 冻结实际 runner/build 身份与选择器到
+[case-manifest](../../../tests/fixtures/spec182/case-manifest.json)：
+每张实现卡一个 selector，含 owning 文件（planned 文件标注 "(planned)"，现有
+suite/case 计数原位登记）、layers 与 executeOwner；所属实现卡在 owning 文件中注册
+suite 后用 `build/unit-tests --list_content` 确认非空，未注册命令不算 existing。
 新增stream unit路径为`tests/unit-tests/distributed-inference-tokenizer.t.cpp`（T007-B）与
 `tests/unit-tests/distributed-inference-stream-recovery.t.cpp`（T010-C/T011-B）；
 sampler四个具名case归`tests/unit-tests/di-native-conversation.t.cpp`的`Spec182Sampling` suite。

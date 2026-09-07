@@ -1,13 +1,15 @@
 # Implementation Plan: Native NDNSF-DI with Optional Python Bindings
 
-**Branch**: Experimental | **Revision**: 7 | **Date**: 2026-09-06
-**Status**: DRAFT / NOT_STARTED
+**Branch**: Experimental | **Revision**: 8 | **Date**: 2026-09-07
+**Status**: DRAFT / T001 DONE（产品实现按门仍 NOT_STARTED）
 **Spec**: [spec.md](spec.md)
 
 ## Summary
 
 完整C++ DI复用Core协作/安全原语、Provider runtime和原生model adapters；
-Python只作同库兼容绑定，旧默认控制路径退出。O-001源码基线已核对关闭；O-002--005关闭前不开始迁移。
+Python只作同库兼容绑定，旧默认控制路径退出。O-001源码基线已核对关闭，
+O-002--O-005 已于 2026-09-07 全部关闭（code-design Open Questions 无 OPEN 项）；
+实现按 T001-C 冻结的 build identity 与 case-manifest selector 从 T002-A 起执行。
 详细接口与字段仅在contracts定义；本文件安排实施和验证阶段。
 
 ## Technical Context
@@ -96,8 +98,18 @@ T017 的 evidence/development-handoff.md 包含 exact commit、clean source clos
 
 ## Current Planning Result
 
-revision 7源码对照审计已完成；用户已授权在Experimental完成182，当前T001 IN_PROGRESS，产品实现与最终运行验证仍NOT_STARTED。
-O-001源码核对已关闭；T001关闭O-002--005，依赖可行性及实际探针见[native dependency design](contracts/native-dependency-design.md)。实验机器已接收上一轮交付，本轮不继续管理它；不恢复旧交付构建，后续按182任务重新固定并验证所需依赖身份。
-O-003/O-005也已按设计范围关闭，当前剩O-002/O-004。CD-005新增具名原生装配worker，以保留不可中断ONNX调用的取消/超时清理；库、worker安装、父子协议及隔离白名单见[native ONNX assembly design](contracts/native-onnx-assembly-design.md)。该设计尚待identity边界/独立向量收口，不代表产品已实现。
+T001-A/B/C 设计关闭全部完成（2026-09-07，evidence
+[t001-ab-closure](evidence/t001-ab-closure-20260907.md) 与
+[t001-c-freeze](evidence/t001-c-freeze-20260907.md)）；用户已授权在Experimental
+完成182，产品实现与最终运行验证仍 NOT_STARTED，按任务门 T002 起执行。
+O-001--O-005 全部关闭：O-002 由 [native ONNX assembly design](contracts/native-onnx-assembly-design.md)
+设计收口，O-003/O-005 见 [native dependency design](contracts/native-dependency-design.md) 与
+[native isolation design](contracts/native-isolation-design.md)，O-004 静态映射收口
+于 compatibility-manifest（62157804/6fa1f756）；运行期 build identity、L0 命令与
+每卡 planned suite/case selector 冻结于 [case-manifest](../../tests/fixtures/spec182/case-manifest.json)。
+CD-005 新增具名原生装配 worker，以保留不可中断ONNX调用的取消/超时清理；库、worker
+安装、父子协议及隔离白名单见 [native ONNX assembly design](contracts/native-onnx-assembly-design.md)。
+产品 native 构建的当前工具链边界为 NAC-ABE ABI 5 符号缺口
+（[failure-log](../../docs/failure-log.md) 2026-09-07），T002-A 匹配后重跑首次 L0。
 后续182开发仍按G1--G6执行本地开发验证；上一轮delivery-only的TRANSFERRED不是永久移走182的T016义务。
 使用仓库[shared design skill](../../skills/speckit-code-design/SKILL.md)及其相对引用，避免依赖开发机个人技能路径。T017复用现有[handoff tooling](../../Experiments/TigerCluster/docs/source-handoff.md)，另生成182身份与依赖清单；旧锁包含Python运行包且不含planned原生DI库，不能直接称为182 no-Python交付。

@@ -1,0 +1,78 @@
+{
+  "schema": "spec182-case-manifest-v1",
+  "frozenAt": "2026-09-07",
+  "freezeOwner": "T001-C",
+  "status": "FROZEN_PLANNED",
+  "note": "planned suites/cases; each author registers its suite in the owning file during its card, then confirms non-empty via list_content before running. NOT_RUN until card execution on the frozen toolchain.",
+  "buildIdentity": {
+    "cxx": "/usr/bin/g++ -B/usr/bin",
+    "cxxVersion": "9.4.0",
+    "binutilsVersion": "2.34",
+    "maxJobs": 2,
+    "unitTarget": "unit-tests",
+    "integrationTarget": "integration-tests",
+    "unitRegistration": "tests/wscript ant_glob unit-tests/**/*.cpp excl sanitizer/",
+    "wafOut": "BUILD_DIR from current waf cache; never reuse a stale default build dir",
+    "unitTimeoutMs": 120000,
+    "networkTimeoutMs": 180000,
+    "cleanupSeconds": 15,
+    "rust": {
+      "version": "1.90.0",
+      "prefix": ".codex-tmp/spec182-t001-dependencies/rust-prefix",
+      "cargoHome": ".codex-tmp/spec182-t001-dependencies/cargo-home"
+    },
+    "tokenizerBridgeCrate": "NDNSF-DistributedInference/cpp/adapters/qwen/tokenizer-bridge",
+    "sourceCommit": "recorded per dispatch via git rev-parse HEAD"
+  },
+  "l0": {
+    "consumer": "tests/standalone/spec182-installed-consumer.cpp",
+    "command": "fresh staging prefix; consume installed ndnsf-distributed-inference via pkg-config include/link; compile with /usr/bin/g++ -B/usr/bin; no DI source copy, no Python link",
+    "executor": "T002-A",
+    "gate": "NAC-ABE ABI closure (5 symbols) is the prerequisite of the first successful L0"
+  },
+  "fixtures": {
+    "caseManifest": "tests/fixtures/spec182/case-manifest.json (this file)",
+    "nativeWireVectors": "tests/fixtures/spec182/native-wire-vectors.json (planned; authored by T003/T004 owners)",
+    "tokenizerVectors": "tests/fixtures/spec182/dependency-probes/tokenizer/vectors.json (existing; sha256 6f44a2e62bebccd4dee2ff214d4d65f99528899e6863705eb1ec431b098ed34b)",
+    "dependencyProbes": "tests/fixtures/spec182/dependency-probes/",
+    "onnxAssemblyVectors": "tests/fixtures/spec181/assembly-vectors-v1.json (existing; sha256 5e035fccaa7fecc0fc5fe272a19ec52c5c7e3163f83a21405dfef9e2a6e30165)"
+  },
+  "cppSuites": [
+    {"card": "T003-A", "selector": "Spec182QwenSplit/*", "file": "tests/unit-tests/di-native-planning.t.cpp", "existingSuite": "Spec182NativePlanning", "existingCases": ["QwenLayerSplitProducesCanonicalRankOneCandidate"], "layers": "L1/2/6", "executeOwner": "T016 for L6", "namedCasesPlanned": []},
+    {"card": "T003-B", "selector": "Spec182YoloSplit/*", "file": "tests/unit-tests/di-native-planning.t.cpp", "existingSuite": "Spec182NativePlanning", "existingCases": ["YoloComponentSplitRejectsUncoveredGraphAndSortsPriority"], "layers": "L1/2/6", "executeOwner": "T016 for L6", "namedCasesPlanned": []},
+    {"card": "T003-C", "selector": "Spec182Placement/*", "file": "tests/unit-tests/di-native-planning.t.cpp", "existingSuite": "Spec182NativePlanning", "existingCases": ["PreSplitPlacementFiltersAndDeterministicallyBindsOneProvider"], "layers": "L1/2/6", "executeOwner": "T016 for L6", "namedCasesPlanned": []},
+    {"card": "T004-A", "selector": "Spec182PlanSealer/*", "file": "tests/unit-tests/di-native-plan-sealer.t.cpp (planned)", "existingSuite": null, "existingCases": [], "layers": "L1/2/3/6", "executeOwner": "T016 for L3/6", "namedCasesPlanned": []},
+    {"card": "T005-A", "selector": "Spec182GrantAuthority/*", "file": "tests/unit-tests/di-native-grant.t.cpp (planned)", "existingSuite": null, "existingCases": [], "layers": "L1/2/6", "executeOwner": "T016", "namedCasesPlanned": []},
+    {"card": "T005-B", "selector": "Spec182GrantClient/*", "file": "tests/unit-tests/di-native-grant-client.t.cpp", "existingSuite": null, "existingCases": 2, "layers": "L1/2/6", "executeOwner": "T016; real publication/fetch T016", "namedCasesPlanned": []},
+    {"card": "T006-A", "selector": "Spec182OnnxIdentity/*", "file": "tests/unit-tests/di-native-assembly.t.cpp", "existingSuite": "Spec182NativeAssembly", "existingCases": 3, "layers": "L1/2/6", "executeOwner": "T016", "namedCasesPlanned": []},
+    {"card": "T006-B", "selector": "Spec182OnnxExtraction/*", "file": "tests/unit-tests/di-native-onnx-recipe.t.cpp (planned); integration tests/integration-tests/ndnsf-di-native-assembly.t.cpp exists", "existingSuite": null, "existingCases": [], "layers": "L1/2/3/6", "executeOwner": "T016", "namedCasesPlanned": []},
+    {"card": "T006-C", "selector": "Spec182OnnxWorkerProtocol/*", "file": "tests/unit-tests/di-native-onnx-recipe.t.cpp (planned)", "existingSuite": null, "existingCases": [], "layers": "L1/2/6 + L0 install link", "executeOwner": "T016; real worker subprocess T016", "namedCasesPlanned": []},
+    {"card": "T006-D", "selector": "Spec182OnnxActivation/*", "file": "tests/unit-tests/di-native-onnx-recipe.t.cpp (planned)", "existingSuite": null, "existingCases": [], "layers": "L1/2/6", "executeOwner": "T016; Selection-after cold assembly case T016", "namedCasesPlanned": []},
+    {"card": "T007-A", "selector": "Spec182TokenizerFull/*", "file": "tests/unit-tests/di-native-tokenizer.t.cpp", "existingSuite": "Spec182NativeTokenizer", "existingCases": ["DigestMismatchIsRejectedBeforeBridgeLookup", "MissingArtifactIsRejectedBeforeBridgeLookup", "StandaloneFactoryRequiresIdentity"], "layers": "L1/2/6", "executeOwner": "T016", "namedCasesPlanned": ["84 full-vector comparison incl Unicode/special/byte-fallback"]},
+    {"card": "T007-B", "selector": "Spec182TokenizerStable/*", "file": "tests/unit-tests/distributed-inference-tokenizer.t.cpp (planned)", "existingSuite": null, "existingCases": [], "layers": "L1/2/6", "executeOwner": "T016", "namedCasesPlanned": []},
+    {"card": "T008-A", "selector": "Spec182Preparation/*", "file": "tests/unit-tests/di-native-preparation.t.cpp", "existingSuite": null, "existingCases": ["NativePreparationBindsAdapterAndGraphPort"], "layers": "L1/2/6", "executeOwner": "T016; real publication T016", "namedCasesPlanned": []},
+    {"card": "T008-B", "selector": "Spec182OfferAdmission/*", "file": "tests/unit-tests/di-native-offer-admission.t.cpp (planned)", "existingSuite": null, "existingCases": ["NativeOfferAdmissionRejectsUnauthenticatedAck"], "layers": "L1/2/6", "executeOwner": "T016", "namedCasesPlanned": []},
+    {"card": "T009-A", "selector": "Spec182Registration/*", "file": "tests/unit-tests/di-native-provider-host.t.cpp (planned)", "existingSuite": null, "existingCases": [], "layers": "L1/2/6", "executeOwner": "T016 for cross-service NFD", "namedCasesPlanned": ["Spec182RegistrationCloseBeforeAckFinish", "Spec182RegistrationOldSelectionAfterReregister", "Spec182RegistrationInlineDispatchFence", "Spec182RegistrationSiblingAfterPendingCleanup", "Spec182RegistrationCloseAfterProviderDestruction", "Spec182RegistrationCleanupDoesNotEraseSuccessor"]},
+    {"card": "T009-B", "selector": "Spec182SharedLease/*", "file": "tests/unit-tests/di-native-provider-host.t.cpp (planned); also register into existing di-execution-lease-service.t.cpp DiExecutionLeaseService suite", "existingSuite": "DiExecutionLeaseService", "existingCases": 3, "layers": "L1/2/6", "executeOwner": "T016", "namedCasesPlanned": ["Spec182SharedLeaseCrossServiceConflict", "Spec182SharedLeaseTargetBinding", "Spec182ClosingServicePreservesSharedLeaseOwner"]},
+    {"card": "T009-C", "selector": "Spec182ProviderHost/*", "file": "tests/unit-tests/di-native-provider-host.t.cpp (planned)", "existingSuite": null, "existingCases": [], "layers": "L1/2/6", "executeOwner": "T016 for real NFD multi-entry", "namedCasesPlanned": []},
+    {"card": "T010-A", "selector": "Spec182ClientState/*", "file": "tests/unit-tests/di-native-client.t.cpp", "existingSuite": "Spec182NativeInferenceClient", "existingCases": ["ClientRejectsMissingCoreOwner", "EmptyHandleFailsClosedAndErrorKeepsStructuredIdentity"], "layers": "L1/2/6", "executeOwner": "T016", "namedCasesPlanned": []},
+    {"card": "T010-B", "selector": "Spec182ClientRequest/*", "file": "tests/unit-tests/di-native-client.t.cpp + tests/integration-tests/di-native-request.t.cpp (planned)", "existingSuite": null, "existingCases": [], "layers": "L1/2/3/6", "executeOwner": "T016 for L3", "namedCasesPlanned": []},
+    {"card": "T010-C", "selector": "Spec182StreamAcceptance/*", "file": "tests/unit-tests/distributed-inference-stream-recovery.t.cpp (planned)", "existingSuite": null, "existingCases": [], "layers": "L1/2/6", "executeOwner": "T016 for real stream path", "namedCasesPlanned": ["Spec182StreamRejectBeforeAcceptKeepsPrefix", "Spec182StreamProviderCommitFailureRecomputesAcceptedPrefix", "Spec182StreamUnreceivedTokenExcludedFromReplacement", "Spec182StreamTerminalTokenNoReplacement", "Spec182StreamFinalTextMismatch", "Spec182StreamCallbackFailureDoesNotReplay"]},
+    {"card": "T011-A", "selector": "Spec182Sampling/*", "file": "tests/unit-tests/di-native-conversation.t.cpp", "existingSuite": null, "existingCases": ["NativeConversation_commits_atomically_and_restores", "NativeConversation_rejects_wrong_parent"], "layers": "L1/2/6", "executeOwner": "T016", "namedCasesPlanned": ["Spec182SamplingTopPRetainedMass", "Spec182SamplingPenaltyOncePerToken", "Spec182SamplingValidationParity", "Spec182SamplingDoublePrecisionAndTies"]},
+    {"card": "T011-B", "selector": "Spec182EpochText/*", "file": "tests/unit-tests/distributed-inference-stream-recovery.t.cpp (planned) + real integration callers", "existingSuite": null, "existingCases": [], "layers": "L1/2/6", "executeOwner": "T016; 3 real integration callers T016", "namedCasesPlanned": []},
+    {"card": "T011-C", "selector": "Spec182Conversation/*", "file": "tests/unit-tests/di-native-conversation.t.cpp", "existingSuite": null, "existingCases": [], "layers": "L1/2/6", "executeOwner": "T016 for two-turn continuation and recovery", "namedCasesPlanned": []}
+  ],
+  "pythonEntries": [
+    {"card": "T012-A", "file": "tests/python/test_spec182_native_bindings.py (planned)", "kexpr": "unit_binding", "layers": "L1/2/6", "executeOwner": "T016 parity"},
+    {"card": "T012-B", "file": "tests/python/test_spec182_native_bindings.py (planned)", "kexpr": "unit_facade", "layers": "L1/2/6", "executeOwner": "T016 parity"},
+    {"card": "T013-A", "file": "tests/python/test_spec182_legacy_exclusion.py (planned)", "kexpr": "unit_routes", "layers": "L0/2/6", "executeOwner": "T016"},
+    {"card": "T013-B", "file": "tests/python/test_spec182_legacy_exclusion.py (planned)", "kexpr": "unit_retirement", "layers": "L0/2/6", "executeOwner": "T016"},
+    {"card": "T014-A", "file": "tests/python/test_spec182_native_closure.py (planned)", "kexpr": "unit_collector", "layers": "L0/3/6", "executeOwner": "T016 real isolation"},
+    {"card": "T014-B", "file": "tests/python/test_spec182_native_closure.py (planned)", "kexpr": "unit_harness", "layers": "L0/3/6", "executeOwner": "T016; I01-I08 and all PO cases T016"}
+  ],
+  "systemEntries": [
+    {"card": "T014/T016", "file": "tests/standalone/run-spec182-native-closure.py", "existing": true, "command": "python3 tests/standalone/run-spec182-native-closure.py --manifest <case-manifest> --case <case-id> --output <new-run-dir>", "owner": "T014 write / T016 execute"},
+    {"card": "T014/T016", "file": "Experiments/NDNSF_DI_NativeClosure_Minindn.py", "existing": true, "command": "python3 Experiments/NDNSF_DI_NativeClosure_Minindn.py --manifest <case-manifest> --output <new-run-dir>", "owner": "T014 review + collector unit / T016 execute L3/4/5"},
+    {"card": "T002-A", "file": "tests/standalone/spec182-installed-consumer.cpp", "existing": true, "owner": "T002-A; L0"}
+  ]
+}

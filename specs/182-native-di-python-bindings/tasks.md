@@ -1,6 +1,6 @@
 # Tasks: Native NDNSF-DI with Optional Python Bindings
 
-**Revision**: 10 | **Status**: DRAFT / T001 IN_PROGRESS
+**Revision**: 11 | **Status**: DRAFT / T001 DONE
 **Input**: [spec](spec.md), [code design](contracts/code-design.md),
 [proof](contracts/proof-design.md), [work units](contracts/work-units.md)
 
@@ -19,8 +19,8 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 | --- | --- | --- | --- | --- |
 | [T001-A Identity and Dependency Closure](contracts/execution-units.md#t001-a-identity-and-dependency-closure) | DONE | — | [closure](evidence/t001-ab-closure-20260907.md)；DOC + 依赖契约 vs 持久探针核对通过；onnx 4/4 与 tokenizer 84+14 全新复现 PASS；rust 1.90.0 独立工具链核验；Cargo 边界已在 rust-prefix 上重跑通过（tokenizer-r2） | 2026-09-07 |
 | [T001-B Lifecycle and Capability Closure](contracts/execution-units.md#t001-b-lifecycle-and-capability-closure) | DONE | — | [closure](evidence/t001-ab-closure-20260907.md)；DOC + 双向映射核对通过；O-004 处置写入 runtime-boundaries（Rev 8）与 symbol-design（C21/Readiness）；registration generation/late ACK/Selection/共享 lease 已冻结于 lifecycle 设计；parity 按 owner 任务继续，不属本卡 | 2026-09-07 |
-| [T001-C Dispatch and Selector Freeze](contracts/execution-units.md#t001-c-dispatch-and-selector-freeze) | READY | T001-A, T001-B | [closure](evidence/t001-ab-closure-20260907.md)；T001-A/B 已 DONE，依赖满足；freeze 内容待本卡执行 | 2026-09-07 |
-| [T002-A Installed Library Boundary](contracts/execution-units.md#t002-a-installed-library-boundary) | BLOCKED | T001-C | [baseline](evidence/task-progress-registry-20260907.md)；已有库/consumer 边界；NAC-ABE API 闭包阻塞构建 | 2026-09-07 |
+| [T001-C Dispatch and Selector Freeze](contracts/execution-units.md#t001-c-dispatch-and-selector-freeze) | DONE | T001-A, T001-B | [closure](evidence/t001-c-freeze-20260907.md)；build identity/L0 命令/每卡 selector 已从实际 Waf 注册冻结到 [case-manifest](../../tests/fixtures/spec182/case-manifest.json)（23 cppSuites + 6 kexpr + 3 system，全部带 author/executeOwner）；proof/code-design/work-units Rev 8、O-002/O-004 关闭；DOC 通过 | 2026-09-07 |
+| [T002-A Installed Library Boundary](contracts/execution-units.md#t002-a-installed-library-boundary) | BLOCKED | T001-C | [baseline](evidence/task-progress-registry-20260907.md)；T001-C DONE 依赖满足；NAC-ABE ABI（5 符号）缺口仍阻塞首次 L0 构建，见 [failure-log](../../docs/failure-log.md) 2026-09-07 | 2026-09-07 |
 | [T003-A Qwen Split Candidates](contracts/execution-units.md#t003-a-qwen-split-candidates) | PARTIAL | T002-A | [baseline](evidence/task-progress-registry-20260907.md)；已有相关源码切片；完整卡验收未完成 | 2026-09-07 |
 | [T003-B Yolo Split Candidates](contracts/execution-units.md#t003-b-yolo-split-candidates) | PARTIAL | T003-A | [baseline](evidence/task-progress-registry-20260907.md)；已有相关源码切片；完整卡验收未完成 | 2026-09-07 |
 | [T003-C Placement and Registry](contracts/execution-units.md#t003-c-placement-and-registry) | PARTIAL | T003-A, T003-B | [baseline](evidence/task-progress-registry-20260907.md)；已有相关源码切片；完整卡验收未完成 | 2026-09-07 |
@@ -55,6 +55,24 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 | [T017-A Development Handoff](contracts/execution-units.md#t017-a-development-handoff) | NOT_STARTED | T016-A | [baseline](evidence/task-progress-registry-20260907.md)；无本卡独立执行/验收记录；按依赖领取 | 2026-09-07 |
 
 ## Current Checkpoint
+
+2026-09-07 T001-C freeze / **T001-C DONE、父 T001 DONE（O-001--O-005 全部关闭）**：
+按 T001-C 卡 Verify（DOC；从实际 Waf 注册推导命令；planned 测试全带 author owner；
+父 T001 完整验收满足）完成。已把 [case-manifest](../../tests/fixtures/spec182/case-manifest.json)
+（schema spec182-case-manifest-v1）写入 tests/fixtures/spec182/：23 张实现卡各一个
+selector（与 execution-units Verify 的 CPP suite 名逐一对照，无重复），owning 文件
+（planned 文件标注 "(planned)"）、现有 suite/case 计数原位登记、layers 与
+executeOwner 全部显式；python kexpr（T012--T014 六个）与 system entries
+（closure runner、MiniNDN、installed-consumer）同步冻结。run identity 为实际注册：
+tests/wscript `unit-tests` program（ant_glob unit-tests/**/*.cpp excl sanitizer）→
+`build/unit-tests`；`./waf build --targets=unit-tests -j2` 构建、Boost.Test
+`--run_test=<Case>` 选择具名 case、`--list_content` 确认注册非空。契约同步：
+proof-design.md Rev 7（冻结句 + L0 installed-library 命令及 NAC-ABE 5 符号 gate）、
+code-design.md Rev 8（Open Questions O-002/O-004 → CLOSED，表内已无 OPEN 项）、
+work-units.md Rev 8、spark-execution.md 冻结句。check-prerequisites/validate_design/
+git diff --check 见 [c-freeze evidence](evidence/t001-c-freeze-20260907.md)。
+下一步：NAC-ABE ABI（5 符号）匹配后重跑 T002-A 首次 L0；T002-A 依赖现已满足，
+当前 BLOCKED 仅剩工具链缺口。
 
 2026-09-07 T001-A/B closure / **T001-A DONE、T001-B DONE、T001-C READY**：
 按 T001-A/B 卡 Verify（DOC + 依赖契约/双向映射核对）完成设计关闭，证据

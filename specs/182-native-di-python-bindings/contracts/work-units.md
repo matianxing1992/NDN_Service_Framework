@@ -1,13 +1,15 @@
 # Work Unit Contracts
 
-**Revision**: 7 | **Status**: planned, all implementation NOT_STARTED
+**Revision**: 8 | **Status**: planned, all implementation NOT_STARTED
 
 ## Common Boundary
 
 执行分派使用[execution cards](execution-units.md)。本文件保留父任务的成果/验收，
 卡提供精确Read/Write与局部步骤；卡完成不代表父任务或完整PO完成。
 
-O-001已按当前源码与181承接范围关闭；T001仍需关闭O-002--005并冻结可执行接口/依赖/测试选择器后开始实现。
+O-001--O-005 已全部关闭（2026-09-07，code-design Open Questions 表无 OPEN 项）；
+可执行接口/依赖/测试选择器已由 T001-C 冻结到 case-manifest（实际 Waf 注册与
+runner 调用见 proof-design Revision 7），实现按冻结身份执行。
 每任务的具体文件与符号由其CD定义，类/方法与字段解释分别引用
 [symbol design](symbol-design.md)和[value contracts](value-contracts.md)，不重复抄表。
 新增/变更公开API提供英文Doxygen/docstring；重要字段、寿命与安全边界解释含义，
@@ -19,13 +21,23 @@ T002--T014只做实现、静态审查、相关unit及必要构建，任务[x]仅
 集成用例与harness随所属任务编写注册；不能只登记将来写测试的TODO。
 具体命令与测试路径见 [test inventory](proof-design.md#planned-test-and-build-inventory)；
 unit/integration按实际调用边界分类，不按文件名或smoke标签分类。
-T001冻结新unit selectors，不能执行整份混合测试文件而意外启动integration。
+T001-C 已冻结新 unit selectors（case-manifest selector 字段）；focused unit 经
+`build/unit-tests --run_test=<Case>` 选择具名 case，不能执行整份混合测试文件而意外启动integration。
 必要原生工具链、时间上限、新run目录和原始失败保存沿用proof/plan约定。
 
 实际结果优先记tasks.md；详情才使用evidence/tNNN-completion.md，不另建审查或逐层放行报告。
 失败只清理本次资源，保留run/patch并同步tasks及failure index，不覆盖他人工作或历史证据。
 
 ## T001 Successor Baseline and Design Closure
+
+设计关闭已由 T001-A/B/C 三张卡完成（2026-09-07，证据
+[ab closure](../evidence/t001-ab-closure-20260907.md) 与
+[c freeze](../evidence/t001-c-freeze-20260907.md)）：
+O-001--O-005 全部 CLOSED（表见 code-design.md Open Questions，已无 OPEN 项）；
+运行期 build identity、L0 命令与每卡 planned suite/case selector 由 T001-C 冻结于
+[case-manifest](../../../tests/fixtures/spec182/case-manifest.json)。
+T001 的 FinalProof PO-012（交付身份）与全部行为证据仍由 T016/T017 关闭，
+设计关闭本身不计产品运行 PASS。
 
 - **Outcome**: 冻结合并基线与181承接表、所有 schema/公开调用方/能力清单及原生依赖，关闭 O-001--005；修订叶子签名与任务至可执行。
 - **Design**: FR-015,FR-016,FR-017; CD-001--014; INV-001,INV-004,INV-008,INV-009; FLOW-001, FLOW-002。

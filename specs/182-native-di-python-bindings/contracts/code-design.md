@@ -1,6 +1,6 @@
 # Code Design Contract
 
-**Revision**: 7 | **Status**: DRAFT
+**Revision**: 8 | **Status**: DRAFT
 **Normative parent**: [spec.md](../spec.md)
 **Baseline**: [integrated baseline](integrated-baseline.md)；旧revision快照和[merge validation](../evidence/merge-validation-20260906.json)保留历史意义，不证明新SVS/NDNSD组合的运行资格。
 
@@ -334,9 +334,9 @@ CD-013/014、取消/通知队列及旧路径回退完整定义于
 | Open ID | Unknown / impact | Bounded investigation and acceptable result | Owner / blocked units |
 | --- | --- | --- | --- |
 | O-001 / CLOSED | 源身份、最终合并差异及181承接已核对 | 审计HEAD `81e251a4`，生产路径与`c770f18b`及交付源`447f7584`无diff；四库pin和旧验证失效范围见[integrated baseline](integrated-baseline.md)。只关闭源码核对，不声称当前依赖运行PASS | T001部分完成；当前O-002/O-004仍阻塞实现 |
-| O-002 | 原生 ONNX extraction/checker/protobuf 是否复现既有精确字节 | 在固定 inline/external-data 与两种 role recipe 上比较；列出 native 调用、版本、许可、依赖和差异。精确相等或经明确版本化设计修订后才能关闭；最多两个候选方案 | T001；T002/T006 |
-| O-003 / CLOSED | tokenizers0.20.3/Rust1.90.0与C ABI、RAII/串行寿命设计已固定 | 三种fixture84个ids/text对照及14个非法输入PASS；ldd无Python；lock、许可、私有安装/构建/释放规则见native-dependency-design。不计T007产品或T016隔离验收 | T001依赖设计完成；T002/T007仍受O-002/O-004阻塞 |
-| O-004 | 所有旧公开 API/策略/会话持久化与调用方尚未穷举；Core无公开逐服务注销接口，Provider host的共享服务关闭语义未闭合 | 12类137字段已匹配当前源码，但仍须按runtime-boundaries分类并补嵌套types、状态、cancel/observer、错误映射和完整inventory。CD-014必须明确registration fence或具名Core改动及PO-014负例；禁止假设removeService存在或用全局stop替代 | T001；T002--T013 |
+| O-002 / CLOSED (design) | 原生 ONNX extraction/checker/protobuf 是否复现既有精确字节 | 已由[native ONNX assembly design](native-onnx-assembly-design.md)设计关闭（2026-09-07）：固定 inline/external-data 与两种 role recipe 比较、native 调用/版本/许可/依赖清单与字节契约冻结；产品装配复现按 Spec181 固定向量由 T006 实现、T016 运行证明，不再开放为设计问题 | T001 设计关闭；T002/T006 实现，T016 证明 |
+| O-003 / CLOSED | tokenizers0.20.3/Rust1.90.0与C ABI、RAII/串行寿命设计已固定 | 三种fixture84个ids/text对照及14个非法输入PASS；ldd无Python；lock、许可、私有安装/构建/释放规则见native-dependency-design。不计T007产品或T016隔离验收 | T001依赖设计完成；T007/T016实施证明 |
+| O-004 / CLOSED (mapping) | 所有旧公开 API/策略/会话持久化与调用方尚未穷举；Core无公开逐服务注销接口，Provider host的共享服务关闭语义未闭合 | 静态映射已于2026-09-07收口（compatibility-manifest.json 344 项、UNREVIEWED 0，逐项 nativeOwner/ownerTask；62157804/6fa1f756）；嵌套types、状态、cancel/observer、错误映射与 registration fence 处置写入 runtime-boundaries.md（Revision 8）与 symbol-design.md（C21/Readiness）：现有 API 无公开逐服务注销/registration token，`NativeServiceRegistration::close` 按 lifecycle Registration Generation Decision 保持 planned Core scoped registration，T009 落地前不包装旧 API，禁止假设 removeService 或用全局 stop 替代。字段/方法/错误 parity 按 owner 任务（T012 等）继续，不属本设计问题 | T001 静态映射收口；T009/T012/T013 实施，T016 证明 |
 | O-005 / CLOSED | native runtime隔离工具可用，权限、最小root、进程/映射/服务白名单和反例已冻结 | 见[native isolation design](native-isolation-design.md)：bwrap/strace最小正例exit0，缺解释器反例在exec边界ENOENT；T014仍须实现完整detector，T016运行I01--I08与业务case，不计最终no-Python PASS | T001设计完成；T014实现；T016资格 |
 
 每项 OPEN 是具体设计边界，不能宣称 READY 后留给实现 improvisation。
@@ -345,7 +345,10 @@ T001 的交付是关闭表、叶子签名、lock/compatibility manifest 和修�
 
 ## Change Control
 
-当前契约为revision 7；未改变的历史附件保留其原revision，OPEN影响范围仍为BLOCK。
+当前契约为revision 8（T001-C，2026-09-07：Open Questions 表 O-002/O-004 关闭，
+仅剩 O-001/003/005 均已 CLOSED，表中无 OPEN 项）；未改变的历史附件保留其原
+revision。实现按 T001-C 冻结的 toolchain/selector/case-manifest 与任务门执行，
+产品行为验证仍 NOT_RUN。
 新增原生依赖/公有字段/状态 owner/wire format/调用方必须先修订 CD、T、PO。
 Private helper 只可实现已描述职责，不能用 helper 名义增加 subsystem。
 完整单元边界见 [work-units](work-units.md)，证明见 [proof-design](proof-design.md)。
