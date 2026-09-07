@@ -21,6 +21,17 @@ failure-log，记录 identity b6710fd6 稳定正确。deferred：远端 storage
 site roots 与 oracle 数值契约待 T005/T006/T012 wiring 验证；release.gates
 仍空，local-cpu 运行资格待真实 prepare+local 执行 receipt。
 
+2026-09-07 run-local 开发驱动 checkpoint：spec183_dev_provision.py 新增
+run-local 子命令，按 plan 驱动 run_rank 完整 local-cpu 生命周期。真实执行
+到达应用启动层：SIF 内 NFD 24.07（ndn-cxx 0.9.0/Boost 1.71）真实启动，
+4 条 nfdc 命令（status/strategy set multicast/face list/route list）全部
+exitCode 0，tiger-yolo-network-setup-v1 receipt 落盘（candidateDigest
+c7ec3d7f）。controller 启动被 SIF 内 DI 应用版本滞后阻断：镜像内旧版
+controller.py 无 --spec180-runtime-receipt-file 参数而 host 源已有
+（examples/.../controller.py:116）——记录为 T011 本地 SIF 重建的前置
+发现（failure-log 同日条目），不做运行时文件注入。基础设施层真实证据
+同时构成 T012 preflight 的一部分。
+
 2026-09-07 首次容器内真实执行 checkpoint：新增
 [spec183_dev_provision.py](../../../Experiments/TigerCluster/tools/spec183_dev_provision.py)
 驱动 resolve_provision_inputs → stage_provision_inputs →

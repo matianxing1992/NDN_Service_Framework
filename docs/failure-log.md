@@ -2373,3 +2373,27 @@ Lesson: a sealed runtime that no test ever executed hides owner-implemented
 import-boundary bugs; the first real container execution is its own gate.
 Fixing the scripts until the DI implementation works is exactly the Spec183
 development path -- the SIF/DI itself needed no rebuild.
+
+# 2026-09-07 — local-cpu rank: NFD/network real, controller blocked by stale in-SIF app
+
+Symptom: the run-local development driver reached the Controller launch and
+failed with CHILD_EXIT:controller:2: "unrecognized arguments:
+--spec180-runtime-receipt-file". NFD, the forwarder config, and all four nfdc
+network commands had already executed for real inside the SIF (exitCode 0).
+
+Cause: the base SIF's in-image yolo_2x2 controller.py predates the Spec183
+harness interface: the host checkout supports --spec180-runtime-receipt-file
+(examples/.../controller.py:116) while the replay image copy does not.  The
+base SIF is a Spec180-built input; the Spec183 harness is written against the
+current host application sources.
+
+Fix: none in-session -- the sealed SIF is not patched at runtime.  The
+evidence (real NFD 24.07 startup, four successful nfdc commands, a written
+tiger-yolo-network-setup-v1 receipt) stands; the application layer requires
+the T011 local-SIF rebuild so in-image DI sources match the Spec183 harness
+interface.  Recorded as a T011 precondition, not a harness workaround.
+
+Lesson: a development driver can prove the infrastructure layer of a sealed
+image immediately; application-layer interface drift between an old sealed
+image and current harness sources is a rebuild trigger, not something to
+paper over with runtime file injection.
