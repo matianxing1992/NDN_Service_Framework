@@ -112,6 +112,9 @@ def scheduled_inputs(tmp_path, mode='two-node-gpu'):
     inputs = application_inputs(tmp_path, 0, mode)
     for name in ('case.json', 'catalogue-registry.json', 'offer-trust-root.json', 'offer-public-key-map.json', 'recipient-public-keys.json'):
         (inputs['public'] / name).write_text('synthetic fixture')
+    (inputs['public'] / 'offer-trust-root.json').write_text(json.dumps({
+        'schema': 'spec180-provider-offer-trust-v1', 'candidateId': 'test-candidate',
+        'candidateDigest': 'sha256:' + 'a' * 64}))
     (inputs['homes']['user'] / 'request-envelope.key').write_bytes(b'x' * 32)
     (inputs['homes']['user'] / 'requester.key').write_bytes(b'y' * 32)
     (inputs['homes']['user'] / 'authority').mkdir()
@@ -123,9 +126,32 @@ def scheduled_inputs(tmp_path, mode='two-node-gpu'):
     plan = {'case': mode, 'requests': [
         dict(index=i, warmup=i == 0, requestId='/run/request/' + str(i),
              output=str(worker.output / 'user' / 'requests' / str(i))) for i in range(count)]}
+    worker._preparation_binding = (plan, 'receipt-fixture', 'sha256:' + 'a' * 64)
+    worker._verify_prepared_boundary = lambda: None  # Not a qualified SIF/credential fixture.
     return worker, plan, dict(package=package, catalog_data_name='/run/catalog/v=1',
         catalog_signer='/run/controller', permission_wait_ms=1000,
         request_deadline_ms=5000, process_timeout_seconds=10, protection_epoch='spec183-test-v1')
+
+
+@pytest.mark.parametrize('fault', ['bad-id', 'wrong-digest', 'unprepared'])
+def test_schedule_rejects_unbound_candidate_before_launch(tmp_path, fault):
+    from apps.yolo import run_requests
+    worker, plan, options = scheduled_inputs(tmp_path, 'local-cpu')
+    path = worker.public / 'offer-trust-root.json'
+    value = json.loads(path.read_text())
+    if fault == 'bad-id':
+        value['candidateId'] = ''
+    elif fault == 'wrong-digest':
+        value['candidateDigest'] = 'sha256:' + 'b' * 64
+    else:
+        worker._preparation_binding = None
+    path.write_text(json.dumps(value))
+    try:
+        with pytest.raises(ValueError, match='CANDIDATE|PREPARATION'):
+            run_requests(worker, plan, accept_request=lambda *_: None, **options)
+        assert not worker.launches
+    finally:
+        worker.close()
 
 
 @pytest.mark.parametrize('mode,count', [('two-node-gpu', 4), ('single-node-gpu', 2), ('local-cpu', 2)])
@@ -152,6 +178,9 @@ def test_schedule_runs_finite_users_preserving_live_provider(tmp_path, monkeypat
         assert len({a[a.index('--lifecycle-output-dir') + 1] for a in calls}) == count
         assert all('--offline-oracle' not in a and '--sequential-requests' not in a for a in calls)
         assert all('SPEC181_PROTECTION_EPOCH=spec183-test-v1' in a for a in calls)
+        assert all('SPEC180_CANDIDATE_ID=test-candidate' in a for a in calls)
+        assert all('SPEC180_CANDIDATE_DIGEST=sha256:' + 'a' * 64 in a for a in calls)
+        assert all('--retain-numerical-response' in a for a in calls)
         assert all('NDNSF_DI_RECIPIENT_PUBLIC_KEY_MAP=/config/recipient-public-keys.json' in a for a in calls)
         assert not any(any(arg.startswith('SPEC181_PROVIDER_RECIPIENT_KEY_MAP=') for arg in a) for a in calls)
         assert all(a[a.index('--generated-policy-dir') + 1].startswith('/output/requests/') for a in calls)

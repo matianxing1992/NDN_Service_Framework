@@ -189,6 +189,17 @@ It never fabricates route-ready records. Single-node cases skip only the
 two-node network probe. The outer worker still owns NFD setup, final cleanup,
 requests and full result collection. RUNTIME_READY is not inference PASS.
 
+### Numerical response evidence
+
+Numerical evidence: the fixed public benchmark may retain one authorized User
+response per invocation in `yolo-response.bin` (exclusive, 0600, ≤1MiB), never
+in a Provider mount, log or Git. General application retention remains disabled.
+Its byte count/hash and candidate/request/attempt/plan binding accompany the
+numerical record. Collection must recompute the frozen reference comparison
+from those bytes, not accept a `matched` flag alone. Reference authenticity and
+candidate-pinned decoder/oracle implementation remain collector preconditions;
+numerical-component acceptance is not an end-to-end or GPU verdict.
+
 ### Frozen harness file contract
 
 `runtime/yolo_bundle.py` 实现小型脚本 bundle 的 freeze/verify。清单格式为

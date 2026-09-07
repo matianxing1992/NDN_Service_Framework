@@ -196,6 +196,22 @@ def _record_yolo_numerical_result(args, reference, payload, plan_digest, attempt
         record["candidateId"] = candidate_id
     if candidate_digest:
         record["candidateDigest"] = candidate_digest
+    if getattr(args, "retain_numerical_response", False):
+        # Opt-in benchmark evidence only: authorized User output, never a
+        # Provider mount or a log field. Enables independent later reanalysis.
+        if not payload or len(payload) > 1024 * 1024:
+            raise ValueError("NUMERICAL_RESPONSE_RETENTION_SIZE")
+        target = Path(args.lifecycle_output_dir) / "yolo-response.bin"
+        numerical = target.parent / "yolo-numerical.json"
+        if (numerical.exists() or any(p.is_symlink() for p in (target, *target.parents))
+                or numerical.is_symlink()):
+            raise ValueError("NUMERICAL_RESPONSE_OUTPUT_NOT_FRESH")
+        with target.open("xb") as stream:
+            os.fchmod(stream.fileno(), 0o600)
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        record.update(responsePath=target.name, responseBytes=len(payload))
     try:
         _, actual = decode_yolo_output(payload, native_predictions_only=True)
         record.update(compare_reference(reference, actual))
@@ -660,6 +676,8 @@ def main() -> int:
         "--lifecycle-case", default="",
         help="registered Spec180 case identifier for lifecycle evidence",
     )
+    parser.add_argument("--retain-numerical-response", action="store_true",
+                        help="retain bounded authorized benchmark response for offline reanalysis; off by default")
     parser.add_argument("--permission-wait-ms", type=int, default=2500)
     parser.add_argument("--async-requests", type=int, default=1)
     parser.add_argument("--dynamic-provisioning", action="store_true",

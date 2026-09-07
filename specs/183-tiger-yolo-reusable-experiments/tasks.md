@@ -78,6 +78,8 @@ T001–T004形成 profile/launcher 实现骨架；可操作 MVP 还要求 T006 �
 
 ## Current Checkpoint
 
+2026-09-07 T006数值重分析组件已实现：User显式opt-in保留0600/≤1MiB响应bin并记录digest，Spec183启用且绑定prepared candidate env；离线重算真实响应而非信任matched flag。共用纯NumPy tensor decoder，adapter exports按需加载使oracle/codec不依赖_ndnsf导入；operator NumPy锁定1.24.4。扩展focused455 passed（35.86s），包括实际producer函数/codec/数学/文件和独立import进程，但参考值为fixture、无模型/native/SIF/Tiger运行。T006完整lifecycle/role/node/GPU/edge/cleanup及operator/T007待完成；见evidence/t006-numerical-reanalysis.md。
+
 2026-09-07 configure_network已接入实际NFD/nfdc启动链，生产nfd-ready/routes-ready：配置端口/两侧endpoint绑定、真实socket类型检查、有限管理子进程、剩余startup预算、peer失败、无覆盖receipt；管理进程借用空闲Provider HOME，不与NFD并发用PIB。route_commands显式接收appName/sync；旧baseline默认/group保留。7新增组件测试（OS进程/socket真实，NFD/nfdc为double），总419 passed（26.61s）。最终operator仍须绑定真实allocation并依次调用configure_network→start_workload→真实requests/collector；T005/T006/T007未完成，无native/SIF/Tiger运行。详见evidence/t005-nfd-network-setup.md。
 
 2026-09-07 启动协调组件接入Controller/Repo/Provider/双向探测实际helper，原子且run/candidate/probe绑定barrier、共享startup预算、peer失败传播；必须两侧network receipt匹配后才启动Controller，完整Provider ready后返回RUNTIME_READY。用户明确Sync为`/<appName>/sync`：plan.applicationName→runtime.application_name→group，不从provider_prefix推导；错`/group`路由拒绝。10新增组件用例，总412 passed（26.13s）。NFD实际路由安装/最终outer worker、完整collector/T007仍未闭合，无SIF/Tiger运行；见evidence/t005-startup-coordination.md。

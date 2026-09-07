@@ -693,10 +693,25 @@ def run_requests(worker, plan: dict, *, package: Path, catalog_data_name: str,
         key = worker.homes['user'] / name
         if any(p.is_symlink() for p in (key, *key.parents)) or not key.is_file():
             raise ValueError('YOLO_USER_PRIVATE_INPUT')
+    from runtime.yolo_profile import _read_plane
+    candidate = _read_plane(worker.public / 'offer-trust-root.json')
+    if (candidate.get('schema') != 'spec180-provider-offer-trust-v1'
+            or not isinstance(candidate.get('candidateId'), str)
+            or not re.fullmatch(r'[A-Za-z0-9_.-]{1,128}', candidate['candidateId'])
+            or not isinstance(candidate.get('candidateDigest'), str)
+            or not re.fullmatch(r'sha256:[a-f0-9]{64}', candidate['candidateDigest'])):
+        raise ValueError('YOLO_USER_CANDIDATE_BINDING')
+    if worker._preparation_binding is None or worker._preparation_binding[0] != plan:
+        raise ValueError('YOLO_USER_PREPARATION_REQUIRED')
+    worker._verify_prepared_boundary()
+    if candidate['candidateDigest'] != worker._preparation_binding[2]:
+        raise ValueError('YOLO_USER_CANDIDATE_BINDING')
     for request in requests:
         i = str(request['index'])
         output = '/output/requests/' + i
         argv = ['/usr/bin/env', 'SPEC181_PROTECTION_EPOCH=' + protection_epoch,
+                'SPEC180_CANDIDATE_ID=' + candidate['candidateId'],
+                'SPEC180_CANDIDATE_DIGEST=' + candidate['candidateDigest'],
                 'NDNSF_DI_RECIPIENT_PUBLIC_KEY_MAP=/config/recipient-public-keys.json',
                 'SPEC181_REQUESTER_PRIVATE_KEY=/identities/user/requester.key',
                 'NDNSF_SPEC180_CONFIG_ROOT=/identities/user/authority',
@@ -709,7 +724,7 @@ def run_requests(worker, plan: dict, *, package: Path, catalog_data_name: str,
                 '--catalog-data-name', catalog_data_name, '--catalog-signer', catalog_signer,
                 '--ack-timeout-ms', '1500', '--timeout-ms', str(request_deadline_ms),
                 '--permission-wait-ms', str(permission_wait_ms),
-                '--native-tensor-input', '--input-size', '640',
+                '--native-tensor-input', '--input-size', '640', '--retain-numerical-response',
                 '--request-id', request['requestId'], '--lifecycle-output-dir', output,
                 '--lifecycle-case', plan['case'],
                 '--envelope-key-file', '/identities/user/request-envelope.key']

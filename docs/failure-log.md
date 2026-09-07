@@ -1,5 +1,12 @@
 # Failure Log and Evidence Index
 
+## 2026-09-07 — Pure YOLO reanalysis imported native runtime eagerly
+
+- Numerical reanalysis test collection failed while importing adapters.yolo.reference: adapters package initializers eagerly loaded runtime contracts and the missing `_ndnsf` extension. The traceback's partial-initialization wording did not mean the NumPy oracle itself required native code.
+- Preserve all public adapter export names but resolve their owners lazily. Extract the existing YOLO native tensor decoder to a shared NumPy-only module; both application and reanalysis use it. A fresh subprocess proves pure imports do not load ndnsf/_ndnsf. Native API compatibility is still a separate T008 gate.
+- The same audit found Spec183 did not pass candidate environment fields into numerical evidence and retained no response for reanalysis. Bind candidate fields to prepared metadata and opt in to bounded private response evidence; recompute instead of trusting PASS.
+- Evidence: Spec183 evidence/t006-numerical-reanalysis.md; expanded focused455 passed, no native/model/remote qualification.
+
 ## 2026-09-07 — Network probe negative test must reject for the intended reason
 
 - The first in-memory Face fixture passed the corrupted-signature negative under a broad Exception assertion, but a stricter check exposed an incorrect ValidationFailure constructor (TypeError, not signature rejection).

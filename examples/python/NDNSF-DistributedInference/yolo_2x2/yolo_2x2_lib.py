@@ -235,49 +235,8 @@ def _load_npz_payload(payload: bytes) -> dict[str, np.ndarray]:
 
 
 def _decode_native_tensor_bundle(payload: bytes) -> dict[str, np.ndarray]:
-    magic = b"NDITB001"
-    if not payload.startswith(magic):
-        raise ValueError("payload is not an NDNSF-DI native tensor bundle")
-    offset = len(magic)
-
-    def read(fmt: str):
-        nonlocal offset
-        size = struct.calcsize(fmt)
-        if offset + size > len(payload):
-            raise ValueError("truncated NDNSF-DI native tensor bundle")
-        value = struct.unpack_from(fmt, payload, offset)[0]
-        offset += size
-        return value
-
-    tensors: dict[str, np.ndarray] = {}
-    count = read("<I")
-    for _ in range(count):
-        name_size = read("<I")
-        if offset + name_size > len(payload):
-            raise ValueError("truncated NDNSF-DI native tensor name")
-        name = payload[offset:offset + name_size].decode("utf-8")
-        offset += name_size
-        if not name or name in tensors:
-            raise ValueError("duplicate or empty native tensor name")
-        element_type = read("<I")
-        rank = read("<I")
-        shape = [read("<q") for _ in range(rank)]
-        if any(dimension < 0 for dimension in shape):
-            raise ValueError("negative native tensor dimension")
-        data_size = read("<Q")
-        if offset + data_size > len(payload):
-            raise ValueError("truncated NDNSF-DI native tensor payload")
-        data = payload[offset:offset + data_size]
-        offset += data_size
-        if element_type != 1:
-            raise ValueError(f"unsupported NDNSF-DI native tensor element type {element_type}")
-        array = np.frombuffer(data, dtype="<f4").astype(np.float32, copy=True)
-        if shape:
-            array = array.reshape(tuple(shape))
-        tensors[name] = array
-    if offset != len(payload):
-        raise ValueError("NDNSF-DI native tensor bundle has trailing bytes")
-    return tensors
+    from ndnsf_distributed_inference.adapters.yolo.tensor_bundle import decode_tensor_bundle
+    return decode_tensor_bundle(payload)
 
 
 def encode_native_tensor_bundle(values: dict[str, np.ndarray]) -> bytes:
