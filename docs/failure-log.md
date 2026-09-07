@@ -2285,3 +2285,45 @@ Merge ORT coverage. 153 focused tests passed; real inference is not claimed.
 
 Lesson: different execution backends require different evidence, not fake
 uniformity. A final fixture must follow actual producer semantics.
+
+# 2026-09-07 — Base SIF digest intermittently mismatches under sandboxed reads
+
+Symptom: dispatch-plane render/check and `sha256sum` intermittently reported
+the 3.5 GB base SIF (`spec180-runtime.sif`) as `9008db7a…` while the recorded
+identity is `b6710fd6…`; two consecutive `sha256sum` runs in one shell could
+disagree, and render then check minutes apart disagreed.
+
+Cause: the file itself never changed — metadata (mtime/ctime/size/nlink) was
+frozen, no process held it, no twin copy existed, and repeated full reads
+outside the sandbox plus warm-cache reads always returned `b6710fd6…`. The
+failure appeared only for cold reads of the large file from sandboxed shell
+commands.
+
+Fix: run full-file digest checks and plane render/check for the base SIF
+outside the sandbox (or retry once on `FILE_DIGEST`); the recorded identity
+is stable and correct.
+
+Lesson: a `FILE_DIGEST` rejection on an unchanged, single-writer CAS file can
+be an environment read fault, not content corruption — confirm with a
+non-sandboxed read before replacing any staged identity.
+
+# 2026-09-07 — Dispatch plane parentId used raw plane.json file sha, not canonical id
+
+Symptom: `spec183_dispatch_plane.py render` self-checks passed (parent_id
+passed explicitly) yet an independent `check_chain` through dispatch failed
+with PLANE_PARENT: runtime recomputed as eeb8afa0 while render reported
+58c6f64f.
+
+Cause: `_write_plane` returned the sha of the raw plane.json bytes and render
+used that value as the stage id for the next plane's parentId. The stage id
+`check_plane` returns (and every chain recomputes) is the canonical logical
+document sha -- files reduced to `{bytes, sha256}` with no paths -- which
+never equals the file bytes. The two are different identities by design.
+
+Fix: render now derives every stage id from `check_plane(...)["id"]`;
+`_write_plane` no longer returns a sha. Raw file shas remain correct for
+profile `release` rows, which reference plane.json files.
+
+Lesson: content-plane stage identity is the canonical document sha, not the
+file sha; only release rows (file references) use file shas. Mixing the two
+produces a chain that renders green and validates red.

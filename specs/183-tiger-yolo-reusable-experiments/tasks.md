@@ -4,6 +4,23 @@
 **Branch**: `TigerClusterExperiments`
 **Status**: 2/17 tasks complete (T001 inventory and T003 focused component acceptance); IN_PROGRESS, no runtime PASS.
 
+2026-09-07 T004 dispatch 级 profile/planes checkpoint：新增
+[tools/spec183_dispatch_plane.py](../../../Experiments/TigerCluster/tools/spec183_dispatch_plane.py)
+render/check —— runtime plane（sif b6710fd6 + nativeManifest 48d7ab79 +
+libraryLock aad276e6）与 dispatch plane（effective-profile 文档 + 21 文件
+sealed harness + 5 个真实 source）以 CAS hardlink 确定性重建，
+[profiles/yolo-two-node.json](../../../Experiments/TigerCluster/profiles/yolo-two-node.json)
+全部 12 个文件行回填真实 bytes/sha256。生产校验 check_chain 至 dispatch +
+verify_harness VERIFIED（identities inputs 36c909db → runtime eeb8afa0 →
+dispatch 10758dc3；qualification 仍未评估）。修两类工具缺陷：stage id 一律取
+check_plane 的 canonical 文档 sha（误用 plane.json 文件 sha 会 render 绿而
+check 红）；重建前需对 freeze 只读 harness 目录 chmod u+w。真实键集与
+repo-top registry 一致性复验通过；删除无对应私钥的 TigerCluster/specs
+孤儿 pub 副本。沙箱内 3.5GB SIF 冷读偶发污染（9008db7a 假象）见
+failure-log，记录 identity b6710fd6 稳定正确。deferred：远端 storage
+site roots 与 oracle 数值契约待 T005/T006/T012 wiring 验证；release.gates
+仍空，local-cpu 运行资格待真实 prepare+local 执行 receipt。
+
 2026-09-07 T005/T006 独立参考生成组件：新增 prepare_role_reference，检查
 组装模型字节摘要、ORT 版本/后端，以 BASIC/1-thread 创建独立 session 导出
 优化图，不调用 run、不读被测 profile；只返回摘要/节点名，临时明文在私有目录
