@@ -85,6 +85,18 @@ def build(bld):
     framework_includes = ['..', '../ndn-service-framework',
                           '../NDNSF-DistributedRepo/include']
     framework_use = 'NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL'
+
+    # Link a clean external-style consumer against the installable DI library
+    # boundary.  The program performs no network work; it only proves that the
+    # public native header and shared-library symbols resolve together.
+    bld.program(target='../spec182-installed-consumer',
+                name='spec182-installed-consumer',
+                source=[bld.path.find_node('standalone/spec182-installed-consumer.cpp')],
+                includes=['..', '../ndn-service-framework'],
+                use='ndnsf-distributed-inference ndn-service-framework ' + framework_use,
+                linkflags=['-Wl,--no-relax'],
+                rpath=[bld.bldnode.abspath()], install_path=None)
+
     di_integration_sources = bld.path.parent.ant_glob([
         'NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.cpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/DependencyWaitScheduler.cpp',
