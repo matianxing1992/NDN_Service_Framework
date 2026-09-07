@@ -30,6 +30,27 @@ No native build, SIF or Tiger job run in this checkpoint.
 
 ### Cross-role and log join
 
+Owned collection follow-up: `collect_owned_dependency_result` accepts actual
+Worker ownership objects rather than arbitrary log paths, rechecks preparation,
+requires closed workers, consistent normal case/ranks and all four unique YOLO
+roles, then runs native PID/profile collection and dependency collection. Both
+readers hash their exact log bytes; differing hashes reject collection. These
+are still components: full cleanup receipts, certified model/GPU/allocation and
+numerical/lifecycle qualification must be joined by the final operator.
+Nine join tests use explicit role/native/dependency doubles, not fake runtime
+PASS. Existing role collection tests separately exercise actual OS child/log
+ownership with synthetic native evidence; native compute remains unrun.
+
+Owned checkpoint: affected suites 61 passed; expanded focused suite 632 passed
+in 41.60s. JUnit: `Experiments/TigerCluster/results/t006-owned-dependency-r1/junit.xml`.
+
+Deployment boundary: the Worker-object helper can serve in-process/local
+collection but is not the final two-node entrypoint. Independent Slurm rank
+processes cannot share Python Worker instances. The distributed collector
+must use each rank's retained launch/cleanup receipt and exact log/output
+artifacts, bound to the frozen plan and allocation. Do not fabricate Worker
+objects from user-supplied metadata and call them live ownership evidence.
+
 `read_public_dependency_contract` reads a bounded non-symlink public artifact,
 rejects duplicate/unknown fields, mismatched roles/providers/request/attempt/
 plan/session, duplicate edges, and missing or disagreeing input/output peers.

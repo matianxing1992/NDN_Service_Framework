@@ -78,6 +78,18 @@ T001–T004形成 profile/launcher 实现骨架；可操作 MVP 还要求 T006 �
 
 ## Current Checkpoint
 
+2026-09-07 owned dependency collection: `collect_owned_dependency_result`
+requires all four roles from closed, reverified prepared Worker ownership
+objects, correct node rank/mode coverage and actual launcher-derived paths.
+It joins existing native PID/profile validation with public dependency checks
+and compares per-log hashes across both reads. Nine join tests use boundary
+doubles, alongside existing real OS process role tests; no native qualification.
+ORT source audit confirms the configured post-Selection preparation factory
+creates a new runner/session per invocation with unique profile prefix;
+keep strict current-request profile binding. Warmup is not proof of reuse of
+an already loaded ORT session. Complete operator/GPU/graph/final receipt join
+and T007 remain pending.
+
 2026-09-07 cross-role join: `read_public_dependency_contract` validates bounded
 User evidence against external request/attempt/plan/role/Provider facts and
 requires exact agreement of producer outputs and consumer inputs.

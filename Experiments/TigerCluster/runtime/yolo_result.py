@@ -113,6 +113,7 @@ def validate_dependency_edges(logs_by_role, edges, *, session_id):
     This is not a physical-link or full-inference qualification verdict.
     """
     from pathlib import Path
+    import hashlib
     from runtime.yolo_bundle import _bytes
     fields = {'session', 'scope', 'producer', 'consumer', 'direction', 'payload_bytes', 'planned_name', 'status'}
     edge_fields = {'scope', 'producer', 'consumer', 'planned_name'}
@@ -131,11 +132,14 @@ def validate_dependency_edges(logs_by_role, edges, *, session_id):
         keys.append(key)
     marker = 'NDNSF_DI_DEPENDENCY_OBJECT '
     records = {}
+    log_digests = {}
     for role, filename in logs_by_role.items():
         path = Path(filename)
         if any(p.is_symlink() for p in (path, *path.parents)):
             raise EvidenceError('DEPENDENCY_LOG_SYMLINK')
-        for line in _bytes(path).decode('utf-8').splitlines():
+        payload = _bytes(path)
+        log_digests[role] = 'sha256:' + hashlib.sha256(payload).hexdigest()
+        for line in payload.decode('utf-8').splitlines():
             if marker not in line:
                 continue
             tokens = line.split(marker, 1)[1].split()
@@ -169,7 +173,45 @@ def validate_dependency_edges(logs_by_role, edges, *, session_id):
         fetched = records.get((key, 'fetch-ndnsf-data-v1'))
         if published is None or published != fetched:
             raise EvidenceError('DEPENDENCY_PAIR_MISSING_OR_BYTES')
-    return dict(edgeCount=len(keys), qualification='DEPENDENCY_COMPONENT_ONLY')
+    return dict(edgeCount=len(keys), logDigests=log_digests, qualification='DEPENDENCY_COMPONENT_ONLY')
+
+
+def collect_owned_dependency_result(workers, path, *, request_id, attempt, plan_digest, providers_by_role):
+    """Join all four YOLO roles using closed prepared Workers' actual logs.
+
+    Still a component gate: allocation/GPU/certified graph, numerical result
+    and final cleanup receipts must also pass before experiment qualification.
+    Workers are live launcher ownership objects, not caller-provided log paths.
+    """
+    expected = {'BackboneNeck', 'DetectShard0', 'DetectShard1', 'Merge'}
+    if (set(providers_by_role) != expected or not isinstance(workers, (list, tuple))
+            or not 1 <= len(workers) <= 2):
+        raise EvidenceError('OWNED_DEPENDENCY_SCOPE')
+    logs, observations, ranks, modes = {}, {}, set(), set()
+    for worker in workers:
+        if (worker.closed is not True or worker.rank in ranks
+                or worker.mode not in ('local-cpu', 'single-node-gpu', 'two-node-gpu')):
+            raise EvidenceError('OWNED_DEPENDENCY_WORKER')
+        worker._verify_prepared_boundary()
+        ranks.add(worker.rank)
+        modes.add(worker.mode)
+        for role in sorted(set(worker.roles) & expected):
+            if role in logs:
+                raise EvidenceError('OWNED_DEPENDENCY_DUPLICATE_ROLE')
+            observations[role] = collect_role_execution(worker, role=role,
+                provider=providers_by_role[role], request_id=request_id,
+                attempt=attempt, plan_digest=plan_digest)
+            logs[role] = worker.children.log_dir / (role + '.log')
+    if (len(modes) != 1 or logs.keys() != expected
+            or ranks != ({0, 1} if modes == {'two-node-gpu'} else {0})):
+        raise EvidenceError('OWNED_DEPENDENCY_ROLE_COVERAGE')
+    dependencies = collect_dependency_result(path, logs, request_id=request_id,
+        attempt=attempt, plan_digest=plan_digest, providers_by_role=providers_by_role)
+    if any(observations[role]['native']['logDigest'] != dependencies['logDigests'][role]
+           for role in expected):
+        raise EvidenceError('OWNED_DEPENDENCY_LOG_CHANGED')
+    return dict(roles=observations, dependencies=dependencies,
+        qualification='OWNED_DEPENDENCY_COMPONENT_ONLY')
 
 
 def collect_request_result(root, reference, *, case, request_id, attempt_id,

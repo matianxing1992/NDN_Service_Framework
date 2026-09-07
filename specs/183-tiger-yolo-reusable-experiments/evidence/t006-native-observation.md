@@ -77,3 +77,21 @@ Selectors: TigerCluster/tests plus test_spec183_v3_backend_selection,
 test_spec183_public_recipients, test_spec180_yolo_numerical,
 test_spec183_numerical_reanalysis and test_spec183_candidate_identity under
 tests/python. No native/SIF/Tiger execution was performed.
+# Request profile lifetime audit (2026-09-07)
+
+The ONNX adapter captures profiling once per runner session, not once per
+arbitrary subsequent Run on a reused session (`profilingCaptured`). Do not
+attribute an old profile to a later request. In the configured V3
+post-Selection path, NativeProviderHandler.cpp around 2195 calls
+runnerPreparationFactory and runnerFactory->create for each invocation.
+RegistryNativeModelRunnerFactory::create dispatches the creator; the ONNX
+creator constructs a new OnnxRuntimeModelRunner. NativeRunnerPreparation.cpp
+sets a unique PID/sequence profile prefix and profileAfterRequest=true.
+Thus this source path supports strict request/attempt profile matching without
+weakening the collector. Native execution must still confirm this wiring.
+
+The schedule's initial warmup request must not be described as proof that later
+requests reuse a loaded ORT session: process/artifact caches and runner/session
+reuse are different. If a future factory starts caching runners, qualification
+must address per-request execution evidence explicitly rather than passing the
+first request's profile off as current evidence.
