@@ -56,6 +56,16 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 
 ## Current Checkpoint
 
+2026-09-07 Native boundary follow-up / **T001 IN_PROGRESS**：补齐 ONNX
+protobuf 生成源到 provider、fault-provider、assembly-parity、smoke 和
+integration 的 Waf 闭包（`76d074af`），移除装配器废弃 JSON/路径 helper
+（`e0a4e248`）；Python 扩展不再重复编译 `NativeGrantVerifier.cpp`，只链接
+安装的 DI 库（`2eb259f7`）。嵌套 graph external initializer 的绑定/内联和
+超大输入上限已由 `b4f02615` 覆盖。相关静态检查及 Spec182 Python 门禁仍
+通过；Cargo 缺失、NAC-ABE ABI mismatch 和完整请求编排未解决，产品仍 **0/17**。
+下一步在匹配工具链上完成 bridge/全量链接，再推进 T010/T011；不把本地
+focused 结果写成 T016 qualification。
+
 2026-09-07 Spec Kit default / **PASS**：通用 tasks-template 默认包含 Execution Progress 和
 Current Checkpoint；任务生成/执行技能增加覆盖检查、增量更新及保留既有状态规则。
 仅工作流文档更新，不改变上表产品状态。检查见 [registry evidence](evidence/task-progress-registry-20260907.md#spec-kit-default)。
