@@ -201,7 +201,8 @@ def issue(namespace: str, role_identities: dict[str, str] | None = None) -> None
             raise RuntimeError("DEFAULT_CERT_MISMATCH:" + role)
         # Validators load /config/root.cert directly. Do not create an issuer
         # identity or import issuer keys into a role's PIB/TPM.
-        records[role] = {"identity": identity, "certificateSha256": digest(cert_path)}
+        records[role] = {"identity": identity, "certificateSha256": digest(cert_path),
+                         **certificate_binding(signed, identity)}
         (homes / role / "session.conf").write_text("")
     validate_role_homes({role: homes / role for role in roles})
     peer_certificates = [public / (role + ".cert") for role in identity_map] + [public / "root.cert"]
@@ -215,6 +216,29 @@ def issue(namespace: str, role_identities: dict[str, str] | None = None) -> None
     (homes / "root" / "request.cert").unlink()
     write_json(public / "identities.json", {"root": namespace, "roles": records,
                                              "rootCertificateSha256": digest(public / "root.cert")})
+
+
+def certificate_binding(encoded: bytes, identity: str) -> dict[str, str]:
+    """Extract exact certificate/key names, never fabricate offer trust names.
+
+    Parsing is not signature validation. The issuer owns signing and default
+    certificate installation; later signed-Data readiness validates trust.
+    """
+    from ndn.encoding import Name, Component, parse_data
+    if not isinstance(encoded, bytes) or not 0 < len(encoded) <= 65536:
+        raise ValueError('IDENTITY_CERTIFICATE_SIZE')
+    try:
+        packet = base64.b64decode(b''.join(encoded.split()), validate=True)
+        name, _, _, _ = parse_data(packet)
+        prefix = Name.from_str(identity)
+        if (len(name) != len(prefix) + 4 or not Name.is_prefix(prefix, name)
+                or name[len(prefix)] != Component.from_str('KEY')
+                or Component.get_type(name[-1]) != Component.TYPE_VERSION):
+            raise ValueError('IDENTITY_CERTIFICATE_NAME')
+        return {'certificateName': Name.to_str(name),
+                'keyLocatorPrefix': Name.to_str(name[:-2])}
+    except (ValueError, TypeError, IndexError) as exc:
+        raise ValueError('IDENTITY_CERTIFICATE_NAME') from exc
 
 
 def issue_yolo_recipients(namespace: str, homes: dict[str, Path], public: Path,

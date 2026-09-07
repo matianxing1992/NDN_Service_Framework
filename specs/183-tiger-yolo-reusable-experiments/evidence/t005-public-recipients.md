@@ -33,6 +33,23 @@ ran. No fake extension or skip was used. Both must pass after T008 native build.
 
 ## Remaining controlling work
 
+### Certificate binding prerequisite for offer preparation
+
+The maintained ProviderOfferTrustVerifier requires the actual certificate name
+and key locator prefix, in addition to the distinct Ed25519 offer signer key.
+`identities.issue` now derives these fields from its newly issued certificate
+Data and records them in `identities.json`; it does not construct guessed key
+or certificate components. `certificate_binding` validates the expected
+identity and certificate-name structure using python-ndn wire parsing.
+
+Five parsing tests passed (0.72s), including foreign identity and malformed
+certificate-name negatives. Their synthetic digest-signed Data prove parsing
+only, not certificate authenticity. The full focused set passed **326 tests in
+21.32s**, JUnit under `results/spec183-certificate-binding-r1/junit.xml`.
+The actual ndnsec issuer/installed default certificate and signed readiness
+remain to be exercised inside the qualified runtime. Offer key generation and
+policy construction still need wiring to these authoritative metadata fields.
+
 ### Real recipient preparation component
 
 `runtime/identities.py::issue_yolo_recipients` now generates four independent

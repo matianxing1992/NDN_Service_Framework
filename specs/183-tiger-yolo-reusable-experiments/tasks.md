@@ -78,6 +78,8 @@ T001–T004形成 profile/launcher 实现骨架；可操作 MVP 还要求 T006 �
 
 ## Current Checkpoint
 
+2026-09-07身份issuer现从实际证书Data记录certificateName/keyLocatorPrefix，避免offer policy猜测名称；5项wire解析测试通过，总326 focused（21.32s）。这是证书结构解析，不是签名认证/实际issuer通过。下一步offer密钥及policy准备接线、模型/authority认证和readiness。T005仍partial，见t005-public-recipients.md。
+
 2026-09-07真实recipient生成组件已加入既有identities.py：每Provider独立密钥/私有map，User独立requester seed和public map；独占写入及HOME lease，拒绝覆盖/身份重复。4项真实crypto测试通过，总321 focused（21.13s）。尚未接最终prepare；模型/authority/offer材料认证、readiness及T006仍待实现，T005不关闭。详见t005-public-recipients.md。
 
 2026-09-07 native recipient启动接线已按真实C++环境变量完成，私钥map精确限定单Provider自身HOME；User和Provider共用`/config/contracts/trust-root-registry-v1.json`，publicKeyPath契约为`contracts/authority.pub`。新增6项拒错，317 focused通过（20.91s），证据追加于t005-public-recipients.md。下一步生成并认证这些真实材料及readiness；不能把fixture路径检查当作native grant通过。T005仍partial。
