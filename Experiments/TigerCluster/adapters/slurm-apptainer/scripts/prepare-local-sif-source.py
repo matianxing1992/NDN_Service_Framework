@@ -83,6 +83,10 @@ NAC_ABE_FILES = (
 NDNSD_FILES = ("waf", "wscript", "ndnsd.pc.in", "logger.hpp", "ndnsd", ".waf-tools")
 EXCLUDED_DIRS = {"build", "__pycache__", "node_modules"}
 EXCLUDED_SUFFIXES = {".so", ".a", ".o", ".pyc", ".pyo"}
+# Untracked example residue in the NAC-ABE checkout (not part of the built
+# library); sealing it would force every handoff to fail on
+# HANDOFF_SOURCE_UNTRACKED until that repository commits it.
+EXCLUDED_DEPENDENCY_FILES = {"examples/example-trust-anchor.cert"}
 
 
 def digest(path: Path) -> str:
@@ -162,6 +166,8 @@ def selected_dependency_files(workspace: Path, entries: tuple[str, ...]) -> list
                    for part in rel.parts):
                 continue
             if candidate.suffix in EXCLUDED_SUFFIXES:
+                continue
+            if rel.as_posix() in EXCLUDED_DEPENDENCY_FILES:
                 continue
             selected.add(rel)
     return sorted(selected, key=lambda value: value.as_posix())
