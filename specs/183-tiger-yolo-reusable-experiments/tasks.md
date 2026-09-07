@@ -4,6 +4,12 @@
 **Branch**: `TigerClusterExperiments`
 **Status**: 2/17 tasks complete (T001 inventory and T003 focused component acceptance); IN_PROGRESS, no runtime PASS.
 
+2026-09-07 准备接线审查：拆分放置候选摘要与运行候选摘要。内部 prepare-input-v2
+分别传递 placementCandidateDigest/runtimeCandidateDigest，前者用于 offers，
+后者用于 preparation receipt/worker。旧 v1 描述拒绝猜测转换；T004/T005 仍未关闭。
+准备生产者/描述解析/进程调用/worker/operator 聚焦回归 32 passed in 2.73s；
+生产者测试替换了密码学和模型 owner，进程测试使用假容器，不代表真实 SIF 资格。
+
 2026-09-07 T004/T005 准备调用边界：新增 `yolo_operator.provision_run`，复用
 现有 `apps.yolo prepare`、container_command 和 Processes；校验固定 descriptor、
 public inputs、SIF/harness 摘要与隔离目录后，单次有界执行离线 issuer，保留

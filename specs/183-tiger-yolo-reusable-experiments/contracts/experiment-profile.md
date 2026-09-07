@@ -130,6 +130,13 @@ wait/readiness 使用 monotonic deadline，并检查 child 和 peer failure。Co
 
 ### T004 implemented interface checkpoint
 
+内部离线准备描述采用 `tiger-yolo-prepare-input-v2`，明确区分：
+`placementCandidateId/placementCandidateDigest` 来自已签名 YOLO catalogue，
+仅用于 Provider offer 的候选声明；`runtimeCandidateDigest` 来自本次已冻结的
+prepared run，写入 preparation receipt 的 `candidateDigest`，由 worker 校验。
+这不是两份可互换的摘要。v1 的单一 candidate 字段存在歧义，拒绝自动猜测迁移；
+调用者必须从相应 owner 重新生成 v2 描述。没有修改 NDNSF 网络消息格式。
+
 `jobs/yolo/submit.py` 暴露五个公开命令：`check`、`prepare`、`local`、
 `submit` 和 `collect`。另外有一个仅由 `jobs/yolo/run.sbatch` 调用的隐藏
 `run` 命令。所有命令都要求显式 profile、run ID 和 output；运行 case 还必须

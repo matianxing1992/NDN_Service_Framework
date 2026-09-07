@@ -2202,3 +2202,20 @@ Mutation cases reject a changed/unbound/writable source before output creation.
 
 Lesson: test public commands without mocking qualification, and do not demand
 runtime qualification merely to copy checked bytes for later qualification.
+
+# 2026-09-07 — Spec183 preparation confused placement and runtime identity
+
+Symptom: prepare_in_container used the catalogue placement digest for both
+signed Provider offers and its preparation receipt, while workers expect the
+enclosing prepared-run digest. With distinct real digests the later worker
+boundary would reject preparation. Earlier fixtures reused one value.
+
+Fix: the internal prepare-input-v2 descriptor and preparation API now require
+explicit placement and runtime identities. Offers retain the placement digest;
+receipt production and verification use the runtime digest. Reject ambiguous
+v1 and missing/bad runtime identities. A producer test exercises both outputs
+with mocked crypto/model owners; fake-container process tests reject receipt
+substitution even after exit 0. No real cluster failure or runtime PASS claimed.
+
+Lesson: fixtures must distinguish identities from different protocol layers;
+reusing a single digest can hide a broken producer/consumer contract.

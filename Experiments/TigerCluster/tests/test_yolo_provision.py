@@ -36,12 +36,13 @@ def fixture(tmp_path, behavior='success'):
     produced = tmp_path / 'produced'
     plan = prepared_public(produced)
     plan['schema'] = 'tiger-yolo-run-plan-v1'
-    desc = dict(schema='tiger-yolo-prepare-input-v1', plan=plan,
+    desc = dict(schema='tiger-yolo-prepare-input-v2', plan=plan,
                 templateDigest=sha(inputs / 'template.json'),
                 registryDigest=sha(inputs / 'trust/contracts/trust-root-registry-v1.json'),
                 manifestDigest=sha(roots['package'] / 'manifest.json'),
-                protectionEpoch='epoch-1', candidateId='shared-backbone-two-shard-v1',
-                candidateDigest='sha256:' + 'a' * 64)
+                protectionEpoch='epoch-1', placementCandidateId='shared-backbone-two-shard-v1',
+                placementCandidateDigest='sha256:' + 'b' * 64,
+                runtimeCandidateDigest='sha256:' + 'a' * 64)
     descriptor = inputs / 'prepare.json'
     descriptor.write_text(json.dumps(desc))
     seal(produced, plan)
@@ -52,6 +53,9 @@ def fixture(tmp_path, behavior='success'):
     receipt_path.write_text(json.dumps(receipt))
     if behavior == 'wrong-epoch':
         receipt['protectionEpoch'] = 'other'
+        receipt_path.write_text(json.dumps(receipt))
+    if behavior == 'placement-as-runtime':
+        receipt['candidateDigest'] = desc['placementCandidateDigest']
         receipt_path.write_text(json.dumps(receipt))
     if behavior == 'tampered':
         (produced / 'case.json').write_text('changed after receipt')
@@ -100,7 +104,7 @@ def test_provision_failure_retains_logs_and_reaps_child(tmp_path, behavior, reas
     assert all(r['reaped'] for r in json.loads((kwargs['output'] / 'cleanup.json').read_text())['records'])
 
 
-@pytest.mark.parametrize('behavior', ['missing', 'tampered'])
+@pytest.mark.parametrize('behavior', ['missing', 'tampered', 'placement-as-runtime'])
 def test_zero_exit_does_not_replace_preparation_evidence(tmp_path, behavior):
     kwargs = fixture(tmp_path, behavior)
     with pytest.raises((ValueError, OSError)):

@@ -95,8 +95,8 @@ def validate_preparation_roots(public: Path, private: Path) -> None:
 def prepare_in_container(plan: dict, *, template_path: Path, template_digest: str,
                          package: Path, manifest_digest: str, registry: Path,
                          registry_digest: str, authority_private: Path,
-                         protection_epoch: str, candidate_id: str,
-                         candidate_digest: str) -> dict:
+                         protection_epoch: str, placement_candidate_id: str,
+                         placement_candidate_digest: str, runtime_candidate_digest: str) -> dict:
     """Offline preparation using installed owners, never a qualification gate.
 
     Invoked only by the audited prepare entrypoint in the exact SIF. Inputs
@@ -104,6 +104,9 @@ def prepare_in_container(plan: dict, *, template_path: Path, template_digest: st
     private, initially empty writable preparation mounts; runtime gets only
     public config and each role's own HOME. No NFD, RPC or model execution is
     started here. A failure retains partial output and prohibits in-place retry.
+    placement_candidate_digest identifies the signed catalogue placement for offers;
+    runtime_candidate_digest binds the enclosing prepared run for workers.
+    They must never be inferred from or substituted for one another.
     """
     from types import SimpleNamespace
     from runtime.identities import (issue, issue_yolo_recipients, issue_yolo_offers,
@@ -111,6 +114,9 @@ def prepare_in_container(plan: dict, *, template_path: Path, template_digest: st
     from runtime.yolo_profile import _read_plane
 
     public, private = Path('/config'), Path('/identities')
+    for value in (placement_candidate_digest, runtime_candidate_digest):
+        if not isinstance(value, str) or re.fullmatch(r'sha256:[0-9a-f]{64}', value) is None:
+            raise ValueError('YOLO_PREPARE_CANDIDATE_DIGEST')
     validate_preparation_roots(public, private)
     template_wire = _read_credential(Path(template_path))
     if 'sha256:' + hashlib.sha256(template_wire).hexdigest() != template_digest:
@@ -140,7 +146,7 @@ def prepare_in_container(plan: dict, *, template_path: Path, template_digest: st
     issue_yolo_recipients(namespace, homes, public, names)
     service = config['services'][0]['name']
     issue_yolo_offers(namespace, homes, public, names, service=service,
-        candidate_id=candidate_id, candidate_digest=candidate_digest,
+        candidate_id=placement_candidate_id, candidate_digest=placement_candidate_digest,
         trust_schema=namespace + '/trust')
     _create_credential(homes['user'] / 'request-envelope.key', os.urandom(32))
     policy_path = owner._materialize_case_config('Y-B', config, public)
@@ -155,7 +161,7 @@ def prepare_in_container(plan: dict, *, template_path: Path, template_digest: st
     from runtime.yolo_bundle import preparation_inventory
     receipt = {'schema': 'tiger-yolo-preparation-v1', 'status': 'PREPARED',
                'qualification': 'NOT_EVALUATED', 'runId': plan['runId'],
-               'candidateDigest': candidate_digest, 'protectionEpoch': protection_epoch,
+               'candidateDigest': runtime_candidate_digest, 'protectionEpoch': protection_epoch,
                'catalogueDataName': catalogue_name, 'catalogueSigner': names['controller'],
                'templateDigest': template_digest, 'packageManifestDigest': manifest_digest,
                'registryDigest': registry_digest,
@@ -173,16 +179,16 @@ def preparation_arguments(descriptor: Path, expected_digest: str) -> dict:
         raise ValueError('YOLO_PREPARE_DESCRIPTOR_DIGEST')
     value = json.loads(wire, object_pairs_hook=_object)
     fields = {'schema', 'plan', 'templateDigest', 'manifestDigest', 'registryDigest',
-              'protectionEpoch', 'candidateId', 'candidateDigest'}
-    if not isinstance(value, dict) or set(value) != fields or value['schema'] != 'tiger-yolo-prepare-input-v1':
+              'protectionEpoch', 'placementCandidateId', 'placementCandidateDigest', 'runtimeCandidateDigest'}
+    if not isinstance(value, dict) or set(value) != fields or value['schema'] != 'tiger-yolo-prepare-input-v2':
         raise ValueError('YOLO_PREPARE_DESCRIPTOR')
-    for key in ('templateDigest', 'manifestDigest', 'registryDigest', 'candidateDigest'):
+    for key in ('templateDigest', 'manifestDigest', 'registryDigest', 'placementCandidateDigest', 'runtimeCandidateDigest'):
         if not isinstance(value[key], str) or not re.fullmatch(r'sha256:[0-9a-f]{64}', value[key]):
             raise ValueError('YOLO_PREPARE_DESCRIPTOR_HASH')
     if (not isinstance(value['plan'], dict)
             or value['plan'].get('schema') != 'tiger-yolo-run-plan-v1'
-            or not isinstance(value['candidateId'], str)
-            or not re.fullmatch(r'[A-Za-z0-9_.-]{1,128}', value['candidateId'])
+            or not isinstance(value['placementCandidateId'], str)
+            or not re.fullmatch(r'[A-Za-z0-9_.-]{1,128}', value['placementCandidateId'])
             or not isinstance(value['protectionEpoch'], str)
             or value['protectionEpoch'] == 'plaintext-v1'
             or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,127}', value['protectionEpoch'])):
@@ -193,8 +199,8 @@ def preparation_arguments(descriptor: Path, expected_digest: str) -> dict:
         registry=Path('/inputs/trust/contracts/trust-root-registry-v1.json'),
         registry_digest=value['registryDigest'],
         authority_private=Path('/inputs/private/artifact-policy-authority.key'),
-        protection_epoch=value['protectionEpoch'], candidate_id=value['candidateId'],
-        candidate_digest=value['candidateDigest'])
+        protection_epoch=value['protectionEpoch'], placement_candidate_id=value['placementCandidateId'],
+        placement_candidate_digest=value['placementCandidateDigest'], runtime_candidate_digest=value['runtimeCandidateDigest'])
 
 
 def main(argv=None):

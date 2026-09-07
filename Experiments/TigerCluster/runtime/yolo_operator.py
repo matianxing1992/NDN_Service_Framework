@@ -122,7 +122,7 @@ def provision_run(*, runtime_profile: dict, bundle: Path, harness_digest: str,
     import hashlib
     receipt_digest = "sha256:" + hashlib.sha256(_bytes(public / "preparation.json")).hexdigest()
     receipt = verify_preparation(public, options["plan"], expected_receipt_digest=receipt_digest,
-                                 candidate_digest=options["candidate_digest"])
+                                 candidate_digest=options["runtime_candidate_digest"])
     expected = {"templateDigest": options["template_digest"],
                 "packageManifestDigest": options["manifest_digest"],
                 "registryDigest": options["registry_digest"],
