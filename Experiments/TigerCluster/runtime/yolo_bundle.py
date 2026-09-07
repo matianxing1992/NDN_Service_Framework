@@ -29,11 +29,72 @@ REQUIRED_HARNESS_FILES = frozenset({
     "runtime/yolo_allocation.py",
     "apps/yolo.py", "apps/yolo_network.py", "jobs/yolo/submit.py", "jobs/yolo/run.sbatch",
     "schemas/tiger-yolo-v1.schema.json", "requirements-operator.txt",
+    "lib/spec183_yolo_host_gate.py", "owners/yolo_reference.py", "owners/yolo_tensor_bundle.py",
 })
 MANIFEST = "harness-manifest.json"
 MAX_FILE_BYTES = 4 * 1024 * 1024
 MAX_TOTAL_BYTES = 16 * 1024 * 1024
 PRIVATE_PEM = re.compile(rb"^-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY-----\r?$", re.M)
+
+
+def harness_source(root: Path, name: str) -> Path:
+    """Map existing generic owners into generated frozen snapshots.
+
+    Its maintained source stays in DI. Only the actual repository builder may
+    read that source; frozen bundles and arbitrary source roots use their own
+    declared file. No recursive source copying or runtime checkout fallback.
+    """
+    root = Path(root)
+    tiger = Path(__file__).resolve().parents[1]
+    repository = tiger.parents[1]
+    sources = {
+        'owners/yolo_reference.py': 'NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/yolo/reference.py',
+        'owners/yolo_tensor_bundle.py': 'NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/yolo/tensor_bundle.py',
+        # Tiger/lib is a pre-existing compatibility directory symlink. Freeze
+        # its declared canonical owner, not the link or an arbitrary target.
+        'lib/spec183_yolo_host_gate.py': 'packaging/ndnsf-di-container/lib/spec183_yolo_host_gate.py',
+    }
+    if (name in sources and root == tiger and tiger.name == 'TigerCluster'
+            and tiger.parent.name == 'Experiments' and (repository / '.git').exists()):
+        return repository / sources[name]
+    return root / name
+
+
+def _numpy_owner(name: str, root: Path | None = None):
+    """Load the declared NumPy-only owner without importing native DI parents.
+
+    Execution/collection callers verify their frozen harness before this call.
+    This loader itself is not qualification authority.
+    """
+    import importlib.util
+    import sys
+    root = Path(__file__).resolve().parents[1] if root is None else Path(root)
+    if name not in ('reference', 'tensor_bundle'):
+        raise ClosureError('NUMPY_OWNER_NAME')
+    path = harness_source(root, 'owners/yolo_' + name + '.py')
+    if any(p.is_symlink() for p in (path, *path.parents)):
+        raise ClosureError('REFERENCE_OWNER_SYMLINK')
+    payload = _bytes(path)
+    name = '_tiger_yolo_reference_' + hashlib.sha256(str(path).encode() + b'\0' + payload).hexdigest()
+    if name not in sys.modules:
+        spec = importlib.util.spec_from_file_location(name, path)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        try:
+            # Execute exactly the bytes just read, not another filesystem read.
+            exec(compile(payload, str(path), 'exec'), module.__dict__)
+        except BaseException:
+            sys.modules.pop(name, None)
+            raise
+    return sys.modules[name]
+
+
+def reference_owner(root: Path | None = None):
+    return _numpy_owner('reference', root)
+
+
+def tensor_bundle_owner(root: Path | None = None):
+    return _numpy_owner('tensor_bundle', root)
 
 
 def preparation_inventory(root: Path, plan: dict, *, receipt_present: bool = False) -> dict:
@@ -166,8 +227,11 @@ def _load(manifest, expected, source_root=None):
         raise ClosureError("HARNESS_TOTAL_BYTES")
     payloads = {}
     for name, row in sorted(value["files"].items()):
-        _file_identity(source_root, name, dict(row, path=name))
-        raw_file = _bytes(source_root / name)
+        source = harness_source(source_root, name)
+        if any(p.is_symlink() for p in (source, *source.parents)):
+            raise ClosureError('HARNESS_SOURCE_SYMLINK')
+        _file_identity(source.parent, name, dict(row, path=source.name))
+        raw_file = _bytes(source)
         if (len(raw_file) != row["bytes"]
                 or "sha256:" + hashlib.sha256(raw_file).hexdigest() != row["sha256"]):
             raise ClosureError("HARNESS_CHANGED_DURING_CHECK:" + name)

@@ -2539,3 +2539,36 @@ Lesson: test actual assembly bytes before runtime qualification; do not let
 annotation imports force offline checks through stale DSOs. Reuse the same
 prepared reference for identity mutations and rerun native checks only after
 the loader closure changes. See evidence/t005-request-reference-wiring.md.
+
+# 2026-09-07 — local dispatch waited for an impossible READY result
+
+Symptom: local/collect required qualification=READY from check_operator_profile,
+whose contract always returns NOT_EVALUATED. Future valid host receipts could
+never reach local execution. Collection also depended on an undeclared host DI
+package instead of the frozen NumPy oracle owner.
+
+Cause: content integrity and prerequisite qualification were conflated; the
+public local owner remained a placeholder while the lower owners were wired.
+
+Fix: require VERIFIED integrity, consume the existing source-bound host gate,
+check the matching nine-artifact native manifest, then execute/reanalyze from
+the frozen CLI. Connect existing provision/rank/collection owners and snapshot
+the canonical NumPy reference source in the explicit harness inventory. No
+native/application/GPU PASS is inferred from these source connections.
+
+Validation exposed two fixture/source issues: Tiger/lib is a pre-existing
+compatibility symlink (map its declared canonical validator source explicitly,
+do not relax frozen-bundle symlink rejection), and the prepare test returned
+None where the actual adapter now supplies graph/catalogue provenance. After
+the latter fixture correction only its 12 tests were rerun (0.33s), preserving
+the initial 113-pass/1-failure JUnit. Latest per-case evidence covers all 114
+unique selected components. Detail: Spec183 evidence/t004-local-owner-wiring.md.
+
+Lesson: check documented return states through the actual caller. Freeze every
+operator-side executable owner and verify source/gate identity before enabling
+expensive effects. Correct narrow fixture failures without repeating model or
+whole-suite campaigns. The other client's active host build was left intact.
+The final import audit caught the remaining tensor decoder dependency before
+qualification; its existing NumPy-only source is now frozen too. A fresh
+isolated interpreter forbids all ndnsf/py_repoclient imports while loading both
+owners, preventing test-suite module state from concealing a missing dependency.

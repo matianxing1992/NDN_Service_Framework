@@ -40,6 +40,44 @@ def test_freeze_is_independent_of_later_source_edits(tmp_path):
     assert (output.stat().st_mode & 0o222) == 0
 
 
+def test_real_frozen_reference_owner_has_no_native_import_dependency(tmp_path):
+    import subprocess
+    from tools.spec183_dispatch_plane import _sealed_harness
+    from runtime.yolo_bundle import reference_owner, tensor_bundle_owner, verify_harness, harness_source
+    _sealed_harness(tmp_path)
+    frozen = tmp_path / 'harness'
+    owner = reference_owner(frozen)
+    assert frozen in Path(owner.__file__).parents
+    assert owner.FIXTURE_PATH == 'tests/fixtures/spec180/yolo26n/fixed-fixture.ppm'
+    assert (frozen / 'owners/yolo_reference.py').read_bytes() == harness_source(ROOT, 'owners/yolo_reference.py').read_bytes()
+    assert 'ndnsf' not in owner.__dict__
+    decoder = tensor_bundle_owner(frozen)
+    assert frozen in Path(decoder.__file__).parents
+    assert decoder.decode_tensor_bundle(b'NDITB001\0\0\0\0') == {}
+    assert (frozen / 'owners/yolo_tensor_bundle.py').read_bytes() == harness_source(ROOT, 'owners/yolo_tensor_bundle.py').read_bytes()
+    manifest = frozen / 'harness-manifest.json'
+    verify_harness(frozen, expected_manifest_sha256='sha256:' + hashlib.sha256(manifest.read_bytes()).hexdigest())
+    # A fresh interpreter has no test-suite sys.modules/package-path help.
+    program = '''
+import builtins, sys
+sys.path.insert(0, sys.argv[1])
+original = builtins.__import__
+def checked(name, *args, **kwargs):
+    if name.startswith(('ndnsf', 'py_repoclient')):
+        raise AssertionError('UNDECLARED_NATIVE_DI_IMPORT:' + name)
+    return original(name, *args, **kwargs)
+builtins.__import__ = checked
+from runtime.yolo_bundle import reference_owner, tensor_bundle_owner
+assert reference_owner().ATOL == 1e-3
+assert tensor_bundle_owner().decode_tensor_bundle(b'NDITB001' + bytes(4)) == {}
+print('FROZEN_NUMPY_OWNERS_OK')
+'''
+    result = subprocess.run([sys.executable, '-I', '-B', '-c', program, str(frozen)],
+                            capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == 'FROZEN_NUMPY_OWNERS_OK'
+
+
 @pytest.mark.parametrize("mutation", ["missing", "extra", "escape", "boolean", "hash",
                                       "symlink", "binary", "private-pem", "oversize"])
 def test_invalid_sources_create_no_destination(tmp_path, mutation):

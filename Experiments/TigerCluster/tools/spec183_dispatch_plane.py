@@ -16,7 +16,7 @@ Stage contents (``runtime/yolo_profile.REQUIRED_FILES``):
               libraryLock    .cache/handoff/development-20260906/
                              dependency-lock.json (build-time dependency lock)
     dispatch  effectiveProfile  generated effective-behavior document
-              harnessManifest   sealed 21-file harness under ``harness/``
+              harnessManifest   explicit sealed harness under ``harness/``
               modelManifest     signed shared-backbone model manifest
               oracle            canonical oracle full-model-output.npy
               fixture           fixed fixture PPM (committed under tests/)
@@ -161,13 +161,13 @@ def _stage_id(root: Path, stage: str, *, parent_id) -> str:
 
 
 def _sealed_harness(dispatch_root: Path) -> dict:
-    """Freeze the 20-file harness under ``dispatch_root/harness`` (read-only)."""
+    """Freeze the declared harness under ``dispatch_root/harness`` (read-only)."""
     from runtime.yolo_bundle import REQUIRED_HARNESS_FILES, MANIFEST
-    from runtime.yolo_bundle import freeze_harness
+    from runtime.yolo_bundle import freeze_harness, harness_source
     base = _REPO_ROOT / "Experiments/TigerCluster"
     rows = {}
     for name in sorted(REQUIRED_HARNESS_FILES):
-        source = base / name
+        source = harness_source(base, name)
         if not source.is_file() or source.is_symlink():
             raise RuntimeError(f"harness source missing: {source}")
         rows[name] = {"bytes": source.stat().st_size, "sha256": _sha256(source)}

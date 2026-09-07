@@ -145,7 +145,19 @@ package catalogue 读取 shared-backbone-two-shard-v1 的放置摘要，生成�
 重验公开文件摘要后仅复制小型模板/信任文件、0600 私钥及描述到私有 issuer
 目录，不复制模型，不把该目录加入公开 harness。真正的签名/私钥匹配仍由
 容器内现有 owner 完成。此映射和 staging 是内部边界，公开 prepare 仍只冻结
-非敏感脚本/计划；local/run 接线和资格门尚未完成。
+非敏感脚本/计划。local 已接入现有 owner；远端 run 和实际运行资格仍未完成。
+
+local 先要求内容完整性 VERIFIED，再由既有 host gate validator 验证
+hostMinindn 的三场景留存文件及 source seal；其 source seal 必须与 runtime
+plane 的 container-native-build.json 一致，九项原生产物须完整且 final hash
+一致。内容检查的 NOT_EVALUATED 不再被误当作永久不可执行开关。此门只消费
+T010 的前置证据，不要求尚未产生的 localSif 结果；当前旧六产物镜像不合格。
+
+local 在冻结 bundle 中重新进入 CLI，复核生成计划/候选摘要后调用
+execute_local_run→provision_run→run_rank→finalize_normal_collection，最后由
+collect 重算判定。每个请求先校验独立 graph reference 与 lifecycle/数值，
+全部请求完成并清理后才生成 collection-input。路径已有部分运行产物时拒绝
+重用，不覆盖失败。collect 同样使用冻结 CLI/NumPy owner，不依赖宿主 native DI。
 
 内部离线准备描述采用 `tiger-yolo-prepare-input-v2`，明确区分：
 `placementCandidateId/placementCandidateDigest` 来自已签名 YOLO catalogue，
@@ -314,8 +326,11 @@ numerical-component acceptance is not an end-to-end or GPU verdict.
 
 `runtime/yolo_bundle.py` 实现小型脚本 bundle 的 freeze/verify。清单格式为
 `schema=tiger-yolo-harness-v1, files={relative-name:{bytes,sha256}}`，明确登记
-16个运行脚本/schema/operator-lock 文件（包含实际跨节点探测apps/yolo_network.py和
-worker-to-collector handoff），不递归复制仓库。清单生成物可放在
+`runtime/yolo_bundle.py::REQUIRED_HARNESS_FILES` 中的明确文件集合（包含跨节点探测、
+worker-to-collector handoff、既有 host gate validator 与通用 NumPy reference/decoder owners）。
+通用 owner 源码仍由 DI 维护，只在生成的冻结 bundle 中快照；既有 Tiger/lib
+兼容链接由 builder 映射到已声明的 canonical owner，冻结结果不含链接。
+不递归复制仓库。清单生成物可放在
 工作树外，通过显式source_root查找同一批已绑定字节；不会为了清单改源码目录。
 缺少真实 `apps/yolo.py`、`yolo_result.py`、`run.sbatch` 时仍不得构造生产 bundle，
 不得写假实现来填清单。清单完整性不能代替T007实际import/调用闭包审查。

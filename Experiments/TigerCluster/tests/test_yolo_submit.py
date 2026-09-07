@@ -146,23 +146,24 @@ def test_local_sif_first_run_requires_host_gate_not_its_own_result(tmp_path, mon
     module = submit_module()
     profile_digest = "sha256:" + "b" * 64
     monkeypatch.setattr(module, "_dispatch_report", lambda _: (
-        {"qualification": "READY", "documentDigest": profile_digest}, {}))
+        {"integrity": "VERIFIED", "qualification": "NOT_EVALUATED", "documentDigest": profile_digest}, {}))
     monkeypatch.setattr(module, "_load_prepared", lambda *_: {
         "case": "local-cpu", "candidateDigest": "sha256:" + "a" * 64,
         "profileDigest": profile_digest})
     seen = []
     monkeypatch.setattr(module, "_gate_receipt", lambda path, profile, gate: seen.append(gate))
+    monkeypatch.setattr(module, '_execute_local', lambda *args: seen.append('worker') or 0)
     args = SimpleNamespace(profile=tmp_path / "profile", output=tmp_path / "output",
                            run_id="test-local", case="local-cpu")
-    assert module._local(args) == module.INCOMPLETE
-    assert seen == ["hostMinindn"]
+    assert module._local(args) == 0
+    assert seen == ["hostMinindn", 'worker']
     assert not args.output.exists()
 
 
 def test_local_rejects_different_profile_before_using_host_receipt(tmp_path, monkeypatch):
     module = submit_module()
     monkeypatch.setattr(module, "_dispatch_report", lambda _: (
-        {"qualification": "READY", "documentDigest": "sha256:" + "a" * 64}, {}))
+        {"integrity": "VERIFIED", "qualification": "NOT_EVALUATED", "documentDigest": "sha256:" + "a" * 64}, {}))
     monkeypatch.setattr(module, "_load_prepared", lambda *_: {
         "case": "local-cpu", "profileDigest": "sha256:" + "b" * 64,
         "candidateDigest": "sha256:" + "c" * 64})
@@ -376,7 +377,9 @@ runpy.run_path(sys.argv[0], run_name='__main__')
     for action, case in (("local", "local-cpu"), ("submit", "two-node-gpu")):
         rejected = cli(action, "--profile", path, "--run-id", "prepare-test",
                        "--output", output, "--case", case, cwd=tmp_path)
-        assert rejected.returncode == 78
+        assert rejected.returncode == (2 if action == 'local' else 78)
+        if action == 'local':
+            assert json.loads(rejected.stdout)['reason'] == 'LOCAL_CASE'
         assert json.loads(rejected.stdout)["qualification"] == "NOT_EVALUATED"
     duplicate = cli(*args, cwd=tmp_path)
     assert duplicate.returncode == 2
@@ -450,6 +453,7 @@ def _negative_collection_input(prepared, *, valid=True):
 @pytest.mark.parametrize("mutation", ["unchanged", "missing", "invalid", "changed-valid", "verdict", "oracle"])
 def test_collect_runs_expected_rejection_oracle_and_writes_immutable_verdict(tmp_path, monkeypatch, capsys, mutation):
     module = submit_module()
+    monkeypatch.setattr(module, '_enter_frozen', lambda *args: None)  # Separate frozen-launch boundary test.
     run_id = "negative-run"
     request_id = "/test/spec183/negative-run/requests/0"
     prepared = {
@@ -466,7 +470,7 @@ def test_collect_runs_expected_rejection_oracle_and_writes_immutable_verdict(tmp
     (root / "prepare.json").write_text("unused")
     (root / "collection-input.json").write_text(json.dumps(_negative_collection_input(prepared)))
     monkeypatch.setattr(module, "_dispatch_report",
-                        lambda path: ({"qualification": "READY",
+                        lambda path: ({"integrity": "VERIFIED", "qualification": "NOT_EVALUATED",
                                        "documentDigest": prepared["profileDigest"]}, {}))
     monkeypatch.setattr(module, "_load_prepared", lambda output, value: prepared)
     args = SimpleNamespace(profile=tmp_path / "profile.json", run_id=run_id,
@@ -506,6 +510,7 @@ def test_collect_runs_expected_rejection_oracle_and_writes_immutable_verdict(tmp
 
 def test_collect_retains_first_rejection_without_promoting_bad_handoff(tmp_path, monkeypatch):
     module = submit_module()
+    monkeypatch.setattr(module, '_enter_frozen', lambda *args: None)
     run_id = "negative-run"
     prepared = {
         "runId": run_id, "case": "negative-dependency",
@@ -522,7 +527,7 @@ def test_collect_retains_first_rejection_without_promoting_bad_handoff(tmp_path,
     (root / "collection-input.json").write_text(
         json.dumps(_negative_collection_input(prepared, valid=False)))
     monkeypatch.setattr(module, "_dispatch_report",
-                        lambda path: ({"qualification": "READY",
+                        lambda path: ({"integrity": "VERIFIED", "qualification": "NOT_EVALUATED",
                                        "documentDigest": prepared["profileDigest"]}, {}))
     monkeypatch.setattr(module, "_load_prepared", lambda output, value: prepared)
     args = SimpleNamespace(profile=tmp_path / "profile.json", run_id=run_id,

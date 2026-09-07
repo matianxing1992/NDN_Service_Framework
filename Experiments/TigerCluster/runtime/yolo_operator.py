@@ -367,6 +367,122 @@ def finalize_normal_collection(*, plan: dict, rank_results: dict, node_roots: di
         allocation_expected=allocation_expected)
 
 
+def execute_local_run(*, prepared: dict, profile: dict, resolved: dict) -> dict:
+    """Execute the exact-SIF CPU gate through the existing owners once.
+
+    The public CLI must validate the source-bound host gate before entering
+    this internal boundary. This function produces retained collection input,
+    never a PASS from process return codes. Partial output is not reusable.
+    """
+    from .yolo_bundle import reference_owner, verify_harness
+    from .yolo_profile import _file_identity
+    from .yolo_result import collect_request_result
+    from .yolo_graph_reference import read_request_reference
+    from .identities import _credential_document
+    plan = prepared['plan']
+    _validate_plan(plan, mode='local-cpu', rank=0)
+    root = _directory(plan['output'], 'LOCAL_RUN_ROOT')
+    bundle = _directory(prepared['bundle'], 'LOCAL_RUN_BUNDLE')
+    verify_harness(bundle, expected_manifest_sha256=prepared['harnessManifestSha256'])
+    if (prepared['case'] != 'local-cpu' or prepared['runId'] != plan['runId']
+            or resolved['descriptor']['plan'] != plan
+            or resolved['descriptor']['runtimeCandidateDigest'] != prepared['candidateDigest']):
+        raise OperatorError('LOCAL_RUN_BINDING')
+    timing = profile['timing']
+    permission_ms = min(120000, timing['progressTimeoutSeconds'] * 1000)
+    process_seconds = (permission_ms + timing['requestDeadlineMs']) / 1000
+    completion_seconds = len(plan['requests']) * process_seconds
+    if (timing['stagingSeconds'] + timing['startupSeconds'] + completion_seconds
+            + timing['cleanupSeconds'] > profile['cluster']['wallTimeSeconds']):
+        raise OperatorError('LOCAL_RUN_WALLTIME_BUDGET')
+    package = _directory(resolved['package'], 'LOCAL_RUN_PACKAGE')
+    # Reuse the generic NumPy owner, frozen with the harness. No model or
+    # native DI initialization is needed on the operator host.
+    owner = reference_owner(bundle)
+    fixture = Path(profile['oracle']['input']['path'])
+    repository = fixture
+    for _ in Path(owner.FIXTURE_PATH).parts:
+        repository = repository.parent
+    if repository / owner.FIXTURE_PATH != fixture:
+        raise OperatorError('LOCAL_RUN_FIXTURE_LAYOUT')
+    for name in ('input', 'reference'):
+        record = profile['oracle'][name]
+        path = Path(record['path'])
+        _file_identity(path.parent, name, dict(record, path=path.name))
+    reference = owner.load_reference(package, repository, 640)
+    if (reference.manifest_digest != resolved['descriptor']['manifestDigest']
+            or reference.fixture_digest != profile['oracle']['input']['sha256']
+            or reference.oracle_digest != profile['oracle']['reference']['sha256']):
+        raise OperatorError('LOCAL_RUN_ORACLE_BINDING')
+    names = ('issuer-inputs', 'public', 'private', 'prepare-output', 'node',
+             'startup', 'completion', 'node0')
+    paths = {name: root / name for name in names}
+    if any(path.exists() or path.is_symlink() for path in paths.values()):
+        raise OperatorError('LOCAL_RUN_ALREADY_STARTED')
+    started = dict(schema='tiger-yolo-local-execution-v1', status='STARTED',
+        runId=plan['runId'], candidateDigest=prepared['candidateDigest'])
+    _credential_document(root / 'local-execution.json', started)
+    try:
+        descriptor = stage_provision_inputs(resolved, paths['issuer-inputs'])
+        for name in names[1:]:
+            paths[name].mkdir(mode=0o700)
+        (paths['private'] / 'root').mkdir(mode=0o700)
+        provision = provision_run(runtime_profile=resolved['runtimeProfile'], bundle=bundle,
+            harness_digest=prepared['harnessManifestSha256'], inputs=paths['issuer-inputs'],
+            descriptor_digest=descriptor, package=package, public=paths['public'],
+            private=paths['private'], output=paths['prepare-output'],
+            seconds=timing['stagingSeconds'], cleanup_seconds=timing['cleanupSeconds'])
+        receipt = provision['preparation']
+        graph_digest = _digest(receipt.get('graphDigest'), 'LOCAL_RUN_GRAPH')
+        catalogue_digest = _digest(receipt.get('catalogueDigest'), 'LOCAL_RUN_CATALOGUE')
+        providers = {role: plan['identities'][role] for role in
+                     ('BackboneNeck', 'DetectShard0', 'DetectShard1', 'Merge')}
+        accepted = []
+
+        def accept(request, output):
+            read_request_reference(output / 'graph-reference.json',
+                run_id=plan['runId'], request_id=request['requestId'],
+                runtime_candidate_digest=prepared['candidateDigest'],
+                placement_candidate_digest=receipt['placementCandidateDigest'],
+                graph_digest=graph_digest)
+            collect_request_result(output, reference, case='local-cpu',
+                request_id=request['requestId'], attempt_id='attempt-1',
+                candidate_id=receipt['placementCandidateId'],
+                candidate_digest=receipt['placementCandidateDigest'],
+                graph_digest=graph_digest, catalogue_digest=catalogue_digest)
+            accepted.append(request['index'])
+
+        merged = dict(profile, **resolved['runtimeProfile'])
+        rank_result = run_rank(plan=plan, profile=merged, mode='local-cpu', rank=0,
+            bundle=bundle, public=paths['public'],
+            homes={role: paths['private'] / role for role in plan['identities']},
+            output=paths['node0'], node=paths['node'], startup_directory=paths['startup'],
+            completion_directory=paths['completion'],
+            preparation_digest=provision['receiptDigest'], candidate_digest=prepared['candidateDigest'],
+            endpoints=[dict(rank=0, address='127.0.0.1', port=profile['cluster']['tcpPort'])],
+            startup_seconds=timing['startupSeconds'], completion_seconds=completion_seconds,
+            startup_options=dict(repo_free_bytes=profile['storage']['peakBytes'] + profile['storage']['marginBytes'],
+                permission_wait_ms=permission_ms, network_probe_seconds=timing['progressTimeoutSeconds']),
+            request_options=dict(package=package, catalog_data_name=receipt['catalogueDataName'],
+                catalog_signer=receipt['catalogueSigner'], permission_wait_ms=permission_ms,
+                request_deadline_ms=timing['requestDeadlineMs'], process_timeout_seconds=process_seconds,
+                protection_epoch=profile['security']['protectionEpoch']), accept_request=accept)
+        if accepted != list(range(len(plan['requests']))):
+            raise OperatorError('LOCAL_RUN_REQUEST_COVERAGE')
+        return finalize_normal_collection(plan=plan, rank_results={0: rank_result},
+            node_roots={0: paths['node0']}, collection_path=root / 'collection-input.json',
+            references=[dict(package=package, repository=repository, inputSize=640)
+                        for _ in plan['requests']],
+            runtime_candidate_digest=prepared['candidateDigest'], providers_by_role=providers,
+            placement_candidate_id=receipt['placementCandidateId'],
+            placement_candidate_digest=receipt['placementCandidateDigest'], graph_digest=graph_digest,
+            catalogue_digest=catalogue_digest, certified_graph={'graphDigest': graph_digest})
+    except BaseException as exc:
+        _credential_document(root / 'local-execution-failure.json', dict(started,
+            status='FAIL', errorType=type(exc).__name__))
+        raise
+
+
 def descriptor_digest(descriptor: dict) -> str:
     """Return a stable digest for an operator descriptor without reading paths."""
     if not isinstance(descriptor, dict):

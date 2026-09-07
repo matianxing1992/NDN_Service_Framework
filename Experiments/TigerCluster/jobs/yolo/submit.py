@@ -92,6 +92,38 @@ def _gate_receipt(profile_path: Path, profile: dict, gate: str) -> dict:
         raise ClosureError("GATE_MISSING:" + gate)
     path = _file_ref(profile_path, gate, row)
     value = _read_plane(path)
+    if gate == 'hostMinindn':
+        # Host qualification predates this SIF, but must name the same sealed
+        # source used by its native build. Consume the existing receipt owner.
+        from lib.spec183_yolo_host_gate import validate_yolo_host_gate
+        try:
+            source_path = Path(value['sourceSeal']['path'])
+            if (not source_path.is_absolute()
+                    or any(p.is_symlink() for p in (source_path, *source_path.parents))):
+                raise ValueError('HOST_SOURCE_PATH')
+            validated = validate_yolo_host_gate(path, source_seal_path=source_path)
+            runtime_path = _file_ref(profile_path, 'runtime', profile['release']['runtime'])
+            native_ref = _read_plane(runtime_path)['files']['nativeManifest']
+            native_path = _file_ref(runtime_path, 'nativeManifest', native_ref)
+            native = _read_plane(native_path)
+            artifacts = native.get('artifacts')
+            names = {'provider', 'faultProvider', 'controller', 'framework',
+                     'ndn-svs', 'nac-abe', 'ndn-sd', 'extension', 'repoExtension'}
+            if (native.get('schemaVersion') != 'spec170-container-native-build-v1'
+                    or native.get('buildBoundary') != 'container-runtime-in-sif'
+                    or native.get('status') != 'PASS'
+                    or native.get('sourceSealSha256') != validated['sourceSeal']['sha256']):
+                raise ValueError('HOST_SIF_SOURCE_MISMATCH')
+            if (not isinstance(artifacts, list) or len(artifacts) != len(names)
+                    or {item.get('name') for item in artifacts if isinstance(item, dict)} != names
+                    or any(not isinstance(item.get('sha256'), str)
+                           or not HASH.fullmatch(item['sha256'])
+                           or item.get('finalSha256') != item['sha256']
+                           for item in artifacts)):
+                raise ValueError('HOST_SIF_NATIVE_CLOSURE')
+        except (KeyError, TypeError, ValueError, OSError) as exc:
+            raise ClosureError('GATE_HOST_SOURCE_BINDING') from exc
+        return {'name': gate, 'path': str(path), 'sha256': row['sha256'], 'receipt': validated}
     if (not isinstance(value, dict)
             or value.get("status") not in ("PASS", "READY")
             or value.get("qualification") not in ("PASS", "READY", "QUALIFIED")):
@@ -101,12 +133,13 @@ def _gate_receipt(profile_path: Path, profile: dict, gate: str) -> dict:
 
 def _dispatch_report(profile: Path) -> tuple[dict, dict]:
     report = check_operator_profile(profile, stage="dispatch")
-    loaded = report.get("profile")
     # check_operator_profile intentionally does not return the mutable profile;
     # load it again only after the content check, anchored to the profile path.
     from runtime.yolo_profile import load_operator_profile
-    loaded = load_operator_profile(profile, stage="dispatch")["profile"]
-    return report, loaded
+    loaded = load_operator_profile(profile, stage="dispatch")
+    if loaded['documentDigest'] != report['documentDigest']:
+        raise ClosureError('PROFILE_CHANGED_DURING_DISPATCH')
+    return report, loaded['profile']
 
 
 def _prepared_path(output: Path, run_id: str) -> Path:
@@ -337,7 +370,7 @@ def _prepare(args) -> int:
 
 def _local(args) -> int:
     report, value = _dispatch_report(Path(args.profile))
-    if report.get("qualification") != "READY":
+    if report.get("integrity") != "VERIFIED":
         return _not_ready("local", "DISPATCH_GATE", report)
     prepared = _load_prepared(args.output, args.run_id)
     if args.case != "local-cpu" or prepared["case"] != args.case:
@@ -345,10 +378,45 @@ def _local(args) -> int:
     if report["documentDigest"] != prepared["profileDigest"]:
         raise ClosureError("PROFILE_CHANGED_AFTER_PREPARE")
     _gate_receipt(Path(args.profile), value, "hostMinindn")
-    # The real SIF worker is intentionally enabled only after T008/T009/T010
-    # produce the local gate receipt.  This branch prevents a structural profile
-    # from silently becoming a fake local qualification.
-    return _not_ready("local", "LOCAL_WORKER_NOT_WIRED", {"prepared": prepared["candidateDigest"]})
+    return _execute_local(args, value, prepared)
+
+
+def _enter_frozen(args, prepared, action):
+    """Use the same verified harness for execution and offline reanalysis."""
+    from runtime.yolo_bundle import verify_harness
+    bundle = Path(prepared['bundle'])
+    verify_harness(bundle, expected_manifest_sha256=prepared['harnessManifestSha256'])
+    if BUNDLE == bundle:
+        return None
+    import subprocess
+    command = [sys.executable, '-B', str(bundle / 'jobs/yolo/submit.py'), action,
+        '--profile', str(Path(args.profile).absolute()), '--run-id', args.run_id,
+        '--output', str(_safe_output(args.output))]
+    if action == 'local':
+        command += ['--case', args.case]
+    return subprocess.run(command, cwd=bundle, check=False).returncode
+
+
+def _execute_local(args, profile, prepared):
+    """Enter the frozen runner only after source-bound host qualification."""
+    plan = resolve_run_plan(Path(args.profile), stage='dispatch', case=args.case,
+                            run_id=args.run_id, output=args.output)
+    if (plan != prepared['plan'] or prepared['candidateDigest'] != _json_digest({
+            'profile': prepared['profileDigest'], 'plan': plan,
+            'harness': prepared['harnessManifestSha256']})):
+        raise ClosureError('LOCAL_PREPARED_PLAN_BINDING')
+    result = _enter_frozen(args, prepared, 'local')
+    if result is not None:
+        return result
+    try:
+        from runtime.yolo_profile import resolve_provision_inputs
+        from runtime.yolo_operator import execute_local_run
+        resolved = resolve_provision_inputs(Path(args.profile), plan=plan,
+            runtime_candidate_digest=prepared['candidateDigest'])
+        execute_local_run(prepared=prepared, profile=profile, resolved=resolved)
+        return _collect(args)
+    except (ValueError, OSError, ImportError, RuntimeError, TimeoutError) as exc:
+        raise ClosureError('LOCAL_EXECUTION_FAILED:' + type(exc).__name__) from exc
 
 
 def _submit(args) -> int:
@@ -375,11 +443,14 @@ def _submit(args) -> int:
 def _collect(args) -> int:
     profile_path = Path(args.profile)
     report, _ = _dispatch_report(profile_path)
-    if report.get("qualification") != "READY":
+    if report.get("integrity") != "VERIFIED":
         return _not_ready("collect", "DISPATCH_GATE", report)
     prepared = _load_prepared(args.output, args.run_id)
     if report["documentDigest"] != prepared["profileDigest"]:
         raise ClosureError("PROFILE_CHANGED_AFTER_PREPARE")
+    result = _enter_frozen(args, prepared, 'collect')
+    if result is not None:
+        return result
     root = _safe_output(args.output) / args.run_id
     verdict = root / "verdict.json"
     if any(p.is_symlink() for p in (verdict, *verdict.parents)):
@@ -402,7 +473,10 @@ def _collect(args) -> int:
             collection_path, root=root, prepared=prepared)
         from runtime import yolo_result
         if collection["kind"] == "normal":
-            from ndnsf_distributed_inference.adapters.yolo.reference import load_reference
+            from runtime.yolo_bundle import reference_owner, verify_harness
+            verify_harness(Path(prepared['bundle']),
+                           expected_manifest_sha256=prepared['harnessManifestSha256'])
+            load_reference = reference_owner(Path(prepared['bundle'])).load_reference
             references = [load_reference(row["package"], row["repository"], row["inputSize"])
                           for row in collection["references"]]
             final = yolo_result.collect_normal_verdict(

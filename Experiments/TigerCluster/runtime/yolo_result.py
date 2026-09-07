@@ -1414,8 +1414,9 @@ def reanalyze_numerical_response(root, reference, *, case, request_id, attempt_i
     from pathlib import Path
     from runtime.yolo_profile import _read_plane
     from runtime.yolo_bundle import _bytes
-    from ndnsf_distributed_inference.adapters.yolo.tensor_bundle import decode_tensor_bundle
-    from ndnsf_distributed_inference.adapters.yolo.reference import compare_reference
+    from runtime.yolo_bundle import reference_owner, tensor_bundle_owner
+    decode_tensor_bundle = tensor_bundle_owner().decode_tensor_bundle
+    compare_reference = reference_owner().compare_reference
     root = Path(root)
     record_path, payload_path = root / 'yolo-numerical.json', root / 'yolo-response.bin'
     if any(p.is_symlink() for p in (record_path, payload_path, root, *root.parents)):

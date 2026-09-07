@@ -108,7 +108,9 @@ def test_issuer_binds_offers_to_placement_but_receipt_to_runtime(tmp_path, monke
                             build_runtime_publication_file=lambda *a: None)
     monkeypatch.setattr(yolo, '_installed_yolo_owner', lambda: owner)
     adapter = ModuleType('ndnsf_distributed_inference.adapters.yolo')
-    adapter.build_yolo26n_adapter = lambda *a, **kw: None
+    adapter.build_yolo26n_adapter = lambda *a, **kw: SimpleNamespace(
+        graph=SimpleNamespace(graph_digest='sha256:'+'3'*64),
+        splitter=SimpleNamespace(catalogue_digest='sha256:'+'4'*64))
     policy = ModuleType('ndnsf_distributed_inference.policy')
     policy.write_policy_bundle = lambda *a: None
     monkeypatch.setitem(sys.modules, adapter.__name__, adapter)
@@ -132,6 +134,8 @@ def test_issuer_binds_offers_to_placement_but_receipt_to_runtime(tmp_path, monke
     assert offers['candidate_digest'] == placement
     assert receipt['candidateDigest'] == runtime
     assert receipt['placementCandidateDigest'] == placement
+    assert receipt['graphDigest'] == 'sha256:'+'3'*64
+    assert receipt['catalogueDigest'] == 'sha256:'+'4'*64
     assert json.loads((public / 'preparation.json').read_text())['candidateDigest'] == runtime
 
 

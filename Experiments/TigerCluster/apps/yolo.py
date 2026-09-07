@@ -147,7 +147,7 @@ def prepare_in_container(plan: dict, *, template_path: Path, template_digest: st
     owner = _installed_yolo_owner()
     from ndnsf_distributed_inference.adapters.yolo import build_yolo26n_adapter
     from ndnsf_distributed_inference.policy import write_policy_bundle
-    build_yolo26n_adapter(package, registry_path=registry)  # Signed catalogue and actual graph digest.
+    adapter = build_yolo26n_adapter(package, registry_path=registry)
     candidates = manifest['catalogue']['candidates']
     selected = [c for c in candidates if c['candidateId'] == placement_candidate_id]
     if len(selected) != 1 or selected[0]['candidateDigest'] != placement_candidate_digest:
@@ -182,6 +182,8 @@ def prepare_in_container(plan: dict, *, template_path: Path, template_digest: st
                'placementCandidateId': placement_candidate_id,
                'placementCandidateDigest': placement_candidate_digest,
                'catalogueDataName': catalogue_name, 'catalogueSigner': names['controller'],
+               'graphDigest': adapter.graph.graph_digest,
+               'catalogueDigest': adapter.splitter.catalogue_digest,
                'templateDigest': template_digest, 'packageManifestDigest': manifest_digest,
                'registryDigest': registry_digest,
                'publicFiles': preparation_inventory(public, plan)}

@@ -24,8 +24,9 @@
 | T002.b | T002 | 既有 builder 接受 Spec183 host-gate receipt、保留 Spec175 | IMPLEMENTED | 后文 T002 dispatch/preflight checkpoint；组件/命令边界证据 | T007 核实接线；T010 后才验证真实 receipt 的消费 | 不为等真实 receipt 重复 fixture suite |
 | T003.a | T003 | `yolo_worker.py` 角色隔离、启动、进程组及清理 | VERIFIED | [worker](evidence/t003-worker.md)；T003 focused acceptance | 真实 workload 接线归 T004/T005 | 生命周期代码未变复用；改动时跑对应回归 |
 | T004.a | T004 | profile/schema、冻结 bundle、五命令与提交 journal | IMPLEMENTED | [profile](evidence/t004-profile.md)、[journal](evidence/t004-cli-journal.md)、后文 dispatch checkpoint | 结构和拒错已有记录；完整执行未验收 | 文档变更不重跑；字段/argv 变更做 focused 检查 |
-| T004.b | T004 | `jobs/yolo/submit.py` 的 local、staging、run 接真实 worker | BLOCKED | 当前源码仍有 `LOCAL_WORKER_NOT_WIRED`、`REMOTE_STAGING_NOT_WIRED`、`RUNNER_NOT_WIRED` | 连接实际 owner，保留 gate 检查；在 T007 前完成接线验证 | 先跑真实调用边界的 focused 回归，不重复全部组件测试 |
+| T004.b | T004 | `jobs/yolo/submit.py` 的远端 staging、run 接真实 worker | BLOCKED | `REMOTE_STAGING_NOT_WIRED`、`RUNNER_NOT_WIRED` 仍在；local 见 T004.d | 连接实际远端 owner 和 typed gate 消费；在 T007 前完成接线验证 | 只验证新调用边界，复用既有 worker/barrier/journal 证据 |
 | T004.c | T004 | `local` 拒绝其他 profile 冻结的 prepared run | VERIFIED | [CLI binding](evidence/t004-cli-journal.md#2026-09-07-local-prepared-profile-binding)；40 CLI passed，先于 host receipt 检查拒绝 | 绑定修复已完成；T004.b 的生产 worker 接线仍待完成 | 相同源码无需重复 CLI suite；本项不触发 SIF/GPU 验证 |
+| T004.d | T004 | local→冻结 CLI→签发→两个 CPU 请求→清理→真实 collector | IMPLEMENTED | [local owner](evidence/t004-local-owner-wiring.md)；114 个唯一组件用例最终有通过记录，非 native/SIF PASS；host seal/九产物、冻结 NumPy owner 已接 | 等 T007 收敛和真实 T010 receipt/新 SIF 后运行，不能以接线关闭 T004 | 首轮仅剩准备 fixture 漂移，修后只重跑该模块12项；不重复全部集合 |
 | T005.a | T005 | 真实 User/Provider 参数、权限材料、准备与 readiness | IMPLEMENTED | [public recipients](evidence/t005-public-recipients.md)、[normal owner](evidence/t005-normal-node-owner.md) | 尚未证明完整真实 YOLO request→response | 未变安全组件证据复用；变更只重测影响边界 |
 | T005.b | T005 | User post-ACK role specs→DI assembler→独立 ORT reference→发布后 MODELROOT | IMPLEMENTED | [request wiring](evidence/t005-request-reference-wiring.md)；176 组件通过，含真实小 ONNX assembler/CPU ORT；原生应用测试收集失败 | 生产调用已接；需修复 native loader 后验证真实 YOLO request，T007 仍 BLOCK | 组件证据复用；native 测试待 loader 修复后再跑，不为 identity mutation 重建模型 |
 | T005.d | T005 | 独立参考区分角色逻辑摘要与组装 ONNX 字节摘要 | VERIFIED | [reference identities](evidence/t005-reference-identities.md)；145 focused passed，CPU ONNX/组件范围 | 后续 producer 传入两个身份，并在发布后绑定实际 MODELROOT manifest；T005.b 未关闭 | 仅重跑 reference/相关 comparator，不触发 native build 或历史 suite |
@@ -62,7 +63,7 @@
 
 方向审计：目标与 TigerCluster GPU YOLO 一致；原计划的 correctness/reuse 范围和
 单节点 1+1、双节点两次各 1+3 已有界，不增加模型、GPU 型号或性能比较矩阵。
-当前应先完成 **T004.b + T005.b + T006.b → T007.b PASS**，然后
+当前应先完成 **T004.b（远端入口）+ T004.d/T005.b/T006.b 生产调用复核 → T007.b PASS**，然后
 **T008 → T009 → T010 → T011 → T012 → T013 → T014 → T015 → T016 → T017**。
 后文将 T008 称为“下一个实现块”的历史 checkpoint 不取消 T007 前置。
 既有构建驱动初稿和开发探测不作为正式资格；本轮未干预可能存在的构建进程。

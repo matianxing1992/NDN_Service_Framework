@@ -3,7 +3,7 @@
 **Branch**: `TigerClusterExperiments`
 **Status**: IN_PROGRESS / NOT_QUALIFIED
 
-目标：一份profiles/yolo-two-node.json和一个jobs/yolo/submit.py入口，本地验证后，以同一完整SIF完成Tiger两节点四Provider推理并在新allocation复现。目前真实profile、SIF和worker allocation仍未取得，入口继续 fail-closed，不能执行规划中的submit命令。
+目标：一份profiles/yolo-two-node.json和一个jobs/yolo/submit.py入口，本地验证后，以同一完整SIF完成Tiger两节点四Provider推理并在新allocation复现。当前有实际输入 profile 和历史 base SIF，尚无本候选合格 SIF/GPU allocation；submit 仍未开放。
 
 ## Current Checkpoint
 
@@ -16,8 +16,10 @@ Spec183 T001输入/接口清点完成。后续已接收锁定 source seal、本�
 `prepare` 目前只冻结通过内容检查的脚本/计划，返回 PREPARED/NOT_EVALUATED。
 宿主侧 `runtime.yolo_operator.provision_run` 已能有界调用现有容器内离线 issuer，
 验证返回文件并保留进程清理记录；它是内部调用边界，不是新的公开命令。
-尚需将 profile 的实际输入、授权私钥位置和合格运行镜像连接到 local/run。
-该函数的假容器子进程测试不能代替真实 SIF 内身份签发及请求验证。
+local 已连接 profile 输入、私钥 locator、冻结 bundle 和 SIF worker：消费同源
+hostMinindn receipt 后执行签发、两个 CPU 请求、清理及 collector 重算。缺门或
+旧六产物镜像在启动前拒绝。实际 T010 receipt/新 SIF 尚未产生，不能把组件用例
+当成真实 SIF 内身份签发及请求验证。远端 run/staging 仍需接线。
 
 ## Operating Contract
 
