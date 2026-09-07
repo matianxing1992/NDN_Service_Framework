@@ -7,6 +7,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from apps.yolo import configuration_for_run
+from runtime.yolo_profile import ClosureError, application_sync_prefix
 
 
 def inputs():
@@ -48,6 +49,17 @@ def test_sync_prefix_uses_application_name_not_provider_prefix():
     assert output['group'] == '/new/run/yolo-app/sync'
     assert output['runtime']['provider_prefix'] == '/new/run'
     assert output['runtime']['application_name'] == '/new/run/yolo-app'
+
+
+@pytest.mark.parametrize('name', ['', 'relative/app', '/', '/new/run/app/',
+                                  '/new/run//app', '/new/run/app with-space'])
+def test_sync_prefix_rejects_noncanonical_application_name(name):
+    with pytest.raises(ClosureError, match='APPLICATION_NAME'):
+        application_sync_prefix(name)
+
+
+def test_sync_prefix_appends_to_existing_absolute_application_name():
+    assert application_sync_prefix('/new/run/yolo-app') == '/new/run/yolo-app/sync'
 
 
 @pytest.mark.parametrize('fault', ['missing-role', 'foreign-identity', 'local-model', 'extra-service'])

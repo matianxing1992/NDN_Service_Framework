@@ -63,10 +63,11 @@ def configuration_for_run(template: dict, plan: dict) -> dict:
     # The run namespace names this application instance, not a Provider.
     # Older plan fixtures omit the explicit alias; prepared runtime always
     # records it, and downstream routing must consume the resulting group.
+    from runtime.yolo_profile import application_sync_prefix
     app_name = plan.get('applicationName', namespace)
     if app_name != namespace:
         identity_inventory(namespace, {'application': app_name})
-    config['controller'], config['group'] = names['controller'], app_name + '/sync'
+    config['controller'], config['group'] = names['controller'], application_sync_prefix(app_name)
     config['runtime'] = {**config.get('runtime', {}), 'user_identity': names['user'],
                          'application_name': app_name, 'provider_prefix': namespace, 'identities': {
                              **names, 'group': config['group']}}
@@ -487,7 +488,8 @@ def configure_network(worker, barrier, *, endpoints: list[dict]):
     if len({p['address'] for p in peers.values()}) != len(peers):
         raise ValueError('YOLO_NETWORK_DUPLICATE_NODE')
     config = _read_plane(worker.public / 'case.json')
-    group = plan['applicationName'] + '/sync'
+    from runtime.yolo_profile import application_sync_prefix
+    group = application_sync_prefix(plan['applicationName'])
     if config['group'] != group or config['runtime']['application_name'] != plan['applicationName']:
         raise ValueError('YOLO_NETWORK_SYNC_NAME')
     identity_inventory(plan['namespace'], {'sync': group})
@@ -567,9 +569,10 @@ def start_workload(worker, barrier, *, repo_free_bytes: int, permission_wait_ms:
         raise ValueError('YOLO_STARTUP_BINDING')
     config = _read_plane(worker.public / 'case.json')
     services = [s for s in config['services'] if not s['name'].startswith('/NDNSF/DistributedRepo/')]
+    from runtime.yolo_profile import application_sync_prefix
     if (len(services) != 1 or set(services[0]['roles']) != PROVIDER_ROLES
             or config['controller'] != plan['identities']['controller']
-            or config['group'] != config['runtime']['application_name'] + '/sync'
+            or config['group'] != application_sync_prefix(config['runtime']['application_name'])
             or config['runtime']['application_name'] != plan['applicationName']):
         raise ValueError('YOLO_STARTUP_CONFIG')
     try:

@@ -20,10 +20,25 @@ REQUIRED_FILES = {
                  "fixture", "trustPolicy", "validationContract"},
 }
 HASH = re.compile(r"sha256:[0-9a-f]{64}\Z")
+APPLICATION_NAME = re.compile(
+    r"/(?:[A-Za-z0-9_-][A-Za-z0-9_.-]*)(?:/[A-Za-z0-9_-][A-Za-z0-9_.-]*)*\Z"
+)
 
 
 class ClosureError(ValueError):
     """A candidate cannot be reproduced from the declared inputs."""
+
+
+def application_sync_prefix(application_name: str) -> str:
+    """Return the canonical Sync group for one application namespace.
+
+    ``application_name`` is already an absolute NDN namespace.  Keeping the
+    slash construction here prevents callers from deriving Sync from a
+    Provider prefix or from accidentally producing ``//sync``/``/group``.
+    """
+    if not isinstance(application_name, str) or not APPLICATION_NAME.fullmatch(application_name):
+        raise ClosureError("APPLICATION_NAME")
+    return application_name + "/sync"
 
 
 def _object(pairs):
