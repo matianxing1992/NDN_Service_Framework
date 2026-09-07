@@ -78,6 +78,14 @@ T001–T004形成 profile/launcher 实现骨架；可操作 MVP 还要求 T006 �
 
 ## Current Checkpoint
 
+2026-09-07 public dependency projection: `runtime/yolo_projection.py` now
+decodes real typed V3 Selection wire and emits an explicit non-secret allowlist
+bound to request/attempt/execution-plan/Provider. Native attempt-session and
+multi-tensor/redistribution scope rules verified against source. Eleven new
+tests plus eight log-pair tests passed; User retention and final collector
+wiring remain pending. T006 stays unchecked; no native/SIF/Tiger PASS.
+See `evidence/t006-dependency-pairs.md`.
+
 2026-09-07 发现并修复V3 numerical planDigest错用outercarrier：新增handle.execution_plan_digest读取coordinator已绑定runtime摘要，YOLO numerical/终端marker改用该属性；不改任一digest计算。4属性kernel+数值related共41通过，native handle未验证。公开dependency projection仍待做；见evidence/t006-lifecycle-component.md。
 
 2026-09-07 依赖trace启用NDNSF_DI_DEPENDENCY_OBJECT_TRACE=1；collector按外部sealed edges/session配对publish/fetch DATA_V1、role/name/scope/bytes，8新fixtures+Worker共39通过。须补真实sealed-plan public投影并绑定四条edge与planDigest，negative/实际跨节点仍未验证。见evidence/t006-dependency-pairs.md；T006未闭合。
