@@ -23,7 +23,7 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 | [T002-A Installed Library Boundary](contracts/execution-units.md#t002-a-installed-library-boundary) | DONE | T001-C | [L0 evidence](evidence/t002-a-l0-20260907.md)；首次 L0 成功（r2 fresh staging）：consumer 独立编译 rc=0、运行打印 `SPEC182_INSTALLED_CONSUMER_NATIVE_DI_OK` rc=0、无 libpython、staging 无 DI `.cpp/.cc` 副本、NAC-ABE 5-symbol gate 通过；空 registry freeze 语义自修正（[failure-log](../../../docs/failure-log.md) 2026-09-07） | 2026-09-07 |
 | [T003-A Qwen Split Candidates](contracts/execution-units.md#t003-a-qwen-split-candidates) | DONE | T002-A | [acceptance](evidence/t003-a-qwen-split-20260907.md)；CPP(Spec182QwenSplit/*) 5 cases 全绿（合法 cover、边界 budget、非法 rank/图输入），expected 逐条对照冻结 `QwenThreeStageSplitter`，支持范围保持 rank-one；新增 2 case 于 di-native-planning.t.cpp | 2026-09-07 |
 | [T003-B Yolo Split Candidates](contracts/execution-units.md#t003-b-yolo-split-candidates) | DONE | T003-A | [acceptance](evidence/t003-b-yolo-split-20260907.md)；CPP(Spec182YoloSplit/*) 7 cases 全绿（固定 cover、错误 component/图/外来模型拒绝、确定性 + budget 截断），expected 对照冻结 `Yolo26Splitter`/`RegisteredYoloCandidate`；新增 2 case 于 di-native-planning.t.cpp | 2026-09-07 |
-| [T003-C Placement and Registry](contracts/execution-units.md#t003-c-placement-and-registry) | PARTIAL | T003-A, T003-B | [baseline](evidence/task-progress-registry-20260907.md)；已有相关源码切片；完整卡验收未完成 | 2026-09-07 |
+| [T003-C Placement and Registry](contracts/execution-units.md#t003-c-placement-and-registry) | DONE | T003-A, T003-B | [acceptance](evidence/t003-c-placement-20260907.md)；CPP(Spec182Placement/*) 9 cases 全绿（residency→freeBytes→provider 稳定序、budget/ref tie-break、同输入同结果、非法向量/全拒），对照冻结 `propose_v3` 共享语义区间；新增 2 case 于 di-native-planning.t.cpp | 2026-09-07 |
 | [T004-A Canonical Plan Sealing](contracts/execution-units.md#t004-a-canonical-plan-sealing) | PARTIAL | T003-C | [baseline](evidence/task-progress-registry-20260907.md)；已有相关源码切片；完整卡验收未完成 | 2026-09-07 |
 | [T005-A InProcess Authority](contracts/execution-units.md#t005-a-inprocess-authority) | NOT_STARTED | T004-A | [baseline](evidence/task-progress-registry-20260907.md)；无本卡独立执行/验收记录；按依赖领取 | 2026-09-07 |
 | [T005-B Requester Grant Publication](contracts/execution-units.md#t005-b-requester-grant-publication) | PARTIAL | T005-A | [baseline](evidence/task-progress-registry-20260907.md)；已有相关源码切片；完整卡验收未完成 | 2026-09-07 |
@@ -307,15 +307,15 @@ T015在全部实现后补审整体接线；T016执行完整unit→integration→
 
 ## Phase 1: Design and Native Components
 
-- [ ] T001 [US5] **Successor Baseline and Design Closure**。冻结合并基线与181承接表、所有 schema/公开调用方/能力清单及原生依赖，关闭 O-001--005；修订叶子签名与任务至可执行。Dependencies: Merged baseline closure and Spec181 handoff。
+- [x] T001 [US5] **Successor Baseline and Design Closure**。冻结合并基线与181承接表、所有 schema/公开调用方/能力清单及原生依赖，关闭 O-001--005；修订叶子签名与任务至可执行。Dependencies: Merged baseline closure and Spec181 handoff。
   Design: FR-015,FR-016,FR-017,FR-018; CD-001--014。Proof: PO-012。
   [T001 contract](contracts/work-units.md#t001-successor-baseline-and-design-closure)。
 
-- [ ] T002 [US1] **Installable Native Library Contract**。existing Provider runtime 可独立安装/链接；planned requester 公开声明先冻结，完整request由T010实现、T016运行验收。Dependencies: T001。
+- [x] T002 [US1] **Installable Native Library Contract**。existing Provider runtime 可独立安装/链接；planned requester 公开声明先冻结，完整request由T010实现、T016运行验收。Dependencies: T001。
   Design: FR-001,FR-012; CD-001,CD-009。Proof: PO-001。
   [T002 contract](contracts/work-units.md#t002-installable-native-library-contract)。
 
-- [ ] T003 [US2] **Native Split and Placement Decisions**。两个原生模型 splitter 与默认 placement 对固定输入生成合法且确定的方案。Dependencies: T002。
+- [x] T003 [US2] **Native Split and Placement Decisions**。两个原生模型 splitter 与默认 placement 对固定输入生成合法且确定的方案。Dependencies: T002。
   Design: FR-003,FR-009,FR-016; CD-002。Proof: PO-002。
   [T003 contract](contracts/work-units.md#t003-native-split-and-placement-decisions)。
 
