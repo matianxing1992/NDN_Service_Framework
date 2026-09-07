@@ -77,4 +77,4 @@ T001–T004形成 profile/launcher 实现骨架；可操作 MVP 还要求 T006 �
 
 ## Current Checkpoint
 
-2026-09-06：T001清点和T003运行组件实现/聚焦验收已完成，最新 **171 passed in 5.87s**，见[evidence/t003-worker.md](evidence/t003-worker.md)。T002内容完整性子层21项已包含在本轮回归，但host receipt/实际边界接线仍待T004/T006，保持unchecked。下一步T004唯一profile/schema/入口与冻结run plan，再T005业务调用和T006真实判定。签名模型包/精确依赖/本地base仍待接收，T007及全部正式环境门未通过；未构建/上传/提交Slurm。早期partial证据`t003-launch.md`、`t003-lifecycle.md`为历史checkpoint，不再作为当前状态。
+2026-09-06：T001和T003完成（2/17）；T004 schema/只读结构解析器partial，最新 **200 passed in 6.61s**，见[evidence/t004-profile.md](evidence/t004-profile.md)。T002 host receipt/实际边界接线仍待T004/T006，保持unchecked。下一步T004唯一入口、冻结run plan与共享submission journal，再T005业务调用和T006真实判定。三依赖精确commit已在独立忽略cache接收且fsck通过，原工作树未改；source封装、签名模型包和本地base仍待完成。T007及全部正式环境门未通过；未构建/上传/提交Slurm。历史T003验收见[evidence/t003-worker.md](evidence/t003-worker.md)。

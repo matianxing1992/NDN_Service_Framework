@@ -162,3 +162,99 @@ def check_chain(paths: dict, *, through: str) -> dict:
         identities[stage] = parent_id
     return {"stage": through, "identities": identities,
             "integrity": "VERIFIED", "qualification": "NOT_EVALUATED"}
+
+
+def _operator_path(value, base, *, local):
+    # Apptainer's bind grammar uses colon/comma; do not permit ambiguous paths.
+    if (any(c in value for c in ":,\\") or value.startswith("~")
+            or any(ord(c) < 32 or ord(c) == 127 for c in value)):
+        raise ClosureError("PROFILE_PATH")
+    path = Path(value)
+    if local:
+        path = path if path.is_absolute() else base / path
+        # Check before normalization: link/../x must not hide the link.
+        for part in (path,) + tuple(path.parents):
+            if part.is_symlink():
+                raise ClosureError("PROFILE_SYMLINK")
+        return os.path.abspath(str(path))
+    if not path.is_absolute() or any(p in (".", "..", "") for p in value.split("/")[1:]):
+        raise ClosureError("PROFILE_REMOTE_PATH")
+    return str(path)
+
+
+def load_operator_profile(path: Path, *, stage: str) -> dict:
+    """Read-only schema/path/budget validation, NOT integrity or qualification.
+
+    Relative local references are anchored to the profile, never the caller's
+    cwd. Remote paths are lexical only: no SSH, mkdir, hashing, or launch here.
+    Future-stage artifacts need not exist to describe an inputs-stage plan.
+    Callers must separately verify content closure and genuine gate receipts.
+    """
+    if stage not in REQUIRED_FILES:
+        raise ClosureError("PROFILE_STAGE")
+    try:
+        from jsonschema import Draft7Validator
+    except ImportError as exc:
+        raise ClosureError("PROFILE_OPERATOR_DEPENDENCIES") from exc
+    path = Path(_operator_path(str(path), Path.cwd(), local=True))
+    value = _read_plane(path)
+    schema_path = Path(__file__).resolve().parents[1] / "schemas/tiger-yolo-v1.schema.json"
+    schema = _read_plane(schema_path)
+    Draft7Validator.check_schema(schema)
+    error = next(Draft7Validator(schema).iter_errors(value), None)
+    if error is not None:
+        # Report location/constraint only, never interpolate user values.
+        raise ClosureError("PROFILE_SCHEMA:" + "/".join(map(str, error.absolute_path))
+                           + ":" + error.validator)
+
+    def strict_scalars(item):
+        if isinstance(item, float):
+            raise ClosureError("PROFILE_INTEGER_REQUIRED")
+        if isinstance(item, str) and any(ord(c) < 32 or ord(c) == 127 for c in item):
+            raise ClosureError("PROFILE_CONTROL_CHARACTER")
+        if isinstance(item, dict):
+            for key, entry in item.items():
+                strict_scalars(key)
+                strict_scalars(entry)
+        elif isinstance(item, list):
+            for entry in item:
+                strict_scalars(entry)
+
+    strict_scalars(value)
+    stages = tuple(REQUIRED_FILES)
+    if not set(stages[:stages.index(stage) + 1]).issubset(value["release"]):
+        raise ClosureError("PROFILE_STAGE_ARTIFACTS")
+    from .identities import identity_inventory
+    try:
+        identity_inventory(value["security"]["identityNamespace"])
+    except ValueError as exc:
+        raise ClosureError("PROFILE_IDENTITY_NAMESPACE") from exc
+    timing = value["timing"]
+    requests = sum(value["schedule"]["twoNode"].values())
+    minimum = (timing["stagingSeconds"] + timing["startupSeconds"]
+               + (requests * timing["requestDeadlineMs"] + 999) // 1000
+               + timing["cleanupSeconds"])
+    if value["cluster"]["wallTimeSeconds"] < minimum:
+        raise ClosureError("PROFILE_WALLTIME_BUDGET")
+    if timing["progressTimeoutSeconds"] > (timing["requestDeadlineMs"] + 999) // 1000:
+        raise ClosureError("PROFILE_PROGRESS_BUDGET")
+    # Canonical document fingerprint is not the candidate E identity.
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+
+    def resolve_refs(item):
+        if isinstance(item, dict):
+            if set(item) == {"path", "bytes", "sha256"}:
+                item["path"] = _operator_path(item["path"], path.parent, local=True)
+            else:
+                for entry in item.values():
+                    resolve_refs(entry)
+
+    resolve_refs(value)
+    value["runtime"]["apptainer"] = _operator_path(value["runtime"]["apptainer"], path.parent, local=True)
+    for key in ("localArtifactRoot", "remoteArtifactRoot", "sharedRunRoot", "sharedLockRoot", "scratchRoot"):
+        value["storage"][key] = _operator_path(value["storage"][key], path.parent,
+                                              local=key == "localArtifactRoot")
+    return {"structure": "VALIDATED", "integrity": "NOT_EVALUATED",
+            "qualification": "NOT_EVALUATED", "stage": stage,
+            "documentDigest": "sha256:" + hashlib.sha256(encoded).hexdigest(),
+            "minimumWallTimeSeconds": minimum, "profile": value}

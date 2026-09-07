@@ -1,6 +1,8 @@
 # Experiment Profile And Run Contract
 
-**Status**: planned; proposed files/CLI below do not exist yet.
+**Status**: T004 partial — schema and read-only structural loader implemented;
+the five-command operator entrypoint, frozen run plan and actual enabled profile
+are not yet delivered. No launch qualification is implied.
 
 ## Operator Interface
 
@@ -38,6 +40,44 @@
 
 15 分钟/job 是起始资源预算建议，必须 T001 按 warmup、4×deadline、startup、stage/hash/cleanup 计算余量并登记；不满足预算时在提交前拒绝，不能运行中加时。GPU 型号/内存等不在本轮凭空填成“已验证”。
 正常请求默认不启用 response-level reselection；协议已有有限传输重试保持锁定。实例故障时失败而不切换另一 Provider 来凑 PASS。
+
+### Concrete schema and structural checkpoint
+
+`schemas/tiger-yolo-v1.schema.json` is the exact field/type contract. All objects
+reject unknown fields; launch consumers must also prove every supported field is
+used (T004/T007), not merely accepted by the schema. File references have exactly
+`path`, integer `bytes`, and `sha256`. `release.inputs/runtime/dispatch` reference
+the I/R/E plane manifests; `release.gates` holds independent receipt references.
+Transitive source/model/security details live in those hashed owner manifests,
+not duplicated manual settings. `evidence.operatorLock` references the local
+operator dependency lock; that lock is not installed into the SIF.
+
+`load_operator_profile` validates structure, stage manifest presence, identity
+namespace, paths and an arithmetic walltime lower bound. It does not check that
+referenced artifacts exist, their hashes, receipts, or site resource availability.
+The result explicitly reports `integrity=NOT_EVALUATED` and
+`qualification=NOT_EVALUATED`; it must never authorize build/upload/submit.
+Local relative paths are resolved against the profile directory; remote storage
+paths must be absolute and are not probed here. Symlinks, control characters and
+ambiguous bind-path separators are rejected. Runtime paths inside the container
+remain `/bundle`, `/output`, and the sealed executable paths, not host paths.
+
+Concrete resource units are `memoryGiB` and `wallTimeSeconds`. Explicit
+`timing.stagingSeconds` budgets allocation staging and hashing; the conservative
+per-allocation lower bound is staging + startup + ceil(4 × requestDeadlineMs /
+1000) + cleanup. With the fixture values 120/120/60000/30 this is 510 seconds,
+not a measured duration or a verified production default. Progress timeout is
+bounded by the request budget; it is not added as another serial allowance.
+Later coordinator/collector time must fit registered stage/cleanup budgets, and
+production consumption is audited at T007. Normal allocations are separate jobs,
+not twice this bound in one job.
+
+`documentDigest` is a canonical JSON fingerprint, not E. The generated effective
+behavior document for E must exclude its own dispatch/receipt references and
+physical locations; prepare must avoid an E→profile→E self-reference. Runtime
+and dispatch checks must additionally verify their content-plane ancestors and
+genuine prerequisite receipts. No actual executable profile is supplied while
+the base/model/signature inputs remain missing.
 
 ## Candidate Identity
 

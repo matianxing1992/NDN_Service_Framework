@@ -8,6 +8,19 @@ T001完成的是接收清点，不是构建/模型/SIF/集群资格。本轮没�
 
 ## Source Reconciliation
 
+Follow-up 2026-09-06: the three exact dependency revisions listed below have now
+been fetched from their corresponding official project forks into independent
+ignored bare caches under `Experiments/TigerCluster/.cache/source-git/`:
+`nacAbe.git`, `ndnSvs.git`, and `ndnSd.git`. Each fetch used the locked SHA,
+`--depth=1 --no-tags`; `refs/spec183/locked` retains it. All three
+`git fsck --full --no-reflogs` checks returned 0 (unborn bare HEAD notice only).
+Total allocated cache size was 2,875,392 bytes. The original dependency
+worktrees, including dirty NDNSD, were not changed. This supersedes only the
+missing-source-object finding below: sealed source archives/build inputs,
+signed model package and local base SIF are still outstanding. SSH login was
+reconfirmed as itiger/tma1; no job was submitted. Historical observations below
+remain unchanged for provenance.
+
 锁为 `Experiments/TigerCluster/development-handoff.lock.json`，运行源码不随实验分支HEAD自动变化。
 
 | Repository | Required revision | Local HEAD observed | Disposition |

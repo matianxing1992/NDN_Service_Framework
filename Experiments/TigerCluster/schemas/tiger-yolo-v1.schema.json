@@ -1,0 +1,134 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Spec183 operator profile; structural validity is not runtime qualification",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "profileId", "release", "workload", "runtime", "cluster", "roles", "security", "timing", "cases", "schedule", "oracle", "storage", "evidence"],
+  "definitions": {
+    "file": {
+      "type": "object", "additionalProperties": false,
+      "required": ["path", "bytes", "sha256"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "bytes": {"type": "integer", "minimum": 0},
+        "sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+      }
+    },
+    "siteName": {"type": "string", "pattern": "^[A-Za-z0-9_-]+$"},
+    "path": {"type": "string", "minLength": 1},
+    "positiveSeconds": {"type": "integer", "minimum": 1, "maximum": 3600}
+  },
+  "properties": {
+    "schema": {"const": "tiger-yolo-v1"},
+    "profileId": {"type": "string", "pattern": "^[a-z][a-z0-9-]{1,63}$"},
+    "release": {
+      "type": "object", "additionalProperties": false, "required": ["inputs", "gates"],
+      "properties": {
+        "inputs": {"$ref": "#/definitions/file"},
+        "runtime": {"$ref": "#/definitions/file"},
+        "dispatch": {"$ref": "#/definitions/file"},
+        "gates": {
+          "type": "object", "additionalProperties": false,
+          "properties": {
+            "hostMinindn": {"$ref": "#/definitions/file"},
+            "localSif": {"$ref": "#/definitions/file"},
+            "singleNodeGpu": {"$ref": "#/definitions/file"}
+          }
+        }
+      }
+    },
+    "workload": {
+      "type": "object", "additionalProperties": false,
+      "required": ["descriptor", "packageManifest"],
+      "properties": {
+        "descriptor": {"$ref": "#/definitions/file"},
+        "packageManifest": {"$ref": "#/definitions/file"}
+      }
+    },
+    "runtime": {
+      "type": "object", "additionalProperties": false,
+      "required": ["apptainer", "apptainerVersion", "python", "nativeProvider", "cwd", "environment"],
+      "properties": {
+        "apptainer": {"$ref": "#/definitions/path"},
+        "apptainerVersion": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[A-Za-z0-9.]+)?$"},
+        "python": {"const": "/opt/venv/bin/python"},
+        "nativeProvider": {"const": "/opt/ndnsf-di/current/bin/di-native-provider"},
+        "cwd": {"const": "/bundle"},
+        "environment": {"const": {"NDNSF_DI_STATE_ROOT": "/output/state", "NDNSF_DI_ORT_PROFILE_PREFIX": "/output/ort/session"}}
+      }
+    },
+    "cluster": {
+      "type": "object", "additionalProperties": false,
+      "required": ["partition", "account", "constraint", "nodes", "gpusPerNode", "gpuClass", "cpusPerNode", "memoryGiB", "wallTimeSeconds", "tcpPort"],
+      "properties": {
+        "partition": {"$ref": "#/definitions/siteName"}, "account": {"$ref": "#/definitions/siteName"},
+        "constraint": {"type": "string", "pattern": "^[A-Za-z0-9_-]*$"},
+        "nodes": {"const": 2}, "gpusPerNode": {"const": 1},
+        "gpuClass": {"enum": ["rtx_6000", "rtx_5000", "h100_80gb"]},
+        "cpusPerNode": {"type": "integer", "minimum": 2, "maximum": 32},
+        "memoryGiB": {"type": "integer", "minimum": 4, "maximum": 256},
+        "wallTimeSeconds": {"type": "integer", "minimum": 60, "maximum": 3600},
+        "tcpPort": {"type": "integer", "minimum": 1024, "maximum": 65535}
+      }
+    },
+    "roles": {"const": {
+      "BackboneNeck": {"node": "A", "device": "cuda:0"},
+      "DetectShard0": {"node": "B", "device": "cuda:0"},
+      "DetectShard1": {"node": "B", "device": "cuda:0"},
+      "Merge": {"node": "A", "device": "cpu"}
+    }},
+    "security": {
+      "type": "object", "additionalProperties": false,
+      "required": ["identityNamespace", "trustPolicy"],
+      "properties": {
+        "identityNamespace": {"type": "string", "pattern": "^/[A-Za-z0-9_-][A-Za-z0-9_./-]*$"},
+        "trustPolicy": {"$ref": "#/definitions/file"}
+      }
+    },
+    "timing": {
+      "type": "object", "additionalProperties": false,
+      "required": ["startupSeconds", "ackTimeoutMs", "requestDeadlineMs", "progressTimeoutSeconds", "cleanupSeconds", "stagingSeconds"],
+      "properties": {
+        "startupSeconds": {"$ref": "#/definitions/positiveSeconds"},
+        "ackTimeoutMs": {"const": 1500},
+        "requestDeadlineMs": {"type": "integer", "minimum": 1501, "maximum": 60000},
+        "progressTimeoutSeconds": {"$ref": "#/definitions/positiveSeconds"},
+        "cleanupSeconds": {"$ref": "#/definitions/positiveSeconds"},
+        "stagingSeconds": {"$ref": "#/definitions/positiveSeconds"}
+      }
+    },
+    "cases": {"const": ["local-cpu", "single-node-gpu", "two-node-gpu", "negative-dependency"]},
+    "schedule": {"const": {"singleNode": {"warmup": 1, "measured": 1}, "twoNode": {"warmup": 1, "measured": 3}, "normalAllocations": 2}},
+    "oracle": {
+      "type": "object", "additionalProperties": false,
+      "required": ["contract", "reference", "input"],
+      "properties": {
+        "contract": {"$ref": "#/definitions/file"},
+        "reference": {"$ref": "#/definitions/file"},
+        "input": {"$ref": "#/definitions/file"}
+      }
+    },
+    "storage": {
+      "type": "object", "additionalProperties": false,
+      "required": ["localArtifactRoot", "remoteArtifactRoot", "sharedRunRoot", "sharedLockRoot", "scratchRoot", "peakBytes", "marginBytes"],
+      "properties": {
+        "localArtifactRoot": {"$ref": "#/definitions/path"},
+        "remoteArtifactRoot": {"$ref": "#/definitions/path"},
+        "sharedRunRoot": {"$ref": "#/definitions/path"},
+        "sharedLockRoot": {"$ref": "#/definitions/path"},
+        "scratchRoot": {"$ref": "#/definitions/path"},
+        "peakBytes": {"type": "integer", "minimum": 1},
+        "marginBytes": {"type": "integer", "minimum": 0}
+      }
+    },
+    "evidence": {
+      "type": "object", "additionalProperties": false,
+      "required": ["operatorLock", "harnessManifest", "validationContract"],
+      "properties": {
+        "operatorLock": {"$ref": "#/definitions/file"},
+        "harnessManifest": {"$ref": "#/definitions/file"},
+        "validationContract": {"$ref": "#/definitions/file"}
+      }
+    }
+  }
+}

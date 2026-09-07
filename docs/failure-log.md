@@ -1,5 +1,12 @@
 # Failure Log and Evidence Index
 
+## 2026-09-06 — Context hook output overflow during Spec183
+
+- Symptom: a context hook emitted a truncated report originally exceeding one million tokens; the preceding tool result was lost from the conversation although its file edits persisted.
+- Finding: this is a host/context-output incident, not a failed SIF or Slurm job. The exact hook-generation cause remains unverified; passing the Context Mode health guard does not establish bounded hook output.
+- Recovery: verified git status and the three new T004 files before continuing, reran only the finite tracer test, and resumed from repository-backed tasks/evidence. Did not replay writes blindly, purge stores, or restart an experiment.
+- Status: execution checkpoint recovered; host output containment is unresolved and must not be called repaired. Keep tool results bounded and use durable checkpoints when another overflow occurs.
+
 ## 2026-09-06 — Spec183 worker ownership, path aliases and repeated TERM
 
 - Symptom: focused production-launcher tests found two workers could acquire the same Provider HOME, missing/misbound directories could launch, role-output symlinks could write into the bundle, and a second TERM killed the cleanup owner (outer process exit -15). The old issuer supported only the CPU role list, while YOLO app source requires explicit state-root and ORT-profile locations.
