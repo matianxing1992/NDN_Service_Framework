@@ -78,6 +78,8 @@ T001–T004形成 profile/launcher 实现骨架；可操作 MVP 还要求 T006 �
 
 ## Current Checkpoint
 
+2026-09-07 Repo readiness组件已接入真实NetworkDistributedRepoClient.capability()接口，normal/FirstResponding、禁用Targeted fallback；有限User独占HOME且不挂载模型。启动probe有独立nonce/回执/调用目录、monotonic预算及外层进程deadline，拒绝过期/异Repo/非零退出/symlink证据，cleanup完成才写READY。18项新增测试，总389 focused（22.60s）；native RPC仍为测试double，真实SIF/NDN运行NOT_RUN。跨节点readiness、完整operator和T006仍待完成；T005/T007保持unchecked，不提交Tiger作业。
+
 2026-09-07 Controller publication readiness接入真实receipt共享校验器，MiniNDN和Tiger复用runtime/yolo_result.py，拒绝重复artifact行；宿主校验不导入SIF-only路径。Provider readiness绑定精确identity/单role READY，source已确认在权限安装之后，不代表model/CUDA ready。8项新增测试，总371 focused（22.30s）。yolo_result.py仅完成publication检查，T006完整collector仍待实现；正式operator、Repo/跨节点readiness及T005/T007仍未闭合。
 
 2026-09-07 NodeRuntime.from_preparation已消费receipt/inventory，在构造前绑定mode/rank/role/run输出，并在每次role启动/User调用前重查；不在100ms存活轮询中hash。3项真实文件边界测试，总363 focused（20.70s）。正式operator仍须接用该factory并独立验证SIF/gates；直接constructor仅低层生命周期测试用途。T005/readiness/T006/T007未完成。

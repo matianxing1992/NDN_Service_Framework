@@ -198,10 +198,16 @@ def main(argv=None):
     prepare = commands.add_parser('prepare')
     prepare.add_argument('--descriptor', type=Path, required=True)
     prepare.add_argument('--descriptor-sha256', required=True)
+    probe = commands.add_parser('repo-probe')
+    probe.add_argument('--probe-id', required=True)
+    probe.add_argument('--seconds', type=float, required=True)
     args = parser.parse_args(argv)
     try:
-        options = preparation_arguments(args.descriptor, args.descriptor_sha256)
-        receipt = prepare_in_container(**options)
+        if args.action == 'prepare':
+            options = preparation_arguments(args.descriptor, args.descriptor_sha256)
+            receipt = prepare_in_container(**options)
+        else:
+            receipt = probe_repo_in_container(args.probe_id, args.seconds)
     except Exception as exc:
         # Never print exception values: private input paths or credentials may
         # occur in errors from imported libraries. Detailed diagnosis is local.
@@ -302,6 +308,103 @@ def start_repo(worker, *, identity: str, free_bytes: int):
         '--storage-dir', '/output/repo-store', '--free-bytes', str(free_bytes),
         '--memory-cache-bytes', str(64 * 1024 * 1024), '--preallocate-bytes', '0',
         '--failure-domain', 'node0', '--handler-threads', '1', '--ack-threads', '1'])
+
+
+def probe_repo_in_container(probe_id: str, seconds: float):
+    """Actual normal Repo RPC in a finite User process; not an inference gate.
+
+    The outer Worker owns a hard process deadline and the sole User HOME lease.
+    Probe output is exclusive and separate from warmup/measured request evidence.
+    """
+    import time
+    from runtime.yolo_profile import _read_plane
+    from runtime.identities import _credential_document, identity_inventory
+    if (not isinstance(probe_id, str) or not re.fullmatch(r'[a-f0-9]{32}', probe_id)
+            or isinstance(seconds, bool) or not isinstance(seconds, (int, float))
+            or not math.isfinite(seconds) or not 0 < seconds <= 300):
+        raise ValueError('YOLO_REPO_PROBE_ARGUMENTS')
+    target = Path('/output/requests/repo-readiness/receipt.json')
+    if target.exists() or any(p.is_symlink() for p in (target, *target.parents)):
+        raise ValueError('YOLO_REPO_PROBE_OUTPUT')
+    config = _read_plane(Path('/config/case.json'))
+    runtime = config['runtime']
+    names = identity_inventory(runtime['provider_prefix'], runtime['identities'])
+    if (config['controller'] != names['controller'] or runtime['user_identity'] != names['user']
+            or config['group'] != runtime['provider_prefix'] + '/sync'
+            or config['trust']['anchor_file'] != '/config/root.cert'):
+        raise ValueError('YOLO_REPO_PROBE_IDENTITIES')
+    # Imports intentionally remain inside the container-only command.
+    from ndnsf import ServiceUser
+    from py_repoclient.orchestration import NetworkDistributedRepoClient
+    deadline = time.monotonic() + seconds
+    user = ServiceUser(group=config['group'], controller=names['controller'], user=names['user'],
+        trust_schema='/config/trust-schema.conf', permission_wait_ms=min(6000, max(1, int(seconds * 1000))),
+        adaptive_admission=False, handler_threads=1, ack_threads=1)
+    repo = None
+    attempts = 0
+    try:
+        user.start()
+        repo = NetworkDistributedRepoClient(user=user, service_name='/NDNSF/DistributedRepo',
+            upload_prefix=names['user'] + '/NDNSF-DISTRIBUTED-REPO/UPLOAD',
+            ack_timeout_ms=500, timeout_ms=3000, control_mode='normal', enable_targeted_fallback=False)
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError('YOLO_REPO_PROBE_DEADLINE')
+            attempts += 1
+            try:
+                capability = repo.capability(timeout_ms=max(1, min(3000, int(remaining * 1000))))
+            except (RuntimeError, TimeoutError):
+                time.sleep(max(0, min(0.2, deadline - time.monotonic())))
+                continue
+            if not isinstance(capability, dict) or capability.get('repoNode') != names['repo']:
+                raise ValueError('YOLO_REPO_PROBE_WRONG_REPO')
+            if time.monotonic() >= deadline:
+                raise TimeoutError('YOLO_REPO_PROBE_DEADLINE')
+            break
+    finally:
+        try:
+            if repo is not None:
+                repo.close()
+        finally:
+            user.stop()
+    receipt = dict(schema='tiger-yolo-repo-readiness-v1', probeId=probe_id,
+                   user=names['user'], repo=names['repo'], attempts=attempts,
+                   status='READY', qualification='NOT_EVALUATED', capability=capability)
+    _credential_document(target, receipt)
+    return receipt
+
+
+def wait_repo_ready(worker, *, seconds: float, peer_failure: Path | None = None):
+    """Consume a fresh finite capability probe; no model mount or stored PASS reuse."""
+    import secrets
+    from runtime.yolo_profile import _read_plane
+    if (worker.rank != 0 or worker._preparation_binding is None
+            or isinstance(seconds, bool) or not isinstance(seconds, (int, float))
+            or not math.isfinite(seconds) or not 0 < seconds <= 300):
+        raise ValueError('YOLO_REPO_PREPARATION_OR_BUDGET')
+    worker._verify_prepared_boundary()
+    names = worker._preparation_binding[0]['identities']
+    probe_id = secrets.token_hex(16)
+    rc = worker.run_user('repo-readiness', [PYTHON, '-m', 'apps.yolo', 'repo-probe',
+        '--probe-id', probe_id, '--seconds', str(seconds)], package=None,
+        seconds=seconds + worker.cleanup_seconds, peer_failure=peer_failure)
+    if rc != 0:
+        raise RuntimeError('YOLO_REPO_PROBE_EXIT')
+    receipt_path = worker.output / 'user/requests/repo-readiness/receipt.json'
+    if any(p.is_symlink() for p in (receipt_path, *receipt_path.parents)):
+        raise ValueError('YOLO_REPO_PROBE_OUTPUT')
+    receipt = _read_plane(receipt_path)
+    expected = dict(schema='tiger-yolo-repo-readiness-v1', probeId=probe_id,
+                    user=names['user'], repo=names['repo'], status='READY', qualification='NOT_EVALUATED')
+    if (any(receipt.get(k) != v for k, v in expected.items())
+            or type(receipt.get('attempts')) is not int or receipt['attempts'] <= 0
+            or not isinstance(receipt.get('capability'), dict)
+            or receipt['capability'].get('repoNode') != names['repo']):
+        raise ValueError('YOLO_REPO_PROBE_RECEIPT')
+    worker._verify_prepared_boundary()
+    worker.check()
+    return receipt
 
 
 def run_requests(worker, plan: dict, *, package: Path, catalog_data_name: str,

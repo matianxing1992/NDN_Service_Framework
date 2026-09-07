@@ -2,6 +2,39 @@
 
 Date: 2026-09-07. Status: PARTIAL; not runtime qualification.
 
+## Repo readiness checkpoint (2026-09-07)
+
+`apps/yolo.py` now contains an internal `repo-probe` command and its host
+`wait_repo_ready` consumer. It calls the maintained
+`NetworkDistributedRepoClient.capability()` (ordinary FirstResponding RPC),
+not a synthetic process-alive marker. It configures normal control mode,
+disables Targeted fallback and adaptive admission, checks the returned Repo
+identity, and closes the client and User before exclusively writing READY.
+Monotonic startup retries are separate from model requests. Invalid payload,
+wrong Repo or cleanup failure are not translated into readiness success.
+
+The parent requires a prepared Worker, pins a fresh random probe ID and exact
+User/Repo identities, verifies clean finite-process exit and bounded receipt,
+and rejects symlink/stale/mismatching output. `run_user(package=None)` retains
+the existing HOME lease, process ownership and teardown but mounts no model.
+The reserved `repo-readiness` invocation has its own directory and cannot be
+reused; it is not a warmup or measured inference. This does not establish
+cross-node connectivity, model availability, GPU execution or inference PASS.
+
+Verification: 18 new component cases use explicit native User/Repo doubles;
+the mount/finite-process check executes a real short-lived OS child behind the
+fake Apptainer boundary. Full focused suite: **389 passed in 22.60s**;
+JUnit `Experiments/TigerCluster/results/t005-repo-readiness-r1/junit.xml`.
+The initial run had two test-expectation errors: the timeout cases raised the
+intended `TimeoutError`, but the assertion only allowed ValueError/RuntimeError.
+The assertion was corrected without weakening runtime timeout behavior.
+
+Actual native RPC, exact SIF and remote inference remain **NOT_RUN**. The final
+operator still must wire Controller publication → Repo probe → model requests,
+with cross-node signed freshness checks and one bounded startup lifecycle.
+T005/T006/T007 remain incomplete; no remote submission is authorized by these
+component results.
+
 The maintained User grant seam now accepts `NDNSF_DI_RECIPIENT_PUBLIC_KEY_MAP`:
 Provider identity maps to a relative public PEM path and SHA-256. The existing
 security owner performs bounded reads and rejects traversal, symlinks, duplicate

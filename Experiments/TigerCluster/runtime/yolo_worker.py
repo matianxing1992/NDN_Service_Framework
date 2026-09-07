@@ -115,7 +115,7 @@ class NodeRuntime:
         self.finite_children = Processes(self.output / "logs")
         self.invocations = set()
 
-    def run_user(self, invocation: str, argv: list[str], *, package: Path,
+    def run_user(self, invocation: str, argv: list[str], *, package: Path | None,
                  seconds: float, peer_failure: Path | None = None):
         """One finite User, retaining persistent Providers and User state.
 
@@ -135,9 +135,10 @@ class NodeRuntime:
             raise ValueError('WORKER_USER_BUDGET')
         if not argv or not all(isinstance(arg, str) and '\x00' not in arg for arg in argv):
             raise ValueError('WORKER_ARGV')
-        package = _directory(package)
+        package = _directory(package) if package is not None else None
         role_output = _directory(self.output / 'user', may_create=True)
-        if package == role_output or package in role_output.parents or role_output in package.parents:
+        if package is not None and (package == role_output or package in role_output.parents
+                                    or role_output in package.parents):
             raise ValueError('WORKER_OUTPUT_OVERLAP')
 
         def check():
