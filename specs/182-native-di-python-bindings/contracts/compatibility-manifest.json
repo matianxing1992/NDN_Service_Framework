@@ -1,7 +1,7 @@
 {
   "schema": "spec182-compatibility-manifest-v1",
   "sourceInventory": "contracts/public-export-inventory.json",
-  "sourceCommit": "f7418f9127d8857580a93db03a5a8288bba7595b",
+  "sourceCommit": "62157804fca46ac332592b0519a6162d4151bd19",
   "coverage": {
     "explicitApiSdkRoot": 277,
     "dynamicAppSdkExports": 67,
