@@ -437,3 +437,14 @@ compute Apptainer `1.5.3-1.el9`，而登录节点仍为 `1.3.4`。因此本地 S
 Spec183 profile、签名模型包或 collector 输入，仅有旧 Spec170/Spec180 材料；
 这些事实已记录到 [input-inventory.md](evidence/input-inventory.md)，不改变
 T002/T007 的资格状态，也未启动模型或 SIF 构建。
+
+2026-09-07 matching tool/input checkpoint：本机显式 `/opt/apptainer/1.5.3/bin/apptainer`
+与 compute 节点版本一致；对锁定历史 base SIF 完成 `sif list`、label 和 `/bin/true`
+执行。source handoff `verify` 返回 `SOURCE_READY`，临时 definition 可正常渲染，
+但在 Spec183 dispatch/model gate 闭合前没有调用 `apptainer build`。从 Tiger 只读取
+公开 YOLO package（不含 private key），逐项 hash 与历史记录一致，catalogue
+Ed25519 signature 已验证；其外部 model manifest 仍错误绑定 `atomic-v1` 且没有签名
+envelope，不能直接作为 shared-backbone Spec183 dispatch 输入。该残余缺口记录于
+[input-inventory.md](evidence/input-inventory.md) 和
+[spec180-candidate-reuse-audit.md](evidence/spec180-candidate-reuse-audit.md)；T004/T007/T008+
+仍未完成，未提交任何 Tiger 作业。
