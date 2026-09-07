@@ -78,6 +78,17 @@ T001–T004形成 profile/launcher 实现骨架；可操作 MVP 还要求 T006 �
 
 ## Current Checkpoint
 
+2026-09-07 critical PID namespace audit: Apptainer --containall isolates PID
+(confirmed by local installed exec --help); native getpid() is not the host
+Popen PID currently used by role collectors. A real unshare user/PID namespace
+test reproduced differing host/container PIDs. New yolo_launch_witness emits
+a host-generated nonce/role/container PID and execs the Provider, preserving
+that PID; included in required frozen harness inventory. Six actual-process
+tests passed with no skip locally. NEXT REQUIRED: wire nonce/witness into
+Worker launch, node receipt and native readers; do not merely drop PID checks
+or disable isolation. Current collectors remain unsuitable for actual SIF
+until this wiring is complete. T007 must block promotion on this issue.
+
 2026-09-07 retained request join: collect_retained_request derives the User
 output directory from node0 and the frozen invocation index, validates the
 real lifecycle/numerical pair, recomputes role and Selection digests and count

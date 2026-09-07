@@ -95,3 +95,29 @@ requests reuse a loaded ORT session: process/artifact caches and runner/session
 reuse are different. If a future factory starts caching runners, qualification
 must address per-request execution evidence explicitly rather than passing the
 first request's profile off as current evidence.
+# PID namespace finding and witness (2026-09-07)
+
+Installed Apptainer exec --help states --containall isolates PID, IPC and
+environment. Current container_command uses this option; ExecutionEvidence
+records getpid(). Therefore comparing it directly with the host Popen PID is
+incorrect, even if the non-container fixture passes. This is a T007 blocker
+until the actual launch/receipt/collector path is corrected.
+
+runtime/yolo_launch_witness.py emits TIGER_PROVIDER_PROCESS_STARTED with a
+64-hex host-generated nonce, role and namespace PID, then os.execvp replaces
+the process without changing that PID. It is included in the required harness
+inventory. Six actual-process tests passed, including a real user/PID
+namespace test showing host PID differs while witness PID equals application
+PID; no skip on this host. This is not exact-SIF qualification and not
+authentication against a malicious container. The host-owned output FD,
+fresh nonce, receipt and native evidence must be joined by the collectors.
+
+Pending next: generate/retain nonce in Worker, launch through the witness,
+persist it in node receipts, require exactly one matching witness and use
+its namespace PID for native identity while retaining host PID for cleanup.
+Do not accept native logs by copying their reported processId into expected
+values. Existing PID-equality collectors are not yet repaired.
+
+Expanded focused regression: 686 passed in 46.52s, including the real PID
+namespace test with no skips. JUnit:
+`Experiments/TigerCluster/results/t006-pid-namespace-r1/junit.xml`.

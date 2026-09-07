@@ -1900,3 +1900,17 @@ added a deterministic outer-wait expiry regression. Initial full run was
   live ownership checks, and revalidate the frozen request inventory offline.
 - Lesson: a matching artifact hash proves content identity, not validity of
   the reported execution; validate semantics at the final consuming boundary.
+# 2026-09-07 Spec183 host/container PID identity mismatch
+
+- Symptom: planned native evidence validation compares Provider getpid() with
+  subprocess.Popen(apptainer).pid. The configured --containall isolates PID;
+  the values need not match. Real local unshare user/PID namespace test
+  demonstrated different launcher and execed application PIDs.
+- Root cause: earlier launcher tests replaced Apptainer with ordinary exec,
+  preserving the host PID and missing namespace behavior.
+- Remediation in progress: a nonce/role-bound launch witness runs inside the
+  container, emits its PID, then execs the Provider. Real exec and namespace
+  tests pass; Worker/receipt/collector wiring and exact-SIF acceptance remain
+  pending. Do not loosen PID validation or remove containment to hide it.
+- Lesson: test the namespace boundary explicitly; host process ownership and
+  native process identity are distinct facts that need an observed link.
