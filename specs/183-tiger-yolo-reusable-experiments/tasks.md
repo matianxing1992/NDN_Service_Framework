@@ -615,3 +615,23 @@ path/bytes/sha256，并用生产验证器 `runtime.yolo_profile.check_plane` 检
 记录不同身份时 fail-closed 拒绝重写。5 项测试通过（含真实 repo 测试对 3.5GB SIF
 的渲染+复核）。该门关闭的是 inputs stage 的收据完整性，不等同于 T011 SIF 构建或
 dispatch 资格：真正的运行接线仍按 T004/T005/T006 继续。
+
+2026-09-07 run-loop discovery checkpoint（探测，未提交任何作业）：对接收的
+base SIF（b6710fd6…）做只读内部探测并核对 Spec183 提交栈实现状态。
+（1）base SIF 内部确实可驱动：`/opt/venv/bin/python3` 3.10.18 导入
+ndnsf / ndnsf_distributed_inference 0.111.0 / py_repoclient 成功，numpy
+1.26.4 + onnxruntime（gpu-1.20.0）在位，DI 全家族 ndnsf_di_* 0.111.0 在位；
+`/opt/ndnsf/bin/run-ndnsf-yolo.sh` 是节点内 Y-B 编排器（Spec180 Tiger
+submission 形状，要求 SLURM_JOB_ID + args bundle 契约）——因此本地跑真实
+执行**不需要先完成 T008 源码构建**，base SIF 就是开发循环的运行基座
+（Spec180 T016 本地 replay 用过的 r119 镜像已不在本机，不能走该路径）。
+（2）T004 五命令入口 `jobs/yolo/submit.py`（check/prepare/local/submit/
+collect/run）已实现且刻意 fail-closed：prepare 冻结真实 harness bundle，
+local 停在 `LOCAL_WORKER_NOT_WIRED`、submit 停在 `REMOTE_STAGING_NOT_WIRED`
+——执行开关的正确开启方式不是删检查，而是先以开发回归方式跑出真实证据
+receipt（localSif/hostMinindn 门），再把 receipt 写进 dispatch profile 的
+release.gates。旧 `profiles/two-node.json`（tiger-two-node-v1）已带真实值：
+sif 指向远端 `/project/tma1/…/spec180-runtime-b6710fd6`，sha 与本机 base
+SIF 一致；T004 目标 `profiles/yolo-two-node.json`（dispatch 级）尚不存在，
+是下一步要建的接线件。探测细节入 [input-inventory.md](evidence/input-inventory.md)。
+本 checkpoint 不改变任何资格门；T004 仍 unchecked。

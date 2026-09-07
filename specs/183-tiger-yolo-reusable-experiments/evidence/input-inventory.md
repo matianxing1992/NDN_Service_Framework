@@ -150,3 +150,20 @@ closed.
 ## Workflow Evidence
 
 Context project/active health均PASS；首次query因低熵required=T001拒绝，改用完整feature basename通过。CodeGraph index up-to-date并定位baseline，再逐项核对源码。GSD为degraded/W019：spec183-handoff不是canonical顶层文件；保留旧phase35，使用独立Spec183 tasks/handoff恢复，不声称GSD完全PASS。
+
+2026-09-07 base-SIF interior probe (development-loop readiness, not qualification):
+with the explicit `/opt/apptainer/1.5.3/bin/apptainer` 1.5.3 and a fresh temp
+`--home`, the received base SIF (`b6710fd6…`, 3,525,861,376 bytes) was probed
+read-only. Inside it: `/opt/venv/bin/python3` 3.10.18 imports `ndnsf`,
+`ndnsf_distributed_inference` (0.111.0), `py_repoclient`, `numpy` 1.26.4,
+`onnxruntime` (gpu 1.20.0 dist-info present; no ultralytics/torch — model
+execution is ORT-only, consistent with the exporter lock). The DI
+package family (`ndnsf_di_core/ops/planner/sdk/app/adapter_onnx`, all 0.111.0)
+is installed. `/opt/ndnsf/bin/` carries the node-local Y-B orchestrator
+`run-ndnsf-yolo.sh` (NFD + four Providers + controller + one cold User,
+terminal collector; requires `SLURM_JOB_ID`, nfd/controller/repo/
+provider-args-dir/user-args contract). This is the Tiger-submission SIF shape
+(Spec180 T016 local replay used a different, now absent r119 image), so a
+local run must either supply the args bundle with a pseudo job id (Spec180
+shape, dev-loop only) or drive the Spec183 worker stack directly. Both are
+development regression vehicles only; nothing here closes T011/T012 gates.
