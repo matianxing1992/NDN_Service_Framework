@@ -190,6 +190,8 @@ def test_schedule_runs_finite_users_preserving_live_provider(tmp_path, monkeypat
     finally:
         rows = worker.close()
         assert len([r for r in rows if r.get('kind') == 'finite']) == count
+        from runtime.yolo_result import validate_worker_cleanup
+        assert validate_worker_cleanup(worker, rows)['childCount'] == count + 1
         assert all(r['reaped'] and not r['forced'] for r in rows)
 
 

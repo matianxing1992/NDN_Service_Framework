@@ -78,6 +78,8 @@ T001–T004形成 profile/launcher 实现骨架；可操作 MVP 还要求 T006 �
 
 ## Current Checkpoint
 
+2026-09-07 cleanup校验对接真实NodeRuntime launch/close清单，不信任外部childCount；拒绝缺失/重复/PID错/forced/unreaped/lease残留/服务提前退出，有限请求必须exit0。12新用例且三种模式已有真实OS schedule测试接入，相关54通过（Apptainer仍double）。完整planned inventory/节点回执/最终collector待接线，T006未完成；见evidence/t006-worker-cleanup.md。
+
 2026-09-07 T006接入bounded native日志唯一记录选择、ORT profile独立解析/节点分配逐项核对/请求绑定与文件hash，补CPU/Merge正例；相关46项通过。profile仅每session首次capture，warm复用行为需核验，旧profile继续拒绝；物理GPU/graph节点覆盖/edge/cleanup/最终collector仍未完成。详见evidence/t006-native-observation.md。
 
 2026-09-07 native观察组件：发现旧collector不兼容Boost PropertyTree bool/uint64字符串且hardcode example identity；新增严格decoder+真实Provider/PID/request/attempt/plan绑定校验，29 focused通过。不把日志声明当实际GPU/edge证据；ORT profile/物理GPU/依赖/cleanup/完整collector仍待做。见evidence/t006-native-observation.md。

@@ -7,6 +7,51 @@ from collections.abc import Mapping
 import re
 
 
+def validate_worker_cleanup(worker, rows):
+    """Check actual NodeRuntime ownership after close, never caller counts.
+
+    This proves only the launched set's cleanup. The final collector must
+    separately require every planned role and finite invocation was launched.
+    """
+    if (worker.closed is not True or worker.leases or worker.children.children
+            or worker.finite_children.children):
+        raise EvidenceError('CLEANUP_OWNERS_REMAIN')
+    expected = {}
+    for launch in worker.launches:
+        role = launch.get('role')
+        invocation = launch.get('invocation')
+        if (not isinstance(role, str) or not role or launch.get('startError')
+                or type(launch.get('pid')) is not int or launch['pid'] <= 0
+                or (invocation is not None and (not isinstance(invocation, str) or not invocation))):
+            raise EvidenceError('CLEANUP_LAUNCH_INCOMPLETE')
+        name = role + '-' + invocation if invocation is not None else role
+        if name in expected:
+            raise EvidenceError('CLEANUP_LAUNCH_DUPLICATE')
+        expected[name] = (launch['pid'], invocation is not None)
+    if not expected or not isinstance(rows, list) or len(rows) != len(expected):
+        raise EvidenceError('CLEANUP_INVENTORY')
+    seen = set()
+    for row in rows:
+        if not isinstance(row, dict) or row.get('name') not in expected or row['name'] in seen:
+            raise EvidenceError('CLEANUP_ROW_IDENTITY')
+        name = row['name']
+        seen.add(name)
+        pid, finite = expected[name]
+        if (type(row.get('pid')) is not int or row['pid'] != pid
+                or row.get('reaped') is not True or row.get('forced') is not False
+                or row.get('leaseReleased') is not True
+                or any(row.get(k) for k in ('cleanupError', 'cleanupTimedOut', 'leaseError'))
+                or type(row.get('exitCode')) is not int):
+            raise EvidenceError('CLEANUP_NOT_CLEAN')
+        if finite:
+            if row.get('kind') != 'finite' or row['exitCode'] != 0:
+                raise EvidenceError('CLEANUP_FINITE_EXIT')
+        elif (row.get('kind') == 'finite' or row.get('exitedBeforeCleanup') is not False
+                or row['exitCode'] not in (0, -15, 143)):
+            raise EvidenceError('CLEANUP_SERVICE_EXIT')
+    return dict(childCount=len(expected), qualification='CLEANUP_COMPONENT_ONLY')
+
+
 def read_native_observation(path, **binding):
     """Select exactly one role/request observation from an owned bounded log.
 
