@@ -551,11 +551,18 @@ jsonNumberArray(const std::vector<std::uint64_t>& values)
 std::string
 jsonContract(const NativeAssemblyTensorContractV3& contract)
 {
+  std::string shape = "[";
+  for (const auto& dimension : contract.shape) {
+    if (shape.size() > 1) shape += ',';
+    if (const auto* number = std::get_if<std::int64_t>(&dimension)) shape += std::to_string(*number);
+    else shape += '"' + jsonString(std::get<std::string>(dimension)) + '"';
+  }
+  shape += ']';
   // Keys sorted: dtype < name < shape.
   return jsonSortedObject({
     {"dtype", '"' + jsonString(contract.dtype) + '"'},
     {"name", '"' + jsonString(contract.name) + '"'},
-    {"shape", jsonArrayOfStrings(contract.shape)},
+    {"shape", shape},
   });
 }
 
@@ -810,11 +817,24 @@ readCertifiedSlice(const JsonNode& recipeNode, NativeCertifiedRecipe& out,
       contract.name = name->text;
       contract.dtype = dtype->text;
       for (const auto& dim : shape->array) {
-        if (dim.type != JsonNode::Type::String) {
+        if (dim.type == JsonNode::Type::String) {
+          contract.shape.emplace_back(dim.text);
+          continue;
+        }
+        if (dim.type != JsonNode::Type::Number) {
           groupFailure = "certified io contract shape is invalid";
           return false;
         }
-        contract.shape.push_back(dim.text);
+        try {
+          std::size_t consumed = 0;
+          const auto number = std::stoll(dim.text, &consumed);
+          if (consumed != dim.text.size()) throw std::invalid_argument("noninteger shape");
+          contract.shape.emplace_back(static_cast<std::int64_t>(number));
+        }
+        catch (const std::exception&) {
+          groupFailure = "certified io contract shape is invalid";
+          return false;
+        }
       }
       parsed.push_back(std::move(contract));
     }

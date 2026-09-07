@@ -332,7 +332,9 @@ nativeYoloMergeRunnerSpecFromProjection(
       std::string value;
       for (std::size_t i = 0; i < output->shape.size(); ++i) {
         if (i != 0) value += ',';
-        value += output->shape[i];
+        const auto& dimension = output->shape[i];
+        value += std::holds_alternative<std::int64_t>(dimension)
+          ? std::to_string(std::get<std::int64_t>(dimension)) : std::get<std::string>(dimension);
       }
       return value;
     }()},

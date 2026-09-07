@@ -11,6 +11,7 @@
 #include <optional>
 #include <string>
 #include <vector>
+#include <variant>
 
 namespace ndnsf::di {
 
@@ -18,7 +19,8 @@ struct NativeAssemblyTensorContractV3
 {
   std::string name;
   std::string dtype;
-  std::vector<std::string> shape;
+  // Wire identity distinguishes numeric dimensions from symbolic strings.
+  std::vector<std::variant<std::int64_t, std::string>> shape;
 };
 
 struct NativeSelectionRoleV3
@@ -120,6 +122,11 @@ struct NativeSelectionProjectionV3
 
 std::vector<std::string>
 stringArrayFromJson(const boost::property_tree::ptree& node, const std::string& key);
+
+/** Encode a complete V3 contract and validate it through the production parser.
+ * Provider-only canonicalArtifactName and legacy plan metadata are not wire fields.
+ */
+std::string nativeSelectionProjectionV3ToJson(const NativeSelectionProjectionV3& projection);
 
 std::map<std::string, NativeExecutionPlan>
 nativeExecutionPlansByServiceFromJson(std::istream& input);

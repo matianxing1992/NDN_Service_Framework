@@ -29,4 +29,12 @@ BOOST_AUTO_TEST_CASE(NonfiniteAndInvalidUnicodeFailClosed)
   BOOST_CHECK_THROW(nativeCanonicalJson(NativeJson(std::string("\xff", 1))), NativeJson::type_error);
 }
 
+BOOST_AUTO_TEST_CASE(ParseRejectsDuplicateKeysWithoutRejectingIndependentObjects)
+{
+  BOOST_CHECK_THROW(nativeParseJson("{\"a\":1,\"a\":2}"), std::invalid_argument);
+  BOOST_CHECK_THROW(nativeParseJson("{\"a\":{\"b\":1,\"b\":2}}"), std::invalid_argument);
+  BOOST_CHECK_NO_THROW(nativeParseJson("[{\"a\":1},{\"a\":2}]"));
+  BOOST_CHECK_NO_THROW(nativeParseJson("{\"a\":{\"a\":1}}"));
+}
+
 BOOST_AUTO_TEST_SUITE_END()
