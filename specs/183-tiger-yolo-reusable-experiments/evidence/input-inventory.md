@@ -56,6 +56,8 @@ remain unchanged for provenance.
 历史记录 `specs/180-ack-driven-cross-model-qualification/evidence/t004-yolo-export-current-20260902.md`给出接收期望：checkpoint5,544,453 bytes/hash `9b09cc8bf347f0fc8a5f7657480587f25db09b34bf33b0652110fb03a8ad4fef`；graph `956ee2aa62f34c1ac035b85a837b70786bfa8da3ae8650e7539abbe572d0dd2a`；weights `1a998d3d56c0103e57ea6df557370a219a3df53380572b4e9337ff26b4a94a7f`；oracle `ed5a23d73e3cda04677bfc9d895732b44e1455f20d9dc433ae5462eb7b9b7175`。这些不是本轮实测artifact hash。
 本机Tiger目录及旧历史checkout未发现canonical package/full-model-output.npy；交付所述.local-tmp/.codex-tmp包目录不存在。需要接收当前签名package，或按既有exporter/lock本地生成并由注册authority签名。旧manifest已被priority变更作废，不得复用。Exporter锁为Python3.10/Torch2.4.1/Ultralytics8.4.56/ONNX1.17.0/ORT1.19.2/NumPy1.26.4；只用于离线export，不是部署依赖。私钥内容未读取。
 
+2026-09-07只读检查发现远端 `spec180-runtime-b6710fd6` 候选包含与历史记录一致的 YOLO26n 图、权重、oracle 和 `shared-backbone-two-shard-v1` catalogue，但它仍是 Spec180 的 SIF/profile/run record，使用旧 `/example/group`，没有 Spec183 source/runtime/dispatch seal。因此只能作为待验证模型输入候选，不能作为 Spec183 runtime 或资格证据；详见 [spec180-candidate-reuse-audit.md](spec180-candidate-reuse-audit.md)。
+
 ## Site And Capacity
 
 - SSH实测itiger/tma1可达，squeue无本用户job；未提交新job。
