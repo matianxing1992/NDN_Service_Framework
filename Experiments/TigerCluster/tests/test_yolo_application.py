@@ -301,3 +301,127 @@ def test_control_plane_bad_input_fails_before_launch(tmp_path, fault):
         assert worker.launches == [] and worker.leases == {}
     finally:
         worker.close()
+
+
+class _LifecycleBarrier:
+    def __init__(self, directory, binding):
+        self.directory = directory
+        self.binding = binding
+        self.rank = 0
+        self.ranks = (0,)
+        self.events = []
+        self.check = lambda: None
+
+    def remaining(self):
+        self.events.append(('remaining',))
+        return 5.0
+
+    def publish(self, stage, payload):
+        self.events.append(('publish', stage, payload))
+
+    def wait(self, stage, ranks=None):
+        self.events.append(('wait', stage, ranks))
+        if stage == 'workload-complete':
+            return {0: {'requestCount': 2}}
+        return {0: {}}
+
+
+def test_run_normal_node_owns_ordered_lifecycle_and_request_callback(tmp_path, monkeypatch):
+    from apps import yolo
+
+    plan = {
+        'runId': 'operator-test-01', 'case': 'local-cpu',
+        'requests': [
+            {'index': 0, 'warmup': True, 'requestId': '/run/request/0'},
+            {'index': 1, 'warmup': False, 'requestId': '/run/request/1'},
+        ],
+    }
+
+    class Worker:
+        mode, rank, cleanup_seconds = 'local-cpu', 0, 0.0
+
+        def __init__(self):
+            self._preparation_binding = (plan, 'sha256:' + '1' * 64, 'sha256:' + '2' * 64)
+            self.output = tmp_path / 'node0'
+            self.output.mkdir()
+            self.events = []
+
+        def close(self):
+            self.events.append(('close',))
+            return []
+
+    worker = Worker()
+    binding = {'runId': plan['runId'], 'probeId': 'a' * 32,
+               'candidateDigest': 'sha256:' + '2' * 64}
+    startup = _LifecycleBarrier(tmp_path / 'startup', binding)
+    completion = _LifecycleBarrier(tmp_path / 'completion', binding)
+    events, accepted = [], []
+
+    monkeypatch.setattr(yolo, 'configure_network',
+                        lambda *_args, **_kwargs: events.append('network'))
+    monkeypatch.setattr(yolo, 'start_workload',
+                        lambda *_args, **_kwargs: events.append('workload'))
+
+    def requests(worker_arg, plan_arg, *, accept_request, **_kwargs):
+        assert worker_arg is worker and plan_arg is plan
+        events.append('requests')
+        for request in plan_arg['requests']:
+            accept_request(request, tmp_path / ('request-' + str(request['index'])))
+
+    monkeypatch.setattr(yolo, 'run_requests', requests)
+    monkeypatch.setattr('runtime.yolo_result.write_worker_receipt',
+                        lambda worker_arg, rows: {'status': 'NODE_COMPONENT'})
+
+    result = yolo.run_normal_node(
+        worker, startup, completion_factory=lambda: completion,
+        endpoints=[{'rank': 0, 'address': '127.0.0.1', 'port': 16380}],
+        startup_options={'repo_free_bytes': 4096, 'permission_wait_ms': 100,
+                         'network_probe_seconds': 1.0},
+        request_options={'package': tmp_path, 'catalog_data_name': '/catalogue/v1',
+                         'catalog_signer': '/controller', 'permission_wait_ms': 100,
+                         'request_deadline_ms': 2000, 'process_timeout_seconds': 2.0,
+                         'protection_epoch': 'epoch-1'},
+        accept_request=lambda request, output: accepted.append((request['index'], output)),
+    )
+
+    assert result == {'status': 'NODE_COMPONENT'}
+    assert events == ['network', 'workload', 'requests']
+    assert [index for index, _ in accepted] == [0, 1]
+    assert ('publish', 'workload-complete', {'requestCount': 2}) in completion.events
+    assert ('wait', 'workload-complete', None) in completion.events
+    assert worker.events == [('close',)]
+
+
+def test_run_normal_node_records_startup_failure_and_closes_worker(tmp_path, monkeypatch):
+    from apps import yolo
+
+    plan = {'runId': 'operator-test-01', 'case': 'local-cpu', 'requests': []}
+
+    class Worker:
+        mode, rank, cleanup_seconds = 'local-cpu', 0, 0.0
+
+        def __init__(self):
+            self._preparation_binding = (plan, 'sha256:' + '1' * 64, 'sha256:' + '2' * 64)
+            self.output = tmp_path / 'node0'
+            self.output.mkdir()
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+            return []
+
+    worker = Worker()
+    startup = _LifecycleBarrier(tmp_path / 'startup', {
+        'runId': plan['runId'], 'probeId': 'a' * 32,
+        'candidateDigest': 'sha256:' + '2' * 64})
+    monkeypatch.setattr(yolo, 'configure_network',
+                        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError('network')))
+    monkeypatch.setattr('runtime.yolo_result.write_worker_receipt',
+                        lambda *_args: pytest.fail('receipt must not be written'))
+
+    with pytest.raises(RuntimeError, match='network'):
+        yolo.run_normal_node(worker, startup, completion_factory=lambda: None,
+                             endpoints=[], startup_options={}, request_options={},
+                             accept_request=lambda *_: None)
+    assert worker.closed
+    assert [event[1] for event in startup.events if event[0] == 'publish'] == ['failed', 'failed']

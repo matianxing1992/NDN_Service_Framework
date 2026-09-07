@@ -27,12 +27,15 @@ python3 -m pytest -q Experiments/TigerCluster/tests/test_yolo_operator.py \
 40 passed in 9.12s
 
 python3 -m pytest -q Experiments/TigerCluster/tests --tb=short
-796 passed in 37.29s
+798 passed in 33.44s
 ```
 
 The operator tests use a lifecycle double to prove rejection before runtime
 construction and exact forwarding of the plan, endpoints, options, collector,
-allocation field, and both barrier bindings. This is structural evidence only;
+allocation field, and both barrier bindings. Application tests additionally
+exercise the normal `configure_network` → `start_workload` → request schedule →
+completion → cleanup order and the startup-failure cleanup path with lifecycle
+doubles. This is structural evidence only;
 no native extension, SIF, model, MiniNDN, GPU, or TigerCluster process ran.
 
 ## Remaining work
