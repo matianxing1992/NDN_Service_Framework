@@ -1,9 +1,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp"
 
 #include <algorithm>
-#include <openssl/sha.h>
 #include <set>
-#include <sstream>
 #include <stdexcept>
 
 namespace ndnsf::di {
@@ -14,11 +12,6 @@ bool digest(const std::string& value)
     std::all_of(value.begin() + 7, value.end(), [] (char c) {
       return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
     });
-}
-
-bool contains(const std::vector<std::string>& values, const std::string& value)
-{
-  return std::find(values.begin(), values.end(), value) != values.end();
 }
 
 // Canonical catalog data names are absolute NDN names: a leading '/',
@@ -32,17 +25,6 @@ bool ndnName(const std::string& value)
     if (c == '/' && (i + 1 == value.size() || value[i + 1] == '/')) return false;
   }
   return true;
-}
-
-std::string hashBytes(const std::vector<std::uint8_t>& bytes)
-{
-  unsigned char hash[SHA256_DIGEST_LENGTH];
-  SHA256(bytes.data(), bytes.size(), hash);
-  std::ostringstream output;
-  output << "sha256:";
-  for (const auto byte : hash)
-    output << "0123456789abcdef"[byte >> 4] << "0123456789abcdef"[byte & 15];
-  return output.str();
 }
 } // namespace
 
@@ -185,35 +167,6 @@ NativeArtifactBinding NativeRequestPreparation::ensureArtifacts(
       throw std::runtime_error("DI_NATIVE_ARTIFACT_BINDING_MISMATCH");
     }
   }
-  return result;
-}
-
-NativeProviderPlanningView NativeOfferAdmission::verify(
-  const NativeAckEvidence& ack, const NativeOfferPolicySnapshot& policy,
-  const NativeOfferBindingContext& context, std::uint64_t nowMs) const
-{
-  if (!ack.coreAuthenticated || ack.requestId != context.requestId ||
-      ack.attempt != context.attempt || ack.serviceName != context.serviceName ||
-      ack.modelDigest != context.modelDigest || ack.graphDigest != context.graphDigest ||
-      ack.provider.empty() || ack.signerIdentity.empty() || ack.controllerVersion.empty() ||
-      !digest(ack.offerDigest) || !digest(policy.policyDigest) ||
-      policy.expiresAtMs <= nowMs || ack.expiresAtMs <= nowMs ||
-      !contains(policy.acceptedProviders, ack.provider) ||
-      !contains(policy.acceptedServices, ack.serviceName) ||
-      !contains(policy.acceptedSignerIdentities, ack.signerIdentity)) {
-    throw std::runtime_error("DI_NATIVE_OFFER_REJECTED");
-  }
-  NativeProviderPlanningView result;
-  result.provider = ack.provider;
-  result.offerDigest = ack.offerDigest;
-  result.acceptedRoles = policy.acceptedRoles;
-  result.backends = policy.backends;
-  result.residencyDigests = policy.residencyDigests;
-  result.freeBytes = policy.freeBytes;
-  result.resourceSequence = policy.resourceSequence;
-  result.preparationAccepted = true;
-  result.executionAllowed = true;
-  result.validate();
   return result;
 }
 
