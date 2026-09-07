@@ -2251,3 +2251,19 @@ No actual model or cluster execution was performed.
 
 Lesson: identity-schema changes need a complete producer-to-consumer trace;
 producer tests alone cannot establish that the runtime path is repaired.
+
+# 2026-09-07 — Certified graph expectations lack a connected producer
+
+Symptom: the final YOLO collector requires certifiedGraph, but the runtime
+operator only forwards it. The comparator docstring claimed a preparation
+producer existed; exact schema searches found only consumers and test data.
+
+Cause: comparison tests supplied expectations directly, leaving provenance
+and the actual production owner outside their coverage.
+
+Action: corrected the inaccurate docstring and recorded the unresolved
+producer/optimizer/publication binding tasks in Spec183. This is not a
+runtime fix; T005/T006/T007 remain open and no coverage gate was weakened.
+
+Lesson: every mandatory collector input needs a traceable production source;
+synthetic expected data cannot establish an executable end-to-end workflow.

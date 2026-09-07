@@ -1226,8 +1226,10 @@ def validate_certified_graph_coverage(observations, model_bindings, certified_gr
                                       *, graph_digest):
     """Compare native/ORT assignments with an independently certified graph.
 
-    ``optimizedNodeNames`` is produced by the signed graph/ORT preparation
-    owner. It deliberately represents the post-optimization node vocabulary;
+    The caller must supply independently established ``optimizedNodeNames``
+    from a graph/ORT preparation owner. This comparator does not authenticate
+    that input or establish its provenance; the production owner is not yet
+    connected (Spec183 T005/T006). It represents the post-optimization vocabulary;
     raw ONNX node counts are not used as an execution proof. This function
     never derives the expected graph or model identities from observations.
     """

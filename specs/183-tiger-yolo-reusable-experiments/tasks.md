@@ -4,6 +4,13 @@
 **Branch**: `TigerClusterExperiments`
 **Status**: 2/17 tasks complete (T001 inventory and T003 focused component acceptance); IN_PROGRESS, no runtime PASS.
 
+2026-09-07 生产路径检查：certifiedGraph 目前只有消费者和合成 fixture，没有
+已接线的独立 ORT/图参考生产者。已纠正注释中“生产者已存在”的错误表述；
+T005/T006 必须补齐真实 owner、运行时 manifest 绑定和 collector 来源验证，
+不得从被测 observations 反推 expected。具体步骤见
+[certified-graph-owner-gap.md](evidence/certified-graph-owner-gap.md)。
+SSH hostname 检查成功；本轮未提交 Slurm 或启动模型任务。
+
 2026-09-07 identity 拆分调用链补漏：User run_requests 仍直接比较 placement
 与 runtime digest；现改为通过绑定 receipt 分别验证，issuer 签发前匹配实际
 catalogue 条目，宿主也重验 placement receipt 字段。71 项 application/
