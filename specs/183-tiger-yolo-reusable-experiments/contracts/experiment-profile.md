@@ -163,7 +163,9 @@ SSH、Slurm、容器或模型。Python3.8 的 JSON Schema 导入可能执行 std
 edge/numerical/cleanup 证据全部重新验证后，才以不可覆盖方式写入
 `verdict.json`；失败只保留首个 `collection-failure.json`，不会把超时或缺文件
 提升为成功。已有 verdict 必须带 `collectorSchema=tiger-yolo-collector-v1`，并
-重新核对 run/candidate 绑定。
+重新核对 run/candidate 绑定。即使已有 verdict，collect 仍须重读 handoff 并
+调用同一数值/执行/负例判定器；证据缺失、判定失败或重算结果与旧 verdict
+不一致均返回非零。旧 verdict 保留为历史记录，不覆盖或作为当前 PASS 的捷径。
 
 `collection-input.json` 的 schema 为 `tiger-yolo-collection-input-v1`。normal
 handoff 固定携带 runtime/placement candidate digest、四个 Provider identity、

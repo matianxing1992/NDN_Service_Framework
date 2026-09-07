@@ -4,6 +4,14 @@
 **Branch**: `TigerClusterExperiments`
 **Status**: 2/17 tasks complete (T001 inventory and T003 focused component acceptance); IN_PROGRESS, no runtime PASS.
 
+2026-09-07 T006 retained-verdict regression: collect previously returned an
+existing PASS without reopening evidence. Five mutation tests reproduced
+false success for missing/invalid/changed handoff, forged qualification and
+oracle rejection. collect now always re-runs its authoritative collector and
+compares the complete result with the retained verdict without overwriting it.
+35 operator tests passed in 8.40s. These are synthetic component tests;
+T006/T007 and real model/network validation remain open.
+
 2026-09-07 interrupted-dispatch review: corrected acyclic prerequisites
 (hostMinindn → localSif → singleNodeGpu → twoNodeGpu), explicit HH:MM:SS,
 case-specific node/task counts, typed GPU GRES and frozen-bundle wrapper path.

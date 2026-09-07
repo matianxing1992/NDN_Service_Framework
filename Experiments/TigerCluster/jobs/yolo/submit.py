@@ -374,6 +374,7 @@ def _collect(args) -> int:
     verdict = root / "verdict.json"
     if any(p.is_symlink() for p in (verdict, *verdict.parents)):
         raise ClosureError("VERDICT_SYMLINK")
+    previous = None
     if verdict.is_file():
         value = _read_plane(verdict)
         if (not isinstance(value, dict) or value.get("runId") != args.run_id
@@ -381,8 +382,7 @@ def _collect(args) -> int:
                 or value.get("collectorSchema") != "tiger-yolo-collector-v1"
                 or value.get("status") != "PASS"):
             raise ClosureError("VERDICT_BINDING")
-        print(json.dumps(value, sort_keys=True))
-        return 0
+        previous = value
     try:
         collection_path = _collection_file(root)
     except ClosureError as exc:
@@ -418,7 +418,14 @@ def _collect(args) -> int:
                      candidateDigest=prepared["candidateDigest"],
                      collectorSchema="tiger-yolo-collector-v1",
                      collectionInputDigest=collection_digest)
-        _write_readonly(verdict, final)
+        # Retained PASS is a historical result, not authority to skip its
+        # evidence. Re-run the same collector even for an unchanged handoff;
+        # nested node logs, native outputs and references may have changed.
+        if previous is not None:
+            if previous != final:
+                raise ClosureError("VERDICT_REANALYSIS_MISMATCH")
+        else:
+            _write_readonly(verdict, final)
         print(json.dumps(final, sort_keys=True))
         return 0
     except (ClosureError, ValueError, OSError, ImportError) as exc:

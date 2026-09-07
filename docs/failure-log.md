@@ -2127,3 +2127,20 @@ semantic staging/receipt validation and runner/reconciliation implementation.
 
 Lesson: test the first execution of each gate and exact allocation semantics;
 mocked PASS fields cannot establish staging or permit a real sbatch call.
+# 2026-09-07 — Spec183 cached verdict bypassed evidence reanalysis
+
+Symptom: collect returned success after evidence removal, evidence mutation,
+forged qualification or an oracle rejection when verdict.json already existed.
+Five focused mutation tests reproduced the false success before the repair.
+
+Cause: the existing-verdict fast return verified only run/candidate/schema/status
+and bypassed handoff loading and the authoritative collector.
+
+Fix: re-run collection for existing verdicts, compare the full recomputed
+result, reject disagreement and preserve the original verdict bytes.
+35 operator tests passed in 8.40s, including unchanged reanalysis and all five
+failure cases. Dispatch qualification is mocked in these component tests;
+this is not evidence of a real Tiger/model run.
+
+Lesson: immutable summaries preserve history; they do not replace validation
+of their retained evidence on later collection.

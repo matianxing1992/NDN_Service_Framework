@@ -374,7 +374,8 @@ def _negative_collection_input(prepared, *, valid=True):
     }
 
 
-def test_collect_runs_expected_rejection_oracle_and_writes_immutable_verdict(tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize("mutation", ["unchanged", "missing", "invalid", "changed-valid", "verdict", "oracle"])
+def test_collect_runs_expected_rejection_oracle_and_writes_immutable_verdict(tmp_path, monkeypatch, capsys, mutation):
     module = submit_module()
     run_id = "negative-run"
     request_id = "/test/spec183/negative-run/requests/0"
@@ -404,7 +405,30 @@ def test_collect_runs_expected_rejection_oracle_and_writes_immutable_verdict(tmp
     assert json.loads(capsys.readouterr().out)["status"] == "PASS"
     mode = (root / "verdict.json").stat().st_mode & 0o777
     assert mode == 0o444
-    assert module._collect(args) == 0
+    old_verdict = (root / "verdict.json").read_bytes()
+    handoff = root / "collection-input.json"
+    if mutation == "missing":
+        handoff.unlink()
+    elif mutation in ("invalid", "changed-valid"):
+        value = json.loads(handoff.read_text())
+        if mutation == "invalid":
+            value["rejection"]["response"]["success"] = True
+        else:
+            value["rejection"]["elapsedMs"] += 1
+        handoff.write_text(json.dumps(value))
+    elif mutation == "verdict":
+        value = json.loads(old_verdict)
+        value["qualification"] = "FORGED_PASS"
+        (root / "verdict.json").chmod(0o644)
+        (root / "verdict.json").write_text(json.dumps(value))
+        old_verdict = (root / "verdict.json").read_bytes()
+    elif mutation == "oracle":
+        from runtime import yolo_result
+        def reject(*args, **kwargs):
+            raise ValueError("retained evidence rejected on reanalysis")
+        monkeypatch.setattr(yolo_result, "finalize_expected_rejection", reject)
+    assert module._collect(args) == (0 if mutation == "unchanged" else module.INCOMPLETE)
+    assert (root / "verdict.json").read_bytes() == old_verdict
 
 
 def test_collect_retains_first_rejection_without_promoting_bad_handoff(tmp_path, monkeypatch):
