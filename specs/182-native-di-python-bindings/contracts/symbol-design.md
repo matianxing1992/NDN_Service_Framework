@@ -42,7 +42,7 @@ request/attempt、deadline、digest、secret lease、缓存失效和队列计数
 | C12 / CD-004 NativeGrantClient | 原生 requester 签名申请、发布及绑定 | authority port、Core publication port、credential handles；请求 lease | acquire；网络动作在 Core executor，secret 不入 handle/日志 |
 | C13 / CD-004 NativeArtifactPolicyAuthority | 模型工件 grant policy issuer，独立于 requester placement | issuer credential、artifact policy；不拥有 Core ControllerVersion | issue；先认证/授权再封装，不重新实现密码算法 |
 | C14 / CD-005 assembler module | 按已认证 recipe 原生格式操作，Provider 拥有激活/缓存 | options 与请求期临时 buffers；退出释放 | prepareNativeCanonicalOnnxRole 两个 overload / assembleNativeCertifiedOnnxModel；写清 post-Selection |
-| C15 / CD-006 NativeTokenizer | digest-bound 原生 encode/decode 适配器 | tokenizer artifact path/digest、native backend handle | constructor/encode/decode/destructor；O-003 关闭前不能选择任意 ABI；不逐 token 重建 |
+| C15 / CD-006 NativeTokenizer | digest-bound 原生 encode/decode 适配器 | tokenizer artifact path/digest、unique_ptr<Impl>；Impl的handle/digest/mutex见native-dependency-design | constructor/encode/decode/destructor；O-003已固定C ABI与串行所有权；不逐 token 重建 |
 | C16 / CD-007 NativeConversationCoordinator | requester turn/checkpoint 原子晋升；复用 Provider state | journalRoot、committedRecords、inflightTurns、writer lease | beginTurn/abortTurn/prepareCheckpoint/commitTurn/restore；不得覆盖已提交 predecessor |
 | C17 / CD-008 bindings module | 纯转换/GIL/事件投递，不复制业务算法 | native shared handles 与 Python callback lifetime | bindDistributedInference；异常和取消语义来自原生，无策略/runner trampoline |
 | C18 / CD-013 NativeRequestPreparation | 原生 task/graph/catalog/input/artifact I/O owner | registry、authenticated catalog/Repo/publication ports、request control | prepareInput/inspectModel/ensureArtifacts；已发布 immutable record 只按 TTL 过期，不假称可撤回 |
@@ -93,8 +93,8 @@ client/provider 不可复制；handle/registration 通过 shared internal record
 | M27 prepareNativeCanonicalOnnxRole(ctx,projection,options) → NativeModelRunnerSpec | 从真实 CollaborationContext绑定fetchers，再委托M26 | native Provider handler；不再复制格式算法 |
 | M28 assembleNativeCertifiedOnnxModel(source,recipe,control) → NativeCertifiedAssembly | 按认证node/external entries构图、checker、确定性序列化；资源/取消检查；不直接激活缓存 | M26；O-002未关闭前不得猜 protobuf ABI |
 | M29 NativeTokenizer(path,expectedDigest) | 验证实际artifact digest并创建一次 native backend；异常释放部分资源 | adapter注册/decoder factory；不启动解释器 |
-| M30 encode(const string& text) const → vector<int64_t> | 保持normalization/BPE/special/byte fallback；输入UTF-8行为按冻结向量 | Qwen task；返回拥有数据的token数组 |
-| M31 decode(const vector<int64_t>& ids) const → string | ID范围、special处理与UTF-8规则按同一tokenizer；返回完整文本 | terminal/native client；不能仅返回token IDs冒充成功 |
+| M30 encode(const string& text,bool addSpecialTokens=true) const → vector<int64_t> | 保持normalization/BPE/byte fallback；addSpecialTokens控制tokenizer配置的特殊token处理，与旧add_special_tokens一致；输入UTF-8行为按冻结向量 | Qwen task；返回拥有数据的token数组；true/false均需对照 |
+| M31 decode(const vector<int64_t>& ids,bool skipSpecialTokens=true) const → string | ID范围与UTF-8规则按同一tokenizer；skipSpecialTokens控制是否跳过特殊token，与旧skip_special_tokens一致；返回完整文本 | terminal/native client；不能仅返回token IDs冒充成功；true/false均需对照 |
 | M32 ~NativeTokenizer() | 用锁定ABI的释放函数释放handle；不抛异常 | RAII；并发调用结束后释放，O-003定义线程策略 |
 | M33 makeNativeStandaloneTokenizerDecoder(options,expectedDigest) → function<string(const vector<int64_t>&)> | 捕获shared native tokenizer；重复调用重用backend | generationTextDecoderFactory；options删除pythonExecutable/pythonModule |
 | M34 beginTurn(continuation,input) → NativeConversationTurn | 校验父记录/权限/attempt lineage，创建inflight turn，不覆盖committed record | native request；无conversations配置时拒绝continuation |
@@ -152,7 +152,7 @@ Name相同但作用域不同的字段不能共享可写状态。
 | journalRoot / C16,M38 | filesystem::path，显式配置 | 本地会话持久化目录 | 不等于Core RuntimeStatusStore路径；权限与单写lease校验 |
 | committedRecords,inflightTurns / C16 | map keyed by conversation/turn identity，restore后/空 | 已提交权威与未提交暂存分开 | 只由C16写；原子晋升，不把temporary当可恢复记录 |
 | tokenizerPath,expectedDigest / C15,M33 | path,string，已声明artifact来源 | 使用哪一个tokenizer及认证字节身份 | 实际文件digest匹配；注释不可每token替换 |
-| backendHandle / C15 | 由O-003冻结的原生ABI owner | 复用tokenizer内存实例 | O-003未闭合不得用void*隐藏释放/线程规则 |
+| backendHandle / C15 | Impl中unique_ptr<void,ndi_token_destroy>；精确C ABI见native-dependency-design | 复用tokenizer内存实例 | 全调用持mutex、Result RAII先释放buffer、shared owner活至调用结束；禁止裸指针混用allocator |
 | provider,registrations,stopped / C20 | shared Core；map服务记录；bool=false | 仅本host注册与停止状态 | sharedCore不被stop；在途record由callback持有 |
 | registrationRecord,closed / C21 | shared registration记录；bool=false | 注册注销和callback lifetime | 幂等close；真实Core注销能力O-004未证实则BLOCK |
 | code/domain/boundary/requestId/attempt / C03 | 既有错误码、边界标识、请求身份 | 为caller区分参数/规划/授权/执行错误 | native→Python固定映射；不以异常文本为协议 |

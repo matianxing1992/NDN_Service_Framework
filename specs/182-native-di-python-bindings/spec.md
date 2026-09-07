@@ -5,12 +5,12 @@
 **Created**: 2026-09-06
 **Revision**: 7
 **Status**: DRAFT
-**Execution Status**: NOT_STARTED
+**Execution Status**: T001 IN_PROGRESS; product implementation NOT_STARTED
 **Activation**: active design; source baseline audited; dependency and interface design closure pending
 
 **Input**: 所有者要求 C++ 自身完成完整 NDNSF-DI 调用；Python 只作为可选兼容外壳。
 Python 可以传入原生策略对象或配置，但默认策略执行、切分决策、运行时装配和协作调用
-必须在原生实现中完成。合并与源码交付已结束，用户确认实验机器已接收；本轮只审计并修订182文档，不执行原生迁移、构建或运行验证，不管理实验机器。
+必须在原生实现中完成。合并与源码交付已结束，用户确认实验机器已接收；用户随后授权在Experimental完成182。当前先关闭T001设计门，再执行原生迁移和规定的本地验证；SIF/Tiger仍由实验机器负责。
 
 ## Goal
 
@@ -200,7 +200,7 @@ Python 绑定可选构建，禁止依赖主工作区未提交文件。
 | INV-006 | 冷动态装配仍在 Selection 后；模型差异归 adapter | NativeCanonicalOnnxAssembler；现有 recipe | 冷缓存、多不同切分和权限先行 |
 | INV-007 | 运行时零 Python，不要求离线训练/导出或构建工具零 Python | 本次用户目标；Waf 为构建工具 | 生产进程树/动态库检查 |
 | INV-008 | 设计、实现、定向检查、本地验收、外部实验分离 | constitution V/VII/VIII；Spec181 handoff | audit + 同源证据 |
-| INV-009 | 本轮只审计/修订182文档和相关上下文；后续开发仍按既定分工 | 本次用户授权 | 明确路径 diff；不构建、不运行产品测试、不管理外部实验 |
+| INV-009 | Experimental负责182设计、开发与本地验证；外部机器负责SIF/Tiger实验 | 用户完成182的授权及既定分工 | 明确路径diff和依赖身份；局部unit与T016最终验证按门执行；不管理外部实验 |
 
 ## Code Design Index
 
@@ -267,11 +267,11 @@ Python 不成为 flow 中间的 planner、grant authority、每 token callback �
 ## Design Readiness
 
 **DRAFT / BLOCK for implementation**。用户目标与职责选择已明确，公开 API/行为和证明框架见附件；
-O-001（合并源码身份及181承接）已按源码范围 CLOSED；O-002（ONNX 原生字节契约）、O-003（tokenizer 原生依赖 ABI）
-、O-004（完整旧能力/调用方清单）与 O-005（隔离设计可行性）在 [code-design](contracts/code-design.md#open-questions)
+O-001（合并源码身份及181承接）与O-003（tokenizer原生依赖/ABI设计）已按各自范围CLOSED；O-002（ONNX完整原生字节契约）、
+O-004（完整旧能力/调用方清单）与 O-005（隔离设计可行性）在 [code-design](contracts/code-design.md#open-questions)
 中保留有界关闭条件。T001仍未完成；新依赖组合的运行资格另列NOT_RUN，不把它混入已关闭的源码身份核对。不得把尚未冻结的叶子接口交给实现者临场补全。
 
-本轮可以完成设计文档交付；它不是 READY_FOR_IMPLEMENTATION 或代码完成。
+当前探针与设计进展不是 READY_FOR_IMPLEMENTATION 或代码完成；用户授权的实施在T001关闭后继续。
 详细参数/状态、工作单元边界、PO 和自审分别见：
 [code-design](contracts/code-design.md)、[proof-design](contracts/proof-design.md)、
 [runtime boundaries](contracts/runtime-boundaries.md)、[work-units](contracts/work-units.md)、[plan](plan.md)、[tasks](tasks.md)、

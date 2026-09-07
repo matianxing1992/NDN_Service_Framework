@@ -3,7 +3,7 @@
 **Revision**: 7 | **Status**: DRAFT / BLOCK for implementation
 **Normative parent**: [spec](../spec.md), [code design](code-design.md)
 本附件补齐 revision 1 的中间调用缺口；所有 Native* 新接口均 planned。
-O-002/O-003 依赖锁和 O-004 完整字段/兼容清单未关闭，不宣称可直接编译。
+O-003 tokenizer依赖/ABI设计已关闭；O-002完整ONNX算法、O-004完整字段/兼容清单和O-005隔离设计仍未关闭，不宣称可直接编译。
 
 ## CD-013 Preparation and Offer Admission
 

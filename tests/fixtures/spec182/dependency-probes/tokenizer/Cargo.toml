@@ -1,0 +1,17 @@
+[package]
+name = "spec182-tokenizer-abi-probe"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.90"
+publish = false
+
+[lib]
+name = "spec182_tokenizer_probe"
+crate-type = ["staticlib"]
+
+[dependencies]
+tokenizers = { version = "=0.20.3", default-features = false, features = ["onig"] }
+
+[profile.release]
+panic = "unwind"
+

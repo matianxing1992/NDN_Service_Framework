@@ -210,17 +210,17 @@ O-002 必须证明原生 ONNX/protobuf 依赖与既有装配固定向量逐字�
 | Operation | Exact paths | Symbols |
 | --- | --- | --- |
 | ADD | NDNSF-DistributedInference/cpp/adapters/qwen/NativeTokenizer.hpp; NDNSF-DistributedInference/cpp/adapters/qwen/NativeTokenizer.cpp | NativeTokenizer::encode, decode；资源和取消边界 |
+| ADD | NDNSF-DistributedInference/cpp/adapters/qwen/tokenizer-bridge/Cargo.toml; NDNSF-DistributedInference/cpp/adapters/qwen/tokenizer-bridge/Cargo.lock; NDNSF-DistributedInference/cpp/adapters/qwen/tokenizer-bridge/src/lib.rs; NDNSF-DistributedInference/cpp/adapters/qwen/tokenizer-bridge/tokenizer-abi.h | 私有Rust C ABI五函数及Result owner，精确职责/字段/释放/构建见native-dependency-design |
 | MODIFY | NDNSF-DistributedInference/cpp/ndnsf-di/NativeStandaloneTokenizer.hpp; NDNSF-DistributedInference/cpp/ndnsf-di/NativeStandaloneTokenizer.cpp | NativeStandaloneTokenizerOptions；makeNativeStandaloneTokenizerDecoder |
 | MODIFY | examples/DI_NativeProviderExecutable.cpp | generationTextDecoderFactory；注入原生 decoder，不 fork Python |
 | KEEP reference only | NDNSF-DistributedInference/ndnsf_distributed_inference/native_token_decode_helper.py | 冻结 tokenizer oracle；不属 runtime dependency |
 
-planned NativeTokenizer(path, expectedDigest)；encode(const std::string& text) →
-std::vector<int64_t>；decode(const std::vector<int64_t>& ids) → std::string。
+planned NativeTokenizer(path, expectedDigest)；`encode(const std::string& text, bool addSpecialTokens = true) const` → std::vector<int64_t>；`decode(const std::vector<int64_t>& ids, bool skipSpecialTokens = true) const` → std::string。
+两个bool分别保持现有StandaloneQwenTokenizer.encode/decode的明确选项，绑定使用原Python参数名。参数是文本语义选项，不是认证/资源检查旁路。C ABI、私有Impl字段、依赖、释放与串行调用规则见[native dependency design](native-dependency-design.md#frozen-production-integration)；O-003依赖设计已关闭，T007尚未实现。
 tokenizer.json 在创建时验证 digest 并加载；const 方法不加载第二份 tokenizer 或每 token 重建进程。
 特殊 token、normalization、BPE、byte fallback、UTF-8 和 skip-special 行为按实际 standalone
 tokenizer 及冻结向量定义。返回 UTF-8；非法 ID、digest 或配置在 adapter 边界失败。
-O-003 决定原生库/可能的 Rust C ABI、锁文件、许可、安装路径和线程安全；禁止虚构已可用的库。
-若选择 C ABI，必须在设计清单新增源/头/构建和内存释放函数后才能实现。
+O-003固定tokenizers0.20.3/Rust1.90.0、Cargo.lock与上表私有C ABI；84个对照及14个拒绝检查PASS。T007仍需生产资源/digest/并发等unit，T014/T016证明完整无Python路径，不能把探针当成已安装产品库。
 
 ## CD-007 Lifecycle
 
@@ -281,7 +281,7 @@ Python extension 本身依赖 Python 是允许的，不混淆检查范围。
 | MODIFY | examples/wscript; tests/wscript | requester/provider 与测试链接同一 DI 库，退出复制源文件列表 |
 | MODIFY | pythonWrapper/setup.py | 绑定链接已构建库，runtime source/ABI identity 一致 |
 | REUSE / verify transitive ABI | NDNSF-DistributedRepo/pythonWrapper/setup.py; pythonWrapper/setup.py; wscript | 保留显式NAC前缀和SVS source/build pair；两wrapper均为ABI消费者，NDNSD须从锁定源码重建；不因本轮DI绑定新增而另造一套依赖选择规则 |
-| ADD | specs/182-native-di-python-bindings/contracts/native-dependencies.json | T001/O-002/O-003 关闭后冻结 ONNX/protobuf/tokenizer/ORT 版本与校验和，当前尚不存在，不编造锁 |
+| ADD | specs/182-native-di-python-bindings/contracts/native-dependencies.json | T001固定已验证的ONNX/protobuf/tokenizer探针输入及现有ORT字节身份；区分设计锁、未完成算法和产品运行资格 |
 
 Waf、测试驱动或离线导出可以使用 Python；“runtime 无 Python”不等于“构建工具无 Python”。
 O-002/O-003 冻结后必须记录原生工具链、include/lib、RPATH、license、build/runtime hash；
@@ -332,7 +332,7 @@ CD-013/014、取消/通知队列及旧路径回退完整定义于
 | --- | --- | --- | --- |
 | O-001 / CLOSED | 源身份、最终合并差异及181承接已核对 | 审计HEAD `81e251a4`，生产路径与`c770f18b`及交付源`447f7584`无diff；四库pin和旧验证失效范围见[integrated baseline](integrated-baseline.md)。只关闭源码核对，不声称当前依赖运行PASS | T001部分完成；不再阻塞源码核对，O-002--005仍阻塞实现 |
 | O-002 | 原生 ONNX extraction/checker/protobuf 是否复现既有精确字节 | 在固定 inline/external-data 与两种 role recipe 上比较；列出 native 调用、版本、许可、依赖和差异。精确相等或经明确版本化设计修订后才能关闭；最多两个候选方案 | T001；T002/T006 |
-| O-003 | 可复用 native tokenizer 库/ABI/线程安全尚未验证 | 固定 tokenizer.json 的 ASCII、Unicode、special/byte fallback 向量，比较完整 ids/text；证明无 Python。冻结一种 ABI/依赖及内存所有权；最多两个候选方案 | T001；T002/T007 |
+| O-003 / CLOSED | tokenizers0.20.3/Rust1.90.0与C ABI、RAII/串行寿命设计已固定 | 三种fixture84个ids/text对照及14个非法输入PASS；ldd无Python；lock、许可、私有安装/构建/释放规则见native-dependency-design。不计T007产品或T016隔离验收 | T001依赖设计完成；T002/T007仍受O-002/O-004/O-005阻塞 |
 | O-004 | 所有旧公开 API/策略/会话持久化与调用方尚未穷举；Core无公开逐服务注销接口，Provider host的共享服务关闭语义未闭合 | 12类137字段已匹配当前源码，但仍须按runtime-boundaries分类并补嵌套types、状态、cancel/observer、错误映射和完整inventory。CD-014必须明确registration fence或具名Core改动及PO-014负例；禁止假设removeService存在或用全局stop替代 | T001；T002--T013 |
 | O-005 | native runtime 隔离设计可行性 | 核对 Linux mount/process observation 能阻断解释器、libpython、旁路服务，同时允许 harness 在外部；T001 冻结工具、权限和白名单设计后关闭此 OPEN；T014 实现并用故意 helper 验证有效性 | T001 设计；T014 实现；T016 资格 |
 

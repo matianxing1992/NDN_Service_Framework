@@ -1,10 +1,18 @@
 # Tasks: Native NDNSF-DI with Optional Python Bindings
 
-**Revision**: 7 | **Status**: DRAFT / NOT_STARTED
+**Revision**: 7 | **Status**: DRAFT / T001 IN_PROGRESS
 **Input**: [spec](spec.md), [code design](contracts/code-design.md),
 [proof](contracts/proof-design.md), [work units](contracts/work-units.md)
 
 ## Current Checkpoint
+
+2026-09-06 T001 / IN_PROGRESS：用户已授权在Experimental完成Spec182，按原目标实施与本地验收；上一轮只审计的范围已结束。先关闭O-002--005，不提前迁移业务或执行最终集成/MiniNDN。已补齐tokenizer特殊token参数，建立[依赖设计与探针契约](contracts/native-dependency-design.md)。T001保持未勾选；SIF/Tiger继续外部负责。
+
+T001运行边界：ONNX1.17.0原生依赖-j2构建及四向量探针 **PASS / exit0**，四个模型字节与原Spec181 oracle完全一致。tokenizers0.20.3/Rust1.90.0静态ABI与C++consumer构建 **PASS**，84个完整ids/text对照和14个拒绝检查 **PASS**；两探针ldd均无Python。ABI、生产桥接路径/字段/所有权、许可及依赖锁已冻结，**O-003 CLOSED**。O-002的完整算法/叶子契约、O-004完整兼容与状态设计、O-005隔离方案仍OPEN；T001和T007未完成。Rust工具链R1/R2下载TLS失败在R3更换HTTPS实现后恢复。详见同一依赖设计记录及failure index；不计产品任务完成。
+
+本依赖设计单元检查 **PASS**：prerequisites、strict structure、design validator（143本地链接、17任务/0完成）、`git diff --check`；lock与两个oracle及三个tokenizer JSON的hash一致，Cargo.lock中72个registry依赖均有精确checksum。probe静态审查已在运行前完成，输入/expected来自旧版本，未改变产品源或历史oracle。恢复时Context Mode提供的`probe.cpp write` timeline查询未通过高熵identifier/source guard，改用持久tasks/contracts与实际日志核对，不从被拒绝的session检索推断状态。下一步补O-002/O-004/O-005；不重跑已通过且输入未变的探针。
+
+### Prior Audit Checkpoint
 
 2026-09-06 revision 7 / SOURCE_ALIGNMENT_COMPLETE：用户确认另一台机器已接收，本轮只审计/修订Spec182。以Experimental `81e251a4ef1d8e6a394dc5f0c38bc44e44bfc973`核对代码，修正未提交合并/旧integration失败的过时表述；固定NAC/SVS/NDNSD身份与旧运行证据失效范围。O-001按源码身份和181承接范围CLOSED；O-002--005仍OPEN，T001未勾选，实现仍 **0/17**。当前SVS/NDNSD组合 **UNQUALIFIED**，接收不等于实验通过。审计发现与关闭责任见[audit](audit.md)，具体版本见[integrated baseline](contracts/integrated-baseline.md)。
 

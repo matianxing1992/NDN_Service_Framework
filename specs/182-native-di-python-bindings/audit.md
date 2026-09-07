@@ -7,9 +7,9 @@
 
 ## Current Findings
 
-本轮用户授权审计182并与最新源码对齐；已停止管理已接收交付的实验机器。
+revision 7审计已按最新源码修订文档；用户随后授权在Experimental完成182，当前T001设计收口中。已停止管理已接收交付的实验机器。
 源码身份与历史状态的文档漂移已修订；未实现功能继续planned，未闭合设计继续BLOCK。
-不构建、不执行unit/integration/MiniNDN/SIF/Tiger，也不把本次审计当成T015产品收敛审查。
+T001有界依赖探针见[native dependency design](contracts/native-dependency-design.md)，不计产品实现或T015/T016资格；后续unit/integration/MiniNDN按任务门执行，SIF/Tiger由外部负责。
 
 | Finding / severity | Source evidence / controlling requirement | Correction / owner / closing proof |
 | --- | --- | --- |
@@ -23,11 +23,11 @@
 | --- | --- | --- |
 | O-001 / CLOSED | 当前源身份、合并差异及181承接已核对；不等于当前依赖运行PASS | T001部分完成 |
 | O-002 | ONNX原生装配字节契约与依赖锁 | T001 |
-| O-003 | tokenizer原生依赖、ABI及固定向量 | T001 |
+| O-003 / CLOSED | 精确crate/toolchain锁、C ABI/释放/串行寿命/生产路径及84对照+14负例PASS；产品迁移/隔离尚未完成 | T001设计完成；T007/T016实施证明 |
 | O-004 | 12类137字段与当前源一致；完整旧能力/调用方/selectors、嵌套schema及A7-03注册寿命仍缺 | T001 |
 | O-005 | 无Python隔离方案可行性与边界 | T001 |
 
-O-002--005的有界关闭条件见[code-design](contracts/code-design.md#open-questions)，本轮不虚构依赖试验或完整兼容清单。
+O-002--005的有界关闭条件见[code-design](contracts/code-design.md#open-questions)，依赖探针结果与完整算法/兼容设计关闭分别记账。
 T002--T014的各项实现、测试工具编写、静态审查、局部单测完成后，T015补审整体接线，
 T016收齐真实运行证据，T017交付。验收标准满足即结束；变化或具体缺陷才触发受影响回归。
 
@@ -54,5 +54,5 @@ T016收齐真实运行证据，T017交付。验收标准满足即结束；变化
 
 ## Next Action
 
-T001继续关闭O-002--005：固定ONNX/protobuf字节契约、tokenizer ABI、完整兼容/注册/状态设计与独立测试selector、no-Python隔离方案。无需重开合并或续跑181资格；需要动态证据的设计项保留OPEN，本轮不启动探针。
-产品实现 **0/17**；本轮源码对照完成，T015产品收敛审查及构建/unit/integration/MiniNDN **NOT_RUN**。
+T001继续关闭O-002--005：固定ONNX/protobuf字节契约、tokenizer ABI、完整兼容/注册/状态设计与独立测试selector、no-Python隔离方案。无需重开合并或续跑181资格；各设计项满足其完整关闭条件后才关闭。
+任务完成 **0/17**；T001依赖探针单独记录，T015产品收敛审查及产品构建/unit/integration/MiniNDN **NOT_RUN**。

@@ -1,0 +1,97 @@
+{
+  "schema": "spec182-native-dependencies-v1",
+  "status": "DESIGN_LOCK_WITH_BOUNDED_PROBES",
+  "productQualification": "NOT_RUN",
+  "sourceBaseline": "81e251a4ef1d8e6a394dc5f0c38bc44e44bfc973",
+  "build": {
+    "cxx": "/usr/bin/g++",
+    "cc": "/usr/bin/gcc",
+    "toolSearchPrefix": "/usr/bin",
+    "cxxVersion": "9.4.0",
+    "binutilsVersion": "2.34",
+    "maxJobs": 2,
+    "hostPythonAllowed": "build generation and offline oracle only",
+    "runtimePythonAllowed": false
+  },
+  "onnx": {
+    "version": "1.17.0",
+    "repository": "https://github.com/onnx/onnx.git",
+    "commit": "b8baa8446686496da4cc8fda09f2b6fe65c2a02c",
+    "license": "Apache-2.0",
+    "options": {
+      "BUILD_ONNX_PYTHON": false,
+      "ONNX_ML": true,
+      "ONNX_GEN_PB_TYPE_STUBS": false,
+      "ONNX_BUILD_TESTS": false,
+      "ONNX_USE_PROTOBUF_SHARED_LIBS": true
+    },
+    "probe": {
+      "fixture": "tests/fixtures/spec181/assembly-vectors-v1.json",
+      "sha256": "5e035fccaa7fecc0fc5fe272a19ec52c5c7e3163f83a21405dfef9e2a6e30165",
+      "exactCases": 4,
+      "status": "PASS"
+    },
+    "remaining": "Production canonical identity and full recipe/validation algorithm design remains OPEN"
+  },
+  "protobuf": {
+    "version": "3.6.1",
+    "distributionPackageVersion": "3.6.1.3-2ubuntu5.2",
+    "license": "BSD-3-Clause and packaged notices",
+    "runtimeSoname": "libprotobuf.so.17",
+    "observedLibrarySha256": "2690b9f07a666d1bc61c9723a2ca4cad20c4ba34410f8797dc4383ff6cb2f73d",
+    "observedProtocSha256": "f54b012c6df6d3837d16ebef2d94225d8aab3955d90758080cbba42315286b3c",
+    "abiRule": "Use matching protoc, headers and shared runtime; all consumers in one process must resolve the same protobuf ABI. Host hashes describe the probe, not binaries for other OS images."
+  },
+  "tokenizer": {
+    "crate": "tokenizers",
+    "version": "0.20.3",
+    "checksum": "67b67c92f6d705e2a1d106fb0b28c696f9074901a9c656ee5d9f5de204c39bf7",
+    "license": "Apache-2.0",
+    "defaultFeatures": false,
+    "features": [
+      "onig"
+    ],
+    "cargoLock": "tests/fixtures/spec182/dependency-probes/tokenizer/Cargo.lock",
+    "cargoLockSha256": "a9352585ceb07cdc8e1fe798ca6e222d10791d89d7aa3ed8ecb3b5a5172f71f1",
+    "registryDependencies": "All exact versions and checksums are normative in Cargo.lock; production package rename may change only local package identity.",
+    "abi": "native-dependency-design.md#tokenizer-abi-probe-contract",
+    "runtimeNetwork": false,
+    "threading": "Read-only owner; serialize complete calls in C++ mutex; shared ownership outlives all calls.",
+    "probe": {
+      "fixture": "tests/fixtures/spec182/dependency-probes/tokenizer/vectors.json",
+      "sha256": "6f44a2e62bebccd4dee2ff214d4d65f99528899e6863705eb1ec431b098ed34b",
+      "exactCases": 84,
+      "negativeCases": 14,
+      "status": "PASS"
+    },
+    "productionIntegration": "native-dependency-design.md#frozen-production-integration"
+  },
+  "rust": {
+    "version": "1.90.0",
+    "target": "x86_64-unknown-linux-gnu",
+    "distribution": "https://static.rust-lang.org/dist/",
+    "components": {
+      "rustc": "48c2a42de9e92fcae8c24568f5fe40d5734696a6f80e83cc6d46eef1a78f13c9",
+      "cargo": "9853db03d68578a30972e2755c89c66aec035fec641cf8f3a7117c81eec2578d",
+      "rust-std": "663f4ab7945b392d5e5294dec1b050a66820a20e86f084ec37eeb0f2f7ff5569"
+    },
+    "scope": "Build-only isolated toolchain; no global environment mutation required.",
+    "panic": "unwind; catch at ABI; resource exhaustion abort is not a recoverable result"
+  },
+  "onnxruntime": {
+    "version": "1.26.0",
+    "observedCommitMetadata": "8c546c37b43caaca1fa25db430dab94b901cf277",
+    "license": "MIT",
+    "observedLibrarySha256": "5bd5bedf736fc501692435d0ec4f6e8b2bdf48cd30af8e6d00d61b3ddc9a7ab8",
+    "observedCHeaderSha256": "f09c0d8584aae94dced9bb05cff8579f4f6c5c4a2271413ea8ab27bd0bbf46aa",
+    "evidenceScope": "Existing /opt/onnxruntime-1.26.0 installation metadata and bytes; not rebuilt or product-qualified in T001.",
+    "releaseRule": "T016/T017 must record the actually loaded library, headers, providers and portable acquisition input; do not infer archive provenance from installed metadata."
+  },
+  "coreDependencies": {
+    "nacAbe": "5ed23e68520fb9c4ef747c51d6d18c915ff88fc4",
+    "ndnSvs": "9f2d8a47cd2a25a5f9ade661c9dbe8acd6416a20",
+    "ndnsd": "375a35c5706d5a6b6f176cd98b72d63dcb7f5b10",
+    "abiQualification": "UNQUALIFIED; rebuild NDNSD and all affected consumers before current identity qualification"
+  },
+  "qualificationBoundary": "Dependency probes establish only the stated byte/ABI properties. T015/T016 and complete runtime isolation remain required."
+}

@@ -16,7 +16,7 @@ Python只作同库兼容绑定，旧默认控制路径退出。O-001源码基线
 沿用Waf、C++/Boost/ndn-cxx/ORT；ONNX/tokenizer依赖及ABI锁由T001冻结。
 原生构建使用核对后的system compiler/binutils、匹配Boost headers/libs、
 NAC-ABE prefix与NDN-SVS source/build pair，并包含直接消费SVS ABI的NDNSD；ABI变化重建全部传递消费者与绑定并核对实际加载路径/hash。四库版本及旧证据失效边界见[integrated baseline](contracts/integrated-baseline.md#current-source-identity)。
-默认至多-j2，不并发操作同一Waf树。本轮只改文档，不构建产品。
+默认至多-j2，不并发操作同一Waf树。T001允许有界依赖探针；产品构建按设计门和各任务的验证范围执行。
 
 ## Constitution Check
 
@@ -87,7 +87,7 @@ T017 的 evidence/development-handoff.md 包含 exact commit、clean source clos
 
 ## Current Planning Result
 
-本轮为revision 7源码对照审计，产品实现仍NOT_STARTED，构建与运行均NOT_RUN。
-O-001源码核对已关闭；下一步T001关闭O-002--005。实验机器已接收上一轮交付，本轮不继续管理它，也不恢复被用户停止的ABI构建。
+revision 7源码对照审计已完成；用户已授权在Experimental完成182，当前T001 IN_PROGRESS，产品实现与最终运行验证仍NOT_STARTED。
+O-001源码核对已关闭；T001关闭O-002--005，依赖可行性及实际探针见[native dependency design](contracts/native-dependency-design.md)。实验机器已接收上一轮交付，本轮不继续管理它；不恢复旧交付构建，后续按182任务重新固定并验证所需依赖身份。
 后续182开发仍按G1--G6执行本地开发验证；上一轮delivery-only的TRANSFERRED不是永久移走182的T016义务。
 使用仓库[shared design skill](../../skills/speckit-code-design/SKILL.md)及其相对引用，避免依赖开发机个人技能路径。T017复用现有[handoff tooling](../../Experiments/TigerCluster/docs/source-handoff.md)，另生成182身份与依赖清单；旧锁包含Python运行包且不含planned原生DI库，不能直接称为182 no-Python交付。

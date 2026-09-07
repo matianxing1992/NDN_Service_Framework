@@ -1,5 +1,13 @@
 # Failure Log and Evidence Index
 
+## 2026-09-06 — Spec182 tokenizer toolchain download transport
+
+R2改为rustc/cargo/rust-std最小组件，首个rustc归档仍在Python3.8 urllib TLS读取阶段以同样错误exit1；保留`rust-r2/boundary.json`与部分归档。R3只切换Node22 HTTPS传输，保持官方来源、TLS验证及SHA256检查，最多一次有界重试；依赖设计与其他T001工作继续，不把下载失败升格为产品阻塞。
+
+R3已恢复：Node22 HTTPS成功下载rustc/cargo/rust-std三组件，官方SHA256全部匹配，exit0。失败边界为旧Python传输路径，未观察到tokenizer代码问题；hash与后续探针结果记录在同一dependency design。
+
+T001依赖可行性所需Rust1.90.0归档下载R1 exit1，在TLS body读取阶段报`DECRYPTION_FAILED_OR_BAD_RECORD_MAC`，尚未校验/解压/安装，更未编译或执行tokenizer。保留部分归档与`.codex-tmp/spec182-t001-dependencies/rust-r1/boundary.json`；新R2目录有限重试并验证官方SHA256，不使用部分文件。ONNX依赖构建独立，不因下载失败重跑。设计及进度见[dependency design](../specs/182-native-di-python-bindings/contracts/native-dependency-design.md)。
+
 ## 2026-09-06 — Delivery-only scope correction
 
 用户明确指出本轮任务仅为交付，编译与测试由另一台机器负责。此前本机ABI消费者验证属于超出范围的扩展；立即停止R4 owned构建进程组2531869，不再启动NDNSD构建、unit/integration、Python扩展验证或MiniNDN。R1/R2中断及R3普通Provider构建记录保留，不能外推完整验证PASS。后续构建/测试均TRANSFERRED，不作为交付阻塞项；当前源码包/definition/依赖锁/skills与GitHub发布已完成，见source handoff。
