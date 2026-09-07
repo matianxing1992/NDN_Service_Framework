@@ -373,6 +373,69 @@ def read_node_log_receipt(root, *, receipt_digest, plan, preparation_digest, can
     return dict(receipt=receipt, logs=logs, qualification='NODE_LOG_COMPONENT_ONLY')
 
 
+def collect_retained_dependencies(nodes, public_path, *, plan, candidate_digest,
+                                   providers_by_role, request_id, attempt, execution_plan_digest):
+    """Cross-process four-role join; node digests come from trusted staging.
+
+    Each node entry has root, receiptDigest and preparationDigest. Does not
+    establish physical allocation/GPU or complete experiment qualification.
+    """
+    from runtime.yolo_worker import assigned_roles
+    expected = {'BackboneNeck', 'DetectShard0', 'DetectShard1', 'Merge'}
+    if (plan['case'] not in ('local-cpu', 'single-node-gpu', 'two-node-gpu')
+            or not isinstance(nodes, dict) or any(type(rank) is not int for rank in nodes)
+            or set(nodes) != ({0, 1} if plan['case'] == 'two-node-gpu' else {0})
+            or set(providers_by_role) != expected):
+        raise EvidenceError('RETAINED_NODE_COVERAGE')
+    roles, logs = {}, {}
+    for rank, node in sorted(nodes.items()):
+        if not isinstance(node, dict) or set(node) != {'root', 'receiptDigest', 'preparationDigest'}:
+            raise EvidenceError('RETAINED_NODE_ENTRY')
+        for role in sorted(set(assigned_roles(plan['case'], rank)) & expected):
+            roles[role] = collect_retained_role_execution(node['root'],
+                receipt_digest=node['receiptDigest'], plan=plan,
+                preparation_digest=node['preparationDigest'], candidate_digest=candidate_digest,
+                rank=rank, role=role, provider=providers_by_role[role], request_id=request_id,
+                attempt=attempt, execution_plan_digest=execution_plan_digest)
+            logs[role] = roles[role]['logPath']
+    dependencies = collect_dependency_result(public_path, logs, request_id=request_id,
+        attempt=attempt, plan_digest=execution_plan_digest, providers_by_role=providers_by_role)
+    if any(roles[role]['native']['logDigest'] != dependencies['logDigests'][role] for role in expected):
+        raise EvidenceError('RETAINED_DEPENDENCY_LOG_CHANGED')
+    return dict(roles=roles, dependencies=dependencies, qualification='RETAINED_DEPENDENCY_COMPONENT_ONLY')
+
+
+def collect_retained_role_execution(root, *, receipt_digest, plan, preparation_digest,
+                                    candidate_digest, rank, role, provider,
+                                    request_id, attempt, execution_plan_digest):
+    """Offline role execution check anchored to a trusted node receipt identity.
+
+    No reconstructed Worker is used. Provider and execution-plan bindings come
+    from verified runtime Selection, independently of the node configuration.
+    Full allocation, graph, cleanup and result qualification is still required.
+    """
+    from pathlib import Path
+    node = read_node_log_receipt(root, receipt_digest=receipt_digest, plan=plan,
+        preparation_digest=preparation_digest, candidate_digest=candidate_digest, rank=rank)
+    if (role not in ('BackboneNeck', 'DetectShard0', 'DetectShard1', 'Merge')
+            or role not in node['logs'] or node['logs'][role]['invocation'] is not None):
+        raise EvidenceError('RETAINED_ROLE_OWNERSHIP')
+    launch = node['logs'][role]
+    runner = ('native-yolo-postprocess' if role == 'Merge' else
+              'onnxruntime-cpu' if plan['case'] == 'local-cpu' else 'onnxruntime-cuda')
+    native = read_native_observation(launch['path'], provider=provider, role=role,
+        request_id=request_id, attempt=attempt, plan_digest=execution_plan_digest,
+        pid=launch['pid'], runner_kind=runner)
+    if native['logDigest'] != launch['logDigest']:
+        raise EvidenceError('RETAINED_ROLE_LOG_CHANGED')
+    profile = None
+    if role != 'Merge':
+        profile_path = resolve_role_output(Path(root)/role, native['observation'].get('providerProfilePath'))
+        profile = validate_ort_profile(profile_path, native['observation'])
+    return dict(native=native, profile=profile, rank=rank, logPath=launch['path'],
+        receiptDigest=receipt_digest, qualification='RETAINED_ROLE_COMPONENT_ONLY')
+
+
 def resolve_role_output(root, container_path):
     """Translate only an exact /output descendant into an owned role output."""
     from pathlib import Path

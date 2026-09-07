@@ -76,6 +76,32 @@ Expanded node receipt regression: 569 passed in 42.91s; JUnit
 `Experiments/TigerCluster/results/t006-node-receipt-r1/junit.xml` (same six selectors).
 # Node log receipt v2 (2026-09-07)
 
+## Offline role and dependency consumers
+
+`collect_retained_role_execution` consumes the trusted receipt identity and
+frozen node plan, obtains the actual recorded PID and verified log, and joins
+the native observation and role-local ORT profile for the expected request,
+attempt and execution-plan digest. A changed log between reads is rejected.
+No in-memory Worker is recreated from an unsigned metadata dictionary.
+
+`collect_retained_dependencies` accepts one or two transferred node roots
+with independently supplied receipt/preparation digests, enforces the normal
+frozen role layout, and combines all four role results with the public
+producer/consumer contract and DATA_V1 log pairs. Log hashes must agree across
+native and dependency readers. It returns RETAINED_DEPENDENCY_COMPONENT_ONLY.
+Allocation/GPU, certified model graph, numerical/lifecycle and complete cleanup
+semantics still belong to the final operator and are not inferred here.
+
+Nine tests use real receipt/log/profile readers with fixture ownership and
+synthetic native evidence; twelve dispatch tests explicitly double the role
+and dependency boundaries across the three registered normal modes. Missing
+node/Provider coverage, wrong PID/request/plan, stale/wrong-backend/symlink
+profile, and changed logs are rejected. These are not native model runs.
+
+Retained execution checkpoint: combined receipt/retained suites 41 passed;
+expanded focused regression 664 passed in 44.09s. JUnit:
+`Experiments/TigerCluster/results/t006-retained-execution-r1/junit.xml`.
+
 `write_worker_receipt` now emits `tiger-yolo-node-receipt-v2` and includes
 logPath, logBytes and logDigest for each actual launch after cleanup. Logs
 must be bounded regular files at the owned logs/<role[-invocation]>.log path;

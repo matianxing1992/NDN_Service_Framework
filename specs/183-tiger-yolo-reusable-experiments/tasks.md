@@ -78,6 +78,16 @@ T001–T004形成 profile/launcher 实现骨架；可操作 MVP 还要求 T006 �
 
 ## Current Checkpoint
 
+2026-09-07 retained execution join: collect_retained_role_execution reads
+verified node receipts, uses their PID/log binding, enforces request/attempt/
+execution-plan identity and role-local current ORT profile. No reconstructed
+Worker. collect_retained_dependencies combines the exact one/two-node role
+layout, all four Providers and public DATA_V1 dependency agreement, comparing
+log hashes again. Twenty-one tests added: real retained file readers with
+fixture ownership/observations, plus explicit cross-node dispatch doubles.
+Final normal operator, trusted staging, GPU/certified graph and full cleanup
+receipt semantics still pending; no experiment PASS.
+
 2026-09-07 node log receipt v2: actual write_worker_receipt now seals each
 launched process's regular bounded log path/bytes/hash after cleanup.
 read_node_log_receipt consumes transferred output independently of Worker
