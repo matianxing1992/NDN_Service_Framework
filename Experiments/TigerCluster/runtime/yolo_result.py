@@ -297,6 +297,53 @@ def collect_retained_request(nodes, reference, *, plan, request_index,
         qualification='RETAINED_REQUEST_COMPONENT_ONLY')
 
 
+def collect_normal_verdict(nodes, references, *, plan, runtime_candidate_digest,
+                           placement_candidate_id, placement_candidate_digest,
+                           graph_digest, catalogue_digest, providers_by_role,
+                           allocation_expected=None, certified_graph=None):
+    """Collect every registered normal request and issue one final verdict.
+
+    The public collection boundary owns the complete request loop.  It rejects
+    a missing certified graph or an incomplete reference schedule before
+    accepting any component result, then delegates each request to the same
+    retained reader and applies the final completeness gate.  There is no
+    retry, inferred request, or partial-PASS path.
+    """
+    if (not isinstance(plan, Mapping)
+            or plan.get('case') not in ('local-cpu', 'single-node-gpu', 'two-node-gpu')
+            or not isinstance(certified_graph, Mapping)
+            or certified_graph.get('graphDigest') != graph_digest):
+        raise EvidenceError('NORMAL_VERDICT_EXPECTED_GRAPH')
+    expected_count = 4 if plan['case'] == 'two-node-gpu' else 2
+    requests = plan.get('requests')
+    if (not isinstance(requests, list) or len(requests) != expected_count
+            or any(not isinstance(row, Mapping) or row.get('index') != index
+                   or type(row.get('warmup')) is not bool
+                   or row['warmup'] != (index == 0)
+                   for index, row in enumerate(requests))):
+        raise EvidenceError('NORMAL_VERDICT_PLAN_SCHEDULE')
+    if isinstance(references, Mapping):
+        if set(references) != set(range(expected_count)):
+            raise EvidenceError('NORMAL_VERDICT_REFERENCE_COVERAGE')
+        ordered_references = [references[index] for index in range(expected_count)]
+    elif isinstance(references, (list, tuple)) and len(references) == expected_count:
+        ordered_references = list(references)
+    else:
+        raise EvidenceError('NORMAL_VERDICT_REFERENCE_COVERAGE')
+    results = []
+    for index, reference in enumerate(ordered_references):
+        results.append(collect_retained_request(
+            nodes, reference, plan=plan, request_index=index,
+            runtime_candidate_digest=runtime_candidate_digest,
+            placement_candidate_id=placement_candidate_id,
+            placement_candidate_digest=placement_candidate_digest,
+            graph_digest=graph_digest, catalogue_digest=catalogue_digest,
+            providers_by_role=providers_by_role, allocation_expected=allocation_expected,
+            certified_graph=certified_graph))
+    verdict = finalize_normal_verdict(results, plan=plan, graph_digest=graph_digest)
+    return dict(verdict, requestResults=results)
+
+
 def finalize_normal_verdict(request_results, *, plan, graph_digest):
     """Issue the final normal-case verdict only after every component joins.
 

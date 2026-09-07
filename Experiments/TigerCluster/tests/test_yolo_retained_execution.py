@@ -85,6 +85,45 @@ def test_finalize_normal_verdict_rejects_partial_component(mutation):
         result.finalize_normal_verdict(rows, plan=plan, graph_digest=graph)
 
 
+def test_collect_normal_verdict_owns_complete_request_loop(monkeypatch):
+    graph = 'sha256:'+'c'*64
+    plan = {'case': 'local-cpu',
+            'requests': [dict(index=0, warmup=True), dict(index=1, warmup=False)]}
+    providers = {name: '/app/' + name for name in ('BackboneNeck', 'DetectShard0', 'DetectShard1', 'Merge')}
+    calls = []
+
+    def retained(nodes, reference, **kwargs):
+        calls.append((reference, kwargs['request_index']))
+        return _final_component('local-cpu', 2, graph=graph)[kwargs['request_index']]
+
+    monkeypatch.setattr(result, 'collect_retained_request', retained)
+    verdict = result.collect_normal_verdict(
+        {0: {'root': '/node0'}}, ['warmup-reference', 'measured-reference'],
+        plan=plan, runtime_candidate_digest='sha256:'+'a'*64,
+        placement_candidate_id='yolo-v1', placement_candidate_digest='sha256:'+'b'*64,
+        graph_digest=graph, catalogue_digest='sha256:'+'d'*64,
+        providers_by_role=providers,
+        certified_graph={'graphDigest': graph})
+    assert verdict['qualification'] == 'NORMAL_EXPERIMENT_PASS'
+    assert calls == [('warmup-reference', 0), ('measured-reference', 1)]
+
+
+@pytest.mark.parametrize('references,certified_graph,reason', [
+    (['only-one'], {'graphDigest': 'sha256:'+'c'*64}, 'NORMAL_VERDICT_REFERENCE_COVERAGE'),
+    (['warmup', 'measured'], None, 'NORMAL_VERDICT_EXPECTED_GRAPH'),
+])
+def test_collect_normal_verdict_rejects_incomplete_inputs(references, certified_graph, reason):
+    plan = {'case': 'local-cpu',
+            'requests': [dict(index=0, warmup=True), dict(index=1, warmup=False)]}
+    with pytest.raises(ValueError, match=reason):
+        result.collect_normal_verdict(
+            {0: {'root': '/node0'}}, references, plan=plan,
+            runtime_candidate_digest='sha256:'+'a'*64,
+            placement_candidate_id='yolo-v1', placement_candidate_digest='sha256:'+'b'*64,
+            graph_digest='sha256:'+'c'*64, catalogue_digest='sha256:'+'d'*64,
+            providers_by_role={}, certified_graph=certified_graph)
+
+
 @pytest.mark.parametrize('fault', ['none', 'pid', 'request', 'execution-plan', 'old-profile',
     'cpu-assignment', 'profile-symlink', 'changed-log', 'wrong-role', 'cpu-gpu-exposure'])
 def test_retained_execution_uses_receipt_pid_and_scoped_profile(tmp_path, fault):

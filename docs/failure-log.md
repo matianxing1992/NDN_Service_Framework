@@ -2010,10 +2010,13 @@ code path and focused regression, not the full runtime qualification.
   in a normal case had passed all required checks.
 - Cause: evidence collection grew incrementally and had no final request-count,
   role-set, and case-specific device gate.
-- Fix: add `finalize_normal_verdict`, requiring the exact warmup/measured
-  schedule, four certified roles, matching graph digest, and expected device
-  set before emitting `tiger-yolo-final-verdict-v1`.
-- Boundary: the helper is not yet wired into the public collector/operator;
-  T006/T007 and real native/SIF/Tiger validation remain open.
+- Fix: add `collect_normal_verdict` as the public collection boundary and
+  `finalize_normal_verdict` as its fail-closed terminal gate. Together they
+  require the exact warmup/measured schedule, four certified roles, matching
+  graph digest, and expected device set before emitting
+  `tiger-yolo-final-verdict-v1`.
+- Boundary: this is still a component-only collector; the operator CLI is not
+  wired to real retained paths, and T006/T007 plus native/SIF/Tiger validation
+  remain open.
 - Lesson: component validators need an explicit final completeness gate before
   any normal experiment can be reported as PASS.
