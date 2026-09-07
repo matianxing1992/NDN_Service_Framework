@@ -259,6 +259,24 @@ class Yolo26Splitter:
         model.validate_graph(graph)
         return tuple(self._candidate(model, graph, item) for item in self.registered)
 
+    def describe_candidate_identity(self, model: ModelDescriptor,
+                                    graph: ModelGraphSnapshot,
+                                    candidate: SplitCandidate) -> tuple[str, str]:
+        """Resolve a runtime split back to its verified catalogue entry.
+
+        Catalogue and runtime split digests describe different objects. Never
+        relabel an arbitrary selected split using a caller-supplied name.
+        Recompute the adapter conversion against the same model and graph;
+        require exactly one matching registered entry. This does not change
+        the runtime digest used in placement or artifact naming.
+        """
+        matches = [item for item in self.registered
+                   if self._candidate(model, graph, item).candidate_digest
+                   == candidate.candidate_digest]
+        if len(matches) != 1:
+            raise ValueError('YOLO candidate catalogue identity is missing or ambiguous')
+        return matches[0].candidate_id, matches[0].candidate_digest
+
 
 class YoloCanonicalArtifactBinding:
     """Describe/ensure port that certifies Provider-local YOLO recipes.

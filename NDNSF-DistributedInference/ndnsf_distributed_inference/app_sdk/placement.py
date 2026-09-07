@@ -3213,10 +3213,19 @@ class AutomaticPlanningCoordinator:
             raise ValueError(
                 "V3 strategy found no feasible graph candidate"
                 + (f" ({detail})" if detail else ""))
+        # Evidence may identify an adapter's registered catalogue candidate,
+        # distinct from the derived runtime SplitCandidate content digest.
+        # The adapter must resolve that identity from the selected split;
+        # placement and artifact contracts continue using the runtime digest.
+        trace_candidate_id = trace_candidate_digest = str(selected_candidate.candidate_digest)
+        identity_resolver = getattr(adapter.splitter, "describe_candidate_identity", None)
+        if self.lifecycle_observer is not None and callable(identity_resolver):
+            trace_candidate_id, trace_candidate_digest = identity_resolver(
+                descriptor, graph, selected_candidate)
         self._emit_lifecycle(
             "PLACEMENT_DECISION", request_id=request_id, attempt=_attempt,
-            candidateId=str(selected_candidate.candidate_digest),
-            candidateDigest=str(selected_candidate.candidate_digest),
+            candidateId=str(trace_candidate_id),
+            candidateDigest=str(trace_candidate_digest),
             candidatePriority=int(getattr(
                 selected_candidate, "selection_priority", 0)),
             providerCount=len(providers))

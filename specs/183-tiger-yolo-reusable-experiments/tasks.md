@@ -78,6 +78,8 @@ T001–T004形成 profile/launcher 实现骨架；可操作 MVP 还要求 T006 �
 
 ## Current Checkpoint
 
+2026-09-07 V3 candidate身份source修复：Yolo26Splitter重建catalogue条目的runtime candidate，精确digest唯一匹配后返回注册ID/digest；V3 lifecycle调用resolver，runtime计划/命名/digest不变。4项隔离production-kernel回归通过；真实adapter/planner未验证。另发现GRAPH_READY缺少catalogueDigest，writer未拒绝缺字段，须由verified catalogue补齐；T006仍未闭合。
+
 最终复核：timestamp巨大整数负例补齐后25项lifecycle测试，完整focused集合480 passed / 45.24s（results/t006-lifecycle-r2/junit.xml）；未执行真实native/inference，候选身份缺口仍待修复。
 
 2026-09-07 T006新增bounded lifecycle组件：按维护中journal的10个事件严格核对外部case/request/attempt/candidate绑定、字段/顺序/计数/digest/有限时间，拒绝duplicate JSON、symlink与超限输入；24 focused用例通过。保持LIFECYCLE_COMPONENT_ONLY，不能证明Provider执行/edge/cleanup。发现V3 planner的PLACEMENT_DECISION把candidate_digest写入candidateId，而prepared offer/numerical使用catalogue名称；尚未修复，必须追踪adapter候选与签名catalogue的映射后修正，不能放宽collector。T006/T007继续unchecked；见evidence/t006-lifecycle-component.md。

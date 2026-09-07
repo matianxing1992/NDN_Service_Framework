@@ -1816,6 +1816,13 @@ part of task context. Format per entry:
   terminal marker or the fetch is unbounded.
 ## 2026-09-07 — Spec183 V3 lifecycle candidate identity mismatch
 
+Follow-up: adapter resolver now recomputes the selected runtime digest against
+registered conversions and requires exactly one match. V3 emission uses the
+resolved catalogue identity; no runtime digest semantics change. Four isolated
+production-kernel regressions pass; native verification still pending. Audit
+also found GRAPH_READY omits required catalogueDigest; keep T006 open until
+that field comes from the verified catalogue owner.
+
 - Symptom: V3 PLACEMENT_DECISION candidateId is the digest, while prepared
   offer trust and numerical evidence use the catalogue candidate name.
 - Cause: V3 SplitCandidate exposes a content digest but no catalogue label;
