@@ -99,10 +99,38 @@ void inlineExternal(onnx::TensorProto& tensor,
   const auto offset = offsetText.empty() ? 0 : parseUint(offsetText, "OFFSET");
   if (offset > bytes.size()) fail("EXTERNAL_RANGE");
   const auto length = lengthText.empty() ? bytes.size() - offset : parseUint(lengthText, "LENGTH");
-  if (length > bytes.size() - offset) fail("EXTERNAL_RANGE");
+  if (length > bytes.size() - offset || length > std::numeric_limits<int>::max())
+    fail("EXTERNAL_RANGE");
   tensor.set_raw_data(bytes.data() + offset, static_cast<int>(length));
   tensor.clear_external_data();
   tensor.set_data_location(onnx::TensorProto::DEFAULT);
+}
+
+bool graphHasExternal(const onnx::GraphProto& graph);
+
+bool tensorHasExternal(const onnx::TensorProto& tensor)
+{
+  return tensor.data_location() == onnx::TensorProto::EXTERNAL;
+}
+
+bool graphHasExternal(const onnx::GraphProto& graph)
+{
+  for (const auto& tensor : graph.initializer()) {
+    if (tensorHasExternal(tensor)) return true;
+  }
+  for (const auto& node : graph.node()) {
+    for (const auto& attribute : node.attribute()) {
+      if (attribute.has_t() && tensorHasExternal(attribute.t())) return true;
+      for (const auto& tensor : attribute.tensors()) {
+        if (tensorHasExternal(tensor)) return true;
+      }
+      if (attribute.has_g() && graphHasExternal(attribute.g())) return true;
+      for (const auto& nested : attribute.graphs()) {
+        if (graphHasExternal(nested)) return true;
+      }
+    }
+  }
+  return false;
 }
 
 void inlineGraph(onnx::GraphProto& graph,
@@ -185,13 +213,16 @@ assembleNativeCertifiedOnnxModel(const NativeCanonicalSource& source,
 {
   checkActive(control);
   if (control.maxSourceBytes == 0 || control.maxAssembledBytes == 0 ||
-      source.modelBytes.empty() || source.modelBytes.size() > control.maxSourceBytes)
+      source.modelBytes.empty() || source.modelBytes.size() > control.maxSourceBytes ||
+      source.modelBytes.size() > std::numeric_limits<int>::max())
     fail("SOURCE_LIMIT");
   if (source.initializerBytes &&
       (source.initializerBytes->empty() ||
        source.initializerBytes->size() > control.maxSourceBytes ||
+       source.initializerBytes->size() > std::numeric_limits<int>::max() ||
        checkedAdd(source.modelBytes.size(), source.initializerBytes->size()) >
-         control.maxSourceBytes * 2)) fail("INITIALIZER_LIMIT");
+         checkedAdd(control.maxSourceBytes, control.maxSourceBytes)))
+    fail("INITIALIZER_LIMIT");
   if (recipe.adapterId.empty() || recipe.backend.empty() || recipe.roleKind.empty() ||
       recipe.nodeIndices.empty() || recipe.maxNodes == 0 ||
       recipe.nodeIndices.size() > recipe.maxNodes) fail("RECIPE");
@@ -207,10 +238,7 @@ assembleNativeCertifiedOnnxModel(const NativeCanonicalSource& source,
     fail("PARSE");
   if (!original.has_graph() || original.graph().node_size() == 0 ||
       original.graph().node_size() > static_cast<int>(recipe.maxNodes)) fail("GRAPH");
-  const bool hasExternal = std::any_of(original.graph().initializer().begin(),
-                                       original.graph().initializer().end(), [] (const auto& t) {
-    return t.data_location() == onnx::TensorProto::EXTERNAL;
-  });
+  const bool hasExternal = graphHasExternal(original.graph());
   if (hasExternal != source.initializerBytes.has_value()) fail("EXTERNAL_BINDING");
   if (source.initializerBytes) inlineGraph(*original.mutable_graph(), *source.initializerBytes);
 
