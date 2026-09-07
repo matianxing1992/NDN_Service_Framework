@@ -72,6 +72,134 @@ BOOST_AUTO_TEST_CASE(QwenLayerSplitProducesCanonicalRankOneCandidate)
                     splitter.enumerate(modelDescriptor, graphSnapshot, {}).front().candidateDigest);
 }
 
+BOOST_AUTO_TEST_CASE(QwenLayerSplitRejectsInvalidRankAndGraph)
+{
+  const auto graphDigest = digest("qwen-invalid-graph");
+  auto validGraph = graph(graphDigest,
+    {"embedding", "layer-00", "layer-01", "layer-02", "layer-03",
+     "final-norm-head"});
+  auto qwenModel = model("qwen-three-stage-pipeline", "QwenFixture", graphDigest);
+  const std::vector<std::string> roles = {
+    "/LLM/Pipeline/Stage/0", "/LLM/Pipeline/Stage/1", "/LLM/Pipeline/Stage/2"};
+  const std::vector<qwen::NativeQwenLayerSplit::LayerRange> ranges = {
+    {0, 2}, {2, 3}, {3, 4}};
+  const std::map<std::string, std::string> artifacts = {
+    {roles[0], digest("qwen-artifact-0")},
+    {roles[1], digest("qwen-artifact-1")},
+    {roles[2], digest("qwen-artifact-2")}};
+  const std::map<std::string, std::uint64_t> weights = {
+    {roles[0], 1}, {roles[1], 1}, {roles[2], 1}};
+
+  // Invalid tensor ranks: native keeps the frozen rank-one support range and
+  // refuses hybrid degrees instead of fabricating candidates (Python hybrid
+  // requires explicit rank artifacts, which the native slice does not model).
+  BOOST_CHECK_THROW(qwen::NativeQwenLayerSplit(ranges, artifacts, weights, roles,
+                                                {1, 2, 1}),
+                    std::invalid_argument);
+
+  // Invalid construction: non-zero start, discontinuous ranges, duplicate
+  // roles, incomplete artifact/weight cover, empty weights, non-digest values.
+  BOOST_CHECK_THROW(qwen::NativeQwenLayerSplit({{1, 3}, {3, 4}, {4, 5}},
+                                               artifacts, weights, roles),
+                    std::invalid_argument);
+  BOOST_CHECK_THROW(qwen::NativeQwenLayerSplit({{0, 1}, {2, 3}, {3, 4}},
+                                               artifacts, weights, roles),
+                    std::invalid_argument);
+  BOOST_CHECK_THROW(qwen::NativeQwenLayerSplit(ranges, artifacts, weights,
+                                               {roles[0], roles[0], roles[1]}),
+                    std::invalid_argument);
+  BOOST_CHECK_THROW(qwen::NativeQwenLayerSplit(ranges,
+                                               {{roles[0], digest("a")},
+                                                {roles[1], digest("b")}},
+                                               weights, roles),
+                    std::invalid_argument);
+  BOOST_CHECK_THROW(qwen::NativeQwenLayerSplit(ranges, artifacts,
+                                               {{roles[0], 1}, {roles[1], 1}},
+                                               roles),
+                    std::invalid_argument);
+  BOOST_CHECK_THROW(qwen::NativeQwenLayerSplit(ranges,
+                                               {{roles[0], "not-a-digest"},
+                                                {roles[1], digest("b")},
+                                                {roles[2], digest("c")}},
+                                               weights, roles),
+                    std::invalid_argument);
+  BOOST_CHECK_THROW(qwen::NativeQwenLayerSplit(ranges, artifacts,
+                                               {{roles[0], 0},
+                                                {roles[1], 1},
+                                                {roles[2], 1}},
+                                               roles),
+                    std::invalid_argument);
+
+  // Wrong adapter, wrong node count, missing boundaries, non-canonical layer
+  // order, and a graph digest mismatch are rejected by enumerate.
+  qwen::NativeQwenLayerSplit splitter(ranges, artifacts, weights, roles);
+  auto yoloModel = model("yolo26n", "YOLO26n", graphDigest);
+  BOOST_CHECK_THROW(splitter.enumerate(yoloModel, validGraph, {}),
+                    std::invalid_argument);
+  auto shortGraph = graph(graphDigest,
+    {"embedding", "layer-00", "layer-01", "layer-02", "final-norm-head"});
+  BOOST_CHECK_THROW(splitter.enumerate(qwenModel, shortGraph, {}),
+                    std::invalid_argument);
+  auto noEmbedding = graph(graphDigest,
+    {"tok", "layer-00", "layer-01", "layer-02", "layer-03", "final-norm-head"});
+  BOOST_CHECK_THROW(splitter.enumerate(qwenModel, noEmbedding, {}),
+                    std::invalid_argument);
+  auto noHead = graph(graphDigest,
+    {"embedding", "layer-00", "layer-01", "layer-02", "layer-03", "tail"});
+  BOOST_CHECK_THROW(splitter.enumerate(qwenModel, noHead, {}),
+                    std::invalid_argument);
+  auto scrambled = graph(graphDigest,
+    {"embedding", "layer-02", "layer-03", "layer-00", "layer-01",
+     "final-norm-head"});
+  BOOST_CHECK_THROW(splitter.enumerate(qwenModel, scrambled, {}),
+                    std::invalid_argument);
+  auto digestMismatch = model("qwen-three-stage-pipeline", "QwenFixture",
+                              digest("other-graph"));
+  BOOST_CHECK_THROW(splitter.enumerate(digestMismatch, validGraph, {}),
+                    std::invalid_argument);
+  // A legal input still enumerates after all rejections.
+  BOOST_CHECK_EQUAL(splitter.enumerate(qwenModel, validGraph, {}).size(), 1U);
+}
+
+BOOST_AUTO_TEST_CASE(QwenLayerSplitEnforcesBudgetBoundaries)
+{
+  const auto graphDigest = digest("qwen-budget-graph");
+  auto graphSnapshot = graph(graphDigest,
+    {"embedding", "layer-00", "layer-01", "layer-02", "layer-03",
+     "final-norm-head"});
+  auto modelDescriptor = model("qwen-three-stage-pipeline", "QwenFixture",
+                               graphDigest);
+  const std::vector<std::string> roles = {
+    "/LLM/Pipeline/Stage/0", "/LLM/Pipeline/Stage/1", "/LLM/Pipeline/Stage/2"};
+  qwen::NativeQwenLayerSplit splitter(
+    {{0, 2}, {2, 3}, {3, 4}},
+    {{roles[0], digest("qwen-artifact-0")},
+     {roles[1], digest("qwen-artifact-1")},
+     {roles[2], digest("qwen-artifact-2")}},
+    {{roles[0], 1}, {roles[1], 1}, {roles[2], 1}}, roles);
+
+  // Out-of-range budgets are rejected before any graph work happens.
+  BOOST_CHECK_THROW(splitter.enumerate(modelDescriptor, graphSnapshot,
+                                       NativeCandidateBudget{0, 100, 1}),
+                    std::invalid_argument);
+  BOOST_CHECK_THROW(splitter.enumerate(modelDescriptor, graphSnapshot,
+                                       NativeCandidateBudget{1025, 100, 1}),
+                    std::invalid_argument);
+  BOOST_CHECK_THROW(splitter.enumerate(modelDescriptor, graphSnapshot,
+                                       NativeCandidateBudget{2, 0, 1}),
+                    std::invalid_argument);
+  BOOST_CHECK_THROW(splitter.enumerate(modelDescriptor, graphSnapshot,
+                                       NativeCandidateBudget{2, 60001, 1}),
+                    std::invalid_argument);
+  BOOST_CHECK_THROW(splitter.enumerate(modelDescriptor, graphSnapshot,
+                                       NativeCandidateBudget{2, 100, 17}),
+                    std::invalid_argument);
+  // Inclusive limits still yield the deterministic single candidate.
+  BOOST_REQUIRE_EQUAL(splitter.enumerate(modelDescriptor, graphSnapshot,
+                                         NativeCandidateBudget{1024, 60000, 16})
+                        .size(), 1U);
+}
+
 BOOST_AUTO_TEST_CASE(YoloComponentSplitRejectsUncoveredGraphAndSortsPriority)
 {
   const auto graphDigest = digest("yolo-graph");
