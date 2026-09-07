@@ -1,5 +1,10 @@
 <!--
 Sync Impact Report
+- Version: 1.4.0 -> 1.5.0
+- Updated workflow: Spec Kit tasks.md Execution Progress and durable evidence
+  replace the GSD requirement for multi-phase state, verification and recovery.
+- Historical .planning records remain evidence; no runtime/security gate changes.
+- Existing tasks-template and task-progress skill reference implement this rule.
 - Version: 1.3.0 -> 1.4.0
 - Added constraint: Document Language Policy (Chinese narrative, English
   structural markers) under Project Constraints.
@@ -196,8 +201,11 @@ translated markers.
    implementation design-code convergence audit, repair every controlling gap,
    add its focused regression, and require a fresh `PASS`. Focused development
    tests are allowed during repair; broad qualification and experiments are not.
-5. Use GSD for multi-phase work that needs explicit state, verification, or
-   recovery.
+5. Use the active Spec Kit `tasks.md` Execution Progress registry, Current
+   Checkpoint and durable evidence for multi-phase state, verification and
+   recovery. Keep all executable units visible and update them after each work
+   unit. GSD is not required; historical `.planning/` records remain historical
+   evidence and do not override the active Spec checkpoint.
 6. Prefer MiniNDN for final NDNSF network/security/performance validation.
 7. After completion, summarize changed files, verification, residual risk, and
    the next best step.
@@ -210,4 +218,4 @@ security invariants, and required validation gates. Local development
 instructions must not override NDNSF runtime/security rules. Amend this
 constitution when those project rules change.
 
-**Version**: 1.4.0 | **Ratified**: 2026-06-24 | **Last Amended**: 2026-09-05
+**Version**: 1.5.0 | **Ratified**: 2026-06-24 | **Last Amended**: 2026-09-07
