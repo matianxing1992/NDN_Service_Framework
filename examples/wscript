@@ -417,7 +417,7 @@ def build(bld):
                             'NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.cpp',
                         ])),
                 includes=['..', '../ndn-service-framework'],
-                use='BOOST ONNXRUNTIME NDN_CXX NDN_SVS OPENSSL DL',
+                use='BOOST ONNXRUNTIME NDN_CXX NDN_SVS PROTOBUF OPENSSL DL',
                 cxxflags=['-fPIC', '-pthread'],
                 linkflags=['-pthread'],
                 install_path=None)
