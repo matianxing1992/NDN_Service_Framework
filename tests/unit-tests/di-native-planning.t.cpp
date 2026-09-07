@@ -378,4 +378,121 @@ BOOST_AUTO_TEST_CASE(PreSplitPlacementFiltersAndDeterministicallyBindsOneProvide
   BOOST_REQUIRE(!NativePlanSealer::encode(projection).empty());
 }
 
+BOOST_AUTO_TEST_CASE(PreSplitPlacementTieBreakResidencyThenBytesThenProvider)
+{
+  const auto graphDigest = digest("placement-tiebreak-graph");
+  auto graphSnapshot = graph(graphDigest, {"embedding", "layer-00", "final-norm-head"});
+  auto modelDescriptor = model("qwen", "QwenFixture", graphDigest);
+  const std::string role = "/LLM/Pipeline/Stage/0";
+  qwen::NativeQwenLayerSplit splitter(
+    {{0, 1}}, {{role, digest("artifact")}}, {{role, 1}}, {role}, {1});
+  const auto candidate = splitter.enumerate(modelDescriptor, graphSnapshot,
+                                             NativeCandidateBudget{1, 100, 1}).front();
+  // qwen requirements fix workspace+activation+transient at ~2.36 GiB after
+  // the 1.10 safety margin; offers below that are filtered out, not ranked.
+  const auto gb = [] (std::uint64_t value) {
+    return value * 1024ULL * 1024ULL * 1024ULL;
+  };
+  NativePlanningSnapshot snapshot;
+  snapshot.model = modelDescriptor;
+  snapshot.graph = graphSnapshot;
+  snapshot.requestId = "request";
+  snapshot.attempt = 1;
+  snapshot.ackClosedDigest = digest("ack-closed");
+  snapshot.deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+  // provider-c: one residency digest wins the residency key regardless of
+  // smaller free bytes; provider-b: same zero residency, larger free bytes
+  // wins the budget key; provider-a: lowest provider name is the ref
+  // tie-break only when residency and free bytes are identical.
+  snapshot.offers = {
+    {"provider-a", digest("offer-a"), {role}, {"onnxruntime"}, {},
+     gb(4), 1, true, true},
+    {"provider-b", digest("offer-b"), {role}, {"onnxruntime"}, {},
+     gb(5), 1, true, true},
+    {"provider-c", digest("offer-c"), {role}, {"onnxruntime"}, {digest("resident")},
+     gb(3), 1, true, true},
+  };
+  NativePreSplitFirstPlacement placement;
+  auto proposal = placement.propose(snapshot, candidate);
+  BOOST_CHECK_EQUAL(proposal.assignment.providerByRole.at(role), "provider-c");
+  proposal.validate(snapshot, candidate);
+  BOOST_CHECK_EQUAL(proposal.strategy.name, "native-pre-split-first");
+  BOOST_CHECK_EQUAL(proposal.strategy.configurationDigest,
+                    NativePreSplitFirstPlacement().identity().configurationDigest);
+
+  // Same inputs, same proposal: the deterministic ref tie-break picks the
+  // smallest provider name when residency and budget keys are tied.
+  snapshot.offers = {
+    {"provider-x", digest("offer-x"), {role}, {"onnxruntime"}, {},
+     gb(4), 1, true, true},
+    {"provider-a", digest("offer-a"), {role}, {"onnxruntime"}, {},
+     gb(4), 1, true, true},
+  };
+  const auto first = placement.propose(snapshot, candidate);
+  BOOST_CHECK_EQUAL(first.assignment.providerByRole.at(role), "provider-a");
+  const auto second = placement.propose(snapshot, candidate);
+  BOOST_CHECK_EQUAL(second.assignment.providerByRole.at(role), "provider-a");
+  BOOST_CHECK_EQUAL(second.requestId, first.requestId);
+  BOOST_CHECK_EQUAL(second.candidateDigest, first.candidateDigest);
+  BOOST_CHECK_EQUAL(second.strategy.configurationDigest,
+                    first.strategy.configurationDigest);
+}
+
+BOOST_AUTO_TEST_CASE(PreSplitPlacementFiltersIneligibleOffersAndRejectsEmpty)
+{
+  const auto graphDigest = digest("placement-filter-graph");
+  auto graphSnapshot = graph(graphDigest, {"embedding", "layer-00", "final-norm-head"});
+  auto modelDescriptor = model("qwen", "QwenFixture", graphDigest);
+  const std::string role = "/LLM/Pipeline/Stage/0";
+  qwen::NativeQwenLayerSplit splitter(
+    {{0, 1}}, {{role, digest("artifact")}}, {{role, 1}}, {role}, {1});
+  const auto candidate = splitter.enumerate(modelDescriptor, graphSnapshot,
+                                             NativeCandidateBudget{1, 100, 1}).front();
+  const auto gb = [] (std::uint64_t value) {
+    return value * 1024ULL * 1024ULL * 1024ULL;
+  };
+  NativePreSplitFirstPlacement placement;
+
+  // Each incompatible offer is filtered on its own: an unaccepted role, a
+  // backend that does not cover onnxruntime, and free bytes below the
+  // required ~2.36 GiB (1.10 safety margin included).
+  NativePlanningSnapshot snapshot;
+  snapshot.model = modelDescriptor;
+  snapshot.graph = graphSnapshot;
+  snapshot.requestId = "request";
+  snapshot.attempt = 1;
+  snapshot.ackClosedDigest = digest("ack-closed");
+  snapshot.deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+  snapshot.offers = {
+    {"provider-role", digest("offer-role"), {"/other/role"}, {"onnxruntime"}, {},
+     gb(8), 1, true, true},
+  };
+  BOOST_CHECK_THROW(placement.propose(snapshot, candidate), std::runtime_error);
+  snapshot.offers = {
+    {"provider-backend", digest("offer-backend"), {role}, {"tensorrt"}, {},
+     gb(8), 1, true, true},
+  };
+  BOOST_CHECK_THROW(placement.propose(snapshot, candidate), std::runtime_error);
+  snapshot.offers = {
+    {"provider-bytes", digest("offer-bytes"), {role}, {"onnxruntime"}, {},
+     gb(1), 1, true, true},
+  };
+  BOOST_CHECK_THROW(placement.propose(snapshot, candidate), std::runtime_error);
+  // A deadline that already expired makes the whole snapshot invalid.
+  snapshot.offers = {
+    {"provider-a", digest("offer-a"), {role}, {"onnxruntime"}, {},
+     gb(8), 1, true, true},
+  };
+  snapshot.deadline = std::chrono::steady_clock::now() - std::chrono::seconds(1);
+  BOOST_CHECK_THROW(placement.propose(snapshot, candidate), std::invalid_argument);
+  // An invalid offer (execution not allowed) is rejected by snapshot
+  // validation before any placement work happens.
+  snapshot.deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+  snapshot.offers = {
+    {"provider-a", digest("offer-a"), {role}, {"onnxruntime"}, {},
+     gb(8), 1, true, false},
+  };
+  BOOST_CHECK_THROW(placement.propose(snapshot, candidate), std::invalid_argument);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
