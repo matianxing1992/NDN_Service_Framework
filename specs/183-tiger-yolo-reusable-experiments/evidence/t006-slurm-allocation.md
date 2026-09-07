@@ -53,6 +53,9 @@ allocation failure results in cleanup with zero GPU/Provider launches.
 
 ## Remaining controlling work
 
+The following list is the producer checkpoint; retained reader progress is
+recorded in the follow-up below. Operator/staging and real qualification remain.
+
 - Wire the final operator to the actual SubmissionJournal job and frozen
   partition/gpuClass; do not derive expected jobId/comment from task env.
 - Read and semantically revalidate the retained allocation and GPU receipts
@@ -77,3 +80,43 @@ candidate/execution-plan selectors as preceding checkpoints. Afterwards added
 a single-node rank0/task-count1 fixture: allocation subset 33 passed in 0.33s.
 All positive scheduler data in these tests is explicitly synthetic; command
 capture, worker gate and ordering tests use declared boundary doubles.
+
+## Retained allocation/GPU join follow-up
+
+`read_retained_device_binding` consumes the expected job/comment/resources
+from the caller plus externally trusted node, allocation and probe file hashes.
+It verifies bounded regular files, exact schemas, run/preparation/candidate,
+allowlisted task inputs and original scheduler bytes. It calls the existing
+Slurm validator again and compares the recomputed result with the saved receipt.
+It does not treat the saved summary or its hash as self-authenticating proof.
+
+It then verifies the GPU probe's allocation digest, rank/role/nonce, log path
+and hash against the node's owned finite launch record, rechecks the original
+CUDA probe output, and rejects a probe recorded after Provider startup. The
+existing node receipt checks still require finite exit0 and valid cleanup.
+Computed {uuid, visible} is compared with the saved probe binding before use.
+
+`collect_retained_request -> collect_retained_dependencies` now requires
+GPU node fields allocationDigest and gpuProbeDigest, replacing the prior bare
+gpuBinding input. Both node bindings are checked before role collection;
+jobId, stepId, submissionKey, expanded host list and uid must agree, while
+hostnames and physical GPU UUIDs must differ. Model-role native observations
+are checked against the recomputed binding on their owner node. Merge remains
+CPU. CPU cases do not require or accept GPU node evidence fields.
+
+Tests exercise actual file/receipt/log/Slurm parsing with synthetic GPU data,
+plus explicit dispatch doubles. They reject hash-consistent invalid summaries,
+wrong run/candidate, non-running job, missing journal, nonce/UUID/selector
+changes, stale allocation links, symlinks, changed logs, late probes and
+cross-node mismatches. They are not physical GPU or complete inference tests.
+
+Remaining: the final operator must authenticate these hash references during
+staging and supply the actual journal/profile expectations. Certified graph
+coverage, negative-case collection, final normal commands and real local/SIF/
+Tiger gates remain incomplete. The older live-Worker component helpers do not
+replace this retained final-path validation. No completion claim for T006.
+
+Expanded focused regression: 814 passed in 47.87s. JUnit:
+Experiments/TigerCluster/results/t006-retained-allocation-r1/junit.xml.
+Selectors remain TigerCluster/tests plus the six documented Python boundary
+suites. No native build, SIF execution or Slurm job in this checkpoint.

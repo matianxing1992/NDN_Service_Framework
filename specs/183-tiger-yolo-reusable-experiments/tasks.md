@@ -78,6 +78,17 @@ T001–T004形成 profile/launcher 实现骨架；可操作 MVP 还要求 T006 �
 
 ## Current Checkpoint
 
+2026-09-07 retained allocation/GPU join: collect_retained_request now forwards
+the external journal/profile allocation expectations to the dependency
+collector. GPU node entries require trusted allocationDigest/gpuProbeDigest,
+not caller-authored gpuBinding. read_retained_device_binding revalidates
+run/prep/candidate, raw Slurm records, observed task data, probe nonce/log,
+allocation link and probe-before-Provider launch order against the node receipt.
+Two nodes must agree on job/step/host list/uid and have distinct hosts/UUIDs.
+20 source-shaped real-file join tests pass. Trusted staging/final operator,
+certified graph, negative path and real native/SIF/Tiger validation remain;
+T006 is still partial, no runtime PASS. See t006-slurm-allocation.md follow-up.
+
 2026-09-07 Slurm task binding: read-only site queries confirmed 24.05.2,
 /usr/bin/scontrol and data_parser/v0.0.41. No active user job. Nonexistent job
 and step queries return exit0 with empty/null records, so new validation

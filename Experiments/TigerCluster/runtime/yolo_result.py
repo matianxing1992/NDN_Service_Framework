@@ -237,7 +237,7 @@ def collect_request_result(root, reference, *, case, request_id, attempt_id,
 def collect_retained_request(nodes, reference, *, plan, request_index,
                              runtime_candidate_digest, placement_candidate_id,
                              placement_candidate_digest, graph_digest,
-                             catalogue_digest, providers_by_role):
+                             catalogue_digest, providers_by_role, allocation_expected=None):
     """Join retained lifecycle/numerical/role/dependency evidence for one request.
 
     Runtime candidate identity (the packaged release) is NOT the selected
@@ -281,7 +281,8 @@ def collect_retained_request(nodes, reference, *, plan, request_index,
         raise EvidenceError('RETAINED_REQUEST_SELECTION_BINDING')
     execution = collect_retained_dependencies(nodes, root/'yolo-public-assignments.json',
         plan=plan, candidate_digest=runtime_candidate_digest, providers_by_role=providers_by_role,
-        request_id=lifecycle['requestId'], attempt=attempt, execution_plan_digest=lifecycle['planDigest'])
+        request_id=lifecycle['requestId'], attempt=attempt, execution_plan_digest=lifecycle['planDigest'],
+        allocation_expected=allocation_expected)
     return dict(request=request, execution=execution, requestIndex=request_index,
         qualification='RETAINED_REQUEST_COMPONENT_ONLY')
 
@@ -455,13 +456,102 @@ def read_node_log_receipt(root, *, receipt_digest, plan, preparation_digest, can
     return dict(receipt=receipt, logs=logs, qualification='NODE_LOG_COMPONENT_ONLY')
 
 
+def read_retained_device_binding(root, *, receipt_digest, allocation_digest, gpu_probe_digest,
+                                plan, preparation_digest, candidate_digest, rank, expected):
+    """Recompute allocation/probe agreement from externally trusted file hashes.
+
+    Staging authenticates hashes and expected job/comment. These files cannot
+    authenticate themselves, and this function never queries an expired job.
+    """
+    import hashlib
+    import json
+    from pathlib import Path
+    from runtime.yolo_bundle import _bytes
+    from runtime.yolo_profile import _object
+    from runtime.yolo_allocation import validate_task_allocation
+    from runtime.yolo_gpu_probe import read_probe
+    if (plan['case'] not in ('single-node-gpu', 'two-node-gpu')
+            or not isinstance(expected, dict)
+            or set(expected) != {'job_id', 'submission_key', 'partition', 'gpu_type'}):
+        raise EvidenceError('RETAINED_ALLOCATION_EXPECTED')
+    node = read_node_log_receipt(root, receipt_digest=receipt_digest, plan=plan,
+        preparation_digest=preparation_digest, candidate_digest=candidate_digest, rank=rank)
+    root = Path(root)
+    def digest(payload):
+        return 'sha256:'+hashlib.sha256(payload).hexdigest()
+    def canonical(value):
+        return json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False)
+    def read(name, expected_digest):
+        if not isinstance(expected_digest, str) or re.fullmatch(r'sha256:[0-9a-f]{64}', expected_digest) is None:
+            raise EvidenceError('RETAINED_ALLOCATION_DIGEST')
+        path = root/name
+        if any(p.is_symlink() for p in (path, *path.parents)):
+            raise EvidenceError('RETAINED_ALLOCATION_SYMLINK')
+        payload = _bytes(path)
+        if digest(payload) != expected_digest:
+            raise EvidenceError('RETAINED_ALLOCATION_CONTENT')
+        value = json.loads(payload, object_pairs_hook=_object)
+        canonical(value)
+        return value
+    allocation = read('slurm-allocation.json', allocation_digest)
+    if (not isinstance(allocation, dict) or set(allocation) != {'schema', 'runId',
+            'preparationDigest', 'candidateDigest', 'expected', 'receipt', 'task', 'sources'}
+            or allocation['schema'] != 'tiger-yolo-allocation-v1' or allocation['runId'] != plan['runId']
+            or allocation['preparationDigest'] != preparation_digest
+            or allocation['candidateDigest'] != candidate_digest or allocation['expected'] != expected):
+        raise EvidenceError('RETAINED_ALLOCATION_RUN')
+    sources, task = allocation['sources'], allocation['task']
+    keys = {'SLURM_JOB_ID', 'SLURM_STEP_ID', 'SLURM_NODEID', 'SLURM_PROCID', 'SLURM_LOCALID',
+        'SLURM_NTASKS', 'SLURM_JOB_NUM_NODES', 'SLURM_GPUS_ON_NODE', 'SLURMD_NODENAME',
+        'SLURM_STEP_GPUS', 'CUDA_VISIBLE_DEVICES'}
+    if (not isinstance(sources, dict) or set(sources) != {'job', 'step', 'hosts', 'stepHosts'}
+            or any(not isinstance(v, str) for v in sources.values())
+            or not isinstance(task, dict) or set(task) != {'hostname', 'uid', 'environment'}
+            or not isinstance(task['environment'], dict) or set(task['environment']) != keys):
+        raise EvidenceError('RETAINED_ALLOCATION_SOURCES')
+    observed = validate_task_allocation(sources['job'].encode(), sources['step'].encode(),
+        sources['hosts'].encode(), step_hostnames=sources['stepHosts'].encode(), **expected,
+        rank=rank, node_count=1 if plan['case'] == 'single-node-gpu' else 2, **task)
+    if canonical(observed) != canonical(allocation['receipt']):
+        raise EvidenceError('RETAINED_ALLOCATION_RECOMPUTE')
+    probe = read('gpu-probe.json', gpu_probe_digest)
+    role = 'BackboneNeck' if rank == 0 else 'DetectShard0'
+    tag = role+'-gpu-device'
+    if (not isinstance(probe, dict) or set(probe) != {'schema', 'rank', 'role', 'nonce',
+            'binding', 'logPath', 'logDigest', 'allocationDigest', 'qualification'}
+            or probe['schema'] != 'tiger-yolo-gpu-probe-v1' or type(probe['rank']) is not int
+            or probe['rank'] != rank or probe['role'] != role
+            or probe['allocationDigest'] != allocation_digest or probe['logPath'] != 'logs/'+tag+'.log'
+            or probe['qualification'] != 'CUDA_VISIBILITY_COMPONENT_ONLY' or tag not in node['logs']):
+        raise EvidenceError('RETAINED_GPU_PROBE_BINDING')
+    launch = node['logs'][tag]
+    if launch['invocation'] != 'gpu-device' or launch['logDigest'] != probe['logDigest']:
+        raise EvidenceError('RETAINED_GPU_PROBE_LAUNCH')
+    payload = _bytes(Path(launch['path']))
+    if digest(payload) != launch['logDigest']:
+        raise EvidenceError('RETAINED_GPU_PROBE_LOG_CHANGED')
+    binding = read_probe(payload, nonce=probe['nonce'], visible=observed['visible'])
+    if canonical(binding) != canonical(probe['binding']):
+        raise EvidenceError('RETAINED_GPU_PROBE_RECOMPUTE')
+    launches = node['receipt']['launches']
+    probe_index = next(i for i, row in enumerate(launches) if row['logPath'] == probe['logPath'])
+    if any(i < probe_index and row['invocation'] is None
+           and row['role'] in ('BackboneNeck', 'DetectShard0', 'DetectShard1', 'Merge')
+           for i, row in enumerate(launches)):
+        raise EvidenceError('RETAINED_GPU_PROBE_ORDER')
+    return dict(allocation=observed, gpuBinding=binding, uid=task['uid'],
+        allocationDigest=allocation_digest, gpuProbeDigest=gpu_probe_digest,
+        qualification='RETAINED_DEVICE_COMPONENT_ONLY')
+
+
 def collect_retained_dependencies(nodes, public_path, *, plan, candidate_digest,
-                                   providers_by_role, request_id, attempt, execution_plan_digest):
+                                   providers_by_role, request_id, attempt, execution_plan_digest,
+                                   allocation_expected=None):
     """Cross-process four-role join; node digests come from trusted staging.
 
     Each node entry has root, receiptDigest and preparationDigest. GPU cases
-    additionally require gpuBinding from independent allocation preflight and
-    the actual launch selector. Never derive it from the collected native log.
+    additionally require trusted allocationDigest and gpuProbeDigest. Device
+    bindings are recomputed from retained evidence, never accepted as inputs.
     This join checks device agreement, not allocation provenance or full PASS.
     """
     from runtime.yolo_worker import assigned_roles
@@ -471,26 +561,42 @@ def collect_retained_dependencies(nodes, public_path, *, plan, candidate_digest,
             or set(nodes) != ({0, 1} if plan['case'] == 'two-node-gpu' else {0})
             or set(providers_by_role) != expected):
         raise EvidenceError('RETAINED_NODE_COVERAGE')
-    roles, logs = {}, {}
+    roles, logs, devices = {}, {}, {}
     for rank, node in sorted(nodes.items()):
         fields = {'root', 'receiptDigest', 'preparationDigest'}
         if plan['case'] != 'local-cpu':
-            fields.add('gpuBinding')
+            fields.update(('allocationDigest', 'gpuProbeDigest'))
         if not isinstance(node, dict) or set(node) != fields:
             raise EvidenceError('RETAINED_NODE_ENTRY')
+        if plan['case'] != 'local-cpu':
+            devices[rank] = read_retained_device_binding(node['root'],
+                receipt_digest=node['receiptDigest'], allocation_digest=node['allocationDigest'],
+                gpu_probe_digest=node['gpuProbeDigest'], plan=plan,
+                preparation_digest=node['preparationDigest'], candidate_digest=candidate_digest,
+                rank=rank, expected=allocation_expected)
+    if len(devices) == 2:
+        first, second = devices[0], devices[1]
+        if (any(first['allocation'][k] != second['allocation'][k]
+                for k in ('jobId', 'stepId', 'submissionKey', 'hosts'))
+                or first['allocation']['hostname'] == second['allocation']['hostname']
+                or first['gpuBinding']['uuid'] == second['gpuBinding']['uuid']
+                or first['uid'] != second['uid']):
+            raise EvidenceError('RETAINED_ALLOCATION_CROSS_NODE')
+    for rank, node in sorted(nodes.items()):
         for role in sorted(set(assigned_roles(plan['case'], rank)) & expected):
             roles[role] = collect_retained_role_execution(node['root'],
                 receipt_digest=node['receiptDigest'], plan=plan,
                 preparation_digest=node['preparationDigest'], candidate_digest=candidate_digest,
                 rank=rank, role=role, provider=providers_by_role[role], request_id=request_id,
                 attempt=attempt, execution_plan_digest=execution_plan_digest,
-                gpu_binding=node.get('gpuBinding') if role != 'Merge' else None)
+                gpu_binding=devices[rank]['gpuBinding'] if rank in devices and role != 'Merge' else None)
             logs[role] = roles[role]['logPath']
     dependencies = collect_dependency_result(public_path, logs, request_id=request_id,
         attempt=attempt, plan_digest=execution_plan_digest, providers_by_role=providers_by_role)
     if any(roles[role]['native']['logDigest'] != dependencies['logDigests'][role] for role in expected):
         raise EvidenceError('RETAINED_DEPENDENCY_LOG_CHANGED')
-    return dict(roles=roles, dependencies=dependencies, qualification='RETAINED_DEPENDENCY_COMPONENT_ONLY')
+    return dict(roles=roles, dependencies=dependencies, devices=devices,
+        qualification='RETAINED_DEPENDENCY_COMPONENT_ONLY')
 
 
 def collect_retained_role_execution(root, *, receipt_digest, plan, preparation_digest,

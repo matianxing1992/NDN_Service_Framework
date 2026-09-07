@@ -102,7 +102,7 @@ def test_cross_process_collection_dispatches_frozen_role_owners(tmp_path, monkey
         for rank in ([0, 1] if mode == 'two-node-gpu' else [0])}
     if mode != 'local-cpu':
         for rank, node in nodes.items():
-            node['gpuBinding'] = dict(uuid=UUID[:-1]+str(rank), visible=str(rank+2))
+            node.update(allocationDigest='allocation-'+str(rank), gpuProbeDigest='probe-'+str(rank))
     providers = {role: '/app/'+role for role in ('BackboneNeck', 'DetectShard0', 'DetectShard1', 'Merge')}
     calls = []
     def role(root, **args):
@@ -111,11 +111,20 @@ def test_cross_process_collection_dispatches_frozen_role_owners(tmp_path, monkey
         assert args['receipt_digest'] == 'receipt-'+str(owner)
         assert args['preparation_digest'] == 'preparation-'+str(owner)
         assert args['provider'] == providers[args['role']]
-        assert args['gpu_binding'] == (nodes[owner]['gpuBinding']
+        assert args['gpu_binding'] == (dict(uuid=UUID[:-1]+str(owner), visible=str(owner+2))
             if mode != 'local-cpu' and args['role'] != 'Merge' else None)
         calls.append(args['role'])
         return dict(logPath=str(root/(args['role']+'.log')), native={'logDigest': 'same'})
     monkeypatch.setattr(result, 'collect_retained_role_execution', role)
+    def device(root, **args):
+        rank = args['rank']
+        assert root == tmp_path/str(rank)
+        assert args['allocation_digest'] == 'allocation-'+str(rank)
+        assert args['gpu_probe_digest'] == 'probe-'+str(rank)
+        return dict(gpuBinding=dict(uuid=UUID[:-1]+str(rank), visible=str(rank+2)), uid=1000,
+            allocation=dict(jobId='123', stepId='0', submissionKey='key',
+                hosts=['node0','node1'], hostname='node'+str(rank)))
+    monkeypatch.setattr(result, 'read_retained_device_binding', device)
     def dependency(path, logs, **args):
         assert path == tmp_path/'public.json' and set(logs) == set(providers)
         return {'logDigests': {name: 'changed' if fault == 'changed-log' else 'same' for name in logs}}
@@ -124,7 +133,7 @@ def test_cross_process_collection_dispatches_frozen_role_owners(tmp_path, monkey
     if fault == 'provider-cover': providers.pop('Merge')
     if fault == 'device-field':
         if mode == 'local-cpu': nodes[0]['gpuBinding'] = dict(uuid=UUID, visible='0')
-        else: nodes[0].pop('gpuBinding')
+        else: nodes[0].pop('allocationDigest')
     def collect():
         return result.collect_retained_dependencies(nodes, tmp_path/'public.json',
             plan={'case': mode}, candidate_digest='candidate', providers_by_role=providers,
