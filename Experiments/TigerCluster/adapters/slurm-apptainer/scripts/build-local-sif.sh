@@ -105,9 +105,14 @@ spec183_host_gate_validator="$script_dir/../../../lib/spec183_yolo_host_gate.py"
 source_validator="$script_dir/validate-local-sif-source.py"
 spec175_preflight="$script_dir/../../../bin/ndnsf-di-spec175-preflight"
 spec175_workload="$script_dir/../../../jobs/spec175/workload.json"
+spec183_preflight="$script_dir/../../../bin/ndnsf-di-spec183-preflight"
 # Keep the record-generator argument defined on the legacy path as well; the
 # Spec175 record deliberately does not retain a Spec183 receipt.
 yolo_host_gate_json='{}'
+spec183_input_preflight_json='{}'
+spec183_preflight_json='{}'
+spec175_input_preflight_json='{}'
+spec175_preflight_json='{}'
 [ -f "$boundary_validator" ] || {
   echo LOCAL_SIF_BUILD_BOUNDARY_VALIDATOR_MISSING >&2
   exit 4
@@ -164,6 +169,10 @@ PY
   ); then
     exit 4
   fi
+  [ -x "$spec183_preflight" ] || {
+    echo SPEC183_PREFLIGHT_MISSING >&2
+    exit 4
+  }
 fi
 if ! python3 - "$definition" "$source_seal" <<'PY'
 import json
@@ -338,7 +347,10 @@ if [ "$workload_kind" = spec175 ]; then
     exit 4
   fi
 else
-  spec175_input_preflight_json='{"status":"NOT_APPLICABLE","reason":"spec183-yolo-dispatch"}'
+  if ! spec183_input_preflight_json=$(python3 "$spec183_preflight" \
+      --phase inputs --source-seal "$source_seal"); then
+    exit 4
+  fi
 fi
 
 # Do not invoke Apptainer until every source, host receipt, definition, and
@@ -456,7 +468,11 @@ if [ "$workload_kind" = spec175 ]; then
     exit 4
   fi
 else
-  spec175_preflight_json='{"status":"NOT_APPLICABLE","reason":"spec183-yolo-dispatch"}'
+  if ! spec183_preflight_json=$(python3 "$spec183_preflight" \
+      --phase sif --source-seal "$source_seal" --sif "$sif" \
+      --apptainer "$apptainer_bin" --expected-sif-sha256 "$sif_sha256"); then
+    exit 4
+  fi
 fi
 
 python3 - "$record_partial" "$definition" "$definition_sha256" "$source_seal" \
@@ -464,7 +480,8 @@ python3 - "$record_partial" "$definition" "$definition_sha256" "$source_seal" \
   "$base_sif" "$base_sif_sha256" "$base_sif_bytes" "$ndnsf_labels_json" \
   "$apptainer_bin" "$apptainer_sha256" "$boundary_json" \
   "$source_validation_json" "$host_gate_json" "$spec175_input_preflight_json" \
-  "$spec175_preflight_json" "$workload_kind" "$yolo_host_gate_json" <<'PY'
+  "$spec175_preflight_json" "$workload_kind" "$yolo_host_gate_json" \
+  "$spec183_input_preflight_json" "$spec183_preflight_json" <<'PY'
 import hashlib
 import json
 import os
@@ -475,7 +492,8 @@ import sys
  base_sif, base_sif_sha, base_sif_bytes, labels_json,
  apptainer_bin, apptainer_sha, boundary_json, source_validation_json,
  host_gate_json, spec175_input_preflight_json,
- spec175_preflight_json, workload_kind, yolo_host_gate_json) = sys.argv[1:]
+ spec175_preflight_json, workload_kind, yolo_host_gate_json,
+ spec183_input_preflight_json, spec183_preflight_json) = sys.argv[1:]
 build_input = {
     "definition": {"path": definition, "sha256": "sha256:" + definition_sha},
     "method": "local-apptainer-definition",
@@ -511,6 +529,8 @@ body = {
 }
 if workload_kind == "spec183-yolo":
     body["yoloHostGate"] = json.loads(yolo_host_gate_json)
+    body["spec183InputPreflight"] = json.loads(spec183_input_preflight_json)
+    body["spec183Preflight"] = json.loads(spec183_preflight_json)
 else:
     body["spec175InputPreflight"] = json.loads(spec175_input_preflight_json)
     body["spec175Preflight"] = json.loads(spec175_preflight_json)

@@ -2058,3 +2058,28 @@ code path and focused regression, not the full runtime qualification.
   `spec183-yolo`, after source/receipt/definition/preflight validation.
 - Lesson: a new workload gate must add a separate command-boundary contract;
   it must not silently rewrite an established release path.
+
+# 2026-09-07 Spec183 builder test used a host receipt as a source seal
+
+- Symptom: the valid component-receipt dispatch test stopped at
+  `LOCAL_SIF_SOURCE_SEAL_DIGEST_MISMATCH` instead of reaching the intended
+  missing Spec183 SIF-preflight gate.
+- Cause: the host-gate fixture's minimal source document is not the complete
+  archive-backed source seal consumed by `validate-local-sif-source.py`.
+- Fix: keep the host receipt and build source seal separate; bind the receipt
+  to a real archive-backed test source seal before invoking the builder.
+- Lesson: a component qualification receipt and a build-input source seal are
+  different contracts and must never be substituted for one another.
+
+# 2026-09-07 Spec183 dispatch had no SIF/ABI preflight boundary
+
+- Symptom: the initial dispatch would mark the Spec175 SIF preflight
+  `NOT_APPLICABLE` for YOLO and could reach build/record without a Spec183
+  native import/ldd/entrypoint check.
+- Cause: the new receipt gate was added without a workload-specific final SIF
+  preflight owner.
+- Fix: require the real `ndnsf-di-spec183-preflight` in two phases (sealed
+  inputs before Apptainer, exact SIF after build); missing preflight fails
+  closed with zero Apptainer calls.
+- Lesson: a new workload dispatch may not disable an existing release gate
+  unless an equivalent workload-specific gate is present.

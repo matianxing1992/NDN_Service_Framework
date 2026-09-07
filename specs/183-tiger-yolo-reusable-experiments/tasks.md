@@ -361,8 +361,8 @@ source seal 与 evidence 文件 hash。`build-local-sif.sh` 通过
 `--workload-kind spec183-yolo --spec183-host-gate` 进入该路径；无效
 schema/workload/source/receipt 或混用旧参数时，在 Apptainer version/build
 之前拒绝。Spec175 原有入口与 version 命令顺序保持不变。host-gate 与
-builder 回归 **21 passed**；仍为 component-only/side-effect-boundary
+builder 回归 **22 passed**；仍为 component-only/side-effect-boundary
 证据，真实 T010 receipt、T011 SIF 与 T007 生产审计未完成，T002 继续
 unchecked。
-合并既有 focused selectors 后为 **873 passed in 51.47s**；JUnit 仍只记录
+合并既有 focused selectors 后为 **874 passed in 51.75s**；JUnit 仍只记录
 本地组件/命令边界，不能替代实际 MiniNDN 或 Tiger 运行。
