@@ -56,11 +56,11 @@
 
 **Action / owner**: T001/O-004登记既有C++/Python能力差异，明确期望语义及旧seed/oracle兼容处置；T011进行必要局部修复或经论证的库适配，禁止重写整个生成runtime。加入上述两个具名单测，再由T016验证完整token/text。不能以“两个入口都调用同一个错误native实现”替代独立oracle。
 
-### A7-10 MEDIUM / OPEN — Native reuse comparison incomplete
+### A7-10 MEDIUM / IN_PROGRESS — Native reuse comparison decision recorded
 
-`native-dependency-design.md:51-61`比较了HF Rust与mlc tokenizers-cpp，没有比较GenAI的tokenizer/stream能力。应补一张小型选型表，检查standalone工件加载、add/skip special flags、错误ID/UTF-8、stream状态、依赖体积和模型包要求。官方C++文档中的Encode/Decode签名未提供当前两个布尔选项；这使现有bridge具有合理性，但不是证明所有GenAI版本都无法实现兼容。
+`native-dependency-design.md:51-61`与`native-generation-design.md`补齐了A7-10复用决策表。现有决策为：ORT Session/CUDA与ONNX1.17工具链走Direct，HF Rust tokenizer走适配层，GenAI OgaTokenizer/OgaGenerator目前仅保留为能力对照。已记录决策标准包括standalone工件加载、add/skip special参数、错误ID/UTF-8、stream状态owner及生成状态边界。
 
-GenAI提供生成、采样、KV及stream能力；现有NDNSF负责NDN角色调度与受保护状态。采用整套GenAI可能引入第二个生成/状态owner，因此不应仅凭API列表立即换引擎。T001补“直接调用 / 最小适配 / 项目职责”决策，优先解决A7-08/09；不追加全模型重导出或新benchmark来决定是否需要一张选型表。
+GenAI提供生成、采样、KV及stream能力；现有NDNSF负责NDN角色调度与受保护状态。采用整套GenAI可能引入第二个生成/状态owner，因此不应仅凭API列表立即换引擎。T001已将“直接调用 / 最小适配 / 项目职责”决策写入A7-10闭环，但A7-08/09修复与T011/T016验证仍在先行；不追加全模型重导出或新benchmark来取代逐缺口处置。
 
 ### A7-11 LOW / OPEN — Stale authorization sentence
 

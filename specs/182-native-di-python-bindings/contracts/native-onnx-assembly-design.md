@@ -1,6 +1,6 @@
 # Native ONNX Assembly Design
 
-**Status**: DRAFT / T001 / O-002
+**Status**: DESIGN_FROZEN / T001 / O-002 CLOSED; T006 implementation NOT_STARTED
 **Authority**: [CD-005](code-design.md#cd-005-assembly), [dependencies](native-dependency-design.md), [proof](proof-design.md)
 **Source baseline**: `11e8d750` / Experimental; production sources unchanged from `81e251a4`
 
@@ -59,9 +59,9 @@ Python `assemble_certified_onnx_model`先验证recipe/role、source/external对�
 ## Algorithm Contract
 
 1. **S1 Recipe binding**：保留当前RoleAssemblySpec/CertifiedOnnxAssemblyRecipe的canonical SHA256格式、schema、非空backend/role kind、COMPONENT_SET的0/0 interval、range非空interval、严格递增无重复nodeIndices、精确expected I/O name集合与所有digest/backend/precision/quantization/layout/padding/resource字段绑定。Provider在OA01前仍使用已认证projection；worker重查格式及recipeDigest，不把接收帧当授权证据。canonical recipe JSON使用原camelCase key、排序key、UTF-8、compact separators；不按snake_case IPC别名计算digest。复用当前jsonContracts的canonical integer dimension规则，数字字符串语义比较不能修改已绑定recipe digest。
-2. **S2 Source and external data**：graph和可选initializer各自非空/size不超maxSourceBytes，累计分配检查加法溢出。外部tensor每个恰好一个location，禁止absolute/`..`/空basename；所有location必须相同。可有安全相对子目录名，不能错误收窄为只有basename。只在内存归一化到`model.onnx.data`，offset/length为有界非负整数、范围不溢出；缺length取剩余，length=0按固定1.17 loader行为处理。有external必须有initializer，无external禁止附带initializer。递归attribute tensor的external支持以现有loader能力清单为准，不允许实际打开任意路径。
+2. **S2 Source and external data**：graph和可选initializer各自非空/size不超maxSourceBytes，累计分配检查加法溢出。外部tensor每个恰好一个location，禁止absolute/`..`/空basename；所有location必须相同。可有安全相对子目录名，不能错误收窄为只有basename。只在内存归一化到`model.onnx.data`，offset/length为有界非负整数、范围不溢出；缺length或length=0均从offset取剩余（1.17 loader的实际行为）。有external必须有initializer，无external禁止附带initializer。覆盖1.17 `_get_all_tensors`遍历的graph及其嵌套graph initializer、node attribute tensor和function attribute tensor；在任何拷贝前对全部external字段施加同一位置/范围检查，不允许实际打开模型声明路径。内联后设置DEFAULT、清除external_data，避免function遍历重复读取。
 3. **S3 Validate before identity**：对内联后的原model执行ONNX1.17 checker full_check，验证节点上限、layerEnd/nodeIndices不越界。禁止unknown protobuf丢失后仍声称原字节identity等价。checker shape推断不写回OA06的原model。
-4. **S4 Canonical identity**：initializer按name排序，拒绝无稳定name；按旧numpy_helper等价规则取得dtype、shape与little-endian contiguous content。每项字段为tensorName/dtype/shape/byteOrder/contentDigest/byteLength；相同contentDigest的名字排序，多于一个时sharedReference取第一个，否则空字符串。graph facts包含irVersion、按domain/version排序的opsets、原序nodes（index/domain/opType/inputs/outputs及按attribute.name排序的deterministic proto hex）、原序input/output proto hex、排序valueInfo proto hex、去掉contentDigest的initializerLayout、排序function proto hex。对compact sorted-key UTF-8 JSON算SHA256。initializerDigest只对有序`{tensorName,contentDigest}`数组算hash。文件名、external打包布局不进入身份。两摘要都必须等于recipe才进入S5。
+4. **S4 Canonical identity**：initializer按name排序，拒绝无稳定name；按[initializer normalization](initializer-normalization.md)取得dtype/shape/content并检查需要v2的assemblerDescriptorDigest，普通稳定numeric保留旧结果，已证实错误的表示不得走旧路径。每项字段为tensorName/dtype/shape/byteOrder/contentDigest/byteLength；相同contentDigest的名字排序，多于一个时sharedReference取第一个，否则空字符串。graph facts包含irVersion、按domain/version排序的opsets、原序nodes（index/domain/opType/inputs/outputs及按attribute.name排序的deterministic proto hex）、原序input/output proto hex、排序valueInfo proto hex、去掉contentDigest的initializerLayout、排序function proto hex。对compact sorted-key UTF-8 JSON算SHA256。initializerDigest只对有序`{tensorName,contentDigest}`数组算hash。文件名、external打包布局不进入身份。两摘要都必须等于recipe才进入S5。
 5. **S5 Extract**：副本用官方InferShapes默认选项；输出逆向DFS遇到recipe input即停止。用显式栈/visited避免C++递归栈溢出，按原node索引输出。I/O按当前recipe排序的inputNames/outputNames重建；原graph已有I/O优先，其余从推断value_info取；找不到拒绝。保留reachable node所引用initializer/value_info的原序；原Extractor拒绝的sparse_initializer/quantization_annotation继续拒绝。local function按第一次引用顺序搜集，递归搜集函数node引用的函数并去重；不得像四向量探针那样直接拒绝全部local function。结果graph.name为`Extracted from {<original name>}`，保留ir/opset、producer_name=`onnx.utils.extract_model`、上述functions；其他meta只按1.17 make_model/make_graph行为设置，不复制全部源metadata。
 6. **S6 Exact cover and I/O**：full checker后实际nodeCount严格等于nodeIndices.size，实际node的deterministic proto bytes逐项等于原model指定node；不是仅比较名字/opType。tensor dtype数字别名按旧_ONNX_DTYPE_NAMES规范化；shape具体int与可解析的十进制文本按旧normalize_shape_dimension语义比较，符号字符串保持原值；rank/name/dtype/每个维度均相同才通过。
 7. **S7 Serialize and load**：确定性序列化，非空且≤maxAssembledBytes；用已锁定ORT实际CPU InferenceSession/Session从这些字节加载，析构后才返回。此处只证明模型可加载，不把CPU预检当Provider实际CUDA执行。实际device/backend和protected activation仍由原NativeProviderRuntime/runner验证。
@@ -83,6 +83,8 @@ OA09逐字段复用旧native_assembly_helper._run：schema、modelName、modelDi
 
 ## Remaining Closure and Proof
 
+O-002设计关闭：4个原生ONNX字节探针、24个原numeric和14个扩展稳定identity参考、缺陷诊断及v2手工expected均已保存；完整算法/worker/manifest与[initializer normalization](initializer-normalization.md)的稳定编码、旧工件拒绝/重新导出规则已冻结。下面早先发现的缺口现在由T003/T006具名实现与T016证明承接，不能把设计关闭记为缺陷已修复或产品PASS。O-004完整迁移/API清单仍阻塞T001。
+
 T001新增`tests/fixtures/spec182/dependency-probes/generate-identity-vectors.py`及`identity-vectors.json`：离线原版本reference探针，使用固定的小ONNX模型，冻结普通数值initializer的raw/typed等价identity；单独诊断BFLOAT16 raw与STRING identity稳定性，不把不稳定值存为正常oracle。`reference_case(name,dtype,values,raw) -> dict`生成owned模型/预期dtype/content和identity；`main()`固定onnx1.17.0、调用现有canonical_onnx_identity并输出JSON，不调用planned native实现。输出包含reference源码hash和模型hex；进程内外重复诊断只记录摘要/一致性，不输出未初始化内存原文。T001只做有界reference提取，T006用冻结稳定向量验证原生实现。
 
 probe私有函数：`digest(data: bytes) -> str`返回canonical SHA256；`inspect_tensor(tensor: TensorProto) -> dict`构造固定Identity小图、full checker、临时模型文件，调用旧identity，返回model hex/digest、两个identity和tensorIndex，退出移除自己temp目录；`diagnostic_case(kind: str) -> dict`只接受bfloat16-raw/bfloat16-typed/string，用固定值对比内容摘要，返回dtype/modelDigest/observed与expected digest，不返回未初始化原文。ROOT和reference source path只定位旧实现；这些工具不安装进runtime。
@@ -90,6 +92,6 @@ generator同时硬校验NumPy1.24.4与旧graph.py SHA256=`e5532328e8752bd626b5a6
 
 R1 reference提取exit0：float32/float16/float64、int64/int32/int16/int8、uint64/uint32/uint16/uint8、bool共24例，12对raw/typed的graphDigest与initializerDigest分别相同，contentDigest与显式little-endian输入bytes一致。两次独立diagnostic确认BFLOAT16 raw摘要与已知bits不符（typed两次正确）；STRING同一model digest产生不同content digest。BFLOAT16这两次结果相同，故只声称内容错误，不声称已动态证明其每次随机。完整摘要与版本/source hash见[identity reference evidence](../evidence/identity-reference-20260906.json)。原生runner当前I/O映射float32/float16/int64不等于initializer格式全集，不能据此随意删除内部dtype支持。
 
-四个既有正向向量字节已相等，但O-002暂不因本附件自动关闭：需补独立identity/recipe/manifest向量覆盖及S4低精度/字符串dtype的明确兼容结论。源码发现ONNX1.17 `numpy_helper.to_array` BFLOAT16分支只遍历int32_data，raw_data输入可能留下未初始化内容；STRING返回object数组时`array.tobytes()`也不能直接视作稳定内容编码。不得在C++复制未定义内容，或用升级oracle偷偷消掉差异；O-004须核对这些表示是否属于当前受支持工件，并把适用的稳定identity/错误边界写明。普通已维护模型的numeric行为不能因此降级。
+S4缺陷已由独立诊断确认并冻结修正规则：BFLOAT16 raw、STRING以及typed-complex不得按旧错误路径迁移。T003和T006消费initializer-normalization的v1/v2契约；recipe/manifest的字段及canonical JSON复用原结构，正式unit必须冻结并检验实际wire，不能用本次仅identity数据替代。普通已维护numeric行为不得降级，旧错误digest不允许fallback。
 
 T006的`tests/unit-tests/di-native-assembly.t.cpp`必须区分：exact byte/identity/recipe/manifest、local function、inline/external别名、wrong offset/size/identity/node/I/O、cancel-before-start/during-worker/after-response、child crash/partial/oversize frame和warm cache不能绕过授权。超时反例用故意阻塞的测试worker，在启动前登记其测试身份，不在生产暴露任意worker路径。T015审查父子边界，T016真实冷recipe/保护/cleanup及no-Python反例；探针不计这些产品证明。

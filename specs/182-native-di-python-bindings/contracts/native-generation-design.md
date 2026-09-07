@@ -6,7 +6,7 @@
 
 ## Reuse Decision
 
-本契约关闭A7-10选型比较，冻结A7-09的采样修复语义；A7-08流式状态设计和O-004完整迁移清单继续OPEN。不以库API存在推断当前模型包兼容，也不以设计决策代替产品验证。
+本契约收敛A7-10复用边界，冻结A7-09的采样修复语义；A7-08流式状态设计和O-004完整迁移清单继续OPEN。不以库API存在推断当前模型包兼容，也不以设计决策代替产品验证。
 
 | Concern | Direct reuse | Adaptation / decision |
 | --- | --- | --- |
@@ -18,6 +18,19 @@
 | KV / generation state | 既有Provider runtime、epoch/state | NDNSF拥有受保护角色状态、grant、lineage和网络commit；不增加OgaGenerator作为第二个状态owner |
 
 依据为2026-09-07读取的[官方GenAI C++接口](https://onnxruntime.ai/docs/genai/api/cpp.html)及[HF 0.20.3源码](https://github.com/huggingface/tokenizers/blob/v0.20.3/tokenizers/src/tokenizer/mod.rs)。GenAI文档标记preview，本项目未锁定/安装GenAI产品依赖。HF固定文件提供完整decode，本轮未发现DecodeStream；不据此否定其他文件/版本。GenAI依赖体积、构建时间、内存和模型包接入成本均未测量；保留现有方案依据是已固定工件与语义闭包，不是未经测量的性能判断。
+
+### A7-10 No Hidden Rewrite decision
+
+| API surface | Decision | Implementation owner / boundary |
+| --- | --- | --- |
+| ORT Session / CUDA EP / tensor I/O | **Direct call**: `Ort::Session`/`Ort::SessionOptions`和已锁定runner路径保持为主要执行接口 | C++ native inference owner，沿现有runner职责，继续通过签名、runner metadata与激活流程收口 |
+| ONNX utils / checker | **Direct in-place reuse**（只用于工具路径） | 不替换ONNX执行，不把parser/shape/serialize逻辑当成可复用采样框架；由CD-005控制输出身份与worker接线 |
+| HF Rust tokenizer (Rust binding + C ABI) | **Adaptation layer** | 专用桥接保持decode/encode参数语义、所有权和panic/error映射；不重建tokenization实现 |
+| GenAI OgaTokenizer/OgaTokenizerStream | **Need explicit per-capability decision**：当前不作为默认生产路径；作为能力对照保留，不承诺跨版本行为 | 仅在独立评估中比较接口可见性；除非给出add/skip特殊参数和稳定stream语义的完整证据，否则不纳入生产编排 |
+| GenAI OgaGenerator / Search | **Custom required (small scope only)**，只用作未来候选 | 不能直接成为当前生产状态owner；不复制完整GenAI状态机，不替代现有NDNSF epoch/commit/lineage 责任 |
+| stream prefix text | **Custom required at API boundary only** | 不采用“完整decode即稳定prefix”替代；`NativeGenerationTextDecoders`须明确full/decodeStable职责边界并由O-004/O-007闭环 |
+
+这张表用于防止“按是否能调用某个库接口”直接判断兼容性：任何未列入本表决议、或跨进程状态owner变化的路径都默认不进入本轮生产路径。
 
 ## Sampling Source Changes
 

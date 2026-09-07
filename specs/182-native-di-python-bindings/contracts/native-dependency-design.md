@@ -93,6 +93,16 @@ Rust ABI source review：repr(C)字段顺序与C头一致；Box<[u8]>与free恢�
 
 复现链接：`/usr/bin/g++ -B/usr/bin -std=c++17 -O1 tests/fixtures/spec182/dependency-probes/tokenizer/probe.cpp <target>/release/libspec182_tokenizer_probe.a -ldl -lpthread -lm -o <run>/tokenizer-probe`。执行`timeout --kill-after=5s 30s <run>/tokenizer-probe tests/fixtures/spec182/dependency-probes/tokenizer/vectors.json`。Rust静态库、C++consumer及冻结expected相互独立；generator只产生reference，运行不调用它。该结果不覆盖产品digest/取消、并发销毁或T014隔离器，因此不计PO-006/SC-005完成。
 
+### ORT/GenAI Reuse Scan (A7-10 follow-up)
+
+按`ORT`与`GenAI`能力边界比较，仅记录可闭环的当前决定，不代表性能结论：
+
+- **Direct reuse：** 已锁定`ONNX Runtime C++ API`（Session/SessionOptions/EP/模型运行）与`ONNX 1.17`工具链的已知能力继续作为基础执行路径。
+- **Not adopted (current slice）：** `ORT GenAI`并非全部默认接入；`OgaTokenizer`与`OgaGenerator`未作为当前生产路径。当前未锁定、未安装GenAI运行时，且缺少`add/skip special`完整参数行为、稳定stream回调与现有`Provider`状态owner映射证据。
+- **Adaptation required：** `NativeEpochCoordinator`与`NativeTokenizer`保留现有C++/Rust路径，只在采样和stream边界处补齐与参考一致的局部行为；不引入“另起生成状态所有者”。
+
+该复核不改变现有`T001`身份：`ONNX`和tokenizer探针不代替T006/T007/T011运行证明；任何未来引入GenAI能力必须先补充`A7-10`决议、版本锁、模型工件证据和状态owner边界。
+
 ### Frozen Production Integration
 
 原五函数是完整encode/decode已验证基线。T007按[token stream design](native-token-stream-design.md)追加第六个私有`ndi_token_decode_stable`及C++方法；新增ABI须单独验证，不使用旧84+14结果证明stream。Rust核心版本/已有ABI所有权保持。
