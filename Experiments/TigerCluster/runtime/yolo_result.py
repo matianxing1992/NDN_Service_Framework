@@ -8,6 +8,9 @@ qualification.
 from collections.abc import Mapping
 import re
 
+_ORT_ROLES = frozenset(('BackboneNeck', 'DetectShard0', 'DetectShard1'))
+_EXECUTION_ROLES = _ORT_ROLES | {'Merge'}
+
 
 def read_public_dependency_contract(path, *, request_id, attempt, plan_digest, providers_by_role):
     """Join User-retained producer/consumer projections against external facts.
@@ -369,7 +372,7 @@ def finalize_normal_verdict(request_results, *, plan, graph_digest):
                    or (row['warmup'] != (i == 0)) for i, row in enumerate(request_plan))):
         raise EvidenceError('FINAL_VERDICT_PLAN_SCHEDULE')
     seen = set()
-    graph_roles = {'BackboneNeck', 'DetectShard0', 'DetectShard1', 'Merge'}
+    execution_roles = _EXECUTION_ROLES
     for index, result in enumerate(request_results):
         if (not isinstance(result, Mapping) or result.get('requestIndex') != index
                 or result.get('qualification') != 'RETAINED_REQUEST_COMPONENT_ONLY'
@@ -392,14 +395,14 @@ def finalize_normal_verdict(request_results, *, plan, graph_digest):
         graph = execution['certifiedGraph']
         if (graph.get('qualification') != 'CERTIFIED_GRAPH_COMPONENT_ONLY'
                 or graph.get('graphDigest') != graph_digest
-                or set(graph.get('roles', {})) != graph_roles):
+                or set(graph.get('roles', {})) != _ORT_ROLES):
             raise EvidenceError('FINAL_VERDICT_GRAPH_BINDING')
         roles = execution.get('roles')
-        if not isinstance(roles, Mapping) or set(roles) != graph_roles:
+        if not isinstance(roles, Mapping) or set(roles) != execution_roles:
             raise EvidenceError('FINAL_VERDICT_ROLE_COVERAGE')
         if any(not isinstance(roles[role], Mapping)
                or roles[role].get('qualification') != 'RETAINED_ROLE_COMPONENT_ONLY'
-               for role in graph_roles):
+               for role in execution_roles):
             raise EvidenceError('FINAL_VERDICT_ROLE_COMPONENT')
         devices = execution.get('devices')
         if plan['case'] == 'local-cpu':
@@ -827,9 +830,16 @@ def collect_retained_dependencies(nodes, public_path, *, plan, candidate_digest,
         raise EvidenceError('RETAINED_DEPENDENCY_LOG_CHANGED')
     graph = None
     if certified_graph is not None:
+        # Merge is independently checked above as native-yolo-postprocess,
+        # including its dependency/model bindings. It has no ORT session and
+        # must not be made to invent model-node profiling evidence.
+        if (not isinstance(certified_graph, Mapping)
+                or not isinstance(certified_graph.get('roles'), Mapping)
+                or set(certified_graph['roles']) != _ORT_ROLES):
+            raise EvidenceError('CERTIFIED_GRAPH_ROLE_COVERAGE')
         graph = validate_certified_graph_coverage(
-            {role: roles[role]['native']['observation'] for role in expected},
-            dependencies['modelBindings'], certified_graph,
+            {role: roles[role]['native']['observation'] for role in _ORT_ROLES},
+            {role: dependencies['modelBindings'][role] for role in _ORT_ROLES}, certified_graph,
             graph_digest=certified_graph.get('graphDigest'))
     return dict(roles=roles, dependencies=dependencies, devices=devices,
         certifiedGraph=graph,
@@ -1243,7 +1253,8 @@ def validate_certified_graph_coverage(observations, model_bindings, certified_gr
             or not isinstance(certified_graph.get('roles'), Mapping)):
         raise EvidenceError('CERTIFIED_GRAPH_SCHEMA')
     roles = certified_graph['roles']
-    if set(roles) != set(model_bindings) or set(roles) != set(observations):
+    if (not roles or not set(roles) <= _ORT_ROLES
+            or set(roles) != set(model_bindings) or set(roles) != set(observations)):
         raise EvidenceError('CERTIFIED_GRAPH_ROLE_COVERAGE')
     result = {}
     for role in sorted(roles):

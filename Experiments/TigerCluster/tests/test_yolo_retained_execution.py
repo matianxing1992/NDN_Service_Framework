@@ -60,8 +60,74 @@ def _final_component(case='local-cpu', count=2, *, graph='sha256:'+'c'*64):
         execution=dict(qualification='RETAINED_DEPENDENCY_COMPONENT_ONLY',
             dependencies={'qualification': 'DEPENDENCY_COMPONENT_ONLY'},
             certifiedGraph={'graphDigest': graph, 'qualification': 'CERTIFIED_GRAPH_COMPONENT_ONLY',
-                            'roles': roles}, roles=roles,
+                            'roles': {name: roles[name] for name in role_names if name != 'Merge'}}, roles=roles,
             devices={rank: {} for rank in devices})) for i in range(count)]
+
+
+@pytest.mark.parametrize('fault', ['none', 'missing-shard', 'fake-merge-ort', 'merge-failed'])
+def test_four_role_join_uses_three_ort_graphs_and_retains_native_merge(monkeypatch, fault):
+    """Real join/comparator; retained readers are explicit synthetic fixtures."""
+    names = ('BackboneNeck', 'DetectShard0', 'DetectShard1', 'Merge')
+    binding = dict(modelManifestDigest='sha256:'+'a'*64, artifactDigest='sha256:'+'b'*64)
+    graph = dict(schema='tiger-yolo-certified-graph-v1', graphDigest='sha256:'+'c'*64,
+        roles={role: dict(binding, backend='CPUExecutionProvider',
+                         optimizedNodeNames=['conv_kernel_time']) for role in names[:-1]})
+    checked_roles = []
+
+    def read_role(*args, role, **kwargs):
+        checked_roles.append(role)
+        if role == 'Merge' and fault == 'merge-failed':
+            raise result.EvidenceError('NATIVE_EXECUTION_BINDING_OR_STATUS')
+        assignments = [] if role == 'Merge' else [dict(role=role,
+            nodeName='conv_kernel_time', provider='CPUExecutionProvider', modelNode=True)]
+        return dict(logPath=role+'.log', native=dict(logDigest='sha256:'+'d'*64,
+            observation=dict(nodeProviderAssignments=assignments)))
+
+    monkeypatch.setattr(result, 'collect_retained_role_execution', read_role)
+    monkeypatch.setattr(result, 'collect_dependency_result', lambda *args, **kwargs: dict(
+        logDigests={role: 'sha256:'+'d'*64 for role in names},
+        modelBindings={role: dict(binding) for role in names}))
+    if fault == 'missing-shard':
+        del graph['roles']['DetectShard1']
+    elif fault == 'fake-merge-ort':
+        graph['roles']['Merge'] = dict(graph['roles']['BackboneNeck'])
+
+    def collect():
+        return result.collect_retained_dependencies(
+            {0: dict(root='/unused', receiptDigest='unused', preparationDigest='unused')},
+            '/unused', plan={'case': 'local-cpu'}, candidate_digest='unused',
+            providers_by_role={role: '/app/'+role for role in names}, request_id='/app/r1',
+            attempt=1, execution_plan_digest='sha256:'+'e'*64, certified_graph=graph)
+
+    if fault == 'none':
+        value = collect()
+        assert set(checked_roles) == set(names)
+        assert set(value['roles']) == set(names)
+        assert set(value['certifiedGraph']['roles']) == set(names[:-1])
+        assert value['roles']['Merge']['native']['observation']['nodeProviderAssignments'] == []
+    else:
+        reason = ('NATIVE_EXECUTION_BINDING_OR_STATUS' if fault == 'merge-failed'
+                  else 'CERTIFIED_GRAPH_ROLE_COVERAGE')
+        with pytest.raises(result.EvidenceError, match=reason):
+            collect()
+
+
+@pytest.mark.parametrize('mutation', ['missing-merge', 'merge-as-onnx', 'missing-shard'])
+def test_native_merge_is_required_but_is_not_an_ort_graph(mutation):
+    rows = _final_component()
+    execution = rows[0]['execution']
+    if mutation == 'missing-merge':
+        del execution['roles']['Merge']
+        reason = 'FINAL_VERDICT_ROLE_COVERAGE'
+    elif mutation == 'merge-as-onnx':
+        execution['certifiedGraph']['roles']['Merge'] = execution['roles']['Merge']
+        reason = 'FINAL_VERDICT_GRAPH_BINDING'
+    else:
+        del execution['certifiedGraph']['roles']['DetectShard1']
+        reason = 'FINAL_VERDICT_GRAPH_BINDING'
+    plan = {'case': 'local-cpu', 'requests': [dict(index=i, warmup=i == 0) for i in range(2)]}
+    with pytest.raises(result.EvidenceError, match=reason):
+        result.finalize_normal_verdict(rows, plan=plan, graph_digest='sha256:'+'c'*64)
 
 
 @pytest.mark.parametrize('case,count', [('local-cpu', 2), ('single-node-gpu', 2),

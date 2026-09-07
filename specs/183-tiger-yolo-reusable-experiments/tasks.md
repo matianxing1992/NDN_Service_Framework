@@ -4,6 +4,13 @@
 **Branch**: `TigerClusterExperiments`
 **Status**: 2/17 tasks complete (T001 inventory and T003 focused component acceptance); IN_PROGRESS, no runtime PASS.
 
+2026-09-07 T006 判定修复：实际 Merge 是 native-yolo-postprocess，不能要求
+ORT 图节点。曾复现 local/single/two 三种正常判定全部失败；现四角色执行/
+依赖/数值要求不变，独立 ORT coverage 仅对应 BackboneNeck 和两个 DetectShard。
+真实 join/comparator + 模拟 retained readers 回归覆盖 Merge 失败、缺 shard、
+伪造 Merge-ORT；连同 collector/CLI 153 passed in 12.72s。独立图参考生产者
+仍缺失，不关闭 T005/T006/T007，不代表 native/MiniNDN/SIF/GPU 通过。
+
 2026-09-07 生产路径检查：certifiedGraph 目前只有消费者和合成 fixture，没有
 已接线的独立 ORT/图参考生产者。已纠正注释中“生产者已存在”的错误表述；
 T005/T006 必须补齐真实 owner、运行时 manifest 绑定和 collector 来源验证，

@@ -43,3 +43,25 @@ not that a real invocation can supply independently justified expectations.
 This is part of the existing task scope, not an additional campaign or a
 reason to wait for a replacement signed legacy model-summary document.
 G2/T007 remains unqualified until this and the other production seams close.
+
+## Corrected model/postprocess boundary
+
+Further source tracing found a separate impossible acceptance condition:
+`NativeYoloMergeRunner` requires a pathless `native-yolo-postprocess` runner,
+and `validate_native_observation` correctly rejects ORT assignments for it.
+Nevertheless, the graph join and final verdict required four ORT roles.
+Source-shaped final fixtures reproduced three failures (CPU, single GPU,
+two GPU), all `FINAL_VERDICT_GRAPH_BINDING`.
+
+The join now validates the three ONNX roles against independent ORT coverage
+while retaining all four native execution and dependency checks. The final
+verdict likewise requires three ORT roles plus all four execution roles and
+the unchanged numerical oracle. Merge is not exempted from execution or
+model/dependency identity checks. Missing Merge, failed Merge, missing shard,
+and an invented Merge ORT graph are negative cases.
+
+Regression: 153 focused tests passed in 12.72s (retained execution, native
+observation, collection and CLI). The new join tests use synthetic retained
+readers with the real comparator; no real inference was run. The independent
+producer gap above is still open. Its optimized-node reference concerns only
+the three ONNX roles, not the native Merge postprocessor.

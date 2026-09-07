@@ -2267,3 +2267,21 @@ runtime fix; T005/T006/T007 remain open and no coverage gate was weakened.
 
 Lesson: every mandatory collector input needs a traceable production source;
 synthetic expected data cannot establish an executable end-to-end workflow.
+
+# 2026-09-07 — Final YOLO verdict demanded ORT execution from native Merge
+
+Symptom: source-shaped final-component fixtures failed in all three normal
+cases with FINAL_VERDICT_GRAPH_BINDING. Native Merge intentionally has no
+ORT profile, but graph collection and final coverage demanded four ORT roles.
+
+Cause: synthetic final fixtures reused the four-role execution inventory as
+the ORT graph inventory, contradicting NativeYoloMergeRunner and the existing
+native observation validator.
+
+Fix: separate three-role ORT coverage from four-role execution/dependency
+coverage. Preserve native Merge validation and the numerical oracle. Add
+join/final regressions for absent or failed Merge, missing shard and invented
+Merge ORT coverage. 153 focused tests passed; real inference is not claimed.
+
+Lesson: different execution backends require different evidence, not fake
+uniformity. A final fixture must follow actual producer semantics.
