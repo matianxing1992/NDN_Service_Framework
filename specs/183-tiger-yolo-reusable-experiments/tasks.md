@@ -78,6 +78,8 @@ T001–T004形成 profile/launcher 实现骨架；可操作 MVP 还要求 T006 �
 
 ## Current Checkpoint
 
+2026-09-07 T006角色路径/启动关联：仅将/output子路径映射到role-owned输出，拒绝traversal/symlink/任意host路径；collect_role_execution从已关闭Worker唯一launch PID与日志接native+ORT校验，CPU/GPU/Merge三种分支。12 focused通过（真实OS PID/log/cleanup，合成execution/profile，非模型运行）。节点回执/完整inventory/物理GPU/edge/最终collector继续待办。
+
 2026-09-07 cleanup校验对接真实NodeRuntime launch/close清单，不信任外部childCount；拒绝缺失/重复/PID错/forced/unreaped/lease残留/服务提前退出，有限请求必须exit0。12新用例且三种模式已有真实OS schedule测试接入，相关54通过（Apptainer仍double）。完整planned inventory/节点回执/最终collector待接线，T006未完成；见evidence/t006-worker-cleanup.md。
 
 2026-09-07 T006接入bounded native日志唯一记录选择、ORT profile独立解析/节点分配逐项核对/请求绑定与文件hash，补CPU/Merge正例；相关46项通过。profile仅每session首次capture，warm复用行为需核验，旧profile继续拒绝；物理GPU/graph节点覆盖/edge/cleanup/最终collector仍未完成。详见evidence/t006-native-observation.md。

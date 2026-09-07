@@ -30,3 +30,25 @@ Expanded regression: 548 passed in 42.50s; JUnit
 Same six selectors: TigerCluster/tests plus the Spec183 backend, public
 recipient, numerical reanalysis, candidate identity and Spec180 numerical
 Python test files. No native/SIF/Tiger qualification claim.
+
+## Role output/launcher join
+
+`resolve_role_output` accepts only exact `/output/<relative>` paths, rejects
+empty/dot/parent/backslash/NUL components, missing files and symlinks in any
+ancestor, and resolves within the owning Provider's host output directory.
+It does not interpret log-supplied paths as arbitrary host paths.
+
+`collect_role_execution` joins the closed NodeRuntime's unique Provider launch
+PID, actual log directory, role-owned output, native observation and ORT
+profile checks. Runner mode derives from local-cpu vs GPU case; Merge remains
+native CPU postprocessing. Return status ROLE_EXECUTION_COMPONENT_ONLY leaves
+full inventory, physical GPU, certified model coverage and dependency evidence
+to the final collector. Provider identity is supplied from the verified plan.
+
+Twelve focused tests cover path traversal/namespace/symlink rejection and
+CPU/GPU/Merge joins with real OS child PID/log/cleanup. The child emits
+synthetic execution observations and profiles, and the container launcher is
+a double; no actual native execution or CUDA behavior is qualified.
+
+Expanded role-output regression: 560 passed in 42.46s; JUnit
+`Experiments/TigerCluster/results/t006-role-output-r1/junit.xml` (same six selectors).

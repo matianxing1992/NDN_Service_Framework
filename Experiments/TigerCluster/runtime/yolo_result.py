@@ -7,6 +7,53 @@ from collections.abc import Mapping
 import re
 
 
+def resolve_role_output(root, container_path):
+    """Translate only an exact /output descendant into an owned role output."""
+    from pathlib import Path
+    root = Path(root)
+    if (not isinstance(container_path, str) or not container_path.startswith('/output/')
+            or '\\' in container_path or '\x00' in container_path):
+        raise EvidenceError('ROLE_OUTPUT_NAMESPACE')
+    parts = container_path[len('/output/'):].split('/')
+    if any(part in ('', '.', '..') for part in parts):
+        raise EvidenceError('ROLE_OUTPUT_COMPONENT')
+    path = root.joinpath(*parts)
+    if any(p.is_symlink() for p in (path, *path.parents)) or not root.is_dir() or not path.is_file():
+        raise EvidenceError('ROLE_OUTPUT_FILE')
+    return path
+
+
+def collect_role_execution(worker, *, role, provider, request_id, attempt, plan_digest):
+    """Join real launcher/log/output bindings with native and ORT components.
+
+    Provider identity comes from the verified prepared role plan. The full
+    collector must additionally validate cleanup, complete role cover,
+    certified model coverage, physical GPU and dependency-edge observations.
+    """
+    if (worker.closed is not True or role not in worker.roles
+            or role not in ('BackboneNeck', 'DetectShard0', 'DetectShard1', 'Merge')):
+        raise EvidenceError('ROLE_COLLECTION_SCOPE')
+    launches = [item for item in worker.launches
+                if item.get('role') == role and item.get('invocation') is None]
+    if len(launches) != 1 or launches[0].get('startError'):
+        raise EvidenceError('ROLE_COLLECTION_LAUNCH')
+    if role == 'Merge':
+        runner = 'native-yolo-postprocess'
+    elif worker.mode == 'local-cpu':
+        runner = 'onnxruntime-cpu'
+    else:
+        runner = 'onnxruntime-cuda'
+    native = read_native_observation(worker.children.log_dir / (role + '.log'),
+        provider=provider, role=role, request_id=request_id, attempt=attempt,
+        plan_digest=plan_digest, pid=launches[0].get('pid'), runner_kind=runner)
+    profile = None
+    if runner != 'native-yolo-postprocess':
+        path = resolve_role_output(worker.output / role, native['observation'].get('providerProfilePath'))
+        profile = validate_ort_profile(path, native['observation'])
+    return dict(native=native, profile=profile, rank=worker.rank,
+                qualification='ROLE_EXECUTION_COMPONENT_ONLY')
+
+
 def validate_worker_cleanup(worker, rows):
     """Check actual NodeRuntime ownership after close, never caller counts.
 
