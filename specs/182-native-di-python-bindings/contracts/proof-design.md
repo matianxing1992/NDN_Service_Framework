@@ -117,8 +117,8 @@ tests/wscript 的 `unit-tests` program（`name='unit-tests'`，
 框架生产源`）编译为 `build/unit-tests`；Boost.Test 直接以
 `build/unit-tests --run_test=<CaseName>[,<CaseName>...]` 选择具名 case（文档化用法，
 见 docs/build-and-test.md），suite 名由各实现卡在 owning 测试文件注册后以
-`build/unit-tests --list_content` 确认非空。构建命令为 `./waf build --targets=unit-tests -j2`
-（默认至多 -j2，不并发操作同一 Waf 树）。
+`build/unit-tests --list_content` 确认非空。构建命令为 `./waf build --targets=unit-tests -j4`
+（本开发机默认 -j4，不并发操作同一 Waf 树；资源与降档规则见 [build policy](../../../docs/native-build-parallelism.md)）。
 默认每 focused unit supervisor 上限 120s；初始网络 case 上限 180s，cleanup 15s；
 若既有 case 需要不同值，T001-C 按已有有效 deadline 固定（case-manifest
 `buildIdentity`），禁止运行中延长到 PASS。

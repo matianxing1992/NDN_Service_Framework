@@ -18,7 +18,9 @@ O-002--O-005 已于 2026-09-07 全部关闭（code-design Open Questions 无 OPE
 沿用Waf、C++/Boost/ndn-cxx/ORT；ONNX/tokenizer依赖及ABI锁由T001冻结。
 原生构建使用核对后的system compiler/binutils、匹配Boost headers/libs、
 NAC-ABE prefix与NDN-SVS source/build pair，并包含直接消费SVS ABI的NDNSD；ABI变化重建全部传递消费者与绑定并核对实际加载路径/hash。四库版本及旧证据失效边界见[integrated baseline](contracts/integrated-baseline.md#current-source-identity)。
-默认至多-j2，不并发操作同一Waf树。T001允许有界依赖探针；产品构建按设计门和各任务的验证范围执行。
+本开发机默认-j4（6逻辑CPU/12GB RAM，2026-09-07用户授权），不并发操作同一Waf树或叠加原生构建。
+持续换页或桌面卡顿时下次降为-j2；其他机器及容器builder另核资源，见[build policy](../../docs/native-build-parallelism.md)。
+T001允许有界依赖探针；产品构建按设计门和各任务的验证范围执行。
 
 ## Constitution Check
 

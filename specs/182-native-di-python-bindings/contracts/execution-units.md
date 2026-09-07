@@ -62,7 +62,7 @@ Write 中新文件均为 planned；已有文件只改 Steps 指定符号。Read 
 卡中 `Spec182.../*` 是 **planned suite selector**，不是声称当前存在。
 T001-C 冻结名称和路径，所属实现卡在 tests/wscript/对应测试文件注册，并用
 `"$UNIT_BIN" --list_content` 核对非空测试集合后才运行；冻结前不能把猜测命令交给 执行者 执行。
-需要编译时沿用 AGENTS 原生 preflight 和已核对 cache，`./waf build -j2 --out="$BUILD_DIR" --targets=unit-tests`；
+需要编译时沿用 AGENTS 原生 preflight 和已核对 cache，`./waf build -j4 --out="$BUILD_DIR" --targets=unit-tests`；
 编译上限按当前 build 计划登记，120s 仅为 focused unit 运行上限，不套用到整库重建。
 
 `PY(file, expression)` 表示 `timeout --kill-after=5s 120s python3 -m pytest '<file>' -k '<expression>'`；
