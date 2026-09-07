@@ -65,8 +65,10 @@ remain unchanged for provenance.
 - 登录Apptainer1.3.4-1.el9，本地/usr/local/bin/apptainer为1.3.4；2026-09-07
   通过一个有界的 `srun` 版本探针在 `itiger02` 实测 compute 为
   `1.5.3-1.el9`（`/usr/bin/apptainer`，RPM `apptainer-1.5.3-1.el9.x86_64`），
-  与登录节点不一致。该探针未启动 YOLO、SIF 构建或模型作业；T011 前必须在本地
-  安装/验证与 compute 匹配的 Apptainer，不能把登录节点 1.3.4 当作构建版本。
+  与登录节点不一致。该探针未启动 YOLO、SIF 构建或模型作业。后续只读检查发现
+  本机已有 `/opt/apptainer/1.5.3/bin/apptainer`，实测版本为 `1.5.3`，可作为
+  T011 的显式本地构建工具；默认 `/usr/local/bin/apptainer` 1.3.4 仍禁止使用，
+  不能把登录节点版本当作构建版本。
 - bigTiger up，公布GRES rtx_6000/rtx_5000/h100_80gb；账号devs/QOS normal。不是两节点同时可分配证明。
 - 远端base锁定路径存在，stat为3,525,861,376 bytes；本地
   `Experiments/TigerCluster/.cache/base-sif/spec180-runtime.sif` 已按完整内容校验为
