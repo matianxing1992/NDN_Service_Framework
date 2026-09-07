@@ -62,15 +62,25 @@ remain unchanged for provenance.
 ## Site And Capacity
 
 - SSH实测itiger/tma1可达，squeue无本用户job；未提交新job。
-- 登录Apptainer1.3.4-1.el9，本地/usr/local/bin/apptainer为1.3.4；compute版本NOT_RUN，T007后独立substrate探测。
+- 登录Apptainer1.3.4-1.el9，本地/usr/local/bin/apptainer为1.3.4；2026-09-07
+  通过一个有界的 `srun` 版本探针在 `itiger02` 实测 compute 为
+  `1.5.3-1.el9`（`/usr/bin/apptainer`，RPM `apptainer-1.5.3-1.el9.x86_64`），
+  与登录节点不一致。该探针未启动 YOLO、SIF 构建或模型作业；T011 前必须在本地
+  安装/验证与 compute 匹配的 Apptainer，不能把登录节点 1.3.4 当作构建版本。
 - bigTiger up，公布GRES rtx_6000/rtx_5000/h100_80gb；账号devs/QOS normal。不是两节点同时可分配证明。
 - 远端base锁定路径存在，stat为3,525,861,376 bytes；本地
   `Experiments/TigerCluster/.cache/base-sif/spec180-runtime.sif` 已按完整内容校验为
   `sha256:b6710fd696a7f962f67f67a54278d92a15babb856c4af428a3f04ba54dc83285`，与 lock 一致。
   该文件仍是历史 Spec180 基础输入，不是 Spec183 最终 SIF，也不替代 T007/T008/T011。
 - 本机`Experiments/TigerCluster/images/spec180-runtime-r119.sif`、`.local-tmp/spec180-candidate-r119/spec180-runtime.sif`均不存在。
-- 本地最近检查可用约18,433,155,072 bytes；远端df显示共享文件系统空间，不能替代用户quota。未取得quota/compute scratch写入和构建峰值，不批准大构建。
-- 远端models/artifacts/candidates三个已知父目录未匹配yolo命名直接子目录；不能断言整个集群无模型。
+- 本地最近检查可用约18,433,155,072 bytes；本次 compute 探针在 `itiger02`
+  看到 `/tmp` 为 14T、可用约14T，`/project` 为900T、可用约838T；这只是该
+  allocation 的容量观察，不能替代用户quota或完整scratch写入/`fsync`验证。
+  未取得Spec183构建峰值，不批准大构建。
+- 2026-09-07只读扫描 `/project/tma1/ndnsf-di` 未发现 `spec183` profile、签名
+  package、candidate 或 collector 输入；仅发现旧 Spec170/Spec180 YOLO/SIF
+  材料。旧候选不能直接升级为Spec183输入，仍需重新绑定 source/runtime/dispatch
+  seal。
 - 15分钟初始预算内startup120+4×request60+cleanup30=390秒，余510秒仍须覆盖stage/hash等实际耗时；未实测，不据此自动提交。
 
 ## Build And Test Selector Registry

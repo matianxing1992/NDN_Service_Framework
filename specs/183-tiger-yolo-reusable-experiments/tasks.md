@@ -429,3 +429,11 @@ GPU case 还要求 allocation/probe 文件和期望字段。6 个新增边界测
 [t006-collector-handoff.md](evidence/t006-collector-handoff.md)。这仍未连接实际
 Slurm worker/collector，不能关闭 T006/T007，也不能声称有 native/GPU/MiniNDN/Tiger
 证据。
+
+2026-09-07 substrate input checkpoint：VPN/SSH 只读检查成功；远端 `bigTiger`
+分区可见 `rtx_5000`/`rtx_6000`/`h100_80gb`，一个有界 `srun` 在 `itiger02` 实测
+compute Apptainer `1.5.3-1.el9`，而登录节点仍为 `1.3.4`。因此本地 SIF 构建
+必须等待并匹配 compute 版本，不能使用登录节点版本。远端项目目录未发现
+Spec183 profile、签名模型包或 collector 输入，仅有旧 Spec170/Spec180 材料；
+这些事实已记录到 [input-inventory.md](evidence/input-inventory.md)，不改变
+T002/T007 的资格状态，也未启动模型或 SIF 构建。
