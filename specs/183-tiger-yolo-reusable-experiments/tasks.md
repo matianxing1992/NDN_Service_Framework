@@ -104,6 +104,13 @@ passed **824 tests in 47.42s**; JUnit:
 This remains structural evidence, not an independent signed-package or
 optimized-graph comparison.
 
+The collector now accepts an optional externally staged
+`tiger-yolo-certified-graph-v1` document. When supplied, it requires exact
+per-role model/artifact bindings, backend, and the certified post-optimization
+node-name set; it never derives expected coverage from Provider logs. Four-role
+coverage tests passed in the 120-test retained/projection subset. Final operator
+wiring must make this document mandatory before T006 can close.
+
 2026-09-07 retained allocation/GPU join: collect_retained_request now forwards
 the external journal/profile allocation expectations to the dependency
 collector. GPU node entries require trusted allocationDigest/gpuProbeDigest,

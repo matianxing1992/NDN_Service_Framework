@@ -261,3 +261,9 @@ expanded focused suite recorded 824 passing tests in
 identity boundary only. It does not authenticate the model package by itself,
 and it does not prove every certified graph node ran: ORT optimization can fuse
 nodes, so coverage must use a separately certified optimized-node mapping.
+
+The collector now has a fail-closed optional join for
+`tiger-yolo-certified-graph-v1`: the graph document is supplied externally and
+binds each role's model/artifact digests, backend, and optimized node names.
+Provider logs cannot create or extend this expected set. The final operator must
+require this join (rather than leaving it optional) before T006 is complete.

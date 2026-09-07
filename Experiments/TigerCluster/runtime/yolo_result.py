@@ -246,7 +246,8 @@ def collect_request_result(root, reference, *, case, request_id, attempt_id,
 def collect_retained_request(nodes, reference, *, plan, request_index,
                              runtime_candidate_digest, placement_candidate_id,
                              placement_candidate_digest, graph_digest,
-                             catalogue_digest, providers_by_role, allocation_expected=None):
+                             catalogue_digest, providers_by_role, allocation_expected=None,
+                             certified_graph=None):
     """Join retained lifecycle/numerical/role/dependency evidence for one request.
 
     Runtime candidate identity (the packaged release) is NOT the selected
@@ -291,7 +292,7 @@ def collect_retained_request(nodes, reference, *, plan, request_index,
     execution = collect_retained_dependencies(nodes, root/'yolo-public-assignments.json',
         plan=plan, candidate_digest=runtime_candidate_digest, providers_by_role=providers_by_role,
         request_id=lifecycle['requestId'], attempt=attempt, execution_plan_digest=lifecycle['planDigest'],
-        allocation_expected=allocation_expected)
+        allocation_expected=allocation_expected, certified_graph=certified_graph)
     return dict(request=request, execution=execution, requestIndex=request_index,
         qualification='RETAINED_REQUEST_COMPONENT_ONLY')
 
@@ -555,7 +556,7 @@ def read_retained_device_binding(root, *, receipt_digest, allocation_digest, gpu
 
 def collect_retained_dependencies(nodes, public_path, *, plan, candidate_digest,
                                    providers_by_role, request_id, attempt, execution_plan_digest,
-                                   allocation_expected=None):
+                                   allocation_expected=None, certified_graph=None):
     """Cross-process four-role join; node digests come from trusted staging.
 
     Each node entry has root, receiptDigest and preparationDigest. GPU cases
@@ -604,7 +605,14 @@ def collect_retained_dependencies(nodes, public_path, *, plan, candidate_digest,
         attempt=attempt, plan_digest=execution_plan_digest, providers_by_role=providers_by_role)
     if any(roles[role]['native']['logDigest'] != dependencies['logDigests'][role] for role in expected):
         raise EvidenceError('RETAINED_DEPENDENCY_LOG_CHANGED')
+    graph = None
+    if certified_graph is not None:
+        graph = validate_certified_graph_coverage(
+            {role: roles[role]['native']['observation'] for role in expected},
+            dependencies['modelBindings'], certified_graph,
+            graph_digest=certified_graph.get('graphDigest'))
     return dict(roles=roles, dependencies=dependencies, devices=devices,
+        certifiedGraph=graph,
         qualification='RETAINED_DEPENDENCY_COMPONENT_ONLY')
 
 
@@ -992,6 +1000,69 @@ def validate_native_observation(payload, *, provider, role, request_id, attempt,
                 or not a['nodeName'] for a in assignments):
             raise EvidenceError('NATIVE_MODEL_NODE_ASSIGNMENT')
     return dict(observation=row, qualification='NATIVE_OBSERVATION_COMPONENT_ONLY')
+
+
+def validate_certified_graph_coverage(observations, model_bindings, certified_graph,
+                                      *, graph_digest):
+    """Compare native/ORT assignments with an independently certified graph.
+
+    ``optimizedNodeNames`` is produced by the signed graph/ORT preparation
+    owner. It deliberately represents the post-optimization node vocabulary;
+    raw ONNX node counts are not used as an execution proof. This function
+    never derives the expected graph or model identities from observations.
+    """
+    if (not isinstance(observations, Mapping) or not isinstance(model_bindings, Mapping)
+            or not isinstance(certified_graph, Mapping)
+            or not isinstance(graph_digest, str)
+            or re.fullmatch(r'sha256:[0-9a-f]{64}', graph_digest) is None):
+        raise EvidenceError('CERTIFIED_GRAPH_INPUT')
+    if (certified_graph.get('schema') != 'tiger-yolo-certified-graph-v1'
+            or certified_graph.get('graphDigest') != graph_digest
+            or not isinstance(certified_graph.get('roles'), Mapping)):
+        raise EvidenceError('CERTIFIED_GRAPH_SCHEMA')
+    roles = certified_graph['roles']
+    if set(roles) != set(model_bindings) or set(roles) != set(observations):
+        raise EvidenceError('CERTIFIED_GRAPH_ROLE_COVERAGE')
+    result = {}
+    for role in sorted(roles):
+        expected = roles[role]
+        binding = model_bindings[role]
+        if (not isinstance(expected, Mapping)
+                or set(expected) != {'modelManifestDigest', 'artifactDigest',
+                                     'backend', 'optimizedNodeNames'}
+                or not isinstance(binding, Mapping)
+                or set(binding) != {'modelManifestDigest', 'artifactDigest'}
+                or any(not isinstance(expected[k], str)
+                       or re.fullmatch(r'sha256:[0-9a-f]{64}', expected[k]) is None
+                       for k in ('modelManifestDigest', 'artifactDigest'))
+                or binding != {k: expected[k] for k in ('modelManifestDigest', 'artifactDigest')}
+                or expected['backend'] not in ('CPUExecutionProvider', 'CUDAExecutionProvider')
+                or not isinstance(expected['optimizedNodeNames'], list)
+                or not expected['optimizedNodeNames']
+                or len(expected['optimizedNodeNames']) > 10000
+                or any(not isinstance(name, str) or not name for name in expected['optimizedNodeNames'])
+                or len(set(expected['optimizedNodeNames'])) != len(expected['optimizedNodeNames'])):
+            raise EvidenceError('CERTIFIED_GRAPH_ROLE_SCHEMA')
+        row = observations[role]
+        if isinstance(row, Mapping) and 'observation' in row:
+            row = row['observation']
+        if not isinstance(row, Mapping):
+            raise EvidenceError('CERTIFIED_GRAPH_OBSERVATION')
+        assignments = row.get('nodeProviderAssignments')
+        if (not isinstance(assignments, list) or not assignments
+                or any(not isinstance(item, Mapping) for item in assignments)):
+            raise EvidenceError('CERTIFIED_GRAPH_ASSIGNMENTS')
+        actual_names = [item.get('nodeName') for item in assignments]
+        actual_backends = {item.get('provider') for item in assignments}
+        if (set(actual_names) != set(expected['optimizedNodeNames'])
+                or actual_backends != {expected['backend']}
+                or any(item.get('role') != role or item.get('modelNode') is not True
+                       for item in assignments)):
+            raise EvidenceError('CERTIFIED_GRAPH_COVERAGE')
+        result[role] = dict(optimizedNodeCount=len(actual_names),
+                            backend=expected['backend'])
+    return dict(graphDigest=graph_digest, roles=result,
+                qualification='CERTIFIED_GRAPH_COMPONENT_ONLY')
 
 
 def validate_lifecycle(root, *, case, request_id, attempt_id, candidate_id, candidate_digest):

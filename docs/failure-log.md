@@ -1988,3 +1988,17 @@ code path and focused regression, not the full runtime qualification.
   optimized graph coverage are separate gates and remain open.
 - Lesson: every evidence field must be carried through producer, retained file,
   reader, and external expected identity before it can support a final verdict.
+
+# 2026-09-07 Spec183 graph coverage lacked an optimized-node boundary
+
+- Symptom: native/profile checks could compare assignments internally but had no
+  independent expected graph vocabulary; raw ONNX node counts would be invalid
+  after ORT fusion.
+- Cause: the collector had model identity and backend checks but no external
+  certified graph mapping.
+- Fix: add a fail-closed `tiger-yolo-certified-graph-v1` join requiring exact
+  role model/artifact bindings, backend, and optimized node-name coverage.
+- Boundary: the API is optional for existing component fixtures; the final
+  operator must supply it and reject absence before declaring T006 PASS.
+- Lesson: optimization-aware coverage requires a separately certified expected
+  vocabulary, not a count inferred from runtime events.

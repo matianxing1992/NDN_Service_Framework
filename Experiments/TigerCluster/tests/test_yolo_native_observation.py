@@ -71,6 +71,43 @@ def test_real_provider_name_not_hardcoded_to_example_prefix():
     assert validate(observation())['qualification'] == 'NATIVE_OBSERVATION_COMPONENT_ONLY'
 
 
+def test_certified_graph_uses_optimized_node_mapping_not_raw_node_count():
+    graph = {'schema': 'tiger-yolo-certified-graph-v1', 'graphDigest': 'sha256:'+'c'*64,
+        'roles': {'BackboneNeck': {'modelManifestDigest': 'sha256:'+'a'*64,
+            'artifactDigest': 'sha256:'+'b'*64, 'backend': 'CUDAExecutionProvider',
+            'optimizedNodeNames': ['conv_kernel_time']}}}
+    row = observation()
+    row['nodeProviderAssignments'][0]['nodeName'] = 'conv_kernel_time'
+    row['nodeProviderAssignments'][0]['modelNode'] = True
+    checked = result.validate_certified_graph_coverage(
+        {'BackboneNeck': row}, {'BackboneNeck': {'modelManifestDigest': 'sha256:'+'a'*64,
+        'artifactDigest': 'sha256:'+'b'*64}}, graph, graph_digest='sha256:'+'c'*64)
+    assert checked['roles']['BackboneNeck']['optimizedNodeCount'] == 1
+
+
+@pytest.mark.parametrize('mutation', ['digest', 'node', 'backend', 'role'])
+def test_certified_graph_rejects_self_consistent_or_wrong_coverage(mutation):
+    graph_digest = 'sha256:'+'c'*64
+    graph = {'schema': 'tiger-yolo-certified-graph-v1', 'graphDigest': graph_digest,
+        'roles': {'BackboneNeck': {'modelManifestDigest': 'sha256:'+'a'*64,
+            'artifactDigest': 'sha256:'+'b'*64, 'backend': 'CUDAExecutionProvider',
+            'optimizedNodeNames': ['conv_kernel_time']}}}
+    row = observation()
+    row['nodeProviderAssignments'][0]['modelNode'] = True
+    if mutation == 'digest':
+        graph['roles']['BackboneNeck']['modelManifestDigest'] = 'sha256:'+'d'*64
+    elif mutation == 'node':
+        graph['roles']['BackboneNeck']['optimizedNodeNames'] = ['different']
+    elif mutation == 'backend':
+        graph['roles']['BackboneNeck']['backend'] = 'CPUExecutionProvider'
+    else:
+        row['nodeProviderAssignments'][0]['role'] = 'Other'
+    with pytest.raises(result.EvidenceError):
+        result.validate_certified_graph_coverage(
+            {'BackboneNeck': row}, {'BackboneNeck': {'modelManifestDigest': 'sha256:'+'a'*64,
+            'artifactDigest': 'sha256:'+'b'*64}}, graph, graph_digest=graph_digest)
+
+
 @pytest.mark.parametrize('kind', ['onnxruntime-cpu', 'native-yolo-postprocess'])
 def test_cpu_and_merge_execution_component(kind):
     row = observation()
