@@ -59,6 +59,15 @@ remain unchanged for provenance.
 
 2026-09-07只读检查发现远端 `spec180-runtime-b6710fd6` 候选包含与历史记录一致的 YOLO26n 图、权重、oracle 和 `shared-backbone-two-shard-v1` catalogue，但它仍是 Spec180 的 SIF/profile/run record，使用旧 `/example/group`，没有 Spec183 source/runtime/dispatch seal。因此只能作为待验证模型输入候选，不能作为 Spec183 runtime 或资格证据；详见 [spec180-candidate-reuse-audit.md](spec180-candidate-reuse-audit.md)。
 
+同日从该候选只读取并转移了公开模型文件到 ignored CAS
+`Experiments/TigerCluster/.cache/model/spec180-public/`：graph、initializer、完整模型
+oracle、package manifest、catalogue registry/key、trust-root 文件和注册的
+`model-manifest-authority.pub`；没有复制任何 private key。逐项 hash 与历史记录一致，
+且 package catalogue 的 Ed25519 signature 已用 registry 验证。该材料仍不能直接关闭
+Spec183 输入门：`model-manifest.json` 仅绑定 `atomic-v1` 且没有 signature envelope，
+而 Spec183 需要 `shared-backbone-two-shard-v1` 的 candidate-bound model manifest。
+需要重新签发或由权威方明确绑定该 manifest 后，才能进入 dispatch/profile。
+
 ## Site And Capacity
 
 - SSH实测itiger/tma1可达，squeue无本用户job；未提交新job。
@@ -84,6 +93,9 @@ remain unchanged for provenance.
   材料。旧候选不能直接升级为Spec183输入，仍需重新绑定 source/runtime/dispatch
   seal。
 - 15分钟初始预算内startup120+4×request60+cleanup30=390秒，余510秒仍须覆盖stage/hash等实际耗时；未实测，不据此自动提交。
+- `/opt/apptainer/1.5.3/bin/apptainer` 已对锁定的历史 base SIF 完成 `sif list`、label
+  检查和 `/bin/true` 执行；这只证明本机匹配工具能够读取该 base，不证明 Spec183
+  runtime 或最终 SIF 已构建。
 
 ## Build And Test Selector Registry
 
