@@ -112,7 +112,7 @@ def run_requests(worker, plan: dict, *, package: Path, catalog_data_name: str,
         seen.add(identity)
         if request['output'] != str(worker.output / 'user' / 'requests' / str(i)):
             raise ValueError('YOLO_REQUEST_OUTPUT')
-    for name in ('case.json', 'catalogue-registry.json', 'offer-trust-root.json',
+    for name in ('case.json', 'contracts/trust-root-registry-v1.json', 'contracts/authority.pub', 'offer-trust-root.json',
                  'offer-public-key-map.json', 'recipient-public-keys.json'):
         path = worker.public / name
         if path.is_symlink() or not path.is_file():
@@ -131,7 +131,7 @@ def run_requests(worker, plan: dict, *, package: Path, catalog_data_name: str,
                 PYTHON, APP_DIR + '/user.py', '--config', '/config/case.json',
                 '--generated-policy-dir', output + '/generated-policy',
                 '--canonical-package', '/artifacts',
-                '--catalogue-registry', '/config/catalogue-registry.json',
+                '--catalogue-registry', '/config/contracts/trust-root-registry-v1.json',
                 '--offer-trust-root', '/config/offer-trust-root.json',
                 '--offer-public-key-map', '/config/offer-public-key-map.json',
                 '--catalog-data-name', catalog_data_name, '--catalog-signer', catalog_signer,

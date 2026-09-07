@@ -78,6 +78,8 @@ T001–T004形成 profile/launcher 实现骨架；可操作 MVP 还要求 T006 �
 
 ## Current Checkpoint
 
+2026-09-07 native recipient启动接线已按真实C++环境变量完成，私钥map精确限定单Provider自身HOME；User和Provider共用`/config/contracts/trust-root-registry-v1.json`，publicKeyPath契约为`contracts/authority.pub`。新增6项拒错，317 focused通过（20.91s），证据追加于t005-public-recipients.md。下一步生成并认证这些真实材料及readiness；不能把fixture路径检查当作native grant通过。T005仍partial。
+
 2026-09-07公共recipient接线：User支持public-only map，Spec183启动强制显式protected epoch及自身requester/authority密钥；311 focused通过。真实User seam新增两项测试因缺少`_ndnsf`在setup失败，未证明grant集成通过；T008须完整重跑。见[evidence/t005-public-recipients.md](evidence/t005-public-recipients.md)。下一步signed准备/registry布局/native Provider recipient/readiness，再T006；T005/T007保持未完成。
 
 2026-09-07控制面接线：apps/yolo.py已复用Controller/Repo入口，role-local policy/store、显式capacity、bounded JSON拒错；见[evidence/t005-control-launch.md](evidence/t005-control-launch.md)。新审查发现现有User默认plaintext-v1且旧protected seam读取Provider私钥map，未满足Spec183隔离；下一步优先实现公共recipient key map并绑定显式protected epoch/requester/authority/native recipient输入。沿用既有可信in-process authority边界，不新增网络授权服务，不共享Provider私钥。完成后继续signed准备/readiness/T006；T005及T007保持未完成，不放行Slurm。

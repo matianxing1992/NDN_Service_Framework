@@ -1,5 +1,6 @@
 """Native argv wiring at the process boundary; not model/SIF qualification."""
 import subprocess
+import json
 import sys
 
 import pytest
@@ -14,6 +15,13 @@ def application_inputs(tmp_path, rank, mode='two-node-gpu'):
         (inputs['public'] / name).write_text('test fixture, not a qualified document')
     for home in inputs['homes'].values():
         (home / 'offer.pem').write_text('test fixture, not a key')
+        (home / 'recipient.pem').write_text('fixture, not a parsed key')
+        (home / 'recipient.pem').chmod(0o600)
+        (home / 'recipient-map.json').write_text(json.dumps({
+            '/run/actual/' + home.name: '/identities/' + home.name + '/recipient.pem'}))
+    (inputs['public'] / 'contracts').mkdir()
+    for name in ('trust-root-registry-v1.json', 'authority.pub'):
+        (inputs['public'] / 'contracts' / name).write_text('fixture, not authenticated')
     return inputs
 
 
@@ -45,17 +53,21 @@ def test_native_provider_argv_reaches_process_boundary(tmp_path, monkeypatch, ro
         assert argv[argv.index('--offer-device') + 1] == ('cpu' if cpu or role == 'Merge' else 'cuda:0')
         assert ('--nv' in argv) == (not cpu and role != 'Merge')
         assert '--offer-has-model' not in argv
+        assert 'SPEC181_GRANT_AUTHORITY_PUBLIC_KEY=/config/contracts/authority.pub' in argv
+        assert ('SPEC181_PROVIDER_RECIPIENT_KEY_MAP=/identities/' + role + '/recipient-map.json') in argv
         assert not any(':/artifacts:' in arg for arg in argv)
     finally:
         assert all(row['reaped'] for row in worker.close())
 
 
 @pytest.mark.parametrize('fault', ['missing-plan', 'missing-key', 'foreign-key',
-                                  'wrong-role', 'bad-name', 'bool-budget', 'long-budget'])
+                                  'wrong-role', 'bad-name', 'bool-budget', 'long-budget',
+                                  'recipient-missing', 'recipient-permissions', 'recipient-peer',
+                                  'recipient-duplicate', 'recipient-oversized', 'registry-missing'])
 def test_provider_rejects_bad_inputs_before_process_or_lease(tmp_path, fault):
     inputs = application_inputs(tmp_path, 0)
     worker = NodeRuntime(**inputs)
-    options = dict(role='BackboneNeck', identity='/run/provider', service='/YOLO',
+    options = dict(role='BackboneNeck', identity='/run/actual/BackboneNeck', service='/YOLO',
                    group='/run/sync', controller='/run/controller', permission_wait_ms=12000)
     if fault == 'missing-plan':
         (inputs['public'] / 'native-execution-plan.json').unlink()
@@ -70,8 +82,24 @@ def test_provider_rejects_bad_inputs_before_process_or_lease(tmp_path, fault):
         options['identity'] = '/bad\nname'
     elif fault == 'bool-budget':
         options['permission_wait_ms'] = True
-    else:
+    elif fault == 'long-budget':
         options['permission_wait_ms'] = 120001
+    elif fault == 'registry-missing':
+        (inputs['public'] / 'contracts/trust-root-registry-v1.json').unlink()
+    else:
+        home = inputs['homes']['BackboneNeck']
+        if fault == 'recipient-missing':
+            (home / 'recipient.pem').unlink()
+        elif fault == 'recipient-permissions':
+            (home / 'recipient.pem').chmod(0o644)
+        elif fault == 'recipient-peer':
+            (home / 'recipient-map.json').write_text(json.dumps({options['identity']:
+                '/identities/Merge/recipient.pem'}))
+        elif fault == 'recipient-duplicate':
+            (home / 'recipient-map.json').write_text(
+                '{"/run/actual/BackboneNeck":"x","/run/actual/BackboneNeck":"y"}')
+        elif fault == 'recipient-oversized':
+            (home / 'recipient-map.json').write_bytes(b'x' * 4097)
     try:
         with pytest.raises(ValueError, match='WORKER_'):
             worker.start_provider(**options)

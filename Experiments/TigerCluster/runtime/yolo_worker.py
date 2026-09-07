@@ -7,6 +7,7 @@ The ACK-driven application remains responsible for the execution plan.
 from __future__ import annotations
 
 import math
+import json
 import os
 from pathlib import Path
 import re
@@ -173,13 +174,37 @@ class NodeRuntime:
         if type(permission_wait_ms) is not int or not 1 <= permission_wait_ms <= 120000:
             raise ValueError("WORKER_PERMISSION_BUDGET")
         files = [self.public / name for name in
-                 ('native-execution-plan.json', 'service-manifest.json', 'trust-schema.conf')]
-        files.append(self.homes[role] / 'offer.pem')
+                 ('native-execution-plan.json', 'service-manifest.json', 'trust-schema.conf',
+                  'contracts/trust-root-registry-v1.json', 'contracts/authority.pub')]
+        files.extend(self.homes[role] / name for name in
+                     ('offer.pem', 'recipient.pem', 'recipient-map.json'))
         for path in files:
             if any(p.is_symlink() for p in (path, *path.parents)) or not path.is_file():
                 raise ValueError("WORKER_PROVIDER_INPUT:" + path.name)
+        # NativeProtectedGrantCredentials reads an identity -> private PEM map.
+        # Each Provider sees only its own map/key; User receives public keys.
+        home_path = '/identities/' + self.homes[role].name
+        mapping = self.homes[role] / 'recipient-map.json'
+        if not 0 < mapping.stat().st_size <= 4096:
+            raise ValueError('WORKER_RECIPIENT_MAP_SIZE')
+        with mapping.open('rb') as stream:
+            wire = stream.read(4097)
+        if len(wire) > 4096:
+            raise ValueError('WORKER_RECIPIENT_MAP_SIZE')
+        try:
+            pairs = json.loads(wire, object_pairs_hook=list)
+        except (ValueError, UnicodeError) as exc:
+            raise ValueError('WORKER_RECIPIENT_MAP') from exc
+        if pairs != [(identity, home_path + '/recipient.pem')]:
+            raise ValueError('WORKER_RECIPIENT_MAP')
+        key = self.homes[role] / 'recipient.pem'
+        if stat.S_IMODE(key.stat().st_mode) != 0o600 or not 0 < key.stat().st_size <= 65536:
+            raise ValueError('WORKER_RECIPIENT_KEY')
         gpu = self.mode != 'local-cpu' and role in MODEL_ROLES
-        argv = [BIN + '/di-native-provider', '--serve',
+        argv = ['/usr/bin/env',
+                'SPEC181_GRANT_AUTHORITY_PUBLIC_KEY=/config/contracts/authority.pub',
+                'SPEC181_PROVIDER_RECIPIENT_KEY_MAP=' + home_path + '/recipient-map.json',
+                BIN + '/di-native-provider', '--serve',
                 '--plan', '/config/native-execution-plan.json',
                 '--manifest', '/config/service-manifest.json',
                 '--trust-schema', '/config/trust-schema.conf',

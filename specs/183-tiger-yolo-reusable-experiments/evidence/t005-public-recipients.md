@@ -33,9 +33,34 @@ ran. No fake extension or skip was used. Both must pass after T008 native build.
 
 ## Remaining controlling work
 
-T005 stays unchecked. Implement signed preparation with a deliberately valid
-authority-registry relative-path layout, native Provider recipient-key wiring,
-and genuine permission/catalogue readiness; then T006 collector. T008 must
+### Native launcher follow-up
+
+The native owner `NativeProtectedGrantCredentials.cpp::credentials` was checked:
+it reads `SPEC181_GRANT_AUTHORITY_PUBLIC_KEY`, locates the sibling
+`trust-root-registry-v1.json`, resolves `publicKeyPath` against the parent of
+that directory, and looks up its own identity in
+`SPEC181_PROVIDER_RECIPIENT_KEY_MAP`. The launcher now supplies these actual
+settings rather than invented CLI options.
+
+The shared public layout is `/config/contracts/trust-root-registry-v1.json`
+with `/config/contracts/authority.pub`; preparation must set registry
+`publicKeyPath` to `contracts/authority.pub`. The User uses this same registry.
+Each Provider's private HOME contains `recipient.pem` (0600) and
+`recipient-map.json`, exactly one identity mapped to that same HOME's container
+path. Launch rejects missing/oversized/duplicate/wrong-identity/foreign-path
+maps, missing keys and invalid key permissions. No authority private key or
+peer private HOME is mounted into a Provider. The native loader retains actual
+PEM and policy validation; launcher fixtures do not prove these validations.
+
+Follow-up focused suite (same command, JUnit under
+`results/spec183-provider-recipients-r1/junit.xml`): **317 passed in 20.91s**.
+This is process-boundary and rejection evidence, not native credential runtime
+or numerical inference evidence. Signed preparation, full key parsing and
+cross-process readiness remain mandatory before qualification.
+
+T005 stays unchecked. Implement signed preparation producing the required
+authority-registry and per-role credential layout, and genuine
+permission/catalogue readiness; then T006 collector. T008 must
 run the full User seam tests and native-import backend tests. New source must
 be sealed into the new local SIF. T007 and remote qualification remain pending;
 SSH connectivity alone grants no experiment readiness.
