@@ -53,11 +53,43 @@ def assigned_roles(mode: str, rank: int) -> tuple[str, ...]:
 class NodeRuntime:
     """Own this node's role processes, role-scoped mounts and cleanup evidence."""
 
+    @classmethod
+    def from_preparation(cls, plan: dict, *, expected_receipt_digest: str,
+                         candidate_digest: str, **kwargs):
+        """Production construction boundary; SIF/gate qualification is external.
+
+        The direct constructor remains a low-level lifecycle component used by
+        isolated process tests, not an authorized experiment entrypoint.
+        """
+        from runtime.yolo_bundle import verify_preparation
+        # Own an immutable snapshot, so caller mutation cannot change the pin.
+        plan = json.loads(json.dumps(plan, allow_nan=False))
+        rank, mode = kwargs['rank'], kwargs['mode']
+        if (plan.get('case') != mode or type(rank) is not int
+                or Path(kwargs['output']) != Path(plan['output']) / ('node' + str(rank))):
+            raise ValueError('WORKER_PREPARATION_RUN')
+        matching = [node for node in plan.get('nodes', []) if node.get('rank') == rank]
+        if len(matching) != 1 or set(matching[0].get('roles', [])) != set(assigned_roles(mode, rank)):
+            raise ValueError('WORKER_PREPARATION_ROLES')
+        verify_preparation(kwargs['public'], plan, expected_receipt_digest=expected_receipt_digest,
+                           candidate_digest=candidate_digest)
+        worker = cls(**kwargs)
+        worker._preparation_binding = (plan, expected_receipt_digest, candidate_digest)
+        return worker
+
+    def _verify_prepared_boundary(self):
+        if self._preparation_binding is not None:
+            from runtime.yolo_bundle import verify_preparation
+            plan, receipt, candidate = self._preparation_binding
+            verify_preparation(self.public, plan, expected_receipt_digest=receipt,
+                               candidate_digest=candidate)
+
     def __init__(self, *, profile: dict, mode: str, rank: int, bundle: Path,
                  homes: dict[str, Path], public: Path, output: Path, node: Path,
                  gpu_device: str | None,
                  cleanup_seconds: float):
         self.roles = assigned_roles(mode, rank)
+        self._preparation_binding = None
         if set(homes) != set(self.roles):
             raise ValueError("WORKER_ROLE_HOMES")
         if (mode == "local-cpu") != (gpu_device is None):
@@ -93,6 +125,7 @@ class NodeRuntime:
         """
         if self.closed or 'user' not in self.roles:
             raise ValueError('WORKER_USER_ROLE')
+        self._verify_prepared_boundary()
         if not isinstance(invocation, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,64}', invocation):
             raise ValueError('WORKER_INVOCATION')
         if invocation in self.invocations:
@@ -227,6 +260,7 @@ class NodeRuntime:
     def _start_service(self, role, argv, initial_files=()):
         if self.closed:
             raise ValueError("WORKER_CLOSED")
+        self._verify_prepared_boundary()
         if role not in self.roles or role == "user":
             raise ValueError("WORKER_SERVICE_ROLE")
         if role in self.started:

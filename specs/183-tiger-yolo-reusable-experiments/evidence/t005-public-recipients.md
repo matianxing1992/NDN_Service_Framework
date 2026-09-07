@@ -33,6 +33,26 @@ ran. No fake extension or skip was used. Both must pass after T008 native build.
 
 ## Remaining controlling work
 
+### Prepared Worker construction and launch boundary
+
+`NodeRuntime.from_preparation` verifies the externally pinned receipt/public
+inventory before constructing the Worker, checks mode/rank/role and run-output
+directory, and retains its own plan snapshot. A bound Worker rechecks prepared
+bytes before each role launch and User invocation. It does not rehash all files
+in 100 ms liveness polls. The direct constructor remains a low-level lifecycle
+component for focused tests, not an authorized experiment entrypoint; T007 must
+require the final operator to use `from_preparation` and separate SIF/gate checks.
+The final operator consumer is still pending.
+
+Three new tests exercise real inventory verification with layout/public-file
+fixtures: changed inputs prevent construction/output creation, changed bytes
+prevent child launch/lease, caller plan mutation cannot rewrite the retained
+snapshot, and another run's output path is rejected. **3 passed in 0.30s**;
+full focused **363 passed in 20.70s**, JUnit
+`results/spec183-prepared-worker-r1/junit.xml`. No actual NDN certificates,
+SIF preparation or inference is validated by these fixture tests. T005 remains
+partial, with final command/readiness/T006/T007 closure outstanding.
+
 ### Public preparation inventory and receipt verification
 
 `runtime/yolo_bundle.py::preparation_inventory` enumerates the exact public
