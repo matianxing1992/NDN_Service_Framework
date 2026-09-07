@@ -42,6 +42,27 @@ The journal currently allows a subset of allowed fields, so it does not reject
 the incomplete event. This must be filled from the verified catalogue owner,
 not fabricated by the collector, before T006 closes.
 
+Follow-up source fix: the YOLO builder now retains `catalogue_body_digest` on
+its splitter after the existing signature/schema/model/graph/weights checks.
+The digest is SHA-256 of the exact canonical signed JSON body (sorted keys,
+compact separators, UTF-8, ensure_ascii=False), excluding only the `signature`
+envelope. Digest calculation alone is not signature verification. V3 graph
+emission propagates this value and rejects malformed nonempty digests. Generic
+splitters without catalogues keep their existing optional evidence behavior.
+The maintained journal itself is not tightened here: negative/partial traces
+can remain partial, but cannot pass the final successful lifecycle validator.
+
+Regression now includes real LifecycleJournal import/write/validate followed
+by the new collector (no writer mock), canonical body digest tests including
+non-ASCII content and signature-envelope independence, and isolated actual V3
+graph emission. Full native adapter construction and model inference remain
+unverified. Final collector must compare this digest to the frozen verified
+catalogue, not only check its syntax.
+
+Catalogue follow-up regression: 489 passed in 42.77s using the same expanded
+six-selector command; JUnit at
+`Experiments/TigerCluster/results/t006-catalogue-r1/junit.xml`.
+
 `app_sdk/placement.py` V3 PLACEMENT_DECISION emits
 `candidateId=str(selected_candidate.candidate_digest)`. The V3 SplitCandidate
 has no catalogue candidate-id field. The maintained User lifecycle observer

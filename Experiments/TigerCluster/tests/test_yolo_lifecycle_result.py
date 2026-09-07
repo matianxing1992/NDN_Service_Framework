@@ -1,6 +1,7 @@
 """Lifecycle is lineage evidence, not proof of Provider execution."""
 import ast
 import json
+import importlib.util
 import sys
 from pathlib import Path
 
@@ -44,6 +45,23 @@ def test_valid_lifecycle_is_only_lineage(tmp_path):
     assert evidence['qualification'] == 'LIFECYCLE_COMPONENT_ONLY'
     assert evidence['planDigest'] == D
     assert evidence['resultDigest'] == D
+
+
+def test_real_journal_bytes_feed_collector(tmp_path):
+    path = ROOT / 'Experiments/NDNSF_DI_YoloAckDriven_Minindn.py'
+    spec = importlib.util.spec_from_file_location('spec183_real_lifecycle_writer', path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    writer = module.LifecycleJournal(tmp_path, 'two-node', require_protocol_binding=True)
+    writer.bind_protocol_identity(request_id='/run/request/1', attempt_id='attempt-1')
+    for row in journal():
+        writer.append(row['milestone'], **{key: row[key] for key in
+                      module._LIFECYCLE_FIELD_ALLOWLIST[row['milestone']]})
+    writer.validate_complete()
+    evidence = result.validate_lifecycle(tmp_path, case='two-node', request_id='/run/request/1',
+        attempt_id='attempt-1', candidate_id='shared-backbone-two-shard-v1', candidate_digest=D)
+    assert evidence['events'][3]['catalogueDigest'] == D
 
 
 @pytest.mark.parametrize('index,key,value', [

@@ -1,11 +1,48 @@
 """Production identity resolver kernel; native adapter import remains T008."""
 import ast
+import hashlib
+import json
+import re
 from pathlib import Path
 from types import SimpleNamespace as NS
 
 import pytest
+from ndnsf_distributed_inference.adapters.yolo import candidates
 
 SOURCE = Path(__file__).resolve().parents[2] / 'NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/yolo/adapter.py'
+
+
+def test_catalogue_digest_covers_signed_body_not_signature_envelope():
+    body = {'schema': 'catalogue', 'label': '车辆', 'candidates': []}
+    expected = 'sha256:' + hashlib.sha256(json.dumps(
+        body, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode()).hexdigest()
+    assert candidates.catalogue_body_digest(dict(body, signature={'valueB64': 'a'})) == expected
+    assert candidates.catalogue_body_digest(dict(body, signature={'valueB64': 'b'})) == expected
+    assert candidates.catalogue_body_digest(dict(body, label='changed')) != expected
+
+
+@pytest.mark.parametrize('digest', ['sha256:' + '1'*64, '', 'bad'])
+def test_v3_graph_emission_propagates_only_valid_adapter_catalogue(digest):
+    path = SOURCE.parents[2] / 'app_sdk/placement.py'
+    tree = ast.parse(path.read_text())
+    parent = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)
+        and any(isinstance(x, ast.Assign) and any(isinstance(t, ast.Name)
+            and t.id == 'graph_evidence' for t in x.targets) for x in n.body))
+    start = next(i for i,n in enumerate(parent.body) if isinstance(n, ast.Assign)
+        and any(isinstance(t, ast.Name) and t.id == 'graph_evidence' for t in n.targets))
+    events = []
+    namespace = dict(re=re, graph=NS(graph_digest='sha256:'+'2'*64),
+        adapter=NS(splitter=NS(catalogue_digest=digest)), request_id='/request/1', _attempt=1,
+        self=NS(_emit_lifecycle=lambda *a, **k: events.append((a,k))))
+    code = compile(ast.fix_missing_locations(ast.Module(body=parent.body[start:start+4], type_ignores=[])), str(path), 'exec')
+    if digest == 'bad':
+        with pytest.raises(ValueError, match='catalogue evidence digest'):
+            exec(code, namespace)
+        assert not events
+    else:
+        exec(code, namespace)
+        assert events[0][0] == ('GRAPH_READY',)
+        assert events[0][1].get('catalogueDigest', '') == digest
 
 
 def resolver():

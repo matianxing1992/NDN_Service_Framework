@@ -21,6 +21,7 @@ from ...splitter import (
 )
 from .candidates import (
     RegisteredYoloCandidate, verify_catalogue, verify_catalogue_signature,
+    catalogue_body_digest,
 )
 from .graph import Yolo26GraphAdapter, load_yolo_graph
 
@@ -53,6 +54,9 @@ class Yolo26Splitter:
     graph_node_names: tuple[str, ...] = ()
     graph_metadata: Mapping[str, Any] = field(default_factory=dict)
     postprocessing: Mapping[str, Any] = field(default_factory=dict)
+    # Evidence identity of the catalogue body validated by the builder.
+    # Not part of SplitCandidate's runtime digest or artifact naming.
+    catalogue_digest: str = ""
 
     def _role_assignment(self, graph: ModelGraphSnapshot, candidate: RegisteredYoloCandidate) -> dict[str, str]:
         nodes = tuple(graph.topological_order)
@@ -557,6 +561,7 @@ def build_yolo26n_adapter(package_dir: str | Path, *, require_signature: bool = 
         tuple(str(item) for item in graph_info.get("nodeNames", ())),
         graph_info,
         manifest.get("postprocessing", {}),
+        catalogue_digest=catalogue_body_digest(catalogue),
     )
     task = JsonTaskAdapter(
         AdapterPortDescriptor("yolo26n-task", "1", descriptor.input_schema_digest),

@@ -24,6 +24,17 @@ def _digest(value: Any) -> str:
     return "sha256:" + hashlib.sha256(_canonical(value)).hexdigest()
 
 
+def catalogue_body_digest(catalogue: Mapping[str, Any]) -> str:
+    """Hash exactly the canonical signed body, excluding its signature envelope.
+
+    Computing this identity does not verify the signature or catalogue schema.
+    Production callers must complete both checks before publishing evidence.
+    """
+    body = dict(catalogue)
+    body.pop('signature', None)
+    return _digest(body)
+
+
 @dataclass(frozen=True)
 class RegisteredYoloCandidate:
     candidate_id: str

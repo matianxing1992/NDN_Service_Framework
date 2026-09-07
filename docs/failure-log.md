@@ -1816,6 +1816,11 @@ part of task context. Format per entry:
   terminal marker or the fetch is unbounded.
 ## 2026-09-07 — Spec183 V3 lifecycle candidate identity mismatch
 
+Second follow-up: verified YOLO catalogue body digest is now retained by the
+splitter and emitted in V3 GRAPH_READY. Canonicalization matches signature
+verification (excludes signature envelope). Real journal-to-collector file
+round-trip passes; actual native adapter/model qualification remains pending.
+
 Follow-up: adapter resolver now recomputes the selected runtime digest against
 registered conversions and requires exactly one match. V3 emission uses the
 resolved catalogue identity; no runtime digest semantics change. Four isolated

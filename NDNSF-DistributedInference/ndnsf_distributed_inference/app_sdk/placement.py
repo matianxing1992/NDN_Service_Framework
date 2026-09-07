@@ -3130,9 +3130,15 @@ class AutomaticPlanningCoordinator:
         candidates = tuple(adapter.splitter.enumerate_candidates(descriptor, graph))
         if not candidates or len(candidates) > self.budget.max_candidates:
             raise ValueError("adapter returned an invalid V3 candidate set")
+        graph_evidence = {"graphDigest": str(graph.graph_digest)}
+        catalogue_digest = str(getattr(adapter.splitter, "catalogue_digest", ""))
+        if catalogue_digest:
+            if re.fullmatch(r"sha256:[0-9a-f]{64}", catalogue_digest) is None:
+                raise ValueError("adapter catalogue evidence digest is invalid")
+            graph_evidence["catalogueDigest"] = catalogue_digest
         self._emit_lifecycle(
             "GRAPH_READY", request_id=request_id, attempt=_attempt,
-            graphDigest=str(graph.graph_digest))
+            **graph_evidence)
 
         providers: list[ProviderPlanningViewV3] = []
         provider_offers: dict[str, ProviderOfferV3] = {}
