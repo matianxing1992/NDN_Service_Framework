@@ -24,7 +24,7 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 | [T003-A Qwen Split Candidates](contracts/execution-units.md#t003-a-qwen-split-candidates) | DONE | T002-A | [acceptance](evidence/t003-a-qwen-split-20260907.md)；CPP(Spec182QwenSplit/*) 5 cases 全绿（合法 cover、边界 budget、非法 rank/图输入），expected 逐条对照冻结 `QwenThreeStageSplitter`，支持范围保持 rank-one；新增 2 case 于 di-native-planning.t.cpp | 2026-09-07 |
 | [T003-B Yolo Split Candidates](contracts/execution-units.md#t003-b-yolo-split-candidates) | DONE | T003-A | [acceptance](evidence/t003-b-yolo-split-20260907.md)；CPP(Spec182YoloSplit/*) 7 cases 全绿（固定 cover、错误 component/图/外来模型拒绝、确定性 + budget 截断），expected 对照冻结 `Yolo26Splitter`/`RegisteredYoloCandidate`；新增 2 case 于 di-native-planning.t.cpp | 2026-09-07 |
 | [T003-C Placement and Registry](contracts/execution-units.md#t003-c-placement-and-registry) | DONE | T003-A, T003-B | [acceptance](evidence/t003-c-placement-20260907.md)；CPP(Spec182Placement/*) 9 cases 全绿（residency→freeBytes→provider 稳定序、budget/ref tie-break、同输入同结果、非法向量/全拒），对照冻结 `propose_v3` 共享语义区间；新增 2 case 于 di-native-planning.t.cpp | 2026-09-07 |
-| [T004-A Canonical Plan Sealing](contracts/execution-units.md#t004-a-canonical-plan-sealing) | PARTIAL | T003-C | [baseline](evidence/task-progress-registry-20260907.md)；已有相关源码切片；完整卡验收未完成 | 2026-09-07 |
+| [T004-A Canonical Plan Sealing](contracts/execution-units.md#t004-a-canonical-plan-sealing) | DONE | T003-C | [acceptance](evidence/t004-a-plan-sealer-20260907.md)；CPP(Spec182PlanSealer/*) 7 cases 全绿（canonical 封印 + M22 单源投影、encode 固定 7-key 片段字节一致 + 独立 JSON oracle、逐维度篡改敏感、错误 endpoint/缺 grant/错 ACK digest 首边界拒绝、plaintext 无 grant 封面）；planned suite 登记于新文件 di-native-plan-sealer.t.cpp；真实 Core commit/Provider parser 对照留 T016 | 2026-09-07 |
 | [T005-A InProcess Authority](contracts/execution-units.md#t005-a-inprocess-authority) | NOT_STARTED | T004-A | [baseline](evidence/task-progress-registry-20260907.md)；无本卡独立执行/验收记录；按依赖领取 | 2026-09-07 |
 | [T005-B Requester Grant Publication](contracts/execution-units.md#t005-b-requester-grant-publication) | PARTIAL | T005-A | [baseline](evidence/task-progress-registry-20260907.md)；已有相关源码切片；完整卡验收未完成 | 2026-09-07 |
 | [T006-A Canonical Source Identity](contracts/execution-units.md#t006-a-canonical-source-identity) | PARTIAL | T002-A | [baseline](evidence/task-progress-registry-20260907.md)；已有相关源码切片；完整卡验收未完成 | 2026-09-07 |
@@ -56,7 +56,20 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 
 ## Current Checkpoint
 
-2026-09-07 T001-C freeze / **T001-C DONE、父 T001 DONE（O-001--O-005 全部关闭）**：
+2026-09-07 T004-A Canonical Plan Sealing / **T004-A DONE、父 T004 DONE**：
+按 T004-A 卡 Verify（CPP(Spec182PlanSealer/*)）在 planned 文件
+`tests/unit-tests/di-native-plan-sealer.t.cpp` 登记 suite `Spec182PlanSealer`
+7 cases 全绿（canonical 封印 + M22 单源投影、encode 固定 7-key canonical
+片段与布局字面量/独立 JSON oracle 一致、逐维度篡改敏感、错误 endpoint/
+缺 grant/错 ACK digest 首边界拒绝、plaintext 无 grant 封面、encode 拒绝面
+与 canonical 转义）；reconfigure 使新 .t.cpp 进入 unit-tests ant_glob
+（configure rc=0），回归两 suite rc=0。修复
+NativePlanSealer.cpp::quote() 控制字符 canonical 转义（escape case 发现的
+缺陷；可达 ASCII 输入字节零变化）。核心密封字节被真实 Core/Provider
+parser 消费、planDigest 密码学再校验、逐 role 投影迭代留 T010/T016。
+evidence [t004-a](evidence/t004-a-plan-sealer-20260907.md)。下一步：T005-A
+（InProcess Authority，依赖已满足）。
+
 按 T001-C 卡 Verify（DOC；从实际 Waf 注册推导命令；planned 测试全带 author owner；
 父 T001 完整验收满足）完成。已把 [case-manifest](../../tests/fixtures/spec182/case-manifest.json)
 （schema spec182-case-manifest-v1）写入 tests/fixtures/spec182/：23 张实现卡各一个
@@ -319,7 +332,7 @@ T015在全部实现后补审整体接线；T016执行完整unit→integration→
   Design: FR-003,FR-009,FR-016; CD-002。Proof: PO-002。
   [T003 contract](contracts/work-units.md#t003-native-split-and-placement-decisions)。
 
-- [ ] T004 [US1] **Canonical Native Plan Sealing**。合法 proposal 转成可被真实 Core/Provider 接受的规范计划；非法投影在首边界拒绝。Dependencies: T003。
+- [x] T004 [US1] **Canonical Native Plan Sealing**。合法 proposal 转成可被真实 Core/Provider 接受的规范计划；非法投影在首边界拒绝。Dependencies: T003。
   Design: FR-002,FR-004; CD-003。Proof: PO-003。
   [T004 contract](contracts/work-units.md#t004-canonical-native-plan-sealing)。
 

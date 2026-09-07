@@ -23,11 +23,29 @@ bool isDigest(const std::string& value)
 
 std::string quote(const std::string& value)
 {
+  static const char hex[] = "0123456789abcdef";
   std::ostringstream out;
   out << '"';
   for (const auto c : value) {
-    if (c == '"' || c == '\\') out << '\\';
-    out << c;
+    const auto byte = static_cast<unsigned char>(c);
+    switch (c) {
+      case '"': out << "\\\""; break;
+      case '\\': out << "\\\\"; break;
+      case '\b': out << "\\b"; break;
+      case '\f': out << "\\f"; break;
+      case '\n': out << "\\n"; break;
+      case '\r': out << "\\r"; break;
+      case '\t': out << "\\t"; break;
+      default:
+        // JSON string bodies cannot carry raw control characters; emit the
+        // canonical \u00XX form. Bytes at or above 0x20 pass through raw,
+        // keeping UTF-8 payloads intact (same rule as the canonical encoder).
+        if (byte < 0x20) {
+          out << "\\u00" << hex[byte >> 4] << hex[byte & 0x0F];
+        } else {
+          out << c;
+        }
+    }
   }
   out << '"';
   return out.str();
