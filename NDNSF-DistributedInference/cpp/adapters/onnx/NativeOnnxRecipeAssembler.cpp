@@ -428,23 +428,33 @@ compareBoundaryContracts(const std::vector<NativeAssemblyTensorContractV3>& expe
 
 } // namespace
 
+namespace {
+
+// Shared certified-assembly chain (the OA04 core).  One implementation runs
+// the S1-S7 gates for both entry styles: OA01 (in-process provider calls with
+// control caps and a cancellation-checking onRound) and the bounded worker
+// child (certified recipe caps from the metadata, no-op onRound).  onRound is
+// invoked at every deadline/cancellation checkpoint exactly where the old
+// in-process chain called checkActive(control).
 NativeCertifiedAssembly
-assembleNativeCertifiedOnnxModel(const NativeCanonicalSource& source,
-                                 const NativeCertifiedRecipe& recipe,
-                                 const NativeAssemblyControl& control)
+assembleCertifiedOnnxChain(const NativeCanonicalSource& source,
+                           const NativeCertifiedRecipe& recipe,
+                           std::uint64_t maxSourceBytes,
+                           std::uint64_t maxAssembledBytes,
+                           const std::function<void()>& onRound)
 {
-  checkActive(control);
-  if (control.maxSourceBytes == 0 || control.maxAssembledBytes == 0 ||
-      source.modelBytes.empty() || source.modelBytes.size() > control.maxSourceBytes ||
+  onRound();
+  if (maxSourceBytes == 0 || maxAssembledBytes == 0 ||
+      source.modelBytes.empty() || source.modelBytes.size() > maxSourceBytes ||
       source.modelBytes.size() > static_cast<std::uint64_t>(std::numeric_limits<int>::max()))
     fail("SOURCE_LIMIT");
   if (source.initializerBytes &&
       (source.initializerBytes->empty() ||
-       source.initializerBytes->size() > control.maxSourceBytes ||
+       source.initializerBytes->size() > maxSourceBytes ||
        source.initializerBytes->size() >
          static_cast<std::uint64_t>(std::numeric_limits<int>::max()) ||
        checkedAdd(source.modelBytes.size(), source.initializerBytes->size()) >
-         checkedAdd(control.maxSourceBytes, control.maxSourceBytes)))
+         checkedAdd(maxSourceBytes, maxSourceBytes)))
     fail("INITIALIZER_LIMIT");
   if (recipe.adapterId.empty() || recipe.backend.empty() || recipe.roleKind.empty() ||
       recipe.nodeIndices.empty() || recipe.maxNodes == 0 ||
@@ -487,14 +497,26 @@ assembleNativeCertifiedOnnxModel(const NativeCanonicalSource& source,
     fail("GRAPH");
   }
 
+  // The identity seam keeps its own control-shaped caps/cancellation checks;
+  // mirror this chain's budget into a local control so the worker child and
+  // the in-process entry share the exact same identity code path.
+  NativeAssemblyControl identityControl;
+  identityControl.deadline = std::chrono::steady_clock::time_point::max();
+  identityControl.requireActive = onRound;
+  identityControl.maxSourceBytes = maxSourceBytes;
+  identityControl.maxAssembledBytes = maxAssembledBytes;
+  const auto chainControl = [&]() -> const NativeAssemblyControl& {
+    return identityControl;
+  };
+
   // S4: the certified identity of the post-inline original must equal the
   // recipe digests; a mismatch means the recipe was sealed for different
   // source bytes (executor.py canonical ONNX digest mismatch errors).
-  const auto identity = canonicalOnnxSourceIdentity(source, control);
+  const auto identity = canonicalOnnxSourceIdentity(source, chainControl());
   if (identity.graphDigest != recipe.graphDigest ||
       identity.initializerDigest != recipe.canonicalInitializerDigest)
     fail("RECIPE");
-  checkActive(control);
+  onRound();
 
   // S5: infer shapes on a copy (never mutating the parsed original), walk
   // the certified output boundary backwards, and rebuild the extractor
@@ -506,7 +528,7 @@ assembleNativeCertifiedOnnxModel(const NativeCanonicalSource& source,
   catch (const std::exception&) {
     fail("GRAPH");
   }
-  checkActive(control);
+  onRound();
   const auto& inferredGraph = inferred.graph();
   std::unordered_set<std::string> graphInputNames;
   for (const auto& input : inferredGraph.input()) graphInputNames.insert(input.name());
@@ -541,7 +563,7 @@ assembleNativeCertifiedOnnxModel(const NativeCanonicalSource& source,
   catch (const std::exception&) {
     fail("GRAPH");
   }
-  checkActive(control);
+  onRound();
   if (assembled.graph().node_size() != static_cast<int>(recipe.nodeIndices.size()))
     fail("NODE_COVER");
   for (std::size_t i = 0; i < recipe.nodeIndices.size(); ++i) {
@@ -553,13 +575,13 @@ assembleNativeCertifiedOnnxModel(const NativeCanonicalSource& source,
   }
   compareBoundaryContracts(recipe.expectedInputs, assembled.graph().input());
   compareBoundaryContracts(recipe.expectedOutputs, assembled.graph().output());
-  checkActive(control);
+  onRound();
 
   // S7: deterministic wire within the resource envelope, then a real CPU
   // session load of exactly these bytes; the session is destroyed before the
   // result leaves this function.
-  auto bytes = deterministicWire(assembled, control.maxAssembledBytes);
-  checkActive(control);
+  auto bytes = deterministicWire(assembled, maxAssembledBytes);
+  onRound();
   try {
     Ort::Env env(ORT_LOGGING_LEVEL_WARNING, "ndnsf-certified-assembly");
     Ort::SessionOptions options;
@@ -569,7 +591,7 @@ assembleNativeCertifiedOnnxModel(const NativeCanonicalSource& source,
   catch (const std::exception&) {
     fail("GRAPH");
   }
-  checkActive(control);
+  onRound();
   NativeCertifiedAssembly result;
   result.modelDigest = digest(bytes);
   result.modelBytes = std::move(bytes);
@@ -577,6 +599,32 @@ assembleNativeCertifiedOnnxModel(const NativeCanonicalSource& source,
   for (const auto& contract : recipe.expectedInputs) result.inputNames.push_back(contract.name);
   for (const auto& contract : recipe.expectedOutputs) result.outputNames.push_back(contract.name);
   return result;
+}
+
+} // namespace
+
+NativeCertifiedAssembly
+assembleNativeCertifiedOnnxModel(const NativeCanonicalSource& source,
+                                 const NativeCertifiedRecipe& recipe,
+                                 const NativeAssemblyControl& control)
+{
+  // OA01 entry: the caller keeps a valid cancellation/deadline control and
+  // its own resource budget; every round of the shared chain re-checks it.
+  checkActive(control);
+  return assembleCertifiedOnnxChain(source, recipe, control.maxSourceBytes,
+                                    control.maxAssembledBytes,
+                                    [&control] { checkActive(control); });
+}
+
+NativeCertifiedAssembly
+assembleInProcess(const NativeCanonicalSource& source,
+                  const NativeCertifiedRecipe& recipe)
+{
+  // OA04: the bounded worker child runs the identical chain against the
+  // certified recipe budget with no cancellation callback of its own; the
+  // parent transport owns cancellation by killing this process.
+  return assembleCertifiedOnnxChain(source, recipe, recipe.maxSourceBytes,
+                                    recipe.maxAssembledBytes, [] {});
 }
 
 // ---------------------------------------------------------------------------

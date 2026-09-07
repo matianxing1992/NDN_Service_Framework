@@ -222,6 +222,30 @@ def build(bld):
                 linkflags=['-Wl,-rpath,$ORIGIN/..'],
                 install_path=None)
 
+    # Bounded native assembly worker (spec182 T006-C / OA03): the fixed
+    # installed binary that runNativeOnnxAssemblyWorker spawns for every cold
+    # certified assembly.  Built unconditionally (with the UAV/App binaries,
+    # before the examples gate) because the Spec182OnnxWorkerProtocol
+    # subprocess cases and the L0 install evidence resolve the same binary
+    # from a --with-tests tree.  It carries only the certified-assembly
+    # chain TU (OA04 in NativeOnnxRecipeAssembler.cpp) and the worker
+    # protocol TU; no provider runtime, no ProtectedRuntime secrets, and no
+    # path-command entry surface: stdout is protocol bytes only and main()
+    # only dispatches into the worker entry.
+    bld.program(name='di-native-assembly-worker',
+                target='../DI_NativeOnnxAssemblyWorker',
+                source=(["DI_NativeOnnxAssemblyWorker.cpp"] +
+                        bld.path.parent.ant_glob([
+                            'NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.cpp',
+                            'NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.cpp',
+                        ])),
+                includes=['..', '../ndn-service-framework',
+                          '../NDNSF-DistributedInference/cpp/adapters/onnx'],
+                use='BOOST ONNXRUNTIME ONNX NDN_CXX NDN_SVS PROTOBUF OPENSSL DL',
+                cxxflags=['-fPIC', '-pthread'],
+                linkflags=['-pthread'],
+                install_path='${LIBEXECDIR}/ndnsf-di')
+
     if not bld.env.WITH_EXAMPLES:
         return
 

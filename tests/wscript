@@ -53,7 +53,7 @@ def build(bld):
                        ]),
                 includes=['..', '../ndn-service-framework',
                           '../NDNSF-DistributedInference/cpp/adapters/onnx'],
-                use='ndn-service-framework NDN_CXX NDN_SVS PROTOBUF ONNX NAC-ABE NDNSD BOOST OPENSSL DL',
+                use='ndn-service-framework NDN_CXX NDN_SVS PROTOBUF ONNX ONNXRUNTIME NAC-ABE NDNSD BOOST OPENSSL DL',
                 rpath=[bld.bldnode.abspath()],
                 install_path=None)
 
@@ -99,6 +99,19 @@ def build(bld):
                 use='ndnsf-distributed-inference ndn-service-framework ' + framework_use,
                 linkflags=['-Wl,--no-relax'],
                 rpath=[bld.bldnode.abspath()], install_path=None)
+
+    # Spec182 worker-protocol test tools (T006-C).  Deliberately-misbehaving
+    # worker children spawned through the same OA02 transport for the crash /
+    # cancel / incomplete subprocess cases; never installed and never
+    # referenced by production code.  Each tool is a dependency-free libc
+    # binary so it stays isolated from the framework in its own process group.
+    for role in ['block', 'sigkill', 'silent0', 'silent7', 'garbage']:
+        target = 'spec182-worker-tool-' + role
+        bld.program(target='../' + target,
+                    name=target,
+                    source=[bld.path.find_node('standalone/spec182-worker-tools/' + role + '.cpp')],
+                    cxxflags=['-fPIC', '-O0', '-g0'],
+                    install_path=None)
 
     di_integration_sources = bld.path.parent.ant_glob([
         'NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.cpp',
