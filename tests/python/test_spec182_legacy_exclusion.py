@@ -35,3 +35,4 @@ def test_setup_compiles_binding_and_links_the_shared_di_library() -> None:
     assert '"src/ndnsf/di_bindings.cpp"' in setup
     assert '"ndnsf-distributed-inference"' in setup
     assert "NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.cpp" not in setup
+    assert "NativeGrantVerifier.cpp" not in setup
