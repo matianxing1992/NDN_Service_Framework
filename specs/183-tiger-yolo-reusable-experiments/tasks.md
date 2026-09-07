@@ -78,6 +78,15 @@ T001–T004形成 profile/launcher 实现骨架；可操作 MVP 还要求 T006 �
 
 ## Current Checkpoint
 
+2026-09-07 device identity component: validate_device_binding compares native
+CUDA UUID/list, CUDA_VISIBLE_DEVICES and runtime device ordinal against
+independently resolved allocation/launch expectations; requires the native
+cuda-runtime-pci+driver-uuid source. One exposed GPU means runtime ordinal 0,
+even when its host selector is 3 or a UUID. CPU/Merge reject GPU claims or
+visibility. Thirty-six source-shaped tests pass; no actual GPU probe. Next
+wire independently verified allocation receipts and role mapping into the
+final collector; do not derive expected UUID from the observation itself.
+
 2026-09-07 PID binding wired: Worker now generates a fresh 64-hex nonce for
 each Provider launch and executes the in-container witness before execing
 the native Provider. Node receipt v3 retains launchNonce and host PID;

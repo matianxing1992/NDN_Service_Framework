@@ -781,6 +781,42 @@ def decode_native_observation(payload):
     return row
 
 
+def validate_device_binding(observation, *, expected_uuid=None, expected_visible=None):
+    """Match native CUDA-runtime identity to independently resolved allocation.
+
+    Expected UUID/selector must come from allocated-node preflight plus the
+    actual launch, not from the observation itself. This is not a substitute
+    for Slurm allocation provenance or ORT model-node execution checks.
+    """
+    uuid = r'GPU-[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}'
+    if not isinstance(observation, dict):
+        raise EvidenceError('DEVICE_OBSERVATION')
+    runner = observation.get('runnerKind')
+    if runner in ('onnxruntime-cpu', 'native-yolo-postprocess'):
+        if (expected_uuid is not None or expected_visible is not None
+                or observation.get('gpuUuid') != ''
+                or observation.get('gpuUuids', []) not in ([], '')
+                or observation.get('cudaVisibleDevices') != ''
+                or observation.get('gpuIdentitySource', '') != ''):
+            raise EvidenceError('CPU_DEVICE_EXPOSURE')
+        return dict(qualification='CPU_DEVICE_COMPONENT_ONLY')
+    if (runner != 'onnxruntime-cuda' or not isinstance(expected_uuid, str)
+            or re.fullmatch(uuid, expected_uuid) is None
+            or not isinstance(expected_visible, str)
+            or re.fullmatch(r'(?:0|[1-9][0-9]*|'+uuid+r')', expected_visible) is None
+            or (expected_visible.startswith('GPU-') and expected_visible.lower() != expected_uuid.lower())):
+        raise EvidenceError('GPU_EXPECTED_ALLOCATION')
+    expected_uuid = 'GPU-' + expected_uuid[4:].lower()
+    device = observation.get('device')
+    if (not isinstance(device, dict) or device.get('kind') != 'cuda' or device.get('id') != '0'
+            or observation.get('gpuUuid') != expected_uuid
+            or observation.get('gpuUuids') != [expected_uuid]
+            or observation.get('cudaVisibleDevices') != expected_visible
+            or observation.get('gpuIdentitySource') != 'cuda-runtime-pci+driver-uuid'):
+        raise EvidenceError('GPU_RUNTIME_ALLOCATION_MISMATCH')
+    return dict(gpuUuid=expected_uuid, qualification='GPU_IDENTITY_COMPONENT_ONLY')
+
+
 def validate_native_observation(payload, *, provider, role, request_id, attempt,
                                 plan_digest, pid, runner_kind):
     """Bind a decoded observation to launcher and lifecycle facts.

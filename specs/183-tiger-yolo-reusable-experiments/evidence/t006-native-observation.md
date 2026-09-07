@@ -143,3 +143,25 @@ values. Existing PID-equality collectors are not yet repaired.
 Expanded focused regression: 686 passed in 46.52s, including the real PID
 namespace test with no skips. JUnit:
 `Experiments/TigerCluster/results/t006-pid-namespace-r1/junit.xml`.
+# Device allocation binding component (2026-09-07)
+
+validate_device_binding requires expected UUID and visibility selector from
+an independently verified allocated-node preflight and actual launch. Native
+CUDA evidence must match both UUID fields, exact CUDA_VISIBLE_DEVICES, device
+kind cuda/ordinal 0 (single exposed device), and gpuIdentitySource equal to
+cuda-runtime-pci+driver-uuid. The source implementation queries the CUDA runtime
+PCI identity then the driver UUID (CudaDeviceIdentity.hpp) and stores these
+fields in OnnxRuntimeModelRunner; environment text alone is not that evidence.
+Uppercase UUID selectors allowed by container_command remain supported, while
+native UUID is compared to its canonical lowercase-hex representation.
+
+CPU and native Merge reject nonempty GPU UUIDs, CUDA visibility or GPU source;
+no GPU expectation may be supplied for these roles. Thirty-six tests use
+source-shaped device records and reject wrong UUID/list/ordinal/selector/source,
+missing device information, ambiguous expected selectors and CPU exposure.
+They do not probe a GPU or qualify a Slurm allocation. The function returns a
+component-only status; trusted allocation receipt production, role-wise wiring,
+physical host agreement and final operator integration remain pending.
+
+Expanded focused regression: 729 passed in 55.70s; JUnit
+`Experiments/TigerCluster/results/t006-device-binding-r1/junit.xml`.
