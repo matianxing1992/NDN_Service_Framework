@@ -4,6 +4,78 @@
 **Branch**: `TigerClusterExperiments`
 **Status**: 2/17 tasks complete (T001 inventory and T003 focused component acceptance); IN_PROGRESS, no runtime PASS.
 
+## Detailed Execution Progress
+
+更新：2026-09-07；文档/源码核对基线 `d1f1504a`，另见工作区已有的
+`Experiments/TigerCluster/tools/spec183_host_build.sh` 修改及未跟踪的
+`evidence/host-unit.md`。本轮只核对与整理进度，没有启动构建、模型或集群测试。
+下表是当前执行入口；后文 checkpoint 是历史证据，不应把旧“下一步”当作当前指令。
+`VERIFIED` 仅指该行声明的范围；历史组件测试记录未在本轮重跑，不能证明当前候选
+的 runtime PASS。`IMPLEMENTED` 表示代码/脚本存在；`BLOCKED` 表示仍有明确前置缺口。
+子步骤不增加顶层任务数，不按行数计算完成百分比。父任务仍须满足原验收条件才勾选。
+
+### T001–T007：关闭实际 GPU YOLO 执行路径
+
+| Step | Parent | Concrete outcome / path | State | Evidence / verification scope | Blocker / next action | Reuse / rerun trigger |
+| --- | --- | --- | --- | --- | --- | --- |
+| T001.a | T001 | 四库、模型、工具、资源与接口接收清点 | VERIFIED | [input-inventory](evidence/input-inventory.md)；清点验收，非运行资格 | 新 candidate 更新输入身份；缺项仍显式保留 | 未变输入复用；source/model/tool 变化重核 |
+| T002.a | T002 | `runtime/yolo_profile.py` 的 I/R/E 完整性与失效检查 | IMPLEMENTED | [integrity](evidence/t002-integrity.md)；有历史 focused 证据 | 与最终生产入口重核，不能以 helper 关闭 T002 | 只重测变化 plane 及零副作用边界 |
+| T002.b | T002 | 既有 builder 接受 Spec183 host-gate receipt、保留 Spec175 | IMPLEMENTED | 后文 T002 dispatch/preflight checkpoint；组件/命令边界证据 | T007 核实接线；T010 后才验证真实 receipt 的消费 | 不为等真实 receipt 重复 fixture suite |
+| T003.a | T003 | `yolo_worker.py` 角色隔离、启动、进程组及清理 | VERIFIED | [worker](evidence/t003-worker.md)；T003 focused acceptance | 真实 workload 接线归 T004/T005 | 生命周期代码未变复用；改动时跑对应回归 |
+| T004.a | T004 | profile/schema、冻结 bundle、五命令与提交 journal | IMPLEMENTED | [profile](evidence/t004-profile.md)、[journal](evidence/t004-cli-journal.md)、后文 dispatch checkpoint | 结构和拒错已有记录；完整执行未验收 | 文档变更不重跑；字段/argv 变更做 focused 检查 |
+| T004.b | T004 | `jobs/yolo/submit.py` 的 local、staging、run 接真实 worker | BLOCKED | 当前源码仍有 `LOCAL_WORKER_NOT_WIRED`、`REMOTE_STAGING_NOT_WIRED`、`RUNNER_NOT_WIRED` | 连接实际 owner，保留 gate 检查；在 T007 前完成接线验证 | 先跑真实调用边界的 focused 回归，不重复全部组件测试 |
+| T005.a | T005 | 真实 User/Provider 参数、权限材料、准备与 readiness | IMPLEMENTED | [public recipients](evidence/t005-public-recipients.md)、[normal owner](evidence/t005-normal-node-owner.md) | 尚未证明完整真实 YOLO request→response | 未变安全组件证据复用；变更只重测影响边界 |
+| T005.b | T005 | 实际模型角色→独立 ORT reference→certified graph producer 接线 | BLOCKED | [owner gap](evidence/certified-graph-owner-gap.md)；serializer 已有，`apps/yolo.py` 无生产调用 | 通过既有 DI owner 取得实际 role bytes，接入 prepare 和真实 graph identity | 新接线的正例/篡改 focused 测试；不新增 campaign |
+| T005.c | T005 | 新 SIF 内 Controller 写真实 publication receipt | BLOCKED | [audit G2](evidence/design-code-convergence.md)；旧 base 缺当前参数 | T007 检查源码调用契约；T011 新 SIF 执行验证 | 旧 base 不反复尝试同一不支持参数 |
+| T006.a | T006 | `yolo_result.py` 数值、角色、边、GPU、退出与负例判定 | IMPLEMENTED | [native observation](evidence/t006-native-observation.md)、[numerical reanalysis](evidence/t006-numerical-reanalysis.md) | 组件证据不能代替生产数据来源和真实运行 | 仅重测变化的 oracle/collector 行为 |
+| T006.b | T006 | producer 文档经 preparation/run/collection 进入最终判定 | BLOCKED | [collector handoff](evidence/t006-collector-handoff.md)、[owner gap](evidence/certified-graph-owner-gap.md) | 依赖 T005.b 和 T004.b；拒绝 synthetic expected graph 代替生产输入 | 同一次接线验收覆盖生产者与消费者 |
+| T007.a | T007 | 生产路径设计—代码审计报告 | VERIFIED | [design-code-convergence](evidence/design-code-convergence.md)；报告结果为 BLOCK，非 PASS | 保留原发现；实际 wiring 修复后重审 | 纯排版不触发全套验证 |
+| T007.b | T007 | T002/T004/T005/T006 生产接线收敛为 PASS | BLOCKED | 同上；已定位 certified graph 与 launcher 缺口 | 先关闭源码语义缺口；T010/T011 runtime receipts 留在后续验收，不倒置依赖 | 按变更范围重审，未 PASS 不开展正式 T008+ 验收 |
+
+### T008–T017：逐级取得运行证据
+
+| Step | Parent | Concrete outcome / path | State | Evidence / verification scope | Blocker / next action | Reuse / rerun trigger |
+| --- | --- | --- | --- | --- | --- | --- |
+| T008.a | T008 | `tools/spec183_host_build.sh` 构建驱动初稿 | IMPLEMENTED | commit `6d9c213c` 与当前工作区源码；`host-unit.md` 的 RUNNING 未由本轮核实 | 需锁定源码、隔离 clean build tree、补第二扩展、让 `--help` 失败正常传播；初稿不是合格 build gate | 先修驱动再运行，避免无效构建产物导致整链返工 |
+| T008.b | T008 | NAC-ABE + NDN-SVS → NDNSD → NDNSF，系统 Boost 1.71，最多 -j2 | BLOCKED | `evidence/host-unit.md` 尚无完成结果；T007 未 PASS | T007 后从锁定源码干净构建；核对实际 loader 路径 | native/toolchain 变化才重建对应 ABI consumers |
+| T008.c | T008 | `_ndnsf` 与 `_py_repoclient`、真实入口、ldd/readelf/hash、注册 unit | BLOCKED | `evidence/host-unit.md` 各门未勾选 | T008.b 后在源码目录之外验证两个扩展，记录所有实际退出码 | 同候选注册集合在此集中验收一次 |
+| T009.a | T009 | 多进程 CPU YOLO 正常 ACK/Selection→四角色→数值结果 | NOT_STARTED | V09；NOT_RUN | T008 后执行；bootstrap 与 inference 分开判定 | 不重跑全部历史 DI 集成 |
+| T009.b | T009 | 当前 epoch/权限拒绝、错 Selection、activation loss/tamper 与清理 | NOT_STARTED | V10；NOT_RUN | 与 T009.a 共用 fixture，逐个保留独立判定 | 只跑注册安全/故障场景 |
+| T010.a | T010 | MiniNDN 正常 CPU 图、权限拒绝、缺依赖三个注册场景 | NOT_STARTED | V11；NOT_RUN | T009 后在真实 NFD 路径运行 | 不重复历史 campaign；消息/网络层证据不能用 unit 替代 |
+| T010.b | T010 | 同源 host qualification manifest 绑定命令、结果与清理 | NOT_STARTED | NOT_RUN | 从 T010.a 同一次实际执行生成 receipt，供 builder 消费 | 生成清单不额外跑模型；identity 变化才失效 |
+| T011.a | T011 | development-20260907 source seal 与 definition 准备 | IMPLEMENTED | 后文 SOURCE_READY checkpoint：`2aea8a0e` / `c4f33beb`，非 SIF PASS | 后续源码改变须重 seal；旧锁不覆盖 | 纯任务表修改按输入清单判断，不无条件重建 SIF |
+| T011.b | T011 | 本机构建一个完整 SIF、九产物/DSO/两个扩展/入口闭包 | NOT_STARTED | V12；NOT_RUN | T010 receipt 后使用匹配 compute 的 Apptainer 构建 | 固定同一合格 SIF；无运行库变更不重复构建 |
+| T011.c | T011 | exact-SIF 本地 CPU YOLO 与 empty HOME/scratch | NOT_STARTED | V13；NOT_RUN | T011.b 后执行，取得 LOCAL_CPU_PASS | 容器环境新增证据，不能以 host 结果替代 |
+| T012.a | T012 | GPU/Apptainer/容量 substrate 实值清点 | IMPLEMENTED | [input inventory](evidence/input-inventory.md) 有早期 probe 记录，非最终环境资格 | 正式 allocation 仍需实测；早期 probe 不抵消 T007 | 静态输入复用，不重复下载/拷贝 |
+| T012.b | T012 | exact-SIF staging、目标节点/GPU/路由与服务就绪 | NOT_STARTED | V14；NOT_RUN | T011 后核验实际 allocation 与哈希 | 每个新 allocation 检查环境，不重建同一镜像 |
+| T013.a | T013 | 一节点 GPU，四 Provider，1 warmup + 1 measured | NOT_STARTED | V15；NOT_RUN | T012 后证明三模型角色实际 CUDA、Merge CPU、全图数值/清理 | 一次有界资格门，不扩展 GPU/模型矩阵 |
+| T014.a | T014 | 两节点正常推理，1 warmup + 3 measured | NOT_STARTED | V16；NOT_RUN | T013 后证明 A backbone/merge、B heads 与跨节点依赖 | 同一候选第一次正常 allocation |
+| T015.a | T015 | 一次远端 negative-dependency，Selection 后切断必需中间 Data | NOT_STARTED | V17；NOT_RUN | T014 后验证有限失败、无假成功及清理 | 保留唯一注册远端负例，不复制整套本地负例 |
+| T016.a | T016 | 第二个新双节点 allocation，原配置/SIF，1+3 请求 | NOT_STARTED | V18；NOT_RUN | T015 后验证不改脚本的复用性 | 这是 SC-004 的独立验收，不是无目的重复 |
+| T017.a | T017 | `docs/yolo-reusable.md` / README 最终操作指引 | IMPLEMENTED | 已有指引；尚无端到端合格交付证据 | T016 后以实际成功命令校对路径/配置 | 文档修正只做链接/契约检查 |
+| T017.b | T017 | 离线重算与 `evidence/closure.md` 最终交付 | NOT_STARTED | V19；NOT_RUN | 对已保留结果重算，汇总各门和复用身份 | 离线重算不启动新的 GPU campaign |
+
+### 当前关键路径与避免重复验证
+
+方向审计：目标与 TigerCluster GPU YOLO 一致；原计划的 correctness/reuse 范围和
+单节点 1+1、双节点两次各 1+3 已有界，不增加模型、GPU 型号或性能比较矩阵。
+当前应先完成 **T004.b + T005.b + T006.b → T007.b PASS**，然后
+**T008 → T009 → T010 → T011 → T012 → T013 → T014 → T015 → T016 → T017**。
+后文将 T008 称为“下一个实现块”的历史 checkpoint 不取消 T007 前置。
+既有构建驱动初稿和开发探测不作为正式资格；本轮未干预可能存在的构建进程。
+
+- 每次运行先声明“本次关闭哪一个未决条件、哪些输入改变、复用哪份证据”。
+  无行为变化、失败或新风险，不重跑整个 focused 集合；子步骤表更新本身不触发测试。
+- 沿用 [plan 的失效矩阵](plan.md#candidate-and-change-invalidation)（正文 `Changed plane`
+  表）：native/toolchain 才触发 ABI 重建；配置/harness 改动重测受影响调用路径；
+  SIF 字节变化必须重新做 exact-SIF 验证；新 allocation 只复用匹配的文件身份。
+- 保留 unit、集成、MiniNDN、exact-SIF、GPU 和跨节点的不同证据范围；T010
+  只跑注册三个场景，T015 只跑一个远端负例。失败先诊断修复，禁止反复运行等待变绿。
+- 同一场景内合并采集数值、权限、角色/边、CUDA、退出和清理证据；不为每种
+  evidence 文件独立启动一轮推理。既有失败与历史结果保留，不覆盖、不拼接 PASS。
+
+## Historical Checkpoints
+
 2026-09-07 T004 dispatch 级 profile/planes checkpoint：新增
 [tools/spec183_dispatch_plane.py](../../../Experiments/TigerCluster/tools/spec183_dispatch_plane.py)
 render/check —— runtime plane（sif b6710fd6 + nativeManifest 48d7ab79 +

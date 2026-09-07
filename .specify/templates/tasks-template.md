@@ -23,6 +23,29 @@ them.
 **Organization**: Tasks are grouped by user story and expressed as cohesive,
 reviewable behavioral outcomes. Do not optimize for a high task count.
 
+## Detailed Execution Progress
+
+维护日期与证据基线（commit / candidate / run，适用时填写）：[UPDATE AT CHECKPOINT]。
+本表记录父任务内部可核实的执行步骤；父任务 checkbox 仍是验收完成状态。
+不要为了增加细节把同一行为拆成更多顶层任务，也不要用步骤数量推算完成百分比。
+
+| Step | Parent | Concrete outcome / path | State | Evidence / verification scope | Blocker / next action | Reuse / rerun trigger |
+| --- | --- | --- | --- | --- | --- | --- |
+| T001.a | T001 | [具体结果及文件路径] | NOT_STARTED | NOT_RUN | [依赖或下一步] | [可复用证据及失效条件；无则 N/A] |
+
+生成真实任务时替换示例行，覆盖每个父任务；复杂或部分完成任务使用稳定的
+`Tnnn.a`、`Tnnn.b` 子步骤 ID，简单任务可只有一行。状态使用
+`NOT_STARTED / IN_PROGRESS / IMPLEMENTED / VERIFIED / BLOCKED / FAILED`。
+`IMPLEMENTED` 仅表示代码存在；`VERIFIED` 仅限该行明确声明的验收范围。
+源码、组件测试、真实集成和运行测量必须区分；缺证据写 `NOT_RUN` 或
+`UNVERIFIED`，不得把 fixture 或旧 candidate 的 PASS 提升为当前运行资格。
+
+每次有效 checkpoint、失败、阻塞变化及 handoff 同步更新本表、父任务 checkbox
+和顶部汇总；只有父任务的全部必需验收条件通过才勾选。证据引用具体文件与
+命令/结果或 run ID，长日志保留在证据文件中。发生变化先按失效矩阵判断影响，
+复用仍匹配的证据；只有行为变化、失败或未决风险才触发相应重测，不因更新
+本表或增加子步骤重跑整套测试。审计只读模式报告不一致，不自动改表。
+
 ## Format: `[ID] [P?] [Story] Description`
 
 - **[P]**: Can run in parallel (different files, no dependencies)

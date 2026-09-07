@@ -2422,3 +2422,46 @@ Lesson: a frozen lock is an input identity, not a live pin; build-time
 re-pinning is a new release with its own lock, and cross-repository dirt
 must be resolved in the owning repository (or excluded when provably not
 part of the build).
+
+# 2026-09-07 — Spec183 progress obscured the controlling wiring gate
+
+Symptom: tasks.md contained many incremental component-test checkpoints and
+a later instruction to start T008, while the durable T007 audit remained
+BLOCK. The host build evidence said RUNNING without a completed qualification
+record. A reader could mistake recent activity for readiness or repeat broad
+tests without closing the actual GPU YOLO invocation gaps.
+
+Cause: parent checkboxes and historical prose did not expose concrete partial
+steps, scoped evidence, blockers and the current next action together. Current
+source still has launcher NOT_WIRED boundaries and no certified-graph producer
+call in apps/yolo.py. The T008 driver is also incomplete: it does not build the
+second Python extension, reuses build directories despite clearing the install
+prefix, and suppresses the entrypoint failure with `|| true`.
+
+Fix/remaining: added a maintained per-step table and dependency-ordered next
+actions in tasks.md; updated the shared task template and installed local
+Spec Kit generation/implementation/audit/convergence skills. The wiring and
+build-driver defects remain explicitly BLOCKED work, not fixes claimed by this
+documentation checkpoint. No build, model run or cluster test was launched;
+pre-existing driver edits and the untracked host-unit record were preserved.
+
+Tool evidence: Context Mode project health passed, but active health returned
+exit 4 for stale tasks.md source hash; direct repository state was used as the
+authority. GSD health was degraded (W017 old worktree, W019 noncanonical handoff);
+Spec183 tasks.md and its audit were used instead of old phase state. Neither
+warning justified deleting another worktree or restarting an experiment.
+After the final task edit, file-backed authority was reindexed; project and
+strict active health passed (five fresh active sources).
+
+Skill validation: the stock skill-creator quick validator rejected the existing
+Spec Kit `compatibility` frontmatter key. Preserved that unrelated metadata and
+used a bounded YAML/name/description/progress-contract check for all four local
+skills instead. The skills are local files excluded by `.git/info/exclude`;
+the shared tracked task template carries the durable table contract. Table
+validation also caught literal shell pipe characters splitting a Markdown row;
+the cell was rewritten and all 31 substeps/17 parents/links then passed.
+
+Lesson: distinguish implemented, component-verified and runtime-qualified
+steps. Close the real wiring gap before formal qualification, reuse unchanged
+evidence under the invalidation matrix, and do not turn table maintenance into
+another full-suite or GPU campaign.
