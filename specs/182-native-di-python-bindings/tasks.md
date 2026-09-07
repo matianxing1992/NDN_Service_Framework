@@ -66,7 +66,7 @@ A7-08仍OPEN：ByteFallback适配选择已明确，但真实Qwen decoder pipelin
 
 ### Prior Generation Design
 
-2026-09-07 Generation design / **T001 IN_PROGRESS**：[native generation contract](contracts/native-generation-design.md)补齐GenAI/HF/ORT复用比较与现有sampler的参数、double精度、去重惩罚、截断后归一化及旧会话兼容处置。A7-10/A7-11 CLOSED；A7-09算法设计已定义，产品修复/测试仍OPEN；A7-08的stream状态与完整O-004清单仍OPEN，T001未完成、产品0/17。修订plan旧授权句；不新增生成引擎或产品依赖，不操作实验机器。
+2026-09-07 Generation design / **T001 IN_PROGRESS**：[native generation contract](contracts/native-generation-design.md)补齐GenAI/HF/ORT复用比较与现有sampler的参数、double精度、去重惩罚、截断后归一化及旧会话兼容处置。A7-10 已按复用边界清单闭环：GenAI仅作能力对照，默认不作为默认生产路径；A7-11 CLOSED。A7-09的采样数学仍只定义设计，不等于实现/通过；A7-08的stream状态与完整O-004清单仍OPEN，T001未完成、产品0/17。修订plan旧授权句；不新增生成引擎或产品依赖，不操作实验机器。
 
 本单元检查 **PASS**：prerequisites、strict structure、design validator和diff whitespace。独立Python reference源SHA256 `3affb6f438a4134bb8e69222d79b3f2ec5a6b256bf0022af636b065627397c11`；将log概率按`struct.pack/unpack('<f')`量化后输入`[-0.5108256340026855,-1.2039728164672852,-2.3025851249694824]`，seed8/top_k3/top_p0.8/temperature1/step0实际选0；重复惩罚例也实际选0，assert通过/exit0。仅运行标准库reference，不构建native或运行产品测试。已有ONNX normalization草稿与failure-log修改保留，不在本单元宣称O-002关闭。
 

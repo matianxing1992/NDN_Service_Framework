@@ -103,6 +103,20 @@ Rust ABI source review：repr(C)字段顺序与C头一致；Box<[u8]>与free恢�
 
 该复核不改变现有`T001`身份：`ONNX`和tokenizer探针不代替T006/T007/T011运行证明；任何未来引入GenAI能力必须先补充`A7-10`决议、版本锁、模型工件证据和状态owner边界。
 
+### Shortcuts matrix (directly callable / explicitly not adopted)
+
+为防止“能调用所以直接接入”或“改用其他runtime即可修复差异”的短路，本节写明本轮明确边界：
+
+| Capability | 直接可复用 API | 本轮处理 |
+| --- | --- | --- |
+| ONNX tensor run / CUDA EP / checkpoint I/O | `Ort::Env` / `Ort::Session` / `Ort::SessionOptions` / `Ort::Value` / `IoBinding` | **Direct call**：当前 `OnnxRuntimeModelRunner` 运行路径保留。禁止改写为 GenAI runner 以代替本地 DI coordinator。 |
+| ONNX/proto checker & shape extract | `onnx::checker`、`onnx::shape_inference` 及1.17静态抽取逻辑 | **Direct call inside native probe/工具**：仅用于离线探针、字节身份核对。不会替代生产的依赖装配/签名组合责任。 |
+| HF tokenizer tokenize/decode 语义 | tokenizers 0.20.3 Rust core + C ABI 桥接 | **Adaptation**：保留参数语义（`add_special_tokens` / `skip_special_tokens`）、错误映射与所有权。不得改写为新BPE实现。 |
+| GenAI tokenizer stream callback | `OgaTokenizerStream` | **Not adopted by default**：不作为文本增量唯一来源；仅保留为能力对照。 |
+| GenAI 采样 | `OgaGenerator` / `Search` | **Not adopted**：未安装/未锁定依赖与版本；不能替代 NDNSF 的`NativeEpochCoordinator`状态ownership。 |
+
+**收口条件**：上表只说明本轮默认路径。若未来要引入任何“Not adopted”项，必须先补齐版本锁、add/skip 特性比对、稳定`stream`回调语义、status owner 映射和T001/O-004关闭条件，然后再走新任务。
+
 ### Frozen Production Integration
 
 原五函数是完整encode/decode已验证基线。T007按[token stream design](native-token-stream-design.md)追加第六个私有`ndi_token_decode_stable`及C++方法；新增ABI须单独验证，不使用旧84+14结果证明stream。Rust核心版本/已有ABI所有权保持。

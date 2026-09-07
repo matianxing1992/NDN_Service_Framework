@@ -32,6 +32,48 @@
 
 这张表用于防止“按是否能调用某个库接口”直接判断兼容性：任何未列入本表决议、或跨进程状态owner变化的路径都默认不进入本轮生产路径。
 
+### No Shortcuts closure gates (A7-08 / A7-09)
+
+本节是本轮可执行的硬性门控，不以“代码能跑”替代语义一致。
+
+#### Gate 1 — Streaming text decode boundary
+
+**目标**：逐token事件文本只能来自稳定前缀 API，不允许完整文本 decoder 当成逐步文本来源。
+
+1. `generationLineage`路径中，`NativeEpochCoordinator`与其工件 `textDecoder`职责是**停止判定+final验收**，逐token发布必须依赖配对的`stableTextDecoder`。
+2. `NativeStandaloneTokenizer`与FFI层必须分别保留`decode(ids, skipSpecial)`（完整）和`decodeStable(ids, skipSpecial, final)`（稳定前缀）；`final=true`必须与完整decode逐字节一致。
+3. eventSink 接受前不得把 `final=true` 的完整内容切片化发布；非最终前只发布 `decodeStable(final=false)` 的 `textDelta`。
+4. `candidateText` 与 `generatedText`的对比只用于完整前缀一致性校验，不能反向“删掉不稳定片段后重新提交”，也不能对合法 U+FFFD 做删改。
+5. `OnnxRuntimeModelRunner::runStreamedImpl` 现仅承载非协调器路径；只上报 token IDs 与终态摘要，不提供 `textDelta`（无文本）是预期，不是完整路径。
+
+**不允许的回避**
+
+- 在 `NativeEpochCoordinator` 中删除prefix异常并继续执行，
+- 以完整decode替代`decodeStable`，
+- 以“跳过/清理U+FFFD”或“缓冲最多N个token”来压缩边界。
+
+**通过条件**
+
+- `tests/unit-tests/distributed-inference-stream-recovery.t.cpp` 与 `tests/integration-tests/ndnsf-di-core-flow.t.cpp` 中覆盖
+  `Spec182StreamFinalTextMismatch`、`Spec182StreamProviderCommitFailureRecomputesAcceptedPrefix`、`Spec182StreamUnreceivedTokenExcludedFromReplacement`。
+- 复用 `check-stream-boundaries.py` 和 byte级fixtures 输出必须保持当前判定；合法 U+FFFD、skipSpecial 和 7-bit/多字节重组不可删除。
+
+#### Gate 2 — Sampling semantics parity (A7-09)
+
+**目标**：`sampleToken`与Python 参考（`tests/fixtures/spec182/dependency-probes/check-generation-reference.py`中等价逻辑）在输入域内行为一致。
+
+1. `generated` 在惩罚阶段按**去重ID**应用惩罚一次（去重语义由现有contract固化）。
+2. 重复惩罚参数、top-k/top-p/temperature 仍在统一入口验证；`top_p=1`、`top_k=1`、`seed`、`step`、`draw`都必须沿用原始`generated`顺序和`seed`，不可用新RNG主干替换。
+3. Top-P 截断后只对 retained 前缀归一化后采样；`draw`域是 `retained_sum`。
+4. `Greedy` 与 `SeededTopKTopP`的范围校验不允许静默 clamp 或“把旧误差归类为新配置”。
+
+**通过条件**
+
+- A7-09最小向量（例如 `[0.6,0.3,0.1]` 与 `generated=[0,0]`/repetition-penalty）在本地`NativeEpochCoordinator`设计条目和对应单测中全部覆盖。
+- 与Python参考断言的失败案例在回归中必须保持“同一输入同一seed同一输出向量”，不能以“两个独立入口一致”替代。
+
+以上两项在 T011 实现前持续 OPEN，且 T016 才可收 T011 产物为行为PASS。
+
 ## Sampling Source Changes
 
 修改`NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.cpp`现有私有`sampleToken(outputs, config, generated, step)`，复用`lastLogits`、`splitmix64`、`deterministicUnit`。不新增public类、配置字段、协议、RNG服务或持久化字段。T011实现，绑定及应用入口共享此函数。
