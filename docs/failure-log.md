@@ -1,5 +1,11 @@
 # Failure Log and Evidence Index
 
+## 2026-09-07 — Spec183 protected grant material absent from launcher closure
+
+- Read-only audit of the maintained User found missing SPEC181_PROTECTION_EPOCH silently selects plaintext-v1, and its protected branch reads Provider private-key paths to derive public recipients. That historical fixture arrangement is incompatible with role-private HOME mounts.
+- Status: controlling wiring gap, not fixed by this checkpoint's Controller/Repo argv implementation. T005 must use a public recipient map, explicit epoch and per-owner private locators, and bind native Provider decryption inputs. Keep the existing explicitly trusted in-process authority role; do not claim process isolation it does not implement or invent a new authority service within experiment scripts.
+- Evidence: Spec183 evidence/t005-control-launch.md. No model/Slurm run occurred; release gating remains closed.
+
 ## 2026-09-07 — YOLO V3 backend alternatives collapsed before ACK placement
 
 - Actual adapter allowed CPU and CUDA, but coordinator initial RoleAssemblySpec retained only the first backend. Pure production-kernel reproduction rejected CUDA BackboneNeck with CPU-first ordering and CPU Merge with CUDA-first ordering despite complete role coverage/resources.

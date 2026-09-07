@@ -14,6 +14,53 @@ from runtime.baseline import PYTHON
 APP_DIR = '/opt/ndnsf-di/replay/repo/examples/python/NDNSF-DistributedInference/yolo_2x2'
 
 
+def _control_config(worker, role):
+    from runtime.yolo_profile import _read_plane
+    if worker.rank != 0 or role not in worker.roles or worker.closed:
+        raise ValueError('YOLO_CONTROL_ROLE')
+    # Reuse the bounded, duplicate-key-rejecting JSON reader. This verifies
+    # syntax/path safety only; candidate hashes and policy authorization are
+    # still established by the coordinator before any launch.
+    config = _read_plane(worker.public / 'case.json')
+    if not isinstance(config.get('runtime'), dict):
+        raise ValueError('YOLO_CONTROL_CONFIG')
+    return config
+
+
+def start_controller(worker):
+    """Start the existing signing/publishing Controller; not a READY verdict."""
+    _control_config(worker, 'controller')
+    from runtime.yolo_profile import _read_plane
+    _read_plane(worker.public / 'runtime-publication.json')
+    return worker.start_service('controller', [
+        PYTHON, APP_DIR + '/controller.py', '--config', '/config/case.json',
+        '--generated-policy-dir', '/output/generated-policy',
+        '--spec180-runtime-publication-file', '/config/runtime-publication.json'])
+
+
+def start_repo(worker, *, identity: str, free_bytes: int):
+    """Start the real Repo with its policy-derived identity and local store.
+
+    Caller supplies verified writable capacity from allocation preflight.
+    The advertised value is not a capacity measurement made by this helper.
+    """
+    config = _control_config(worker, 'repo')
+    prefix = config['runtime'].get('provider_prefix')
+    from runtime.identities import identity_inventory
+    identities = identity_inventory(prefix, {'repo': identity})
+    if identities['repo'] != prefix + '/repo':
+        raise ValueError('YOLO_REPO_IDENTITY')
+    if type(free_bytes) is not int or free_bytes <= 0 or free_bytes > 2**63 - 1:
+        raise ValueError('YOLO_REPO_CAPACITY')
+    return worker.start_service('repo', [
+        PYTHON, APP_DIR + '/repo_node.py', '--config', '/config/case.json',
+        '--generated-policy-dir', '/output/generated-policy',
+        '--provider-id', 'repo', '--repo-node', identity,
+        '--storage-dir', '/output/repo-store', '--free-bytes', str(free_bytes),
+        '--memory-cache-bytes', str(64 * 1024 * 1024), '--preallocate-bytes', '0',
+        '--failure-domain', 'node0', '--handler-threads', '1', '--ack-threads', '1'])
+
+
 def run_requests(worker, plan: dict, *, package: Path, catalog_data_name: str,
                  catalog_signer: str, permission_wait_ms: int,
                  request_deadline_ms: int, process_timeout_seconds: float,

@@ -179,3 +179,56 @@ def test_invalid_schedule_rejects_before_user_launch(tmp_path, fault):
         assert not (worker.output / 'user').exists()
     finally:
         worker.close()
+
+
+def test_controller_and_repo_use_real_entrypoints_and_role_writable_outputs(tmp_path, monkeypatch):
+    import json
+    from apps.yolo import start_controller, start_repo
+    worker, _, _ = scheduled_inputs(tmp_path)
+    (worker.public / 'case.json').write_text(json.dumps({
+        'controller': '/run/controller', 'runtime': {'provider_prefix': '/run'}}))
+    (worker.public / 'runtime-publication.json').write_text('{}')
+    original, calls = subprocess.Popen, []
+
+    def boundary(argv, **kwargs):
+        calls.append(argv)
+        return original([sys.executable, '-c', 'import time;time.sleep(60)'], **kwargs)
+
+    monkeypatch.setattr(subprocess, 'Popen', boundary)
+    try:
+        start_controller(worker)
+        start_repo(worker, identity='/run/repo', free_bytes=1000000)
+        assert len(calls) == 2
+        for argv, script in zip(calls, ('controller.py', 'repo_node.py')):
+            assert any(a.endswith('/yolo_2x2/' + script) for a in argv)
+            assert argv[argv.index('--config') + 1] == '/config/case.json'
+            assert argv[argv.index('--generated-policy-dir') + 1] == '/output/generated-policy'
+            assert '--nv' not in argv
+            assert not any(':/artifacts:' in a for a in argv)
+        assert calls[0][calls[0].index('--spec180-runtime-publication-file') + 1] == '/config/runtime-publication.json'
+        assert calls[1][calls[1].index('--provider-id') + 1] == 'repo'
+        assert calls[1][calls[1].index('--storage-dir') + 1] == '/output/repo-store'
+        assert calls[1][calls[1].index('--free-bytes') + 1] == '1000000'
+    finally:
+        assert all(r['reaped'] for r in worker.close())
+
+
+@pytest.mark.parametrize('fault', ['missing-publication', 'duplicate-json', 'repo-identity', 'capacity'])
+def test_control_plane_bad_input_fails_before_launch(tmp_path, fault):
+    import json
+    from apps.yolo import start_controller, start_repo
+    worker, _, _ = scheduled_inputs(tmp_path)
+    (worker.public / 'case.json').write_text(json.dumps({
+        'controller': '/run/controller', 'runtime': {'provider_prefix': '/run'}}))
+    try:
+        with pytest.raises(ValueError):
+            if fault in ('missing-publication', 'duplicate-json'):
+                if fault == 'duplicate-json':
+                    (worker.public / 'runtime-publication.json').write_text('{"a":1,"a":2}')
+                start_controller(worker)
+            else:
+                start_repo(worker, identity='/run/other' if fault == 'repo-identity' else '/run/repo',
+                           free_bytes=True if fault == 'capacity' else 1000)
+        assert worker.launches == [] and worker.leases == {}
+    finally:
+        worker.close()
