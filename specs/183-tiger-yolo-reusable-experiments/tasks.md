@@ -99,8 +99,10 @@ Follow-up checkpoint: public retained assignments now use envelope
 artifact digests from the typed Selection assembly. The User writer rejects an
 incomplete identity before creating the retained file, and the collector rejects
 old/malformed envelopes or wrong-role model bindings. The complete focused suite
-passed **824 tests in 47.42s**; JUnit:
-`Experiments/TigerCluster/results/t006-model-binding-r1/junit.xml`.
+passed **829 tests in 54.39s**; JUnit:
+`Experiments/TigerCluster/results/t006-graph-coverage-r1/junit.xml` (ignored
+runtime output retained locally; the durable model-binding JUnit remains
+`Experiments/TigerCluster/results/t006-model-binding-r1/junit.xml`).
 This remains structural evidence, not an independent signed-package or
 optimized-graph comparison.
 
