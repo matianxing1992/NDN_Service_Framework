@@ -1,5 +1,12 @@
 # Failure Log and Evidence Index
 
+## 2026-09-07 — Spec182 T003 placement repair fixture failures
+
+r1 定向测试 exit 201：sealer fixture 依赖无关 residency 排序；新双角色 fixture 少传一个
+tensor degree，在 splitter 构造阶段拒绝。已定位 fixture 首边界，修复输入后在独立 r2 重试。
+原始 `.codex-tmp/spec182-t003-placement-r1/` 保留；见
+[placement repair](../specs/182-native-di-python-bindings/evidence/t003-role-placement-20260907.md)。
+
 ## 2026-09-07 — Spec182 T003 placement source audit reopened
 
 NativePlanning.cpp::propose 将全部角色分配给一个 Provider，并按 residency 集合大小

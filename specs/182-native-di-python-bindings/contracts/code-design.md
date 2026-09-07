@@ -385,3 +385,16 @@ Private helper 只可实现已描述职责，不能用 helper 名义增加 subsy
 ## Pre-Test Review Obligation
 
 源码对照设计的审查、任务内unit和全部实现后的integration/MiniNDN统一见 [validation workflow](pre-test-static-review.md)。本附件只定义技术契约，静态或文档检查不代替运行证明。
+## Placement Repair Checkpoint
+
+2026-09-07：NativePreSplitFirstPlacement 按排序后的执行角色逐个选择尚未使用的 Provider；
+每个角色独立执行 acceptedRoles/backend/resource 过滤。NativePlacementProposal::validate
+重复检查分配成员、可行性和唯一性；snapshot 拒绝重复 Provider，候选拒绝非法 margin 与工件摘要。
+资源求和先提升精度，避免 uint64 加法溢出造成误接纳。排序仅在可行集合内执行，
+摘要提示必须覆盖本角色所有目标工件才获得 canonical availability 优先级，不能作为
+loaded/assembled exact reuse、设备兼容性或 lease 授权证据。
+
+此修复保留 reference propose_v3 的逐角色贪心过程，不引入重新优化或后退搜索。
+完整 residency 证明、backend/device、rank 与 canonical wire DTO 仍待统一补齐；T003-C PARTIAL。
+定向验证使用真实 Spec182NativePlanning suite，覆盖双角色→独立 Provider→sealer/grantView、
+输入顺序变化、Provider 不足、伪分配、无关 residency、非法和溢出预算。

@@ -93,3 +93,8 @@ T001继续关闭O-002--005：固定ONNX/protobuf字节契约、tokenizer ABI、�
 但 T003-C 将全部角色分配给同一 Provider，且按无关 residency 数量排序；已重开该卡与
 依赖完成状态。A8-01 的 canonical wire 部分保持 OPEN。完整证据见
 [binding repair and placement audit](evidence/t004-artifact-grant-bindings-20260907.md)。
+## A9 Repair Verification
+
+2026-09-07：逐角色独立 Provider、真实目标工件提示排序与预算拒绝修复定向 PASS（37 cases）。
+旧 sealer fixture 依赖无关缓存加分，现已纠正；完整 proof/device/rank DTO 和 Python oracle
+尚缺，A9 与 T003-C 保持 OPEN/PARTIAL。见 [placement evidence](evidence/t003-role-placement-20260907.md)。

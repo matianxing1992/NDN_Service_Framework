@@ -95,7 +95,7 @@ OneRolePlan oneRolePlan(const std::string& tag, const std::string& ackDigest,
   result.snapshot.offers = {
     {"provider-a", offerADigest.empty() ? digest(tag + "-offer-a") : offerADigest,
      {result.role}, {"onnxruntime"},
-     {digest(tag + "-resident")}, 4 * GB, 1, true, true},
+     {digest(tag + "-artifact")}, 4 * GB, 1, true, true},
     {"provider-b", digest(tag + "-offer-b"), {result.role}, {"onnxruntime"}, {},
      5 * GB, 1, true, true},
   };
