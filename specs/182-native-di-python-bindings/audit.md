@@ -98,3 +98,9 @@ T001继续关闭O-002--005：固定ONNX/protobuf字节契约、tokenizer ABI、�
 2026-09-07：逐角色独立 Provider、真实目标工件提示排序与预算拒绝修复定向 PASS（37 cases）。
 旧 sealer fixture 依赖无关缓存加分，现已纠正；完整 proof/device/rank DTO 和 Python oracle
 尚缺，A9 与 T003-C 保持 OPEN/PARTIAL。见 [placement evidence](evidence/t003-role-placement-20260907.md)。
+## A8 Typed Wire Repair Verification
+
+2026-09-07：typed shape 贯通 Selection/worker/Provider 消费者，完整 projection encoder
+已通过生产 parser 往返；77 cases、2521 assertions PASS。旧 sealer 的七字段 encode 与
+不完整 project 仍在原位，A8-01 保持 OPEN；不得将新 encoder 可用解释成 requester 链已闭合。
+见 [typed shape and wire evidence](evidence/t004-typed-shape-20260907.md)。

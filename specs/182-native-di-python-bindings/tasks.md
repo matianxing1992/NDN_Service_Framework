@@ -24,7 +24,7 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 | [T003-A Qwen Split Candidates](contracts/execution-units.md#t003-a-qwen-split-candidates) | DONE | T002-A | [acceptance](evidence/t003-a-qwen-split-20260907.md)；CPP(Spec182QwenSplit/*) 5 cases 全绿（合法 cover、边界 budget、非法 rank/图输入），expected 逐条对照冻结 `QwenThreeStageSplitter`，支持范围保持 rank-one；新增 2 case 于 di-native-planning.t.cpp | 2026-09-07 |
 | [T003-B Yolo Split Candidates](contracts/execution-units.md#t003-b-yolo-split-candidates) | DONE | T003-A | [acceptance](evidence/t003-b-yolo-split-20260907.md)；CPP(Spec182YoloSplit/*) 7 cases 全绿（固定 cover、错误 component/图/外来模型拒绝、确定性 + budget 截断），expected 对照冻结 `Yolo26Splitter`/`RegisteredYoloCandidate`；新增 2 case 于 di-native-planning.t.cpp | 2026-09-07 |
 | [T003-C Placement and Registry](contracts/execution-units.md#t003-c-placement-and-registry) | PARTIAL | T003-A, T003-B | [placement repair](evidence/t003-role-placement-20260907.md)；逐角色独立 Provider、目标工件提示与预算拒绝已修复；37 cases PASS；完整 device/rank/residency proof 与 Python 对照仍待完成 | 2026-09-07 |
-| [T004-A Canonical Plan Sealing](contracts/execution-units.md#t004-a-canonical-plan-sealing) | PARTIAL | T003-C | [binding repair](evidence/t004-artifact-grant-bindings-20260907.md)；真实工件/context→sealCore→grantView 修复；33 cases PASS；canonical wire/device/rank 与 T003-C 仍未闭合 | 2026-09-07 |
+| [T004-A Canonical Plan Sealing](contracts/execution-units.md#t004-a-canonical-plan-sealing) | PARTIAL | T003-C | [typed wire repair](evidence/t004-typed-shape-20260907.md)；工件/grant/context 与 typed shape 已修复；完整 projection encoder→生产 parser PASS；77 cases/2521 assertions；旧 sealer project/encode 接线、规范 core digest 和完整 Python oracle 仍待完成 | 2026-09-07 |
 | [T005-A InProcess Authority](contracts/execution-units.md#t005-a-inprocess-authority) | PARTIAL | T004-A | [旧局部验收](evidence/t005-a-inprocess-authority-20260907.md) 6 cases PASS 保留；依赖 T004-A 因 [A8-01](evidence/t004-wire-reopened-20260907.md) 重开，修复真实 grantView/core identity 后需复核，不能维持整卡 DONE | 2026-09-07 |
 | [T005-B Requester Grant Publication](contracts/execution-units.md#t005-b-requester-grant-publication) | PARTIAL | T005-A | [旧局部验收](evidence/t005-b-requester-grant-20260907.md) 8 cases + publication/fetch 证据保留；随 T004-A/T005-A 依赖闭合回退，待真实 grantView 输入和 Provider 消费链复核；见 [A8-01](evidence/t004-wire-reopened-20260907.md) | 2026-09-07 |
 | [T006-A Canonical Source Identity](contracts/execution-units.md#t006-a-canonical-source-identity) | DONE | T002-A | [acceptance](evidence/t006-a-canonical-source-identity-20260907.md)；CPP(Spec182OnnxIdentity/*) 11 cases 全绿（24 v1 + 14 accepted extended 全模型 golden 逐字段、typed/raw pair 摘要恒等、v2 per-tensor 12 accepted 逐字节 + 5 拒绝、bf16 两编码归一、revision 分类、v2 descriptor binding 门、external/function-attr 内联等价、overflow/非法路径/限额拒绝） | 2026-09-07 |
@@ -55,6 +55,11 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 | [T017-A Development Handoff](contracts/execution-units.md#t017-a-development-handoff) | NOT_STARTED | T016-A | [baseline](evidence/task-progress-registry-20260907.md)；无本卡独立执行/验收记录；按依赖领取 | 2026-09-07 |
 
 ## Current Checkpoint
+
+2026-09-07 T004 typed shape / **PARTIAL**：Selection 与 worker 保留 int64/string 维度类型。
+新 ABI 构建 r1/r2 消费者编译失败已修复；r3 -j4 构建 PASS（119.84s），核心 73 cases/
+2491 assertions、worker metadata 4 cases/30 assertions PASS。完整 projection encoder→生产
+parser 往返已通过，但旧 sealer 主链仍未切换；见 [typed shape evidence](evidence/t004-typed-shape-20260907.md)。
 
 2026-09-07 T004 canonical JSON foundation / **PARTIAL**：新增固定原生 typed JSON 库和内部 helper；
 r1 DBL_MAX stream failbit 缺陷已修复，r2 构建 PASS，冻结 Python 对照 2/2 cases、2028 assertions PASS。

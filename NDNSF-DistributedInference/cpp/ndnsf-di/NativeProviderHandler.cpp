@@ -1360,7 +1360,8 @@ validateNativePreparedRunnerSpec(
     std::string expectedOutputShape;
     for (const auto& dimension : assembly.expectedOutputs.front().shape) {
       if (!expectedOutputShape.empty()) expectedOutputShape += ',';
-      expectedOutputShape += dimension;
+      expectedOutputShape += std::holds_alternative<std::int64_t>(dimension)
+        ? std::to_string(std::get<std::int64_t>(dimension)) : std::get<std::string>(dimension);
     }
     if (spec.role != assembly.selectedRole ||
         spec.kind != "native-yolo-postprocess" ||
@@ -1480,7 +1481,10 @@ stateTensorContractIdentity(const NativeSelectionRoleV3& assembly,
   }
   std::ostringstream shape;
   for (const auto& dimension : found->shape) {
-    shape << dimension.size() << ":" << dimension << ";";
+    const bool numeric = std::holds_alternative<std::int64_t>(dimension);
+    const auto text = numeric ? std::to_string(std::get<std::int64_t>(dimension))
+                              : std::get<std::string>(dimension);
+    shape << (numeric ? 'i' : 's') << text.size() << ":" << text << ";";
   }
   return name + "|" + found->dtype + "|" + shape.str();
 }

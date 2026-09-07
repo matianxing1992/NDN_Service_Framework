@@ -8,6 +8,7 @@
 #include <iomanip>
 #include <locale>
 #include <sstream>
+#include <set>
 #include <stdexcept>
 
 namespace ndnsf::di {
@@ -15,6 +16,26 @@ namespace ndnsf::di {
 // Internal typed JSON value. The library owns parsing, escaping and JSON types;
 // canonical rendering follows sdk/placement.py's json.dumps contract.
 using NativeJson = nlohmann::json;
+
+inline NativeJson nativeParseJson(const std::string& wire)
+{
+  std::vector<std::set<std::string>> objectKeys;
+  try {
+    return NativeJson::parse(wire, [&objectKeys] (int, NativeJson::parse_event_t event,
+                                                 NativeJson& value) {
+      if (event == NativeJson::parse_event_t::object_start) objectKeys.emplace_back();
+      else if (event == NativeJson::parse_event_t::object_end) objectKeys.pop_back();
+      else if (event == NativeJson::parse_event_t::key &&
+               !objectKeys.back().insert(value.get<std::string>()).second) {
+        throw std::invalid_argument("duplicate canonical JSON object key");
+      }
+      return true;
+    });
+  }
+  catch (const NativeJson::exception& error) {
+    throw std::invalid_argument(std::string("invalid native JSON: ") + error.what());
+  }
+}
 
 namespace canonical_json_detail {
 

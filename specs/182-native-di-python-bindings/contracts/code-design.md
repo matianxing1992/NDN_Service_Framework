@@ -406,3 +406,16 @@ NativeCanonicalJson.hpp 是内部编码 helper，不把第三方类型放入公�
 UTF-8 检查与 ASCII escaping。Python json.dumps 的浮点指数边界/最短回转表示单独适配，
 拒绝 nonfinite；冻结 stdlib oracle 覆盖 Unicode、整数边界、容器类型、负零、subnormal、
 极大值和固定种子的随机 binary64。此为 wire 修复前置步骤，未接入完整 sealer 前不关闭 T004。
+## Typed Assembly Shape Repair
+
+2026-09-07：NativeAssemblyTensorContractV3::shape 改为 int64/string variant，保持 JSON 的
+整数维度与符号维度类型。Selection parser 在既有语义比较前，从 typed JSON 恢复 shape；
+拒绝 duplicate object keys、bool/float/null/超 int64 维度。既有 PropertyTree 语义检查继续复用，
+不把 JSON 重新编码成丢失类型的输入。ONNX worker metadata 保持同样的类型；最终 ONNX
+I/O 语义比较仍沿用既有 normalize_shape_dimension，仅 wire identity 比较不混同数字与字符串。
+公开 DTO 布局改变，必要构建使用新目录；定向检查覆盖 Selection 类型替换拒绝与 worker roundtrip。
+这是完整 serializer 前置修复，T004 保持 PARTIAL。
+
+nativeSelectionProjectionV3ToJson 已提供完整 DTO 的 typed wire 编码，并在返回前复用生产
+parser 检查；包括 generation/conversation 可选字段，不输出 Core-only canonicalArtifactName。
+NativePlanSealer::project 的完整输入与旧 encode 切换仍是下一工作单元，不能假设已接通。

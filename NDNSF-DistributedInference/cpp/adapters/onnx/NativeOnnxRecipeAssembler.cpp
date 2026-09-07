@@ -420,7 +420,10 @@ compareBoundaryContracts(const std::vector<NativeAssemblyTensorContractV3>& expe
     for (int i = 0; i < dims.size(); ++i) {
       const std::string observedDim = dims.Get(i).has_dim_value()
         ? std::to_string(dims.Get(i).dim_value()) : dims.Get(i).dim_param();
-      if (normalizeShapeDimText(observedDim) != normalizeShapeDimText(contract.shape[i]))
+      const auto& dimension = contract.shape[i];
+      const auto expectedDim = std::holds_alternative<std::int64_t>(dimension)
+        ? std::to_string(std::get<std::int64_t>(dimension)) : std::get<std::string>(dimension);
+      if (normalizeShapeDimText(observedDim) != normalizeShapeDimText(expectedDim))
         fail("IO_DTYPE");
     }
   }

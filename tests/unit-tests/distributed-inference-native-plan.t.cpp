@@ -499,7 +499,7 @@ BOOST_AUTO_TEST_CASE(NativeV3ProjectionDecodesCertifiedAssemblyRecipe)
   BOOST_CHECK_EQUAL(value.assembly.canonicalInitializerDigest, digest('e'));
   BOOST_CHECK_EQUAL(value.assembly.nodeIndices.size(), 4);
   BOOST_REQUIRE_EQUAL(value.assembly.expectedInputs.size(), 1);
-  BOOST_CHECK_EQUAL(value.assembly.expectedInputs.front().shape.at(1), "4");
+  BOOST_CHECK_EQUAL(std::get<std::int64_t>(value.assembly.expectedInputs.front().shape.at(1)), 4);
   BOOST_CHECK_EQUAL(value.assembly.precision, "fp32");
   BOOST_CHECK_EQUAL(value.assembly.maxSourceBytes, 4096);
 
@@ -516,6 +516,60 @@ BOOST_AUTO_TEST_CASE(NativeV3ProjectionRejectsMultipleLocalRoles)
 {
   BOOST_CHECK_THROW(parseProjection(projectionJson(1, {}, "CPU", {}, true)),
                     std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(NativeV3ProjectionCompleteEncoderRoundTripsProductionParser)
+{
+  const auto original = parseProjection(projectionJson(1, {}, "CPU", {}, false, true));
+  const auto wire = nativeSelectionProjectionV3ToJson(original);
+  const auto parsed = parseProjection(wire);
+  BOOST_CHECK_EQUAL(parsed.planDigest, original.planDigest);
+  BOOST_CHECK_EQUAL(parsed.offerDigest, original.offerDigest);
+  BOOST_CHECK_EQUAL(parsed.dataflow.dataflowDigest, original.dataflow.dataflowDigest);
+  BOOST_CHECK_EQUAL(parsed.deviceBinding.resourceSnapshotDigest, original.deviceBinding.resourceSnapshotDigest);
+  BOOST_CHECK(parsed.assembly.expectedInputs.front().shape == original.assembly.expectedInputs.front().shape);
+  BOOST_CHECK_EQUAL(nativeSelectionProjectionV3ToJson(parsed), wire);
+  auto incomplete = original;
+  incomplete.deadlineMs = 0;
+  BOOST_CHECK_THROW(nativeSelectionProjectionV3ToJson(incomplete), std::invalid_argument);
+  incomplete = original;
+  incomplete.deviceBinding.offerDigest = digest('9');
+  BOOST_CHECK_THROW(nativeSelectionProjectionV3ToJson(incomplete), std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(NativeV3ProjectionPreservesNumericAndSymbolicDimensions)
+{
+  auto wire = projectionJson(1, {}, "CPU", {}, false, true);
+  const std::string before = "\"shape\":[1,4]";
+  const std::string after = "\"shape\":[1,\"4\"]";
+  std::size_t position = 0;
+  while ((position = wire.find(before, position)) != std::string::npos) {
+    wire.replace(position, before.size(), after);
+    position += after.size();
+  }
+  const auto parsed = parseProjection(wire);
+  const auto& shape = parsed.assembly.expectedInputs.front().shape;
+  BOOST_REQUIRE_EQUAL(shape.size(), 2U);
+  BOOST_CHECK_EQUAL(std::get<std::int64_t>(shape.at(0)), 1);
+  BOOST_CHECK_EQUAL(std::get<std::string>(shape.at(1)), "4");
+  // Equal text is not equal wire identity: roles and assembly must agree on type.
+  wire.replace(wire.find(after), after.size(), before);
+  BOOST_CHECK_THROW(parseProjection(wire), std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(NativeV3ProjectionRejectsNonIntegerDimensions)
+{
+  for (const auto& shape : {"[true,4]", "[1.0,4]", "[null,4]", "[18446744073709551615,4]"}) {
+    auto wire = projectionJson(1, {}, "CPU", {}, false, true);
+    const std::string before = "\"shape\":[1,4]";
+    const std::string after = std::string("\"shape\":") + shape;
+    std::size_t position = 0;
+    while ((position = wire.find(before, position)) != std::string::npos) {
+      wire.replace(position, before.size(), after);
+      position += after.size();
+    }
+    BOOST_CHECK_THROW(parseProjection(wire), std::invalid_argument);
+  }
 }
 
 BOOST_AUTO_TEST_CASE(NativeV3ProjectionRejectsWrongPlanOrAttempt)

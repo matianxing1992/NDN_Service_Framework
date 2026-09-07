@@ -166,7 +166,9 @@ NativeCertifiedRecipe recipeFromVector(const boost::property_tree::ptree& row)
       NativeAssemblyTensorContractV3 contract;
       contract.name = child.second.get<std::string>("name");
       contract.dtype = child.second.get<std::string>("dtype");
-      contract.shape = stringChildren(child.second.get_child("shape"));
+      for (const auto& dimension : stringChildren(child.second.get_child("shape"))) {
+        contract.shape.emplace_back(dimension);
+      }
       contracts.push_back(std::move(contract));
     }
     return contracts;
@@ -1173,6 +1175,20 @@ BOOST_AUTO_TEST_CASE(MetadataAcceptsCanonicalEnvelopeRoundtrip)
                       recipe.expectedInputs.size());
   BOOST_CHECK_EQUAL(check.value.recipe.expectedInputs[0].name,
                     recipe.expectedInputs[0].name);
+}
+
+BOOST_AUTO_TEST_CASE(MetadataPreservesNumericAndSymbolicShapeDimensions)
+{
+  auto recipe = recipeFromVector(workerAcceptRow());
+  BOOST_REQUIRE(!recipe.expectedInputs.empty());
+  recipe.expectedInputs.front().shape = {std::int64_t(1), std::string("1"), std::string("batch")};
+  const auto check = validateNativeOnnxWorkerMetadata(buildNativeOnnxWorkerRequestMetadata(recipe));
+  BOOST_REQUIRE(check.ok);
+  const auto& shape = check.value.recipe.expectedInputs.front().shape;
+  BOOST_REQUIRE_EQUAL(shape.size(), 3U);
+  BOOST_CHECK_EQUAL(std::get<std::int64_t>(shape[0]), 1);
+  BOOST_CHECK_EQUAL(std::get<std::string>(shape[1]), "1");
+  BOOST_CHECK_EQUAL(std::get<std::string>(shape[2]), "batch");
 }
 
 BOOST_AUTO_TEST_CASE(MetadataRejectsNonJsonAndEnvelopePoisons)

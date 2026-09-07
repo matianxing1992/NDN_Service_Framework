@@ -1,4 +1,5 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/property_tree/ptree.hpp>
@@ -72,7 +73,9 @@ assemblyTensorContractsFromJson(const boost::property_tree::ptree& node,
     NativeAssemblyTensorContractV3 value;
     value.name = item.second.get<std::string>("name", "");
     value.dtype = item.second.get<std::string>("dtype", "");
-    value.shape = stringArrayFromJson(item.second, "shape");
+    for (const auto& dimension : stringArrayFromJson(item.second, "shape")) {
+      value.shape.emplace_back(dimension);
+    }
     if (value.name.empty() || value.dtype.empty()) {
       throw std::invalid_argument("invalid V3 assembly tensor contract");
     }
@@ -806,8 +809,11 @@ NativeSelectionProjectionV3
 nativeSelectionProjectionV3FromJson(std::istream& input,
                                     const std::string& selectedRole)
 {
+  const std::string wire{std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+  const auto typedRoot = nativeParseJson(wire);
+  std::istringstream legacyInput(wire);
   boost::property_tree::ptree root;
-  boost::property_tree::read_json(input, root);
+  boost::property_tree::read_json(legacyInput, root);
   if (root.get<std::string>("schema", "") != "ndnsf-di-selection-v3" ||
       root.get<int>("schema_version", 0) != 3) {
     throw std::invalid_argument("V3 Selection projection schema mismatch");
@@ -1002,6 +1008,37 @@ nativeSelectionProjectionV3FromJson(std::istream& input,
   }
   projection.executionRole = executionRoleFromV3Json(*executionRole);
   projection.assembly = selectionRoleFromV3Json(*assembly, planRole);
+  // PropertyTree is retained for existing semantic checks, but cannot retain
+  // scalar JSON types. Restore typed dimensions before same-assembly checks.
+  const auto restoreShapes = [] (NativeSelectionRoleV3& role, const NativeJson& node) {
+    const auto restore = [&node] (auto& contracts, const char* key) {
+      if (contracts.empty()) return;
+      if (!node.contains(key) || !node.at(key).is_array() ||
+          node.at(key).size() != contracts.size()) {
+        throw std::invalid_argument("invalid typed assembly tensor contracts");
+      }
+      for (std::size_t i = 0; i < contracts.size(); ++i) {
+        const auto& tensor = node.at(key).at(i);
+        if (!tensor.contains("shape") || !tensor.at("shape").is_array()) {
+          throw std::invalid_argument("invalid typed assembly tensor shape");
+        }
+        contracts[i].shape.clear();
+        for (const auto& dimension : tensor.at("shape")) {
+          if (dimension.is_string()) contracts[i].shape.emplace_back(dimension.get<std::string>());
+          else if (dimension.is_number_integer() &&
+                   (!dimension.is_number_unsigned() ||
+                    dimension.get<std::uint64_t>() <= static_cast<std::uint64_t>(INT64_MAX))) {
+            contracts[i].shape.emplace_back(dimension.get<std::int64_t>());
+          }
+          else throw std::invalid_argument("assembly dimension must be int64 or string");
+        }
+      }
+    };
+    restore(role.expectedInputs, "expected_inputs");
+    restore(role.expectedOutputs, "expected_outputs");
+  };
+  restoreShapes(projection.selectedRole, typedRoot.at("roles").at(0));
+  restoreShapes(projection.assembly, typedRoot.at("assembly"));
   projection.dataflow = dataflowFromV3Json(*dataflow);
   projection.deviceBinding = deviceBindingFromV3Json(*deviceBinding);
 

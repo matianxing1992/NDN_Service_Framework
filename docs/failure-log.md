@@ -1,5 +1,17 @@
 # Failure Log and Evidence Index
 
+## 2026-09-07 — Spec182 typed shape Provider consumers
+
+r2 构建在 NativeProviderHandler.cpp 的 YOLO 文本 metadata 与 decode tensor identity
+两个旧字符串消费者失败。已改显式文本转换及带类型的身份编码；原始 r2 build.log 保留。
+见 [typed shape evidence](../specs/182-native-di-python-bindings/evidence/t004-typed-shape-20260907.md)。
+
+## 2026-09-07 — Spec182 typed shape consumer compilation
+
+shape variant 的新 ABI 构建 r1 在 NativeYoloMergeRunner.cpp:335 失败：旧 metadata
+字符串拼接未处理整数/符号类型。已定位文本 runner 配置边界，显式转换后独立 r2 重试。
+见 [typed shape evidence](../specs/182-native-di-python-bindings/evidence/t004-typed-shape-20260907.md)。
+
 ## 2026-09-07 — Spec182 canonical float overflow probe
 
 typed canonical JSON r1 的 DBL_MAX 对照失败：stream 解析溢出后饱和值误判为回转成功，
