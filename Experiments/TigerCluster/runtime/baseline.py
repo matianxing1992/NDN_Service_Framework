@@ -123,8 +123,13 @@ def container_command(profile: dict, bundle: Path, home: Path, public: Path,
                 or any(c in str(path) for c in ":,\n\r\x00")):
             raise ValueError("BIND_PATH")
     role_home = "/identities/" + home.name
+    # The absolute container-path form never creates the home or copies the
+    # image skeleton; a host:container pair would inject skeleton files (e.g.
+    # .ndn) into the already-bound directory after the caller's emptiness
+    # checks, failing them inside the container.  Callers pre-create the
+    # home under the bound /identities mount.
     command = [profile["apptainer"], "exec", "--cleanenv", "--containall",
-               "--home", f"{home}:{role_home}", "--pwd", "/bundle",
+               "--home", role_home, "--pwd", "/bundle",
                "--bind", f"{bundle}:/bundle:ro", "--bind", f"{public}:/config:{'rw' if prepare else 'ro'}",
                "--bind", f"{output}:/output:rw"]
     if gpu:

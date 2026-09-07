@@ -21,6 +21,19 @@ APP_DIR = '/opt/ndnsf-di/replay/repo/examples/python/NDNSF-DistributedInference/
 def _installed_yolo_owner():
     import importlib.util
     import sys
+    # The replay image ships pythonWrapper without its compiled _ndnsf
+    # extension, and the owner prepends the replay pythonWrapper to sys.path
+    # (its launcher/child import-boundary rule).  That shadows the installed
+    # site-packages ndnsf and makes every later ``ndnsf.*`` import fail with
+    # ImportError at runtime_telemetry.  Bind the authoritative site-packages
+    # package into sys.modules before the owner runs: Python then resolves all
+    # ndnsf submodules through the bound package's __path__, never the
+    # extension-less replay copy.  Only inside the SIF (APP_DIR under
+    # /opt/ndnsf-di): host MiniNDN environments provide their own compiled
+    # pythonWrapper and must keep their existing import boundary.
+    if str(APP_DIR).startswith("/opt/ndnsf-di"):
+        import ndnsf  # noqa: F401  bind the installed package first
+        import py_repoclient  # noqa: F401  same for the repo client's compiled extension
     path = Path(APP_DIR).parents[3] / 'Experiments/NDNSF_DI_YoloAckDriven_Minindn.py'
     name = '_spec183_installed_yolo_owner'
     spec = importlib.util.spec_from_file_location(name, path)

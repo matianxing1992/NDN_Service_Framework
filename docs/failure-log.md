@@ -2327,3 +2327,49 @@ profile `release` rows, which reference plane.json files.
 Lesson: content-plane stage identity is the canonical document sha, not the
 file sha; only release rows (file references) use file shas. Mixing the two
 produces a chain that renders green and validates red.
+
+# 2026-09-07 — Containerized offline issuer: three DI/runtime defects found by first real SIF execution
+
+Symptom: the first genuinely executing Spec183 step (provision_run driving
+`apps.yolo.py prepare` inside the base SIF) failed three times in sequence:
+ImportError at ndnsf.runtime_telemetry (extension-less replay pythonWrapper),
+ValueError YOLO catalogue signer not registered (spec180-signed catalogue vs
+the Spec183 registry), and IDENTITY_REUSE:root (pre-existing .ndn under the
+issuer HOME). A fourth failure (ModuleNotFoundError on py_repoclient's
+compiled extension) was the same shadowing pattern as the first.
+
+Cause:
+1. The installed YOLO owner prepends the replay repo's pythonWrapper trees to
+   sys.path (its launcher/child import-boundary rule).  The replay image ships
+   pythonWrapper and py_repoclient WITHOUT their compiled extensions, so the
+   extension-less copies shadowed site-packages and every `ndnsf.*` /
+   `py_repoclient.*` import failed.  The owner's child PYTHONPATH puts
+   site-packages first, so the SIF-internal execution path had never been
+   exercised before Spec183.
+2. The canonical package manifest's catalogue was signed by the Spec180
+   authority (keyId spec180-...-20260903) while the Spec183 trust-root
+   registry registers the fixed Spec183 catalogue key; the DI verifier also
+   requires signature.authorityId, which the Spec183 wire format omits.
+3. Importing the ndnsf extension initializes a default keychain under $HOME
+   (`.ndn`) before issue() runs; issue() correctly treats that as identity
+   reuse and fails.
+
+Fix:
+1. `_installed_yolo_owner` binds the installed `ndnsf` and `py_repoclient`
+   packages in sys.modules before executing the owner, so all submodule
+   imports resolve through the bound packages' __path__.
+2. Re-signed the package catalogue with the fixed Spec183 catalogue key
+   (candidates are the same; revision kept), including authorityId in the
+   envelope; `sign_manifest` gained an optional authority_id parameter.  The
+   re-signed package lives under .cache/model/spec183-signed/ (hard links for
+   the model bytes).
+3. issue() removes the root role's import-side-effect .ndn before its
+   reuse check; every real role home is still checked unchanged.
+Also fixed en route: `--home` must use the absolute container-path form
+(host:container copies the image skeleton into the already-bound directory);
+resolve_run_plan anchors the CLI --output to cwd, not the profile directory.
+
+Lesson: a sealed runtime that no test ever executed hides owner-implemented
+import-boundary bugs; the first real container execution is its own gate.
+Fixing the scripts until the DI implementation works is exactly the Spec183
+development path -- the SIF/DI itself needed no rebuild.

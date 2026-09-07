@@ -21,6 +21,27 @@ failure-log，记录 identity b6710fd6 稳定正确。deferred：远端 storage
 site roots 与 oracle 数值契约待 T005/T006/T012 wiring 验证；release.gates
 仍空，local-cpu 运行资格待真实 prepare+local 执行 receipt。
 
+2026-09-07 首次容器内真实执行 checkpoint：新增
+[spec183_dev_provision.py](../../../Experiments/TigerCluster/tools/spec183_dev_provision.py)
+驱动 resolve_provision_inputs → stage_provision_inputs →
+provision_run，在 base SIF 内以真实输入跑通完整离线 issuer：
+Spec181 y-b.json 服务模板（templateDigest cda36d33）、spec183 重签的
+canonical package catalogue（placementCandidateDigest 3fd5fb9d）、固定
+key 集、真实 bundle（candidateDigest 8db00719）→ 真实
+tiger-yolo-preparation-v1 receipt（receiptDigest 0ee275ff，30+ publicFiles：
+8 张角色证书、case-policy、native-execution-plan、trust-schema、
+runtime-publication、service-manifest）。执行中修三处 DI/运行时缺陷
+（详见 failure-log 同日条目）：replay pythonWrapper 无编译扩展遮蔽
+site-packages（_installed_yolo_owner 预绑定 ndnsf/py_repoclient）；
+spec180 签名的 catalogue 与 Spec183 registry 不匹配（用固定 catalogue
+权威重签至 .cache/model/spec183-signed/，sign_manifest 增 authorityId）；
+ndnsf 扩展 import 在 $HOME 产生 .ndn keychain 副作用（issue() 仅清理
+root 角色副作用，真实角色仍 fail-closed）。另修 container_command 的
+--home 容器内绝对路径形式与 resolve_run_plan 的 --output cwd 锚定。
+workload.descriptor 改指 specs/181 的 y-b.json，packageManifest 改指
+重签 package（原指向 spec180 签名件属行角色错位，已纠正）。下一步：
+repo-probe/worker 栈的真实 local-cpu 执行与 localSif gate 回填。
+
 2026-09-07 T005/T006 独立参考生成组件：新增 prepare_role_reference，检查
 组装模型字节摘要、ORT 版本/后端，以 BASIC/1-thread 创建独立 session 导出
 优化图，不调用 run、不读被测 profile；只返回摘要/节点名，临时明文在私有目录

@@ -15,20 +15,20 @@
   "dispatch": {
    "path": "../.cache/planes/dispatch/plane.json",
    "bytes": 1216,
-   "sha256": "sha256:b1f59e21fe3a1250d8b16cf71bfb9e5269dae7a74ccb33db56ef08e3da4d655c"
+   "sha256": "sha256:ed28d1e743a6aca9d1d03f3fae20170dbbe352a0ff0bdd5a291c8e76ae5c50b0"
   },
   "gates": {}
  },
  "workload": {
   "descriptor": {
-   "path": "../.cache/model/spec180-public/models/canonical-package/manifest.json",
-   "bytes": 465616,
-   "sha256": "sha256:9c92d7526f19903a7cfd0acc0e764a466dd4b6d648fbab3a5f0eb640b07edf6d"
+   "path": "../../../specs/181-ndnsf-di-protected-grant-qualification/contracts/local-case-configs/y-b.json",
+   "bytes": 8283,
+   "sha256": "sha256:cda36d330cac85c9bb324dae7e9410256d6e0c15d2ff827a867fafa5c370c6df"
   },
   "packageManifest": {
-   "path": "../.cache/model/spec180-public/model-manifest-shared-backbone-two-shard-v1.signed.json",
-   "bytes": 730,
-   "sha256": "sha256:02f7dabc17686d6e5be8f3a89b6a6709cccb5de002bc7e03d4c2306c42228ca8"
+   "path": "../.cache/model/spec183-signed/canonical-package/manifest.json",
+   "bytes": 390181,
+   "sha256": "sha256:84bfcbe25e09d4f43587f5fbfef2a3548cd11315af96519b07696ddd6a87c543"
   }
  },
  "runtime": {
@@ -142,7 +142,7 @@
   "harnessManifest": {
    "path": "../.cache/planes/dispatch/harness/harness-manifest.json",
    "bytes": 2655,
-   "sha256": "sha256:5df7a5b2cea7749ffb7a18dbae98b56a8a31a2dad1175d2fb05c1dbcf746ced3"
+   "sha256": "sha256:96e86c436b6342a48da7bf1dcccf1cf24d037deb709bd220be8518678bfee898"
   },
   "validationContract": {
    "path": "../../../specs/183-tiger-yolo-reusable-experiments/contracts/experiment-profile.md",

@@ -227,7 +227,14 @@ def test_case_digest_ignores_run_and_location_but_binds_behavior(tmp_path):
         return json.loads(result.stdout)["runPlan"]
 
     first = plan("test-first", tmp_path)
-    assert first == plan("test-first", tmp_path.parent)
+    relocated = plan("test-first", tmp_path.parent)
+    # Output is a cwd-relative operator argument, so the resolved location
+    # differs; the behavior digest, identities and request ids must not.
+    assert first["output"] == str(tmp_path / "results" / "test-first")
+    assert relocated["output"] == str(tmp_path.parent / "results" / "test-first")
+    assert first["caseBehaviorDigest"] == relocated["caseBehaviorDigest"]
+    assert first["identities"] == relocated["identities"]
+    assert {r["requestId"] for r in first["requests"]} == {r["requestId"] for r in relocated["requests"]}
     second = plan("test-second", tmp_path)
     assert first["caseBehaviorDigest"] == second["caseBehaviorDigest"]
     assert set(first["identities"].values()).isdisjoint(second["identities"].values())

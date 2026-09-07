@@ -142,8 +142,13 @@ def _pem_public(key) -> bytes:
 
 
 def sign_manifest(manifest: Mapping[str, Any], *, key_path: Path,
-                  key_id: str) -> dict[str, Any]:
-    """Return a copy of ``manifest`` with the detached signature envelope."""
+                  key_id: str, authority_id: str | None = None) -> dict[str, Any]:
+    """Return a copy of ``manifest`` with the detached signature envelope.
+
+    ``authority_id`` is optional: the Spec183 wire format carries keyId only,
+    but the DI catalogue verifier additionally binds ``authorityId`` from the
+    registry, so catalogue re-signing passes it through.
+    """
     payload = dict(manifest)
     payload.pop("signature", None)
     key = _load_pem_key(key_path)
@@ -154,6 +159,8 @@ def sign_manifest(manifest: Mapping[str, Any], *, key_path: Path,
         "algorithm": ALGORITHM,
         "valueB64": base64.b64encode(signature).decode("ascii"),
     }
+    if authority_id is not None:
+        signed["signature"]["authorityId"] = authority_id
     return signed
 
 

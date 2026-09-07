@@ -108,7 +108,7 @@ def test_network_probe_releases_provider_home_before_startup(tmp_path, monkeypat
         assert role not in worker.started
         assert '--nv' not in calls[0]
         assert not any(':/artifacts:' in arg for arg in calls[0])
-        assert str(worker.homes[role]) + ':/identities/' + role in calls[0]
+        assert calls[0][calls[0].index('--home') + 1] == '/identities/' + role
         assert all(not arg.startswith(str(home) + ':')
                    for r, home in worker.homes.items() if r != role for arg in calls[0])
         with pytest.raises(ValueError, match='REUSED'):

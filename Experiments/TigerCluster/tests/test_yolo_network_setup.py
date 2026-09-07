@@ -64,7 +64,7 @@ def test_network_setup_uses_owned_commands_and_stops_on_failure(tmp_path, monkey
         assert BIN + '/nfdc' in argv
         assert '--nv' not in argv and not any(':/artifacts:' in a for a in argv)
         home = argv[argv.index('--home') + 1]
-        assert home.endswith(':/identities/BackboneNeck') or home.endswith(':/identities/DetectShard0')
+        assert home in ('/identities/BackboneNeck', '/identities/DetectShard0')
         rc = 4 if fault == 'command' and 'route' in argv and 'add' in argv else 0
         return original([sys.executable, '-c', 'import sys; sys.exit(' + str(rc) + ')'], **kwargs)
     monkeypatch.setattr(subprocess, 'Popen', boundary)

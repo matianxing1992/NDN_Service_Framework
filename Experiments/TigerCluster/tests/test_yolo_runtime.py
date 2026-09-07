@@ -27,7 +27,7 @@ def test_gpu_device_is_explicit_and_package_is_read_only(tmp_path, device):
     assert "CUDA_VISIBLE_DEVICES=" + device in argv
     assert str(tmp_path / "package") + ":/artifacts:ro" in argv
     assert argv[argv.index("--pwd") + 1] == "/bundle"
-    assert argv[argv.index("--home") + 1].endswith(":/identities/backbone")
+    assert argv[argv.index("--home") + 1] == "/identities/backbone"
     assert not any(":/identities:rw" in arg for arg in argv)
 
 

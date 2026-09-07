@@ -168,6 +168,17 @@ def issue(namespace: str, role_identities: dict[str, str] | None = None) -> None
     homes = Path("/identities")
     public = Path("/config")
     roles = ["root", "wrong-root", *identity_map]
+    # Importing the installed ndnsf extension initializes a default keychain
+    # under $HOME (.ndn) before issue() runs; that launcher side effect is
+    # not pre-existing identity state.  Clear it for the root role only so
+    # ndnsec starts from a clean PIB; every real role home must still start
+    # clean and is checked unchanged below.
+    root_side_effect = homes / "root" / ".ndn"
+    if root_side_effect.exists():
+        import shutil as _shutil
+        if root_side_effect.is_symlink() or not root_side_effect.is_dir():
+            raise ValueError("IDENTITY_SIDE_EFFECT_NOT_DIRECTORY:root")
+        _shutil.rmtree(root_side_effect)
     for role in roles:
         home = homes / role
         if (home / ".ndn").exists():

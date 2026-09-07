@@ -424,7 +424,10 @@ def resolve_run_plan(path: Path, *, stage: str, case: str, run_id: str, output: 
     profile = loaded["profile"]
     if case not in profile["cases"]:
         raise ClosureError("RUN_CASE")
-    output = Path(_operator_path(str(output), Path(path).absolute().parent, local=True))
+    # The operator supplies --output on the command line, so it is a cwd
+    # reference (like _safe_output), never a profile-relative reference like
+    # the profile's own file rows.
+    output = Path(_operator_path(str(output), Path.cwd(), local=True))
     if output == Path(output.anchor):
         raise ClosureError("RUN_OUTPUT_ROOT")
     from .identities import identity_inventory
