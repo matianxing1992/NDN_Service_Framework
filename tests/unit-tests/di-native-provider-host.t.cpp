@@ -1,5 +1,5 @@
-/* spec182 T009-A/T009-B: Spec182Registration + Spec182SharedLease frozen
- * selectors.
+/* spec182 T009-A/T009-B/T009-C: Spec182Registration + Spec182SharedLease +
+ * Spec182ProviderHost frozen selectors.
  *
  * Registration 全部通过真实注册（addScopedService/addScopedCollaborationHandler）
  * 与 V2 request/selection 投递驱动：真实 inline/worker dispatch、真实 Face
@@ -10,9 +10,19 @@
  * SharedLease 三个 selector 通过真实 ExecutionLeaseService::handle + wire
  * （encode/decode）驱动共享 host state：双 target 争同槽、跨 target
  * 非 Prepare 操作拒绝、target 关闭后执行中槽不被提前释放。
+ *
+ * ProviderHost 通过真实 Core scoped registration 驱动
+ * NativeInferenceProvider（CD-014）host surface：双 target 共享固定 lease
+ * 入口与 host 一致性 fence、duplicate/close/re-register、stop 的幂等 fence、
+ * close 后新 request 不再建立 pending、固定 lease 入口在 target close 与
+ * re-serve 后仍对 sibling/新 target 真实路由（wire 级深度断言见
+ * Spec182ProviderHost 内固定入口真实 dispatch；collab handler 真实执行与
+ * 真实 NFD 多入口留 T016）。
  */
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ExecutionLeaseService.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceProvider.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp"
 
 #include "tests/unit-tests/generic-dynamic-api-fixture.hpp"
 
@@ -972,5 +982,402 @@ BOOST_AUTO_TEST_CASE(Spec182ClosingServicePreservesSharedLeaseOwner)
 }
 
 BOOST_AUTO_TEST_SUITE_END() // Spec182SharedLease
+
+namespace {
+
+using ndnsf::di::NativeAdapterRegistry;
+using ndnsf::di::NativeInferenceProvider;
+using ndnsf::di::NativeProviderHandlerConfig;
+using ndnsf::di::NativeServiceDefinition;
+using ndnsf::di::NativeServiceRegistration;
+
+constexpr char NATIVE_HOST_PROVIDER_NAME[] = "/spec182/provider/native-host";
+constexpr char NATIVE_HOST_BOOT_ID[] = "host-boot-epoch";
+constexpr char HOST_SERVICE_A[] = "/Inference/Spec182HostA";
+constexpr char HOST_SERVICE_B[] = "/Inference/Spec182HostB";
+
+// host.serve 组装 runtime 时只要求 runnerFactory 非空；生命周期 suite 从不
+// dispatch 到 handler（collab 真实执行留 T016），factory 一律不得被调用。
+class UnusedRunnerFactory final : public ndnsf::di::NativeModelRunnerFactory
+{
+public:
+  std::shared_ptr<ndnsf::di::NativeModelRunner>
+  create(const ndnsf::di::NativeModelRunnerSpec&) const override
+  {
+    throw std::logic_error("runner factory must not be called by host "
+                           "lifecycle tests");
+  }
+};
+
+NativeProviderHandlerConfig
+makeHostConfig(const std::string& serviceName,
+               std::size_t workerCount = 1,
+               bool leaseOn = false)
+{
+  NativeProviderHandlerConfig config;
+  config.plan.executionPolicy = "DATA_DRIVEN_V2";
+  config.executionPolicy = "DATA_DRIVEN_V2";
+  config.localProviderName = NATIVE_HOST_PROVIDER_NAME;
+  config.providerBootId = NATIVE_HOST_BOOT_ID;
+  config.workerCount = workerCount;
+  config.runnerFactory = std::make_shared<UnusedRunnerFactory>();
+  if (leaseOn) {
+    // Host injects the shared lease table; the caller only binds the target.
+    config.executionLeaseTable = nullptr;
+    config.executionLeaseTargetService = serviceName;
+  }
+  return config;
+}
+
+NativeServiceDefinition
+makeHostService(const std::string& serviceName,
+                ServiceProvider::AckStrategyHandler ackHandler)
+{
+  NativeServiceDefinition service;
+  service.serviceName = serviceName;
+  service.allowedRoles = {"/Backbone"};
+  service.ackHandler = std::move(ackHandler);
+  return service;
+}
+
+} // namespace
+
+BOOST_AUTO_TEST_SUITE(Spec182ProviderHost)
+
+// host.serve 通过真实 addScopedService/addScopedCollaborationHandler 安装：
+// 双 target 同 host 共存、各自 registration 有效；active 同名重复 serve 被
+// host gate 拒绝且不波及其它 target。
+BOOST_AUTO_TEST_CASE(Spec182ProviderHostDualTargetSharedHostFencesDuplicate)
+{
+  ndn::security::KeyChain keyChain("pib-memory:spec182-host-dual",
+                                   "tpm-memory:spec182-host-dual");
+  ndn::DummyClientFace face(keyChain);
+  auto providerCert = makeRsaIdentity(keyChain, ndn::Name(HOST_PROVIDER_NAME));
+  auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/spec182/aa-host-dual"));
+  auto provider = std::make_shared<LocalServiceProvider>(
+    face, ndn::Name("/spec182/group"), providerCert, aaCert,
+    "examples/trust-any.conf");
+
+  auto host = std::make_shared<NativeInferenceProvider>(
+    provider, std::make_shared<NativeAdapterRegistry>());
+  auto serviceA = makeHostService(HOST_SERVICE_A, makeAcceptingAckHandler());
+  auto serviceB = makeHostService(HOST_SERVICE_B, makeAcceptingAckHandler());
+
+  NativeServiceRegistration regA = host->serve(
+    serviceA, makeHostConfig(HOST_SERVICE_A));
+  NativeServiceRegistration regB = host->serve(
+    serviceB, makeHostConfig(HOST_SERVICE_B));
+  BOOST_REQUIRE(regA.valid());
+  BOOST_REQUIRE(regB.valid());
+  BOOST_CHECK(!regA.closed());
+  BOOST_CHECK(!regB.closed());
+  BOOST_CHECK_EQUAL(regA.serviceName(), HOST_SERVICE_A);
+  BOOST_CHECK_EQUAL(regB.serviceName(), HOST_SERVICE_B);
+  BOOST_CHECK_GT(regA.generation(), 0);
+  BOOST_CHECK_GT(regB.generation(), 0);
+
+  // Active duplicate: refused by the host gate; sibling unaffected.
+  BOOST_CHECK_THROW(
+    host->serve(serviceA, makeHostConfig(HOST_SERVICE_A)), std::logic_error);
+  BOOST_CHECK(!regB.closed());
+}
+
+// Host 共享 boot 身份与 compute-slot 范围：后续 serve 不得悄悄重塑。
+BOOST_AUTO_TEST_CASE(Spec182ProviderHostHostConfigConsistencyFences)
+{
+  ndn::security::KeyChain keyChain("pib-memory:spec182-host-config",
+                                   "tpm-memory:spec182-host-config");
+  ndn::DummyClientFace face(keyChain);
+  auto providerCert = makeRsaIdentity(keyChain, ndn::Name(HOST_PROVIDER_NAME));
+  auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/spec182/aa-host-config"));
+  auto provider = std::make_shared<LocalServiceProvider>(
+    face, ndn::Name("/spec182/group"), providerCert, aaCert,
+    "examples/trust-any.conf");
+  auto host = std::make_shared<NativeInferenceProvider>(
+    provider, std::make_shared<NativeAdapterRegistry>());
+  auto serviceA = makeHostService(HOST_SERVICE_A, makeAcceptingAckHandler());
+  NativeServiceRegistration regA = host->serve(
+    serviceA, makeHostConfig(HOST_SERVICE_A));
+  BOOST_REQUIRE(regA.valid());
+
+  auto renamedConfig = makeHostConfig(HOST_SERVICE_A);
+  renamedConfig.localProviderName = "/spec182/provider/other";
+  BOOST_CHECK_THROW(host->serve(serviceA, renamedConfig),
+                    std::invalid_argument);
+
+  auto rebootingConfig = makeHostConfig(HOST_SERVICE_A);
+  rebootingConfig.providerBootId = "other-boot-epoch";
+  BOOST_CHECK_THROW(host->serve(serviceA, rebootingConfig),
+                    std::invalid_argument);
+
+  auto resizedConfig = makeHostConfig(HOST_SERVICE_A, /*workerCount=*/2);
+  BOOST_CHECK_THROW(host->serve(serviceA, resizedConfig),
+                    std::invalid_argument);
+
+  // The active duplicate gate fires before config checks on the same name.
+  BOOST_CHECK_THROW(host->serve(serviceA, makeHostConfig(HOST_SERVICE_A)),
+                    std::logic_error);
+}
+
+// close 幂等且 fence 该 target；同 serviceName 立即可重新 serve（draining
+// record 被替换，不继承旧 target 的 lease/fence/bindings）。
+BOOST_AUTO_TEST_CASE(Spec182ProviderHostCloseAllowsSameNameReServe)
+{
+  ndn::security::KeyChain keyChain("pib-memory:spec182-host-reserve",
+                                   "tpm-memory:spec182-host-reserve");
+  ndn::DummyClientFace face(keyChain);
+  auto providerCert = makeRsaIdentity(keyChain, ndn::Name(HOST_PROVIDER_NAME));
+  auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/spec182/aa-host-reserve"));
+  auto provider = std::make_shared<LocalServiceProvider>(
+    face, ndn::Name("/spec182/group"), providerCert, aaCert,
+    "examples/trust-any.conf");
+  auto host = std::make_shared<NativeInferenceProvider>(
+    provider, std::make_shared<NativeAdapterRegistry>());
+  auto serviceA = makeHostService(HOST_SERVICE_A, makeAcceptingAckHandler());
+
+  NativeServiceRegistration reg1 = host->serve(
+    serviceA, makeHostConfig(HOST_SERVICE_A));
+  const auto generation1 = reg1.generation();
+  reg1.close();
+  BOOST_CHECK(reg1.closed());
+  BOOST_CHECK_NO_THROW(reg1.close()); // idempotent
+
+  // Draining record replaced: a fresh serve of the same name is accepted.
+  NativeServiceRegistration reg2 = host->serve(
+    serviceA, makeHostConfig(HOST_SERVICE_A));
+  BOOST_REQUIRE(reg2.valid());
+  BOOST_CHECK(!reg2.closed());
+  BOOST_CHECK_GT(reg2.generation(), generation1);
+  BOOST_CHECK(reg1.closed()); // old handle stays closed
+
+  // And a duplicate of the fresh registration is again refused.
+  BOOST_CHECK_THROW(host->serve(serviceA, makeHostConfig(HOST_SERVICE_A)),
+                    std::logic_error);
+}
+
+// close 一个 target 不影响 sibling；stop 幂等关闭全部并 fence 后续 serve；
+// host 释放顺序（外部 provider owner 先 reset）不提前关闭 registration。
+BOOST_AUTO_TEST_CASE(Spec182ProviderHostStopClosesAllAndFencesServe)
+{
+  ndn::security::KeyChain keyChain("pib-memory:spec182-host-stop",
+                                   "tpm-memory:spec182-host-stop");
+  ndn::DummyClientFace face(keyChain);
+  auto providerCert = makeRsaIdentity(keyChain, ndn::Name(HOST_PROVIDER_NAME));
+  auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/spec182/aa-host-stop"));
+  auto provider = std::make_shared<LocalServiceProvider>(
+    face, ndn::Name("/spec182/group"), providerCert, aaCert,
+    "examples/trust-any.conf");
+  auto host = std::make_shared<NativeInferenceProvider>(
+    provider, std::make_shared<NativeAdapterRegistry>());
+  auto serviceA = makeHostService(HOST_SERVICE_A, makeAcceptingAckHandler());
+  auto serviceB = makeHostService(HOST_SERVICE_B, makeAcceptingAckHandler());
+
+  NativeServiceRegistration regA = host->serve(
+    serviceA, makeHostConfig(HOST_SERVICE_A));
+  NativeServiceRegistration regB = host->serve(
+    serviceB, makeHostConfig(HOST_SERVICE_B));
+
+  // Close A only: B stays open until host stop.
+  regA.close();
+  BOOST_CHECK(regA.closed());
+  BOOST_CHECK(!regB.closed());
+
+  // The host outlives the external provider owner: registration is held by
+  // the host/closure chain, not by the caller's provider shared_ptr.
+  provider.reset();
+  BOOST_CHECK(!regB.closed());
+
+  host->stop();
+  BOOST_CHECK(regA.closed());
+  BOOST_CHECK(regB.closed());
+  BOOST_CHECK_NO_THROW(host->stop()); // idempotent
+  BOOST_CHECK_THROW(host->serve(serviceA, makeHostConfig(HOST_SERVICE_A)),
+                    std::runtime_error);
+
+  // Host destruction also stops; remaining registration handle stays safe.
+  host.reset();
+  BOOST_CHECK(regB.closed());
+  BOOST_CHECK_NO_THROW(regB.close());
+}
+
+// close 后晚到 request/ack 的真实 Core 边界（host 注册面冻结）：
+// scoped close 的 fence 位于 dispatch/execution 层而非 decrypt->ack 决策
+// 层——closed 后到达的新 request 仍经过 host-installed 注册的 ack 决策
+// 并建立 pending（pending 保留到 cleanup 边界，同 Spec182Registration
+// selector 1/2 冻结语义），execution 的拒绝由 Core closed/generation gate
+// 保证（T009-A selector 1/2）。host 侧断言晚到 ack 不炸、注册链完好。
+BOOST_AUTO_TEST_CASE(Spec182ProviderHostLateAckAfterCloseHitsCoreBoundary)
+{
+  ndn::security::KeyChain keyChain("pib-memory:spec182-host-fence",
+                                   "tpm-memory:spec182-host-fence");
+  ndn::DummyClientFace face(keyChain);
+  const ndn::Name requesterName("/spec182/user/alice");
+  const ndn::Name serviceName(HOST_SERVICE_A);
+  const ndn::Name requestId1("/request/host-fence-1");
+  const ndn::Name requestId2("/request/host-fence-2");
+  auto providerCert = makeRsaIdentity(keyChain, ndn::Name(HOST_PROVIDER_NAME));
+  auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/spec182/aa-host-fence"));
+  auto provider = std::make_shared<LocalServiceProvider>(
+    face, ndn::Name("/spec182/group"), providerCert, aaCert,
+    "examples/trust-any.conf");
+  provider->applyPermissionResponse(
+    makePermissionResponse(ndn::Name(HOST_PROVIDER_NAME),
+                           tlv::ProviderPermission,
+                           ndn::Name(HOST_PROVIDER_NAME),
+                           serviceName));
+
+  std::atomic<int> ackCalls{0};
+  auto host = std::make_shared<NativeInferenceProvider>(
+    provider, std::make_shared<NativeAdapterRegistry>());
+  auto serviceA = makeHostService(
+    HOST_SERVICE_A,
+    ServiceProvider::AckStrategyHandler(
+      [&ackCalls] (const RequestMessage&) {
+        ++ackCalls;
+        ServiceProvider::AckDecision decision;
+        decision.status = true;
+        decision.message = "accept";
+        return decision;
+      }));
+  NativeServiceRegistration reg = host->serve(
+    serviceA, makeHostConfig(HOST_SERVICE_A));
+
+  // Real accept R1 through the host-installed registration.
+  const auto [request1, requestWire1] =
+    makeAuthenticatedRequestWire("payload-before-close", "spec182-host-token-1");
+  provider->addPendingRequestForTokenTest(
+    requesterName, serviceName, requestId1, request1, "provider-token-1");
+  injectRequest(*provider, requesterName, serviceName, requestId1, requestWire1);
+  BOOST_REQUIRE(provider->hasPendingRequestForTokenTest(
+    requesterName, serviceName, requestId1));
+  BOOST_REQUIRE(waitUntil([&ackCalls] { return ackCalls.load() == 1; },
+                          std::chrono::seconds(5)));
+
+  reg.close();
+  BOOST_CHECK(reg.closed());
+
+  // Late R2 (new user token, distinct requestId) after close. The Core
+  // accept boundary stays reachable through the closed entry (ack decision
+  // is asked, pending is recorded for the cleanup boundary); execution is
+  // fenced by the Core closed/generation gate per Spec182Registration.
+  const auto [request2, requestWire2] =
+    makeAuthenticatedRequestWire("payload-after-close", "spec182-host-token-2");
+  provider->addPendingRequestForTokenTest(
+    requesterName, serviceName, requestId2, request2, "provider-token-2");
+  injectRequest(*provider, requesterName, serviceName, requestId2, requestWire2);
+  BOOST_REQUIRE(waitUntil([&ackCalls] { return ackCalls.load() == 2; },
+                          std::chrono::seconds(5)));
+  BOOST_CHECK(provider->hasPendingRequestForTokenTest(
+    requesterName, serviceName, requestId2));
+  BOOST_CHECK(reg.closed());
+  BOOST_CHECK_NO_THROW(reg.close()); // late-ack window never breaks the host
+}
+
+// 固定 lease 入口真实路由（Core request/selection 全链）：单入口服务双
+// target；target close 后 sibling 继续可用（PO-014 shared service）；draining
+// target 与 re-serve 后的新 target 都不破坏固定入口。
+BOOST_AUTO_TEST_CASE(Spec182ProviderHostFixedLeaseEntryRoutesRealDispatch)
+{
+  ndn::security::KeyChain keyChain("pib-memory:spec182-host-lease-route",
+                                   "tpm-memory:spec182-host-lease-route");
+  ndn::DummyClientFace face(keyChain);
+  const ndn::Name requesterName("/spec182/user/alice");
+  const ndn::Name providerName(HOST_PROVIDER_NAME);
+  const ndn::Name leaseEntryName(ndnsf::di::EXECUTION_LEASE_SERVICE_NAME);
+  auto providerCert = makeRsaIdentity(keyChain, providerName);
+  auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/spec182/aa-host-lease-route"));
+  auto provider = std::make_shared<LocalServiceProvider>(
+    face, ndn::Name("/spec182/group"), providerCert, aaCert,
+    "examples/trust-any.conf");
+  provider->applyPermissionResponse(
+    makePermissionResponse(providerName,
+                           tlv::ProviderPermission,
+                           providerName,
+                           leaseEntryName));
+
+  auto host = std::make_shared<NativeInferenceProvider>(
+    provider, std::make_shared<NativeAdapterRegistry>());
+  auto serviceA = makeHostService(HOST_SERVICE_A, makeAcceptingAckHandler());
+  auto serviceB = makeHostService(HOST_SERVICE_B, makeAcceptingAckHandler());
+  NativeServiceRegistration regA = host->serve(
+    serviceA, makeHostConfig(HOST_SERVICE_A, /*workerCount=*/1,
+                             /*leaseOn=*/true));
+  NativeServiceRegistration regB = host->serve(
+    serviceB, makeHostConfig(HOST_SERVICE_B, /*workerCount=*/1,
+                             /*leaseOn=*/true));
+
+  // 真实投递并等待该 selection 的 dispatch 落定（成功 = Completed）。
+  auto dispatchLeaseRequest = [&] (const std::string& tag,
+                                   const std::string& userToken,
+                                   const std::string& providerToken,
+                                   const ndn::Name& requestIdName,
+                                   const std::string& targetService) {
+    ndnsf::di::LeaseOperationRequest operation;
+    operation.operation = ndnsf::di::LeaseOperation::Prepare;
+    operation.requestId = "lease-req-" + tag;
+    operation.planDigest = "plan-" + tag;
+    operation.idempotencyKey = "idem-" + tag;
+    operation.targetServiceName = targetService;
+    operation.resourceBindingProof = ndn::Buffer{1, 2, 3};
+    operation.roles = {"/Backbone"};
+    operation.expiresAtMs = 200000;
+    const auto [request, requestWire] = makeAuthenticatedRequestWire(
+      ndnsf::di::encodeLeaseOperationRequest(operation), userToken);
+    provider->addPendingRequestForTokenTest(
+      requesterName, leaseEntryName, requestIdName, request, providerToken);
+    injectRequest(*provider, requesterName, leaseEntryName, requestIdName,
+                  requestWire);
+    BOOST_REQUIRE(provider->hasPendingRequestForTokenTest(
+      requesterName, leaseEntryName, requestIdName));
+    const auto selection = makeSelectionBuffer(requestIdName, providerToken);
+    const auto digest = selectionDigestFor(selection);
+    BOOST_REQUIRE(!digest.empty());
+    provider->OnServiceSelectionMessageDecryptionSuccessCallbackV2(
+      requesterName, providerName, leaseEntryName, requestIdName, selection);
+    const auto status = provider->getSelectionExecutionStatus(digest);
+    BOOST_REQUIRE_MESSAGE(
+      status != std::nullopt,
+      "lease dispatch for " << tag << " never reached a terminal state");
+    return status;
+  };
+
+  // R_A: A 与 B 并存时,Prepare(A) 经单固定入口路由到 A 的 lease instance。
+  auto statusA = dispatchLeaseRequest(
+    "a", "spec182-lease-token-a", "provider-lease-token-a",
+    ndn::Name("/request/lease-a"), HOST_SERVICE_A);
+  BOOST_CHECK(statusA->state == SelectionExecutionState::Completed);
+  BOOST_CHECK(statusA->message.find("exception") == std::string::npos);
+
+  regA.close();
+
+  // R_B: A close 后共享固定入口仍为 sibling B 路由（另一个共享服务可用）。
+  auto statusB = dispatchLeaseRequest(
+    "b", "spec182-lease-token-b", "provider-lease-token-b",
+    ndn::Name("/request/lease-b"), HOST_SERVICE_B);
+  BOOST_CHECK(statusB->state == SelectionExecutionState::Completed);
+  BOOST_CHECK(statusB->message.find("exception") == std::string::npos);
+
+  // R_A2: draining target 的晚到 Prepare 由 router 应答（不崩溃、不牵连
+  // 固定入口）。
+  auto statusA2 = dispatchLeaseRequest(
+    "a2", "spec182-lease-token-a2", "provider-lease-token-a2",
+    ndn::Name("/request/lease-a2"), HOST_SERVICE_A);
+  BOOST_CHECK(statusA2->state == SelectionExecutionState::Completed);
+  BOOST_CHECK(statusA2->message.find("exception") == std::string::npos);
+
+  // Re-serve A: 旧 draining record 被替换;固定入口继续把 Prepare 路由到
+  // 新 target 的 lease instance（旧行残留不影响新注册的 Core 面）。
+  NativeServiceRegistration regA2 = host->serve(
+    serviceA, makeHostConfig(HOST_SERVICE_A, /*workerCount=*/1,
+                             /*leaseOn=*/true));
+  BOOST_REQUIRE(regA2.valid());
+  auto statusA3 = dispatchLeaseRequest(
+    "a3", "spec182-lease-token-a3", "provider-lease-token-a3",
+    ndn::Name("/request/lease-a3"), HOST_SERVICE_A);
+  BOOST_CHECK(statusA3->state == SelectionExecutionState::Completed);
+  BOOST_CHECK(statusA3->message.find("exception") == std::string::npos);
+}
+
+BOOST_AUTO_TEST_SUITE_END() // Spec182ProviderHost
 
 } // namespace ndn_service_framework::test

@@ -9,6 +9,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeStandaloneTokenizer.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeYoloMergeRunner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ExecutionLeaseService.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceProvider.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderReadiness.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderSession.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeServiceManifest.hpp"
@@ -1378,16 +1379,17 @@ main(int argc, char** argv)
 
       std::cout << "NDNSF_DI_NATIVE_PROVIDER_SERVICE_PROVIDER_CREATING"
                 << std::endl;
-      ndn_service_framework::ServiceProvider provider(face,
-                                                      ndn::Name(options.groupName),
-                                                      providerCert,
-                                                      controllerCert,
-                                                      options.trustSchema);
+      auto provider = std::make_shared<ndn_service_framework::ServiceProvider>(
+        face,
+        ndn::Name(options.groupName),
+        providerCert,
+        controllerCert,
+        options.trustSchema);
       // The framework owns the Provider boot epoch carried by the ACK's
       // encrypted key offer.  Bind every DI offer, assignment, and evidence
       // record to that same epoch instead of inventing a second executable-
       // local identifier that the User must reject.
-      providerBootId = provider.getProviderBootEpoch();
+      providerBootId = provider->getProviderBootEpoch();
       specs = withExecutionEvidenceContext(
         std::move(specs), options, providerBootId, providerStartedAtMs);
       if (nativeOfferConfig) {
@@ -1395,19 +1397,15 @@ main(int argc, char** argv)
       }
       std::cout << "NDNSF_DI_NATIVE_PROVIDER_SERVICE_PROVIDER_READY"
                 << std::endl;
-      provider.setUseTokens(!options.disableTokens);
-      provider.setHandlerThreads(options.handlerThreads);
-      provider.setAckThreads(options.ackThreads);
+      provider->setUseTokens(!options.disableTokens);
+      provider->setHandlerThreads(options.handlerThreads);
+      provider->setAckThreads(options.ackThreads);
       std::cout << "NDNSF_DI_NATIVE_PROVIDER_THREADS_READY handlerThreads="
                 << options.handlerThreads
                 << " ackThreads=" << options.ackThreads
                 << std::endl;
 
-      using CollaborationHandler =
-        ndn_service_framework::ServiceProvider::CollaborationHandler;
       auto provisioningState = std::make_shared<NativeProviderReadinessState>();
-      auto readyHandler = std::make_shared<std::optional<CollaborationHandler>>();
-      auto readyHandlerMutex = std::make_shared<std::mutex>();
       auto capacitySnapshot = std::make_shared<
         NativeProviderReadinessState::CapacitySnapshotProvider>();
       auto capacitySnapshotMutex = std::make_shared<std::mutex>();
@@ -1429,117 +1427,32 @@ main(int argc, char** argv)
       provisioningState->setTelemetrySnapshotProvider(
         [telemetryCollector] { return telemetryCollector->snapshot(); });
       if (options.enableAdmissionLease) {
-        provider.setGenericAdmissionLeaseRequired(ndn::Name(options.serviceName), true);
+        provider->setGenericAdmissionLeaseRequired(ndn::Name(options.serviceName), true);
         std::cout << "NDNSF_DI_NATIVE_PROVIDER_ADMISSION_LEASE_REQUIRED"
                   << " service=" << options.serviceName
                   << " ttlMs=" << options.admissionLeaseTtlMs
                   << std::endl;
       }
 
-      auto executionLeaseServiceRef =
-        std::make_shared<ndnsf::di::ExecutionLeaseService*>(nullptr);
-      auto executionLeaseService = std::make_shared<ndnsf::di::ExecutionLeaseService>(
-        options.providerName,
-        options.serviceName,
-        [executionLeaseServiceRef,
-         providerName = options.providerName,
-         workerCount = std::max<std::size_t>(1, options.workers)](
-          const ndnsf::di::LeaseOperationRequest&,
-          const ndnsf::di::ExecutionLeaseRequestContext&) {
-          if (*executionLeaseServiceRef == nullptr) {
-            return std::vector<std::string>{};
-          }
-          for (std::size_t slot = 0; slot < workerCount; ++slot) {
-            const auto key = providerName + ":compute-slot:" + std::to_string(slot);
-            if (!(*executionLeaseServiceRef)->table().hasActiveConflictKey(
-                  key, static_cast<std::uint64_t>(std::max<long long>(0, epochMs())))) {
-              return std::vector<std::string>{key};
-            }
-          }
-          return std::vector<std::string>{};
-        },
-        providerBootId);
-      *executionLeaseServiceRef = executionLeaseService.get();
-      provider.addService(
-        ndn::Name(ndnsf::di::EXECUTION_LEASE_SERVICE_NAME),
-        ndn_service_framework::ServiceProvider::AckStrategyHandler(
-          [] (const ndn_service_framework::RequestMessage&) {
-            ndn_service_framework::ServiceProvider::AckDecision decision;
-            decision.status = true;
-            decision.message = "execution lease service ready";
-            return decision;
-          }),
-        ndn_service_framework::ServiceProvider::RequestHandler(
-          [executionLeaseService](
-            const ndn::Name& requesterIdentity,
-            const ndn::Name& providerName,
-            const ndn::Name& serviceName,
-            const ndn::Name& requestId,
-            const ndn_service_framework::RequestMessage& request) {
-            const auto requestPayload = request.getPayload();
-            const std::string payload(
-              reinterpret_cast<const char*>(requestPayload.data()),
-              requestPayload.size());
-            const ndnsf::di::ExecutionLeaseRequestContext context{
-              requesterIdentity.toUri(), providerName.toUri(), serviceName.toUri(),
-              requestId.toUri()};
-            const auto now = static_cast<std::uint64_t>(
-              std::max<long long>(0, epochMs()));
-            const auto responsePayload = executionLeaseService->handle(
-              context, payload, now);
-            const auto leaseResponse =
-              ndnsf::di::decodeLeaseOperationResponse(responsePayload);
-            const auto counters = executionLeaseService->table().counters(now);
-            const auto operationName = [&leaseResponse] {
-              switch (leaseResponse.operation) {
-                case ndnsf::di::LeaseOperation::Prepare: return "PREPARE";
-                case ndnsf::di::LeaseOperation::Commit: return "COMMIT";
-                case ndnsf::di::LeaseOperation::Abort: return "ABORT";
-                case ndnsf::di::LeaseOperation::Renew: return "RENEW";
-                case ndnsf::di::LeaseOperation::Release: return "RELEASE";
-              }
-              return "UNKNOWN";
-            }();
-            std::cout << "NDNSF_DI_EXECUTION_LEASE_OPERATION"
-                      << " provider=" << providerName
-                      << " requester=" << requesterIdentity
-                      << " operation=" << operationName
-                      << " status=" << (leaseResponse.status ? "accepted" : "rejected")
-                      << " reason=" << leaseResponse.reasonCode
-                      << " leaseId=" << leaseResponse.leaseId
-                      << " prepared=" << counters.prepared
-                      << " committed=" << counters.committed
-                      << " activated=" << counters.activated
-                      << " released=" << counters.released
-                      << " expired=" << counters.expired
-                      << " conflicts=" << counters.conflict
-                      << " staleEpoch=" << counters.staleEpoch
-                      << " activePrepared=" << counters.activePrepared
-                      << " activeCommitted=" << counters.activeCommitted
-                      << " activeExecuting=" << counters.activeExecuting
-                      << std::endl;
-            ndn_service_framework::ResponseMessage response;
-            response.setStatus(true);
-            ndn::Buffer bytes(
-              reinterpret_cast<const uint8_t*>(responsePayload.data()),
-              responsePayload.size());
-            response.setPayload(bytes, bytes.size());
-            return response;
-          }),
-        ndn_service_framework::ServiceProvider::ServiceInvocationMode::NormalAndTargeted);
-      std::cout << "NDNSF_DI_EXECUTION_LEASE_SERVICE_READY provider="
-                << options.providerName
-                << " service=" << ndnsf::di::EXECUTION_LEASE_SERVICE_NAME
-                << " workers=" << options.workers
-                << std::endl;
-
-      provider.addCollaborationHandler(
-        ndn::Name(options.serviceName),
-        allowedRoles,
+      // spec182 CD-014: the shared NativeInferenceProvider host owns the
+      // single fixed execution-lease entry, the host-wide shared lease
+      // table, and one routed ExecutionLeaseService per served target.  The
+      // collaboration registration below is installed by host->serve inside
+      // the installTask; the main thread waits for that registration before
+      // starting the event loop, so serve always lands on the Face event
+      // thread or before the event loop starts (the Core scoped-registration
+      // constraint), and the executable keeps exactly one registration path.
+      auto providerHost = std::make_shared<ndnsf::di::NativeInferenceProvider>(
+        provider, std::make_shared<ndnsf::di::NativeAdapterRegistry>());
+      ndnsf::di::NativeServiceRegistration nativeRegistration;
+      ndnsf::di::NativeServiceDefinition nativeService;
+      nativeService.serviceName = options.serviceName;
+      nativeService.allowedRoles = allowedRoles;
+      nativeService.ackHandler =
         [rolesText = joinRoles(allowedRoles),
          allowedRoles,
          provisioningState,
-         &provider,
+         provider,
          serviceName = ndn::Name(options.serviceName),
          providerName = ndn::Name(options.providerName),
          nativeOfferConfig,
@@ -1567,15 +1480,15 @@ main(int argc, char** argv)
           // Update NDNSD meta with live capacity from this ACK decision
           if (decision.status) {
             auto payloadText = bufferText(decision.payload);
-            provider.updateNdnsdMeta("roles", rolesText);
-            provider.updateNdnsdMeta("runtimeStatus", "ready");
+            provider->updateNdnsdMeta("roles", rolesText);
+            provider->updateNdnsdMeta("runtimeStatus", "ready");
             // Parse semicolon-delimited key=value fields for capacity
             std::string current;
             for (char ch : payloadText) {
               if (ch == ';') {
                 auto eq = current.find('=');
                 if (eq != std::string::npos && eq > 0 && eq + 1 < current.size()) {
-                  provider.updateNdnsdMeta(current.substr(0, eq), current.substr(eq + 1));
+                  provider->updateNdnsdMeta(current.substr(0, eq), current.substr(eq + 1));
                 }
                 current.clear();
               } else {
@@ -1594,7 +1507,7 @@ main(int argc, char** argv)
             if (!proof.empty()) {
               lease.resourceBindingProof = textBuffer(proof);
             }
-            provider.grantGenericAdmissionLease(lease);
+            provider->grantGenericAdmissionLease(lease);
             std::string payload = bufferText(decision.payload);
             if (!payload.empty() && payload.back() != ';') {
               payload.push_back(';');
@@ -1622,22 +1535,94 @@ main(int argc, char** argv)
                     << " payload=\"" << bufferText(decision.payload) << "\""
                     << std::endl;
           return decision;
-        },
-        [provisioningState, readyHandler, readyHandlerMutex](
-          ndn_service_framework::ServiceProvider::CollaborationContext& ctx,
-          const ndn_service_framework::RequestMessage& request) {
-          CollaborationHandler handler;
+        };
+      // Observation seam invoked by host->serve once the native runtime is
+      // assembled, before its collaboration registration is installed: bind
+      // the runtime capacity/evidence snapshot to readiness and telemetry,
+      // exactly the wiring the old readyHandler forwarder owned.
+      nativeService.runtimeObserver =
+        [provisioningState,
+         allowedRoles,
+         capacitySnapshot,
+         capacitySnapshotMutex,
+         telemetryCollector,
+         stageServiceTimeObserver,
+         executionEvidenceObserver](
+          const ndnsf::di::NativeProviderCollaborationRuntime& runtime) {
           {
-            std::lock_guard<std::mutex> lock(*readyHandlerMutex);
-            if (!readyHandler->has_value()) {
-              ctx.fail("native DI provider " + provisioningState->statusText() +
-                       ": " + provisioningState->message());
-              return;
-            }
-            handler = **readyHandler;
+            std::lock_guard<std::mutex> lock(*capacitySnapshotMutex);
+            *capacitySnapshot = runtime.capacitySnapshot;
           }
-          handler(ctx, request);
-        });
+          *stageServiceTimeObserver = [telemetryCollector](
+            std::chrono::milliseconds duration) {
+            telemetryCollector->recordStageServiceTime(duration);
+          };
+          telemetryCollector->refresh();
+          auto executionEvidenceByRole = std::make_shared<
+            std::map<std::string, ExecutionEvidence>>();
+          for (const auto& item : runtime.executionEvidence) {
+            for (const auto& role : item.roles) {
+              (*executionEvidenceByRole)[role] = item;
+            }
+          }
+          if (!runtime.executionEvidence.empty()) {
+            auto executionEvidence = aggregateExecutionEvidence(
+              runtime.executionEvidence);
+            provisioningState->setExecutionEvidence(executionEvidence);
+            std::cout << "NDNSF_DI_EXECUTION_EVIDENCE "
+                      << executionEvidenceToJson(executionEvidence)
+                      << std::endl;
+          }
+          else {
+            // Canonical role assembly is deliberately deferred until an
+            // authenticated Selection.  Readiness is capability-only here;
+            // per-role execution evidence is published after ORT loads.
+            std::cout << "NDNSF_DI_EXECUTION_EVIDENCE_DEFERRED"
+                      << " reason=post-selection-assembly"
+                      << " roles=" << allowedRoles.size()
+                      << std::endl;
+          }
+          provisioningState->setExecutionEvidenceByRole(*executionEvidenceByRole);
+          auto executionEvidenceMutex = std::make_shared<std::mutex>();
+          *executionEvidenceObserver =
+            [executionEvidenceByRole, executionEvidenceMutex, provisioningState]
+            (const ExecutionEvidence& observed) {
+              std::lock_guard<std::mutex> lock(*executionEvidenceMutex);
+              for (const auto& role : observed.roles) {
+                (*executionEvidenceByRole)[role] = observed;
+              }
+              std::vector<ExecutionEvidence> current;
+              current.reserve(executionEvidenceByRole->size());
+              for (const auto& item : *executionEvidenceByRole) {
+                current.push_back(item.second);
+              }
+              const auto aggregate = aggregateExecutionEvidence(current);
+              provisioningState->setExecutionEvidence(aggregate);
+              provisioningState->setExecutionEvidenceByRole(*executionEvidenceByRole);
+              std::cout << "NDNSF_DI_EXECUTION_EVIDENCE_UPDATE "
+                        << executionEvidenceToJson(aggregate)
+                        << std::endl;
+              std::cout << "NDNSF_DI_EXECUTION_EVIDENCE_OBSERVED "
+                        << executionEvidenceToJson(observed)
+                        << std::endl;
+            };
+        };
+
+      // The installTask assembles the runtime and registers the service
+      // through host->serve before the event loop starts (the main thread
+      // waits on serveCompleted below), then polls the Controller permission
+      // and marks readiness once the event loop is running.
+      auto serveCompleted = std::make_shared<std::atomic<bool>>(false);
+      auto serveCompletedMutex = std::make_shared<std::mutex>();
+      auto serveCompletedCv = std::make_shared<std::condition_variable>();
+      auto signalServeCompleted = [serveCompleted, serveCompletedMutex,
+                                   serveCompletedCv] {
+        {
+          std::lock_guard<std::mutex> lock(*serveCompletedMutex);
+          *serveCompleted = true;
+        }
+        serveCompletedCv->notify_all();
+      };
       auto installTask =
         [options,
          plan,
@@ -1650,16 +1635,14 @@ main(int argc, char** argv)
          controllerCert,
          controllerIdentity,
          provisioningState,
-         readyHandler,
-         readyHandlerMutex,
-         capacitySnapshot,
-         capacitySnapshotMutex,
-         telemetryCollector,
          stageServiceTimeObserver,
          executionEvidenceObserver,
-         executionLeaseService,
-         &keyChain,
-         &provider] () mutable {
+         provider,
+         providerHost,
+         nativeService,
+         registrationOut = &nativeRegistration,
+         signalServeCompleted,
+         &keyChain] () mutable {
           try {
             provisioningState->markInstalling(
               "waiting for authenticated post-Selection role assembly");
@@ -1839,79 +1822,29 @@ main(int argc, char** argv)
                 coordinator->installCapability(std::move(capability), {}, true);
                 return coordinator;
               };
+            // spec182 CD-014: the host injects its shared lease table; the
+            // executable only declares that the service wants one.
             if (options.requireExecutionLease) {
-              config.executionLeaseTable = &executionLeaseService->table();
               config.executionLeaseTargetService = options.serviceName;
             }
             config.executionLeaseHardDeadlineMs = static_cast<uint64_t>(
               std::max(1000, options.admissionLeaseTtlMs));
 
-            auto runtime = makeNativeProviderCollaborationRuntime(std::move(config));
-            {
-              std::lock_guard<std::mutex> lock(*capacitySnapshotMutex);
-              *capacitySnapshot = runtime.capacitySnapshot;
-            }
-            *stageServiceTimeObserver = [telemetryCollector](
-              std::chrono::milliseconds duration) {
-              telemetryCollector->recordStageServiceTime(duration);
-            };
-            telemetryCollector->refresh();
-            auto executionEvidenceByRole = std::make_shared<
-              std::map<std::string, ExecutionEvidence>>();
-            for (const auto& item : runtime.executionEvidence) {
-              for (const auto& role : item.roles) {
-                (*executionEvidenceByRole)[role] = item;
-              }
-            }
-            if (!runtime.executionEvidence.empty()) {
-              auto executionEvidence = aggregateExecutionEvidence(
-                runtime.executionEvidence);
-              provisioningState->setExecutionEvidence(executionEvidence);
-              std::cout << "NDNSF_DI_EXECUTION_EVIDENCE "
-                        << executionEvidenceToJson(executionEvidence)
-                        << std::endl;
-            }
-            else {
-              // Canonical role assembly is deliberately deferred until an
-              // authenticated Selection.  Readiness is capability-only here;
-              // per-role execution evidence is published after ORT loads.
-              std::cout << "NDNSF_DI_EXECUTION_EVIDENCE_DEFERRED"
-                        << " reason=post-selection-assembly"
-                        << " roles=" << allowedRoles.size()
-                        << std::endl;
-            }
-            provisioningState->setExecutionEvidenceByRole(*executionEvidenceByRole);
-            auto executionEvidenceMutex = std::make_shared<std::mutex>();
-            *executionEvidenceObserver =
-              [executionEvidenceByRole, executionEvidenceMutex, provisioningState]
-              (const ExecutionEvidence& observed) {
-                std::lock_guard<std::mutex> lock(*executionEvidenceMutex);
-                for (const auto& role : observed.roles) {
-                  (*executionEvidenceByRole)[role] = observed;
-                }
-                std::vector<ExecutionEvidence> current;
-                current.reserve(executionEvidenceByRole->size());
-                for (const auto& item : *executionEvidenceByRole) {
-                  current.push_back(item.second);
-                }
-                const auto aggregate = aggregateExecutionEvidence(current);
-                provisioningState->setExecutionEvidence(aggregate);
-                provisioningState->setExecutionEvidenceByRole(*executionEvidenceByRole);
-                std::cout << "NDNSF_DI_EXECUTION_EVIDENCE_UPDATE "
-                          << executionEvidenceToJson(aggregate)
-                          << std::endl;
-                std::cout << "NDNSF_DI_EXECUTION_EVIDENCE_OBSERVED "
-                          << executionEvidenceToJson(observed)
-                          << std::endl;
-              };
-            {
-              std::lock_guard<std::mutex> lock(*readyHandlerMutex);
-              *readyHandler = std::move(runtime.handler);
-            }
+            // serve assembles the runtime -- invoking nativeService.runtimeObserver
+            // for the capacity/evidence/telemetry wiring -- and installs the
+            // scoped collaboration registration on this thread, before the
+            // event loop starts, so the Core scoped-registration thread
+            // constraint holds and the main thread owns the registration.
+            *registrationOut = providerHost->serve(nativeService, config);
+            signalServeCompleted();
+            std::cout << "NDNSF_DI_EXECUTION_LEASE_SERVICE_READY"
+                      << " provider=" << options.providerName
+                      << " service=" << options.serviceName
+                      << std::endl;
             const auto permissionDeadline =
               std::chrono::steady_clock::now() +
               std::chrono::milliseconds(options.permissionWaitMs);
-            while (!provider.hasProviderPermissionForService(
+            while (!provider->hasProviderPermissionForService(
                      ndn::Name(options.serviceName))) {
               if (std::chrono::steady_clock::now() >= permissionDeadline) {
                 throw std::runtime_error(
@@ -1922,9 +1855,9 @@ main(int argc, char** argv)
             std::cout << "NDNSF_DI_NATIVE_PROVIDER_PERMISSION_READY"
                       << " provider=" << options.providerName
                       << " service=" << options.serviceName
-                      << " policyEpoch=" << provider.getCurrentPolicyEpoch()
+                      << " policyEpoch=" << provider->getCurrentPolicyEpoch()
                       << std::endl;
-            provider.updateNdnsdMeta("providerBootId", providerBootId);
+            provider->updateNdnsdMeta("providerBootId", providerBootId);
             std::cout << "NDNSF_DI_PROVIDER_BOOT_READY"
                       << " provider=" << options.providerName
                       << " providerBootId=" << providerBootId
@@ -1933,7 +1866,7 @@ main(int argc, char** argv)
                       << std::endl;
             provisioningState->markReady(
               "native runtime ready; role assembly deferred until Selection");
-            provider.updateNdnsdMeta("runtimeStatus", "ready");
+            provider->updateNdnsdMeta("runtimeStatus", "ready");
             std::cout << "NDNSF_DI_NATIVE_PROVIDER_PROVISION_READY"
                       << " activeRoles=" << allowedRoles.size()
                       << " workers=" << options.workers
@@ -1948,19 +1881,30 @@ main(int argc, char** argv)
             std::cerr << "NDNSF_DI_NATIVE_PROVIDER_PROVISION_FAILED"
                       << " error=\"" << exc.what() << "\""
                       << std::endl;
+            // The main thread waits for serve below even when assembly
+            // failed; otherwise it would never enter the event loop.
+            signalServeCompleted();
           }
         };
 
-      provider.fetchPermissionsFromController(controllerIdentity);
+      provider->fetchPermissionsFromController(controllerIdentity);
       std::cout << "NDNSF_DI_NATIVE_PROVIDER_PERMISSION_FETCH_ISSUED controller="
                 << controllerIdentity
                 << std::endl;
-      provider.init();
+      provider->init();
       std::cout << "NDNSF_DI_NATIVE_PROVIDER_INIT_DONE" << std::endl;
-      provider.setNdnsdMeta({{"runtimeStatus", "installing"}});
-      provider.startNdnsdPeriodicPublish(10);
+      provider->setNdnsdMeta({{"runtimeStatus", "installing"}});
+      provider->startNdnsdPeriodicPublish(10);
       std::thread(std::move(installTask)).detach();
 
+      // InstallTask runs serve() off the main thread; wait for the host
+      // registration to land (or the assembly failure to be reported) before
+      // processing events, so serve never races the Core Face dispatch.
+      {
+        std::unique_lock<std::mutex> lock(*serveCompletedMutex);
+        serveCompletedCv->wait(lock,
+                               [&serveCompleted] { return serveCompleted->load(); });
+      }
       std::cout << "NDNSF_DI_NATIVE_PROVIDER_SERVE_READY service="
                 << options.serviceName
                 << " identity=" << options.providerName
