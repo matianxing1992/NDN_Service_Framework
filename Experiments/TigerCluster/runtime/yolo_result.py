@@ -7,6 +7,73 @@ from collections.abc import Mapping
 import re
 
 
+def validate_dependency_edges(logs_by_role, edges, *, session_id):
+    """Pair DATA_V1 publication/verified fetch logs for sealed expected edges.
+
+    Caller binds each log to its actual Provider launch, and derives edges and
+    session_id from the real sealed request plan, never from observed logs.
+    This is not a physical-link or full-inference qualification verdict.
+    """
+    from pathlib import Path
+    from runtime.yolo_bundle import _bytes
+    fields = {'session', 'scope', 'producer', 'consumer', 'direction', 'payload_bytes', 'planned_name', 'status'}
+    edge_fields = {'scope', 'producer', 'consumer', 'planned_name'}
+    if (not isinstance(edges, list) or not 0 < len(edges) <= 64
+            or not isinstance(session_id, str) or not session_id or any(c.isspace() for c in session_id)):
+        raise EvidenceError('DEPENDENCY_EXPECTED_CONTRACT')
+    keys = []
+    for edge in edges:
+        if (not isinstance(edge, dict) or set(edge) != edge_fields
+                or any(not isinstance(v, str) or not v or any(c.isspace() for c in v) for v in edge.values())
+                or not edge['planned_name'].startswith('/') or edge['producer'] == edge['consumer']):
+            raise EvidenceError('DEPENDENCY_EXPECTED_EDGE')
+        key = tuple(edge[k] for k in sorted(edge_fields))
+        if key in keys:
+            raise EvidenceError('DEPENDENCY_EXPECTED_DUPLICATE')
+        keys.append(key)
+    marker = 'NDNSF_DI_DEPENDENCY_OBJECT '
+    records = {}
+    for role, filename in logs_by_role.items():
+        path = Path(filename)
+        if any(p.is_symlink() for p in (path, *path.parents)):
+            raise EvidenceError('DEPENDENCY_LOG_SYMLINK')
+        for line in _bytes(path).decode('utf-8').splitlines():
+            if marker not in line:
+                continue
+            tokens = line.split(marker, 1)[1].split()
+            row = {}
+            for token in tokens:
+                key, sep, value = token.partition('=')
+                if not sep or key in row:
+                    raise EvidenceError('DEPENDENCY_LOG_FIELDS')
+                row[key] = value
+            if set(row) != fields:
+                raise EvidenceError('DEPENDENCY_LOG_FIELDS')
+            if row['session'] != session_id:
+                continue
+            key = tuple(row[k] for k in sorted(edge_fields))
+            if key not in keys:
+                raise EvidenceError('DEPENDENCY_UNPLANNED_EDGE')
+            direction = row['direction']
+            expected_role = row['producer'] if direction == 'publish-ndnsf-data-v1' else row['consumer']
+            if (direction not in ('publish-ndnsf-data-v1', 'fetch-ndnsf-data-v1')
+                    or role != expected_role or row['status'] != 'ok'
+                    or not re.fullmatch(r'[1-9][0-9]{0,19}', row['payload_bytes'])):
+                raise EvidenceError('DEPENDENCY_TRANSPORT_OR_OWNER')
+            pair = (key, direction)
+            if pair in records:
+                raise EvidenceError('DEPENDENCY_DUPLICATE_OBSERVATION')
+            if int(row['payload_bytes']) >= 2**64:
+                raise EvidenceError('DEPENDENCY_BYTES_RANGE')
+            records[pair] = int(row['payload_bytes'])
+    for key in keys:
+        published = records.get((key, 'publish-ndnsf-data-v1'))
+        fetched = records.get((key, 'fetch-ndnsf-data-v1'))
+        if published is None or published != fetched:
+            raise EvidenceError('DEPENDENCY_PAIR_MISSING_OR_BYTES')
+    return dict(edgeCount=len(keys), qualification='DEPENDENCY_COMPONENT_ONLY')
+
+
 def collect_request_result(root, reference, *, case, request_id, attempt_id,
                            candidate_id, candidate_digest, graph_digest, catalogue_digest):
     """Join one lifecycle and recomputed response, with frozen graph identity.

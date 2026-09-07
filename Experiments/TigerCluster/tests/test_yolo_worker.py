@@ -46,6 +46,7 @@ def test_real_child_is_started_by_role_launcher_and_cleaned_up(tmp_path):
         assert "--nv" in argv
         assert not any(":/artifacts:" in arg for arg in argv)
         assert "NDNSF_DI_STATE_ROOT=/output/state" in argv
+        assert "NDNSF_DI_DEPENDENCY_OBJECT_TRACE=1" in argv
         assert "NDNSF_DI_ORT_PROFILE_PREFIX=/output/ort/session" in argv
         assert not any(":/identities:rw" in item for item in argv)
     finally:

@@ -1864,3 +1864,13 @@ added a deterministic outer-wait expiry regression. Initial full run was
   earlier-phase-only failure test; application/runtime remain doubles.
 - Lesson: phase-local coordination must still observe earlier ownership
   failure channels throughout the run.
+## 2026-09-07 — Missing dependency trace enablement in YOLO worker
+
+- Symptom: qualification needs paired DATA_V1 dependency observations, but
+  the Worker launch did not enable either native dependency tracing variable.
+- Fix: enable NDNSF_DI_DEPENDENCY_OBJECT_TRACE=1 explicitly; add launch assertion
+  and source-format paired publish/fetch validator tests.
+- Remaining: User has not retained the safe public sealed dependency contract;
+  collector cannot derive expected edges from observations themselves.
+- Lesson: verify both producer instrumentation and independent expected
+  contract before claiming edge coverage from successful final responses.

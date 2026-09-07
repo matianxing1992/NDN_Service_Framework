@@ -386,6 +386,7 @@ class NodeRuntime:
         role_output = _directory(self.output / role, may_create=True)
         gpu = self.mode != "local-cpu" and role in MODEL_ROLES
         application = ["/usr/bin/env", "NDNSF_DI_STATE_ROOT=/output/state",
+                       "NDNSF_DI_DEPENDENCY_OBJECT_TRACE=1",
                        "NDNSF_DI_ORT_PROFILE_PREFIX=/output/ort/session", *argv]
         command = container_command(
             self.profile, self.bundle, self.homes[role], self.public, role_output,
