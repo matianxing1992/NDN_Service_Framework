@@ -334,7 +334,7 @@ CD-013/014、取消/通知队列及旧路径回退完整定义于
 | O-002 | 原生 ONNX extraction/checker/protobuf 是否复现既有精确字节 | 在固定 inline/external-data 与两种 role recipe 上比较；列出 native 调用、版本、许可、依赖和差异。精确相等或经明确版本化设计修订后才能关闭；最多两个候选方案 | T001；T002/T006 |
 | O-003 / CLOSED | tokenizers0.20.3/Rust1.90.0与C ABI、RAII/串行寿命设计已固定 | 三种fixture84个ids/text对照及14个非法输入PASS；ldd无Python；lock、许可、私有安装/构建/释放规则见native-dependency-design。不计T007产品或T016隔离验收 | T001依赖设计完成；T002/T007仍受O-002/O-004/O-005阻塞 |
 | O-004 | 所有旧公开 API/策略/会话持久化与调用方尚未穷举；Core无公开逐服务注销接口，Provider host的共享服务关闭语义未闭合 | 12类137字段已匹配当前源码，但仍须按runtime-boundaries分类并补嵌套types、状态、cancel/observer、错误映射和完整inventory。CD-014必须明确registration fence或具名Core改动及PO-014负例；禁止假设removeService存在或用全局stop替代 | T001；T002--T013 |
-| O-005 | native runtime 隔离设计可行性 | 核对 Linux mount/process observation 能阻断解释器、libpython、旁路服务，同时允许 harness 在外部；T001 冻结工具、权限和白名单设计后关闭此 OPEN；T014 实现并用故意 helper 验证有效性 | T001 设计；T014 实现；T016 资格 |
+| O-005 / CLOSED | native runtime隔离工具可用，权限、最小root、进程/映射/服务白名单和反例已冻结 | 见[native isolation design](native-isolation-design.md)：bwrap/strace最小正例exit0，缺解释器反例在exec边界ENOENT；T014仍须实现完整detector，T016运行I01--I08与业务case，不计最终no-Python PASS | T001设计完成；T014实现；T016资格 |
 
 每项 OPEN 是具体设计边界，不能宣称 READY 后留给实现 improvisation。
 T001 的交付是关闭表、叶子签名、lock/compatibility manifest 和修订后的原子任务，

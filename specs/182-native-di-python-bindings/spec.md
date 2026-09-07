@@ -267,8 +267,8 @@ Python 不成为 flow 中间的 planner、grant authority、每 token callback �
 ## Design Readiness
 
 **DRAFT / BLOCK for implementation**。用户目标与职责选择已明确，公开 API/行为和证明框架见附件；
-O-001（合并源码身份及181承接）与O-003（tokenizer原生依赖/ABI设计）已按各自范围CLOSED；O-002（ONNX完整原生字节契约）、
-O-004（完整旧能力/调用方清单）与 O-005（隔离设计可行性）在 [code-design](contracts/code-design.md#open-questions)
+O-001（合并源码身份及181承接）、O-003（tokenizer原生依赖/ABI设计）与O-005（隔离设计可行性）已按各自范围CLOSED；O-002（ONNX完整原生字节契约）、
+O-004（完整旧能力/调用方清单）在 [code-design](contracts/code-design.md#open-questions)
 中保留有界关闭条件。T001仍未完成；新依赖组合的运行资格另列NOT_RUN，不把它混入已关闭的源码身份核对。不得把尚未冻结的叶子接口交给实现者临场补全。
 
 当前探针与设计进展不是 READY_FOR_IMPLEMENTATION 或代码完成；用户授权的实施在T001关闭后继续。

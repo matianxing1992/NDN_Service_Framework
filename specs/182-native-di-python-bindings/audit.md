@@ -25,7 +25,7 @@ T001有界依赖探针见[native dependency design](contracts/native-dependency-
 | O-002 | ONNX原生装配字节契约与依赖锁 | T001 |
 | O-003 / CLOSED | 精确crate/toolchain锁、C ABI/释放/串行寿命/生产路径及84对照+14负例PASS；产品迁移/隔离尚未完成 | T001设计完成；T007/T016实施证明 |
 | O-004 | 12类137字段与当前源一致；完整旧能力/调用方/selectors、嵌套schema及A7-03注册寿命仍缺 | T001 |
-| O-005 | 无Python隔离方案可行性与边界 | T001 |
+| O-005 / CLOSED | 最小root/namespace+strace工具正反例PASS；权限/服务白名单、函数/字段、I01--I08及观测失败规则冻结；不计完整运行资格 | T001设计完成；T014/T016实施证明 |
 
 O-002--005的有界关闭条件见[code-design](contracts/code-design.md#open-questions)，依赖探针结果与完整算法/兼容设计关闭分别记账。
 T002--T014的各项实现、测试工具编写、静态审查、局部单测完成后，T015补审整体接线，

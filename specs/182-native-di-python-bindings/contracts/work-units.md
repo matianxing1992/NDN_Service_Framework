@@ -144,6 +144,7 @@ T001冻结新unit selectors，不能执行整份混合测试文件而意外启�
 - **Outcome**: harness 将被测 native scope 与 Python harness 隔离；交付正式 MiniNDN harness/collector/fixtures，本地单测完成后进入T015，真实反例由T016运行。
 - **Design**: FR-001,FR-011,FR-012,FR-014; CD-011; INV-002,INV-007,INV-008; FLOW-001, FLOW-002。
 - **Changes**: run-spec182-native-closure.py、test_spec182_native_closure.py、NDNSF_DI_NativeClosure_Minindn.py、case-manifest
+- 具体函数/内部状态/manifest字段与I01--I08 selector按[native isolation design](native-isolation-design.md)执行；复用同一runner/collector，不建立第二份判定逻辑。
 - **ForbiddenChanges**: 只看 PATH/字符串就 PASS；隐藏 Python 服务；混用源/依赖身份。
 - **LocalChecks**: collector判定、manifest和隔离gate解析逻辑单测，编写并注册所有真实反例；warm-only/rename-helper/embedded-libpython与隔离运行均在T016。
 - **FinalProof**: PO-001,PO-010,PO-012。 本任务只完成局部单测；其余运行证据由T016统一产生。

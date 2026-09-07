@@ -106,7 +106,7 @@ harness 可在隔离外用 Python 操作 MiniNDN，必须记录 PID/cgroup/mount
 
 检查必须同时覆盖：冷缓存、未提前装配的两个 recipe、真实 raw input/图/工件准备、ACK admission、真实保护、完整文本 encode/decode，
 以及动态进程执行/映射。仅 rg 找不到字符串、PATH 去掉 python、ldd 通过或暖缓存成功都不足。
-T001/O-005 冻结隔离设计、T014 实现后，用已知 fork-helper 版本作反例证明 gate 可发现旁路。
+T001/O-005已冻结[native isolation design](native-isolation-design.md)的文件/函数、manifest、权限/白名单、进程/映射/endpoint观测与I01--I08反例；最小工具可行性检查PASS。T014实现、T016用已知fork-helper/瞬时libpython/旁路连接等反例证明gate有效，最小工具检查不计这些反例或业务资格。
 检查工具不能自行生成 PASS marker 后宣称被测路径纯原生。
 
 ## Acceptance Cases
