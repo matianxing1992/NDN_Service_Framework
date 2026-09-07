@@ -45,6 +45,7 @@ T001已完成接收清点（见evidence/input-inventory.md），发现两个必�
 
 1. G0 / T001：当前源码/交付锁/接口/输入清点。未知环境值列清单；不启动模型或下载大 artifact。
 2. G1 / T002–T006：实现配置闭包、launcher/生命周期、YOLO 适配/collector 及 focused 红绿回归。可做小型合成 child-process 测试。
+   内部先完成T002内容完整性接口，再实现T003–T006，最后回填T002真实命令边界及builder receipt dispatch测试。T002的最终验收依赖T004/T006，不再要求在消费者存在前完成；所有任务仍须在G2前关闭，测试fixture不能冒充T010真实host receipt。
 3. G2 / T007：实现到生产调用路径收敛审计，必须 PASS。检查实际 argv/env、角色路由、secure grant/selection、harness/oracle、清理、数据路径。未接线不能算实现。
 4. G3 / T008–T010：按锁干净构建（`NAC-ABE + NDN-SVS → NDNSD → NDNSF → Apps/两个 Python 扩展`），unit→真实集成→CPU 小模型 MiniNDN。宿主库路径和编译/链接工具闭包要实测。
 5. G4 / T011：合格 host-gate manifest 后通过原入口本地构建完整 SIF，容器内九原生产物/所有 DSO/import/help/CPU 小模型验证。

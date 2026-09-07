@@ -30,7 +30,8 @@ PYTHON = "/opt/venv/bin/python"
 def container_env() -> dict:
     """Discard host runtime injection; job configuration comes from argv only."""
     return {key: value for key, value in os.environ.items()
-            if not key.startswith(("APPTAINER", "SINGULARITY", "NDN", "PYTHON", "LD_"))}
+            if not key.startswith(("APPTAINER", "SINGULARITY", "NDN", "PYTHON", "LD_",
+                                   "CUDA", "NVIDIA", "ORT_"))}
 
 
 def digest(path: Path) -> str:
@@ -95,20 +96,37 @@ def bundle_files(root: Path) -> dict:
 
 def container_command(profile: dict, bundle: Path, home: Path, public: Path,
                       output: Path, argv: list[str], *, node: Path | None = None,
-                      prepare: Path | None = None) -> list[str]:
+                      prepare: Path | None = None, artifacts: Path | None = None,
+                      gpu: bool = False, gpu_device: str | None = None) -> list[str]:
     """Compose a role-isolated command; HOME paths match the PIB's TPM locator.
 
     ``prepare`` is used only by the offline identity issuer. Normal workloads
     never receive this mount or the root's private key directory.
+    ``artifacts`` mounts an immutable model package at /artifacts. GPU workers
+    must provide one scheduler-assigned device explicitly; this helper checks
+    syntax only, not allocation membership or actual CUDA execution. Those are
+    worker/preflight and result-validation responsibilities.
     """
-    for path in (bundle, home, public, output):
-        if any(c in str(path) for c in ":,\n\r"):
+    if (type(gpu) is not bool or (not gpu and gpu_device is not None)
+            or (gpu and (not isinstance(gpu_device, str) or not re.fullmatch(
+                r"(?:0|[1-9][0-9]*|GPU-[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12})",
+                gpu_device)))):
+        raise ValueError("GPU_DEVICE")
+    for path in (bundle, home, public, output, node, prepare, artifacts):
+        if path is None:
+            continue
+        if (not Path(path).is_absolute() or ".." in Path(path).parts
+                or any(c in str(path) for c in ":,\n\r\x00")):
             raise ValueError("BIND_PATH")
     role_home = "/identities/" + home.name
     command = [profile["apptainer"], "exec", "--cleanenv", "--containall",
                "--home", f"{home}:{role_home}", "--pwd", "/bundle",
                "--bind", f"{bundle}:/bundle:ro", "--bind", f"{public}:/config:{'rw' if prepare else 'ro'}",
                "--bind", f"{output}:/output:rw"]
+    if gpu:
+        command += ["--nv"]
+    if artifacts is not None:
+        command += ["--bind", f"{artifacts}:/artifacts:ro"]
     if node is not None:
         command += ["--bind", f"{node}:/node:rw"]
     if prepare is not None:
@@ -120,7 +138,10 @@ def container_command(profile: dict, bundle: Path, home: Path, public: Path,
                 "NDN_CLIENT_TRANSPORT=unix:///node/nfd.sock",
                 "NDNSF_CONFIG=" + role_home + "/session.conf",
                 "NDNSF_CONTROLLER_CERT_FILE=/config/controller.cert",
-                "NDN_LOG=ndn_service_framework.*=ERROR", *argv]
+                "NDN_LOG=ndn_service_framework.*=ERROR"]
+    if gpu:
+        command += ["CUDA_VISIBLE_DEVICES=" + gpu_device]
+    command += argv
     return command
 
 
@@ -131,11 +152,12 @@ class Processes:
         log_dir.mkdir(parents=True, exist_ok=True)
         self.children = []
 
-    def start(self, name: str, argv: list[str], env: dict | None = None):
+    def start(self, name: str, argv: list[str], env: dict | None = None, *,
+              cwd: Path | None = None):
         log = (self.log_dir / (name + ".log")).open("wb")
         try:
             child = subprocess.Popen(argv, stdout=log, stderr=subprocess.STDOUT,
-                                     start_new_session=True, env=env)
+                                     start_new_session=True, env=env, cwd=cwd)
         except BaseException:
             log.close()
             raise

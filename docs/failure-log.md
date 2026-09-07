@@ -1,5 +1,12 @@
 # Failure Log and Evidence Index
 
+## 2026-09-06 — Spec183 gate dependency cycle and launch isolation gaps
+
+- Symptom: T002 final acceptance needs the T004 external command boundary and T006 result validator, but the task chain required T002 complete before implementing either. Focused launcher tests also exposed missing GPU/model/cwd arguments, unchecked optional bind paths and ambient GPU settings (25 failed / 1 passed before repair).
+- Cause: implementation interfaces and final qualification were conflated; the shared CPU-only launcher had not yet implemented the new GPU contract.
+- Resolution: allow T003–T006 implementation from T002's integrity interface, then close T002 integration before T007. Extend the original shared launcher with explicit single-device selection, fixed read-only artifact mount, all-mount path checks, filtered environment and child cwd. Focused regression: 84 passed in 2.60s; see Spec183 evidence/t003-launch.md.
+- Remaining: T002/T003 stay unchecked; the real worker, aggregate cleanup budget, receipt validator and launch gates are not qualified. Do not manufacture receipts or treat argument tests as GPU execution.
+
 ## 2026-09-06 — Spec183 integrity preflight ambiguous and blocking inputs
 
 Focused red/green found inventory omissions, unknown fields and escaped paths accepted by the initial integrity tracer bullet (7 failures), then an unimplemented ancestor chain (1 failure). A separate FIFO-manifest probe timed out after 2 s: ordinary open could block even before validation. Strict metadata/path/JSON checks, recomputed parent identities and nonblocking regular-file opens resolve these focused cases; final 21 tests pass. Full T002 launch/receipt gating remains pending. See `specs/183-tiger-yolo-reusable-experiments/evidence/t002-integrity.md`; these fixture passes are not build/GPU qualification.

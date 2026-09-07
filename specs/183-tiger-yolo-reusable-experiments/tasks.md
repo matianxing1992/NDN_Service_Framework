@@ -24,7 +24,7 @@ T002追加接收审查修复：在既有`build-local-sif.sh`与host-gate owner�
 
 **Independent Test**: deterministic resolved config from another cwd; fail-before-side-effects; two concurrent submit attempts cannot both launch.
 
-- [ ] T003 [US1] Extend reusable role/container lifecycle in `Experiments/TigerCluster/runtime/baseline.py`, `identities.py`, and planned `yolo_worker.py`, with `Experiments/TigerCluster/tests/test_yolo_runtime.py`: preserve CPU baseline behavior; support explicit GPU/env/mount/cwd mapping, isolated role identities/PIB, owned process groups and bounded peer/readiness checks. Add real short-lived parent/child cleanup tests, wrong cwd/port/shared PIB rejection and no host runtime injection. Reuse common primitives, not a copied supervisor. Depends on T002.
+- [ ] T003 [US1] Extend reusable role/container lifecycle in `Experiments/TigerCluster/runtime/baseline.py`, `identities.py`, and planned `yolo_worker.py`, with `Experiments/TigerCluster/tests/test_yolo_runtime.py`: preserve CPU baseline behavior; support explicit GPU/env/mount/cwd mapping, isolated role identities/PIB, owned process groups and bounded peer/readiness checks. Add real short-lived parent/child cleanup tests, wrong cwd/port/shared PIB rejection and no host runtime injection. Reuse common primitives, not a copied supervisor. Depends on T001 and the T002 content-integrity interface; final T002 qualification is required at T007, not before implementation of its consumers.
 - [ ] T004 [US1] Deliver strict profile and one entrypoint in `Experiments/TigerCluster/profiles/yolo-two-node.json`, `schemas/tiger-yolo-v1.schema.json`, `jobs/yolo/submit.py`, `jobs/yolo/run.sbatch`, and `tests/test_yolo_submit.py`: expose the five contract commands, resolve every field into actual argv/env, reject leftovers, bind immutable bundle, stage-scoped gates and allocate-once journal. Test atomic duplicate-run prevention and SUBMISSION_UNKNOWN recovery without resubmit; register case differences and walltime/timeout budgets. Fill real operational values before enabling submit; do not modify old `profiles/two-node.json`. Depends on T003.
 
 ## Phase 4: User Story 2 - Current YOLO Path And Independent Verdict
@@ -67,13 +67,14 @@ T005/T006追加调用次数约束：正常ACK-driven User一次只执行一请�
 
 ## Dependencies And Execution Strategy
 
-`T001 → T002 → T003 → T004 → T005 → T006 → T007 → T008 → T009 → T010 → T011 → T012 → T013 → T014 → T015 → T016 → T017`。
+实现顺序：`T001 → T002 内容完整性接口 → T003 → T004 → T005 → T006 → T002 集成验收 → T007 → T008 → T009 → T010 → T011 → T012 → T013 → T014 → T015 → T016 → T017`。
+T002 的真实启动边界来自 T004，receipt 语义校验来自 T006；原先要求 T002 全部完成才实现消费者会造成循环依赖。允许先实现消费者不等于放开资格门：T002保持unchecked，T007必须同时验收T002–T006。T010才产生真实host receipt；之前仅可用明确标注的测试fixture验证拒错逻辑。
 T001 中的缺 artifact/GPU 访问不阻止使用已知接口进行 focused 实现，但所有实际 build/run 的输入必须齐全；不能跳过 T007 或伪造后续 qualification。
 
-MVP 为 T001–T004：一份可解释、拒错且不会误提交的 profile/launcher。完整用户目标到 T017 才结束。
+T001–T004形成 profile/launcher 实现骨架；可操作 MVP 还要求 T006 判定器、T002集成验收和T007审计，不能把骨架作为可提交实验的版本。完整用户目标到 T017 才结束。
 无 `[P]` 项：当前关键路径共享 profile/runtime 和真实资格，默认串行；可在任务内部并行只读盘点/离线测试，但不并行构建或自动派发 agent，不同时运行多个同 candidate/gate 实验。
 合并了“测试→实现→局部验收→证据”机械链；各任务边界来自配置、生命周期、业务接线、判定、生产审计和独立环境验收。
 
 ## Current Checkpoint
 
-2026-09-06：T001完成；T002内容完整性子层已实现，21项focused回归通过；T002仍未完成，下一步修原builder的Spec183 host-receipt dispatch与真实外部命令门控。签名模型包/锁定依赖/本地base仍待接收，T007与所有正式运行门未通过。未编译或提交Slurm；原历史结果未改写。
+2026-09-06：T001完成；T002内容完整性子层21项focused通过。T003共享启动参数/挂载/cwd已补，新增及既有聚焦回归84项通过，见[evidence/t003-launch.md](evidence/t003-launch.md)。T002/T003仍未完成；按上面的无环依赖先继续生命周期/worker/profile接线，再闭合原builder receipt与真实命令门控。签名模型包/锁定依赖/本地base仍待接收，T007与所有正式运行门未通过。VPN及SSH已确认恢复；未编译或提交Slurm，原历史结果未改写。
