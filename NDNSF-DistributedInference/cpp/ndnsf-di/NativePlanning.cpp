@@ -33,6 +33,20 @@ bool contains(const std::vector<std::string>& values, const std::string& value)
   return std::find(values.begin(), values.end(), value) != values.end();
 }
 
+bool canPlaceRole(const NativeProviderPlanningView& offer, const std::string& role,
+                  const NativeRoleResourceRequirement& requirement)
+{
+  if (!contains(offer.acceptedRoles, role) ||
+      std::none_of(requirement.backends.begin(), requirement.backends.end(),
+                   [&offer] (const auto& backend) { return contains(offer.backends, backend); })) {
+    return false;
+  }
+  // Promote before addition: a wrapped byte sum must never admit an offer.
+  const long double bytes = static_cast<long double>(requirement.weightBytes) +
+    requirement.workspaceBytes + requirement.activationBytes + requirement.transientBytes;
+  return bytes * requirement.safetyMargin <= static_cast<long double>(offer.freeBytes);
+}
+
 } // namespace
 
 void NativeStrategyIdentity::validate() const
@@ -95,7 +109,13 @@ void NativePlanningSnapshot::validate() const
   if (requestId.empty() || attempt == 0 || ackClosedDigest.empty() || offers.empty()) {
     throw std::invalid_argument("planning snapshot is incomplete");
   }
-  for (const auto& offer : offers) offer.validate();
+  std::set<std::string> providers;
+  for (const auto& offer : offers) {
+    offer.validate();
+    if (!providers.insert(offer.provider).second) {
+      throw std::invalid_argument("planning snapshot contains duplicate Provider offers");
+    }
+  }
   if (deadline <= std::chrono::steady_clock::now()) {
     throw std::invalid_argument("planning snapshot deadline has expired");
   }
@@ -111,13 +131,24 @@ void NativeSplitCandidate::validate(const NativeGraphSnapshot& graph) const
   }
   std::set<std::string> roles(executionPlan.roles.begin(), executionPlan.roles.end());
   if (roles.size() != executionPlan.roles.size() || roles.empty() ||
-      fragmentsByRole.size() != roles.size() || requirementsByRole.size() != roles.size()) {
+      fragmentsByRole.size() != roles.size() || artifactsByRole.size() != roles.size() ||
+      requirementsByRole.size() != roles.size()) {
     throw std::invalid_argument("split candidate role cover is incomplete");
   }
   for (const auto& role : roles) {
+    if (fragmentsByRole.count(role) == 0 || artifactsByRole.count(role) == 0 ||
+        requirementsByRole.count(role) == 0) {
+      throw std::invalid_argument("split candidate role cover contains foreign roles");
+    }
     if (fragmentsByRole.at(role).empty() || artifactsByRole.at(role).empty() ||
         requirementsByRole.at(role).backends.empty()) {
       throw std::invalid_argument("split candidate role has no artifact or backend");
+    }
+    const auto margin = requirementsByRole.at(role).safetyMargin;
+    if (!std::isfinite(margin) || margin < 1.0 ||
+        std::any_of(artifactsByRole.at(role).begin(), artifactsByRole.at(role).end(),
+                    [] (const auto& digest) { return !isDigest(digest); })) {
+      throw std::invalid_argument("split candidate artifact or resource requirement is invalid");
     }
   }
 }
@@ -135,10 +166,17 @@ void NativePlacementProposal::validate(const NativePlanningSnapshot& snapshot,
   if (assignment.providerByRole.size() != executionPlan.roles.size()) {
     throw std::invalid_argument("placement proposal does not cover every role");
   }
+  std::set<std::string> usedProviders;
   for (const auto& role : executionPlan.roles) {
     const auto it = assignment.providerByRole.find(role);
     if (it == assignment.providerByRole.end() || it->second.empty()) {
       throw std::invalid_argument("placement proposal has an unassigned role");
+    }
+    const auto offer = std::find_if(snapshot.offers.begin(), snapshot.offers.end(),
+      [&it] (const auto& view) { return view.provider == it->second; });
+    if (offer == snapshot.offers.end() || !usedProviders.insert(it->second).second ||
+        !canPlaceRole(*offer, role, candidate.requirementsByRole.at(role))) {
+      throw std::invalid_argument("placement proposal requires distinct feasible Providers");
     }
   }
 }
@@ -174,31 +212,6 @@ NativePreSplitFirstPlacement::propose(const NativePlanningSnapshot& snapshot,
   candidate.validate(snapshot.graph);
   if (candidate.executionPlan.roles.empty()) throw std::invalid_argument("candidate has no roles");
 
-  std::vector<const NativeProviderPlanningView*> eligible;
-  for (const auto& offer : snapshot.offers) {
-    bool hasBackend = true;
-    for (const auto& req : candidate.requirementsByRole) {
-      if (!contains(offer.acceptedRoles, req.first) ||
-          std::none_of(req.second.backends.begin(), req.second.backends.end(),
-                       [&offer] (const auto& backend) { return contains(offer.backends, backend); })) {
-        hasBackend = false;
-        break;
-      }
-      const auto required = static_cast<double>(req.second.weightBytes + req.second.workspaceBytes +
-                                                req.second.activationBytes + req.second.transientBytes) *
-                            req.second.safetyMargin;
-      if (required > static_cast<double>(offer.freeBytes)) hasBackend = false;
-    }
-    if (hasBackend) eligible.push_back(&offer);
-  }
-  if (eligible.empty()) throw std::runtime_error("no eligible provider for native split candidate");
-  std::stable_sort(eligible.begin(), eligible.end(), [] (auto left, auto right) {
-    if (left->residencyDigests.size() != right->residencyDigests.size())
-      return left->residencyDigests.size() > right->residencyDigests.size();
-    if (left->freeBytes != right->freeBytes) return left->freeBytes > right->freeBytes;
-    return left->provider < right->provider;
-  });
-
   NativePlacementProposal result;
   result.requestId = snapshot.requestId;
   result.attempt = snapshot.attempt;
@@ -207,10 +220,35 @@ NativePreSplitFirstPlacement::propose(const NativePlanningSnapshot& snapshot,
   result.candidateDigest = candidate.candidateDigest;
   result.strategy = m_identity;
   result.executionPlan = candidate.executionPlan;
-  for (const auto& role : candidate.executionPlan.roles) {
-    // A single provider assignment is deliberate: the existing pre-split
-    // strategy does not invent rank/device fan-out or bypass lease authority.
+  std::set<std::string> usedProviders;
+  auto roles = candidate.executionPlan.roles;
+  std::sort(roles.begin(), roles.end());
+  for (const auto& role : roles) {
+    std::vector<const NativeProviderPlanningView*> eligible;
+    for (const auto& offer : snapshot.offers) {
+      if (usedProviders.count(offer.provider) == 0 &&
+          canPlaceRole(offer, role, candidate.requirementsByRole.at(role))) {
+        eligible.push_back(&offer);
+      }
+    }
+    if (eligible.empty()) {
+      throw std::runtime_error("no distinct feasible Provider for native role " + role);
+    }
+    // Digest hints rank canonical availability only, never device-ready reuse.
+    const auto hasArtifacts = [&candidate, &role] (const auto* offer) {
+      const auto& artifacts = candidate.artifactsByRole.at(role);
+      return std::all_of(artifacts.begin(), artifacts.end(), [&offer] (const auto& digest) {
+        return contains(offer->residencyDigests, digest);
+      });
+    };
+    std::sort(eligible.begin(), eligible.end(), [&hasArtifacts] (auto left, auto right) {
+      const bool leftHit = hasArtifacts(left), rightHit = hasArtifacts(right);
+      if (leftHit != rightHit) return leftHit;
+      if (left->freeBytes != right->freeBytes) return left->freeBytes > right->freeBytes;
+      return left->provider < right->provider;
+    });
     result.assignment.providerByRole.emplace(role, eligible.front()->provider);
+    usedProviders.insert(eligible.front()->provider);
   }
   result.validate(snapshot, candidate);
   return result;

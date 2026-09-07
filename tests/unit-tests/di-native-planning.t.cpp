@@ -6,6 +6,8 @@
 #include <boost/test/unit_test.hpp>
 
 #include <chrono>
+#include <algorithm>
+#include <limits>
 
 namespace {
 
@@ -36,6 +38,35 @@ NativeGraphSnapshot graph(const std::string& graphDigest,
   result.legalCutEdges = {"cut-0", "cut-1"};
   return result;
 }
+
+struct TwoRolePlacement
+{
+  const std::string first = "/LLM/Pipeline/Stage/0";
+  const std::string second = "/LLM/Pipeline/Stage/1";
+  NativePlanningSnapshot snapshot;
+  NativeSplitCandidate candidate;
+
+  TwoRolePlacement()
+  {
+    const auto graphDigest = digest("two-role-graph");
+    snapshot.graph = graph(graphDigest, {"embedding", "layer-00", "layer-01", "final-norm-head"});
+    snapshot.model = model("qwen", "QwenFixture", graphDigest);
+    snapshot.requestId = "two-role-request";
+    snapshot.attempt = 1;
+    snapshot.ackClosedDigest = digest("two-role-ack");
+    snapshot.deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    qwen::NativeQwenLayerSplit splitter({{0, 1}, {1, 2}},
+      {{first, digest("first-artifact")}, {second, digest("second-artifact")}},
+      {{first, 1}, {second, 1}}, {first, second}, {1, 1});
+    candidate = splitter.enumerate(snapshot.model, snapshot.graph, {}).front();
+    snapshot.offers = {
+      {"provider-a", digest("offer-a"), {first}, {"onnxruntime"}, {},
+        4ULL << 30, 1, true, true},
+      {"provider-b", digest("offer-b"), {second}, {"onnxruntime"}, {},
+        4ULL << 30, 1, true, true},
+    };
+  }
+};
 
 } // namespace
 
@@ -407,7 +438,7 @@ BOOST_AUTO_TEST_CASE(PreSplitPlacementTieBreakResidencyThenBytesThenProvider)
   snapshot.attempt = 1;
   snapshot.ackClosedDigest = digest("ack-closed");
   snapshot.deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
-  // provider-c: one residency digest wins the residency key regardless of
+  // provider-c: the target artifact digest wins the residency key regardless of
   // smaller free bytes; provider-b: same zero residency, larger free bytes
   // wins the budget key; provider-a: lowest provider name is the ref
   // tie-break only when residency and free bytes are identical.
@@ -416,7 +447,7 @@ BOOST_AUTO_TEST_CASE(PreSplitPlacementTieBreakResidencyThenBytesThenProvider)
      gb(4), 1, true, true},
     {"provider-b", digest("offer-b"), {role}, {"onnxruntime"}, {},
      gb(5), 1, true, true},
-    {"provider-c", digest("offer-c"), {role}, {"onnxruntime"}, {digest("resident")},
+    {"provider-c", digest("offer-c"), {role}, {"onnxruntime"}, {digest("artifact")},
      gb(3), 1, true, true},
   };
   NativePreSplitFirstPlacement placement;
@@ -426,6 +457,11 @@ BOOST_AUTO_TEST_CASE(PreSplitPlacementTieBreakResidencyThenBytesThenProvider)
   BOOST_CHECK_EQUAL(proposal.strategy.name, "native-pre-split-first");
   BOOST_CHECK_EQUAL(proposal.strategy.configurationDigest,
                     NativePreSplitFirstPlacement().identity().configurationDigest);
+
+  // Unrelated or repeated cache hints confer no advantage, however numerous.
+  snapshot.offers[2].residencyDigests = {digest("other"), digest("other"), digest("third")};
+  BOOST_CHECK_EQUAL(placement.propose(snapshot, candidate).assignment.providerByRole.at(role),
+                    "provider-b");
 
   // Same inputs, same proposal: the deterministic ref tie-break picks the
   // smallest provider name when residency and budget keys are tied.
@@ -500,6 +536,80 @@ BOOST_AUTO_TEST_CASE(PreSplitPlacementFiltersIneligibleOffersAndRejectsEmpty)
      gb(8), 1, true, false},
   };
   BOOST_CHECK_THROW(placement.propose(snapshot, candidate), std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(PlacementAssignsDistinctRoleSpecificProvidersAndSeals)
+{
+  TwoRolePlacement fixture;
+  NativePreSplitFirstPlacement placement;
+  const auto proposal = placement.propose(fixture.snapshot, fixture.candidate);
+  BOOST_CHECK_EQUAL(proposal.assignment.providerByRole.at(fixture.first), "provider-a");
+  BOOST_CHECK_EQUAL(proposal.assignment.providerByRole.at(fixture.second), "provider-b");
+  NativePlanSealingInputs inputs;
+  inputs.artifacts = {{{fixture.first, "/canonical/first"}, {fixture.second, "/canonical/second"}},
+    {{fixture.first, digest("first-artifact")}, {fixture.second, digest("second-artifact")}},
+    digest("manifest"), digest("recipe"), fixture.snapshot.requestId, fixture.snapshot.attempt,
+    fixture.snapshot.model.contentDigest, fixture.snapshot.graph.graphDigest};
+  inputs.requesterIdentity = "/requester";
+  inputs.protectionEpoch = "protected-v1";
+  inputs.expiresAtMs = 2000000000000ULL;
+  const auto core = NativePlanSealer::sealCore(fixture.snapshot, proposal, inputs);
+  BOOST_CHECK_EQUAL(core.assignment.providerByRole.size(), 2U);
+  for (const auto& offer : fixture.snapshot.offers) {
+    const auto view = NativePlanSealer::grantView(core, offer, {digest("policy"), true});
+    BOOST_CHECK_EQUAL(core.assignment.providerByRole.at(view.role), offer.provider);
+    BOOST_CHECK_EQUAL(view.artifactDigest, inputs.artifacts.artifactDigestByRole.at(view.role));
+  }
+}
+
+BOOST_AUTO_TEST_CASE(PlacementNeverReusesProviderAndIsOrderIndependent)
+{
+  TwoRolePlacement fixture;
+  for (auto& offer : fixture.snapshot.offers) offer.acceptedRoles = {fixture.first, fixture.second};
+  const auto first = NativePreSplitFirstPlacement().propose(fixture.snapshot, fixture.candidate);
+  BOOST_CHECK_EQUAL(first.assignment.providerByRole.at(fixture.first), "provider-a");
+  BOOST_CHECK_EQUAL(first.assignment.providerByRole.at(fixture.second), "provider-b");
+  std::reverse(fixture.snapshot.offers.begin(), fixture.snapshot.offers.end());
+  std::reverse(fixture.candidate.executionPlan.roles.begin(), fixture.candidate.executionPlan.roles.end());
+  const auto reversed = NativePreSplitFirstPlacement().propose(fixture.snapshot, fixture.candidate);
+  BOOST_CHECK(first.assignment.providerByRole == reversed.assignment.providerByRole);
+  fixture.snapshot.offers.resize(1);
+  BOOST_CHECK_THROW(NativePreSplitFirstPlacement().propose(fixture.snapshot, fixture.candidate),
+                    std::runtime_error);
+}
+
+BOOST_AUTO_TEST_CASE(PlacementRejectsForgedAssignmentsAndDuplicateOffers)
+{
+  TwoRolePlacement fixture;
+  auto proposal = NativePreSplitFirstPlacement().propose(fixture.snapshot, fixture.candidate);
+  proposal.assignment.providerByRole[fixture.second] = "provider-a";
+  BOOST_CHECK_THROW(proposal.validate(fixture.snapshot, fixture.candidate), std::invalid_argument);
+  proposal.assignment.providerByRole[fixture.second] = "foreign";
+  BOOST_CHECK_THROW(proposal.validate(fixture.snapshot, fixture.candidate), std::invalid_argument);
+  proposal.assignment.providerByRole[fixture.second] = "provider-b";
+  fixture.snapshot.offers[1].freeBytes = 1;
+  BOOST_CHECK_THROW(proposal.validate(fixture.snapshot, fixture.candidate), std::invalid_argument);
+  fixture.snapshot.offers.push_back(fixture.snapshot.offers.front());
+  BOOST_CHECK_THROW(NativePreSplitFirstPlacement().propose(fixture.snapshot, fixture.candidate),
+                    std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(PlacementRejectsInvalidAndOverflowingResourceBudgets)
+{
+  TwoRolePlacement fixture;
+  for (const auto margin : {0.0, -1.0, std::numeric_limits<double>::infinity(),
+                           std::numeric_limits<double>::quiet_NaN()}) {
+    auto candidate = fixture.candidate;
+    candidate.requirementsByRole.at(fixture.first).safetyMargin = margin;
+    BOOST_CHECK_THROW(NativePreSplitFirstPlacement().propose(fixture.snapshot, candidate),
+                      std::invalid_argument);
+  }
+  auto& requirement = fixture.candidate.requirementsByRole.at(fixture.first);
+  requirement.weightBytes = std::numeric_limits<std::uint64_t>::max();
+  requirement.workspaceBytes = 2;
+  requirement.safetyMargin = 1.0;
+  BOOST_CHECK_THROW(NativePreSplitFirstPlacement().propose(fixture.snapshot, fixture.candidate),
+                    std::runtime_error);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
