@@ -33,6 +33,33 @@ ran. No fake extension or skip was used. Both must pass after T008 native build.
 
 ## Remaining controlling work
 
+### Pinned trust material import
+
+`identities.install_yolo_trust` imports the existing configured registry only
+when its bytes match the caller's authenticated candidate digest. It checks
+the registered YOLO model family/epoch, Ed25519 algorithms and public-file
+digests, then verifies the supplied 0600 policy-authority private key against
+the registered public key. It preserves registry bytes and all three public
+trust roots (catalogue, modelManifest, artifactPolicyAuthority). The native
+`authority.pub` locator is only a public alias; no trust root is regenerated.
+Only the explicitly trusted User HOME receives the authority private key.
+Output directories are exclusive; failure/reuse never overwrites prior files.
+
+Six tests use actual keys and the maintained authority registry/private-key
+loaders. They verify successful import without registry rewriting and reject
+registry/public hash changes, wrong private keys, unsafe private mode and
+unregistered epoch before output. **6 passed in 0.65s**; full focused set
+**337 passed in 21.89s**, JUnit under
+`results/spec183-trust-preparation-r1/junit.xml`. After tightening JSON field
+types, the same six tests passed again in **0.64s**. No catalogue signature,
+model manifest, NDN permission readiness or inference acceptance is implied.
+
+Next: final prepare must invoke these existing components inside the candidate
+SIF, authenticate the source trust digest, validate the signed canonical model
+through the maintained adapter, generate the remaining envelope/runtime
+publication inputs and orchestrate bounded readiness. T005 remains partial;
+T006 and formal gates are still pending.
+
 ### Offer preparation component
 
 `identities.issue_yolo_offers` generates one independent Ed25519 offer key in
@@ -104,8 +131,11 @@ that directory, and looks up its own identity in
 settings rather than invented CLI options.
 
 The shared public layout is `/config/contracts/trust-root-registry-v1.json`
-with `/config/contracts/authority.pub`; preparation must set registry
-`publicKeyPath` to `contracts/authority.pub`. The User uses this same registry.
+with `/config/contracts/authority.pub` as the native locator alias. Preparation
+preserves the original registry's `publicKeyPath` and corresponding public
+file bytes; it must not rewrite catalogue/model trust roots. The User uses
+this same registry. The initial instruction to rewrite `publicKeyPath` was
+superseded after checking the actual native locator behavior.
 Each Provider's private HOME contains `recipient.pem` (0600) and
 `recipient-map.json`, exactly one identity mapped to that same HOME's container
 path. Launch rejects missing/oversized/duplicate/wrong-identity/foreign-path

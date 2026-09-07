@@ -242,6 +242,21 @@ def certificate_binding(encoded: bytes, identity: str) -> dict[str, str]:
         raise ValueError('IDENTITY_CERTIFICATE_NAME') from exc
 
 
+def _read_credential(path: Path, *, private: bool = False) -> bytes:
+    if any(p.is_symlink() for p in (path, *path.parents)):
+        raise ValueError('CREDENTIAL_SYMLINK')
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, 'rb') as stream:
+        info = os.fstat(stream.fileno())
+        if (not stat.S_ISREG(info.st_mode) or not 0 < info.st_size <= 65536
+                or private and stat.S_IMODE(info.st_mode) != 0o600):
+            raise ValueError('CREDENTIAL_FILE')
+        wire = stream.read(65537)
+        if len(wire) != info.st_size:
+            raise ValueError('CREDENTIAL_CHANGED')
+        return wire
+
+
 def _create_credential(path: Path, payload: bytes) -> None:
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, 'wb') as stream:
@@ -373,6 +388,88 @@ def issue_yolo_offers(namespace: str, homes: dict[str, Path], public: Path,
         _credential_document(public / 'offer-trust-root.json', {
             'schema': 'spec180-provider-offer-trust-v1', 'candidateId': candidate_id,
             'candidateDigest': candidate_digest, 'trustSchema': trust_schema, 'entries': entries})
+
+
+def install_yolo_trust(registry: Path, *, expected_registry_digest: str,
+                       authority_private: Path, user_home: Path, public: Path,
+                       protection_epoch: str) -> None:
+    """Copy a pinned registry without replacing catalogue/model trust roots.
+
+    The caller obtains expected_registry_digest from authenticated candidate
+    input, not from the untrusted file itself. Only the explicitly trusted
+    User process receives the policy-authority private key. Actual signed
+    catalogue/model verification remains with the maintained adapter.
+    """
+    from cryptography.hazmat.backends import default_backend
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ed25519
+    from runtime.yolo_profile import _object
+
+    registry, public, user_home = Path(registry), Path(public), Path(user_home)
+    validate_role_homes({'user': user_home})
+    if (registry.parent.name != 'contracts' or not registry.is_absolute()
+            or not isinstance(protection_epoch, str) or protection_epoch == 'plaintext-v1'
+            or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,127}', protection_epoch)
+            or not public.is_absolute() or '..' in public.parts or not public.is_dir()
+            or any(p.is_symlink() for p in (public, *public.parents))
+            or public == user_home or public in user_home.parents or user_home in public.parents):
+        raise ValueError('YOLO_TRUST_LAYOUT')
+    wire = _read_credential(registry)
+    if 'sha256:' + hashlib.sha256(wire).hexdigest() != expected_registry_digest:
+        raise ValueError('YOLO_TRUST_REGISTRY_DIGEST')
+    document = json.loads(wire, object_pairs_hook=_object)
+    if (not isinstance(document, dict) or type(document.get('schemaVersion')) is not int
+            or document.get('schemaVersion') != 1 or document.get('status') != 'CONFIGURED'
+            or set(document) != {'schemaVersion', 'status', 'catalogue',
+                                 'modelManifest', 'artifactPolicyAuthority'}):
+        raise ValueError('YOLO_TRUST_REGISTRY')
+    files, keys = {}, {}
+    for name in ('catalogue', 'modelManifest', 'artifactPolicyAuthority'):
+        entry = document[name]
+        if (not isinstance(entry, dict) or entry.get('publicKeyAlgorithm') != 'ed25519'
+                or entry.get('signatureAlgorithm') != 'ed25519'
+                or not isinstance(entry.get('acceptedModelFamilies'), list)
+                or 'YOLO26n' not in entry['acceptedModelFamilies']
+                or any(not isinstance(entry.get(field), str) or not entry[field].strip()
+                       for field in ('authorityId', 'keyId'))):
+            raise ValueError('YOLO_TRUST_POLICY')
+        relative = entry.get('publicKeyPath', '')
+        if not isinstance(relative, str) or not re.fullmatch(r'contracts/[A-Za-z0-9_-][A-Za-z0-9_.-]*\.pub', relative):
+            raise ValueError('YOLO_TRUST_PUBLIC_PATH')
+        payload = _read_credential(registry.parent.parent / relative)
+        if 'sha256:' + hashlib.sha256(payload).hexdigest() != entry.get('publicKeySha256'):
+            raise ValueError('YOLO_TRUST_PUBLIC_DIGEST')
+        key = serialization.load_pem_public_key(payload, backend=default_backend())
+        if not isinstance(key, ed25519.Ed25519PublicKey):
+            raise ValueError('YOLO_TRUST_PUBLIC_ALGORITHM')
+        files[Path(relative).name], keys[name] = payload, key
+    policy = document['artifactPolicyAuthority']
+    if (policy.get('grantSchema') != 'ndnsf-di-key-grant-v1'
+            or not isinstance(policy.get('protectionEpochs'), list)
+            or protection_epoch not in policy['protectionEpochs']):
+        raise ValueError('YOLO_TRUST_EPOCH')
+    secret = _read_credential(Path(authority_private), private=True)
+    key = serialization.load_pem_private_key(secret, password=None, backend=default_backend())
+    def raw(k):
+        return k.public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+    if not isinstance(key, ed25519.Ed25519PrivateKey) or raw(key.public_key()) != raw(keys['artifactPolicyAuthority']):
+        raise ValueError('YOLO_TRUST_PRIVATE_MISMATCH')
+    alias = files[Path(policy['publicKeyPath']).name]
+    if 'authority.pub' in files and files['authority.pub'] != alias:
+        raise ValueError('YOLO_TRUST_ALIAS_COLLISION')
+    files['authority.pub'] = alias  # Native loader uses its parent to locate the registry.
+    if any(p.exists() or p.is_symlink() for p in (public / 'contracts', user_home / 'authority')):
+        raise ValueError('YOLO_TRUST_REUSE')
+    lease = RoleHomeLease(user_home)
+    try:
+        (public / 'contracts').mkdir(mode=0o700)
+        (user_home / 'authority').mkdir(mode=0o700)
+        for name, payload in files.items():
+            _create_credential(public / 'contracts' / name, payload)
+        _create_credential(user_home / 'authority/artifact-policy-authority.key', secret)
+        _create_credential(public / 'contracts/trust-root-registry-v1.json', wire)
+    finally:
+        lease.close()
 
 
 if __name__ == "__main__":
