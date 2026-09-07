@@ -28,6 +28,37 @@ No native build, SIF or Tiger job run in this checkpoint.
 
 ## Public typed assignment projection (2026-09-07)
 
+### Cross-role and log join
+
+`read_public_dependency_contract` reads a bounded non-symlink public artifact,
+rejects duplicate/unknown fields, mismatched roles/providers/request/attempt/
+plan/session, duplicate edges, and missing or disagreeing input/output peers.
+Expected role ownership must be supplied externally, never inferred from logs.
+`collect_dependency_result` additionally requires the exact role log inventory
+and feeds the agreed edges into the existing publication/fetch pair verifier.
+The returned status remains DEPENDENCY_COMPONENT_ONLY; the caller must bind
+each log to its actual owned launch PID and verify the other evidence gates.
+
+Application ingress is not an inter-Provider publication pair: native
+`requestInputs` creates an already authenticated request-input TensorBundle
+(NativeProviderHandler.cpp around 916), and execution inserts it into role
+initialInputs for APPLICATION_INPUT (around 3043). It is retained separately
+in the public contract, and not fabricated as a second dependency Interest.
+Its request-ingress authentication must still be proven by the full run.
+
+Tests construct real producer and consumer Selection projections with two
+tensors, serialize and decode them, then pair synthetic native-format logs;
+one-sided byte-count modification fails. Tests also reject missing/changed
+peer scope/name/role/Provider/attempt/plan, duplicate assignments, unexpected
+secret fields and symlink files. An APPLICATION_INPUT fixture verifies the
+separate path. None of these fixtures is actual native network inference.
+
+Verification: expanded suite 622 passed in 46.11s before the final collector
+wrapper/application-input addition (`results/t006-cross-role-r1/junit.xml`).
+Final affected projection/dependency suites: 40 passed in 1.33s
+(`results/t006-cross-role-final/junit.xml`), both paths relative to
+`Experiments/TigerCluster/`. No native/SIF/Tiger run at this checkpoint.
+
 Follow-up owner wiring: the projector has moved from the Tiger runtime to
 `ndnsf_distributed_inference/sdk/public_evidence.py`, so the maintained User
 does not import an experiment harness. User `_retain_public_assignments` is

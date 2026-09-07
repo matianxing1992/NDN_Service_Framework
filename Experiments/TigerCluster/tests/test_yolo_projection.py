@@ -134,3 +134,73 @@ def test_user_retains_only_bound_public_evidence(tmp_path, fault):
             assert target.read_text() == 'preserve'
         elif fault != 'symlink':
             assert not target.exists()
+
+
+@pytest.mark.parametrize('fault', ['none', 'application-input', 'missing', 'scope', 'name', 'provider',
+    'attempt', 'plan', 'role', 'duplicate', 'secret-field', 'symlink'])
+def test_public_cross_role_join(tmp_path, fault):
+    from ndnsf_distributed_inference.sdk.public_evidence import public_assignment_projection
+    from runtime.yolo_result import read_public_dependency_contract
+    source = assignment()
+    if fault == 'application-input':
+        endpoint = replace(source.dataflow.may_publish[0], source_kind='APPLICATION_INPUT',
+            producer_namespace='/user', producer_role='', consumer_role='BackboneNeck',
+            consumer_roles=('BackboneNeck',), group_id='application-input',
+            operation='APPLICATION_INPUT', tensor_id='application-input', endpoint_digest='')
+        source = replace(source, dataflow=replace(source.dataflow,
+            must_fetch=(endpoint,), dataflow_digest=''))
+    role = replace(source.assembly, role='DetectShard0')
+    consumer = replace(source, provider='/provider/b', roles=(role,), assembly=role,
+        execution_role=replace(source.execution_role, role_id='DetectShard0', stage_id='DetectShard0'),
+        dataflow=RoleDataflowContract(source.request_id, 2, source.plan_digest,
+            'DetectShard0', must_fetch=source.dataflow.may_publish),
+        device_binding=replace(source.device_binding, provider='/provider/b', role='DetectShard0'))
+    rows = [public_assignment_projection(p.to_bytes(), request_id=p.request_id,
+        attempt=2, plan_digest=p.plan_digest, provider=p.provider) for p in (source, consumer)]
+    if fault == 'missing': rows[1]['inputs'].pop()
+    if fault == 'scope': rows[1]['inputs'][0]['scope'] = 'wrong'
+    if fault == 'name': rows[1]['inputs'][0]['planned_name'] = '/wrong'
+    if fault == 'provider': rows[1]['provider'] = '/wrong'
+    if fault == 'attempt': rows[1]['attempt'] = 1
+    if fault == 'plan': rows[1]['planDigest'] = 'sha256:'+'b'*64
+    if fault == 'role': rows[1]['role'] = 'wrong'
+    if fault == 'duplicate': rows.append(rows[0])
+    if fault == 'secret-field': rows[0]['group_capability_v1'] = 'secret'
+    path = tmp_path/'public.json'
+    path.write_text(json.dumps(dict(schema='yolo-public-assignments-v1', assignments=rows)))
+    if fault == 'symlink':
+        link = tmp_path/'link.json'
+        link.symlink_to(path)
+        path = link
+    def run():
+        return read_public_dependency_contract(path, request_id=source.request_id,
+            attempt=2, plan_digest=source.plan_digest,
+            providers_by_role={'BackboneNeck': '/provider/a', 'DetectShard0': '/provider/b'})
+    if fault in ('none', 'application-input'):
+        contract = run()
+        assert len(contract['edges']) == 2
+        assert contract['sessionId'] == 'request/1/attempt/2'
+        assert len(contract['applicationInputs']) == int(fault == 'application-input')
+        # Pair against source-format logs; these are not a transport run.
+        from runtime.yolo_result import collect_dependency_result
+        logs = {}
+        for role_name, direction in [('BackboneNeck', 'publish'), ('DetectShard0', 'fetch')]:
+            lines = []
+            for edge in contract['edges']:
+                event = dict(session=contract['sessionId'], **edge,
+                    direction=direction+'-ndnsf-data-v1', payload_bytes='123', status='ok')
+                lines.append('NDNSF_DI_DEPENDENCY_OBJECT ' + ' '.join(k+'='+v for k,v in event.items()))
+            logs[role_name] = tmp_path/(role_name+'.log')
+            logs[role_name].write_text('\n'.join(lines)+'\n')
+        def collect():
+            return collect_dependency_result(path, logs, request_id=source.request_id,
+                attempt=2, plan_digest=source.plan_digest,
+                providers_by_role={'BackboneNeck': '/provider/a', 'DetectShard0': '/provider/b'})
+        result = collect()
+        assert result['edgeCount'] == 2
+        assert result['applicationInputCount'] == int(fault == 'application-input')
+        logs['DetectShard0'].write_text(logs['DetectShard0'].read_text().replace('payload_bytes=123', 'payload_bytes=124'))
+        with pytest.raises(ValueError):
+            collect()
+    else:
+        with pytest.raises(ValueError): run()

@@ -78,6 +78,15 @@ T001–T004形成 profile/launcher 实现骨架；可操作 MVP 还要求 T006 �
 
 ## Current Checkpoint
 
+2026-09-07 cross-role join: `read_public_dependency_contract` validates bounded
+User evidence against external request/attempt/plan/role/Provider facts and
+requires exact agreement of producer outputs and consumer inputs.
+`collect_dependency_result` connects those expected edges to DATA_V1 log pairs,
+with exact log-role coverage. APPLICATION_INPUT is retained separately: native
+handler pre-satisfies it from authenticated request ingress, not dependency IO.
+Tests use actual typed projections and synthetic log records; owned-PID/final
+normal operator integration remains pending. T006 stays unchecked.
+
 2026-09-07 User retention wiring: generic public projection now lives in
 `ndnsf_distributed_inference/sdk/public_evidence.py` (no dependency from the
 maintained YOLO example on Tiger harness files). `--retain-public-assignments`

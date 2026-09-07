@@ -7,6 +7,104 @@ from collections.abc import Mapping
 import re
 
 
+def read_public_dependency_contract(path, *, request_id, attempt, plan_digest, providers_by_role):
+    """Join User-retained producer/consumer projections against external facts.
+
+    The record is not a signature or execution proof. Caller obtains expected
+    identities from the request/placement, not from this file. Application
+    input has no Provider publication peer and is returned separately.
+    """
+    import hashlib
+    import json
+    from pathlib import Path
+    from runtime.yolo_bundle import _bytes
+    if (not isinstance(request_id, str) or not request_id.strip('/')
+            or any(c.isspace() for c in request_id)
+            or type(attempt) is not int or not 0 < attempt < 2**64
+            or not isinstance(plan_digest, str) or not re.fullmatch(r'sha256:[0-9a-f]{64}', plan_digest)
+            or not isinstance(providers_by_role, Mapping) or not 0 < len(providers_by_role) <= 64
+            or any(not isinstance(v, str) or not v or any(c.isspace() for c in v)
+                   for pair in providers_by_role.items() for v in pair)):
+        raise EvidenceError('PUBLIC_DEPENDENCY_EXPECTED_BINDING')
+    path = Path(path)
+    if any(p.is_symlink() for p in (path, *path.parents)):
+        raise EvidenceError('PUBLIC_DEPENDENCY_SYMLINK')
+    payload = _bytes(path)
+    if len(payload) > 1024 * 1024:
+        raise EvidenceError('PUBLIC_DEPENDENCY_SIZE')
+    def pairs(items):
+        result = {}
+        for key, value in items:
+            if key in result:
+                raise EvidenceError('PUBLIC_DEPENDENCY_DUPLICATE_FIELD')
+            result[key] = value
+        return result
+    def constant(value):
+        raise EvidenceError('PUBLIC_DEPENDENCY_NONFINITE')
+    try:
+        document = json.loads(payload, object_pairs_hook=pairs, parse_constant=constant)
+    except (UnicodeError, RecursionError, json.JSONDecodeError) as exc:
+        raise EvidenceError('PUBLIC_DEPENDENCY_JSON') from exc
+    if (not isinstance(document, dict) or set(document) != {'schema', 'assignments'}
+            or document['schema'] != 'yolo-public-assignments-v1'
+            or not isinstance(document['assignments'], list)
+            or len(document['assignments']) != len(providers_by_role)):
+        raise EvidenceError('PUBLIC_DEPENDENCY_SCHEMA')
+    fields = {'schema', 'requestId', 'attempt', 'planDigest', 'sessionId', 'provider', 'role', 'inputs', 'outputs'}
+    edge_fields = ('scope', 'producer', 'consumer', 'planned_name')
+    session = request_id.strip('/') + '/attempt/' + str(attempt)
+    inputs, outputs, application_inputs, roles = {}, {}, [], set()
+    for row in document['assignments']:
+        if (not isinstance(row, dict) or set(row) != fields
+                or not isinstance(row['role'], str) or row['role'] not in providers_by_role
+                or row['role'] in roles or row['schema'] != 'tiger-yolo-public-assignment-v1'
+                or row['requestId'] != request_id or type(row['attempt']) is not int
+                or row['attempt'] != attempt or row['planDigest'] != plan_digest
+                or row['sessionId'] != session or row['provider'] != providers_by_role[row['role']]):
+            raise EvidenceError('PUBLIC_DEPENDENCY_ROLE_BINDING')
+        roles.add(row['role'])
+        for direction, collection in (('inputs', inputs), ('outputs', outputs)):
+            if not isinstance(row[direction], list) or len(row[direction]) > 64:
+                raise EvidenceError('PUBLIC_DEPENDENCY_EDGE_COUNT')
+            for edge in row[direction]:
+                if (not isinstance(edge, dict) or set(edge) != set(edge_fields)
+                        or any(not isinstance(v, str) or any(c.isspace() for c in v) for v in edge.values())
+                        or not edge['scope'] or not edge['planned_name'].startswith('/')
+                        or edge['consumer'] not in providers_by_role
+                        or (edge['producer'] and edge['producer'] not in providers_by_role)
+                        or edge['producer'] == edge['consumer']
+                        or edge['consumer' if direction == 'inputs' else 'producer'] != row['role']):
+                    raise EvidenceError('PUBLIC_DEPENDENCY_EDGE_BINDING')
+                key = tuple(edge[field] for field in edge_fields)
+                if key in collection:
+                    raise EvidenceError('PUBLIC_DEPENDENCY_DUPLICATE_EDGE')
+                collection[key] = edge
+                if direction == 'inputs' and not edge['producer']:
+                    application_inputs.append(edge)
+    paired_inputs = {key: value for key, value in inputs.items() if value['producer']}
+    if not outputs or outputs.keys() != paired_inputs.keys() or len(outputs) > 64:
+        raise EvidenceError('PUBLIC_DEPENDENCY_PAIR_MISMATCH')
+    return dict(sessionId=session, edges=[outputs[key] for key in sorted(outputs)],
+        applicationInputs=application_inputs, sourceDigest='sha256:'+hashlib.sha256(payload).hexdigest(),
+        qualification='PUBLIC_DEPENDENCY_COMPONENT_ONLY')
+
+
+def collect_dependency_result(path, logs_by_role, *, request_id, attempt, plan_digest, providers_by_role):
+    """Join public contracts to logs already bound by the caller to owned PIDs.
+
+    APPLICATION_INPUT is pre-satisfied from authenticated request input by the
+    native handler, not published by another Provider. Its verification belongs
+    to request ingress, not the inter-Provider dependency log pair check.
+    """
+    contract = read_public_dependency_contract(path, request_id=request_id,
+        attempt=attempt, plan_digest=plan_digest, providers_by_role=providers_by_role)
+    if set(logs_by_role) != set(providers_by_role):
+        raise EvidenceError('DEPENDENCY_LOG_ROLE_COVERAGE')
+    result = validate_dependency_edges(logs_by_role, contract['edges'], session_id=contract['sessionId'])
+    return dict(result, publicContractDigest=contract['sourceDigest'],
+        applicationInputCount=len(contract['applicationInputs']))
+
+
 def validate_dependency_edges(logs_by_role, edges, *, session_id):
     """Pair DATA_V1 publication/verified fetch logs for sealed expected edges.
 
