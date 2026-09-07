@@ -100,6 +100,8 @@ Core 是否支持逐服务注销及 exact config 类型由 O-004 映射已有 AP
 
 ### Current Registration Boundary
 
+多服务提取的共享lease所有权、精确字段/API及关闭期间清理见[provider lifecycle design](native-provider-lifecycle-design.md)。已识别固定lease入口覆盖和每服务独立表的冲突缺口；registration generation与真正关闭入口的方案仍需O-004关闭。
+
 在审计基线中，`ndn-service-framework/ServiceProvider.hpp`提供`addService(serviceName, ackHandler, requestHandler, ServiceInvocationMode)`和`addCollaborationHandler(serviceName, allowedRoles, ackHandler, handler)`及重载，没有公开逐服务remove/unregister方法。`examples/DI_NativeProviderExecutable.cpp::main`分别注册execution lease服务与推理collaboration handler；其ACK路径调用`issueNativeProviderOfferV3`，准备路径注入`runnerPreparationFactory`及`generationTextDecoderFactory`，就绪后安装`makeNativeProviderCollaborationRuntime(...).handler`。这些接线必须整体提取复用，不能仅移动最终handler而丢失ACK、lease、readiness和权限检查。
 
 因此`NativeServiceRegistration::close`目前是planned设计缺口，而不是现有Core方法包装。T001/O-004需冻结registration记录的owner、closed/generation fence、晚到ACK/Selection处理、重复注册及共享lease服务寿命；如需新Core API，先补精确文件/签名/字段/调用链与PO，不能临场扩写。PO-014必须证明关闭一个registration后不再接收新工作且共享服务继续可用，并核对已接收工作的清理；T009在此之前保持BLOCK。
