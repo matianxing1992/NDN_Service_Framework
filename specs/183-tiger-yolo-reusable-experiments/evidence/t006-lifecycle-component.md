@@ -118,3 +118,29 @@ journal: establish a digest-bound catalogue-to-candidate mapping first.
 - Complete T006 orchestration, T007 audit and all real qualification gates.
 
 No SIF build, upload, Slurm submission, or inference run occurred here.
+# Retained request join (2026-09-07)
+
+collect_retained_request combines lifecycle/numerical and retained four-role
+execution/dependencies. The request ID/index comes from the frozen schedule;
+output resolves under node0/user/requests/<index>. Normal cases require
+attempt-1, consistent with disabled retry/reselection. User roleDigest must
+match the expected Provider map; selected role/provider counts and ACK count
+must agree. Selection digest is recomputed exactly as the V3 coordinator:
+canonical SHA256 of {"plan": executionPlanDigest, "ack": ackSnapshotDigest}
+(app_sdk/placement.py around 4095), not the outer carrier digest.
+
+Runtime candidate digest binds the packaged release/node receipts. Placement
+candidate ID/digest binds the chosen catalogue partition/lifecycle/numerical
+record. They are distinct parameters, not interchangeable values with the
+same label. Native and public dependency evidence use the lifecycle's request,
+attempt and execution-plan binding. No component PASS is promoted to an
+experiment PASS; GPU/allocation, certified model graph and operator-level
+frozen-input coverage still need verification.
+
+Nine tests exercise the actual lifecycle reader; numerical/native boundaries
+are explicit doubles. Wrong role/Selection digest, ACK/provider/role count,
+request index, attempt and numerical rejection prevent the native join.
+They are composition tests, not a real model or transport run.
+
+Expanded focused regression: 680 passed in 44.28s. JUnit:
+`Experiments/TigerCluster/results/t006-retained-request-r1/junit.xml`.

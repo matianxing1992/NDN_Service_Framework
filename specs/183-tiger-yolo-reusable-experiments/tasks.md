@@ -78,6 +78,16 @@ T001–T004形成 profile/launcher 实现骨架；可操作 MVP 还要求 T006 �
 
 ## Current Checkpoint
 
+2026-09-07 retained request join: collect_retained_request derives the User
+output directory from node0 and the frozen invocation index, validates the
+real lifecycle/numerical pair, recomputes role and Selection digests and count
+bindings, then invokes four-role retained execution/dependency checks with
+the lifecycle execution-plan identity. Runtime release candidate digest and
+catalogue placement candidate digest are distinct explicit arguments. Normal
+cases require attempt-1 (no retry/reselection). Nine tests use the real
+lifecycle reader and explicit numerical/native doubles. This remains a
+component join; GPU/graph/allocation/final normal operator pending.
+
 2026-09-07 retained cleanup semantics: offline receipt reading now invokes
 shared validate_cleanup_records (also used by live Worker cleanup), recomputes
 cleanupSummary and verifies every frozen User invocation and unique request ID.

@@ -234,6 +234,58 @@ def collect_request_result(root, reference, *, case, request_id, attempt_id,
                 qualification='REQUEST_RESULT_COMPONENT_ONLY')
 
 
+def collect_retained_request(nodes, reference, *, plan, request_index,
+                             runtime_candidate_digest, placement_candidate_id,
+                             placement_candidate_digest, graph_digest,
+                             catalogue_digest, providers_by_role):
+    """Join retained lifecycle/numerical/role/dependency evidence for one request.
+
+    Runtime candidate identity (the packaged release) is NOT the selected
+    catalogue candidate identity (the model partition). Both are explicit.
+    This does not replace allocation/GPU/certified graph qualification.
+    """
+    import hashlib
+    import json
+    from pathlib import Path
+    requests = plan.get('requests')
+    if (not isinstance(requests, list) or type(request_index) is not int
+            or not 0 <= request_index < len(requests) or 0 not in nodes
+            or not isinstance(requests[request_index], dict)
+            or type(requests[request_index].get('index')) is not int
+            or requests[request_index]['index'] != request_index):
+        raise EvidenceError('RETAINED_REQUEST_INDEX')
+    request_id = requests[request_index]['requestId']
+    # Normal Spec183 cases disable retry/reselection; a new attempt must not
+    # silently become the accepted evidence for this fixed single invocation.
+    attempt = 1
+    root = Path(nodes[0]['root'])/'user'/'requests'/str(request_index)
+    request = collect_request_result(root, reference, case=plan['case'],
+        request_id=request_id, attempt_id='attempt-1', candidate_id=placement_candidate_id,
+        candidate_digest=placement_candidate_digest, graph_digest=graph_digest,
+        catalogue_digest=catalogue_digest)
+    lifecycle = request['lifecycle']
+    events = lifecycle['events']
+    def digest(value):
+        return 'sha256:'+hashlib.sha256(json.dumps(value, ensure_ascii=False,
+            sort_keys=True, separators=(',', ':'), allow_nan=False).encode()).hexdigest()
+    if (set(providers_by_role) != {'BackboneNeck', 'DetectShard0', 'DetectShard1', 'Merge'}
+            or any(not isinstance(v, str) or not v for v in providers_by_role.values())):
+        raise EvidenceError('RETAINED_REQUEST_PROVIDERS')
+    count = len(set(providers_by_role.values()))
+    if (events[8]['roleDigest'] != digest(dict(providers_by_role))
+            or events[8]['providerCount'] != count or events[4]['providerCount'] != count
+            or events[7]['selectedRoleCount'] != len(providers_by_role)
+            or events[2]['ackCount'] < count
+            or events[7]['selectionDigest'] != digest({'plan': lifecycle['planDigest'],
+                                                       'ack': events[2]['ackSnapshotDigest']})):
+        raise EvidenceError('RETAINED_REQUEST_SELECTION_BINDING')
+    execution = collect_retained_dependencies(nodes, root/'yolo-public-assignments.json',
+        plan=plan, candidate_digest=runtime_candidate_digest, providers_by_role=providers_by_role,
+        request_id=lifecycle['requestId'], attempt=attempt, execution_plan_digest=lifecycle['planDigest'])
+    return dict(request=request, execution=execution, requestIndex=request_index,
+        qualification='RETAINED_REQUEST_COMPONENT_ONLY')
+
+
 def write_worker_receipt(worker, rows):
     """Persist prepared-run ownership after normal-case service/User cleanup.
 
