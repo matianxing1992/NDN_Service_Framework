@@ -383,15 +383,22 @@ def finalize_normal_verdict(request_results, *, plan, graph_digest):
                 or numerical.get('qualification') != 'NUMERICAL_COMPONENT_ONLY'
                 or not isinstance(execution, Mapping)
                 or execution.get('qualification') != 'RETAINED_DEPENDENCY_COMPONENT_ONLY'
+                or not isinstance(execution.get('dependencies'), Mapping)
+                or execution['dependencies'].get('qualification') != 'DEPENDENCY_COMPONENT_ONLY'
                 or execution.get('certifiedGraph') is None):
             raise EvidenceError('FINAL_VERDICT_COMPONENT_MISSING')
         graph = execution['certifiedGraph']
-        if (graph.get('graphDigest') != graph_digest
+        if (graph.get('qualification') != 'CERTIFIED_GRAPH_COMPONENT_ONLY'
+                or graph.get('graphDigest') != graph_digest
                 or set(graph.get('roles', {})) != graph_roles):
             raise EvidenceError('FINAL_VERDICT_GRAPH_BINDING')
         roles = execution.get('roles')
         if not isinstance(roles, Mapping) or set(roles) != graph_roles:
             raise EvidenceError('FINAL_VERDICT_ROLE_COVERAGE')
+        if any(not isinstance(roles[role], Mapping)
+               or roles[role].get('qualification') != 'RETAINED_ROLE_COMPONENT_ONLY'
+               for role in graph_roles):
+            raise EvidenceError('FINAL_VERDICT_ROLE_COMPONENT')
         devices = execution.get('devices')
         if plan['case'] == 'local-cpu':
             if devices != {}:

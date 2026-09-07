@@ -2020,3 +2020,18 @@ code path and focused regression, not the full runtime qualification.
   remain open.
 - Lesson: component validators need an explicit final completeness gate before
   any normal experiment can be reported as PASS.
+
+# 2026-09-07 Spec183 final verdict trusted role names without role evidence
+
+- Symptom: a final component result with the four expected role names but empty
+  role records could satisfy the initial completeness check.
+- Cause: the terminal helper checked role-set coverage but not each role's
+  retained component qualification, dependency qualification, or certified
+  graph qualification.
+- Fix: require `RETAINED_ROLE_COMPONENT_ONLY`,
+  `DEPENDENCY_COMPONENT_ONLY`, and `CERTIFIED_GRAPH_COMPONENT_ONLY` at the
+  final boundary; add negative mutations for each forged record.
+- Boundary: all evidence remains source-shaped component evidence; no native,
+  SIF, allocation, or Tiger execution is implied.
+- Lesson: terminal aggregation must validate both identity coverage and the
+  qualification of every child component.

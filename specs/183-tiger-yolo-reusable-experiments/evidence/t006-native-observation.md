@@ -257,8 +257,8 @@ Each role records `modelManifestDigest` and `artifactDigest` from the typed V3
 assembly. The User writer rejects incomplete identity; the offline reader
 requires the v2 envelope, canonical digests, and exact role ownership. The
 expanded focused suite recorded 824 passing tests in
-`results/t006-model-binding-r1/junit.xml`; the subsequent 840-test suite also
-passed in 47.69 seconds (`results/t006-graph-coverage-r1/junit.xml`). This
+`results/t006-model-binding-r1/junit.xml`; the subsequent 843-test suite also
+passed in 45.51 seconds (`results/t006-graph-coverage-r1/junit.xml`). This
 establishes a fail-closed
 identity boundary only. It does not authenticate the model package by itself,
 and it does not prove every certified graph node ran: ORT optimization can fuse

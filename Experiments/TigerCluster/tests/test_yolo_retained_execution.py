@@ -51,13 +51,16 @@ def test_retained_gpu_role_compares_external_device_expectation(tmp_path, fault)
 
 
 def _final_component(case='local-cpu', count=2, *, graph='sha256:'+'c'*64):
-    roles = {name: {} for name in ('BackboneNeck', 'DetectShard0', 'DetectShard1', 'Merge')}
+    role_names = ('BackboneNeck', 'DetectShard0', 'DetectShard1', 'Merge')
+    roles = {name: {'qualification': 'RETAINED_ROLE_COMPONENT_ONLY'} for name in role_names}
     devices = {} if case == 'local-cpu' else ({0} if case == 'single-node-gpu' else {0, 1})
     return [dict(requestIndex=i, qualification='RETAINED_REQUEST_COMPONENT_ONLY',
         request=dict(lifecycle={'qualification': 'LIFECYCLE_COMPONENT_ONLY'},
                      numerical={'matched': True, 'qualification': 'NUMERICAL_COMPONENT_ONLY'}),
         execution=dict(qualification='RETAINED_DEPENDENCY_COMPONENT_ONLY',
-            certifiedGraph={'graphDigest': graph, 'roles': roles}, roles=roles,
+            dependencies={'qualification': 'DEPENDENCY_COMPONENT_ONLY'},
+            certifiedGraph={'graphDigest': graph, 'qualification': 'CERTIFIED_GRAPH_COMPONENT_ONLY',
+                            'roles': roles}, roles=roles,
             devices={rank: {} for rank in devices})) for i in range(count)]
 
 
@@ -70,7 +73,8 @@ def test_finalize_normal_verdict_requires_all_components(case, count):
     assert verdict['status'] == 'PASS' and verdict['requestCount'] == count
 
 
-@pytest.mark.parametrize('mutation', ['missing', 'numerical', 'graph', 'roles', 'devices'])
+@pytest.mark.parametrize('mutation', ['missing', 'numerical', 'graph', 'roles', 'role-component',
+                                      'dependencies', 'graph-qualification', 'devices'])
 def test_finalize_normal_verdict_rejects_partial_component(mutation):
     graph = 'sha256:'+'c'*64
     plan = {'case': 'two-node-gpu',
@@ -80,6 +84,9 @@ def test_finalize_normal_verdict_rejects_partial_component(mutation):
     elif mutation == 'numerical': rows[0]['request']['numerical']['matched'] = False
     elif mutation == 'graph': rows[0]['execution']['certifiedGraph']['graphDigest'] = 'sha256:'+'d'*64
     elif mutation == 'roles': rows[0]['execution']['roles'].pop('Merge')
+    elif mutation == 'role-component': rows[0]['execution']['roles']['Merge'] = {}
+    elif mutation == 'dependencies': rows[0]['execution']['dependencies']['qualification'] = 'BAD'
+    elif mutation == 'graph-qualification': rows[0]['execution']['certifiedGraph']['qualification'] = 'BAD'
     else: rows[0]['execution']['devices'] = {0: {}}
     with pytest.raises(ValueError):
         result.finalize_normal_verdict(rows, plan=plan, graph_digest=graph)
