@@ -8,7 +8,7 @@
 
 2026-09-06 Source ABI Validation：fresh build R1在299/318触发1800秒执行器上限（exit124，非compiler/protocol failure）；R2因Waf未保存task signatures而重复重编，已中断。R3保持同一fresh树/配置/`-j2`，仅补齐未完成交付目标及依赖，再做完整native tests。D001仍IN_PROGRESS，记录见source handoff；不计182实现进度。
 
-2026-09-06 Source Handoff IN_PROGRESS：三主库及必要传递依赖NDNSD已固定源码；可迁移输入/模板与root skills已完成D002/D003。相关工具28/28 PASS、真实包搬迁/渲染PASS、五项skill检查PASS；D001等待新ABI消费者fresh编译验证，D004等待GitHub Experimental发布。设计/命令/证据统一记在 [source handoff](../../Experiments/TigerCluster/docs/source-handoff.md)，Spec182仍0/17，不计T001--T017完成。
+2026-09-06 Source Handoff IN_PROGRESS：三主库及必要传递依赖NDNSD已固定源码；可迁移输入/模板与root skills已完成D002/D003。相关工具28/28 PASS、真实包搬迁/渲染PASS、五项skill检查PASS；D004四库Experimental发布已完成，NDNSF首次交付为0a8d8cc7；D001等待新ABI消费者构建与运行验证。设计/命令/证据统一记在 [source handoff](../../Experiments/TigerCluster/docs/source-handoff.md)，Spec182仍0/17，不计T001--T017完成。
 
 2026-09-06 Existing Presentation Checkpoint：补存此前未跟踪的`docs/NDNSF-UAV/slides/UPDATES.tex`及对应4页PDF；标题和全部命名frame的PDF文本核对PASS。旧版`UPDATES_UAV.pdf`、LaTeX缓存、原始实验输出及本地助手状态继续保留为本地产物，不计源码或182进度。活动指针/managed plan均指182，最终索引刷新后project与active健康检查PASS。
 

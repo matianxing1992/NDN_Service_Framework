@@ -109,6 +109,8 @@ python3 Experiments/TigerCluster/adapters/slurm-apptainer/scripts/prepare-develo
 
 ## Checkpoint
 
+GitHub首次交付发布已核对：NDNSF `Experimental`为`0a8d8cc7af14a891fd4ce3f2548694f08511649e`，NAC/SVS/NDNSD的`Experimental`分别与锁文件相同；后续提交仅同步验证记录。共享skills与全部交付工具已可获取。D001运行验证继续，不能将发布成功理解为当前SIF资格完成。
+
 2026-09-06 TOOLING_CHECKPOINT：最终统一R5 **28/28 PASS，17.90s**（四文件：`test_development_handoff.py`、`test_prepare_local_sif_source.py`、`test_build_local_sif_record.py`、`test_development_runtime_template.py`）；raw `.codex-tmp/source-handoff-20260906/tool-checks-r5/output.log`。其中旧build-record fixture修复R3为8/8 PASS；扩展NDNSD前统一R4为26/26 PASS。五项skill frontmatter检查PASS，14份Markdown的28个相对链接及接收命令Python语法PASS。
 
 真实包 `.codex-tmp/source-handoff-20260906/bundle-r3`：NDNSF453、NAC63、SVS31、NDNSD14个源码成员，四个归档总计12,072,960字节；加五个wheel、锁和模板。复制至`relocated-r3`后verify PASS，实际固定base摘要校验及definition render PASS，raw同级`package-r3.log`、`relocation-r3.log`、`render-r3.log`。seal为`sha256:9129d07298f5754823f3bc2bf9c10fea7416adbb1e4168ced3dc82750948612c`，静态定义检查含4库/9个原生产物。SIF_BUILD/CONTAINER_RUNTIME仍NOT_RUN。
@@ -126,6 +128,6 @@ R2日志随后证明Waf未保存R1 task signatures、实际重新编译全图，
 - [ ] D001 Dependency source checkpoints and compatibility
 - [x] D002 Portable source inputs and definition
 - [x] D003 Shared skills and receiving-machine instructions
-- [ ] D004 Validated local package and GitHub Experimental publication
+- [x] D004 Validated local package and GitHub Experimental publication
 
 Spec182保持0/17；Tiger B003与历史Local R8保持未完成/FAIL。本记录完成后补充精确commit、命令和下一台机器的步骤。
