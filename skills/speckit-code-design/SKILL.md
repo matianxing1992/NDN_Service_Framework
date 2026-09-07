@@ -49,6 +49,10 @@ description: Define reviewable code design and coherent implementation tasks, th
 
 ## Implementation And Validation
 
+所有执行者必须使用 [task progress registry](references/task-progress.md)：
+tasks.md 顶部完整登记执行单元、依赖、状态、证据和剩余项，每个工作单元结束后同步。
+此规则不取决于模型或 bounded-executor 模式；详细卡片与当前进度分工明确。
+
 用户要求 Spark 或有限范围执行时，应用 [bounded executor](references/bounded-executor.md)：
 设计者冻结决策，按行为提供定向阅读/精确写入范围/检查命令，执行者一次完成一张就绪卡。
 已有上层任务与正式验收保持；执行卡不自动表示设计已就绪。
