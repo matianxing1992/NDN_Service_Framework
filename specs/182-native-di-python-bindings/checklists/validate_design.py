@@ -206,7 +206,8 @@ for path in list(feature.rglob("*.md")):
         filename, _, anchor = target.partition("#")
         destination = (path.parent / unquote(filename)).resolve() if filename else path
         links += 1
-        require(destination.is_file(), f"missing link {path.name}: {target}")
+        require(destination.is_file() or destination.is_dir(),
+                f"missing link {path.name}: {target}")
         if destination.is_file() and anchor and destination.suffix == ".md":
             headings = re.findall(r"^#{1,6} (.+)$", destination.read_text(), re.M)
             require(unquote(anchor) in {slug(h) for h in headings},
