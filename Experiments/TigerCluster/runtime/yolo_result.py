@@ -7,6 +7,97 @@ from collections.abc import Mapping
 import re
 
 
+def decode_native_observation(payload):
+    """Decode ExecutionEvidence.cpp JSON, NOT validate execution success.
+
+    Boost PropertyTree writes scalar booleans/uint64 as strings and an empty
+    array as "". Accept only canonical values at the specific native fields;
+    never recursively coerce arbitrary strings or treat bool('false') as true.
+    Typed JSON from other maintained producers is also accepted strictly.
+    """
+    import json
+    if not isinstance(payload, str) or len(payload.encode('utf-8')) > 1024 * 1024:
+        raise EvidenceError('NATIVE_OBSERVATION_SIZE')
+    def pairs(items):
+        result = {}
+        for key, value in items:
+            if key in result:
+                raise EvidenceError('NATIVE_OBSERVATION_DUPLICATE_KEY')
+            result[key] = value
+        return result
+    def constant(value):
+        raise EvidenceError('NATIVE_OBSERVATION_NONFINITE')
+    try:
+        row = json.loads(payload, object_pairs_hook=pairs, parse_constant=constant)
+    except (ValueError, RecursionError) as exc:
+        raise EvidenceError('NATIVE_OBSERVATION_JSON') from exc
+    if not isinstance(row, dict) or row.get('schema') != 'ndnsf-di-execution-evidence-v1':
+        raise EvidenceError('NATIVE_OBSERVATION_SCHEMA')
+    def boolean(value):
+        if type(value) is bool:
+            return value
+        if type(value) is str and value in ('true', 'false'):
+            return value == 'true'
+        raise EvidenceError('NATIVE_OBSERVATION_BOOL')
+    def unsigned(value):
+        if type(value) is str and re.fullmatch(r'0|[1-9][0-9]{0,19}', value):
+            value = int(value)
+        if type(value) is not int or not 0 <= value < 2**64:
+            raise EvidenceError('NATIVE_OBSERVATION_UINT64')
+        return value
+    for key in ('realCompute', 'cpuFallbackUsed', 'loadCompleted', 'warmupCompleted',
+                'executionCompleted', 'exactForwardCacheHit'):
+        row[key] = boolean(row.get(key))
+    for key in ('processId', 'attemptEpoch', 'evidenceEpoch', 'createdAtMs', 'profileAttemptEpoch'):
+        row[key] = unsigned(row.get(key))
+    for key in ('roles', 'nodeProviderAssignments'):
+        if row.get(key) == '':
+            row[key] = []
+        if not isinstance(row.get(key), list) or len(row[key]) > 10000:
+            raise EvidenceError('NATIVE_OBSERVATION_ARRAY')
+    if any(not isinstance(role, str) or not role for role in row['roles']):
+        raise EvidenceError('NATIVE_OBSERVATION_ROLE')
+    for assignment in row['nodeProviderAssignments']:
+        if not isinstance(assignment, dict):
+            raise EvidenceError('NATIVE_OBSERVATION_ASSIGNMENT')
+        assignment['modelNode'] = boolean(assignment.get('modelNode'))
+    return row
+
+
+def validate_native_observation(payload, *, provider, role, request_id, attempt,
+                                plan_digest, pid, runner_kind):
+    """Bind a decoded observation to launcher and lifecycle facts.
+
+    Does not qualify the referenced ORT profile, GPU allocation, dependency
+    transfers or process cleanup. Those checks must precede a full PASS.
+    """
+    if (type(pid) is not int or pid <= 0 or type(attempt) is not int or attempt <= 0
+            or any(not isinstance(v, str) or not v for v in (provider, role, request_id))
+            or not isinstance(plan_digest, str)
+            or not re.fullmatch(r'sha256:[0-9a-f]{64}', plan_digest)
+            or runner_kind not in ('onnxruntime-cpu', 'onnxruntime-cuda', 'native-yolo-postprocess')):
+        raise EvidenceError('NATIVE_EXPECTED_BINDING')
+    row = decode_native_observation(payload)
+    expected = dict(providerName=provider, roles=[role], requestId=request_id,
+        attemptEpoch=attempt, planDigest=plan_digest, processId=pid, runnerKind=runner_kind,
+        executionCompleted=True, exactForwardCacheHit=False, loadCompleted=True,
+        warmupCompleted=True, cpuFallbackUsed=False,
+        realCompute=runner_kind != 'native-yolo-postprocess')
+    if any(row.get(k) != v for k,v in expected.items()):
+        raise EvidenceError('NATIVE_EXECUTION_BINDING_OR_STATUS')
+    assignments = row['nodeProviderAssignments']
+    if runner_kind == 'native-yolo-postprocess':
+        if assignments or row.get('gpuUuid') != '' or row.get('cudaVisibleDevices') != '':
+            raise EvidenceError('NATIVE_MERGE_DEVICE')
+    else:
+        backend = 'CUDAExecutionProvider' if runner_kind == 'onnxruntime-cuda' else 'CPUExecutionProvider'
+        if not assignments or any(a.get('role') != role or a.get('provider') != backend
+                or a.get('modelNode') is not True or not isinstance(a.get('nodeName'), str)
+                or not a['nodeName'] for a in assignments):
+            raise EvidenceError('NATIVE_MODEL_NODE_ASSIGNMENT')
+    return dict(observation=row, qualification='NATIVE_OBSERVATION_COMPONENT_ONLY')
+
+
 def validate_lifecycle(root, *, case, request_id, attempt_id, candidate_id, candidate_digest):
     """Validate one externally bound, successful, no-reselection request.
 

@@ -82,7 +82,12 @@ async def exchange(app, keys, namespace, role, probe_id, seconds, read_certifica
             except (InterestNack, InterestTimeout):
                 await asyncio.sleep(min(0.05, max(0, deadline - loop.time())))
         raise TimeoutError('NETWORK_PROBE_PEER_TIMEOUT')
-    await asyncio.wait_for(fetch(), timeout=max(0, deadline - loop.time()))
+    try:
+        await asyncio.wait_for(fetch(), timeout=max(0, deadline - loop.time()))
+    except asyncio.TimeoutError as exc:
+        # Python 3.8 has a distinct asyncio.TimeoutError; normalize both
+        # scheduler expiry and the inner peer deadline at this API boundary.
+        raise TimeoutError('NETWORK_PROBE_PEER_TIMEOUT') from exc
     # Do not exit immediately: the opposite rank must still fetch our Data.
     # A delayed/missing rank fails closed; the parent requires both receipts.
     await asyncio.sleep(max(0, deadline - loop.time()))

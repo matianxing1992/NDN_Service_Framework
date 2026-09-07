@@ -32,8 +32,13 @@ def signed_material():
     return signers, certs
 
 
-@pytest.mark.parametrize('fault', ['none', 'signature', 'payload', 'name', 'certificate', 'missing'])
-def test_bidirectional_fresh_signed_exchange(signed_material, fault):
+@pytest.mark.parametrize('fault', ['none', 'signature', 'payload', 'name', 'certificate', 'missing', 'outer-timeout'])
+def test_bidirectional_fresh_signed_exchange(signed_material, fault, monkeypatch):
+    if fault == 'outer-timeout':
+        async def expire(coro, *, timeout):
+            coro.close()
+            raise asyncio.TimeoutError()
+        monkeypatch.setattr(network.asyncio, 'wait_for', expire)
     signers, certs = signed_material
     callbacks = {}
     class Face:
@@ -81,7 +86,8 @@ def test_bidirectional_fresh_signed_exchange(signed_material, fault):
         assert results[1]['peer'] == results[0]['producer']
     else:
         expected_error = {'signature': ValidationFailure, 'payload': ValueError,
-                          'name': ValueError, 'certificate': ValueError, 'missing': TimeoutError}[fault]
+                          'name': ValueError, 'certificate': ValueError, 'missing': TimeoutError,
+                          'outer-timeout': TimeoutError}[fault]
         assert all(isinstance(r, expected_error) for r in results), results
 
 

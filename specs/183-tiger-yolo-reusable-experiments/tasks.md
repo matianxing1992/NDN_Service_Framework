@@ -78,6 +78,8 @@ T001–T004形成 profile/launcher 实现骨架；可操作 MVP 还要求 T006 �
 
 ## Current Checkpoint
 
+2026-09-07 native观察组件：发现旧collector不兼容Boost PropertyTree bool/uint64字符串且hardcode example identity；新增严格decoder+真实Provider/PID/request/attempt/plan绑定校验，29 focused通过。不把日志声明当实际GPU/edge证据；ORT profile/物理GPU/依赖/cleanup/完整collector仍待做。见evidence/t006-native-observation.md。
+
 2026-09-07 GRAPH_READY catalogueDigest source接通：YOLO builder既有验签/图/权重校验后保存签名body摘要，V3发出它并拒绝非法非空digest。真实LifecycleJournal文件→collector回归通过，连同候选映射/边界共34 focused通过；仍须最终collector对冻结catalogue做精确比较及真实native验证。T006保持unchecked。
 
 2026-09-07 V3 candidate身份source修复：Yolo26Splitter重建catalogue条目的runtime candidate，精确digest唯一匹配后返回注册ID/digest；V3 lifecycle调用resolver，runtime计划/命名/digest不变。4项隔离production-kernel回归通过；真实adapter/planner未验证。另发现GRAPH_READY缺少catalogueDigest，writer未拒绝缺字段，须由verified catalogue补齐；T006仍未闭合。

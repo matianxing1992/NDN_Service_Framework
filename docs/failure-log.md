@@ -1837,3 +1837,19 @@ that field comes from the verified catalogue owner.
   remain open until a trustworthy mapping is implemented.
 - Lesson: validate the actual writer against the collector contract before
   launching a GPU job; do not weaken evidence binding to make a trace pass.
+## 2026-09-07 — Native evidence serializer/collector type mismatch
+
+Regression uncovered a separate network boundary defect: missing-peer expiry
+sometimes raised Python 3.8 asyncio.TimeoutError, not the built-in TimeoutError
+used by the explicit inner deadline. Unified exchange() timeout normalization;
+added a deterministic outer-wait expiry regression. Initial full run was
+517 passed/1 failed, not PASS. Focused network+observation follow-up: 43 passed.
+
+- Symptom: the old Spec180 collector rejects actual native bool/uint64 JSON
+  scalar strings and assumes `/example/provider/<role>` identities.
+- Cause: executionEvidenceToJson uses Boost PropertyTree, while collector
+  fixtures used Python typed JSON; namespace assumptions were not deployment-bound.
+- Resolution: Spec183 decoder recognizes only canonical values in the known
+  native fields, and validator binds actual expected Provider/PID/request/plan.
+  29 focused tests pass; native serializer/runtime and full collector pending.
+- Lesson: inspect producer serialization, not only synthetic collector fixtures.
