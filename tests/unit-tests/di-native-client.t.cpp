@@ -4,6 +4,22 @@
 #include "tests/unit-tests/generic-dynamic-api-fixture.hpp"
 #include <future>
 #include <deque>
+#include <limits>
+
+namespace ndnsf::di {
+// This friend is defined only in the unit test; no configurable production
+// constructor or installed test-clock factory is exposed by the library.
+class NativeClientTestAccess {
+public:
+  using Port = NativeInferenceClient::TestPort;
+  static std::unique_ptr<NativeInferenceClient> create(
+      const Port& port, std::shared_ptr<ndn_service_framework::ServiceUser> user,
+      std::shared_ptr<const NativeAdapterRegistry> adapters) {
+    return std::unique_ptr<NativeInferenceClient>(
+      new NativeInferenceClient(port, std::move(user), std::move(adapters)));
+  }
+};
+}
 
 using namespace ndnsf::di;
 
@@ -59,6 +75,12 @@ struct ClientStateFixture {
   std::shared_ptr<ndn_service_framework::test::LocalServiceUser> user;
   std::shared_ptr<NativeAdapterRegistry> adapters = std::make_shared<NativeAdapterRegistry>();
   std::deque<std::function<void()>> work;
+  struct Timer {
+    std::chrono::steady_clock::time_point deadline;
+    std::function<void()> fire;
+    bool cancelled = false;
+  };
+  std::vector<std::shared_ptr<Timer>> timers;
   std::chrono::steady_clock::time_point now{};
   NativeModelRef model;
   ClientStateFixture() {
@@ -78,14 +100,20 @@ struct ClientStateFixture {
     model.adapterId = "client-test";
     model.adapterVersion = "1";
   }
-  NativeClientTestPort port() {
-    return {[this] { return now; }, [this](std::function<void()> f) { work.push_back(std::move(f)); }};
+  NativeClientTestAccess::Port port() {
+    return {[this] { return now; },
+      [this](std::function<void()> f) { work.push_back(std::move(f)); },
+      [this](std::chrono::steady_clock::time_point deadline, std::function<void()> fire) {
+        auto timer = std::make_shared<Timer>(Timer{deadline, std::move(fire)});
+        timers.push_back(timer);
+        return [timer] { timer->cancelled = true; timer->fire = {}; };
+      }};
   }
-  NativeInferenceHandle request(NativeInferenceClient& client) {
+  NativeInferenceHandle request(NativeInferenceClient& client, NativeRequestOptions options = {}) {
     NativeApplicationInput input;
     input.payload = {1};
     return client.request(model, input, std::make_shared<ClientTestSplit>(),
-                          std::make_shared<NativePreSplitFirstPlacement>(), {});
+                          std::make_shared<NativePreSplitFirstPlacement>(), options);
   }
 };
 }
@@ -94,7 +122,7 @@ BOOST_FIXTURE_TEST_SUITE(Spec182ClientState, ClientStateFixture)
 
 BOOST_AUTO_TEST_CASE(SlowObserverDoesNotBlockCancelAndLateReplaySurvivesClientClose)
 {
-  auto client = std::make_unique<NativeInferenceClient>(port(), user, adapters);
+  auto client = NativeClientTestAccess::create(port(), user, adapters);
   auto handle = request(*client);
   std::promise<void> entered, release;
   auto enteredFuture = entered.get_future();
@@ -120,8 +148,8 @@ BOOST_AUTO_TEST_CASE(SlowObserverDoesNotBlockCancelAndLateReplaySurvivesClientCl
 
 BOOST_AUTO_TEST_CASE(LocalWaitDoesNotTerminateRequestAndExpiredDispatchFails)
 {
-  NativeInferenceClient client(port(), user, adapters);
-  auto handle = request(client);
+  auto client = NativeClientTestAccess::create(port(), user, adapters);
+  auto handle = request(*client);
   BOOST_CHECK_EXCEPTION(handle.result(std::chrono::milliseconds(0)), NativeDiError,
                         [](const NativeDiError& e) { return e.code() == "LOCAL_WAIT_TIMEOUT"; });
   BOOST_CHECK(handle.status() == NativeRequestStatus::Pending);
@@ -137,10 +165,124 @@ BOOST_AUTO_TEST_CASE(SubmissionFailureReturnsFailedHandle)
 {
   auto throwingPort = port();
   throwingPort.submitHook = [](std::function<void()>) { throw std::runtime_error("queue unavailable"); };
-  NativeInferenceClient client(throwingPort, user, adapters);
-  auto handle = request(client);
+  auto client = NativeClientTestAccess::create(throwingPort, user, adapters);
+  auto handle = request(*client);
   BOOST_CHECK_EXCEPTION(handle.result(std::chrono::milliseconds(0)), NativeDiError,
                         [](const NativeDiError& e) { return e.code() == "NATIVE_REQUEST_DISPATCH_FAILED"; });
+  BOOST_REQUIRE_EQUAL(timers.size(), 1U);
+  BOOST_CHECK(timers.front()->cancelled);
+}
+
+BOOST_AUTO_TEST_CASE(DeadlineFiresWithoutDispatchAndCannotBeRearmedByWait)
+{
+  auto client = NativeClientTestAccess::create(port(), user, adapters);
+  auto handle = request(*client);
+  BOOST_REQUIRE_EQUAL(timers.size(), 1U);
+  BOOST_CHECK(timers.front()->deadline == now + std::chrono::seconds(30));
+  BOOST_CHECK_EXCEPTION(handle.result(std::chrono::milliseconds(0)), NativeDiError,
+                        [](const NativeDiError& e) { return e.code() == "LOCAL_WAIT_TIMEOUT"; });
+  auto lateDeadline = timers.front()->fire;
+  now += std::chrono::seconds(30);
+  lateDeadline();
+  BOOST_CHECK_EXCEPTION(handle.result(std::chrono::milliseconds(0)), NativeDiError,
+                        [](const NativeDiError& e) { return e.code() == "NATIVE_REQUEST_TIMEOUT"; });
+  BOOST_CHECK(timers.front()->cancelled);
+  BOOST_CHECK_EQUAL(timers.size(), 1U);
+  // Neither the overdue queued request nor an already-dispatched timer may
+  // resurrect this operation or replace its first terminal error.
+  work.front()();
+  lateDeadline();
+  handle.cancel();
+  BOOST_CHECK(handle.status() == NativeRequestStatus::Failed);
+}
+
+BOOST_AUTO_TEST_CASE(CancelAndCloseRemoveTimersAndIgnoreLateExpiry)
+{
+  auto client = NativeClientTestAccess::create(port(), user, adapters);
+  auto cancelled = request(*client);
+  auto closing = request(*client);
+  auto lateFirst = timers.at(0)->fire;
+  auto lateSecond = timers.at(1)->fire;
+  cancelled.cancel();
+  client.reset();
+  BOOST_CHECK(timers.at(0)->cancelled);
+  BOOST_CHECK(timers.at(1)->cancelled);
+  lateFirst();
+  lateSecond();
+  for (auto& task : work) task();
+  BOOST_CHECK(cancelled.status() == NativeRequestStatus::Cancelled);
+  BOOST_CHECK(closing.status() == NativeRequestStatus::Cancelled);
+}
+
+BOOST_AUTO_TEST_CASE(RealDeadlineDoesNotWaitForWorkOrSlowObserver)
+{
+  auto realPort = port();
+  realPort.now = {};
+  realPort.scheduleHook = {};
+  auto client = NativeClientTestAccess::create(realPort, user, adapters);
+  auto first = request(*client);
+  std::promise<void> entered, release;
+  auto enteredFuture = entered.get_future();
+  auto gate = release.get_future().share();
+  first.observe([&](const NativeInferenceEvent&) { entered.set_value(); gate.wait(); });
+  first.cancel();
+  const auto enteredState = enteredFuture.wait_for(std::chrono::seconds(2));
+  NativeRequestOptions options;
+  options.timeoutMs = 50;
+  options.ackTimeoutMs = 10;
+  auto pending = request(*client, options);
+  std::string errorCode;
+  try { pending.result(std::chrono::seconds(2)); }
+  catch (const NativeDiError& error) { errorCode = error.code(); }
+  // Always release the worker before any fatal test assertion/unwinding.
+  release.set_value();
+  BOOST_CHECK(enteredState == std::future_status::ready);
+  BOOST_CHECK_EQUAL(errorCode, "NATIVE_REQUEST_TIMEOUT");
+  BOOST_CHECK(pending.status() == NativeRequestStatus::Failed);
+  BOOST_CHECK_EQUAL(work.size(), 2U); // No DI work was pumped to cause expiry.
+  // Queue a barrier to ensure the callback's referenced promises are no
+  // longer used when the test returns.
+  auto barrier = std::make_shared<std::promise<void>>();
+  auto done = barrier->get_future();
+  pending.observe([barrier](const NativeInferenceEvent&) { barrier->set_value(); });
+  BOOST_REQUIRE(done.wait_for(std::chrono::seconds(2)) == std::future_status::ready);
+}
+
+BOOST_AUTO_TEST_CASE(InvalidDeadlinesAndNegativeWaitAreRejectedWithoutSubmission)
+{
+  auto client = NativeClientTestAccess::create(port(), user, adapters);
+  NativeRequestOptions options;
+  options.timeoutMs = options.ackTimeoutMs;
+  BOOST_CHECK_EXCEPTION(request(*client, options), NativeDiError,
+                        [](const NativeDiError& e) { return e.code() == "INVALID_REQUEST"; });
+  options.timeoutMs = std::numeric_limits<std::uint64_t>::max();
+  BOOST_CHECK_EXCEPTION(request(*client, options), NativeDiError,
+                        [](const NativeDiError& e) { return e.code() == "INVALID_REQUEST"; });
+  BOOST_CHECK(work.empty());
+  BOOST_CHECK(timers.empty());
+  auto handle = request(*client);
+  BOOST_CHECK_EXCEPTION(handle.result(std::chrono::milliseconds(-1)), NativeDiError,
+                        [](const NativeDiError& e) { return e.code() == "INVALID_WAIT_TIMEOUT"; });
+  BOOST_CHECK(handle.status() == NativeRequestStatus::Pending);
+}
+
+BOOST_AUTO_TEST_CASE(DispatchExceptionIsContainedAndRemovesTimer)
+{
+  auto failingClock = port();
+  unsigned calls = 0;
+  failingClock.now = [&] {
+    if (calls++ > 0) throw std::runtime_error("private diagnostic detail");
+    return now;
+  };
+  auto client = NativeClientTestAccess::create(failingClock, user, adapters);
+  auto handle = request(*client);
+  BOOST_CHECK_NO_THROW(work.front()());
+  BOOST_CHECK_EXCEPTION(handle.result(std::chrono::milliseconds(0)), NativeDiError,
+                        [](const NativeDiError& e) {
+                          return e.code() == "NATIVE_REQUEST_DISPATCH_FAILED" &&
+                            std::string(e.what()).find("private diagnostic") == std::string::npos;
+                        });
+  BOOST_CHECK(timers.at(0)->cancelled);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

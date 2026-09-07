@@ -4,6 +4,8 @@
 #include <chrono>
 #include <condition_variable>
 #include <deque>
+#include <limits>
+#include <map>
 #include <mutex>
 #include <thread>
 #include <utility>
@@ -57,6 +59,9 @@ class SerialRequestExecutor
     std::mutex mutex;
     std::condition_variable condition;
     std::deque<std::function<void()>> queue;
+    std::multimap<std::chrono::steady_clock::time_point,
+                  std::pair<std::uint64_t, std::function<void()>>> timers;
+    std::uint64_t nextTimer = 0;
     bool stopped = false;
   };
 public:
@@ -74,12 +79,26 @@ public:
           std::function<void()> task;
           {
             std::unique_lock<std::mutex> lock(state->mutex);
-            state->condition.wait(lock, [&] {
-              return state->stopped || !state->queue.empty();
-            });
-            if (state->queue.empty()) return;
-            task = std::move(state->queue.front());
-            state->queue.pop_front();
+            for (;;) {
+              if (!state->queue.empty()) {
+                task = std::move(state->queue.front());
+                state->queue.pop_front();
+                break;
+              }
+              if (state->stopped) return;
+              if (state->timers.empty()) {
+                state->condition.wait(lock);
+              } else if (state->timers.begin()->first <= std::chrono::steady_clock::now()) {
+                task = std::move(state->timers.begin()->second.second);
+                state->timers.erase(state->timers.begin());
+                break;
+              } else {
+                // Copy the deadline: cancelling a timer may erase its node
+                // while wait_until releases the mutex.
+                const auto deadline = state->timers.begin()->first;
+                state->condition.wait_until(lock, deadline);
+              }
+            }
           }
           task();
         }
@@ -113,6 +132,36 @@ public:
     m_state->condition.notify_all();
   }
 
+  // Only the independent deadline executor receives timed work. A blocked
+  // preparation job or observer cannot postpone this wakeup.
+  std::function<void()> scheduleAt(std::chrono::steady_clock::time_point deadline,
+                                   std::function<void()> task)
+  {
+    std::uint64_t id;
+    {
+      std::lock_guard<std::mutex> lock(m_state->mutex);
+      if (m_state->stopped) throw std::runtime_error("native deadline executor stopped");
+      id = ++m_state->nextTimer;
+      m_state->timers.emplace(deadline, std::make_pair(id, std::move(task)));
+    }
+    m_state->condition.notify_one();
+    return [state = m_state, id] {
+      std::function<void()> retired;
+      {
+        std::lock_guard<std::mutex> lock(state->mutex);
+        for (auto it = state->timers.begin(); it != state->timers.end(); ++it) {
+          if (it->second.first == id) {
+            retired = std::move(it->second.second);
+            state->timers.erase(it);
+            break;
+          }
+        }
+      }
+      state->condition.notify_one();
+      // Captures are destroyed outside the queue lock.
+    };
+  }
+
 private:
   explicit SerialRequestExecutor(std::function<void(std::function<void()>)> submitHook)
     : m_submitHook(std::move(submitHook)), m_state(std::make_shared<State>()) {}
@@ -130,6 +179,7 @@ struct NativeInferenceHandle::Operation
   DiRequestPhase phase = DiRequestPhase::New;
   std::uint64_t attempt = 1;
   std::chrono::steady_clock::time_point deadline{};
+  std::function<void()> cancelDeadline;
   NativeInferenceResult result;
   std::shared_ptr<NativeDiError> error;
   std::uint64_t staleCallbacks = 0;    // late/duplicate terminal attempts: counted, never resurrecting
@@ -171,6 +221,7 @@ markTerminal(const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
              std::shared_ptr<NativeDiError> error = nullptr,
              const NativeInferenceResult* result = nullptr)
 {
+  std::function<void()> cancelDeadline;
   {
     std::lock_guard<std::mutex> lock(operation->mutex);
     if (operation->status != NativeRequestStatus::Pending) {
@@ -185,7 +236,9 @@ markTerminal(const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
     }
     operation->status = terminal;
     operation->phase = DiRequestPhase::Terminal;
+    cancelDeadline = std::move(operation->cancelDeadline);
   }
+  if (cancelDeadline) cancelDeadline();
   operation->condition.notify_all();
   return true;
 }
@@ -317,6 +370,10 @@ NativeInferenceHandle::result(std::chrono::milliseconds waitTimeout) const
 {
   if (!m_operation) throw NativeDiError("INVALID_HANDLE", "local", "handle",
                                          "native inference handle is empty");
+  if (waitTimeout.count() < 0) {
+    throw NativeDiError("INVALID_WAIT_TIMEOUT", "local", "wait",
+                        "native result wait duration must be nonnegative");
+  }
   // Work on a local copy of the operation: the wait must keep the operation
   // alive even if the last user reference to this handle is released from
   // another thread while the wait is parked.
@@ -379,7 +436,7 @@ NativeInferenceClient::NativeInferenceClient(
   std::shared_ptr<NativeConversationCoordinator> conversations,
   std::shared_ptr<NativeRequestPreparation> preparation,
   std::shared_ptr<const NativeOfferAdmission> admission)
-  : NativeInferenceClient(NativeClientTestPort{},
+  : NativeInferenceClient(TestPort{},
                           std::move(user), std::move(adapters),
                           std::move(grants), std::move(conversations),
                           std::move(preparation), std::move(admission))
@@ -387,7 +444,7 @@ NativeInferenceClient::NativeInferenceClient(
 }
 
 NativeInferenceClient::NativeInferenceClient(
-  const NativeClientTestPort& testPort,
+  const TestPort& testPort,
   std::shared_ptr<ndn_service_framework::ServiceUser> user,
   std::shared_ptr<const NativeAdapterRegistry> adapters,
   std::shared_ptr<NativeGrantClient> grants,
@@ -403,6 +460,12 @@ NativeInferenceClient::NativeInferenceClient(
   , m_now(testPort.now ? testPort.now : defaultClock())
   , m_executor(SerialRequestExecutor::create(testPort.submitHook))
   , m_notifications(SerialRequestExecutor::create())
+  , m_deadlines(SerialRequestExecutor::create())
+  , m_schedule(testPort.scheduleHook ? testPort.scheduleHook :
+      [executor = m_deadlines](std::chrono::steady_clock::time_point deadline,
+                               std::function<void()> task) {
+        return executor->scheduleAt(deadline, std::move(task));
+      })
 {
   if (!m_user || !m_adapters) {
     throw NativeDiError("INVALID_CLIENT_CONFIGURATION", "local", "constructor",
@@ -430,7 +493,8 @@ NativeInferenceHandle NativeInferenceClient::request(
                           "native inference client is closed");
     }
     if (!splitStrategy || !placementStrategy || options.timeoutMs == 0 ||
-        options.ackTimeoutMs == 0 || options.ackTimeoutMs > options.timeoutMs ||
+        options.ackTimeoutMs == 0 || options.ackTimeoutMs >= options.timeoutMs ||
+        options.timeoutMs > static_cast<std::uint64_t>(std::numeric_limits<int>::max()) ||
         (input.payload.empty() && input.repositoryReference.empty())) {
       throw NativeDiError("INVALID_REQUEST", "local", "request",
                           "native request arguments are invalid");
@@ -459,7 +523,31 @@ NativeInferenceHandle NativeInferenceClient::request(
   // safely outlive this client.
   auto now = m_now;
   try {
-    m_executor->submit([operation, now] { dispatchOperation(operation, now); });
+    {
+      std::lock_guard<std::mutex> lock(operation->mutex);
+      if (operation->status != NativeRequestStatus::Pending) {
+        return NativeInferenceHandle(std::move(operation));
+      }
+      operation->cancelDeadline = m_schedule(operation->deadline,
+        [weak = std::weak_ptr<NativeInferenceHandle::Operation>(operation)] {
+          if (auto pending = weak.lock()) {
+            failOperation(pending, NativeDiError(
+              "NATIVE_REQUEST_TIMEOUT", "local", "request",
+              "native request budget expired", pending->requestId, pending->attempt));
+          }
+        });
+    }
+    m_executor->submit([operation, now] {
+      try {
+        dispatchOperation(operation, now);
+      } catch (const NativeDiError& error) {
+        failOperation(operation, error);
+      } catch (...) {
+        failOperation(operation, NativeDiError(
+          "NATIVE_REQUEST_DISPATCH_FAILED", "local", "request",
+          "native request dispatch failed", operation->requestId, operation->attempt));
+      }
+    });
   } catch (...) {
     failOperation(operation, NativeDiError(
       "NATIVE_REQUEST_DISPATCH_FAILED", "local", "request",
@@ -487,6 +575,7 @@ void NativeInferenceClient::close() noexcept
   // already-terminal operations, and a callback-driven close never waits on
   // the executor.  The shared Core/user is not closed or joined here.
   m_executor->stop();
+  m_deadlines->stop();
 }
 
 } // namespace ndnsf::di
