@@ -20,10 +20,15 @@ def _digest(payload):
 
 
 def prepare_role_reference(model_bytes: bytes, *, artifact_digest: str,
+                           assembled_model_digest: str,
                            model_manifest_digest: str, role: str,
                            backend: str, ort_version: str, scratch: Path) -> dict:
     """Initialize an independent ORT session, export its graph, never run it.
 
+    ``artifact_digest`` is the certified role-contract identity carried by
+    Selection, not a hash of the extracted ONNX. ``assembled_model_digest``
+    pins the separately authenticated assembler output bytes. Both must come
+    from the certified assembly owner; neither is inferred from observations.
     Supports inline assembled ONNX only. External-data references are rejected
     rather than resolved against an arbitrary cwd. Temporary optimized models
     may contain plaintext weights, so they stay in a private temporary directory
@@ -36,8 +41,11 @@ def prepare_role_reference(model_bytes: bytes, *, artifact_digest: str,
     if role not in ('BackboneNeck', 'DetectShard0', 'DetectShard1'):
         raise ValueError('GRAPH_REFERENCE_ROLE')
     if (not isinstance(model_bytes, bytes) or not 0 < len(model_bytes) <= 32 * 1024 * 1024
-            or _digest(model_bytes) != artifact_digest):
+            or _digest(model_bytes) != assembled_model_digest):
         raise ValueError('GRAPH_REFERENCE_MODEL_BYTES')
+    if (not isinstance(artifact_digest, str)
+            or re.fullmatch(r'sha256:[0-9a-f]{64}', artifact_digest) is None):
+        raise ValueError('GRAPH_REFERENCE_ARTIFACT')
     if (not isinstance(model_manifest_digest, str)
             or re.fullmatch(r'sha256:[0-9a-f]{64}', model_manifest_digest) is None):
         raise ValueError('GRAPH_REFERENCE_MANIFEST')
@@ -98,6 +106,7 @@ def prepare_role_reference(model_bytes: bytes, *, artifact_digest: str,
             raise ValueError('GRAPH_REFERENCE_NODE_IDENTITIES')
         return dict(schema='tiger-yolo-role-reference-v1', role=role,
             qualification='ORT_GRAPH_PREPARATION_COMPONENT_ONLY',
+            assembledModelDigest=assembled_model_digest,
             ortVersion=ort.__version__, optimizedModelDigest=_digest(payload),
             sessionOptions=dict(intraOpThreads=1, graphOptimization='ORT_ENABLE_BASIC',
                                 allowCpuFallback=False, deviceId=0),
@@ -115,11 +124,11 @@ _CANONICAL_SESSION_OPTIONS = dict(intraOpThreads=1,
                                   graphOptimization='ORT_ENABLE_BASIC',
                                   allowCpuFallback=False, deviceId=0)
 _REFERENCE_FIELDS = {'schema', 'role', 'qualification', 'ortVersion',
-                     'optimizedModelDigest', 'sessionOptions', 'expected'}
+                     'assembledModelDigest', 'optimizedModelDigest', 'sessionOptions', 'expected'}
 _EXPECTED_FIELDS = {'modelManifestDigest', 'artifactDigest', 'backend',
                     'optimizedNodeNames'}
 _PROVENANCE_FIELDS = {'schema', 'qualification', 'ortVersion',
-                      'optimizedModelDigest', 'sessionOptions', 'backend'}
+                      'assembledModelDigest', 'optimizedModelDigest', 'sessionOptions', 'backend'}
 
 
 def _role_reference_expected(record, role):
@@ -131,6 +140,9 @@ def _role_reference_expected(record, role):
         raise ValueError('CERTIFIED_GRAPH_REFERENCE_PROVENANCE')
     if not isinstance(record['ortVersion'], str) or not record['ortVersion']:
         raise ValueError('CERTIFIED_GRAPH_REFERENCE_ORT_VERSION')
+    if (not isinstance(record['assembledModelDigest'], str)
+            or re.fullmatch(r'sha256:[0-9a-f]{64}', record['assembledModelDigest']) is None):
+        raise ValueError('CERTIFIED_GRAPH_REFERENCE_ASSEMBLED_DIGEST')
     if (not isinstance(record['optimizedModelDigest'], str)
             or re.fullmatch(r'sha256:[0-9a-f]{64}',
                             record['optimizedModelDigest']) is None):
@@ -190,6 +202,7 @@ def serialize_certified_graph(role_references, *, graph_digest) -> dict:
         referenceProvenance={
             role: dict(schema=record['schema'], qualification=record['qualification'],
                        ortVersion=record['ortVersion'],
+                       assembledModelDigest=record['assembledModelDigest'],
                        optimizedModelDigest=record['optimizedModelDigest'],
                        sessionOptions=dict(record['sessionOptions']),
                        backend=expected_by_role[role]['backend'])
@@ -232,6 +245,9 @@ def validate_certified_graph_provenance(certified_graph) -> dict:
                 or row['qualification'] != _REFERENCE_QUALIFICATION
                 or not isinstance(row['ortVersion'], str)
                 or not row['ortVersion']
+                or not isinstance(row['assembledModelDigest'], str)
+                or re.fullmatch(r'sha256:[0-9a-f]{64}',
+                                row['assembledModelDigest']) is None
                 or not isinstance(row['optimizedModelDigest'], str)
                 or re.fullmatch(r'sha256:[0-9a-f]{64}',
                                 row['optimizedModelDigest']) is None

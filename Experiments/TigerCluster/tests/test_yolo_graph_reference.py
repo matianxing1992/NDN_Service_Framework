@@ -28,6 +28,7 @@ def model():
 
 def arguments(tmp_path, payload):
     return dict(artifact_digest='sha256:'+hashlib.sha256(payload).hexdigest(),
+        assembled_model_digest='sha256:'+hashlib.sha256(payload).hexdigest(),
         model_manifest_digest='sha256:'+'a'*64, role='BackboneNeck',
         backend='CPUExecutionProvider', ort_version=ort.__version__, scratch=tmp_path)
 
@@ -53,7 +54,8 @@ def test_reference_before_execution_matches_separate_real_cpu_profile(tmp_path):
 
 
 @pytest.mark.parametrize('field,value,reason', [
-    ('artifact_digest', 'sha256:'+'b'*64, 'MODEL_BYTES'),
+    ('assembled_model_digest', 'sha256:'+'b'*64, 'MODEL_BYTES'),
+    ('artifact_digest', 'not-a-digest', 'ARTIFACT'),
     ('role', 'Merge', 'ROLE'),
     ('ort_version', 'incorrect', 'ORT_VERSION'),
     ('backend', 'unknown', 'BACKEND'),
@@ -141,9 +143,29 @@ def references(tmp_path, payloads, backend='CPUExecutionProvider'):
     for role, payload in payloads.items():
         result[role] = prepare_role_reference(
             payload, artifact_digest='sha256:' + hashlib.sha256(payload).hexdigest(),
+            assembled_model_digest='sha256:' + hashlib.sha256(payload).hexdigest(),
             model_manifest_digest='sha256:' + 'a' * 64, role=role, backend=backend,
             ort_version=ort.__version__, scratch=tmp_path)
     return result
+
+
+def test_logical_role_artifact_is_distinct_from_assembled_model_bytes(tmp_path):
+    """YOLO fragment IDs hash the role contract, not serialized ONNX bytes."""
+    records = {}
+    for role, payload in role_models().items():
+        options = arguments(tmp_path, payload)
+        options['role'] = role
+        logical = 'sha256:' + hashlib.sha256(('signed-role:' + role).encode()).hexdigest()
+        options['artifact_digest'] = logical
+        assert logical != options['assembled_model_digest']
+        records[role] = prepare_role_reference(payload, **options)
+        assert records[role]['expected']['artifactDigest'] == logical
+        assert records[role]['assembledModelDigest'] == options['assembled_model_digest']
+    document = serialize_certified_graph(records, graph_digest='sha256:' + 'c' * 64)
+    for role, record in records.items():
+        assert document['referenceProvenance'][role]['assembledModelDigest'] == record['assembledModelDigest']
+    validate_certified_graph_provenance(document)
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_serialize_produces_comparator_document_and_join_passes(tmp_path):
@@ -218,6 +240,7 @@ def test_serialize_rejects_incomplete_or_extra_role_coverage(tmp_path):
                         'allowCpuFallback': False, 'deviceId': 0},
      'CERTIFIED_GRAPH_REFERENCE_SESSION_OPTIONS'),
     ('optimizedModelDigest', 'not-a-digest', 'CERTIFIED_GRAPH_REFERENCE_OPTIMIZED_DIGEST'),
+    ('assembledModelDigest', 'not-a-digest', 'CERTIFIED_GRAPH_REFERENCE_ASSEMBLED_DIGEST'),
 ])
 def test_serialize_rejects_tampered_reference_provenance(tmp_path, field, value, code):
     payloads = role_models()
@@ -281,6 +304,7 @@ def test_serialize_rejects_bad_graph_digest(tmp_path):
     ('expected-backend-mismatch', 'CERTIFIED_GRAPH_PROVENANCE_BINDING'),
     ('session-tamper', 'CERTIFIED_GRAPH_PROVENANCE_BINDING'),
     ('export-digest', 'CERTIFIED_GRAPH_PROVENANCE_BINDING'),
+    ('assembled-digest', 'CERTIFIED_GRAPH_PROVENANCE_BINDING'),
     ('ort-version', 'CERTIFIED_GRAPH_PROVENANCE_BINDING'),
     ('identity', 'CERTIFIED_GRAPH_PROVENANCE_BINDING'),
     ('no-roles', 'CERTIFIED_GRAPH_PROVENANCE_DOCUMENT'),
@@ -302,6 +326,8 @@ def test_provenance_recheck_rejects_mutated_documents(tmp_path, mutation, code):
         document['referenceProvenance'][role]['sessionOptions']['intraOpThreads'] = 4
     elif mutation == 'export-digest':
         document['referenceProvenance'][role]['optimizedModelDigest'] = 'not-a-digest'
+    elif mutation == 'assembled-digest':
+        document['referenceProvenance'][role]['assembledModelDigest'] = 'not-a-digest'
     elif mutation == 'ort-version':
         document['referenceProvenance'][role]['ortVersion'] = ''
     elif mutation == 'identity':

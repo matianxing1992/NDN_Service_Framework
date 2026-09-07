@@ -284,6 +284,21 @@ It never fabricates route-ready records. Single-node cases skip only the
 two-node network probe. The outer worker still owns NFD setup, final cleanup,
 requests and full result collection. RUNTIME_READY is not inference PASS.
 
+### Independent graph identity binding
+
+`artifactDigest` 是既有 DI Selection 的角色逻辑摘要（YOLO splitter 对候选、图、
+角色和 node cover 求摘要），不是组装后 ONNX 文件的字节摘要。独立参考生成器
+必须分别接收该逻辑身份和 `assembled_model_digest`，后者必须等于认证 assembler
+返回的模型 bytes 的 SHA-256。`referenceProvenance.assembledModelDigest` 保留
+这个字节身份，`roles[role].artifactDigest` 继续与真实 Selection 对照；不能让
+测试使用两个恰巧相等的摘要掩盖实际调用中的不同身份。旧的不含组装摘要的
+component reference 必须重新生成，不作为当前 producer 证据。
+
+包 manifest、请求发布后的 canonical MODELROOT manifest 和角色逻辑 artifact
+同样不可互换。完整 producer 必须在既有 owner 给出实际请求绑定后保留该身份；
+离线 prepare 时不能猜测未来 MODELROOT 摘要。本节修正身份合同，不放行缺失的
+生产接线，也不授权提前运行 GPU 或完整验证。
+
 ### Numerical response evidence
 
 Numerical evidence: the fixed public benchmark may retain one authorized User

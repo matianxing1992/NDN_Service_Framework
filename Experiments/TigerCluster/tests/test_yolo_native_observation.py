@@ -81,6 +81,7 @@ def certified_graph(backend='CUDAExecutionProvider'):
         'referenceProvenance': {role: {'schema': 'tiger-yolo-role-reference-v1',
             'qualification': 'ORT_GRAPH_PREPARATION_COMPONENT_ONLY',
             'ortVersion': 'fixture-ort-version',
+            'assembledModelDigest': 'sha256:'+'e'*64,
             'optimizedModelDigest': 'sha256:'+'d'*64,
             'sessionOptions': {'intraOpThreads': 1,
                 'graphOptimization': 'ORT_ENABLE_BASIC',

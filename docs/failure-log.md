@@ -2465,3 +2465,27 @@ Lesson: distinguish implemented, component-verified and runtime-qualified
 steps. Close the real wiring gap before formal qualification, reuse unchanged
 evidence under the invalidation matrix, and do not turn table maintenance into
 another full-suite or GPU campaign.
+
+# 2026-09-07 — Spec183 ORT reference conflated logical and byte identities
+
+Symptom: independent ORT reference preparation required the SHA-256 of
+assembled ONNX bytes to equal the Selection artifact digest. Real YOLO roles
+use a logical candidate/graph/role/node-cover digest, so a correctly assembled
+model could not satisfy that check. Earlier tiny-model fixtures used the same
+digest for both identities and missed the production incompatibility.
+
+Cause: the reference boundary conflated the splitter's role contract with the
+assembler's serialized output. Source tracing also showed that request-time
+MODELROOT publication changes the model-manifest digest; an offline package
+manifest cannot stand in for the final request binding.
+
+Fix: require an explicit assembled_model_digest, verify actual bytes against
+it, preserve artifact_digest for Selection comparison, and require the separate
+assembledModelDigest in retained provenance. Added distinct-identity and digest
+mutation checks; 145 affected tests passed in 5.52s. Evidence and command:
+specs/183-tiger-yolo-reusable-experiments/evidence/t005-reference-identities.md.
+The actual producer/request binding remains open; no runtime PASS is claimed.
+
+Lesson: use source-derived identities in test fixtures and distinguish logical,
+serialized and request-publication digests before wiring a distributed oracle.
+Avoid broad reruns while its producer is still disconnected.

@@ -3,6 +3,15 @@
 Status: OPEN, implementation finding; not a runtime failure or qualification.
 Source inspected: `bef847ef` on `TigerClusterExperiments`.
 
+Latest correction (2026-09-07): [reference identity repair](t005-reference-identities.md)
+separates the Selection role-contract digest from assembled ONNX bytes (145
+focused passes). The wiring map below is a located component chain, not a
+completed or directly executable producer: offline package manifest and the
+post-publication canonical MODELROOT manifest differ. Final request binding
+must use the latter through the actual owner; no private placement call or
+preparation-time guess may stand in for it. The production invocation gap
+remains OPEN.
+
 ## Observed boundary
 
 `runtime/yolo_result.py::collect_normal_verdict` requires a certified graph.
