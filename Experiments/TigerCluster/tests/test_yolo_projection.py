@@ -33,7 +33,7 @@ def assignment():
 
 
 def test_public_projection_uses_actual_typed_names_scopes_and_attempt():
-    from runtime.yolo_projection import public_assignment_projection
+    from ndnsf_distributed_inference.sdk.public_evidence import public_assignment_projection
     source = assignment()
     public = public_assignment_projection(source.to_bytes(), request_id=source.request_id,
         attempt=2, plan_digest=source.plan_digest, provider=source.provider)
@@ -51,7 +51,7 @@ def test_public_projection_uses_actual_typed_names_scopes_and_attempt():
 @pytest.mark.parametrize('field,value', [('attempt', 1), ('attempt', True),
     ('request_id', 'other'), ('plan_digest', 'sha256:'+'b'*64), ('provider', '/other')])
 def test_public_projection_rejects_external_binding_mismatch(field, value):
-    from runtime.yolo_projection import public_assignment_projection
+    from ndnsf_distributed_inference.sdk.public_evidence import public_assignment_projection
     source = assignment()
     binding = dict(request_id=source.request_id, attempt=2,
         plan_digest=source.plan_digest, provider=source.provider)
@@ -65,7 +65,7 @@ def test_public_projection_rejects_external_binding_mismatch(field, value):
     ('redistribution', 'backbone-to-head/from/BackboneNeck'),
 ])
 def test_native_scope_alternatives(mode, expected):
-    from runtime.yolo_projection import public_assignment_projection
+    from ndnsf_distributed_inference.sdk.public_evidence import public_assignment_projection
     source = assignment()
     if mode == 'single':
         flow = replace(source.dataflow, may_publish=source.dataflow.may_publish[:1], dataflow_digest='')
@@ -80,8 +80,57 @@ def test_native_scope_alternatives(mode, expected):
 
 @pytest.mark.parametrize('wire', [b'{}', b'not-json', b'x' * (1024 * 1024 + 1)])
 def test_reject_invalid_selection_wire(wire):
-    from runtime.yolo_projection import public_assignment_projection
+    from ndnsf_distributed_inference.sdk.public_evidence import public_assignment_projection
     source = assignment()
     with pytest.raises(ValueError):
         public_assignment_projection(wire, request_id=source.request_id,
             attempt=2, plan_digest=source.plan_digest, provider=source.provider)
+
+
+@pytest.mark.parametrize('fault', ['none', 'disabled', 'role', 'provider', 'plan',
+    'attempt', 'coverage', 'existing', 'symlink'])
+def test_user_retains_only_bound_public_evidence(tmp_path, fault):
+    """Actual User function and typed wire; handle is a boundary fixture."""
+    import ast
+    import os
+    import re
+    from types import SimpleNamespace as NS
+    path = Path(__file__).resolve().parents[3] / 'examples/python/NDNSF-DistributedInference/yolo_2x2/user.py'
+    tree = ast.parse(path.read_text())
+    method = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
+                  and node.name == '_retain_public_assignments')
+    namespace = dict(Path=Path, os=os, re=re, json=json)
+    exec(compile(ast.Module(body=[method], type_ignores=[]), str(path), 'exec'), namespace)
+    source = assignment()
+    role = 'wrong' if fault == 'role' else source.dataflow.role
+    plan = NS(providers_by_role={role: '/other' if fault == 'provider' else source.provider},
+        assignment_payloads_by_role={role: source.to_bytes()})
+    if fault == 'coverage':
+        plan.assignment_payloads_by_role = {}
+    handle = NS(sealed_plan=plan, execution_plan_digest='bad' if fault == 'plan' else source.plan_digest)
+    args = NS(retain_public_assignments=fault != 'disabled', request_id=source.request_id,
+        lifecycle_output_dir=str(tmp_path))
+    target = tmp_path / 'yolo-public-assignments.json'
+    if fault == 'existing':
+        target.write_text('preserve')
+    if fault == 'symlink':
+        target.symlink_to(tmp_path / 'missing')
+    invoke = lambda: namespace['_retain_public_assignments'](args, handle,
+        'attempt-1' if fault == 'attempt' else 'attempt-2')
+    if fault == 'none':
+        invoke()
+        record = json.loads(target.read_text())
+        assert len(record['assignments']) == 1
+        assert record['assignments'][0]['planDigest'] == source.plan_digest
+        assert source.group_capability_v1 not in target.read_text()
+        assert target.stat().st_mode & 0o777 == 0o600
+    elif fault == 'disabled':
+        invoke()
+        assert not target.exists()
+    else:
+        with pytest.raises((ValueError, FileExistsError)):
+            invoke()
+        if fault == 'existing':
+            assert target.read_text() == 'preserve'
+        elif fault != 'symlink':
+            assert not target.exists()

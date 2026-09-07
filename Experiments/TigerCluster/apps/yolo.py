@@ -728,6 +728,7 @@ def run_requests(worker, plan: dict, *, package: Path, catalog_data_name: str,
                 '--ack-timeout-ms', '1500', '--timeout-ms', str(request_deadline_ms),
                 '--permission-wait-ms', str(permission_wait_ms),
                 '--native-tensor-input', '--input-size', '640', '--retain-numerical-response',
+                '--retain-public-assignments',
                 '--request-id', request['requestId'], '--lifecycle-output-dir', output,
                 '--lifecycle-case', plan['case'],
                 '--envelope-key-file', '/identities/user/request-envelope.key']

@@ -181,6 +181,7 @@ def test_schedule_runs_finite_users_preserving_live_provider(tmp_path, monkeypat
         assert all('SPEC180_CANDIDATE_ID=test-candidate' in a for a in calls)
         assert all('SPEC180_CANDIDATE_DIGEST=sha256:' + 'a' * 64 in a for a in calls)
         assert all('--retain-numerical-response' in a for a in calls)
+        assert all('--retain-public-assignments' in a for a in calls)
         assert all('NDNSF_DI_RECIPIENT_PUBLIC_KEY_MAP=/config/recipient-public-keys.json' in a for a in calls)
         assert not any(any(arg.startswith('SPEC181_PROVIDER_RECIPIENT_KEY_MAP=') for arg in a) for a in calls)
         assert all(a[a.index('--generated-policy-dir') + 1].startswith('/output/requests/') for a in calls)

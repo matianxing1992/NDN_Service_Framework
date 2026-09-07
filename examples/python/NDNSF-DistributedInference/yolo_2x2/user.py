@@ -224,6 +224,40 @@ def _record_yolo_numerical_result(args, reference, payload, plan_digest, attempt
     return record["matched"]
 
 
+def _retain_public_assignments(args, handle, attempt_id):
+    """Optional authorized User evidence, never raw Selection/grant material."""
+    if not getattr(args, 'retain_public_assignments', False):
+        return
+    from ndnsf_distributed_inference.sdk.public_evidence import public_assignment_projection
+    if not re.fullmatch(r'attempt-[1-9][0-9]*', attempt_id):
+        raise ValueError('PUBLIC_ASSIGNMENT_ATTEMPT')
+    attempt = int(attempt_id[len('attempt-'):])
+    plan = handle.sealed_plan
+    roles = plan.providers_by_role
+    payloads = plan.assignment_payloads_by_role
+    if not roles or len(roles) > 64 or set(roles) != set(payloads):
+        raise ValueError('PUBLIC_ASSIGNMENT_ROLE_COVERAGE')
+    projections = []
+    for role in sorted(roles):
+        public = public_assignment_projection(payloads[role], request_id=args.request_id,
+            attempt=attempt, plan_digest=handle.execution_plan_digest, provider=str(roles[role]))
+        if public['role'] != str(role):
+            raise ValueError('PUBLIC_ASSIGNMENT_ROLE_BINDING')
+        projections.append(public)
+    record = dict(schema='yolo-public-assignments-v1', assignments=projections)
+    wire = json.dumps(record, sort_keys=True, allow_nan=False).encode('utf-8')
+    if len(wire) > 1024 * 1024:
+        raise ValueError('PUBLIC_ASSIGNMENT_OUTPUT_SIZE')
+    target = Path(args.lifecycle_output_dir) / 'yolo-public-assignments.json'
+    if any(p.is_symlink() for p in (target, *target.parents)):
+        raise ValueError('PUBLIC_ASSIGNMENT_OUTPUT_SYMLINK')
+    with target.open('xb') as stream:
+        os.fchmod(stream.fileno(), 0o600)
+        stream.write(wire)
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
 def _digest_json(value) -> str:
     return "sha256:" + hashlib.sha256(json.dumps(
         value, ensure_ascii=False, sort_keys=True,
@@ -589,6 +623,7 @@ def _load_yolo_ack_driven(client, args) -> int:
             _emit_spec180_y_n_negative(args, mutation, journal=journal)
             return 91
         raise
+    _retain_public_assignments(args, handle, journal.attempt_id)
     role_map = {
         str(role): str(provider)
         for role, provider in handle.sealed_plan.providers_by_role.items()
@@ -678,6 +713,8 @@ def main() -> int:
     )
     parser.add_argument("--retain-numerical-response", action="store_true",
                         help="retain bounded authorized benchmark response for offline reanalysis; off by default")
+    parser.add_argument("--retain-public-assignments", action="store_true",
+                        help="retain non-secret sealed role/dependency evidence; off by default")
     parser.add_argument("--permission-wait-ms", type=int, default=2500)
     parser.add_argument("--async-requests", type=int, default=1)
     parser.add_argument("--dynamic-provisioning", action="store_true",

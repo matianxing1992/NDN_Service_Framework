@@ -28,7 +28,26 @@ No native build, SIF or Tiger job run in this checkpoint.
 
 ## Public typed assignment projection (2026-09-07)
 
-`runtime/yolo_projection.py::public_assignment_projection` decodes the actual
+Follow-up owner wiring: the projector has moved from the Tiger runtime to
+`ndnsf_distributed_inference/sdk/public_evidence.py`, so the maintained User
+does not import an experiment harness. User `_retain_public_assignments` is
+called after request_task returns the real sealed handle and before the
+execution-start lifecycle marker. The optional CLI flag defaults off; the
+Tiger normal User launcher explicitly enables it. Output is the fresh
+`yolo-public-assignments.json` under the authorized User output directory,
+bounded to 1 MiB, mode 0600, with symlink/existing-target rejection. Every
+role must have exactly one matching assignment; request, attempt, execution
+digest and assigned Provider are checked before writing. The retention tests
+run the actual User function with real typed wire, but the returned handle
+is still a fixture; native APPClient qualification remains T008 onward.
+Public records are evidence projections, not signatures or runtime proof.
+
+Retention checkpoint regression: 62 focused tests passed; expanded suite
+611 passed in 42.35s. JUnit:
+`Experiments/TigerCluster/results/t006-user-projection-r1/junit.xml`.
+No native build, local SIF or remote job was run in this checkpoint.
+
+`sdk/public_evidence.py::public_assignment_projection` decodes the actual
 ProviderSelectionProjectionV3 wire using the production Python contract and
 checks externally supplied request/attempt/execution-plan/Provider bindings.
 It returns an explicit field allowlist; it never persists the Selection wire,

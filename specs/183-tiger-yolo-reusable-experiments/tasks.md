@@ -78,6 +78,16 @@ T001–T004形成 profile/launcher 实现骨架；可操作 MVP 还要求 T006 �
 
 ## Current Checkpoint
 
+2026-09-07 User retention wiring: generic public projection now lives in
+`ndnsf_distributed_inference/sdk/public_evidence.py` (no dependency from the
+maintained YOLO example on Tiger harness files). `--retain-public-assignments`
+defaults off; the frozen Tiger User argv enables it. Actual User helper checks
+role coverage and all request/attempt/execution-plan/Provider bindings before
+exclusive bounded 0600 output, never raw assignment wire. Nine retention
+tests exercise the actual function with real typed Selection bytes and a
+handle fixture. Cross-role collector join and native qualification remain
+pending; no task completion claim.
+
 2026-09-07 public dependency projection: `runtime/yolo_projection.py` now
 decodes real typed V3 Selection wire and emits an explicit non-secret allowlist
 bound to request/attempt/execution-plan/Provider. Native attempt-session and
