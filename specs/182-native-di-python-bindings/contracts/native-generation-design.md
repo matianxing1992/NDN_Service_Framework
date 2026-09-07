@@ -46,4 +46,16 @@ T011新增选择器`Spec182SamplingTopPRetainedMass`、`Spec182SamplingPenaltyOn
 
 ## Streaming Closure Required
 
+### Verified Boundary and Planned ByteFallback Algorithm
+
+2026-09-07新增[独立参考检查](../../../tests/fixtures/spec182/dependency-probes/check-stream-boundaries.py)，固定既有tokenizer JSON SHA及tokenizers0.20.3。`<0x61>`解出`a`，追加`<0xFF>`或未完成的`<0xE5>`后，完整decode变成两个U+FFFD；即使当前文本没有replacement，也不代表可提交。合法U+FFFD的三个byte token最终必须保留一个U+FFFD，不能用删除该字符作为修复。普通非byte token结束byte run；skipSpecialTokens=true时被过滤的special token不结束run，false时保留的非byte special才结束run。
+
+固定版本[官方ByteFallback实现](https://github.com/huggingface/tokenizers/blob/v0.20.3/tokenizers/src/decoders/byte_fallback.rs)以整个连续byte run调用String::from_utf8，失败则每byte返回一个replacement。由此选择的适配算法是：对过滤special后的token序列，暂存最后尚未由非byte token结束的整个byte run；只将此前闭合部分交给原HF decoder作为稳定文本；正常终止时再用完整decode flush尾run。不能仅保留最后最多3个UTF-8字节，因为后续无效byte会改变此前整段。run长度受既有生成token上限约束，不添加静默截断。极端全byte输出可直到终止才产生text delta，但每个接受token仍按原协议发布token事件；这不是把所有decoder改成结束后一次输出。
+
+当前三份fixture的decoder分别为null、WordPiece(prefix为空且cleanup=false)、单独ByteFallback。前两种按当前完整decode可逐步形成稳定前缀；上面的run算法仅定义单独ByteFallback，不能未经证明套用Sequence/Replace/Strip/ByteLevel或真实Qwen tokenizer。完整encode/decode能力保持，生产stream能力必须对实际工件的decoder pipeline单独核对；不可为通过fixture而缩减真实模型范围。
+
+HF0.21.0提供[DecodeStream/step_decode_stream](https://github.com/huggingface/tokenizers/blob/v0.21.0/tokenizers/src/tokenizer/mod.rs)，维护ids/prefix/read_index/prefix_index并对末尾U+FFFD暂缓输出。本轮源码比较说明“HF没有原生stream能力”不能作为跨版本结论；但其算法不是已证明满足上述完整ByteFallback finalText、合法U+FFFD flush及NDNSF事务边界的替换。暂不升级已锁定0.20.3或复制新版实现；旧84个完整向量结果保持原范围。
+
+候选状态仍必须与提交状态隔离：preview接收candidate IDs及是否终止，返回owned稳定文本，拒绝事件或取消时丢弃候选；终止判定应先根据完整decode判断既有stop suffix/EOS/MAX_TOKENS，再flush当前候选，不能先发布不稳定文本后用finalPayload补救。既有eventSink接受后仍可能发生反馈发布或runtime commit失败；已发布事件无法撤回，恢复需要journal/event接受边界的显式协议，不能仅靠本地decoder rollback宣称事务回滚。该跨层问题继续由O-004和T011关闭。
+
 A7-08继续阻塞相关接线：需明确pending bytes与稳定片段算法、preview/commit隔离、EOS/MAX_TOKENS flush、stop、cancel/事件拒绝和恢复状态，以及调用方/字段。全量decode后删除U+FFFD或任意缓冲几个token不是通用正确方案；合法U+FFFD、decoder cleanup、special token和byte fallback分别覆盖。五函数ABI目前只承诺完整encode/decode，不改写为stream-ready。

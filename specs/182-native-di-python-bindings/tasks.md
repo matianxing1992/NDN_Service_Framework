@@ -6,6 +6,12 @@
 
 ## Current Checkpoint
 
+2026-09-07 Stream boundary / **T001 IN_PROGRESS**：新增可移植[reference checker](../../tests/fixtures/spec182/dependency-probes/check-stream-boundaries.py)，固定tokenizers0.20.3及既有fixture哈希，7个边界输入实际PASS/exit0。确认完整UTF-8的byte run仍会被后续无效byte改写；合法U+FFFD不能删除，skip special不构成run边界。算法与新版HF原生stream能力比较写入[generation contract](contracts/native-generation-design.md#verified-boundary-and-planned-bytefallback-algorithm)。本轮没有native产品构建/测试。
+
+A7-08仍OPEN：ByteFallback适配选择已明确，但真实Qwen decoder pipeline、完整调用/字段与事件接受后失败的恢复边界尚未关闭。源码确认eventSink接受后仍执行反馈发布与runtime commit，不能承诺靠decoder局部rollback撤回事件。T001未完成、产品0/17；下一步从实际Qwen工件和既有journal/commit路径关闭这些剩余设计，不重跑已固定reference用例。本单元strict structure、design validator（173本地链接）及diff whitespace检查PASS；参考运行命令为`/usr/bin/python3 tests/fixtures/spec182/dependency-probes/check-stream-boundaries.py`。
+
+### Prior Generation Design
+
 2026-09-07 Generation design / **T001 IN_PROGRESS**：[native generation contract](contracts/native-generation-design.md)补齐GenAI/HF/ORT复用比较与现有sampler的参数、double精度、去重惩罚、截断后归一化及旧会话兼容处置。A7-10/A7-11 CLOSED；A7-09算法设计已定义，产品修复/测试仍OPEN；A7-08的stream状态与完整O-004清单仍OPEN，T001未完成、产品0/17。修订plan旧授权句；不新增生成引擎或产品依赖，不操作实验机器。
 
 本单元检查 **PASS**：prerequisites、strict structure、design validator和diff whitespace。独立Python reference源SHA256 `3affb6f438a4134bb8e69222d79b3f2ec5a6b256bf0022af636b065627397c11`；将log概率按`struct.pack/unpack('<f')`量化后输入`[-0.5108256340026855,-1.2039728164672852,-2.3025851249694824]`，seed8/top_k3/top_p0.8/temperature1/step0实际选0；重复惩罚例也实际选0，assert通过/exit0。仅运行标准库reference，不构建native或运行产品测试。已有ONNX normalization草稿与failure-log修改保留，不在本单元宣称O-002关闭。
