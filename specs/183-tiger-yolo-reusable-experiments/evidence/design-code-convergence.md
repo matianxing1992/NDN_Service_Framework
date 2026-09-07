@@ -21,16 +21,18 @@ started.
 | Result boundaries | lifecycle, numerical, dependency, device, cleanup, node-receipt, and expected-rejection validators reject the registered mutation classes. | PASS (retained/component evidence only) |
 | SIF dispatch preflight | Spec183 host receipt and exact-SIF preflight fail closed before Apptainer/build calls and inspect imports/entrypoints/`ldd` when a real SIF is supplied. | PASS (negative/fixture boundary only) |
 
-The merged registered focused selector currently reports **885 passed**. This
-number is not a runtime qualification result; the tests use doubles or
-source-shaped receipts where the physical inputs are unavailable.
+The direct full `Experiments/TigerCluster/tests` run currently reports
+**798 passed in 33.44s**. A prior broader registered selector reported 885
+tests; that historical count is not reused as current evidence. Neither count
+is a runtime qualification result: the tests use doubles or source-shaped
+receipts where the physical inputs are unavailable.
 
 ## Blocking production findings
 
 | ID | Requirement | Finding | Owner / earliest gate |
 | --- | --- | --- | --- |
 | T007-B1 | FR-002, FR-018 | `Experiments/TigerCluster/profiles/yolo-two-node.json` is absent. No real partition/account/GPU/memory/SIF/model/oracle references can be checked. | T001 external inputs, then T004 |
-| T007-B2 | FR-012, FR-018 | `Experiments/TigerCluster/jobs/yolo/run.sbatch` is absent and `jobs/yolo/submit.py` exposes only read-only `check`. There is no production `prepare/local/submit/collect` command path or Slurm query/recovery boundary. | T004 |
+| T007-B2 | FR-012, FR-018 | `run.sbatch` now exists and `jobs/yolo/submit.py` exposes `check`, `prepare`, `local`, `submit`, and `collect` plus a hidden allocation-bound `run`. The commands remain fail-closed: no qualified profile/receipt has reached a real Slurm query, worker launch, recovery boundary, or collector result. | T004/T007 |
 | T007-B3 | FR-007, FR-008, FR-009 | `run_normal_node` is a coordinator library, not connected to a real operator allocation. No real NFD, Controller, Repo, Provider, User, or cross-node signed-data run has occurred. | T005/T007, then T009/T010 |
 | T007-B4 | FR-005, FR-006 | Locked source archives/build inputs, the signed YOLO package/registry/oracle, and the local base SIF are not all present. The exact-SIF preflight therefore cannot produce a candidate. | T002/T008/T011; `WAITING_EXTERNAL_INPUT` |
 | T007-B5 | FR-010, FR-011 | The final collector is implemented and exercised with retained fixtures, but no real native response, optimized graph, CUDA execution, or independent model oracle has reached it. | T006, then T008–T011 |
@@ -38,17 +40,20 @@ source-shaped receipts where the physical inputs are unavailable.
 
 ## Effective-field audit
 
-The current library path consumes the fixed ACK timeout, request deadline,
-protected epoch, candidate identifiers, application Sync prefix, role
-identity, provider/service names, output paths, and cleanup budgets in its
-component-level argv checks. The following profile-owned fields are not yet
-consumed by a production command because the profile/launcher is absent:
+The rank-operator seam and application coordinator consume the fixed ACK
+timeout, request deadline, protected epoch, candidate identifiers, exact
+`applicationName + '/sync'` prefix, role identity, provider/service names,
+output paths, endpoints, and cleanup budgets in component-level argv and
+lifecycle checks. The following profile-owned fields are still not consumed
+by an actual production dispatch because no qualified profile has been
+accepted and the launcher is intentionally fail-closed:
 
 * Apptainer executable/version and exact SIF path/hash;
 * Slurm partition, account, constraint, node/GPU/memory/walltime allocation;
 * immutable harness/model/oracle references and their candidate E binding;
 * shared run/lock roots and allocate-once `SubmissionJournal` transitions;
-* `prepare`, `local`, `submit`, and `collect` argv/env plus job reconciliation.
+* `prepare`, `local`, `submit`, and `collect` argv/env plus job reconciliation
+  against a real Slurm allocation and collector receipt.
 
 Consequently, no field-consumption or no-leftovers claim is allowed yet.
 
@@ -56,9 +61,10 @@ Consequently, no field-consumption or no-leftovers claim is allowed yet.
 
 1. Receive and independently hash the locked source/base/package/model/oracle
    inputs; keep any missing item explicitly `WAITING_EXTERNAL_INPUT`.
-2. Implement the real profile and `run.sbatch` around the existing helpers;
-   do not add a placeholder file merely to satisfy the harness inventory.
-3. Wire the five operator commands and allocate-once journal, including
+2. Provide the real profile and complete the existing `run.sbatch`/operator
+   wiring around the existing helpers; do not add a placeholder file merely
+   to satisfy the harness inventory.
+3. Connect the five operator commands and allocate-once journal, including
    `SUBMISSION_UNKNOWN` reconciliation without blind resubmission.
 4. Re-run T002–T006 through the actual command boundaries, then rerun this
    audit with CodeGraph and exact argv/env evidence.
