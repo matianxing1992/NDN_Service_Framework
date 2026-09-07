@@ -127,7 +127,8 @@ names were fixed by ORT preparation, provenance-required comparator gate,
 role-coverage gaps/extras, tampered reference identity/provenance, mixed or
 unknown backends, node-vocabulary mutations, graph-digest rejection and
 deterministic provenance digest. 33 graph-reference tests passed; full
-TigerCluster suite 895 passed in 43.27s. Old comparator fixtures are now
+TigerCluster suite 895 passed in 39.45s (commit-boundary run, matching the
+tasks.md checkpoint). Old comparator fixtures are now
 explicitly labeled synthetic provenance.
 
 Still open on this gap (unchanged for T005/T006/T007): the real invocation
