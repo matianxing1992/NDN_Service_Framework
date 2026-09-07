@@ -17,9 +17,9 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 
 | Unit / Details | Status | Depends | Evidence / Remaining | Updated |
 | --- | --- | --- | --- | --- |
-| [T001-A Identity and Dependency Closure](contracts/execution-units.md#t001-a-identity-and-dependency-closure) | PARTIAL | — | [baseline](evidence/task-progress-registry-20260907.md)；已有身份设计；完整关闭待核对 | 2026-09-07 |
-| [T001-B Lifecycle and Capability Closure](contracts/execution-units.md#t001-b-lifecycle-and-capability-closure) | PARTIAL | — | [baseline](evidence/task-progress-registry-20260907.md)；已有生命周期设计；manifest 已补签名/别名表达式；O-004 映射已收口（UNREVIEWED 0，10 PARTIAL_EXISTING + 17 PLANNED）；字段/方法/错误 parity 仍 OPEN | 2026-09-07 |
-| [T001-C Dispatch and Selector Freeze](contracts/execution-units.md#t001-c-dispatch-and-selector-freeze) | BLOCKED | T001-A, T001-B | [baseline](evidence/task-progress-registry-20260907.md)；T001-A/B 与 O-004 未关闭；selector release 待完成 | 2026-09-07 |
+| [T001-A Identity and Dependency Closure](contracts/execution-units.md#t001-a-identity-and-dependency-closure) | DONE | — | [closure](evidence/t001-ab-closure-20260907.md)；DOC + 依赖契约 vs 持久探针核对通过；onnx 4/4 与 tokenizer 84+14 全新复现 PASS；rust 1.90.0 独立工具链核验；Cargo 边界已在 rust-prefix 上重跑通过（tokenizer-r2） | 2026-09-07 |
+| [T001-B Lifecycle and Capability Closure](contracts/execution-units.md#t001-b-lifecycle-and-capability-closure) | DONE | — | [closure](evidence/t001-ab-closure-20260907.md)；DOC + 双向映射核对通过；O-004 处置写入 runtime-boundaries（Rev 8）与 symbol-design（C21/Readiness）；registration generation/late ACK/Selection/共享 lease 已冻结于 lifecycle 设计；parity 按 owner 任务继续，不属本卡 | 2026-09-07 |
+| [T001-C Dispatch and Selector Freeze](contracts/execution-units.md#t001-c-dispatch-and-selector-freeze) | READY | T001-A, T001-B | [closure](evidence/t001-ab-closure-20260907.md)；T001-A/B 已 DONE，依赖满足；freeze 内容待本卡执行 | 2026-09-07 |
 | [T002-A Installed Library Boundary](contracts/execution-units.md#t002-a-installed-library-boundary) | BLOCKED | T001-C | [baseline](evidence/task-progress-registry-20260907.md)；已有库/consumer 边界；NAC-ABE API 闭包阻塞构建 | 2026-09-07 |
 | [T003-A Qwen Split Candidates](contracts/execution-units.md#t003-a-qwen-split-candidates) | PARTIAL | T002-A | [baseline](evidence/task-progress-registry-20260907.md)；已有相关源码切片；完整卡验收未完成 | 2026-09-07 |
 | [T003-B Yolo Split Candidates](contracts/execution-units.md#t003-b-yolo-split-candidates) | PARTIAL | T003-A | [baseline](evidence/task-progress-registry-20260907.md)；已有相关源码切片；完整卡验收未完成 | 2026-09-07 |
@@ -55,6 +55,21 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 | [T017-A Development Handoff](contracts/execution-units.md#t017-a-development-handoff) | NOT_STARTED | T016-A | [baseline](evidence/task-progress-registry-20260907.md)；无本卡独立执行/验收记录；按依赖领取 | 2026-09-07 |
 
 ## Current Checkpoint
+
+2026-09-07 T001-A/B closure / **T001-A DONE、T001-B DONE、T001-C READY**：
+按 T001-A/B 卡 Verify（DOC + 依赖契约/双向映射核对）完成设计关闭，证据
+[closure](evidence/t001-ab-closure-20260907.md)。实际执行与核对：ONNX probe
+4/4 与 tokenizer ABI probe 84 exact+14 negative 在现工具链上全新复现 PASS；
+product tokenizer bridge `--release --locked -j2` rc=0（raw
+`.codex-tmp/spec182-t001-dependencies/tokenizer-r2/`），failure-log 的 Cargo
+exit127 边界已在该独立 rust-prefix（rustc/cargo 1.90.0）上解决；identity 向量
+24+16+17 与设计声明及冻结 sha256 一致，A7-07 缺陷诊断保留原位。O-004 收口
+处置写入 runtime-boundaries.md（Rev 8）与 symbol-design.md（C21/Readiness），
+registration generation/late ACK/Selection/共享 lease 设计已在 lifecycle 设计
+冻结。字段/方法/错误 parity 按各契约原文归 T012 及 owner 任务。产品构建仍被
+NAC-ABE ABI 缺口阻塞（下一个工具链边界）。
+下一步：T001-C Dispatch and Selector Freeze（依赖已满足）。
+
 
 2026-09-07 O-004 mapping closure / **T001-B IN_PROGRESS**：formal `api` 的 18 项
 `UNREVIEWED` 全部完成 owner 语义映射（`PARTIAL_EXISTING_TYPE 10`、

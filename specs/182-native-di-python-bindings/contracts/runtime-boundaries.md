@@ -1,9 +1,13 @@
 # Runtime Boundary Completion
 
-**Revision**: 7 | **Status**: DRAFT / BLOCK for implementation
+**Revision**: 8 | **Status**: DRAFT / BLOCK for implementation
 **Normative parent**: [spec](../spec.md), [code design](code-design.md)
 本附件补齐 revision 1 的中间调用缺口；所有 Native* 新接口均 planned。
-O-003 tokenizer依赖/ABI设计与O-005隔离设计已关闭；O-002完整ONNX算法、O-004完整字段/兼容清单仍未关闭，不宣称可直接编译。
+O-003 tokenizer依赖/ABI设计与O-005隔离设计已关闭；O-002完整ONNX算法已由
+[native ONNX assembly design](native-onnx-assembly-design.md)设计关闭；O-004 静态
+映射已于 2026-09-07 收口（UNREVIEWED 0，344 项 manifest，逐项带 nativeOwner/
+ownerTask），字段/方法/错误 parity 按 owner 任务（T012 等）继续。设计关闭仍
+不宣称可直接编译：T002-A 起按 T001-C 冻结的工具链与 selector 执行。
 
 ## CD-013 Preparation and Offer Admission
 
@@ -95,16 +99,25 @@ NativeServiceDefinition 的 service/roles/backend/能力来自已验证 native c
 NativeServiceRegistration 持有该 registration 与在途 handler 的共享寿命，close 幂等；
 停止新 admission 后让已接受角色按既有取消/deadline/cleanup 完成，不销毁正在运行的 handler。
 宿主不关闭共享 ServiceProvider/Face，不在 I/O 线程 join；异常不能越过 Core callback。
-Core 是否支持逐服务注销及 exact config 类型由 O-004 映射已有 API；缺少能力时保持 BLOCK，
-不能实现为全局 stop 他人服务或发明 Core 方法。
+O-004 映射（2026-09-07 收口）证实现有 API 无公开逐服务注销/registration token；
+exact config 类型按 O-004 记录。因此 NativeServiceRegistration::close 保持 planned
+Core scoped registration 扩展（见 [lifecycle design](native-provider-lifecycle-design.md)
+Registration Generation Decision），实现卡不得临场发明 Core 方法或包装全局 stop。
 
 ### Current Registration Boundary
 
-多服务提取的共享lease所有权、精确字段/API及关闭期间清理见[provider lifecycle design](native-provider-lifecycle-design.md)。已识别固定lease入口覆盖和每服务独立表的冲突缺口；registration generation与真正关闭入口的方案仍需O-004关闭。
+多服务提取的共享lease所有权、精确字段/API及关闭期间清理见[provider lifecycle design](native-provider-lifecycle-design.md)。已识别固定lease入口覆盖和每服务独立表的冲突缺口；registration generation与真正关闭入口方案随 O-004 收口（2026-09-07）冻结为 planned Core scoped registration，见下文与 lifecycle Registration Generation Decision。
 
 在审计基线中，`ndn-service-framework/ServiceProvider.hpp`提供`addService(serviceName, ackHandler, requestHandler, ServiceInvocationMode)`和`addCollaborationHandler(serviceName, allowedRoles, ackHandler, handler)`及重载，没有公开逐服务remove/unregister方法。`examples/DI_NativeProviderExecutable.cpp::main`分别注册execution lease服务与推理collaboration handler；其ACK路径调用`issueNativeProviderOfferV3`，准备路径注入`runnerPreparationFactory`及`generationTextDecoderFactory`，就绪后安装`makeNativeProviderCollaborationRuntime(...).handler`。这些接线必须整体提取复用，不能仅移动最终handler而丢失ACK、lease、readiness和权限检查。
 
-因此`NativeServiceRegistration::close`目前是planned设计缺口，而不是现有Core方法包装。T001/O-004需冻结registration记录的owner、closed/generation fence、晚到ACK/Selection处理、重复注册及共享lease服务寿命；如需新Core API，先补精确文件/签名/字段/调用链与PO，不能临场扩写。PO-014必须证明关闭一个registration后不再接收新工作且共享服务继续可用，并核对已接收工作的清理；T009在此之前保持BLOCK。
+因此`NativeServiceRegistration::close`目前是planned设计缺口，而不是现有Core方法包装。
+T001-B 已在 [lifecycle design](native-provider-lifecycle-design.md) 冻结 registration
+记录 owner（move-only ServiceRegistration + 共享 RegistrationState）、closed/generation
+fence（Provider 单调 generation，ACK 发布/Selection 派发/CollaborationWorkFence 三处
+检查）、晚到 ACK/Selection 处理、重复注册语义与共享 lease 服务寿命；所需新 Core API
+以精确文件/签名/字段/调用链/PO 列入 T009 卡，不临场扩写。PO-014 必须证明关闭一个
+registration 后不再接收新工作且共享服务继续可用，并核对已接收工作的清理；T009 在
+其 Core 改动落地并运行 PO-014 前保持 BLOCK。
 
 InferenceProvider 是 least-authority serving facade。ProviderAdminPort 的 stage/activate/
 drain/delete、带凭证的修订生命周期与普通 serve 分开；T001 清单必须判断真实支持的管理

@@ -154,7 +154,7 @@ Name相同但作用域不同的字段不能共享可写状态。
 | tokenizerPath,expectedDigest / C15,M33 | path,string，已声明artifact来源 | 使用哪一个tokenizer及认证字节身份 | 实际文件digest匹配；注释不可每token替换 |
 | backendHandle / C15 | Impl中unique_ptr<void,ndi_token_destroy>；精确C ABI见native-dependency-design | 复用tokenizer内存实例 | 全调用持mutex、Result RAII先释放buffer、shared owner活至调用结束；禁止裸指针混用allocator |
 | provider,registrations,stopped / C20 | shared Core；map服务记录；bool=false | 仅本host注册与停止状态 | sharedCore不被stop；在途record由callback持有 |
-| registrationRecord,closed / C21 | shared registration记录；bool=false | 注册注销和callback lifetime | 幂等close；真实Core注销能力O-004未证实则BLOCK |
+| registrationRecord,closed / C21 | shared registration记录；bool=false | 注册注销和callback lifetime | 幂等close；O-004收口证实Core无公开逐服务注销，close按[lifecycle Registration Generation Decision](native-provider-lifecycle-design.md)的planned ServiceRegistration实现，T009落地前不包装旧API |
 | code/domain/boundary/requestId/attempt / C03 | 既有错误码、边界标识、请求身份 | 为caller区分参数/规划/授权/执行错误 | native→Python固定映射；不以异常文本为协议 |
 | cacheDir,providerIdentity / assembler options | existing string配置 | 内容缓存位置、实际Provider身份 | 保留既有路径/权限检查；身份不由策略覆盖 |
 | pythonExecutable/pythonModule/helperTimeoutMs / assembler options | existing字段，DELETE或替换 | 退出解释器桥接，超时转request control | 删除所有CLI/config/callers和旧注释；不留下静默fallback |
@@ -255,8 +255,15 @@ policy snapshot仅提供计算输入，受保护转换仍由Core/Provider重新�
 ## Readiness Boundary
 
 本文使类职责/方法行为/状态/注释和用法可审查；它不是“所有叶子API已冻结”的声明。
-value-contracts列出的nested类型、O-002/003原生依赖、O-004的注销/错误/持久化字段，
-以及O-005隔离方案尚未闭合。历史合并integration失败已修复，当前SVS/NDNSD组合仍未获完整运行资格；不得把两个状态混淆。Core没有公开逐服务注销接口，M47须按[runtime boundary](runtime-boundaries.md#current-registration-boundary)补齐设计。T001必须逐条关闭设计缺口，不能跳过进入T002。
+value-contracts列出的nested类型、O-002/003原生依赖与O-005隔离方案在本文快照后仍
+按各自契约推进；O-004静态映射已于2026-09-07收口（344项manifest，0 UNREVIEWED，
+注销/错误/持久化字段的native处置逐项登记，见
+[public API migration review](public-api-migration-review.md)），字段/方法/错误
+parity 按 owner 任务继续。历史合并integration失败已修复，当前SVS/NDNSD组合仍未获
+完整运行资格；不得把两个状态混淆。M47 设计缺口已按[runtime boundary](runtime-boundaries.md#current-registration-boundary)
+与[lifecycle Registration Generation Decision](native-provider-lifecycle-design.md)
+补齐（planned Core scoped registration），T001 设计缺口逐条关闭后按 T001-C 冻结
+顺序进入 T002。
 
 ## Static Review Use
 
