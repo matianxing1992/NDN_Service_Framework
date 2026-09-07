@@ -1,7 +1,7 @@
 {
   "schema": "spec182-compatibility-manifest-v1",
   "sourceInventory": "contracts/public-export-inventory.json",
-  "sourceCommit": "9c4ba8cf0c83aad5dcb5fcf9232224f3f2a8484c",
+  "sourceCommit": "f7418f9127d8857580a93db03a5a8288bba7595b",
   "coverage": {
     "explicitApiSdkRoot": 277,
     "dynamicAppSdkExports": 67,
@@ -19609,8 +19609,8 @@
       },
       "externalUseStatus": "repository_callers_found",
       "disposition": "NATIVE_REQUIRED",
-      "nativeOwner": "UNRESOLVED_O004",
-      "ownerTask": "T001-C/O-004",
+      "nativeOwner": "Native deployment contract types (planned; T008/T010)",
+      "ownerTask": "T008/T012",
       "defaultReachable": true,
       "parameterContract": {
         "publicMethods": [
@@ -19710,8 +19710,8 @@
         ],
         "nestedTypes": []
       },
-      "mappingStatus": "UNREVIEWED",
-      "mappingReference": "contracts/public-api-migration-review.md",
+      "mappingStatus": "PLANNED_TYPE",
+      "mappingReference": "contracts/runtime-boundaries.md#cd-013-preparation-and-offer-admission",
       "verificationSelectors": [],
       "status": "PLANNED_NATIVE",
       "removalEligible": false,
@@ -19804,8 +19804,8 @@
       },
       "externalUseStatus": "repository_callers_found",
       "disposition": "NATIVE_REQUIRED",
-      "nativeOwner": "UNRESOLVED_O004",
-      "ownerTask": "T001-C/O-004",
+      "nativeOwner": "Native deployment contract types (planned; T008/T010)",
+      "ownerTask": "T008/T012",
       "defaultReachable": true,
       "parameterContract": {
         "publicMethods": [
@@ -19835,8 +19835,8 @@
           "Tuple"
         ]
       },
-      "mappingStatus": "UNREVIEWED",
-      "mappingReference": "contracts/public-api-migration-review.md",
+      "mappingStatus": "PLANNED_TYPE",
+      "mappingReference": "contracts/runtime-boundaries.md#cd-013-preparation-and-offer-admission",
       "verificationSelectors": [
         "examples/python/NDNSF-DistributedInference/spec116_user_api.py",
         "tests/python/test_ndnsf_di_on_demand_protocol.py",
@@ -20138,8 +20138,8 @@
       },
       "externalUseStatus": "repository_callers_found",
       "disposition": "NATIVE_REQUIRED",
-      "nativeOwner": "UNRESOLVED_O004",
-      "ownerTask": "T001-C/O-004",
+      "nativeOwner": "Native deployment definition port",
+      "ownerTask": "T010/T012",
       "defaultReachable": true,
       "parameterContract": {
         "publicMethods": [
@@ -20266,8 +20266,8 @@
           "Tuple"
         ]
       },
-      "mappingStatus": "UNREVIEWED",
-      "mappingReference": "contracts/public-api-migration-review.md",
+      "mappingStatus": "PLANNED_TYPE",
+      "mappingReference": "contracts/runtime-boundaries.md#cd-013-preparation-and-offer-admission",
       "verificationSelectors": [
         "tests/python/test_ndnsf_di_deployment_workflow.py"
       ],
@@ -20392,8 +20392,8 @@
       },
       "externalUseStatus": "repository_callers_found",
       "disposition": "NATIVE_REQUIRED",
-      "nativeOwner": "UNRESOLVED_O004",
-      "ownerTask": "T001-C/O-004",
+      "nativeOwner": "Native deployment contract types (planned; T008/T010)",
+      "ownerTask": "T008/T012",
       "defaultReachable": true,
       "parameterContract": {
         "publicMethods": [
@@ -20427,8 +20427,8 @@
         ],
         "nestedTypes": []
       },
-      "mappingStatus": "UNREVIEWED",
-      "mappingReference": "contracts/public-api-migration-review.md",
+      "mappingStatus": "PLANNED_TYPE",
+      "mappingReference": "contracts/runtime-boundaries.md#cd-013-preparation-and-offer-admission",
       "verificationSelectors": [
         "tests/python/test_ndnsf_di_deployment_catalog.py"
       ],
@@ -20621,8 +20621,8 @@
       },
       "externalUseStatus": "repository_callers_found",
       "disposition": "NATIVE_REQUIRED",
-      "nativeOwner": "UNRESOLVED_O004",
-      "ownerTask": "T001-C/O-004",
+      "nativeOwner": "Native deployment handle (planned)",
+      "ownerTask": "T010/T012",
       "defaultReachable": true,
       "parameterContract": {
         "publicMethods": [
@@ -20728,8 +20728,8 @@
         ],
         "nestedTypes": []
       },
-      "mappingStatus": "UNREVIEWED",
-      "mappingReference": "contracts/public-api-migration-review.md",
+      "mappingStatus": "PLANNED_TYPE",
+      "mappingReference": "contracts/runtime-boundaries.md#cd-013-preparation-and-offer-admission",
       "verificationSelectors": [],
       "status": "PLANNED_NATIVE",
       "removalEligible": false,
@@ -20866,8 +20866,8 @@
       },
       "externalUseStatus": "repository_callers_found",
       "disposition": "NATIVE_REQUIRED",
-      "nativeOwner": "UNRESOLVED_O004",
-      "ownerTask": "T001-C/O-004",
+      "nativeOwner": "Native deployment handle (planned)",
+      "ownerTask": "T010/T012",
       "defaultReachable": true,
       "parameterContract": {
         "publicMethods": [
@@ -20917,8 +20917,8 @@
         ],
         "nestedTypes": []
       },
-      "mappingStatus": "UNREVIEWED",
-      "mappingReference": "contracts/public-api-migration-review.md",
+      "mappingStatus": "PLANNED_TYPE",
+      "mappingReference": "contracts/runtime-boundaries.md#cd-013-preparation-and-offer-admission",
       "verificationSelectors": [
         "tests/python/test_ndnsf_di_deployment_catalog.py"
       ],
@@ -21094,8 +21094,8 @@
       },
       "externalUseStatus": "repository_callers_found",
       "disposition": "NATIVE_REQUIRED",
-      "nativeOwner": "UNRESOLVED_O004",
-      "ownerTask": "T001-C/O-004",
+      "nativeOwner": "Native deployment contract types (planned; T008/T010)",
+      "ownerTask": "T008/T012",
       "defaultReachable": true,
       "parameterContract": {
         "publicMethods": [
@@ -21163,8 +21163,8 @@
           "DeploymentProgressPhase"
         ]
       },
-      "mappingStatus": "UNREVIEWED",
-      "mappingReference": "contracts/public-api-migration-review.md",
+      "mappingStatus": "PLANNED_TYPE",
+      "mappingReference": "contracts/runtime-boundaries.md#cd-013-preparation-and-offer-admission",
       "verificationSelectors": [
         "tests/python/test_ndnsf_di_deployment_catalog.py",
         "tests/python/test_ndnsf_di_user_journey.py"
@@ -21352,8 +21352,8 @@
       },
       "externalUseStatus": "repository_callers_found",
       "disposition": "NATIVE_REQUIRED",
-      "nativeOwner": "UNRESOLVED_O004",
-      "ownerTask": "T001-C/O-004",
+      "nativeOwner": "Native deployment contract types (planned; T008/T010)",
+      "ownerTask": "T008/T012",
       "defaultReachable": true,
       "parameterContract": {
         "publicMethods": [
@@ -21422,8 +21422,8 @@
         ],
         "nestedTypes": []
       },
-      "mappingStatus": "UNREVIEWED",
-      "mappingReference": "contracts/public-api-migration-review.md",
+      "mappingStatus": "PLANNED_TYPE",
+      "mappingReference": "contracts/runtime-boundaries.md#cd-013-preparation-and-offer-admission",
       "verificationSelectors": [
         "tests/python/test_ndnsf_di_deployment_catalog.py",
         "tests/python/test_ndnsf_di_user_journey.py"
@@ -21588,8 +21588,8 @@
       },
       "externalUseStatus": "repository_callers_found",
       "disposition": "NATIVE_REQUIRED",
-      "nativeOwner": "UNRESOLVED_O004",
-      "ownerTask": "T001-C/O-004",
+      "nativeOwner": "Native deployment contract types (planned; T008/T010)",
+      "ownerTask": "T008/T012",
       "defaultReachable": true,
       "parameterContract": {
         "publicMethods": [
@@ -21654,8 +21654,8 @@
           "Tuple"
         ]
       },
-      "mappingStatus": "UNREVIEWED",
-      "mappingReference": "contracts/public-api-migration-review.md",
+      "mappingStatus": "PLANNED_TYPE",
+      "mappingReference": "contracts/runtime-boundaries.md#cd-013-preparation-and-offer-admission",
       "verificationSelectors": [
         "tests/python/test_ndnsf_di_deployment_catalog.py",
         "tests/python/test_ndnsf_di_scenarios.py",
@@ -21724,8 +21724,8 @@
       },
       "externalUseStatus": "repository_callers_found",
       "disposition": "NATIVE_REQUIRED",
-      "nativeOwner": "UNRESOLVED_O004",
-      "ownerTask": "T001-C/O-004",
+      "nativeOwner": "Native deployment contract types (planned; T008/T010)",
+      "ownerTask": "T008/T012",
       "defaultReachable": true,
       "parameterContract": {
         "publicMethods": [],
@@ -21742,8 +21742,8 @@
           "Union"
         ]
       },
-      "mappingStatus": "UNREVIEWED",
-      "mappingReference": "contracts/public-api-migration-review.md",
+      "mappingStatus": "PLANNED_TYPE",
+      "mappingReference": "contracts/runtime-boundaries.md#cd-013-preparation-and-offer-admission",
       "verificationSelectors": [],
       "status": "PLANNED_NATIVE",
       "removalEligible": false,
@@ -22587,8 +22587,8 @@
       },
       "externalUseStatus": "repository_callers_found",
       "disposition": "NATIVE_REQUIRED",
-      "nativeOwner": "UNRESOLVED_O004",
-      "ownerTask": "T001-C/O-004",
+      "nativeOwner": "NativeInferenceClient / NativeConversationCoordinator",
+      "ownerTask": "T012-B",
       "defaultReachable": true,
       "parameterContract": {
         "publicMethods": [
@@ -22950,8 +22950,8 @@
         ],
         "nestedTypes": []
       },
-      "mappingStatus": "UNREVIEWED",
-      "mappingReference": "contracts/public-api-migration-review.md",
+      "mappingStatus": "PARTIAL_EXISTING_TYPE",
+      "mappingReference": "contracts/code-design.md#cd-001-public-api",
       "verificationSelectors": [
         "examples/python/NDNSF-DistributedInference/spec116_user_api.py",
         "tests/python/test_ndnsf_di_documented_api.py",
@@ -25204,8 +25204,8 @@
       },
       "externalUseStatus": "repository_callers_found",
       "disposition": "NATIVE_REQUIRED",
-      "nativeOwner": "UNRESOLVED_O004",
-      "ownerTask": "T001-C/O-004",
+      "nativeOwner": "Native placement strategy input (planned; T003)",
+      "ownerTask": "T003/T012",
       "defaultReachable": true,
       "parameterContract": {
         "publicMethods": [
@@ -25232,8 +25232,8 @@
           "Tuple"
         ]
       },
-      "mappingStatus": "UNREVIEWED",
-      "mappingReference": "contracts/public-api-migration-review.md",
+      "mappingStatus": "PLANNED_TYPE",
+      "mappingReference": "contracts/value-contracts.md",
       "verificationSelectors": [
         "examples/python/NDNSF-DistributedInference/spec116_user_api.py",
         "tests/python/test_ndnsf_di_on_demand_protocol.py",
@@ -25750,8 +25750,8 @@
       },
       "externalUseStatus": "repository_callers_found",
       "disposition": "NATIVE_REQUIRED",
-      "nativeOwner": "UNRESOLVED_O004",
-      "ownerTask": "T001-C/O-004",
+      "nativeOwner": "Native placement strategy input (planned; T003)",
+      "ownerTask": "T003/T012",
       "defaultReachable": true,
       "parameterContract": {
         "publicMethods": [
@@ -25780,8 +25780,8 @@
           "None"
         ]
       },
-      "mappingStatus": "UNREVIEWED",
-      "mappingReference": "contracts/public-api-migration-review.md",
+      "mappingStatus": "PLANNED_TYPE",
+      "mappingReference": "contracts/value-contracts.md",
       "verificationSelectors": [
         "examples/python/NDNSF-DistributedInference/spec116_user_api.py",
         "tests/python/support/spec111_policy.py",
@@ -25903,8 +25903,8 @@
       },
       "externalUseStatus": "repository_callers_found",
       "disposition": "NATIVE_REQUIRED",
-      "nativeOwner": "UNRESOLVED_O004",
-      "ownerTask": "T001-C/O-004",
+      "nativeOwner": "NativeProviderPlanningView",
+      "ownerTask": "T008/T012",
       "defaultReachable": true,
       "parameterContract": {
         "publicMethods": [
@@ -25943,8 +25943,8 @@
           "Tuple"
         ]
       },
-      "mappingStatus": "UNREVIEWED",
-      "mappingReference": "contracts/public-api-migration-review.md",
+      "mappingStatus": "PLANNED_TYPE",
+      "mappingReference": "contracts/runtime-boundaries.md#cd-013-preparation-and-offer-admission",
       "verificationSelectors": [
         "tests/python/test_ndnsf_di_on_demand_protocol.py"
       ],
@@ -26117,8 +26117,8 @@
       },
       "externalUseStatus": "repository_callers_found",
       "disposition": "NATIVE_REQUIRED",
-      "nativeOwner": "UNRESOLVED_O004",
-      "ownerTask": "T001-C/O-004",
+      "nativeOwner": "NativeProviderPlanningView",
+      "ownerTask": "T008/T012",
       "defaultReachable": true,
       "parameterContract": {
         "publicMethods": [
@@ -26197,8 +26197,8 @@
           "Tuple"
         ]
       },
-      "mappingStatus": "UNREVIEWED",
-      "mappingReference": "contracts/public-api-migration-review.md",
+      "mappingStatus": "PLANNED_TYPE",
+      "mappingReference": "contracts/runtime-boundaries.md#cd-013-preparation-and-offer-admission",
       "verificationSelectors": [
         "tests/python/test_ndnsf_di_on_demand_protocol.py"
       ],
@@ -26288,8 +26288,8 @@
       },
       "externalUseStatus": "repository_callers_found",
       "disposition": "NATIVE_REQUIRED",
-      "nativeOwner": "UNRESOLVED_O004",
-      "ownerTask": "T001-C/O-004",
+      "nativeOwner": "Native request contract (planned; T010)",
+      "ownerTask": "T010/T012",
       "defaultReachable": true,
       "parameterContract": {
         "publicMethods": [
@@ -26316,8 +26316,8 @@
         ],
         "nestedTypes": []
       },
-      "mappingStatus": "UNREVIEWED",
-      "mappingReference": "contracts/public-api-migration-review.md",
+      "mappingStatus": "PLANNED_TYPE",
+      "mappingReference": "contracts/code-design.md#cd-001-public-api",
       "verificationSelectors": [
         "examples/python/NDNSF-DistributedInference/spec116_user_api.py",
         "tests/python/test_ndnsf_di_on_demand_protocol.py",
@@ -26362,8 +26362,8 @@
       },
       "externalUseStatus": "repository_callers_found",
       "disposition": "NATIVE_REQUIRED",
-      "nativeOwner": "UNRESOLVED_O004",
-      "ownerTask": "T001-C/O-004",
+      "nativeOwner": "NativeInferenceHandle",
+      "ownerTask": "T010/T012",
       "defaultReachable": true,
       "parameterContract": {
         "publicMethods": [],
@@ -26371,8 +26371,8 @@
         "methodSignatures": [],
         "nestedTypes": []
       },
-      "mappingStatus": "UNREVIEWED",
-      "mappingReference": "contracts/public-api-migration-review.md",
+      "mappingStatus": "PARTIAL_EXISTING_TYPE",
+      "mappingReference": "contracts/code-design.md#cd-001-public-api",
       "verificationSelectors": [],
       "status": "PLANNED_NATIVE",
       "removalEligible": false,
@@ -26417,8 +26417,8 @@
       },
       "externalUseStatus": "repository_callers_found",
       "disposition": "NATIVE_REQUIRED",
-      "nativeOwner": "UNRESOLVED_O004",
-      "ownerTask": "T001-C/O-004",
+      "nativeOwner": "Native requestable deployment union (planned; T010)",
+      "ownerTask": "T010/T012",
       "defaultReachable": true,
       "parameterContract": {
         "publicMethods": [],
@@ -26426,8 +26426,8 @@
         "methodSignatures": [],
         "nestedTypes": []
       },
-      "mappingStatus": "UNREVIEWED",
-      "mappingReference": "contracts/public-api-migration-review.md",
+      "mappingStatus": "PLANNED_TYPE",
+      "mappingReference": "contracts/runtime-boundaries.md#cd-013-preparation-and-offer-admission",
       "verificationSelectors": [],
       "status": "PLANNED_NATIVE",
       "removalEligible": false,

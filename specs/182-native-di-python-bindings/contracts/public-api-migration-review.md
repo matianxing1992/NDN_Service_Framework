@@ -1,6 +1,6 @@
 # Public API Migration Review
 
-**Status**: INVENTORY_CAPTURED / O-004 OPEN / T001 IN_PROGRESS
+**Status**: INVENTORY_CAPTURED / O-004 MAPPED (parity open) / T001 IN_PROGRESS
 
 ## Source Inventory
 
@@ -20,15 +20,28 @@ path/line/hash、类方法签名、字段、assignment expression、保守 token
 并将 caller token 按 `maintainedCandidates`、`tests`、`generatedCopies`、`other` 分组；
 mapping status 和 verification selector 仍须由 owner 做语义审阅。
 
-formal `api` 的当前静态映射状态为：`PARTIAL_EXISTING_TYPE 8`、`PLANNED_TYPE 1`、
-`UNREVIEWED 18`。已有类型但仍需字段/错误/状态闭环的八项是：
+formal `api` 的当前静态映射状态为：`PARTIAL_EXISTING_TYPE 10`、`PLANNED_TYPE 17`、
+`UNREVIEWED 0`（2026-09-07 O-004 收口）。已有类型但仍需字段/错误/状态闭环的十项是：
 `ArtifactReference→NativeArtifactBinding`、`GenerationInput→NativeApplicationInput`、
 `InferenceClient→NativeInferenceClient`、`InferenceProvider→NativeInferenceProvider`、
 `InferenceRequestHandle→NativeInferenceHandle`、`InferenceResult→NativeInferenceResult`、
-`InferenceOptions→NativeRequestOptions`、`ModelRef→NativeModelRef`。`GenerationConfig`
-只记录为 planned `NativeGenerationOptions`。`RequestRef` 和 `RequestableDeployment` 的
-Python assignment expression 已保留，不能再按独立 native type 猜测。上述状态只表示
-静态映射入口已记录，不能关闭 O-004、T001 或任何产品任务。
+`InferenceOptions→NativeRequestOptions`、`ModelRef→NativeModelRef`、
+`InferenceApplication→NativeInferenceClient / NativeConversationCoordinator`、
+`RequestRef→NativeInferenceHandle`（`RequestRef` 是 `InferenceRequestHandle` 的
+assignment alias，按同一 native 句柄处理，不设独立类型）。`PLANNED_TYPE` 17 项按
+三个领域归口：部署契约（`DeploymentActivationRecord/Constraints/Definition/
+DefinitionRef/Handle/HandleRef/Progress/Ref/Status/Summary` → T008/T010 的
+`NativeRequestPreparation`/`NativeOfferAdmission` 部署契约类型，
+`runtime-boundaries.md#cd-013`）、Provider 视图（`ProviderDeploymentOffer/Offers` →
+`NativeProviderPlanningView`）、策略输入与请求编排（`ModelIntent`/
+`OptimizationObjective` → T003 placement 策略输入、`RequestContract`/
+`RequestableDeployment` → T010 请求契约、`GenerationConfig` →
+`NativeGenerationOptions`）。owner 逐项语义映射（owner/default/removal condition/
+verification selector）已写入 `checklists/build_api_migration_manifest.py` 的
+`API_MAPPING_OVERRIDES` 并重新生成 manifest；`RequestableDeployment` 的 Union
+assignment 与 `RequestRef` 的 alias expression 保留。上述状态只表示
+静态映射入口已记录，不能关闭 O-004、T001 或任何产品任务——字段/方法/错误
+parity 与真实调用方核对仍是 T012 及对应 owner 任务的义务。
 
 复现命令：
 

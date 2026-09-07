@@ -18,7 +18,7 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 | Unit / Details | Status | Depends | Evidence / Remaining | Updated |
 | --- | --- | --- | --- | --- |
 | [T001-A Identity and Dependency Closure](contracts/execution-units.md#t001-a-identity-and-dependency-closure) | PARTIAL | — | [baseline](evidence/task-progress-registry-20260907.md)；已有身份设计；完整关闭待核对 | 2026-09-07 |
-| [T001-B Lifecycle and Capability Closure](contracts/execution-units.md#t001-b-lifecycle-and-capability-closure) | PARTIAL | — | [baseline](evidence/task-progress-registry-20260907.md)；已有生命周期设计；manifest 已补签名/别名表达式；O-004 公开 API 映射仍 OPEN | 2026-09-07 |
+| [T001-B Lifecycle and Capability Closure](contracts/execution-units.md#t001-b-lifecycle-and-capability-closure) | PARTIAL | — | [baseline](evidence/task-progress-registry-20260907.md)；已有生命周期设计；manifest 已补签名/别名表达式；O-004 映射已收口（UNREVIEWED 0，10 PARTIAL_EXISTING + 17 PLANNED）；字段/方法/错误 parity 仍 OPEN | 2026-09-07 |
 | [T001-C Dispatch and Selector Freeze](contracts/execution-units.md#t001-c-dispatch-and-selector-freeze) | BLOCKED | T001-A, T001-B | [baseline](evidence/task-progress-registry-20260907.md)；T001-A/B 与 O-004 未关闭；selector release 待完成 | 2026-09-07 |
 | [T002-A Installed Library Boundary](contracts/execution-units.md#t002-a-installed-library-boundary) | BLOCKED | T001-C | [baseline](evidence/task-progress-registry-20260907.md)；已有库/consumer 边界；NAC-ABE API 闭包阻塞构建 | 2026-09-07 |
 | [T003-A Qwen Split Candidates](contracts/execution-units.md#t003-a-qwen-split-candidates) | PARTIAL | T002-A | [baseline](evidence/task-progress-registry-20260907.md)；已有相关源码切片；完整卡验收未完成 | 2026-09-07 |
@@ -55,6 +55,22 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 | [T017-A Development Handoff](contracts/execution-units.md#t017-a-development-handoff) | NOT_STARTED | T016-A | [baseline](evidence/task-progress-registry-20260907.md)；无本卡独立执行/验收记录；按依赖领取 | 2026-09-07 |
 
 ## Current Checkpoint
+
+2026-09-07 O-004 mapping closure / **T001-B IN_PROGRESS**：formal `api` 的 18 项
+`UNREVIEWED` 全部完成 owner 语义映射（`PARTIAL_EXISTING_TYPE 10`、
+`PLANNED_TYPE 17`、`UNREVIEWED 0`），分类写入
+`checklists/build_api_migration_manifest.py` 的 `API_MAPPING_OVERRIDES`
+（`InferenceApplication→NativeInferenceClient/NativeConversationCoordinator`、
+`RequestRef→NativeInferenceHandle` alias、部署契约十项 → T008/T010
+`runtime-boundaries.md#cd-013`、`ProviderDeploymentOffer(s)→NativeProviderPlanningView`、
+`ModelIntent/OptimizationObjective→T003 策略输入、RequestContract/
+RequestableDeployment→T010 请求契约），manifest 按当前 source commit 重新生成
+（344 项），`public-api-migration-review.md` 状态更新为 O-004 MAPPED
+（parity open）。字段/方法/错误 parity 与真实调用方逐项核对仍属 T012 及对应
+owner 任务义务；O-004 静态映射收口不关闭 T001 或任何产品任务。
+下一步：T001-C selector/build identity/case manifest 冻结（依赖 T001-A/B
+完整验收），然后工具链（Cargo 安装、NAC-ABE ABI 匹配）→ T009 → T010。
+
 
 2026-09-07 Skill surface / **PASS**：按用户要求精简共享个人技能 105→18，GSD 69 个技能、
 34 个 agent 注册和 4 个 hook 退出活动配置，原文件留本机归档；项目 12 个 Spec Kit 技能保持。

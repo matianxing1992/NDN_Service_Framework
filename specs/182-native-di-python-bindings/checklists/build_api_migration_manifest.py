@@ -345,6 +345,120 @@ API_MAPPING_OVERRIDES: dict[str, dict[str, str]] = {
         "mappingReference": "contracts/value-contracts.md",
         "ownerTask": "T003/T012",
     },
+    # O-004 closure (2026-09-07): the api-namespace Deployment/Request surface
+    # maps onto the T008/T010 native preparation/orchestration contract types
+    # (runtime-boundaries CD-013) and the T003 placement-strategy inputs.
+    # PARTIAL_EXISTING_TYPE = a native type already exists under the named
+    # owner; field/method/error parity stays an O-004/T012 obligation.
+    # PLANNED_TYPE = the native type is planned and contract-named only.
+    "DeploymentActivationRecord": {
+        "mappingStatus": "PLANNED_TYPE",
+        "nativeOwner": "Native deployment contract types (planned; T008/T010)",
+        "mappingReference": "contracts/runtime-boundaries.md#cd-013-preparation-and-offer-admission",
+        "ownerTask": "T008/T012",
+    },
+    "DeploymentConstraints": {
+        "mappingStatus": "PLANNED_TYPE",
+        "nativeOwner": "Native deployment contract types (planned; T008/T010)",
+        "mappingReference": "contracts/runtime-boundaries.md#cd-013-preparation-and-offer-admission",
+        "ownerTask": "T008/T012",
+    },
+    "DeploymentDefinition": {
+        "mappingStatus": "PLANNED_TYPE",
+        "nativeOwner": "Native deployment definition port",
+        "mappingReference": "contracts/runtime-boundaries.md#cd-013-preparation-and-offer-admission",
+        "ownerTask": "T010/T012",
+    },
+    "DeploymentDefinitionRef": {
+        "mappingStatus": "PLANNED_TYPE",
+        "nativeOwner": "Native deployment contract types (planned; T008/T010)",
+        "mappingReference": "contracts/runtime-boundaries.md#cd-013-preparation-and-offer-admission",
+        "ownerTask": "T008/T012",
+    },
+    "DeploymentHandle": {
+        "mappingStatus": "PLANNED_TYPE",
+        "nativeOwner": "Native deployment handle (planned)",
+        "mappingReference": "contracts/runtime-boundaries.md#cd-013-preparation-and-offer-admission",
+        "ownerTask": "T010/T012",
+    },
+    "DeploymentHandleRef": {
+        "mappingStatus": "PLANNED_TYPE",
+        "nativeOwner": "Native deployment handle (planned)",
+        "mappingReference": "contracts/runtime-boundaries.md#cd-013-preparation-and-offer-admission",
+        "ownerTask": "T010/T012",
+    },
+    "DeploymentProgress": {
+        "mappingStatus": "PLANNED_TYPE",
+        "nativeOwner": "Native deployment contract types (planned; T008/T010)",
+        "mappingReference": "contracts/runtime-boundaries.md#cd-013-preparation-and-offer-admission",
+        "ownerTask": "T008/T012",
+    },
+    "DeploymentRef": {
+        "mappingStatus": "PLANNED_TYPE",
+        "nativeOwner": "Native deployment contract types (planned; T008/T010)",
+        "mappingReference": "contracts/runtime-boundaries.md#cd-013-preparation-and-offer-admission",
+        "ownerTask": "T008/T012",
+    },
+    "DeploymentStatus": {
+        "mappingStatus": "PLANNED_TYPE",
+        "nativeOwner": "Native deployment contract types (planned; T008/T010)",
+        "mappingReference": "contracts/runtime-boundaries.md#cd-013-preparation-and-offer-admission",
+        "ownerTask": "T008/T012",
+    },
+    "DeploymentSummary": {
+        "mappingStatus": "PLANNED_TYPE",
+        "nativeOwner": "Native deployment contract types (planned; T008/T010)",
+        "mappingReference": "contracts/runtime-boundaries.md#cd-013-preparation-and-offer-admission",
+        "ownerTask": "T008/T012",
+    },
+    "InferenceApplication": {
+        "mappingStatus": "PARTIAL_EXISTING_TYPE",
+        "nativeOwner": "NativeInferenceClient / NativeConversationCoordinator",
+        "mappingReference": "contracts/code-design.md#cd-001-public-api",
+        "ownerTask": "T012-B",
+    },
+    "ModelIntent": {
+        "mappingStatus": "PLANNED_TYPE",
+        "nativeOwner": "Native placement strategy input (planned; T003)",
+        "mappingReference": "contracts/value-contracts.md",
+        "ownerTask": "T003/T012",
+    },
+    "OptimizationObjective": {
+        "mappingStatus": "PLANNED_TYPE",
+        "nativeOwner": "Native placement strategy input (planned; T003)",
+        "mappingReference": "contracts/value-contracts.md",
+        "ownerTask": "T003/T012",
+    },
+    "ProviderDeploymentOffer": {
+        "mappingStatus": "PLANNED_TYPE",
+        "nativeOwner": "NativeProviderPlanningView",
+        "mappingReference": "contracts/runtime-boundaries.md#cd-013-preparation-and-offer-admission",
+        "ownerTask": "T008/T012",
+    },
+    "ProviderDeploymentOffers": {
+        "mappingStatus": "PLANNED_TYPE",
+        "nativeOwner": "NativeProviderPlanningView",
+        "mappingReference": "contracts/runtime-boundaries.md#cd-013-preparation-and-offer-admission",
+        "ownerTask": "T008/T012",
+    },
+    "RequestContract": {
+        "mappingStatus": "PLANNED_TYPE",
+        "nativeOwner": "Native request contract (planned; T010)",
+        "mappingReference": "contracts/code-design.md#cd-001-public-api",
+        "ownerTask": "T010/T012",
+    },
+    "RequestRef": {
+        "mappingStatus": "PARTIAL_EXISTING_TYPE",
+        "nativeOwner": "NativeInferenceHandle",
+        "mappingReference": "contracts/code-design.md#cd-001-public-api",
+        "ownerTask": "T010/T012",
+    },
+    "RequestableDeployment": {
+        "mappingStatus": "PLANNED_TYPE",
+        "nativeOwner": "Native requestable deployment union (planned; T010)",
+        "mappingReference": "contracts/runtime-boundaries.md#cd-013-preparation-and-offer-admission",
+        "ownerTask": "T010/T012",
+    },
 }
 
 
