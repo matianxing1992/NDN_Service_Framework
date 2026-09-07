@@ -6,6 +6,12 @@
 
 ## Current Checkpoint
 
+2026-09-07 Registration generation / **T001 IN_PROGRESS**：源码确认ACK复制旧handler异步执行、Selection重新查当前service handler，单独DI closed包装不能隔离重注册旧请求。已在[lifecycle contract](contracts/native-provider-lifecycle-design.md#registration-generation-decision)定义Core scoped registration、pending代次绑定、ACK完成/Selection/work fence检查及幂等close清理范围；不增加wire或授权owner，不删除legacy API。尚需补齐Provider存活控制与同步fallback位置，T009仍BLOCK、T001/O-004未完成、产品0/17。本轮无native产品构建/测试；下一步沿新增Core范围完成可实施设计，不重新讨论已确定的代次机制。
+
+### Prior Shared Lease Design
+
+上述registration设计单元strict structure、design validator（183本地链接）和diff whitespace检查PASS；只支持文档checkpoint，不表示Core扩展已实现或生命周期测试通过。
+
 2026-09-07 Shared Provider lease design / **T001 IN_PROGRESS**：核对Core addService/addCollaborationHandler会覆盖同名handler，且没有公开unregister；当前单服务CLI为固定lease入口创建单target私有表，不能直接逐serve复制。新增[Provider lifecycle contract](contracts/native-provider-lifecycle-design.md)，定义一个host共享lease表/prepare mutex、单入口target路由、跨target绑定验证、关闭期间只清理旧lease及精确类/字段/constructor迁移。此为拟议多服务集成风险的源码推导，没有运行native产品；现有单服务结果不被改判失败。
 
 本单元strict structure、design validator（182本地链接）及diff whitespace检查PASS；无产品构建/测试。T001/O-004及T009仍未完成：下一步关闭registration generation、晚到ACK/Selection及Core入口生命周期，再完成其余公开类型清单。产品0/17，SIF/Tiger不介入。

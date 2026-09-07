@@ -99,7 +99,7 @@ T001冻结新unit selectors，不能执行整份混合测试文件而意外启�
 - **Outcome**: executable 与独立 consumer 共用宿主及同一 NativeProviderRuntime。
 - **Design**: FR-001,FR-009,FR-010,FR-012; CD-014; INV-001,INV-002,INV-003,INV-005; FLOW-001,FLOW-004。
 - **Changes**: NativeInferenceProvider头/源与DI_NativeProviderExecutable接线，删除重复宿主逻辑；完整提取ACK/lease/readiness/权限与runtime.handler，范围及注册寿命缺口见[CD-014 source boundary](runtime-boundaries.md#current-registration-boundary)。O-004关闭前不得实施。
-- **ForbiddenChanges**: 重写 Provider runtime、把管理权限合并进 serving facade、销毁共享 Face、Python runner trampoline。
+- **ForbiddenChanges**: 重写 Provider runtime、把管理权限合并进 serving facade、销毁共享 Face、Python runner trampoline。允许的Core扩展仅限[lifecycle contract](native-provider-lifecycle-design.md#registration-generation-decision)的scoped registration和本地代次fence；完整设计关闭后方可实现，不增加DI wire知识。
 - **LocalChecks**: host配置、重复注册、stop/共享资源所有权单测；真实NFD注册/ACK/Selection及多入口协作在T016。
 - **FinalProof**: PO-014。 本任务只完成局部单测；其余运行证据由T016统一产生。
 
