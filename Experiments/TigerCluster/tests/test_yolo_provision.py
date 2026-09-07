@@ -49,7 +49,8 @@ def fixture(tmp_path, behavior='success'):
     receipt_path = produced / 'preparation.json'
     receipt = json.loads(receipt_path.read_text())
     receipt.update(templateDigest=desc['templateDigest'], registryDigest=desc['registryDigest'],
-                   packageManifestDigest=desc['manifestDigest'], protectionEpoch=desc['protectionEpoch'])
+                   packageManifestDigest=desc['manifestDigest'], protectionEpoch=desc['protectionEpoch'],
+                   placementCandidateId=desc['placementCandidateId'], placementCandidateDigest=desc['placementCandidateDigest'])
     receipt_path.write_text(json.dumps(receipt))
     if behavior == 'wrong-epoch':
         receipt['protectionEpoch'] = 'other'

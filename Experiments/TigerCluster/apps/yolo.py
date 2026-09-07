@@ -135,6 +135,10 @@ def prepare_in_container(plan: dict, *, template_path: Path, template_digest: st
     from ndnsf_distributed_inference.adapters.yolo import build_yolo26n_adapter
     from ndnsf_distributed_inference.policy import write_policy_bundle
     build_yolo26n_adapter(package, registry_path=registry)  # Signed catalogue and actual graph digest.
+    candidates = manifest['catalogue']['candidates']
+    selected = [c for c in candidates if c['candidateId'] == placement_candidate_id]
+    if len(selected) != 1 or selected[0]['candidateDigest'] != placement_candidate_digest:
+        raise ValueError('YOLO_PREPARE_PLACEMENT_CANDIDATE')
     owner._validate_policy_loader_compatibility(config)
 
     namespace, names = plan['namespace'], plan['identities']
@@ -162,6 +166,8 @@ def prepare_in_container(plan: dict, *, template_path: Path, template_digest: st
     receipt = {'schema': 'tiger-yolo-preparation-v1', 'status': 'PREPARED',
                'qualification': 'NOT_EVALUATED', 'runId': plan['runId'],
                'candidateDigest': runtime_candidate_digest, 'protectionEpoch': protection_epoch,
+               'placementCandidateId': placement_candidate_id,
+               'placementCandidateDigest': placement_candidate_digest,
                'catalogueDataName': catalogue_name, 'catalogueSigner': names['controller'],
                'templateDigest': template_digest, 'packageManifestDigest': manifest_digest,
                'registryDigest': registry_digest,
@@ -716,7 +722,10 @@ def run_requests(worker, plan: dict, *, package: Path, catalog_data_name: str,
     if worker._preparation_binding is None or worker._preparation_binding[0] != plan:
         raise ValueError('YOLO_USER_PREPARATION_REQUIRED')
     worker._verify_prepared_boundary()
-    if candidate['candidateDigest'] != worker._preparation_binding[2]:
+    preparation = _read_plane(worker.public / 'preparation.json')
+    if (preparation.get('candidateDigest') != worker._preparation_binding[2]
+            or candidate['candidateId'] != preparation.get('placementCandidateId')
+            or candidate['candidateDigest'] != preparation.get('placementCandidateDigest')):
         raise ValueError('YOLO_USER_CANDIDATE_BINDING')
     for request in requests:
         i = str(request['index'])

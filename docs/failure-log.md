@@ -2235,3 +2235,19 @@ no production key or runtime launch occurred.
 
 Lesson: a runtime function is not connected until every argument has a
 documented, consumed source. Do not fill missing values with wrapper defaults.
+
+# 2026-09-07 — Follow-up consumer missed during candidate identity split
+
+Symptom: after separating issuer/runtime digests, run_requests still compared
+offer.candidateDigest to worker._preparation_binding[2], which is a runtime
+identity. The earlier producer-focused fix did not cover this consumer.
+
+Fix: issuer verifies the selected catalogue ID/digest before issuing identities
+and records both identities. Host provisioning checks both, and User compares
+offer placement fields against its bound preparation receipt separately from
+the worker runtime digest. Application fixtures now use distinct identities.
+71 focused tests passed, including malformed/missing/swapped identity rejection.
+No actual model or cluster execution was performed.
+
+Lesson: identity-schema changes need a complete producer-to-consumer trace;
+producer tests alone cannot establish that the runtime path is repaired.

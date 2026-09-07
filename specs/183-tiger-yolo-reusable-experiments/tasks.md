@@ -4,6 +4,12 @@
 **Branch**: `TigerClusterExperiments`
 **Status**: 2/17 tasks complete (T001 inventory and T003 focused component acceptance); IN_PROGRESS, no runtime PASS.
 
+2026-09-07 identity 拆分调用链补漏：User run_requests 仍直接比较 placement
+与 runtime digest；现改为通过绑定 receipt 分别验证，issuer 签发前匹配实际
+catalogue 条目，宿主也重验 placement receipt 字段。71 项 application/
+provision/prepare 聚焦测试通过（4.54s），含不同摘要正例、串错/缺字段负例。
+密码学/model owner 使用替身；单节点公开执行流程仍未接通。
+
 2026-09-07 profile→issuer 输入映射及小文件 staging：明确模板/package/registry/
 私钥 locator/epoch/SIF/placement 摘要来源，生成 prepare-input-v2；重验公开
 摘要、0600 私钥和独占目标目录，不复制模型或执行外部程序。8 项新真实文件

@@ -126,14 +126,19 @@ def scheduled_inputs(tmp_path, mode='two-node-gpu'):
     plan = {'case': mode, 'requests': [
         dict(index=i, warmup=i == 0, requestId='/run/request/' + str(i),
              output=str(worker.output / 'user' / 'requests' / str(i))) for i in range(count)]}
-    worker._preparation_binding = (plan, 'receipt-fixture', 'sha256:' + 'a' * 64)
+    worker._preparation_binding = (plan, 'receipt-fixture', 'sha256:' + 'c' * 64)
+    (inputs['public'] / 'preparation.json').write_text(json.dumps({
+        'candidateDigest': 'sha256:' + 'c' * 64,
+        'placementCandidateId': 'test-candidate', 'placementCandidateDigest': 'sha256:' + 'a' * 64}))
     worker._verify_prepared_boundary = lambda: None  # Not a qualified SIF/credential fixture.
     return worker, plan, dict(package=package, catalog_data_name='/run/catalog/v=1',
         catalog_signer='/run/controller', permission_wait_ms=1000,
         request_deadline_ms=5000, process_timeout_seconds=10, protection_epoch='spec183-test-v1')
 
 
-@pytest.mark.parametrize('fault', ['bad-id', 'wrong-digest', 'unprepared'])
+@pytest.mark.parametrize('fault', ['bad-id', 'wrong-digest', 'unprepared',
+                                  'wrong-valid-id', 'runtime-as-placement',
+                                  'wrong-runtime-receipt', 'missing-placement'])
 def test_schedule_rejects_unbound_candidate_before_launch(tmp_path, fault):
     from apps.yolo import run_requests
     worker, plan, options = scheduled_inputs(tmp_path, 'local-cpu')
@@ -143,6 +148,18 @@ def test_schedule_rejects_unbound_candidate_before_launch(tmp_path, fault):
         value['candidateId'] = ''
     elif fault == 'wrong-digest':
         value['candidateDigest'] = 'sha256:' + 'b' * 64
+    elif fault == 'wrong-valid-id':
+        value['candidateId'] = 'another-valid-candidate'
+    elif fault == 'runtime-as-placement':
+        value['candidateDigest'] = worker._preparation_binding[2]
+    elif fault in ('wrong-runtime-receipt', 'missing-placement'):
+        receipt_path = worker.public / 'preparation.json'
+        receipt = json.loads(receipt_path.read_text())
+        if fault == 'wrong-runtime-receipt':
+            receipt['candidateDigest'] = 'sha256:' + 'd' * 64
+        else:
+            del receipt['placementCandidateDigest']
+        receipt_path.write_text(json.dumps(receipt))
     else:
         worker._preparation_binding = None
     path.write_text(json.dumps(value))

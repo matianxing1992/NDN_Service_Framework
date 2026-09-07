@@ -153,6 +153,11 @@ package catalogue 读取 shared-backbone-two-shard-v1 的放置摘要，生成�
 prepared run，写入 preparation receipt 的 `candidateDigest`，由 worker 校验。
 这不是两份可互换的摘要。v1 的单一 candidate 字段存在歧义，拒绝自动猜测迁移；
 调用者必须从相应 owner 重新生成 v2 描述。没有修改 NDNSF 网络消息格式。
+issuer 必须在签发身份之前，确认 placement ID/digest 精确匹配已由 adapter
+验证的 catalogue 条目。preparation receipt 同时记录 placementCandidateId/
+placementCandidateDigest 和运行 candidateDigest；宿主按描述验证它们，User
+按已绑定 receipt 比对 offer 的 placement，并单独比对 worker 的运行摘要。
+禁止再将 offer 的 placement digest 与 worker 的运行 digest 直接比较。
 
 `jobs/yolo/submit.py` 暴露五个公开命令：`check`、`prepare`、`local`、
 `submit` 和 `collect`。另外有一个仅由 `jobs/yolo/run.sbatch` 调用的隐藏

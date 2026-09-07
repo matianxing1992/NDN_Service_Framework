@@ -168,7 +168,9 @@ def provision_run(*, runtime_profile: dict, bundle: Path, harness_digest: str,
     expected = {"templateDigest": options["template_digest"],
                 "packageManifestDigest": options["manifest_digest"],
                 "registryDigest": options["registry_digest"],
-                "protectionEpoch": options["protection_epoch"]}
+                "protectionEpoch": options["protection_epoch"],
+                "placementCandidateId": options["placement_candidate_id"],
+                "placementCandidateDigest": options["placement_candidate_digest"]}
     if any(receipt.get(key) != value for key, value in expected.items()):
         raise OperatorError("OPERATOR_PREPARATION_RECEIPT_INPUTS")
     return {"status": "PREPARED", "qualification": "NOT_EVALUATED",

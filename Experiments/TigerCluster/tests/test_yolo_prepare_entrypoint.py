@@ -74,7 +74,8 @@ def test_empty_issuer_home_created_by_apptainer_is_allowed(tmp_path):
         yolo.validate_preparation_roots(public, private)
 
 
-def test_issuer_binds_offers_to_placement_but_receipt_to_runtime(tmp_path, monkeypatch):
+@pytest.mark.parametrize('bad_candidate', [False, True])
+def test_issuer_binds_offers_to_placement_but_receipt_to_runtime(tmp_path, monkeypatch, bad_candidate):
     """Run the preparation producer with mocked crypto/model owners, not a SIF."""
     from types import ModuleType, SimpleNamespace
     from runtime import identities, yolo_bundle
@@ -87,7 +88,8 @@ def test_issuer_binds_offers_to_placement_but_receipt_to_runtime(tmp_path, monke
     template_path, registry = tmp_path / 'template.json', tmp_path / 'registry.json'
     template_path.write_text(json.dumps(template))
     registry.write_text('{}')
-    (package / 'manifest.json').write_text('{}')
+    (package / 'manifest.json').write_text(json.dumps({'catalogue': {'candidates': [{
+        'candidateId': 'shared-backbone-two-shard-v1', 'candidateDigest': 'sha256:' + '1' * 64}]}}))
     monkeypatch.setattr(yolo, 'Path', lambda value: {'/config': public, '/identities': private}.get(str(value), Path(value)))
     def issue(namespace, names):
         for role in names:
@@ -114,14 +116,22 @@ def test_issuer_binds_offers_to_placement_but_receipt_to_runtime(tmp_path, monke
     monkeypatch.setattr(yolo_bundle, 'preparation_inventory', lambda *a: {})
     digest = lambda path: 'sha256:' + hashlib.sha256(path.read_bytes()).hexdigest()
     placement, runtime = 'sha256:' + '1' * 64, 'sha256:' + '2' * 64
-    receipt = yolo.prepare_in_container(plan, template_path=template_path,
+    options = dict(template_path=template_path,
         template_digest=digest(template_path), package=package,
         manifest_digest=digest(package / 'manifest.json'), registry=registry,
         registry_digest=digest(registry), authority_private=tmp_path / 'unused.key',
         protection_epoch='epoch-1', placement_candidate_id='shared-backbone-two-shard-v1',
-        placement_candidate_digest=placement, runtime_candidate_digest=runtime)
+        placement_candidate_digest=('sha256:' + '9' * 64 if bad_candidate else placement),
+        runtime_candidate_digest=runtime)
+    if bad_candidate:
+        with pytest.raises(ValueError, match='YOLO_PREPARE_PLACEMENT_CANDIDATE'):
+            yolo.prepare_in_container(plan, **options)
+        assert not offers and not any(private.iterdir())
+        return
+    receipt = yolo.prepare_in_container(plan, **options)
     assert offers['candidate_digest'] == placement
     assert receipt['candidateDigest'] == runtime
+    assert receipt['placementCandidateDigest'] == placement
     assert json.loads((public / 'preparation.json').read_text())['candidateDigest'] == runtime
 
 
