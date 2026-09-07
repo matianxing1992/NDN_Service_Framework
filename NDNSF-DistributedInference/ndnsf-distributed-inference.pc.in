@@ -1,0 +1,11 @@
+prefix=@prefix@
+exec_prefix=@exec_prefix@
+libdir=@libdir@
+includedir=@includedir@
+
+Name: ndnsf-distributed-inference
+Description: Native NDNSF distributed-inference runtime and adapters
+Version: @VERSION@
+Requires: libndn-service-framework
+Libs: -L${libdir} -lndnsf-distributed-inference
+Cflags: -I${includedir} -I${includedir}/NDNSF-DistributedInference/cpp

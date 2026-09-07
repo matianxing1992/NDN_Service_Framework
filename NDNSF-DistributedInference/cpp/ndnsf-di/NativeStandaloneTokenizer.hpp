@@ -11,18 +11,29 @@ namespace ndnsf::di {
 struct NativeStandaloneTokenizerOptions
 {
   std::string tokenizerPath;
-  std::string pythonExecutable = "python3";
-  std::string pythonModule =
-    "ndnsf_distributed_inference.native_token_decode_helper";
+  // Optional path used by development builds.  Production packaging places
+  // the bridge beside the native binaries and leaves this empty.
+  std::string bridgeLibrary;
+};
+
+struct NativeGenerationTextDecoders
+{
+  std::function<std::string(const std::vector<std::int64_t>&)> full;
+  std::function<std::string(const std::vector<std::int64_t>&, bool)> stable;
 };
 
 /**
- * Create a digest-bound standalone tokenizer callback for the native terminal
- * role.  The callback invokes the deployment-safe Rust-backed `tokenizers`
- * helper without importing PyTorch or Transformers into the C++ process.
+ * Create paired digest-bound callbacks for the native terminal role.  Both
+ * callbacks share one read-only Rust tokenizer owner; no process, interpreter,
+ * or per-token helper is created.
  */
 std::function<std::string(const std::vector<std::int64_t>&)>
 makeNativeStandaloneTokenizerDecoder(
+  NativeStandaloneTokenizerOptions options,
+  std::string expectedDigest);
+
+NativeGenerationTextDecoders
+makeNativeStandaloneTokenizerDecoders(
   NativeStandaloneTokenizerOptions options,
   std::string expectedDigest);
 

@@ -548,8 +548,12 @@ sampleToken(const std::map<std::string, TensorBundle>& outputs,
             std::size_t step)
 {
   auto logits = lastLogits(outputs);
+  std::set<std::int64_t> penalized;
   for (const auto token : generated) {
     if (token < 0 || static_cast<std::size_t>(token) >= logits.size()) {
+      continue;
+    }
+    if (!penalized.insert(token).second) {
       continue;
     }
     if (config.samplingRepetitionPenalty != 1.0) {
@@ -611,7 +615,14 @@ sampleToken(const std::map<std::string, TensorBundle>& outputs,
       break;
     }
   }
-  const auto draw = deterministicUnit(config.samplingSeed, step) * total;
+  double retainedTotal = 0.0;
+  for (std::size_t index = 0; index < retained; ++index) {
+    retainedTotal += weights[index];
+  }
+  if (!std::isfinite(retainedTotal) || retainedTotal <= 0.0) {
+    throw std::invalid_argument("native sampling retained distribution is empty");
+  }
+  const auto draw = deterministicUnit(config.samplingSeed, step) * retainedTotal;
   double prefix = 0.0;
   for (std::size_t index = 0; index < retained; ++index) {
     prefix += weights[index];
@@ -724,6 +735,9 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
   if ((!config.stopStrings.empty() || config.requireTextOutput) &&
       !config.textDecoder) {
     throw std::invalid_argument("NATIVE_TEXT_DECODER_REQUIRED");
+  }
+  if (config.textDecoder && !config.stableTextDecoder) {
+    throw std::invalid_argument("NATIVE_STABLE_TEXT_DECODER_REQUIRED");
   }
   if (config.attemptEpoch < 1 || config.attemptEpoch > 2 ||
       (config.attemptEpoch == 1 && !config.committedPrefixTokenIds.empty()) ||
@@ -982,14 +996,16 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
         return value;
       }();
       std::string candidateText;
+      std::string stableCandidateText;
       std::string textDelta;
       if (config.textDecoder) {
         candidateText = config.textDecoder(candidateTokenIds);
-        if (candidateText.size() < generatedText.size() ||
-            candidateText.compare(0, generatedText.size(), generatedText) != 0) {
+        stableCandidateText = config.stableTextDecoder(candidateTokenIds, false);
+        if (stableCandidateText.size() < generatedText.size() ||
+            stableCandidateText.compare(0, generatedText.size(), generatedText) != 0) {
           throw std::runtime_error("native tokenizer rewrote committed text prefix");
         }
-        textDelta = candidateText.substr(generatedText.size());
+        textDelta = stableCandidateText.substr(generatedText.size());
       }
       else if (config.requireTextOutput) {
         throw std::runtime_error("NATIVE_TEXT_DECODER_REQUIRED");
@@ -1026,7 +1042,7 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
       }
       generated.push_back(token);
       if (config.textDecoder) {
-        generatedText = std::move(candidateText);
+        generatedText = std::move(stableCandidateText);
       }
 
       // Feedback is produced for the next decode epoch.  Use the next
@@ -1080,8 +1096,14 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
         result.finalizedRole = executable;
       }
       if (eos || stopSequence || atMax) {
+        if (config.textDecoder) {
+          const auto finalStableText = config.stableTextDecoder(candidateTokenIds, true);
+          if (finalStableText != candidateText) {
+            throw std::runtime_error("NATIVE_FINAL_TEXT_DECODE_MISMATCH");
+          }
+        }
         result.finalPayload = makeFinalPayload(generated, finishHint,
-                                               generatedText);
+                                               config.textDecoder ? candidateText : generatedText);
         return result;
       }
     }

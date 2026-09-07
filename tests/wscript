@@ -91,12 +91,18 @@ def build(bld):
         'NDNSF-DistributedInference/cpp/ndnsf-di/ExecutionEvidence.cpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.cpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.cpp',
+        'NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.cpp',
+        'NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanSealer.cpp',
+        'NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.cpp',
+        'NDNSF-DistributedInference/cpp/adapters/qwen/NativeQwenPlanner.cpp',
+        'NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloPlanner.cpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.cpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/DistributedExecutionConsistency.cpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.cpp',
         'NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloMergeRunner.cpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.cpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/NativeStandaloneTokenizer.cpp',
+        'NDNSF-DistributedInference/cpp/adapters/qwen/NativeTokenizer.cpp',
         # The integration target exercises the real CPU ONNX adapter when
         # NDNSF_DI_TEST_ONNX_MODEL is set; keep the adapter object in the same
         # target rather than accidentally testing only the fake runner.

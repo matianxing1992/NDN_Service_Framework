@@ -89,6 +89,9 @@ struct NativeEpochCoordinatorConfig
   // The standalone adapter owns tokenizer implementation.  Native Core only
   // receives a bounded decoder callback and never embeds Transformers/PyTorch.
   std::function<std::string(const std::vector<std::int64_t>&)> textDecoder;
+  // Stable streaming decode may withhold an incomplete replacement suffix;
+  // `final=true` must be byte-identical to the full decoder result.
+  std::function<std::string(const std::vector<std::int64_t>&, bool)> stableTextDecoder;
   bool requireTextOutput = false;
   // Conversation-enabled turns may need one bounded state-only pass through
   // non-terminal roles after the terminal role has emitted its final token.

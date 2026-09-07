@@ -1,0 +1,49 @@
+#ifndef NDNSF_DI_NATIVE_QWEN_PLANNER_HPP
+#define NDNSF_DI_NATIVE_QWEN_PLANNER_HPP
+
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
+
+#include <cstdint>
+#include <map>
+#include <string>
+#include <utility>
+#include <vector>
+
+namespace ndnsf::di::qwen {
+
+/** Native counterpart of the maintained three-stage Qwen splitter.
+ *
+ * The adapter consumes an already inspected, digest-bound graph.  It does not
+ * read model files, contact a Provider, or choose a placement.
+ */
+class NativeQwenLayerSplit final : public NativeModelSplitStrategy
+{
+public:
+  using LayerRange = std::pair<std::uint64_t, std::uint64_t>;
+
+  NativeQwenLayerSplit(
+    std::vector<LayerRange> layerRanges,
+    std::map<std::string, std::string> artifactDigestsByRole,
+    std::map<std::string, std::uint64_t> weightBytesByRole,
+    std::vector<std::string> roles = {
+      "/LLM/Pipeline/Stage/0", "/LLM/Pipeline/Stage/1",
+      "/LLM/Pipeline/Stage/2"},
+    std::vector<std::uint64_t> tensorDegrees = {1, 1, 1});
+
+  NativeStrategyIdentity identity() const override;
+  std::vector<NativeSplitCandidate> enumerate(
+    const NativeModelDescriptor& model,
+    const NativeGraphSnapshot& graph,
+    const NativeCandidateBudget& budget) const override;
+
+private:
+  std::vector<LayerRange> m_layerRanges;
+  std::map<std::string, std::string> m_artifactDigestsByRole;
+  std::map<std::string, std::uint64_t> m_weightBytesByRole;
+  std::vector<std::string> m_roles;
+  std::vector<std::uint64_t> m_tensorDegrees;
+};
+
+} // namespace ndnsf::di::qwen
+
+#endif // NDNSF_DI_NATIVE_QWEN_PLANNER_HPP
