@@ -137,10 +137,13 @@ def build_extension() -> Extension:
         "ndnsf._ndnsf",
         # NativeGrantVerifier is a DI-layer component (not part of the Core
         # library), compiled directly into the binding (spec181 T002).
+        # Sources must stay relative to setup.py: pip builds reject absolute
+        # source paths outright, and both waf install and direct build_ext
+        # run with this directory as the working directory.
         sources=[
             "src/ndnsf/_ndnsf.cpp",
-            str(ROOT / "NDNSF-DistributedInference/cpp/ndnsf-di/"
-                "NativeGrantVerifier.cpp"),
+            "../NDNSF-DistributedInference/cpp/ndnsf-di/"
+            "NativeGrantVerifier.cpp",
         ],
         include_dirs=[
             *nac_includes,
