@@ -123,6 +123,7 @@ def test_issue_is_idempotent_and_fixed(tmp_path):
     assert first == second and pub_first == pub_second
     assert sorted(first) == ["BackboneNeck.key", "DetectShard0.key",
                              "DetectShard1.key", "Merge.key",
+                             "artifact-policy-authority.key",
                              "catalogue-authority.key",
                              "model-manifest-authority.key"]
 

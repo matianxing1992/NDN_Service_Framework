@@ -24,5 +24,20 @@
   "acceptedModelFamilies": [
    "YOLO26n"
   ]
+ },
+ "artifactPolicyAuthority": {
+  "authorityId": "spec183-artifact-policy-authority",
+  "keyId": "spec183-artifact-policy-ed25519-20260907",
+  "publicKeyAlgorithm": "ed25519",
+  "signatureAlgorithm": "ed25519",
+  "publicKeyPath": "contracts/artifact-policy-authority.pub",
+  "publicKeySha256": "sha256:798110f33039df070d16eef11d355d19bd82dd387c57e75ce527c651e8bd3020",
+  "grantSchema": "ndnsf-di-key-grant-v1",
+  "acceptedModelFamilies": [
+   "YOLO26n"
+  ],
+  "protectionEpochs": [
+   "spec183-yolo-protected-v1"
+  ]
  }
 }

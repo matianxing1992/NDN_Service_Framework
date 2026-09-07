@@ -32,6 +32,9 @@ Private (git-ignored via ``Experiments/TigerCluster/.gitignore`` ``/.keys/``)::
     Experiments/TigerCluster/.keys/
         catalogue-authority.key            catalogue signer
         model-manifest-authority.key       model-manifest signer
+        artifact-policy-authority.key      artifact-policy signer; the
+                                           dispatch profile's protectionEpoch
+                                           must be in its protectionEpochs
         offers/{role}.key                  fixed provider offer keys,
                                            one per role for every run
 
@@ -40,6 +43,7 @@ Public (committed under the Spec183 contracts directory)::
     specs/183-tiger-yolo-reusable-experiments/contracts/
         catalogue-authority.pub
         model-manifest-authority.pub
+        artifact-policy-authority.pub
         offers/{role}.pub
         trust-root-registry-v1.json        schemaVersion 1, status CONFIGURED
         experiment-authority-v1.md         this arrangement as a contract
@@ -67,9 +71,20 @@ AUTHORITIES = (
     ("modelManifest", "spec183-model-manifest-ed25519-20260907",
      "spec183-model-manifest-authority", "spec180-model-manifest-v1"),
 )
+# The offline issuer and the protected-grant path bind the artifact-policy
+# authority through protectionEpochs; the Spec183 dispatch profile carries
+# one of these epochs in security.protectionEpoch.
+ARTIFACT_POLICY = {
+    "registryKey": "artifactPolicyAuthority",
+    "keyId": "spec183-artifact-policy-ed25519-20260907",
+    "authorityId": "spec183-artifact-policy-authority",
+    "grantSchema": "ndnsf-di-key-grant-v1",
+    "protectionEpochs": ["spec183-yolo-protected-v1"],
+}
 ALGORITHM = "ed25519"
 FAMILIES = ("YOLO26n",)
-KEY_SLUGS = {"catalogue": "catalogue", "modelManifest": "model-manifest"}
+KEY_SLUGS = {"catalogue": "catalogue", "modelManifest": "model-manifest",
+             "artifactPolicyAuthority": "artifact-policy"}
 
 
 class AuthorityError(RuntimeError):
@@ -205,6 +220,16 @@ def issue(root: Path, *, force: bool = False) -> dict[str, Any]:
             "publicKeyPath": "contracts/" + pub_path.name,
             "publicKeySha256": _sha256_digest(pub_pem),
         }
+    policy = ARTIFACT_POLICY
+    policy_slug = KEY_SLUGS[policy["registryKey"]]
+    pub_pem = _issue_keypair(key_dir, policy_slug + "-authority", force=force)
+    pub_path = contracts / (policy_slug + "-authority.pub")
+    _write_committed(pub_path, pub_pem, force=force)
+    identities["authorities"][policy["registryKey"]] = {
+        "keyId": policy["keyId"],
+        "publicKeyPath": "contracts/" + pub_path.name,
+        "publicKeySha256": _sha256_digest(pub_pem),
+    }
 
     offer_dir = key_dir / "offers"
     offer_pub_dir = contracts / "offers"
@@ -234,16 +259,33 @@ def issue(root: Path, *, force: bool = False) -> dict[str, Any]:
             "manifestSchema": schema,
             "acceptedModelFamilies": list(FAMILIES),
         }
+    policy_info = identities["authorities"][policy["registryKey"]]
+    registry_doc[policy["registryKey"]] = {
+        "authorityId": policy["authorityId"],
+        "keyId": policy["keyId"],
+        "publicKeyAlgorithm": ALGORITHM,
+        "signatureAlgorithm": ALGORITHM,
+        "publicKeyPath": policy_info["publicKeyPath"],
+        "publicKeySha256": policy_info["publicKeySha256"],
+        "grantSchema": policy["grantSchema"],
+        "acceptedModelFamilies": list(FAMILIES),
+        "protectionEpochs": list(policy["protectionEpochs"]),
+    }
+    all_names = [name for name, *_ in AUTHORITIES] + [policy["registryKey"]]
     if registry.exists():
         existing = json.loads(registry.read_text())
-        for name, *_ in AUTHORITIES:
-            if existing.get(name, {}).get("keyId") != registry_doc[name]["keyId"]:
+        for name in all_names:
+            current = existing.get(name)
+            if (current is not None
+                    and current.get("keyId") != registry_doc[name]["keyId"]):
                 if not force:
                     raise AuthorityError(
                         f"registry {registry} already names a different {name} "
                         "key; refusing to mix identities (pass --force after "
                         "recording the change)")
-        if existing != registry_doc and force:
+        if existing != registry_doc:
+            # Additive registration of a brand-new fixed authority needs no
+            # force; changing an already-registered keyId does (checked above).
             registry.write_text(json.dumps(registry_doc, indent=1) + "\n")
     else:
         registry.parent.mkdir(parents=True, exist_ok=True)

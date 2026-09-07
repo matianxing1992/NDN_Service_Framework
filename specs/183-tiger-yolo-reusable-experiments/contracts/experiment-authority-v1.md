@@ -23,6 +23,13 @@ Private material lives only under `Experiments/TigerCluster/.keys/`
 
 - `catalogue-authority.key` — signs the candidate catalogue document.
 - `model-manifest-authority.key` — signs the candidate model manifest.
+- `artifact-policy-authority.key` — the artifact-policy authority that the
+  offline issuer and the protected-grant path bind through
+  `protectionEpochs`; the dispatch profile's `security.protectionEpoch` must
+  be one of `spec183-yolo-protected-v1`. Registered as
+  `contracts/artifact-policy-authority.pub` in the trust-root registry
+  (`grantSchema: ndnsf-di-key-grant-v1`). Registered 2026-09-07 as an
+  additive owner; catalogue/modelManifest key IDs are unchanged.
 - `offers/{BackboneNeck,DetectShard0,DetectShard1,Merge}.key` — fixed
   per-role provider offer identities, one per role, reused by every run.
 
@@ -39,11 +46,13 @@ export and runtime paths must never create or replace a key.
 registered in `trust-root-registry-v1.json` (`schemaVersion` 1,
 `status: CONFIGURED`):
 
-- `catalogue-authority.pub`, `model-manifest-authority.pub` — PEM public
-  identities of the two signing authorities, with `keyId`,
-  `publicKeySha256`, `manifestSchema` and `acceptedModelFamilies` bound in
-  the registry. `publicKeyPath` is resolved relative to the Spec183 feature
-  directory (the registry's own parent).
+- `catalogue-authority.pub`, `model-manifest-authority.pub`,
+  `artifact-policy-authority.pub` — PEM public identities of the three
+  signing authorities, with `keyId`, `publicKeySha256`, `manifestSchema` and
+  `acceptedModelFamilies` bound in the registry (the artifact-policy entry
+  binds `grantSchema` and `protectionEpochs` instead of `manifestSchema`).
+  `publicKeyPath` is resolved relative to the Spec183 feature directory (the
+  registry's own parent).
 - `offers/{role}.pub` — PEM public identities for the fixed provider offer
   keys; `keyId` is the sha256 of the raw Ed25519 public bytes.
 

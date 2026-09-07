@@ -635,3 +635,15 @@ sif 指向远端 `/project/tma1/…/spec180-runtime-b6710fd6`，sha 与本机 ba
 SIF 一致；T004 目标 `profiles/yolo-two-node.json`（dispatch 级）尚不存在，
 是下一步要建的接线件。探测细节入 [input-inventory.md](evidence/input-inventory.md)。
 本 checkpoint 不改变任何资格门；T004 仍 unchecked。
+
+2026-09-07 artifact-policy authority checkpoint：Spec183 固定 key 集补第三个
+签发权威 `artifact-policy-authority.key`（keyId
+`spec183-artifact-policy-ed25519-20260907`，protectionEpochs
+`["spec183-yolo-protected-v1"]`，grantSchema `ndnsf-di-key-grant-v1`），
+作为**加性** owner 写入 registry（catalogue/modelManifest keyId 不变），
+pub 提交为 `contracts/artifact-policy-authority.pub`。这是
+`resolve_provision_inputs`/离线 issuer 对 dispatch 的硬前置：registry 必须
+同时有 catalogue/modelManifest/artifactPolicyAuthority 三 owner，且 profile
+的 `security.protectionEpoch` ∈ protectionEpochs。`issue` 语义收紧：新增
+owner 不再需要 --force；改名已注册 keyId 仍必须 force。13 项权威测试 +
+provision/trust 24 项回归 + 共享 contract gate 全绿。授权契约文档已同步。
