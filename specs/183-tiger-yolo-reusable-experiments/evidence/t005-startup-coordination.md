@@ -28,6 +28,13 @@ wrong Sync prefix, wrong peer and a Provider permission-readiness failure.
 An additional preparation test makes the application name different from the
 Provider prefix and requires the resulting appName/sync group.
 
+The follow-up hardening centralizes this construction in
+`runtime.yolo_profile.application_sync_prefix()`. Projection, NFD route setup,
+and startup validation now share the same absolute-name validator; malformed
+names, trailing slashes, duplicate separators, and relative names are rejected
+before any runtime launch. This remains a routing-integrity check, not a native
+or Tiger execution result.
+
 Full focused suite: 412 passed in 26.13s, JUnit at
 Experiments/TigerCluster/results/t005-startup-coordination/junit.xml.
 After tightening barrier rank types and directory rechecks, the 15 affected

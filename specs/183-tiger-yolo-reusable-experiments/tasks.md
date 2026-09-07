@@ -376,3 +376,9 @@ entrypoints 和 `ldd`。缺失 harness、参数或运行时闭包时 fail closed
 新增/相关边界测试通过。合并 focused selectors 后 **878 passed in 51.67s**
 （`results/t002-yolo-dispatch-r5/full-junit.xml`）。这没有制造 SIF 或集群
 证据；T002、T007、T010、T011 仍未闭合。
+2026-09-07 application Sync naming hardening：新增
+`runtime.yolo_profile.application_sync_prefix()`，由 projection、NFD route
+setup 与 startup validation 共享校验 `applicationName + '/sync'`；拒绝相对名、
+尾部斜杠、重复分隔符和 `/group` 退化。相关回归 71 项通过；合并注册 focused
+selectors 后 **885 passed in 55.18s**。这是 routing-integrity/component evidence，
+不是 native/SIF/MiniNDN/Tiger qualification；T005/T006/T007 仍未闭合。
