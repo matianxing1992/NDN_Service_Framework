@@ -57,7 +57,8 @@ def test_native_positive(tmp_path: Path) -> None:
     command = runner.make_launch(case, staged, {"id": ""}, tmp_path / "run/trace.txt")
     assert "--unshare-all" in command
     result = runner.evaluate_case(
-        case, {"returncode": 0, "timedOut": False},
+        case, {"returncode": 0, "timedOut": False,
+               "evidence": sorted(runner.REQUIRED_EVIDENCE)},
         {"complete": True, "violations": []})
     assert result["status"] == "PASS"
 
@@ -75,7 +76,8 @@ def test_helper_exec_rejected(tmp_path: Path) -> None:
 def test_transient_python_mapping_rejected(tmp_path: Path) -> None:
     case = runner.load_case(_manifest(tmp_path), "positive")
     result = runner.evaluate_case(
-        case, {"returncode": 0, "timedOut": False},
+        case, {"returncode": 0, "timedOut": False,
+               "evidence": sorted(runner.REQUIRED_EVIDENCE)},
         {"complete": True, "violations": ["PYTHON_MAPPING"]})
     assert "PYTHON_MAPPING" in result["failures"]
 
@@ -83,7 +85,8 @@ def test_transient_python_mapping_rejected(tmp_path: Path) -> None:
 def test_undeclared_endpoint_rejected(tmp_path: Path) -> None:
     case = runner.load_case(_manifest(tmp_path), "positive")
     result = runner.evaluate_case(
-        case, {"returncode": 0, "timedOut": False},
+        case, {"returncode": 0, "timedOut": False,
+               "evidence": sorted(runner.REQUIRED_EVIDENCE)},
         {"complete": True, "violations": ["UNDECLARED_ENDPOINT"]})
     assert result["status"] == "FAIL"
 
@@ -91,7 +94,8 @@ def test_undeclared_endpoint_rejected(tmp_path: Path) -> None:
 def test_incomplete_observation_unqualified(tmp_path: Path) -> None:
     case = runner.load_case(_manifest(tmp_path), "positive")
     result = runner.evaluate_case(
-        case, {"returncode": 0, "timedOut": False},
+        case, {"returncode": 0, "timedOut": False,
+               "evidence": sorted(runner.REQUIRED_EVIDENCE)},
         {"complete": False, "violations": []})
     assert "OBSERVATION_UNQUALIFIED" in result["failures"]
 
@@ -101,7 +105,8 @@ def test_cold_path_and_role_coverage_required(tmp_path: Path) -> None:
     case["cold"] = True
     case["requiredRoles"] = ["requester", "provider"]
     result = runner.evaluate_case(
-        case, {"returncode": 0, "timedOut": False},
+        case, {"returncode": 0, "timedOut": False,
+               "evidence": sorted(runner.REQUIRED_EVIDENCE)},
         {"complete": True, "violations": []})
     assert result["status"] == "PASS"
 
