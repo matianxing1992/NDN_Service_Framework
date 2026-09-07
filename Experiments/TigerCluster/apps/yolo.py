@@ -638,7 +638,8 @@ def run_requests(worker, plan: dict, *, package: Path, catalog_data_name: str,
                  catalog_signer: str, permission_wait_ms: int,
                  request_deadline_ms: int, process_timeout_seconds: float,
                  protection_epoch: str,
-                 accept_request, peer_failure: Path | None = None):
+                 accept_request, peer_failure: Path | None = None,
+                 remaining_seconds=None):
     """Stop on the first process/evidence failure, keeping Providers alive.
 
     ``accept_request(request, output)`` must raise on incomplete/invalid
@@ -647,6 +648,8 @@ def run_requests(worker, plan: dict, *, package: Path, catalog_data_name: str,
     """
     if not callable(accept_request):
         raise ValueError('YOLO_RESULT_VALIDATOR_REQUIRED')
+    if remaining_seconds is not None and not callable(remaining_seconds):
+        raise ValueError('YOLO_WORKLOAD_BUDGET_CALLBACK')
     if (not isinstance(protection_epoch, str) or protection_epoch == 'plaintext-v1'
             or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,127}', protection_epoch)):
         raise ValueError('YOLO_PROTECTED_EPOCH_REQUIRED')
@@ -728,9 +731,85 @@ def run_requests(worker, plan: dict, *, package: Path, catalog_data_name: str,
                 '--request-id', request['requestId'], '--lifecycle-output-dir', output,
                 '--lifecycle-case', plan['case'],
                 '--envelope-key-file', '/identities/user/request-envelope.key']
-        worker.run_user(i, argv, package=package, seconds=process_timeout_seconds,
+        seconds = process_timeout_seconds
+        if remaining_seconds is not None:
+            seconds = min(seconds, remaining_seconds() - worker.cleanup_seconds)
+            if not math.isfinite(seconds) or seconds <= 0:
+                raise TimeoutError('YOLO_WORKLOAD_BUDGET')
+        worker.run_user(i, argv, package=package, seconds=seconds,
                         peer_failure=peer_failure)
         accept_request(request, Path(request['output']))
+
+
+def run_normal_node(worker, startup, *, completion_factory, endpoints,
+                    startup_options, request_options, accept_request):
+    """Own the normal node lifecycle behind the external qualification gates.
+
+    Both ranks call this. The completion barrier is created only after startup
+    with its own frozen workload budget and exclusive directory; it shares
+    the run/candidate/probe identity, not the consumed startup deadline.
+    Rank 1 remains alive until rank 0 finishes validated requests. No public
+    submit command is enabled here, and node cleanup is not inference PASS.
+    """
+    from runtime.yolo_result import write_worker_receipt
+    if (worker._preparation_binding is None or worker.mode not in
+            ('local-cpu', 'single-node-gpu', 'two-node-gpu')
+            or not callable(completion_factory) or not callable(accept_request)):
+        raise ValueError('YOLO_NODE_OWNER_SCOPE')
+    plan = worker._preparation_binding[0]
+    completion = None
+    rows = None
+    def notify(error):
+        # A stage may already have reported failure; preserve original error
+        # and still attempt notification on the other phase's control lane.
+        for barrier in (completion, startup):
+            if barrier is not None:
+                try:
+                    barrier.publish('failed', {'errorType': type(error).__name__})
+                except Exception:
+                    pass
+    try:
+        try:
+            configure_network(worker, startup, endpoints=endpoints)
+            start_workload(worker, startup, **startup_options)
+            completion = completion_factory()
+            if (completion.binding != startup.binding or completion.rank != worker.rank
+                    or completion.ranks != startup.ranks or completion.directory == startup.directory):
+                raise ValueError('YOLO_COMPLETION_BINDING')
+            peer_failure = (completion.directory / ('failed-' + str(1-worker.rank) + '.json')
+                            if len(completion.ranks) == 2 else None)
+            if worker.rank == 0:
+                def accept(request, output):
+                    completion.remaining()
+                    accept_request(request, output)
+                run_requests(worker, plan, accept_request=accept,
+                             peer_failure=peer_failure, remaining_seconds=completion.remaining,
+                             **request_options)
+            count = len(plan['requests']) if worker.rank == 0 else 0
+            completion.publish('workload-complete', {'requestCount': count})
+            completed = completion.wait('workload-complete')
+            expected = {rank: {'requestCount': len(plan['requests']) if rank == 0 else 0}
+                        for rank in completion.ranks}
+            if completed != expected:
+                raise ValueError('YOLO_COMPLETION_REQUEST_COVER')
+        except BaseException as exc:
+            notify(exc)
+            raise
+        finally:
+            rows = worker.close()
+        return write_worker_receipt(worker, rows)
+    except BaseException as exc:
+        notify(exc)
+        from runtime.identities import _credential_document
+        try:
+            _credential_document(worker.output / 'node-failure.json', {
+                'schema': 'tiger-yolo-node-failure-v1', 'runId': plan['runId'],
+                'case': worker.mode, 'rank': worker.rank,
+                'errorType': type(exc).__name__, 'cleanup': rows,
+                'qualification': 'FAILED'})
+        except Exception as recording_error:
+            raise exc from recording_error
+        raise
 
 
 if __name__ == '__main__':
