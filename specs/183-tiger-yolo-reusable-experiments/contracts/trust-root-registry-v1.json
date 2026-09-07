@@ -1,0 +1,28 @@
+{
+ "schemaVersion": 1,
+ "status": "CONFIGURED",
+ "catalogue": {
+  "authorityId": "spec183-yolo-catalogue-authority",
+  "keyId": "spec183-yolo-catalogue-ed25519-20260907",
+  "publicKeyAlgorithm": "ed25519",
+  "signatureAlgorithm": "ed25519",
+  "publicKeyPath": "contracts/catalogue-authority.pub",
+  "publicKeySha256": "sha256:aed8dea56cc13eab5048154f181df0d4b926f92eaa4af77ac786002f8d85d016",
+  "manifestSchema": "spec180-yolo-catalogue-v1",
+  "acceptedModelFamilies": [
+   "YOLO26n"
+  ]
+ },
+ "modelManifest": {
+  "authorityId": "spec183-model-manifest-authority",
+  "keyId": "spec183-model-manifest-ed25519-20260907",
+  "publicKeyAlgorithm": "ed25519",
+  "signatureAlgorithm": "ed25519",
+  "publicKeyPath": "contracts/model-manifest-authority.pub",
+  "publicKeySha256": "sha256:6da587cca92f65c9a0b2e81dfe423d7b042922e58562126bbf801633d7cf472b",
+  "manifestSchema": "spec180-model-manifest-v1",
+  "acceptedModelFamilies": [
+   "YOLO26n"
+  ]
+ }
+}

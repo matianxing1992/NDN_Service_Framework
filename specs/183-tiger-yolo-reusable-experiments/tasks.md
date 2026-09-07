@@ -168,6 +168,26 @@ T001–T004形成 profile/launcher 实现骨架；可操作 MVP 还要求 T006 �
 
 ## Current Checkpoint
 
+2026-09-07 Spec183 experiment authority 修复 checkpoint（修整裁决已执行）：按用户
+裁决，Spec183 不再等待丢失的 Spec180 离机私钥（原位于
+`~/.config/ndnsf/spec180/*.key`，已不存在），改为自建固定 experiment-only 权威
+key 集并永久复用——所有 run、所有 provider（catalogue / model-manifest /
+offers×4 role）共用同一套。新工具 `Experiments/TigerCluster/tools/spec183_authority.py`
+（`issue`/`sign` 子命令）持有私钥于 `Experiments/TigerCluster/.keys/`
+（0600/0700、`.gitignore` 覆盖、绝不提交），公共侧
+`specs/183-tiger-yolo-reusable-experiments/contracts/`：`catalogue-authority.pub`、
+`model-manifest-authority.pub`、`offers/{role}.pub` 与
+`trust-root-registry-v1.json`（schemaVersion 1、status CONFIGURED、keyId 绑定
+`spec183-yolo-catalogue-ed25519-20260907` / `spec183-model-manifest-ed25519-20260907`）。
+wire format 与共享门 `scripts/spec180_contract_gate.py` 完全一致（detached
+envelope + canonical JSON），契约文档 `contracts/experiment-authority-v1.md`
+固定此安排。13 项 authority 测试全通过（真实 pub/registry 一致性、真实私钥经
+共享门互操作、双 authority 区分、篡改/未签名/外来 keyId 拒绝、幂等与权限、CLI
+签名、gitignore）；门禁测试在重新 issue 后确认 catalogue 签名经 Spec180 gate
+验证通过。凭此可直接签发 stage 2 candidate manifest 并进入真实 profile 接线；
+T001 的 signed catalogue/model-manifest 输入不再受私钥缺口阻塞。该 key 集为
+实验身份，不是生产 PKI；再生成会破坏全部已记录签名，须先记录 identity change。
+
 2026-09-07 canonical Sync and component regression checkpoint：`applicationName + '/sync'`
 （例如 `/appname` → `/appname/sync`）已由 profile、projection、NFD route 和 startup
 validation 共用；不得从 Provider prefix 或旧 `/group` 推导。重新运行完整

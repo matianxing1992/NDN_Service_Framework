@@ -2,5 +2,6 @@
 !/images/README.md
 /results/
 /.cache/
+/.keys/
 __pycache__/
 *.pyc
