@@ -1,4 +1,5 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp"
+#include "ndn-service-framework/ServiceUser.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -172,6 +173,9 @@ private:
 
 struct NativeInferenceHandle::Operation
 {
+  // The caller's Core owner survives asynchronous work and handle waits.
+  // It does not transfer ownership of the application's Face to DI.
+  std::shared_ptr<ndn_service_framework::ServiceUser> user;
   mutable std::mutex mutex;
   std::condition_variable condition;
   std::string requestId;
@@ -378,6 +382,11 @@ NativeInferenceHandle::result(std::chrono::milliseconds waitTimeout) const
   // alive even if the last user reference to this handle is released from
   // another thread while the wait is parked.
   const auto operation = m_operation;
+  if (waitTimeout.count() > 0 && operation->user->isOnIoThread()) {
+    throw NativeDiError("CORE_IO_WAIT_FORBIDDEN", "local", "wait",
+                        "native result cannot block the Core I/O thread",
+                        operation->requestId, operation->attempt);
+  }
   std::unique_lock<std::mutex> lock(operation->mutex);
   if (!operation->condition.wait_for(lock, waitTimeout, [&operation] {
         return operation->status != NativeRequestStatus::Pending;
@@ -505,6 +514,7 @@ NativeInferenceHandle NativeInferenceClient::request(
                           "native model adapter is not registered");
     }
     operation = std::make_shared<NativeInferenceHandle::Operation>();
+    operation->user = m_user;
     operation->notifications = m_notifications;
     // The requestId comes from a unique native owner allocated at submission
     // (runtime-boundaries: Core allocation or unique native owner); the

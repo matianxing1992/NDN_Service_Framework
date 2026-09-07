@@ -247,6 +247,16 @@ namespace ndn_service_framework{
     class ServiceUser
     {
         public:
+            /** Queue work on this user's existing Face I/O context.
+             * Never invokes inline or starts an event loop. The application
+             * keeps the Face alive and running; the task must retain its
+             * own owners and contain its asynchronous exceptions. */
+            void postToIo(std::function<void()> task) const;
+
+            /** True while this thread executes the existing Face context.
+             * Blocking application waits must be rejected on that thread. */
+            bool isOnIoThread() const;
+
             using AcksHandler =
                 std::function<std::vector<ndn_service_framework::RequestAckMessage>(
                     const std::vector<ndn_service_framework::RequestAckMessage>&)>;
