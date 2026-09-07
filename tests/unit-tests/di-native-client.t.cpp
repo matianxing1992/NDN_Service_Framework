@@ -5,6 +5,7 @@
 #include <future>
 #include <deque>
 #include <limits>
+#include <thread>
 
 namespace ndnsf::di {
 // This friend is defined only in the unit test; no configurable production
@@ -283,6 +284,75 @@ BOOST_AUTO_TEST_CASE(DispatchExceptionIsContainedAndRemovesTimer)
                             std::string(e.what()).find("private diagnostic") == std::string::npos;
                         });
   BOOST_CHECK(timers.at(0)->cancelled);
+}
+
+BOOST_AUTO_TEST_CASE(CorePostUsesSharedFaceAndNeverRunsInline)
+{
+  BOOST_CHECK(!user->isOnIoThread());
+  BOOST_CHECK_THROW(user->postToIo({}), std::invalid_argument);
+  bool outerRan = false, outerReturned = false, innerRan = false;
+  const auto ioThread = std::this_thread::get_id();
+  auto submitter = std::async(std::launch::async, [&] {
+    user->postToIo([&] {
+      outerRan = true;
+      BOOST_CHECK(user->isOnIoThread());
+      BOOST_CHECK(std::this_thread::get_id() == ioThread);
+      user->postToIo([&] {
+        innerRan = true;
+        BOOST_CHECK(outerReturned);
+        BOOST_CHECK(user->isOnIoThread());
+      });
+      BOOST_CHECK(!innerRan);
+      outerReturned = true;
+    });
+  });
+  submitter.get();
+  BOOST_CHECK(!outerRan);
+  face.getIoContext().restart();
+  face.getIoContext().poll();
+  BOOST_CHECK(outerRan);
+  BOOST_CHECK(innerRan);
+  BOOST_CHECK(!user->isOnIoThread());
+}
+
+BOOST_AUTO_TEST_CASE(CoreIoRejectsBlockingResultButAllowsPollAndCancel)
+{
+  auto client = NativeClientTestAccess::create(port(), user, adapters);
+  auto handle = request(*client);
+  bool checked = false;
+  user->postToIo([&] {
+    checked = true;
+    BOOST_CHECK_EXCEPTION(handle.result(std::chrono::milliseconds(1)), NativeDiError,
+                          [&](const NativeDiError& e) {
+                            return e.code() == "CORE_IO_WAIT_FORBIDDEN" &&
+                              e.requestId() == handle.requestId();
+                          });
+    BOOST_CHECK(handle.status() == NativeRequestStatus::Pending);
+    BOOST_CHECK_EXCEPTION(handle.result(std::chrono::milliseconds(0)), NativeDiError,
+                          [](const NativeDiError& e) { return e.code() == "LOCAL_WAIT_TIMEOUT"; });
+    handle.cancel();
+    BOOST_CHECK_EXCEPTION(handle.result(std::chrono::milliseconds(0)), NativeDiError,
+                          [](const NativeDiError& e) { return e.code() == "CANCELLED"; });
+  });
+  face.getIoContext().restart();
+  face.getIoContext().poll();
+  BOOST_CHECK(checked);
+  BOOST_CHECK(handle.status() == NativeRequestStatus::Cancelled);
+}
+
+BOOST_AUTO_TEST_CASE(HandleRetainsCoreOwnerAfterClientClose)
+{
+  auto client = NativeClientTestAccess::create(port(), user, adapters);
+  auto handle = request(*client);
+  std::weak_ptr<ndn_service_framework::ServiceUser> weakUser = user;
+  client.reset();
+  user.reset();
+  BOOST_CHECK(!weakUser.expired());
+  BOOST_CHECK_EXCEPTION(handle.result(std::chrono::milliseconds(1)), NativeDiError,
+                        [](const NativeDiError& e) { return e.code() == "CANCELLED"; });
+  work.clear();
+  handle = NativeInferenceHandle{};
+  BOOST_CHECK(weakUser.expired());
 }
 
 BOOST_AUTO_TEST_SUITE_END()

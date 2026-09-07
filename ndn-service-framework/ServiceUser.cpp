@@ -6651,6 +6651,21 @@ namespace ndn_service_framework
         return requestId;
     }
 
+    void ServiceUser::postToIo(std::function<void()> task) const
+    {
+        if (!task) {
+            throw std::invalid_argument("ServiceUser I/O task must not be empty");
+        }
+        // No raw ServiceUser capture: the queued task owns exactly the
+        // captures supplied by its caller, including any required owner.
+        boost::asio::post(m_face.getIoContext(), std::move(task));
+    }
+
+    bool ServiceUser::isOnIoThread() const
+    {
+        return m_face.getIoContext().get_executor().running_in_this_thread();
+    }
+
     ndn::Name ServiceUser::BeginCollaboration(
         const ServiceName& service,
         const RequestPayload& initialRequest,

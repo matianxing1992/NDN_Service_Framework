@@ -255,7 +255,7 @@ worker crash/cancel 等真实子进程案例也转 T016，卡内只运行纯 fra
 
 - **Parent**: T010; **Depends**: T005-B, T008-B, T009-C; **Reviewer**: lifetime/concurrency review
 - **Read**: CD-001 → runtime-boundaries Cancellation and Observer Contract → Symbols/Values；ndn-service-framework/ServiceUser.hpp 的 collaboration handle。
-- **Write**: N/NativeInferenceClient.hpp; N/NativeInferenceClient.cpp; U/di-native-client.t.cpp; wscript。
+- **Write**: N/NativeInferenceClient.hpp; N/NativeInferenceClient.cpp; ndn-service-framework/ServiceUser.hpp; ndn-service-framework/ServiceUser.cpp; U/di-native-client.t.cpp; wscript。
 - **Steps**: 实现 handle/operation owner、poll/result/cancel/deadline/observer 单一终态；注入冻结 Core port，不在 Face 线程等待，不允许 late callback 复活。
 - **Verify**: CPP(Spec182ClientState/*)；cancel 与成功竞争、绝对 deadline、重复/晚到回调、共享资源销毁；无完整 request stub。
 

@@ -86,6 +86,18 @@ result 返回 payload 和真实执行/结果元数据，禁止把本地日志 ma
 线程/取消见 [runtime boundary](runtime-boundaries.md#cancellation-and-observer-contract)；
 现有 cancelStreamRequest 不是远端 abort。T001/O-004 固定非 stream 的本地 fencing 和真实 control 接线。
 
+### Core Executor Access
+
+2026-09-07 T010 接线复核：现有 BeginCollaboration/CommitCollaborationPlan 直接操作
+Core pending 状态，不自行投递；ServiceUser 没有公开 I/O executor 入口。T010-A 在
+`ndn-service-framework/ServiceUser.{hpp,cpp}` 增加通用 `postToIo(function<void()>) const`
+与 `isOnIoThread() const`，复用 Face 的 Boost.Asio context。post 始终排队、不内联、
+不启动线程/Face、不等待完成；拒绝空函数，任务的 owner/lifetime 和异常处理由调用方持有。
+应用仍负责运行并保持同一 Face 存活。该扩展不接收 DI 类型、不改变 wire/认证/网络状态。
+DI operation 保留共享 ServiceUser，后续 Begin/commit/cancel/publication 经该入口调度；
+`result(waitTimeout > 0)` 在 Core I/O 线程拒绝，`result(0)` 仍允许非阻塞查询。
+该边界单测随 T010-A 实现，不替代 T010-B 的真实请求或 T016 网络验收。
+
 ## CD-002 Strategies
 
 | Operation | Exact paths | Symbols / before → after |

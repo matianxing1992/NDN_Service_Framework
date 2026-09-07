@@ -125,6 +125,7 @@ Name相同但作用域不同的字段不能共享可写状态。
 | Field / owners | Type / source / initial | Meaning / readers and writers | Lifetime / validation / annotation |
 | --- | --- | --- | --- |
 | user / C01 | shared_ptr<ServiceUser>，应用构造传入，必需 | Core网络/认证访问；C01只调用公开API | shared非独占；不关闭Face；注释 Core remains authoritative |
+| user / operation | 同 C01 的 shared_ptr<ServiceUser> | client close 后 handle 仍可检查 Core I/O 线程并读取终态 | operation 最后引用释放时释放 owner；应用继续负责 Face 生命周期 |
 | adapters / C01,C18,C20 | shared_ptr<const NativeAdapterRegistry>，已freeze | ID→native模型实现；请求只读 | 必需；freeze前不可交client；不可混Python对象 |
 | grants / C01 | shared_ptr<NativeGrantClient>，已配置凭证/issuer | 保护角色申请grant | 生命周期覆盖在途请求；不含caller明文keydict |
 | conversations / C01 | shared_ptr<NativeConversationCoordinator>，可空 | continuation owner | 空仅限无状态请求；不能默认丢弃continuation |
