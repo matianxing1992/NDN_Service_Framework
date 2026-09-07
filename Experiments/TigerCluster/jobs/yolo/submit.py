@@ -334,7 +334,10 @@ def _collect(args) -> int:
             raise ClosureError("VERDICT_BINDING")
         print(json.dumps(value, sort_keys=True))
         return 0
-    collection_path = _collection_file(root)
+    try:
+        collection_path = _collection_file(root)
+    except ClosureError as exc:
+        return _not_ready("collect", str(exc), {"prepared": prepared["candidateDigest"]})
     try:
         collection, collection_digest = _load_collection_input(
             collection_path, root=root, prepared=prepared)
