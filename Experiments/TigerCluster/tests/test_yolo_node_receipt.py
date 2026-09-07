@@ -14,6 +14,9 @@ def worker(tmp_path):
     names = [r for r in roles if r != 'user']
     launches = [dict(role=r, pid=100+i, argv=['fixture', r]) for i,r in enumerate(names)]
     launches += [dict(role='user', invocation=str(i), pid=200+i, argv=['fixture', str(i)]) for i in range(2)]
+    for launch in launches:
+        if launch['role'] in ('BackboneNeck', 'DetectShard0', 'DetectShard1', 'Merge'):
+            launch['launchNonce'] = format(launch['pid'], '064x')
     rows = [dict(name=x['role'] + ('-'+x['invocation'] if 'invocation' in x else ''), pid=x['pid'],
         kind='finite' if 'invocation' in x else 'service', exitedBeforeCleanup=False,
         forced=False, reaped=True, leaseReleased=True, exitCode=0) for x in launches]
@@ -24,6 +27,12 @@ def worker(tmp_path):
     (output/'logs').mkdir()
     for item in rows:
         (output/'logs'/(item['name']+'.log')).write_text('fixture log '+item['name'])
+    import json
+    for launch in launches:
+        if launch.get('launchNonce'):
+            (output/'logs'/(launch['role']+'.log')).write_text('TIGER_PROVIDER_PROCESS_STARTED '+json.dumps(
+                dict(schema='tiger-provider-process-v1', nonce=launch['launchNonce'],
+                     role=launch['role'], pid=launch['pid']))+'\n')
     state = NS(closed=True, leases={}, children=NS(children=[]), finite_children=NS(children=[]),
         launches=launches, roles=roles, rank=0, mode='local-cpu', output=output,
         _preparation_binding=(plan, 'sha256:'+'1'*64, 'sha256:'+'2'*64),
@@ -36,7 +45,7 @@ def test_receipt_is_exclusive_and_not_inference_pass(tmp_path):
     receipt = result.write_worker_receipt(state, rows)
     assert receipt['qualification'] == 'NODE_CLEANUP_COMPONENT_ONLY'
     assert receipt['runId'] == 'test-run'
-    assert receipt['schema'] == 'tiger-yolo-node-receipt-v2'
+    assert receipt['schema'] == 'tiger-yolo-node-receipt-v3'
     import hashlib
     for launch in receipt['launches']:
         content = (state.output/launch['logPath']).read_bytes()

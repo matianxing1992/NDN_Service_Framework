@@ -97,6 +97,28 @@ must address per-request execution evidence explicitly rather than passing the
 first request's profile off as current evidence.
 # PID namespace finding and witness (2026-09-07)
 
+Follow-up wiring supersedes the pending implementation note below. Each real
+Provider Worker launch now creates a fresh nonce and uses the frozen witness
+module inside the container before execing di-native-provider. Node receipt
+v3 stores launchNonce along with the host PID. Both receipt production and
+offline reading require exactly one marker with matching nonce/role and a
+positive integer namespace PID. Live/retained native collectors pass that
+nonce and validate native processId against the witness PID, not the host PID;
+hostProcessId is separately retained for ownership/cleanup provenance.
+
+The new real unshare test executes the witness and an application that emits
+native-format evidence with its own os.getpid(): host-PID-only validation
+fails, nonce-bound validation passes and retains the distinct host PID. The
+record is still synthetic compute evidence, but PID isolation/exec and the
+reader are real. Wrong/missing/duplicate witness, wrong nonce/role and boolean
+PID tests reject. Fake-Apptainer launcher tests now emulate /bundle Python
+module lookup; they remain explicitly fake and do not replace exact SIF.
+73 affected tests passed with no skips. Exact-SIF native acceptance remains
+mandatory before promotion; no isolation setting was removed.
+
+Expanded focused regression: 693 passed in 54.62s, no skips; JUnit:
+`Experiments/TigerCluster/results/t006-pid-binding-r1/junit.xml`.
+
 Installed Apptainer exec --help states --containall isolates PID, IPC and
 environment. Current container_command uses this option; ExecutionEvidence
 records getpid(). Therefore comparing it directly with the host Popen PID is

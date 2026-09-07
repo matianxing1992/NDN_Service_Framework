@@ -78,6 +78,17 @@ T001–T004形成 profile/launcher 实现骨架；可操作 MVP 还要求 T006 �
 
 ## Current Checkpoint
 
+2026-09-07 PID binding wired: Worker now generates a fresh 64-hex nonce for
+each Provider launch and executes the in-container witness before execing
+the native Provider. Node receipt v3 retains launchNonce and host PID;
+writer/reader require exactly one matching nonce/role/namespace-PID marker.
+Native readers use that observed namespace PID while host PID remains the
+cleanup identity. Live and retained collectors pass the nonce explicitly.
+73 affected tests pass, including real namespace mismatch/reader regression
+without skips. Earlier ordinary-process launcher fixtures now emulate the
+bundle Python module lookup explicitly. Exact-SIF gate still required; this
+is not Tiger qualification. Continue GPU/graph and final operator work.
+
 2026-09-07 critical PID namespace audit: Apptainer --containall isolates PID
 (confirmed by local installed exec --help); native getpid() is not the host
 Popen PID currently used by role collectors. A real unshare user/PID namespace

@@ -23,7 +23,7 @@ def test_retained_execution_uses_receipt_pid_and_scoped_profile(tmp_path, fault)
     if fault == 'pid': row['processId'] = str(launch['pid']+1)
     if fault == 'old-profile': row['profileRequestId'] = 'old-request'
     log = state.output/'logs/BackboneNeck.log'
-    log.write_text('NDNSF_DI_EXECUTION_EVIDENCE_OBSERVED '+json.dumps(row)+'\n')
+    log.write_text(log.read_text()+'NDNSF_DI_EXECUTION_EVIDENCE_OBSERVED '+json.dumps(row)+'\n')
     profile = state.output/'BackboneNeck/ort/profile.json'
     profile.parent.mkdir(parents=True)
     profile.write_text(json.dumps([dict(cat='Node', name='conv_kernel_time',

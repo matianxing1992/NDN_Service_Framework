@@ -22,6 +22,8 @@ def prepared(tmp_path, rank=0, mode="two-node-gpu"):
     launcher = tmp_path / "fake-apptainer"
     launcher.write_text("#!/usr/bin/python3\nimport os,sys\n"
                         "args=sys.argv[1:]; i=args.index('/usr/bin/env')\n"
+                        + "args=[a.replace('PYTHONPATH=/bundle', 'PYTHONPATH=" + str(Path(__file__).resolve().parents[1]) + "') for a in args]\n"
+                        +
                         "if '/opt/ndnsf-di/current/bin/nfd' in args:\n"
                         " os.execv(sys.executable,[sys.executable,'-c','import time;time.sleep(60)'])\n"
                         "os.execv('/usr/bin/env',args[i:])\n")

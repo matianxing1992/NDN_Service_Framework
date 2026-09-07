@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import re
+import secrets
 import signal
 import stat
 import threading
@@ -388,6 +389,10 @@ class NodeRuntime:
         application = ["/usr/bin/env", "NDNSF_DI_STATE_ROOT=/output/state",
                        "NDNSF_DI_DEPENDENCY_OBJECT_TRACE=1",
                        "NDNSF_DI_ORT_PROFILE_PREFIX=/output/ort/session", *argv]
+        launch_nonce = secrets.token_hex(32) if role in PROVIDER_ROLES else None
+        if launch_nonce is not None:
+            application = ['/usr/bin/python3', '-m', 'runtime.yolo_launch_witness',
+                           '--nonce', launch_nonce, '--role', role, '--', *application]
         command = container_command(
             self.profile, self.bundle, self.homes[role], self.public, role_output,
             application, node=self.node,
@@ -400,7 +405,8 @@ class NodeRuntime:
                 fd = os.open(str(role_output / name), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
                 with os.fdopen(fd, "w") as stream:
                     stream.write(content)
-            record = {"role": role, "rank": self.rank, "argv": command, "pid": None}
+            record = {"role": role, "rank": self.rank, "argv": command, "pid": None,
+                      "launchNonce": launch_nonce}
             self.launches.append(record)
             child = self.children.start(role, command, container_env(), cwd=self.bundle)
         except BaseException as exc:

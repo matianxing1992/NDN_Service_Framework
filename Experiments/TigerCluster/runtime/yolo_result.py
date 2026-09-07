@@ -333,6 +333,12 @@ def write_worker_receipt(worker, rows):
                 or any(not isinstance(v, str) for v in row['argv'])):
             raise EvidenceError('NODE_RECEIPT_ARGV')
         invocation = row.get('invocation')
+        nonce = row.get('launchNonce')
+        if row['role'] in ('BackboneNeck', 'DetectShard0', 'DetectShard1', 'Merge'):
+            if not isinstance(nonce, str) or re.fullmatch(r'[0-9a-f]{64}', nonce) is None:
+                raise EvidenceError('NODE_RECEIPT_LAUNCH_NONCE')
+        elif nonce is not None:
+            raise EvidenceError('NODE_RECEIPT_UNEXPECTED_NONCE')
         tag = row['role'] + ('-' + invocation if invocation is not None else '')
         if not tag or '/' in tag or '\\' in tag or tag in ('.', '..'):
             raise EvidenceError('NODE_RECEIPT_LOG_NAME')
@@ -341,10 +347,13 @@ def write_worker_receipt(worker, rows):
         if any(p.is_symlink() for p in (log, *log.parents)):
             raise EvidenceError('NODE_RECEIPT_LOG_SYMLINK')
         content = _bytes(log)
+        if nonce is not None:
+            from runtime.yolo_launch_witness import namespace_pid_from_log
+            namespace_pid_from_log(content, nonce=nonce, role=row['role'])
         launches.append(dict(role=row['role'], invocation=invocation,
             pid=row['pid'], argvDigest=digest(row['argv']), logPath=relative,
-            logBytes=len(content), logDigest='sha256:'+hashlib.sha256(content).hexdigest()))
-    receipt = dict(schema='tiger-yolo-node-receipt-v2', runId=plan['runId'], case=worker.mode,
+            logBytes=len(content), logDigest='sha256:'+hashlib.sha256(content).hexdigest(), launchNonce=nonce))
+    receipt = dict(schema='tiger-yolo-node-receipt-v3', runId=plan['runId'], case=worker.mode,
         rank=worker.rank, planDigest=digest(plan), preparationDigest=preparation_digest,
         candidateDigest=candidate_digest, launches=launches, cleanup=rows,
         cleanupSummary=cleanup, qualification='NODE_CLEANUP_COMPONENT_ONLY')
@@ -387,7 +396,7 @@ def read_node_log_receipt(root, *, receipt_digest, plan, preparation_digest, can
     fields = {'schema', 'runId', 'case', 'rank', 'planDigest', 'preparationDigest',
               'candidateDigest', 'launches', 'cleanup', 'cleanupSummary', 'qualification'}
     if (not isinstance(receipt, dict) or set(receipt) != fields
-            or receipt['schema'] != 'tiger-yolo-node-receipt-v2'
+            or receipt['schema'] != 'tiger-yolo-node-receipt-v3'
             or type(receipt['rank']) is not int or receipt['rank'] != rank
             or receipt['runId'] != plan['runId'] or receipt['case'] != plan['case']
             or receipt['planDigest'] != digest(json.dumps(plan, sort_keys=True,
@@ -401,7 +410,7 @@ def read_node_log_receipt(root, *, receipt_digest, plan, preparation_digest, can
     logs, services = {}, set()
     for launch in receipt['launches']:
         if (not isinstance(launch, dict) or set(launch) != {'role', 'invocation', 'pid',
-                'argvDigest', 'logPath', 'logDigest', 'logBytes'}
+                'argvDigest', 'logPath', 'logDigest', 'logBytes', 'launchNonce'}
                 or launch['role'] not in roles or type(launch['pid']) is not int or launch['pid'] <= 0
                 or type(launch['logBytes']) is not int or launch['logBytes'] < 0
                 or (launch['invocation'] is not None and (not isinstance(launch['invocation'], str)
@@ -418,6 +427,11 @@ def read_node_log_receipt(root, *, receipt_digest, plan, preparation_digest, can
         payload = _bytes(path)
         if len(payload) != launch['logBytes'] or digest(payload) != launch['logDigest']:
             raise EvidenceError('NODE_LOG_CONTENT')
+        if launch['role'] in ('BackboneNeck', 'DetectShard0', 'DetectShard1', 'Merge'):
+            from runtime.yolo_launch_witness import namespace_pid_from_log
+            namespace_pid_from_log(payload, nonce=launch['launchNonce'], role=launch['role'])
+        elif launch['launchNonce'] is not None:
+            raise EvidenceError('NODE_LOG_UNEXPECTED_NONCE')
         logs[tag] = dict(launch, path=str(path))
         if launch['invocation'] is None:
             services.add(launch['role'])
@@ -493,7 +507,7 @@ def collect_retained_role_execution(root, *, receipt_digest, plan, preparation_d
               'onnxruntime-cpu' if plan['case'] == 'local-cpu' else 'onnxruntime-cuda')
     native = read_native_observation(launch['path'], provider=provider, role=role,
         request_id=request_id, attempt=attempt, plan_digest=execution_plan_digest,
-        pid=launch['pid'], runner_kind=runner)
+        pid=launch['pid'], runner_kind=runner, launch_nonce=launch['launchNonce'])
     if native['logDigest'] != launch['logDigest']:
         raise EvidenceError('RETAINED_ROLE_LOG_CHANGED')
     profile = None
@@ -532,7 +546,9 @@ def collect_role_execution(worker, *, role, provider, request_id, attempt, plan_
         raise EvidenceError('ROLE_COLLECTION_SCOPE')
     launches = [item for item in worker.launches
                 if item.get('role') == role and item.get('invocation') is None]
-    if len(launches) != 1 or launches[0].get('startError'):
+    if (len(launches) != 1 or launches[0].get('startError')
+            or not isinstance(launches[0].get('launchNonce'), str)
+            or re.fullmatch(r'[0-9a-f]{64}', launches[0]['launchNonce']) is None):
         raise EvidenceError('ROLE_COLLECTION_LAUNCH')
     if role == 'Merge':
         runner = 'native-yolo-postprocess'
@@ -542,7 +558,8 @@ def collect_role_execution(worker, *, role, provider, request_id, attempt, plan_
         runner = 'onnxruntime-cuda'
     native = read_native_observation(worker.children.log_dir / (role + '.log'),
         provider=provider, role=role, request_id=request_id, attempt=attempt,
-        plan_digest=plan_digest, pid=launches[0].get('pid'), runner_kind=runner)
+        plan_digest=plan_digest, pid=launches[0].get('pid'), runner_kind=runner,
+        launch_nonce=launches[0].get('launchNonce'))
     profile = None
     if runner != 'native-yolo-postprocess':
         path = resolve_role_output(worker.output / role, native['observation'].get('providerProfilePath'))
@@ -605,7 +622,7 @@ def validate_cleanup_records(launches, rows):
     return dict(childCount=len(expected), qualification='CLEANUP_COMPONENT_ONLY')
 
 
-def read_native_observation(path, **binding):
+def read_native_observation(path, *, launch_nonce=None, **binding):
     """Select exactly one role/request observation from an owned bounded log.
 
     Caller supplies the actual launcher's log path and process binding. This
@@ -618,6 +635,12 @@ def read_native_observation(path, **binding):
     if any(p.is_symlink() for p in (path, *path.parents)):
         raise EvidenceError('NATIVE_LOG_SYMLINK')
     payload = _bytes(path)
+    host_pid = binding.get('pid')
+    if launch_nonce is not None:
+        from runtime.yolo_launch_witness import namespace_pid_from_log
+        if type(host_pid) is not int or host_pid <= 0:
+            raise EvidenceError('NATIVE_HOST_PID')
+        binding['pid'] = namespace_pid_from_log(payload, nonce=launch_nonce, role=binding.get('role'))
     prefix = 'NDNSF_DI_EXECUTION_EVIDENCE_OBSERVED '
     selected = []
     try:
@@ -634,7 +657,7 @@ def read_native_observation(path, **binding):
     if len(selected) != 1:
         raise EvidenceError('NATIVE_LOG_OBSERVATION_COUNT')
     result = validate_native_observation(selected[0], **binding)
-    return dict(result, logDigest='sha256:' + hashlib.sha256(payload).hexdigest())
+    return dict(result, logDigest='sha256:' + hashlib.sha256(payload).hexdigest(), hostProcessId=host_pid)
 
 
 def validate_ort_profile(path, observation):

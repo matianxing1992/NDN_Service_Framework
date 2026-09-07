@@ -1902,6 +1902,12 @@ added a deterministic outer-wait expiry regression. Initial full run was
   the reported execution; validate semantics at the final consuming boundary.
 # 2026-09-07 Spec183 host/container PID identity mismatch
 
+Follow-up: Worker nonce/witness launch, receipt v3 and live/offline readers are
+now wired. The real namespace/reader regression shows raw host-PID validation
+fails and nonce-bound namespace-PID validation succeeds. Host PID remains the
+cleanup identity. Exact-SIF acceptance is still pending; this resolves the
+code path and focused regression, not the full runtime qualification.
+
 - Symptom: planned native evidence validation compares Provider getpid() with
   subprocess.Popen(apptainer).pid. The configured --containall isolates PID;
   the values need not match. Real local unshare user/PID namespace test

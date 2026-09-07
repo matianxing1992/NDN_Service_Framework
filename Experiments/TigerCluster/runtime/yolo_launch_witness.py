@@ -10,6 +10,30 @@ import os
 import re
 
 
+def namespace_pid_from_log(payload, *, nonce, role):
+    """Read exactly one expected witness, never a native row's claimed PID."""
+    if not isinstance(nonce, str) or re.fullmatch(r'[0-9a-f]{64}', nonce) is None:
+        raise ValueError('LAUNCH_WITNESS_NONCE')
+    def pairs(items):
+        result = {}
+        for key, value in items:
+            if key in result:
+                raise ValueError('LAUNCH_WITNESS_DUPLICATE_FIELD')
+            result[key] = value
+        return result
+    markers = [line for line in payload.decode('utf-8').splitlines()
+               if line.startswith('TIGER_PROVIDER_PROCESS_STARTED ')]
+    if len(markers) != 1 or len(markers[0]) > 1024:
+        raise ValueError('LAUNCH_WITNESS_COUNT_OR_SIZE')
+    row = json.loads(markers[0].split(' ', 1)[1], object_pairs_hook=pairs)
+    if (not isinstance(row, dict) or set(row) != {'schema', 'nonce', 'role', 'pid'}
+            or row['schema'] != 'tiger-provider-process-v1'
+            or row['nonce'] != nonce or row['role'] != role
+            or type(row['pid']) is not int or not 0 < row['pid'] < 2**64):
+        raise ValueError('LAUNCH_WITNESS_BINDING')
+    return row['pid']
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument('--nonce', required=True)
