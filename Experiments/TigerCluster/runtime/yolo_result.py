@@ -7,6 +7,88 @@ from collections.abc import Mapping
 import re
 
 
+def validate_lifecycle(root, *, case, request_id, attempt_id, candidate_id, candidate_digest):
+    """Validate one externally bound, successful, no-reselection request.
+
+    These User journal entries do not prove native execution, model loading,
+    edge delivery or cleanup. Those independent components remain required.
+    """
+    import json
+    import math
+    from pathlib import Path
+    from runtime.yolo_bundle import _bytes
+    fields = {
+        'INPUT_REFERENCE_PUBLISHED': {'referenceDigest'},
+        'REQUEST_SENT': {'requestDigest'},
+        'ACK_CLOSED': {'ackSnapshotDigest', 'ackCount'},
+        'GRAPH_READY': {'graphDigest', 'catalogueDigest'},
+        'PLACEMENT_DECISION': {'candidateId', 'candidateDigest', 'candidatePriority', 'providerCount'},
+        'ARTIFACTS_READY': {'artifactDigest', 'artifactCount'},
+        'PLAN_SEALED': {'planDigest'},
+        'SELECTION_COMMITTED': {'selectionDigest', 'selectedRoleCount'},
+        'PROVIDER_EXECUTION_STARTED': {'roleDigest', 'providerCount'},
+        'TERMINAL_RESPONSE': {'resultDigest', 'requestCount', 'status'},
+    }
+    common = {'schema', 'caseId', 'requestId', 'attemptId', 'sequence', 'timestampUnix', 'milestone'}
+    if (any(not isinstance(v, str) or not v for v in
+            (case, request_id, attempt_id, candidate_id))
+            or not isinstance(candidate_digest, str)
+            or not re.fullmatch(r'sha256:[0-9a-f]{64}', candidate_digest)):
+        raise EvidenceError('LIFECYCLE_EXPECTED_BINDING')
+    path = Path(root) / 'lifecycle.jsonl'
+    if any(p.is_symlink() for p in (path, *path.parents)):
+        raise EvidenceError('LIFECYCLE_SYMLINK')
+    payload = _bytes(path)
+    if len(payload) > 64 * 1024:
+        raise EvidenceError('LIFECYCLE_SIZE')
+    def pairs(items):
+        value = {}
+        for key, item in items:
+            if key in value:
+                raise EvidenceError('LIFECYCLE_DUPLICATE_KEY')
+            value[key] = item
+        return value
+    def constant(value):
+        raise EvidenceError('LIFECYCLE_NONFINITE')
+    try:
+        lines = payload.decode('utf-8').splitlines()
+        if len(lines) != len(fields):
+            raise EvidenceError('LIFECYCLE_EVENT_COUNT')
+        events = [json.loads(line, object_pairs_hook=pairs, parse_constant=constant) for line in lines]
+    except (UnicodeError, ValueError) as exc:
+        raise EvidenceError('LIFECYCLE_JSON_INVALID') from exc
+    for index, ((milestone, allowed), row) in enumerate(zip(fields.items(), events)):
+        if (not isinstance(row, dict) or set(row) != common | allowed
+                or row['schema'] != 'spec180-yolo-lifecycle-event-v1'
+                or row['milestone'] != milestone):
+            raise EvidenceError('LIFECYCLE_SCHEMA_OR_ORDER')
+        if (row['caseId'], row['requestId'], row['attemptId']) != (case, request_id, attempt_id):
+            raise EvidenceError('LIFECYCLE_PROTOCOL_BINDING')
+        stamp = row['timestampUnix']
+        if (type(row['sequence']) is not int or row['sequence'] != index
+                or type(stamp) not in (int, float) or not 0 < stamp < 1e15
+                or not math.isfinite(stamp)):
+            raise EvidenceError('LIFECYCLE_SEQUENCE_OR_TIME')
+        # time.time() may move backwards under clock correction; sequence,
+        # not wall-clock monotonicity, establishes the journal ordering.
+        for key in allowed:
+            value = row[key]
+            if key.endswith('Digest') and (not isinstance(value, str)
+                    or not re.fullmatch(r'sha256:[0-9a-f]{64}', value)):
+                raise EvidenceError('LIFECYCLE_DIGEST')
+            if key.endswith('Count') or key == 'candidatePriority':
+                minimum = 0 if key == 'candidatePriority' else 1
+                if type(value) is not int or not minimum <= value <= 1000000:
+                    raise EvidenceError('LIFECYCLE_COUNT')
+    if (events[4]['candidateId'], events[4]['candidateDigest']) != (candidate_id, candidate_digest):
+        raise EvidenceError('LIFECYCLE_CANDIDATE_MISMATCH')
+    if events[-1]['status'] is not True or events[-1]['requestCount'] != 1:
+        raise EvidenceError('LIFECYCLE_TERMINAL_NOT_PASS')
+    return dict(events=events, requestId=request_id, attemptId=attempt_id,
+                planDigest=events[6]['planDigest'], resultDigest=events[-1]['resultDigest'],
+                qualification='LIFECYCLE_COMPONENT_ONLY')
+
+
 def reanalyze_numerical_response(root, reference, *, case, request_id, attempt_id,
                                plan_digest, result_digest, candidate_id, candidate_digest):
     """Recompute fixed-input numerical comparison from retained User bytes.

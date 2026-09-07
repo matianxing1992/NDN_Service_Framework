@@ -1814,3 +1814,14 @@ part of task context. Format per entry:
 - **Ref**: Spec179 baseline fixes.
 - **Lesson**: any segmented Data served to a SegmentFetcher must carry a
   terminal marker or the fetch is unbounded.
+## 2026-09-07 — Spec183 V3 lifecycle candidate identity mismatch
+
+- Symptom: V3 PLACEMENT_DECISION candidateId is the digest, while prepared
+  offer trust and numerical evidence use the catalogue candidate name.
+- Cause: V3 SplitCandidate exposes a content digest but no catalogue label;
+  the planner writes that digest to both fields and the User forwards it.
+- Status: discovered by source audit before runtime qualification; NOT fixed.
+  Added strict lifecycle rejection and regression for this mismatch. T006/T007
+  remain open until a trustworthy mapping is implemented.
+- Lesson: validate the actual writer against the collector contract before
+  launching a GPU job; do not weaken evidence binding to make a trace pass.

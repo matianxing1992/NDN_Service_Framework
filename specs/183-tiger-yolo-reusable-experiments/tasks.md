@@ -78,6 +78,10 @@ T001–T004形成 profile/launcher 实现骨架；可操作 MVP 还要求 T006 �
 
 ## Current Checkpoint
 
+最终复核：timestamp巨大整数负例补齐后25项lifecycle测试，完整focused集合480 passed / 45.24s（results/t006-lifecycle-r2/junit.xml）；未执行真实native/inference，候选身份缺口仍待修复。
+
+2026-09-07 T006新增bounded lifecycle组件：按维护中journal的10个事件严格核对外部case/request/attempt/candidate绑定、字段/顺序/计数/digest/有限时间，拒绝duplicate JSON、symlink与超限输入；24 focused用例通过。保持LIFECYCLE_COMPONENT_ONLY，不能证明Provider执行/edge/cleanup。发现V3 planner的PLACEMENT_DECISION把candidate_digest写入candidateId，而prepared offer/numerical使用catalogue名称；尚未修复，必须追踪adapter候选与签名catalogue的映射后修正，不能放宽collector。T006/T007继续unchecked；见evidence/t006-lifecycle-component.md。
+
 2026-09-07 T006数值重分析组件已实现：User显式opt-in保留0600/≤1MiB响应bin并记录digest，Spec183启用且绑定prepared candidate env；离线重算真实响应而非信任matched flag。共用纯NumPy tensor decoder，adapter exports按需加载使oracle/codec不依赖_ndnsf导入；operator NumPy锁定1.24.4。扩展focused455 passed（35.86s），包括实际producer函数/codec/数学/文件和独立import进程，但参考值为fixture、无模型/native/SIF/Tiger运行。T006完整lifecycle/role/node/GPU/edge/cleanup及operator/T007待完成；见evidence/t006-numerical-reanalysis.md。
 
 2026-09-07 configure_network已接入实际NFD/nfdc启动链，生产nfd-ready/routes-ready：配置端口/两侧endpoint绑定、真实socket类型检查、有限管理子进程、剩余startup预算、peer失败、无覆盖receipt；管理进程借用空闲Provider HOME，不与NFD并发用PIB。route_commands显式接收appName/sync；旧baseline默认/group保留。7新增组件测试（OS进程/socket真实，NFD/nfdc为double），总419 passed（26.61s）。最终operator仍须绑定真实allocation并依次调用configure_network→start_workload→真实requests/collector；T005/T006/T007未完成，无native/SIF/Tiger运行。详见evidence/t005-nfd-network-setup.md。
