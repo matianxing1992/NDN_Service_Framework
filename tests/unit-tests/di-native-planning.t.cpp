@@ -366,7 +366,14 @@ BOOST_AUTO_TEST_CASE(PreSplitPlacementFiltersAndDeterministicallyBindsOneProvide
   BOOST_CHECK_EQUAL(proposal.strategy.name, "native-pre-split-first");
   BOOST_CHECK_NO_THROW(proposal.validate(snapshot, candidate));
 
-  const auto core = NativePlanSealer::sealCore(snapshot, proposal);
+  NativePlanSealingInputs inputs;
+  inputs.artifacts = {{{role, "/canonical/model"}}, {{role, digest("artifact")}},
+                       digest("manifest"), digest("recipe"), snapshot.requestId,
+                       snapshot.attempt, modelDescriptor.contentDigest, graphDigest};
+  inputs.requesterIdentity = "/requester";
+  inputs.protectionEpoch = "protected-v1";
+  inputs.expiresAtMs = 2000000000000ULL;
+  const auto core = NativePlanSealer::sealCore(snapshot, proposal, inputs);
   const NativeSecurityPolicySnapshot security{digest("security-policy"), true};
   const auto view = NativePlanSealer::grantView(core, snapshot.offers[1], security);
   const NativeGrantBinding grant{view.provider, view.role, "/grant/1",

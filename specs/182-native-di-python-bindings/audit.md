@@ -87,3 +87,9 @@ T001继续关闭O-002--005：固定ONNX/protobuf字节契约、tokenizer ABI、�
 全部执行单元使用 [generic cards](contracts/execution-units.md)，不依赖 Spark。
 旧 Spark 设计/试用记录保留历史含义；本次不改变 FR/SC、父任务验收或 Gate Order。
 逐行状态为保守迁移，相关实现未经过本单元验收；检查见 [registry evidence](evidence/task-progress-registry-20260907.md)。
+# A9 Placement and Artifact Binding Follow-up
+
+2026-09-07 / OPEN：T004 已移除角色名伪工件摘要并补齐 grant 输入，33 个相关单测通过。
+但 T003-C 将全部角色分配给同一 Provider，且按无关 residency 数量排序；已重开该卡与
+依赖完成状态。A8-01 的 canonical wire 部分保持 OPEN。完整证据见
+[binding repair and placement audit](evidence/t004-artifact-grant-bindings-20260907.md)。

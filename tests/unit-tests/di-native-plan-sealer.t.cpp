@@ -1,16 +1,14 @@
 // T004-A Canonical Plan Sealing — Spec182PlanSealer/* (case-manifest card
 // T004-A; planned suite registered in this file).
 //
-// Native independent canonical plan construction between placement and Core:
-// sealCore -> grantView -> finalizeSecurity -> project -> encode.  Byte-exact
-// conformance against the frozen Python PlanSealerV3 wire belongs to the real
-// Core commit / Provider-parser collaboration (T016); this suite verifies the
-// canonical semantics, the first-boundary rejections (wrong endpoint, missing
-// grant, wrong ACK digest) and the deterministic sealed bytes (encode) that
-// T016 will hand to the Provider parser.
+// Local sealer checks. A8-01 reopened this task: the legacy seven-field
+// encoder and custom digest are not production V3 wire or canonical parity.
+// Artifact/grant-input checks below exercise repaired production APIs; the
+// remaining wire assertions are legacy regressions only, not acceptance.
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanSealer.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGrantClient.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/qwen/NativeQwenPlanner.hpp"
 
 #include <boost/property_tree/json_parser.hpp>
@@ -68,6 +66,7 @@ struct OneRolePlan
 {
   NativePlanningSnapshot snapshot;
   NativePlacementProposal proposal;
+  NativePlanSealingInputs inputs;
   std::string role;
 };
 
@@ -102,6 +101,18 @@ OneRolePlan oneRolePlan(const std::string& tag, const std::string& ackDigest,
   };
   NativePreSplitFirstPlacement placement;
   result.proposal = placement.propose(result.snapshot, candidate);
+  result.inputs.artifacts.sourceByRole = {{result.role, "/canonical/" + tag}};
+  result.inputs.artifacts.artifactDigestByRole = {{result.role, digest(tag + "-artifact")}};
+  result.inputs.artifacts.manifestDigest = digest(tag + "-manifest");
+  result.inputs.artifacts.recipeDigest = digest(tag + "-recipe");
+  result.inputs.artifacts.requestId = result.snapshot.requestId;
+  result.inputs.artifacts.attempt = result.snapshot.attempt;
+  result.inputs.artifacts.modelDigest = result.snapshot.model.contentDigest;
+  result.inputs.artifacts.graphDigest = result.snapshot.graph.graphDigest;
+  result.inputs.requesterIdentity = "/requester";
+  result.inputs.protectionEpoch = "protected-v1";
+  result.inputs.expiresAtMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+    std::chrono::system_clock::now().time_since_epoch()).count() + 1000;
   BOOST_REQUIRE_EQUAL(result.proposal.assignment.providerByRole.at(result.role),
                       "provider-a");
   return result;
@@ -119,27 +130,27 @@ std::string sealedEncodeBytes(const NativeSealedPlan& sealed,
 
 BOOST_AUTO_TEST_SUITE(Spec182PlanSealer)
 
-BOOST_AUTO_TEST_CASE(PlanSealerCanonicalSealingBindsSnapshotAndSingleSourcesProjection)
+BOOST_AUTO_TEST_CASE(PlanSealerBindsSnapshotArtifactsAndGrantContext)
 {
   // One canonical sealing pipeline over a fixed snapshot/proposal pair: every
   // field of the projection is single-sourced from the sealed plan (M22), the
   // digests are deterministic and the encode bytes are canonical JSON with the
-  // frozen 7-key fragment layout.
+  // legacy fragment layout (not a V3 wire oracle; see A8-01).
   const auto ackDigest = digest("t004-ack");
   auto plan = oneRolePlan("t004-seal", ackDigest);
   const NativeSecurityPolicySnapshot security{digest("t004-security"), true};
 
-  const auto core = NativePlanSealer::sealCore(plan.snapshot, plan.proposal);
+  const auto core = NativePlanSealer::sealCore(plan.snapshot, plan.proposal, plan.inputs);
   checkSha256Format(core.coreDigest);
   // Determinism: the same inputs reseal to the same core digest.
   BOOST_CHECK_EQUAL(
-    NativePlanSealer::sealCore(plan.snapshot, plan.proposal).coreDigest,
+    NativePlanSealer::sealCore(plan.snapshot, plan.proposal, plan.inputs).coreDigest,
     core.coreDigest);
   // Offer and artifact maps are bound from the ACK offers and plan roles.
   BOOST_CHECK_EQUAL(core.offerDigestByProvider.at("provider-a"),
                     digest("t004-seal-offer-a"));
   BOOST_CHECK_EQUAL(core.artifactDigestByRole.at(plan.role),
-                    nativePlanningDigest("role-artifact|" + plan.role));
+                    digest("t004-seal-artifact"));
   BOOST_CHECK_EQUAL(core.ackClosedDigest, ackDigest);
 
   const auto view = NativePlanSealer::grantView(core, plan.snapshot.offers[0],
@@ -151,6 +162,12 @@ BOOST_AUTO_TEST_CASE(PlanSealerCanonicalSealingBindsSnapshotAndSingleSourcesProj
   BOOST_CHECK_EQUAL(view.modelDigest, core.modelDigest);
   BOOST_CHECK_EQUAL(view.graphDigest, core.graphDigest);
   BOOST_CHECK_EQUAL(view.artifactDigest, core.artifactDigestByRole.at(plan.role));
+  BOOST_CHECK_EQUAL(view.requestId, plan.snapshot.requestId);
+  BOOST_CHECK_EQUAL(view.attempt, plan.snapshot.attempt);
+  BOOST_CHECK_EQUAL(view.requesterIdentity, plan.inputs.requesterIdentity);
+  BOOST_CHECK_EQUAL(view.modelManifestDigest, plan.inputs.artifacts.manifestDigest);
+  BOOST_CHECK_EQUAL(view.protectionEpoch, plan.inputs.protectionEpoch);
+  BOOST_CHECK_EQUAL(view.expiresAtMs, plan.inputs.expiresAtMs);
 
   const NativeGrantBinding grant{view.provider, view.role, "/grant/t004",
                                  digest("t004-grant"), view.provider};
@@ -233,7 +250,7 @@ BOOST_AUTO_TEST_CASE(PlanSealerDigestAndEncodeBytesAreTamperSensitivePerDimensio
   const auto ackDigest = digest("t004-ack");
   auto plan = oneRolePlan("t004-tamper", ackDigest);
   const NativeSecurityPolicySnapshot security{digest("t004-security"), true};
-  const auto core = NativePlanSealer::sealCore(plan.snapshot, plan.proposal);
+  const auto core = NativePlanSealer::sealCore(plan.snapshot, plan.proposal, plan.inputs);
   const auto view = NativePlanSealer::grantView(core, plan.snapshot.offers[0],
                                                 security);
   const NativeGrantBinding grant{view.provider, view.role, "/grant/t004",
@@ -251,8 +268,7 @@ BOOST_AUTO_TEST_CASE(PlanSealerDigestAndEncodeBytesAreTamperSensitivePerDimensio
   // plan digest and the wire.
   {
     auto other = oneRolePlan("t004-tamper", digest("t004-ack-tampered"));
-    const auto otherCore = NativePlanSealer::sealCore(other.snapshot,
-                                                      other.proposal);
+    const auto otherCore = NativePlanSealer::sealCore(other.snapshot, other.proposal, other.inputs);
     BOOST_REQUIRE_NE(otherCore.coreDigest, baselineCore);
     const auto otherView =
       NativePlanSealer::grantView(otherCore, other.snapshot.offers[0],
@@ -274,8 +290,7 @@ BOOST_AUTO_TEST_CASE(PlanSealerDigestAndEncodeBytesAreTamperSensitivePerDimensio
   {
     auto other = oneRolePlan("t004-tamper", ackDigest,
                              digest("t004-offer-a-tampered"));
-    const auto otherCore = NativePlanSealer::sealCore(other.snapshot,
-                                                      other.proposal);
+    const auto otherCore = NativePlanSealer::sealCore(other.snapshot, other.proposal, other.inputs);
     BOOST_REQUIRE_NE(otherCore.coreDigest, baselineCore);
     BOOST_REQUIRE_EQUAL(otherCore.offerDigestByProvider.at("provider-a"),
                         digest("t004-offer-a-tampered"));
@@ -289,8 +304,7 @@ BOOST_AUTO_TEST_CASE(PlanSealerDigestAndEncodeBytesAreTamperSensitivePerDimensio
   {
     const NativeSecurityPolicySnapshot otherPolicy{digest("t004-security-x"),
                                                    true};
-    const auto otherCore = NativePlanSealer::sealCore(plan.snapshot,
-                                                      plan.proposal);
+    const auto otherCore = NativePlanSealer::sealCore(plan.snapshot, plan.proposal, plan.inputs);
     BOOST_REQUIRE_EQUAL(otherCore.coreDigest, baselineCore);
     const auto otherView = NativePlanSealer::grantView(otherCore,
                                                        plan.snapshot.offers[0],
@@ -338,7 +352,7 @@ BOOST_AUTO_TEST_CASE(PlanSealerRejectsProviderOutsidePlanEndpoint)
   const auto ackDigest = digest("t004-ack");
   auto plan = oneRolePlan("t004-endpoint", ackDigest);
   const NativeSecurityPolicySnapshot security{digest("t004-security"), true};
-  const auto core = NativePlanSealer::sealCore(plan.snapshot, plan.proposal);
+  const auto core = NativePlanSealer::sealCore(plan.snapshot, plan.proposal, plan.inputs);
   const auto view = NativePlanSealer::grantView(core, plan.snapshot.offers[0],
                                                 security);
   const NativeGrantBinding grant{view.provider, view.role, "/grant/t004",
@@ -373,7 +387,7 @@ BOOST_AUTO_TEST_CASE(PlanSealerRejectsIncompleteSubstitutedOrOutsideGrantCover)
   const auto ackDigest = digest("t004-ack");
   auto plan = oneRolePlan("t004-grant", ackDigest);
   const NativeSecurityPolicySnapshot security{digest("t004-security"), true};
-  const auto core = NativePlanSealer::sealCore(plan.snapshot, plan.proposal);
+  const auto core = NativePlanSealer::sealCore(plan.snapshot, plan.proposal, plan.inputs);
   const auto view = NativePlanSealer::grantView(core, plan.snapshot.offers[0],
                                                 security);
 
@@ -424,13 +438,13 @@ BOOST_AUTO_TEST_CASE(PlanSealerRejectsNonCanonicalAckDigestAtSealBoundary)
   // sealed core.  The placement proposal above is well-formed; the sealer
   // refuses to mint an identity over a non-canonical digest string.
   auto plan = oneRolePlan("t004-ack-junk", "not-a-digest");
-  BOOST_CHECK_THROW(NativePlanSealer::sealCore(plan.snapshot, plan.proposal),
+  BOOST_CHECK_THROW(NativePlanSealer::sealCore(plan.snapshot, plan.proposal, plan.inputs),
                     std::invalid_argument);
   // The same guard holds on the sealed-core object: tampering the ACK field
   // into a non-canonical string invalidates the core identity.
   const auto ackDigest = digest("t004-ack");
   auto valid = oneRolePlan("t004-ack-boundary", ackDigest);
-  auto core = NativePlanSealer::sealCore(valid.snapshot, valid.proposal);
+  auto core = NativePlanSealer::sealCore(valid.snapshot, valid.proposal, valid.inputs);
   core.ackClosedDigest = "not-a-digest";
   BOOST_CHECK_THROW(core.validate(), std::invalid_argument);
 }
@@ -442,8 +456,9 @@ BOOST_AUTO_TEST_CASE(PlanSealerPlaintextPolicyNeedsNoGrantCover)
   // still single-sourced and carries no grant binding.
   const auto ackDigest = digest("t004-ack");
   auto plan = oneRolePlan("t004-plaintext", ackDigest);
+  plan.inputs.protectionEpoch = "plaintext-v1";
   const NativeSecurityPolicySnapshot plaintext{digest("t004-security"), false};
-  const auto core = NativePlanSealer::sealCore(plan.snapshot, plan.proposal);
+  const auto core = NativePlanSealer::sealCore(plan.snapshot, plan.proposal, plan.inputs);
   const auto sealed = NativePlanSealer::finalizeSecurity(core, {}, plaintext);
   checkSha256Format(sealed.planDigest);
   const auto projection = NativePlanSealer::project(sealed, "provider-a");
@@ -506,6 +521,110 @@ BOOST_AUTO_TEST_CASE(PlanSealerEncodeRejectsIncompleteProjectionsAndEscapesCanon
   // fragment still carries them as empty strings (fixed canonical layout).
   BOOST_CHECK_EQUAL(tree.get<std::string>("plan_core_digest", ""), "");
   BOOST_CHECK_EQUAL(tree.get<std::string>("ack_closed_digest", ""), "");
+}
+
+BOOST_AUTO_TEST_CASE(PreparedArtifactsReachGrantAcquisitionWithoutBackfill)
+{
+  auto plan = oneRolePlan("t004-prepared", digest("ack"));
+  auto registry = std::make_shared<NativeAdapterRegistry>();
+  registry->freeze();
+  auto published = plan.inputs.artifacts;
+  published.requestId = "untrusted-port-claim";
+  published.attempt = 99;
+  unsigned publications = 0, issues = 0;
+  NativeRequestPreparation preparation(registry, {},
+    [&](const NativeInspectedModel&, const NativePlacementProposal&,
+        const NativeRequestControl&) { ++publications; return published; });
+  NativeInspectedModel inspected{plan.snapshot.model, plan.snapshot.graph,
+                                  "/canonical/model", plan.snapshot.model.contentDigest};
+  NativeRequestControl control{plan.snapshot.requestId, plan.snapshot.attempt,
+                                plan.snapshot.deadline, {}};
+  plan.inputs.artifacts = preparation.ensureArtifacts(inspected, plan.proposal, control);
+  const auto core = NativePlanSealer::sealCore(plan.snapshot, plan.proposal, plan.inputs);
+  const NativeSecurityPolicySnapshot security{digest("policy"), true};
+  const auto view = NativePlanSealer::grantView(core, plan.snapshot.offers.front(), security);
+  auto authority = std::make_shared<NativeArtifactPolicyAuthority>(
+    [&](const NativeGrantRequest& request) {
+      ++issues;
+      BOOST_CHECK_EQUAL(request.requestId, control.requestId);
+      BOOST_CHECK_EQUAL(request.attempt, control.attempt);
+      BOOST_CHECK_EQUAL(request.requesterIdentity, "/requester");
+      BOOST_CHECK_EQUAL(request.modelManifestDigest, published.manifestDigest);
+      BOOST_CHECK_EQUAL(request.artifactDigest, published.artifactDigestByRole.at(plan.role));
+      BOOST_CHECK_EQUAL(request.expiresAtMs, plan.inputs.expiresAtMs);
+      return NativeKeyGrant{"/issued/grant", digest("issued"), request.providerIdentity,
+                             "test-issuer-envelope", request.expiresAtMs};
+    });
+  NativeGrantClient client("/requester", authority,
+    [](const std::string& name, const std::string&) { return name; });
+  // No caller repairs the grant view between the real preparation, sealer
+  // and acquire boundaries. Crypto/actual network publication remain T005/T016.
+  const auto grant = client.acquire(view,
+    std::chrono::system_clock::time_point(std::chrono::milliseconds(view.expiresAtMs)));
+  BOOST_CHECK_EQUAL(publications, 1U);
+  BOOST_CHECK_EQUAL(issues, 1U);
+  BOOST_CHECK_EQUAL(grant.expiresAtMs, view.expiresAtMs);
+  BOOST_CHECK_EQUAL(grant.provider, view.provider);
+}
+
+BOOST_AUTO_TEST_CASE(SealCoreRejectsForeignArtifactsAndInexactCover)
+{
+  const auto plan = oneRolePlan("t004-binding", digest("ack"));
+  const std::vector<std::function<void(NativePlanSealingInputs&)>> mutations = {
+    [](auto& x) { x.artifacts.requestId = "foreign"; },
+    [](auto& x) { ++x.artifacts.attempt; },
+    [](auto& x) { x.artifacts.modelDigest = digest("foreign-model"); },
+    [](auto& x) { x.artifacts.graphDigest = digest("foreign-graph"); },
+    [](auto& x) { x.artifacts.artifactDigestByRole.clear(); },
+    [](auto& x) { x.artifacts.sourceByRole.clear(); },
+    [](auto& x) { x.artifacts.sourceByRole.emplace("extra", "/canonical/extra");
+                  x.artifacts.artifactDigestByRole.emplace("extra", digest("extra")); },
+    [](auto& x) { x.requesterIdentity.clear(); },
+    [](auto& x) { x.protectionEpoch.clear(); },
+    [](auto& x) { x.expiresAtMs = 1; },
+  };
+  for (const auto& mutate : mutations) {
+    auto changed = plan.inputs;
+    mutate(changed);
+    BOOST_CHECK_THROW(NativePlanSealer::sealCore(plan.snapshot, plan.proposal, changed),
+                      std::invalid_argument);
+  }
+}
+
+BOOST_AUTO_TEST_CASE(RealArtifactIdentityChangesCoreWithoutChangingRole)
+{
+  const auto plan = oneRolePlan("t004-artifact", digest("ack"));
+  const auto before = NativePlanSealer::sealCore(plan.snapshot, plan.proposal, plan.inputs);
+  auto revised = plan.inputs;
+  revised.artifacts.artifactDigestByRole.at(plan.role) = digest("different-certified-artifact");
+  const auto after = NativePlanSealer::sealCore(plan.snapshot, plan.proposal, revised);
+  BOOST_CHECK_NE(before.coreDigest, after.coreDigest);
+  BOOST_CHECK_EQUAL(after.artifactDigestByRole.at(plan.role), digest("different-certified-artifact"));
+}
+
+BOOST_AUTO_TEST_CASE(GrantViewRejectsChangedOfferAndProtectionPolicy)
+{
+  auto plan = oneRolePlan("t004-offer", digest("ack"));
+  const auto core = NativePlanSealer::sealCore(plan.snapshot, plan.proposal, plan.inputs);
+  const NativeSecurityPolicySnapshot security{digest("policy"), true};
+  auto changed = plan.snapshot.offers.front();
+  changed.offerDigest = digest("changed-offer");
+  BOOST_CHECK_THROW(NativePlanSealer::grantView(core, changed, security), std::invalid_argument);
+  BOOST_CHECK_THROW(NativePlanSealer::grantView(core, plan.snapshot.offers.front(),
+                    NativeSecurityPolicySnapshot{digest("policy"), false}), std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(SealCoreRejectsProviderReusedAcrossRoles)
+{
+  auto plan = oneRolePlan("t004-ownership", digest("ack"));
+  plan.proposal.executionPlan.roles.push_back("/other-role");
+  plan.proposal.assignment.providerByRole.emplace("/other-role", "provider-a");
+  plan.inputs.artifacts.sourceByRole.emplace("/other-role", "/canonical/other");
+  plan.inputs.artifacts.artifactDigestByRole.emplace("/other-role", digest("other-artifact"));
+  BOOST_CHECK_EXCEPTION(NativePlanSealer::sealCore(plan.snapshot, plan.proposal, plan.inputs),
+                        std::invalid_argument, [](const std::invalid_argument& e) {
+                          return std::string(e.what()) == "native plan requires one role per Provider";
+                        });
 }
 
 BOOST_AUTO_TEST_SUITE_END()

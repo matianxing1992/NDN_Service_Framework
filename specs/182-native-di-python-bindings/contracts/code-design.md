@@ -150,6 +150,23 @@ port 在 ACK_CLOSED 后、planning snapshot 形成前完成，不能在 comparat
 
 ## CD-003 Plan Semantics
 
+### Artifact and Request Binding Repair
+
+A8-01 修复时，`sealCore(snapshot, proposal, NativePlanSealingInputs)` 取代缺少工件
+输入的两参数入口，不保留合成工件摘要的默认 overload。NativePlanSealingInputs 包含
+CD-013 ensureArtifacts 返回的 NativeArtifactBinding、原请求 owner 的 requesterIdentity、
+protectionEpoch、原绝对 wall expiry（expiresAtMs）；不重新发明 TTL。NativeArtifactBinding
+增加 requestId/attempt/modelDigest/graphDigest，由 ensureArtifacts 在检查 model/proposal/
+control 和实际 publication 结果之后写入，不信任 publication port 自报的上下文。
+sealer 检查其与 snapshot/proposal 完全匹配、工件 exact role cover 和原请求有效期；
+core 保留该 binding，artifactDigestByRole 复制真实摘要。grantView 同源填完整申请字段，
+且要求传入 offer digest 等于 sealed ACK、protection epoch 与 security policy 一致。
+
+原 Python validate_one_to_one_role_provider 和生产 projection set 均要求一 role/Provider，
+含 rank 的各完整 execution role 仍各自有唯一 Provider。不得用同一 Provider 分配所有
+roles 或把 find_if 第一个角色当完整覆盖。此处修复输入来源，不宣称现有摘要/七字段
+encode 已与 canonical V3 wire 等价；剩余 A8-01 按 tasks 继续修复。
+
 | Operation | Exact paths | Symbols |
 | --- | --- | --- |
 | ADD | NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanSealer.hpp; NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanSealer.cpp | NativePlanSealer::sealCore, grantView, finalizeSecurity, project, encode |

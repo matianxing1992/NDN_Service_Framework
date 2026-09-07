@@ -46,6 +46,12 @@ struct NativeArtifactBinding
   std::map<std::string, std::string> artifactDigestByRole;
   std::string manifestDigest;
   std::string recipeDigest;
+  // Filled by ensureArtifacts from the checked request/model, not by its
+  // publication port. The sealer refuses a foreign or unbound result.
+  std::string requestId;
+  std::uint64_t attempt = 0;
+  std::string modelDigest;
+  std::string graphDigest;
 
   void validate() const;
 };

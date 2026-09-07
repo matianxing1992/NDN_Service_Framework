@@ -126,6 +126,8 @@ Name相同但作用域不同的字段不能共享可写状态。
 | --- | --- | --- | --- |
 | user / C01 | shared_ptr<ServiceUser>，应用构造传入，必需 | Core网络/认证访问；C01只调用公开API | shared非独占；不关闭Face；注释 Core remains authoritative |
 | user / operation | 同 C01 的 shared_ptr<ServiceUser> | client close 后 handle 仍可检查 Core I/O 线程并读取终态 | operation 最后引用释放时释放 owner；应用继续负责 Face 生命周期 |
+| artifacts / NativePlacementPlanCore | ensureArtifacts 返回的 NativeArtifactBinding，复制持有 | 对照 request/attempt/model/graph 和 exact role cover；grantView 使用真实 manifest/artifact digest | 不从 role 名生成摘要；publication port 不拥有请求绑定字段 |
+| requesterIdentity/protectionEpoch/expiresAtMs / NativePlanSealingInputs | 原 request owner 的配置及绝对 wire expiry | 原样保存在 core 并由 grantView 派生，expiry 非新 TTL | 非空/有效期检查；policy 与 epoch 一致；详细来源见 CD-003 Artifact and Request Binding Repair |
 | adapters / C01,C18,C20 | shared_ptr<const NativeAdapterRegistry>，已freeze | ID→native模型实现；请求只读 | 必需；freeze前不可交client；不可混Python对象 |
 | grants / C01 | shared_ptr<NativeGrantClient>，已配置凭证/issuer | 保护角色申请grant | 生命周期覆盖在途请求；不含caller明文keydict |
 | conversations / C01 | shared_ptr<NativeConversationCoordinator>，可空 | continuation owner | 空仅限无状态请求；不能默认丢弃continuation |

@@ -1,5 +1,13 @@
 # Failure Log and Evidence Index
 
+## 2026-09-07 — Spec182 T003 placement source audit reopened
+
+NativePlanning.cpp::propose 将全部角色分配给一个 Provider，并按 residency 集合大小
+代替目标工件命中排序。既有 rank-one 局部 PASS 未覆盖该缺陷；T003-C 及相关依赖 DONE
+已回退 PARTIAL。此为源码审计，没有新的失败运行；下一步修复逐角色独立 Provider 分配。
+同时 T004 真实工件/grant 输入修复已完成定向 33-case 验证，完整 wire 仍未完成。
+见 [binding repair and placement audit](../specs/182-native-di-python-bindings/evidence/t004-artifact-grant-bindings-20260907.md)。
+
 ## 2026-09-07 — Spec182 T004 native Selection wire incompatible
 
 最小 native codec 诊断中，NativePlanSealer::encode 接受字段并输出 386 字节，
