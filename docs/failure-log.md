@@ -1874,3 +1874,17 @@ added a deterministic outer-wait expiry regression. Initial full run was
   collector cannot derive expected edges from observations themselves.
 - Lesson: verify both producer instrumentation and independent expected
   contract before claiming edge coverage from successful final responses.
+## 2026-09-07 — V3 numerical receipt used carrier rather than execution digest
+
+- Symptom: V3 PLAN_SEALED/native assignments use PlanSealerV3 execution digest,
+  while YOLO User wrote SealedCollaborationPlan.plan_digest to numerical evidence.
+- Cause: the outer carrier digest includes assignment payloads and is a
+  different object; isolated tests supplied one generic plan string.
+- Fix: AutomaticInferenceHandle.execution_plan_digest exposes the coordinator's
+  existing runtime plan binding, with strict digest validation and legacy/V2
+  carrier fallback only when no explicit metadata binding exists. YOLO uses it.
+- Evidence: property kernel distinguishes carrier/runtime, rejects invalid
+  explicit bindings; numerical production-tail fixture now separates names.
+  Native integration remains pending.
+- Lesson: identify what each digest covers before joining evidence; similarly
+  named plan fields are not interchangeable.

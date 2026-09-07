@@ -647,13 +647,13 @@ def _load_yolo_ack_driven(client, args) -> int:
         return 3
     if not _record_yolo_numerical_result(
             args, numerical_reference, bytes(response.payload),
-            handle.sealed_plan.plan_digest, journal.attempt_id):
+            handle.execution_plan_digest, journal.attempt_id):
         print("YOLO_ACK_DRIVEN_RESULT status=false reason=NUMERICAL_ORACLE_FAILED", flush=True)
         return 4
     print(
         "YOLO_ACK_DRIVEN_RESULT status=true "
         f"payload_bytes={len(response.payload)} "
-        f"plan_digest={handle.sealed_plan.plan_digest}",
+        f"plan_digest={handle.execution_plan_digest}",
         flush=True,
     )
     return 0

@@ -386,6 +386,20 @@ class AutomaticInferenceHandle:
     def response(self, timeout_ms: int | None = None):
         return self.collaboration.result(timeout_ms)
 
+    @property
+    def execution_plan_digest(self) -> str:
+        """Identity sealed into runtime assignments and execution evidence.
+
+        V3's execution plan is distinct from the outer Collaboration carrier
+        (sealed_plan.plan_digest). V2 uses the carrier as its execution plan.
+        The coordinator already binds the runtime identity in handle metadata.
+        """
+        metadata = self.conversation_metadata or {}
+        value = metadata.get('plan_digest', self.sealed_plan.plan_digest)
+        if not isinstance(value, str) or re.fullmatch(r'sha256:[0-9a-f]{64}', value) is None:
+            raise ValueError('invalid execution plan digest')
+        return value
+
     def result(self, timeout_ms: int | None = None) -> Any:
         response = self.response(timeout_ms)
         if not response.status:

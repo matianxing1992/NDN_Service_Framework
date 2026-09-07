@@ -78,6 +78,8 @@ T001–T004形成 profile/launcher 实现骨架；可操作 MVP 还要求 T006 �
 
 ## Current Checkpoint
 
+2026-09-07 发现并修复V3 numerical planDigest错用outercarrier：新增handle.execution_plan_digest读取coordinator已绑定runtime摘要，YOLO numerical/终端marker改用该属性；不改任一digest计算。4属性kernel+数值related共41通过，native handle未验证。公开dependency projection仍待做；见evidence/t006-lifecycle-component.md。
+
 2026-09-07 依赖trace启用NDNSF_DI_DEPENDENCY_OBJECT_TRACE=1；collector按外部sealed edges/session配对publish/fetch DATA_V1、role/name/scope/bytes，8新fixtures+Worker共39通过。须补真实sealed-plan public投影并绑定四条edge与planDigest，negative/实际跨节点仍未验证。见evidence/t006-dependency-pairs.md；T006未闭合。
 
 2026-09-07 collect_request_result合并lifecycle与实际response重分析，严格对冻结graph/catalogue，numerical所用plan/result/request/attempt全部来自已验证lifecycle。4新增交叉绑定负例/正例，数值suite15通过；REQUEST_RESULT_COMPONENT_ONLY，native/GPU/edge/cleanup仍未闭合。

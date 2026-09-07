@@ -154,7 +154,8 @@ def test_actual_user_terminal_branch_cannot_print_false_success(matched, remote_
     journal = SimpleNamespace(attempt_id="attempt-1", append=lambda *a, **k: None, validate_complete=lambda: None)
     namespace = {"hashlib": hashlib, "journal": journal, "numerical_reference": object(),
                  "handle": SimpleNamespace(response=lambda timeout: SimpleNamespace(status=remote_status, payload=b"real response", error="secret"),
-                                           sealed_plan=SimpleNamespace(plan_digest="bound-plan")),
+                                           execution_plan_digest="bound-plan",
+                                           sealed_plan=SimpleNamespace(plan_digest="carrier-plan")),
                  "_record_yolo_numerical_result": lambda *args: calls.append(args) or matched}
     exec(compile(ast.Module(body=[node], type_ignores=[]), "user-terminal", "exec"), namespace)
     assert namespace["_load_yolo_ack_driven"](None, SimpleNamespace(timeout_ms=10)) == exit_code

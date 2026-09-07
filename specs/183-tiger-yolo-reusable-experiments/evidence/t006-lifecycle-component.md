@@ -1,5 +1,23 @@
 # T006 lifecycle component checkpoint
 
+## Runtime plan vs carrier correction
+
+V3 PLAN_SEALED emits the finalized PlanSealerV3 execution digest, also used in
+assignments and native observations. SealedCollaborationPlan.plan_digest hashes
+the outer carrier including assignment payloads; it is a distinct identity.
+YOLO numerical records and terminal marker previously used that carrier hash.
+AutomaticInferenceHandle now exposes execution_plan_digest from the existing
+coordinator metadata binding (strict canonical SHA-256); legacy handles with
+no explicit binding fall back to the carrier, as V2 does. YOLO evidence uses
+the execution property. Neither carrier nor runtime hash computation changed.
+Four isolated property tests and updated real production-tail numerical tests
+pass; full public native handle construction remains T008. Public dependency
+projection is still pending and must use this corrected execution binding.
+
+Expanded regression: 591 passed in 46.51s (previous six selectors plus
+tests/python/test_spec183_execution_plan_identity.py); JUnit
+`Experiments/TigerCluster/results/t006-execution-plan-r1/junit.xml`.
+
 ## Request-result join follow-up
 
 collect_request_result now joins strict lifecycle validation with real response
