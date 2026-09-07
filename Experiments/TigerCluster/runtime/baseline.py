@@ -98,6 +98,7 @@ def bundle_files(root: Path) -> dict:
 def container_command(profile: dict, bundle: Path, home: Path, public: Path,
                       output: Path, argv: list[str], *, node: Path | None = None,
                       prepare: Path | None = None, artifacts: Path | None = None,
+                      preparation_inputs: Path | None = None,
                       gpu: bool = False, gpu_device: str | None = None) -> list[str]:
     """Compose a role-isolated command; HOME paths match the PIB's TPM locator.
 
@@ -113,7 +114,9 @@ def container_command(profile: dict, bundle: Path, home: Path, public: Path,
                 r"(?:0|[1-9][0-9]*|GPU-[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12})",
                 gpu_device)))):
         raise ValueError("GPU_DEVICE")
-    for path in (bundle, home, public, output, node, prepare, artifacts):
+    if preparation_inputs is not None and (prepare is None or gpu or node is not None):
+        raise ValueError('PREPARATION_INPUT_SCOPE')
+    for path in (bundle, home, public, output, node, prepare, artifacts, preparation_inputs):
         if path is None:
             continue
         if (not Path(path).is_absolute() or ".." in Path(path).parts
@@ -132,6 +135,8 @@ def container_command(profile: dict, bundle: Path, home: Path, public: Path,
         command += ["--bind", f"{node}:/node:rw"]
     if prepare is not None:
         command += ["--bind", f"{prepare}:/identities:rw"]
+    if preparation_inputs is not None:
+        command += ["--bind", f"{preparation_inputs}:/inputs:ro"]
     command += [profile["sif"], "/usr/bin/env",
                 f"PATH={BIN}:/opt/venv/bin:/usr/bin:/bin",
                 "LD_LIBRARY_PATH=/opt/ndnsf-di/current/lib:/opt/onnxruntime/lib",

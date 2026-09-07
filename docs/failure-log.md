@@ -1769,6 +1769,11 @@ part of task context. Format per entry:
 
 ## 2026-09-07 — Controller receipt conflicted with read-only configuration mount
 
+### Preparation mount review follow-up
+
+- Source review found that a strict empty `/identities` check conflicts with the shared Apptainer command's pre-created `root` HOME. The guard now allows only that empty directory and rejects any old content; a focused regression covers both cases. This was fixed before any SIF launch, not observed as a cluster failure.
+- Private preparation inputs now have an explicit read-only `/inputs` mount restricted to offline preparation (no node mount/GPU/ordinary worker). Final operator gating and actual SIF execution remain pending.
+
 - Symptom: source audit found the maintained publication function writes `runtime-publication-receipt.json` beside its input; Spec183 passes `/config/runtime-publication.json` under a read-only mount. Real deployment would fail after publication.
 - Cause: an old MiniNDN writable-directory assumption crossed into the SIF launch contract; process-argv tests alone did not exercise receipt I/O.
 - Fix: explicit optional receipt-output CLI on the original Controller; Tiger launch passes `/output/runtime-publication-receipt.json`. Explicit paths reject overwrite/input alias/symlink/traversal; legacy default remains for older runners. New source seal/SIF required.

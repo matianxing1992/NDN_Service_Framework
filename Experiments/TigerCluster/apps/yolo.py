@@ -60,6 +60,19 @@ def configuration_for_run(template: dict, plan: dict) -> dict:
     return config
 
 
+def validate_preparation_roots(public: Path, private: Path) -> None:
+    """Apptainer may pre-create the empty issuer HOME for --home."""
+    for root in (public, private):
+        if any(p.is_symlink() for p in (root, *root.parents)) or not root.is_dir():
+            raise ValueError('YOLO_PREPARE_OUTPUT_NOT_EMPTY')
+    if any(public.iterdir()):
+        raise ValueError('YOLO_PREPARE_OUTPUT_NOT_EMPTY')
+    children = list(private.iterdir())
+    if children and (children != [private / 'root'] or children[0].is_symlink()
+                     or not children[0].is_dir() or any(children[0].iterdir())):
+        raise ValueError('YOLO_PREPARE_OUTPUT_NOT_EMPTY')
+
+
 def prepare_in_container(plan: dict, *, template_path: Path, template_digest: str,
                          package: Path, manifest_digest: str, registry: Path,
                          registry_digest: str, authority_private: Path,
@@ -81,9 +94,7 @@ def prepare_in_container(plan: dict, *, template_path: Path, template_digest: st
     from runtime.yolo_profile import _read_plane
 
     public, private = Path('/config'), Path('/identities')
-    for root in (public, private):
-        if root.is_symlink() or not root.is_dir() or any(root.iterdir()):
-            raise ValueError('YOLO_PREPARE_OUTPUT_NOT_EMPTY')
+    validate_preparation_roots(public, private)
     template_wire = _read_credential(Path(template_path))
     if 'sha256:' + hashlib.sha256(template_wire).hexdigest() != template_digest:
         raise ValueError('YOLO_PREPARE_TEMPLATE_DIGEST')
@@ -137,6 +148,64 @@ def prepare_in_container(plan: dict, *, template_path: Path, template_digest: st
                'registryDigest': registry_digest}
     _credential_document(public / 'preparation.json', receipt)
     return receipt
+
+
+def preparation_arguments(descriptor: Path, expected_digest: str) -> dict:
+    """Decode a pinned internal prepare descriptor with fixed mount paths."""
+    from runtime.identities import _read_credential
+    from runtime.yolo_profile import _object
+    wire = _read_credential(Path(descriptor))
+    if 'sha256:' + hashlib.sha256(wire).hexdigest() != expected_digest:
+        raise ValueError('YOLO_PREPARE_DESCRIPTOR_DIGEST')
+    value = json.loads(wire, object_pairs_hook=_object)
+    fields = {'schema', 'plan', 'templateDigest', 'manifestDigest', 'registryDigest',
+              'protectionEpoch', 'candidateId', 'candidateDigest'}
+    if not isinstance(value, dict) or set(value) != fields or value['schema'] != 'tiger-yolo-prepare-input-v1':
+        raise ValueError('YOLO_PREPARE_DESCRIPTOR')
+    for key in ('templateDigest', 'manifestDigest', 'registryDigest', 'candidateDigest'):
+        if not isinstance(value[key], str) or not re.fullmatch(r'sha256:[0-9a-f]{64}', value[key]):
+            raise ValueError('YOLO_PREPARE_DESCRIPTOR_HASH')
+    if (not isinstance(value['plan'], dict)
+            or value['plan'].get('schema') != 'tiger-yolo-run-plan-v1'
+            or not isinstance(value['candidateId'], str)
+            or not re.fullmatch(r'[A-Za-z0-9_.-]{1,128}', value['candidateId'])
+            or not isinstance(value['protectionEpoch'], str)
+            or value['protectionEpoch'] == 'plaintext-v1'
+            or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,127}', value['protectionEpoch'])):
+        raise ValueError('YOLO_PREPARE_DESCRIPTOR_BINDING')
+    return dict(plan=value['plan'], template_path=Path('/inputs/template.json'),
+        template_digest=value['templateDigest'], package=Path('/artifacts'),
+        manifest_digest=value['manifestDigest'],
+        registry=Path('/inputs/trust/contracts/trust-root-registry-v1.json'),
+        registry_digest=value['registryDigest'],
+        authority_private=Path('/inputs/private/artifact-policy-authority.key'),
+        protection_epoch=value['protectionEpoch'], candidate_id=value['candidateId'],
+        candidate_digest=value['candidateDigest'])
+
+
+def main(argv=None):
+    """Internal container command. Operator qualification belongs to submit.py."""
+    import argparse
+    parser = argparse.ArgumentParser(description=main.__doc__)
+    commands = parser.add_subparsers(dest='action', required=True)
+    prepare = commands.add_parser('prepare')
+    prepare.add_argument('--descriptor', type=Path, required=True)
+    prepare.add_argument('--descriptor-sha256', required=True)
+    args = parser.parse_args(argv)
+    try:
+        options = preparation_arguments(args.descriptor, args.descriptor_sha256)
+        receipt = prepare_in_container(**options)
+    except Exception as exc:
+        # Never print exception values: private input paths or credentials may
+        # occur in errors from imported libraries. Detailed diagnosis is local.
+        import traceback
+        frames = [{'file': Path(frame.filename).name, 'line': frame.lineno, 'function': frame.name}
+                  for frame in traceback.extract_tb(exc.__traceback__)[-8:]]
+        print(json.dumps({'status': 'FAILED', 'qualification': 'NOT_EVALUATED',
+                          'errorType': type(exc).__name__, 'frames': frames}, sort_keys=True))
+        return 2
+    print(json.dumps(receipt, sort_keys=True))
+    return 0
 
 
 def _control_config(worker, role):
@@ -269,3 +338,7 @@ def run_requests(worker, plan: dict, *, package: Path, catalog_data_name: str,
         worker.run_user(i, argv, package=package, seconds=process_timeout_seconds,
                         peer_failure=peer_failure)
         accept_request(request, Path(request['output']))
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

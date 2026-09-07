@@ -33,6 +33,32 @@ ran. No fake extension or skip was used. Both must pass after T008 native build.
 
 ## Remaining controlling work
 
+### Internal prepare command and input mount scope
+
+The actual internal entry is now `python -m apps.yolo prepare --descriptor
+/inputs/prepare.json --descriptor-sha256 <pinned-digest>`. It requires an exact
+descriptor schema/hash and fixes template, registry, private authority and model
+paths under `/inputs` and `/artifacts`; it does not accept injected executable
+or mount paths. Failure exits 2 with error type and bounded source-frame
+locations, excluding exception text/private material. Success is PREPARED /
+NOT_EVALUATED only. This internal command does not bypass T007 or replace the
+still-pending public operator `submit.py prepare` qualification boundary.
+
+The existing `container_command` now supports an explicitly offline,
+read-only `/inputs` mount only with preparation enabled, no node/network mount
+and no GPU. Normal workers cannot receive this mount. The output-root guard
+allows Apptainer's pre-created *empty* root HOME but rejects old contents or
+other roles; requiring a completely empty `/identities` would conflict with
+the common launcher's `--home` bind.
+
+Seven command/mount/root-guard tests pass (**0.18s**); actual module `--help`
+runs locally. The first full focused run passed **349 in 20.50s** before the
+empty-root regression was added. Full native preparation and output inventory
+binding remain unverified; do not count mock command dispatch as execution.
+
+Final r2 including the root-HOME regression: **350 passed in 21.13s**,
+JUnit `results/spec183-prepare-command-r2/junit.xml`.
+
 ### Preparation orchestration wiring
 
 `apps/yolo.py::prepare_in_container` now connects the actual existing owners
