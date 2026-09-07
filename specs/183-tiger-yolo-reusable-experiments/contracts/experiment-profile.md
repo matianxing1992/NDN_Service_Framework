@@ -254,3 +254,15 @@ verify仅扫描已登记目录，未知子目录当场拒绝，不先遍历其�
 并检查冻结树的完整内容、无额外文件和只读模式。成功只增加
 `harness.integrity=VERIFIED`；整体仍INCOMPLETE/NOT_EVALUATED，因为业务/源/模型/
 ABI/receipt等生产门未完成。此实现不开放prepare/submit的资格绕过入口。
+
+### T005 operator seam checkpoint
+
+`runtime/yolo_operator.py::run_rank` is the only rank-level coordinator seam. It
+requires a validated plan and explicitly supplied preparation/candidate digests,
+sealed public/bundle/output directories, role homes, endpoints, timing budgets,
+and the CPU/GPU allocation contract. It constructs `NodeRuntime` through
+`from_preparation`, then delegates the maintained lifecycle to
+`apps.yolo.run_normal_node`. The operator does not create ACKs, Selection,
+model outputs, or verdicts. Its focused tests use a lifecycle double only;
+actual SIF/native/Provider/MiniNDN/GPU evidence remains required before T005 or
+T007 can close.
