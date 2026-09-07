@@ -1,5 +1,21 @@
 # T006 lifecycle component checkpoint
 
+## Request-result join follow-up
+
+collect_request_result now joins strict lifecycle validation with real response
+byte reanalysis. It compares GRAPH_READY against caller-authenticated frozen
+graph/catalogue digests, then derives request/attempt/plan/result bindings for
+numerical reanalysis from the validated lifecycle, not independently supplied
+values. Four added tests exercise the real producer numerical function, codec,
+NumPy reference and retained bytes, rejecting swapped plan, response or
+catalogue identities. The lifecycle in these tests is synthetic; no native
+inference is claimed. REQUEST_RESULT_COMPONENT_ONLY still requires native
+roles, physical GPU, dependency transfer, model coverage and cleanup checks.
+
+Expanded join regression: 579 passed in 43.59s, same six selectors; JUnit
+`Experiments/TigerCluster/results/t006-request-join-r1/junit.xml`.
+
+
 The validator in `runtime/yolo_result.py` consumes a bounded, non-symlink
 `lifecycle.jsonl`. It checks the maintained ten-event schema against externally
 provided case/request/attempt/candidate identities. It rejects missing/reordered

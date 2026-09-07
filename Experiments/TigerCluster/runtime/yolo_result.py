@@ -7,6 +7,26 @@ from collections.abc import Mapping
 import re
 
 
+def collect_request_result(root, reference, *, case, request_id, attempt_id,
+                           candidate_id, candidate_digest, graph_digest, catalogue_digest):
+    """Join one lifecycle and recomputed response, with frozen graph identity.
+
+    Caller authenticates the frozen reference/catalogue/graph. This does not
+    replace native role, GPU, dependency or cleanup qualification.
+    """
+    lifecycle = validate_lifecycle(root, case=case, request_id=request_id,
+        attempt_id=attempt_id, candidate_id=candidate_id, candidate_digest=candidate_digest)
+    graph = lifecycle['events'][3]
+    if graph['graphDigest'] != graph_digest or graph['catalogueDigest'] != catalogue_digest:
+        raise EvidenceError('REQUEST_GRAPH_CATALOGUE_BINDING')
+    numerical = reanalyze_numerical_response(root, reference, case=case,
+        request_id=lifecycle['requestId'], attempt_id=lifecycle['attemptId'],
+        plan_digest=lifecycle['planDigest'], result_digest=lifecycle['resultDigest'],
+        candidate_id=candidate_id, candidate_digest=candidate_digest)
+    return dict(lifecycle=lifecycle, numerical=numerical,
+                qualification='REQUEST_RESULT_COMPONENT_ONLY')
+
+
 def write_worker_receipt(worker, rows):
     """Persist prepared-run ownership after normal-case service/User cleanup.
 

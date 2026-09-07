@@ -14,6 +14,35 @@ sys.path.insert(0, str(ROOT / 'Experiments/TigerCluster'))
 from runtime.yolo_result import reanalyze_numerical_response
 
 
+@pytest.mark.parametrize('fault', ['none', 'plan', 'response', 'catalogue'])
+def test_request_collection_joins_actual_numerical_bytes_to_lifecycle(reference, tmp_path, monkeypatch, fault):
+    from runtime.yolo_result import collect_request_result
+    sys.path.insert(0, str(ROOT / 'Experiments/TigerCluster/tests'))
+    from test_yolo_lifecycle_result import journal, D
+    package, expected = reference
+    frozen = load_reference(package, ROOT, 640)
+    functions = _production_functions()
+    payload = functions['encode_native_tensor_bundle']({'predictions': expected})
+    monkeypatch.setenv('SPEC180_CANDIDATE_ID', 'shared-backbone-two-shard-v1')
+    monkeypatch.setenv('SPEC180_CANDIDATE_DIGEST', D)
+    args = SimpleNamespace(lifecycle_output_dir=str(tmp_path), lifecycle_case='two-node',
+                           request_id='/run/request/1', retain_numerical_response=True)
+    functions['_record_yolo_numerical_result'](args, frozen, payload, D, 'attempt-1')
+    rows = journal()
+    rows[-1]['resultDigest'] = 'sha256:' + hashlib.sha256(payload).hexdigest()
+    if fault == 'plan': rows[6]['planDigest'] = 'sha256:'+'2'*64
+    if fault == 'response': rows[-1]['resultDigest'] = D
+    if fault == 'catalogue': rows[3]['catalogueDigest'] = 'sha256:'+'2'*64
+    (tmp_path/'lifecycle.jsonl').write_text('\n'.join(json.dumps(r) for r in rows)+'\n')
+    kwargs = dict(case='two-node', request_id='/run/request/1', attempt_id='attempt-1',
+        candidate_id='shared-backbone-two-shard-v1', candidate_digest=D, graph_digest=D, catalogue_digest=D)
+    if fault == 'none':
+        assert collect_request_result(tmp_path, frozen, **kwargs)['qualification'] == 'REQUEST_RESULT_COMPONENT_ONLY'
+    else:
+        with pytest.raises(ValueError):
+            collect_request_result(tmp_path, frozen, **kwargs)
+
+
 @pytest.mark.parametrize('fault', ['none', 'forged-pass', 'payload', 'lineage', 'oracle', 'tolerance', 'path', 'symlink'])
 def test_reanalysis_uses_bytes_not_pass_flag(reference, tmp_path, monkeypatch, fault):
     package, expected = reference

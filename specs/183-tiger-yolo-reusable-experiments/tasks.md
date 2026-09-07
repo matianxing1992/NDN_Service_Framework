@@ -78,6 +78,8 @@ T001–T004形成 profile/launcher 实现骨架；可操作 MVP 还要求 T006 �
 
 ## Current Checkpoint
 
+2026-09-07 collect_request_result合并lifecycle与实际response重分析，严格对冻结graph/catalogue，numerical所用plan/result/request/attempt全部来自已验证lifecycle。4新增交叉绑定负例/正例，数值suite15通过；REQUEST_RESULT_COMPONENT_ONLY，native/GPU/edge/cleanup仍未闭合。
+
 2026-09-07 two-rank real-file barrier回归：请求pending时对端不得close、正常双方退出、请求失败双方保留记录。修复跨phase failure盲区：completion持续检查startup失败但不复用旧deadline，finite User也监控common failure lane。6 orchestration通过，runtime/应用仍double，非NFD/SIF验证；见evidence/t005-normal-node-owner.md。
 
 2026-09-07 internal normal node owner接线：network→startup→rank0 requests→both-rank completion→close→node receipt；completion独立目录/后启动预算、同run/candidate/probe绑定，User时限clamp剩余预算；失败通知+本地node-failure记录。3新orchestration double测试+application共45通过；实际双rank/negative/fullvalidator/operator/T007仍未完成。见evidence/t005-normal-node-owner.md。
