@@ -54,7 +54,7 @@ T012 -> T013 -> T014 -> T015 -> T016 -> T017
 T006/T007 的原生依赖设计必须先由 T001 关闭，不能一边猜 ABI 一边并入 requester。
 T003--011 中的大算法迁移为设计批次，超过工作单元阈值时按 work-units 先沿稳定行为接口细分，
 不机械按文件拆分、不授权并行 agent 自动实施。
-当前授权仅文档，不运行以上实现/构建/实验。Static review PASS != Behavior PASS。
+用户已授权在Experimental完成Spec182；当前按T001关闭设计，再按上述门执行实现与本地验证。SIF/Tiger仍由实验机器负责。Static review PASS != Behavior PASS。
 
 ## Migration and Compatibility
 

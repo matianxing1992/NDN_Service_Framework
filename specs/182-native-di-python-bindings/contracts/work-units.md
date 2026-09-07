@@ -116,7 +116,7 @@ T001冻结新unit selectors，不能执行整份混合测试文件而意外启�
 
 - **Outcome**: 原生 requester 续接/有限恢复与既有 epoch/state runtime 协作，文本/lineage 正确。
 - **Design**: FR-008,FR-016; CD-007; INV-003,INV-004,INV-005; FLOW-001, FLOW-003。
-- **Changes**: NativeConversationCoordinator 头/源及 NativeInferenceClient 接线，di-native-conversation
+- **Changes**: NativeConversationCoordinator 头/源及 NativeInferenceClient 接线，di-native-conversation；现有NativeEpochCoordinator私有sampleToken按[generation contract](native-generation-design.md)修复采样差异，不新增生成runtime。
 - **ForbiddenChanges**: 新生成运行时；Python journal authority；悄悄丢弃旧会话格式。
 - **LocalChecks**: journal/lineage、prefix、cancel、wrong-parent、replacement状态转换单测；真实两轮续接在T016。
 - **FinalProof**: PO-007,PO-008。 本任务只完成局部单测；其余运行证据由T016统一产生。

@@ -6,6 +6,14 @@
 
 ## Current Checkpoint
 
+2026-09-07 Generation design / **T001 IN_PROGRESS**：[native generation contract](contracts/native-generation-design.md)补齐GenAI/HF/ORT复用比较与现有sampler的参数、double精度、去重惩罚、截断后归一化及旧会话兼容处置。A7-10/A7-11 CLOSED；A7-09算法设计已定义，产品修复/测试仍OPEN；A7-08的stream状态与完整O-004清单仍OPEN，T001未完成、产品0/17。修订plan旧授权句；不新增生成引擎或产品依赖，不操作实验机器。
+
+本单元检查 **PASS**：prerequisites、strict structure、design validator和diff whitespace。独立Python reference源SHA256 `3affb6f438a4134bb8e69222d79b3f2ec5a6b256bf0022af636b065627397c11`；将log概率按`struct.pack/unpack('<f')`量化后输入`[-0.5108256340026855,-1.2039728164672852,-2.3025851249694824]`，seed8/top_k3/top_p0.8/temperature1/step0实际选0；重复惩罚例也实际选0，assert通过/exit0。仅运行标准库reference，不构建native或运行产品测试。已有ONNX normalization草稿与failure-log修改保留，不在本单元宣称O-002关闭。
+
+下一步关闭stream decoder的preview/commit/flush/restore算法和逐调用方清单，再完成O-004及T001。下方审计检查点为历史事实，不覆盖本段状态。
+
+### Prior Native Reuse Review
+
 2026-09-06 Native reuse review / **BLOCK for implementation**：核对原生库复用与当前源码，ONNX/ORT及HF Rust tokenizer方向合理；新增A7-08流式decode前缀不稳定、A7-09已有C++ Top-P归一化及重复惩罚与Python reference不一致，A7-10缺GenAI复用对照、A7-11计划旧授权语句。详见[native reuse review](evidence/native-reuse-review-20260906.md)。reference诊断exit0：多byte-token文本展示prefix重写，两个采样输入Python实际返回0而native源逻辑推导为1；未运行native产品。raw `.codex-tmp/spec182-native-reuse-review-20260906-r1/`。T001/O-002/O-004保持OPEN、产品0/17；下一步在T001冻结复用/stream/采样兼容处置，再由T007/T011/T016实现和证明。本轮仅审计记录，不改产品源码或既有oracle。
 
 本审计记录检查 **PASS**：Spec Kit prerequisites、strict structure、design validator（163本地链接、17任务/0完成）、`git diff --check`；reference诊断exit0及具体结果见同一review/raw。这些只允许保存审计记录，不关闭A7-08/A7-09、O-002/O-004或T001。

@@ -225,6 +225,8 @@ O-003固定tokenizers0.20.3/Rust1.90.0、Cargo.lock与上表私有C ABI；84个�
 
 ## CD-007 Lifecycle
 
+现有NativeEpochCoordinator的采样复用、参数/精度修复和兼容处置见[native generation design](native-generation-design.md)。流式状态仍待A7-08关闭；完整decode接口不等于稳定stream接口。
+
 | Operation | Exact paths | Symbols |
 | --- | --- | --- |
 | ADD | NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp; NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.cpp | beginTurn, abortTurn, prepareCheckpoint, commitTurn, restore |
