@@ -312,16 +312,26 @@ rib
 '''
 
 
-def configure_routes(command, namespace: str, remote: str, port: int,
-                     output: Path) -> None:
-    """Use in-image nfdc, never an ambient compute-node installation."""
+def route_commands(namespace: str, remote: str, port: int, *, sync_prefix: str):
+    """Shared nfdc arguments with an explicit application Sync name."""
+    from runtime.identities import identity_inventory
+    identity_inventory(namespace, {'sync': sync_prefix})
+    if type(port) is not int or not 1024 <= port <= 65535:
+        raise ValueError('NFD_PORT')
     ipaddress.IPv4Address(remote)
     uri = f"tcp4://{remote}:{port}"
-    calls = [["face", "create", "remote", uri, "persistency", "permanent"],
+    return [["face", "create", "remote", uri, "persistency", "permanent"],
              ["route", "add", "prefix", namespace, "nexthop", uri, "cost", "10"],
-             ["strategy", "set", "prefix", namespace + "/group",
+             ["strategy", "set", "prefix", sync_prefix,
               "strategy", "/localhost/nfd/strategy/multicast"],
              ["face", "list"], ["route", "list"]]
+
+
+def configure_routes(command, namespace: str, remote: str, port: int,
+                     output: Path, *, sync_prefix: str | None = None) -> None:
+    """Use in-image nfdc; keep the old baseline's group unless explicitly supplied."""
+    calls = route_commands(namespace, remote, port,
+                           sync_prefix=sync_prefix if sync_prefix is not None else namespace + '/group')
     records = []
     for args in calls:
         completed = subprocess.run(command([BIN + "/nfdc", *args]), capture_output=True, env=container_env(),

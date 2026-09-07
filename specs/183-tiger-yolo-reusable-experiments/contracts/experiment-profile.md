@@ -172,6 +172,11 @@ Controller, User, Provider and NFD Sync forwarding must consume this exact
 `group`. Do not infer it from Provider names or copy the legacy CPU baseline's
 hard-coded `/group` route. The future network setup must install the actual
 application Sync prefix; this is not yet an executed forwarding gate.
+`configure_network` now performs the owned NFD/nfdc command chain and publishes
+run-bound route readiness only after successful status, endpoint agreement,
+route/strategy commands and listings. It consumes the pinned profile TCP port
+and allocation-derived endpoints; signed peer probing still establishes actual
+data-path readiness. Management uses an idle Provider HOME, no GPU/model mount.
 
 `StartupBarrier` coordinates only control/readiness records in an exclusively
 created run directory. Each record binds run ID, candidate digest, probe ID,

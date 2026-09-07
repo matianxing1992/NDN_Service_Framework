@@ -33,7 +33,7 @@ class StartupBarrier:
     references/results already validated by their stage owner, not authority
     to bypass SIF, model or credential verification.
     """
-    STAGES = frozenset(('routes-ready', 'network-ready', 'control-ready', 'providers-ready', 'failed'))
+    STAGES = frozenset(('nfd-ready', 'routes-ready', 'network-ready', 'control-ready', 'providers-ready', 'failed'))
 
     def __init__(self, directory, *, run_id, probe_id, candidate_digest, ranks, rank, seconds, check):
         self.directory = _directory(Path(directory))
@@ -220,6 +220,21 @@ class NodeRuntime:
             raise ValueError('WORKER_NETWORK_PROBE_SCOPE')
         role = 'BackboneNeck' if self.rank == 0 else 'DetectShard0'
         return self._run_finite_role(role, 'network-readiness', argv, package=None,
+                                     seconds=seconds, peer_failure=peer_failure)
+
+    def run_management(self, invocation: str, arguments: list[str], *, seconds: float,
+                       peer_failure: Path | None = None):
+        """Execute exact-SIF nfdc with a borrowed, otherwise idle Provider HOME.
+
+        NFD keeps its own HOME; no second process opens that live role's PIB.
+        Management commands neither mount models nor enable CUDA.
+        """
+        if self._preparation_binding is None or 'nfd' + str(self.rank) not in self.started:
+            raise ValueError('WORKER_MANAGEMENT_SCOPE')
+        if not isinstance(invocation, str) or not invocation.startswith('nfd-'):
+            raise ValueError('WORKER_MANAGEMENT_INVOCATION')
+        role = 'BackboneNeck' if self.rank == 0 else 'DetectShard0'
+        return self._run_finite_role(role, invocation, [BIN + '/nfdc', *arguments], package=None,
                                      seconds=seconds, peer_failure=peer_failure)
 
     def _run_finite_role(self, role, invocation, argv, *, package, seconds, peer_failure):

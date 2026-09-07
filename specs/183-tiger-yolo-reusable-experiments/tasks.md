@@ -78,6 +78,8 @@ T001–T004形成 profile/launcher 实现骨架；可操作 MVP 还要求 T006 �
 
 ## Current Checkpoint
 
+2026-09-07 configure_network已接入实际NFD/nfdc启动链，生产nfd-ready/routes-ready：配置端口/两侧endpoint绑定、真实socket类型检查、有限管理子进程、剩余startup预算、peer失败、无覆盖receipt；管理进程借用空闲Provider HOME，不与NFD并发用PIB。route_commands显式接收appName/sync；旧baseline默认/group保留。7新增组件测试（OS进程/socket真实，NFD/nfdc为double），总419 passed（26.61s）。最终operator仍须绑定真实allocation并依次调用configure_network→start_workload→真实requests/collector；T005/T006/T007未完成，无native/SIF/Tiger运行。详见evidence/t005-nfd-network-setup.md。
+
 2026-09-07 启动协调组件接入Controller/Repo/Provider/双向探测实际helper，原子且run/candidate/probe绑定barrier、共享startup预算、peer失败传播；必须两侧network receipt匹配后才启动Controller，完整Provider ready后返回RUNTIME_READY。用户明确Sync为`/<appName>/sync`：plan.applicationName→runtime.application_name→group，不从provider_prefix推导；错`/group`路由拒绝。10新增组件用例，总412 passed（26.13s）。NFD实际路由安装/最终outer worker、完整collector/T007仍未闭合，无SIF/Tiger运行；见evidence/t005-startup-coordination.md。
 
 2026-09-07 双向签名Data readiness组件已实现：apps/yolo_network.py，两rank并行、同一新probeId、真实RSA验签、精确name/payload、独立有限窗口；复用finite-role进程/HOME管理，探测不挂载model/GPU，退出后允许真正Provider启动。身份从prepared plan传入，不假设等于role名字。父层校验精确回执与退出，正式operator仍须同时接受两个方向；harness清单更新15文件。13项新增组件测试，总402 passed（25.00s），其中加密真实但Face是内存double。实际NFD/SIF/Tiger仍NOT_RUN；T005/T006/T007未闭合。详见evidence/t005-network-readiness.md；下一步完整worker协调/启动barrier及请求collector，不扩大实验。

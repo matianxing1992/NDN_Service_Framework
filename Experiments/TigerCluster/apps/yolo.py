@@ -448,6 +448,102 @@ def wait_network_ready(worker, *, probe_id: str, seconds: float,
     return receipt
 
 
+def configure_network(worker, barrier, *, endpoints: list[dict]):
+    """Start exact-SIF NFD and perform owned nfdc setup before readiness probes.
+
+    Endpoints come from the verified allocation, not profile-invented hostnames.
+    Both ranks call this concurrently. This establishes command success and
+    local management access; signed peer traffic is still checked afterwards.
+    """
+    import ipaddress
+    import stat
+    import time
+    from runtime.baseline import route_commands
+    from runtime.identities import _credential_document, identity_inventory
+    from runtime.yolo_profile import _read_plane
+    from runtime.yolo_worker import StartupBarrier
+    if worker._preparation_binding is None or not isinstance(barrier, StartupBarrier):
+        raise ValueError('YOLO_NETWORK_PREPARATION')
+    plan, _, candidate = worker._preparation_binding
+    if (barrier.rank != worker.rank or barrier.binding['runId'] != plan['runId']
+            or barrier.binding['candidateDigest'] != candidate
+            or barrier.ranks != tuple(n['rank'] for n in plan['nodes'])):
+        raise ValueError('YOLO_NETWORK_BINDING')
+    if not isinstance(endpoints, list) or len(endpoints) != len(barrier.ranks):
+        raise ValueError('YOLO_NETWORK_ENDPOINTS')
+    peers = {}
+    port = plan['effectiveBehavior']['profile']['cluster']['tcpPort']
+    for node in endpoints:
+        if (not isinstance(node, dict) or set(node) != {'rank', 'address', 'port'}
+                or type(node['rank']) is not int or node['rank'] not in barrier.ranks
+                or node['rank'] in peers or type(node['port']) is not int
+                or node['port'] != port or not 1024 <= node['port'] <= 65535
+                or not isinstance(node['address'], str)):
+            raise ValueError('YOLO_NETWORK_ENDPOINTS')
+        address = ipaddress.IPv4Address(node['address'])
+        if address.is_unspecified or address.is_multicast or (len(barrier.ranks) == 2 and address.is_loopback):
+            raise ValueError('YOLO_NETWORK_ADDRESS')
+        peers[node['rank']] = dict(node)
+    if len({p['address'] for p in peers.values()}) != len(peers):
+        raise ValueError('YOLO_NETWORK_DUPLICATE_NODE')
+    config = _read_plane(worker.public / 'case.json')
+    group = plan['applicationName'] + '/sync'
+    if config['group'] != group or config['runtime']['application_name'] != plan['applicationName']:
+        raise ValueError('YOLO_NETWORK_SYNC_NAME')
+    identity_inventory(plan['namespace'], {'sync': group})
+    worker._verify_prepared_boundary()
+    commands = []
+    try:
+        peer_failure = (barrier.directory / ('failed-' + str(1 - worker.rank) + '.json')
+                        if len(peers) == 2 else None)
+        barrier.remaining()
+        worker.start_forwarder(port=port)
+        socket_path = worker.node / 'nfd.sock'
+        while True:
+            remaining = barrier.remaining()
+            if socket_path.is_symlink():
+                raise ValueError('YOLO_NFD_SOCKET_SYMLINK')
+            if socket_path.exists():
+                if not stat.S_ISSOCK(socket_path.stat().st_mode):
+                    raise ValueError('YOLO_NFD_SOCKET_TYPE')
+                break
+            time.sleep(min(0.1, remaining))
+        def execute(arguments):
+            seconds = min(20, barrier.remaining() - worker.cleanup_seconds)
+            if seconds <= 0:
+                raise TimeoutError('YOLO_NETWORK_COMMAND_BUDGET')
+            invocation = 'nfd-command-' + str(len(commands))
+            rc = worker.run_management(invocation, arguments, seconds=seconds, peer_failure=peer_failure)
+            commands.append({'invocation': invocation, 'arguments': arguments, 'exitCode': rc})
+            if rc != 0:
+                raise RuntimeError('YOLO_NETWORK_COMMAND_EXIT')
+        execute(['status', 'report'])
+        barrier.publish('nfd-ready', peers[worker.rank])
+        observed = barrier.wait('nfd-ready')
+        if observed != peers:
+            raise ValueError('YOLO_NETWORK_PEER_BINDING')
+        if len(peers) == 2:
+            peer = peers[1 - worker.rank]
+            calls = route_commands(plan['namespace'], peer['address'], peer['port'], sync_prefix=group)
+        else:
+            calls = [['strategy', 'set', 'prefix', group, 'strategy', '/localhost/nfd/strategy/multicast'],
+                     ['face', 'list'], ['route', 'list']]
+        for arguments in calls:
+            execute(arguments)
+        _credential_document(worker.output / 'network-setup.json', {
+            'schema': 'tiger-yolo-network-setup-v1', 'runId': plan['runId'], 'rank': worker.rank,
+            'candidateDigest': candidate, 'endpoint': peers[worker.rank], 'syncPrefix': group,
+            'commands': commands, 'qualification': 'NOT_EVALUATED'})
+        barrier.publish('routes-ready', {'namespace': plan['namespace'], 'syncPrefix': group})
+        return commands
+    except BaseException as exc:
+        try:
+            barrier.publish('failed', {'errorType': type(exc).__name__})
+        except Exception as publication_error:
+            raise exc from publication_error
+        raise
+
+
 def start_workload(worker, barrier, *, repo_free_bytes: int, permission_wait_ms: int,
                    network_probe_seconds: float):
     """Join prepared/routed workers and start actual Controller/Repo/Providers.
