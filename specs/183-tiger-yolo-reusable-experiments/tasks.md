@@ -605,3 +605,13 @@ fixture 已加明确标注 synthetic provenance。此 checkpoint 未改变证据
 （从 signed candidate package 读 role model bytes、在 CPU 本机/已分配 GPU 上 prepare、
 绑定 catalogue 发布后的真实 graph digest、经 preparation/run/collection 携带文档）仍
 等待 T001 signed model manifest 与 SIF/GPU 门，T005/T006/T007 保持 open。
+
+2026-09-07 inputs content plane checkpoint (d7c8dc6f)：`Experiments/TigerCluster/tools/spec183_inputs_plane.py`
+render/check 把四个真实接收输入（sourceLock=handoff lock、sourceSeal、buildDefinition、baseSif
+`b6710fd6…`）装配进一个被忽略的 plane 根（`.cache/planes/inputs`），逐行记录
+path/bytes/sha256，并用生产验证器 `runtime.yolo_profile.check_plane` 检查为
+`VERIFIED`（content integrity only，NOT_EVALUATED，不是 runtime qualification）。
+文件用硬链接（禁止 symlink/`..`/absolute），重复 render 确定性一致；旧 plane.json
+记录不同身份时 fail-closed 拒绝重写。5 项测试通过（含真实 repo 测试对 3.5GB SIF
+的渲染+复核）。该门关闭的是 inputs stage 的收据完整性，不等同于 T011 SIF 构建或
+dispatch 资格：真正的运行接线仍按 T004/T005/T006 继续。
