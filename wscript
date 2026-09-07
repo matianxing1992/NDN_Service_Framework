@@ -56,7 +56,85 @@ def _resolve_compiler_toolchain(cxx, env=None, expected_root='/usr/bin'):
     return resolved
 
 
+def _ensure_tokenizer_bridge(conf):
+    """Build the pinned Rust tokenizer staticlib (spec182 T007-A) once and
+    expose it as the TOKENIZER_BRIDGE uselib.
+
+    The frozen dependency contract statically links the Rust engine into the
+    DI shared library; the C ABI is a private implementation detail and is
+    never dlopen'd or installed.  Cargo runs against the pinned toolchain
+    recorded in the spec182 case manifest (.codex-tmp spec182-t001-
+    dependencies rust-prefix/cargo-home), in its own target directory, with
+    --locked --offline at -j2, and is only re-invoked when a crate source is
+    newer than the archive (configure re-runs keep it current).
+    """
+    top = conf.path.abspath()
+    pinned = os.path.join(top, '.codex-tmp', 'spec182-t001-dependencies')
+    rust_prefix = os.environ.get('NDNSF_RUST_PREFIX', '').strip() \
+        or os.path.join(pinned, 'rust-prefix')
+    cargo = os.path.join(rust_prefix, 'bin', 'cargo')
+    if not os.path.isfile(cargo) or not os.access(cargo, os.X_OK):
+        conf.fatal(f'Pinned Rust cargo is missing: {cargo} '
+                   '(set NDNSF_RUST_PREFIX)')
+    cargo_home = os.environ.get('NDNSF_CARGO_HOME', '').strip() \
+        or os.path.join(pinned, 'cargo-home')
+    if not os.path.isdir(cargo_home):
+        conf.fatal(f'Pinned Rust cargo home is missing: {cargo_home} '
+                   '(set NDNSF_CARGO_HOME)')
+    target_dir = os.environ.get('NDNSF_TOKENIZER_BRIDGE_TARGET', '').strip() \
+        or os.path.join(pinned, 'tokenizer-bridge-target')
+    crate_dir = os.path.join(
+        top, 'NDNSF-DistributedInference', 'cpp', 'adapters', 'qwen',
+        'tokenizer-bridge')
+    archive = os.path.join(target_dir, 'release',
+                           'libndnsf_tokenizer_bridge.a')
+
+    def stale():
+        if not os.path.isfile(archive):
+            return True
+        archive_mtime = os.path.getmtime(archive)
+        for name in ('Cargo.toml', 'Cargo.lock'):
+            if os.path.getmtime(os.path.join(crate_dir, name)) > archive_mtime:
+                return True
+        for dirpath, _, files in os.walk(os.path.join(crate_dir, 'src')):
+            for name in files:
+                if name.endswith('.rs') and \
+                        os.path.getmtime(os.path.join(dirpath, name)) > archive_mtime:
+                    return True
+        return False
+
+    if stale():
+        conf.start_msg('Building pinned Rust tokenizer staticlib')
+        build_env = dict(os.environ)
+        build_env['PATH'] = os.path.join(rust_prefix, 'bin') + \
+            os.pathsep + build_env.get('PATH', '')
+        build_env['CARGO_HOME'] = cargo_home
+        proc = subprocess.run(
+            [cargo, 'build', '--release', '--locked', '-j2', '--offline',
+             '--target-dir', target_dir,
+             '--manifest-path', os.path.join(crate_dir, 'Cargo.toml')],
+            env=build_env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True)
+        if proc.returncode != 0 or not os.path.isfile(archive):
+            conf.end_msg('failed', color='RED')
+            tail = '\n'.join(proc.stdout.splitlines()[-25:])
+            conf.fatal(f'Pinned Rust tokenizer staticlib build failed:\n{tail}')
+        conf.end_msg(os.path.relpath(archive, top))
+    conf.env.STLIB_TOKENIZER_BRIDGE = ['ndnsf_tokenizer_bridge']
+    conf.env.STLIBPATH_TOKENIZER_BRIDGE = [os.path.join(target_dir, 'release')]
+    conf.env.NDNSF_TOKENIZER_BRIDGE_ARCHIVE = archive
+    conf.msg('Pinned Rust tokenizer staticlib',
+             os.path.relpath(archive, top))
+
+
 def _pin_compiler_toolchain(conf):
+    """Record the closed compiler/binutils closure for every later task.
+
+    configure() pins the driver with _resolve_compiler_toolchain (search
+    flag, toolchain root); this mirror records the resolved tools in the
+    build env so the NDNSF_LINKER used by later tasks is the exact ld from
+    the closed toolchain, not whatever the default linker search yields.
+    """
     cxx = list(conf.env.CXX or [])
     if not cxx:
         conf.fatal('The C++ compiler was not configured')
@@ -78,6 +156,7 @@ def _pin_compiler_toolchain(conf):
     conf.env.NM = [tools['nm']]
     conf.env.LD = [tools['ld']]
     conf.env.NDNSF_TOOLCHAIN_ROOT = tools['toolchain_root']
+
     conf.env.NDNSF_LINKER = tools['ld']
 
     conf.msg('Closed C++ toolchain',
@@ -416,6 +495,8 @@ int main() {
     # system has a different version of the ndn-svs library installed.
     conf.env.prepend_value('STLIBPATH', ['.'])
 
+    _ensure_tokenizer_bridge(conf)
+
     conf.define_cond('HAVE_TESTS', conf.env.WITH_TESTS)
     conf.define_cond('HAVE_ONNXRUNTIME_CPP', conf.env.HAVE_ONNXRUNTIME_CPP)
     conf.define_cond('HAVE_GSTREAMER', conf.env.HAVE_GSTREAMER)
@@ -500,10 +581,13 @@ def build(bld):
     if bld.env.HAVE_ONNXRUNTIME_CPP:
         di_library_use += ' ONNXRUNTIME'
     if bld.env.enable_shared:
+        # The pinned Rust tokenizer engine links into the installed DI shared
+        # library (spec182 T007-A frozen production integration).
+        di_shlib_use = di_library_use + ' TOKENIZER_BRIDGE'
         bld.shlib(name='ndnsf-distributed-inference',
                   target='ndnsf-distributed-inference',
                   source=di_library_sources,
-                  use=di_library_use,
+                  use=di_shlib_use,
                   includes=['.', 'ndn-service-framework',
                             'NDNSF-DistributedInference/cpp/adapters/onnx'],
                   export_includes=['.', 'ndn-service-framework',

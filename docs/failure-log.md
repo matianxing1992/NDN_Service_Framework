@@ -1851,3 +1851,41 @@ part of task context. Format per entry:
   verbatim at the caller") needs at least one end-to-end lock that drives
   a real subprocess with a frozen reject vector; unit mocks of the child
   catch could not expose the string-compare bug.
+
+## 2026-09-07 — Spec182 T007-A: wscript helper insertion broke _pin_compiler_toolchain; boost 1.71 cannot print std::vector
+- **Area**: spec182 T007-A static Rust tokenizer link; root `wscript` and
+  `tests/unit-tests/di-native-tokenizer.t.cpp`.
+- **Symptom**: (1) configure failed rc=2 with `NameError: name 'tools' is
+  not defined` at wscript ~line 152 — the `_ensure_tokenizer_bridge` helper
+  had been inserted in the middle of `_pin_compiler_toolchain`, and that
+  function's tail statements (`conf.env.NDNSF_LINKER`, the 'Closed C++
+  toolchain' msg) dangled at 4-space indent, becoming the helper's last
+  statements. (2) The compile fix then revealed a duplicate
+  `_pin_compiler_toolchain` def (original tailless copy plus a reconstructed
+  complete copy) — Python shadowing made it work but left ~25 lines of dead
+  code. (3) `unit-tests` compile failed on `BOOST_REQUIRE_EQUAL(encode(), ids)`:
+  boost 1.71's `print_helper` has no `operator<<` for `std::vector<long>`.
+- **Root cause**: (1) `Edit` with an old_string ending mid-function appended
+  the new helper inside the old function body; indentation kept the tail
+  inside the helper. (3) boost 1.71 test-tools cannot stream a vector; the
+  assertion is fine at runtime but does not compile.
+- **Fix**: (1) re-emitted the helper as a complete module-level function and
+  restored `_pin_compiler_toolchain` with its own tail; (2) deleted the dead
+  original copy, keeping one documented def; configure rc=0 with 'Pinned
+  Rust tokenizer staticlib' resolved. (3) switched vector equality to
+  elementwise `BOOST_REQUIRE_EQUAL_COLLECTIONS` (three sites:
+  `compareVectorCase`, owner-reuse roundtrip, concurrency baseline check).
+- **Ref**: run dirs retained under `.codex-tmp/` (`t007-configure-r2.log`,
+  `t007-build-r3.log`, `t007-full-regression.log`); cargo PATH lesson: the
+  pinned rustc must be on PATH (`rust-prefix/bin`) or `cargo build` dies
+  with "could not execute process `rustc -vV`".
+- **Addendum（同卡）**: an unfiltered full run (`./build-nac182/unit-tests`,
+  no exclusion) segfaulted rc=139 inside the known environment-dependent
+  stream-facade family (`PredictiveProviderExactWireValidationAndAtomicFlush`,
+  stream-facade.t.cpp:270 last checkpoint); negative preserved, same family
+  every spec182 card excludes since T006-B/C/D. The card regression gate ran
+  with `--run_test='!StreamFacade'` → 859 cases, No errors detected.
+- **Lesson**: insert a new top-level `def` only with an old_string that ends
+  at a module-level boundary (blank-line pair); after any structural waf
+  edit, re-run configure before building. Assert `std::vector` equality in
+  boost 1.71 with `EQUAL_COLLECTIONS`, never `REQUIRE_EQUAL`.

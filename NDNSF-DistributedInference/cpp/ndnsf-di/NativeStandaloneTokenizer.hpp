@@ -11,9 +11,6 @@ namespace ndnsf::di {
 struct NativeStandaloneTokenizerOptions
 {
   std::string tokenizerPath;
-  // Optional path used by development builds.  Production packaging places
-  // the bridge beside the native binaries and leaves this empty.
-  std::string bridgeLibrary;
 };
 
 struct NativeGenerationTextDecoders
