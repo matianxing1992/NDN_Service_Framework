@@ -1,5 +1,9 @@
 # Failure Log and Evidence Index
 
+## 2026-09-06 — Spec182 native reuse review boundaries
+
+审计发现现有NativeEpochCoordinator将完整decode作为稳定stream前缀，且C++采样的Top-P截断归一化、重复token惩罚与Python reference不一致。固定tokenizers0.20.3/现有byte-fallback fixture诊断exit0：`好`的prefix为`�→��→好`；seed8的Top-P例和重复token Greedy例，Python返回0、native源代码推导为1。首边界是文本提交/采样算法，不是网络或授权失败；未执行native产品。raw `.codex-tmp/spec182-native-reuse-review-20260906-r1/`；完整输入/hash/源码/边界见[native reuse review](../specs/182-native-di-python-bindings/evidence/native-reuse-review-20260906.md)。A7-08/A7-09 OPEN，T001/O-004先冻结处置，T007/T011修复后由T016验收，不将reference诊断计为产品PASS。
+
 ## 2026-09-06 — Spec182 legacy ONNX initializer identity boundary
 
 T001独立reference探针（ONNX1.17.0/NumPy1.24.4，未修改graph.py）确认：BFLOAT16 raw_data两次计算的content digest均不等于声明权重位模式，而typed表示正确；STRING相同model digest在两个独立进程产生不同initializer content digest。首边界是旧numpy_helper/object-array归一化，不是网络、授权或原生装配结果。普通12种数值类型的24个raw/typed向量通过。raw `.codex-tmp/spec182-t001-identity-r1/diagnostics.json`，脱敏[durable evidence](../specs/182-native-di-python-bindings/evidence/identity-reference-20260906.json)。O-002/O-004继续冻结稳定身份与兼容处置；不把错误摘要写为正确oracle、不以未运行的C++测试关闭此缺陷。

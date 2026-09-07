@@ -6,6 +6,14 @@
 
 ## Current Checkpoint
 
+2026-09-06 Native reuse review / **BLOCK for implementation**：核对原生库复用与当前源码，ONNX/ORT及HF Rust tokenizer方向合理；新增A7-08流式decode前缀不稳定、A7-09已有C++ Top-P归一化及重复惩罚与Python reference不一致，A7-10缺GenAI复用对照、A7-11计划旧授权语句。详见[native reuse review](evidence/native-reuse-review-20260906.md)。reference诊断exit0：多byte-token文本展示prefix重写，两个采样输入Python实际返回0而native源逻辑推导为1；未运行native产品。raw `.codex-tmp/spec182-native-reuse-review-20260906-r1/`。T001/O-002/O-004保持OPEN、产品0/17；下一步在T001冻结复用/stream/采样兼容处置，再由T007/T011/T016实现和证明。本轮仅审计记录，不改产品源码或既有oracle。
+
+本审计记录检查 **PASS**：Spec Kit prerequisites、strict structure、design validator（163本地链接、17任务/0完成）、`git diff --check`；reference诊断exit0及具体结果见同一review/raw。这些只允许保存审计记录，不关闭A7-08/A7-09、O-002/O-004或T001。
+
+checkpoint首轮被本地pre-commit全索引引用检查拒绝（exit1）；已核对hook提供`NDNSF_LOCAL_CHECKPOINT=1`专用模式，后续本地提交使用该模式且保留禁止路径检查，原始`commit-r1.json`不覆盖。未修改hook、未push；其他工作正在追加的typed-complex诊断不纳入本审计提交。
+
+### Prior ONNX Contract Checkpoint
+
 2026-09-06 T001 ONNX contract / IN_PROGRESS：补齐[native ONNX assembly design](contracts/native-onnx-assembly-design.md)的owned类型、9个函数、8步算法、recipe/manifest字节与native worker生命周期；修复直接进程内替换会丢失硬超时回收的设计缺口。原始Python实现仍未修改；独立reference提取24个普通numeric raw/typed向量PASS。额外诊断确认BFLOAT16 raw摘要内容错误、STRING跨进程摘要不稳定，见[identity evidence](evidence/identity-reference-20260906.json)及failure index。**O-002/O-004仍OPEN，T001未完成，产品实现0/17**。下一步冻结这两种表示的稳定身份/兼容处置，并继续完整能力和Provider注册清单；不复制错误oracle、不以I/O dtype代替initializer能力范围。
 
 本单元检查 **PASS**：strict structure、design validator（160本地链接、17任务/0完成）、diff whitespace；24个model hash、12对identity、6条诊断及未修改reference源hash核对一致。generator锁定原onnx/numpy/source版本，补锁后typed诊断仍通过。Context Mode健康检查PASS，但relevance检索返回了较早的Dependency Design子节，checkpoint以实际tasks顶部为准；CodeGraph的临时副本结果仍剔除，算法按精确生产路径核对。未构建/测试产品，不把发现旧缺陷或补全设计计作T006完成。

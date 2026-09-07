@@ -7,6 +7,8 @@
 
 ## Current Findings
 
+2026-09-06追加[native capability reuse review](evidence/native-reuse-review-20260906.md)，审查源码`5239b229`。方向保留，产品实现继续BLOCK：A7-08 HIGH/OPEN为stream decode契约，A7-09 HIGH/OPEN为已有native采样与Python reference两处差异；A7-10 MEDIUM/OPEN补GenAI原生能力选型对照，A7-11 LOW/OPEN为plan旧授权语句。T001/O-004登记处置，T007/T011实现、T016运行证明；本轮只有reference诊断与源码推导，不声称native回归已运行或缺陷已修复。
+
 revision 7审计已按最新源码修订文档；用户随后授权在Experimental完成182，当前T001设计收口中。已停止管理已接收交付的实验机器。
 源码身份与历史状态的文档漂移已修订；未实现功能继续planned，未闭合设计继续BLOCK。
 T001有界依赖探针见[native dependency design](contracts/native-dependency-design.md)，不计产品实现或T015/T016资格；后续unit/integration/MiniNDN按任务门执行，SIF/Tiger由外部负责。
