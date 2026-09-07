@@ -12,7 +12,7 @@ description: Prepare or review NDNSF source and SIF delivery, diagnose container
 与相关持久 evidence。当前用户授权优先；历史 Spec、job ID 或成功候选不是新运行指令。
 
 开发机负责开发、源码审查、unit/integration 和约定的本地 MiniNDN；实验机接收明确源码版本，负责 SIF 构建、Tiger 运行和问题反馈。
-仅整理或交付源码时，不构建 SIF、不提交作业。不要按 Qwen/YOLO 划分长期机器职责。
+仅整理或交付源码时，只整理、固定和发布输入；不要自行启动宿主或容器编译、unit/integration、MiniNDN或集群测试。发现ABI变化时写清接收方重建要求，不把本机补测变成交付条件。不要按 Qwen/YOLO 划分长期机器职责。
 已有授权直接完成；缺少运行授权时，先完成可审阅的 definition、输入清单、profile 和确切命令。
 
 ## Repository Routing

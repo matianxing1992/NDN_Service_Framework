@@ -2,7 +2,9 @@
 
 ## Scope And Status
 
-**Status**: IN_PROGRESS / SOURCE_DELIVERY_ONLY。本交付固定NDNSF、NAC-ABE、NDN-SVS及传递依赖NDNSD源码，整理可迁移的构建输入及共享skills；不执行SIF构建、Tiger作业或Spec182实现。实验验收仍由实验机器负责。
+**Status**: COMPLETE / SOURCE_READY。本交付固定NDNSF、NAC-ABE、NDN-SVS及传递依赖NDNSD源码，提供可迁移的构建输入及共享skills。
+
+2026-09-06用户明确纠正范围：本机本轮只负责交付；后续编译、unit/integration、Python扩展验证、MiniNDN、SIF和Tiger测试全部移交另一台机器。此前自行扩大的本机构建已停止，保留原始记录；它们不再是交付完成的前置条件，也不能被记为完整验证PASS。Spec182仍不开始。
 
 ## Design And Ownership
 
@@ -109,25 +111,19 @@ python3 Experiments/TigerCluster/adapters/slurm-apptainer/scripts/prepare-develo
 
 ## Checkpoint
 
-GitHub首次交付发布已核对：NDNSF `Experimental`为`0a8d8cc7af14a891fd4ce3f2548694f08511649e`，NAC/SVS/NDNSD的`Experimental`分别与锁文件相同；后续提交仅同步验证记录。共享skills与全部交付工具已可获取。D001运行验证继续，不能将发布成功理解为当前SIF资格完成。
-
-2026-09-06 TOOLING_CHECKPOINT：最终统一R5 **28/28 PASS，17.90s**（四文件：`test_development_handoff.py`、`test_prepare_local_sif_source.py`、`test_build_local_sif_record.py`、`test_development_runtime_template.py`）；raw `.codex-tmp/source-handoff-20260906/tool-checks-r5/output.log`。其中旧build-record fixture修复R3为8/8 PASS；扩展NDNSD前统一R4为26/26 PASS。五项skill frontmatter检查PASS，14份Markdown的28个相对链接及接收命令Python语法PASS。
-
-真实包 `.codex-tmp/source-handoff-20260906/bundle-r3`：NDNSF453、NAC63、SVS31、NDNSD14个源码成员，四个归档总计12,072,960字节；加五个wheel、锁和模板。复制至`relocated-r3`后verify PASS，实际固定base摘要校验及definition render PASS，raw同级`package-r3.log`、`relocation-r3.log`、`render-r3.log`。seal为`sha256:9129d07298f5754823f3bc2bf9c10fea7416adbb1e4168ced3dc82750948612c`，静态定义检查含4库/9个原生产物。SIF_BUILD/CONTAINER_RUNTIME仍NOT_RUN。
-
-SVS源码检查87/87 cases、639 assertions PASS；NDNSD pkg-config路径真实RED/GREEN PASS。新依赖下的NDNSF消费者fresh build/unit/integration尚在运行；不能将此前759/154结果当作本闭包结果。
-
-消费者build R1在299/318触发执行器1800秒上限（exit124，1800.081s），首边界为`TIMEOUT_AT_RUNNER_BOUNDARY`，没有compiler error；R2在同一fresh build目录按相同配置/-j2续编，执行器有限上限3600秒。R1原始记录在独立树 `ndnsf-svs-abi-20260906/.codex-tmp/svs-abi-20260906-r1/build-r1/`，不覆盖。
-
-R2日志随后证明Waf未保存R1 task signatures、实际重新编译全图，故SIGINT停止重复R2（exit68，78.516s）。R3只选择尚未完成的`di-native-provider`及必要依赖；R1已有Core/unit/integration/应用按同一源码和配置保留逐目标证据。任何中断轮次均不记PASS，最终须补齐交付目标并验证运行。
-
-真实归档R1在依赖checkout的未跟踪 `examples/example-trust-anchor.cert` 被拒绝，未创建bundle。R2改用三库新建detached checkout；保留开发目录原样，不把工作目录生成物带入交付。
-
-工具R1：19 PASS / 5 FAIL；首边界为旧build-record测试复用历史host gate后与current workload不匹配，原始 `.codex-tmp/source-handoff-20260906/tool-checks-r1/output.log`。修复测试隔离后在新目录重跑；新source helper、三库sealer及模板相关用例已通过。模板初轮注释解析失败与wheel输入闭合复审见 `docs/failure-log.md`，不改写历史实验资格。
-
-- [ ] D001 Dependency source checkpoints and compatibility
+- [x] D001 Dependency source checkpoints and ABI handoff
 - [x] D002 Portable source inputs and definition
 - [x] D003 Shared skills and receiving-machine instructions
 - [x] D004 Validated local package and GitHub Experimental publication
 
-Spec182保持0/17；Tiger B003与历史Local R8保持未完成/FAIL。本记录完成后补充精确commit、命令和下一台机器的步骤。
+D001按用户明确范围修订为“固定源码并移交ABI重建要求”，不再要求本机完成兼容性编译/运行测试。四库Experimental已发布：NDNSF首次交付为`0a8d8cc7`，后续为进度/范围记录；NAC、SVS、NDNSD与锁文件一致。
+
+已完成的交付检查：相关工具28/28 PASS（17.90s）、五项skill结构检查、28个文档相对链接及接收命令语法检查；真实四库包生成、搬迁后verify、固定base摘要及definition render PASS。这些是已发生的检查，不是下一轮测试指令。
+
+本地包：`.codex-tmp/source-handoff-20260906/bundle-r3`，搬迁副本`relocated-r3`；NDNSF453、NAC63、SVS31、NDNSD14个源码成员。seal为`sha256:9129d07298f5754823f3bc2bf9c10fea7416adbb1e4168ced3dc82750948612c`。记录在同级`package-r3.log`、`relocation-r3.log`、`render-r3.log`、`tool-checks-r5/output.log`；这些本地产物不入Git，接收端可按上文重建。
+
+额外启动的本机构建已按用户要求停止：R1执行器超时、R2重复构建中断、R3普通Provider构建成功、R4故障Provider构建被用户范围纠正中止。原始记录保留在独立树`ndnsf-svs-abi-20260906/.codex-tmp/svs-abi-20260906-r1/`，不声称完整构建或运行验证通过。
+
+**TRANSFERRED**：另一台机器按锁定源码重新构建全部ABI消费者（含NDNSD及两个扩展），执行unit/integration、必要MiniNDN、SIF构建和Tiger验收。本机停止补测；SIF/新闭包运行资格均未取得。既有构建入口所需host qualification manifest仍是接收方需处理的前置项。
+
+Spec182保持0/17；Tiger B003与历史Local R8的未完成/FAIL状态保留。下一步由实验机器按Receiving Machine步骤接收和验证。
