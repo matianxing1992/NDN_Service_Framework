@@ -2163,3 +2163,21 @@ Evidence: specs/183-tiger-yolo-reusable-experiments/evidence/yolo-input-validati
 Lesson: establish a missing artifact's actual consumer and schema before
 classifying it as an external blocker. Preserve runtime and dispatch binding
 requirements without inventing another signing authority.
+
+# 2026-09-07 — Spec183 ranks could generate incompatible barrier identities
+
+Symptom: run_rank without probe_id generated an independent random ID on each
+rank; a two-rank invocation could not accept its peer's startup records.
+Completion budget validation also happened only when its barrier was created.
+
+Cause: a single-rank convenience default was reused for distributed startup,
+and runtime-independent budget checks were delayed beyond runtime creation.
+
+Fix: require a shared caller-provided probe ID for multiple ranks and validate
+all three budgets before constructing NodeRuntime. Four targeted rejection
+tests failed before the fix. The focused operator/startup suite now passes
+16 tests, including real on-disk exchange between two rank barrier objects
+(runtime and lifecycle mocked; no model or cluster qualification).
+
+Lesson: invocation identity belongs to the coordinator, not individual ranks;
+validate static budgets before creating resources.

@@ -79,6 +79,72 @@ def test_invalid_application_name_is_rejected_before_runtime(monkeypatch, tmp_pa
     assert not called
 
 
+def test_two_rank_operator_requires_shared_probe_before_runtime(monkeypatch, tmp_path):
+    from runtime import yolo_operator
+    from runtime.yolo_worker import assigned_roles
+    kwargs = _run_kwargs(tmp_path)
+    kwargs.update(mode="two-node-gpu", allocation_expected={}, gpu_device="0")
+    kwargs["plan"].update(case="two-node-gpu", nodes=[
+        {"rank": rank, "roles": list(assigned_roles("two-node-gpu", rank))}
+        for rank in (0, 1)])
+    kwargs["endpoints"].append({"rank": 1, "address": "192.0.2.2", "port": 16380})
+    def forbidden(*args, **kwargs):
+        pytest.fail("missing shared probe must fail before creating a runtime")
+    monkeypatch.setattr(yolo_operator.NodeRuntime, "from_preparation", forbidden)
+    with pytest.raises(yolo_operator.OperatorError, match="OPERATOR_SHARED_PROBE_REQUIRED"):
+        yolo_operator.run_rank(**kwargs)
+
+
+def test_both_ranks_share_startup_and_completion_identity(monkeypatch, tmp_path):
+    from runtime import yolo_operator
+    from runtime.yolo_worker import assigned_roles
+    import apps.yolo as yolo_app
+    kwargs = _run_kwargs(tmp_path)
+    kwargs.update(mode="two-node-gpu", allocation_expected={}, gpu_device="0",
+                  probe_id="a" * 32)
+    kwargs["plan"].update(case="two-node-gpu", nodes=[
+        {"rank": rank, "roles": list(assigned_roles("two-node-gpu", rank))}
+        for rank in (0, 1)])
+    kwargs["endpoints"].append({"rank": 1, "address": "192.0.2.2", "port": 16380})
+    class Worker:
+        def check(self):
+            pass
+    monkeypatch.setattr(yolo_operator.NodeRuntime, "from_preparation", lambda *a, **k: Worker())
+    barriers = []
+    def lifecycle(worker, startup, **options):
+        completion = options["completion_factory"]()
+        startup.publish("nfd-ready", {"rank": startup.rank})
+        completion.publish("workload-complete", {"rank": startup.rank})
+        barriers.append((startup, completion))
+        return {"rank": startup.rank}
+    monkeypatch.setattr(yolo_app, "run_normal_node", lifecycle)
+    for rank in (0, 1):
+        yolo_operator.run_rank(**dict(kwargs, rank=rank))
+    for startup, completion in barriers:
+        assert startup.wait("nfd-ready") == {0: {"rank": 0}, 1: {"rank": 1}}
+        assert completion.wait("workload-complete") == {0: {"rank": 0}, 1: {"rank": 1}}
+        assert startup.binding == completion.binding == barriers[0][0].binding
+
+
+@pytest.mark.parametrize("field,value,reason", [
+    ("startup_seconds", 0, "OPERATOR_STARTUP_BUDGET"),
+    ("completion_seconds", float("nan"), "OPERATOR_COMPLETION_BUDGET"),
+    ("cleanup", True, "OPERATOR_CLEANUP_BUDGET"),
+])
+def test_all_budgets_are_validated_before_runtime(monkeypatch, tmp_path, field, value, reason):
+    from runtime import yolo_operator
+    kwargs = _run_kwargs(tmp_path)
+    if field == "cleanup":
+        kwargs["profile"]["timing"]["cleanupSeconds"] = value
+    else:
+        kwargs[field] = value
+    def forbidden(*args, **kwargs):
+        pytest.fail("invalid budget reached runtime creation")
+    monkeypatch.setattr(yolo_operator.NodeRuntime, "from_preparation", forbidden)
+    with pytest.raises(yolo_operator.OperatorError, match=reason):
+        yolo_operator.run_rank(**kwargs)
+
+
 def test_rank_operator_binds_preparation_barriers_and_lifecycle(monkeypatch, tmp_path):
     from runtime import yolo_operator
 

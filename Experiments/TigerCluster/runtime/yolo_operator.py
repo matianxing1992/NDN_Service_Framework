@@ -137,6 +137,8 @@ def run_rank(*, plan: dict, profile: dict, mode: str, rank: int, bundle: Path,
     The function is deliberately explicit about every boundary input.  It is
     suitable for a local CPU rank and for one `srun` task; the caller decides
     how two ranks are launched and how the final collector joins their receipts.
+    Multi-rank callers must generate one probe_id per invocation and pass it
+    unchanged to every rank; independently generated IDs cannot share barriers.
     """
     roles, ranks = _validate_plan(plan, mode=mode, rank=rank)
     _digest(preparation_digest, "OPERATOR_PREPARATION_DIGEST")
@@ -151,6 +153,12 @@ def run_rank(*, plan: dict, profile: dict, mode: str, rank: int, bundle: Path,
         raise OperatorError("OPERATOR_BARRIER_ALIAS")
     if not isinstance(profile, dict):
         raise OperatorError("OPERATOR_PROFILE")
+    startup_seconds = _finite(startup_seconds, "OPERATOR_STARTUP_BUDGET")
+    completion_seconds = _finite(completion_seconds, "OPERATOR_COMPLETION_BUDGET")
+    timing = profile.get("timing")
+    if not isinstance(timing, dict):
+        raise OperatorError("OPERATOR_CLEANUP_BUDGET")
+    cleanup_seconds = _finite(timing.get("cleanupSeconds"), "OPERATOR_CLEANUP_BUDGET")
     if not callable(accept_request):
         raise OperatorError("OPERATOR_COLLECTOR")
     _validate_endpoints(endpoints, ranks)
@@ -164,6 +172,8 @@ def run_rank(*, plan: dict, profile: dict, mode: str, rank: int, bundle: Path,
         if gpu_device is None or not isinstance(gpu_device, str) or not gpu_device:
             raise OperatorError("OPERATOR_GPU_SELECTOR")
     if probe_id is None:
+        if len(ranks) > 1:
+            raise OperatorError("OPERATOR_SHARED_PROBE_REQUIRED")
         probe_id = secrets.token_hex(16)
     if not isinstance(probe_id, str) or re.fullmatch(r"[a-f0-9]{32}", probe_id) is None:
         raise OperatorError("OPERATOR_PROBE_ID")
@@ -172,17 +182,17 @@ def run_rank(*, plan: dict, profile: dict, mode: str, rank: int, bundle: Path,
             plan, expected_receipt_digest=preparation_digest,
             candidate_digest=candidate_digest, profile=profile, mode=mode, rank=rank,
             bundle=bundle, homes=homes, public=public, output=output, node=node,
-            gpu_device=gpu_device, cleanup_seconds=float(profile["timing"]["cleanupSeconds"]))
+            gpu_device=gpu_device, cleanup_seconds=cleanup_seconds)
     except (KeyError, TypeError, ValueError) as exc:
         raise OperatorError("OPERATOR_PREPARATION") from exc
     startup = StartupBarrier(startup_directory, run_id=plan["runId"], probe_id=probe_id,
         candidate_digest=candidate_digest, ranks=ranks, rank=rank,
-        seconds=_finite(startup_seconds, "OPERATOR_STARTUP_BUDGET"), check=worker.check)
+        seconds=startup_seconds, check=worker.check)
 
     def completion_factory():
         return StartupBarrier(completion_directory, run_id=plan["runId"], probe_id=probe_id,
             candidate_digest=candidate_digest, ranks=ranks, rank=rank,
-            seconds=_finite(completion_seconds, "OPERATOR_COMPLETION_BUDGET"), check=worker.check)
+            seconds=completion_seconds, check=worker.check)
 
     from apps.yolo import run_normal_node
     return run_normal_node(worker, startup, completion_factory=completion_factory,

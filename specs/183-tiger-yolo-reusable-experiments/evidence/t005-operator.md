@@ -40,6 +40,22 @@ no native extension, SIF, model, MiniNDN, GPU, or TigerCluster process ran.
 
 ## Remaining work
 
+### 2026-09-07 shared probe and early budget regression
+
+The multi-rank operator now requires a coordinator-provided shared `probe_id`.
+Previously each rank could generate a different random ID, making its peer's
+otherwise valid startup record fail the binding check. Single-rank invocation
+may still generate its own ID. Startup, completion and cleanup budgets are
+validated before `NodeRuntime.from_preparation`, including rejection of boolean
+and nonfinite values.
+
+`python3 -m pytest -q Experiments/TigerCluster/tests/test_yolo_operator.py
+Experiments/TigerCluster/tests/test_yolo_startup.py --tb=short`:
+**16 passed in 0.88s**. The positive two-rank test exchanges real on-disk startup
+and completion records with one ID. Runtime creation and application lifecycle
+are doubles; it does not demonstrate multi-process NFD, model or GPU execution.
+The allocation coordinator must still supply this shared ID in the real path.
+
 T005 remains open until the actual secure YOLO application path and collector
 are wired to this seam and exercised through T006/T007. T007 must re-audit every
 effective profile field and the hidden `run` boundary before any formal build,
