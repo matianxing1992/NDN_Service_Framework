@@ -78,6 +78,8 @@ T001–T004形成 profile/launcher 实现骨架；可操作 MVP 还要求 T006 �
 
 ## Current Checkpoint
 
+2026-09-07公共recipient接线：User支持public-only map，Spec183启动强制显式protected epoch及自身requester/authority密钥；311 focused通过。真实User seam新增两项测试因缺少`_ndnsf`在setup失败，未证明grant集成通过；T008须完整重跑。见[evidence/t005-public-recipients.md](evidence/t005-public-recipients.md)。下一步signed准备/registry布局/native Provider recipient/readiness，再T006；T005/T007保持未完成。
+
 2026-09-07控制面接线：apps/yolo.py已复用Controller/Repo入口，role-local policy/store、显式capacity、bounded JSON拒错；见[evidence/t005-control-launch.md](evidence/t005-control-launch.md)。新审查发现现有User默认plaintext-v1且旧protected seam读取Provider私钥map，未满足Spec183隔离；下一步优先实现公共recipient key map并绑定显式protected epoch/requester/authority/native recipient输入。沿用既有可信in-process authority边界，不新增网络授权服务，不共享Provider私钥。完成后继续signed准备/readiness/T006；T005及T007保持未完成，不放行Slurm。
 
 2026-09-07源码发现：YOLO声明CPU/CUDA备选，但_v3_role_specs只取首项，GPU-only模型Provider或CPU Merge无法同时满足。已在原DI coordinator保留明确的ONNX CPU/CUDA family后再由ACK选择；9个kernel测试复现/修复并保留资源/角色/CPU-only负例，见[evidence/t005-backend-selection.md](evidence/t005-backend-selection.md)。T008必须在原生绑定构建后以`SPEC183_REQUIRE_NATIVE_PLANNER_IMPORT=1`重跑该文件，禁止AST模式代替完整import。该源码变化使旧runtime/source seal失效；handoff交付SHA只作provenance，新SIF必须含修复。T005仍partial，Controller/Repo准备和T006未完成。

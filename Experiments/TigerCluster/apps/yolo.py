@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import math
+import re
 
 from runtime.baseline import PYTHON
 
@@ -64,6 +65,7 @@ def start_repo(worker, *, identity: str, free_bytes: int):
 def run_requests(worker, plan: dict, *, package: Path, catalog_data_name: str,
                  catalog_signer: str, permission_wait_ms: int,
                  request_deadline_ms: int, process_timeout_seconds: float,
+                 protection_epoch: str,
                  accept_request, peer_failure: Path | None = None):
     """Stop on the first process/evidence failure, keeping Providers alive.
 
@@ -73,6 +75,9 @@ def run_requests(worker, plan: dict, *, package: Path, catalog_data_name: str,
     """
     if not callable(accept_request):
         raise ValueError('YOLO_RESULT_VALIDATOR_REQUIRED')
+    if (not isinstance(protection_epoch, str) or protection_epoch == 'plaintext-v1'
+            or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,127}', protection_epoch)):
+        raise ValueError('YOLO_PROTECTED_EPOCH_REQUIRED')
     if (type(permission_wait_ms) is not int or not 1 <= permission_wait_ms <= 120000
             or type(request_deadline_ms) is not int or not 1500 < request_deadline_ms <= 60000
             or isinstance(process_timeout_seconds, bool)
@@ -108,17 +113,22 @@ def run_requests(worker, plan: dict, *, package: Path, catalog_data_name: str,
         if request['output'] != str(worker.output / 'user' / 'requests' / str(i)):
             raise ValueError('YOLO_REQUEST_OUTPUT')
     for name in ('case.json', 'catalogue-registry.json', 'offer-trust-root.json',
-                 'offer-public-key-map.json'):
+                 'offer-public-key-map.json', 'recipient-public-keys.json'):
         path = worker.public / name
         if path.is_symlink() or not path.is_file():
             raise ValueError('YOLO_USER_INPUT:' + name)
-    key = worker.homes['user'] / 'request-envelope.key'
-    if key.is_symlink() or not key.is_file():
-        raise ValueError('YOLO_USER_ENVELOPE_KEY')
+    for name in ('request-envelope.key', 'requester.key', 'authority/artifact-policy-authority.key'):
+        key = worker.homes['user'] / name
+        if any(p.is_symlink() for p in (key, *key.parents)) or not key.is_file():
+            raise ValueError('YOLO_USER_PRIVATE_INPUT')
     for request in requests:
         i = str(request['index'])
         output = '/output/requests/' + i
-        argv = [PYTHON, APP_DIR + '/user.py', '--config', '/config/case.json',
+        argv = ['/usr/bin/env', 'SPEC181_PROTECTION_EPOCH=' + protection_epoch,
+                'NDNSF_DI_RECIPIENT_PUBLIC_KEY_MAP=/config/recipient-public-keys.json',
+                'SPEC181_REQUESTER_PRIVATE_KEY=/identities/user/requester.key',
+                'NDNSF_SPEC180_CONFIG_ROOT=/identities/user/authority',
+                PYTHON, APP_DIR + '/user.py', '--config', '/config/case.json',
                 '--generated-policy-dir', output + '/generated-policy',
                 '--canonical-package', '/artifacts',
                 '--catalogue-registry', '/config/catalogue-registry.json',

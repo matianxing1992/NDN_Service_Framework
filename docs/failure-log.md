@@ -1767,6 +1767,13 @@ part of task context. Format per entry:
 - **Lesson**: every deferred async retry needs a bounded schedule or an
   idle-face test can deadlock the whole suite.
 
+## 2026-09-07 — Spec183 public-recipient seam native import gate
+
+- Symptom: two new actual User-seam tests failed during setup, before grant execution.
+- Cause: the maintained User imports the host `ndnsf._ndnsf` extension, which is unavailable in this checkout/runtime; the Python partially-initialized-module text is not evidence of a newly introduced circular dependency.
+- Resolution/status: preserved both tests without skip or fake extension. T008 native build must rerun the full seam suite. Public-key decoding and launch-boundary checks pass in the 311-test focused suite, but do not close this native integration requirement.
+- Lesson: pure security/launcher tests cannot establish application import or protected grant integration. Preserve exact failure scope and require the real native environment.
+
 ## 2026-09-02 — SegmentFetcher infinite fetch on discovery Data
 - **Area**: Core `ServiceProvider::replyFromIMS`
 - **Symptom**: SegmentFetcher kept requesting segments until timeout.

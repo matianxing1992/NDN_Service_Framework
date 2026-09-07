@@ -125,6 +125,29 @@ def test_y_b_grant_seam_round_trip(seam):
     assert len(key) == 32
 
 
+def test_public_recipient_seam_without_provider_private_file(seam, monkeypatch):
+    """The actual User grant seam must work with public-only peer material."""
+    payload = seam.recipient.public_key().public_bytes(
+        serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo)
+    (seam.root / "recipient.pub").write_bytes(payload)
+    mapping = seam.root / "public-recipients.json"
+    mapping.write_text(json.dumps({seam.view.provider: {
+        "path": "recipient.pub",
+        "sha256": "sha256:" + hashlib.sha256(payload).hexdigest(),
+    }}))
+    (seam.root / "recipient.key").unlink()
+    monkeypatch.delenv("SPEC181_PROVIDER_RECIPIENT_KEY_MAP")
+    monkeypatch.setenv("NDNSF_DI_RECIPIENT_PUBLIC_KEY_MAP", str(mapping))
+    test_y_b_grant_seam_round_trip(seam)
+
+
+def test_recipient_seam_rejects_ambiguous_maps(seam, monkeypatch):
+    monkeypatch.setenv("NDNSF_DI_RECIPIENT_PUBLIC_KEY_MAP", "unused-public-map.json")
+    with pytest.raises(ValueError, match="only one recipient key map"):
+        build(seam)
+    assert seam.published == []
+
+
 @pytest.mark.parametrize("changes", [
     {"model_manifest_digest": "sha256:" + "f" * 64},
     {"protection_epoch": "epoch-other"},

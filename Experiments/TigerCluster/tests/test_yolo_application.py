@@ -82,9 +82,12 @@ def test_provider_rejects_bad_inputs_before_process_or_lease(tmp_path, fault):
 
 def scheduled_inputs(tmp_path, mode='two-node-gpu'):
     inputs = application_inputs(tmp_path, 0, mode)
-    for name in ('case.json', 'catalogue-registry.json', 'offer-trust-root.json', 'offer-public-key-map.json'):
+    for name in ('case.json', 'catalogue-registry.json', 'offer-trust-root.json', 'offer-public-key-map.json', 'recipient-public-keys.json'):
         (inputs['public'] / name).write_text('synthetic fixture')
     (inputs['homes']['user'] / 'request-envelope.key').write_bytes(b'x' * 32)
+    (inputs['homes']['user'] / 'requester.key').write_bytes(b'y' * 32)
+    (inputs['homes']['user'] / 'authority').mkdir()
+    (inputs['homes']['user'] / 'authority/artifact-policy-authority.key').write_text('fixture, not a key')
     package = tmp_path / 'package'
     package.mkdir()
     worker = NodeRuntime(**inputs)
@@ -94,7 +97,7 @@ def scheduled_inputs(tmp_path, mode='two-node-gpu'):
              output=str(worker.output / 'user' / 'requests' / str(i))) for i in range(count)]}
     return worker, plan, dict(package=package, catalog_data_name='/run/catalog/v=1',
         catalog_signer='/run/controller', permission_wait_ms=1000,
-        request_deadline_ms=5000, process_timeout_seconds=10)
+        request_deadline_ms=5000, process_timeout_seconds=10, protection_epoch='spec183-test-v1')
 
 
 @pytest.mark.parametrize('mode,count', [('two-node-gpu', 4), ('single-node-gpu', 2), ('local-cpu', 2)])
@@ -120,6 +123,9 @@ def test_schedule_runs_finite_users_preserving_live_provider(tmp_path, monkeypat
         assert len({a[a.index('--request-id') + 1] for a in calls}) == count
         assert len({a[a.index('--lifecycle-output-dir') + 1] for a in calls}) == count
         assert all('--offline-oracle' not in a and '--sequential-requests' not in a for a in calls)
+        assert all('SPEC181_PROTECTION_EPOCH=spec183-test-v1' in a for a in calls)
+        assert all('NDNSF_DI_RECIPIENT_PUBLIC_KEY_MAP=/config/recipient-public-keys.json' in a for a in calls)
+        assert not any(any(arg.startswith('SPEC181_PROVIDER_RECIPIENT_KEY_MAP=') for arg in a) for a in calls)
         assert all(a[a.index('--generated-policy-dir') + 1].startswith('/output/requests/') for a in calls)
         with pytest.raises(ValueError, match='WORKER_INVOCATION_REUSED'):
             run_requests(worker, plan, accept_request=accept, **options)
@@ -158,7 +164,7 @@ def test_schedule_stops_at_first_failure_and_preserves_output(tmp_path, monkeypa
         assert all(r['reaped'] for r in worker.close())
 
 
-@pytest.mark.parametrize('fault', ['bare-id', 'duplicate-id', 'wrong-output', 'missing-key', 'wrong-count'])
+@pytest.mark.parametrize('fault', ['bare-id', 'duplicate-id', 'wrong-output', 'missing-key', 'wrong-count', 'plaintext', 'empty-epoch'])
 def test_invalid_schedule_rejects_before_user_launch(tmp_path, fault):
     from apps.yolo import run_requests
     worker, plan, options = scheduled_inputs(tmp_path)
@@ -170,6 +176,8 @@ def test_invalid_schedule_rejects_before_user_launch(tmp_path, fault):
         plan['requests'][0]['output'] = str(tmp_path / 'wrong')
     elif fault == 'missing-key':
         (worker.homes['user'] / 'request-envelope.key').unlink()
+    elif fault in ('plaintext', 'empty-epoch'):
+        options['protection_epoch'] = 'plaintext-v1' if fault == 'plaintext' else ''
     else:
         plan['requests'].pop()
     try:

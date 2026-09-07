@@ -254,7 +254,7 @@ def _build_grant_seam(client, *, registry_path, model_manifest_digest,
     from ndnsf_distributed_inference.security.registry_keys import (
         load_artifact_policy_authority_private_key,
         load_artifact_policy_authority_registry, load_ed25519_private_key,
-        load_grant_recipient_private_key)
+        load_grant_recipient_private_key, load_grant_recipient_public_map)
     from ndnsf_distributed_inference.security.requester_grant_pipeline import (
         build_in_process_grant_provider)
     policy = load_artifact_policy_authority_registry(
@@ -273,13 +273,20 @@ def _build_grant_seam(client, *, registry_path, model_manifest_digest,
         current_manifest()
     requester_seed_path = Path(os.environ["SPEC181_REQUESTER_PRIVATE_KEY"])
     requester_key = load_ed25519_private_key(requester_seed_path, raw_seed=True)
-    recipient_map_path = Path(os.environ["SPEC181_PROVIDER_RECIPIENT_KEY_MAP"])
-    recipient_entries = json.loads(recipient_map_path.read_text(
-        encoding="utf-8"))
-    recipient_public_keys = {}
-    for provider, pem_path in recipient_entries.items():
-        key = load_grant_recipient_private_key(pem_path)
-        recipient_public_keys[provider] = key.public_key()
+    public_map = os.environ.get("NDNSF_DI_RECIPIENT_PUBLIC_KEY_MAP", "")
+    if public_map:
+        if os.environ.get("SPEC181_PROVIDER_RECIPIENT_KEY_MAP"):
+            raise ValueError("configure only one recipient key map")
+        recipient_public_keys = load_grant_recipient_public_map(public_map)
+    else:
+        # Historical Spec181 functional fixtures only. Spec183 must supply
+        # the public map above and never mount peer private HOME directories.
+        recipient_map_path = Path(os.environ["SPEC181_PROVIDER_RECIPIENT_KEY_MAP"])
+        recipient_entries = json.loads(recipient_map_path.read_text(encoding="utf-8"))
+        recipient_public_keys = {}
+        for provider, pem_path in recipient_entries.items():
+            key = load_grant_recipient_private_key(pem_path)
+            recipient_public_keys[provider] = key.public_key()
     content_keys: dict[tuple[str, str], bytes] = {}
 
     def content_key_owner(model_manifest_digest: str, protection_epoch: str):

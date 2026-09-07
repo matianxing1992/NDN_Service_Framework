@@ -16,6 +16,7 @@ from __future__ import annotations
 import os
 import hashlib
 import json
+import re
 import stat
 from dataclasses import dataclass
 from pathlib import Path
@@ -101,6 +102,62 @@ def load_grant_recipient_private_key(path: str | Path):
     raise ValueError("grant recipient private key must be Ed25519 or EC P-256")
 
 
+def load_grant_recipient_public_map(path: str | Path):
+    """Load pinned public recipients without opening any Provider private key.
+
+    Map: absolute Provider name -> {path: relative PEM path, sha256: digest}.
+    The operator must authenticate/bind the map itself in the candidate;
+    matching its per-file hashes alone is not authorization.
+    """
+    path = Path(path).expanduser().absolute()
+
+    def read_bounded(file, limit):
+        if any(p.is_symlink() for p in (file, *file.parents)):
+            raise ValueError('recipient public input is a symlink')
+        fd = os.open(file, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+        with os.fdopen(fd, 'rb') as stream:
+            info = os.fstat(stream.fileno())
+            if not stat.S_ISREG(info.st_mode) or not 0 < info.st_size <= limit:
+                raise ValueError('recipient public input is not a bounded regular file')
+            payload = stream.read(limit + 1)
+            if len(payload) != info.st_size:
+                raise ValueError('recipient public input size changed')
+            return payload
+
+    def unique(pairs):
+        result = {}
+        for name, value in pairs:
+            if name in result:
+                raise ValueError('duplicate recipient map field')
+            result[name] = value
+        return result
+
+    entries = json.loads(read_bounded(path, 1024 * 1024), object_pairs_hook=unique)
+    if not isinstance(entries, dict) or not 1 <= len(entries) <= 64:
+        raise ValueError('recipient public map cardinality')
+    result = {}
+    for provider, entry in entries.items():
+        if (not isinstance(provider, str) or not provider.startswith('/') or provider == '/'
+                or len(provider) > 1024 or any(ord(c) < 33 for c in provider)
+                or not isinstance(entry, dict) or set(entry) != {'path', 'sha256'}
+                or not isinstance(entry['path'], str) or not entry['path']
+                or not isinstance(entry['sha256'], str)
+                or not re.fullmatch(r'sha256:[0-9a-f]{64}', entry['sha256'])):
+            raise ValueError('invalid recipient public map entry')
+        relative = Path(entry['path'])
+        if relative.is_absolute() or '..' in relative.parts:
+            raise ValueError('recipient public path escapes map directory')
+        payload = read_bounded(path.parent / relative, 65536)
+        if 'sha256:' + hashlib.sha256(payload).hexdigest() != entry['sha256']:
+            raise ValueError('recipient public key digest mismatch')
+        key = serialization.load_pem_public_key(payload, backend=default_backend())
+        if not (isinstance(key, ed25519.Ed25519PublicKey) or
+                isinstance(key, ec.EllipticCurvePublicKey) and isinstance(key.curve, ec.SECP256R1)):
+            raise ValueError('grant recipient public key must be Ed25519 or EC P-256')
+        result[provider] = key
+    return result
+
+
 @dataclass(frozen=True)
 class ArtifactPolicyRegistry:
     authority_id: str
@@ -158,6 +215,7 @@ def load_ed25519_public_key(path: str | Path) -> ed25519.Ed25519PublicKey:
 __all__ = [
     "ArtifactPolicyRegistry", "load_artifact_policy_authority_registry",
     "load_ed25519_private_key", "load_grant_recipient_private_key",
+    "load_grant_recipient_public_map",
     "load_artifact_policy_authority_private_key",
     "load_ed25519_public_key",
 ]
