@@ -1,95 +1,119 @@
-# Spec183 design-to-code convergence audit
+# T007 Design-Code Convergence Audit
 
-**Date:** 2026-09-07
-**Branch:** `TigerClusterExperiments`
-**Verdict:** **BLOCKED / NOT READY FOR FORMAL VALIDATION**
+**Date**: 2026-09-07
+**Scope**: submit → worker → application → Core/DI/Repo → collector closure
+per the 12 speckit-audit principles (`.specify/memory/speckit-audit-principles.md`).
+**Method**: CodeGraph symbol verification against real source, the 913-test
+focused suite, and the real container execution receipts produced this cycle
+(a3ad4454, 13c5e58a).  No task checkbox was trusted on its own.
 
-This is the required production-wiring audit for T007. It is deliberately a
-blocking audit, not a completion claim. The audit used the current Spec183
-documents, `git status`, the CodeGraph index, exact source inspection, and the
-registered focused test suite. No SIF, model, MiniNDN, or Tiger job was
-started.
+## Verdict: BLOCK (HIGH)
 
-## Verified component boundaries
+T002/T005/T006 remain open on controlling semantic/evidence gaps (G1, G2, G3
+below).  The audit is report-only; no fix is applied by this document.
 
-| Boundary | Current evidence | Verdict |
-| --- | --- | --- |
-| `applicationName + '/sync'` | `runtime.yolo_profile.application_sync_prefix()` is consumed by projection, NFD route setup, and startup validation; malformed names and legacy `/group` are rejected. | PASS (component only) |
-| Worker lifecycle | `NodeRuntime`, owned role homes, process groups, finite User calls, GPU/PID probes, and cleanup readers have source-shaped and real short-lived process tests. | PASS (component only) |
-| Preparation/public material | `apps/yolo.py::prepare_in_container` and preparation inventory enforce isolated mounts, public recipient maps, protected epoch, and no Provider model mount. | PASS (component only) |
-| Normal request schedule | `run_requests` invokes the maintained ACK-driven User once per warmup/measured request and keeps Providers alive. | PASS (argv/process-boundary tests only) |
-| Result boundaries | lifecycle, numerical, dependency, device, cleanup, node-receipt, and expected-rejection validators reject the registered mutation classes. | PASS (retained/component evidence only) |
-| SIF dispatch preflight | Spec183 host receipt and exact-SIF preflight fail closed before Apptainer/build calls and inspect imports/entrypoints/`ldd` when a real SIF is supplied. | PASS (negative/fixture boundary only) |
+## Four evidence layers
 
-The direct full `Experiments/TigerCluster/tests` run currently reports
-**806 passed in 32.84s**. A prior broader registered selector reported 885
-tests; that historical count is not reused as current evidence. Neither count
-is a runtime qualification result: the tests use doubles or source-shaped
-receipts where the physical inputs are unavailable.
+### 1. 文档声称 (documents)
 
-## Blocking production findings
+- spec.md/plan.md/tasks.md traceability is intact through T004-T006; the
+  task list accurately records open status (2/17 complete).
+- `contracts/experiment-profile.md` workload semantics were found and fixed
+  DURING this cycle: `workload.descriptor` must point at the existing service
+  JSON template and `workload.packageManifest` at the package-root
+  manifest.json.  The profile initially pointed both rows at the wrong files;
+  corrected in a3ad4454 (descriptor → `specs/181/.../local-case-configs/y-b.json`,
+  packageManifest → `.cache/model/spec183-signed/canonical-package/manifest.json`).
+  This was a cross-document consistency failure that production code
+  (`resolve_provision_inputs`, `prepare_in_container`) correctly rejected.
 
-2026-09-07 follow-up: the interrupted submission patch contained self-dependent
-gate requirements, seconds emitted as bare Slurm minutes, a fixed two-node
-allocation for single-node mode, untyped GPU allocation and a mutable-checkout
-wrapper path. These are corrected and covered by 74 focused operator/profile/
-journal tests (9.66s). The proposed live submission was withheld because
-`_gate_receipt` only checks generic status strings: it still needs exact
-candidate, case, source/runtime and retained-evidence binding. The shared
-remote staging/runner/reconciliation path remains unimplemented. No task
-or runtime qualification is closed by these tests.
+### 2. 代码实现 (code, CodeGraph file:line)
 
-| ID | Requirement | Finding | Owner / earliest gate |
-| --- | --- | --- | --- |
-| T007-B1 | FR-002, FR-018 | `Experiments/TigerCluster/profiles/yolo-two-node.json` is absent. No real partition/account/GPU/memory/SIF/model/oracle references can be checked. | T001 external inputs, then T004 |
-| T007-B2 | FR-012, FR-018 | `run.sbatch` now exists and `jobs/yolo/submit.py` exposes `check`, `prepare`, `local`, `submit`, and `collect` plus a hidden allocation-bound `run`. The commands remain fail-closed: no qualified profile/receipt has reached a real Slurm query, worker launch, recovery boundary, or collector result. | T004/T007 |
-| T007-B3 | FR-007, FR-008, FR-009 | `run_normal_node` and `runtime.yolo_operator.finalize_normal_collection` now provide the production-shaped rank and worker-to-collector seams. The finalizer refuses partial rank returns and the handoff writer re-reads every retained node receipt before publishing `collection-input.json`; no real NFD, Controller, Repo, Provider, User, or cross-node signed-data run has occurred. | T005/T007, then T009/T010 |
-| T007-B4 | FR-005, FR-006 | Locked source archives/build inputs, the signed YOLO package/registry/oracle, and the local base SIF are not all present. The exact-SIF preflight therefore cannot produce a candidate. The bounded compute probe shows Apptainer 1.5.3 while the login host has 1.3.4; the matching local `/opt/apptainer/1.5.3/bin/apptainer` is now available, but must be used explicitly rather than the login/default binary. | T002/T008/T011; `WAITING_EXTERNAL_INPUT` |
-| T007-B5 | FR-010, FR-011 | The final collector is implemented and exercised with retained fixtures, but no real native response, optimized graph, CUDA execution, or independent model oracle has reached it. | T006, then T008–T011 |
-| T007-B6 | FR-014 | The required unit → integration → MiniNDN → exact-SIF → Tiger sequence cannot start until T007 closes; current component tests do not satisfy that ordering. | T007 gate |
+Verified against real source this cycle:
 
-## Effective-field audit
+- `check_plane`/`check_chain` (runtime/yolo_profile.py:126/159) — content
+  integrity recomputes every ancestor; plane identities are canonical
+  document shas, never plane.json file shas (fixed in 652d13c4).
+- `resolve_run_plan` (yolo_profile.py:414) — CLI `--output` now anchors to
+  cwd, matching `_safe_output` (submit.py:42); previously profile-anchored,
+  which made plan.output disagree with the actual freeze location.
+- `_prepare` (jobs/yolo/submit.py:298) — real execution: froze a 21-file
+  bundle (PREPARED, candidateDigest c7ec3d7f) and wrote prepare.json.
+- `resolve_provision_inputs` → `stage_provision_inputs` → `provision_run`
+  (yolo_profile.py:328, yolo_operator.py:55/97) — real execution produced
+  tiger-yolo-preparation-v1 receiptDigest 968d0c93 inside the base SIF.
+- `run_rank` (yolo_operator.py:253) → `run_normal_node` (apps/yolo.py) —
+  real execution reached the Controller launch: in-SIF NFD 24.07 started and
+  four nfdc commands exited 0 (tiger-yolo-network-setup-v1 receipt).
+- Owner boundary `_installed_yolo_owner` (apps/yolo.py) — binds installed
+  ndnsf/py_repoclient before the owner mutates sys.path; scoped to the SIF
+  path so host MiniNDN keeps its own compiled pythonWrapper.
+- `issue()` (runtime/identities.py:162) — clears only the root role's import
+  side-effect keychain; real role homes still fail closed.
+- `container_command` (runtime/baseline.py:98) — `--home` uses the absolute
+  container-path form so apptainer never injects skeleton files after the
+  caller's emptiness checks.
 
-The rank-operator seam and application coordinator consume the fixed ACK
-timeout, request deadline, protected epoch, candidate identifiers, exact
-`applicationName + '/sync'` prefix, role identity, provider/service names,
-output paths, endpoints, and cleanup budgets in component-level argv and
-lifecycle checks. The following profile-owned fields are still not consumed
-by an actual production dispatch because no qualified profile has been
-accepted and the launcher is intentionally fail-closed:
+### 3. 测试执行 (tests)
 
-* Apptainer executable/version and exact SIF path/hash;
-* Slurm partition, account, constraint, node/GPU/memory/walltime allocation;
-* immutable harness/model/oracle references and their candidate E binding;
-* shared run/lock roots and allocate-once `SubmissionJournal` transitions;
-* `prepare`, `local`, `submit`, and `collect` argv/env plus job reconciliation
-  against a real Slurm allocation and collector receipt.
+913 focused tests pass (75s) after the fixes; the full suite was the commit
+gate for 652d13c4/a3ad4454/13c5e58a.  Failures found during the cycle were
+either real defects (fixed) or stale assertions of the old `--home` form
+(updated to the corrected contract).
 
-Consequently, no field-consumption or no-leftovers claim is allowed yet.
+### 4. 实验测量 (measurements)
 
-## Required closure before changing this verdict
+- Real containerized offline issuer: preparation receipt with 30+ public
+  files (8 role certificates, case-policy, native-execution-plan,
+  trust-schema, runtime-publication, service-manifest), placementCandidateDigest
+  3fd5fb9d, protectionEpoch spec183-yolo-protected-v1.
+- Real in-SIF NFD/network layer: NFD 24.07 (ndn-cxx 0.9.0, Boost 1.71),
+  4/4 nfdc commands exit 0.
+- No GPU execution exists anywhere; no Tiger allocation has been used; no
+  PASS is claimed for anything runtime-related.
 
-1. Receive and independently hash the locked source/base/package/model/oracle
-   inputs; keep any missing item explicitly `WAITING_EXTERNAL_INPUT`.
-2. Provide the real profile and complete the existing `run.sbatch`/operator
-   wiring around the existing helpers; do not add a placeholder file merely
-   to satisfy the harness inventory.
-3. Connect the five operator commands and allocate-once journal, including
-   `SUBMISSION_UNKNOWN` reconciliation without blind resubmission.
-4. Re-run T002–T006 through the actual command boundaries, then rerun this
-   audit with CodeGraph and exact argv/env evidence.
-5. Only after a PASS audit run the mandated local unit/integration/MiniNDN and
-   local-SIF gates; no Tiger submission is authorized before those receipts.
+## Principle review
 
-## Evidence references
+1. **Intent fidelity** — OK.  Fixed experiment authority (user ruling), real
+   inputs only, no fabricated receipts.
+2. **Necessity & Occam** — OK.  Planes/harness/authority/dev tools each solve
+   a concrete, encountered problem; no redundant mechanism found.
+3. **Architecture & ownership** — OK.  Core (ndn-service-framework) untouched;
+   all changes live in Experiments/TigerCluster, tools, specs.  DI repairs
+   were scoped to the harness boundary, not Core.
+4. **Cross-document consistency** — FIXED DURING AUDIT CYCLE (workload row
+   semantics, output anchoring).  Residual: oracle.contract still references
+   experiment-profile.md prose until T005/T006 produce the numeric contract.
+5. **Code fact verification** — OK for what is wired; the verified chain
+   matches contracts field-for-field.
+6. **Security & distributed correctness** — OK for the wired portion: 0600
+   private keys, fail-closed staging/verification, no gate fabrication,
+   replay-safe identity issue (side-effect cleanup is root-only).
+7. **Task executability** — OK.  Five submit commands exist; check/prepare
+   ran for real; local/run/submit are intentionally NOT_WIRED (design, not
+   defect — G4).
+8. **Validation design** — PARTIAL.  913 unit/focused tests; MiniNDN
+   validation (T010) not yet run.
+9. **Evidence integrity** — OK.  Real receipts and fixtures are strictly
+   separated; failure log entries accompany every fix commit.
+10. **Frozen evidence protection** — OK.  No selective rerun; all negative
+    results recorded.
+11. **Migration & rollback** — OK.  Old profiles/two-node.json untouched;
+    gates empty until qualified.
+12. **Verdict gate** — BLOCK (HIGH), reasons below.
 
-* [input inventory](input-inventory.md) — locked revisions, missing physical
-  inputs, and external-input boundary.
-* [T005 startup coordination](t005-startup-coordination.md) — component
-  readiness and canonical Sync prefix, explicitly not native/Tiger evidence.
-* [T006 collector handoff](t006-collector-handoff.md) — rank-join and immutable
-  worker-to-collector input boundary, still fixture/component evidence only.
-* [T002 integrity](t002-integrity.md) — staged closure and fail-closed
-  preflight boundaries.
-* [experiment profile contract](../contracts/experiment-profile.md) — the
-  five-command interface and qualification gates.
+## Discrepancy registry
+
+| # | Severity | Owner | Discrepancy | Regression |
+|---|----------|-------|-------------|------------|
+| G1 | HIGH | T005/T006 | `prepare_role_reference` (runtime/yolo_graph_reference.py:22) produces ORT graph references (COMPONENT_ONLY) but no production owner publishes a certifiedGraph into the collector path; the final verdict consumes certifiedGraph that no wired producer generates (evidence/certified-graph-owner-gap.md). | A test that runs the collector with a graph reference produced by the wired owner and rejects a synthetic one. |
+| G2 | HIGH | T011 | The base SIF's in-image controller.py predates `--spec180-runtime-receipt-file` (host sources: examples/python/NDNSF-DistributedInference/yolo_2x2/controller.py:116); the full application layer cannot execute against the Spec183 harness until the T011 local SIF rebuild. | A post-rebuild container run that reaches wait_controller_publication with the real receipt file written. |
+| G3 | HIGH | T010/T011 | `release.gates` is empty: no qualified hostMinindn or localSif receipt exists. `_local`/`_submit` correctly refuse to run without them. | The real T010/T011 receipts bound into the profile gates, then `submit.py local` opening. |
+| G4 | MEDIUM | T004/T012 | `submit.py local/run/submit` return NOT_WIRED/RUNNER_NOT_WIRED by design; acceptable until G3 closes, but must be re-audited when wired. | Existing LOCAL_WORKER_NOT_WIRED/RUNNER_NOT_WIRED tests remain green after wiring. |
+| G5 | LOW | T012 | Remote storage roots (/project/tma1/ndnsf-di/{candidates,runs,locks,scratch}) are profile values not yet verified against the real project share. | T012 preflight comparing the staged SIF and writable capacity on the login node. |
+
+## Unblock path
+
+T005/T006 owner wiring (G1) → T007 re-audit (PASS) → T008 host-unit build →
+T009 integration → T010 MiniNDN host receipt (G3 half) → T011 local SIF
+rebuild (G2, G3 half) → T012 qualification → T013-T017 Tiger GPU deployment.

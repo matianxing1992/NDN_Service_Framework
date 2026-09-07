@@ -21,6 +21,17 @@ failure-log，记录 identity b6710fd6 稳定正确。deferred：远端 storage
 site roots 与 oracle 数值契约待 T005/T006/T012 wiring 验证；release.gates
 仍空，local-cpu 运行资格待真实 prepare+local 执行 receipt。
 
+2026-09-07 T007 审计（report-only）：产出
+[design-code-convergence.md](evidence/design-code-convergence.md)，判定
+BLOCK (HIGH)。四层证据逐项核实（文档/CodeGraph file:line/913 测试/真实
+容器 receipts）；登记 5 项 discrepancy：G1(HIGH) certifiedGraph 无已接线
+production owner（prepare_role_reference 仅 COMPONENT_ONLY）；G2(HIGH)
+base SIF 内 controller.py 无 --spec180-runtime-receipt-file（T011 重建
+前置）；G3(HIGH) release.gates 空（hostMinindn/localSif 未产生，不得伪造）；
+G4(MEDIUM) local/run/submit 有意 NOT_WIRED（设计内，wiring 后重审）；
+G5(LOW) 远端 storage roots 未实测。解除路径：T005/T006 owner 接线 →
+重审 PASS → T008→T009→T010→T011→T012→Tiger GPU 部署。
+
 2026-09-07 run-local 开发驱动 checkpoint：spec183_dev_provision.py 新增
 run-local 子命令，按 plan 驱动 run_rank 完整 local-cpu 生命周期。真实执行
 到达应用启动层：SIF 内 NFD 24.07（ndn-cxx 0.9.0/Boost 1.71）真实启动，
