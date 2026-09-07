@@ -106,33 +106,10 @@ private:
 
 class SerialRequestExecutor; // internal serial executor, defined in the .cpp
 
-// CD-001 non-public test port (test-only publication boundary): injects the
-// steady clock that derives operation deadlines and optionally replaces the
-// worker-thread dispatch with an explicit hook a unit test pumps, so
-// lifecycle ordering is deterministic.  Production callers use the
-// constructor without a test port; the default clock is steady_clock::now and
-// dispatch runs on the client-owned serial executor.
-struct NativeClientTestPort
-{
-  std::function<std::chrono::steady_clock::time_point()> now;
-  // When set, every request dispatch is handed to this function instead of
-  // the worker thread (no thread is started).  A test queues the functions
-  // and runs each one explicitly for deterministic ordering.
-  std::function<void(std::function<void()>)> submitHook;
-};
-
 class NativeInferenceClient
 {
 public:
   NativeInferenceClient(
-    std::shared_ptr<ndn_service_framework::ServiceUser> user,
-    std::shared_ptr<const NativeAdapterRegistry> adapters,
-    std::shared_ptr<NativeGrantClient> grants = nullptr,
-    std::shared_ptr<NativeConversationCoordinator> conversations = nullptr,
-    std::shared_ptr<NativeRequestPreparation> preparation = nullptr,
-    std::shared_ptr<const NativeOfferAdmission> admission = nullptr);
-  NativeInferenceClient(
-    const NativeClientTestPort& testPort,
     std::shared_ptr<ndn_service_framework::ServiceUser> user,
     std::shared_ptr<const NativeAdapterRegistry> adapters,
     std::shared_ptr<NativeGrantClient> grants = nullptr,
@@ -150,6 +127,24 @@ public:
   void close() noexcept;
 
 private:
+  // Only the unit-test friend can replace clocks/dispatch. Production
+  // construction always uses a monotonic clock and an independent timer.
+  friend class NativeClientTestAccess;
+  struct TestPort {
+    std::function<std::chrono::steady_clock::time_point()> now;
+    std::function<void(std::function<void()>)> submitHook;
+    std::function<std::function<void()>(std::chrono::steady_clock::time_point,
+                                       std::function<void()>)> scheduleHook;
+  };
+  NativeInferenceClient(
+    const TestPort& testPort,
+    std::shared_ptr<ndn_service_framework::ServiceUser> user,
+    std::shared_ptr<const NativeAdapterRegistry> adapters,
+    std::shared_ptr<NativeGrantClient> grants = nullptr,
+    std::shared_ptr<NativeConversationCoordinator> conversations = nullptr,
+    std::shared_ptr<NativeRequestPreparation> preparation = nullptr,
+    std::shared_ptr<const NativeOfferAdmission> admission = nullptr);
+
   std::shared_ptr<ndn_service_framework::ServiceUser> m_user;
   std::shared_ptr<const NativeAdapterRegistry> m_adapters;
   std::shared_ptr<NativeGrantClient> m_grants;
@@ -159,6 +154,9 @@ private:
   std::function<std::chrono::steady_clock::time_point()> m_now;
   std::shared_ptr<SerialRequestExecutor> m_executor;
   std::shared_ptr<SerialRequestExecutor> m_notifications;
+  std::shared_ptr<SerialRequestExecutor> m_deadlines;
+  std::function<std::function<void()>(std::chrono::steady_clock::time_point,
+                                     std::function<void()>)> m_schedule;
   mutable std::mutex m_mutex;
   std::vector<std::weak_ptr<NativeInferenceHandle::Operation>> m_operations;
   bool m_closed = false;

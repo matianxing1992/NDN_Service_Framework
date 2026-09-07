@@ -137,6 +137,8 @@ Name相同但作用域不同的字段不能共享可写状态。
 | requestId / operation | ndn::Name，Core分配后固定 | 跨ACK/plan/grant/结果绑定 | API不允许与Core分配矛盾；URI仅显示形式 |
 | attempt / operation | uint64，首次1，受支持恢复才递增 | fence旧结果/状态，不是Core ControllerVersion | cancel后不递增；不得接受caller覆盖 |
 | deadline / operation,control | steady time_point，本次总预算计算 | 本地工作/等待上界 | 时钟回拨不延长；保留独立wall expiry wire字段 |
+| deadlines / C01 | 独立 serial timer executor；使用同一 steady deadline | 工作或 observer 被占用时仍触发单一超时终态 | 每请求定时项仅持 weak operation；terminal 取消定时项，close 停止 timer；不关闭共享 Core |
+| cancelDeadline / operation | 定时项取消函数；初始空 | terminal gate 锁外调用，移除自有定时项 | 晚到 timer 仍通过同一 terminal fence；不延长预算；测试注入仅由 private TestPort/friend 提供 |
 | deadlineMs / signed values | uint64 epoch-ms，来源已认证契约 | wire/grant/lease有效期 | 不与monotonic时钟直接比较；转换策略O-004锁定 |
 | result / operation | optional<NativeInferenceResult>，初始无 | 一个native业务结果，由terminal owner写 | 非秘密payload类型按task验证；失败不设成功 |
 | error / operation | optional<NativeDiError>，初始无 | 稳定业务错误；与local wait timeout区别 | 首终态写一次；不存key/rawcipher secrets |

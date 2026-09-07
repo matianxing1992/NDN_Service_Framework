@@ -1,5 +1,12 @@
 # Failure Log and Evidence Index
 
+## 2026-09-07 — Spec182 T010-A unit selector rejected
+
+两个 Boost.Test suite 误用逗号组合，exit200，`no test cases matching filter or all
+test cases were disabled`；未执行用例，不是 requester 行为失败。原始
+`.codex-tmp/spec182-t010a-deadline-r1/client-state.log` 保留，改为分别执行单 suite。
+见 [deadline evidence](../specs/182-native-di-python-bindings/evidence/t010-a-deadline-20260907.md)。
+
 ## 2026-09-07 — T002-A L0 consumer aborts: freeze() rejects an empty native adapter registry
 - **Area**: spec182 T002-A Installed Library Boundary
 - **Symptom**: installed-library consumer
