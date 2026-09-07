@@ -48,6 +48,12 @@ Git携带工具、definition模板、锁和skills。四个源码tar与五个whee
 
 保留另一台机器已有工作目录；在新目录获取NDNSF的`Experimental`。先阅读本文件和 [shared skills](../../../skills/README.md)，可直接要求代理读取 `skills/itiger-ndnsf-ops/SKILL.md`。根目录skills不会自动覆盖个人版本。
 
+```bash
+git clone --branch Experimental --single-branch \
+  https://github.com/matianxing1992/NDN_Service_Framework.git ndnsf-experiment-delivery
+cd ndnsf-experiment-delivery
+```
+
 从新的NDNSF checkout根执行以下准备命令。`../source-handoff-20260906`必须尚不存在；路径不要含空格。四库均采用锁中的完整commit，普通clone后detach，不覆盖现有开发分支。
 
 ```bash
@@ -108,6 +114,10 @@ python3 Experiments/TigerCluster/adapters/slurm-apptainer/scripts/prepare-develo
 真实包 `.codex-tmp/source-handoff-20260906/bundle-r3`：NDNSF453、NAC63、SVS31、NDNSD14个源码成员，四个归档总计12,072,960字节；加五个wheel、锁和模板。复制至`relocated-r3`后verify PASS，实际固定base摘要校验及definition render PASS，raw同级`package-r3.log`、`relocation-r3.log`、`render-r3.log`。seal为`sha256:9129d07298f5754823f3bc2bf9c10fea7416adbb1e4168ced3dc82750948612c`，静态定义检查含4库/9个原生产物。SIF_BUILD/CONTAINER_RUNTIME仍NOT_RUN。
 
 SVS源码检查87/87 cases、639 assertions PASS；NDNSD pkg-config路径真实RED/GREEN PASS。新依赖下的NDNSF消费者fresh build/unit/integration尚在运行；不能将此前759/154结果当作本闭包结果。
+
+消费者build R1在299/318触发执行器1800秒上限（exit124，1800.081s），首边界为`TIMEOUT_AT_RUNNER_BOUNDARY`，没有compiler error；R2在同一fresh build目录按相同配置/-j2续编，执行器有限上限3600秒。R1原始记录在独立树 `ndnsf-svs-abi-20260906/.codex-tmp/svs-abi-20260906-r1/build-r1/`，不覆盖。
+
+R2日志随后证明Waf未保存R1 task signatures、实际重新编译全图，故SIGINT停止重复R2（exit68，78.516s）。R3只选择尚未完成的`di-native-provider`及必要依赖；R1已有Core/unit/integration/应用按同一源码和配置保留逐目标证据。任何中断轮次均不记PASS，最终须补齐交付目标并验证运行。
 
 真实归档R1在依赖checkout的未跟踪 `examples/example-trust-anchor.cert` 被拒绝，未创建bundle。R2改用三库新建detached checkout；保留开发目录原样，不把工作目录生成物带入交付。
 
