@@ -101,6 +101,13 @@ def build_extension() -> Extension:
             raise RuntimeError(
                 "NDNSF_LIBRARY_DIR does not contain libndn-service-framework"
             )
+        if not any(
+            any(Path(value).glob("libndnsf-distributed-inference.so*"))
+            for value in candidate_dirs
+        ):
+            raise RuntimeError(
+                "NDNSF_LIBRARY_DIR does not contain libndnsf-distributed-inference"
+            )
     else:
         # Preserve the ordinary editable developer build when no immutable
         # candidate was requested.  Its transitive closure remains the build
@@ -139,6 +146,7 @@ def build_extension() -> Extension:
         # library), compiled directly into the binding (spec181 T002).
         sources=[
             "src/ndnsf/_ndnsf.cpp",
+            "src/ndnsf/di_bindings.cpp",
             str(ROOT / "NDNSF-DistributedInference/cpp/ndnsf-di/"
                 "NativeGrantVerifier.cpp"),
         ],
@@ -152,7 +160,7 @@ def build_extension() -> Extension:
             *include_dirs,
         ],
         library_dirs=library_dirs,
-        libraries=["ndn-service-framework", *libraries],
+        libraries=["ndn-service-framework", "ndnsf-distributed-inference", *libraries],
         extra_objects=[*svs_objects, *nac_objects],
         extra_compile_args=["-std=c++17"],
         extra_link_args=extra_link_args,

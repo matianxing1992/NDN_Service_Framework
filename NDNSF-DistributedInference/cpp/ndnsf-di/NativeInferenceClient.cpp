@@ -30,6 +30,29 @@ NativeDiError makeError(const NativeInferenceHandle::Operation& operation)
                        operation.error ? operation.error->what() : "native request failed",
                        operation.requestId, 1);
 }
+
+void
+failOperation(const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
+              NativeDiError error)
+{
+  std::vector<std::function<void(const NativeInferenceEvent&)>> observers;
+  NativeInferenceEvent event;
+  {
+    std::lock_guard<std::mutex> lock(operation->mutex);
+    if (operation->status != NativeRequestStatus::Pending) {
+      return;
+    }
+    operation->error = std::make_shared<NativeDiError>(std::move(error));
+    operation->status = NativeRequestStatus::Failed;
+    event.requestId = operation->requestId;
+    event.terminal = true;
+    observers = operation->observers;
+  }
+  operation->condition.notify_all();
+  for (const auto& observer : observers) {
+    try { observer(event); } catch (...) { }
+  }
+}
 } // namespace
 
 NativeDiError::NativeDiError(std::string code, std::string domain,
@@ -188,12 +211,10 @@ NativeInferenceHandle NativeInferenceClient::request(
   // are linked.  The handle therefore records a structured failure instead
   // of returning a synthetic success; later lifecycle tasks replace this
   // single transition with the real asynchronous pipeline.
-  operation->error = std::make_shared<NativeDiError>(
+  failOperation(operation, NativeDiError(
     "NATIVE_REQUEST_PIPELINE_NOT_READY", "planning", "request",
     "native request orchestration is not linked in this build",
-    operation->requestId, 1);
-  operation->status = NativeRequestStatus::Failed;
-  operation->condition.notify_all();
+    operation->requestId, 1));
   return NativeInferenceHandle(std::move(operation));
 }
 

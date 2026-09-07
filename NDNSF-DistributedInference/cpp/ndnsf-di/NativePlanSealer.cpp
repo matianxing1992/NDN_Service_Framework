@@ -46,6 +46,10 @@ std::string canonicalCore(const NativePlacementPlanCore& core)
   for (const auto& item : core.assignment.providerByRole) {
     out << item.first << '=' << item.second << ';';
   }
+  out << "|offers=";
+  for (const auto& item : core.offerDigestByProvider) {
+    out << item.first << '=' << item.second << ';';
+  }
   out << "|artifacts=";
   for (const auto& item : core.artifactDigestByRole) {
     out << item.first << '=' << item.second << ';';
@@ -67,7 +71,8 @@ void NativePlacementPlanCore::validate() const
   std::set<std::string> roles(executionPlan.roles.begin(), executionPlan.roles.end());
   if (roles.size() != executionPlan.roles.size() ||
       assignment.providerByRole.size() != roles.size() ||
-      artifactDigestByRole.size() != roles.size()) {
+      artifactDigestByRole.size() != roles.size() ||
+      offerDigestByProvider.empty()) {
     throw std::invalid_argument("native placement plan core role cover is incomplete");
   }
   for (const auto& role : roles) {
@@ -76,6 +81,10 @@ void NativePlacementPlanCore::validate() const
     if (provider == assignment.providerByRole.end() || provider->second.empty() ||
         artifact == artifactDigestByRole.end() || !isDigest(artifact->second)) {
       throw std::invalid_argument("native placement plan core role binding is invalid");
+    }
+    const auto offer = offerDigestByProvider.find(provider->second);
+    if (offer == offerDigestByProvider.end() || !isDigest(offer->second)) {
+      throw std::invalid_argument("native placement plan core offer binding is invalid");
     }
   }
 }
@@ -138,6 +147,18 @@ NativePlacementPlanCore NativePlanSealer::sealCore(
   core.strategy = proposal.strategy;
   core.executionPlan = proposal.executionPlan;
   core.assignment = proposal.assignment;
+  for (const auto& offer : snapshot.offers) {
+    const auto assigned = std::find_if(core.assignment.providerByRole.begin(),
+      core.assignment.providerByRole.end(), [&offer] (const auto& item) {
+        return item.second == offer.provider;
+      });
+    if (assigned != core.assignment.providerByRole.end()) {
+      if (!isDigest(offer.offerDigest)) {
+        throw std::invalid_argument("ACK offer digest is not canonical");
+      }
+      core.offerDigestByProvider.emplace(offer.provider, offer.offerDigest);
+    }
+  }
   for (const auto& role : core.executionPlan.roles) {
     core.artifactDigestByRole.emplace(role, nativePlanningDigest("role-artifact|" + role));
   }
@@ -212,7 +233,7 @@ NativeSelectionProjectionV3 NativePlanSealer::project(
   projection.planCoreDigest = sealed.core.coreDigest;
   projection.planDigest = sealed.planDigest;
   projection.ackClosedDigest = sealed.core.ackClosedDigest;
-  projection.offerDigest = provider;
+  projection.offerDigest = sealed.core.offerDigestByProvider.at(provider);
   projection.securityPolicySnapshotDigest = sealed.security.policyDigest;
   projection.selectedRole.role = assignment->first;
   projection.selectedRole.selectedRole = assignment->first;

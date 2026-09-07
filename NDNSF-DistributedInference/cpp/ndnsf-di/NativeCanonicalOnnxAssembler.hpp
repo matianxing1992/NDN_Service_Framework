@@ -17,18 +17,14 @@ namespace ndnsf::di {
  * Options for the production post-Selection ONNX assembly bridge.
  *
  * The C++ Provider remains the owner of the authenticated assignment and
- * cache.  The Python helper is only the adapter-format operation and is
- * invoked with an exec'ed argument vector (never a shell command).  The
- * helper must call the existing CertifiedOnnxAssemblyRecipe implementation.
+ * cache.  Format validation and graph assembly are performed by the native
+ * ONNX adapter; this options object carries only Provider-owned policy.
  */
 struct NativeCanonicalOnnxAssemblerOptions
 {
   std::string cacheDir = "/tmp/ndnsf-di-native-artifacts";
-  std::string pythonExecutable = "python3";
-  std::string pythonModule =
-    "ndnsf_distributed_inference.native_assembly_helper";
   std::string providerIdentity;
-  std::uint64_t helperTimeoutMs = 30000;
+  std::uint64_t assemblyTimeoutMs = 30000;
   std::function<bool()> shouldCancel;
   std::function<std::string(const std::string& manifestBytes)> signManifest;
   std::shared_ptr<ProtectedRuntime> protectedRuntime;

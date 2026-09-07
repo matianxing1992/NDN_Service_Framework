@@ -20,6 +20,14 @@ void requireDigest(const std::string& value, const char* field)
   }
 }
 
+bool isDigest(const std::string& value)
+{
+  return value.size() == 71 && value.compare(0, 7, "sha256:") == 0 &&
+    std::all_of(value.begin() + 7, value.end(), [] (char c) {
+      return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+    });
+}
+
 bool contains(const std::vector<std::string>& values, const std::string& value)
 {
   return std::find(values.begin(), values.end(), value) != values.end();
@@ -73,7 +81,9 @@ void NativeCandidateBudget::validate() const
 void NativeProviderPlanningView::validate() const
 {
   if (provider.empty() || !preparationAccepted || !executionAllowed ||
-      offerDigest.empty() || resourceSequence == 0 || backends.empty()) {
+      !isDigest(offerDigest) || resourceSequence == 0 || backends.empty() ||
+      std::any_of(residencyDigests.begin(), residencyDigests.end(),
+                  [] (const auto& value) { return !isDigest(value); })) {
     throw std::invalid_argument("provider planning view is not executable");
   }
 }
@@ -208,9 +218,16 @@ NativePreSplitFirstPlacement::propose(const NativePlanningSnapshot& snapshot,
 
 void NativeAdapterRegistry::registerAdapter(std::shared_ptr<const NativeModelAdapter> adapter)
 {
+  if (m_frozen) throw std::logic_error("native adapter registry is frozen");
   if (!adapter || adapter->adapterId().empty()) throw std::invalid_argument("invalid native adapter");
   auto [it, inserted] = m_adapters.emplace(adapter->adapterId(), std::move(adapter));
   if (!inserted) throw std::invalid_argument("native adapter is already registered");
+}
+
+void NativeAdapterRegistry::freeze()
+{
+  if (m_adapters.empty()) throw std::invalid_argument("native adapter registry is empty");
+  m_frozen = true;
 }
 
 std::shared_ptr<const NativeModelAdapter>
