@@ -452,7 +452,7 @@ def build(bld):
                 'NDNSF-DistributedInference/cpp/adapters/onnx/onnx/*.cc'),
         includes=['.', 'ndn-service-framework',
                   'NDNSF-DistributedInference/cpp/adapters/onnx'],
-        use='NDN_CXX BOOST ONNXRUNTIME', cxxflags=['-fPIC'])
+        use='NDN_CXX BOOST PROTOBUF ONNXRUNTIME', cxxflags=['-fPIC'])
     bld.objects(
         target='ndnsf-di-adapter-yolo-objects',
         source=bld.path.ant_glob(
