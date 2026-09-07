@@ -7139,7 +7139,7 @@ BOOST_AUTO_TEST_CASE(NativeEpochCoordinatorProducesTextAndTerminalFeedback)
       config.samplingTopP = 1.0;
     }
     config.requireTextOutput = true;
-    config.textDecoder = [] (const std::vector<std::int64_t>& tokens) {
+    const auto decodeText = [] (const std::vector<std::int64_t>& tokens) {
       std::string text;
       for (const auto token : tokens) {
         switch (token) {
@@ -7150,6 +7150,11 @@ BOOST_AUTO_TEST_CASE(NativeEpochCoordinatorProducesTextAndTerminalFeedback)
         }
       }
       return text;
+    };
+    config.textDecoder = decodeText;
+    config.stableTextDecoder = [decodeText] (
+      const std::vector<std::int64_t>& tokens, bool) {
+      return decodeText(tokens);
     };
     config.eventSink = [&events] (const std::vector<std::uint8_t>& wire) {
       events.emplace_back(wire.begin(), wire.end());

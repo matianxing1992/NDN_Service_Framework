@@ -461,6 +461,39 @@ def build(bld):
         includes=['.', 'ndn-service-framework'],
         use='BOOST', cxxflags=['-fPIC'])
 
+    # One installable native DI library is the link boundary for C++
+    # consumers and the optional Python binding.  Keep the source closure
+    # identical to the object groups above; adapters remain model-specific
+    # while the shared library owns no Python runtime.
+    di_library_sources = di_core_sources + bld.path.ant_glob(
+        'NDNSF-DistributedInference/cpp/adapters/onnx/*.cpp') + \
+        bld.path.ant_glob('NDNSF-DistributedInference/cpp/adapters/yolo/*.cpp') + \
+        bld.path.ant_glob('NDNSF-DistributedInference/cpp/adapters/qwen/*.cpp')
+    di_library_use = 'ndn-service-framework NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL'
+    if bld.env.HAVE_ONNXRUNTIME_CPP:
+        di_library_use += ' ONNXRUNTIME'
+    if bld.env.enable_shared:
+        bld.shlib(name='ndnsf-distributed-inference',
+                  target='ndnsf-distributed-inference',
+                  source=di_library_sources,
+                  use=di_library_use,
+                  includes=['.', 'ndn-service-framework'],
+                  export_includes=['.', 'ndn-service-framework',
+                                   'NDNSF-DistributedInference/cpp'],
+                  install_path='${LIBDIR}',
+                  linkflags=['-Wl,-rpath,$ORIGIN'])
+    if bld.env.enable_static:
+        bld.stlib(name='ndnsf-distributed-inference-static'
+                  if bld.env.enable_shared else 'ndnsf-distributed-inference',
+                  target='ndnsf-distributed-inference-static'
+                  if bld.env.enable_shared else 'ndnsf-distributed-inference',
+                  source=di_library_sources,
+                  use=di_library_use,
+                  includes=['.', 'ndn-service-framework'],
+                  export_includes=['.', 'ndn-service-framework',
+                                   'NDNSF-DistributedInference/cpp'],
+                  install_path='${LIBDIR}')
+
     bld.recurse('NDNSF-DistributedRepo')
 
     bld.recurse('examples')
@@ -483,6 +516,12 @@ def build(bld):
     bld.install_files(
         '${INCLUDEDIR}/NDNSF-DistributedInference/cpp/adapters/qwen',
         bld.path.ant_glob('NDNSF-DistributedInference/cpp/adapters/qwen/*.hpp'))
+
+    bld(features='subst',
+        source='NDNSF-DistributedInference/ndnsf-distributed-inference.pc.in',
+        target='ndnsf-distributed-inference.pc',
+        install_path='${LIBDIR}/pkgconfig',
+        VERSION=VERSION)
 
     bld(features='subst',
         source='libndn-service-framework.pc.in',

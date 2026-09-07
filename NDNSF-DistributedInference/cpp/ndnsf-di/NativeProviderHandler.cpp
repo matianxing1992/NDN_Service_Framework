@@ -1666,7 +1666,9 @@ struct NativeAuthenticatedGenerationConfig
   std::uint64_t samplingSeed = 1'750'001;
   std::vector<std::string> stopStrings;
   std::function<std::string(const std::vector<std::int64_t>&)> textDecoder;
+  std::function<std::string(const std::vector<std::int64_t>&, bool)> stableTextDecoder;
   NativeProviderHandlerConfig::GenerationTextDecoderFactory textDecoderFactory;
+  NativeProviderHandlerConfig::GenerationTextDecodersFactory textDecodersFactory;
   bool requireTextOutput = false;
   std::vector<std::int64_t> committedPrefixTokenIds;
 };
@@ -1692,7 +1694,9 @@ generationConfigFromAuthenticatedRequest(
     base.generationSamplingSeed,
     base.generationStopStrings,
     base.generationTextDecoder,
+    {},
     base.generationTextDecoderFactory,
+    base.generationTextDecodersFactory,
     base.requireGenerationTextOutput,
     base.generationCommittedPrefixTokenIds,
   };
@@ -1713,8 +1717,17 @@ generationConfigFromAuthenticatedRequest(
     result.samplingRepetitionPenalty = sealed.samplingRepetitionPenalty;
     result.samplingSeed = sealed.samplingSeed;
     result.stopStrings = sealed.stopStrings;
-    if (result.textDecoderFactory) {
+    if (result.textDecodersFactory) {
+      const auto decoders = result.textDecodersFactory(sealed.tokenizerDigest);
+      result.textDecoder = decoders.full;
+      result.stableTextDecoder = decoders.stable;
+    }
+    else if (result.textDecoderFactory) {
       result.textDecoder = result.textDecoderFactory(sealed.tokenizerDigest);
+      // Legacy fixtures supplied only a complete decoder.  Keep them working
+      // while requiring the paired factory for production streaming paths.
+      result.stableTextDecoder = [decoder = result.textDecoder](
+        const std::vector<std::int64_t>& ids, bool) { return decoder(ids); };
     }
     result.committedPrefixTokenIds = sealed.committedPrefixTokenIds;
   }
@@ -2688,6 +2701,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
         coordinatorConfig.samplingSeed = authenticatedGeneration.samplingSeed;
         coordinatorConfig.stopStrings = authenticatedGeneration.stopStrings;
         coordinatorConfig.textDecoder = authenticatedGeneration.textDecoder;
+        coordinatorConfig.stableTextDecoder = authenticatedGeneration.stableTextDecoder;
         coordinatorConfig.requireTextOutput =
           authenticatedGeneration.requireTextOutput;
         coordinatorConfig.checkpointFinalize =

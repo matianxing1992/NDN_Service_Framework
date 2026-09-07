@@ -5,6 +5,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NdnsfCollaborationDependencyIo.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeStandaloneTokenizer.hpp"
 
 #include "ndn-service-framework/ServiceProvider.hpp"
 #include "ndn-service-framework/ExecutionLease.hpp"
@@ -44,6 +45,8 @@ struct NativeProviderHandlerConfig
   using GenerationTextDecoderFactory = std::function<
     std::function<std::string(const std::vector<std::int64_t>&)>(
       const std::string& tokenizerDigest)>;
+  using GenerationTextDecodersFactory = std::function<
+    NativeGenerationTextDecoders(const std::string& tokenizerDigest)>;
 
   NativeExecutionPlan plan;
   NativeProviderAssignment assignment;
@@ -90,6 +93,7 @@ struct NativeProviderHandlerConfig
   std::function<std::string(const std::vector<std::int64_t>&)>
     generationTextDecoder;
   GenerationTextDecoderFactory generationTextDecoderFactory;
+  GenerationTextDecodersFactory generationTextDecodersFactory;
   bool requireGenerationTextOutput = false;
   std::vector<std::int64_t> generationCommittedPrefixTokenIds;
   // User-generated request scope shared only with the selected Provider roles

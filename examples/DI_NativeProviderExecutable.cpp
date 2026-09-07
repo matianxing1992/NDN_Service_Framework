@@ -1660,11 +1660,11 @@ main(int argc, char** argv)
             config.requireGenerationTextOutput = true;
             if (!options.tokenizerJson.empty()) {
               const auto tokenizerPath = options.tokenizerJson;
-              config.generationTextDecoderFactory =
+              config.generationTextDecodersFactory =
                 [tokenizerPath](const std::string& tokenizerDigest) {
                   NativeStandaloneTokenizerOptions tokenizerOptions;
                   tokenizerOptions.tokenizerPath = tokenizerPath;
-                  return makeNativeStandaloneTokenizerDecoder(
+                  return makeNativeStandaloneTokenizerDecoders(
                     std::move(tokenizerOptions), tokenizerDigest);
                 };
             }
