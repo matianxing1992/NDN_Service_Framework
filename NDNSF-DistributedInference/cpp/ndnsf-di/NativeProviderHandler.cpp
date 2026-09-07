@@ -1668,7 +1668,7 @@ struct NativeAuthenticatedGenerationConfig
   std::function<std::string(const std::vector<std::int64_t>&)> textDecoder;
   std::function<std::string(const std::vector<std::int64_t>&, bool)> stableTextDecoder;
   NativeProviderHandlerConfig::GenerationTextDecoderFactory textDecoderFactory;
-  NativeProviderHandlerConfig::GenerationTextDecodersFactory textDecodersFactory;
+  NativeProviderHandlerConfig::GenerationDecodersFactory textDecodersFactory;
   bool requireTextOutput = false;
   std::vector<std::int64_t> committedPrefixTokenIds;
 };
@@ -1696,7 +1696,7 @@ generationConfigFromAuthenticatedRequest(
     base.generationTextDecoder,
     {},
     base.generationTextDecoderFactory,
-    base.generationTextDecodersFactory,
+    base.generationDecodersFactory,
     base.requireGenerationTextOutput,
     base.generationCommittedPrefixTokenIds,
   };
