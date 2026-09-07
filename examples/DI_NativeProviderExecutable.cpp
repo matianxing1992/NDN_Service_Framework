@@ -41,6 +41,7 @@
 #include <cctype>
 #include <cstdint>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <future>
 #include <iostream>
@@ -178,6 +179,51 @@ sha256File(const std::string& path)
     return static_cast<char>(std::tolower(ch));
   });
   return "sha256:" + hex;
+}
+
+// OA02 worker location for post-Selection ONNX assembly.  The provider pins
+// path AND content hash: every spawn re-probes the file and a mismatch fails
+// the request before any fetch.  Resolution honors NDNSF_DI_WORKER_BINARY,
+// then the invocation-directory siblings that a staged install produces.
+// Returns an empty path when no worker is present (the request then fails
+// deterministically with DI_PROVIDER_ASSEMBLY_WORKER_LOCATION_MISSING).
+NativeOnnxWorkerLocation
+resolveWorkerLocation()
+{
+  std::vector<std::string> candidates;
+  const char* pinned = std::getenv("NDNSF_DI_WORKER_BINARY");
+  if (pinned != nullptr && *pinned != '\0') {
+    candidates.push_back(pinned);
+  }
+  std::array<char, 4096> selfPath{};
+  const auto linkCount = ::readlink("/proc/self/exe", selfPath.data(),
+                                    selfPath.size() - 1);
+  if (linkCount > 0) {
+    selfPath[linkCount] = '\0';
+    const std::string invocationDir =
+      std::filesystem::path(selfPath.data()).parent_path().string();
+    candidates.push_back(invocationDir + "/DI_NativeOnnxAssemblyWorker");
+    candidates.push_back(
+      (std::filesystem::path(invocationDir).parent_path() /
+       "DI_NativeOnnxAssemblyWorker").string());
+  }
+  candidates.push_back("build-nac182/DI_NativeOnnxAssemblyWorker");
+  candidates.push_back("build/DI_NativeOnnxAssemblyWorker");
+  for (const auto& path : candidates) {
+    std::error_code error;
+    if (std::filesystem::is_regular_file(path, error) && !error) {
+      try {
+        return NativeOnnxWorkerLocation{path, sha256File(path)};
+      }
+      catch (const std::exception&) {
+        return NativeOnnxWorkerLocation{path, ""};
+      }
+    }
+  }
+  std::cerr << "DI_NativeProviderExecutable: no DI_NativeOnnxAssemblyWorker "
+               "found; onnx post-Selection requests will fail with "
+               "DI_PROVIDER_ASSEMBLY_WORKER_LOCATION_MISSING\n";
+  return {};
 }
 
 ndn::Buffer
@@ -1670,9 +1716,13 @@ main(int argc, char** argv)
             }
             const auto assemblyCacheDir = options.artifactCacheDir;
             const auto assemblyProviderIdentity = options.providerName;
+            // Pinned OA02 worker (path + content hash): every post-Selection
+            // assembly spawns this binary and re-probes its hash first.
+            const auto assemblyWorkerLocation = resolveWorkerLocation();
             config.runnerPreparationFactory =
               [assemblyCacheDir,
                assemblyProviderIdentity,
+               assemblyWorkerLocation,
                providerCert,
                providerBootId,
                providerStartedAtMs,
@@ -1689,6 +1739,7 @@ main(int argc, char** argv)
                   assemblyOptions.cacheDir = assemblyCacheDir;
                   assemblyOptions.providerIdentity = assemblyProviderIdentity;
                   assemblyOptions.protectedRuntime = protectedRuntime;
+                  assemblyOptions.workerLocation = assemblyWorkerLocation;
                   if (protectedRuntime) {
                     const auto& payload = ctx.assignment().assignmentPayload;
                     assemblyOptions.roleAssemblySpecDigest = nativeAssemblyDigestFromCanonicalProjection(

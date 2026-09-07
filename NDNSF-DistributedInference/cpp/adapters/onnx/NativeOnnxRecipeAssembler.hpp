@@ -40,9 +40,11 @@ struct NativeCertifiedAssembly
 };
 
 /**
- * Assemble one authenticated ONNX role without an interpreter subprocess.
- * The function owns no cache or network state; callers retain those
- * responsibilities and must re-check authorization before activation.
+ * OA01 (legacy, suite-only entry): assemble one authenticated ONNX role
+ * in-process.  Retained for the frozen native-assembly parity suites;
+ * production post-Selection activation runs the same chain through the
+ * OA02 worker subprocess (runNativeOnnxAssemblyWorkerAt), never through
+ * this in-process helper.
  */
 NativeCertifiedAssembly
 assembleNativeCertifiedOnnxModel(const NativeCanonicalSource& source,

@@ -301,6 +301,9 @@ def build(bld):
     di_native_onnx_assembly_sources = bld.path.parent.ant_glob([
         'NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.cpp',
         'NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.cpp',
+        # prepareNativeCanonicalOnnxRole activates through the OA02 worker
+        # subprocess transport, which lives in this TU.
+        'NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.cpp',
     ])
 
     # NDNSF_DATA_V1 seals through the framework's authenticated envelope

@@ -1943,8 +1943,11 @@ runNativeOnnxAssemblyWorkerMain(int argc, char** argv)
   }
   catch (const std::exception& error) {
     const std::string what = error.what();
+    // The family literal is 15 bytes; the three-argument compare() treats
+    // the whole literal as the right side, so the bound must be 15 or every
+    // chain rejection is mislabeled DI_NATIVE_ONNX_WORKER_INTERNAL.
     const bool known =
-      what.compare(0, 14, "DI_NATIVE_ONNX_") == 0 && what.size() <= 96;
+      what.compare(0, 15, "DI_NATIVE_ONNX_") == 0 && what.size() <= 96;
     const std::string code = known ? what : "DI_NATIVE_ONNX_WORKER_INTERNAL";
     const std::string message = known ? what
       : "internal worker failure while assembling the certified model";
