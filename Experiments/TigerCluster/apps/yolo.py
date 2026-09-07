@@ -776,7 +776,17 @@ def run_normal_node(worker, startup, *, completion_factory, endpoints,
             if (completion.binding != startup.binding or completion.rank != worker.rank
                     or completion.ranks != startup.ranks or completion.directory == startup.directory):
                 raise ValueError('YOLO_COMPLETION_BINDING')
-            peer_failure = (completion.directory / ('failed-' + str(1-worker.rank) + '.json')
+            prior_check = completion.check
+            def check_completion():
+                prior_check()
+                # A peer can fail before constructing its completion barrier.
+                # Inspect startup failure records without reusing its expired
+                # startup deadline as the workload budget.
+                for rank in startup.ranks:
+                    if startup._read('failed', rank) is not None:
+                        raise RuntimeError('YOLO_PEER_FAILED:' + str(rank))
+            completion.check = check_completion
+            peer_failure = (startup.directory / ('failed-' + str(1-worker.rank) + '.json')
                             if len(completion.ranks) == 2 else None)
             if worker.rank == 0:
                 def accept(request, output):

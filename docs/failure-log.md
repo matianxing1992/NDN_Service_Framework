@@ -1853,3 +1853,14 @@ added a deterministic outer-wait expiry regression. Initial full run was
   native fields, and validator binds actual expected Provider/PID/request/plan.
   29 focused tests pass; native serializer/runtime and full collector pending.
 - Lesson: inspect producer serialization, not only synthetic collector fixtures.
+## 2026-09-07 — Cross-phase peer failure visibility
+
+- Symptom: normal owner originally watched only completion failure files after
+  startup; a peer failing before its completion factory returned could only
+  publish startup failure, delaying detection until a timeout.
+- Fix: completion liveness checks read startup failure records without using
+  its elapsed deadline; finite User peer path watches the common startup lane.
+- Evidence: concurrent real-file barrier normal/failure regressions plus an
+  earlier-phase-only failure test; application/runtime remain doubles.
+- Lesson: phase-local coordination must still observe earlier ownership
+  failure channels throughout the run.
