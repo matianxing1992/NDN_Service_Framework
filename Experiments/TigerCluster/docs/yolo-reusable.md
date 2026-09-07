@@ -7,8 +7,17 @@
 
 ## Current Checkpoint
 
-Spec183 T001输入/接口清点完成，见[接收清单](../../../specs/183-tiger-yolo-reusable-experiments/evidence/input-inventory.md)。三依赖需隔离接收锁定版本，NDNSD原目录有未提交改动不能覆盖；本地base SIF/当前签名YOLO package尚缺。远端base仅核对存在/大小。
-现有builder host gate绑定Spec175 tiny-onnx，须增加明确的YOLO证据分支，不能用旧M01冒充。正常YOLO User是一次请求入口；warmup/measured分别执行和保存，不假定legacy sequential参数在当前路径有效。
+Spec183 T001输入/接口清点完成。后续已接收锁定 source seal、本地历史 base SIF
+及 YOLO package；签名 catalogue、graph/weights 和 reference 读取验证见
+[输入验证](../../../specs/183-tiger-yolo-reusable-experiments/evidence/yolo-input-validation.md)。
+这不等于当前应用 SIF 已合格，不能用历史 base 或旧 tiny-onnx 结果冒充 YOLO 资格。
+正常YOLO User是一次请求入口；warmup/measured分别执行和保存，不假定legacy sequential参数在当前路径有效。
+
+`prepare` 目前只冻结通过内容检查的脚本/计划，返回 PREPARED/NOT_EVALUATED。
+宿主侧 `runtime.yolo_operator.provision_run` 已能有界调用现有容器内离线 issuer，
+验证返回文件并保留进程清理记录；它是内部调用边界，不是新的公开命令。
+尚需将 profile 的实际输入、授权私钥位置和合格运行镜像连接到 local/run。
+该函数的假容器子进程测试不能代替真实 SIF 内身份签发及请求验证。
 
 ## Operating Contract
 

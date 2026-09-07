@@ -13,6 +13,7 @@ import math
 from pathlib import Path
 import re
 import secrets
+import subprocess
 
 from .yolo_worker import NodeRuntime, StartupBarrier, assigned_roles
 from .yolo_profile import application_sync_prefix
@@ -49,6 +50,87 @@ def _finite(value, code: str, *, minimum: float = 0.0, maximum: float = 3600.0) 
     if not minimum < value <= maximum:
         raise OperatorError(code)
     return float(value)
+
+
+def provision_run(*, runtime_profile: dict, bundle: Path, harness_digest: str,
+                  inputs: Path, descriptor_digest: str, package: Path,
+                  public: Path, private: Path, output: Path,
+                  seconds: float, cleanup_seconds: float) -> dict:
+    """Invoke the installed offline issuer and pin its actual public receipt.
+
+    The caller must qualify the runtime before calling this internal boundary.
+    Hash checks here bind execution bytes, not GPU/model qualification. Inputs
+    contain prepare.json, template.json, trust/contracts and private/; only this
+    offline container receives the complete issuer directory. Partial output
+    and logs are retained, so retry requires a new preparation directory.
+    """
+    from apps.yolo import preparation_arguments, validate_preparation_roots
+    from .baseline import PYTHON, Processes, container_command, container_env, digest, write_json
+    from .yolo_bundle import _bytes, verify_harness, verify_preparation
+
+    seconds = _finite(seconds, "OPERATOR_PREPARATION_BUDGET")
+    cleanup_seconds = _finite(cleanup_seconds, "OPERATOR_CLEANUP_BUDGET")
+    bundle = _directory(bundle, "OPERATOR_BUNDLE")
+    inputs = _directory(inputs, "OPERATOR_PREPARATION_INPUTS")
+    package = _directory(package, "OPERATOR_PACKAGE")
+    public = _directory(public, "OPERATOR_PUBLIC")
+    private = _directory(private, "OPERATOR_PRIVATE")
+    output = _directory(output, "OPERATOR_OUTPUT")
+    roots = (bundle, inputs, package, public, private, output)
+    if any(a == b or a in b.parents or b in a.parents
+           for index, a in enumerate(roots) for b in roots[index + 1:]):
+        raise OperatorError("OPERATOR_PREPARATION_OVERLAP")
+    validate_preparation_roots(public, private)
+    if any(output.iterdir()):
+        raise OperatorError("OPERATOR_PREPARATION_OUTPUT_NOT_EMPTY")
+    verify_harness(bundle, expected_manifest_sha256=harness_digest)
+    options = preparation_arguments(inputs / "prepare.json", descriptor_digest)
+    from .identities import _read_credential
+    _read_credential(inputs / "private/artifact-policy-authority.key", private=True)
+    # Validate the public inputs before creating any child. The issuer remains
+    # responsible for the private/public key match and signed catalogue checks.
+    for path, expected in ((inputs / "template.json", options["template_digest"]),
+                           (inputs / "trust/contracts/trust-root-registry-v1.json", options["registry_digest"]),
+                           (package / "manifest.json", options["manifest_digest"])):
+        if any(p.is_symlink() for p in (path, *path.parents)) or not path.is_file():
+            raise OperatorError("OPERATOR_PREPARATION_INPUT_FILE")
+        if "sha256:" + digest(path) != expected:
+            raise OperatorError("OPERATOR_PREPARATION_INPUT_DIGEST")
+    sif = Path(runtime_profile["sif"])
+    if (not sif.is_absolute() or not sif.is_file()
+            or any(p.is_symlink() for p in (sif, *sif.parents))
+            or digest(sif) != runtime_profile["sifSha256"]):
+        raise OperatorError("OPERATOR_PREPARATION_SIF_DIGEST")
+    command = container_command(runtime_profile, bundle, private / "root", public,
+        output, [PYTHON, "-m", "apps.yolo", "prepare", "--descriptor", "/inputs/prepare.json",
+                 "--descriptor-sha256", descriptor_digest],
+        prepare=private, artifacts=package, preparation_inputs=inputs)
+    children = Processes(output / "logs")
+    try:
+        child = children.start("prepare", command, env=container_env(), cwd=bundle)
+        try:
+            code = child.wait(timeout=seconds)
+        except subprocess.TimeoutExpired as exc:
+            raise OperatorError("OPERATOR_PREPARATION_TIMEOUT") from exc
+        if code != 0:
+            raise OperatorError("OPERATOR_PREPARATION_EXIT:" + str(code))
+    finally:
+        cleanup = children.close(seconds=cleanup_seconds)
+        write_json(output / "cleanup.json", {"records": cleanup})
+    if any(not row.get("reaped") or row.get("forced") or row.get("cleanupError") for row in cleanup):
+        raise OperatorError("OPERATOR_PREPARATION_CLEANUP")
+    import hashlib
+    receipt_digest = "sha256:" + hashlib.sha256(_bytes(public / "preparation.json")).hexdigest()
+    receipt = verify_preparation(public, options["plan"], expected_receipt_digest=receipt_digest,
+                                 candidate_digest=options["candidate_digest"])
+    expected = {"templateDigest": options["template_digest"],
+                "packageManifestDigest": options["manifest_digest"],
+                "registryDigest": options["registry_digest"],
+                "protectionEpoch": options["protection_epoch"]}
+    if any(receipt.get(key) != value for key, value in expected.items()):
+        raise OperatorError("OPERATOR_PREPARATION_RECEIPT_INPUTS")
+    return {"status": "PREPARED", "qualification": "NOT_EVALUATED",
+            "receiptDigest": receipt_digest, "preparation": receipt}
 
 
 def _validate_plan(plan: dict, *, mode: str, rank: int) -> tuple[tuple[str, ...], tuple[int, ...]]:

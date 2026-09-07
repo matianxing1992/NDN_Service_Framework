@@ -4,6 +4,16 @@
 **Branch**: `TigerClusterExperiments`
 **Status**: 2/17 tasks complete (T001 inventory and T003 focused component acceptance); IN_PROGRESS, no runtime PASS.
 
+2026-09-07 T004/T005 准备调用边界：新增 `yolo_operator.provision_run`，复用
+现有 `apps.yolo prepare`、container_command 和 Processes；校验固定 descriptor、
+public inputs、SIF/harness 摘要与隔离目录后，单次有界执行离线 issuer，保留
+cleanup/logs，并从实际 public/preparation.json 重算摘要和输入绑定。10 项新
+测试使用真实短进程、假 Apptainer/合成凭证；连同既有 prepare/operator 测试
+24 passed in 2.28s。不是 SIF、密码学签发或模型资格。
+尚未接入公开 local/run：最终调用者仍须从同一 profile/已验证候选解析
+输入位置和 runtime 参数，并提供已注册的 artifact-policy-authority 私钥。
+不得由此组件生成 READY 或绕过 T007/T008–T011。
+
 2026-09-07 real prepare path: removed the impossible dependency on READY from
 the content-only checker, which always reports NOT_EVALUATED. prepare now
 freezes verified dispatch/harness bytes and an unqualified plan, with no
