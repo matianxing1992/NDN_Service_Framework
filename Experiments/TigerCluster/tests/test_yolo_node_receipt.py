@@ -21,6 +21,9 @@ def worker(tmp_path):
                 requests=[dict(index=i, requestId='/request/'+str(i)) for i in range(2)])
     output = tmp_path / 'node0'
     output.mkdir()
+    (output/'logs').mkdir()
+    for item in rows:
+        (output/'logs'/(item['name']+'.log')).write_text('fixture log '+item['name'])
     state = NS(closed=True, leases={}, children=NS(children=[]), finite_children=NS(children=[]),
         launches=launches, roles=roles, rank=0, mode='local-cpu', output=output,
         _preparation_binding=(plan, 'sha256:'+'1'*64, 'sha256:'+'2'*64),
@@ -33,6 +36,12 @@ def test_receipt_is_exclusive_and_not_inference_pass(tmp_path):
     receipt = result.write_worker_receipt(state, rows)
     assert receipt['qualification'] == 'NODE_CLEANUP_COMPONENT_ONLY'
     assert receipt['runId'] == 'test-run'
+    assert receipt['schema'] == 'tiger-yolo-node-receipt-v2'
+    import hashlib
+    for launch in receipt['launches']:
+        content = (state.output/launch['logPath']).read_bytes()
+        assert launch['logDigest'] == 'sha256:'+hashlib.sha256(content).hexdigest()
+        assert launch['logBytes'] == len(content)
     assert (state.output / 'node-receipt.json').is_file()
     with pytest.raises((ValueError, OSError)):
         result.write_worker_receipt(state, rows)
@@ -60,3 +69,46 @@ def test_partial_or_unbound_worker_never_gets_receipt(tmp_path, fault):
     with pytest.raises(ValueError):
         result.write_worker_receipt(state, rows)
     assert not (state.output / 'node-receipt.json').exists()
+
+
+@pytest.mark.parametrize('fault', ['missing', 'symlink', 'directory'])
+def test_node_receipt_requires_actual_regular_logs(tmp_path, fault):
+    state, rows = worker(tmp_path)
+    target = state.output/'logs'/(rows[0]['name']+'.log')
+    target.unlink()
+    if fault == 'symlink': target.symlink_to(state.output/'logs'/(rows[1]['name']+'.log'))
+    if fault == 'directory': target.mkdir()
+    with pytest.raises(ValueError): result.write_worker_receipt(state, rows)
+    assert not (state.output/'node-receipt.json').exists()
+
+
+@pytest.mark.parametrize('fault', ['none', 'receipt-hash', 'changed-log', 'log-symlink',
+    'receipt-symlink', 'plan', 'preparation', 'rank'])
+def test_retained_receipt_binds_logs_without_recreating_worker(tmp_path, fault):
+    import hashlib
+    state, rows = worker(tmp_path)
+    receipt = result.write_worker_receipt(state, rows)
+    path = state.output/'node-receipt.json'
+    digest = 'sha256:'+hashlib.sha256(path.read_bytes()).hexdigest()
+    plan, prep, candidate = state._preparation_binding
+    if fault == 'receipt-hash': digest = 'sha256:'+'0'*64
+    if fault == 'plan': plan = dict(plan, runId='other')
+    if fault == 'preparation': prep = 'sha256:'+'0'*64
+    log = state.output/receipt['launches'][0]['logPath']
+    if fault == 'changed-log': log.write_text('changed')
+    if fault == 'log-symlink':
+        log.unlink()
+        log.symlink_to(state.output/receipt['launches'][1]['logPath'])
+    if fault == 'receipt-symlink':
+        target = state.output/'original.json'
+        path.rename(target)
+        path.symlink_to(target)
+    def read():
+        return result.read_node_log_receipt(state.output, receipt_digest=digest, plan=plan,
+            preparation_digest=prep, candidate_digest=candidate, rank=1 if fault == 'rank' else 0)
+    if fault == 'none':
+        evidence = read()
+        assert len(evidence['logs']) == len(state.launches)
+        assert evidence['qualification'] == 'NODE_LOG_COMPONENT_ONLY'
+    else:
+        with pytest.raises(ValueError): read()

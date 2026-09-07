@@ -78,6 +78,16 @@ T001–T004形成 profile/launcher 实现骨架；可操作 MVP 还要求 T006 �
 
 ## Current Checkpoint
 
+2026-09-07 node log receipt v2: actual write_worker_receipt now seals each
+launched process's regular bounded log path/bytes/hash after cleanup.
+read_node_log_receipt consumes transferred output independently of Worker
+instances, requiring externally trusted receipt digest plus frozen plan,
+candidate, preparation and rank bindings. It verifies exact launch fields,
+log content and service coverage; no fabricated Worker ownership. Twenty
+receipt tests passed with actual files and fixture ownership. Remote trusted
+receipt collection, full cleanup/requests/allocation and final verdict remain
+pending. v1 is historical and rejected by the new reader.
+
 2026-09-07 owned dependency collection: `collect_owned_dependency_result`
 requires all four roles from closed, reverified prepared Worker ownership
 objects, correct node rank/mode coverage and actual launcher-derived paths.

@@ -245,6 +245,7 @@ def write_worker_receipt(worker, rows):
     from pathlib import Path
     from runtime.identities import _credential_document
     from runtime.yolo_worker import assigned_roles
+    from runtime.yolo_bundle import _bytes
     if worker._preparation_binding is None:
         raise EvidenceError('NODE_RECEIPT_PREPARATION_REQUIRED')
     worker._verify_prepared_boundary()
@@ -279,14 +280,97 @@ def write_worker_receipt(worker, rows):
         if (not isinstance(row.get('argv'), list) or not row['argv']
                 or any(not isinstance(v, str) for v in row['argv'])):
             raise EvidenceError('NODE_RECEIPT_ARGV')
-        launches.append(dict(role=row['role'], invocation=row.get('invocation'),
-                             pid=row['pid'], argvDigest=digest(row['argv'])))
-    receipt = dict(schema='tiger-yolo-node-receipt-v1', runId=plan['runId'], case=worker.mode,
+        invocation = row.get('invocation')
+        tag = row['role'] + ('-' + invocation if invocation is not None else '')
+        if not tag or '/' in tag or '\\' in tag or tag in ('.', '..'):
+            raise EvidenceError('NODE_RECEIPT_LOG_NAME')
+        relative = 'logs/' + tag + '.log'
+        log = worker.output / relative
+        if any(p.is_symlink() for p in (log, *log.parents)):
+            raise EvidenceError('NODE_RECEIPT_LOG_SYMLINK')
+        content = _bytes(log)
+        launches.append(dict(role=row['role'], invocation=invocation,
+            pid=row['pid'], argvDigest=digest(row['argv']), logPath=relative,
+            logBytes=len(content), logDigest='sha256:'+hashlib.sha256(content).hexdigest()))
+    receipt = dict(schema='tiger-yolo-node-receipt-v2', runId=plan['runId'], case=worker.mode,
         rank=worker.rank, planDigest=digest(plan), preparationDigest=preparation_digest,
         candidateDigest=candidate_digest, launches=launches, cleanup=rows,
         cleanupSummary=cleanup, qualification='NODE_CLEANUP_COMPONENT_ONLY')
     _credential_document(worker.output / 'node-receipt.json', receipt)
     return receipt
+
+
+def read_node_log_receipt(root, *, receipt_digest, plan, preparation_digest, candidate_digest, rank):
+    """Bind retained node logs to a receipt digest obtained from trusted staging.
+
+    Does not recreate a Worker or prove a receipt truthful by its own hash.
+    Caller authenticates expected receipt/plan identities and separately checks
+    allocation, cleanup semantics and execution results.
+    """
+    import hashlib
+    import json
+    from pathlib import Path
+    from runtime.yolo_bundle import _bytes
+    from runtime.yolo_profile import _object
+    from runtime.yolo_worker import assigned_roles
+    def digest(value):
+        return 'sha256:'+hashlib.sha256(value).hexdigest()
+    if (type(rank) is not int or rank not in (0, 1)
+            or any(not isinstance(v, str) or re.fullmatch(r'sha256:[0-9a-f]{64}', v) is None
+                   for v in (receipt_digest, preparation_digest, candidate_digest))):
+        raise EvidenceError('NODE_LOG_EXPECTED_BINDING')
+    root = Path(root)
+    path = root/'node-receipt.json'
+    if any(p.is_symlink() for p in (path, *path.parents)):
+        raise EvidenceError('NODE_LOG_RECEIPT_SYMLINK')
+    content = _bytes(path)
+    if digest(content) != receipt_digest:
+        raise EvidenceError('NODE_LOG_RECEIPT_DIGEST')
+    try:
+        receipt = json.loads(content, object_pairs_hook=_object)
+        json.dumps(receipt, allow_nan=False)
+    except (ValueError, UnicodeError, RecursionError) as exc:
+        raise EvidenceError('NODE_LOG_RECEIPT_JSON') from exc
+    fields = {'schema', 'runId', 'case', 'rank', 'planDigest', 'preparationDigest',
+              'candidateDigest', 'launches', 'cleanup', 'cleanupSummary', 'qualification'}
+    if (not isinstance(receipt, dict) or set(receipt) != fields
+            or receipt['schema'] != 'tiger-yolo-node-receipt-v2'
+            or type(receipt['rank']) is not int or receipt['rank'] != rank
+            or receipt['runId'] != plan['runId'] or receipt['case'] != plan['case']
+            or receipt['planDigest'] != digest(json.dumps(plan, sort_keys=True,
+                separators=(',', ':'), allow_nan=False).encode())
+            or receipt['preparationDigest'] != preparation_digest
+            or receipt['candidateDigest'] != candidate_digest
+            or receipt['qualification'] != 'NODE_CLEANUP_COMPONENT_ONLY'
+            or not isinstance(receipt['launches'], list) or not 0 < len(receipt['launches']) <= 64):
+        raise EvidenceError('NODE_LOG_RECEIPT_BINDING')
+    roles = set(assigned_roles(receipt['case'], rank))
+    logs, services = {}, set()
+    for launch in receipt['launches']:
+        if (not isinstance(launch, dict) or set(launch) != {'role', 'invocation', 'pid',
+                'argvDigest', 'logPath', 'logDigest', 'logBytes'}
+                or launch['role'] not in roles or type(launch['pid']) is not int or launch['pid'] <= 0
+                or type(launch['logBytes']) is not int or launch['logBytes'] < 0
+                or (launch['invocation'] is not None and (not isinstance(launch['invocation'], str)
+                    or not launch['invocation']))
+                or any(not isinstance(launch[key], str) or re.fullmatch(r'sha256:[0-9a-f]{64}', launch[key]) is None
+                       for key in ('argvDigest', 'logDigest'))):
+            raise EvidenceError('NODE_LOG_LAUNCH')
+        tag = launch['role'] + ('-'+launch['invocation'] if launch['invocation'] is not None else '')
+        if '/' in tag or '\\' in tag or tag in logs or launch['logPath'] != 'logs/'+tag+'.log':
+            raise EvidenceError('NODE_LOG_PATH')
+        path = root/launch['logPath']
+        if any(p.is_symlink() for p in (path, *path.parents)):
+            raise EvidenceError('NODE_LOG_SYMLINK')
+        payload = _bytes(path)
+        if len(payload) != launch['logBytes'] or digest(payload) != launch['logDigest']:
+            raise EvidenceError('NODE_LOG_CONTENT')
+        logs[tag] = dict(launch, path=str(path))
+        if launch['invocation'] is None:
+            services.add(launch['role'])
+    if services != roles - {'user'}:
+        raise EvidenceError('NODE_LOG_SERVICE_COVERAGE')
+    return dict(receipt=receipt, logs=logs, qualification='NODE_LOG_COMPONENT_ONLY')
 
 
 def resolve_role_output(root, container_path):

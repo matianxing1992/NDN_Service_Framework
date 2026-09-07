@@ -74,3 +74,26 @@ the complete result. No public execution/submit bypass was added.
 
 Expanded node receipt regression: 569 passed in 42.91s; JUnit
 `Experiments/TigerCluster/results/t006-node-receipt-r1/junit.xml` (same six selectors).
+# Node log receipt v2 (2026-09-07)
+
+`write_worker_receipt` now emits `tiger-yolo-node-receipt-v2` and includes
+logPath, logBytes and logDigest for each actual launch after cleanup. Logs
+must be bounded regular files at the owned logs/<role[-invocation]>.log path;
+missing logs, directories and symlink ancestors reject receipt creation.
+Only hashes and metadata are added, not command credentials or model bytes.
+
+`read_node_log_receipt` reads copied output with no live Worker dependency.
+The caller must obtain the expected receipt digest through trusted staging
+and supply the frozen plan/preparation/candidate/rank. The reader verifies
+strict schema and launch fields, receipt/plan identity, exact log naming,
+service coverage and each log's actual bytes/hash. Legacy v1 is rejected.
+This is NODE_LOG_COMPONENT_ONLY, not proof that self-reported execution was
+truthful; final cleanup/finite-request semantics, allocation and per-request
+native/profile/numerical/dependency evidence must still be reconciled.
+
+Twenty tests run real file writing/reading using fixture ownership objects,
+including missing/nonregular logs, changed content, symlinks, wrong receipt
+hash and wrong plan/preparation/rank. No SIF or Tiger run is represented.
+
+Expanded focused regression: 643 passed in 44.22s. JUnit:
+`Experiments/TigerCluster/results/t006-node-log-receipt-r1/junit.xml`.
