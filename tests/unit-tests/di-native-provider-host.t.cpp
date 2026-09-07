@@ -1,11 +1,18 @@
-/* spec182 T009-A: Spec182Registration frozen selectors.
+/* spec182 T009-A/T009-B: Spec182Registration + Spec182SharedLease frozen
+ * selectors.
  *
- * 全部通过真实注册（addScopedService/addScopedCollaborationHandler）与
- * V2 request/selection 投递驱动：真实 inline/worker dispatch、真实 Face
+ * Registration 全部通过真实注册（addScopedService/addScopedCollaborationHandler）
+ * 与 V2 request/selection 投递驱动：真实 inline/worker dispatch、真实 Face
  * 完成路径、真实 cleanup，不以独立 bool 代替。六 selector 对应
  * specs/182-native-di-python-bindings/contracts/native-provider-lifecycle-design.md
  * 六路径 gate 表（Selection/ack/finish/cleanup）。
+ *
+ * SharedLease 三个 selector 通过真实 ExecutionLeaseService::handle + wire
+ * （encode/decode）驱动共享 host state：双 target 争同槽、跨 target
+ * 非 Prepare 操作拒绝、target 关闭后执行中槽不被提前释放。
  */
+
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/ExecutionLeaseService.hpp"
 
 #include "tests/unit-tests/generic-dynamic-api-fixture.hpp"
 
@@ -570,5 +577,400 @@ BOOST_AUTO_TEST_CASE(Spec182RegistrationCleanupDoesNotEraseSuccessor)
 }
 
 BOOST_AUTO_TEST_SUITE_END() // Spec182Registration
+
+namespace {
+
+using ndnsf::di::ExecutionLeaseRequestContext;
+using ndnsf::di::ExecutionLeaseService;
+using ndnsf::di::LeaseOperation;
+using ndnsf::di::LeaseOperationRequest;
+using ndnsf::di::LeaseOperationResponse;
+using ndnsf::di::SharedExecutionLeaseState;
+
+constexpr char HOST_PROVIDER_NAME[] = "/provider/Host";
+constexpr char HOST_EPOCH[] = "host-epoch";
+constexpr char MODEL_A_NAME[] = "/Inference/ModelA";
+constexpr char MODEL_B_NAME[] = "/Inference/ModelB";
+
+const ndn::Buffer PROOF_A{1, 2, 3};
+const ndn::Buffer PROOF_B{4, 5, 6};
+
+// One physical compute slot: both targets resolve to the same conflict key,
+// so slot contention is visible across services of the same host.
+auto
+sameSlotResolver(const ndnsf::di::LeaseOperationRequest&,
+                 const ndnsf::di::ExecutionLeaseRequestContext&)
+{
+  return std::vector<std::string>{"compute-slot:0"};
+}
+
+LeaseOperationResponse
+leaseHandle(ExecutionLeaseService& service, const std::string& requester,
+            const std::string& routeRequestId, const LeaseOperationRequest& request,
+            uint64_t nowMs)
+{
+  ExecutionLeaseRequestContext context{requester, HOST_PROVIDER_NAME,
+                                       ndnsf::di::EXECUTION_LEASE_SERVICE_NAME,
+                                       routeRequestId};
+  return ndnsf::di::decodeLeaseOperationResponse(
+    service.handle(context, ndnsf::di::encodeLeaseOperationRequest(request), nowMs));
+}
+
+LeaseOperationRequest
+prepareFor(const std::string& requestId, const std::string& planDigest,
+           const std::string& idempotencyKey, const std::string& targetService,
+           const ndn::Buffer& proof)
+{
+  LeaseOperationRequest request;
+  request.operation = LeaseOperation::Prepare;
+  request.requestId = requestId;
+  request.planDigest = planDigest;
+  request.idempotencyKey = idempotencyKey;
+  request.targetServiceName = targetService;
+  request.resourceBindingProof = proof;
+  request.roles = {"/Backbone"};
+  request.expiresAtMs = 100000;
+  return request;
+}
+
+LeaseOperationRequest
+leaseIdOperation(LeaseOperation operation, const std::string& leaseId,
+                 const std::string& idempotencyKey, const std::string& targetService,
+                 const std::string& providerEpoch, uint64_t expiresAtMs = 0)
+{
+  LeaseOperationRequest request;
+  request.operation = operation;
+  request.requestId = "route-holder";
+  request.planDigest = "plan-holder";
+  request.idempotencyKey = idempotencyKey;
+  request.targetServiceName = targetService;
+  request.leaseId = leaseId;
+  request.providerEpoch = providerEpoch;
+  request.expiresAtMs = expiresAtMs;
+  return request;
+}
+
+std::shared_ptr<SharedExecutionLeaseState>
+sharedHostLeaseState()
+{
+  return std::make_shared<SharedExecutionLeaseState>(HOST_EPOCH);
+}
+
+ExecutionLeaseService
+makeModelAService(const std::shared_ptr<SharedExecutionLeaseState>& shared)
+{
+  return ExecutionLeaseService(HOST_PROVIDER_NAME, MODEL_A_NAME, sameSlotResolver, shared);
+}
+
+ExecutionLeaseService
+makeModelBService(const std::shared_ptr<SharedExecutionLeaseState>& shared)
+{
+  return ExecutionLeaseService(HOST_PROVIDER_NAME, MODEL_B_NAME, sameSlotResolver, shared);
+}
+
+} // namespace
+
+BOOST_AUTO_TEST_SUITE(Spec182SharedLease)
+
+// 两个 targets 争同一槽只允许一个 Prepare 成功；host epoch 共享，任一 target
+// 不能通过单独重置表绕过预留；槽释放后另一 target 的等待者续订成功。
+BOOST_AUTO_TEST_CASE(Spec182SharedLeaseCrossServiceConflict)
+{
+  const auto shared = sharedHostLeaseState();
+  auto serviceA = makeModelAService(shared);
+  auto serviceB = makeModelBService(shared);
+
+  // Same underlying host table and epoch across both targets.
+  BOOST_REQUIRE_EQUAL(&serviceA.table(), &serviceB.table());
+  BOOST_CHECK_EQUAL(serviceA.table().providerEpoch(), HOST_EPOCH);
+  BOOST_CHECK_EQUAL(serviceB.table().providerEpoch(), HOST_EPOCH);
+
+  // A reserves the only slot.
+  const auto preparedA = leaseHandle(serviceA, "/user/one", "route-a1",
+                                     prepareFor("req-a1", "plan-a1", "prep-a1",
+                                                MODEL_A_NAME, PROOF_A),
+                                     1000);
+  BOOST_REQUIRE(preparedA.status);
+  BOOST_CHECK_EQUAL(preparedA.reasonCode, "OK");
+  BOOST_CHECK_EQUAL(preparedA.providerEpoch, HOST_EPOCH);
+  BOOST_REQUIRE_EQUAL(preparedA.conflictKeys.size(), 1);
+  BOOST_CHECK_EQUAL(preparedA.conflictKeys.front(), "compute-slot:0");
+  const std::string leaseA = preparedA.leaseId;
+
+  // B wants the same slot through the shared table: waitlisted, not granted.
+  const auto waitlistedB = leaseHandle(serviceB, "/user/two", "route-b1",
+                                       prepareFor("req-b1", "plan-b1", "prep-b1",
+                                                  MODEL_B_NAME, PROOF_B),
+                                       1100);
+  BOOST_REQUIRE(!waitlistedB.status);
+  BOOST_CHECK_EQUAL(waitlistedB.reasonCode, "LEASE_CAPACITY_REJECTED");
+  BOOST_CHECK_EQUAL(waitlistedB.retryAfterMs, 100);
+  BOOST_CHECK(waitlistedB.leaseId.empty());
+
+  // The host cannot double-book its own physical slot either; the probe joins
+  // the shared waitlist behind B.
+  const auto waitlistedA = leaseHandle(serviceA, "/user/one", "route-a2",
+                                       prepareFor("req-a2", "plan-a2", "prep-a2",
+                                                  MODEL_A_NAME, PROOF_A),
+                                       1200);
+  BOOST_CHECK(!waitlistedA.status);
+  BOOST_CHECK_EQUAL(waitlistedA.reasonCode, "LEASE_CAPACITY_REJECTED");
+
+  // A cleans up its own lease (Abort of a Prepared row).
+  const auto abortedA = leaseHandle(serviceA, "/user/one", "route-a1",
+                                    leaseIdOperation(LeaseOperation::Abort, leaseA,
+                                                     "abort-a1", MODEL_A_NAME, HOST_EPOCH),
+                                    1300);
+  BOOST_REQUIRE(abortedA.status);
+  BOOST_CHECK_EQUAL(abortedA.reasonCode, "OK");
+
+  // B's retry of the same request now succeeds on the freed slot.
+  const auto preparedB = leaseHandle(serviceB, "/user/two", "route-b1",
+                                     prepareFor("req-b1", "plan-b1", "prep-b1",
+                                                MODEL_B_NAME, PROOF_B),
+                                     1400);
+  BOOST_REQUIRE(preparedB.status);
+  BOOST_CHECK_EQUAL(preparedB.reasonCode, "OK");
+  BOOST_CHECK_EQUAL(preparedB.providerEpoch, HOST_EPOCH);
+  BOOST_CHECK_EQUAL(preparedB.leaseId, "host-epoch-lease-2");
+
+  // Symmetric direction: B holds the slot (A's queued probe waits in FIFO
+  // order), then B cleans up its own lease and A's retry is granted.
+  const auto queuedA = leaseHandle(serviceA, "/user/one", "route-a2",
+                                   prepareFor("req-a2", "plan-a2", "prep-a2",
+                                              MODEL_A_NAME, PROOF_A),
+                                   1500);
+  BOOST_REQUIRE(!queuedA.status);
+  BOOST_CHECK_EQUAL(queuedA.reasonCode, "LEASE_CAPACITY_REJECTED");
+  const auto abortedB = leaseHandle(serviceB, "/user/two", "route-b1",
+                                    leaseIdOperation(LeaseOperation::Abort,
+                                                     preparedB.leaseId, "abort-b1",
+                                                     MODEL_B_NAME, HOST_EPOCH),
+                                    1600);
+  BOOST_REQUIRE(abortedB.status);
+  const auto preparedA2 = leaseHandle(serviceA, "/user/one", "route-a2",
+                                      prepareFor("req-a2", "plan-a2", "prep-a2",
+                                                 MODEL_A_NAME, PROOF_A),
+                                      1700);
+  BOOST_REQUIRE(preparedA2.status);
+  BOOST_CHECK_EQUAL(preparedA2.leaseId, "host-epoch-lease-3");
+
+  // The waitlist round trip is fully symmetric: B is now the queued party
+  // (fresh request; replaying the aborted prep-b1 idempotency is refused by
+  // Core's state revalidation, not by the waitlist).
+  const auto queuedB = leaseHandle(serviceB, "/user/two", "route-b2",
+                                   prepareFor("req-b2", "plan-b2", "prep-b2",
+                                              MODEL_B_NAME, PROOF_B),
+                                   1800);
+  BOOST_REQUIRE(!queuedB.status);
+  BOOST_CHECK_EQUAL(queuedB.reasonCode, "LEASE_CAPACITY_REJECTED");
+  BOOST_CHECK_EQUAL(queuedB.retryAfterMs, 100);
+}
+
+// 另一 target 不能 Commit/Abort/Renew/Release 前者 lease；未知 lease 保持 Core
+// 缺失处理；同一 target 上 Core 的 requester/epoch/重放验证不被 find 替代。
+BOOST_AUTO_TEST_CASE(Spec182SharedLeaseTargetBinding)
+{
+  const auto shared = sharedHostLeaseState();
+  auto serviceA = makeModelAService(shared);
+  auto serviceB = makeModelBService(shared);
+
+  const auto preparedA = leaseHandle(serviceA, "/user/one", "route-a1",
+                                     prepareFor("req-a1", "plan-a1", "prep-a1",
+                                                MODEL_A_NAME, PROOF_A),
+                                     1000);
+  BOOST_REQUIRE(preparedA.status);
+  const std::string leaseA = preparedA.leaseId;
+
+  const auto committedA = leaseHandle(serviceA, "/user/one", "route-a1",
+                                      leaseIdOperation(LeaseOperation::Commit, leaseA,
+                                                       "com-a1", MODEL_A_NAME, HOST_EPOCH),
+                                      1100);
+  BOOST_REQUIRE(committedA.status);
+  BOOST_CHECK_EQUAL(committedA.state, "COMMITTED");
+
+  // Same-target idempotent replay of the commit is still served while the
+  // row is in the recorded state (Core replay validation untouched).
+  const auto replayedCommit = leaseHandle(serviceA, "/user/one", "route-a1",
+                                          leaseIdOperation(LeaseOperation::Commit, leaseA,
+                                                           "com-a1", MODEL_A_NAME,
+                                                           HOST_EPOCH),
+                                          1150);
+  BOOST_REQUIRE(replayedCommit.status);
+  BOOST_CHECK_EQUAL(replayedCommit.reasonCode, "OK");
+
+  // Production activation path (table accessor): Committed -> Executing.
+  ndn_service_framework::ExecutionLeaseBinding binding;
+  binding.requesterName = "/user/one";
+  binding.requestId = "req-a1";
+  binding.serviceName = MODEL_A_NAME;
+  binding.planDigest = "plan-a1";
+  binding.resourceBindingSchema = "ndnsf-di-binding-v1";
+  binding.resourceBindingProof = PROOF_A;
+  const auto activated = serviceA.table().validateAndActivate(
+    leaseA, HOST_EPOCH, binding, "act-a1", 1200, 100000);
+  BOOST_REQUIRE(activated.status);
+
+  // The true lease owner itself is refused through the other target's route:
+  // the row is pinned to ModelA before any requester/epoch/state check.
+  for (LeaseOperation operation : {LeaseOperation::Commit, LeaseOperation::Abort,
+                                   LeaseOperation::Renew, LeaseOperation::Release}) {
+    const auto crossTarget = leaseHandle(
+      serviceB, "/user/one", "route-b1",
+      leaseIdOperation(operation, leaseA, "x-" + std::to_string(static_cast<int>(operation)),
+                       MODEL_B_NAME, HOST_EPOCH, 50000),
+      1300);
+    BOOST_CHECK(!crossTarget.status);
+    BOOST_CHECK_EQUAL(crossTarget.reasonCode, "LEASE_SERVICE_MISMATCH");
+    // No lease detail of the other service's row leaks through this route.
+    BOOST_CHECK(crossTarget.leaseId.empty());
+    BOOST_CHECK(crossTarget.state.empty());
+    BOOST_CHECK(crossTarget.conflictKeys.empty());
+  }
+
+  // The cross-target attempts never touched the row.
+  const auto preserved = serviceB.table().find(leaseA);
+  BOOST_REQUIRE(preserved);
+  BOOST_CHECK(preserved->state == ndn_service_framework::ExecutionLeaseState::Executing);
+
+  // Unknown lease keeps Core's missing handling, not a target verdict.
+  const auto unknown = leaseHandle(serviceB, "/user/two", "route-b1",
+                                   leaseIdOperation(LeaseOperation::Release,
+                                                    "host-epoch-lease-404", "rel-x",
+                                                    MODEL_B_NAME, HOST_EPOCH),
+                                   1300);
+  BOOST_REQUIRE(!unknown.status);
+  BOOST_CHECK_EQUAL(unknown.reasonCode, "LEASE_NOT_FOUND");
+
+  // Same target still delegates authorization to Core.
+  const auto wrongRequester = leaseHandle(serviceA, "/user/nine", "route-a9",
+                                          leaseIdOperation(LeaseOperation::Abort, leaseA,
+                                                           "abort-z", MODEL_A_NAME,
+                                                           HOST_EPOCH),
+                                          1300);
+  BOOST_REQUIRE(!wrongRequester.status);
+  BOOST_CHECK_EQUAL(wrongRequester.reasonCode, "LEASE_REQUESTER_MISMATCH");
+  const auto staleEpoch = leaseHandle(serviceA, "/user/one", "route-a1",
+                                      leaseIdOperation(LeaseOperation::Commit, leaseA,
+                                                       "com-stale", MODEL_A_NAME,
+                                                       "epoch-stale"),
+                                      1300);
+  BOOST_REQUIRE(!staleEpoch.status);
+  BOOST_CHECK_EQUAL(staleEpoch.reasonCode, "LEASE_STALE_EPOCH");
+
+  // Legitimate cleanup by the owning target at the executing lease's safe
+  // release point; the other target is still refused on the Released row.
+  const auto releasedA = leaseHandle(serviceA, "/user/one", "route-a1",
+                                     leaseIdOperation(LeaseOperation::Release, leaseA,
+                                                      "rel-a1", MODEL_A_NAME, HOST_EPOCH),
+                                     1400);
+  BOOST_REQUIRE(releasedA.status);
+  BOOST_CHECK_EQUAL(releasedA.state, "RELEASED");
+
+  // Same-target idempotent replay of the release is still served (row kept in
+  // the recorded Released state) — Core replay tombstones are not bypassed by
+  // the target pre-check.
+  const auto replayedRelease = leaseHandle(serviceA, "/user/one", "route-a1",
+                                           leaseIdOperation(LeaseOperation::Release, leaseA,
+                                                            "rel-a1", MODEL_A_NAME,
+                                                            HOST_EPOCH),
+                                           1500);
+  BOOST_REQUIRE(replayedRelease.status);
+  BOOST_CHECK_EQUAL(replayedRelease.reasonCode, "OK");
+
+  const auto stillBound = leaseHandle(serviceB, "/user/one", "route-b1",
+                                      leaseIdOperation(LeaseOperation::Commit, leaseA,
+                                                       "com-a1", MODEL_B_NAME, HOST_EPOCH),
+                                      1600);
+  BOOST_CHECK(!stillBound.status);
+  BOOST_CHECK_EQUAL(stillBound.reasonCode, "LEASE_SERVICE_MISMATCH");
+}
+
+// 关闭 target A 的 service 实例不提前释放其执行中槽：shared state 保留该行，
+// B 无法操作或盗用该槽；重新 serve A 也不能继承；只有 A target 自身的 owner
+// 流（Abort/Release）能在安全点清理旧 lease，之后 B 继续 Prepare/执行。
+BOOST_AUTO_TEST_CASE(Spec182ClosingServicePreservesSharedLeaseOwner)
+{
+  const auto shared = sharedHostLeaseState();
+  auto serviceB = makeModelBService(shared);
+  const std::string leaseA = [&] {
+    auto serviceA = makeModelAService(shared);
+    const auto preparedA = leaseHandle(serviceA, "/user/one", "route-a1",
+                                       prepareFor("req-a1", "plan-a1", "prep-a1",
+                                                  MODEL_A_NAME, PROOF_A),
+                                       1000);
+    BOOST_REQUIRE(preparedA.status);
+    const auto committedA = leaseHandle(serviceA, "/user/one", "route-a1",
+                                        leaseIdOperation(LeaseOperation::Commit,
+                                                         preparedA.leaseId, "com-a1",
+                                                         MODEL_A_NAME, HOST_EPOCH),
+                                        1100);
+    BOOST_REQUIRE(committedA.status);
+    ndn_service_framework::ExecutionLeaseBinding binding;
+    binding.requesterName = "/user/one";
+    binding.requestId = "req-a1";
+    binding.serviceName = MODEL_A_NAME;
+    binding.planDigest = "plan-a1";
+    binding.resourceBindingSchema = "ndnsf-di-binding-v1";
+    binding.resourceBindingProof = PROOF_A;
+    const auto activated = serviceA.table().validateAndActivate(
+      preparedA.leaseId, HOST_EPOCH, binding, "act-a1", 1200, 100000);
+    BOOST_REQUIRE(activated.status);
+    return preparedA.leaseId;
+  }(); // serviceA closed here: its instance is gone while its lease executes.
+
+  // Closing the instance did not free the executing row from the shared state.
+  const auto preserved = serviceB.table().find(leaseA);
+  BOOST_REQUIRE(preserved);
+  BOOST_CHECK(preserved->state == ndn_service_framework::ExecutionLeaseState::Executing);
+  BOOST_CHECK_EQUAL(serviceB.table().providerEpoch(), HOST_EPOCH);
+
+  // B still cannot take or clean the closed target's executing slot.
+  const auto waitlistedB = leaseHandle(serviceB, "/user/two", "route-b1",
+                                       prepareFor("req-b1", "plan-b1", "prep-b1",
+                                                  MODEL_B_NAME, PROOF_B),
+                                       1300);
+  BOOST_REQUIRE(!waitlistedB.status);
+  BOOST_CHECK_EQUAL(waitlistedB.reasonCode, "LEASE_CAPACITY_REJECTED");
+  for (LeaseOperation operation : {LeaseOperation::Abort, LeaseOperation::Release}) {
+    const auto crossTarget = leaseHandle(
+      serviceB, "/user/one", "route-b1",
+      leaseIdOperation(operation, leaseA, "x-" + std::to_string(static_cast<int>(operation)),
+                       MODEL_B_NAME, HOST_EPOCH),
+      1300);
+    BOOST_REQUIRE(!crossTarget.status);
+    BOOST_CHECK_EQUAL(crossTarget.reasonCode, "LEASE_SERVICE_MISMATCH");
+  }
+
+  // Re-serving A over the same shared state cannot steal the old executing
+  // slot either.
+  auto serviceA2 = makeModelAService(shared);
+  const auto waitlistedA2 = leaseHandle(serviceA2, "/user/two", "route-a2",
+                                        prepareFor("req-a2", "plan-a2", "prep-a2",
+                                                   MODEL_A_NAME, PROOF_B),
+                                        1400);
+  BOOST_REQUIRE(!waitlistedA2.status);
+  BOOST_CHECK_EQUAL(waitlistedA2.reasonCode, "LEASE_CAPACITY_REJECTED");
+
+  // The A-target owner flow still routes cleanup of the old record: the
+  // executing lease returns at its safe release point.
+  const auto releasedA = leaseHandle(serviceA2, "/user/one", "route-a1",
+                                     leaseIdOperation(LeaseOperation::Release, leaseA,
+                                                      "rel-a1", MODEL_A_NAME, HOST_EPOCH),
+                                     1500);
+  BOOST_REQUIRE(releasedA.status);
+  BOOST_CHECK_EQUAL(releasedA.state, "RELEASED");
+
+  // The freed slot serves B normally: closing A never blocks B's execution.
+  const auto preparedB = leaseHandle(serviceB, "/user/two", "route-b1",
+                                     prepareFor("req-b1", "plan-b1", "prep-b1",
+                                                MODEL_B_NAME, PROOF_B),
+                                     1600);
+  BOOST_REQUIRE(preparedB.status);
+  BOOST_CHECK_EQUAL(preparedB.reasonCode, "OK");
+  BOOST_CHECK_EQUAL(preparedB.providerEpoch, HOST_EPOCH);
+}
+
+BOOST_AUTO_TEST_SUITE_END() // Spec182SharedLease
 
 } // namespace ndn_service_framework::test
