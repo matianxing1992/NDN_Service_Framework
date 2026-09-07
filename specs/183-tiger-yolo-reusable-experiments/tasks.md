@@ -21,6 +21,15 @@ failure-log，记录 identity b6710fd6 稳定正确。deferred：远端 storage
 site roots 与 oracle 数值契约待 T005/T006/T012 wiring 验证；release.gates
 仍空，local-cpu 运行资格待真实 prepare+local 执行 receipt。
 
+2026-09-07 构建工具链规则（用户裁决，AGENTS.md 同步记录）：NDN-SVS 的
+某些线在 configure 检查里声明最低 Boost 1.74，但本机是 Ubuntu 20.04
+（系统 Boost 1.71，无法装 1.74）。手递锁 pin 的 Experimental revision
+已声明 1.71 即可。规则：一律用**系统 Boost 1.71** + 锁 pin 的
+Experimental revision 构建 NDN-SVS；不得为满足检查自建隔离 Boost 1.74
+前缀，也不得在 checkout 里 patch 版本门。若某 revision 确实要求 1.74，
+切换到锁里声明 1.71 的 Experimental revision（锁为权威），而非换新
+Boost。此前为满足 master 旧版 1.74 门自建的 /tmp/t008-boost 已弃用。
+
 2026-09-07 T011 构建前置推进：生成 development-20260907 锁（四仓库
 revision 重 pin 当前 HEAD；20260906 锁作为 spec180 冻结输入不动）。修两处
 构建前置：sealer 排除 NAC-ABE 未跟踪示例证书（examples/example-trust-anchor.cert，
