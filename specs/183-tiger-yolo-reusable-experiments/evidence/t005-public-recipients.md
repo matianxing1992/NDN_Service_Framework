@@ -33,6 +33,37 @@ ran. No fake extension or skip was used. Both must pass after T008 native build.
 
 ## Remaining controlling work
 
+### Controller/Provider readiness consumers
+
+`wait_controller_publication` requires a prepared Worker, waits for the
+Controller's publication-complete marker, rechecks public input integrity and
+reads `/output/controller/runtime-publication-receipt.json` on the host. The
+marker fences the receipt write; it is not sufficient evidence by itself.
+The exact catalogue signer/name/digest and artifact name/digest set are checked
+through one shared pure validator in `runtime/yolo_result.py`. The existing
+MiniNDN receipt wait now delegates to that same checker while retaining its
+RunnerError API. Duplicate artifact rows are rejected rather than silently
+collapsed by a dictionary comprehension. Host readiness never imports a
+SIF-only installed source path; that import is reserved for in-container prep.
+
+`wait_provider_ready` waits for the exact bound Provider identity and one-role
+READY line. Source inspection of `DI_NativeProviderExecutable.cpp` confirmed
+it follows successful `hasProviderPermissionForService` and runtime readiness.
+It does NOT mean model assembly or CUDA execution: those remain post-Selection
+and require execution evidence. Repo readiness and inter-node signed probes
+are not covered by these functions.
+
+Eight tests cover the real shared validator, malformed/duplicate/missing/
+changed receipt rejection, a simulated marker/write fence, exact Provider
+binding and no host import of a SIF-only path. **8 passed in 0.56s** before
+the final host-import assertion; full final focused **371 passed in 22.30s**,
+JUnit `results/spec183-publication-readiness-r2/junit.xml`. These tests do not
+perform actual APP publication or authentication. `yolo_result.py` contains
+real publication validation only, not a placeholder PASS collector; T006's
+request/role/edge/numerical/cleanup evaluator remains unfinished. Final
+operator orchestration, Repo/network readiness and all runtime gates remain
+pending. Source sealing must include the maintained MiniNDN owner changes.
+
 ### Prepared Worker construction and launch boundary
 
 `NodeRuntime.from_preparation` verifies the externally pinned receipt/public

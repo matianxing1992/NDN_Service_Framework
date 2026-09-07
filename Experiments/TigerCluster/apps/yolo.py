@@ -18,6 +18,18 @@ from runtime.baseline import PYTHON
 APP_DIR = '/opt/ndnsf-di/replay/repo/examples/python/NDNSF-DistributedInference/yolo_2x2'
 
 
+def _installed_yolo_owner():
+    import importlib.util
+    import sys
+    path = Path(APP_DIR).parents[3] / 'Experiments/NDNSF_DI_YoloAckDriven_Minindn.py'
+    name = '_spec183_installed_yolo_owner'
+    spec = importlib.util.spec_from_file_location(name, path)
+    owner = importlib.util.module_from_spec(spec)
+    sys.modules[name] = owner
+    spec.loader.exec_module(owner)
+    return owner
+
+
 def configuration_for_run(template: dict, plan: dict) -> dict:
     """Bind authorization identities, retaining the frozen model graph.
 
@@ -86,8 +98,6 @@ def prepare_in_container(plan: dict, *, template_path: Path, template_digest: st
     public config and each role's own HOME. No NFD, RPC or model execution is
     started here. A failure retains partial output and prohibits in-place retry.
     """
-    import importlib.util
-    import sys
     from types import SimpleNamespace
     from runtime.identities import (issue, issue_yolo_recipients, issue_yolo_offers,
         install_yolo_trust, _read_credential, _create_credential, _credential_document)
@@ -108,12 +118,7 @@ def prepare_in_container(plan: dict, *, template_path: Path, template_digest: st
         raise ValueError('YOLO_PREPARE_MANIFEST_DIGEST')
     config = configuration_for_run(_read_plane(template_path), plan)
     # Only the installed source owner is imported, never a host checkout.
-    runner_path = Path(APP_DIR).parents[3] / 'Experiments/NDNSF_DI_YoloAckDriven_Minindn.py'
-    module_name = '_spec183_installed_yolo_owner'
-    spec = importlib.util.spec_from_file_location(module_name, runner_path)
-    owner = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = owner
-    spec.loader.exec_module(owner)
+    owner = _installed_yolo_owner()
     from ndnsf_distributed_inference.adapters.yolo import build_yolo26n_adapter
     from ndnsf_distributed_inference.policy import write_policy_bundle
     build_yolo26n_adapter(package, registry_path=registry)  # Signed catalogue and actual graph digest.
@@ -233,6 +238,47 @@ def start_controller(worker):
         '--generated-policy-dir', '/output/generated-policy',
         '--spec180-runtime-publication-file', '/config/runtime-publication.json',
         '--spec180-runtime-receipt-file', '/output/runtime-publication-receipt.json'])
+
+
+def wait_controller_publication(worker, *, seconds: float, peer_failure: Path | None = None):
+    """Wait for complete signed/readback publication, then match its receipt.
+
+    Requires the prepared Worker factory. The marker is only a completion
+    fence for the receipt write; the shared validator checks its actual rows.
+    This does not prove remote-node reachability or Repo readiness.
+    """
+    from runtime.yolo_profile import _read_plane
+    if worker.rank != 0 or worker._preparation_binding is None:
+        raise ValueError('YOLO_PUBLICATION_PREPARATION_REQUIRED')
+    worker._verify_prepared_boundary()
+    worker.wait_marker('controller', 'SPEC180_RUNTIME_CATALOGUE_PUBLISHED',
+                       seconds=seconds, peer_failure=peer_failure)
+    worker._verify_prepared_boundary()
+    expected = _read_plane(worker.public / 'runtime-publication.json')
+    receipt_path = worker.output / 'controller/runtime-publication-receipt.json'
+    if any(p.is_symlink() for p in (receipt_path, *receipt_path.parents)):
+        raise ValueError('YOLO_PUBLICATION_RECEIPT_SYMLINK')
+    receipt = _read_plane(receipt_path)
+    from runtime.yolo_result import validate_runtime_publication_receipt
+    result = validate_runtime_publication_receipt(expected, receipt)
+    worker.check()
+    return result
+
+
+def wait_provider_ready(worker, role: str, *, seconds: float,
+                         peer_failure: Path | None = None) -> None:
+    """Native permission/runtime readiness, NOT model assembly or GPU proof."""
+    from runtime.yolo_worker import PROVIDER_ROLES
+    if worker._preparation_binding is None or role not in PROVIDER_ROLES or role not in worker.roles:
+        raise ValueError('YOLO_PROVIDER_PREPARATION_REQUIRED')
+    worker._verify_prepared_boundary()
+    identity = worker._preparation_binding[0]['identities'][role]
+    # Native source emits this only after hasProviderPermissionForService()
+    # succeeds and provisioningState->markReady(). Single-role launch is fixed.
+    marker = 'NDNSF_DI_NATIVE_PROVIDER_READY provider=' + identity + ' activeRoles=1\n'
+    worker.wait_marker(role, marker, seconds=seconds, peer_failure=peer_failure)
+    worker._verify_prepared_boundary()
+    worker.check()
 
 
 def start_repo(worker, *, identity: str, free_bytes: int):

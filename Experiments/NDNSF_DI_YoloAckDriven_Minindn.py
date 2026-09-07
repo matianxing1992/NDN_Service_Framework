@@ -40,6 +40,7 @@ _LOCAL_PYTHON_ROOTS = (
     ROOT / "NDNSF-DistributedRepo/pythonWrapper",
     ROOT / "pythonWrapper",
     ROOT / "NDNSF-DistributedInference",
+    ROOT,  # Shared pure evidence validators used by MiniNDN and Tiger jobs.
 )
 for _python_root in reversed(_LOCAL_PYTHON_ROOTS):
     if _python_root.is_dir() and str(_python_root) not in sys.path:
@@ -2371,6 +2372,17 @@ def validate_inputs(case: str, environment: Mapping[str, str]) -> tuple[Path, Ma
                     "envelope_key_file": envelope_key_file}
 
 
+def validate_runtime_publication_receipt(expected: Mapping[str, Any],
+                                          receipt: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Retain the existing runner error contract around the shared pure checker."""
+    from Experiments.TigerCluster.runtime.yolo_result import (
+        EvidenceError, validate_runtime_publication_receipt as validate)
+    try:
+        return validate(expected, receipt)
+    except EvidenceError as exc:
+        raise RunnerError(str(exc)) from exc
+
+
 def _wait_for_runtime_receipt(output: Path, publication: Path,
                               timeout_s: float = 20.0) -> Mapping[str, Any]:
     """Wait for the Controller child's signed APP publication receipt."""
@@ -2388,26 +2400,7 @@ def _wait_for_runtime_receipt(output: Path, publication: Path,
                 receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
             except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
                 raise RunnerError("CASE_RUNTIME_PUBLICATION_RECEIPT_INVALID") from exc
-            if receipt.get("schema") != "spec180-runtime-publication-receipt-v1":
-                raise RunnerError("CASE_RUNTIME_PUBLICATION_RECEIPT_SCHEMA_INVALID")
-            if (receipt.get("catalogueDataName") != expected.get("catalogueDataName")
-                    or receipt.get("catalogueSigner") != expected.get("catalogueSigner")
-                    or receipt.get("cataloguePayloadDigest")
-                    != expected.get("cataloguePayloadDigest")):
-                raise RunnerError("CASE_RUNTIME_PUBLICATION_RECEIPT_MISMATCH")
-            expected_artifacts = {
-                str(item.get("dataName")): str(item.get("payloadDigest"))
-                for item in expected.get("artifacts", ())
-                if isinstance(item, Mapping)
-            }
-            receipt_artifacts = {
-                str(item.get("dataName")): str(item.get("payloadDigest"))
-                for item in receipt.get("artifacts", ())
-                if isinstance(item, Mapping)
-            }
-            if expected_artifacts != receipt_artifacts:
-                raise RunnerError("CASE_RUNTIME_PUBLICATION_ARTIFACT_RECEIPT_MISMATCH")
-            return receipt
+            return validate_runtime_publication_receipt(expected, receipt)
         time.sleep(0.1)
     raise RunnerError("CASE_RUNTIME_PUBLICATION_RECEIPT_TIMEOUT")
 

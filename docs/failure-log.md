@@ -1769,6 +1769,11 @@ part of task context. Format per entry:
 
 ## 2026-09-07 — Controller receipt conflicted with read-only configuration mount
 
+### Readiness boundary review follow-up
+
+- The old receipt comparator collapsed duplicate artifact rows into dictionaries, hiding incorrect cardinality. MiniNDN and Tiger now use one shared pure validator that rejects duplicates, malformed rows, missing artifacts and changed digests.
+- Host-side Worker readiness must not import an installed `/opt/...` SIF path. The pure receipt checker lives in the frozen runtime bundle; only in-container preparation imports installed application owners. A focused regression prohibits that host import. These are source/fixture findings, not claimed successful signed-network tests.
+
 ### Preparation mount review follow-up
 
 - Source review found that a strict empty `/identities` check conflicts with the shared Apptainer command's pre-created `root` HOME. The guard now allows only that empty directory and rejects any old content; a focused regression covers both cases. This was fixed before any SIF launch, not observed as a cluster failure.
