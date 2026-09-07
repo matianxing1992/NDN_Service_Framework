@@ -91,6 +91,10 @@ Spec183 profile、native/SIF 和真实 MiniNDN/Tiger 证据。
 会失败；preflight 现在为每次 probe 提供临时隔离 `--home`，相关 12 项 builder/
 preflight 回归通过。该修复不改变历史 base 的资格，也不关闭 T008/T011。
 
+随后重跑 TigerCluster 全部组件测试并合并 Spec183 preflight/builder 选择器：818
+passed（38.15s）。这仍是 component-only 证据，T007 仍需真实 profile、candidate
+manifest、native/SIF、MiniNDN 和跨节点运行收敛。
+
 2026-09-07 输入接收推进：四个锁定源码已在隔离 `/tmp/ndnsf-spec183-src` 工作树按
 `development-handoff.lock.json` 精确 checkout，五个锁定 wheel 已下载并逐一校验，
 `prepare-development-handoff.py verify` 返回 `SOURCE_READY`，source seal 为
