@@ -7,6 +7,14 @@
 
 ## Current Findings
 
+### Remaining Production Chain Review 2026-09-08
+
+用户要求暂停新增实现并重排剩余链。当前基线 ac962cc8，见
+[RC-01–RC-05 and R1–R7](evidence/production-chain-replan-20260908.md)：默认 requester
+未接通、生产 adapter/port 缺口、局部卡与最终接线责任混淆，以及字段消费方先于
+生产来源闭合的问题。这里只审查相关入口和执行计划，不重签 T015 或历史资格。
+保持全部已通过证据和真实运行要求，暂停产品调度，等待明确恢复。
+
 ### YOLO Fragment Registration Binding 2026-09-07
 
 原生 fragment 字符串哈希遗漏注册摘要和有序节点，已改维护的规范 JSON 身份。

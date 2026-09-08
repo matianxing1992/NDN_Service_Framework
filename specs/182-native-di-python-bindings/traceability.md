@@ -6,6 +6,12 @@ source review 只证明 baseline 所述实现存在，不证明新实现或资�
 
 ## Requirement-to-task Map
 
+2026-09-08 剩余任务执行批次见 [production chain replan](evidence/production-chain-replan-20260908.md#remaining-batches)。
+FR-003/009→R1；FR-004/005→R2；FR-001/002/008→R3；FR-007/008/016→R4；
+FR-010/012→R5；FR-011/017→R6；FR-013/014/018/019 及完整 SC/PO→R7。
+此为执行层映射，不替换下方逐需求任务表；FR-006 的已验原生装配在 R2/R3 复用，
+完整保护冷路径仍由 R7 验收。FR-015 的已关闭基线不重启。所有批次受原硬门约束。
+
 2026-09-07 A8-01：FR-002/004、CD-003、PO-003 的 T004 完成证明已撤回；
 [wire/identity diagnosis](evidence/t004-wire-reopened-20260907.md) 重现真实 parser 拒绝。
 T010 的 FLOW-001/4--6 依赖该修复；T005 已有局部授权检查不等于 grantView 生产接线完整。
