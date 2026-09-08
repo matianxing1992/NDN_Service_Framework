@@ -41,6 +41,17 @@ FILES = (
     "Experiments/NDNSF_NewAPI_Minindn_Perf.py",
     "Experiments/spec175_repo_bootstrap.py",
     "Experiments/Topology/spec175-host-gate.conf",
+    # Spec183's application bundle must carry the same maintained harness
+    # inputs that are source-bound by the base preflight.
+    "Experiments/TigerCluster/apps/yolo.py",
+    "Experiments/TigerCluster/apps/yolo_network.py",
+    "Experiments/TigerCluster/jobs/yolo/run.sbatch",
+    "Experiments/TigerCluster/jobs/yolo/submit.py",
+    "Experiments/TigerCluster/runtime/yolo_bundle.py",
+    "Experiments/TigerCluster/runtime/yolo_profile.py",
+    "Experiments/TigerCluster/runtime/yolo_result.py",
+    "Experiments/TigerCluster/runtime/yolo_worker.py",
+    "Experiments/TigerCluster/schemas/tiger-yolo-v1.schema.json",
     "examples/trust-schema.conf",
     "examples/python/NDNSF-DistributedInference/llm_pipeline",
     "examples/python/NDNSF-DistributedInference/yolo_2x2",

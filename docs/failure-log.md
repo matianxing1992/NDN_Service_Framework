@@ -3757,3 +3757,17 @@ identity and rerun packaging against the existing incremental Waf cache.
 - Lesson: release preflight should assert the bytes and fields of the selected
   metadata artifact before testing tools that may apply additional environment
   policy.
+
+## 2026-09-08: complete-runtime template consumed app files from a base seal
+
+- Symptom: the multistage development-runtime build compiled the stable
+  libraries, then failed at `Cannot read the folder '/src/ndnsf/examples'`.
+- Root cause: that template is a complete application-SIF recipe, while the
+  `base-libraries-v1` source seal intentionally excludes examples, DI Python,
+  and experiment replay files under the accepted layered-v1 boundary.
+- Fix: stop using the complete-runtime template for this rebuild; use the
+  maintained single-stage library-runtime definition for the base and extend
+  the legacy-complete application selector with the source-bound TigerCluster
+  harness files needed by the external app bundle.
+- Lesson: a template that can rebuild a full runtime is not interchangeable
+  with the stable base recipe; source selection must match the ownership layer.
