@@ -1,5 +1,13 @@
 # Failure Log and Evidence Index
 
+## 2026-09-08 — Spec182 conversation oracle canonical mutation
+
+R4-B4 离线oracle author首次 exit1：负例使用默认 json.dumps，旧参考先以
+ConversationCheckpointInvalid("checkpoint is not canonical")拒绝，未到摘要篡改检查。
+改用参考 canonical payload 后篡改字段，接收该参考的两类拒绝异常；不是原生运行失败。
+详细边界及重试结果见[R4-B4](../specs/182-native-di-python-bindings/evidence/r4-b4-conversation-chain-20260908.md)。
+修正后生成/确定性重现及每例错key/篡改检查PASS，author边界RESOLVED。
+
 ## 2026-09-08 — Spec182 epoch text test optional payload
 
 R4-B3 增量构建 exit1：新增 C++ 测试直接 parse optional finalPayload，类型不匹配。

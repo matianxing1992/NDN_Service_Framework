@@ -17,6 +17,7 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 
 | Unit / Details | Status | Depends | Evidence / Remaining | Updated |
 | --- | --- | --- | --- | --- |
+| [R4-B4 Authenticated Conversation Chain](evidence/r4-b4-conversation-chain-20260908.md) | IN_PROGRESS | R4-B3; T011-C acceptance retained | scaffold缺口已审计；CC-1两个旧checkpoint/continuation oracle生成/重现及拒绝检查PASS，原生消费者和完整journal向量待补；CC-1至CC-4以公开两轮续接为出口 | 2026-09-08 |
 | [R4-B3 Epoch Text Commit Boundary](evidence/r4-b3-epoch-text-20260908.md#final-local-result) | DONE | R4-B2; T011-B acceptance retained | terminal stable flush前移至事件接受前；真实tokenizer/epoch及stream/sampling共24 cases/411 assertions PASS，unit与实际DI库增量build PASS；父任务仍未完整验收 | 2026-09-08 |
 | [R4-B2 Native Stream Production Chain](evidence/r4-b2-stream-production-20260908.md#final-local-result) | DONE | R3-B1; R4-B1 | Local requester stream batch：7 stream/190 assertions、2 options/21、29 regression/695 PASS；2 SDK recovery wires、CLI/loader PASS；真实Provider/会话/T016仍未完成 | 2026-09-08 |
 | [R4-B1 Native Sampling Contract Repair](evidence/r4-b1-sampling-20260908.md) | DONE | R3-B1; T010-C/T011 acceptance retained | Local sampling batch：double惩罚与统一参数校验；4 cases/40 assertions、既有epoch 28 assertions PASS；增量unit与实际DI共享库构建PASS；stream/session仍待完成 | 2026-09-08 |
@@ -82,6 +83,14 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 | [T017-A Development Handoff](contracts/execution-units.md#t017-a-development-handoff) | NOT_STARTED | T016-A | [baseline](evidence/task-progress-registry-20260907.md)；无本卡独立执行/验收记录；按依赖领取 | 2026-09-07 |
 
 ## Current Checkpoint
+
+2026-09-08 R4-B4 / **IN_PROGRESS**：已审查真实会话链，C++ coordinator 当前为未接线
+scaffold，旧测试手工seed不能证明首轮/续接；abort无状态变更，checkpoint/journal与旧
+认证加密格式不兼容。详见[R4-B4审计及执行成员](evidence/r4-b4-conversation-chain-20260908.md)。
+按旧Python契约冻结独立oracle后，CC-1至CC-4同批完成native owner、持久化和公开接线；
+尚未编译或执行本批测试，不关闭T011-C。
+CC-1已冻结两个旧checkpoint/continuation oracle并通过确定性重现、错key/篡改拒绝；
+这是离线参考验证，尚未证明C++兼容，完整transcript/journal向量与native实现仍待完成。
 
 2026-09-08 R4-B3 / **DONE (local epoch text batch)**：终止 stable flush 和一致性校验
 先于事件接受，保留 feedback/state 顺序。真实 tokenizer MAX/EOS/stop/replay 与 mismatch

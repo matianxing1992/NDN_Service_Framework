@@ -319,6 +319,10 @@ worker crash/cancel 等真实子进程案例也转 T016，卡内只运行纯 fra
 
 ### T011-C Conversation Journal and Continuation
 
+当前执行批次：[R4-B4 Authenticated Conversation Chain](../evidence/r4-b4-conversation-chain-20260908.md)。
+现有C++实现为未接线scaffold，不是兼容journal基线；按CC-1至CC-4同批完成认证值、
+owner/持久化及公开两轮请求。旧手工seed组件用例不替代FULL_CONTEXT首轮或APPEND_DELTA验收。
+
 - **Parent**: T011; **Depends**: T011-B; **Reviewer**: state/compatibility review
 - **Read**: CD-007 State Authority → runtime-boundaries Migration and Rollback Contract；P/conversation.py::ConversationCoordinator；P/app_sdk/runtime_journal.py；N/NativeProviderRuntime.hpp::ConversationStateStore。
 - **Write**: N/NativeConversationCoordinator.hpp; N/NativeConversationCoordinator.cpp; N/NativeInferenceClient.hpp; N/NativeInferenceClient.cpp; U/di-native-conversation.t.cpp; I/di-native-conversation.t.cpp; wscript。
