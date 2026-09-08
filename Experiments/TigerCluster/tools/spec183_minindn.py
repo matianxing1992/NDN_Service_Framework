@@ -4,8 +4,9 @@ Maps the containerized-issuer products (case.json, offer trust/maps, role
 certificates, catalogue names) plus the actual per-run offer private keys
 onto the maintained ACK-driven MiniNDN driver
 (``Experiments/NDNSF_DI_YoloAckDriven_Minindn.py --case Y-B``), which runs
-the four-role graph over the clean-root host binaries. Three-case execution,
-bounded outer cleanup and semantic host qualification remain T007 N1/N2 work;
+the four-role graph over the clean-root host binaries. A transient systemd
+service bounds the process tree. Three-case execution, network resource cleanup
+evidence and semantic host qualification remain T007 N1/N2 work;
 a successful driver exit alone is not a host, GPU or SIF qualification.
 """
 from __future__ import annotations
@@ -181,7 +182,9 @@ def main(argv: Iterable[str] | None = None) -> int:
     # The driver demands an exclusive, initially empty output root.
     case_output.mkdir(mode=0o700, parents=True, exist_ok=False)
 
-    env = dict(os.environ)
+    # Pass only the declared host inputs and executable/module search paths.
+    # Inherited SIF bypass knobs or unrelated credentials are not host inputs.
+    env = {name: os.environ[name] for name in ('PATH', 'PYTHONPATH') if name in os.environ}
     env.update({
         "LD_LIBRARY_PATH": args.library_path,
         "NDNSF_DI_STATE_ROOT": str(state),
@@ -211,14 +214,18 @@ def main(argv: Iterable[str] | None = None) -> int:
                         'spec183-deploy-config.json': deploy}.items():
         _credential_document(inputs/name, value)
 
-    import subprocess
+    from runtime.host_minindn import supervise
     command = [sys.executable, str(DRIVER_REL), "--case", args.case]
     print(json.dumps({"status": "T010_START", "case": args.case,
                       "driver": str(DRIVER_REL)}, sort_keys=True))
-    completed = subprocess.run(command, env=env, cwd=_REPO_ROOT)
-    print(json.dumps({"status": "T010_DONE", "returncode": completed.returncode,
+    timing = checked['profile']['timing']
+    seconds = (timing['stagingSeconds'] + timing['startupSeconds']
+               + (timing['requestDeadlineMs'] + 999) // 1000)
+    returncode = supervise(command, env, host_root/'supervisor', cwd=_REPO_ROOT,
+                          seconds=seconds, cleanup_seconds=timing['cleanupSeconds'])
+    print(json.dumps({"status": "T010_DONE", "returncode": returncode,
                       "output": str(case_output), "qualification": "NOT_EVALUATED"}, sort_keys=True))
-    return completed.returncode
+    return returncode
 
 
 if __name__ == "__main__":

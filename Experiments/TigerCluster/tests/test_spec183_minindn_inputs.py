@@ -5,7 +5,6 @@ import os
 from pathlib import Path
 import subprocess
 import sys
-from types import SimpleNamespace
 
 import pytest
 from cryptography.hazmat.primitives import serialization
@@ -133,16 +132,24 @@ def test_invalid_input_starts_no_driver_and_writes_no_host_state(inputs, monkeyp
 
 
 def test_main_maps_verified_inputs_into_exclusive_host_output(inputs, monkeypatch, capsys):
+    from runtime import host_minindn
     called=[]
-    def run(command, **kwargs):
+    def run(command, env, output, **kwargs):
+        kwargs.update(env=env, output=output)
         called.append((command, kwargs))
-        return SimpleNamespace(returncode=0)
-    monkeypatch.setattr(subprocess,'run',run)
+        return 0
+    monkeypatch.setattr(host_minindn,'supervise',run)
+    monkeypatch.setenv('UNRELATED_PRIVATE_CREDENTIAL', 'do-not-forward')
+    monkeypatch.setenv('NDNSF_SPEC180_SIF_RUNTIME', '1')
     argv=['--run-id',inputs['run_id'],'--output',str(inputs['output']),
           '--profile',str(inputs['profile_path']),'--preparation-sha256',inputs['preparation_sha256']]
     assert runner.main(argv) == 0
     root = inputs['output']/'run-1'
     env=called[0][1]['env']
+    assert 'UNRELATED_PRIVATE_CREDENTIAL' not in env
+    assert 'NDNSF_SPEC180_SIF_RUNTIME' not in env
+    assert called[0][1]['output'] == root/'host-minindn/supervisor'
+    assert called[0][1]['seconds'] > 0 and called[0][1]['cleanup_seconds'] > 0
     assert env['SPEC181_PROTECTION_EPOCH']=='epoch-1'
     assert env['NDNSF_SPEC180_CONFIG_ROOT']==str(root/'private/user/authority')
     assert env['SPEC181_REQUESTER_PRIVATE_KEY']==str(root/'private/user/requester.key')

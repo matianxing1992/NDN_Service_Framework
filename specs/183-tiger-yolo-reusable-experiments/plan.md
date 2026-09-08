@@ -11,6 +11,7 @@
 
 - Language/Version：宿主 Python 3.8+ 兼容；容器 CPython 3.10 由现有交付锁确定，C++/Waf/CMake/bash 沿用仓库。
 - Dependencies：四库精确版本取 `development-handoff.lock.json`；base 提供 NDN-CXX/NFD/ORT。补记录包/编译器/Boost/ORT/CUDA 实际版本，不从旧 chat 猜测。
+- Host MiniNDN：复用本机 systemd system manager/cgroup transient service，需 root 或 sudo -n；runtime/host_minindn.py 保留独占 unit 身份、时限和整树清理证据。此宿主适配不进入 Tiger Slurm 执行路径，cgroup 空置不替代网络/协议验收。
 - Storage：源码、profile/小型证据跟踪；SIF/模型内容寻址缓存，run 输出隔离，秘密为 run 私有 0700 路径。
 - Testing：pytest 配置/launcher mutation，Boost 单元/真实集成，MiniNDN，最终 SIF 本地 CPU 和 Slurm GPU。
 - Target：两节点、每节点一 GPU、四个独立 Provider；不做 Qwen/扩展性能矩阵。
@@ -29,6 +30,7 @@ I/II：沿用动态 API 和现有鉴权/请求级密钥，不新建框架协议�
 | `Experiments/TigerCluster/runtime/baseline.py`, `identities.py` | existing; narrow extension | 公共进程/容器/身份/路由原语；保持已有 CPU v1 schema 及历史结果语义 |
 | `runtime/yolo_profile.py` | implemented; qualification open | I/R/E、effective profile、case/run与冻结bundle已接；版本已由issuer/rank/collector消费，剩host语义gate见T007 N1 |
 | `runtime/yolo_submission.py` | partial implementation | 共享根下candidate/gate提交状态和未知job恢复；只管理记录，不执行Slurm或验证模型 |
+| `runtime/host_minindn.py`, `tools/spec183_minindn.py` | host process owner implemented; three-case qualification pending | 准备输入绑定、systemd runtime/stop 时限、unit身份及cgroup观测；复用有限进程client，不重新实现Core或MiniNDN应用 |
 | `runtime/yolo_bundle.py` | integrity implemented; production bundle pending | 显式小型脚本清单冻结/验证，dispatch已调用；不含模型/私钥/宿主库，不替代源/运行资格 |
 | `runtime/yolo_worker.py`, `yolo_result.py` | implemented; runtime unqualified | 共享生命周期、四角色和normal/negative留存collector已接；每rank先有界检查版本，public重算要求issuer及所有rank原记录 |
 | `apps/yolo.py` | implemented; runtime unqualified | 复用ACK-driven User/签发/准备，per-request独立graph reference已接；不另建模型规划或密钥owner |

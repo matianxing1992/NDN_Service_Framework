@@ -50,7 +50,11 @@ Spec183 的 `tools/spec183_minindn.py` 输入包括 `--run-id`、`--output`、
 保留的 preparation 摘要，不能临时给任意输入计算摘要作为批准。
 包装器验证准备材料、模型清单和实际每 run 密钥后，独占创建
 `<output>/<run-id>/host-minindn/`；重用同一输出会拒绝启动。
-当前仍只接 Y-B，三场景、有界外层清理和语义 host manifest 未完成，
+包装器在本机通过 systemd transient service 执行（需要 system manager、
+cgroup 和 root 或 `sudo -n`）。运行时限取已验证 profile 的 staging + startup
++ 一次 request deadline，退出清理使用 cleanupSeconds；不自动重试任务。
+`host-minindn/supervisor/` 保留 unit 身份、日志、结果及 cgroup 空置观测。
+当前仍只接 Y-B，三场景、网络资源清理证据和语义 host manifest 未完成，
 `T010_DONE` 的 `NOT_EVALUATED` 不能放行 SIF 构建。正式执行遵循
 T007 → T008 → T009 → T010；当前证据见
 [输入绑定修复](../../specs/183-tiger-yolo-reusable-experiments/evidence/t010-input-binding.md)。

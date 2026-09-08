@@ -1,5 +1,21 @@
 # Failure Log and Evidence Index
 
+## 2026-09-08 — Outer MiniNDN launch did not own detached descendants
+
+- Symptom: wrapper's unbounded subprocess.run and direct Popen reaping could
+  not enforce a whole-run deadline for detached MiniNDN descendants.
+- Cause: caller lifetime/process-group assumptions were weaker than the actual
+  namespace launcher and application process tree.
+- Fix: canonical Tiger host owner uses an exclusive systemd transient service
+  with runtime/stop deadlines, identity-checked stop and retained cgroup state.
+  Wrapper passes only prepared environment inputs, removing inherited SIF
+  bypass and unrelated credential values from the service environment.
+- Validation: actual normal and SIGTERM-ignoring fork/setsid probes completed;
+  timeout was the expected negative result, both groups empty and PIDs gone.
+  Twelve component boundaries passed. See Spec183 t010-host-supervisor.md.
+- Lesson: OS-managed process lifetime is separate from network-resource cleanup
+  and protocol qualification. No MiniNDN or GPU PASS follows from these probes.
+
 ## 2026-09-08 — Child cleanup discarded failures before reaping
 
 - Symptom: shared MiniNDN stop helper killed timed-out children without a final
