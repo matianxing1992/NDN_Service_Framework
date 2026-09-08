@@ -80,6 +80,8 @@ struct NativeRequestControl
   std::string requestId;
   std::uint64_t attempt = 0;
   std::chrono::steady_clock::time_point deadline;
+  // Thread-safe request-owner predicate: preparation and Core I/O publication
+  // may observe cancellation concurrently. Captured state must outlive callbacks.
   std::function<bool()> cancelled;
 
   void requireActive() const;

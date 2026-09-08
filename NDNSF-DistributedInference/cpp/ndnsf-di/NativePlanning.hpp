@@ -223,6 +223,8 @@ private:
 };
 
 std::string nativePlanningDigest(const std::string& canonical);
+// Hash owned binary sources without allocating an intermediate string.
+std::string nativePlanningDigest(const std::uint8_t* data, std::size_t size);
 
 } // namespace ndnsf::di
 

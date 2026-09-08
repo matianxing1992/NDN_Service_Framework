@@ -183,8 +183,14 @@ void NativePlacementProposal::validate(const NativePlanningSnapshot& snapshot,
 
 std::string nativePlanningDigest(const std::string& canonical)
 {
+  return nativePlanningDigest(reinterpret_cast<const std::uint8_t*>(canonical.data()), canonical.size());
+}
+
+std::string nativePlanningDigest(const std::uint8_t* data, std::size_t size)
+{
+  if (!data && size) throw std::invalid_argument("native digest source is null");
   unsigned char digest[SHA256_DIGEST_LENGTH];
-  SHA256(reinterpret_cast<const unsigned char*>(canonical.data()), canonical.size(), digest);
+  SHA256(data, size, digest);
   std::ostringstream out;
   out << "sha256:" << std::hex;
   for (const auto value : digest) {
