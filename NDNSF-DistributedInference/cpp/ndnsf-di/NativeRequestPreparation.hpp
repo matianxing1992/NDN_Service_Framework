@@ -2,6 +2,7 @@
 #define NDNSF_DI_NATIVE_REQUEST_PREPARATION_HPP
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
 
 #include <chrono>
 #include <cstdint>
@@ -26,6 +27,7 @@ struct NativePreparedInput
   std::string adapterId;
   std::string adapterVersion;
   bool encoded = false;
+  NativeModelDescriptor expectedModel;
 
   void validate() const;
 };
@@ -36,6 +38,7 @@ struct NativeInspectedModel
   NativeGraphSnapshot graph;
   std::string canonicalSourceName;
   std::string canonicalSourceDigest;
+  std::string modelManifestDigest;
 
   void validate() const;
 };
@@ -69,13 +72,16 @@ struct NativeRequestControl
 class NativeRequestPreparation
 {
 public:
-  using InspectPort = std::function<NativeGraphSnapshot(
+  // Native catalog/inspection owner returns actual authenticated source metadata.
+  using InspectPort = std::function<NativeInspectedModel(
     const NativePreparedInput&, const NativeModelDescriptor&)>;
   using ArtifactPort = std::function<NativeArtifactBinding(
     const NativeInspectedModel&, const NativePlacementProposal&, const NativeRequestControl&)>;
+  using RolePort = std::function<std::vector<NativeSelectionRoleV3>(
+    const NativeInspectedModel&, const NativeSplitCandidate&, const NativeRequestControl&)>;
 
   explicit NativeRequestPreparation(std::shared_ptr<const NativeAdapterRegistry> adapters,
-                                    InspectPort inspect = {}, ArtifactPort artifacts = {});
+                                    InspectPort inspect = {}, ArtifactPort artifacts = {}, RolePort roles = {});
 
   NativePreparedInput prepareInput(const NativeModelDescriptor& model,
                                    std::string taskName,
@@ -87,6 +93,9 @@ public:
 
   NativeInspectedModel inspectModel(const NativePreparedInput& input) const;
 
+  std::vector<NativeSelectionRoleV3> prepareRoles(const NativeInspectedModel& model,
+    const NativeSplitCandidate& candidate, const NativeRequestControl& control) const;
+
   NativeArtifactBinding ensureArtifacts(const NativeInspectedModel& model,
                                         const NativePlacementProposal& proposal,
                                         const NativeRequestControl& control) const;
@@ -95,6 +104,7 @@ private:
   std::shared_ptr<const NativeAdapterRegistry> m_adapters;
   InspectPort m_inspect;
   ArtifactPort m_artifacts;
+  RolePort m_roles;
 };
 
 } // namespace ndnsf::di

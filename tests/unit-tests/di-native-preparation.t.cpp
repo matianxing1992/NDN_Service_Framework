@@ -8,6 +8,7 @@
 // the orchestration layer must never accept an inconsistent binding from.
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp"
+#include "tests/fixtures/spec182/native-sealing-fixture.hpp"
 
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/property_tree/ptree.hpp>
@@ -79,6 +80,12 @@ NativeGraphSnapshot graphFor(const NativeModelDescriptor& model)
   graph.nodes = {{"node", "Identity", 0}};
   graph.topologicalOrder = {"node"};
   return graph;
+}
+
+NativeInspectedModel inspectedFor(const NativeModelDescriptor& model)
+{
+  return {model, graphFor(model), "/catalog/authenticated/model/42",
+          digest("catalog-source-bytes"), digest("manifest")};
 }
 
 NativePlacementProposal proposalFor(const NativeRequestControl& control,
@@ -170,7 +177,8 @@ NativeModelDescriptor modelDescriptor(const TaskFixtureAdapter& adapter,
                                       const std::string& graphLabel = "graph")
 {
   return {modelName, digest("model"), digest(semanticsLabel), digest(graphLabel),
-          "onnx", "float32", adapter.adapterId(), adapter.adapterVersion()};
+          adapter.inspect(modelName, digest("model")).modelFormat,
+          adapter.inspect(modelName, digest("model")).precision, adapter.adapterId(), adapter.adapterVersion()};
 }
 
 // Adapter that answers under one registered id but inspects as another model
@@ -194,6 +202,83 @@ public:
 
 BOOST_AUTO_TEST_SUITE(Spec182Preparation)
 
+BOOST_AUTO_TEST_CASE(InspectionPreservesResolvedSourceAndRejectsForeignModel)
+{
+  auto adapter = std::make_shared<TaskFixtureAdapter>("fixture", "1", "onnx", "float32",
+    "semantics", "graph", identityBytes, identityBytes);
+  auto registry = std::make_shared<NativeAdapterRegistry>();
+  registry->registerAdapter(adapter); registry->freeze();
+  const auto model = modelDescriptor(*adapter);
+  auto resolved = inspectedFor(model);
+  NativeRequestPreparation preparation(registry,
+    [&](const NativePreparedInput&, const NativeModelDescriptor&) { return resolved; });
+  const auto input = preparation.prepareInput(model, "task", digest("schema"), digest("schema"),
+    {1}, {}, deadline(1000));
+  auto result = preparation.inspectModel(input);
+  BOOST_CHECK_EQUAL(result.canonicalSourceName, "/catalog/authenticated/model/42");
+  BOOST_CHECK_EQUAL(result.canonicalSourceDigest, digest("catalog-source-bytes"));
+  BOOST_CHECK_EQUAL(result.modelManifestDigest, digest("manifest"));
+  for (int mutation = 0; mutation < 5; ++mutation) {
+    resolved = inspectedFor(model);
+    if (mutation == 0) resolved.descriptor.contentDigest = digest("foreign");
+    if (mutation == 1) resolved.descriptor.semanticsDigest = digest("foreign");
+    if (mutation == 2) resolved.descriptor.modelName = "foreign";
+    if (mutation == 3) resolved.canonicalSourceName = "not-an-ndn-name";
+    if (mutation == 4) resolved.modelManifestDigest.clear();
+    BOOST_CHECK_THROW(preparation.inspectModel(input), std::exception);
+  }
+}
+
+BOOST_AUTO_TEST_CASE(CertifiedRolesBindManifestRankArtifactAndResourceBudget)
+{
+  auto adapter = std::make_shared<TaskFixtureAdapter>("fixture", "1", "onnx", "float32",
+    "semantics", "graph", identityBytes, identityBytes);
+  auto registry = std::make_shared<NativeAdapterRegistry>();
+  registry->registerAdapter(adapter); registry->freeze();
+  const auto model = inspectedFor(modelDescriptor(*adapter));
+  NativeSplitCandidate candidate;
+  candidate.model = model.descriptor; candidate.graphDigest = model.graph.graphDigest;
+  candidate.splitter = {"fixture", "1", digest("strategy")};
+  candidate.candidateDigest = digest("candidate");
+  candidate.executionPlan.roles = {"role"};
+  candidate.fragmentsByRole = {{"role", digest("fragment")}};
+  candidate.artifactsByRole = {{"role", {digest("artifact")}}};
+  candidate.tensorDegreesByRole = {{"role", 1}};
+  candidate.requirementsByRole = {{"role", {{"onnxruntime"}, 1024 * 1024, 0, 0, 0, 1.0}}};
+  NativePlanSealingInputs fixtureInputs;
+  fixtureInputs.artifacts.artifactDigestByRole = {{"role", digest("artifact")}};
+  fixtureInputs.artifacts.manifestDigest = model.modelManifestDigest;
+  fixtureInputs.artifacts.graphDigest = model.graph.graphDigest;
+  fixtureInputs.artifacts.recipeDigest = digest("recipe");
+  fixtureInputs.protectionEpoch = "protected";
+  fixture::assemblies(fixtureInputs);
+  auto role = fixtureInputs.assemblyByRole.at("role");
+  role.adapterId = adapter->adapterId(); role.requiredDeviceMemoryMb = 1;
+  std::vector<NativeSelectionRoleV3> returned{role};
+  bool cancelled = false;
+  NativeRequestControl control{"/request", 1, deadline(1000), [&] { return cancelled; }};
+  NativeRequestPreparation preparation(registry, {}, {},
+    [&](const NativeInspectedModel&, const NativeSplitCandidate&, const NativeRequestControl&) { return returned; });
+  BOOST_REQUIRE_EQUAL(preparation.prepareRoles(model, candidate, control).size(), 1);
+  for (int mutation = 0; mutation < 8; ++mutation) {
+    returned = {role};
+    if (mutation == 0) returned[0].modelManifestDigest = digest("foreign");
+    if (mutation == 1) returned[0].artifactDigest = digest("foreign");
+    if (mutation == 2) returned[0].rank = 1;
+    if (mutation == 3) returned[0].adapterId = "foreign";
+    if (mutation == 4) returned[0].requiredDeviceMemoryMb = 0;
+    if (mutation == 5) returned[0].nodeIndices = {100};
+    if (mutation == 6) returned.push_back(role);
+    if (mutation == 7) returned.clear();
+    BOOST_CHECK_THROW(preparation.prepareRoles(model, candidate, control), std::runtime_error);
+  }
+  returned = {role}; cancelled = true;
+  BOOST_CHECK_THROW(preparation.prepareRoles(model, candidate, control), std::runtime_error);
+  cancelled = false;
+  NativeRequestPreparation missing(registry);
+  BOOST_CHECK_THROW(missing.prepareRoles(model, candidate, control), std::runtime_error);
+}
+
 // Existing case (T008-A manifest existingCases[0]): the fixture adapter and
 // graph port are bound into one preparation that encodes, inspects and then
 // ensures an artifact binding covering the placed plan roles.
@@ -210,7 +295,7 @@ BOOST_AUTO_TEST_CASE(NativePreparationBindsAdapterAndGraphPort)
   NativeRequestPreparation preparation(
     registry,
     [] (const NativePreparedInput&, const NativeModelDescriptor& model) {
-      return graphFor(model);
+      return inspectedFor(model);
     },
     [&artifactCalls] (const NativeInspectedModel&, const NativePlacementProposal&,
                       const NativeRequestControl&) {
@@ -229,7 +314,7 @@ BOOST_AUTO_TEST_CASE(NativePreparationBindsAdapterAndGraphPort)
   const auto inspected = preparation.inspectModel(input);
   BOOST_CHECK_EQUAL(inspected.graph.nodes.size(), 1u);
   BOOST_CHECK_EQUAL(inspected.canonicalSourceName,
-                    std::string("/NDNSF/DI/MODEL/") + digest("model"));
+                    "/catalog/authenticated/model/42");
 
   NativeRequestControl control{"/request/1", 1, deadline(1000), {}};
   const auto binding = preparation.ensureArtifacts(
@@ -254,7 +339,7 @@ BOOST_AUTO_TEST_CASE(QwenPipelineBytesIdentityMappingThroughPreparation)
   NativeRequestPreparation preparation(
     registry,
     [] (const NativePreparedInput&, const NativeModelDescriptor& model) {
-      return graphFor(model);
+      return inspectedFor(model);
     },
     {});
 
@@ -289,7 +374,7 @@ BOOST_AUTO_TEST_CASE(QwenStageRolesCoveredByCanonicalBinding)
   NativeRequestPreparation preparation(
     registry,
     [] (const NativePreparedInput&, const NativeModelDescriptor& model) {
-      return graphFor(model);
+      return inspectedFor(model);
     },
     [&roles] (const NativeInspectedModel&, const NativePlacementProposal&,
               const NativeRequestControl&) {
@@ -365,7 +450,7 @@ BOOST_AUTO_TEST_CASE(PreparationRejectsForeignRequestOrModelProposal)
   NativeRequestPreparation preparation(
     registry,
     [] (const NativePreparedInput&, const NativeModelDescriptor& model) {
-      return graphFor(model);
+      return inspectedFor(model);
     },
     [&artifactCalls] (const NativeInspectedModel&, const NativePlacementProposal&,
                       const NativeRequestControl&) {
@@ -416,7 +501,7 @@ BOOST_AUTO_TEST_CASE(PreparationRejectsEmptyOrDuplicatePlanRoles)
   NativeRequestPreparation preparation(
     registry,
     [] (const NativePreparedInput&, const NativeModelDescriptor& model) {
-      return graphFor(model);
+      return inspectedFor(model);
     },
     [&artifactCalls] (const NativeInspectedModel&, const NativePlacementProposal&,
                       const NativeRequestControl&) {
@@ -455,7 +540,7 @@ BOOST_AUTO_TEST_CASE(PreparationRejectsBindingRoleGapExtraForeignRoles)
   NativeRequestPreparation preparation(
     registry,
     [] (const NativePreparedInput&, const NativeModelDescriptor& model) {
-      return graphFor(model);
+      return inspectedFor(model);
     },
     [] (const NativeInspectedModel&, const NativePlacementProposal& proposal,
         const NativeRequestControl&) {
@@ -519,7 +604,7 @@ BOOST_AUTO_TEST_CASE(PreparationRejectsNonNdnBindingSourceNames)
   NativeRequestPreparation preparation(
     registry,
     [] (const NativePreparedInput&, const NativeModelDescriptor& model) {
-      return graphFor(model);
+      return inspectedFor(model);
     },
     [] (const NativeInspectedModel&, const NativePlacementProposal&,
         const NativeRequestControl&) {
@@ -563,7 +648,7 @@ BOOST_AUTO_TEST_CASE(PreparationRejectsMalformedBindingDigests)
   NativeRequestPreparation preparation(
     registry,
     [] (const NativePreparedInput&, const NativeModelDescriptor& model) {
-      return graphFor(model);
+      return inspectedFor(model);
     },
     {});
   const auto input = preparation.prepareInput(
@@ -617,7 +702,7 @@ BOOST_AUTO_TEST_CASE(PreparationFailsClosedWithoutConfiguredPorts)
   NativeRequestPreparation graphOnly(
     registry,
     [] (const NativePreparedInput&, const NativeModelDescriptor& model) {
-      return graphFor(model);
+      return inspectedFor(model);
     },
     {});
   const auto inspected = graphOnly.inspectModel(input);
@@ -676,7 +761,7 @@ BOOST_AUTO_TEST_CASE(PreparationCleanupBoundaryReleasesRequestState)
   NativeRequestPreparation preparation(
     registry,
     [] (const NativePreparedInput&, const NativeModelDescriptor& model) {
-      return graphFor(model);
+      return inspectedFor(model);
     },
     [&artifactCalls, &cancelled, &cancelAtPort] (const NativeInspectedModel&,
                                                  const NativePlacementProposal&,
