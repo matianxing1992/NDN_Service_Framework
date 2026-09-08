@@ -1,5 +1,31 @@
 # Repo Python-only base repack
 
+## Protected ACK follow-up, 2026-09-08
+
+Source revision06f34412 seals the complete protected ACK/selector fix into
+`repo-protected-source` (base117 files) and `app-source-repo-protected`.
+The parent is the verified ccdd4ac0 SIF and `repo-order-source-r2` seal.
+The guarded renderer accepts exactly one changed Python file and unchanged
+dependency archives; no native build is requested. Source preparation retains
+`--derive-ndn-svs-version` and the pinned system-Boost-compatible dependencies.
+
+The owned script `results/yolo-layered-20260908/preflight/repack-protected-repo.sh`
+extracts the parent through a read-only loop at its actual partition offset45056
+(different from the older d403 image). Extraction completes; the loop detaches.
+Actual writable-sandbox apply reports PASS/PYTHON_REPACK_ONLY with all6 native
+artifacts unchanged. Compression/build is still in progress under a1800s
+timeout, using at most2 processors and512MiB mksquashfs memory.
+Do not restart merely because a polling call yields. New SIF, independent
+packaged-image check and external-app composition are not yet verified.
+
+Artifacts: `repo-protected-repack`, `repo-protected-rootfs`, prospective
+`base-runtime-repo-protected.sif`; logs `protected-base-extract.log`,
+`protected-base-apply.log`, `protected-base-pack.log` under the preflight root.
+The independent `check-protected-base.py` will compare installed Repo Python
+against the new source seal, all6 native rows against ccdd, and the retained
+NCCL digest. Only after build termination and these checks may the app cache
+from `app-repo-order` advance; subsequent app/plane/CPU evidence stays pending.
+
 Status: BASE_AND_APP_CONTENT_VERIFIED. Full runtime qualification remains open.
 
 The Repo ordering fix is the only changed row among117 original base workspace

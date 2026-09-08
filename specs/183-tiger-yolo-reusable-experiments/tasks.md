@@ -20,6 +20,7 @@
 | T009.acceptance：开发入口请求结果验收 | IMPLEMENTED | 使用生产graph-reference/result校验后才记录accepted；保留结果目录；3项定向检查通过，不代表实际推理通过 |
 | T009.repo-ack：Repo保护模式ACK适配 | SOURCE_VERIFIED | 保护模式改为能力ACK、保留Selection后操作/身份校验；最小4进程诊断STATUS首次请求READY、User0、全清理；显式源码挂载，未封装或验收完整YOLO |
 | T009.repo-select：隐藏输入下对象定位 | IMPLEMENTED | manifest在总deadline内逐一尝试未知位置Provider，响应确认对象；delete使用确认副本；53项HA检查分两次完成（52通过、1新断言修正后通过）；待完整新组合运行 |
+| T011.protected-base：封装完整Repo ACK修复 | IN_PROGRESS | 06f34412源码封存仅1个Python文件变化；解包/实际apply通过，6原生产物不变；新SIF正在压缩，独立验证与app组合待完成 |
 | T011.base-python：封装修正后的Repo库 | VERIFIED_COMPOSITION | [重封装](evidence/base-python-repack.md)：新SIF ccdd4ac0独立验证；6原生产物不变；app89c49f7a全部159文件不变，configure7.409s/Waf1.036s无C++编译；组合闭包/入口通过，完整运行待验 |
 
 用户指定的 [C++ NDN/SIF 两节点小例子](evidence/cpp-ndn-smoke.md)已实跑通过：
