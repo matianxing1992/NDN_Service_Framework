@@ -181,6 +181,13 @@ finish or stop safely and use `-j2` for the next invocation. This is a host
 policy, not a measured speedup guarantee; other hosts and container builders
 must be checked separately.
 
+For a change confined to `NDNSF-DistributedInference/`, reuse the verified Waf
+tree and select the affected DI target(s) and focused tests. Do not rebuild
+Core, Repo, or UAV targets or create a fresh whole-tree build solely because a
+batch identifier changed. Expand the rebuild to transitive consumers only for
+shared-header, generated-input, build-configuration, ABI, or dependency changes,
+and record the selected boundary in the active Spec evidence.
+
 If you install manually and also need Python APIs, install the Python packages
 after the C++ build:
 

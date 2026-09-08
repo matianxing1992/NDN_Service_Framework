@@ -11,6 +11,9 @@ checkpoint/transcript的`ensure_ascii=False`不一致；中文service wire先被
 修复后`Spec182Conversation*`按`-j4`增量检查，9 cases/exit0；该结果只覆盖会话组件focused边界。
 随后共享回归`Spec182CanonicalJson*`、`Spec182Conversation*`、`Spec182EpochText*`、
 `Spec182StreamAcceptance*`、`Spec182Sampling*`共25 cases按`-j4`运行exit0。
+移除未使用的会话 ready 常量后按同一 system toolchain/`-j4` 重建 DI shared library exit0，
+再运行共享25 cases与`Spec182ProviderHost*` 6 cases均exit0；这些仍是本地 focused/regression
+结果，不代表真实两轮跨进程或 T016 qualification。
 
 ## 2026-09-08 — Spec182 progress audit checkpoint hook
 

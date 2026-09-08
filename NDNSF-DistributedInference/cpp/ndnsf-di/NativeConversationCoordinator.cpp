@@ -272,9 +272,13 @@ NativeConversationRecord NativeConversationCoordinator::commitTurn(
     guard.lock();
     auto& current = s.find(turn);
     s.parent(current.turn);
+    guard.unlock();
     nativeReadConversationCheckpoint(record.checkpoint.wire, s.config.authenticationKeys, s.config.nowMs());
     const auto publish = [&] {
       require(!published, "conversation commit gate called twice");
+      std::lock_guard<std::mutex> publishGuard(s.mutex);
+      auto& current = s.find(turn);
+      s.parent(current.turn);
       if (s.config.journal) s.config.journal->appendConversation(record.checkpoint.wire,
         record.checkpoint.transcript, s.config.nowMs(), record.checkpoint.nativeInitialPromptTokenCount);
       const auto found = s.records.find(record.checkpoint.conversationId);
@@ -284,6 +288,7 @@ NativeConversationRecord NativeConversationCoordinator::commitTurn(
       published = true;
     };
     if (commitGate) commitGate(publish); else publish();
+    guard.lock();
     require(published, "conversation commit gate did not publish");
     guard.unlock();
     if (finalize) { try { finalize(); } catch (...) { /* Retention bounds lost FINALIZE. */ } }

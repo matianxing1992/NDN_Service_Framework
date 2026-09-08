@@ -7,12 +7,14 @@
 #include "ndn-service-framework/ServiceUser.hpp"
 
 #include <atomic>
+#include <algorithm>
 #include <chrono>
 #include <condition_variable>
 #include <deque>
 #include <limits>
 #include <map>
 #include <mutex>
+#include <set>
 #include <thread>
 #include <utility>
 #include <openssl/rand.h>
@@ -30,6 +32,11 @@ std::atomic<std::uint64_t> NEXT_REQUEST_ID{1};
 // happens it records DELIVERY_OVERFLOW and drops the event instead of
 // fabricating a business result.
 constexpr std::size_t kObservedEventCapacity = 64;
+constexpr char kConversationStateScope[] = "ndnsf-di-conversation-state-v1";
+constexpr char kConversationReceiptTopic[] = "/ndnsf-di/conversation/receipt";
+constexpr char kConversationCommitTopic[] = "/ndnsf-di/conversation/commit";
+constexpr char kConversationRollbackTopic[] = "/ndnsf-di/conversation/rollback";
+constexpr char kConversationControlTopic[] = "/ndnsf-di/conversation/control";
 
 struct ObserverEntry
 {
@@ -41,6 +48,79 @@ std::function<std::chrono::steady_clock::time_point()>
 defaultClock()
 {
   return [] { return std::chrono::steady_clock::now(); };
+}
+
+ProviderConversationStateReceiptV1
+parseConversationReceipt(const NativeJson& value)
+{
+  static const std::set<std::string> fields = {
+    "adapterDigest", "cacheEpoch", "conversationId", "expiresAtMs",
+    "graphSemanticDigest", "layoutDigest", "modelDigest",
+    "originGenerationId", "originRequestId", "parentContextEpoch",
+    "planRoleMapDigest", "positionDigest", "prefixDigest", "prefixTokenCount",
+    "providerBootId", "providerIdentity", "receiptDigest", "requesterIdentity",
+    "roleName", "roleSplitDigest", "schema", "securityDomainDigest",
+    "serviceName", "signature", "stateComponentDigests", "stateSchemaDigest",
+    "successorContextEpoch",
+  };
+  if (!value.is_object() || value.value("schema", std::string{}) !=
+        "ndnsf-di-provider-conversation-receipt-v1")
+    throw std::invalid_argument("conversation receipt schema mismatch");
+  std::set<std::string> seen;
+  for (const auto& item : value.items()) seen.insert(item.key());
+  if (seen != fields) throw std::invalid_argument("conversation receipt field set mismatch");
+  ProviderConversationStateReceiptV1 result;
+  result.conversationId = value.at("conversationId").get<std::string>();
+  result.parentContextEpoch = value.at("parentContextEpoch").get<std::uint64_t>();
+  result.successorContextEpoch = value.at("successorContextEpoch").get<std::uint64_t>();
+  result.originRequestId = value.at("originRequestId").get<std::string>();
+  result.originGenerationId = value.at("originGenerationId").get<std::string>();
+  result.serviceName = value.at("serviceName").get<std::string>();
+  result.requesterIdentity = value.at("requesterIdentity").get<std::string>();
+  result.securityDomainDigest = value.at("securityDomainDigest").get<std::string>();
+  result.modelDigest = value.at("modelDigest").get<std::string>();
+  result.graphSemanticDigest = value.at("graphSemanticDigest").get<std::string>();
+  result.adapterDigest = value.at("adapterDigest").get<std::string>();
+  result.roleName = value.at("roleName").get<std::string>();
+  result.roleSplitDigest = value.at("roleSplitDigest").get<std::string>();
+  result.layoutDigest = value.at("layoutDigest").get<std::string>();
+  result.planRoleMapDigest = value.at("planRoleMapDigest").get<std::string>();
+  result.providerIdentity = value.at("providerIdentity").get<std::string>();
+  result.providerBootId = value.at("providerBootId").get<std::string>();
+  result.cacheEpoch = value.at("cacheEpoch").get<std::uint64_t>();
+  result.prefixDigest = value.at("prefixDigest").get<std::string>();
+  result.prefixTokenCount = value.at("prefixTokenCount").get<std::uint32_t>();
+  result.positionDigest = value.at("positionDigest").get<std::string>();
+  result.stateSchemaDigest = value.at("stateSchemaDigest").get<std::string>();
+  result.stateComponentDigests = value.at("stateComponentDigests").get<std::vector<std::string>>();
+  result.expiresAtMs = value.at("expiresAtMs").get<std::uint64_t>();
+  result.validate();
+  if (value.at("receiptDigest") != result.computedDigest() ||
+      !value.at("signature").is_string() || !value.at("signature").get<std::string>().empty())
+    throw std::invalid_argument("conversation receipt digest or signature field mismatch");
+  return result;
+}
+
+NativeJson
+conversationControlJson(const char* action,
+                        const NativeConversationTurn& turn,
+                        const ProviderConversationStateReceiptV1& receipt,
+                        const std::string& checkpointDigest,
+                        std::uint64_t expiresAtMs)
+{
+  return NativeJson{
+    {"schema", "ndnsf-di-conversation-promotion-control-v1"},
+    {"action", action},
+    {"conversationId", turn.parent.conversationId},
+    {"parentContextEpoch", receipt.parentContextEpoch},
+    {"successorContextEpoch", receipt.successorContextEpoch},
+    {"serviceName", turn.parent.serviceName},
+    {"planRoleMapDigest", turn.parent.planRoleMapDigest},
+    {"roleName", receipt.roleName},
+    {"receiptDigest", receipt.computedDigest()},
+    {"checkpointDigest", checkpointDigest},
+    {"expiresAtMs", expiresAtMs},
+  };
 }
 
 } // namespace
@@ -205,6 +285,9 @@ struct NativeInferenceHandle::Operation
   std::shared_ptr<NativeConversationCoordinator> conversations;
   std::optional<NativeConversationTurn> conversationTurn;
   bool conversationCommitted = false;
+  bool conversationTransactionActive = false;
+  bool conversationCleanupDeferred = false;
+  bool conversationCancelDeferred = false;
   bool coreActive = false;
   mutable std::mutex mutex;
   std::condition_variable condition;
@@ -291,13 +374,16 @@ struct NativeInferenceHandle::Operation
     auto text = acceptedText + event.at("textDelta").get<std::string>();
     if (text.size() > (16U << 20)) reject("generation text exceeds output bound");
     // Prepare every allocation before committing any accepted state.
+    // Advance the coordinator before publishing the process-local prefix.
+    // If the turn was concurrently aborted/replaced, no half-accepted token
+    // may remain in the requester operation.
+    if (conversationTurn && conversations) {
+      conversations->acceptTokenPrefix(*conversationTurn, tokens);
+    }
     auto terminalHint = hint;
     acceptedTokenIds.swap(tokens);
     acceptedText.swap(text);
     acceptedTerminalHint.swap(terminalHint);
-    if (conversationTurn && conversations) {
-      conversations->acceptTokenPrefix(*conversationTurn, acceptedTokenIds);
-    }
     return true;
   }
 
@@ -380,6 +466,7 @@ markTerminal(const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
   std::shared_ptr<NativeConversationCoordinator> conversations;
   std::optional<NativeConversationTurn> conversationTurn;
   bool conversationCommitted = false;
+  bool deferConversationCleanup = false;
   {
     std::lock_guard<std::mutex> lock(operation->mutex);
     if (operation->status != NativeRequestStatus::Pending ||
@@ -399,6 +486,11 @@ markTerminal(const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
     conversations = operation->conversations;
     conversationTurn = operation->conversationTurn;
     conversationCommitted = operation->conversationCommitted;
+    deferConversationCleanup = operation->conversationTransactionActive;
+    if (deferConversationCleanup) {
+      operation->conversationCleanupDeferred = true;
+      if (cancelCore) operation->conversationCancelDeferred = true;
+    }
     if (operation->planned) {
       for (const auto& scope : operation->planned->corePlan.keyScopes) releaseScopes.push_back(scope.name);
     }
@@ -419,14 +511,17 @@ markTerminal(const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
       // A terminal request must not be resurrected by an abort-side failure.
     }
   }
-  if (cancelCore) {
+  if (cancelCore && !deferConversationCleanup) {
     const auto user = operation->user;
     const auto id = ndn::Name(operation->coreRequestId);
-    user->postToIo([user, id, scopes = std::move(releaseScopes)] {
+    user->postToIo([user, id, scopes = std::move(releaseScopes), deferConversationCleanup] {
       user->CancelCollaboration(id);
-      // Core may already have consumed the pending call before its terminal
-      // callback. Release retained per-scope data independently of that map.
-      for (const auto& scope : scopes) user->clearVerifiedCollaborationData(id, scope);
+      // A conversation commit may still need the request-scope key for
+      // ROLLBACK/FINALIZE. The transaction owner clears it after its callback
+      // leaves the coordinator; ordinary terminal paths clear immediately.
+      if (!deferConversationCleanup) {
+        for (const auto& scope : scopes) user->clearVerifiedCollaborationData(id, scope);
+      }
     });
   }
   return true;
@@ -502,6 +597,319 @@ void enqueueOperation(const std::shared_ptr<NativeInferenceHandle::Operation>& o
   }
 }
 
+int conversationWaitBudgetMs(
+  const std::shared_ptr<NativeInferenceHandle::Operation>& operation)
+{
+  std::chrono::steady_clock::time_point deadline;
+  {
+    std::lock_guard<std::mutex> lock(operation->mutex);
+    deadline = operation->deadline;
+  }
+  const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+    deadline - std::chrono::steady_clock::now()).count();
+  if (remaining <= 0) {
+    throw NativeDiError("NATIVE_REQUEST_TIMEOUT", "conversation", "receipt",
+      "conversation transaction exceeded the request deadline", operation->requestId,
+      operation->attempt);
+  }
+  return static_cast<int>(std::min<std::int64_t>(remaining,
+    static_cast<std::int64_t>(std::numeric_limits<int>::max())));
+}
+
+void finishConversationTransaction(
+  const std::shared_ptr<NativeInferenceHandle::Operation>& operation) noexcept
+{
+  std::vector<std::string> scopes;
+  bool clearScopes = false;
+  bool cancelCore = false;
+  {
+    std::lock_guard<std::mutex> lock(operation->mutex);
+    if (!operation->conversationTransactionActive) return;
+    operation->conversationTransactionActive = false;
+    clearScopes = operation->conversationCleanupDeferred;
+    operation->conversationCleanupDeferred = false;
+    cancelCore = operation->conversationCancelDeferred;
+    operation->conversationCancelDeferred = false;
+    if (clearScopes && operation->planned) {
+      for (const auto& scope : operation->planned->corePlan.keyScopes)
+        scopes.push_back(scope.name);
+    }
+  }
+  if (!clearScopes && !cancelCore) return;
+  try {
+    const auto user = operation->user;
+    const auto id = ndn::Name(operation->coreRequestId);
+    user->postToIo([user, id, scopes = std::move(scopes), cancelCore] {
+      if (cancelCore) user->CancelCollaboration(id);
+      for (const auto& scope : scopes) user->clearVerifiedCollaborationData(id, scope);
+    });
+  }
+  catch (...) {
+    // The terminal outcome is already fenced. A failed asynchronous cleanup
+    // remains observable through the request-scope retention bound.
+  }
+}
+
+struct ConversationTransactionGuard
+{
+  std::shared_ptr<NativeInferenceHandle::Operation> operation;
+
+  ~ConversationTransactionGuard()
+  {
+    finishConversationTransaction(operation);
+  }
+};
+
+std::vector<ProviderConversationStateReceiptV1>
+collectConversationReceipts(
+  const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
+  const NativeConversationTurn& turn,
+  const NativePlannedRequest& planned)
+{
+  const std::set<std::string> expectedRoles(turn.parent.expectedRoles.begin(),
+                                             turn.parent.expectedRoles.end());
+  if (expectedRoles.empty())
+    throw NativeDiError("NATIVE_CONVERSATION_RECEIPTS_INCOMPLETE", "conversation", "receipt",
+      "conversation turn has no expected Provider roles", operation->requestId, turn.attempt);
+  const auto records = operation->user->waitForVerifiedCollaborationData(
+    ndn::Name(operation->coreRequestId), kConversationStateScope,
+    ndn::Name(kConversationReceiptTopic), expectedRoles.size(),
+    conversationWaitBudgetMs(operation), true);
+  if (records.size() != expectedRoles.size())
+    throw NativeDiError("NATIVE_CONVERSATION_RECEIPTS_INCOMPLETE", "conversation", "receipt",
+      "authenticated conversation receipt set is incomplete", operation->requestId, turn.attempt);
+
+  std::vector<ProviderConversationStateReceiptV1> receipts;
+  std::set<std::string> seenRoles;
+  for (const auto& record : records) {
+    if (record.requestId != ndn::Name(operation->coreRequestId) ||
+        record.keyScope != kConversationStateScope ||
+        !ndn::Name(kConversationReceiptTopic).isPrefixOf(record.topic) ||
+        record.producerRole.empty()) {
+      throw NativeDiError("NATIVE_CONVERSATION_RECEIPT_BINDING", "conversation", "receipt",
+        "conversation receipt transport binding mismatch", operation->requestId, turn.attempt);
+    }
+    ProviderConversationStateReceiptV1 receipt;
+    try {
+      receipt = parseConversationReceipt(nativeParseJson(
+        std::string(record.payload.begin(), record.payload.end())));
+    }
+    catch (const std::exception&) {
+      throw NativeDiError("NATIVE_CONVERSATION_RECEIPT_INVALID", "conversation", "receipt",
+        "authenticated conversation receipt is malformed", operation->requestId, turn.attempt);
+    }
+    const auto assigned = planned.sealed.core.assignment.providerByRole.find(receipt.roleName);
+    if (assigned == planned.sealed.core.assignment.providerByRole.end() ||
+        !seenRoles.insert(receipt.roleName).second ||
+        expectedRoles.count(receipt.roleName) == 0 ||
+        record.producer != ndn::Name(receipt.providerIdentity) ||
+        record.producerRole != receipt.roleName ||
+        receipt.conversationId != turn.parent.conversationId ||
+        receipt.parentContextEpoch != turn.parent.parentContextEpoch ||
+        receipt.successorContextEpoch != turn.successorContextEpoch ||
+        receipt.serviceName != turn.parent.serviceName ||
+        receipt.planRoleMapDigest != turn.parent.planRoleMapDigest ||
+        receipt.originRequestId != turn.executionRequestId ||
+        receipt.originGenerationId != turn.parent.generationId ||
+        receipt.requesterIdentity != operation->runtime->requesterIdentity ||
+        receipt.expiresAtMs <= static_cast<std::uint64_t>(
+          std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count()) ||
+        assigned->second != receipt.providerIdentity) {
+      throw NativeDiError("NATIVE_CONVERSATION_RECEIPT_BINDING", "conversation", "receipt",
+        "conversation receipt identity does not match the sealed placement", operation->requestId,
+        turn.attempt);
+    }
+    receipts.push_back(std::move(receipt));
+  }
+  if (seenRoles != expectedRoles)
+    throw NativeDiError("NATIVE_CONVERSATION_RECEIPTS_INCOMPLETE", "conversation", "receipt",
+      "authenticated conversation receipt roles are incomplete", operation->requestId, turn.attempt);
+  std::sort(receipts.begin(), receipts.end(),
+    [](const auto& left, const auto& right) { return left.roleName < right.roleName; });
+  return receipts;
+}
+
+void publishConversationControls(
+  const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
+  const NativeConversationTurn& turn,
+  const std::vector<ProviderConversationStateReceiptV1>& receipts,
+  const char* action,
+  const std::string& checkpointDigest,
+  std::uint64_t expiresAtMs)
+{
+  for (const auto& receipt : receipts) {
+    const auto payload = nativeCanonicalJson(conversationControlJson(
+      action, turn, receipt, checkpointDigest, expiresAtMs));
+    if (!operation->user->publishCollaborationData(
+          ndn::Name(receipt.providerIdentity), ndn::Name(operation->coreRequestId),
+          kConversationStateScope, ndn::Name(kConversationControlTopic),
+          ndn::Buffer(payload.begin(), payload.end()))) {
+      throw NativeDiError("NATIVE_CONVERSATION_CONTROL_FAILED", "conversation", "control",
+        "conversation control publication failed", operation->requestId, turn.attempt);
+    }
+  }
+}
+
+void waitConversationCommitAcks(
+  const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
+  const NativeConversationTurn& turn,
+  const std::vector<ProviderConversationStateReceiptV1>& receipts,
+  const NativePlannedRequest& planned,
+  const std::string& checkpointDigest)
+{
+  const auto records = operation->user->waitForVerifiedCollaborationData(
+    ndn::Name(operation->coreRequestId), kConversationStateScope,
+    ndn::Name(kConversationCommitTopic), receipts.size(),
+    conversationWaitBudgetMs(operation), true);
+  if (records.size() != receipts.size())
+    throw NativeDiError("NATIVE_CONVERSATION_COMMIT_ACK_INCOMPLETE", "conversation", "commit",
+      "conversation Provider commit acknowledgement set is incomplete", operation->requestId,
+      turn.attempt);
+  std::set<std::string> seen;
+  for (const auto& record : records) {
+    NativeJson value;
+    try { value = nativeParseJson(std::string(record.payload.begin(), record.payload.end())); }
+    catch (...) {
+      throw NativeDiError("NATIVE_CONVERSATION_COMMIT_ACK_INVALID", "conversation", "commit",
+        "conversation Provider commit acknowledgement is malformed", operation->requestId, turn.attempt);
+    }
+    static const std::set<std::string> fields = {
+      "schema", "requestId", "attemptEpoch", "generationId", "planDigest",
+      "conversationId", "parentContextEpoch", "successorContextEpoch", "serviceName",
+      "planRoleMapDigest", "roleName", "receiptDigest", "checkpointDigest",
+      "providerIdentity", "providerBootId", "cacheEpoch", "committed",
+    };
+    std::set<std::string> seenFields;
+    if (!value.is_object()) {
+      throw NativeDiError("NATIVE_CONVERSATION_COMMIT_ACK_INVALID", "conversation", "commit",
+        "conversation Provider commit acknowledgement is not an object", operation->requestId, turn.attempt);
+    }
+    for (const auto& item : value.items()) seenFields.insert(item.key());
+    const auto role = value.value("roleName", std::string{});
+    const auto provider = value.value("providerIdentity", std::string{});
+    const auto receipt = std::find_if(receipts.begin(), receipts.end(),
+      [&](const auto& item) { return item.roleName == role; });
+    const auto assigned = planned.sealed.core.assignment.providerByRole.find(role);
+    if (seenFields != fields || receipt == receipts.end() || assigned == planned.sealed.core.assignment.providerByRole.end() ||
+        !seen.insert(role).second || record.requestId != ndn::Name(operation->coreRequestId) ||
+        record.keyScope != kConversationStateScope || record.producer != ndn::Name(provider) ||
+        record.producerRole != role || provider != receipt->providerIdentity ||
+        value.value("schema", std::string{}) != "ndnsf-di-provider-conversation-commit-ack-v1" ||
+        value.value("requestId", std::string{}) != operation->coreRequestId ||
+        value.value("attemptEpoch", std::uint64_t{0}) != turn.attempt ||
+        value.value("generationId", std::string{}) != turn.parent.generationId ||
+        value.value("planDigest", std::string{}) != planned.sealed.planDigest ||
+        value.value("conversationId", std::string{}) != turn.parent.conversationId ||
+        value.value("parentContextEpoch", std::uint64_t{0}) != turn.parent.parentContextEpoch ||
+        value.value("successorContextEpoch", std::uint64_t{0}) != turn.successorContextEpoch ||
+        value.value("serviceName", std::string{}) != turn.parent.serviceName ||
+        value.value("planRoleMapDigest", std::string{}) != turn.parent.planRoleMapDigest ||
+        value.value("receiptDigest", std::string{}) != receipt->computedDigest() ||
+        value.value("checkpointDigest", std::string{}) != checkpointDigest ||
+        value.value("providerBootId", std::string{}) != receipt->providerBootId ||
+        value.value("cacheEpoch", std::uint64_t{0}) != receipt->cacheEpoch ||
+        value.value("committed", false) != true) {
+      throw NativeDiError("NATIVE_CONVERSATION_COMMIT_ACK_BINDING", "conversation", "commit",
+        "conversation Provider commit acknowledgement identity mismatch", operation->requestId, turn.attempt);
+    }
+  }
+  if (seen.size() != receipts.size())
+    throw NativeDiError("NATIVE_CONVERSATION_COMMIT_ACK_INCOMPLETE", "conversation", "commit",
+      "conversation Provider commit acknowledgement roles are incomplete", operation->requestId, turn.attempt);
+}
+
+void commitConversationTurn(
+  const std::shared_ptr<NativeInferenceHandle::Operation>& operation)
+{
+  NativeConversationTurn turn;
+  NativePlannedRequest planned;
+  std::vector<std::int64_t> accepted;
+  std::string generationId;
+  std::string tokenizerDigest;
+  std::string chatTemplateDigest;
+  std::string applicationMessages;
+  {
+    std::lock_guard<std::mutex> lock(operation->mutex);
+    if (!operation->conversationTurn || !operation->conversations ||
+        !operation->planned || operation->status != NativeRequestStatus::Pending)
+      throw NativeDiError("NATIVE_CONVERSATION_TURN_UNAVAILABLE", "conversation", "commit",
+        "conversation turn is unavailable for completion", operation->requestId, operation->attempt);
+    turn = *operation->conversationTurn;
+    planned = *operation->planned;
+    accepted = operation->acceptedTokenIds;
+    generationId = operation->generationId;
+    tokenizerDigest = operation->options.generation->tokenizerDigest;
+    applicationMessages.assign(operation->input.payload.begin(), operation->input.payload.end());
+    operation->conversationTransactionActive = true;
+  }
+  ConversationTransactionGuard transactionGuard{operation};
+  if (tokenizerDigest.empty()) tokenizerDigest = operation->model.semanticsDigest;
+  chatTemplateDigest = operation->model.semanticsDigest;
+  try {
+    const auto options = nativeParseJson(std::string(operation->input.options.begin(), operation->input.options.end()));
+    if (options.is_object()) {
+      chatTemplateDigest = options.value("chatTemplateDigest",
+        options.value("chat_template_digest", chatTemplateDigest));
+    }
+  }
+  catch (...) {
+    // The request envelope already authenticated options bytes; missing JSON
+    // metadata simply uses the model's pinned semantic digest.
+  }
+  const auto receipts = collectConversationReceipts(operation, turn, planned);
+  const auto committedCheckpointDigest = std::make_shared<std::string>();
+  NativeCompletedAttempt completed;
+  completed.requestId = turn.executionRequestId;
+  completed.attempt = turn.attempt;
+  completed.tokenIds = turn.parent.canonicalTokenIds;
+  completed.tokenIds.insert(completed.tokenIds.end(), accepted.begin(), accepted.end());
+  completed.complete = true;
+  completed.generationId = generationId;
+  completed.modelContractDigest = operation->model.intentDigest();
+  completed.tokenizerDigest = tokenizerDigest;
+  completed.chatTemplateDigest = chatTemplateDigest;
+  completed.applicationMessages = std::move(applicationMessages);
+  for (const auto& receipt : receipts) {
+    completed.authenticatedReceipts.push_back(nativeParseJson(receipt.toJson()));
+  }
+  completed.commitProviderState = [operation, turn, receipts, planned, committedCheckpointDigest](const std::string& checkpointDigest) {
+    *committedCheckpointDigest = checkpointDigest;
+    const auto expiresAt = std::min_element(receipts.begin(), receipts.end(),
+      [](const auto& left, const auto& right) { return left.expiresAtMs < right.expiresAtMs; })->expiresAtMs;
+    publishConversationControls(operation, turn, receipts, "COMMIT", checkpointDigest, expiresAt);
+    waitConversationCommitAcks(operation, turn, receipts, planned, checkpointDigest);
+  };
+  completed.rollbackProviderState = [operation, turn, receipts, committedCheckpointDigest] {
+    try {
+      if (committedCheckpointDigest->empty()) return;
+      const auto expiresAt = std::min_element(receipts.begin(), receipts.end(),
+        [](const auto& left, const auto& right) { return left.expiresAtMs < right.expiresAtMs; })->expiresAtMs;
+      publishConversationControls(operation, turn, receipts, "ROLLBACK", *committedCheckpointDigest, expiresAt);
+    }
+    catch (...) {}
+  };
+  completed.durableCommitGate = [operation](const std::function<void()>& publish) {
+    std::lock_guard<std::mutex> lock(operation->mutex);
+    if (operation->status != NativeRequestStatus::Pending ||
+        std::chrono::steady_clock::now() >= operation->deadline)
+      throw std::runtime_error("conversation durable commit fenced by terminal request");
+    publish();
+    operation->conversationCommitted = true;
+  };
+  completed.finalizeProviderState = [operation, turn, receipts, committedCheckpointDigest] {
+    try {
+      if (committedCheckpointDigest->empty()) return;
+      const auto expiresAt = std::min_element(receipts.begin(), receipts.end(),
+        [](const auto& left, const auto& right) { return left.expiresAtMs < right.expiresAtMs; })->expiresAtMs;
+      publishConversationControls(operation, turn, receipts, "FINALIZE", *committedCheckpointDigest, expiresAt);
+    }
+    catch (...) {}
+  };
+  const auto checkpoint = operation->conversations->prepareCheckpoint(turn, completed);
+  operation->conversations->commitTurn(turn, checkpoint);
+}
+
 void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& operation);
 
 bool beginReplacement(const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
@@ -515,6 +923,9 @@ bool beginReplacement(const std::shared_ptr<NativeInferenceHandle::Operation>& o
   NativeApplicationInput input;
   std::vector<std::string> oldScopes;
   std::string oldRequest;
+  std::optional<NativeConversationTurn> oldConversationTurn;
+  std::optional<NativeConversationTurn> replacementConversationTurn;
+  std::shared_ptr<NativeConversationCoordinator> conversations;
   {
     std::lock_guard<std::mutex> lock(operation->mutex);
     if (operation->status != NativeRequestStatus::Pending || sourceAttempt != 1 ||
@@ -528,6 +939,8 @@ bool beginReplacement(const std::shared_ptr<NativeInferenceHandle::Operation>& o
         std::chrono::steady_clock::now() + std::chrono::milliseconds(operation->options.ackTimeoutMs) >= operation->deadline)
       return false;
     oldRequest = operation->coreRequestId;
+    oldConversationTurn = operation->conversationTurn;
+    conversations = operation->conversations;
     recovery = {operation->generationId, oldRequest,
       operation->requestId + "/recovery/" + std::to_string(NEXT_REQUEST_ID.fetch_add(1)),
       operation->encodedRequest->inputManifestDigest, operation->planned->sealed.planDigest,
@@ -539,22 +952,48 @@ bool beginReplacement(const std::shared_ptr<NativeInferenceHandle::Operation>& o
   }
   auto encoded = encodeNativeRequestEnvelope(operation->model, input, *operation->requestContract,
     recovery.recoveryRequestId, 2, operation->wireDeadlineMs, recovery);
+  if (oldConversationTurn && conversations) {
+    try {
+      replacementConversationTurn = conversations->replaceAttempt(
+        *oldConversationTurn, recovery.recoveryRequestId);
+    }
+    catch (const std::exception&) {
+      throw NativeDiError("NATIVE_CONVERSATION_REPLACEMENT_FAILED", "conversation", "replacement",
+        "conversation turn replacement was rejected", operation->requestId, sourceAttempt);
+    }
+  }
+  bool installedReplacement = false;
   {
     std::lock_guard<std::mutex> lock(operation->mutex);
-    if (operation->status != NativeRequestStatus::Pending || operation->attempt != sourceAttempt ||
-        operation->replacementStarted) return false;
-    operation->options.generation->committedPrefixTokenIds = recovery.committedTokenIds;
-    operation->coreRequestId = recovery.recoveryRequestId;
-    operation->recovery = std::move(recovery);
-    operation->encodedRequest = std::move(encoded);
-    operation->replacementStarted = true;
-    operation->attempt = 2;
-    operation->phase = DiRequestPhase::New;
-    operation->planned.reset();
-    operation->coreActive = false;
-    operation->options.stream->attemptEpoch = operation->options.stream->streamEpoch = 2;
-    operation->options.stream->allowReplacement = false;
-    operation->options.stream->maxReplacements = 0;
+    if (operation->status == NativeRequestStatus::Pending && operation->attempt == sourceAttempt &&
+        !operation->replacementStarted) {
+      operation->options.generation->committedPrefixTokenIds = recovery.committedTokenIds;
+      operation->coreRequestId = recovery.recoveryRequestId;
+      operation->recovery = std::move(recovery);
+      operation->encodedRequest = std::move(encoded);
+      operation->replacementStarted = true;
+      operation->attempt = 2;
+      if (replacementConversationTurn) {
+        operation->conversationTurn = std::move(replacementConversationTurn);
+      }
+      operation->phase = DiRequestPhase::New;
+      operation->planned.reset();
+      operation->coreActive = false;
+      operation->options.stream->attemptEpoch = operation->options.stream->streamEpoch = 2;
+      operation->options.stream->allowReplacement = false;
+      operation->options.stream->maxReplacements = 0;
+      installedReplacement = true;
+    }
+  }
+  if (!installedReplacement) {
+    if (replacementConversationTurn && conversations) {
+      const NativeDiError stale(
+        "NATIVE_CONVERSATION_REPLACEMENT_CANCELLED", "conversation", "replacement",
+        "conversation replacement became terminal before installation", operation->requestId,
+        sourceAttempt);
+      conversations->abortTurn(*replacementConversationTurn, stale);
+    }
+    return false;
   }
   const auto user = operation->user;
   user->postToIo([user, oldRequest, oldScopes = std::move(oldScopes)] {
@@ -719,6 +1158,14 @@ void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& o
           if (std::chrono::steady_clock::now() >= operation->deadline)
             throw NativeDiError("NATIVE_REQUEST_TIMEOUT", "local", "stream-final",
               "request expired during stream result decoding", operation->requestId, sourceAttempt);
+          bool hasConversationTurn = false;
+          {
+            std::lock_guard<std::mutex> lock(operation->mutex);
+            hasConversationTurn = operation->conversationTurn.has_value();
+          }
+          if (hasConversationTurn) {
+            commitConversationTurn(operation);
+          }
           if (markTerminal(operation, NativeRequestStatus::Succeeded, nullptr, &result))
             publishEvent(operation, makeTerminalEvent(*operation));
         }, "stream-final");
@@ -756,8 +1203,9 @@ void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& o
 // that can no longer finish inside the request budget is refused and the
 // operation fails once with NATIVE_REQUEST_TIMEOUT.  Orchestration stages
 // (CD-013 preparation, Core BeginCollaboration, planning, commit) link into
-// this driver in T010-B; this installable-boundary build records the frozen
-// structured failure instead of claiming a synthetic success.
+// this driver when a complete NativeRequestRuntime is configured.  The
+// constructor used by compatibility/component tests has no runtime and keeps
+// the structured not-ready failure instead of claiming a synthetic success.
 void
 dispatchOperation(const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
                   const std::function<std::chrono::steady_clock::time_point()>& now)
@@ -862,20 +1310,33 @@ dispatchOperation(const std::shared_ptr<NativeInferenceHandle::Operation>& opera
     }
   }
   if (operation->options.conversation) {
-    if (!operation->conversations || !operation->options.generation ||
+    if (!operation->runtime || !operation->conversations || !operation->options.generation ||
         !operation->options.stream) {
       failOperation(operation, NativeDiError(
         "INVALID_CONVERSATION_OPTIONS", "conversation", "request",
-        "conversation requests require a native coordinator and authenticated streaming",
+        "conversation requests require a native runtime, coordinator and authenticated streaming",
         operation->requestId, operation->attempt));
       return;
     }
     try {
       auto turn = operation->conversations->beginTurn(
         *operation->options.conversation, operation->coreRequestId, operation->attempt);
-      std::lock_guard<std::mutex> lock(operation->mutex);
-      if (operation->status != NativeRequestStatus::Pending) return;
-      operation->conversationTurn = std::move(turn);
+      bool installed = false;
+      {
+        std::lock_guard<std::mutex> lock(operation->mutex);
+        if (operation->status == NativeRequestStatus::Pending) {
+          operation->conversationTurn = turn;
+          installed = true;
+        }
+      }
+      if (!installed) {
+        const NativeDiError stale(
+          "NATIVE_CONVERSATION_BEGIN_CANCELLED", "conversation", "begin",
+          "conversation turn became terminal before installation", operation->requestId,
+          operation->attempt);
+        operation->conversations->abortTurn(turn, stale);
+        return;
+      }
     }
     catch (const NativeDiError&) { throw; }
     catch (const std::exception&) {

@@ -17,7 +17,7 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 
 | Unit / Details | Status | Depends | Evidence / Remaining | Updated |
 | --- | --- | --- | --- | --- |
-| [R4-B4 Authenticated Conversation Chain](evidence/r4-b4-conversation-chain-20260908.md) | IN_PROGRESS | R4-B3; T011-C acceptance retained | CC-1/CC-2 focused C++ 9 cases PASS；CC-3A 已接入 continuation→turn→planner projection 与 conversation scope，DI library/PlanSealer 定向检查 PASS；Provider确认/回滚窗口、公开receipt/control/终态清理及真实两轮仍待完成 | 2026-09-08 |
+| [R4-B4 Authenticated Conversation Chain](evidence/r4-b4-conversation-chain-20260908.md) | IN_PROGRESS | R4-B3; T011-C acceptance retained | CC-1/CC-2 focused C++ 9 cases、CC-3A projection、CC-3B requester/provider transaction wiring 均已构建验证；25 个共享回归 cases 与 6 个 ProviderHost cases PASS。公开两轮、真实跨进程 receipt/control、T011-C/T016 资格仍未完成 | 2026-09-08 |
 | [R4-B3 Epoch Text Commit Boundary](evidence/r4-b3-epoch-text-20260908.md#final-local-result) | DONE | R4-B2; T011-B acceptance retained | terminal stable flush前移至事件接受前；真实tokenizer/epoch及stream/sampling共24 cases/411 assertions PASS，unit与实际DI库增量build PASS；父任务仍未完整验收 | 2026-09-08 |
 | [R4-B2 Native Stream Production Chain](evidence/r4-b2-stream-production-20260908.md#final-local-result) | DONE | R3-B1; R4-B1 | Local requester stream batch：7 stream/190 assertions、2 options/21、29 regression/695 PASS；2 SDK recovery wires、CLI/loader PASS；真实Provider/会话/T016仍未完成 | 2026-09-08 |
 | [R4-B1 Native Sampling Contract Repair](evidence/r4-b1-sampling-20260908.md) | DONE | R3-B1; T010-C/T011 acceptance retained | Local sampling batch：double惩罚与统一参数校验；4 cases/40 assertions、既有epoch 28 assertions PASS；增量unit与实际DI共享库构建PASS；stream/session仍待完成 | 2026-09-08 |
@@ -71,7 +71,7 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 | [T010-C Stream Acceptance and Replacement](contracts/execution-units.md#t010-c-stream-acceptance-and-replacement) | PARTIAL | T010-B | [R4-B2](evidence/r4-b2-stream-production-20260908.md#final-local-result)：client/Core回调接受/恢复/final 7 cases/190 assertions与SDK wire PASS；T010-B完整依赖及真实stream验收保留 | 2026-09-08 |
 | [T011-A Sampling Parity Repair](contracts/execution-units.md#t011-a-sampling-parity-repair) | PARTIAL | T010-C | [R4-B1](evidence/r4-b1-sampling-20260908.md)：真实epoch采样4 cases/40 assertions与独立参考PASS；T010-C及完整卡验收依赖仍未关闭 | 2026-09-08 |
 | [T011-B Stable Epoch Emission](contracts/execution-units.md#t011-b-stable-epoch-emission) | PARTIAL | T011-A | [R4-B2](evidence/r4-b2-stream-production-20260908.md#final-local-result)：paired factory接线、full-only回退移除、requester final一致性本地通过；真实epoch/三处integration验收仍待完成 | 2026-09-08 |
-| [T011-C Conversation Journal and Continuation](contracts/execution-units.md#t011-c-conversation-journal-and-continuation) | PARTIAL | T011-B | [baseline](evidence/task-progress-registry-20260907.md)；已有相关源码切片；完整卡验收未完成 | 2026-09-07 |
+| [T011-C Conversation Journal and Continuation](contracts/execution-units.md#t011-c-conversation-journal-and-continuation) | PARTIAL | T011-B | [R4-B4](evidence/r4-b4-conversation-chain-20260908.md#cc-3b-requester-provider-transaction-wiring)；C++ owner、planner projection、receipt/control、replacement/cancel cleanup 已接线并通过 25-case shared regression；真实两轮/恢复 integration 与 Provider runtime qualification 未完成 | 2026-09-08 |
 | [T012-A Native Binding Types and Lifetime](contracts/execution-units.md#t012-a-native-binding-types-and-lifetime) | PARTIAL | T011-C | [baseline](evidence/task-progress-registry-20260907.md) 保留；[descriptor binding](evidence/t003-model-descriptor-20260907.md) 暴露完整模型/adapter，源码语法编译 PASS；新 ABI extension 运行及整卡验收未完成 | 2026-09-07 |
 | [T012-B Compatible Python Facades](contracts/execution-units.md#t012-b-compatible-python-facades) | NOT_STARTED | T012-A | [baseline](evidence/task-progress-registry-20260907.md)；无本卡独立执行/验收记录；按依赖领取 | 2026-09-07 |
 | [T013-A Maintained Caller Migration](contracts/execution-units.md#t013-a-maintained-caller-migration) | NOT_STARTED | T012-B | [baseline](evidence/task-progress-registry-20260907.md)；无本卡独立执行/验收记录；按依赖领取 | 2026-09-07 |
@@ -89,15 +89,29 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 focused边界，未关闭Provider确认或公开请求链。当前主机后续构建恢复默认`-j4`。
 
 共享回归`Spec182CanonicalJson*,Spec182Conversation*,Spec182EpochText*,Spec182StreamAcceptance*,
-Spec182Sampling*`共25 cases按默认`-j4`构建并PASS；保留CC-3及公开两轮请求为PARTIAL。
+Spec182Sampling*`共25 cases按默认`-j4`构建并PASS；`Spec182ProviderHost*`另有6 cases PASS。
+保留CC-3及公开两轮请求为PARTIAL。
+
+2026-09-08 R4-B4 CC-3B requester/provider transaction wiring / **PARTIAL**：Requester 已收集
+认证 receipt，严格核对 request/scope/topic/role/provider/conversation/epoch/generation/身份/期限，
+通过现有加密 collaboration 端口按角色发布 COMMIT/ROLLBACK/FINALIZE，并等待逐角色 canonical
+commit ACK；Provider handler 已保留 COMMIT 后补偿窗口、canonical ACK 与精确 rollback/release。
+coordinator 修正 callback 锁顺序，提交期间延后清理 scope key，replacement 安装竞态和 token
+接受原子性也已收口。官方 `/home/tianxing/.codex/skills/review-agent/SKILL.md` 只读静态门
+覆盖本批完整差异；发现并修复 coordinator→operation 与 operation→coordinator 死锁、提交中
+过早清 key、replacement pending 泄漏和 coordinator/local prefix 半提交。`git diff --check`
+PASS；DI library 使用 system compiler/binutils、`-j4`构建 exit 0，定向共享回归 25 cases PASS，
+oracle `build-conversation-oracle.py --check` PASS。尚无真实两轮/跨进程 receipt/control 集成
+结果；ProviderHost 6 cases 也已通过；本批保持 PARTIAL，T011-C 不勾选。
 
 2026-09-08 Progress Audit / **PARTIAL**：按用户要求暂停新增实现。路线评估为
 CONDITIONAL PASS，不能按当前证据承诺完整目标可顺利收敛；父任务仍3/17验收，
-不换算工作量百分比。最后原生验证仍为R4-B3的24 cases/411 assertions；R4-B4
-公开会话入口未接通，新增runtime/logical prefix区分及journal metadata也未获C++验证。
+不换算工作量百分比。Progress Audit 之前的 R4-B4 入口判断已被 CC-3A/CC-3B 更新；公开
+会话仍未完成真实跨进程资格，新增 runtime/logical prefix 区分及 journal metadata 仅有
+本地定向验证。
 见[本轮审计](evidence/r4-b4-conversation-chain-20260908.md#progress-and-feasibility-audit)。
-结构检查与prerequisites PASS；未运行新构建/行为测试。下一步建议先重定稳定接口与
-有独立验收价值的批界，再接公开两轮请求；这是建议，尚未修改计划或恢复编码。
+结构检查与prerequisites PASS；暂停新增实现的审计结论已转为按 R4-B4 稳定接口继续，下一步
+是补真实两轮/恢复集成测试，不重做已验证组件。
 
 2026-09-08 R4-B4 CC-3A projection / **PARTIAL**：NativeInferenceClient 请求选项已接入
 continuation，dispatch 创建 owner turn；planner 校验实际 role/provider map，填充每角色
@@ -105,12 +119,9 @@ turn/state projection，并把 conversation scope 加入 Core plan。DI library 
 构建 exit0（24.489s），`Spec182PlanSealer*` 12 cases PASS；未运行真实 continuation
 projection、receipt/control 或 Provider 网络。见[CC-3A记录](evidence/r4-b4-conversation-chain-20260908.md#cc-3a-requester-to-projection-context)。
 
-2026-09-08 R4-B4 CC-3 boundary / **PARTIAL**：已编码Provider COMMIT后的FINALIZE/
-ROLLBACK窗口、lambda值捕获修复、coordinator durable gate与成功后清理边界；新增gate
-用例未运行。见[接线地图](evidence/r4-b4-conversation-chain-20260908.md#cc-3-remaining-wiring-map)。
-公开client仍未接通，尤其markTerminal当前会提前清Core scope key；首次验证构建误用旧`-j2`，
-后续构建恢复主机默认`-j4`；下一步同步input/
-turn投影、receipt/control与延后清理，再整批构建。T011未完成，产品源码未提交。
+2026-09-08 R4-B4 CC-3 boundary / **PARTIAL**：Provider COMMIT后的FINALIZE/ROLLBACK窗口、
+lambda值捕获、coordinator durable gate与 requester 的 receipt/control/延后清理已接线；
+仍缺真实跨进程两轮集成及 T011-C 资格。相关入口见[CC-3B记录](evidence/r4-b4-conversation-chain-20260908.md#cc-3b-requester-provider-transaction-wiring)。
 
 2026-09-08 R4-B4 CC-2 owner / **PARTIAL**：coordinator已替换空abort和伪seed路径，
 真实pending/accepted prefix、一次replacement、认证prepare与Provider promotion→

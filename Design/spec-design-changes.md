@@ -81,6 +81,7 @@ R2 新增 D-002（文档校验与行为补充）及 TG-01 至 TG-05（PLANNED）
 | D-000 | 四模块设计 R0 建档；Spec182 的 D-DESIGN-R0 文档单元 | Core / UAV / DI / Repo | 建立当前/目标一致的 35 章基线；新增版本管理与追踪规则 | VERIFIED（文档） |
 | D-182-BASE | [Spec182](../specs/182-native-di-python-bindings/spec.md) 基线观察 | DI | 记录原生迁移当前边界；尚未逐项追溯该 Spec 全部设计差异 | PARTIAL（历史映射） |
 | D-001 | [D-DESIGN-API](../specs/182-native-di-python-bindings/evidence/design-api-guide-20260907.md) | Core / UAV / DI / Repo | 从组件级细化到 API 契约与准确声明，增加 AGENTS 管理要求 | VERIFIED（文档；结果见证据） |
+| D-182-CC3B | [Spec182 R4-B4](../specs/182-native-di-python-bindings/evidence/r4-b4-conversation-chain-20260908.md#cc-3b-requester-provider-transaction-wiring) | DI | 配置化 native requester 接入会话 owner、认证 receipt、Provider COMMIT/ROLLBACK/FINALIZE 与终态清理；真实跨进程两轮仍待验收 | PARTIAL（实现与局部验证） |
 
 ## D-001：API 开发者指南与维护规则
 
@@ -112,6 +113,24 @@ R2 新增 D-002（文档校验与行为补充）及 TG-01 至 TG-05（PLANNED）
 - 当前/目标差异：本次用户指定 R0 两份一致，因此没有把 Spec182 尚未完成的迁移目标自动写入目标 PDF；Spec182 的目标仍以其 plan/contracts 为准。
 - 历史变更前后与提交范围：尚未完整追溯，不能把 R0 快照当作整个 Spec182 的变更清单。下一次该 Spec 设计更新时新增具体条目，并逐项补齐任务 ID、行为差异、源码提交与验证。
 - 状态：PARTIAL 仅指本文件的历史映射；不替代或降低 Spec 自身验收状态。
+
+## D-182-CC3B：会话请求事务接线
+
+- 日期 / Spec / 任务：2026-09-08；Spec182 R4-B4 CC-3B；T011-C 保持 PARTIAL。
+- 原设计：`NativeInferenceClient` 仅保存会话 coordinator，公开 stream final 没有 receipt
+  收集、Provider promotion 或 durable checkpoint 提交。
+- 当前变化：配置了 `NativeRequestRuntime` 的请求在 final 阶段创建 owner turn，验证每个角色的
+  receipt，发送加密 COMMIT/ROLLBACK/FINALIZE 控制并等待 canonical commit ACK；coordinator
+  在 durable gate 中执行 parent/journal 晋升，取消、deadline 和 replacement 清理有明确边界。
+  未配置 runtime 的兼容/组件构造仍保留结构化 `NATIVE_REQUEST_PIPELINE_NOT_READY`。
+- 兼容与目标边界：不改变既有 collaboration wire；Provider 仍使用现有 request-scope 加密
+  端口。真实两轮、跨进程 control/receipt、恢复和 T016 qualification 未完成，因此不能把局部
+  build/test 结果写成完整原生请求链。
+- 源码与证据：NativeInferenceClient、NativeConversationCoordinator、NativeProviderHandler；
+  当前批次命令、日志和剩余出口见 [R4-B4 证据](../specs/182-native-di-python-bindings/evidence/r4-b4-conversation-chain-20260908.md#cc-3b-requester-provider-transaction-wiring)。
+- Design PDF：当前/目标 PDF 继续保持原设计基线；未将未验收的请求链写入目标行为，下一次设计
+  PDF 修订须在真实两轮/恢复验收后同步。
+- 状态：PARTIAL；下一步补 C++ integration harness，再执行 T012/T013 与 T015/T016。
 
 ## 新记录模板
 

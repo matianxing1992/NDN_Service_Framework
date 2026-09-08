@@ -53,6 +53,13 @@ R1–R7 是能力阶段，不是固定执行批次或“每阶段只编译一次
 本次新目标构成恢复授权；后续仍按具体批次及硬门领取，不恢复逐字段构建。
 已通过的 B-G1-YOLO-SEMANTIC 定向结果作为 R1 输入复用，不重新起草或重复构建。
 
+2026-09-08 当前执行批次为 R4-B4 CC-3B：在已验证的 conversation wire/journal/coordinator、
+stream acceptance 和 CC-3A planner projection 之上，接通 requester receipt/control、Provider
+COMMIT/ROLLBACK/FINALIZE 窗口及终态 scope 清理。该批已通过只读 `review-agent` 静态门、DI
+library `-j4` build 和 25-case shared regression，但保持 `PARTIAL`；下一独立出口是实际
+跨进程两轮请求/恢复 integration，之后才进入 T012/T013 caller migration 与 T015/T016。
+不要把本批局部 PASS 写成 T010/T011 或全 Spec 完成。
+
 2026-09-07 implementation audit：T004-A 因真实 Selection wire/identity 不兼容重开，
 见 [A8-01](evidence/t004-wire-reopened-20260907.md)。在继续 T010 完整请求提交前，
 先修复 T004 的完整 canonical wire、真实工件和 grant 输入，并复核受影响前置值契约；

@@ -2,12 +2,15 @@
 
 ## Status and Exit Capability
 
-IN_PROGRESS / T011-C。本批完成后，公开 native requester 应能执行 FULL_CONTEXT 首轮、
-收齐 Provider receipts、提交认证 checkpoint/加密 transcript，再执行 APPEND_DELTA；
-取消和提交失败不能改变已提交父记录。当前不具备此能力，禁止以旧两个组件测试关闭本卡。
+IN_PROGRESS / T011-C。本批已将公开 native requester 的 FULL_CONTEXT/APPEND_DELTA owner turn、
+Provider receipt 收集、COMMIT/ROLLBACK/FINALIZE 控制和终态清理接线；取消和提交失败的状态
+边界也已收口。当前只有静态审查、组件/共享回归和本地 oracle 证据，尚无真实两轮跨进程
+请求资格，禁止把本批局部 PASS 写成 T011-C 或 Spec182 完成。
 遵循 CD-007/M34–M38，不另起 Spec，不修改已有 Provider KV owner。
 
-## Source Audit
+## Source Audit (baseline before CC-3A/CC-3B)
+
+本表保留接线前的缺口快照；CC-3A/CC-3B 的当前实现与剩余出口见下文对应章节。
 
 核对基线 bfb66aa4，源码与旧 Python 契约直接对照：
 
@@ -48,9 +51,11 @@ CC-1 至 CC-4 属于同一能力批次。逐成员静态门、批末共享构建
 
 ## Validation Boundary
 
-本记录为当前源码审计与可执行缺口登记，尚无本批生产实现或行为 PASS。
+本记录同时登记当前批次的实现与缺口：CC-1/CC-2 的 wire、journal、coordinator 以及
+CC-3A/CC-3B 的 requester/provider 接线已有局部行为 PASS，但没有真实两轮跨进程资格。
 R4-B3 的24 cases/411 assertions仅证明其稳定文本范围，不能证明认证会话能力。
-T011/T012/T016仍未完成；下一步从CC-1冻结原格式开始，同批推进到公开两轮调用。
+T011/T012/T016仍未完成；下一步是补公开 FULL_CONTEXT→receipt→durable commit→
+APPEND_DELTA→restore 的 integration harness。
 
 ## Oracle Author Attempt
 
@@ -161,7 +166,9 @@ coordinator新增durableCommitGate：operation可将journal/parent发布与其�
 取消互斥区；新增finalizeProviderState负责成功后释放Provider等待slot。耐久发布后的
 通知/FINALIZE异常不再触发rollback。已编写gate拒绝与发布后异常C++用例，未运行。
 
-## CC-3 Remaining Wiring Map
+## CC-3 Remaining Wiring Map (superseded by CC-3A/CC-3B)
+
+以下是 CC-3 接线前的缺口地图，保留用于解释批次演进；当前状态以 CC-3A/CC-3B 章节为准。
 
 - NativeInferenceClient.cpp::Operation、acceptGenerationEvent、streamComplete、markTerminal：
   目前仍未消费conversation owner。markTerminal立即CancelCollaboration及clear scopes，
@@ -218,7 +225,60 @@ turn 参数，未提供 continuation 的请求行为不变。
 真实 continuation projection、receipt 收集或 Provider 网络事务，R4-B4 与 T011-C 仍为
 PARTIAL。
 
+## CC-3B Requester Provider Transaction Wiring
+
+CC-3B 将 CC-3A 的 owner turn 和每角色 projection 接到公开 requester 的最终流式路径。
+`NativeInferenceClient` 在 stream final 通过现有 `ServiceUser` collaboration 接口等待
+每个 sealed role 的 Provider receipt，并逐项核对 request/scope/topic/producer/role、
+conversation/epoch/service/plan-role-map、origin request/generation、requester identity、
+provider assignment 和 retention expiry。receipt 的 application digest 重新计算并与其
+payload 字段一致，外层 SVS 验证仍是认证边界。
+
+Requester 随后建立完整 `NativeCompletedAttempt`：canonical parent token prefix 与已接受
+token、generation/tokenizer/chat-template metadata、application payload 和排序后的
+receipt set 一起交给 coordinator。Provider promotion 使用现有 request-scope encrypted
+collaboration control：每个 role 先收到 canonical `COMMIT`，Requester 等待带有精确
+checkpoint/receipt/provider boot/cache identity 的 canonical commit ACK；失败路径只在
+已知 checkpoint 时发送 `ROLLBACK`，成功路径发送有界 `FINALIZE`。Provider handler 保留
+COMMIT 后补偿窗口，可重发 ACK，或在匹配 checkpoint 的 ROLLBACK 下释放精确 successor；
+丢失 FINALIZE 不被推断成 requester 失败。
+
+本批静态审查按官方 `/home/tianxing/.codex/skills/review-agent/SKILL.md` 的只读协议执行，
+覆盖 NativeInferenceClient/NativeConversationCoordinator/NativeProviderHandler 的完整
+差异、调用方、服务 collaboration API、planner projection 和已有流式测试。发现并修复的
+控制性问题如下：
+
+- coordinator 原先在持有自身 mutex 时调用 durable gate，而 gate 需要 operation mutex；
+  现在 callback 在 coordinator 锁外执行，发布 lambda 自己短持锁并复查 owner/parent；
+- stream final 的 token 接受先推进 coordinator，再交换 requester prefix，避免半提交；
+- deadline/cancel 在会话提交期间不提前清除 scope key，事务 guard 结束后才清理，以保留
+  ROLLBACK/FINALIZE 所需密钥；
+- replacement 已切换 coordinator attempt 但尚未安装到 operation 时，终态竞态会显式 abort
+  新 turn，避免 pending owner 泄漏；无 runtime 的 conversation option 在 begin 前拒绝。
+
+静态审查结果为 `STATIC_PASS / TESTS_DEFERRED`，随后批末验证通过：
+
+- `git diff --check`：exit 0；
+- `PATH=/usr/bin:/bin:/usr/sbin:/sbin /usr/bin/python3 ./waf -o build-nac182 build --targets=ndnsf-distributed-inference -j4 -v`：exit 0，当前 DI shared library 成功构建；
+- `./.codex-tmp/spec182-r4-b2/build/unit-tests --run_test='Spec182Conversation*,Spec182StreamAcceptance*,Spec182CanonicalJson*,Spec182EpochText*,Spec182Sampling*' --log_level=test_suite`：25 cases，exit 0；
+- `./.codex-tmp/spec182-r4-b2/build/unit-tests --run_test='Spec182ProviderHost*' --log_level=test_suite`：6 cases，exit 0；
+- `python3 tests/fixtures/spec182/build-conversation-oracle.py --check tests/fixtures/spec182/conversation-oracle.json`：exit 0；
+- 原始日志：[build-final.log](../../../.codex-tmp/spec182-r4-b4-current/build-final.log)、
+  [tests-final-r2.log](../../../.codex-tmp/spec182-r4-b4-current/tests-final-r2.log)、
+  [provider-host.log](../../../.codex-tmp/spec182-r4-b4-current/provider-host.log)、
+  [oracle.log](../../../.codex-tmp/spec182-r4-b4-current/oracle.log)。
+
+这些结果证明当前 native library 的编译、会话 owner、流式接受和独立 oracle 没有回归；
+尚未证明真实两轮请求、跨进程 receipt/control、Provider 运行时重算或 T016 qualification。
+CC-3B 与 T011-C 保持 `PARTIAL`，下一出口是补真实两轮/恢复 integration harness，再运行
+T015/T016 规定的完整 unit→integration→MiniNDN/no-Python gates。
+
 ## Progress and Feasibility Audit
+
+（历史快照：pre-CC-3A/CC-3B）
+
+本节保留 2026-09-08 暂停新增实现时的审计快照。Requester/provider 接线后的当前状态
+见上方 CC-3B 与 tasks.md 的 Current Checkpoint；不要用本节旧 Findings 覆盖最新批次证据。
 
 2026-09-08；用户要求暂停新增实现、审计继续执行能否达成目标。
 源码基线为`3e2d0ea9`加当前未提交改动；本节是源码与证据审计，不是原生行为验收。
