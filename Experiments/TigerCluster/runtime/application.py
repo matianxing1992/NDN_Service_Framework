@@ -60,11 +60,15 @@ def verify_application(root, *, manifest_sha256, base_sif_sha256):
         raise ValueError('APP_SOURCE_IDENTITY')
     identity = body.get('buildIdentity', {})
     if (not isinstance(identity, dict)
-            or set(identity) != {'baseSifSha256', 'flags', 'builderSha256', 'targets'}
+            or not set(identity).issubset({'baseSifSha256', 'flags', 'builderSha256',
+                                           'targets', 'jobs'})
+            or set(identity) < {'baseSifSha256', 'flags', 'builderSha256', 'targets'}
             or identity.get('baseSifSha256') != base_sif_sha256
             or not isinstance(identity.get('flags'), str) or not identity['flags']
             or not re.fullmatch(r'sha256:[0-9a-f]{64}', str(identity.get('builderSha256')))
             or identity.get('targets') != ['App_ServiceController', 'di-native-provider', 'di-native-fault-provider']
+            or ('jobs' in identity and (type(identity['jobs']) is not int
+                                        or not 1 <= identity['jobs'] <= 4))
             or hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
             != body.get('buildKey')):
         raise ValueError('APP_BUILD_IDENTITY')

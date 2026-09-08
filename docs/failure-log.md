@@ -3796,3 +3796,15 @@ identity and rerun packaging against the existing incremental Waf cache.
   selected jobs value in the build identity.
 - Lesson: command-line parallelism changes need an execution-path regression,
   not only argument-range validation.
+
+## 2026-09-08: app manifest verifier rejected recorded jobs identity
+
+- Symptom: the `-j2` external build compiled all 84 targets successfully, then
+  failed while freezing the bundle with `APP_BUILD_IDENTITY`.
+- Root cause: the builder began recording its bounded jobs value in
+  `buildIdentity`, but `runtime/application.py` still enforced the historical
+  four-field identity exactly.
+- Fix: accept the optional jobs field, validate its 1–4 range, and keep old
+  four-field manifests valid for compatibility.
+- Lesson: provenance fields must be added at both the producer and verifier
+  boundary in the same change.
