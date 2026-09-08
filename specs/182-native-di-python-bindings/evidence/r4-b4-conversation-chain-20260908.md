@@ -71,3 +71,30 @@ author=[build-conversation-oracle.py](../../../tests/fixtures/spec182/build-conv
 按review-agent只读审查author与生成物：无生产key读取、无native输出充当期望值，
 原checkpoint字节和签名由旧参考生成。当前不含完整transcript/journal交易向量；CC-1
 保持PARTIAL，后续补齐其向量和C++消费者，再继续CC-2/CC-3，批末统一构建。
+
+## CC-1 Wire Implementation Checkpoint
+
+新增 NativeConversationWire.hpp/.cpp，放在现有 ndnsf-di 原生库源目录，由既有 glob
+纳入构建；这是 C16 共用的格式/认证函数，不另建会话状态 owner。已经编码：
+
+- 旧 canonical checkpoint SHA256/HMAC、严格字段/整数/摘要、身份/epoch/expiry、轮换key验证；
+- transcript prefix与checkpoint绑定、完整role receipt集合及摘要、base64格式；
+- RuntimeJournal原身份域分离子密钥，以及v1 HMAC/v2/v3 AES-GCM envelope读取。
+  使用系统OpenSSL；v1/v2旧格式路径尚缺独立fixture，不能以v3替代兼容证明。
+
+已编写 Spec182ConversationWire 两个 C++ 用例：旧checkpoint签名/解析、错key/期限/
+篡改/类型、transcript缺/重复receipt与prefix、v3解密/subkey/错identity/keyId/tag。
+**尚未构建运行**；源码审查检查了认证前不返回明文、失败路径清除临时解密输出、
+字段与原 wire 对齐、常量时间签名比较、有限key ring和输入上限。下游owner仍待接入。
+
+参考author现新增实际旧Provider receipt/完整transcript，以及RuntimeJournal真实
+prepare/commit/reopen产生的两个加密事务；固定随机nonce仅作用于离线参考fixture。
+fixture有明确公开测试key，未读取任何运行key/journal。新生成/--check exit0，
+旧两个冻结case逐值保持不变。扩展前的--check预期报告fixture尚未更新；生成后通过。
+新增checkpoint两个（共四个）、transcript两个、journal transactions两个，
+参考实际重新打开并解密成功；这不是原生运行结果。
+
+资源边界暂定checkpoint wire 1MiB、transcript JSON 16MiB、加密envelope 64MiB、
+verification key ring 16项。CC-2显式配置总journal quota、单写lease和恢复上限；
+不得用逐条上限替代总额约束。C++实现与测试保持未验收，下一成员先实现持久owner，
+然后CC-3接公开调用，批末一次构建及相关测试。

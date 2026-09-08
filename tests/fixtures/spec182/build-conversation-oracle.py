@@ -6,9 +6,63 @@ import importlib.util
 import json
 from pathlib import Path
 import sys
+import tempfile
+import types
+from unittest.mock import patch
+import base64
 
 ROOT = Path(__file__).resolve().parents[3]
 SOURCE = ROOT / "NDNSF-DistributedInference/ndnsf_distributed_inference/conversation.py"
+
+
+def journal_vector(cases, key):
+    # Load the actual reference modules without executing application bootstrap.
+    package = SOURCE.parent
+    for name, directory in (("spec182_reference", package),
+                            ("spec182_reference.core", package / "core"),
+                            ("spec182_reference.app_sdk", package / "app_sdk")):
+        module = types.ModuleType(name)
+        module.__path__ = [str(directory)]
+        sys.modules[name] = module
+    name = "spec182_reference.app_sdk.runtime_journal"
+    path = package / "app_sdk/runtime_journal.py"
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    provider = module.StaticRequestEnvelopeKeyProvider(module.RequestEnvelopeKey("fixture-key", key))
+    with tempfile.TemporaryDirectory(prefix="spec182-journal-oracle-") as root:
+        journal = module.RuntimeJournal(root, "fixture-owner", envelope_key_provider=provider,
+                                        test_only_allow_ephemeral_state_root=True)
+        payloads = []
+        for index, case in enumerate(cases):
+            checkpoint = json.loads(case["checkpointWire"])
+            epoch = checkpoint["contextEpoch"]
+            envelope_id = "conversation-" + hashlib.sha256(checkpoint["conversationId"].encode()).hexdigest() + "-" + str(epoch)
+            payload = json.dumps({"checkpoint": base64.b64encode(case["checkpointWire"].encode()).decode(),
+                                  "transcript": case["transcript"]},
+                                 sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+            with patch.object(module.secrets, "token_bytes", return_value=bytes([index + 1]) * 12), \
+                 patch.object(module.time, "time", return_value=2_000_000_000 + index):
+                prepared = journal.prepare_envelope(envelope_id, payload, expires_at_ms=checkpoint["expiresAtMs"])
+                journal.commit_prepared_envelope(prepared, (("conversation-checkpoint", {
+                    "conversationId": checkpoint["conversationId"], "contextEpoch": epoch,
+                    "checkpointDigest": checkpoint["checkpointDigest"], "envelopeId": envelope_id,
+                    "wireDigest": prepared.wire_digest,
+                    "payloadDigest": "sha256:" + hashlib.sha256(payload).hexdigest(),
+                    "expiresAtMs": checkpoint["expiresAtMs"],
+                }),))
+            assert journal.read_envelope(envelope_id, at_ms=2_000_000_000_003) == payload
+            payloads.append({"envelopeId": envelope_id, "plaintext": payload.decode(),
+                             "encoded": prepared.encoded.decode(), "wireDigest": prepared.wire_digest})
+        reopened = module.RuntimeJournal(root, "fixture-owner", envelope_key_provider=provider,
+                                         test_only_allow_ephemeral_state_root=True)
+        for item in payloads:
+            assert reopened.read_envelope(item["envelopeId"], at_ms=2_000_000_000_003).decode() == item["plaintext"]
+        return {"sourceSha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                "identity": "fixture-owner", "keyId": "fixture-key",
+                "authenticationSubkeyHex": journal.authentication_key_ring("conversation-checkpoint-v1")[0].hex(),
+                "journalWire": journal.path.read_text(), "envelopes": payloads}
 
 
 def build():
@@ -21,7 +75,28 @@ def build():
     digest = lambda value: "sha256:" + hashlib.sha256(value.encode()).hexdigest()
     cases = []
     parent = None
-    for epoch, tokens in ((1, (10, 11)), (2, (10, 11, 12, 13))):
+    for epoch, tokens, with_receipts in ((1, (10, 11), False), (2, (10, 11, 12, 13), False),
+                                        (1, (10, 11), True), (2, (10, 11, 12, 13), True)):
+        if epoch == 1:
+            parent = None
+        receipts = []
+        if with_receipts:
+            for role in ("B", "A"):
+                receipts.append(reference.ProviderConversationStateReceiptV1(
+                    conversation_id="0123456789abcdef0123456789abcdef",
+                    parent_context_epoch=epoch - 1, successor_context_epoch=epoch,
+                    origin_request_id="/request/" + str(epoch), origin_generation_id="1" * 32,
+                    service_name="/service/会话", requester_identity="/requester/A",
+                    security_domain_digest=digest("security"), model_digest=digest("model"),
+                    graph_semantic_digest=digest("graph"), adapter_digest=digest("adapter"),
+                    role_name="/role/" + role, role_split_digest=digest("split"),
+                    layout_digest=digest("layout"), plan_role_map_digest=digest("roles"),
+                    provider_identity="/provider/" + role, provider_boot_id="boot-" + role,
+                    cache_epoch=1, prefix_digest=reference._prefix_digest(tokens),
+                    prefix_token_count=len(tokens), position_digest=digest("position"),
+                    state_schema_digest=digest("state"), state_component_digests=(digest("kv"),),
+                    expires_at_ms=2_000_000_100_000 + epoch,
+                ).sign(key))
         checkpoint = reference.ConversationCheckpointV1(
             conversation_id="0123456789abcdef0123456789abcdef",
             parent_context_epoch=epoch - 1, context_epoch=epoch,
@@ -30,8 +105,9 @@ def build():
             plan_role_map_digest=digest("roles"),
             logical_prefix_digest=reference._prefix_digest(tokens),
             prefix_token_count=len(tokens),
-            role_receipt_digests={"/role/B": digest("receipt-B-" + str(epoch)),
-                                 "/role/A": digest("receipt-A-" + str(epoch))},
+            role_receipt_digests=({item.role_name: item.receipt_digest for item in receipts}
+                if with_receipts else {"/role/B": digest("receipt-B-" + str(epoch)),
+                                       "/role/A": digest("receipt-A-" + str(epoch))}),
             issued_at_ms=2_000_000_000_000 + epoch,
             expires_at_ms=2_000_000_100_000 + epoch,
         ).sign(key)
@@ -56,17 +132,32 @@ def build():
             expected_parent_context_epoch=epoch - 1 if parent else None,
             turn_input_digest=digest("input-" + str(epoch)),
         )
-        cases.append({"name": "first" if epoch == 1 else "append",
+        cases.append({"name": ("first" if epoch == 1 else "append") + ("-receipts" if with_receipts else ""),
                       "canonicalTokenIds": list(tokens),
                       "continuation": continuation.to_dict(),
                       "checkpointWire": wire.decode(),
                       "checkpointDigest": checkpoint.checkpoint_digest,
                       "signature": checkpoint.signature})
+        if with_receipts:
+            transcript = reference.ConversationTranscriptRecordV1(
+                conversation_id=checkpoint.conversation_id, context_epoch=epoch,
+                requester_identity=checkpoint.requester_identity, service_name=checkpoint.service_name,
+                security_domain_digest=checkpoint.security_domain_digest,
+                application_messages="用户消息".encode(), tokenizer_digest=digest("tokenizer"),
+                chat_template_digest=digest("template"), canonical_token_ids=tokens,
+                prefix_digest=checkpoint.logical_prefix_digest, prefix_token_count=len(tokens),
+                provider_role_receipts=tuple(reference._canonical_payload(item.to_dict()) for item in receipts),
+                checkpoint_digest=checkpoint.checkpoint_digest, plan_role_map_digest=checkpoint.plan_role_map_digest,
+                created_at_ms=checkpoint.issued_at_ms, expires_at_ms=checkpoint.expires_at_ms,
+            )
+            cases[-1]["transcript"] = transcript.to_dict()
+            assert reference.ConversationTranscriptRecordV1.from_dict(transcript.to_dict()).to_dict() == transcript.to_dict()
         parent = wire
     return {"schema": "spec182-conversation-oracle-v1",
             "source": str(SOURCE.relative_to(ROOT)),
             "sourceSha256": hashlib.sha256(SOURCE.read_bytes()).hexdigest(),
-            "testOnlyAuthenticationKeyHex": key.hex(), "cases": cases}
+            "testOnlyAuthenticationKeyHex": key.hex(), "cases": cases,
+            "journal": journal_vector(cases[2:], key)}
 
 
 def main():
@@ -80,7 +171,7 @@ def main():
             raise SystemExit("conversation oracle differs from reference")
     else:
         args.output.write_text(encoded)
-    print("PASS: 2 legacy checkpoint/continuation vectors; round-trip, wrong-key and tamper checks")
+    print("PASS: 4 checkpoints, 2 transcripts, 2 encrypted journal transactions; reference reopen and authentication checks")
 
 
 if __name__ == "__main__":

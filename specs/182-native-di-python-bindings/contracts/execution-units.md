@@ -322,6 +322,9 @@ worker crash/cancel 等真实子进程案例也转 T016，卡内只运行纯 fra
 当前执行批次：[R4-B4 Authenticated Conversation Chain](../evidence/r4-b4-conversation-chain-20260908.md)。
 现有C++实现为未接线scaffold，不是兼容journal基线；按CC-1至CC-4同批完成认证值、
 owner/持久化及公开两轮请求。旧手工seed组件用例不替代FULL_CONTEXT首轮或APPEND_DELTA验收。
+CC-1补充Write：N/NativeConversationWire.hpp、N/NativeConversationWire.cpp；同一原生库
+内复用的V1格式认证函数，由C16消费；tests/fixtures/spec182/conversation-oracle.json
+及独立author负责旧格式期望，U/di-native-conversation.t.cpp负责原生行为验证。
 
 - **Parent**: T011; **Depends**: T011-B; **Reviewer**: state/compatibility review
 - **Read**: CD-007 State Authority → runtime-boundaries Migration and Rollback Contract；P/conversation.py::ConversationCoordinator；P/app_sdk/runtime_journal.py；N/NativeProviderRuntime.hpp::ConversationStateStore。
