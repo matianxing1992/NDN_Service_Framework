@@ -8,6 +8,7 @@
 #include <set>
 #include <sstream>
 #include <stdexcept>
+#include <type_traits>
 
 namespace ndnsf::di {
 namespace {
@@ -45,6 +46,25 @@ bool canPlaceRole(const NativeProviderPlanningView& offer, const std::string& ro
   }
   const auto peak = requirement.estimatedPeakGpuMemoryBytes();
   return peak && *peak <= offer.freeBytes;
+}
+
+NativeJson redistributionJson(const RedistributionSpec& edge)
+{
+  return NativeJson{{"producer_ranks", edge.producerRanks}, {"consumer_ranks", edge.consumerRanks},
+    {"tensor", edge.tensor}, {"operation", edge.operation}, {"epoch", edge.epoch},
+    {"integrity_digest", edge.integrityDigest}, {"source_layout_digest", edge.sourceLayoutDigest},
+    {"target_layout_digest", edge.targetLayoutDigest}, {"temporary_memory_bytes", edge.temporaryMemoryBytes},
+    {"complete_output", edge.completeOutput}, {"axis", edge.axis}};
+}
+
+NativeJson tensorJson(const NativeTensorContract& tensor)
+{
+  tensor.validate();
+  auto shape = NativeJson::array();
+  for (const auto& dimension : tensor.shape)
+    std::visit([&](const auto& value) { shape.push_back(value); }, dimension);
+  return NativeJson{{"name", tensor.name}, {"dtype", tensor.dtype}, {"shape", shape},
+    {"estimated_bytes", tensor.estimatedBytes ? NativeJson(*tensor.estimatedBytes) : NativeJson(nullptr)}};
 }
 
 } // namespace
@@ -232,11 +252,135 @@ void NativePlanningSnapshot::validate() const
   }
 }
 
+void NativeHybridPlan::validate() const
+{
+  if (!stages || tensorDegrees.size() != stages)
+    throw std::invalid_argument("hybrid plan stage cover is incomplete");
+  std::uint64_t count = 0;
+  for (const auto degree : tensorDegrees) {
+    if (!degree || degree > std::numeric_limits<std::uint64_t>::max() - count)
+      throw std::invalid_argument("hybrid plan rank count is invalid");
+    count += degree;
+  }
+  if (count != rankLabels.size()) throw std::invalid_argument("hybrid plan rank cover is incomplete");
+  std::vector<std::size_t> stageOfRank;
+  std::vector<std::uint64_t> offsets;
+  for (std::size_t stage = 0; stage < tensorDegrees.size(); ++stage) {
+    offsets.push_back(stageOfRank.size());
+    for (std::uint64_t rank = 0; rank < tensorDegrees[stage]; ++rank) {
+      if (rankLabels[stageOfRank.size()] != "S" + std::to_string(stage) + "R" + std::to_string(rank))
+        throw std::invalid_argument("hybrid plan rank labels are not canonical");
+      stageOfRank.push_back(stage);
+    }
+  }
+  std::set<std::string> identities;
+  std::set<std::size_t> boundaries;
+  for (const auto& edge : redistributions) {
+    const auto p = edge.producerRanks.size(), c = edge.consumerRanks.size();
+    const bool operationMatches =
+      (p == 1 && c > 1 && edge.operation == "SCATTER") ||
+      (p > 1 && c == 1 && edge.operation == "GATHER") ||
+      (p > 1 && c > 1 && edge.operation == "RESHARD") ||
+      (p == 1 && c == 1 && edge.operation == "RESHARD" && edge.sourceLayoutDigest != edge.targetLayoutDigest);
+    if (!operationMatches || edge.tensor.empty() || edge.epoch.empty() || !edge.completeOutput ||
+        edge.axis < -16 || edge.axis >= 16)
+      throw std::invalid_argument("invalid hybrid redistribution edge");
+    requireDigest(edge.integrityDigest, "redistribution integrity");
+    requireDigest(edge.sourceLayoutDigest, "redistribution source layout");
+    requireDigest(edge.targetLayoutDigest, "redistribution target layout");
+    const auto stageFor = [&](const auto& ranks) {
+      std::set<std::uint64_t> unique(ranks.begin(), ranks.end());
+      if (unique.empty() || unique.size() != ranks.size() || *unique.rbegin() >= count)
+        throw std::invalid_argument("invalid redistribution rank set");
+      const auto stage = stageOfRank[*unique.begin()];
+      if (unique.size() != tensorDegrees[stage] || *unique.begin() != offsets[stage] ||
+          *unique.rbegin() != offsets[stage] + tensorDegrees[stage] - 1)
+        throw std::invalid_argument("redistribution stage rank cover is incomplete");
+      return stage;
+    };
+    const auto producerStage = stageFor(edge.producerRanks);
+    if (stageFor(edge.consumerRanks) != producerStage + 1)
+      throw std::invalid_argument("redistribution must follow an adjacent stage boundary");
+    auto identity = redistributionJson(edge);
+    for (const auto* field : {"source_layout_digest", "target_layout_digest", "temporary_memory_bytes",
+                              "complete_output", "axis"}) identity.erase(field);
+    if (!identities.insert(nativeCanonicalJson(identity)).second)
+      throw std::invalid_argument("duplicate redistribution edge");
+    boundaries.insert(producerStage);
+  }
+  for (std::size_t stage = 0; stage + 1 < tensorDegrees.size(); ++stage)
+    if (tensorDegrees[stage] != tensorDegrees[stage + 1] && !boundaries.count(stage))
+      throw std::invalid_argument("degree-changing boundary omits redistribution");
+}
+
+std::string NativeHybridPlan::canonicalJson() const
+{
+  validate();
+  auto edges = NativeJson::array();
+  for (const auto& edge : redistributions) edges.push_back(redistributionJson(edge));
+  return nativeCanonicalJson(NativeJson{{"stages", stages}, {"tensor_degrees", tensorDegrees},
+    {"rank_labels", rankLabels}, {"redistributions", edges}});
+}
+
+std::string NativeSplitCandidate::canonicalJson() const
+{
+  splitter.validate();
+  auto dependencies = NativeJson::array();
+  // RoleExecutionPlan is model planning data. Runtime transport attributes are
+  // sealed later and are intentionally outside the maintained candidate schema.
+  for (const auto& edge : executionPlan.dependencies)
+    for (const auto& producer : edge.producers)
+      for (const auto& consumer : edge.consumers)
+        dependencies.push_back(NativeJson{{"producer", producer}, {"consumer", consumer},
+                                          {"tensor_edges", edge.tensors}});
+  auto resources = NativeJson::object();
+  for (const auto& role : requirementsByRole) resources[role.first] = nativeParseJson(role.second.canonicalJson());
+  auto costs = NativeJson::object();
+  for (const auto& item : estimatedCosts)
+    std::visit([&](const auto& value) {
+      if constexpr (std::is_same_v<std::decay_t<decltype(value)>, std::monostate>) costs[item.first] = nullptr;
+      else costs[item.first] = value;
+    }, item.second);
+  const auto states = [](const auto& roles) {
+    auto result = NativeJson::object();
+    for (const auto& role : roles) {
+      auto tensors = NativeJson::array();
+      for (const auto& tensor : role.second) tensors.push_back(tensorJson(tensor));
+      result[role.first] = std::move(tensors);
+    }
+    return result;
+  };
+  const auto postprocessing = nativeParseJson(postprocessingJson);
+  if (!postprocessing.is_object()) throw std::invalid_argument("candidate postprocessing must be an object");
+  return nativeCanonicalJson(NativeJson{
+    {"source", source}, {"splitter", {{"name", splitter.name}, {"version", splitter.version},
+      {"state_digest", splitter.configurationDigest}, {"deterministic", splitter.deterministic}}},
+    {"model", nativeParseJson(model.canonicalJson())}, {"graph_digest", graphDigest},
+    {"execution_plan", {{"roles", executionPlan.roles}, {"dependencies", dependencies}, {"node_roles", nodeRoles}}},
+    {"fragments_by_role", fragmentsByRole}, {"artifacts_by_role", artifactsByRole},
+    {"requirements_by_role", resources}, {"cross_partition_tensors", crossPartitionTensors},
+    {"estimated_costs", costs}, {"tensor_degrees_by_role", tensorDegreesByRole},
+    {"rank_artifact_digests_by_role", rankArtifactDigestsByRole},
+    {"role_state_inputs_by_role", states(roleStateInputsByRole)},
+    {"role_state_outputs_by_role", states(roleStateOutputsByRole)},
+    {"hybrid_plan", hybridPlan ? nativeParseJson(hybridPlan->canonicalJson()) : NativeJson(nullptr)},
+    {"selection_priority", selectionPriority}, {"input_ingress_role", inputIngressRole},
+    {"result_egress_role", resultEgressRole}, {"merge_kind", mergeKind}, {"postprocessing", postprocessing}});
+}
+
+std::string NativeSplitCandidate::computedDigest() const
+{
+  return nativePlanningDigest(canonicalJson());
+}
+
 void NativeSplitCandidate::validate(const NativeGraphSnapshot& graph) const
 {
   splitter.validate();
   model.validate();
   graph.validate(model);
+  if ((source != "PRE_SPLIT" && source != "GENERATED") || selectionPriority < 0 ||
+      (mergeKind != "" && mergeKind != "NATIVE_POSTPROCESS" && mergeKind != "ONNX_MERGE_GRAPH"))
+    throw std::invalid_argument("invalid split candidate source, priority or merge kind");
   if (graphDigest != graph.graphDigest || executionPlan.roles.empty() ||
       !isDigest(candidateDigest)) {
     throw std::invalid_argument("split candidate identity is incomplete");
@@ -343,6 +487,21 @@ void NativeSplitCandidate::validate(const NativeGraphSnapshot& graph) const
           throw std::invalid_argument("split candidate rank artifact is absent from its role");
     }
   }
+  if (hybridPlan) {
+    hybridPlan->validate();
+    std::vector<std::uint64_t> degrees;
+    for (const auto& role : executionPlan.roles) {
+      if (!tensorDegreesByRole.count(role)) throw std::invalid_argument("hybrid plan requires tensor degrees");
+      degrees.push_back(tensorDegreesByRole.at(role));
+    }
+    if (degrees != hybridPlan->tensorDegrees)
+      throw std::invalid_argument("hybrid candidate degree vector mismatches its plan");
+  }
+  else if (std::any_of(tensorDegreesByRole.begin(), tensorDegreesByRole.end(),
+                       [](const auto& role) { return role.second != 1; }))
+    throw std::invalid_argument("hybrid candidate requires a sealed hybrid plan");
+  if (candidateDigest != computedDigest())
+    throw std::invalid_argument("split candidate digest does not bind its complete contract");
 }
 
 void NativePlacementProposal::validate(const NativePlanningSnapshot& snapshot,

@@ -129,7 +129,7 @@ NativeSplitCandidate candidateFor(const NativeInspectedModel& model,
   NativeSplitCandidate candidate;
   candidate.model = model.descriptor; candidate.graphDigest = model.graph.graphDigest;
   candidate.splitter = {"fixture", "1", digest("strategy")};
-  candidate.candidateDigest = digest("candidate");
+  candidate.source = "PRE_SPLIT";
   for (const auto& role : proposal.roles) {
     candidate.executionPlan.roles.push_back(role.role);
     candidate.fragmentsByRole[role.role] = digest("fragment");
@@ -140,6 +140,7 @@ NativeSplitCandidate candidateFor(const NativeInspectedModel& model,
   }
   for (std::size_t i = 0; !candidate.executionPlan.roles.empty() && i < model.graph.nodes.size(); ++i)
     candidate.nodeRoles[model.graph.nodes[i].id] = candidate.executionPlan.roles.at(i % candidate.executionPlan.roles.size());
+  candidate.candidateDigest = candidate.computedDigest();
   return candidate;
 }
 
@@ -304,7 +305,7 @@ BOOST_AUTO_TEST_CASE(CertifiedRolesBindManifestRankArtifactAndResourceBudget)
   NativeSplitCandidate candidate;
   candidate.model = model.descriptor; candidate.graphDigest = model.graph.graphDigest;
   candidate.splitter = {"fixture", "1", digest("strategy")};
-  candidate.candidateDigest = digest("candidate");
+  candidate.source = "PRE_SPLIT";
   candidate.executionPlan.roles = {"role"};
   for (const auto& node : model.graph.nodes) candidate.nodeRoles[node.id] = "role";
   candidate.fragmentsByRole = {{"role", digest("fragment")}};
@@ -312,6 +313,7 @@ BOOST_AUTO_TEST_CASE(CertifiedRolesBindManifestRankArtifactAndResourceBudget)
   candidate.tensorDegreesByRole = {{"role", 1}};
   candidate.rankArtifactDigestsByRole = candidate.artifactsByRole;
   candidate.requirementsByRole = {{"role", {{"onnxruntime"}, 1024 * 1024, 0, 0, 0, 0, 1.0}}};
+  candidate.candidateDigest = candidate.computedDigest();
   NativePlanSealingInputs fixtureInputs;
   fixtureInputs.artifacts.artifactDigestByRole = {{"role", digest("artifact")}};
   fixtureInputs.artifacts.manifestDigest = model.modelManifestDigest;
@@ -327,6 +329,10 @@ BOOST_AUTO_TEST_CASE(CertifiedRolesBindManifestRankArtifactAndResourceBudget)
   NativeRequestPreparation preparation(registry, {}, {},
     [&](const NativeInspectedModel&, const NativeSplitCandidate&, const NativeRequestControl&) { return returned; });
   BOOST_REQUIRE_EQUAL(preparation.prepareRoles(model, candidate, control).size(), 1);
+  auto ordinary = candidate;
+  ordinary.tensorDegreesByRole.clear(); ordinary.rankArtifactDigestsByRole.clear();
+  ordinary.candidateDigest = ordinary.computedDigest();
+  BOOST_CHECK_EQUAL(preparation.prepareRoles(model, ordinary, control).size(), 1);
   for (int mutation = 0; mutation < 8; ++mutation) {
     returned = {role};
     if (mutation == 0) returned[0].modelManifestDigest = digest("foreign");
@@ -342,12 +348,15 @@ BOOST_AUTO_TEST_CASE(CertifiedRolesBindManifestRankArtifactAndResourceBudget)
   returned = {role};
   auto& budget = candidate.requirementsByRole.at("role");
   budget.kvBytes = 1;
+  candidate.candidateDigest = candidate.computedDigest();
   BOOST_CHECK_THROW(preparation.prepareRoles(model, candidate, control), std::runtime_error);
   returned[0].requiredDeviceMemoryMb = 2;
   BOOST_REQUIRE_EQUAL(preparation.prepareRoles(model, candidate, control).size(), 1);
   budget.kvBytes.reset();
+  candidate.candidateDigest = candidate.computedDigest();
   BOOST_CHECK_THROW(preparation.prepareRoles(model, candidate, control), std::runtime_error);
   budget.kvBytes = 0;
+  candidate.candidateDigest = candidate.computedDigest();
   returned = {role}; cancelled = true;
   BOOST_CHECK_THROW(preparation.prepareRoles(model, candidate, control), std::runtime_error);
   cancelled = false;

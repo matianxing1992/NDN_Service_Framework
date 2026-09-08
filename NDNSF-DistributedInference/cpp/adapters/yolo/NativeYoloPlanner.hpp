@@ -27,7 +27,7 @@ class NativeYoloComponentSplit final : public NativeModelSplitStrategy
 {
 public:
   explicit NativeYoloComponentSplit(
-    std::vector<NativeYoloComponentSpec> candidates);
+    std::vector<NativeYoloComponentSpec> candidates, std::string postprocessingJson = "{}");
 
   NativeStrategyIdentity identity() const override;
   std::vector<NativeSplitCandidate> enumerate(
@@ -37,6 +37,8 @@ public:
 
 private:
   std::vector<NativeYoloComponentSpec> m_candidates;
+  /** Adapter-owned terminal configuration, applied only to explicit Merge roles. */
+  std::string m_postprocessingJson;
 };
 
 } // namespace ndnsf::di::yolo

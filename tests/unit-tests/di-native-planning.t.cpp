@@ -1,5 +1,6 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
 #include "tests/fixtures/spec182/native-model-fixture.hpp"
+#include "tests/fixtures/spec182/native-candidate-json-fixture.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include <fstream>
 #include "tests/fixtures/spec182/native-sealing-fixture.hpp"
@@ -132,8 +133,8 @@ BOOST_AUTO_TEST_CASE(QwenLayerSplitProducesCanonicalRankOneCandidate)
   }
   BOOST_CHECK_EQUAL(candidate.crossPartitionTensors.size(), 2U);
   BOOST_CHECK_EQUAL(candidate.tensorDegreesByRole.at(roles[1]), 1U);
-  BOOST_CHECK_EQUAL(candidate.inputIngressRole, roles.front());
-  BOOST_CHECK_EQUAL(candidate.resultEgressRole, roles.back());
+  BOOST_CHECK(candidate.inputIngressRole.empty());
+  BOOST_CHECK(candidate.resultEgressRole.empty());
   const std::map<std::string, std::string> expectedOwners{
     {"embedding", roles[0]}, {"layer-00", roles[0]}, {"layer-01", roles[0]},
     {"layer-02", roles[1]}, {"layer-03", roles[2]}, {"final-norm-head", roles[2]}};
@@ -684,6 +685,7 @@ BOOST_AUTO_TEST_CASE(PlacementNeverReusesProviderAndIsOrderIndependent)
   BOOST_CHECK_EQUAL(first.assignment.providerByRole.at(fixture.second), "provider-b");
   std::reverse(fixture.snapshot.offers.begin(), fixture.snapshot.offers.end());
   std::reverse(fixture.candidate.executionPlan.roles.begin(), fixture.candidate.executionPlan.roles.end());
+  fixture.candidate.candidateDigest = fixture.candidate.computedDigest();
   const auto reversed = NativePreSplitFirstPlacement().propose(fixture.snapshot, fixture.candidate);
   BOOST_CHECK(first.assignment.providerByRole == reversed.assignment.providerByRole);
   fixture.snapshot.offers.resize(1);
@@ -721,6 +723,7 @@ BOOST_AUTO_TEST_CASE(PlacementRejectsInvalidAndOverflowingResourceBudgets)
   requirement.weightBytes = std::numeric_limits<std::uint64_t>::max();
   requirement.workspaceBytes = 2;
   requirement.safetyMargin = 1.0;
+  fixture.candidate.candidateDigest = fixture.candidate.computedDigest();
   BOOST_CHECK_THROW(NativePreSplitFirstPlacement().propose(fixture.snapshot, fixture.candidate),
                     std::runtime_error);
 }
@@ -736,7 +739,7 @@ BOOST_AUTO_TEST_CASE(CandidateRejectsIncompleteDependenciesAndRankArtifacts)
       case 0: candidate.candidateDigest = "not-a-digest"; break;
       case 1: candidate.fragmentsByRole[role] = "not-a-digest"; break;
       case 2: candidate.inputIngressRole = "foreign"; break;
-      case 3: candidate.resultEgressRole.clear(); break;
+      case 3: candidate.inputIngressRole = role; candidate.resultEgressRole.clear(); break;
       case 4: candidate.crossPartitionTensors.push_back(candidate.crossPartitionTensors.front()); break;
       case 5: candidate.crossPartitionTensors = {"foreign"}; break;
       case 6: candidate.executionPlan.dependencies.clear(); break;
@@ -858,6 +861,8 @@ BOOST_AUTO_TEST_CASE(YoloFragmentMatchesMaintainedSplitterAndBindsRegistration)
     yolo::NativeYoloComponentSpec registered{"atomic-v1", 1, {"FullModel"}, {},
       "FullModel", "FullModel", "NATIVE_POSTPROCESS", row.at("registered_digest")};
     const auto candidate = yolo::NativeYoloComponentSplit({registered}).enumerate(descriptor, snapshot, {}).front();
+    BOOST_CHECK_EQUAL(candidate.canonicalJson(), row.at("candidate_json").get<std::string>());
+    BOOST_CHECK_EQUAL(candidate.candidateDigest, row.at("candidate_digest").get<std::string>());
     BOOST_CHECK_EQUAL(candidate.fragmentsByRole.at("FullModel"), row.at("fragment_digest").get<std::string>());
     BOOST_CHECK(candidate.artifactsByRole.at("FullModel") == std::vector<std::string>({row.at("fragment_digest")}));
     const auto& requirement = candidate.requirementsByRole.at("FullModel");
@@ -914,14 +919,132 @@ BOOST_AUTO_TEST_CASE(PlacementAccountsForKvAndRejectsUnknownPeak)
   TwoRolePlacement fixture;
   auto& budget = fixture.candidate.requirementsByRole.at(fixture.first);
   budget = {{"onnxruntime"}, 1, 0, 0, 0, 0, 1.0};
+  fixture.candidate.candidateDigest = fixture.candidate.computedDigest();
   fixture.snapshot.offers.front().freeBytes = 1;
   BOOST_CHECK_NO_THROW(NativePreSplitFirstPlacement().propose(fixture.snapshot, fixture.candidate));
   budget.kvBytes = 1;
+  fixture.candidate.candidateDigest = fixture.candidate.computedDigest();
   BOOST_CHECK_THROW(NativePreSplitFirstPlacement().propose(fixture.snapshot, fixture.candidate), std::runtime_error);
   fixture.snapshot.offers.front().freeBytes = 2;
   BOOST_CHECK_NO_THROW(NativePreSplitFirstPlacement().propose(fixture.snapshot, fixture.candidate));
   budget.kvBytes.reset();
+  fixture.candidate.candidateDigest = fixture.candidate.computedDigest();
   BOOST_CHECK_THROW(NativePreSplitFirstPlacement().propose(fixture.snapshot, fixture.candidate), std::runtime_error);
+}
+
+BOOST_AUTO_TEST_CASE(CompleteCandidateIdentityMatchesMaintainedPython)
+{
+  std::ifstream file("tests/fixtures/spec182/candidate-oracle.json");
+  BOOST_REQUIRE(file.good());
+  const auto rows = NativeJson::parse(file);
+  BOOST_REQUIRE_EQUAL(rows.size(), 9);
+  for (const auto& row : rows) {
+    BOOST_TEST_CONTEXT(row.at("name").get<std::string>()) {
+      auto candidate = fixture::candidateFromJson(row.at("input"));
+      candidate.candidateDigest = row.at("candidate_digest");
+      auto snapshot = graph(candidate.graphDigest, {"z-node", "a-node"});
+      snapshot.edges.front().id = "hidden"; snapshot.edges.front().tensor.name = "hidden";
+      snapshot.legalCutEdges = {"hidden"};
+      if (row.at("name") == "qwen-default") {
+        snapshot = graph(candidate.graphDigest, {"embedding", "layer-00", "layer-01", "final-norm-head"});
+        qwen::NativeQwenLayerSplit splitter({{0, 1}, {1, 2}},
+          {{"front", digest("qwen-front")}, {"end", digest("qwen-end")}},
+          {{"front", 1}, {"end", 1}}, {"front", "end"}, {1, 1});
+        const auto actual = splitter.enumerate(candidate.model, snapshot, {}).front();
+        BOOST_CHECK_EQUAL(actual.canonicalJson(), row.at("canonical_json").get<std::string>());
+        BOOST_CHECK_EQUAL(actual.candidateDigest, candidate.candidateDigest);
+      }
+      BOOST_CHECK_NO_THROW(candidate.validate(snapshot));
+      BOOST_CHECK_EQUAL(candidate.canonicalJson(), row.at("canonical_json").get<std::string>());
+      BOOST_CHECK_EQUAL(candidate.computedDigest(), candidate.candidateDigest);
+      candidate.candidateDigest = digest("old-subset-identity");
+      BOOST_CHECK_THROW(candidate.validate(snapshot), std::invalid_argument);
+    }
+  }
+}
+
+BOOST_AUTO_TEST_CASE(CandidateIdentityRejectsStaleDigestForValidContractChanges)
+{
+  std::ifstream file("tests/fixtures/spec182/candidate-oracle.json");
+  BOOST_REQUIRE(file.good());
+  const auto row = NativeJson::parse(file).at(0);
+  auto base = fixture::candidateFromJson(row.at("input"));
+  base.candidateDigest = row.at("candidate_digest");
+  auto snapshot = graph(base.graphDigest, {"z-node", "a-node"});
+  snapshot.edges.front().id = "hidden"; snapshot.edges.front().tensor.name = "hidden";
+  snapshot.legalCutEdges = {"hidden"};
+  BOOST_REQUIRE_NO_THROW(base.validate(snapshot));
+  for (unsigned mutation = 0; mutation < 20; ++mutation) {
+    auto c = base;
+    switch (mutation) {
+      case 0: c.source = "GENERATED"; break;
+      case 1: c.splitter.name += "-other"; break;
+      case 2: c.splitter.version = "2"; break;
+      case 3: c.splitter.configurationDigest = digest("other-state"); break;
+      case 4: c.splitter.deterministic = false; break;
+      case 5: c.model.sourceRevision = "revision-2"; break;
+      case 6: c.fragmentsByRole.at("front") = digest("other-fragment"); break;
+      case 7: c.artifactsByRole.at("front").push_back(digest("extra-artifact")); break;
+      case 8: c.requirementsByRole.at("front").kvBytes = 123; break;
+      case 9: c.requirementsByRole.at("front").weightBytes.reset(); break;
+      case 10: c.estimatedCosts["unknown"] = 2.5; break;
+      case 11: c.selectionPriority = 6; break;
+      case 12: c.postprocessingJson = "{\"threshold\":0.5}"; break;
+      case 13: c.roleStateInputsByRole.at("front").front().shape[0] = std::string("batch2"); break;
+      case 14: c.roleStateOutputsByRole.at("end").front().estimatedBytes = 64; break;
+      case 15: c.mergeKind = "ONNX_MERGE_GRAPH"; break;
+      case 16: std::reverse(c.executionPlan.roles.begin(), c.executionPlan.roles.end()); break;
+      case 17: c.tensorDegreesByRole.clear(); c.rankArtifactDigestsByRole.clear(); break;
+      case 18: c.inputIngressRole.clear(); c.resultEgressRole.clear(); break;
+      case 19: c.hybridPlan = NativeHybridPlan{2, {1, 1}, {"S0R0", "S1R0"}, {}}; break;
+    }
+    BOOST_TEST_CONTEXT(mutation) {
+      BOOST_CHECK(c.computedDigest() != base.candidateDigest);
+      BOOST_CHECK_THROW(c.validate(snapshot), std::invalid_argument);
+      c.candidateDigest = c.computedDigest();
+      BOOST_CHECK_NO_THROW(c.validate(snapshot));
+    }
+  }
+  for (const auto* malformed : {"[]", "{\"a\":1,\"a\":2}", "{\"x\":NaN}"}) {
+    auto c = base; c.postprocessingJson = malformed;
+    BOOST_CHECK_THROW(c.computedDigest(), std::invalid_argument);
+  }
+}
+
+BOOST_AUTO_TEST_CASE(HybridCandidateRejectsIncompleteRankAndRedistributionContracts)
+{
+  std::ifstream file("tests/fixtures/spec182/candidate-oracle.json");
+  BOOST_REQUIRE(file.good());
+  const auto row = NativeJson::parse(file).at(1);
+  auto base = fixture::candidateFromJson(row.at("input"));
+  base.candidateDigest = row.at("candidate_digest");
+  BOOST_REQUIRE(base.hybridPlan);
+  for (unsigned mutation = 0; mutation < 14; ++mutation) {
+    auto h = *base.hybridPlan;
+    switch (mutation) {
+      case 0: h.stages = 1; break;
+      case 1: h.tensorDegrees = {1, 0}; break;
+      case 2: h.rankLabels[1] = "S0R0"; break;
+      case 3: h.redistributions.clear(); break;
+      case 4: h.redistributions.push_back(h.redistributions.front()); break;
+      case 5: h.redistributions.front().consumerRanks = {1}; break;
+      case 6: h.redistributions.front().consumerRanks = {1, 3}; break;
+      case 7: h.redistributions.front().producerRanks = {1}; break;
+      case 8: h.redistributions.front().operation = "GATHER"; break;
+      case 9: h.redistributions.front().completeOutput = false; break;
+      case 10: h.redistributions.front().axis = 16; break;
+      case 11: h.redistributions.front().epoch.clear(); break;
+      case 12: h.redistributions.front().integrityDigest = "bad"; break;
+      case 13: h.redistributions.front().consumerRanks = {1, 1}; break;
+    }
+    BOOST_CHECK_THROW(h.validate(), std::invalid_argument);
+  }
+  auto snapshot = graph(base.graphDigest, {"z-node", "a-node"});
+  snapshot.edges.front().id = "hidden"; snapshot.edges.front().tensor.name = "hidden";
+  snapshot.legalCutEdges = {"hidden"};
+  base.hybridPlan.reset();
+  base.candidateDigest = base.computedDigest();
+  BOOST_CHECK_THROW(base.validate(snapshot), std::invalid_argument);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

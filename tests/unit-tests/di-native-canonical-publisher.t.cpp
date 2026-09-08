@@ -78,13 +78,14 @@ struct Input
     }
     candidate.model = model.descriptor; candidate.graphDigest = model.graph.graphDigest;
     candidate.splitter = {"fixture", "1", nativePlanningDigest("splitter")};
-    candidate.candidateDigest = nativePlanningDigest("candidate");
+    candidate.source = "PRE_SPLIT";
     candidate.executionPlan.roles = {role.role}; candidate.tensorDegreesByRole = {{role.role, 1}};
     for (const auto& node : model.graph.nodes) candidate.nodeRoles[node.id] = role.role;
     candidate.artifactsByRole = {{role.role, {role.artifactDigest}}};
     candidate.rankArtifactDigestsByRole = candidate.artifactsByRole;
     candidate.fragmentsByRole = {{role.role, role.artifactDigest}};
     candidate.requirementsByRole = {{role.role, {{"onnxruntime"}, 1, 0, 0, 0, 0, 1.0}}};
+    candidate.candidateDigest = candidate.computedDigest();
     options = {"/fixture/NDNSF/DI/ARTIFACT", model.modelManifestDigest, {role.artifactDigest}};
   }
   NativeCanonicalArtifactPublisher::SourcePort resolver()

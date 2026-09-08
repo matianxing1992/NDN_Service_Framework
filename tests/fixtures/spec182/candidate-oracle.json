@@ -1,0 +1,1952 @@
+[
+  {
+    "name": "complete",
+    "input": {
+      "artifacts_by_role": {
+        "end": [
+          "sha256:361e48d0308f20e32dba5fb56328baf18d72ef0ccb43b84f5c262d2a6a1fc6c8"
+        ],
+        "front": [
+          "sha256:2d8d693177ac44895fc02c009ec3f6af32e51eb00783c17000d7051d1662b93a"
+        ]
+      },
+      "cross_partition_tensors": [
+        "hidden"
+      ],
+      "estimated_costs": {
+        "fraction": 1.25,
+        "large": 9223372036854775808,
+        "negative-zero": -0.0,
+        "signed": -7,
+        "unknown": null
+      },
+      "execution_plan": {
+        "dependencies": [
+          {
+            "consumer": "end",
+            "producer": "front",
+            "tensor_edges": [
+              "hidden"
+            ]
+          }
+        ],
+        "node_roles": {
+          "a-node": "end",
+          "z-node": "front"
+        },
+        "roles": [
+          "front",
+          "end"
+        ]
+      },
+      "fragments_by_role": {
+        "end": "sha256:361e48d0308f20e32dba5fb56328baf18d72ef0ccb43b84f5c262d2a6a1fc6c8",
+        "front": "sha256:2d8d693177ac44895fc02c009ec3f6af32e51eb00783c17000d7051d1662b93a"
+      },
+      "graph_digest": "sha256:eef93e1d14482804277fca0172464032d1a4fdbcc338524059fa1e861454ad4d",
+      "hybrid_plan": null,
+      "input_ingress_role": "front",
+      "merge_kind": "NATIVE_POSTPROCESS",
+      "model": {
+        "adapter": {
+          "abi": "fixture-abi-v1",
+          "backends": [
+            "onnxruntime"
+          ],
+          "deterministic_analysis": true,
+          "graph_inspectable": true,
+          "graph_schema_digest": "sha256:1e20c7dd694f6e793a9bb08049c67f266580472837940b45e5afa0443699931c",
+          "input_schema_digest": "sha256:48ead40f3b571b24200aa70ed78cb2cc270fc39350348405fc1fa8b5949b5442",
+          "model_formats": [
+            "onnx"
+          ],
+          "name": "fixture",
+          "options_schema_digest": "sha256:42b86994847bdf859b467a0efe3d3669735a8613f283be361681429849d647fe",
+          "precisions": [
+            "float32"
+          ],
+          "result_schema_digest": "sha256:1b00cb6a7161fd1841dfeded937a734927d0ea37daecfe79eee96f4d5cb9bb45",
+          "split_schema_digest": "sha256:d7da0e471a903882466a7be7b420d9cf652dbeadee4b351ee7d298d5583977c5",
+          "splittable": true,
+          "state_digest": "sha256:4f9510f10cfed8b796f0d6067766165a92241de68fc9e1944322272fe6f9bd93",
+          "state_schema_digest": "sha256:7ecd71aa2742542271a9f2e6d86c272a694c95d45a0049fe638af7c6511774e0",
+          "tasks": [
+            "task"
+          ],
+          "version": "1"
+        },
+        "content_digest": "sha256:ed7002b439e9ac845f22357d822bac1444730fbdb6016d3ec9432297b9ec9f73",
+        "graph_digest": "sha256:eef93e1d14482804277fca0172464032d1a4fdbcc338524059fa1e861454ad4d",
+        "model_format": "onnx",
+        "model_name": "Candidate模型",
+        "precision": "float32",
+        "semantics_digest": "sha256:4ce162f873de0f7c0e1ad341334e21b2259eef05045dce753a77a7d1fd663179",
+        "source_revision": ""
+      },
+      "postprocessing": {
+        "nested": [
+          true,
+          null,
+          {
+            "threshold": 0.25
+          }
+        ],
+        "unicode": "配置"
+      },
+      "rank_artifact_digests_by_role": {
+        "end": [
+          "sha256:361e48d0308f20e32dba5fb56328baf18d72ef0ccb43b84f5c262d2a6a1fc6c8"
+        ],
+        "front": [
+          "sha256:2d8d693177ac44895fc02c009ec3f6af32e51eb00783c17000d7051d1662b93a"
+        ]
+      },
+      "requirements_by_role": {
+        "end": {
+          "activation_bytes": 4,
+          "backends": [
+            "onnxruntime"
+          ],
+          "kv_bytes": 3,
+          "safety_margin": 1.1,
+          "transient_bytes": 5,
+          "weight_bytes": 1,
+          "workspace_bytes": 2
+        },
+        "front": {
+          "activation_bytes": 4,
+          "backends": [
+            "onnxruntime"
+          ],
+          "kv_bytes": 3,
+          "safety_margin": 1.1,
+          "transient_bytes": 5,
+          "weight_bytes": 1,
+          "workspace_bytes": 2
+        }
+      },
+      "result_egress_role": "end",
+      "role_state_inputs_by_role": {
+        "end": [
+          {
+            "dtype": "float32",
+            "estimated_bytes": null,
+            "name": "state",
+            "shape": [
+              "batch",
+              -1,
+              4
+            ]
+          }
+        ],
+        "front": [
+          {
+            "dtype": "float32",
+            "estimated_bytes": null,
+            "name": "state",
+            "shape": [
+              "batch",
+              -1,
+              4
+            ]
+          }
+        ]
+      },
+      "role_state_outputs_by_role": {
+        "end": [
+          {
+            "dtype": "float32",
+            "estimated_bytes": 16,
+            "name": "out",
+            "shape": [
+              "batch",
+              -1,
+              4
+            ]
+          }
+        ],
+        "front": [
+          {
+            "dtype": "float32",
+            "estimated_bytes": 16,
+            "name": "out",
+            "shape": [
+              "batch",
+              -1,
+              4
+            ]
+          }
+        ]
+      },
+      "selection_priority": 5,
+      "source": "PRE_SPLIT",
+      "splitter": {
+        "deterministic": true,
+        "name": "fixture",
+        "state_digest": "sha256:ad1a64057f9ab34fecfe3f4ee78660bb0316dbda9370581ffbeb1e8bddf3d598",
+        "version": "1"
+      },
+      "tensor_degrees_by_role": {
+        "end": 1,
+        "front": 1
+      }
+    },
+    "canonical_json": "{\"artifacts_by_role\":{\"end\":[\"sha256:361e48d0308f20e32dba5fb56328baf18d72ef0ccb43b84f5c262d2a6a1fc6c8\"],\"front\":[\"sha256:2d8d693177ac44895fc02c009ec3f6af32e51eb00783c17000d7051d1662b93a\"]},\"cross_partition_tensors\":[\"hidden\"],\"estimated_costs\":{\"fraction\":1.25,\"large\":9223372036854775808,\"negative-zero\":-0.0,\"signed\":-7,\"unknown\":null},\"execution_plan\":{\"dependencies\":[{\"consumer\":\"end\",\"producer\":\"front\",\"tensor_edges\":[\"hidden\"]}],\"node_roles\":{\"a-node\":\"end\",\"z-node\":\"front\"},\"roles\":[\"front\",\"end\"]},\"fragments_by_role\":{\"end\":\"sha256:361e48d0308f20e32dba5fb56328baf18d72ef0ccb43b84f5c262d2a6a1fc6c8\",\"front\":\"sha256:2d8d693177ac44895fc02c009ec3f6af32e51eb00783c17000d7051d1662b93a\"},\"graph_digest\":\"sha256:eef93e1d14482804277fca0172464032d1a4fdbcc338524059fa1e861454ad4d\",\"hybrid_plan\":null,\"input_ingress_role\":\"front\",\"merge_kind\":\"NATIVE_POSTPROCESS\",\"model\":{\"adapter\":{\"abi\":\"fixture-abi-v1\",\"backends\":[\"onnxruntime\"],\"deterministic_analysis\":true,\"graph_inspectable\":true,\"graph_schema_digest\":\"sha256:1e20c7dd694f6e793a9bb08049c67f266580472837940b45e5afa0443699931c\",\"input_schema_digest\":\"sha256:48ead40f3b571b24200aa70ed78cb2cc270fc39350348405fc1fa8b5949b5442\",\"model_formats\":[\"onnx\"],\"name\":\"fixture\",\"options_schema_digest\":\"sha256:42b86994847bdf859b467a0efe3d3669735a8613f283be361681429849d647fe\",\"precisions\":[\"float32\"],\"result_schema_digest\":\"sha256:1b00cb6a7161fd1841dfeded937a734927d0ea37daecfe79eee96f4d5cb9bb45\",\"split_schema_digest\":\"sha256:d7da0e471a903882466a7be7b420d9cf652dbeadee4b351ee7d298d5583977c5\",\"splittable\":true,\"state_digest\":\"sha256:4f9510f10cfed8b796f0d6067766165a92241de68fc9e1944322272fe6f9bd93\",\"state_schema_digest\":\"sha256:7ecd71aa2742542271a9f2e6d86c272a694c95d45a0049fe638af7c6511774e0\",\"tasks\":[\"task\"],\"version\":\"1\"},\"content_digest\":\"sha256:ed7002b439e9ac845f22357d822bac1444730fbdb6016d3ec9432297b9ec9f73\",\"graph_digest\":\"sha256:eef93e1d14482804277fca0172464032d1a4fdbcc338524059fa1e861454ad4d\",\"model_format\":\"onnx\",\"model_name\":\"Candidate\\u6a21\\u578b\",\"precision\":\"float32\",\"semantics_digest\":\"sha256:4ce162f873de0f7c0e1ad341334e21b2259eef05045dce753a77a7d1fd663179\",\"source_revision\":\"\"},\"postprocessing\":{\"nested\":[true,null,{\"threshold\":0.25}],\"unicode\":\"\\u914d\\u7f6e\"},\"rank_artifact_digests_by_role\":{\"end\":[\"sha256:361e48d0308f20e32dba5fb56328baf18d72ef0ccb43b84f5c262d2a6a1fc6c8\"],\"front\":[\"sha256:2d8d693177ac44895fc02c009ec3f6af32e51eb00783c17000d7051d1662b93a\"]},\"requirements_by_role\":{\"end\":{\"activation_bytes\":4,\"backends\":[\"onnxruntime\"],\"kv_bytes\":3,\"safety_margin\":1.1,\"transient_bytes\":5,\"weight_bytes\":1,\"workspace_bytes\":2},\"front\":{\"activation_bytes\":4,\"backends\":[\"onnxruntime\"],\"kv_bytes\":3,\"safety_margin\":1.1,\"transient_bytes\":5,\"weight_bytes\":1,\"workspace_bytes\":2}},\"result_egress_role\":\"end\",\"role_state_inputs_by_role\":{\"end\":[{\"dtype\":\"float32\",\"estimated_bytes\":null,\"name\":\"state\",\"shape\":[\"batch\",-1,4]}],\"front\":[{\"dtype\":\"float32\",\"estimated_bytes\":null,\"name\":\"state\",\"shape\":[\"batch\",-1,4]}]},\"role_state_outputs_by_role\":{\"end\":[{\"dtype\":\"float32\",\"estimated_bytes\":16,\"name\":\"out\",\"shape\":[\"batch\",-1,4]}],\"front\":[{\"dtype\":\"float32\",\"estimated_bytes\":16,\"name\":\"out\",\"shape\":[\"batch\",-1,4]}]},\"selection_priority\":5,\"source\":\"PRE_SPLIT\",\"splitter\":{\"deterministic\":true,\"name\":\"fixture\",\"state_digest\":\"sha256:ad1a64057f9ab34fecfe3f4ee78660bb0316dbda9370581ffbeb1e8bddf3d598\",\"version\":\"1\"},\"tensor_degrees_by_role\":{\"end\":1,\"front\":1}}",
+    "candidate_digest": "sha256:e996f0d3c6398dd8a28e955685956288a8622b2455f2e4da7ea5fc65fa0a32d5"
+  },
+  {
+    "name": "hybrid-scatter",
+    "input": {
+      "artifacts_by_role": {
+        "end": [
+          "sha256:361e48d0308f20e32dba5fb56328baf18d72ef0ccb43b84f5c262d2a6a1fc6c8",
+          "sha256:79e68e098510a799e18ecfa47b9e5f90f2dbb61d92b6901abcf324e37e54cee9"
+        ],
+        "front": [
+          "sha256:2d8d693177ac44895fc02c009ec3f6af32e51eb00783c17000d7051d1662b93a"
+        ]
+      },
+      "cross_partition_tensors": [
+        "hidden"
+      ],
+      "estimated_costs": {
+        "fraction": 1.25,
+        "large": 9223372036854775808,
+        "negative-zero": -0.0,
+        "signed": -7,
+        "unknown": null
+      },
+      "execution_plan": {
+        "dependencies": [
+          {
+            "consumer": "end",
+            "producer": "front",
+            "tensor_edges": [
+              "hidden"
+            ]
+          }
+        ],
+        "node_roles": {
+          "a-node": "end",
+          "z-node": "front"
+        },
+        "roles": [
+          "front",
+          "end"
+        ]
+      },
+      "fragments_by_role": {
+        "end": "sha256:361e48d0308f20e32dba5fb56328baf18d72ef0ccb43b84f5c262d2a6a1fc6c8",
+        "front": "sha256:2d8d693177ac44895fc02c009ec3f6af32e51eb00783c17000d7051d1662b93a"
+      },
+      "graph_digest": "sha256:eef93e1d14482804277fca0172464032d1a4fdbcc338524059fa1e861454ad4d",
+      "hybrid_plan": {
+        "rank_labels": [
+          "S0R0",
+          "S1R0",
+          "S1R1"
+        ],
+        "redistributions": [
+          {
+            "axis": -1,
+            "complete_output": true,
+            "consumer_ranks": [
+              1,
+              2
+            ],
+            "epoch": "epoch",
+            "integrity_digest": "sha256:78587c41ed99a3375022dc28be882f72b1a608a0dac7aa900c61f48b2bb37be6",
+            "operation": "SCATTER",
+            "producer_ranks": [
+              0
+            ],
+            "source_layout_digest": "sha256:ed1b7c71c10412b617c9553e37e30fac03404dbf3c1c4fbf56caa81ec3977e74",
+            "target_layout_digest": "sha256:251f65f32852d7b27151a84bb4c0666323f2eda3ca0bd81f3d594548f21534a1",
+            "temporary_memory_bytes": 64,
+            "tensor": "hidden"
+          }
+        ],
+        "stages": 2,
+        "tensor_degrees": [
+          1,
+          2
+        ]
+      },
+      "input_ingress_role": "front",
+      "merge_kind": "NATIVE_POSTPROCESS",
+      "model": {
+        "adapter": {
+          "abi": "fixture-abi-v1",
+          "backends": [
+            "onnxruntime"
+          ],
+          "deterministic_analysis": true,
+          "graph_inspectable": true,
+          "graph_schema_digest": "sha256:1e20c7dd694f6e793a9bb08049c67f266580472837940b45e5afa0443699931c",
+          "input_schema_digest": "sha256:48ead40f3b571b24200aa70ed78cb2cc270fc39350348405fc1fa8b5949b5442",
+          "model_formats": [
+            "onnx"
+          ],
+          "name": "fixture",
+          "options_schema_digest": "sha256:42b86994847bdf859b467a0efe3d3669735a8613f283be361681429849d647fe",
+          "precisions": [
+            "float32"
+          ],
+          "result_schema_digest": "sha256:1b00cb6a7161fd1841dfeded937a734927d0ea37daecfe79eee96f4d5cb9bb45",
+          "split_schema_digest": "sha256:d7da0e471a903882466a7be7b420d9cf652dbeadee4b351ee7d298d5583977c5",
+          "splittable": true,
+          "state_digest": "sha256:4f9510f10cfed8b796f0d6067766165a92241de68fc9e1944322272fe6f9bd93",
+          "state_schema_digest": "sha256:7ecd71aa2742542271a9f2e6d86c272a694c95d45a0049fe638af7c6511774e0",
+          "tasks": [
+            "task"
+          ],
+          "version": "1"
+        },
+        "content_digest": "sha256:ed7002b439e9ac845f22357d822bac1444730fbdb6016d3ec9432297b9ec9f73",
+        "graph_digest": "sha256:eef93e1d14482804277fca0172464032d1a4fdbcc338524059fa1e861454ad4d",
+        "model_format": "onnx",
+        "model_name": "Candidate模型",
+        "precision": "float32",
+        "semantics_digest": "sha256:4ce162f873de0f7c0e1ad341334e21b2259eef05045dce753a77a7d1fd663179",
+        "source_revision": ""
+      },
+      "postprocessing": {
+        "nested": [
+          true,
+          null,
+          {
+            "threshold": 0.25
+          }
+        ],
+        "unicode": "配置"
+      },
+      "rank_artifact_digests_by_role": {
+        "end": [
+          "sha256:361e48d0308f20e32dba5fb56328baf18d72ef0ccb43b84f5c262d2a6a1fc6c8",
+          "sha256:79e68e098510a799e18ecfa47b9e5f90f2dbb61d92b6901abcf324e37e54cee9"
+        ],
+        "front": [
+          "sha256:2d8d693177ac44895fc02c009ec3f6af32e51eb00783c17000d7051d1662b93a"
+        ]
+      },
+      "requirements_by_role": {
+        "end": {
+          "activation_bytes": 4,
+          "backends": [
+            "onnxruntime"
+          ],
+          "kv_bytes": 3,
+          "safety_margin": 1.1,
+          "transient_bytes": 5,
+          "weight_bytes": 1,
+          "workspace_bytes": 2
+        },
+        "front": {
+          "activation_bytes": 4,
+          "backends": [
+            "onnxruntime"
+          ],
+          "kv_bytes": 3,
+          "safety_margin": 1.1,
+          "transient_bytes": 5,
+          "weight_bytes": 1,
+          "workspace_bytes": 2
+        }
+      },
+      "result_egress_role": "end",
+      "role_state_inputs_by_role": {
+        "end": [
+          {
+            "dtype": "float32",
+            "estimated_bytes": null,
+            "name": "state",
+            "shape": [
+              "batch",
+              -1,
+              4
+            ]
+          }
+        ],
+        "front": [
+          {
+            "dtype": "float32",
+            "estimated_bytes": null,
+            "name": "state",
+            "shape": [
+              "batch",
+              -1,
+              4
+            ]
+          }
+        ]
+      },
+      "role_state_outputs_by_role": {
+        "end": [
+          {
+            "dtype": "float32",
+            "estimated_bytes": 16,
+            "name": "out",
+            "shape": [
+              "batch",
+              -1,
+              4
+            ]
+          }
+        ],
+        "front": [
+          {
+            "dtype": "float32",
+            "estimated_bytes": 16,
+            "name": "out",
+            "shape": [
+              "batch",
+              -1,
+              4
+            ]
+          }
+        ]
+      },
+      "selection_priority": 5,
+      "source": "PRE_SPLIT",
+      "splitter": {
+        "deterministic": true,
+        "name": "fixture",
+        "state_digest": "sha256:ad1a64057f9ab34fecfe3f4ee78660bb0316dbda9370581ffbeb1e8bddf3d598",
+        "version": "1"
+      },
+      "tensor_degrees_by_role": {
+        "end": 2,
+        "front": 1
+      }
+    },
+    "canonical_json": "{\"artifacts_by_role\":{\"end\":[\"sha256:361e48d0308f20e32dba5fb56328baf18d72ef0ccb43b84f5c262d2a6a1fc6c8\",\"sha256:79e68e098510a799e18ecfa47b9e5f90f2dbb61d92b6901abcf324e37e54cee9\"],\"front\":[\"sha256:2d8d693177ac44895fc02c009ec3f6af32e51eb00783c17000d7051d1662b93a\"]},\"cross_partition_tensors\":[\"hidden\"],\"estimated_costs\":{\"fraction\":1.25,\"large\":9223372036854775808,\"negative-zero\":-0.0,\"signed\":-7,\"unknown\":null},\"execution_plan\":{\"dependencies\":[{\"consumer\":\"end\",\"producer\":\"front\",\"tensor_edges\":[\"hidden\"]}],\"node_roles\":{\"a-node\":\"end\",\"z-node\":\"front\"},\"roles\":[\"front\",\"end\"]},\"fragments_by_role\":{\"end\":\"sha256:361e48d0308f20e32dba5fb56328baf18d72ef0ccb43b84f5c262d2a6a1fc6c8\",\"front\":\"sha256:2d8d693177ac44895fc02c009ec3f6af32e51eb00783c17000d7051d1662b93a\"},\"graph_digest\":\"sha256:eef93e1d14482804277fca0172464032d1a4fdbcc338524059fa1e861454ad4d\",\"hybrid_plan\":{\"rank_labels\":[\"S0R0\",\"S1R0\",\"S1R1\"],\"redistributions\":[{\"axis\":-1,\"complete_output\":true,\"consumer_ranks\":[1,2],\"epoch\":\"epoch\",\"integrity_digest\":\"sha256:78587c41ed99a3375022dc28be882f72b1a608a0dac7aa900c61f48b2bb37be6\",\"operation\":\"SCATTER\",\"producer_ranks\":[0],\"source_layout_digest\":\"sha256:ed1b7c71c10412b617c9553e37e30fac03404dbf3c1c4fbf56caa81ec3977e74\",\"target_layout_digest\":\"sha256:251f65f32852d7b27151a84bb4c0666323f2eda3ca0bd81f3d594548f21534a1\",\"temporary_memory_bytes\":64,\"tensor\":\"hidden\"}],\"stages\":2,\"tensor_degrees\":[1,2]},\"input_ingress_role\":\"front\",\"merge_kind\":\"NATIVE_POSTPROCESS\",\"model\":{\"adapter\":{\"abi\":\"fixture-abi-v1\",\"backends\":[\"onnxruntime\"],\"deterministic_analysis\":true,\"graph_inspectable\":true,\"graph_schema_digest\":\"sha256:1e20c7dd694f6e793a9bb08049c67f266580472837940b45e5afa0443699931c\",\"input_schema_digest\":\"sha256:48ead40f3b571b24200aa70ed78cb2cc270fc39350348405fc1fa8b5949b5442\",\"model_formats\":[\"onnx\"],\"name\":\"fixture\",\"options_schema_digest\":\"sha256:42b86994847bdf859b467a0efe3d3669735a8613f283be361681429849d647fe\",\"precisions\":[\"float32\"],\"result_schema_digest\":\"sha256:1b00cb6a7161fd1841dfeded937a734927d0ea37daecfe79eee96f4d5cb9bb45\",\"split_schema_digest\":\"sha256:d7da0e471a903882466a7be7b420d9cf652dbeadee4b351ee7d298d5583977c5\",\"splittable\":true,\"state_digest\":\"sha256:4f9510f10cfed8b796f0d6067766165a92241de68fc9e1944322272fe6f9bd93\",\"state_schema_digest\":\"sha256:7ecd71aa2742542271a9f2e6d86c272a694c95d45a0049fe638af7c6511774e0\",\"tasks\":[\"task\"],\"version\":\"1\"},\"content_digest\":\"sha256:ed7002b439e9ac845f22357d822bac1444730fbdb6016d3ec9432297b9ec9f73\",\"graph_digest\":\"sha256:eef93e1d14482804277fca0172464032d1a4fdbcc338524059fa1e861454ad4d\",\"model_format\":\"onnx\",\"model_name\":\"Candidate\\u6a21\\u578b\",\"precision\":\"float32\",\"semantics_digest\":\"sha256:4ce162f873de0f7c0e1ad341334e21b2259eef05045dce753a77a7d1fd663179\",\"source_revision\":\"\"},\"postprocessing\":{\"nested\":[true,null,{\"threshold\":0.25}],\"unicode\":\"\\u914d\\u7f6e\"},\"rank_artifact_digests_by_role\":{\"end\":[\"sha256:361e48d0308f20e32dba5fb56328baf18d72ef0ccb43b84f5c262d2a6a1fc6c8\",\"sha256:79e68e098510a799e18ecfa47b9e5f90f2dbb61d92b6901abcf324e37e54cee9\"],\"front\":[\"sha256:2d8d693177ac44895fc02c009ec3f6af32e51eb00783c17000d7051d1662b93a\"]},\"requirements_by_role\":{\"end\":{\"activation_bytes\":4,\"backends\":[\"onnxruntime\"],\"kv_bytes\":3,\"safety_margin\":1.1,\"transient_bytes\":5,\"weight_bytes\":1,\"workspace_bytes\":2},\"front\":{\"activation_bytes\":4,\"backends\":[\"onnxruntime\"],\"kv_bytes\":3,\"safety_margin\":1.1,\"transient_bytes\":5,\"weight_bytes\":1,\"workspace_bytes\":2}},\"result_egress_role\":\"end\",\"role_state_inputs_by_role\":{\"end\":[{\"dtype\":\"float32\",\"estimated_bytes\":null,\"name\":\"state\",\"shape\":[\"batch\",-1,4]}],\"front\":[{\"dtype\":\"float32\",\"estimated_bytes\":null,\"name\":\"state\",\"shape\":[\"batch\",-1,4]}]},\"role_state_outputs_by_role\":{\"end\":[{\"dtype\":\"float32\",\"estimated_bytes\":16,\"name\":\"out\",\"shape\":[\"batch\",-1,4]}],\"front\":[{\"dtype\":\"float32\",\"estimated_bytes\":16,\"name\":\"out\",\"shape\":[\"batch\",-1,4]}]},\"selection_priority\":5,\"source\":\"PRE_SPLIT\",\"splitter\":{\"deterministic\":true,\"name\":\"fixture\",\"state_digest\":\"sha256:ad1a64057f9ab34fecfe3f4ee78660bb0316dbda9370581ffbeb1e8bddf3d598\",\"version\":\"1\"},\"tensor_degrees_by_role\":{\"end\":2,\"front\":1}}",
+    "candidate_digest": "sha256:ec3133ab4985c1ca3e63f5ed62c8515414c7ff75ed5473c154879ef6f1c499dd"
+  },
+  {
+    "name": "generated-nondeterministic",
+    "input": {
+      "artifacts_by_role": {
+        "end": [
+          "sha256:361e48d0308f20e32dba5fb56328baf18d72ef0ccb43b84f5c262d2a6a1fc6c8"
+        ],
+        "front": [
+          "sha256:2d8d693177ac44895fc02c009ec3f6af32e51eb00783c17000d7051d1662b93a"
+        ]
+      },
+      "cross_partition_tensors": [
+        "hidden"
+      ],
+      "estimated_costs": {
+        "fraction": 1.25,
+        "large": 9223372036854775808,
+        "negative-zero": -0.0,
+        "signed": -7,
+        "unknown": null
+      },
+      "execution_plan": {
+        "dependencies": [
+          {
+            "consumer": "end",
+            "producer": "front",
+            "tensor_edges": [
+              "hidden"
+            ]
+          }
+        ],
+        "node_roles": {
+          "a-node": "end",
+          "z-node": "front"
+        },
+        "roles": [
+          "front",
+          "end"
+        ]
+      },
+      "fragments_by_role": {
+        "end": "sha256:361e48d0308f20e32dba5fb56328baf18d72ef0ccb43b84f5c262d2a6a1fc6c8",
+        "front": "sha256:2d8d693177ac44895fc02c009ec3f6af32e51eb00783c17000d7051d1662b93a"
+      },
+      "graph_digest": "sha256:eef93e1d14482804277fca0172464032d1a4fdbcc338524059fa1e861454ad4d",
+      "hybrid_plan": null,
+      "input_ingress_role": "front",
+      "merge_kind": "NATIVE_POSTPROCESS",
+      "model": {
+        "adapter": {
+          "abi": "fixture-abi-v1",
+          "backends": [
+            "onnxruntime"
+          ],
+          "deterministic_analysis": true,
+          "graph_inspectable": true,
+          "graph_schema_digest": "sha256:1e20c7dd694f6e793a9bb08049c67f266580472837940b45e5afa0443699931c",
+          "input_schema_digest": "sha256:48ead40f3b571b24200aa70ed78cb2cc270fc39350348405fc1fa8b5949b5442",
+          "model_formats": [
+            "onnx"
+          ],
+          "name": "fixture",
+          "options_schema_digest": "sha256:42b86994847bdf859b467a0efe3d3669735a8613f283be361681429849d647fe",
+          "precisions": [
+            "float32"
+          ],
+          "result_schema_digest": "sha256:1b00cb6a7161fd1841dfeded937a734927d0ea37daecfe79eee96f4d5cb9bb45",
+          "split_schema_digest": "sha256:d7da0e471a903882466a7be7b420d9cf652dbeadee4b351ee7d298d5583977c5",
+          "splittable": true,
+          "state_digest": "sha256:4f9510f10cfed8b796f0d6067766165a92241de68fc9e1944322272fe6f9bd93",
+          "state_schema_digest": "sha256:7ecd71aa2742542271a9f2e6d86c272a694c95d45a0049fe638af7c6511774e0",
+          "tasks": [
+            "task"
+          ],
+          "version": "1"
+        },
+        "content_digest": "sha256:ed7002b439e9ac845f22357d822bac1444730fbdb6016d3ec9432297b9ec9f73",
+        "graph_digest": "sha256:eef93e1d14482804277fca0172464032d1a4fdbcc338524059fa1e861454ad4d",
+        "model_format": "onnx",
+        "model_name": "Candidate模型",
+        "precision": "float32",
+        "semantics_digest": "sha256:4ce162f873de0f7c0e1ad341334e21b2259eef05045dce753a77a7d1fd663179",
+        "source_revision": ""
+      },
+      "postprocessing": {
+        "nested": [
+          true,
+          null,
+          {
+            "threshold": 0.25
+          }
+        ],
+        "unicode": "配置"
+      },
+      "rank_artifact_digests_by_role": {
+        "end": [
+          "sha256:361e48d0308f20e32dba5fb56328baf18d72ef0ccb43b84f5c262d2a6a1fc6c8"
+        ],
+        "front": [
+          "sha256:2d8d693177ac44895fc02c009ec3f6af32e51eb00783c17000d7051d1662b93a"
+        ]
+      },
+      "requirements_by_role": {
+        "end": {
+          "activation_bytes": 4,
+          "backends": [
+            "onnxruntime"
+          ],
+          "kv_bytes": 3,
+          "safety_margin": 1.1,
+          "transient_bytes": 5,
+          "weight_bytes": 1,
+          "workspace_bytes": 2
+        },
+        "front": {
+          "activation_bytes": 4,
+          "backends": [
+            "onnxruntime"
+          ],
+          "kv_bytes": 3,
+          "safety_margin": 1.1,
+          "transient_bytes": 5,
+          "weight_bytes": 1,
+          "workspace_bytes": 2
+        }
+      },
+      "result_egress_role": "end",
+      "role_state_inputs_by_role": {
+        "end": [
+          {
+            "dtype": "float32",
+            "estimated_bytes": null,
+            "name": "state",
+            "shape": [
+              "batch",
+              -1,
+              4
+            ]
+          }
+        ],
+        "front": [
+          {
+            "dtype": "float32",
+            "estimated_bytes": null,
+            "name": "state",
+            "shape": [
+              "batch",
+              -1,
+              4
+            ]
+          }
+        ]
+      },
+      "role_state_outputs_by_role": {
+        "end": [
+          {
+            "dtype": "float32",
+            "estimated_bytes": 16,
+            "name": "out",
+            "shape": [
+              "batch",
+              -1,
+              4
+            ]
+          }
+        ],
+        "front": [
+          {
+            "dtype": "float32",
+            "estimated_bytes": 16,
+            "name": "out",
+            "shape": [
+              "batch",
+              -1,
+              4
+            ]
+          }
+        ]
+      },
+      "selection_priority": 5,
+      "source": "GENERATED",
+      "splitter": {
+        "deterministic": false,
+        "name": "fixture",
+        "state_digest": "sha256:ad1a64057f9ab34fecfe3f4ee78660bb0316dbda9370581ffbeb1e8bddf3d598",
+        "version": "1"
+      },
+      "tensor_degrees_by_role": {
+        "end": 1,
+        "front": 1
+      }
+    },
+    "canonical_json": "{\"artifacts_by_role\":{\"end\":[\"sha256:361e48d0308f20e32dba5fb56328baf18d72ef0ccb43b84f5c262d2a6a1fc6c8\"],\"front\":[\"sha256:2d8d693177ac44895fc02c009ec3f6af32e51eb00783c17000d7051d1662b93a\"]},\"cross_partition_tensors\":[\"hidden\"],\"estimated_costs\":{\"fraction\":1.25,\"large\":9223372036854775808,\"negative-zero\":-0.0,\"signed\":-7,\"unknown\":null},\"execution_plan\":{\"dependencies\":[{\"consumer\":\"end\",\"producer\":\"front\",\"tensor_edges\":[\"hidden\"]}],\"node_roles\":{\"a-node\":\"end\",\"z-node\":\"front\"},\"roles\":[\"front\",\"end\"]},\"fragments_by_role\":{\"end\":\"sha256:361e48d0308f20e32dba5fb56328baf18d72ef0ccb43b84f5c262d2a6a1fc6c8\",\"front\":\"sha256:2d8d693177ac44895fc02c009ec3f6af32e51eb00783c17000d7051d1662b93a\"},\"graph_digest\":\"sha256:eef93e1d14482804277fca0172464032d1a4fdbcc338524059fa1e861454ad4d\",\"hybrid_plan\":null,\"input_ingress_role\":\"front\",\"merge_kind\":\"NATIVE_POSTPROCESS\",\"model\":{\"adapter\":{\"abi\":\"fixture-abi-v1\",\"backends\":[\"onnxruntime\"],\"deterministic_analysis\":true,\"graph_inspectable\":true,\"graph_schema_digest\":\"sha256:1e20c7dd694f6e793a9bb08049c67f266580472837940b45e5afa0443699931c\",\"input_schema_digest\":\"sha256:48ead40f3b571b24200aa70ed78cb2cc270fc39350348405fc1fa8b5949b5442\",\"model_formats\":[\"onnx\"],\"name\":\"fixture\",\"options_schema_digest\":\"sha256:42b86994847bdf859b467a0efe3d3669735a8613f283be361681429849d647fe\",\"precisions\":[\"float32\"],\"result_schema_digest\":\"sha256:1b00cb6a7161fd1841dfeded937a734927d0ea37daecfe79eee96f4d5cb9bb45\",\"split_schema_digest\":\"sha256:d7da0e471a903882466a7be7b420d9cf652dbeadee4b351ee7d298d5583977c5\",\"splittable\":true,\"state_digest\":\"sha256:4f9510f10cfed8b796f0d6067766165a92241de68fc9e1944322272fe6f9bd93\",\"state_schema_digest\":\"sha256:7ecd71aa2742542271a9f2e6d86c272a694c95d45a0049fe638af7c6511774e0\",\"tasks\":[\"task\"],\"version\":\"1\"},\"content_digest\":\"sha256:ed7002b439e9ac845f22357d822bac1444730fbdb6016d3ec9432297b9ec9f73\",\"graph_digest\":\"sha256:eef93e1d14482804277fca0172464032d1a4fdbcc338524059fa1e861454ad4d\",\"model_format\":\"onnx\",\"model_name\":\"Candidate\\u6a21\\u578b\",\"precision\":\"float32\",\"semantics_digest\":\"sha256:4ce162f873de0f7c0e1ad341334e21b2259eef05045dce753a77a7d1fd663179\",\"source_revision\":\"\"},\"postprocessing\":{\"nested\":[true,null,{\"threshold\":0.25}],\"unicode\":\"\\u914d\\u7f6e\"},\"rank_artifact_digests_by_role\":{\"end\":[\"sha256:361e48d0308f20e32dba5fb56328baf18d72ef0ccb43b84f5c262d2a6a1fc6c8\"],\"front\":[\"sha256:2d8d693177ac44895fc02c009ec3f6af32e51eb00783c17000d7051d1662b93a\"]},\"requirements_by_role\":{\"end\":{\"activation_bytes\":4,\"backends\":[\"onnxruntime\"],\"kv_bytes\":3,\"safety_margin\":1.1,\"transient_bytes\":5,\"weight_bytes\":1,\"workspace_bytes\":2},\"front\":{\"activation_bytes\":4,\"backends\":[\"onnxruntime\"],\"kv_bytes\":3,\"safety_margin\":1.1,\"transient_bytes\":5,\"weight_bytes\":1,\"workspace_bytes\":2}},\"result_egress_role\":\"end\",\"role_state_inputs_by_role\":{\"end\":[{\"dtype\":\"float32\",\"estimated_bytes\":null,\"name\":\"state\",\"shape\":[\"batch\",-1,4]}],\"front\":[{\"dtype\":\"float32\",\"estimated_bytes\":null,\"name\":\"state\",\"shape\":[\"batch\",-1,4]}]},\"role_state_outputs_by_role\":{\"end\":[{\"dtype\":\"float32\",\"estimated_bytes\":16,\"name\":\"out\",\"shape\":[\"batch\",-1,4]}],\"front\":[{\"dtype\":\"float32\",\"estimated_bytes\":16,\"name\":\"out\",\"shape\":[\"batch\",-1,4]}]},\"selection_priority\":5,\"source\":\"GENERATED\",\"splitter\":{\"deterministic\":false,\"name\":\"fixture\",\"state_digest\":\"sha256:ad1a64057f9ab34fecfe3f4ee78660bb0316dbda9370581ffbeb1e8bddf3d598\",\"version\":\"1\"},\"tensor_degrees_by_role\":{\"end\":1,\"front\":1}}",
+    "candidate_digest": "sha256:24a08000bd148db97deafde4ac169c89f85c9fe7a745ab0f0162449da54471e1"
+  },
+  {
+    "name": "ordinary-no-rank-metadata",
+    "input": {
+      "artifacts_by_role": {
+        "end": [
+          "sha256:361e48d0308f20e32dba5fb56328baf18d72ef0ccb43b84f5c262d2a6a1fc6c8"
+        ],
+        "front": [
+          "sha256:2d8d693177ac44895fc02c009ec3f6af32e51eb00783c17000d7051d1662b93a"
+        ]
+      },
+      "cross_partition_tensors": [
+        "hidden"
+      ],
+      "estimated_costs": {
+        "fraction": 1.25,
+        "large": 9223372036854775808,
+        "negative-zero": -0.0,
+        "signed": -7,
+        "unknown": null
+      },
+      "execution_plan": {
+        "dependencies": [
+          {
+            "consumer": "end",
+            "producer": "front",
+            "tensor_edges": [
+              "hidden"
+            ]
+          }
+        ],
+        "node_roles": {
+          "a-node": "end",
+          "z-node": "front"
+        },
+        "roles": [
+          "front",
+          "end"
+        ]
+      },
+      "fragments_by_role": {
+        "end": "sha256:361e48d0308f20e32dba5fb56328baf18d72ef0ccb43b84f5c262d2a6a1fc6c8",
+        "front": "sha256:2d8d693177ac44895fc02c009ec3f6af32e51eb00783c17000d7051d1662b93a"
+      },
+      "graph_digest": "sha256:eef93e1d14482804277fca0172464032d1a4fdbcc338524059fa1e861454ad4d",
+      "hybrid_plan": null,
+      "input_ingress_role": "front",
+      "merge_kind": "NATIVE_POSTPROCESS",
+      "model": {
+        "adapter": {
+          "abi": "fixture-abi-v1",
+          "backends": [
+            "onnxruntime"
+          ],
+          "deterministic_analysis": true,
+          "graph_inspectable": true,
+          "graph_schema_digest": "sha256:1e20c7dd694f6e793a9bb08049c67f266580472837940b45e5afa0443699931c",
+          "input_schema_digest": "sha256:48ead40f3b571b24200aa70ed78cb2cc270fc39350348405fc1fa8b5949b5442",
+          "model_formats": [
+            "onnx"
+          ],
+          "name": "fixture",
+          "options_schema_digest": "sha256:42b86994847bdf859b467a0efe3d3669735a8613f283be361681429849d647fe",
+          "precisions": [
+            "float32"
+          ],
+          "result_schema_digest": "sha256:1b00cb6a7161fd1841dfeded937a734927d0ea37daecfe79eee96f4d5cb9bb45",
+          "split_schema_digest": "sha256:d7da0e471a903882466a7be7b420d9cf652dbeadee4b351ee7d298d5583977c5",
+          "splittable": true,
+          "state_digest": "sha256:4f9510f10cfed8b796f0d6067766165a92241de68fc9e1944322272fe6f9bd93",
+          "state_schema_digest": "sha256:7ecd71aa2742542271a9f2e6d86c272a694c95d45a0049fe638af7c6511774e0",
+          "tasks": [
+            "task"
+          ],
+          "version": "1"
+        },
+        "content_digest": "sha256:ed7002b439e9ac845f22357d822bac1444730fbdb6016d3ec9432297b9ec9f73",
+        "graph_digest": "sha256:eef93e1d14482804277fca0172464032d1a4fdbcc338524059fa1e861454ad4d",
+        "model_format": "onnx",
+        "model_name": "Candidate模型",
+        "precision": "float32",
+        "semantics_digest": "sha256:4ce162f873de0f7c0e1ad341334e21b2259eef05045dce753a77a7d1fd663179",
+        "source_revision": ""
+      },
+      "postprocessing": {
+        "nested": [
+          true,
+          null,
+          {
+            "threshold": 0.25
+          }
+        ],
+        "unicode": "配置"
+      },
+      "rank_artifact_digests_by_role": {},
+      "requirements_by_role": {
+        "end": {
+          "activation_bytes": 4,
+          "backends": [
+            "onnxruntime"
+          ],
+          "kv_bytes": 3,
+          "safety_margin": 1.1,
+          "transient_bytes": 5,
+          "weight_bytes": 1,
+          "workspace_bytes": 2
+        },
+        "front": {
+          "activation_bytes": 4,
+          "backends": [
+            "onnxruntime"
+          ],
+          "kv_bytes": 3,
+          "safety_margin": 1.1,
+          "transient_bytes": 5,
+          "weight_bytes": 1,
+          "workspace_bytes": 2
+        }
+      },
+      "result_egress_role": "end",
+      "role_state_inputs_by_role": {
+        "end": [
+          {
+            "dtype": "float32",
+            "estimated_bytes": null,
+            "name": "state",
+            "shape": [
+              "batch",
+              -1,
+              4
+            ]
+          }
+        ],
+        "front": [
+          {
+            "dtype": "float32",
+            "estimated_bytes": null,
+            "name": "state",
+            "shape": [
+              "batch",
+              -1,
+              4
+            ]
+          }
+        ]
+      },
+      "role_state_outputs_by_role": {
+        "end": [
+          {
+            "dtype": "float32",
+            "estimated_bytes": 16,
+            "name": "out",
+            "shape": [
+              "batch",
+              -1,
+              4
+            ]
+          }
+        ],
+        "front": [
+          {
+            "dtype": "float32",
+            "estimated_bytes": 16,
+            "name": "out",
+            "shape": [
+              "batch",
+              -1,
+              4
+            ]
+          }
+        ]
+      },
+      "selection_priority": 5,
+      "source": "PRE_SPLIT",
+      "splitter": {
+        "deterministic": true,
+        "name": "fixture",
+        "state_digest": "sha256:ad1a64057f9ab34fecfe3f4ee78660bb0316dbda9370581ffbeb1e8bddf3d598",
+        "version": "1"
+      },
+      "tensor_degrees_by_role": {}
+    },
+    "canonical_json": "{\"artifacts_by_role\":{\"end\":[\"sha256:361e48d0308f20e32dba5fb56328baf18d72ef0ccb43b84f5c262d2a6a1fc6c8\"],\"front\":[\"sha256:2d8d693177ac44895fc02c009ec3f6af32e51eb00783c17000d7051d1662b93a\"]},\"cross_partition_tensors\":[\"hidden\"],\"estimated_costs\":{\"fraction\":1.25,\"large\":9223372036854775808,\"negative-zero\":-0.0,\"signed\":-7,\"unknown\":null},\"execution_plan\":{\"dependencies\":[{\"consumer\":\"end\",\"producer\":\"front\",\"tensor_edges\":[\"hidden\"]}],\"node_roles\":{\"a-node\":\"end\",\"z-node\":\"front\"},\"roles\":[\"front\",\"end\"]},\"fragments_by_role\":{\"end\":\"sha256:361e48d0308f20e32dba5fb56328baf18d72ef0ccb43b84f5c262d2a6a1fc6c8\",\"front\":\"sha256:2d8d693177ac44895fc02c009ec3f6af32e51eb00783c17000d7051d1662b93a\"},\"graph_digest\":\"sha256:eef93e1d14482804277fca0172464032d1a4fdbcc338524059fa1e861454ad4d\",\"hybrid_plan\":null,\"input_ingress_role\":\"front\",\"merge_kind\":\"NATIVE_POSTPROCESS\",\"model\":{\"adapter\":{\"abi\":\"fixture-abi-v1\",\"backends\":[\"onnxruntime\"],\"deterministic_analysis\":true,\"graph_inspectable\":true,\"graph_schema_digest\":\"sha256:1e20c7dd694f6e793a9bb08049c67f266580472837940b45e5afa0443699931c\",\"input_schema_digest\":\"sha256:48ead40f3b571b24200aa70ed78cb2cc270fc39350348405fc1fa8b5949b5442\",\"model_formats\":[\"onnx\"],\"name\":\"fixture\",\"options_schema_digest\":\"sha256:42b86994847bdf859b467a0efe3d3669735a8613f283be361681429849d647fe\",\"precisions\":[\"float32\"],\"result_schema_digest\":\"sha256:1b00cb6a7161fd1841dfeded937a734927d0ea37daecfe79eee96f4d5cb9bb45\",\"split_schema_digest\":\"sha256:d7da0e471a903882466a7be7b420d9cf652dbeadee4b351ee7d298d5583977c5\",\"splittable\":true,\"state_digest\":\"sha256:4f9510f10cfed8b796f0d6067766165a92241de68fc9e1944322272fe6f9bd93\",\"state_schema_digest\":\"sha256:7ecd71aa2742542271a9f2e6d86c272a694c95d45a0049fe638af7c6511774e0\",\"tasks\":[\"task\"],\"version\":\"1\"},\"content_digest\":\"sha256:ed7002b439e9ac845f22357d822bac1444730fbdb6016d3ec9432297b9ec9f73\",\"graph_digest\":\"sha256:eef93e1d14482804277fca0172464032d1a4fdbcc338524059fa1e861454ad4d\",\"model_format\":\"onnx\",\"model_name\":\"Candidate\\u6a21\\u578b\",\"precision\":\"float32\",\"semantics_digest\":\"sha256:4ce162f873de0f7c0e1ad341334e21b2259eef05045dce753a77a7d1fd663179\",\"source_revision\":\"\"},\"postprocessing\":{\"nested\":[true,null,{\"threshold\":0.25}],\"unicode\":\"\\u914d\\u7f6e\"},\"rank_artifact_digests_by_role\":{},\"requirements_by_role\":{\"end\":{\"activation_bytes\":4,\"backends\":[\"onnxruntime\"],\"kv_bytes\":3,\"safety_margin\":1.1,\"transient_bytes\":5,\"weight_bytes\":1,\"workspace_bytes\":2},\"front\":{\"activation_bytes\":4,\"backends\":[\"onnxruntime\"],\"kv_bytes\":3,\"safety_margin\":1.1,\"transient_bytes\":5,\"weight_bytes\":1,\"workspace_bytes\":2}},\"result_egress_role\":\"end\",\"role_state_inputs_by_role\":{\"end\":[{\"dtype\":\"float32\",\"estimated_bytes\":null,\"name\":\"state\",\"shape\":[\"batch\",-1,4]}],\"front\":[{\"dtype\":\"float32\",\"estimated_bytes\":null,\"name\":\"state\",\"shape\":[\"batch\",-1,4]}]},\"role_state_outputs_by_role\":{\"end\":[{\"dtype\":\"float32\",\"estimated_bytes\":16,\"name\":\"out\",\"shape\":[\"batch\",-1,4]}],\"front\":[{\"dtype\":\"float32\",\"estimated_bytes\":16,\"name\":\"out\",\"shape\":[\"batch\",-1,4]}]},\"selection_priority\":5,\"source\":\"PRE_SPLIT\",\"splitter\":{\"deterministic\":true,\"name\":\"fixture\",\"state_digest\":\"sha256:ad1a64057f9ab34fecfe3f4ee78660bb0316dbda9370581ffbeb1e8bddf3d598\",\"version\":\"1\"},\"tensor_degrees_by_role\":{}}",
+    "candidate_digest": "sha256:ee9e437c0da65b43491a3b2d43e1806f284e127b4ec6678ece708b7e7417dbc3"
+  },
+  {
+    "name": "unknown-resource",
+    "input": {
+      "artifacts_by_role": {
+        "end": [
+          "sha256:361e48d0308f20e32dba5fb56328baf18d72ef0ccb43b84f5c262d2a6a1fc6c8"
+        ],
+        "front": [
+          "sha256:2d8d693177ac44895fc02c009ec3f6af32e51eb00783c17000d7051d1662b93a"
+        ]
+      },
+      "cross_partition_tensors": [
+        "hidden"
+      ],
+      "estimated_costs": {
+        "fraction": 1.25,
+        "large": 9223372036854775808,
+        "negative-zero": -0.0,
+        "signed": -7,
+        "unknown": null
+      },
+      "execution_plan": {
+        "dependencies": [
+          {
+            "consumer": "end",
+            "producer": "front",
+            "tensor_edges": [
+              "hidden"
+            ]
+          }
+        ],
+        "node_roles": {
+          "a-node": "end",
+          "z-node": "front"
+        },
+        "roles": [
+          "front",
+          "end"
+        ]
+      },
+      "fragments_by_role": {
+        "end": "sha256:361e48d0308f20e32dba5fb56328baf18d72ef0ccb43b84f5c262d2a6a1fc6c8",
+        "front": "sha256:2d8d693177ac44895fc02c009ec3f6af32e51eb00783c17000d7051d1662b93a"
+      },
+      "graph_digest": "sha256:eef93e1d14482804277fca0172464032d1a4fdbcc338524059fa1e861454ad4d",
+      "hybrid_plan": null,
+      "input_ingress_role": "front",
+      "merge_kind": "NATIVE_POSTPROCESS",
+      "model": {
+        "adapter": {
+          "abi": "fixture-abi-v1",
+          "backends": [
+            "onnxruntime"
+          ],
+          "deterministic_analysis": true,
+          "graph_inspectable": true,
+          "graph_schema_digest": "sha256:1e20c7dd694f6e793a9bb08049c67f266580472837940b45e5afa0443699931c",
+          "input_schema_digest": "sha256:48ead40f3b571b24200aa70ed78cb2cc270fc39350348405fc1fa8b5949b5442",
+          "model_formats": [
+            "onnx"
+          ],
+          "name": "fixture",
+          "options_schema_digest": "sha256:42b86994847bdf859b467a0efe3d3669735a8613f283be361681429849d647fe",
+          "precisions": [
+            "float32"
+          ],
+          "result_schema_digest": "sha256:1b00cb6a7161fd1841dfeded937a734927d0ea37daecfe79eee96f4d5cb9bb45",
+          "split_schema_digest": "sha256:d7da0e471a903882466a7be7b420d9cf652dbeadee4b351ee7d298d5583977c5",
+          "splittable": true,
+          "state_digest": "sha256:4f9510f10cfed8b796f0d6067766165a92241de68fc9e1944322272fe6f9bd93",
+          "state_schema_digest": "sha256:7ecd71aa2742542271a9f2e6d86c272a694c95d45a0049fe638af7c6511774e0",
+          "tasks": [
+            "task"
+          ],
+          "version": "1"
+        },
+        "content_digest": "sha256:ed7002b439e9ac845f22357d822bac1444730fbdb6016d3ec9432297b9ec9f73",
+        "graph_digest": "sha256:eef93e1d14482804277fca0172464032d1a4fdbcc338524059fa1e861454ad4d",
+        "model_format": "onnx",
+        "model_name": "Candidate模型",
+        "precision": "float32",
+        "semantics_digest": "sha256:4ce162f873de0f7c0e1ad341334e21b2259eef05045dce753a77a7d1fd663179",
+        "source_revision": ""
+      },
+      "postprocessing": {
+        "nested": [
+          true,
+          null,
+          {
+            "threshold": 0.25
+          }
+        ],
+        "unicode": "配置"
+      },
+      "rank_artifact_digests_by_role": {
+        "end": [
+          "sha256:361e48d0308f20e32dba5fb56328baf18d72ef0ccb43b84f5c262d2a6a1fc6c8"
+        ],
+        "front": [
+          "sha256:2d8d693177ac44895fc02c009ec3f6af32e51eb00783c17000d7051d1662b93a"
+        ]
+      },
+      "requirements_by_role": {
+        "end": {
+          "activation_bytes": 4,
+          "backends": [
+            "onnxruntime"
+          ],
+          "kv_bytes": null,
+          "safety_margin": 1.1,
+          "transient_bytes": 5,
+          "weight_bytes": 1,
+          "workspace_bytes": 2
+        },
+        "front": {
+          "activation_bytes": 4,
+          "backends": [
+            "onnxruntime"
+          ],
+          "kv_bytes": null,
+          "safety_margin": 1.1,
+          "transient_bytes": 5,
+          "weight_bytes": 1,
+          "workspace_bytes": 2
+        }
+      },
+      "result_egress_role": "end",
+      "role_state_inputs_by_role": {
+        "end": [
+          {
+            "dtype": "float32",
+            "estimated_bytes": null,
+            "name": "state",
+            "shape": [
+              "batch",
+              -1,
+              4
+            ]
+          }
+        ],
+        "front": [
+          {
+            "dtype": "float32",
+            "estimated_bytes": null,
+            "name": "state",
+            "shape": [
+              "batch",
+              -1,
+              4
+            ]
+          }
+        ]
+      },
+      "role_state_outputs_by_role": {
+        "end": [
+          {
+            "dtype": "float32",
+            "estimated_bytes": 16,
+            "name": "out",
+            "shape": [
+              "batch",
+              -1,
+              4
+            ]
+          }
+        ],
+        "front": [
+          {
+            "dtype": "float32",
+            "estimated_bytes": 16,
+            "name": "out",
+            "shape": [
+              "batch",
+              -1,
+              4
+            ]
+          }
+        ]
+      },
+      "selection_priority": 5,
+      "source": "PRE_SPLIT",
+      "splitter": {
+        "deterministic": true,
+        "name": "fixture",
+        "state_digest": "sha256:ad1a64057f9ab34fecfe3f4ee78660bb0316dbda9370581ffbeb1e8bddf3d598",
+        "version": "1"
+      },
+      "tensor_degrees_by_role": {
+        "end": 1,
+        "front": 1
+      }
+    },
+    "canonical_json": "{\"artifacts_by_role\":{\"end\":[\"sha256:361e48d0308f20e32dba5fb56328baf18d72ef0ccb43b84f5c262d2a6a1fc6c8\"],\"front\":[\"sha256:2d8d693177ac44895fc02c009ec3f6af32e51eb00783c17000d7051d1662b93a\"]},\"cross_partition_tensors\":[\"hidden\"],\"estimated_costs\":{\"fraction\":1.25,\"large\":9223372036854775808,\"negative-zero\":-0.0,\"signed\":-7,\"unknown\":null},\"execution_plan\":{\"dependencies\":[{\"consumer\":\"end\",\"producer\":\"front\",\"tensor_edges\":[\"hidden\"]}],\"node_roles\":{\"a-node\":\"end\",\"z-node\":\"front\"},\"roles\":[\"front\",\"end\"]},\"fragments_by_role\":{\"end\":\"sha256:361e48d0308f20e32dba5fb56328baf18d72ef0ccb43b84f5c262d2a6a1fc6c8\",\"front\":\"sha256:2d8d693177ac44895fc02c009ec3f6af32e51eb00783c17000d7051d1662b93a\"},\"graph_digest\":\"sha256:eef93e1d14482804277fca0172464032d1a4fdbcc338524059fa1e861454ad4d\",\"hybrid_plan\":null,\"input_ingress_role\":\"front\",\"merge_kind\":\"NATIVE_POSTPROCESS\",\"model\":{\"adapter\":{\"abi\":\"fixture-abi-v1\",\"backends\":[\"onnxruntime\"],\"deterministic_analysis\":true,\"graph_inspectable\":true,\"graph_schema_digest\":\"sha256:1e20c7dd694f6e793a9bb08049c67f266580472837940b45e5afa0443699931c\",\"input_schema_digest\":\"sha256:48ead40f3b571b24200aa70ed78cb2cc270fc39350348405fc1fa8b5949b5442\",\"model_formats\":[\"onnx\"],\"name\":\"fixture\",\"options_schema_digest\":\"sha256:42b86994847bdf859b467a0efe3d3669735a8613f283be361681429849d647fe\",\"precisions\":[\"float32\"],\"result_schema_digest\":\"sha256:1b00cb6a7161fd1841dfeded937a734927d0ea37daecfe79eee96f4d5cb9bb45\",\"split_schema_digest\":\"sha256:d7da0e471a903882466a7be7b420d9cf652dbeadee4b351ee7d298d5583977c5\",\"splittable\":true,\"state_digest\":\"sha256:4f9510f10cfed8b796f0d6067766165a92241de68fc9e1944322272fe6f9bd93\",\"state_schema_digest\":\"sha256:7ecd71aa2742542271a9f2e6d86c272a694c95d45a0049fe638af7c6511774e0\",\"tasks\":[\"task\"],\"version\":\"1\"},\"content_digest\":\"sha256:ed7002b439e9ac845f22357d822bac1444730fbdb6016d3ec9432297b9ec9f73\",\"graph_digest\":\"sha256:eef93e1d14482804277fca0172464032d1a4fdbcc338524059fa1e861454ad4d\",\"model_format\":\"onnx\",\"model_name\":\"Candidate\\u6a21\\u578b\",\"precision\":\"float32\",\"semantics_digest\":\"sha256:4ce162f873de0f7c0e1ad341334e21b2259eef05045dce753a77a7d1fd663179\",\"source_revision\":\"\"},\"postprocessing\":{\"nested\":[true,null,{\"threshold\":0.25}],\"unicode\":\"\\u914d\\u7f6e\"},\"rank_artifact_digests_by_role\":{\"end\":[\"sha256:361e48d0308f20e32dba5fb56328baf18d72ef0ccb43b84f5c262d2a6a1fc6c8\"],\"front\":[\"sha256:2d8d693177ac44895fc02c009ec3f6af32e51eb00783c17000d7051d1662b93a\"]},\"requirements_by_role\":{\"end\":{\"activation_bytes\":4,\"backends\":[\"onnxruntime\"],\"kv_bytes\":null,\"safety_margin\":1.1,\"transient_bytes\":5,\"weight_bytes\":1,\"workspace_bytes\":2},\"front\":{\"activation_bytes\":4,\"backends\":[\"onnxruntime\"],\"kv_bytes\":null,\"safety_margin\":1.1,\"transient_bytes\":5,\"weight_bytes\":1,\"workspace_bytes\":2}},\"result_egress_role\":\"end\",\"role_state_inputs_by_role\":{\"end\":[{\"dtype\":\"float32\",\"estimated_bytes\":null,\"name\":\"state\",\"shape\":[\"batch\",-1,4]}],\"front\":[{\"dtype\":\"float32\",\"estimated_bytes\":null,\"name\":\"state\",\"shape\":[\"batch\",-1,4]}]},\"role_state_outputs_by_role\":{\"end\":[{\"dtype\":\"float32\",\"estimated_bytes\":16,\"name\":\"out\",\"shape\":[\"batch\",-1,4]}],\"front\":[{\"dtype\":\"float32\",\"estimated_bytes\":16,\"name\":\"out\",\"shape\":[\"batch\",-1,4]}]},\"selection_priority\":5,\"source\":\"PRE_SPLIT\",\"splitter\":{\"deterministic\":true,\"name\":\"fixture\",\"state_digest\":\"sha256:ad1a64057f9ab34fecfe3f4ee78660bb0316dbda9370581ffbeb1e8bddf3d598\",\"version\":\"1\"},\"tensor_degrees_by_role\":{\"end\":1,\"front\":1}}",
+    "candidate_digest": "sha256:308d79dba2da097a4bc4a65c42a524e16ff67200c8e2eda947cac77c01cb8cbd"
+  },
+  {
+    "name": "hybrid-gather",
+    "input": {
+      "artifacts_by_role": {
+        "end": [
+          "sha256:c4e6ef2387a3f64bd47fd5739d9dae9d8b01174a9f38ab329aa809d68ff519d7"
+        ],
+        "front": [
+          "sha256:f1adacd3a2fac0cc2cf50d5ab27da822e0258df71962511b95120ebd3077dfec",
+          "sha256:69f6830c20201fe15970f281837cfb7c21aabe66d2b9fb9da0d3e3ab30afb752"
+        ]
+      },
+      "cross_partition_tensors": [
+        "hidden"
+      ],
+      "estimated_costs": {
+        "fraction": 1.25,
+        "large": 9223372036854775808,
+        "negative-zero": -0.0,
+        "signed": -7,
+        "unknown": null
+      },
+      "execution_plan": {
+        "dependencies": [
+          {
+            "consumer": "end",
+            "producer": "front",
+            "tensor_edges": [
+              "hidden"
+            ]
+          }
+        ],
+        "node_roles": {
+          "a-node": "end",
+          "z-node": "front"
+        },
+        "roles": [
+          "front",
+          "end"
+        ]
+      },
+      "fragments_by_role": {
+        "end": "sha256:361e48d0308f20e32dba5fb56328baf18d72ef0ccb43b84f5c262d2a6a1fc6c8",
+        "front": "sha256:2d8d693177ac44895fc02c009ec3f6af32e51eb00783c17000d7051d1662b93a"
+      },
+      "graph_digest": "sha256:eef93e1d14482804277fca0172464032d1a4fdbcc338524059fa1e861454ad4d",
+      "hybrid_plan": {
+        "rank_labels": [
+          "S0R0",
+          "S0R1",
+          "S1R0"
+        ],
+        "redistributions": [
+          {
+            "axis": -1,
+            "complete_output": true,
+            "consumer_ranks": [
+              2
+            ],
+            "epoch": "epoch",
+            "integrity_digest": "sha256:78587c41ed99a3375022dc28be882f72b1a608a0dac7aa900c61f48b2bb37be6",
+            "operation": "GATHER",
+            "producer_ranks": [
+              0,
+              1
+            ],
+            "source_layout_digest": "sha256:ed1b7c71c10412b617c9553e37e30fac03404dbf3c1c4fbf56caa81ec3977e74",
+            "target_layout_digest": "sha256:251f65f32852d7b27151a84bb4c0666323f2eda3ca0bd81f3d594548f21534a1",
+            "temporary_memory_bytes": 64,
+            "tensor": "hidden"
+          }
+        ],
+        "stages": 2,
+        "tensor_degrees": [
+          2,
+          1
+        ]
+      },
+      "input_ingress_role": "front",
+      "merge_kind": "NATIVE_POSTPROCESS",
+      "model": {
+        "adapter": {
+          "abi": "fixture-abi-v1",
+          "backends": [
+            "onnxruntime"
+          ],
+          "deterministic_analysis": true,
+          "graph_inspectable": true,
+          "graph_schema_digest": "sha256:1e20c7dd694f6e793a9bb08049c67f266580472837940b45e5afa0443699931c",
+          "input_schema_digest": "sha256:48ead40f3b571b24200aa70ed78cb2cc270fc39350348405fc1fa8b5949b5442",
+          "model_formats": [
+            "onnx"
+          ],
+          "name": "fixture",
+          "options_schema_digest": "sha256:42b86994847bdf859b467a0efe3d3669735a8613f283be361681429849d647fe",
+          "precisions": [
+            "float32"
+          ],
+          "result_schema_digest": "sha256:1b00cb6a7161fd1841dfeded937a734927d0ea37daecfe79eee96f4d5cb9bb45",
+          "split_schema_digest": "sha256:d7da0e471a903882466a7be7b420d9cf652dbeadee4b351ee7d298d5583977c5",
+          "splittable": true,
+          "state_digest": "sha256:4f9510f10cfed8b796f0d6067766165a92241de68fc9e1944322272fe6f9bd93",
+          "state_schema_digest": "sha256:7ecd71aa2742542271a9f2e6d86c272a694c95d45a0049fe638af7c6511774e0",
+          "tasks": [
+            "task"
+          ],
+          "version": "1"
+        },
+        "content_digest": "sha256:ed7002b439e9ac845f22357d822bac1444730fbdb6016d3ec9432297b9ec9f73",
+        "graph_digest": "sha256:eef93e1d14482804277fca0172464032d1a4fdbcc338524059fa1e861454ad4d",
+        "model_format": "onnx",
+        "model_name": "Candidate模型",
+        "precision": "float32",
+        "semantics_digest": "sha256:4ce162f873de0f7c0e1ad341334e21b2259eef05045dce753a77a7d1fd663179",
+        "source_revision": ""
+      },
+      "postprocessing": {
+        "nested": [
+          true,
+          null,
+          {
+            "threshold": 0.25
+          }
+        ],
+        "unicode": "配置"
+      },
+      "rank_artifact_digests_by_role": {
+        "end": [
+          "sha256:c4e6ef2387a3f64bd47fd5739d9dae9d8b01174a9f38ab329aa809d68ff519d7"
+        ],
+        "front": [
+          "sha256:f1adacd3a2fac0cc2cf50d5ab27da822e0258df71962511b95120ebd3077dfec",
+          "sha256:69f6830c20201fe15970f281837cfb7c21aabe66d2b9fb9da0d3e3ab30afb752"
+        ]
+      },
+      "requirements_by_role": {
+        "end": {
+          "activation_bytes": 4,
+          "backends": [
+            "onnxruntime"
+          ],
+          "kv_bytes": 3,
+          "safety_margin": 1.1,
+          "transient_bytes": 5,
+          "weight_bytes": 1,
+          "workspace_bytes": 2
+        },
+        "front": {
+          "activation_bytes": 4,
+          "backends": [
+            "onnxruntime"
+          ],
+          "kv_bytes": 3,
+          "safety_margin": 1.1,
+          "transient_bytes": 5,
+          "weight_bytes": 1,
+          "workspace_bytes": 2
+        }
+      },
+      "result_egress_role": "end",
+      "role_state_inputs_by_role": {
+        "end": [
+          {
+            "dtype": "float32",
+            "estimated_bytes": null,
+            "name": "state",
+            "shape": [
+              "batch",
+              -1,
+              4
+            ]
+          }
+        ],
+        "front": [
+          {
+            "dtype": "float32",
+            "estimated_bytes": null,
+            "name": "state",
+            "shape": [
+              "batch",
+              -1,
+              4
+            ]
+          }
+        ]
+      },
+      "role_state_outputs_by_role": {
+        "end": [
+          {
+            "dtype": "float32",
+            "estimated_bytes": 16,
+            "name": "out",
+            "shape": [
+              "batch",
+              -1,
+              4
+            ]
+          }
+        ],
+        "front": [
+          {
+            "dtype": "float32",
+            "estimated_bytes": 16,
+            "name": "out",
+            "shape": [
+              "batch",
+              -1,
+              4
+            ]
+          }
+        ]
+      },
+      "selection_priority": 5,
+      "source": "PRE_SPLIT",
+      "splitter": {
+        "deterministic": true,
+        "name": "fixture",
+        "state_digest": "sha256:ad1a64057f9ab34fecfe3f4ee78660bb0316dbda9370581ffbeb1e8bddf3d598",
+        "version": "1"
+      },
+      "tensor_degrees_by_role": {
+        "end": 1,
+        "front": 2
+      }
+    },
+    "canonical_json": "{\"artifacts_by_role\":{\"end\":[\"sha256:c4e6ef2387a3f64bd47fd5739d9dae9d8b01174a9f38ab329aa809d68ff519d7\"],\"front\":[\"sha256:f1adacd3a2fac0cc2cf50d5ab27da822e0258df71962511b95120ebd3077dfec\",\"sha256:69f6830c20201fe15970f281837cfb7c21aabe66d2b9fb9da0d3e3ab30afb752\"]},\"cross_partition_tensors\":[\"hidden\"],\"estimated_costs\":{\"fraction\":1.25,\"large\":9223372036854775808,\"negative-zero\":-0.0,\"signed\":-7,\"unknown\":null},\"execution_plan\":{\"dependencies\":[{\"consumer\":\"end\",\"producer\":\"front\",\"tensor_edges\":[\"hidden\"]}],\"node_roles\":{\"a-node\":\"end\",\"z-node\":\"front\"},\"roles\":[\"front\",\"end\"]},\"fragments_by_role\":{\"end\":\"sha256:361e48d0308f20e32dba5fb56328baf18d72ef0ccb43b84f5c262d2a6a1fc6c8\",\"front\":\"sha256:2d8d693177ac44895fc02c009ec3f6af32e51eb00783c17000d7051d1662b93a\"},\"graph_digest\":\"sha256:eef93e1d14482804277fca0172464032d1a4fdbcc338524059fa1e861454ad4d\",\"hybrid_plan\":{\"rank_labels\":[\"S0R0\",\"S0R1\",\"S1R0\"],\"redistributions\":[{\"axis\":-1,\"complete_output\":true,\"consumer_ranks\":[2],\"epoch\":\"epoch\",\"integrity_digest\":\"sha256:78587c41ed99a3375022dc28be882f72b1a608a0dac7aa900c61f48b2bb37be6\",\"operation\":\"GATHER\",\"producer_ranks\":[0,1],\"source_layout_digest\":\"sha256:ed1b7c71c10412b617c9553e37e30fac03404dbf3c1c4fbf56caa81ec3977e74\",\"target_layout_digest\":\"sha256:251f65f32852d7b27151a84bb4c0666323f2eda3ca0bd81f3d594548f21534a1\",\"temporary_memory_bytes\":64,\"tensor\":\"hidden\"}],\"stages\":2,\"tensor_degrees\":[2,1]},\"input_ingress_role\":\"front\",\"merge_kind\":\"NATIVE_POSTPROCESS\",\"model\":{\"adapter\":{\"abi\":\"fixture-abi-v1\",\"backends\":[\"onnxruntime\"],\"deterministic_analysis\":true,\"graph_inspectable\":true,\"graph_schema_digest\":\"sha256:1e20c7dd694f6e793a9bb08049c67f266580472837940b45e5afa0443699931c\",\"input_schema_digest\":\"sha256:48ead40f3b571b24200aa70ed78cb2cc270fc39350348405fc1fa8b5949b5442\",\"model_formats\":[\"onnx\"],\"name\":\"fixture\",\"options_schema_digest\":\"sha256:42b86994847bdf859b467a0efe3d3669735a8613f283be361681429849d647fe\",\"precisions\":[\"float32\"],\"result_schema_digest\":\"sha256:1b00cb6a7161fd1841dfeded937a734927d0ea37daecfe79eee96f4d5cb9bb45\",\"split_schema_digest\":\"sha256:d7da0e471a903882466a7be7b420d9cf652dbeadee4b351ee7d298d5583977c5\",\"splittable\":true,\"state_digest\":\"sha256:4f9510f10cfed8b796f0d6067766165a92241de68fc9e1944322272fe6f9bd93\",\"state_schema_digest\":\"sha256:7ecd71aa2742542271a9f2e6d86c272a694c95d45a0049fe638af7c6511774e0\",\"tasks\":[\"task\"],\"version\":\"1\"},\"content_digest\":\"sha256:ed7002b439e9ac845f22357d822bac1444730fbdb6016d3ec9432297b9ec9f73\",\"graph_digest\":\"sha256:eef93e1d14482804277fca0172464032d1a4fdbcc338524059fa1e861454ad4d\",\"model_format\":\"onnx\",\"model_name\":\"Candidate\\u6a21\\u578b\",\"precision\":\"float32\",\"semantics_digest\":\"sha256:4ce162f873de0f7c0e1ad341334e21b2259eef05045dce753a77a7d1fd663179\",\"source_revision\":\"\"},\"postprocessing\":{\"nested\":[true,null,{\"threshold\":0.25}],\"unicode\":\"\\u914d\\u7f6e\"},\"rank_artifact_digests_by_role\":{\"end\":[\"sha256:c4e6ef2387a3f64bd47fd5739d9dae9d8b01174a9f38ab329aa809d68ff519d7\"],\"front\":[\"sha256:f1adacd3a2fac0cc2cf50d5ab27da822e0258df71962511b95120ebd3077dfec\",\"sha256:69f6830c20201fe15970f281837cfb7c21aabe66d2b9fb9da0d3e3ab30afb752\"]},\"requirements_by_role\":{\"end\":{\"activation_bytes\":4,\"backends\":[\"onnxruntime\"],\"kv_bytes\":3,\"safety_margin\":1.1,\"transient_bytes\":5,\"weight_bytes\":1,\"workspace_bytes\":2},\"front\":{\"activation_bytes\":4,\"backends\":[\"onnxruntime\"],\"kv_bytes\":3,\"safety_margin\":1.1,\"transient_bytes\":5,\"weight_bytes\":1,\"workspace_bytes\":2}},\"result_egress_role\":\"end\",\"role_state_inputs_by_role\":{\"end\":[{\"dtype\":\"float32\",\"estimated_bytes\":null,\"name\":\"state\",\"shape\":[\"batch\",-1,4]}],\"front\":[{\"dtype\":\"float32\",\"estimated_bytes\":null,\"name\":\"state\",\"shape\":[\"batch\",-1,4]}]},\"role_state_outputs_by_role\":{\"end\":[{\"dtype\":\"float32\",\"estimated_bytes\":16,\"name\":\"out\",\"shape\":[\"batch\",-1,4]}],\"front\":[{\"dtype\":\"float32\",\"estimated_bytes\":16,\"name\":\"out\",\"shape\":[\"batch\",-1,4]}]},\"selection_priority\":5,\"source\":\"PRE_SPLIT\",\"splitter\":{\"deterministic\":true,\"name\":\"fixture\",\"state_digest\":\"sha256:ad1a64057f9ab34fecfe3f4ee78660bb0316dbda9370581ffbeb1e8bddf3d598\",\"version\":\"1\"},\"tensor_degrees_by_role\":{\"end\":1,\"front\":2}}",
+    "candidate_digest": "sha256:48c8432637e07b15b8be9fa571e75947d96cef96c885f562151badd85d7d385e"
+  },
+  {
+    "name": "hybrid-reshard",
+    "input": {
+      "artifacts_by_role": {
+        "end": [
+          "sha256:c4e6ef2387a3f64bd47fd5739d9dae9d8b01174a9f38ab329aa809d68ff519d7",
+          "sha256:79e68e098510a799e18ecfa47b9e5f90f2dbb61d92b6901abcf324e37e54cee9"
+        ],
+        "front": [
+          "sha256:f1adacd3a2fac0cc2cf50d5ab27da822e0258df71962511b95120ebd3077dfec",
+          "sha256:69f6830c20201fe15970f281837cfb7c21aabe66d2b9fb9da0d3e3ab30afb752"
+        ]
+      },
+      "cross_partition_tensors": [
+        "hidden"
+      ],
+      "estimated_costs": {
+        "fraction": 1.25,
+        "large": 9223372036854775808,
+        "negative-zero": -0.0,
+        "signed": -7,
+        "unknown": null
+      },
+      "execution_plan": {
+        "dependencies": [
+          {
+            "consumer": "end",
+            "producer": "front",
+            "tensor_edges": [
+              "hidden"
+            ]
+          }
+        ],
+        "node_roles": {
+          "a-node": "end",
+          "z-node": "front"
+        },
+        "roles": [
+          "front",
+          "end"
+        ]
+      },
+      "fragments_by_role": {
+        "end": "sha256:361e48d0308f20e32dba5fb56328baf18d72ef0ccb43b84f5c262d2a6a1fc6c8",
+        "front": "sha256:2d8d693177ac44895fc02c009ec3f6af32e51eb00783c17000d7051d1662b93a"
+      },
+      "graph_digest": "sha256:eef93e1d14482804277fca0172464032d1a4fdbcc338524059fa1e861454ad4d",
+      "hybrid_plan": {
+        "rank_labels": [
+          "S0R0",
+          "S0R1",
+          "S1R0",
+          "S1R1"
+        ],
+        "redistributions": [
+          {
+            "axis": -1,
+            "complete_output": true,
+            "consumer_ranks": [
+              2,
+              3
+            ],
+            "epoch": "epoch",
+            "integrity_digest": "sha256:78587c41ed99a3375022dc28be882f72b1a608a0dac7aa900c61f48b2bb37be6",
+            "operation": "RESHARD",
+            "producer_ranks": [
+              0,
+              1
+            ],
+            "source_layout_digest": "sha256:ed1b7c71c10412b617c9553e37e30fac03404dbf3c1c4fbf56caa81ec3977e74",
+            "target_layout_digest": "sha256:251f65f32852d7b27151a84bb4c0666323f2eda3ca0bd81f3d594548f21534a1",
+            "temporary_memory_bytes": 64,
+            "tensor": "hidden"
+          }
+        ],
+        "stages": 2,
+        "tensor_degrees": [
+          2,
+          2
+        ]
+      },
+      "input_ingress_role": "front",
+      "merge_kind": "NATIVE_POSTPROCESS",
+      "model": {
+        "adapter": {
+          "abi": "fixture-abi-v1",
+          "backends": [
+            "onnxruntime"
+          ],
+          "deterministic_analysis": true,
+          "graph_inspectable": true,
+          "graph_schema_digest": "sha256:1e20c7dd694f6e793a9bb08049c67f266580472837940b45e5afa0443699931c",
+          "input_schema_digest": "sha256:48ead40f3b571b24200aa70ed78cb2cc270fc39350348405fc1fa8b5949b5442",
+          "model_formats": [
+            "onnx"
+          ],
+          "name": "fixture",
+          "options_schema_digest": "sha256:42b86994847bdf859b467a0efe3d3669735a8613f283be361681429849d647fe",
+          "precisions": [
+            "float32"
+          ],
+          "result_schema_digest": "sha256:1b00cb6a7161fd1841dfeded937a734927d0ea37daecfe79eee96f4d5cb9bb45",
+          "split_schema_digest": "sha256:d7da0e471a903882466a7be7b420d9cf652dbeadee4b351ee7d298d5583977c5",
+          "splittable": true,
+          "state_digest": "sha256:4f9510f10cfed8b796f0d6067766165a92241de68fc9e1944322272fe6f9bd93",
+          "state_schema_digest": "sha256:7ecd71aa2742542271a9f2e6d86c272a694c95d45a0049fe638af7c6511774e0",
+          "tasks": [
+            "task"
+          ],
+          "version": "1"
+        },
+        "content_digest": "sha256:ed7002b439e9ac845f22357d822bac1444730fbdb6016d3ec9432297b9ec9f73",
+        "graph_digest": "sha256:eef93e1d14482804277fca0172464032d1a4fdbcc338524059fa1e861454ad4d",
+        "model_format": "onnx",
+        "model_name": "Candidate模型",
+        "precision": "float32",
+        "semantics_digest": "sha256:4ce162f873de0f7c0e1ad341334e21b2259eef05045dce753a77a7d1fd663179",
+        "source_revision": ""
+      },
+      "postprocessing": {
+        "nested": [
+          true,
+          null,
+          {
+            "threshold": 0.25
+          }
+        ],
+        "unicode": "配置"
+      },
+      "rank_artifact_digests_by_role": {
+        "end": [
+          "sha256:c4e6ef2387a3f64bd47fd5739d9dae9d8b01174a9f38ab329aa809d68ff519d7",
+          "sha256:79e68e098510a799e18ecfa47b9e5f90f2dbb61d92b6901abcf324e37e54cee9"
+        ],
+        "front": [
+          "sha256:f1adacd3a2fac0cc2cf50d5ab27da822e0258df71962511b95120ebd3077dfec",
+          "sha256:69f6830c20201fe15970f281837cfb7c21aabe66d2b9fb9da0d3e3ab30afb752"
+        ]
+      },
+      "requirements_by_role": {
+        "end": {
+          "activation_bytes": 4,
+          "backends": [
+            "onnxruntime"
+          ],
+          "kv_bytes": 3,
+          "safety_margin": 1.1,
+          "transient_bytes": 5,
+          "weight_bytes": 1,
+          "workspace_bytes": 2
+        },
+        "front": {
+          "activation_bytes": 4,
+          "backends": [
+            "onnxruntime"
+          ],
+          "kv_bytes": 3,
+          "safety_margin": 1.1,
+          "transient_bytes": 5,
+          "weight_bytes": 1,
+          "workspace_bytes": 2
+        }
+      },
+      "result_egress_role": "end",
+      "role_state_inputs_by_role": {
+        "end": [
+          {
+            "dtype": "float32",
+            "estimated_bytes": null,
+            "name": "state",
+            "shape": [
+              "batch",
+              -1,
+              4
+            ]
+          }
+        ],
+        "front": [
+          {
+            "dtype": "float32",
+            "estimated_bytes": null,
+            "name": "state",
+            "shape": [
+              "batch",
+              -1,
+              4
+            ]
+          }
+        ]
+      },
+      "role_state_outputs_by_role": {
+        "end": [
+          {
+            "dtype": "float32",
+            "estimated_bytes": 16,
+            "name": "out",
+            "shape": [
+              "batch",
+              -1,
+              4
+            ]
+          }
+        ],
+        "front": [
+          {
+            "dtype": "float32",
+            "estimated_bytes": 16,
+            "name": "out",
+            "shape": [
+              "batch",
+              -1,
+              4
+            ]
+          }
+        ]
+      },
+      "selection_priority": 5,
+      "source": "PRE_SPLIT",
+      "splitter": {
+        "deterministic": true,
+        "name": "fixture",
+        "state_digest": "sha256:ad1a64057f9ab34fecfe3f4ee78660bb0316dbda9370581ffbeb1e8bddf3d598",
+        "version": "1"
+      },
+      "tensor_degrees_by_role": {
+        "end": 2,
+        "front": 2
+      }
+    },
+    "canonical_json": "{\"artifacts_by_role\":{\"end\":[\"sha256:c4e6ef2387a3f64bd47fd5739d9dae9d8b01174a9f38ab329aa809d68ff519d7\",\"sha256:79e68e098510a799e18ecfa47b9e5f90f2dbb61d92b6901abcf324e37e54cee9\"],\"front\":[\"sha256:f1adacd3a2fac0cc2cf50d5ab27da822e0258df71962511b95120ebd3077dfec\",\"sha256:69f6830c20201fe15970f281837cfb7c21aabe66d2b9fb9da0d3e3ab30afb752\"]},\"cross_partition_tensors\":[\"hidden\"],\"estimated_costs\":{\"fraction\":1.25,\"large\":9223372036854775808,\"negative-zero\":-0.0,\"signed\":-7,\"unknown\":null},\"execution_plan\":{\"dependencies\":[{\"consumer\":\"end\",\"producer\":\"front\",\"tensor_edges\":[\"hidden\"]}],\"node_roles\":{\"a-node\":\"end\",\"z-node\":\"front\"},\"roles\":[\"front\",\"end\"]},\"fragments_by_role\":{\"end\":\"sha256:361e48d0308f20e32dba5fb56328baf18d72ef0ccb43b84f5c262d2a6a1fc6c8\",\"front\":\"sha256:2d8d693177ac44895fc02c009ec3f6af32e51eb00783c17000d7051d1662b93a\"},\"graph_digest\":\"sha256:eef93e1d14482804277fca0172464032d1a4fdbcc338524059fa1e861454ad4d\",\"hybrid_plan\":{\"rank_labels\":[\"S0R0\",\"S0R1\",\"S1R0\",\"S1R1\"],\"redistributions\":[{\"axis\":-1,\"complete_output\":true,\"consumer_ranks\":[2,3],\"epoch\":\"epoch\",\"integrity_digest\":\"sha256:78587c41ed99a3375022dc28be882f72b1a608a0dac7aa900c61f48b2bb37be6\",\"operation\":\"RESHARD\",\"producer_ranks\":[0,1],\"source_layout_digest\":\"sha256:ed1b7c71c10412b617c9553e37e30fac03404dbf3c1c4fbf56caa81ec3977e74\",\"target_layout_digest\":\"sha256:251f65f32852d7b27151a84bb4c0666323f2eda3ca0bd81f3d594548f21534a1\",\"temporary_memory_bytes\":64,\"tensor\":\"hidden\"}],\"stages\":2,\"tensor_degrees\":[2,2]},\"input_ingress_role\":\"front\",\"merge_kind\":\"NATIVE_POSTPROCESS\",\"model\":{\"adapter\":{\"abi\":\"fixture-abi-v1\",\"backends\":[\"onnxruntime\"],\"deterministic_analysis\":true,\"graph_inspectable\":true,\"graph_schema_digest\":\"sha256:1e20c7dd694f6e793a9bb08049c67f266580472837940b45e5afa0443699931c\",\"input_schema_digest\":\"sha256:48ead40f3b571b24200aa70ed78cb2cc270fc39350348405fc1fa8b5949b5442\",\"model_formats\":[\"onnx\"],\"name\":\"fixture\",\"options_schema_digest\":\"sha256:42b86994847bdf859b467a0efe3d3669735a8613f283be361681429849d647fe\",\"precisions\":[\"float32\"],\"result_schema_digest\":\"sha256:1b00cb6a7161fd1841dfeded937a734927d0ea37daecfe79eee96f4d5cb9bb45\",\"split_schema_digest\":\"sha256:d7da0e471a903882466a7be7b420d9cf652dbeadee4b351ee7d298d5583977c5\",\"splittable\":true,\"state_digest\":\"sha256:4f9510f10cfed8b796f0d6067766165a92241de68fc9e1944322272fe6f9bd93\",\"state_schema_digest\":\"sha256:7ecd71aa2742542271a9f2e6d86c272a694c95d45a0049fe638af7c6511774e0\",\"tasks\":[\"task\"],\"version\":\"1\"},\"content_digest\":\"sha256:ed7002b439e9ac845f22357d822bac1444730fbdb6016d3ec9432297b9ec9f73\",\"graph_digest\":\"sha256:eef93e1d14482804277fca0172464032d1a4fdbcc338524059fa1e861454ad4d\",\"model_format\":\"onnx\",\"model_name\":\"Candidate\\u6a21\\u578b\",\"precision\":\"float32\",\"semantics_digest\":\"sha256:4ce162f873de0f7c0e1ad341334e21b2259eef05045dce753a77a7d1fd663179\",\"source_revision\":\"\"},\"postprocessing\":{\"nested\":[true,null,{\"threshold\":0.25}],\"unicode\":\"\\u914d\\u7f6e\"},\"rank_artifact_digests_by_role\":{\"end\":[\"sha256:c4e6ef2387a3f64bd47fd5739d9dae9d8b01174a9f38ab329aa809d68ff519d7\",\"sha256:79e68e098510a799e18ecfa47b9e5f90f2dbb61d92b6901abcf324e37e54cee9\"],\"front\":[\"sha256:f1adacd3a2fac0cc2cf50d5ab27da822e0258df71962511b95120ebd3077dfec\",\"sha256:69f6830c20201fe15970f281837cfb7c21aabe66d2b9fb9da0d3e3ab30afb752\"]},\"requirements_by_role\":{\"end\":{\"activation_bytes\":4,\"backends\":[\"onnxruntime\"],\"kv_bytes\":3,\"safety_margin\":1.1,\"transient_bytes\":5,\"weight_bytes\":1,\"workspace_bytes\":2},\"front\":{\"activation_bytes\":4,\"backends\":[\"onnxruntime\"],\"kv_bytes\":3,\"safety_margin\":1.1,\"transient_bytes\":5,\"weight_bytes\":1,\"workspace_bytes\":2}},\"result_egress_role\":\"end\",\"role_state_inputs_by_role\":{\"end\":[{\"dtype\":\"float32\",\"estimated_bytes\":null,\"name\":\"state\",\"shape\":[\"batch\",-1,4]}],\"front\":[{\"dtype\":\"float32\",\"estimated_bytes\":null,\"name\":\"state\",\"shape\":[\"batch\",-1,4]}]},\"role_state_outputs_by_role\":{\"end\":[{\"dtype\":\"float32\",\"estimated_bytes\":16,\"name\":\"out\",\"shape\":[\"batch\",-1,4]}],\"front\":[{\"dtype\":\"float32\",\"estimated_bytes\":16,\"name\":\"out\",\"shape\":[\"batch\",-1,4]}]},\"selection_priority\":5,\"source\":\"PRE_SPLIT\",\"splitter\":{\"deterministic\":true,\"name\":\"fixture\",\"state_digest\":\"sha256:ad1a64057f9ab34fecfe3f4ee78660bb0316dbda9370581ffbeb1e8bddf3d598\",\"version\":\"1\"},\"tensor_degrees_by_role\":{\"end\":2,\"front\":2}}",
+    "candidate_digest": "sha256:1736243aa1494453f31288638d8e10051a87730c4581aa89ccf005fed9e60db5"
+  },
+  {
+    "name": "hybrid-layout-reshard",
+    "input": {
+      "artifacts_by_role": {
+        "end": [
+          "sha256:c4e6ef2387a3f64bd47fd5739d9dae9d8b01174a9f38ab329aa809d68ff519d7"
+        ],
+        "front": [
+          "sha256:f1adacd3a2fac0cc2cf50d5ab27da822e0258df71962511b95120ebd3077dfec"
+        ]
+      },
+      "cross_partition_tensors": [
+        "hidden"
+      ],
+      "estimated_costs": {
+        "fraction": 1.25,
+        "large": 9223372036854775808,
+        "negative-zero": -0.0,
+        "signed": -7,
+        "unknown": null
+      },
+      "execution_plan": {
+        "dependencies": [
+          {
+            "consumer": "end",
+            "producer": "front",
+            "tensor_edges": [
+              "hidden"
+            ]
+          }
+        ],
+        "node_roles": {
+          "a-node": "end",
+          "z-node": "front"
+        },
+        "roles": [
+          "front",
+          "end"
+        ]
+      },
+      "fragments_by_role": {
+        "end": "sha256:361e48d0308f20e32dba5fb56328baf18d72ef0ccb43b84f5c262d2a6a1fc6c8",
+        "front": "sha256:2d8d693177ac44895fc02c009ec3f6af32e51eb00783c17000d7051d1662b93a"
+      },
+      "graph_digest": "sha256:eef93e1d14482804277fca0172464032d1a4fdbcc338524059fa1e861454ad4d",
+      "hybrid_plan": {
+        "rank_labels": [
+          "S0R0",
+          "S1R0"
+        ],
+        "redistributions": [
+          {
+            "axis": -1,
+            "complete_output": true,
+            "consumer_ranks": [
+              1
+            ],
+            "epoch": "epoch",
+            "integrity_digest": "sha256:78587c41ed99a3375022dc28be882f72b1a608a0dac7aa900c61f48b2bb37be6",
+            "operation": "RESHARD",
+            "producer_ranks": [
+              0
+            ],
+            "source_layout_digest": "sha256:ed1b7c71c10412b617c9553e37e30fac03404dbf3c1c4fbf56caa81ec3977e74",
+            "target_layout_digest": "sha256:251f65f32852d7b27151a84bb4c0666323f2eda3ca0bd81f3d594548f21534a1",
+            "temporary_memory_bytes": 64,
+            "tensor": "hidden"
+          }
+        ],
+        "stages": 2,
+        "tensor_degrees": [
+          1,
+          1
+        ]
+      },
+      "input_ingress_role": "front",
+      "merge_kind": "NATIVE_POSTPROCESS",
+      "model": {
+        "adapter": {
+          "abi": "fixture-abi-v1",
+          "backends": [
+            "onnxruntime"
+          ],
+          "deterministic_analysis": true,
+          "graph_inspectable": true,
+          "graph_schema_digest": "sha256:1e20c7dd694f6e793a9bb08049c67f266580472837940b45e5afa0443699931c",
+          "input_schema_digest": "sha256:48ead40f3b571b24200aa70ed78cb2cc270fc39350348405fc1fa8b5949b5442",
+          "model_formats": [
+            "onnx"
+          ],
+          "name": "fixture",
+          "options_schema_digest": "sha256:42b86994847bdf859b467a0efe3d3669735a8613f283be361681429849d647fe",
+          "precisions": [
+            "float32"
+          ],
+          "result_schema_digest": "sha256:1b00cb6a7161fd1841dfeded937a734927d0ea37daecfe79eee96f4d5cb9bb45",
+          "split_schema_digest": "sha256:d7da0e471a903882466a7be7b420d9cf652dbeadee4b351ee7d298d5583977c5",
+          "splittable": true,
+          "state_digest": "sha256:4f9510f10cfed8b796f0d6067766165a92241de68fc9e1944322272fe6f9bd93",
+          "state_schema_digest": "sha256:7ecd71aa2742542271a9f2e6d86c272a694c95d45a0049fe638af7c6511774e0",
+          "tasks": [
+            "task"
+          ],
+          "version": "1"
+        },
+        "content_digest": "sha256:ed7002b439e9ac845f22357d822bac1444730fbdb6016d3ec9432297b9ec9f73",
+        "graph_digest": "sha256:eef93e1d14482804277fca0172464032d1a4fdbcc338524059fa1e861454ad4d",
+        "model_format": "onnx",
+        "model_name": "Candidate模型",
+        "precision": "float32",
+        "semantics_digest": "sha256:4ce162f873de0f7c0e1ad341334e21b2259eef05045dce753a77a7d1fd663179",
+        "source_revision": ""
+      },
+      "postprocessing": {
+        "nested": [
+          true,
+          null,
+          {
+            "threshold": 0.25
+          }
+        ],
+        "unicode": "配置"
+      },
+      "rank_artifact_digests_by_role": {
+        "end": [
+          "sha256:c4e6ef2387a3f64bd47fd5739d9dae9d8b01174a9f38ab329aa809d68ff519d7"
+        ],
+        "front": [
+          "sha256:f1adacd3a2fac0cc2cf50d5ab27da822e0258df71962511b95120ebd3077dfec"
+        ]
+      },
+      "requirements_by_role": {
+        "end": {
+          "activation_bytes": 4,
+          "backends": [
+            "onnxruntime"
+          ],
+          "kv_bytes": 3,
+          "safety_margin": 1.1,
+          "transient_bytes": 5,
+          "weight_bytes": 1,
+          "workspace_bytes": 2
+        },
+        "front": {
+          "activation_bytes": 4,
+          "backends": [
+            "onnxruntime"
+          ],
+          "kv_bytes": 3,
+          "safety_margin": 1.1,
+          "transient_bytes": 5,
+          "weight_bytes": 1,
+          "workspace_bytes": 2
+        }
+      },
+      "result_egress_role": "end",
+      "role_state_inputs_by_role": {
+        "end": [
+          {
+            "dtype": "float32",
+            "estimated_bytes": null,
+            "name": "state",
+            "shape": [
+              "batch",
+              -1,
+              4
+            ]
+          }
+        ],
+        "front": [
+          {
+            "dtype": "float32",
+            "estimated_bytes": null,
+            "name": "state",
+            "shape": [
+              "batch",
+              -1,
+              4
+            ]
+          }
+        ]
+      },
+      "role_state_outputs_by_role": {
+        "end": [
+          {
+            "dtype": "float32",
+            "estimated_bytes": 16,
+            "name": "out",
+            "shape": [
+              "batch",
+              -1,
+              4
+            ]
+          }
+        ],
+        "front": [
+          {
+            "dtype": "float32",
+            "estimated_bytes": 16,
+            "name": "out",
+            "shape": [
+              "batch",
+              -1,
+              4
+            ]
+          }
+        ]
+      },
+      "selection_priority": 5,
+      "source": "PRE_SPLIT",
+      "splitter": {
+        "deterministic": true,
+        "name": "fixture",
+        "state_digest": "sha256:ad1a64057f9ab34fecfe3f4ee78660bb0316dbda9370581ffbeb1e8bddf3d598",
+        "version": "1"
+      },
+      "tensor_degrees_by_role": {
+        "end": 1,
+        "front": 1
+      }
+    },
+    "canonical_json": "{\"artifacts_by_role\":{\"end\":[\"sha256:c4e6ef2387a3f64bd47fd5739d9dae9d8b01174a9f38ab329aa809d68ff519d7\"],\"front\":[\"sha256:f1adacd3a2fac0cc2cf50d5ab27da822e0258df71962511b95120ebd3077dfec\"]},\"cross_partition_tensors\":[\"hidden\"],\"estimated_costs\":{\"fraction\":1.25,\"large\":9223372036854775808,\"negative-zero\":-0.0,\"signed\":-7,\"unknown\":null},\"execution_plan\":{\"dependencies\":[{\"consumer\":\"end\",\"producer\":\"front\",\"tensor_edges\":[\"hidden\"]}],\"node_roles\":{\"a-node\":\"end\",\"z-node\":\"front\"},\"roles\":[\"front\",\"end\"]},\"fragments_by_role\":{\"end\":\"sha256:361e48d0308f20e32dba5fb56328baf18d72ef0ccb43b84f5c262d2a6a1fc6c8\",\"front\":\"sha256:2d8d693177ac44895fc02c009ec3f6af32e51eb00783c17000d7051d1662b93a\"},\"graph_digest\":\"sha256:eef93e1d14482804277fca0172464032d1a4fdbcc338524059fa1e861454ad4d\",\"hybrid_plan\":{\"rank_labels\":[\"S0R0\",\"S1R0\"],\"redistributions\":[{\"axis\":-1,\"complete_output\":true,\"consumer_ranks\":[1],\"epoch\":\"epoch\",\"integrity_digest\":\"sha256:78587c41ed99a3375022dc28be882f72b1a608a0dac7aa900c61f48b2bb37be6\",\"operation\":\"RESHARD\",\"producer_ranks\":[0],\"source_layout_digest\":\"sha256:ed1b7c71c10412b617c9553e37e30fac03404dbf3c1c4fbf56caa81ec3977e74\",\"target_layout_digest\":\"sha256:251f65f32852d7b27151a84bb4c0666323f2eda3ca0bd81f3d594548f21534a1\",\"temporary_memory_bytes\":64,\"tensor\":\"hidden\"}],\"stages\":2,\"tensor_degrees\":[1,1]},\"input_ingress_role\":\"front\",\"merge_kind\":\"NATIVE_POSTPROCESS\",\"model\":{\"adapter\":{\"abi\":\"fixture-abi-v1\",\"backends\":[\"onnxruntime\"],\"deterministic_analysis\":true,\"graph_inspectable\":true,\"graph_schema_digest\":\"sha256:1e20c7dd694f6e793a9bb08049c67f266580472837940b45e5afa0443699931c\",\"input_schema_digest\":\"sha256:48ead40f3b571b24200aa70ed78cb2cc270fc39350348405fc1fa8b5949b5442\",\"model_formats\":[\"onnx\"],\"name\":\"fixture\",\"options_schema_digest\":\"sha256:42b86994847bdf859b467a0efe3d3669735a8613f283be361681429849d647fe\",\"precisions\":[\"float32\"],\"result_schema_digest\":\"sha256:1b00cb6a7161fd1841dfeded937a734927d0ea37daecfe79eee96f4d5cb9bb45\",\"split_schema_digest\":\"sha256:d7da0e471a903882466a7be7b420d9cf652dbeadee4b351ee7d298d5583977c5\",\"splittable\":true,\"state_digest\":\"sha256:4f9510f10cfed8b796f0d6067766165a92241de68fc9e1944322272fe6f9bd93\",\"state_schema_digest\":\"sha256:7ecd71aa2742542271a9f2e6d86c272a694c95d45a0049fe638af7c6511774e0\",\"tasks\":[\"task\"],\"version\":\"1\"},\"content_digest\":\"sha256:ed7002b439e9ac845f22357d822bac1444730fbdb6016d3ec9432297b9ec9f73\",\"graph_digest\":\"sha256:eef93e1d14482804277fca0172464032d1a4fdbcc338524059fa1e861454ad4d\",\"model_format\":\"onnx\",\"model_name\":\"Candidate\\u6a21\\u578b\",\"precision\":\"float32\",\"semantics_digest\":\"sha256:4ce162f873de0f7c0e1ad341334e21b2259eef05045dce753a77a7d1fd663179\",\"source_revision\":\"\"},\"postprocessing\":{\"nested\":[true,null,{\"threshold\":0.25}],\"unicode\":\"\\u914d\\u7f6e\"},\"rank_artifact_digests_by_role\":{\"end\":[\"sha256:c4e6ef2387a3f64bd47fd5739d9dae9d8b01174a9f38ab329aa809d68ff519d7\"],\"front\":[\"sha256:f1adacd3a2fac0cc2cf50d5ab27da822e0258df71962511b95120ebd3077dfec\"]},\"requirements_by_role\":{\"end\":{\"activation_bytes\":4,\"backends\":[\"onnxruntime\"],\"kv_bytes\":3,\"safety_margin\":1.1,\"transient_bytes\":5,\"weight_bytes\":1,\"workspace_bytes\":2},\"front\":{\"activation_bytes\":4,\"backends\":[\"onnxruntime\"],\"kv_bytes\":3,\"safety_margin\":1.1,\"transient_bytes\":5,\"weight_bytes\":1,\"workspace_bytes\":2}},\"result_egress_role\":\"end\",\"role_state_inputs_by_role\":{\"end\":[{\"dtype\":\"float32\",\"estimated_bytes\":null,\"name\":\"state\",\"shape\":[\"batch\",-1,4]}],\"front\":[{\"dtype\":\"float32\",\"estimated_bytes\":null,\"name\":\"state\",\"shape\":[\"batch\",-1,4]}]},\"role_state_outputs_by_role\":{\"end\":[{\"dtype\":\"float32\",\"estimated_bytes\":16,\"name\":\"out\",\"shape\":[\"batch\",-1,4]}],\"front\":[{\"dtype\":\"float32\",\"estimated_bytes\":16,\"name\":\"out\",\"shape\":[\"batch\",-1,4]}]},\"selection_priority\":5,\"source\":\"PRE_SPLIT\",\"splitter\":{\"deterministic\":true,\"name\":\"fixture\",\"state_digest\":\"sha256:ad1a64057f9ab34fecfe3f4ee78660bb0316dbda9370581ffbeb1e8bddf3d598\",\"version\":\"1\"},\"tensor_degrees_by_role\":{\"end\":1,\"front\":1}}",
+    "candidate_digest": "sha256:debf09f01ad20f2a10efba121b5205af21f8c83e6081b2a93c625ea4d5b784c6"
+  },
+  {
+    "name": "qwen-default",
+    "input": {
+      "artifacts_by_role": {
+        "end": [
+          "sha256:dc42df198b10c6f9bbbce5b32a05fc00736dd644fdde10c2a2700a44ed80140b"
+        ],
+        "front": [
+          "sha256:2674d596e69a8aa494818de038ff91b0af19c85bb7b524e5d7ee117559b4e617"
+        ]
+      },
+      "cross_partition_tensors": [
+        "hidden-layer-0-to-1"
+      ],
+      "estimated_costs": {
+        "decoder_layers": 2,
+        "known_transfer_bytes": 0,
+        "rank_count": 2,
+        "role_count": 2,
+        "unknown_transfer_tensors": 2
+      },
+      "execution_plan": {
+        "dependencies": [
+          {
+            "consumer": "end",
+            "producer": "front",
+            "tensor_edges": [
+              "hidden-layer-0-to-1"
+            ]
+          }
+        ],
+        "node_roles": {
+          "embedding": "front",
+          "final-norm-head": "end",
+          "layer-00": "front",
+          "layer-01": "end"
+        },
+        "roles": [
+          "front",
+          "end"
+        ]
+      },
+      "fragments_by_role": {
+        "end": "sha256:dc42df198b10c6f9bbbce5b32a05fc00736dd644fdde10c2a2700a44ed80140b",
+        "front": "sha256:2674d596e69a8aa494818de038ff91b0af19c85bb7b524e5d7ee117559b4e617"
+      },
+      "graph_digest": "sha256:63dc52957ac14ed70a7bd852e1c03de226a1d0c06e656a9c0ffda6024e43dc93",
+      "hybrid_plan": null,
+      "input_ingress_role": "",
+      "merge_kind": "",
+      "model": {
+        "adapter": {
+          "abi": "fixture-abi-v1",
+          "backends": [
+            "onnxruntime"
+          ],
+          "deterministic_analysis": true,
+          "graph_inspectable": true,
+          "graph_schema_digest": "sha256:1e20c7dd694f6e793a9bb08049c67f266580472837940b45e5afa0443699931c",
+          "input_schema_digest": "sha256:48ead40f3b571b24200aa70ed78cb2cc270fc39350348405fc1fa8b5949b5442",
+          "model_formats": [
+            "onnx"
+          ],
+          "name": "qwen",
+          "options_schema_digest": "sha256:42b86994847bdf859b467a0efe3d3669735a8613f283be361681429849d647fe",
+          "precisions": [
+            "float32"
+          ],
+          "result_schema_digest": "sha256:1b00cb6a7161fd1841dfeded937a734927d0ea37daecfe79eee96f4d5cb9bb45",
+          "split_schema_digest": "sha256:d7da0e471a903882466a7be7b420d9cf652dbeadee4b351ee7d298d5583977c5",
+          "splittable": true,
+          "state_digest": "sha256:4f9510f10cfed8b796f0d6067766165a92241de68fc9e1944322272fe6f9bd93",
+          "state_schema_digest": "sha256:7ecd71aa2742542271a9f2e6d86c272a694c95d45a0049fe638af7c6511774e0",
+          "tasks": [
+            "task"
+          ],
+          "version": "1"
+        },
+        "content_digest": "sha256:34e1b5468a63812c036a261b2659e44b658a5efe381ae110c6e72841d04ed6f2",
+        "graph_digest": "sha256:63dc52957ac14ed70a7bd852e1c03de226a1d0c06e656a9c0ffda6024e43dc93",
+        "model_format": "onnx",
+        "model_name": "QwenFixture",
+        "precision": "float32",
+        "semantics_digest": "sha256:5f049d2fde60e9df8e3f00034b56b59b8713ae5e12bfc0f57c5cccc2ad85bd03",
+        "source_revision": ""
+      },
+      "postprocessing": {},
+      "rank_artifact_digests_by_role": {
+        "end": [
+          "sha256:dc42df198b10c6f9bbbce5b32a05fc00736dd644fdde10c2a2700a44ed80140b"
+        ],
+        "front": [
+          "sha256:2674d596e69a8aa494818de038ff91b0af19c85bb7b524e5d7ee117559b4e617"
+        ]
+      },
+      "requirements_by_role": {
+        "end": {
+          "activation_bytes": 536870912,
+          "backends": [
+            "onnxruntime"
+          ],
+          "kv_bytes": 0,
+          "safety_margin": 1.1,
+          "transient_bytes": 536870912,
+          "weight_bytes": 1,
+          "workspace_bytes": 1073741824
+        },
+        "front": {
+          "activation_bytes": 536870912,
+          "backends": [
+            "onnxruntime"
+          ],
+          "kv_bytes": 0,
+          "safety_margin": 1.1,
+          "transient_bytes": 536870912,
+          "weight_bytes": 1,
+          "workspace_bytes": 1073741824
+        }
+      },
+      "result_egress_role": "",
+      "role_state_inputs_by_role": {
+        "end": [
+          {
+            "dtype": "float32",
+            "estimated_bytes": null,
+            "name": "attention_kv_in",
+            "shape": [
+              "layers",
+              "heads",
+              "sequence",
+              "head-dimension"
+            ]
+          },
+          {
+            "dtype": "float32",
+            "estimated_bytes": null,
+            "name": "recurrent_state_in",
+            "shape": [
+              "layers",
+              "hidden"
+            ]
+          },
+          {
+            "dtype": "float32",
+            "estimated_bytes": null,
+            "name": "convolution_state_in",
+            "shape": [
+              "layers",
+              "channels",
+              "kernel"
+            ]
+          }
+        ],
+        "front": [
+          {
+            "dtype": "float32",
+            "estimated_bytes": null,
+            "name": "attention_kv_in",
+            "shape": [
+              "layers",
+              "heads",
+              "sequence",
+              "head-dimension"
+            ]
+          },
+          {
+            "dtype": "float32",
+            "estimated_bytes": null,
+            "name": "recurrent_state_in",
+            "shape": [
+              "layers",
+              "hidden"
+            ]
+          },
+          {
+            "dtype": "float32",
+            "estimated_bytes": null,
+            "name": "convolution_state_in",
+            "shape": [
+              "layers",
+              "channels",
+              "kernel"
+            ]
+          }
+        ]
+      },
+      "role_state_outputs_by_role": {
+        "end": [
+          {
+            "dtype": "float32",
+            "estimated_bytes": null,
+            "name": "attention_kv_out",
+            "shape": [
+              "layers",
+              "heads",
+              "sequence",
+              "head-dimension"
+            ]
+          },
+          {
+            "dtype": "float32",
+            "estimated_bytes": null,
+            "name": "recurrent_state_out",
+            "shape": [
+              "layers",
+              "hidden"
+            ]
+          },
+          {
+            "dtype": "float32",
+            "estimated_bytes": null,
+            "name": "convolution_state_out",
+            "shape": [
+              "layers",
+              "channels",
+              "kernel"
+            ]
+          }
+        ],
+        "front": [
+          {
+            "dtype": "float32",
+            "estimated_bytes": null,
+            "name": "attention_kv_out",
+            "shape": [
+              "layers",
+              "heads",
+              "sequence",
+              "head-dimension"
+            ]
+          },
+          {
+            "dtype": "float32",
+            "estimated_bytes": null,
+            "name": "recurrent_state_out",
+            "shape": [
+              "layers",
+              "hidden"
+            ]
+          },
+          {
+            "dtype": "float32",
+            "estimated_bytes": null,
+            "name": "convolution_state_out",
+            "shape": [
+              "layers",
+              "channels",
+              "kernel"
+            ]
+          }
+        ]
+      },
+      "selection_priority": 0,
+      "source": "PRE_SPLIT",
+      "splitter": {
+        "deterministic": true,
+        "name": "native-qwen-layer-split",
+        "state_digest": "sha256:36851fd62188e3043ce29572c62b99bea2ac1fb85f74de8c176941e9eda0abd3",
+        "version": "1"
+      },
+      "tensor_degrees_by_role": {
+        "end": 1,
+        "front": 1
+      }
+    },
+    "canonical_json": "{\"artifacts_by_role\":{\"end\":[\"sha256:dc42df198b10c6f9bbbce5b32a05fc00736dd644fdde10c2a2700a44ed80140b\"],\"front\":[\"sha256:2674d596e69a8aa494818de038ff91b0af19c85bb7b524e5d7ee117559b4e617\"]},\"cross_partition_tensors\":[\"hidden-layer-0-to-1\"],\"estimated_costs\":{\"decoder_layers\":2,\"known_transfer_bytes\":0,\"rank_count\":2,\"role_count\":2,\"unknown_transfer_tensors\":2},\"execution_plan\":{\"dependencies\":[{\"consumer\":\"end\",\"producer\":\"front\",\"tensor_edges\":[\"hidden-layer-0-to-1\"]}],\"node_roles\":{\"embedding\":\"front\",\"final-norm-head\":\"end\",\"layer-00\":\"front\",\"layer-01\":\"end\"},\"roles\":[\"front\",\"end\"]},\"fragments_by_role\":{\"end\":\"sha256:dc42df198b10c6f9bbbce5b32a05fc00736dd644fdde10c2a2700a44ed80140b\",\"front\":\"sha256:2674d596e69a8aa494818de038ff91b0af19c85bb7b524e5d7ee117559b4e617\"},\"graph_digest\":\"sha256:63dc52957ac14ed70a7bd852e1c03de226a1d0c06e656a9c0ffda6024e43dc93\",\"hybrid_plan\":null,\"input_ingress_role\":\"\",\"merge_kind\":\"\",\"model\":{\"adapter\":{\"abi\":\"fixture-abi-v1\",\"backends\":[\"onnxruntime\"],\"deterministic_analysis\":true,\"graph_inspectable\":true,\"graph_schema_digest\":\"sha256:1e20c7dd694f6e793a9bb08049c67f266580472837940b45e5afa0443699931c\",\"input_schema_digest\":\"sha256:48ead40f3b571b24200aa70ed78cb2cc270fc39350348405fc1fa8b5949b5442\",\"model_formats\":[\"onnx\"],\"name\":\"qwen\",\"options_schema_digest\":\"sha256:42b86994847bdf859b467a0efe3d3669735a8613f283be361681429849d647fe\",\"precisions\":[\"float32\"],\"result_schema_digest\":\"sha256:1b00cb6a7161fd1841dfeded937a734927d0ea37daecfe79eee96f4d5cb9bb45\",\"split_schema_digest\":\"sha256:d7da0e471a903882466a7be7b420d9cf652dbeadee4b351ee7d298d5583977c5\",\"splittable\":true,\"state_digest\":\"sha256:4f9510f10cfed8b796f0d6067766165a92241de68fc9e1944322272fe6f9bd93\",\"state_schema_digest\":\"sha256:7ecd71aa2742542271a9f2e6d86c272a694c95d45a0049fe638af7c6511774e0\",\"tasks\":[\"task\"],\"version\":\"1\"},\"content_digest\":\"sha256:34e1b5468a63812c036a261b2659e44b658a5efe381ae110c6e72841d04ed6f2\",\"graph_digest\":\"sha256:63dc52957ac14ed70a7bd852e1c03de226a1d0c06e656a9c0ffda6024e43dc93\",\"model_format\":\"onnx\",\"model_name\":\"QwenFixture\",\"precision\":\"float32\",\"semantics_digest\":\"sha256:5f049d2fde60e9df8e3f00034b56b59b8713ae5e12bfc0f57c5cccc2ad85bd03\",\"source_revision\":\"\"},\"postprocessing\":{},\"rank_artifact_digests_by_role\":{\"end\":[\"sha256:dc42df198b10c6f9bbbce5b32a05fc00736dd644fdde10c2a2700a44ed80140b\"],\"front\":[\"sha256:2674d596e69a8aa494818de038ff91b0af19c85bb7b524e5d7ee117559b4e617\"]},\"requirements_by_role\":{\"end\":{\"activation_bytes\":536870912,\"backends\":[\"onnxruntime\"],\"kv_bytes\":0,\"safety_margin\":1.1,\"transient_bytes\":536870912,\"weight_bytes\":1,\"workspace_bytes\":1073741824},\"front\":{\"activation_bytes\":536870912,\"backends\":[\"onnxruntime\"],\"kv_bytes\":0,\"safety_margin\":1.1,\"transient_bytes\":536870912,\"weight_bytes\":1,\"workspace_bytes\":1073741824}},\"result_egress_role\":\"\",\"role_state_inputs_by_role\":{\"end\":[{\"dtype\":\"float32\",\"estimated_bytes\":null,\"name\":\"attention_kv_in\",\"shape\":[\"layers\",\"heads\",\"sequence\",\"head-dimension\"]},{\"dtype\":\"float32\",\"estimated_bytes\":null,\"name\":\"recurrent_state_in\",\"shape\":[\"layers\",\"hidden\"]},{\"dtype\":\"float32\",\"estimated_bytes\":null,\"name\":\"convolution_state_in\",\"shape\":[\"layers\",\"channels\",\"kernel\"]}],\"front\":[{\"dtype\":\"float32\",\"estimated_bytes\":null,\"name\":\"attention_kv_in\",\"shape\":[\"layers\",\"heads\",\"sequence\",\"head-dimension\"]},{\"dtype\":\"float32\",\"estimated_bytes\":null,\"name\":\"recurrent_state_in\",\"shape\":[\"layers\",\"hidden\"]},{\"dtype\":\"float32\",\"estimated_bytes\":null,\"name\":\"convolution_state_in\",\"shape\":[\"layers\",\"channels\",\"kernel\"]}]},\"role_state_outputs_by_role\":{\"end\":[{\"dtype\":\"float32\",\"estimated_bytes\":null,\"name\":\"attention_kv_out\",\"shape\":[\"layers\",\"heads\",\"sequence\",\"head-dimension\"]},{\"dtype\":\"float32\",\"estimated_bytes\":null,\"name\":\"recurrent_state_out\",\"shape\":[\"layers\",\"hidden\"]},{\"dtype\":\"float32\",\"estimated_bytes\":null,\"name\":\"convolution_state_out\",\"shape\":[\"layers\",\"channels\",\"kernel\"]}],\"front\":[{\"dtype\":\"float32\",\"estimated_bytes\":null,\"name\":\"attention_kv_out\",\"shape\":[\"layers\",\"heads\",\"sequence\",\"head-dimension\"]},{\"dtype\":\"float32\",\"estimated_bytes\":null,\"name\":\"recurrent_state_out\",\"shape\":[\"layers\",\"hidden\"]},{\"dtype\":\"float32\",\"estimated_bytes\":null,\"name\":\"convolution_state_out\",\"shape\":[\"layers\",\"channels\",\"kernel\"]}]},\"selection_priority\":0,\"source\":\"PRE_SPLIT\",\"splitter\":{\"deterministic\":true,\"name\":\"native-qwen-layer-split\",\"state_digest\":\"sha256:36851fd62188e3043ce29572c62b99bea2ac1fb85f74de8c176941e9eda0abd3\",\"version\":\"1\"},\"tensor_degrees_by_role\":{\"end\":1,\"front\":1}}",
+    "candidate_digest": "sha256:6fe6b4b3d76ff388e26a1794db0267b5d96a2ecb3e020c19ceaa9c1a50f25586"
+  }
+]
