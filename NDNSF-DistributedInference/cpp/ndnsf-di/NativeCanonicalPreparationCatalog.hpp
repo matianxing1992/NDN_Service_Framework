@@ -25,6 +25,9 @@ public:
   NativeCanonicalPreparationCatalog(std::vector<NativeCanonicalCatalogEntry> entries,
     const NativeAssemblyControl& control);
   std::shared_ptr<const NativeAdapterRegistry> adapters() const;
+  NativeSplitCandidate bindStateContracts(const NativeInspectedModel& model,
+    const NativeSplitCandidate& candidate, const NativeStateTensorMapping& mapping,
+    const NativeRequestControl& control) const;
   std::shared_ptr<NativeRequestPreparation> makePreparation(
     std::shared_ptr<ndn_service_framework::ServiceUser> user, std::string serviceName) const;
 
