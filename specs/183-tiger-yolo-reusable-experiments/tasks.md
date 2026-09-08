@@ -11,6 +11,9 @@
 2026-09-08 用户进一步确认“基础库SIF + 外置DI/UAV应用”方案：
 [runtime layers](../../Experiments/TigerCluster/docs/runtime-app-layers.md)，设计已记录，代码迁移未完成。
 下一步先接T002/T004/T011分层清单、ABI及构建/挂载，再复用这套配置推进最小NDNSF服务与YOLO。
+同模型独立CPU与GPU参考已完成：[backend reference](evidence/yolo-backend-reference.md)。
+209982因默认TF32数值失败；仅关闭TF32后的209983在RTX6000Ada上实跑PASS，
+既定容差不变。精度修复已同步native/reference源码，正式NDNSF-DI四Provider仍未通过。
 原 17 项验收及既有 MiniNDN 交付证据不被替换。
 
 更新：2026-09-08；进度表初始审计基线 `d1f1504a`，`cc638d00`审计后N3源码修复，见
@@ -80,6 +83,8 @@ T007 复核确认正常/负例/SSH 接线已存在；N3 issuer/rank版本检查�
 | T012.a | T012 | GPU/Apptainer/容量 substrate 实值清点 | IMPLEMENTED | [input inventory](evidence/input-inventory.md) 有早期 probe 记录，非最终环境资格 | 正式 allocation 仍需实测；早期 probe 不抵消 T007 | 静态输入复用，不重复下载/拷贝 |
 | T012.b | T012 | exact-SIF staging、目标节点/GPU/路由与服务就绪 | NOT_STARTED | V14；NOT_RUN | T011 后核验实际 allocation 与哈希 | 每个新 allocation 检查环境，不重建同一镜像 |
 | T012.c | T012 | 用户指定的独立 C++ NDN/SIF 两节点 CPU 诊断 | VERIFIED | [C++ NDN evidence](evidence/cpp-ndn-smoke.md)：209981，itiger01/02，同一历史 SIF 哈希，3条Data，0:0及清理；209980仅收尾标记超时，未记整次PASS | 仅基础传输诊断；T012正式GPU/权限/候选资格仍未完成 | 固定小例子不再跑；配置/ABI/网络相关变化才重测；复用实际日志与脚本 |
+| T012.d | T012 | 同一真实YOLO模型的独立CPU/GPU参考 | VERIFIED | [backend reference](evidence/yolo-backend-reference.md)：CPU两次matched；209983，RTX6000Ada、CUDA kernel、两次数值matched、Slurm0:0及清理 | 仅STANDALONE_YOLO_REFERENCE；非NDNSF-DI或T013资格 | 209982失败保留；仅一次TF32修复对照，不重复相同参考 |
+| T005.tf32 | T005 | 原生ORT与独立参考关闭TF32并绑定精度策略 | IMPLEMENTED | 真实GPU参考修复PASS；native开启ORT语法检查、147组件+2新拒错通过 | 新Provider尚需构建/装入app包及真实分布式请求 | 不重跑未变CPU/独立GPU参考；验证变化native路径 |
 | T013.a | T013 | 一节点 GPU，四 Provider，1 warmup + 1 measured | NOT_STARTED | V15；NOT_RUN | T012 后证明三模型角色实际 CUDA、Merge CPU、全图数值/清理 | 一次有界资格门，不扩展 GPU/模型矩阵 |
 | T014.a | T014 | 两节点正常推理，1 warmup + 3 measured | NOT_STARTED | V16；NOT_RUN | T013 后证明 A backbone/merge、B heads 与跨节点依赖 | 同一候选第一次正常 allocation |
 | T015.a | T015 | 一次远端 negative-dependency，Selection 后切断必需中间 Data | NOT_STARTED | V17；NOT_RUN | T014 后验证有限失败、无假成功及清理 | 保留唯一注册远端负例，不复制整套本地负例 |

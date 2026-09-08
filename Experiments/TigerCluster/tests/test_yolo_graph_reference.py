@@ -77,6 +77,8 @@ def test_options_follow_native_runner_source():
     assert 'options.SetIntraOpNumThreads(1);' in options
     assert 'options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_BASIC);' in options
     assert 'options.AddConfigEntry("session.disable_cpu_ep_fallback", "1");' in options
+    assert '{"use_tf32", "0"}' in options
+    assert 'options.AppendExecutionProvider_CUDA_V2(*cudaOptions);' in options
 
 
 def test_external_initializer_is_rejected_before_session(tmp_path, monkeypatch):
@@ -247,6 +249,18 @@ def test_serialize_rejects_tampered_reference_provenance(tmp_path, field, value,
     records = references(tmp_path, payloads)
     records['DetectShard0'][field] = value
     with pytest.raises(ValueError, match=code):
+        serialize_certified_graph(records, graph_digest='sha256:' + 'c' * 64)
+
+
+@pytest.mark.parametrize('policy', [True, None])
+def test_reference_rejects_tf32_and_legacy_unspecified_policy(tmp_path, policy):
+    records = references(tmp_path, role_models())
+    options = records['DetectShard0']['sessionOptions']
+    if policy is None:
+        options.pop('cudaUseTf32')
+    else:
+        options['cudaUseTf32'] = policy
+    with pytest.raises(ValueError, match='CERTIFIED_GRAPH_REFERENCE_SESSION_OPTIONS'):
         serialize_certified_graph(records, graph_digest='sha256:' + 'c' * 64)
 
 

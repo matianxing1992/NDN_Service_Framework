@@ -2,6 +2,11 @@
 
 ## Accepted Layout Revision — 2026-09-08
 
+同日真机精度修复：FP32 YOLO的CUDA会话显式`use_tf32=0`，原生执行器与
+独立参考一致；referenceProvenance.sessionOptions必须含`cudaUseTf32=false`。
+默认TF32在209982产生49/50数值错误，209983关闭后通过；容差/阈值没有放宽。
+旧缺失精度策略的参考回执不能按新契约验收，细节见../evidence/yolo-backend-reference.md。
+
 分层目标以本文 Candidate Identity 与 [runtime layers](../../../Experiments/TigerCluster/docs/runtime-app-layers.md)
 为准：base SIF固定基础库，app包外置。当前下述已实现接口仍描述迁移前行为；
 “九产物/旧六产物拒绝/容器内已安装DI”相关条件须在T002/T004/T011改为分层闭包

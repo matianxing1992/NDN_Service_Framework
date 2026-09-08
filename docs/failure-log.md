@@ -2954,3 +2954,22 @@ Lesson: a small real transport probe resolves container/network configuration
 early; neither component suites nor an application's isolated PASS line replace
 the complete job verdict. No additional unchanged probe, GPU, model, broad suite
 or image build was run. Evidence: specs/183-tiger-yolo-reusable-experiments/evidence/cpp-ndn-smoke.md.
+
+## 2026-09-08 — Real YOLO CUDA default TF32 crossed the fixed detection threshold
+
+Standalone reference job209982 on itiger02/RTX6000Ada executed real CUDA kernels
+in the hash-verified historical SIF, but produced49 rather than50 filtered rows.
+The CPU boundary score0.0010087192 became0.0009920001 on GPU. Default TF32 was
+the tested hypothesis; job209983 changed only use_tf32=0 and recorded the actual
+provider option. Both requests matched the unchanged oracle at atol0.001/rtol0.0001,
+maxAbsError0.00042724609375, allocation0:0 with clean scratch. No tolerance change,
+model replacement or silent CPU fallback. Preserve both runs and all ORT traces.
+
+Fix: explicit CUDA optionsV2 use_tf32=0 in the native runner; same Python graph
+reference option and required cudaUseTf32=false provenance. Native ORT-enabled
+syntax check and147 affected component checks pass;2 added old/TF32 provenance
+rejections pass. Newly compiled/deployed native and full NDNSF-DI qualification
+remain open. GPU standalone PASS is not four-Provider PASS. Also retain the
+initial local wrong Apptainer path and shallow external User layout import
+failures; use the actual per-host binary and preserve the app's repository layout.
+Evidence: specs/183-tiger-yolo-reusable-experiments/evidence/yolo-backend-reference.md.

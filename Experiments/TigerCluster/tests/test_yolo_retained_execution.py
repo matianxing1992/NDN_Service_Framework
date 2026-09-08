@@ -79,7 +79,7 @@ def test_four_role_join_uses_three_ort_graphs_and_retains_native_merge(monkeypat
             ortVersion='fixture-ort-version', optimizedModelDigest='sha256:'+'d'*64,
             assembledModelDigest='sha256:'+'e'*64,
             sessionOptions={'intraOpThreads': 1, 'graphOptimization': 'ORT_ENABLE_BASIC',
-                            'allowCpuFallback': False, 'deviceId': 0},
+                            'allowCpuFallback': False, 'deviceId': 0, 'cudaUseTf32': False},
             backend='CPUExecutionProvider') for role in names[:-1]})
     checked_roles = []
 

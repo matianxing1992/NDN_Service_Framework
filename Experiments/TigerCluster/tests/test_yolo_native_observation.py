@@ -85,7 +85,7 @@ def certified_graph(backend='CUDAExecutionProvider'):
             'optimizedModelDigest': 'sha256:'+'d'*64,
             'sessionOptions': {'intraOpThreads': 1,
                 'graphOptimization': 'ORT_ENABLE_BASIC',
-                'allowCpuFallback': False, 'deviceId': 0},
+                'allowCpuFallback': False, 'deviceId': 0, 'cudaUseTf32': False},
             'backend': backend}}}
 
 

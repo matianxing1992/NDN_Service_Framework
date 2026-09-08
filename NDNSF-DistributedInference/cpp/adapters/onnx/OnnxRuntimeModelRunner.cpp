@@ -317,14 +317,19 @@ makeSessionOptions(const OnnxRuntimeProviderSelection& selection,
     options.EnableProfiling(profilePrefix.c_str());
   }
   if (selection.selectedProvider == "cuda") {
-    OrtCUDAProviderOptions cudaOptions{};
+    int deviceId;
     try {
-      cudaOptions.device_id = std::stoi(selection.deviceId);
+      deviceId = std::stoi(selection.deviceId);
     }
     catch (const std::exception&) {
       throw std::invalid_argument("invalid ONNX Runtime CUDA device ID: " + selection.deviceId);
     }
-    options.AppendExecutionProvider_CUDA(cudaOptions);
+    // FP32 graph/oracle contracts must not silently use reduced-precision
+    // TF32 kernels. Tiger YOLO run 209982 crossed the detection threshold
+    // under the CUDA default; the same model passed with use_tf32=0 (209983).
+    Ort::CUDAProviderOptions cudaOptions;
+    cudaOptions.Update({{"device_id", std::to_string(deviceId)}, {"use_tf32", "0"}});
+    options.AppendExecutionProvider_CUDA_V2(*cudaOptions);
     if (!runnerMetadataBool(spec, {"allowCpuFallback", "allow_cpu_fallback"})) {
       options.AddConfigEntry("session.disable_cpu_ep_fallback", "1");
     }

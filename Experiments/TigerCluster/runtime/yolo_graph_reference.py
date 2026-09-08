@@ -226,7 +226,7 @@ def prepare_role_reference(model_bytes: bytes, *, artifact_digest: str,
         providers = [backend]
         if backend == 'CUDAExecutionProvider':
             options.add_session_config_entry('session.disable_cpu_ep_fallback', '1')
-            providers = [(backend, {'device_id': 0})]
+            providers = [(backend, {'device_id': 0, 'use_tf32': '0'})]
         session = ort.InferenceSession(model_bytes, sess_options=options, providers=providers)
         if session.get_providers()[0] != backend:
             raise ValueError('GRAPH_REFERENCE_BACKEND_FALLBACK')
@@ -245,7 +245,7 @@ def prepare_role_reference(model_bytes: bytes, *, artifact_digest: str,
             assembledModelDigest=assembled_model_digest,
             ortVersion=ort.__version__, optimizedModelDigest=_digest(payload),
             sessionOptions=dict(intraOpThreads=1, graphOptimization='ORT_ENABLE_BASIC',
-                                allowCpuFallback=False, deviceId=0),
+                                allowCpuFallback=False, deviceId=0, cudaUseTf32=False),
             expected=dict(modelManifestDigest=model_manifest_digest,
                           artifactDigest=artifact_digest, backend=backend,
                           optimizedNodeNames=[name + '_kernel_time' for name in names]))
@@ -258,7 +258,7 @@ _REFERENCE_QUALIFICATION = 'ORT_GRAPH_PREPARATION_COMPONENT_ONLY'
 _BACKENDS = ('CPUExecutionProvider', 'CUDAExecutionProvider')
 _CANONICAL_SESSION_OPTIONS = dict(intraOpThreads=1,
                                   graphOptimization='ORT_ENABLE_BASIC',
-                                  allowCpuFallback=False, deviceId=0)
+                                  allowCpuFallback=False, deviceId=0, cudaUseTf32=False)
 _REFERENCE_FIELDS = {'schema', 'role', 'qualification', 'ortVersion',
                      'assembledModelDigest', 'optimizedModelDigest', 'sessionOptions', 'expected'}
 _EXPECTED_FIELDS = {'modelManifestDigest', 'artifactDigest', 'backend',

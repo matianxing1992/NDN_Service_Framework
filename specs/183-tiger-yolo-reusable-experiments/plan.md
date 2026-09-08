@@ -45,6 +45,12 @@ I/II：沿用动态 API 和现有鉴权/请求级密钥，不新建框架协议�
 
 ## Gate Order
 
+2026-09-08 用户授权在已完成NDN小例子基础上推进YOLO真机推理并修复问题。
+先做相同 canonical graph/weights/fixture/oracle 的独立CPU→单GPU参考诊断，
+1 warmup + 1 measured，固定rtx_6000、五分钟上限。此诊断仅依赖自身脚本/模型/
+容器闭包审计与本地CPU实跑，不借用NDNSF尚未完成的门，也不返回NDNSF-DI资格。
+然后继续分层应用及安全NDN推理链路；正式四Provider实验仍遵守下方原门禁。
+
 2026-09-08 用户确认采用[稳定基础 SIF + 外置应用](../../Experiments/TigerCluster/docs/runtime-app-layers.md)。
 状态 ACCEPTED / IMPLEMENTATION_PENDING；以下分层要求替代“应用全烘焙入SIF”目标。
 基础库、通用 Python 绑定、NFD/依赖随 base 固定；DI/UAV 应用及自有扩展独立构建。
