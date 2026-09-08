@@ -3441,3 +3441,12 @@ The wrapper and User dispatch now pass the already validated catalogue digest
 explicitly, and focused application/reference/negative tests pass (79). A fresh
 app bundle and run are still required; v10 remains negative evidence and does not
 establish numerical, GPU, or TigerCluster qualification.
+
+## 2026-09-08: external app builder rejected base-only source selection
+
+The first v11 app-only retry supplied `base-libraries-v1` to
+`build-external-yolo.py`; the builder rejected it before configure with
+`APP_SOURCE_SELECTION` because external applications require the complete
+`legacy-complete` source plane. No compiler work or bundle was produced. The
+retry used `legacy-complete` (seal `sha256:3576ed3a…`) with the unchanged staged
+base and verified cache, then completed 84/84 targets under `-j4`.
