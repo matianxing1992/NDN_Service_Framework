@@ -2690,3 +2690,19 @@ model failures; a timeout leaves the existing numeric verdict and journal intact
 78 focused checks passed. Four new GPU-gate cases passed; a new frozen-entry
 fixture lacked harnessManifestSha256, then passed after that required field was
 added. No models or Slurm jobs ran. Unknown-submission recovery remains pending.
+
+## 2026-09-07 — Submit had no receiver and the batch interpreter lacks dependencies
+
+Symptom: even valid pre-staged normal runs ended in REMOTE_STAGING_NOT_WIRED;
+unknown-submission recovery had no query owner. Separately, read-only iTiger
+/usr/bin/python3 import fails immediately with ModuleNotFoundError: jsonschema.
+Using a different local Python environment would not qualify the fixed batch
+interpreter and would merely postpone this error until after sbatch.
+Fix: wire the shared-path receiver with exact argv/intent, atomic SUBMITTING,
+one no-requeue sbatch and bound acknowledgment; retry unknown submissions through
+sacct/squeue only. Validate wrapper mode before external calls or reservation.
+Add an actual batch interpreter/pinned dependency check before sbatch. The missing
+site dependency is NOT repaired by these source changes; a maintained environment
+and portable transport still need implementation. 85 initial component checks
+and affected receiver regressions pass; see t004-shared-submit.md. No Slurm jobs,
+model execution, SIF rebuild or download. The base-SIF read fault remains open.

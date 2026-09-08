@@ -15,6 +15,7 @@ import os
 from pathlib import Path
 import re
 import stat
+import subprocess
 import tempfile
 import time
 
@@ -28,6 +29,72 @@ class JournalError(ValueError):
 TERMINAL = {"PASS", "FAIL", "INCOMPLETE"}
 CLOSED = TERMINAL | {"CANCELLED_BEFORE_SUBMIT"}
 STATES = CLOSED | {"PREPARED", "SUBMITTING", "SUBMISSION_UNKNOWN", "SUBMITTED", "RUNNING"}
+
+
+def verify_operator_python(bundle, *, seconds):
+    """Verify the actual batch interpreter and frozen operator dependency pins."""
+    script = '''import sys, pathlib, importlib.metadata as metadata
+import jsonschema, numpy
+for line in pathlib.Path(sys.argv[1]).read_text().splitlines():
+    line=line.split('#',1)[0].strip()
+    if not line: continue
+    parts=line.split(';')
+    if len(parts)>2: raise ValueError('OPERATOR_REQUIREMENT_FORMAT')
+    if len(parts)==2:
+        if parts[1].strip()!='python_version < "3.9"': raise ValueError('OPERATOR_REQUIREMENT_MARKER')
+        if sys.version_info[:2]>=(3,9): continue
+    name,version=parts[0].strip().split('==')
+    if metadata.version(name)!=version: raise ValueError('OPERATOR_REQUIREMENT_VERSION:'+name)
+print('OPERATOR_REQUIREMENTS_OK')
+'''
+    result=subprocess.run(['/usr/bin/python3','-c',script,str(Path(bundle)/'requirements-operator.txt')],
+        check=True,capture_output=True,timeout=seconds,env={'PATH':'/usr/bin:/bin','LC_ALL':'C'})
+    if result.stdout!=b'OPERATOR_REQUIREMENTS_OK\n' or result.stderr:
+        raise JournalError('OPERATOR_REQUIREMENTS_REJECTED')
+
+
+def observe_submission(*, submission_key, partition, since, seconds):
+    """Find an uncertain submission by its exact comment, never submit a retry."""
+    import datetime
+    import math
+    if (not isinstance(submission_key,str) or re.fullmatch(r'spec183-[a-f0-9]{64}',submission_key) is None
+            or not isinstance(partition,str) or re.fullmatch(r'[A-Za-z0-9_-]{1,64}',partition) is None
+            or not isinstance(since,str) or re.fullmatch(r'\d{4}-\d{2}-\d{2}',since) is None
+            or isinstance(seconds,bool) or not isinstance(seconds,(int,float))
+            or not math.isfinite(seconds) or seconds<=0):
+        raise JournalError('SUBMISSION_QUERY_ARGUMENTS')
+    datetime.datetime.strptime(since,'%Y-%m-%d')
+    uid=os.getuid()
+    deadline=time.monotonic()+seconds
+    commands=[['/usr/bin/sacct','-X','-n','-P','--duplicates','--user='+str(uid),
+        '--starttime='+since,'--format=JobIDRaw,Comment%80,UID,Partition,Cluster'],
+        ['/usr/bin/squeue','--noheader','--user='+str(uid),'--format=%i|%k|%U|%P']]
+    outputs=[]
+    matches=[]
+    for index,command in enumerate(commands):
+        remaining=deadline-time.monotonic()
+        if remaining<=0:
+            raise TimeoutError('SUBMISSION_QUERY_DEADLINE')
+        result=subprocess.run(command,check=True,capture_output=True,timeout=remaining,
+                              env={'PATH':'/usr/bin:/bin','LC_ALL':'C'})
+        if len(result.stdout)>4*1024*1024 or result.stderr:
+            raise JournalError('SUBMISSION_QUERY_OUTPUT')
+        output=result.stdout.decode('ascii')
+        outputs.append(output)
+        for line in output.splitlines():
+            if not line.strip(): continue
+            fields=line.split('|')
+            if len(fields)!=(5 if index==0 else 4):
+                raise JournalError('SUBMISSION_QUERY_FORMAT')
+            job,comment,user,part=fields[:4]
+            if comment!=submission_key: continue
+            if (re.fullmatch(r'[1-9][0-9]{0,9}',job) is None or user!=str(uid)
+                    or part!=partition or (index==0 and fields[4]!='itiger')):
+                raise JournalError('SUBMISSION_QUERY_BINDING')
+            matches.append(dict(comment=comment,jobId=job))
+    return dict(schema='tiger-yolo-submission-query-v1',submissionKey=submission_key,
+                uid=uid,partition=partition,since=since,commands=commands,
+                accounting=outputs[0],queue=outputs[1],jobs=matches)
 
 
 class SubmissionJournal:
@@ -189,7 +256,7 @@ class SubmissionJournal:
     def record_submission(self, run_id, job_id):
         """Record a validated sbatch response, not a guess after timeout."""
         self._job_id(job_id)
-        return self._change(run_id, expected={"SUBMITTING"}, state="SUBMITTED", job_id=job_id)
+        return self._change(run_id, expected={"SUBMITTING", "SUBMISSION_UNKNOWN"}, state="SUBMITTED", job_id=job_id)
 
     def mark_running(self, run_id, job_id):
         self._job_id(job_id)

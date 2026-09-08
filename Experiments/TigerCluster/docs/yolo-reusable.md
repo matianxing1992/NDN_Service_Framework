@@ -3,7 +3,7 @@
 **Branch**: `TigerClusterExperiments`
 **Status**: IN_PROGRESS / NOT_QUALIFIED
 
-目标：一份profiles/yolo-two-node.json和一个jobs/yolo/submit.py入口，本地验证后，以同一完整SIF完成Tiger两节点四Provider推理并在新allocation复现。当前有实际输入 profile 和历史 base SIF，尚无本候选合格 SIF/GPU allocation；submit 仍未开放。
+目标：一份profiles/yolo-two-node.json和一个jobs/yolo/submit.py入口，本地验证后，以同一完整SIF完成Tiger两节点四Provider推理并在新allocation复现。当前有实际输入 profile 和历史 base SIF，尚无本候选合格 SIF/GPU allocation；共享目录接收端submit已接，尚不具备真实提交资格。
 
 ## Current Checkpoint
 
@@ -19,7 +19,15 @@ Spec183 T001输入/接口清点完成。后续已接收锁定 source seal、本�
 local 已连接 profile 输入、私钥 locator、冻结 bundle 和 SIF worker：消费同源
 hostMinindn receipt 后执行签发、两个 CPU 请求、清理及 collector 重算。缺门或
 旧六产物镜像在启动前拒绝。实际 T010 receipt/新 SIF 尚未产生，不能把组件用例
-当成真实 SIF 内身份签发及请求验证。远端 run/staging 仍需接线。
+当成真实 SIF 内身份签发及请求验证。正常单/双GPU run、节点scratch、外部
+collect --reconcile 和共享目录接收端submit已接；跨机器文件运输、可移植前置
+证据和负例仍缺。新机器必须安装冻结 requirements-operator.txt 对应的操作者
+依赖并保证batch解释器一致；实测Tiger /usr/bin/python3缺jsonschema，现会在
+sbatch前拒绝。不要临时启动job来试错或把另一解释器的import当作该解释器合格。
+
+提交回执丢失时使用同一run ID重试submit，只会按唯一comment查询原job，不重提。
+默认collect离线重算；作业结束后显式collect --reconcile核对scheduler终态并释放
+journal。共享输出路径不能手动改写prepared receipt；目前必须先完成运输接线。
 
 ## Operating Contract
 

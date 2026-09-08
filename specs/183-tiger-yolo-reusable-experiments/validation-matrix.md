@@ -1,6 +1,6 @@
 # Validation Matrix
 
-**Status**: All implementation/runtime cases NOT_RUN. Planning validation is separate.
+**Status**: Component implementation evidence is tracked by the detailed table in tasks.md. Formal runtime qualification remains NOT_RUN; component checks do not close the runtime gates below.
 
 | ID | Gate / owner | Positive or negative case | Required oracle |
 | --- | --- | --- | --- |

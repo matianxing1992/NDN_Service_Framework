@@ -354,7 +354,7 @@ def _submission_command(profile_path: Path, profile: dict, args, prepared: dict,
     if not wrapper.is_file() or wrapper.is_symlink() or not os.access(wrapper, os.X_OK):
         raise ClosureError("RUN_WRAPPER")
     command = [
-        "sbatch", "--parsable", "--export=NONE",
+        "/usr/bin/sbatch", "--parsable", "--export=NONE", "--no-requeue",
         "--partition=" + cluster["partition"],
         "--account=" + cluster["account"],
         "--nodes=" + str(nodes), "--ntasks=" + str(nodes), "--ntasks-per-node=1",
@@ -483,11 +483,132 @@ def _submit(args) -> int:
         return result
     gate_name = CASE_GATE[args.case]
     _gate_receipt(profile_path, value, gate_name, prepared=prepared)
-    # A generic PASS marker cannot establish remote staging or allocation
-    # readiness. T012 must validate the promoted bundle and wire the runner
-    # before any journal mutation or sbatch call is enabled.
-    return _not_ready("submit", "REMOTE_STAGING_NOT_WIRED",
-                      {"prepared": prepared["candidateDigest"], "case": args.case})
+    if args.case == 'negative-dependency':
+        return _not_ready('submit','NEGATIVE_RUNNER_NOT_WIRED')
+    if not _shared_submission_paths(args,value,prepared):
+        return _not_ready('submit','SHARED_STAGING_REQUIRED')
+    return _submit_shared(args,value,prepared)
+
+
+def _shared_submission_paths(args,profile,prepared):
+    """Receiver-side closure only; this does not upload or relocate a run."""
+    storage=profile.get('storage',{})
+    if not {'remoteArtifactRoot','sharedRunRoot','sharedLockRoot'} <= set(storage):
+        return False
+    roots=[_safe_output(storage[key]) for key in ('remoteArtifactRoot','sharedRunRoot','sharedLockRoot')]
+    artifact,runs,locks=roots
+    root=_safe_output(args.output)/args.run_id
+    if (any(not p.is_dir() for p in roots) or root.parent!=runs
+            or prepared['plan']['output']!=str(root) or Path(prepared['bundle'])!=root/'bundle'):
+        return False
+    def within(path, allowed):
+        path=_safe_output(path)
+        for parent in allowed:
+            try: path.relative_to(parent); return True
+            except ValueError: pass
+        return False
+    if not within(Path(args.profile).absolute(),(artifact,)):
+        return False
+    def references(item,gate=False):
+        if isinstance(item,dict):
+            if set(item)=={'path','bytes','sha256'}:
+                return within(item['path'],(runs,) if gate else (artifact,))
+            return all(references(v,gate or k=='gates') for k,v in item.items())
+        if isinstance(item,list): return all(references(v,gate) for v in item)
+        return True
+    if not references(profile): return False
+    key=Path(profile['security']['authorityPrivateKey'])
+    if (not within(key,(artifact,)) or not key.is_file() or key.stat().st_mode & 0o077):
+        raise ClosureError('SUBMIT_PRIVATE_KEY_LOCATION_OR_MODE')
+    return True
+
+
+def _submit_shared(args,profile,prepared):
+    """Single receiver-side sbatch owner, with durable uncertainty and recovery."""
+    import datetime
+    import time
+    from runtime.yolo_submission import SubmissionJournal, JournalError, observe_submission, verify_operator_python
+    from runtime.yolo_storage import measured_capacity
+    if os.environ.get('SLURM_JOB_ID'):
+        raise ClosureError('SUBMIT_INSIDE_ALLOCATION')
+    seconds=profile['timing']['progressTimeoutSeconds']
+    # A shared-looking pathname on a workstation is not a cluster preflight.
+    try:
+        journal=SubmissionJournal(Path(profile['storage']['sharedLockRoot']),
+            candidate_id=prepared['contentIdentities']['dispatch'],gate=args.case)
+        command=_submission_command(Path(args.profile),profile,args,prepared,journal._submission_key(args.run_id))
+        site=subprocess.run(['/usr/bin/scontrol','show','config'],check=True,
+            capture_output=True,timeout=seconds,env={'PATH':'/usr/bin:/bin','LC_ALL':'C'})
+        if (len(site.stdout)>4*1024*1024 or site.stderr
+                or re.findall(rb'^ClusterName\s*=\s*(\S+)\s*$',site.stdout,re.M)!=[b'itiger']):
+            raise ClosureError('SUBMIT_CLUSTER_BINDING')
+        verify_operator_python(Path(prepared['bundle']),seconds=seconds)
+        measured_capacity(Path(args.output),profile['storage']['peakBytes']+profile['storage']['marginBytes'])
+        try:
+            row=journal.get(args.run_id)
+        except JournalError as exc:
+            if str(exc)!='RUN_NOT_REGISTERED': raise
+            try: row=journal.reserve(args.run_id)
+            except JournalError as race:
+                if str(race)!='RUN_ALREADY_REGISTERED': raise
+                row=journal.get(args.run_id)
+        root=Path(prepared['plan']['output'])
+        intent_path=root/'submission-intent.json'
+        if row['state'] in ('PASS','FAIL','INCOMPLETE','CANCELLED_BEFORE_SUBMIT'):
+            raise ClosureError('SUBMIT_RUN_ALREADY_CLOSED')
+        if intent_path.exists():
+            intent=_read_plane(intent_path)
+            if (not isinstance(intent,dict) or set(intent)!= {'schema','runId','candidateDigest','argv','querySince'}
+                    or intent['schema']!='tiger-yolo-submission-intent-v1'
+                    or intent['runId']!=args.run_id or intent['candidateDigest']!=prepared['candidateDigest']
+                    or intent['argv']!=command or not isinstance(intent['querySince'],str)
+                    or re.fullmatch(r'\d{4}-\d{2}-\d{2}',intent['querySince']) is None):
+                raise ClosureError('SUBMISSION_INTENT_BINDING')
+        elif row['state']=='PREPARED':
+            since=(datetime.datetime.now(datetime.timezone.utc)-datetime.timedelta(days=1)).date().isoformat()
+            intent=dict(schema='tiger-yolo-submission-intent-v1',runId=args.run_id,
+                candidateDigest=prepared['candidateDigest'],argv=command,querySince=since)
+            _write_readonly(intent_path,intent)
+        else:
+            raise ClosureError('SUBMISSION_INTENT_MISSING')
+        if row['state'] in ('SUBMITTING','SUBMISSION_UNKNOWN'):
+            observed=observe_submission(submission_key=row['submissionKey'],partition=profile['cluster']['partition'],
+                                        since=intent['querySince'],seconds=seconds)
+            _write_readonly(root/('submission-query-'+str(time.time_ns())+'.json'),observed)
+            try: row=journal.reconcile(args.run_id,observed['jobs'])
+            except JournalError as race:
+                current=journal.get(args.run_id)
+                if str(race)!='INVALID_TRANSITION' or current['state'] not in ('SUBMITTED','RUNNING'): raise
+                row=current
+        elif row['state']=='PREPARED':
+            journal.mark_submitting(args.run_id)
+            try:
+                response=subprocess.run(command,check=False,capture_output=True,timeout=seconds,
+                    cwd=Path(prepared['bundle']),env={'PATH':'/usr/bin:/bin','LC_ALL':'C'})
+                job=response.stdout.decode('ascii').strip()
+                if response.returncode!=0 or response.stderr or re.fullmatch(r'[1-9][0-9]{0,9}(?:;itiger)?',job) is None:
+                    raise ValueError('SUBMISSION_RESPONSE_UNCERTAIN')
+                job=job.split(';')[0]
+                _write_readonly(root/'submission-response.json',dict(jobId=job,exitCode=response.returncode,
+                    stdout=response.stdout.decode('ascii'),submissionKey=row['submissionKey']))
+                current=journal.get(args.run_id)
+                if current['state'] in ('SUBMITTING','SUBMISSION_UNKNOWN'):
+                    row=journal.record_submission(args.run_id,job)
+                elif current['state'] in ('SUBMITTED','RUNNING') and current['jobId']==job:
+                    row=current
+                else: raise JournalError('SUBMISSION_ACK_CONFLICT')
+            except (ValueError,OSError,subprocess.SubprocessError) as exc:
+                current=journal.get(args.run_id)
+                if current['state'] in ('SUBMITTING','SUBMISSION_UNKNOWN'):
+                    journal.mark_unknown(args.run_id)
+                return _not_ready('submit','SUBMISSION_UNCERTAIN',{'errorType':type(exc).__name__})
+        if row['state'] not in ('SUBMITTED','RUNNING'):
+            return _not_ready('submit','SUBMISSION_UNKNOWN',{'runId':args.run_id})
+        print(json.dumps(dict(status=row['state'],jobId=row['jobId'],runId=args.run_id,
+            candidateDigest=prepared['candidateDigest'],qualification='NOT_EVALUATED'),sort_keys=True))
+        return 0
+    except (ValueError,OSError,subprocess.SubprocessError) as exc:
+        raise ClosureError('SHARED_SUBMISSION:'+str(exc)) from exc
 
 
 def _reanalyze_retained(root: Path, prepared: dict) -> dict:
@@ -719,6 +840,14 @@ def _allocated_context(args, *, task=False):
         candidate_id=prepared['contentIdentities']['dispatch'], gate=args.case)
     row = journal.get(args.run_id)
     expected_state = 'RUNNING' if task else 'SUBMITTED'
+    if not task and row['state'] in ('SUBMITTING','SUBMISSION_UNKNOWN'):
+        import time
+        deadline=time.monotonic()+profile['timing']['progressTimeoutSeconds']
+        while row['state'] in ('SUBMITTING','SUBMISSION_UNKNOWN'):
+            if time.monotonic()>=deadline:
+                raise ClosureError('RUN_SUBMISSION_ACK_TIMEOUT')
+            time.sleep(min(0.05,max(0,deadline-time.monotonic())))
+            row=journal.get(args.run_id)
     if row['state'] != expected_state or row['jobId'] != os.environ['SLURM_JOB_ID']:
         raise ClosureError('RUN_JOURNAL_JOB_BINDING')
     expected = dict(job_id=row['jobId'], submission_key=row['submissionKey'],

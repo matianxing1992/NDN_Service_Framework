@@ -13,8 +13,7 @@ behavior. Recompute its retained collection using its saved plan and compare the
 complete verdict; never require a historical run to match a subsequently edited
 profile document containing new gate references. Bind normal collection to the
 prepared runtime candidate and saved package, oracle, and fixture digests.
-These checks do not replace actual stage execution or authorize an unwired remote
-launcher. Prepared output paths remain bound; relocation requires an explicit
+These checks do not replace actual stage execution. Prepared output paths remain bound; relocation requires an explicit
 transport contract before remote execution can be enabled.
 
 The dispatch `effectiveProfile` must equal the shared canonical behavior document
@@ -36,9 +35,9 @@ invokes the normal collector only after clean reaping. GPU reanalysis must also
 join that cleanup record to the collection's actual job ID. Zero task exit is
 not an inference verdict; only the collector determines the result.
 The batch does not close the journal while its allocation remains active;
-external `collect --reconcile` owns terminal-state reconciliation. Remote staging,
-negative runner and actual
-submission remain incomplete; this private entry is not release qualification.
+external `collect --reconcile` owns terminal-state reconciliation. Receiver-side
+submission is wired for already verified shared paths. Remote transport and the
+negative runner remain incomplete; this is not release qualification.
 
 The normal two-node case now uses two tasks in the same srun step. The batch
 publishes one run/candidate/job-bound probe nonce; rank zero alone invokes the
@@ -57,8 +56,8 @@ node receipts and collection candidate to that argument. The actual profile's
 walltime is 900 seconds: its four permission/request windows plus stage/start/
 cleanup require at least 630 seconds, so the old 600-second setting could never
 satisfy the complete owner budget. Schedule and request deadlines are unchanged.
-Negative-dependency still fails as NEGATIVE_RUNNER_NOT_WIRED. Remote staging
-and unknown-submission query recovery remain prerequisites.
+Negative-dependency still fails as NEGATIVE_RUNNER_NOT_WIRED. Remote transport
+and portable prerequisite evidence remain prerequisites.
 
 ## External allocation termination (2026-09-07)
 
@@ -82,8 +81,40 @@ requires this successful terminal record joined to the actual srun job as well
 as numerical/native evidence; a PASS written inside the batch alone is insufficient.
 
 Unknown/unacknowledged submissions are deliberately not handled by this terminal
-observer. Their unique-comment query/recovery belongs to the pending submit
-transport owner and must not submit a second job on an empty response.
+observer. Their unique-comment recovery belongs to the submit owner below.
+
+## Receiver-side submit and uncertain acknowledgment (2026-09-07)
+
+`submit` can execute on the receiving cluster only after prior gates and the
+frozen content/profile checks pass. Require the prepared run/bundle at the exact
+declared shared run root, profile and file inputs below remoteArtifactRoot, gate
+references below sharedRunRoot, and a private authority key with owner-only mode
+below remoteArtifactRoot. Unstaged inputs return SHARED_STAGING_REQUIRED without
+querying Slurm or reserving a journal. No output path or receipt is silently rebased.
+
+Before reservation, query ClusterName=itiger, measure available output capacity,
+and verify the actual `/usr/bin/python3` batch interpreter against the frozen
+requirements-operator.txt. This includes real jsonschema/NumPy imports. Missing
+or mismatched dependencies prevent sbatch; local component doubles cannot prove
+that the cluster interpreter is usable.
+
+Persist an exact argv/candidate/run-bound submission intent, then atomically
+mark SUBMITTING before the sole `/usr/bin/sbatch`. Use explicit resources,
+--export=NONE, --no-requeue and the journal's unique comment. Accept only a clean
+parsable numeric job ID, optionally suffixed by ;itiger. Timeout, rejection or an
+ambiguous response remains uncertain; it never enables another sbatch for that run.
+The batch briefly waits for the submitter's durable acknowledgment and checks
+the matching job ID before proceeding; it cannot acknowledge itself.
+
+On retry, acknowledged jobs reuse their recorded ID. Unknown submissions query
+bounded sacct plus squeue using the original intent's date range and exact
+comment, UID, partition and cluster. Persist observations before reconciliation;
+zero matches remain UNKNOWN, one distinct job ID reconnects, multiple IDs fail
+and remain reserved. A late valid acknowledgment may resolve UNKNOWN. No query
+result authorizes resubmission. Final failure remains a separate collect action.
+
+This receiver does not upload files or relocate local prerequisite runs. Those
+transport owners and actual shared-filesystem qualification remain unfinished.
 
 ## Allocated storage ownership (2026-09-07)
 
@@ -368,11 +399,11 @@ sbatch，也不验证模型。所有操作者必须用同一已验证共享目�
 
 进程在 SUBMITTING 崩溃或响应丢失时不能重提；按唯一 submissionKey/comment
 查询，零匹配仍为 SUBMISSION_UNKNOWN，单一 jobId 才接回 SUBMITTED，多匹配
-明确报错并继续占用。query transport 和真实 Slurm 输出解析仍待接线。
+明确报错并继续占用。submit 已接有界 sacct/squeue 查询和绑定解析；跨机器文件运输仍缺。
 尚处 PREPARED 可原子转为 `CANCELLED_BEFORE_SUBMIT` 释放预留；这是提交记录的
 终态，不是模型结果。进入 SUBMITTING 后禁止此取消出口。正常 finish 必须由
 上层先核对同一 job 真正终止和 collector verdict；jobId 不匹配、改写终态、
-未知提交直接 finish 均拒绝。正式提交入口未实现，所以这些组件不构成 T004 完成。
+未知提交直接 finish 均拒绝。已接收共享目录的提交入口已有组件证据；运输与完整运行仍缺，因此不构成 T004 完成。
 
 ### Application Sync name and startup coordination
 
