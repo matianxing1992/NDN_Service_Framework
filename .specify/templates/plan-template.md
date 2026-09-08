@@ -108,8 +108,10 @@ be stricter but must not weaken its PASS/BLOCK boundary.
 <!--
   Define each independently verifiable behavior batch once. Do not grow a batch
   after its stable exit merely to avoid another build. Use the shared reference
-  for required coverage and result fields. For documentation-only work, record
-  N/A with the reason instead of inventing a code batch.
+  for required coverage and result fields. Declare the five-lane Coverage matrix scope
+  (production callers, implementation/wire, test/harness/oracle, build/source
+  closure, migration/evidence) and its evidence owner. For documentation-only
+  work, record N/A with the reason instead of inventing a code batch.
 -->
 
 | Batch ID | Behavior boundary / stable exit | Members | Implementation dependencies | Acceptance dependencies | Shared build/test selector and owner |

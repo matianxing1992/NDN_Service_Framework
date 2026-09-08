@@ -5,7 +5,7 @@
 
 | Skill | Use |
 | --- | --- |
-| [speckit-code-design](speckit-code-design/SKILL.md) | 设计文件/符号/字段/调用链、内聚任务、源码对照设计和验收；批次质量与漏检记录见其 `references/batch-quality-gates.md` |
+| [speckit-code-design](speckit-code-design/SKILL.md) | 设计文件/符号/字段/调用链、内聚任务、源码对照设计和验收；所有 Spec Kit 入口共用其五 lane Coverage matrix、批次质量与漏检记录 |
 | [itiger-ndnsf-ops](itiger-ndnsf-ops/SKILL.md) | 路由现有SIF交付与Tiger工具，保持开发/实验分工及来源证据 |
 | [ndnsf-minindn-experiment](ndnsf-minindn-experiment/SKILL.md) | 本地拓扑、应用生命周期、独立判据和实验结果 |
 | [codegraph-first](codegraph-first/SKILL.md) | 有索引时优先图查询，没有时精确源码检索 |
@@ -49,5 +49,7 @@ for name in ('speckit-code-design', 'itiger-ndnsf-ops', 'ndnsf-minindn-experimen
 PY
 ```
 
-后续改进提交回本目录并review；个人定制不要在更新时直接覆盖。
+后续改进提交回本目录并review；个人定制不要在更新时直接覆盖。更新后需同步
+使用中的本机入口，并核对入口引用的共享 reference 版本；只更新一份 reference，
+不要在各个 Spec Kit 命令中复制另一套门禁。
 本地检查验证frontmatter与相对引用完整性；它们不证明依赖已安装、代码通过测试或实验已完成。
