@@ -40,7 +40,10 @@ def build(bld):
               source=repo_sources,
               includes=['include', '..'],
               use='ndn-service-framework NDN_SVS NDN_CXX BOOST NAC-ABE NDNSD OPENSSL sqlite3 DL',
-              install_path=None)
+              install_path='${LIBDIR}' if bld.env.RUNTIME_LIBRARIES_ONLY else None)
+
+    if bld.env.RUNTIME_LIBRARIES_ONLY:
+        return
 
     bld.program(name='DistributedRepoSmoke',
                 target='DistributedRepoSmoke',

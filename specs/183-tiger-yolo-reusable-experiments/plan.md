@@ -15,7 +15,7 @@
 - Storage：源码、profile/小型证据跟踪；SIF/模型内容寻址缓存，run 输出隔离，秘密为 run 私有 0700 路径。
 - Testing：pytest 配置/launcher mutation，Boost 单元/真实集成，MiniNDN，最终 SIF 本地 CPU 和 Slurm GPU。
 - Target：两节点、每节点一 GPU、四个独立 Provider；不做 Qwen/扩展性能矩阵。
-- Constraints：最多 `-j2`，同构建树串行；本地匹配 base 的容器/SDK 构建；基础 SIF + 外部只读 app→Tiger verify/run；无隐式 CPU fallback；禁止 Spec182 迁移。
+- Constraints：最多 `-j4`，同构建树串行；本地匹配 base 的容器/SDK 构建；基础 SIF + 外部只读 app→Tiger verify/run；无隐式 CPU fallback；禁止 Spec182 迁移。
 - Performance goals：本 Spec 无速度优越性门槛。记录冷启动、warmup、每请求耗时及失败，主要判据为正确性和复用。
 
 ## Constitution Check

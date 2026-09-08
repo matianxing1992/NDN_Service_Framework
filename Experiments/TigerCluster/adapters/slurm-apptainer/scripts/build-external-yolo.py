@@ -233,10 +233,12 @@ def compile_application(command):
     subprocess.run(command + ['/opt/venv/bin/python',
                    '/opt/ndnsf-di/current/manifest/verify-base-runtime.py', 'verify'], check=True)
     subprocess.run(command + ['./waf', 'configure', '--out=/build', '--with-examples',
+                   '--external-application-only',
+                   '--application-component=di',
                    '--disable-local-dependency-prefix', '--nac-abe-prefix=/opt/ndnsf-di/current',
                    '--prefix=/opt/ndnsf-di/current', '--libdir=/opt/ndnsf-di/current/lib',
                    '--boost-includes=/usr/include', '--boost-libs=/usr/lib/x86_64-linux-gnu'], check=True)
-    subprocess.run(command + ['./waf', '-j2', '--targets=' + ','.join(TARGETS)], check=True)
+    subprocess.run(command + ['./waf', '-j4', '--targets=' + ','.join(TARGETS)], check=True)
 
 
 if __name__ == '__main__':

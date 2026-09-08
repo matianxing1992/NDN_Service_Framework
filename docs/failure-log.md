@@ -3310,3 +3310,24 @@ libndn-service-framework.so 名称不符。回归改用依赖 pkg-config flags �
 使用真实库名已链接成功，更新后的安装元数据仍须在新 SIF 验证。
 构建器同时增加受新旧源码和原库收据约束的依赖复用，避免该 Core 修复
 再次无条件重编未变依赖。5项边界测试通过，实际构建尚未开始。
+
+## 2026-09-08: zstd 默认压缩级别导致基础层封装缓慢
+
+Core、两个 Python 扩展和内部原生检查均通过后，mksquashfs 使用 zstd
+默认15级；约3分33秒只读取1.6GB，CPU约195%。根因是仅指定 -comp zstd
+并不选择快速级别。完整保留已编译 rootfs（cp -al 成功，未重跑编译），
+再终止本任务的压缩 PID2082454；原构建因此明确以封装失败终止。
+随后仅从保留的 rootfs 重新封装，显式指定 -processors 2 -comp zstd
+-Xcompression-level 3。第二次封装及新SIF验证仍需单独确认。
+教训：记录实际压缩级别；只修复有证据的慢步骤，不因工具句柄丢失而
+重启仍存活的构建，也不丢弃已通过编译的产物。
+
+## 2026-09-08: 外置应用构建先于 Waf 入口更新
+
+按用户裁决把外置应用构建切换到 `-j4` 并试用
+`--external-application-only` 时，旧 source seal 中的 `wscript` 尚未包含该
+选项，Waf 在 configure 阶段以 `no such option` 退出；未生成可信任的 app bundle。
+根因是构建脚本与封存源码的入口版本不同。修复是先将 Waf 外部应用分支和
+并行度规则写入仓库，再重新封存 source、重建基础 SIF 并以同一 source/base
+身份编译 app。教训：Waf 命令行能力必须和 source seal 一起验证，入口失败不应
+复用其未完成缓存作为候选。

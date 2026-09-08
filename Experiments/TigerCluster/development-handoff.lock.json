@@ -61,7 +61,7 @@
   "requirements": {
     "architecture": "x86_64",
     "containerPython": "CPython 3.10",
-    "maxBuildJobs": 2,
+    "maxBuildJobs": 4,
     "buildBoundary": "container-native",
     "apt": "online Ubuntu repositories; final stage installs builder-selected runtime package versions; not a fully offline APT lock",
     "baseProvidedDependencies": [

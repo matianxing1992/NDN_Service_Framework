@@ -16,7 +16,7 @@ Tiger分布式推理、SIF构建及Slurm配置的统一入口。当前生产/合
 实验机当前工作分支为 `TigerClusterExperiments`，从 `Experimental` 的交付提交
 `81e251a4` 创建。旧 `UAV-Experimental` 已合并并删除。后续开发机更新通过正常
 merge 整合；具体规则见 [分支策略](../../docs/DEVELOPMENT_BRANCHING_POLICY.md)。
-源码接收仅为 SOURCE_READY，后续构建与测试仍按交付锁文件执行，最多 `-j2`。
+源码接收仅为 SOURCE_READY，后续构建与测试仍按交付锁文件执行，最多 `-j4`；同一构建树不并行。
 
 | Path | Owner / purpose |
 | --- | --- |

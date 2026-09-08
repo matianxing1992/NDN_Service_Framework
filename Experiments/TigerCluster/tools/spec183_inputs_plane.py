@@ -115,7 +115,7 @@ def render(root: Path, *, verify: bool = False, sources=None, layout=None) -> di
         files[name] = {"path": target.name, "bytes": target.stat().st_size,
                        "sha256": observed}
     document = {"schema": PLANE_SCHEMA, "stage": "inputs", "parentId": None,
-                "files": files, "parameters": {"maxBuildJobs": 2}}
+                "files": files, "parameters": {"maxBuildJobs": 4}}
     if layout is not None:
         document['parameters']['layout'] = layout
     payload = json.dumps(document, sort_keys=True, separators=(",", ":")).encode()

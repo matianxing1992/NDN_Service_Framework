@@ -10,6 +10,10 @@
 完整运行f已越过请求ID不一致问题，进入ACK汇总；四Provider均因ControllerVersion
 拒绝同一请求，退出2。协作入口版本绑定已完成原生红绿回归；新SIF组合及完整推理验收仍未完成。
 
+2026-09-08 用户裁决将本仓库 TigerCluster 构建并行度上限从 `-j2` 调整为 `-j4`，
+用于缩短构建时间并保持可复现；同一构建树仍只允许一个构建进程。历史回执保留实际
+使用的 `-j2` 命令，不改写为新规则下的执行证据。
+
 | 细分任务 | 状态 | 实证 / 下一步 |
 |---|---|---|
 | T004.local-tools：本机与Tiger工具版本绑定 | IMPLEMENTED | 本机1.5.3签名准备成功；Tiger版本要求保留 |
@@ -17,6 +21,7 @@
 | T009.role-home：角色身份挂载修复 | VERIFIED_STARTUP | 同SIF内身份可见、根身份隔离；Controller签名发布成功并清理 |
 | T009.cpu-chain：完整CPU链 | IN_PROGRESS | 候选f进入ACK汇总、0候选；四Provider明确拒绝ControllerVersion，原生回归及修复进行中；尚无完整推理验收 |
 | T009.controller-version：协作请求版本绑定 | SOURCE_VERIFIED | 原SIF两入口均缺版本，exit201；修复ServiceUser单对象后版本绑定及撤权拒绝断言exit0；待新原生基础层和应用消费者验证，Provider检查不变 |
+| T009.native-refresh：更新修复后的基础层 | IN_PROGRESS | 66554c42源码已封存；依赖复用5项边界检查通过；新SIF本机构建进行中，父镜像c6dbeda8，未改handoff依赖锁，尚无新镜像PASS |
 | T009.repo-order：Repo双Face管理命令顺序 | VERIFIED_STARTUP | 修复已装入ccdd4ac0基础SIF；候选c越过原注册故障；48项HA及新增失败清理检查沿用，STATUS响应仍待修复 |
 | T009.acceptance：开发入口请求结果验收 | IMPLEMENTED | 使用生产graph-reference/result校验后才记录accepted；保留结果目录；3项定向检查通过，不代表实际推理通过 |
 | T009.repo-ack：Repo保护模式ACK适配 | SOURCE_VERIFIED | 保护模式改为能力ACK、保留Selection后操作/身份校验；最小4进程诊断STATUS首次请求READY、User0、全清理；显式源码挂载，未封装或验收完整YOLO |
@@ -92,7 +97,7 @@ T007 复核确认正常/负例/SSH 接线已存在；N3 issuer/rank版本检查�
 | Step | Parent | Concrete outcome / path | State | Evidence / verification scope | Blocker / next action | Reuse / rerun trigger |
 | --- | --- | --- | --- | --- | --- | --- |
 | T008.a | T008 | `tools/spec183_host_build.sh` 干净根构建驱动 | IMPLEMENTED | `64df1581`；[host-unit](evidence/host-unit.md) 已记录构建 exit 0 | 正式验收仍受 T007 和候选源码身份约束 | 复用匹配候选的构建产物，不无条件重建 |
-| T008.b | T008 | NAC-ABE + NDN-SVS → NDNSD → NDNSF，系统 Boost 1.71，最多 -j2 | IMPLEMENTED | 其他客户端记录 BUILD PASS、隔离根与两个扩展；本轮未重跑 | 核对最终锁/source seal 与该构建身份；T007 未 PASS | native/toolchain 变化才重建对应 ABI consumers |
+| T008.b | T008 | NAC-ABE + NDN-SVS → NDNSD → NDNSF，系统 Boost 1.71，最多 -j4 | IMPLEMENTED | 其他客户端记录 BUILD PASS、隔离根与两个扩展；本轮未重跑 | 核对最终锁/source seal 与该构建身份；T007 未 PASS | native/toolchain 变化才重建对应 ABI consumers |
 | T008.c | T008 | `_ndnsf` 与 `_py_repoclient`、真实入口、ldd/readelf/hash、注册 unit | BLOCKED | [host-unit](evidence/host-unit.md) 与4ade12bf已记录树外import/ldd、unit-tests和integration-tests RC0；本轮未重跑 | T007与最终source身份仍须闭合；二进制suite通过不等于T009多进程YOLO | 复用匹配候选的测试记录；不重复已有loader或unit集合 |
 | T009.a | T009 | 多进程 CPU YOLO 正常 ACK/Selection→四角色→数值结果 | NOT_STARTED | V09；NOT_RUN | T008 后执行；bootstrap 与 inference 分开判定 | 不重跑全部历史 DI 集成 |
 | T009.b | T009 | 当前 epoch/权限拒绝、错 Selection、activation loss/tamper 与清理 | NOT_STARTED | V10；NOT_RUN | 与 T009.a 共用 fixture，逐个保留独立判定 | 只跑注册安全/故障场景 |
@@ -412,10 +417,10 @@ UAV仅复用同一部署边界；本Spec不实现UAV应用或Spec182。正式YOL
 
 **Independent Test**: current dependency build, real CPU multi-process graph and same-SIF app path. Record one evidence receipt per independently meaningful gate.
 
-- [ ] T008 [US2] Qualify the locked dependency/native/Python closure built locally in the matching base container/SDK, using existing build owners and `Experiments/TigerCluster/docs/yolo-reusable.md`, recording `specs/183-tiger-yolo-reusable-experiments/evidence/host-unit.md`: clean affected ABI consumers in isolated build roots, system toolchain/Boost, at most `-j2` per active build tree; record both Python extension imports, actual entrypoint checks, ldd/readelf/loaded hashes and relevant dependency/NDNSF/Tiger unit results. Reuse unchanged component evidence with its source identity; do not build a redundant host-ORT variant before building the actual SIF-ORT application. Preserve failures; no stale incremental objects or manual PASS manifests. Formal closure depends on T007 and complete T001 inputs; base construction follows T011's independent boundary.
+- [ ] T008 [US2] Qualify the locked dependency/native/Python closure built locally in the matching base container/SDK, using existing build owners and `Experiments/TigerCluster/docs/yolo-reusable.md`, recording `specs/183-tiger-yolo-reusable-experiments/evidence/host-unit.md`: clean affected ABI consumers in isolated build roots, system toolchain/Boost, at most `-j4` per active build tree; record both Python extension imports, actual entrypoint checks, ldd/readelf/loaded hashes and relevant dependency/NDNSF/Tiger unit results. Reuse unchanged component evidence with its source identity; do not build a redundant host-ORT variant before building the actual SIF-ORT application. Preserve failures; no stale incremental objects or manual PASS manifests. Formal closure depends on T007 and complete T001 inputs; base construction follows T011's independent boundary.
 - [ ] T009 [US2] Execute real multi-process CPU integration in `Experiments/TigerCluster/tests/test_yolo_integration.py` and existing NDNSF integration fixtures, recording `specs/183-tiger-yolo-reusable-experiments/evidence/integration.md`: separate identity/bootstrap tests from a prepared authorized fixture; real signed messages, encrypted dependency Data, actual small ONNX execution and final oracle. Cover fresh Controller/epoch, denied role, wrong selection, activation loss/tamper and process cleanup. No mocked inference final PASS. Depends on T008.
 - [ ] T010 [US2] Run bounded CPU MiniNDN YOLO through `Experiments/NDNSF_DI_YoloAckDriven_Minindn.py` with Spec183-owned case configuration/driver in `Experiments/TigerCluster/tests` and record `specs/183-tiger-yolo-reusable-experiments/evidence/minindn.md`: normal four-role graph plus registered permission/dependency-failure cases, request-to-response IDs/edge hashes, route snapshots and cleanup. Freeze the actual source/base/app-bound qualification receipt for the composition's dispatch gate; it is not a prerequisite for constructing unchanged base libraries. Do not rerun all historical campaigns, build another host ABI variant or substitute echo. Depends on T009.
-- [ ] T011 [US2] Split base-runtime and application production in the existing `Experiments/TigerCluster/adapters/slurm-apptainer/scripts/prepare-development-handoff.py`, `build-local-sif.sh`, definition and preflight owners; record `specs/183-tiger-yolo-reusable-experiments/evidence/local-sif.md`: build/reuse the locked base SIF, container/SDK-build only affected external app targets, freeze required-R app manifest, verify base/app DSO and Python closures and actual entrypoints in the exact read-only composition. Replace the all-nine-in-SIF assumption. Prove an app-only change preserves the base hash and rebuilds only affected targets; wrong base/ABI, shadowed foundational libraries and mixed legacy receipts reject before workload. Keep models outside both layers. Final composition CPU YOLO qualification depends on T010; base construction/reuse does not depend on each changed app's future receipt. No host-library injection or Tiger build. Use the existing bounded builder and at most -j2.
+- [ ] T011 [US2] Split base-runtime and application production in the existing `Experiments/TigerCluster/adapters/slurm-apptainer/scripts/prepare-development-handoff.py`, `build-local-sif.sh`, definition and preflight owners; record `specs/183-tiger-yolo-reusable-experiments/evidence/local-sif.md`: build/reuse the locked base SIF, container/SDK-build only affected external app targets, freeze required-R app manifest, verify base/app DSO and Python closures and actual entrypoints in the exact read-only composition. Replace the all-nine-in-SIF assumption. Prove an app-only change preserves the base hash and rebuilds only affected targets; wrong base/ABI, shadowed foundational libraries and mixed legacy receipts reject before workload. Keep models outside both layers. Final composition CPU YOLO qualification depends on T010; base construction/reuse does not depend on each changed app's future receipt. No host-library injection or Tiger build. Use the existing bounded builder and at most -j4.
 
 ## Phase 7: User Story 3 - GPU And Cross-Node Execution
 

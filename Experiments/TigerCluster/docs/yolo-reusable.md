@@ -88,6 +88,6 @@ profile选择同一解释器。submit协调、本地CPU和普通离线collect使
   `runtime.yolo_operator.finalize_normal_collection()` 发布一次不可覆盖的
   `collection-input.json`；它使用 `applicationName + '/sync'`，不使用 legacy
   `/group`，也不从缺失文件或退出码推断 PASS。
-- 最大-j2；SIF本地构建、Tiger只验证/运行；CAS缓存不按run复制模型，容量按实际峰值检查。
+- 最大-j4；SIF本地构建、Tiger只验证/运行；CAS缓存不按run复制模型，容量按实际峰值检查。
 
 真实参数、命令和成功示例在验收后补充；未运行继续NOT_RUN，不复制历史PASS。计划见[Spec183](../../../specs/183-tiger-yolo-reusable-experiments/plan.md)。

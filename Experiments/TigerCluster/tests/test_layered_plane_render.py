@@ -47,7 +47,7 @@ def test_input_renderer_records_explicit_layered_sources(tmp_path):
         sources[name] = path
     output = tmp_path/'inputs'
     body = render_inputs(output, sources=sources, layout='layered-v1')
-    assert body['parameters'] == {'maxBuildJobs': 2, 'layout': 'layered-v1'}
+    assert body['parameters'] == {'maxBuildJobs': 4, 'layout': 'layered-v1'}
     assert check_inputs(output)['integrity'] == 'VERIFIED'
 
 

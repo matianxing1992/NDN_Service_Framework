@@ -27,7 +27,7 @@ def input_plane(root):
         files[name] = {"path": name, "bytes": len(payload),
                        "sha256": "sha256:" + hashlib.sha256(payload).hexdigest()}
     doc = {"schema": "tiger-yolo-plane-v1", "stage": "inputs", "parentId": None,
-           "files": files, "parameters": {"maxBuildJobs": 2}}
+           "files": files, "parameters": {"maxBuildJobs": 4}}
     path = root / "plane.json"
     path.write_text(json.dumps(doc))
     return path, doc
@@ -137,8 +137,8 @@ def test_tampered_or_ambiguous_documents_fail_closed(tmp_path, mutation):
         os.mkfifo(data)
     path.write_text(json.dumps(doc))
     if mutation == "duplicate-json":
-        path.write_text(path.read_text().replace('"maxBuildJobs": 2',
-                                                '"maxBuildJobs": 1, "maxBuildJobs": 2'))
+        path.write_text(path.read_text().replace('"maxBuildJobs": 4',
+                                                '"maxBuildJobs": 1, "maxBuildJobs": 4'))
     with pytest.raises(module.ClosureError):
         module.check_plane(path, expected_stage="other" if mutation == "unknown-stage" else "inputs")
 

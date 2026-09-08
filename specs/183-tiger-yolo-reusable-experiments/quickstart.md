@@ -28,7 +28,7 @@ python3 Experiments/TigerCluster/jobs/yolo/submit.py check --stage inputs --prof
 python3 Experiments/TigerCluster/jobs/yolo/submit.py prepare --profile Experiments/TigerCluster/profiles/yolo-two-node.json --run-id yolo-prepare-01 --output Experiments/TigerCluster/results
 ```
 
-按 T007–T011 完成生产审计→unit→integration→MiniNDN→本地 SIF。只调用已有 `build-local-sif.sh`，参数从实际锁及合格 host-gate 产生；不能从此文复制一个虚构 PASS manifest。构建最多 `-j2`。
+按 T007–T011 完成生产审计→unit→integration→MiniNDN→本地 SIF。只调用已有 `build-local-sif.sh`，参数从实际锁及合格 host-gate 产生；不能从此文复制一个虚构 PASS manifest。构建最多 `-j4`，同一构建树串行。
 
 ```bash
 python3 Experiments/TigerCluster/jobs/yolo/submit.py local --case local-cpu --profile Experiments/TigerCluster/profiles/yolo-two-node.json --run-id yolo-local-01 --output Experiments/TigerCluster/results

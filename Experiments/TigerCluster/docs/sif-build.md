@@ -10,6 +10,13 @@ Repo通用库及运行依赖；DI/UAV程序、包及自有扩展独立构建、�
 实现时沿用这些owner拆分输出与预检，禁止临时注入宿主基础库；最终检查针对
 精确base+app组合。已有合格base缓存可复用，不因每次app发布而重新打包。
 
+仓库根 `wscript` 现在提供分层构建边界：基础层使用
+`--runtime-libraries-only`（NDNSF Core、Repo 通用静态库和绑定），外置层使用
+`--external-application-only --application-component=<di|uav|repo|all>`。YOLO
+入口固定选择 `di`，并行度统一为 `-j4`；同一构建树不可同时运行两个 Waf/CMake
+构建。外置模式通过 base 安装的 pkg-config/库闭包，不把 Core 或 Repo 源码重新
+编进 DI 应用。
+
 构建入口：`Experiments/TigerCluster/adapters/slurm-apptainer/scripts/build-local-sif.sh`。
 构建前准备源码seal并核对definition、依赖和工具链，沿用 [runtime package](../../../packaging/ndnsf-di-container/README.md) 的原生ABI与候选规则。
 

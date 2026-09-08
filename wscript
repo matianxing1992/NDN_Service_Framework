@@ -108,6 +108,11 @@ def options(opt):
                       help='Build unit tests')
     optgrp.add_option('--runtime-libraries-only', action='store_true', default=False,
                       help='Build/install the shared framework without optional DI applications')
+    optgrp.add_option('--external-application-only', action='store_true', default=False,
+                      help='Build application targets against the installed framework; do not rebuild Core/Repo')
+    optgrp.add_option('--application-component', choices=('di', 'uav', 'repo', 'all'),
+                      default='di',
+                      help='Select the external application component (default: di)')
     optgrp.add_option('--toolchain-root', default='/usr/bin',
                       help='Required compiler/binutils root (default: /usr/bin)')
     optgrp.add_option('--ndn-svs-source-tree', default='',
@@ -158,6 +163,8 @@ def configure(conf):
     conf.env.WITH_EXAMPLES = conf.options.with_examples
     conf.env.WITH_TESTS = conf.options.with_tests
     conf.env.RUNTIME_LIBRARIES_ONLY = conf.options.runtime_libraries_only
+    conf.env.EXTERNAL_APPLICATION_ONLY = conf.options.external_application_only
+    conf.env.APPLICATION_COMPONENT = conf.options.application_component
 
     conf.find_program('dot', mandatory=False)
 
@@ -198,6 +205,19 @@ def configure(conf):
 
     conf.check_cfg(package='libndn-cxx', args=['libndn-cxx >= 0.8.0', '--cflags', '--libs'],
                    uselib_store='NDN_CXX', pkg_config_path=pkg_config_path)
+
+    if conf.env.EXTERNAL_APPLICATION_ONLY:
+        conf.check_cfg(package='libndn-service-framework',
+                       args=['--cflags', '--libs'],
+                       uselib_store='ndn-service-framework',
+                       pkg_config_path=pkg_config_path)
+        # Repo is a base-owned static library.  Export it as an imported
+        # uselib when present so UAV applications can link without rebuilding
+        # the Repo sources in the external application tree.
+        repo_archive = os.path.join(conf.env.LIBDIR, 'libndnsf-distributed-repo.a')
+        if os.path.isfile(repo_archive):
+            conf.env.LIBPATH_NDNSF_REPO = [conf.env.LIBDIR]
+            conf.env.LIB_NDNSF_REPO = ['ndnsf-distributed-repo']
 
     # The Boost stacktrace/OpenSSL combination used by the pinned Ubuntu
     # toolchain exposes libdl symbols through libndn-cxx's transitive
@@ -405,6 +425,79 @@ int main() {
     conf.write_config_header('config.hpp')
 
 def build(bld):
+    if bld.env.EXTERNAL_APPLICATION_ONLY:
+        # The external app layer consumes the framework and dependency DSOs
+        # from the base SIF.  Define only the selected application targets;
+        # do not recurse into the Core, Repo, UAV, or generic example graphs.
+        component = bld.env.APPLICATION_COMPONENT
+        framework_use = ('ndn-service-framework NDN_CXX NDN_SVS BOOST '
+                         'PROTOBUF NAC-ABE NDNSD OPENSSL DL')
+        if component in ('di', 'all'):
+            bld.program(name='App_ServiceController', target='examples/App_ServiceController',
+                        source=['examples/App_ServiceController.cpp'], includes=['.'],
+                        use=framework_use, install_path=None)
+
+            di_sources = bld.path.ant_glob(
+                'NDNSF-DistributedInference/cpp/ndnsf-di/*.cpp')
+            di_sources += bld.path.ant_glob(
+                'NDNSF-DistributedInference/cpp/adapters/onnx/*.cpp')
+            di_sources += bld.path.ant_glob(
+                'NDNSF-DistributedInference/cpp/adapters/qwen/*.cpp')
+            di_sources += bld.path.ant_glob(
+                'NDNSF-DistributedInference/cpp/adapters/yolo/*.cpp')
+            di_includes = ['.', 'ndn-service-framework',
+                           'NDNSF-DistributedRepo/include']
+            di_use = ('BOOST ONNXRUNTIME NDN_CXX NDN_SVS PROTOBUF NAC-ABE '
+                      'NDNSD OPENSSL DL ndn-service-framework')
+            for name, entry, extra_flags in (
+                    ('di-native-provider', 'DI_NativeProviderExecutable.cpp', []),
+                    ('di-native-fault-provider', 'DI_NativeFaultProviderExecutable.cpp',
+                     ['-DNDNSF_DI_EXPERIMENT_FAULTS=1'])):
+                bld.program(name=name, target='examples/' + name,
+                            source=['examples/' + entry] + di_sources,
+                            includes=di_includes, use=di_use,
+                            cxxflags=['-fPIC', '-pthread'] + extra_flags,
+                            linkflags=['-pthread'], install_path=None)
+
+        if component in ('repo', 'all'):
+            bld.recurse('NDNSF-DistributedRepo')
+
+        if component in ('uav', 'all'):
+            uav_sources = [
+                'NDNSF-UAV-APP/shared/UavProtocol.cpp',
+                'NDNSF-UAV-APP/shared/UavMissionSession.cpp',
+                'NDNSF-UAV-APP/shared/UavDetectorProvider.cpp',
+                'NDNSF-UAV-APP/shared/UavMultiViewRecognition.cpp',
+                'NDNSF-UAV-APP/shared/UavCollaborationPolicy.cpp',
+                'NDNSF-UAV-APP/shared/UavDiagnostics.cpp',
+                'NDNSF-UAV-APP/drone/UavCollaborationParticipant.cpp',
+                'NDNSF-UAV-APP/ground-station/UavIncidentCoordinator.cpp',
+                'NDNSF-UAV-APP/shared/UavVideoPipeline.cpp',
+                'NDNSF-UAV-APP/shared/UavSensorStreams.cpp',
+            ]
+            uav_flags = ['-Wno-error=extra-semi', '-g0']
+            if bld.env.CXX_NAME == 'gcc':
+                uav_flags.append('-fdisable-rtl-cmpelim')
+            uav_use = ('NDNSF_REPO ndn-service-framework NDN_CXX NDN_SVS BOOST '
+                       'NAC-ABE NDNSD gtkmm sqlite3 GSTREAMER')
+            uav_includes = ['.', 'NDNSF-UAV-APP/shared',
+                            'NDNSF-DistributedRepo/include']
+            bld.program(name='UavDroneApp', target='examples/UavDroneApp',
+                        source=['NDNSF-UAV-APP/drone/UavDroneApp.cpp'] + uav_sources,
+                        includes=uav_includes, use=uav_use,
+                        cxxflags=uav_flags, install_path=None)
+            bld.program(name='UavGroundStationApp', target='examples/UavGroundStationApp',
+                        source=['NDNSF-UAV-APP/ground-station/UavGroundStationApp.cpp'] + uav_sources,
+                        includes=uav_includes, use=uav_use,
+                        cxxflags=uav_flags, install_path=None)
+            bld.program(name='UavSensorStreamNode', target='examples/UavSensorStreamNode',
+                        source=['NDNSF-UAV-APP/tools/uav_sensor_stream_node.cpp',
+                                'NDNSF-UAV-APP/shared/UavSensorStreams.cpp'],
+                        includes=['.', 'NDNSF-UAV-APP/shared'],
+                        use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD',
+                        install_path=None)
+        return
+
     if bld.env.HAVE_GSTREAMER and not bld.env.RUNTIME_LIBRARIES_ONLY:
         bld.program(
             target='uav-video-pipeline-probe',
@@ -445,6 +538,7 @@ def build(bld):
     # The base SIF owns the framework library. Optional application source
     # trees need not be present to configure its build graph or install it.
     if bld.env.RUNTIME_LIBRARIES_ONLY:
+        bld.recurse('NDNSF-DistributedRepo')
         return
 
     # Spec 111 ownership targets. These object groups keep the mechanism Core

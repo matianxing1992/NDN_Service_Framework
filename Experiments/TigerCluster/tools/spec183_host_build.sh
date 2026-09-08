@@ -2,7 +2,7 @@
 # Spec183 T008 host-unit build: clean dependency/native/Python closure.
 #
 # Builds NAC-ABE + NDN-SVS -> NDNSD -> NDNSF Core -> the two Python
-# extensions into one fresh root with at most -j2 per build tree, recording
+# extensions into one fresh root with at most -j4 per build tree, recording
 # every step.  This is host qualification evidence, never a runtime PASS.
 set -euo pipefail
 
@@ -12,7 +12,7 @@ NAC=/home/tianxing/NDN/NAC-ABE
 SVS=/home/tianxing/NDN/ndn-svs
 SD=/home/tianxing/NDN/NDNSD
 NS=/home/tianxing/NDN/ndn-service-framework
-J=2
+J=4
 # The pinned Experimental ndn-svs checks for Boost >= 1.71 (its 1.74 gate
 # exists only on other lines); Ubuntu 20.04 ships 1.71, so the system Boost
 # is the matching toolchain -- no isolated Boost prefix.

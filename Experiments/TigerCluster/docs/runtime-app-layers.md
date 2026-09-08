@@ -5,7 +5,8 @@
 2026-09-08 用户要求：SIF 固定 NDNSF/Repo/NDN 依赖，频繁变化的 DI/UAV 应用
 放在镜像外，减少编译和镜像重建。此方案 **ACCEPTED / IMPLEMENTATION_IN_PROGRESS**。
 Spec183 的旧“九个原生产物全部打入完整应用 SIF”是迁移前实现，不再作为目标。
-基础层源码选择和构建入口已开始实现；现有正式 YOLO launcher 尚未完成分层发布接线。
+基础层源码选择和构建入口已开始实现；Waf 已支持 base 与 `di`/`uav`/`repo` 外置
+组件分开构建，现有正式 YOLO launcher 尚未完成分层发布接线。
 
 本机采用单阶段 `library-runtime.def.in`，让基础 SIF 同时保留匹配的编译器和
 开发头文件，作为本地应用 SDK；这些稳定工具不是 DI/UAV 应用。这样不需要
@@ -35,6 +36,15 @@ configure6.728s、Waf0.837s、三原生二进制哈希不变，基础SIF不重�
 差异来复用。新镜像内部核对旧源码封存、已安装Python原字节、六个原生产物与
 链接闭包，再更新Python、wheel RECORD、源码封存及基础运行记录；不运行编译器。
 该入口只证明 Python 重封装边界，不能代替新组合的 MiniNDN/GPU 验收。
+
+Core 原生改动须构建新的基础层。依赖源码未变时，原
+`render-library-runtime.py` 可显式使用 `--reuse-installed-dependencies`
+和 `--parent-sif-sha256 sha256:<已验证父镜像摘要>`；仍传原 handoff lock，
+不修改依赖锁来伪装新镜像为交付镜像。构建前验证父镜像原生清单、依赖版本、
+源码文件及归档摘要；只有全部相同才跳过 APT 和 NAC/SVS/NDNSD 重编。
+Core 与两个 Python 扩展仍构建，结束时再次核对 NAC/SVS/NDNSD/ndn-cxx
+字节不变，保存 `manifest/base-dependency-reuse.json`。这不是 Python
+重封装，也不会继承旧组合的运行资格。外部应用按新 base/SDK 身份构建和验证。
 
 重封装仍生成新的基础SIF身份。外部应用只有在原生ABI及基础相关源码保持一致、
 原程序字节再次验证之后才能重新绑定；禁止直接更改旧应用清单中的base摘要。
@@ -75,7 +85,9 @@ Spec183 的 YOLO 实施范围，也不启动 Spec182。
 2. 在本机匹配该 base 的容器构建环境/SDK 中编译 app，输出独立安装目录。
    SDK 可包含头文件、编译器和静态构建工具；它由同一基础锁派生并记录摘要，
    不要求运行 SIF 安装编译器，也不在 Tiger 编译。复用现有 builder，
-   不另建镜像工厂。最多 `-j2`，同一构建树不并行启动构建。
+   不另建镜像工厂。最多 `-j4`，同一构建树不并行启动构建。
+   Waf 通过 `--external-application-only --application-component=di|uav|repo|all`
+   选择应用边界；YOLO builder 固定 `di`，UAV/Repo 可由同一入口独立调用。
 3. 构建缓存按 base/SDK/toolchain/flags/dependency-lock 分隔。键不变时仅编译
    受影响目标及其消费者；纯 Python 改动只重新冻结包。构建键改变时重建受影响
    消费者，不能复用不明来源对象文件。外部包不得携带宿主 venv 或替代基础库。
