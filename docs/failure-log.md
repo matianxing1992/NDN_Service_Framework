@@ -3741,3 +3741,19 @@ identity and rerun packaging against the existing incremental Waf cache.
   directory; retain the overlay only for subsequent framework configure steps.
 - Lesson: ABI metadata checks must identify the exact package file being
   qualified instead of trusting a mutable search-path precedence.
+
+## 2026-09-08: inline ndnsd pkg-config probe remained empty
+
+- Symptom: the same builder still returned an empty value for
+  `pkg-config --cflags-only-I ndnsd` even when the search path was scoped to the
+  freshly installed directory; a standalone reproduction with the same source
+  and base showed the generated metadata was valid.
+- Root cause: the inline probe was an unnecessary second interpretation of the
+  package metadata and did not provide a stable diagnostic at the build
+  boundary.
+- Fix: validate the installed `ndnsd.pc` file directly for its include path,
+  library path, and Cflags declaration, then leave pkg-config resolution to the
+  subsequent configure closure checks.
+- Lesson: release preflight should assert the bytes and fields of the selected
+  metadata artifact before testing tools that may apply additional environment
+  policy.
