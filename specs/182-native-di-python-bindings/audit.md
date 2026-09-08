@@ -7,6 +7,14 @@
 
 ## Current Findings
 
+### Offer Observation Audit 2026-09-07
+
+**A8-02 / HIGH / OPEN**：NativeOfferAdmission 从 policy 合成 capabilities 而非读取
+ACK offer，且缺少 policy-bound offer signature 验证。新增数据解码及 SDK oracle 已通过
+定向检查，但没有形成可信 planning view；T008-B 保持 PARTIAL。
+见 [observed offer evidence](evidence/t008-observed-offer-20260907.md)。真实 Core ACK provenance
+和既有 offer signature 都必须接入，CPU 不制造资源观测、hasModel 不冒充 exact residency。
+
 ### Implementation Audit 2026-09-07
 
 以下 revision7 设计审计保留为历史；当前执行状态以 tasks 为准，不再以旧的 T001

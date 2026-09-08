@@ -1,5 +1,11 @@
 # Failure Log and Evidence Index
 
+## 2026-09-07 — Spec182 offer admission source audit
+
+NativeOfferAdmission 从本地 policy 合成 Provider 能力，未消费 ACK payload 或验证
+offer 自身签名。T008-B 保持 PARTIAL；先补数据解码，再接 Core provenance 与 policy-bound
+signature。此为源码审计，无失败运行；见 [offer evidence](../specs/182-native-di-python-bindings/evidence/t008-observed-offer-20260907.md)。
+
 ## 2026-09-07 — Spec182 typed shape Provider consumers
 
 r2 构建在 NativeProviderHandler.cpp 的 YOLO 文本 metadata 与 decode tensor identity

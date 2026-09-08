@@ -223,8 +223,8 @@ worker crash/cancel 等真实子进程案例也转 T016，卡内只运行纯 fra
 
 - **Parent**: T008; **Depends**: T008-A; **Reviewer**: provenance/security review
 - **Read**: CD-013 → CD-002 snapshot；P/app_sdk/provider.py::ProviderOfferTrustVerifier；ndn-service-framework/ServiceUser.hpp 的 ACK provenance。
-- **Write**: N/NativeOfferAdmission.hpp; N/NativeOfferAdmission.cpp; U/di-native-offer-admission.t.cpp; I/di-native-preparation.t.cpp; wscript。
-- **Steps**: 使用 Core 认证结果检查 policy/有效期/绑定再形成 immutable view；拒绝 caller trusted=true 和 Python verifier callback。
+- **Write**: N/NativeOfferAdmission.hpp; N/NativeOfferAdmission.cpp; N/NativeObservedOfferV3.hpp; N/NativeObservedOfferV3.cpp; U/di-native-observed-offer.t.cpp; tests/fixtures/spec182/offer-python-oracle.json; tests/fixtures/spec182/author-offer-python-oracle.py; U/di-native-offer-admission.t.cpp; I/di-native-preparation.t.cpp; wscript。
+- **Steps**: 先将 ACK payload 解码为无认证权力的 NativeObservedProviderOfferV3，保留真实 topology/resources/residency 与 SDK canonical digest；再使用 Core 认证结果检查 policy/有效期/绑定及 policy-bound offer signature，形成 immutable view。policy 不提供 Provider 观测能力；拒绝 caller trusted=true 和 Python verifier callback。
 - **Verify**: CPP(Spec182OfferAdmission/*)；伪 provenance、错身份/策略、过期 ACK；无合法 view 就不能进入 strategy；真实 Core admission 留 T016。
 
 ### T009-A Core Scoped Registration
