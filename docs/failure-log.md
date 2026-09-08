@@ -3331,3 +3331,14 @@ Core、两个 Python 扩展和内部原生检查均通过后，mksquashfs 使用
 并行度规则写入仓库，再重新封存 source、重建基础 SIF 并以同一 source/base
 身份编译 app。教训：Waf 命令行能力必须和 source seal 一起验证，入口失败不应
 复用其未完成缓存作为候选。
+
+## 2026-09-08: ControllerVersion 父 SIF 在重解包时出现 zstd 读取失败
+
+使用已验证的 `base-runtime-controller-version.sif` 作为本次 `-j4` base 重建
+父镜像时，Apptainer 1.5.3 在解包 `/usr/lib/x86_64-linux-gnu/dri/i830_dri.so`
+阶段返回 `zstd uncompress failed with error code 20`，构建未进入 `%post`，没有
+生成新候选。该镜像此前的普通 `exec` 只触及少量路径，不能证明整层可重解包；
+它不再作为父输入。改用可完整解包且 `verify-base-runtime.py` 为 PASS 的
+`base-runtime-repo-protected.sif`，保留依赖复用规则，重新编译受影响 Core/绑定。
+教训：基础 SIF 作为 Apptainer 父层必须先通过完整解包/重建探针，局部 exec
+和元数据读取不足以证明压缩层完整。
