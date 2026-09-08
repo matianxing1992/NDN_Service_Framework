@@ -146,6 +146,9 @@ Python 绑定可选构建，禁止依赖主工作区未提交文件。
   [native test ownership](contracts/proof-design.md#native-test-ownership)。
 - **FR-014**: **Immutable Local Delivery**. System MUST 交付同一源、原生库、配置、工件、
   adapter、harness、依赖锁与证据身份；本地交付和外部 SIF/Tiger verdict 分开记录。
+  后续容器交付采用稳定基础 SIF 与外置不可变 DI/UAV 应用包，候选身份绑定二者及
+  模型/profile。应用在匹配基础依赖的 builder 内构建；实现状态、加载闭包与接续
+  责任见 [Layered Runtime Delivery](contracts/layered-runtime-delivery.md)。
 - **FR-015**: **Controlled Successor Activation**. System MUST 在合并修复基线及181承接表确认、对应设计门关闭后启动182实现；不要求先完成181全部旧资格，不改写历史验收结果。
 - **FR-016**: **No Capability Reduction by Relocation**. System MUST 保留已支持生产能力的
   行为清单；禁止以提前离线固定切分、只验 warm path、只返回 tokens 或删除负例冒充完整原生化。

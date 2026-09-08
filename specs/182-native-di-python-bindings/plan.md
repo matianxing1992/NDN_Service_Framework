@@ -141,10 +141,14 @@ T017 的 evidence/development-handoff.md 包含 exact commit、clean source clos
 全部本地 verdict、失败处置和已知限制。私钥不入 Git。
 另附原生库头/链接说明与最短 C++/Python 示例；示例均调用同一 public API。
 
-外部 owner=实验机器：消费该提交构建 SIF，验证 exact runtime dependency closure，
+外部 owner=实验机器：按 [layered runtime delivery](contracts/layered-runtime-delivery.md)
+构建或复用稳定基础 SIF，在对应 builder 内构建外置 DI/UAV 应用包，迁移并验证
+组合身份/profile/launcher（当前 PLANNED），验证 exact runtime dependency closure，
 运行 Tiger 并返回该身份的日志和 verdict。TRANSFERRED 只表示责任移交，
 不得把未运行的 SIF/Tiger/GPU/性能写为 PASS。
 既有容器内 ABI/build boundary 仍适用，不把 host .so 或 venv 装入镜像充当构建。
+仅应用改动不重新打包未变基础镜像；依赖/ABI 变化仍重建相应闭包。T017 包含
+分层清单、构建方法、组合验证及外部工具接续步骤；文档接受不授予部署 PASS。
 
 ## Current Planning Result
 

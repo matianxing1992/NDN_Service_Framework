@@ -1,5 +1,16 @@
 # Local SIF Build
 
+## Current Delivery Direction
+
+2026-09-08 已接受后续使用**稳定基础 SIF + 外置版本化 DI/UAV 应用包**。
+详细归属、builder ABI、只读挂载、组合身份与验收见
+[Layered Runtime Delivery](../../../specs/182-native-di-python-bindings/contracts/layered-runtime-delivery.md)。
+应用更新可复用未变基础 SIF，但须在对应 builder 内构建并验证新组合。
+目前为 ACCEPTED DESIGN / PLANNED TOOLING；下面的现有 complete-SIF 命令仍是旧实现，
+不能仅加一个 bind 就声称已支持分层发布。基础与应用构建/运行由实验机器接续。
+
+## Existing Build Entry
+
 构建入口：`Experiments/TigerCluster/adapters/slurm-apptainer/scripts/build-local-sif.sh`。
 构建前准备源码seal并核对definition、依赖和工具链，沿用 [runtime package](../../../packaging/ndnsf-di-container/README.md) 的原生ABI与候选规则。
 

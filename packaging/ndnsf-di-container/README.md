@@ -1,5 +1,11 @@
 # NDNSF-DI Runtime Package
 
+**Current design update (2026-09-08):** Spec182 adopts a stable base SIF plus a
+versioned external DI/UAV application bundle. This is accepted design with
+tooling migration still planned; follow the [layered delivery contract](../../specs/182-native-di-python-bindings/contracts/layered-runtime-delivery.md).
+The complete-application SIF workflow below describes the existing implementation
+and historical Spec170 release, not evidence that the new launch path is ready.
+
 > **Spec170 starts with a local SIF.** Build the complete application SIF on
 > the local host with the matching Apptainer release, verify that exact file,
 > and upload only the hash-bound SIF. TigerCluster only verifies and executes

@@ -17,6 +17,7 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 
 | Unit / Details | Status | Depends | Evidence / Remaining | Updated |
 | --- | --- | --- | --- | --- |
+| [D-LAYERED-SIF Layered Runtime Delivery](contracts/layered-runtime-delivery.md) | DONE | User architecture request | 方案已同步 FR-014/Delivery/T017/Tiger/packaging，定向链接、diff 与 design validator PASS；仅设计完成，部署工具 PLANNED | 2026-09-08 |
 | [R1-B3 Native Merge Publication](evidence/r1-b3-native-merge-20260908.md) | DONE | R1-B2; existing shared role contract | NM-1/NM-2 batch only：r3 incremental build 与 68 C++ cases/800 assertions PASS；真实 adapter/requester 与 parent gates unchanged | 2026-09-08 |
 | [R1-B2 Candidate Role Semantics](evidence/r1-b2-role-semantics-20260908.md) | DONE | T002-A; existing candidate contract | CR-1/CR-2 batch only：官方静态门与 C++ 26 cases/546 assertions PASS；native Merge publication remains open，T003-C 不变 | 2026-09-08 |
 | [D-DISK-CLEANUP Build Object Cleanup](evidence/disk-cleanup-20260908.md) | DONE | User cleanup request | pip cache 及 2702 个旧对象已清理；磁盘可用 910 MB→30 GB；当前构建、二进制与原始证据保留 | 2026-09-08 |

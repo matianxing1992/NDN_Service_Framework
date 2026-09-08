@@ -373,6 +373,10 @@ worker crash/cancel 等真实子进程案例也转 T016，卡内只运行纯 fra
 
 ### T017-A Development Handoff
 
+分层交付补充：按 [Layered Runtime Delivery](layered-runtime-delivery.md) 输出基础
+依赖与应用清单、对应 builder 内应用构建方法、组合身份和 launcher/profile 迁移
+负例；外部构建/工具/运行的 PLANNED/TRANSFERRED 项明确接续 owner，不伪造已实现。
+
 - **Parent**: T017; **Depends**: T016-A; **Reviewer**: delivery review
 - **Read**: CD-012 → S/plan.md Delivery → Experiments/TigerCluster/docs/source-handoff.md；T016 actual evidence。
 - **Write**: S/evidence/development-handoff.md; docs/architecture.md; docs/ndnsf-core-app-boundary.md; docs/NDNSF-DI-runtime-workflow.md。
