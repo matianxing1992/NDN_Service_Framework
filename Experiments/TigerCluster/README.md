@@ -22,6 +22,10 @@ Tiger分布式推理、SIF构建及Slurm配置的统一入口。当前生产/合
 
 ## Entry Points
 
+后续分层交付方向已接受：稳定基础 SIF 与外置 DI/UAV 应用包分别构建，以固定组合
+验收和运行。当前启动器迁移仍 PLANNED，边界与接续责任见
+[SIF build](docs/sif-build.md#current-delivery-direction)。
+
 从仓库根运行，参数沿用原脚本契约：
 
 ```bash
