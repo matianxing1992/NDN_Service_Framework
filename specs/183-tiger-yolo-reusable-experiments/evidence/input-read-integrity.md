@@ -67,3 +67,26 @@ The local mount is /dev/sda5 ext4 (rw,relatime,errors=remount-ro). A bounded ker
 journal search over the preceding 30 minutes found no matching I/O, ext4, machine
 check, hardware-memory or OOM errors; absence of such logs does not prove healthy
 reads. No host setting, mount option or memory setting was changed.
+# 2026-09-08: one cached byte differs from direct I/O and RAM
+
+Retained logs under `results/yolo-layered-20260908/preflight/` now locate a
+specific difference in the new d4031191 base, rather than only differing hashes.
+`page-cache-difference.log`: file offset3188006099, buffered byte0xba versus
+RAM/direct-I/O byte0xbb; one differing byte in its4MiB block. Direct I/O matches
+RAM and disagrees with buffered reads. `disk-ram-joint-hash.log` reports disk
+d9d255f3… versus RAM d4031191…, while coreutils independently confirms RAM d403.
+Inode3802628, size3900682240 and mtime remain unchanged.
+
+Invalidating only the4096-byte containing page restores0xbb and the complete
+d403 digest (`target-page-invalidation.log`), but the following input-render
+attempt reproduces d9d255f3. This is not a permanent repair. The evidence locates
+a cached-read bit difference; hardware, virtualization or kernel cause remains
+unproven. Stop repeated disk-side retries and do not rewrite the locked digest.
+
+Current workaround: keep `/dev/shm/spec183-sdk-d4031191/base-runtime.sif`, whose
+bytes retain d403, and hard-link it into RAM-resident I/R planes. Only small
+metadata (at most4MiB) may copy across filesystems; SIFs are never copied by that
+fallback. The owned RAM snapshot is now user-owned0444 so Linux protected
+hardlinks permits the task's links; no system-wide hardlink protection changed.
+Actual production content check passes using RAM, while runtime qualification
+remains NOT_EVALUATED. Durable metadata archive excludes SIF payloads.

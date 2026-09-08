@@ -96,19 +96,15 @@ def _sha256(path: Path) -> str:
     return "sha256:" + digest.hexdigest()
 
 
-def _link_into(source: Path, target: Path, name: str) -> dict:
-    """Hard-link one CAS source under a plane root; never copy or symlink."""
+def _link_into(source: Path, target: Path, name: str, *, allow_small_copy=False) -> dict:
+    """Link a CAS artifact; layered metadata may cross a filesystem boundary."""
     if not source.is_file() or source.is_symlink():
         raise RuntimeError(f"real source missing for {name}: {source}")
     target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     if any(p.is_symlink() for p in (target, *target.parents)):
         raise RuntimeError(f"plane target lies below a symlink: {target}")
-    try:
-        os.link(source, target)
-    except FileExistsError:
-        pass  # identical previous render already linked it
-    if not (target.stat().st_nlink > 1 or target == source):
-        raise RuntimeError(f"plane file {name} is not the CAS file")
+    from tools.spec183_inputs_plane import link_file
+    link_file(source, target, allow_small_copy=allow_small_copy)
     observed = _sha256(target)
     if observed != _sha256(source):
         raise RuntimeError(f"plane file {name} does not match its source ({observed})")
@@ -253,7 +249,8 @@ def render(plane_root: Path, profile_path: Path, *, runtime_sources=None, applic
     runtime_files = {}
     for name, relative in selected_runtime.items():
         runtime_files[name] = _link_into(
-            _REPO_ROOT / relative, runtime_root / relative.name, name)
+            _REPO_ROOT / relative, runtime_root / relative.name, name,
+            allow_small_copy=layout is not None)
     _write_plane(runtime_root, "runtime", inputs_id, runtime_files, layout=layout)
     runtime_id = _stage_id(runtime_root, "runtime", parent_id=inputs_id)
 
@@ -296,7 +293,8 @@ def render(plane_root: Path, profile_path: Path, *, runtime_sources=None, applic
                              for name, row in references.items()}
     for name, relative in selected_dispatch.items():
         dispatch_files[name] = _link_into(
-            _REPO_ROOT / relative, dispatch_root / relative.name, name)
+            _REPO_ROOT / relative, dispatch_root / relative.name, name,
+            allow_small_copy=layout is not None)
     dispatch_files["effectiveProfile"] = {
         "path": effective.name, "bytes": effective.stat().st_size,
         "sha256": _sha256(effective)}
@@ -306,7 +304,8 @@ def render(plane_root: Path, profile_path: Path, *, runtime_sources=None, applic
         "bytes": sealed_manifest.stat().st_size, "sha256": _sha256(sealed_manifest)}
     if app_ref is not None:
         dispatch_files['applicationManifest'] = _link_into(
-            Path(app_ref['path']), dispatch_root/'application-manifest.json', 'applicationManifest')
+            Path(app_ref['path']), dispatch_root/'application-manifest.json', 'applicationManifest',
+            allow_small_copy=True)
     _write_plane(dispatch_root, "dispatch", runtime_id, dispatch_files, layout=layout)
     dispatch_id = _stage_id(dispatch_root, "dispatch", parent_id=runtime_id)
 

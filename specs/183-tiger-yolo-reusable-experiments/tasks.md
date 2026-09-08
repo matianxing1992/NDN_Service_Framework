@@ -36,7 +36,7 @@ T007 复核确认正常/负例/SSH 接线已存在；N3 issuer/rank版本检查�
 | --- | --- | --- | --- | --- | --- | --- |
 | T001.a | T001 | 四库、模型、工具、资源与接口接收清点 | VERIFIED | [input-inventory](evidence/input-inventory.md)；清点验收，非运行资格 | 新 candidate 更新输入身份；缺项仍显式保留 | 未变输入复用；source/model/tool 变化重核 |
 | T002.a | T002 | `runtime/yolo_profile.py` 的 I/R/E 完整性与失效检查 | IMPLEMENTED | [integrity](evidence/t002-integrity.md)；有历史 focused 证据 | 与最终生产入口重核，不能以 helper 关闭 T002 | 只重测变化 plane 及零副作用边界 |
-| T002.a2 | T002 | 显式分层I/R/E生成器接独立base/app输入 | IMPLEMENTED | [layered plane render](evidence/layered-plane-render.md)：3focused通过，renderer→生产profile validator；旧磁盘SIF实值检查再次FILE_DIGEST | 实际候选发布及运行资格尚未完成；新分层目录拒绝覆盖旧回执 | 不再重复旧SIF读取测试；沿用已核验RAM SDK，不改错哈希来放行 |
+| T002.a2 | T002 | 显式分层I/R/E生成器接独立base/app输入 | VERIFIED | [layered plane render](evidence/layered-plane-render.md)：真实RAM候选通过public check，29harness/159app文件；NOT_EVALUATED、exit78；4focused通过 | 仅内容范围；本机/Tiger版本绑定、实际MiniNDN及N1语义资格尚未完成 | 磁盘缓存单比特差异会复现，保留RAM基础镜像；仅复制小清单，不重建SIF |
 | T002.b | T002 | 既有 builder 接受 Spec183 host-gate receipt、保留 Spec175 | BLOCKED | [审计 N1](evidence/design-code-convergence.md)：现有 validator 只绑定摘要，返回 COMPONENT_ONLY 却被 builder/local 消费 | 与 T010 producer 一起补真实语义重算；不可手填资格 token 放行 | 只增加空语义/错误故障/退出清理在真实消费边界的拒绝检查 |
 | T003.a | T003 | `yolo_worker.py` 角色隔离、启动、进程组及清理 | VERIFIED | [worker](evidence/t003-worker.md)；T003 focused acceptance | 真实 workload 接线归 T004/T005 | 生命周期代码未变复用；改动时跑对应回归 |
 | T004.a | T004 | profile/schema、冻结 bundle、五命令与提交 journal | IMPLEMENTED | [runtime version](evidence/t004-runtime-version.md)：N3已接issuer/rank→public重算→运输；37首组、78修复组、11最终边界通过（有重叠） | N3源码范围已验证；实际版本资格归T011/T012；T004仍依赖N1/N2收敛 | 无native/SIF/模型运行；版本边界不变不重复检查集合，实际新rank仍观测一次 |

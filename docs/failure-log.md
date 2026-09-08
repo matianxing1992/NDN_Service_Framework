@@ -3117,3 +3117,18 @@ failure; do not refresh its recorded digest or rerun the same unchanged test.
 The new fixture initially needed its seed directory created; after correction,
 three targeted render/source-descriptor tests pass. Use precise test selection
 so component checks do not unintentionally reread multi-GB legacy inputs.
+
+## 2026-09-08 — Cached SIF bit difference localized; RAM candidate works
+
+New base offset3188006099 reads0xba from page cache and0xbb through direct I/O
+and the retained RAM snapshot. Only one byte differs in that4MiB block; full
+hashes are d9d255f3… and d4031191… respectively. Target-page invalidation restores
+the correct digest once, but input rendering reproduces the difference. Root
+hardware/VM/kernel cause remains unresolved. Do not call it a source defect or
+permanent host repair. Preserve detailed logs in preflight/page-cache-difference.log,
+disk-ram-joint-hash.log and target-page-invalidation.log.
+
+Use the same verified RAM SIF for I/R planes, copying only small cross-filesystem
+metadata. A first RAM link failed Linux protected-hardlink ownership checks;
+make the task-owned RAM file user-owned0444, preserving global protections.
+Actual public content check now yields VERIFIED/NOT_EVALUATED, exit78 as designed.

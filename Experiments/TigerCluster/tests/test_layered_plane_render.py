@@ -1,5 +1,6 @@
 """Real renderer to content validator; fixture bytes never qualify runtime."""
 import json
+import errno
 from pathlib import Path
 import shutil
 
@@ -8,7 +9,7 @@ import pytest
 from test_yolo_layered_profile import layered_dispatch
 from runtime.yolo_profile import check_operator_profile
 from tools import spec183_dispatch_plane as renderer
-from tools.spec183_inputs_plane import source_files, render as render_inputs, check as check_inputs
+from tools.spec183_inputs_plane import source_files, render as render_inputs, check as check_inputs, link_file
 
 
 def test_layered_render_binds_the_selected_base_and_app(tmp_path):
@@ -48,3 +49,21 @@ def test_input_renderer_records_explicit_layered_sources(tmp_path):
     body = render_inputs(output, sources=sources, layout='layered-v1')
     assert body['parameters'] == {'maxBuildJobs': 2, 'layout': 'layered-v1'}
     assert check_inputs(output)['integrity'] == 'VERIFIED'
+
+
+def test_cross_filesystem_copy_is_limited_to_small_metadata(tmp_path, monkeypatch):
+    from tools import spec183_inputs_plane as owner
+    def cross_device(*args):
+        raise OSError(errno.EXDEV, 'cross filesystem')
+    monkeypatch.setattr(owner.os, 'link', cross_device)
+    source, target = tmp_path/'source', tmp_path/'target'
+    source.write_bytes(b'manifest bytes')
+    with pytest.raises(OSError):
+        link_file(source, target)
+    link_file(source, target, allow_small_copy=True)
+    assert target.read_bytes() == source.read_bytes()
+    with source.open('wb') as stream:
+        stream.truncate(4*1024*1024+1)
+    with pytest.raises(OSError):
+        link_file(source, tmp_path/'large-copy', allow_small_copy=True)
+    assert not (tmp_path/'large-copy').exists()

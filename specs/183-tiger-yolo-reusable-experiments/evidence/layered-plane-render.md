@@ -27,3 +27,24 @@ seed directory and was corrected. Both failures remain in layered-plane-render.x
 The old input test is not being repeated; the verified RAM SDK remains the
 current local execution input. Actual layered I/R/E publication, source/host-gate
 semantics, MiniNDN and full GPU qualification remain pending.
+
+## Actual layered candidate, using the verified RAM SIF
+
+The default profile now points to `/dev/shm/spec183-sdk-d4031191/planes`, the
+same d403 base and app-d9be0bfa manifest c086d64c… . Input/runtime metadata may
+cross filesystems by bounded small-file copy; the large SIF remains hard-linked.
+Four focused checks pass (`layered-ram-metadata-components.xml`).
+
+`layered-production-check.log` is the actual public `submit.py check --stage
+dispatch` result: content VERIFIED,29harness files,159application files,
+qualification NOT_EVALUATED, status INCOMPLETE, intentional exit78.
+Profile digest41670032e797de4431d9fe521a237877f7453392d2981de82728df74d9355320;
+I775d15ee…, R5186b21e…, E357448bb… . Raw/render IDs are distinct from these
+canonical stage IDs. `layered-plane-metadata.tar` and
+`layered-profile-content-check.json` retain the metadata on disk without copying
+the large SIF. RAM paths are local execution locators, not Tiger-ready transport.
+
+The profile still declares Tiger's Apptainer1.3.4-1.el9 at/usr/bin/apptainer;
+this host has1.5.3 at/opt/apptainer/1.5.3/bin/apptainer and no/usr/bin/apptainer.
+Do not merely overwrite the expected version to pass the runtime gate. Explicit
+local/cluster environment binding and the MiniNDN issuer/wrapper remain next.

@@ -27,9 +27,11 @@ same ``plane.json`` bytes, so the plane identity is reproducible.
 from __future__ import annotations
 
 import argparse
+import errno
 import hashlib
 import json
 import os
+import shutil
 from pathlib import Path
 import sys
 from typing import Iterable
@@ -66,6 +68,23 @@ def source_files(path: Path, expected: set[str]) -> dict:
     return {name: path.absolute().parent/Path(item) for name, item in value.items()}
 
 
+def link_file(source: Path, target: Path, *, allow_small_copy=False):
+    """Large artifacts stay hard-linked; cross-filesystem metadata may copy."""
+    try:
+        os.link(source, target)
+    except FileExistsError:
+        pass
+    except OSError as exc:
+        if (not allow_small_copy or exc.errno != errno.EXDEV
+                or source.stat().st_size > 4*1024*1024):
+            raise
+        with source.open('rb') as stream, target.open('xb') as output:
+            shutil.copyfileobj(stream, output)
+    if not (target.stat().st_nlink > 1 or target == source
+            or (allow_small_copy and target.stat().st_size <= 4*1024*1024)):
+        raise RuntimeError('PLANE_FILE_NOT_LINKED')
+
+
 def render(root: Path, *, verify: bool = False, sources=None, layout=None) -> dict:
     """Assemble the four real files under ``root`` and write plane.json."""
     root = Path(root).resolve()
@@ -84,9 +103,7 @@ def render(root: Path, *, verify: bool = False, sources=None, layout=None) -> di
         if target.is_symlink():
             raise RuntimeError(f"plane file {name} is a symlink: {target}")
         try:
-            os.link(source, target)
-        except FileExistsError:
-            pass  # already linked from a previous render
+            link_file(source, target, allow_small_copy=layout == 'layered-v1')
         except OSError as exc:
             raise RuntimeError(f"cannot link {name} into the plane root") from exc
         if not target.is_file():
@@ -95,8 +112,6 @@ def render(root: Path, *, verify: bool = False, sources=None, layout=None) -> di
         if observed != _sha256(source):
             raise RuntimeError(f"plane file {name} does not match its source "
                                f"({observed})")
-        if not (target.stat().st_nlink > 1 or target == source):
-            raise RuntimeError(f"plane file {name} is not the CAS file")
         files[name] = {"path": target.name, "bytes": target.stat().st_size,
                        "sha256": observed}
     document = {"schema": PLANE_SCHEMA, "stage": "inputs", "parentId": None,
