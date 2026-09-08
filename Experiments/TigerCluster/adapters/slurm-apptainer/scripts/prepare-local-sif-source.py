@@ -100,6 +100,19 @@ BASE_FILES = (
     "NDNSF-DistributedRepo/include", "NDNSF-DistributedRepo/wscript",
     "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGrantVerifier.cpp",
     "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGrantVerifier.hpp",
+    # Spec183's input preflight is source-bound to the maintained
+    # TigerCluster harness.  These files are copied into the build context
+    # for validation only; build-base-libraries.sh still installs no
+    # application code, model, or credential into the stable base layer.
+    "Experiments/TigerCluster/apps/yolo.py",
+    "Experiments/TigerCluster/apps/yolo_network.py",
+    "Experiments/TigerCluster/jobs/yolo/run.sbatch",
+    "Experiments/TigerCluster/jobs/yolo/submit.py",
+    "Experiments/TigerCluster/runtime/yolo_bundle.py",
+    "Experiments/TigerCluster/runtime/yolo_profile.py",
+    "Experiments/TigerCluster/runtime/yolo_result.py",
+    "Experiments/TigerCluster/runtime/yolo_worker.py",
+    "Experiments/TigerCluster/schemas/tiger-yolo-v1.schema.json",
 )
 
 

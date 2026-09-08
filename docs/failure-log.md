@@ -3687,3 +3687,20 @@ identity and rerun packaging against the existing incremental Waf cache.
   host-library override is allowed.
 - Lesson: a successful compile of one changed translation unit cannot certify
   the framework closure when the host and sealed dependency revisions differ.
+
+## 2026-09-08: base-source preflight rejected an incomplete library seal
+
+- Symptom: the first source archive for the deferred-bootstrap rebuild passed
+  its archive seal but `build-local-sif.sh` stopped before Apptainer with
+  `SPEC183_HARNESS_NOT_SEALED` for the nine maintained TigerCluster harness
+  files.
+- Root cause: `prepare-local-sif-source.py --selection base-libraries-v1`
+  omitted the harness even though the Spec183 input preflight requires it;
+  the previous source candidate had been produced before this selection drift.
+- Fix: make the required harness an explicit source-only part of the
+  `base-libraries-v1` input selection.  The container build still installs
+  only stable libraries and Python runtime components; no application bundle
+  or model is promoted into the base layer.
+- Lesson: source-only validation inputs must be declared in the same canonical
+  selector as the preflight contract, otherwise a valid library split cannot
+  be rebuilt reproducibly.
