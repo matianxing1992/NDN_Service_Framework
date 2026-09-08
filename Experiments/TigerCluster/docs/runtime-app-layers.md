@@ -18,6 +18,11 @@ Spec183 的旧“九个原生产物全部打入完整应用 SIF”是迁移前�
 `build-external-yolo.py --reuse-application <已验证应用目录>`，但必须保持同一
 source seal、source revision、base SHA 和编译参数；保留原编译器构建身份，
 重新冻结应用清单，不执行编译。源码变化不能使用这个快捷入口。
+源码变化时可使用 `--build-cache-from <上次已验证应用目录>`：核对基础SHA、
+编译参数和缓存所有权，仍执行configure与Waf增量依赖检查。构建成功后缓存
+跟随新应用的buildKey，下一次引用最新应用即可。Python启动器改动已有实证：
+configure6.728s、Waf0.837s、三原生二进制哈希不变，基础SIF不重建。
+外置应用的目录也冻结为0555；宿主编排禁写字节码，避免导入产生未登记缓存。
 
 MiniNDN 在本机系统 Python 环境中编排网络 namespace，再通过 Apptainer
 启动 NFD 和应用子进程。不要因容器没有 Mininet 而重建基础镜像；本机旧

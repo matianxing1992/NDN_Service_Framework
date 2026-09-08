@@ -41,6 +41,33 @@ def reusable_application(root, seal, base_sha256):
     return body
 
 
+def compatible_build_cache(cache, application, base_sha256):
+    """Reuse Waf state, never skip configure/build, for matching base and flags."""
+    application = application.resolve()
+    body = verify_application(application,
+        manifest_sha256=digest(application/'application-manifest.json'),
+        base_sif_sha256=base_sha256)
+    identity = body['buildIdentity']
+    if identity['flags'] != FLAGS:
+        raise ValueError('APP_CACHE_FLAGS_CHANGED')
+    work = cache/body['buildKey']
+    marker = work/'cache-identity.json'
+    if (any(p.is_symlink() for p in (marker, work, *work.parents))
+            or not marker.is_file() or json.loads(marker.read_text()) != identity):
+        raise ValueError('APP_CACHE_IDENTITY')
+    return work, identity
+
+
+def publish_cache(cache, work, identity, key):
+    """Keep the latest application's buildKey usable for the next increment."""
+    destination = cache/key
+    if destination != work and destination.exists():
+        raise ValueError('APP_CACHE_DESTINATION_EXISTS')
+    (work/'cache-identity.json').write_text(json.dumps(identity, sort_keys=True)+'\n')
+    if destination != work:
+        work.rename(destination)
+
+
 def run(args):
     source, base, cache, output = (getattr(args, name).resolve()
                                   for name in ('source', 'base', 'cache', 'output'))
@@ -67,11 +94,19 @@ def run(args):
         build_identity = reusable_application(reuse, seal, args.base_sha256)['buildIdentity']
     key = hashlib.sha256(json.dumps(build_identity, sort_keys=True).encode()).hexdigest()
     work = cache / key
+    cache_identity = build_identity
+    cache_from = getattr(args, 'build_cache_from', None)
+    if cache_from is not None:
+        if reuse is not None:
+            raise ValueError('APP_CACHE_AND_REPACKAGE_EXCLUSIVE')
+        work, cache_identity = compatible_build_cache(cache, cache_from, args.base_sha256)
+        if work != cache/key and (cache/key).exists():
+            raise ValueError('APP_CACHE_DESTINATION_EXISTS')
     work.mkdir(parents=True, exist_ok=True)
     # Only the cache created by this owner may be refreshed or pruned.
     marker = work / 'cache-identity.json'
     if marker.exists():
-        assert json.loads(marker.read_text()) == json.loads(json.dumps(build_identity)), 'APP_CACHE_IDENTITY'
+        assert json.loads(marker.read_text()) == json.loads(json.dumps(cache_identity)), 'APP_CACHE_IDENTITY'
     else:
         assert not any(work.iterdir()), 'APP_CACHE_UNOWNED'
         marker.write_text(json.dumps(build_identity, sort_keys=True) + '\n')
@@ -136,9 +171,15 @@ def run(args):
             path.chmod(0o555 if path.parent == partial / 'bin' else 0o444)
     verify_application(partial, manifest_sha256=digest(partial / 'application-manifest.json'),
                        base_sif_sha256=args.base_sha256)
+    for path in partial.rglob('*'):
+        if path.is_dir():
+            path.chmod(0o555)
+    partial.chmod(0o555)
     partial.rename(output)
+    if cache_from is not None:
+        publish_cache(cache, work, build_identity, key)
     print(json.dumps({'status': 'BUILT', 'scope': manifest['scope'], 'bundle': str(output),
-                      'compiled': reuse is None}))
+                      'buildInvoked': reuse is None}))
 
 
 def compile_application(command):
@@ -158,4 +199,6 @@ if __name__ == '__main__':
     parser.add_argument('--base-sha256', required=True)
     parser.add_argument('--reuse-application', type=Path,
                         help='Repackage verified binaries only when source seal/base/flags are unchanged')
+    parser.add_argument('--build-cache-from', type=Path,
+                        help='Use a verified prior application build cache; configure and Waf still run')
     run(parser.parse_args())

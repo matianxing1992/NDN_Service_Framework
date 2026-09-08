@@ -186,6 +186,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     # Inherited SIF bypass knobs or unrelated credentials are not host inputs.
     env = {name: os.environ[name] for name in ('PATH', 'PYTHONPATH') if name in os.environ}
     env.update({
+        "PYTHONDONTWRITEBYTECODE": "1",
         "LD_LIBRARY_PATH": args.library_path,
         "NDNSF_DI_STATE_ROOT": str(state),
         "NDNSF_DI_ENVELOPE_KEY_FILE": str(private / "user/request-envelope.key"),

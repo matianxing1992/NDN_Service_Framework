@@ -80,6 +80,7 @@ T007 复核确认正常/负例/SSH 接线已存在；N3 issuer/rank版本检查�
 | T011.a | T011 | development-20260907 source seal 与 definition 准备 | IMPLEMENTED | 后文 SOURCE_READY checkpoint：`2aea8a0e` / `c4f33beb`，非 SIF PASS | 后续源码改变须重 seal；旧锁不覆盖 | 纯任务表修改按输入清单判断，不无条件重建 SIF |
 | T011.b | T011 | 构建或复用基础SIF，在匹配SDK构建独立app并验证组合闭包 | IN_PROGRESS | [local-sif](evidence/local-sif.md)：基础6产物验证、外置3程序编译完成；157文件内容复核、User入口成功；分层挂载/清单/运输组件33+38+11通过 | 完整原生启动、MiniNDN与精确组合回执及增量构建证明待完成；不计runtime PASS | 复用已编译app；权限归一化不重编译；基础库/ABI未变不重建SIF |
 | T011.b2 | T011 | 同源应用补包复用与MiniNDN延迟导入闭包 | VERIFIED | [local-sif](evidence/local-sif.md)：r2包159文件，3二进制不变、compiled:false；6复用边界测试；本机系统Python导入成功 | 仅补包/导入范围；分层MiniNDN命令和真实场景仍待完成 | 不因缺辅助Python文件或本机工具环境而重编译/重建基础SIF |
+| T011.b3 | T011 | Python应用改动复用C++构建缓存，冻结后实际命令加载 | VERIFIED | [local-sif](evidence/local-sif.md)：d9be0bfa应用，configure6.728s/Waf0.837s，三二进制哈希不变；冻结driver→SIF内User入口exit0；25focused通过 | 仅增量构建与实际入口；四Provider/MiniNDN推理仍待执行 | 基础SIF与未变C++均未重建；下一次使用最新app的缓存 |
 | T011.c | T011 | exact-SIF 本地 CPU YOLO 与 empty HOME/scratch | NOT_STARTED | V13；NOT_RUN | T011.b 后执行，取得 LOCAL_CPU_PASS | 容器环境新增证据，不能以 host 结果替代 |
 | T012.a | T012 | GPU/Apptainer/容量 substrate 实值清点 | IMPLEMENTED | [input inventory](evidence/input-inventory.md) 有早期 probe 记录，非最终环境资格 | 正式 allocation 仍需实测；早期 probe 不抵消 T007 | 静态输入复用，不重复下载/拷贝 |
 | T012.b | T012 | exact-SIF staging、目标节点/GPU/路由与服务就绪 | NOT_STARTED | V14；NOT_RUN | T011 后核验实际 allocation 与哈希 | 每个新 allocation 检查环境，不重建同一镜像 |

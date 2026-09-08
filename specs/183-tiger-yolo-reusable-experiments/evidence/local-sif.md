@@ -97,6 +97,32 @@ selection. That wrapper connection and run-scoped bind closure remain pending.
 The r2 sealed application predates this driver edit; do not claim the new
 commands were exercised through r2 or silently mutate that frozen bundle.
 
+## Verified Python-only incremental build
+
+Source `d9be0bfaa5696cfb48161e648ea3de4249e0032e` is now sealed and built as
+`.cache/layered-base-20260908/app-d9be0bfa` (159files). Manifest SHA256:
+`c086d64c837b3561851aceb4c106b2512fd064ef60ba3a4624d2c249cc3fcff5`.
+The unchanged base117source records still match. With `--build-cache-from`
+the prior verified app, configure took6.728s and Waf build0.837s, with no C++
+compile task. All three native manifest rows equal the original app's rows.
+The base SIF was not rebuilt. Raw: `app-incremental-d9be0bfa-r2.log`; its legacy
+`compiled:true` field meant the build branch was invoked, not that any compiler
+task ran. The output field is now named `buildInvoked` to avoid that ambiguity.
+
+The first attempt correctly rejected APP_FILE_SET: a host import had created
+unsealed `__pycache__` under the r2 app. Only that generated cache was removed.
+Published directories are now0555 as well as files0444/binaries0555, and host
+orchestration disables bytecode writes. Cache relocation retains the latest
+application buildKey for the next increment; existing object bytes are kept.
+25 focused checks pass (`app-incremental-final-components.xml`).
+
+The frozen new driver generated the actual Apptainer command and successfully
+ran the real User help with a fresh node HOME and `/app:ro` in the exact base
+(`preflight/frozen-layered-command.log`, exit0). This advances the previously
+source-only command observation; it is still entrypoint loading, not a real
+four-Provider MiniNDN or inference result. Tiger wrapper/profile/gate and
+run-specific bind closure remain the next work.
+
 `runtime/application.py` now verifies the producer's application manifest before
 publication. Four component checks pass: candidate-only scope, wrong base,
 changed binary, and declared foundational-library shadowing. An initial test

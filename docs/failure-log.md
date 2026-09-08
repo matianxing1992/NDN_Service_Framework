@@ -3095,3 +3095,15 @@ dropped SPEC181 protected-epoch/requester environment variables; preserve them
 for the actual protected runtime. Tests exercise four Provider commands, User,
 base library paths and authorization environment. Source checks do not update
 the already sealed application or prove any MiniNDN scenario has passed.
+
+## 2026-09-08 — Host bytecode polluted the external application
+
+Incremental build rejected APP_FILE_SET before compiling: the prior successful
+host MiniNDN helper import had added __pycache__ to r2's writable directories.
+Remove only those generated caches, freeze all published directories0555, and
+set PYTHONDONTWRITEBYTECODE=1 in host orchestration. Retried exact inputs pass.
+The existing cache initially followed the whole builder hash, so packaging
+edits would otherwise cause a cold build. Explicit verified --build-cache-from
+reuses Waf state with the same base/flags and still runs configure/build. Keep
+the latest application's cache identity usable after relocation. Real result:
+configure6.728s/build0.837s, no C++ tasks, unchanged binary hashes, no SIF rebuild.

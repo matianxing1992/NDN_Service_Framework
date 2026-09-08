@@ -1,5 +1,6 @@
 """Repackaging cannot reuse binaries from different source or runtime inputs."""
 import importlib.util
+import json
 from pathlib import Path
 
 import pytest
@@ -41,3 +42,47 @@ def test_rejects_reuse_across_changed_inputs(tmp_path, builder, monkeypatch, fau
         monkeypatch.setattr(builder, 'FLAGS', '-O3')
     with pytest.raises(ValueError):
         builder.reusable_application(tmp_path, seal, base)
+
+
+@pytest.mark.parametrize('fault', [None, 'marker', 'symlink', 'base', 'flags'])
+def test_incremental_cache_requires_owned_matching_runtime(tmp_path, builder, monkeypatch, fault):
+    app = tmp_path/'application'
+    bundle(app)
+    body = json.loads((app/'application-manifest.json').read_text())
+    cache = tmp_path/'cache'
+    work = cache/body['buildKey']
+    work.mkdir(parents=True)
+    marker = work/'cache-identity.json'
+    marker.write_text(json.dumps(body['buildIdentity']))
+    base = BASE
+    if fault == 'marker':
+        marker.write_text('{}')
+    elif fault == 'symlink':
+        actual = work.with_name('actual')
+        work.rename(actual)
+        work.symlink_to(actual, target_is_directory=True)
+    elif fault == 'base':
+        base = 'sha256:'+'e'*64
+    elif fault == 'flags':
+        monkeypatch.setattr(builder, 'FLAGS', '-O3')
+    if fault is not None:
+        with pytest.raises(ValueError):
+            builder.compatible_build_cache(cache, app, base)
+    else:
+        selected, identity = builder.compatible_build_cache(cache, app, base)
+        assert selected == work and identity == body['buildIdentity']
+
+
+def test_incremental_cache_can_be_selected_by_the_new_application(tmp_path, builder):
+    cache = tmp_path/'cache'
+    work = cache/'previous'
+    work.mkdir(parents=True)
+    (work/'object.o').write_bytes(b'preserved build object')
+    identity = {'fixture': 'new compiler provenance'}
+    builder.publish_cache(cache, work, identity, 'next')
+    assert not work.exists()
+    assert (cache/'next/object.o').read_bytes() == b'preserved build object'
+    assert json.loads((cache/'next/cache-identity.json').read_text()) == identity
+    work.mkdir()
+    with pytest.raises(ValueError, match='APP_CACHE_DESTINATION_EXISTS'):
+        builder.publish_cache(cache, work, identity, 'next')
