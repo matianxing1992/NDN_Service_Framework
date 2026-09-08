@@ -1,6 +1,9 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanSealer.hpp"
 
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
+
 #include <algorithm>
+#include <tuple>
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -21,58 +24,34 @@ bool isDigest(const std::string& value)
     });
 }
 
-std::string quote(const std::string& value)
-{
-  static const char hex[] = "0123456789abcdef";
-  std::ostringstream out;
-  out << '"';
-  for (const auto c : value) {
-    const auto byte = static_cast<unsigned char>(c);
-    switch (c) {
-      case '"': out << "\\\""; break;
-      case '\\': out << "\\\\"; break;
-      case '\b': out << "\\b"; break;
-      case '\f': out << "\\f"; break;
-      case '\n': out << "\\n"; break;
-      case '\r': out << "\\r"; break;
-      case '\t': out << "\\t"; break;
-      default:
-        // JSON string bodies cannot carry raw control characters; emit the
-        // canonical \u00XX form. Bytes at or above 0x20 pass through raw,
-        // keeping UTF-8 payloads intact (same rule as the canonical encoder).
-        if (byte < 0x20) {
-          out << "\\u00" << hex[byte >> 4] << hex[byte & 0x0F];
-        } else {
-          out << c;
-        }
-    }
-  }
-  out << '"';
-  return out.str();
-}
-
 std::string canonicalCore(const NativePlacementPlanCore& core)
 {
-  std::ostringstream out;
-  out << "request=" << core.requestId << "|attempt=" << core.attempt
-      << "|model=" << core.modelDigest << "|graph=" << core.graphDigest
-      << "|ack=" << core.ackClosedDigest << "|candidate=" << core.candidateDigest
-      << "|strategy=" << core.strategy.name << ':' << core.strategy.version << ':'
-      << core.strategy.configurationDigest << "|roles=";
-  for (const auto& role : core.executionPlan.roles) out << role << ';';
-  out << "|assignment=";
-  for (const auto& item : core.assignment.providerByRole) {
-    out << item.first << '=' << item.second << ';';
+  auto roles = NativeJson::array();
+  for (const auto& role : core.executionPlan.roles) {
+    const auto assembly = core.assemblyByRole.find(role);
+    if (assembly == core.assemblyByRole.end()) throw std::invalid_argument("missing sealed assembly role");
+    roles.push_back(nativeAssemblyJson(assembly->second));
   }
-  out << "|offers=";
-  for (const auto& item : core.offerDigestByProvider) {
-    out << item.first << '=' << item.second << ';';
-  }
-  out << "|artifacts=";
-  for (const auto& item : core.artifactDigestByRole) {
-    out << item.first << '=' << item.second << ';';
-  }
-  return out.str();
+  const auto strategy = nativePlanningDigest(nativeCanonicalJson(NativeJson{
+    {"name", core.strategy.name}, {"version", core.strategy.version},
+    {"state", core.strategy.configurationDigest}}));
+  return nativeCanonicalJson(NativeJson{
+    {"request_id", core.requestId}, {"attempt", core.attempt},
+    {"model_digest", core.modelDigest}, {"graph_digest", core.graphDigest},
+    {"roles", roles}, {"provider_by_role", core.assignment.providerByRole},
+    {"dependencies", nativeDependenciesJson(core.executionPlan.dependencies)},
+    {"ack_closed_digest", core.ackClosedDigest}, {"strategy_digest", strategy},
+    {"candidate_digest", core.candidateDigest}, {"request_contract_digest", core.requestContractDigest},
+    {"generation_contract", core.generationContract.enabled ? nativeGenerationJson(core.generationContract) : NativeJson(nullptr)}});
+}
+
+std::string canonicalSealed(const NativeSealedPlan& sealed)
+{
+  std::vector<std::tuple<std::string, std::string, std::string>> grants;
+  for (const auto& grant : sealed.grants) grants.emplace_back(grant.provider, grant.grantName, grant.grantDigest);
+  std::sort(grants.begin(), grants.end());
+  return nativeCanonicalJson(NativeJson{{"core", sealed.core.coreDigest}, {"grants", grants},
+    {"securityPolicySnapshotDigest", sealed.security.policyDigest}});
 }
 
 } // namespace
@@ -99,6 +78,7 @@ void NativePlacementPlanCore::validate() const
   if (roles.size() != executionPlan.roles.size() ||
       assignment.providerByRole.size() != roles.size() ||
       artifactDigestByRole.size() != roles.size() ||
+      assemblyByRole.size() != roles.size() ||
       offerDigestByProvider.empty()) {
     throw std::invalid_argument("native placement plan core role cover is incomplete");
   }
@@ -116,6 +96,22 @@ void NativePlacementPlanCore::validate() const
     if (!providers.insert(provider->second).second) {
       throw std::invalid_argument("native plan requires one role per Provider");
     }
+    const auto assembly = assemblyByRole.find(role);
+    if (assembly == assemblyByRole.end() || assembly->second.selectedRole != role ||
+        assembly->second.artifactDigest != artifact->second ||
+        assembly->second.graphDigest != graphDigest ||
+        assembly->second.modelManifestDigest != artifacts.manifestDigest ||
+        assembly->second.protectionEpoch != protectionEpoch) {
+      throw std::invalid_argument("native sealed assembly differs from authenticated artifact context");
+    }
+    if (assembly->second.role != role &&
+        assembly->second.role + "#" + std::to_string(assembly->second.rank) != role) {
+      throw std::invalid_argument("native assembly logical role/rank differs from assignment");
+    }
+    validateNativeAssembly(assembly->second);
+  }
+  if (nativePlanningDigest(canonicalCore(*this)) != coreDigest) {
+    throw std::invalid_argument("native plan core was modified after sealing");
   }
 }
 
@@ -128,7 +124,7 @@ void NativeSealedPlan::validate() const
   std::set<std::string> seen;
   for (const auto& grant : grants) {
     if (grant.provider.empty() || grant.role.empty() || grant.grantName.empty() ||
-        grant.recipient.empty() || !isDigest(grant.grantDigest) ||
+        grant.recipient != grant.provider || grant.grantName.front() != '/' || !isDigest(grant.grantDigest) ||
         !seen.insert(grant.provider + "\n" + grant.role).second) {
       throw std::invalid_argument("native sealed plan grant binding is invalid");
     }
@@ -139,6 +135,11 @@ void NativeSealedPlan::validate() const
   }
   if (security.requireProtectedArtifacts && seen.size() != core.executionPlan.roles.size()) {
     throw std::invalid_argument("native sealed plan is missing a protected grant");
+  }
+  if ((!security.requireProtectedArtifacts && !grants.empty()) ||
+      security.requireProtectedArtifacts == (core.protectionEpoch == "plaintext-v1") ||
+      nativePlanningDigest(canonicalSealed(*this)) != planDigest) {
+    throw std::invalid_argument("native sealed plan security binding was modified");
   }
 }
 
@@ -200,6 +201,15 @@ NativePlacementPlanCore NativePlanSealer::sealCore(
   core.requesterIdentity = inputs.requesterIdentity;
   core.protectionEpoch = inputs.protectionEpoch;
   core.expiresAtMs = inputs.expiresAtMs;
+  core.assemblyByRole = inputs.assemblyByRole;
+  core.requestContractDigest = inputs.requestContractDigest;
+  core.generationContract = inputs.generationContract;
+  for (const auto& item : core.assemblyByRole) {
+    if (item.second.adapterId != snapshot.model.adapterId ||
+        item.second.adapterVersion != snapshot.model.adapterVersion) {
+      throw std::invalid_argument("native assembly adapter differs from inspected model");
+    }
+  }
   core.coreDigest = nativePlanningDigest(canonicalCore(core));
   core.validate();
   return core;
@@ -245,19 +255,14 @@ NativeSealedPlan NativePlanSealer::finalizeSecurity(
     throw std::invalid_argument("security policy digest is invalid");
   }
   NativeSealedPlan sealed{core, grants, security, {}};
-  std::ostringstream canonical;
-  canonical << canonicalCore(core) << "|policy=" << security.policyDigest;
-  for (const auto& grant : grants) {
-    canonical << "|grant=" << grant.provider << ':' << grant.role << ':'
-              << grant.grantName << ':' << grant.grantDigest << ':' << grant.recipient;
-  }
-  sealed.planDigest = nativePlanningDigest(canonical.str());
+  sealed.planDigest = nativePlanningDigest(canonicalSealed(sealed));
   sealed.validate();
   return sealed;
 }
 
 NativeSelectionProjectionV3 NativePlanSealer::project(
-  const NativeSealedPlan& sealed, const std::string& provider)
+  const NativeSealedPlan& sealed, const std::string& provider,
+  const NativeRoleProjectionInputs& inputs)
 {
   sealed.validate();
   const auto assignment = std::find_if(sealed.core.assignment.providerByRole.begin(),
@@ -281,44 +286,32 @@ NativeSelectionProjectionV3 NativePlanSealer::project(
   projection.ackClosedDigest = sealed.core.ackClosedDigest;
   projection.offerDigest = sealed.core.offerDigestByProvider.at(provider);
   projection.securityPolicySnapshotDigest = sealed.security.policyDigest;
-  projection.selectedRole.role = assignment->first;
-  projection.selectedRole.selectedRole = assignment->first;
-  projection.selectedRole.backend = "onnxruntime-cpu";
-  projection.selectedRole.artifactDigest = sealed.core.artifactDigestByRole.at(assignment->first);
-  projection.selectedRole.graphDigest = sealed.core.graphDigest;
-  projection.selectedRole.adapterId = sealed.core.executionPlan.modelFamily;
-  projection.selectedRole.adapterVersion = "1";
-  projection.selectedRole.roleKind = sealed.core.executionPlan.modelFamily;
-  projection.executionRole = {assignment->first, assignment->first, 0, 0, 0,
-                              "onnxruntime-cpu", sealed.core.executionPlan.modelFamily, "1"};
+  projection.selectedRole = sealed.core.assemblyByRole.at(assignment->first);
+  projection.assembly = projection.selectedRole;
+  projection.executionRole = inputs.executionRole;
+  projection.dataflow = inputs.dataflow;
+  projection.deviceBinding = inputs.deviceBinding;
+  projection.deadlineMs = sealed.core.expiresAtMs;
+  projection.requestContractDigest = sealed.core.requestContractDigest;
+  projection.generationContract = sealed.core.generationContract;
+  projection.groupCapabilityV1 = inputs.groupCapabilityV1;
+  projection.conversationStateReference = inputs.conversationStateReference;
+  projection.conversationTurnBinding = inputs.conversationTurnBinding;
   projection.hasGrantBinding = grant != sealed.grants.end();
   if (grant != sealed.grants.end()) {
     projection.grantName = grant->grantName;
     projection.grantDigest = grant->grantDigest;
   }
   projection.plan = sealed.core.executionPlan;
+  nativeSelectionProjectionV3ToJson(projection);
   return projection;
 }
 
 std::vector<std::uint8_t> NativePlanSealer::encode(
   const NativeSelectionProjectionV3& projection)
 {
-  if (projection.provider.empty() || projection.requestId.empty() ||
-      !isDigest(projection.planDigest) || projection.attempt == 0 ||
-      projection.selectedRole.role.empty()) {
-    throw std::invalid_argument("native selection projection is incomplete");
-  }
-  std::ostringstream json;
-  json << "{\"provider\":" << quote(projection.provider)
-       << ",\"request_id\":" << quote(projection.requestId)
-       << ",\"attempt\":" << projection.attempt
-       << ",\"plan_digest\":" << quote(projection.planDigest)
-       << ",\"plan_core_digest\":" << quote(projection.planCoreDigest)
-       << ",\"ack_closed_digest\":" << quote(projection.ackClosedDigest)
-       << ",\"selected_role\":{\"role\":"
-       << quote(projection.selectedRole.role) << "}}";
-  const auto value = json.str();
-  return {value.begin(), value.end()};
+  const auto wire = nativeSelectionProjectionV3ToJson(projection);
+  return {wire.begin(), wire.end()};
 }
 
 } // namespace ndnsf::di

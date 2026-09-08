@@ -1,4 +1,5 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
+#include "tests/fixtures/spec182/native-sealing-fixture.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanSealer.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/qwen/NativeQwenPlanner.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloPlanner.hpp"
@@ -404,6 +405,7 @@ BOOST_AUTO_TEST_CASE(PreSplitPlacementFiltersAndDeterministicallyBindsOneProvide
   inputs.requesterIdentity = "/requester";
   inputs.protectionEpoch = "protected-v1";
   inputs.expiresAtMs = 2000000000000ULL;
+  ndnsf::di::fixture::assemblies(inputs);
   const auto core = NativePlanSealer::sealCore(snapshot, proposal, inputs);
   const NativeSecurityPolicySnapshot security{digest("security-policy"), true};
   const auto view = NativePlanSealer::grantView(core, snapshot.offers[1], security);
@@ -412,7 +414,8 @@ BOOST_AUTO_TEST_CASE(PreSplitPlacementFiltersAndDeterministicallyBindsOneProvide
   // The single-role fixture needs one grant; finalizeSecurity verifies exact
   // role/provider coverage before exposing a projection.
   const auto sealed = NativePlanSealer::finalizeSecurity(core, {grant}, security);
-  const auto projection = NativePlanSealer::project(sealed, view.provider);
+  const auto projection = NativePlanSealer::project(sealed, view.provider,
+    ndnsf::di::fixture::projection(sealed, view.provider));
   BOOST_REQUIRE(!NativePlanSealer::encode(projection).empty());
 }
 
@@ -553,6 +556,7 @@ BOOST_AUTO_TEST_CASE(PlacementAssignsDistinctRoleSpecificProvidersAndSeals)
   inputs.requesterIdentity = "/requester";
   inputs.protectionEpoch = "protected-v1";
   inputs.expiresAtMs = 2000000000000ULL;
+  ndnsf::di::fixture::assemblies(inputs);
   const auto core = NativePlanSealer::sealCore(fixture.snapshot, proposal, inputs);
   BOOST_CHECK_EQUAL(core.assignment.providerByRole.size(), 2U);
   for (const auto& offer : fixture.snapshot.offers) {
