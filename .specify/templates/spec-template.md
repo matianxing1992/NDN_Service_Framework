@@ -1,5 +1,7 @@
 # Feature Specification: [FEATURE NAME]
 
+<!-- 验收定义实际行为、独立判据和必要负例，不默认要求每小任务编译测试。执行时引用 skills/speckit-code-design/references/pre-test-static-review.md：逐任务静态门、批末流程门、统一构建测试；静态通过不能替代行为验收。 -->
+
 <!--
   DOCUMENT LANGUAGE POLICY (constitution 1.4.0, 2026-09-05):
   中文写叙述性内容：用户故事描述、Why this priority、Edge Cases、修订历史、
