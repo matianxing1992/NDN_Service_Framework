@@ -109,6 +109,20 @@ failure-log，记录 identity b6710fd6 稳定正确。deferred：远端 storage
 site roots 与 oracle 数值契约待 T005/T006/T012 wiring 验证；release.gates
 仍空，local-cpu 运行资格待真实 prepare+local 执行 receipt。
 
+2026-09-07 T008 host-unit 构建通过（64df1581/5171450d）：
+spec183_host_build.sh 驱动干净根 -j2 全链——NAC-ABE（Experimental
+5ed23e68，-O1 规避 GCC9.4 ICE）→ NDN-SVS（9f2d8a47，系统 Boost 1.71
+按 AGENTS.md 规则）→ NDNSD（375a35c5）→ NDNSF Core（waf install）→
+两个 Python 扩展（_ndnsf 显式闭包 env + _py_repoclient）。ldd 闭包全部
+解析到 /tmp/t008-build-root（ndn-cxx 用系统 /usr/local），0 unresolved；
+两扩展源树外 import OK（NDNSF_EXT_OK/PY_REPOCLIENT_EXT_OK）；
+App_ServiceController entrypoint 真实执行到 NFD socket 边界。修复记录：
+pythonWrapper setup.py 源路径改相对（pip 兼容，spec181 回归）、
+NAC-ABE 仓库 example-trust-anchor.cert 排除、NDNSD 仓库 pkg-config
+Cflags 修复提交（57d7431）。证据见 evidence/host-unit.md。T009 单测
+（--with-tests）构建在跑；T010 MiniNDN 用 NDNSF_DI_YoloAckDriven_Minindn.py
++ Spec183 case 配置（skill 已加载），T011 构建等 host gate receipt。
+
 2026-09-07 构建工具链规则（用户裁决，AGENTS.md 同步记录）：NDN-SVS 的
 某些线在 configure 检查里声明最低 Boost 1.74，但本机是 Ubuntu 20.04
 （系统 Boost 1.71，无法装 1.74）。手递锁 pin 的 Experimental revision
