@@ -3351,3 +3351,13 @@ Core、两个 Python 扩展和内部原生检查均通过后，mksquashfs 使用
 的源码、头文件和 Python wrapper；新的 runtime-only 分支开始递归 Repo 后，子
 构建描述也成为必要输入。修复是把 `NDNSF-DistributedRepo/wscript` 纳入 base
 选择，重新生成 seal 后再构建。该轮没有生成 SIF 或依赖复用 PASS。
+
+## 2026-09-08: 外置 Controller 缺少 NAC-ABE 子目录 include
+
+新 base 上的外置 `di` configure 和 Waf 进入 84 个目标后，`App_ServiceController.cpp`
+在 `nac-abe/algo/master-key.hpp` 处失败：`fatal error: common.hpp: No such file
+or directory`。`libnac-abe.pc` 只声明 `/opt/ndnsf-di/current/include`，而 NAC-ABE
+的算法头使用相对于 `nac-abe/algo` 的裸 `common.hpp`；基础库编译未触发这条更深
+的 include 路径。修复 Waf 的显式 NAC-ABE include 闭包，同时加入
+`include/nac-abe`，并重新封存/重建 base 后再编译 app。失败缓存不作为候选，保留
+为同一 owner 的诊断输入。
