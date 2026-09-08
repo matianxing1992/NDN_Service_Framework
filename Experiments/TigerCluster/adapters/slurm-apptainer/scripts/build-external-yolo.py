@@ -19,6 +19,7 @@ sys.path.insert(0, str(HERE.parents[2]))
 from runtime.application import verify_application
 FLAGS = '-O1 -g0 -B/usr/bin/ -DBOOST_PHOENIX_DONT_USE_PREPROCESSED_FILES'
 TARGETS = ('App_ServiceController', 'di-native-provider', 'di-native-fault-provider')
+MAX_JOBS = 4
 
 
 def digest(path):
@@ -121,8 +122,12 @@ def run(args):
     source_files = {row['path']: row for row in seal['files']}
     for row in base_seal['files']:
         assert source_files.get(row['path']) == row, 'APP_CHANGED_BASE_SOURCE:' + row['path']
+    jobs = int(args.jobs)
+    if not 1 <= jobs <= MAX_JOBS:
+        raise ValueError('APP_BUILD_JOBS_OUT_OF_RANGE')
     build_identity = {'baseSifSha256': args.base_sha256, 'flags': FLAGS,
-                      'builderSha256': digest(__file__), 'targets': TARGETS}
+                      'builderSha256': digest(__file__), 'targets': TARGETS,
+                      'jobs': jobs}
     reuse = getattr(args, 'reuse_application', None)
     if reuse is not None:
         # Preserve the original compiler provenance; this run only packages
@@ -187,7 +192,7 @@ def run(args):
                '--env', 'LDFLAGS=-B/usr/bin/ -Wl,-rpath,/opt/ndnsf-di/current/lib',
                '--env', 'CPLUS_INCLUDE_PATH=/opt/ndnsf-di/current/include', str(base)]
     if reuse is None:
-        compile_application(command)
+        compile_application(command, jobs)
     partial = output.with_name(output.name + '.partial')
     partial.mkdir(parents=True, exist_ok=False)
     (partial / 'bin').mkdir()
@@ -229,7 +234,7 @@ def run(args):
                       'buildInvoked': reuse is None}))
 
 
-def compile_application(command):
+def compile_application(command, jobs):
     subprocess.run(command + ['/opt/venv/bin/python',
                    '/opt/ndnsf-di/current/manifest/verify-base-runtime.py', 'verify'], check=True)
     subprocess.run(command + ['./waf', 'configure', '--out=/build', '--with-examples',
@@ -238,7 +243,7 @@ def compile_application(command):
                    '--disable-local-dependency-prefix', '--nac-abe-prefix=/opt/ndnsf-di/current',
                    '--prefix=/opt/ndnsf-di/current', '--libdir=/opt/ndnsf-di/current/lib',
                    '--boost-includes=/usr/include', '--boost-libs=/usr/lib/x86_64-linux-gnu'], check=True)
-    subprocess.run(command + ['./waf', '-j4', '--targets=' + ','.join(TARGETS)], check=True)
+    subprocess.run(command + [f'-j{jobs}', '--targets=' + ','.join(TARGETS)], check=True)
 
 
 if __name__ == '__main__':
@@ -246,6 +251,8 @@ if __name__ == '__main__':
     for name in ('source', 'base', 'cache', 'output', 'apptainer'):
         parser.add_argument('--' + name, type=Path, required=True)
     parser.add_argument('--base-sha256', required=True)
+    parser.add_argument('--jobs', type=int, default=4,
+                        help='Waf parallelism (1-4); lower values avoid GCC9 ICEs')
     parser.add_argument('--reuse-application', type=Path,
                         help='Repackage verified binaries only when source seal/base/flags are unchanged')
     parser.add_argument('--build-cache-from', type=Path,

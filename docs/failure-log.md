@@ -3771,3 +3771,17 @@ identity and rerun packaging against the existing incremental Waf cache.
   harness files needed by the external app bundle.
 - Lesson: a template that can rebuild a full runtime is not interchangeable
   with the stable base recipe; source selection must match the ownership layer.
+
+## 2026-09-08: GCC 9 ICE during external DI app build
+
+- Symptom: the v10 base/complete app source reached Waf compilation but GCC
+  9.4.0 aborted with an internal compiler error in `bits/locale_facets.h` while
+  compiling `NativeProtectedArtifactStore.cpp` under `-j4`.
+- Root cause: this Ubuntu 20.04 compiler has a reproducible resource-sensitive
+  ICE on the large DI translation-unit set; no source diagnostic or ABI error
+  was emitted.
+- Fix: make external app Waf parallelism an explicit 1–4 input and record it in
+  the build identity; retry this build with `-j2` while preserving the repo's
+  `-j4` upper bound.
+- Lesson: parallelism is part of the compiler/toolchain identity and must be
+  captured rather than hidden behind a fixed command.
