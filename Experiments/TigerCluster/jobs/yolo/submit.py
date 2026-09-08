@@ -435,8 +435,11 @@ def _enter_frozen(args, prepared, action):
     if _json_digest(raw_profile)!=prepared['profileDigest']:
         raise ClosureError('FROZEN_PROFILE_CHANGED')
     configured=raw_profile.get('runtime',{}).get('operatorPython')
-    if action=='local' or (action=='collect' and not getattr(args,'reconcile',False)):
-        configured=None  # Local CPU/offline reanalysis use the invoking host's interpreter.
+    if action in ('local','submit') or (action=='collect' and not getattr(args,'reconcile',False)):
+        # Submit coordinates on the invoking host before receiver staging/site
+        # checks. A cluster-only interpreter must not be executed on the sender.
+        # The receiver verifies the configured batch interpreter before sbatch.
+        configured=None
     interpreter=(sys.executable if configured is None else _operator_path(
         configured,Path(args.profile).absolute().parent,local=True))
     if BUNDLE == bundle and os.path.abspath(sys.executable)==os.path.abspath(interpreter):

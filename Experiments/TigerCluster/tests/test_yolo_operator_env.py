@@ -35,7 +35,9 @@ def test_operator_interpreter_symlink_is_not_a_profile_locator(tmp_path):
         load_operator_profile(path,stage='inputs')
 
 
-@pytest.mark.parametrize('action,reconcile,use_remote',[('submit',False,True),('collect',False,False),('collect',True,True)])
+@pytest.mark.parametrize('action,reconcile,use_remote',[
+    ('submit',False,False),('local',False,False),('collect',False,False),
+    ('collect',True,True),('run',False,True),('rank',False,True)])
 def test_frozen_entry_uses_configured_interpreter_and_rejects_profile_change(tmp_path,monkeypatch,action,reconcile,use_remote):
     from runtime import yolo_bundle
     module=submit_module()

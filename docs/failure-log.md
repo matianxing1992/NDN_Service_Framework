@@ -1,5 +1,20 @@
 # Failure Log and Evidence Index
 
+## 2026-09-07 — Sender submit selected a receiver-only Python path
+
+- Symptom: `_enter_frozen` selected the configured Tiger operator Python for
+  local submit before reaching receiver staging/site checks; that absolute
+  executable need not exist on the sender.
+- Cause: submission coordination and allocated execution used the same
+  interpreter-selection branch after adding runtime.operatorPython.
+- Fix: submit coordinates with the invoking host's verified interpreter;
+  receiver checks the configured batch interpreter before sbatch. Run/rank
+  keep the cluster selection. Profile/frozen dependency binding stays intact.
+- Validation: 68 affected component checks passed; retained JUnit under
+  results/spec183-submit-origin-20260907. No actual remote/model execution.
+- Lesson: a configured remote physical locator must not become a local
+  executable before crossing an explicit host boundary.
+
 ## 2026-09-07 — Spec183 preflight boundary test expected an obsolete missing-script error
 
 - Symptom: the first regression after adding the real two-phase Spec183

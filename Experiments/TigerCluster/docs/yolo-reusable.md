@@ -44,7 +44,7 @@ journal。共享输出路径不能手动改写prepared receipt；目前必须先
 
 重复调用只验证并复用完成的环境；不会重装或清空失败/正在安装的prefix。
 集群上使用该环境的Python调用submit.py；batch通过已绑定参数、srun通过已验证
-profile选择同一解释器。本地CPU和普通离线collect使用调用者本机解释器，进入
+profile选择同一解释器。submit协调、本地CPU和普通离线collect使用调用者本机解释器，进入
 冻结CLI后也核对实际依赖pins。显式collect --reconcile使用集群解释器。
 每个实际allocation仍需证明compute节点可加载该环境；登录节点通过不代表GPU通过。
 

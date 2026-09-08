@@ -4,6 +4,10 @@
 launch checks. T004 and T007 remain incomplete. No Slurm allocation, SIF build,
 model/GPU execution or large input download occurred.
 
+Follow-up: [t004-submit-origin.md](t004-submit-origin.md) corrects sender submit
+to use its invoking interpreter before receiver staging. Installation evidence
+below remains valid; the original submit-selection description is historical.
+
 ## Actual environment
 
 Tiger login Python: 3.9.18. Created the independent prefix

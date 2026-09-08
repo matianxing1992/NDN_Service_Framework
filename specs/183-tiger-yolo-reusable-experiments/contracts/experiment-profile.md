@@ -13,8 +13,52 @@ behavior. Recompute its retained collection using its saved plan and compare the
 complete verdict; never require a historical run to match a subsequently edited
 profile document containing new gate references. Bind normal collection to the
 prepared runtime candidate and saved package, oracle, and fixture digests.
-These checks do not replace actual stage execution. Prepared output paths remain bound; relocation requires an explicit
-transport contract before remote execution can be enabled.
+These checks do not replace actual stage execution. Prepared output paths remain
+bound. The transport layout below preserves those paths; arbitrary relocation is
+not supported.
+
+### Cross-host transport layout (design fixed; transport not implemented)
+
+Use the declared project namespace on both the experiment host and Tiger before
+creating new qualifying runs: artifact inputs/profile under `remoteArtifactRoot`,
+run outputs and their frozen bundles under `sharedRunRoot`. These are separate
+physical filesystems with identical absolute names, not a shared mount. A local
+directory at that name does not prove that the process is on Tiger; receiver
+cluster verification remains mandatory before scheduler/journal side effects.
+The local mirror is the explicitly declared project-storage counterpart of the
+retained results directory. Operator environment paths may exist on Tiger only.
+
+Transport must copy original receipt, collection, source-seal and evidence bytes,
+including the complete retained prerequisite closure, to the same absolute
+locations. Stage the source seal in this namespace before producing its host
+gate. Prepare and qualify local-SIF runs in the final namespace from the start.
+Do not rewrite old prepare.json, candidateDigest, plan.output, node receipts or
+absolute collection references. Historical runs outside this layout remain
+historical until an explicit future relocation contract exists; do not rerun a
+qualified experiment merely because this design document changed.
+
+Before any upload, validate the exact content/profile/frozen harness and required
+gate on the sender, enumerate required regular files with size/digest/mode, and
+reject any evidence reference escaping the declared namespace. Do not recursively
+copy the checkout, scratch, operator venv or all results. Run secrets/keys must be
+explicitly selected, owner-only and sent only through authenticated SSH; their
+contents never enter logs or Git. An authority key is an input, not a PASS proof.
+
+The receiver must verify the planned destination names and content independently,
+retain incomplete transfers as non-submittable, and never overwrite an existing
+different candidate/run or merge a transfer into a live allocation. Exact existing
+files may be reused after verification. No rsync --delete, implicit path rebasing,
+new preparation of copied historical evidence, or remote native/SIF build. Only
+after complete closure verification may the receiver run the existing frozen
+submit path; it reanalyzes prerequisite evidence and checks the actual cluster,
+operator dependencies and capacity before its sole sbatch call. Transfer success
+alone cannot authorize a GPU run or release a submission journal.
+
+Sender-side submit uses the invoking host's verified interpreter. Remote
+coordination must invoke the configured Tiger interpreter explicitly over SSH;
+batch/rank retain that selection. This avoids executing a Tiger-only absolute
+Python path on the local sender. The transport coordinator/receiver publication
+and recovery tests remain T004 work, not an implemented gate in this checkpoint.
 
 The dispatch `effectiveProfile` must equal the shared canonical behavior document
 computed from the current operator profile, not merely have a valid file hash.
@@ -137,10 +181,11 @@ on the login node from requirements SHA-256
 `3b4f62bcad8e182c7402f9068dce192afd3283be0b9fc5ec2d0e597aa7a9b755`.
 Pass the selected interpreter as the sixth immutable batch argument; the wrapper
 does not parse mutable profile data to choose an executable. srun uses that same
-selected path. Local CPU and ordinary offline collect use the invoking host's
+selected path. Submit coordination, local CPU and ordinary offline collect use the invoking host's
 interpreter. On entry into the frozen CLI, verify that interpreter's actual
-dependency pins before continuing. Explicit cluster submit and collect
---reconcile dispatch through the configured cluster interpreter.
+dependency pins before continuing. The receiver independently verifies the
+configured batch interpreter before sbatch. Explicit collect --reconcile uses
+the configured cluster interpreter and is run on the receiver.
 
 Login installation/import and shell/argv tests do not establish compute-node
 availability. The same shared interpreter and dependencies must load on each

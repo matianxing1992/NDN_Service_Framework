@@ -69,6 +69,8 @@ Provider mount。发布方的 canonical package 与通用脚本 bundle 分离，
 
 ## Candidate And Change Invalidation
 
+运输采用[同绝对路径布局](contracts/experiment-profile.md#cross-host-transport-layout-design-fixed-transport-not-implemented)：在本机project镜像目录完成新的本地资格，随后原字节复制至Tiger同名目录。旧回执不改路径或candidate；本地同名目录不是Tiger身份证明。先补运输闭包、接收校验与失败恢复，再启用远端提交；此设计已确定，运输代码仍未完成。
+
 使用 [candidate contract](contracts/experiment-profile.md#candidate-identity) 的 input/runtime/experiment 三阶段身份；每次 final candidate 关联同一输入身份。构建输入清单和运行资格清单用途不同，不人工填 PASS。
 
 Spec183 外部 Python job/应用适配器可以作为 E 中的只读脚本 bundle 挂载到固定 R；须通过该 R 的实际已安装 API/import 检查。它不改变 `447f7584` 运行库归属，也不能夹带宿主 `.so`。若需修改镜像内应用或 Core/DI，则先更新 I/source lock、重新构建 R，再验证 E；不能在旧 SIF 上临时覆盖 native/runtime 文件。
