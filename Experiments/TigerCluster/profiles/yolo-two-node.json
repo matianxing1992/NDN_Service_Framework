@@ -3,19 +3,19 @@
  "profileId": "tiger-yolo-two-node-v1",
  "release": {
   "inputs": {
-   "path": "/dev/shm/spec183-sdk-d4031191/planes-local-tools/inputs/plane.json",
+   "path": "/dev/shm/spec183-sdk-d4031191/planes-role-home/inputs/plane.json",
    "bytes": 696,
    "sha256": "sha256:8a34755c8ee8a4be7eae6d33e31a369bcf33744065bb3e23232f2c46de60c559"
   },
   "runtime": {
-   "path": "/dev/shm/spec183-sdk-d4031191/planes-local-tools/runtime/plane.json",
+   "path": "/dev/shm/spec183-sdk-d4031191/planes-role-home/runtime/plane.json",
    "bytes": 602,
    "sha256": "sha256:424e56ccd7294b4446c96c8a695b7cf477913c03504e3e8f619e49102bd4a657"
   },
   "dispatch": {
-   "path": "/dev/shm/spec183-sdk-d4031191/planes-local-tools/dispatch/plane.json",
+   "path": "/dev/shm/spec183-sdk-d4031191/planes-role-home/dispatch/plane.json",
    "bytes": 1354,
-   "sha256": "sha256:32f65762998312932d2be03145d2e85e2716c83989979b20159be2f4790d5e89"
+   "sha256": "sha256:8e62072eba67c1f8a8da3dff4a72b57053cdc45c621aa543d83994422d453310"
   },
   "gates": {}
  },
@@ -151,9 +151,9 @@
    "sha256": "sha256:aad276e64faecd88a1cae5af8dad98e0bd6ec0ab4a5beeab4164217b35ff5d97"
   },
   "harnessManifest": {
-   "path": "/dev/shm/spec183-sdk-d4031191/planes-local-tools/dispatch/harness/harness-manifest.json",
+   "path": "/dev/shm/spec183-sdk-d4031191/planes-role-home/dispatch/harness/harness-manifest.json",
    "bytes": 3662,
-   "sha256": "sha256:1992b0a2f1913b99d16ea4f0a35171156a4ad8d01f0db2c64e6238592518d061"
+   "sha256": "sha256:1227fded39ce4d9df56732a89892c6be5ad484ba88aeec799982b5d3fac4f93f"
   },
   "validationContract": {
    "path": "../../../specs/183-tiger-yolo-reusable-experiments/contracts/experiment-profile.md",

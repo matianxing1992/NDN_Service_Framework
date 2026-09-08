@@ -1,5 +1,26 @@
 # Failure Log and Evidence Index
 
+## 2026-09-08 — Repo management signatures reach NFD out of timestamp order
+
+The role-home-fixed full run layered-host-20260908b passes Controller publication
+but fails Repo readiness, with prefix registrations rejected by NFD. The bounded
+repo-management diagnostic identifies `Timestamp is reordered for key .../repo/KEY/...`.
+Provider construction queues older signed commands; RepoNodeApp.run starts its
+data-plane Face first, sending newer commands with the same identity. Start the
+Provider after handlers are installed and before advertisement/data-plane startup.
+Keep replay validation unchanged. Move startup inside cleanup and stop Provider
+on failure as well as normal exit. The actual provider-first-r2 diagnostic records
+all expected Repo routes and no reordered-timestamp errors; all children cleanly
+reaped. The first provider-first harness had misplaced -c and failed argument
+parsing; corrected before interpreting the comparison.
+
+Order regression red before fix;48 HA tests pass after fix, followed by2 selected
+order/failure-cleanup checks including three injected startup failures. The
+existing base SIF still has old Python: source fix and in-memory diagnostic are
+not immutable runtime qualification. Repackage the corrected Repo library into
+a new base identity without rebuilding unchanged native code when byte/ABI
+verification supports reuse. Retain both real failures and diagnostic artifacts.
+
 ## 2026-09-08 — Runtime HOME selected but issued role identity not mounted
 
 Actual layered-host-20260908a signed provisioning passed, but local startup

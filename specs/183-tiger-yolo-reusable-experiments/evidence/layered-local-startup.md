@@ -56,3 +56,56 @@ Next: refresh the frozen harness into a new candidate and run the complete
 local CPU chain. N1/N2 MiniNDN semantic gates and the four-Provider Tiger
 campaign remain open. This local launcher defect does not contradict the
 delivered MiniNDN results from the other machine.
+
+## Next full attempt and Repo command ordering
+
+`layered-host-20260908b` freezes the role-home fix into harness
+`1227fded39ce4d9df56732a89892c6be5ad484ba88aeec799982b5d3fac4f93f`;
+candidate `9499c18c586aa767630c88380848395d9d5b152c2f38a0c7aacb960b5a28374f`.
+Signed preparation exits0, receipt
+`11c2f8ec7cf1900a84051b8f778a29b9802bf72908a81d324c04a0b4712ad166`.
+I/R plane identities and base/app bytes are unchanged. The new dispatch plane
+is under `/dev/shm/spec183-sdk-d4031191/planes-role-home`.
+
+The full attempt passes Controller publication, then exits2 with
+`APP_EXIT:user-repo-readiness:2`. Repo reports NFD `authorization rejected`
+for its NDNSF/CK/NDNSF-DI/application prefixes. No inference requests were
+accepted. All nine recorded child/finite operations are reaped, every lease
+released, no forced cleanup. This is a new failed startup, not a CPU PASS.
+
+Bounded NFD+Controller+Repo diagnostic `repo-management` exposes NFD's precise
+reason: `Timestamp is reordered for key .../repo/KEY/...`. The Provider queues
+its signed registrations during construction; RepoNodeApp.run starts another
+Face with the same identity before starting the Provider event loop. Newer
+commands arrive first and invalidate the queued timestamps under replay policy.
+
+Changing only startup order in diagnostic `repo-provider-first-r2` eliminates
+these rejections. NFD records successful routes for Repo KEY, NDNSF, CK,
+NDNSF-DI, application prefix, sync and REPO-SERVING. Repo has no error/traceback;
+all three processes are reaped without forced cleanup. The earlier
+`repo-provider-first` invocation inserted Python -c at the wrong argv position
+and failed argument parsing; it is retained and excluded from validation.
+
+The production fix belongs to the existing Repo library owner:
+`NDNSF-DistributedRepo/pythonWrapper/py_repoclient/orchestration.py`. Start the
+Provider after installing handlers, then advertise/start the data plane; the
+subsequent blocking run remains idempotent. Enclose startup in cleanup and stop
+the Provider on every exit. The order regression fails before the fix. The
+existing HA suite passes48 tests; an added startup-failure check then passes
+with the order check (2 selected tests, covering Provider/advertisement/data-plane
+failures and resource cleanup). No replay policy or trust configuration changes.
+
+The diagnostic changes Python in memory only and is NOT an immutable runtime
+qualification. The retained d403 base still contains the old Repo Python.
+NEXT: package the corrected library into a new base identity, reusing unchanged
+native libraries and consumer binaries only after proving unchanged ABI/source
+boundaries; verify the new exact base+app composition, then resume full CPU and
+MiniNDN runs. Do not ship a host-library overlay or relabel the old base as fixed.
+
+Pre-repack comparison against the original base's117 sealed workspace files:
+116 unchanged; only `NDNSF-DistributedRepo/pythonWrapper/py_repoclient/orchestration.py`
+changes, from `2cc685017ee7f33a2f7ef819db2088c805121c87f22a5c496f84a35d23fe6095`
+to `abc43042bac8198eb12ff65291b354e491c1f27cceb2e7dd7b3730ce669c0487`.
+This supports a Python-only base repack, not a cold native rebuild. The eventual
+new image must independently retain the same native artifact hashes and pass
+imports/closure plus corrected Repo runtime verification.

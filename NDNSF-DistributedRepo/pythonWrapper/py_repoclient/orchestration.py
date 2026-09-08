@@ -5455,16 +5455,19 @@ class RepoNodeApp:
                 lambda payload, registered=service_name:
                 self._ack(payload, registered),
             )
-        # Advertise one stable locator for this repo. Object Data names remain
-        # dynamic and are reached through this forwarding hint, avoiding one
-        # NLSR advertisement per stored object.
-        self._advertise_prefix(self._serving_forwarding_hint(""))
-        self._data_plane.start()
-        self._start_catalog_sync()
         try:
+            # Flush the Provider's queued registrations before a second Face
+            # uses the same identity. Otherwise newer data-plane commands can
+            # reach NFD first and make Provider timestamps fail replay checks.
+            self.provider.start()
+            # One stable locator avoids per-object NLSR advertisements.
+            self._advertise_prefix(self._serving_forwarding_hint(""))
+            self._data_plane.start()
+            self._start_catalog_sync()
             return self.provider.run()
         finally:
             self._catalog_stop.set()
+            self.provider.stop()
             self._stop_producers()
             if self._db is not None:
                 with self._db_lock:

@@ -13,7 +13,7 @@ import time
 import unittest
 import uuid
 from pathlib import Path
-from unittest.mock import ANY, patch
+from unittest.mock import ANY, Mock, patch
 
 from ndnsf import make_segmented_data_packets
 from py_repoclient import artifact_capability_from_dict
@@ -342,6 +342,8 @@ def make_repo(database: Path, *, budget: int = 4096) -> RepoNodeApp:
 
 class RepoContractTest(unittest.TestCase):
     def test_run_advertises_one_stable_data_plane_locator(self) -> None:
+        events = []
+
         class FakeProvider:
             def add_context_handler(self, *args) -> None:
                 del args
@@ -352,7 +354,14 @@ class RepoContractTest(unittest.TestCase):
             def set_ack_handler(self, *args) -> None:
                 del args
 
+            def start(self) -> None:
+                events.append("provider-ready")
+
+            def stop(self) -> None:
+                events.append("provider-stop")
+
             def run(self) -> int:
+                events.append("provider-run")
                 return 0
 
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -370,8 +379,16 @@ class RepoContractTest(unittest.TestCase):
                 "stdout": "",
             })()
 
-            with patch("subprocess.run", return_value=command_result) as run:
+            def advertise(*args, **kwargs):
+                events.append("advertise")
+                return command_result
+
+            with patch("subprocess.run", side_effect=advertise) as run, patch.object(
+                repo._data_plane, "start", side_effect=lambda: events.append("data-plane-start")
+            ):
                 self.assertEqual(repo.run(), 0)
+            self.assertEqual(events, ["provider-ready", "advertise", "data-plane-start",
+                                      "provider-run", "provider-stop"])
 
             locator = "/provider/ha-test/NDNSF/REPO-SERVING"
             run.assert_called_once_with(
@@ -382,6 +399,31 @@ class RepoContractTest(unittest.TestCase):
                 text=True,
             )
             self.assertEqual(repo._advertised_prefixes, {locator})
+
+    def test_run_reaps_started_components_when_startup_fails(self) -> None:
+        for stage in ("provider", "advertise", "data-plane"):
+            with self.subTest(stage=stage), tempfile.TemporaryDirectory() as temp_dir:
+                repo = make_repo(Path(temp_dir) / "repo.sqlite3")
+                repo.provider = Mock()
+                repo._catalog_stop = threading.Event()
+                repo._catalog_thread = None
+                repo.peer_repo_nodes = ()
+                failure = RuntimeError("startup failed: " + stage)
+                if stage == "provider":
+                    repo.provider.start.side_effect = failure
+                with patch.object(repo, "_advertise_prefix",
+                                  side_effect=failure if stage == "advertise" else None), \
+                     patch.object(repo._data_plane, "start",
+                                  side_effect=failure if stage == "data-plane" else None), \
+                     patch.object(repo._data_plane, "stop") as stop:
+                    with self.assertRaisesRegex(RuntimeError, "startup failed:"):
+                        repo.run()
+                    stop.assert_called_once_with()
+                repo.provider.start.assert_called_once_with()
+                repo.provider.stop.assert_called_once_with()
+                repo.provider.run.assert_not_called()
+                self.assertTrue(repo._catalog_stop.is_set())
+                self.assertIsNone(repo._db)
 
     def test_unspecified_repair_floor_defaults_to_replication_factor(self) -> None:
         common = {

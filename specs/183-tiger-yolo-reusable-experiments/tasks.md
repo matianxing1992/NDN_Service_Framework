@@ -15,7 +15,9 @@
 | T004.local-tools：本机与Tiger工具版本绑定 | IMPLEMENTED | 本机1.5.3签名准备成功；Tiger版本要求保留 |
 | T009.prepare：实际分层候选签名准备 | EXECUTED | layered-host-20260908a，receipt46405701；非推理PASS |
 | T009.role-home：角色身份挂载修复 | VERIFIED_STARTUP | 同SIF内身份可见、根身份隔离；Controller签名发布成功并清理 |
-| T009.cpu-chain：完整CPU链 | IN_PROGRESS | 下一步冻结修复后的新harness，保留失败运行，不复用其输出目录 |
+| T009.cpu-chain：完整CPU链 | IN_PROGRESS | 新候选b越过Controller，在Repo就绪探测退出2；全清理，未发推理请求 |
+| T009.repo-order：Repo双Face管理命令顺序 | SOURCE_FIXED | 真机最小诊断确认时间戳乱序；Provider先启动后7类路由成功，48项HA及新增失败清理检查通过；基础SIF尚未装入修复 |
+| T011.base-python：封装修正后的Repo库 | PENDING | 仅Python库源码变化，优先复用未变native；生成新base身份后重验组合，不以诊断覆盖代替不可变SIF |
 
 用户指定的 [C++ NDN/SIF 两节点小例子](evidence/cpp-ndn-smoke.md)已实跑通过：
 209981，itiger01/02，三次 Interest/Data，Slurm 0:0，清理完成。
