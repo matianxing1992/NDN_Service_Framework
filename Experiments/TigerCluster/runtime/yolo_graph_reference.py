@@ -30,17 +30,21 @@ class RequestReferenceBinding:
     """
 
     def __init__(self, binding, *, package: Path, output: Path, backend: str,
-                 run_id: str, request_id: str, runtime_candidate_digest: str):
+                 run_id: str, request_id: str, runtime_candidate_digest: str,
+                 placement_candidate_digest: str):
         self.binding, self.package, self.output = binding, Path(package), Path(output)
         self.backend = backend
         self.run_id, self.request_id = run_id, request_id
         self.runtime_candidate_digest = runtime_candidate_digest
+        self.placement_candidate_digest = placement_candidate_digest
         self.started = False
         if (backend not in ('CPUExecutionProvider', 'CUDAExecutionProvider')
                 or not isinstance(run_id, str) or not run_id
                 or not isinstance(request_id, str) or not request_id.startswith('/')
                 or not isinstance(runtime_candidate_digest, str)
-                or re.fullmatch(r'sha256:[0-9a-f]{64}', runtime_candidate_digest) is None):
+                or re.fullmatch(r'sha256:[0-9a-f]{64}', runtime_candidate_digest) is None
+                or not isinstance(placement_candidate_digest, str)
+                or re.fullmatch(r'sha256:[0-9a-f]{64}', placement_candidate_digest) is None):
             raise ValueError('REQUEST_REFERENCE_BINDING')
         for path in (self.package, self.output):
             if (not path.is_absolute() or not path.is_dir()
@@ -123,7 +127,7 @@ class RequestReferenceBinding:
         graph = serialize_certified_graph(records, graph_digest=candidate.graph_digest)
         value = dict(schema='tiger-yolo-request-reference-v1', runId=self.run_id,
             requestId=self.request_id, runtimeCandidateDigest=self.runtime_candidate_digest,
-            placementCandidateDigest=candidate.candidate_digest, certifiedGraph=graph)
+            placementCandidateDigest=self.placement_candidate_digest, certifiedGraph=graph)
         from .identities import _credential_document
         _credential_document(self.output / 'graph-reference.json', value)
         return published

@@ -17,6 +17,7 @@ def test_reference_cli_forwards_bound_user_arguments(monkeypatch, tmp_path):
     prefix = ['user', '--reference-backend', 'CPUExecutionProvider',
         '--reference-run-id', 'run', '--reference-request-id', '/run/0',
         '--reference-candidate-digest', 'sha256:'+'a'*64,
+        '--reference-placement-candidate-digest', 'sha256:'+'b'*64,
         '--reference-output', str(tmp_path), '--']
     forwarded = ['--request-id', '/run/0', '--lifecycle-output-dir', str(tmp_path)]
     assert app.main(prefix + forwarded) == 0

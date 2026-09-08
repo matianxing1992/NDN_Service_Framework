@@ -54,7 +54,8 @@ def fixture(tmp_path):
     publisher = Publisher()
     wrapper = RequestReferenceBinding(publisher, package=package, output=output,
         backend='CPUExecutionProvider', run_id='reference-test', request_id='/request/1',
-        runtime_candidate_digest='sha256:'+'f'*64)
+        runtime_candidate_digest='sha256:'+'f'*64,
+        placement_candidate_digest='sha256:'+'a'*64)
     return wrapper, publisher, specs, candidate, case
 
 
@@ -67,6 +68,7 @@ def test_real_assembler_reference_binds_post_publication_manifest(tmp_path):
     record = json.loads((wrapper.output / 'graph-reference.json').read_text())
     assert record['requestId'] == '/request/1'
     assert record['runtimeCandidateDigest'] == 'sha256:'+'f'*64
+    assert record['placementCandidateDigest'] == 'sha256:'+'a'*64
     graph = record['certifiedGraph']
     assert set(graph['roles']) == {'BackboneNeck', 'DetectShard0', 'DetectShard1'}
     for role, value in graph['roles'].items():
@@ -77,7 +79,7 @@ def test_real_assembler_reference_binds_post_publication_manifest(tmp_path):
     validate_certified_graph_provenance(graph)
     expected = dict(run_id='reference-test', request_id='/request/1',
         runtime_candidate_digest='sha256:'+'f'*64,
-        placement_candidate_digest=candidate.candidate_digest, graph_digest=candidate.graph_digest)
+        placement_candidate_digest='sha256:'+'a'*64, graph_digest=candidate.graph_digest)
     path = wrapper.output / 'graph-reference.json'
     assert read_request_reference(path, **expected) == graph
     # Reuse the same independently assembled record: identity checks do not

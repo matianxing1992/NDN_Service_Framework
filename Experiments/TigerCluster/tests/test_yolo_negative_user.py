@@ -147,7 +147,8 @@ def test_composition_observes_after_owner_shutdown_without_reference(tmp_path, m
     monkeypatch.setattr(importlib.util, 'module_from_spec', lambda _: SimpleNamespace(main=main))
     assert app.run_user_with_reference(['--timeout-ms', '5000'], negative=True,
         backend='CPUExecutionProvider', run_id='run', request_id='/r',
-        candidate_digest=D, output=tmp_path) == 0
+        candidate_digest=D, placement_candidate_digest='sha256:'+'b'*64,
+        output=tmp_path) == 0
     assert events == ['wait', 'shutdown', 'snapshot']
 
 

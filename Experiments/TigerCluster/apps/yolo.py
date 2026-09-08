@@ -232,7 +232,8 @@ def preparation_arguments(descriptor: Path, expected_digest: str) -> dict:
 
 
 def run_user_with_reference(argv, *, backend, run_id, request_id,
-                            candidate_digest, output, negative=False):
+                            candidate_digest, placement_candidate_digest,
+                            output, negative=False):
     """Compose the installed User with a bounded independent reference owner."""
     import importlib.util
     import sys
@@ -268,7 +269,9 @@ def run_user_with_reference(argv, *, backend, run_id, request_id,
     def factory(**kwargs):
         return RequestReferenceBinding(owner.YoloCanonicalArtifactBinding(**kwargs),
             package=kwargs['package_dir'], output=Path(output), backend=backend,
-            run_id=run_id, request_id=request_id, runtime_candidate_digest=candidate_digest)
+            run_id=run_id, request_id=request_id,
+            runtime_candidate_digest=candidate_digest,
+            placement_candidate_digest=placement_candidate_digest)
 
     return owner.main(argv, canonical_binding_factory=factory)
 
@@ -289,6 +292,7 @@ def main(argv=None):
     user.add_argument('--reference-run-id', required=True)
     user.add_argument('--reference-request-id', required=True)
     user.add_argument('--reference-candidate-digest', required=True)
+    user.add_argument('--reference-placement-candidate-digest', required=True)
     user.add_argument('--reference-output', type=Path, required=True)
     user.add_argument('--expected-dependency-failure', action='store_true')
     user.add_argument('user_args', nargs=argparse.REMAINDER)
@@ -310,6 +314,7 @@ def main(argv=None):
             return run_user_with_reference(forwarded, backend=args.reference_backend,
                 run_id=args.reference_run_id, request_id=args.reference_request_id,
                 candidate_digest=args.reference_candidate_digest, output=args.reference_output,
+                placement_candidate_digest=args.reference_placement_candidate_digest,
                 **({'negative':True} if args.expected_dependency_failure else {}))
         else:
             receipt = probe_repo_in_container(args.probe_id, args.seconds)
@@ -825,6 +830,7 @@ def run_requests(worker, plan: dict, *, package: Path, catalog_data_name: str,
                 '--reference-backend', ('CPUExecutionProvider' if worker.mode == 'local-cpu' else 'CUDAExecutionProvider'),
                 '--reference-run-id', plan['runId'], '--reference-request-id', request['requestId'],
                 '--reference-candidate-digest', worker._preparation_binding[2],
+                '--reference-placement-candidate-digest', candidate['candidateDigest'],
                 '--reference-output', output, '--', '--config', '/config/case.json',
                 '--generated-policy-dir', output + '/generated-policy',
                 '--canonical-package', '/artifacts',

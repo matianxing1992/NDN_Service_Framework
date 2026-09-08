@@ -3408,3 +3408,36 @@ exact tensor Data packet with contentBytes=7784 and wireBytes=9238, above the 88
 NDN packet budget; DetectShard fetches exhausted retries and the User timed out. The parser
 fix is now staged in the app source; the wire-budget defect remains open and no numerical
 YOLO or GPU/TigerCluster PASS is established.
+## 2026-09-08: base SIF hash binding drifted before app composition
+
+After the app v7 build, independent `sha256sum` and `openssl dgst -sha256` reads of
+`base-runtime-controller-version-j4-v4.sif` both returned
+`sha256:d99ac13fc2ccc1de55e8f1d28c2b0aa575236b0e9e22b9bd71ce72a0255644c4`, while
+the prior handoff records and app manifests carried `sha256:ed1ac6b66b678e2acbfb8b730432bdff76581e806bcaccacf4e077e5cf390c0d`. The SIF
+mtime and size stayed unchanged across an Apptainer inspect. The v7 bundle is therefore
+retained as diagnostic output but rejected as a hash-bound candidate; the input plane and
+app must be rebuilt against one rehashed base identity. Lesson: hash the exact bytes again
+at composition time and never promote a stale SIF manifest or copied bundle.
+## 2026-09-08: app rebuild hit GCC internal compiler error at j4
+
+The app v8 rebuild against the rehashed base identity reached 82/84 tasks with the
+repository ceiling `-j4`, then GCC 9 aborted in `NativeProviderHandler.cpp` with an
+internal compiler error at `bits/stl_relops.h:88` (`ggc_set_mark`). No application bundle
+was emitted. The source seal, base SIF and partial owner cache are retained; retry the same
+source/base identity from that cache before changing parallelism. This is a toolchain or
+resource failure, not evidence that the source fix is invalid.
+
+## 2026-09-08: local request reference used runtime split digest as catalogue placement identity
+
+The v10 exact staged-base local run reached four CPU ACKs, GRAPH_READY, placement,
+Selection, native execution start, and a matched numerical response, then the
+coordinator rejected the retained `graph-reference.json` with
+`REQUEST_REFERENCE_IDENTITY`. The User's canonical owner correctly recorded the
+runtime split digest `sha256:6b6d…` while the preparation receipt and lifecycle use
+the signed catalogue placement digest `sha256:3fd5…`; these identities are
+intentionally distinct. The reference wrapper was missing the explicit placement
+digest input and wrote the runtime split digest into `placementCandidateDigest`.
+The wrapper and User dispatch now pass the already validated catalogue digest
+explicitly, and focused application/reference/negative tests pass (79). A fresh
+app bundle and run are still required; v10 remains negative evidence and does not
+establish numerical, GPU, or TigerCluster qualification.
