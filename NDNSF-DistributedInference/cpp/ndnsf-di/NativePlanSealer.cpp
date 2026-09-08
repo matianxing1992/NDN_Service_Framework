@@ -262,6 +262,11 @@ NativePlacementPlanCore NativePlanSealer::sealCore(
     std::chrono::system_clock::now().time_since_epoch()).count();
   if (now < 0) throw std::invalid_argument("invalid sealing clock");
   validateNativeRolePlacement(proposal, prepared, offers, static_cast<std::uint64_t>(now));
+  auto published = proposal;
+  published.roles = NativeRequestPreparation::bindPublishedRoles(model, candidate, proposal.roles, inputs.artifacts);
+  // A refreshed recipe invalidates an old exact-reuse proof. Recheck the same
+  // placement against current admitted capabilities before sealing the new root.
+  validateNativeRolePlacement(published, published.roles, offers, static_cast<std::uint64_t>(now));
   const auto& context = proposal.context;
   std::vector<std::string> selectedOrder;
   for (const auto& role : proposal.roles) selectedOrder.push_back(role.selectedRole);
@@ -272,7 +277,6 @@ NativePlacementPlanCore NativePlanSealer::sealCore(
       context.modelDigest != model.descriptor.contentDigest || context.graphDigest != model.graph.graphDigest ||
       context.deadlineMs != inputs.expiresAtMs || executionPlan.serviceName != context.serviceName ||
       executionPlan.modelName != model.descriptor.modelName ||
-      inputs.artifacts.manifestDigest != model.modelManifestDigest ||
       inputs.artifacts.canonicalGraphDigest != model.canonicalGraphDigest || !isDigest(candidate.candidateDigest))
     throw std::invalid_argument("V3 sealing inputs differ from the request or inspected model");
   NativePlacementPlanCore core;
@@ -286,7 +290,7 @@ NativePlacementPlanCore NativePlanSealer::sealCore(
   core.requesterIdentity = inputs.requesterIdentity; core.protectionEpoch = inputs.protectionEpoch;
   core.expiresAtMs = inputs.expiresAtMs; core.requestContractDigest = inputs.requestContractDigest;
   core.generationContract = inputs.generationContract;
-  for (const auto& role : proposal.roles) {
+  for (const auto& role : published.roles) {
     if (!core.assemblyByRole.emplace(role.selectedRole, role).second)
       throw std::invalid_argument("duplicate selected V3 execution role");
   }

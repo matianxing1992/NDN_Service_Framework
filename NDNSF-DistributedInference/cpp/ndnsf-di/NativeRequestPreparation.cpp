@@ -1,6 +1,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeV3Placement.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -37,6 +38,19 @@ bool sameModel(const NativeModelDescriptor& a, const NativeModelDescriptor& b)
     a.semanticsDigest == b.semanticsDigest && a.graphDigest == b.graphDigest &&
     a.modelFormat == b.modelFormat && a.precision == b.precision &&
     a.adapterId == b.adapterId && a.adapterVersion == b.adapterVersion;
+}
+
+NativeJson publicationRoot(const NativeArtifactBinding& artifacts)
+{
+  const auto& wire = artifacts.canonicalManifestJson;
+  if (wire.empty() || wire.size() > 1024 * 1024 || nativePlanningDigest(wire) != artifacts.manifestDigest)
+    throw std::invalid_argument("native publication business root bytes differ from the manifest digest");
+  auto root = nativeParseJson(wire);
+  if (!root.is_object() || root.value("schema", NativeJson{}) != "ndnsf-di-canonical-model-manifest-v1" ||
+      root.value("state", NativeJson{}) != "ACTIVE" ||
+      !root.contains("metadata") || !root.at("metadata").is_object())
+    throw std::invalid_argument("native publication root is not an active canonical model manifest");
+  return root;
 }
 } // namespace
 
@@ -80,6 +94,17 @@ void NativeArtifactBinding::validate() const
     }
     if (!ndnName(item.second)) {
       throw std::invalid_argument("native artifact binding source is not an NDN name");
+    }
+  }
+  if (!canonicalManifestJson.empty()) {
+    publicationRoot(*this);
+    if (artifactNameByRole.size() != sourceByRole.size())
+      throw std::invalid_argument("native publication stable artifact cover is incomplete");
+    for (const auto& item : sourceByRole) {
+      const auto stable = artifactNameByRole.find(item.first);
+      if (stable == artifactNameByRole.end() || !ndnName(stable->second) ||
+          item.second != sourceByRole.begin()->second)
+        throw std::invalid_argument("native publication has invalid stable names or multiple root fetch names");
     }
   }
 }
@@ -269,7 +294,7 @@ NativeArtifactBinding NativeRequestPreparation::ensureArtifacts(
   // The binding must cover exactly the roles the placed plan requires: a
   // missing role leaves a provider unassemblable, an extra role would smuggle
   // provider-side assembly into requester preparation.
-  if (result.manifestDigest != model.modelManifestDigest || result.sourceByRole.size() != roles.size()) {
+  if (result.sourceByRole.size() != roles.size()) {
     throw std::runtime_error("DI_NATIVE_ARTIFACT_BINDING_MISMATCH");
   }
   for (const auto& role : roles) {
@@ -284,7 +309,61 @@ NativeArtifactBinding NativeRequestPreparation::ensureArtifacts(
   result.modelDigest = model.descriptor.contentDigest;
   result.graphDigest = model.graph.graphDigest;
   result.canonicalGraphDigest = model.canonicalGraphDigest;
+  bindPublishedRoles(model, candidate, roles, result);
   return result;
+}
+
+std::vector<NativeSelectionRoleV3> NativeRequestPreparation::bindPublishedRoles(
+  const NativeInspectedModel& model, const NativeSplitCandidate& candidate,
+  const std::vector<NativeSelectionRoleV3>& roles, const NativeArtifactBinding& artifacts)
+{
+  validateRoles(model, candidate, roles);
+  artifacts.validate();
+  if (artifacts.canonicalManifestJson.empty()) {
+    if (artifacts.manifestDigest != model.modelManifestDigest)
+      throw std::runtime_error("DI_NATIVE_ARTIFACT_BINDING_MISMATCH");
+    return roles;
+  }
+  const auto root = publicationRoot(artifacts);
+  const auto& metadata = root.at("metadata");
+  const auto sourceName = metadata.value("canonicalSourceDataName", NativeJson{});
+  const auto sourceBytes = metadata.value("canonicalSourceBytes", NativeJson{});
+  if (root.value("modelIdentityDigest", NativeJson{}) != model.descriptor.contentDigest ||
+      root.value("modelName", NativeJson{}) != model.descriptor.modelName ||
+      metadata.value("canonicalSourceDigest", NativeJson{}) != model.canonicalSourceDigest ||
+      !sourceName.is_string() || !ndnName(sourceName.get<std::string>()) ||
+      !model.canonicalSourceBytes ||
+      !sourceBytes.is_number_unsigned() || sourceBytes != NativeJson(model.canonicalSourceBytes))
+    throw std::invalid_argument("native published root differs from inspected model source");
+  if (metadata.contains("packageManifestDigest") &&
+      metadata.at("packageManifestDigest") != model.modelManifestDigest)
+    throw std::invalid_argument("native published root differs from inspected package manifest");
+  const bool hasInitializer = metadata.contains("canonicalInitializerDataName") ||
+    metadata.contains("canonicalInitializerObjectDigest") || metadata.contains("canonicalInitializerBytes");
+  if (hasInitializer || model.canonicalInitializerBytes || !model.canonicalInitializerObjectDigest.empty()) {
+    const auto name = metadata.value("canonicalInitializerDataName", NativeJson{});
+    const auto size = metadata.value("canonicalInitializerBytes", NativeJson{});
+    if (!model.canonicalInitializerBytes || !digest(model.canonicalInitializerObjectDigest) ||
+        !name.is_string() || !ndnName(name.get<std::string>()) ||
+        metadata.value("canonicalInitializerObjectDigest", NativeJson{}) != model.canonicalInitializerObjectDigest ||
+        !size.is_number_unsigned() || size != NativeJson(model.canonicalInitializerBytes))
+      throw std::invalid_argument("native published root differs from inspected initializer object");
+  }
+  auto certified = roles;
+  if (artifacts.sourceByRole.size() != roles.size())
+    throw std::invalid_argument("native published root has a foreign role cover");
+  for (auto& role : certified) {
+    const auto artifact = artifacts.artifactDigestByRole.find(role.selectedRole);
+    if (root.value("artifactProfileDigest", NativeJson{}) != role.artifactProfileDigest ||
+        artifact == artifacts.artifactDigestByRole.end() || artifact->second != role.artifactDigest ||
+        model.canonicalSourceBytes > role.maxSourceBytes || model.canonicalInitializerBytes > role.maxSourceBytes)
+      throw std::invalid_argument("native published root differs from the selected role contract");
+    // Only the business-root certificate changes; do not rerun strategy or alter
+    // any assignment, device, artifact, graph, or resource requirement here.
+    role.modelManifestDigest = artifacts.manifestDigest;
+    role.recipeDigest = nativePlanningDigest(canonicalNativeOnnxRecipeJson(role));
+  }
+  return certified;
 }
 
 } // namespace ndnsf::di
