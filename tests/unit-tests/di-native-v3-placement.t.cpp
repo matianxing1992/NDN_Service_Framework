@@ -13,6 +13,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGrantVerifier.hpp"
 #include <openssl/evp.h>
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGroupKeyAdmission.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGroupProjectionBuilder.hpp"
 #include "ndn-service-framework/HybridMessageCrypto.hpp"
 #include <ndn-cxx/security/key-params.hpp>
 
@@ -107,6 +108,27 @@ struct Input
     }
   }
 };
+std::map<std::string, ndn::security::Certificate> groupCertificates(Input& input, ndn::security::KeyChain& keyChain)
+{
+  std::map<std::string, ndn::security::Certificate> certificates;
+  for (auto& ack : input.acks) {
+    const auto payload = ack.ack.getPayload();
+    const auto offer = decodeNativeProviderOfferV3(std::string(payload.begin(), payload.end()));
+    const auto cert = keyChain.createIdentity(ndn::Name(offer.provider), ndn::RsaKeyParams(2048))
+      .getDefaultKey().getDefaultCertificate();
+    certificates.emplace(offer.provider, cert);
+    const auto bytes = cert.getPublicKey();
+    ndn_service_framework::SelectionInputKeyOffer value;
+    value.setField("schemaVersion", "1"); value.setField("recipient", offer.provider);
+    value.setField("recipientCertName", cert.getName().toUri());
+    value.setField("recipientPublicKey", ndn_service_framework::selectionGatedHex(bytes));
+    value.setField("recipientCertDigest", nativePlanningDigest(std::string(reinterpret_cast<const char*>(bytes.data()), bytes.size())));
+    value.setField("providerBootEpoch", offer.provider + ":" + offer.bootEpoch);
+    value.setField("ndnsfDataV1EndpointPrefix", offer.provider + "/NDNSF-DI/data/");
+    ack.ack.setSelectionInputKeyOffer(value);
+  }
+  return certificates;
+}
 NativeSealedPlan projectionPlan(const NativePlacementPlanCore& core)
 {
   // Grant metadata fixture only; this test does not claim grant issuance or
@@ -243,7 +265,7 @@ BOOST_AUTO_TEST_CASE(ProjectionBuilderDerivesApplicationInputAndDependencyReadin
     }
     const auto now = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
       std::chrono::system_clock::now().time_since_epoch()).count());
-    const auto proposal = NativePreSplitFirstPlacement().proposeRoles(input.context, input.ackDigest, input.roles, input.offers, now);
+    auto proposal = NativePreSplitFirstPlacement().proposeRoles(input.context, input.ackDigest, input.roles, input.offers, now);
     auto execution = input.split.executionPlan;
     execution.serviceName = input.context.serviceName; execution.modelName = input.inspected.descriptor.modelName;
     execution.roles.clear();
@@ -297,6 +319,69 @@ BOOST_AUTO_TEST_CASE(ProjectionBuilderDerivesApplicationInputAndDependencyReadin
       BOOST_REQUIRE_EQUAL(last.mustFetch.size(), 2);
       BOOST_REQUIRE_EQUAL(last.waitFor.size(), 1);
       BOOST_CHECK_EQUAL(last.waitFor.front().mode, "ALL");
+      {
+        ndn::security::KeyChain keyChain("pib-memory:group-projection", "tpm-memory:group-projection");
+        const auto certificates = groupCertificates(input, keyChain);
+        NativeOfferAdmission admission(f.at("policy").dump(),
+          {{f.at("key_id").get<std::string>(), f.at("public_pem").get<std::string>()}}, f.at("candidate"));
+        NativeGroupKeyAdmission keys(admission, input.acks, input.context, now);
+        const auto original = proposal.providerByRole;
+        std::swap(proposal.providerByRole.at(execution.roles.front()), proposal.providerByRole.at(execution.roles.back()));
+        const auto swapped = seal(execution);
+        NativeProjectionContext requestContext{now, 1000, 4096};
+        const auto authorized = NativeGroupProjectionBuilder::build(swapped, input.split, keys, requestContext, 4096);
+        const auto& source = authorized.at(execution.roles.front());
+        const auto& target = authorized.at(execution.roles.back());
+        BOOST_REQUIRE_EQUAL(source.dataflow.mayPublish.size(), 2);
+        BOOST_CHECK_NE(source.dataflow.mayPublish[0].round, source.dataflow.mayPublish[1].round);
+        BOOST_CHECK_NE(source.dataflow.mayPublish[0].producerRank, source.executionRole.rank);
+        const auto openCoordinator = [&](const std::string& role) {
+          const auto provider = swapped.core.assignment.providerByRole.at(role);
+          ProviderGroupCoordinatorOptions options;
+          options.localProvider = provider;
+          options.unwrapEpochKey = [&](const std::string& id, const ProviderGroupBytes& wrapped) {
+            const auto plain = ndn_service_framework::unwrapSelectionGatedInputKey(ndn::Buffer(wrapped.begin(), wrapped.end()),
+              certificates.at(id).getName(), keyChain);
+            return ProviderGroupBytes(plain.begin(), plain.end());
+          };
+          auto owner = std::make_shared<ProviderGroupCoordinator>(options);
+          const auto wire = ndn_service_framework::selectionGatedUnhex(authorized.at(role).groupCapabilityV1);
+          owner->installCapability(ProviderGroupCoordinator::decodeCapability({wire.begin(), wire.end()}), {}, true);
+          return owner;
+        };
+        const auto producer = openCoordinator(execution.roles.front()), consumer = openCoordinator(execution.roles.back());
+        BOOST_REQUIRE_EQUAL(producer->capability().permittedOperations.size(), 2);
+        for (std::size_t i = 0; i < source.dataflow.mayPublish.size(); ++i) {
+          const auto& endpoint = source.dataflow.mayPublish[i];
+          BOOST_CHECK_EQUAL(endpoint.endpointDigest, target.dataflow.mustFetch[i].endpointDigest);
+          BOOST_CHECK_EQUAL(endpoint.endpointDigest, target.dataflow.waitFor.front().endpointDigests[i]);
+          const auto& operations = producer->capability().permittedOperations;
+          const auto op = std::find_if(operations.begin(), operations.end(), [&](const auto& value) { return value.operationIndex == endpoint.round; });
+          BOOST_REQUIRE(op != operations.end());
+          const auto transfer = producer->sealOperation(*op, std::to_string(endpoint.producerRank),
+            endpoint.layoutDigest, endpoint.targetLayoutDigest, endpoint.tensorDigest, {{1, 2, 3}}, now);
+          BOOST_CHECK(consumer->openSegment(transfer.manifest, transfer.segments.front()) == ProviderGroupBytes({1, 2, 3}));
+        }
+        BOOST_CHECK_THROW(NativeGroupProjectionBuilder::build(swapped, input.split, keys, context), std::invalid_argument);
+        auto expired = requestContext; expired.nowMs = swapped.core.expiresAtMs;
+        BOOST_CHECK_THROW(NativeGroupProjectionBuilder::build(swapped, input.split, keys, expired), std::invalid_argument);
+        auto redistributedPlan = execution;
+        for (const auto& tensor : std::vector<std::string>{"hidden", "mask"})
+          redistributedPlan.dependencies.front().redistributions.push_back(RedistributionSpec{{0}, {1}, tensor,
+            "GATHER", "epoch", nativePlanningDigest(tensor), nativePlanningDigest("source-" + tensor),
+            nativePlanningDigest("target-" + tensor), 0, 16, true});
+        const auto redistributedGroups = NativeGroupProjectionBuilder::build(seal(redistributedPlan), input.split, keys, requestContext);
+        const auto& transfers = redistributedGroups.at(execution.roles.front()).dataflow.mayPublish;
+        BOOST_REQUIRE_EQUAL(transfers.size(), 2);
+        BOOST_CHECK_NE(transfers[0].round, transfers[1].round);
+        BOOST_CHECK_NE(transfers[0].targetLayoutDigest, transfers[1].targetLayoutDigest);
+        auto feedbackPlan = execution;
+        auto feedbackEdge = execution.dependencies.front();
+        std::swap(feedbackEdge.producers, feedbackEdge.consumers); feedbackEdge.operationKind = "TOKEN_FEEDBACK";
+        feedbackPlan.dependencies.push_back(feedbackEdge);
+        BOOST_CHECK_THROW(NativeGroupProjectionBuilder::build(seal(feedbackPlan), input.split, keys, requestContext), std::invalid_argument);
+        proposal.providerByRole = original;
+      }
       for (std::size_t i = 0; i < 2; ++i) {
         BOOST_CHECK_EQUAL(first.mayPublish[i].endpointDigest, last.mustFetch[i].endpointDigest);
         BOOST_CHECK_EQUAL(first.mayPublish[i].tensorId, execution.dependencies.front().tensors[i]);

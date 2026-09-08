@@ -20,8 +20,13 @@ bool cpu(std::string value)
   std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) { return std::tolower(c); });
   return value == "cpu" || (value.size() >= 4 && value.substr(value.size() - 4) == "-cpu");
 }
-void certify(NativeTensorEndpointV3& endpoint)
+void certifyEndpoint(NativeTensorEndpointV3& endpoint)
 {
+  if (endpoint.sourceKind == "ROLE")
+    endpoint.manifestDigest = hash(NativeJson{{"requestId", endpoint.requestId}, {"attempt", endpoint.attempt},
+      {"planDigest", endpoint.planDigest}, {"group", endpoint.groupId}, {"epoch", endpoint.groupEpoch},
+      {"operation", endpoint.operation}, {"round", endpoint.round}, {"producer", endpoint.producerRole},
+      {"consumers", endpoint.consumerRoles}, {"tensor", endpoint.tensorId}, {"tensorDigest", endpoint.tensorDigest}});
   auto value = nativeEndpointJson(endpoint);
   value.erase("endpoint_digest"); value.erase("consumer_role");
   endpoint.endpointDigest = hash(value);
@@ -99,7 +104,7 @@ std::map<std::string, NativeRoleProjectionInputs> NativePlanProjectionBuilder::b
     e.consumerRole = selected(candidate.inputIngressRole); e.consumerRoles = {e.consumerRole};
     e.tensorId = "application-input"; e.tensorDigest = e.manifestDigest = context.logicalInputDigest;
     e.layoutDigest = e.targetLayoutDigest = context.inputLayoutDigest; e.segmentCount = 1;
-    certify(e); result.at(e.consumerRole).dataflow.mustFetch.push_back(std::move(e));
+    certifyEndpoint(e); result.at(e.consumerRole).dataflow.mustFetch.push_back(std::move(e));
   }
   std::set<std::string> outgoing;
   std::set<std::size_t> consumedBindings;
@@ -172,11 +177,7 @@ std::map<std::string, NativeRoleProjectionInputs> NativePlanProjectionBuilder::b
         e.tensorId = transfer.tensor; e.tensorDigest = transfer.integrityDigest;
         e.layoutDigest = transfer.sourceLayoutDigest; e.targetLayoutDigest = transfer.targetLayoutDigest;
         e.segmentCount = context.maxSegments;
-        e.manifestDigest = hash(NativeJson{{"requestId", core.requestId}, {"attempt", core.attempt},
-          {"planDigest", sealed.planDigest}, {"group", e.groupId}, {"epoch", e.groupEpoch},
-          {"operation", e.operation}, {"round", e.round}, {"producer", producer},
-          {"consumers", e.consumerRoles}, {"tensor", e.tensorId}, {"tensorDigest", e.tensorDigest}});
-        e.consumerRole = e.consumerRoles.front(); certify(e);
+        e.consumerRole = e.consumerRoles.front(); certifyEndpoint(e);
         result.at(producer).dataflow.mayPublish.push_back(e);
         for (const auto& consumer : e.consumerRoles) {
           if (!result.count(consumer)) throw std::invalid_argument("projection dependency has a foreign consumer");
@@ -191,10 +192,21 @@ std::map<std::string, NativeRoleProjectionInputs> NativePlanProjectionBuilder::b
   if (!candidate.resultEgressRole.empty()) terminals.push_back(selected(candidate.resultEgressRole));
   else for (const auto& item : result) if (!outgoing.count(item.first)) terminals.push_back(item.first);
   if (terminals.size() != 1) throw std::invalid_argument("projection has no unique terminal response owner");
+  for (auto& item : result) item.second.dataflow.terminalResponseOwner = item.first == terminals.front();
+  certify(result, sealed);
+  return result;
+}
+
+void NativePlanProjectionBuilder::certify(std::map<std::string, NativeRoleProjectionInputs>& result,
+                                         const NativeSealedPlan& sealed)
+{
+  const auto& core = sealed.core;
   std::vector<NativeSelectionProjectionV3> validation;
   for (auto& item : result) {
     auto& dataflow = item.second.dataflow;
-    dataflow.terminalResponseOwner = item.first == terminals.front();
+    for (auto& e : dataflow.mayPublish) certifyEndpoint(e);
+    for (auto& e : dataflow.mustFetch) certifyEndpoint(e);
+    dataflow.waitFor.clear();
     if (!dataflow.mustFetch.empty()) {
       NativeReadinessPredicateV3 wait; wait.mode = "ALL";
       for (const auto& e : dataflow.mustFetch) wait.endpointDigests.push_back(e.endpointDigest);
@@ -208,6 +220,5 @@ std::map<std::string, NativeRoleProjectionInputs> NativePlanProjectionBuilder::b
     value.dataflow = dataflow; validation.push_back(std::move(value));
   }
   validateNativeSelectionProjectionSetV3(validation);
-  return result;
 }
 } // namespace ndnsf::di
