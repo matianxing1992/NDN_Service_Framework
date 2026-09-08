@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import unittest
+import sys
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -37,6 +38,43 @@ class Spec182NativeBindingsTest(unittest.TestCase):
                 "model_name", "content_digest", "adapter_id", "payload",
                 "transport_mode", "timeout_ms", "ack_timeout_ms"):
             self.assertIn(f'"{field}"', source)
+
+    def test_native_runtime_composition_types_are_exported(self):
+        sys.path.insert(0, str(ROOT / "pythonWrapper"))
+        from ndnsf import _ndnsf
+
+        runtime = _ndnsf.NativeRequestRuntime()
+        runtime.contract = _ndnsf.NativeRequestContract()
+        runtime.security = _ndnsf.NativeSecurityPolicySnapshot()
+        runtime.budget = _ndnsf.NativeCandidateBudget()
+        runtime.state_mapping = _ndnsf.NativeStateTensorMapping()
+        self.assertIsInstance(runtime, _ndnsf.NativeRequestRuntime)
+        for name in (
+                "NativeRequestCatalog", "NativeRequestPreparation",
+                "NativeCanonicalPreparationCatalog", "NativeOfferAdmission",
+                "NativeAuthenticatedGrantClient"):
+            self.assertTrue(hasattr(_ndnsf, name), name)
+
+    def test_catalog_loader_keeps_source_validation_native(self):
+        sys.path.insert(0, str(ROOT / "pythonWrapper"))
+        from ndnsf import _ndnsf
+
+        with self.assertRaisesRegex(ValueError, "unsupported native request catalog schema"):
+            _ndnsf.NativeRequestCatalog.load('{"schema":"invalid"}', b"")
+
+        # The binding accepts bytes at the Python boundary; source parsing and
+        # digest/format validation remain in NativeRequestCatalog::load.
+        self.assertIn("NativeRequestCatalog::load", BINDINGS.read_text(encoding="utf-8"))
+        native_user = MODULE.read_text(encoding="utf-8")
+        self.assertIn("native_inference_client_configured", native_user)
+        self.assertIn("native_grant_client_from_config", native_user)
+
+    def test_native_grant_config_binds_requester_to_service_user(self):
+        source = MODULE.read_text(encoding="utf-8")
+        self.assertIn("requester != m_userIdentity", source)
+        self.assertIn(
+            "native grant requester identity must match the ServiceUser identity",
+            source)
 
 
 if __name__ == "__main__":

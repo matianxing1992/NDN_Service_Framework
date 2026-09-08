@@ -2395,6 +2395,36 @@ class ServiceUser:
             bootstrap_token=bootstrap_token,
         )
 
+    @staticmethod
+    def load_native_request_catalog(
+        configuration_json: str,
+        model_bytes: bytes,
+        initializer_bytes: bytes | None = None,
+        *,
+        max_source_bytes: int = 256 * 1024 * 1024,
+        max_assembled_bytes: int = 512 * 1024 * 1024,
+    ):
+        """Load a source checked catalog through the native DI owner."""
+        return _ndnsf.NativeRequestCatalog.load(
+            configuration_json, bytes(model_bytes), initializer_bytes,
+            int(max_source_bytes), int(max_assembled_bytes))
+
+    def native_preparation(self, catalog, service_name: str):
+        """Bind catalog publication and inspection ports to this Core user."""
+        return self._native.native_preparation(catalog, str(service_name))
+
+    def native_grant_client_from_config(
+        self, configuration_json: str, base_directory: str = "."):
+        """Construct the native grant owner from operator key-file config."""
+        return self._native.native_grant_client_from_config(
+            configuration_json, str(base_directory))
+
+    def native_inference_client_configured(
+        self, runtime, preparation, admission):
+        """Create a fully configured native requester without Python planning."""
+        return self._native.native_inference_client_configured(
+            runtime, preparation, admission)
+
     def open_live_stream(
         self,
         descriptor,

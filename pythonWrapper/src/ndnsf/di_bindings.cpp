@@ -2,6 +2,13 @@
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestCatalog.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPlanner.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeOfferAdmission.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeAuthenticatedGrantClient.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanSealer.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalRolePreparer.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/qwen/NativeQwenPlanner.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloPlanner.hpp"
 
@@ -99,6 +106,97 @@ bindDistributedInference(py::module_& module)
     .def_readwrite("ack_timeout_ms", &di::NativeRequestOptions::ackTimeoutMs)
     .def_readwrite("task_name", &di::NativeRequestOptions::taskName)
     .def_readwrite("output_mode", &di::NativeRequestOptions::outputMode);
+
+  py::class_<di::NativeRequestContract>(module, "NativeRequestContract")
+    .def(py::init<>())
+    .def_readwrite("service_name", &di::NativeRequestContract::serviceName)
+    .def_readwrite("task_name", &di::NativeRequestContract::taskName)
+    .def_readwrite("adapter_name", &di::NativeRequestContract::adapterName)
+    .def_readwrite("adapter_descriptor_digest", &di::NativeRequestContract::adapterDescriptorDigest)
+    .def_readwrite("adapter_composition_digest", &di::NativeRequestContract::adapterCompositionDigest)
+    .def_readwrite("task_descriptor_digest", &di::NativeRequestContract::taskDescriptorDigest)
+    .def_readwrite("generation_mode", &di::NativeRequestContract::generationMode);
+
+  py::class_<di::NativeSecurityPolicySnapshot>(module, "NativeSecurityPolicySnapshot")
+    .def(py::init<>())
+    .def_readwrite("policy_digest", &di::NativeSecurityPolicySnapshot::policyDigest)
+    .def_readwrite("require_protected_artifacts", &di::NativeSecurityPolicySnapshot::requireProtectedArtifacts);
+
+  py::class_<di::NativeCandidateBudget>(module, "NativeCandidateBudget")
+    .def(py::init<>())
+    .def_readwrite("max_candidates", &di::NativeCandidateBudget::maxCandidates)
+    .def_readwrite("max_policy_ms", &di::NativeCandidateBudget::maxPolicyMs)
+    .def_readwrite("max_reentries", &di::NativeCandidateBudget::maxReentries);
+
+  py::class_<di::NativeStateTensorMapping>(module, "NativeStateTensorMapping")
+    .def(py::init<>())
+    .def_readwrite("inputs", &di::NativeStateTensorMapping::inputs)
+    .def_readwrite("outputs", &di::NativeStateTensorMapping::outputs);
+
+  py::class_<di::NativeRequestPreparation,
+             std::shared_ptr<di::NativeRequestPreparation>>(
+    module, "NativeRequestPreparation");
+
+  py::class_<di::NativeCanonicalPreparationCatalog,
+             std::shared_ptr<di::NativeCanonicalPreparationCatalog>>(
+    module, "NativeCanonicalPreparationCatalog")
+    .def_property_readonly("adapters", &di::NativeCanonicalPreparationCatalog::adapters);
+
+  py::class_<di::NativeAuthenticatedGrantClient,
+             std::shared_ptr<di::NativeAuthenticatedGrantClient>>(
+    module, "NativeAuthenticatedGrantClient");
+
+  py::class_<di::NativeOfferAdmission,
+             std::shared_ptr<di::NativeOfferAdmission>>(
+    module, "NativeOfferAdmission")
+    .def(py::init<const std::string&, const std::map<std::string, std::string>&,
+                  const std::string&>(),
+         py::arg("policy_json"), py::arg("public_key_pem_by_id"),
+         py::arg("candidate_digest"));
+
+  py::class_<di::NativeRequestCatalog>(module, "NativeRequestCatalog")
+    .def_readonly("model", &di::NativeRequestCatalog::model)
+    .def_readonly("preparation", &di::NativeRequestCatalog::preparation)
+    .def_readonly("splitter", &di::NativeRequestCatalog::splitter)
+    .def_readonly("state_mapping", &di::NativeRequestCatalog::stateMapping)
+    .def_static("load", [](const std::string& configuration_json,
+                            const py::bytes& model_bytes,
+                            const py::object& initializer_bytes,
+                            std::uint64_t max_source_bytes,
+                            std::uint64_t max_assembled_bytes) {
+      if (!max_source_bytes || !max_assembled_bytes)
+        throw std::invalid_argument("native catalog limits must be positive");
+      di::NativeCanonicalSource source;
+      const std::string model = model_bytes;
+      source.modelBytes.assign(model.begin(), model.end());
+      if (!initializer_bytes.is_none()) {
+        const std::string initializer = initializer_bytes.cast<py::bytes>();
+        source.initializerBytes.emplace(initializer.begin(), initializer.end());
+      }
+      const auto deadline = std::chrono::steady_clock::now() +
+        std::chrono::hours(1);
+      di::NativeAssemblyControl control{
+        deadline, [] {}, max_source_bytes, max_assembled_bytes};
+      return di::NativeRequestCatalog::load(configuration_json,
+                                            std::move(source), control);
+    }, py::arg("configuration_json"), py::arg("model_bytes"),
+       py::arg("initializer_bytes") = py::none(),
+       py::arg("max_source_bytes") = 256ULL * 1024ULL * 1024ULL,
+       py::arg("max_assembled_bytes") = 512ULL * 1024ULL * 1024ULL);
+
+  py::class_<di::NativeRequestRuntime>(module, "NativeRequestRuntime")
+    .def(py::init<>())
+    .def_readwrite("contract", &di::NativeRequestRuntime::contract)
+    .def_readwrite("requester_identity", &di::NativeRequestRuntime::requesterIdentity)
+    .def_readwrite("protection_epoch", &di::NativeRequestRuntime::protectionEpoch)
+    .def_readwrite("input_layout_digest", &di::NativeRequestRuntime::inputLayoutDigest)
+    .def_readwrite("security", &di::NativeRequestRuntime::security)
+    .def_readwrite("budget", &di::NativeRequestRuntime::budget)
+    .def_readwrite("grants", &di::NativeRequestRuntime::grants)
+    .def_readwrite("catalog", &di::NativeRequestRuntime::catalog)
+    .def_readwrite("state_mapping", &di::NativeRequestRuntime::stateMapping)
+    .def_readwrite("no_progress_ms", &di::NativeRequestRuntime::noProgressMs)
+    .def_readwrite("max_segments", &di::NativeRequestRuntime::maxSegments);
 
   py::class_<di::NativeInferenceResult>(module, "NativeInferenceResult")
     .def(py::init<>())

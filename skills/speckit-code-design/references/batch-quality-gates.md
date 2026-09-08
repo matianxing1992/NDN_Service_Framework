@@ -42,6 +42,15 @@
 尚未达到独立出口的组件可以留在同批，但必须在 `Evidence / Remaining` 中说明
 缺口。不能为了减少一次编译无限加入新的职责；已经闭合的批次应及时执行批末验证。
 
+## Native Test Ownership
+
+对于 NDNSF-DI 的原生运行时、协议、状态机、并发、密码和模型行为，验收测试必须
+直接调用生产 C++ target，并登记真实的 C++ suite/selector。Python 测试可以覆盖
+pybind API 形状、facade 转发、离线 oracle、配置拒绝和外部设施适配，但不能以
+Python focused test 的通过替代 native behavior、C++/Python parity 或跨进程资格。
+若某个 native requirement 只有 Python 测试或没有 C++ target/selector，Coverage
+matrix 的 `test/harness/oracle` lane 必须写 `gap`，对应任务保持 `PARTIAL`。
+
 ## Batch Result Record
 
 每批只维护一份 tasks/evidence 结果记录。记录以下字段；没有发现时写 `none`

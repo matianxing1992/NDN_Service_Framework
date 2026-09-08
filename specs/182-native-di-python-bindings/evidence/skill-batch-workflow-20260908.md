@@ -79,6 +79,18 @@ evidence 中的旧并行度和耗时保持原事实。该同步不改产品契�
 `specs/182-native-di-python-bindings/checklists/validate_design.py` 均通过；未执行
 产品构建或运行测试。
 
+## Follow-up Native Test Ownership
+
+2026-09-08：为保持 NDNSF-DI 的 C++ ownership，`batch-quality-gates.md` 新增
+Native Test Ownership：原生运行时、协议、状态机、并发、密码和模型行为必须由直接
+调用生产 C++ target 的 suite/selector 验收；Python 只覆盖 pybind 形状、facade 转发、
+离线 oracle、配置拒绝或外部设施边界。`speckit-plan`、`speckit-tasks`、
+`speckit-implement`、`speckit-analyze` 和 `speckit-audit` 的本机入口均同步该检查。
+这样 future Spec 的 Python focused test 不会被误记为 native parity 或 qualification。
+
+本次定向核对共享 reference、五个入口文件、Spec182 plan/tasks 与 R5-B2 evidence 的
+规则和链接一致，`git diff --check` 通过；这是流程文档修订，不改变产品验收状态。
+
 ## Follow-up Batch Boundary And Miss Taxonomy
 
 2026-09-08：根据 R4-B4/R4-B6 的实际执行记录，批次规则再补一条可复用约束：当同一

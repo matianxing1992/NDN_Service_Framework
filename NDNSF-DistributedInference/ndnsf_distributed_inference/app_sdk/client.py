@@ -55,7 +55,7 @@ class APPClient:
     def __init__(self, journal: RuntimeJournal, *, executor=None, engine=None,
                  observers=None, intent_coordinator=None, network_client=None,
                  requester_identity: str = "", execution_control_transport=None,
-                 automatic_planner=None):
+                 automatic_planner=None, native_client=None):
         if not journal.has_envelope_key:
             raise RuntimeJournalKeyError(
                 "APPClient requires an owner-injected request-envelope key provider")
@@ -66,6 +66,11 @@ class APPClient:
         self._network_client = network_client
         self._execution_control_transport = execution_control_transport
         self._automatic_planner = automatic_planner
+        # Optional native requester owner.  When configured, callers use the
+        # explicit request_native() surface below; the compatibility planner
+        # remains available only for instances that have not opted into this
+        # native path and is never used as a silent fallback by that surface.
+        self._native_client = native_client
         self._network_futures = {}
         self._result_cache: dict[str, bytes] = {}
         self._selection_acceptance_trackers: dict[
@@ -303,6 +308,40 @@ class APPClient:
         if self.engine is None:
             raise RuntimeError("APPClient requires an explicit optimization engine")
         return self.engine.run_decision_graph(requests)
+
+    @property
+    def native_client(self):
+        """Return the configured native requester, if one was injected."""
+        return self._native_client
+
+    def configure_native_requester(self, runtime, admission):
+        """Bind the existing Core user to a complete native DI runtime.
+
+        Catalog inspection, artifact publication, offer admission and grant
+        ownership stay in C++; this method only composes already native-owned
+        objects and stores the resulting requester lifetime.
+        """
+        if self._network_client is None:
+            raise RuntimeError("native requester requires a network client")
+        catalog = getattr(runtime, "catalog", None)
+        contract = getattr(runtime, "contract", None)
+        if catalog is None or contract is None:
+            raise TypeError("native runtime must include catalog and contract")
+        service_user = self._network_client.service_user
+        preparation = service_user.native_preparation(
+            catalog, contract.service_name)
+        self._native_client = service_user.native_inference_client_configured(
+            runtime, preparation, admission)
+        return self._native_client
+
+    def request_native(self, *, model, input, split_strategy,
+                       placement_strategy, options):
+        """Submit directly to NativeInferenceClient without Python planning."""
+        if self._native_client is None:
+            raise RuntimeError(
+                "native requester is not configured; refusing Python planner fallback")
+        return self._native_client.request(
+            model, input, split_strategy, placement_strategy, options)
 
     def request(
         self,
@@ -1604,6 +1643,22 @@ class InferenceClient:
     @property
     def requests(self):
         return self._requests
+
+    @property
+    def native_client(self):
+        """Return the explicitly configured native requester, if any."""
+        return self._core.native_client
+
+    def configure_native_requester(self, runtime, admission):
+        """Configure the native requester through the canonical core owner."""
+        return self._core.configure_native_requester(runtime, admission)
+
+    def request_native(self, *, model, input, split_strategy,
+                       placement_strategy, options):
+        """Submit through NativeInferenceClient without Python planning."""
+        return self._core.request_native(
+            model=model, input=input, split_strategy=split_strategy,
+            placement_strategy=placement_strategy, options=options)
 
     def deploy(self, definition):
         return self._deployments.ensure(definition)

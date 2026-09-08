@@ -16,7 +16,7 @@ from ..sdk.loader import (
 
 try:
     from .runtime_journal import *
-    from .client import APPClient
+    from .client import APPClient, InferenceClient, InferenceRequestHandle
     from .controller import APPController, DistributedInferenceController
     from .deployment import APPDeployment, APPDeploymentLifecycleStore
     from .engine import DistributedInferenceEngine
