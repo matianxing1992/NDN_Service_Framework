@@ -379,7 +379,7 @@ T005/T006追加调用次数约束：正常ACK-driven User一次只执行一请�
 | --- | --- | --- | --- | --- | --- | --- |
 | T002.layer | T002 | 原source sealer/`runtime/yolo_profile.py`分离base/app闭包、显式layout版本和required R | NOT_STARTED | 仅设计；FR-005/006、Candidate Identity | 错base、app漏文件、旧layout混搭在副作用前拒绝；基础源码闭包不得遗漏 | app变更只失效E；基础变更才失效I/R |
 | T004.layer | T004 | 原bundle/operator/worker/transport验证并只读挂载app原生产物，保留harness归属 | NOT_STARTED | 仅设计；`/app:ro`不覆盖基础前缀 | 连接builder输出到实际local/rank入口；app own DSO允许、基础库遮蔽拒绝 | 只传变化app；复用相同base、模型与既有运输owner |
-| T011.layer | T011 | 原prepare/build definition/preflight拆base与app构建、清单及资格；SDK键隔离增量缓存 | IN_PROGRESS | base-only Waf 3 checks、source selection 7 checks通过；file-specific缓存释放后两个输入校验通过，单阶段base/SDK本地构建已启动 | 完成实际base构建/import/ABI校验及外置app增量构建；底层读取故障原因仍未确认 | 不重跑209981/209983；不把代码或旧monolithic receipt算完整组合PASS |
+| T011.layer | T011 | 原prepare/build definition/preflight拆base与app构建、清单及资格；SDK键隔离增量缓存 | IN_PROGRESS | 新base/SDK SIF d4031191…已构建并独立加载验证；普通/直接读取摘要一致；外部app清单4项拒错/内容检查通过，见evidence/local-sif.md | 编译外置app并验证完整组合；接正式profile/dispatch；旧输入读取故障仍仅有绕行方案 | 不重跑209981/209983；不把基础库PASS或旧monolithic receipt算完整组合PASS |
 | T007.layer | T007 | 审计分层producer→manifest→transport→rank→collector全链及回退 | NOT_STARTED | 仅设计；既有T007 BLOCK仍保留 | 上三项接线后复审；错base/混搭/宿主库/旧回执均不可放行 | 复用未受影响组件证据，不启动文档性重测 |
 
 UAV仅复用同一部署边界；本Spec不实现UAV应用或Spec182。正式YOLO运行继续等待

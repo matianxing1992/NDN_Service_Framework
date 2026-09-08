@@ -11,9 +11,12 @@ import json
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tarfile
 
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE.parents[2]))
+from runtime.application import verify_application
 FLAGS = '-O1 -g0 -B/usr/bin/ -DBOOST_PHOENIX_DONT_USE_PREPROCESSED_FILES'
 TARGETS = ('App_ServiceController', 'di-native-provider', 'di-native-fault-provider')
 
@@ -64,7 +67,7 @@ def run(args):
         previous = json.loads(previous_path.read_text())
         for name in {row['path'] for row in previous['files']} - names:
             path = (repo / name).resolve()
-            assert path.is_relative_to(repo), 'APP_CACHE_PATH_ESCAPE'
+            assert repo in path.parents, 'APP_CACHE_PATH_ESCAPE'
             path.unlink(missing_ok=True)
     with tarfile.open(source / 'workspace.tar') as archive:
         for member in archive.getmembers():
@@ -72,7 +75,7 @@ def run(args):
             target = repo / member.name
             expected = source_files[member.name]
             assert not target.is_symlink(), 'APP_CACHE_SYMLINK'
-            assert target.resolve().is_relative_to(repo), 'APP_CACHE_PATH_ESCAPE'
+            assert repo in target.resolve().parents, 'APP_CACHE_PATH_ESCAPE'
             if not target.exists() or digest(target) != expected['sha256']:
                 target.parent.mkdir(parents=True, exist_ok=True)
                 with archive.extractfile(member) as stream, target.open('wb') as dest:
@@ -113,6 +116,8 @@ def run(args):
                 'sourceSealDigest': seal['sealDigest'], 'sourceRevision': seal['sourceRevision'],
                 'buildIdentity': build_identity, 'buildKey': key, 'files': rows}
     (partial / 'application-manifest.json').write_text(json.dumps(manifest, indent=2, sort_keys=True) + '\n')
+    verify_application(partial, manifest_sha256=digest(partial / 'application-manifest.json'),
+                       base_sif_sha256=args.base_sha256)
     partial.rename(output)
     print(json.dumps({'status': 'BUILT', 'scope': manifest['scope'], 'bundle': str(output)}))
 
