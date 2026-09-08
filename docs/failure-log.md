@@ -3534,3 +3534,15 @@ identity and rerun packaging against the existing incremental Waf cache.
   keeping the no-symlink, mode-0600 and exact-size checks unchanged.
 - Lesson: all secret paths crossing the host owner boundary need the same
   explicit run-owner binding, not only the state directory.
+
+## 2026-09-08: exact-SIF MiniNDN could not see external canonical package
+
+- Symptom: after the owner checks passed, the Y-B driver stopped before NFD
+  startup with `CANONICAL_CATALOGUE_VERIFY_FAILED` and exit 78.
+- Root cause: the signed YOLO canonical package is intentionally outside the
+  repository `results` and `specs` trees under `.cache/model`; the SIF command
+  forwarded its host path but did not mount that immutable directory.
+- Fix: add an explicit read-only bind for the validated canonical package to
+  the exact-SIF MiniNDN command prefix. The base libraries remain image-owned.
+- Lesson: every external execution input needs both an identity reference and
+  a container-visible mount; an absolute host path alone is not a runtime bind.

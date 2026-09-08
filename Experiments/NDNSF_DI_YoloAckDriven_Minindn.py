@@ -110,6 +110,18 @@ def _sif_bind_args() -> list[str]:
                 or not re.fullmatch(r'[A-Za-z0-9_./-]+', str(app))):
             raise RunnerError('SIF_APPLICATION_PATH_INVALID')
         result.extend(['--bind', f'{app}:/app:ro'])
+    # The canonical model package is an external, immutable input.  It lives
+    # outside the repository's results/specs trees and therefore needs an
+    # explicit read-only bind when the MiniNDN process runs inside the exact
+    # SIF.  Passing its host path as an environment variable without this bind
+    # makes package verification fail before NFD starts.
+    package_value = os.environ.get("SPEC180_YOLO_CANONICAL_PACKAGE", "").strip()
+    if package_value:
+        package = Path(package_value).expanduser().resolve()
+        if (not package.is_absolute() or not package.is_dir()
+                or any(p.is_symlink() for p in (package, *package.parents))):
+            raise RunnerError("SIF_CANONICAL_PACKAGE_PATH_INVALID")
+        result.extend(["--bind", f"{package}:{package}:ro"])
     seen: set[str] = set()
     for raw in bind_roots:
         path = Path(raw).expanduser().resolve()
