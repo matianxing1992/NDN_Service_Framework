@@ -7,6 +7,11 @@ import difflib, hashlib, io, json, subprocess, tarfile
 root = Path(__file__).resolve().parent.parent
 dest = root / 'Design/source-baseline.json'
 manifest = json.loads(dest.read_text())
+from design_state import source_files
+# Keep existing supporting files, add all maintained implementation/config inputs.
+manifest['files'] = {p: {} for p in sorted(set(manifest['files']) | source_files(root)) if (root/p).is_file()}
+manifest['revision'] = 'R2'
+manifest['scope_policy'] = 'design_state.source_files plus explicitly retained supporting files; byte identity is not semantic or runtime qualification'
 api_inventory = root / 'Design/api/inventory.json'
 if api_inventory.exists():
     for item in json.loads(api_inventory.read_text())['files']:
@@ -32,5 +37,5 @@ with tarfile.open(archive, 'w:gz') as tar:
 manifest.update(snapshot_utc=now.isoformat(), baseline_commit=head, local_source_archive=str(archive.relative_to(root)), archive_sha256=hashlib.sha256(archive.read_bytes()).hexdigest())
 dest.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + '\n')
 (root / 'Design/evidence/source-baseline-worktree.patch').write_text(''.join(patch_lines))
-(root / 'Design/snapshot.tex').write_text('\\newcommand{\\SourceBaseline}{' + head[:12] + '}\n\\newcommand{\\SnapshotDate}{2026-09-07}\n')
+(root / 'Design/snapshot.tex').write_text('\\newcommand{\\SourceBaseline}{' + head[:12] + '}\n\\newcommand{\\SnapshotDate}{' + now.date().isoformat() + '}\n')
 print(manifest['snapshot_utc'], head, len(manifest['files']))

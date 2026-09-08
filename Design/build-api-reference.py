@@ -10,13 +10,8 @@ prefixes = {'Core': ('ndn-service-framework/', 'pythonWrapper/ndnsf/'),
             'DI': ('NDNSF-DistributedInference/cpp/', 'NDNSF-DistributedInference/ndnsf_distributed_inference/'),
             'UAV': ('NDNSF-UAV-APP/',)}
 tracked = subprocess.check_output(['git','ls-files','-z'], cwd=root).decode().split('\0')
-files = {}
-for p in tracked:
-    if not p or any(x in Path(p).parts for x in ('tests','test','build','vendor','__pycache__')):
-        continue
-    for module, roots in prefixes.items():
-        if p.startswith(roots) and Path(p).suffix in ('.hpp','.h','.py'):
-            files[p] = module
+from design_state import api_files
+files = api_files(root)
 
 cpp = sorted(p for p in files if not p.endswith('.py'))
 parsed = json.loads(subprocess.check_output(['node',str(design/'extract-cpp-api.cjs')], input=json.dumps(cpp), text=True, cwd=root))

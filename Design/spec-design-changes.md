@@ -14,6 +14,34 @@
 
 ## 索引
 
+R2 新增 D-002（文档校验与行为补充）及 TG-01 至 TG-05（PLANNED）。目标批准来自用户
+“先修复设计基线和校验机制，再补关键 API 行为契约，最后将架构改进逐项纳入目标设计”。
+
+## D-002：基线、校验与行为契约
+
+- 工作单元：Spec182 D-DESIGN-R2；[证据](../specs/182-native-di-python-bindings/evidence/design-r2-20260907.md)。
+- 变更前：350 文件快照遗漏关键 .cpp；目标渲染共享当前 API；PDF 未绑定全部生成输入。
+- 变更后：460 文件实现/配置快照；独立目标 API/源码基线；输入/PDF 构建身份验证；
+  全函数 API ID 的保守覆盖状态；新增文件、源码漂移与过期生成内容均检查。
+- API 行为：AC-13 修正精确 lookup；BC-01 至 BC-04 补授权失效、句柄异步行为、Repo 和 UAV 边界。
+- 当前源码：ca585ab5365189203325a8462d8726d2ea32c98f 加 source-baseline.json 登记的工作区补丁；
+  未提交实现只作为字节基线，不随文档暂存，不因此获得产品资格。
+- 目标源码：保留 e9fe33994a6ca3ff81893591bd24c3fae43f933f 的 R1 冻结 API/源码快照。
+- 文档状态和精确检查结果见证据；剩余 SIGNATURE_ONLY 项不计行为审查完成。
+
+## R2 Target Changes
+
+| ID | 模块 / 目标章节 | 前后变化 | API / 兼容边界 | 状态 / 后续验收 |
+|---|---|---|---|---|
+| TG-01 | Core / 授权版本与影响范围 | 全局版本失效 → 按权限和密钥变化区分影响 | grant/revoke/getPolicyStatus/install；旧客户端保守处理，线格式待 Spec | PLANNED；撤销、乱序、离线及无关节点刷新证据 |
+| TG-02 | DI / 原生请求链 | Python/native 分担运行状态 → 原生唯一状态所有者 | APPClient/NativeInferenceClient/Handle；保留签名和错误兼容，关联 Spec182 原任务 | PLANNED；真实 requester 路径、oracle、失败及取消 |
+| TG-03 | 四模块 / 异步 API | 分散描述 → 显式线程、deadline、取消、终态和背压契约 | streaming/handle/transfer/mission；逐 API 迁移 | PLANNED；竞争、重入、资源释放和远端取消 |
+| TG-04 | Repo / 能力与恢复 | 模糊跨层能力 → 明确能力表和操作幂等/恢复 | lookup 精确语义不变，组合查询单独契约；格式版本迁移 | PLANNED；崩溃、重复提交、目录/数据不一致 |
+| TG-05 | UAV / 类型和状态机 | Fields 与交织控制 → 类型验证、独立状态机与适配器 | command/sendMavlink/mission/job；兼容适配器明确拒绝非法输入 | PLANNED；Mock、真实飞控、失联和迟到结果分阶段 |
+
+仅 TG-02 关联当前 Spec182 的既有迁移任务；其余尚未分配 Spec，不虚构编号。
+这些记录不改变当前产品 API 或任何功能验收门；未来修改须同步对应 Spec 的 plan/contracts/tasks。
+
 | 记录 | Spec / 工作单元 | 模块 | 设计影响 | 状态 |
 |---|---|---|---|---|
 | D-000 | 四模块设计 R0 建档；Spec182 的 D-DESIGN-R0 文档单元 | Core / UAV / DI / Repo | 建立当前/目标一致的 35 章基线；新增版本管理与追踪规则 | VERIFIED（文档） |

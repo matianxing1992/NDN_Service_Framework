@@ -29,3 +29,14 @@ Design 的 PDF、正文、契约、声明参考、脚本和精简证据入 Git�
 Context Mode project health PASS、active health rc=4（tasks.md 哈希过期），改用仓库和 CodeGraph。Python tree_sitter 不可用，复用 CodeGraph 的 web-tree-sitter/C++ wasm，未修改产品依赖。
 R0 的 35 页设计与 94 文件快照在提交 9c019a17，旧验证为 evidence/r0-git-verification.json；当前 source-baseline 已推进到 R1。
 后续按 README.md 和 MANAGEMENT.md 同步当前/目标、Spec 与 API。
+## R2 Baseline and Contracts
+
+当前 PDF 66 页、62 目录项；目标 PDF 69 页、67 目录项。最终独立构建目录：
+`.codex-tmp/design-pdf-20260908T043646760539Z/`。
+两份字体嵌入、目录页码、构建输入/PDF 身份检查 PASS，无警告/溢出/缺字；技术正文按计划不同。
+当前新增行为页和目标 TG 页面已渲染抽查。完整机器结果与失败历史见
+[R2 证据](../specs/182-native-di-python-bindings/evidence/design-r2-20260907.md)。
+工具回归 4 PASS；295 API 文件、16586 声明、5744 函数记录（5743 唯一 API ID）、852 绑定 PASS；
+当前 460 文件、目标 350 文件 Git+patch 还原 PASS，检查时当前无源码漂移。
+当前源码基线保留采样提交与未提交补丁；后续源码修改须重新核对，不自动继承本次 PASS。
+产品测试、MiniNDN、SIF、Tiger 均 NOT_RUN；目标五项 PLANNED 不计实现完成。

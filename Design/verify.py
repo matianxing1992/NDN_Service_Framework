@@ -8,6 +8,10 @@ run = root / sys.argv[1]
 design = root / 'Design'
 result = {'run': str(run.relative_to(root)), 'runtime_tests': 'not run'}
 contract=json.loads((design/'document-contract.json').read_text())
+from design_state import verify_provenance
+record=json.loads((design/'build-provenance.json').read_text())
+verify_provenance(design, record)
+assert record == json.loads((run/'build-provenance.json').read_text()), 'Wrong build run'
 texts = []
 for name in ('current-design', 'target-design'):
     pdf = design / (name + '.pdf')
@@ -21,7 +25,8 @@ for name in ('current-design', 'target-design'):
     toc=(run/name/(name+'.toc')).read_text()
     pdf_pages=text.split('\f')
     sections=re.findall(r'\\contentsline \{section\}\{\\numberline \{(\d+)\}([^}]*)\}\{(\d+)\}',toc)
-    assert len(sections)==58
+    source_text='\n'.join(p.read_text() for p in design.glob(name.split('-')[0]+'-*.tex'))
+    assert len(sections)==len(re.findall(r'\\section\{', source_text)), 'Missing sections'
     for number,title,page in sections:
         assert re.sub(r'\s+','',number+title) in re.sub(r'\s+','',pdf_pages[int(page)-1]), (name,number,page)
     texts.append(re.sub(r'\s+', '', '\n'.join(l for l in text.splitlines() if not ('NDNSF /' in l))))
@@ -35,12 +40,16 @@ result['technical_body_equal'] = body_equal
 result['api_verification']=json.loads(subprocess.check_output([sys.executable,str(design/'verify-api-reference.py')],text=True))
 m = json.loads((design / 'source-baseline.json').read_text())
 result['source_reconstruction'] = json.loads(subprocess.check_output([sys.executable, str(design / 'verify-source-baseline.py')], text=True))
+result['target_source_reconstruction'] = json.loads(subprocess.check_output([sys.executable, str(design / 'verify-source-baseline.py'), '--target'], text=True))
+for marker in contract.get('expected_target_sections',[]):
+    assert marker in (design/'target-roadmap.tex').read_text(), 'Missing planned target: '+marker
 if (root / m['local_source_archive']).exists():
     assert hashlib.sha256((root / m['local_source_archive']).read_bytes()).hexdigest() == m['archive_sha256']
     with tarfile.open(root / m['local_source_archive']) as tar:
         assert all(hashlib.sha256(tar.extractfile(p).read()).hexdigest() == meta['sha256'] for p, meta in m['files'].items())
     result['source_archive_verified'] = len(m['files'])
 result['source_drift_after_snapshot'] = [p for p, meta in m['files'].items() if hashlib.sha256((root / p).read_bytes()).hexdigest() != meta['sha256']]
+assert not result['source_drift_after_snapshot'], 'Source changed after snapshot'
 result['snapshot_commit'] = m['baseline_commit']
 subprocess.run(['pdftoppm', '-scale-to', '1000', '-png', str(design / 'current-design.pdf'), str(run / 'page')], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 files = sorted(run.glob('page-*.png'))

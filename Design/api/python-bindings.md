@@ -7550,7 +7550,7 @@ py::keep_alive<0, 1>())
 
 ## pythonWrapper/src/ndnsf/di_bindings.cpp
 
-SHA-256：`f20305f8cc08e78b6d30a47b42f228b71db2a007616a3a7371d697dc50562461`。
+SHA-256：`58847625fc73fca2760ec96205743b1a0ce5fc131fc2fd91b4ee5f2a650e92c3`。
 
 ### NativeRequestStatus · "CANCELLED"
 
@@ -7606,9 +7606,216 @@ value("INLINE",
 di::NativeInputTransportMode::Inline)
 ```
 
-### NativeModelDescriptor · "adapter_version"
+### NativeAdapterDescriptor · "descriptor_digest"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L66)
+
+```cpp
+def_property_readonly("descriptor_digest",
+&di::NativeAdapterDescriptor::descriptorDigest)
+```
+
+### NativeAdapterDescriptor · "canonical_json"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L65)
+
+```cpp
+def("canonical_json",
+&di::NativeAdapterDescriptor::canonicalJson)
+```
+
+### NativeAdapterDescriptor · "deterministic_analysis"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L64)
+
+```cpp
+def_readwrite("deterministic_analysis",
+&di::NativeAdapterDescriptor::deterministicAnalysis)
+```
+
+### NativeAdapterDescriptor · "splittable"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L63)
+
+```cpp
+def_readwrite("splittable",
+&di::NativeAdapterDescriptor::splittable)
+```
+
+### NativeAdapterDescriptor · "graph_inspectable"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L62)
+
+```cpp
+def_readwrite("graph_inspectable",
+&di::NativeAdapterDescriptor::graphInspectable)
+```
+
+### NativeAdapterDescriptor · "state_schema_digest"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L61)
+
+```cpp
+def_readwrite("state_schema_digest",
+&di::NativeAdapterDescriptor::stateSchemaDigest)
+```
+
+### NativeAdapterDescriptor · "split_schema_digest"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L60)
+
+```cpp
+def_readwrite("split_schema_digest",
+&di::NativeAdapterDescriptor::splitSchemaDigest)
+```
+
+### NativeAdapterDescriptor · "graph_schema_digest"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L59)
+
+```cpp
+def_readwrite("graph_schema_digest",
+&di::NativeAdapterDescriptor::graphSchemaDigest)
+```
+
+### NativeAdapterDescriptor · "result_schema_digest"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L58)
+
+```cpp
+def_readwrite("result_schema_digest",
+&di::NativeAdapterDescriptor::resultSchemaDigest)
+```
+
+### NativeAdapterDescriptor · "options_schema_digest"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L57)
+
+```cpp
+def_readwrite("options_schema_digest",
+&di::NativeAdapterDescriptor::optionsSchemaDigest)
+```
+
+### NativeAdapterDescriptor · "input_schema_digest"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L56)
+
+```cpp
+def_readwrite("input_schema_digest",
+&di::NativeAdapterDescriptor::inputSchemaDigest)
+```
+
+### NativeAdapterDescriptor · "precisions"
 
 [源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L55)
+
+```cpp
+def_readwrite("precisions",
+&di::NativeAdapterDescriptor::precisions)
+```
+
+### NativeAdapterDescriptor · "backends"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L54)
+
+```cpp
+def_readwrite("backends",
+&di::NativeAdapterDescriptor::backends)
+```
+
+### NativeAdapterDescriptor · "tasks"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L53)
+
+```cpp
+def_readwrite("tasks",
+&di::NativeAdapterDescriptor::tasks)
+```
+
+### NativeAdapterDescriptor · "model_formats"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L52)
+
+```cpp
+def_readwrite("model_formats",
+&di::NativeAdapterDescriptor::modelFormats)
+```
+
+### NativeAdapterDescriptor · "abi"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L51)
+
+```cpp
+def_readwrite("abi",
+&di::NativeAdapterDescriptor::abi)
+```
+
+### NativeAdapterDescriptor · "state_digest"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L50)
+
+```cpp
+def_readwrite("state_digest",
+&di::NativeAdapterDescriptor::stateDigest)
+```
+
+### NativeAdapterDescriptor · "version"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L49)
+
+```cpp
+def_readwrite("version",
+&di::NativeAdapterDescriptor::version)
+```
+
+### NativeAdapterDescriptor · "name"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L48)
+
+```cpp
+def_readwrite("name",
+&di::NativeAdapterDescriptor::name)
+```
+
+### NativeModelDescriptor · "model_digest"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L81)
+
+```cpp
+def_property_readonly("model_digest",
+&di::NativeModelDescriptor::modelDigest)
+```
+
+### NativeModelDescriptor · "canonical_json"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L80)
+
+```cpp
+def("canonical_json",
+&di::NativeModelDescriptor::canonicalJson)
+```
+
+### NativeModelDescriptor · "source_revision"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L79)
+
+```cpp
+def_readwrite("source_revision",
+&di::NativeModelDescriptor::sourceRevision)
+```
+
+### NativeModelDescriptor · "adapter"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L78)
+
+```cpp
+def_readwrite("adapter",
+&di::NativeModelDescriptor::adapter)
+```
+
+### NativeModelDescriptor · "adapter_version"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L77)
 
 ```cpp
 def_readwrite("adapter_version",
@@ -7617,7 +7824,7 @@ def_readwrite("adapter_version",
 
 ### NativeModelDescriptor · "adapter_id"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L54)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L76)
 
 ```cpp
 def_readwrite("adapter_id",
@@ -7626,7 +7833,7 @@ def_readwrite("adapter_id",
 
 ### NativeModelDescriptor · "precision"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L53)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L75)
 
 ```cpp
 def_readwrite("precision",
@@ -7635,7 +7842,7 @@ def_readwrite("precision",
 
 ### NativeModelDescriptor · "model_format"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L52)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L74)
 
 ```cpp
 def_readwrite("model_format",
@@ -7644,7 +7851,7 @@ def_readwrite("model_format",
 
 ### NativeModelDescriptor · "graph_digest"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L51)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L73)
 
 ```cpp
 def_readwrite("graph_digest",
@@ -7653,7 +7860,7 @@ def_readwrite("graph_digest",
 
 ### NativeModelDescriptor · "semantics_digest"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L50)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L72)
 
 ```cpp
 def_readwrite("semantics_digest",
@@ -7662,7 +7869,7 @@ def_readwrite("semantics_digest",
 
 ### NativeModelDescriptor · "content_digest"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L49)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L71)
 
 ```cpp
 def_readwrite("content_digest",
@@ -7671,25 +7878,16 @@ def_readwrite("content_digest",
 
 ### NativeModelDescriptor · "model_name"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L48)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L70)
 
 ```cpp
 def_readwrite("model_name",
 &di::NativeModelDescriptor::modelName)
 ```
 
-### NativeModelRef · "source_revision"
-
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L59)
-
-```cpp
-def_readwrite("source_revision",
-&di::NativeModelRef::sourceRevision)
-```
-
 ### NativeApplicationInput · "repository_reference"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L69)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L94)
 
 ```cpp
 def_readwrite("repository_reference",
@@ -7698,7 +7896,7 @@ def_readwrite("repository_reference",
 
 ### NativeApplicationInput · "transport_mode"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L68)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L93)
 
 ```cpp
 def_readwrite("transport_mode",
@@ -7707,7 +7905,7 @@ def_readwrite("transport_mode",
 
 ### NativeApplicationInput · "options"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L67)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L92)
 
 ```cpp
 def_readwrite("options",
@@ -7716,7 +7914,7 @@ def_readwrite("options",
 
 ### NativeApplicationInput · "payload"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L66)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L91)
 
 ```cpp
 def_readwrite("payload",
@@ -7725,7 +7923,7 @@ def_readwrite("payload",
 
 ### NativeApplicationInput · "options_schema_digest"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L65)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L90)
 
 ```cpp
 def_readwrite("options_schema_digest",
@@ -7734,7 +7932,7 @@ def_readwrite("options_schema_digest",
 
 ### NativeApplicationInput · "input_schema_digest"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L64)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L89)
 
 ```cpp
 def_readwrite("input_schema_digest",
@@ -7743,7 +7941,7 @@ def_readwrite("input_schema_digest",
 
 ### NativeApplicationInput · "task_name"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L63)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L88)
 
 ```cpp
 def_readwrite("task_name",
@@ -7752,7 +7950,7 @@ def_readwrite("task_name",
 
 ### NativeRequestOptions · "output_mode"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L76)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L101)
 
 ```cpp
 def_readwrite("output_mode",
@@ -7761,7 +7959,7 @@ def_readwrite("output_mode",
 
 ### NativeRequestOptions · "task_name"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L75)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L100)
 
 ```cpp
 def_readwrite("task_name",
@@ -7770,7 +7968,7 @@ def_readwrite("task_name",
 
 ### NativeRequestOptions · "ack_timeout_ms"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L74)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L99)
 
 ```cpp
 def_readwrite("ack_timeout_ms",
@@ -7779,7 +7977,7 @@ def_readwrite("ack_timeout_ms",
 
 ### NativeRequestOptions · "timeout_ms"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L73)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L98)
 
 ```cpp
 def_readwrite("timeout_ms",
@@ -7788,7 +7986,7 @@ def_readwrite("timeout_ms",
 
 ### NativeInferenceResult · "plan_digest"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L82)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L107)
 
 ```cpp
 def_readonly("plan_digest",
@@ -7797,7 +7995,7 @@ def_readonly("plan_digest",
 
 ### NativeInferenceResult · "model_digest"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L81)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L106)
 
 ```cpp
 def_readonly("model_digest",
@@ -7806,7 +8004,7 @@ def_readonly("model_digest",
 
 ### NativeInferenceResult · "payload"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L80)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L105)
 
 ```cpp
 def_readonly("payload",
@@ -7815,7 +8013,7 @@ def_readonly("payload",
 
 ### NativeInferenceEvent · "terminal"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L87)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L112)
 
 ```cpp
 def_readonly("terminal",
@@ -7824,7 +8022,7 @@ def_readonly("terminal",
 
 ### NativeInferenceEvent · "payload"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L86)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L111)
 
 ```cpp
 def_readonly("payload",
@@ -7833,7 +8031,7 @@ def_readonly("payload",
 
 ### NativeInferenceEvent · "request_id"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L85)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L110)
 
 ```cpp
 def_readonly("request_id",
@@ -7842,7 +8040,7 @@ def_readonly("request_id",
 
 ### NativeAdapterRegistry · "frozen"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L94)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L119)
 
 ```cpp
 def_property_readonly("frozen",
@@ -7851,7 +8049,7 @@ def_property_readonly("frozen",
 
 ### NativeAdapterRegistry · "find"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L93)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L118)
 
 ```cpp
 def("find",
@@ -7860,7 +8058,7 @@ def("find",
 
 ### NativeAdapterRegistry · "freeze"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L92)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L117)
 
 ```cpp
 def("freeze",
@@ -7869,7 +8067,7 @@ def("freeze",
 
 ### NativeYoloComponentSpec · "candidate_digest"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L132)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L157)
 
 ```cpp
 def_readwrite("candidate_digest",
@@ -7878,7 +8076,7 @@ def_readwrite("candidate_digest",
 
 ### NativeYoloComponentSpec · "merge_kind"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L131)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L156)
 
 ```cpp
 def_readwrite("merge_kind",
@@ -7887,7 +8085,7 @@ def_readwrite("merge_kind",
 
 ### NativeYoloComponentSpec · "result_egress_role"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L129)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L154)
 
 ```cpp
 def_readwrite("result_egress_role",
@@ -7896,7 +8094,7 @@ def_readwrite("result_egress_role",
 
 ### NativeYoloComponentSpec · "input_ingress_role"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L127)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L152)
 
 ```cpp
 def_readwrite("input_ingress_role",
@@ -7905,7 +8103,7 @@ def_readwrite("input_ingress_role",
 
 ### NativeYoloComponentSpec · "node_names_by_role"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L125)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L150)
 
 ```cpp
 def_readwrite("node_names_by_role",
@@ -7914,7 +8112,7 @@ def_readwrite("node_names_by_role",
 
 ### NativeYoloComponentSpec · "roles"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L124)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L149)
 
 ```cpp
 def_readwrite("roles",
@@ -7923,7 +8121,7 @@ def_readwrite("roles",
 
 ### NativeYoloComponentSpec · "priority"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L123)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L148)
 
 ```cpp
 def_readwrite("priority",
@@ -7932,7 +8130,7 @@ def_readwrite("priority",
 
 ### NativeYoloComponentSpec · "candidate_id"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L122)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L147)
 
 ```cpp
 def_readwrite("candidate_id",
@@ -7941,7 +8139,7 @@ def_readwrite("candidate_id",
 
 ### NativeInferenceHandle · "status_name"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L155)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L180)
 
 ```cpp
 def_property_readonly("status_name",
@@ -7950,7 +8148,7 @@ def_property_readonly("status_name",
 
 ### NativeInferenceHandle · "cancel"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L154)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L179)
 
 ```cpp
 def("cancel",
@@ -7959,7 +8157,7 @@ def("cancel",
 
 ### NativeInferenceHandle · "result"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L150)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L175)
 
 ```cpp
 def("result",
@@ -7970,7 +8168,7 @@ py::arg("wait_timeout_ms") = 0)
 
 ### NativeInferenceHandle · "status"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L149)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L174)
 
 ```cpp
 def_property_readonly("status",
@@ -7979,7 +8177,7 @@ def_property_readonly("status",
 
 ### NativeInferenceHandle · "request_id"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L148)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L173)
 
 ```cpp
 def_property_readonly("request_id",
@@ -7988,7 +8186,7 @@ def_property_readonly("request_id",
 
 ### NativeInferenceClient · "request"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L162)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L187)
 
 ```cpp
 def("request",
@@ -8002,7 +8200,7 @@ py::arg("options"))
 
 ### NativeInferenceClient · "close"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L161)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L186)
 
 ```cpp
 def("close",

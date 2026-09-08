@@ -11381,7 +11381,7 @@ verifyAndUnwrapNativeGrant(const std::string& wireJson,
 
 ## NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp
 
-源码 SHA-256：`47fcede90169314867c3a4a77e2690c97853fb53025c544898db0c4fb8e97035`。
+源码 SHA-256：`6b6a07f1f214d1776bb65a362f6ac6c69a5cbaeae326638ce40729ba9cde3eb3`。
 
 ### API-d2e9b0cd1af8 · ndn_service_framework::ServiceUser
 
@@ -11431,17 +11431,9 @@ public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndns
 struct NativeModelRef : NativeModelDescriptor
 ```
 
-### API-993d02ec44b0 · ndnsf::di::NativeModelRef::sourceRevision
-
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L28)
-
-```cpp
-std::string sourceRevision;
-```
-
 ### API-23693d32226c · ndnsf::di::NativeInputTransportMode
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L31)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L30)
 
 ```cpp
 enum class NativeInputTransportMode
@@ -11449,7 +11441,7 @@ enum class NativeInputTransportMode
 
 ### API-acc5c5dce210 · ndnsf::di::NativeInputTransportMode::Inline
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L31)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L30)
 
 ```cpp
 Inline
@@ -11457,7 +11449,7 @@ Inline
 
 ### API-fa6b399434f2 · ndnsf::di::NativeInputTransportMode::RepositoryReference
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L31)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L30)
 
 ```cpp
 RepositoryReference
@@ -11465,7 +11457,7 @@ RepositoryReference
 
 ### API-6b4182d3e629 · ndnsf::di::NativeApplicationInput
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L33)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L32)
 
 ```cpp
 struct NativeApplicationInput
@@ -11473,7 +11465,7 @@ struct NativeApplicationInput
 
 ### API-ee501372f6c7 · ndnsf::di::NativeApplicationInput::taskName
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L35)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L34)
 
 ```cpp
 std::string taskName;
@@ -11481,7 +11473,7 @@ std::string taskName;
 
 ### API-d5cc119acc9d · ndnsf::di::NativeApplicationInput::inputSchemaDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L36)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L35)
 
 ```cpp
 std::string inputSchemaDigest;
@@ -11489,7 +11481,7 @@ std::string inputSchemaDigest;
 
 ### API-f9afc8575217 · ndnsf::di::NativeApplicationInput::optionsSchemaDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L37)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L36)
 
 ```cpp
 std::string optionsSchemaDigest;
@@ -11497,7 +11489,7 @@ std::string optionsSchemaDigest;
 
 ### API-a456a8447890 · ndnsf::di::NativeApplicationInput::payload
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L38)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L37)
 
 ```cpp
 std::vector<std::uint8_t> payload;
@@ -11505,7 +11497,7 @@ std::vector<std::uint8_t> payload;
 
 ### API-b775279d0c57 · ndnsf::di::NativeApplicationInput::options
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L39)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L38)
 
 ```cpp
 std::vector<std::uint8_t> options;
@@ -11513,7 +11505,7 @@ std::vector<std::uint8_t> options;
 
 ### API-81d60eacb430 · ndnsf::di::NativeApplicationInput::transportMode
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L40)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L39)
 
 ```cpp
 NativeInputTransportMode transportMode = NativeInputTransportMode::Inline;
@@ -11521,7 +11513,7 @@ NativeInputTransportMode transportMode = NativeInputTransportMode::Inline;
 
 ### API-4a1d689a3734 · ndnsf::di::NativeApplicationInput::repositoryReference
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L41)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L40)
 
 ```cpp
 std::string repositoryReference;
@@ -11529,7 +11521,7 @@ std::string repositoryReference;
 
 ### API-fbcb8b0d5bbb · ndnsf::di::NativeRequestOptions
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L44)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L43)
 
 ```cpp
 struct NativeRequestOptions
@@ -11537,7 +11529,7 @@ struct NativeRequestOptions
 
 ### API-c3dc507f38aa · ndnsf::di::NativeRequestOptions::timeoutMs
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L46)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L45)
 
 ```cpp
 std::uint64_t timeoutMs = 30'000;
@@ -11545,7 +11537,7 @@ std::uint64_t timeoutMs = 30'000;
 
 ### API-8ac39b086691 · ndnsf::di::NativeRequestOptions::ackTimeoutMs
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L47)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L46)
 
 ```cpp
 std::uint64_t ackTimeoutMs = 5'000;
@@ -11553,7 +11545,7 @@ std::uint64_t ackTimeoutMs = 5'000;
 
 ### API-f7721e1421a6 · ndnsf::di::NativeRequestOptions::taskName
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L48)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L47)
 
 ```cpp
 std::string taskName;
@@ -11561,7 +11553,7 @@ std::string taskName;
 
 ### API-6ffb06aef95f · ndnsf::di::NativeRequestOptions::outputMode
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L49)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L48)
 
 ```cpp
 std::string outputMode = "FULL";
@@ -11569,7 +11561,7 @@ std::string outputMode = "FULL";
 
 ### API-5a5bf25d9a92 · ndnsf::di::NativeRequestStatus
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L52)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L51)
 
 ```cpp
 enum class NativeRequestStatus
@@ -11577,7 +11569,7 @@ enum class NativeRequestStatus
 
 ### API-e3de3204ed84 · ndnsf::di::NativeRequestStatus::Pending
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L52)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L51)
 
 ```cpp
 Pending
@@ -11585,7 +11577,7 @@ Pending
 
 ### API-97c7035aba3f · ndnsf::di::NativeRequestStatus::Succeeded
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L52)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L51)
 
 ```cpp
 Succeeded
@@ -11593,7 +11585,7 @@ Succeeded
 
 ### API-74b14af80de7 · ndnsf::di::NativeRequestStatus::Failed
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L52)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L51)
 
 ```cpp
 Failed
@@ -11601,7 +11593,7 @@ Failed
 
 ### API-1ef3a003664c · ndnsf::di::NativeRequestStatus::Cancelled
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L52)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L51)
 
 ```cpp
 Cancelled
@@ -11609,7 +11601,7 @@ Cancelled
 
 ### API-1585a4dddc2a · ndnsf::di::NativeInferenceResult
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L54)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L53)
 
 ```cpp
 struct NativeInferenceResult
@@ -11617,7 +11609,7 @@ struct NativeInferenceResult
 
 ### API-008a2d6089ba · ndnsf::di::NativeInferenceResult::payload
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L56)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L55)
 
 ```cpp
 std::vector<std::uint8_t> payload;
@@ -11625,7 +11617,7 @@ std::vector<std::uint8_t> payload;
 
 ### API-1dac8cae5fbe · ndnsf::di::NativeInferenceResult::modelDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L57)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L56)
 
 ```cpp
 std::string modelDigest;
@@ -11633,7 +11625,7 @@ std::string modelDigest;
 
 ### API-c2ec47323926 · ndnsf::di::NativeInferenceResult::planDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L58)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L57)
 
 ```cpp
 std::string planDigest;
@@ -11641,7 +11633,7 @@ std::string planDigest;
 
 ### API-063af335c804 · ndnsf::di::NativeInferenceEvent
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L61)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L60)
 
 ```cpp
 struct NativeInferenceEvent
@@ -11649,7 +11641,7 @@ struct NativeInferenceEvent
 
 ### API-f79af09a8a92 · ndnsf::di::NativeInferenceEvent::requestId
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L63)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L62)
 
 ```cpp
 std::string requestId;
@@ -11657,7 +11649,7 @@ std::string requestId;
 
 ### API-910e19e3950a · ndnsf::di::NativeInferenceEvent::payload
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L64)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L63)
 
 ```cpp
 std::vector<std::uint8_t> payload;
@@ -11665,7 +11657,7 @@ std::vector<std::uint8_t> payload;
 
 ### API-2050100ec909 · ndnsf::di::NativeInferenceEvent::terminal
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L65)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L64)
 
 ```cpp
 bool terminal = false;
@@ -11673,7 +11665,7 @@ bool terminal = false;
 
 ### API-82c88efb172f · ndnsf::di::NativeDiError
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L68)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L67)
 
 ```cpp
 class NativeDiError : public std::runtime_error
@@ -11681,7 +11673,7 @@ class NativeDiError : public std::runtime_error
 
 ### API-f75710d4534f · ndnsf::di::NativeDiError::NativeDiError
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L71)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L70)
 
 ```cpp
 NativeDiError(std::string code, std::string domain, std::string boundary,
@@ -11691,7 +11683,7 @@ NativeDiError(std::string code, std::string domain, std::string boundary,
 
 ### API-b4ab508901b8 · ndnsf::di::NativeDiError::code
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L75)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L74)
 
 ```cpp
 const std::string& code() const noexcept
@@ -11699,7 +11691,7 @@ const std::string& code() const noexcept
 
 ### API-5e1801c255a1 · ndnsf::di::NativeDiError::domain
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L76)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L75)
 
 ```cpp
 const std::string& domain() const noexcept
@@ -11707,7 +11699,7 @@ const std::string& domain() const noexcept
 
 ### API-7e716688c724 · ndnsf::di::NativeDiError::boundary
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L77)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L76)
 
 ```cpp
 const std::string& boundary() const noexcept
@@ -11715,7 +11707,7 @@ const std::string& boundary() const noexcept
 
 ### API-cbcee00a86f6 · ndnsf::di::NativeDiError::requestId
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L78)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L77)
 
 ```cpp
 const std::string& requestId() const noexcept
@@ -11723,7 +11715,7 @@ const std::string& requestId() const noexcept
 
 ### API-24b315986e5b · ndnsf::di::NativeDiError::attempt
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L79)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L78)
 
 ```cpp
 std::uint64_t attempt() const noexcept
@@ -11731,7 +11723,7 @@ std::uint64_t attempt() const noexcept
 
 ### API-f97b91ec28d7 · ndnsf::di::NativeInferenceHandle
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L89)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L88)
 
 ```cpp
 class NativeInferenceHandle
@@ -11739,7 +11731,7 @@ class NativeInferenceHandle
 
 ### API-f43e1859b0cf · ndnsf::di::NativeInferenceHandle::NativeInferenceHandle
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L92)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L91)
 
 ```cpp
 NativeInferenceHandle() = default;
@@ -11747,7 +11739,7 @@ NativeInferenceHandle() = default;
 
 ### API-a3ac3abcd50b · ndnsf::di::NativeInferenceHandle::requestId
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L93)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L92)
 
 ```cpp
 std::string requestId() const;
@@ -11755,7 +11747,7 @@ std::string requestId() const;
 
 ### API-590560e43930 · ndnsf::di::NativeInferenceHandle::status
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L94)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L93)
 
 ```cpp
 NativeRequestStatus status() const;
@@ -11763,7 +11755,7 @@ NativeRequestStatus status() const;
 
 ### API-c0c25988d534 · ndnsf::di::NativeInferenceHandle::result
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L95)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L94)
 
 ```cpp
 NativeInferenceResult result(std::chrono::milliseconds waitTimeout) const;
@@ -11771,7 +11763,7 @@ NativeInferenceResult result(std::chrono::milliseconds waitTimeout) const;
 
 ### API-b5b8e5590c3c · ndnsf::di::NativeInferenceHandle::cancel
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L96)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L95)
 
 ```cpp
 void cancel();
@@ -11779,7 +11771,7 @@ void cancel();
 
 ### API-66244a25664d · ndnsf::di::NativeInferenceHandle::observe
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L97)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L96)
 
 ```cpp
 void observe(std::function<void(const NativeInferenceEvent&)> observer);
@@ -11787,7 +11779,7 @@ void observe(std::function<void(const NativeInferenceEvent&)> observer);
 
 ### API-8c99e279a18e · ndnsf::di::NativeInferenceHandle::Operation
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L100)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L99)
 
 ```cpp
 struct Operation
@@ -11795,7 +11787,7 @@ struct Operation
 
 ### API-64eda2b4613a · ndnsf::di::SerialRequestExecutor
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L107)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L106)
 
 ```cpp
 class SerialRequestExecutor
@@ -11803,7 +11795,7 @@ class SerialRequestExecutor
 
 ### API-b407b8fc9aa9 · ndnsf::di::NativeInferenceClient
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L109)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L108)
 
 ```cpp
 class NativeInferenceClient
@@ -11811,7 +11803,7 @@ class NativeInferenceClient
 
 ### API-830ca6e69ac2 · ndnsf::di::NativeInferenceClient::NativeInferenceClient
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L112)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L111)
 
 ```cpp
 NativeInferenceClient(
@@ -11825,7 +11817,7 @@ NativeInferenceClient(
 
 ### API-3a9143b31b6e · ndnsf::di::NativeInferenceClient::~NativeInferenceClient
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L119)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L118)
 
 ```cpp
 ~NativeInferenceClient() noexcept;
@@ -11833,7 +11825,7 @@ public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndns
 
 ### API-375b92c9a402 · ndnsf::di::NativeInferenceClient::request
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L121)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L120)
 
 ```cpp
 NativeInferenceHandle request(
@@ -11846,7 +11838,7 @@ NativeInferenceHandle request(
 
 ### API-23b315950d8e · ndnsf::di::NativeInferenceClient::close
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L127)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp#L126)
 
 ```cpp
 void close() noexcept;
@@ -13934,7 +13926,7 @@ static std::vector<std::uint8_t> encode(
 
 ## NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp
 
-源码 SHA-256：`4606cb13e15c0abda0c8d3086c48f621e8ca580a26456cc5fe7cce9ad67d9101`。
+源码 SHA-256：`8882d45ba53f3fd8ca60694d008af26a4cf6bb78469a401a6e48bb9e488c1349`。
 
 ### API-bd73fe2928e4 · ndnsf::di::NativeAdmittedOfferV3
 
@@ -14008,9 +14000,177 @@ public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndns
 void validate() const;
 ```
 
-### API-778906aa65e6 · ndnsf::di::NativeModelDescriptor
+### API-b74c754b3900 · ndnsf::di::NativeAdapterDescriptor
 
 public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L32)
+
+```cpp
+struct NativeAdapterDescriptor
+```
+
+### API-797a5326c9da · ndnsf::di::NativeAdapterDescriptor::name
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L34)
+
+```cpp
+std::string name;
+```
+
+### API-99bc636087a2 · ndnsf::di::NativeAdapterDescriptor::version
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L35)
+
+```cpp
+std::string version;
+```
+
+### API-7b9ac0d54fc0 · ndnsf::di::NativeAdapterDescriptor::stateDigest
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L36)
+
+```cpp
+std::string stateDigest;
+```
+
+### API-3c05212e11f0 · ndnsf::di::NativeAdapterDescriptor::abi
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L37)
+
+```cpp
+std::string abi;
+```
+
+### API-f73beeb24bb4 · ndnsf::di::NativeAdapterDescriptor::modelFormats
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L38)
+
+```cpp
+std::vector<std::string> modelFormats;
+```
+
+### API-670f955efc5d · ndnsf::di::NativeAdapterDescriptor::tasks
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L39)
+
+```cpp
+std::vector<std::string> tasks;
+```
+
+### API-a36128d33ec0 · ndnsf::di::NativeAdapterDescriptor::backends
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L40)
+
+```cpp
+std::vector<std::string> backends;
+```
+
+### API-30fa14f1a4cd · ndnsf::di::NativeAdapterDescriptor::precisions
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L41)
+
+```cpp
+std::vector<std::string> precisions;
+```
+
+### API-7503bed6c373 · ndnsf::di::NativeAdapterDescriptor::inputSchemaDigest
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L42)
+
+```cpp
+std::string inputSchemaDigest;
+```
+
+### API-b6c92aaa4d97 · ndnsf::di::NativeAdapterDescriptor::optionsSchemaDigest
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L43)
+
+```cpp
+std::string optionsSchemaDigest;
+```
+
+### API-8d8d08ad4deb · ndnsf::di::NativeAdapterDescriptor::resultSchemaDigest
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L44)
+
+```cpp
+std::string resultSchemaDigest;
+```
+
+### API-68dd3a577863 · ndnsf::di::NativeAdapterDescriptor::graphSchemaDigest
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L45)
+
+```cpp
+std::string graphSchemaDigest;
+```
+
+### API-3ac4db13290d · ndnsf::di::NativeAdapterDescriptor::splitSchemaDigest
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L46)
+
+```cpp
+std::string splitSchemaDigest;
+```
+
+### API-b4bf8b5a6aa3 · ndnsf::di::NativeAdapterDescriptor::stateSchemaDigest
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L47)
+
+```cpp
+std::string stateSchemaDigest;
+```
+
+### API-78c24d7cb3ff · ndnsf::di::NativeAdapterDescriptor::graphInspectable
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L48)
+
+```cpp
+bool graphInspectable = false;
+```
+
+### API-9d4af36407ea · ndnsf::di::NativeAdapterDescriptor::splittable
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L49)
+
+```cpp
+bool splittable = false;
+```
+
+### API-2c0b7be0f481 · ndnsf::di::NativeAdapterDescriptor::deterministicAnalysis
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L50)
+
+```cpp
+bool deterministicAnalysis = true;
+```
+
+### API-34de87845a1c · ndnsf::di::NativeAdapterDescriptor::validate
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L52)
+
+```cpp
+void validate() const;
+```
+
+### API-13e73308c165 · ndnsf::di::NativeAdapterDescriptor::canonicalJson
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L53)
+
+```cpp
+std::string canonicalJson() const;
+```
+
+### API-313338a144c4 · ndnsf::di::NativeAdapterDescriptor::descriptorDigest
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L54)
+
+```cpp
+std::string descriptorDigest() const;
+```
+
+### API-778906aa65e6 · ndnsf::di::NativeModelDescriptor
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L57)
 
 ```cpp
 struct NativeModelDescriptor
@@ -14018,7 +14178,7 @@ struct NativeModelDescriptor
 
 ### API-605732a3c999 · ndnsf::di::NativeModelDescriptor::modelName
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L34)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L59)
 
 ```cpp
 std::string modelName;
@@ -14026,7 +14186,7 @@ std::string modelName;
 
 ### API-96ad4bb8e5be · ndnsf::di::NativeModelDescriptor::contentDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L35)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L60)
 
 ```cpp
 std::string contentDigest;
@@ -14034,7 +14194,7 @@ std::string contentDigest;
 
 ### API-a41ec35bf7c8 · ndnsf::di::NativeModelDescriptor::semanticsDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L36)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L61)
 
 ```cpp
 std::string semanticsDigest;
@@ -14042,7 +14202,7 @@ std::string semanticsDigest;
 
 ### API-043a8bb9d9f9 · ndnsf::di::NativeModelDescriptor::graphDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L37)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L62)
 
 ```cpp
 std::string graphDigest;
@@ -14050,7 +14210,7 @@ std::string graphDigest;
 
 ### API-a19110fdb0b2 · ndnsf::di::NativeModelDescriptor::modelFormat
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L38)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L63)
 
 ```cpp
 std::string modelFormat;
@@ -14058,7 +14218,7 @@ std::string modelFormat;
 
 ### API-edc87d2c6cfd · ndnsf::di::NativeModelDescriptor::precision
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L39)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L64)
 
 ```cpp
 std::string precision;
@@ -14066,7 +14226,7 @@ std::string precision;
 
 ### API-a052a77c06da · ndnsf::di::NativeModelDescriptor::adapterId
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L40)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L65)
 
 ```cpp
 std::string adapterId;
@@ -14074,23 +14234,55 @@ std::string adapterId;
 
 ### API-f79a1c4d7a02 · ndnsf::di::NativeModelDescriptor::adapterVersion
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L41)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L66)
 
 ```cpp
 std::string adapterVersion;
 ```
 
+### API-7a4a4f90a2da · ndnsf::di::NativeModelDescriptor::adapter
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L67)
+
+```cpp
+NativeAdapterDescriptor adapter;
+```
+
+### API-bbbd6fbca81b · ndnsf::di::NativeModelDescriptor::sourceRevision
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L68)
+
+```cpp
+std::string sourceRevision;
+```
+
 ### API-51616acc6619 · ndnsf::di::NativeModelDescriptor::validate
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L43)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L70)
 
 ```cpp
 void validate() const;
 ```
 
+### API-b17e261bb798 · ndnsf::di::NativeModelDescriptor::canonicalJson
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L71)
+
+```cpp
+std::string canonicalJson() const;
+```
+
+### API-36a06c9fd450 · ndnsf::di::NativeModelDescriptor::modelDigest
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L72)
+
+```cpp
+std::string modelDigest() const;
+```
+
 ### API-66c305c7ac04 · ndnsf::di::NativeGraphNode
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L46)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L75)
 
 ```cpp
 struct NativeGraphNode
@@ -14098,7 +14290,7 @@ struct NativeGraphNode
 
 ### API-4bc73bdc9ad7 · ndnsf::di::NativeGraphNode::id
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L48)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L77)
 
 ```cpp
 std::string id;
@@ -14106,7 +14298,7 @@ std::string id;
 
 ### API-b9424dfcb078 · ndnsf::di::NativeGraphNode::opType
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L49)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L78)
 
 ```cpp
 std::string opType;
@@ -14114,7 +14306,7 @@ std::string opType;
 
 ### API-31e286a62509 · ndnsf::di::NativeGraphNode::ordinal
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L50)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L79)
 
 ```cpp
 std::uint64_t ordinal = 0;
@@ -14122,7 +14314,7 @@ std::uint64_t ordinal = 0;
 
 ### API-fcb57ab98cd5 · ndnsf::di::NativeTensorContract
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L53)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L82)
 
 ```cpp
 struct NativeTensorContract
@@ -14130,7 +14322,7 @@ struct NativeTensorContract
 
 ### API-b68d4d0755e2 · ndnsf::di::NativeTensorContract::name
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L55)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L84)
 
 ```cpp
 std::string name;
@@ -14138,7 +14330,7 @@ std::string name;
 
 ### API-a10ab62bcdb3 · ndnsf::di::NativeTensorContract::dtype
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L56)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L85)
 
 ```cpp
 std::string dtype;
@@ -14146,7 +14338,7 @@ std::string dtype;
 
 ### API-aa09c31d3e0a · ndnsf::di::NativeTensorContract::shape
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L57)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L86)
 
 ```cpp
 std::vector<std::variant<std::int64_t, std::string>> shape;
@@ -14154,15 +14346,23 @@ std::vector<std::variant<std::int64_t, std::string>> shape;
 
 ### API-704a800ddd3a · ndnsf::di::NativeTensorContract::estimatedBytes
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L58)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L87)
 
 ```cpp
 std::optional<std::uint64_t> estimatedBytes;
 ```
 
+### API-5b2c45546bea · ndnsf::di::NativeTensorContract::validate
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L89)
+
+```cpp
+void validate() const;
+```
+
 ### API-42f655651220 · ndnsf::di::NativeGraphEdge
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L61)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L92)
 
 ```cpp
 struct NativeGraphEdge
@@ -14170,7 +14370,7 @@ struct NativeGraphEdge
 
 ### API-e43e58a4c2a2 · ndnsf::di::NativeGraphEdge::id
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L63)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L94)
 
 ```cpp
 std::string id;
@@ -14178,7 +14378,7 @@ std::string id;
 
 ### API-657bb4fe5dac · ndnsf::di::NativeGraphEdge::producer
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L64)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L95)
 
 ```cpp
 std::string producer;
@@ -14186,7 +14386,7 @@ std::string producer;
 
 ### API-f986c1836e46 · ndnsf::di::NativeGraphEdge::consumers
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L65)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L96)
 
 ```cpp
 std::vector<std::string> consumers;
@@ -14194,7 +14394,7 @@ std::vector<std::string> consumers;
 
 ### API-87b4325bb2dc · ndnsf::di::NativeGraphEdge::tensor
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L66)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L97)
 
 ```cpp
 NativeTensorContract tensor;
@@ -14202,7 +14402,7 @@ NativeTensorContract tensor;
 
 ### API-ddb5f230cbbc · ndnsf::di::NativeGraphSnapshot
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L69)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L100)
 
 ```cpp
 struct NativeGraphSnapshot
@@ -14210,7 +14410,7 @@ struct NativeGraphSnapshot
 
 ### API-99b59b6c5fb2 · ndnsf::di::NativeGraphSnapshot::graphDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L71)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L102)
 
 ```cpp
 std::string graphDigest;
@@ -14218,7 +14418,7 @@ std::string graphDigest;
 
 ### API-56bfbad6ca8b · ndnsf::di::NativeGraphSnapshot::nodes
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L72)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L103)
 
 ```cpp
 std::vector<NativeGraphNode> nodes;
@@ -14226,7 +14426,7 @@ std::vector<NativeGraphNode> nodes;
 
 ### API-e8324a8239e4 · ndnsf::di::NativeGraphSnapshot::topologicalOrder
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L73)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L104)
 
 ```cpp
 std::vector<std::string> topologicalOrder;
@@ -14234,7 +14434,7 @@ std::vector<std::string> topologicalOrder;
 
 ### API-12ada36e9cfc · ndnsf::di::NativeGraphSnapshot::legalCutEdges
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L74)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L105)
 
 ```cpp
 std::vector<std::string> legalCutEdges;
@@ -14242,7 +14442,7 @@ std::vector<std::string> legalCutEdges;
 
 ### API-1ae151dbb4aa · ndnsf::di::NativeGraphSnapshot::modelInputs
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L75)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L106)
 
 ```cpp
 std::vector<NativeTensorContract> modelInputs;
@@ -14250,7 +14450,7 @@ std::vector<NativeTensorContract> modelInputs;
 
 ### API-90b5f28654fb · ndnsf::di::NativeGraphSnapshot::modelOutputs
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L76)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L107)
 
 ```cpp
 std::vector<NativeTensorContract> modelOutputs;
@@ -14258,7 +14458,7 @@ std::vector<NativeTensorContract> modelOutputs;
 
 ### API-7bfdfc0bcd39 · ndnsf::di::NativeGraphSnapshot::edges
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L77)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L108)
 
 ```cpp
 std::vector<NativeGraphEdge> edges;
@@ -14266,7 +14466,7 @@ std::vector<NativeGraphEdge> edges;
 
 ### API-fbca915988d9 · ndnsf::di::NativeGraphSnapshot::validate
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L79)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L110)
 
 ```cpp
 void validate(const NativeModelDescriptor& model) const;
@@ -14274,7 +14474,7 @@ void validate(const NativeModelDescriptor& model) const;
 
 ### API-28b3c67439a3 · ndnsf::di::NativeCandidateBudget
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L82)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L113)
 
 ```cpp
 struct NativeCandidateBudget
@@ -14282,7 +14482,7 @@ struct NativeCandidateBudget
 
 ### API-5c20621ace80 · ndnsf::di::NativeCandidateBudget::maxCandidates
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L84)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L115)
 
 ```cpp
 std::size_t maxCandidates = 1;
@@ -14290,7 +14490,7 @@ std::size_t maxCandidates = 1;
 
 ### API-045a803d37ca · ndnsf::di::NativeCandidateBudget::maxPolicyMs
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L85)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L116)
 
 ```cpp
 std::uint64_t maxPolicyMs = 100;
@@ -14298,7 +14498,7 @@ std::uint64_t maxPolicyMs = 100;
 
 ### API-298d90ad719d · ndnsf::di::NativeCandidateBudget::maxReentries
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L86)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L117)
 
 ```cpp
 std::size_t maxReentries = 1;
@@ -14306,7 +14506,7 @@ std::size_t maxReentries = 1;
 
 ### API-f9611080b5e5 · ndnsf::di::NativeCandidateBudget::validate
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L88)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L119)
 
 ```cpp
 void validate() const;
@@ -14314,7 +14514,7 @@ void validate() const;
 
 ### API-8ec046edf2b9 · ndnsf::di::NativeRoleResourceRequirement
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L91)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L122)
 
 ```cpp
 struct NativeRoleResourceRequirement
@@ -14322,7 +14522,7 @@ struct NativeRoleResourceRequirement
 
 ### API-f25de309052d · ndnsf::di::NativeRoleResourceRequirement::backends
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L93)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L124)
 
 ```cpp
 std::vector<std::string> backends;
@@ -14330,7 +14530,7 @@ std::vector<std::string> backends;
 
 ### API-cb6070e215e3 · ndnsf::di::NativeRoleResourceRequirement::weightBytes
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L94)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L125)
 
 ```cpp
 std::uint64_t weightBytes = 0;
@@ -14338,7 +14538,7 @@ std::uint64_t weightBytes = 0;
 
 ### API-c2d01c7d12e3 · ndnsf::di::NativeRoleResourceRequirement::workspaceBytes
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L95)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L126)
 
 ```cpp
 std::uint64_t workspaceBytes = 0;
@@ -14346,7 +14546,7 @@ std::uint64_t workspaceBytes = 0;
 
 ### API-3223742eb68f · ndnsf::di::NativeRoleResourceRequirement::activationBytes
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L96)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L127)
 
 ```cpp
 std::uint64_t activationBytes = 0;
@@ -14354,7 +14554,7 @@ std::uint64_t activationBytes = 0;
 
 ### API-637b99e7d003 · ndnsf::di::NativeRoleResourceRequirement::transientBytes
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L97)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L128)
 
 ```cpp
 std::uint64_t transientBytes = 0;
@@ -14362,7 +14562,7 @@ std::uint64_t transientBytes = 0;
 
 ### API-db9befcca930 · ndnsf::di::NativeRoleResourceRequirement::safetyMargin
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L98)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L129)
 
 ```cpp
 double safetyMargin = 1.0;
@@ -14370,7 +14570,7 @@ double safetyMargin = 1.0;
 
 ### API-0edcf641fc3f · ndnsf::di::NativeProviderPlanningView
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L101)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L132)
 
 ```cpp
 struct NativeProviderPlanningView
@@ -14378,7 +14578,7 @@ struct NativeProviderPlanningView
 
 ### API-11400ea6af37 · ndnsf::di::NativeProviderPlanningView::provider
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L103)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L134)
 
 ```cpp
 std::string provider;
@@ -14386,7 +14586,7 @@ std::string provider;
 
 ### API-94dff038f5f6 · ndnsf::di::NativeProviderPlanningView::offerDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L104)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L135)
 
 ```cpp
 std::string offerDigest;
@@ -14394,7 +14594,7 @@ std::string offerDigest;
 
 ### API-76c8c6748024 · ndnsf::di::NativeProviderPlanningView::acceptedRoles
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L105)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L136)
 
 ```cpp
 std::vector<std::string> acceptedRoles;
@@ -14402,7 +14602,7 @@ std::vector<std::string> acceptedRoles;
 
 ### API-997d89d2a48a · ndnsf::di::NativeProviderPlanningView::backends
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L106)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L137)
 
 ```cpp
 std::vector<std::string> backends;
@@ -14410,7 +14610,7 @@ std::vector<std::string> backends;
 
 ### API-c32cf0b4f410 · ndnsf::di::NativeProviderPlanningView::residencyDigests
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L107)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L138)
 
 ```cpp
 std::vector<std::string> residencyDigests;
@@ -14418,7 +14618,7 @@ std::vector<std::string> residencyDigests;
 
 ### API-aa613202039d · ndnsf::di::NativeProviderPlanningView::freeBytes
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L108)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L139)
 
 ```cpp
 std::uint64_t freeBytes = 0;
@@ -14426,7 +14626,7 @@ std::uint64_t freeBytes = 0;
 
 ### API-c8dc942f5a22 · ndnsf::di::NativeProviderPlanningView::resourceSequence
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L109)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L140)
 
 ```cpp
 std::uint64_t resourceSequence = 0;
@@ -14434,7 +14634,7 @@ std::uint64_t resourceSequence = 0;
 
 ### API-63e7cbf58353 · ndnsf::di::NativeProviderPlanningView::preparationAccepted
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L110)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L141)
 
 ```cpp
 bool preparationAccepted = false;
@@ -14442,7 +14642,7 @@ bool preparationAccepted = false;
 
 ### API-c441e31ca5bf · ndnsf::di::NativeProviderPlanningView::executionAllowed
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L111)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L142)
 
 ```cpp
 bool executionAllowed = false;
@@ -14450,7 +14650,7 @@ bool executionAllowed = false;
 
 ### API-299737ca8e52 · ndnsf::di::NativeProviderPlanningView::validate
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L113)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L144)
 
 ```cpp
 void validate() const;
@@ -14458,7 +14658,7 @@ void validate() const;
 
 ### API-1f2e22041e57 · ndnsf::di::NativePlanningSnapshot
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L116)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L147)
 
 ```cpp
 struct NativePlanningSnapshot
@@ -14466,7 +14666,7 @@ struct NativePlanningSnapshot
 
 ### API-d32a488e1444 · ndnsf::di::NativePlanningSnapshot::model
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L118)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L149)
 
 ```cpp
 NativeModelDescriptor model;
@@ -14474,7 +14674,7 @@ NativeModelDescriptor model;
 
 ### API-8ed67d7fdfa6 · ndnsf::di::NativePlanningSnapshot::graph
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L119)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L150)
 
 ```cpp
 NativeGraphSnapshot graph;
@@ -14482,7 +14682,7 @@ NativeGraphSnapshot graph;
 
 ### API-7bb3dc9748f4 · ndnsf::di::NativePlanningSnapshot::offers
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L120)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L151)
 
 ```cpp
 std::vector<NativeProviderPlanningView> offers;
@@ -14490,7 +14690,7 @@ std::vector<NativeProviderPlanningView> offers;
 
 ### API-a0b4226528e4 · ndnsf::di::NativePlanningSnapshot::requestId
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L121)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L152)
 
 ```cpp
 std::string requestId;
@@ -14498,7 +14698,7 @@ std::string requestId;
 
 ### API-f9e02b99708c · ndnsf::di::NativePlanningSnapshot::attempt
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L122)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L153)
 
 ```cpp
 std::uint64_t attempt = 1;
@@ -14506,7 +14706,7 @@ std::uint64_t attempt = 1;
 
 ### API-8fa29be159c0 · ndnsf::di::NativePlanningSnapshot::ackClosedDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L123)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L154)
 
 ```cpp
 std::string ackClosedDigest;
@@ -14514,7 +14714,7 @@ std::string ackClosedDigest;
 
 ### API-4f7f27197d86 · ndnsf::di::NativePlanningSnapshot::deadline
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L124)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L155)
 
 ```cpp
 std::chrono::steady_clock::time_point deadline;
@@ -14522,7 +14722,7 @@ std::chrono::steady_clock::time_point deadline;
 
 ### API-a020efd12b9d · ndnsf::di::NativePlanningSnapshot::validate
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L126)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L157)
 
 ```cpp
 void validate() const;
@@ -14530,7 +14730,7 @@ void validate() const;
 
 ### API-49d61b9bf2b3 · ndnsf::di::NativeSplitCandidate
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L129)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L160)
 
 ```cpp
 struct NativeSplitCandidate
@@ -14538,7 +14738,7 @@ struct NativeSplitCandidate
 
 ### API-62234c5132aa · ndnsf::di::NativeSplitCandidate::source
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L131)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L162)
 
 ```cpp
 std::string source;
@@ -14546,7 +14746,7 @@ std::string source;
 
 ### API-94e840a7c00b · ndnsf::di::NativeSplitCandidate::splitter
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L132)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L163)
 
 ```cpp
 NativeStrategyIdentity splitter;
@@ -14554,7 +14754,7 @@ NativeStrategyIdentity splitter;
 
 ### API-4a973421c606 · ndnsf::di::NativeSplitCandidate::model
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L133)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L164)
 
 ```cpp
 NativeModelDescriptor model;
@@ -14562,7 +14762,7 @@ NativeModelDescriptor model;
 
 ### API-1cace18e0abf · ndnsf::di::NativeSplitCandidate::graphDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L134)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L165)
 
 ```cpp
 std::string graphDigest;
@@ -14570,7 +14770,7 @@ std::string graphDigest;
 
 ### API-4e35e78eefc5 · ndnsf::di::NativeSplitCandidate::executionPlan
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L135)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L166)
 
 ```cpp
 NativeExecutionPlan executionPlan;
@@ -14578,7 +14778,7 @@ NativeExecutionPlan executionPlan;
 
 ### API-be060ef69118 · ndnsf::di::NativeSplitCandidate::fragmentsByRole
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L136)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L167)
 
 ```cpp
 std::map<std::string, std::string> fragmentsByRole;
@@ -14586,7 +14786,7 @@ std::map<std::string, std::string> fragmentsByRole;
 
 ### API-df1f042bf577 · ndnsf::di::NativeSplitCandidate::artifactsByRole
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L137)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L168)
 
 ```cpp
 std::map<std::string, std::vector<std::string>> artifactsByRole;
@@ -14594,7 +14794,7 @@ std::map<std::string, std::vector<std::string>> artifactsByRole;
 
 ### API-7f49986811b3 · ndnsf::di::NativeSplitCandidate::requirementsByRole
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L138)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L169)
 
 ```cpp
 std::map<std::string, NativeRoleResourceRequirement> requirementsByRole;
@@ -14602,7 +14802,7 @@ std::map<std::string, NativeRoleResourceRequirement> requirementsByRole;
 
 ### API-f44ecb898d7e · ndnsf::di::NativeSplitCandidate::crossPartitionTensors
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L139)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L170)
 
 ```cpp
 std::vector<std::string> crossPartitionTensors;
@@ -14610,7 +14810,7 @@ std::vector<std::string> crossPartitionTensors;
 
 ### API-49867e04f506 · ndnsf::di::NativeSplitCandidate::tensorDegreesByRole
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L140)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L171)
 
 ```cpp
 std::map<std::string, std::uint64_t> tensorDegreesByRole;
@@ -14618,7 +14818,7 @@ std::map<std::string, std::uint64_t> tensorDegreesByRole;
 
 ### API-97186945924f · ndnsf::di::NativeSplitCandidate::rankArtifactDigestsByRole
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L141)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L172)
 
 ```cpp
 std::map<std::string, std::vector<std::string>> rankArtifactDigestsByRole;
@@ -14626,7 +14826,7 @@ std::map<std::string, std::vector<std::string>> rankArtifactDigestsByRole;
 
 ### API-274ed6f31f34 · ndnsf::di::NativeSplitCandidate::selectionPriority
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L142)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L173)
 
 ```cpp
 int selectionPriority = 0;
@@ -14634,7 +14834,7 @@ int selectionPriority = 0;
 
 ### API-6a4cc06aee50 · ndnsf::di::NativeSplitCandidate::inputIngressRole
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L143)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L174)
 
 ```cpp
 std::string inputIngressRole;
@@ -14642,7 +14842,7 @@ std::string inputIngressRole;
 
 ### API-a8d2fa8af102 · ndnsf::di::NativeSplitCandidate::resultEgressRole
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L144)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L175)
 
 ```cpp
 std::string resultEgressRole;
@@ -14650,7 +14850,7 @@ std::string resultEgressRole;
 
 ### API-4ccabe003318 · ndnsf::di::NativeSplitCandidate::mergeKind
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L145)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L176)
 
 ```cpp
 std::string mergeKind;
@@ -14658,7 +14858,7 @@ std::string mergeKind;
 
 ### API-35eff69b6cb5 · ndnsf::di::NativeSplitCandidate::postprocessIdentity
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L146)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L177)
 
 ```cpp
 std::string postprocessIdentity;
@@ -14666,15 +14866,46 @@ std::string postprocessIdentity;
 
 ### API-85717516b81b · ndnsf::di::NativeSplitCandidate::candidateDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L147)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L178)
 
 ```cpp
 std::string candidateDigest;
 ```
 
+### API-6fa12359a513 · ndnsf::di::NativeSplitCandidate::nodeRoles
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L182)
+
+```cpp
+std::map<std::string, std::string> nodeRoles;
+```
+
+原始接口说明：
+
+```text
+// Planning node IDs, not canonical ONNX assembly indices. The adapter owns
+// the conversion between these two graph identity spaces.
+```
+
+### API-02d3afb4b136 · ndnsf::di::NativeSplitCandidate::roleStateInputsByRole
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L183)
+
+```cpp
+std::map<std::string, std::vector<NativeTensorContract>> roleStateInputsByRole;
+```
+
+### API-0d787cc47296 · ndnsf::di::NativeSplitCandidate::roleStateOutputsByRole
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L184)
+
+```cpp
+std::map<std::string, std::vector<NativeTensorContract>> roleStateOutputsByRole;
+```
+
 ### API-4204edd696cc · ndnsf::di::NativeSplitCandidate::validate
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L149)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L186)
 
 ```cpp
 void validate(const NativeGraphSnapshot& graph) const;
@@ -14682,7 +14913,7 @@ void validate(const NativeGraphSnapshot& graph) const;
 
 ### API-f67586c2ac92 · ndnsf::di::NativePlacementProposal
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L152)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L189)
 
 ```cpp
 struct NativePlacementProposal
@@ -14690,7 +14921,7 @@ struct NativePlacementProposal
 
 ### API-891572dd8b75 · ndnsf::di::NativePlacementProposal::requestId
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L154)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L191)
 
 ```cpp
 std::string requestId;
@@ -14698,7 +14929,7 @@ std::string requestId;
 
 ### API-a40b80d425fa · ndnsf::di::NativePlacementProposal::attempt
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L155)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L192)
 
 ```cpp
 std::uint64_t attempt = 1;
@@ -14706,7 +14937,7 @@ std::uint64_t attempt = 1;
 
 ### API-2df9230bed61 · ndnsf::di::NativePlacementProposal::modelDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L156)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L193)
 
 ```cpp
 std::string modelDigest;
@@ -14714,7 +14945,7 @@ std::string modelDigest;
 
 ### API-fd402dc3fc3a · ndnsf::di::NativePlacementProposal::graphDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L157)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L194)
 
 ```cpp
 std::string graphDigest;
@@ -14722,7 +14953,7 @@ std::string graphDigest;
 
 ### API-614e7e7fbe13 · ndnsf::di::NativePlacementProposal::candidateDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L158)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L195)
 
 ```cpp
 std::string candidateDigest;
@@ -14730,7 +14961,7 @@ std::string candidateDigest;
 
 ### API-1a435ae06cfa · ndnsf::di::NativePlacementProposal::strategy
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L159)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L196)
 
 ```cpp
 NativeStrategyIdentity strategy;
@@ -14738,7 +14969,7 @@ NativeStrategyIdentity strategy;
 
 ### API-6e945a32d1b0 · ndnsf::di::NativePlacementProposal::executionPlan
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L160)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L197)
 
 ```cpp
 NativeExecutionPlan executionPlan;
@@ -14746,7 +14977,7 @@ NativeExecutionPlan executionPlan;
 
 ### API-4da1e46f8d78 · ndnsf::di::NativePlacementProposal::assignment
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L161)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L198)
 
 ```cpp
 NativeProviderAssignment assignment;
@@ -14754,7 +14985,7 @@ NativeProviderAssignment assignment;
 
 ### API-99236b6187cb · ndnsf::di::NativePlacementProposal::validate
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L163)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L200)
 
 ```cpp
 void validate(const NativePlanningSnapshot& snapshot,
@@ -14763,7 +14994,7 @@ void validate(const NativePlanningSnapshot& snapshot,
 
 ### API-aa687dbaff22 · ndnsf::di::NativeModelSplitStrategy
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L167)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L204)
 
 ```cpp
 class NativeModelSplitStrategy
@@ -14771,7 +15002,7 @@ class NativeModelSplitStrategy
 
 ### API-06a9699ebb49 · ndnsf::di::NativeModelSplitStrategy::~NativeModelSplitStrategy
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L170)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L207)
 
 ```cpp
 virtual ~NativeModelSplitStrategy() = default;
@@ -14779,7 +15010,7 @@ virtual ~NativeModelSplitStrategy() = default;
 
 ### API-7516038e04c4 · ndnsf::di::NativeModelSplitStrategy::identity
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L171)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L208)
 
 ```cpp
 virtual NativeStrategyIdentity identity() const = 0;
@@ -14787,7 +15018,7 @@ virtual NativeStrategyIdentity identity() const = 0;
 
 ### API-da75fc521e8b · ndnsf::di::NativeModelSplitStrategy::enumerate
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L172)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L209)
 
 ```cpp
 virtual std::vector<NativeSplitCandidate> enumerate(
@@ -14798,7 +15029,7 @@ virtual std::vector<NativeSplitCandidate> enumerate(
 
 ### API-f3887f6fa66b · ndnsf::di::NativePlacementStrategy
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L178)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L215)
 
 ```cpp
 class NativePlacementStrategy
@@ -14806,7 +15037,7 @@ class NativePlacementStrategy
 
 ### API-154778d422a9 · ndnsf::di::NativePlacementStrategy::~NativePlacementStrategy
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L181)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L218)
 
 ```cpp
 virtual ~NativePlacementStrategy() = default;
@@ -14814,7 +15045,7 @@ virtual ~NativePlacementStrategy() = default;
 
 ### API-e2e35edf9182 · ndnsf::di::NativePlacementStrategy::identity
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L182)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L219)
 
 ```cpp
 virtual NativeStrategyIdentity identity() const = 0;
@@ -14822,7 +15053,7 @@ virtual NativeStrategyIdentity identity() const = 0;
 
 ### API-0f4ac0e590fd · ndnsf::di::NativePlacementStrategy::proposeRoles
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L183)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L220)
 
 ```cpp
 virtual NativeRolePlacementProposalV3 proposeRoles(
@@ -14833,7 +15064,7 @@ virtual NativeRolePlacementProposalV3 proposeRoles(
 
 ### API-0971ccaca97b · ndnsf::di::NativePreSplitFirstPlacement
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L189)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L226)
 
 ```cpp
 class NativePreSplitFirstPlacement final : public NativePlacementStrategy
@@ -14841,7 +15072,7 @@ class NativePreSplitFirstPlacement final : public NativePlacementStrategy
 
 ### API-36d5faaf8ea6 · ndnsf::di::NativePreSplitFirstPlacement::NativePreSplitFirstPlacement
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L192)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L229)
 
 ```cpp
 explicit NativePreSplitFirstPlacement(NativeStrategyIdentity identity = {
@@ -14851,7 +15082,7 @@ explicit NativePreSplitFirstPlacement(NativeStrategyIdentity identity = {
 
 ### API-5960132990e1 · ndnsf::di::NativePreSplitFirstPlacement::identity
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L196)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L233)
 
 ```cpp
 NativeStrategyIdentity identity() const override;
@@ -14859,7 +15090,7 @@ NativeStrategyIdentity identity() const override;
 
 ### API-73513efe9d2d · ndnsf::di::NativePreSplitFirstPlacement::propose
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L198)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L235)
 
 ```cpp
 NativePlacementProposal propose(const NativePlanningSnapshot& snapshot,
@@ -14874,7 +15105,7 @@ NativePlacementProposal propose(const NativePlanningSnapshot& snapshot,
 
 ### API-22510777a99c · ndnsf::di::NativePreSplitFirstPlacement::proposeRoles
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L201)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L238)
 
 ```cpp
 NativeRolePlacementProposalV3 proposeRoles(
@@ -14885,7 +15116,7 @@ NativeRolePlacementProposalV3 proposeRoles(
 
 ### API-8481201cfbdd · ndnsf::di::NativeModelAdapter
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L210)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L247)
 
 ```cpp
 class NativeModelAdapter
@@ -14893,7 +15124,7 @@ class NativeModelAdapter
 
 ### API-6866236593a1 · ndnsf::di::NativeModelAdapter::~NativeModelAdapter
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L213)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L250)
 
 ```cpp
 virtual ~NativeModelAdapter() = default;
@@ -14901,7 +15132,7 @@ virtual ~NativeModelAdapter() = default;
 
 ### API-768854a63852 · ndnsf::di::NativeModelAdapter::adapterId
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L214)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L251)
 
 ```cpp
 virtual std::string adapterId() const = 0;
@@ -14909,7 +15140,7 @@ virtual std::string adapterId() const = 0;
 
 ### API-88833eb9cefe · ndnsf::di::NativeModelAdapter::adapterVersion
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L215)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L252)
 
 ```cpp
 virtual std::string adapterVersion() const = 0;
@@ -14917,7 +15148,7 @@ virtual std::string adapterVersion() const = 0;
 
 ### API-5bce169c3a9c · ndnsf::di::NativeModelAdapter::inspect
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L216)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L253)
 
 ```cpp
 virtual NativeModelDescriptor inspect(const std::string& modelName,
@@ -14926,7 +15157,7 @@ virtual NativeModelDescriptor inspect(const std::string& modelName,
 
 ### API-0a4d581fb406 · ndnsf::di::NativeModelAdapter::encodeInput
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L218)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L255)
 
 ```cpp
 virtual std::vector<std::uint8_t> encodeInput(
@@ -14935,7 +15166,7 @@ virtual std::vector<std::uint8_t> encodeInput(
 
 ### API-6a251d8a5a23 · ndnsf::di::NativeModelAdapter::decodeResult
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L220)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L257)
 
 ```cpp
 virtual std::vector<std::uint8_t> decodeResult(
@@ -14944,7 +15175,7 @@ virtual std::vector<std::uint8_t> decodeResult(
 
 ### API-b5d26eb3034f · ndnsf::di::NativeAdapterRegistry
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L224)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L261)
 
 ```cpp
 class NativeAdapterRegistry
@@ -14952,7 +15183,7 @@ class NativeAdapterRegistry
 
 ### API-26acfbfac56f · ndnsf::di::NativeAdapterRegistry::registerAdapter
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L227)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L264)
 
 ```cpp
 void registerAdapter(std::shared_ptr<const NativeModelAdapter> adapter);
@@ -14960,7 +15191,7 @@ void registerAdapter(std::shared_ptr<const NativeModelAdapter> adapter);
 
 ### API-1da178c30b39 · ndnsf::di::NativeAdapterRegistry::freeze
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L228)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L265)
 
 ```cpp
 void freeze();
@@ -14968,7 +15199,7 @@ void freeze();
 
 ### API-2570d41eb65f · ndnsf::di::NativeAdapterRegistry::frozen
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L229)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L266)
 
 ```cpp
 bool frozen() const noexcept
@@ -14976,7 +15207,7 @@ bool frozen() const noexcept
 
 ### API-c11b46ff0831 · ndnsf::di::NativeAdapterRegistry::find
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L230)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L267)
 
 ```cpp
 std::shared_ptr<const NativeModelAdapter> find(const std::string& adapterId) const;
@@ -14984,7 +15215,7 @@ std::shared_ptr<const NativeModelAdapter> find(const std::string& adapterId) con
 
 ### API-54390fef89ed · ndnsf::di::nativePlanningDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L237)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L274)
 
 ```cpp
 std::string nativePlanningDigest(const std::string& canonical);
@@ -14992,7 +15223,7 @@ std::string nativePlanningDigest(const std::string& canonical);
 
 ### API-9ec898d308fb · ndnsf::di::nativePlanningDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L239)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L276)
 
 ```cpp
 std::string nativePlanningDigest(const std::uint8_t* data, std::size_t size);

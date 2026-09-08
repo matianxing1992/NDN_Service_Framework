@@ -1,6 +1,7 @@
 {
-  "revision": "R1",
+  "revision": "R2",
   "minimum_pages": 50,
-  "expect_equal": true,
-  "note": "R1 初始当前与目标一致；用户明确修改目标后改为 false 并在追踪记录解释差异。页数下限只防止缺失 API 部分，不是质量证明。"
+  "expect_equal": false,
+  "expected_target_sections": ["TG-01", "TG-02", "TG-03", "TG-04", "TG-05"],
+  "note": "R2 用户接受分步改进；目标保留独立 API 基线并增加五项 PLANNED 目标。页数不是语义覆盖证明。"
 }

@@ -13,3 +13,12 @@
 源码文件和定位见 api/inventory.json、四模块 reference、api/contract-map.json 及 source-baseline.json。
 架构和运行边界使用 docs/architecture.md、docs/ndnsf-core-app-boundary.md、docs/NDNSF-DI-runtime-workflow.md 与 active Spec 的契约/证据。
 源码注释在 API 参考中保留原文作为接口作者说明；中文行为契约单独维护，不将注释自动升级为测试证明。
+## R2 改进参考（2026-09-07 核对）
+
+- [Envoy xDS protocol](https://www.envoyproxy.io/docs/envoy/latest/api-docs/xds_protocol.html)：
+  TG-01 借鉴按资源增量更新与已应用版本/ACK/NACK 的区分；不把 xDS 传输或认证直接移入 NDN。
+- [gRPC Deadlines](https://grpc.io/docs/guides/deadlines/) 和
+  [Cancellation](https://grpc.io/docs/guides/cancellation/)：TG-03 借鉴预算传播与应用协作取消边界。
+  取消本地调用不代表应用计算被强制中断。
+- [NFD Developer’s Guide](https://named-data.gitlab.io/TR-NDN-0021-NFD-dev-guide/ndn-0021-nfd-guide.pdf)：
+  BC/TG 采用流程、状态、扩展约束的说明方式。此参考不提供 NDNSF 实现的正确性证据。
