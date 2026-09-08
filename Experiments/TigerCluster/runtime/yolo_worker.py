@@ -466,6 +466,8 @@ class NodeRuntime:
         application = ["/usr/bin/env", "NDNSF_DI_STATE_ROOT=/output/state",
                        "NDNSF_DI_DEPENDENCY_OBJECT_TRACE=1",
                        "NDNSF_DI_ORT_PROFILE_PREFIX=/output/ort/session", *argv]
+        if self.mode == 'negative-dependency' and role in PROVIDER_ROLES:
+            application.insert(1, 'NDNSF_DI_RUNTIME_TIMING=1')
         launch_nonce = secrets.token_hex(32) if role in PROVIDER_ROLES else None
         if launch_nonce is not None:
             application = ['/usr/bin/python3', '-m', 'runtime.yolo_launch_witness',

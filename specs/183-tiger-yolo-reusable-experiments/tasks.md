@@ -6,8 +6,8 @@
 
 ## Detailed Execution Progress
 
-更新：2026-09-07；进度表初始审计基线 `d1f1504a`，最新增量接续 `c7aea386`，见
-[negative User observation](evidence/t004-negative-user.md)。其他客户端已在
+更新：2026-09-08；进度表初始审计基线 `d1f1504a`，最新增量接续 `af8022f7`，见
+[negative collector](evidence/t004-negative-collection.md)。其他客户端已在
 `64df1581` / `5171450d` 提交 [host-unit](evidence/host-unit.md) 的构建与加载证据；
 下表记录其已声明范围，未重复运行构建，也不将它升级为正式 runtime 资格。
 下表是当前执行入口；后文 checkpoint 是历史证据，不应把旧“下一步”当作当前指令。
@@ -17,9 +17,9 @@
 
 ### T001–T007：关闭实际 GPU YOLO 执行路径
 
-当前关键缺口是 T004.s：User 终态观察已实现，双 rank 负例调度与独立留存
-collector 尚未接通。T004.q 已连接 SSH 运输和接收端唯一提交入口；早期行中
-“运输未接”的历史状态不再适用。完整候选运输、SIF 与 GPU 资格仍未验收。
+T004.s 的 User、双 rank 负例调度与独立留存 collector 已接通，下一步是
+T007 对全部生产路径的收敛审查。T004.q 已连接 SSH 运输和唯一提交入口；
+旧“运输/负例未接”的历史状态不再适用。完整候选运输、SIF 与 GPU 资格仍未验收。
 
 | Step | Parent | Concrete outcome / path | State | Evidence / verification scope | Blocker / next action | Reuse / rerun trigger |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -28,23 +28,23 @@ collector 尚未接通。T004.q 已连接 SSH 运输和接收端唯一提交入�
 | T002.b | T002 | 既有 builder 接受 Spec183 host-gate receipt、保留 Spec175 | IMPLEMENTED | 后文 T002 dispatch/preflight checkpoint；组件/命令边界证据 | T007 核实接线；T010 后才验证真实 receipt 的消费 | 不为等真实 receipt 重复 fixture suite |
 | T003.a | T003 | `yolo_worker.py` 角色隔离、启动、进程组及清理 | VERIFIED | [worker](evidence/t003-worker.md)；T003 focused acceptance | 真实 workload 接线归 T004/T005 | 生命周期代码未变复用；改动时跑对应回归 |
 | T004.a | T004 | profile/schema、冻结 bundle、五命令与提交 journal | IMPLEMENTED | [profile](evidence/t004-profile.md)、[journal](evidence/t004-cli-journal.md)、后文 dispatch checkpoint | 结构和拒错已有记录；完整执行未验收 | 文档变更不重跑；字段/argv 变更做 focused 检查 |
-| T004.b | T004 | `jobs/yolo/submit.py` 的远端 staging、run 接真实 worker | BLOCKED | 接收端submit与SSH运输已接（T004.k/q）；NEGATIVE_RUNNER_NOT_WIRED仍在 | 完成负例与完整候选前置证据；在 T007 前完成审查 | 只验证新调用边界，复用既有 worker/barrier/journal 证据 |
-| T004.c | T004 | `local` 拒绝其他 profile 冻结的 prepared run | VERIFIED | [CLI binding](evidence/t004-cli-journal.md#2026-09-07-local-prepared-profile-binding)；40 CLI passed，先于 host receipt 检查拒绝 | 绑定修复已完成；T004.b 的生产 worker 接线仍待完成 | 相同源码无需重复 CLI suite；本项不触发 SIF/GPU 验证 |
+| T004.b | T004 | `jobs/yolo/submit.py` 的远端 staging、run 接真实 worker | IMPLEMENTED | T004.k/q/s已连接正常与负例入口；实际提交仍要求前置资格门 | T007统一审查所有有效字段/完整调用链；完整候选前置证据仍缺 | 只验证新调用边界，复用既有 worker/barrier/journal 证据 |
+| T004.c | T004 | `local` 拒绝其他 profile 冻结的 prepared run | VERIFIED | [CLI binding](evidence/t004-cli-journal.md#2026-09-07-local-prepared-profile-binding)；40 CLI passed，先于 host receipt 检查拒绝 | 绑定修复已完成；完整调用链等待T007审查 | 相同源码无需重复 CLI suite；本项不触发 SIF/GPU 验证 |
 | T004.e | T004 | v2 prepared 绑定 I/R/E；跨运行 prerequisite 重算留存证据 | IMPLEMENTED | [gate reuse](evidence/t004-gate-reuse.md)；56 项 CLI/门边界检查通过，collector double 不代表运行通过 | 运输接线见T004.q；真实先行运行证据仍缺；旧 v1 不放行 | 同内容复用留存证据；改变内容/脚本/行为拒绝复用，不启动模型重复测试 |
-| T004.f | T004 | 冻结脚本→刷新文件摘要→有效配置快照；检查当前语义一致性 | VERIFIED | [effective profile](evidence/t004-effective-profile.md)；79 项组件通过，含真实小文件 renderer 一次收敛/重复稳定性 | 仅本行配置一致性通过；最终候选E待刷新，负例owner待T004.s | 只重测 renderer/profile/prepare/provision；不重跑模型或旧单位套件 |
-| T004.g | T004 | 单 GPU batch→srun→journal-bound rank→真实单节点 owner→collector | IMPLEMENTED | [single GPU runner](evidence/t004-single-gpu-runner.md)；63 项首轮、11 项最终边界通过；无真实 Slurm/GPU 执行 | 暂存/容量/终态/双节点已接T004.h–q；候选门与负例仍缺；不关闭T013 | 复用 CPU owner 与已有 allocation/GPU probe；仅测新增编排、错误与清理边界 |
+| T004.f | T004 | 冻结脚本→刷新文件摘要→有效配置快照；检查当前语义一致性 | VERIFIED | [effective profile](evidence/t004-effective-profile.md)；79 项组件通过，含真实小文件 renderer 一次收敛/重复稳定性 | 仅本行配置一致性通过；T004.s已接，最终候选E待刷新 | 只重测 renderer/profile/prepare/provision；不重跑模型或旧单位套件 |
+| T004.g | T004 | 单 GPU batch→srun→journal-bound rank→真实单节点 owner→collector | IMPLEMENTED | [single GPU runner](evidence/t004-single-gpu-runner.md)；63 项首轮、11 项最终边界通过；无真实 Slurm/GPU 执行 | 后续编排已接T004.h–s；候选前置资格与T007仍待闭合；不关闭T013 | 复用 CPU owner 与已有 allocation/GPU probe；仅测新增编排、错误与清理边界 |
 | T004.h | T004 | 两 rank 共用签发和nonce、独立allocation/角色、全部退出后汇总 | IMPLEMENTED | [two-node runner](evidence/t004-two-node-runner.md)；41 owner/handoff + 53 CLI 检查通过，83 个唯一用例；无真实 Slurm/GPU | 630秒最小预算、profile900；暂存/scratch/终态已有后续接线；负例与T014仍未验收 | 双 rank 并发组件 + 实际留存文件汇总；未运行额外模型case |
 | T004.i | T004 | 实测容量、每 rank 校验复制同一 SIF、node-local NFD、持久清理凭据 | IMPLEMENTED | [node storage](evidence/t004-node-storage.md)；56 + 66 项局部通过；真实小文件/fsync/socket，native/Slurm 编排使用 double | 实际候选刷新两次 FILE_DIGEST:baseSif，独立读取6a3d0010与锁b6710fd6不符；先查读取/内容完整性；T012仍未验收 | 不再盲重试刷新；仅测变化边界，无模型/GPU重跑 |
-| T004.j | T004 | 作业外 `collect --reconcile` 查询终态、持久观察、释放journal；GPU前置门要求终态 | IMPLEMENTED | [terminal observer](evidence/t004-terminal-observer.md)；78项首组 + 4项gate + 1项修正fixture通过；真实journal和文件、scheduler double | 未知提交恢复/运输已接T004.k/q；负例与 [input read integrity](evidence/input-read-integrity.md) 仍缺 | 默认collect离线；只测新终态/门边界，不启动GPU或复跑旧模型 |
-| T004.k | T004 | 共享目录接收端唯一sbatch；intent→SUBMITTING→ack，未知job按comment查询恢复 | IMPLEMENTED | [shared submit](evidence/t004-shared-submit.md)；85首组、15最终接收边界通过；真实journal/files、Slurm double | 环境/运输已接T004.l/q；真实候选gate、负例与镜像读取异常未解决 | 只重测提交/journal/ack与新依赖门；未启动GPU、重编native或重复下载SIF |
+| T004.j | T004 | 作业外 `collect --reconcile` 查询终态、持久观察、释放journal；GPU前置门要求终态 | IMPLEMENTED | [terminal observer](evidence/t004-terminal-observer.md)；78项首组 + 4项gate + 1项修正fixture通过；真实journal和文件、scheduler double | 后续接线见T004.k/q/s；实际负例验收与 [input read integrity](evidence/input-read-integrity.md) 仍缺 | 默认collect离线；只测新终态/门边界，不启动GPU或复跑旧模型 |
+| T004.k | T004 | 共享目录接收端唯一sbatch；intent→SUBMITTING→ack，未知job按comment查询恢复 | IMPLEMENTED | [shared submit](evidence/t004-shared-submit.md)；85首组、15最终接收边界通过；真实journal/files、Slurm double | 环境/运输/负例已接T004.l/q/s；真实候选gate与镜像读取异常未解决 | 只重测提交/journal/ack与新依赖门；未启动GPU、重编native或重复下载SIF |
 | T004.l | T004 | 独立operator venv、固定解释器配置贯穿提交/batch/srun，保留本机离线入口 | IMPLEMENTED | [operator environment](evidence/t004-operator-env.md)；实际Tiger安装/复用和本机pins通过；104首组、78最终边界通过 | 登录节点依赖已验证；compute rank、完整候选运输和runtime资格仍未验收；不扩大为SIF/GPU PASS | 复用按依赖摘要命名的环境，不重装系统Python、不改SIF；每实际rank检查加载 |
 | T004.m | T004 | sender submit使用本机解释器；两端同名project路径保留验收原字节 | IMPLEMENTED | [submit origin](evidence/t004-submit-origin.md)；68项组件；T004.q已验证小型project镜像与SSH协调 | 完整真实候选运输仍未验收；不以小文件fixture代替SIF资格 | 仅重测提交解释器和接收边界；不修改旧回执、不重跑模型或下载SIF |
 | T004.n | T004 | 显式文件inventory与不覆盖接收发布；中断后复用已匹配文件 | IMPLEMENTED | [transport receiver](evidence/t004-transport-receiver.md)；15组件检查通过；真实SSH两文件首次发布/复用通过 | 清单/锁/SSH已接T004.p/o/q；完整候选和计算节点尚未验收 | 只测新增文件/发布边界；11KB工具与合成输入，不传模型/密钥/SIF |
 | T004.o | T004 | transport独占namespace锁，journal共享锁；未关闭/未知提交阻止发布 | IMPLEMENTED | [transport guard](evidence/t004-transport-guard.md)；83首组、41最终检查；Tiger登录节点真实双进程互斥通过 | 运输已接T004.q；计算节点/跨节点锁语义未实测；最终候选须冻结新版harness/同一lock root | 无GPU/Slurm，只传16KB工具和synthetic journal；复用现有提交状态机 |
 | T004.p | T004 | `submit --plan-transport`经原门验证后枚举candidate与前置验收文件 | IMPLEMENTED | [transport inventory](evidence/t004-transport-inventory.md)；80首组、21入口、9最终清单检查通过；fixture scope | SSH已接T004.q；真实候选未导出；最终harness须更新E | 无模型/SSH/Slurm；按原collector输出取所需文件，不复制角色HOME或重跑模型 |
-| T004.q | T004 | 同名project目录的SSH运输、断点续传、接收校验→唯一提交入口 | IMPLEMENTED | [SSH coordinator](evidence/t004-ssh-coordinator.md)；15新边界、82受影响检查通过；真实Tiger登录节点31文件507380字节发布/同run复用成功 | 运输不是GPU资格；后续T004.s新增后harness为28文件待冻结；负例与实际候选门仍未完成 | 仅约507KB运输fixture，无Slurm/SIF/模型；失败记录保留，匹配文件和原journal复用 |
-| T004.r | T004 | 原生V3输出在契约校验后、首包发布前阻断；Tiger指定DetectShard0→Merge | IMPLEMENTED | [dependency cutpoint](evidence/t004-dependency-cutpoint.md)；27参数检查、3新原生精确Data集成case、handler/入口语法通过 | 触发器有组件证据；负例User终态和collector仍缺；native源码须重seal/构建 | 独立目录只编译必要测试/IO，复用不变DI对象；不重跑历史suite/SIF/GPU |
-| T004.s | T004 | 单个负例User终态→双rank调度→留存Selection/故障/清理证据的collector | IN_PROGRESS | [negative User](evidence/t004-negative-user.md)；User观察/应用调度已接，组件检查通过；仍保留NEGATIVE_RUNNER_NOT_WIRED | 接通双rank与独立collector，关联T004.r/消费者错误/清理；普通超时不算PASS | 新增19项边界，复用正常路径；无native重编/SIF/GPU；harness现28文件待冻结 |
+| T004.q | T004 | 同名project目录的SSH运输、断点续传、接收校验→唯一提交入口 | IMPLEMENTED | [SSH coordinator](evidence/t004-ssh-coordinator.md)；15新边界、82受影响检查通过；真实Tiger登录节点31文件507380字节发布/同run复用成功 | 运输不是GPU资格；28文件harness待冻结；实际负例验收与候选前置门仍未完成 | 仅约507KB运输fixture，无Slurm/SIF/模型；失败记录保留，匹配文件和原journal复用 |
+| T004.r | T004 | 原生V3输出在契约校验后、首包发布前阻断；Tiger指定DetectShard0→Merge | IMPLEMENTED | [dependency cutpoint](evidence/t004-dependency-cutpoint.md)；27参数检查、3新原生精确Data集成case、handler/入口语法通过 | T004.s已接User/collector；native源码须重seal/构建并实际验证 | 本轮复用原生证据，未重编或重跑；原生/真实GPU验收留在对应门 |
+| T004.s | T004 | 单个负例User终态→双rank调度→留存Selection/故障/清理证据的collector | IMPLEMENTED | [negative collector](evidence/t004-negative-collection.md)；191首组、52入口、12存储/JSON、21响应边界通过（有重叠） | 已移除未接线占位拒绝；前置两节点资格门仍强制；T007审查，T015实际运行未验收 | 共用正常owner/锁/清理；只重测变化边界，无native/SIF/GPU；28文件harness待冻结 |
 | T004.d | T004 | local→冻结 CLI→签发→两个 CPU 请求→清理→真实 collector | IMPLEMENTED | [local owner](evidence/t004-local-owner-wiring.md)；114 个唯一组件用例最终有通过记录，非 native/SIF PASS；host seal/九产物、冻结 NumPy owner 已接 | 等 T007 收敛和真实 T010 receipt/新 SIF 后运行，不能以接线关闭 T004 | 首轮仅剩准备 fixture 漂移，修后只重跑该模块12项；不重复全部集合 |
 | T005.a | T005 | 真实 User/Provider 参数、权限材料、准备与 readiness | IMPLEMENTED | [public recipients](evidence/t005-public-recipients.md)、[normal owner](evidence/t005-normal-node-owner.md) | 尚未证明完整真实 YOLO request→response | 未变安全组件证据复用；变更只重测影响边界 |
 | T005.b | T005 | User post-ACK role specs→DI assembler→独立 ORT reference→发布后 MODELROOT | IMPLEMENTED | [request wiring](evidence/t005-request-reference-wiring.md)；176 组件通过，含真实小 ONNX assembler/CPU ORT；原生应用测试收集失败 | 生产调用已接；需修复 native loader 后验证真实 YOLO request，T007 仍 BLOCK | 组件证据复用；native 测试待 loader 修复后再跑，不为 identity mutation 重建模型 |
@@ -82,7 +82,7 @@ collector 尚未接通。T004.q 已连接 SSH 运输和接收端唯一提交入�
 
 方向审计：目标与 TigerCluster GPU YOLO 一致；原计划的 correctness/reuse 范围和
 单节点 1+1、双节点两次各 1+3 已有界，不增加模型、GPU 型号或性能比较矩阵。
-当前应先完成 **T004.b（远端入口）+ T004.d/T005.b/T006.b 生产调用复核 → T007.b PASS**，然后
+当前应先完成 **T002/T004/T005/T006 全部生产调用与有效字段复核 → T007.b PASS**，然后
 **T008 → T009 → T010 → T011 → T012 → T013 → T014 → T015 → T016 → T017**。
 后文将 T008 称为“下一个实现块”的历史 checkpoint 不取消 T007 前置。
 既有构建驱动初稿和开发探测不作为正式资格；本轮未干预可能存在的构建进程。

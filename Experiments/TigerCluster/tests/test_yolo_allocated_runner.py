@@ -132,20 +132,22 @@ def test_reanalysis_rejects_cleanup_from_a_different_job(allocated, monkeypatch)
         module._reanalyze_retained(root, prepared)
 
 
-def _two_node(allocated):
+def _two_node(allocated, mode='two-node-gpu'):
     module, args, prepared, profile, _, root = allocated
-    args.case = prepared['case'] = 'two-node-gpu'
+    args.case = prepared['case'] = mode
     journal = SubmissionJournal(Path(profile['storage']['sharedLockRoot']),
-        candidate_id=prepared['contentIdentities']['dispatch'], gate='two-node-gpu')
+        candidate_id=prepared['contentIdentities']['dispatch'], gate=mode)
     journal.reserve(args.run_id)
     journal.mark_submitting(args.run_id)
     journal.record_submission(args.run_id, '123')
     return module, args, prepared, profile, journal, root
 
 
-def test_two_node_batch_joins_only_after_both_task_exit(allocated, monkeypatch):
+@pytest.mark.parametrize('mode', ['two-node-gpu', 'negative-dependency'])
+def test_two_node_batch_joins_only_after_both_task_exit(allocated, monkeypatch, mode):
     from runtime import worker, yolo_profile, yolo_operator
-    module, args, prepared, profile, journal, root = _two_node(allocated)
+    module, args, prepared, profile, journal, root = _two_node(allocated, mode)
+    gate = 'twoNodeGpu' if mode == 'negative-dependency' else 'singleNodeGpu'
     events = []
     monkeypatch.setattr(module, '_gate_receipt', lambda p, v, gate, **k: events.append(gate))
     def finite(name, command, log, cleanup, **kw):
@@ -158,18 +160,19 @@ def test_two_node_batch_joins_only_after_both_task_exit(allocated, monkeypatch):
     monkeypatch.setattr(worker, 'run_finite_application', finite)
     monkeypatch.setattr(yolo_profile, 'resolve_provision_inputs', lambda *a, **k: {})
     def join(**kw):
-        assert events == ['singleNodeGpu', 'srun']
+        assert events == [gate, 'srun']
         module._verify_srun_cleanup(root, prepared)
         events.append('join')
     monkeypatch.setattr(yolo_operator, 'finalize_distributed_run', join)
     monkeypatch.setattr(module, '_collect', lambda a: events.append('collect') or 78)
     assert module._run(args) == 78
-    assert events == ['singleNodeGpu','srun','join','collect']
+    assert events == [gate,'srun','join','collect']
 
 
-def test_two_node_task_uses_attested_rank_entry(allocated, monkeypatch):
+@pytest.mark.parametrize('mode', ['two-node-gpu', 'negative-dependency'])
+def test_two_node_task_uses_attested_rank_entry(allocated, monkeypatch, mode):
     from runtime import yolo_profile, yolo_operator
-    module, args, prepared, _, journal, _ = _two_node(allocated)
+    module, args, prepared, _, journal, _ = _two_node(allocated, mode)
     journal.mark_running(args.run_id, '123')
     monkeypatch.setenv('SLURM_PROCID', '1')
     monkeypatch.setattr(yolo_profile, 'resolve_provision_inputs', lambda *a, **k: {})

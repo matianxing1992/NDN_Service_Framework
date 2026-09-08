@@ -21,7 +21,7 @@ class CollectionHandoffError(ValueError):
 
 
 _ROLES = frozenset(("BackboneNeck", "DetectShard0", "DetectShard1", "Merge"))
-_CASES = frozenset(("local-cpu", "single-node-gpu", "two-node-gpu"))
+_CASES = frozenset(("local-cpu", "single-node-gpu", "two-node-gpu", "negative-dependency"))
 
 
 def _digest(payload: bytes) -> str:
@@ -106,7 +106,7 @@ def publish_normal_handoff(path: Path, *, plan: dict, node_roots: dict,
                            catalogue_digest: str, providers_by_role: dict,
                            certified_graph: dict,
                            allocation_expected: dict | None = None) -> dict:
-    """Publish a complete normal-case collection input after all ranks return.
+    """Publish a normal or registered-negative handoff after all ranks return.
 
     ``node_roots`` and ``references`` are supplied by the real worker/staging
     owner.  The function requires all expected rank receipts and refuses to
@@ -127,7 +127,8 @@ def publish_normal_handoff(path: Path, *, plan: dict, node_roots: dict,
             or not isinstance(certified_graph, dict)
             or certified_graph.get("graphDigest") != graph_digest):
         raise CollectionHandoffError("HANDOFF_DESCRIPTOR")
-    expected_ranks = {0, 1} if plan["case"] == "two-node-gpu" else {0}
+    negative = plan['case'] == 'negative-dependency'
+    expected_ranks = {0, 1} if plan["case"] in ('two-node-gpu', 'negative-dependency') else {0}
     if (not isinstance(node_roots, dict) or set(node_roots) != expected_ranks
             or any(type(rank) is not int for rank in node_roots)):
         raise CollectionHandoffError("HANDOFF_NODE_COVERAGE")
@@ -152,7 +153,7 @@ def publish_normal_handoff(path: Path, *, plan: dict, node_roots: dict,
                 "gpuProbeDigest": _digest(_owned_path(probe,
                     label=f"node-{rank}-gpu-probe", directory=False).read_bytes()),
             })
-    expected_references = 4 if plan["case"] == "two-node-gpu" else 2
+    expected_references = 0 if negative else 4 if plan["case"] == "two-node-gpu" else 2
     if not isinstance(references, list) or len(references) != expected_references:
         raise CollectionHandoffError("HANDOFF_REFERENCE_COVERAGE")
     retained = []
@@ -172,7 +173,7 @@ def publish_normal_handoff(path: Path, *, plan: dict, node_roots: dict,
             raise CollectionHandoffError("HANDOFF_ALLOCATION_SCHEMA")
     value = {"schema": "tiger-yolo-collection-input-v1", "status": "READY",
              "runId": plan["runId"], "candidateDigest": runtime_candidate_digest,
-             "case": plan["case"], "kind": "normal",
+             "case": plan["case"], "kind": "expected-rejection" if negative else "normal",
              "runtimeCandidateDigest": runtime_candidate_digest,
              "placementCandidateId": placement_candidate_id,
              "placementCandidateDigest": placement_candidate_digest,

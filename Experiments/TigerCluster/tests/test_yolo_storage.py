@@ -120,9 +120,10 @@ def test_reanalysis_rejects_changed_storage_evidence(inputs, fault):
 
 
 @pytest.mark.parametrize('fault', ['none','host','image'])
-def test_two_rank_storage_requires_distinct_hosts_and_same_image(inputs, fault):
+@pytest.mark.parametrize('mode', ['two-node-gpu', 'negative-dependency'])
+def test_two_rank_storage_requires_distinct_hosts_and_same_image(inputs, fault, mode):
     prepared, profile, runtime, allocation, root, _=inputs
-    prepared['case']='two-node-gpu'
+    prepared['case']=mode
     with instance(inputs): pass
     second=dict(receipt=dict(rank=1,jobId='123',hostname='n1'))
     with storage.NodeScratch(prepared=prepared,profile=profile,runtime_profile=runtime,

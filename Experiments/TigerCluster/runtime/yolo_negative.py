@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 from pathlib import Path
 import re
@@ -9,6 +10,261 @@ import time
 
 from .yolo_collection import _write_once
 from .yolo_result import validate_lifecycle
+
+
+def _read_json(path, *, limit=65536):
+    from .yolo_bundle import _bytes
+    from .yolo_profile import _object
+    path = Path(path)
+    if any(p.is_symlink() for p in (path, *path.parents)):
+        raise ValueError('NEGATIVE_RECORD_SYMLINK')
+    payload = _bytes(path)
+    if len(payload) > limit:
+        raise ValueError('NEGATIVE_RECORD_SIZE')
+    try:
+        value = json.loads(payload, object_pairs_hook=_object)
+        json.dumps(value, allow_nan=False)
+    except (ValueError, UnicodeError, RecursionError) as exc:
+        raise ValueError('NEGATIVE_RECORD_JSON') from exc
+    return value, 'sha256:' + hashlib.sha256(payload).hexdigest()
+
+
+def read_negative_user(output, *, run_id, request_id, candidate_digest,
+                       placement_id, placement_digest, deadline_ms):
+    """Re-read bounded observations; absence of a response is never a verdict."""
+    # Reuse the externally supplied binding checks, not fields from the record.
+    expected = NegativeUserObserver(run_id=run_id, request_id=request_id,
+        candidate_digest=candidate_digest, output=output, placement_id=placement_id,
+        placement_digest=placement_digest, deadline_ms=deadline_ms)
+    selection = expected._selection()
+    value, digest = _read_json(Path(output) / 'negative-user.json')
+    fields = {'schema', 'qualification', 'runId', 'requestId', 'attempt',
+        'candidateDigest', 'placementCandidateId', 'placementCandidateDigest',
+        'planDigest', 'deadlineMs', 'dependencyNoProgressMs', 'elapsedMs',
+        'observedAfterShutdown', 'waitErrorType', 'snapshotErrorType', 'response'}
+    if (not isinstance(value, dict) or set(value) != fields
+            or value['schema'] != 'tiger-yolo-negative-user-v1'
+            or value['qualification'] != 'OBSERVATION_ONLY'
+            or value['runId'] != run_id or value['requestId'] != request_id
+            or type(value['attempt']) is not int or value['attempt'] != 1
+            or value['candidateDigest'] != candidate_digest
+            or value['placementCandidateId'] != placement_id
+            or value['placementCandidateDigest'] != placement_digest
+            or value['planDigest'] != selection['planDigest']
+            or type(value['deadlineMs']) is not int or value['deadlineMs'] != deadline_ms
+            or type(value['dependencyNoProgressMs']) is not int
+            or value['dependencyNoProgressMs'] != expected.dependency_no_progress_ms
+            or type(value['elapsedMs']) is not int or not 1 <= value['elapsedMs'] <= deadline_ms
+            or value['observedAfterShutdown'] is not True
+            or any(not isinstance(value[k], str) or re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]{0,127}|', value[k]) is None
+                   for k in ('waitErrorType', 'snapshotErrorType'))):
+        raise ValueError('NEGATIVE_USER_RECORD_BINDING')
+    response = value['response']
+    if (not isinstance(response, dict) or set(response) != {'present', 'success', 'bytes', 'sha256'}
+            or type(response['present']) is not bool or type(response['success']) is not bool
+            or type(response['bytes']) is not int or not 0 <= response['bytes'] < 2**64):
+        raise ValueError('NEGATIVE_USER_RESPONSE_RECORD')
+    if response['present']:
+        if not isinstance(response['sha256'], str) or re.fullmatch(r'sha256:[a-f0-9]{64}', response['sha256']) is None:
+            raise ValueError('NEGATIVE_USER_RESPONSE_DIGEST')
+    elif (response != dict(present=False, success=False, bytes=0, sha256=None)
+          or not value['waitErrorType'] or not value['snapshotErrorType']):
+        raise ValueError('NEGATIVE_USER_ABSENCE_RECORD')
+    return dict(observation=value, lifecycle=selection, sourceDigest=digest,
+                qualification='NEGATIVE_USER_COMPONENT_ONLY')
+
+
+def read_negative_cutpoint(logs, *, contract, request_id, plan_digest, providers_by_role):
+    """Join a source-emitted output suppression with the consumer's exact failure.
+
+    Logs must already be bound to closed node receipts. No operator-authored
+    failure flags or wall-clock ordering across hosts are accepted here.
+    """
+    from .yolo_bundle import _bytes
+    from .yolo_profile import _object
+    edges = [edge for edge in contract['edges']
+             if edge['producer'] == 'DetectShard0' and edge['consumer'] == 'Merge']
+    if len(edges) != 1 or set(logs) != {'BackboneNeck', 'DetectShard0', 'DetectShard1', 'Merge'}:
+        raise ValueError('NEGATIVE_CUTPOINT_EDGE')
+    edge = edges[0]
+    session = contract['sessionId']
+    records, failures, digests = [], [], {}
+    for role, filename in logs.items():
+        path = Path(filename)
+        if any(p.is_symlink() for p in (path, *path.parents)):
+            raise ValueError('NEGATIVE_LOG_SYMLINK')
+        payload = _bytes(path)
+        if len(payload) > 16 * 1024 * 1024:
+            raise ValueError('NEGATIVE_LOG_SIZE')
+        digests[role] = 'sha256:' + hashlib.sha256(payload).hexdigest()
+        for line in payload.decode('utf-8').splitlines():
+            if 'NDNSF_DI_OUTPUT_WITHHELD ' in line:
+                try:
+                    record = json.loads(line.split('NDNSF_DI_OUTPUT_WITHHELD ', 1)[1], object_pairs_hook=_object)
+                except (ValueError, RecursionError) as exc:
+                    raise ValueError('NEGATIVE_CUTPOINT_JSON') from exc
+                if role != 'DetectShard0':
+                    raise ValueError('NEGATIVE_CUTPOINT_OWNER')
+                records.append(record)
+            if 'NDNSF_DI_NATIVE_FAILURE ' in line:
+                failures.append((role, line.split('NDNSF_DI_NATIVE_FAILURE ', 1)[1]))
+            if 'NDNSF_DI_DEPENDENCY_OBJECT ' in line:
+                tokens = line.split('NDNSF_DI_DEPENDENCY_OBJECT ', 1)[1].split()
+                parts = [token.partition('=') for token in tokens]
+                if any(not sep for _, sep, _ in parts) or len({k for k, _, _ in parts}) != len(parts):
+                    raise ValueError('NEGATIVE_DEPENDENCY_LOG_FIELDS')
+                dependency = {k: v for k, _, v in parts}
+                if (dependency.get('session') == session
+                        and dependency.get('producer') == 'DetectShard0'
+                        and dependency.get('consumer') == 'Merge'):
+                    raise ValueError('NEGATIVE_WITHHELD_EDGE_WAS_TRANSFERRED')
+    if len(records) != 1:
+        raise ValueError('NEGATIVE_CUTPOINT_COUNT')
+    row = records[0]
+    fields = {'schema', 'session', 'requestId', 'attempt', 'planDigest',
+        'producerRole', 'consumerRole', 'manifestDataName', 'plannedDataName',
+        'endpointDigest', 'contentDigest', 'bytes', 'provider', 'providerBootId', 'atMs'}
+    if not isinstance(row, dict) or set(row) != fields:
+        raise ValueError('NEGATIVE_CUTPOINT_SCHEMA')
+    # Boost property_tree emits numeric leaf values as decimal JSON strings.
+    for field in ('attempt', 'bytes', 'atMs'):
+        if (not isinstance(row[field], str) or re.fullmatch(r'[1-9][0-9]{0,19}', row[field]) is None
+                or int(row[field]) >= 2**64):
+            raise ValueError('NEGATIVE_CUTPOINT_NUMBER')
+    if (row['schema'] != 'ndnsf-di-withheld-output-v1' or row['session'] != session
+            or row['requestId'] != request_id or row['attempt'] != '1'
+            or row['planDigest'] != plan_digest or row['producerRole'] != edge['producer']
+            or row['consumerRole'] != edge['consumer']
+            or row['plannedDataName'] != edge['planned_name']
+            or row['manifestDataName'] != edge['planned_name'].rstrip('/') + '/MANIFEST'
+            or row['provider'] != providers_by_role['DetectShard0']
+            or not isinstance(row['providerBootId'], str) or not row['providerBootId']
+            or any(not isinstance(row[k], str) or re.fullmatch(r'sha256:[a-f0-9]{64}', row[k]) is None
+                   for k in ('endpointDigest', 'contentDigest'))):
+        raise ValueError('NEGATIVE_CUTPOINT_BINDING')
+    failure = 'session=' + session + ' role=Merge reason=failed to fetch signed exact Data: ' + row['manifestDataName']
+    if failures != [('Merge', failure)]:
+        raise ValueError('NEGATIVE_CONSUMER_EXACT_FAILURE')
+    return dict(edge=edge, cutpoint=row, logDigests=digests,
+        qualification='NEGATIVE_CUTPOINT_COMPONENT_ONLY')
+
+
+def collect_negative_verdict(nodes, *, plan, runtime_candidate_digest,
+                             placement_candidate_id, placement_candidate_digest,
+                             graph_digest, catalogue_digest, providers_by_role,
+                             allocation_expected, request_deadline_ms):
+    """Derive the rejection from retained sources after both ranks have exited."""
+    from . import yolo_result as result
+    from .yolo_bundle import verify_preparation
+    roles = {'BackboneNeck', 'DetectShard0', 'DetectShard1', 'Merge'}
+    requests = plan.get('requests')
+    if (plan.get('case') != 'negative-dependency' or not isinstance(nodes, dict)
+            or set(nodes) != {0, 1} or any(type(k) is not int for k in nodes)
+            or not isinstance(requests, list) or len(requests) != 1
+            or set(requests[0]) != {'index', 'warmup', 'requestId', 'output'}
+            or type(requests[0]['index']) is not int or requests[0]['index'] != 0
+            or requests[0]['warmup'] is not False or set(providers_by_role) != roles
+            or any(providers_by_role[r] != plan['identities'][r] for r in roles)):
+        raise ValueError('NEGATIVE_RETAINED_PLAN')
+    root = Path(plan['output'])
+    closed, devices, logs = {}, {}, {}
+    for rank in (0, 1):
+        node = nodes[rank]
+        if (set(node) != {'root', 'receiptDigest', 'preparationDigest', 'allocationDigest', 'gpuProbeDigest'}
+                or Path(node['root']) != root / ('node' + str(rank))):
+            raise ValueError('NEGATIVE_RETAINED_NODE')
+        closed[rank] = result.read_node_log_receipt(node['root'],
+            receipt_digest=node['receiptDigest'], plan=plan, rank=rank,
+            preparation_digest=node['preparationDigest'], candidate_digest=runtime_candidate_digest)
+        devices[rank] = result.read_retained_device_binding(node['root'],
+            receipt_digest=node['receiptDigest'], allocation_digest=node['allocationDigest'],
+            gpu_probe_digest=node['gpuProbeDigest'], plan=plan, rank=rank,
+            preparation_digest=node['preparationDigest'], candidate_digest=runtime_candidate_digest,
+            expected=allocation_expected)
+        logs.update({role: closed[rank]['logs'][role]['path']
+                     for role in roles & closed[rank]['logs'].keys()})
+    if nodes[0]['preparationDigest'] != nodes[1]['preparationDigest']:
+        raise ValueError('NEGATIVE_PREPARATION_CROSS_NODE')
+    preparation = verify_preparation(root / 'public', plan,
+        expected_receipt_digest=nodes[0]['preparationDigest'], candidate_digest=runtime_candidate_digest)
+    if any(preparation[k] != v for k, v in {
+            'placementCandidateId': placement_candidate_id,
+            'placementCandidateDigest': placement_candidate_digest,
+            'graphDigest': graph_digest, 'catalogueDigest': catalogue_digest}.items()):
+        raise ValueError('NEGATIVE_PREPARATION_COLLECTION_BINDING')
+    first, second = devices[0], devices[1]
+    if (any(first['allocation'][k] != second['allocation'][k]
+            for k in ('jobId', 'stepId', 'submissionKey', 'hosts'))
+            or first['allocation']['hostname'] == second['allocation']['hostname']
+            or first['gpuBinding']['uuid'] == second['gpuBinding']['uuid']
+            or first['uid'] != second['uid']):
+        raise ValueError('NEGATIVE_ALLOCATION_CROSS_NODE')
+    output = root / 'node0/user/requests/0'
+    if Path(requests[0]['output']) != output:
+        raise ValueError('NEGATIVE_REQUEST_OUTPUT')
+    user = read_negative_user(output, run_id=plan['runId'], request_id=requests[0]['requestId'],
+        candidate_digest=runtime_candidate_digest, placement_id=placement_candidate_id,
+        placement_digest=placement_candidate_digest, deadline_ms=request_deadline_ms)
+    lifecycle, observation = user['lifecycle'], user['observation']
+    events = lifecycle['events']
+    def digest(value):
+        return 'sha256:' + hashlib.sha256(json.dumps(value, ensure_ascii=False,
+            sort_keys=True, separators=(',', ':'), allow_nan=False).encode()).hexdigest()
+    count = len(set(providers_by_role.values()))
+    if (events[3]['graphDigest'] != graph_digest or events[3]['catalogueDigest'] != catalogue_digest
+            or events[8]['roleDigest'] != digest(providers_by_role)
+            or events[8]['providerCount'] != count or events[4]['providerCount'] != count
+            or events[7]['selectedRoleCount'] != 4 or events[2]['ackCount'] < count
+            or events[7]['selectionDigest'] != digest({'plan': lifecycle['planDigest'],
+                                                      'ack': events[2]['ackSnapshotDigest']})):
+        raise ValueError('NEGATIVE_SELECTION_BINDING')
+    if observation['response']['success']:
+        raise ValueError('NEGATIVE_UNEXPECTED_SUCCESS')
+    contract = result.read_public_dependency_contract(output / 'yolo-public-assignments.json',
+        request_id=requests[0]['requestId'], attempt=1, plan_digest=lifecycle['planDigest'],
+        providers_by_role=providers_by_role)
+    cutpoint = read_negative_cutpoint(logs, contract=contract,
+        request_id=requests[0]['requestId'], plan_digest=lifecycle['planDigest'], providers_by_role=providers_by_role)
+    execution = {}
+    # Both sides really computed on their allocated GPUs before the remote head
+    # reached the publication cutpoint. Merge intentionally cannot complete.
+    for rank, role in ((0, 'BackboneNeck'), (1, 'DetectShard0')):
+        node = nodes[rank]
+        checked = result.collect_retained_role_execution(node['root'],
+            receipt_digest=node['receiptDigest'], plan=plan, rank=rank, role=role,
+            preparation_digest=node['preparationDigest'], candidate_digest=runtime_candidate_digest,
+            provider=providers_by_role[role], request_id=requests[0]['requestId'], attempt=1,
+            execution_plan_digest=lifecycle['planDigest'], gpu_binding=devices[rank]['gpuBinding'])
+        native = checked['native']['observation']
+        model = contract['modelBindings'][role]
+        if (native['modelDigest'] != model['modelManifestDigest']
+                or native['artifactDigests'].get(role) != model['artifactDigest']
+                or checked['native']['logDigest'] != cutpoint['logDigests'][role]):
+            raise ValueError('NEGATIVE_COMPUTE_MODEL_BINDING')
+        execution[role] = checked
+    for rank in (0, 1):
+        for role in roles & closed[rank]['logs'].keys():
+            if closed[rank]['logs'][role]['logDigest'] != cutpoint['logDigests'][role]:
+                raise ValueError('NEGATIVE_LOG_CHANGED')
+    rejection = dict(schema='tiger-yolo-expected-rejection-v1', status='REJECTED',
+        qualification='EXPECTED_REJECTION_COMPONENT_ONLY', case='negative-dependency',
+        runId=plan['runId'], requestId=requests[0]['requestId'], attempt=1,
+        candidateDigest=runtime_candidate_digest,
+        selection=dict(status='COMMITTED', selectedProvider=providers_by_role['Merge'],
+                       selectionCount=1, reselectionCount=0),
+        failure=dict(boundary='DEPENDENCY_DATA_MISSING',
+            edge=dict(producer='DetectShard0', consumer='Merge', plannedName=cutpoint['edge']['planned_name']),
+            observedAfterSelection=True, reselected=False),
+        response=dict(present=observation['response']['present'], success=False),
+        cleanup=dict(qualification='CLEANUP_COMPONENT_ONLY', allChildrenReaped=True,
+                     forced=False, remainingChildren=0, deadlineSatisfied=True),
+        elapsedMs=observation['elapsedMs'], deadlineMs=request_deadline_ms)
+    verdict = result.finalize_expected_rejection(rejection, plan=plan,
+        request_id=requests[0]['requestId'], attempt=1, candidate_digest=runtime_candidate_digest,
+        request_deadline_ms=request_deadline_ms)
+    return dict(verdict, userObservation=user, cutpoint=cutpoint, devices=devices,
+        execution=execution, publicContractDigest=contract['sourceDigest'],
+        nodeReceiptDigests={rank: nodes[rank]['receiptDigest'] for rank in (0, 1)})
 
 
 class NegativeUserObserver:

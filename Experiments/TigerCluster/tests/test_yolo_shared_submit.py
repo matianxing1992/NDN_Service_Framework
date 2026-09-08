@@ -83,6 +83,30 @@ def test_public_submit_records_before_once_only_sbatch_and_reuses_ack(shared,mon
     assert sum(c[0]=='/usr/bin/sbatch' for c in commands)==1
 
 
+@pytest.mark.parametrize('ready', [True, False])
+def test_negative_submit_uses_two_node_gate_and_same_once_only_owner(shared, monkeypatch, ready):
+    module, args, prepared, profile, _, root, events = shared
+    args.case = prepared['case'] = 'negative-dependency'
+    journal = SubmissionJournal(Path(profile['storage']['sharedLockRoot']),
+        candidate_id=prepared['contentIdentities']['dispatch'], gate=args.case)
+    def gate(path, profile, name, **kwargs):
+        assert name == 'twoNodeGpu'
+        events.append('gate')
+        if not ready:
+            raise ValueError('MISSING_TWO_NODE_QUALIFICATION')
+    monkeypatch.setattr(module, '_gate_receipt', gate)
+    commands = scheduler((module, args, prepared, profile, journal, root, events), monkeypatch)
+    if ready:
+        assert module._submit(args) == 0
+        assert module._submit(args) == 0
+        submitted = [c for c in commands if c[0] == '/usr/bin/sbatch']
+        assert len(submitted) == 1 and '--nodes=2' in submitted[0] and '--ntasks=2' in submitted[0]
+    else:
+        with pytest.raises(ValueError, match='MISSING_TWO_NODE_QUALIFICATION'):
+            module._submit(args)
+        assert commands == []
+
+
 @pytest.mark.parametrize('response',['timeout','bad'])
 def test_uncertain_submission_queries_then_recovers_without_resubmitting(shared,monkeypatch,response):
     module,args,prepared,profile,journal,root,_=shared

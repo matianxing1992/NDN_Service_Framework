@@ -261,7 +261,8 @@ def _load_collection_input(path: Path, *, root: Path, prepared: dict) -> tuple[d
             or value["case"] != prepared["case"]
             or value["kind"] not in ("normal", "expected-rejection")):
         raise ClosureError("COLLECTION_INPUT_BINDING")
-    if value["kind"] == "normal":
+    negative = value['case'] == 'negative-dependency'
+    if value['kind'] == ('expected-rejection' if negative else 'normal'):
         required = common | {"runtimeCandidateDigest", "placementCandidateId",
                              "placementCandidateDigest", "graphDigest", "catalogueDigest",
                              "providersByRole", "nodes", "references", "certifiedGraph"}
@@ -280,7 +281,7 @@ def _load_collection_input(path: Path, *, root: Path, prepared: dict) -> tuple[d
                 or set(value["providersByRole"]) != roles
                 or any(not isinstance(v, str) or not v for v in value["providersByRole"].values())):
             raise ClosureError("COLLECTION_PROVIDER_ROLES")
-        expected_nodes = 2 if value["case"] == "two-node-gpu" else 1
+        expected_nodes = 2 if value['case'] in ('two-node-gpu', 'negative-dependency') else 1
         if (not isinstance(value["nodes"], dict)
                 or set(value["nodes"]) != {str(i) for i in range(expected_nodes)}):
             raise ClosureError("COLLECTION_NODE_COVERAGE")
@@ -297,7 +298,7 @@ def _load_collection_input(path: Path, *, root: Path, prepared: dict) -> tuple[d
                         if field == "root" else _digest_field(row[field], f"node-{key}-{field}"))
                 for field in row
             }
-        expected_requests = 4 if value["case"] == "two-node-gpu" else 2
+        expected_requests = 0 if negative else 4 if value["case"] == "two-node-gpu" else 2
         if (not isinstance(value["references"], list)
                 or len(value["references"]) != expected_requests):
             raise ClosureError("COLLECTION_REFERENCE_COVERAGE")
@@ -313,18 +314,7 @@ def _load_collection_input(path: Path, *, root: Path, prepared: dict) -> tuple[d
             raise ClosureError("COLLECTION_CERTIFIED_GRAPH")
         value = dict(value, nodes=nodes, references=references)
         return value, digest
-    required = common | {"requestId", "attempt", "candidateDigestForRequest",
-                         "requestDeadlineMs", "rejection"}
-    if set(value) != required:
-        raise ClosureError("COLLECTION_REJECTION_SCHEMA")
-    if (not isinstance(value["requestId"], str) or not value["requestId"].startswith("/")
-            or type(value["attempt"]) is not int or not 0 < value["attempt"] < 2**64
-            or not HASH.fullmatch(value["candidateDigestForRequest"])
-            or type(value["requestDeadlineMs"]) is not int
-            or not 1501 <= value["requestDeadlineMs"] <= 60000
-            or not isinstance(value["rejection"], dict)):
-        raise ClosureError("COLLECTION_REJECTION_BINDING")
-    return value, digest
+    raise ClosureError('COLLECTION_CASE_KIND_BINDING')
 
 
 def _not_ready(action: str, reason: str, report: dict | None = None) -> int:
@@ -519,8 +509,6 @@ def _submit(args) -> int:
         manifest = _transport_manifest(profile_path, value, prepared, gate_name, gate)
         print(json.dumps(dict(status='PLANNED',qualification='NOT_EVALUATED',transport=manifest),sort_keys=True))
         return INCOMPLETE
-    if args.case == 'negative-dependency':
-        return _not_ready('submit','NEGATIVE_RUNNER_NOT_WIRED')
     if not _shared_submission_paths(args,value,prepared):
         return _not_ready('submit','SHARED_STAGING_REQUIRED')
     if getattr(args,'remote_receiver',False) or Path('/usr/bin/scontrol').is_file():
@@ -668,16 +656,16 @@ def _reanalyze_retained(root: Path, prepared: dict) -> dict:
     collection, collection_digest = _load_collection_input(
         collection_path, root=root, prepared=prepared)
     from runtime import yolo_result
+    if prepared['case'] != 'local-cpu':
+        cleanup = _verify_srun_cleanup(root, prepared)
+        if cleanup['jobId'] != collection.get('allocationExpected', {}).get('job_id'):
+            raise ClosureError('SRUN_COLLECTION_JOB_BINDING')
+        from runtime.yolo_storage import verify_storage_cleanup
+        verify_storage_cleanup(root, prepared, cleanup['jobId'])
+    from runtime.yolo_bundle import reference_owner, verify_harness
+    verify_harness(Path(prepared['bundle']),
+                   expected_manifest_sha256=prepared['harnessManifestSha256'])
     if collection['kind'] == 'normal':
-        if prepared['case'] != 'local-cpu':
-            cleanup = _verify_srun_cleanup(root, prepared)
-            if cleanup['jobId'] != collection.get('allocationExpected', {}).get('job_id'):
-                raise ClosureError('SRUN_COLLECTION_JOB_BINDING')
-            from runtime.yolo_storage import verify_storage_cleanup
-            verify_storage_cleanup(root, prepared, cleanup['jobId'])
-        from runtime.yolo_bundle import reference_owner, verify_harness
-        verify_harness(Path(prepared['bundle']),
-                       expected_manifest_sha256=prepared['harnessManifestSha256'])
         owner = reference_owner(Path(prepared['bundle']))
         references = [owner.load_reference(row['package'], row['repository'], row['inputSize'])
                       for row in collection['references']]
@@ -696,15 +684,19 @@ def _reanalyze_retained(root: Path, prepared: dict) -> dict:
             allocation_expected=collection.get('allocationExpected'),
             certified_graph=collection['certifiedGraph'])
     else:
-        request = prepared['plan'].get('requests', [{}])[0]
-        if request.get('requestId') != collection['requestId']:
-            raise ClosureError('COLLECTION_REJECTION_REQUEST')
-        final = yolo_result.finalize_expected_rejection(
-            collection['rejection'], plan=prepared['plan'], request_id=collection['requestId'],
-            attempt=collection['attempt'], candidate_digest=collection['candidateDigestForRequest'],
-            request_deadline_ms=collection['requestDeadlineMs'])
-    return dict(final, runId=prepared['runId'], candidateDigest=prepared['candidateDigest'],
-        collectorSchema='tiger-yolo-collector-v1', collectionInputDigest=collection_digest)
+        from runtime.yolo_negative import collect_negative_verdict
+        final = collect_negative_verdict(collection['nodes'], plan=prepared['plan'],
+            runtime_candidate_digest=collection['runtimeCandidateDigest'],
+            placement_candidate_id=collection['placementCandidateId'],
+            placement_candidate_digest=collection['placementCandidateDigest'],
+            graph_digest=collection['graphDigest'], catalogue_digest=collection['catalogueDigest'],
+            providers_by_role=collection['providersByRole'], allocation_expected=collection.get('allocationExpected'),
+            request_deadline_ms=prepared['plan']['effectiveBehavior']['profile']['timing']['requestDeadlineMs'])
+    # JSON persists rank keys as strings. Normalize once at the public boundary
+    # so rereading the immutable verdict compares the same representation.
+    return json.loads(json.dumps(dict(final, runId=prepared['runId'], candidateDigest=prepared['candidateDigest'],
+        collectorSchema='tiger-yolo-collector-v1', collectionInputDigest=collection_digest),
+        sort_keys=True, allow_nan=False))
 
 
 def _collect(args) -> int:
@@ -869,8 +861,8 @@ def _verify_srun_cleanup(root, prepared):
 def _allocated_context(args, *, task=False):
     if not os.environ.get("SLURM_JOB_ID"):
         raise ClosureError("ALLOCATION_REQUIRED")
-    if args.case not in ('single-node-gpu', 'two-node-gpu'):
-        raise ClosureError('NEGATIVE_RUNNER_NOT_WIRED')
+    if args.case not in ('single-node-gpu', 'two-node-gpu', 'negative-dependency'):
+        raise ClosureError('RUN_CASE')
     report, profile = _dispatch_report(Path(args.profile))
     if report.get('integrity') != 'VERIFIED':
         raise ClosureError('RUN_CONTENT_NOT_VERIFIED')
@@ -933,7 +925,7 @@ def _run(args) -> int:
     _gate_receipt(Path(args.profile), profile, CASE_GATE[args.case], prepared=prepared)
     from runtime.worker import run_finite_application
     root = Path(prepared['plan']['output'])
-    nodes = 2 if args.case == 'two-node-gpu' else 1
+    nodes = 2 if args.case in ('two-node-gpu', 'negative-dependency') else 1
     if nodes == 2:
         import secrets
         _write_readonly(root/'distributed-control.json', dict(runId=args.run_id,

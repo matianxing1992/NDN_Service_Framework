@@ -154,7 +154,7 @@ class NodeScratch:
 
 
 def verify_storage_cleanup(root, prepared, job_id):
-    ranks = (0,1) if prepared['case']=='two-node-gpu' else (0,)
+    ranks = (0,1) if prepared['case'] in ('two-node-gpu', 'negative-dependency') else (0,)
     rows=[]
     for rank in ranks:
         row = _read_plane(Path(root)/('storage-rank'+str(rank)+'.json'))

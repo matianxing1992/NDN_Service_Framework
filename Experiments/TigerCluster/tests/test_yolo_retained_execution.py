@@ -242,9 +242,12 @@ def _expected_rejection():
         elapsedMs=812, deadlineMs=60000)
 
 
-def test_finalize_expected_rejection_requires_selection_failure_and_cleanup():
+@pytest.mark.parametrize('failed_response', [False, True])
+def test_finalize_expected_rejection_requires_selection_failure_and_cleanup(failed_response):
+    rejection = _expected_rejection()
+    rejection['response']['present'] = failed_response
     value = result.finalize_expected_rejection(
-        _expected_rejection(),
+        rejection,
         plan={'case': 'negative-dependency', 'runId': 'run-1', 'requests': [
             {'index': 0, 'warmup': False, 'requestId': '/run/negative/requests/0',
              'output': '/run/output/0'}]},
@@ -270,6 +273,7 @@ def test_finalize_expected_rejection_rejects_false_negative_pass(mutation):
         value['failure']['observedAfterSelection'] = False
     elif mutation == 'response':
         value['response']['present'] = True
+        value['response']['success'] = True
     elif mutation == 'forced-cleanup':
         value['cleanup']['forced'] = True
     elif mutation == 'unbounded':

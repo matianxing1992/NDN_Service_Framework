@@ -19,7 +19,7 @@ def digest(value):
 def plan_fixture(tmp_path, *, case="local-cpu"):
     run_root = tmp_path / "results" / "run-01"
     run_root.mkdir(parents=True)
-    nodes = {0} if case != "two-node-gpu" else {0, 1}
+    nodes = {0, 1} if case in ('two-node-gpu', 'negative-dependency') else {0}
     for rank in nodes:
         root = run_root / ("node" + str(rank))
         root.mkdir()
@@ -61,7 +61,8 @@ def kwargs(tmp_path, plan, run_root, nodes):
     return dict(
         path=run_root / "collection-input.json", plan=plan,
         node_roots={rank: run_root / ("node" + str(rank)) for rank in nodes},
-        references=references(tmp_path, 4 if plan["case"] == "two-node-gpu" else 2),
+        references=references(tmp_path, 0 if plan['case'] == 'negative-dependency' else
+                              4 if plan["case"] == "two-node-gpu" else 2),
         runtime_candidate_digest="sha256:" + "d" * 64,
         placement_candidate_id="placement-v1",
         placement_candidate_digest="sha256:" + "e" * 64,

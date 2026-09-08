@@ -475,7 +475,7 @@ def _negative_collection_input(prepared, *, valid=True):
 
 
 @pytest.mark.parametrize("mutation", ["unchanged", "missing", "invalid", "changed-valid", "verdict", "oracle"])
-def test_collect_runs_expected_rejection_oracle_and_writes_immutable_verdict(tmp_path, monkeypatch, capsys, mutation):
+def test_collect_calls_retained_negative_owner_and_keeps_immutable_verdict(tmp_path, monkeypatch, capsys, mutation):
     module = submit_module()
     monkeypatch.setattr(module, '_enter_frozen', lambda *args: None)  # Separate frozen-launch boundary test.
     run_id = "negative-run"
@@ -492,7 +492,34 @@ def test_collect_runs_expected_rejection_oracle_and_writes_immutable_verdict(tmp
     root = tmp_path / "results" / run_id
     root.mkdir(parents=True)
     (root / "prepare.json").write_text("unused")
-    (root / "collection-input.json").write_text(json.dumps(_negative_collection_input(prepared)))
+    # CLI persistence boundary only: native/allocation joins have independent
+    # retained-reader tests. The public handoff can no longer supply rejection facts.
+    prepared.update(bundle=str(root / 'bundle'), harnessManifestSha256='fixture')
+    prepared['plan']['effectiveBehavior'] = {'profile': {'timing': {'requestDeadlineMs': 60000}}}
+    nodes = {}
+    for rank in (0, 1):
+        node = root / ('node' + str(rank))
+        node.mkdir()
+        nodes[str(rank)] = dict(root=str(node), receiptDigest=prepared['candidateDigest'],
+            preparationDigest=prepared['candidateDigest'], allocationDigest=prepared['candidateDigest'],
+            gpuProbeDigest=prepared['candidateDigest'])
+    collection = dict(schema='tiger-yolo-collection-input-v1', status='READY', runId=run_id,
+        candidateDigest=prepared['candidateDigest'], case='negative-dependency', kind='expected-rejection',
+        runtimeCandidateDigest=prepared['candidateDigest'], placementCandidateId='yolo',
+        placementCandidateDigest=prepared['candidateDigest'], graphDigest=prepared['candidateDigest'],
+        catalogueDigest=prepared['candidateDigest'], providersByRole={r: '/run/' + r for r in
+            ('BackboneNeck', 'DetectShard0', 'DetectShard1', 'Merge')}, nodes=nodes, references=[],
+        certifiedGraph={}, allocationExpected={'job_id': '1'})
+    (root / 'collection-input.json').write_text(json.dumps(collection))
+    from runtime import yolo_bundle, yolo_storage, yolo_negative
+    monkeypatch.setattr(module, '_verify_srun_cleanup', lambda *a: {'jobId': '1'})
+    monkeypatch.setattr(yolo_storage, 'verify_storage_cleanup', lambda *a: None)
+    monkeypatch.setattr(yolo_bundle, 'verify_harness', lambda *a, **k: None)
+    def retained(nodes, **kw):
+        assert set(nodes) == {0, 1} and kw['request_deadline_ms'] == 60000
+        return dict(status='PASS', qualification='EXPECTED_REJECTION_PASS',
+                    devices={rank: {'fixture': True} for rank in nodes})
+    monkeypatch.setattr(yolo_negative, 'collect_negative_verdict', retained)
     monkeypatch.setattr(module, "_dispatch_report",
                         lambda path: ({"integrity": "VERIFIED", "qualification": "NOT_EVALUATED",
                                        "documentDigest": prepared["profileDigest"]}, {}))
@@ -503,6 +530,7 @@ def test_collect_runs_expected_rejection_oracle_and_writes_immutable_verdict(tmp
     verdict = json.loads((root / "verdict.json").read_text())
     assert verdict["qualification"] == "EXPECTED_REJECTION_PASS"
     assert verdict["collectorSchema"] == "tiger-yolo-collector-v1"
+    assert set(verdict['devices']) == {'0', '1'}
     assert json.loads(capsys.readouterr().out)["status"] == "PASS"
     mode = (root / "verdict.json").stat().st_mode & 0o777
     assert mode == 0o444
@@ -513,9 +541,9 @@ def test_collect_runs_expected_rejection_oracle_and_writes_immutable_verdict(tmp
     elif mutation in ("invalid", "changed-valid"):
         value = json.loads(handoff.read_text())
         if mutation == "invalid":
-            value["rejection"]["response"]["success"] = True
+            value['kind'] = 'normal'
         else:
-            value["rejection"]["elapsedMs"] += 1
+            value['graphDigest'] = 'sha256:' + 'e' * 64
         handoff.write_text(json.dumps(value))
     elif mutation == "verdict":
         value = json.loads(old_verdict)
@@ -524,10 +552,9 @@ def test_collect_runs_expected_rejection_oracle_and_writes_immutable_verdict(tmp
         (root / "verdict.json").write_text(json.dumps(value))
         old_verdict = (root / "verdict.json").read_bytes()
     elif mutation == "oracle":
-        from runtime import yolo_result
         def reject(*args, **kwargs):
             raise ValueError("retained evidence rejected on reanalysis")
-        monkeypatch.setattr(yolo_result, "finalize_expected_rejection", reject)
+        monkeypatch.setattr(yolo_negative, 'collect_negative_verdict', reject)
     assert module._collect(args) == (0 if mutation == "unchanged" else module.INCOMPLETE)
     assert (root / "verdict.json").read_bytes() == old_verdict
 

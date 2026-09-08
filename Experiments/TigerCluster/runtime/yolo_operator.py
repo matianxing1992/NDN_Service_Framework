@@ -25,7 +25,7 @@ class OperatorError(ValueError):
 
 
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
-_MODES = {"local-cpu", "single-node-gpu", "two-node-gpu"}
+_MODES = {"local-cpu", "single-node-gpu", "two-node-gpu", "negative-dependency"}
 
 
 def _directory(value, code: str) -> Path:
@@ -191,7 +191,7 @@ def _validate_plan(plan: dict, *, mode: str, rank: int) -> tuple[tuple[str, ...]
     if type(rank) is not int or rank < 0:
         raise OperatorError("OPERATOR_RANK")
     nodes = plan.get("nodes")
-    if not isinstance(nodes, list) or len(nodes) != (1 if mode != "two-node-gpu" else 2):
+    if not isinstance(nodes, list) or len(nodes) != (2 if mode in ('two-node-gpu', 'negative-dependency') else 1):
         raise OperatorError("OPERATOR_NODES")
     matching = [row for row in nodes if isinstance(row, dict) and row.get("rank") == rank]
     if len(matching) != 1 or set(matching[0].get("roles", ())) != set(assigned_roles(mode, rank)):
@@ -343,16 +343,16 @@ def finalize_normal_collection(*, plan: dict, rank_results: dict, node_roots: di
                                allocation_expected: dict | None = None) -> dict:
     """Join completed rank returns and publish the collector handoff.
 
-    This is the outer coordinator boundary for a future ``srun`` owner.  It
+    This is the outer coordinator boundary for the ``srun`` owner. It
     runs only after every expected rank has returned a clean worker receipt;
     the handoff writer then re-reads each retained ``node-receipt.json`` and
     binds its bytes and preparation digest.  No result or verdict is inferred
     from a rank exit code or from an incomplete rank map.
     """
     if not isinstance(plan, dict) or plan.get("case") not in {
-            "local-cpu", "single-node-gpu", "two-node-gpu"}:
+            "local-cpu", "single-node-gpu", "two-node-gpu", "negative-dependency"}:
         raise OperatorError("OPERATOR_COLLECTION_CASE")
-    expected = {0, 1} if plan["case"] == "two-node-gpu" else {0}
+    expected = {0, 1} if plan["case"] in ('two-node-gpu', 'negative-dependency') else {0}
     if (not isinstance(rank_results, dict) or set(rank_results) != expected
             or any(type(rank) is not int for rank in rank_results)):
         raise OperatorError("OPERATOR_COLLECTION_RANKS")
@@ -453,12 +453,14 @@ def execute_distributed_rank(*, prepared, profile, resolved, allocation_expected
     from .yolo_graph_reference import read_request_reference
     from .yolo_result import collect_request_result
     plan = prepared['plan']
-    _validate_plan(plan, mode='two-node-gpu', rank=rank)
+    if prepared['case'] not in ('two-node-gpu', 'negative-dependency'):
+        raise OperatorError('DISTRIBUTED_CASE')
+    _validate_plan(plan, mode=prepared['case'], rank=rank)
     root = _directory(plan['output'], 'DISTRIBUTED_ROOT')
     bundle = _directory(prepared['bundle'], 'DISTRIBUTED_BUNDLE')
     control = _distributed_control(prepared, allocation_expected)
     verify_harness(bundle, expected_manifest_sha256=prepared['harnessManifestSha256'])
-    if (resolved['descriptor']['plan'] != plan or prepared['case'] != 'two-node-gpu'
+    if (resolved['descriptor']['plan'] != plan
             or resolved['descriptor']['runtimeCandidateDigest'] != prepared['candidateDigest']):
         raise OperatorError('DISTRIBUTED_PREPARED_BINDING')
     timing = profile['timing']
@@ -525,13 +527,23 @@ def _execute_distributed_workload(*, prepared, profile, resolved, allocation_exp
                                      candidate_digest=prepared['candidateDigest'])
         if receipt != provision['preparation']:
             raise OperatorError('DISTRIBUTED_PREPARATION_CHANGED')
-        reference = _normal_reference(prepared, profile, resolved)[0] if rank == 0 else None
+        negative = plan['case'] == 'negative-dependency'
+        reference = _normal_reference(prepared, profile, resolved)[0] if rank == 0 and not negative else None
         output = root / ('node'+str(rank))
         output.mkdir(mode=0o700)
         accepted = []
         def accept(request, request_output):
             if rank != 0:
                 raise OperatorError('DISTRIBUTED_USER_RANK')
+            if negative:
+                from .yolo_negative import read_negative_user
+                read_negative_user(request_output, run_id=plan['runId'], request_id=request['requestId'],
+                    candidate_digest=prepared['candidateDigest'], placement_id=receipt['placementCandidateId'],
+                    placement_digest=receipt['placementCandidateDigest'], deadline_ms=timing['requestDeadlineMs'])
+                # Observation completion only; the final collector also requires
+                # both closed ranks, exact consumer failure and native cutpoint.
+                accepted.append(request['index'])
+                return
             read_request_reference(request_output/'graph-reference.json', run_id=plan['runId'],
                 request_id=request['requestId'], runtime_candidate_digest=prepared['candidateDigest'],
                 placement_candidate_digest=receipt['placementCandidateDigest'], graph_digest=receipt['graphDigest'])
@@ -540,9 +552,9 @@ def _execute_distributed_workload(*, prepared, profile, resolved, allocation_exp
                 candidate_digest=receipt['placementCandidateDigest'], graph_digest=receipt['graphDigest'],
                 catalogue_digest=receipt['catalogueDigest'])
             accepted.append(request['index'])
-        result = run_rank(plan=plan, profile=dict(profile, **resolved['runtimeProfile']), mode='two-node-gpu',
+        result = run_rank(plan=plan, profile=dict(profile, **resolved['runtimeProfile']), mode=plan['case'],
             rank=rank, bundle=bundle, public=root/'public',
-            homes={role: root/'private'/role for role in assigned_roles('two-node-gpu', rank)},
+            homes={role: root/'private'/role for role in assigned_roles(plan['case'], rank)},
             output=output, node=node, startup_directory=root/'startup', completion_directory=root/'completion',
             preparation_digest=provision['receiptDigest'], candidate_digest=prepared['candidateDigest'],
             endpoints=endpoints, startup_seconds=timing['startupSeconds'], completion_seconds=completion_seconds,
@@ -574,11 +586,14 @@ def finalize_distributed_run(*, prepared, profile, resolved, allocation_expected
         raise OperatorError('DISTRIBUTED_PREPARATION_BINDING')
     receipt = verify_preparation(root/'public', plan, expected_receipt_digest=value['provision']['receiptDigest'],
                                  candidate_digest=prepared['candidateDigest'])
-    _, package, repository = _normal_reference(prepared, profile, resolved)
+    references = []
+    if plan['case'] != 'negative-dependency':
+        _, package, repository = _normal_reference(prepared, profile, resolved)
+        references = [dict(package=package, repository=repository, inputSize=640) for _ in plan['requests']]
     return finalize_normal_collection(plan=plan,
         rank_results={rank: _read_plane(root/('node'+str(rank))/'node-receipt.json') for rank in (0, 1)},
         node_roots={rank: root/('node'+str(rank)) for rank in (0, 1)}, collection_path=root/'collection-input.json',
-        references=[dict(package=package, repository=repository, inputSize=640) for _ in plan['requests']],
+        references=references,
         runtime_candidate_digest=prepared['candidateDigest'],
         providers_by_role={role: plan['identities'][role] for role in ('BackboneNeck','DetectShard0','DetectShard1','Merge')},
         placement_candidate_id=receipt['placementCandidateId'], placement_candidate_digest=receipt['placementCandidateDigest'],

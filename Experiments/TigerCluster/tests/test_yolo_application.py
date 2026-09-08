@@ -97,6 +97,21 @@ def test_negative_provider_selects_only_bound_head0_output(tmp_path,monkeypatch,
     finally: worker.close()
 
 
+def test_negative_merge_enables_native_failure_evidence_at_process_boundary(tmp_path, monkeypatch):
+    worker = NodeRuntime(**application_inputs(tmp_path, 0, 'negative-dependency'))
+    original, observed = subprocess.Popen, []
+    def boundary(argv, **kwargs):
+        observed.append(argv)
+        return original([sys.executable, '-c', 'import time; time.sleep(60)'], **kwargs)
+    monkeypatch.setattr(subprocess, 'Popen', boundary)
+    try:
+        worker._start_service('Merge', ['/fixture-native'])
+        assert 'NDNSF_DI_RUNTIME_TIMING=1' in observed[0]
+        assert '--withhold-v3-output' not in observed[0]
+    finally:
+        assert all(row['reaped'] and not row['forced'] for row in worker.close())
+
+
 def test_negative_provider_requires_single_nonwarmup_prepared_request(tmp_path,monkeypatch):
     worker=NodeRuntime(**application_inputs(tmp_path,1,'negative-dependency'))
     monkeypatch.setattr(worker,'_start_service',lambda *a:pytest.fail('unbound fault launched'))

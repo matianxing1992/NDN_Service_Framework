@@ -2796,3 +2796,27 @@ repeated. Original output is retained with the negative User evidence. Lesson:
 distinguish the integer request index in the prepared plan from the string
 invocation identifier at the worker API; do not change production behavior to
 accommodate a test assumption. See t004-negative-user.md.
+
+## 2026-09-08 — Negative collector lacked production evidence and JSON-stable reanalysis
+
+The old negative collection handoff accepted a caller-authored rejection record;
+the actual two-rank negative owner/collector remained disconnected. Source review
+also found that dependency tracing did not enable NativeProviderHandler's failure
+log, so the required exact consumer error would be absent. Fix: reuse the normal
+rank/cleanup owners, enable runtime timing for negative Providers, and derive the
+rejection from bound User/Selection/cutpoint/consumer/native-GPU/node evidence.
+Ordinary timeout and raw rejection records remain insufficient.
+
+Two further semantic issues were found during the same join review: the helper
+rejected even a protocol failure response although V17 requires zero successful
+responses; and integer rank keys changed to strings on JSON persistence, making
+unchanged offline reanalysis unequal. Accept a failed response only with all
+independent fault evidence, and normalize JSON at the public collection boundary.
+Targeted response/immutable-verdict checks pass. This does not qualify a real run.
+
+The first new reader suite had 22 passes and one rank1 fixture failure: it reused
+the CPU fixture's nfd0 launch instead of nfd1. Corrected the fixture service/log
+identity, then the affected 191-test wiring group passed. Preserve that first log.
+Lesson: trace actual producer-to-consumer evidence and serialized representations;
+do not manufacture verdict facts, confuse failed responses with successes, or
+infer rank layouts from a single-node fixture. Evidence: t004-negative-collection.md.

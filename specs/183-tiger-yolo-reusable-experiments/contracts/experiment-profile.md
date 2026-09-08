@@ -474,8 +474,10 @@ edge/numerical/cleanup 证据全部重新验证后，才以不可覆盖方式写
 handoff 固定携带 runtime/placement candidate digest、四个 Provider identity、
 节点 receipt/preparation（GPU case 另有 allocation/probe）digest、每个注册请求
 的 reference package/repository、certified graph 及 catalogue/graph digest；
-negative handoff 固定携带 request/attempt/deadline 和独立的
-`tiger-yolo-expected-rejection-v1` record。收集器拒绝符号链接、缺失/重复字段、
+negative handoff 使用相同的 runtime/placement/graph/catalogue/双节点绑定，
+`kind=expected-rejection` 且 `references=[]`；请求、attempt=1 与 deadline 来自
+prepared plan。旧的调用者直接传入 `rejection` 结论格式拒绝接收。
+收集器拒绝符号链接、缺失/重复字段、
 错误 case coverage 和不匹配的 prepared candidate。
 
 正常 handoff 只能由外层 coordinator 在所有 rank 返回后调用
@@ -505,21 +507,31 @@ the generic V3 output callback executes after configured authorization and
 tensor-contract/sealing checks, before any exact Data is published. Tiger enables
 the native `--withhold-v3-output` option only for the bound request's
 DetectShard0→Merge edge. Its structured record describes actual invocation,
-not a PASS verdict. The negative User terminal path and collector remain unwired;
-the submit guard must stay until those owners are implemented. Changed native
+not a PASS verdict. The negative User and two-rank collector are now wired
+(evidence/t004-negative-collection.md). Submission still requires the preceding
+qualified two-node normal run and all frozen content gates. Changed native
 source and worker harness require fresh candidate identities before qualification.
 
 The `negative-dependency` case has a separate terminal contract; it MUST NOT be
 reported through the normal success verdict. `runtime/yolo_result.py::finalize_expected_rejection`
-requires a retained `tiger-yolo-expected-rejection-v1` record bound to the exact
-run, request, attempt, candidate digest, and request deadline. The record must
+checks a `tiger-yolo-expected-rejection-v1` record derived by the production
+collector, bound to the exact run, request, attempt, candidate digest, and request deadline. The record must
 show one committed Selection with `reselectionCount=0`, a specific planned edge
 that failed after Selection (`DEPENDENCY_DATA_MISSING` or `PEER_FAILURE`), no
 successful response, and a `CLEANUP_COMPONENT_ONLY` record proving all owned
 children were reaped without forced cleanup. A timeout, missing file, generic
 nonzero exit, or an operator-supplied PASS marker is insufficient. The helper
-returns `EXPECTED_REJECTION_PASS` only for this exact component contract; a
-real MiniNDN/Tiger negative run and the production collector remain required.
+returns `EXPECTED_REJECTION_PASS` only for this exact component contract.
+`runtime/yolo_negative.py::collect_negative_verdict` independently reads the
+User's post-shutdown observation and Selection prefix, verifies preparation and
+both node/allocation/probe/cleanup receipts, checks real CUDA execution records
+for BackboneNeck and DetectShard0, and joins the single source-emitted withheld
+DetectShard0→Merge object with Merge's failure to fetch that exact MANIFEST.
+It rejects any contradictory transfer, extra cutpoint/native failure or successful
+response. A protocol response with `status=false` is allowed only with the same
+independent failure evidence; it is not itself proof of the fault. No cross-host
+wall-clock ordering is inferred. Srun and storage cleanup are checked separately
+at the public collector boundary. Actual MiniNDN/Tiger qualification remains required.
 
 `runtime/yolo_submission.py::SubmissionJournal` 只管理共享提交记录，不调用
 sbatch，也不验证模型。所有操作者必须用同一已验证共享目录；本机 flock 测试

@@ -437,7 +437,7 @@ def finalize_expected_rejection(rejection, *, plan, request_id, attempt,
 
     This is deliberately separate from :func:`finalize_normal_verdict`.  A
     negative dependency run passes only when a real Selection was committed,
-    the required post-Selection edge failed, no response or reselection was
+    the required post-Selection edge failed, no successful response or reselection was
     observed, and every owned child was reaped without forced cleanup.  The
     collector never infers these facts from a timeout or from a missing output
     directory; the caller must retain the exact, bound record.
@@ -513,7 +513,7 @@ def finalize_expected_rejection(rejection, *, plan, request_id, attempt,
     response = rejection['response']
     if (not isinstance(response, Mapping)
             or set(response) != {'present', 'success'}
-            or response['present'] is not False
+            or type(response['present']) is not bool
             or response['success'] is not False):
         raise EvidenceError('EXPECTED_REJECTION_RESPONSE')
 
@@ -536,7 +536,7 @@ def finalize_expected_rejection(rejection, *, plan, request_id, attempt,
 
 
 def write_worker_receipt(worker, rows):
-    """Persist prepared-run ownership after normal-case service/User cleanup.
+    """Persist prepared-run ownership after service/User cleanup.
 
     This is not a final experiment receipt: management/probe completeness,
     inference, allocation and edges are still independently qualified.
@@ -551,7 +551,7 @@ def write_worker_receipt(worker, rows):
         raise EvidenceError('NODE_RECEIPT_PREPARATION_REQUIRED')
     worker._verify_prepared_boundary()
     plan, preparation_digest, candidate_digest = worker._preparation_binding
-    if (worker.mode not in ('local-cpu', 'single-node-gpu', 'two-node-gpu')
+    if (worker.mode not in ('local-cpu', 'single-node-gpu', 'two-node-gpu', 'negative-dependency')
             or plan.get('case') != worker.mode
             or worker.output != Path(plan['output']) / ('node' + str(worker.rank))
             or set(worker.roles) != set(assigned_roles(worker.mode, worker.rank))):
@@ -561,7 +561,7 @@ def write_worker_receipt(worker, rows):
     if set(services) != set(worker.roles) - {'user'}:
         raise EvidenceError('NODE_RECEIPT_SERVICE_COVER')
     requests = plan.get('requests')
-    count = 4 if worker.mode == 'two-node-gpu' else 2
+    count = 1 if worker.mode == 'negative-dependency' else 4 if worker.mode == 'two-node-gpu' else 2
     if (not isinstance(requests, list) or len(requests) != count
             or any(not isinstance(r, dict) or type(r.get('index')) is not int or r['index'] != i
                    or not isinstance(r.get('requestId'), str) or not r['requestId']
@@ -689,7 +689,7 @@ def read_node_log_receipt(root, *, receipt_digest, plan, preparation_digest, can
     cleanup = validate_cleanup_records(receipt['launches'], receipt['cleanup'])
     if receipt['cleanupSummary'] != cleanup:
         raise EvidenceError('NODE_LOG_CLEANUP_SUMMARY')
-    count = 4 if plan['case'] == 'two-node-gpu' else 2
+    count = 1 if plan['case'] == 'negative-dependency' else 4 if plan['case'] == 'two-node-gpu' else 2
     requests = plan.get('requests')
     if (not isinstance(requests, list) or len(requests) != count
             or any(not isinstance(row, dict) or type(row.get('index')) is not int or row['index'] != i
@@ -718,7 +718,7 @@ def read_retained_device_binding(root, *, receipt_digest, allocation_digest, gpu
     from runtime.yolo_profile import _object
     from runtime.yolo_allocation import validate_task_allocation
     from runtime.yolo_gpu_probe import read_probe
-    if (plan['case'] not in ('single-node-gpu', 'two-node-gpu')
+    if (plan['case'] not in ('single-node-gpu', 'two-node-gpu', 'negative-dependency')
             or not isinstance(expected, dict)
             or set(expected) != {'job_id', 'submission_key', 'partition', 'gpu_type'}):
         raise EvidenceError('RETAINED_ALLOCATION_EXPECTED')
