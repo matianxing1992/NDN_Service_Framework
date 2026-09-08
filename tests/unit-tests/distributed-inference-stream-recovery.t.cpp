@@ -1,8 +1,115 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestEnvelope.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include <boost/test/unit_test.hpp>
+#include "NDNSF-DistributedInference/cpp/adapters/qwen/NativeTokenizer.hpp"
+#include "tests/fixtures/spec182/native-sampling-epoch.hpp"
+#include <fstream>
+#include <unistd.h>
 
 namespace Spec182V3Placement { void runPublicClientScenario(int scenario); }
+
+namespace {
+struct EpochTokenizer
+{
+  EpochTokenizer()
+  {
+    std::ifstream input("tests/fixtures/spec182/dependency-probes/tokenizer/stable-vectors.json");
+    NativeFixtureJsonRead(input);
+  }
+  void NativeFixtureJsonRead(std::istream& input)
+  {
+    const auto fixtures = ndnsf::di::NativeJson::parse(input);
+    for (const auto& fixture : fixtures.at("fixtures")) {
+      if (fixture.at("name") != "byte-fallback-special") continue;
+      char path[] = "/tmp/spec182-epoch-tokenizer-XXXXXX";
+      const auto fd = ::mkstemp(path);
+      if (fd < 0) throw std::runtime_error("cannot create tokenizer fixture");
+      ::close(fd);
+      try {
+        {
+          std::ofstream output(path, std::ios::binary);
+          output.exceptions(std::ios::failbit | std::ios::badbit);
+          output << fixture.at("tokenizerJson").get<std::string>();
+        }
+        tokenizer = std::make_unique<ndnsf::di::qwen::NativeTokenizer>(
+          path, "sha256:" + fixture.at("sha256").get<std::string>());
+      }
+      catch (...) { ::unlink(path); throw; }
+      ::unlink(path);
+      return;
+    }
+    throw std::runtime_error("missing frozen ByteFallback fixture");
+  }
+  std::unique_ptr<ndnsf::di::qwen::NativeTokenizer> tokenizer;
+};
+
+std::vector<std::vector<float>> epochLogits(std::initializer_list<std::size_t> ids)
+{
+  std::vector<std::vector<float>> result;
+  for (const auto id : ids) {
+    result.emplace_back(261, -100.0f);
+    result.back().at(id) = 100.0f;
+  }
+  return result;
+}
+}
+
+BOOST_AUTO_TEST_SUITE(Spec182EpochText)
+BOOST_AUTO_TEST_CASE(TerminalFlushMatchesFinalForMaxEosStopAndReplay)
+{
+  using namespace ndnsf::di;
+  EpochTokenizer fixture;
+  for (int scenario = 0; scenario != 4; ++scenario) {
+    std::vector<NativeJson> events;
+    const auto result = test::runSamplingEpochs(
+      scenario == 1 ? epochLogits({102, 2}) : epochLogits({102, 260}),
+      [&](NativeEpochCoordinatorConfig& config) {
+        config.requireTextOutput = true;
+        config.textDecoder = [&](const auto& ids) { return fixture.tokenizer->decode(ids); };
+        config.stableTextDecoder = [&](const auto& ids, bool final) {
+          return fixture.tokenizer->decodeStable(ids, true, final);
+        };
+        if (scenario == 1) config.eosTokenIds = {2};
+        if (scenario == 2) config.stopStrings = {"a"};
+        if (scenario == 3) {
+          config.attemptEpoch = 2;
+          config.committedPrefixTokenIds = {102};
+        }
+        config.eventSink = [&](const auto& bytes) {
+          events.push_back(NativeJson::parse(bytes));
+          return true;
+        };
+      });
+    BOOST_REQUIRE(result.finalPayload.has_value());
+    const auto final = NativeJson::parse(*result.finalPayload);
+    BOOST_REQUIRE_EQUAL(events.size(), scenario >= 2 ? 1 : 2);
+    std::string joined;
+    for (const auto& event : events) joined += event.at("textDelta").get<std::string>();
+    const std::string expected = scenario == 1 || scenario == 2 ? "a" : "\xef\xbf\xbd\xef\xbf\xbd";
+    BOOST_CHECK_EQUAL(joined, expected);
+    BOOST_CHECK_EQUAL(final.at("text").get<std::string>(), expected);
+    BOOST_CHECK_EQUAL(events.back().at("finishHint").get<std::string>(),
+      scenario == 1 ? "EOS" : scenario == 2 ? "STOP_SEQUENCE" : "MAX_TOKENS");
+    BOOST_CHECK_EQUAL(result.prefixTokensRecomputed, scenario == 3 ? 1 : 0);
+    if (events.size() == 2) BOOST_CHECK_EQUAL(events.front().at("textDelta"), "");
+  }
+}
+
+BOOST_AUTO_TEST_CASE(FinalDecoderMismatchRejectsBeforeEventAcceptance)
+{
+  using namespace ndnsf::di;
+  std::size_t accepted = 0;
+  BOOST_CHECK_EXCEPTION(test::runSamplingEpochs(epochLogits({102}),
+    [&](NativeEpochCoordinatorConfig& config) {
+      config.textDecoder = [](const auto&) { return "a"; };
+      config.stableTextDecoder = [](const auto&, bool final) { return final ? "wrong" : ""; };
+      config.eventSink = [&](const auto&) { ++accepted; return true; };
+    }), std::runtime_error, [](const auto& error) {
+      return std::string(error.what()) == "NATIVE_FINAL_TEXT_DECODE_MISMATCH";
+    });
+  BOOST_CHECK_EQUAL(accepted, 0);
+}
+BOOST_AUTO_TEST_SUITE_END()
 
 BOOST_AUTO_TEST_SUITE(Spec182StreamAcceptance)
 BOOST_AUTO_TEST_CASE(Spec182StreamAcceptsCompleteTranscript)
