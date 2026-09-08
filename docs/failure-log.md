@@ -2706,3 +2706,21 @@ site dependency is NOT repaired by these source changes; a maintained environmen
 and portable transport still need implementation. 85 initial component checks
 and affected receiver regressions pass; see t004-shared-submit.md. No Slurm jobs,
 model execution, SIF rebuild or download. The base-SIF read fault remains open.
+
+## 2026-09-07 — Fixed batch Python bypassed a usable isolated environment
+
+Symptom: Tiger's system Python lacks jsonschema. Installing a separate venv alone
+would not repair hardcoded interpreter paths in pre-submit checks, the batch
+wrapper and srun. Selecting an interpreter from mutable profile contents inside
+the shell would also act before the frozen profile binding is checked.
+Fix: create/reuse a pinned binary-only operator environment under project storage;
+configure runtime.operatorPython; bind it as the sixth batch argument and use it
+for srun and cluster frozen entry. Local CPU/offline collection use the invoking
+host interpreter; frozen entry verifies its dependency pins. The wrapper never
+chooses an executable by parsing mutable profile data. Raw profile digests remain
+bound even though physical interpreter locations are excluded from behavior IDs.
+Actual Tiger installation and reuse passed; local dependency pins also passed.
+104 initial and 78 final focused checks passed, with overlapping groups reported
+separately. No Slurm/SIF/GPU execution or host/native library replacement occurred.
+Lesson: verify the exact interpreter at every relevant boundary and reuse a valid
+environment instead of installing packages repeatedly. See t004-operator-env.md.

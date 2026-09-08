@@ -120,7 +120,7 @@ def test_submission_prerequisites_and_allocation_contract(tmp_path, monkeypatch,
     assert "--nodes=" + str(nodes) in command
     assert "--ntasks=" + str(nodes) in command
     assert "--gres=gpu:rtx_6000:1" in command
-    assert command[-6] == str(wrapper)
+    assert command[-7] == str(wrapper)
     seen = []
     prepared['contentIdentities'] = dict.fromkeys(('inputs', 'runtime', 'dispatch'), 'sha256:' + 'c' * 64)
     monkeypatch.setattr(module, "_dispatch_report",

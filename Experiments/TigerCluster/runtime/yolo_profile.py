@@ -266,6 +266,8 @@ def load_operator_profile(path: Path, *, stage: str) -> dict:
 
     resolve_refs(value)
     value["runtime"]["apptainer"] = _operator_path(value["runtime"]["apptainer"], path.parent, local=True)
+    if 'operatorPython' in value['runtime']:
+        value['runtime']['operatorPython'] = _operator_path(value['runtime']['operatorPython'], path.parent, local=True)
     value["security"]["authorityPrivateKey"] = _operator_path(
         value["security"]["authorityPrivateKey"], path.parent, local=True)
     for key in ("localArtifactRoot", "remoteArtifactRoot", "sharedRunRoot", "sharedLockRoot", "scratchRoot"):
@@ -292,6 +294,7 @@ def effective_profile_document(profile: dict) -> dict:
     behavior.pop('release')
     behavior.pop('profileId')
     behavior['runtime'].pop('apptainer')
+    behavior['runtime'].pop('operatorPython',None)
     behavior['security'].pop('authorityPrivateKey')
     behavior['storage'] = {key: profile['storage'][key] for key in ('peakBytes', 'marginBytes')}
     return dict(schema='tiger-yolo-effective-profile-v1', profileId=profile['profileId'],

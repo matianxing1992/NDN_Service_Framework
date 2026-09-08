@@ -93,7 +93,7 @@ below remoteArtifactRoot. Unstaged inputs return SHARED_STAGING_REQUIRED without
 querying Slurm or reserving a journal. No output path or receipt is silently rebased.
 
 Before reservation, query ClusterName=itiger, measure available output capacity,
-and verify the actual `/usr/bin/python3` batch interpreter against the frozen
+and verify the configured batch interpreter against the frozen
 requirements-operator.txt. This includes real jsonschema/NumPy imports. Missing
 or mismatched dependencies prevent sbatch; local component doubles cannot prove
 that the cluster interpreter is usable.
@@ -115,6 +115,37 @@ result authorizes resubmission. Final failure remains a separate collect action.
 
 This receiver does not upload files or relocate local prerequisite runs. Those
 transport owners and actual shared-filesystem qualification remain unfinished.
+
+## Operator Python environment (2026-09-07)
+
+Optional `runtime.operatorPython` selects the cluster receiver/batch/srun
+interpreter. It is a validated physical locator, excluded from normalized
+behavior like the Apptainer executable path. Its raw profile document remains
+bound to preparation; changed profile data is rejected before interpreter
+dispatch. Profiles without the field retain their legacy system batch default.
+
+`tools/spec183_operator_env.py` creates a new, isolated venv with copied Python
+executables and only binary, version-pinned requirements. It never clears an
+existing prefix. A completed prefix is reused only after the same requirements
+digest and actual imports/versions verify again; an unfinished prefix is rejected.
+Installation logs and an OPERATOR_DEPENDENCIES_ONLY receipt stay in that prefix.
+This is an operator environment outside the SIF, not native/runtime qualification.
+
+The canonical profile now selects
+`/project/tma1/ndnsf-di/operator-envs/py39-3b4f62bc/bin/python`, created and verified
+on the login node from requirements SHA-256
+`3b4f62bcad8e182c7402f9068dce192afd3283be0b9fc5ec2d0e597aa7a9b755`.
+Pass the selected interpreter as the sixth immutable batch argument; the wrapper
+does not parse mutable profile data to choose an executable. srun uses that same
+selected path. Local CPU and ordinary offline collect use the invoking host's
+interpreter. On entry into the frozen CLI, verify that interpreter's actual
+dependency pins before continuing. Explicit cluster submit and collect
+--reconcile dispatch through the configured cluster interpreter.
+
+Login installation/import and shell/argv tests do not establish compute-node
+availability. The same shared interpreter and dependencies must load on each
+actual rank before native work. No system Python installation or SIF library was
+modified to make this work.
 
 ## Allocated storage ownership (2026-09-07)
 

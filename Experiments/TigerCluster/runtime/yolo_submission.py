@@ -31,7 +31,7 @@ CLOSED = TERMINAL | {"CANCELLED_BEFORE_SUBMIT"}
 STATES = CLOSED | {"PREPARED", "SUBMITTING", "SUBMISSION_UNKNOWN", "SUBMITTED", "RUNNING"}
 
 
-def verify_operator_python(bundle, *, seconds):
+def verify_operator_python(bundle, *, seconds, operator_python='/usr/bin/python3'):
     """Verify the actual batch interpreter and frozen operator dependency pins."""
     script = '''import sys, pathlib, importlib.metadata as metadata
 import jsonschema, numpy
@@ -47,7 +47,7 @@ for line in pathlib.Path(sys.argv[1]).read_text().splitlines():
     if metadata.version(name)!=version: raise ValueError('OPERATOR_REQUIREMENT_VERSION:'+name)
 print('OPERATOR_REQUIREMENTS_OK')
 '''
-    result=subprocess.run(['/usr/bin/python3','-c',script,str(Path(bundle)/'requirements-operator.txt')],
+    result=subprocess.run([str(operator_python),'-c',script,str(Path(bundle)/'requirements-operator.txt')],
         check=True,capture_output=True,timeout=seconds,env={'PATH':'/usr/bin:/bin','LC_ALL':'C'})
     if result.stdout!=b'OPERATOR_REQUIREMENTS_OK\n' or result.stderr:
         raise JournalError('OPERATOR_REQUIREMENTS_REJECTED')

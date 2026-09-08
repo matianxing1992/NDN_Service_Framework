@@ -50,6 +50,7 @@
       "type": "object", "additionalProperties": false,
       "required": ["apptainer", "apptainerVersion", "python", "nativeProvider", "cwd", "environment"],
       "properties": {
+        "operatorPython": {"$ref": "#/definitions/path"},
         "apptainer": {"$ref": "#/definitions/path"},
         "apptainerVersion": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[A-Za-z0-9.]+)?$"},
         "python": {"const": "/opt/venv/bin/python"},

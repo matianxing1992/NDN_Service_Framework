@@ -366,7 +366,7 @@ def _submission_command(profile_path: Path, profile: dict, args, prepared: dict,
         "--comment=" + submission_key,
         "--output=" + str(output / (args.run_id + "-slurm-%j.log")),
         str(wrapper), str(bundle), str(profile_path.resolve()), str(output),
-        args.run_id, args.case,
+        args.run_id, args.case, profile.get('runtime',{}).get('operatorPython','/usr/bin/python3'),
     ]
     constraint = cluster.get("constraint", "")
     if constraint:
@@ -431,10 +431,23 @@ def _enter_frozen(args, prepared, action):
     from runtime.yolo_bundle import verify_harness
     bundle = Path(prepared['bundle'])
     verify_harness(bundle, expected_manifest_sha256=prepared['harnessManifestSha256'])
-    if BUNDLE == bundle:
+    raw_profile=_read_plane(Path(args.profile))
+    if _json_digest(raw_profile)!=prepared['profileDigest']:
+        raise ClosureError('FROZEN_PROFILE_CHANGED')
+    configured=raw_profile.get('runtime',{}).get('operatorPython')
+    if action=='local' or (action=='collect' and not getattr(args,'reconcile',False)):
+        configured=None  # Local CPU/offline reanalysis use the invoking host's interpreter.
+    interpreter=(sys.executable if configured is None else _operator_path(
+        configured,Path(args.profile).absolute().parent,local=True))
+    if BUNDLE == bundle and os.path.abspath(sys.executable)==os.path.abspath(interpreter):
+        from runtime.yolo_submission import verify_operator_python
+        try:
+            verify_operator_python(bundle,operator_python=interpreter,
+                seconds=raw_profile.get('timing',{}).get('progressTimeoutSeconds',30))
+        except (ValueError,OSError,subprocess.SubprocessError) as exc:
+            raise ClosureError('FROZEN_OPERATOR_DEPENDENCIES') from exc
         return None
-    import subprocess
-    command = [sys.executable, '-B', str(bundle / 'jobs/yolo/submit.py'), action,
+    command = [interpreter, '-B', str(bundle / 'jobs/yolo/submit.py'), action,
         '--profile', str(Path(args.profile).absolute()), '--run-id', args.run_id,
         '--output', str(_safe_output(args.output))]
     if action in ('local', 'submit', 'run', 'rank'):
@@ -542,7 +555,8 @@ def _submit_shared(args,profile,prepared):
         if (len(site.stdout)>4*1024*1024 or site.stderr
                 or re.findall(rb'^ClusterName\s*=\s*(\S+)\s*$',site.stdout,re.M)!=[b'itiger']):
             raise ClosureError('SUBMIT_CLUSTER_BINDING')
-        verify_operator_python(Path(prepared['bundle']),seconds=seconds)
+        verify_operator_python(Path(prepared['bundle']),seconds=seconds,
+            operator_python=profile.get('runtime',{}).get('operatorPython','/usr/bin/python3'))
         measured_capacity(Path(args.output),profile['storage']['peakBytes']+profile['storage']['marginBytes'])
         try:
             row=journal.get(args.run_id)
@@ -895,7 +909,8 @@ def _run(args) -> int:
     command = ['/usr/bin/srun', '--exact', '--nodes='+str(nodes), '--ntasks='+str(nodes),
         '--ntasks-per-node=1', '--kill-on-bad-exit=1', '--mpi=none',
         '--cpus-per-task=' + str(profile['cluster']['cpusPerNode']), '--gpus-per-task=1',
-        '/usr/bin/python3', '-B', str(Path(prepared['bundle']) / 'jobs/yolo/submit.py'),
+        profile.get('runtime',{}).get('operatorPython','/usr/bin/python3'), '-B',
+        str(Path(prepared['bundle']) / 'jobs/yolo/submit.py'),
         'rank', '--profile', str(Path(args.profile).absolute()), '--run-id', args.run_id,
         '--output', str(_safe_output(args.output)), '--case', args.case]
     journal.mark_running(args.run_id, expected['job_id'])

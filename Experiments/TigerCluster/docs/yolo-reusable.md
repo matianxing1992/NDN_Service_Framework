@@ -22,12 +22,31 @@ hostMinindn receipt 后执行签发、两个 CPU 请求、清理及 collector �
 当成真实 SIF 内身份签发及请求验证。正常单/双GPU run、节点scratch、外部
 collect --reconcile 和共享目录接收端submit已接；跨机器文件运输、可移植前置
 证据和负例仍缺。新机器必须安装冻结 requirements-operator.txt 对应的操作者
-依赖并保证batch解释器一致；实测Tiger /usr/bin/python3缺jsonschema，现会在
-sbatch前拒绝。不要临时启动job来试错或把另一解释器的import当作该解释器合格。
+依赖并保证batch解释器一致。Tiger已建立独立环境，当前profile的
+runtime.operatorPython指向它；系统Python仍不作为该环境的替代。
 
 提交回执丢失时使用同一run ID重试submit，只会按唯一comment查询原job，不重提。
 默认collect离线重算；作业结束后显式collect --reconcile核对scheduler终态并释放
 journal。共享输出路径不能手动改写prepared receipt；目前必须先完成运输接线。
+
+## Operator environment
+
+操作者依赖不安装进SIF。当前Tiger环境为
+`/project/tma1/ndnsf-di/operator-envs/py39-3b4f62bc/bin/python`；依赖文件摘要为
+`3b4f62bcad8e182c7402f9068dce192afd3283be0b9fc5ec2d0e597aa7a9b755`。
+新环境用维护的工具创建（prefix父目录须已存在）：
+
+```bash
+/usr/bin/python3 Experiments/TigerCluster/tools/spec183_operator_env.py \
+  --prefix /project/tma1/ndnsf-di/operator-envs/py39-3b4f62bc \
+  --requirements Experiments/TigerCluster/requirements-operator.txt
+```
+
+重复调用只验证并复用完成的环境；不会重装或清空失败/正在安装的prefix。
+集群上使用该环境的Python调用submit.py；batch通过已绑定参数、srun通过已验证
+profile选择同一解释器。本地CPU和普通离线collect使用调用者本机解释器，进入
+冻结CLI后也核对实际依赖pins。显式collect --reconcile使用集群解释器。
+每个实际allocation仍需证明compute节点可加载该环境；登录节点通过不代表GPU通过。
 
 ## Operating Contract
 

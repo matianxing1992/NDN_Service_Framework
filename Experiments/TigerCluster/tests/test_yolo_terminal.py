@@ -166,6 +166,8 @@ def test_frozen_entry_preserves_explicit_reconciliation_option(allocated,monkeyp
     module=submit_module()
     args.reconcile=True
     prepared['harnessManifestSha256']='sha256:'+'d'*64
+    args.profile.write_text('{"runtime":{}}')
+    prepared['profileDigest']=module._json_digest({'runtime':{}})
     monkeypatch.setattr(yolo_bundle,'verify_harness',lambda *a,**k: None)
     commands=[]
     monkeypatch.setattr(subprocess,'run',lambda command,**k: commands.append(command) or SimpleNamespace(returncode=78))
