@@ -1,5 +1,13 @@
 # Failure Log and Evidence Index
 
+## 2026-09-08 — Spec182 progress audit checkpoint hook
+
+审计文档checkpoint首次提交exit1：pre-commit扫描全索引中的既有助手引用。
+已检查钩子提供的`NDNSF_LOCAL_CHECKPOINT=1`本地模式，仍保留禁止路径检查；
+这是提交边界，不是产品测试失败。首边界节录保存在
+[commit-failure.txt](../.codex-tmp/spec182-progress-audit-20260908/commit-failure.txt)，
+审计结论见[R4-B4](../specs/182-native-di-python-bindings/evidence/r4-b4-conversation-chain-20260908.md#progress-and-feasibility-audit)。
+
 ## 2026-09-08 — Spec182 conversation oracle canonical mutation
 
 R4-B4 离线oracle author首次 exit1：负例使用默认 json.dumps，旧参考先以

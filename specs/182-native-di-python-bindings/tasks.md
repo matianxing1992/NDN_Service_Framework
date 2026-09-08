@@ -84,6 +84,14 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 
 ## Current Checkpoint
 
+2026-09-08 Progress Audit / **PARTIAL**：按用户要求暂停新增实现。路线评估为
+CONDITIONAL PASS，不能按当前证据承诺完整目标可顺利收敛；父任务仍3/17验收，
+不换算工作量百分比。最后原生验证仍为R4-B3的24 cases/411 assertions；R4-B4
+公开会话入口未接通，新增runtime/logical prefix区分及journal metadata也未获C++验证。
+见[本轮审计](evidence/r4-b4-conversation-chain-20260908.md#progress-and-feasibility-audit)。
+结构检查与prerequisites PASS；未运行新构建/行为测试。下一步建议先重定稳定接口与
+有独立验收价值的批界，再接公开两轮请求；这是建议，尚未修改计划或恢复编码。
+
 2026-09-08 R4-B4 CC-3 boundary / **PARTIAL**：已编码Provider COMMIT后的FINALIZE/
 ROLLBACK窗口、lambda值捕获修复、coordinator durable gate与成功后清理边界；新增gate
 用例未运行。见[接线地图](evidence/r4-b4-conversation-chain-20260908.md#cc-3-remaining-wiring-map)。
