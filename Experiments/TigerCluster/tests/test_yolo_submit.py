@@ -211,7 +211,10 @@ def test_deterministic_run_plan_has_four_provider_roles_and_four_requests(tmp_pa
     assert len(plan["requests"]) == 4
     assert [r["warmup"] for r in plan["requests"]] == [True, False, False, False]
     assert len({r["requestId"] for r in plan["requests"]}) == 4
-    assert all(r['requestId'].startswith(plan['namespace'] + '/requests/') for r in plan['requests'])
+    from urllib.parse import unquote
+    assert all(r['requestId'].count('/') == 1 for r in plan['requests'])
+    assert all(unquote(r['requestId']).startswith(plan['namespace'] + '/requests/')
+               for r in plan['requests'])
     assert all(r['output'] == str(Path(plan['output']) / 'node0/user/requests' / str(r['index']))
                for r in plan['requests'])
     assert len(plan["nodes"]) == 2

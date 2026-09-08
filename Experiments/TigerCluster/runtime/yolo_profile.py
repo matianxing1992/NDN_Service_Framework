@@ -11,6 +11,7 @@ import os
 from pathlib import Path, PurePosixPath
 import re
 import stat
+from urllib.parse import quote
 
 
 REQUIRED_FILES = {
@@ -519,8 +520,11 @@ def resolve_run_plan(path: Path, *, stage: str, case: str, run_id: str, output: 
     schedule = ({"warmup": 0, "measured": 1} if case == "negative-dependency" else
                 profile["schedule"]["singleNode" if count == 1 else "twoNode"])
     requests = [{"index": n, "warmup": n < schedule["warmup"],
-                 "requestId": namespace + "/requests/" + hashlib.sha256(
+                 # V2 carries exactly one request-ID NameComponent. Freeze
+                 # that wire form before journals/reference bindings consume it.
+                 "requestId": "/" + quote(namespace[1:] + "/requests/" + hashlib.sha256(
                      ("tiger-yolo-request-v1:" + namespace + "/" + str(n)).encode()).hexdigest()[:32],
+                     safe="-._~%"),
                  "output": str(output / run_id / "node0" / "user" / "requests" / str(n))}
                 for n in range(schedule["warmup"] + schedule["measured"])]
 

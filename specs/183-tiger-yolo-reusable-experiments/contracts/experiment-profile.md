@@ -1,5 +1,18 @@
 # Experiment Profile And Run Contract
 
+## Canonical Request Identity
+
+Generated request IDs are absolute canonical V2 NameComponent URIs: one
+leading `/`, with namespace/run separators encoded as `%2F` inside that single
+component. Freeze this wire form in the run plan before signing, reference
+binding or lifecycle journal creation. Each warmup/measured request retains
+its distinct namespace/index-derived digest. The existing DI normalizer must
+leave the planned ID unchanged; journals, graph references, assignments and
+result collectors compare that exact same string. Do not normalize only one
+consumer or suppress identity-mismatch errors. Previously prepared multi-
+component diagnostic runs remain failed evidence; create a fresh candidate
+with the corrected frozen harness.
+
 ## Accepted Layout Revision — 2026-09-08
 
 同日真机精度修复：FP32 YOLO的CUDA会话显式`use_tf32=0`，原生执行器与

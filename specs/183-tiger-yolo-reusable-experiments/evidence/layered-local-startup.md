@@ -3,6 +3,30 @@
 Status: signed preparation and corrected Controller/Repo registration executed;
 full four-Provider inference and formal qualification remain open.
 
+## Run e: input published, request-ID representation mismatch
+
+`layered-host-20260908e` uses the fixture-corrected app71aecff6 and unchanged
+basec6dbeda8. Candidate SHA is
+`285c96127baf518c1b8c10687de23c050900285e6f295714fd696bdf00b64f9e`;
+preparation receipt SHA is
+`e8c7044b13434e4a00943bcd98b45ac82ae56bfb63c7f9bfe6dd1301314a3804`.
+Actual signing succeeds, Repo and all four Providers reach readiness.
+User publishes its4915270-byte encrypted input reference and sends the V3
+deferred planning request. It then exits2 when the lifecycle observer raises
+LIFECYCLE_PROTOCOL_IDENTITY_MISMATCH. All13 owned operations are reaped,
+leases released, none forced; no inference request is accepted.
+
+Root cause: Tiger resolve_run_plan generates `/namespace/run/requests/digest`,
+but the existing DI normalize_request_id_component converts the internal
+slashes to `%2F`, since V2 carries one request-ID component. The observer
+correctly refuses to equate that wire string with the journal's original path.
+Generate the canonical encoded form in the plan before any signing/journal/
+reference binding. Keep every consumer's exact identity check. The focused
+plan regression fails on the former multi-component IDs, then passes after
+the fix, retaining four distinct requests, warmup ordering and output layout.
+Only Tiger's frozen harness changes; base and app require no rebuild/repack.
+Next: refresh dispatch/harness and run fresh candidate f.
+
 ## Packaged run d: all roles ready, User fixture omission
 
 Run `layered-host-20260908d` uses the independently verified c6dbeda8 base and

@@ -1,5 +1,17 @@
 # Failure Log and Evidence Index
 
+## 2026-09-08 — Planned request name differs from canonical V2 wire ID
+
+Fixture-fixed run e publishes its encrypted input and sends the V3 request,
+then User exits2 with LIFECYCLE_PROTOCOL_IDENTITY_MISMATCH. Tiger planned a
+multi-component path; DI's existing normalizer encodes it into the one V2
+request-ID component. The journal's raw path no longer matches. Freeze the
+canonical encoded ID at plan generation, before every signature/reference/
+journal consumer. Preserve exact identity rejection. The focused four-request
+plan test fails before the change and passes after it. All13 failed-run
+operations are reaped with leases released and no force. Refresh only the
+frozen Tiger harness and use a fresh run; base/app bytes remain reusable.
+
 ## 2026-09-08 — External application omitted the registered YOLO fixture
 
 Full packaged run d passes Repo and four-Provider readiness, then User exits2
