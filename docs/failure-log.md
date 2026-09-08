@@ -1,5 +1,17 @@
 # Failure Log and Evidence Index
 
+## 2026-09-08 — Spec182 R4-B4 conversation Unicode canonical boundary
+
+首次R4-B4增量构建使用旧`-j2`并成功完成；随后`Spec182Conversation*`运行9 cases，
+8项失败。首个代码边界是`NativeCanonicalJson`使用`ensure_ascii=true`，与旧Python
+checkpoint/transcript的`ensure_ascii=False`不一致；中文service wire先被canonical
+检查拒绝，receipt digest随后连带失败。该次不是Provider网络或协议资格结果。
+原始选择器输出见本次会话命令结果；修复已改为保留UTF-8，需按主机默认`-j4`重建并复验。
+详细进度见[R4-B4](../specs/182-native-di-python-bindings/evidence/r4-b4-conversation-chain-20260908.md)。
+修复后`Spec182Conversation*`按`-j4`增量检查，9 cases/exit0；该结果只覆盖会话组件focused边界。
+随后共享回归`Spec182CanonicalJson*`、`Spec182Conversation*`、`Spec182EpochText*`、
+`Spec182StreamAcceptance*`、`Spec182Sampling*`共25 cases按`-j4`运行exit0。
+
 ## 2026-09-08 — Spec182 progress audit checkpoint hook
 
 审计文档checkpoint首次提交exit1：pre-commit扫描全索引中的既有助手引用。

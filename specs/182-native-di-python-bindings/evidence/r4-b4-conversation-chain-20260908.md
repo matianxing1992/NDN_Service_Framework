@@ -178,8 +178,27 @@ coordinator新增durableCommitGate：operation可将journal/parent发布与其�
 - canonicalTokenIds必须与真实prepared input一致；NativePreparedInput当前只有payload，
   不得把未核对的caller token列表当模型实际输入。完整输入/续接投影仍需按现有tensor格式接线。
 
-本轮无C++构建/行为结果。公开两轮请求仍未完成，继续CC-3输入/投影、receipt收集、
-控制及单终态接线后，才进入整批验证。不能把上述静态修复当作事务资格。
+首次R4-B4 C++增量构建使用了旧降档`-j2`，构建成功（2m47.131s）；这不是当前主机默认。
+随后`Spec182Conversation*`选择器9 cases中8项失败，首边界为canonical JSON Unicode编码
+不符合旧Python `ensure_ascii=False`，并连带造成receipt digest失败；不是Provider网络结果。
+公开两轮请求仍未完成，继续CC-3输入/投影、receipt收集、控制及单终态接线后，才进入整批验证。
+不能把上述失败或修复当作事务资格。
+
+### CC-1/CC-2 Focused Validation
+
+修正`NativeCanonicalJson`保留UTF-8（与旧Python `ensure_ascii=False`一致）后，按当前开发机
+默认`-j4`完成增量检查；`vmstat`后续采样`si/so=0`，未见持续换页。运行
+`build/unit-tests --run_test=Spec182Conversation*`：**9 cases PASS，exit 0**。
+覆盖旧checkpoint/transcript/envelope parity、native journal读写/lease/torn-tail/quota、
+owner FULL_CONTEXT/APPEND_DELTA、abort/replacement/durable gate及restore。Python oracle
+`build-conversation-oracle.py --check`仍为6 checkpoints/4 transactions PASS。
+这次结果只关闭Wire/Journal/Coordinator的focused行为边界；Provider确认窗口、公开client入口、
+真实Core/Provider网络和T016资格仍未完成。
+
+共享回归选择器`Spec182CanonicalJson*,Spec182Conversation*,Spec182EpochText*,
+Spec182StreamAcceptance*,Spec182Sampling*`按`-j4`构建后的运行结果为**25 cases PASS，exit 0**。
+这确认会话专用UTF-8编码没有改变既有框架canonical-json或已验收的epoch/stream/sampling行为；
+仍不授予真实Provider/Core网络或完整Spec资格。
 
 ## Progress and Feasibility Audit
 
