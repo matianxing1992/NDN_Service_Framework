@@ -1,0 +1,6 @@
+{
+  "revision": "R1",
+  "minimum_pages": 50,
+  "expect_equal": true,
+  "note": "R1 初始当前与目标一致；用户明确修改目标后改为 false 并在追踪记录解释差异。页数下限只防止缺失 API 部分，不是质量证明。"
+}

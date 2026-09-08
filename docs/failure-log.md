@@ -1,5 +1,13 @@
 # Failure Log and Evidence Index
 
+## 2026-09-07 — Design API selector
+
+API 契约首轮渲染使用不存在的 ExecutionLease::release；源码 owner 为 ProviderExecutionLeaseTable。
+保留首边界，修正选择器后独立重验；见 [API guide evidence](../specs/182-native-di-python-bindings/evidence/design-api-guide-20260907.md)。
+选择器修复后 23 契约/53 签名渲染通过；首轮双份 79 页 PDF 有一个长标识符溢出，已定位并独立修复重建。
+连续排版后 63 页；目录页码需第三遍编译才能稳定，已增加构建遍数并另建验证目录。
+最终 r4 双份 63 页、58 个目录页码、API 声明/绑定和源码还原检查 PASS；文档失败已修复，不计产品资格。
+
 ## 2026-09-07 — Spec182 publication fixture name
 
 publication recertification r1 新 ABI -j4 build PASS（302.273s）；定向测试在构造

@@ -1,41 +1,31 @@
 # 文档验证记录
 
-## 结果
+## R1 API 开发者指南
 
-完成四模块中文设计 R0，两份各 35 页 A4。当前与目标 TeX 技术正文逐字节一致，PDF 提取文字去除文档身份页眉后相同。
-两份各执行两遍 XeLaTeX，返回码均为 0；最终日志无排版溢出、缺字或警告，字体全部嵌入。
-查看当前 PDF 全部 35 页缩略图，并放大检查制品接口页、密集源码索引页以及目标首页；未发现裁切、重叠或意外空白页。
+两份中文 PDF 各 63 页、58 章，包含四模块结构说明和 23 组 API 契约、53 个准确签名示例。当前/目标技术正文相同，两套可编辑契约独立保存。
 
-## 持久证据
+最终构建目录：`.codex-tmp/design-pdf-20260908T035534860722Z/`。各执行三遍 XeLaTeX，目录分页稳定；无警告、缺字或溢出，字体全部嵌入。
+机器逐章核对 58 个目录条目的页码与实际标题；正文与 API 部分字节一致，PDF 去身份页眉后文字相同。
+检查目录和 API 部分全部页面缩略图，放大检查长签名、密集参数与源码定位；原先的短尾页已改为连续排版。
 
-- 最终构建及验证：[r5 原始目录](../.codex-tmp/design-pdf-20260908T023607184577Z/)。
-- [机器验证结果](../.codex-tmp/design-pdf-20260908T023607184577Z/verification.json)：PDF 摘要、页数、字体、正文和源码存档验证。
-- [源码基线](source-baseline.json)：采样于 UTC 2026-09-08 02:36:29，提交 d7fa9c8edef924a6cf29c12d3793049aa794a6be，逐文件标明是否匹配提交。
-- 94 个已登记文件的存档摘要全部匹配；最终验证时这些源码与快照无差异。
-- [Spec 文档工作单元](../specs/182-native-di-python-bindings/evidence/design-pdf-baseline-20260907.md)：包含原始失败和修复过程。
+## API 与源码身份
 
-## 源码变化处理
+- [API 检查结果](evidence/r1-api-verification.json)：295 个规范文件、16558 个声明条目，其中 5738 个函数条目；无记录的解析错误，签名与源码及契约 ID 核对通过。
+- pybind11 映射另有两个源文件、830 项操作（含属性/枚举）；文件摘要与登记 Git 提交一致。8 项动态类名 helper 明确保留人工定位边界。
+- [源码基线](source-baseline.json)：UTC 2026-09-08 03:47:37 采样，基线 e9fe33994a6ca3ff81893591bd24c3fae43f933f 加已登记工作树补丁，覆盖 350 文件及全部 295 个 API 清单来源。
+- Git 提交加补丁还原全部 350 文件并通过 SHA-256 核对，无需本机压缩包。基线是明确时刻的快照，后续并行修改不会自动获得审查。
+- [综合验证](evidence/r1-guide-verification.json) 保存 PDF 哈希、页数、目录、字体、文本、API 与源码还原结果。
 
-编写期间其他工作修改了三个 DI 实现文件，分别涉及 canonical graph digest 校验和规划图/工件图身份区分。
-重新检查后捕获当前字节；正文没有把两种图身份混写为强制相同，也没有把准备组件的存在写成真实 catalog/Repo 请求链已接通。
-提交号只是采样时 HEAD，具体内容以每个文件的摘要与本地存档为准；并发工作树修改已由 matches_head 字段标识。
+## 管理规则与证据边界
 
-## 范围与限制
+本机 AGENTS.md 已增加 API/设计同步规则，可随 Git 交付的规范在 MANAGEMENT.md。AGENTS.md 本来被本地 exclude 排除，保持该跟踪策略。
+Design 的 PDF、正文、契约、声明参考、脚本和精简证据入 Git；原始日志、预览与源码压缩包不提交、不推送。
+本轮未回溯全部旧 Spec；没有 runtime 修改、协议测试、原生构建、模型性能或硬件资格结论。
 
-本轮执行源码核对和文档构建验证，没有新增协议测试、原生构建、模型性能或硬件资格结论。
-覆盖矩阵和 606 文件清单用于解释设计范围，不声称所有文件逐行审计。
-Context Mode active 层因 tasks.md 哈希过期返回 rc=4，按规则改用仓库文档与 CodeGraph 核对；项目层检索有效。
-首版交付时 Design 被本地排除。随后用户明确要求完整纳入 Git，现已移除排除项，准备文档本地 checkpoint；不推送，不包含其他工作单元的源码改动。
+## 失败、工具与历史
 
-## Git 管理修订验证
-
-新增 spec-design-changes.md；同步两份 PDF 的版本管理说明，仍各 35 页且技术正文一致。
-新构建目录为 `.codex-tmp/design-pdf-20260908T024454038889Z/`；两份各两遍编译成功，无警告/溢出/缺字，字体全部嵌入；复查修改的第 1、35 页。
-精简机器结果随文档保存到 [验证摘要](evidence/r0-git-verification.json)。
-运行 `python3 Design/verify-source-baseline.py` 可从基线 Git 提交加已登记工作树补丁还原并核对全部 94 个文件，不依赖本机源码压缩包。
-旧 Spec 变更尚未逐项回溯，新记录已明确历史映射边界；本次没有产品行为变化或运行测试。
-
-## 复查命令
-
-`python3 Design/build.py` 创建新构建目录后，运行 `python3 Design/verify.py <该构建目录>`，再检查其 contact 图片。
-源代码更新后须重新核对设计，不能仅凭重新编译 PDF 宣称设计已同步。
+错误的 ExecutionLease owner 已修正为 ProviderExecutionLeaseTable；长标识符溢出改用可断行 code；目录增加第三遍编译并核对页码。
+各次独立目录及第一失败边界见 [Spec 证据](../specs/182-native-di-python-bindings/evidence/design-api-guide-20260907.md)。
+Context Mode project health PASS、active health rc=4（tasks.md 哈希过期），改用仓库和 CodeGraph。Python tree_sitter 不可用，复用 CodeGraph 的 web-tree-sitter/C++ wasm，未修改产品依赖。
+R0 的 35 页设计与 94 文件快照在提交 9c019a17，旧验证为 evidence/r0-git-verification.json；当前 source-baseline 已推进到 R1。
+后续按 README.md 和 MANAGEMENT.md 同步当前/目标、Spec 与 API。

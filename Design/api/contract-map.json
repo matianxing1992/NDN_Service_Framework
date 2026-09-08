@@ -1,0 +1,191 @@
+[
+  {
+    "contract": "AC-01",
+    "title": "API 阅读方法与覆盖边界",
+    "api_ids": []
+  },
+  {
+    "contract": "AC-02",
+    "title": "Core API：容器与角色生命周期",
+    "api_ids": [
+      "API-ee68261266a4",
+      "API-04ad67003514",
+      "API-cd596b18ee08"
+    ]
+  },
+  {
+    "contract": "AC-03",
+    "title": "Core API：请求发起与 Targeted 调用",
+    "api_ids": [
+      "API-1009e77682c2",
+      "API-efa9e29aae17"
+    ]
+  },
+  {
+    "contract": "AC-04",
+    "title": "Core API：Provider 注册与作用域回收",
+    "api_ids": [
+      "API-c3a3fd9da1b0",
+      "API-23e6ea05d4d6",
+      "API-33314e8f5bbb"
+    ]
+  },
+  {
+    "contract": "AC-05",
+    "title": "Core API：延迟规划与协作提交",
+    "api_ids": [
+      "API-c9045b5b03e6",
+      "API-3ab0d3d87607"
+    ]
+  },
+  {
+    "contract": "AC-06",
+    "title": "Core API：调用流的事件和终态",
+    "api_ids": [
+      "API-9e9c476a768e",
+      "API-2eecc93af394",
+      "API-2bdd4eb83edb"
+    ]
+  },
+  {
+    "contract": "AC-07",
+    "title": "Core API：命名对象与连续流",
+    "api_ids": [
+      "API-160499aab055",
+      "API-ef2281d2fe2d",
+      "API-68706878d1a8"
+    ]
+  },
+  {
+    "contract": "AC-08",
+    "title": "Core API：在线授权与版本状态",
+    "api_ids": [
+      "API-d5f6b3c470a6",
+      "API-3ad7bdf59cc1",
+      "API-a6e1ee327414"
+    ]
+  },
+  {
+    "contract": "AC-09",
+    "title": "Core API：执行租约、观测与并发",
+    "api_ids": [
+      "API-f52dcb87cd76"
+    ]
+  },
+  {
+    "contract": "AC-10",
+    "title": "Repo API：对象与精确 Data packet",
+    "api_ids": [
+      "API-3690bad70c85",
+      "API-208878700957"
+    ]
+  },
+  {
+    "contract": "AC-11",
+    "title": "Repo API：制品上传与提交",
+    "api_ids": [
+      "API-c7c484fc1ed7",
+      "API-91dcd6af85dd"
+    ]
+  },
+  {
+    "contract": "AC-12",
+    "title": "Repo API：下载、验证与传输状态机",
+    "api_ids": [
+      "API-1707faa2f3ea",
+      "API-6f363704fd88",
+      "API-b8a723742c4e"
+    ]
+  },
+  {
+    "contract": "AC-13",
+    "title": "Repo API：目录、副本与缓存控制",
+    "api_ids": [
+      "API-b28b415568be",
+      "API-e296daab62b3",
+      "API-2c18852cdee0"
+    ]
+  },
+  {
+    "contract": "AC-14",
+    "title": "DI API：Python 应用入口与原生句柄",
+    "api_ids": [
+      "API-0ad867060005",
+      "API-375b92c9a402",
+      "API-c0c25988d534"
+    ]
+  },
+  {
+    "contract": "AC-15",
+    "title": "DI API：模型适配与角色放置扩展",
+    "api_ids": [
+      "API-da75fc521e8b",
+      "API-0f4ac0e590fd"
+    ]
+  },
+  {
+    "contract": "AC-16",
+    "title": "DI API：准备、发布后再绑定与封存",
+    "api_ids": [
+      "API-2d8e39c7fc67",
+      "API-d192a8a670da",
+      "API-1df2153e06a6"
+    ]
+  },
+  {
+    "contract": "AC-17",
+    "title": "DI API：Provider 注册、授权与执行",
+    "api_ids": [
+      "API-b5abfc9b9043",
+      "API-859789c40049",
+      "API-070f116bfa58"
+    ]
+  },
+  {
+    "contract": "AC-18",
+    "title": "DI API：生成、KV 与会话延续",
+    "api_ids": [
+      "API-b5b8e5590c3c"
+    ]
+  },
+  {
+    "contract": "AC-19",
+    "title": "UAV API：飞控边界与操作权限",
+    "api_ids": [
+      "API-b1e46a3def66",
+      "API-c4f6835e7d67",
+      "API-76b58451421c"
+    ]
+  },
+  {
+    "contract": "AC-20",
+    "title": "UAV API：任务、补偿与终端报告",
+    "api_ids": [
+      "API-9439cf6844b2",
+      "API-8bc23c85a02b",
+      "API-f10389b9d21d"
+    ]
+  },
+  {
+    "contract": "AC-21",
+    "title": "UAV API：视频管线、遥测与录像",
+    "api_ids": [
+      "API-a064d74ab888",
+      "API-11ef609f2477",
+      "API-730501b40b2c"
+    ]
+  },
+  {
+    "contract": "AC-22",
+    "title": "UAV API：检测与多视角识别扩展",
+    "api_ids": [
+      "API-1da9ec7348c6",
+      "API-01be92408d26"
+    ]
+  },
+  {
+    "contract": "AC-23",
+    "title": "API 扩展与跨模块调用检查",
+    "api_ids": []
+  }
+]

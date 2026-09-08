@@ -17,6 +17,7 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 
 | Unit / Details | Status | Depends | Evidence / Remaining | Updated |
 | --- | --- | --- | --- | --- |
+| [D-DESIGN-API API Developer Guide](evidence/design-api-guide-20260907.md) | PASS | User documentation request | 四模块 23 组 API 契约、295 文件声明参考及 830 绑定操作；双份 63 页 PDF/58 目录项、声明/源码快照检查 PASS；AGENTS 与 MANAGEMENT 同步；不改变功能验收 | 2026-09-07 |
 | [D-DESIGN-R0 Framework Design PDFs](evidence/design-pdf-baseline-20260907.md#work-unit-d-design-r0) | PASS | User request; documentation only | 四模块中文双 PDF 各 35 页；正文/字体/版面与 94 文件基线检查通过；新增 Spec 设计变更记录，用户已授权 Design 完整入 Git；不关闭功能任务 | 2026-09-07 |
 | [T001-A Identity and Dependency Closure](contracts/execution-units.md#t001-a-identity-and-dependency-closure) | DONE | — | [closure](evidence/t001-ab-closure-20260907.md)；DOC + 依赖契约 vs 持久探针核对通过；onnx 4/4 与 tokenizer 84+14 全新复现 PASS；rust 1.90.0 独立工具链核验；Cargo 边界已在 rust-prefix 上重跑通过（tokenizer-r2） | 2026-09-07 |
 | [T001-B Lifecycle and Capability Closure](contracts/execution-units.md#t001-b-lifecycle-and-capability-closure) | DONE | — | [closure](evidence/t001-ab-closure-20260907.md)；DOC + 双向映射核对通过；O-004 处置写入 runtime-boundaries（Rev 8）与 symbol-design（C21/Readiness）；registration generation/late ACK/Selection/共享 lease 已冻结于 lifecycle 设计；parity 按 owner 任务继续，不属本卡 | 2026-09-07 |
@@ -56,6 +57,10 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 | [T017-A Development Handoff](contracts/execution-units.md#t017-a-development-handoff) | NOT_STARTED | T016-A | [baseline](evidence/task-progress-registry-20260907.md)；无本卡独立执行/验收记录；按依赖领取 | 2026-09-07 |
 
 ## Current Checkpoint
+
+2026-09-07 D-DESIGN-API / **PASS**：完成声明参考和 23 组中文契约，两份 PDF 各 63 页，
+58 目录项/正文/字体/版面、295 文件声明与 350 文件源码还原检查 PASS；AGENTS 本机规则与 MANAGEMENT.md 已同步。
+见 [API guide evidence](evidence/design-api-guide-20260907.md)。不关闭 Spec182 功能任务。
 
 2026-09-07 T008 Core artifact publisher / **PARTIAL**：新增可直接注入 ArtifactPort
 的原生 Core 发布 owner，验证真实源字节/ONNX 身份，保留 Core I/O 与加密/分段所有权。

@@ -7,6 +7,7 @@ root = Path(__file__).resolve().parent.parent
 run = root / sys.argv[1]
 design = root / 'Design'
 result = {'run': str(run.relative_to(root)), 'runtime_tests': 'not run'}
+contract=json.loads((design/'document-contract.json').read_text())
 texts = []
 for name in ('current-design', 'target-design'):
     pdf = design / (name + '.pdf')
@@ -17,12 +18,21 @@ for name in ('current-design', 'target-design'):
     fonts = subprocess.check_output(['pdffonts', str(pdf)], text=True)
     embedded = all(re.search(r'\s+yes\s+(?:yes|no)\s+(?:yes|no)\s+\d+\s+\d+\s*$', l) for l in fonts.splitlines()[2:])
     text = subprocess.check_output(['pdftotext', '-layout', str(pdf), '-'], text=True)
+    toc=(run/name/(name+'.toc')).read_text()
+    pdf_pages=text.split('\f')
+    sections=re.findall(r'\\contentsline \{section\}\{\\numberline \{(\d+)\}([^}]*)\}\{(\d+)\}',toc)
+    assert len(sections)==58
+    for number,title,page in sections:
+        assert re.sub(r'\s+','',number+title) in re.sub(r'\s+','',pdf_pages[int(page)-1]), (name,number,page)
     texts.append(re.sub(r'\s+', '', '\n'.join(l for l in text.splitlines() if not ('NDNSF /' in l))))
     result[name] = dict(pages=pages, warnings=warnings, fonts_embedded=embedded, sha256=hashlib.sha256(pdf.read_bytes()).hexdigest())
-    assert pages == 35 and not warnings and embedded
-assert texts[0] == texts[1]
-assert (design / 'current-content.tex').read_bytes() == (design / 'target-content.tex').read_bytes()
-result['technical_body_equal'] = True
+    result[name]['toc_sections_verified']=len(sections)
+    assert pages >= contract['minimum_pages'] and not warnings and embedded
+body_equal=all((design / ('current-'+name)).read_bytes()==(design / ('target-'+name)).read_bytes() for name in ['content.tex','api.tex'])
+if contract['expect_equal']:
+    assert texts[0] == texts[1] and body_equal
+result['technical_body_equal'] = body_equal
+result['api_verification']=json.loads(subprocess.check_output([sys.executable,str(design/'verify-api-reference.py')],text=True))
 m = json.loads((design / 'source-baseline.json').read_text())
 result['source_reconstruction'] = json.loads(subprocess.check_output([sys.executable, str(design / 'verify-source-baseline.py')], text=True))
 if (root / m['local_source_archive']).exists():

@@ -12,12 +12,14 @@
 | 24–28 | UAV 容器、飞控/权限、巡逻补偿、视频/录像、检测/多视角 | UavDroneApp、GroundStationApp、UavNames、FlightControllerBackend、MissionSession、VideoPublisher、识别工具 |
 | 29–31 | 跨模块流程、构建配置、运行边界、测试入口与实现状态 | 架构文档、构建入口、当前 Spec182、实验入口 |
 | 32–35 | 三组源码索引和后续维护规则 | source-baseline.json、module-inventory.json |
+| 36–58 | 23 组 API 阅读/行为/扩展契约，53 个准确签名示例 | api-contracts.json、api/contract-map.json、api/inventory.json |
 
 ## 清单口径
 
 模块清单登记 Core 56、Core Python 18、UAV 98、DI 391、Repo 43 个文件，共 606 个。
 清单包含代码、配置、文档与资产；不把测试存在或清单完整视为运行通过。
-94 个关键文件另保存源码摘要与精确字节存档。主要流程经源码核对，其余支持文件不声称逐行审计。
+R0 有 94 个关键文件；R1 扩展为 350 个源码快照文件，覆盖 295 个 API 清单源文件。主要流程经源码核对，其余支持文件不声称逐行审计。
+API 清单包括 16558 个声明（5738 个函数条目，其余为类型/字段/枚举等），不是公开 API 数或资格通过数。范围与解析边界见 api/README.md。
 
 ## 特别保留的实现边界
 

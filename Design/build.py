@@ -15,7 +15,7 @@ def main():
     for name in ("current-design", "target-design"):
         out = run / name
         out.mkdir()
-        for iteration in (1, 2):
+        for iteration in (1, 2, 3):
             with (out / f"pass-{iteration}.log").open("wb") as log:
                 subprocess.run(["/usr/bin/xelatex", "-no-shell-escape", "-interaction=nonstopmode",
                                 "-halt-on-error", "-file-line-error", f"-output-directory={out}",
