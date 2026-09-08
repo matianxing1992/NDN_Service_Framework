@@ -2973,3 +2973,24 @@ remain open. GPU standalone PASS is not four-Provider PASS. Also retain the
 initial local wrong Apptainer path and shallow external User layout import
 failures; use the actual per-host binary and preserve the app's repository layout.
 Evidence: specs/183-tiger-yolo-reusable-experiments/evidence/yolo-backend-reference.md.
+
+## 2026-09-08 — Preserve network ownership and exact external application closure
+
+The pending MiniNDN cleanup change could not infer namespace deletion from child
+exit: an open namespace FD or nsfs mount can keep it alive. Capture node
+PID/startTicks/netns and owned root interface identities, inspect their union
+after stop, and reject unreadable/remaining resources. The fake-proc fixture's
+task symlink initially pointed one parent too far; fix that fixture, retaining
+the11/12 initial and6/6 affected records. The real root FD-pin/release probe
+passed once. Initial root pytest loading failed twice (missing pytest, then
+site-packages shadowing stdlib argparse); ordered import-path insertion resolved
+the launcher without changing system packages. No repeat of the passed probe.
+
+While preparing external YOLO, include this new helper in the source sealer;
+otherwise a runtime import would pass only in the working tree. Six source-seal
+checks passed. Separately, ldd -r exposed the existing host Provider requiring
+three NAC APIs missing in the old SIF and ORT VERS_1.26.0 against SIF1.20. This
+is a real ABI mismatch, not evidence the delivered MiniNDN scenario failed.
+Base/app rebuild remains necessary; see layered-runtime-preflight.md. Both local
+full SIF cache files now independently hash to the retained b6710fd6; preserve old
+read-failure history and deduplicate only the identical recovery cache inode.

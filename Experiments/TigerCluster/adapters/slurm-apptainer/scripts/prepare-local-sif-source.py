@@ -36,6 +36,7 @@ FILES = (
     "Experiments/NDNSF_DI_StreamedGeneration_Minindn.py",
     "Experiments/NDNSF_DI_LlmPipeline_Minindn.py",
     "Experiments/NDNSF_DI_YoloAckDriven_Minindn.py",
+    "Experiments/minindn_network_resources.py",
     "Experiments/NDNSF_DI_Yolo2x2_Minindn.py",
     "Experiments/NDNSF_NewAPI_Minindn_Perf.py",
     "Experiments/spec175_repo_bootstrap.py",

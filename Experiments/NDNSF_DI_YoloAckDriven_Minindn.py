@@ -47,6 +47,8 @@ for _python_root in reversed(_LOCAL_PYTHON_ROOTS):
     if _python_root.is_dir() and str(_python_root) not in sys.path:
         sys.path.insert(0, str(_python_root))
 
+from Experiments import minindn_network_resources as network_resources
+
 # Exact-SIF replay contract (SPEC180_RUNTIME_SIF / SPEC180_RUNTIME_APPTAINER):
 # when the environment declares the sealed candidate image, every NFD and
 # application child command is prefixed with the only approved Apptainer
@@ -511,6 +513,13 @@ class MiniNdnCaseRuntime:
         self._cleanup_complete = False
         self._cleanup_started = False
         self._cleanup_attempts = 0
+        self._network_resources = []
+
+    def _record_network_resources(self, label):
+        resources = network_resources.capture(self._ndn)
+        name = 'network-resources-' + label + '.json'
+        self._network_resources.append((name, resources))
+        network_resources.write_exclusive(self.binding.output/name, resources)
 
     def _legacy_module(self):
         if self._legacy is None:
@@ -549,7 +558,9 @@ class MiniNdnCaseRuntime:
         # Retain even a partially started network until its stop succeeds.
         self._ndn = ndn
         try:
+            self._record_network_resources('created')
             ndn.start()
+            self._record_network_resources('started')
             nfd_app = Spec180SifNfd if sif_runtime_enabled() else legacy.Nfd
             legacy.AppManager(ndn, ndn.net.hosts, nfd_app, logLevel="INFO")
             legacy.perf.wait_for_nfd_sockets(ndn, self.binding.output)
@@ -1240,8 +1251,20 @@ class MiniNdnCaseRuntime:
         self._started_phases.clear()
         self._ready_phases.clear()
         self._catalogue_publication_digest = None
+        observations = []
+        if self._network_resources:
+            try:
+                combined = network_resources.combine([row[1] for row in self._network_resources])
+                observation = network_resources.inspect(combined)
+                observations.append(dict(resourceSnapshots=[row[0] for row in self._network_resources],
+                                         observation=observation))
+                if not observation['clean']:
+                    errors.append('network-resources:REMAINING')
+            except Exception as exc:
+                errors.append('network-resources:' + type(exc).__name__)
         record = dict(schema='minindn-owned-cleanup-v1',
                       attempt=self._cleanup_attempts, children=records,
+                      networkResourceObservations=observations,
                       networkStopped=self._ndn is None, errors=errors,
                       qualification='NOT_EVALUATED')
         try:

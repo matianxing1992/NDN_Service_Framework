@@ -1590,11 +1590,14 @@ def test_runtime_wait_for_ready_closes_the_phase_state(tmp_path: Path):
 
 @pytest.mark.parametrize('stop_failure', [False, True])
 def test_start_network_failure_stops_partial_network_and_normalizes_error(
-        tmp_path: Path, stop_failure):
+        tmp_path: Path, stop_failure, monkeypatch):
     module = load_runner()
     output, inputs = _binding_inputs(tmp_path, module)
     binding = module.CaseRuntimeBinding.from_inputs("Y-B", output, inputs)
     runtime = module.MiniNdnCaseRuntime(binding, inputs)
+    monkeypatch.setattr(module.network_resources, 'capture', lambda _network: dict(
+        observerNamespace='net:[1]', namespaces=['net:[2]'], interfaces=[]))
+    monkeypatch.setattr(module.network_resources, 'inspect', lambda _resources: {'clean': True})
     calls = []
 
     class Network:
@@ -1785,6 +1788,34 @@ def test_runtime_cleanup_failure_retains_ownership_and_attempt_records(tmp_path,
     assert (output/'cleanup-attempt-001.json').read_bytes() == first
     assert json.loads((output/'cleanup-attempt-002.json').read_text())['errors'] == []
     assert attempts[failure] == 2
+
+
+@pytest.mark.parametrize('fault', ['remaining', 'unreadable'])
+def test_runtime_network_observation_prevents_false_cleanup(tmp_path, monkeypatch, fault):
+    module = load_runner()
+    output, inputs = _binding_inputs(tmp_path, module, 'Y-B')
+    binding = module.CaseRuntimeBinding.from_inputs('Y-B', output, inputs)
+    runtime = module.MiniNdnCaseRuntime(binding, inputs)
+    runtime._legacy = SimpleNamespace()
+    inventory = dict(observerNamespace='net:[1]', namespaces=['net:[2]'], interfaces=[])
+    for label in ('created', 'started'):
+        name = 'network-resources-'+label+'.json'
+        runtime._network_resources.append((name, inventory))
+        module.network_resources.write_exclusive(output/name, inventory)
+    calls = []
+    def inspect(combined):
+        calls.append(combined)
+        if len(calls) == 1 and fault == 'unreadable': raise PermissionError('fixture')
+        return dict(clean=len(calls)>1, references=[], interfaces=[])
+    monkeypatch.setattr(module.network_resources, 'inspect', inspect)
+    with pytest.raises(module.RunnerError, match='network-resources:'):
+        runtime.stop()
+    assert not runtime._cleanup_complete and len(calls) == 1
+    runtime.stop()
+    assert runtime._cleanup_complete and len(calls) == 2
+    record = json.loads((output/'cleanup-attempt-002.json').read_text())
+    assert record['networkResourceObservations'][0]['resourceSnapshots'] == [
+        'network-resources-created.json', 'network-resources-started.json']
 
 
 def test_case_process_specs_reject_repo_identity_not_in_provider_namespace(tmp_path: Path):
