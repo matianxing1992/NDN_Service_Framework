@@ -1,5 +1,12 @@
 # Failure Log and Evidence Index
 
+## 2026-09-08 — Spec182 shared workflow validation references
+
+工作流集中到共享 skill 后，validate_design 仍在 feature wrapper 查旧标题/诊断
+条款，proof-design 也保留旧 anchor，导致结构检查 exit=1。修复规则读取位置和
+真实 anchor，保留原门禁并独立重跑 exit=0。该失败与 YOLO 行为验证无关，原始结果
+及修复见 [semantic batch evidence](../specs/182-native-di-python-bindings/evidence/t003-yolo-semantic-batch-20260908.md)。
+
 ## 2026-09-08 — Skill validator compatibility field mismatch
 
 工作流修订时，skill-creator quick_validate 拒绝已安装 Spec Kit 技能的既有

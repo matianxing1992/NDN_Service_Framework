@@ -102,9 +102,14 @@ require("maxRoles、maxNodes" not in texts["contracts/code-design.md"], "stale C
 require("RuntimeStatusStore" in texts["contracts/runtime-boundaries.md"], "merged security boundary absent")
 # Check only the written workflow; this is not a semantic source review.
 review_text = texts["contracts/pre-test-static-review.md"]
-for marker in ["Static review PASS != Behavior PASS", "## One Completion Record",
-               "## Spec182 Ownership", "T002--T014", "T015", "T016", "最小具名诊断"]:
+for marker in ["Static review PASS != Behavior PASS", "## Workflow",
+               "## Spec182 Ownership", "T002--T014", "T015", "T016",
+               "../../../skills/speckit-code-design/references/pre-test-static-review.md"]:
     require(marker in review_text, f"missing workflow rule: {marker}")
+shared_review = feature.parents[1] / "skills/speckit-code-design/references/pre-test-static-review.md"
+shared_review_text = shared_review.read_text() if shared_review.is_file() else ""
+for marker in ["## One Completion Record", "最小具名诊断", "## Batch Static Gate And Tests"]:
+    require(marker in shared_review_text, f"missing shared workflow rule: {marker}")
 for name in ["spec.md", "plan.md", "tasks.md", "contracts/proof-design.md"]:
     require("pre-test-static-review.md" in texts[name], f"workflow not referenced: {name}")
 require("完整unit→integration→MiniNDN" in texts["tasks.md"], "final runtime stage order missing")

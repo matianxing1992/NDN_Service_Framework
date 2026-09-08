@@ -1048,6 +1048,59 @@ BOOST_AUTO_TEST_CASE(HybridCandidateRejectsIncompleteRankAndRedistributionContra
   BOOST_CHECK_THROW(base.validate(snapshot), std::invalid_argument);
 }
 
+BOOST_AUTO_TEST_CASE(YoloCatalogConsumesActualOnnxSemanticPartition)
+{
+  std::ifstream file("tests/fixtures/spec182/yolo-semantic-oracle.json");
+  BOOST_REQUIRE(file.good());
+  const auto row = NativeJson::parse(file);
+  NativeCanonicalSource source;
+  const auto hex = row.at("model_hex").get<std::string>();
+  for (std::size_t i = 0; i < hex.size(); i += 2)
+    source.modelBytes.push_back(std::stoul(hex.substr(i, 2), nullptr, 16));
+  auto descriptor = model("yolo26n", "YOLOFixture", row.at("graph_digest").get<std::string>());
+  NativeAssemblyControl control{std::chrono::steady_clock::now() + std::chrono::seconds(30),
+    [] {}, 1024 * 1024, 1024 * 1024};
+  yolo::NativeYoloComponentSpec component{"semantic-v1", 1, {"Front", "Branch", "Merge"}, {},
+    "Front", "Merge", "NATIVE_POSTPROCESS", row.at("registered_digest").get<std::string>()};
+  const auto partition = row.at("partition");
+  auto splitter = yolo::NativeYoloComponentSplit::fromOnnxCatalog(descriptor, source, control,
+    {{component, nativeCanonicalJson(partition)}});
+  const auto inspected = inspectNativeOnnxPlanningGraph(source, descriptor, control);
+  const auto actual = splitter.enumerate(descriptor, inspected.graph, {});
+  BOOST_REQUIRE_EQUAL(actual.size(), 1);
+  BOOST_CHECK(actual.front().canonicalJson() == row.at("candidate_json").get<std::string>());
+  BOOST_CHECK_EQUAL(actual.front().computedDigest(), row.at("candidate_digest").get<std::string>());
+  const auto expectedOwners = row.at("node_roles").get<std::map<std::string, std::string>>();
+  BOOST_CHECK(actual.front().nodeRoles == expectedOwners);
+  // A caller's reconstructed graph cannot replace source-derived facts.
+  auto supplied = inspected.graph;
+  supplied.nodes.clear(); supplied.edges.clear();
+  BOOST_CHECK_EQUAL(splitter.enumerate(descriptor, supplied, {}).front().candidateDigest,
+                    actual.front().candidateDigest);
+  auto foreign = descriptor; foreign.sourceRevision = "foreign";
+  BOOST_CHECK_THROW(splitter.enumerate(foreign, inspected.graph, {}), std::invalid_argument);
+  supplied.graphDigest = digest("foreign");
+  BOOST_CHECK_THROW(splitter.enumerate(descriptor, supplied, {}), std::invalid_argument);
+  for (int mutation = 0; mutation < 9; ++mutation) {
+    auto broken = partition;
+    switch (mutation) {
+      case 0: broken["roleNodeSets"]["Front"][0] = "onnx-node-0"; break;
+      case 1: broken["tensorInterfaces"][0]["producerNode"] = "foreign"; break;
+      case 2: broken["tensorInterfaces"][0]["consumerRoles"] = NativeJson::array({"Front"}); break;
+      case 3: broken["tensorInterfaces"][0]["dtype"] = "int64"; break;
+      case 4: broken["tensorInterfaces"][0]["shape"] = NativeJson::array({99}); break;
+      case 5: broken["dependencyEdges"] = NativeJson::array(); break;
+      case 6: broken["safeCuts"] = NativeJson::array(); break;
+      case 7: broken["roleInterfaces"]["Front"]["inputs"] = NativeJson::array(); break;
+      case 8: broken["roleInterfaces"]["Merge"]["outputs"][0]["name"] = "foreign"; break;
+    }
+    BOOST_TEST_CONTEXT("semantic mutation " << mutation) {
+      BOOST_CHECK_THROW(yolo::NativeYoloComponentSplit::fromOnnxCatalog(descriptor, source, control,
+        {{component, nativeCanonicalJson(broken)}}), std::invalid_argument);
+    }
+  }
+}
+
 BOOST_AUTO_TEST_CASE(OwnedOnnxGraphMatchesMaintainedPlanningAndCanonicalIdentities)
 {
   std::ifstream file("tests/fixtures/spec182/onnx-planning-graph-oracle.json");

@@ -168,7 +168,7 @@ T001/O-005已冻结[native isolation design](native-isolation-design.md)的文�
 
 ## Evidence Record
 
-使用 [validation workflow](pre-test-static-review.md#one-completion-record)的一份短记录，
+使用 [validation workflow](../../../skills/speckit-code-design/references/pre-test-static-review.md#one-completion-record)的一份短记录，
 说明实际源码/范围、审查发现、命令/结果/日志、状态和下一步。
 未运行、实现/单测完成、完整PO通过分别标明；T016收齐全部既定运行证据。
 失败保留新run-dir并同步tasks和docs/failure-log.md，不提交secrets或大日志。

@@ -1,0 +1,196 @@
+{
+  "model_hex": "08083af5010a1e0a06696d616765730a04626961731203e4b8ad1a04726f6f7422034164640a1b0a03e4b8ad12046c6566741a046c65667422084964656e746974790a120a03e4b8ad12057269676874220452656c750a260a046c6566740a057269676874120b70726564696374696f6e731a056d657267652203416464120d7374617469632d6272616e63682a1a080108031001220c0000803f00000040000040404204626961735a180a06696d61676573120e0a0c080112080a0208010a0208035a160a0462696173120e0a0c080112080a0208010a020803621d0a0b70726564696374696f6e73120e0a0c080112080a0208010a02080342040a00100d",
+  "graph_digest": "sha256:7f9dd7524839a3be386314b69f3e35400caff8516e37cadac5bbabf64ab7aacc",
+  "registered_digest": "sha256:6d491f2ee501360b43e04f9260fd43af74c0a3134b32da763b1cdfb0412ccc16",
+  "partition": {
+    "roleNodeSets": {
+      "Front": [
+        "root"
+      ],
+      "Branch": [
+        "left",
+        "2:Relu"
+      ],
+      "Merge": [
+        "merge"
+      ]
+    },
+    "tensorInterfaces": [
+      {
+        "edgeId": "left",
+        "producerNode": "left",
+        "producerRole": "Branch",
+        "consumerNodes": [
+          "merge"
+        ],
+        "consumerRoles": [
+          "Merge"
+        ],
+        "dtype": "float32",
+        "shape": [
+          1,
+          3
+        ]
+      },
+      {
+        "edgeId": "right",
+        "producerNode": "2:Relu",
+        "producerRole": "Branch",
+        "consumerNodes": [
+          "merge"
+        ],
+        "consumerRoles": [
+          "Merge"
+        ],
+        "dtype": "float32",
+        "shape": [
+          1,
+          3
+        ]
+      },
+      {
+        "edgeId": "中",
+        "producerNode": "root",
+        "producerRole": "Front",
+        "consumerNodes": [
+          "left",
+          "2:Relu"
+        ],
+        "consumerRoles": [
+          "Branch"
+        ],
+        "dtype": "float32",
+        "shape": [
+          1,
+          3
+        ]
+      }
+    ],
+    "dependencyEdges": [
+      {
+        "fromRole": "Branch",
+        "toRole": "Merge",
+        "tensorEdges": [
+          "left",
+          "right"
+        ]
+      },
+      {
+        "fromRole": "Front",
+        "toRole": "Branch",
+        "tensorEdges": [
+          "中"
+        ]
+      }
+    ],
+    "safeCuts": [
+      {
+        "fromRole": "Branch",
+        "toRole": "Merge",
+        "boundaryTensors": [
+          "left",
+          "right"
+        ]
+      },
+      {
+        "fromRole": "Front",
+        "toRole": "Branch",
+        "boundaryTensors": [
+          "中"
+        ]
+      }
+    ],
+    "roleInterfaces": {
+      "Front": {
+        "inputs": [
+          {
+            "name": "images",
+            "dtype": "float32",
+            "shape": [
+              1,
+              3
+            ]
+          }
+        ],
+        "outputs": [
+          {
+            "name": "中",
+            "dtype": "float32",
+            "shape": [
+              1,
+              3
+            ]
+          }
+        ]
+      },
+      "Branch": {
+        "inputs": [
+          {
+            "name": "中",
+            "dtype": "float32",
+            "shape": [
+              1,
+              3
+            ]
+          }
+        ],
+        "outputs": [
+          {
+            "name": "left",
+            "dtype": "float32",
+            "shape": [
+              1,
+              3
+            ]
+          },
+          {
+            "name": "right",
+            "dtype": "float32",
+            "shape": [
+              1,
+              3
+            ]
+          }
+        ]
+      },
+      "Merge": {
+        "inputs": [
+          {
+            "name": "left",
+            "dtype": "float32",
+            "shape": [
+              1,
+              3
+            ]
+          },
+          {
+            "name": "right",
+            "dtype": "float32",
+            "shape": [
+              1,
+              3
+            ]
+          }
+        ],
+        "outputs": [
+          {
+            "name": "predictions",
+            "dtype": "float32",
+            "shape": [
+              1,
+              3
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "node_roles": {
+    "onnx-node-0": "Front",
+    "onnx-node-1": "Branch",
+    "onnx-node-2": "Branch",
+    "onnx-node-3": "Merge"
+  },
+  "candidate_json": "{\"artifacts_by_role\":{\"Branch\":[\"sha256:cb464465fe5547aedcbe265414ff7463b5e7b3706cac38a74d0ccfddb86eacb1\"],\"Front\":[\"sha256:313e8c49573021c5194d43ebfb596b7d22e6f96175f8c338cb44a66c0b68090d\"],\"Merge\":[\"sha256:eced75c734623d545d96c85c011913dcfe06f938173f6e633a32d0eee0da64da\"]},\"cross_partition_tensors\":[\"left\",\"right\",\"\\u4e2d\"],\"estimated_costs\":{\"known_transfer_bytes\":36,\"role_count\":3},\"execution_plan\":{\"dependencies\":[{\"consumer\":\"Merge\",\"producer\":\"Branch\",\"tensor_edges\":[\"left\"]},{\"consumer\":\"Merge\",\"producer\":\"Branch\",\"tensor_edges\":[\"right\"]},{\"consumer\":\"Branch\",\"producer\":\"Front\",\"tensor_edges\":[\"\\u4e2d\"]}],\"node_roles\":{\"onnx-node-0\":\"Front\",\"onnx-node-1\":\"Branch\",\"onnx-node-2\":\"Branch\",\"onnx-node-3\":\"Merge\"},\"roles\":[\"Front\",\"Branch\",\"Merge\"]},\"fragments_by_role\":{\"Branch\":\"sha256:cb464465fe5547aedcbe265414ff7463b5e7b3706cac38a74d0ccfddb86eacb1\",\"Front\":\"sha256:313e8c49573021c5194d43ebfb596b7d22e6f96175f8c338cb44a66c0b68090d\",\"Merge\":\"sha256:eced75c734623d545d96c85c011913dcfe06f938173f6e633a32d0eee0da64da\"},\"graph_digest\":\"sha256:7f9dd7524839a3be386314b69f3e35400caff8516e37cadac5bbabf64ab7aacc\",\"hybrid_plan\":null,\"input_ingress_role\":\"Front\",\"merge_kind\":\"NATIVE_POSTPROCESS\",\"model\":{\"adapter\":{\"abi\":\"fixture-abi-v1\",\"backends\":[\"onnxruntime\"],\"deterministic_analysis\":true,\"graph_inspectable\":true,\"graph_schema_digest\":\"sha256:1e20c7dd694f6e793a9bb08049c67f266580472837940b45e5afa0443699931c\",\"input_schema_digest\":\"sha256:48ead40f3b571b24200aa70ed78cb2cc270fc39350348405fc1fa8b5949b5442\",\"model_formats\":[\"onnx\"],\"name\":\"yolo26n\",\"options_schema_digest\":\"sha256:42b86994847bdf859b467a0efe3d3669735a8613f283be361681429849d647fe\",\"precisions\":[\"float32\"],\"result_schema_digest\":\"sha256:1b00cb6a7161fd1841dfeded937a734927d0ea37daecfe79eee96f4d5cb9bb45\",\"split_schema_digest\":\"sha256:d7da0e471a903882466a7be7b420d9cf652dbeadee4b351ee7d298d5583977c5\",\"splittable\":true,\"state_digest\":\"sha256:4f9510f10cfed8b796f0d6067766165a92241de68fc9e1944322272fe6f9bd93\",\"state_schema_digest\":\"sha256:7ecd71aa2742542271a9f2e6d86c272a694c95d45a0049fe638af7c6511774e0\",\"tasks\":[\"task\"],\"version\":\"1\"},\"content_digest\":\"sha256:ba28393ce4ae48a5b66d44806ef8a537b5bee6e5041c6b4ac231cc8505c22272\",\"graph_digest\":\"sha256:7f9dd7524839a3be386314b69f3e35400caff8516e37cadac5bbabf64ab7aacc\",\"model_format\":\"onnx\",\"model_name\":\"YOLOFixture\",\"precision\":\"float32\",\"semantics_digest\":\"sha256:390662ac60b135f9b17c7e9bda8683636d8cae09a7929b8bb00a4b5ac451275c\",\"source_revision\":\"\"},\"postprocessing\":{},\"rank_artifact_digests_by_role\":{},\"requirements_by_role\":{\"Branch\":{\"activation_bytes\":268435456,\"backends\":[\"onnxruntime-cpu\",\"onnxruntime-cuda\"],\"kv_bytes\":0,\"safety_margin\":1.1,\"transient_bytes\":67108864,\"weight_bytes\":12,\"workspace_bytes\":268435456},\"Front\":{\"activation_bytes\":268435456,\"backends\":[\"onnxruntime-cpu\",\"onnxruntime-cuda\"],\"kv_bytes\":0,\"safety_margin\":1.1,\"transient_bytes\":67108864,\"weight_bytes\":12,\"workspace_bytes\":268435456},\"Merge\":{\"activation_bytes\":268435456,\"backends\":[\"onnxruntime-cpu\",\"onnxruntime-cuda\"],\"kv_bytes\":0,\"safety_margin\":1.1,\"transient_bytes\":67108864,\"weight_bytes\":12,\"workspace_bytes\":268435456}},\"result_egress_role\":\"Merge\",\"role_state_inputs_by_role\":{},\"role_state_outputs_by_role\":{},\"selection_priority\":1,\"source\":\"PRE_SPLIT\",\"splitter\":{\"deterministic\":true,\"name\":\"native-yolo-component-split\",\"state_digest\":\"sha256:080c1e7b4cd71dbac65ca6aa1bf6a3828d907e8f182e05008ee895dbf0615429\",\"version\":\"1\"},\"tensor_degrees_by_role\":{}}",
+  "candidate_digest": "sha256:03c61b665eafb1b1d6c6fd642b0a4206ffe08966b8f6b68ab8d9ee604d73c6d4"
+}

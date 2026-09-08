@@ -133,6 +133,7 @@ worker crash/cancel 等真实子进程案例也转 T016，卡内只运行纯 fra
 - **Write**: N/NativePlanning.hpp; N/NativePlanning.cpp; A/yolo/NativeYoloPlanner.hpp; A/yolo/NativeYoloPlanner.cpp; U/di-native-planning.t.cpp; U/di-native-plan-sealer.t.cpp; tests/fixtures/spec182/author-yolo-fragment-oracle.py; tests/fixtures/spec182/yolo-fragment-oracle.json; tests/fixtures/spec182/case-manifest.json; wscript。
 - **Steps**: 实现现有 YOLO component cover 与候选排序，复用共享不可变类型；保存并验证真实 tensor producer/consumer edges，按维护算法生成跨角色依赖及已知字节预算，不能合成节点相邻依赖；图输入检查与候选约束都在 native adapter。catalog/interface 和候选身份仍须完整对照后才能 DONE。
 - **Fragment identity**: 注册 candidateDigest 必填；fragment 为 canonical_contract_digest({candidate: registered digest, graph: planning graph digest, role, nodes: graph topological order 中属于该 role 的节点})。注册摘要与完整 SplitCandidate 摘要不是同一身份。
+- **B-G1-YOLO-SEMANTIC API**: `NativeYoloCatalogComponent` 包含既有 component identity 和完整 `semanticPartitionJson`；`NativeYoloComponentSplit::fromOnnxCatalog(model, source, control, candidates, postprocessingJson)` 直接调用实际 ONNX inspection，校验语义 partition 后建立 immutable splitter。工厂保留完整 model identity 与实际规划图；enumerate 使用保留图，不信任调用方重建的图事实，并拒绝另一 model/graph identity。原 typed constructor 接收已解析 planning IDs，不代表 catalog 校验。factory 不认证网络来源、不合成注册摘要，调用方须从既有 catalog owner 提供配置。`atomic-v1` 按维护算法将全图分配给首角色；非 atomic 完整检查名称、tensor interfaces、依赖、安全切点及角色输入输出后才产生候选。新增 class 状态需要 fresh ABI tree，批末统一构建。
 - **Verify**: CPP(Spec182YoloSplit/*)；固定 cover、错误 component/rank、确定性重复调用；不加载服务协作。
 
 ### T003-C Placement and Registry
