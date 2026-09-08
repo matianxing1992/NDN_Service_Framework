@@ -226,6 +226,14 @@ def main(argv: Iterable[str] | None = None) -> int:
         "SPEC181_PROVIDER_RECIPIENT_KEY_MAP": str(inputs/'recipient-private-key-map.json'),
         "NDNSF_TIMELINE_TRACE_SAMPLE_RATE": "0.01",
     })
+    # Preserve the selected exact-SIF command provider across the systemd
+    # boundary.  Without these three values the outer driver falls back to
+    # the host-source freshness gate and never reaches the sealed children.
+    for name in ("SPEC180_RUNTIME_SIF", "SPEC180_RUNTIME_APPTAINER",
+                 "SPEC180_RUNTIME_APP_ROOT"):
+        value = os.environ.get(name, "").strip()
+        if value:
+            env[name] = value
     from runtime.identities import _credential_document
     for name, value in {'offer-private-key-map.json': private_map,
                         'offer-public-key-map.json': host_offer_map,

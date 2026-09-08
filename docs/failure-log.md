@@ -3575,3 +3575,18 @@ identity and rerun packaging against the existing incremental Waf cache.
   sealed SIF ABI for every NFD/application child.
 - Lesson: a layered run has two deliberate ABI domains; the host preflight must
   not shadow either domain with an unrelated incremental build root.
+
+## 2026-09-08: MiniNDN systemd boundary dropped exact-SIF selectors
+
+- Symptom: Y-B reached the real driver but stopped before NFD with
+  `LOCAL_NATIVE_BUILD_REJECTED:STALE_SOURCES` and exit 2.
+- Root cause: the wrapper selected `SPEC180_RUNTIME_SIF`, Apptainer and the
+  external app in its own environment, but did not forward those selectors to
+  the systemd transient service. The child therefore believed it was a host
+  source run and applied the unrelated stale-source gate.
+- Fix: forward the three exact-SIF selector variables through the explicit
+  systemd environment allowlist; SIF children now use the sealed command
+  provider and image-owned runtime paths.
+- Lesson: a runtime mode selected before a privilege/process boundary must be
+  part of the signed launch environment, otherwise a secure fail-closed check
+  can select the wrong execution domain.
