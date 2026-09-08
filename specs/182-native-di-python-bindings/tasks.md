@@ -17,6 +17,7 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 
 | Unit / Details | Status | Depends | Evidence / Remaining | Updated |
 | --- | --- | --- | --- | --- |
+| [R1-B5 Canonical Role Preparation](evidence/r1-b5-canonical-role-preparation-20260908.md) | DONE | R1-B4; existing ONNX/candidate contracts | RP-1/RP-2/RP-3 batch only：实际源图→角色→发布后重新认证/抽取；69 C++ cases/1560 assertions PASS；默认 requester、Qwen state/rank source 仍待完成 | 2026-09-08 |
 | [R1-B4 Catalog Task Adapter](evidence/r1-b4-catalog-task-adapter-20260908.md) | DONE | T002-A; C09/C18 contracts | CA-1/CA-2 batch only：production adapter→registry/preparation，45 C++ cases/944 assertions PASS；实际图/角色端口与原卡验收仍待完成 | 2026-09-08 |
 | [D-LAYERED-SIF Layered Runtime Delivery](contracts/layered-runtime-delivery.md) | DONE | User architecture request | 方案已同步 FR-014/Delivery/T017/Tiger/packaging，定向链接、diff 与 design validator PASS；仅设计完成，部署工具 PLANNED | 2026-09-08 |
 | [D-DESIGN-DIAGRAMS Visual Guide](evidence/design-diagrams-20260908.md) | DONE | User diagram request | 两侧各 9 个矢量视图；PDF 91/96 页，版面/目录/字体、API、460/350 文件还原、5 工具回归与视觉检查 PASS；不关闭产品任务 | 2026-09-08 |
@@ -70,6 +71,13 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 | [T017-A Development Handoff](contracts/execution-units.md#t017-a-development-handoff) | NOT_STARTED | T016-A | [baseline](evidence/task-progress-registry-20260907.md)；无本卡独立执行/验收记录；按依赖领取 | 2026-09-07 |
 
 ## Current Checkpoint
+
+2026-09-08 R1-B5 Canonical Role Preparation / **DONE (batch only)**：Owner 当前执行者。
+RP-1：源图检查与不同规划坐标；RP-2：冻结 profile/mapping 的原生 role port；
+RP-3：实际 ONNX 字节→角色→preparation 回归。对现有 T003/T008 共享契约修复，
+共享增量 -j4 build 46.998s，69 C++ cases/1560 assertions PASS；未重编 Core/UAV。
+不放行硬依赖或关闭真实 requester；下一步核对 T003 原卡剩余项并接续生产准备端口，详情与共同验证见
+[R1-B5](evidence/r1-b5-canonical-role-preparation-20260908.md)。
 
 2026-09-08 R1-B4 Catalog Task Adapter / **DONE (batch only)**：Owner 当前执行者。
 CA-1：immutable 模型目录与有界 opaque/JSON 字节入口；CA-2：实际 registry/preparation

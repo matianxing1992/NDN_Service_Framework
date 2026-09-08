@@ -90,6 +90,13 @@ NativeOnnxGraphInspection
 inspectNativeOnnxPlanningGraph(const NativeCanonicalSource& source,
   const NativeModelDescriptor& expectedModel, const NativeAssemblyControl& control);
 
+/** Derive the actual ONNX graph independently of a semantic adapter graph.
+ * The returned graph has its own computed identity. Callers must bind the
+ * source bytes/canonical identity and explicitly map semantic nodes to it. */
+NativeOnnxGraphInspection
+inspectNativeOnnxSourceGraph(const NativeCanonicalSource& source,
+  const NativeModelDescriptor& model, const NativeAssemblyControl& control);
+
 /**
  * Normalize one serialized ONNX TensorProto into its canonical payload, or
  * throw DI_ONNX_INITIALIZER_ENCODING_INVALID when the shape, field, or

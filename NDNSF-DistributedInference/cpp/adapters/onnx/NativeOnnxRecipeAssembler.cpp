@@ -1573,7 +1573,7 @@ canonicalOnnxSourceIdentity(const NativeCanonicalSource& source,
 }
 
 NativeOnnxGraphInspection
-inspectNativeOnnxPlanningGraph(const NativeCanonicalSource& source,
+inspectNativeOnnxSourceGraph(const NativeCanonicalSource& source,
   const NativeModelDescriptor& expectedModel, const NativeAssemblyControl& control)
 {
   expectedModel.validate();
@@ -1706,11 +1706,22 @@ inspectNativeOnnxPlanningGraph(const NativeCanonicalSource& source,
     {"inputs", inputs}, {"outputs", outputs}, {"initializers", initializerNames}, {"tensors", tensors},
     {"nodes", nodes}, {"tensor_producers", producers}, {"tensor_consumers", consumers}};
   result.graph.graphDigest = nativePlanningDigest(nativeCanonicalJson(identity));
-  result.graph.validate(expectedModel);
+  auto sourceModel = expectedModel;
+  sourceModel.graphDigest = result.graph.graphDigest;
+  result.graph.validate(sourceModel);
   result.graphMetadataJson = nativeCanonicalJson(NativeJson{
     {"inputs", inputs}, {"outputs", outputs}, {"initializers", initializerNames}, {"tensors", tensors},
     {"nodes", nodes}, {"tensorProducers", producers}, {"tensorConsumers", consumers}});
   checkActive(control);
+  return result;
+}
+
+NativeOnnxGraphInspection
+inspectNativeOnnxPlanningGraph(const NativeCanonicalSource& source,
+  const NativeModelDescriptor& expectedModel, const NativeAssemblyControl& control)
+{
+  auto result = inspectNativeOnnxSourceGraph(source, expectedModel, control);
+  result.graph.validate(expectedModel);
   return result;
 }
 

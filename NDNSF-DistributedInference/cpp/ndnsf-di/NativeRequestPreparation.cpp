@@ -246,7 +246,9 @@ void NativeRequestPreparation::validateRoles(const NativeInspectedModel& model,
     if (std::none_of(backends.begin(), backends.end(), [&](const auto& backend) {
           return role.backend == backend || role.backend == backend + "-cpu" || role.backend == backend + "-cuda";
         }) || std::any_of(role.nodeIndices.begin(), role.nodeIndices.end(), [&](auto index) {
-          return index >= model.graph.nodes.size();
+          // ONNX source indices and semantic planning ordinals are different
+          // coordinate spaces. The source owner/assembler checks actual cover.
+          return index >= (nativeMerge ? model.graph.nodes.size() : role.maxNodes);
         })) throw std::runtime_error("DI_NATIVE_ROLE_BINDING_MISMATCH");
   }
 }
