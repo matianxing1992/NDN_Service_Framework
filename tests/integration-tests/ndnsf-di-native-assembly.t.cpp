@@ -542,6 +542,43 @@ BOOST_AUTO_TEST_CASE(CollaborationContextBindsAssignmentRootBeforeSourceFetch)
   }
 }
 
+BOOST_AUTO_TEST_CASE(CollaborationContextDoesNotReuseArtifactAcrossRequests)
+{
+  fixture::BootstrapProfile profile;
+  profile.serviceName = ndn::Name("/LLM/Qwen");
+  fixture::NdnsfIntegrationEnvironment environment(profile);
+
+  const ndn::Name assignedArtifact("/artifact/native");
+  const std::vector<std::uint8_t> firstPayload{'f', 'i', 'r', 's', 't'};
+  const std::vector<std::uint8_t> secondPayload{'s', 'e', 'c', 'o', 'n', 'd'};
+  RequestMessage request;
+
+  ServiceProvider::CollaborationAssignment firstAssignment;
+  firstAssignment.role = "BackboneNeck";
+  firstAssignment.service = profile.serviceName;
+  firstAssignment.assignedArtifact = assignedArtifact;
+  firstAssignment.artifactPayload = ndn::Buffer(firstPayload.data(), firstPayload.size());
+  ServiceProvider::CollaborationContext firstContext(
+    environment.provider(), environment.user().getName(), ndn::Name("/request/first"),
+    request, firstAssignment);
+  BOOST_REQUIRE(firstContext.fetchArtifact(assignedArtifact, 1));
+  const auto firstResult = firstContext.getArtifact(assignedArtifact);
+  BOOST_REQUIRE(firstResult);
+  BOOST_CHECK_EQUAL_COLLECTIONS(firstResult->begin(), firstResult->end(),
+                                firstPayload.begin(), firstPayload.end());
+
+  ServiceProvider::CollaborationAssignment secondAssignment = firstAssignment;
+  secondAssignment.artifactPayload = ndn::Buffer(secondPayload.data(), secondPayload.size());
+  ServiceProvider::CollaborationContext secondContext(
+    environment.provider(), environment.user().getName(), ndn::Name("/request/second"),
+    request, secondAssignment);
+  BOOST_REQUIRE(secondContext.fetchArtifact(assignedArtifact, 1));
+  const auto secondResult = secondContext.getArtifact(assignedArtifact);
+  BOOST_REQUIRE(secondResult);
+  BOOST_CHECK_EQUAL_COLLECTIONS(secondResult->begin(), secondResult->end(),
+                                secondPayload.begin(), secondPayload.end());
+}
+
 BOOST_AUTO_TEST_CASE(RegisteredOneProviderAssemblyLoadsOrt)
 {
   runRegisteredProviderAssemblyCase(1);

@@ -3450,3 +3450,30 @@ The first v11 app-only retry supplied `base-libraries-v1` to
 `legacy-complete` source plane. No compiler work or bundle was produced. The
 retry used `legacy-complete` (seal `sha256:3576ed3a…`) with the unchanged staged
 base and verified cache, then completed 84/84 targets under `-j4`.
+
+## 2026-09-08: core regression build exposed host NAC-ABE API drift
+
+The isolated `integration-tests` build for the CollaborationContext regression
+stopped before linking because the host NAC-ABE headers expose neither
+`KpAttributeAuthority::getPublicParametersVersion` nor
+`KpAttributeAuthority::getPublicParametersWire`, while the checked-out fixture
+expects both symbols. This is a dependency/toolchain mismatch, not a failure
+of the artifact-cache fix. The source change still needs validation against
+the matching NAC-ABE prefix.
+
+The same host build, retried with the pinned NAC-ABE prefix, then reached the
+framework library and stopped on the host ndn-svs headers because
+`SVSPubSub::subscribeToProducerWithCatchUp` is absent. The exact dependency
+revisions are available inside the layered base SIF; host build output is not
+used as runtime evidence.
+
+## 2026-09-08: repeated-request artifact cache reused stale canonical root
+
+The v11 and v12 exact-SIF local-cpu runs accepted request 0 but rejected request
+1 after `BackboneNeck` reported `DI_CANONICAL_ROOT_DIGEST_MISMATCH`; dependent
+roles then exhausted exact tensor fetch retries. The provider cached fetched
+canonical root bytes globally by stable `assignedArtifact`, even though the
+assignment's `artifactDataName` and root payload are request-scoped. The fix
+makes the payload part of the request-owned `CollaborationAssignment` and
+removes the provider-global artifact cache. MiniNDN/component tests that use a
+single request did not exercise this lifetime boundary.

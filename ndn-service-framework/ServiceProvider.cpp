@@ -2939,11 +2939,6 @@ namespace ndn_service_framework
 
     bool ServiceProvider::CollaborationContext::hasArtifact(const ndn::Name& artifactName) const
     {
-        std::lock_guard<std::mutex> lock(m_provider.m_collaborationMutex);
-        if (m_provider.m_collaborationArtifacts.count(
-                m_assignment.assignedArtifact.toUri()) != 0) {
-            return true;
-        }
         return !m_assignment.artifactPayload.empty() &&
                !m_assignment.assignedArtifact.empty() &&
                m_assignment.assignedArtifact.equals(artifactName);
@@ -2951,17 +2946,9 @@ namespace ndn_service_framework
 
     bool ServiceProvider::CollaborationContext::fetchArtifact(const ndn::Name& artifactName, int)
     {
-        {
-            std::lock_guard<std::mutex> lock(m_provider.m_collaborationMutex);
-            if (m_provider.m_collaborationArtifacts.count(artifactName.toUri()) != 0) {
-                return true;
-            }
-            if (m_assignment.assignedArtifact.equals(artifactName) &&
-                !m_assignment.artifactPayload.empty()) {
-                m_provider.m_collaborationArtifacts[artifactName.toUri()] =
-                    m_assignment.artifactPayload;
-                return true;
-            }
+        if (m_assignment.assignedArtifact.equals(artifactName) &&
+            !m_assignment.artifactPayload.empty()) {
+            return true;
         }
 
         if (!m_assignment.assignedArtifact.equals(artifactName) ||
@@ -2977,12 +2964,11 @@ namespace ndn_service_framework
     std::optional<ndn::Buffer>
     ServiceProvider::CollaborationContext::getArtifact(const ndn::Name& artifactName) const
     {
-        std::lock_guard<std::mutex> lock(m_provider.m_collaborationMutex);
-        auto it = m_provider.m_collaborationArtifacts.find(artifactName.toUri());
-        if (it == m_provider.m_collaborationArtifacts.end()) {
+        if (!m_assignment.assignedArtifact.equals(artifactName) ||
+            m_assignment.artifactPayload.empty()) {
             return std::nullopt;
         }
-        return it->second;
+        return m_assignment.artifactPayload;
     }
 
     std::optional<ndn::Buffer>
@@ -7722,11 +7708,6 @@ namespace ndn_service_framework
                     scopeKeyDataNames[entry.first] = entry.second;
                 }
             }
-            if (!state->assignment.assignedArtifact.empty() &&
-                !state->assignment.artifactPayload.empty()) {
-                m_collaborationArtifacts[state->assignment.assignedArtifact.toUri()] =
-                    state->assignment.artifactPayload;
-            }
         }
 
         state->fence = makeCollaborationWorkFence(
@@ -7751,8 +7732,7 @@ namespace ndn_service_framework
             needsArtifactFetch =
                 !state->assignment.assignedArtifact.empty() &&
                 !state->assignment.artifactDataName.empty() &&
-                m_collaborationArtifacts.count(
-                    state->assignment.assignedArtifact.toUri()) == 0;
+                state->assignment.artifactPayload.empty();
         }
 
         state->pending = keysToFetch.size() + (needsArtifactFetch ? 1 : 0) +
@@ -7789,7 +7769,7 @@ namespace ndn_service_framework
                 }
                 if (!state->fetchedArtifact.empty() &&
                     !state->assignment.assignedArtifact.empty()) {
-                    m_collaborationArtifacts[state->assignment.assignedArtifact.toUri()] =
+                    state->assignment.artifactPayload =
                         std::move(state->fetchedArtifact);
                 }
                 auto pendingIt =

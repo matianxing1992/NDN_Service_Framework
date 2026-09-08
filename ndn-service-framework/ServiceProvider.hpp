@@ -1700,7 +1700,6 @@ namespace ndn_service_framework{
             std::map<ndn::Name, ndn::Name> m_collaborationServiceNamesByRequest;
             std::set<std::string> m_collaborationScopeKeyFetchesInFlight;
             std::map<ndn::Name, std::vector<PendingEncryptedCollaborationData>> m_pendingEncryptedCollaborationData;
-            std::map<std::string, ndn::Buffer> m_collaborationArtifacts;
             std::vector<CollaborationSubscription> m_collaborationSubscriptions;
             std::mutex m_collaborationMutex;
             std::condition_variable m_collaborationCv;
