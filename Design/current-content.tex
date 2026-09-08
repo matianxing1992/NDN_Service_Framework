@@ -3,7 +3,7 @@
 本文覆盖四个模块的职责、主要接口、控制与数据流程、安全、状态、恢复、配置、部署和实现边界。按子系统解释设计，不逐行转录源代码。代码标识、协议字段和文件名保留原名，其余叙述使用中文。
 
 \begin{description}
-\item[版本] R2；当前设计记录已核对源码行为与明确限制。目标设计保留独立基线，并另列五项 PLANNED 改进；两份文档不再要求正文相同。
+\item[版本] R3；当前设计记录已核对源码行为与明确限制，补充具体接口、状态及例子。目标设计保留独立基线，另列五项 PLANNED 改进。
 \item[基线] \SnapshotDate，\code{Experimental} 分支。采样时提交为 \texttt{\SourceBaseline}；逐文件摘要、工作树差异与本地源码快照见 \code{source-baseline.json}。
 \item[事实口径] 主要流程核对源码；已有接口与已接通流程分别说明。历史测试仅作为检索入口，不冒充本轮结果。
 \item[版本维护] 本目录完整纳入 Git。两份正文独立保存；修改目标设计不自动修改当前设计或代码。
@@ -86,6 +86,10 @@ Controller 的启动含独立 Face 的公参可达性探测，避免仅以内进
 配置集中在 ConfigManager、PolicyParser 及应用配置文件；服务容器只负责组合，硬件连接、
 模型加载和数据库路径由各应用模块决定。
 
+
+\subsection{从配置到可调用服务}
+以一个进程同时拥有 User 和 Provider 为例：容器身份不是服务名；先配置 Face、证书和 Controller 前缀，再把 /example/echo 注册给 Provider，并保存 scoped registration。容器 start 后事件循环才处理发现与执行。User 取得 requestId 只表示本地请求建立。完整签名、句柄保存与 stop 顺序分别见 AC-02 至 AC-04。
+
 \newpage
 
 \section{Core：普通调用与 Targeted 调用}
@@ -119,6 +123,10 @@ Controller 的启动含独立 Face 的公参可达性探测，避免仅以内进
 Nack、没有可用 ACK、负 ACK、选择失败、执行错误、响应验证失败与超时是不同边界。
 发布成功不等于执行成功；普通 ACK 也不天然表示独占资源预留。
 
+
+\subsection{应用怎样判断完成}
+例如请求预算为 3000 ms，应用将 requestId 与界面操作关联，等待 ResponseHandler 或 TimeoutHandler。ACK 阶段不能显示执行完成，也不应启动另一个重复业务请求。普通请求与 Targeted 的并列声明和最小调用见 AC-03；涉及 token 的短路径仍要通过同一服务权限检查。
+
 \newpage
 
 \section{Core：协作规划与选择事务}
@@ -145,6 +153,10 @@ R1 的 DI reservation 是独立协商能力，不能赋予所有普通 ACK 相�
 不把旧兼容 ReadySet/ExecutionActivate 接口解释为所有当前路径都需要的全局启动屏障。[D2]
 
 \callout{完成边界}{计划提交、Provider 接受、资源准备完成、角色执行完成、终端结果被接受是不同状态；文档和应用状态显示应分别记录。}
+
+
+\subsection{一个有依赖的协作计划}
+设 A 在 P1 执行，B 在 P2 执行且消费 A 的输出。ACK\_CLOSED 固定本次候选，应用将 A/B 的参与者、A 到 B 的命名依赖及终端规则写入计划，再以相同 requestId 和闭包摘要提交。Core 接受提交后，P2 仍需验证选择并获得 A 的实际输出。提交失败不能靠提前执行 B 补救。AC-05 将 User 提交与 Provider 选择事务的两个 owner 分开说明。
 
 \newpage
 
@@ -176,6 +188,10 @@ AEAD，必须具有相应的请求密钥/绑定。Repo 增加持久存储和副�
 
 \callout{选择例子}{直播使用连续流；已完成录像使用命名对象；一个推理请求逐 token 输出使用调用事件流。三者可以组合，但不能互相冒充。}
 
+
+\subsection{对应到代码类型}
+完整对象的结果是可验证的全部字节；连续流的 StreamPublisher::push 输入已经签名的 Data，返回 void；调用事件流的 writer.publish 输入 EventT，返回 bool，finish 则可能抛异常。三种 API 的参数和返回值不能混用，分别见 AC-06、AC-07。
+
 \newpage
 
 \section{Core：能力、并发、持久状态与观测}
@@ -201,6 +217,10 @@ ControllerGenerationStore 管理持久授权版本；RuntimeStatusStore 可选�
 NetworkTelemetry、TimelineTrace 和应用 diagnostics 提供事件与时序信息。
 应区分排队/网络/验证/装配/计算/呈现时间；成功标记、源码 hash 和原始运行目录需要关联。
 单项测试或某个统计计数不自动构成端到端性能或安全资格结论。
+
+
+\subsection{一次执行槽位的生命周期}
+同一物理设备的冲突资源通过 conflictKeys 与 proof 绑定。租约从 Prepared，经 commit 成为 Committed，validateAndActivate 再核对 \code{requester/request/service/plan} 进入 Executing，结束后 release；未选预留可 abort，到期可 cleanup。Provider 重启后的 providerEpoch 变化会使旧代租约不可照用。AC-09 给出完整创建、提交、激活、释放、查询签名与 reasonCode，观测计数按这些状态解释。
 
 \newpage
 
@@ -232,6 +252,10 @@ DI artifact grant、UAV 视频内容钥匙和操作权 lease 是各自应用契�
 安全 bootstrap 需要实际名称路由、Controller/Authority 可达和签名验证。
 NFD 前缀注册、forwarding hint 或本地缓存只影响数据如何到达，
 不能取代身份和内容验证；失败要按证书、公参、权限、状态或内容层定位。
+
+
+\subsection{按攻击对象选择检查}
+签名有效但没有服务属性的 User 仍应被拒绝；具有服务属性但未被选定的 Provider 不能获得本次输入密钥；得到模型文件的节点也不因此具有特定请求的受保护模型 grant。调用者依次核对身份、服务授权、request/selection 绑定与领域 grant，不把四个问题缩成一个 authenticated 标志。
 
 \newpage
 
@@ -286,6 +310,10 @@ DKEY & 当前 KP-ABE 实现按身份持有完整属性策略的解密密钥，�
 没有权限内容变化且 ABE 公参身份不变时，无关身份不会仅因为更高 epoch 而请求替换 DKEY。不过，Provider 接受已安装状态的版本推进后会重新拉取自身权限表；运行状态失效也仍然可能发生。详见“Core：授权变化的运行影响”一节。[S5--S7]
 
 \callout{本流程的限定范围}{上述不轮换结论限定于普通 grant-only。若 grant 入口先恢复了此前失败的撤权轮换，此次调用包含那次轮换的影响，不能归类为纯目标身份更新。}
+
+
+\subsection{单项输入与策略物化}
+给身份 U 新增服务 S 时，调用 grant(U, S, attribute)，控制器向已有服务/属性集合插入这一项，再从有效集合重建 ABE 策略。应用无需提交 U 的完整权限表。相同授权已存在可以返回 false；证书已撤销等拒绝也可以返回 false，所以返回值不能单独区分所有原因。已有待轮换状态时先恢复该状态，grant-only 的局部更新描述不能覆盖这个例外。见 AC-08。
 
 \newpage
 
@@ -373,10 +401,10 @@ Provider 的在途状态 & 清理匹配服务的 pending 请求、token、stream
 不能说：普通 grant-only 只影响目标 Provider，其他节点无须拉取或更新任何状态、
 所有在途调用不受影响。这超过当前运行状态失效逻辑所支持的结论。
 
-\subsection{目标 R0 的边界}
-本版尚未采纳更新范围优化或 SVS 通知。因此目标 R0
-保留本页全部现状。后续若修改目标设计，应明确影响判定、变更认证、版本兼容、
-离线补齐和在途请求处置，再讨论实现；当前代码与验收门不随文档标题自动改变。
+\subsection{当前行为与已接受目标}
+本页记录全局 ControllerVersion 的基线行为。目标 TG-01 已接受细化影响范围的方向，
+字段线格式、通知承载及轮换粒度仍待后续 Spec 定稿；NDN-SVS 是可选通知方案，
+尚未据此建立当前实现的广播保证。目标还须规定版本兼容、离线补齐和在途请求处置。
 
 \newpage
 
@@ -408,6 +436,10 @@ INVENTORY、STATUS、CACHE\_STATUS、CATALOG 系列和 DELETE 等属于控制操
 
 \callout{通用性}{Repo 不解释模型层、视频帧和张量。payload 是否加密、如何解码和何时可以用于业务，由发布者、消费者及应用权限机制决定。}
 
+
+\subsection{对象引用的阅读顺序}
+先看 objectName 定位逻辑对象，再用 manifest 中的摘要、大小、segmentCount 和有序 packet 名验证内容，最后核对 replica metadata 的实际可读性。模型文件和录像 packet 可以共用 Repo 存储，但前者的模型语义由 DI 解释，后者的签名原始 wire 由 UAV 验证。AC-10 给出两份 packet 的保存/获取例子。
+
 \newpage
 
 \section{Repo：持久化、写入与原子可见性}
@@ -434,6 +466,10 @@ in-memory backend 是测试替身，不应当成受支持的持久部署模式�
 分段收到、哈希验证、持久提交和对外可见分别记录。副本不足或 receipt 不匹配不能用“部分上传成功”包装成完整发布。[R5, R6]
 
 \callout{范围区别}{普通存储 helper 的重试/分段适配器与 artifact-manifest-v2 的会话生命周期不是同一层；不能把某一条本地路径通过当作所有网络后端都通过。}
+
+
+\subsection{成功信号属于哪个阶段}
+普通 put 的本地返回、制品 transfer 完成、commit 产生已验证 receipt、目录观察到对象是不同事件。断点状态只能支持继续接收，不能让未验证片段直接对外宣称完整文件。文档中的原子可见性指对应存储入口的提交边界，不向所有 Python 编排、缓存和跨 Repo 目录扩展为一个分布式原子事务。
 
 \newpage
 
@@ -467,6 +503,10 @@ AdaptiveArtifactTransfer 跟踪 in-flight、重传、重复和 verification back
 
 \callout{恢复原则}{只复用经过验证的精确进度；过期 lease、不同 digest、不同分段参数或错误 operation 绑定应由会话检查拒绝，不能静默接着写入另一个对象。}
 
+
+\subsection{断点下载的操作身份}
+同一 artifact 下载到不同目标路径可能形成不同 operation。fetch\_file 默认 resume=True、verify=True、replace=False；先 begin\_fetch，再 transfer，最后 commit。异常时依据 resume 决定是否保留进度。AC-11、AC-12 展开 descriptor/result、receipt、副本计数、kwargs 和底层 receive/markVerified 的区别，避免把进度条完成当成文件提交。
+
 \newpage
 
 \section{Repo：目录、副本、保留与恢复}
@@ -479,7 +519,8 @@ AdaptiveArtifactTransfer 跟踪 in-flight、重传、重复和 verification back
 \begin{description}
 \item[CATALOG\_STATUS] 返回 Repo 模式、目录 epoch、对象数量和副本接收能力。
 \item[SNAPSHOT / DELTA] 提供全量恢复或指定 epoch 之后的变化；目录 sequence 不等于 Controller 授权 epoch。
-\item[LOOKUP / QUERY] 查找对象位置，按类型、class、发布者、状态、标签和时间等 metadata 过滤；C++ 与 Python 注册能力需分别确认。
+\item[C++ LOOKUP] catalogLookup 仅接受精确 objectName 并返回一个条目，没有组合过滤参数。
+\item[Python QUERY] metadata 过滤和目录编排属于 Python 路径；不能归入 C++ LOOKUP 的能力。
 \end{description}
 
 \subsection{副本选择与确认}
@@ -495,6 +536,10 @@ AdaptiveArtifactTransfer 跟踪 in-flight、重传、重复和 verification back
 \subsection{应用集成}
 UAV 的内嵌 Repo 为加密录像和原始 packet 留存提供存储；DI 使用公开 artifact API 传输模型制品。
 独立 Repo-node、应用内 RepoCore 和 Python 网络制品后端是不同部署形态；文档中的能力应绑定具体入口。
+
+
+\subsection{一次目录读不等于副本验收}
+catalogLookup 在目录锁外读取 store manifest，再在锁内附加本 Repo 的 epoch，因此不是存储与目录的全局一致快照。missing/store 错误沿路径传播，不是统一返回空集合。P1 的 epoch 不能作为 P2 的 delta 游标；目录条目指向 P2 也仍需对实际字节取数验证。精确查询能力和 Python 编排边界见 AC-13。
 
 \newpage
 
@@ -524,7 +569,11 @@ NativeExecutionPlan、NativeProviderSession/Runtime、ProviderRoleWorker、
 因此“纯 C++ 应用已完成默认端到端推理”不是当前可支持的结论。
 真实 catalog/Repo 输入准备、完整报价消费及请求编排接线仍有未完成项。[D7]
 
-\callout{目标 R0 的口径}{Spec182 的目标是同一原生实现配可选 Python 外壳；本文件的目标 R0 仍复制当前代码现状，不把这个尚未完成的目标写成已经实现。}
+\callout{目标与基线}{目标 TG-02 接受同一原生实现配可选 Python 外壳的方向；本章解释仍存在的 Python/C++ 分工，目标方向不构成 requester 已接通的证据。}
+
+
+\subsection{如何选择入口并解释失败}
+需要现在的应用编排时定位 app\_sdk/client.py 的 APPClient.request；需要检查原生迁移则定位 \code{NativeInferenceClient.cpp} 的 dispatchOperation。模型/任务/输入是业务值，native handle 是异步操作句柄，两者不能替代。AC-14 说明输入形式、默认预算、局部等待和取消；全局实现状态集中见第 31 章，目标所有权迁移见 TG-02。
 
 \newpage
 
@@ -555,6 +604,10 @@ NativeRequestPreparation、NativeOfferAdmission、NativeV3Placement 已有对应
 当前真实数据来源端口及 requester 主链仍需接线。原生组件的定向测试不能替代
 模型意图经过网络 ACK 到终端结果的整体验收。[D3, D7]
 
+
+\subsection{用两段模型读懂数据结构}
+线性图分为 A、B 两段，A 输出必须匹配 B 输入，这一分解形成 candidate。认证报价分别给出 P1/P2 的角色、设备与资源，placement 才提出 A→P1、B→P2 的 proposal；validator 再校验它。模型描述、图快照、candidate、offer、proposal 依次收窄自由度，不是同一份 JSON 的五个别名。AC-15 给出精确复用与需准备路径的例子，AC-16 解释发布后如何重绑身份。
+
 \newpage
 
 \section{DI：计划封装、执行授权与制品}
@@ -584,6 +637,10 @@ Core 的请求保密保护调用输入/输出；DI 的模型/计划身份保证�
 不能用“使用了 ABE”概括所有模型权限。
 
 \callout{当前限制}{Spec182 的封装、grant 和准备 owner 虽已有实现片段，真实请求端接线与全部验收尚未闭合；接口和类型存在不等于默认网络路径已使用它。}
+
+
+\subsection{五种摘要不互换}
+ACK 闭包摘要绑定观察到的候选；模型/图摘要绑定被检查内容；artifact root 绑定发布的业务制品；plan core 摘要绑定执行内容；grant/projection 绑定授权视图和具体参与者。发布切片后必须以真实 root/recipe 再绑定角色，再封存计划，不能改下载 URL 却保留旧驻留证明。AC-16 按 prepare、inspect、ensure、bind、seal、grant、project、encode 说明前后数据。
 
 \newpage
 
@@ -617,6 +674,10 @@ OnnxRuntimeModelRunner 以及 ONNX/Qwen/YOLO adapter 处理各自的模型格式
 设备、CUDA/CPU execution provider、runner 身份与 runtime ABI 必须按实际配置核对；
 不能把允许 GPU 的配置当成实际使用 GPU。输出发布和 terminal role 接受仍由当前执行绑定约束。[D5]
 
+
+\subsection{A 到 B 的实际执行}
+Session 组合 plan、assignment、DependencyIo、runnerFactory 与 worker 数。A 的初始输入可由 initialInputs 提供；worker 运行后通过已绑定的依赖 scope 发布 TensorBundle，B 在对应前驱输入就绪后运行。executeRoleAsync 返回 future，异常需由调用者取回并收尾；发布一个中间张量不等于终端结果被 User 接受。session、I/O 和 runner 生命周期须覆盖 future 的工作期，见 AC-17。
+
 \newpage
 
 \section{DI：逐 token 生成、KV 与会话延续}
@@ -647,6 +708,10 @@ Python app journal 也保存请求和恢复记录。延续不是重放上一轮�
 stable epoch emission、journal/continuation 与完整原生 stream 接线仍保留未完成验收项。
 不把某些部件测试通过写成完整生成路径已迁移。}
 
+
+\subsection{一次生成与下一轮对话}
+实际入口 \code{runNativeEpochCoordinator} 逐 role/epoch 调用 runner.run，模型状态机执行 Selecting→Prefilling→Decoding→Draining→Completed。attempt 是替换尝试，streamEpoch 是流实例，context epoch 是对话轮次，三者不按每个 token 同步递增。AC-18 给出方法状态表、两 token 示例、KV pin/迁移/释放以及 beginTurn→prepareCheckpoint→commitTurn 的完整阅读主线。
+
 \newpage
 
 \section{DI：部署、扩展与管理接口}
@@ -675,6 +740,10 @@ stable epoch emission、journal/continuation 与完整原生 stream 接线仍保
 原生 Provider host/注册/共享 lease 已有进度记录；Python facade 兼容迁移、
 maintained caller 迁移及完整请求链仍未全部关闭。文档将 Python 控制路径和 C++ 组件同时列出，
 避免把 Spec182 的未来单一实现方向覆盖当前仍实际存在的 owner。[D7]
+
+
+\subsection{管理动作与请求动作的区别}
+stage 准备某部署修订，activate 使其可供请求，drain 限制新增工作，delete 处理该部署资源；这些管理接口由 \code{APPProvider/ProviderAdminPort} 拥有，不能用 \code{NativeInferenceHandle.cancel} 代替。恢复定位需要部署修订、request/attempt、plan、Provider boot 和有效 lease/grant，而非只有可读部署名称。新增 adapter/strategy 必须被 registry/配置实际选择，步骤见 AC-23。
 
 \newpage
 
@@ -708,10 +777,14 @@ MissionProgressState、VideoState、AnalyzeSnapshot 和 dashboard 数据，
 
 \callout{应用边界}{Core 传递 opaque MAVLink/应用 payload；飞行语义、地图与 GUI、媒体选择和检测模型均由 UAV 应用拥有。}
 
+
+\subsection{界面如何使用状态}
+例如命令按钮关联一次 invocation 的 requestId，飞控 readiness 来源于遥测，视频窗口关联一个当前 stream session；三者分别更新。关闭视频窗口不应被解释为 mission 已取消，取得服务响应也不证明飞控 COMMAND\_ACK 已到达。新增 UI 控件应订阅对应 typed state 并管理 Qt 回调生命周期，不直接重写设备状态。
+
 \newpage
 
 \section{UAV：飞控适配与操作权限}
-\lead{网络授权、操作权和飞行安全条件是三层独立检查}
+\lead{网络授权、操作权和飞行安全属于三个责任域，实际门禁位置须分别核对}
 \subsection{飞控数据路径}
 GS 构造 MAVLink 命令，经 NDNSF 普通认证/token bootstrap 后对目标无人机使用 Targeted。
 Drone 的后端负责向 mock、UDP 或 serial 飞控路径传递字节并读取 ACK/遥测；
@@ -732,11 +805,18 @@ armed/landed 等应用状态判断动作是否允许；lease 不能替代飞控�
 \end{enumerate}
 操作权 issuer 不等于 Core ServiceController；其 lease 修订也不是 Controller epoch。
 UI 阻止命令、网络拒绝授权和飞控返回 command ACK 必须分别显示。[U2, U3]
+当前 Drone Execute handler 解码 command/mavlink\_hex 后直接调用 backend，
+其函数体没有操作 lease 或 readiness 的独立重验；不能把 GS 侧门禁当作 Drone 侧同样
+强制执行的证据。AC-19 列出实际字段与 ACK 行为，TG-05 规划后端边界的明确校验。
 
 \subsection{现有支持与限制}
 mock/SITL、UDP、serial、遥测显示与参数操作为可运行入口；真实飞控、
 fail-safe、长时间断连恢复和户外设备条件仍需对应运行验证。
 代码具备硬件接口不表示本轮进行了飞行验证，也不等同于成熟飞控地面站的认证。
+
+
+\subsection{沿失败位置排查}
+命令尚未获得 Core 权限时停在服务入口；操作 lease 过期属于 UAV 操作权；设备链路断开或飞控拒绝属于 backend/飞控反馈。三类失败不可都显示为 timeout。AC-19 分开说明网络 Response、发送字节与 COMMAND\_ACK，同时明确当前 Fields 命令表未形成覆盖全部命令的静态 schema；类型化补齐属于 TG-05。
 
 \newpage
 
@@ -768,6 +848,10 @@ executing、reporting 和 terminal 状态。[U3, U4]
 \callout{与 Core 的分工}{Core 负责每次调用的认证与超时；UAV 负责 part 是否完成、哪些工作需要补偿、
 跨调用的任务身份以及任务层最终完成。}
 
+
+\subsection{两个分片的任务例子}
+P0 已验证完成，P1 进入 missing 时，仅对 P1 开启补偿 attempt；P0 的结果继续保留。新 invocation 获得新 token/assignment，旧 P1 的迟到终端报告仍须匹配当前 attempt/plan/owner 才可接纳。恢复时先 reconcile 实际车辆与流，再允许新的业务动作。AC-20 解释 bool/reason、局部状态与真实飞行停止的差异。
+
 \newpage
 
 \section{UAV：视频、遥测流与录像}
@@ -797,6 +881,10 @@ Repo；留存清单记录确切 packet、缺口和会话身份，不通过重新
 \callout{时序边界}{网络收到、解码完成与实际显示不是同一事件；低延迟或稳定性结论需要真实采集/呈现记录，
 不能用一个管线启动成功代替。}
 
+
+\subsection{丢帧与录像完整性}
+最新帧队列中有 10、11、12 时 popLatest 只交付 12，其余计入 dropped。push 返回 true 也可能因为丢弃旧帧才腾出空间；超大单帧直接返回 false。这个显示策略不能复制到完整 packet 录像，后者需 manifest 和 gap 记录。AC-21 同时给出遥测单位、admit 多字段结果及 capture→传输→解码→显示/录像分工。
+
 \newpage
 
 \section{UAV：目标检测与多视角识别}
@@ -824,6 +912,10 @@ images 与 viewMask 输入在图内联合处理，输出 logits 和 pooledFeatur
 C++ 算法注入接口存在不证明真实 ONNX worker 已在每个默认 GUI/Provider 路径中接入；
 工具 fixture 的功能结果也不证明真实飞行准确率。
 跨进程获取、候选竞争、单一终端 owner、结果/标注发布和失败终态需在对应网络夹具中分别验证。
+
+
+\subsection{两视角输入到终端接受}
+两架 Drone 提供同一事件窗口的精确视图引用，job 绑定这些输入与模型 profile。executeMultiViewJob 的算法输出随后仍要经过 coordinator 的 \code{job/attempt/terminalOwner} 检查；算法成功不等于业务结果已接受。默认确定性算法、真实 ONNX worker 和单帧 YOLO 是独立入口。扩展点和例子见 AC-22。
 
 \newpage
 
@@ -857,6 +949,10 @@ terminal role 产生被调用者接收的结果。原生 requester 仍未接通�
 恢复有 owner & Core 清理调用；Repo 恢复已验证字节；DI 管执行/会话；UAV 管任务补偿。\\
 \bottomrule
 \end{tabularx}
+
+
+\subsection{贯穿四模块的例子与实际接线边界}
+一次 UAV 事件可以组织为：相机经 Core 命名流发布画面；录像路径将原 packet 与 manifest 存入 Repo；地面站以精确画面引用构造分析 job；分析服务验证输入并返回绑定 job/attempt 的结果。若选择接入 DI，DI 还要完成模型准备、ACK 规划、角色执行与终端验证。前半段现有 UAV/Repo 入口与可选 DI 集成必须分开核对，当前原生 requester 的 NOT\_READY 意味着不能把这条组合示例写成已经通过纯 C++ 端到端验收的调用链。
 
 \newpage
 
@@ -892,6 +988,10 @@ Tiger 的唯一维护入口为 \path{Experiments/TigerCluster/}。
 模型名、设备参数和服务路由需与实际被加载/注册的内容核对；
 本轮没有启动 NFD/MiniNDN、构建原生依赖或向集群提交任务。
 
+
+\subsection{可复现入口与本轮命令}
+本轮文档命令从仓库根执行：python3 \code{Design/build-api-reference.py}；python3 \code{Design/build-behavior-coverage.py}；python3 \code{Design/refresh-snapshot.py}；python3 \code{Design/render-api-contracts.py} --target；python3 Design/build.py；python3 Design/verify.py 后接本次输出目录。原生编译参数按 \code{docs/native-build-parallelism.md} 与当前 Spec 的 quickstart/验证脚本，镜像按 \code{Experiments/TigerCluster/docs/sif-build.md}。文档更新不自行启动原生构建、SIF 或集群作业。
+
 \newpage
 
 \section{实现状态与验证口径}
@@ -926,6 +1026,10 @@ DI 有 \code{di-native-*} 及 Python/experiment 检查。[V1]
 
 \callout{失效快照的处理}{代码变化后，source-baseline 摘要可能与当前工作树不再一致。
 这表示设计快照需要重新核对，而不是证明新代码有缺陷；目标文档也不能凭自动复制变成实现事实。}
+
+
+\subsection{能力、入口与证据的对应}
+Core 在线权限以 \code{ServiceController::grant/revoke} 和第 9–13 章分支为依据；Repo 精确目录以 RepoCore::catalogLookup 为依据；UAV 最新帧以 \code{BoundedLatestFrameQueue::push/popLatest} 为依据；DI 请求句柄以 NativeInferenceClient 为依据。这些行为核对分别进入 AC-08、AC-13、AC-21、AC-14。生成/KV 组件行为在 AC-18，原生全链路、sampling parity、会话恢复及 Python caller 迁移仍由 \code{specs/182-native-di-python-bindings/tasks.md} 和 evidence 控制。Design/reviews 的修订记录只证明文档工作，不替代这些功能门。
 
 \newpage
 
@@ -998,6 +1102,10 @@ Repo 根为 \path{NDNSF-DistributedRepo/}；DI Python 根为
 \path{NDNSF-DistributedInference/ndnsf_distributed_inference/}，DI C++ 根为
 \path{NDNSF-DistributedInference/cpp/ndnsf-di/}。}
 
+
+\subsection{生成与会话的准确文件入口}
+D6 的生成自由函数位于 \code{NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.cpp}；\code{QwenGenerationSessionStateMachine} 的实现位于 \code{cpp/adapters/qwen/QwenGenerationSession.cpp}；会话日志位于 \code{cpp/ndnsf-di/NativeConversationCoordinator.cpp}；缓存状态机在 \code{NativeProviderRuntime.cpp} 的 ConversationStateStore。由 AC-18 的所属符号和签名定位，不把同名转发头当完整实现。
+
 \newpage
 
 \section{源码索引：UAV 与交付}
@@ -1032,6 +1140,10 @@ CodeGraph 用于定位规范符号和调用者；出现 compare-old/compare-new�
 副本时，以仓库维护的原始路径为准。章节中的运行限制来自具体实现分支，
 不是根据类名或 README 的目标描述推测。
 
+
+\subsection{索引的使用范围}
+UAV 高频回调和硬件行为常在 .inc.hpp 与 .cpp 中，公开头文件清单不能代替这些实现。video queue 查 \code{shared/UavVideoPipeline.cpp}，mission 查 \code{shared/UavMissionSession.cpp}，实际命令解析查 \code{drone/DroneServiceContainer.inc.hpp}。module-inventory.json 是 R0 历史盘点，当前新增/删除检测以 \code{design_state.source_files} 和 source-baseline 为准。
+
 \newpage
 
 \section{文档维护与后续目标变更}
@@ -1044,14 +1156,14 @@ CodeGraph 用于定位规范符号和调用者；出现 compare-old/compare-new�
 \item 实现落地后，重新核对生产路径、状态/安全分支和实际证据，
 更新当前正文与源码快照；不能仅因为目标 PDF 已更新就宣称功能完成。
 \item 运行 \code{python3 Design/build.py} 重建两份 PDF，检查文本、分页、字体、表格和图。
-文档身份标题可以不同；R0 的技术正文必须一致。
+当前与目标按各自源码身份检查；TG-01 至 TG-05 的有意差异必须保留。
 \item 更新 \code{CHANGELOG.md}、\code{validation.md} 和相关 Spec 进度。
 本目录完整纳入 Git；每个 Spec 的设计影响记入 \code{spec-design-changes.md}，与正文和 PDF 同步提交。
 \end{enumerate}
 
 \subsection{覆盖清单与源码快照}
 \code{coverage-matrix.md} 记录四模块各功能域对应章节与主要入口；
-\code{module-inventory.json} 记录本次维护目录的文件清单，用于以后发现遗漏或新增组件。
+\code{module-inventory.json} 保留 R0 历史盘点；新增/删除由当前源码范围检查发现。
 文件被列入清单不表示每一行都完成审计；正文区分主要流程源码核对与配置/工具入口登记。
 
 \code{source-baseline.json} 记录重点核对文件的摘要、采样时提交和工作树差异。
@@ -1061,7 +1173,10 @@ CodeGraph 用于定位规范符号和调用者；出现 compare-old/compare-new�
 \subsection{本文未引入的行为变化}
 本版不新增 SVS epoch 公告、不改变 grant 的本地失效范围、
 不补接原生 DI 请求链，也不扩大 Repo/UAV 现有接口能力。
-下一步由用户指定目标设计修改，明确新旧差异后再讨论实现与验收。
+目标 TG-01 至 TG-05 已登记改进方向；下一步沿 Spec182 推进 TG-02，并逐项定稿其余目标的接口和验收条件。
 
 \callout{交付标准}{两份完整中文 PDF、可编辑源文件、覆盖/源码记录和验证记录一起维护。
 文档完成与代码实现完成是两个独立状态。}
+
+\subsection{章节的人工接受条件}
+读者应能从每个关键入口说明参数从哪里来、下一步调用什么、怎样判定完成以及失败保留在哪一层。签名生成和 PDF 校验无法自动证明这些问题已回答。修改需连同 API、正文、目标差异、Spec 记录、PDF 和验证证据形成一个本地提交；未定义的字段/线程保证明确登记，禁止用增加页数替代行为契约。

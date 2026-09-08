@@ -17,6 +17,7 @@
     "contract": "AC-03",
     "title": "Core API：请求发起与 Targeted 调用",
     "api_ids": [
+      "API-09fc656cb649",
       "API-1009e77682c2",
       "API-efa9e29aae17"
     ]
@@ -69,7 +70,11 @@
     "contract": "AC-09",
     "title": "Core API：执行租约、观测与并发",
     "api_ids": [
-      "API-f52dcb87cd76"
+      "API-d154a2bbea78",
+      "API-13c34e09371a",
+      "API-e156fa6d6cf2",
+      "API-f52dcb87cd76",
+      "API-e43c54567dc6"
     ]
   },
   {
@@ -92,6 +97,7 @@
     "contract": "AC-12",
     "title": "Repo API：下载、验证与传输状态机",
     "api_ids": [
+      "API-39b8d985de2c",
       "API-1707faa2f3ea",
       "API-6f363704fd88",
       "API-b8a723742c4e"
@@ -127,9 +133,14 @@
     "contract": "AC-16",
     "title": "DI API：准备、发布后再绑定与封存",
     "api_ids": [
+      "API-f8cbacddff79",
+      "API-dcca376d355a",
       "API-2d8e39c7fc67",
       "API-d192a8a670da",
-      "API-1df2153e06a6"
+      "API-1df2153e06a6",
+      "API-550c3b9b50b5",
+      "API-e3e459f19b03",
+      "API-07a74268daf4"
     ]
   },
   {
@@ -137,7 +148,9 @@
     "title": "DI API：Provider 注册、授权与执行",
     "api_ids": [
       "API-b5abfc9b9043",
-      "API-859789c40049",
+      "API-1ec58fcbe7cc",
+      "API-79b6adfd9bf2",
+      "API-5ea3dea813e9",
       "API-070f116bfa58"
     ]
   },
@@ -145,16 +158,28 @@
     "contract": "AC-18",
     "title": "DI API：生成、KV 与会话延续",
     "api_ids": [
-      "API-b5b8e5590c3c"
+      "API-d18cce8f82c2",
+      "API-493dc84e5029",
+      "API-5772f7ae757f",
+      "API-6fd4334a3745",
+      "API-30fbe53f3d3e",
+      "API-855d3ec7afd2",
+      "API-1013f1ace7ee",
+      "API-10751ce7a09d",
+      "API-6b3bff150575",
+      "API-daca2274c659",
+      "API-32c8162259ef",
+      "API-1e7281b52fd5",
+      "API-a550281a7724",
+      "API-8c7c62356113",
+      "API-64cbde6b1261"
     ]
   },
   {
     "contract": "AC-19",
     "title": "UAV API：飞控边界与操作权限",
     "api_ids": [
-      "API-b1e46a3def66",
-      "API-c4f6835e7d67",
-      "API-76b58451421c"
+      "API-b1e46a3def66"
     ]
   },
   {

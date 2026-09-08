@@ -28,14 +28,15 @@ API 清单包括 16558 个声明（5738 个函数条目，其余为类型/字段
 - Repo 网络整制品发布目前要求 Collaboration；公开选项不意味着 TARGETED 发布实现可用。
 - Core 已含通用不透明字节 FEC，UAV 保有视频编码和媒体策略。
 - UAV 模型工具、模拟夹具与真实飞控/模型入口分别说明，不据此声明硬件或准确率资格。
-# R2 增补覆盖
+# R3 行为合并与目标覆盖
 
 | 契约 | 核对入口 | 范围 / 限制 |
 |---|---|---|
-| BC-01 | Core Controller/User/Provider 授权安装与失效 | 源码行为；未重新测量在线撤销 |
-| BC-02 | DI NativeInferenceClient.cpp | 局部等待、通知、取消及未接通 dispatch；无网络资格 |
-| BC-03 | RepoCore.cpp catalogLookup/handleCatalogLookup | 精确查询、错误传播、锁范围；无跨层对等保证 |
-| BC-04 | UAV FlightControllerBackend/mission/video/multiview | 扩展和生命周期边界；未验证真实飞行 |
+| AC-08（原 BC-01） | Core Controller/User/Provider 授权安装与失效 | 单项 grant 输入、内部完整策略与版本安装；未重新测量在线撤销 |
+| AC-14/15（原 BC-02） | DI NativeInferenceClient.cpp / NativePlanning.hpp | 句柄与当前描述符分章，不复制新增字段到冻结目标 |
+| AC-13（原 BC-03） | RepoCore.cpp catalogLookup/handleCatalogLookup | 精确查询、错误传播、锁范围；无跨层对等保证 |
+| AC-19—22（原 BC-04） | UAV FlightControllerBackend/mission/video/multiview | 字段、backend ACK、队列/任务实例；Drone 门禁未外推 |
+| AC-18 | epoch coordinator / Qwen 状态机 / Provider KV / conversation journal | 实际入口、状态、两 token 示例、缓存操作和提交/恢复限制 |
 | TG-01 至 TG-05 | target-roadmap.tex | 用户接受的 PLANNED 目标，独立于当前实现 |
 
 机器清单 api/behavior-coverage.json 按 API ID 区分 CONTRACT_REFERENCED / SIGNATURE_ONLY，

@@ -14,6 +14,22 @@
 
 ## 索引
 
+## D-004：逐章修订与关键 API 行为（2026-09-08）
+
+- 工作单元 D-DESIGN-R3；依据用户授权审计并修正 Design。
+- 前：第 53 章只有 cancel 声明；grant/流/目录存在错述；BC 重复；目标正文含 R0 过时声明。
+- 后：23 组 API 先解释行为，再列带所属符号的准确声明；补字段、状态表、返回/错误及调用示意。
+  第 53 章覆盖 epoch/Qwen/KV/journal；BC 合入 AC，当前/目标 58/63 章；五项目标补兼容和验收。
+- 新发现：Drone Execute handler 直接转交 backend，未见独立 lease/readiness 重验；
+  Qwen cancel 与 handle cancel 不同；journal abort/耐久性限制按实际代码记录，目标显式承接。
+- 工具：修复长方法名断行，生成两侧可读 Markdown 声明并逐字节检查，目标使用冻结 inventory。
+  维护规则加入原章勘误、逐章阅读和示意/运行证据区分；不把计数当语义通过。
+- 当前采样身份见 source-baseline.json 与精确补丁；目标身份继续保留独立冻结记录。
+  当前新增模型/候选字段仅写当前契约，未修改目标基线或产品代码。
+- 逐项位置：[67 个原主题的修订记录](reviews/chapter-revision-r3-20260908.md)。
+- 验证及状态：[R3 evidence](../specs/182-native-di-python-bindings/evidence/design-r3-20260908.md)。
+  文档修订不关闭 Spec182 产品任务；未定稿目标继续 PLANNED。
+
 ## D-003：逐章可理解性审阅（2026-09-08）
 
 - 工作单元 D-DESIGN-CHAPTER-AUDIT；[审阅清单](reviews/chapter-audit-20260908.md)、

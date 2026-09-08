@@ -19,6 +19,17 @@ NDN-SVS 可作为通知承载候选，是否采用由后续 Spec 决定；必须
 记录每个节点的安装版本、权限刷新次数与密钥刷新次数；“无关节点不更新”须有定向证据。
 版本字段的线格式、密钥轮换粒度和兼容协商尚未定稿，本章不声称现有实现满足目标。
 
+\subsection{版本的作用域与判定示例}
+以下是逻辑字段职责，字段名为设计占位，不是已冻结的 wire schema：keyVersion 标识实际
+加密材料，servicePolicyVersion 标识服务规则，subjectAuthorizationVersion 标识主体在
+服务中的授权视图，affectedSubjects/affectedServices 指明影响范围。每个比较都必须先
+确认 Controller、主体和服务归属；不得跨域比较整数。
+
+例：只给 P1 增加 S 权限时，P2 收到提示仍可验证权威状态；若 P2/S 的授权视图和密钥身份
+均未变化，应保留其在途调用和已验证缓存。若密钥轮换，则使用旧密钥的 P2 仍必须刷新。
+旧客户端无法解释细粒度字段时继续采用全局失效的保守路径；不能把“无法解析影响范围”
+当成“不受影响”。在途请求继续还是终止须由服务安全语义明确规定。
+
 \section{TG-02：DI 原生请求链与唯一状态所有者}
 \lead{PLANNED · DI；关联 Spec182，不能据此关闭原有任务}
 NativeInferenceClient 的请求入口负责驱动准备、ACK 收集关闭、候选选择、发布后绑定、
@@ -39,6 +50,30 @@ observe 保留迟注册历史回放和串行通知规则。接通 dispatch 之�
 晚到 ACK、发布失败和取消竞争。组件测试、网络集成、模型执行及硬件资格分别记录。
 新旧路径切换必须显式配置和可观测，兼容入口删除须先证明维护调用方已经迁移。
 
+\subsection{对象连接与状态迁移}
+\begin{tabularx}{\linewidth}{@{}p{45mm}X@{}}
+\toprule
+现有责任 & 目标 owner 与输出 \\
+\midrule
+Python APPClient / coordinator & NativeInferenceClient 持有一次 operation；Python 仅转参数、异常和事件。\\
+模型/输入准备 & NativeRequestPreparation 调用固定 adapter，产出输入、真实图和候选。\\
+ACK 后规划 & 原生操作接收 Core ACK\_CLOSED，admission 后调用 split/placement，并验证 proposal。\\
+制品与封存 & ensureArtifacts → bindPublishedRoles → sealCore → grant/security → project/encode。\\
+执行与结束 & Core 提交选择，Provider 原生 session 执行；唯一 operation 接受结果或错误，阻断旧 attempt。\\
+\bottomrule
+\end{tabularx}
+操作应明确经历准备输入、等待 ACK、规划、确保制品、封存、提交、等待结果和终态；
+在任一耗时边界检查同一 deadline/cancel，不以新子步骤重新获得完整请求预算。
+Python 不再自行重建候选摘要、重试 attempt 或持有另一套终态仲裁。
+
+\subsection{生成与会话的已发现缺口}
+AC-18 记录当前 abortTurn 不持久化且未实际设置 aborted、journal 缺显式写失败/fsync
+检查、beginTurn 需要父记录而缺独立首次对话引导流程。目标须为首次建会话、父记录验证、
+本轮完成、Provider KV 提升、journal 提交和失败回退指定唯一 owner 与先后次序。
+写失败不得返回已提交；取消必须阻止同一 attempt 的后续 checkpoint；本地恢复成功但
+Provider 缓存丢失时明确重算或拒绝，不能无证据宣称 KV 命中。具体事务 API 与崩溃一致性
+协议随 Spec182 的 generation/conversation 契约定稿，本轮未实现它们。
+
 \section{TG-03：跨模块异步 API 契约}
 \lead{PLANNED · Core / DI / Repo / UAV}
 统一描述规则，不强制所有组件使用同一个线程池。每个异步入口登记调用线程、回调执行器、
@@ -56,6 +91,22 @@ RequestServiceStreaming、NativeInferenceHandle、artifact transfer 和 UAV miss
 使用可控时钟和调度器覆盖 cancel/complete/close 竞争、回调重入、观察者异常、
 排队超时和资源释放。远端取消须有实际协议路径证据，不能只依赖本地状态测试。
 
+\subsection{按 API 指定策略，避免错误统一}
+\begin{tabularx}{\linewidth}{@{}p{44mm}X@{}}
+\toprule
+入口 & 目标明确的规则 \\
+\midrule
+NativeInferenceHandle & 保留局部等待与请求期限区分；observer 的回放/新事件串行，cancel 幂等。\\
+RequestServiceStreaming & 事件队列有界，发布拒绝原因可观察；终态一次，重传不重做业务。\\
+artifact session & transfer 与 commit 分阶段取消；已提交副作用不能因本地取消自动撤回。\\
+UAV mission/job & 取消任务与发送车辆停止命令分开确认；迟到旧 attempt 报告不推进新状态。\\
+视频最新帧队列 & 保留丢旧帧策略，报告 dropped；不要求与完整制品同样的全量交付。\\
+\bottomrule
+\end{tabularx}
+每项还需在后续 Spec 固定 callback executor、重入许可与 close 后是否排空队列；目前
+没有全模块通用的线程安全保证。Qwen 内部状态机终态 cancel 会抛异常，兼容调整必须显式
+决定是保留内部严格方法，还是由外层幂等包装；不能悄悄修改所有同名 cancel。
+
 \section{TG-04：Repo 能力、提交与恢复}
 \lead{PLANNED · Repo；保留接收、验证、提交的阶段边界}
 C++ RepoCore::catalogLookup 继续表示精确对象名查询；组合过滤由单独的查询契约承载，
@@ -71,6 +122,17 @@ begin\_upload、publish\_file、begin\_fetch、fetch\_file 和 abort 应明确 o
 \subsection{验收}
 覆盖传输中止、验证后崩溃、提交后响应丢失、重复提交、目录存在但数据缺失、删除与读取竞争。
 不得把 Python repair 编排自动归入 C++ 对等能力；存储格式变更需提供迁移或版本拒绝路径。
+
+\subsection{操作身份与条件提交}
+目标操作记录应绑定逻辑操作键、制品内容摘要、manifest 身份、目标/副本集合、阶段及
+验证 receipt。提交需携带预期旧状态或 revision：相同内容的已提交重试回放结果，
+不同内容冲突拒绝，旧阶段请求不得覆盖新 COMMITTED/tombstone。实际字段名、数据库事务
+范围与 wire 版本由后续 Spec 决定，不能以一张 DTO 表替代落盘设计。
+
+目标能力表以三类真实入口为列：local C++、network service、Python orchestration；行至少
+包括精确对象、原 packet、上传提交、恢复下载、精确目录、过滤查询、replication、repair。
+当前 C++ 精确 lookup 保留支持，过滤与跨 Repo 编排不能自动升级为 C++ supported。
+格式迁移先识别旧版本并验证恢复信息，再原子提交新记录；不能遇到未知版本就清空进度。
 
 \section{TG-05：UAV 类型边界与独立状态机}
 \lead{PLANNED · UAV；飞控、任务、视频与界面通过显式接口协作}
@@ -89,3 +151,15 @@ compensateMissingParts 仅对缺失部分发起新 attempt，旧结果不得覆�
 视频性能和真实飞行安全边界另行验收。本轮只接受改进方向，不宣称硬件链路已通过。
 优先完成文档基线和关键契约，再沿当前 Spec 落地 TG-02；TG-01/03/04/05 各自通过
 后续 Spec 确定具体接口、兼容迁移和任务，不创建虚构的 Spec 编号。
+
+\subsection{命令模型与适配层}
+候选命令模型应显式包含 schemaVersion、commandId、目标 Drone、命令类型、带单位的
+参数、deadline 和 operator lease 引用；候选结果包含接受/执行/拒绝阶段、原始飞控
+ACK、错误域和关联 commandId。这里定义职责，尚不固定 JSON 字段拼写与 MAVLink 映射。
+旧 Fields 由兼容适配器解析为领域类型，领域层校验后才调用 backend；未知命令拒绝，
+不能通过一个默认分支发送任意帧。原始帧能力继续单独授权。
+
+mission owner 管理分片与补偿，job owner 管理有限 attempt，backend 管理设备链路与
+ACK，Qt 仅订阅不可变状态并发起命令。关闭窗口不隐式宣称取消车辆动作；遥测中断时
+领域层更新 readiness，结果通过明确状态传回 UI。分阶段验收先覆盖字段/单位转换和
+Mock 状态竞争，再验证 UDP/串口与 SITL，最后单独评估真实飞控；不同阶段不共用一个 PASS。

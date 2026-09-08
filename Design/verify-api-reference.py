@@ -8,6 +8,10 @@ inventory=json.loads((root/'Design/api/inventory.json').read_text())
 snapshot=json.loads((root/'Design/source-baseline.json').read_text())
 normalize=lambda s:re.sub(r'\s+',' ',s).strip()
 errors=[];ids=set();entries=0
+generator_hash=hashlib.sha256(b''.join((root/'Design'/name).read_bytes() for name in
+    ('build-api-reference.py','extract-cpp-api.cjs','design_state.py'))).hexdigest()
+if inventory.get('generator_sha256')!=generator_hash:
+    errors.append('API generator identity changed: regenerate inventory')
 from design_state import api_files, source_files
 actual=set(api_files(root)); captured={f['file'] for f in inventory['files']}
 if actual != captured: errors.append('API file set changed: '+repr(sorted(actual ^ captured)))
@@ -43,7 +47,7 @@ for e in coverage:
 # Re-render in isolation: stale TeX/maps and unresolved frozen target selectors fail.
 with tempfile.TemporaryDirectory(prefix='design-render-check-') as temporary:
     work=Path(temporary); (work/'api').mkdir()
-    for name in ('render-api-contracts.py','api-contracts.json','target-api-contracts.json'):
+    for name in ('render-api-contracts.py','render-api-reference.py','api-contracts.json','target-api-contracts.json'):
         shutil.copyfile(root/'Design'/name, work/name)
     for name in ('inventory.json','target-inventory.json'):
         shutil.copyfile(root/'Design/api'/name,work/'api'/name)
@@ -54,6 +58,14 @@ with tempfile.TemporaryDirectory(prefix='design-render-check-') as temporary:
         for name in (('target-api.tex','api/target-contract-map.json') if target else ('current-api.tex','api/contract-map.json')):
             if (work/name).read_bytes() != (root/'Design'/name).read_bytes():
                 errors.append('stale generated contract: '+name)
+        completed=subprocess.run([sys.executable,str(work/'render-api-reference.py')]+(['--target'] if target else []),capture_output=True,text=True)
+        if completed.returncode:
+            errors.append('reference render failed: '+completed.stderr[-500:]); continue
+        for module in ('core','repo','di','uav'):
+            name='api/'+('target-' if target else '')+module+'-reference.md'
+            path=root/'Design'/name
+            if not path.is_file() or (work/name).read_bytes()!=path.read_bytes():
+                errors.append('stale generated reference: '+name)
 bindings=json.loads((root/'Design/api/python-bindings.json').read_text())
 for f in bindings:
     data=(root/f['file']).read_bytes()

@@ -10,7 +10,7 @@ manifest = json.loads(dest.read_text())
 from design_state import source_files
 # Keep existing supporting files, add all maintained implementation/config inputs.
 manifest['files'] = {p: {} for p in sorted(set(manifest['files']) | source_files(root)) if (root/p).is_file()}
-manifest['revision'] = 'R2'
+manifest['revision'] = 'R3'
 manifest['scope_policy'] = 'design_state.source_files plus explicitly retained supporting files; byte identity is not semantic or runtime qualification'
 api_inventory = root / 'Design/api/inventory.json'
 if api_inventory.exists():
