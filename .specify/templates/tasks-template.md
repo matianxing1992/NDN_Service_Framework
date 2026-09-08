@@ -25,7 +25,13 @@ reviewable behavioral outcomes. Do not optimize for a high task count.
 
 ## Logical Batches
 
-生成时应用 `skills/speckit-code-design/references/pre-test-static-review.md` 及其中的只读 review-agent profile。在本节登记每批 ID、成员、连贯行为边界、implementation / acceptance dependencies、共享构建/测试选择器及负责人。逐任务静态通过后继续同批，整批流程审查后统一构建/测试；测试待运行保持 PARTIAL，并在 Evidence / Remaining 写 `STATIC_PASS / TESTS_DEFERRED / Batch ID`。硬验收依赖不自动降级；不能把整个 Spec 默认作为一批。具体批次表取代本段提示。
+生成时应用 `skills/speckit-code-design/references/pre-test-static-review.md` 与
+`skills/speckit-code-design/references/batch-quality-gates.md` 及其中的只读
+review-agent profile。在本节登记每批 ID、成员、连贯行为边界、稳定出口、
+implementation / acceptance dependencies、共享构建/测试选择器及负责人。逐任务静态通过后继续同批，
+整批流程审查后统一构建/测试；测试待运行保持 PARTIAL，并在 Evidence / Remaining 写
+`STATIC_PASS / TESTS_DEFERRED / Batch ID`。硬验收依赖不自动降级；不能把整个 Spec 默认作为一批。
+具体批次表取代本段提示。
 
 ## Execution Progress
 
@@ -51,6 +57,16 @@ READY 必须满足依赖和阶段门禁；DONE 必须有完整单元验收证据
 
 记录最近工作单元的实际结果、持久证据与下一步；当前状态以 Execution Progress 为准。
 生成时用实际已知情况替换说明，不将生成任务本身计为产品完成，也不重置已有 checkpoint。
+
+## Batch Quality Record
+
+每批只维护一份结果记录，引用 [batch-quality-gates](../../skills/speckit-code-design/references/batch-quality-gates.md)。
+批末填写以下字段；没有发现时写 `none` 或 `not observed`，不留空。耗时只能用于相同
+target/source closure、toolchain、配置和工作树条件下的对照，不能由单次运行推导总体提速。
+
+| Batch ID | Static findings | Compile/build misses | Runtime/test misses | Build scope / target / `-j` / elapsed / exit | Behavior result | Evidence / remaining |
+| --- | --- | --- | --- | --- | --- | --- |
+| B-01 | [found/fixed/gaps] | [compiler/linker/wiring misses] | [runtime/test misses and first boundary] | [command, closure, toolchain, timing, log] | [STATIC_PASS / BUILD_PASS / FOCUSED_BEHAVIOR_PASS / QUALIFICATION_PASS] | [links and next step] |
 
 ## Format: `[ID] [P?] [Story] Description`
 
