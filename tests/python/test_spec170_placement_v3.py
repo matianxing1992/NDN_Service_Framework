@@ -73,11 +73,21 @@ class Spec170PlacementV3Test(unittest.TestCase):
                   preparation=True, residency=False)
 
     def test_zero_one_many_devices_are_truthful(self):
-        for devices in ((), ("cuda:0",), ("cuda:0", "cuda:1")):
+        for devices in ((), ("cpu",)):
             value = offer(devices=devices, residency=False,
                           disposition=ExecutionDisposition.ACCEPT_WITH_PREPARATION,
                           preparation=True)
             self.assertEqual(tuple(value.topology.devices), devices)
+
+        for devices in (("cuda:0",), ("cuda:0", "cuda:1")):
+            topology = DeviceTopologyProfile("p0", devices, "onnxruntime-cuda")
+            self.assertEqual(tuple(topology.devices), devices)
+
+    def test_cpu_and_cuda_device_identities_cannot_mix(self):
+        with self.assertRaisesRegex(ValueError, "device identity"):
+            DeviceTopologyProfile("p0", ("cpu", "cuda:0"), "cpu")
+        with self.assertRaisesRegex(ValueError, "device identity"):
+            DeviceTopologyProfile("p0", ("cpu",), "onnxruntime-cuda")
 
     def test_canonical_v3_round_trip_and_dispatch(self):
         value = offer()

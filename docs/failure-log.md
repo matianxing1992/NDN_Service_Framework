@@ -3369,3 +3369,14 @@ or directory`。`libnac-abe.pc` 只声明 `/opt/ndnsf-di/current/include`，而 
 的 include 路径。修复 Waf 的显式 NAC-ABE include 闭包，同时加入
 `include/nac-abe`，并重新封存/重建 base 后再编译 app。失败缓存不作为候选，保留
 为同一 owner 的诊断输入。
+
+## 2026-09-08: layered CPU V3 offer rejected truthful CPU topology
+
+使用新的 ControllerVersion 修复版 base/app 运行 `layered-host-20260908-v4`
+时，NFD、Controller、Repo 和四个 CPU Provider 均启动，User 收到四个有效
+`DI_PLACEMENT_V3_OFFER` ACK；随后 User 在 `ProviderOfferV3.from_bytes` 解析
+`topology.devices=["cpu"]` 时退出 2。`DeviceTopologyProfile` 原逻辑无条件
+拒绝 `cpu`，与 Provider 对 CPU 后端的真实声明冲突。修复为 CPU 后端只接受
+`cpu`，CUDA 后端只接受 `cuda:<ordinal>`，并加入混合拓扑回归测试。该次运行
+证明 ControllerVersion admission 已越过，但不是数值 PASS；应在重新封存 app
+后以新 run-id 重跑本机链路。

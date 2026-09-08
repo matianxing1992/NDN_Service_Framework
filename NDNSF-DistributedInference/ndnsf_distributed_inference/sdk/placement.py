@@ -543,14 +543,17 @@ class DeviceTopologyProfile:
         object.__setattr__(self, "devices", devices)
         if not self.provider or len(set(devices)) != len(devices):
             raise ValueError("invalid V3 device topology")
-        if any(
-                not item
-                or item == "cpu"
-                or not item.startswith("cuda:")
-                for item in devices):
-            raise ValueError("invalid V3 device identity")
         if not self.backend:
             raise ValueError("V3 topology backend is required")
+        # CPU Providers truthfully advertise the logical ``cpu`` device.  CUDA
+        # Providers advertise one or more stable ``cuda:<ordinal>`` devices;
+        # never accept a mixed topology or a device identity that disagrees
+        # with the selected backend.
+        if is_cpu_backend(self.backend):
+            if any(item != "cpu" for item in devices):
+                raise ValueError("invalid V3 device identity")
+        elif any(not item.startswith("cuda:") for item in devices):
+            raise ValueError("invalid V3 device identity")
 
     def to_dict(self) -> dict[str, Any]:
         return _plain(self)
