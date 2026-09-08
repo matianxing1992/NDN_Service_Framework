@@ -3590,3 +3590,18 @@ identity and rerun packaging against the existing incremental Waf cache.
 - Lesson: a runtime mode selected before a privilege/process boundary must be
   part of the signed launch environment, otherwise a secure fail-closed check
   can select the wrong execution domain.
+
+## 2026-09-08: exact-SIF NFD socket root was not mounted
+
+- Symptom: the exact-SIF Y-B run reached NFD startup but all five node daemons
+  failed with `filesystem error: UnixStreamChannel::listen: bind: Read-only
+  file system [/run/nfd/<node>.sock]`.
+- Root cause: the host `/run/nfd` directory did not exist, so the bind builder
+  omitted it; Apptainer consequently exposed the sealed image's read-only
+  `/run` to NFD.
+- Fix: the root-launched exact-SIF prefix now creates, validates and binds the
+  host `/run/nfd` directory before starting any NFD child. Unprivileged callers
+  fail closed if they cannot establish this socket boundary.
+- Lesson: conventional runtime socket paths need an explicit writable host
+  bind before a sealed image starts; checking only optional path existence is
+  insufficient for daemon startup.

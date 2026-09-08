@@ -141,6 +141,18 @@ def sif_exec_prefix(base_env: Mapping[str, str] | None = None,
     """
     if not sif_runtime_enabled():
         return ""
+    # NFD's MiniNDN configuration uses the conventional /run/nfd/<node>.sock
+    # path.  The sealed image has a read-only /run, so create and explicitly
+    # bind the host socket directory before any SIF child starts.  The host
+    # systemd owner is root for this operation; unprivileged callers fail
+    # closed instead of silently falling back to a host socket.
+    nfd_socket_root = Path("/run/nfd")
+    if not nfd_socket_root.exists():
+        if os.geteuid() != 0:
+            raise RunnerError("SIF_NFD_SOCKET_ROOT_UNAVAILABLE")
+        nfd_socket_root.mkdir(mode=0o755, parents=True, exist_ok=True)
+    if nfd_socket_root.is_symlink() or not nfd_socket_root.is_dir():
+        raise RunnerError("SIF_NFD_SOCKET_ROOT_INVALID")
     env = base_env or {}
     pieces = [
         shutil.which(SIF_RUNTIME_APPTAINER) or SIF_RUNTIME_APPTAINER,
