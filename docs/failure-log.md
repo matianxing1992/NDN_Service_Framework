@@ -1,5 +1,10 @@
 # Failure Log and Evidence Index
 
+## 2026-09-07 — Spec182 V3 placement test macro
+
+r1 build 在新测试 BOOST_CHECK 的 std::map 模板参数逗号处失败，尚未运行策略。
+修复后 r2 build PASS，最终 r4 build/34-case 定向检查 PASS；见 [V3 placement evidence](../specs/182-native-di-python-bindings/evidence/t003-v3-placement-20260907.md)。
+
 ## 2026-09-07 — Spec182 signed offer fixture import
 
 authoring 导入 app_sdk.provider 时缺 py_repoclient 搜索路径，尚未执行签名验证。

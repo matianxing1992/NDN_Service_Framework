@@ -13,6 +13,11 @@
 
 namespace ndnsf::di {
 
+class NativeAdmittedOfferV3;
+struct NativeOfferBindingContext;
+struct NativeSelectionRoleV3;
+struct NativeRolePlacementProposalV3;
+
 struct NativeStrategyIdentity
 {
   std::string name;
@@ -178,6 +183,11 @@ public:
   NativeStrategyIdentity identity() const override;
   NativePlacementProposal propose(const NativePlanningSnapshot& snapshot,
                                   const NativeSplitCandidate& candidate) const override;
+
+  NativeRolePlacementProposalV3 proposeRoles(
+    const NativeOfferBindingContext& context, const std::string& ackClosedDigest,
+    const std::vector<NativeSelectionRoleV3>& roles,
+    const std::vector<NativeAdmittedOfferV3>& offers, std::uint64_t nowMs) const;
 
 private:
   NativeStrategyIdentity m_identity;

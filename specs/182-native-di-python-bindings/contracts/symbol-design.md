@@ -33,7 +33,7 @@ request/attempt、deadline、digest、secret lease、缓存失效和队列计数
 | C03 / CD-001 NativeDiError | 稳定非秘密错误值/异常，替代跨语言文本判断 | code/domain/boundary/requestId/attempt；不可含 key/payload | 构造时验证原因码；bindings 映射同一类别，不从文本反推原因 |
 | C04 / CD-002 NativeModelSplitStrategy | 模型角色切分提案接口，不能授权 | immutable strategy identity；无网络状态 | identity/enumerate/virtual destructor；注释输入冻结、输出由 sealer 再校验 |
 | C05 / CD-002 NativePlacementStrategy | 角色到 Provider/device 的提案接口 | immutable strategy identity；只读 snapshot | identity/propose/virtual destructor；不持有发布/授权端口 |
-| C06 / CD-002 NativePreSplitFirstPlacement | 保留已支持 placement 排序与确定性 tie-break | 冻结参数，无 residency 权威缓存 | identity/propose；has_model 不证明 exact residency |
+| C06 / CD-002 NativePreSplitFirstPlacement | 保留已支持 placement 排序与确定性 tie-break | 冻结参数，无 residency 权威缓存 | identity/proposeRoles 接受完整角色与 admitted offer；旧 propose 待 metadata 迁移后替换；has_model 不证明 exact residency |
 | C07 / CD-002 NativeQwenLayerSplit | Qwen cover/rank-one 默认切分；模型变化归 adapter | 已验证 split 参数 | identity/enumerate；未支持的 tensor parallel 拒绝，非本次新增能力 |
 | C08 / CD-002 NativeYoloComponentSplit | YOLO FullModel/component cover 与 ingress/egress | 已验证 split 参数 | identity/enumerate；保留 source candidate priority，不能被缓存排序覆盖 |
 | C09 / CD-002/013 NativeModelAdapter | graph/task/state/runner 差异契约；不接管协作状态 | immutable descriptor/task/state contract；native runner factory | inspect/encodeInput/decodeResult；模型输入输出语义与通用调用分离 |

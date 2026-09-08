@@ -135,9 +135,9 @@ worker crash/cancel 等真实子进程案例也转 T016，卡内只运行纯 fra
 
 - **Parent**: T003; **Depends**: T003-A, T003-B; **Reviewer**: local source review
 - **Read**: CD-002 → Values；P/planner/presplit_first.py::propose_v3；N/NativePlanning.hpp。
-- **Write**: N/NativePlanning.hpp; N/NativePlanning.cpp; U/di-native-planning.t.cpp; wscript。
+- **Write**: N/NativePlanning.hpp; N/NativePlanning.cpp; N/NativeV3Placement.hpp; N/NativeV3Placement.cpp; U/di-native-planning.t.cpp; U/di-native-v3-placement.t.cpp; tests/fixtures/spec182/author-placement-v3-oracle.py; tests/fixtures/spec182/placement-v3-oracle.json; wscript。
 - **Steps**: 实现 registry 与默认 placement，固定同一 snapshot 时间，先兼容过滤再 residency 排序；不做 I/O、不授权、不把 has_model 当 exact residency。
-- **Verify**: CPP(Spec182NativePlanning/*)；lease/budget/device/ref tie-break、非法向量、同输入同结果；与冻结 Python proposal 对照。2026-09-07 修正旧不存在的 Spec182Placement selector；当前局部用例不覆盖完整 device/residency proof，T003-C 保持 PARTIAL。
+- **Verify**: CPP(Spec182NativePlanning/*) 与 CPP(Spec182V3Placement/*)；lease/budget/device/ref tie-break、非法向量、同输入同结果；与冻结 Python proposal 对照。proposeRoles 接受完整 role/rank metadata 与 admitted offer，旧 candidate 的 metadata/主链迁移未闭合前 T003-C 保持 PARTIAL。
 
 ### T004-A Canonical Plan Sealing
 

@@ -7,6 +7,13 @@
 
 ## Current Findings
 
+### V3 Placement Checkpoint 2026-09-07
+
+完整 role/rank、admitted offer 的 proposeRoles 已实现 capability/device 优先、exact
+residency 与确定性成本排序；真实 SDK assignment/device 对照通过。旧简化 candidate
+仍缺完整 assembly metadata，主链尚未迁移，不能用新入口的单测宣称 T003-C 或 T010 完成。
+见 [V3 placement evidence](evidence/t003-v3-placement-20260907.md)。
+
 ### Offer Observation Audit 2026-09-07
 
 **A8-02 / HIGH / PARTIAL**：policy 合成 capabilities 与缺失 offer signature 的旧入口已删除，

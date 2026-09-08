@@ -1,0 +1,444 @@
+{
+  "ack_digest": "sha256:01a0f87fe4b273765ac24c1a9c497bae3aee0ce1680726390e20369881a070da",
+  "candidate": "sha256:dda18a0e21ae47c53b4309434cbc02ae8bf764fa83a6defbb719431242722aa7",
+  "cases": [
+    {
+      "expected": {
+        "providers": {
+          "/LLM/Pipeline/Stage/0": "/provider/a"
+        },
+        "roles": [
+          {
+            "backend": "onnxruntime-cpu",
+            "device_set": [],
+            "rank": 0,
+            "role": "/LLM/Pipeline/Stage/0"
+          }
+        ]
+      },
+      "name": "cpu",
+      "native_freshness": false,
+      "offers": [
+        "{\"accepted_roles\":[\"/LLM/Pipeline/Stage/0\"],\"ack_reservation\":false,\"attempt\":1,\"backends\":[\"onnxruntime-cpu\"],\"bandwidth_mbps\":0.0,\"boot_epoch\":\"boot\",\"can_provision\":false,\"captured_at_ms\":100,\"estimated_wait_ms\":0.0,\"execution_disposition\":\"ACCEPT_WITH_PREPARATION\",\"expires_at_ms\":1000,\"graph_digest\":\"sha256:eb39048e76e23f16bdd123ca37e0e32aedbe6d0c52d14c2e5bfd22aa88239b08\",\"has_model\":true,\"model_digest\":\"sha256:34e1b5468a63812c036a261b2659e44b658a5efe381ae110c6e72841d04ed6f2\",\"preparation_accepted\":true,\"provider\":\"/provider/a\",\"queue_depth\":0,\"request_id\":\"request\",\"residency\":[],\"resources\":[],\"rtt_ms\":0.0,\"schema\":\"DI_PLACEMENT_V3\",\"schema_version\":3,\"service\":\"/service\",\"signature\":\"Th32i/V48x4mJcK9Ys3rHww8qDYcfef2BPwr1q97kThtgZAbV8SpA0+8u5vSwp5POo79O7HNHqa3SF6X/mnOBQ==\",\"signer_key_id\":\"sha256:56475aa75463474c0285df5dbf2bcab73da651358839e9b77481b2eab107708c\",\"status\":true,\"topology\":{\"backend\":\"onnxruntime-cpu\",\"devices\":[],\"provider\":\"/provider/a\",\"topology_digest\":\"\"}}",
+        "{\"accepted_roles\":[\"/LLM/Pipeline/Stage/0\"],\"ack_reservation\":false,\"attempt\":1,\"backends\":[\"onnxruntime-cpu\"],\"bandwidth_mbps\":0.0,\"boot_epoch\":\"boot\",\"can_provision\":false,\"captured_at_ms\":100,\"estimated_wait_ms\":0.0,\"execution_disposition\":\"ACCEPT_WITH_PREPARATION\",\"expires_at_ms\":1000,\"graph_digest\":\"sha256:eb39048e76e23f16bdd123ca37e0e32aedbe6d0c52d14c2e5bfd22aa88239b08\",\"has_model\":true,\"model_digest\":\"sha256:34e1b5468a63812c036a261b2659e44b658a5efe381ae110c6e72841d04ed6f2\",\"preparation_accepted\":true,\"provider\":\"/provider/b\",\"queue_depth\":0,\"request_id\":\"request\",\"residency\":[],\"resources\":[],\"rtt_ms\":0.0,\"schema\":\"DI_PLACEMENT_V3\",\"schema_version\":3,\"service\":\"/service\",\"signature\":\"wPKxDiQKLcb6NIswCs4G2BKYQ0sOi+CT6ieWRoExt8AABokYU0OaP0qipkhnHI5hTxH5Xi/ngn/lXzY/VXtQAg==\",\"signer_key_id\":\"sha256:56475aa75463474c0285df5dbf2bcab73da651358839e9b77481b2eab107708c\",\"status\":true,\"topology\":{\"backend\":\"onnxruntime-cpu\",\"devices\":[],\"provider\":\"/provider/b\",\"topology_digest\":\"\"}}"
+      ],
+      "ranks": [
+        0
+      ]
+    },
+    {
+      "expected": {
+        "providers": {
+          "/LLM/Pipeline/Stage/0": "/provider/a"
+        },
+        "roles": [
+          {
+            "backend": "onnxruntime-cuda",
+            "device_set": [
+              "cuda:1"
+            ],
+            "rank": 0,
+            "role": "/LLM/Pipeline/Stage/0"
+          }
+        ]
+      },
+      "name": "loaded_second_device",
+      "native_freshness": false,
+      "offers": [
+        "{\"accepted_roles\":[\"/LLM/Pipeline/Stage/0\"],\"ack_reservation\":false,\"attempt\":1,\"backends\":[\"onnxruntime-cuda\"],\"bandwidth_mbps\":0.0,\"boot_epoch\":\"boot\",\"can_provision\":false,\"captured_at_ms\":100,\"estimated_wait_ms\":0.0,\"execution_disposition\":\"ACCEPT_IF_EXACT_REUSE\",\"expires_at_ms\":1000,\"graph_digest\":\"sha256:eb39048e76e23f16bdd123ca37e0e32aedbe6d0c52d14c2e5bfd22aa88239b08\",\"has_model\":true,\"model_digest\":\"sha256:34e1b5468a63812c036a261b2659e44b658a5efe381ae110c6e72841d04ed6f2\",\"preparation_accepted\":false,\"provider\":\"/provider/a\",\"queue_depth\":0,\"request_id\":\"request\",\"residency\":[{\"artifact_digest\":\"sha256:1f508a1852ecb01602ba7f3c3d2ef34c177caf21e316e8c65d1dd4fc42bd45cd\",\"artifact_profile_digest\":\"sha256:4d5fd5739bc8977b9004af4061c14de70b37399e611c5515fa2d3b35a57e6364\",\"assembly_spec_digest\":\"sha256:b2d669b8459414976b05a0280e49ef75a12ae08391032a88446c0e6519f456e6\",\"backend\":\"onnxruntime-cuda\",\"boot_epoch\":\"boot\",\"captured_at_ms\":100,\"device_set\":[\"cuda:1\"],\"estimated_assembly_ms\":0.0,\"estimated_load_ms\":0.0,\"expires_at_ms\":1000,\"fencing_token\":\"fence\",\"graph_digest\":\"sha256:eb39048e76e23f16bdd123ca37e0e32aedbe6d0c52d14c2e5bfd22aa88239b08\",\"identity_digest\":\"sha256:1f508a1852ecb01602ba7f3c3d2ef34c177caf21e316e8c65d1dd4fc42bd45cd\",\"missing_verified_bytes\":0,\"model_manifest_digest\":\"sha256:40a310a18cf042ffce64ab7dbfe7d6f08afd66df2e4a8fade46af74dcc574ba2\",\"process_epoch\":\"process\",\"proof_digest\":\"\",\"protection_epoch\":\"protected-v1\",\"rank\":0,\"residency_class\":\"LOADED_RUNTIME\",\"role\":\"/LLM/Pipeline/Stage/0\",\"runtime_generation\":1,\"tier\":\"GPU\",\"topology_digest\":\"sha256:aa110ee80fa2691b7ee0b71aaa021924767576d44845b967e01db3c33c653fb2\"}],\"resources\":[{\"active_requests\":0,\"captured_at_ms\":100,\"device\":\"cuda:0\",\"free_memory_mb\":4096,\"resource_sequence\":1,\"topology_digest\":\"sha256:aa110ee80fa2691b7ee0b71aaa021924767576d44845b967e01db3c33c653fb2\",\"total_memory_mb\":8192},{\"active_requests\":0,\"captured_at_ms\":100,\"device\":\"cuda:1\",\"free_memory_mb\":4096,\"resource_sequence\":1,\"topology_digest\":\"sha256:aa110ee80fa2691b7ee0b71aaa021924767576d44845b967e01db3c33c653fb2\",\"total_memory_mb\":8192}],\"rtt_ms\":0.0,\"schema\":\"DI_PLACEMENT_V3\",\"schema_version\":3,\"service\":\"/service\",\"signature\":\"Qj5WoRhRW5tnYFA61QP6U7mmS56nMQIUTlmCFvJlmD/YhmgQzBBqIbQL7MXksYOKCC0OYgjwRiRX2egcvtFfCA==\",\"signer_key_id\":\"sha256:56475aa75463474c0285df5dbf2bcab73da651358839e9b77481b2eab107708c\",\"status\":true,\"topology\":{\"backend\":\"onnxruntime-cuda\",\"devices\":[\"cuda:0\",\"cuda:1\"],\"provider\":\"/provider/a\",\"topology_digest\":\"\"}}",
+        "{\"accepted_roles\":[\"/LLM/Pipeline/Stage/0\"],\"ack_reservation\":false,\"attempt\":1,\"backends\":[\"onnxruntime-cuda\"],\"bandwidth_mbps\":0.0,\"boot_epoch\":\"boot\",\"can_provision\":false,\"captured_at_ms\":100,\"estimated_wait_ms\":0.0,\"execution_disposition\":\"ACCEPT_WITH_PREPARATION\",\"expires_at_ms\":1000,\"graph_digest\":\"sha256:eb39048e76e23f16bdd123ca37e0e32aedbe6d0c52d14c2e5bfd22aa88239b08\",\"has_model\":true,\"model_digest\":\"sha256:34e1b5468a63812c036a261b2659e44b658a5efe381ae110c6e72841d04ed6f2\",\"preparation_accepted\":true,\"provider\":\"/provider/b\",\"queue_depth\":0,\"request_id\":\"request\",\"residency\":[],\"resources\":[{\"active_requests\":0,\"captured_at_ms\":100,\"device\":\"cuda:0\",\"free_memory_mb\":4096,\"resource_sequence\":1,\"topology_digest\":\"sha256:19794b1d830f60c7a54479365f47575322c6da653fad6de4475e746ec6f1a4f2\",\"total_memory_mb\":8192},{\"active_requests\":0,\"captured_at_ms\":100,\"device\":\"cuda:1\",\"free_memory_mb\":4096,\"resource_sequence\":1,\"topology_digest\":\"sha256:19794b1d830f60c7a54479365f47575322c6da653fad6de4475e746ec6f1a4f2\",\"total_memory_mb\":8192}],\"rtt_ms\":0.0,\"schema\":\"DI_PLACEMENT_V3\",\"schema_version\":3,\"service\":\"/service\",\"signature\":\"zwaiEcCr7lM10vTWCwciyI7K9VvLezZKmsYi4qYclz4j65hGAlOqNwiAZHrcOZwFnFtnBJklaTNnqpOtLZfyAA==\",\"signer_key_id\":\"sha256:56475aa75463474c0285df5dbf2bcab73da651358839e9b77481b2eab107708c\",\"status\":true,\"topology\":{\"backend\":\"onnxruntime-cuda\",\"devices\":[\"cuda:0\",\"cuda:1\"],\"provider\":\"/provider/b\",\"topology_digest\":\"\"}}"
+      ],
+      "ranks": [
+        0
+      ]
+    },
+    {
+      "expected": {
+        "providers": {
+          "/LLM/Pipeline/Stage/0": "/provider/a"
+        },
+        "roles": [
+          {
+            "backend": "onnxruntime-cuda",
+            "device_set": [
+              "cuda:0"
+            ],
+            "rank": 0,
+            "role": "/LLM/Pipeline/Stage/0"
+          }
+        ]
+      },
+      "name": "assembled",
+      "native_freshness": false,
+      "offers": [
+        "{\"accepted_roles\":[\"/LLM/Pipeline/Stage/0\"],\"ack_reservation\":false,\"attempt\":1,\"backends\":[\"onnxruntime-cuda\"],\"bandwidth_mbps\":0.0,\"boot_epoch\":\"boot\",\"can_provision\":false,\"captured_at_ms\":100,\"estimated_wait_ms\":0.0,\"execution_disposition\":\"ACCEPT_IF_EXACT_REUSE\",\"expires_at_ms\":1000,\"graph_digest\":\"sha256:eb39048e76e23f16bdd123ca37e0e32aedbe6d0c52d14c2e5bfd22aa88239b08\",\"has_model\":true,\"model_digest\":\"sha256:34e1b5468a63812c036a261b2659e44b658a5efe381ae110c6e72841d04ed6f2\",\"preparation_accepted\":false,\"provider\":\"/provider/a\",\"queue_depth\":0,\"request_id\":\"request\",\"residency\":[{\"artifact_digest\":\"sha256:1f508a1852ecb01602ba7f3c3d2ef34c177caf21e316e8c65d1dd4fc42bd45cd\",\"artifact_profile_digest\":\"sha256:4d5fd5739bc8977b9004af4061c14de70b37399e611c5515fa2d3b35a57e6364\",\"assembly_spec_digest\":\"sha256:b2d669b8459414976b05a0280e49ef75a12ae08391032a88446c0e6519f456e6\",\"backend\":\"onnxruntime-cuda\",\"boot_epoch\":\"boot\",\"captured_at_ms\":100,\"device_set\":[\"cuda:1\"],\"estimated_assembly_ms\":0.0,\"estimated_load_ms\":0.0,\"expires_at_ms\":1000,\"fencing_token\":\"fence\",\"graph_digest\":\"sha256:eb39048e76e23f16bdd123ca37e0e32aedbe6d0c52d14c2e5bfd22aa88239b08\",\"identity_digest\":\"sha256:1f508a1852ecb01602ba7f3c3d2ef34c177caf21e316e8c65d1dd4fc42bd45cd\",\"missing_verified_bytes\":0,\"model_manifest_digest\":\"sha256:40a310a18cf042ffce64ab7dbfe7d6f08afd66df2e4a8fade46af74dcc574ba2\",\"process_epoch\":\"process\",\"proof_digest\":\"\",\"protection_epoch\":\"protected-v1\",\"rank\":0,\"residency_class\":\"ASSEMBLED_FRAGMENT\",\"role\":\"/LLM/Pipeline/Stage/0\",\"runtime_generation\":1,\"tier\":\"RAM\",\"topology_digest\":\"sha256:aa110ee80fa2691b7ee0b71aaa021924767576d44845b967e01db3c33c653fb2\"}],\"resources\":[{\"active_requests\":0,\"captured_at_ms\":100,\"device\":\"cuda:0\",\"free_memory_mb\":4096,\"resource_sequence\":1,\"topology_digest\":\"sha256:aa110ee80fa2691b7ee0b71aaa021924767576d44845b967e01db3c33c653fb2\",\"total_memory_mb\":8192},{\"active_requests\":0,\"captured_at_ms\":100,\"device\":\"cuda:1\",\"free_memory_mb\":4096,\"resource_sequence\":1,\"topology_digest\":\"sha256:aa110ee80fa2691b7ee0b71aaa021924767576d44845b967e01db3c33c653fb2\",\"total_memory_mb\":8192}],\"rtt_ms\":0.0,\"schema\":\"DI_PLACEMENT_V3\",\"schema_version\":3,\"service\":\"/service\",\"signature\":\"FDbXNrxkysfBvObPxJyFisMPiF9Jsxz2lVYm+5Z5t3azcWw2JL6A02XsUBNSlInhHJPEp/IPQ4g0AyOz/ny8Dg==\",\"signer_key_id\":\"sha256:56475aa75463474c0285df5dbf2bcab73da651358839e9b77481b2eab107708c\",\"status\":true,\"topology\":{\"backend\":\"onnxruntime-cuda\",\"devices\":[\"cuda:0\",\"cuda:1\"],\"provider\":\"/provider/a\",\"topology_digest\":\"\"}}",
+        "{\"accepted_roles\":[\"/LLM/Pipeline/Stage/0\"],\"ack_reservation\":false,\"attempt\":1,\"backends\":[\"onnxruntime-cuda\"],\"bandwidth_mbps\":0.0,\"boot_epoch\":\"boot\",\"can_provision\":false,\"captured_at_ms\":100,\"estimated_wait_ms\":0.0,\"execution_disposition\":\"ACCEPT_WITH_PREPARATION\",\"expires_at_ms\":1000,\"graph_digest\":\"sha256:eb39048e76e23f16bdd123ca37e0e32aedbe6d0c52d14c2e5bfd22aa88239b08\",\"has_model\":true,\"model_digest\":\"sha256:34e1b5468a63812c036a261b2659e44b658a5efe381ae110c6e72841d04ed6f2\",\"preparation_accepted\":true,\"provider\":\"/provider/b\",\"queue_depth\":0,\"request_id\":\"request\",\"residency\":[],\"resources\":[{\"active_requests\":0,\"captured_at_ms\":100,\"device\":\"cuda:0\",\"free_memory_mb\":4096,\"resource_sequence\":1,\"topology_digest\":\"sha256:19794b1d830f60c7a54479365f47575322c6da653fad6de4475e746ec6f1a4f2\",\"total_memory_mb\":8192},{\"active_requests\":0,\"captured_at_ms\":100,\"device\":\"cuda:1\",\"free_memory_mb\":4096,\"resource_sequence\":1,\"topology_digest\":\"sha256:19794b1d830f60c7a54479365f47575322c6da653fad6de4475e746ec6f1a4f2\",\"total_memory_mb\":8192}],\"rtt_ms\":0.0,\"schema\":\"DI_PLACEMENT_V3\",\"schema_version\":3,\"service\":\"/service\",\"signature\":\"zwaiEcCr7lM10vTWCwciyI7K9VvLezZKmsYi4qYclz4j65hGAlOqNwiAZHrcOZwFnFtnBJklaTNnqpOtLZfyAA==\",\"signer_key_id\":\"sha256:56475aa75463474c0285df5dbf2bcab73da651358839e9b77481b2eab107708c\",\"status\":true,\"topology\":{\"backend\":\"onnxruntime-cuda\",\"devices\":[\"cuda:0\",\"cuda:1\"],\"provider\":\"/provider/b\",\"topology_digest\":\"\"}}"
+      ],
+      "ranks": [
+        0
+      ]
+    },
+    {
+      "expected": {
+        "providers": {
+          "/LLM/Pipeline/Stage/0": "/provider/a"
+        },
+        "roles": [
+          {
+            "backend": "onnxruntime-cuda",
+            "device_set": [
+              "cuda:0"
+            ],
+            "rank": 0,
+            "role": "/LLM/Pipeline/Stage/0"
+          }
+        ]
+      },
+      "name": "canonical",
+      "native_freshness": false,
+      "offers": [
+        "{\"accepted_roles\":[\"/LLM/Pipeline/Stage/0\"],\"ack_reservation\":false,\"attempt\":1,\"backends\":[\"onnxruntime-cuda\"],\"bandwidth_mbps\":0.0,\"boot_epoch\":\"boot\",\"can_provision\":false,\"captured_at_ms\":100,\"estimated_wait_ms\":0.0,\"execution_disposition\":\"ACCEPT_WITH_PREPARATION\",\"expires_at_ms\":1000,\"graph_digest\":\"sha256:eb39048e76e23f16bdd123ca37e0e32aedbe6d0c52d14c2e5bfd22aa88239b08\",\"has_model\":true,\"model_digest\":\"sha256:34e1b5468a63812c036a261b2659e44b658a5efe381ae110c6e72841d04ed6f2\",\"preparation_accepted\":true,\"provider\":\"/provider/a\",\"queue_depth\":0,\"request_id\":\"request\",\"residency\":[{\"artifact_digest\":\"sha256:1f508a1852ecb01602ba7f3c3d2ef34c177caf21e316e8c65d1dd4fc42bd45cd\",\"artifact_profile_digest\":\"sha256:4d5fd5739bc8977b9004af4061c14de70b37399e611c5515fa2d3b35a57e6364\",\"assembly_spec_digest\":\"sha256:b2d669b8459414976b05a0280e49ef75a12ae08391032a88446c0e6519f456e6\",\"backend\":\"onnxruntime-cuda\",\"boot_epoch\":\"boot\",\"captured_at_ms\":100,\"device_set\":[\"cuda:1\"],\"estimated_assembly_ms\":0.0,\"estimated_load_ms\":0.0,\"expires_at_ms\":1000,\"fencing_token\":\"fence\",\"graph_digest\":\"sha256:eb39048e76e23f16bdd123ca37e0e32aedbe6d0c52d14c2e5bfd22aa88239b08\",\"identity_digest\":\"sha256:1f508a1852ecb01602ba7f3c3d2ef34c177caf21e316e8c65d1dd4fc42bd45cd\",\"missing_verified_bytes\":0,\"model_manifest_digest\":\"sha256:40a310a18cf042ffce64ab7dbfe7d6f08afd66df2e4a8fade46af74dcc574ba2\",\"process_epoch\":\"process\",\"proof_digest\":\"\",\"protection_epoch\":\"protected-v1\",\"rank\":0,\"residency_class\":\"CANONICAL\",\"role\":\"/LLM/Pipeline/Stage/0\",\"runtime_generation\":1,\"tier\":\"CANONICAL\",\"topology_digest\":\"sha256:aa110ee80fa2691b7ee0b71aaa021924767576d44845b967e01db3c33c653fb2\"}],\"resources\":[{\"active_requests\":0,\"captured_at_ms\":100,\"device\":\"cuda:0\",\"free_memory_mb\":4096,\"resource_sequence\":1,\"topology_digest\":\"sha256:aa110ee80fa2691b7ee0b71aaa021924767576d44845b967e01db3c33c653fb2\",\"total_memory_mb\":8192},{\"active_requests\":0,\"captured_at_ms\":100,\"device\":\"cuda:1\",\"free_memory_mb\":4096,\"resource_sequence\":1,\"topology_digest\":\"sha256:aa110ee80fa2691b7ee0b71aaa021924767576d44845b967e01db3c33c653fb2\",\"total_memory_mb\":8192}],\"rtt_ms\":0.0,\"schema\":\"DI_PLACEMENT_V3\",\"schema_version\":3,\"service\":\"/service\",\"signature\":\"kHA+In19AxoCs1SoQdw+BQ39GPyEqhANjlwFF24EsB05zE1dRXBPKAhncmJ15iB7rVDCPhqkR4Z9JQpbsUNxCQ==\",\"signer_key_id\":\"sha256:56475aa75463474c0285df5dbf2bcab73da651358839e9b77481b2eab107708c\",\"status\":true,\"topology\":{\"backend\":\"onnxruntime-cuda\",\"devices\":[\"cuda:0\",\"cuda:1\"],\"provider\":\"/provider/a\",\"topology_digest\":\"\"}}",
+        "{\"accepted_roles\":[\"/LLM/Pipeline/Stage/0\"],\"ack_reservation\":false,\"attempt\":1,\"backends\":[\"onnxruntime-cuda\"],\"bandwidth_mbps\":0.0,\"boot_epoch\":\"boot\",\"can_provision\":false,\"captured_at_ms\":100,\"estimated_wait_ms\":0.0,\"execution_disposition\":\"ACCEPT_WITH_PREPARATION\",\"expires_at_ms\":1000,\"graph_digest\":\"sha256:eb39048e76e23f16bdd123ca37e0e32aedbe6d0c52d14c2e5bfd22aa88239b08\",\"has_model\":true,\"model_digest\":\"sha256:34e1b5468a63812c036a261b2659e44b658a5efe381ae110c6e72841d04ed6f2\",\"preparation_accepted\":true,\"provider\":\"/provider/b\",\"queue_depth\":0,\"request_id\":\"request\",\"residency\":[],\"resources\":[{\"active_requests\":0,\"captured_at_ms\":100,\"device\":\"cuda:0\",\"free_memory_mb\":4096,\"resource_sequence\":1,\"topology_digest\":\"sha256:19794b1d830f60c7a54479365f47575322c6da653fad6de4475e746ec6f1a4f2\",\"total_memory_mb\":8192},{\"active_requests\":0,\"captured_at_ms\":100,\"device\":\"cuda:1\",\"free_memory_mb\":4096,\"resource_sequence\":1,\"topology_digest\":\"sha256:19794b1d830f60c7a54479365f47575322c6da653fad6de4475e746ec6f1a4f2\",\"total_memory_mb\":8192}],\"rtt_ms\":0.0,\"schema\":\"DI_PLACEMENT_V3\",\"schema_version\":3,\"service\":\"/service\",\"signature\":\"zwaiEcCr7lM10vTWCwciyI7K9VvLezZKmsYi4qYclz4j65hGAlOqNwiAZHrcOZwFnFtnBJklaTNnqpOtLZfyAA==\",\"signer_key_id\":\"sha256:56475aa75463474c0285df5dbf2bcab73da651358839e9b77481b2eab107708c\",\"status\":true,\"topology\":{\"backend\":\"onnxruntime-cuda\",\"devices\":[\"cuda:0\",\"cuda:1\"],\"provider\":\"/provider/b\",\"topology_digest\":\"\"}}"
+      ],
+      "ranks": [
+        0
+      ]
+    },
+    {
+      "expected": {
+        "providers": {
+          "/LLM/Pipeline/Stage/0": "/provider/b"
+        },
+        "roles": [
+          {
+            "backend": "onnxruntime-cuda",
+            "device_set": [
+              "cuda:0"
+            ],
+            "rank": 0,
+            "role": "/LLM/Pipeline/Stage/0"
+          }
+        ]
+      },
+      "name": "insufficient_memory",
+      "native_freshness": false,
+      "offers": [
+        "{\"accepted_roles\":[\"/LLM/Pipeline/Stage/0\"],\"ack_reservation\":false,\"attempt\":1,\"backends\":[\"onnxruntime-cuda\"],\"bandwidth_mbps\":0.0,\"boot_epoch\":\"boot\",\"can_provision\":false,\"captured_at_ms\":100,\"estimated_wait_ms\":0.0,\"execution_disposition\":\"ACCEPT_IF_EXACT_REUSE\",\"expires_at_ms\":1000,\"graph_digest\":\"sha256:eb39048e76e23f16bdd123ca37e0e32aedbe6d0c52d14c2e5bfd22aa88239b08\",\"has_model\":true,\"model_digest\":\"sha256:34e1b5468a63812c036a261b2659e44b658a5efe381ae110c6e72841d04ed6f2\",\"preparation_accepted\":false,\"provider\":\"/provider/a\",\"queue_depth\":0,\"request_id\":\"request\",\"residency\":[{\"artifact_digest\":\"sha256:1f508a1852ecb01602ba7f3c3d2ef34c177caf21e316e8c65d1dd4fc42bd45cd\",\"artifact_profile_digest\":\"sha256:4d5fd5739bc8977b9004af4061c14de70b37399e611c5515fa2d3b35a57e6364\",\"assembly_spec_digest\":\"sha256:b2d669b8459414976b05a0280e49ef75a12ae08391032a88446c0e6519f456e6\",\"backend\":\"onnxruntime-cuda\",\"boot_epoch\":\"boot\",\"captured_at_ms\":100,\"device_set\":[\"cuda:1\"],\"estimated_assembly_ms\":0.0,\"estimated_load_ms\":0.0,\"expires_at_ms\":1000,\"fencing_token\":\"fence\",\"graph_digest\":\"sha256:eb39048e76e23f16bdd123ca37e0e32aedbe6d0c52d14c2e5bfd22aa88239b08\",\"identity_digest\":\"sha256:1f508a1852ecb01602ba7f3c3d2ef34c177caf21e316e8c65d1dd4fc42bd45cd\",\"missing_verified_bytes\":0,\"model_manifest_digest\":\"sha256:40a310a18cf042ffce64ab7dbfe7d6f08afd66df2e4a8fade46af74dcc574ba2\",\"process_epoch\":\"process\",\"proof_digest\":\"\",\"protection_epoch\":\"protected-v1\",\"rank\":0,\"residency_class\":\"LOADED_RUNTIME\",\"role\":\"/LLM/Pipeline/Stage/0\",\"runtime_generation\":1,\"tier\":\"GPU\",\"topology_digest\":\"sha256:aa110ee80fa2691b7ee0b71aaa021924767576d44845b967e01db3c33c653fb2\"}],\"resources\":[{\"active_requests\":0,\"captured_at_ms\":100,\"device\":\"cuda:0\",\"free_memory_mb\":512,\"resource_sequence\":1,\"topology_digest\":\"sha256:aa110ee80fa2691b7ee0b71aaa021924767576d44845b967e01db3c33c653fb2\",\"total_memory_mb\":8192},{\"active_requests\":0,\"captured_at_ms\":100,\"device\":\"cuda:1\",\"free_memory_mb\":512,\"resource_sequence\":1,\"topology_digest\":\"sha256:aa110ee80fa2691b7ee0b71aaa021924767576d44845b967e01db3c33c653fb2\",\"total_memory_mb\":8192}],\"rtt_ms\":0.0,\"schema\":\"DI_PLACEMENT_V3\",\"schema_version\":3,\"service\":\"/service\",\"signature\":\"cdP3gUnWbnIwi28P7H4bqfsR59qRCZU5A57z9B6LaQmJ2srI2C6XtEJqqQXA53ZsrYunMrlKPOtUtpRinRZoCw==\",\"signer_key_id\":\"sha256:56475aa75463474c0285df5dbf2bcab73da651358839e9b77481b2eab107708c\",\"status\":true,\"topology\":{\"backend\":\"onnxruntime-cuda\",\"devices\":[\"cuda:0\",\"cuda:1\"],\"provider\":\"/provider/a\",\"topology_digest\":\"\"}}",
+        "{\"accepted_roles\":[\"/LLM/Pipeline/Stage/0\"],\"ack_reservation\":false,\"attempt\":1,\"backends\":[\"onnxruntime-cuda\"],\"bandwidth_mbps\":0.0,\"boot_epoch\":\"boot\",\"can_provision\":false,\"captured_at_ms\":100,\"estimated_wait_ms\":0.0,\"execution_disposition\":\"ACCEPT_WITH_PREPARATION\",\"expires_at_ms\":1000,\"graph_digest\":\"sha256:eb39048e76e23f16bdd123ca37e0e32aedbe6d0c52d14c2e5bfd22aa88239b08\",\"has_model\":true,\"model_digest\":\"sha256:34e1b5468a63812c036a261b2659e44b658a5efe381ae110c6e72841d04ed6f2\",\"preparation_accepted\":true,\"provider\":\"/provider/b\",\"queue_depth\":0,\"request_id\":\"request\",\"residency\":[],\"resources\":[{\"active_requests\":0,\"captured_at_ms\":100,\"device\":\"cuda:0\",\"free_memory_mb\":4096,\"resource_sequence\":1,\"topology_digest\":\"sha256:19794b1d830f60c7a54479365f47575322c6da653fad6de4475e746ec6f1a4f2\",\"total_memory_mb\":8192},{\"active_requests\":0,\"captured_at_ms\":100,\"device\":\"cuda:1\",\"free_memory_mb\":4096,\"resource_sequence\":1,\"topology_digest\":\"sha256:19794b1d830f60c7a54479365f47575322c6da653fad6de4475e746ec6f1a4f2\",\"total_memory_mb\":8192}],\"rtt_ms\":0.0,\"schema\":\"DI_PLACEMENT_V3\",\"schema_version\":3,\"service\":\"/service\",\"signature\":\"zwaiEcCr7lM10vTWCwciyI7K9VvLezZKmsYi4qYclz4j65hGAlOqNwiAZHrcOZwFnFtnBJklaTNnqpOtLZfyAA==\",\"signer_key_id\":\"sha256:56475aa75463474c0285df5dbf2bcab73da651358839e9b77481b2eab107708c\",\"status\":true,\"topology\":{\"backend\":\"onnxruntime-cuda\",\"devices\":[\"cuda:0\",\"cuda:1\"],\"provider\":\"/provider/b\",\"topology_digest\":\"\"}}"
+      ],
+      "ranks": [
+        0
+      ]
+    },
+    {
+      "expected": {
+        "providers": {
+          "/LLM/Pipeline/Stage/0": "/provider/b"
+        },
+        "roles": [
+          {
+            "backend": "onnxruntime-cuda",
+            "device_set": [
+              "cuda:0"
+            ],
+            "rank": 0,
+            "role": "/LLM/Pipeline/Stage/0"
+          }
+        ]
+      },
+      "name": "wrong_boot",
+      "native_freshness": false,
+      "offers": [
+        "{\"accepted_roles\":[\"/LLM/Pipeline/Stage/0\"],\"ack_reservation\":false,\"attempt\":1,\"backends\":[\"onnxruntime-cuda\"],\"bandwidth_mbps\":0.0,\"boot_epoch\":\"boot\",\"can_provision\":false,\"captured_at_ms\":100,\"estimated_wait_ms\":0.0,\"execution_disposition\":\"ACCEPT_IF_EXACT_REUSE\",\"expires_at_ms\":1000,\"graph_digest\":\"sha256:eb39048e76e23f16bdd123ca37e0e32aedbe6d0c52d14c2e5bfd22aa88239b08\",\"has_model\":true,\"model_digest\":\"sha256:34e1b5468a63812c036a261b2659e44b658a5efe381ae110c6e72841d04ed6f2\",\"preparation_accepted\":false,\"provider\":\"/provider/a\",\"queue_depth\":0,\"request_id\":\"request\",\"residency\":[{\"artifact_digest\":\"sha256:1f508a1852ecb01602ba7f3c3d2ef34c177caf21e316e8c65d1dd4fc42bd45cd\",\"artifact_profile_digest\":\"sha256:4d5fd5739bc8977b9004af4061c14de70b37399e611c5515fa2d3b35a57e6364\",\"assembly_spec_digest\":\"sha256:b2d669b8459414976b05a0280e49ef75a12ae08391032a88446c0e6519f456e6\",\"backend\":\"onnxruntime-cuda\",\"boot_epoch\":\"foreign\",\"captured_at_ms\":100,\"device_set\":[\"cuda:1\"],\"estimated_assembly_ms\":0.0,\"estimated_load_ms\":0.0,\"expires_at_ms\":1000,\"fencing_token\":\"fence\",\"graph_digest\":\"sha256:eb39048e76e23f16bdd123ca37e0e32aedbe6d0c52d14c2e5bfd22aa88239b08\",\"identity_digest\":\"sha256:1f508a1852ecb01602ba7f3c3d2ef34c177caf21e316e8c65d1dd4fc42bd45cd\",\"missing_verified_bytes\":0,\"model_manifest_digest\":\"sha256:40a310a18cf042ffce64ab7dbfe7d6f08afd66df2e4a8fade46af74dcc574ba2\",\"process_epoch\":\"process\",\"proof_digest\":\"\",\"protection_epoch\":\"protected-v1\",\"rank\":0,\"residency_class\":\"LOADED_RUNTIME\",\"role\":\"/LLM/Pipeline/Stage/0\",\"runtime_generation\":1,\"tier\":\"GPU\",\"topology_digest\":\"sha256:aa110ee80fa2691b7ee0b71aaa021924767576d44845b967e01db3c33c653fb2\"}],\"resources\":[{\"active_requests\":0,\"captured_at_ms\":100,\"device\":\"cuda:0\",\"free_memory_mb\":4096,\"resource_sequence\":1,\"topology_digest\":\"sha256:aa110ee80fa2691b7ee0b71aaa021924767576d44845b967e01db3c33c653fb2\",\"total_memory_mb\":8192},{\"active_requests\":0,\"captured_at_ms\":100,\"device\":\"cuda:1\",\"free_memory_mb\":4096,\"resource_sequence\":1,\"topology_digest\":\"sha256:aa110ee80fa2691b7ee0b71aaa021924767576d44845b967e01db3c33c653fb2\",\"total_memory_mb\":8192}],\"rtt_ms\":0.0,\"schema\":\"DI_PLACEMENT_V3\",\"schema_version\":3,\"service\":\"/service\",\"signature\":\"3r+E8VdP7/ZMTnwHMsgBNGI+uiQfyeiUSRqYm+5mBngeuK8v+o60MM6IahQMs/e28NrQhhnUqdijhfdNcFayAQ==\",\"signer_key_id\":\"sha256:56475aa75463474c0285df5dbf2bcab73da651358839e9b77481b2eab107708c\",\"status\":true,\"topology\":{\"backend\":\"onnxruntime-cuda\",\"devices\":[\"cuda:0\",\"cuda:1\"],\"provider\":\"/provider/a\",\"topology_digest\":\"\"}}",
+        "{\"accepted_roles\":[\"/LLM/Pipeline/Stage/0\"],\"ack_reservation\":false,\"attempt\":1,\"backends\":[\"onnxruntime-cuda\"],\"bandwidth_mbps\":0.0,\"boot_epoch\":\"boot\",\"can_provision\":false,\"captured_at_ms\":100,\"estimated_wait_ms\":0.0,\"execution_disposition\":\"ACCEPT_WITH_PREPARATION\",\"expires_at_ms\":1000,\"graph_digest\":\"sha256:eb39048e76e23f16bdd123ca37e0e32aedbe6d0c52d14c2e5bfd22aa88239b08\",\"has_model\":true,\"model_digest\":\"sha256:34e1b5468a63812c036a261b2659e44b658a5efe381ae110c6e72841d04ed6f2\",\"preparation_accepted\":true,\"provider\":\"/provider/b\",\"queue_depth\":0,\"request_id\":\"request\",\"residency\":[],\"resources\":[{\"active_requests\":0,\"captured_at_ms\":100,\"device\":\"cuda:0\",\"free_memory_mb\":4096,\"resource_sequence\":1,\"topology_digest\":\"sha256:19794b1d830f60c7a54479365f47575322c6da653fad6de4475e746ec6f1a4f2\",\"total_memory_mb\":8192},{\"active_requests\":0,\"captured_at_ms\":100,\"device\":\"cuda:1\",\"free_memory_mb\":4096,\"resource_sequence\":1,\"topology_digest\":\"sha256:19794b1d830f60c7a54479365f47575322c6da653fad6de4475e746ec6f1a4f2\",\"total_memory_mb\":8192}],\"rtt_ms\":0.0,\"schema\":\"DI_PLACEMENT_V3\",\"schema_version\":3,\"service\":\"/service\",\"signature\":\"zwaiEcCr7lM10vTWCwciyI7K9VvLezZKmsYi4qYclz4j65hGAlOqNwiAZHrcOZwFnFtnBJklaTNnqpOtLZfyAA==\",\"signer_key_id\":\"sha256:56475aa75463474c0285df5dbf2bcab73da651358839e9b77481b2eab107708c\",\"status\":true,\"topology\":{\"backend\":\"onnxruntime-cuda\",\"devices\":[\"cuda:0\",\"cuda:1\"],\"provider\":\"/provider/b\",\"topology_digest\":\"\"}}"
+      ],
+      "ranks": [
+        0
+      ]
+    },
+    {
+      "expected": {
+        "providers": {
+          "/LLM/Pipeline/Stage/0": "/provider/b"
+        },
+        "roles": [
+          {
+            "backend": "onnxruntime-cuda",
+            "device_set": [
+              "cuda:0"
+            ],
+            "rank": 0,
+            "role": "/LLM/Pipeline/Stage/0"
+          }
+        ]
+      },
+      "name": "wrong_topology",
+      "native_freshness": false,
+      "offers": [
+        "{\"accepted_roles\":[\"/LLM/Pipeline/Stage/0\"],\"ack_reservation\":false,\"attempt\":1,\"backends\":[\"onnxruntime-cuda\"],\"bandwidth_mbps\":0.0,\"boot_epoch\":\"boot\",\"can_provision\":false,\"captured_at_ms\":100,\"estimated_wait_ms\":0.0,\"execution_disposition\":\"ACCEPT_IF_EXACT_REUSE\",\"expires_at_ms\":1000,\"graph_digest\":\"sha256:eb39048e76e23f16bdd123ca37e0e32aedbe6d0c52d14c2e5bfd22aa88239b08\",\"has_model\":true,\"model_digest\":\"sha256:34e1b5468a63812c036a261b2659e44b658a5efe381ae110c6e72841d04ed6f2\",\"preparation_accepted\":false,\"provider\":\"/provider/a\",\"queue_depth\":0,\"request_id\":\"request\",\"residency\":[{\"artifact_digest\":\"sha256:1f508a1852ecb01602ba7f3c3d2ef34c177caf21e316e8c65d1dd4fc42bd45cd\",\"artifact_profile_digest\":\"sha256:4d5fd5739bc8977b9004af4061c14de70b37399e611c5515fa2d3b35a57e6364\",\"assembly_spec_digest\":\"sha256:b2d669b8459414976b05a0280e49ef75a12ae08391032a88446c0e6519f456e6\",\"backend\":\"onnxruntime-cuda\",\"boot_epoch\":\"boot\",\"captured_at_ms\":100,\"device_set\":[\"cuda:1\"],\"estimated_assembly_ms\":0.0,\"estimated_load_ms\":0.0,\"expires_at_ms\":1000,\"fencing_token\":\"fence\",\"graph_digest\":\"sha256:eb39048e76e23f16bdd123ca37e0e32aedbe6d0c52d14c2e5bfd22aa88239b08\",\"identity_digest\":\"sha256:1f508a1852ecb01602ba7f3c3d2ef34c177caf21e316e8c65d1dd4fc42bd45cd\",\"missing_verified_bytes\":0,\"model_manifest_digest\":\"sha256:40a310a18cf042ffce64ab7dbfe7d6f08afd66df2e4a8fade46af74dcc574ba2\",\"process_epoch\":\"process\",\"proof_digest\":\"\",\"protection_epoch\":\"protected-v1\",\"rank\":0,\"residency_class\":\"LOADED_RUNTIME\",\"role\":\"/LLM/Pipeline/Stage/0\",\"runtime_generation\":1,\"tier\":\"GPU\",\"topology_digest\":\"sha256:b2d669b8459414976b05a0280e49ef75a12ae08391032a88446c0e6519f456e6\"}],\"resources\":[{\"active_requests\":0,\"captured_at_ms\":100,\"device\":\"cuda:0\",\"free_memory_mb\":4096,\"resource_sequence\":1,\"topology_digest\":\"sha256:aa110ee80fa2691b7ee0b71aaa021924767576d44845b967e01db3c33c653fb2\",\"total_memory_mb\":8192},{\"active_requests\":0,\"captured_at_ms\":100,\"device\":\"cuda:1\",\"free_memory_mb\":4096,\"resource_sequence\":1,\"topology_digest\":\"sha256:aa110ee80fa2691b7ee0b71aaa021924767576d44845b967e01db3c33c653fb2\",\"total_memory_mb\":8192}],\"rtt_ms\":0.0,\"schema\":\"DI_PLACEMENT_V3\",\"schema_version\":3,\"service\":\"/service\",\"signature\":\"H8leqrjSz1MN+NEn2mvKXm6THKwyN3ZF7Quowtgy0uK3ypW5XkDKgE73p5Jg3P7aIhRAib0I8lOi3zEvoHKpDg==\",\"signer_key_id\":\"sha256:56475aa75463474c0285df5dbf2bcab73da651358839e9b77481b2eab107708c\",\"status\":true,\"topology\":{\"backend\":\"onnxruntime-cuda\",\"devices\":[\"cuda:0\",\"cuda:1\"],\"provider\":\"/provider/a\",\"topology_digest\":\"\"}}",
+        "{\"accepted_roles\":[\"/LLM/Pipeline/Stage/0\"],\"ack_reservation\":false,\"attempt\":1,\"backends\":[\"onnxruntime-cuda\"],\"bandwidth_mbps\":0.0,\"boot_epoch\":\"boot\",\"can_provision\":false,\"captured_at_ms\":100,\"estimated_wait_ms\":0.0,\"execution_disposition\":\"ACCEPT_WITH_PREPARATION\",\"expires_at_ms\":1000,\"graph_digest\":\"sha256:eb39048e76e23f16bdd123ca37e0e32aedbe6d0c52d14c2e5bfd22aa88239b08\",\"has_model\":true,\"model_digest\":\"sha256:34e1b5468a63812c036a261b2659e44b658a5efe381ae110c6e72841d04ed6f2\",\"preparation_accepted\":true,\"provider\":\"/provider/b\",\"queue_depth\":0,\"request_id\":\"request\",\"residency\":[],\"resources\":[{\"active_requests\":0,\"captured_at_ms\":100,\"device\":\"cuda:0\",\"free_memory_mb\":4096,\"resource_sequence\":1,\"topology_digest\":\"sha256:19794b1d830f60c7a54479365f47575322c6da653fad6de4475e746ec6f1a4f2\",\"total_memory_mb\":8192},{\"active_requests\":0,\"captured_at_ms\":100,\"device\":\"cuda:1\",\"free_memory_mb\":4096,\"resource_sequence\":1,\"topology_digest\":\"sha256:19794b1d830f60c7a54479365f47575322c6da653fad6de4475e746ec6f1a4f2\",\"total_memory_mb\":8192}],\"rtt_ms\":0.0,\"schema\":\"DI_PLACEMENT_V3\",\"schema_version\":3,\"service\":\"/service\",\"signature\":\"zwaiEcCr7lM10vTWCwciyI7K9VvLezZKmsYi4qYclz4j65hGAlOqNwiAZHrcOZwFnFtnBJklaTNnqpOtLZfyAA==\",\"signer_key_id\":\"sha256:56475aa75463474c0285df5dbf2bcab73da651358839e9b77481b2eab107708c\",\"status\":true,\"topology\":{\"backend\":\"onnxruntime-cuda\",\"devices\":[\"cuda:0\",\"cuda:1\"],\"provider\":\"/provider/b\",\"topology_digest\":\"\"}}"
+      ],
+      "ranks": [
+        0
+      ]
+    },
+    {
+      "expected": {
+        "providers": {
+          "/LLM/Pipeline/Stage/0": "/provider/b"
+        },
+        "roles": [
+          {
+            "backend": "onnxruntime-cuda",
+            "device_set": [
+              "cuda:0"
+            ],
+            "rank": 0,
+            "role": "/LLM/Pipeline/Stage/0"
+          }
+        ]
+      },
+      "name": "wrong_epoch",
+      "native_freshness": false,
+      "offers": [
+        "{\"accepted_roles\":[\"/LLM/Pipeline/Stage/0\"],\"ack_reservation\":false,\"attempt\":1,\"backends\":[\"onnxruntime-cuda\"],\"bandwidth_mbps\":0.0,\"boot_epoch\":\"boot\",\"can_provision\":false,\"captured_at_ms\":100,\"estimated_wait_ms\":0.0,\"execution_disposition\":\"ACCEPT_IF_EXACT_REUSE\",\"expires_at_ms\":1000,\"graph_digest\":\"sha256:eb39048e76e23f16bdd123ca37e0e32aedbe6d0c52d14c2e5bfd22aa88239b08\",\"has_model\":true,\"model_digest\":\"sha256:34e1b5468a63812c036a261b2659e44b658a5efe381ae110c6e72841d04ed6f2\",\"preparation_accepted\":false,\"provider\":\"/provider/a\",\"queue_depth\":0,\"request_id\":\"request\",\"residency\":[{\"artifact_digest\":\"sha256:1f508a1852ecb01602ba7f3c3d2ef34c177caf21e316e8c65d1dd4fc42bd45cd\",\"artifact_profile_digest\":\"sha256:4d5fd5739bc8977b9004af4061c14de70b37399e611c5515fa2d3b35a57e6364\",\"assembly_spec_digest\":\"sha256:b2d669b8459414976b05a0280e49ef75a12ae08391032a88446c0e6519f456e6\",\"backend\":\"onnxruntime-cuda\",\"boot_epoch\":\"boot\",\"captured_at_ms\":100,\"device_set\":[\"cuda:1\"],\"estimated_assembly_ms\":0.0,\"estimated_load_ms\":0.0,\"expires_at_ms\":1000,\"fencing_token\":\"fence\",\"graph_digest\":\"sha256:eb39048e76e23f16bdd123ca37e0e32aedbe6d0c52d14c2e5bfd22aa88239b08\",\"identity_digest\":\"sha256:1f508a1852ecb01602ba7f3c3d2ef34c177caf21e316e8c65d1dd4fc42bd45cd\",\"missing_verified_bytes\":0,\"model_manifest_digest\":\"sha256:40a310a18cf042ffce64ab7dbfe7d6f08afd66df2e4a8fade46af74dcc574ba2\",\"process_epoch\":\"process\",\"proof_digest\":\"\",\"protection_epoch\":\"foreign\",\"rank\":0,\"residency_class\":\"LOADED_RUNTIME\",\"role\":\"/LLM/Pipeline/Stage/0\",\"runtime_generation\":1,\"tier\":\"GPU\",\"topology_digest\":\"sha256:aa110ee80fa2691b7ee0b71aaa021924767576d44845b967e01db3c33c653fb2\"}],\"resources\":[{\"active_requests\":0,\"captured_at_ms\":100,\"device\":\"cuda:0\",\"free_memory_mb\":4096,\"resource_sequence\":1,\"topology_digest\":\"sha256:aa110ee80fa2691b7ee0b71aaa021924767576d44845b967e01db3c33c653fb2\",\"total_memory_mb\":8192},{\"active_requests\":0,\"captured_at_ms\":100,\"device\":\"cuda:1\",\"free_memory_mb\":4096,\"resource_sequence\":1,\"topology_digest\":\"sha256:aa110ee80fa2691b7ee0b71aaa021924767576d44845b967e01db3c33c653fb2\",\"total_memory_mb\":8192}],\"rtt_ms\":0.0,\"schema\":\"DI_PLACEMENT_V3\",\"schema_version\":3,\"service\":\"/service\",\"signature\":\"WRHBs2P1f4rikwaB0G5hX0YR7TwESJklncR4I/Hw+PYfptlHIy6CvXvLZcsztNwdDd/tu4apGYFfwQmR7cM6AQ==\",\"signer_key_id\":\"sha256:56475aa75463474c0285df5dbf2bcab73da651358839e9b77481b2eab107708c\",\"status\":true,\"topology\":{\"backend\":\"onnxruntime-cuda\",\"devices\":[\"cuda:0\",\"cuda:1\"],\"provider\":\"/provider/a\",\"topology_digest\":\"\"}}",
+        "{\"accepted_roles\":[\"/LLM/Pipeline/Stage/0\"],\"ack_reservation\":false,\"attempt\":1,\"backends\":[\"onnxruntime-cuda\"],\"bandwidth_mbps\":0.0,\"boot_epoch\":\"boot\",\"can_provision\":false,\"captured_at_ms\":100,\"estimated_wait_ms\":0.0,\"execution_disposition\":\"ACCEPT_WITH_PREPARATION\",\"expires_at_ms\":1000,\"graph_digest\":\"sha256:eb39048e76e23f16bdd123ca37e0e32aedbe6d0c52d14c2e5bfd22aa88239b08\",\"has_model\":true,\"model_digest\":\"sha256:34e1b5468a63812c036a261b2659e44b658a5efe381ae110c6e72841d04ed6f2\",\"preparation_accepted\":true,\"provider\":\"/provider/b\",\"queue_depth\":0,\"request_id\":\"request\",\"residency\":[],\"resources\":[{\"active_requests\":0,\"captured_at_ms\":100,\"device\":\"cuda:0\",\"free_memory_mb\":4096,\"resource_sequence\":1,\"topology_digest\":\"sha256:19794b1d830f60c7a54479365f47575322c6da653fad6de4475e746ec6f1a4f2\",\"total_memory_mb\":8192},{\"active_requests\":0,\"captured_at_ms\":100,\"device\":\"cuda:1\",\"free_memory_mb\":4096,\"resource_sequence\":1,\"topology_digest\":\"sha256:19794b1d830f60c7a54479365f47575322c6da653fad6de4475e746ec6f1a4f2\",\"total_memory_mb\":8192}],\"rtt_ms\":0.0,\"schema\":\"DI_PLACEMENT_V3\",\"schema_version\":3,\"service\":\"/service\",\"signature\":\"zwaiEcCr7lM10vTWCwciyI7K9VvLezZKmsYi4qYclz4j65hGAlOqNwiAZHrcOZwFnFtnBJklaTNnqpOtLZfyAA==\",\"signer_key_id\":\"sha256:56475aa75463474c0285df5dbf2bcab73da651358839e9b77481b2eab107708c\",\"status\":true,\"topology\":{\"backend\":\"onnxruntime-cuda\",\"devices\":[\"cuda:0\",\"cuda:1\"],\"provider\":\"/provider/b\",\"topology_digest\":\"\"}}"
+      ],
+      "ranks": [
+        0
+      ]
+    },
+    {
+      "expected": {
+        "providers": {
+          "/LLM/Pipeline/Stage/0": "/provider/b"
+        },
+        "roles": [
+          {
+            "backend": "onnxruntime-cuda",
+            "device_set": [
+              "cuda:0"
+            ],
+            "rank": 0,
+            "role": "/LLM/Pipeline/Stage/0"
+          }
+        ]
+      },
+      "name": "wrong_artifact",
+      "native_freshness": false,
+      "offers": [
+        "{\"accepted_roles\":[\"/LLM/Pipeline/Stage/0\"],\"ack_reservation\":false,\"attempt\":1,\"backends\":[\"onnxruntime-cuda\"],\"bandwidth_mbps\":0.0,\"boot_epoch\":\"boot\",\"can_provision\":false,\"captured_at_ms\":100,\"estimated_wait_ms\":0.0,\"execution_disposition\":\"ACCEPT_IF_EXACT_REUSE\",\"expires_at_ms\":1000,\"graph_digest\":\"sha256:eb39048e76e23f16bdd123ca37e0e32aedbe6d0c52d14c2e5bfd22aa88239b08\",\"has_model\":true,\"model_digest\":\"sha256:34e1b5468a63812c036a261b2659e44b658a5efe381ae110c6e72841d04ed6f2\",\"preparation_accepted\":false,\"provider\":\"/provider/a\",\"queue_depth\":0,\"request_id\":\"request\",\"residency\":[{\"artifact_digest\":\"sha256:b2d669b8459414976b05a0280e49ef75a12ae08391032a88446c0e6519f456e6\",\"artifact_profile_digest\":\"sha256:4d5fd5739bc8977b9004af4061c14de70b37399e611c5515fa2d3b35a57e6364\",\"assembly_spec_digest\":\"sha256:b2d669b8459414976b05a0280e49ef75a12ae08391032a88446c0e6519f456e6\",\"backend\":\"onnxruntime-cuda\",\"boot_epoch\":\"boot\",\"captured_at_ms\":100,\"device_set\":[\"cuda:1\"],\"estimated_assembly_ms\":0.0,\"estimated_load_ms\":0.0,\"expires_at_ms\":1000,\"fencing_token\":\"fence\",\"graph_digest\":\"sha256:eb39048e76e23f16bdd123ca37e0e32aedbe6d0c52d14c2e5bfd22aa88239b08\",\"identity_digest\":\"sha256:1f508a1852ecb01602ba7f3c3d2ef34c177caf21e316e8c65d1dd4fc42bd45cd\",\"missing_verified_bytes\":0,\"model_manifest_digest\":\"sha256:40a310a18cf042ffce64ab7dbfe7d6f08afd66df2e4a8fade46af74dcc574ba2\",\"process_epoch\":\"process\",\"proof_digest\":\"\",\"protection_epoch\":\"protected-v1\",\"rank\":0,\"residency_class\":\"LOADED_RUNTIME\",\"role\":\"/LLM/Pipeline/Stage/0\",\"runtime_generation\":1,\"tier\":\"GPU\",\"topology_digest\":\"sha256:aa110ee80fa2691b7ee0b71aaa021924767576d44845b967e01db3c33c653fb2\"}],\"resources\":[{\"active_requests\":0,\"captured_at_ms\":100,\"device\":\"cuda:0\",\"free_memory_mb\":4096,\"resource_sequence\":1,\"topology_digest\":\"sha256:aa110ee80fa2691b7ee0b71aaa021924767576d44845b967e01db3c33c653fb2\",\"total_memory_mb\":8192},{\"active_requests\":0,\"captured_at_ms\":100,\"device\":\"cuda:1\",\"free_memory_mb\":4096,\"resource_sequence\":1,\"topology_digest\":\"sha256:aa110ee80fa2691b7ee0b71aaa021924767576d44845b967e01db3c33c653fb2\",\"total_memory_mb\":8192}],\"rtt_ms\":0.0,\"schema\":\"DI_PLACEMENT_V3\",\"schema_version\":3,\"service\":\"/service\",\"signature\":\"p6G+PGAVJ2z43qdetC7tQc+jzdt4o+sbS7/hc/Rd+t0ymi6auduK8XpV0ogiGR3sI7TBdKXAqpbcqNyMPnfVDA==\",\"signer_key_id\":\"sha256:56475aa75463474c0285df5dbf2bcab73da651358839e9b77481b2eab107708c\",\"status\":true,\"topology\":{\"backend\":\"onnxruntime-cuda\",\"devices\":[\"cuda:0\",\"cuda:1\"],\"provider\":\"/provider/a\",\"topology_digest\":\"\"}}",
+        "{\"accepted_roles\":[\"/LLM/Pipeline/Stage/0\"],\"ack_reservation\":false,\"attempt\":1,\"backends\":[\"onnxruntime-cuda\"],\"bandwidth_mbps\":0.0,\"boot_epoch\":\"boot\",\"can_provision\":false,\"captured_at_ms\":100,\"estimated_wait_ms\":0.0,\"execution_disposition\":\"ACCEPT_WITH_PREPARATION\",\"expires_at_ms\":1000,\"graph_digest\":\"sha256:eb39048e76e23f16bdd123ca37e0e32aedbe6d0c52d14c2e5bfd22aa88239b08\",\"has_model\":true,\"model_digest\":\"sha256:34e1b5468a63812c036a261b2659e44b658a5efe381ae110c6e72841d04ed6f2\",\"preparation_accepted\":true,\"provider\":\"/provider/b\",\"queue_depth\":0,\"request_id\":\"request\",\"residency\":[],\"resources\":[{\"active_requests\":0,\"captured_at_ms\":100,\"device\":\"cuda:0\",\"free_memory_mb\":4096,\"resource_sequence\":1,\"topology_digest\":\"sha256:19794b1d830f60c7a54479365f47575322c6da653fad6de4475e746ec6f1a4f2\",\"total_memory_mb\":8192},{\"active_requests\":0,\"captured_at_ms\":100,\"device\":\"cuda:1\",\"free_memory_mb\":4096,\"resource_sequence\":1,\"topology_digest\":\"sha256:19794b1d830f60c7a54479365f47575322c6da653fad6de4475e746ec6f1a4f2\",\"total_memory_mb\":8192}],\"rtt_ms\":0.0,\"schema\":\"DI_PLACEMENT_V3\",\"schema_version\":3,\"service\":\"/service\",\"signature\":\"zwaiEcCr7lM10vTWCwciyI7K9VvLezZKmsYi4qYclz4j65hGAlOqNwiAZHrcOZwFnFtnBJklaTNnqpOtLZfyAA==\",\"signer_key_id\":\"sha256:56475aa75463474c0285df5dbf2bcab73da651358839e9b77481b2eab107708c\",\"status\":true,\"topology\":{\"backend\":\"onnxruntime-cuda\",\"devices\":[\"cuda:0\",\"cuda:1\"],\"provider\":\"/provider/b\",\"topology_digest\":\"\"}}"
+      ],
+      "ranks": [
+        0
+      ]
+    },
+    {
+      "expected": {
+        "providers": {
+          "/LLM/Pipeline/Stage/0": "/provider/b"
+        },
+        "roles": [
+          {
+            "backend": "onnxruntime-cuda",
+            "device_set": [
+              "cuda:0"
+            ],
+            "rank": 0,
+            "role": "/LLM/Pipeline/Stage/0"
+          }
+        ]
+      },
+      "name": "wrong_recipe",
+      "native_freshness": false,
+      "offers": [
+        "{\"accepted_roles\":[\"/LLM/Pipeline/Stage/0\"],\"ack_reservation\":false,\"attempt\":1,\"backends\":[\"onnxruntime-cuda\"],\"bandwidth_mbps\":0.0,\"boot_epoch\":\"boot\",\"can_provision\":false,\"captured_at_ms\":100,\"estimated_wait_ms\":0.0,\"execution_disposition\":\"ACCEPT_IF_EXACT_REUSE\",\"expires_at_ms\":1000,\"graph_digest\":\"sha256:eb39048e76e23f16bdd123ca37e0e32aedbe6d0c52d14c2e5bfd22aa88239b08\",\"has_model\":true,\"model_digest\":\"sha256:34e1b5468a63812c036a261b2659e44b658a5efe381ae110c6e72841d04ed6f2\",\"preparation_accepted\":false,\"provider\":\"/provider/a\",\"queue_depth\":0,\"request_id\":\"request\",\"residency\":[{\"artifact_digest\":\"sha256:1f508a1852ecb01602ba7f3c3d2ef34c177caf21e316e8c65d1dd4fc42bd45cd\",\"artifact_profile_digest\":\"sha256:4d5fd5739bc8977b9004af4061c14de70b37399e611c5515fa2d3b35a57e6364\",\"assembly_spec_digest\":\"sha256:1f508a1852ecb01602ba7f3c3d2ef34c177caf21e316e8c65d1dd4fc42bd45cd\",\"backend\":\"onnxruntime-cuda\",\"boot_epoch\":\"boot\",\"captured_at_ms\":100,\"device_set\":[\"cuda:1\"],\"estimated_assembly_ms\":0.0,\"estimated_load_ms\":0.0,\"expires_at_ms\":1000,\"fencing_token\":\"fence\",\"graph_digest\":\"sha256:eb39048e76e23f16bdd123ca37e0e32aedbe6d0c52d14c2e5bfd22aa88239b08\",\"identity_digest\":\"sha256:1f508a1852ecb01602ba7f3c3d2ef34c177caf21e316e8c65d1dd4fc42bd45cd\",\"missing_verified_bytes\":0,\"model_manifest_digest\":\"sha256:40a310a18cf042ffce64ab7dbfe7d6f08afd66df2e4a8fade46af74dcc574ba2\",\"process_epoch\":\"process\",\"proof_digest\":\"\",\"protection_epoch\":\"protected-v1\",\"rank\":0,\"residency_class\":\"LOADED_RUNTIME\",\"role\":\"/LLM/Pipeline/Stage/0\",\"runtime_generation\":1,\"tier\":\"GPU\",\"topology_digest\":\"sha256:aa110ee80fa2691b7ee0b71aaa021924767576d44845b967e01db3c33c653fb2\"}],\"resources\":[{\"active_requests\":0,\"captured_at_ms\":100,\"device\":\"cuda:0\",\"free_memory_mb\":4096,\"resource_sequence\":1,\"topology_digest\":\"sha256:aa110ee80fa2691b7ee0b71aaa021924767576d44845b967e01db3c33c653fb2\",\"total_memory_mb\":8192},{\"active_requests\":0,\"captured_at_ms\":100,\"device\":\"cuda:1\",\"free_memory_mb\":4096,\"resource_sequence\":1,\"topology_digest\":\"sha256:aa110ee80fa2691b7ee0b71aaa021924767576d44845b967e01db3c33c653fb2\",\"total_memory_mb\":8192}],\"rtt_ms\":0.0,\"schema\":\"DI_PLACEMENT_V3\",\"schema_version\":3,\"service\":\"/service\",\"signature\":\"Bcf3qAc7h5b7wc4AdC+cug6P8LiXrouJijzYwp9b2Xfu7dNxSPqb9zZjc1filoCmdR5+QSPgqRUdUlxZnWWtAQ==\",\"signer_key_id\":\"sha256:56475aa75463474c0285df5dbf2bcab73da651358839e9b77481b2eab107708c\",\"status\":true,\"topology\":{\"backend\":\"onnxruntime-cuda\",\"devices\":[\"cuda:0\",\"cuda:1\"],\"provider\":\"/provider/a\",\"topology_digest\":\"\"}}",
+        "{\"accepted_roles\":[\"/LLM/Pipeline/Stage/0\"],\"ack_reservation\":false,\"attempt\":1,\"backends\":[\"onnxruntime-cuda\"],\"bandwidth_mbps\":0.0,\"boot_epoch\":\"boot\",\"can_provision\":false,\"captured_at_ms\":100,\"estimated_wait_ms\":0.0,\"execution_disposition\":\"ACCEPT_WITH_PREPARATION\",\"expires_at_ms\":1000,\"graph_digest\":\"sha256:eb39048e76e23f16bdd123ca37e0e32aedbe6d0c52d14c2e5bfd22aa88239b08\",\"has_model\":true,\"model_digest\":\"sha256:34e1b5468a63812c036a261b2659e44b658a5efe381ae110c6e72841d04ed6f2\",\"preparation_accepted\":true,\"provider\":\"/provider/b\",\"queue_depth\":0,\"request_id\":\"request\",\"residency\":[],\"resources\":[{\"active_requests\":0,\"captured_at_ms\":100,\"device\":\"cuda:0\",\"free_memory_mb\":4096,\"resource_sequence\":1,\"topology_digest\":\"sha256:19794b1d830f60c7a54479365f47575322c6da653fad6de4475e746ec6f1a4f2\",\"total_memory_mb\":8192},{\"active_requests\":0,\"captured_at_ms\":100,\"device\":\"cuda:1\",\"free_memory_mb\":4096,\"resource_sequence\":1,\"topology_digest\":\"sha256:19794b1d830f60c7a54479365f47575322c6da653fad6de4475e746ec6f1a4f2\",\"total_memory_mb\":8192}],\"rtt_ms\":0.0,\"schema\":\"DI_PLACEMENT_V3\",\"schema_version\":3,\"service\":\"/service\",\"signature\":\"zwaiEcCr7lM10vTWCwciyI7K9VvLezZKmsYi4qYclz4j65hGAlOqNwiAZHrcOZwFnFtnBJklaTNnqpOtLZfyAA==\",\"signer_key_id\":\"sha256:56475aa75463474c0285df5dbf2bcab73da651358839e9b77481b2eab107708c\",\"status\":true,\"topology\":{\"backend\":\"onnxruntime-cuda\",\"devices\":[\"cuda:0\",\"cuda:1\"],\"provider\":\"/provider/b\",\"topology_digest\":\"\"}}"
+      ],
+      "ranks": [
+        0
+      ]
+    },
+    {
+      "expected": {
+        "providers": {
+          "/LLM/Pipeline/Stage/0": "/provider/b"
+        },
+        "roles": [
+          {
+            "backend": "onnxruntime-cuda",
+            "device_set": [
+              "cuda:0"
+            ],
+            "rank": 0,
+            "role": "/LLM/Pipeline/Stage/0"
+          }
+        ]
+      },
+      "name": "missing_fence",
+      "native_freshness": false,
+      "offers": [
+        "{\"accepted_roles\":[\"/LLM/Pipeline/Stage/0\"],\"ack_reservation\":false,\"attempt\":1,\"backends\":[\"onnxruntime-cuda\"],\"bandwidth_mbps\":0.0,\"boot_epoch\":\"boot\",\"can_provision\":false,\"captured_at_ms\":100,\"estimated_wait_ms\":0.0,\"execution_disposition\":\"ACCEPT_IF_EXACT_REUSE\",\"expires_at_ms\":1000,\"graph_digest\":\"sha256:eb39048e76e23f16bdd123ca37e0e32aedbe6d0c52d14c2e5bfd22aa88239b08\",\"has_model\":true,\"model_digest\":\"sha256:34e1b5468a63812c036a261b2659e44b658a5efe381ae110c6e72841d04ed6f2\",\"preparation_accepted\":false,\"provider\":\"/provider/a\",\"queue_depth\":0,\"request_id\":\"request\",\"residency\":[{\"artifact_digest\":\"sha256:1f508a1852ecb01602ba7f3c3d2ef34c177caf21e316e8c65d1dd4fc42bd45cd\",\"artifact_profile_digest\":\"sha256:4d5fd5739bc8977b9004af4061c14de70b37399e611c5515fa2d3b35a57e6364\",\"assembly_spec_digest\":\"sha256:b2d669b8459414976b05a0280e49ef75a12ae08391032a88446c0e6519f456e6\",\"backend\":\"onnxruntime-cuda\",\"boot_epoch\":\"boot\",\"captured_at_ms\":100,\"device_set\":[\"cuda:1\"],\"estimated_assembly_ms\":0.0,\"estimated_load_ms\":0.0,\"expires_at_ms\":1000,\"fencing_token\":\"\",\"graph_digest\":\"sha256:eb39048e76e23f16bdd123ca37e0e32aedbe6d0c52d14c2e5bfd22aa88239b08\",\"identity_digest\":\"sha256:1f508a1852ecb01602ba7f3c3d2ef34c177caf21e316e8c65d1dd4fc42bd45cd\",\"missing_verified_bytes\":0,\"model_manifest_digest\":\"sha256:40a310a18cf042ffce64ab7dbfe7d6f08afd66df2e4a8fade46af74dcc574ba2\",\"process_epoch\":\"process\",\"proof_digest\":\"\",\"protection_epoch\":\"protected-v1\",\"rank\":0,\"residency_class\":\"LOADED_RUNTIME\",\"role\":\"/LLM/Pipeline/Stage/0\",\"runtime_generation\":1,\"tier\":\"GPU\",\"topology_digest\":\"sha256:aa110ee80fa2691b7ee0b71aaa021924767576d44845b967e01db3c33c653fb2\"}],\"resources\":[{\"active_requests\":0,\"captured_at_ms\":100,\"device\":\"cuda:0\",\"free_memory_mb\":4096,\"resource_sequence\":1,\"topology_digest\":\"sha256:aa110ee80fa2691b7ee0b71aaa021924767576d44845b967e01db3c33c653fb2\",\"total_memory_mb\":8192},{\"active_requests\":0,\"captured_at_ms\":100,\"device\":\"cuda:1\",\"free_memory_mb\":4096,\"resource_sequence\":1,\"topology_digest\":\"sha256:aa110ee80fa2691b7ee0b71aaa021924767576d44845b967e01db3c33c653fb2\",\"total_memory_mb\":8192}],\"rtt_ms\":0.0,\"schema\":\"DI_PLACEMENT_V3\",\"schema_version\":3,\"service\":\"/service\",\"signature\":\"ztjIT9kkefIMAM280xEAlKwsGrFl7nhp3XhhWaHHexgDt/Mu1vY4rfy4ddassoD0ZRVzP7h0NJtew4kQsD7DCw==\",\"signer_key_id\":\"sha256:56475aa75463474c0285df5dbf2bcab73da651358839e9b77481b2eab107708c\",\"status\":true,\"topology\":{\"backend\":\"onnxruntime-cuda\",\"devices\":[\"cuda:0\",\"cuda:1\"],\"provider\":\"/provider/a\",\"topology_digest\":\"\"}}",
+        "{\"accepted_roles\":[\"/LLM/Pipeline/Stage/0\"],\"ack_reservation\":false,\"attempt\":1,\"backends\":[\"onnxruntime-cuda\"],\"bandwidth_mbps\":0.0,\"boot_epoch\":\"boot\",\"can_provision\":false,\"captured_at_ms\":100,\"estimated_wait_ms\":0.0,\"execution_disposition\":\"ACCEPT_WITH_PREPARATION\",\"expires_at_ms\":1000,\"graph_digest\":\"sha256:eb39048e76e23f16bdd123ca37e0e32aedbe6d0c52d14c2e5bfd22aa88239b08\",\"has_model\":true,\"model_digest\":\"sha256:34e1b5468a63812c036a261b2659e44b658a5efe381ae110c6e72841d04ed6f2\",\"preparation_accepted\":true,\"provider\":\"/provider/b\",\"queue_depth\":0,\"request_id\":\"request\",\"residency\":[],\"resources\":[{\"active_requests\":0,\"captured_at_ms\":100,\"device\":\"cuda:0\",\"free_memory_mb\":4096,\"resource_sequence\":1,\"topology_digest\":\"sha256:19794b1d830f60c7a54479365f47575322c6da653fad6de4475e746ec6f1a4f2\",\"total_memory_mb\":8192},{\"active_requests\":0,\"captured_at_ms\":100,\"device\":\"cuda:1\",\"free_memory_mb\":4096,\"resource_sequence\":1,\"topology_digest\":\"sha256:19794b1d830f60c7a54479365f47575322c6da653fad6de4475e746ec6f1a4f2\",\"total_memory_mb\":8192}],\"rtt_ms\":0.0,\"schema\":\"DI_PLACEMENT_V3\",\"schema_version\":3,\"service\":\"/service\",\"signature\":\"zwaiEcCr7lM10vTWCwciyI7K9VvLezZKmsYi4qYclz4j65hGAlOqNwiAZHrcOZwFnFtnBJklaTNnqpOtLZfyAA==\",\"signer_key_id\":\"sha256:56475aa75463474c0285df5dbf2bcab73da651358839e9b77481b2eab107708c\",\"status\":true,\"topology\":{\"backend\":\"onnxruntime-cuda\",\"devices\":[\"cuda:0\",\"cuda:1\"],\"provider\":\"/provider/b\",\"topology_digest\":\"\"}}"
+      ],
+      "ranks": [
+        0
+      ]
+    },
+    {
+      "expected": {
+        "providers": {
+          "/LLM/Pipeline/Stage/0#0": "/provider/a",
+          "/LLM/Pipeline/Stage/0#1": "/provider/b"
+        },
+        "roles": [
+          {
+            "backend": "onnxruntime-cuda",
+            "device_set": [
+              "cuda:0"
+            ],
+            "rank": 0,
+            "role": "/LLM/Pipeline/Stage/0"
+          },
+          {
+            "backend": "onnxruntime-cuda",
+            "device_set": [
+              "cuda:0"
+            ],
+            "rank": 1,
+            "role": "/LLM/Pipeline/Stage/0"
+          }
+        ]
+      },
+      "name": "rank_cover",
+      "native_freshness": false,
+      "offers": [
+        "{\"accepted_roles\":[\"/LLM/Pipeline/Stage/0\"],\"ack_reservation\":false,\"attempt\":1,\"backends\":[\"onnxruntime-cuda\"],\"bandwidth_mbps\":0.0,\"boot_epoch\":\"boot\",\"can_provision\":false,\"captured_at_ms\":100,\"estimated_wait_ms\":0.0,\"execution_disposition\":\"ACCEPT_WITH_PREPARATION\",\"expires_at_ms\":1000,\"graph_digest\":\"sha256:eb39048e76e23f16bdd123ca37e0e32aedbe6d0c52d14c2e5bfd22aa88239b08\",\"has_model\":true,\"model_digest\":\"sha256:34e1b5468a63812c036a261b2659e44b658a5efe381ae110c6e72841d04ed6f2\",\"preparation_accepted\":true,\"provider\":\"/provider/a\",\"queue_depth\":0,\"request_id\":\"request\",\"residency\":[],\"resources\":[{\"active_requests\":0,\"captured_at_ms\":100,\"device\":\"cuda:0\",\"free_memory_mb\":4096,\"resource_sequence\":1,\"topology_digest\":\"sha256:aa110ee80fa2691b7ee0b71aaa021924767576d44845b967e01db3c33c653fb2\",\"total_memory_mb\":8192},{\"active_requests\":0,\"captured_at_ms\":100,\"device\":\"cuda:1\",\"free_memory_mb\":4096,\"resource_sequence\":1,\"topology_digest\":\"sha256:aa110ee80fa2691b7ee0b71aaa021924767576d44845b967e01db3c33c653fb2\",\"total_memory_mb\":8192}],\"rtt_ms\":0.0,\"schema\":\"DI_PLACEMENT_V3\",\"schema_version\":3,\"service\":\"/service\",\"signature\":\"uQjX74BM2135odzfn5T+4gsr8SBPYeBfDARce82kMhca8cF0Q1wTSkXy4E7ysWdwGo2QMjrkauuiB265bHiqBw==\",\"signer_key_id\":\"sha256:56475aa75463474c0285df5dbf2bcab73da651358839e9b77481b2eab107708c\",\"status\":true,\"topology\":{\"backend\":\"onnxruntime-cuda\",\"devices\":[\"cuda:0\",\"cuda:1\"],\"provider\":\"/provider/a\",\"topology_digest\":\"\"}}",
+        "{\"accepted_roles\":[\"/LLM/Pipeline/Stage/0\"],\"ack_reservation\":false,\"attempt\":1,\"backends\":[\"onnxruntime-cuda\"],\"bandwidth_mbps\":0.0,\"boot_epoch\":\"boot\",\"can_provision\":false,\"captured_at_ms\":100,\"estimated_wait_ms\":0.0,\"execution_disposition\":\"ACCEPT_WITH_PREPARATION\",\"expires_at_ms\":1000,\"graph_digest\":\"sha256:eb39048e76e23f16bdd123ca37e0e32aedbe6d0c52d14c2e5bfd22aa88239b08\",\"has_model\":true,\"model_digest\":\"sha256:34e1b5468a63812c036a261b2659e44b658a5efe381ae110c6e72841d04ed6f2\",\"preparation_accepted\":true,\"provider\":\"/provider/b\",\"queue_depth\":0,\"request_id\":\"request\",\"residency\":[],\"resources\":[{\"active_requests\":0,\"captured_at_ms\":100,\"device\":\"cuda:0\",\"free_memory_mb\":4096,\"resource_sequence\":1,\"topology_digest\":\"sha256:19794b1d830f60c7a54479365f47575322c6da653fad6de4475e746ec6f1a4f2\",\"total_memory_mb\":8192},{\"active_requests\":0,\"captured_at_ms\":100,\"device\":\"cuda:1\",\"free_memory_mb\":4096,\"resource_sequence\":1,\"topology_digest\":\"sha256:19794b1d830f60c7a54479365f47575322c6da653fad6de4475e746ec6f1a4f2\",\"total_memory_mb\":8192}],\"rtt_ms\":0.0,\"schema\":\"DI_PLACEMENT_V3\",\"schema_version\":3,\"service\":\"/service\",\"signature\":\"zwaiEcCr7lM10vTWCwciyI7K9VvLezZKmsYi4qYclz4j65hGAlOqNwiAZHrcOZwFnFtnBJklaTNnqpOtLZfyAA==\",\"signer_key_id\":\"sha256:56475aa75463474c0285df5dbf2bcab73da651358839e9b77481b2eab107708c\",\"status\":true,\"topology\":{\"backend\":\"onnxruntime-cuda\",\"devices\":[\"cuda:0\",\"cuda:1\"],\"provider\":\"/provider/b\",\"topology_digest\":\"\"}}"
+      ],
+      "ranks": [
+        0,
+        1
+      ]
+    },
+    {
+      "expected": null,
+      "name": "has_model_only",
+      "native_freshness": false,
+      "offers": [
+        "{\"accepted_roles\":[\"/LLM/Pipeline/Stage/0\"],\"ack_reservation\":false,\"attempt\":1,\"backends\":[\"onnxruntime-cuda\"],\"bandwidth_mbps\":0.0,\"boot_epoch\":\"boot\",\"can_provision\":false,\"captured_at_ms\":100,\"estimated_wait_ms\":0.0,\"execution_disposition\":\"ACCEPT_IF_EXACT_REUSE\",\"expires_at_ms\":1000,\"graph_digest\":\"sha256:eb39048e76e23f16bdd123ca37e0e32aedbe6d0c52d14c2e5bfd22aa88239b08\",\"has_model\":true,\"model_digest\":\"sha256:34e1b5468a63812c036a261b2659e44b658a5efe381ae110c6e72841d04ed6f2\",\"preparation_accepted\":false,\"provider\":\"/provider/a\",\"queue_depth\":0,\"request_id\":\"request\",\"residency\":[],\"resources\":[{\"active_requests\":0,\"captured_at_ms\":100,\"device\":\"cuda:0\",\"free_memory_mb\":4096,\"resource_sequence\":1,\"topology_digest\":\"sha256:aa110ee80fa2691b7ee0b71aaa021924767576d44845b967e01db3c33c653fb2\",\"total_memory_mb\":8192},{\"active_requests\":0,\"captured_at_ms\":100,\"device\":\"cuda:1\",\"free_memory_mb\":4096,\"resource_sequence\":1,\"topology_digest\":\"sha256:aa110ee80fa2691b7ee0b71aaa021924767576d44845b967e01db3c33c653fb2\",\"total_memory_mb\":8192}],\"rtt_ms\":0.0,\"schema\":\"DI_PLACEMENT_V3\",\"schema_version\":3,\"service\":\"/service\",\"signature\":\"exjafH49Envr9L5Xv0kbSwvMVi076eAzkE9Hx84pfGWAwIG73HrYgnisvCFXv02xMLW7g226R7S469bIoB6fDQ==\",\"signer_key_id\":\"sha256:56475aa75463474c0285df5dbf2bcab73da651358839e9b77481b2eab107708c\",\"status\":true,\"topology\":{\"backend\":\"onnxruntime-cuda\",\"devices\":[\"cuda:0\",\"cuda:1\"],\"provider\":\"/provider/a\",\"topology_digest\":\"\"}}"
+      ],
+      "ranks": [
+        0
+      ]
+    },
+    {
+      "expected": null,
+      "name": "expired_proof",
+      "native_freshness": true,
+      "offers": [
+        "{\"accepted_roles\":[\"/LLM/Pipeline/Stage/0\"],\"ack_reservation\":false,\"attempt\":1,\"backends\":[\"onnxruntime-cuda\"],\"bandwidth_mbps\":0.0,\"boot_epoch\":\"boot\",\"can_provision\":false,\"captured_at_ms\":100,\"estimated_wait_ms\":0.0,\"execution_disposition\":\"ACCEPT_IF_EXACT_REUSE\",\"expires_at_ms\":1000,\"graph_digest\":\"sha256:eb39048e76e23f16bdd123ca37e0e32aedbe6d0c52d14c2e5bfd22aa88239b08\",\"has_model\":true,\"model_digest\":\"sha256:34e1b5468a63812c036a261b2659e44b658a5efe381ae110c6e72841d04ed6f2\",\"preparation_accepted\":false,\"provider\":\"/provider/a\",\"queue_depth\":0,\"request_id\":\"request\",\"residency\":[{\"artifact_digest\":\"sha256:1f508a1852ecb01602ba7f3c3d2ef34c177caf21e316e8c65d1dd4fc42bd45cd\",\"artifact_profile_digest\":\"sha256:4d5fd5739bc8977b9004af4061c14de70b37399e611c5515fa2d3b35a57e6364\",\"assembly_spec_digest\":\"sha256:b2d669b8459414976b05a0280e49ef75a12ae08391032a88446c0e6519f456e6\",\"backend\":\"onnxruntime-cuda\",\"boot_epoch\":\"boot\",\"captured_at_ms\":100,\"device_set\":[\"cuda:1\"],\"estimated_assembly_ms\":0.0,\"estimated_load_ms\":0.0,\"expires_at_ms\":150,\"fencing_token\":\"fence\",\"graph_digest\":\"sha256:eb39048e76e23f16bdd123ca37e0e32aedbe6d0c52d14c2e5bfd22aa88239b08\",\"identity_digest\":\"sha256:1f508a1852ecb01602ba7f3c3d2ef34c177caf21e316e8c65d1dd4fc42bd45cd\",\"missing_verified_bytes\":0,\"model_manifest_digest\":\"sha256:40a310a18cf042ffce64ab7dbfe7d6f08afd66df2e4a8fade46af74dcc574ba2\",\"process_epoch\":\"process\",\"proof_digest\":\"\",\"protection_epoch\":\"protected-v1\",\"rank\":0,\"residency_class\":\"LOADED_RUNTIME\",\"role\":\"/LLM/Pipeline/Stage/0\",\"runtime_generation\":1,\"tier\":\"GPU\",\"topology_digest\":\"sha256:aa110ee80fa2691b7ee0b71aaa021924767576d44845b967e01db3c33c653fb2\"}],\"resources\":[{\"active_requests\":0,\"captured_at_ms\":100,\"device\":\"cuda:0\",\"free_memory_mb\":4096,\"resource_sequence\":1,\"topology_digest\":\"sha256:aa110ee80fa2691b7ee0b71aaa021924767576d44845b967e01db3c33c653fb2\",\"total_memory_mb\":8192},{\"active_requests\":0,\"captured_at_ms\":100,\"device\":\"cuda:1\",\"free_memory_mb\":4096,\"resource_sequence\":1,\"topology_digest\":\"sha256:aa110ee80fa2691b7ee0b71aaa021924767576d44845b967e01db3c33c653fb2\",\"total_memory_mb\":8192}],\"rtt_ms\":0.0,\"schema\":\"DI_PLACEMENT_V3\",\"schema_version\":3,\"service\":\"/service\",\"signature\":\"a3MCE4wMxz8GM9Q4pjtD8Hu/VhtgYUwPvEu/FOyJALDaEOAH/S7UviCPf3FTHQf636P8HITDHAFMY0KOvcvpBA==\",\"signer_key_id\":\"sha256:56475aa75463474c0285df5dbf2bcab73da651358839e9b77481b2eab107708c\",\"status\":true,\"topology\":{\"backend\":\"onnxruntime-cuda\",\"devices\":[\"cuda:0\",\"cuda:1\"],\"provider\":\"/provider/a\",\"topology_digest\":\"\"}}"
+      ],
+      "ranks": [
+        0
+      ]
+    },
+    {
+      "expected": null,
+      "name": "future_proof",
+      "native_freshness": true,
+      "offers": [
+        "{\"accepted_roles\":[\"/LLM/Pipeline/Stage/0\"],\"ack_reservation\":false,\"attempt\":1,\"backends\":[\"onnxruntime-cuda\"],\"bandwidth_mbps\":0.0,\"boot_epoch\":\"boot\",\"can_provision\":false,\"captured_at_ms\":100,\"estimated_wait_ms\":0.0,\"execution_disposition\":\"ACCEPT_IF_EXACT_REUSE\",\"expires_at_ms\":1000,\"graph_digest\":\"sha256:eb39048e76e23f16bdd123ca37e0e32aedbe6d0c52d14c2e5bfd22aa88239b08\",\"has_model\":true,\"model_digest\":\"sha256:34e1b5468a63812c036a261b2659e44b658a5efe381ae110c6e72841d04ed6f2\",\"preparation_accepted\":false,\"provider\":\"/provider/a\",\"queue_depth\":0,\"request_id\":\"request\",\"residency\":[{\"artifact_digest\":\"sha256:1f508a1852ecb01602ba7f3c3d2ef34c177caf21e316e8c65d1dd4fc42bd45cd\",\"artifact_profile_digest\":\"sha256:4d5fd5739bc8977b9004af4061c14de70b37399e611c5515fa2d3b35a57e6364\",\"assembly_spec_digest\":\"sha256:b2d669b8459414976b05a0280e49ef75a12ae08391032a88446c0e6519f456e6\",\"backend\":\"onnxruntime-cuda\",\"boot_epoch\":\"boot\",\"captured_at_ms\":300,\"device_set\":[\"cuda:1\"],\"estimated_assembly_ms\":0.0,\"estimated_load_ms\":0.0,\"expires_at_ms\":1000,\"fencing_token\":\"fence\",\"graph_digest\":\"sha256:eb39048e76e23f16bdd123ca37e0e32aedbe6d0c52d14c2e5bfd22aa88239b08\",\"identity_digest\":\"sha256:1f508a1852ecb01602ba7f3c3d2ef34c177caf21e316e8c65d1dd4fc42bd45cd\",\"missing_verified_bytes\":0,\"model_manifest_digest\":\"sha256:40a310a18cf042ffce64ab7dbfe7d6f08afd66df2e4a8fade46af74dcc574ba2\",\"process_epoch\":\"process\",\"proof_digest\":\"\",\"protection_epoch\":\"protected-v1\",\"rank\":0,\"residency_class\":\"LOADED_RUNTIME\",\"role\":\"/LLM/Pipeline/Stage/0\",\"runtime_generation\":1,\"tier\":\"GPU\",\"topology_digest\":\"sha256:aa110ee80fa2691b7ee0b71aaa021924767576d44845b967e01db3c33c653fb2\"}],\"resources\":[{\"active_requests\":0,\"captured_at_ms\":100,\"device\":\"cuda:0\",\"free_memory_mb\":4096,\"resource_sequence\":1,\"topology_digest\":\"sha256:aa110ee80fa2691b7ee0b71aaa021924767576d44845b967e01db3c33c653fb2\",\"total_memory_mb\":8192},{\"active_requests\":0,\"captured_at_ms\":100,\"device\":\"cuda:1\",\"free_memory_mb\":4096,\"resource_sequence\":1,\"topology_digest\":\"sha256:aa110ee80fa2691b7ee0b71aaa021924767576d44845b967e01db3c33c653fb2\",\"total_memory_mb\":8192}],\"rtt_ms\":0.0,\"schema\":\"DI_PLACEMENT_V3\",\"schema_version\":3,\"service\":\"/service\",\"signature\":\"j2zGGYfnCjNATX0Iwi4G+AEjBkpQIiz4wXvTT01cbeo2L3L6yywMFegjEchTep/v8iQf1h2NFUtw3JS/+jO/Cw==\",\"signer_key_id\":\"sha256:56475aa75463474c0285df5dbf2bcab73da651358839e9b77481b2eab107708c\",\"status\":true,\"topology\":{\"backend\":\"onnxruntime-cuda\",\"devices\":[\"cuda:0\",\"cuda:1\"],\"provider\":\"/provider/a\",\"topology_digest\":\"\"}}"
+      ],
+      "ranks": [
+        0
+      ]
+    }
+  ],
+  "graph_digest": "sha256:eb39048e76e23f16bdd123ca37e0e32aedbe6d0c52d14c2e5bfd22aa88239b08",
+  "key_id": "sha256:56475aa75463474c0285df5dbf2bcab73da651358839e9b77481b2eab107708c",
+  "model_digest": "sha256:34e1b5468a63812c036a261b2659e44b658a5efe381ae110c6e72841d04ed6f2",
+  "policy": {
+    "candidateDigest": "sha256:dda18a0e21ae47c53b4309434cbc02ae8bf764fa83a6defbb719431242722aa7",
+    "candidateId": "fixture",
+    "entries": [
+      {
+        "certificateName": "/provider/a/KEY/fixture/issuer/v=1",
+        "keyLocatorPrefix": "/provider/a/KEY/fixture",
+        "provider": "/provider/a",
+        "service": "/service",
+        "signerKeyId": "sha256:56475aa75463474c0285df5dbf2bcab73da651358839e9b77481b2eab107708c"
+      },
+      {
+        "certificateName": "/provider/b/KEY/fixture/issuer/v=1",
+        "keyLocatorPrefix": "/provider/b/KEY/fixture",
+        "provider": "/provider/b",
+        "service": "/service",
+        "signerKeyId": "sha256:56475aa75463474c0285df5dbf2bcab73da651358839e9b77481b2eab107708c"
+      }
+    ],
+    "schema": "spec180-provider-offer-trust-v1",
+    "trustSchema": "/trust/schema"
+  },
+  "public_pem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAA6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=\n-----END PUBLIC KEY-----\n",
+  "role": {
+    "adapter_descriptor_digest": "sha256:9a63593b7b52dc82acdf4e5e55f4f497e0c2105df11b76446c023b09b503881c",
+    "adapter_id": "qwen",
+    "adapter_version": "1",
+    "artifact_digest": "sha256:1f508a1852ecb01602ba7f3c3d2ef34c177caf21e316e8c65d1dd4fc42bd45cd",
+    "artifact_profile_digest": "sha256:4d5fd5739bc8977b9004af4061c14de70b37399e611c5515fa2d3b35a57e6364",
+    "assembler_descriptor_digest": "sha256:a47cd8fca0a8044afb7d408b758874573a49fc71eaafc13c868fa0cc98fa043e",
+    "backend": "onnxruntime-cpu",
+    "backend_abi": "onnxruntime-cpu-v1",
+    "canonical_initializer_digest": "sha256:0f8cdfc405caef74ba827db1c4e98e5f8554b6dbaeda912b239debdb1d2e0c39",
+    "device_set": [],
+    "expected_inputs": [
+      {
+        "dtype": "float32",
+        "name": "x",
+        "shape": [
+          1,
+          "batch"
+        ]
+      }
+    ],
+    "expected_outputs": [
+      {
+        "dtype": "float32",
+        "name": "y",
+        "shape": [
+          1,
+          "batch"
+        ]
+      }
+    ],
+    "graph_digest": "sha256:eb39048e76e23f16bdd123ca37e0e32aedbe6d0c52d14c2e5bfd22aa88239b08",
+    "layer_begin": 0,
+    "layer_end": 1,
+    "layout": "native",
+    "merge_kind": "",
+    "model_manifest_digest": "sha256:40a310a18cf042ffce64ab7dbfe7d6f08afd66df2e4a8fade46af74dcc574ba2",
+    "node_indices": [
+      0
+    ],
+    "padding": "none",
+    "postprocess_confidence_threshold": 0.0,
+    "postprocess_identity": "",
+    "postprocess_output_name": "",
+    "postprocess_sort": "",
+    "precision": "fp32",
+    "protection_epoch": "protected-v1",
+    "quantization": "none",
+    "rank": 0,
+    "recipe_digest": "sha256:b2d669b8459414976b05a0280e49ef75a12ae08391032a88446c0e6519f456e6",
+    "required_device_memory_mb": 0,
+    "resource_envelope": {
+      "maxAssembledBytes": 8192,
+      "maxNodes": 16,
+      "maxSourceBytes": 4096
+    },
+    "role": "/LLM/Pipeline/Stage/0",
+    "role_kind": "PIPELINE_RANGE"
+  }
+}
