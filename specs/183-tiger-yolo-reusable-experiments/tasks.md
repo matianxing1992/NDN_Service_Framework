@@ -112,6 +112,17 @@ failure-log，记录 identity b6710fd6 稳定正确。deferred：远端 storage
 site roots 与 oracle 数值契约待 T005/T006/T012 wiring 验证；release.gates
 仍空，local-cpu 运行资格待真实 prepare+local 执行 receipt。
 
+2026-09-07 T010 驱动推进：新增 spec183_minindn.py 把 provision 产物
+映射到 NDNSF_DI_YoloAckDriven_Minindn.py --case Y-B 的 11 个 env 输入。
+四轮适配通过验证链：输出根排他（map 移入 inputs/）→ offer key map 的
+容器路径重映射到 host 副本（digest 键权威）→ spec181 Y-B 布局部署
+config（Spec183 身份 + MiniNDN 节点映射）→ NDNSF_SPEC180_CONFIG_ROOT
+指向固定 key 集。剩余障碍：驱动深绑定 spec180 host 布局
+（build-system-j2/spec180-native-build.json manifest +
+di-native-provider 二进制），本机无 spec180 host 构建产物；Spec183
+等价物（T008 干净根）尚缺独立 di-native-provider 构建与 manifest
+适配——T010 保持 open，不做伪造 manifest。
+
 2026-09-07 T008/T009 单测门达成（4ade12bf）：--with-tests 构建
 500/500 任务成功（1h25m），build/unit-tests RC0 与 build/integration-tests
 RC0（No errors detected，LD_LIBRARY_PATH 指干净根）。T009 剩余真实多进程
