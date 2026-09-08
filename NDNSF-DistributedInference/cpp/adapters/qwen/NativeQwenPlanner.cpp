@@ -16,14 +16,6 @@ bool isDigest(const std::string& value)
     });
 }
 
-std::string roleFragment(const std::string& role,
-                         const std::string& graphDigest,
-                         const std::string& artifactDigest)
-{
-  return nativePlanningDigest("qwen-fragment|" + role + "|" +
-                              graphDigest + "|" + artifactDigest);
-}
-
 } // namespace
 
 NativeQwenLayerSplit::NativeQwenLayerSplit(
@@ -126,12 +118,12 @@ NativeQwenLayerSplit::enumerate(const NativeModelDescriptor& model,
   for (std::size_t i = 0; i < m_roles.size(); ++i) {
     const auto& role = m_roles[i];
     const auto& artifact = m_artifactDigestsByRole.at(role);
-    candidate.fragmentsByRole[role] = roleFragment(role, graph.graphDigest, artifact);
+    candidate.fragmentsByRole[role] = artifact;
     candidate.artifactsByRole[role] = {artifact};
     candidate.rankArtifactDigestsByRole[role] = {artifact};
     candidate.tensorDegreesByRole[role] = 1;
     candidate.requirementsByRole[role] = {
-      {"onnxruntime", "onnxruntime-cpu", "onnxruntime-cuda"},
+      {"onnxruntime"},
       m_weightBytesByRole.at(role), 1024ULL * 1024ULL * 1024ULL,
       512ULL * 1024ULL * 1024ULL, 512ULL * 1024ULL * 1024ULL, 1.10};
   }

@@ -7,6 +7,14 @@
 
 ## Current Findings
 
+### Graph Edges and Candidate Identity 2026-09-07
+
+源码对照发现原生 YOLO 按节点相邻关系合成依赖、按节点数估算预算，Qwen 又哈希
+既有 artifact 作为 fragment。已补真实 tensor edges、分支依赖及已知大小预算，
+Qwen 保留 artifact 摘要和 onnxruntime family；新 ABI 构建及 67 cases/818 assertions
+PASS。T003-A/B 撤回 DONE，完整候选 node/state/interface/identity 仍待闭合，
+见 [tensor edge audit](evidence/t003-yolo-tensor-edges-20260907.md)。
+
 ### Native Core Artifact Publication 2026-09-07
 
 新增 native publisher，作为既有 ArtifactPort 复用 Core prepared-request、加密大对象

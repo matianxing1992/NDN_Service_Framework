@@ -8,6 +8,14 @@ API 契约首轮渲染使用不存在的 ExecutionLease::release；源码 owner 
 连续排版后 63 页；目录页码需第三遍编译才能稳定，已增加构建遍数并另建验证目录。
 最终 r4 双份 63 页、58 个目录页码、API 声明/绑定和源码还原检查 PASS；文档失败已修复，不计产品资格。
 
+## 2026-09-07 — Spec182 YOLO tensor edge source audit
+
+NativeGraphSnapshot 缺 tensor edges，YOLO planner 按相邻节点合成依赖及节点数预算，
+与维护 Python splitter 不一致。另发现 Qwen fragment 额外哈希与 backend family 差异。
+上述局部问题已修复，67 cases/818 assertions PASS；T003-A/B 过早 DONE 已撤回 PARTIAL，
+完整候选契约仍待闭合。此为源码发现，
+不是网络运行结果。见 [tensor edge audit](../specs/182-native-di-python-bindings/evidence/t003-yolo-tensor-edges-20260907.md)。
+
 ## 2026-09-07 — Spec182 publication fixture name
 
 publication recertification r1 新 ABI -j4 build PASS（302.273s）；定向测试在构造

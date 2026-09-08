@@ -8,8 +8,10 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
+#include <variant>
 
 namespace ndnsf::di {
 
@@ -52,7 +54,16 @@ struct NativeTensorContract
 {
   std::string name;
   std::string dtype;
-  std::vector<std::int64_t> shape;
+  std::vector<std::variant<std::int64_t, std::string>> shape;
+  std::optional<std::uint64_t> estimatedBytes;
+};
+
+struct NativeGraphEdge
+{
+  std::string id;
+  std::string producer;
+  std::vector<std::string> consumers;
+  NativeTensorContract tensor;
 };
 
 struct NativeGraphSnapshot
@@ -63,6 +74,7 @@ struct NativeGraphSnapshot
   std::vector<std::string> legalCutEdges;
   std::vector<NativeTensorContract> modelInputs;
   std::vector<NativeTensorContract> modelOutputs;
+  std::vector<NativeGraphEdge> edges;
 
   void validate(const NativeModelDescriptor& model) const;
 };

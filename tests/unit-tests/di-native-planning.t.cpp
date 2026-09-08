@@ -36,7 +36,14 @@ NativeGraphSnapshot graph(const std::string& graphDigest,
     result.nodes.push_back({nodeIds[i], "op", static_cast<std::uint64_t>(i)});
   }
   result.topologicalOrder = std::move(nodeIds);
-  result.legalCutEdges = {"cut-0", "cut-1"};
+  // Explicit chain fixture. Production graph inspection supplies real edges;
+  // the planner never invents adjacency or tensor names.
+  for (std::size_t i = 1; i < result.nodes.size(); ++i) {
+    const auto id = "cut-" + std::to_string(i - 1);
+    result.edges.push_back({id, result.nodes[i - 1].id, {result.nodes[i].id},
+      {id, "float32", {std::int64_t(1)}, 4}});
+    result.legalCutEdges.push_back(id);
+  }
   return result;
 }
 
@@ -95,6 +102,8 @@ BOOST_AUTO_TEST_CASE(QwenLayerSplitProducesCanonicalRankOneCandidate)
   BOOST_REQUIRE_EQUAL(candidate.executionPlan.roles.size(), roles.size());
   for (std::size_t i = 0; i < roles.size(); ++i) {
     BOOST_CHECK_EQUAL(candidate.executionPlan.roles[i], roles[i]);
+    BOOST_CHECK_EQUAL(candidate.fragmentsByRole.at(roles[i]), digest("qwen-artifact-" + std::to_string(i)));
+    BOOST_CHECK(candidate.requirementsByRole.at(roles[i]).backends == std::vector<std::string>({"onnxruntime"}));
   }
   BOOST_CHECK_EQUAL(candidate.crossPartitionTensors.size(), 2U);
   BOOST_CHECK_EQUAL(candidate.tensorDegreesByRole.at(roles[1]), 1U);
@@ -258,6 +267,72 @@ BOOST_AUTO_TEST_CASE(YoloComponentSplitRejectsUncoveredGraphAndSortsPriority)
   yolo::NativeYoloComponentSplit bad({invalid});
   BOOST_CHECK_THROW(bad.enumerate(modelDescriptor, graphSnapshot, {}),
                     std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(YoloUsesRealBranchTensorsAndKnownByteEstimates)
+{
+  const auto identity = digest("branch-graph");
+  auto snapshot = graph(identity, {"a", "b", "c", "d", "e"});
+  const auto descriptor = model("yolo26n", "YOLO26n", identity);
+  snapshot.edges = {
+    {"x", "a", {"b", "c", "e"}, {"x", "float32", {std::int64_t(2), std::int64_t(2)}, 16}},
+    {"y", "b", {"d"}, {"y", "float32", {std::int64_t(2), std::int64_t(4)}, 32}},
+    {"latent", "b", {"c"}, {"latent", "float32", {std::string("batch"), std::int64_t(4)}, std::nullopt}}
+  };
+  snapshot.legalCutEdges = {"x", "y"};
+  snapshot.modelInputs = {{"input", "float32", {std::int64_t(-1), std::string("batch")}, std::nullopt}};
+  BOOST_CHECK_NO_THROW(snapshot.validate(descriptor));
+  BOOST_CHECK_EQUAL(std::get<std::int64_t>(snapshot.modelInputs[0].shape[0]), -1);
+  const yolo::NativeYoloComponentSpec partition{"branch", 1, {"Left", "Right", "Merge"},
+    {{"Left", {"a"}}, {"Right", {"b", "c"}}, {"Merge", {"d", "e"}}}, "Left", "Merge", "", digest("registered")};
+  const yolo::NativeYoloComponentSplit splitter({partition});
+  const auto candidate = splitter.enumerate(descriptor, snapshot, {}).front();
+  // Python Yolo26Splitter._candidate's actual tensor semantics: x fans out to
+  // two roles (b/c share Right), y reaches non-adjacent d, latent stays local.
+  std::vector<std::string> actual;
+  for (const auto& dependency : candidate.executionPlan.dependencies) {
+    BOOST_REQUIRE_EQUAL(dependency.producers.size(), 1);
+    BOOST_REQUIRE_EQUAL(dependency.consumers.size(), 1);
+    BOOST_REQUIRE_EQUAL(dependency.tensors.size(), 1);
+    actual.push_back(dependency.producers[0] + "->" + dependency.consumers[0] + ":" + dependency.tensors[0]);
+  }
+  const std::vector<std::string> expected{"Left->Merge:x", "Left->Right:x", "Right->Merge:y"};
+  BOOST_CHECK(actual == expected);
+  BOOST_CHECK(candidate.crossPartitionTensors == std::vector<std::string>({"x", "y"}));
+  for (const auto& role : partition.roles) BOOST_CHECK_EQUAL(candidate.requirementsByRole.at(role).weightBytes, 16);
+  BOOST_CHECK_EQUAL(std::get<std::string>(snapshot.edges[2].tensor.shape[0]), "batch");
+  BOOST_CHECK(!snapshot.edges[2].tensor.estimatedBytes);
+  snapshot.legalCutEdges = {"x"};
+  BOOST_CHECK_THROW(splitter.enumerate(descriptor, snapshot, {}), std::invalid_argument);
+  snapshot.legalCutEdges = {"x", "y"};
+  snapshot.edges[0].tensor.estimatedBytes = std::numeric_limits<std::uint64_t>::max();
+  BOOST_CHECK_THROW(splitter.enumerate(descriptor, snapshot, {}), std::invalid_argument);
+  snapshot.edges.clear(); snapshot.legalCutEdges.clear();
+  const auto independent = splitter.enumerate(descriptor, snapshot, {}).front();
+  BOOST_CHECK(independent.executionPlan.dependencies.empty());
+  BOOST_CHECK(independent.crossPartitionTensors.empty());
+  BOOST_CHECK_EQUAL(independent.requirementsByRole.at("Right").weightBytes, 1);
+}
+
+BOOST_AUTO_TEST_CASE(GraphRejectsForeignTensorReferencesAndInvalidTopology)
+{
+  const auto identity = digest("edge-validation");
+  const auto original = graph(identity, {"a", "b", "c"});
+  const auto descriptor = model("yolo26n", "YOLO26n", identity);
+  BOOST_CHECK_NO_THROW(original.validate(descriptor));
+  for (unsigned mutation = 0; mutation != 9; ++mutation) {
+    auto broken = original;
+    if (mutation == 0) broken.edges[0].producer = "foreign";
+    if (mutation == 1) broken.edges[0].consumers = {"foreign"};
+    if (mutation == 2) broken.edges[0].consumers = {"b", "b"};
+    if (mutation == 3) broken.edges[0].consumers.clear();
+    if (mutation == 4) { broken.edges[0].producer = "c"; broken.edges[0].consumers = {"a"}; }
+    if (mutation == 5) broken.edges.push_back(broken.edges[0]);
+    if (mutation == 6) broken.edges[0].tensor.name = "foreign";
+    if (mutation == 7) broken.legalCutEdges.push_back("foreign");
+    if (mutation == 8) broken.edges[0].tensor.dtype.clear();
+    BOOST_CHECK_THROW(broken.validate(descriptor), std::invalid_argument);
+  }
 }
 
 BOOST_AUTO_TEST_CASE(YoloComponentSplitRejectsInvalidComponentsAndForeignModel)

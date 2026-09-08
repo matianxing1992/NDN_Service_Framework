@@ -127,8 +127,8 @@ worker crash/cancel 等真实子进程案例也转 T016，卡内只运行纯 fra
 
 - **Parent**: T003; **Depends**: T003-A; **Reviewer**: local source review
 - **Read**: CD-002 → Symbols/Values；P/adapters/yolo/adapter.py::Yolo26Splitter；A/qwen/NativeQwenPlanner.hpp 的公共协议。
-- **Write**: A/yolo/NativeYoloPlanner.hpp; A/yolo/NativeYoloPlanner.cpp; U/di-native-planning.t.cpp; wscript。
-- **Steps**: 实现现有 YOLO component cover 与候选排序，复用共享不可变类型；图输入检查与候选约束都在 native adapter。
+- **Write**: N/NativePlanning.hpp; N/NativePlanning.cpp; A/yolo/NativeYoloPlanner.hpp; A/yolo/NativeYoloPlanner.cpp; U/di-native-planning.t.cpp; U/di-native-plan-sealer.t.cpp; wscript。
+- **Steps**: 实现现有 YOLO component cover 与候选排序，复用共享不可变类型；保存并验证真实 tensor producer/consumer edges，按维护算法生成跨角色依赖及已知字节预算，不能合成节点相邻依赖；图输入检查与候选约束都在 native adapter。catalog/interface 和候选身份仍须完整对照后才能 DONE。
 - **Verify**: CPP(Spec182YoloSplit/*)；固定 cover、错误 component/rank、确定性重复调用；不加载服务协作。
 
 ### T003-C Placement and Registry

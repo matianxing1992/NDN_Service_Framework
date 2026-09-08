@@ -25,6 +25,11 @@ Source: `NDNSF-DistributedInference/ndnsf_distributed_inference/splitter.py:142`
 
 ## V02 ModelGraphSnapshot
 
+原生图保留真实 tensor edges（producer/consumers 和 tensor ID），不可由相邻节点推断。
+NativeTensorContract 的 shape 区分 int64 与 symbolic string，estimatedBytes 可未知；
+NativeGraphEdge 的 tensor.name 必须等于 edge ID。节点引用、consumer 唯一性/拓扑
+方向、合法 cut 引用均由 graph.validate 检查；见 [tensor edge audit](../evidence/t003-yolo-tensor-edges-20260907.md)。
+
 Source: `NDNSF-DistributedInference/ndnsf_distributed_inference/splitter.py:211` → planned `NativeGraphSnapshot`。
 
 | Field ID | Existing declaration | Meaning and native consumer obligation |
