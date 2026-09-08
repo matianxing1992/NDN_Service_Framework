@@ -44,7 +44,10 @@ active build tree, isolated install prefix, every build tree recreated per run.
       socket boundary (`could not connect to NDN forwarder at
       /run/nfd/nfd.sock` — expected on a host without NFD; the binary loaded
       its full linked closure and reached the network layer).
-- [ ] NDNSF unit tests pass in the clean root (T009 scope)
+- [x] NDNSF unit tests pass in the clean root: `build/unit-tests` RC 0
+      ("No errors detected") and `build/integration-tests` RC 0, both with
+      `LD_LIBRARY_PATH=/tmp/t008-build-root/lib` (built via
+      `./waf configure --with-tests`, 500/500 tasks).
 
 ## Record
 
