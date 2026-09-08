@@ -189,6 +189,10 @@ def main(argv: Iterable[str] | None = None) -> int:
         "PYTHONDONTWRITEBYTECODE": "1",
         "LD_LIBRARY_PATH": args.library_path,
         "NDNSF_DI_STATE_ROOT": str(state),
+        # The systemd system manager runs the MiniNDN owner as root so it can
+        # create network namespaces.  The child must still bind its state
+        # directory to the unprivileged operator who created this run.
+        "NDNSF_DI_STATE_ROOT_OWNER_UID": str(state.stat().st_uid),
         "NDNSF_DI_ENVELOPE_KEY_FILE": str(private / "user/request-envelope.key"),
         "SPEC180_CASE_OUTPUT_DIR": str(case_output),
         "SPEC180_YOLO_CANONICAL_PACKAGE": str(checked['package']),

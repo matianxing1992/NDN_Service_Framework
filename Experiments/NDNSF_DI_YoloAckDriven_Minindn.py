@@ -277,6 +277,7 @@ YN_GRANT_REJECTIONS = {
 # verifier with parity lock); the R004 gate is absorbed.
 GRANT_WIRING_AVAILABLE = True
 PROTECTION_EPOCH_ENV = "SPEC181_PROTECTION_EPOCH"
+STATE_ROOT_OWNER_ENV = "NDNSF_DI_STATE_ROOT_OWNER_UID"
 PLAINTEXT_EPOCH = "plaintext-v1"
 
 
@@ -1453,7 +1454,19 @@ def _validate_state_root(value: str) -> Path:
     if path.exists():
         if not path.is_dir():
             raise RunnerError("STATE_ROOT_NOT_DIRECTORY")
-        if path.stat().st_uid != os.geteuid():
+        owner_uid = path.stat().st_uid
+        # ``runtime.host_minindn`` uses the system manager so it can create
+        # network namespaces and NFD sockets.  The transient unit therefore
+        # runs as root even when the operator invoked this wrapper as an
+        # unprivileged user.  Bind the pre-created state directory to that
+        # operator UID before crossing the privilege boundary; never accept
+        # an arbitrary owner for a root-launched child.
+        allowed_uids = {os.geteuid()}
+        if os.geteuid() == 0:
+            declared_owner = os.environ.get(STATE_ROOT_OWNER_ENV, "").strip()
+            if declared_owner.isdigit():
+                allowed_uids.add(int(declared_owner))
+        if owner_uid not in allowed_uids:
             raise RunnerError("STATE_ROOT_OWNER_MISMATCH")
     return resolved
 

@@ -3506,3 +3506,19 @@ The rebuilt external DI targets all compiled and linked against base v6, but
 source seal used an eight-character revision label. The application manifest
 contract requires a full 40-hex revision. Replace it with the owning commit
 identity and rerun packaging against the existing incremental Waf cache.
+
+## 2026-09-08: MiniNDN owner rejected operator-created state root
+
+- Symptom: the first exact base-plus-app MiniNDN Y-B launch stopped before NFD
+  startup with `STATE_ROOT_OWNER_MISMATCH` and exit 78.
+- Root cause: `spec183_minindn.py` creates the state directory as the invoking
+  operator, then `runtime/host_minindn.py` launches the driver through the
+  systemd system manager as root for network-namespace setup. The driver
+  compared the directory owner only with its effective UID and rejected the
+  legitimate privilege boundary.
+- Fix: bind the state directory to its pre-created operator UID through the
+  wrapper-owned `NDNSF_DI_STATE_ROOT_OWNER_UID` variable and accept that UID
+  only for a root-launched child. The 13 input-binding tests remain green.
+- Lesson: host privilege transitions must preserve the original run-owner
+  binding explicitly; an effective-UID-only check can block before protocol
+  evidence while hiding no security or data-plane defect.
