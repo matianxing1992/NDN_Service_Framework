@@ -75,6 +75,13 @@ SIF_RUNTIME_PYTHONPATH = ":".join((
 ))
 SPEC180_SIF_HOST_PROCESS_FALLBACK = "SPEC180_SIF_HOST_PROCESS_FALLBACK"
 
+# MiniNDN's legacy ``getPopen(..., shell=True)`` implementation reads the
+# launcher's process-wide SHELL variable instead of the per-node envDict.  The
+# systemd system manager intentionally supplies a minimal environment, so set
+# the deterministic shell used by the command provider before any child starts.
+if not os.environ.get("SHELL"):
+    os.environ["SHELL"] = "/bin/bash"
+
 
 def sif_runtime_enabled() -> bool:
     """True only when the sealed candidate image is declared."""

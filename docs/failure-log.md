@@ -3605,3 +3605,17 @@ identity and rerun packaging against the existing incremental Waf cache.
 - Lesson: conventional runtime socket paths need an explicit writable host
   bind before a sealed image starts; checking only optional path existence is
   insufficient for daemon startup.
+
+## 2026-09-08: MiniNDN child launch required an implicit SHELL variable
+
+- Symptom: after NFD startup succeeded, exact-SIF Y-B stopped while starting
+  the first control process with `KeyError: 'SHELL'` from MiniNDN's
+  `getPopen(..., shell=True)` path.
+- Root cause: the systemd system manager deliberately passed a minimal outer
+  environment, while the legacy MiniNDN helper reads process-wide `SHELL`
+  instead of the supplied per-node `envDict`.
+- Fix: set the absent process-wide variable to the deterministic `/bin/bash`
+  command provider before any MiniNDN child starts; node-specific environment
+  values remain controlled by the existing wrapper.
+- Lesson: legacy helpers that read process-global launch state need an explicit
+  compatibility default at the privilege boundary.
