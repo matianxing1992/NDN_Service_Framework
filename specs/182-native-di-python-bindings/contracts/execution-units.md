@@ -216,7 +216,7 @@ worker crash/cancel 等真实子进程案例也转 T016，卡内只运行纯 fra
 - **Parent**: T008; **Depends**: T003-C, T006-D, T007-B; **Reviewer**: adapter/identity review
 - **Read**: CD-013 → Symbols/Values；P/artifact_deployment.py::CanonicalCatalogEnsurer；P/adapters/base.py 的 GraphAdapter/TaskAdapter。
 - **Write**: N/NativeRequestPreparation.hpp; N/NativeRequestPreparation.cpp; N/NativePlanning.hpp; A/qwen/NativeQwenPlanner.hpp; A/qwen/NativeQwenPlanner.cpp; A/yolo/NativeYoloPlanner.hpp; A/yolo/NativeYoloPlanner.cpp; U/di-native-preparation.t.cpp; I/di-native-preparation.t.cpp; wscript。
-- **Steps**: 实现 inspect/encodeInput/decodeResult 与 prepareInput/inspectModel/ensureArtifacts 的冻结端口，复用两 adapter；认证 name/digest 绑定，I/O 位于 preparation，不移入纯策略。
+- **Steps**: 实现 inspect/encodeInput/decodeResult 与 prepareInput/inspectModel/prepareRoles/ensureArtifacts 的冻结端口，复用两 adapter；inspection 返回实际 source/manifest、绑定完整请求模型；prepareRoles 校验候选 role/rank/artifact 与最低资源预算；认证 name/digest 绑定，I/O 位于 preparation，不移入纯策略。
 - **Verify**: CPP(Spec182Preparation/*)；两模型 input/result mapping、错 catalog/publication name/digest、清理边界；真实 publication 在 T016。
 
 ### T008-B Authenticated Offer Admission

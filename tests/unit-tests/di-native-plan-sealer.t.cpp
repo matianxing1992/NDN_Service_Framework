@@ -264,7 +264,8 @@ BOOST_AUTO_TEST_CASE(PreparedArtifactsReachGrantAcquisitionWithoutBackfill)
     [&](const NativeInspectedModel&, const NativePlacementProposal&,
         const NativeRequestControl&) { ++publications; return published; });
   NativeInspectedModel inspected{plan.snapshot.model, plan.snapshot.graph,
-                                  "/canonical/model", plan.snapshot.model.contentDigest};
+                                  "/canonical/model", plan.snapshot.model.contentDigest,
+                                  published.manifestDigest};
   NativeRequestControl control{plan.snapshot.requestId, plan.snapshot.attempt,
                                 plan.snapshot.deadline, {}};
   plan.inputs.artifacts = preparation.ensureArtifacts(inspected, plan.proposal, control);

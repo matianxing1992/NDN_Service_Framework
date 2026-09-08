@@ -29,6 +29,8 @@ NativePreparedInput prepareInput(const NativeModelRef& model,
                                 const NativeApplicationInput& value,
                                 const NativeRequestOptions& options);
 NativeInspectedModel inspectModel(const NativePreparedInput& input);
+std::vector<NativeSelectionRoleV3> prepareRoles(const NativeInspectedModel& model,
+    const NativeSplitCandidate& candidate, const NativeRequestControl& control);
 NativeArtifactBinding ensureArtifacts(const NativeInspectedModel& model,
                                       const NativePlacementProposal& proposal,
                                       const NativeRequestControl& control);
@@ -43,8 +45,12 @@ NativeAdmittedOfferV3 verify(const ndn_service_framework::AckSelectionCandidate&
   文本 encode 在 Qwen adapter 调用 CD-006，普通 bytes 不再编码；禁止重复分词。
 - BeginCollaboration 后的 ACK_CLOSED 冻结才 inspectModel，保留当前 post-ACK
   graph/candidate 决策顺序。读取同一认证模型 revision，目录提示不能覆盖 digest。
-- NativePreparedInput 拥有 task descriptor、编码 bytes/已验证引用和单调 deadline；
-  NativeInspectedModel 拥有 descriptor、graph、认证 canonical source identity。
+- NativePreparedInput 拥有 task descriptor、完整 expectedModel、编码 bytes/已验证引用和单调 deadline；
+  NativeInspectedModel 拥有 descriptor、graph、实际解析的 canonical source name/digest 和
+  modelManifestDigest。InspectPort 返回完整 inspected model，不允许 preparation 合成来源名。
+- prepareRoles 从 native catalog/recipe owner 获取候选完整角色契约，绑定 model/manifest、
+  role/rank/artifact、adapter、节点与最低内存预算，再交给 proposeRoles；缺 port 明确失败。
+  网络来源认证由既有 Core/catalog owner 完成，端口 DTO 本身不构成认证证明。
   无 caller 提供的 trusted=true；网络或本地可信配置的验证证据由对应 owner 创建。
 - ensureArtifacts 在候选选定后、sealCore/grant 前执行；复用已存在 canonical 工件或
   原生完成当前运行时所需 publication/encryption。只返回认证 manifest/recipe/input

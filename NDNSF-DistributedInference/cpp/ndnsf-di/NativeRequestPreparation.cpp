@@ -1,8 +1,10 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <set>
 #include <stdexcept>
+#include <tuple>
 
 namespace ndnsf::di {
 namespace {
@@ -26,10 +28,22 @@ bool ndnName(const std::string& value)
   }
   return true;
 }
+
+bool sameModel(const NativeModelDescriptor& a, const NativeModelDescriptor& b)
+{
+  return a.modelName == b.modelName && a.contentDigest == b.contentDigest &&
+    a.semanticsDigest == b.semanticsDigest && a.graphDigest == b.graphDigest &&
+    a.modelFormat == b.modelFormat && a.precision == b.precision &&
+    a.adapterId == b.adapterId && a.adapterVersion == b.adapterVersion;
+}
 } // namespace
 
 void NativePreparedInput::validate() const
 {
+  expectedModel.validate();
+  if (modelName != expectedModel.modelName || modelDigest != expectedModel.contentDigest ||
+      adapterId != expectedModel.adapterId || adapterVersion != expectedModel.adapterVersion)
+    throw std::invalid_argument("prepared input model binding is inconsistent");
   if (modelName.empty() || !digest(modelDigest) || taskName.empty() ||
       !digest(inputSchemaDigest) || !digest(optionsSchemaDigest) ||
       payload.empty() || adapterId.empty() || adapterVersion.empty() || !encoded ||
@@ -45,7 +59,7 @@ void NativeInspectedModel::validate() const
 {
   descriptor.validate();
   graph.validate(descriptor);
-  if (canonicalSourceName.empty() || !digest(canonicalSourceDigest)) {
+  if (!ndnName(canonicalSourceName) || !digest(canonicalSourceDigest) || !digest(modelManifestDigest)) {
     throw std::invalid_argument("native inspected model source identity is incomplete");
   }
 }
@@ -77,9 +91,9 @@ void NativeRequestControl::requireActive() const
 
 NativeRequestPreparation::NativeRequestPreparation(
   std::shared_ptr<const NativeAdapterRegistry> adapters, InspectPort inspect,
-  ArtifactPort artifacts)
+  ArtifactPort artifacts, RolePort roles)
   : m_adapters(std::move(adapters)), m_inspect(std::move(inspect)),
-    m_artifacts(std::move(artifacts))
+    m_artifacts(std::move(artifacts)), m_roles(std::move(roles))
 {
   if (!m_adapters) throw std::invalid_argument("native preparation requires adapter registry");
 }
@@ -107,7 +121,7 @@ NativePreparedInput NativeRequestPreparation::prepareInput(
   NativePreparedInput result{model.modelName, model.contentDigest, std::move(taskName),
                              std::move(inputSchemaDigest),
                              std::move(optionsSchemaDigest), std::move(encoded), {},
-                             deadline, model.adapterId, model.adapterVersion, true};
+                             deadline, model.adapterId, model.adapterVersion, true, model};
   result.validate();
   return result;
 }
@@ -123,13 +137,67 @@ NativeInspectedModel NativeRequestPreparation::inspectModel(
   if (descriptor.adapterId != input.adapterId || descriptor.adapterVersion != input.adapterVersion) {
     throw std::runtime_error("DI_NATIVE_MODEL_ADAPTER_IDENTITY_MISMATCH");
   }
+  if (!sameModel(descriptor, input.expectedModel))
+    throw std::runtime_error("DI_NATIVE_MODEL_INSPECTION_BINDING_MISMATCH");
   if (!m_inspect) throw std::runtime_error("DI_NATIVE_MODEL_GRAPH_PORT_NOT_CONFIGURED");
-  auto graph = m_inspect(input, descriptor);
-  graph.validate(descriptor);
-  NativeInspectedModel result{descriptor, std::move(graph),
-                              "/NDNSF/DI/MODEL/" + descriptor.contentDigest,
-                              descriptor.contentDigest};
+  auto result = m_inspect(input, descriptor);
+  input.validate(); // A late inspection cannot extend the request deadline.
   result.validate();
+  if (!sameModel(result.descriptor, input.expectedModel))
+    throw std::runtime_error("DI_NATIVE_MODEL_INSPECTION_BINDING_MISMATCH");
+  return result;
+}
+
+std::vector<NativeSelectionRoleV3> NativeRequestPreparation::prepareRoles(
+  const NativeInspectedModel& model, const NativeSplitCandidate& candidate,
+  const NativeRequestControl& control) const
+{
+  model.validate();
+  control.requireActive();
+  candidate.validate(model.graph);
+  if (!sameModel(candidate.model, model.descriptor))
+    throw std::runtime_error("DI_NATIVE_ROLE_BINDING_MISMATCH");
+  if (!m_roles) throw std::runtime_error("DI_NATIVE_ROLE_PORT_NOT_CONFIGURED");
+  auto result = m_roles(model, candidate, control);
+  control.requireActive();
+  std::set<std::pair<std::string, std::uint64_t>> expected;
+  for (const auto& role : candidate.executionPlan.roles) {
+    const auto degree = candidate.tensorDegreesByRole.find(role);
+    if (degree == candidate.tensorDegreesByRole.end() || !degree->second || degree->second > 1024)
+      throw std::runtime_error("DI_NATIVE_ROLE_BINDING_MISMATCH");
+    for (std::uint64_t rank = 0; rank < degree->second; ++rank) expected.emplace(role, rank);
+  }
+  if (result.size() != expected.size()) throw std::runtime_error("DI_NATIVE_ROLE_BINDING_MISMATCH");
+  for (const auto& role : result) {
+    if (!expected.erase({role.role, role.rank}) || role.graphDigest != model.graph.graphDigest ||
+        role.modelManifestDigest != model.modelManifestDigest ||
+        role.adapterId != model.descriptor.adapterId || role.adapterVersion != model.descriptor.adapterVersion ||
+        !digest(role.recipeDigest) || !digest(role.artifactProfileDigest) ||
+        !digest(role.canonicalInitializerDigest) || !digest(role.adapterDescriptorDigest) ||
+        !digest(role.assemblerDescriptorDigest) || role.backendAbi.empty() || role.precision.empty() ||
+        role.protectionEpoch.empty() || role.nodeIndices.empty() || !role.maxSourceBytes ||
+        !role.maxAssembledBytes || !role.maxNodes)
+      throw std::runtime_error("DI_NATIVE_ROLE_BINDING_MISMATCH");
+    const auto specific = candidate.rankArtifactDigestsByRole.find(role.role);
+    const auto& artifacts = specific == candidate.rankArtifactDigestsByRole.end()
+      ? candidate.artifactsByRole.at(role.role) : specific->second;
+    if (role.rank >= artifacts.size() || role.artifactDigest != artifacts[role.rank])
+      throw std::runtime_error("DI_NATIVE_ROLE_BINDING_MISMATCH");
+    const auto& backends = candidate.requirementsByRole.at(role.role).backends;
+    const auto& budget = candidate.requirementsByRole.at(role.role);
+    const long double requiredMb = std::ceil((static_cast<long double>(budget.weightBytes) +
+      budget.workspaceBytes + budget.activationBytes + budget.transientBytes) * budget.safetyMargin / (1024 * 1024));
+    if (static_cast<long double>(role.requiredDeviceMemoryMb) < requiredMb)
+      throw std::runtime_error("DI_NATIVE_ROLE_BINDING_MISMATCH");
+    if (std::none_of(backends.begin(), backends.end(), [&](const auto& backend) {
+          return role.backend == backend || role.backend == backend + "-cpu" || role.backend == backend + "-cuda";
+        }) || std::any_of(role.nodeIndices.begin(), role.nodeIndices.end(), [&](auto index) {
+          return index >= model.graph.nodes.size();
+        })) throw std::runtime_error("DI_NATIVE_ROLE_BINDING_MISMATCH");
+  }
+  std::sort(result.begin(), result.end(), [](const auto& a, const auto& b) {
+    return std::tie(a.role, a.rank) < std::tie(b.role, b.rank);
+  });
   return result;
 }
 
@@ -159,7 +227,7 @@ NativeArtifactBinding NativeRequestPreparation::ensureArtifacts(
   // The binding must cover exactly the roles the placed plan requires: a
   // missing role leaves a provider unassemblable, an extra role would smuggle
   // provider-side assembly into requester preparation.
-  if (result.sourceByRole.size() != roles.size()) {
+  if (result.manifestDigest != model.modelManifestDigest || result.sourceByRole.size() != roles.size()) {
     throw std::runtime_error("DI_NATIVE_ARTIFACT_BINDING_MISMATCH");
   }
   for (const auto& role : roles) {

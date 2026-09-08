@@ -39,6 +39,28 @@ struct Input
       role.requiredDeviceMemoryMb = 1024;
       roles.push_back(role);
     }
+    NativeModelDescriptor descriptor{"QwenFixture", context.modelDigest, nativePlanningDigest("semantics"),
+      context.graphDigest, "onnx", "fp32", roles.front().adapterId, roles.front().adapterVersion};
+    NativeGraphSnapshot graph;
+    graph.graphDigest = context.graphDigest; graph.nodes = {{"node", "Identity", 0}};
+    graph.topologicalOrder = {"node"};
+    NativeInspectedModel inspected{descriptor, graph, "/catalog/model", nativePlanningDigest("source"),
+      r.at("model_manifest_digest")};
+    NativeSplitCandidate split;
+    split.model = descriptor; split.graphDigest = context.graphDigest;
+    split.splitter = {"fixture", "1", nativePlanningDigest("split")};
+    split.candidateDigest = nativePlanningDigest("candidate");
+    for (const auto& role : roles) {
+      if (!split.tensorDegreesByRole.count(role.role)) split.executionPlan.roles.push_back(role.role);
+      ++split.tensorDegreesByRole[role.role];
+      split.fragmentsByRole[role.role] = nativePlanningDigest("fragment");
+      split.artifactsByRole[role.role].push_back(role.artifactDigest);
+      split.requirementsByRole[role.role] = {{"onnxruntime"}, 1, 0, 0, 0, 1.0};
+    }
+    NativeRequestPreparation preparation(std::make_shared<NativeAdapterRegistry>(), {}, {},
+      [&](const NativeInspectedModel&, const NativeSplitCandidate&, const NativeRequestControl&) { return roles; });
+    NativeRequestControl control{"request", 1, std::chrono::steady_clock::now() + std::chrono::seconds(10), {}};
+    roles = preparation.prepareRoles(inspected, split, control);
     NativeOfferAdmission admission(f.at("policy").dump(),
       {{f.at("key_id").get<std::string>(), f.at("public_pem").get<std::string>()}}, f.at("candidate"));
     for (const auto& item : sample.at("offers")) {

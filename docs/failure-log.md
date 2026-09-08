@@ -1,5 +1,11 @@
 # Failure Log and Evidence Index
 
+## 2026-09-07 — Spec182 inspection source audit
+
+inspectModel 合成 catalog source name 并丢失原请求完整 model descriptor，缺实际来源证据。
+已改 inspection owner 返回来源/manifest，补齐模型与角色绑定；真实 catalog/Repo 接线仍待完成。
+这是源码审计，无失败运行；见 [inspection evidence](../specs/182-native-di-python-bindings/evidence/t008-inspection-roles-20260907.md)。
+
 ## 2026-09-07 — Spec182 V3 placement test macro
 
 r1 build 在新测试 BOOST_CHECK 的 std::map 模板参数逗号处失败，尚未运行策略。

@@ -7,6 +7,13 @@
 
 ## Current Findings
 
+### Inspection Source Checkpoint 2026-09-07
+
+**A8-03 / HIGH / PARTIAL**：inspectModel 原先拼造 catalog 名称，并丢失请求完整模型描述。
+已改完整 inspection 结果、expectedModel/manifest 绑定与 prepareRoles 验证；真实 catalog/Repo
+owner 和 requester 主链仍缺，不能把本地 fixture 视为认证 I/O。见
+[inspection evidence](evidence/t008-inspection-roles-20260907.md)。
+
 ### V3 Placement Checkpoint 2026-09-07
 
 完整 role/rank、admitted offer 的 proposeRoles 已实现 capability/device 优先、exact
