@@ -1,0 +1,482 @@
+[
+  {
+    "ranges": [
+      [
+        0,
+        1
+      ],
+      [
+        1,
+        2
+      ]
+    ],
+    "graph": {
+      "graph_digest": "sha256:9534457be440912a168cfb3c5d6520718eca413e003bc54f0229e2776f42a6ba",
+      "adapter": {
+        "name": "qwen",
+        "version": "1",
+        "state_digest": "sha256:4f9510f10cfed8b796f0d6067766165a92241de68fc9e1944322272fe6f9bd93",
+        "abi": "fixture-abi-v1",
+        "model_formats": [
+          "onnx"
+        ],
+        "tasks": [
+          "task"
+        ],
+        "backends": [
+          "onnxruntime"
+        ],
+        "precisions": [
+          "float32"
+        ],
+        "input_schema_digest": "sha256:48ead40f3b571b24200aa70ed78cb2cc270fc39350348405fc1fa8b5949b5442",
+        "options_schema_digest": "sha256:42b86994847bdf859b467a0efe3d3669735a8613f283be361681429849d647fe",
+        "result_schema_digest": "sha256:1b00cb6a7161fd1841dfeded937a734927d0ea37daecfe79eee96f4d5cb9bb45",
+        "graph_schema_digest": "sha256:1e20c7dd694f6e793a9bb08049c67f266580472837940b45e5afa0443699931c",
+        "split_schema_digest": "sha256:d7da0e471a903882466a7be7b420d9cf652dbeadee4b351ee7d298d5583977c5",
+        "state_schema_digest": "sha256:7ecd71aa2742542271a9f2e6d86c272a694c95d45a0049fe638af7c6511774e0",
+        "graph_inspectable": true,
+        "splittable": true,
+        "deterministic_analysis": true
+      },
+      "nodes": [
+        {
+          "node_id": "embedding",
+          "operation": "embedding"
+        },
+        {
+          "node_id": "layer-00",
+          "operation": "layer-00"
+        },
+        {
+          "node_id": "layer-01",
+          "operation": "layer-01"
+        },
+        {
+          "node_id": "final-norm-head",
+          "operation": "final-norm-head"
+        }
+      ],
+      "edges": [
+        {
+          "edge_id": "hidden-embedding-to-layer-00",
+          "producer": "embedding",
+          "consumers": [
+            "layer-00"
+          ],
+          "dtype": "float32",
+          "shape": [
+            "batch",
+            "sequence",
+            "hidden"
+          ],
+          "estimated_bytes": null
+        },
+        {
+          "edge_id": "hidden-layer-0-to-1",
+          "producer": "layer-00",
+          "consumers": [
+            "layer-01"
+          ],
+          "dtype": "float32",
+          "shape": [
+            "batch",
+            "sequence",
+            "hidden"
+          ],
+          "estimated_bytes": null
+        },
+        {
+          "edge_id": "hidden-layer-1-to-final",
+          "producer": "layer-01",
+          "consumers": [
+            "final-norm-head"
+          ],
+          "dtype": "float32",
+          "shape": [
+            "batch",
+            "sequence",
+            "hidden"
+          ],
+          "estimated_bytes": null
+        }
+      ],
+      "topological_order": [
+        "embedding",
+        "layer-00",
+        "layer-01",
+        "final-norm-head"
+      ],
+      "legal_cut_edges": [
+        "hidden-embedding-to-layer-00",
+        "hidden-layer-0-to-1",
+        "hidden-layer-1-to-final"
+      ],
+      "model_inputs": [
+        {
+          "name": "input_ids",
+          "dtype": "int64",
+          "shape": [
+            "batch",
+            "sequence"
+          ],
+          "estimated_bytes": null
+        }
+      ],
+      "model_outputs": [
+        {
+          "name": "logits",
+          "dtype": "float32",
+          "shape": [
+            "batch",
+            "sequence",
+            "vocabulary"
+          ],
+          "estimated_bytes": null
+        }
+      ]
+    },
+    "candidate_json": "{\"artifacts_by_role\":{\"end\":[\"sha256:dc42df198b10c6f9bbbce5b32a05fc00736dd644fdde10c2a2700a44ed80140b\"],\"front\":[\"sha256:2674d596e69a8aa494818de038ff91b0af19c85bb7b524e5d7ee117559b4e617\"]},\"cross_partition_tensors\":[\"hidden-layer-0-to-1\"],\"estimated_costs\":{\"decoder_layers\":2,\"known_transfer_bytes\":0,\"rank_count\":2,\"role_count\":2,\"unknown_transfer_tensors\":2},\"execution_plan\":{\"dependencies\":[{\"consumer\":\"end\",\"producer\":\"front\",\"tensor_edges\":[\"hidden-layer-0-to-1\"]}],\"node_roles\":{\"embedding\":\"front\",\"final-norm-head\":\"end\",\"layer-00\":\"front\",\"layer-01\":\"end\"},\"roles\":[\"front\",\"end\"]},\"fragments_by_role\":{\"end\":\"sha256:dc42df198b10c6f9bbbce5b32a05fc00736dd644fdde10c2a2700a44ed80140b\",\"front\":\"sha256:2674d596e69a8aa494818de038ff91b0af19c85bb7b524e5d7ee117559b4e617\"},\"graph_digest\":\"sha256:9534457be440912a168cfb3c5d6520718eca413e003bc54f0229e2776f42a6ba\",\"hybrid_plan\":null,\"input_ingress_role\":\"\",\"merge_kind\":\"\",\"model\":{\"adapter\":{\"abi\":\"fixture-abi-v1\",\"backends\":[\"onnxruntime\"],\"deterministic_analysis\":true,\"graph_inspectable\":true,\"graph_schema_digest\":\"sha256:1e20c7dd694f6e793a9bb08049c67f266580472837940b45e5afa0443699931c\",\"input_schema_digest\":\"sha256:48ead40f3b571b24200aa70ed78cb2cc270fc39350348405fc1fa8b5949b5442\",\"model_formats\":[\"onnx\"],\"name\":\"qwen\",\"options_schema_digest\":\"sha256:42b86994847bdf859b467a0efe3d3669735a8613f283be361681429849d647fe\",\"precisions\":[\"float32\"],\"result_schema_digest\":\"sha256:1b00cb6a7161fd1841dfeded937a734927d0ea37daecfe79eee96f4d5cb9bb45\",\"split_schema_digest\":\"sha256:d7da0e471a903882466a7be7b420d9cf652dbeadee4b351ee7d298d5583977c5\",\"splittable\":true,\"state_digest\":\"sha256:4f9510f10cfed8b796f0d6067766165a92241de68fc9e1944322272fe6f9bd93\",\"state_schema_digest\":\"sha256:7ecd71aa2742542271a9f2e6d86c272a694c95d45a0049fe638af7c6511774e0\",\"tasks\":[\"task\"],\"version\":\"1\"},\"content_digest\":\"sha256:34e1b5468a63812c036a261b2659e44b658a5efe381ae110c6e72841d04ed6f2\",\"graph_digest\":\"sha256:9534457be440912a168cfb3c5d6520718eca413e003bc54f0229e2776f42a6ba\",\"model_format\":\"onnx\",\"model_name\":\"QwenFixture\",\"precision\":\"float32\",\"semantics_digest\":\"sha256:5f049d2fde60e9df8e3f00034b56b59b8713ae5e12bfc0f57c5cccc2ad85bd03\",\"source_revision\":\"\"},\"postprocessing\":{},\"rank_artifact_digests_by_role\":{\"end\":[\"sha256:dc42df198b10c6f9bbbce5b32a05fc00736dd644fdde10c2a2700a44ed80140b\"],\"front\":[\"sha256:2674d596e69a8aa494818de038ff91b0af19c85bb7b524e5d7ee117559b4e617\"]},\"requirements_by_role\":{\"end\":{\"activation_bytes\":536870912,\"backends\":[\"onnxruntime\"],\"kv_bytes\":0,\"safety_margin\":1.1,\"transient_bytes\":536870912,\"weight_bytes\":1,\"workspace_bytes\":1073741824},\"front\":{\"activation_bytes\":536870912,\"backends\":[\"onnxruntime\"],\"kv_bytes\":0,\"safety_margin\":1.1,\"transient_bytes\":536870912,\"weight_bytes\":1,\"workspace_bytes\":1073741824}},\"result_egress_role\":\"\",\"role_state_inputs_by_role\":{\"end\":[{\"dtype\":\"float32\",\"estimated_bytes\":null,\"name\":\"attention_kv_in\",\"shape\":[\"layers\",\"heads\",\"sequence\",\"head-dimension\"]},{\"dtype\":\"float32\",\"estimated_bytes\":null,\"name\":\"recurrent_state_in\",\"shape\":[\"layers\",\"hidden\"]},{\"dtype\":\"float32\",\"estimated_bytes\":null,\"name\":\"convolution_state_in\",\"shape\":[\"layers\",\"channels\",\"kernel\"]}],\"front\":[{\"dtype\":\"float32\",\"estimated_bytes\":null,\"name\":\"attention_kv_in\",\"shape\":[\"layers\",\"heads\",\"sequence\",\"head-dimension\"]},{\"dtype\":\"float32\",\"estimated_bytes\":null,\"name\":\"recurrent_state_in\",\"shape\":[\"layers\",\"hidden\"]},{\"dtype\":\"float32\",\"estimated_bytes\":null,\"name\":\"convolution_state_in\",\"shape\":[\"layers\",\"channels\",\"kernel\"]}]},\"role_state_outputs_by_role\":{\"end\":[{\"dtype\":\"float32\",\"estimated_bytes\":null,\"name\":\"attention_kv_out\",\"shape\":[\"layers\",\"heads\",\"sequence\",\"head-dimension\"]},{\"dtype\":\"float32\",\"estimated_bytes\":null,\"name\":\"recurrent_state_out\",\"shape\":[\"layers\",\"hidden\"]},{\"dtype\":\"float32\",\"estimated_bytes\":null,\"name\":\"convolution_state_out\",\"shape\":[\"layers\",\"channels\",\"kernel\"]}],\"front\":[{\"dtype\":\"float32\",\"estimated_bytes\":null,\"name\":\"attention_kv_out\",\"shape\":[\"layers\",\"heads\",\"sequence\",\"head-dimension\"]},{\"dtype\":\"float32\",\"estimated_bytes\":null,\"name\":\"recurrent_state_out\",\"shape\":[\"layers\",\"hidden\"]},{\"dtype\":\"float32\",\"estimated_bytes\":null,\"name\":\"convolution_state_out\",\"shape\":[\"layers\",\"channels\",\"kernel\"]}]},\"selection_priority\":0,\"source\":\"PRE_SPLIT\",\"splitter\":{\"deterministic\":true,\"name\":\"native-qwen-layer-split\",\"state_digest\":\"sha256:36851fd62188e3043ce29572c62b99bea2ac1fb85f74de8c176941e9eda0abd3\",\"version\":\"1\"},\"tensor_degrees_by_role\":{\"end\":1,\"front\":1}}",
+    "candidate_digest": "sha256:775e09f8fa57558ad2ff359365595a1dc17228d19e57802a9931a9c11a1e306b"
+  },
+  {
+    "ranges": [
+      [
+        0,
+        5
+      ],
+      [
+        5,
+        12
+      ]
+    ],
+    "graph": {
+      "graph_digest": "sha256:4d742d3c53adc400f6882ca1fe58c0414c237ccdea63d146065a0faff742e9d9",
+      "adapter": {
+        "name": "qwen",
+        "version": "1",
+        "state_digest": "sha256:4f9510f10cfed8b796f0d6067766165a92241de68fc9e1944322272fe6f9bd93",
+        "abi": "fixture-abi-v1",
+        "model_formats": [
+          "onnx"
+        ],
+        "tasks": [
+          "task"
+        ],
+        "backends": [
+          "onnxruntime"
+        ],
+        "precisions": [
+          "float32"
+        ],
+        "input_schema_digest": "sha256:48ead40f3b571b24200aa70ed78cb2cc270fc39350348405fc1fa8b5949b5442",
+        "options_schema_digest": "sha256:42b86994847bdf859b467a0efe3d3669735a8613f283be361681429849d647fe",
+        "result_schema_digest": "sha256:1b00cb6a7161fd1841dfeded937a734927d0ea37daecfe79eee96f4d5cb9bb45",
+        "graph_schema_digest": "sha256:1e20c7dd694f6e793a9bb08049c67f266580472837940b45e5afa0443699931c",
+        "split_schema_digest": "sha256:d7da0e471a903882466a7be7b420d9cf652dbeadee4b351ee7d298d5583977c5",
+        "state_schema_digest": "sha256:7ecd71aa2742542271a9f2e6d86c272a694c95d45a0049fe638af7c6511774e0",
+        "graph_inspectable": true,
+        "splittable": true,
+        "deterministic_analysis": true
+      },
+      "nodes": [
+        {
+          "node_id": "embedding",
+          "operation": "embedding"
+        },
+        {
+          "node_id": "layer-00",
+          "operation": "layer-00"
+        },
+        {
+          "node_id": "layer-01",
+          "operation": "layer-01"
+        },
+        {
+          "node_id": "layer-02",
+          "operation": "layer-02"
+        },
+        {
+          "node_id": "layer-03",
+          "operation": "layer-03"
+        },
+        {
+          "node_id": "layer-04",
+          "operation": "layer-04"
+        },
+        {
+          "node_id": "layer-05",
+          "operation": "layer-05"
+        },
+        {
+          "node_id": "layer-06",
+          "operation": "layer-06"
+        },
+        {
+          "node_id": "layer-07",
+          "operation": "layer-07"
+        },
+        {
+          "node_id": "layer-08",
+          "operation": "layer-08"
+        },
+        {
+          "node_id": "layer-09",
+          "operation": "layer-09"
+        },
+        {
+          "node_id": "layer-10",
+          "operation": "layer-10"
+        },
+        {
+          "node_id": "layer-11",
+          "operation": "layer-11"
+        },
+        {
+          "node_id": "final-norm-head",
+          "operation": "final-norm-head"
+        }
+      ],
+      "edges": [
+        {
+          "edge_id": "hidden-embedding-to-layer-00",
+          "producer": "embedding",
+          "consumers": [
+            "layer-00"
+          ],
+          "dtype": "float32",
+          "shape": [
+            "batch",
+            "sequence",
+            "hidden"
+          ],
+          "estimated_bytes": null
+        },
+        {
+          "edge_id": "hidden-layer-0-to-1",
+          "producer": "layer-00",
+          "consumers": [
+            "layer-01"
+          ],
+          "dtype": "float32",
+          "shape": [
+            "batch",
+            "sequence",
+            "hidden"
+          ],
+          "estimated_bytes": null
+        },
+        {
+          "edge_id": "hidden-layer-1-to-2",
+          "producer": "layer-01",
+          "consumers": [
+            "layer-02"
+          ],
+          "dtype": "float32",
+          "shape": [
+            "batch",
+            "sequence",
+            "hidden"
+          ],
+          "estimated_bytes": null
+        },
+        {
+          "edge_id": "hidden-layer-2-to-3",
+          "producer": "layer-02",
+          "consumers": [
+            "layer-03"
+          ],
+          "dtype": "float32",
+          "shape": [
+            "batch",
+            "sequence",
+            "hidden"
+          ],
+          "estimated_bytes": null
+        },
+        {
+          "edge_id": "hidden-layer-3-to-4",
+          "producer": "layer-03",
+          "consumers": [
+            "layer-04"
+          ],
+          "dtype": "float32",
+          "shape": [
+            "batch",
+            "sequence",
+            "hidden"
+          ],
+          "estimated_bytes": null
+        },
+        {
+          "edge_id": "hidden-layer-4-to-5",
+          "producer": "layer-04",
+          "consumers": [
+            "layer-05"
+          ],
+          "dtype": "float32",
+          "shape": [
+            "batch",
+            "sequence",
+            "hidden"
+          ],
+          "estimated_bytes": null
+        },
+        {
+          "edge_id": "hidden-layer-5-to-6",
+          "producer": "layer-05",
+          "consumers": [
+            "layer-06"
+          ],
+          "dtype": "float32",
+          "shape": [
+            "batch",
+            "sequence",
+            "hidden"
+          ],
+          "estimated_bytes": null
+        },
+        {
+          "edge_id": "hidden-layer-6-to-7",
+          "producer": "layer-06",
+          "consumers": [
+            "layer-07"
+          ],
+          "dtype": "float32",
+          "shape": [
+            "batch",
+            "sequence",
+            "hidden"
+          ],
+          "estimated_bytes": null
+        },
+        {
+          "edge_id": "hidden-layer-7-to-8",
+          "producer": "layer-07",
+          "consumers": [
+            "layer-08"
+          ],
+          "dtype": "float32",
+          "shape": [
+            "batch",
+            "sequence",
+            "hidden"
+          ],
+          "estimated_bytes": null
+        },
+        {
+          "edge_id": "hidden-layer-8-to-9",
+          "producer": "layer-08",
+          "consumers": [
+            "layer-09"
+          ],
+          "dtype": "float32",
+          "shape": [
+            "batch",
+            "sequence",
+            "hidden"
+          ],
+          "estimated_bytes": null
+        },
+        {
+          "edge_id": "hidden-layer-9-to-10",
+          "producer": "layer-09",
+          "consumers": [
+            "layer-10"
+          ],
+          "dtype": "float32",
+          "shape": [
+            "batch",
+            "sequence",
+            "hidden"
+          ],
+          "estimated_bytes": null
+        },
+        {
+          "edge_id": "hidden-layer-10-to-11",
+          "producer": "layer-10",
+          "consumers": [
+            "layer-11"
+          ],
+          "dtype": "float32",
+          "shape": [
+            "batch",
+            "sequence",
+            "hidden"
+          ],
+          "estimated_bytes": null
+        },
+        {
+          "edge_id": "hidden-layer-11-to-final",
+          "producer": "layer-11",
+          "consumers": [
+            "final-norm-head"
+          ],
+          "dtype": "float32",
+          "shape": [
+            "batch",
+            "sequence",
+            "hidden"
+          ],
+          "estimated_bytes": null
+        }
+      ],
+      "topological_order": [
+        "embedding",
+        "layer-00",
+        "layer-01",
+        "layer-02",
+        "layer-03",
+        "layer-04",
+        "layer-05",
+        "layer-06",
+        "layer-07",
+        "layer-08",
+        "layer-09",
+        "layer-10",
+        "layer-11",
+        "final-norm-head"
+      ],
+      "legal_cut_edges": [
+        "hidden-embedding-to-layer-00",
+        "hidden-layer-0-to-1",
+        "hidden-layer-1-to-2",
+        "hidden-layer-2-to-3",
+        "hidden-layer-3-to-4",
+        "hidden-layer-4-to-5",
+        "hidden-layer-5-to-6",
+        "hidden-layer-6-to-7",
+        "hidden-layer-7-to-8",
+        "hidden-layer-8-to-9",
+        "hidden-layer-9-to-10",
+        "hidden-layer-10-to-11",
+        "hidden-layer-11-to-final"
+      ],
+      "model_inputs": [
+        {
+          "name": "input_ids",
+          "dtype": "int64",
+          "shape": [
+            "batch",
+            "sequence"
+          ],
+          "estimated_bytes": null
+        }
+      ],
+      "model_outputs": [
+        {
+          "name": "logits",
+          "dtype": "float32",
+          "shape": [
+            "batch",
+            "sequence",
+            "vocabulary"
+          ],
+          "estimated_bytes": null
+        }
+      ]
+    },
+    "candidate_json": "{\"artifacts_by_role\":{\"end\":[\"sha256:dc42df198b10c6f9bbbce5b32a05fc00736dd644fdde10c2a2700a44ed80140b\"],\"front\":[\"sha256:2674d596e69a8aa494818de038ff91b0af19c85bb7b524e5d7ee117559b4e617\"]},\"cross_partition_tensors\":[\"hidden-layer-4-to-5\"],\"estimated_costs\":{\"decoder_layers\":12,\"known_transfer_bytes\":0,\"rank_count\":2,\"role_count\":2,\"unknown_transfer_tensors\":2},\"execution_plan\":{\"dependencies\":[{\"consumer\":\"end\",\"producer\":\"front\",\"tensor_edges\":[\"hidden-layer-4-to-5\"]}],\"node_roles\":{\"embedding\":\"front\",\"final-norm-head\":\"end\",\"layer-00\":\"front\",\"layer-01\":\"front\",\"layer-02\":\"front\",\"layer-03\":\"front\",\"layer-04\":\"front\",\"layer-05\":\"end\",\"layer-06\":\"end\",\"layer-07\":\"end\",\"layer-08\":\"end\",\"layer-09\":\"end\",\"layer-10\":\"end\",\"layer-11\":\"end\"},\"roles\":[\"front\",\"end\"]},\"fragments_by_role\":{\"end\":\"sha256:dc42df198b10c6f9bbbce5b32a05fc00736dd644fdde10c2a2700a44ed80140b\",\"front\":\"sha256:2674d596e69a8aa494818de038ff91b0af19c85bb7b524e5d7ee117559b4e617\"},\"graph_digest\":\"sha256:4d742d3c53adc400f6882ca1fe58c0414c237ccdea63d146065a0faff742e9d9\",\"hybrid_plan\":null,\"input_ingress_role\":\"\",\"merge_kind\":\"\",\"model\":{\"adapter\":{\"abi\":\"fixture-abi-v1\",\"backends\":[\"onnxruntime\"],\"deterministic_analysis\":true,\"graph_inspectable\":true,\"graph_schema_digest\":\"sha256:1e20c7dd694f6e793a9bb08049c67f266580472837940b45e5afa0443699931c\",\"input_schema_digest\":\"sha256:48ead40f3b571b24200aa70ed78cb2cc270fc39350348405fc1fa8b5949b5442\",\"model_formats\":[\"onnx\"],\"name\":\"qwen\",\"options_schema_digest\":\"sha256:42b86994847bdf859b467a0efe3d3669735a8613f283be361681429849d647fe\",\"precisions\":[\"float32\"],\"result_schema_digest\":\"sha256:1b00cb6a7161fd1841dfeded937a734927d0ea37daecfe79eee96f4d5cb9bb45\",\"split_schema_digest\":\"sha256:d7da0e471a903882466a7be7b420d9cf652dbeadee4b351ee7d298d5583977c5\",\"splittable\":true,\"state_digest\":\"sha256:4f9510f10cfed8b796f0d6067766165a92241de68fc9e1944322272fe6f9bd93\",\"state_schema_digest\":\"sha256:7ecd71aa2742542271a9f2e6d86c272a694c95d45a0049fe638af7c6511774e0\",\"tasks\":[\"task\"],\"version\":\"1\"},\"content_digest\":\"sha256:34e1b5468a63812c036a261b2659e44b658a5efe381ae110c6e72841d04ed6f2\",\"graph_digest\":\"sha256:4d742d3c53adc400f6882ca1fe58c0414c237ccdea63d146065a0faff742e9d9\",\"model_format\":\"onnx\",\"model_name\":\"QwenFixture\",\"precision\":\"float32\",\"semantics_digest\":\"sha256:5f049d2fde60e9df8e3f00034b56b59b8713ae5e12bfc0f57c5cccc2ad85bd03\",\"source_revision\":\"\"},\"postprocessing\":{},\"rank_artifact_digests_by_role\":{\"end\":[\"sha256:dc42df198b10c6f9bbbce5b32a05fc00736dd644fdde10c2a2700a44ed80140b\"],\"front\":[\"sha256:2674d596e69a8aa494818de038ff91b0af19c85bb7b524e5d7ee117559b4e617\"]},\"requirements_by_role\":{\"end\":{\"activation_bytes\":536870912,\"backends\":[\"onnxruntime\"],\"kv_bytes\":0,\"safety_margin\":1.1,\"transient_bytes\":536870912,\"weight_bytes\":1,\"workspace_bytes\":1073741824},\"front\":{\"activation_bytes\":536870912,\"backends\":[\"onnxruntime\"],\"kv_bytes\":0,\"safety_margin\":1.1,\"transient_bytes\":536870912,\"weight_bytes\":1,\"workspace_bytes\":1073741824}},\"result_egress_role\":\"\",\"role_state_inputs_by_role\":{\"end\":[{\"dtype\":\"float32\",\"estimated_bytes\":null,\"name\":\"attention_kv_in\",\"shape\":[\"layers\",\"heads\",\"sequence\",\"head-dimension\"]},{\"dtype\":\"float32\",\"estimated_bytes\":null,\"name\":\"recurrent_state_in\",\"shape\":[\"layers\",\"hidden\"]},{\"dtype\":\"float32\",\"estimated_bytes\":null,\"name\":\"convolution_state_in\",\"shape\":[\"layers\",\"channels\",\"kernel\"]}],\"front\":[{\"dtype\":\"float32\",\"estimated_bytes\":null,\"name\":\"attention_kv_in\",\"shape\":[\"layers\",\"heads\",\"sequence\",\"head-dimension\"]},{\"dtype\":\"float32\",\"estimated_bytes\":null,\"name\":\"recurrent_state_in\",\"shape\":[\"layers\",\"hidden\"]},{\"dtype\":\"float32\",\"estimated_bytes\":null,\"name\":\"convolution_state_in\",\"shape\":[\"layers\",\"channels\",\"kernel\"]}]},\"role_state_outputs_by_role\":{\"end\":[{\"dtype\":\"float32\",\"estimated_bytes\":null,\"name\":\"attention_kv_out\",\"shape\":[\"layers\",\"heads\",\"sequence\",\"head-dimension\"]},{\"dtype\":\"float32\",\"estimated_bytes\":null,\"name\":\"recurrent_state_out\",\"shape\":[\"layers\",\"hidden\"]},{\"dtype\":\"float32\",\"estimated_bytes\":null,\"name\":\"convolution_state_out\",\"shape\":[\"layers\",\"channels\",\"kernel\"]}],\"front\":[{\"dtype\":\"float32\",\"estimated_bytes\":null,\"name\":\"attention_kv_out\",\"shape\":[\"layers\",\"heads\",\"sequence\",\"head-dimension\"]},{\"dtype\":\"float32\",\"estimated_bytes\":null,\"name\":\"recurrent_state_out\",\"shape\":[\"layers\",\"hidden\"]},{\"dtype\":\"float32\",\"estimated_bytes\":null,\"name\":\"convolution_state_out\",\"shape\":[\"layers\",\"channels\",\"kernel\"]}]},\"selection_priority\":0,\"source\":\"PRE_SPLIT\",\"splitter\":{\"deterministic\":true,\"name\":\"native-qwen-layer-split\",\"state_digest\":\"sha256:be28bc762c70c13467bfc5b9857c9efa0bfe1b4d2870eec619d3edbaf4e95057\",\"version\":\"1\"},\"tensor_degrees_by_role\":{\"end\":1,\"front\":1}}",
+    "candidate_digest": "sha256:28f9f1704c87484627e701f7e1d33829efcdc91642729beed05c373281af5648"
+  }
+]

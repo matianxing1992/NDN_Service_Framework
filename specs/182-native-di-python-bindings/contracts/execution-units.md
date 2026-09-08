@@ -117,6 +117,8 @@ worker crash/cancel 等真实子进程案例也转 T016，卡内只运行纯 fra
 
 ### T003-A Qwen Split Candidates
 
+- **R1-B1 metadata entry**: NativeQwenLayerSplit::inspectGraph(model, revision, maxNodes) 从维护 model metadata 生成 semantic graph，校验完整 expected graph digest；enumerateFromMetadata 直接调用该入口与既有 enumerate，不要求调用方先用 Python 制造图。maxNodes 在分配前显式检查，未知 tensor bytes 保留；固定 decode profile 与 maintained builder 对照。此图不提供 ONNX index，不代替 R2 source/recipe owner。验证见 [R1-B1](../evidence/r1-b1-qwen-metadata-20260908.md)。
+
 - **Parent**: T003; **Depends**: T002-A; **Reviewer**: local source review
 - **Read**: CD-002 → Symbols/Values；P/adapters/qwen/placement.py::QwenThreeStageSplitter；N/NativePlanning.hpp（由本卡新增共享声明）。
 - **Write**: N/NativePlanning.hpp; N/NativePlanning.cpp; N/NativeInferenceClient.hpp; A/qwen/NativeQwenPlanner.hpp; A/qwen/NativeQwenPlanner.cpp; U/di-native-planning.t.cpp; U/di-native-client.t.cpp; tests/fixtures/spec182/native-model-fixture.hpp; tests/fixtures/spec182/author-model-descriptor-oracle.py; tests/fixtures/spec182/model-descriptor-oracle.json; wscript。

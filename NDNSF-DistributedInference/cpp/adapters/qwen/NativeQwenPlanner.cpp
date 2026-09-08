@@ -1,4 +1,5 @@
 #include "NDNSF-DistributedInference/cpp/adapters/qwen/NativeQwenPlanner.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 
 #include <algorithm>
 #include <set>
@@ -59,6 +60,51 @@ NativeStrategyIdentity NativeQwenLayerSplit::identity() const
       m_layerRanges[i].second << ':' << m_artifactDigestsByRole.at(m_roles[i]) << ';';
   }
   return {"native-qwen-layer-split", "1", nativePlanningDigest(canonical.str())};
+}
+
+NativeGraphSnapshot NativeQwenLayerSplit::inspectGraph(const NativeModelDescriptor& model,
+  const std::string& revision, std::uint64_t maxNodes) const
+{
+  model.validate();
+  const auto layers = m_layerRanges.back().second;
+  if (revision.empty() || maxNodes < 2 || layers > maxNodes - 2)
+    throw std::invalid_argument("Qwen metadata revision or graph size is invalid");
+  NativeGraphSnapshot result;
+  result.topologicalOrder.push_back("embedding");
+  for (std::uint64_t i = 0; i < layers; ++i)
+    result.topologicalOrder.push_back("layer-" + std::string(i < 10 ? "0" : "") + std::to_string(i));
+  result.topologicalOrder.push_back("final-norm-head");
+  for (std::size_t i = 0; i < result.topologicalOrder.size(); ++i) {
+    const auto& id = result.topologicalOrder[i];
+    result.nodes.push_back({id, id, i});
+    if (i == 0) continue;
+    const auto edge = i == 1 ? "hidden-embedding-to-layer-00" :
+      i == result.topologicalOrder.size() - 1 ? "hidden-layer-" + std::to_string(layers - 1) + "-to-final" :
+      "hidden-layer-" + std::to_string(i - 2) + "-to-" + std::to_string(i - 1);
+    result.edges.push_back({edge, result.topologicalOrder[i - 1], {id},
+      {edge, model.precision, {std::string("batch"), std::string("sequence"), std::string("hidden")}, std::nullopt}});
+    result.legalCutEdges.push_back(edge);
+  }
+  result.modelInputs = {{"input_ids", "int64", {std::string("batch"), std::string("sequence")}, std::nullopt}};
+  result.modelOutputs = {{"logits", model.precision,
+    {std::string("batch"), std::string("sequence"), std::string("vocabulary")}, std::nullopt}};
+  auto ranges = NativeJson::array();
+  for (const auto& range : m_layerRanges) ranges.push_back(NativeJson::array({range.first, range.second}));
+  result.graphDigest = nativePlanningDigest(nativeCanonicalJson(NativeJson{
+    {"model", model.modelName}, {"revision", revision}, {"precision", model.precision},
+    {"decode_mode", "single-token-autoregressive"}, {"modality", "text-only"},
+    {"mtp_enabled", false}, {"thinking_mode", "disabled"}, {"layer_ranges", ranges},
+    {"nodes", result.topologicalOrder}, {"edges", result.legalCutEdges}, {"legal_cuts", result.legalCutEdges}}));
+  result.validate(model);
+  return result;
+}
+
+std::vector<NativeSplitCandidate> NativeQwenLayerSplit::enumerateFromMetadata(
+  const NativeModelDescriptor& model, const std::string& revision, std::uint64_t maxNodes,
+  const NativeCandidateBudget& budget) const
+{
+  budget.validate();
+  return enumerate(model, inspectGraph(model, revision, maxNodes), budget);
 }
 
 std::vector<NativeSplitCandidate>
