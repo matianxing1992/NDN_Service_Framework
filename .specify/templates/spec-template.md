@@ -1,6 +1,9 @@
 # Feature Specification: [FEATURE NAME]
 
-<!-- 验收定义实际行为、独立判据和必要负例，不默认要求每小任务编译测试。执行时引用 skills/speckit-code-design/references/pre-test-static-review.md：逐任务静态门、批末流程门、统一构建测试；静态通过不能替代行为验收。 -->
+<!-- 验收定义实际行为、真实入口、独立判据和必要负例，不默认要求每小任务编译测试。
+     对有代码接线的故事，说明生产调用方、可观察结果、独立 oracle、恢复/取消边界和证据责任；未知项显式标记。
+     执行时引用 skills/speckit-code-design/references/pre-test-static-review.md 与 batch-quality-gates.md：
+     逐任务静态门、批末流程门、统一构建测试；静态通过不能替代行为验收。 -->
 
 <!--
   DOCUMENT LANGUAGE POLICY (constitution 1.4.0, 2026-09-05):

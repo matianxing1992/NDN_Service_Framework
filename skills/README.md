@@ -5,7 +5,7 @@
 
 | Skill | Use |
 | --- | --- |
-| [speckit-code-design](speckit-code-design/SKILL.md) | 设计文件/符号/字段/调用链、内聚任务、源码对照设计和验收 |
+| [speckit-code-design](speckit-code-design/SKILL.md) | 设计文件/符号/字段/调用链、内聚任务、源码对照设计和验收；批次质量与漏检记录见其 `references/batch-quality-gates.md` |
 | [itiger-ndnsf-ops](itiger-ndnsf-ops/SKILL.md) | 路由现有SIF交付与Tiger工具，保持开发/实验分工及来源证据 |
 | [ndnsf-minindn-experiment](ndnsf-minindn-experiment/SKILL.md) | 本地拓扑、应用生命周期、独立判据和实验结果 |
 | [codegraph-first](codegraph-first/SKILL.md) | 有索引时优先图查询，没有时精确源码检索 |

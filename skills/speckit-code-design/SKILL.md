@@ -61,6 +61,10 @@ tasks.md 顶部完整登记执行单元、依赖、状态、证据和剩余项�
 每个小任务编码后应用只读 review-agent profile 静态门，通过后继续同一逻辑批次；整批逻辑/流程审查通过后统一构建和相关测试。批次测试未完成保持 PARTIAL；集成与真实实验沿用最终验证阶段。
 Static review PASS != Behavior PASS。
 
+批次覆盖、稳定出口、漏检分类和构建测量统一遵循
+[batch-quality-gates.md](references/batch-quality-gates.md)。该参考由所有 Spec Kit
+写作、分析、审计和执行技能引用；不要在单个 Spec 或模型专用表中另建一套规则。
+
 接口、职责、状态或验收改变时先修订对应契约；普通局部实现选择无需新报告或批准。
 完成时核对最终 diff 和实际证据，同步 tasks.md。未完成的实现/验证保持未勾选。
 仅重审、重跑变化影响的范围；不能自动把旧 PASS 延续到新行为。

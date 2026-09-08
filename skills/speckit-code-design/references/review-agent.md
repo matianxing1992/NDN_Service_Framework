@@ -17,6 +17,9 @@
 找到首个问题后继续审完其余改动。具体 finding 使用 `[P1/P2/P3] 标题 — file:line`，给出触发条件、源码因果与影响，定位最小相关范围；P0 只用于无条件严重阻断。缺陷须有证据、可行动，不制造风格问题、推测性故障或把旧问题说成本次引入。
 
 设计缺失、既有阻塞和未读路径单列为 coverage/design gap，不伪造 regression finding；控制当前任务正确性时同样阻止静态门。无缺陷写 No findings，并附实际覆盖、设计符合性、待运行验证和残余不确定性，由工作流判定是否 STATIC_PASS。
+实际覆盖至少包括生产调用方/默认接线、测试或 harness 及其 oracle、构建注册/source
+closure；这些未读时写 coverage gap，不能仅凭 No findings 记 `STATIC_PASS`。批次漏检与
+构建测量按 [batch-quality-gates.md](batch-quality-gates.md) 的结果字段归档，不在本参考另建报告。
 
 ## Techniques
 

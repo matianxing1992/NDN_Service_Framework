@@ -1,6 +1,9 @@
 # Implementation Plan: [FEATURE]
 
-<!-- 工作流采用 skills/speckit-code-design/references/pre-test-static-review.md：设计先行；声明逻辑批次及实现/验收依赖；每小任务只读静态审查后继续同批；整批逻辑/流程审查后统一构建和相关测试。批次表在 plan 或 tasks 只定义一次，另一处引用；未测试不标 DONE。 -->
+<!-- 工作流采用 skills/speckit-code-design/references/pre-test-static-review.md 与
+     batch-quality-gates.md：设计先行；声明逻辑批次及实现/验收依赖；每小任务只读静态审查后继续同批；
+     整批逻辑/流程审查后统一构建和相关测试。批次表在 plan 或 tasks 只定义一次，另一处引用；未测试不标 DONE。
+     每批还要冻结稳定行为出口、生产入口/调用方/测试与构建接线范围，并记录静态、编译/链接、运行漏检分类和耗时。 -->
 
 <!--
   DOCUMENT LANGUAGE POLICY (constitution 1.4.0, 2026-09-05):
@@ -99,6 +102,19 @@ configuration, harness, or evidence-contract changes]
 
 Follow `.specify/memory/design-code-convergence.md`; feature-specific rules may
 be stricter but must not weaken its PASS/BLOCK boundary.
+
+## Logical Batch Quality Plan
+
+<!--
+  Define each independently verifiable behavior batch once. Do not grow a batch
+  after its stable exit merely to avoid another build. Use the shared reference
+  for required coverage and result fields. For documentation-only work, record
+  N/A with the reason instead of inventing a code batch.
+-->
+
+| Batch ID | Behavior boundary / stable exit | Members | Implementation dependencies | Acceptance dependencies | Shared build/test selector and owner |
+| --- | --- | --- | --- | --- | --- |
+| B-01 | [observable behavior and exit] | [task IDs] | [IDs or —] | [hard gates or —] | [selector / owner] |
 
 ## Project Structure
 
