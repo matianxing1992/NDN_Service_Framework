@@ -421,6 +421,64 @@ BOOST_AUTO_TEST_CASE(NativePreparationBindsAdapterAndGraphPort)
   BOOST_CHECK_EQUAL(ordinaryBinding.artifactDigestByRole.at("role"), digest("artifact"));
 }
 
+BOOST_AUTO_TEST_CASE(PreparationBindsCandidatePostprocessingToEgressOnly)
+{
+  TaskFixtureAdapter adapter("fixture", "1", "fixture", "float32", "semantics", "graph",
+                             identityBytes, identityBytes);
+  const auto model = inspectedFor(modelDescriptor(adapter));
+  NativeRequestControl control{"/request/semantics", 1, deadline(1000), {}};
+  auto proposal = proposalFor(control, model, {"Front", "Merge"});
+  auto candidate = candidateFor(model, proposal);
+  candidate.inputIngressRole = "Front";
+  candidate.resultEgressRole = "Merge";
+  candidate.mergeKind = "NATIVE_POSTPROCESS";
+  candidate.postprocessingJson = R"({"identity":"yolo-postprocess-v1","outputName":"detections","confidenceThreshold":0.25,"sort":"confidence-desc,class-asc,xyxy-asc"})";
+  candidate.candidateDigest = candidate.computedDigest();
+  auto& merge = proposal.roles.back();
+  merge.mergeKind = candidate.mergeKind;
+  merge.postprocessIdentity = "yolo-postprocess-v1";
+  merge.postprocessOutputName = "detections";
+  merge.postprocessConfidenceThreshold = 0.25;
+  merge.postprocessSort = "confidence-desc,class-asc,xyxy-asc";
+  BOOST_CHECK_NO_THROW(NativeRequestPreparation::validateRoles(model, candidate, proposal.roles));
+
+  const std::vector<std::function<void(NativeSelectionRoleV3&)>> mutations{
+    [](auto& r) { r.mergeKind = "ONNX_MERGE_GRAPH"; },
+    [](auto& r) { r.postprocessIdentity = "other"; },
+    [](auto& r) { r.postprocessOutputName = "other"; },
+    [](auto& r) { r.postprocessConfidenceThreshold = 0.5; },
+    [](auto& r) { r.postprocessSort = "other"; }
+  };
+  for (const auto& mutate : mutations) {
+    auto roles = proposal.roles;
+    mutate(roles.back());
+    expectCode([&] { NativeRequestPreparation::validateRoles(model, candidate, roles); },
+               "DI_NATIVE_ROLE_BINDING_MISMATCH");
+    roles = proposal.roles;
+    mutate(roles.front());
+    expectCode([&] { NativeRequestPreparation::validateRoles(model, candidate, roles); },
+               "DI_NATIVE_ROLE_BINDING_MISMATCH");
+  }
+  auto moved = candidate;
+  moved.resultEgressRole = "Front";
+  moved.candidateDigest = moved.computedDigest();
+  expectCode([&] { NativeRequestPreparation::validateRoles(model, moved, proposal.roles); },
+             "DI_NATIVE_ROLE_BINDING_MISMATCH");
+  candidate.mergeKind = "ONNX_MERGE_GRAPH";
+  candidate.candidateDigest = candidate.computedDigest();
+  merge.mergeKind = candidate.mergeKind;
+  BOOST_CHECK_NO_THROW(NativeRequestPreparation::validateRoles(model, candidate, proposal.roles));
+  // Ordinary candidates retain the empty/default semantic projection.
+  candidate.mergeKind.clear();
+  candidate.inputIngressRole.clear();
+  candidate.resultEgressRole.clear();
+  candidate.postprocessingJson = "{}";
+  candidate.candidateDigest = candidate.computedDigest();
+  merge.mergeKind.clear(); merge.postprocessIdentity.clear(); merge.postprocessOutputName.clear();
+  merge.postprocessConfidenceThreshold = 0.0; merge.postprocessSort.clear();
+  BOOST_CHECK_NO_THROW(NativeRequestPreparation::validateRoles(model, candidate, proposal.roles));
+}
+
 // Qwen pipeline bytes are encoded exactly once and passed through unchanged
 // (BytesGenerationTaskAdapter identity semantics); decodeResult is the same
 // byte identity for the native final result.

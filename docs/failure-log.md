@@ -1,5 +1,17 @@
 # Failure Log and Evidence Index
 
+## 2026-09-08 — Cleanup Python path compatibility
+
+旧对象清理脚本在删除前检查使用 Path.is_relative_to；系统 Python 3.8 不支持，
+因此尚未生成清单或删除对象。改为 resolve().relative_to() 的包含检查后重试；
+pip cache purge 已独立成功。清理清单在 .codex-tmp/cleanup-20260908-object-files.json。
+
+## 2026-09-08 — Spec182 role semantics fixture ingress
+
+R1-B2 build PASS，25/26 cases PASS；新 C++ fixture 只填 result egress 未填 input
+ingress，candidate.validate 在语义校验之前拒绝。补齐成对入口/出口并在普通候选
+场景同时清空；保留原始日志，见 [R1-B2](../specs/182-native-di-python-bindings/evidence/r1-b2-role-semantics-20260908.md)。
+
 ## 2026-09-08 — Spec182 shared workflow validation references
 
 工作流集中到共享 skill 后，validate_design 仍在 feature wrapper 查旧标题/诊断

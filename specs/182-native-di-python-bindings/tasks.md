@@ -17,6 +17,8 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 
 | Unit / Details | Status | Depends | Evidence / Remaining | Updated |
 | --- | --- | --- | --- | --- |
+| [R1-B2 Candidate Role Semantics](evidence/r1-b2-role-semantics-20260908.md) | DONE | T002-A; existing candidate contract | CR-1/CR-2 batch only：官方静态门与 C++ 26 cases/546 assertions PASS；native Merge publication remains open，T003-C 不变 | 2026-09-08 |
+| [D-DISK-CLEANUP Build Object Cleanup](evidence/disk-cleanup-20260908.md) | DONE | User cleanup request | pip cache 及 2702 个旧对象已清理；磁盘可用 910 MB→30 GB；当前构建、二进制与原始证据保留 | 2026-09-08 |
 | [D-NATIVE-TEST-POLICY Native Test Ownership](contracts/proof-design.md#native-test-ownership) | DONE | User native testing request | 主要行为测试由 C++ 直接调用生产库；Python 兼容/离线 oracle/外部设施边界已明确，文档检查 PASS；实际测试迁移由各实现卡与 T013/T015/T016 负责 | 2026-09-08 |
 | [D-CHAIN-REPLAN Production Chain Review](evidence/production-chain-replan-20260908.md) | DONE | User pause and replan request | 23 张未完成卡归入七个能力阶段；实际 R<n>-B<k> 按完整行为/共享契约/稳定出口领取，逐任务静态门、批末统一验证；36 张原卡状态不变，新增实现暂停 | 2026-09-08 |
 | [D-REVIEW-AGENT Official Skill](evidence/review-agent-install-20260908.md) | DONE | User installation request | 官方原版安装/字节身份/技能 schema PASS；逐任务静态门明确调用，文档校验 PASS；不关闭产品任务 | 2026-09-08 |
@@ -64,6 +66,16 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 | [T017-A Development Handoff](contracts/execution-units.md#t017-a-development-handoff) | NOT_STARTED | T016-A | [baseline](evidence/task-progress-registry-20260907.md)；无本卡独立执行/验收记录；按依赖领取 | 2026-09-07 |
 
 ## Current Checkpoint
+
+2026-09-08 R1-B2 Candidate Role Semantics / **DONE (batch only)**：Owner 当前执行者。
+复用 T002-A 与已验证候选契约，修复 T003-C 角色消费边界；不放行 T003-A/B/C
+整卡依赖。完整行为出口是候选 postprocessing 字段仅绑定到 result egress，
+prepare/publish 共用 validateRoles 拒绝偏离；非 ONNX Merge 发布仍是后续缺口。
+成员 CR-1：候选到角色语义绑定与 C++ 篡改负例；CR-2：官方只读静态门、组合审查后
+单次共享 -j4 build，执行 Spec182Preparation/Spec182CanonicalPublisher/Spec182V3Placement。
+首次 fixture 失败已保留，补齐 ingress/egress 后 r2 build 16.033s、26 cases/546 assertions
+PASS；T003-C 与生产请求仍 PARTIAL，证据见 [R1-B2](evidence/r1-b2-role-semantics-20260908.md)。
+用户清理请求已完成，见 [disk cleanup](evidence/disk-cleanup-20260908.md)。
 
 2026-09-08 Native Test Ownership / **DONE (policy only)**：按用户要求，主要
 DI 行为测试使用 C++ 直接调用生产库；Python 用于可选绑定兼容、离线独立 oracle

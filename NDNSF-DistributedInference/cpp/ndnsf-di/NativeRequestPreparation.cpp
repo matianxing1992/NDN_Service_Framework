@@ -209,7 +209,17 @@ void NativeRequestPreparation::validateRoles(const NativeInspectedModel& model,
     for (std::uint64_t rank = 0; rank < count; ++rank) expected.emplace(role, rank);
   }
   if (roles.size() != expected.size()) throw std::runtime_error("DI_NATIVE_ROLE_BINDING_MISMATCH");
+  const auto postprocessing = nativeParseJson(candidate.postprocessingJson);
   for (const auto& role : roles) {
+    // The candidate, not an independently supplied role, owns postprocessing.
+    // Keep the maintained egress-only projection for both ONNX and native merge.
+    const bool egress = role.role == candidate.resultEgressRole;
+    if (role.mergeKind != (egress ? candidate.mergeKind : "") ||
+        role.postprocessIdentity != (egress ? postprocessing.value("identity", std::string{}) : "") ||
+        role.postprocessOutputName != (egress ? postprocessing.value("outputName", std::string{}) : "") ||
+        role.postprocessConfidenceThreshold != (egress ? postprocessing.value("confidenceThreshold", 0.0) : 0.0) ||
+        role.postprocessSort != (egress ? postprocessing.value("sort", std::string{}) : ""))
+      throw std::runtime_error("DI_NATIVE_ROLE_BINDING_MISMATCH");
     if (!expected.erase({role.role, role.rank}) || role.graphDigest != model.canonicalGraphDigest ||
         role.modelManifestDigest != model.modelManifestDigest ||
         role.adapterId != model.descriptor.adapterId || role.adapterVersion != model.descriptor.adapterVersion ||
