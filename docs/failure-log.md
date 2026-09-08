@@ -3633,3 +3633,20 @@ identity and rerun packaging against the existing incremental Waf cache.
   existing read-write evidence output and the image-owned base libraries.
 - Lesson: container path checks must follow the repository's canonical artifact
   owner, not a historical compatibility path that may be absent.
+
+## 2026-09-08: privileged exact-SIF Controller rejected operator state root
+
+- Symptom: after the results bind fix, Controller entered its serving loop but
+  exited during runtime publication with
+  `RuntimeJournalUnsafeRootError: journal root must be owned by the current
+  identity`.
+- Root cause: local MiniNDN uses a root systemd supervisor, so the Controller
+  inside the exact SIF ran as UID 0 while the outer operator-owned state root
+  was intentionally retained for preflight ownership checks.
+- Fix: exact-SIF local replay now creates a fresh root-owned
+  `.sif-runtime-state` directory inside the exclusive case output after
+  preflight and passes it only to child applications; Tiger/Slurm user-UID
+  runs keep the operator state root.
+- Lesson: the outer input owner and the privileged local child owner are
+  separate security boundaries and need separate, explicitly scoped state
+  roots.

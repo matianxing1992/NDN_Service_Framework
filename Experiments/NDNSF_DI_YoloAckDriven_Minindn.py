@@ -3413,6 +3413,20 @@ def _run_live_case_once(case: str, output: Path, inputs: Mapping[str, Any], *,
     # controller/repository construction remains read-compatible.
     env["NDNSF_DI_STATE_ROOT"] = str(
         runtime_inputs.get("state_root") or os.environ.get("NDNSF_DI_STATE_ROOT", ""))
+    # The local MiniNDN supervisor is root so it can create network
+    # namespaces, while RuntimeJournal inside an exact-SIF application binds
+    # its root to the process UID. Keep the operator-owned outer state root
+    # for preflight, and give privileged SIF children a fresh root-owned
+    # journal directory inside this case's evidence tree. Tiger/Slurm runs do
+    # not enter this branch because their application UID is already the
+    # operator UID.
+    if sif_runtime_enabled() and os.geteuid() == 0:
+        child_state_root = binding.output / ".sif-runtime-state"
+        if child_state_root.exists() or child_state_root.is_symlink():
+            raise RunnerError("SIF_RUNTIME_STATE_ROOT_REUSED")
+        child_state_root.mkdir(mode=0o700, parents=False, exist_ok=False)
+        os.chown(child_state_root, os.geteuid(), os.getegid())
+        env["NDNSF_DI_STATE_ROOT"] = str(child_state_root)
     env.setdefault("NDNSF_HANDLER_THREADS", "1")
     env.setdefault("NDNSF_ACK_THREADS", "1")
     cleanup_done = False
