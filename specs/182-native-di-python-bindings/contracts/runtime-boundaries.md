@@ -49,6 +49,10 @@ NativeAdmittedOfferV3 verify(const ndn_service_framework::AckSelectionCandidate&
 - NativePreparedInput 拥有 task descriptor、完整 expectedModel、编码 bytes/已验证引用和单调 deadline；
   NativeInspectedModel 拥有 descriptor、graph、实际解析的 canonical source name/digest 和
   modelManifestDigest。InspectPort 返回完整 inspected model，不允许 preparation 合成来源名。
+  canonicalGraphDigest 单独绑定 ONNX 装配身份；graph.graphDigest 是 adapter 的 planning
+  graph 身份，不能强制相等。角色 recipe 检查前者，request/offer/candidate 检查后者。
+  当前发布前必须存在 source name/固定 manifest 的实现仍不支持 request-scoped publisher；
+  维护入口的 pre/post publication describe 与重新认证必须由后续 owner 接线保留。
 - prepareRoles 从 native catalog/recipe owner 获取候选完整角色契约，绑定 model/manifest、
   role/rank/artifact、adapter、节点与最低内存预算，再交给 proposeRoles；缺 port 明确失败。
   网络来源认证由既有 Core/catalog owner 完成，端口 DTO 本身不构成认证证明。

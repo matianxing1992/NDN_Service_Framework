@@ -109,7 +109,8 @@ std::map<std::string, std::set<std::uint64_t>> validateSnapshot(
   std::map<std::string, std::set<std::uint64_t>> ranks;
   for (const auto& role : roles) {
     if (role.role.empty() || role.backend.empty() || !digest(role.artifactDigest) ||
-        !digest(role.recipeDigest) || (!role.graphDigest.empty() && role.graphDigest != context.graphDigest) ||
+        !digest(role.recipeDigest) || !digest(role.graphDigest) ||
+        role.graphDigest != roles.front().graphDigest ||
         !ranks[role.role].insert(role.rank).second)
       throw std::invalid_argument("invalid or duplicate V3 role/rank");
   }

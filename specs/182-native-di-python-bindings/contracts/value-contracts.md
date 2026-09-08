@@ -143,6 +143,11 @@ Source: `NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/placemen
 
 ## V09 ProviderPlanningViewV3
 
+本契约中 model/snapshot/candidate/offer/proposal/core 的顶层 graph_digest 是 planning
+graph；角色装配 recipe 的 graph_digest 可为不同的 canonical ONNX graph。
+NativeInspectedModel 与 NativeArtifactBinding 显式保留 canonicalGraphDigest，不能用
+顶层 graph digest 回填；见 [graph identity evidence](../evidence/t008-graph-identity-spaces-20260907.md)。
+
 Source: `NDNSF-DistributedInference/ndnsf_distributed_inference/sdk/placement.py:789` → current
 `NativeAdmittedOfferV3::observation()`；旧 `NativeProviderPlanningView` 不是完整 V3 字段载体。
 

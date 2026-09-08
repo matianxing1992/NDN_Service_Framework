@@ -86,7 +86,7 @@ NativeGraphSnapshot graphFor(const NativeModelDescriptor& model)
 NativeInspectedModel inspectedFor(const NativeModelDescriptor& model)
 {
   return {model, graphFor(model), "/catalog/authenticated/model/42",
-          digest("catalog-source-bytes"), digest("manifest")};
+          digest("catalog-source-bytes"), digest("manifest"), model.graphDigest};
 }
 
 NativeRolePlacementProposalV3 proposalFor(const NativeRequestControl& control,
@@ -104,6 +104,7 @@ NativeRolePlacementProposalV3 proposalFor(const NativeRequestControl& control,
     inputs.artifacts.artifactDigestByRole = {{name, digest(name == "role" ? "artifact" : "artifact-" + name)}};
     inputs.artifacts.manifestDigest = model.modelManifestDigest;
     inputs.artifacts.graphDigest = model.graph.graphDigest;
+    inputs.artifacts.canonicalGraphDigest = model.canonicalGraphDigest;
     inputs.artifacts.recipeDigest = digest("recipe");
     inputs.protectionEpoch = "protected";
     fixture::assemblies(inputs);
@@ -259,13 +260,18 @@ BOOST_AUTO_TEST_CASE(InspectionPreservesResolvedSourceAndRejectsForeignModel)
   BOOST_CHECK_EQUAL(result.canonicalSourceName, "/catalog/authenticated/model/42");
   BOOST_CHECK_EQUAL(result.canonicalSourceDigest, digest("catalog-source-bytes"));
   BOOST_CHECK_EQUAL(result.modelManifestDigest, digest("manifest"));
-  for (int mutation = 0; mutation < 5; ++mutation) {
+  resolved.canonicalGraphDigest = digest("canonical-graph");
+  result = preparation.inspectModel(input);
+  BOOST_CHECK_EQUAL(result.graph.graphDigest, model.graphDigest);
+  BOOST_CHECK_EQUAL(result.canonicalGraphDigest, digest("canonical-graph"));
+  for (int mutation = 0; mutation < 6; ++mutation) {
     resolved = inspectedFor(model);
     if (mutation == 0) resolved.descriptor.contentDigest = digest("foreign");
     if (mutation == 1) resolved.descriptor.semanticsDigest = digest("foreign");
     if (mutation == 2) resolved.descriptor.modelName = "foreign";
     if (mutation == 3) resolved.canonicalSourceName = "not-an-ndn-name";
     if (mutation == 4) resolved.modelManifestDigest.clear();
+    if (mutation == 5) resolved.canonicalGraphDigest.clear();
     BOOST_CHECK_THROW(preparation.inspectModel(input), std::exception);
   }
 }

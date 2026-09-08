@@ -1,5 +1,16 @@
 # Failure Log and Evidence Index
 
+## 2026-09-07 — Spec182 graph identity source audit
+
+r2 首次定向运行在篡改 graph 的负例断言失败：产品正确抛 invalid_argument，fixture
+期待 runtime_error；真实不同图摘要的 SDK core 对照已通过。保留 r2 日志后修正期待，
+r3 build 与 58 cases/594 assertions PASS；未更改产品拒绝逻辑。
+
+维护中的 YOLO binding 区分 planning graph 与 canonical ONNX graph，但原生准备/封存
+强制两者相等。现显式绑定两种身份并增加不同 digest 的 SDK oracle；此为源码发现。
+发布前后 manifest/source 身份转换仍未接通，见
+[graph identity evidence](../specs/182-native-di-python-bindings/evidence/t008-graph-identity-spaces-20260907.md)。
+
 ## 2026-09-07 — Design source patch whitespace
 
 设计入 Git 的首轮 staged diff 检查因补丁空白上下文行返回 rc=2；改用零上下文补丁，94 文件还原与 staged diff 重验 PASS。

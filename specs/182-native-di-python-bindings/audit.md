@@ -7,6 +7,15 @@
 
 ## Current Findings
 
+### Planning and Canonical Graph Spaces 2026-09-07
+
+维护中的 YOLO binding 在 recipe 中使用 canonical ONNX graph，顶层保留 planning graph；
+原生强制相等的校验不符合源码，现显式拆分身份并新增不同 digest 的 SDK core oracle。
+新 ABI 构建与最终 58 cases/594 assertions PASS，错误摘要替换与缺失均拒绝。
+同时发现 publication 后 manifest 更新与 artifact/fetch 名分离尚未由原生 owner 实现，
+当前 source/manifest 前提不能直接承接维护路径。T008-A/T004-A 继续 PARTIAL，见
+[graph identity evidence](evidence/t008-graph-identity-spaces-20260907.md)。
+
 ### V3 Artifact Publication 2026-09-07
 
 ensureArtifacts/ArtifactPort 已移除旧简化 proposal 输入，直接使用候选与选定 V3 roles。

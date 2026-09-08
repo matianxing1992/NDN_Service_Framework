@@ -6,6 +6,10 @@ namespace ndnsf::di::fixture {
 
 inline void assemblies(NativePlanSealingInputs& inputs)
 {
+  // Most frozen fixtures intentionally use one digest for both graph spaces.
+  // A distinct source identity must be provided explicitly by its fixture.
+  if (inputs.artifacts.canonicalGraphDigest.empty())
+    inputs.artifacts.canonicalGraphDigest = inputs.artifacts.graphDigest;
   inputs.assemblyByRole.clear();
   for (const auto& item : inputs.artifacts.artifactDigestByRole) {
     NativeSelectionRoleV3 role;
@@ -19,7 +23,7 @@ inline void assemblies(NativePlanSealingInputs& inputs)
     role.adapterVersion = "1";
     role.modelManifestDigest = inputs.artifacts.manifestDigest;
     role.artifactProfileDigest = nativePlanningDigest("fixture-profile");
-    role.graphDigest = inputs.artifacts.graphDigest;
+    role.graphDigest = inputs.artifacts.canonicalGraphDigest;
     role.canonicalInitializerDigest = nativePlanningDigest("fixture-initializers");
     role.adapterDescriptorDigest = nativePlanningDigest("fixture-adapter");
     role.assemblerDescriptorDigest = nativePlanningDigest("fixture-assembler");

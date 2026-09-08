@@ -39,6 +39,9 @@ struct NativeInspectedModel
   std::string canonicalSourceName;
   std::string canonicalSourceDigest;
   std::string modelManifestDigest;
+  // The adapter's planning graph and the canonical ONNX assembly graph have
+  // separate identities; inspection must resolve both from the model source.
+  std::string canonicalGraphDigest;
 
   void validate() const;
 };
@@ -55,6 +58,8 @@ struct NativeArtifactBinding
   std::uint64_t attempt = 0;
   std::string modelDigest;
   std::string graphDigest;
+
+  std::string canonicalGraphDigest;
 
   void validate() const;
 };

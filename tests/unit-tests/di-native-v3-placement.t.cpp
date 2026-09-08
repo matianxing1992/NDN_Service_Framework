@@ -33,6 +33,8 @@ struct Input
     inputs.artifacts.manifestDigest = r.at("model_manifest_digest");
     inputs.artifacts.recipeDigest = r.at("recipe_digest");
     inputs.artifacts.graphDigest = r.at("graph_digest");
+    inputs.artifacts.canonicalGraphDigest = sample.value<std::string>(
+      "canonical_graph_digest", r.at("graph_digest").get<std::string>());
     inputs.protectionEpoch = r.at("protection_epoch");
     fixture::assemblies(inputs);
     for (const auto& rank : sample.at("ranks")) {
@@ -48,7 +50,7 @@ struct Input
     graph.graphDigest = context.graphDigest; graph.nodes = {{"node", "Identity", 0}};
     graph.topologicalOrder = {"node"};
     inspected = {descriptor, graph, "/catalog/model", nativePlanningDigest("source"),
-      r.at("model_manifest_digest")};
+      r.at("model_manifest_digest"), inputs.artifacts.canonicalGraphDigest};
     split.model = descriptor; split.graphDigest = context.graphDigest;
     split.splitter = {"fixture", "1", nativePlanningDigest("split")};
     split.candidateDigest = nativePlanningDigest("placed-candidate");
@@ -193,6 +195,18 @@ BOOST_AUTO_TEST_CASE(AdmittedPlacementSealsSdkCoreAndRejectsTampering)
         input.split, value, execution, input.offers, input.ackDigest, inputs); };
       const auto core = seal(proposal);
       BOOST_CHECK_EQUAL(core.coreDigest, sample.at("core_digest").get<std::string>());
+      BOOST_CHECK_EQUAL(core.graphDigest, input.context.graphDigest);
+      BOOST_CHECK_EQUAL(core.artifacts.canonicalGraphDigest, input.inspected.canonicalGraphDigest);
+      BOOST_CHECK_EQUAL(core.assemblyByRole.begin()->second.graphDigest, input.inspected.canonicalGraphDigest);
+      if (sample.at("name") == "distinct_graph_spaces") {
+        BOOST_CHECK_NE(core.graphDigest, core.artifacts.canonicalGraphDigest);
+        auto changed = proposal;
+        changed.roles[0].graphDigest = input.context.graphDigest;
+        BOOST_CHECK_THROW(seal(changed), std::invalid_argument);
+        auto changedCore = core;
+        changedCore.artifacts.canonicalGraphDigest = input.context.graphDigest;
+        BOOST_CHECK_THROW(changedCore.validate(), std::invalid_argument);
+      }
       for (const auto& admitted : input.offers) {
         if (!core.offerDigestByProvider.count(admitted.observation().provider)) continue;
         const auto grant = NativePlanSealer::grantView(core, admitted, {nativePlanningDigest("policy"), true});
