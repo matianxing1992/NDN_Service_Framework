@@ -17,6 +17,7 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 
 | Unit / Details | Status | Depends | Evidence / Remaining | Updated |
 | --- | --- | --- | --- | --- |
+| [D-DESIGN-CHAPTER-AUDIT Chapter Review](evidence/design-chapter-audit-20260908.md) | PASS | User document review request | 审阅完成：当前/目标 62/67 章；7 KEEP、36 EXPAND、20 REWRITE、4 CORRECT；被审文档 NEEDS_REVISION，PDF 未改写，不关闭产品任务 | 2026-09-08 |
 | [D-DESIGN-R2 Baseline and Contracts](evidence/design-r2-20260907.md) | PASS | User documentation request | 当前/目标 66/69 页；4 工具回归、API、460/350 文件还原、PDF 身份/版面 PASS；BC-01 至 BC-04 已补，TG-01 至 TG-05 PLANNED；不关闭功能任务 | 2026-09-07 |
 | [D-DESIGN-API API Developer Guide](evidence/design-api-guide-20260907.md) | PASS | User documentation request | 四模块 23 组 API 契约、295 文件声明参考及 830 绑定操作；双份 63 页 PDF/58 目录项、声明/源码快照检查 PASS；AGENTS 与 MANAGEMENT 同步；不改变功能验收 | 2026-09-07 |
 | [D-DESIGN-R0 Framework Design PDFs](evidence/design-pdf-baseline-20260907.md#work-unit-d-design-r0) | PASS | User request; documentation only | 四模块中文双 PDF 各 35 页；正文/字体/版面与 94 文件基线检查通过；新增 Spec 设计变更记录，用户已授权 Design 完整入 Git；不关闭功能任务 | 2026-09-07 |
@@ -58,6 +59,11 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 | [T017-A Development Handoff](contracts/execution-units.md#t017-a-development-handoff) | NOT_STARTED | T016-A | [baseline](evidence/task-progress-registry-20260907.md)；无本卡独立执行/验收记录；按依赖领取 | 2026-09-07 |
 
 ## Current Checkpoint
+
+2026-09-08 D-DESIGN-CHAPTER-AUDIT / **PASS（审阅）**：逐章检查当前/目标全部章节；
+第 53 章缺核心 API/调用流程，第 59 章 grant 输入解释错误，目标历史叙述需勘误。
+文档内容 **NEEDS_REVISION**；清单记录每章缺口与补写标准，PDF/产品源码本轮不改。
+见 [chapter audit](evidence/design-chapter-audit-20260908.md)。既有文档技术 PASS 不代表语义完整。
 
 2026-09-07 T003 YOLO fragment identity / **PARTIAL**：修复 fragment 规范输入，
 强制注册摘要、保留节点顺序，并对齐 backend/余量/原子候选 Merge 语义。

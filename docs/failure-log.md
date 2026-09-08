@@ -1,5 +1,12 @@
 # Failure Log and Evidence Index
 
+## 2026-09-08 — Design chapter semantic review
+
+R2 PDF/源码摘要检查曾通过，但逐章可理解性审阅结果 NEEDS_REVISION。
+第 53 章生成/KV/会话仅列 cancel；第 59 章混淆 grant 外部单项输入与内部完整策略物化；
+目标历史叙述与 TG 冲突。审阅已完成，修订待办，不把文档问题判为产品运行失败。
+见 [chapter audit](../specs/182-native-di-python-bindings/evidence/design-chapter-audit-20260908.md)。
+
 ## 2026-09-07 — Spec182 YOLO fragment source audit
 
 原生 fragment 哈希缺注册摘要与有序节点，且 backend/安全余量/原子 Merge 与维护
