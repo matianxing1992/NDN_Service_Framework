@@ -1505,6 +1505,18 @@ NativeInferenceClient::NativeInferenceClient(
   const NativeRequestRuntime& runtime,
   std::shared_ptr<NativeRequestPreparation> preparation,
   std::shared_ptr<const NativeOfferAdmission> admission)
+  : NativeInferenceClient(std::move(user), std::move(adapters), runtime, nullptr,
+                          std::move(preparation), std::move(admission))
+{
+}
+
+NativeInferenceClient::NativeInferenceClient(
+  std::shared_ptr<ndn_service_framework::ServiceUser> user,
+  std::shared_ptr<const NativeAdapterRegistry> adapters,
+  const NativeRequestRuntime& runtime,
+  std::shared_ptr<NativeConversationCoordinator> conversations,
+  std::shared_ptr<NativeRequestPreparation> preparation,
+  std::shared_ptr<const NativeOfferAdmission> admission)
   : NativeInferenceClient(std::move(user), std::move(adapters), runtime.contract,
                           std::move(preparation), std::move(admission))
 {
@@ -1515,6 +1527,7 @@ NativeInferenceClient::NativeInferenceClient(
     throw NativeDiError("INVALID_CLIENT_CONFIGURATION", "local", "constructor",
       "native requester requires protected runtime policy and grant owner");
   m_runtime = std::make_shared<const NativeRequestRuntime>(runtime);
+  m_conversations = std::move(conversations);
 }
 
 NativeInferenceClient::NativeInferenceClient(
