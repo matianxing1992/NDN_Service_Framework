@@ -8,6 +8,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeYoloMergeRunner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalRolePreparer.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalPreparationCatalog.hpp"
 
 #include <fstream>
 #include <future>
@@ -21,6 +22,17 @@ public:
   static NativeCanonicalArtifactPublisher create(Transport transport,
     NativeCanonicalPublicationOptions options, NativeCanonicalArtifactPublisher::SourcePort source)
   { return NativeCanonicalArtifactPublisher(std::move(transport), "/service", std::move(options), std::move(source)); }
+};
+class NativeCanonicalCatalogTestAccess
+{
+public:
+  static std::shared_ptr<NativeRequestPreparation> create(
+    const NativeCanonicalPreparationCatalog& catalog, NativeCanonicalPublisherTestAccess::Transport transport)
+  {
+    return catalog.makePreparation([transport](auto options, auto source) {
+      return NativeCanonicalPublisherTestAccess::create(transport, std::move(options), std::move(source));
+    });
+  }
 };
 }
 
@@ -131,6 +143,70 @@ struct TransportFixture
 }
 
 BOOST_AUTO_TEST_SUITE(Spec182CanonicalPublisher)
+BOOST_AUTO_TEST_CASE(CatalogComposesOwnedInputInspectionRolesAndPublication)
+{
+  for (bool external : {false, true}) {
+    Input input(external); TransportFixture io;
+    const auto& original = input.roles.front();
+    NativeCanonicalCatalogEntry entry;
+    entry.model = input.model; entry.source = *input.source;
+    entry.recipe = {original.artifactProfileDigest, original.assemblerDescriptorDigest,
+      original.backendAbi, original.precision, original.quantization, original.layout, original.padding,
+      original.protectionEpoch, original.maxSourceBytes, original.maxAssembledBytes, original.maxNodes};
+    entry.nodes = {{"n0", {0}}, {"n1", {1}}}; entry.publication = input.options;
+    entry.format = external ? NativeCatalogModelAdapter::Format::JsonBytes : NativeCatalogModelAdapter::Format::OpaqueBytes;
+    entry.maxPayloadBytes = 1024;
+    NativeAssemblyControl control{input.control.deadline, [&] { input.control.requireActive(); },
+      entry.recipe.maxSourceBytes, entry.recipe.maxAssembledBytes};
+    auto alternate = entry;
+    alternate.model.descriptor.modelName = "second-model";
+    alternate.model.descriptor.contentDigest = nativePlanningDigest("second-model");
+    auto catalog = std::make_unique<NativeCanonicalPreparationCatalog>(
+      std::vector<NativeCanonicalCatalogEntry>{entry, alternate}, control);
+    const auto registry = catalog->adapters();
+    BOOST_CHECK(registry->frozen());
+    const auto preparation = NativeCanonicalCatalogTestAccess::create(*catalog, io.transport());
+    BOOST_CHECK_THROW(catalog->makePreparation(nullptr, "/service"), std::invalid_argument);
+    catalog.reset(); // Returned ports own the pinned state, not the factory.
+    input.source->modelBytes.clear(); // Caller mutation must not change the owned publication source.
+    const std::vector<std::uint8_t> payload = external ? std::vector<std::uint8_t>{'{', '}'} :
+      std::vector<std::uint8_t>{0, 255, 1};
+    const auto prepared = preparation->prepareInput(entry.model.descriptor, "inference",
+      nativePlanningDigest("input"), nativePlanningDigest("options"), payload, {}, input.control.deadline);
+    BOOST_CHECK(prepared.payload == payload);
+    const auto inspected = preparation->inspectModel(prepared);
+    BOOST_CHECK_EQUAL(inspected.canonicalSourceDigest, entry.model.canonicalSourceDigest);
+    const auto secondInput = preparation->prepareInput(alternate.model.descriptor, "inference",
+      nativePlanningDigest("input"), nativePlanningDigest("options"), payload, {}, input.control.deadline);
+    BOOST_CHECK_EQUAL(preparation->inspectModel(secondInput).descriptor.contentDigest, alternate.model.descriptor.contentDigest);
+    BOOST_CHECK(registry->find(inspected.descriptor.adapterId)->decodeResult(payload) == payload);
+    auto roles = preparation->prepareRoles(inspected, input.candidate, input.control);
+    BOOST_REQUIRE_EQUAL(roles.size(), 1);
+    auto proposal = input.proposal(); proposal.roles = roles;
+    proposal.roles.front().backend = original.backend;
+    const auto published = preparation->ensureArtifacts(inspected, input.candidate, proposal, input.control);
+    const auto rebound = NativeRequestPreparation::bindPublishedRoles(inspected, input.candidate, proposal.roles, published);
+    BOOST_CHECK_EQUAL(assembleNativeCertifiedOnnxModel(entry.source, rebound.front(), control).modelDigest, original.artifactDigest);
+    BOOST_REQUIRE(!io.payloads.empty());
+    BOOST_CHECK_EQUAL(nativePlanningDigest(io.payloads.front().data(), io.payloads.front().size()), entry.model.canonicalSourceDigest);
+    auto foreign = prepared;
+    foreign.expectedModel.semanticsDigest = nativePlanningDigest("foreign semantics");
+    BOOST_CHECK_THROW(preparation->inspectModel(foreign), std::runtime_error);
+    auto wrongSource = inspected; wrongSource.canonicalSourceName = "/foreign/source";
+    BOOST_CHECK_THROW(preparation->prepareRoles(wrongSource, input.candidate, input.control), std::invalid_argument);
+    const auto publishedCount = io.payloads.size();
+    auto cancelled = input.control; cancelled.cancelled = [] { return true; };
+    BOOST_CHECK_THROW(preparation->ensureArtifacts(inspected, input.candidate, proposal, cancelled), std::runtime_error);
+    BOOST_CHECK_EQUAL(io.payloads.size(), publishedCount);
+    BOOST_CHECK_THROW(NativeCanonicalPreparationCatalog(std::vector<NativeCanonicalCatalogEntry>{entry, entry}, control), std::invalid_argument);
+    auto conflict = entry; conflict.maxPayloadBytes = 2048;
+    BOOST_CHECK_THROW(NativeCanonicalPreparationCatalog(std::vector<NativeCanonicalCatalogEntry>{entry, conflict}, control), std::invalid_argument);
+    auto corrupt = entry; corrupt.source.modelBytes.front() ^= 1;
+    BOOST_CHECK_THROW(NativeCanonicalPreparationCatalog(std::vector<NativeCanonicalCatalogEntry>{corrupt}, control), std::invalid_argument);
+    BOOST_CHECK_THROW(NativeCanonicalPreparationCatalog({}, control), std::invalid_argument);
+  }
+}
+
 BOOST_AUTO_TEST_CASE(PublishesOwnedInlineAndExternalSourcesThroughPreparation)
 {
   for (bool external : {false, true}) {
