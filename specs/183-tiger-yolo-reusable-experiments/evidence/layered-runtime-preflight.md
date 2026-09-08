@@ -57,3 +57,17 @@ Follow-up: direct I/O matched the lock; file-specific page-cache eviction restor
 ordinary reads and the renderer's independent digest check. The single-stage
 build is now running with a 2700-second bound and at most two compile jobs.
 See `input-read-integrity.md`; do not describe this as a permanent host repair.
+
+Third build checkpoint: source copied through direct I/O into a verified tmpfs
+SIF; extraction and APT succeeded. NAC, SVS (system Boost 1.71), NDNSD and Core
+compiled/installed; Python bindings are now building. The base SIF is not yet
+complete or qualified. See `base-build-3.log` and the live build, not stale tool
+session handles after goal continuation.
+
+The external app source seal at `.cache/layered-base-20260908/app-source` contains
+456 files from revision `81e330eaee6bb6109735b7a13b570d63dc7b7771`. All 117 base
+source records match the running base build exactly. The TF32 API compatibility
+repair therefore changes only the external app. The old host1.26 syntax check
+was insufficient: actual SIF1.20 headers lack the newer C++ options owner. The
+V2 C API replacement passes the one affected policy check; full exact-SDK app
+compilation and runtime qualification remain pending.
