@@ -1,5 +1,13 @@
 # Failure Log and Evidence Index
 
+## 2026-09-08 — Spec182 production grant implementation gap
+
+源码审计确认 NativeArtifactPolicyAuthority 仅有 IssuePort 验证包装，未实现 requester
+签名/策略/recipient encryption/authority 签名；client 也缺答复认证和真实 Core 发布
+生命周期。现有 wrong-recipient 正例只证明转发，不能证明授权。T005-A/B 保持 PARTIAL，
+R2-B4 修复批次已登记，见 [源码边界与接续](../specs/182-native-di-python-bindings/evidence/r2-b4-grant-production-audit-20260908.md)。
+本项为静态发现的实施缺口，不是运行失败或协议拒绝结果；未启动重建/实验。
+
 ## 2026-09-08 — Spec182 state mapping template call
 
 随后 r2 build PASS、70/71 cases PASS。真实 causal ONNX 的 Concat 重复引用同一输入，

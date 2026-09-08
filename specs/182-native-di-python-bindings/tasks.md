@@ -17,6 +17,7 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 
 | Unit / Details | Status | Depends | Evidence / Remaining | Updated |
 | --- | --- | --- | --- | --- |
+| [R2-B4 Production Grant Chain](evidence/r2-b4-grant-production-audit-20260908.md) | NOT_STARTED | R2-B3; CD-004; T004 acceptance retained | 源码审计完成：GA-01—04 确认签名请求、策略签发、答复验证和真实发布缺失；GA-1/2/3 批次已登记，尚未编码/测试 | 2026-09-08 |
 | [R2-B3 Projection Builder](evidence/r2-b3-projection-builder-20260908.md) | DONE | T003-C; R2-B1/B2 | PB-1/PB-2/PB-3 batch only：73 cases/1735 assertions PASS；补充1 case/37 assertions + SDK 7 dataflows/11 endpoints PASS；Core group/grant/default requester 仍待接线 | 2026-09-08 |
 | [R2-B2 State Source Binding](evidence/r2-b2-state-source-binding-20260908.md) | DONE | R2-B1 | SB-1/SB-2/SB-3 batch only：显式状态映射与源图重复 operand 修复；r3 71 cases/1649 assertions PASS；真实模型 bootstrap/requester 仍待完成 | 2026-09-08 |
 | [R2-B1 Preparation Catalog](evidence/r2-b1-preparation-catalog-20260908.md) | DONE | T003-C; T006-D; T007-B | PC-1/PC-2/PC-3 batch only：源目录→完整 preparation 端口组合，70 C++ cases/1596 assertions PASS；真实 bootstrap/state/requester 仍待完成 | 2026-09-08 |
@@ -45,8 +46,8 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 | [T003-B Yolo Split Candidates](contracts/execution-units.md#t003-b-yolo-split-candidates) | DONE | T003-A | [local closure](evidence/t003-local-closure-20260908.md)；实际 ONNX catalog/完整语义接口/确定性候选与独立 oracle 通过；catalog 网络取得和 requester 仍归 T008/T010；PO-002 留 T016 | 2026-09-08 |
 | [T003-C Placement and Registry](contracts/execution-units.md#t003-c-placement-and-registry) | DONE | T003-A, T003-B | [local closure](evidence/t003-local-closure-20260908.md)；完整候选/role metadata、确定性放置及 SDK V3 oracle 原卡单测通过；默认调用链仍归 T010；PO-002 留 T016 | 2026-09-08 |
 | [T004-A Canonical Plan Sealing](contracts/execution-units.md#t004-a-canonical-plan-sealing) | PARTIAL | T003-C | [publication recertification](evidence/t008-publication-recertification-20260907.md)；发布后 recipe/core 与 SDK 对照、旧 exact-reuse 拒绝及相关 58 cases/710 assertions PASS；dataflow/device binding、真实 requester 主链与完整验收仍待完成 | 2026-09-07 |
-| [T005-A InProcess Authority](contracts/execution-units.md#t005-a-inprocess-authority) | PARTIAL | T004-A | [旧局部验收](evidence/t005-a-inprocess-authority-20260907.md) 6 cases PASS 保留；依赖 T004-A 因 [A8-01](evidence/t004-wire-reopened-20260907.md) 重开，修复真实 grantView/core identity 后需复核，不能维持整卡 DONE | 2026-09-07 |
-| [T005-B Requester Grant Publication](contracts/execution-units.md#t005-b-requester-grant-publication) | PARTIAL | T005-A | [旧局部验收](evidence/t005-b-requester-grant-20260907.md) 8 cases + publication/fetch 证据保留；随 T004-A/T005-A 依赖闭合回退，待真实 grantView 输入和 Provider 消费链复核；见 [A8-01](evidence/t004-wire-reopened-20260907.md) | 2026-09-07 |
+| [T005-A InProcess Authority](contracts/execution-units.md#t005-a-inprocess-authority) | PARTIAL | T004-A | [旧局部验收](evidence/t005-a-inprocess-authority-20260907.md) 6 cases PASS 保留；[R2-B4 GA-01/02](evidence/r2-b4-grant-production-audit-20260908.md) 确认签名请求与真实 policy/crypto issuer 缺失，不只是依赖待复核 | 2026-09-08 |
+| [T005-B Requester Grant Publication](contracts/execution-units.md#t005-b-requester-grant-publication) | PARTIAL | T005-A | [旧局部验收](evidence/t005-b-requester-grant-20260907.md) 8 cases + publication/fetch 证据保留；[R2-B4 GA-03/04](evidence/r2-b4-grant-production-audit-20260908.md) 待答复认证、真实 Core publication、cancel/deadline fence 和 Provider 消费链 | 2026-09-08 |
 | [T006-A Canonical Source Identity](contracts/execution-units.md#t006-a-canonical-source-identity) | DONE | T002-A | [acceptance](evidence/t006-a-canonical-source-identity-20260907.md)；CPP(Spec182OnnxIdentity/*) 11 cases 全绿（24 v1 + 14 accepted extended 全模型 golden 逐字段、typed/raw pair 摘要恒等、v2 per-tensor 12 accepted 逐字节 + 5 拒绝、bf16 两编码归一、revision 分类、v2 descriptor binding 门、external/function-attr 内联等价、overflow/非法路径/限额拒绝） | 2026-09-07 |
 | [T006-B Certified Extraction and Wire](contracts/execution-units.md#t006-b-certified-extraction-and-wire) | DONE | T006-A | [acceptance](evidence/t006-b-certified-extraction-wire-20260907.md)；CPP(Spec182OnnxExtraction/*) 11 cases 全绿（4 accept 逐字节 parity + 独立 sha256 交叉检查，7 reject 精确 reason family）+ Spec182NativeAssembly 3 cases + Spec182OnnxIdentity 11 cases 回归；官方 ONNX 1.17 full-pb 统一（--onnx-prefix）；data_location proto3-optional presence 奇点修正 byteParity（frozen sha 77300e13，diff 唯一 delta）；完整回归 5 个环境性失败（TPM/NFD）与本卡无关 | 2026-09-07 |
 | [T006-C Bounded Native Worker](contracts/execution-units.md#t006-c-bounded-native-worker) | DONE | T006-B | [acceptance](evidence/t006-c-bounded-native-worker-20260907.md)；CPP(Spec182OnnxWorkerProtocol/*) 27 cases 全绿（frame 截断/溢出/重复帧逐字节状态机、compose/finalize 语义、metadata envelope 规范往返与 poison、真子进程 cancel 1304ms TERM→KILL escalation、信号死亡/静默/垃圾 stdout、PREFLIGHT 族）+ 842 cases 完整回归（除环境性 StreamFacade）；修复 isSha256Digest 长度门 66→71 root cause（failure-log 2026-09-07）；L0 staged install 链接验证（libexec/ndnsf-di，ELF/ldd clean，pythonWrapper 消息为设计内路径） | 2026-09-07 |
@@ -75,6 +76,12 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 | [T017-A Development Handoff](contracts/execution-units.md#t017-a-development-handoff) | NOT_STARTED | T016-A | [baseline](evidence/task-progress-registry-20260907.md)；无本卡独立执行/验收记录；按依赖领取 | 2026-09-07 |
 
 ## Current Checkpoint
+
+2026-09-08 R2-B4 production grant audit / **AUDIT_COMPLETE / IMPLEMENTATION_NOT_STARTED**：
+canonical C++ 与旧生产 Python 对照确认，T005 不只是等待 sealer 依赖复核：
+未签名请求、IssuePort-only authority、未验证答复及未接 Core 的 publication 均待实现。
+GA-1/2/3 完整签发/发布/消费批次已登记；旧局部 PASS 保留，不作为真实授权证明。
+见 [R2-B4 audit and batch](evidence/r2-b4-grant-production-audit-20260908.md)。
 
 2026-09-08 R2-B3 Projection Builder / **DONE (batch only)**：从 sealed plan/candidate 和
 admitted offers 生成执行角色、真实 device snapshot 绑定、application-input/dependency

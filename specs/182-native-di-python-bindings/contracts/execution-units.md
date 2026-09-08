@@ -159,6 +159,8 @@ worker crash/cancel 等真实子进程案例也转 T016，卡内只运行纯 fra
 
 ### T005-A InProcess Authority
 
+- **Production gap / R2-B4**: [源码审计与 GA-1/2/3 批次](../evidence/r2-b4-grant-production-audit-20260908.md) 是当前实施入口；IssuePort 单测不能替代 requester signature、operator policy、recipient encryption 与 authority signature。GA-1 补全真实签发，GA-2/3 连接验证、发布与消费。
+
 - **Parent**: T005; **Depends**: T004-A; **Reviewer**: security review
 - **Read**: CD-004 → Symbols/Values；P/security/artifact_policy_authority.py::ArtifactPolicyAuthority.issue；N/NativeGrantVerifier.cpp。
 - **Write**: N/NativeArtifactPolicyAuthority.hpp; N/NativeArtifactPolicyAuthority.cpp; U/di-native-grant.t.cpp; wscript。
@@ -166,6 +168,8 @@ worker crash/cancel 等真实子进程案例也转 T016，卡内只运行纯 fra
 - **Verify**: CPP(Spec182GrantAuthority/*)；固定证书/时钟向量、wrong-recipient/key/expiry 原因码，secret 生命周期；不引入网络 authority。
 
 ### T005-B Requester Grant Publication
+
+- **Production gap / R2-B4**: 同一 [R2-B4](../evidence/r2-b4-grant-production-audit-20260908.md) 的 GA-03/04 控制答复验证及 publication 生命周期；历史 wrong-recipient fixture 只证明端口转发，须改为真实绑定负例。
 
 - **Parent**: T005; **Depends**: T005-A; **Reviewer**: security/lifetime review
 - **Read**: CD-004 → runtime-boundaries Cancellation and Observer Contract；P/security/requester_grant_pipeline.py；ndn-service-framework/ServiceUser.hpp::publishSignedAppData。
