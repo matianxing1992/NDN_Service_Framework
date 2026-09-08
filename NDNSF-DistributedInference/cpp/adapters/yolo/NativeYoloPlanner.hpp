@@ -2,6 +2,7 @@
 #define NDNSF_DI_NATIVE_YOLO_PLANNER_HPP
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp"
 
 #include <map>
 #include <string>
@@ -22,12 +23,26 @@ struct NativeYoloComponentSpec
   std::string candidateDigest;
 };
 
+/** Catalog identity plus the maintained semanticPartition document. */
+struct NativeYoloCatalogComponent
+{
+  NativeYoloComponentSpec component;
+  std::string semanticPartitionJson;
+};
+
 /** Native counterpart of the registered YOLO candidate splitter. */
 class NativeYoloComponentSplit final : public NativeModelSplitStrategy
 {
 public:
   explicit NativeYoloComponentSplit(
     std::vector<NativeYoloComponentSpec> candidates, std::string postprocessingJson = "{}");
+
+  /** Inspect actual source bytes and bind registered semantic partitions to
+   * their graph. Source authentication remains with the native catalog owner. */
+  static NativeYoloComponentSplit fromOnnxCatalog(
+    const NativeModelDescriptor& model, const NativeCanonicalSource& source,
+    const NativeAssemblyControl& control, std::vector<NativeYoloCatalogComponent> candidates,
+    std::string postprocessingJson = "{}");
 
   NativeStrategyIdentity identity() const override;
   std::vector<NativeSplitCandidate> enumerate(
@@ -39,6 +54,8 @@ private:
   std::vector<NativeYoloComponentSpec> m_candidates;
   /** Adapter-owned terminal configuration, applied only to explicit Merge roles. */
   std::string m_postprocessingJson;
+  std::string m_catalogModelDigest;
+  std::optional<NativeGraphSnapshot> m_catalogGraph;
 };
 
 } // namespace ndnsf::di::yolo

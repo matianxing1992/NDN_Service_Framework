@@ -22,6 +22,162 @@ bool contains(const std::vector<std::string>& values, const std::string& value)
   return std::find(values.begin(), values.end(), value) != values.end();
 }
 
+std::set<std::string> stringSet(const NativeJson& value)
+{
+  if (!value.is_array()) throw std::invalid_argument("YOLO semantic set must be an array");
+  const auto items = value.get<std::vector<std::string>>();
+  return {items.begin(), items.end()};
+}
+
+using RoleEdges = std::map<std::pair<std::string, std::string>, std::set<std::string>>;
+
+RoleEdges declaredRoleEdges(const NativeJson& values, const char* tensors)
+{
+  if (!values.is_array()) throw std::invalid_argument("YOLO semantic dependencies must be an array");
+  RoleEdges result;
+  for (const auto& item : values) {
+    const auto key = std::make_pair(item.at("fromRole").get<std::string>(),
+                                    item.at("toRole").get<std::string>());
+    if (!result.emplace(key, stringSet(item.at(tensors))).second)
+      throw std::invalid_argument("YOLO semantic dependency pair is duplicated");
+  }
+  return result;
+}
+
+// Consume the registered partition against facts obtained from actual ONNX
+// bytes. The graph IDs and semantic names are deliberately separate domains.
+void bindSemanticPartition(NativeYoloComponentSpec& spec, const NativeJson& partition,
+                           const NativeOnnxGraphInspection& inspection)
+{
+  const auto& graph = inspection.graph;
+  spec.nodeNamesByRole.clear();
+  if (spec.candidateId == "atomic-v1") {
+    if (spec.roles.size() != 1)
+      throw std::invalid_argument("YOLO atomic candidate requires one role");
+    spec.nodeNamesByRole[spec.roles.front()] = graph.topologicalOrder;
+    return;
+  }
+  const auto& roleSets = partition.at("roleNodeSets");
+  if (!roleSets.is_object() || roleSets.size() != spec.roles.size() ||
+      inspection.nodeNames.size() != graph.topologicalOrder.size())
+    throw std::invalid_argument("YOLO semantic role partition is incomplete");
+  std::map<std::string, std::string> ownerByName, nameByNode, ownerByNode;
+  for (const auto& role : spec.roles) {
+    const auto& names = roleSets.at(role);
+    if (!names.is_array() || names.empty())
+      throw std::invalid_argument("YOLO semantic role node set is invalid");
+    for (const auto& item : names) {
+      const auto name = item.get<std::string>();
+      if (name.empty() || !ownerByName.emplace(name, role).second)
+        throw std::invalid_argument("YOLO semantic role assigns a node twice");
+    }
+  }
+  const std::set<std::string> actualNames(inspection.nodeNames.begin(), inspection.nodeNames.end());
+  if (actualNames.size() != ownerByName.size())
+    throw std::invalid_argument("YOLO semantic partition does not cover graph names");
+  for (std::size_t i = 0; i < graph.topologicalOrder.size(); ++i) {
+    const auto& name = inspection.nodeNames[i];
+    const auto found = ownerByName.find(name);
+    if (found == ownerByName.end())
+      throw std::invalid_argument("YOLO semantic partition contains foreign names");
+    const auto& node = graph.topologicalOrder[i];
+    nameByNode.emplace(node, name);
+    ownerByNode.emplace(node, found->second);
+    spec.nodeNamesByRole[found->second].push_back(node);
+  }
+
+  const auto& interfaces = partition.at("tensorInterfaces");
+  if (!interfaces.is_array())
+    throw std::invalid_argument("YOLO tensor interfaces must be an array");
+  std::map<std::string, NativeJson> declared;
+  for (const auto& item : interfaces)
+    if (!declared.emplace(item.at("edgeId").get<std::string>(), item).second)
+      throw std::invalid_argument("YOLO tensor interface is duplicated");
+  RoleEdges actualDependencies;
+  for (const auto& edge : graph.edges) {
+    const auto& producerRole = ownerByNode.at(edge.producer);
+    std::set<std::string> consumerNames, consumerRoles;
+    for (const auto& consumer : edge.consumers) {
+      const auto& role = ownerByNode.at(consumer);
+      if (role != producerRole) {
+        consumerNames.insert(nameByNode.at(consumer));
+        consumerRoles.insert(role);
+        actualDependencies[{producerRole, role}].insert(edge.id);
+      }
+    }
+    if (consumerRoles.empty()) continue;
+    const auto found = declared.find(edge.id);
+    if (found == declared.end())
+      throw std::invalid_argument("YOLO tensor interface coverage differs from graph");
+    const auto& item = found->second;
+    auto shape = NativeJson::array();
+    for (const auto& dimension : edge.tensor.shape)
+      std::visit([&](const auto& value) { shape.push_back(value); }, dimension);
+    if (item.at("producerNode") != nameByNode.at(edge.producer) ||
+        item.at("producerRole") != producerRole ||
+        stringSet(item.at("consumerNodes")) != consumerNames ||
+        stringSet(item.at("consumerRoles")) != consumerRoles ||
+        item.at("dtype") != edge.tensor.dtype || item.at("shape") != shape)
+      throw std::invalid_argument("YOLO tensor interface differs from actual graph");
+    declared.erase(found);
+  }
+  if (!declared.empty() ||
+      declaredRoleEdges(partition.at("dependencyEdges"), "tensorEdges") != actualDependencies ||
+      declaredRoleEdges(partition.at("safeCuts"), "boundaryTensors") != actualDependencies)
+    throw std::invalid_argument("YOLO dependencies or safe cuts differ from actual graph");
+
+  const auto metadata = nativeParseJson(inspection.graphMetadataJson);
+  const auto inputs = stringSet(metadata.at("inputs"));
+  const auto outputs = stringSet(metadata.at("outputs"));
+  std::map<std::string, std::string> producers;
+  std::map<std::string, std::set<std::string>> consumers;
+  for (const auto& node : metadata.at("nodes")) {
+    const auto name = node.at("name").get<std::string>();
+    for (const auto& tensor : stringSet(node.at("outputs"))) producers[tensor] = name;
+    for (const auto& tensor : stringSet(node.at("inputs"))) consumers[tensor].insert(name);
+  }
+  std::map<std::string, std::set<std::string>> roleInputs, roleOutputs;
+  for (const auto& node : metadata.at("nodes")) {
+    const auto& role = ownerByName.at(node.at("name").get<std::string>());
+    for (const auto& tensor : stringSet(node.at("inputs"))) {
+      const auto producer = producers.find(tensor);
+      if (inputs.count(tensor) || (producer != producers.end() && ownerByName.at(producer->second) != role))
+        roleInputs[role].insert(tensor);
+    }
+    for (const auto& tensor : stringSet(node.at("outputs")))
+      if (outputs.count(tensor) || std::any_of(consumers[tensor].begin(), consumers[tensor].end(),
+          [&](const auto& name) { return ownerByName.at(name) != role; }))
+        roleOutputs[role].insert(tensor);
+  }
+  const auto endpoints = [](const NativeJson& values) {
+    if (!values.is_array()) throw std::invalid_argument("YOLO role endpoints must be an array");
+    std::set<std::string> result;
+    for (const auto& item : values)
+      result.insert(nativeCanonicalJson(NativeJson{{"name", item.at("name")},
+        {"dtype", item.value("dtype", NativeJson("unknown"))},
+        {"shape", item.value("shape", NativeJson::array())}}));
+    return result;
+  };
+  const auto actualEndpoints = [&](const std::set<std::string>& tensors) {
+    auto result = NativeJson::array();
+    for (const auto& tensor : tensors) {
+      const auto info = metadata.at("tensors").value(tensor, NativeJson::object());
+      result.push_back(NativeJson{{"name", tensor}, {"dtype", info.value("dtype", NativeJson("unknown"))},
+        {"shape", info.value("shape", NativeJson::array())}});
+    }
+    return endpoints(result);
+  };
+  const auto& roleInterfaces = partition.at("roleInterfaces");
+  if (!roleInterfaces.is_object() || roleInterfaces.size() != spec.roles.size())
+    throw std::invalid_argument("YOLO role interface coverage differs from graph");
+  for (const auto& role : spec.roles) {
+    const auto& item = roleInterfaces.at(role);
+    if (endpoints(item.at("inputs")) != actualEndpoints(roleInputs[role]) ||
+        endpoints(item.at("outputs")) != actualEndpoints(roleOutputs[role]))
+      throw std::invalid_argument("YOLO role interface differs from actual graph");
+  }
+}
+
 } // namespace
 
 NativeYoloComponentSplit::NativeYoloComponentSplit(
@@ -55,13 +211,39 @@ NativeStrategyIdentity NativeYoloComponentSplit::identity() const
           nativePlanningDigest("yolo-component-split|1")};
 }
 
+NativeYoloComponentSplit NativeYoloComponentSplit::fromOnnxCatalog(
+  const NativeModelDescriptor& model, const NativeCanonicalSource& source,
+  const NativeAssemblyControl& control, std::vector<NativeYoloCatalogComponent> candidates,
+  std::string postprocessingJson)
+{
+  const auto inspected = inspectNativeOnnxPlanningGraph(source, model, control);
+  std::vector<NativeYoloComponentSpec> bound;
+  for (auto& candidate : candidates) {
+    control.requireActive();
+    bindSemanticPartition(candidate.component,
+      nativeParseJson(candidate.semanticPartitionJson), inspected);
+    bound.push_back(std::move(candidate.component));
+  }
+  NativeYoloComponentSplit result(std::move(bound), std::move(postprocessingJson));
+  result.m_catalogModelDigest = model.modelDigest();
+  result.m_catalogGraph = inspected.graph;
+  control.requireActive();
+  if (std::chrono::steady_clock::now() >= control.deadline)
+    throw std::runtime_error("ASSEMBLY_TIMEOUT");
+  return result;
+}
+
 std::vector<NativeSplitCandidate>
 NativeYoloComponentSplit::enumerate(const NativeModelDescriptor& model,
-                                    const NativeGraphSnapshot& graph,
+                                    const NativeGraphSnapshot& suppliedGraph,
                                     const NativeCandidateBudget& budget) const
 {
   budget.validate();
   model.validate();
+  if (m_catalogGraph && (model.modelDigest() != m_catalogModelDigest ||
+      suppliedGraph.graphDigest != m_catalogGraph->graphDigest))
+    throw std::invalid_argument("YOLO catalog splitter received a foreign model or graph");
+  const auto& graph = m_catalogGraph ? *m_catalogGraph : suppliedGraph;
   graph.validate(model);
   if (model.adapterId.find("yolo") == std::string::npos &&
       model.modelName.find("YOLO") == std::string::npos &&
