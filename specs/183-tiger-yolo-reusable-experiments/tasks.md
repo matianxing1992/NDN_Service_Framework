@@ -65,7 +65,7 @@ T007 复核确认正常/负例/SSH 接线已存在；N3 issuer/rank版本检查�
 | T008.c | T008 | `_ndnsf` 与 `_py_repoclient`、真实入口、ldd/readelf/hash、注册 unit | BLOCKED | [host-unit](evidence/host-unit.md) 与4ade12bf已记录树外import/ldd、unit-tests和integration-tests RC0；本轮未重跑 | T007与最终source身份仍须闭合；二进制suite通过不等于T009多进程YOLO | 复用匹配候选的测试记录；不重复已有loader或unit集合 |
 | T009.a | T009 | 多进程 CPU YOLO 正常 ACK/Selection→四角色→数值结果 | NOT_STARTED | V09；NOT_RUN | T008 后执行；bootstrap 与 inference 分开判定 | 不重跑全部历史 DI 集成 |
 | T009.b | T009 | 当前 epoch/权限拒绝、错 Selection、activation loss/tamper 与清理 | NOT_STARTED | V10；NOT_RUN | 与 T009.a 共用 fixture，逐个保留独立判定 | 只跑注册安全/故障场景 |
-| T010.a | T010 | MiniNDN 正常 CPU 图、权限拒绝、缺依赖三个注册场景 | BLOCKED | [审计 N2](evidence/design-code-convergence.md)：现wrapper仅Y-B，未验准备绑定/有界外层清理；V11 NOT_RUN | T007前修wrapper/source；T009后才执行三场景，不以其他Y-N故障替代缺依赖 | 仅新driver边界测试；不重复历史campaign或另一端构建 |
+| T010.a | T010 | MiniNDN 正常 CPU 图、权限拒绝、缺依赖三个注册场景 | BLOCKED | [输入绑定](evidence/t010-input-binding.md)：准备/profile/实际每run密钥已校验并传到driver；13输入、22消费边界通过；仅Y-B，V11 NOT_RUN | 剩三场景注册与有界owned清理；T007前完成源码，T009后实跑，不以其他Y-N故障替代缺依赖 | 仅变化边界补测；最后只复跑新增密钥断言所在1项，不重复13项或历史campaign |
 | T010.b | T010 | 同源 host qualification manifest 绑定命令、结果与清理 | NOT_STARTED | [审计 N1/N2](evidence/design-code-convergence.md)；现wrapper未产生manifest；NOT_RUN | 先实现同一producer/语义validator契约，再从T010.a同次实跑生成供builder消费的回执 | 生成清单不额外跑模型；不得把COMPONENT_ONLY改token冒充PASS |
 | T011.a | T011 | development-20260907 source seal 与 definition 准备 | IMPLEMENTED | 后文 SOURCE_READY checkpoint：`2aea8a0e` / `c4f33beb`，非 SIF PASS | 后续源码改变须重 seal；旧锁不覆盖 | 纯任务表修改按输入清单判断，不无条件重建 SIF |
 | T011.b | T011 | 本机构建一个完整 SIF、九产物/DSO/两个扩展/入口闭包 | NOT_STARTED | V12；NOT_RUN | T010 receipt 后使用匹配 compute 的 Apptainer 构建 | 固定同一合格 SIF；无运行库变更不重复构建 |

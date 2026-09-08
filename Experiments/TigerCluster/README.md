@@ -44,6 +44,17 @@ bash Experiments/TigerCluster/jobs/spec180/submit.sh <gate> <profile.json> <run-
 ```
 
 构建与新镜像输出见 [SIF build](docs/sif-build.md)。
+
+Spec183 的 `tools/spec183_minindn.py` 输入包括 `--run-id`、`--output`、
+`--profile` 和必填的 `--preparation-sha256`。后者必须来自该次 issuer
+保留的 preparation 摘要，不能临时给任意输入计算摘要作为批准。
+包装器验证准备材料、模型清单和实际每 run 密钥后，独占创建
+`<output>/<run-id>/host-minindn/`；重用同一输出会拒绝启动。
+当前仍只接 Y-B，三场景、有界外层清理和语义 host manifest 未完成，
+`T010_DONE` 的 `NOT_EVALUATED` 不能放行 SIF 构建。正式执行遵循
+T007 → T008 → T009 → T010；当前证据见
+[输入绑定修复](../../specs/183-tiger-yolo-reusable-experiments/evidence/t010-input-binding.md)。
+
 三库固定与接收操作见 [source handoff](docs/source-handoff.md)；共享维护的技能见根目录 [skills/](../../skills/README.md)。
 模型准备与运行证据见 [Qwen models](docs/itiger-qwen-models.md)、[Qwen evidence](docs/itiger-qwen-evidence.md)。
 Spec180既定用例见 [quickstart](../../specs/180-ack-driven-cross-model-qualification/quickstart.md)；其历史阶段/状态以相应Spec为准，不作为启动旧资格流程的指令。

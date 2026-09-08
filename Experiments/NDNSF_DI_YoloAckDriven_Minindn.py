@@ -3252,11 +3252,13 @@ def _run_live_case_once(case: str, output: Path, inputs: Mapping[str, Any], *,
         if requested_epoch and requested_epoch != PLAINTEXT_EPOCH:
             env[PROTECTION_EPOCH_ENV] = requested_epoch
             env["SPEC181_REQUESTER_PRIVATE_KEY"] = str(
+                env.get("SPEC181_REQUESTER_PRIVATE_KEY") or
                 env.get("NDNSF_DI_ENVELOPE_KEY_FILE", ""))
             env["SPEC181_PROVIDER_RECIPIENT_KEY_MAP"] = str(
                 env.get("SPEC181_PROVIDER_RECIPIENT_KEY_MAP") or
                 env.get("SPEC180_YOLO_OFFER_PRIVATE_KEY_MAP", ""))
             env["SPEC181_GRANT_AUTHORITY_PUBLIC_KEY"] = str(
+                env.get("SPEC181_GRANT_AUTHORITY_PUBLIC_KEY") or
                 ROOT / "specs/180-ack-driven-cross-model-qualification"
                 / "contracts/artifact-policy-authority.pub")
             # Resolve the selected external config before MiniNDN changes

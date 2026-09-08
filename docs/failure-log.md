@@ -1,5 +1,21 @@
 # Failure Log and Evidence Index
 
+## 2026-09-08 — MiniNDN wrapper did not consume its actual prepared keys
+
+- Symptom: wrapper selected global offer-key paths although the issuer produces
+  per-run `private/<role>/offer.pem`; generic driver also overwrote caller
+  requester signing and authority public-key settings with legacy defaults.
+- Cause: incomplete adaptation of container preparation to the maintained host
+  driver, plus unconditional environment assignment at the downstream owner.
+- Fix: production input verifiers and actual key-pair/map validation before
+  launch, exclusive run outputs, explicit prepared key environment, downstream
+  preservation with legacy defaults only when caller settings are absent.
+- Validation: 13 input checks and 22 driver environment checks passed; final
+  wrapper check rerun once after new assertions. See Spec183
+  `evidence/t010-input-binding.md`; all are component evidence, no host PASS.
+- Lesson: validate the producer's real paths and trace them to the consuming
+  child; validating an upstream map cannot catch a downstream override.
+
 ## 2026-09-07 — Standalone transport test lacked its canonical import root
 
 - Symptom: targeted receiver tests stopped during collection with

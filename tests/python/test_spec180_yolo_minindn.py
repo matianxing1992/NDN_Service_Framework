@@ -185,8 +185,9 @@ def test_sif_never_uses_host_build_receipt(monkeypatch):
     *[("Y-N", "Y-N-E", value) for value in
       ("EXPIRED", "WRONG_RECIPIENT", "FORGED_AUTHORITY")],
 ])
+@pytest.mark.parametrize('explicit_keys', [False, True])
 def test_live_case_child_epoch_matches_publication(monkeypatch, tmp_path,
-                                                  case, subcase, mutation):
+                                                  case, subcase, mutation, explicit_keys):
     module = load_runner()
     requested = "spec180-yolo-protected-v1"
     monkeypatch.setenv(module.PROTECTION_EPOCH_ENV, requested)
@@ -194,6 +195,13 @@ def test_live_case_child_epoch_matches_publication(monkeypatch, tmp_path,
     monkeypatch.setenv("NDNSF_DI_ENVELOPE_KEY_FILE", str(tmp_path / "requester.key"))
     monkeypatch.setenv("SPEC180_YOLO_OFFER_PRIVATE_KEY_MAP", str(tmp_path / "keys.json"))
     monkeypatch.setenv("NDNSF_SPEC180_CONFIG_ROOT", str(tmp_path))
+    for name in ('SPEC181_REQUESTER_PRIVATE_KEY', 'SPEC181_GRANT_AUTHORITY_PUBLIC_KEY'):
+        monkeypatch.delenv(name, raising=False)
+    if explicit_keys:
+        (tmp_path/'signing.key').write_bytes(b'x'*32)
+        (tmp_path/'authority.pub').write_text('environment binding fixture')
+        monkeypatch.setenv('SPEC181_REQUESTER_PRIVATE_KEY', str(tmp_path/'signing.key'))
+        monkeypatch.setenv('SPEC181_GRANT_AUTHORITY_PUBLIC_KEY', str(tmp_path/'authority.pub'))
     (tmp_path / "artifact-policy-authority.key").write_text("preflight fixture")
     publication_inputs, child_environment = {}, {}
     def binding(_case, _output, inputs):
@@ -217,7 +225,11 @@ def test_live_case_child_epoch_matches_publication(monkeypatch, tmp_path,
     assert child_environment[module.PROTECTION_EPOCH_ENV] == expected
     assert module.os.environ[module.PROTECTION_EPOCH_ENV] == requested
     if expected == requested:
-        assert child_environment["SPEC181_REQUESTER_PRIVATE_KEY"]
+        assert child_environment["SPEC181_REQUESTER_PRIVATE_KEY"] == str(
+            tmp_path/('signing.key' if explicit_keys else 'requester.key'))
+        assert child_environment['SPEC181_GRANT_AUTHORITY_PUBLIC_KEY'] == str(
+            tmp_path/'authority.pub' if explicit_keys else
+            ROOT/'specs/180-ack-driven-cross-model-qualification/contracts/artifact-policy-authority.pub')
         assert child_environment["SPEC181_PROVIDER_RECIPIENT_KEY_MAP"]
 
 

@@ -1,15 +1,17 @@
-"""Spec183 T010: bounded CPU MiniNDN Y-B run with the real provision outputs.
+"""Spec183 T010: validate per-run inputs for the maintained CPU MiniNDN Y-B driver.
 
 Maps the containerized-issuer products (case.json, offer trust/maps, role
-certificates, catalogue names) plus the fixed experiment offer private keys
+certificates, catalogue names) plus the actual per-run offer private keys
 onto the maintained ACK-driven MiniNDN driver
 (``Experiments/NDNSF_DI_YoloAckDriven_Minindn.py --case Y-B``), which runs
-the four-role graph over the clean-root host binaries.  This produces the
-real host MiniNDN receipt; it is not a GPU or SIF qualification.
+the four-role graph over the clean-root host binaries. Three-case execution,
+bounded outer cleanup and semantic host qualification remain T007 N1/N2 work;
+a successful driver exit alone is not a host, GPU or SIF qualification.
 """
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -28,44 +30,123 @@ ROLES = ("BackboneNeck", "DetectShard0", "DetectShard1", "Merge")
 
 
 def _prepared(output: Path, run_id: str) -> dict:
-    receipt = Path(output) / run_id / "prepare.json"
-    value = json.loads(receipt.read_text())
-    if value.get("status") != "PREPARED":
-        raise SystemExit(f"prepared run receipt invalid at {receipt}")
-    return value
+    from jobs.yolo.submit import _load_prepared
+    return _load_prepared(output, run_id)
+
+
+def validated_inputs(output: Path, run_id: str, *, profile_path: Path,
+                     preparation_sha256: str) -> dict:
+    """Read-only binding check before any host output, process or key-map write.
+
+    The digest is the actual issuer's retained public preparation identity;
+    computing it from an arbitrary supplied document here would self-authorize
+    that document. This is input integrity only, not a host qualification gate.
+    No SIF is opened or required to be newly built by this check.
+    """
+    from cryptography.hazmat.backends import default_backend
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ed25519
+    from runtime.yolo_profile import load_operator_profile, _read_plane, HASH, application_sync_prefix
+    from runtime.yolo_bundle import verify_harness, verify_preparation, _bytes
+    from runtime.identities import _read_credential
+
+    prepared = _prepared(output, run_id)
+    loaded = load_operator_profile(Path(profile_path), stage='inputs')
+    if loaded['documentDigest'] != prepared['profileDigest']:
+        raise ValueError('MININDN_PREPARED_PROFILE')
+    if not isinstance(preparation_sha256, str) or not HASH.fullmatch(preparation_sha256):
+        raise ValueError('MININDN_PREPARATION_DIGEST')
+    verify_harness(Path(prepared['bundle']), expected_manifest_sha256=prepared['harnessManifestSha256'])
+    root = Path(prepared['plan']['output'])
+    public, private = root/'public', root/'private'
+    receipt = verify_preparation(public, prepared['plan'],
+        expected_receipt_digest=preparation_sha256, candidate_digest=prepared['candidateDigest'])
+    profile = loaded['profile']
+    ref = profile['workload']['packageManifest']
+    manifest = Path(ref['path'])
+    wire = _bytes(manifest)
+    if (len(wire) != ref['bytes'] or 'sha256:'+hashlib.sha256(wire).hexdigest() != ref['sha256']
+            or receipt.get('packageManifestDigest') != ref['sha256']
+            or receipt.get('protectionEpoch') != profile['security']['protectionEpoch']):
+        raise ValueError('MININDN_PREPARATION_WORKLOAD')
+    case = _read_plane(public/'case.json')
+    identities = case.get('runtime', {}).get('identities') if isinstance(case, dict) else None
+    plan = prepared['plan']
+    group = application_sync_prefix(plan.get('applicationName', plan['namespace']))
+    if (identities != dict(plan['identities'], group=group) or case.get('group') != group
+            or case['runtime'].get('application_name') != plan.get('applicationName', plan['namespace'])):
+        raise ValueError('MININDN_PREPARATION_IDENTITIES')
+
+    def key_pair(secret_path, public_path):
+        key = serialization.load_pem_private_key(_read_credential(secret_path, private=True),
+                                                 password=None, backend=default_backend())
+        advertised = serialization.load_pem_public_key(_read_credential(public_path), backend=default_backend())
+        if not isinstance(key, ed25519.Ed25519PrivateKey) or not isinstance(advertised, ed25519.Ed25519PublicKey):
+            raise ValueError('MININDN_KEY_ALGORITHM')
+        def raw(k): return k.public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+        if raw(key.public_key()) != raw(advertised):
+            raise ValueError('MININDN_PRIVATE_KEY_MISMATCH')
+        return 'sha256:'+hashlib.sha256(raw(advertised)).hexdigest()
+
+    offer_map = _read_plane(public/'offer-public-key-map.json')
+    trust = _read_plane(public/'offer-trust-root.json')
+    recipients = _read_plane(public/'recipient-public-keys.json')
+    if (not isinstance(offer_map, dict) or len(offer_map) != len(ROLES)
+            or not isinstance(recipients, dict) or set(recipients) != {identities[r] for r in ROLES}
+            or not isinstance(trust, dict) or trust.get('candidateId') != receipt.get('placementCandidateId')
+            or trust.get('candidateDigest') != receipt.get('placementCandidateDigest')
+            or not isinstance(trust.get('entries'), list) or len(trust['entries']) != len(ROLES)):
+        raise ValueError('MININDN_PREPARATION_KEY_MAP')
+    private_map, host_offer_map, recipient_map = {}, {}, {}
+    for role in ROLES:
+        identity = identities[role]
+        secret = private/role/'offer.pem'
+        key_id = key_pair(secret, public/'offers'/(role+'.pub'))
+        if offer_map.get(key_id) != '/config/offers/'+role+'.pub':
+            raise ValueError('MININDN_OFFER_MAP_BINDING')
+        matching = [row for row in trust['entries'] if isinstance(row, dict) and row.get('provider') == identity]
+        if len(matching) != 1 or matching[0].get('signerKeyId') != key_id:
+            raise ValueError('MININDN_OFFER_IDENTITY_BINDING')
+        private_map[identity] = str(secret)
+        host_offer_map[key_id] = str(public/'offers'/(role+'.pub'))
+        relative = 'recipients/'+role+'.pub'
+        row = recipients[identity]
+        if (not isinstance(row, dict) or set(row) != {'path','sha256'} or row['path'] != relative
+                or row['sha256'] != 'sha256:'+hashlib.sha256(_read_credential(public/relative)).hexdigest()):
+            raise ValueError('MININDN_RECIPIENT_MAP_BINDING')
+        key_pair(private/role/'recipient.pem', public/relative)
+        recipient_map[identity] = str(private/role/'recipient.pem')
+    authority = private/'user/authority/artifact-policy-authority.key'
+    key_pair(authority, public/'contracts/authority.pub')
+    for name in ('request-envelope.key', 'requester.key'):
+        if len(_read_credential(private/'user'/name, private=True)) != 32:
+            raise ValueError('MININDN_USER_KEY')
+    return dict(prepared=prepared, profile=profile, receipt=receipt, case=case,
+                public=public, private=private, package=manifest.parent,
+                privateMap=private_map, offerMap=host_offer_map, recipientMap=recipient_map)
 
 
 def main(argv: Iterable[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--profile", type=Path, default=PROFILE_REL)
+    parser.add_argument("--preparation-sha256", required=True,
+                        help="Retained issuer digest of public/preparation.json")
     parser.add_argument("--case", choices=("Y-B",), default="Y-B")
     parser.add_argument("--library-path", default="/tmp/t008-build-root/lib")
     args = parser.parse_args(argv)
 
-    output = Path(args.output).resolve()
+    output = Path(os.path.abspath(str(args.output)))
     run_root = output / args.run_id
     public = run_root / "public"
     private = run_root / "private"
-    prepared = _prepared(output, args.run_id)
-    from runtime.yolo_profile import _read_plane
-    receipt = _read_plane(public / "preparation.json")
-    case_path = public / "case.json"
-    case = _read_plane(case_path)
+    checked = validated_inputs(output, args.run_id, profile_path=args.profile,
+                               preparation_sha256=args.preparation_sha256)
+    prepared, receipt, case = (checked[key] for key in ('prepared','receipt','case'))
     identities = case["runtime"]["identities"]
 
-    keys = TC / ".keys/offers"
-    private_map = {identities[role]: str(keys / (role + ".key"))
-                   for role in ROLES}
-    for path in private_map.values():
-        if not Path(path).is_file():
-            raise SystemExit(f"offer private key missing: {path}")
-    # The provision-stage key map records in-container paths (/config/...);
-    # the digest keys are authoritative, so re-map values to the host copy.
-    offer_map = _read_plane(public / "offer-public-key-map.json")
-    host_offer_map = {
-        digest: str(public / "offers" / Path(value).name)
-        for digest, value in offer_map.items()}
+    private_map, host_offer_map = checked['privateMap'], checked['offerMap']
     # The MiniNDN driver needs a deployment config in the spec181 Y-B layout:
     # the Spec183 identities from case.json plus a MiniNDN node placement.
     namespace = prepared["plan"]["namespace"]
@@ -92,9 +173,9 @@ def main(argv: Iterable[str] | None = None) -> int:
     deploy["runtime"]["provider_prefix"] = namespace
     deploy["runtime"]["user_identity"] = identities["user"]
 
-    state = TC / ".cache/t010-minindn-state"
-    case_output = TC / ".cache/t010-minindn-output"
-    inputs = TC / ".cache/t010-minindn-inputs"
+    host_root = run_root / 'host-minindn'
+    host_root.mkdir(mode=0o700, exist_ok=False)
+    state, case_output, inputs = (host_root/name for name in ('state', 'output', 'inputs'))
     for directory in (state, inputs):
         directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     # The driver demands an exclusive, initially empty output root.
@@ -106,8 +187,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         "NDNSF_DI_STATE_ROOT": str(state),
         "NDNSF_DI_ENVELOPE_KEY_FILE": str(private / "user/request-envelope.key"),
         "SPEC180_CASE_OUTPUT_DIR": str(case_output),
-        "SPEC180_YOLO_CANONICAL_PACKAGE": str(_REPO_ROOT / "Experiments/TigerCluster"
-                                             / ".cache/model/spec183-signed/canonical-package"),
+        "SPEC180_YOLO_CANONICAL_PACKAGE": str(checked['package']),
         "SPEC180_YOLO_CATALOGUE_REGISTRY": str(public / "contracts/trust-root-registry-v1.json"),
         "SPEC180_YOLO_CATALOG_DATA_NAME": receipt["catalogueDataName"],
         "SPEC180_YOLO_CATALOG_SIGNER": receipt["catalogueSigner"],
@@ -116,16 +196,20 @@ def main(argv: Iterable[str] | None = None) -> int:
         "SPEC180_YOLO_OFFER_PRIVATE_KEY_MAP": str(inputs / "offer-private-key-map.json"),
         "SPEC180_YOLO_TOPOLOGY": str(TOPOLOGY_REL),
         "SPEC180_YOLO_CONFIG": str(inputs / "spec183-deploy-config.json"),
-        "SPEC181_PROTECTION_EPOCH": "spec183-yolo-protected-v1",
-        "NDNSF_SPEC180_CONFIG_ROOT": str(keys.parent),
+        "SPEC181_PROTECTION_EPOCH": receipt['protectionEpoch'],
+        "NDNSF_SPEC180_CONFIG_ROOT": str(private/'user/authority'),
+        "SPEC181_REQUESTER_PRIVATE_KEY": str(private/'user/requester.key'),
+        "SPEC181_GRANT_AUTHORITY_PUBLIC_KEY": str(public/'contracts/authority.pub'),
+        "NDNSF_DI_RECIPIENT_PUBLIC_KEY_MAP": str(public/'recipient-public-keys.json'),
+        "SPEC181_PROVIDER_RECIPIENT_KEY_MAP": str(inputs/'recipient-private-key-map.json'),
         "NDNSF_TIMELINE_TRACE_SAMPLE_RATE": "0.01",
     })
-    (inputs / "offer-private-key-map.json").write_text(
-        json.dumps(private_map, indent=1) + "\n")
-    (inputs / "offer-public-key-map.json").write_text(
-        json.dumps(host_offer_map, indent=1) + "\n")
-    (inputs / "spec183-deploy-config.json").write_text(
-        json.dumps(deploy, indent=1) + "\n")
+    from runtime.identities import _credential_document
+    for name, value in {'offer-private-key-map.json': private_map,
+                        'offer-public-key-map.json': host_offer_map,
+                        'recipient-private-key-map.json': checked['recipientMap'],
+                        'spec183-deploy-config.json': deploy}.items():
+        _credential_document(inputs/name, value)
 
     import subprocess
     command = [sys.executable, str(DRIVER_REL), "--case", args.case]
@@ -133,7 +217,7 @@ def main(argv: Iterable[str] | None = None) -> int:
                       "driver": str(DRIVER_REL)}, sort_keys=True))
     completed = subprocess.run(command, env=env, cwd=_REPO_ROOT)
     print(json.dumps({"status": "T010_DONE", "returncode": completed.returncode,
-                      "output": str(case_output)}, sort_keys=True))
+                      "output": str(case_output), "qualification": "NOT_EVALUATED"}, sort_keys=True))
     return completed.returncode
 
 
