@@ -1,5 +1,27 @@
 # Failure Log and Evidence Index
 
+## 2026-09-08 — Runtime HOME selected but issued role identity not mounted
+
+Actual layered-host-20260908a signed provisioning passed, but local startup
+aborted Controller134 while authenticating NAC public parameters. The shared
+launcher selected /identities/controller without supplying its host directory.
+Actual exact-SIF probes show missing PIB/session; adding only the role bind
+makes both visible while root remains hidden. Add the per-role rw bind only
+outside preparation. A bounded NFD+Controller reproduction then publishes its
+signed runtime receipt and cleans both processes without force. No base/app
+rebuild is needed. Startup success is not full inference qualification.
+
+The first test command omitted PYTHONPATH and failed import; corrected command
+reproduced the missing-bind assertion before the fix.116 focused tests pass.
+The first minimal runtime harness omitted NDNSF_DI_STATE_ROOT; restore that
+production setting before interpreting its result. Preserve both failed
+diagnostics. Lesson: selecting HOME does not mount prepared credentials;
+verify actual in-container identity visibility and isolation, not argv alone.
+
+Local/cluster Apptainer versions are now separately declared and selected by
+case; both issuer and retained runtime receipts enforce the selected version.
+See specs/183-tiger-yolo-reusable-experiments/evidence/layered-local-startup.md.
+
 ## 2026-09-08 — Outer MiniNDN launch did not own detached descendants
 
 - Symptom: wrapper's unbounded subprocess.run and direct Popen reaping could

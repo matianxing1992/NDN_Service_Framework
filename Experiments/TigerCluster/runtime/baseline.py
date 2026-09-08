@@ -129,7 +129,7 @@ def container_command(profile: dict, bundle: Path, home: Path, public: Path,
     # image skeleton; a host:container pair would inject skeleton files (e.g.
     # .ndn) into the already-bound directory after the caller's emptiness
     # checks, failing them inside the container.  Callers pre-create the
-    # home under the bound /identities mount.
+    # home under the issuer's /identities mount or the single-role bind below.
     command = [profile["apptainer"], "exec", "--cleanenv", "--containall",
                "--home", role_home, "--pwd", "/bundle",
                "--bind", f"{bundle}:/bundle:ro", "--bind", f"{public}:/config:{'rw' if prepare else 'ro'}",
@@ -144,6 +144,10 @@ def container_command(profile: dict, bundle: Path, home: Path, public: Path,
         command += ["--bind", f"{node}:/node:rw"]
     if prepare is not None:
         command += ["--bind", f"{prepare}:/identities:rw"]
+    else:
+        # --home selects the in-container path but does not supply the issued
+        # PIB/TPM. Mount only this role; other roles and issuer keys stay hidden.
+        command += ["--bind", f"{home}:{role_home}:rw"]
     if preparation_inputs is not None:
         command += ["--bind", f"{preparation_inputs}:/inputs:ro"]
     command += [profile["sif"], "/usr/bin/env",

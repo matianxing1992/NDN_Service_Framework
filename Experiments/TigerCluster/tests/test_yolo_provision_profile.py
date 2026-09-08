@@ -62,6 +62,23 @@ def test_profile_resolves_every_issuer_input_without_launch_or_copy(tmp_path, mo
     assert 'private fixture' not in json.dumps(result)
 
 
+@pytest.mark.parametrize('case,expected', [('local-cpu', '1.5.3'),
+    ('two-node-gpu', '1.3.4'), ('negative-dependency', '1.3.4')])
+def test_explicit_local_tools_preserve_the_shared_composition(tmp_path, case, expected):
+    path, profile, _ = fixture(tmp_path)
+    profile['runtime']['local'] = dict(apptainer='/local/apptainer', apptainerVersion='1.5.3')
+    path.write_text(json.dumps(profile))
+    refresh_effective_profile(path, profile)
+    plan = resolve_run_plan(path, stage='dispatch', case=case,
+                            run_id='environment-test', output=tmp_path/'runs')
+    result = resolve_provision_inputs(path, plan=plan,
+                                      runtime_candidate_digest='sha256:'+'a'*64)
+    assert result['runtimeProfile']['apptainerVersion'] == expected
+    assert result['runtimeProfile']['sif'] == str(tmp_path/'runtime/sif')
+    local = plan['effectiveBehavior']['profile']['runtime']['local']
+    assert local == {'apptainerVersion': '1.5.3'}
+
+
 @pytest.mark.parametrize('fault,reason', [('template', 'FILE_DIGEST'),
     ('key-mode', 'PROVISION_PRIVATE_KEY_PERMISSIONS'), ('key-missing', 'PROVISION_PRIVATE_KEY_UNAVAILABLE'),
     ('old-plan', 'PROVISION_PROFILE_CHANGED'), ('candidate', 'PROVISION_RUNTIME_CANDIDATE')])

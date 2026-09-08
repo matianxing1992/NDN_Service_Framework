@@ -139,13 +139,17 @@ def test_rank_bad_version_probe_starts_no_role(tmp_path, behavior):
         worker.close()
 
 
-def test_normal_public_reanalysis_requires_this_issuer_and_rank_version(tmp_path, monkeypatch):
+@pytest.mark.parametrize('local_override', [False, True])
+def test_normal_public_reanalysis_requires_this_issuer_and_rank_version(tmp_path, monkeypatch, local_override):
     from test_yolo_submit import submit_module
     from runtime import yolo_bundle, yolo_result
     module = submit_module()
     prepared = dict(runId='version-run', case='local-cpu', candidateDigest=BINDING['candidateDigest'],
         bundle=str(tmp_path/'bundle'), harnessManifestSha256='fixture', plan={'effectiveBehavior': {'profile': {
             'runtime': {'apptainerVersion': '1.5.3'}, 'workload': {}, 'oracle': {}}}})
+    if local_override:
+        prepared['plan']['effectiveBehavior']['profile']['runtime'] = {
+            'apptainerVersion': '1.3.4-1.el9', 'local': {'apptainerVersion': '1.5.3'}}
     node = tmp_path/'node0'
     collection = dict(kind='normal', nodes={0: {'root': str(node)}}, references=[], certifiedGraph={},
         runtimeCandidateDigest='fixture', placementCandidateId='fixture', placementCandidateDigest='fixture',

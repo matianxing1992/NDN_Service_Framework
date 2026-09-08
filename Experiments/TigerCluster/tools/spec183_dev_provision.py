@@ -15,12 +15,12 @@ warmup + measured requests against the real ONNX model on CPU), accepting
 each request into the collector directory.  Verdicts against the oracle
 belong to the T005/T006 owners; this tool records the execution, not a PASS.
 
-Development only: the profile's cluster apptainer locator
-(``/usr/bin/apptainer`` on Tiger) is overridden with this host's apptainer
-binary for every invocation; the profile itself is never modified.  A run's
+Development only: local-cpu uses the profile's declared local tools when
+present. An explicit CLI locator must match that declaration; it cannot
+silently override the frozen runtime environment. A run's
 issuer-inputs/public/private/prepare-output/node/startup/completion
-directories are exclusive and a retry after failure requires removing them
-first (fail-closed, like ``provision_run`` itself).
+directories are exclusive. Preserve failed runs and retry under a fresh run ID
+(fail-closed, like ``provision_run`` itself).
 """
 from __future__ import annotations
 
@@ -43,14 +43,18 @@ def _sha256_file(path: Path) -> str:
 
 
 def _prepared(output: Path, run_id: str) -> dict:
-    receipt = Path(output) / run_id / "prepare.json"
-    if not receipt.is_file() or receipt.is_symlink():
-        raise SystemExit(f"no prepared run at {receipt}; run submit.py prepare first")
-    value = json.loads(receipt.read_text())
-    if (not isinstance(value, dict) or value.get("schema") != "tiger-yolo-prepared-run-v2"
-            or value.get("status") != "PREPARED"):
-        raise SystemExit(f"prepared run receipt invalid at {receipt}")
+    from jobs.yolo.submit import _load_prepared
+    value = _load_prepared(output, run_id)
+    if value['case'] != 'local-cpu':
+        raise ValueError('DEVELOPMENT_LOCAL_CASE_REQUIRED')
     return value
+
+
+def _declared_runtime(resolved: dict, apptainer: str) -> dict:
+    runtime = dict(resolved['runtimeProfile'])
+    if Path(apptainer).resolve() != Path(runtime['apptainer']).resolve():
+        raise ValueError('DEVELOPMENT_RUNTIME_LOCATOR_MISMATCH')
+    return runtime
 
 
 def _runtime_profile(profile: Path, prepared: dict, apptainer: str) -> dict:
@@ -59,8 +63,7 @@ def _runtime_profile(profile: Path, prepared: dict, apptainer: str) -> dict:
     loaded = load_operator_profile(profile, stage="dispatch")["profile"]
     resolved = resolve_provision_inputs(profile, plan=prepared["plan"],
                                         runtime_candidate_digest=prepared["candidateDigest"])
-    runtime = dict(resolved["runtimeProfile"])
-    runtime["apptainer"] = apptainer  # host override, never the profile
+    runtime = _declared_runtime(resolved, apptainer)
     merged = dict(loaded)
     merged.update(runtime)
     return merged
@@ -86,8 +89,7 @@ def provision(args) -> int:
 
     resolved = resolve_provision_inputs(profile, plan=plan,
                                         runtime_candidate_digest=candidate)
-    runtime_profile = dict(resolved["runtimeProfile"])
-    runtime_profile["apptainer"] = args.apptainer  # host override
+    runtime_profile = _declared_runtime(resolved, args.apptainer)
 
     run_root = Path(args.output).resolve() / args.run_id
     inputs = run_root / "issuer-inputs"

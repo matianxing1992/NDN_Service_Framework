@@ -129,3 +129,15 @@ R/E 回执不重解释。混合仓库按实际基础源码闭包 seal，不能�
 ## Complexity Tracking
 
 新增的是一个实验 consumer 和其严格配置/判定，不新增调度平台、镜像工厂、通用数据库或权限协议。共享封装只在已有 baseline 与 YOLO 都调用时抽取。可复用并不意味着承诺所有未来模型无需验证。
+# Local tool binding clarification (2026-09-08)
+
+The actual host uses Apptainer1.5.3 at/opt/apptainer/1.5.3/bin/apptainer;
+Tiger's declared environment uses1.3.4-1.el9 at/usr/bin/apptainer. Keep the
+same base/app composition and declare local tools explicitly in runtime.local.
+Local-cpu issuer/ranks and their public reanalysis use the local declaration;
+cluster cases retain the cluster declaration. Both versions remain frozen in
+effective profile behavior, allowing gate reuse to compare the same complete
+profile while each environment supplies its own actual observation.
+Reuse tools/spec183_dev_provision.py for signed development preparation; its
+prepared-run validation must use the canonical decoder and it must reject a
+CLI executable that differs from the selected declaration.

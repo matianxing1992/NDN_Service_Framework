@@ -669,7 +669,8 @@ def _reanalyze_retained(root: Path, prepared: dict) -> dict:
     # Join this run's issuer and every node's exact command/cleanup evidence.
     from runtime.yolo_worker import read_runtime_version
     expected = prepared['plan']['effectiveBehavior']['profile']
-    version = expected['runtime']['apptainerVersion']
+    from runtime.yolo_profile import runtime_environment
+    version = runtime_environment(expected, prepared['case'])['apptainerVersion']
     version_binding = dict(runId=prepared['runId'], candidateDigest=prepared['candidateDigest'])
     runtime_versions = {'issuer': read_runtime_version(root / 'prepare-output',
         expected_version=version, binding=dict(version_binding, rank='issuer'))}

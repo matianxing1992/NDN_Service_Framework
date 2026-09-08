@@ -6,6 +6,17 @@
 
 ## Detailed Execution Progress
 
+当前检查点：[分层本地启动实证](evidence/layered-local-startup.md)。签名准备已实跑；
+首次Controller认证退出134，已定位并修复角色HOME未挂载。相同基础库与应用的
+最小NFD+Controller实跑已成功发布签名回执，116项局部检查通过；未重编C++。
+
+| 细分任务 | 状态 | 实证 / 下一步 |
+|---|---|---|
+| T004.local-tools：本机与Tiger工具版本绑定 | IMPLEMENTED | 本机1.5.3签名准备成功；Tiger版本要求保留 |
+| T009.prepare：实际分层候选签名准备 | EXECUTED | layered-host-20260908a，receipt46405701；非推理PASS |
+| T009.role-home：角色身份挂载修复 | VERIFIED_STARTUP | 同SIF内身份可见、根身份隔离；Controller签名发布成功并清理 |
+| T009.cpu-chain：完整CPU链 | IN_PROGRESS | 下一步冻结修复后的新harness，保留失败运行，不复用其输出目录 |
+
 用户指定的 [C++ NDN/SIF 两节点小例子](evidence/cpp-ndn-smoke.md)已实跑通过：
 209981，itiger01/02，三次 Interest/Data，Slurm 0:0，清理完成。
 2026-09-08 用户进一步确认“基础库SIF + 外置DI/UAV应用”方案：

@@ -36,6 +36,7 @@ def test_container_has_only_own_home_and_in_image_tools(tmp_path):
     command = baseline.container_command(profile, tmp_path / "bundle", tmp_path / "private/user",
         tmp_path / "public", tmp_path / "out/user", [baseline.BIN + "/nfdc", "status"], node=tmp_path / "node")
     assert command[command.index("--home") + 1] == "/identities/user"
+    assert str(tmp_path / "private/user") + ":/identities/user:rw" in command
     assert "--cleanenv" in command and "--containall" in command
     assert not any(x.startswith("HOME=") for x in command)
     assert not any(":/identities:rw" in x or "root.key" in x for x in command)

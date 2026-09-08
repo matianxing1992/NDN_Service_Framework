@@ -266,6 +266,9 @@ def load_operator_profile(path: Path, *, stage: str) -> dict:
 
     resolve_refs(value)
     value["runtime"]["apptainer"] = _operator_path(value["runtime"]["apptainer"], path.parent, local=True)
+    if 'local' in value['runtime']:
+        value['runtime']['local']['apptainer'] = _operator_path(
+            value['runtime']['local']['apptainer'], path.parent, local=True)
     if 'operatorPython' in value['runtime']:
         value['runtime']['operatorPython'] = _operator_path(value['runtime']['operatorPython'], path.parent, local=True)
     value["security"]["authorityPrivateKey"] = _operator_path(
@@ -295,10 +298,22 @@ def effective_profile_document(profile: dict) -> dict:
     behavior.pop('profileId')
     behavior['runtime'].pop('apptainer')
     behavior['runtime'].pop('operatorPython',None)
+    if 'local' in behavior['runtime']:
+        behavior['runtime']['local'].pop('apptainer')
     behavior['security'].pop('authorityPrivateKey')
     behavior['storage'] = {key: profile['storage'][key] for key in ('peakBytes', 'marginBytes')}
     return dict(schema='tiger-yolo-effective-profile-v1', profileId=profile['profileId'],
                 effectiveBehavior=behavior)
+
+
+def runtime_environment(profile: dict, case: str) -> dict:
+    """Select declared host tools without changing the base/application tuple."""
+    if case not in ('local-cpu', 'single-node-gpu', 'two-node-gpu', 'negative-dependency'):
+        raise ClosureError('RUNTIME_ENVIRONMENT_CASE')
+    runtime = profile['runtime']
+    if case == 'local-cpu' and 'local' in runtime:
+        return dict(runtime, **runtime['local'])
+    return dict(runtime)
 
 
 def check_operator_profile(path: Path, *, stage: str) -> dict:
@@ -450,8 +465,9 @@ def resolve_provision_inputs(path: Path, *, plan: dict, runtime_candidate_digest
     image = _read_plane(runtime_path)["files"]["sif"]
     # The runtime plane has already validated relative file membership.
     sif = runtime_path.parent / image["path"]
-    runtime_profile = {"apptainer": profile["runtime"]["apptainer"],
-                       "apptainerVersion": profile["runtime"]["apptainerVersion"],
+    environment = runtime_environment(profile, plan['case'])
+    runtime_profile = {"apptainer": environment["apptainer"],
+                       "apptainerVersion": environment["apptainerVersion"],
                        "sif": str(sif), "sifSha256": image["sha256"][7:], "sifBytes": image['bytes']}
     if profile['runtime'].get('layout') == 'layered-v1':
         runtime_profile.update(layout='layered-v1',

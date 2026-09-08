@@ -704,3 +704,18 @@ identities/provenance and joins it with native evidence. The shared handoff
 graph field is only an expected graph identity anchor; it cannot supply
 missing role references. Reference preparation is component evidence, never
 execution proof. CUDA preparation requires allocated-node GPU preflight.
+# Local and cluster execution tools (2026-09-08 clarification)
+
+`runtime.apptainer` and `runtime.apptainerVersion` declare cluster tools.
+Optional `runtime.local` declares both fields for the local experiment host.
+`local-cpu` selects that local declaration when present; GPU/negative-dependency
+cluster cases select the cluster declaration. Without `runtime.local`, the
+existing single-tool declaration remains the explicit default.
+
+Both declared versions remain in effective behavior; physical executable paths
+do not. Source/base/application identities are unchanged by tool selection.
+Issuer and rank version probes, and public retained-evidence reanalysis, must
+select the same case-specific declaration. A local observation cannot satisfy
+a cluster version check. Development commands cannot silently replace the
+selected executable or expected version. These declarations do not grant any
+MiniNDN, GPU or model qualification.
