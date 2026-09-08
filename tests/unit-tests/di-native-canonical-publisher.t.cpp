@@ -84,7 +84,7 @@ struct Input
     candidate.artifactsByRole = {{role.role, {role.artifactDigest}}};
     candidate.rankArtifactDigestsByRole = candidate.artifactsByRole;
     candidate.fragmentsByRole = {{role.role, role.artifactDigest}};
-    candidate.requirementsByRole = {{role.role, {{"onnxruntime"}, 1, 0, 0, 0, 1.0}}};
+    candidate.requirementsByRole = {{role.role, {{"onnxruntime"}, 1, 0, 0, 0, 0, 1.0}}};
     options = {"/fixture/NDNSF/DI/ARTIFACT", model.modelManifestDigest, {role.artifactDigest}};
   }
   NativeCanonicalArtifactPublisher::SourcePort resolver()

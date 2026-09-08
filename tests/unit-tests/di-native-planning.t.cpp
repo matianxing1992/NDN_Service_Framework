@@ -332,7 +332,7 @@ BOOST_AUTO_TEST_CASE(YoloUsesRealBranchTensorsAndKnownByteEstimates)
   const std::vector<std::string> expected{"Left->Merge:x", "Left->Right:x", "Right->Merge:y"};
   BOOST_CHECK(actual == expected);
   BOOST_CHECK(candidate.crossPartitionTensors == std::vector<std::string>({"x", "y"}));
-  for (const auto& role : partition.roles) BOOST_CHECK_EQUAL(candidate.requirementsByRole.at(role).weightBytes, 16);
+  for (const auto& role : partition.roles) BOOST_CHECK_EQUAL(candidate.requirementsByRole.at(role).weightBytes.value(), 16);
   BOOST_CHECK_EQUAL(std::get<std::string>(snapshot.edges[2].tensor.shape[0]), "batch");
   BOOST_CHECK(!snapshot.edges[2].tensor.estimatedBytes);
   snapshot.legalCutEdges = {"x"};
@@ -344,7 +344,7 @@ BOOST_AUTO_TEST_CASE(YoloUsesRealBranchTensorsAndKnownByteEstimates)
   const auto independent = splitter.enumerate(descriptor, snapshot, {}).front();
   BOOST_CHECK(independent.executionPlan.dependencies.empty());
   BOOST_CHECK(independent.crossPartitionTensors.empty());
-  BOOST_CHECK_EQUAL(independent.requirementsByRole.at("Right").weightBytes, 1);
+  BOOST_CHECK_EQUAL(independent.requirementsByRole.at("Right").weightBytes.value(), 1);
 }
 
 BOOST_AUTO_TEST_CASE(GraphRejectsForeignTensorReferencesAndInvalidTopology)
@@ -862,7 +862,7 @@ BOOST_AUTO_TEST_CASE(YoloFragmentMatchesMaintainedSplitterAndBindsRegistration)
     BOOST_CHECK(candidate.artifactsByRole.at("FullModel") == std::vector<std::string>({row.at("fragment_digest")}));
     const auto& requirement = candidate.requirementsByRole.at("FullModel");
     BOOST_CHECK(requirement.backends == row.at("backends").get<std::vector<std::string>>());
-    BOOST_CHECK_EQUAL(requirement.weightBytes, row.at("weight_bytes").get<std::uint64_t>());
+    BOOST_CHECK_EQUAL(requirement.weightBytes.value(), row.at("weight_bytes").get<std::uint64_t>());
     BOOST_CHECK_EQUAL(requirement.safetyMargin, row.at("safety_margin").get<double>());
     BOOST_CHECK_EQUAL(candidate.mergeKind, row.at("merge_kind").get<std::string>());
     fragments.insert(candidate.fragmentsByRole.at("FullModel"));
@@ -872,6 +872,56 @@ BOOST_AUTO_TEST_CASE(YoloFragmentMatchesMaintainedSplitterAndBindsRegistration)
   // Both rows have the same candidate ID, role and graph. Registration changes
   // must change the fragment identity independently of these shared fields.
   BOOST_CHECK_EQUAL(fragments.size(), 2);
+}
+
+BOOST_AUTO_TEST_CASE(ResourceBudgetsMatchMaintainedPythonContract)
+{
+  std::ifstream input("tests/fixtures/spec182/resource-budget-oracle.json");
+  BOOST_REQUIRE(input.good());
+  const auto rows = NativeJson::parse(input);
+  BOOST_REQUIRE_EQUAL(rows.size(), 12);
+  for (const auto& row : rows) {
+    BOOST_TEST_CONTEXT(row.at("name").get<std::string>()) {
+      const auto& value = row.at("input");
+      const auto bytes = [&](const char* field) -> std::optional<std::uint64_t> {
+        if (value.at(field).is_null()) return std::nullopt;
+        return value.at(field).get<std::uint64_t>();
+      };
+      NativeRoleResourceRequirement budget{
+        value.at("backends").get<std::vector<std::string>>(), bytes("weight_bytes"),
+        bytes("workspace_bytes"), bytes("kv_bytes"), bytes("activation_bytes"),
+        bytes("transient_bytes"), value.at("safety_margin").get<double>()};
+      BOOST_CHECK_EQUAL(budget.canonicalJson(), row.at("canonical_json").get<std::string>());
+      if (row.at("native_overflow").get<bool>()) {
+        BOOST_CHECK_THROW(budget.estimatedPeakGpuMemoryBytes(), std::overflow_error);
+      }
+      else if (row.at("peak").is_null()) {
+        BOOST_CHECK(!budget.estimatedPeakGpuMemoryBytes());
+      }
+      else {
+        BOOST_CHECK_EQUAL(budget.estimatedPeakGpuMemoryBytes().value(), row.at("peak").get<std::uint64_t>());
+      }
+    }
+  }
+  NativeRoleResourceRequirement defaults;
+  defaults.backends = {"onnxruntime"};
+  BOOST_CHECK_EQUAL(defaults.safetyMargin, 1.1);
+  BOOST_CHECK(!defaults.estimatedPeakGpuMemoryBytes());
+}
+
+BOOST_AUTO_TEST_CASE(PlacementAccountsForKvAndRejectsUnknownPeak)
+{
+  TwoRolePlacement fixture;
+  auto& budget = fixture.candidate.requirementsByRole.at(fixture.first);
+  budget = {{"onnxruntime"}, 1, 0, 0, 0, 0, 1.0};
+  fixture.snapshot.offers.front().freeBytes = 1;
+  BOOST_CHECK_NO_THROW(NativePreSplitFirstPlacement().propose(fixture.snapshot, fixture.candidate));
+  budget.kvBytes = 1;
+  BOOST_CHECK_THROW(NativePreSplitFirstPlacement().propose(fixture.snapshot, fixture.candidate), std::runtime_error);
+  fixture.snapshot.offers.front().freeBytes = 2;
+  BOOST_CHECK_NO_THROW(NativePreSplitFirstPlacement().propose(fixture.snapshot, fixture.candidate));
+  budget.kvBytes.reset();
+  BOOST_CHECK_THROW(NativePreSplitFirstPlacement().propose(fixture.snapshot, fixture.candidate), std::runtime_error);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

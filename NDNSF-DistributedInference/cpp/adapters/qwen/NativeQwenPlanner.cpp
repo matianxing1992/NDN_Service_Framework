@@ -138,7 +138,7 @@ NativeQwenLayerSplit::enumerate(const NativeModelDescriptor& model,
     candidate.tensorDegreesByRole[role] = 1;
     candidate.requirementsByRole[role] = {
       {"onnxruntime"},
-      m_weightBytesByRole.at(role), 1024ULL * 1024ULL * 1024ULL,
+      m_weightBytesByRole.at(role), 1024ULL * 1024ULL * 1024ULL, 0,
       512ULL * 1024ULL * 1024ULL, 512ULL * 1024ULL * 1024ULL, 1.10};
   }
   candidate.inputIngressRole = m_roles.front();

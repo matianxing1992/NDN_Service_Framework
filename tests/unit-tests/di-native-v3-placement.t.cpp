@@ -64,7 +64,7 @@ struct Input
       split.fragmentsByRole[role.role] = nativePlanningDigest("fragment");
       split.artifactsByRole[role.role].push_back(role.artifactDigest);
       split.rankArtifactDigestsByRole[role.role].push_back(role.artifactDigest);
-      split.requirementsByRole[role.role] = {{"onnxruntime"}, 1, 0, 0, 0, 1.0};
+      split.requirementsByRole[role.role] = {{"onnxruntime"}, 1, 0, 0, 0, 0, 1.0};
     }
     NativeRequestPreparation preparation(std::make_shared<NativeAdapterRegistry>(), {}, {},
       [&](const NativeInspectedModel&, const NativeSplitCandidate&, const NativeRequestControl&) { return roles; });
