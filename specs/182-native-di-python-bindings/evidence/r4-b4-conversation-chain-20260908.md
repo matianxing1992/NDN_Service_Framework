@@ -98,3 +98,24 @@ fixture有明确公开测试key，未读取任何运行key/journal。新生成/-
 verification key ring 16项。CC-2显式配置总journal quota、单写lease和恢复上限；
 不得用逐条上限替代总额约束。C++实现与测试保持未验收，下一成员先实现持久owner，
 然后CC-3接公开调用，批末一次构建及相关测试。
+
+## CC-2 Journal Implementation Checkpoint
+
+新增 NativeConversationJournal.hpp/.cpp，作为 C16 的持久化端口，沿用旧 RuntimeJournal
+格式，不创建第二种checkpoint协议。已编码：owner目录/文件检查、跨进程flock lease、
+journal及旧spool总quota、旧checksum/transaction展开、仅末尾未终结语法损坏的torn-tail
+修复、加密envelope+conversation index同一事务追加、fsync后晋升内存视图。
+追加失败尝试truncate/fsync恢复旧长度；恢复失败则poison实例，禁止继续读写。
+解析/字段重复/未知schema/完整记录checksum错误不能当作可丢弃尾部。
+
+恢复验证旧加密wire和payload摘要、checkpoint/transcript/index身份及期限、role receipt
+集合后返回记录。journal负责加密存储认证；checkpoint签名、最新parent CAS、pending turn
+与Provider promotion仍由C16负责，当前尚未接入，不能单独调用journal冒充会话验收。
+新增wire端口使用OpenSSL RAND/AES-GCM生成v3 envelope，nonce每次随机；base64复用EVP。
+
+Spec182ConversationJournal 已编写旧两条事务读取、native追加再打开、无spool恢复、
+writer lease竞争、torn tail、quota拒绝保留旧文件和完整record篡改用例，**尚未运行**。
+源码按review-agent只读检查发现并修正两点：duplicate key不能吞为torn tail；quota必须
+计入旧兼容spool，不能只算新log。当前无C++编译/行为PASS，产品源码保持未提交。
+下一步CC-2剩余：替换NativeConversationCoordinator scaffold，创建真正pending turn/
+abort/prepare/CAS/restore owner并消费上述端口；随后CC-3公开接线，同批末统一构建测试。

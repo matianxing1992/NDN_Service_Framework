@@ -325,6 +325,8 @@ owner/持久化及公开两轮请求。旧手工seed组件用例不替代FULL_CO
 CC-1补充Write：N/NativeConversationWire.hpp、N/NativeConversationWire.cpp；同一原生库
 内复用的V1格式认证函数，由C16消费；tests/fixtures/spec182/conversation-oracle.json
 及独立author负责旧格式期望，U/di-native-conversation.t.cpp负责原生行为验证。
+CC-2补充Write：N/NativeConversationJournal.hpp、N/NativeConversationJournal.cpp；C16的
+旧格式持久化端口，负责lease/加密事务/恢复，不能替代C16的parent CAS与Provider晋升。
 
 - **Parent**: T011; **Depends**: T011-B; **Reviewer**: state/compatibility review
 - **Read**: CD-007 State Authority → runtime-boundaries Migration and Rollback Contract；P/conversation.py::ConversationCoordinator；P/app_sdk/runtime_journal.py；N/NativeProviderRuntime.hpp::ConversationStateStore。

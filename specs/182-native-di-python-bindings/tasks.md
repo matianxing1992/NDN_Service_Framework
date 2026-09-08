@@ -17,7 +17,7 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 
 | Unit / Details | Status | Depends | Evidence / Remaining | Updated |
 | --- | --- | --- | --- | --- |
-| [R4-B4 Authenticated Conversation Chain](evidence/r4-b4-conversation-chain-20260908.md) | IN_PROGRESS | R4-B3; T011-C acceptance retained | CC-1 PARTIAL：原生认证wire/解密及C++用例已编写未运行；4 checkpoint/2 transcript/2旧加密journal事务参考重现PASS；CC-2 owner持久化与CC-3公开接线待完成 | 2026-09-08 |
+| [R4-B4 Authenticated Conversation Chain](evidence/r4-b4-conversation-chain-20260908.md) | IN_PROGRESS | R4-B3; T011-C acceptance retained | CC-1/CC-2 PARTIAL：认证wire、兼容加密journal/lease/恢复和C++用例已编写未运行；旧参考重现PASS；coordinator pending/CAS与公开接线待完成 | 2026-09-08 |
 | [R4-B3 Epoch Text Commit Boundary](evidence/r4-b3-epoch-text-20260908.md#final-local-result) | DONE | R4-B2; T011-B acceptance retained | terminal stable flush前移至事件接受前；真实tokenizer/epoch及stream/sampling共24 cases/411 assertions PASS，unit与实际DI库增量build PASS；父任务仍未完整验收 | 2026-09-08 |
 | [R4-B2 Native Stream Production Chain](evidence/r4-b2-stream-production-20260908.md#final-local-result) | DONE | R3-B1; R4-B1 | Local requester stream batch：7 stream/190 assertions、2 options/21、29 regression/695 PASS；2 SDK recovery wires、CLI/loader PASS；真实Provider/会话/T016仍未完成 | 2026-09-08 |
 | [R4-B1 Native Sampling Contract Repair](evidence/r4-b1-sampling-20260908.md) | DONE | R3-B1; T010-C/T011 acceptance retained | Local sampling batch：double惩罚与统一参数校验；4 cases/40 assertions、既有epoch 28 assertions PASS；增量unit与实际DI共享库构建PASS；stream/session仍待完成 | 2026-09-08 |
@@ -83,6 +83,12 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 | [T017-A Development Handoff](contracts/execution-units.md#t017-a-development-handoff) | NOT_STARTED | T016-A | [baseline](evidence/task-progress-registry-20260907.md)；无本卡独立执行/验收记录；按依赖领取 | 2026-09-07 |
 
 ## Current Checkpoint
+
+2026-09-08 R4-B4 CC-2 / **PARTIAL**：已编码旧格式加密journal读写、writer lease、
+总quota、torn-tail/事务恢复及对应C++测试，尚未构建。见
+[journal checkpoint](evidence/r4-b4-conversation-chain-20260908.md#cc-2-journal-implementation-checkpoint)。
+源码静态检查修正duplicate-key尾部分类和旧spool额度遗漏；产品仍未验收/未提交。
+下一步替换coordinator的空abort/伪seed逻辑，消费journal后接公开两轮请求；同批末统一构建。
 
 2026-09-08 R4-B4 CC-1 / **PARTIAL**：原生checkpoint/transcript/加密envelope认证函数
 和C++测试已编写，尚未构建；旧参考4 checkpoint/2 transcript/2 journal事务生成、
