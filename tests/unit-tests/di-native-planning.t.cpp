@@ -1,6 +1,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
 #include "tests/fixtures/spec182/native-model-fixture.hpp"
 #include "tests/fixtures/spec182/native-candidate-json-fixture.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include <fstream>
 #include "tests/fixtures/spec182/native-sealing-fixture.hpp"
@@ -1045,6 +1046,99 @@ BOOST_AUTO_TEST_CASE(HybridCandidateRejectsIncompleteRankAndRedistributionContra
   base.hybridPlan.reset();
   base.candidateDigest = base.computedDigest();
   BOOST_CHECK_THROW(base.validate(snapshot), std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(OwnedOnnxGraphMatchesMaintainedPlanningAndCanonicalIdentities)
+{
+  std::ifstream file("tests/fixtures/spec182/onnx-planning-graph-oracle.json");
+  BOOST_REQUIRE(file.good());
+  const auto rows = NativeJson::parse(file);
+  BOOST_REQUIRE_EQUAL(rows.size(), 6);
+  const auto tensorJson = [](const NativeTensorContract& tensor) {
+    auto shape = NativeJson::array();
+    for (const auto& dim : tensor.shape) std::visit([&](const auto& v) { shape.push_back(v); }, dim);
+    return NativeJson{{"name", tensor.name}, {"dtype", tensor.dtype}, {"shape", shape},
+      {"estimated_bytes", tensor.estimatedBytes ? NativeJson(*tensor.estimatedBytes) : NativeJson(nullptr)}};
+  };
+  for (const auto& row : rows) {
+    BOOST_TEST_CONTEXT(row.at("name").get<std::string>()) {
+      NativeCanonicalSource source;
+      const auto hex = row.at("model_hex").get<std::string>();
+      for (std::size_t i = 0; i < hex.size(); i += 2)
+        source.modelBytes.push_back(std::stoul(hex.substr(i, 2), nullptr, 16));
+      const auto& expected = row.at("snapshot");
+      const auto descriptor = model("fixture", "OnnxFixture", expected.at("graph_digest"));
+      NativeAssemblyControl control{std::chrono::steady_clock::now() + std::chrono::seconds(10), [] {}, 1 << 20, 1 << 20};
+      const auto actual = inspectNativeOnnxPlanningGraph(source, descriptor, control);
+      BOOST_CHECK_EQUAL(actual.graph.graphDigest, expected.at("graph_digest").get<std::string>());
+      BOOST_CHECK_EQUAL(actual.graphMetadataJson, row.at("metadata_json").get<std::string>());
+      BOOST_CHECK_EQUAL(actual.canonicalIdentity.graphDigest, row.at("canonical_graph_digest").get<std::string>());
+      BOOST_CHECK_EQUAL(actual.canonicalIdentity.initializerDigest, row.at("initializer_digest").get<std::string>());
+      BOOST_CHECK(actual.canonicalIdentity.graphDigest != actual.graph.graphDigest);
+      BOOST_CHECK(actual.graph.topologicalOrder == expected.at("topological_order").get<std::vector<std::string>>());
+      BOOST_CHECK(actual.graph.legalCutEdges == expected.at("legal_cut_edges").get<std::vector<std::string>>());
+      BOOST_REQUIRE_EQUAL(actual.graph.nodes.size(), expected.at("nodes").size());
+      const auto metadata = nativeParseJson(row.at("metadata_json"));
+      for (std::size_t i = 0; i < actual.graph.nodes.size(); ++i) {
+        const auto& node = actual.graph.nodes[i];
+        BOOST_CHECK_EQUAL(node.id, expected.at("nodes")[i].at("node_id").get<std::string>());
+        BOOST_CHECK_EQUAL(node.opType, expected.at("nodes")[i].at("operation").get<std::string>());
+        BOOST_CHECK_EQUAL(node.ordinal, i);
+        BOOST_CHECK_EQUAL(actual.nodeNames[i], metadata.at("nodes")[i].at("name").get<std::string>());
+        BOOST_CHECK_EQUAL(actual.canonicalNodeIndices.at(node.id), i);
+      }
+      BOOST_REQUIRE_EQUAL(actual.graph.edges.size(), expected.at("edges").size());
+      for (std::size_t i = 0; i < actual.graph.edges.size(); ++i) {
+        const auto& edge = actual.graph.edges[i]; const auto& want = expected.at("edges")[i];
+        BOOST_CHECK_EQUAL(edge.id, want.at("edge_id").get<std::string>());
+        BOOST_CHECK_EQUAL(edge.producer, want.at("producer").get<std::string>());
+        BOOST_CHECK(edge.consumers == want.at("consumers").get<std::vector<std::string>>());
+        auto contract = tensorJson(edge.tensor);
+        BOOST_CHECK_EQUAL(contract.at("name").get<std::string>(), edge.id);
+        for (const auto* key : {"dtype", "shape", "estimated_bytes"}) BOOST_CHECK(contract.at(key) == want.at(key));
+      }
+      auto inputs = NativeJson::array(), outputs = NativeJson::array();
+      for (const auto& tensor : actual.graph.modelInputs) inputs.push_back(tensorJson(tensor));
+      for (const auto& tensor : actual.graph.modelOutputs) outputs.push_back(tensorJson(tensor));
+      BOOST_CHECK(inputs == expected.at("model_inputs"));
+      BOOST_CHECK(outputs == expected.at("model_outputs"));
+    }
+  }
+}
+
+BOOST_AUTO_TEST_CASE(OwnedOnnxGraphRejectsForeignAdapterSourceAndExpiredControl)
+{
+  std::ifstream file("tests/fixtures/spec182/onnx-planning-graph-oracle.json");
+  BOOST_REQUIRE(file.good());
+  const auto rows = NativeJson::parse(file);
+  const auto sourceFor = [](const NativeJson& row) {
+    NativeCanonicalSource source;
+    const auto hex = row.at("model_hex").get<std::string>();
+    for (std::size_t i = 0; i < hex.size(); i += 2)
+      source.modelBytes.push_back(std::stoul(hex.substr(i, 2), nullptr, 16));
+    return source;
+  };
+  const auto source = sourceFor(rows[0]);
+  const auto descriptor = model("fixture", "OnnxFixture", rows[0].at("snapshot").at("graph_digest"));
+  NativeAssemblyControl control{std::chrono::steady_clock::now() + std::chrono::seconds(10), [] {}, 1 << 20, 1 << 20};
+  auto graph = inspectNativeOnnxPlanningGraph(source, descriptor, control).graph;
+  auto foreign = descriptor; foreign.adapter.abi = "different-abi";
+  BOOST_CHECK_THROW(inspectNativeOnnxPlanningGraph(source, foreign, control), std::invalid_argument);
+  foreign = descriptor; foreign.graphDigest = digest("foreign-graph");
+  BOOST_CHECK_THROW(inspectNativeOnnxPlanningGraph(source, foreign, control), std::invalid_argument);
+  BOOST_CHECK_THROW(inspectNativeOnnxPlanningGraph(sourceFor(rows[1]), descriptor, control), std::invalid_argument);
+  BOOST_CHECK_THROW(inspectNativeOnnxPlanningGraph(NativeCanonicalSource{{255, 255}, {}}, descriptor, control), std::runtime_error);
+  graph.nodes.front().opType.clear();
+  BOOST_CHECK_THROW(graph.validate(descriptor), std::invalid_argument);
+  auto limited = control; limited.maxSourceBytes = 1;
+  BOOST_CHECK_THROW(inspectNativeOnnxPlanningGraph(source, descriptor, limited), std::runtime_error);
+  limited = control; limited.deadline = std::chrono::steady_clock::now() - std::chrono::seconds(1);
+  BOOST_CHECK_THROW(inspectNativeOnnxPlanningGraph(source, descriptor, limited), std::runtime_error);
+  limited = control; limited.requireActive = {};
+  BOOST_CHECK_THROW(inspectNativeOnnxPlanningGraph(source, descriptor, limited), std::runtime_error);
+  limited = control; limited.requireActive = [] { throw std::runtime_error("fixture-cancelled"); };
+  BOOST_CHECK_EXCEPTION(inspectNativeOnnxPlanningGraph(source, descriptor, limited), std::runtime_error,
+    [](const auto& error) { return std::string(error.what()) == "fixture-cancelled"; });
 }
 
 BOOST_AUTO_TEST_SUITE_END()

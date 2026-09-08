@@ -2,6 +2,7 @@
 #define NDNSF_DI_NATIVE_ONNX_RECIPE_ASSEMBLER_HPP
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
 
 #include <chrono>
 #include <cstdint>
@@ -12,7 +13,7 @@
 
 namespace ndnsf::di {
 
-/** Authenticated canonical ONNX bytes fetched after Selection. */
+/** Owned canonical ONNX bytes; source authentication belongs to the fetching owner. */
 struct NativeCanonicalSource
 {
   std::vector<std::uint8_t> modelBytes;
@@ -25,6 +26,7 @@ using NativeCertifiedRecipe = NativeSelectionRoleV3;
 struct NativeAssemblyControl
 {
   std::chrono::steady_clock::time_point deadline;
+  /** Required cancellation/owner fence, invoked before and during native work. */
   std::function<void()> requireActive;
   std::uint64_t maxSourceBytes = 0;
   std::uint64_t maxAssembledBytes = 0;
@@ -67,6 +69,26 @@ struct NativeOnnxIdentity
   std::string graphDigest;
   std::string initializerDigest;
 };
+
+/** Source-derived planning facts, distinct from the original assembly identity. */
+struct NativeOnnxGraphInspection
+{
+  NativeGraphSnapshot graph;
+  std::vector<std::string> nodeNames;
+  // ONNX planning nodes have a one-to-one original source index. Semantic
+  // layer adapters must provide their own many-node mapping rather than reuse it.
+  std::map<std::string, std::uint64_t> canonicalNodeIndices;
+  std::string graphMetadataJson;
+  NativeOnnxIdentity canonicalIdentity;
+};
+
+/** Inspect owned ONNX bytes using official shape inference and the maintained
+ * adapter-bound planning schema. Reject a different expected graph identity;
+ * source fetching/authentication belongs to the caller's native catalog owner.
+ */
+NativeOnnxGraphInspection
+inspectNativeOnnxPlanningGraph(const NativeCanonicalSource& source,
+  const NativeModelDescriptor& expectedModel, const NativeAssemblyControl& control);
 
 /**
  * Normalize one serialized ONNX TensorProto into its canonical payload, or

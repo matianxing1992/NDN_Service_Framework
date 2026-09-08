@@ -1,4 +1,5 @@
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 
 // Spec 182 unifies the DI ONNX world on the official 1.17 full-protobuf
 // headers (ONNX_USE_LITE_PROTO=OFF) installed by the configured ONNX prefix;
@@ -1569,6 +1570,148 @@ canonicalOnnxSourceIdentity(const NativeCanonicalSource& source,
   identity.initializerDigest = sha256HexOf(initializerContentJson(entries));
   checkActive(control);
   return identity;
+}
+
+NativeOnnxGraphInspection
+inspectNativeOnnxPlanningGraph(const NativeCanonicalSource& source,
+  const NativeModelDescriptor& expectedModel, const NativeAssemblyControl& control)
+{
+  expectedModel.validate();
+  if (expectedModel.modelFormat != "onnx") fail("GRAPH_MODEL_FORMAT");
+  const auto original = ownedSourceModel(source, control);
+  const auto entries = buildTensorIndex(original);
+  NativeOnnxGraphInspection result;
+  result.canonicalIdentity = {sha256HexOf(graphFactsJson(original, entries)),
+                              sha256HexOf(initializerContentJson(entries))};
+  auto inferred = original;
+  try { onnx::shape_inference::InferShapes(inferred); }
+  catch (const std::exception&) {
+    // Python infer_shapes returns a copy. A failed C++ inference may have
+    // partially mutated its argument, so restore the original before fallback.
+    inferred = original;
+  }
+  checkActive(control);
+  const auto& graph = inferred.graph();
+  if (graph.node_size() != original.graph().node_size()) fail("GRAPH_NODE_ORDER");
+
+  static const std::map<int, std::pair<std::string, std::uint64_t>> types = {
+    {1, {"float32", 4}}, {2, {"uint8", 1}}, {3, {"int8", 1}}, {4, {"uint16", 2}},
+    {5, {"int16", 2}}, {6, {"int32", 4}}, {7, {"int64", 8}}, {9, {"bool", 1}},
+    {10, {"float16", 2}}, {11, {"float64", 8}}, {12, {"uint32", 4}},
+    {13, {"uint64", 8}}, {16, {"bfloat16", 2}}};
+  const auto tensorInfo = [&](const std::string& name, int type, const NativeJson& shape) {
+    const auto known = types.find(type);
+    NativeJson bytes = nullptr;
+    if (known != types.end()) {
+      bool fixed = true, zero = false;
+      for (const auto& dim : shape) {
+        if (!dim.is_number_integer() || dim.get<std::int64_t>() < 0) fixed = false;
+        else if (dim.get<std::int64_t>() == 0) zero = true;
+      }
+      if (fixed) {
+        std::uint64_t count = zero ? 0 : known->second.second;
+        if (!zero) for (const auto& dim : shape) {
+          const auto n = dim.get<std::uint64_t>();
+          if (n && count > std::numeric_limits<std::uint64_t>::max() / n) fail("GRAPH_TENSOR_SIZE");
+          count *= n;
+        }
+        bytes = count;
+      }
+    }
+    return NativeJson{{"name", name}, {"dtype", known == types.end() ? "onnx_type_" + std::to_string(type) : known->second.first},
+                      {"shape", shape}, {"sizeBytes", bytes}};
+  };
+  auto tensors = NativeJson::object();
+  const auto addValues = [&](const auto& values) {
+    for (const auto& value : values) {
+      if (value.name().empty()) continue;
+      const auto& type = value.type().tensor_type();
+      auto shape = NativeJson::array();
+      for (const auto& dim : type.shape().dim()) {
+        if (dim.has_dim_value()) shape.push_back(dim.dim_value());
+        else if (dim.has_dim_param()) shape.push_back(dim.dim_param());
+        else shape.push_back("?");
+      }
+      tensors[value.name()] = tensorInfo(value.name(), type.elem_type(), shape);
+    }
+  };
+  addValues(graph.input()); addValues(graph.output()); addValues(graph.value_info());
+  std::set<std::string> initializers;
+  for (const auto& tensor : graph.initializer()) {
+    auto shape = NativeJson::array();
+    for (const auto dim : tensor.dims()) shape.push_back(dim);
+    tensors[tensor.name()] = tensorInfo(tensor.name(), tensor.data_type(), shape);
+    initializers.insert(tensor.name());
+  }
+  std::vector<std::string> inputs, outputs;
+  for (const auto& value : graph.input()) if (!initializers.count(value.name())) inputs.push_back(value.name());
+  for (const auto& value : graph.output()) outputs.push_back(value.name());
+  auto nodes = NativeJson::array();
+  std::map<std::string, std::uint64_t> producers;
+  std::map<std::string, std::vector<std::uint64_t>> consumers;
+  for (int index = 0; index < graph.node_size(); ++index) {
+    checkActive(control);
+    const auto& node = graph.node(index);
+    const auto& before = original.graph().node(index);
+    if (node.name() != before.name() || node.op_type() != before.op_type() ||
+        !std::equal(node.input().begin(), node.input().end(), before.input().begin(), before.input().end()) ||
+        !std::equal(node.output().begin(), node.output().end(), before.output().begin(), before.output().end()))
+      fail("GRAPH_NODE_ORDER");
+    const auto id = "onnx-node-" + std::to_string(index);
+    const auto name = node.name().empty() ? std::to_string(index) + ":" + node.op_type() : node.name();
+    std::vector<std::string> in, out;
+    for (const auto& value : node.input()) if (!value.empty() && !initializers.count(value)) {
+      in.push_back(value); consumers[value].push_back(index);
+    }
+    for (const auto& value : node.output()) if (!value.empty()) {
+      out.push_back(value); producers[value] = index;
+    }
+    nodes.push_back(NativeJson{{"index", index}, {"name", name}, {"opType", node.op_type()},
+                               {"inputs", in}, {"outputs", out}});
+    result.graph.nodes.push_back({id, node.op_type(), std::uint64_t(index)});
+    result.graph.topologicalOrder.push_back(id);
+    result.nodeNames.push_back(name);
+    result.canonicalNodeIndices[id] = index;
+  }
+  const auto contract = [&](const std::string& name) {
+    NativeTensorContract tensor;
+    tensor.name = name; tensor.dtype = "unknown";
+    const auto found = tensors.find(name);
+    if (found == tensors.end()) return tensor;
+    tensor.dtype = found->at("dtype").get<std::string>();
+    for (const auto& dim : found->at("shape")) {
+      if (dim.is_string()) tensor.shape.emplace_back(dim.get<std::string>());
+      else tensor.shape.emplace_back(dim.get<std::int64_t>());
+    }
+    if (!found->at("sizeBytes").is_null()) tensor.estimatedBytes = found->at("sizeBytes").get<std::uint64_t>();
+    return tensor;
+  };
+  for (const auto& producer : producers) {
+    const auto users = consumers.find(producer.first);
+    if (users == consumers.end() || users->second.empty()) continue;
+    NativeGraphEdge edge;
+    edge.id = producer.first; edge.producer = "onnx-node-" + std::to_string(producer.second);
+    edge.tensor = contract(edge.id);
+    for (const auto user : users->second) edge.consumers.push_back("onnx-node-" + std::to_string(user));
+    result.graph.edges.push_back(std::move(edge));
+    // Every forward edge crosses the sequential cut after its producer.
+    // The union of all maintained cuts is therefore exactly this edge set;
+    // validate() below rejects backward or otherwise invalid dependencies.
+    result.graph.legalCutEdges.push_back(producer.first);
+  }
+  for (const auto& name : inputs) result.graph.modelInputs.push_back(contract(name));
+  for (const auto& name : outputs) result.graph.modelOutputs.push_back(contract(name));
+  const std::vector<std::string> initializerNames(initializers.begin(), initializers.end());
+  const NativeJson identity{{"adapter_descriptor_digest", expectedModel.adapter.descriptorDigest()},
+    {"inputs", inputs}, {"outputs", outputs}, {"initializers", initializerNames}, {"tensors", tensors},
+    {"nodes", nodes}, {"tensor_producers", producers}, {"tensor_consumers", consumers}};
+  result.graph.graphDigest = nativePlanningDigest(nativeCanonicalJson(identity));
+  result.graph.validate(expectedModel);
+  result.graphMetadataJson = nativeCanonicalJson(NativeJson{
+    {"inputs", inputs}, {"outputs", outputs}, {"initializers", initializerNames}, {"tensors", tensors},
+    {"nodes", nodes}, {"tensorProducers", producers}, {"tensorConsumers", consumers}});
+  checkActive(control);
+  return result;
 }
 
 std::uint32_t

@@ -1,0 +1,614 @@
+[
+  {
+    "name": "static-branch",
+    "model_hex": "08083af5010a1e0a06696d616765730a04626961731203e4b8ad1a04726f6f7422034164640a1b0a03e4b8ad12046c6566741a046c65667422084964656e746974790a120a03e4b8ad12057269676874220452656c750a260a046c6566740a057269676874120b70726564696374696f6e731a056d657267652203416464120d7374617469632d6272616e63682a1a080108031001220c0000803f00000040000040404204626961735a180a06696d61676573120e0a0c080112080a0208010a0208035a160a0462696173120e0a0c080112080a0208010a020803621d0a0b70726564696374696f6e73120e0a0c080112080a0208010a02080342040a00100d",
+    "snapshot": {
+      "graph_digest": "sha256:f5fa19d0a678b62806760f9b051101f210e598ec99ccb5eaf13eb33764923e96",
+      "adapter": {
+        "name": "fixture",
+        "version": "1",
+        "state_digest": "sha256:4f9510f10cfed8b796f0d6067766165a92241de68fc9e1944322272fe6f9bd93",
+        "abi": "fixture-abi-v1",
+        "model_formats": [
+          "onnx"
+        ],
+        "tasks": [
+          "task"
+        ],
+        "backends": [
+          "onnxruntime"
+        ],
+        "precisions": [
+          "float32"
+        ],
+        "input_schema_digest": "sha256:48ead40f3b571b24200aa70ed78cb2cc270fc39350348405fc1fa8b5949b5442",
+        "options_schema_digest": "sha256:42b86994847bdf859b467a0efe3d3669735a8613f283be361681429849d647fe",
+        "result_schema_digest": "sha256:1b00cb6a7161fd1841dfeded937a734927d0ea37daecfe79eee96f4d5cb9bb45",
+        "graph_schema_digest": "sha256:1e20c7dd694f6e793a9bb08049c67f266580472837940b45e5afa0443699931c",
+        "split_schema_digest": "sha256:d7da0e471a903882466a7be7b420d9cf652dbeadee4b351ee7d298d5583977c5",
+        "state_schema_digest": "sha256:7ecd71aa2742542271a9f2e6d86c272a694c95d45a0049fe638af7c6511774e0",
+        "graph_inspectable": true,
+        "splittable": true,
+        "deterministic_analysis": true
+      },
+      "nodes": [
+        {
+          "node_id": "onnx-node-0",
+          "operation": "Add"
+        },
+        {
+          "node_id": "onnx-node-1",
+          "operation": "Identity"
+        },
+        {
+          "node_id": "onnx-node-2",
+          "operation": "Relu"
+        },
+        {
+          "node_id": "onnx-node-3",
+          "operation": "Add"
+        }
+      ],
+      "edges": [
+        {
+          "edge_id": "left",
+          "producer": "onnx-node-1",
+          "consumers": [
+            "onnx-node-3"
+          ],
+          "dtype": "float32",
+          "shape": [
+            1,
+            3
+          ],
+          "estimated_bytes": 12
+        },
+        {
+          "edge_id": "right",
+          "producer": "onnx-node-2",
+          "consumers": [
+            "onnx-node-3"
+          ],
+          "dtype": "float32",
+          "shape": [
+            1,
+            3
+          ],
+          "estimated_bytes": 12
+        },
+        {
+          "edge_id": "中",
+          "producer": "onnx-node-0",
+          "consumers": [
+            "onnx-node-1",
+            "onnx-node-2"
+          ],
+          "dtype": "float32",
+          "shape": [
+            1,
+            3
+          ],
+          "estimated_bytes": 12
+        }
+      ],
+      "topological_order": [
+        "onnx-node-0",
+        "onnx-node-1",
+        "onnx-node-2",
+        "onnx-node-3"
+      ],
+      "legal_cut_edges": [
+        "left",
+        "right",
+        "中"
+      ],
+      "model_inputs": [
+        {
+          "name": "images",
+          "dtype": "float32",
+          "shape": [
+            1,
+            3
+          ],
+          "estimated_bytes": 12
+        }
+      ],
+      "model_outputs": [
+        {
+          "name": "predictions",
+          "dtype": "float32",
+          "shape": [
+            1,
+            3
+          ],
+          "estimated_bytes": 12
+        }
+      ]
+    },
+    "metadata_json": "{\"initializers\":[\"bias\"],\"inputs\":[\"images\"],\"nodes\":[{\"index\":0,\"inputs\":[\"images\"],\"name\":\"root\",\"opType\":\"Add\",\"outputs\":[\"\\u4e2d\"]},{\"index\":1,\"inputs\":[\"\\u4e2d\"],\"name\":\"left\",\"opType\":\"Identity\",\"outputs\":[\"left\"]},{\"index\":2,\"inputs\":[\"\\u4e2d\"],\"name\":\"2:Relu\",\"opType\":\"Relu\",\"outputs\":[\"right\"]},{\"index\":3,\"inputs\":[\"left\",\"right\"],\"name\":\"merge\",\"opType\":\"Add\",\"outputs\":[\"predictions\"]}],\"outputs\":[\"predictions\"],\"tensorConsumers\":{\"images\":[0],\"left\":[3],\"right\":[3],\"\\u4e2d\":[1,2]},\"tensorProducers\":{\"left\":1,\"predictions\":3,\"right\":2,\"\\u4e2d\":0},\"tensors\":{\"bias\":{\"dtype\":\"float32\",\"name\":\"bias\",\"shape\":[1,3],\"sizeBytes\":12},\"images\":{\"dtype\":\"float32\",\"name\":\"images\",\"shape\":[1,3],\"sizeBytes\":12},\"left\":{\"dtype\":\"float32\",\"name\":\"left\",\"shape\":[1,3],\"sizeBytes\":12},\"predictions\":{\"dtype\":\"float32\",\"name\":\"predictions\",\"shape\":[1,3],\"sizeBytes\":12},\"right\":{\"dtype\":\"float32\",\"name\":\"right\",\"shape\":[1,3],\"sizeBytes\":12},\"\\u4e2d\":{\"dtype\":\"float32\",\"name\":\"\\u4e2d\",\"shape\":[1,3],\"sizeBytes\":12}}}",
+    "canonical_graph_digest": "sha256:1fc5a2c048d90edff32c573deaf87e3262292455e37e92311f329f3ffedaaacf",
+    "initializer_digest": "sha256:6b1173cd95ae0e8871a3e829c89f7efc6c3ec5487c2dd0b018e1e95fbc35121b"
+  },
+  {
+    "name": "dynamic-branch",
+    "model_hex": "08083a80020a1e0a06696d616765730a04626961731203e4b8ad1a04726f6f7422034164640a1b0a03e4b8ad12046c6566741a046c65667422084964656e746974790a120a03e4b8ad12057269676874220452656c750a260a046c6566740a057269676874120b70726564696374696f6e731a056d657267652203416464120e64796e616d69632d6272616e63682a1a080108031001220c0000803f00000040000040404204626961735a1d0a06696d6167657312130a110801120d0a07120562617463680a0208035a160a0462696173120e0a0c080112080a0208010a02080362220a0b70726564696374696f6e7312130a110801120d0a07120562617463680a02080342040a00100d",
+    "snapshot": {
+      "graph_digest": "sha256:74956f724201c4312563d12b8f00f83f3336eef38811ee5a32be9fb06457d451",
+      "adapter": {
+        "name": "fixture",
+        "version": "1",
+        "state_digest": "sha256:4f9510f10cfed8b796f0d6067766165a92241de68fc9e1944322272fe6f9bd93",
+        "abi": "fixture-abi-v1",
+        "model_formats": [
+          "onnx"
+        ],
+        "tasks": [
+          "task"
+        ],
+        "backends": [
+          "onnxruntime"
+        ],
+        "precisions": [
+          "float32"
+        ],
+        "input_schema_digest": "sha256:48ead40f3b571b24200aa70ed78cb2cc270fc39350348405fc1fa8b5949b5442",
+        "options_schema_digest": "sha256:42b86994847bdf859b467a0efe3d3669735a8613f283be361681429849d647fe",
+        "result_schema_digest": "sha256:1b00cb6a7161fd1841dfeded937a734927d0ea37daecfe79eee96f4d5cb9bb45",
+        "graph_schema_digest": "sha256:1e20c7dd694f6e793a9bb08049c67f266580472837940b45e5afa0443699931c",
+        "split_schema_digest": "sha256:d7da0e471a903882466a7be7b420d9cf652dbeadee4b351ee7d298d5583977c5",
+        "state_schema_digest": "sha256:7ecd71aa2742542271a9f2e6d86c272a694c95d45a0049fe638af7c6511774e0",
+        "graph_inspectable": true,
+        "splittable": true,
+        "deterministic_analysis": true
+      },
+      "nodes": [
+        {
+          "node_id": "onnx-node-0",
+          "operation": "Add"
+        },
+        {
+          "node_id": "onnx-node-1",
+          "operation": "Identity"
+        },
+        {
+          "node_id": "onnx-node-2",
+          "operation": "Relu"
+        },
+        {
+          "node_id": "onnx-node-3",
+          "operation": "Add"
+        }
+      ],
+      "edges": [
+        {
+          "edge_id": "left",
+          "producer": "onnx-node-1",
+          "consumers": [
+            "onnx-node-3"
+          ],
+          "dtype": "float32",
+          "shape": [
+            "batch",
+            3
+          ],
+          "estimated_bytes": null
+        },
+        {
+          "edge_id": "right",
+          "producer": "onnx-node-2",
+          "consumers": [
+            "onnx-node-3"
+          ],
+          "dtype": "float32",
+          "shape": [
+            "batch",
+            3
+          ],
+          "estimated_bytes": null
+        },
+        {
+          "edge_id": "中",
+          "producer": "onnx-node-0",
+          "consumers": [
+            "onnx-node-1",
+            "onnx-node-2"
+          ],
+          "dtype": "float32",
+          "shape": [
+            "batch",
+            3
+          ],
+          "estimated_bytes": null
+        }
+      ],
+      "topological_order": [
+        "onnx-node-0",
+        "onnx-node-1",
+        "onnx-node-2",
+        "onnx-node-3"
+      ],
+      "legal_cut_edges": [
+        "left",
+        "right",
+        "中"
+      ],
+      "model_inputs": [
+        {
+          "name": "images",
+          "dtype": "float32",
+          "shape": [
+            "batch",
+            3
+          ],
+          "estimated_bytes": null
+        }
+      ],
+      "model_outputs": [
+        {
+          "name": "predictions",
+          "dtype": "float32",
+          "shape": [
+            "batch",
+            3
+          ],
+          "estimated_bytes": null
+        }
+      ]
+    },
+    "metadata_json": "{\"initializers\":[\"bias\"],\"inputs\":[\"images\"],\"nodes\":[{\"index\":0,\"inputs\":[\"images\"],\"name\":\"root\",\"opType\":\"Add\",\"outputs\":[\"\\u4e2d\"]},{\"index\":1,\"inputs\":[\"\\u4e2d\"],\"name\":\"left\",\"opType\":\"Identity\",\"outputs\":[\"left\"]},{\"index\":2,\"inputs\":[\"\\u4e2d\"],\"name\":\"2:Relu\",\"opType\":\"Relu\",\"outputs\":[\"right\"]},{\"index\":3,\"inputs\":[\"left\",\"right\"],\"name\":\"merge\",\"opType\":\"Add\",\"outputs\":[\"predictions\"]}],\"outputs\":[\"predictions\"],\"tensorConsumers\":{\"images\":[0],\"left\":[3],\"right\":[3],\"\\u4e2d\":[1,2]},\"tensorProducers\":{\"left\":1,\"predictions\":3,\"right\":2,\"\\u4e2d\":0},\"tensors\":{\"bias\":{\"dtype\":\"float32\",\"name\":\"bias\",\"shape\":[1,3],\"sizeBytes\":12},\"images\":{\"dtype\":\"float32\",\"name\":\"images\",\"shape\":[\"batch\",3],\"sizeBytes\":null},\"left\":{\"dtype\":\"float32\",\"name\":\"left\",\"shape\":[\"batch\",3],\"sizeBytes\":null},\"predictions\":{\"dtype\":\"float32\",\"name\":\"predictions\",\"shape\":[\"batch\",3],\"sizeBytes\":null},\"right\":{\"dtype\":\"float32\",\"name\":\"right\",\"shape\":[\"batch\",3],\"sizeBytes\":null},\"\\u4e2d\":{\"dtype\":\"float32\",\"name\":\"\\u4e2d\",\"shape\":[\"batch\",3],\"sizeBytes\":null}}}",
+    "canonical_graph_digest": "sha256:e6924a436ad3011a75c881dae6dafd984b99fe69c111977059a9f8679ddd4ee5",
+    "initializer_digest": "sha256:6b1173cd95ae0e8871a3e829c89f7efc6c3ec5487c2dd0b018e1e95fbc35121b"
+  },
+  {
+    "name": "zero-branch",
+    "model_hex": "08083af3010a1e0a06696d616765730a04626961731203e4b8ad1a04726f6f7422034164640a1b0a03e4b8ad12046c6566741a046c65667422084964656e746974790a120a03e4b8ad12057269676874220452656c750a260a046c6566740a057269676874120b70726564696374696f6e731a056d657267652203416464120b7a65726f2d6272616e63682a1a080108031001220c0000803f00000040000040404204626961735a180a06696d61676573120e0a0c080112080a0208000a0208035a160a0462696173120e0a0c080112080a0208010a020803621d0a0b70726564696374696f6e73120e0a0c080112080a0208000a02080342040a00100d",
+    "snapshot": {
+      "graph_digest": "sha256:3dc70194db766b69046e5bb549ca818b5d150f5991f36e36235a0e9334116665",
+      "adapter": {
+        "name": "fixture",
+        "version": "1",
+        "state_digest": "sha256:4f9510f10cfed8b796f0d6067766165a92241de68fc9e1944322272fe6f9bd93",
+        "abi": "fixture-abi-v1",
+        "model_formats": [
+          "onnx"
+        ],
+        "tasks": [
+          "task"
+        ],
+        "backends": [
+          "onnxruntime"
+        ],
+        "precisions": [
+          "float32"
+        ],
+        "input_schema_digest": "sha256:48ead40f3b571b24200aa70ed78cb2cc270fc39350348405fc1fa8b5949b5442",
+        "options_schema_digest": "sha256:42b86994847bdf859b467a0efe3d3669735a8613f283be361681429849d647fe",
+        "result_schema_digest": "sha256:1b00cb6a7161fd1841dfeded937a734927d0ea37daecfe79eee96f4d5cb9bb45",
+        "graph_schema_digest": "sha256:1e20c7dd694f6e793a9bb08049c67f266580472837940b45e5afa0443699931c",
+        "split_schema_digest": "sha256:d7da0e471a903882466a7be7b420d9cf652dbeadee4b351ee7d298d5583977c5",
+        "state_schema_digest": "sha256:7ecd71aa2742542271a9f2e6d86c272a694c95d45a0049fe638af7c6511774e0",
+        "graph_inspectable": true,
+        "splittable": true,
+        "deterministic_analysis": true
+      },
+      "nodes": [
+        {
+          "node_id": "onnx-node-0",
+          "operation": "Add"
+        },
+        {
+          "node_id": "onnx-node-1",
+          "operation": "Identity"
+        },
+        {
+          "node_id": "onnx-node-2",
+          "operation": "Relu"
+        },
+        {
+          "node_id": "onnx-node-3",
+          "operation": "Add"
+        }
+      ],
+      "edges": [
+        {
+          "edge_id": "left",
+          "producer": "onnx-node-1",
+          "consumers": [
+            "onnx-node-3"
+          ],
+          "dtype": "float32",
+          "shape": [
+            0,
+            3
+          ],
+          "estimated_bytes": 0
+        },
+        {
+          "edge_id": "right",
+          "producer": "onnx-node-2",
+          "consumers": [
+            "onnx-node-3"
+          ],
+          "dtype": "float32",
+          "shape": [
+            0,
+            3
+          ],
+          "estimated_bytes": 0
+        },
+        {
+          "edge_id": "中",
+          "producer": "onnx-node-0",
+          "consumers": [
+            "onnx-node-1",
+            "onnx-node-2"
+          ],
+          "dtype": "float32",
+          "shape": [
+            0,
+            3
+          ],
+          "estimated_bytes": 0
+        }
+      ],
+      "topological_order": [
+        "onnx-node-0",
+        "onnx-node-1",
+        "onnx-node-2",
+        "onnx-node-3"
+      ],
+      "legal_cut_edges": [
+        "left",
+        "right",
+        "中"
+      ],
+      "model_inputs": [
+        {
+          "name": "images",
+          "dtype": "float32",
+          "shape": [
+            0,
+            3
+          ],
+          "estimated_bytes": 0
+        }
+      ],
+      "model_outputs": [
+        {
+          "name": "predictions",
+          "dtype": "float32",
+          "shape": [
+            0,
+            3
+          ],
+          "estimated_bytes": 0
+        }
+      ]
+    },
+    "metadata_json": "{\"initializers\":[\"bias\"],\"inputs\":[\"images\"],\"nodes\":[{\"index\":0,\"inputs\":[\"images\"],\"name\":\"root\",\"opType\":\"Add\",\"outputs\":[\"\\u4e2d\"]},{\"index\":1,\"inputs\":[\"\\u4e2d\"],\"name\":\"left\",\"opType\":\"Identity\",\"outputs\":[\"left\"]},{\"index\":2,\"inputs\":[\"\\u4e2d\"],\"name\":\"2:Relu\",\"opType\":\"Relu\",\"outputs\":[\"right\"]},{\"index\":3,\"inputs\":[\"left\",\"right\"],\"name\":\"merge\",\"opType\":\"Add\",\"outputs\":[\"predictions\"]}],\"outputs\":[\"predictions\"],\"tensorConsumers\":{\"images\":[0],\"left\":[3],\"right\":[3],\"\\u4e2d\":[1,2]},\"tensorProducers\":{\"left\":1,\"predictions\":3,\"right\":2,\"\\u4e2d\":0},\"tensors\":{\"bias\":{\"dtype\":\"float32\",\"name\":\"bias\",\"shape\":[1,3],\"sizeBytes\":12},\"images\":{\"dtype\":\"float32\",\"name\":\"images\",\"shape\":[0,3],\"sizeBytes\":0},\"left\":{\"dtype\":\"float32\",\"name\":\"left\",\"shape\":[0,3],\"sizeBytes\":0},\"predictions\":{\"dtype\":\"float32\",\"name\":\"predictions\",\"shape\":[0,3],\"sizeBytes\":0},\"right\":{\"dtype\":\"float32\",\"name\":\"right\",\"shape\":[0,3],\"sizeBytes\":0},\"\\u4e2d\":{\"dtype\":\"float32\",\"name\":\"\\u4e2d\",\"shape\":[0,3],\"sizeBytes\":0}}}",
+    "canonical_graph_digest": "sha256:ca1880356d2f17d6cdb2b3f37dd621ef4c75cbcacce7b4cecec6d234dbafaf90",
+    "initializer_digest": "sha256:6b1173cd95ae0e8871a3e829c89f7efc6c3ec5487c2dd0b018e1e95fbc35121b"
+  },
+  {
+    "name": "scalar",
+    "model_hex": "08083a340a100a017812017922084964656e7469747912067363616c61725a0b0a017812060a0408011200620b0a017912060a040801120042040a00100d",
+    "snapshot": {
+      "graph_digest": "sha256:50243a5e80bada9f5bd272f4acd8c36a13db1629bf127a103a3a59d3aa0f173a",
+      "adapter": {
+        "name": "fixture",
+        "version": "1",
+        "state_digest": "sha256:4f9510f10cfed8b796f0d6067766165a92241de68fc9e1944322272fe6f9bd93",
+        "abi": "fixture-abi-v1",
+        "model_formats": [
+          "onnx"
+        ],
+        "tasks": [
+          "task"
+        ],
+        "backends": [
+          "onnxruntime"
+        ],
+        "precisions": [
+          "float32"
+        ],
+        "input_schema_digest": "sha256:48ead40f3b571b24200aa70ed78cb2cc270fc39350348405fc1fa8b5949b5442",
+        "options_schema_digest": "sha256:42b86994847bdf859b467a0efe3d3669735a8613f283be361681429849d647fe",
+        "result_schema_digest": "sha256:1b00cb6a7161fd1841dfeded937a734927d0ea37daecfe79eee96f4d5cb9bb45",
+        "graph_schema_digest": "sha256:1e20c7dd694f6e793a9bb08049c67f266580472837940b45e5afa0443699931c",
+        "split_schema_digest": "sha256:d7da0e471a903882466a7be7b420d9cf652dbeadee4b351ee7d298d5583977c5",
+        "state_schema_digest": "sha256:7ecd71aa2742542271a9f2e6d86c272a694c95d45a0049fe638af7c6511774e0",
+        "graph_inspectable": true,
+        "splittable": true,
+        "deterministic_analysis": true
+      },
+      "nodes": [
+        {
+          "node_id": "onnx-node-0",
+          "operation": "Identity"
+        }
+      ],
+      "edges": [],
+      "topological_order": [
+        "onnx-node-0"
+      ],
+      "legal_cut_edges": [],
+      "model_inputs": [
+        {
+          "name": "x",
+          "dtype": "float32",
+          "shape": [],
+          "estimated_bytes": 4
+        }
+      ],
+      "model_outputs": [
+        {
+          "name": "y",
+          "dtype": "float32",
+          "shape": [],
+          "estimated_bytes": 4
+        }
+      ]
+    },
+    "metadata_json": "{\"initializers\":[],\"inputs\":[\"x\"],\"nodes\":[{\"index\":0,\"inputs\":[\"x\"],\"name\":\"0:Identity\",\"opType\":\"Identity\",\"outputs\":[\"y\"]}],\"outputs\":[\"y\"],\"tensorConsumers\":{\"x\":[0]},\"tensorProducers\":{\"y\":0},\"tensors\":{\"x\":{\"dtype\":\"float32\",\"name\":\"x\",\"shape\":[],\"sizeBytes\":4},\"y\":{\"dtype\":\"float32\",\"name\":\"y\",\"shape\":[],\"sizeBytes\":4}}}",
+    "canonical_graph_digest": "sha256:adbcf27aa0617cd89838dbeeb42cb82f5ceb6d871e41dee08c835b8c1fed15aa",
+    "initializer_digest": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+  },
+  {
+    "name": "unknown-dimension",
+    "model_hex": "08083a4b0a100a017812017922084964656e746974791211756e6b6e6f776e2d64696d656e73696f6e5a110a0178120c0a0a080112060a000a02080362110a0179120c0a0a080112060a000a02080342040a00100d",
+    "snapshot": {
+      "graph_digest": "sha256:1dfd32e99fa64250e48950e4962b2e62a1c5f43eaf8181614c09759a9ef8a7b0",
+      "adapter": {
+        "name": "fixture",
+        "version": "1",
+        "state_digest": "sha256:4f9510f10cfed8b796f0d6067766165a92241de68fc9e1944322272fe6f9bd93",
+        "abi": "fixture-abi-v1",
+        "model_formats": [
+          "onnx"
+        ],
+        "tasks": [
+          "task"
+        ],
+        "backends": [
+          "onnxruntime"
+        ],
+        "precisions": [
+          "float32"
+        ],
+        "input_schema_digest": "sha256:48ead40f3b571b24200aa70ed78cb2cc270fc39350348405fc1fa8b5949b5442",
+        "options_schema_digest": "sha256:42b86994847bdf859b467a0efe3d3669735a8613f283be361681429849d647fe",
+        "result_schema_digest": "sha256:1b00cb6a7161fd1841dfeded937a734927d0ea37daecfe79eee96f4d5cb9bb45",
+        "graph_schema_digest": "sha256:1e20c7dd694f6e793a9bb08049c67f266580472837940b45e5afa0443699931c",
+        "split_schema_digest": "sha256:d7da0e471a903882466a7be7b420d9cf652dbeadee4b351ee7d298d5583977c5",
+        "state_schema_digest": "sha256:7ecd71aa2742542271a9f2e6d86c272a694c95d45a0049fe638af7c6511774e0",
+        "graph_inspectable": true,
+        "splittable": true,
+        "deterministic_analysis": true
+      },
+      "nodes": [
+        {
+          "node_id": "onnx-node-0",
+          "operation": "Identity"
+        }
+      ],
+      "edges": [],
+      "topological_order": [
+        "onnx-node-0"
+      ],
+      "legal_cut_edges": [],
+      "model_inputs": [
+        {
+          "name": "x",
+          "dtype": "float32",
+          "shape": [
+            "?",
+            3
+          ],
+          "estimated_bytes": null
+        }
+      ],
+      "model_outputs": [
+        {
+          "name": "y",
+          "dtype": "float32",
+          "shape": [
+            "unk__0",
+            3
+          ],
+          "estimated_bytes": null
+        }
+      ]
+    },
+    "metadata_json": "{\"initializers\":[],\"inputs\":[\"x\"],\"nodes\":[{\"index\":0,\"inputs\":[\"x\"],\"name\":\"0:Identity\",\"opType\":\"Identity\",\"outputs\":[\"y\"]}],\"outputs\":[\"y\"],\"tensorConsumers\":{\"x\":[0]},\"tensorProducers\":{\"y\":0},\"tensors\":{\"x\":{\"dtype\":\"float32\",\"name\":\"x\",\"shape\":[\"?\",3],\"sizeBytes\":null},\"y\":{\"dtype\":\"float32\",\"name\":\"y\",\"shape\":[\"unk__0\",3],\"sizeBytes\":null}}}",
+    "canonical_graph_digest": "sha256:63d0ec5ab8a5d7a61cdc82833a72981b04271647438f26ccfe47bc1c40c952ff",
+    "initializer_digest": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+  },
+  {
+    "name": "custom-unknown",
+    "model_hex": "08083a700a1d0a0178120668696464656e22074d7973746572793a07666978747572650a150a0668696464656e12017922084964656e74697479120e637573746f6d2d756e6b6e6f776e5a130a0178120e0a0c080112080a0208010a02080362130a0179120e0a0c080112080a0208010a02080342040a00100d420b0a07666978747572651001",
+    "snapshot": {
+      "graph_digest": "sha256:d745c4461a9cd9f40de6df6d233fb9f27af1bee3e78f7c790ecc19c0057bf23b",
+      "adapter": {
+        "name": "fixture",
+        "version": "1",
+        "state_digest": "sha256:4f9510f10cfed8b796f0d6067766165a92241de68fc9e1944322272fe6f9bd93",
+        "abi": "fixture-abi-v1",
+        "model_formats": [
+          "onnx"
+        ],
+        "tasks": [
+          "task"
+        ],
+        "backends": [
+          "onnxruntime"
+        ],
+        "precisions": [
+          "float32"
+        ],
+        "input_schema_digest": "sha256:48ead40f3b571b24200aa70ed78cb2cc270fc39350348405fc1fa8b5949b5442",
+        "options_schema_digest": "sha256:42b86994847bdf859b467a0efe3d3669735a8613f283be361681429849d647fe",
+        "result_schema_digest": "sha256:1b00cb6a7161fd1841dfeded937a734927d0ea37daecfe79eee96f4d5cb9bb45",
+        "graph_schema_digest": "sha256:1e20c7dd694f6e793a9bb08049c67f266580472837940b45e5afa0443699931c",
+        "split_schema_digest": "sha256:d7da0e471a903882466a7be7b420d9cf652dbeadee4b351ee7d298d5583977c5",
+        "state_schema_digest": "sha256:7ecd71aa2742542271a9f2e6d86c272a694c95d45a0049fe638af7c6511774e0",
+        "graph_inspectable": true,
+        "splittable": true,
+        "deterministic_analysis": true
+      },
+      "nodes": [
+        {
+          "node_id": "onnx-node-0",
+          "operation": "Mystery"
+        },
+        {
+          "node_id": "onnx-node-1",
+          "operation": "Identity"
+        }
+      ],
+      "edges": [
+        {
+          "edge_id": "hidden",
+          "producer": "onnx-node-0",
+          "consumers": [
+            "onnx-node-1"
+          ],
+          "dtype": "unknown",
+          "shape": [],
+          "estimated_bytes": null
+        }
+      ],
+      "topological_order": [
+        "onnx-node-0",
+        "onnx-node-1"
+      ],
+      "legal_cut_edges": [
+        "hidden"
+      ],
+      "model_inputs": [
+        {
+          "name": "x",
+          "dtype": "float32",
+          "shape": [
+            1,
+            3
+          ],
+          "estimated_bytes": 12
+        }
+      ],
+      "model_outputs": [
+        {
+          "name": "y",
+          "dtype": "float32",
+          "shape": [
+            1,
+            3
+          ],
+          "estimated_bytes": 12
+        }
+      ]
+    },
+    "metadata_json": "{\"initializers\":[],\"inputs\":[\"x\"],\"nodes\":[{\"index\":0,\"inputs\":[\"x\"],\"name\":\"0:Mystery\",\"opType\":\"Mystery\",\"outputs\":[\"hidden\"]},{\"index\":1,\"inputs\":[\"hidden\"],\"name\":\"1:Identity\",\"opType\":\"Identity\",\"outputs\":[\"y\"]}],\"outputs\":[\"y\"],\"tensorConsumers\":{\"hidden\":[1],\"x\":[0]},\"tensorProducers\":{\"hidden\":0,\"y\":1},\"tensors\":{\"x\":{\"dtype\":\"float32\",\"name\":\"x\",\"shape\":[1,3],\"sizeBytes\":12},\"y\":{\"dtype\":\"float32\",\"name\":\"y\",\"shape\":[1,3],\"sizeBytes\":12}}}",
+    "canonical_graph_digest": "sha256:acb9a2b9032a4b9b7ee718311072a6fa15a90087a71ecf851f97196294eca58c",
+    "initializer_digest": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+  }
+]
