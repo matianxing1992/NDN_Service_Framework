@@ -66,6 +66,13 @@ void NativeModelDescriptor::validate() const
   requireDigest(graphDigest, "model graphDigest");
 }
 
+void NativeTensorContract::validate() const
+{
+  if (name.empty() || dtype.empty()) throw std::invalid_argument("incomplete tensor contract");
+  // Preserve the graph owner's integer/symbolic representation. Assembly and
+  // runtime shape contracts apply their constraints at their own boundaries.
+}
+
 void NativeGraphSnapshot::validate(const NativeModelDescriptor& model) const
 {
   requireDigest(graphDigest, "graph graphDigest");
@@ -82,13 +89,8 @@ void NativeGraphSnapshot::validate(const NativeModelDescriptor& model) const
   }
   std::set<std::string> cuts(legalCutEdges.begin(), legalCutEdges.end());
   if (cuts.size() != legalCutEdges.size()) throw std::invalid_argument("duplicate graph cut edge");
-  const auto tensorValid = [](const NativeTensorContract& tensor) {
-    if (tensor.name.empty() || tensor.dtype.empty()) throw std::invalid_argument("incomplete graph tensor contract");
-    // Preserve the graph owner's integer/symbolic representation. Assembly and
-    // runtime shape contracts apply their constraints at their own boundaries.
-  };
-  for (const auto& tensor : modelInputs) tensorValid(tensor);
-  for (const auto& tensor : modelOutputs) tensorValid(tensor);
+  for (const auto& tensor : modelInputs) tensor.validate();
+  for (const auto& tensor : modelOutputs) tensor.validate();
   std::map<std::string, std::size_t> position;
   for (std::size_t i = 0; i < nodes.size(); ++i) position.emplace(nodes[i].id, i);
   std::set<std::string> edgeIds;
@@ -96,7 +98,7 @@ void NativeGraphSnapshot::validate(const NativeModelDescriptor& model) const
     if (edge.id.empty() || !edgeIds.insert(edge.id).second || edge.tensor.name != edge.id ||
         !position.count(edge.producer) || edge.consumers.empty())
       throw std::invalid_argument("invalid graph tensor edge identity or producer");
-    tensorValid(edge.tensor);
+    edge.tensor.validate();
     std::set<std::string> consumers;
     for (const auto& consumer : edge.consumers) {
       if (!position.count(consumer) || !consumers.insert(consumer).second ||
@@ -180,12 +182,45 @@ void NativeSplitCandidate::validate(const NativeGraphSnapshot& graph) const
   if (inputIngressRole.empty() != resultEgressRole.empty() ||
       (!inputIngressRole.empty() && (!roles.count(inputIngressRole) || !roles.count(resultEgressRole))))
     throw std::invalid_argument("split candidate ingress/egress role is undeclared");
+  std::set<std::string> ownedRoles;
+  if (nodeRoles.size() != graph.nodes.size())
+    throw std::invalid_argument("split candidate does not partition every graph node");
+  for (const auto& node : graph.nodes) {
+    const auto owner = nodeRoles.find(node.id);
+    if (owner == nodeRoles.end() || !roles.count(owner->second))
+      throw std::invalid_argument("split candidate node owner is absent or undeclared");
+    ownedRoles.insert(owner->second);
+  }
+  if (ownedRoles != roles)
+    throw std::invalid_argument("split candidate has a role without graph nodes");
+  const auto stateValid = [&](const auto& contracts) {
+    if (contracts.size() != roles.size())
+      throw std::invalid_argument("split candidate state I/O role cover is incomplete");
+    for (const auto& role : roles) {
+      const auto tensors = contracts.find(role);
+      if (tensors == contracts.end() || tensors->second.empty())
+        throw std::invalid_argument("split candidate state I/O is empty or has foreign roles");
+      std::set<std::string> names;
+      for (const auto& tensor : tensors->second) {
+        tensor.validate();
+        if (!names.insert(tensor.name).second)
+          throw std::invalid_argument("split candidate state tensor names are duplicate");
+      }
+    }
+  };
+  if (!roleStateInputsByRole.empty() || !roleStateOutputsByRole.empty()) {
+    stateValid(roleStateInputsByRole);
+    stateValid(roleStateOutputsByRole);
+  }
   const std::set<std::string> cuts(crossPartitionTensors.begin(), crossPartitionTensors.end());
   const std::set<std::string> legal(graph.legalCutEdges.begin(), graph.legalCutEdges.end());
   if (cuts.size() != crossPartitionTensors.size() ||
       !std::includes(legal.begin(), legal.end(), cuts.begin(), cuts.end()))
     throw std::invalid_argument("split candidate has duplicate or illegal cut tensors");
   std::set<std::string> dependencyTensors;
+  std::map<std::string, std::set<std::string>> outgoing;
+  std::map<std::string, std::size_t> incoming;
+  for (const auto& role : roles) incoming[role] = 0;
   for (const auto& dependency : executionPlan.dependencies) {
     if (dependency.producers.empty() || dependency.consumers.empty() || dependency.tensors.empty())
       throw std::invalid_argument("split candidate dependency is incomplete");
@@ -194,9 +229,21 @@ void NativeSplitCandidate::validate(const NativeGraphSnapshot& graph) const
     for (const auto& role : dependency.consumers)
       if (!roles.count(role)) throw std::invalid_argument("split candidate dependency consumer is undeclared");
     dependencyTensors.insert(dependency.tensors.begin(), dependency.tensors.end());
+    for (const auto& producer : dependency.producers)
+      for (const auto& consumer : dependency.consumers)
+        if (outgoing[producer].insert(consumer).second) ++incoming.at(consumer);
   }
   if (dependencyTensors != cuts)
     throw std::invalid_argument("split candidate dependency tensors do not match its cuts");
+  std::vector<std::string> ready;
+  for (const auto& role : incoming) if (!role.second) ready.push_back(role.first);
+  std::size_t visited = 0;
+  while (!ready.empty()) {
+    const auto role = ready.back(); ready.pop_back(); ++visited;
+    for (const auto& consumer : outgoing[role])
+      if (--incoming.at(consumer) == 0) ready.push_back(consumer);
+  }
+  if (visited != roles.size()) throw std::invalid_argument("split candidate role dependencies are cyclic");
   if (!tensorDegreesByRole.empty() || !rankArtifactDigestsByRole.empty()) {
     if (tensorDegreesByRole.size() != roles.size() || rankArtifactDigestsByRole.size() != roles.size())
       throw std::invalid_argument("split candidate rank metadata cover is incomplete");

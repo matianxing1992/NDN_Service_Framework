@@ -106,11 +106,35 @@ BOOST_AUTO_TEST_CASE(QwenLayerSplitProducesCanonicalRankOneCandidate)
     BOOST_CHECK_EQUAL(candidate.executionPlan.roles[i], roles[i]);
     BOOST_CHECK_EQUAL(candidate.fragmentsByRole.at(roles[i]), digest("qwen-artifact-" + std::to_string(i)));
     BOOST_CHECK(candidate.requirementsByRole.at(roles[i]).backends == std::vector<std::string>({"onnxruntime"}));
+    const auto& inputs = candidate.roleStateInputsByRole.at(roles[i]);
+    const auto& outputs = candidate.roleStateOutputsByRole.at(roles[i]);
+    BOOST_REQUIRE_EQUAL(inputs.size(), 3);
+    BOOST_REQUIRE_EQUAL(outputs.size(), 3);
+    const std::vector<std::string> names{"attention_kv", "recurrent_state", "convolution_state"};
+    const std::vector<std::vector<std::string>> shapes{
+      {"layers", "heads", "sequence", "head-dimension"}, {"layers", "hidden"}, {"layers", "channels", "kernel"}};
+    for (std::size_t state = 0; state < names.size(); ++state) {
+      BOOST_CHECK_EQUAL(inputs[state].name, names[state] + "_in");
+      BOOST_CHECK_EQUAL(outputs[state].name, names[state] + "_out");
+      BOOST_CHECK_EQUAL(inputs[state].dtype, modelDescriptor.precision);
+      BOOST_CHECK_EQUAL(outputs[state].dtype, modelDescriptor.precision);
+      BOOST_CHECK(!inputs[state].estimatedBytes && !outputs[state].estimatedBytes);
+      BOOST_REQUIRE_EQUAL(inputs[state].shape.size(), shapes[state].size());
+      BOOST_REQUIRE_EQUAL(outputs[state].shape.size(), shapes[state].size());
+      for (std::size_t axis = 0; axis < shapes[state].size(); ++axis) {
+        BOOST_CHECK_EQUAL(std::get<std::string>(inputs[state].shape[axis]), shapes[state][axis]);
+        BOOST_CHECK_EQUAL(std::get<std::string>(outputs[state].shape[axis]), shapes[state][axis]);
+      }
+    }
   }
   BOOST_CHECK_EQUAL(candidate.crossPartitionTensors.size(), 2U);
   BOOST_CHECK_EQUAL(candidate.tensorDegreesByRole.at(roles[1]), 1U);
   BOOST_CHECK_EQUAL(candidate.inputIngressRole, roles.front());
   BOOST_CHECK_EQUAL(candidate.resultEgressRole, roles.back());
+  const std::map<std::string, std::string> expectedOwners{
+    {"embedding", roles[0]}, {"layer-00", roles[0]}, {"layer-01", roles[0]},
+    {"layer-02", roles[1]}, {"layer-03", roles[2]}, {"final-norm-head", roles[2]}};
+  BOOST_CHECK(candidate.nodeRoles == expectedOwners);
   BOOST_CHECK_EQUAL(candidate.candidateDigest,
                     splitter.enumerate(modelDescriptor, graphSnapshot, {}).front().candidateDigest);
 }
@@ -289,6 +313,10 @@ BOOST_AUTO_TEST_CASE(YoloUsesRealBranchTensorsAndKnownByteEstimates)
     {{"Left", {"a"}}, {"Right", {"b", "c"}}, {"Merge", {"d", "e"}}}, "Left", "Merge", "", digest("registered")};
   const yolo::NativeYoloComponentSplit splitter({partition});
   const auto candidate = splitter.enumerate(descriptor, snapshot, {}).front();
+  const std::map<std::string, std::string> expectedOwners{
+    {"a", "Left"}, {"b", "Right"}, {"c", "Right"}, {"d", "Merge"}, {"e", "Merge"}};
+  BOOST_CHECK(candidate.nodeRoles == expectedOwners);
+  BOOST_CHECK(candidate.roleStateInputsByRole.empty() && candidate.roleStateOutputsByRole.empty());
   // Python Yolo26Splitter._candidate's actual tensor semantics: x fans out to
   // two roles (b/c share Right), y reaches non-adjacent d, latent stays local.
   std::vector<std::string> actual;
@@ -729,6 +757,37 @@ BOOST_AUTO_TEST_CASE(CandidateRejectsIncompleteDependenciesAndRankArtifacts)
   auto malformed = fixture.snapshot.graph;
   malformed.edges.front().producer = "foreign";
   BOOST_CHECK_THROW(fixture.candidate.validate(malformed), std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(CandidateRejectsMissingNodeOwnersStateContractsAndRoleCycles)
+{
+  const TwoRolePlacement fixture;
+  for (unsigned mutation = 0; mutation != 10; ++mutation) {
+    auto candidate = fixture.candidate;
+    switch (mutation) {
+      case 0: candidate.nodeRoles.erase("embedding"); break;
+      case 1: candidate.nodeRoles["embedding"] = "foreign"; break;
+      case 2:
+        candidate.nodeRoles.erase("embedding"); candidate.nodeRoles["foreign"] = fixture.first; break;
+      case 3:
+        for (auto& node : candidate.nodeRoles) node.second = fixture.first;
+        break;
+      case 4: candidate.roleStateInputsByRole.clear(); break;
+      case 5: candidate.roleStateOutputsByRole.erase(fixture.first); break;
+      case 6: candidate.roleStateInputsByRole[fixture.first].clear(); break;
+      case 7:
+        candidate.roleStateInputsByRole[fixture.first].push_back(candidate.roleStateInputsByRole[fixture.first].front());
+        break;
+      case 8: candidate.roleStateOutputsByRole[fixture.first].front().dtype.clear(); break;
+      case 9: {
+        auto reverse = candidate.executionPlan.dependencies.front();
+        std::swap(reverse.producers, reverse.consumers);
+        candidate.executionPlan.dependencies.push_back(reverse);
+        break;
+      }
+    }
+    BOOST_CHECK_THROW(candidate.validate(fixture.snapshot.graph), std::invalid_argument);
+  }
 }
 
 BOOST_AUTO_TEST_SUITE_END()

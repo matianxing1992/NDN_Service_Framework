@@ -55,6 +55,7 @@ struct Input
     split.model = descriptor; split.graphDigest = context.graphDigest;
     split.splitter = {"fixture", "1", nativePlanningDigest("split")};
     split.candidateDigest = nativePlanningDigest("placed-candidate");
+    split.nodeRoles = {{"node", roles.front().role}};
     for (const auto& role : roles) {
       if (!split.tensorDegreesByRole.count(role.role)) split.executionPlan.roles.push_back(role.role);
       ++split.tensorDegreesByRole[role.role];
