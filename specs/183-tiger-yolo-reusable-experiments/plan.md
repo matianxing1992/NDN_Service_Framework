@@ -45,6 +45,11 @@ I/II：沿用动态 API 和现有鉴权/请求级密钥，不新建框架协议�
 
 ## Gate Order
 
+2026-09-08 用户明确要求先做简单 C++ NDN 多节点 SIF 实跑。允许独立的
+CPU-only 两节点 transport diagnostic 先于剩余 YOLO 门禁执行，范围仅三条
+Interest/Data、容器/NFD/TCP/清理；见 evidence/cpp-ndn-smoke.md。使用已存在
+历史 SIF 并在两 rank 校验摘要，不晋升镜像、不计作 GPU/YOLO PASS。
+
 T001已完成接收清点（见evidence/input-inventory.md），发现两个必须在T007前闭合的实际接口差异：现有builder绑定Spec175 tiny-onnx门，T002须扩展原owner接受严格Spec183 YOLO receipt且保留旧行为；正常ACK-driven User为一次请求入口，T005按请求分别调用、独立证据，不用legacy sequential参数假定实现批量。缺物理输入保持WAITING_EXTERNAL_INPUT，不妨碍离线focused实现。
 
 1. G0 / T001：当前源码/交付锁/接口/输入清点。未知环境值列清单；不启动模型或下载大 artifact。

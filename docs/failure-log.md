@@ -2930,3 +2930,27 @@ Corrected production log mode and fixture setup; 78 affected checks and 11 final
 boundary checks pass. Preserve the initial log and do not sum overlapping suites.
 Lesson: follow a new preflight observation through launch, retained reanalysis
 and transport, including permission bits. Evidence: t004-runtime-version.md.
+
+## 2026-09-08 — Small C++ NDN/SIF diagnostic exposed toolchain and completion bugs
+
+The standalone user-requested probe first linked through Linuxbrew ld and failed
+transitive-library resolution. Select the system PATH/g++/ld, matching system
+Boost1.71 and the SIF ndn-cxx0.9.0; include boost/asio/io_context.hpp explicitly
+when stopping the event loop. No framework rebuild was needed. An initial ldd
+check also treated optional Apptainer fuse2fs warnings as a missing DSO; check
+the actual `=> not found` loader diagnostic instead.
+
+Local-v2 exchanged three packets but left the application deadline active and
+printed FAIL followed by stale PASS. Stop the io_context, clear success on failure
+and reject FAIL lines. Local-v3 then passed with clean cleanup. Tiger job209980
+also exchanged all three packets on itiger01/02 but its wrapper timed out waiting
+for a peer completion marker. Shared-file visibility was an unnecessary success
+dependency; a specific NFS cache mechanism was not proven. Wait for the local
+producer process and let srun/the parent aggregate both ranks instead. One
+affected rerun209981 passed, allocation and step0:0, same binary/SIF, both pinned
+hashes verified and scratch removed. Preserve all failed runs, not only final PASS.
+
+Lesson: a small real transport probe resolves container/network configuration
+early; neither component suites nor an application's isolated PASS line replace
+the complete job verdict. No additional unchanged probe, GPU, model, broad suite
+or image build was run. Evidence: specs/183-tiger-yolo-reusable-experiments/evidence/cpp-ndn-smoke.md.

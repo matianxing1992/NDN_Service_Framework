@@ -2,9 +2,14 @@
 
 **Input**: [spec.md](spec.md), [plan.md](plan.md), [profile contract](contracts/experiment-profile.md), [validation matrix](validation-matrix.md)
 **Branch**: `TigerClusterExperiments`
-**Status**: 2/17 tasks complete (T001 inventory and T003 focused component acceptance); IN_PROGRESS, no runtime PASS.
+**Status**: 2/17 tasks complete (T001 inventory and T003 focused component acceptance); IN_PROGRESS, no formal YOLO runtime PASS. Standalone C++ NDN/SIF diagnostic passed in Tiger job 209981.
 
 ## Detailed Execution Progress
+
+用户指定的 [C++ NDN/SIF 两节点小例子](evidence/cpp-ndn-smoke.md)已实跑通过：
+209981，itiger01/02，三次 Interest/Data，Slurm 0:0，清理完成。
+接下来复用这套容器/NFD/TCP/Slurm配置推进最小 NDNSF 服务与 YOLO。
+原 17 项验收及既有 MiniNDN 交付证据不被替换。
 
 更新：2026-09-08；进度表初始审计基线 `d1f1504a`，`cc638d00`审计后N3源码修复，见
 [runtime version](evidence/t004-runtime-version.md)；[生产审计](evidence/design-code-convergence.md)仍BLOCK于N1/N2。其他客户端已在
@@ -72,6 +77,7 @@ T007 复核确认正常/负例/SSH 接线已存在；N3 issuer/rank版本检查�
 | T011.c | T011 | exact-SIF 本地 CPU YOLO 与 empty HOME/scratch | NOT_STARTED | V13；NOT_RUN | T011.b 后执行，取得 LOCAL_CPU_PASS | 容器环境新增证据，不能以 host 结果替代 |
 | T012.a | T012 | GPU/Apptainer/容量 substrate 实值清点 | IMPLEMENTED | [input inventory](evidence/input-inventory.md) 有早期 probe 记录，非最终环境资格 | 正式 allocation 仍需实测；早期 probe 不抵消 T007 | 静态输入复用，不重复下载/拷贝 |
 | T012.b | T012 | exact-SIF staging、目标节点/GPU/路由与服务就绪 | NOT_STARTED | V14；NOT_RUN | T011 后核验实际 allocation 与哈希 | 每个新 allocation 检查环境，不重建同一镜像 |
+| T012.c | T012 | 用户指定的独立 C++ NDN/SIF 两节点 CPU 诊断 | VERIFIED | [C++ NDN evidence](evidence/cpp-ndn-smoke.md)：209981，itiger01/02，同一历史 SIF 哈希，3条Data，0:0及清理；209980仅收尾标记超时，未记整次PASS | 仅基础传输诊断；T012正式GPU/权限/候选资格仍未完成 | 固定小例子不再跑；配置/ABI/网络相关变化才重测；复用实际日志与脚本 |
 | T013.a | T013 | 一节点 GPU，四 Provider，1 warmup + 1 measured | NOT_STARTED | V15；NOT_RUN | T012 后证明三模型角色实际 CUDA、Merge CPU、全图数值/清理 | 一次有界资格门，不扩展 GPU/模型矩阵 |
 | T014.a | T014 | 两节点正常推理，1 warmup + 3 measured | NOT_STARTED | V16；NOT_RUN | T013 后证明 A backbone/merge、B heads 与跨节点依赖 | 同一候选第一次正常 allocation |
 | T015.a | T015 | 一次远端 negative-dependency，Selection 后切断必需中间 Data | NOT_STARTED | V17；NOT_RUN | T014 后验证有限失败、无假成功及清理 | 保留唯一注册远端负例，不复制整套本地负例 |
