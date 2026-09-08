@@ -3477,3 +3477,23 @@ assignment's `artifactDataName` and root payload are request-scoped. The fix
 makes the payload part of the request-owned `CollaborationAssignment` and
 removes the provider-global artifact cache. MiniNDN/component tests that use a
 single request did not exercise this lifetime boundary.
+
+## 2026-09-08: full-SIF builder boundary rejected library-only definition
+
+`build-local-sif.sh` correctly rejected the rendered `library-runtime.def.in`
+with `WRONG_BUILD_BOUNDARY_MULTISTAGE_REQUIRED`; that entry point is reserved
+for the complete application SIF. The library-only base was therefore built
+with the pinned Apptainer binary directly from the rendered localimage
+definition, followed by the base runtime verifier and exact composition checks.
+## 2026-09-08 Spec183 layered base build v2: Waf mode flattened
+
+- Symptom: the pinned Apptainer base rebuild compiled NAC-ABE, ndn-svs, and
+  ndnsd, then stopped in `%post` at `./waf configure` with `Permission denied`.
+- Root cause: `workspace.tar` and dependency archives contained `waf` members
+  with mode `0644`; they had been generated from an extracted handoff tree that
+  had already lost executable bits.  The source content and checksums were
+  valid, but the container could not execute the build driver.
+- Fix: normalize the three sealed Waf entrypoints to `0755` immediately after
+  extraction in `build-base-libraries.sh`, before any configure/build step.
+- Lesson: source sealing must validate executable semantics as well as bytes;
+  the container build now repairs this known archive-mode boundary explicitly.

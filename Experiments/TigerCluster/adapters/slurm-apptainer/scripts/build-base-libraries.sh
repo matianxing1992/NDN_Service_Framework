@@ -68,6 +68,11 @@ tar -xf /build-input/source/workspace.tar -C /src/ndnsf
 tar -xf /build-input/source/nacAbe.tar -C /src/nac-abe
 tar -xf /build-input/source/ndn-svs.tar -C /src/ndn-svs
 tar -xf /build-input/source/ndnSd.tar -C /src/ndn-sd
+# Some handoff archives were produced from an extracted source tree whose
+# executable bits had already been flattened.  Waf is part of the sealed
+# source contract, so restore its required mode before invoking it rather
+# than relying on the mode of an intermediate tar member.
+chmod 0755 /src/ndnsf/waf /src/ndn-svs/waf /src/ndn-sd/waf
 if [ "${NDNSF_REUSE_BASE_DEPENDENCIES:-0}" = 0 ]; then
 cmake -S /src/nac-abe -B /src/nac-abe/build -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_CXX_FLAGS_RELEASE='-O1 -DNDEBUG -g0' -DHAVE_TESTS=OFF -DBUILD_EXAMPLES=OFF \
