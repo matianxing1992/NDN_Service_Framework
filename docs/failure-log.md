@@ -2572,3 +2572,21 @@ The final import audit caught the remaining tensor decoder dependency before
 qualification; its existing NumPy-only source is now frozen too. A fresh
 isolated interpreter forbids all ndnsf/py_repoclient imports while loading both
 owners, preventing test-suite module state from concealing a missing dependency.
+
+## 2026-09-07 — Spec183 cross-run prerequisite identity and CLI fixture drift
+
+Symptom: submit required READY from a checker that only reports content integrity;
+generic prerequisite PASS did not bind prior run content. A run-specific candidate
+also cannot establish content equivalence across different run paths.
+Fix: v2 prepared receipts bind I/R/E; typed prior case and matching harness/global
+behavior are required, followed by retained-data reanalysis against saved bindings.
+Runtime candidate and numerical reference hashes are checked during collection.
+Remote staging/run remain unavailable until their actual owners are connected.
+
+Verification initially returned 48 passes / 3 fixture failures: two READY doubles
+were stale, and a frozen empty CLI returned zero without executing validation.
+New gate fixtures also omitted the renderer's parent directory (16 setup errors).
+Corrected fixtures use actual frozen CLI source and an explicit parent directory;
+56 targeted checks pass (20.60s), evidence in t004-gate-reuse.md. Lesson: test real
+executable entrypoints at command boundaries, and do not mistake content validity
+or a fake script's zero exit for runtime qualification. No GPU rerun was needed.

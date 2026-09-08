@@ -122,12 +122,14 @@ def test_submission_prerequisites_and_allocation_contract(tmp_path, monkeypatch,
     assert "--gres=gpu:rtx_6000:1" in command
     assert command[-6] == str(wrapper)
     seen = []
+    prepared['contentIdentities'] = dict.fromkeys(('inputs', 'runtime', 'dispatch'), 'sha256:' + 'c' * 64)
     monkeypatch.setattr(module, "_dispatch_report",
-                        lambda _: ({"qualification": "READY",
+                        lambda _: ({"integrity": "VERIFIED", "identities": prepared['contentIdentities'],
                                     "documentDigest": prepared["profileDigest"]}, profile))
     monkeypatch.setattr(module, "_load_prepared", lambda *_: prepared)
+    monkeypatch.setattr(module, "_enter_frozen", lambda *_: None)
     monkeypatch.setattr(module, "_gate_receipt",
-                        lambda path, profile, name: seen.append(name))
+                        lambda path, profile, name, **kwargs: seen.append(name))
     def forbidden(*args, **kwargs):
         pytest.fail("unwired staging must not launch Slurm")
     monkeypatch.setattr(subprocess, "run", forbidden)
@@ -186,7 +188,7 @@ def test_submit_rejects_changed_preparation_before_receipts(tmp_path, monkeypatc
     if mutation == "case":
         prepared["case"] = "single-node-gpu"
     monkeypatch.setattr(module, "_dispatch_report", lambda _: (
-        {"qualification": "READY", "documentDigest": "sha256:" + ("b" if mutation == "profile" else "a") * 64}, {}))
+        {"integrity": "VERIFIED", "documentDigest": "sha256:" + ("b" if mutation == "profile" else "a") * 64}, {}))
     monkeypatch.setattr(module, "_load_prepared", lambda *_: prepared)
     def forbidden(*args, **kwargs):
         pytest.fail("changed preparation must be rejected before receipt checks")
@@ -309,15 +311,23 @@ runpy.run_path(sys.argv[0], run_name='__main__')
     assert json.loads(result.stdout)["integrity"] == "VERIFIED"
 
 
-def dispatch_profile(tmp_path):
+def dispatch_profile(tmp_path, *, real_harness=False):
     from runtime.yolo_bundle import freeze_harness
     from runtime.yolo_profile import check_plane
     from test_yolo_bundle import fixture_manifest
     from test_yolo_closure import next_plane
     path, value = input_profile(tmp_path)
-    manifest, expected = fixture_manifest(tmp_path / "source")
-    frozen = tmp_path / "frozen"
-    freeze_harness(manifest, frozen, expected_manifest_sha256=expected)
+    if real_harness:
+        from tools.spec183_dispatch_plane import _sealed_harness
+        source = tmp_path / 'source'
+        source.mkdir()
+        _sealed_harness(source)
+        frozen = source / 'harness'
+        manifest = frozen / 'harness-manifest.json'
+    else:
+        manifest, expected = fixture_manifest(tmp_path / "source")
+        frozen = tmp_path / "frozen"
+        freeze_harness(manifest, frozen, expected_manifest_sha256=expected)
     inputs = Path(value["release"]["inputs"]["path"])
     iid = check_plane(inputs, expected_stage="inputs")["id"]
     runtime, _ = next_plane(tmp_path / "runtime", "runtime", iid)
@@ -344,7 +354,7 @@ def test_dispatch_check_binds_and_verifies_frozen_harness(tmp_path):
 
 
 def test_real_prepare_freezes_without_runtime_qualification(tmp_path):
-    path, value, _ = dispatch_profile(tmp_path)
+    path, value, _ = dispatch_profile(tmp_path, real_harness=True)
     output = tmp_path / "runs"
     args = ("prepare", "--profile", path, "--run-id", "prepare-test",
             "--output", output, "--case", "two-node-gpu")
@@ -377,7 +387,7 @@ runpy.run_path(sys.argv[0], run_name='__main__')
     for action, case in (("local", "local-cpu"), ("submit", "two-node-gpu")):
         rejected = cli(action, "--profile", path, "--run-id", "prepare-test",
                        "--output", output, "--case", case, cwd=tmp_path)
-        assert rejected.returncode == (2 if action == 'local' else 78)
+        assert rejected.returncode == 2
         if action == 'local':
             assert json.loads(rejected.stdout)['reason'] == 'LOCAL_CASE'
         assert json.loads(rejected.stdout)["qualification"] == "NOT_EVALUATED"

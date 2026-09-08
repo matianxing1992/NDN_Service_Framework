@@ -1,5 +1,22 @@
 # Experiment Profile And Run Contract
 
+## Prepared identity and prerequisite reuse (2026-09-07)
+
+New preparation receipts use `tiger-yolo-prepared-run-v2`. `contentIdentities`
+contains exactly the canonical `inputs`, `runtime`, and `dispatch` SHA-256 IDs.
+The run candidate binds these IDs together with profile digest, plan and frozen
+harness digest. v1 receipts remain historical and cannot qualify new submissions.
+
+Prior gates use the typed normal collector verdict for the required case, from
+a distinct run with the same I/R/E, frozen harness, and normalized global profile
+behavior. Recompute its retained collection using its saved plan and compare the
+complete verdict; never require a historical run to match a subsequently edited
+profile document containing new gate references. Bind normal collection to the
+prepared runtime candidate and saved package, oracle, and fixture digests.
+These checks do not replace actual stage execution or authorize an unwired remote
+launcher. Prepared output paths remain bound; relocation requires an explicit
+transport contract before remote execution can be enabled.
+
 **Status**: T004 partial — schema、只读 `check`、确定性运行预览和提交记录组件已实现；
 完整五命令、合格不可变 bundle、实际 enabled profile 和生产提交接线尚未完成。
 没有启动资格。

@@ -47,7 +47,7 @@ def _prepared(output: Path, run_id: str) -> dict:
     if not receipt.is_file() or receipt.is_symlink():
         raise SystemExit(f"no prepared run at {receipt}; run submit.py prepare first")
     value = json.loads(receipt.read_text())
-    if (not isinstance(value, dict) or value.get("schema") != "tiger-yolo-prepared-run-v1"
+    if (not isinstance(value, dict) or value.get("schema") != "tiger-yolo-prepared-run-v2"
             or value.get("status") != "PREPARED"):
         raise SystemExit(f"prepared run receipt invalid at {receipt}")
     return value

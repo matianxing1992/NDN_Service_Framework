@@ -39,6 +39,18 @@ def _json_digest(value):
         value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
 
 
+def _prepared_candidate(value):
+    return _json_digest({'profile': value['profileDigest'], 'plan': value['plan'],
+        'harness': value['harnessManifestSha256'], 'content': value['contentIdentities']})
+
+
+def _content_identities(value):
+    if (not isinstance(value, dict) or set(value) != {'inputs', 'runtime', 'dispatch'}
+            or any(not isinstance(item, str) or not HASH.fullmatch(item) for item in value.values())):
+        raise ClosureError('RUN_CONTENT_IDENTITIES')
+    return value
+
+
 def _safe_output(path: Path) -> Path:
     """Resolve an operator output without following a pre-existing symlink."""
     path = Path(path)
@@ -84,7 +96,7 @@ def _file_ref(profile_path: Path, name: str, row: dict) -> Path:
     return target
 
 
-def _gate_receipt(profile_path: Path, profile: dict, gate: str) -> dict:
+def _gate_receipt(profile_path: Path, profile: dict, gate: str, *, prepared=None) -> dict:
     """Read a signed/owned prerequisite receipt without treating its hash as PASS."""
     gates = profile.get("release", {}).get("gates", {})
     row = gates.get(gate)
@@ -124,10 +136,32 @@ def _gate_receipt(profile_path: Path, profile: dict, gate: str) -> dict:
         except (KeyError, TypeError, ValueError, OSError) as exc:
             raise ClosureError('GATE_HOST_SOURCE_BINDING') from exc
         return {'name': gate, 'path': str(path), 'sha256': row['sha256'], 'receipt': validated}
-    if (not isinstance(value, dict)
-            or value.get("status") not in ("PASS", "READY")
-            or value.get("qualification") not in ("PASS", "READY", "QUALIFIED")):
-        raise ClosureError("GATE_NOT_QUALIFIED:" + gate)
+    cases = {'localSif': 'local-cpu', 'singleNodeGpu': 'single-node-gpu', 'twoNodeGpu': 'two-node-gpu'}
+    if gate not in cases or not isinstance(prepared, dict):
+        raise ClosureError('GATE_CURRENT_PREPARATION_REQUIRED')
+    if (path.name != 'verdict.json' or not isinstance(value, dict)
+            or value.get('status') != 'PASS'
+            or value.get('qualification') != 'NORMAL_EXPERIMENT_PASS'
+            or value.get('case') != cases[gate]
+            or value.get('collectorSchema') != 'tiger-yolo-collector-v1'):
+        raise ClosureError('GATE_NOT_QUALIFIED:' + gate)
+    previous = _load_prepared(path.parent.parent, path.parent.name)
+    try:
+        if (previous['case'] != cases[gate]
+                or previous['runId'] == prepared['runId']
+                or previous['candidateDigest'] == prepared['candidateDigest']
+                or previous['contentIdentities'] != prepared['contentIdentities']
+                or previous['harnessManifestSha256'] != prepared['harnessManifestSha256']
+                or previous['plan']['effectiveBehavior']['profile'] != prepared['plan']['effectiveBehavior']['profile']):
+            raise ValueError('GATE_REUSE_IDENTITY')
+        from runtime.yolo_bundle import verify_harness
+        verify_harness(Path(prepared['bundle']),
+                       expected_manifest_sha256=prepared['harnessManifestSha256'])
+        verified = _reanalyze_retained(path.parent, previous)
+        if verified != value:
+            raise ValueError('GATE_VERDICT_REANALYSIS_MISMATCH')
+    except (KeyError, TypeError, ValueError, OSError, ImportError) as exc:
+        raise ClosureError('GATE_RETAINED_EVIDENCE:' + gate) from exc
     return {"name": gate, "path": str(path), "sha256": row["sha256"], "receipt": value}
 
 
@@ -156,18 +190,25 @@ def _load_prepared(output: Path, run_id: str) -> dict:
         raise ClosureError("RUN_NOT_PREPARED")
     value = _read_plane(path)
     fields = {"schema", "status", "qualification", "runId", "case", "candidateDigest",
-              "profileDigest", "plan", "bundle", "harnessManifestSha256"}
-    if (set(value) != fields or value["schema"] != "tiger-yolo-prepared-run-v1"
+              "profileDigest", "plan", "bundle", "harnessManifestSha256", "contentIdentities"}
+    if (not isinstance(value, dict) or set(value) != fields
+            or value["schema"] != "tiger-yolo-prepared-run-v2"
             or value["status"] != "PREPARED" or value["qualification"] != "NOT_EVALUATED"
-            or value["runId"] != run_id or not HASH.fullmatch(value["candidateDigest"])
-            or not HASH.fullmatch(value["profileDigest"])
+            or value["runId"] != run_id
+            or any(not isinstance(value[key], str) or not HASH.fullmatch(value[key])
+                   for key in ('candidateDigest', 'profileDigest', 'harnessManifestSha256'))
             or not isinstance(value["plan"], dict)
             or value["plan"].get("runId") != run_id
-            or not isinstance(value["bundle"], str)
-            or not HASH.fullmatch(value["harnessManifestSha256"])):
+            or not isinstance(value["bundle"], str)):
         raise ClosureError("RUN_PREPARATION_RECEIPT")
+    _content_identities(value['contentIdentities'])
+    if (value['plan'].get('case') != value['case']
+            or value['plan'].get('documentDigest') != value['profileDigest']
+            or value['plan'].get('output') != str(path.parent)
+            or _prepared_candidate(value) != value['candidateDigest']):
+        raise ClosureError('RUN_PREPARATION_CONTENT_BINDING')
     bundle = Path(value["bundle"])
-    if any(p.is_symlink() for p in (bundle, *bundle.parents)):
+    if not bundle.is_absolute() or any(p.is_symlink() for p in (bundle, *bundle.parents)):
         raise ClosureError("RUN_BUNDLE_SYMLINK")
     return value
 
@@ -226,6 +267,8 @@ def _load_collection_input(path: Path, *, root: Path, prepared: dict) -> tuple[d
         for key in ("runtimeCandidateDigest", "placementCandidateDigest", "graphDigest",
                     "catalogueDigest"):
             _digest_field(value[key], key)
+        if value['runtimeCandidateDigest'] != prepared['candidateDigest']:
+            raise ClosureError('COLLECTION_RUNTIME_BINDING')
         if (not isinstance(value["placementCandidateId"], str)
                 or not re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", value["placementCandidateId"])):
             raise ClosureError("COLLECTION_PLACEMENT_CANDIDATE")
@@ -356,13 +399,12 @@ def _prepare(args) -> int:
                             source_root=manifest.parent)
     # Preserve the source; the frozen copy is bound independently so subsequent
     # source edits cannot silently change this run's harness.
-    candidate = _json_digest({"profile": report["documentDigest"], "plan": plan,
-                              "harness": frozen["manifestSha256"]})
-    receipt = {"schema": "tiger-yolo-prepared-run-v1", "status": "PREPARED",
+    receipt = {"schema": "tiger-yolo-prepared-run-v2", "status": "PREPARED",
                "qualification": "NOT_EVALUATED", "runId": args.run_id,
-               "case": args.case, "candidateDigest": candidate,
+               "case": args.case, "contentIdentities": _content_identities(report['identities']),
                "profileDigest": report["documentDigest"], "plan": plan,
                "bundle": str(bundle), "harnessManifestSha256": frozen["manifestSha256"]}
+    receipt['candidateDigest'] = _prepared_candidate(receipt)
     _write_readonly(run_root / "prepare.json", receipt)
     print(json.dumps(receipt, sort_keys=True))
     return INCOMPLETE
@@ -392,7 +434,7 @@ def _enter_frozen(args, prepared, action):
     command = [sys.executable, '-B', str(bundle / 'jobs/yolo/submit.py'), action,
         '--profile', str(Path(args.profile).absolute()), '--run-id', args.run_id,
         '--output', str(_safe_output(args.output))]
-    if action == 'local':
+    if action in ('local', 'submit', 'run'):
         command += ['--case', args.case]
     return subprocess.run(command, cwd=bundle, check=False).returncode
 
@@ -401,9 +443,7 @@ def _execute_local(args, profile, prepared):
     """Enter the frozen runner only after source-bound host qualification."""
     plan = resolve_run_plan(Path(args.profile), stage='dispatch', case=args.case,
                             run_id=args.run_id, output=args.output)
-    if (plan != prepared['plan'] or prepared['candidateDigest'] != _json_digest({
-            'profile': prepared['profileDigest'], 'plan': plan,
-            'harness': prepared['harnessManifestSha256']})):
+    if plan != prepared['plan'] or prepared['candidateDigest'] != _prepared_candidate(prepared):
         raise ClosureError('LOCAL_PREPARED_PLAN_BINDING')
     result = _enter_frozen(args, prepared, 'local')
     if result is not None:
@@ -424,20 +464,68 @@ def _submit(args) -> int:
         raise ClosureError("SUBMIT_CASE")
     profile_path = Path(args.profile)
     report, value = _dispatch_report(profile_path)
-    if report.get("qualification") != "READY":
+    if report.get("integrity") != "VERIFIED":
         return _not_ready("submit", "DISPATCH_GATE", report)
     prepared = _load_prepared(args.output, args.run_id)
     if prepared["case"] != args.case:
         raise ClosureError("SUBMIT_CASE")
     if report["documentDigest"] != prepared["profileDigest"]:
         raise ClosureError("PROFILE_CHANGED_AFTER_PREPARE")
+    if report['identities'] != prepared['contentIdentities']:
+        raise ClosureError('CONTENT_CHANGED_AFTER_PREPARE')
+    result = _enter_frozen(args, prepared, 'submit')
+    if result is not None:
+        return result
     gate_name = CASE_GATE[args.case]
-    _gate_receipt(profile_path, value, gate_name)
+    _gate_receipt(profile_path, value, gate_name, prepared=prepared)
     # A generic PASS marker cannot establish remote staging or allocation
     # readiness. T012 must validate the promoted bundle and wire the runner
     # before any journal mutation or sbatch call is enabled.
     return _not_ready("submit", "REMOTE_STAGING_NOT_WIRED",
                       {"prepared": prepared["candidateDigest"], "case": args.case})
+
+
+def _reanalyze_retained(root: Path, prepared: dict) -> dict:
+    """Recompute retained evidence using saved bindings, not a mutable profile.
+
+    The enclosing CLI/gate verifies content identity and the frozen harness.
+    This is read-only: no receipt mutation, native process, or scheduler call.
+    """
+    collection_path = _collection_file(root)
+    collection, collection_digest = _load_collection_input(
+        collection_path, root=root, prepared=prepared)
+    from runtime import yolo_result
+    if collection['kind'] == 'normal':
+        from runtime.yolo_bundle import reference_owner, verify_harness
+        verify_harness(Path(prepared['bundle']),
+                       expected_manifest_sha256=prepared['harnessManifestSha256'])
+        owner = reference_owner(Path(prepared['bundle']))
+        references = [owner.load_reference(row['package'], row['repository'], row['inputSize'])
+                      for row in collection['references']]
+        expected = prepared['plan']['effectiveBehavior']['profile']
+        if any(ref.manifest_digest != expected['workload']['packageManifest']['sha256']
+               or ref.oracle_digest != expected['oracle']['reference']['sha256']
+               or ref.fixture_digest != expected['oracle']['input']['sha256'] for ref in references):
+            raise ClosureError('COLLECTION_REFERENCE_PROFILE_BINDING')
+        final = yolo_result.collect_normal_verdict(
+            collection['nodes'], references, plan=prepared['plan'],
+            runtime_candidate_digest=collection['runtimeCandidateDigest'],
+            placement_candidate_id=collection['placementCandidateId'],
+            placement_candidate_digest=collection['placementCandidateDigest'],
+            graph_digest=collection['graphDigest'], catalogue_digest=collection['catalogueDigest'],
+            providers_by_role=collection['providersByRole'],
+            allocation_expected=collection.get('allocationExpected'),
+            certified_graph=collection['certifiedGraph'])
+    else:
+        request = prepared['plan'].get('requests', [{}])[0]
+        if request.get('requestId') != collection['requestId']:
+            raise ClosureError('COLLECTION_REJECTION_REQUEST')
+        final = yolo_result.finalize_expected_rejection(
+            collection['rejection'], plan=prepared['plan'], request_id=collection['requestId'],
+            attempt=collection['attempt'], candidate_digest=collection['candidateDigestForRequest'],
+            request_deadline_ms=collection['requestDeadlineMs'])
+    return dict(final, runId=prepared['runId'], candidateDigest=prepared['candidateDigest'],
+        collectorSchema='tiger-yolo-collector-v1', collectionInputDigest=collection_digest)
 
 
 def _collect(args) -> int:
@@ -469,39 +557,7 @@ def _collect(args) -> int:
     except ClosureError as exc:
         return _not_ready("collect", str(exc), {"prepared": prepared["candidateDigest"]})
     try:
-        collection, collection_digest = _load_collection_input(
-            collection_path, root=root, prepared=prepared)
-        from runtime import yolo_result
-        if collection["kind"] == "normal":
-            from runtime.yolo_bundle import reference_owner, verify_harness
-            verify_harness(Path(prepared['bundle']),
-                           expected_manifest_sha256=prepared['harnessManifestSha256'])
-            load_reference = reference_owner(Path(prepared['bundle'])).load_reference
-            references = [load_reference(row["package"], row["repository"], row["inputSize"])
-                          for row in collection["references"]]
-            final = yolo_result.collect_normal_verdict(
-                collection["nodes"], references, plan=prepared["plan"],
-                runtime_candidate_digest=collection["runtimeCandidateDigest"],
-                placement_candidate_id=collection["placementCandidateId"],
-                placement_candidate_digest=collection["placementCandidateDigest"],
-                graph_digest=collection["graphDigest"],
-                catalogue_digest=collection["catalogueDigest"],
-                providers_by_role=collection["providersByRole"],
-                allocation_expected=collection.get("allocationExpected"),
-                certified_graph=collection["certifiedGraph"])
-        else:
-            request = prepared["plan"].get("requests", [{}])[0]
-            if request.get("requestId") != collection["requestId"]:
-                raise ClosureError("COLLECTION_REJECTION_REQUEST")
-            final = yolo_result.finalize_expected_rejection(
-                collection["rejection"], plan=prepared["plan"],
-                request_id=collection["requestId"], attempt=collection["attempt"],
-                candidate_digest=collection["candidateDigestForRequest"],
-                request_deadline_ms=collection["requestDeadlineMs"])
-        final = dict(final, runId=args.run_id,
-                     candidateDigest=prepared["candidateDigest"],
-                     collectorSchema="tiger-yolo-collector-v1",
-                     collectionInputDigest=collection_digest)
+        final = _reanalyze_retained(root, prepared)
         # Retained PASS is a historical result, not authority to skip its
         # evidence. Re-run the same collector even for an unchanged handoff;
         # nested node logs, native outputs and references may have changed.
