@@ -1588,8 +1588,9 @@ def test_runtime_wait_for_ready_closes_the_phase_state(tmp_path: Path):
     assert runtime._ready_phases == {"providers"}
 
 
+@pytest.mark.parametrize('stop_failure', [False, True])
 def test_start_network_failure_stops_partial_network_and_normalizes_error(
-        tmp_path: Path):
+        tmp_path: Path, stop_failure):
     module = load_runner()
     output, inputs = _binding_inputs(tmp_path, module)
     binding = module.CaseRuntimeBinding.from_inputs("Y-B", output, inputs)
@@ -1605,6 +1606,8 @@ def test_start_network_failure_stops_partial_network_and_normalizes_error(
 
         def stop(self):
             calls.append("network.stop")
+            if stop_failure and calls.count('network.stop') == 1:
+                raise RuntimeError('partial network stop failed')
 
     class Minindn(Network):
         @staticmethod
@@ -1632,6 +1635,10 @@ def test_start_network_failure_stops_partial_network_and_normalizes_error(
     assert calls == [
         "minindn.verifyDependencies", "network.start", "network.stop",
     ]
+    if stop_failure:
+        assert runtime._ndn is not None
+        runtime.stop()
+        assert calls.count('network.stop') == 2
     assert runtime._ndn is None
 
 
@@ -1737,6 +1744,47 @@ def test_runtime_stop_uses_legacy_process_handles_after_start(tmp_path: Path):
     runtime.stop()
 
     assert stopped == legacy_processes
+
+
+@pytest.mark.parametrize('failure', ['children', 'network'])
+def test_runtime_cleanup_failure_retains_ownership_and_attempt_records(tmp_path, failure):
+    module = load_runner()
+    output, inputs = _binding_inputs(tmp_path, module, 'Y-B')
+    binding = module.CaseRuntimeBinding.from_inputs('Y-B', output, inputs)
+    runtime = module.MiniNdnCaseRuntime(binding, inputs)
+    attempts = dict(children=0, network=0)
+    entry = (object(), object(), tmp_path/'child.log')
+
+    def stop_children(entries):
+        attempts['children'] += 1
+        if failure == 'children' and attempts['children'] == 1:
+            raise RuntimeError('unreaped child')
+        assert entries == [entry]
+        return [dict(pid=123, reaped=True, exitStatus=0)]
+
+    class Network:
+        def stop(self):
+            attempts['network'] += 1
+            if failure == 'network' and attempts['network'] == 1:
+                raise RuntimeError('network did not stop')
+
+    runtime._legacy = SimpleNamespace(stop_process_group=stop_children)
+    runtime._processes = [entry]
+    runtime._ndn = Network()
+    with pytest.raises(module.RunnerError, match='CASE_RUNTIME_CLEANUP_FAILED'):
+        runtime.stop()
+    first = (output/'cleanup-attempt-001.json').read_bytes()
+    assert json.loads(first)['errors']
+    assert not runtime._cleanup_complete
+    assert bool(runtime._processes) == (failure == 'children')
+    assert (runtime._ndn is not None) == (failure == 'network')
+    runtime.stop()
+    runtime.stop()
+    assert runtime._cleanup_complete
+    assert not runtime._processes and runtime._ndn is None
+    assert (output/'cleanup-attempt-001.json').read_bytes() == first
+    assert json.loads((output/'cleanup-attempt-002.json').read_text())['errors'] == []
+    assert attempts[failure] == 2
 
 
 def test_case_process_specs_reject_repo_identity_not_in_provider_namespace(tmp_path: Path):

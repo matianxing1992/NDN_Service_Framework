@@ -509,6 +509,8 @@ class MiniNdnCaseRuntime:
         self._catalogue_publication_digest: str | None = None
         self._processes: list[tuple[object, object, Path]] = []
         self._cleanup_complete = False
+        self._cleanup_started = False
+        self._cleanup_attempts = 0
 
     def _legacy_module(self):
         if self._legacy is None:
@@ -519,7 +521,7 @@ class MiniNdnCaseRuntime:
 
     def start_network(self):
         """Reuse the established NFD/SVS startup path with explicit inputs."""
-        if self._cleanup_complete:
+        if self._cleanup_started:
             raise RunnerError("CASE_RUNTIME_ALREADY_STOPPED")
         if self._ndn is not None:
             raise RunnerError("CASE_RUNTIME_NETWORK_ALREADY_STARTED")
@@ -544,6 +546,8 @@ class MiniNdnCaseRuntime:
             )
         finally:
             sys.argv = saved_argv
+        # Retain even a partially started network until its stop succeeds.
+        self._ndn = ndn
         try:
             ndn.start()
             nfd_app = Spec180SifNfd if sif_runtime_enabled() else legacy.Nfd
@@ -553,6 +557,7 @@ class MiniNdnCaseRuntime:
             cleanup_errors = []
             try:
                 ndn.stop()
+                self._ndn = None
             except Exception as cleanup_exc:
                 cleanup_errors.append("network:" + str(cleanup_exc))
             detail = type(exc).__name__ + ":" + str(exc)
@@ -560,7 +565,6 @@ class MiniNdnCaseRuntime:
                 detail += ";cleanup=" + ";".join(cleanup_errors)
             raise RunnerError(
                 "CASE_RUNTIME_NETWORK_START_FAILED:" + detail) from exc
-        self._ndn = ndn
         return ndn
 
     def route_origins(self) -> Mapping[str, tuple[str, ...]]:
@@ -1157,7 +1161,12 @@ class MiniNdnCaseRuntime:
             if phase_procs:
                 try:
                     legacy.stop_process_group(phase_procs)
-                finally:
+                except Exception:
+                    # Preserve ownership for the outer finally/retry. Failed
+                    # cleanup must not erase the only remaining child handles.
+                    self._processes.extend(phase_procs)
+                    raise
+                else:
                     del procs[phase_start:]
             # The outer matrix deliberately reports a bounded failure code.
             # Preserve the underlying location before that wrapping loses it,
@@ -1200,29 +1209,29 @@ class MiniNdnCaseRuntime:
         The live driver must call this from ``finally`` after every phase,
         publication, or request attempt.  Cleanup is idempotent and does not
         depend on a successful ACK/Response. This initiates owned teardown;
-        final child reaping and bounded cleanup qualification are separate
-        requirements, not proved by returning from the legacy helper.
+        tracked child reaping is checked by the shared helper. Descendant and
+        network-wide deadline qualification remain separate requirements.
         """
         if self._cleanup_complete:
             return
         legacy = self._legacy_module()
-        # Mark the boundary only after the maintained helper module is
-        # available.  An import failure must remain retryable; once teardown
-        # starts, repeated calls are intentionally no-ops.
-        self._cleanup_complete = True
+        self._cleanup_started = True
+        self._cleanup_attempts += 1
         errors: list[str] = []
         owned = list(self._processes)
-        self._processes.clear()
+        records = []
         if owned:
             try:
-                legacy.stop_process_group(owned)
+                records = legacy.stop_process_group(owned)
+                self._processes.clear()
             except Exception as exc:
+                records = getattr(exc, 'records', [])
                 errors.append("processes:" + str(exc))
         network = self._ndn
-        self._ndn = None
         if network is not None:
             try:
                 network.stop()
+                self._ndn = None
             except Exception as exc:
                 errors.append("network:" + str(exc))
         # Minindn.cleanUp() is host-global (including unrelated processes and
@@ -1231,6 +1240,18 @@ class MiniNdnCaseRuntime:
         self._started_phases.clear()
         self._ready_phases.clear()
         self._catalogue_publication_digest = None
+        record = dict(schema='minindn-owned-cleanup-v1',
+                      attempt=self._cleanup_attempts, children=records,
+                      networkStopped=self._ndn is None, errors=errors,
+                      qualification='NOT_EVALUATED')
+        try:
+            with (self.binding.output / (
+                    'cleanup-attempt-%03d.json' % self._cleanup_attempts)).open('x') as stream:
+                json.dump(record, stream, sort_keys=True, indent=2)
+                stream.write('\n')
+        except OSError as exc:
+            errors.append('record:' + type(exc).__name__)
+        self._cleanup_complete = not errors
         if errors:
             raise RunnerError("CASE_RUNTIME_CLEANUP_FAILED:" + ";".join(errors))
 

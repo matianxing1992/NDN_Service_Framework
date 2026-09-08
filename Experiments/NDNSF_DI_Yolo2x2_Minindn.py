@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import signal
@@ -129,15 +130,66 @@ def start(node, name, cmd, env, procs, *, output_dir: Path = OUT,
     return p, path
 
 
-def stop_process_group(procs: list[tuple[object, object, Path]]) -> None:
-    for p, f, _ in reversed(procs):
+def stop_process_group(procs: list[tuple[object, object, Path]], *,
+                       seconds: float = 30) -> list[dict]:
+    """Stop and reap tracked children within one budget, retaining failures.
+
+    The historical name does not imply POSIX process-group ownership. Signal
+    only the supplied Popen handles; descendant/network cleanup requires the
+    owning MiniNDN instance and separate evidence.
+    """
+    if (isinstance(seconds, bool) or not isinstance(seconds, (int, float))
+            or not math.isfinite(seconds) or seconds <= 0):
+        raise ValueError("CHILD_CLEANUP_BUDGET")
+    deadline = time.monotonic() + seconds
+    grace = min(deadline - min(1.0, seconds / 2), time.monotonic() + 3)
+    owned = list(reversed(procs))
+    rows = [dict(pid=p.pid, log=Path(path).name, forced=False,
+                 terminationRequested=p.poll() is None, errors=[])
+            for p, _f, path in owned]
+    for (p, _f, _path), row in zip(owned, rows):
         if p.poll() is None:
-            p.send_signal(signal.SIGINT)
             try:
-                p.wait(timeout=3)
-            except Exception:
+                p.send_signal(signal.SIGINT)
+            except ProcessLookupError:
+                pass
+            except OSError as exc:
+                row['errors'].append(type(exc).__name__)
+    for (p, _f, _path), row in zip(owned, rows):
+        try:
+            p.wait(timeout=max(0, grace - time.monotonic()))
+        except subprocess.TimeoutExpired:
+            pass
+        except OSError as exc:
+            row['errors'].append(type(exc).__name__)
+    for (p, _f, _path), row in zip(owned, rows):
+        if p.poll() is None:
+            row['forced'] = True
+            try:
                 p.kill()
-        f.close()
+            except ProcessLookupError:
+                pass
+            except OSError as exc:
+                row['errors'].append(type(exc).__name__)
+    for (p, f, _path), row in zip(owned, rows):
+        try:
+            p.wait(timeout=max(0, deadline - time.monotonic()))
+        except subprocess.TimeoutExpired:
+            pass
+        except OSError as exc:
+            row['errors'].append(type(exc).__name__)
+        exit_status = p.poll()
+        row.update(exitStatus=exit_status, reaped=exit_status is not None)
+        if row['reaped']:
+            try:
+                f.close()
+            except OSError as exc:
+                row['errors'].append(type(exc).__name__)
+    if any(not row['reaped'] or row['errors'] for row in rows):
+        failure = RuntimeError("CHILD_CLEANUP_INCOMPLETE")
+        failure.records = rows
+        raise failure
+    return rows
 
 
 def start_ndn_packet_traces(ndn, env: dict, node_names: list[str]):

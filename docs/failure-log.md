@@ -1,5 +1,23 @@
 # Failure Log and Evidence Index
 
+## 2026-09-08 — Child cleanup discarded failures before reaping
+
+- Symptom: shared MiniNDN stop helper killed timed-out children without a final
+  wait; runtime cleared handles and marked cleanup complete before helper and
+  network stop succeeded. Partial-start cleanup also discarded failed handles.
+- Cause: teardown initiation was treated as completed resource cleanup.
+- Fix: one child-batch deadline with signal/kill/wait records; unreaped failures
+  retain handles. Runtime keeps failed resources retryable and writes exclusive
+  attempt records. Reaped status and exit status share one poll observation.
+- Validation: 19 related cases passed; four helper checks repeated after the
+  single-observation adjustment. Actual subprocess tests verify forced reaping
+  and an untouched unowned child; network failure/retry uses doubles. See
+  Spec183 `evidence/t010-reaping.md`.
+- Follow-up: retain a partially started network when its first stop fails;
+  two targeted startup cases passed, including successful subsequent cleanup.
+- Lesson: retain ownership until cleanup succeeds. Direct child reaping does
+  not prove all descendants or the MiniNDN network are gone within a deadline.
+
 ## 2026-09-08 — MiniNDN cancellation bypassed owned cleanup
 
 - Symptom: SIGTERM could terminate the driver outside its finally cleanup;

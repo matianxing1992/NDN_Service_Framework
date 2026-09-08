@@ -34,8 +34,9 @@ N1 is a source-proven validation gap, not a claim that forged evidence was used
 in a real run. The current profile has no host gate, so its normal entry remains
 closed. N2 is a code gap even before MiniNDN execution. Its
 [cancellation/ownership follow-up](t010-cancellation.md) routes SIGINT/SIGTERM
-through cleanup and removes host-global cleanup; outer deadlines and verified
-child reaping remain missing. N3 concerned the YOLO path,
+through cleanup and removes host-global cleanup. [Tracked-child reaping](t010-reaping.md)
+now waits after kill and retains retryable failures; outer deadlines and complete
+descendant/network cleanup remain missing. N3 concerned the YOLO path,
 not the legacy worker's own version check. The finding row preserves the initial
 defect; its source repair is now closed: issuer and every rank observe the exact
 version before workload, public reanalysis requires their bound raw records, and
