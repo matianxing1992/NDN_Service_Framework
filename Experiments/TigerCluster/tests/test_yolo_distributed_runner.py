@@ -6,13 +6,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from test_yolo_local_execution import frozen_bundle
+from test_yolo_local_execution import frozen_bundle, scratch_double
 from test_yolo_collection import plan_fixture, kwargs as collection_kwargs
 from runtime import yolo_operator as operator
 
 
 @pytest.mark.parametrize('fault', ['none', 'prepare', 'request', 'missing-request', 'budget'])
-def test_two_ranks_share_one_preparation_and_probe_without_partial_success(tmp_path, monkeypatch, frozen_bundle, fault):
+def test_two_ranks_share_one_preparation_and_probe_without_partial_success(tmp_path, monkeypatch, frozen_bundle, scratch_double, fault):
     from runtime import yolo_allocation, yolo_bundle, yolo_result, yolo_graph_reference
     from runtime.yolo_worker import assigned_roles
     bundle, harness = frozen_bundle

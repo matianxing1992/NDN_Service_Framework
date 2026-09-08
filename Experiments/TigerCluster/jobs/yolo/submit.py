@@ -500,6 +500,8 @@ def _reanalyze_retained(root: Path, prepared: dict) -> dict:
             cleanup = _verify_srun_cleanup(root, prepared)
             if cleanup['jobId'] != collection.get('allocationExpected', {}).get('job_id'):
                 raise ClosureError('SRUN_COLLECTION_JOB_BINDING')
+            from runtime.yolo_storage import verify_storage_cleanup
+            verify_storage_cleanup(root, prepared, cleanup['jobId'])
         from runtime.yolo_bundle import reference_owner, verify_harness
         verify_harness(Path(prepared['bundle']),
                        expected_manifest_sha256=prepared['harnessManifestSha256'])

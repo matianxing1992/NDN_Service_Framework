@@ -129,7 +129,7 @@
   "remoteArtifactRoot": "/project/tma1/ndnsf-di/candidates",
   "sharedRunRoot": "/project/tma1/ndnsf-di/runs",
   "sharedLockRoot": "/project/tma1/ndnsf-di/locks",
-  "scratchRoot": "/project/tma1/ndnsf-di/scratch",
+  "scratchRoot": "/tmp",
   "peakBytes": 3525861376,
   "marginBytes": 0
  },

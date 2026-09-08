@@ -2633,3 +2633,32 @@ preserving 1 warmup + 3 measured requests and their original deadlines.
 41 focused owner/handoff and 53 CLI checks passed; no runtime tests were repeated.
 Lesson: test adjacent owners with production-shaped data, and budget the full
 invocation including permission acquisition. See t004-two-node-runner.md.
+
+## 2026-09-07 — Declared storage budget was passed as measured capacity
+
+Symptom: normal owners supplied peakBytes + marginBytes as repo_free_bytes;
+GPU NFD node directories also lived under shared output, without allocated
+local SIF staging. Those values could not establish real local storage readiness.
+Fix: introduce the canonical allocated NodeScratch owner, measure statvfs bytes,
+copy and verify the same SIF, probe fsync/Unix sockets, and retain final cleanup
+records outside scratch. Copy and issuer share one bounded staging window.
+Initial focused tests had three stale dictionary-identity assertions when the
+GPU runtime mapping was copied to replace its SIF path; assert the passed path
+and preserved descriptor instead. Final focused groups passed 56 and 66 checks.
+Lesson: requested capacity is not observed capacity; statvfs is still not quota
+or reservation proof. Distinguish physical-path relocation from content identity,
+and never infer real GPU qualification from doubled launchers. No model reruns.
+
+## 2026-09-07 — Storage checkpoint cannot refresh the pinned base SIF
+
+Symptom: dispatch render and one bounded retry both fail FILE_DIGEST:baseSif.
+An independent 1 MiB streaming read returns 6a3d001088305a9e189c7e97fe1ed19c8167347341de1ca23a1e67076f564b94,
+not pinned b6710fd696a7f962f67f67a54278d92a15babb856c4af428a3f04ba54dc83285.
+Size/mtime/ctime remain stable within that read; this does not prove correct bytes.
+Root cause: unresolved; the earlier sandbox/cold-read diagnosis is not established
+for this occurrence. Containment: preserve the lock/hash and failure, stop blind
+retries, do not publish the new 25-file harness as a verified candidate. Next
+compare trusted retained image evidence and host read integrity before repairing
+or replacing input. Source/component storage checks remain separately recorded.
+Lesson: do not normalize a surprising hash into a release identity or treat stable
+metadata as a substitute for content verification. See t004-node-storage.md.

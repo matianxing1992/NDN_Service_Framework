@@ -14,6 +14,7 @@ from pathlib import Path
 import re
 import secrets
 import subprocess
+import time
 
 from .yolo_worker import NodeRuntime, StartupBarrier, assigned_roles
 from .yolo_profile import application_sync_prefix
@@ -111,6 +112,7 @@ def provision_run(*, runtime_profile: dict, bundle: Path, harness_digest: str,
     from .yolo_bundle import _bytes, verify_harness, verify_preparation
 
     seconds = _finite(seconds, "OPERATOR_PREPARATION_BUDGET")
+    deadline = time.monotonic() + seconds
     cleanup_seconds = _finite(cleanup_seconds, "OPERATOR_CLEANUP_BUDGET")
     bundle = _directory(bundle, "OPERATOR_BUNDLE")
     inputs = _directory(inputs, "OPERATOR_PREPARATION_INPUTS")
@@ -148,10 +150,12 @@ def provision_run(*, runtime_profile: dict, bundle: Path, harness_digest: str,
                  "--descriptor-sha256", descriptor_digest],
         prepare=private, artifacts=package, preparation_inputs=inputs)
     children = Processes(output / "logs")
+    if time.monotonic() >= deadline:
+        raise OperatorError('OPERATOR_PREPARATION_TIMEOUT')
     try:
         child = children.start("prepare", command, env=container_env(), cwd=bundle)
         try:
-            code = child.wait(timeout=seconds)
+            code = child.wait(timeout=max(0.001, deadline-time.monotonic()))
         except subprocess.TimeoutExpired as exc:
             raise OperatorError("OPERATOR_PREPARATION_TIMEOUT") from exc
         if code != 0:
@@ -161,6 +165,8 @@ def provision_run(*, runtime_profile: dict, bundle: Path, harness_digest: str,
         write_json(output / "cleanup.json", {"records": cleanup})
     if any(not row.get("reaped") or row.get("forced") or row.get("cleanupError") for row in cleanup):
         raise OperatorError("OPERATOR_PREPARATION_CLEANUP")
+    if time.monotonic() >= deadline:
+        raise OperatorError('OPERATOR_PREPARATION_TIMEOUT')
     import hashlib
     receipt_digest = "sha256:" + hashlib.sha256(_bytes(public / "preparation.json")).hexdigest()
     receipt = verify_preparation(public, options["plan"], expected_receipt_digest=receipt_digest,
@@ -465,6 +471,28 @@ def execute_distributed_rank(*, prepared, profile, resolved, allocation_expected
                                       seconds=timing['progressTimeoutSeconds'])
     endpoints = _allocation_endpoints(observed['receipt']['hosts'], profile['cluster']['tcpPort'],
                                      timing['progressTimeoutSeconds'])
+    from .yolo_storage import NodeScratch
+    with NodeScratch(prepared=prepared, profile=profile, runtime_profile=resolved['runtimeProfile'],
+                     allocation=observed, rank=rank) as storage:
+        return _execute_distributed_workload(prepared=prepared, profile=profile,
+            resolved=dict(resolved, runtimeProfile=storage.runtime_profile), allocation_expected=allocation_expected,
+            rank=rank, observed=observed, endpoints=endpoints, control=control, node=storage.node,
+            staging_deadline=storage.deadline)
+
+
+def _execute_distributed_workload(*, prepared, profile, resolved, allocation_expected, rank,
+                                  observed, endpoints, control, node, staging_deadline):
+    from .yolo_bundle import verify_preparation
+    from .yolo_profile import _read_plane
+    from .identities import _credential_document
+    from .yolo_graph_reference import read_request_reference
+    from .yolo_result import collect_request_result
+    from .yolo_storage import measured_capacity
+    plan, root, bundle = prepared['plan'], Path(prepared['plan']['output']), Path(prepared['bundle'])
+    timing = profile['timing']
+    permission_ms = min(120000, timing['progressTimeoutSeconds']*1000)
+    process_seconds = (permission_ms+timing['requestDeadlineMs'])/1000
+    completion_seconds = len(plan['requests'])*process_seconds
     provision_path = root / 'distributed-preparation.json'
     try:
         if rank == 0:
@@ -476,11 +504,11 @@ def execute_distributed_rank(*, prepared, profile, resolved, allocation_expected
             provision = provision_run(runtime_profile=resolved['runtimeProfile'], bundle=bundle,
                 harness_digest=prepared['harnessManifestSha256'], inputs=root/'issuer-inputs',
                 descriptor_digest=descriptor, package=Path(resolved['package']), public=root/'public',
-                private=root/'private', output=root/'prepare-output', seconds=timing['stagingSeconds'],
+                private=root/'private', output=root/'prepare-output', seconds=staging_deadline-time.monotonic(),
                 cleanup_seconds=timing['cleanupSeconds'])
             _credential_document(provision_path, dict(control=control, provision=provision))
         else:
-            deadline = time.monotonic() + timing['stagingSeconds'] + timing['cleanupSeconds']
+            deadline = staging_deadline + timing['cleanupSeconds']
             while True:
                 if (root/'failed-0.json').exists():
                     raise OperatorError('DISTRIBUTED_PREPARATION_PEER_FAILED')
@@ -498,9 +526,8 @@ def execute_distributed_rank(*, prepared, profile, resolved, allocation_expected
         if receipt != provision['preparation']:
             raise OperatorError('DISTRIBUTED_PREPARATION_CHANGED')
         reference = _normal_reference(prepared, profile, resolved)[0] if rank == 0 else None
-        output, node = root / ('node'+str(rank)), root / ('node-runtime-'+str(rank))
+        output = root / ('node'+str(rank))
         output.mkdir(mode=0o700)
-        node.mkdir(mode=0o700)
         accepted = []
         def accept(request, request_output):
             if rank != 0:
@@ -519,7 +546,8 @@ def execute_distributed_rank(*, prepared, profile, resolved, allocation_expected
             output=output, node=node, startup_directory=root/'startup', completion_directory=root/'completion',
             preparation_digest=provision['receiptDigest'], candidate_digest=prepared['candidateDigest'],
             endpoints=endpoints, startup_seconds=timing['startupSeconds'], completion_seconds=completion_seconds,
-            startup_options=dict(repo_free_bytes=profile['storage']['peakBytes']+profile['storage']['marginBytes'],
+            startup_options=dict(repo_free_bytes=measured_capacity(root,
+                profile['storage']['peakBytes']+profile['storage']['marginBytes'])['freeBytes'],
                 permission_wait_ms=permission_ms, network_probe_seconds=timing['progressTimeoutSeconds']),
             request_options=dict(package=Path(resolved['package']), catalog_data_name=receipt['catalogueDataName'],
                 catalog_signer=receipt['catalogueSigner'], permission_wait_ms=permission_ms,
@@ -566,13 +594,18 @@ def execute_single_gpu_run(*, prepared: dict, profile: dict, resolved: dict,
         seconds=profile['timing']['progressTimeoutSeconds'])
     # Query before any issuer/native process, then let NodeRuntime retain and
     # revalidate the allocation at the provider launch boundary as usual.
-    return _execute_single_node(prepared=prepared, profile=profile, resolved=resolved,
-        mode='single-node-gpu', allocation_expected=allocation_expected,
-        gpu_device=observed['receipt']['visible'])
+    from .yolo_storage import NodeScratch
+    with NodeScratch(prepared=prepared, profile=profile, runtime_profile=resolved['runtimeProfile'],
+                     allocation=observed, rank=0) as storage:
+        return _execute_single_node(prepared=prepared, profile=profile,
+            resolved=dict(resolved, runtimeProfile=storage.runtime_profile), mode='single-node-gpu',
+            allocation_expected=allocation_expected, gpu_device=observed['receipt']['visible'],
+            node_override=storage.node, staging_deadline=storage.deadline)
 
 
 def _execute_single_node(*, prepared: dict, profile: dict, resolved: dict, mode: str,
-                         allocation_expected=None, gpu_device=None) -> dict:
+                         allocation_expected=None, gpu_device=None, node_override=None,
+                         staging_deadline=None) -> dict:
     """Execute one complete normal single-node case through existing owners.
 
     The public CLI must validate the relevant prior gate before entering
@@ -584,6 +617,7 @@ def _execute_single_node(*, prepared: dict, profile: dict, resolved: dict, mode:
     from .yolo_result import collect_request_result
     from .yolo_graph_reference import read_request_reference
     from .identities import _credential_document
+    from .yolo_storage import measured_capacity
     plan = prepared['plan']
     _validate_plan(plan, mode=mode, rank=0)
     root = _directory(plan['output'], 'LOCAL_RUN_ROOT')
@@ -605,8 +639,13 @@ def _execute_single_node(*, prepared: dict, profile: dict, resolved: dict, mode:
     names = ('issuer-inputs', 'public', 'private', 'prepare-output', 'node',
              'startup', 'completion', 'node0')
     paths = {name: root / name for name in names}
+    if node_override is not None:
+        names = tuple(name for name in names if name != 'node')
+        paths.pop('node')
     if any(path.exists() or path.is_symlink() for path in paths.values()):
         raise OperatorError('LOCAL_RUN_ALREADY_STARTED')
+    if node_override is not None:
+        paths['node'] = _directory(node_override, 'LOCAL_NODE_SCRATCH')
     started = dict(schema='tiger-yolo-local-execution-v1', status='STARTED', case=mode,
         runId=plan['runId'], candidateDigest=prepared['candidateDigest'])
     _credential_document(root / 'local-execution.json', started)
@@ -619,7 +658,8 @@ def _execute_single_node(*, prepared: dict, profile: dict, resolved: dict, mode:
             harness_digest=prepared['harnessManifestSha256'], inputs=paths['issuer-inputs'],
             descriptor_digest=descriptor, package=package, public=paths['public'],
             private=paths['private'], output=paths['prepare-output'],
-            seconds=timing['stagingSeconds'], cleanup_seconds=timing['cleanupSeconds'])
+            seconds=(timing['stagingSeconds'] if staging_deadline is None else staging_deadline-time.monotonic()),
+            cleanup_seconds=timing['cleanupSeconds'])
         receipt = provision['preparation']
         graph_digest = _digest(receipt.get('graphDigest'), 'LOCAL_RUN_GRAPH')
         catalogue_digest = _digest(receipt.get('catalogueDigest'), 'LOCAL_RUN_CATALOGUE')
@@ -649,7 +689,8 @@ def _execute_single_node(*, prepared: dict, profile: dict, resolved: dict, mode:
             preparation_digest=provision['receiptDigest'], candidate_digest=prepared['candidateDigest'],
             endpoints=[dict(rank=0, address='127.0.0.1', port=profile['cluster']['tcpPort'])],
             startup_seconds=timing['startupSeconds'], completion_seconds=completion_seconds,
-            startup_options=dict(repo_free_bytes=profile['storage']['peakBytes'] + profile['storage']['marginBytes'],
+            startup_options=dict(repo_free_bytes=measured_capacity(root,
+                profile['storage']['peakBytes']+profile['storage']['marginBytes'])['freeBytes'],
                 permission_wait_ms=permission_ms, network_probe_seconds=timing['progressTimeoutSeconds']),
             request_options=dict(package=package, catalog_data_name=receipt['catalogueDataName'],
                 catalog_signer=receipt['catalogueSigner'], permission_wait_ms=permission_ms,

@@ -3,6 +3,7 @@ import hashlib
 import json
 from pathlib import Path
 import sys
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -22,10 +23,27 @@ def frozen_bundle(tmp_path_factory):
     return root / 'harness', receipt['manifestSha256']
 
 
+@pytest.fixture
+def scratch_double(tmp_path, monkeypatch):
+    """Composition fixture only; real file staging is covered by test_yolo_storage."""
+    from runtime import yolo_storage
+    class Scratch:
+        def __init__(self, **kw):
+            self.runtime_profile = dict(kw['runtime_profile'], sif=str(tmp_path/'staged-fixture.sif'))
+            self.node = tmp_path/('scratch-node-'+str(kw['rank']))
+            self.deadline = time.monotonic()+kw['profile']['timing']['stagingSeconds']
+        def __enter__(self):
+            self.node.mkdir(exist_ok=True)
+            return self
+        def __exit__(self, *args):
+            return False
+    monkeypatch.setattr(yolo_storage, 'NodeScratch', Scratch)
+
+
 @pytest.mark.parametrize('fault', ['none', 'request', 'missing-request'])
 @pytest.mark.parametrize('mode', ['local-cpu', 'single-node-gpu'])
 def test_local_owner_stops_on_failed_request_and_publishes_only_after_cleanup(
-        tmp_path, monkeypatch, reference, frozen_bundle, fault, mode):
+        tmp_path, monkeypatch, reference, frozen_bundle, scratch_double, fault, mode):
     from runtime import yolo_operator as operator, yolo_result, yolo_graph_reference
     from runtime.yolo_worker import assigned_roles
     package, _ = reference
@@ -51,13 +69,16 @@ def test_local_owner_stops_on_failed_request_and_publishes_only_after_cleanup(
                         manifestDigest=file_ref(package / 'manifest.json')['sha256']))
     events = []
     def stage(value, path):
-        assert value is resolved
+        assert value['descriptor'] is resolved['descriptor']
+        assert value['runtimeProfile']['sif'] == (str(tmp_path/'staged-fixture.sif')
+            if mode=='single-node-gpu' else resolved['runtimeProfile']['sif'])
         events.append('stage')
         path.mkdir()
         return 'sha256:'+'b'*64
     def provision(**kwargs):
         events.append('provision')
-        assert kwargs['runtime_profile'] == resolved['runtimeProfile']
+        assert kwargs['runtime_profile']['sif'] == (str(tmp_path/'staged-fixture.sif')
+            if mode=='single-node-gpu' else resolved['runtimeProfile']['sif'])
         assert kwargs['bundle'] == bundle and kwargs['package'] == package
         return dict(receiptDigest='sha256:'+'c'*64, preparation=dict(
             graphDigest='sha256:'+'d'*64, catalogueDigest='sha256:'+'e'*64,
@@ -74,6 +95,8 @@ def test_local_owner_stops_on_failed_request_and_publishes_only_after_cleanup(
     def rank(**kwargs):
         events.append('rank')
         assert kwargs['mode'] == mode and kwargs['rank'] == 0
+        assert kwargs['profile']['sif'] == (str(tmp_path/'staged-fixture.sif')
+            if mode=='single-node-gpu' else resolved['runtimeProfile']['sif'])
         if mode == 'single-node-gpu':
             assert kwargs['gpu_device'] == '0' and kwargs['allocation_expected'] == expected
         assert kwargs['completion_seconds'] == 6

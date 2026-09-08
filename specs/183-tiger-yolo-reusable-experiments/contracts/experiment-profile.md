@@ -37,7 +37,7 @@ join that cleanup record to the collection's actual job ID. Zero task exit is
 not an inference verdict; only the collector determines the result.
 The batch does not close the journal while its allocation remains active;
 external terminal-state reconciliation remains required. Remote staging,
-allocation scratch/capacity integration, distributed/negative runner and actual
+negative runner and actual
 submission remain incomplete; this private entry is not release qualification.
 
 The normal two-node case now uses two tasks in the same srun step. The batch
@@ -57,8 +57,32 @@ node receipts and collection candidate to that argument. The actual profile's
 walltime is 900 seconds: its four permission/request windows plus stage/start/
 cleanup require at least 630 seconds, so the old 600-second setting could never
 satisfy the complete owner budget. Schedule and request deadlines are unchanged.
-Negative-dependency still fails as NEGATIVE_RUNNER_NOT_WIRED. Remote staging,
-scratch/capacity and allocation-terminal reconciliation remain prerequisites.
+Negative-dependency still fails as NEGATIVE_RUNNER_NOT_WIRED. Remote staging
+and allocation-terminal reconciliation remain prerequisites.
+
+## Allocated storage ownership (2026-09-07)
+
+The 25-file frozen harness includes `runtime/yolo_storage.py`. After actual
+Slurm identity capture, each normal GPU rank chooses `SLURM_TMPDIR` when set,
+otherwise the profile scratch root (`/tmp` in the current profile). Reject
+symlinked directories and unsupported/network filesystem types. Create one
+private run/rank directory, exercise a 4096-byte fsync and Unix socket bind,
+and copy the complete SIF into it while checking exact size and SHA-256. Native
+execution uses that copy and a node-local NFD directory. Copy and issuer share
+the original staging deadline; neither grants a fresh full window afterward.
+
+Measure available blocks/inodes for scratch and durable output before staging.
+Repo startup receives measured available bytes, never `peakBytes + marginBytes`
+as fabricated capacity. These observations are not quota or space reservations
+(`quotaVerified=false`); actual T012 environment qualification remains required.
+
+Keep start/final `storage-rankN*.json` receipts under the durable run root. Clean
+only owned scratch after successful workload/child cleanup. On workload failure,
+retain scratch because an unreaped process may still map its image. GPU collection
+and retained reanalysis require CLEANED receipts bound to run/candidate/job/rank,
+matching staged SIF digests and distinct two-node hostnames. Staging/cleanup failure
+cannot qualify a run, even if a collection handoff was already written. Local
+small-file tests qualify this storage owner only, not a real SIF or GPU allocation.
 
 **Status**: T004 partial — schema、只读 `check`、确定性运行预览和提交记录组件已实现；
 完整五命令、合格不可变 bundle、实际 enabled profile 和生产提交接线尚未完成。

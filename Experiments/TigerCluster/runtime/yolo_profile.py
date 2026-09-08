@@ -436,7 +436,7 @@ def resolve_provision_inputs(path: Path, *, plan: dict, runtime_candidate_digest
             "package": str(package_manifest.parent),
             "runtimeProfile": {"apptainer": profile["runtime"]["apptainer"],
                                "apptainerVersion": profile["runtime"]["apptainerVersion"],
-                               "sif": str(sif), "sifSha256": image["sha256"][7:]}}
+                               "sif": str(sif), "sifSha256": image["sha256"][7:], "sifBytes": image['bytes']}}
 
 
 def resolve_run_plan(path: Path, *, stage: str, case: str, run_id: str, output: Path) -> dict:
