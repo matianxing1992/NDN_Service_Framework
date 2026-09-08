@@ -147,11 +147,11 @@ sudo ./install_ndnsf_stack.sh --force-dependencies
 sudo ./waf install
 ```
 
-对于 8 GB 开发 VM，应保留 4 GB swap 作为防 OOM 保险（把原有 2 GB swap
-增加到 4 GB），日常编译使用 `./waf build -j2`。大型依赖编译或高内存链接阶段
-如果仍然内存不足，应降为 `./waf build -j1`；不建议在该 VM 配置下使用默认的
-`-j4` 并发。完整安装脚本目前通过 `nproc` 决定并发数，可用
-`sudo taskset -c 0,1 ./install_ndnsf_stack.sh` 将其限制为两个并发任务。
+当前开发机为 6 个逻辑 CPU、12 GB RAM，日常原生构建使用 `./waf build -j4`。
+同一 Waf 树只运行一个构建进程，也不要叠加独立的原生依赖构建。观察可用内存和
+`vmstat 1`；只有出现持续换页或桌面卡顿时，当前调用安全收尾或停止，下一次才降为
+`-j2`。这是本机执行策略，不是已经测得的加速保证；其他主机和容器 builder 需单独
+核对资源。
 
 如果手动安装，并且需要 Python API，请在 C++ 编译后安装这些 Python 包：
 
