@@ -1,5 +1,14 @@
 # Failure Log and Evidence Index
 
+## 2026-09-08 — Design diagram width
+
+后续 R3 版面已通过，API 门检测两份并发修改的 Tiger supporting docs 与快照
+不一致；按现有规则重采样并重建，未放宽源码漂移检查。原始 run 同见下列图解证据。
+
+新增 DI 类图两侧弯曲返回箭头扩大 TikZ 边界，双 PDF 构建成功但版面门发现
+overfull 70.85669pt 后退出 1。改为页宽内折线路径；原始构建和后续检查见
+[diagram evidence](../specs/182-native-di-python-bindings/evidence/design-diagrams-20260908.md)。
+
 ## 2026-09-08 — Spec182 native Merge sealing fixture
 
 R1-B3 incremental build 29.838s PASS，67/68 cases PASS。新 mixed-role fixture 已完成

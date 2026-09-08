@@ -17,6 +17,7 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 
 | Unit / Details | Status | Depends | Evidence / Remaining | Updated |
 | --- | --- | --- | --- | --- |
+| [D-DESIGN-DIAGRAMS Visual Guide](evidence/design-diagrams-20260908.md) | DONE | User diagram request | 两侧各 9 个矢量视图；PDF 91/96 页，版面/目录/字体、API、460/350 文件还原、5 工具回归与视觉检查 PASS；不关闭产品任务 | 2026-09-08 |
 | [D-LAYERED-SIF Layered Runtime Delivery](contracts/layered-runtime-delivery.md) | DONE | User architecture request | 方案已同步 FR-014/Delivery/T017/Tiger/packaging，定向链接、diff 与 design validator PASS；仅设计完成，部署工具 PLANNED | 2026-09-08 |
 | [R1-B3 Native Merge Publication](evidence/r1-b3-native-merge-20260908.md) | DONE | R1-B2; existing shared role contract | NM-1/NM-2 batch only：r3 incremental build 与 68 C++ cases/800 assertions PASS；真实 adapter/requester 与 parent gates unchanged | 2026-09-08 |
 | [R1-B2 Candidate Role Semantics](evidence/r1-b2-role-semantics-20260908.md) | DONE | T002-A; existing candidate contract | CR-1/CR-2 batch only：官方静态门与 C++ 26 cases/546 assertions PASS；native Merge publication remains open，T003-C 不变 | 2026-09-08 |

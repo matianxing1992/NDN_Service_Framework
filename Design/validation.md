@@ -1,5 +1,13 @@
 # 文档验证记录
 
+## R3 Diagram Supplement
+
+两份 PDF 各新增 G1--G9：当前 91 页/59 章，目标 96 页/64 章。图解页分别为
+83--91 与 88--96，TikZ 可编辑矢量图，当前与目标 G7 独立。全部新增图页经过视觉检查；
+DI 返回连线超宽及 result/getManifest 方法标注已修正。构建、字体、页码、API、源码
+身份与失败边界的最终证据见 [diagram validation](../specs/182-native-di-python-bindings/evidence/design-diagrams-20260908.md)。
+不把图解或声明参考刷新当成全部函数语义审查或产品验收。
+
 ## R3 Chapter Revision
 
 PASS（文档单元）。[完整证据](../specs/182-native-di-python-bindings/evidence/design-r3-20260908.md)

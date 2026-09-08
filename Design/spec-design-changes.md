@@ -14,6 +14,14 @@
 
 ## 索引
 
+## D-005：四模块图解（2026-09-08）
+
+- 工作单元 D-DESIGN-DIAGRAMS；用户授权补充模块图、类图、时序/状态图。
+- 新增图解章节与 G1--G9；API/实现行为无新增，属于现有设计的图形说明。
+- 当前 G7 对照 NativeInferenceClient::dispatchOperation 的未就绪终点；目标 G7 仅表达 TG-02/TG-03，PLANNED，不声明完整原生链已实现。
+- 当前源码身份与 API 清单同步，目标快照保持冻结；共享对象图核对两侧关系。
+- 文档与渲染证据见 [diagram evidence](../specs/182-native-di-python-bindings/evidence/design-diagrams-20260908.md)；状态以该记录为准，不关闭 Spec182 产品任务。
+
 ## D-004：逐章修订与关键 API 行为（2026-09-08）
 
 - 工作单元 D-DESIGN-R3；依据用户授权审计并修正 Design。

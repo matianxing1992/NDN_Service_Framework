@@ -1,0 +1,26 @@
+\clearpage
+\subsection{G6：Core 普通调用的主要时序}
+\begin{center}
+\begin{tikzpicture}[font=\small]
+\node (a) at (0,0) {调用应用};
+\node (u) at (4,0) {ServiceUser};
+\node (p) at (9,0) {ServiceProvider};
+\node (h) at (13,0) {处理器};
+\foreach \x in {0,4,9,13} \draw[dlife] (\x,-.4)--(\x,-9);
+\draw[dcall] (0,-1)--node[dlabel,above]{提交请求}(4,-1);
+\draw[dcall] (4,-2)--node[dlabel,above]{Request：发现}(9,-2);
+\draw[dcall] (9,-3)--node[dlabel,above]{ACK：候选与 token}(4,-3);
+\node[dlabel] at (4,-3.8) {ACK 窗口结束；选择候选};
+\draw[dcall] (4,-4.6)--node[dlabel,above]{Selection：绑定被选者}(9,-4.6);
+\node[dlabel] at (9,-5.4) {校验授权及请求绑定};
+\draw[dcall] (9,-6.2)--node[dlabel,above]{通过后执行}(13,-6.2);
+\draw[dcall] (13,-7)--node[dlabel,above]{业务结果}(9,-7);
+\draw[dcall] (9,-7.8)--node[dlabel,above]{Response}(4,-7.8);
+\draw[dcall] (4,-8.6)--node[dlabel,above]{验证后通知}(0,-8.6);
+\end{tikzpicture}
+\end{center}
+\diagramnote{竖线是逻辑参与者，不是线程；横线概括协议/回调，不逐个展开 Interest、Data、
+签名与密钥获取。图只画成功主路径：无候选、授权失败、选择过期和执行错误须在对应阶段
+结束或拒绝，不能跳到成功回调。Controller 提供授权权威，不假定每次请求同步经过 Controller。}
+\callout{范围}{Targeted 调用有单独的受保护路径，不能把本图删除 ACK/Selection 后当成其完整契约。
+Core 调用完成也不自动证明 UAV mission、Repo 副本或 DI 会话已完成。}

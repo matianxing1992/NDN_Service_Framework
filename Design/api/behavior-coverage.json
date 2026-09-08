@@ -562,13 +562,33 @@
       ]
     },
     {
+      "api_id": "API-80771b0510b2",
+      "file": "NDNSF-DistributedInference/cpp/adapters/qwen/NativeQwenPlanner.hpp",
+      "name": "ndnsf::di::qwen::NativeQwenLayerSplit::inspectGraph",
+      "status": "SIGNATURE_ONLY",
+      "contracts": [],
+      "declaration_lines": [
+        36
+      ]
+    },
+    {
+      "api_id": "API-4e1e8ac4cf33",
+      "file": "NDNSF-DistributedInference/cpp/adapters/qwen/NativeQwenPlanner.hpp",
+      "name": "ndnsf::di::qwen::NativeQwenLayerSplit::enumerateFromMetadata",
+      "status": "SIGNATURE_ONLY",
+      "contracts": [],
+      "declaration_lines": [
+        38
+      ]
+    },
+    {
       "api_id": "API-e4ac032fe39f",
       "file": "NDNSF-DistributedInference/cpp/adapters/qwen/NativeQwenPlanner.hpp",
       "name": "ndnsf::di::qwen::NativeQwenLayerSplit::enumerate",
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        34
+        40
       ]
     },
     {
@@ -1148,7 +1168,17 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        29
+        37
+      ]
+    },
+    {
+      "api_id": "API-5c9e13af2388",
+      "file": "NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloPlanner.hpp",
+      "name": "ndnsf::di::yolo::NativeYoloComponentSplit::fromOnnxCatalog",
+      "status": "SIGNATURE_ONLY",
+      "contracts": [],
+      "declaration_lines": [
+        42
       ]
     },
     {
@@ -1158,7 +1188,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        32
+        47
       ]
     },
     {
@@ -1168,7 +1198,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        33
+        48
       ]
     },
     {

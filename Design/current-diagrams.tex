@@ -1,0 +1,18 @@
+\clearpage
+\section{图解：四模块关系、对象与关键流程}
+\label{sec:current-diagrams}
+\lead{CURRENT · 箭头说明关系，正文与 API 契约说明完整行为}
+本章对照当前源码快照，图中省略非关键字段和 helper。实线带箭头表示明确标注的持有或流程，
+虚线表示调用、协议消息或目标步骤，不能仅凭连线推导继承、线程安全或远端成功。
+模块图不是部署拓扑；对象图不替代精确声明参考。各图源码入口见
+\code{Design/diagrams/README.md}。DI 原生请求链的缺口在图 G7 显式截断。
+\input{diagram-style.tex}
+\input{diagrams/modules.tex}
+\input{diagrams/core-classes.tex}
+\input{diagrams/di-classes.tex}
+\input{diagrams/repo-classes.tex}
+\input{diagrams/uav-classes.tex}
+\input{diagrams/core-sequence.tex}
+\input{diagrams/di-current-flow.tex}
+\input{diagrams/repo-sequence.tex}
+\input{diagrams/uav-sequence.tex}

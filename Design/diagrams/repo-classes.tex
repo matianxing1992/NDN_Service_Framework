@@ -1,0 +1,23 @@
+\clearpage
+\subsection{G4：Repo 本地存储与服务适配}
+\begin{center}
+\begin{tikzpicture}
+\node[dbox] (client) at (0,0) {RepoClient\\静态 put / get 等 helper};
+\node[dbox] (node) at (6,0) {RepoNode\\core；存储服务适配};
+\node[dbox] (core) at (6,-2.6) {RepoCore\\put / get / getManifest\\本地存储门面};
+\node[dbox] (store) at (6,-5.2) {RepoStoreBackend\\持久存储接口};
+\node[dbox] (net) at (0,-3.5) {ServiceProvider 或\\LocalServiceRegistry\\调用接入};
+\draw[dcall] (client)--node[dlabel,above]{传入 RepoNode 引用}(node);
+\draw[down] (node)--node[dlabel,right]{值成员 m\_core}(core);
+\draw[down] (core)--node[dlabel,right]{shared\_ptr}(store);
+\draw[dcall] (node)--node[dlabel,above,sloped]{注册处理器}(net);
+\end{tikzpicture}
+\end{center}
+\diagramnote{RepoClient 的直接 helper 不是拥有一个 RepoNode 的长期会话对象。
+RepoNode 的值成员 RepoCore 随节点销毁；底层 store 共享持有，其最后一个持有者决定释放。
+服务注册路径和本地 helper 是不同入口，不强制每次本地 put 都经过 NDN。}
+\callout{不要混为一层}{大制品的 PayloadStore/MetadataStore 与普通 RepoStoreBackend
+是不同职责，不在本图中伪造继承关系。Python 制品会话、目录和副本编排也不能由 C++ helper
+类名推断为同一套完整网络实现。}
+\diagramnote{源码：\code{NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp}、
+\code{RepoNode.hpp}、\code{RepoCore.hpp}。对应 Repo 架构、持久化与 AC-10--AC-13。}

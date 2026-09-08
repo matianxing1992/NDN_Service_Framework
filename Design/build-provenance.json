@@ -1,8 +1,8 @@
 {
   "inputs": {
-    "api/behavior-coverage.json": "60b9bbc2b7b392bade70fb5471d04449f0c7deef0f2fbc4ef59a529e18ba2780",
+    "api/behavior-coverage.json": "7d34fca173d5e6eaa0722d7e4f7143f92f2a065ef1897caa7605f495d4f37067",
     "api/contract-map.json": "68d3d16bdf8c64b38c7902ee24583b4e23fe82dc922e5baa2463f44fb43f8cfe",
-    "api/inventory.json": "21e5ed7c9baa044c9a1defeca65fb28ff6dd58eee7a165267f13a188316bec3c",
+    "api/inventory.json": "0fd809304865dba5bea73a5f9b21c39bd2f8385fdcd7c631ad3a7a84a1273566",
     "api/python-bindings.json": "99f71238e8e7f8dbb447e775c509e2fbc5b9e0c516a821651b24d35f34002091",
     "api/target-contract-map.json": "68d3d16bdf8c64b38c7902ee24583b4e23fe82dc922e5baa2463f44fb43f8cfe",
     "api/target-inventory.json": "35d39de622ae9c5f81ded338c70000f2f0f4afef1973812cd1de2f4d568c286d",
@@ -12,13 +12,25 @@
     "build.py": "1276ead3b32ac726ab9b732cb4b5b1225fbfa72502b473bd5fccdb6d798efd74",
     "current-api.tex": "89ba8deeef15c01e57bb5adcb31608d138d133f08adb3fb349a71fbc1fac50d1",
     "current-content.tex": "a5ab1cc5150323ee0d68588514989f148649c6ce2aa96f3d6910b99ea4bd7044",
-    "current-design.tex": "6799a2bd716c65d080bea58119f4bcc335f1a23df2fe43a667f650a6494c0fe1",
+    "current-design.tex": "b60edc36c31d9b0dbc826aa365840eb2dcaa7c6e1c102f87a1aa0829dbc4c37c",
+    "current-diagrams.tex": "dbc0471bba57b079e8cf603b43f636e56e8c871ac12a099ca61b37bcd26b0439",
     "design_state.py": "70200e2f6b8fdf5557b83d38b13c2f03e3a9fab09d31d23e668515e56d116cd9",
+    "diagram-style.tex": "67cf4700b48270728a84daa590923ef9b63a9d40574fa7f60645e6320c59d19a",
+    "diagrams/core-classes.tex": "a5e94708a5cbaf638bee0d36b3054999017ab8fb7b07541ca2e6c8d56bc8d6a3",
+    "diagrams/core-sequence.tex": "d0bb9da2f734aabec203bfe0d9f8dcfc79651eb8ad74cfa05e0fd81c2180e68d",
+    "diagrams/di-classes.tex": "65cf9ee00e259b341fffd208e111d735cb77f606af32918439ba892f0316f614",
+    "diagrams/di-current-flow.tex": "83ce06d6308f305395ad9de0ff6abf795f874908745a0b6b31640ac0a8b6351f",
+    "diagrams/di-target-flow.tex": "2dc85c98d933ef2b3580cdfd1143f103fb1c0e797a066667105931e534a29271",
+    "diagrams/modules.tex": "310bf4ff26a30795b66f2db6411c2a708402e32438c459e0336b10e200f6ca63",
+    "diagrams/repo-classes.tex": "0e9d894c328b5fa706952fdf8295e0eb3ed3c3a44381458c8aea198772ddf724",
+    "diagrams/repo-sequence.tex": "89c515d878fdea5badebbd23eb26a50860962fddd680939a842a54b77066c96e",
+    "diagrams/uav-classes.tex": "e9dbf0a635217fdc0a62298265bb2157537d69f03c11393dc5186c2b7bdacc94",
+    "diagrams/uav-sequence.tex": "1e1bf5dfece7c547f3d2c5ffb29102ff1565a9f6f09a68cd71943c4aadeb0127",
     "document-contract.json": "e1ba03b8715e2b741600f0d2a77e38e68064867d474cc66871998101ba3fbbf5",
     "evidence/r0-git-verification.json": "6bdbfc42b2edde1d43d0bd61d0cc7d40ad44ceed79a3e7f6a61f9009fade9980",
     "evidence/r1-api-verification.json": "4273925070089df3c98a9229cf74653e76b2234f6b8162ed4cb4a8d35d6f906d",
     "evidence/r1-guide-verification.json": "5ddfd8d3ff031e358f708c2ea58a2047bb2752403c4baec2a63fb37a378f60e6",
-    "evidence/source-baseline-worktree.patch": "37a0de05c8708ebb3180c39fbd489f1b4a9c45a10c29bb91ae560d49e624d15c",
+    "evidence/source-baseline-worktree.patch": "3ace40ec767d3d1f46b2e7a52d547f9e26958142b1329248f9f9f363d9725c97",
     "evidence/target-source-baseline-worktree.patch": "f48a8c1a1b81be4e0cb7d5c4c0c7fd6d0da20d881728b1785fdc12e4ea7b53aa",
     "extract-cpp-api.cjs": "5ddfa8bc0a0be8b0927354ce74001fcd7cad14dc264f528c0628b938d210efa3",
     "extract-python-bindings.cjs": "721479213109d089ea21e14878e79e01ef855a614fa0661caa62028214cc2c8d",
@@ -27,12 +39,13 @@
     "refresh-snapshot.py": "fafa7334726ff319f2d8f8b17886adf62abc80adc49456460c1cdbb58f654d94",
     "render-api-contracts.py": "5da0adf44fb5287abe2fdd00165f8a98de2d2b879d76c60331779f14b49d1b09",
     "render-api-reference.py": "f36de2c9447300e0f0d3d9ad6bfbeb36f0324e4b7124dc42770d2cafeea0cfd4",
-    "snapshot.tex": "c75e88f46b084ecc04c8b59aea52b22ebb707cead283afdeb3e276f376cdbdb4",
-    "source-baseline.json": "2e044c80ab844ccb04d65f443b06cb6a3a4057136b8481a5bdf3cc800426b161",
+    "snapshot.tex": "07acefa348ce1f0bf8a309a7af560f4de4cd40f43cac990c1ea53368482befec",
+    "source-baseline.json": "632ceb5983d7eb7f9514997a1ff77a0e2a07bceadb81bc356272733dfdd1cfa4",
     "target-api-contracts.json": "c5536a15a54ff8b4db56bf056d61084e4aaef18c8937dd147d23958c3eb305bc",
     "target-api.tex": "3d8752993880695a1aaed5da642024459fbe142a7d6b1fa54028fb3e921f0cad",
     "target-content.tex": "09ea5e0b5a2fba62121997c9a6ee5dbdef4782da549b1b962cc5c86533b61798",
-    "target-design.tex": "a0529d55624c81e58af1edbac6348722e39b52c5c6822c5abebe47bf6641cd61",
+    "target-design.tex": "46ace3e38f6ff74a09732a7b0867c228da728531060402532b1fed76d606a79a",
+    "target-diagrams.tex": "3b1548d8d9837fa0883c099cad74840ae2be0cfa146a5226e75c2687196e746e",
     "target-roadmap.tex": "00e50add0e969c781d4897e31b7b81eb27dfc6b95d7908b3a4a39552bc42f11b",
     "target-snapshot.tex": "929101730a26eeaa5ad93d6d2ce595b866038f5c08db680b40ab9daa5ea1fc09",
     "target-source-baseline.json": "03b7338c553a31d300d8b4574f362b22eef0bb52cfe55fed0db7e612934486c7",
@@ -42,8 +55,8 @@
     "verify.py": "5468712c08d32dce91aaa72b0e6c3eddf5ef0603daa0832826f752c6422232da"
   },
   "pdfs": {
-    "current-design.pdf": "752774a39fc7d5e1581c27e116ddf6d0dfb18e5e380cd251fa983ab4568ae473",
-    "target-design.pdf": "13f2e04abfe9d28794e9bf761113e50df8d7398327ec016a4072a0c81d8ac095"
+    "current-design.pdf": "79fe7fcb01b7a8884b28eace74a2db90731ccc009141a5477a9f66ef09c1131b",
+    "target-design.pdf": "37a3f235c70f7e37dc8118dbabeb6d7e13581941fb031722944109300a3ffcbf"
   },
-  "run": ".codex-tmp/design-pdf-20260908T060641412515Z"
+  "run": ".codex-tmp/design-pdf-20260908T075110290934Z"
 }

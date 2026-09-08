@@ -1,0 +1,17 @@
+\subsection{G1：模块依赖与领域边界}
+\begin{center}
+\begin{tikzpicture}
+\node[dbox] (u) at (0,0) {NDNSF-UAV\\飞控、巡逻、视频与识别};
+\node[dbox] (d) at (5,0) {NDNSF-DI\\模型、拆分、放置与执行};
+\node[dbox] (r) at (10,0) {NDNSF-Repo\\对象、制品与目录};
+\node[dwide] (c) at (5,-3) {NDNSF Core\\ServiceUser / ServiceProvider / ServiceController\\通用调用、协作、授权、对象与流传输};
+\node[dwide] (n) at (5,-5.3) {NDN 与公共依赖\\ndn-cxx / NFD / ndn-svs / NAC-ABE};
+\draw[dcall] (u)--node[dlabel,left]{服务调用}(u|-c.north);
+\draw[dcall] (d)--node[dlabel,right]{通用协议}(c);
+\draw[dcall] (r)--node[dlabel,right]{网络服务}(r|-c.north);
+\draw[dcall] (c)--node[dlabel,right]{网络与密码能力}(n);
+\end{tikzpicture}
+\end{center}
+\diagramnote{应用间关系：UAV 使用 Repo 保存录像；DI 使用 Repo 发布或读取制品。这两类依赖是应用编排，不要求 Core 理解视频帧、模型图或目录业务语义。UAV 的检测服务也不能直接等同于已接通完整原生 DI 请求链。}
+\callout{阅读范围}{箭头只表示依赖方向，不表示每个组件都是独立进程，也不表示所有部署都必须启动 Repo。RepoCore 的本地存储操作不依赖一次 Core 网络调用。}
+\diagramnote{正文入口：系统组成与职责边界；Repo 架构；DI 应用入口；UAV 服务容器。}
