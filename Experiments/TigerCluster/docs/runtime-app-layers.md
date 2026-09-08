@@ -13,7 +13,17 @@ Spec183 的旧“九个原生产物全部打入完整应用 SIF”是迁移前�
 编译应用，以 base SHA、构建入口和编译参数隔离缓存，基础源码变化则拒绝复用。
 外部输出包含应用二进制、Python 源码和显式 base 绑定的 application manifest；
 `BUILT_APPLICATION_CANDIDATE` 不代表 ABI/import、MiniNDN 或 Tiger 资格通过。
-正式 launcher、独立 app 清单验证和完整组合验收仍需完成。
+正式 launcher 的显式分层挂载、独立 app 清单和运输闭包已接入；正式资格回执
+迁移和完整组合验收仍需完成。打包文件遗漏或权限修正可使用
+`build-external-yolo.py --reuse-application <已验证应用目录>`，但必须保持同一
+source seal、source revision、base SHA 和编译参数；保留原编译器构建身份，
+重新冻结应用清单，不执行编译。源码变化不能使用这个快捷入口。
+
+MiniNDN 在本机系统 Python 环境中编排网络 namespace，再通过 Apptainer
+启动 NFD 和应用子进程。不要因容器没有 Mininet 而重建基础镜像；本机旧
+`minindn-venv` 也不能代替已验证的系统环境。入口 `--help` 不触发延迟导入，
+必须另外检查 `NDNSF_DI_Yolo2x2_Minindn` 与 `NDNSF_NewAPI_Minindn_Perf` 的
+真实加载。外置包包含这些封装源码，实际挂载/命令仍须按分层方案接线。
 
 [C++ NDN 诊断](ndn-smoke.md) 的 Tiger 作业 209981 已验证：同一历史 SIF 加
 外部只读二进制可在两节点实际通信。它支持这个部署方向，但未验证 DI/UAV 的

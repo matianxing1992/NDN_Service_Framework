@@ -3074,3 +3074,14 @@ mutating its runtime document. Final inventory suite:11 passed, retained in
 layered-transport-components-r3.xml. Native --help is not a universal smoke
 contract: Provider rejects it and Controller starts NFD-dependent service.
 Retain those exitcodes separately from successful Python User --help.
+
+## 2026-09-08 — MiniNDN help missed lazy imports
+
+The frozen app's help command passed but its network startup lazily imports
+two omitted sealed helpers. Include both in the external package. Repackage
+from the same verified source/base/flags and existing binary bytes; no rebuild.
+The deeper import also identifies the environment boundary: base and old
+minindn-venv lack Mininet; system Python3.8 on the host imports successfully.
+Keep host MiniNDN orchestration and container application execution distinct.
+Evidence: app-repackage-r2.log, app-minindn-lazy-import.log,
+app-host-minindn-import.log; six repackage boundary checks pass.

@@ -29,6 +29,18 @@ def digest(path):
     return 'sha256:' + h.hexdigest()
 
 
+def reusable_application(root, seal, base_sha256):
+    """Reuse compiled bytes only for an identical sealed source and toolchain."""
+    root = root.resolve()
+    body = verify_application(root, manifest_sha256=digest(root/'application-manifest.json'),
+                              base_sif_sha256=base_sha256)
+    if (body['sourceSealDigest'] != seal['sealDigest']
+            or body['sourceRevision'] != seal['sourceRevision']
+            or body['buildIdentity']['flags'] != FLAGS):
+        raise ValueError('APP_REPACKAGE_SOURCE_OR_FLAGS_CHANGED')
+    return body
+
+
 def run(args):
     source, base, cache, output = (getattr(args, name).resolve()
                                   for name in ('source', 'base', 'cache', 'output'))
@@ -48,6 +60,11 @@ def run(args):
         assert source_files.get(row['path']) == row, 'APP_CHANGED_BASE_SOURCE:' + row['path']
     build_identity = {'baseSifSha256': args.base_sha256, 'flags': FLAGS,
                       'builderSha256': digest(__file__), 'targets': TARGETS}
+    reuse = getattr(args, 'reuse_application', None)
+    if reuse is not None:
+        # Preserve the original compiler provenance; this run only packages
+        # already verified binary bytes with files from the same source seal.
+        build_identity = reusable_application(reuse, seal, args.base_sha256)['buildIdentity']
     key = hashlib.sha256(json.dumps(build_identity, sort_keys=True).encode()).hexdigest()
     work = cache / key
     work.mkdir(parents=True, exist_ok=True)
@@ -88,23 +105,21 @@ def run(args):
                '--env', 'CXXFLAGS=' + FLAGS,
                '--env', 'LDFLAGS=-B/usr/bin/ -Wl,-rpath,/opt/ndnsf-di/current/lib',
                '--env', 'CPLUS_INCLUDE_PATH=/opt/ndnsf-di/current/include', str(base)]
-    subprocess.run(command + ['/opt/venv/bin/python',
-                   '/opt/ndnsf-di/current/manifest/verify-base-runtime.py', 'verify'], check=True)
-    subprocess.run(command + ['./waf', 'configure', '--out=/build', '--with-examples',
-                   '--disable-local-dependency-prefix', '--nac-abe-prefix=/opt/ndnsf-di/current',
-                   '--prefix=/opt/ndnsf-di/current', '--libdir=/opt/ndnsf-di/current/lib',
-                   '--boost-includes=/usr/include', '--boost-libs=/usr/lib/x86_64-linux-gnu'], check=True)
-    subprocess.run(command + ['./waf', '-j2', '--targets=' + ','.join(TARGETS)], check=True)
+    if reuse is None:
+        compile_application(command)
     partial = output.with_name(output.name + '.partial')
     partial.mkdir(parents=True, exist_ok=False)
     (partial / 'bin').mkdir()
+    binary_root = reuse.resolve()/'bin' if reuse is not None else build/'examples'
     for target in TARGETS:
-        shutil.copy2(build / 'examples' / target, partial / 'bin' / target)
+        shutil.copy2(binary_root / target, partial / 'bin' / target)
     for name in ('NDNSF-DistributedInference/ndnsf_distributed_inference',
                  'examples/python/NDNSF-DistributedInference/yolo_2x2'):
         shutil.copytree(repo / name, partial / 'repo' / name,
                         ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
     for name in ('Experiments/NDNSF_DI_YoloAckDriven_Minindn.py',
+                 'Experiments/NDNSF_DI_Yolo2x2_Minindn.py',
+                 'Experiments/NDNSF_NewAPI_Minindn_Perf.py',
                  'Experiments/minindn_network_resources.py', 'examples/trust-schema.conf'):
         dest = partial / 'repo' / name
         dest.parent.mkdir(parents=True, exist_ok=True)
@@ -122,7 +137,18 @@ def run(args):
     verify_application(partial, manifest_sha256=digest(partial / 'application-manifest.json'),
                        base_sif_sha256=args.base_sha256)
     partial.rename(output)
-    print(json.dumps({'status': 'BUILT', 'scope': manifest['scope'], 'bundle': str(output)}))
+    print(json.dumps({'status': 'BUILT', 'scope': manifest['scope'], 'bundle': str(output),
+                      'compiled': reuse is None}))
+
+
+def compile_application(command):
+    subprocess.run(command + ['/opt/venv/bin/python',
+                   '/opt/ndnsf-di/current/manifest/verify-base-runtime.py', 'verify'], check=True)
+    subprocess.run(command + ['./waf', 'configure', '--out=/build', '--with-examples',
+                   '--disable-local-dependency-prefix', '--nac-abe-prefix=/opt/ndnsf-di/current',
+                   '--prefix=/opt/ndnsf-di/current', '--libdir=/opt/ndnsf-di/current/lib',
+                   '--boost-includes=/usr/include', '--boost-libs=/usr/lib/x86_64-linux-gnu'], check=True)
+    subprocess.run(command + ['./waf', '-j2', '--targets=' + ','.join(TARGETS)], check=True)
 
 
 if __name__ == '__main__':
@@ -130,4 +156,6 @@ if __name__ == '__main__':
     for name in ('source', 'base', 'cache', 'output', 'apptainer'):
         parser.add_argument('--' + name, type=Path, required=True)
     parser.add_argument('--base-sha256', required=True)
+    parser.add_argument('--reuse-application', type=Path,
+                        help='Repackage verified binaries only when source seal/base/flags are unchanged')
     run(parser.parse_args())

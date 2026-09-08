@@ -60,6 +60,26 @@ checks: 11 passed (`layered-transport-components-r3.xml`). Application payloads
 are enumerated transitively and tampering rejects transport. None qualifies
 MiniNDN or the four-Provider NDNSF-DI GPU experiment.
 
+## Same-source repackaging and actual MiniNDN import boundary
+
+The runner lazily imports two helpers absent from the first app package:
+`NDNSF_DI_Yolo2x2_Minindn.py` and `NDNSF_NewAPI_Minindn_Perf.py`. They were already
+in the sealed source. The builder now includes them and supports verified
+same-source `--reuse-application` without recompiling. Actual output:
+`.cache/layered-base-20260908/app-81e330ea-r2`,159files, manifest SHA256
+`65264ff70e725e2061b56957ca3cbf60e0ad4a2384f1ae0336d891883447500b`.
+All three binary manifest rows equal the prior build. `app-repackage-r2.log`
+reports `compiled:false`. Six tests reject changes to source, revision, base,
+binary bytes or flags and verify preserved compiler provenance.
+
+Full helper import failed inside the base and the old host `minindn-venv`
+because Mininet is absent. The intended host-orchestrated path succeeds with
+system Python3.8 (`preflight/app-host-minindn-import.log`); the container supplies
+the application ABI, not the host namespace orchestrator. This confirms the
+environment choice without another image build. The generic driver's legacy
+SIF command paths and Tiger wrapper still need explicit layered wiring before
+a real scenario; this is not a MiniNDN case PASS.
+
 `runtime/application.py` now verifies the producer's application manifest before
 publication. Four component checks pass: candidate-only scope, wrong base,
 changed binary, and declared foundational-library shadowing. An initial test
