@@ -4578,16 +4578,16 @@ class RepoNodeApp:
                 manifest_obj = request.get("manifest", {})
                 replica_nodes = set(manifest_obj.get("replicaNodes", []))
                 if replica_nodes and self.repo_node not in replica_nodes:
-                    return AckDecision(False, "repo-not-selected")
+                    return AckDecision(status=False, message="repo-not-selected")
             if operation == "MANIFEST" and not has_manifest:
-                return AckDecision(False, "repo-manifest-miss")
+                return AckDecision(status=False, message="repo-manifest-miss")
             if operation in {"FETCH", "FETCH_PREPARE"} and not has_object:
-                return AckDecision(False, "repo-object-miss")
+                return AckDecision(status=False, message="repo-object-miss")
             if operation == "FETCH_PACKET_PREPARE" and not (
                     data_name and self._sqlite_has_packet(data_name)):
-                return AckDecision(False, "repo-packet-miss")
+                return AckDecision(status=False, message="repo-packet-miss")
         except Exception:
-            return AckDecision(False, "repo-bad-request")
+            return AckDecision(status=False, message="repo-bad-request")
         capability = self._capability()
         cache_status = self._cache_status()
         runtime = self._runtime_snapshot()

@@ -1,7 +1,65 @@
 # Layered local startup, 2026-09-08
 
-Status: signed preparation and corrected Controller startup executed;
+Status: signed preparation and corrected Controller/Repo registration executed;
 full four-Provider inference and formal qualification remain open.
+
+## Latest checkpoint: repacked composition, run c
+
+`layered-host-20260908c` uses base `ccdd4ac0` and app manifest `89c49f7a`
+(full identities in `base-python-repack.md`). Candidate SHA is
+`28accac6c1787847193081a66cdf41ac96abeea905a03096afd21fdeed77315f`;
+signed preparation receipt SHA is
+`0dc826dc503879b88e75b0502cef06950fc221f7c1f9468d0ace0bdf57ce56fd`.
+The unchanged frozen harness is `1227fded`. Actual preparation succeeds;
+the complete local attempt exits2 at `APP_EXIT:user-repo-readiness:2`.
+Controller catalogue publication succeeds and the prior NFD timestamp
+registration rejection is absent. Repo STATUS still times out. All nine
+owned operations are reaped and leases released without forced cleanup;
+no inference request is accepted. This is not runtime qualification.
+
+Minimal NFD+Controller+Repo+User reproduction `repo-status-multicast` uses
+that same composition and role-isolated copied homes. Requests reach Repo,
+decrypt and pass permissions; User reports `no_selection_published` and
+times out without a readiness receipt. All four processes are reaped without
+forced cleanup. Replayed requests are rejected; this alone does not establish
+the cause of the missing ACK. The earlier `repo-status-current` reduction
+omitted the group multicast strategy and is excluded as an equivalent setup.
+`repo-status-timeline` repeats the symptom and clean teardown; its trace
+configuration did not expose ACK stages, so it does not locate the fault.
+Use bounded ACK stage instrumentation before changing deadlines or Core.
+
+`repo-status-timing-r3` enables the TimelineTrace logger, control timing and
+sample rate1. Earlier probes omitted that separate logger (and initially the
+sample rate), so their absent stage messages were instrumentation gaps.
+The first ACK handler starts at1788871652.098839 and finishes at
+1788871652.100062: about1.2ms. It is then suppressed with TypeError because
+`AckDecision(False, "repo-bad-request")` puts the string into the second
+dataclass field, `payload: bytes`, instead of `message`. All five Repo negative
+ACK branches now use named fields. A real SIF binding regression first fails
+on the wrong payload, then passes `_to_native_ack` after the fix. Only the
+changed Python file is mounted for this diagnostic; the packaged SIF is not
+yet updated. The first test harness mounted a source-only package and failed
+to find its native extension; the corrected one-file mount uses the packaged
+extension. No C++ build or image repack was needed.
+
+The underlying `repo-bad-request` is a second source-proven contract mismatch:
+User logs `NDNSF_REQUEST_SCOPED_DEFAULT`; Core's
+`prepareRequestScopedRequest` clears Request payload and retains input for
+the selected Provider, while Repo `_ack` unconditionally JSON-decodes that
+payload before Selection. Fixing argument order only makes rejection
+observable; it does not restore STATUS success. Next, adapt Repo's protected
+ACK path to authenticated service/capability metadata, retain operation/input
+validation after Selection, and audit object-presence-dependent selectors.
+Do not disable request-scoped confidentiality or lengthen timeouts to bypass
+this mismatch. The timing run exits2 and reaps all four processes without
+forced cleanup. Full CPU/MiniNDN/Tiger qualification remains open.
+
+The development coordinator also had an independent pre-run audit defect:
+it treated an existing request-output directory as a file and recorded
+acceptance before validation. It now calls the production graph-reference
+and result validators before acceptance, retaining the actual output files.
+Three focused tests cover both validator failures and successful dispatch.
+The frozen harness, base and app bytes are unchanged by this coordinator fix.
 
 ## Prepared composition
 

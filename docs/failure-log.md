@@ -1,5 +1,52 @@
 # Failure Log and Evidence Index
 
+## 2026-09-08 — Repo negative ACK argument order hides protected-input mismatch
+
+The effective timing-r3 probe observes an ACK callback completing in1.2ms,
+then suppression with TypeError: native AckDecision.payload expects bytes,
+but receives 'repo-bad-request'. Five positional negative ACK constructors
+used the message as the second (payload) argument. Use named status/message.
+The real SIF binding regression fails before this fix and passes afterward.
+The first test mounted a source-only package lacking its native extension;
+corrected it to mount only orchestration.py over the packaged Python file.
+This is diagnostic source composition, not an updated qualified SIF.
+
+User runtime logs also confirm RequestScopedConfidentialityV1 default mode.
+Core clears pre-Selection Request payload, while Repo's ACK JSON decoder
+expects plaintext there. This remaining protocol integration defect requires
+capability-only protected ACK and post-Selection input validation, including
+an audit of object-presence selectors. Do not weaken confidentiality or tune
+timeouts around it. Initial stage probes omitted the TimelineTrace logger;
+enable that exact component and sample rate1 for bounded diagnostic requests.
+
+## 2026-09-08 — Repo STATUS timeout after corrected registration
+
+Layered local run c uses the verified Python-repacked base and unchanged app
+payload. Controller publication succeeds and the prior NFD registration error
+is absent, but user-repo-readiness exits2 with TimeoutError; all nine owned
+operations are reaped and no inference request is accepted. The equivalent
+four-process multicast reduction confirms request decryption/permissions at
+Repo and no Selection at User. Root cause remains unresolved at the ACK seam;
+duplicate-request replay rejections must not be mistaken for its cause.
+An initial reduction omitted multicast and was corrected; an initial timeline
+probe lacked effective ACK-stage instrumentation and cannot localize the fault.
+Retain these exclusions and inspect stage timing before changing timeouts or
+security behavior. Evidence: specs/183-tiger-yolo-reusable-experiments/evidence/
+layered-local-startup.md and the ignored controller-identity-diagnostic runs.
+
+## 2026-09-08 — Development request callback overwrote the output-directory contract
+
+Pre-run source review found that spec183_dev_provision.run_local appended an
+accepted request and called Path(request_output).write_text(...), although
+apps.yolo.run_requests passes an existing result directory. A successful model
+run would then fail with IsADirectoryError and had no semantic acceptance check.
+Use the existing graph-reference and collect_request_result owners before
+appending acceptance; preserve all retained files. Load the canonical reference
+through the production helper and take package location from the bound profile,
+removing the hard-coded fallback. Three focused checks cover normal validation,
+graph rejection, result rejection and directory preservation. This is a
+development coordinator fix; the frozen worker harness and base/app are unchanged.
+
 ## 2026-09-08 — Python repack source identity and localimage extraction
 
 The first Python-only source seal omitted --derive-ndn-svs-version. Its pinned

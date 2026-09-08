@@ -123,6 +123,23 @@ def provision(args) -> int:
     return 0
 
 
+def validate_local_request(request, output, *, reference, prepared, receipt):
+    """Validate retained request evidence without replacing its output directory."""
+    from runtime.yolo_graph_reference import read_request_reference
+    from runtime.yolo_result import collect_request_result
+    output = Path(output)
+    read_request_reference(output / 'graph-reference.json',
+        run_id=prepared['runId'], request_id=request['requestId'],
+        runtime_candidate_digest=prepared['candidateDigest'],
+        placement_candidate_digest=receipt['placementCandidateDigest'],
+        graph_digest=receipt['graphDigest'])
+    return collect_request_result(output, reference, case='local-cpu',
+        request_id=request['requestId'], attempt_id='attempt-1',
+        candidate_id=receipt['placementCandidateId'],
+        candidate_digest=receipt['placementCandidateDigest'],
+        graph_digest=receipt['graphDigest'], catalogue_digest=receipt['catalogueDigest'])
+
+
 def run_local(args) -> int:
     from runtime import yolo_operator as operator
     from runtime.yolo_operator import OperatorError, run_rank
@@ -136,6 +153,11 @@ def run_local(args) -> int:
     private = run_root / "private"
     preparation_digest = _sha256_file(public / "preparation.json")
     merged = _runtime_profile(profile, prepared, args.apptainer)
+    receipt = json.loads((public / 'preparation.json').read_text())
+    package = Path(merged['workload']['packageManifest']['path']).parent
+    reference, package, _ = operator._normal_reference(prepared, merged,
+        dict(package=package, descriptor=dict(manifestDigest=
+             merged['workload']['packageManifest']['sha256'])))
 
     homes = {role: private / role for role in plan["identities"]}
     # from_preparation requires the worker output to be plan.output/node<rank>;
@@ -150,7 +172,7 @@ def run_local(args) -> int:
                        "permission_wait_ms": args.permission_wait_ms,
                        "network_probe_seconds": args.network_probe_seconds}
     request_options = {
-        "package": _package_path(run_root),
+        "package": str(package),
         **_request_identifiers(public),
         "permission_wait_ms": args.permission_wait_ms,
         "request_deadline_ms": args.request_deadline_ms,
@@ -160,10 +182,9 @@ def run_local(args) -> int:
     accepted = []
 
     def accept(request, request_output):
+        validate_local_request(request, request_output, reference=reference,
+                               prepared=prepared, receipt=receipt)
         accepted.append(request.get("requestId"))
-        destination = Path(request_output)
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_text(json.dumps(request, sort_keys=True))
         print(json.dumps({"status": "REQUEST_ACCEPTED",
                           "requestId": request.get("requestId")}, sort_keys=True))
 
@@ -191,17 +212,6 @@ def run_local(args) -> int:
     print(json.dumps({"status": "RUN_LOCAL_DONE", "result": result,
                       "accepted": accepted}, sort_keys=True))
     return 0
-
-
-def _package_path(run_root: Path) -> str:
-    """The spec183-signed canonical package root (manifest.json parent)."""
-    candidates = [
-        _REPO_ROOT / "Experiments/TigerCluster/.cache/model/spec183-signed/canonical-package",
-    ]
-    for candidate in candidates:
-        if (candidate / "manifest.json").is_file():
-            return str(candidate)
-    raise SystemExit("spec183-signed canonical package not found")
 
 
 def _request_identifiers(public: Path) -> dict:

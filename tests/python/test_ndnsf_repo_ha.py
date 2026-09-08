@@ -62,6 +62,21 @@ class FakeRepoDataPlane:
         }
 
 
+class RepoNegativeAckBindingTest(unittest.TestCase):
+    def test_bad_request_ack_converts_through_real_native_binding(self) -> None:
+        from ndnsf.service import _to_native_ack
+
+        app = RepoNodeApp.__new__(RepoNodeApp)
+        decision = app._ack(b"invalid-json", "/NDNSF/DistributedRepo/Object/v1/STATUS")
+        self.assertFalse(decision.status)
+        self.assertEqual(decision.payload, b"")
+        self.assertEqual(decision.message, "repo-bad-request")
+        native = _to_native_ack(decision)
+        self.assertFalse(native.status)
+        self.assertFalse(native.suppress)
+        self.assertEqual(native.message, "repo-bad-request")
+
+
 class ControlDispatcherTest(unittest.TestCase):
     def test_control_metrics_can_reset_after_warmup(self) -> None:
         class FakeUser:
