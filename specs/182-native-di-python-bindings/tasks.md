@@ -84,6 +84,12 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 
 ## Current Checkpoint
 
+2026-09-08 Shared workflow/build policy documentation sync / **PASS**：共享 Spec Kit
+技能与模板沿 `91bb428f` 的批次质量门继续作为新 Spec 的统一标准；当前开发机文档示例
+已统一为默认 `-j4`，仅按实测换页/卡顿降档，历史 evidence 的 `-j2` 保持原事实。
+本轮只读 review-agent 审查无 findings，结构验证与 `git diff --check` 通过；未改产品
+任务状态，未运行产品构建或测试。见[同步记录](evidence/skill-batch-workflow-20260908.md#follow-up-documentation-sync)。
+
 2026-09-08 R4-B4 CC-1/CC-2 focused validation / **PARTIAL**：canonical JSON Unicode修复后
 9个`Spec182Conversation*` C++ cases PASS，oracle check PASS；这只关闭Wire/Journal/Coordinator
 focused边界，未关闭Provider确认或公开请求链。当前主机后续构建恢复默认`-j4`。

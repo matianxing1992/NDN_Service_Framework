@@ -63,7 +63,7 @@ empty successful export.
 ## Build and test
 
 ```bash
-./waf build --targets=unit-tests,di-native-provider -j2
+./waf build --targets=unit-tests,di-native-provider -j4
 ./build/unit-tests --catch_system_errors=no \
   --report_level=detailed --log_level=nothing
 python3 -m unittest discover -s tests/python -p 'test_*.py'
@@ -72,6 +72,11 @@ python3 Experiments/NDNSF_Run_Minindn_Quick_Checks.py
 python3 tests/python/test_ndnsf_di_deployment_readiness.py
 python3 tests/python/test_ndnsf_runtime_doctor.py
 ```
+
+On the current development host (6 logical CPUs, 12 GB RAM), native builds use
+`-j4` by default. Use `-j2` for a later invocation only after observing
+sustained swap activity or desktop stalls; the historical commands and timings
+in evidence records retain the parallelism that was actually used.
 
 The final integrated run passed 242 C++ cases/45,688 assertions, then 407 maintained
 Python tests with one environment skip after convergence, six security regressions and the

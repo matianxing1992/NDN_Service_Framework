@@ -42,3 +42,17 @@ D-SKILL-BATCH；用户授权修改 Spec Kit 技能。基线 5adc6688；只修改
 ## Next
 
 检查通过后本地 checkpoint；后续实现沿登记的逻辑批次和硬依赖执行。并发会话已开始登记 B-G1-YOLO-SEMANTIC，本单元不代审或提交其批次计划。产品任务、正式资格和历史证据均未改为完成。
+
+## Follow-up Documentation Sync
+
+2026-09-08 文档复核确认当前开发机执行政策已统一为 `-j4`：
+`AGENTS.md`、`CLAUDE.md`、`docs/build-and-test.md`、
+`docs/native-build-parallelism.md` 和 Spec182 `plan.md` 均将 `-j4` 作为默认，
+仅在观察到持续换页或桌面卡顿后对下一次构建降为 `-j2`。修正
+`docs/NDNSF-DI-deployment-candidate.md` 的当前构建示例为 `-j4`，并明确历史
+evidence 中的旧并行度和耗时保持原事实。该同步不改产品契约或资格状态。
+
+只读审查按 `/home/tianxing/.codex/skills/review-agent/SKILL.md` 执行，覆盖该文档的
+命令上下文及历史/当前边界，结果为 `No findings`。`git diff --check` 和
+`specs/182-native-di-python-bindings/checklists/validate_design.py` 均通过；未执行
+产品构建或运行测试。
