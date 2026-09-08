@@ -27,17 +27,17 @@ I/II：沿用动态 API 和现有鉴权/请求级密钥，不新建框架协议�
 | Owner/path | Existing or planned | Responsibility |
 | --- | --- | --- |
 | `Experiments/TigerCluster/runtime/baseline.py`, `identities.py` | existing; narrow extension | 公共进程/容器/身份/路由原语；保持已有 CPU v1 schema 及历史结果语义 |
-| `runtime/yolo_profile.py` | partial implementation | `tiger-yolo-v1` 字段/内容检查和确定性case/run预览；实际qualified closure与冻结bundle待接线 |
+| `runtime/yolo_profile.py` | implemented; qualification open | I/R/E、effective profile、确定性case/run与冻结bundle已接；host语义gate和版本消费缺口见T007 N1/N3 |
 | `runtime/yolo_submission.py` | partial implementation | 共享根下candidate/gate提交状态和未知job恢复；只管理记录，不执行Slurm或验证模型 |
 | `runtime/yolo_bundle.py` | integrity implemented; production bundle pending | 显式小型脚本清单冻结/验证，dispatch已调用；不含模型/私钥/宿主库，不替代源/运行资格 |
-| `runtime/yolo_worker.py`, `yolo_result.py` | planned | 每节点角色启动/结果；调用共享 runtime，收集 YOLO 专属 DAG/GPU/数值证据 |
-| `apps/yolo.py` | planned | 薄封装已有 ACK-driven YOLO User/准备接口；无模型规划/密钥新 owner |
-| `jobs/yolo/submit.py`, `run.sbatch` | partial execution wiring; runtime unqualified | 唯一五命令；normal local/single/two、共享接收端submit/query及终态已接；运输/可移植前置证据/negative仍缺，见tasks.md |
-| `profiles/yolo-two-node.json`, `schemas/tiger-yolo-v1.schema.json` | planned | 一份操作者配置及验证格式；图/模型等外部输入仅以 immutable 引用出现 |
+| `runtime/yolo_worker.py`, `yolo_result.py` | implemented; runtime unqualified | 共享生命周期、四角色和normal/negative留存DAG/GPU/数值/清理collector已接；每rank版本检查待补 |
+| `apps/yolo.py` | implemented; runtime unqualified | 复用ACK-driven User/签发/准备，per-request独立graph reference已接；不另建模型规划或密钥owner |
+| `jobs/yolo/submit.py`, `run.sbatch` | implemented; runtime unqualified | 五命令、normal local/single/two、negative双rank、SSH接收/submit/query和终态已接；真实前置资格仍缺，见tasks.md |
+| `profiles/yolo-two-node.json`, `schemas/tiger-yolo-v1.schema.json` | implemented; candidate refresh pending | 一份操作者配置及验证格式；图/模型等外部输入仅以immutable引用出现；最终source/R/E尚未资格化 |
 | `adapters/slurm-apptainer/scripts/build-local-sif.sh`, `prepare-development-handoff.py` | existing | 原构建/打包入口，不新增另一个构建器 |
 | `examples/python/NDNSF-DistributedInference/yolo_2x2/user.py`, `Experiments/NDNSF_DI_YoloAckDriven_Minindn.py` | existing | 当前实际应用/本地网络路径，适配层传参数而不复制 |
 | `NDNSF-DistributedInference`, `ndn-service-framework`, dependency repos | existing | DI 计划/执行、NDN 安全/传输、库 ABI；修复归原 owner |
-| `Experiments/TigerCluster/tests`, `docs/yolo-reusable.md` | planned additions | 可独立运行的实验测试/操作说明，不能依赖个人 skills 安装 |
+| `Experiments/TigerCluster/tests`, `docs/yolo-reusable.md` | implemented; final acceptance open | 独立实验测试/操作说明已存在；最终成功命令和交付须依真实资格证据校对 |
 
 表中省略前缀的 Tiger 路径均相对 `Experiments/TigerCluster/`。
 
@@ -69,11 +69,11 @@ Provider mount。发布方的 canonical package 与通用脚本 bundle 分离，
 
 ## Candidate And Change Invalidation
 
-运输采用[同绝对路径布局](contracts/experiment-profile.md#cross-host-transport-layout-design-fixed-transport-not-implemented)：在本机project镜像目录完成新的本地资格，随后原字节复制至Tiger同名目录。旧回执不改路径或candidate；本地同名目录不是Tiger身份证明。先补运输闭包、接收校验与失败恢复，再启用远端提交；此设计已确定，运输代码仍未完成。
+运输采用[同绝对路径布局](contracts/experiment-profile.md#cross-host-transport-layout-design-fixed-transport-not-implemented)：在本机project镜像目录完成新的本地资格，随后原字节复制至Tiger同名目录。旧回执不改路径或candidate；本地同名目录不是Tiger身份证明。运输清单、互斥锁、接收校验、SSH断点续传与唯一submit/query已接（T004.n–q）；登录节点小文件验证不等于完整候选运输或GPU资格。当前控制缺口见[生产审计N1–N3](evidence/design-code-convergence.md)，不重复实施运输。
 
 使用 [candidate contract](contracts/experiment-profile.md#candidate-identity) 的 input/runtime/experiment 三阶段身份；每次 final candidate 关联同一输入身份。构建输入清单和运行资格清单用途不同，不人工填 PASS。
 
-Spec183 外部 Python job/应用适配器可以作为 E 中的只读脚本 bundle 挂载到固定 R；须通过该 R 的实际已安装 API/import 检查。它不改变 `447f7584` 运行库归属，也不能夹带宿主 `.so`。若需修改镜像内应用或 Core/DI，则先更新 I/source lock、重新构建 R，再验证 E；不能在旧 SIF 上临时覆盖 native/runtime 文件。
+Spec183 外部 Python job/应用适配器可以作为 E 中的只读脚本 bundle 挂载到固定 R；须通过该 R 的实际已安装 API/import 检查，不能夹带宿主 `.so`。`447f7584`只保留为旧交付来源；后续User/DI/native cutpoint修复必须纳入新的I/source lock与R，不能把旧运行库身份继续称为当前候选。镜像内应用或Core/DI变化须先重seal并构建R，再验证E；不能在旧SIF上临时覆盖native/runtime文件。
 
 | Changed plane | Earliest restart | Evidence retained/reused |
 | --- | --- | --- |

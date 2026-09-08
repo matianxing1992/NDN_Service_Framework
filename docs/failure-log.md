@@ -2820,3 +2820,28 @@ identity, then the affected 191-test wiring group passed. Preserve that first lo
 Lesson: trace actual producer-to-consumer evidence and serialized representations;
 do not manufacture verdict facts, confuse failed responses with successes, or
 infer rank layouts from a single-node fixture. Evidence: t004-negative-collection.md.
+
+## 2026-09-08 — Host qualification boundary and stale audit blocked convergence
+
+T007 source re-audit found that the Spec183 host receipt validator checks retained
+file hashes but not their result semantics, returns COMPONENT_ONLY, and is still
+consumed as the builder/local host prerequisite. The existing positive fixture
+contains only case/kind records. The MiniNDN wrapper cannot yet produce the three
+registered cases or this manifest, uses fixed shared paths/unverified preparation,
+and lacks an outer process deadline. Separately, the YOLO issuer/rank path copies
+apptainerVersion without enforcing it; the legacy worker's check is not on this
+path. These are source findings, not observed forged qualification or GPU failure.
+
+Root cause: component-boundary checks and later-stage wrapper drafts were not
+reviewed together at their actual consumers. The old audit also continued to name
+already-wired graph/negative owners and future T010/T011 results as current source
+blockers. Resolution this checkpoint: correct the audit, plan and detailed progress
+table; preserve BLOCK on explicit N1–N3. Code repair remains open: one real host
+producer/semantic validator, a verified bounded three-case MiniNDN wrapper, and
+issuer/rank version enforcement. Do not change qualification tokens as a shortcut.
+
+Lesson: integrity is not result qualification; review downstream validation tools
+without requiring their future physical PASS before the source audit can close.
+Reuse existing component evidence and add only affected boundary checks. No test,
+native build, model, SIF hash/transfer or GPU campaign was repeated for this audit.
+Evidence: specs/183-tiger-yolo-reusable-experiments/evidence/design-code-convergence.md.

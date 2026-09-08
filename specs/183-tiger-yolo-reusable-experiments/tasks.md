@@ -6,8 +6,8 @@
 
 ## Detailed Execution Progress
 
-更新：2026-09-08；进度表初始审计基线 `d1f1504a`，最新增量接续 `af8022f7`，见
-[negative collector](evidence/t004-negative-collection.md)。其他客户端已在
+更新：2026-09-08；进度表初始审计基线 `d1f1504a`，当前源码复核基线 `0e22b210`，见
+[生产审计 N1–N3](evidence/design-code-convergence.md)。其他客户端已在
 `64df1581` / `5171450d` 提交 [host-unit](evidence/host-unit.md) 的构建与加载证据；
 下表记录其已声明范围，未重复运行构建，也不将它升级为正式 runtime 资格。
 下表是当前执行入口；后文 checkpoint 是历史证据，不应把旧“下一步”当作当前指令。
@@ -17,17 +17,18 @@
 
 ### T001–T007：关闭实际 GPU YOLO 执行路径
 
-T004.s 的 User、双 rank 负例调度与独立留存 collector 已接通，下一步是
-T007 对全部生产路径的收敛审查。T004.q 已连接 SSH 运输和唯一提交入口；
-旧“运输/负例未接”的历史状态不再适用。完整候选运输、SIF 与 GPU 资格仍未验收。
+T007 复核确认正常/负例/SSH 接线已存在；当前控制项为 N1 host gate 语义重算、
+N2 MiniNDN 三场景及有界准备/执行、N3 YOLO issuer/rank 的 Apptainer 版本检查。
+旧“运输/负例/certified graph 未接”的历史状态不再适用。T010/T011 实际回执是
+后续验收，不倒置为 T007 的物理前置；完整候选运输、SIF 与 GPU 资格仍未验收。
 
 | Step | Parent | Concrete outcome / path | State | Evidence / verification scope | Blocker / next action | Reuse / rerun trigger |
 | --- | --- | --- | --- | --- | --- | --- |
 | T001.a | T001 | 四库、模型、工具、资源与接口接收清点 | VERIFIED | [input-inventory](evidence/input-inventory.md)；清点验收，非运行资格 | 新 candidate 更新输入身份；缺项仍显式保留 | 未变输入复用；source/model/tool 变化重核 |
 | T002.a | T002 | `runtime/yolo_profile.py` 的 I/R/E 完整性与失效检查 | IMPLEMENTED | [integrity](evidence/t002-integrity.md)；有历史 focused 证据 | 与最终生产入口重核，不能以 helper 关闭 T002 | 只重测变化 plane 及零副作用边界 |
-| T002.b | T002 | 既有 builder 接受 Spec183 host-gate receipt、保留 Spec175 | IMPLEMENTED | 后文 T002 dispatch/preflight checkpoint；组件/命令边界证据 | T007 核实接线；T010 后才验证真实 receipt 的消费 | 不为等真实 receipt 重复 fixture suite |
+| T002.b | T002 | 既有 builder 接受 Spec183 host-gate receipt、保留 Spec175 | BLOCKED | [审计 N1](evidence/design-code-convergence.md)：现有 validator 只绑定摘要，返回 COMPONENT_ONLY 却被 builder/local 消费 | 与 T010 producer 一起补真实语义重算；不可手填资格 token 放行 | 只增加空语义/错误故障/退出清理在真实消费边界的拒绝检查 |
 | T003.a | T003 | `yolo_worker.py` 角色隔离、启动、进程组及清理 | VERIFIED | [worker](evidence/t003-worker.md)；T003 focused acceptance | 真实 workload 接线归 T004/T005 | 生命周期代码未变复用；改动时跑对应回归 |
-| T004.a | T004 | profile/schema、冻结 bundle、五命令与提交 journal | IMPLEMENTED | [profile](evidence/t004-profile.md)、[journal](evidence/t004-cli-journal.md)、后文 dispatch checkpoint | 结构和拒错已有记录；完整执行未验收 | 文档变更不重跑；字段/argv 变更做 focused 检查 |
+| T004.a | T004 | profile/schema、冻结 bundle、五命令与提交 journal | IMPLEMENTED | [profile](evidence/t004-profile.md)、[journal](evidence/t004-cli-journal.md)；[审计 N3](evidence/design-code-convergence.md)发现YOLO未检查apptainerVersion | 在issuer和每rank容器启动前有界验证冻结版本；实际版本资格仍归T011/T012 | 只测版本不符/退出/超时零workload启动，不重复模型或SIF hash |
 | T004.b | T004 | `jobs/yolo/submit.py` 的远端 staging、run 接真实 worker | IMPLEMENTED | T004.k/q/s已连接正常与负例入口；实际提交仍要求前置资格门 | T007统一审查所有有效字段/完整调用链；完整候选前置证据仍缺 | 只验证新调用边界，复用既有 worker/barrier/journal 证据 |
 | T004.c | T004 | `local` 拒绝其他 profile 冻结的 prepared run | VERIFIED | [CLI binding](evidence/t004-cli-journal.md#2026-09-07-local-prepared-profile-binding)；40 CLI passed，先于 host receipt 检查拒绝 | 绑定修复已完成；完整调用链等待T007审查 | 相同源码无需重复 CLI suite；本项不触发 SIF/GPU 验证 |
 | T004.e | T004 | v2 prepared 绑定 I/R/E；跨运行 prerequisite 重算留存证据 | IMPLEMENTED | [gate reuse](evidence/t004-gate-reuse.md)；56 项 CLI/门边界检查通过，collector double 不代表运行通过 | 运输接线见T004.q；真实先行运行证据仍缺；旧 v1 不放行 | 同内容复用留存证据；改变内容/脚本/行为拒绝复用，不启动模型重复测试 |
@@ -49,11 +50,11 @@ T007 对全部生产路径的收敛审查。T004.q 已连接 SSH 运输和唯一
 | T005.a | T005 | 真实 User/Provider 参数、权限材料、准备与 readiness | IMPLEMENTED | [public recipients](evidence/t005-public-recipients.md)、[normal owner](evidence/t005-normal-node-owner.md) | 尚未证明完整真实 YOLO request→response | 未变安全组件证据复用；变更只重测影响边界 |
 | T005.b | T005 | User post-ACK role specs→DI assembler→独立 ORT reference→发布后 MODELROOT | IMPLEMENTED | [request wiring](evidence/t005-request-reference-wiring.md)；176 组件通过，含真实小 ONNX assembler/CPU ORT；原生应用测试收集失败 | 生产调用已接；需修复 native loader 后验证真实 YOLO request，T007 仍 BLOCK | 组件证据复用；native 测试待 loader 修复后再跑，不为 identity mutation 重建模型 |
 | T005.d | T005 | 独立参考区分角色逻辑摘要与组装 ONNX 字节摘要 | VERIFIED | [reference identities](evidence/t005-reference-identities.md)；145 focused passed，CPU ONNX/组件范围 | 后续 producer 传入两个身份，并在发布后绑定实际 MODELROOT manifest；T005.b 未关闭 | 仅重跑 reference/相关 comparator，不触发 native build 或历史 suite |
-| T005.c | T005 | 新 SIF 内 Controller 写真实 publication receipt | BLOCKED | [audit G2](evidence/design-code-convergence.md)；旧 base 缺当前参数 | T007 检查源码调用契约；T011 新 SIF 执行验证 | 旧 base 不反复尝试同一不支持参数 |
+| T005.c | T005 | 新 SIF 内 Controller 写真实 publication receipt | BLOCKED | [旧 G2 处置](evidence/design-code-convergence.md)；当前host源码支持参数，旧base不支持 | T011新SIF执行验证；不是要求T011先于T007的源码阻塞 | 旧 base 不反复尝试同一不支持参数 |
 | T006.a | T006 | `yolo_result.py` 数值、角色、边、GPU、退出与负例判定 | IMPLEMENTED | [native observation](evidence/t006-native-observation.md)、[numerical reanalysis](evidence/t006-numerical-reanalysis.md) | 组件证据不能代替生产数据来源和真实运行 | 仅重测变化的 oracle/collector 行为 |
 | T006.b | T006 | collector 读取每次 User 留存的独立 graph-reference.json | IMPLEMENTED | [request wiring](evidence/t005-request-reference-wiring.md)；核验 run/request/runtime/placement/graph，缺文件拒绝共享图替代 | 仍依赖 T004.b 实际调度和完整 retained-native 验收；不以 helper 关闭父任务 | 与 T005.b 共用 176 项证据，不单独启动 GPU 采集 |
-| T007.a | T007 | 生产路径设计—代码审计报告 | VERIFIED | [design-code-convergence](evidence/design-code-convergence.md)；报告结果为 BLOCK，非 PASS | 保留原发现；实际 wiring 修复后重审 | 纯排版不触发全套验证 |
-| T007.b | T007 | T002/T004/T005/T006 生产接线收敛为 PASS | BLOCKED | 同上；已定位 certified graph 与 launcher 缺口 | 先关闭源码语义缺口；T010/T011 runtime receipts 留在后续验收，不倒置依赖 | 按变更范围重审，未 PASS 不开展正式 T008+ 验收 |
+| T007.a | T007 | 生产路径设计—代码审计报告 | VERIFIED | [2026-09-08复核](evidence/design-code-convergence.md)：旧G1/G4源码接线已修，N1–N3为当前HIGH；报告BLOCK | 修复三个实际边界，保留旧审计为历史；本轮未跑测试/模型/构建 | 复用历史focused证据；报告更新只查结构/一致性 |
+| T007.b | T007 | T002/T004/T005/T006 生产接线收敛为 PASS | BLOCKED | 同上；host资格语义、MiniNDN wrapper、YOLO版本约束三个控制项 | 先N1/N2共享producer/validator，再N3；T010/T011物理回执留在后续 | 只重审/重测变化边界；未PASS不开展正式T008+验收 |
 
 ### T008–T017：逐级取得运行证据
 
@@ -64,8 +65,8 @@ T007 对全部生产路径的收敛审查。T004.q 已连接 SSH 运输和唯一
 | T008.c | T008 | `_ndnsf` 与 `_py_repoclient`、真实入口、ldd/readelf/hash、注册 unit | BLOCKED | [host-unit](evidence/host-unit.md) 与4ade12bf已记录树外import/ldd、unit-tests和integration-tests RC0；本轮未重跑 | T007与最终source身份仍须闭合；二进制suite通过不等于T009多进程YOLO | 复用匹配候选的测试记录；不重复已有loader或unit集合 |
 | T009.a | T009 | 多进程 CPU YOLO 正常 ACK/Selection→四角色→数值结果 | NOT_STARTED | V09；NOT_RUN | T008 后执行；bootstrap 与 inference 分开判定 | 不重跑全部历史 DI 集成 |
 | T009.b | T009 | 当前 epoch/权限拒绝、错 Selection、activation loss/tamper 与清理 | NOT_STARTED | V10；NOT_RUN | 与 T009.a 共用 fixture，逐个保留独立判定 | 只跑注册安全/故障场景 |
-| T010.a | T010 | MiniNDN 正常 CPU 图、权限拒绝、缺依赖三个注册场景 | IN_PROGRESS | 1512b203已加入`tools/spec183_minindn.py`驱动；V11 runtime仍NOT_RUN | T009 后在真实 NFD 路径运行；驱动源码不计场景验收 | 不重复历史campaign或另一端的-j2构建；消息/网络证据不能用unit替代 |
-| T010.b | T010 | 同源 host qualification manifest 绑定命令、结果与清理 | NOT_STARTED | NOT_RUN | 从 T010.a 同一次实际执行生成 receipt，供 builder 消费 | 生成清单不额外跑模型；identity 变化才失效 |
+| T010.a | T010 | MiniNDN 正常 CPU 图、权限拒绝、缺依赖三个注册场景 | BLOCKED | [审计 N2](evidence/design-code-convergence.md)：现wrapper仅Y-B，未验准备绑定/有界外层清理；V11 NOT_RUN | T007前修wrapper/source；T009后才执行三场景，不以其他Y-N故障替代缺依赖 | 仅新driver边界测试；不重复历史campaign或另一端构建 |
+| T010.b | T010 | 同源 host qualification manifest 绑定命令、结果与清理 | NOT_STARTED | [审计 N1/N2](evidence/design-code-convergence.md)；现wrapper未产生manifest；NOT_RUN | 先实现同一producer/语义validator契约，再从T010.a同次实跑生成供builder消费的回执 | 生成清单不额外跑模型；不得把COMPONENT_ONLY改token冒充PASS |
 | T011.a | T011 | development-20260907 source seal 与 definition 准备 | IMPLEMENTED | 后文 SOURCE_READY checkpoint：`2aea8a0e` / `c4f33beb`，非 SIF PASS | 后续源码改变须重 seal；旧锁不覆盖 | 纯任务表修改按输入清单判断，不无条件重建 SIF |
 | T011.b | T011 | 本机构建一个完整 SIF、九产物/DSO/两个扩展/入口闭包 | NOT_STARTED | V12；NOT_RUN | T010 receipt 后使用匹配 compute 的 Apptainer 构建 | 固定同一合格 SIF；无运行库变更不重复构建 |
 | T011.c | T011 | exact-SIF 本地 CPU YOLO 与 empty HOME/scratch | NOT_STARTED | V13；NOT_RUN | T011.b 后执行，取得 LOCAL_CPU_PASS | 容器环境新增证据，不能以 host 结果替代 |
@@ -82,7 +83,7 @@ T007 对全部生产路径的收敛审查。T004.q 已连接 SSH 运输和唯一
 
 方向审计：目标与 TigerCluster GPU YOLO 一致；原计划的 correctness/reuse 范围和
 单节点 1+1、双节点两次各 1+3 已有界，不增加模型、GPU 型号或性能比较矩阵。
-当前应先完成 **T002/T004/T005/T006 全部生产调用与有效字段复核 → T007.b PASS**，然后
+当前应先完成 **N1/N2 host资格producer/validator与MiniNDN wrapper → N3版本检查 → T007.b PASS**，然后
 **T008 → T009 → T010 → T011 → T012 → T013 → T014 → T015 → T016 → T017**。
 后文将 T008 称为“下一个实现块”的历史 checkpoint 不取消 T007 前置。
 既有构建驱动初稿和开发探测不作为正式资格；本轮未干预可能存在的构建进程。
