@@ -99,6 +99,16 @@ NativeQwenLayerSplit::enumerate(const NativeModelDescriptor& model,
   candidate.executionPlan.plannerKind = "native-qwen-layer";
   candidate.executionPlan.executionPolicy = "DATA_DRIVEN_V2";
   candidate.executionPlan.roles = m_roles;
+  candidate.nodeRoles["embedding"] = m_roles.front();
+  candidate.nodeRoles["final-norm-head"] = m_roles.back();
+  const std::vector<NativeTensorContract> stateInputs = {
+    {"attention_kv_in", model.precision, {"layers", "heads", "sequence", "head-dimension"}, std::nullopt},
+    {"recurrent_state_in", model.precision, {"layers", "hidden"}, std::nullopt},
+    {"convolution_state_in", model.precision, {"layers", "channels", "kernel"}, std::nullopt}};
+  const std::vector<NativeTensorContract> stateOutputs = {
+    {"attention_kv_out", model.precision, {"layers", "heads", "sequence", "head-dimension"}, std::nullopt},
+    {"recurrent_state_out", model.precision, {"layers", "hidden"}, std::nullopt},
+    {"convolution_state_out", model.precision, {"layers", "channels", "kernel"}, std::nullopt}};
   for (std::size_t i = 0; i + 1 < m_roles.size(); ++i) {
     NativeDependencySpec dependency;
     dependency.producers = {m_roles[i]};
@@ -118,6 +128,10 @@ NativeQwenLayerSplit::enumerate(const NativeModelDescriptor& model,
   for (std::size_t i = 0; i < m_roles.size(); ++i) {
     const auto& role = m_roles[i];
     const auto& artifact = m_artifactDigestsByRole.at(role);
+    for (std::size_t layer = m_layerRanges[i].first; layer < m_layerRanges[i].second; ++layer)
+      candidate.nodeRoles[graph.nodes[layer + 1].id] = role;
+    candidate.roleStateInputsByRole[role] = stateInputs;
+    candidate.roleStateOutputsByRole[role] = stateOutputs;
     candidate.fragmentsByRole[role] = artifact;
     candidate.artifactsByRole[role] = {artifact};
     candidate.rankArtifactDigestsByRole[role] = {artifact};

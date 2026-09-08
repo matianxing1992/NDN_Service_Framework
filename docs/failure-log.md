@@ -1,5 +1,12 @@
 # Failure Log and Evidence Index
 
+## 2026-09-07 — Spec182 node owner fixture
+
+node/state r1 新 ABI build PASS（410.204s），68/69 cases PASS；空角色负例的
+测试 helper 在分配节点时对 roles.size()==0 取模，未进入产品拒绝路径。
+保留 r1 日志，修复 helper 后独立 r2 build（21.493s）及 69 cases/972 assertions
+PASS；见 [node/state evidence](../specs/182-native-di-python-bindings/evidence/t003-node-state-contracts-20260907.md)。
+
 ## 2026-09-07 — Spec182 candidate rank fixture
 
 候选校验 r1 build PASS（41.485s），66/68 cases PASS；两个 V3 case 在共享候选

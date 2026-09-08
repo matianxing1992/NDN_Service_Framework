@@ -23,8 +23,8 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 | [T001-B Lifecycle and Capability Closure](contracts/execution-units.md#t001-b-lifecycle-and-capability-closure) | DONE | — | [closure](evidence/t001-ab-closure-20260907.md)；DOC + 双向映射核对通过；O-004 处置写入 runtime-boundaries（Rev 8）与 symbol-design（C21/Readiness）；registration generation/late ACK/Selection/共享 lease 已冻结于 lifecycle 设计；parity 按 owner 任务继续，不属本卡 | 2026-09-07 |
 | [T001-C Dispatch and Selector Freeze](contracts/execution-units.md#t001-c-dispatch-and-selector-freeze) | DONE | T001-A, T001-B | [closure](evidence/t001-c-freeze-20260907.md)；build identity/L0 命令/每卡 selector 已从实际 Waf 注册冻结到 [case-manifest](../../tests/fixtures/spec182/case-manifest.json)（23 cppSuites + 6 kexpr + 3 system，全部带 author/executeOwner）；proof/code-design/work-units Rev 8、O-002/O-004 关闭；DOC 通过 | 2026-09-07 |
 | [T002-A Installed Library Boundary](contracts/execution-units.md#t002-a-installed-library-boundary) | DONE | T001-C | [L0 evidence](evidence/t002-a-l0-20260907.md)；首次 L0 成功（r2 fresh staging）：consumer 独立编译 rc=0、运行打印 `SPEC182_INSTALLED_CONSUMER_NATIVE_DI_OK` rc=0、无 libpython、staging 无 DI `.cpp/.cc` 副本、NAC-ABE 5-symbol gate 通过；空 registry freeze 语义自修正（[failure-log](../../docs/failure-log.md) 2026-09-07） | 2026-09-07 |
-| [T003-A Qwen Split Candidates](contracts/execution-units.md#t003-a-qwen-split-candidates) | PARTIAL | T002-A | [candidate source audit](evidence/t003-yolo-tensor-edges-20260907.md)；撤回过早 DONE；fragment 保留 artifact、backend family 已修复并定向通过；完整 candidate/state/identity 仍未闭合 | 2026-09-07 |
-| [T003-B Yolo Split Candidates](contracts/execution-units.md#t003-b-yolo-split-candidates) | PARTIAL | T003-A | [tensor-edge audit](evidence/t003-yolo-tensor-edges-20260907.md)；撤回过早 DONE；真实 tensor 边/分支依赖/已知字节预算已修复，相关 67 cases/818 assertions PASS；catalog/interface/候选身份完整对照仍待完成 | 2026-09-07 |
+| [T003-A Qwen Split Candidates](contracts/execution-units.md#t003-a-qwen-split-candidates) | PARTIAL | T002-A | [node/state evidence](evidence/t003-node-state-contracts-20260907.md)；补完整节点归属及三组状态 I/O，相关 69 cases/972 assertions PASS；[此前修复](evidence/t003-yolo-tensor-edges-20260907.md) 保留；完整 descriptor/candidate identity 和装配映射仍待完成 | 2026-09-07 |
+| [T003-B Yolo Split Candidates](contracts/execution-units.md#t003-b-yolo-split-candidates) | PARTIAL | T003-A | [node/state evidence](evidence/t003-node-state-contracts-20260907.md)；保存 nodeRoles 并复用覆盖/DAG 检查，69 cases/972 assertions PASS；[真实边修复](evidence/t003-yolo-tensor-edges-20260907.md) 保留；catalog/interface/候选身份仍待完成 | 2026-09-07 |
 | [T003-C Placement and Registry](contracts/execution-units.md#t003-c-placement-and-registry) | PARTIAL | T003-A, T003-B | [V3 strategy interface](evidence/t003-v3-strategy-interface-20260907.md)；共享 [candidate validation](evidence/t003-candidate-validation-20260907.md) 补 cut/dependency/rank 工件校验，68 cases/836 assertions PASS；完整 candidate 字段/身份及主链仍待完成 | 2026-09-07 |
 | [T004-A Canonical Plan Sealing](contracts/execution-units.md#t004-a-canonical-plan-sealing) | PARTIAL | T003-C | [publication recertification](evidence/t008-publication-recertification-20260907.md)；发布后 recipe/core 与 SDK 对照、旧 exact-reuse 拒绝及相关 58 cases/710 assertions PASS；dataflow/device binding、真实 requester 主链与完整验收仍待完成 | 2026-09-07 |
 | [T005-A InProcess Authority](contracts/execution-units.md#t005-a-inprocess-authority) | PARTIAL | T004-A | [旧局部验收](evidence/t005-a-inprocess-authority-20260907.md) 6 cases PASS 保留；依赖 T004-A 因 [A8-01](evidence/t004-wire-reopened-20260907.md) 重开，修复真实 grantView/core identity 后需复核，不能维持整卡 DONE | 2026-09-07 |
@@ -57,6 +57,13 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 | [T017-A Development Handoff](contracts/execution-units.md#t017-a-development-handoff) | NOT_STARTED | T016-A | [baseline](evidence/task-progress-registry-20260907.md)；无本卡独立执行/验收记录；按依赖领取 | 2026-09-07 |
 
 ## Current Checkpoint
+
+2026-09-07 T003 node/state contracts / **PARTIAL**：补共享候选 nodeRoles 与
+role state I/O，Qwen/YOLO 同一 validator 校验完整节点/角色覆盖及无环依赖。
+r1 新 ABI -j4 build PASS（410.204s）；空角色负例 helper 除零已修复，r2 build
+PASS（21.493s），69 cases/972 assertions PASS，原始失败保留。见
+[node/state evidence](evidence/t003-node-state-contracts-20260907.md)。
+planning/canonical ONNX 节点不混用；完整 descriptor/规范摘要及装配映射仍待完成。
 
 2026-09-07 T003 candidate validation / **PARTIAL**：补共享候选的合法 cut、依赖
 tensor 集合与 rank-artifact 覆盖校验。r1 旧 V3 fixture 重复 rank artifact 的失败

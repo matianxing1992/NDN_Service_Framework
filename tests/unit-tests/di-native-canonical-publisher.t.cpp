@@ -78,6 +78,7 @@ struct Input
     candidate.splitter = {"fixture", "1", nativePlanningDigest("splitter")};
     candidate.candidateDigest = nativePlanningDigest("candidate");
     candidate.executionPlan.roles = {role.role}; candidate.tensorDegreesByRole = {{role.role, 1}};
+    for (const auto& node : model.graph.nodes) candidate.nodeRoles[node.id] = role.role;
     candidate.artifactsByRole = {{role.role, {role.artifactDigest}}};
     candidate.rankArtifactDigestsByRole = candidate.artifactsByRole;
     candidate.fragmentsByRole = {{role.role, role.artifactDigest}};

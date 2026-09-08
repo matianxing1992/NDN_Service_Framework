@@ -56,6 +56,8 @@ struct NativeTensorContract
   std::string dtype;
   std::vector<std::variant<std::int64_t, std::string>> shape;
   std::optional<std::uint64_t> estimatedBytes;
+
+  void validate() const;
 };
 
 struct NativeGraphEdge
@@ -145,6 +147,12 @@ struct NativeSplitCandidate
   std::string mergeKind;
   std::string postprocessIdentity;
   std::string candidateDigest;
+
+  // Planning node IDs, not canonical ONNX assembly indices. The adapter owns
+  // the conversion between these two graph identity spaces.
+  std::map<std::string, std::string> nodeRoles;
+  std::map<std::string, std::vector<NativeTensorContract>> roleStateInputsByRole;
+  std::map<std::string, std::vector<NativeTensorContract>> roleStateOutputsByRole;
 
   void validate(const NativeGraphSnapshot& graph) const;
 };

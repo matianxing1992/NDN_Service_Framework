@@ -122,6 +122,7 @@ NativeYoloComponentSplit::enumerate(const NativeModelDescriptor& model,
     candidate.executionPlan.plannerKind = "native-yolo-component";
     candidate.executionPlan.executionPolicy = "DATA_DRIVEN_V2";
     candidate.executionPlan.roles = spec->roles;
+    candidate.nodeRoles = ownerByNode;
     candidate.selectionPriority = spec->priority;
     candidate.inputIngressRole = spec->inputIngressRole;
     candidate.resultEgressRole = spec->resultEgressRole;

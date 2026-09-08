@@ -119,7 +119,7 @@ worker crash/cancel 等真实子进程案例也转 T016，卡内只运行纯 fra
 
 - **Parent**: T003; **Depends**: T002-A; **Reviewer**: local source review
 - **Read**: CD-002 → Symbols/Values；P/adapters/qwen/placement.py::QwenThreeStageSplitter；N/NativePlanning.hpp（由本卡新增共享声明）。
-- **Write**: N/NativePlanning.hpp; A/qwen/NativeQwenPlanner.hpp; A/qwen/NativeQwenPlanner.cpp; U/di-native-planning.t.cpp; wscript。
+- **Write**: N/NativePlanning.hpp; N/NativePlanning.cpp; A/qwen/NativeQwenPlanner.hpp; A/qwen/NativeQwenPlanner.cpp; U/di-native-planning.t.cpp; wscript。
 - **Steps**: 按冻结类型声明 strategy/registry 端口，实现 Qwen cover 和确定性候选；保持支持范围和预算，不将模型名判断放入 Core。只声明其他 adapter 端口，不返回伪结果。
 - **Verify**: CPP(Spec182QwenSplit/*)；固定小图合法 cover、边界 budget、非法 rank/图输入；expected 来自冻结旧 splitter。
 

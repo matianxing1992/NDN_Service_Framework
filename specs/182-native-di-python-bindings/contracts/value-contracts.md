@@ -45,6 +45,14 @@ Source: `NDNSF-DistributedInference/ndnsf_distributed_inference/splitter.py:211`
 
 ## V03 SplitCandidate
 
+NativeSplitCandidate.nodeRoles 保存 Python execution_plan.node_roles 的规划节点归属，
+不写入旧 runtime ExecutionPlan wire。它必须覆盖 graph 中每个节点，且其 role 值
+恰好覆盖声明角色；角色依赖必须无环。planning node ID 不等于 canonical ONNX
+node index，实际装配映射仍由 adapter owner 提供，不能用 ordinal 直接替代。
+roleStateInputsByRole/roleStateOutputsByRole 保存模型声明的 TensorContract 序列；
+两者同时为空或完整覆盖角色，每角色非空、同侧 name 唯一。Qwen 填充维护 splitter
+的 attention KV/recurrent/convolution 状态，YOLO 无状态时保留空映射。
+
 候选边界必须调用 graph.validate(model)，拒绝非法/重复 cut，并核对 dependencies
 中的 tensor 集合等于 crossPartitionTensors。rank 元数据出现时 degree/rank-artifact
 均须完整覆盖角色，rank 工件数量等于 degree、互不重复且属于对应 artifacts。

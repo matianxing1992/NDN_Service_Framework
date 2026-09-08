@@ -78,8 +78,10 @@ NativeGraphSnapshot graphFor(const NativeModelDescriptor& model)
 {
   NativeGraphSnapshot graph;
   graph.graphDigest = model.graphDigest;
-  graph.nodes = {{"node", "Identity", 0}};
-  graph.topologicalOrder = {"node"};
+  // Three independent planning nodes support the one/two/three-role binding
+  // fixtures without claiming that one node belongs to several roles.
+  graph.nodes = {{"node", "Identity", 0}, {"node1", "Identity", 1}, {"node2", "Identity", 2}};
+  graph.topologicalOrder = {"node", "node1", "node2"};
   return graph;
 }
 
@@ -135,6 +137,8 @@ NativeSplitCandidate candidateFor(const NativeInspectedModel& model,
     candidate.rankArtifactDigestsByRole[role.role] = candidate.artifactsByRole.at(role.role);
     candidate.requirementsByRole[role.role] = {{"onnxruntime"}, 1, 0, 0, 0, 1.0};
   }
+  for (std::size_t i = 0; !candidate.executionPlan.roles.empty() && i < model.graph.nodes.size(); ++i)
+    candidate.nodeRoles[model.graph.nodes[i].id] = candidate.executionPlan.roles.at(i % candidate.executionPlan.roles.size());
   return candidate;
 }
 
@@ -289,6 +293,7 @@ BOOST_AUTO_TEST_CASE(CertifiedRolesBindManifestRankArtifactAndResourceBudget)
   candidate.splitter = {"fixture", "1", digest("strategy")};
   candidate.candidateDigest = digest("candidate");
   candidate.executionPlan.roles = {"role"};
+  for (const auto& node : model.graph.nodes) candidate.nodeRoles[node.id] = "role";
   candidate.fragmentsByRole = {{"role", digest("fragment")}};
   candidate.artifactsByRole = {{"role", {digest("artifact")}}};
   candidate.tensorDegreesByRole = {{"role", 1}};
@@ -361,7 +366,7 @@ BOOST_AUTO_TEST_CASE(NativePreparationBindsAdapterAndGraphPort)
   BOOST_CHECK(input.payload == std::vector<std::uint8_t>({1, 2, 3}));
 
   const auto inspected = preparation.inspectModel(input);
-  BOOST_CHECK_EQUAL(inspected.graph.nodes.size(), 1u);
+  BOOST_CHECK_EQUAL(inspected.graph.nodes.size(), 3u);
   BOOST_CHECK_EQUAL(inspected.canonicalSourceName,
                     "/catalog/authenticated/model/42");
 

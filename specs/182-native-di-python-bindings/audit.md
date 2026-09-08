@@ -7,6 +7,14 @@
 
 ## Current Findings
 
+### Candidate Node Ownership and State 2026-09-07
+
+共享候选补 nodeRoles 与 state I/O，Qwen/YOLO 均验证全节点/全角色覆盖和依赖
+无环；Qwen 三组状态精确字段对照与非法输入检查通过。新 ABI build PASS；
+修复空角色测试 helper 后 69 cases/972 assertions PASS。完整 adapter descriptor、
+candidate 规范摘要和实际装配映射仍缺，保持 PARTIAL，见
+[node/state evidence](evidence/t003-node-state-contracts-20260907.md)。
+
 ### Shared Candidate Validation 2026-09-07
 
 补齐 graph/model、摘要格式、ingress/egress、合法 cut/dependency tensor 集合及
