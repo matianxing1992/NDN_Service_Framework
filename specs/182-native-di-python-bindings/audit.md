@@ -7,6 +7,14 @@
 
 ## Current Findings
 
+### YOLO Fragment Registration Binding 2026-09-07
+
+原生 fragment 字符串哈希遗漏注册摘要和有序节点，已改维护的规范 JSON 身份。
+同时对齐 CPU/CUDA backend、1.1 余量和无 Merge 角色时的原子候选行为。实际 Python
+splitter oracle 及相关 82 cases/1084 assertions PASS；case-manifest 覆盖全部当前
+YOLO 用例。完整 candidate identity 与 catalog/interface 仍待闭合，见
+[fragment evidence](evidence/t003-yolo-fragment-20260907.md)。
+
 ### Complete Model Descriptor Identity 2026-09-07
 
 新增完整 AdapterDescriptor 的规范 JSON/摘要，ModelDescriptor 保留 sourceRevision

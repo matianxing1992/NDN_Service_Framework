@@ -1,5 +1,11 @@
 # Failure Log and Evidence Index
 
+## 2026-09-07 — Spec182 YOLO fragment source audit
+
+原生 fragment 哈希缺注册摘要与有序节点，且 backend/安全余量/原子 Merge 与维护
+splitter 不同。现已修复，实际 Python 对照及 82 cases/1084 assertions PASS；
+完整候选身份仍未闭合。此为源码发现，见 [fragment evidence](../specs/182-native-di-python-bindings/evidence/t003-yolo-fragment-20260907.md)。
+
 ## 2026-09-07 — Spec182 descriptor build termination
 
 model-descriptor r1 configure 通过；build 进程终态 rc=143，日志停在 74/173，

@@ -1,4 +1,5 @@
 #include "NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloPlanner.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 
 #include <algorithm>
 #include <limits>
@@ -39,7 +40,7 @@ NativeYoloComponentSplit::NativeYoloComponentSplit(
           candidate.roles.size()) {
       throw std::invalid_argument("YOLO native candidate identity is invalid");
     }
-    if (!candidate.candidateDigest.empty() && !isDigest(candidate.candidateDigest)) {
+    if (!isDigest(candidate.candidateDigest)) {
       throw std::invalid_argument("YOLO native candidate digest is invalid");
     }
   }
@@ -126,7 +127,7 @@ NativeYoloComponentSplit::enumerate(const NativeModelDescriptor& model,
     candidate.selectionPriority = spec->priority;
     candidate.inputIngressRole = spec->inputIngressRole;
     candidate.resultEgressRole = spec->resultEgressRole;
-    candidate.mergeKind = spec->mergeKind;
+    candidate.mergeKind = contains(spec->roles, "Merge") ? spec->mergeKind : "";
     std::uint64_t knownBytes = 0;
     for (const auto& edge : graph.edges) {
       const auto size = edge.tensor.estimatedBytes.value_or(0);
@@ -157,20 +158,23 @@ NativeYoloComponentSplit::enumerate(const NativeModelDescriptor& model,
     }
     const auto roleBytes = std::max<std::uint64_t>(1, knownBytes / spec->roles.size());
     for (const auto& role : spec->roles) {
-      candidate.fragmentsByRole[role] = nativePlanningDigest(
-        "yolo-fragment|" + spec->candidateId + "|" + role + "|" + graph.graphDigest);
+      std::vector<std::string> roleNodes;
+      for (const auto& node : graph.topologicalOrder)
+        if (ownerByNode.at(node) == role) roleNodes.push_back(node);
+      candidate.fragmentsByRole[role] = nativePlanningDigest(nativeCanonicalJson(NativeJson{
+        {"candidate", spec->candidateDigest}, {"graph", graph.graphDigest},
+        {"role", role}, {"nodes", roleNodes}}));
       candidate.artifactsByRole[role] = {candidate.fragmentsByRole[role]};
       candidate.requirementsByRole[role] = {
-        {"onnxruntime-cpu", "onnxruntime-cuda", "onnxruntime"},
+        {"onnxruntime-cpu", "onnxruntime-cuda"},
         roleBytes, 256ULL * 1024ULL * 1024ULL,
-        256ULL * 1024ULL * 1024ULL, 64ULL * 1024ULL * 1024ULL, 1.0};
+        256ULL * 1024ULL * 1024ULL, 64ULL * 1024ULL * 1024ULL, 1.1};
       candidate.tensorDegreesByRole[role] = 1;
       candidate.rankArtifactDigestsByRole[role] = candidate.artifactsByRole.at(role);
     }
-    candidate.candidateDigest = spec->candidateDigest.empty()
-      ? nativePlanningDigest("yolo-candidate|" + spec->candidateId + "|" +
-                             model.contentDigest + "|" + graph.graphDigest)
-      : spec->candidateDigest;
+    // Registration identity is retained during migration. Full SplitCandidate
+    // canonical identity remains a separate T003 closure obligation.
+    candidate.candidateDigest = spec->candidateDigest;
     candidate.validate(graph);
     result.push_back(std::move(candidate));
   }
