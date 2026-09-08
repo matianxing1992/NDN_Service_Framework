@@ -3301,3 +3301,12 @@ libndn-service-framework.so 名称不符。回归改用依赖 pkg-config flags �
 真实库名，保存对象供链接复用；该 pkg-config 元数据问题尚未修复。
 教训：用实际 SDK 的构建参数建立最小回归，记录测试链接与正式镜像验证的
 边界；不能通过增大 ACK 超时或放宽 Provider 版本检查绕过协议缺陷。
+
+## 2026-09-08: 基础 SDK 的 pkg-config 链接名与产物不一致
+
+症状：实际 SIF 编译回归时，pkg-config libndn-service-framework 输出
+-lndnsf，链接器报 cannot find -lndnsf。根因是模板仍使用旧库名，Waf
+产物已为 libndn-service-framework.so。修复模板的 Libs 字段；前一回归
+使用真实库名已链接成功，更新后的安装元数据仍须在新 SIF 验证。
+构建器同时增加受新旧源码和原库收据约束的依赖复用，避免该 Core 修复
+再次无条件重编未变依赖。5项边界测试通过，实际构建尚未开始。

@@ -8,10 +8,13 @@ From: @BASE_SIF@
     @WHEELS@ /build-input/wheels
     @SCRIPTS@/build-base-libraries.sh /build-input/build-base-libraries.sh
     @SCRIPTS@/verify-base-runtime.py /build-input/verify-base-runtime.py
+    @SCRIPTS@/render-library-runtime.py /build-input/render-library-runtime.py
 
 %post
     set -eu
     echo '@SEAL_SHA256@  /build-input/source/source-seal.json' | sha256sum -c -
+    export NDNSF_REUSE_BASE_DEPENDENCIES=@REUSE_DEPENDENCIES@
+    export NDNSF_PARENT_SIF_SHA256=@PARENT_SIF_SHA256@
     /bin/bash /build-input/build-base-libraries.sh
 
 %environment

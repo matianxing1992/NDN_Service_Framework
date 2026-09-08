@@ -45,6 +45,14 @@ green.log、fixed-compile.log）。下一步：复用未变依赖，构建新原
 Mode 延用已记录的 active authority 失败后仓库回退。本轮是运行缺陷修复，
 不开展 ARS 统计实验设计。
 
+基础层更新准备：现有 renderer 增加显式 `--reuse-installed-dependencies`。
+构建前核对父镜像内原生收据及新旧依赖 sourceRevision、文件清单、归档
+hash；不匹配即失败。匹配时跳过 APT 和 NAC/SVS/NDNSD 构建，仍重建 Core
+及两个 Python 扩展。完成后核对 NAC/SVS/NDNSD/ndn-cxx 库字节保持原值。
+5项依赖变更/选择边界测试通过，shell语法检查通过；实际新SIF尚待构建。
+同时修复框架 pkg-config 的库名，使其与实际 libndn-service-framework.so
+一致；真正的安装后链接验证归入新基础层检查。
+
 ## Run e: input published, request-ID representation mismatch
 
 `layered-host-20260908e` uses the fixture-corrected app71aecff6 and unchanged

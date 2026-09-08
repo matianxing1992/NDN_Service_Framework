@@ -16,7 +16,7 @@ export LIBRARY_PATH=/opt/ndnsf-di/current/lib
 export PYTHONNOUSERSITE=1 DEBIAN_FRONTEND=noninteractive
 
 /opt/venv/bin/python - <<'PY'
-import hashlib, json, sysconfig
+import hashlib, json, sysconfig, os, importlib.util, subprocess
 from pathlib import Path
 root = Path('/build-input/source')
 seal = json.loads((root / 'source-seal.json').read_text())
@@ -30,6 +30,24 @@ for filename, record in [('workspace.tar', seal['archive']),
     data = (root / filename).read_bytes()
     assert len(data) == record['bytes']
     assert 'sha256:' + hashlib.sha256(data).hexdigest() == record['sha256']
+if os.environ.get('NDNSF_REUSE_BASE_DEPENDENCIES', '0') not in ('0', '1'):
+    raise ValueError('BASE_REUSE_MODE')
+if os.environ.get('NDNSF_REUSE_BASE_DEPENDENCIES') == '1':
+    manifest = Path('/opt/ndnsf-di/current/manifest')
+    spec = importlib.util.spec_from_file_location('renderer', '/build-input/render-library-runtime.py')
+    renderer = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(renderer)
+    previous = json.loads((manifest / 'base-source-seal.json').read_text())
+    renderer.validate_dependency_reuse(previous, seal)
+    subprocess.run(['/opt/venv/bin/python', str(manifest / 'verify-base-runtime.py'), 'verify'], check=True)
+    libraries = ['/opt/ndnsf-di/current/lib/' + name for name in
+                 ('libnac-abe.so', 'libndn-svs.so', 'libndnsd.so', 'libndn-cxx.so')]
+    receipt = dict(schema='spec183-base-dependency-reuse-v1',
+                   parentSifSha256=os.environ['NDNSF_PARENT_SIF_SHA256'],
+                   previousSourceSealSha256=renderer.digest(manifest / 'base-source-seal.json'),
+                   sourceSealSha256=renderer.digest(root / 'source-seal.json'),
+                   preservedLibraries={path: renderer.digest(Path(path)) for path in libraries})
+    Path('/build-input/dependency-reuse.json').write_text(json.dumps(receipt, indent=2) + '\n')
 PY
 
 # Remove inherited applications before compiling any new library consumers.
@@ -39,15 +57,18 @@ rm -rf /opt/ndnsf-di/current/manifest
 rm -f /opt/ndnsf-di/current/bin/{di-native-provider,di-native-fault-provider,App_ServiceController}
 rm -rf /opt/venv/lib/python3.10/site-packages/{ndnsf,py_repoclient,ndnsf_distributed_inference}
 rm -rf /opt/venv/lib/python3.10/site-packages/{ndnsf,py_repoclient,ndnsf_di,ndnsf_distributed_inference}-*.dist-info
+if [ "${NDNSF_REUSE_BASE_DEPENDENCIES:-0}" = 0 ]; then
 sed -i 's|http://archive.ubuntu.com|https://archive.ubuntu.com|g; s|http://security.ubuntu.com|https://security.ubuntu.com|g' /etc/apt/sources.list
 apt-get -o Acquire::Retries=3 update
 apt-get install -y --no-install-recommends build-essential cmake pkg-config libgmp-dev libssl-dev libsqlite3-dev libboost-all-dev libpcap-dev protobuf-compiler libprotobuf-dev libgtkmm-3.0-dev ca-certificates
 rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*.deb
+fi
 mkdir -p /src/{ndnsf,ndn-svs,nac-abe,ndn-sd}
 tar -xf /build-input/source/workspace.tar -C /src/ndnsf
 tar -xf /build-input/source/nacAbe.tar -C /src/nac-abe
 tar -xf /build-input/source/ndn-svs.tar -C /src/ndn-svs
 tar -xf /build-input/source/ndnSd.tar -C /src/ndn-sd
+if [ "${NDNSF_REUSE_BASE_DEPENDENCIES:-0}" = 0 ]; then
 cmake -S /src/nac-abe -B /src/nac-abe/build -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_CXX_FLAGS_RELEASE='-O1 -DNDEBUG -g0' -DHAVE_TESTS=OFF -DBUILD_EXAMPLES=OFF \
     -DCMAKE_INSTALL_PREFIX=/opt/ndnsf-di/current -DCMAKE_INSTALL_LIBDIR=lib \
@@ -61,6 +82,7 @@ for project in ndn-svs ndn-sd; do
     ./waf -j2
     ./waf install -j2
 done
+fi
 cd /src/ndnsf
 ./waf configure --runtime-libraries-only --disable-local-dependency-prefix \
     --prefix=/opt/ndnsf-di/current --libdir=/opt/ndnsf-di/current/lib \
@@ -78,5 +100,16 @@ mkdir -p /opt/ndnsf-di/current/manifest
 cp /build-input/source/source-seal.json /opt/ndnsf-di/current/manifest/base-source-seal.json
 cp /build-input/verify-base-runtime.py /opt/ndnsf-di/current/manifest/
 /opt/venv/bin/python /opt/ndnsf-di/current/manifest/verify-base-runtime.py record
+if [ "${NDNSF_REUSE_BASE_DEPENDENCIES:-0}" = 1 ]; then
+/opt/venv/bin/python - <<'PY'
+import hashlib, json
+from pathlib import Path
+receipt = json.loads(Path('/build-input/dependency-reuse.json').read_text())
+for path, expected in receipt['preservedLibraries'].items():
+    assert 'sha256:' + hashlib.sha256(Path(path).read_bytes()).hexdigest() == expected, 'BASE_REUSE_LIBRARY_CHANGED:' + path
+receipt['status'] = 'PASS'
+Path('/opt/ndnsf-di/current/manifest/base-dependency-reuse.json').write_text(json.dumps(receipt, indent=2) + '\n')
+PY
+fi
 cd /
 rm -rf /src/ndnsf /src/ndn-svs /src/nac-abe /src/ndn-sd /build-input /root/.cache/pip
