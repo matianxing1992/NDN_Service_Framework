@@ -1,7 +1,7 @@
 {
-  "revision": "R2",
+  "revision": "R3",
   "minimum_pages": 50,
   "expect_equal": false,
   "expected_target_sections": ["TG-01", "TG-02", "TG-03", "TG-04", "TG-05"],
-  "note": "R2 用户接受分步改进；目标保留独立 API 基线并增加五项 PLANNED 目标。页数不是语义覆盖证明。"
+  "note": "R3 重写关键 API 行为、补正文例子；BC 合入对应 AC；目标冻结基线独立，五项 PLANNED 目标展开。页数不是语义覆盖证明。"
 }

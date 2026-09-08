@@ -1,0 +1,62 @@
+{
+  "run": ".codex-tmp/design-pdf-20260908T060641412515Z",
+  "runtime_tests": "not run",
+  "current-design": {
+    "pages": 82,
+    "warnings": [],
+    "fonts_embedded": true,
+    "sha256": "752774a39fc7d5e1581c27e116ddf6d0dfb18e5e380cd251fa983ab4568ae473",
+    "toc_sections_verified": 58
+  },
+  "target-design": {
+    "pages": 87,
+    "warnings": [],
+    "fonts_embedded": true,
+    "sha256": "13f2e04abfe9d28794e9bf761113e50df8d7398327ec016a4072a0c81d8ac095",
+    "toc_sections_verified": 63
+  },
+  "technical_body_equal": false,
+  "api_verification": {
+    "result": "PASS",
+    "files": 295,
+    "entries": 16610,
+    "bindings": 852,
+    "functions": 5752,
+    "errors": []
+  },
+  "source_reconstruction": {
+    "result": "PASS",
+    "files_verified": 460,
+    "baseline_commit": "354a54a182228111ec3ed68c8208d8efd8424b24",
+    "patch_sha256": "37a0de05c8708ebb3180c39fbd489f1b4a9c45a10c29bb91ae560d49e624d15c"
+  },
+  "target_source_reconstruction": {
+    "result": "PASS",
+    "files_verified": 350,
+    "baseline_commit": "e9fe33994a6ca3ff81893591bd24c3fae43f933f",
+    "patch_sha256": "f48a8c1a1b81be4e0cb7d5c4c0c7fd6d0da20d881728b1785fdc12e4ea7b53aa"
+  },
+  "source_archive_verified": 460,
+  "source_drift_after_snapshot": [],
+  "snapshot_commit": "354a54a182228111ec3ed68c8208d8efd8424b24",
+  "document_tool_tests": {
+    "result": "PASS",
+    "cases": 5
+  },
+  "revision_topics": {
+    "result": "PASS",
+    "ids": 67
+  },
+  "visual_review": {
+    "current_overview_pages": 82,
+    "current_detailed_page": 70,
+    "target_roadmap_pages": [
+      83,
+      84,
+      85,
+      86,
+      87
+    ],
+    "scope": "layout overview plus detailed generation/target review; not independent reader acceptance"
+  }
+}

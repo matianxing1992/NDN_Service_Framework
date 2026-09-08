@@ -37,7 +37,13 @@ vendor、模型和构建输出；另外保留已明确登记的支撑文件。�
 快照范围不等于逐行语义审查；基线刷新必须保留未提交差异及实际资格状态。
 
 当前更新顺序：build-api-reference.py → build-behavior-coverage.py → refresh-snapshot.py；
-目标按需运行 render-api-contracts.py --target。检查 test_design_state.py、verify-api-reference.py
+仅有少量源文件变化时可给第一步加 --changed-only，路径/模块/SHA 与生成器身份均未变
+才复用记录；解析器或范围规则变化自动回到全量。发布清单前再次检查全集 SHA/文件集合，
+若并行修改导致变化则拒绝发布。增量与全量的新增/删除/签名变化等价性及扫描期间漂移
+拒绝由回归覆盖，不能以增量模式跳过后续全量一致性校验。
+目标按需运行 render-api-reference.py --target 与 render-api-contracts.py --target；
+目标可读声明由冻结清单生成，不把旧行号链接成当前源文件。verify-api-reference.py
+分别重渲染两侧 TeX、映射和八份 Markdown，以拒绝过时声明参考。检查 test_design_state.py、verify-api-reference.py
 和两侧 verify-source-baseline.py 后，build.py 构建双 PDF，verify.py 核对同一次构建。
 build-provenance.json 绑定所有 TeX/JSON/脚本/补丁输入与双 PDF；任何输入改变必须重建。
 behavior-coverage.json 为每个函数登记 SIGNATURE_ONLY 或 CONTRACT_REFERENCED；不得把后者
@@ -48,6 +54,14 @@ behavior-coverage.json 为每个函数登记 SIGNATURE_ONLY 或 CONTRACT_REFEREN
 不提交原始日志、预览图片、源码压缩包、模型、密钥和构建缓存。AGENTS.md 若是本机忽略文件，只在本机维护规则入口，可交付内容以本文件为准，不为文档任务强行改变仓库指令文件追踪策略。
 
 ## 开发者指南写法
+
+R3 起不再单独堆叠 BC 勘误章：错误在原章纠正，API 行为在对应 AC 中维护，历史审阅
+保留在 reviews/ 并记录原编号到新位置的映射。当前新增字段仅写当前契约；共享接口
+行为需核对冻结目标后才分别编辑两份 JSON，禁止生成时复制当前到目标。
+每个签名显示所属符号；行为可使用 text、两列 rows 和明确标为示意的 code 段。
+表格跨页且长代码标识允许断行。测试覆盖目标隔离、所属符号、转义、例子/表格渲染；
+PDF 门仍拒绝字体缺失、溢出和输入/PDF 身份变化。语法门无法判断“解释是否足够”，
+所以必须逐章阅读，给出一个调用、一个失败及具体源码入口，而不是只统计字数/方法数。
 
 参考 NFD Developer’s Guide 的组织方式：先解释组件与数据结构，再讲处理流程、触发回调、允许动作、状态约束和扩展方法。使用 NDNSF 实际 API 和状态机，不能将 NFD 的转发接口直接套用为 NDNSF 接口。
 每个 API 契约应使读者能定位实现、理解怎样调用或扩展，以及失败会在哪里发生；PDF 是可阅读的主线，完整声明参考是精确查询入口。

@@ -17,6 +17,7 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 
 | Unit / Details | Status | Depends | Evidence / Remaining | Updated |
 | --- | --- | --- | --- | --- |
+| [D-DESIGN-R3 Revision](evidence/design-r3-20260908.md) | PASS | User documentation request | 逐章修订、23 组关键契约、生成/KV/会话重写；双 PDF 82/87 页、5 工具回归、API/八份参考/460+350 源码还原/版面 PASS；不关闭产品任务或全量语义审计 | 2026-09-08 |
 | [D-DESIGN-CHAPTER-AUDIT Chapter Review](evidence/design-chapter-audit-20260908.md) | PASS | User document review request | 审阅完成：当前/目标 62/67 章；7 KEEP、36 EXPAND、20 REWRITE、4 CORRECT；被审文档 NEEDS_REVISION，PDF 未改写，不关闭产品任务 | 2026-09-08 |
 | [D-DESIGN-R2 Baseline and Contracts](evidence/design-r2-20260907.md) | PASS | User documentation request | 当前/目标 66/69 页；4 工具回归、API、460/350 文件还原、PDF 身份/版面 PASS；BC-01 至 BC-04 已补，TG-01 至 TG-05 PLANNED；不关闭功能任务 | 2026-09-07 |
 | [D-DESIGN-API API Developer Guide](evidence/design-api-guide-20260907.md) | PASS | User documentation request | 四模块 23 组 API 契约、295 文件声明参考及 830 绑定操作；双份 63 页 PDF/58 目录项、声明/源码快照检查 PASS；AGENTS 与 MANAGEMENT 同步；不改变功能验收 | 2026-09-07 |
@@ -67,6 +68,11 @@ r1 fresh ABI -j4 build PASS（406.080s），Qwen 额外 ingress 与 Python 不�
 与文档检查 PASS。见 [candidate evidence](evidence/t003-candidate-identity-20260908.md)。
 完整候选身份的本批检查通过，不新增 DONE；下一步关闭真实 graph adapter/catalog/interface
 与 canonical node 映射，再推进 requester 接线。
+
+2026-09-08 D-DESIGN-R3 / **PASS**：修正 grant/流/目录/UAV 门禁叙述，重写 23 组关键契约，
+第 53 章补生成状态、KV、journal。双 PDF 82/87 页，5 项工具回归、签名/可读参考、
+460/350 文件还原、目录/字体/版面与 67 个原主题追踪 PASS；并行源码变化触发旧基线拒绝后
+已重新采样。见 [R3 evidence](evidence/design-r3-20260908.md)。不改变产品任务状态。
 
 2026-09-08 T003 shared resource contract / **PARTIAL**：补五类 nullable 预算、KV、
 完整资源规范 JSON，两个 splitter 与 placement/preparation 同步；12 组维护 Python

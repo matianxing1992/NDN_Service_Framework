@@ -1,26 +1,61 @@
 \clearpage
 
+\Needspace{12\baselineskip}
 \section{API 阅读方法与覆盖边界}
 \lead{AC-01 · Core 接口契约}
 
-\subsection{如何阅读}
-先看前 35 章的组件职责，再查本部分的入口契约，最后用 api/ 下的完整声明参考核对重载、默认参数、类型和字段。API 清单是声明证据，不是运行资格。每个条目的 ID 绑定文件、符号和签名；签名改变会产生新 ID，应在 Spec 设计变更记录中关联旧、新条目。
+\subsection{阅读路径与例子的前提}
+先按前 35 章找到组件，再按 AC 编号查本节契约。每个签名上方给出所属符号，避免把两个类同名的 cancel 当成同一操作。下方的参数、状态和例子解释如何使用。例子省略证书、Face、配置和业务序列化的建立，不是可直接启动的完整程序；具体类型和重载用 API ID 到 api/ 声明参考查找。
 
-\subsection{范围}
-C++ 覆盖规范模块头文件的 public/protected 声明和数据字段；Python 覆盖规范包中公共命名的定义、带类型字段与可静态读取的导出。UAV 的容器内部接口明确标为 application-internal。宏展开、继承展开、运行时动态导出和 C++ ABI 不由此清单证明。测试 helper 不作为公开产品调用建议。
+\subsection{常用术语}
 
-\subsection{契约约定}
-签名中的 const、引用、shared\_ptr/unique\_ptr、optional、std::function 和默认值原样保留。Ms/ms 是毫秒，Ns 是纳秒；未带单位的计数不能按时间使用。空 optional、false、异常、错误回调和终端事件是不同结果，按接口说明处理。未声明的线程安全或重试保证不推断存在。
+\begin{longtable}{@{}p{43mm}p{119mm}@{}}
+\toprule
+项目 & 行为与调用含义 \\
+\midrule\endhead
+owner & 负责创建、修改和销毁某项状态的组件；不是仅持有一个指针的调用方。 \\
+ACK\_CLOSED & ACK 收集结束后冻结的候选快照。ackClosedDigest 将规划输入绑定到这一次观察；不能换成模型摘要。 \\
+proposal / plan core & proposal 是待验证的放置建议；plan core 是封存的执行内容。产生建议不等于获准执行。 \\
+projection / grant view & projection 是给特定参与者的选择信息；grant view 是授权计算需要的计划视图；两者不是任意可互换 JSON。 \\
+recipe / exact reuse & recipe 描述怎样装配实际制品。exact reuse 要求身份、角色、设备和有效期均匹配，不能只看 has\_model。 \\
+epoch / lineage & epoch 必须带所属域理解；lineage 关联生成前缀与执行轮次。Controller、Repo、attempt、stream、conversation 的计数不能直接比较。 \\
+观察状态 & SIGNATURE\_ONLY 仅有声明；CONTRACT\_REFERENCED 有人工说明引用，仍不等于全部运行行为已验收。 \\
+\bottomrule
+\end{longtable}
 
-\subsection{参考来源}
-组织方式参考 NFD Developer’s Guide 的组件、数据结构、处理管线以及 Strategy API 的触发/动作说明。本次参考的是官方维护 PDF（Revision 12 标为 TBD）；只借鉴组织方法，NDNSF 契约全部依据本项目源码。详见 references.md。
+\subsection{一次查阅示例}
+需要停止生成时，先查 AC-14 的请求句柄 cancel，再查 AC-18 的模型状态机和 Provider KV 操作。句柄终态取消可无操作，而 Qwen 状态机终态再次 cancel 会抛异常；KV release 是另一项显式资源动作。这样的差异必须由所属符号和状态契约判断，不能由动词猜测。
 
-完整声明查询：\path{api/target-inventory.json}。
+完整声明查询：\path{api/target-core-reference.md}。
 
+\Needspace{12\baselineskip}
 \section{Core API：容器与角色生命周期}
 \lead{AC-02 · Core 接口契约}
 
+\subsection{创建与所有权}
+ServiceContainer 组合进程中的角色。RuntimeConfig 的 containerIdentity 是容器身份，groupPrefix 是组命名范围，controllerPrefix 指向权限控制器，trustSchemaPath 指定信任规则。\code{addController/addUser/addProvider} 登记角色；use 系列使用外部已有对象，外部对象必须比容器的相关使用期更长。本地 addLocalService 的 RequestT/ResponseT 是 C++ 类型约定，不产生网络服务权限。
+
+\subsection{调用次序}
+
+\begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
+// 示意：roles/config/handlers 已由应用建立
+// 1. 建立身份、Face 与配置
+// 2. 登记 Controller/User/Provider 与本地服务
+// 3. 登记启动/停止 hook
+container.start();
+// 4. 应用运行 Face 事件循环，处理服务回调
+container.stop();
+// 5. 排空应用 worker 后释放借用的角色、Face 和回调资源
+\end{Verbatim}
+
+\subsection{前置条件与失败}
+受保护的注册方法调用 ensureNotStarted，启动后修改会被拒绝；空角色对象和缺失角色是本地配置错误，不是网络超时。start/stop 的 hook 不能代替应用 worker 的排空。容器本地调用不经过网络权限握手，只有已经可信的进程内调用方才可使用。扩展应把模型加载、数据库连接和飞控 worker 放在应用 hook 中，Core 容器不解释这些领域状态。
+
+\subsection{完整签名与源码定位}
+
+\Needspace{7\baselineskip}
 \textbf{API-ee68261266a4}\quad public\par
+\textbf{所属符号：}\code{ndn_service_framework::ServiceContainer::addLocalService}\par
 \begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
 template <typename RequestT, typename ResponseT, typename HandlerT>
 void
@@ -28,38 +63,82 @@ void
 \end{Verbatim}
 \textbf{源码：}\path{ndn-service-framework/ServiceContainer.hpp}，第 73 行。\par
 
+\Needspace{7\baselineskip}
 \textbf{API-04ad67003514}\quad public\par
+\textbf{所属符号：}\code{ndn_service_framework::ServiceContainer::start}\par
 \begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
 void
   start()
 \end{Verbatim}
 \textbf{源码：}\path{ndn-service-framework/ServiceContainer.hpp}，第 331 行。\par
 
+\Needspace{7\baselineskip}
 \textbf{API-cd596b18ee08}\quad public\par
+\textbf{所属符号：}\code{ndn_service_framework::ServiceContainer::stop}\par
 \begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
 void
   stop()
 \end{Verbatim}
 \textbf{源码：}\path{ndn-service-framework/ServiceContainer.hpp}，第 365 行。\par
 
-\subsection{入口与参数}
-RuntimeConfig 中 containerIdentity、groupPrefix、controllerPrefix 与 trustSchemaPath 描述进程组成。\code{addController/addUser/addProvider} 以角色名登记共享或独占对象；use 系列借用外部对象，调用者必须保证其生命周期。addLocalService 的 RequestT/ResponseT 是进程内类型契约，不能跨网络序列化后仍假定同一 C++ 类型身份。
+完整声明查询：\path{api/target-core-reference.md}。
 
-\subsection{处理流程}
-先构造 Face/身份环境，再登记角色和 helper hooks，最后 start。容器调用各角色初始化并启动生命周期 hook；stop 负责相应停机。运行服务请求通过 User/Provider，可信同进程调用通过 LocalServiceRegistry，不经网络权限握手。
-
-\subsection{状态与失败}
-启动后再改变受保护的注册集合会被 ensureNotStarted 拒绝；空角色、空对象和缺失角色分别按具体方法抛错。此类异常不是远端超时。对象容器不承诺所有外部业务线程已被取消；应用 hook 应承担自己的 worker 排空与资源回收。
-
-\subsection{扩展点}
-新增模块通过本地服务或生命周期 hook 组合，避免让容器理解模型图、航点或 Repo manifest。先核对 start/stop 的异常与重复调用分支，再设计自定义 hook 的幂等性。
-
-完整声明查询：\path{api/target-inventory.json}。
-
+\Needspace{12\baselineskip}
 \section{Core API：请求发起与 Targeted 调用}
 \lead{AC-03 · Core 接口契约}
 
+\subsection{请求标识与参数}
+普通 RequestService 的 serviceName 表示服务，requestMessage 是序列化请求，timeoutMs 是毫秒预算，strategy 默认 FirstResponding。另一组重载额外提供 ACK 窗口与候选回调。RequestServiceTargeted 额外指定 provider。返回 ndn::Name 是请求标识，后续结果经 ResponseHandler 交付；TimeoutHandler 处理超时，不是返回值的一部分。保持回调捕获资源有效，并按 User 的 Face/I/O 执行上下文调用。
+
+\subsection{最小调用示意}
+
+\begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
+// user、RequestMessage payload、onTimeout/onResponse 已建立
+auto requestId = user.RequestService(
+    ndn::Name("/example/echo"), payload, 3000, onTimeout, onResponse);
+// 保存 requestId 用于观测；此处尚未取得业务响应
+// 已知 provider 的调用使用 RequestServiceTargeted(provider, ...)
+\end{Verbatim}
+
+\subsection{事件与接受边界}
+
+\begin{longtable}{@{}p{43mm}p{119mm}@{}}
+\toprule
+项目 & 行为与调用含义 \\
+\midrule\endhead
+Request → ACK & Provider 验证发现请求并报价，ACK 说明候选愿意参与；一般 ACK 不保证已独占预留资源。 \\
+ACK → Selection & User 按候选策略选择，绑定请求与 token；未被选中的 Provider 不执行请求。 \\
+Selection → Response & Provider 验证选择后执行；User 验证响应后才交付。拿到 requestId 或收到 ACK 都不能记为完成。 \\
+Targeted & 已有认证 token 关联时走短路径；token 不可用时遵循 bootstrap/失败分支，不跳过授权。 \\
+错误观察 & 无 ACK、权限/响应验证失败、业务错误与 deadline 是不同边界。getRequestStatus 是本地状态查询，不能替代远端实际执行证据。 \\
+\bottomrule
+\end{longtable}
+
+\subsection{回调类型}
+低层响应回调收到 ResponseMessage 的常量引用，超时回调收到请求 Name；要异步保存结果就复制所需数据，不捕获一个仅在回调期间有效的引用。类型化重载另行解码 ResponseT。
+\begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
+using ResponseHandler = std::function<void(const ResponseMessage&)>;
+using TimeoutHandler = std::function<void(const ndn::Name&)>;
+\end{Verbatim}
+
+\subsection{完整签名与源码定位}
+
+\Needspace{7\baselineskip}
+\textbf{API-09fc656cb649}\quad public\par
+\textbf{所属符号：}\code{ndn_service_framework::ServiceUser::RequestService}\par
+\begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
+ndn::Name RequestService(const ndn::Name& serviceName,
+                                 ndn_service_framework::RequestMessage requestMessage,
+                                 int timeoutMs,
+                                 TimeoutHandler onTimeout,
+                                 ResponseHandler onResponseHandler,
+                                 size_t strategy = ndn_service_framework::tlv::FirstResponding);
+\end{Verbatim}
+\textbf{源码：}\path{ndn-service-framework/ServiceUser.hpp}，第 725 行。\par
+
+\Needspace{7\baselineskip}
 \textbf{API-1009e77682c2}\quad public\par
+\textbf{所属符号：}\code{ndn_service_framework::ServiceUser::RequestServiceTargeted}\par
 \begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
 ndn::Name RequestServiceTargeted(const ndn::Name& provider,
                                  const ndn::Name& serviceName,
@@ -70,7 +149,9 @@ ndn::Name RequestServiceTargeted(const ndn::Name& provider,
 \end{Verbatim}
 \textbf{源码：}\path{ndn-service-framework/ServiceUser.hpp}，第 718 行。\par
 
+\Needspace{7\baselineskip}
 \textbf{API-efa9e29aae17}\quad public\par
+\textbf{所属符号：}\code{ndn_service_framework::ServiceUser::RequestServiceTargeted}\par
 \begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
 template<typename RequestT, typename ResponseT>
 ndn::Name RequestServiceTargeted(const ndn::Name& provider,
@@ -82,24 +163,34 @@ ndn::Name RequestServiceTargeted(const ndn::Name& provider,
 \end{Verbatim}
 \textbf{源码：}\path{ndn-service-framework/ServiceUser.hpp}，第 977 行。\par
 
-\subsection{参数与返回}
-provider 与 serviceName 均为 NDN Name；requestMessage 或模板 RequestT 携带应用载荷，timeoutMs 为调用期限。返回 ndn::Name 是请求标识，不是结果。低层重载使用 \code{TimeoutHandler/ResponseHandler}；类型化重载传递解码后的 ResponseT，不应互换回调签名。完整普通 RequestService 重载见 Core 声明参考。
+完整声明查询：\path{api/target-core-reference.md}。
 
-\subsection{调用流程}
-普通调用发布 Request，收集已认证 ACK，执行选择后发送 Selection，再接受绑定该请求的 Response。Targeted 利用已有 Provider/token 关联；没有可用关联时的 bootstrap/重建行为由 User 实现，指定 provider 并不跳过授权。
-
-\subsection{完成与错误}
-调用方保持回调捕获对象有效，直到完成或超时。NDN Nack、取数失败、权限拒绝、业务错误和 deadline 到期需要按各自通路观察；不能把拿到 requestId 当作服务已执行。getRequestStatus 和生命周期回调用于本地状态观测，不构成远端执行证据。
-
-\subsection{线程与安全}
-User 提供 postToIo/isOnIoThread；涉及 Face 的操作遵守其执行上下文。模板请求/结果须满足具体序列化路径。request、service、Provider 证书及 ControllerVersion 的绑定由 Core 检查，应用不能只用 payload 自报身份替代。
-
-完整声明查询：\path{api/target-inventory.json}。
-
+\Needspace{12\baselineskip}
 \section{Core API：Provider 注册与作用域回收}
 \lead{AC-04 · Core 接口契约}
 
+\subsection{注册者必须保存句柄}
+addScopedService 的 ackHandler 处理发现阶段资格，requestHandler 处理被选定后的请求；\code{addScopedCollaborationHandler} 的 handler 接收协作角色与 assignment。返回的 ServiceRegistration 是 move-only 句柄，不能当临时返回值立即丢弃，否则作用域回收会关闭这一代注册。模板服务输入/输出必须满足对应序列化契约。
+
+\subsection{调用与关闭示意}
+
+\begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
+// service、ackHandler、requestHandler 和模式参数采用上方重载
+auto registration = provider.addScopedService(
+    service, ackHandler, requestHandler /* 其余参数见签名 */);
+// 保存 registration，运行事件循环
+registration.close();
+// Provider generation 阻止这一代新的 ACK/Selection/执行工作
+\end{Verbatim}
+
+\subsection{时序与资源}
+在 Face 线程或事件循环开始前注册。Request 认证通过才触发 ACK，Selection 绑定通过才触发执行；不要在 ACK 回调里提前执行有副作用的业务。close/析构先关闭 generation，再投递清理；Provider 已销毁时旧句柄关闭为无害操作。正在运行的外部业务 worker 仍须自行停机/排空，关闭服务不会删除网络缓存中的历史 Data。legacy 注册不能覆盖仍存活的 scoped owner。
+
+\subsection{完整签名与源码定位}
+
+\Needspace{7\baselineskip}
 \textbf{API-c3a3fd9da1b0}\quad public\par
+\textbf{所属符号：}\code{ndn_service_framework::ServiceProvider::addScopedService}\par
 \begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
 ServiceRegistration addScopedService(const ndn::Name& serviceName,
                                                  AckStrategyHandler ackHandler,
@@ -108,7 +199,9 @@ ServiceRegistration addScopedService(const ndn::Name& serviceName,
 \end{Verbatim}
 \textbf{源码：}\path{ndn-service-framework/ServiceProvider.hpp}，第 856 行。\par
 
+\Needspace{7\baselineskip}
 \textbf{API-23e6ea05d4d6}\quad public\par
+\textbf{所属符号：}\code{ndn_service_framework::ServiceProvider::addScopedService}\par
 \begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
 ServiceRegistration addScopedService(const ndn::Name& serviceName,
                                                  AckStrategyHandler ackHandler,
@@ -117,7 +210,9 @@ ServiceRegistration addScopedService(const ndn::Name& serviceName,
 \end{Verbatim}
 \textbf{源码：}\path{ndn-service-framework/ServiceProvider.hpp}，第 860 行。\par
 
+\Needspace{7\baselineskip}
 \textbf{API-33314e8f5bbb}\quad public\par
+\textbf{所属符号：}\code{ndn_service_framework::ServiceProvider::addScopedCollaborationHandler}\par
 \begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
 ServiceRegistration addScopedCollaborationHandler(
                 const ndn::Name& serviceName,
@@ -127,24 +222,52 @@ ServiceRegistration addScopedCollaborationHandler(
 \end{Verbatim}
 \textbf{源码：}\path{ndn-service-framework/ServiceProvider.hpp}，第 869 行。\par
 
-\subsection{参数与返回}
-serviceName 是受注册所有权约束的名称；ackHandler 决定请求阶段的资格/报价，requestHandler 或 CollaborationHandler 执行业务。ServiceMode 与 ServiceInvocationMode 分别表达服务与调用模式。返回 ServiceRegistration 是 move-only RAII handle，应用须保存它以维持该注册代次。
+完整声明查询：\path{api/target-core-reference.md}。
 
-\subsection{触发顺序}
-认证 Request 到达后执行 ACK 路径；被选定且 Selection 绑定校验通过后才进入执行 handler。协作 handler 获得角色和 assignment；同一个名字的 legacy/scoped 注册不能覆盖仍存活的 scoped owner。
-
-\subsection{关闭语义}
-close 或 handle 析构先关闭 generation，阻止新的 ACK/Selection/排队执行使用该代次，再将清理投递到 Face。Provider 销毁后关闭旧 handle 为无害操作。关闭注册不等于历史 Data 从网络缓存消失。
-
-\subsection{线程与扩展}
-这些注册方法按头文件约定只在 Face 线程或事件循环启动前调用。handler 可以使用线程池，但必须遵守 generation、deadline 和停止边界。新增模型/飞控业务通过 handler 扩展，不修改 Core 的领域语义。
-
-完整声明查询：\path{api/target-inventory.json}。
-
+\Needspace{12\baselineskip}
 \section{Core API：延迟规划与协作提交}
 \lead{AC-05 · Core 接口契约}
 
+\subsection{两种时间预算}
+ackCollectionTimeMs 只控制报价收集窗口，timeoutMs 控制整个请求期限。例如总预算 5000 ms、ACK 窗口 1000 ms，报价结束后准备与执行共用剩余预算，不能再获得全新的 5000 ms。onAckClosed 给出不可变候选闭包，应用此时才决定本次角色和参与者。
+
+\subsection{两角色例子}
+设 role A 在 Provider P1 产生中间对象，role B 在 P2 消费该对象并返回终端结果。应用计划需表达两个角色的参与者、A→B 的依赖及其命名/密钥作用域、终端接收规则；Core 认证和传递这些内容，DI 决定张量是否合法，UAV 决定任务分区是否合法。两个角色不是两个独立、互不绑定的 RequestService。
+
+\subsection{提交顺序与结果}
+
+\begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
+// 回调顺序示意，不展开应用计划编码
+BeginCollaboration(..., onAckClosed, onFinalResponse, onTimeout);
+// onAckClosed(snapshot):
+//   plan = 按 snapshot 校验候选并构造应用计划
+//   accepted = CommitCollaborationPlan(requestId, snapshotDigest, plan)
+// accepted 只表示本地提交被接受；等待最终结果或失败
+\end{Verbatim}
+
+\subsection{不可越过的状态}
+错误 requestId、闭包摘要不匹配、请求过期或状态不允许提交时，不得把失败提交继续显示为执行中。bool 不是各 Provider 的完成聚合值。\code{GenericSelectionTxnStore} 的 prepare/commit 保存 Provider 侧认证选择和 opaque blob，与 User 的 CommitCollaborationPlan 是两个 owner；恢复事务还需匹配 Provider boot epoch、token/lease 和期限，不能用旧 WAL 绕过新进程验证。
+
+\subsection{CollaborationPlan 的具体字段}
+
+\begin{longtable}{@{}p{43mm}p{119mm}@{}}
+\toprule
+项目 & 行为与调用含义 \\
+\midrule\endhead
+窗口/期限 & ackCollectionTimeMs 默认 200，timeoutMs 默认 5000，单位毫秒；与 BeginCollaboration 的请求预算一致管理。 \\
+roles & 每项含 \code{role/service/requiredArtifact}、\code{allowDynamicProvisioning}=false、provisioningTimeoutMs=30000、\code{appRequirement/assignmentPayload}、\code{minProviders/maxProviders} 默认 1、terminalResponseOwner=false。流式协作指定唯一用户终端 owner。 \\
+keyScopes & 每项含 name 与允许的 roles；依赖引用该密钥作用域，而不是自行传递一个未绑定的解密密钥。 \\
+dependencies & 每项含 producers、consumers、keyScope、topicPrefix、required=true；A→B 的例子分别在 producers/consumers 填 A/B。 \\
+\code{sharedAssignmentMetadata} & 选中参与者共享的不透明 metadata，与各角色 assignmentPayload 分开传递。 \\
+participantSelector & shared\_ptr<const \code{ParticipantSelectionPolicy}>；select(candidates, roles) 返回 SelectedParticipant，含精确 Provider、角色、assignment 与实际 ACK 绑定。 \\
+\bottomrule
+\end{longtable}
+
+\subsection{完整签名与源码定位}
+
+\Needspace{7\baselineskip}
 \textbf{API-c9045b5b03e6}\quad public\par
+\textbf{所属符号：}\code{ndn_service_framework::ServiceUser::BeginCollaboration}\par
 \begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
 ndn::Name BeginCollaboration(const ServiceName& service,
                                          const RequestPayload& initialRequest,
@@ -157,7 +280,9 @@ ndn::Name BeginCollaboration(const ServiceName& service,
 \end{Verbatim}
 \textbf{源码：}\path{ndn-service-framework/ServiceUser.hpp}，第 858 行。\par
 
+\Needspace{7\baselineskip}
 \textbf{API-3ab0d3d87607}\quad public\par
+\textbf{所属符号：}\code{ndn_service_framework::ServiceUser::CommitCollaborationPlan}\par
 \begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
 bool CommitCollaborationPlan(const RequestId& requestId,
                                          const std::string& ackClosedDigest,
@@ -165,24 +290,44 @@ bool CommitCollaborationPlan(const RequestId& requestId,
 \end{Verbatim}
 \textbf{源码：}\path{ndn-service-framework/ServiceUser.hpp}，第 887 行。\par
 
-\subsection{参数与状态}
-BeginCollaboration 的 ackCollectionTimeMs 控制 ACK 窗口，timeoutMs 控制整个请求期限；requestId 可显式提供。onAckClosed 收到不可变 ACK\_CLOSED，包括可用于提交的摘要。返回请求名后仍处于异步流程，不能立即假定已经选择 Provider。
+完整声明查询：\path{api/target-core-reference.md}。
 
-\subsection{提交契约}
-应用只在相应 ACK 关闭后构造 CollaborationPlan，并使用同一 requestId 与 ackClosedDigest 调用 CommitCollaborationPlan。bool 表示提交接口的接受结果，不表示所有 Provider 已完成。计划内角色、assignment 和最终结果接受规则由应用定义并由 Core 传送和认证。
-
-\subsection{错误与副作用}
-过期、错误请求或错误闭包摘要不能作为可提交计划；业务计划失败应沿超时/失败路径收尾，不能复用旧闭包用于新 attempt。\code{GenericSelectionTxnStore} 的 prepare/commit 与应用协作计划是相关但不同层的事务。
-
-\subsection{时序示意}
-User Begin → Provider ACK → User ACK\_CLOSED → 应用验证报价/规划 → CommitCollaborationPlan → Provider Selection 校验 → 各角色执行 → 终端结果。DI 在 ACK 后 inspect/规划；UAV 使用有限 job，不能把长期 mission 直接映射为永不结束的 invocation。
-
-完整声明查询：\path{api/target-inventory.json}。
-
+\Needspace{12\baselineskip}
 \section{Core API：调用流的事件和终态}
 \lead{AC-06 · Core 接口契约}
 
+\subsection{如何取得 writer}
+User 通过 RequestServiceStreaming 建立单次调用并保存共享 handle；Provider 通过 addStreamingHandler 注册流处理器，由该处理器获得 StreamedResponseWriter。不要自行构造脱离 Core 请求绑定的 writer core。onEvent 接收 EventT，onComplete 接收最终 ResponseT，onError 接收 StreamedInvocationError；选定的模板类型需要可序列化。
+
+\subsection{返回值与异常}
+
+\begin{longtable}{@{}p{43mm}p{119mm}@{}}
+\toprule
+项目 & 行为与调用含义 \\
+\midrule\endhead
+publish(event) → bool & 模板先序列化再调用 core；任何异常被捕获并返回 false。false 也可能是 core 拒绝发布，不能仅解释为队列已满，更不能等同远端消费完成。 \\
+finish(response, reason) & 返回 void；core 拒绝时抛 logic\_error（stream finish rejected）；序列化异常也可传播。不能在 finish 后继续发布普通事件。 \\
+fail(code, message) & 错误终态已被占用时抛 logic\_error；与 publish 的吞异常返回 false 行为不同。 \\
+取消/期限 & isCancelled 与 remainingDeadline 用于工作边界检查，仍需处理检查后发生取消的竞争；最终状态由 Core 仲裁。 \\
+有界流 & options 管理期限、排队、保留与重试。事件留存可重传不等于业务执行可重复；应用不应通过再次执行生成来补一个遗失的网络事件。 \\
+\bottomrule
+\end{longtable}
+
+\subsection{两事件示意}
+
+\begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
+// 在已认证的 Provider streaming handler 中
+if (!writer.publish(event1)) { /* 停止产生新事件并检查关闭原因 */ }
+else if (!writer.publish(event2)) { /* 同上 */ }
+else { writer.finish(finalResponse, finishReason); }
+// 必须处理 finish 的异常；不能假设 publish(false) 从不发生
+\end{Verbatim}
+
+\subsection{完整签名与源码定位}
+
+\Needspace{7\baselineskip}
 \textbf{API-9e9c476a768e}\quad public\par
+\textbf{所属符号：}\code{ndn_service_framework::ServiceUser::RequestServiceStreaming}\par
 \begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
 template<typename RequestT, typename EventT, typename ResponseT>
 std::shared_ptr<StreamedInvocationHandle<EventT, ResponseT>>
@@ -197,36 +342,58 @@ std::shared_ptr<StreamedInvocationHandle<EventT, ResponseT>>
 \end{Verbatim}
 \textbf{源码：}\path{ndn-service-framework/ServiceUser.hpp}，第 779 行。\par
 
+\Needspace{7\baselineskip}
 \textbf{API-2eecc93af394}\quad public\par
+\textbf{所属符号：}\code{ndn_service_framework::StreamedResponseWriter::publish}\par
 \begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
 bool publish(const EventT& event)
 \end{Verbatim}
 \textbf{源码：}\path{ndn-service-framework/InvocationStream.hpp}，第 348 行。\par
 
+\Needspace{7\baselineskip}
 \textbf{API-2bdd4eb83edb}\quad public\par
+\textbf{所属符号：}\code{ndn_service_framework::StreamedResponseWriter::finish}\par
 \begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
 void finish(const ResponseT& response, StreamFinishReason reason)
 \end{Verbatim}
 \textbf{源码：}\path{ndn-service-framework/InvocationStream.hpp}，第 359 行。\par
 
-\subsection{返回与回调}
-RequestServiceStreaming 返回共享调用 handle；onEvent 接收 EventT，onComplete 接收最终 ResponseT，onError 接收 StreamedInvocationError。\code{StreamedInvocationOptions} 约束 deadline、队列和重试。模板类型须满足相应序列化要求。
+完整声明查询：\path{api/target-core-reference.md}。
 
-\subsection{Provider 动作}
-addStreamingHandler 提供 writer；publish 发送事件，finish 结束并提供最终结果，fail 产生错误终态。isCancelled、remainingDeadline 和状态值用于判断是否仍可发布。发布成功、事件送达、回调消费和最终完成是不同观察点。
-
-\subsection{状态与背压}
-Core 管理 cursor、重排序、转录摘要、AEAD 与签名 Data，并通过有界队列限制等待事件。处理 terminal 后不能继续当作新流；取消、授权失效和超时均有独立关闭路径。调用流不等于独立连续视频流。
-
-\subsection{扩展约束}
-应用编码事件语义，Core 保留请求/\code{attempt/ControllerVersion} 绑定。业务若需要恢复，应明确恢复身份与新 attempt，不使用旧 handle 伪装连续成功。
-
-完整声明查询：\path{api/target-inventory.json}。
-
+\Needspace{12\baselineskip}
 \section{Core API：命名对象与连续流}
 \lead{AC-07 · Core 接口契约}
 
+\subsection{选择哪一种 API}
+
+\begin{longtable}{@{}p{43mm}p{119mm}@{}}
+\toprule
+项目 & 行为与调用含义 \\
+\midrule\endhead
+签名对象 & publishSignedAppData 发布 dataName 对应的字节，freshness 是毫秒；fetchSignedAppData 传精确名字、expectedSigner、timeoutMs 和成功/失败回调。验证签名者后才能消费。 \\
+完整大对象 & \code{publishEncryptedLargeData/fetchEncryptedLargeData} 或协作中的 \code{publishLargeNamed/fetchLargeExact} 处理分段与完整对象。manifest 引用和实际对象摘要由应用解释。 \\
+连续流 & StreamPublisher::push 接收 shared\_ptr<ndn::Data> signedData，调用前已构造并签名；它不是接收未签名业务块并自动解释视频 metadata 的接口。 \\
+调用事件流 & AC-06 的 writer 接收 EventT，由 Core 绑定单次请求、序号和终态。不能把它当成无结束时间的摄像头会话。 \\
+\bottomrule
+\end{longtable}
+
+\subsection{连续流例子}
+
+\begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
+// signedData 已按流的精确名称/会话规则构造并签名
+publisher.push(signedData); // void，不返回逐包送达确认
+// subscriber 按会话与 cursor 获取并验证
+// 应用决定过期视频帧可丢弃，完整录像对象必须完整验证
+\end{Verbatim}
+
+\subsection{资源与恢复}
+发布窗口、订阅缓存和恢复范围有界，FEC 修复的是不透明字节，不能代替媒体解码或完整对象校验。发布、签名验证、重排、业务消费是不同阶段。调用者保存异步回调依赖的资源；流 stop 后历史 Data 仍可能在缓存中，应用必须用会话身份拒绝迟到旧帧。
+
+\subsection{完整签名与源码定位}
+
+\Needspace{7\baselineskip}
 \textbf{API-160499aab055}\quad public\par
+\textbf{所属符号：}\code{ndn_service_framework::ServiceUser::publishSignedAppData}\par
 \begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
 ndn::Name publishSignedAppData(
                 const ndn::Name& dataName,
@@ -235,7 +402,9 @@ ndn::Name publishSignedAppData(
 \end{Verbatim}
 \textbf{源码：}\path{ndn-service-framework/ServiceUser.hpp}，第 637 行。\par
 
+\Needspace{7\baselineskip}
 \textbf{API-ef2281d2fe2d}\quad public\par
+\textbf{所属符号：}\code{ndn_service_framework::ServiceUser::fetchSignedAppData}\par
 \begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
 void fetchSignedAppData(
                 const ndn::Name& dataName,
@@ -246,30 +415,44 @@ void fetchSignedAppData(
 \end{Verbatim}
 \textbf{源码：}\path{ndn-service-framework/ServiceUser.hpp}，第 660 行。\par
 
+\Needspace{7\baselineskip}
 \textbf{API-68706878d1a8}\quad public\par
+\textbf{所属符号：}\code{ndn_service_framework::StreamPublisher::push}\par
 \begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
 void push(std::shared_ptr<ndn::Data> signedData);
 \end{Verbatim}
 \textbf{源码：}\path{ndn-service-framework/StreamFacade.hpp}，第 46 行。\par
 
-\subsection{命名对象}
-publishSignedAppData 以 dataName 发布带签名载荷，freshness 使用 ndn::time::milliseconds；fetchSignedAppData 同时指定精确 dataName、expectedSigner 与 timeoutMs。成功回调和失败回调分离，签名者校验不是只比名称字符串。
+完整声明查询：\path{api/target-core-reference.md}。
 
-\subsection{大对象与协作}
-\code{publishEncryptedLargeData/fetchEncryptedLargeData} 承担完整对象传输；CollaborationContext 的 publishLargeNamed、fetchSignedExactData 等在协作身份范围内使用。应用决定 manifest 和对象引用，Core 处理字节、签名、分段与授权。
-
-\subsection{连续流}
-\code{createStream/subscribeStream} 或 live stream facade 以 stream identity、session 与 cursor 定位数据。StreamPublisher push 接收带元数据的块，stop/status 管理运行；\code{PredictiveStreamSubscriber} 负责预测取数和统计，Core 已有通用不透明字节 FEC。
-
-\subsection{生命周期}
-发布者队列与订阅缓存有界；内容编码、可丢帧/必须完整等应用约束由 UAV 或其他模块选择。取到一个分段不等于完整对象，取到某个最新样本不意味着消费了所有历史事件。
-
-完整声明查询：\path{api/target-inventory.json}。
-
+\Needspace{12\baselineskip}
 \section{Core API：在线授权与版本状态}
 \lead{AC-08 · Core 接口契约}
 
+\subsection{输入是单项授权}
+grant(identity, serviceName, authorizationAttribute) 接受一次身份/服务/属性操作。控制器把服务加入已有 allowedServices，把属性加入集合，再从有效属性重建完整 ABE 策略；调用者不提交该身份的全量策略。grant-only 推进 ControllerVersion，通常不旋转 ABE generation；如已有 pending rotation，先协调恢复，因此不能保证每次 grant 调用都绝无全局轮换。
+
+\subsection{返回分支}
+
+\begin{longtable}{@{}p{43mm}p{119mm}@{}}
+\toprule
+项目 & 行为与调用含义 \\
+\midrule\endhead
+grant 返回 false & 可能是非法 target、generation 未就绪、待轮换恢复失败、证书已撤销，或相同授权已经存在且无需重授的 no-op。bool 不能唯一编码失败原因。 \\
+grant 产生变更 & 更新目标身份的权限与属性，移除相应服务撤销/可恢复的身份撤销；证书撤销不能靠 grant 覆盖。 \\
+revoke(target) & RevocationTarget 显式区分身份、服务授权和证书。撤销事实/版本持久化后再做 ABE 轮换；后续失败不意味着撤销自动回滚。 \\
+\code{getPolicyStatus(service)} & 得到服务相关撤销信息与全局版本；发布的外层 Data 要签名。policyDigest 不能当全部动态权限集合的规范摘要。 \\
+\bottomrule
+\end{longtable}
+
+\subsection{接收者何时更新}
+User/Provider 验证并安装 Controller 状态后，版本推进会使服务相关缓存失效；权限属性不变可以避免 DKEY 重取，但不保证业务状态毫无刷新。\code{NDNSF_POLICY_REVALIDATION_PERIOD_MS} 默认 0，未开启周期重校验时不能靠该机制主动发现。当前没有通用 SVS epoch 广播保证；认证 hint 仅触发权威拉取。目标 TG-01 将细化影响范围，不能用目标推定当前行为。
+
+\subsection{完整签名与源码定位}
+
+\Needspace{7\baselineskip}
 \textbf{API-d5f6b3c470a6}\quad public\par
+\textbf{所属符号：}\code{ndn_service_framework::ServiceController::grant}\par
 \begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
 bool grant(const ndn::Name& identity,
              const ndn::Name& serviceName,
@@ -277,36 +460,79 @@ bool grant(const ndn::Name& identity,
 \end{Verbatim}
 \textbf{源码：}\path{ndn-service-framework/ServiceController.hpp}，第 103 行。\par
 
+\Needspace{7\baselineskip}
 \textbf{API-3ad7bdf59cc1}\quad public\par
+\textbf{所属符号：}\code{ndn_service_framework::ServiceController::revoke}\par
 \begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
 bool revoke(const RevocationTarget& target);
 \end{Verbatim}
 \textbf{源码：}\path{ndn-service-framework/ServiceController.hpp}，第 95 行。\par
 
+\Needspace{7\baselineskip}
 \textbf{API-a6e1ee327414}\quad public\par
+\textbf{所属符号：}\code{ndn_service_framework::ServiceController::getPolicyStatus}\par
 \begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
 PolicyStatusData getPolicyStatus(const ndn::Name& serviceName) const;
 \end{Verbatim}
 \textbf{源码：}\path{ndn-service-framework/ServiceController.hpp}，第 91 行。\par
 
-\subsection{参数}
-grant 接收身份、服务与精确授权属性三个 Name。revoke 接收有类型的 RevocationTarget，以区分身份、服务或证书范围。getPolicyStatus(serviceName) 返回该服务的状态载荷；真正发布时由 Controller 为外层 Data 签名。
+完整声明查询：\path{api/target-core-reference.md}。
 
-\subsection{返回与变更}
-bool 返回值用于区分是否产生变更或是否存在待完成处理；不能用它推断所有远端已安装新状态。grant-only 更新目标身份的完整策略并推进 ControllerVersion，保持 ABE generation；撤权推进版本并旋转公参、重发剩余有效策略，重复完成的撤权是 no-op。
-
-\subsection{失败与恢复}
-旋转失败保留撤权事实和 pending 处理，后续 grant/revoke 先协调恢复。PolicyStatusData 的全局版本与服务作用域分别解释；policyDigest 不是所有运行时授权变化的完整摘要。
-
-\subsection{传播与调用影响}
-远端通过 PolicyStatus 拉取、启用的周期发现或经过认证的业务 hint 获知版本，hint 不是权威。无关身份可跳过 DKEY 重取，但安装新服务版本仍可使请求/流缓存失效。具体分支见第 9–13 章，不能把局部取钥优化写成完全无感更新。
-
-完整声明查询：\path{api/target-inventory.json}。
-
+\Needspace{12\baselineskip}
 \section{Core API：执行租约、观测与并发}
 \lead{AC-09 · Core 接口契约}
 
+\subsection{租约携带什么}
+GenericExecutionLease 包含 leaseId、\code{providerName/providerEpoch}、\code{requesterName/requestId/serviceName/planDigest}、\code{resourceBindingSchema/proof}、conflictKeys、expiresAtMs、executionDeadlineMs 与 idempotencyKey。providerEpoch 区分 Provider 进程代次；不能用 ControllerVersion 代替。resource proof 绑定资源，服务权限和 DI 解密 grant 另行检查。
+
+\subsection{正常状态链}
+prepare(lease, nowMs) 建立 Prepared；commit 用相同租约、Provider 代次、Requester 和幂等键进入 Committed；validateAndActivate 额外验证完整 ExecutionLeaseBinding 与执行期限，进入 Executing；结束后 release。未采用的预留可 abort，到期由 cleanupExpired 回收。find 返回 optional：查不到与找到了 Expired/Released 记录需要分别处理。
+
+\subsection{结果与诊断}
+ExecutionLeaseResult 包含 status、operation、reasonCode、lease、retryAfterMs、idempotentReplay。调用者先看 status，再按 reasonCode 处理 LEASE\_EXPIRED、LEASE\_STALE\_EPOCH、\code{LEASE_IDEMPOTENCY_CONFLICT}、\code{LEASE_REQUESTER_MISMATCH}、LEASE\_PLAN\_MISMATCH 或 LEASE\_CAPACITY\_REJECTED 等；重复成功回放由 idempotentReplay 标识。返回旧租约不等于可继续执行。
+
+\subsection{并发与观察}
+表内部以 mutex 保护状态，不使调用它的所有 Face API 任意线程安全。ACK/handler 工作池各有配置，增加线程不能扩大物理容量。counters(nowMs)、生命周期事件和 diagnostics 用于解释 \code{Prepared/Committed/Executing} 等资源占用；最终完成仍需实际结果证据。
+
+\subsection{完整签名与源码定位}
+
+\Needspace{7\baselineskip}
+\textbf{API-d154a2bbea78}\quad public\par
+\textbf{所属符号：}\code{ndn_service_framework::ProviderExecutionLeaseTable::prepare}\par
+\begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
+ExecutionLeaseResult
+  prepare(GenericExecutionLease lease, uint64_t nowMs);
+\end{Verbatim}
+\textbf{源码：}\path{ndn-service-framework/ExecutionLease.hpp}，第 112 行。\par
+
+\Needspace{7\baselineskip}
+\textbf{API-13c34e09371a}\quad public\par
+\textbf{所属符号：}\code{ndn_service_framework::ProviderExecutionLeaseTable::commit}\par
+\begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
+ExecutionLeaseResult
+  commit(const std::string& leaseId, const std::string& providerEpoch,
+         const std::string& requesterName, const std::string& idempotencyKey,
+         uint64_t nowMs);
+\end{Verbatim}
+\textbf{源码：}\path{ndn-service-framework/ExecutionLease.hpp}，第 115 行。\par
+
+\Needspace{7\baselineskip}
+\textbf{API-e156fa6d6cf2}\quad public\par
+\textbf{所属符号：}\code{ndn_service_framework::ProviderExecutionLeaseTable::validateAndActivate}\par
+\begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
+ExecutionLeaseResult
+  validateAndActivate(const std::string& leaseId,
+                      const std::string& providerEpoch,
+                      const ExecutionLeaseBinding& binding,
+                      const std::string& idempotencyKey,
+                      uint64_t nowMs,
+                      uint64_t executionDeadlineMs);
+\end{Verbatim}
+\textbf{源码：}\path{ndn-service-framework/ExecutionLease.hpp}，第 120 行。\par
+
+\Needspace{7\baselineskip}
 \textbf{API-f52dcb87cd76}\quad public\par
+\textbf{所属符号：}\code{ndn_service_framework::ProviderExecutionLeaseTable::release}\par
 \begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
 ExecutionLeaseResult
   release(const std::string& leaseId, const std::string& providerEpoch,
@@ -315,24 +541,35 @@ ExecutionLeaseResult
 \end{Verbatim}
 \textbf{源码：}\path{ndn-service-framework/ExecutionLease.hpp}，第 145 行。\par
 
-\subsection{数据边界}
-ExecutionLease 及 \code{ProviderAdmissionLeaseTable} 管理有界 admission/execution 资源；generic admission token 不是服务权限，也不是 DI execution grant。请求的 lease 必须绑定具体身份、请求、服务与有效期，不能仅把 ACK 的 capacity 视作永久预留。
+\Needspace{7\baselineskip}
+\textbf{API-e43c54567dc6}\quad public\par
+\textbf{所属符号：}\code{ndn_service_framework::ProviderExecutionLeaseTable::find}\par
+\begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
+std::optional<GenericExecutionLease>
+  find(const std::string& leaseId) const;
+\end{Verbatim}
+\textbf{源码：}\path{ndn-service-framework/ExecutionLease.hpp}，第 153 行。\par
 
-\subsection{观测入口}
-User/Provider 的生命周期 callback 与 \code{getActiveRequestStatuses}、\code{getProviderAdmissionCounters}、\code{consumeRuntimeDiagnostics} 描述本地运行。\code{TimelineTrace/NetworkTelemetry} 支持跟踪，不改变协议接受结果。Ms 与队列大小分别为时间和数量。
+完整声明查询：\path{api/target-core-reference.md}。
 
-\subsection{线程}
-setHandlerThreads、setAckProcessingThreads、setAckThreads 的作用域不同；设置更多线程不使全部 Face API 变为任意线程安全。异步关闭要先禁止新任务，再停止/排空 worker 和回调捕获。
-
-\subsection{检查}
-使用 scoped registration 与租约生命周期检查确认关闭、重复释放和过期行为；统计值不能替代 selected Provider 的实际执行/终端结果。完整类型和 setter 参数见 Core 参考。
-
-完整声明查询：\path{api/target-inventory.json}。
-
+\Needspace{12\baselineskip}
 \section{Repo API：对象与精确 Data packet}
 \lead{AC-10 · Repo 接口契约}
 
+\subsection{对象与 manifest}
+put(node, objectName, payload, options) 的本地重载接收 RepoNode 和字节，返回 RepoObjectManifest。StoreOptions 提供 objectType、replicationFactor、replicaNodes、policyEpoch。名字识别对象，摘要识别内容，segmentCount 描述分段数量，副本字段只是位置/策略信息，不能用其中一个替代全部验证。网络 helper 与本地静态调用不是同一传输或超时模型。
+
+\subsection{原始 packet 例子}
+录像含两份已经由摄像头签名的 Data，名称分别指向两个精确 packet。putDataPacket 保存原始 wire；manifest 保存有序完整名称；getDataPackets 按该列表读回。必须核对完整组的名称和索引，不能重新签名 payload 来冒充原摄像头。普通字节对象 put 则不承诺这些字节本身已经加密。
+
+\subsection{存储与可见性}
+普通对象由 SQLite 权威存储加有界缓存支持，权威写入后更新缓存；RepoCore 负责网络中立操作，RepoNode 持有网络服务注册。remove 的本地删除结果不能表示远端副本、目录或 NDN 缓存同时消失。取回 manifest 只是下一步取数依据，完整对象成功须验证全部字节及声明摘要。
+
+\subsection{完整签名与源码定位}
+
+\Needspace{7\baselineskip}
 \textbf{API-3690bad70c85}\quad public\par
+\textbf{所属符号：}\code{ndnsf_distributed_repo::RepoClient::put}\par
 \begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
 static RepoObjectManifest put(RepoNode& node,
                                 const std::string& objectName,
@@ -341,7 +578,9 @@ static RepoObjectManifest put(RepoNode& node,
 \end{Verbatim}
 \textbf{源码：}\path{NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp}，第 33 行。\par
 
+\Needspace{7\baselineskip}
 \textbf{API-208878700957}\quad public\par
+\textbf{所属符号：}\code{ndnsf_distributed_repo::RepoClient::getDataPackets}\par
 \begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
 static std::vector<std::vector<uint8_t>> getDataPackets(
     const RepoNode& node,
@@ -349,24 +588,47 @@ static std::vector<std::vector<uint8_t>> getDataPackets(
 \end{Verbatim}
 \textbf{源码：}\path{NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp}，第 62 行。\par
 
-\subsection{参数与返回}
-put 的 objectName 是对象身份，payload 是字节，StoreOptions 指定 objectType、replicationFactor、replicaNodes 和 policyEpoch；返回 RepoObjectManifest。静态本地、LocalServiceRegistry 与网络 helper 的重载不共享同一种传输/异常时序。
+完整声明查询：\path{api/target-repo-reference.md}。
 
-\subsection{packet 契约}
-putDataPacket 保存签名 Data 的原始 wire，并使用其中编码的精确名称。getDataPackets 按 manifest 的有序完整名称读取；索引不完整、名称不一致等情况在返回整组结果前拒绝。Repo 不重新解释或重签应用 payload。
-
-\subsection{存储与删除}
-普通对象默认 SQLite 加有界缓存；插入先完成权威存储再更新缓存。remove 返回是否删除，删除本地对象不意味着清除了所有副本或网络缓存。RepoCore 保持网络中立，RepoNode 拥有服务注册。
-
-\subsection{安全与单位}
-SHA-256、segmentCount、size、objectType 和 policyEpoch 不能互相替代身份字段；metadata 的声明不证明 payload 已经加密。调用者需要明确精确字节、签名者和授权要求。
-
-完整声明查询：\path{api/target-inventory.json}。
-
+\Needspace{12\baselineskip}
 \section{Repo API：制品上传与提交}
 \lead{AC-11 · Repo 接口契约}
 
+\subsection{公开上传调用}
+publish\_file 要求已有文件 path、逻辑 name、expected\_sha256；replicas 默认 1、verification 默认 signed-manifest、resume 默认 True。应用必须先独立得到预期内容摘要，不能从未验证的上传结果倒填。timeout\_ms、取消 token 与 progress observer 控制不同方面。
+
+\subsection{显式阶段}
+
+\begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
+// Python 调用顺序示意
+session = api.begin_upload(descriptor)
+session.upload_file(path)
+result = session.commit()
+// transfer/upload 成功仍不能替代 commit 成功
+// 失败时按恢复策略 abort(preserve_progress=...)
+\end{Verbatim}
+
+\subsection{结果字段}
+
+\begin{longtable}{@{}p{43mm}p{119mm}@{}}
+\toprule
+项目 & 行为与调用含义 \\
+\midrule\endhead
+reference / operation\_id & reference 是后续下载依据，operation\_id 识别本次操作；不能仅保存本地文件路径。 \\
+requested / achieved replicas & 请求数量与成功数量分别报告；achieved\_replicas 必须等于不同 COMMITTED receipt\_id 的数量，不能只数候选 ACK。 \\
+replicas & 每个 ArtifactReplicaResult 含 repo\_node、state、receipt\_id、error\_code；用于识别哪个副本完成，哪个失败。 \\
+deduplicated / resumed & 分别说明复用与恢复，不代表本轮传输了全部字节；duration 和 phase\_durations\_ms 是本次观测。 \\
+\bottomrule
+\end{longtable}
+
+\subsection{提交与重试}
+commit 校验 operation、摘要、选定副本及 receipt 后产生可交付结果。幂等键用于识别同一业务上传，但不能允许同一操作携带冲突内容。网络后端的 TARGETED 全制品发布支持有边界，不能由控制选项存在推断所有模式可用。失败保留 operation 和阶段原因；是否保留进度按 resume/abort 策略决定。
+
+\subsection{完整签名与源码定位}
+
+\Needspace{7\baselineskip}
 \textbf{API-c7c484fc1ed7}\quad public-by-name\par
+\textbf{所属符号：}\code{ArtifactRepositoryApi.publish_file}\par
 \begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
 def publish_file(
         self,
@@ -387,7 +649,9 @@ def publish_file(
 \end{Verbatim}
 \textbf{源码：}\path{NDNSF-DistributedRepo/pythonWrapper/py_repoclient/artifact_api.py}，第 844 行。\par
 
+\Needspace{7\baselineskip}
 \textbf{API-91dcd6af85dd}\quad public-by-name\par
+\textbf{所属符号：}\code{ArtifactRepositoryApi.begin_upload}\par
 \begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
 def begin_upload(
         self,
@@ -399,24 +663,56 @@ def begin_upload(
 \end{Verbatim}
 \textbf{源码：}\path{NDNSF-DistributedRepo/pythonWrapper/py_repoclient/artifact_api.py}，第 819 行。\par
 
-\subsection{输入与输出}
-publish\_file 要求 path、逻辑 name、expected\_sha256；replicas 默认 1，verification 默认 signed-manifest，resume 默认 True。返回 ArtifactPublishResult；async 变体与高级 session 的状态/回调形式在 Repo 参考中分别列出。timeout\_ms、取消 token 和 progress observer 是不同控制面。
+完整声明查询：\path{api/target-repo-reference.md}。
 
-\subsection{显式会话}
-begin\_upload(descriptor) 返回 ArtifactUploadSession；随后 upload\_file，再 commit。transfer/upload 完成并不等于对外可见，commit 校验 receipt、选定副本集合、operation 和 digest 后才产生成功引用。abort(preserve\_progress=True) 可以保留可恢复 staging。
-
-\subsection{网络限制}
-公开 control 允许表达多种模式，但当前 network backend 的整制品发布拒绝 TARGETED 并要求 Collaboration。不要因签名接受一个选项便推断所有 backend 都实现该模式。
-
-\subsection{恢复身份}
-幂等键、artifact/root digest、chunk 参数和 lease 联合约束恢复；同路径文件被替换后不能沿用旧进度。进度回调反映阶段，不替代完整 hash 与副本 receipt 校验。
-
-完整声明查询：\path{api/target-inventory.json}。
-
+\Needspace{12\baselineskip}
 \section{Repo API：下载、验证与传输状态机}
 \lead{AC-12 · Repo 接口契约}
 
+\subsection{kwargs 的实际含义}
+fetch\_file(reference, destination, **kwargs) 把参数传给 begin\_fetch：resume=True、verify=True、replace=False、on\_progress=None、idempotency\_key 空、timeout\_ms=None、control=\code{ArtifactControlOptions()}、cancellation=None。默认幂等键由 \code{reference.content_digest} 与目标绝对路径构造，operation identity 还绑定 reference；换路径并不天然延续同一操作。timeout\_ms 通过 int(timeout\_ms or default\_timeout\_ms) 传给后端，所以传 0 会采用默认预算。
+
+\subsection{调用次序与结果}
+
+\begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
+result = api.fetch_file(reference, destination,
+                        resume=True, verify=True, replace=False)
+// 等价主线：begin_fetch → transfer → commit
+// 异常且尚未终态：尝试 abort(preserve_progress=resume)，再抛 API error
+\end{Verbatim}
+
+\subsection{如何读统计}
+ArtifactFetchResult 包含 reference、operation\_id、destination、reused\_bytes、transferred\_bytes、source\_replicas、last\_segment、delivered\_segments、total\_segments、retransmitted\_bytes 和阶段耗时。复用字节与本轮网络字节分开；last\_segment 默认 -1，不能当作完整对象成功。成功交付来自 commit 和校验，不由进度达到某个百分比推断。
+
+\subsection{底层分段是另一层状态}
+\code{AdaptiveArtifactTransfer::receive} 记录 segmentNo、logicalBytes、wireBytes 和 nowMs，返回 \code{ArtifactSegmentDisposition}；markVerified 显式标记验证完成。接收、验证、整体提交是不同动作。高层 fetch session 管理文件、操作身份和异常恢复，底层窗口/重传状态不能直接当成最终文件完成。resume 必须保留同一制品和可信分段状态，不是无条件追加目标文件。
+
+\subsection{完整签名与源码定位}
+
+\Needspace{7\baselineskip}
+\textbf{API-39b8d985de2c}\quad public-by-name\par
+\textbf{所属符号：}\code{ArtifactRepositoryApi.begin_fetch}\par
+\begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
+def begin_fetch(
+        self,
+        reference: ArtifactReference,
+        destination: Union[str, Path],
+        *,
+        resume: bool = True,
+        verify: bool = True,
+        replace: bool = False,
+        on_progress: Optional[ProgressObserver] = None,
+        idempotency_key: str = "",
+        timeout_ms: Optional[int] = None,
+        control: ArtifactControlOptions = ArtifactControlOptions(),
+        cancellation: Optional[ArtifactCancellationToken] = None,
+    ) -> ArtifactFetchSession:
+\end{Verbatim}
+\textbf{源码：}\path{NDNSF-DistributedRepo/pythonWrapper/py_repoclient/artifact_api.py}，第 914 行。\par
+
+\Needspace{7\baselineskip}
 \textbf{API-1707faa2f3ea}\quad public-by-name\par
+\textbf{所属符号：}\code{ArtifactRepositoryApi.fetch_file}\par
 \begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
 def fetch_file(
         self,
@@ -427,7 +723,9 @@ def fetch_file(
 \end{Verbatim}
 \textbf{源码：}\path{NDNSF-DistributedRepo/pythonWrapper/py_repoclient/artifact_api.py}，第 960 行。\par
 
+\Needspace{7\baselineskip}
 \textbf{API-6f363704fd88}\quad public\par
+\textbf{所属符号：}\code{ndnsf_distributed_repo::AdaptiveArtifactTransfer::receive}\par
 \begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
 ArtifactSegmentDisposition
   receive(uint64_t segmentNo, uint64_t logicalBytes, uint64_t wireBytes,
@@ -435,65 +733,100 @@ ArtifactSegmentDisposition
 \end{Verbatim}
 \textbf{源码：}\path{NDNSF-DistributedRepo/include/ndnsf-distributed-repo/ArtifactTransfer.hpp}，第 78 行。\par
 
+\Needspace{7\baselineskip}
 \textbf{API-b8a723742c4e}\quad public\par
+\textbf{所属符号：}\code{ndnsf_distributed_repo::AdaptiveArtifactTransfer::markVerified}\par
 \begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
 void markVerified(uint64_t segmentNo);
 \end{Verbatim}
 \textbf{源码：}\path{NDNSF-DistributedRepo/include/ndnsf-distributed-repo/ArtifactTransfer.hpp}，第 82 行。\par
 
-\subsection{获取结果}
-fetch\_file 接收不可变 ArtifactReference 与 destination；kwargs 由内部 begin\_fetch/会话参数继续约束，不能把 **kwargs 视为任意选项均可接受。begin\_fetch 返回下载 session；transfer 后 commit 才物化最终可见文件。
+完整声明查询：\path{api/target-repo-reference.md}。
 
-\subsection{接收与验证}
-\code{AdaptiveArtifactTransfer} 将 poll 的调度、receive 的接收与 markVerified 的校验分开。收到字节先进入 verification backlog；摘要或签名失败走 reject/fail。窗口背压限制未完成与待验证数据，并处理 expire 超时。
-
-\subsection{恢复状态}
-ArtifactResumeSession 的 restoreVerified、markVerified、renewLease、resume、cancel、expire、complete/fail 维护同一身份下的状态。未验证范围不能持久化为已完成；重复、超期和跨身份恢复必须拒绝。
-
-\subsection{存储边界}
-\code{PayloadStore/MetadataStore} 与 FilesystemArtifactStore 维护 staging 和元数据，区别于普通对象 SQLite。重试需保存 first failure；旧缓存存在不证明恢复后的文件与引用匹配。
-
-完整声明查询：\path{api/target-inventory.json}。
-
+\Needspace{12\baselineskip}
 \section{Repo API：目录、副本与缓存控制}
 \lead{AC-13 · Repo 接口契约}
 
+\subsection{本地目录操作矩阵}
+
+\begin{longtable}{@{}p{43mm}p{119mm}@{}}
+\toprule
+项目 & 行为与调用含义 \\
+\midrule\endhead
+catalogStatus & 本 Repo 的模式、catalogEpoch 和对象数；不是所有 Repo 的一致全局视图。 \\
+catalogSnapshot & 返回 RepoCatalogDelta 形式的全量目录；调用方按快照恢复自己的视图。 \\
+\code{catalogDelta(sinceEpoch)} & 按本 Repo 的目录 epoch 请求变化；空变化与查不到单个对象不是同一个结果，不能把其他 Repo 的 epoch 当作游标。 \\
+\code{catalogLookup(objectName)} & 精确读取一个对象的 manifest，再生成 AVAILABLE 条目；无类型、类别、前缀或标签过滤参数。 \\
+Python orchestration & 查询编排、目录交换和 repair 属于独立路径；C++ 类型存在不表示已在 C++ 启动这些服务。 \\
+\bottomrule
+\end{longtable}
+
+\subsection{lookup 的实际失败与锁边界}
+RepoCore 先在目录锁外调用 store->get(objectName)，再锁住目录状态构造条目和 catalogEpoch。对象缺失或存储异常沿路径传播，不承诺返回空集合。该顺序不保证存储与目录是一份线性一致快照；并发删除/更新时，调用方不可将条目视为永久可读凭据。handleCatalogLookup 将请求字节解释为对象名，返回条目 JSON。
+
+\subsection{副本判断例子}
+目录声称 P1、P2 保存 artifact X 时，下载还需验证 X 的 manifest 和实际字节；若 P2 不可读，不能继续统计为本轮已验证的第二副本。repair 应遵守 tombstone、retention 和 repairAllowed；旧目录 AVAILABLE 信息不能无条件复活已删除对象。TG-04 将进一步规定跨后端能力及提交/恢复一致性。
+
+\subsection{完整签名与源码定位}
+
+\Needspace{7\baselineskip}
 \textbf{API-b28b415568be}\quad public\par
+\textbf{所属符号：}\code{ndnsf_distributed_repo::RepoCore::catalogSnapshot}\par
 \begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
 RepoCatalogDelta catalogSnapshot() const;
 \end{Verbatim}
 \textbf{源码：}\path{NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoCore.hpp}，第 60 行。\par
 
+\Needspace{7\baselineskip}
 \textbf{API-e296daab62b3}\quad public\par
+\textbf{所属符号：}\code{ndnsf_distributed_repo::RepoCore::catalogDelta}\par
 \begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
 RepoCatalogDelta catalogDelta(uint64_t sinceEpoch) const;
 \end{Verbatim}
 \textbf{源码：}\path{NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoCore.hpp}，第 62 行。\par
 
+\Needspace{7\baselineskip}
 \textbf{API-2c18852cdee0}\quad public\par
+\textbf{所属符号：}\code{ndnsf_distributed_repo::RepoCore::catalogLookup}\par
 \begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
 RepoCatalogEntry catalogLookup(const std::string& objectName) const;
 \end{Verbatim}
 \textbf{源码：}\path{NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoCore.hpp}，第 64 行。\par
 
-\subsection{目录数据}
-catalogStatus 报告本 Repo 的模式、epoch 和对象数；snapshot 是完整本地目录，delta 按目录 epoch 提供变化。冻结基线中的 C++ RepoCore::catalogLookup 只接受 objectName 并精确读取一个对象，不提供类型/类别组合过滤；扩展查询的目标见 TG-04。目录 epoch 不是 Core ControllerVersion。
+完整声明查询：\path{api/target-repo-reference.md}。
 
-\subsection{跨 Repo 行为}
-目录交换、同步和 repair 的 Python 编排不因为 C++ DTO 存在就自动启动。Replica metadata 声明、实际 Data 可读性、保留/删除状态必须分别核对。共享目录不意味着每个节点都拥有全部对象。
-
-\subsection{删除与保留}
-应用指定 object class、retention、repairAllowed 等语义，Repo 执行保存和删除规则；tombstone 不能被旧 repair 错误复活。catalog/control 入口的 C++ 与 Python 支持集合分别在参考中查证。
-
-\subsection{失败}
-缺失对象、校验错误、过期 lease、副本不足和控制命令拒绝不是同一错误。调用者按明确 operation/status 响应处理，不以空结果一概解释全部失败。
-
-完整声明查询：\path{api/target-inventory.json}。
-
+\Needspace{12\baselineskip}
 \section{DI API：Python 应用入口与原生句柄}
 \lead{AC-14 · DI 接口契约}
 
+\subsection{Python 与 C++ 是两个现存入口}
+APPClient.request 输入 model、task、input、timeout\_ms，可带 \code{options/objective/constraints/strategy}。model 描述模型身份，task 指定业务任务，input 是应用值，策略决定候选选择；显式 deployment 的 request 入口属于另一种调用形态。Python api 包重新导出 app\_sdk，不意味着运行时已经委托给 C++。
+
+\subsection{原生输入与选项}
+NativeApplicationInput 区分 Inline 和 RepositoryReference，携带任务及 schema 绑定；内联字节与 Repo 引用不能混填。NativeRequestOptions 的 timeoutMs 默认 30000，ackTimeoutMs 默认 5000，后者是前者之内的报价预算。NativeInferenceClient 创建 handle 并调度请求；目前生产 dispatch 仍在期限检查后返回 \code{NATIVE_REQUEST_PIPELINE_NOT_READY}。
+
+\subsection{句柄行为}
+
+\begin{longtable}{@{}p{43mm}p{119mm}@{}}
+\toprule
+项目 & 行为与调用含义 \\
+\midrule\endhead
+result(waitTimeout) & 局部等待超时抛 LOCAL\_WAIT\_TIMEOUT，请求仍可继续；不修改请求 deadline。Core I/O 线程正数等待预算抛 CORE\_IO\_WAIT\_FORBIDDEN。 \\
+cancel & 空句柄或已终态请求不重新提交终态；返回并不保证远端计算已经停止，也不等价于释放 Provider KV。 \\
+observe & 拒绝空 observer，回放已有事件；回放与新事件在独立通知队列串行排序。回调异常被捕获，捕获资源须存活至通知结束。 \\
+close / 生命周期 & client close 取消当前操作并关闭调度资源；等待者持有共享 operation。迟到 dispatch 在 phase/状态不符时退出，不复活请求。 \\
+NativeDiError & 保留 \code{code/domain/boundary/requestId/attempt}；调用者按错误字段分流，不能仅比较一段异常文案。 \\
+\bottomrule
+\end{longtable}
+
+\subsection{等待例子}
+应用给请求 30 秒预算，先用 100 毫秒局部等待显示进度。出现 LOCAL\_WAIT\_TIMEOUT 后可继续观察或再次等待，不应创建重复推理请求；只有应用明确结束业务才 cancel。这个例子解释句柄语义，不代表当前原生 requester 已能成功完成模型推理；接通路线见 TG-02。
+
+\subsection{完整签名与源码定位}
+
+\Needspace{7\baselineskip}
 \textbf{API-0ad867060005}\quad public-by-name\par
+\textbf{所属符号：}APPClient.request\par
 \begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
 def request(
         self,
@@ -511,7 +844,9 @@ def request(
 \end{Verbatim}
 \textbf{源码：}\path{NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/client.py}，第 307 行。\par
 
+\Needspace{7\baselineskip}
 \textbf{API-375b92c9a402}\quad public\par
+\textbf{所属符号：}\code{ndnsf::di::NativeInferenceClient::request}\par
 \begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
 NativeInferenceHandle request(
     const NativeModelRef& model,
@@ -522,30 +857,44 @@ NativeInferenceHandle request(
 \end{Verbatim}
 \textbf{源码：}\path{NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp}，第 121 行。\par
 
+\Needspace{7\baselineskip}
 \textbf{API-c0c25988d534}\quad public\par
+\textbf{所属符号：}\code{ndnsf::di::NativeInferenceHandle::result}\par
 \begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
 NativeInferenceResult result(std::chrono::milliseconds waitTimeout) const;
 \end{Verbatim}
 \textbf{源码：}\path{NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp}，第 95 行。\par
 
-\subsection{应用入口}
-APPClient.request 以 model、task、input、timeout\_ms 为必需业务输入，\code{options/objective/constraints/strategy} 按路径处理。InferenceClient 的 request\_model、request\_task 和 request(deployment, ...) 是不同入口；api 包的重导出不改变真实 owner。
+完整声明查询：\path{api/target-di-reference.md}。
 
-\subsection{原生数据}
-NativeApplicationInput 区分 Inline 与 RepositoryReference，携带任务和 schema 摘要；NativeRequestOptions 的 timeoutMs 默认 30000、ackTimeoutMs 默认 5000。NativeInferenceHandle 返回请求标识、\code{Pending/Succeeded/Failed/Cancelled} 状态；result(waitTimeout) 的等待期限不等于修改底层总 deadline。
-
-\subsection{当前限制}
-原生生产 dispatch 仍返回 \code{NATIVE_REQUEST_PIPELINE_NOT_READY}；已有 executor、timer、句柄与 Provider runtime 不能证明完整 C++ requester 链已接通。NativeDiError 保留 \code{code/domain/boundary/requestId/attempt}，调用者不应只比较异常文案。
-
-\subsection{生命周期}
-cancel 请求取消，observe 注册事件观察，close 停止 client；捕获资源须覆盖异步生命周期。Python 编排和 native 迁移的实际差异由 Spec182 跟踪，目标 PDF 本轮仍不自动增加尚未获用户单独确认的迁移设计。
-
-完整声明查询：\path{api/target-inventory.json}。
-
+\Needspace{12\baselineskip}
 \section{DI API：模型适配与角色放置扩展}
 \lead{AC-15 · DI 接口契约}
 
+\subsection{规划对象怎么连接}
+
+\begin{longtable}{@{}p{43mm}p{119mm}@{}}
+\toprule
+项目 & 行为与调用含义 \\
+\midrule\endhead
+模型描述 / 图快照 & 描述模型及 adapter 身份；inspect 得到真实图，planning graph 与 canonical ONNX graph 可有不同摘要，不能只因都叫 graphDigest 就混用。 \\
+NativeSplitCandidate & enumerate 返回的候选包含模型/图绑定和角色方案；候选数量受预算控制。候选是可验证的执行分解，不是任意 Provider 名单。 \\
+ProviderOfferV3 & 来自认证 ACK 的报价，经 admission 检查请求、attempt、模型/图、Provider、设备和新鲜度；不是从 capability 文本自行补全的运行承诺。 \\
+V3 proposal & proposeRoles 以绑定上下文、ackClosedDigest、角色、合格报价和 nowMs 提出放置；独立 validator 仍要校验覆盖、资源和身份。 \\
+\bottomrule
+\end{longtable}
+
+\subsection{两段模型例子}
+将线性模型的前半段作为 A、后半段作为 B，候选须说明 A 的输出与 B 的输入匹配。P1 报价能运行 A，P2 报价能运行 B，策略才可提出 A→P1、B→P2；如果 P2 只有模糊 has\_model 声明而缺该角色/设备证明，不能标为 exact reuse。若允许准备，则明确采用需装配/加载的路径，并把准备成本计入总期限。
+
+\subsection{扩展最小职责}
+\code{NativeModelSplitStrategy} 实现 identity 和 enumerate；NativePlacementStrategy 实现 identity 和 proposeRoles。adapter 拥有模型检查、输入编码、结果解码，由 registry 登记并在使用前固定。策略返回值不能给自己签发 grant。新增策略应以固定图、报价、时钟测试确定性和拒绝分支，再让实际 requester 选择它；仅创建子类不会改变默认路径。
+
+\subsection{完整签名与源码定位}
+
+\Needspace{7\baselineskip}
 \textbf{API-da75fc521e8b}\quad public\par
+\textbf{所属符号：}\code{ndnsf::di::NativeModelSplitStrategy::enumerate}\par
 \begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
 virtual std::vector<NativeSplitCandidate> enumerate(
     const NativeModelDescriptor& model,
@@ -554,7 +903,9 @@ virtual std::vector<NativeSplitCandidate> enumerate(
 \end{Verbatim}
 \textbf{源码：}\path{NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp}，第 172 行。\par
 
+\Needspace{7\baselineskip}
 \textbf{API-0f4ac0e590fd}\quad public\par
+\textbf{所属符号：}\code{ndnsf::di::NativePlacementStrategy::proposeRoles}\par
 \begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
 virtual NativeRolePlacementProposalV3 proposeRoles(
     const NativeOfferBindingContext& context, const std::string& ackClosedDigest,
@@ -563,24 +914,60 @@ virtual NativeRolePlacementProposalV3 proposeRoles(
 \end{Verbatim}
 \textbf{源码：}\path{NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp}，第 183 行。\par
 
-\subsection{切分输入}
-enumerate 输入模型描述、已检查的图快照和候选预算，输出 NativeSplitCandidate 集合。候选描述应与 adapter 的真实图、工件及预算绑定；不是先任意创造角色再让执行器猜测如何运行。
+完整声明查询：\path{api/target-di-reference.md}。
 
-\subsection{放置输入}
-proposeRoles 消费 \code{NativeOfferBindingContext}、ackClosedDigest、角色、已 admission 的 ProviderOfferV3 和 nowMs，返回带身份与验证信息的 V3 proposal。策略只能选择当前报价允许的角色/设备组合，不能从 capability 字符串推断现成 runtime。
-
-\subsection{实现时序}
-ACK\_CLOSED → adapter inspect/候选枚举 → offer admission → placement → artifacts/plan seal。planning graph 与 canonical ONNX graph 是可不同的身份空间；引用和 recipe 应绑定到正确对象。
-
-\subsection{扩展规则}
-新增策略实现 identity 与虚接口，保持确定的输入绑定、预算和拒绝行为。已有 \code{NativePreSplitFirstPlacement} 不代表所有模型都支持同一种切分；ONNX、Qwen、YOLO、Python llama 的后端支持分别核对。
-
-完整声明查询：\path{api/target-inventory.json}。
-
+\Needspace{12\baselineskip}
 \section{DI API：准备、发布后再绑定与封存}
 \lead{AC-16 · DI 接口契约}
 
+\subsection{阶段输入输出}
+
+\begin{longtable}{@{}p{43mm}p{119mm}@{}}
+\toprule
+项目 & 行为与调用含义 \\
+\midrule\endhead
+prepareInput / inspectModel & 绑定 task/schema、输入字节或引用和 NativeRequestControl；检查真实模型与图。control 保存 request/attempt、steady-clock deadline 和取消检查。 \\
+prepareRoles / validateRoles & 把候选转成可执行角色并检查一致性，不能先封存再猜测模型边界。 \\
+ensureArtifacts & 消费完整 candidate、proposal、control，通过发布端口确保制品；检查业务 root 原始字节及模型/profile/source/package 等身份。 \\
+bindPublishedRoles & 将发布后的 manifest/recipe 绑定到角色；保持角色、候选、Provider、设备选择不被偷偷更换，旧 exact-reuse 证明必须仍覆盖实际 recipe。 \\
+sealCore / grantView & 前者固定计划核心，后者形成授权所需视图；摘要对应具体规范对象，不是任意 JSON 文本。 \\
+finalizeSecurity / project / encode & 完成安全材料后产生各 Provider 的选择投影并编码；不能在安全材料未绑定时发送一个看似完整的旧投影。 \\
+\bottomrule
+\end{longtable}
+
+\subsection{发布改变身份的例子}
+候选最初引用 canonical 模型，发布后得到切片 artifact root R 和装配 recipe Q。不能只把 URL 改为 R 而继续保留旧 planDigest 或驻留证明；bindPublishedRoles 校验选择不变并绑定 R/Q，再封存对应计划与授权。业务 root 摘要标识模型制品，Core 传输 manifest 描述取数封装，两者不能互代。
+
+\subsection{失败边界}
+取消/过期先由 control 拒绝继续准备；内容或角色不匹配在准备/再绑定阶段拒绝，grant 验证失败在安全边界拒绝。端口定向测试不证明生产 Repo/catalog 与 requester 已接通；实现状态集中见第 31 章与 Spec182，而非给每一步追加成功承诺。
+
+\subsection{完整签名与源码定位}
+
+\Needspace{7\baselineskip}
+\textbf{API-f8cbacddff79}\quad public\par
+\textbf{所属符号：}\code{ndnsf::di::NativeRequestPreparation::prepareInput}\par
+\begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
+NativePreparedInput prepareInput(const NativeModelDescriptor& model,
+                                   std::string taskName,
+                                   std::string inputSchemaDigest,
+                                   std::string optionsSchemaDigest,
+                                   std::vector<std::uint8_t> payload,
+                                   std::string repositoryReference,
+                                   std::chrono::steady_clock::time_point deadline) const;
+\end{Verbatim}
+\textbf{源码：}\path{NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp}，第 105 行。\par
+
+\Needspace{7\baselineskip}
+\textbf{API-dcca376d355a}\quad public\par
+\textbf{所属符号：}\code{ndnsf::di::NativeRequestPreparation::inspectModel}\par
+\begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
+NativeInspectedModel inspectModel(const NativePreparedInput& input) const;
+\end{Verbatim}
+\textbf{源码：}\path{NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp}，第 113 行。\par
+
+\Needspace{7\baselineskip}
 \textbf{API-2d8e39c7fc67}\quad public\par
+\textbf{所属符号：}\code{ndnsf::di::NativeRequestPreparation::ensureArtifacts}\par
 \begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
 NativeArtifactBinding ensureArtifacts(const NativeInspectedModel& model,
                                         const NativeSplitCandidate& candidate,
@@ -589,7 +976,9 @@ NativeArtifactBinding ensureArtifacts(const NativeInspectedModel& model,
 \end{Verbatim}
 \textbf{源码：}\path{NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp}，第 121 行。\par
 
+\Needspace{7\baselineskip}
 \textbf{API-d192a8a670da}\quad public\par
+\textbf{所属符号：}\code{ndnsf::di::NativeRequestPreparation::bindPublishedRoles}\par
 \begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
 static std::vector<NativeSelectionRoleV3> bindPublishedRoles(
     const NativeInspectedModel& model, const NativeSplitCandidate& candidate,
@@ -597,7 +986,9 @@ static std::vector<NativeSelectionRoleV3> bindPublishedRoles(
 \end{Verbatim}
 \textbf{源码：}\path{NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp}，第 128 行。\par
 
+\Needspace{7\baselineskip}
 \textbf{API-1df2153e06a6}\quad public\par
+\textbf{所属符号：}\code{ndnsf::di::NativePlanSealer::sealCore}\par
 \begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
 static NativePlacementPlanCore sealCore(
     const NativePlanningSnapshot& snapshot,
@@ -606,37 +997,98 @@ static NativePlacementPlanCore sealCore(
 \end{Verbatim}
 \textbf{源码：}\path{NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanSealer.hpp}，第 114 行。\par
 
-\subsection{准备职责}
-prepareInput 绑定 task/schema、payload 或 Repo reference 及 steady-clock deadline；inspectModel 获取真实模型/图身份；\code{prepareRoles/validateRoles} 校验候选角色。NativeRequestControl 将 deadline、request/attempt 和取消检查带入准备流程。
+\Needspace{7\baselineskip}
+\textbf{API-550c3b9b50b5}\quad public\par
+\textbf{所属符号：}\code{ndnsf::di::NativePlanSealer::grantView}\par
+\begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
+static NativeProviderGrantView grantView(
+    const NativePlacementPlanCore& core,
+    const NativeProviderPlanningView& provider,
+    const NativeSecurityPolicySnapshot& security);
+\end{Verbatim}
+\textbf{源码：}\path{NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanSealer.hpp}，第 125 行。\par
 
-\subsection{发布后的身份}
-ensureArtifacts 使用完整 candidate、proposal 和 control，不能只验证返回摘要格式。当前准备 owner 会核对发布后的业务 root 原始字节与模型/profile/source/package 等身份；业务 root digest 与 Core 传输 manifest 是不同对象。
+\Needspace{7\baselineskip}
+\textbf{API-e3e459f19b03}\quad public\par
+\textbf{所属符号：}\code{ndnsf::di::NativePlanSealer::project}\par
+\begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
+static NativeSelectionProjectionV3 project(
+    const NativeSealedPlan& sealed, const std::string& provider,
+    const NativeRoleProjectionInputs& inputs);
+\end{Verbatim}
+\textbf{源码：}\path{NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanSealer.hpp}，第 138 行。\par
 
-\subsection{再绑定}
-bindPublishedRoles 在保持角色、候选、Provider 和设备不变的条件下，将最终 manifest/recipe 绑定回角色。旧 exact-reuse 证明若不能覆盖新 recipe，应拒绝，不能沿用旧 ready 标签。详细字段见当前头文件和 API 参考。
+\Needspace{7\baselineskip}
+\textbf{API-07a74268daf4}\quad public\par
+\textbf{所属符号：}\code{ndnsf::di::NativePlanSealer::encode}\par
+\begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
+static std::vector<std::uint8_t> encode(
+    const NativeSelectionProjectionV3& projection);
+\end{Verbatim}
+\textbf{源码：}\path{NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanSealer.hpp}，第 142 行。\par
 
-\subsection{封存与边界}
-sealCore、grantView、finalizeSecurity、project、encode 构成计划/安全投影的不同步骤。端口测试通过不等于真实 catalog/Repo、Core publisher 与 requester 默认链已接通；新准备/发布组件的接线状态仍需 Spec182 证据。
+完整声明查询：\path{api/target-di-reference.md}。
 
-完整声明查询：\path{api/target-inventory.json}。
-
+\Needspace{12\baselineskip}
 \section{DI API：Provider 注册、授权与执行}
 \lead{AC-17 · DI 接口契约}
 
+\subsection{组成一个 Provider}
+NativeServiceDefinition 声明 serviceName 和模型支持，\code{NativeProviderHandlerConfig} 提供处理配置；serve 返回必须保存的 \code{NativeServiceRegistration}。执行层 NativeProviderSession 持有 plan、assignment、DependencyIo、runnerFactory 和 worker 数，按角色 registerRunner。plan 描述做什么，assignment 指定谁做，DependencyIo 指定怎样获取/发布边数据，runnerFactory 提供实际后端。
+
+\subsection{执行次序}
+Core scoped handler 接受并验证 Selection 后，NativeProviderHandler 取得协作认证上下文，核对计划、角色、lease 和 grant；再构造/调用 session。executeRoleAsync 返回 future<ProviderRoleResult>，调用方须处理 future 的异常并保留 session/I/O 生命周期。source role 可用初始输入，有依赖的角色等直接前驱输出，不需要凭空增加全局所有节点 Ready 屏障。
+
+\subsection{grant 从哪里来}
+\code{verifyAndUnwrapNativeGrant} 的输入来自认证选择上下文和 Provider 投影，不能使用应用随意填写的 requester/plan 字符串代替已认证来源。服务权限允许调用，execution lease 约束资源，request-scoped grant 约束受保护模型与计划；三个条件不能互相代替。默认 plaintext-v1 路径与 ProtectedRuntime 明文生命周期管理要分别说明。
+
+\subsection{关闭与迟到工作}
+保存服务注册句柄直到停服，close 阻断该 generation 的新工作和晚到发布；应用还需排空已启动 worker。关闭服务、释放运行 lease、释放缓存状态和删除 artifact 是不同操作。真实后端/设备以及迁移接线状态由第 31 章与当前 Spec 记录。
+
+\subsection{完整签名与源码定位}
+
+\Needspace{7\baselineskip}
 \textbf{API-b5abfc9b9043}\quad public\par
+\textbf{所属符号：}\code{ndnsf::di::NativeInferenceProvider::serve}\par
 \begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
 NativeServiceRegistration serve(const NativeServiceDefinition& service,
                                   const NativeProviderHandlerConfig& config);
 \end{Verbatim}
 \textbf{源码：}\path{NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceProvider.hpp}，第 98 行。\par
 
-\textbf{API-859789c40049}\quad public\par
+\Needspace{7\baselineskip}
+\textbf{API-1ec58fcbe7cc}\quad public\par
+\textbf{所属符号：}\code{ndnsf::di::NativeProviderSession::NativeProviderSession}\par
 \begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
-void close() noexcept;
+NativeProviderSession(NativeExecutionPlan plan,
+                        NativeProviderAssignment assignment,
+                        std::shared_ptr<DependencyIo> dependencyIo,
+                        std::shared_ptr<NativeModelRunnerFactory> runnerFactory,
+                        std::size_t workerCount = std::thread::hardware_concurrency());
 \end{Verbatim}
-\textbf{源码：}\path{NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceProvider.hpp}，第 64 行。\par
+\textbf{源码：}\path{NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderSession.hpp}，第 19 行。\par
 
+\Needspace{7\baselineskip}
+\textbf{API-79b6adfd9bf2}\quad public\par
+\textbf{所属符号：}\code{ndnsf::di::NativeProviderSession::registerRunner}\par
+\begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
+void
+  registerRunner(const NativeModelRunnerSpec& spec);
+\end{Verbatim}
+\textbf{源码：}\path{NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderSession.hpp}，第 25 行。\par
+
+\Needspace{7\baselineskip}
+\textbf{API-5ea3dea813e9}\quad public\par
+\textbf{所属符号：}\code{ndnsf::di::NativeProviderSession::executeRoleAsync}\par
+\begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
+std::future<ProviderRoleResult>
+  executeRoleAsync(const std::string& sessionId, const std::string& role);
+\end{Verbatim}
+\textbf{源码：}\path{NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderSession.hpp}，第 34 行。\par
+
+\Needspace{7\baselineskip}
 \textbf{API-070f116bfa58}\quad public\par
+\textbf{所属符号：}\code{ndnsf::di::verifyAndUnwrapNativeGrant}\par
 \begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
 NativeGrantVerificationResult
 verifyAndUnwrapNativeGrant(const std::string& wireJson,
@@ -654,160 +1106,406 @@ verifyAndUnwrapNativeGrant(const std::string& wireJson,
 \end{Verbatim}
 \textbf{源码：}\path{NDNSF-DistributedInference/cpp/ndnsf-di/NativeGrantVerifier.hpp}，第 57 行。\par
 
-\subsection{服务入口}
-serve 接收 NativeServiceDefinition 与 \code{NativeProviderHandlerConfig}，返回 \code{NativeServiceRegistration}；serviceName、模型支持和运行配置由 DI 声明，再交给 Core scoped registration。注册 handle 和 generation 属于实际生命周期，不只是名称句柄。
+完整声明查询：\path{api/target-di-reference.md}。
 
-\subsection{执行链}
-NativeProviderHandler → NativeProviderSession → \code{NativeProviderRuntime/ProviderRoleWorker} → model runner。角色使用 assignment/dependencyIo，准备和执行保留 request/attempt/grant 绑定；dependency watcher 的就绪不等于所有集群节点都就绪。
-
-\subsection{安全}
-\code{verifyAndUnwrapNativeGrant} 验证认证上下文与投影，再解包运行所需授权；\code{NativeProtectedArtifactStore/ProtectedRuntime} 分担受保护工件与运行记录。服务调用权限、execution lease 与 request-scoped grant 是三种不同授权/资源约束。
-
-\subsection{失败与关闭}
-错误 grant、过期 lease、角色不符、模型未准备和执行错误保留不同边界。关闭注册要阻止过期 generation 的 queued work 发布结果。默认模型配置可能使用 plaintext-v1，不能仅因存在 ProtectedRuntime 就声称所有工件均已加密。
-
-完整声明查询：\path{api/target-inventory.json}。
-
+\Needspace{12\baselineskip}
 \section{DI API：生成、KV 与会话延续}
 \lead{AC-18 · DI 接口契约}
 
-\textbf{API-b5b8e5590c3c}\quad public\par
+\subsection{四个 owner 与真正执行入口}
+实际生成入口是自由函数 \code{runNativeEpochCoordinator(config)}，不是一个名为 NativeEpochCoordinator 的对象方法。它组织各 role/epoch 执行；\code{QwenGenerationSessionStateMachine} 管理合法动作和终止原因；\code{NativeProviderSession/Runtime} 管理 Provider 解码/会话缓存；\code{NativeConversationCoordinator} 管理跨轮 checkpoint 的本地记录。请求句柄只负责外层等待/取消/观察，不承担这些全部职责。
+
+\subsection{Config 与结果中的关键字段}
+
+\begin{longtable}{@{}p{43mm}p{119mm}@{}}
+\toprule
+项目 & 行为与调用含义 \\
+\midrule\endhead
+runtime / plan / assignment / dependencyIo & 构造 config 时提供：runtime 是借用对象，plan/assignment 随 config 保存，I/O 为共享依赖。运行期间这些资源必须有效。 \\
+sessionId / requestId / role & 分别识别会话、请求和本地执行角色，localProvider 绑定本地参与者。lineagePlanDigest 来自认证的计划投影。 \\
+attemptEpoch / streamEpoch & 默认均为 1；attempt 表示替换尝试，stream 表示流实例，不是每输出一个 token 都增加 streamEpoch。 \\
+initialInputs / tokenInputName & 初始张量按名字映射，tokenInputName 默认 input\_ids；\code{stateInputNames/stateOutputNames} 描述模型状态端口。 \\
+maxEpochs / sampling & maxEpochs 默认 0，调用方需按有效配置设置界限；samplingMode 默认 Greedy，temperature=0、topK=1、topP=1、repetitionPenalty=1，seed=1750001。不由默认值推断随机采样已验收。 \\
+stateIdentityTemplate & 由 adapter/runner 提供不可变状态身份模板，运行时派生前缀/计数相关身份；\code{conversationStateBinding} 指向父轮保留状态，两者不是同一对象。 \\
+checkStop / 文本解码 & checkStop 在工作边界报告 Cancelled/Deadline；\code{stableTextDecoder(tokens}, final) 可暂留不稳定后缀，final 时完成 flush。 \\
+结果 & finalPayload 为 optional；\code{epochsExecuted/eventsPublished/prefixTokensRecomputed} 是实际计数。finalizedRole 是最后提交的准确角色身份，用于会话状态提升，不应由应用重新拼装。 \\
+\bottomrule
+\end{longtable}
+
+\subsection{Qwen 状态机：允许的调用}
+构造函数先 validate session spec；spec 绑定 \code{candidate/plan/model/artifact}、\code{logicalSessionId/requestId/serviceName}、attempt/token epoch、输入与生成 token 上界、deadline、context/feedback 与角色。下表描述实际方法分支。Preparing 虽在枚举中存在，但 activate 在此实现直接进入 Prefilling，不能据枚举名称补造一条执行链。
+\begin{longtable}{@{}p{43mm}p{119mm}@{}}
+\toprule
+项目 & 行为与调用含义 \\
+\midrule\endhead
+Created → Selecting & beginSelection，仅 Created 可调用。 \\
+Selecting/Rebuilding → Prefilling & activate；其他状态抛 logic\_error。 \\
+Prefilling → Decoding & completePrefill；之后才允许 token 计数和停止条件观察。 \\
+Decoding → Decoding & \code{completeTokenEpoch(attempt)} 要求 attempt 相同且未达 maxGeneratedTokens，返回增加后的生成计数；旧 attempt 或越界抛 logic\_error。 \\
+Decoding → Draining & beginDrain(reason)：Eos/StopSequence 先有对应 observe；MaxTokens 要计数恰好达到上限；ApplicationComplete 无这两项观察要求。 \\
+Draining → Completed & complete 必须使用相同 finish reason。claimTerminalResponse 第一次返回 true，后续 false；终态前调用抛异常。它只领取发送权，不负责网络发布。 \\
+Decoding → Rebuilding & beginReplacement 增加 attempt，最多到 2；再替换抛异常。生成计数保留，不把已交付前缀清零。 \\
+取消 / 期限 / 失败 & cancel 进入 Cancelled，已终态再次调用抛 logic\_error；terminate 要求非终态且 reason 非 None；expireIfDeadlineReached 在尚未到期或已终态时返回 false。 \\
+\bottomrule
+\end{longtable}
+
+\subsection{两 token 示例与替换}
+
+\begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
+// 示意：validSpec 已通过模型/角色/摘要与 deadline 校验
+QwenGenerationSessionStateMachine state(validSpec);
+state.beginSelection();
+state.activate();
+state.completePrefill();
+auto n1 = state.completeTokenEpoch(state.attemptEpoch());
+auto n2 = state.completeTokenEpoch(state.attemptEpoch());
+// 若生成上限是 2，按 MaxTokens 进入 Draining，再以同一原因 complete
+// 终态发布方必须先 claimTerminalResponse()，仅成功领取者发布
+\end{Verbatim}
+
+\subsection{token 循环与重复抑制}
+epoch coordinator 每角色/轮次调用 NativeModelRunner::run；此路径不使用兼容的单 Provider runStreamed。attempt 2 的 committedPrefixTokenIds 用于重算并核对已提交前缀，抑制重复事件。缓存观测中的 actualNewInputExtent 可能是 token 数，也可能是激活元素数量，不能一律计为 token。checkpointFinalize 是保留会话时的状态补齐阶段，默认 false、上限 32；不发布新的 token 事件。终端文本、事件数量与 KV 包含的前缀必须分别对齐。
+
+\subsection{KV 操作与资源状态}
+
+\begin{longtable}{@{}p{43mm}p{119mm}@{}}
+\toprule
+项目 & 行为与调用含义 \\
+\midrule\endhead
+lookupConversationState & 返回 optional<TensorBundle>；空结果不能作为命中。binding 校验错误可能抛异常，不是所有失败都返回空值。 \\
+pin / unpin & pin 校验 binding、状态与有效期并增加 pinCount；unpin 递减，计数归零回到 IDLE。pin 不是续期或重新授权。 \\
+\code{pauseConversationStateToHost} & 仅匹配、未过期、GPU\_RESIDENT、IDLE 且未 pin 的条目可迁移；Host 空间不足或 adapter 暂停失败返回 false。它改变驻留位置，不新建对话轮次。 \\
+\code{prefetchConversationStateToGpu} & 返回 future<bool>，必须等待结果并处理异常；发起预取不表示已在 GPU。\code{cancelConversationStatePrefetch} 与请求取消是不同动作。 \\
+\code{releaseConversationState} & 按 binding 释放缓存条目；与 unpin（减少引用保护）不同，也不删除已经保存的会话 journal。 \\
+提升缓存 & \code{promoteDecodeStateToConversation} 使用真实执行后的 session/role 和 binding；不可只凭请求号复用另一模型、recipe、前缀或安全域的 KV。 \\
+\bottomrule
+\end{longtable}
+
+\subsection{从第 N 轮延续到 N+1 轮}
+前提是 coordinator 已有父轮记录（或先 restore 加载），Provider 仍有与父 binding 匹配的状态。beginTurn 不能单独启动一个从未登记的新对话：它要求非空 \code{conversationId/serviceName/planRoleMapDigest/parentCheckpointDigest/requestContractDigest}、正 \code{parentContextEpoch/retentionDeadlineMs/request} attempt，并在内存记录中核对父 epoch、摘要、服务和角色映射；不匹配抛 \code{DI_NATIVE_CONVERSATION_PARENT_MISMATCH}。这里仅检查 retention deadline 非零，不自行完成墙钟过期验证。
+
+\subsection{checkpoint 的三个步骤}
+
+\begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
+// continuation 指向已登记父记录；requestId 为本轮新请求
+auto turn = journal.beginTurn(continuation, requestId, 1);
+// 真实生成结束后填写 completed：同 request/attempt、tokenIds、
+// providerStateDigest，且 complete=true；不能用局部 token 事件冒充
+auto checkpoint = journal.prepareCheckpoint(turn, completed);
+auto record = journal.commitTurn(turn, checkpoint);
+// 下一轮引用 record.checkpoint 的 successor epoch 与摘要
+\end{Verbatim}
+
+\subsection{journal 的实际限制}
+prepareCheckpoint 拒绝 aborted、request/attempt 不同、未完成、空 token 列表或空 providerStateDigest，报 \code{DI_NATIVE_CONVERSATION_ATTEMPT_INCOMPLETE}。prefixDigest 当前由包含会话/轮次/请求/父摘要/Provider 状态及 token 列表的拼接材料计算，不是仅 token 原始字节摘要。commitTurn 检查父记录未变化，否则报 \code{DI_NATIVE_CONVERSATION_STATE_CHANGED}；写临时文件再 rename 并更新内存。当前没有显式 fsync/输出流失败检查，不能宣称崩溃耐久提交。restore 清空并读取本地 JSON，解析错误可能传播；它不会恢复远端 GPU KV。abortTurn 当前没有持久化或实际修改 turn.aborted 的动作，不能把注释中的 fence 当已实现取消屏障。上述缺口保留为目标改进和 Spec182 待验收边界。
+
+\subsection{完整签名与源码定位}
+
+\Needspace{7\baselineskip}
+\textbf{API-d18cce8f82c2}\quad public\par
+\textbf{所属符号：}\code{ndnsf::di::runNativeEpochCoordinator}\par
+\begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
+NativeEpochCoordinatorResult
+runNativeEpochCoordinator(NativeEpochCoordinatorConfig config);
+\end{Verbatim}
+\textbf{源码：}\path{NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp}，第 153 行。\par
+
+\Needspace{7\baselineskip}
+\textbf{API-493dc84e5029}\quad public\par
+\textbf{所属符号：}\code{ndnsf::di::QwenGenerationSessionStateMachine::completeTokenEpoch}\par
+\begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
+std::uint32_t completeTokenEpoch();
+\end{Verbatim}
+\textbf{源码：}\path{NDNSF-DistributedInference/cpp/adapters/qwen/QwenGenerationSession.hpp}，第 143 行。\par
+
+\Needspace{7\baselineskip}
+\textbf{API-5772f7ae757f}\quad public\par
+\textbf{所属符号：}\code{ndnsf::di::QwenGenerationSessionStateMachine::completeTokenEpoch}\par
+\begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
+std::uint32_t completeTokenEpoch(std::uint64_t attemptEpoch);
+\end{Verbatim}
+\textbf{源码：}\path{NDNSF-DistributedInference/cpp/adapters/qwen/QwenGenerationSession.hpp}，第 144 行。\par
+
+\Needspace{7\baselineskip}
+\textbf{API-6fd4334a3745}\quad public\par
+\textbf{所属符号：}\code{ndnsf::di::QwenGenerationSessionStateMachine::beginReplacement}\par
+\begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
+void beginReplacement();
+\end{Verbatim}
+\textbf{源码：}\path{NDNSF-DistributedInference/cpp/adapters/qwen/QwenGenerationSession.hpp}，第 148 行。\par
+
+\Needspace{7\baselineskip}
+\textbf{API-30fbe53f3d3e}\quad public\par
+\textbf{所属符号：}\code{ndnsf::di::QwenGenerationSessionStateMachine::cancel}\par
 \begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
 void cancel();
 \end{Verbatim}
-\textbf{源码：}\path{NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp}，第 96 行。\par
+\textbf{源码：}\path{NDNSF-DistributedInference/cpp/adapters/qwen/QwenGenerationSession.hpp}，第 151 行。\par
 
-\subsection{状态 owner}
-NativeEpochCoordinator、GenerationEpochLineage、DecodeStateIdentity 与 \code{ConversationStateBinding} 分别管理 generation 轮次、谱系、解码状态及会话绑定。QwenGenerationSession 处理模型执行/KV，tokenizer 和采样策略属于 DI，不进入 Core。
+\Needspace{7\baselineskip}
+\textbf{API-855d3ec7afd2}\quad public\par
+\textbf{所属符号：}\code{ndnsf::di::QwenGenerationSessionStateMachine::claimTerminalResponse}\par
+\begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
+bool claimTerminalResponse();
+\end{Verbatim}
+\textbf{源码：}\path{NDNSF-DistributedInference/cpp/adapters/qwen/QwenGenerationSession.hpp}，第 153 行。\par
 
-\subsection{身份与输出}
-KV cache 的身份包含模型、工件、adapter/runner、role、rank、split、tokenizer 及 lineage 等契约字段；不能按文件路径或请求号单独复用。token 事件、文本片段、stream complete 与 inference result 的最终返回区分处理。
+\Needspace{7\baselineskip}
+\textbf{API-1013f1ace7ee}\quad public\par
+\textbf{所属符号：}\code{ndnsf::di::NativeProviderSession::lookupConversationState}\par
+\begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
+std::optional<TensorBundle>
+  lookupConversationState(const ConversationStateBinding& binding,
+                          std::uint64_t nowMs);
+\end{Verbatim}
+\textbf{源码：}\path{NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderSession.hpp}，第 51 行。\par
 
-\subsection{暂停和恢复}
-pin、release、restore 与会话 journal 是不同阶段；恢复需核对绑定和保存时状态，不能静默把旧 cache 接到新模型或新 recipe。生成取消应阻止后续 token/终态误发布。
+\Needspace{7\baselineskip}
+\textbf{API-10751ce7a09d}\quad public\par
+\textbf{所属符号：}\code{ndnsf::di::NativeProviderSession::pauseConversationStateToHost}\par
+\begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
+bool
+  pauseConversationStateToHost(const ConversationStateBinding& binding,
+                               std::uint64_t nowMs);
+\end{Verbatim}
+\textbf{源码：}\path{NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderSession.hpp}，第 55 行。\par
 
-\subsection{验证边界}
-当前原生 generation/tokenizer 组件已有局部实现和定向证据，但完整 requester/no-Python、流式与会话资格由 Spec182 控制。本轮 API 文档不升级这些运行结论。完整方法与字段分别见相应 C++ 及 Python 声明参考。
+\Needspace{7\baselineskip}
+\textbf{API-6b3bff150575}\quad public\par
+\textbf{所属符号：}\code{ndnsf::di::NativeProviderSession::prefetchConversationStateToGpu}\par
+\begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
+std::future<bool>
+  prefetchConversationStateToGpu(const ConversationStateBinding& binding,
+                                  std::uint64_t nowMs);
+\end{Verbatim}
+\textbf{源码：}\path{NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderSession.hpp}，第 59 行。\par
 
-完整声明查询：\path{api/target-inventory.json}。
+\Needspace{7\baselineskip}
+\textbf{API-daca2274c659}\quad public\par
+\textbf{所属符号：}\code{ndnsf::di::NativeProviderSession::pinConversationState}\par
+\begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
+bool
+  pinConversationState(const ConversationStateBinding& binding,
+                       std::uint64_t nowMs);
+\end{Verbatim}
+\textbf{源码：}\path{NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderSession.hpp}，第 66 行。\par
 
+\Needspace{7\baselineskip}
+\textbf{API-32c8162259ef}\quad public\par
+\textbf{所属符号：}\code{ndnsf::di::NativeProviderSession::releaseConversationState}\par
+\begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
+bool
+  releaseConversationState(const ConversationStateBinding& binding);
+\end{Verbatim}
+\textbf{源码：}\path{NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderSession.hpp}，第 73 行。\par
+
+\Needspace{7\baselineskip}
+\textbf{API-1e7281b52fd5}\quad public\par
+\textbf{所属符号：}\code{ndnsf::di::NativeConversationCoordinator::beginTurn}\par
+\begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
+NativeConversationTurn beginTurn(const NativeConversationContinuation& continuation,
+                                   std::string requestId,
+                                   std::uint64_t attempt = 1) const;
+\end{Verbatim}
+\textbf{源码：}\path{NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp}，第 73 行。\par
+
+\Needspace{7\baselineskip}
+\textbf{API-a550281a7724}\quad public\par
+\textbf{所属符号：}\code{ndnsf::di::NativeConversationCoordinator::prepareCheckpoint}\par
+\begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
+NativeConversationCheckpoint prepareCheckpoint(
+    const NativeConversationTurn& turn, const NativeCompletedAttempt& completed) const;
+\end{Verbatim}
+\textbf{源码：}\path{NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp}，第 77 行。\par
+
+\Needspace{7\baselineskip}
+\textbf{API-8c7c62356113}\quad public\par
+\textbf{所属符号：}\code{ndnsf::di::NativeConversationCoordinator::commitTurn}\par
+\begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
+NativeConversationRecord commitTurn(const NativeConversationTurn& turn,
+                                      const NativeConversationCheckpoint& checkpoint);
+\end{Verbatim}
+\textbf{源码：}\path{NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp}，第 79 行。\par
+
+\Needspace{7\baselineskip}
+\textbf{API-64cbde6b1261}\quad public\par
+\textbf{所属符号：}\code{ndnsf::di::NativeConversationCoordinator::restore}\par
+\begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
+void restore(const std::filesystem::path& journalRoot);
+\end{Verbatim}
+\textbf{源码：}\path{NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp}，第 81 行。\par
+
+完整声明查询：\path{api/target-di-reference.md}。
+
+\Needspace{12\baselineskip}
 \section{UAV API：飞控边界与操作权限}
 \lead{AC-19 · UAV 接口契约}
 
+\subsection{内部接口与线载荷}
+FlightControllerBackend 是 Drone 应用内部接口，sendMavlink(frame, commandName) 接收原始 MAVLink 字节与命令标签，返回 Fields 键值结果。Fields 不提供统一静态类型/单位检查；调用者必须遵循 UavProtocol 与当前服务 handler 的命令字段解析，不能把任意 map 当已经过认证的命令。AC-19 所列为接口声明，Mock/UDP/串口行为要按实际 backend 分开。
+
+\subsection{完整命令路径}
+GS 从 UI 状态和操作选择构造命令，经 /UAV/MAVLink/Execute 调用目标 Drone；Core 检查服务权限、token 和认证绑定，UAV 路径处理操作 lease，应用/飞控处理 readiness 与执行。收到网络 Response、backend 发送字节和飞控 COMMAND\_ACK 是三个事件；UI 应保留失败所处阶段，不能把一次本地 send 成功显示成车辆已经执行。
+
+\subsection{三类状态的例子}
+
+\begin{longtable}{@{}p{43mm}p{119mm}@{}}
+\toprule
+项目 & 行为与调用含义 \\
+\midrule\endhead
+Core 授权失败 & 尚未获得服务执行资格；修复身份/策略，不能重新解释为飞控忙。 \\
+OperatorAuthorityLease 失效 & 操作员对目标/范围/期限的应用授权不成立；issuer 不是 ServiceController，lease 版本不是 Controller epoch。 \\
+readiness 不满足 & 例如应用所需新鲜遥测缺失；lease 有效不意味着所有飞行动作都可执行。 \\
+Mock 与设备 backend & Mock 返回可用于界面/状态机检查的结果；UDP/串口涉及线程、链路、ACK 和设备错误，其成功不能从 Mock 外推。 \\
+\bottomrule
+\end{longtable}
+
+\subsection{扩展边界}
+新 backend 实现能力、遥测、命令结果与停止行为，保留实际错误。GS Qt 回调不能延长已销毁设备对象的生命周期。当前仍缺一份覆盖所有命令的规范字段/ACK 表，不能把本章当完整飞控线协议规范；TG-05 规定类型化与兼容转换的收敛方向。
+
+\subsection{当前 Execute 字段与 backend 返回}
+Fields 的实际类型是 map<string,string>。Drone Execute handler 读取 command（缺省 unknown）和 mavlink\_hex（缺省空字符串），hexDecode 后直接调用 backend->sendMavlink；返回附加 backend 和 drone\_id，以 accepted 字符串是否为 true 决定外层响应成功。此 handler 内未见 OperatorAuthorityLease 或 readiness 的独立重验；GS 的操作门与 UI 拒绝不能作为该网络入口已强制执行这两项检查的证据。
+\begin{longtable}{@{}p{43mm}p{119mm}@{}}
+\toprule
+项目 & 行为与调用含义 \\
+\midrule\endhead
+accepted / ack\_result & Mock 返回 \code{mock-accepted/mock-rejected}。设备 backend 连接/发送失败分别返回 \code{connect-failed/send-failed}；其他命令以 accepted 或 in-progress ACK 判为 accepted=true。 \\
+manual\_control & 成功发送后仅收集约 5 ms 遥测，设置 \code{manual-control-forwarded}，并据转发判为接受，不等同等待 COMMAND\_ACK。 \\
+其他设备命令 & sendMavlink 传入 700 ms ACK 等待预算；整次调用还含连接和发送，不保证总耗时严格等于 700 ms。内部持 socket mutex，可能阻塞调用线程。 \\
+forwarded\_bytes & 记录帧大小；send-failed 分支也填 frame.size()，不是实际成功发送字节的可靠统计。 \\
+ack\_source / fc\_state & ack\_source 是 mock 或实际 transport；fc\_state 及附加遥测由后端产生，字段集合并非所有 backend 完全一致。 \\
+\bottomrule
+\end{longtable}
+
+\subsection{完整签名与源码定位}
+
+\Needspace{7\baselineskip}
 \textbf{API-b1e46a3def66}\quad public\par
+\textbf{所属符号：}\code{FlightControllerBackend::sendMavlink}\par
 \begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
 virtual Fields sendMavlink(const std::vector<uint8_t>& frame,
                              const std::string& commandName) = 0;
 \end{Verbatim}
 \textbf{源码：}\path{NDNSF-UAV-APP/drone/DroneServiceContainer.inc.hpp}，第 8 行。\par
 
-\textbf{API-c4f6835e7d67}\quad public\par
-\begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
-Fields
-  sendMavlink(const std::vector<uint8_t>& frame,
-              const std::string& commandName) override
-\end{Verbatim}
-\textbf{源码：}\path{NDNSF-UAV-APP/drone/DroneServiceContainer.inc.hpp}，第 79 行。\par
+完整声明查询：\path{api/target-uav-reference.md}。
 
-\textbf{API-76b58451421c}\quad public\par
-\begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
-Fields
-  sendMavlink(const std::vector<uint8_t>& frame,
-              const std::string& commandName) override
-\end{Verbatim}
-\textbf{源码：}\path{NDNSF-UAV-APP/drone/DroneServiceContainer.inc.hpp}，第 314 行。\par
-
-\subsection{接口性质}
-FlightControllerBackend 位于 DroneServiceContainer 的应用内部实现，sendMavlink 接收原始 MAVLink frame 和 commandName，返回 Fields。Mock 与 UDP/串口实现具有不同外部副作用；同一签名不表示同一硬件资格。
-
-\subsection{网络入口}
-Ground Station 构造命令，经 /UAV/MAVLink/Execute 等 NDNSF 服务发送，Drone 的 handler 校验身份、操作权限和 readiness 后转交 backend。Fields 是应用键值协议，不等于类型完整的安全证明。
-
-\subsection{三层前置条件}
-Core 的 User/Provider 权限、UAV OperatorAuthorityLease、飞行 readiness/safety gate 分别独立。操作 lease 的 issuer 不是 Core Controller epoch；GPS 应取飞控 telemetry，不能用任意业务参数冒充真实车辆状态。
-
-\subsection{生命周期与失败}
-持续接收链路、串口/UDP worker、Qt UI 回调有不同执行上下文。链路断开、设备拒绝、操作 lease 到期和服务超时应保留原边界。新增飞控 backend 需实现能力、状态和停机行为，不在 Core 中加入 MAVLink 指令解释。
-
-完整声明查询：\path{api/target-inventory.json}。
-
+\Needspace{12\baselineskip}
 \section{UAV API：任务、补偿与终端报告}
 \lead{AC-20 · UAV 接口契约}
 
+\subsection{任务和调用各自存活多久}
+UavMissionSession 持有长生命周期 mission；part 是可独立完成的工作单元，incident/job 是有限分析调用。assignPart、markPartExecuting、completePart、markPartMissing 维护 part。Core requestId/token 属于每次 invocation，新 attempt 不沿用旧调用令牌。
+
+\subsection{两个 part 的补偿例子}
+任务含 P0、P1：P0 已完成并有有效结果，P1 失联进入 missing。compensateMissingParts 只为 P1 形成补偿工作，不重跑 P0。补偿使用新的 attempt/调用绑定；若旧 P1 结果晚到，acceptTerminalReport 仍要匹配当前任务、job、attempt、计划与 terminal owner，不能覆盖新 attempt。全部必要 part 有有效结果才是 mission 完成。
+
+\subsection{返回、恢复与资源}
+bool 表示本地迁移/报告接受，reason 指针可接收诊断；false 不表示车辆已停止。snapshot/restore 保存/载入业务状态，\code{reconcileVehicleAndStreams} 再与实际车辆/流对照；不能恢复一个 Active 标记就继续发命令。incident 的 \code{retryAnalysis/retriesUsed} 另有有界重试，不由 mission 无限重试代替。
+
+\subsection{完整签名与源码定位}
+
+\Needspace{7\baselineskip}
 \textbf{API-9439cf6844b2}\quad public\par
+\textbf{所属符号：}\code{ndnsf::examples::uav::UavMissionSession::compensateMissingParts}\par
 \begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
 bool compensateMissingParts(std::string* reason = nullptr);
 \end{Verbatim}
 \textbf{源码：}\path{NDNSF-UAV-APP/shared/UavMissionSession.hpp}，第 49 行。\par
 
+\Needspace{7\baselineskip}
 \textbf{API-8bc23c85a02b}\quad public\par
+\textbf{所属符号：}\code{ndnsf::examples::uav::UavMissionSession::acceptTerminalReport}\par
 \begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
 bool acceptTerminalReport(const UavTerminalReport& report,
                             std::string* reason = nullptr);
 \end{Verbatim}
 \textbf{源码：}\path{NDNSF-UAV-APP/shared/UavMissionSession.hpp}，第 60 行。\par
 
+\Needspace{7\baselineskip}
 \textbf{API-f10389b9d21d}\quad public\par
+\textbf{所属符号：}\code{ndnsf::examples::uav::UavIncidentCoordinator::acceptReport}\par
 \begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
 bool acceptReport(const UavTerminalReport& report, uint64_t nowMs,
                     std::string* reason = nullptr);
 \end{Verbatim}
 \textbf{源码：}\path{NDNSF-UAV-APP/ground-station/UavIncidentCoordinator.hpp}，第 62 行。\par
 
-\subsection{任务模型}
-UavMissionSession 是长期 mission owner，包含 part、stream、incident 和有限 job。\code{assignPart/markPartExecuting/completePart/markPartMissing} 维护任务分片；compensateMissingParts 只处理 missing 集合，新 invocation 获取新 token/assignment。
+完整声明查询：\path{api/target-uav-reference.md}。
 
-\subsection{返回与原因}
-这些 bool 方法表示本地状态迁移/报告是否被接受；可选 reason 输出诊断，false 不能等价于车辆已安全停止。acceptTerminalReport 核对 mission/job/attempt、计划与 terminal owner，旧 attempt 的成功报告不能完成新任务。
-
-\subsection{恢复}
-snapshot/restore 和 \code{reconcileVehicleAndStreams} 将持久任务状态与实际飞控/流状态对照；恢复不是把保存的 Active 标记直接当作仍在执行。UavIncidentCoordinator 的 retryAnalysis 和 retriesUsed 管理有界分析重试。
-
-\subsection{协作扩展}
-新增任务类型保持 mission/part/job 各自身份和状态机；使用 Core Begin/Commit 协作原语，应用定义航点和证据。不要把长期 mission 绑为一个无限存活的 Core invocation。
-
-完整声明查询：\path{api/target-inventory.json}。
-
+\Needspace{12\baselineskip}
 \section{UAV API：视频管线、遥测与录像}
 \lead{AC-21 · UAV 接口契约}
 
+\subsection{队列输入与准确返回}
+BoundedLatestFrameQueue 构造要求 maxFrames 和 maxBytes 都为正，否则 invalid\_argument。push 接收含字节的 UavVideoFrame；单帧超过字节容量返回 false 并记录 \code{frame-exceeds-byte-capacity}；否则先丢最旧帧直到数量和字节均容纳新帧，再入队返回 true。因此 true 也可能伴随历史帧被丢弃。
+
+\subsection{popLatest 的例子}
+队列依次存有帧 10、11、12，popLatest 只返回 12，把 10、11 计为 dropped，并清空队列和字节计数；空队列返回 nullopt。此策略适合及时显示，不能用于要求逐段完整的制品下载或完整录像。push/pop/clear 的内部 mutex 保护队列，不自动保护外部解码器。
+
+\subsection{遥测值与时间}
+
+\begin{longtable}{@{}p{43mm}p{119mm}@{}}
+\toprule
+项目 & 行为与调用含义 \\
+\midrule\endhead
+地理/速度/电量 & latitudeE7/longitudeE7 为角度的 10\textasciicircum{}7 缩放，altitudeMm 为毫米，groundSpeedMmps 为毫米每秒，batteryPermille 为千分比。 \\
+sampleId / sourceTimestampNs & 分别用于样本身份和源时间；receivedTimestampNs 是接收时间，不能与源时间混作同一观测。 \\
+admit 返回 & \code{valid/stateAdvanced/newSample/duplicate/outOfOrder/ageNs/reason} 分开解释；格式有效的旧样本不一定推进最新状态。 \\
+声学块 & \code{CompleteAcousticBlockAdmission} 要求领域完整性和截止期；Core 的 FEC/签名恢复不直接等价于声学业务可用。 \\
+\bottomrule
+\end{longtable}
+
+\subsection{捕获到录像的分工}
+capture/编码产生带 session、frameId、PTS、keyframe 等元数据的帧，Core 流负责命名传输，GS 解码后经最新帧队列显示。录像路径保存原签名/保护 packet 与应用 manifest 到 Repo，记录 gap、retention 与游标；直播显示丢帧和录像数据缺口分别统计。相机链已有具体入口，不能据 DataProductReference 推定所有遥测/检测结果已自动录制。
+
+\subsection{完整签名与源码定位}
+
+\Needspace{7\baselineskip}
 \textbf{API-a064d74ab888}\quad public\par
+\textbf{所属符号：}\code{ndnsf::examples::uav::BoundedLatestFrameQueue::push}\par
 \begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
 bool push(UavVideoFrame frame);
 \end{Verbatim}
 \textbf{源码：}\path{NDNSF-UAV-APP/shared/UavVideoPipeline.hpp}，第 65 行。\par
 
+\Needspace{7\baselineskip}
 \textbf{API-11ef609f2477}\quad public\par
+\textbf{所属符号：}\code{ndnsf::examples::uav::BoundedLatestFrameQueue::popLatest}\par
 \begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
 std::optional<UavVideoFrame> popLatest();
 \end{Verbatim}
 \textbf{源码：}\path{NDNSF-UAV-APP/shared/UavVideoPipeline.hpp}，第 66 行。\par
 
+\Needspace{7\baselineskip}
 \textbf{API-730501b40b2c}\quad public\par
+\textbf{所属符号：}\code{ndnsf::examples::uav::LatestTelemetryAdmission::admit}\par
 \begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
 TelemetryAdmissionResult admit(const std::vector<uint8_t>& wire,
                                  uint64_t receivedTimestampNs);
 \end{Verbatim}
 \textbf{源码：}\path{NDNSF-UAV-APP/shared/UavSensorStreams.hpp}，第 57 行。\par
 
-\subsection{媒体参数}
-视频 pipeline 区分 capture/decode、access unit、PTS、keyframe 和 sessionGeneration；BoundedLatestFrameQueue 以最新帧策略控制积压，不能用于必须完整保留的制品下载。GStreamer 与 LegacyPipe capability 探测决定可用后端。
+完整声明查询：\path{api/target-uav-reference.md}。
 
-\subsection{遥测数据}
-CompactTelemetrySample 的 latitudeE7/longitudeE7、altitudeMm、groundSpeedMmps、batteryPermille 明确单位；sampleId 与 sourceTimestampNs 用于去重/新旧判断。\code{LatestTelemetryAdmission::admit} 返回 \code{valid/stateAdvanced/newSample/duplicate/outOfOrder/ageNs/reason}，不以单一 bool 概括全部状态。
-
-\subsection{完整块}
-\code{CompleteAcousticBlockAdmission} 对不透明声学块判断完整性和截止期；数据来源可以包括 Core 的恢复 provenance。Core 处理签名/FEC，UAV 判断一帧、一份遥测或一个完整块的领域可用性。
-
-\subsection{录像链}
-录像保存原始带签名/保护的 packet 与应用 manifest，再通过 Repo API 写入。录制开关独立于直播显示；gap、retention 和 playback 游标属于应用管理。Camera/Repo 完整产品链不能自动外推所有传感器录制都已实现。
-
-完整声明查询：\path{api/target-inventory.json}。
-
+\Needspace{12\baselineskip}
 \section{UAV API：检测与多视角识别扩展}
 \lead{AC-22 · UAV 接口契约}
 
+\subsection{输入对象与责任}
+MultiViewRecognitionJob 绑定任务/attempt、目标与精确视图引用；model profile 指定模型输入要求，verified views 提供已验证视图，terminalOwner 指定结果归属。executeMultiViewJob 返回 \code{MultiViewExecutionResult}；入口先通过 \code{validateMultiViewJobAndViews} 校验任务、视角数量/来源、时间窗口和模型绑定，不能让算法自行忽略缺视角。
+
+\subsection{两个视角的例子}
+Drone A 和 B 在同一事件窗口提供两份已验证画面引用，job 指向这两份精确对象。选定算法消费对应视图并产生结果，\code{UavIncidentCoordinator::acceptMultiViewResult} 再校验当前 job/attempt/owner。把 A 的同一画面重复两次不应作为两架独立 Drone 的证据；单视角基线另行构造输入。
+
+\subsection{算法扩展与错误}
+\code{IMultiViewRecognitionAlgorithm} 是 C++ 扩展点；默认 \code{DeterministicMultiViewAlgorithm} 是确定性研究/测试夹具。真实 ONNX CPUExecutionProvider 路径在 \code{tools/mvcnn_onnx_worker.py}，必须显式核对调用方接线。缺视角、模型/摘要不符、任务过期、错误 owner 与模型执行失败保留各自原因。GS 的单帧 YOLO、UAV 多视角 job、NDNSF-DI 规划是三个入口，不能混称一次分布式推理。
+
+\subsection{完整签名与源码定位}
+
+\Needspace{7\baselineskip}
 \textbf{API-1da9ec7348c6}\quad public\par
+\textbf{所属符号：}\code{ndnsf::examples::uav::executeMultiViewJob}\par
 \begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
 MultiViewExecutionResult
 executeMultiViewJob(const MultiViewRecognitionJob& job,
@@ -819,40 +1517,28 @@ executeMultiViewJob(const MultiViewRecognitionJob& job,
 \end{Verbatim}
 \textbf{源码：}\path{NDNSF-UAV-APP/shared/UavMultiViewRecognition.hpp}，第 195 行。\par
 
+\Needspace{7\baselineskip}
 \textbf{API-01be92408d26}\quad public\par
+\textbf{所属符号：}\code{ndnsf::examples::uav::UavIncidentCoordinator::acceptMultiViewResult}\par
 \begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
 bool acceptMultiViewResult(const FusedRecognitionResult& result, uint64_t nowMs,
                              std::string* reason = nullptr);
 \end{Verbatim}
 \textbf{源码：}\path{NDNSF-UAV-APP/ground-station/UavIncidentCoordinator.hpp}，第 66 行。\par
 
-\subsection{参数与输出}
-executeMultiViewJob 输入 job、model profile、已验证 views、terminalOwner 和算法对象，输出 \code{MultiViewExecutionResult}。默认算法是 \code{DeterministicMultiViewAlgorithm} 测试/研究夹具，不能宣称默认执行了真实 MVCNN 模型。
+完整声明查询：\path{api/target-uav-reference.md}。
 
-\subsection{前置条件}
-\code{validateMultiViewJobAndViews} 检查任务与视角数、来源、模型/窗口等绑定；终端报告还由 coordinator 核对 \code{job/attempt/terminalOwner}。最少独立 drone 视角和单视角配对基线是不同实验输入，不应混为一次模型调用。
-
-\subsection{模型实现}
-\code{IMultiViewRecognitionAlgorithm} 是 C++ 扩展点；\code{tools/mvcnn_onnx_worker.py} 有真实 ONNX CPUExecutionProvider 路径。单帧 GS/ObjectDetection YOLO worker 和多视角任务、分布式 DI 请求是不同入口，默认接线需分别核对。
-
-\subsection{失败与验证}
-缺视角、模型/输入摘要不符、任务过期、错误 owner 与模型失败分别报告。新增算法保留输入绑定、结果字段与可复核模型身份；接口存在不证明真实硬件准确率或分布式运行资格。
-
-完整声明查询：\path{api/target-inventory.json}。
-
+\Needspace{12\baselineskip}
 \section{API 扩展与跨模块调用检查}
 \lead{AC-23 · Core 接口契约}
 
-\subsection{新增服务}
-先在应用模块定义 request/response/event 或 Fields 语义；注册 Provider handler，写明 ACK 接受条件和 Selection 后执行动作；再实现 User 调用、取消/超时与结果绑定。Core 不增加模型/航点领域字段来替代应用 payload。
+\subsection{新增服务的最小闭环}
+以 echo 服务为例：应用定义可序列化请求/响应，Provider 在 ACK 阶段只判断资格，Selection 通过后执行并返回；保存 scoped registration；User 用 AC-03 普通调用保存 requestId 并处理响应/超时；停服时关闭注册并排空工作。跨网络测试应覆盖无权限、无候选、错误响应与迟到回调，而不仅是本地 handler 直接调用。Core 不为这个服务增加领域字段。
 
-\subsection{新增策略或存储后端}
-实现对应虚接口，显式声明能力和不支持项；确保运行入口真正选择该实现。DI strategy 必须消费认证 ACK/offer，Repo backend 必须保留 artifact 身份和提交阶段，UAV algorithm 必须核对 job 与视角。
+\subsection{新增 DI 策略的最小闭环}
+实现 AC-15 的 identity/enumerate 或 proposeRoles，用固定模型图和认证报价生成候选；交由共享 validator，准备/发布/再绑定后封存；将实现登记到实际使用的 registry/配置；验证默认调用链确实选中该策略。只增加类、只通过 mock 端口测试或只生成更多 API ID，都不能表示该功能接入产品。
 
-\subsection{开发者核对顺序}
-查签名/默认值 → 查参数与数据结构 → 查触发点/前置条件 → 查 owner 的状态迁移与失败出口 → 查回调/资源回收 → 查调用方 → 执行与变更相称的验证 → 同步 Spec、设计及 Git。
+\subsection{设计维护的交付单元}
+API 变化同时登记输入/输出字段、单位、错误、状态、线程与资源、源码位置和验证证据。按 MANAGEMENT.md 更新当前设计；目标独立维护，PLANNED 不写成 existing。生成器验证声明，人工审阅验证解释能否指导调用；每个 Spec 在 spec-design-changes.md 记录前后行为，不用文件数量或模板段落宣称完整。
 
-\subsection{文档管理}
-执行 MANAGEMENT.md 与 AGENTS.md 的同步要求。API 变更不仅是改函数名；默认值、线程承诺、权限门、状态和错误语义改变也必须登记。当前/目标必须独立维护，完整声明参考更新后人工审查差异。
-
-完整声明查询：\path{api/target-inventory.json}。
+完整声明查询：\path{api/target-core-reference.md}。

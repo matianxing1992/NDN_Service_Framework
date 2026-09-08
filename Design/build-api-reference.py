@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Generate source-bound API inventories without importing product modules."""
 from pathlib import Path
-import ast, hashlib, io, json, os, subprocess, tokenize
+import ast, hashlib, io, json, os, subprocess, tokenize, sys
 
 root = Path(__file__).resolve().parent.parent
 design = root / 'Design'
@@ -12,10 +12,23 @@ prefixes = {'Core': ('ndn-service-framework/', 'pythonWrapper/ndnsf/'),
 tracked = subprocess.check_output(['git','ls-files','-z'], cwd=root).decode().split('\0')
 from design_state import api_files
 files = api_files(root)
+initial_hashes = {p: hashlib.sha256((root/p).read_bytes()).hexdigest() for p in files}
+generator_hash = hashlib.sha256(b''.join((design/name).read_bytes() for name in
+    ('build-api-reference.py', 'extract-cpp-api.cjs', 'design_state.py'))).hexdigest()
+previous = {}
+if '--changed-only' in sys.argv:
+    captured = design/'api/inventory.json'
+    if captured.exists():
+        old_inventory = json.loads(captured.read_text())
+        if old_inventory.get('generator_sha256') == generator_hash:
+            previous = {f['file']: f for f in old_inventory['files']
+                        if f['file'] in files and f['module'] == files[f['file']]}
+changed = {p for p in files if p not in previous or previous[p]['sha256'] != initial_hashes[p]}
 
-cpp = sorted(p for p in files if not p.endswith('.py'))
+cpp = sorted(p for p in changed if not p.endswith('.py'))
 parsed = json.loads(subprocess.check_output(['node',str(design/'extract-cpp-api.cjs')], input=json.dumps(cpp), text=True, cwd=root))
-by_file = {f['file']: f for f in parsed}
+by_file = {p: f for p, f in previous.items() if p not in changed}
+by_file.update({f['file']: f for f in parsed})
 
 def header(source, node):
     lines = source.splitlines(True)
@@ -32,6 +45,7 @@ def header(source, node):
     raise ValueError('Missing signature: ' + str(node.lineno))
 
 for p in sorted(files):
+    if p not in changed: continue
     source = (root/p).read_text()
     if p.endswith('.py'):
         tree = ast.parse(source); entries=[]; exports=[]
@@ -53,22 +67,15 @@ for p in sorted(files):
         e['id']='API-'+hashlib.sha256(identity.encode()).hexdigest()[:12]
         e['surface']='test-helper' if e.get('test_only') else ('application-internal' if files[p]=='UAV' or '/detail/' in p or '/experimental/' in p else 'declared-interface')
 
-inventory=dict(revision='R1',baseline_commit=subprocess.check_output(['git','rev-parse','HEAD'],cwd=root,text=True).strip(),
+if files != api_files(root) or any(hashlib.sha256((root/p).read_bytes()).hexdigest()!=initial_hashes[p] for p in files):
+    raise RuntimeError('API source changed during extraction; no inventory published')
+inventory=dict(revision='R3',baseline_commit=subprocess.check_output(['git','rev-parse','HEAD'],cwd=root,text=True).strip(),
+    generator_sha256=generator_hash,
     scope='C++ canonical headers: public/protected declarations and fields; Python canonical packages: public-name definitions/annotated fields and literal exports. No macro expansion, inherited-member expansion or ABI/runtime qualification.',
     files=[by_file[p] for p in sorted(by_file)])
 dest=design/'api';dest.mkdir(exist_ok=True)
 (dest/'inventory.json').write_text(json.dumps(inventory,ensure_ascii=False,indent=2)+'\n')
-for module in prefixes:
-    parts=['# '+module+' API 参考\n\n声明从源码语法树提取。保留准确类型、参数、默认值、限定符和原始注释；注释不代替运行证据。中文语义契约见开发者指南。protected 扩展点、测试 helper、应用内部接口各自标注。\n']
-    for f in inventory['files']:
-        if f['module']!=module: continue
-        parts.append('\n## '+f['file']+'\n\n源码 SHA-256：`'+f['sha256']+'`。\n')
-        if f.get('exports'):parts.append('\n显式导出：`'+'`, `'.join(f['exports'])+'`。\n')
-        if f['parse_errors']:parts.append('\n解析边界：'+json.dumps(f['parse_errors'],ensure_ascii=False)+'\n')
-        for e in f['entries']:
-            parts.append('\n### '+e['id']+' · '+e['name'].replace('\n',' ')+'\n\n'+e['access']+' / '+e['surface']+'；[源码](../../'+f['file']+'#L'+str(e['line'])+')\n\n```'+('python' if f['file'].endswith('.py') else 'cpp')+'\n'+e['signature']+'\n```\n')
-            if e.get('documentation'): parts.append('\n原始接口说明：\n\n```text\n'+e['documentation']+'\n```\n')
-    (dest/(module.lower()+'-reference.md')).write_text('\n'.join(line.rstrip() for line in ''.join(parts).splitlines())+'\n')
+subprocess.run(['python3',str(design/'render-api-reference.py')], check=True)
 errors=[(f['file'],f['parse_errors']) for f in inventory['files'] if f['parse_errors']]
 print(json.dumps({'files':len(inventory['files']),'entries':sum(len(f['entries']) for f in inventory['files']),'per_module':{m:sum(len(f['entries']) for f in inventory['files'] if f['module']==m) for m in prefixes},'parse_errors':errors},ensure_ascii=False))
 

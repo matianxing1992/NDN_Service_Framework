@@ -1,5 +1,19 @@
 # Failure Log and Evidence Index
 
+## 2026-09-08 — Design R3 table layout
+
+后续第三轮版面门通过；补可读目标参考后的 pre-build 门又检测到并行 ONNX 源码漂移，
+保持拒绝旧基线，核对差异后重采样。该拒绝证明漂移门生效，不是新源代码失败。
+第五轮全量扫描期间 ONNX 头文件再变化；新增显式增量扫描与发布前全集 SHA 检查，
+仍保留原始解析和完整校验，不以忽略漂移完成文档。
+
+R3 双 PDF 编译成功，版面门拒绝 AC-13 两个带参数方法名在表格列溢出。
+修正标识符断行识别并补回归；首轮原始目录保留，不作为产品或最终 PDF PASS。
+见 [R3 evidence](../specs/182-native-di-python-bindings/evidence/design-r3-20260908.md)。
+
+最终独立构建 82/87 页、5 项文档工具回归、源码/API/版面 PASS；原失败轮次保留。
+内容修订与全量函数语义审计区分，详见证据中的逐章追踪。
+
 ## 2026-09-08 — Spec182 Qwen candidate ingress identity
 
 candidate identity r1 build PASS，86/87 cases PASS；完整 Qwen oracle 发现 native

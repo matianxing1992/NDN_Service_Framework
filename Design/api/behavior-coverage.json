@@ -258,7 +258,17 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        49
+        51
+      ]
+    },
+    {
+      "api_id": "API-6b35326ad52b",
+      "file": "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp",
+      "name": "ndnsf::di::inspectNativeOnnxPlanningGraph",
+      "status": "SIGNATURE_ONLY",
+      "contracts": [],
+      "declaration_lines": [
+        89
       ]
     },
     {
@@ -268,7 +278,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        78
+        100
       ]
     },
     {
@@ -278,7 +288,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        89
+        111
       ]
     },
     {
@@ -288,7 +298,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        99
+        121
       ]
     },
     {
@@ -298,7 +308,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        110
+        132
       ]
     },
     {
@@ -865,8 +875,10 @@
       "api_id": "API-493dc84e5029",
       "file": "NDNSF-DistributedInference/cpp/adapters/qwen/QwenGenerationSession.hpp",
       "name": "ndnsf::di::QwenGenerationSessionStateMachine::completeTokenEpoch",
-      "status": "SIGNATURE_ONLY",
-      "contracts": [],
+      "status": "CONTRACT_REFERENCED",
+      "contracts": [
+        "AC-18"
+      ],
       "declaration_lines": [
         143
       ]
@@ -875,8 +887,10 @@
       "api_id": "API-5772f7ae757f",
       "file": "NDNSF-DistributedInference/cpp/adapters/qwen/QwenGenerationSession.hpp",
       "name": "ndnsf::di::QwenGenerationSessionStateMachine::completeTokenEpoch",
-      "status": "SIGNATURE_ONLY",
-      "contracts": [],
+      "status": "CONTRACT_REFERENCED",
+      "contracts": [
+        "AC-18"
+      ],
       "declaration_lines": [
         144
       ]
@@ -915,8 +929,10 @@
       "api_id": "API-6fd4334a3745",
       "file": "NDNSF-DistributedInference/cpp/adapters/qwen/QwenGenerationSession.hpp",
       "name": "ndnsf::di::QwenGenerationSessionStateMachine::beginReplacement",
-      "status": "SIGNATURE_ONLY",
-      "contracts": [],
+      "status": "CONTRACT_REFERENCED",
+      "contracts": [
+        "AC-18"
+      ],
       "declaration_lines": [
         148
       ]
@@ -945,8 +961,10 @@
       "api_id": "API-30fbe53f3d3e",
       "file": "NDNSF-DistributedInference/cpp/adapters/qwen/QwenGenerationSession.hpp",
       "name": "ndnsf::di::QwenGenerationSessionStateMachine::cancel",
-      "status": "SIGNATURE_ONLY",
-      "contracts": [],
+      "status": "CONTRACT_REFERENCED",
+      "contracts": [
+        "AC-18"
+      ],
       "declaration_lines": [
         151
       ]
@@ -965,8 +983,10 @@
       "api_id": "API-855d3ec7afd2",
       "file": "NDNSF-DistributedInference/cpp/adapters/qwen/QwenGenerationSession.hpp",
       "name": "ndnsf::di::QwenGenerationSessionStateMachine::claimTerminalResponse",
-      "status": "SIGNATURE_ONLY",
-      "contracts": [],
+      "status": "CONTRACT_REFERENCED",
+      "contracts": [
+        "AC-18"
+      ],
       "declaration_lines": [
         153
       ]
@@ -1122,13 +1142,13 @@
       ]
     },
     {
-      "api_id": "API-bad88525aa71",
+      "api_id": "API-f48539cd3086",
       "file": "NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloPlanner.hpp",
       "name": "ndnsf::di::yolo::NativeYoloComponentSplit::NativeYoloComponentSplit",
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        28
+        29
       ]
     },
     {
@@ -1138,7 +1158,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        31
+        32
       ]
     },
     {
@@ -1148,7 +1168,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        32
+        33
       ]
     },
     {
@@ -2145,8 +2165,10 @@
       "api_id": "API-1e7281b52fd5",
       "file": "NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp",
       "name": "ndnsf::di::NativeConversationCoordinator::beginTurn",
-      "status": "SIGNATURE_ONLY",
-      "contracts": [],
+      "status": "CONTRACT_REFERENCED",
+      "contracts": [
+        "AC-18"
+      ],
       "declaration_lines": [
         73
       ]
@@ -2165,8 +2187,10 @@
       "api_id": "API-a550281a7724",
       "file": "NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp",
       "name": "ndnsf::di::NativeConversationCoordinator::prepareCheckpoint",
-      "status": "SIGNATURE_ONLY",
-      "contracts": [],
+      "status": "CONTRACT_REFERENCED",
+      "contracts": [
+        "AC-18"
+      ],
       "declaration_lines": [
         77
       ]
@@ -2175,8 +2199,10 @@
       "api_id": "API-8c7c62356113",
       "file": "NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp",
       "name": "ndnsf::di::NativeConversationCoordinator::commitTurn",
-      "status": "SIGNATURE_ONLY",
-      "contracts": [],
+      "status": "CONTRACT_REFERENCED",
+      "contracts": [
+        "AC-18"
+      ],
       "declaration_lines": [
         79
       ]
@@ -2185,8 +2211,10 @@
       "api_id": "API-64cbde6b1261",
       "file": "NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp",
       "name": "ndnsf::di::NativeConversationCoordinator::restore",
-      "status": "SIGNATURE_ONLY",
-      "contracts": [],
+      "status": "CONTRACT_REFERENCED",
+      "contracts": [
+        "AC-18"
+      ],
       "declaration_lines": [
         81
       ]
@@ -2215,8 +2243,10 @@
       "api_id": "API-d18cce8f82c2",
       "file": "NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp",
       "name": "ndnsf::di::runNativeEpochCoordinator",
-      "status": "SIGNATURE_ONLY",
-      "contracts": [],
+      "status": "CONTRACT_REFERENCED",
+      "contracts": [
+        "AC-18"
+      ],
       "declaration_lines": [
         153
       ]
@@ -2849,10 +2879,8 @@
       "api_id": "API-b5b8e5590c3c",
       "file": "NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp",
       "name": "ndnsf::di::NativeInferenceHandle::cancel",
-      "status": "CONTRACT_REFERENCED",
-      "contracts": [
-        "AC-18"
-      ],
+      "status": "SIGNATURE_ONLY",
+      "contracts": [],
       "declaration_lines": [
         95
       ]
@@ -2973,10 +3001,8 @@
       "api_id": "API-859789c40049",
       "file": "NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceProvider.hpp",
       "name": "ndnsf::di::NativeServiceRegistration::close",
-      "status": "CONTRACT_REFERENCED",
-      "contracts": [
-        "AC-17"
-      ],
+      "status": "SIGNATURE_ONLY",
+      "contracts": [],
       "declaration_lines": [
         64
       ]
@@ -3469,8 +3495,10 @@
       "api_id": "API-550c3b9b50b5",
       "file": "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanSealer.hpp",
       "name": "ndnsf::di::NativePlanSealer::grantView",
-      "status": "SIGNATURE_ONLY",
-      "contracts": [],
+      "status": "CONTRACT_REFERENCED",
+      "contracts": [
+        "AC-16"
+      ],
       "declaration_lines": [
         125
       ]
@@ -3499,8 +3527,10 @@
       "api_id": "API-e3e459f19b03",
       "file": "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanSealer.hpp",
       "name": "ndnsf::di::NativePlanSealer::project",
-      "status": "SIGNATURE_ONLY",
-      "contracts": [],
+      "status": "CONTRACT_REFERENCED",
+      "contracts": [
+        "AC-16"
+      ],
       "declaration_lines": [
         138
       ]
@@ -3509,8 +3539,10 @@
       "api_id": "API-07a74268daf4",
       "file": "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanSealer.hpp",
       "name": "ndnsf::di::NativePlanSealer::encode",
-      "status": "SIGNATURE_ONLY",
-      "contracts": [],
+      "status": "CONTRACT_REFERENCED",
+      "contracts": [
+        "AC-16"
+      ],
       "declaration_lines": [
         142
       ]
@@ -3522,7 +3554,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        29
+        31
       ]
     },
     {
@@ -3532,7 +3564,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        52
+        72
       ]
     },
     {
@@ -3542,7 +3574,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        53
+        74
       ]
     },
     {
@@ -3552,7 +3584,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        54
+        76
       ]
     },
     {
@@ -3562,7 +3594,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        70
+        94
       ]
     },
     {
@@ -3572,7 +3604,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        71
+        96
       ]
     },
     {
@@ -3582,7 +3614,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        72
+        98
       ]
     },
     {
@@ -3592,7 +3624,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        89
+        115
       ]
     },
     {
@@ -3602,7 +3634,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        110
+        136
       ]
     },
     {
@@ -3612,7 +3644,37 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        119
+        145
+      ]
+    },
+    {
+      "api_id": "API-0ac7eb948966",
+      "file": "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp",
+      "name": "ndnsf::di::NativeRoleResourceRequirement::validate",
+      "status": "SIGNATURE_ONLY",
+      "contracts": [],
+      "declaration_lines": [
+        160
+      ]
+    },
+    {
+      "api_id": "API-3200fa4c6827",
+      "file": "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp",
+      "name": "ndnsf::di::NativeRoleResourceRequirement::canonicalJson",
+      "status": "SIGNATURE_ONLY",
+      "contracts": [],
+      "declaration_lines": [
+        162
+      ]
+    },
+    {
+      "api_id": "API-3059eeee5733",
+      "file": "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp",
+      "name": "ndnsf::di::NativeRoleResourceRequirement::estimatedPeakGpuMemoryBytes",
+      "status": "SIGNATURE_ONLY",
+      "contracts": [],
+      "declaration_lines": [
+        164
       ]
     },
     {
@@ -3622,7 +3684,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        144
+        179
       ]
     },
     {
@@ -3632,7 +3694,27 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        157
+        192
+      ]
+    },
+    {
+      "api_id": "API-bfc1e906a340",
+      "file": "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp",
+      "name": "ndnsf::di::NativeHybridPlan::validate",
+      "status": "SIGNATURE_ONLY",
+      "contracts": [],
+      "declaration_lines": [
+        204
+      ]
+    },
+    {
+      "api_id": "API-d3b656f1ca66",
+      "file": "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp",
+      "name": "ndnsf::di::NativeHybridPlan::canonicalJson",
+      "status": "SIGNATURE_ONLY",
+      "contracts": [],
+      "declaration_lines": [
+        205
       ]
     },
     {
@@ -3642,7 +3724,27 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        186
+        240
+      ]
+    },
+    {
+      "api_id": "API-d780bcaa2b01",
+      "file": "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp",
+      "name": "ndnsf::di::NativeSplitCandidate::canonicalJson",
+      "status": "SIGNATURE_ONLY",
+      "contracts": [],
+      "declaration_lines": [
+        242
+      ]
+    },
+    {
+      "api_id": "API-7f7de9cdf234",
+      "file": "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp",
+      "name": "ndnsf::di::NativeSplitCandidate::computedDigest",
+      "status": "SIGNATURE_ONLY",
+      "contracts": [],
+      "declaration_lines": [
+        243
       ]
     },
     {
@@ -3652,7 +3754,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        200
+        257
       ]
     },
     {
@@ -3662,7 +3764,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        207
+        264
       ]
     },
     {
@@ -3672,7 +3774,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        208
+        265
       ]
     },
     {
@@ -3684,7 +3786,7 @@
         "AC-15"
       ],
       "declaration_lines": [
-        209
+        266
       ]
     },
     {
@@ -3694,7 +3796,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        218
+        275
       ]
     },
     {
@@ -3704,7 +3806,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        219
+        276
       ]
     },
     {
@@ -3716,7 +3818,7 @@
         "AC-15"
       ],
       "declaration_lines": [
-        220
+        277
       ]
     },
     {
@@ -3726,7 +3828,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        229
+        286
       ]
     },
     {
@@ -3736,7 +3838,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        233
+        290
       ]
     },
     {
@@ -3746,7 +3848,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        235
+        292
       ]
     },
     {
@@ -3756,7 +3858,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        238
+        295
       ]
     },
     {
@@ -3766,7 +3868,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        250
+        307
       ]
     },
     {
@@ -3776,7 +3878,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        251
+        308
       ]
     },
     {
@@ -3786,7 +3888,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        252
+        309
       ]
     },
     {
@@ -3796,7 +3898,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        253
+        310
       ]
     },
     {
@@ -3806,7 +3908,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        255
+        312
       ]
     },
     {
@@ -3816,7 +3918,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        257
+        314
       ]
     },
     {
@@ -3826,7 +3928,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        264
+        321
       ]
     },
     {
@@ -3836,7 +3938,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        265
+        322
       ]
     },
     {
@@ -3846,7 +3948,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        266
+        323
       ]
     },
     {
@@ -3856,7 +3958,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        267
+        324
       ]
     },
     {
@@ -3866,7 +3968,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        274
+        331
       ]
     },
     {
@@ -3876,7 +3978,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        276
+        333
       ]
     },
     {
@@ -5023,8 +5125,10 @@
       "api_id": "API-1ec58fcbe7cc",
       "file": "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderSession.hpp",
       "name": "ndnsf::di::NativeProviderSession::NativeProviderSession",
-      "status": "SIGNATURE_ONLY",
-      "contracts": [],
+      "status": "CONTRACT_REFERENCED",
+      "contracts": [
+        "AC-17"
+      ],
       "declaration_lines": [
         19
       ]
@@ -5033,8 +5137,10 @@
       "api_id": "API-79b6adfd9bf2",
       "file": "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderSession.hpp",
       "name": "ndnsf::di::NativeProviderSession::registerRunner",
-      "status": "SIGNATURE_ONLY",
-      "contracts": [],
+      "status": "CONTRACT_REFERENCED",
+      "contracts": [
+        "AC-17"
+      ],
       "declaration_lines": [
         25
       ]
@@ -5063,8 +5169,10 @@
       "api_id": "API-5ea3dea813e9",
       "file": "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderSession.hpp",
       "name": "ndnsf::di::NativeProviderSession::executeRoleAsync",
-      "status": "SIGNATURE_ONLY",
-      "contracts": [],
+      "status": "CONTRACT_REFERENCED",
+      "contracts": [
+        "AC-17"
+      ],
       "declaration_lines": [
         34
       ]
@@ -5103,8 +5211,10 @@
       "api_id": "API-1013f1ace7ee",
       "file": "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderSession.hpp",
       "name": "ndnsf::di::NativeProviderSession::lookupConversationState",
-      "status": "SIGNATURE_ONLY",
-      "contracts": [],
+      "status": "CONTRACT_REFERENCED",
+      "contracts": [
+        "AC-18"
+      ],
       "declaration_lines": [
         51
       ]
@@ -5113,8 +5223,10 @@
       "api_id": "API-10751ce7a09d",
       "file": "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderSession.hpp",
       "name": "ndnsf::di::NativeProviderSession::pauseConversationStateToHost",
-      "status": "SIGNATURE_ONLY",
-      "contracts": [],
+      "status": "CONTRACT_REFERENCED",
+      "contracts": [
+        "AC-18"
+      ],
       "declaration_lines": [
         55
       ]
@@ -5123,8 +5235,10 @@
       "api_id": "API-6b3bff150575",
       "file": "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderSession.hpp",
       "name": "ndnsf::di::NativeProviderSession::prefetchConversationStateToGpu",
-      "status": "SIGNATURE_ONLY",
-      "contracts": [],
+      "status": "CONTRACT_REFERENCED",
+      "contracts": [
+        "AC-18"
+      ],
       "declaration_lines": [
         59
       ]
@@ -5143,8 +5257,10 @@
       "api_id": "API-daca2274c659",
       "file": "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderSession.hpp",
       "name": "ndnsf::di::NativeProviderSession::pinConversationState",
-      "status": "SIGNATURE_ONLY",
-      "contracts": [],
+      "status": "CONTRACT_REFERENCED",
+      "contracts": [
+        "AC-18"
+      ],
       "declaration_lines": [
         66
       ]
@@ -5163,8 +5279,10 @@
       "api_id": "API-32c8162259ef",
       "file": "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderSession.hpp",
       "name": "ndnsf::di::NativeProviderSession::releaseConversationState",
-      "status": "SIGNATURE_ONLY",
-      "contracts": [],
+      "status": "CONTRACT_REFERENCED",
+      "contracts": [
+        "AC-18"
+      ],
       "declaration_lines": [
         73
       ]
@@ -5223,8 +5341,10 @@
       "api_id": "API-f8cbacddff79",
       "file": "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp",
       "name": "ndnsf::di::NativeRequestPreparation::prepareInput",
-      "status": "SIGNATURE_ONLY",
-      "contracts": [],
+      "status": "CONTRACT_REFERENCED",
+      "contracts": [
+        "AC-16"
+      ],
       "declaration_lines": [
         105
       ]
@@ -5233,8 +5353,10 @@
       "api_id": "API-dcca376d355a",
       "file": "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp",
       "name": "ndnsf::di::NativeRequestPreparation::inspectModel",
-      "status": "SIGNATURE_ONLY",
-      "contracts": [],
+      "status": "CONTRACT_REFERENCED",
+      "contracts": [
+        "AC-16"
+      ],
       "declaration_lines": [
         113
       ]
@@ -27797,8 +27919,10 @@
       "api_id": "API-39b8d985de2c",
       "file": "NDNSF-DistributedRepo/pythonWrapper/py_repoclient/artifact_api.py",
       "name": "ArtifactRepositoryApi.begin_fetch",
-      "status": "SIGNATURE_ONLY",
-      "contracts": [],
+      "status": "CONTRACT_REFERENCED",
+      "contracts": [
+        "AC-12"
+      ],
       "declaration_lines": [
         914
       ]
@@ -30231,10 +30355,8 @@
       "api_id": "API-c4f6835e7d67",
       "file": "NDNSF-UAV-APP/drone/DroneServiceContainer.inc.hpp",
       "name": "MockFlightControllerBackend::sendMavlink",
-      "status": "CONTRACT_REFERENCED",
-      "contracts": [
-        "AC-19"
-      ],
+      "status": "SIGNATURE_ONLY",
+      "contracts": [],
       "declaration_lines": [
         79
       ]
@@ -30313,10 +30435,8 @@
       "api_id": "API-76b58451421c",
       "file": "NDNSF-UAV-APP/drone/DroneServiceContainer.inc.hpp",
       "name": "UdpFlightControllerBackend::sendMavlink",
-      "status": "CONTRACT_REFERENCED",
-      "contracts": [
-        "AC-19"
-      ],
+      "status": "SIGNATURE_ONLY",
+      "contracts": [],
       "declaration_lines": [
         314
       ]
@@ -38251,8 +38371,10 @@
       "api_id": "API-d154a2bbea78",
       "file": "ndn-service-framework/ExecutionLease.hpp",
       "name": "ndn_service_framework::ProviderExecutionLeaseTable::prepare",
-      "status": "SIGNATURE_ONLY",
-      "contracts": [],
+      "status": "CONTRACT_REFERENCED",
+      "contracts": [
+        "AC-09"
+      ],
       "declaration_lines": [
         112
       ]
@@ -38261,8 +38383,10 @@
       "api_id": "API-13c34e09371a",
       "file": "ndn-service-framework/ExecutionLease.hpp",
       "name": "ndn_service_framework::ProviderExecutionLeaseTable::commit",
-      "status": "SIGNATURE_ONLY",
-      "contracts": [],
+      "status": "CONTRACT_REFERENCED",
+      "contracts": [
+        "AC-09"
+      ],
       "declaration_lines": [
         115
       ]
@@ -38271,8 +38395,10 @@
       "api_id": "API-e156fa6d6cf2",
       "file": "ndn-service-framework/ExecutionLease.hpp",
       "name": "ndn_service_framework::ProviderExecutionLeaseTable::validateAndActivate",
-      "status": "SIGNATURE_ONLY",
-      "contracts": [],
+      "status": "CONTRACT_REFERENCED",
+      "contracts": [
+        "AC-09"
+      ],
       "declaration_lines": [
         120
       ]
@@ -38333,8 +38459,10 @@
       "api_id": "API-e43c54567dc6",
       "file": "ndn-service-framework/ExecutionLease.hpp",
       "name": "ndn_service_framework::ProviderExecutionLeaseTable::find",
-      "status": "SIGNATURE_ONLY",
-      "contracts": [],
+      "status": "CONTRACT_REFERENCED",
+      "contracts": [
+        "AC-09"
+      ],
       "declaration_lines": [
         153
       ]
@@ -48632,8 +48760,10 @@
       "api_id": "API-09fc656cb649",
       "file": "ndn-service-framework/ServiceUser.hpp",
       "name": "ndn_service_framework::ServiceUser::RequestService",
-      "status": "SIGNATURE_ONLY",
-      "contracts": [],
+      "status": "CONTRACT_REFERENCED",
+      "contracts": [
+        "AC-03"
+      ],
       "declaration_lines": [
         725
       ]

@@ -1,13 +1,15 @@
 # NDNSF 四模块设计
 
-**内容状态：NEEDS_REVISION。** [2026-09-08 逐章审阅](reviews/chapter-audit-20260908.md)
-发现 API 行为说明不足及若干勘误；R2 的构建/摘要检查 PASS 不代表开发者指南已经完整。
-审阅覆盖当前 62 章和目标 67 章，PDF 本轮未重写，具体补写顺序见报告。
+**内容状态：R3 REVISED。** 已按 [R2 逐章审阅](reviews/chapter-audit-20260908.md)
+修正确认的事实错误，重写 23 组关键 API 契约，补充字段、状态、失败和调用例子。
+见 [67 个原主题的修订记录及剩余边界](reviews/chapter-revision-r3-20260908.md)。
+四章重复补充已合入对应 API；当前/目标为 58/63 章。完整函数语义覆盖仍按清单逐项收敛，
+文档构建 PASS 不等于全部 API 或产品运行资格通过。
 
 本目录保存中文设计，覆盖 NDNSF Core、NDNSF-UAV、NDNSF-DI 和 NDNSF-Repo 的完整子系统视图。
 
 - [当前设计](current-design.pdf)：按源码核对职责、接口、控制与数据流程、状态、安全、恢复及实现边界。
-- [目标设计](target-design.pdf)：R2 独立冻结 API 基线，并纳入 TG-01 至 TG-05 五项 PLANNED 改进。
+- [目标设计](target-design.pdf)：保留独立冻结 API 基线，展开 TG-01 至 TG-05 的字段职责、状态、兼容与验收。
 - [覆盖矩阵](coverage-matrix.md)：章节与模块、核对入口的对应关系。
 - [验证记录](validation.md)：构建、版面和正文一致性检查。
 - [源码基线](source-baseline.json)：维护实现、配置及 API 输入的摘要、采样时间、提交与精确补丁；具体数量以清单为准。
@@ -36,11 +38,12 @@
 5. 文档不替代 active Spec，也不改变功能或运行资格验收。
 6. 每个 Spec 开始、目标变更和实现验收时同步 spec-design-changes.md；无设计变化也记录“无”，部分实现保持 PARTIAL。更新 PDF、正文和记录须属于同一文档提交。
 
-下一步：根据用户后续要求修改目标设计，保持当前设计作为可核对的实现基线。
+下一步：沿 Spec182 推进原生请求与生成/会话迁移，同步实际行为；其余目标在对应 Spec 中定稿，保留独立源码基线。
 
 ## API 更新命令
 
 源码 API 变化后执行 `python3 Design/build-api-reference.py`，只生成当前声明参考和当前契约 TeX；审查 diff 并补全 api-contracts.json 的中文语义后，再独立渲染。
+少量变化可加 `--changed-only`，仍核对全集与生成器身份；目标可读声明独立运行 `python3 Design/render-api-reference.py --target`。
 生成器使用 Node 和 web-tree-sitter/C++ wasm；本机复用 CodeGraph 安装，其他机器用 NDNSF_TREE_SITTER_ROOT 指向包含 web-tree-sitter 与 tree-sitter-wasms 的 node_modules。Python AST 不导入产品模块。
 运行 `python3 Design/test_design_state.py` 检查遗漏/旧 PDF/目标耦合回归；运行 `python3 Design/verify-api-reference.py` 检查源码全集、快照、声明、行为覆盖和双侧生成内容；运行 `python3 Design/verify-source-baseline.py` 与加 `--target` 的命令检查两侧可还原身份。
 PDF 构建后运行 `python3 Design/verify.py <本次构建目录>` 并人工检查版面。生成命令不是行为审计，完整最低要求见 MANAGEMENT.md。

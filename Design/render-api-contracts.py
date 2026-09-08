@@ -10,29 +10,44 @@ inventory = json.loads((dest / ('target-inventory.json' if target else 'inventor
 def tex(text):
     def escape(value):
         return ''.join({'\\':r'\textbackslash{}','&':r'\&','%':r'\%','$':r'\$','#':r'\#','_':r'\_','{':r'\{','}':r'\}','~':r'\textasciitilde{}','^':r'\textasciicircum{}'}.get(c,c) for c in value)
-    pieces=re.split(r'([A-Za-z][A-Za-z0-9_:/.-]{23,})',text)
+    pieces=re.split(r'([A-Za-z][A-Za-z0-9_:/().-]{23,})',text)
     return ''.join(r'\code{'+part+'}' if i%2 else escape(part) for i,part in enumerate(pieces))
 
 target='--target' in sys.argv
 cards=json.loads((design/('target-api-contracts.json' if target else 'api-contracts.json')).read_text())['cards']
 parts=['\\clearpage\n']; coverage=[]
 for card in cards:
-    parts.append('\n\\section{'+tex(card['title'])+'}\n\\lead{'+card['id']+' · '+tex(card['module'])+' 接口契约}\n')
+    parts.append('\n\\Needspace{12\\baselineskip}\n\\section{'+tex(card['title'])+'}\n\\lead{'+card['id']+' · '+tex(card['module'])+' 接口契约}\n')
     selected=[]
+    signature_start=len(parts)
     for selector in card['selectors']:
         suffix,name,*choice=selector
         hits=[(f,e) for f in inventory['files'] if f['file'].endswith('/'+suffix) for e in f['entries'] if e['kind']=='function' and e['name'].endswith(name)]
         if not hits: raise ValueError('Missing API selector: '+repr(selector))
         if choice: hits=[hits[choice[0]]]
         for f,e in hits:
-            parts.append('\n\\textbf{'+e['id']+'}\\quad '+tex(e['access'])+'\\par\n\\begin{Verbatim}[fontsize=\\footnotesize,breaklines,breakanywhere]\n'+e['signature']+'\n\\end{Verbatim}\n\\textbf{源码：}\\path{'+f['file']+'}，第 '+str(e['line'])+' 行。\\par\n')
+            parts.append('\n\\Needspace{7\\baselineskip}\n\\textbf{'+e['id']+'}\\quad '+tex(e['access'])+'\\par\n\\textbf{所属符号：}'+tex(e['name'])+'\\par\n\\begin{Verbatim}[fontsize=\\footnotesize,breaklines,breakanywhere]\n'+e['signature']+'\n\\end{Verbatim}\n\\textbf{源码：}\\path{'+f['file']+'}，第 '+str(e['line'])+' 行。\\par\n')
             selected.append(e['id'])
     for signature in card.get('planned_signatures',[]):
         if not target: raise ValueError('Planned API cannot be rendered as current implementation')
         parts.append('\n\\textbf{目标接口：PLANNED}\\par\n\\begin{Verbatim}[fontsize=\\footnotesize,breaklines,breakanywhere]\n'+signature+'\n\\end{Verbatim}\n')
+    signature_parts=parts[signature_start:]
+    del parts[signature_start:]
     for section in card['sections']:
-        parts.append('\n\\subsection{'+tex(section['title'])+'}\n'+tex(section['text'])+'\n')
-    reference = 'target-inventory.json' if target else card['module'].lower()+'-reference.md'
+        parts.append('\n\\subsection{'+tex(section['title'])+'}\n'+tex(section.get('text',''))+'\n')
+        if 'rows' in section:
+            parts.append('\\begin{longtable}{@{}p{43mm}p{119mm}@{}}\n\\toprule\n项目 & 行为与调用含义 \\\\\n\\midrule\\endhead\n')
+            for row in section['rows']:
+                if len(row)!=2: raise ValueError('Behavior tables require two columns')
+                parts.append(tex(row[0])+' & '+tex(row[1])+' \\\\\n')
+            parts.append('\\bottomrule\n\\end{longtable}\n')
+        if 'code' in section:
+            if '\\end{Verbatim}' in section['code']: raise ValueError('Invalid code block terminator')
+            parts.append('\\begin{Verbatim}[fontsize=\\footnotesize,breaklines,breakanywhere]\n'+section['code']+'\n\\end{Verbatim}\n')
+    if signature_parts:
+        parts.append('\n\\subsection{完整签名与源码定位}\n')
+        parts.extend(signature_parts)
+    reference = ('target-' if target else '') + card['module'].lower()+'-reference.md'
     parts.append('\n完整声明查询：\\path{api/'+reference+'}。\n')
     coverage.append(dict(contract=card['id'],title=card['title'],api_ids=selected))
 (design/('target-api.tex' if target else 'current-api.tex')).write_text(''.join(parts))
