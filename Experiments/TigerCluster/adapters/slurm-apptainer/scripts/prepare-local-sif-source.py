@@ -97,7 +97,7 @@ BASE_FILES = (
     "pythonWrapper/pyproject.toml", "pythonWrapper/README.md",
     "pythonWrapper/ndnsf", "pythonWrapper/src",
     "NDNSF-DistributedRepo/pythonWrapper", "NDNSF-DistributedRepo/src",
-    "NDNSF-DistributedRepo/include",
+    "NDNSF-DistributedRepo/include", "NDNSF-DistributedRepo/wscript",
     "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGrantVerifier.cpp",
     "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGrantVerifier.hpp",
 )

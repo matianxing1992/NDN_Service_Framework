@@ -3342,3 +3342,12 @@ Core、两个 Python 扩展和内部原生检查均通过后，mksquashfs 使用
 `base-runtime-repo-protected.sif`，保留依赖复用规则，重新编译受影响 Core/绑定。
 教训：基础 SIF 作为 Apptainer 父层必须先通过完整解包/重建探针，局部 exec
 和元数据读取不足以证明压缩层完整。
+
+## 2026-09-08: base source selection 漏掉 Repo 子 wscript
+
+改用完整父 SIF 重跑 `-j4` 基础层后，Waf configure 成功，但 build 在进入
+`bld.recurse('NDNSF-DistributedRepo')` 时返回 `No wscript file in directory
+/src/ndnsf/NDNSF-DistributedRepo`。`base-libraries-v1` 原有选择只封存 Repo
+的源码、头文件和 Python wrapper；新的 runtime-only 分支开始递归 Repo 后，子
+构建描述也成为必要输入。修复是把 `NDNSF-DistributedRepo/wscript` 纳入 base
+选择，重新生成 seal 后再构建。该轮没有生成 SIF 或依赖复用 PASS。
