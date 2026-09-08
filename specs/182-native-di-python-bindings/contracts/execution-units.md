@@ -225,7 +225,7 @@ worker crash/cancel 等真实子进程案例也转 T016，卡内只运行纯 fra
 - **Read**: CD-013 → CD-002 snapshot；P/app_sdk/provider.py::ProviderOfferTrustVerifier；ndn-service-framework/ServiceUser.hpp 的 ACK provenance。
 - **Write**: N/NativeOfferAdmission.hpp; N/NativeOfferAdmission.cpp; N/NativeObservedOfferV3.hpp; N/NativeObservedOfferV3.cpp; U/di-native-observed-offer.t.cpp; tests/fixtures/spec182/offer-python-oracle.json; tests/fixtures/spec182/author-offer-python-oracle.py; U/di-native-offer-admission.t.cpp; I/di-native-preparation.t.cpp; wscript。
 - **Steps**: 先将 ACK payload 解码为无认证权力的 NativeObservedProviderOfferV3，保留真实 topology/resources/residency 与 SDK canonical digest；再使用 Core 认证结果检查 policy/有效期/绑定及 policy-bound offer signature，形成 immutable view。policy 不提供 Provider 观测能力；拒绝 caller trusted=true 和 Python verifier callback。
-- **Verify**: CPP(Spec182OfferAdmission/*)；伪 provenance、错身份/策略、过期 ACK；无合法 view 就不能进入 strategy；真实 Core admission 留 T016。
+- **Verify**: CPP(Spec182OfferAdmission/*)；真实 SDK Ed25519 fixture、公钥 ID/candidate/policy 绑定、payload 篡改、伪 provenance、错身份、KeyLocator component-prefix 混淆及过期/不覆盖 deadline 的 ACK；无合法 view 就不能进入 strategy；真实 Core admission 留 T016。signed fixture 由 tests/fixtures/spec182/author-signed-offer-oracle.py 生成 signed-offer-oracle.json，仅作测试 authoring。
 
 ### T009-A Core Scoped Registration
 

@@ -46,7 +46,7 @@ request/attempt、deadline、digest、secret lease、缓存失效和队列计数
 | C16 / CD-007 NativeConversationCoordinator | requester turn/checkpoint 原子晋升；复用 Provider state | journalRoot、committedRecords、inflightTurns、writer lease | beginTurn/abortTurn/prepareCheckpoint/commitTurn/restore；不得覆盖已提交 predecessor |
 | C17 / CD-008 bindings module | 纯转换/GIL/事件投递，不复制业务算法 | native shared handles 与 Python callback lifetime | bindDistributedInference；异常和取消语义来自原生，无策略/runner trampoline |
 | C18 / CD-013 NativeRequestPreparation | 原生 task/graph/catalog/input/artifact I/O owner | registry、authenticated catalog/Repo/publication ports、request control | prepareInput/inspectModel/ensureArtifacts；已发布 immutable record 只按 TTL 过期，不假称可撤回 |
-| C19 / CD-013 NativeOfferAdmission | 在 Core 包认证之后验证 DI candidate/offer 绑定 | immutable offer policy；没有独立 Trust Schema | verify；不接受 caller trusted=true，校验完成前 offer 不得影响规划 |
+| C19 / CD-013 NativeOfferAdmission | 在 Core 包认证之后验证 DI candidate/offer 绑定及 Ed25519 signature | immutable candidate policy/public-key registry；没有独立 Trust Schema | verify 接受 Core AckSelectionCandidate，返回仅 owner 可构造的 NativeAdmittedOfferV3；policy 不提供观测能力 |
 | C20 / CD-014 NativeInferenceProvider | 提取 executable 的共享注册/runtime 接线 | shared provider/adapters、registrations、stopped | constructor/serve/stop/destructor；不停止共享 Core，不合并管理权限 |
 | C21 / CD-014 NativeServiceRegistration | 本服务注册 RAII 句柄，保护在途 callback 寿命 | shared registration record、closed | close/destructor；重复关闭幂等，关闭后拒绝新 admission |
 

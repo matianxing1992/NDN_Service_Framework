@@ -1,5 +1,10 @@
 # Failure Log and Evidence Index
 
+## 2026-09-07 — Spec182 signed offer fixture import
+
+authoring 导入 app_sdk.provider 时缺 py_repoclient 搜索路径，尚未执行签名验证。
+补齐仓库 Python 路径后重试；见 [core offer evidence](../specs/182-native-di-python-bindings/evidence/t008-core-offer-admission-20260907.md)。
+
 ## 2026-09-07 — Spec182 offer admission source audit
 
 NativeOfferAdmission 从本地 policy 合成 Provider 能力，未消费 ACK payload 或验证

@@ -32,9 +32,9 @@ NativeInspectedModel inspectModel(const NativePreparedInput& input);
 NativeArtifactBinding ensureArtifacts(const NativeInspectedModel& model,
                                       const NativePlacementProposal& proposal,
                                       const NativeRequestControl& control);
-NativeProviderPlanningView verify(const NativeAckEvidence& ack,
-                                 const NativeOfferPolicySnapshot& policy,
-                                 const NativeOfferBindingContext& context);
+NativeAdmittedOfferV3 verify(const ndn_service_framework::AckSelectionCandidate& ack,
+                            const NativeOfferBindingContext& context,
+                            std::uint64_t nowMs) const;
 ~~~
 
 - preparation 构造时注入已认证 catalog/Repo 访问、publication 和 adapter registry 端口；
@@ -56,9 +56,11 @@ NativeProviderPlanningView verify(const NativeAckEvidence& ack,
   模型预处理/后处理仅迁移现有已支持行为；不暗中增加图像格式或新模型能力。
 - verify 的 ack 必须来自 Core callback 的真实 ACK/provenance；验证 Trust Schema 结果、
   signer identity/key locator/wire digest、policy 的 Provider/service/key/candidate 绑定、
-  offer 签名、request/model/graph/有效期和字段限额，然后才产生 planning view。
+  offer 签名、request/model/graph/有效期和字段限额，然后才产生 admitted observation。
   Core 包认证与 DI candidate policy 不合并为“字段相等”；缺证据失败关闭。
-  禁止 caller 或策略自行构造 NativeAckEvidence 的可信实例。
+- admission 构造时绑定既有 candidate policy 与 Ed25519 公钥注册表；public-key raw bytes
+  的 SHA256 必须等于 signerKeyId。返回仅 owner 可构造的 NativeAdmittedOfferV3，完整保留
+  ACK payload 观测；policy 不含 freeBytes/backends/residency 等观测值，signature 必须验证。
 - wall-clock 用于现有签名/有效期字段；本地总预算使用单调 deadline，不因时钟回拨延长。
   O-004 固定字段、序列化和上限；production clock 不允许测试覆盖。
 - 所有耗时 I/O/图解析在工作 executor；Core Face 调用投递回 Core I/O owner。
