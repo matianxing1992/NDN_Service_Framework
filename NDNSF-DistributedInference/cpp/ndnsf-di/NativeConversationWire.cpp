@@ -426,8 +426,10 @@ void nativeValidateConversationTranscript(const NativeJson& value, const NativeJ
             checkpoint.at("roleReceiptDigests").at(role) == receiptDigest,
             "conversation transcript role receipt mismatch");
     for (const auto field : {"conversationId", "requesterIdentity", "serviceName",
-          "securityDomainDigest", "planRoleMapDigest", "prefixTokenCount"})
-      require(receipt.at(field) == checkpoint.at(field), "conversation receipt scope mismatch");
+          "securityDomainDigest", "planRoleMapDigest", "prefixTokenCount"}) {
+      if (receipt.at(field) != checkpoint.at(field))
+        throw std::invalid_argument(std::string("conversation receipt scope mismatch: ") + field);
+    }
     const auto currentPrefix = string(receipt, "prefixDigest");
     if (receiptPrefix.empty()) receiptPrefix = currentPrefix;
     require(currentPrefix == receiptPrefix &&

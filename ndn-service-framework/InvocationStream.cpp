@@ -172,6 +172,26 @@ appendRequesterComponent(ndn::Name& name, const ndn::Name& requester)
   name.append(ndn::name::Component(requester.toUri()));
 }
 
+void
+appendRequestIdComponent(ndn::Name& name, const ndn::Name& requestId)
+{
+  // Legacy event names carry only the final request-id component. Structured
+  // native IDs contain reserved path components; carry their canonical URI as
+  // one component instead of silently dropping the structured identity.
+  const bool structured = requestId.size() >= 4 &&
+    requestId.get(0).toUri() == "NDNSF" &&
+    requestId.get(1).toUri() == "DI" &&
+    requestId.get(2).toUri() == "REQUEST";
+  if (!structured) {
+    // Preserve the pre-structured event-name wire for legacy multi-component
+    // callers, whose parser historically exposed only the final component.
+    name.append(requestId.get(-1));
+  }
+  else {
+    name.append(ndn::name::Component(requestId.toUri()));
+  }
+}
+
 std::optional<ndn::Name>
 parseRequesterComponent(const ndn::name::Component& component)
 {
@@ -186,6 +206,29 @@ parseRequesterComponent(const ndn::name::Component& component)
       return std::nullopt;
     }
     return requester;
+  }
+  catch (const std::exception&) {
+    return std::nullopt;
+  }
+}
+
+std::optional<ndn::Name>
+parseRequestIdComponent(const ndn::name::Component& component)
+{
+  try {
+    const std::string value(
+      reinterpret_cast<const char*>(component.value()), component.value_size());
+    if (value.empty()) return std::nullopt;
+    if (value.front() != '/') {
+      ndn::Name requestId;
+      requestId.append(component);
+      return requestId;
+    }
+    ndn::Name requestId(value);
+    if (ndn::name::Component(requestId.toUri()) != component) {
+      return std::nullopt;
+    }
+    return requestId;
   }
   catch (const std::exception&) {
     return std::nullopt;
@@ -1376,7 +1419,7 @@ makeInvocationEventName(const StreamBinding& binding, uint64_t cursor)
   name.append("NDNSF").append("EVENT");
   appendRequesterComponent(name, binding.requester);
   name.append(binding.serviceName);
-  name.append(binding.requestId.get(-1));
+  appendRequestIdComponent(name, binding.requestId);
   name.appendNumber(binding.attemptEpoch);
   name.append(toLowerHex(ndn::span<const uint8_t>(
     binding.planDigest.data(), binding.planDigest.size())));
@@ -1424,7 +1467,9 @@ parseInvocationEventName(const ndn::Name& name)
     parsed.producer = subName(name, 0, *marker);
     parsed.requester = *requester;
     parsed.serviceName = subName(name, serviceIndex, serviceCount);
-    parsed.requestId = subName(name, requestIdIndex, 1);
+    const auto requestId = parseRequestIdComponent(name.get(requestIdIndex));
+    if (!requestId) return std::nullopt;
+    parsed.requestId = *requestId;
     parsed.attemptEpoch = name.get(attemptIndex).toNumber();
     parsed.planDigest = *plan;
     parsed.generationId = *generation;
@@ -1437,7 +1482,8 @@ parseInvocationEventName(const ndn::Name& name)
     ndn::Name canonical(parsed.producer);
     canonical.append("NDNSF").append("EVENT");
     appendRequesterComponent(canonical, parsed.requester);
-    canonical.append(parsed.serviceName).append(parsed.requestId);
+    canonical.append(parsed.serviceName);
+    appendRequestIdComponent(canonical, parsed.requestId);
     canonical.appendNumber(parsed.attemptEpoch);
     canonical.append(toLowerHex(ndn::span<const uint8_t>(parsed.planDigest.data(), parsed.planDigest.size())));
     canonical.append(toLowerHex(ndn::span<const uint8_t>(parsed.generationId.data(), parsed.generationId.size())));
@@ -2127,7 +2173,16 @@ StreamEventConsumer::deliverReady()
       }
     }
     if (!hasEvent) {
-      if (retryTimedOutGap) {
+      bool endObserved = false;
+      {
+        std::lock_guard<std::mutex> lock(mutex_);
+        endObserved = observedEnd_.has_value();
+      }
+      // End is the terminal stream event.  Its cursor advances the ordered
+      // event frontier, but the encrypted Response may arrive separately and
+      // later.  Do not manufacture a post-End cursor gap while waiting for
+      // that Response to close the stream.
+      if (retryTimedOutGap && !endObserved) {
         requestGapRetry();
       }
       std::lock_guard<std::mutex> lock(mutex_);
@@ -2313,7 +2368,7 @@ StreamEventConsumer::onRetryTimeout(
     // timeout for the cursor currently blocking delivery may consume retry
     // budget. Unlike the old reorder-only condition, this also detects a
     // Provider that becomes completely silent after the last delivered event.
-    if (failed_ || complete_ || parsed->cursor < expectedCursor_) {
+    if (failed_ || complete_ || observedEnd_ || parsed->cursor < expectedCursor_) {
       return;
     }
     const bool initialInterest =

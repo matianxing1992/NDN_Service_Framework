@@ -575,6 +575,52 @@ BOOST_AUTO_TEST_CASE(V2RequestAndResponseNames)
   BOOST_CHECK_EQUAL(parsedSegmentedResponse->serviceName, serviceName);
   BOOST_CHECK_EQUAL(parsedSegmentedResponse->requestId, requestId);
 
+  // Native DI request identities are structured names. They must remain a
+  // requestId suffix rather than being absorbed into serviceName by V2
+  // parsing; the legacy one-component form above remains unchanged.
+  const ndn::Name structuredRequestId("/NDNSF/DI/REQUEST/7");
+  const auto structuredRequest = makeRequestNameV2(
+    requester, serviceName, structuredRequestId);
+  const auto parsedStructuredRequest = parseRequestNameV2(structuredRequest);
+  BOOST_REQUIRE(parsedStructuredRequest);
+  BOOST_CHECK_EQUAL(parsedStructuredRequest->serviceName, serviceName);
+  BOOST_CHECK_EQUAL(parsedStructuredRequest->requestId, structuredRequestId);
+
+  const auto structuredResponse = makeResponseNameV2(
+    provider, requester, serviceName, structuredRequestId);
+  const auto parsedStructuredResponse = parseResponseNameV2(structuredResponse);
+  BOOST_REQUIRE(parsedStructuredResponse);
+  BOOST_CHECK_EQUAL(parsedStructuredResponse->serviceName, serviceName);
+  BOOST_CHECK_EQUAL(parsedStructuredResponse->requestId, structuredRequestId);
+
+  const auto structuredAck = makeRequestAckNameV2(
+    provider, requester, serviceName, structuredRequestId);
+  const auto parsedStructuredAck = parseRequestAckNameV2(structuredAck);
+  BOOST_REQUIRE(parsedStructuredAck);
+  BOOST_CHECK_EQUAL(parsedStructuredAck->serviceName, serviceName);
+  BOOST_CHECK_EQUAL(parsedStructuredAck->requestId, structuredRequestId);
+
+  const auto structuredSelection = makeServiceSelectionNameV2(
+    requester, provider, serviceName, structuredRequestId);
+  const auto parsedStructuredSelection = parseServiceSelectionNameV2(
+    structuredSelection);
+  BOOST_REQUIRE(parsedStructuredSelection);
+  BOOST_CHECK_EQUAL(parsedStructuredSelection->serviceName, serviceName);
+  BOOST_CHECK_EQUAL(parsedStructuredSelection->requestId, structuredRequestId);
+
+  // A plain provider-bound Selection name ends with the structured request
+  // counter; it must not be mistaken for a decision attempt.
+  BOOST_CHECK(!parseServiceSelectionDecisionNameV2(structuredSelection));
+
+  const auto structuredDecision = makeServiceSelectionDecisionNameV2(
+    requester, provider, serviceName, structuredRequestId, 2);
+  const auto parsedStructuredDecision = parseServiceSelectionDecisionNameV2(
+    structuredDecision);
+  BOOST_REQUIRE(parsedStructuredDecision);
+  BOOST_CHECK_EQUAL(parsedStructuredDecision->serviceName, serviceName);
+  BOOST_CHECK_EQUAL(parsedStructuredDecision->requestId, structuredRequestId);
+  BOOST_CHECK_EQUAL(parsedStructuredDecision->attempt, 2U);
+
   const auto compactSelectionName =
     makeCompactServiceSelectionNameV2(requester, serviceName, requestId);
   BOOST_CHECK(compactSelectionName.toUri().find("%2FNDNSF%2FCOMPACT") ==
@@ -599,6 +645,37 @@ BOOST_AUTO_TEST_CASE(V2RequestAndResponseNames)
   BOOST_CHECK_EQUAL(parsedLegacySelection->providerName, provider);
   BOOST_CHECK_EQUAL(parsedLegacySelection->serviceName, serviceName);
   BOOST_CHECK(!parseCompactServiceSelectionNameV2(legacySelectionName));
+}
+
+BOOST_AUTO_TEST_CASE(CollaborationNamePreservesStructuredRequestId)
+{
+  const ndn::Name producer("/test/provider/camera");
+  const ndn::Name requester("/test/user/alice");
+  const ndn::Name structuredRequestId("/NDNSF/DI/REQUEST/7");
+  const ndn::Name topic("/ndnsf-di/conversation/receipt/LLM/Pipeline/Stage/0");
+
+  const auto name = makeCollaborationDataName(
+    producer, requester, structuredRequestId,
+    "ndnsf-di-conversation-state-v1", topic, 3);
+  const auto parsed = parseCollaborationDataName(name);
+  BOOST_REQUIRE(parsed);
+  BOOST_CHECK_EQUAL(parsed->producerName, producer);
+  BOOST_CHECK_EQUAL(parsed->requesterName, requester);
+  BOOST_CHECK_EQUAL(parsed->requestId, structuredRequestId);
+  BOOST_CHECK_EQUAL(parsed->keyScope, "ndnsf-di-conversation-state-v1");
+  BOOST_CHECK_EQUAL(parsed->topic, topic);
+  BOOST_CHECK_EQUAL(parsed->sequence, 3U);
+
+  // Names written by the pre-structured format remain readable.
+  ndn::Name legacy(producer);
+  legacy.append("NDNSF").append("COLLAB").append("3").append(requester)
+    .append(structuredRequestId).append("ndnsf-di-conversation-state-v1")
+    .append(std::to_string(topic.size())).append(topic).append("3");
+  const auto parsedLegacy = parseCollaborationDataName(legacy);
+  BOOST_REQUIRE(parsedLegacy);
+  BOOST_CHECK_EQUAL(parsedLegacy->requestId, structuredRequestId);
+  BOOST_CHECK_EQUAL(parsedLegacy->keyScope, "ndnsf-di-conversation-state-v1");
+  BOOST_CHECK_EQUAL(parsedLegacy->topic, topic);
 }
 
 BOOST_AUTO_TEST_CASE(AddHandlerRequestServiceDispatchResponseAndAck)

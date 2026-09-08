@@ -7,9 +7,9 @@
 
 namespace ndnsf::di {
 namespace {
-void require(bool value)
+void require(bool value, const char* detail = "unknown")
 {
-  if (!value) throw std::invalid_argument("DI_NATIVE_GROUP_KEY_OFFER_REJECTED");
+  if (!value) throw std::invalid_argument(std::string("DI_NATIVE_GROUP_KEY_OFFER_REJECTED: ") + detail);
 }
 }
 NativeGroupKeyAdmission::NativeGroupKeyAdmission(const NativeOfferAdmission& admission,
@@ -20,32 +20,38 @@ NativeGroupKeyAdmission::NativeGroupKeyAdmission(const NativeOfferAdmission& adm
   for (const auto& ack : acks) {
     auto admitted = admission.verify(ack, context, nowMs);
     const auto& observed = admitted.observation();
-    require(ack.ack.hasSelectionInputKeyOffer() && ack.ack.getSelectionInputKeyOffer().getVersion() == 1);
+    require(ack.ack.hasSelectionInputKeyOffer() && ack.ack.getSelectionInputKeyOffer().getVersion() == 1,
+      "missing-or-wrong-version");
     const auto& fields = ack.ack.getSelectionInputKeyOffer().getFields();
     const auto field = [&](const char* name) -> const std::string& {
       const auto it = fields.find(name);
-      require(it != fields.end() && !it->second.empty());
+      require(it != fields.end() && !it->second.empty(), name);
       return it->second;
     };
-    require(field("schemaVersion") == "1" && field("recipient") == observed.provider);
+    require(field("schemaVersion") == "1" && field("recipient") == observed.provider,
+      "schema-or-recipient");
     const auto& epoch = field("providerBootEpoch");
-    require(epoch == observed.bootEpoch || epoch == observed.provider + ":" + observed.bootEpoch);
+    require(epoch == observed.bootEpoch || epoch == observed.provider + ":" + observed.bootEpoch,
+      "provider-epoch");
     const auto& cert = field("recipientCertName");
-    require(cert.front() == '/' && ndn::Name(observed.provider + "/KEY").isPrefixOf(ndn::Name(cert)));
+    require(cert.front() == '/' && ndn::Name(observed.provider + "/KEY").isPrefixOf(ndn::Name(cert)),
+      "recipient-cert");
     auto prefix = field("ndnsfDataV1EndpointPrefix");
     while (prefix.size() > 1 && prefix.back() == '/') prefix.pop_back();
-    require(prefix.front() == '/' && ndn::Name(observed.provider).isPrefixOf(ndn::Name(prefix)));
+    require(prefix.front() == '/' && ndn::Name(observed.provider).isPrefixOf(ndn::Name(prefix)),
+      "endpoint-prefix");
     const auto& hex = field("recipientPublicKey");
     require(hex.size() % 2 == 0 && hex.size() <= 8192 &&
       std::all_of(hex.begin(), hex.end(), [](char c) {
         return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
-      }));
+      }), "recipient-public-key-hex");
     const auto decoded = ndn_service_framework::selectionGatedUnhex(hex);
     require(field("recipientCertDigest") == nativePlanningDigest(
-      std::string(reinterpret_cast<const char*>(decoded.data()), decoded.size())));
+      std::string(reinterpret_cast<const char*>(decoded.data()), decoded.size())),
+      "recipient-cert-digest");
     ndn::security::transform::PublicKey publicKey;
     publicKey.loadPkcs8(decoded);
-    require(publicKey.getKeyType() == ndn::KeyType::RSA);
+    require(publicKey.getKeyType() == ndn::KeyType::RSA, "recipient-key-type");
     // No mutable alias to ACK fields or the caller's key map survives admission.
     const auto provider = observed.provider;
     require(entries->emplace(provider, Entry{std::move(admitted), std::move(prefix),

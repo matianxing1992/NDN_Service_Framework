@@ -115,6 +115,24 @@ namespace ndn_service_framework
             dst.append(ndn::name::Component(value.toUri()));
         }
 
+        void
+        appendCollaborationRequestId(ndn::Name& dst, const ndn::Name& requestId)
+        {
+            // Keep the legacy representation byte-for-byte compatible.
+            // Structured native request identities are encoded as one URI
+            // component so the following keyScope remains unambiguous.
+            const bool structured = requestId.size() >= 4 &&
+                requestId.get(0).toUri() == "NDNSF" &&
+                requestId.get(1).toUri() == "DI" &&
+                requestId.get(2).toUri() == "REQUEST";
+            if (!structured) {
+                dst.append(requestId);
+            }
+            else {
+                appendNameUriComponent(dst, requestId);
+            }
+        }
+
         std::optional<ndn::Name>
         parseNameUriComponent(const ndn::Name& name, size_t index)
         {
@@ -182,6 +200,37 @@ namespace ndn_service_framework
                 }
             }
             return std::nullopt;
+        }
+
+        // Native DI uses a structured multi-component request identity
+        // (/NDNSF/DI/REQUEST/<counter>) while legacy callers use one component.
+        // The V2 name format has no length field for requestId, so recognize
+        // this reserved suffix before falling back to the legacy final
+        // component split.
+        std::optional<size_t>
+        findStructuredRequestIdStart(const ndn::Name& name, size_t begin)
+        {
+            if (name.size() < begin + 4) {
+                return std::nullopt;
+            }
+            for (size_t i = name.size() - 3; i >= begin; --i) {
+                if (name.get(i).toUri() == "NDNSF" &&
+                    name.get(i + 1).toUri() == "DI" &&
+                    name.get(i + 2).toUri() == "REQUEST" &&
+                    i + 3 < name.size()) {
+                    return i;
+                }
+                if (i == begin) {
+                    break;
+                }
+            }
+            return std::nullopt;
+        }
+
+        size_t
+        requestIdStartOrFinal(const ndn::Name& name, size_t begin)
+        {
+            return findStructuredRequestIdStart(name, begin).value_or(name.size() - 1);
         }
 
         ndn::span<const uint8_t>
@@ -273,12 +322,16 @@ namespace ndn_service_framework
         if (index + 2 > requestName.size()) {
             return std::nullopt;
         }
-        const size_t serviceComponentCount = requestName.size() - index - 1;
+        const size_t requestIdStart = requestIdStartOrFinal(requestName, index);
+        if (requestIdStart <= index) {
+            return std::nullopt;
+        }
 
         return RequestNameV2{
             getSubNameByComponentCount(requestName, 0, *marker),
-            getSubNameByComponentCount(requestName, index, serviceComponentCount),
-            getSubNameByComponentCount(requestName, index + serviceComponentCount, 1)};
+            getSubNameByComponentCount(requestName, index, requestIdStart - index),
+            getSubNameByComponentCount(requestName, requestIdStart,
+                                        requestName.size() - requestIdStart)};
     }
 
     ndn::Name makeResponseNameV2(const ndn::Name& providerName,
@@ -335,13 +388,17 @@ namespace ndn_service_framework
             return std::nullopt;
         }
         const size_t serviceIndex = index + 1;
-        const size_t serviceComponentCount = baseName.size() - serviceIndex - 1;
+        const size_t requestIdStart = requestIdStartOrFinal(baseName, serviceIndex);
+        if (requestIdStart <= serviceIndex) {
+            return std::nullopt;
+        }
 
         return ResponseNameV2{
             getSubNameByComponentCount(baseName, 0, *marker),
             *requesterName,
-            getSubNameByComponentCount(baseName, serviceIndex, serviceComponentCount),
-            getSubNameByComponentCount(baseName, baseName.size() - 1, 1)};
+            getSubNameByComponentCount(baseName, serviceIndex, requestIdStart - serviceIndex),
+            getSubNameByComponentCount(baseName, requestIdStart,
+                                        baseName.size() - requestIdStart)};
     }
 
     ndn::Name makeRequestAckNameV2(const ndn::Name& providerName,
@@ -385,13 +442,18 @@ namespace ndn_service_framework
             return std::nullopt;
         }
         const size_t serviceIndex = index + 1;
-        const size_t serviceComponentCount = requestAckName.size() - serviceIndex - 1;
+        const size_t requestIdStart = requestIdStartOrFinal(requestAckName, serviceIndex);
+        if (requestIdStart <= serviceIndex) {
+            return std::nullopt;
+        }
 
         return RequestAckNameV2{
             getSubNameByComponentCount(requestAckName, 0, *marker),
             *requesterName,
-            getSubNameByComponentCount(requestAckName, serviceIndex, serviceComponentCount),
-            getSubNameByComponentCount(requestAckName, requestAckName.size() - 1, 1)};
+            getSubNameByComponentCount(requestAckName, serviceIndex,
+                                        requestIdStart - serviceIndex),
+            getSubNameByComponentCount(requestAckName, requestIdStart,
+                                        requestAckName.size() - requestIdStart)};
     }
 
     ndn::Name makeServiceSelectionNameV2(const ndn::Name& requesterName,
@@ -431,7 +493,15 @@ namespace ndn_service_framework
                 std::all_of(attempt.begin(), attempt.end(), [] (char ch) {
                     return ch >= '0' && ch <= '9';
                 }) && attempt != "0") {
-                return parseServiceSelectionNameV2(serviceSelectionName.getPrefix(-1));
+                const auto marker = findNdnsfMessageMarker(serviceSelectionName, "SELECTION");
+                const auto structured = marker ?
+                    findStructuredRequestIdStart(serviceSelectionName, *marker + 3) :
+                    std::nullopt;
+                // A structured request id itself ends in a numeric counter;
+                // only a second numeric component is the Selection attempt.
+                if (!structured || serviceSelectionName.size() - (*structured + 3) >= 2) {
+                    return parseServiceSelectionNameV2(serviceSelectionName.getPrefix(-1));
+                }
             }
         }
         auto marker = findNdnsfMessageMarker(serviceSelectionName, "SELECTION");
@@ -448,13 +518,18 @@ namespace ndn_service_framework
             return std::nullopt;
         }
         const size_t serviceIndex = index + 1;
-        const size_t serviceComponentCount = serviceSelectionName.size() - serviceIndex - 1;
+        const size_t requestIdStart = requestIdStartOrFinal(serviceSelectionName, serviceIndex);
+        if (requestIdStart <= serviceIndex) {
+            return std::nullopt;
+        }
 
         return ServiceSelectionNameV2{
             getSubNameByComponentCount(serviceSelectionName, 0, *marker),
             *providerName,
-            getSubNameByComponentCount(serviceSelectionName, serviceIndex, serviceComponentCount),
-            getSubNameByComponentCount(serviceSelectionName, serviceSelectionName.size() - 1, 1)};
+            getSubNameByComponentCount(serviceSelectionName, serviceIndex,
+                                        requestIdStart - serviceIndex),
+            getSubNameByComponentCount(serviceSelectionName, requestIdStart,
+                                        serviceSelectionName.size() - requestIdStart)};
     }
 
     ndn::Name makeServiceSelectionDecisionNameV2(const ndn::Name& requesterName,
@@ -496,6 +571,16 @@ namespace ndn_service_framework
         }
         catch (const std::exception&) {
             return std::nullopt;
+        }
+        // A structured Native DI request identity ends in a numeric counter.
+        // Treat the final numeric component as a Selection attempt only when
+        // a second component follows that structured identity.
+        const auto marker = findNdnsfMessageMarker(name, "SELECTION");
+        if (marker) {
+            const auto structured = findStructuredRequestIdStart(name, *marker + 3);
+            if (structured && name.size() - (*structured + 3) < 2) {
+                return std::nullopt;
+            }
         }
         const auto base = name.getPrefix(-1);
         auto parsed = parseServiceSelectionNameV2(base);
@@ -747,7 +832,7 @@ namespace ndn_service_framework
         ndn::Name name(producerName);
         name.append(ndn::Name("/NDNSF/COLLAB"));
         appendCountedName(name, requesterName);
-        name.append(requestId);
+        appendCollaborationRequestId(name, requestId);
         name.append(keyScope);
         name.append(std::to_string(topic.size()));
         name.append(topic);
@@ -769,7 +854,49 @@ namespace ndn_service_framework
             return std::nullopt;
         }
 
-        ndn::Name requestId(collaborationDataName.get(index++).toUri());
+        ndn::Name requestId;
+        if (auto encodedRequestId = parseNameUriComponent(collaborationDataName,
+                                                          index);
+            encodedRequestId && encodedRequestId->size() > 1) {
+            requestId = *encodedRequestId;
+            ++index;
+        }
+        else {
+            // Accept names emitted by older builds, which appended a
+            // structured request identity component-by-component and had no
+            // requestId length field. The topic-count component is the only
+            // unambiguous boundary from the end of the name; choose it after
+            // the reserved NDNSF/DI/REQUEST marker and retain the legacy
+            // single-component fallback for all other request identities.
+            const auto structured = findStructuredRequestIdStart(
+                collaborationDataName, index);
+            if (structured) {
+                for (size_t topicCount = *structured + 3;
+                     topicCount + 1 < collaborationDataName.size(); ++topicCount) {
+                    const auto count = parseComponentCount(collaborationDataName,
+                                                           topicCount);
+                    if (!count || topicCount + 1 + *count !=
+                                      collaborationDataName.size() - 1 ||
+                        topicCount <= index) {
+                        continue;
+                    }
+                    const auto requestEnd = topicCount - 1;
+                    if (requestEnd <= index) {
+                        continue;
+                    }
+                    requestId = getSubNameByComponentCount(
+                        collaborationDataName, index, requestEnd - index);
+                    index = requestEnd;
+                    break;
+                }
+            }
+            if (requestId.empty()) {
+                if (index >= collaborationDataName.size()) {
+                    return std::nullopt;
+                }
+                requestId = ndn::Name(collaborationDataName.get(index++).toUri());
+            }
+        }
         if (index >= collaborationDataName.size()) {
             return std::nullopt;
         }

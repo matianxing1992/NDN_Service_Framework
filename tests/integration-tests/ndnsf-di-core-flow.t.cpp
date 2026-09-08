@@ -10,12 +10,24 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeStandaloneTokenizer.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderGroupCoordinator.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCatalogModelAdapter.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeOfferAdmission.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderOfferV3.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeAuthenticatedGrantClient.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPlanner.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestEnvelope.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp"
+#include "tests/fixtures/spec182/native-model-fixture.hpp"
 #include "ndn-service-framework/HybridMessageCrypto.hpp"
 #include "ndn-service-framework/InvocationStream.hpp"
 #include "ndnsf-integration-fixture.hpp"
 
 #include <ndn-cxx/security/signing-helpers.hpp>
 #include <ndn-cxx/util/sha256.hpp>
+#include <openssl/evp.h>
+#include <openssl/pem.h>
 
 #include <algorithm>
 #include <array>
@@ -6551,6 +6563,570 @@ runSpec175NativeTinyReplacementCase()
   return runSpec175NativeTinyMultiProviderCase(2, std::move(options));
 }
 
+// R4-B6 keeps the first real requester/provider conversation deliberately
+// small.  The Provider is the production ServiceProvider and Core transport;
+// its handler emits authenticated stream/receipt/control records directly so
+// this case isolates the public native requester transaction from ONNX
+// assembly.  The NativeProviderHandler/real model qualification remains T016.
+std::shared_ptr<EVP_PKEY>
+makeR4B6Ed25519Key(unsigned char seed)
+{
+  std::array<unsigned char, 32> bytes{};
+  bytes.fill(seed);
+  auto* key = EVP_PKEY_new_raw_private_key(EVP_PKEY_ED25519, nullptr,
+                                            bytes.data(), bytes.size());
+  if (key == nullptr) {
+    throw std::runtime_error("R4-B6 Ed25519 key creation failed");
+  }
+  return std::shared_ptr<EVP_PKEY>(key, EVP_PKEY_free);
+}
+
+std::string
+r4B6PublicPem(const std::shared_ptr<EVP_PKEY>& key)
+{
+  BIO* raw = BIO_new(BIO_s_mem());
+  if (raw == nullptr || PEM_write_bio_PUBKEY(raw, key.get()) != 1) {
+    if (raw != nullptr) BIO_free(raw);
+    throw std::runtime_error("R4-B6 public key PEM encoding failed");
+  }
+  char* data = nullptr;
+  const auto size = BIO_get_mem_data(raw, &data);
+  std::string result(data, size > 0 ? static_cast<std::size_t>(size) : 0);
+  BIO_free(raw);
+  return result;
+}
+
+std::string
+r4B6SignDigest(const std::shared_ptr<EVP_PKEY>& key, const std::string& digest)
+{
+  std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)> context(
+    EVP_MD_CTX_new(), EVP_MD_CTX_free);
+  if (!context || EVP_DigestSignInit(context.get(), nullptr, nullptr, nullptr,
+                                    key.get()) != 1) {
+    throw std::runtime_error("R4-B6 offer signer initialization failed");
+  }
+  std::array<unsigned char, 64> signature{};
+  std::size_t length = signature.size();
+  if (EVP_DigestSign(context.get(), signature.data(), &length,
+                     reinterpret_cast<const unsigned char*>(digest.data()),
+                     digest.size()) != 1 || length != signature.size()) {
+    throw std::runtime_error("R4-B6 offer signing failed");
+  }
+  std::array<unsigned char, 89> encoded{};
+  if (EVP_EncodeBlock(encoded.data(), signature.data(),
+                      static_cast<int>(length)) != 88) {
+    throw std::runtime_error("R4-B6 offer signature encoding failed");
+  }
+  return std::string(reinterpret_cast<const char*>(encoded.data()), 88);
+}
+
+void
+runR4B6RealProviderConversationCase()
+{
+  using namespace ndn_service_framework;
+  test::BootstrapProfile profile;
+  profile.groupPrefix = ndn::Name("/ndnsf/spec182/r4-b6");
+  profile.syncPrefix = ndn::Name("/ndnsf/spec182/r4-b6/sync");
+  profile.userNode = ndn::Name("/ndnsf/spec182/r4-b6/user");
+  profile.providerNode = ndn::Name("/ndnsf/spec182/r4-b6/provider");
+  profile.userIdentity = ndn::Name("/spec182/r4-b6/user");
+  profile.providerIdentity = ndn::Name("/spec182/r4-b6/provider");
+  profile.attributeAuthority = ndn::Name("/spec182/r4-b6/aa");
+  profile.serviceName = ndn::Name("/Spec182/R4B6/Conversation");
+  test::NdnsfIntegrationEnvironment environment(profile);
+  environment.bootstrap();
+
+  const auto serviceName = environment.profile().serviceName.toUri();
+  const auto requesterName = environment.user().getName().toUri();
+  const auto providerName = environment.provider().getName().toUri();
+  const std::string role = "/LLM/Pipeline/Stage/0";
+  const std::string protectionEpoch = "protected-r4-b6";
+  const std::string policyDigest = nativePlanningDigest("r4-b6-policy");
+  const std::string graphDigest = nativePlanningDigest("r4-b6-graph");
+  const std::string contentDigest = nativePlanningDigest("r4-b6-content");
+  const std::string semanticsDigest = nativePlanningDigest("r4-b6-semantics");
+  const std::string manifestDigest = nativePlanningDigest("r4-b6-manifest");
+  const std::string recipeDigest = nativePlanningDigest("r4-b6-recipe");
+  const std::string artifactDigest = nativePlanningDigest("r4-b6-artifact");
+  const std::string artifactProfileDigest = nativePlanningDigest("r4-b6-profile");
+  const std::string tokenizerDigest = nativePlanningDigest("r4-b6-tokenizer");
+  const std::string roleMapDigest = nativePlanningDigest(
+    nativeCanonicalJson(NativeJson::array({NativeJson::array({role, providerName})})));
+
+  NativeModelDescriptor model{
+    "r4-b6-model", contentDigest, semanticsDigest, graphDigest, "onnx", "fp32",
+    "r4-b6-adapter", "1"};
+  model = fixture::completeModel(std::move(model));
+  NativeGraphSnapshot graph;
+  graph.graphDigest = graphDigest;
+  graph.nodes = {{"node", "Identity", 0}};
+  graph.topologicalOrder = {"node"};
+  graph.modelInputs = {
+    {"input_ids", "int64", {std::int64_t(1), std::int64_t(1)}, std::nullopt},
+    {"attention_kv_in", "float32", {std::int64_t(1)}, std::nullopt},
+    {"recurrent_state_in", "float32", {std::int64_t(1)}, std::nullopt},
+    {"convolution_state_in", "float32", {std::int64_t(1)}, std::nullopt}};
+  graph.modelOutputs = {
+    {"logits", "float32", {std::int64_t(1)}, std::nullopt},
+    {"attention_kv_out", "float32", {std::int64_t(1)}, std::nullopt},
+    {"recurrent_state_out", "float32", {std::int64_t(1)}, std::nullopt},
+    {"convolution_state_out", "float32", {std::int64_t(1)}, std::nullopt}};
+  NativeInspectedModel inspected{
+    model, graph, "/r4-b6/catalog/model", nativePlanningDigest("r4-b6-source"),
+    manifestDigest, graphDigest};
+  inspected.validate();
+
+  NativeSelectionRoleV3 preparedRole;
+  preparedRole.role = preparedRole.selectedRole = role;
+  preparedRole.layerEnd = 1;
+  preparedRole.backend = "onnxruntime-cpu";
+  preparedRole.artifactDigest = artifactDigest;
+  preparedRole.recipeDigest = recipeDigest;
+  preparedRole.roleKind = "PIPELINE_RANGE";
+  preparedRole.adapterId = model.adapterId;
+  preparedRole.adapterVersion = model.adapterVersion;
+  preparedRole.modelManifestDigest = manifestDigest;
+  preparedRole.artifactProfileDigest = artifactProfileDigest;
+  preparedRole.graphDigest = graphDigest;
+  preparedRole.canonicalInitializerDigest = nativePlanningDigest("r4-b6-initializers");
+  preparedRole.adapterDescriptorDigest = nativePlanningDigest("fixture-adapter");
+  preparedRole.assemblerDescriptorDigest = nativePlanningDigest("r4-b6-assembler");
+  preparedRole.backendAbi = "onnxruntime-cpu-v1";
+  preparedRole.nodeIndices = {0};
+  preparedRole.expectedInputs = {
+    {"input_ids", "int64", {std::int64_t(1), std::int64_t(1)}},
+    {"attention_kv_in", "float32", {std::int64_t(1)}},
+    {"recurrent_state_in", "float32", {std::int64_t(1)}},
+    {"convolution_state_in", "float32", {std::int64_t(1)}}};
+  preparedRole.expectedOutputs = {
+    {"logits", "float32", {std::int64_t(1)}},
+    {"attention_kv_out", "float32", {std::int64_t(1)}},
+    {"recurrent_state_out", "float32", {std::int64_t(1)}},
+    {"convolution_state_out", "float32", {std::int64_t(1)}}};
+  preparedRole.precision = "fp32";
+  preparedRole.quantization = "none";
+  preparedRole.layout = "native";
+  preparedRole.padding = "none";
+  preparedRole.protectionEpoch = protectionEpoch;
+  preparedRole.maxSourceBytes = 4096;
+  preparedRole.maxAssembledBytes = 8192;
+  preparedRole.maxNodes = 16;
+
+  NativeSplitCandidate candidate;
+  candidate.source = "PRE_SPLIT";
+  candidate.splitter = {"r4-b6-fixture", "1", nativePlanningDigest("r4-b6-split")};
+  candidate.model = model;
+  candidate.graphDigest = graphDigest;
+  candidate.executionPlan.serviceName = serviceName;
+  candidate.executionPlan.modelName = model.modelName;
+  candidate.executionPlan.roles = {role};
+  candidate.fragmentsByRole[role] = nativePlanningDigest("r4-b6-fragment");
+  candidate.artifactsByRole[role] = {artifactDigest};
+  candidate.requirementsByRole[role] = { {"onnxruntime-cpu"}, 0, 0, 0, 0, 0, 1.0 };
+  candidate.tensorDegreesByRole[role] = 1;
+  candidate.rankArtifactDigestsByRole[role] = {artifactDigest};
+  candidate.nodeRoles["node"] = role;
+  candidate.inputIngressRole = role;
+  candidate.resultEgressRole = role;
+  candidate.candidateDigest = candidate.computedDigest();
+  candidate.validate(graph);
+
+  auto registry = std::make_shared<NativeAdapterRegistry>();
+  registry->registerAdapter(std::make_shared<NativeCatalogModelAdapter>(
+    std::vector<NativeModelDescriptor>{model}, NativeCatalogModelAdapter::Format::OpaqueBytes, 4096));
+  registry->freeze();
+  NativeArtifactBinding binding;
+  binding.artifactNameByRole[role] = "/r4-b6/catalog/artifact";
+  binding.artifactDigestByRole[role] = artifactDigest;
+  binding.manifestDigest = manifestDigest;
+  binding.recipeDigest = recipeDigest;
+  const std::vector<std::uint8_t> catalogRootPayload = {
+    'r', '4', '-', 'b', '6', '-', 'c', 'a', 't', 'a', 'l', 'o', 'g', '-', 'r', 'o', 'o', 't'};
+  const auto catalogContext = environment.user().prepareServiceRequest(serviceName);
+  const auto catalogPublished = environment.user().publishEncryptedLargeData(
+      catalogContext, catalogRootPayload, "catalog-root",
+      ndn::time::milliseconds(60000));
+  BOOST_REQUIRE_MESSAGE(catalogPublished.success,
+                        catalogPublished.errorMessage);
+  binding.sourceByRole[role] = catalogPublished.encryptedDataName.toUri();
+  auto preparation = std::make_shared<NativeRequestPreparation>(
+    registry,
+    [inspected] (const auto&, const auto&) { return inspected; },
+    [binding] (const auto&, const auto&, const auto&, const auto&) { return binding; },
+    [preparedRole] (const auto&, const auto&, const auto&) {
+      return std::vector<NativeSelectionRoleV3>{preparedRole};
+    });
+
+  const auto offerKey = makeR4B6Ed25519Key(0x31);
+  std::array<unsigned char, 32> offerPublic{};
+  std::size_t offerPublicSize = offerPublic.size();
+  if (EVP_PKEY_get_raw_public_key(offerKey.get(), offerPublic.data(), &offerPublicSize) != 1 ||
+      offerPublicSize != offerPublic.size()) {
+    throw std::runtime_error("R4-B6 offer public key extraction failed");
+  }
+  const auto offerKeyId = nativePlanningDigest(std::string(
+    reinterpret_cast<const char*>(offerPublic.data()), offerPublic.size()));
+  NativeProviderOfferV3Config offerConfig;
+  offerConfig.provider = providerName;
+  offerConfig.service = serviceName;
+  offerConfig.bootEpoch = providerName + ":" + environment.provider().getProviderBootEpoch();
+  offerConfig.signerKeyId = offerKeyId;
+  offerConfig.acceptedRoles = {role};
+  offerConfig.backends = {"onnxruntime-cpu"};
+  offerConfig.signDigest = [offerKey] (const std::string& value) {
+    return r4B6SignDigest(offerKey, value);
+  };
+  const auto policyJson = nativeCanonicalJson(NativeJson{
+    {"schema", "spec180-provider-offer-trust-v1"},
+    {"candidateId", "r4-b6"}, {"candidateDigest", nativePlanningDigest("r4-b6-candidate-policy")},
+    {"trustSchema", "/r4-b6/trust"},
+    {"entries", NativeJson::array({NativeJson{
+      {"provider", providerName}, {"service", serviceName},
+      {"keyLocatorPrefix", environment.provider().getSigningKeyName().toUri()},
+      {"signerKeyId", offerKeyId},
+      {"certificateName", environment.provider().getSigningCertificateName().toUri()}}})}});
+  const auto candidatePolicyDigest = nativeParseJson(policyJson).at("candidateDigest").get<std::string>();
+  auto admission = std::make_shared<NativeOfferAdmission>(
+    policyJson, std::map<std::string, std::string>{{offerKeyId, r4B6PublicPem(offerKey)}},
+    candidatePolicyDigest);
+
+  const auto requesterKey = makeR4B6Ed25519Key(0x41);
+  const auto authorityKey = makeR4B6Ed25519Key(0x51);
+  const auto recipientKey = makeR4B6Ed25519Key(0x61);
+  std::array<unsigned char, 32> authorityPublic{};
+  std::size_t authorityPublicSize = authorityPublic.size();
+  if (EVP_PKEY_get_raw_public_key(authorityKey.get(), authorityPublic.data(),
+                                  &authorityPublicSize) != 1 ||
+      authorityPublicSize != authorityPublic.size()) {
+    throw std::runtime_error("R4-B6 authority public key extraction failed");
+  }
+  NativeGrantIssuerConfig issuerConfig;
+  issuerConfig.authorityIdentity = "/r4-b6/authority";
+  issuerConfig.requesterIdentity = requesterName;
+  issuerConfig.protectionEpoch = protectionEpoch;
+  issuerConfig.keyId = "r4-b6-grant-key";
+  issuerConfig.authorityPrivateKey = authorityKey;
+  issuerConfig.requesterPublicKey = requesterKey;
+  issuerConfig.allowedModelManifests = {manifestDigest};
+  issuerConfig.recipientPublicKeys = {{providerName, recipientKey}};
+  issuerConfig.contentKey = [] (const auto&, const auto&) {
+    return std::vector<std::uint8_t>(32, 0x77);
+  };
+  NativeAuthenticatedGrantClient::Publish publishGrant =
+    [] (const std::string& name, const std::string&, const NativeGrantControl&) {
+      return name;
+    };
+  const auto authorityIdentity = issuerConfig.authorityIdentity;
+  auto grantIssuer = std::make_shared<NativeArtifactGrantIssuer>(std::move(issuerConfig));
+  BOOST_TEST_MESSAGE("R4-B6 grant requester=" << requesterName
+                    << " authority=" << authorityIdentity
+                    << " requesterKeyId=" << EVP_PKEY_id(requesterKey.get())
+                    << " authorityPublicBytes=" << authorityPublicSize
+                    << " publish=" << static_cast<bool>(publishGrant));
+  auto grants = std::make_shared<NativeAuthenticatedGrantClient>(
+    requesterName, requesterKey, authorityIdentity,
+    std::string(reinterpret_cast<const char*>(authorityPublic.data()), authorityPublic.size()),
+    grantIssuer,
+    std::move(publishGrant));
+
+  auto user = std::shared_ptr<ServiceUser>(&environment.user(), [] (ServiceUser*) {});
+  const auto providerBootId = providerName + "-boot";
+  auto ackCalls = std::make_shared<std::atomic<unsigned>>(0);
+  auto collaborationCalls = std::make_shared<std::atomic<unsigned>>(0);
+  environment.provider().addCollaborationHandler(
+    ndn::Name(serviceName),
+    [offerConfig, ackCalls] (const RequestMessage& request) {
+      ackCalls->fetch_add(1, std::memory_order_relaxed);
+      ServiceProvider::AckDecision decision;
+      const auto payload = request.getPayload();
+      const auto issued = issueNativeProviderOfferV3(
+        std::vector<std::uint8_t>(payload.begin(), payload.end()), offerConfig,
+        static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::system_clock::now().time_since_epoch()).count()));
+      if (!issued || !issued->status) {
+        decision.message = issued ? issued->message : "DI_V3_REQUEST_NOT_SELECTED";
+        return decision;
+      }
+      decision.status = true;
+      decision.message = issued->message;
+      decision.payload = ndn::Buffer(issued->payload.begin(), issued->payload.end());
+      decision.pendingStateTtlMs = issued->pendingStateTtlMs;
+      return decision;
+    },
+    [model, policyDigest, protectionEpoch, role, providerBootId, collaborationCalls] (
+      ServiceProvider::CollaborationContext& ctx, const RequestMessage& request) {
+      try {
+        collaborationCalls->fetch_add(1, std::memory_order_relaxed);
+        const auto assignment = ctx.assignment().assignmentPayload;
+        std::istringstream input(std::string(assignment.begin(), assignment.end()));
+        const auto projection = nativeSelectionProjectionV3FromJson(input, role);
+        if (!projection.conversationTurnBinding || !ctx.isStreamed()) {
+          throw std::runtime_error("R4-B6 conversation projection missing");
+        }
+        const auto binding = *projection.conversationTurnBinding;
+        ctx.subscribe("ndnsf-di-conversation-state-v1",
+                      ndn::Name("/ndnsf-di/conversation/control"),
+                      [] (const ServiceProvider::CollaborationData&) {});
+        const bool append = binding.parentContextEpoch != 0;
+        const std::vector<std::int64_t> fullTokens = append
+          // The continuation carries the reconstructed context [1,2,3];
+          // the streamed delta contributes token 3 as the next generated
+          // token, so the coordinator's completed prefix is [1,2,3,3].
+          ? std::vector<std::int64_t>{1, 2, 3, 3}
+          : std::vector<std::int64_t>{1, 2};
+        const auto publishToken = [&ctx, &projection] (std::int64_t token,
+                                                        std::uint64_t epoch,
+                                                        const std::string& prefix,
+                                                        const std::string& delta,
+                                                        const std::string& hint) {
+          const auto wire = nativeCanonicalJson(NativeJson{
+            {"schema", "GenerationTokenEventV1"}, {"tokenId", token},
+            {"tokenEpoch", epoch}, {"acceptedPrefixDigest", nativePlanningDigest(prefix)},
+            {"textDelta", delta}, {"finishHint", hint},
+            {"generationId", projection.generationContract.generationId},
+            {"samplingDigest", projection.generationContract.samplingDigest}});
+          if (!ctx.publishStreamEvent(ndn::Buffer(wire.begin(), wire.end()))) {
+            throw std::runtime_error("R4-B6 stream event publication failed");
+          }
+        };
+        if (append) {
+          publishToken(3, 1, "3", "c", "EOS");
+        }
+        else {
+          publishToken(1, 1, "1", "a", "NONE");
+          publishToken(2, 2, "1,2", "b", "EOS");
+        }
+        const auto text = append ? std::string("c") : std::string("ab");
+        const auto deltaTokens = append ? std::vector<std::int64_t>{3} :
+          std::vector<std::int64_t>{1, 2};
+        const auto final = nativeCanonicalJson(NativeJson{
+          {"schema", "NDNSF-DI-FINAL-V1"}, {"tokenIds", deltaTokens},
+          {"text", text}, {"finishHint", "EOS"}, {"finishReason", "eos"},
+          {"generationId", projection.generationContract.generationId}});
+        if (!ctx.finishStream(ndn::Buffer(final.begin(), final.end()),
+                              StreamFinishReason::ApplicationComplete)) {
+          throw std::runtime_error("R4-B6 stream final publication failed");
+        }
+
+        ProviderConversationStateReceiptV1 receipt;
+        receipt.conversationId = binding.conversationId;
+        receipt.parentContextEpoch = binding.parentContextEpoch;
+        receipt.successorContextEpoch = binding.successorContextEpoch;
+        receipt.originRequestId = ctx.sessionId();
+        receipt.originGenerationId = projection.generationContract.generationId;
+        receipt.serviceName = binding.serviceName;
+        receipt.requesterIdentity = ctx.requesterName().toUri();
+        receipt.securityDomainDigest = policyDigest;
+        receipt.modelDigest = model.intentDigest();
+        receipt.graphSemanticDigest = model.semanticsDigest;
+        receipt.adapterDigest = model.adapter.descriptorDigest();
+        receipt.roleName = role;
+        receipt.roleSplitDigest = projection.selectedRole.recipeDigest;
+        receipt.layoutDigest = projection.selectedRole.artifactProfileDigest;
+        receipt.planRoleMapDigest = binding.planRoleMapDigest;
+        receipt.providerIdentity = ctx.localProvider().toUri();
+        receipt.providerBootId = providerBootId;
+        receipt.cacheEpoch = append ? 2 : 1;
+        receipt.prefixDigest = nativeConversationPrefixDigest(fullTokens);
+        receipt.prefixTokenCount = static_cast<std::uint32_t>(fullTokens.size());
+        receipt.positionDigest = nativePlanningDigest("r4-b6-position");
+        receipt.stateSchemaDigest = nativePlanningDigest("r4-b6-state-schema");
+        receipt.stateComponentDigests = {nativePlanningDigest("r4-b6-state")};
+        receipt.expiresAtMs = binding.retentionDeadlineMs;
+        receipt.validate();
+        const auto receiptJson = receipt.toJson();
+        ctx.publish("ndnsf-di-conversation-state-v1",
+                    ndn::Name("/ndnsf-di/conversation/receipt").append(role),
+                    ndn::Buffer(receiptJson.begin(), receiptJson.end()));
+
+        const auto controlTopic = ndn::Name("/ndnsf-di/conversation/control");
+        const auto commitTopic = ndn::Name("/ndnsf-di/conversation/commit");
+        // A failed test must not leave the collaboration worker waiting
+        // forever for a control message after the requester has aborted.
+        for (int rounds = 0; rounds < 30; ++rounds) {
+          const auto controls = ctx.waitFor("ndnsf-di-conversation-state-v1",
+                                             controlTopic, 1, 1000);
+          for (const auto& controlData : controls) {
+            if (controlData.producer != ctx.requesterName() ||
+                controlData.producerRole != "user-control-v1") {
+              continue;
+            }
+            const auto control = nativeParseJson(std::string(
+              controlData.payload.begin(), controlData.payload.end()));
+            if (control.value("conversationId", std::string{}) != binding.conversationId ||
+                control.value("successorContextEpoch", std::uint64_t{0}) != binding.successorContextEpoch ||
+                control.value("roleName", std::string{}) != role) {
+              continue;
+            }
+            const auto action = control.value("action", std::string{});
+            if (action == "FINALIZE") return;
+            if (action != "COMMIT") continue;
+            const auto ack = nativeCanonicalJson(NativeJson{
+              {"schema", "ndnsf-di-provider-conversation-commit-ack-v1"},
+              {"requestId", ctx.sessionId()}, {"attemptEpoch", projection.attempt},
+              {"generationId", projection.generationContract.generationId},
+              {"planDigest", projection.planDigest}, {"conversationId", binding.conversationId},
+              {"parentContextEpoch", binding.parentContextEpoch},
+              {"successorContextEpoch", binding.successorContextEpoch},
+              {"serviceName", binding.serviceName}, {"planRoleMapDigest", binding.planRoleMapDigest},
+              {"roleName", role}, {"receiptDigest", receipt.computedDigest()},
+              {"checkpointDigest", control.value("checkpointDigest", std::string{})},
+              {"providerIdentity", ctx.localProvider().toUri()},
+              {"providerBootId", providerBootId}, {"cacheEpoch", receipt.cacheEpoch},
+              {"committed", true}});
+            ctx.publish("ndnsf-di-conversation-state-v1", commitTopic,
+                        ndn::Buffer(ack.begin(), ack.end()));
+            // A COMMIT control is terminal for this role.  Returning here
+            // prevents the retained control record from being processed in a
+            // tight loop while the acknowledgement is handed to the Face.
+            return;
+          }
+        }
+        throw std::runtime_error("R4-B6 conversation control timeout");
+      }
+      catch (const std::exception& error) {
+      ctx.fail(std::string("R4-B6 handler failure: ") + error.what());
+      }
+    });
+
+  environment.enableProductionIngressForTest();
+  environment.provider().markHybridResponseKeyWrappedForTest(serviceName);
+  const auto selectionKey = environment.user().prepareHybridSendKeyForTest(
+    serviceName, "SELECTION");
+  const auto ackKey = environment.provider().prepareHybridSendKeyForTest(
+    serviceName, "ACK");
+  environment.user().cacheHybridReceiveKeyForTest(
+    ackKey.keyId, ackKey.epochId, ackKey.key);
+  const auto responseKey = environment.provider().prepareHybridSendKeyForTest(
+    serviceName, "RESPONSE");
+  environment.user().cacheHybridReceiveKeyForTest(
+    responseKey.keyId, responseKey.epochId, responseKey.key);
+  environment.provider().cacheHybridReceiveKeyForTest(
+    selectionKey.keyId, selectionKey.epochId, selectionKey.key);
+
+  NativeRequestRuntime runtime;
+  runtime.contract = {serviceName, "task", model.adapterId,
+    model.adapter.descriptorDigest(), nativePlanningDigest("r4-b6-composition"),
+    nativePlanningDigest("r4-b6-task"), "TOKEN_STREAMING"};
+  runtime.requesterIdentity = requesterName;
+  runtime.protectionEpoch = protectionEpoch;
+  runtime.inputLayoutDigest = nativePlanningDigest("r4-b6-input-layout");
+  runtime.security = {policyDigest, true};
+  runtime.budget = {1, 1000, 1};
+  runtime.grants = grants;
+  runtime.noProgressMs = 5000;
+  runtime.maxSegments = 64;
+
+  NativeModelRef modelRef;
+  static_cast<NativeModelDescriptor&>(modelRef) = model;
+  NativeApplicationInput application;
+  application.taskName = "task";
+  application.inputSchemaDigest = model.adapter.inputSchemaDigest;
+  application.optionsSchemaDigest = model.adapter.optionsSchemaDigest;
+  application.payload = {1, 2, 3};
+  const auto generationOptions = nativeCanonicalJson(NativeJson{
+    {"useCache", true}, {"outputMode", "TOKEN_STREAMING"}, {"maxNewTokens", 2},
+    {"eosTokenIds", NativeJson::array({2})}, {"tokenizerDigest", tokenizerDigest},
+    {"tokenInputName", "input_ids"},
+    {"stateInputNames", NativeJson::array({"attention_kv_in", "recurrent_state_in", "convolution_state_in"})},
+    {"stateOutputNames", NativeJson::array({"attention_kv_out", "recurrent_state_out", "convolution_state_out"})},
+    {"greedy", true}});
+  application.options.assign(generationOptions.begin(), generationOptions.end());
+  NativeRequestOptions options;
+  options.taskName = "task";
+  options.timeoutMs = 20000;
+  options.ackTimeoutMs = 3000;
+  options.stream = StreamRequestOptions{};
+  options.stream->generationId.fill(0x11);
+  options.stream->maxEvents = 8;
+  options.stream->interestWindow = 4;
+  options.stream->retentionMs = 5000;
+  options.stream->allowReplacement = false;
+  options.stream->maxReplacements = 0;
+  options.generation = nativeGenerationFromOptions(application.options,
+                                                     std::string(32, '1'));
+  const auto retentionDeadlineMs = static_cast<std::uint64_t>(
+    std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::system_clock::now().time_since_epoch()).count()) + 60000;
+  options.conversation = NativeConversationContinuation{
+    "r4-b6-conversation-001", 0, serviceName, roleMapDigest, {}, {},
+    retentionDeadlineMs, "FULL_CONTEXT", {}, std::string(32, '1'), {}, {role}};
+
+  NativeConversationConfig conversationConfig;
+  conversationConfig.authenticationKeys = {std::vector<std::uint8_t>(32, 0x5a)};
+  conversationConfig.requesterIdentity = requesterName;
+  conversationConfig.serviceName = serviceName;
+  conversationConfig.securityDomainDigest = policyDigest;
+  auto conversations = std::make_shared<NativeConversationCoordinator>(
+    std::move(conversationConfig));
+  NativeInferenceClient client(user, registry, runtime, conversations,
+                               preparation, admission);
+  class R4B6Splitter final : public NativeModelSplitStrategy {
+  public:
+    explicit R4B6Splitter(NativeSplitCandidate value) : m_value(std::move(value)) {}
+    NativeStrategyIdentity identity() const override { return m_value.splitter; }
+    std::vector<NativeSplitCandidate> enumerate(const NativeModelDescriptor&, const NativeGraphSnapshot&,
+                                                const NativeCandidateBudget&) const override { return {m_value}; }
+  private:
+    NativeSplitCandidate m_value;
+  };
+  auto splitter = std::make_shared<R4B6Splitter>(candidate);
+  auto placement = std::make_shared<NativePreSplitFirstPlacement>();
+  const auto first = client.request(modelRef, application,
+                                    splitter, placement, options);
+  for (int i = 0; i < 20 && first.status() == NativeRequestStatus::Pending; ++i) {
+    environment.pumpUntil([&] { return first.status() != NativeRequestStatus::Pending; });
+  }
+  if (first.status() != NativeRequestStatus::Succeeded) {
+    try { (void)first.result(std::chrono::milliseconds(0)); }
+    catch (const NativeDiError& error) {
+      BOOST_TEST_MESSAGE("R4-B6 first failed code=" << error.code()
+                        << " domain=" << error.domain()
+                        << " boundary=" << error.boundary()
+                        << " message=" << error.what()
+                        << " ackCalls=" << ackCalls->load()
+                        << " collaborationCalls=" << collaborationCalls->load());
+    }
+  }
+  BOOST_REQUIRE(first.status() == NativeRequestStatus::Succeeded);
+  const auto firstResult = first.result(std::chrono::milliseconds(0));
+  const auto firstJson = nativeParseJson(
+    std::string(firstResult.payload.begin(), firstResult.payload.end()));
+  BOOST_CHECK_EQUAL(firstJson.at("text").get<std::string>(), "ab");
+  const auto record = conversations->find("r4-b6-conversation-001");
+  BOOST_REQUIRE(record.has_value());
+
+  auto secondOptions = options;
+  secondOptions.generation = nativeGenerationFromOptions(application.options,
+                                                         std::string(32, '1'));
+  secondOptions.conversation = NativeConversationContinuation{
+    record->checkpoint.conversationId, record->checkpoint.successorContextEpoch,
+    serviceName, roleMapDigest, record->checkpoint.checkpointDigest, {},
+    record->retentionDeadlineMs,
+    "APPEND_DELTA", record->checkpoint.wire, std::string(32, '1'), {1, 2, 3}, {role}};
+  const auto second = client.request(modelRef, application,
+                                     std::make_shared<R4B6Splitter>(candidate), placement,
+                                     secondOptions);
+  for (int i = 0; i < 20 && second.status() == NativeRequestStatus::Pending; ++i) {
+    environment.pumpUntil([&] { return second.status() != NativeRequestStatus::Pending; });
+  }
+  if (second.status() != NativeRequestStatus::Succeeded) {
+    try { (void)second.result(std::chrono::milliseconds(0)); }
+    catch (const NativeDiError& error) {
+      BOOST_TEST_MESSAGE("R4-B6 second failed code=" << error.code()
+                        << " domain=" << error.domain()
+                        << " boundary=" << error.boundary()
+                        << " message=" << error.what());
+    }
+  }
+  BOOST_REQUIRE(second.status() == NativeRequestStatus::Succeeded);
+  const auto secondResult = second.result(std::chrono::milliseconds(0));
+  const auto secondJson = nativeParseJson(
+    std::string(secondResult.payload.begin(), secondResult.payload.end()));
+  BOOST_CHECK_EQUAL(secondJson.at("text").get<std::string>(), "c");
+  client.close();
+}
+
 Spec175NativeTinyStreamResult
 runSpec175NativeTinyFourProviderCase(bool permuteRoleProviders)
 {
@@ -6573,6 +7149,11 @@ BOOST_AUTO_TEST_CASE(ProductionNativeHandlersRunStreamedD2bRequestToFinalRespons
 BOOST_AUTO_TEST_CASE(ProductionNativeHandlersPrepareRolesAfterSelection)
 {
   runProductionNativeD2bCase(false, false, true);
+}
+
+BOOST_AUTO_TEST_CASE(Spec182R4B6RealProviderConversation)
+{
+  runR4B6RealProviderConversationCase();
 }
 
 BOOST_AUTO_TEST_CASE(Spec175NativeTinyOnnxI01OneProvider)

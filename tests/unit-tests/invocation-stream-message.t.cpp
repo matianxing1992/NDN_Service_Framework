@@ -572,6 +572,18 @@ BOOST_AUTO_TEST_CASE(StreamCompletionAndEventNameBindOneInvocation)
     "7172737475767778797a7b7c7d7e7f");
 }
 
+BOOST_AUTO_TEST_CASE(StructuredRequestIdRemainsBoundInEventName)
+{
+  auto binding = validBinding();
+  binding.requestId = ndn::Name("/NDNSF/DI/REQUEST/1");
+  const auto eventName = makeInvocationEventName(binding, 1);
+  const auto parsed = parseInvocationEventName(eventName);
+  BOOST_REQUIRE(parsed.has_value());
+  BOOST_CHECK_EQUAL(parsed->requestId, binding.requestId);
+  BOOST_CHECK_EQUAL(eventName.get(eventName.size() - 6).toUri(),
+                    ndn::name::Component(binding.requestId.toUri()).toUri());
+}
+
 BOOST_AUTO_TEST_CASE(ResponseMessageCarriesOneFinalStreamCompletionBlock)
 {
   ResponseMessage response;
