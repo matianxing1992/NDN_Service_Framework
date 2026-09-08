@@ -31,6 +31,60 @@ CLOSED = TERMINAL | {"CANCELLED_BEFORE_SUBMIT"}
 STATES = CLOSED | {"PREPARED", "SUBMITTING", "SUBMISSION_UNKNOWN", "SUBMITTED", "RUNNING"}
 
 
+def _journal_root(root):
+    root = Path(root)
+    if (not root.is_absolute() or '..' in root.parts or not root.is_dir()
+            or any(p.is_symlink() for p in (root, *root.parents))):
+        raise JournalError('JOURNAL_ROOT')
+    return root
+
+
+@contextmanager
+def _file_lock(path, operation):
+    fd = os.open(str(path), os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise JournalError('JOURNAL_LOCK_TYPE')
+        deadline = time.monotonic() + 2.0
+        while True:
+            try:
+                fcntl.flock(fd, operation | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise JournalError('JOURNAL_LOCK_TIMEOUT')
+                time.sleep(0.02)
+        yield
+    finally:
+        os.close(fd)
+
+
+@contextmanager
+def transport_guard(root):
+    """Exclude managed submissions for the entire publication transaction.
+
+    Every participant must use this same shared journal root and lock protocol.
+    Uncertain submissions stay active until the existing observer closes them.
+    """
+    root = _journal_root(root)
+    with _file_lock(root / '.transport.lock', fcntl.LOCK_EX):
+        paths = sorted(p for p in root.iterdir() if re.fullmatch(r'[0-9a-f]{64}\.json', p.name))
+        if len(paths) > 4096:
+            raise JournalError('TRANSPORT_JOURNAL_LIMIT')
+        for path in paths:
+            value = _read_plane(path)
+            if not isinstance(value, dict) or not {'candidateId', 'gate'} <= set(value):
+                raise JournalError('JOURNAL_RECORD')
+            journal = SubmissionJournal(root, candidate_id=value['candidateId'], gate=value['gate'])
+            if journal.path != path:
+                raise JournalError('JOURNAL_RECORD')
+            # Namespace EX excludes all journal writers; do not recursively lock.
+            if journal._load()['activeRunId'] is not None:
+                raise JournalError('TRANSPORT_ACTIVE_SUBMISSION')
+        yield
+
+
 def verify_operator_python(bundle, *, seconds, operator_python='/usr/bin/python3'):
     """Verify the actual batch interpreter and frozen operator dependency pins."""
     script = '''import sys, pathlib, importlib.metadata as metadata
@@ -99,10 +153,7 @@ def observe_submission(*, submission_key, partition, since, seconds):
 
 class SubmissionJournal:
     def __init__(self, root: Path, *, candidate_id: str, gate: str):
-        root = Path(root)
-        if (not root.is_absolute() or ".." in root.parts or not root.is_dir()
-                or any(p.is_symlink() for p in (root,) + tuple(root.parents))):
-            raise JournalError("JOURNAL_ROOT")
+        root = _journal_root(root)
         if not isinstance(candidate_id, str) or not HASH.fullmatch(candidate_id):
             raise JournalError("JOURNAL_CANDIDATE")
         if gate not in ("local-cpu", "single-node-gpu", "two-node-gpu", "negative-dependency"):
@@ -113,24 +164,9 @@ class SubmissionJournal:
 
     @contextmanager
     def _locked(self):
-        fd = os.open(str(self.root / (self.key + ".lock")),
-                     os.O_CREAT | os.O_WRONLY | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
-        try:
-            info = os.fstat(fd)
-            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
-                raise JournalError("JOURNAL_LOCK_TYPE")
-            deadline = time.monotonic() + 2.0
-            while True:
-                try:
-                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    break
-                except BlockingIOError:
-                    if time.monotonic() >= deadline:
-                        raise JournalError("JOURNAL_LOCK_TIMEOUT")
-                    time.sleep(0.02)
+        with _file_lock(self.root / '.transport.lock', fcntl.LOCK_SH), \
+                _file_lock(self.root / (self.key + '.lock'), fcntl.LOCK_EX):
             yield
-        finally:
-            os.close(fd)
 
     def _load(self):
         if not os.path.lexists(str(self.path)):

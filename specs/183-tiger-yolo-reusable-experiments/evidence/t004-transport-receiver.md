@@ -2,6 +2,10 @@
 
 2026-09-07. Transport component implemented; T004 and runtime qualification open.
 
+Follow-up: t004-transport-guard.md adds required sharedLockRoot coordination;
+the initial receiver CLI below predates that mandatory argument. Its original
+two-file transport observations remain historical component evidence.
+
 `runtime/yolo_transport.py` inventories explicitly selected regular files under
 operator-supplied artifact/run roots. The manifest binds absolute paths, sizes,
 SHA-256, modes, declared private-file flags and caller candidate digest. It

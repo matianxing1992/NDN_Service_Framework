@@ -129,7 +129,19 @@ def _capacity(pending):
         raise ValueError('TRANSPORT_CAPACITY')
 
 
-def receive(manifest, *, roots, staging):
+def receive(manifest, *, roots, staging, lock_root):
+    """Publish only while the configured submission namespace is idle."""
+    validate_manifest(manifest, roots=roots)
+    lock_root = _path(str(lock_root))
+    if any(lock_root == root or lock_root in root.parents or root in lock_root.parents
+           for root in _roots(roots)):
+        raise ValueError('TRANSPORT_LOCK_ROOT_OVERLAP')
+    from .yolo_submission import transport_guard
+    with transport_guard(lock_root):
+        return _receive_files(manifest, roots=roots, staging=staging)
+
+
+def _receive_files(manifest, *, roots, staging):
     """Verify staging/blobs/<sha256> then publish no-overwrite at original paths.
 
     Failed incoming staging is retained. Repeating this operation revalidates

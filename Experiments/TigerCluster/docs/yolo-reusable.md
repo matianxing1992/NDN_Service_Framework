@@ -3,7 +3,10 @@
 内部运输组件 `tools/spec183_transport.py` 已有显式inventory/receive；输入清单
 只描述所选文件，不能证明完整candidate闭包。接收端先校验、测容量，再无覆盖
 发布；匹配文件可复用，结果仅CONTENT_VERIFIED/NOT_EVALUATED。真实两文件SSH
-验证见Spec183的 `evidence/t004-transport-receiver.md`。活动作业排除、自动闭包
+验证见Spec183的 `evidence/t004-transport-receiver.md`。receive必须传与profile
+一致的 `--lock-root`；未关闭/未知journal或并发提交与运输互斥。所有操作者必须
+使用同一新版锁协议；旧冻结脚本不能同时参与。登录节点验证见
+`evidence/t004-transport-guard.md`，跨计算节点仍待实际allocation检查。自动闭包
 枚举与公开submit的SSH协调尚未完成，不能用此工具替代正式前置门。
 
 **Branch**: `TigerClusterExperiments`

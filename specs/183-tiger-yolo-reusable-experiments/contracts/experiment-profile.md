@@ -23,8 +23,20 @@ Implementation checkpoint: explicit inventory/no-overwrite receiver is present
 in runtime/yolo_transport.py with internal tools/spec183_transport.py. It verifies
 only operator-selected files. Fifteen focused checks and an actual two-file Tiger
 exercise are retained in evidence/t004-transport-receiver.md. Automatic semantic
-closure, active-allocation exclusion and the public submit SSH coordinator are
-still missing; end-to-end transport remains unimplemented.
+closure and the public submit SSH coordinator are still missing; end-to-end
+transport remains unimplemented. Managed-journal exclusion is now wired as below.
+
+Receiver requires `--lock-root` equal to the profile's sharedLockRoot. It takes
+an exclusive `.transport.lock` across journal validation and all publication;
+every SubmissionJournal operation takes that lock shared before its per-key
+exclusive lock. A non-closed entry anywhere in this namespace, including unknown
+submission, prevents transport. The receiver never cancels/finishes a row to
+obtain access. All participating submitters must use this same root and protocol;
+old frozen scripts cannot safely coexist with the new transport owner. This
+serializes transfer with the campaign's managed allocations, not unmanaged jobs.
+The receiver still cannot replace a gate with a transport receipt. Real login
+process locking is recorded in evidence/t004-transport-guard.md; compute/cross-node
+locking must be verified in the later allocation gate.
 
 Use the declared project namespace on both the experiment host and Tiger before
 creating new qualifying runs: artifact inputs/profile under `remoteArtifactRoot`,

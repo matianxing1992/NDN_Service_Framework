@@ -20,6 +20,8 @@ def main():
                         help='Explicit JSON file list for inventory, manifest for receive')
     parser.add_argument('--candidate-digest')
     parser.add_argument('--staging', type=Path)
+    parser.add_argument('--lock-root', type=Path,
+                        help='Same sharedLockRoot used by every submitter; required for receive')
     parser.add_argument('--private-file', action='append', default=[],
                         help='Explicit owner-only secret in the inventory file list')
     args = parser.parse_args()
@@ -31,9 +33,9 @@ def main():
         result = inventory(value, roots=roots, candidate_digest=args.candidate_digest,
                            private_paths=args.private_file)
     else:
-        if args.staging is None:
-            parser.error('receive requires --staging')
-        result = receive(value, roots=roots, staging=args.staging)
+        if args.staging is None or args.lock_root is None:
+            parser.error('receive requires --staging and --lock-root')
+        result = receive(value, roots=roots, staging=args.staging, lock_root=args.lock_root)
     print(json.dumps(result, sort_keys=True))
 
 
