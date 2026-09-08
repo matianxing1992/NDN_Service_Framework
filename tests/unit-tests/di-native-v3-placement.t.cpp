@@ -1,4 +1,5 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeV3Placement.hpp"
+#include "tests/fixtures/spec182/native-model-fixture.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "tests/fixtures/spec182/native-sealing-fixture.hpp"
 #include "ndn-service-framework/ServiceUser.hpp"
@@ -47,6 +48,7 @@ struct Input
     }
     NativeModelDescriptor descriptor{"QwenFixture", context.modelDigest, nativePlanningDigest("semantics"),
       context.graphDigest, "onnx", "fp32", roles.front().adapterId, roles.front().adapterVersion};
+    descriptor = fixture::completeModel(descriptor);
     NativeGraphSnapshot graph;
     graph.graphDigest = context.graphDigest; graph.nodes = {{"node", "Identity", 0}};
     graph.topologicalOrder = {"node"};

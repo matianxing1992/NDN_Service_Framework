@@ -1,3 +1,4 @@
+#include "tests/fixtures/spec182/native-model-fixture.hpp"
 // Spec182Preparation: frozen ports of NativeRequestPreparation against the
 // two model task adapters (Qwen pipeline bytes identity, YOLO canonical JSON
 // document boundary) and the certified artifact binding checks.  The suite
@@ -160,11 +161,12 @@ public:
                      std::function<std::vector<std::uint8_t>(
                        const std::vector<std::uint8_t>&)> encode,
                      std::function<std::vector<std::uint8_t>(
-                       const std::vector<std::uint8_t>&)> decode)
+                       const std::vector<std::uint8_t>&)> decode,
+                     std::string sourceRevision = {})
     : m_adapterId(std::move(adapterId)), m_adapterVersion(std::move(adapterVersion)),
       m_modelFormat(std::move(modelFormat)), m_precision(std::move(precision)),
       m_semanticsDigest(digest(semanticsLabel)), m_graphDigest(digest(graphLabel)),
-      m_encode(std::move(encode)), m_decode(std::move(decode))
+      m_encode(std::move(encode)), m_decode(std::move(decode)), m_sourceRevision(std::move(sourceRevision))
   {}
 
   std::string adapterId() const override { return m_adapterId; }
@@ -182,6 +184,8 @@ public:
     model.precision = m_precision;
     model.adapterId = m_adapterId;
     model.adapterVersion = m_adapterVersion;
+    model.adapter = fixture::modelAdapter(m_adapterId, m_adapterVersion, m_modelFormat, m_precision);
+    model.sourceRevision = m_sourceRevision;
     return model;
   }
 
@@ -208,6 +212,7 @@ private:
     const std::vector<std::uint8_t>&)> m_encode;
   std::function<std::vector<std::uint8_t>(
     const std::vector<std::uint8_t>&)> m_decode;
+  std::string m_sourceRevision;
 };
 
 std::vector<std::uint8_t> identityBytes(
@@ -223,9 +228,11 @@ NativeModelDescriptor modelDescriptor(const TaskFixtureAdapter& adapter,
                                       const std::string& semanticsLabel = "semantics",
                                       const std::string& graphLabel = "graph")
 {
-  return {modelName, digest("model"), digest(semanticsLabel), digest(graphLabel),
-          adapter.inspect(modelName, digest("model")).modelFormat,
-          adapter.inspect(modelName, digest("model")).precision, adapter.adapterId(), adapter.adapterVersion()};
+  const auto inspected = adapter.inspect(modelName, digest("model"));
+  auto model = fixture::completeModel({modelName, digest("model"), digest(semanticsLabel), digest(graphLabel),
+          inspected.modelFormat, inspected.precision, adapter.adapterId(), adapter.adapterVersion()});
+  model.sourceRevision = inspected.sourceRevision;
+  return model;
 }
 
 // Adapter that answers under one registered id but inspects as another model
@@ -241,6 +248,7 @@ public:
     auto model = TaskFixtureAdapter::inspect(name, content);
     model.adapterId = "yolo26n-task";
     model.modelFormat = "onnx";
+    model.adapter = fixture::modelAdapter(model.adapterId, model.adapterVersion, model.modelFormat, model.precision);
     return model;
   }
 };
@@ -252,15 +260,17 @@ BOOST_AUTO_TEST_SUITE(Spec182Preparation)
 BOOST_AUTO_TEST_CASE(InspectionPreservesResolvedSourceAndRejectsForeignModel)
 {
   auto adapter = std::make_shared<TaskFixtureAdapter>("fixture", "1", "onnx", "float32",
-    "semantics", "graph", identityBytes, identityBytes);
+    "semantics", "graph", identityBytes, identityBytes, "source-revision");
   auto registry = std::make_shared<NativeAdapterRegistry>();
   registry->registerAdapter(adapter); registry->freeze();
-  const auto model = modelDescriptor(*adapter);
+  auto model = modelDescriptor(*adapter);
+  model.sourceRevision = "source-revision";
   auto resolved = inspectedFor(model);
   NativeRequestPreparation preparation(registry,
     [&](const NativePreparedInput&, const NativeModelDescriptor&) { return resolved; });
   const auto input = preparation.prepareInput(model, "task", digest("schema"), digest("schema"),
     {1}, {}, deadline(1000));
+  BOOST_CHECK_EQUAL(input.expectedModel.sourceRevision, "source-revision");
   auto result = preparation.inspectModel(input);
   BOOST_CHECK_EQUAL(result.canonicalSourceName, "/catalog/authenticated/model/42");
   BOOST_CHECK_EQUAL(result.canonicalSourceDigest, digest("catalog-source-bytes"));
@@ -269,7 +279,7 @@ BOOST_AUTO_TEST_CASE(InspectionPreservesResolvedSourceAndRejectsForeignModel)
   result = preparation.inspectModel(input);
   BOOST_CHECK_EQUAL(result.graph.graphDigest, model.graphDigest);
   BOOST_CHECK_EQUAL(result.canonicalGraphDigest, digest("canonical-graph"));
-  for (int mutation = 0; mutation < 6; ++mutation) {
+  for (int mutation = 0; mutation < 9; ++mutation) {
     resolved = inspectedFor(model);
     if (mutation == 0) resolved.descriptor.contentDigest = digest("foreign");
     if (mutation == 1) resolved.descriptor.semanticsDigest = digest("foreign");
@@ -277,6 +287,9 @@ BOOST_AUTO_TEST_CASE(InspectionPreservesResolvedSourceAndRejectsForeignModel)
     if (mutation == 3) resolved.canonicalSourceName = "not-an-ndn-name";
     if (mutation == 4) resolved.modelManifestDigest.clear();
     if (mutation == 5) resolved.canonicalGraphDigest.clear();
+    if (mutation == 6) resolved.descriptor.sourceRevision = "foreign-revision";
+    if (mutation == 7) resolved.descriptor.adapter.abi = "foreign-abi";
+    if (mutation == 8) resolved.descriptor.adapter.stateSchemaDigest = digest("foreign-schema");
     BOOST_CHECK_THROW(preparation.inspectModel(input), std::exception);
   }
 }
@@ -793,6 +806,7 @@ BOOST_AUTO_TEST_CASE(PreparationRejectsAdapterIdentityAndVersionMismatch)
   // A version that the frozen registry does not hold is refused up front.
   auto unknownVersion = modelDescriptor(*mislabeled, "Qwen/Qwen2.5-1.5B");
   unknownVersion.adapterVersion = "2";
+  unknownVersion.adapter.version = "2";
   BOOST_CHECK_THROW(preparation.prepareInput(
     unknownVersion, "text-generation", digest("schema"), digest("schema"),
     {1}, {}, deadline(1000)), std::invalid_argument);

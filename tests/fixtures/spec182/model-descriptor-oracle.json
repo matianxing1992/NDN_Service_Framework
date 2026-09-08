@@ -1,0 +1,284 @@
+[
+  {
+    "name": "complete",
+    "model": {
+      "model_name": "Fixture/模型",
+      "content_digest": "sha256:ed7002b439e9ac845f22357d822bac1444730fbdb6016d3ec9432297b9ec9f73",
+      "semantics_digest": "sha256:904b1fdcdeee067da93713d79673fe7cd3884165842e6eb3fb1855b0f4a4d1a9",
+      "graph_digest": "sha256:eef93e1d14482804277fca0172464032d1a4fdbcc338524059fa1e861454ad4d",
+      "model_format": "onnx",
+      "precision": "float32",
+      "adapter": {
+        "name": "fixture-适配器",
+        "version": "2",
+        "state_digest": "sha256:4ba69735ca53765ed6a709edb56c6ea236b7193a3b29a6b390c346f0f4340e4e",
+        "abi": "adapter-abi-v2",
+        "model_formats": [
+          "onnx",
+          "fixture"
+        ],
+        "tasks": [
+          "generate",
+          "detect"
+        ],
+        "backends": [
+          "onnxruntime-cpu",
+          "onnxruntime-cuda"
+        ],
+        "precisions": [
+          "float32",
+          "float16"
+        ],
+        "input_schema_digest": "sha256:c96c6d5be8d08a12e7b5cdc1b207fa6b2430974c86803d8891675e76fd992c20",
+        "options_schema_digest": "sha256:a793ab8fcc2afce5e42b3044090719ddaff19741697d93b3b7f36838dd5e825c",
+        "result_schema_digest": "sha256:f6a214f7a5fcda0c2cee9660b7fc29f5649e3c68aad48e20e950137c98913a68",
+        "graph_schema_digest": "sha256:785007541a901caa9e1662506a05b53f0510b388ec52e28d9473a5a22fe36901",
+        "split_schema_digest": "sha256:138e4d87f3101cb0a2c74a3fbe9df23da718cb37c0a527f29d7100ff8e5dec70",
+        "state_schema_digest": "sha256:dc7e110390277417d04a795dc22eafa475744ed330e18cedcdcc87576eebd1ad",
+        "graph_inspectable": true,
+        "splittable": true,
+        "deterministic_analysis": true
+      },
+      "source_revision": "revision-α"
+    },
+    "adapter_json": "{\"abi\":\"adapter-abi-v2\",\"backends\":[\"onnxruntime-cpu\",\"onnxruntime-cuda\"],\"deterministic_analysis\":true,\"graph_inspectable\":true,\"graph_schema_digest\":\"sha256:785007541a901caa9e1662506a05b53f0510b388ec52e28d9473a5a22fe36901\",\"input_schema_digest\":\"sha256:c96c6d5be8d08a12e7b5cdc1b207fa6b2430974c86803d8891675e76fd992c20\",\"model_formats\":[\"onnx\",\"fixture\"],\"name\":\"fixture-\\u9002\\u914d\\u5668\",\"options_schema_digest\":\"sha256:a793ab8fcc2afce5e42b3044090719ddaff19741697d93b3b7f36838dd5e825c\",\"precisions\":[\"float32\",\"float16\"],\"result_schema_digest\":\"sha256:f6a214f7a5fcda0c2cee9660b7fc29f5649e3c68aad48e20e950137c98913a68\",\"split_schema_digest\":\"sha256:138e4d87f3101cb0a2c74a3fbe9df23da718cb37c0a527f29d7100ff8e5dec70\",\"splittable\":true,\"state_digest\":\"sha256:4ba69735ca53765ed6a709edb56c6ea236b7193a3b29a6b390c346f0f4340e4e\",\"state_schema_digest\":\"sha256:dc7e110390277417d04a795dc22eafa475744ed330e18cedcdcc87576eebd1ad\",\"tasks\":[\"generate\",\"detect\"],\"version\":\"2\"}",
+    "model_json": "{\"adapter\":{\"abi\":\"adapter-abi-v2\",\"backends\":[\"onnxruntime-cpu\",\"onnxruntime-cuda\"],\"deterministic_analysis\":true,\"graph_inspectable\":true,\"graph_schema_digest\":\"sha256:785007541a901caa9e1662506a05b53f0510b388ec52e28d9473a5a22fe36901\",\"input_schema_digest\":\"sha256:c96c6d5be8d08a12e7b5cdc1b207fa6b2430974c86803d8891675e76fd992c20\",\"model_formats\":[\"onnx\",\"fixture\"],\"name\":\"fixture-\\u9002\\u914d\\u5668\",\"options_schema_digest\":\"sha256:a793ab8fcc2afce5e42b3044090719ddaff19741697d93b3b7f36838dd5e825c\",\"precisions\":[\"float32\",\"float16\"],\"result_schema_digest\":\"sha256:f6a214f7a5fcda0c2cee9660b7fc29f5649e3c68aad48e20e950137c98913a68\",\"split_schema_digest\":\"sha256:138e4d87f3101cb0a2c74a3fbe9df23da718cb37c0a527f29d7100ff8e5dec70\",\"splittable\":true,\"state_digest\":\"sha256:4ba69735ca53765ed6a709edb56c6ea236b7193a3b29a6b390c346f0f4340e4e\",\"state_schema_digest\":\"sha256:dc7e110390277417d04a795dc22eafa475744ed330e18cedcdcc87576eebd1ad\",\"tasks\":[\"generate\",\"detect\"],\"version\":\"2\"},\"content_digest\":\"sha256:ed7002b439e9ac845f22357d822bac1444730fbdb6016d3ec9432297b9ec9f73\",\"graph_digest\":\"sha256:eef93e1d14482804277fca0172464032d1a4fdbcc338524059fa1e861454ad4d\",\"model_format\":\"onnx\",\"model_name\":\"Fixture/\\u6a21\\u578b\",\"precision\":\"float32\",\"semantics_digest\":\"sha256:904b1fdcdeee067da93713d79673fe7cd3884165842e6eb3fb1855b0f4a4d1a9\",\"source_revision\":\"revision-\\u03b1\"}",
+    "adapter_digest": "sha256:6271855285e2831d3fc907da39d9c99b93c9554c724da6318926c71270fb4908",
+    "model_digest": "sha256:394f94307a5976a11a43e68def2cebf5bfc0bcace0d19351a18b19ba5baa8817"
+  },
+  {
+    "name": "revision",
+    "model": {
+      "model_name": "Fixture/模型",
+      "content_digest": "sha256:ed7002b439e9ac845f22357d822bac1444730fbdb6016d3ec9432297b9ec9f73",
+      "semantics_digest": "sha256:904b1fdcdeee067da93713d79673fe7cd3884165842e6eb3fb1855b0f4a4d1a9",
+      "graph_digest": "sha256:eef93e1d14482804277fca0172464032d1a4fdbcc338524059fa1e861454ad4d",
+      "model_format": "onnx",
+      "precision": "float32",
+      "adapter": {
+        "name": "fixture-适配器",
+        "version": "2",
+        "state_digest": "sha256:4ba69735ca53765ed6a709edb56c6ea236b7193a3b29a6b390c346f0f4340e4e",
+        "abi": "adapter-abi-v2",
+        "model_formats": [
+          "onnx",
+          "fixture"
+        ],
+        "tasks": [
+          "generate",
+          "detect"
+        ],
+        "backends": [
+          "onnxruntime-cpu",
+          "onnxruntime-cuda"
+        ],
+        "precisions": [
+          "float32",
+          "float16"
+        ],
+        "input_schema_digest": "sha256:c96c6d5be8d08a12e7b5cdc1b207fa6b2430974c86803d8891675e76fd992c20",
+        "options_schema_digest": "sha256:a793ab8fcc2afce5e42b3044090719ddaff19741697d93b3b7f36838dd5e825c",
+        "result_schema_digest": "sha256:f6a214f7a5fcda0c2cee9660b7fc29f5649e3c68aad48e20e950137c98913a68",
+        "graph_schema_digest": "sha256:785007541a901caa9e1662506a05b53f0510b388ec52e28d9473a5a22fe36901",
+        "split_schema_digest": "sha256:138e4d87f3101cb0a2c74a3fbe9df23da718cb37c0a527f29d7100ff8e5dec70",
+        "state_schema_digest": "sha256:dc7e110390277417d04a795dc22eafa475744ed330e18cedcdcc87576eebd1ad",
+        "graph_inspectable": true,
+        "splittable": true,
+        "deterministic_analysis": true
+      },
+      "source_revision": "revision-β"
+    },
+    "adapter_json": "{\"abi\":\"adapter-abi-v2\",\"backends\":[\"onnxruntime-cpu\",\"onnxruntime-cuda\"],\"deterministic_analysis\":true,\"graph_inspectable\":true,\"graph_schema_digest\":\"sha256:785007541a901caa9e1662506a05b53f0510b388ec52e28d9473a5a22fe36901\",\"input_schema_digest\":\"sha256:c96c6d5be8d08a12e7b5cdc1b207fa6b2430974c86803d8891675e76fd992c20\",\"model_formats\":[\"onnx\",\"fixture\"],\"name\":\"fixture-\\u9002\\u914d\\u5668\",\"options_schema_digest\":\"sha256:a793ab8fcc2afce5e42b3044090719ddaff19741697d93b3b7f36838dd5e825c\",\"precisions\":[\"float32\",\"float16\"],\"result_schema_digest\":\"sha256:f6a214f7a5fcda0c2cee9660b7fc29f5649e3c68aad48e20e950137c98913a68\",\"split_schema_digest\":\"sha256:138e4d87f3101cb0a2c74a3fbe9df23da718cb37c0a527f29d7100ff8e5dec70\",\"splittable\":true,\"state_digest\":\"sha256:4ba69735ca53765ed6a709edb56c6ea236b7193a3b29a6b390c346f0f4340e4e\",\"state_schema_digest\":\"sha256:dc7e110390277417d04a795dc22eafa475744ed330e18cedcdcc87576eebd1ad\",\"tasks\":[\"generate\",\"detect\"],\"version\":\"2\"}",
+    "model_json": "{\"adapter\":{\"abi\":\"adapter-abi-v2\",\"backends\":[\"onnxruntime-cpu\",\"onnxruntime-cuda\"],\"deterministic_analysis\":true,\"graph_inspectable\":true,\"graph_schema_digest\":\"sha256:785007541a901caa9e1662506a05b53f0510b388ec52e28d9473a5a22fe36901\",\"input_schema_digest\":\"sha256:c96c6d5be8d08a12e7b5cdc1b207fa6b2430974c86803d8891675e76fd992c20\",\"model_formats\":[\"onnx\",\"fixture\"],\"name\":\"fixture-\\u9002\\u914d\\u5668\",\"options_schema_digest\":\"sha256:a793ab8fcc2afce5e42b3044090719ddaff19741697d93b3b7f36838dd5e825c\",\"precisions\":[\"float32\",\"float16\"],\"result_schema_digest\":\"sha256:f6a214f7a5fcda0c2cee9660b7fc29f5649e3c68aad48e20e950137c98913a68\",\"split_schema_digest\":\"sha256:138e4d87f3101cb0a2c74a3fbe9df23da718cb37c0a527f29d7100ff8e5dec70\",\"splittable\":true,\"state_digest\":\"sha256:4ba69735ca53765ed6a709edb56c6ea236b7193a3b29a6b390c346f0f4340e4e\",\"state_schema_digest\":\"sha256:dc7e110390277417d04a795dc22eafa475744ed330e18cedcdcc87576eebd1ad\",\"tasks\":[\"generate\",\"detect\"],\"version\":\"2\"},\"content_digest\":\"sha256:ed7002b439e9ac845f22357d822bac1444730fbdb6016d3ec9432297b9ec9f73\",\"graph_digest\":\"sha256:eef93e1d14482804277fca0172464032d1a4fdbcc338524059fa1e861454ad4d\",\"model_format\":\"onnx\",\"model_name\":\"Fixture/\\u6a21\\u578b\",\"precision\":\"float32\",\"semantics_digest\":\"sha256:904b1fdcdeee067da93713d79673fe7cd3884165842e6eb3fb1855b0f4a4d1a9\",\"source_revision\":\"revision-\\u03b2\"}",
+    "adapter_digest": "sha256:6271855285e2831d3fc907da39d9c99b93c9554c724da6318926c71270fb4908",
+    "model_digest": "sha256:a1f8e0a6225386fbfbc6aa8d4ad9ffce7359d5264433dbbeb5a32e8f16f00373"
+  },
+  {
+    "name": "schema",
+    "model": {
+      "model_name": "Fixture/模型",
+      "content_digest": "sha256:ed7002b439e9ac845f22357d822bac1444730fbdb6016d3ec9432297b9ec9f73",
+      "semantics_digest": "sha256:904b1fdcdeee067da93713d79673fe7cd3884165842e6eb3fb1855b0f4a4d1a9",
+      "graph_digest": "sha256:eef93e1d14482804277fca0172464032d1a4fdbcc338524059fa1e861454ad4d",
+      "model_format": "onnx",
+      "precision": "float32",
+      "adapter": {
+        "name": "fixture-适配器",
+        "version": "2",
+        "state_digest": "sha256:4ba69735ca53765ed6a709edb56c6ea236b7193a3b29a6b390c346f0f4340e4e",
+        "abi": "adapter-abi-v2",
+        "model_formats": [
+          "onnx",
+          "fixture"
+        ],
+        "tasks": [
+          "generate",
+          "detect"
+        ],
+        "backends": [
+          "onnxruntime-cpu",
+          "onnxruntime-cuda"
+        ],
+        "precisions": [
+          "float32",
+          "float16"
+        ],
+        "input_schema_digest": "sha256:c96c6d5be8d08a12e7b5cdc1b207fa6b2430974c86803d8891675e76fd992c20",
+        "options_schema_digest": "sha256:a793ab8fcc2afce5e42b3044090719ddaff19741697d93b3b7f36838dd5e825c",
+        "result_schema_digest": "sha256:f6a214f7a5fcda0c2cee9660b7fc29f5649e3c68aad48e20e950137c98913a68",
+        "graph_schema_digest": "sha256:785007541a901caa9e1662506a05b53f0510b388ec52e28d9473a5a22fe36901",
+        "split_schema_digest": "sha256:138e4d87f3101cb0a2c74a3fbe9df23da718cb37c0a527f29d7100ff8e5dec70",
+        "state_schema_digest": "sha256:970c1b32869014064900c63dbd7ed32d1acbd1aa5023d2a26b5accd2b48dcca4",
+        "graph_inspectable": true,
+        "splittable": true,
+        "deterministic_analysis": true
+      },
+      "source_revision": "revision-α"
+    },
+    "adapter_json": "{\"abi\":\"adapter-abi-v2\",\"backends\":[\"onnxruntime-cpu\",\"onnxruntime-cuda\"],\"deterministic_analysis\":true,\"graph_inspectable\":true,\"graph_schema_digest\":\"sha256:785007541a901caa9e1662506a05b53f0510b388ec52e28d9473a5a22fe36901\",\"input_schema_digest\":\"sha256:c96c6d5be8d08a12e7b5cdc1b207fa6b2430974c86803d8891675e76fd992c20\",\"model_formats\":[\"onnx\",\"fixture\"],\"name\":\"fixture-\\u9002\\u914d\\u5668\",\"options_schema_digest\":\"sha256:a793ab8fcc2afce5e42b3044090719ddaff19741697d93b3b7f36838dd5e825c\",\"precisions\":[\"float32\",\"float16\"],\"result_schema_digest\":\"sha256:f6a214f7a5fcda0c2cee9660b7fc29f5649e3c68aad48e20e950137c98913a68\",\"split_schema_digest\":\"sha256:138e4d87f3101cb0a2c74a3fbe9df23da718cb37c0a527f29d7100ff8e5dec70\",\"splittable\":true,\"state_digest\":\"sha256:4ba69735ca53765ed6a709edb56c6ea236b7193a3b29a6b390c346f0f4340e4e\",\"state_schema_digest\":\"sha256:970c1b32869014064900c63dbd7ed32d1acbd1aa5023d2a26b5accd2b48dcca4\",\"tasks\":[\"generate\",\"detect\"],\"version\":\"2\"}",
+    "model_json": "{\"adapter\":{\"abi\":\"adapter-abi-v2\",\"backends\":[\"onnxruntime-cpu\",\"onnxruntime-cuda\"],\"deterministic_analysis\":true,\"graph_inspectable\":true,\"graph_schema_digest\":\"sha256:785007541a901caa9e1662506a05b53f0510b388ec52e28d9473a5a22fe36901\",\"input_schema_digest\":\"sha256:c96c6d5be8d08a12e7b5cdc1b207fa6b2430974c86803d8891675e76fd992c20\",\"model_formats\":[\"onnx\",\"fixture\"],\"name\":\"fixture-\\u9002\\u914d\\u5668\",\"options_schema_digest\":\"sha256:a793ab8fcc2afce5e42b3044090719ddaff19741697d93b3b7f36838dd5e825c\",\"precisions\":[\"float32\",\"float16\"],\"result_schema_digest\":\"sha256:f6a214f7a5fcda0c2cee9660b7fc29f5649e3c68aad48e20e950137c98913a68\",\"split_schema_digest\":\"sha256:138e4d87f3101cb0a2c74a3fbe9df23da718cb37c0a527f29d7100ff8e5dec70\",\"splittable\":true,\"state_digest\":\"sha256:4ba69735ca53765ed6a709edb56c6ea236b7193a3b29a6b390c346f0f4340e4e\",\"state_schema_digest\":\"sha256:970c1b32869014064900c63dbd7ed32d1acbd1aa5023d2a26b5accd2b48dcca4\",\"tasks\":[\"generate\",\"detect\"],\"version\":\"2\"},\"content_digest\":\"sha256:ed7002b439e9ac845f22357d822bac1444730fbdb6016d3ec9432297b9ec9f73\",\"graph_digest\":\"sha256:eef93e1d14482804277fca0172464032d1a4fdbcc338524059fa1e861454ad4d\",\"model_format\":\"onnx\",\"model_name\":\"Fixture/\\u6a21\\u578b\",\"precision\":\"float32\",\"semantics_digest\":\"sha256:904b1fdcdeee067da93713d79673fe7cd3884165842e6eb3fb1855b0f4a4d1a9\",\"source_revision\":\"revision-\\u03b1\"}",
+    "adapter_digest": "sha256:1a6dcc5c0458abd2526fd8caa637a5bd16fe3d692941172bfbd154d783ea4c74",
+    "model_digest": "sha256:aa56c8396a5db313b1ab7df79a901f6443dd18b0855036d9404efa047a60470e"
+  },
+  {
+    "name": "abi",
+    "model": {
+      "model_name": "Fixture/模型",
+      "content_digest": "sha256:ed7002b439e9ac845f22357d822bac1444730fbdb6016d3ec9432297b9ec9f73",
+      "semantics_digest": "sha256:904b1fdcdeee067da93713d79673fe7cd3884165842e6eb3fb1855b0f4a4d1a9",
+      "graph_digest": "sha256:eef93e1d14482804277fca0172464032d1a4fdbcc338524059fa1e861454ad4d",
+      "model_format": "onnx",
+      "precision": "float32",
+      "adapter": {
+        "name": "fixture-适配器",
+        "version": "2",
+        "state_digest": "sha256:4ba69735ca53765ed6a709edb56c6ea236b7193a3b29a6b390c346f0f4340e4e",
+        "abi": "adapter-abi-v3",
+        "model_formats": [
+          "onnx",
+          "fixture"
+        ],
+        "tasks": [
+          "generate",
+          "detect"
+        ],
+        "backends": [
+          "onnxruntime-cpu",
+          "onnxruntime-cuda"
+        ],
+        "precisions": [
+          "float32",
+          "float16"
+        ],
+        "input_schema_digest": "sha256:c96c6d5be8d08a12e7b5cdc1b207fa6b2430974c86803d8891675e76fd992c20",
+        "options_schema_digest": "sha256:a793ab8fcc2afce5e42b3044090719ddaff19741697d93b3b7f36838dd5e825c",
+        "result_schema_digest": "sha256:f6a214f7a5fcda0c2cee9660b7fc29f5649e3c68aad48e20e950137c98913a68",
+        "graph_schema_digest": "sha256:785007541a901caa9e1662506a05b53f0510b388ec52e28d9473a5a22fe36901",
+        "split_schema_digest": "sha256:138e4d87f3101cb0a2c74a3fbe9df23da718cb37c0a527f29d7100ff8e5dec70",
+        "state_schema_digest": "sha256:dc7e110390277417d04a795dc22eafa475744ed330e18cedcdcc87576eebd1ad",
+        "graph_inspectable": true,
+        "splittable": true,
+        "deterministic_analysis": true
+      },
+      "source_revision": "revision-α"
+    },
+    "adapter_json": "{\"abi\":\"adapter-abi-v3\",\"backends\":[\"onnxruntime-cpu\",\"onnxruntime-cuda\"],\"deterministic_analysis\":true,\"graph_inspectable\":true,\"graph_schema_digest\":\"sha256:785007541a901caa9e1662506a05b53f0510b388ec52e28d9473a5a22fe36901\",\"input_schema_digest\":\"sha256:c96c6d5be8d08a12e7b5cdc1b207fa6b2430974c86803d8891675e76fd992c20\",\"model_formats\":[\"onnx\",\"fixture\"],\"name\":\"fixture-\\u9002\\u914d\\u5668\",\"options_schema_digest\":\"sha256:a793ab8fcc2afce5e42b3044090719ddaff19741697d93b3b7f36838dd5e825c\",\"precisions\":[\"float32\",\"float16\"],\"result_schema_digest\":\"sha256:f6a214f7a5fcda0c2cee9660b7fc29f5649e3c68aad48e20e950137c98913a68\",\"split_schema_digest\":\"sha256:138e4d87f3101cb0a2c74a3fbe9df23da718cb37c0a527f29d7100ff8e5dec70\",\"splittable\":true,\"state_digest\":\"sha256:4ba69735ca53765ed6a709edb56c6ea236b7193a3b29a6b390c346f0f4340e4e\",\"state_schema_digest\":\"sha256:dc7e110390277417d04a795dc22eafa475744ed330e18cedcdcc87576eebd1ad\",\"tasks\":[\"generate\",\"detect\"],\"version\":\"2\"}",
+    "model_json": "{\"adapter\":{\"abi\":\"adapter-abi-v3\",\"backends\":[\"onnxruntime-cpu\",\"onnxruntime-cuda\"],\"deterministic_analysis\":true,\"graph_inspectable\":true,\"graph_schema_digest\":\"sha256:785007541a901caa9e1662506a05b53f0510b388ec52e28d9473a5a22fe36901\",\"input_schema_digest\":\"sha256:c96c6d5be8d08a12e7b5cdc1b207fa6b2430974c86803d8891675e76fd992c20\",\"model_formats\":[\"onnx\",\"fixture\"],\"name\":\"fixture-\\u9002\\u914d\\u5668\",\"options_schema_digest\":\"sha256:a793ab8fcc2afce5e42b3044090719ddaff19741697d93b3b7f36838dd5e825c\",\"precisions\":[\"float32\",\"float16\"],\"result_schema_digest\":\"sha256:f6a214f7a5fcda0c2cee9660b7fc29f5649e3c68aad48e20e950137c98913a68\",\"split_schema_digest\":\"sha256:138e4d87f3101cb0a2c74a3fbe9df23da718cb37c0a527f29d7100ff8e5dec70\",\"splittable\":true,\"state_digest\":\"sha256:4ba69735ca53765ed6a709edb56c6ea236b7193a3b29a6b390c346f0f4340e4e\",\"state_schema_digest\":\"sha256:dc7e110390277417d04a795dc22eafa475744ed330e18cedcdcc87576eebd1ad\",\"tasks\":[\"generate\",\"detect\"],\"version\":\"2\"},\"content_digest\":\"sha256:ed7002b439e9ac845f22357d822bac1444730fbdb6016d3ec9432297b9ec9f73\",\"graph_digest\":\"sha256:eef93e1d14482804277fca0172464032d1a4fdbcc338524059fa1e861454ad4d\",\"model_format\":\"onnx\",\"model_name\":\"Fixture/\\u6a21\\u578b\",\"precision\":\"float32\",\"semantics_digest\":\"sha256:904b1fdcdeee067da93713d79673fe7cd3884165842e6eb3fb1855b0f4a4d1a9\",\"source_revision\":\"revision-\\u03b1\"}",
+    "adapter_digest": "sha256:3059f2367afd86ad651d177d1e4a9ca5e810b05eb035931aa5591f07aad5a4b7",
+    "model_digest": "sha256:568c037a38559b63a709b1b58a57ecdebd9b3beaa2d44c4fb6682b07efefe7bf"
+  },
+  {
+    "name": "capability-order",
+    "model": {
+      "model_name": "Fixture/模型",
+      "content_digest": "sha256:ed7002b439e9ac845f22357d822bac1444730fbdb6016d3ec9432297b9ec9f73",
+      "semantics_digest": "sha256:904b1fdcdeee067da93713d79673fe7cd3884165842e6eb3fb1855b0f4a4d1a9",
+      "graph_digest": "sha256:eef93e1d14482804277fca0172464032d1a4fdbcc338524059fa1e861454ad4d",
+      "model_format": "onnx",
+      "precision": "float32",
+      "adapter": {
+        "name": "fixture-适配器",
+        "version": "2",
+        "state_digest": "sha256:4ba69735ca53765ed6a709edb56c6ea236b7193a3b29a6b390c346f0f4340e4e",
+        "abi": "adapter-abi-v2",
+        "model_formats": [
+          "onnx",
+          "fixture"
+        ],
+        "tasks": [
+          "generate",
+          "detect"
+        ],
+        "backends": [
+          "onnxruntime-cuda",
+          "onnxruntime-cpu"
+        ],
+        "precisions": [
+          "float32",
+          "float16"
+        ],
+        "input_schema_digest": "sha256:c96c6d5be8d08a12e7b5cdc1b207fa6b2430974c86803d8891675e76fd992c20",
+        "options_schema_digest": "sha256:a793ab8fcc2afce5e42b3044090719ddaff19741697d93b3b7f36838dd5e825c",
+        "result_schema_digest": "sha256:f6a214f7a5fcda0c2cee9660b7fc29f5649e3c68aad48e20e950137c98913a68",
+        "graph_schema_digest": "sha256:785007541a901caa9e1662506a05b53f0510b388ec52e28d9473a5a22fe36901",
+        "split_schema_digest": "sha256:138e4d87f3101cb0a2c74a3fbe9df23da718cb37c0a527f29d7100ff8e5dec70",
+        "state_schema_digest": "sha256:dc7e110390277417d04a795dc22eafa475744ed330e18cedcdcc87576eebd1ad",
+        "graph_inspectable": true,
+        "splittable": true,
+        "deterministic_analysis": true
+      },
+      "source_revision": "revision-α"
+    },
+    "adapter_json": "{\"abi\":\"adapter-abi-v2\",\"backends\":[\"onnxruntime-cuda\",\"onnxruntime-cpu\"],\"deterministic_analysis\":true,\"graph_inspectable\":true,\"graph_schema_digest\":\"sha256:785007541a901caa9e1662506a05b53f0510b388ec52e28d9473a5a22fe36901\",\"input_schema_digest\":\"sha256:c96c6d5be8d08a12e7b5cdc1b207fa6b2430974c86803d8891675e76fd992c20\",\"model_formats\":[\"onnx\",\"fixture\"],\"name\":\"fixture-\\u9002\\u914d\\u5668\",\"options_schema_digest\":\"sha256:a793ab8fcc2afce5e42b3044090719ddaff19741697d93b3b7f36838dd5e825c\",\"precisions\":[\"float32\",\"float16\"],\"result_schema_digest\":\"sha256:f6a214f7a5fcda0c2cee9660b7fc29f5649e3c68aad48e20e950137c98913a68\",\"split_schema_digest\":\"sha256:138e4d87f3101cb0a2c74a3fbe9df23da718cb37c0a527f29d7100ff8e5dec70\",\"splittable\":true,\"state_digest\":\"sha256:4ba69735ca53765ed6a709edb56c6ea236b7193a3b29a6b390c346f0f4340e4e\",\"state_schema_digest\":\"sha256:dc7e110390277417d04a795dc22eafa475744ed330e18cedcdcc87576eebd1ad\",\"tasks\":[\"generate\",\"detect\"],\"version\":\"2\"}",
+    "model_json": "{\"adapter\":{\"abi\":\"adapter-abi-v2\",\"backends\":[\"onnxruntime-cuda\",\"onnxruntime-cpu\"],\"deterministic_analysis\":true,\"graph_inspectable\":true,\"graph_schema_digest\":\"sha256:785007541a901caa9e1662506a05b53f0510b388ec52e28d9473a5a22fe36901\",\"input_schema_digest\":\"sha256:c96c6d5be8d08a12e7b5cdc1b207fa6b2430974c86803d8891675e76fd992c20\",\"model_formats\":[\"onnx\",\"fixture\"],\"name\":\"fixture-\\u9002\\u914d\\u5668\",\"options_schema_digest\":\"sha256:a793ab8fcc2afce5e42b3044090719ddaff19741697d93b3b7f36838dd5e825c\",\"precisions\":[\"float32\",\"float16\"],\"result_schema_digest\":\"sha256:f6a214f7a5fcda0c2cee9660b7fc29f5649e3c68aad48e20e950137c98913a68\",\"split_schema_digest\":\"sha256:138e4d87f3101cb0a2c74a3fbe9df23da718cb37c0a527f29d7100ff8e5dec70\",\"splittable\":true,\"state_digest\":\"sha256:4ba69735ca53765ed6a709edb56c6ea236b7193a3b29a6b390c346f0f4340e4e\",\"state_schema_digest\":\"sha256:dc7e110390277417d04a795dc22eafa475744ed330e18cedcdcc87576eebd1ad\",\"tasks\":[\"generate\",\"detect\"],\"version\":\"2\"},\"content_digest\":\"sha256:ed7002b439e9ac845f22357d822bac1444730fbdb6016d3ec9432297b9ec9f73\",\"graph_digest\":\"sha256:eef93e1d14482804277fca0172464032d1a4fdbcc338524059fa1e861454ad4d\",\"model_format\":\"onnx\",\"model_name\":\"Fixture/\\u6a21\\u578b\",\"precision\":\"float32\",\"semantics_digest\":\"sha256:904b1fdcdeee067da93713d79673fe7cd3884165842e6eb3fb1855b0f4a4d1a9\",\"source_revision\":\"revision-\\u03b1\"}",
+    "adapter_digest": "sha256:ededfbbcc405f39e868c67844ca8a1d4ebc8e47b0e98c46263be9e6358ce7d7c",
+    "model_digest": "sha256:93996a0ccbd4f2b63b088a79c60729fc62c95a48807934325fa4efb123c83e15"
+  },
+  {
+    "name": "booleans",
+    "model": {
+      "model_name": "Fixture/模型",
+      "content_digest": "sha256:ed7002b439e9ac845f22357d822bac1444730fbdb6016d3ec9432297b9ec9f73",
+      "semantics_digest": "sha256:904b1fdcdeee067da93713d79673fe7cd3884165842e6eb3fb1855b0f4a4d1a9",
+      "graph_digest": "sha256:eef93e1d14482804277fca0172464032d1a4fdbcc338524059fa1e861454ad4d",
+      "model_format": "onnx",
+      "precision": "float32",
+      "adapter": {
+        "name": "fixture-适配器",
+        "version": "2",
+        "state_digest": "sha256:4ba69735ca53765ed6a709edb56c6ea236b7193a3b29a6b390c346f0f4340e4e",
+        "abi": "adapter-abi-v2",
+        "model_formats": [
+          "onnx",
+          "fixture"
+        ],
+        "tasks": [
+          "generate",
+          "detect"
+        ],
+        "backends": [
+          "onnxruntime-cpu",
+          "onnxruntime-cuda"
+        ],
+        "precisions": [
+          "float32",
+          "float16"
+        ],
+        "input_schema_digest": "sha256:c96c6d5be8d08a12e7b5cdc1b207fa6b2430974c86803d8891675e76fd992c20",
+        "options_schema_digest": "sha256:a793ab8fcc2afce5e42b3044090719ddaff19741697d93b3b7f36838dd5e825c",
+        "result_schema_digest": "sha256:f6a214f7a5fcda0c2cee9660b7fc29f5649e3c68aad48e20e950137c98913a68",
+        "graph_schema_digest": "sha256:785007541a901caa9e1662506a05b53f0510b388ec52e28d9473a5a22fe36901",
+        "split_schema_digest": "sha256:138e4d87f3101cb0a2c74a3fbe9df23da718cb37c0a527f29d7100ff8e5dec70",
+        "state_schema_digest": "sha256:dc7e110390277417d04a795dc22eafa475744ed330e18cedcdcc87576eebd1ad",
+        "graph_inspectable": false,
+        "splittable": false,
+        "deterministic_analysis": false
+      },
+      "source_revision": "revision-α"
+    },
+    "adapter_json": "{\"abi\":\"adapter-abi-v2\",\"backends\":[\"onnxruntime-cpu\",\"onnxruntime-cuda\"],\"deterministic_analysis\":false,\"graph_inspectable\":false,\"graph_schema_digest\":\"sha256:785007541a901caa9e1662506a05b53f0510b388ec52e28d9473a5a22fe36901\",\"input_schema_digest\":\"sha256:c96c6d5be8d08a12e7b5cdc1b207fa6b2430974c86803d8891675e76fd992c20\",\"model_formats\":[\"onnx\",\"fixture\"],\"name\":\"fixture-\\u9002\\u914d\\u5668\",\"options_schema_digest\":\"sha256:a793ab8fcc2afce5e42b3044090719ddaff19741697d93b3b7f36838dd5e825c\",\"precisions\":[\"float32\",\"float16\"],\"result_schema_digest\":\"sha256:f6a214f7a5fcda0c2cee9660b7fc29f5649e3c68aad48e20e950137c98913a68\",\"split_schema_digest\":\"sha256:138e4d87f3101cb0a2c74a3fbe9df23da718cb37c0a527f29d7100ff8e5dec70\",\"splittable\":false,\"state_digest\":\"sha256:4ba69735ca53765ed6a709edb56c6ea236b7193a3b29a6b390c346f0f4340e4e\",\"state_schema_digest\":\"sha256:dc7e110390277417d04a795dc22eafa475744ed330e18cedcdcc87576eebd1ad\",\"tasks\":[\"generate\",\"detect\"],\"version\":\"2\"}",
+    "model_json": "{\"adapter\":{\"abi\":\"adapter-abi-v2\",\"backends\":[\"onnxruntime-cpu\",\"onnxruntime-cuda\"],\"deterministic_analysis\":false,\"graph_inspectable\":false,\"graph_schema_digest\":\"sha256:785007541a901caa9e1662506a05b53f0510b388ec52e28d9473a5a22fe36901\",\"input_schema_digest\":\"sha256:c96c6d5be8d08a12e7b5cdc1b207fa6b2430974c86803d8891675e76fd992c20\",\"model_formats\":[\"onnx\",\"fixture\"],\"name\":\"fixture-\\u9002\\u914d\\u5668\",\"options_schema_digest\":\"sha256:a793ab8fcc2afce5e42b3044090719ddaff19741697d93b3b7f36838dd5e825c\",\"precisions\":[\"float32\",\"float16\"],\"result_schema_digest\":\"sha256:f6a214f7a5fcda0c2cee9660b7fc29f5649e3c68aad48e20e950137c98913a68\",\"split_schema_digest\":\"sha256:138e4d87f3101cb0a2c74a3fbe9df23da718cb37c0a527f29d7100ff8e5dec70\",\"splittable\":false,\"state_digest\":\"sha256:4ba69735ca53765ed6a709edb56c6ea236b7193a3b29a6b390c346f0f4340e4e\",\"state_schema_digest\":\"sha256:dc7e110390277417d04a795dc22eafa475744ed330e18cedcdcc87576eebd1ad\",\"tasks\":[\"generate\",\"detect\"],\"version\":\"2\"},\"content_digest\":\"sha256:ed7002b439e9ac845f22357d822bac1444730fbdb6016d3ec9432297b9ec9f73\",\"graph_digest\":\"sha256:eef93e1d14482804277fca0172464032d1a4fdbcc338524059fa1e861454ad4d\",\"model_format\":\"onnx\",\"model_name\":\"Fixture/\\u6a21\\u578b\",\"precision\":\"float32\",\"semantics_digest\":\"sha256:904b1fdcdeee067da93713d79673fe7cd3884165842e6eb3fb1855b0f4a4d1a9\",\"source_revision\":\"revision-\\u03b1\"}",
+    "adapter_digest": "sha256:6addc2cf8d98ada155226802f728939336fdb040691f037510f4087721434d88",
+    "model_digest": "sha256:acf712a580a80d8e6dd570c6e80c8189c52237f67fc9a2ae6504c3d6416aff8a"
+  }
+]
