@@ -221,6 +221,8 @@ worker crash/cancel 等真实子进程案例也转 T016，卡内只运行纯 fra
 
 ### T008-A Native Input and Artifact Preparation
 
+- **R2-B1 composition entry**: `NativeCanonicalPreparationCatalog` 拥有 bootstrap 提供的认证目录事实和按值接收的 pinned source；复用 role producer 校验，`adapters()` 返回冻结 registry，`makePreparation(user, serviceName)` 返回同目录绑定的 inspect/role/真实 publisher 组合。目录工厂销毁不使返回端口悬空；完整 model/source identity、重复/冲突配置拒绝。接口、测试与剩余网络/state/bootstrap 责任见 [R2-B1](../evidence/r2-b1-preparation-catalog-20260908.md)。Write 扩展至 `N/NativeCanonicalPreparationCatalog.hpp/.cpp`。
+
 - **Parent**: T008; **Depends**: T003-C, T006-D, T007-B; **Reviewer**: adapter/identity review
 - **Read**: CD-013 → Symbols/Values；P/artifact_deployment.py::CanonicalCatalogEnsurer；P/adapters/yolo/adapter.py::YoloCanonicalArtifactBinding；examples/python/NDNSF-DistributedInference/llm_pipeline/user.py::_TinyCanonicalArtifactEnsurer；P/app_sdk/placement.py::_certify_v3_role_specs；P/adapters/base.py 的 GraphAdapter/TaskAdapter。维护路径支持发布后 manifest 更新及 canonical/planning graph 分离，不能仅从 generic catalog 推定不变身份。
 - **Write**: N/NativeRequestPreparation.hpp; N/NativeRequestPreparation.cpp; N/NativeCanonicalArtifactPublisher.hpp; N/NativeCanonicalArtifactPublisher.cpp; N/NativePlanning.hpp; N/NativePlanning.cpp; A/qwen/NativeQwenPlanner.hpp; A/qwen/NativeQwenPlanner.cpp; A/yolo/NativeYoloPlanner.hpp; A/yolo/NativeYoloPlanner.cpp; U/di-native-preparation.t.cpp; U/di-native-canonical-publisher.t.cpp; U/di-native-plan-sealer.t.cpp; U/di-native-v3-placement.t.cpp; I/di-native-preparation.t.cpp; wscript。
