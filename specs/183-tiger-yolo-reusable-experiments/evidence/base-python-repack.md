@@ -1,6 +1,6 @@
 # Repo Python-only base repack
 
-Status: IN_PROGRESS. This updates the base-library candidate, not runtime qualification.
+Status: BASE_AND_APP_CONTENT_VERIFIED. Full runtime qualification remains open.
 
 The Repo ordering fix is the only changed row among117 original base workspace
 files. All pinned NAC-ABE/NDN-SVS/NDNSD dependency archives must remain identical.
@@ -52,8 +52,36 @@ Logs live under `Experiments/TigerCluster/results/yolo-layered-20260908/prefligh
 `base-python-repack-build.log`, `base-single-extract.log`,
 `base-python-repack-apply.log`, `base-python-repack-pack.log`.
 
-Next: verify the completed SIF independently; build/rebind the unchanged app
-through the explicit incremental path; then perform actual full CPU/MiniNDN
-qualification. Keep old SIF/application and failure evidence until replacement
-verification succeeds. Remove only the task-owned expanded sandbox afterwards
-to recover space. Never use the diagnostic Python overlay for qualification.
+## Completed image and incremental application
+
+The packing process exits0 and reports Build complete. New SIF:
+`base-runtime-repo-order.sif`,3900579840bytes, SHA
+`ccdd4ac0cc2e26c69c01a2699fc7721cafdc2aa8898a20e889fb3e5c4e21cf01`.
+Independent execution in this finished SIF passes the installed manifest,
+native imports/ldd, all6 predecessor native hashes, Repo Python SHAabc43042…,
+and NCCL SHA78df2f31…. The runtime manifest is retained as
+`preflight/base-runtime-repo-order.json`; source seal SHA is
+`f90be8890a890ca01e4f46d96c7067ebe504979af0e6d5450a72b1891abdc7cb`.
+`repo-order-built.def` is dumped from the actual SIF descriptor: it identifies
+the sandbox localimage route, not the earlier failed definition.
+
+Actual external build uses app-source-repo-order, --build-cache-from
+app-d9be0bfa and --python-repacked-base. Configure7.409s, Waf1.036s, no C++
+compile tasks. App output `app-repo-order`, manifest SHA
+`89c49f7a00e96236917d4945b6bfec61196080a4a0a84658ff0d60bd82119ac9`.
+All159 payload file rows, including all3 native programs, equal the preceding
+application. The new build identity records the actual new-base configure/Waf
+run. Its owned cache is relocated to the new app buildKey; future increments
+must use app-repo-order as the cache source.
+
+Independent new-SIF+new-app execution passes all3 native ldd-r checks,
+ndnsf/py_repoclient/DI imports from their intended roots, and the actual User
+--help entrypoint. Evidence: app-repo-order-build.log,
+app-repo-order-comparison.json, app-repo-order-closure.log and
+base-python-repack-verify.log under preflight. These establish composition and
+startup preconditions, not full inference or MiniNDN/GPU qualification.
+
+After these checks, remove only the task-owned repo-order-rootfs sandbox and
+nccl-unpack-probe extraction; disk free returns to29GiB. Original SIFs, RAM
+snapshot, source archives, applications and failure evidence remain retained.
+Next: freeze I/R/E using the new base/app and execute a fresh full CPU run.

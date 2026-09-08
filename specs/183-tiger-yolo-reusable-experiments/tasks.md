@@ -17,7 +17,7 @@
 | T009.role-home：角色身份挂载修复 | VERIFIED_STARTUP | 同SIF内身份可见、根身份隔离；Controller签名发布成功并清理 |
 | T009.cpu-chain：完整CPU链 | IN_PROGRESS | 新候选b越过Controller，在Repo就绪探测退出2；全清理，未发推理请求 |
 | T009.repo-order：Repo双Face管理命令顺序 | SOURCE_FIXED | 真机最小诊断确认时间戳乱序；Provider先启动后7类路由成功，48项HA及新增失败清理检查通过；基础SIF尚未装入修复 |
-| T011.base-python：封装修正后的Repo库 | IN_PROGRESS | [重封装](evidence/base-python-repack.md)：严格Python/依赖边界、原生6产物不变；沙箱更新实跑通过，正在压缩新SIF；应用增量重绑定待运行 |
+| T011.base-python：封装修正后的Repo库 | VERIFIED_COMPOSITION | [重封装](evidence/base-python-repack.md)：新SIF ccdd4ac0独立验证；6原生产物不变；app89c49f7a全部159文件不变，configure7.409s/Waf1.036s无C++编译；组合闭包/入口通过，完整运行待验 |
 
 用户指定的 [C++ NDN/SIF 两节点小例子](evidence/cpp-ndn-smoke.md)已实跑通过：
 209981，itiger01/02，三次 Interest/Data，Slurm 0:0，清理完成。
