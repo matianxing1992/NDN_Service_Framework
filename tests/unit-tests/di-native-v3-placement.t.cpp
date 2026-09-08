@@ -17,6 +17,8 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGroupProjectionBuilder.hpp"
 #include "ndn-service-framework/HybridMessageCrypto.hpp"
 #include <ndn-cxx/security/key-params.hpp>
+#include <ndn-svs/security-options.hpp>
+#include <ndn-svs/svspubsub.hpp>
 #include "tests/unit-tests/generic-dynamic-api-fixture.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCatalogModelAdapter.hpp"
 #include <thread>
@@ -574,6 +576,40 @@ void runPublicClientScenario(int scenario)
     void deliver(const ndn::Name& id, const ndn::Name& provider, const ResponseMessage& response) {
       handleResponse(id, provider, response);
     }
+    void seedConversationScope(const ndn::Name& id, const std::string& scope,
+                               const ndn::Buffer& key) {
+      std::lock_guard<std::mutex> lock(m_verifiedCollaborationMutex);
+      m_userCollaborationScopeKeys[id][scope] = key;
+    }
+    void seedConversationData(VerifiedCollaborationData data) {
+      std::lock_guard<std::mutex> lock(m_verifiedCollaborationMutex);
+      m_verifiedCollaborationData[data.requestId].push_back(std::move(data));
+      m_verifiedCollaborationCv.notify_all();
+    }
+    std::string assignmentField(const ndn::Name& id, const ndn::Name& provider,
+                                const char* field) const {
+      auto payload = getSelectionAssignmentPayloadForTest(id, provider);
+      if (payload.empty()) {
+        const auto pending = m_pendingCalls.find(id);
+        if (pending != m_pendingCalls.end()) {
+          for (const auto& participant : pending->second.collaborationCommittedParticipants) {
+            if (participant.provider == provider) {
+              const auto role = std::find_if(pending->second.collaborationPlan.roles.begin(),
+                pending->second.collaborationPlan.roles.end(),
+                [&](const auto& value) { return value.role == participant.role; });
+              if (role != pending->second.collaborationPlan.roles.end()) {
+                payload = role->assignmentPayload;
+                break;
+              }
+            }
+          }
+        }
+      }
+      BOOST_REQUIRE(!payload.empty());
+      const auto value = nativeParseJson(std::string(payload.begin(), payload.end()));
+      BOOST_REQUIRE(value.is_object());
+      return value.value(field, std::string{});
+    }
   };
   const auto f = oracle();
   const auto sample = std::find_if(f.at("seal_cases").begin(), f.at("seal_cases").end(),
@@ -591,9 +627,34 @@ void runPublicClientScenario(int scenario)
   };
   ndn::security::KeyChain keyChain{"pib-memory:", "tpm-memory:"};
   ndn::DummyClientFace face{keyChain};
+  const auto requesterCert = test::makeRsaIdentity(keyChain, ndn::Name("/requester"));
+  const auto authorityCert = test::makeRsaIdentity(keyChain, ndn::Name("/authority"));
   auto user = std::make_shared<User>(face, ndn::Name("/client"),
-    test::makeRsaIdentity(keyChain, ndn::Name("/requester")),
-    test::makeRsaIdentity(keyChain, ndn::Name("/authority")), "examples/trust-any.conf");
+    requesterCert, authorityCert, "examples/trust-any.conf");
+  std::shared_ptr<NativeConversationCoordinator> conversations;
+  std::optional<NativeConversationContinuation> conversation;
+  if (scenario == 13) {
+    NativeConversationConfig conversationConfig;
+    conversationConfig.authenticationKeys = {std::vector<std::uint8_t>(32, 0x5a)};
+    conversationConfig.requesterIdentity = "/requester";
+    conversationConfig.serviceName = "/service";
+    conversationConfig.securityDomainDigest = nativePlanningDigest("policy");
+    conversationConfig.nowMs = [] { return std::uint64_t{2'000'000'000'000}; };
+    conversations = std::make_shared<NativeConversationCoordinator>(
+      std::move(conversationConfig));
+    ndn::svs::SecurityOptions security(keyChain);
+    security.interestSigner = std::make_shared<ndn::svs::BaseSigner>();
+    security.dataSigner->signingInfo = ndn::security::signingByCertificate(requesterCert);
+    security.pubSigner->signingInfo = ndn::security::signingByCertificate(requesterCert);
+    security.validator = std::make_shared<ndn::svs::BaseValidator>();
+    security.encapsulatedDataValidator = std::make_shared<ndn::svs::BaseValidator>();
+    ndn::svs::SVSPubSubOptions svsOptions;
+    svsOptions.useTimestamp = false;
+    auto pubSub = std::make_shared<ndn::svs::SVSPubSub>(
+      ndn::Name("/spec182/public/sync"), ndn::Name("/spec182/public/user/0"), face,
+      [] (const std::vector<ndn::svs::MissingDataInfo>&) {}, svsOptions, security);
+    user->attachLocalMockPubSubForTest(std::move(pubSub));
+  }
   if (scenario >= 3) {
     for (const auto& provider : {std::string("/provider/a"), std::string("/provider/b")}) {
       const auto cert = keyChain.createIdentity(ndn::Name(provider), ndn::RsaKeyParams(2048))
@@ -664,7 +725,7 @@ void runPublicClientScenario(int scenario)
     return done();
   };
   {
-    NativeInferenceClient client(user, registry, runtime, preparation, admission);
+    NativeInferenceClient client(user, registry, runtime, conversations, preparation, admission);
     NativeRequestOptions requestOptions;
     std::atomic<unsigned> accepted{0};
     if (scenario >= 3) {
@@ -677,6 +738,21 @@ void runPublicClientScenario(int scenario)
       requestOptions.stream->allowReplacement = true;
       requestOptions.stream->maxReplacements = 1;
       requestOptions.generation = nativeGenerationFromOptions(application.options, std::string(32, '1'));
+      if (scenario == 13) {
+        NativeConversationContinuation value;
+        value.conversationId = "conv-spec182-public-1";
+        value.parentContextEpoch = 0;
+        value.serviceName = "/service";
+        const auto role = input.roles.front().selectedRole;
+        value.planRoleMapDigest = nativePlanningDigest(nativeCanonicalJson(
+          NativeJson::array({NativeJson::array({role, "/provider/a"})})));
+        value.retentionDeadlineMs = 2'000'000'060'000ULL;
+        value.mode = "FULL_CONTEXT";
+        value.generationId = requestOptions.generation->generationId;
+        value.expectedRoles = {role};
+        conversation = value;
+        requestOptions.conversation = value;
+      }
       requestOptions.onGenerationEvent = [&](const auto&) {
         ++accepted;
         if (scenario == 7) throw std::runtime_error("application callback fixture failure");
@@ -712,6 +788,92 @@ void runPublicClientScenario(int scenario)
     BOOST_REQUIRE(pumpUntil([&] { return user->committed(id) || handle.status() != NativeRequestStatus::Pending; }));
     if (handle.status() != NativeRequestStatus::Pending) handle.result(std::chrono::milliseconds(0));
     BOOST_REQUIRE(user->committed(id));
+    if (scenario == 13) {
+      BOOST_REQUIRE(conversation.has_value());
+      const auto role = input.roles.front().selectedRole;
+      const auto planRoleMapDigest = conversation->planRoleMapDigest;
+      const auto planDigest = user->assignmentField(id, ndn::Name("/provider/a"), "plan_digest");
+      BOOST_REQUIRE(!planDigest.empty());
+      ProviderConversationStateReceiptV1 receipt;
+      receipt.conversationId = conversation->conversationId;
+      receipt.parentContextEpoch = 0;
+      receipt.successorContextEpoch = 1;
+      receipt.originRequestId = id.toUri();
+      receipt.originGenerationId = requestOptions.generation->generationId;
+      receipt.serviceName = "/service";
+      receipt.requesterIdentity = "/requester";
+      receipt.securityDomainDigest = runtime.security.policyDigest;
+      receipt.modelDigest = model.intentDigest();
+      receipt.graphSemanticDigest = model.semanticsDigest;
+      receipt.adapterDigest = model.adapter.descriptorDigest();
+      receipt.roleName = role;
+      receipt.roleSplitDigest = input.roles.front().recipeDigest;
+      receipt.layoutDigest = input.roles.front().artifactProfileDigest;
+      receipt.planRoleMapDigest = planRoleMapDigest;
+      receipt.providerIdentity = "/provider/a";
+      receipt.providerBootId = "/provider/a-boot";
+      receipt.cacheEpoch = 1;
+      receipt.prefixDigest = nativeConversationPrefixDigest({1, 2});
+      receipt.prefixTokenCount = 2;
+      receipt.positionDigest = nativePlanningDigest("position");
+      receipt.stateSchemaDigest = nativePlanningDigest("state-schema");
+      receipt.stateComponentDigests = {nativePlanningDigest("state-component")};
+      receipt.expiresAtMs = 2'000'000'060'000ULL;
+      const auto receiptJson = receipt.toJson();
+      const auto seedRecord = [&] (const ndn::Name& topic, const ndn::Buffer& payload) {
+        VerifiedCollaborationData value;
+        value.dataName = ndn::Name("/provider/a/NDNSF/DI/conversation").append(topic);
+        value.requestId = id;
+        value.keyScope = "ndnsf-di-conversation-state-v1";
+        value.topic = topic;
+        value.producer = ndn::Name("/provider/a");
+        value.producerRole = role;
+        value.sequence = 1;
+        value.payload = payload;
+        user->seedConversationData(std::move(value));
+      };
+      const ndn::Buffer receiptPayload(receiptJson.begin(), receiptJson.end());
+      user->seedConversationScope(id, "ndnsf-di-conversation-state-v1", ndn::Buffer(32, 0x5a));
+      seedRecord(ndn::Name("/ndnsf-di/conversation/receipt").append(role), receiptPayload);
+
+      NativeConversationConfig shadowConfig;
+      shadowConfig.authenticationKeys = {std::vector<std::uint8_t>(32, 0x5a)};
+      shadowConfig.requesterIdentity = "/requester";
+      shadowConfig.serviceName = "/service";
+      shadowConfig.securityDomainDigest = runtime.security.policyDigest;
+      shadowConfig.nowMs = [] { return std::uint64_t{2'000'000'000'000}; };
+      NativeConversationCoordinator shadow(std::move(shadowConfig));
+      auto shadowContinuation = *conversation;
+      shadowContinuation.requestContractDigest = nativePlanningDigest("contract");
+      const auto shadowTurn = shadow.beginTurn(shadowContinuation, id.toUri(), 1);
+      shadow.acceptTokenPrefix(shadowTurn, {1, 2});
+      NativeCompletedAttempt completed;
+      completed.requestId = id.toUri();
+      completed.attempt = 1;
+      completed.tokenIds = {1, 2};
+      completed.complete = true;
+      completed.generationId = requestOptions.generation->generationId;
+      completed.modelContractDigest = model.intentDigest();
+      completed.tokenizerDigest = requestOptions.generation->tokenizerDigest;
+      completed.chatTemplateDigest = model.semanticsDigest;
+      completed.applicationMessages.assign(application.payload.begin(), application.payload.end());
+      completed.authenticatedReceipts = {nativeParseJson(receiptJson)};
+      completed.commitProviderState = [] (const std::string&) {};
+      completed.rollbackProviderState = [] {};
+      const auto checkpoint = shadow.prepareCheckpoint(shadowTurn, completed);
+      auto ack = nativeCanonicalJson(NativeJson{
+        {"schema", "ndnsf-di-provider-conversation-commit-ack-v1"},
+        {"requestId", id.toUri()}, {"attemptEpoch", 1},
+        {"generationId", requestOptions.generation->generationId}, {"planDigest", planDigest},
+        {"conversationId", conversation->conversationId}, {"parentContextEpoch", 0},
+        {"successorContextEpoch", 1}, {"serviceName", "/service"},
+        {"planRoleMapDigest", planRoleMapDigest}, {"roleName", role},
+        {"receiptDigest", receipt.computedDigest()}, {"checkpointDigest", checkpoint.checkpointDigest},
+        {"providerIdentity", "/provider/a"}, {"providerBootId", receipt.providerBootId},
+        {"cacheEpoch", 1}, {"committed", true}});
+      seedRecord(ndn::Name("/ndnsf-di/conversation/commit").append(role),
+                 ndn::Buffer(ack.begin(), ack.end()));
+    }
     if (scenario >= 3) {
       const auto callbacks = user->streamCallbacks(id);
       const auto tokenEvent = [&](std::int64_t token, std::size_t epoch, const std::string& prefix,
@@ -731,7 +893,7 @@ void runPublicClientScenario(int scenario)
       if (scenario != 9)
         BOOST_REQUIRE(pumpUntil([&] { return accepted.load() == 1 || handle.status() != NativeRequestStatus::Pending; }));
       if (scenario == 4) callbacks->onEvent(tokenEvent(3, 3, "1,3", "bad", "NONE"));
-      else if (scenario >= 10) {
+      else if (scenario >= 10 && scenario != 13) {
         auto invalid = tokenEvent(2, 2, "1,2", "b", "EOS");
         if (scenario == 10) invalid = firstToken; // Duplicate accepted epoch.
         else if (scenario == 11) invalid = tokenEvent(2, 2, "1,9", "b", "EOS");
@@ -787,7 +949,7 @@ void runPublicClientScenario(int scenario)
         callbacks->onComplete(finalPayload(scenario == 6 ? "wrong" : "ab"));
       }
       BOOST_REQUIRE(pumpUntil([&] { return handle.status() != NativeRequestStatus::Pending; }));
-      if (scenario == 3 || scenario == 8 || scenario == 9) {
+      if (scenario == 3 || scenario == 8 || scenario == 9 || scenario == 13) {
         BOOST_CHECK(handle.status() == NativeRequestStatus::Succeeded);
         BOOST_CHECK_EQUAL(accepted.load(), 2);
         const auto result = handle.result(std::chrono::milliseconds(0));
@@ -839,6 +1001,11 @@ void runPublicClientScenario(int scenario)
 BOOST_AUTO_TEST_CASE(PublicClientCommitsSignedOfferAndIgnoresLateTerminalCallbacks)
 {
   for (int scenario = 0; scenario != 3; ++scenario) runPublicClientScenario(scenario);
+}
+
+BOOST_AUTO_TEST_CASE(PublicClientConversationCommitsSeededReceiptAndCheckpoint)
+{
+  runPublicClientScenario(13);
 }
 
 BOOST_AUTO_TEST_CASE(AdmittedPlacementSealsSdkCoreAndRejectsTampering)

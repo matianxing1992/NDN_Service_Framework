@@ -53,7 +53,9 @@ struct NativeRequestOptions
   std::optional<ndn_service_framework::StreamRequestOptions> stream;
   // A conversation turn is owned by the native coordinator. The caller only
   // supplies the authenticated parent continuation; request/attempt/epoch
-  // identities are allocated and fenced by the requester.
+  // identities are allocated and fenced by the requester. The current
+  // requestContractDigest may be empty because it covers the owner-allocated
+  // request ID; the requester fills it from the encoded envelope.
   std::optional<NativeConversationContinuation> conversation;
   // Runs after process-local acceptance on the request worker. An exception
   // fails the request without rolling back accepted tokens or replaying them.

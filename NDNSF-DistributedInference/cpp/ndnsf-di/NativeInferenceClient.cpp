@@ -1319,8 +1319,25 @@ dispatchOperation(const std::shared_ptr<NativeInferenceHandle::Operation>& opera
       return;
     }
     try {
+      auto continuation = *operation->options.conversation;
+      // The request-contract digest covers the complete envelope, including
+      // the request ID allocated by this native owner. Callers cannot know
+      // that ID before submission; an empty value is therefore filled from
+      // the encoded envelope at this ownership boundary. A supplied value is
+      // retained and remains subject to the normal coordinator/planner
+      // equality checks.
+      if (continuation.requestContractDigest.empty()) {
+        if (!operation->encodedRequest || operation->encodedRequest->requestContractDigest.empty()) {
+          failOperation(operation, NativeDiError(
+            "NATIVE_CONVERSATION_CONTRACT_UNAVAILABLE", "conversation", "begin",
+            "encoded request contract digest is unavailable", operation->requestId,
+            operation->attempt));
+          return;
+        }
+        continuation.requestContractDigest = operation->encodedRequest->requestContractDigest;
+      }
       auto turn = operation->conversations->beginTurn(
-        *operation->options.conversation, operation->coreRequestId, operation->attempt);
+        continuation, operation->coreRequestId, operation->attempt);
       bool installed = false;
       {
         std::lock_guard<std::mutex> lock(operation->mutex);
