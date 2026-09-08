@@ -3716,3 +3716,16 @@ identity and rerun packaging against the existing incremental Waf cache.
   template, rendered with the source8 seal and the exact v6 base image.
 - Lesson: the build entry point's boundary validator is part of the release
   contract; a custom one-stage definition cannot stand in for it.
+
+## 2026-09-08: multistage builder requested an unavailable Python package
+
+- Symptom: the corrected two-stage SIF build reached the builder `%post` and
+  failed during APT with `Unable to locate package python3.10-dev`.
+- Root cause: Ubuntu 20.04's configured repositories provide Python 3.8
+  development packages, while the sealed v6 base already carries the pinned
+  `/usr/local/bin/python3.10` interpreter and headers.
+- Fix: remove the unavailable APT package from the maintained template and keep
+  the in-container Python 3.10 header assertion as the build contract.
+- Lesson: dependency installation must match the sealed base ABI; an APT
+  package name cannot be assumed to exist merely because the interpreter is
+  locally provisioned.

@@ -40,7 +40,10 @@ Stage: builder
     export DEBIAN_FRONTEND=noninteractive
     sed -i 's|http://archive.ubuntu.com|https://archive.ubuntu.com|g; s|http://security.ubuntu.com|https://security.ubuntu.com|g' /etc/apt/sources.list
     apt-get -o Acquire::Retries=3 update
-    apt-get install -y --no-install-recommends build-essential cmake pkg-config libgmp-dev libssl-dev libsqlite3-dev libboost-all-dev libpcap-dev protobuf-compiler libprotobuf-dev libgtkmm-3.0-dev ca-certificates python3.10-dev
+    # The pinned base owns the /usr/local Python 3.10 interpreter and headers;
+    # Ubuntu 20.04 does not publish a python3.10-dev package in its configured
+    # repositories.  Keep the explicit header assertion below as the contract.
+    apt-get install -y --no-install-recommends build-essential cmake pkg-config libgmp-dev libssl-dev libsqlite3-dev libboost-all-dev libpcap-dev protobuf-compiler libprotobuf-dev libgtkmm-3.0-dev ca-certificates
     rm -rf /var/lib/apt/lists/*
     install -d /src/ndnsf /src/ndn-svs /src/nac-abe /src/ndn-sd /opt/ndnsf-stage/bin /opt/ndnsf-stage/include /opt/ndnsf-stage/lib/pkgconfig /opt/ndnsf-stage/python /opt/ndnsf-stage/manifest /opt/ndnsf-stage/replay/repo /tmp/ndnsf-pc /tmp/ndnsf-build-python
     /opt/venv/bin/python - <<'PY'
