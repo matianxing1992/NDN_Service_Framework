@@ -33,3 +33,12 @@ semantic layer 当作 ONNX 单节点。新增接口先同步 runtime/strategy �
 正例节点名必须与 onnx-node-N 不同。负例独立修改名称 cover、tensor 端点、
 dtype/shape、依赖、safe cuts、角色外部输入输出。批内不逐小任务构建；静态完成
 后统一运行计划选择器。尚未实现上述成员，不能记录 STATIC_PASS 或测试 PASS。
+
+## Documentation Check Boundary
+
+批次记录 checkpoint f9e5e257。最后全局 validate_design.py exit=1：并行修改的
+contracts/pre-test-static-review.md 缺 `## One Completion Record`、`最小具名诊断`
+及对应 anchor。原始输出见
+[validation](../../../.codex-tmp/spec182-preparation-rank-r1/semantic-batch-design-final.json)。
+不把该失败算作产品/YOLO 行为失败，也不宣称全局文档 PASS；未覆盖或回退他人工作流
+修改。本批 diff 格式检查通过，三个批次文档引用存在；没有运行新的产品构建或测试。
