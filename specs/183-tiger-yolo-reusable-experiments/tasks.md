@@ -17,6 +17,9 @@
 
 ### T001–T007：关闭实际 GPU YOLO 执行路径
 
+2026-09-07 当前增量：T004.f 关闭 dispatch 快照先写后刷新造成的配置漂移，
+新增语义一致性拒错；[effective profile](evidence/t004-effective-profile.md)。
+
 2026-09-07 当前增量：T004.e 已连接跨运行 typed prerequisite，详见
 [gate reuse](evidence/t004-gate-reuse.md)。远端 staging/run 仍待实现，父任务保持未完成。
 
@@ -30,6 +33,7 @@
 | T004.b | T004 | `jobs/yolo/submit.py` 的远端 staging、run 接真实 worker | BLOCKED | `REMOTE_STAGING_NOT_WIRED`、`RUNNER_NOT_WIRED` 仍在；local 见 T004.d | 连接实际远端 owner 和 typed gate 消费；在 T007 前完成接线验证 | 只验证新调用边界，复用既有 worker/barrier/journal 证据 |
 | T004.c | T004 | `local` 拒绝其他 profile 冻结的 prepared run | VERIFIED | [CLI binding](evidence/t004-cli-journal.md#2026-09-07-local-prepared-profile-binding)；40 CLI passed，先于 host receipt 检查拒绝 | 绑定修复已完成；T004.b 的生产 worker 接线仍待完成 | 相同源码无需重复 CLI suite；本项不触发 SIF/GPU 验证 |
 | T004.e | T004 | v2 prepared 绑定 I/R/E；跨运行 prerequisite 重算留存证据 | IMPLEMENTED | [gate reuse](evidence/t004-gate-reuse.md)；56 项 CLI/门边界检查通过，collector double 不代表运行通过 | 远端 staging/run 及真实先行运行证据仍缺；旧 v1 不放行 | 同内容复用留存证据；改变内容/脚本/行为拒绝复用，不启动模型重复测试 |
+| T004.f | T004 | 冻结脚本→刷新文件摘要→有效配置快照；检查当前语义一致性 | VERIFIED | [effective profile](evidence/t004-effective-profile.md)；79 项组件通过，含真实小文件 renderer 一次收敛/重复稳定性 | 仅本行配置一致性通过；T004.b 远端 owner 未连接 | 只重测 renderer/profile/prepare/provision；不重跑模型或旧单位套件 |
 | T004.d | T004 | local→冻结 CLI→签发→两个 CPU 请求→清理→真实 collector | IMPLEMENTED | [local owner](evidence/t004-local-owner-wiring.md)；114 个唯一组件用例最终有通过记录，非 native/SIF PASS；host seal/九产物、冻结 NumPy owner 已接 | 等 T007 收敛和真实 T010 receipt/新 SIF 后运行，不能以接线关闭 T004 | 首轮仅剩准备 fixture 漂移，修后只重跑该模块12项；不重复全部集合 |
 | T005.a | T005 | 真实 User/Provider 参数、权限材料、准备与 readiness | IMPLEMENTED | [public recipients](evidence/t005-public-recipients.md)、[normal owner](evidence/t005-normal-node-owner.md) | 尚未证明完整真实 YOLO request→response | 未变安全组件证据复用；变更只重测影响边界 |
 | T005.b | T005 | User post-ACK role specs→DI assembler→独立 ORT reference→发布后 MODELROOT | IMPLEMENTED | [request wiring](evidence/t005-request-reference-wiring.md)；176 组件通过，含真实小 ONNX assembler/CPU ORT；原生应用测试收集失败 | 生产调用已接；需修复 native loader 后验证真实 YOLO request，T007 仍 BLOCK | 组件证据复用；native 测试待 loader 修复后再跑，不为 identity mutation 重建模型 |

@@ -277,6 +277,27 @@ def load_operator_profile(path: Path, *, stage: str) -> dict:
             "minimumWallTimeSeconds": minimum, "profile": value}
 
 
+def effective_profile_document(profile: dict) -> dict:
+    """One path-independent behavior representation for plans and dispatch."""
+    def logical(item):
+        if isinstance(item, dict):
+            if set(item) == {'path', 'bytes', 'sha256'}:
+                return {key: item[key] for key in ('bytes', 'sha256')}
+            return {key: logical(value) for key, value in item.items()}
+        if isinstance(item, list):
+            return [logical(value) for value in item]
+        return item
+
+    behavior = logical(profile)
+    behavior.pop('release')
+    behavior.pop('profileId')
+    behavior['runtime'].pop('apptainer')
+    behavior['security'].pop('authorityPrivateKey')
+    behavior['storage'] = {key: profile['storage'][key] for key in ('peakBytes', 'marginBytes')}
+    return dict(schema='tiger-yolo-effective-profile-v1', profileId=profile['profileId'],
+                effectiveBehavior=behavior)
+
+
 def check_operator_profile(path: Path, *, stage: str) -> dict:
     """Inspect the current stage's bytes, without granting execution authority.
 
@@ -311,6 +332,13 @@ def check_operator_profile(path: Path, *, stage: str) -> dict:
                 any(declared[key] != reference[key] for key in ("bytes", "sha256"))):
             raise ClosureError("HARNESS_DISPATCH_BINDING")
         harness = verify_harness(manifest.parent, expected_manifest_sha256=reference["sha256"])
+        row = _read_plane(paths['dispatch'])['files']['effectiveProfile']
+        snapshot_path = paths['dispatch'].parent / row['path']
+        _file_identity(paths['dispatch'].parent, 'effectiveProfile', row)
+        snapshot = _read_plane(snapshot_path)
+        if snapshot != effective_profile_document(profile):
+            raise ClosureError('EFFECTIVE_PROFILE_BINDING')
+        _file_identity(paths['dispatch'].parent, 'effectiveProfile', row)
         verify_reference("dispatch", profile["release"]["dispatch"])
     result = {"status": "INCOMPLETE", "stage": stage,
             "structure": loaded["structure"], "integrity": checked["integrity"],
@@ -450,23 +478,7 @@ def resolve_run_plan(path: Path, *, stage: str, case: str, run_id: str, output: 
                  "output": str(output / run_id / "node0" / "user" / "requests" / str(n))}
                 for n in range(schedule["warmup"] + schedule["measured"])]
 
-    def logical(item):
-        if isinstance(item, dict):
-            if set(item) == {"path", "bytes", "sha256"}:
-                return {"bytes": item["bytes"], "sha256": item["sha256"]}
-            return {key: logical(entry) for key, entry in item.items()}
-        return item
-
-    behavior = logical(profile)
-    # R binds the input/runtime chain; E cannot contain its own manifest or
-    # future gate receipts. Site paths and run identity are ResolvedRun fields.
-    behavior.pop("release")
-    behavior.pop("profileId")
-    behavior["runtime"].pop("apptainer")
-    # The trusted public key is content-bound through trustPolicy. A private
-    # key locator is physical deployment data, not another policy identity.
-    behavior["security"].pop("authorityPrivateKey")
-    behavior["storage"] = {key: profile["storage"][key] for key in ("peakBytes", "marginBytes")}
+    behavior = effective_profile_document(profile)['effectiveBehavior']
     case_behavior = {"profile": behavior, "case": case, "nodes": nodes,
                      "schedule": schedule}
     basis = json.dumps(case_behavior, sort_keys=True, separators=(",", ":")).encode()

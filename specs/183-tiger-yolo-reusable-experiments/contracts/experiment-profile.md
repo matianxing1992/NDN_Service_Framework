@@ -17,6 +17,15 @@ These checks do not replace actual stage execution or authorize an unwired remot
 launcher. Prepared output paths remain bound; relocation requires an explicit
 transport contract before remote execution can be enabled.
 
+The dispatch `effectiveProfile` must equal the shared canonical behavior document
+computed from the current operator profile, not merely have a valid file hash.
+Generate it after sealing the harness and refreshing all non-release file rows;
+only the excluded release rows may be synchronized afterward. Plans use that same
+normalization. Private-key/Apptainer locations, file paths, storage roots and gate
+references do not change behavior identity; declared file content and execution
+settings do. A rehashed stale or extra-field snapshot is rejected before prepare
+or execution. One render on unchanged sources must produce stable plane bytes.
+
 **Status**: T004 partial — schema、只读 `check`、确定性运行预览和提交记录组件已实现；
 完整五命令、合格不可变 bundle、实际 enabled profile 和生产提交接线尚未完成。
 没有启动资格。

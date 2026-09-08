@@ -2590,3 +2590,17 @@ Corrected fixtures use actual frozen CLI source and an explicit parent directory
 56 targeted checks pass (20.60s), evidence in t004-gate-reuse.md. Lesson: test real
 executable entrypoints at command boundaries, and do not mistake content validity
 or a fake script's zero exit for runtime qualification. No GPU rerun was needed.
+
+## 2026-09-07 — Spec183 effective snapshot lagged behind refreshed file rows
+
+Symptom: a valid dispatch hash could describe old harness/contract settings.
+Root cause: renderer generated effective-profile before _sync_profile_rows;
+checker compared bytes but never the snapshot's actual settings with the profile.
+Fix: shared canonical behavior owner, non-release rows refreshed before snapshot,
+release rows last, and strict semantic equality at dispatch validation. Rehashed
+wrong/extra fields are rejected before prepare. 79 focused components passed in
+19.82s, including real small-plane render convergence and repeat stability;
+evidence/t004-effective-profile.md records the exact command. Initial test import
+order caused collection failure (runtime path unavailable); fixed the fixture
+import order and retained the failed JUnit. Lesson: hash validity needs a binding
+to the intended semantic object, and generators must prove one-pass convergence.

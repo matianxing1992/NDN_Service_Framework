@@ -7,7 +7,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from runtime.yolo_profile import ClosureError, resolve_provision_inputs, resolve_run_plan
-from test_yolo_submit import dispatch_profile, file_ref
+from test_yolo_submit import dispatch_profile, file_ref, refresh_effective_profile
 
 
 def fixture(tmp_path):
@@ -36,6 +36,7 @@ def fixture(tmp_path):
     profile['workload'] = {'descriptor': file_ref(template), 'packageManifest': file_ref(manifest)}
     profile['security'].update(trustPolicy=file_ref(registry_path), authorityPrivateKey=secret.name)
     path.write_text(json.dumps(profile))
+    refresh_effective_profile(path, profile)
     plan = resolve_run_plan(path, stage='dispatch', case='two-node-gpu', run_id='mapping-test', output=tmp_path / 'runs')
     return path, profile, plan
 

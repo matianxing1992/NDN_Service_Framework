@@ -29,9 +29,9 @@ participate in identities) and ``release`` (the plane references, which would
 otherwise form a profile -> plane -> profile self-reference), the physical
 ``authorityPrivateKey``/``apptainer`` locators, and the storage roots are
 excluded -- exactly the reduction ``resolve_run_plan`` applies to profile
-behavior.  Because release rows are excluded from the document, synchronizing
-real row hashes back into the profile never changes the document, so the
-render -> row-sync loop converges in one pass.
+behavior. Seal the harness and synchronize non-release file hashes BEFORE
+writing effectiveProfile; synchronize the excluded release rows afterward.
+This ordering makes one render sufficient even after harness/contract changes.
 
 ``render`` also writes the exact ``release.inputs/runtime/dispatch`` and
 ``evidence.harnessManifest`` row values back into the profile file, so the
@@ -116,15 +116,6 @@ def _link_into(source: Path, target: Path, name: str) -> dict:
             "sha256": observed}
 
 
-def _logical(item):
-    """Reduce file rows to identity and recurse (mirrors resolve_run_plan)."""
-    if isinstance(item, dict):
-        if set(item) == {"path", "bytes", "sha256"}:
-            return {"bytes": item["bytes"], "sha256": item["sha256"]}
-        return {key: _logical(entry) for key, entry in item.items()}
-    return item
-
-
 def _effective_document(profile: dict) -> dict:
     """Deterministic effective-behavior document without self-references.
 
@@ -133,15 +124,8 @@ def _effective_document(profile: dict) -> dict:
     locators, and all storage roots except the byte budgets -- the same
     reduction ``resolve_run_plan`` applies to profile behavior.
     """
-    behavior = _logical(profile)
-    behavior.pop("release", None)
-    behavior["runtime"].pop("apptainer", None)
-    behavior["security"].pop("authorityPrivateKey", None)
-    behavior["storage"] = {key: behavior["storage"][key]
-                           for key in ("peakBytes", "marginBytes")}
-    return {"schema": "tiger-yolo-effective-profile-v1",
-            "profileId": profile.get("profileId"),
-            "effectiveBehavior": behavior}
+    from runtime.yolo_profile import effective_profile_document
+    return effective_profile_document(profile)
 
 
 def _plane_document(stage: str, parent_id, files: dict, parameters: dict) -> dict:
@@ -200,7 +184,7 @@ def _rmtree_force(root: Path) -> None:
     shutil.rmtree(root)
 
 
-def _sync_profile_rows(profile_path: Path, plane_root: Path) -> list[str]:
+def _sync_profile_rows(profile_path: Path, plane_root: Path, *, skip_release=False) -> list[str]:
     """Rewrite every file row to the real identity of the file it points at.
 
     The profile is the single editable publication; all row hashes must equal
@@ -214,6 +198,8 @@ def _sync_profile_rows(profile_path: Path, plane_root: Path) -> list[str]:
     updated: list[str] = []
 
     def walk(item, where: str):
+        if skip_release and where == 'profile.release':
+            return
         if isinstance(item, dict):
             if set(item) == {"path", "bytes", "sha256"}:
                 path = Path(item["path"])
@@ -267,10 +253,14 @@ def render(plane_root: Path, profile_path: Path) -> dict:
     if dispatch_root.exists():
         _rmtree_force(dispatch_root)
     dispatch_root.mkdir(mode=0o700)
+    # Seal the executable owners and refresh all non-release identities before
+    # snapshotting behavior. Only release rows depend on the completed E plane;
+    # they are excluded from the behavior document and synchronized last.
+    _sealed_harness(dispatch_root)
+    updated = _sync_profile_rows(profile_path, plane_root, skip_release=True)
     profile = json.loads(profile_path.read_text())
     effective = dispatch_root / "effective-profile.json"
     effective.write_text(json.dumps(_effective_document(profile), indent=1) + "\n")
-    _sealed_harness(dispatch_root)
     dispatch_files = {}
     for name, relative in DISPATCH_SOURCES.items():
         dispatch_files[name] = _link_into(
@@ -285,7 +275,7 @@ def render(plane_root: Path, profile_path: Path) -> dict:
     _write_plane(dispatch_root, "dispatch", runtime_id, dispatch_files)
     dispatch_id = _stage_id(dispatch_root, "dispatch", parent_id=runtime_id)
 
-    updated = _sync_profile_rows(profile_path, plane_root)
+    updated = sorted(set(updated + _sync_profile_rows(profile_path, plane_root)))
     return {"status": "RENDERED", "planeRoot": str(plane_root),
             "runtime": runtime_id, "dispatch": dispatch_id,
             "inputs": inputs_id, "profileRowsUpdated": updated}

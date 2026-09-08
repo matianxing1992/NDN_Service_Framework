@@ -340,7 +340,21 @@ def dispatch_profile(tmp_path, *, real_harness=False):
     value["release"].update(runtime=file_ref(runtime), dispatch=file_ref(dispatch))
     value["evidence"]["harnessManifest"] = file_ref(frozen / "harness-manifest.json")
     path.write_text(json.dumps(value))
+    refresh_effective_profile(path, value)
     return path, value, frozen
+
+
+def refresh_effective_profile(path, value):
+    """Publish fixture behavior into its content plane using the real owner."""
+    from runtime.yolo_profile import effective_profile_document
+    plane = Path(value['release']['dispatch']['path'])
+    doc = json.loads(plane.read_text())
+    target = plane.parent / doc['files']['effectiveProfile']['path']
+    target.write_text(json.dumps(effective_profile_document(value)))
+    doc['files']['effectiveProfile'] = dict(file_ref(target), path=target.name)
+    plane.write_text(json.dumps(doc))
+    value['release']['dispatch'] = file_ref(plane)
+    path.write_text(json.dumps(value))
 
 
 def test_dispatch_check_binds_and_verifies_frozen_harness(tmp_path):
