@@ -149,6 +149,8 @@ worker crash/cancel 等真实子进程案例也转 T016，卡内只运行纯 fra
 
 ### T004-A Canonical Plan Sealing
 
+- **R2-B5 group key input**: `N/NativeGroupKeyAdmission.hpp/.cpp` 复用 NativeOfferAdmission 对同一 Core ACK 的 V3/key offer 绑定检查，冻结 public-key/endpoint 并提供 Core RSA wrap closure；`U/di-native-v3-placement.t.cpp::AdmittedGroupKeysReachCoreRsaCapabilityUnwrap` 验证真实 capability/Provider 解封。详见 [R2-B5](../evidence/r2-b5-group-key-admission-20260908.md)；group membership、operation/rank 到 endpoint 的完整编排仍待接线。
+
 - **R2-B3 projection input owner**: `NativePlanProjectionBuilder::build(sealed,candidate,offers,context)` 生成 execution/dataflow/device inputs；context 由 request/Core group owner 提供时间、application-input identity、dependency group/namespace 与 capability，不能由 builder 自发授权。复用 NativeSelectionJson 和整体 DAG/终态校验；SDK 完整 device/dataflow 及非空 endpoint 对照见 [R2-B3](../evidence/r2-b3-projection-builder-20260908.md)。Write 扩展至 `N/NativePlanProjectionBuilder.hpp/.cpp` 与共享 `NativeSelectionJson.cpp`/`detail/NativeSelectionJsonValues.hpp`。
 
 - **Parent**: T004; **Depends**: T003-C; **Reviewer**: wire/security review
