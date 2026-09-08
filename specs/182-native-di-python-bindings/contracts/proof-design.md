@@ -64,6 +64,30 @@ T002--T014不提前执行L3/L4；T015整体静态检查后，T016执行完整uni
 测试编写与执行分开；同一文件有不同层级时使用 T001-C 冻结的独立 selector
 （case-manifest 的 `selector` 字段，2026-09-07 冻结）。
 
+## Native Test Ownership
+
+2026-09-08 用户明确：NDNSF-DI 生产逻辑由 C++ 负责，主要行为测试也由 C++ 负责。
+本规则落实 FR-013，不增加第二套测试框架，不回写冻结历史证据。
+
+| Subject | Primary test owner | Python boundary |
+| --- | --- | --- |
+| Graph/candidate/placement、sealer/grant、assembly/tokenizer、Provider runtime | 现有 C++ test target 直接调用原生生产符号，覆盖成功和必要负例 | 可离线生成独立 frozen oracle；运行 C++ 测试只读取数据，不启动 Python |
+| Request/stream/session、取消/超时/晚回调、恢复/清理 | C++ 单测与 C++ 集成主体，断言同一原生 owner 的状态和结果 | 不用 Python 测试替代原生调用链验证 |
+| 真正协作与 no-Python 资格 | C++ requester/authority/Provider 进程与原生验证入口 | MiniNDN/外部调度、日志汇总可保留 Python 基础设施；被测 DI 进程和业务逻辑无解释器依赖，外部工具不重实现 DI 决策 |
+| 可选 Python bindings/facades | Python 专测参数/异常映射、寿命、原生入口转发及兼容性；与 C++ 对照 | 必要且保留，但不能作为 C++ 核心行为唯一验收 |
+| 既有 Python 业务行为测试 | 迁移其需求、关键断言和错误路径到对应 C++ owner 的测试 | 旧实现仅作为离线独立行为对照；未建立等价覆盖前不删除或将其静默排除 |
+
+测试不应在 C++ 中复制另一套业务实现来制造期望值。优先复用现有 Boost.Test、
+原生 consumer/fixture 和稳定数据 oracle；保留 Python 维护实现生成独立向量的
+价值。业务断言应覆盖真实 C++ 入口，不能只由日志出现某个字符串推断通过。
+
+后续批次在登记 selectors 时标明 C++ 行为入口与 Python 辅助/兼容用途。
+各实现 owner 迁移本行为的主要测试；T013-A 核对 maintained Python 行为测试到
+C++ case 的覆盖映射，T013-B 退出旧测试运行路径时不得丢失断言，T015 检查没有
+仅凭 Python facade PASS 关闭的核心 PO，T016 执行原生主要套件及单独的绑定兼容门。
+既有 case-manifest 的用例和负例保留，迁移时同步实际文件/selector/owner；不把语言
+调整当作删除失败测试、降低运行层级或提前运行 integration 的理由。
+
 ## Planned Test and Build Inventory
 
 下列文件/命令是 planned，当前未创建/运行；旧 selectors 与新增 case 名称已由

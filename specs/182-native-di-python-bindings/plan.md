@@ -14,6 +14,11 @@ O-002--O-005 已于 2026-09-07 全部关闭（code-design Open Questions 无 OPE
 
 ## Technical Context
 
+主要行为测试直接用 C++ 调用生产库；Python 保留可选绑定兼容、离线 oracle 和
+外部实验基础设施，不能成为原生核心 PO 的唯一证明。各实施批次同步迁移本行为
+测试，T013/T015 核对覆盖，T016 分开执行原生主套件与绑定兼容套件；见
+[native test ownership](contracts/proof-design.md#native-test-ownership)。
+
 建立可安装ndnsf-distributed-inference库与独立C++ consumer，Python绑定可选。
 沿用Waf、C++/Boost/ndn-cxx/ORT；ONNX/tokenizer依赖及ABI锁由T001冻结。
 内部 typed JSON 使用固定 nlohmann/json 源与许可证；版本/哈希见 native-dependencies.json。

@@ -139,6 +139,11 @@ Python 绑定可选构建，禁止依赖主工作区未提交文件。
 - **FR-012**: **Native Build and Runtime Closure**. System MUST 可独立构建/安装/链接原生库
   与 C++ consumer；生产运行树不依赖 Python/libpython/DI Python 包，绑定为可选构建产物。
 - **FR-013**: **Behavioral Proof and Convergence**. System MUST 在实现阶段静态审查后执行相关unit；全部实现与T015整体审查完成后，由T016统一执行真实完整unit/integration/MiniNDN与规定负例，故障先分类首边界。
+  原生 DI 核心行为的主要测试 MUST 用 C++ 编写并直接调用同一生产库/API，包含
+  单测、集成、请求/会话生命周期、安全拒绝及恢复路径；不得只经 Python 绑定证明
+  C++ 行为。Python 限于可选绑定兼容、离线独立 oracle 和外部测试基础设施；
+  纯 C++ 验收不依赖执行 Python oracle 或导入旧 DI runtime。细则见
+  [native test ownership](contracts/proof-design.md#native-test-ownership)。
 - **FR-014**: **Immutable Local Delivery**. System MUST 交付同一源、原生库、配置、工件、
   adapter、harness、依赖锁与证据身份；本地交付和外部 SIF/Tiger verdict 分开记录。
 - **FR-015**: **Controlled Successor Activation**. System MUST 在合并修复基线及181承接表确认、对应设计门关闭后启动182实现；不要求先完成181全部旧资格，不改写历史验收结果。

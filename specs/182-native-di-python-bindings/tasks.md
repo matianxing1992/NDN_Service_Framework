@@ -17,6 +17,7 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 
 | Unit / Details | Status | Depends | Evidence / Remaining | Updated |
 | --- | --- | --- | --- | --- |
+| [D-NATIVE-TEST-POLICY Native Test Ownership](contracts/proof-design.md#native-test-ownership) | DONE | User native testing request | 主要行为测试由 C++ 直接调用生产库；Python 兼容/离线 oracle/外部设施边界已明确，文档检查 PASS；实际测试迁移由各实现卡与 T013/T015/T016 负责 | 2026-09-08 |
 | [D-CHAIN-REPLAN Production Chain Review](evidence/production-chain-replan-20260908.md) | DONE | User pause and replan request | 23 张未完成卡归入七个能力阶段；实际 R<n>-B<k> 按完整行为/共享契约/稳定出口领取，逐任务静态门、批末统一验证；36 张原卡状态不变，新增实现暂停 | 2026-09-08 |
 | [D-REVIEW-AGENT Official Skill](evidence/review-agent-install-20260908.md) | DONE | User installation request | 官方原版安装/字节身份/技能 schema PASS；逐任务静态门明确调用，文档校验 PASS；不关闭产品任务 | 2026-09-08 |
 | [D-SKILL-BATCH Workflow Revision](evidence/skill-batch-workflow-20260908.md) | DONE | User workflow request | 逐任务只读静态门、批末流程审查与统一测试已同步；共享技能 schema、链接、5 份安装同步、4 入口 YAML/路由及 diff PASS；旧验证器 compatibility 白名单限制已记录，不关闭产品任务 | 2026-09-08 |
@@ -63,6 +64,13 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 | [T017-A Development Handoff](contracts/execution-units.md#t017-a-development-handoff) | NOT_STARTED | T016-A | [baseline](evidence/task-progress-registry-20260907.md)；无本卡独立执行/验收记录；按依赖领取 | 2026-09-07 |
 
 ## Current Checkpoint
+
+2026-09-08 Native Test Ownership / **DONE (policy only)**：按用户要求，主要
+DI 行为测试使用 C++ 直接调用生产库；Python 用于可选绑定兼容、离线独立 oracle
+及外部测试设施。spec FR-013、plan 和 [test ownership](contracts/proof-design.md#native-test-ownership)
+已同步。各实现批次迁移所属行为测试，T013/T015 核对覆盖，T016 保留全部真实门。
+不删除旧测试或重写既有证据，不宣称测试迁移已全部完成；产品任务状态不变。
+文档验证及 diff 检查 PASS，见 [check](../../.codex-tmp/spec182-native-test-policy/design.json)。
 
 2026-09-08 R1-B1 Qwen Metadata to Candidate / **DONE (batch only)**：用户新设“完成
 Spec182 全部任务”目标，恢复产品执行。本批属于 T003-A，交付 maintained 元数据
