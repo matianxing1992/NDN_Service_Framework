@@ -715,6 +715,27 @@ makeFinalPayload(const std::vector<std::int64_t>& generated,
 
 } // namespace
 
+std::string nativeGenerationStatePrefixDigest(const std::vector<std::int64_t>& tokens,
+  std::size_t initialPromptTokenCount, const std::string& tokenizerDigest)
+{
+  if (initialPromptTokenCount > tokens.size() || tokens.size() > std::numeric_limits<std::uint32_t>::max() ||
+      tokenizerDigest.size() != 71 || tokenizerDigest.compare(0, 7, "sha256:") != 0 ||
+      tokenizerDigest.find_first_not_of("0123456789abcdef", 7) != std::string::npos ||
+      std::any_of(tokens.begin(), tokens.end(), [](auto id) { return id < 0; }))
+    throw std::invalid_argument("native generation transcript commitment input invalid");
+  DecodeStateIdentityV1 identity;
+  identity.tokenizerDigest = tokenizerDigest;
+  GenerationEpochLineageV1 lineage;
+  lineage.logicalPrefixTokenCount = static_cast<std::uint32_t>(initialPromptTokenCount);
+  lineage.logicalPrefixDigest = initialPrefixDigest(identity,
+    std::vector<std::int64_t>(tokens.begin(), tokens.begin() + initialPromptTokenCount));
+  for (auto position = initialPromptTokenCount; position < tokens.size(); ++position) {
+    lineage.logicalPrefixDigest = appendedPrefixDigest(lineage, tokens[position]);
+    ++lineage.logicalPrefixTokenCount;
+  }
+  return lineage.logicalPrefixDigest;
+}
+
 bool
 nativeRoleHasOnlyInternalFeedbackOutputs(const RoleSpec& role)
 {

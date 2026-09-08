@@ -16,6 +16,12 @@
 
 namespace ndnsf::di {
 
+// Recompute the existing Provider state commitment from a complete transcript.
+// The original prefill boundary is required because this is a chained digest,
+// distinct from the conversation checkpoint's canonical token-list digest.
+std::string nativeGenerationStatePrefixDigest(const std::vector<std::int64_t>& tokens,
+  std::size_t initialPromptTokenCount, const std::string& tokenizerDigest);
+
 enum class NativeEpochStopReason
 {
   Cancelled,

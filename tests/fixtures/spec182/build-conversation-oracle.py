@@ -10,12 +10,13 @@ import tempfile
 import types
 from unittest.mock import patch
 import base64
+from dataclasses import replace
 
 ROOT = Path(__file__).resolve().parents[3]
 SOURCE = ROOT / "NDNSF-DistributedInference/ndnsf_distributed_inference/conversation.py"
 
 
-def journal_vector(cases, key):
+def journal_vector(cases, key, reference):
     # Load the actual reference modules without executing application bootstrap.
     package = SOURCE.parent
     for name, directory in (("spec182_reference", package),
@@ -45,13 +46,16 @@ def journal_vector(cases, key):
             with patch.object(module.secrets, "token_bytes", return_value=bytes([index + 1]) * 12), \
                  patch.object(module.time, "time", return_value=2_000_000_000 + index):
                 prepared = journal.prepare_envelope(envelope_id, payload, expires_at_ms=checkpoint["expiresAtMs"])
-                journal.commit_prepared_envelope(prepared, (("conversation-checkpoint", {
+                index_record = {
                     "conversationId": checkpoint["conversationId"], "contextEpoch": epoch,
                     "checkpointDigest": checkpoint["checkpointDigest"], "envelopeId": envelope_id,
                     "wireDigest": prepared.wire_digest,
                     "payloadDigest": "sha256:" + hashlib.sha256(payload).hexdigest(),
                     "expiresAtMs": checkpoint["expiresAtMs"],
-                }),))
+                }
+                if "nativeInitialPromptTokenCount" in case:
+                    index_record["nativeInitialPromptTokenCount"] = case["nativeInitialPromptTokenCount"]
+                journal.commit_prepared_envelope(prepared, (("conversation-checkpoint", index_record),))
             assert journal.read_envelope(envelope_id, at_ms=2_000_000_000_003) == payload
             payloads.append({"envelopeId": envelope_id, "plaintext": payload.decode(),
                              "encoded": prepared.encoded.decode(), "wireDigest": prepared.wire_digest})
@@ -59,6 +63,9 @@ def journal_vector(cases, key):
                                          test_only_allow_ephemeral_state_root=True)
         for item in payloads:
             assert reopened.read_envelope(item["envelopeId"], at_ms=2_000_000_000_003).decode() == item["plaintext"]
+        with patch.object(reference.time, "time", return_value=2_000_000_000.003):
+            owner = reference.ConversationCoordinator(journal=reopened, signer_key=key)
+            assert owner.checkpoint(json.loads(cases[-1]["checkpointWire"])["conversationId"]).decode() == cases[-1]["checkpointWire"]
         return {"sourceSha256": hashlib.sha256(path.read_bytes()).hexdigest(),
                 "identity": "fixture-owner", "keyId": "fixture-key",
                 "authenticationSubkeyHex": journal.authentication_key_ring("conversation-checkpoint-v1")[0].hex(),
@@ -153,11 +160,40 @@ def build():
             cases[-1]["transcript"] = transcript.to_dict()
             assert reference.ConversationTranscriptRecordV1.from_dict(transcript.to_dict()).to_dict() == transcript.to_dict()
         parent = wire
+    # Native state lineage uses an existing PROMPT/APPEND hash chain. Keep
+    # checkpoint/transcript token-list digests unchanged and bind both via
+    # authenticated role receipts, with the original prefill count retained.
+    native_cases = []
+    for case in cases[2:]:
+        tokens = case["canonicalTokenIds"]
+        tokenizer = case["transcript"]["tokenizerDigest"]
+        runtime_prefix = digest("NDNSF-DI-PREFIX-V1/PROMPT\n" + tokenizer + "\n1\n" + str(tokens[0]))
+        for count, token in enumerate(tokens[1:], 2):
+            runtime_prefix = digest("NDNSF-DI-PREFIX-V1/APPEND\n" + runtime_prefix + "\n" + str(count) + "\n" + str(token))
+        receipts = [replace(reference.ProviderConversationStateReceiptV1.from_dict(
+            json.loads(base64.b64decode(encoded))), prefix_digest=runtime_prefix,
+            receipt_digest="", signature="").sign(key) for encoded in case["transcript"]["providerRoleReceipts"]]
+        cp = replace(reference.ConversationCheckpointV1.from_bytes(case["checkpointWire"].encode()),
+                     role_receipt_digests={r.role_name: r.receipt_digest for r in receipts},
+                     checkpoint_digest="", signature="").sign(key)
+        transcript = replace(reference.ConversationTranscriptRecordV1.from_dict(case["transcript"]),
+            provider_role_receipts=tuple(reference._canonical_payload(r.to_dict()) for r in receipts),
+            checkpoint_digest=cp.checkpoint_digest)
+        native_case = {**case, "name": case["name"] + "-native-state", "checkpointWire": cp.to_bytes().decode(),
+                       "checkpointDigest": cp.checkpoint_digest, "signature": cp.signature,
+                       "transcript": transcript.to_dict(), "nativeInitialPromptTokenCount": 1,
+                       "runtimePrefixDigest": runtime_prefix}
+        native_case["continuation"] = dict(case["continuation"])
+        if native_cases:
+            native_case["continuation"]["parentCheckpoint"] = base64.b64encode(native_cases[-1]["checkpointWire"].encode()).decode()
+        native_cases.append(native_case)
     return {"schema": "spec182-conversation-oracle-v1",
             "source": str(SOURCE.relative_to(ROOT)),
             "sourceSha256": hashlib.sha256(SOURCE.read_bytes()).hexdigest(),
             "testOnlyAuthenticationKeyHex": key.hex(), "cases": cases,
-            "journal": journal_vector(cases[2:], key)}
+            "journal": journal_vector(cases[2:], key, reference),
+            "nativeStateCases": native_cases,
+            "nativeStateJournal": journal_vector(native_cases, key, reference)}
 
 
 def main():
@@ -171,7 +207,7 @@ def main():
             raise SystemExit("conversation oracle differs from reference")
     else:
         args.output.write_text(encoded)
-    print("PASS: 4 checkpoints, 2 transcripts, 2 encrypted journal transactions; reference reopen and authentication checks")
+    print("PASS: 6 checkpoints, 4 transcripts, 4 encrypted transactions; legacy owner restore and authentication checks")
 
 
 if __name__ == "__main__":
