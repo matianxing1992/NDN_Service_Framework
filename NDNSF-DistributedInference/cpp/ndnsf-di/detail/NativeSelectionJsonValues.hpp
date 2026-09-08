@@ -7,5 +7,8 @@ namespace ndnsf::di {
 NativeJson nativeAssemblyJson(const NativeSelectionRoleV3& role);
 NativeJson nativeDependenciesJson(const std::vector<NativeDependencySpec>& dependencies);
 NativeJson nativeGenerationJson(const NativeGenerationExecutionContractV1& generation);
+NativeJson nativeEndpointJson(const NativeTensorEndpointV3& endpoint);
+NativeJson nativeDataflowJson(const NativeRoleDataflowContractV3& dataflow);
+NativeJson nativeDeviceBindingJson(const NativeDeviceBindingV3& binding);
 void validateNativeAssembly(const NativeSelectionRoleV3& role);
 }

@@ -1,4 +1,6 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeV3Placement.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanProjectionBuilder.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
 #include "tests/fixtures/spec182/native-model-fixture.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "tests/fixtures/spec182/native-sealing-fixture.hpp"
@@ -6,6 +8,7 @@
 #include <boost/test/unit_test.hpp>
 #include <algorithm>
 #include <fstream>
+#include <cstdlib>
 
 namespace {
 using namespace ndnsf::di;
@@ -96,6 +99,27 @@ struct Input
     }
   }
 };
+NativeSealedPlan projectionPlan(const NativePlacementPlanCore& core)
+{
+  // Grant metadata fixture only; this test does not claim grant issuance or
+  // Provider cryptographic acceptance. The builder owns no grant authority.
+  std::vector<NativeGrantBinding> grants;
+  for (const auto& item : core.assignment.providerByRole)
+    grants.push_back({item.second, item.first, "/grant/" + item.first,
+      nativePlanningDigest("grant-" + item.first), item.second, "{}", core.expiresAtMs});
+  return NativePlanSealer::finalizeSecurity(core, grants, {nativePlanningDigest("projection-policy"), true});
+}
+
+void recordProjectionOracle(const std::map<std::string, NativeRoleProjectionInputs>& values)
+{
+  // Optional raw evidence consumed by the independent offline SDK decoder.
+  const auto* path = std::getenv("NDNSF_PROJECTION_ORACLE_OUTPUT");
+  if (!path) return;
+  std::ofstream file(path, std::ios::app);
+  if (!file) throw std::runtime_error("cannot write projection oracle evidence");
+  for (const auto& item : values) file << nativeCanonicalJson(nativeDataflowJson(item.second.dataflow)) << '\n';
+}
+
 // A native policy implements only the authenticated V3 contract. It does not
 // need a legacy planning view or a Python trampoline to be injected.
 class PreferProvider final : public NativePlacementStrategy
@@ -121,6 +145,110 @@ private:
 };
 }
 BOOST_AUTO_TEST_SUITE(Spec182V3Placement)
+BOOST_AUTO_TEST_CASE(ProjectionBuilderDerivesApplicationInputAndDependencyReadiness)
+{
+  const auto f = oracle();
+  for (const auto& name : {"cpu", "rank_cover"}) {
+    const auto sample = std::find_if(f.at("seal_cases").begin(), f.at("seal_cases").end(),
+      [&](const auto& value) { return value.at("name") == name; });
+    BOOST_REQUIRE(sample != f.at("seal_cases").end());
+    Input input(f, *sample);
+    const bool single = input.roles.size() == 1;
+    if (single) {
+      input.split.inputIngressRole = input.split.resultEgressRole = input.roles.front().role;
+      input.split.candidateDigest = input.split.computedDigest();
+    }
+    const auto now = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::system_clock::now().time_since_epoch()).count());
+    const auto proposal = NativePreSplitFirstPlacement().proposeRoles(input.context, input.ackDigest, input.roles, input.offers, now);
+    auto execution = input.split.executionPlan;
+    execution.serviceName = input.context.serviceName; execution.modelName = input.inspected.descriptor.modelName;
+    execution.roles.clear();
+    NativePlanSealingInputs sealing;
+    sealing.requesterIdentity = "/requester"; sealing.protectionEpoch = input.roles.front().protectionEpoch;
+    sealing.expiresAtMs = input.context.deadlineMs;
+    auto& artifacts = sealing.artifacts;
+    artifacts.requestId = input.context.requestId; artifacts.attempt = input.context.attempt;
+    artifacts.modelDigest = input.context.modelDigest; artifacts.graphDigest = input.context.graphDigest;
+    artifacts.canonicalGraphDigest = input.inspected.canonicalGraphDigest;
+    artifacts.manifestDigest = input.inspected.modelManifestDigest; artifacts.recipeDigest = input.roles.front().recipeDigest;
+    for (const auto& role : proposal.roles) {
+      execution.roles.push_back(role.selectedRole);
+      artifacts.sourceByRole[role.selectedRole] = "/catalog/source";
+      artifacts.artifactDigestByRole[role.selectedRole] = role.artifactDigest;
+    }
+    for (std::size_t i = 0; i < input.roles.size(); ++i) sealing.assemblyByRole.emplace(std::to_string(i), input.roles[i]);
+    NativeProjectionContext context{now, 1000, 4096};
+    if (single) { context.logicalInputDigest = nativePlanningDigest("input"); context.inputLayoutDigest = nativePlanningDigest("input-layout"); }
+    else {
+      NativeDependencySpec dependency;
+      dependency.producers = {execution.roles.front()}; dependency.consumers = {execution.roles.back()};
+      dependency.keyScope = "activation"; dependency.tensors = {"hidden", "mask"};
+      dependency.operationKind = "ACTIVATION";
+      execution.dependencies = {dependency};
+      context.dependencies[0] = {"group", "epoch", {{proposal.providerByRole.at(execution.roles.front()), "/producer/tensors"}}, 7};
+    }
+    const auto seal = [&](const NativeExecutionPlan& plan) {
+      return projectionPlan(NativePlanSealer::sealCore(input.inspected, input.split, proposal,
+        plan, input.offers, input.ackDigest, sealing));
+    };
+    const auto sealed = seal(execution);
+    const auto built = NativePlanProjectionBuilder::build(sealed, input.split, input.offers, context);
+    recordProjectionOracle(built);
+    BOOST_REQUIRE_EQUAL(built.size(), execution.roles.size());
+    const auto& first = built.at(execution.roles.front()).dataflow;
+    const auto& last = built.at(execution.roles.back()).dataflow;
+    BOOST_CHECK(last.terminalResponseOwner);
+    if (single) {
+      BOOST_REQUIRE_EQUAL(first.mustFetch.size(), 1);
+      BOOST_CHECK_EQUAL(first.mustFetch.front().sourceKind, "APPLICATION_INPUT");
+      BOOST_CHECK_EQUAL(first.mustFetch.front().tensorDigest, context.logicalInputDigest);
+      BOOST_CHECK_EQUAL(first.mustFetch.front().targetLayoutDigest, context.inputLayoutDigest);
+      BOOST_CHECK_EQUAL(first.mustFetch.front().hardDeadlineMs, sealed.core.expiresAtMs - now);
+      auto missing = context; missing.logicalInputDigest.clear();
+      BOOST_CHECK_THROW(NativePlanProjectionBuilder::build(sealed, input.split, input.offers, missing), std::invalid_argument);
+    }
+    else {
+      BOOST_CHECK(!first.terminalResponseOwner);
+      BOOST_REQUIRE_EQUAL(first.mayPublish.size(), 2);
+      BOOST_REQUIRE_EQUAL(last.mustFetch.size(), 2);
+      BOOST_REQUIRE_EQUAL(last.waitFor.size(), 1);
+      BOOST_CHECK_EQUAL(last.waitFor.front().mode, "ALL");
+      for (std::size_t i = 0; i < 2; ++i) {
+        BOOST_CHECK_EQUAL(first.mayPublish[i].endpointDigest, last.mustFetch[i].endpointDigest);
+        BOOST_CHECK_EQUAL(first.mayPublish[i].tensorId, execution.dependencies.front().tensors[i]);
+        BOOST_CHECK_EQUAL(first.mayPublish[i].producerNamespace, "/producer/tensors");
+        BOOST_CHECK_EQUAL(first.mayPublish[i].round, 7);
+        BOOST_CHECK_EQUAL(first.mayPublish[i].segmentCount, 4096);
+        BOOST_CHECK_EQUAL(last.waitFor.front().endpointDigests[i], last.mustFetch[i].endpointDigest);
+      }
+      auto missing = context; missing.dependencies.clear();
+      BOOST_CHECK_THROW(NativePlanProjectionBuilder::build(sealed, input.split, input.offers, missing), std::invalid_argument);
+      auto cycle = execution; auto back = execution.dependencies.front();
+      std::swap(back.producers, back.consumers); cycle.dependencies.push_back(back);
+      auto cycleContext = context;
+      cycleContext.dependencies[1] = {"back", "epoch", {{proposal.providerByRole.at(execution.roles.back()), "/tail/tensors"}}, 8};
+      BOOST_CHECK_THROW(NativePlanProjectionBuilder::build(seal(cycle), input.split, input.offers, cycleContext), std::invalid_argument);
+      auto feedback = cycle; feedback.dependencies.back().operationKind = "TOKEN_FEEDBACK";
+      const auto withFeedback = NativePlanProjectionBuilder::build(seal(feedback), input.split, input.offers, context);
+      recordProjectionOracle(withFeedback);
+      BOOST_CHECK_EQUAL(withFeedback.at(execution.roles.back()).dataflow.mustFetch.size(), 2);
+      auto redistributed = execution;
+      redistributed.dependencies.front().redistributions = {RedistributionSpec{{0}, {1}, "hidden", "GATHER", "epoch",
+        nativePlanningDigest("tensor"), nativePlanningDigest("source-layout"), nativePlanningDigest("target-layout"), 0, 16, true}};
+      const auto gathered = NativePlanProjectionBuilder::build(seal(redistributed), input.split, input.offers, context);
+      recordProjectionOracle(gathered);
+      const auto& endpoints = gathered.at(execution.roles.back()).dataflow.mustFetch;
+      BOOST_REQUIRE_EQUAL(endpoints.size(), 1);
+      BOOST_CHECK_EQUAL(endpoints.front().operation, "GATHER");
+      BOOST_CHECK_EQUAL(endpoints.front().targetLayoutDigest, nativePlanningDigest("target-layout"));
+      BOOST_CHECK_EQUAL(endpoints.front().producerRank, 0);
+      redistributed.dependencies.front().redistributions.front().consumerRanks = {9};
+      BOOST_CHECK_THROW(NativePlanProjectionBuilder::build(seal(redistributed), input.split, input.offers, context), std::invalid_argument);
+    }
+  }
+}
+
 BOOST_AUTO_TEST_CASE(InjectedV3PolicyUsesAdmittedOffersAndIndependentValidation)
 {
   const auto f = oracle();
@@ -226,6 +354,26 @@ BOOST_AUTO_TEST_CASE(AdmittedPlacementSealsSdkCoreAndRejectsTampering)
       }
       const auto core = seal(proposal);
       BOOST_CHECK_EQUAL(core.coreDigest, sample.at("core_digest").get<std::string>());
+      if (proposal.roles.size() == 1) {
+        std::ifstream expectedFile("tests/fixtures/spec182/projection-oracle.json");
+        BOOST_REQUIRE(expectedFile.good());
+        const auto expected = NativeJson::parse(expectedFile).at(sample.at("name").get<std::string>());
+        const auto sealed = projectionPlan(core);
+        NativeProjectionContext context{now, 1000, 4096};
+        const auto values = NativePlanProjectionBuilder::build(sealed, input.split, input.offers, context);
+        BOOST_REQUIRE_EQUAL(values.size(), 1);
+        const auto& value = values.begin()->second;
+        BOOST_CHECK_EQUAL(sealed.planDigest, expected.at("plan_digest").get<std::string>());
+        BOOST_CHECK_EQUAL(nativeCanonicalJson(nativeDataflowJson(value.dataflow)), nativeCanonicalJson(expected.at("dataflow")));
+        BOOST_CHECK_EQUAL(nativeCanonicalJson(nativeDeviceBindingJson(value.deviceBinding)), nativeCanonicalJson(expected.at("device")));
+        BOOST_CHECK_EQUAL(value.executionRole.roleId, core.assemblyByRole.begin()->first);
+        BOOST_CHECK_EQUAL(value.executionRole.backend, core.assemblyByRole.begin()->second.backend);
+        BOOST_CHECK_THROW(NativePlanProjectionBuilder::build(sealed, input.split, {}, context), std::invalid_argument);
+        auto expired = context; expired.nowMs = core.expiresAtMs;
+        BOOST_CHECK_THROW(NativePlanProjectionBuilder::build(sealed, input.split, input.offers, expired), std::invalid_argument);
+        auto extra = context; extra.dependencies[0] = {};
+        BOOST_CHECK_THROW(NativePlanProjectionBuilder::build(sealed, input.split, input.offers, extra), std::invalid_argument);
+      }
       BOOST_CHECK_EQUAL(core.graphDigest, input.context.graphDigest);
       BOOST_CHECK_EQUAL(core.artifacts.canonicalGraphDigest, input.inspected.canonicalGraphDigest);
       BOOST_CHECK_EQUAL(core.assemblyByRole.begin()->second.graphDigest, input.inspected.canonicalGraphDigest);
