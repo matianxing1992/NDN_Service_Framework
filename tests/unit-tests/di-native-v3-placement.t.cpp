@@ -9,6 +9,9 @@
 #include <algorithm>
 #include <fstream>
 #include <cstdlib>
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeAuthenticatedGrantClient.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGrantVerifier.hpp"
+#include <openssl/evp.h>
 
 namespace {
 using namespace ndnsf::di;
@@ -354,6 +357,60 @@ BOOST_AUTO_TEST_CASE(AdmittedPlacementSealsSdkCoreAndRejectsTampering)
       }
       const auto core = seal(proposal);
       BOOST_CHECK_EQUAL(core.coreDigest, sample.at("core_digest").get<std::string>());
+      if (sample.at("name") == "cpu") {
+        const auto key = [](char value) {
+          const std::string seed(32, value);
+          return std::shared_ptr<EVP_PKEY>(EVP_PKEY_new_raw_private_key(EVP_PKEY_ED25519, nullptr,
+            reinterpret_cast<const unsigned char*>(seed.data()), seed.size()), EVP_PKEY_free);
+        };
+        const auto authorityKey = key('a');
+        std::string authorityPublic(32, '\0'); std::size_t size = authorityPublic.size();
+        BOOST_REQUIRE_EQUAL(EVP_PKEY_get_raw_public_key(authorityKey.get(),
+          reinterpret_cast<unsigned char*>(authorityPublic.data()), &size), 1);
+        NativeGrantIssuerConfig config;
+        config.authorityIdentity = "/authority"; config.requesterIdentity = core.requesterIdentity;
+        config.protectionEpoch = core.protectionEpoch; config.keyId = "fixture-content-key";
+        config.authorityPrivateKey = authorityKey; config.requesterPublicKey = key('b');
+        config.allowedModelManifests = {core.artifacts.manifestDigest};
+        const auto provider = core.assignment.providerByRole.begin()->second;
+        config.recipientPublicKeys = {{provider, key('c')}};
+        config.contentKey = [](const auto&, const auto&) { return std::vector<std::uint8_t>(32, 42); };
+        auto issuer = std::make_shared<NativeArtifactGrantIssuer>(config);
+        auto cancelled = std::make_shared<std::atomic<bool>>(false);
+        NativeGrantControl grantControl{std::chrono::system_clock::now() + std::chrono::seconds(5), cancelled};
+        unsigned publications = 0; int mode = 0;
+        NativeAuthenticatedGrantClient client(core.requesterIdentity, key('b'), "/authority", authorityPublic,
+          issuer, [&](const std::string& name, const std::string&, const NativeGrantControl&) {
+            ++publications;
+            if (mode == 1) cancelled->store(true);
+            return mode == 2 ? name + "/wrong" : name;
+          }, [now] { return now; });
+        const auto admitted = std::find_if(input.offers.begin(), input.offers.end(), [&](const auto& o) {
+          return o.observation().provider == provider;
+        });
+        BOOST_REQUIRE(admitted != input.offers.end());
+        NativeSecurityPolicySnapshot policy{nativePlanningDigest("real-issuer-policy"), true};
+        const auto binding = client.acquire(core, *admitted, policy, grantControl);
+        auto opened = verifyAndUnwrapNativeGrant(binding.wireJson, authorityPublic,
+          {NativeRecipientKey::Kind::Ed25519Seed, std::string(32, 'c')}, provider,
+          core.requestId, core.attempt, core.coreDigest, core.artifacts.manifestDigest,
+          core.protectionEpoch, now, "/authority", binding.grantDigest);
+        BOOST_REQUIRE_MESSAGE(opened.verified, opened.reason);
+        BOOST_CHECK(opened.contentKey == std::vector<std::uint8_t>(32, 42));
+        const auto authorized = NativePlanSealer::finalizeSecurity(core, {binding}, policy);
+        const auto projections = NativePlanProjectionBuilder::build(authorized, input.split, input.offers,
+          NativeProjectionContext{now, 1000, 4096});
+        BOOST_CHECK_NO_THROW(NativePlanSealer::project(authorized, provider, projections.begin()->second));
+        mode = 1;
+        BOOST_CHECK_THROW(client.acquire(core, *admitted, policy, grantControl), std::runtime_error);
+        const auto prior = publications;
+        BOOST_CHECK_THROW(client.acquire(core, *admitted, policy, grantControl), std::runtime_error);
+        BOOST_CHECK_EQUAL(publications, prior);
+        cancelled->store(false); mode = 2;
+        BOOST_CHECK_THROW(client.acquire(core, *admitted, policy, grantControl), std::runtime_error);
+        auto expired = grantControl; expired.deadline = std::chrono::system_clock::now();
+        BOOST_CHECK_THROW(client.acquire(core, *admitted, policy, expired), std::runtime_error);
+      }
       if (proposal.roles.size() == 1) {
         std::ifstream expectedFile("tests/fixtures/spec182/projection-oracle.json");
         BOOST_REQUIRE(expectedFile.good());

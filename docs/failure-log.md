@@ -1,5 +1,13 @@
 # Failure Log and Evidence Index
 
+## 2026-09-08 — Spec182 grant oracle backend argument
+
+R2-B4 native 增量 build 和 37 C++ cases PASS；离线 Python oracle 在 P-256
+fixture 的 `ec.derive_private_key` 缺旧版 cryptography 所需 backend 参数时失败，
+尚不能授予完整 oracle PASS。保留[首边界](../.codex-tmp/spec182-r2-b4/oracle-error.txt)，
+补显式 default_backend 后仅重跑 oracle，不重复 native build；见
+[R2-B4](../specs/182-native-di-python-bindings/evidence/r2-b4-grant-production-audit-20260908.md)。
+
 ## 2026-09-08 — Spec182 production grant implementation gap
 
 源码审计确认 NativeArtifactPolicyAuthority 仅有 IssuePort 验证包装，未实现 requester

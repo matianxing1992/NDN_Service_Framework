@@ -1,4 +1,6 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGrantVerifier.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/property_tree/ptree.hpp>
@@ -9,6 +11,8 @@
 #include <openssl/kdf.h>
 #include <openssl/pem.h>
 #include <openssl/sha.h>
+#include <openssl/rand.h>
+#include <openssl/bn.h>
 
 #include <algorithm>
 #include <cctype>
@@ -457,6 +461,168 @@ ed25519SeedToX25519(const std::string& seed)
 }
 
 } // namespace
+
+namespace detail {
+std::string signNativeGrantBytes(EVP_PKEY& key, const std::string& bytes)
+{
+  std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)> ctx(EVP_MD_CTX_new(), EVP_MD_CTX_free);
+  std::vector<std::uint8_t> signature(64);
+  std::size_t size = signature.size();
+  if (EVP_PKEY_id(&key) != EVP_PKEY_ED25519 || !ctx ||
+      EVP_DigestSignInit(ctx.get(), nullptr, nullptr, nullptr, &key) != 1 ||
+      EVP_DigestSign(ctx.get(), signature.data(), &size,
+        reinterpret_cast<const unsigned char*>(bytes.data()), bytes.size()) != 1 || size != 64)
+    throw std::runtime_error("DI_PROTECTED_GRANT_REJECTED: Ed25519 signing failed");
+  return hexEncode(signature);
+}
+
+bool verifyNativeGrantBytes(EVP_PKEY& key, const std::string& bytes,
+                            const std::string& signature)
+{
+  if (signature.size() != 128) return false;
+  std::string raw(32, '\0');
+  std::size_t size = raw.size();
+  return EVP_PKEY_id(&key) == EVP_PKEY_ED25519 &&
+    EVP_PKEY_get_raw_public_key(&key, reinterpret_cast<unsigned char*>(raw.data()), &size) == 1 &&
+    size == 32 && verifyEd25519(signature, bytes, raw);
+}
+
+void verifyNativeIssuedGrant(const NativeKeyGrant& value, const NativeSignedGrantRequest& request,
+  const std::string& authority, const std::string& authorityPublicKeyRaw,
+  std::uint64_t nowMs, std::uint64_t expiresAtMs)
+{
+  ParsedGrant grant;
+  std::string error;
+  if (value.wireJson.size() > 65536 || !parseGrant(value.wireJson, grant, error) ||
+      grant.policyAuthority != authority || grant.providerIdentity != request.providerIdentity ||
+      grant.requestId != request.requestId || grant.attempt != request.attempt ||
+      grant.planCoreDigest != request.planCoreDigest || grant.modelManifestDigest != request.modelManifestDigest ||
+      grant.protectionEpoch != request.protectionEpoch || grant.issuedAtMs > nowMs ||
+      grant.issuedAtMs < request.issuedAtMs || grant.expiresAtMs != expiresAtMs || nowMs >= expiresAtMs ||
+      grant.allowedResidencyTiers != request.allowedResidencyTiers ||
+      grant.grantDigest != grant.computedGrantDigest() || value.grantDigest != grant.grantDigest ||
+      value.recipient != request.providerIdentity || value.expiresAtMs != grant.expiresAtMs ||
+      !verifyEd25519(grant.authoritySignature, grant.signingBytes(), authorityPublicKeyRaw))
+    throw std::runtime_error("DI_PROTECTED_GRANT_REJECTED: issuer answer authentication failed");
+  auto canonical = NativeJson::parse(grant.signingBytes());
+  canonical["grantDigest"] = grant.grantDigest;
+  canonical["authoritySignature"] = grant.authoritySignature;
+  if (canonical.dump() != value.wireJson)
+    throw std::runtime_error("DI_PROTECTED_GRANT_REJECTED: issuer answer is not canonical");
+  if (value.grantName != canonicalNativeGrantName(request.requesterIdentity, request.providerIdentity,
+        request.requestId, request.attempt, request.planCoreDigest, request.modelManifestDigest,
+        request.protectionEpoch, grant.grantDigest))
+    throw std::runtime_error("DI_PROTECTED_GRANT_REJECTED: issuer answer name mismatch");
+}
+
+NativeKeyGrant issueNativeGrantWire(const NativeSignedGrantRequest& request,
+  const std::string& authority, const std::string& keyId, EVP_PKEY& authorityKey,
+  EVP_PKEY& recipientKey, const std::vector<std::uint8_t>& contentKey,
+  std::uint64_t nowMs, std::uint64_t expiresAtMs)
+{
+  const auto require = [](bool ok) {
+    if (!ok) throw std::runtime_error("DI_PROTECTED_GRANT_REJECTED: recipient envelope creation failed");
+  };
+  // Only public points cross this conversion. Match the frozen Ed25519 ->
+  // Montgomery representation; OpenSSL owns all key exchange and AEAD work.
+  std::unique_ptr<EVP_PKEY, decltype(&EVP_PKEY_free)> converted(nullptr, EVP_PKEY_free);
+  EVP_PKEY* peer = &recipientKey;
+  const int kind = EVP_PKEY_id(peer);
+  if (kind == EVP_PKEY_ED25519) {
+    unsigned char raw[32]; std::size_t size = sizeof(raw);
+    require(EVP_PKEY_get_raw_public_key(peer, raw, &size) == 1 && size == sizeof(raw));
+    raw[31] &= 127;
+    std::unique_ptr<BN_CTX, decltype(&BN_CTX_free)> bn(BN_CTX_new(), BN_CTX_free);
+    require(bool(bn));
+    BN_CTX_start(bn.get());
+    auto* y = BN_CTX_get(bn.get()); auto* p = BN_CTX_get(bn.get());
+    auto* num = BN_CTX_get(bn.get()); auto* den = BN_CTX_get(bn.get());
+    auto* inv = BN_CTX_get(bn.get()); auto* u = BN_CTX_get(bn.get());
+    require(u && BN_lebin2bn(raw, sizeof(raw), y) && BN_one(p) == 1 &&
+      BN_lshift(p, p, 255) == 1 && BN_sub_word(p, 19) == 1 && BN_cmp(y, p) < 0 &&
+      BN_mod_add(num, y, BN_value_one(), p, bn.get()) == 1 &&
+      BN_mod_sub(den, BN_value_one(), y, p, bn.get()) == 1 &&
+      BN_mod_inverse(inv, den, p, bn.get()) &&
+      BN_mod_mul(u, num, inv, p, bn.get()) == 1 && BN_bn2lebinpad(u, raw, sizeof(raw)) == 32);
+    converted.reset(EVP_PKEY_new_raw_public_key(EVP_PKEY_X25519, nullptr, raw, sizeof(raw)));
+    BN_CTX_end(bn.get());
+    require(bool(converted)); peer = converted.get();
+  }
+  require(EVP_PKEY_id(peer) == EVP_PKEY_X25519 || EVP_PKEY_id(peer) == EVP_PKEY_EC);
+  const bool ec = EVP_PKEY_id(peer) == EVP_PKEY_EC;
+  if (ec) {
+    std::unique_ptr<EC_KEY, decltype(&EC_KEY_free)> key(EVP_PKEY_get1_EC_KEY(peer), EC_KEY_free);
+    require(key && EC_KEY_get0_group(key.get()) &&
+      EC_GROUP_get_curve_name(EC_KEY_get0_group(key.get())) == NID_X9_62_prime256v1 &&
+      EC_KEY_check_key(key.get()) == 1);
+  }
+  std::unique_ptr<EVP_PKEY_CTX, decltype(&EVP_PKEY_CTX_free)> gen(
+    EVP_PKEY_CTX_new_id(ec ? EVP_PKEY_EC : EVP_PKEY_X25519, nullptr), EVP_PKEY_CTX_free);
+  require(gen && EVP_PKEY_keygen_init(gen.get()) == 1);
+  if (ec) require(EVP_PKEY_CTX_set_ec_paramgen_curve_nid(gen.get(), NID_X9_62_prime256v1) == 1);
+  EVP_PKEY* generated = nullptr;
+  const int generatedOk = EVP_PKEY_keygen(gen.get(), &generated);
+  EvpKey ephemeral(generated);
+  require(generatedOk == 1 && ephemeral.get());
+  std::unique_ptr<EVP_PKEY_CTX, decltype(&EVP_PKEY_CTX_free)> exchange(
+    EVP_PKEY_CTX_new(ephemeral.get(), nullptr), EVP_PKEY_CTX_free);
+  std::string shared(32, '\0'); CleanseString clearShared{shared};
+  std::size_t sharedSize = shared.size();
+  require(exchange && EVP_PKEY_derive_init(exchange.get()) == 1 &&
+    EVP_PKEY_derive_set_peer(exchange.get(), peer) == 1 &&
+    EVP_PKEY_derive(exchange.get(), reinterpret_cast<unsigned char*>(shared.data()), &sharedSize) == 1 &&
+    sharedSize == shared.size());
+  std::vector<std::uint8_t> ephemeralPublic(ec ? 65 : 32);
+  if (ec) {
+    std::unique_ptr<EC_KEY, decltype(&EC_KEY_free)> key(
+      EVP_PKEY_get1_EC_KEY(ephemeral.get()), EC_KEY_free);
+    require(key && EC_POINT_point2oct(EC_KEY_get0_group(key.get()), EC_KEY_get0_public_key(key.get()),
+      POINT_CONVERSION_UNCOMPRESSED, ephemeralPublic.data(), ephemeralPublic.size(), nullptr) == 65);
+  }
+  else {
+    std::size_t size = ephemeralPublic.size();
+    require(EVP_PKEY_get_raw_public_key(ephemeral.get(), ephemeralPublic.data(), &size) == 1 && size == 32);
+  }
+  const auto context = bindingContextJson(request.providerIdentity, request.requestId, request.attempt,
+    request.planCoreDigest, request.modelManifestDigest, request.protectionEpoch);
+  auto derived = deriveHkdfSha256(shared, std::string(GRANT_KDF_INFO) + context);
+  CleanseString clearDerived{derived};
+  std::vector<std::uint8_t> nonce(12), ciphertext(contentKey.size() + 16);
+  require(RAND_bytes(nonce.data(), nonce.size()) == 1);
+  std::unique_ptr<EVP_CIPHER_CTX, decltype(&EVP_CIPHER_CTX_free)> cipher(
+    EVP_CIPHER_CTX_new(), EVP_CIPHER_CTX_free);
+  int aadSize = 0, bodySize = 0, finalSize = 0;
+  require(cipher && EVP_EncryptInit_ex(cipher.get(), EVP_aes_256_gcm(), nullptr,
+      reinterpret_cast<const unsigned char*>(derived.data()), nonce.data()) == 1 &&
+    EVP_EncryptUpdate(cipher.get(), nullptr, &aadSize,
+      reinterpret_cast<const unsigned char*>(context.data()), context.size()) == 1 &&
+    EVP_EncryptUpdate(cipher.get(), ciphertext.data(), &bodySize, contentKey.data(), contentKey.size()) == 1 &&
+    EVP_EncryptFinal_ex(cipher.get(), ciphertext.data() + bodySize, &finalSize) == 1 &&
+    bodySize + finalSize == static_cast<int>(contentKey.size()) &&
+    EVP_CIPHER_CTX_ctrl(cipher.get(), EVP_CTRL_GCM_GET_TAG, 16, ciphertext.data() + contentKey.size()) == 1);
+  ParsedGrant grant;
+  grant.policyAuthority = authority; grant.providerIdentity = request.providerIdentity;
+  grant.requestId = request.requestId; grant.attempt = request.attempt;
+  grant.planCoreDigest = request.planCoreDigest; grant.modelManifestDigest = request.modelManifestDigest;
+  grant.protectionEpoch = request.protectionEpoch; grant.keyId = keyId;
+  grant.envelopeAlg = ec ? "ECDH-P256-AESGCM-SHA256" : "X25519-AESGCM-SHA256";
+  grant.envelopeKdf = "HKDF-SHA256"; grant.envelopeEphemeralPublicKey = hexEncode(ephemeralPublic);
+  grant.envelopeNonce = hexEncode(nonce); grant.envelopeCiphertext = hexEncode(ciphertext);
+  grant.allowedResidencyTiers = request.allowedResidencyTiers;
+  grant.issuedAtMs = nowMs; grant.expiresAtMs = expiresAtMs; grant.activeRequestPolicy = GRANT_POLICY;
+  grant.grantDigest = grant.computedGrantDigest();
+  grant.authoritySignature = signNativeGrantBytes(authorityKey, grant.signingBytes());
+  // Provider parser owns the signed payload. Wire appends only its two excluded fields.
+  auto wire = grant.signingBytes(); wire.pop_back();
+  wire += ",\"grantDigest\":" + jsonEscape(grant.grantDigest) +
+          ",\"authoritySignature\":" + jsonEscape(grant.authoritySignature) + "}";
+  require(wire.size() <= 65536);
+  return {canonicalNativeGrantName(request.requesterIdentity, request.providerIdentity,
+    request.requestId, request.attempt, request.planCoreDigest, request.modelManifestDigest,
+    request.protectionEpoch, grant.grantDigest), grant.grantDigest, request.providerIdentity,
+    NativeJson::parse(wire).dump(), expiresAtMs};
+}
+} // namespace detail
 
 std::string
 canonicalNativeGrantName(

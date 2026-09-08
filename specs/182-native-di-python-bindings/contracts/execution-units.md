@@ -159,6 +159,8 @@ worker crash/cancel 等真实子进程案例也转 T016，卡内只运行纯 fra
 
 ### T005-A InProcess Authority
 
+- **R2-B4 concrete owner**: `NativeSignedGrantRequest` / `NativeGrantIssuerConfig` / `NativeArtifactGrantIssuer` 位于 `N/NativeArtifactPolicyAuthority.hpp/.cpp`；共享 wire/crypto 实现在 `N/NativeGrantVerifier.cpp`。`U/di-native-grant-issuer.t.cpp` 是真实 issuer 单测，旧 IssuePort suite 只保留兼容切片。验收结果见 [R2-B4](../evidence/r2-b4-grant-production-audit-20260908.md)。
+
 - **Production gap / R2-B4**: [源码审计与 GA-1/2/3 批次](../evidence/r2-b4-grant-production-audit-20260908.md) 是当前实施入口；IssuePort 单测不能替代 requester signature、operator policy、recipient encryption 与 authority signature。GA-1 补全真实签发，GA-2/3 连接验证、发布与消费。
 
 - **Parent**: T005; **Depends**: T004-A; **Reviewer**: security review
@@ -168,6 +170,8 @@ worker crash/cancel 等真实子进程案例也转 T016，卡内只运行纯 fra
 - **Verify**: CPP(Spec182GrantAuthority/*)；固定证书/时钟向量、wrong-recipient/key/expiry 原因码，secret 生命周期；不引入网络 authority。
 
 ### T005-B Requester Grant Publication
+
+- **R2-B4 concrete client**: `N/NativeAuthenticatedGrantClient.hpp/.cpp` 从 sealed core/admitted offer 构造签名请求并认证答复；生产构造调用 Core publication factory。新类型避免破坏旧 client ABI，T010/T013 必须将默认 requester 从旧 wrapper 切到此 owner 并清理无消费者路径。Write 含此新类、V3 placement unit test、`I/di-native-requester-grant.t.cpp` 新具名 case 和离线 `check-grant-issuer-wire.py`；Core transport 的运行门仍归 T016。
 
 - **Production gap / R2-B4**: 同一 [R2-B4](../evidence/r2-b4-grant-production-audit-20260908.md) 的 GA-03/04 控制答复验证及 publication 生命周期；历史 wrong-recipient fixture 只证明端口转发，须改为真实绑定负例。
 
