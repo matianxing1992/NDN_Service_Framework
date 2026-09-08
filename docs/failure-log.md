@@ -2662,3 +2662,31 @@ compare trusted retained image evidence and host read integrity before repairing
 or replacing input. Source/component storage checks remain separately recorded.
 Lesson: do not normalize a surprising hash into a release identity or treat stable
 metadata as a substitute for content verification. See t004-node-storage.md.
+
+## 2026-09-07 — Base-SIF recovery verifies once, then changes observed digest
+
+Remote retained input still hashes to pinned b6710fd6. Local original repeatedly
+returned 6a3d0010. Stop the confirmed slow scp and recover to a distinct directory
+with rsync delta transfer: only 59,376 literal bytes, original untouched. Recovered
+file initially hashes b6710fd6; cmp finds a differing byte at 1,092,472,020.
+The guarded replacement rehash then fails BEFORE changing any canonical link.
+Later the reported differing window reads identically from both files, and a
+single full recovery read gives c01cbda1 with both OpenSSL and independent _sha256.
+Metadata stays stable during that read. No matching recent kernel errors found.
+Root cause remains unresolved host/storage/read-path behavior, not proven stable
+file corruption or an OpenSSL-specific bug. Preserve both files and original
+locked identities; do not repeatedly download or promote the recovered file.
+Exact evidence: specs/183-tiger-yolo-reusable-experiments/evidence/input-read-integrity.md.
+
+## 2026-09-07 — Finished allocation could not close the Spec183 journal
+
+Symptom: private batch correctly left its journal RUNNING but no external owner
+verified termination and closed it, preventing the next independent allocation.
+Fix: explicit collect --reconcile queries bound accounting plus the live queue,
+retains the observation before journal closure and keeps default collect offline.
+GPU prerequisite reuse also requires successful terminal evidence. Empty/failed
+queries never release a job or resubmit. Scheduler errors remain separate from
+model failures; a timeout leaves the existing numeric verdict and journal intact.
+78 focused checks passed. Four new GPU-gate cases passed; a new frozen-entry
+fixture lacked harnessManifestSha256, then passed after that required field was
+added. No models or Slurm jobs ran. Unknown-submission recovery remains pending.

@@ -16,6 +16,7 @@ import json
 import os
 from pathlib import Path
 import re
+import subprocess
 import sys
 
 sys.dont_write_bytecode = True
@@ -160,6 +161,8 @@ def _gate_receipt(profile_path: Path, profile: dict, gate: str, *, prepared=None
         verified = _reanalyze_retained(path.parent, previous)
         if verified != value:
             raise ValueError('GATE_VERDICT_REANALYSIS_MISMATCH')
+        if previous['case'] != 'local-cpu':
+            _verify_terminal_record(path.parent, previous, require_pass=True)
     except (KeyError, TypeError, ValueError, OSError, ImportError) as exc:
         raise ClosureError('GATE_RETAINED_EVIDENCE:' + gate) from exc
     return {"name": gate, "path": str(path), "sha256": row["sha256"], "receipt": value}
@@ -436,6 +439,8 @@ def _enter_frozen(args, prepared, action):
         '--output', str(_safe_output(args.output))]
     if action in ('local', 'submit', 'run', 'rank'):
         command += ['--case', args.case]
+    if action == 'collect' and getattr(args, 'reconcile', False):
+        command += ['--reconcile']
     return subprocess.run(command, cwd=bundle, check=False).returncode
 
 
@@ -536,7 +541,7 @@ def _reanalyze_retained(root: Path, prepared: dict) -> dict:
 
 def _collect(args) -> int:
     profile_path = Path(args.profile)
-    report, _ = _dispatch_report(profile_path)
+    report, profile = _dispatch_report(profile_path)
     if report.get("integrity") != "VERIFIED":
         return _not_ready("collect", "DISPATCH_GATE", report)
     prepared = _load_prepared(args.output, args.run_id)
@@ -561,6 +566,7 @@ def _collect(args) -> int:
     try:
         collection_path = _collection_file(root)
     except ClosureError as exc:
+        _maybe_reconcile(args, profile, prepared, 'INCOMPLETE')
         return _not_ready("collect", str(exc), {"prepared": prepared["candidateDigest"]})
     try:
         final = _reanalyze_retained(root, prepared)
@@ -572,8 +578,6 @@ def _collect(args) -> int:
                 raise ClosureError("VERDICT_REANALYSIS_MISMATCH")
         else:
             _write_readonly(verdict, final)
-        print(json.dumps(final, sort_keys=True))
-        return 0
     except (ClosureError, ValueError, OSError, ImportError) as exc:
         reason = str(exc) if isinstance(exc, ClosureError) else "COLLECTION_REJECTED"
         failure = {"schema": "tiger-yolo-collection-failure-v1", "status": "FAIL",
@@ -583,7 +587,97 @@ def _collect(args) -> int:
         failure_path = root / "collection-failure.json"
         if not failure_path.exists() and not failure_path.is_symlink():
             _write_readonly(failure_path, failure)
+        _maybe_reconcile(args, profile, prepared, 'FAIL')
         return _not_ready("collect", "COLLECTION_REJECTED", {"reason": reason})
+    # Scheduler observation failure is not numerical collection failure, and
+    # must not write collection-failure.json or release a still-live job.
+    terminal = _maybe_reconcile(args, profile, prepared, 'PASS')
+    if terminal is not None and terminal != 'PASS':
+        return _not_ready('collect', 'ALLOCATION_FAILED', {'terminalStatus':terminal})
+    print(json.dumps(final, sort_keys=True))
+    return 0
+
+
+def _verify_terminal_record(root, prepared, *, require_pass=False):
+    from runtime.yolo_allocation import validate_terminal_allocation
+    path = Path(root)/'allocation-terminal.json'
+    if any(p.is_symlink() for p in (path,*path.parents)):
+        raise ClosureError('TERMINAL_RECORD_SYMLINK')
+    value = _read_plane(path)
+    if (not isinstance(value, dict) or set(value) != {
+            'runId','candidateDigest','status','observation'}
+            or value['runId'] != prepared['runId']
+            or value['candidateDigest'] != prepared['candidateDigest']
+            or value['status'] not in ('PASS','FAIL','INCOMPLETE')):
+        raise ClosureError('TERMINAL_RECORD_BINDING')
+    observed = value['observation']
+    if not isinstance(observed, dict) or set(observed) != {'receipt','accounting','queue'}:
+        raise ClosureError('TERMINAL_OBSERVATION')
+    receipt = observed['receipt']
+    try:
+        validated = validate_terminal_allocation(observed['accounting'].encode('ascii'),
+            observed['queue'].encode('ascii'), job_id=receipt['jobId'],
+            submission_key=receipt['submissionKey'], partition=receipt['partition'], uid=receipt['uid'])
+    except (KeyError, AttributeError, TypeError, ValueError) as exc:
+        raise ClosureError('TERMINAL_OBSERVATION') from exc
+    if receipt != validated:
+        raise ClosureError('TERMINAL_RECEIPT_CHANGED')
+    key = hashlib.sha256((prepared['contentIdentities']['dispatch']+':'+prepared['case']).encode()).hexdigest()
+    expected_comment = 'spec183-'+hashlib.sha256((key+':'+prepared['runId']).encode()).hexdigest()
+    if receipt['submissionKey'] != expected_comment:
+        raise ClosureError('TERMINAL_SUBMISSION_BINDING')
+    if require_pass:
+        cleanup = _verify_srun_cleanup(Path(root), prepared)
+        if (value['status'] != 'PASS' or receipt['state'] != 'COMPLETED'
+                or receipt['exitCode'] != '0:0' or receipt['jobId'] != cleanup['jobId']):
+            raise ClosureError('TERMINAL_NOT_PASS')
+    return value
+
+
+def _maybe_reconcile(args, profile, prepared, outcome):
+    if not getattr(args, 'reconcile', False):
+        return None
+    if prepared['case'] == 'local-cpu' or os.environ.get('SLURM_JOB_ID'):
+        raise ClosureError('TERMINAL_OBSERVER_CONTEXT')
+    root = _safe_output(args.output)/args.run_id
+    if root.parent != Path(profile['storage']['sharedRunRoot']):
+        raise ClosureError('TERMINAL_SHARED_ROOT')
+    from runtime.yolo_submission import SubmissionJournal
+    from runtime.yolo_allocation import capture_terminal_allocation
+    journal = SubmissionJournal(Path(profile['storage']['sharedLockRoot']),
+        candidate_id=prepared['contentIdentities']['dispatch'], gate=prepared['case'])
+    row = journal.get(args.run_id)
+    if row['state'] not in ('SUBMITTED','RUNNING','PASS','FAIL','INCOMPLETE'):
+        raise ClosureError('TERMINAL_JOB_NOT_ACKNOWLEDGED')
+    path = root/'allocation-terminal.json'
+    try:
+        if path.exists():
+            record = _verify_terminal_record(root, prepared)
+            observation = record['observation']
+        else:
+            observation = capture_terminal_allocation(job_id=row['jobId'],
+                submission_key=row['submissionKey'], partition=profile['cluster']['partition'],
+                seconds=profile['timing']['progressTimeoutSeconds'])
+            record = None
+        receipt = observation['receipt']
+        if (receipt['jobId'] != row['jobId'] or receipt['submissionKey'] != row['submissionKey']
+                or receipt['partition'] != profile['cluster']['partition'] or receipt['uid'] != os.getuid()):
+            raise ClosureError('TERMINAL_JOURNAL_BINDING')
+        status = outcome if receipt['state']=='COMPLETED' and receipt['exitCode']=='0:0' else 'FAIL'
+        if record is None:
+            record = dict(runId=args.run_id,candidateDigest=prepared['candidateDigest'],
+                          status=status,observation=observation)
+            _write_readonly(path,record)
+            _verify_terminal_record(root,prepared,require_pass=status=='PASS')
+        elif record['status'] != status:
+            raise ClosureError('TERMINAL_OUTCOME_CHANGED')
+        if row['state'] in ('SUBMITTED','RUNNING'):
+            journal.finish(args.run_id,row['jobId'],status)
+        elif row['state'] != status:
+            raise ClosureError('TERMINAL_JOURNAL_CHANGED')
+        return status
+    except (ValueError,OSError,TimeoutError,subprocess.SubprocessError) as exc:
+        raise ClosureError('TERMINAL_RECONCILIATION:'+str(exc)) from exc
 
 
 def _verify_srun_cleanup(root, prepared):
@@ -730,6 +824,8 @@ def main(argv=None):
     _common(submit, case=True)
     collect = commands.add_parser("collect", help="recompute a retained verdict")
     _common(collect)
+    collect.add_argument('--reconcile', action='store_true',
+        help='outside a job, verify Slurm termination and close the shared submission journal')
     runner = commands.add_parser("run", help=argparse.SUPPRESS)
     _common(runner, case=True)
     rank = commands.add_parser('rank', help=argparse.SUPPRESS)

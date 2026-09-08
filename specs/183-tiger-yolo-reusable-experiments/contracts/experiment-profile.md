@@ -36,7 +36,7 @@ invokes the normal collector only after clean reaping. GPU reanalysis must also
 join that cleanup record to the collection's actual job ID. Zero task exit is
 not an inference verdict; only the collector determines the result.
 The batch does not close the journal while its allocation remains active;
-external terminal-state reconciliation remains required. Remote staging,
+external `collect --reconcile` owns terminal-state reconciliation. Remote staging,
 negative runner and actual
 submission remain incomplete; this private entry is not release qualification.
 
@@ -58,7 +58,32 @@ walltime is 900 seconds: its four permission/request windows plus stage/start/
 cleanup require at least 630 seconds, so the old 600-second setting could never
 satisfy the complete owner budget. Schedule and request deadlines are unchanged.
 Negative-dependency still fails as NEGATIVE_RUNNER_NOT_WIRED. Remote staging
-and allocation-terminal reconciliation remain prerequisites.
+and unknown-submission query recovery remain prerequisites.
+
+## External allocation termination (2026-09-07)
+
+Default `collect` remains offline. Explicit `collect --reconcile` must run outside
+an allocation against the declared shared run/journal roots; it retains normal
+content/profile/harness checks and forwards the option into the frozen CLI.
+The observer queries bounded `sacct` accounting and then the current user's
+`squeue`. Require exactly one non-truncated terminal accounting record bound to
+journal job/comment, UID, partition and cluster, and no matching live job/comment.
+Empty accounting, malformed/ambiguous records, query errors, timeouts or a live
+queue match leave the submission reserved. This path never submits or cancels.
+
+Persist the raw read-only observations and validated receipt in the run's
+`allocation-terminal.json` before closing the journal. Only COMPLETED/0:0 plus
+successful retained collection can close PASS; scheduler failure closes FAIL,
+and absent collection on a successful terminated allocation closes INCOMPLETE.
+Original failures remain immutable. A retry revalidates the retained terminal
+record and resumes journal closure without another scheduler query. Scheduler
+errors are distinct from model collection errors. GPU prerequisite reuse now
+requires this successful terminal record joined to the actual srun job as well
+as numerical/native evidence; a PASS written inside the batch alone is insufficient.
+
+Unknown/unacknowledged submissions are deliberately not handled by this terminal
+observer. Their unique-comment query/recovery belongs to the pending submit
+transport owner and must not submit a second job on an empty response.
 
 ## Allocated storage ownership (2026-09-07)
 

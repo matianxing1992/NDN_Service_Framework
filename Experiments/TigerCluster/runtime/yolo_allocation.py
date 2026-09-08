@@ -15,6 +15,80 @@ import time
 from runtime.yolo_gpu_probe import SELECTOR
 
 
+TERMINAL_STATES = frozenset(('COMPLETED', 'FAILED', 'CANCELLED', 'TIMEOUT',
+    'NODE_FAIL', 'OUT_OF_MEMORY', 'PREEMPTED', 'BOOT_FAIL', 'DEADLINE', 'REVOKED'))
+
+
+def validate_terminal_allocation(accounting, queue, *, job_id, submission_key,
+                                 partition, uid):
+    """Bind terminal accounting AND absence from the live queue to one journal job.
+
+    Empty accounting or a failed query is not evidence of termination. A
+    scheduler-completed job is not, by itself, a successful YOLO experiment.
+    """
+    _expected(job_id, submission_key, 0, 1, partition, 'unused')
+    if type(uid) is not int or uid < 0:
+        raise ValueError('SLURM_TERMINAL_UID')
+    for payload in (accounting, queue):
+        if not isinstance(payload, bytes) or len(payload) > 4*1024*1024:
+            raise ValueError('SLURM_TERMINAL_SIZE')
+    rows = [line.split('|') for line in accounting.decode('ascii').splitlines() if line.strip()]
+    if len(rows) != 1 or len(rows[0]) != 7:
+        raise ValueError('SLURM_TERMINAL_NOT_ONE_RECORD')
+    identity, state, exit_code, comment, user, part, cluster = rows[0]
+    if (identity != job_id or comment != submission_key or user != str(uid)
+            or part != partition or cluster != 'itiger'):
+        raise ValueError('SLURM_TERMINAL_BINDING')
+    if re.fullmatch(r'CANCELLED by [0-9]+', state):
+        state = 'CANCELLED'
+    if state not in TERMINAL_STATES or re.fullmatch(r'[0-9]{1,10}:[0-9]{1,10}', exit_code) is None:
+        raise ValueError('SLURM_NOT_TERMINAL')
+    for line in queue.decode('ascii').splitlines():
+        if not line.strip():
+            continue
+        fields = line.split('|')
+        if len(fields) != 4:
+            raise ValueError('SLURM_TERMINAL_QUEUE_FORMAT')
+        if fields[0] == job_id or fields[1] == submission_key:
+            raise ValueError('SLURM_ALLOCATION_STILL_QUEUED')
+    return dict(schema='tiger-slurm-terminal-v1', jobId=job_id,
+        submissionKey=submission_key, partition=partition, uid=uid, cluster='itiger',
+        state=state, exitCode=exit_code,
+        accountingDigest='sha256:'+hashlib.sha256(accounting).hexdigest(),
+        queueDigest='sha256:'+hashlib.sha256(queue).hexdigest())
+
+
+def capture_terminal_allocation(*, job_id, submission_key, partition, seconds):
+    """Read-only login-node observer; never sbatch, scancel or a retry submission."""
+    _expected(job_id, submission_key, 0, 1, partition, 'unused')
+    if os.environ.get('SLURM_JOB_ID'):
+        raise ValueError('SLURM_TERMINAL_OBSERVER_INSIDE_JOB')
+    if (isinstance(seconds, bool) or not isinstance(seconds, (int, float))
+            or not math.isfinite(seconds) or seconds <= 0):
+        raise ValueError('SLURM_QUERY_BUDGET')
+    uid = os.getuid()
+    deadline = time.monotonic()+seconds
+    def query(command):
+        remaining = deadline-time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError('SLURM_QUERY_DEADLINE')
+        result = subprocess.run(command, check=True, capture_output=True, timeout=remaining,
+            env={'PATH':'/usr/bin:/bin', 'LC_ALL':'C'})
+        if len(result.stdout)>4*1024*1024 or result.stderr:
+            raise ValueError('SLURM_TERMINAL_QUERY_OUTPUT')
+        return result.stdout
+    accounting = query(['/usr/bin/sacct', '-X', '-n', '-P', '--duplicates',
+        '--jobs='+job_id,
+        '--format=JobIDRaw,State%32,ExitCode,Comment%80,UID,Partition,Cluster'])
+    # Query all of this UID's jobs: a vanished --jobs target can itself produce
+    # a CLI error, and that error must never be interpreted as an empty queue.
+    queue = query(['/usr/bin/squeue', '--noheader', '--user='+str(uid),
+                   '--format=%i|%k|%U|%P'])
+    receipt = validate_terminal_allocation(accounting, queue, job_id=job_id,
+        submission_key=submission_key, partition=partition, uid=uid)
+    return dict(receipt=receipt, accounting=accounting.decode('ascii'), queue=queue.decode('ascii'))
+
+
 def _document(payload, collection):
     if not isinstance(payload, bytes) or len(payload) > 4*1024*1024:
         raise ValueError('SLURM_DOCUMENT_SIZE')
