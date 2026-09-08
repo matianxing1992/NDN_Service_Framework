@@ -163,6 +163,15 @@ def candidate_inventory(profile_path, profile, prepared, *, provision, gates):
         path = Path(profile['release'][plane]['path'])
         for row in document(path)['files'].values():
             add(path.parent/row['path'], row)
+    if profile.get('runtime', {}).get('layout') == 'layered-v1':
+        from .application import verify_application
+        app_reference = profile['runtime']['applicationManifest']
+        root = Path(add(app_reference['path'], app_reference)).parent
+        image = document(profile['release']['runtime']['path'])['files']['sif']
+        application = verify_application(root, manifest_sha256=app_reference['sha256'],
+                                         base_sif_sha256=image['sha256'])
+        for row in application['files']:
+            add(root/row['path'], row)
     # The E-plane harness is distinct from the prepared run's frozen copy.
     bundle(Path(profile['evidence']['harnessManifest']['path']).parent,
            profile['evidence']['harnessManifest']['sha256'])

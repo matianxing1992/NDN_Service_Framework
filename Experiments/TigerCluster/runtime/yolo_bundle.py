@@ -21,6 +21,7 @@ from .yolo_profile import ClosureError, HASH, _file_identity, _object, _operator
 # Missing future application/collector files keep a production bundle incomplete.
 REQUIRED_HARNESS_FILES = frozenset({
     "runtime/__init__.py", "runtime/baseline.py", "runtime/identities.py",
+    "runtime/application.py",
     "runtime/worker.py", "runtime/yolo_worker.py", "runtime/yolo_profile.py",
     "runtime/yolo_submission.py", "runtime/yolo_bundle.py", "runtime/yolo_result.py",
     "runtime/yolo_operator.py", "runtime/yolo_collection.py", "runtime/yolo_graph_reference.py",

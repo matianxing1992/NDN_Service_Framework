@@ -116,6 +116,9 @@ def run(args):
                 'sourceSealDigest': seal['sealDigest'], 'sourceRevision': seal['sourceRevision'],
                 'buildIdentity': build_identity, 'buildKey': key, 'files': rows}
     (partial / 'application-manifest.json').write_text(json.dumps(manifest, indent=2, sort_keys=True) + '\n')
+    for path in partial.rglob('*'):
+        if path.is_file():
+            path.chmod(0o555 if path.parent == partial / 'bin' else 0o444)
     verify_application(partial, manifest_sha256=digest(partial / 'application-manifest.json'),
                        base_sif_sha256=args.base_sha256)
     partial.rename(output)

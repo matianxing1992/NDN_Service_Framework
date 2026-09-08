@@ -16,6 +16,26 @@ def _digest(path):
     return 'sha256:' + h.hexdigest()
 
 
+def application_root(profile):
+    """Resolve only the explicit layered profile; legacy commands stay distinct."""
+    layout = profile.get('layout')
+    reference = profile.get('applicationManifest')
+    if 'layout' not in profile and 'applicationManifest' not in profile:
+        return None
+    if layout != 'layered-v1' or not isinstance(reference, dict):
+        raise ValueError('APP_LAYOUT')
+    if set(reference) != {'path', 'bytes', 'sha256'}:
+        raise ValueError('APP_REFERENCE')
+    manifest = Path(reference['path'])
+    if (manifest.name != 'application-manifest.json' or manifest.is_symlink()
+            or type(reference['bytes']) is not int
+            or manifest.stat().st_size != reference['bytes']):
+        raise ValueError('APP_REFERENCE')
+    verify_application(manifest.parent, manifest_sha256=reference['sha256'],
+                       base_sif_sha256='sha256:' + profile['sifSha256'])
+    return manifest.parent
+
+
 def verify_application(root, *, manifest_sha256, base_sif_sha256):
     root = Path(root)
     if (not root.is_absolute() or not root.is_dir()

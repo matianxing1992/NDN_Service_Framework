@@ -549,7 +549,8 @@ class NodeRuntime:
         argv = ['/usr/bin/env',
                 'SPEC181_GRANT_AUTHORITY_PUBLIC_KEY=/config/contracts/authority.pub',
                 'SPEC181_PROVIDER_RECIPIENT_KEY_MAP=' + home_path + '/recipient-map.json',
-                BIN + '/di-native-provider', '--serve',
+                ('/app/bin' if self.profile.get('layout') == 'layered-v1' else BIN)
+                + '/di-native-provider', '--serve',
                 '--plan', '/config/native-execution-plan.json',
                 '--manifest', '/config/service-manifest.json',
                 '--trust-schema', '/config/trust-schema.conf',

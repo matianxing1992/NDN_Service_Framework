@@ -93,6 +93,39 @@ def test_inventory_covers_transitive_inputs_and_retained_results_without_private
     assert result['candidateDigest']==prepared['candidateDigest']
 
 
+@pytest.mark.parametrize('tamper', [False, True])
+def test_layered_inventory_includes_verified_application_payloads(candidate, tamper):
+    from test_external_application import bundle
+    path, profile, prepared, provision, gates, _ = candidate
+    root = Path(profile['storage']['remoteArtifactRoot'])/'application'
+    runtime = Path(profile['release']['runtime']['path'])
+    body = json.loads(runtime.read_text())
+    digest = bundle(root, {'repo/app.py': b'print("fixture")'},
+                    base_sha256=body['files']['payload']['sha256'])
+    manifest = root/'application-manifest.json'
+    profile['runtime'] = dict(layout='layered-v1', applicationManifest=dict(
+        path=str(manifest), bytes=manifest.stat().st_size, sha256=digest))
+    body['files']['sif'] = dict(body['files']['payload'])
+    runtime.chmod(0o600)
+    runtime.write_text(json.dumps(body))
+    profile['release']['runtime'].update(bytes=runtime.stat().st_size,
+        sha256='sha256:'+hashlib.sha256(runtime.read_bytes()).hexdigest())
+    if tamper:
+        (root/'bin/di-native-provider').write_bytes(b'changed')
+        with pytest.raises(ValueError, match='APP_FILE_CHANGED'):
+            candidate_inventory(path, profile, prepared, provision=provision, gates=gates)
+        return
+    for item in root.rglob('*'):
+        if item.is_file():
+            item.chmod(0o555 if item.parent == root/'bin' else 0o444)
+    result = candidate_inventory(path, profile, prepared, provision=provision, gates=gates)
+    rows = {row['path']: row for row in result['files']}
+    for row in json.loads(manifest.read_text())['files']:
+        actual = rows[str(root/row['path'])]
+        assert actual['sha256'] == row['sha256']
+        assert actual['bytes'] == row['bytes']
+
+
 def test_host_and_gpu_prerequisite_specific_files_are_included(candidate):
     path,profile,prepared,provision,gates,_=candidate
     artifacts=Path(profile['storage']['remoteArtifactRoot'])

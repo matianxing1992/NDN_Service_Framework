@@ -54,10 +54,17 @@
         "apptainer": {"$ref": "#/definitions/path"},
         "apptainerVersion": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[A-Za-z0-9.]+)?$"},
         "python": {"const": "/opt/venv/bin/python"},
-        "nativeProvider": {"const": "/opt/ndnsf-di/current/bin/di-native-provider"},
+        "layout": {"const": "layered-v1"},
+        "applicationManifest": {"$ref": "#/definitions/file"},
+        "nativeProvider": {"enum": ["/opt/ndnsf-di/current/bin/di-native-provider", "/app/bin/di-native-provider"]},
         "cwd": {"const": "/bundle"},
         "environment": {"const": {"NDNSF_DI_STATE_ROOT": "/output/state", "NDNSF_DI_ORT_PROFILE_PREFIX": "/output/ort/session"}}
-      }
+      },
+      "allOf": [{
+        "if": {"required": ["layout"]},
+        "then": {"required": ["applicationManifest"], "properties": {"nativeProvider": {"const": "/app/bin/di-native-provider"}}},
+        "else": {"not": {"required": ["applicationManifest"]}, "properties": {"nativeProvider": {"const": "/opt/ndnsf-di/current/bin/di-native-provider"}}}
+      }]
     },
     "cluster": {
       "type": "object", "additionalProperties": false,

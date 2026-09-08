@@ -21,22 +21,44 @@ Raw evidence is under `Experiments/TigerCluster/results/yolo-layered-20260908/`:
 The previous Python development-package and extraction failures are retained in
 the first two logs and documented in `input-read-integrity.md` and the failure log.
 
-No external application has yet been compiled in this new SDK. No MiniNDN,
+The external application has now compiled in this exact SDK (150 Waf tasks,
+26m40.982s, maximum -j2; `app-build-2.log` ends BUILT). No MiniNDN,
 exact-composition local YOLO or Tiger NDNSF-DI qualification is claimed by this
-base receipt. T011 remains unchecked. Next: build the already sealed app source
-with this exact base, inspect its native/Python closure and real entrypoints,
+base receipt. T011 remains unchecked. Next: inspect the complete native/Python
+runtime path and produce the registered source/composition-bound gate receipts,
 then complete the production wiring and the registered runtime gates.
 
-## Application build in progress
+## Application build completed; composition qualification pending
 
 The first application attempt rejected `APP_BASE_DIGEST` before compilation,
 despite the earlier agreeing reads of this new image. The buffered-read problem
 also affects newly built SIFs; do not call the host permanently repaired.
 Direct-copy the new SIF to `/dev/shm/spec183-sdk-d4031191/base-runtime.sif` and
 check it against the same d4031191 digest. The second attempt passed the digest,
-base source/ABI checks and configure, and is compiling the external targets with
-`-j2`. Logs: `app-build-1.log` (rejection) and `app-build-2.log` (live compilation).
+base source/ABI checks and configure, and compiled the external targets with
+`-j2`. Logs: `app-build-1.log` (rejection) and `app-build-2.log` (successful build).
 Keep the owned RAM source until the build and exact-composition checks finish.
+
+The frozen app is `.cache/layered-base-20260908/app-81e330ea`: 157 files,
+manifest SHA256 `e8a6266e0fe6cc3036c848df8f9e9e37aa9023276739182adea9534bfc4b4f11`.
+All three ELF dependency listings resolve in the exact base, and the real YOLO
+User `--help` exits 0 through `/app:ro`; logs are `preflight/app-runtime-preflight.log`
+and `preflight/app-user-help.log`. The combined native probe exits 2 because
+Provider rejects `--help`; Controller also interprets it as normal startup and
+exits 1 without NFD. These are not successful service/inference tests.
+The real MiniNDN runner `--help` and imports of installed `ndnsf`, installed
+`py_repoclient`, and external `ndnsf_distributed_inference` also exit0 in the
+same composition (`preflight/app-minindn-help.log`); this verifies entrypoint
+loading, not execution of any MiniNDN scenario.
+`preflight/app-content-final.log` revalidates all bytes against the base identity.
+Publication now normalizes binaries to 0555 and other files to 0444; the already
+built candidate received the same mode-only normalization without recompilation.
+
+Layered profile, readonly mount and launch component checks: 33 passed (45
+deselected); profile/plane closure checks: 38 passed; final transport inventory
+checks: 11 passed (`layered-transport-components-r3.xml`). Application payloads
+are enumerated transitively and tampering rejects transport. None qualifies
+MiniNDN or the four-Provider NDNSF-DI GPU experiment.
 
 `runtime/application.py` now verifies the producer's application manifest before
 publication. Four component checks pass: candidate-only scope, wrong base,

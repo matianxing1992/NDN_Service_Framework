@@ -325,6 +325,27 @@ def check_operator_profile(path: Path, *, stage: str) -> dict:
     # The reference must still bind the manifest parsed by check_chain.
     for plane in needed:
         verify_reference(plane, profile["release"][plane])
+    layout = profile['runtime'].get('layout')
+    for plane in needed:
+        if _read_plane(paths[plane])['parameters'].get('layout') != layout:
+            raise ClosureError('APP_LAYOUT_BINDING')
+    application = None
+    if layout == 'layered-v1' and stage != 'inputs':
+        from .application import verify_application
+        reference = profile['runtime']['applicationManifest']
+        manifest = verify_reference('applicationManifest', reference)
+        image = _read_plane(paths['runtime'])['files']['sif']
+        try:
+            verify_application(manifest.parent, manifest_sha256=reference['sha256'],
+                               base_sif_sha256=image['sha256'])
+        except (ValueError, OSError) as exc:
+            raise ClosureError('APP_CONTENT_BINDING:' + str(exc)) from exc
+        if stage == 'dispatch':
+            declared = _read_plane(paths['dispatch'])['files'].get('applicationManifest', {})
+            if any(declared.get(key) != reference[key] for key in ('bytes', 'sha256')):
+                raise ClosureError('APP_DISPATCH_BINDING')
+        application = {'manifestSha256': reference['sha256'], 'baseSifSha256': image['sha256'],
+                       'integrity': 'VERIFIED', 'qualification': 'NOT_EVALUATED'}
     harness = None
     if stage == "dispatch":
         from .yolo_bundle import verify_harness, MANIFEST
@@ -353,6 +374,8 @@ def check_operator_profile(path: Path, *, stage: str) -> dict:
                         "WORKLOAD_GATE_VALIDATION"]}
     if harness is not None:
         result["harness"] = harness
+    if application is not None:
+        result['application'] = application
     return result
 
 
@@ -427,6 +450,12 @@ def resolve_provision_inputs(path: Path, *, plan: dict, runtime_candidate_digest
     image = _read_plane(runtime_path)["files"]["sif"]
     # The runtime plane has already validated relative file membership.
     sif = runtime_path.parent / image["path"]
+    runtime_profile = {"apptainer": profile["runtime"]["apptainer"],
+                       "apptainerVersion": profile["runtime"]["apptainerVersion"],
+                       "sif": str(sif), "sifSha256": image["sha256"][7:], "sifBytes": image['bytes']}
+    if profile['runtime'].get('layout') == 'layered-v1':
+        runtime_profile.update(layout='layered-v1',
+                               applicationManifest=dict(profile['runtime']['applicationManifest']))
     descriptor = {"schema": "tiger-yolo-prepare-input-v2", "plan": plan,
         "templateDigest": profile["workload"]["descriptor"]["sha256"],
         "manifestDigest": profile["workload"]["packageManifest"]["sha256"],
@@ -437,9 +466,7 @@ def resolve_provision_inputs(path: Path, *, plan: dict, runtime_candidate_digest
     return {"qualification": "NOT_EVALUATED", "descriptor": descriptor,
             "publicInputs": public_inputs, "authorityPrivateKey": str(private_key),
             "package": str(package_manifest.parent),
-            "runtimeProfile": {"apptainer": profile["runtime"]["apptainer"],
-                               "apptainerVersion": profile["runtime"]["apptainerVersion"],
-                               "sif": str(sif), "sifSha256": image["sha256"][7:], "sifBytes": image['bytes']}}
+            "runtimeProfile": runtime_profile}
 
 
 def resolve_run_plan(path: Path, *, stage: str, case: str, run_id: str, output: Path) -> dict:

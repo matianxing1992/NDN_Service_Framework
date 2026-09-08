@@ -116,7 +116,9 @@ def container_command(profile: dict, bundle: Path, home: Path, public: Path,
         raise ValueError("GPU_DEVICE")
     if preparation_inputs is not None and (prepare is None or gpu or node is not None):
         raise ValueError('PREPARATION_INPUT_SCOPE')
-    for path in (bundle, home, public, output, node, prepare, artifacts, preparation_inputs):
+    from runtime.application import application_root
+    app = application_root(profile)
+    for path in (bundle, home, public, output, node, prepare, artifacts, preparation_inputs, app):
         if path is None:
             continue
         if (not Path(path).is_absolute() or ".." in Path(path).parts
@@ -136,6 +138,8 @@ def container_command(profile: dict, bundle: Path, home: Path, public: Path,
         command += ["--nv"]
     if artifacts is not None:
         command += ["--bind", f"{artifacts}:/artifacts:ro"]
+    if app is not None:
+        command += ["--bind", f"{app}:/app:ro"]
     if node is not None:
         command += ["--bind", f"{node}:/node:rw"]
     if prepare is not None:
@@ -145,11 +149,13 @@ def container_command(profile: dict, bundle: Path, home: Path, public: Path,
     command += [profile["sif"], "/usr/bin/env",
                 f"PATH={BIN}:/opt/venv/bin:/usr/bin:/bin",
                 "LD_LIBRARY_PATH=/opt/ndnsf-di/current/lib:/opt/onnxruntime/lib",
-                "PYTHONNOUSERSITE=1", "PYTHONPATH=/bundle",
+                "PYTHONNOUSERSITE=1", "PYTHONPATH=/bundle" + (":/app/repo/NDNSF-DistributedInference" if app else ""),
                 "NDN_CLIENT_TRANSPORT=unix:///node/nfd.sock",
                 "NDNSF_CONFIG=" + role_home + "/session.conf",
                 "NDNSF_CONTROLLER_CERT_FILE=/config/controller.cert",
                 "NDN_LOG=ndn_service_framework.*=ERROR"]
+    if app is not None:
+        command += ["NDNSF_APP_LAYOUT=layered-v1"]
     if gpu:
         command += ["CUDA_VISIBLE_DEVICES=" + gpu_device]
     command += argv

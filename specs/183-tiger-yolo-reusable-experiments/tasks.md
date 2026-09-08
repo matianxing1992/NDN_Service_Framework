@@ -78,7 +78,7 @@ T007 复核确认正常/负例/SSH 接线已存在；N3 issuer/rank版本检查�
 | T010.a | T010 | MiniNDN 正常 CPU 图、权限拒绝、缺依赖三个注册场景 | BLOCKED | [输入绑定](evidence/t010-input-binding.md)、[取消](evidence/t010-cancellation.md)、[reap](evidence/t010-reaping.md)、[systemd整树时限](evidence/t010-host-supervisor.md)、[网络资源](evidence/t010-network-resources.md)已接；真实FD保留/释放netns probe通过；仅Y-B，V11 NOT_RUN | 剩三场景及完整协议/数值实跑；T007前完成源码，T009后实跑 | 不重复正常/setsid/namespace小probe；复用既有证据 |
 | T010.b | T010 | 同源 host qualification manifest 绑定命令、结果与清理 | NOT_STARTED | [审计 N1/N2](evidence/design-code-convergence.md)；现wrapper未产生manifest；NOT_RUN | 先实现同一producer/语义validator契约，再从T010.a同次实跑生成供builder消费的回执 | 生成清单不额外跑模型；不得把COMPONENT_ONLY改token冒充PASS |
 | T011.a | T011 | development-20260907 source seal 与 definition 准备 | IMPLEMENTED | 后文 SOURCE_READY checkpoint：`2aea8a0e` / `c4f33beb`，非 SIF PASS | 后续源码改变须重 seal；旧锁不覆盖 | 纯任务表修改按输入清单判断，不无条件重建 SIF |
-| T011.b | T011 | 构建或复用基础SIF，在匹配SDK构建独立app并验证组合闭包 | NOT_STARTED | V12；NOT_RUN；旧九产物builder未迁移 | 基础/app分层清单与挂载接线，T010后验证精确组合 | app增量构建；基础库/ABI未变不重建SIF |
+| T011.b | T011 | 构建或复用基础SIF，在匹配SDK构建独立app并验证组合闭包 | IN_PROGRESS | [local-sif](evidence/local-sif.md)：基础6产物验证、外置3程序编译完成；157文件内容复核、User入口成功；分层挂载/清单/运输组件33+38+11通过 | 完整原生启动、MiniNDN与精确组合回执及增量构建证明待完成；不计runtime PASS | 复用已编译app；权限归一化不重编译；基础库/ABI未变不重建SIF |
 | T011.c | T011 | exact-SIF 本地 CPU YOLO 与 empty HOME/scratch | NOT_STARTED | V13；NOT_RUN | T011.b 后执行，取得 LOCAL_CPU_PASS | 容器环境新增证据，不能以 host 结果替代 |
 | T012.a | T012 | GPU/Apptainer/容量 substrate 实值清点 | IMPLEMENTED | [input inventory](evidence/input-inventory.md) 有早期 probe 记录，非最终环境资格 | 正式 allocation 仍需实测；早期 probe 不抵消 T007 | 静态输入复用，不重复下载/拷贝 |
 | T012.b | T012 | exact-SIF staging、目标节点/GPU/路由与服务就绪 | NOT_STARTED | V14；NOT_RUN | T011 后核验实际 allocation 与哈希 | 每个新 allocation 检查环境，不重建同一镜像 |

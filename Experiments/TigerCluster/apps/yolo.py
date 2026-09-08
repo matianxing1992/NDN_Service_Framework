@@ -15,7 +15,14 @@ import os
 
 from runtime.baseline import PYTHON
 
-APP_DIR = '/opt/ndnsf-di/replay/repo/examples/python/NDNSF-DistributedInference/yolo_2x2'
+LAYERED_APP_DIR = '/app/repo/examples/python/NDNSF-DistributedInference/yolo_2x2'
+APP_DIR = (LAYERED_APP_DIR if os.environ.get('NDNSF_APP_LAYOUT') == 'layered-v1'
+           else '/opt/ndnsf-di/replay/repo/examples/python/NDNSF-DistributedInference/yolo_2x2')
+
+
+def _worker_app_dir(worker):
+    return (LAYERED_APP_DIR if getattr(worker, 'profile', {}).get('layout') == 'layered-v1'
+            else APP_DIR)
 
 
 def _installed_yolo_owner():
@@ -31,7 +38,7 @@ def _installed_yolo_owner():
     # extension-less replay copy.  Only inside the SIF (APP_DIR under
     # /opt/ndnsf-di): host MiniNDN environments provide their own compiled
     # pythonWrapper and must keep their existing import boundary.
-    if str(APP_DIR).startswith("/opt/ndnsf-di"):
+    if str(APP_DIR).startswith(("/opt/ndnsf-di", "/app/repo/")):
         import ndnsf  # noqa: F401  bind the installed package first
         import py_repoclient  # noqa: F401  same for the repo client's compiled extension
     path = Path(APP_DIR).parents[3] / 'Experiments/NDNSF_DI_YoloAckDriven_Minindn.py'
@@ -232,7 +239,7 @@ def run_user_with_reference(argv, *, backend, run_id, request_id,
     from runtime.yolo_graph_reference import RequestReferenceBinding
     # Bind installed extensions before the example's own path setup, just as
     # the offline issuer does. Never import a replay copy of an absent .so.
-    if str(APP_DIR).startswith('/opt/ndnsf-di'):
+    if str(APP_DIR).startswith(('/opt/ndnsf-di', '/app/repo/')):
         import ndnsf
         import py_repoclient
     script = Path(APP_DIR) / 'user.py'
@@ -338,7 +345,7 @@ def start_controller(worker):
     from runtime.yolo_profile import _read_plane
     _read_plane(worker.public / 'runtime-publication.json')
     return worker.start_service('controller', [
-        PYTHON, APP_DIR + '/controller.py', '--config', '/config/case.json',
+        PYTHON, _worker_app_dir(worker) + '/controller.py', '--config', '/config/case.json',
         '--generated-policy-dir', '/output/generated-policy',
         '--spec180-runtime-publication-file', '/config/runtime-publication.json',
         '--spec180-runtime-receipt-file', '/output/runtime-publication-receipt.json'])
@@ -400,7 +407,7 @@ def start_repo(worker, *, identity: str, free_bytes: int):
     if type(free_bytes) is not int or free_bytes <= 0 or free_bytes > 2**63 - 1:
         raise ValueError('YOLO_REPO_CAPACITY')
     return worker.start_service('repo', [
-        PYTHON, APP_DIR + '/repo_node.py', '--config', '/config/case.json',
+        PYTHON, _worker_app_dir(worker) + '/repo_node.py', '--config', '/config/case.json',
         '--generated-policy-dir', '/output/generated-policy',
         '--provider-id', 'repo', '--repo-node', identity,
         '--storage-dir', '/output/repo-store', '--free-bytes', str(free_bytes),

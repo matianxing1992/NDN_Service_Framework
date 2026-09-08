@@ -3061,3 +3061,16 @@ passed the same builder guard and reached configure/compilation. Retain both
 application logs and use the verified memory snapshot for this host's current
 build/qualification work. Do not rebuild the base or alter its locked hash to
 hide the read-path problem; a permanent host repair remains unproven.
+
+## 2026-09-08 — Layered application transport closure
+
+The external SDK build succeeded but inherited 0775/0664 modes, which the
+existing transport contract rejects. Normalize published executables to0555
+and data to0444, and enumerate every manifest-bound application payload.
+Apply the same mode-only repair to the built candidate; do not recompile.
+The first new fixture also exposed a local variable shadowing the reference
+collector function; rename it app_reference. Fix fixture identities after
+mutating its runtime document. Final inventory suite:11 passed, retained in
+layered-transport-components-r3.xml. Native --help is not a universal smoke
+contract: Provider rejects it and Controller starts NFD-dependent service.
+Retain those exitcodes separately from successful Python User --help.
