@@ -3729,3 +3729,15 @@ identity and rerun packaging against the existing incremental Waf cache.
 - Lesson: dependency installation must match the sealed base ABI; an APT
   package name cannot be assumed to exist merely because the interpreter is
   locally provisioned.
+
+## 2026-09-08: ndnsd metadata check used an inherited pkg-config overlay
+
+- Symptom: the builder compiled and installed the pinned NDN-SD library, then
+  stopped because `pkg-config --cflags-only-I ndnsd` returned no include flag.
+- Root cause: the maintained template queried through a temporary overlay that
+  can contain an inherited package entry and hide the freshly installed
+  `/opt/ndnsf-di/current/lib/pkgconfig/ndnsd.pc` metadata.
+- Fix: scope the ndnsd metadata assertions to the freshly installed pkg-config
+  directory; retain the overlay only for subsequent framework configure steps.
+- Lesson: ABI metadata checks must identify the exact package file being
+  qualified instead of trusting a mutable search-path precedence.

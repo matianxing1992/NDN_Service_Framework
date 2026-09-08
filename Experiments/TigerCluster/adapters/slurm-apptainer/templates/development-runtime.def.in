@@ -124,8 +124,11 @@ PY
     ./waf configure --prefix=/opt/ndnsf-di/current --libdir=/opt/ndnsf-di/current/lib --boost-includes=/usr/include --boost-libs=/usr/lib/x86_64-linux-gnu
     ./waf -j4 -v
     ./waf install -j4
-    test "$(pkg-config --cflags-only-I ndnsd | tr -d '[:space:]')" = '-I/opt/ndnsf-di/current/include'
-    test "$(pkg-config --variable=libdir ndnsd)" = /opt/ndnsf-di/current/lib
+    # Keep this check on the freshly installed metadata.  The temporary
+    # pkg-config overlay is needed by later framework configure steps and can
+    # shadow ndnsd on images that inherit an older overlay entry.
+    test "$(PKG_CONFIG_PATH=/opt/ndnsf-di/current/lib/pkgconfig pkg-config --cflags-only-I ndnsd | tr -d '[:space:]')" = '-I/opt/ndnsf-di/current/include'
+    test "$(PKG_CONFIG_PATH=/opt/ndnsf-di/current/lib/pkgconfig pkg-config --variable=libdir ndnsd)" = /opt/ndnsf-di/current/lib
     install -m 0755 /opt/ndnsf-di/current/lib/libndnsd.so.0.1.0 /opt/ndnsf-stage/lib/libndnsd.so.0.1.0
     ln -s libndnsd.so.0.1.0 /opt/ndnsf-stage/lib/libndnsd.so
     cp -a /opt/ndnsf-di/current/include/ndnsd /opt/ndnsf-stage/include/
