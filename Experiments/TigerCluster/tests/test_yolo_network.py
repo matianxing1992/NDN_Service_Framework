@@ -94,8 +94,9 @@ def test_bidirectional_fresh_signed_exchange(signed_material, fault, monkeypatch
 @pytest.mark.parametrize('rank', [0, 1])
 def test_network_probe_releases_provider_home_before_startup(tmp_path, monkeypatch, rank):
     worker = NodeRuntime(**prepared(tmp_path, rank=rank))
-    worker._preparation_binding = ('fixture',)
+    worker._preparation_binding = ({'runId': 'network-probe'}, 'fixture', 'sha256:'+'a'*64)
     monkeypatch.setattr(worker, '_verify_prepared_boundary', lambda: None)
+    worker.verify_runtime(seconds=2)
     original, calls = subprocess.Popen, []
     def boundary(argv, **kwargs):
         calls.append(argv)

@@ -876,6 +876,7 @@ def run_normal_node(worker, startup, *, completion_factory, endpoints,
                     pass
     try:
         try:
+            worker.verify_runtime(seconds=startup.remaining())
             if worker.mode != 'local-cpu':
                 worker.verify_allocation(allocation_expected, seconds=startup.remaining())
                 peer = (startup.directory / ('failed-' + str(1-worker.rank) + '.json')

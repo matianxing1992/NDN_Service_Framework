@@ -68,7 +68,10 @@ def candidate(tmp_path):
             native={'observation':{'providerProfilePath':'/output/trace.json'}})}}})
     doc(old/'collection-input.json',dict(kind='normal',nodes={'0':{'root':'node0'}},
         references=[dict(package=os.path.relpath(package,old),repository=str(artifacts/'repository'))]))
-    verdict={'requestResults':requests}
+    from test_yolo_runtime_version import retained_version
+    versions = {key: retained_version(root, run_id='previous-run', candidate='sha256:'+'a'*64, rank=rank)
+                for key,root,rank in [('issuer',old/'prepare-output','issuer'), ('0',old/'node0',0)]}
+    verdict={'requestResults':requests, 'runtimeVersions':versions}
     verdict_ref=doc(old/'verdict.json',verdict)
     gates={'localSif':dict(path=verdict_ref['path'],receipt=verdict)}
     profile['release']['gates']={'localSif':verdict_ref}

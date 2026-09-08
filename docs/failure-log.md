@@ -2845,3 +2845,20 @@ without requiring their future physical PASS before the source audit can close.
 Reuse existing component evidence and add only affected boundary checks. No test,
 native build, model, SIF hash/transfer or GPU campaign was repeated for this audit.
 Evidence: specs/183-tiger-yolo-reusable-experiments/evidence/design-code-convergence.md.
+
+## 2026-09-08 — YOLO version constraint was not enforced by actual launch owners
+
+The profile accepted apptainerVersion but issuer/rank launch did not execute the
+legacy worker's version check. Fix N3 at the actual owners using their existing
+bounded finite-process/group cleanup, retain a run-bound raw observation, and
+require it again in public collection and prerequisite transport. A version
+failure starts no workload; no GPU or SIF qualification is inferred.
+
+The first affected-consumer run had 148 passes and 11 failures: two new retained
+transport fixtures used umask-dependent modes, seven application fixtures skipped
+the new version precondition, and two worker doubles omitted its method. The mode
+review also showed the actual process log needed explicit creation as 0600.
+Corrected production log mode and fixture setup; 78 affected checks and 11 final
+boundary checks pass. Preserve the initial log and do not sum overlapping suites.
+Lesson: follow a new preflight observation through launch, retained reanalysis
+and transport, including permission bits. Evidence: t004-runtime-version.md.

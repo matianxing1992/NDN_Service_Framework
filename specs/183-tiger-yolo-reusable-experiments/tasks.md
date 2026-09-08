@@ -6,8 +6,8 @@
 
 ## Detailed Execution Progress
 
-更新：2026-09-08；进度表初始审计基线 `d1f1504a`，当前源码复核基线 `0e22b210`，见
-[生产审计 N1–N3](evidence/design-code-convergence.md)。其他客户端已在
+更新：2026-09-08；进度表初始审计基线 `d1f1504a`，`cc638d00`审计后N3源码修复，见
+[runtime version](evidence/t004-runtime-version.md)；[生产审计](evidence/design-code-convergence.md)仍BLOCK于N1/N2。其他客户端已在
 `64df1581` / `5171450d` 提交 [host-unit](evidence/host-unit.md) 的构建与加载证据；
 下表记录其已声明范围，未重复运行构建，也不将它升级为正式 runtime 资格。
 下表是当前执行入口；后文 checkpoint 是历史证据，不应把旧“下一步”当作当前指令。
@@ -17,8 +17,8 @@
 
 ### T001–T007：关闭实际 GPU YOLO 执行路径
 
-T007 复核确认正常/负例/SSH 接线已存在；当前控制项为 N1 host gate 语义重算、
-N2 MiniNDN 三场景及有界准备/执行、N3 YOLO issuer/rank 的 Apptainer 版本检查。
+T007 复核确认正常/负例/SSH 接线已存在；N3 issuer/rank版本检查及collection/运输已修，
+当前控制项为 N1 host gate 语义重算、N2 MiniNDN 三场景及有界准备/执行。
 旧“运输/负例/certified graph 未接”的历史状态不再适用。T010/T011 实际回执是
 后续验收，不倒置为 T007 的物理前置；完整候选运输、SIF 与 GPU 资格仍未验收。
 
@@ -28,7 +28,7 @@ N2 MiniNDN 三场景及有界准备/执行、N3 YOLO issuer/rank 的 Apptainer �
 | T002.a | T002 | `runtime/yolo_profile.py` 的 I/R/E 完整性与失效检查 | IMPLEMENTED | [integrity](evidence/t002-integrity.md)；有历史 focused 证据 | 与最终生产入口重核，不能以 helper 关闭 T002 | 只重测变化 plane 及零副作用边界 |
 | T002.b | T002 | 既有 builder 接受 Spec183 host-gate receipt、保留 Spec175 | BLOCKED | [审计 N1](evidence/design-code-convergence.md)：现有 validator 只绑定摘要，返回 COMPONENT_ONLY 却被 builder/local 消费 | 与 T010 producer 一起补真实语义重算；不可手填资格 token 放行 | 只增加空语义/错误故障/退出清理在真实消费边界的拒绝检查 |
 | T003.a | T003 | `yolo_worker.py` 角色隔离、启动、进程组及清理 | VERIFIED | [worker](evidence/t003-worker.md)；T003 focused acceptance | 真实 workload 接线归 T004/T005 | 生命周期代码未变复用；改动时跑对应回归 |
-| T004.a | T004 | profile/schema、冻结 bundle、五命令与提交 journal | IMPLEMENTED | [profile](evidence/t004-profile.md)、[journal](evidence/t004-cli-journal.md)；[审计 N3](evidence/design-code-convergence.md)发现YOLO未检查apptainerVersion | 在issuer和每rank容器启动前有界验证冻结版本；实际版本资格仍归T011/T012 | 只测版本不符/退出/超时零workload启动，不重复模型或SIF hash |
+| T004.a | T004 | profile/schema、冻结 bundle、五命令与提交 journal | IMPLEMENTED | [runtime version](evidence/t004-runtime-version.md)：N3已接issuer/rank→public重算→运输；37首组、78修复组、11最终边界通过（有重叠） | N3源码范围已验证；实际版本资格归T011/T012；T004仍依赖N1/N2收敛 | 无native/SIF/模型运行；版本边界不变不重复检查集合，实际新rank仍观测一次 |
 | T004.b | T004 | `jobs/yolo/submit.py` 的远端 staging、run 接真实 worker | IMPLEMENTED | T004.k/q/s已连接正常与负例入口；实际提交仍要求前置资格门 | T007统一审查所有有效字段/完整调用链；完整候选前置证据仍缺 | 只验证新调用边界，复用既有 worker/barrier/journal 证据 |
 | T004.c | T004 | `local` 拒绝其他 profile 冻结的 prepared run | VERIFIED | [CLI binding](evidence/t004-cli-journal.md#2026-09-07-local-prepared-profile-binding)；40 CLI passed，先于 host receipt 检查拒绝 | 绑定修复已完成；完整调用链等待T007审查 | 相同源码无需重复 CLI suite；本项不触发 SIF/GPU 验证 |
 | T004.e | T004 | v2 prepared 绑定 I/R/E；跨运行 prerequisite 重算留存证据 | IMPLEMENTED | [gate reuse](evidence/t004-gate-reuse.md)；56 项 CLI/门边界检查通过，collector double 不代表运行通过 | 运输接线见T004.q；真实先行运行证据仍缺；旧 v1 不放行 | 同内容复用留存证据；改变内容/脚本/行为拒绝复用，不启动模型重复测试 |
@@ -53,8 +53,8 @@ N2 MiniNDN 三场景及有界准备/执行、N3 YOLO issuer/rank 的 Apptainer �
 | T005.c | T005 | 新 SIF 内 Controller 写真实 publication receipt | BLOCKED | [旧 G2 处置](evidence/design-code-convergence.md)；当前host源码支持参数，旧base不支持 | T011新SIF执行验证；不是要求T011先于T007的源码阻塞 | 旧 base 不反复尝试同一不支持参数 |
 | T006.a | T006 | `yolo_result.py` 数值、角色、边、GPU、退出与负例判定 | IMPLEMENTED | [native observation](evidence/t006-native-observation.md)、[numerical reanalysis](evidence/t006-numerical-reanalysis.md) | 组件证据不能代替生产数据来源和真实运行 | 仅重测变化的 oracle/collector 行为 |
 | T006.b | T006 | collector 读取每次 User 留存的独立 graph-reference.json | IMPLEMENTED | [request wiring](evidence/t005-request-reference-wiring.md)；核验 run/request/runtime/placement/graph，缺文件拒绝共享图替代 | 仍依赖 T004.b 实际调度和完整 retained-native 验收；不以 helper 关闭父任务 | 与 T005.b 共用 176 项证据，不单独启动 GPU 采集 |
-| T007.a | T007 | 生产路径设计—代码审计报告 | VERIFIED | [2026-09-08复核](evidence/design-code-convergence.md)：旧G1/G4源码接线已修，N1–N3为当前HIGH；报告BLOCK | 修复三个实际边界，保留旧审计为历史；本轮未跑测试/模型/构建 | 复用历史focused证据；报告更新只查结构/一致性 |
-| T007.b | T007 | T002/T004/T005/T006 生产接线收敛为 PASS | BLOCKED | 同上；host资格语义、MiniNDN wrapper、YOLO版本约束三个控制项 | 先N1/N2共享producer/validator，再N3；T010/T011物理回执留在后续 | 只重审/重测变化边界；未PASS不开展正式T008+验收 |
+| T007.a | T007 | 生产路径设计—代码审计报告 | VERIFIED | [2026-09-08复核](evidence/design-code-convergence.md)：旧G1/G4已接，N3源码修复；当前N1/N2 HIGH，报告BLOCK | 完成host producer/validator与MiniNDN wrapper，保留旧发现为历史 | 复用已通过版本检查与旧focused证据；报告更新不触发全套验证 |
+| T007.b | T007 | T002/T004/T005/T006 生产接线收敛为 PASS | BLOCKED | 同上；剩host资格语义和MiniNDN wrapper两个控制项 | N1/N2共享producer/validator；T010/T011物理回执留在后续；不用旧Y-N子场景替代缺依赖Data | 只重审/重测变化边界；未PASS不开展正式T008+验收 |
 
 ### T008–T017：逐级取得运行证据
 
@@ -83,7 +83,7 @@ N2 MiniNDN 三场景及有界准备/执行、N3 YOLO issuer/rank 的 Apptainer �
 
 方向审计：目标与 TigerCluster GPU YOLO 一致；原计划的 correctness/reuse 范围和
 单节点 1+1、双节点两次各 1+3 已有界，不增加模型、GPU 型号或性能比较矩阵。
-当前应先完成 **N1/N2 host资格producer/validator与MiniNDN wrapper → N3版本检查 → T007.b PASS**，然后
+当前应先完成 **N1/N2 host资格producer/validator与MiniNDN wrapper → T007.b PASS**，然后
 **T008 → T009 → T010 → T011 → T012 → T013 → T014 → T015 → T016 → T017**。
 后文将 T008 称为“下一个实现块”的历史 checkpoint 不取消 T007 前置。
 既有构建驱动初稿和开发探测不作为正式资格；本轮未干预可能存在的构建进程。

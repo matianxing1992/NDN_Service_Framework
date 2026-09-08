@@ -474,7 +474,8 @@ def _negative_collection_input(prepared, *, valid=True):
     }
 
 
-@pytest.mark.parametrize("mutation", ["unchanged", "missing", "invalid", "changed-valid", "verdict", "oracle"])
+@pytest.mark.parametrize("mutation", ["unchanged", "missing", "invalid", "changed-valid", "verdict", "oracle",
+                                      "version-missing", "version-invalid", "version-other-run"])
 def test_collect_calls_retained_negative_owner_and_keeps_immutable_verdict(tmp_path, monkeypatch, capsys, mutation):
     module = submit_module()
     monkeypatch.setattr(module, '_enter_frozen', lambda *args: None)  # Separate frozen-launch boundary test.
@@ -495,11 +496,16 @@ def test_collect_calls_retained_negative_owner_and_keeps_immutable_verdict(tmp_p
     # CLI persistence boundary only: native/allocation joins have independent
     # retained-reader tests. The public handoff can no longer supply rejection facts.
     prepared.update(bundle=str(root / 'bundle'), harnessManifestSha256='fixture')
-    prepared['plan']['effectiveBehavior'] = {'profile': {'timing': {'requestDeadlineMs': 60000}}}
+    prepared['plan']['effectiveBehavior'] = {'profile': {
+        'timing': {'requestDeadlineMs': 60000}, 'runtime': {'apptainerVersion': '1.5.3'}}}
+    from test_yolo_runtime_version import retained_version
+    retained_version(root/'prepare-output', run_id=run_id,
+                     candidate=prepared['candidateDigest'], rank='issuer')
     nodes = {}
     for rank in (0, 1):
         node = root / ('node' + str(rank))
         node.mkdir()
+        retained_version(node, run_id=run_id, candidate=prepared['candidateDigest'], rank=rank)
         nodes[str(rank)] = dict(root=str(node), receiptDigest=prepared['candidateDigest'],
             preparationDigest=prepared['candidateDigest'], allocationDigest=prepared['candidateDigest'],
             gpuProbeDigest=prepared['candidateDigest'])
@@ -555,6 +561,15 @@ def test_collect_calls_retained_negative_owner_and_keeps_immutable_verdict(tmp_p
         def reject(*args, **kwargs):
             raise ValueError("retained evidence rejected on reanalysis")
         monkeypatch.setattr(yolo_negative, 'collect_negative_verdict', reject)
+    elif mutation.startswith('version-'):
+        path = root / 'node1/runtime-version/receipt.json'
+        if mutation == 'version-missing':
+            path.unlink()
+        else:
+            value = json.loads(path.read_text())
+            if mutation == 'version-invalid': value['cleanup'][0]['exitCode'] = 7
+            else: value['binding']['runId'] = 'other-run'
+            path.write_text(json.dumps(value))
     assert module._collect(args) == (0 if mutation == "unchanged" else module.INCOMPLETE)
     assert (root / "verdict.json").read_bytes() == old_verdict
 

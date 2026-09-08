@@ -49,6 +49,7 @@ def test_network_setup_uses_owned_commands_and_stops_on_failure(tmp_path, monkey
         monkeypatch.setattr(worker, '_verify_prepared_boundary', lambda: None)
         (worker.public / 'case.json').write_text(json.dumps({
             'group': '/run/app/sync', 'runtime': {'application_name': '/run/app'}}))
+        worker.verify_runtime(seconds=2)
         workers.append(worker)
         barriers.append(StartupBarrier(shared, run_id=plan['runId'], probe_id='a' * 32,
             candidate_digest='sha256:' + 'b' * 64, ranks=ranks, rank=rank, seconds=5, check=worker.check))

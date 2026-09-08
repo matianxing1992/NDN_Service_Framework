@@ -26,6 +26,114 @@ MODEL_ROLES = frozenset(("BackboneNeck", "DetectShard0", "DetectShard1"))
 PROVIDER_ROLES = MODEL_ROLES | {"Merge"}
 
 
+def _version_binding(binding):
+    if (not isinstance(binding, dict) or set(binding) != {'runId', 'candidateDigest', 'rank'}
+            or not isinstance(binding['runId'], str)
+            or not re.fullmatch(r'[a-z][a-z0-9-]{1,47}', binding['runId'])
+            or not isinstance(binding['candidateDigest'], str)
+            or not re.fullmatch(r'sha256:[a-f0-9]{64}', binding['candidateDigest'])
+            or not (binding['rank'] == 'issuer' or
+                    type(binding['rank']) is int and binding['rank'] in (0, 1))):
+        raise ValueError('APPTAINER_VERSION_BINDING')
+
+
+def _version_expected(version):
+    if not isinstance(version, str) or not re.fullmatch(
+            r'[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.]+)?', version):
+        raise ValueError('APPTAINER_VERSION_EXPECTED')
+
+
+def read_runtime_version(output, *, expected_version, binding):
+    """Recheck the retained command/cleanup observation without executing it."""
+    import hashlib
+    from runtime.yolo_profile import _read_plane
+    from runtime.yolo_bundle import _bytes
+    _version_expected(expected_version)
+    _version_binding(binding)
+    directory = _directory(Path(output) / 'runtime-version')
+    path = directory / 'receipt.json'
+    record = _read_plane(path)
+    if (not isinstance(record, dict)
+            or set(record) != {'schema', 'status', 'binding', 'expected', 'argv', 'cleanup', 'log'}
+            or record['schema'] != 'tiger-yolo-runtime-version-v1'
+            or record['status'] != 'MATCH' or record['binding'] != binding
+            or record['expected'] != expected_version):
+        raise ValueError('APPTAINER_VERSION_RECEIPT')
+    _version_binding(record['binding'])
+    argv = record['argv']
+    if (not isinstance(argv, list) or len(argv) != 2 or argv[1] != '--version'
+            or not isinstance(argv[0], str) or not Path(argv[0]).is_absolute()
+            or any(ord(c) < 32 for c in argv[0])):
+        raise ValueError('APPTAINER_VERSION_COMMAND')
+    rows = record['cleanup']
+    if (not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], dict)
+            or rows[0].get('name') != 'apptainer-version'
+            or rows[0].get('kind') != 'finite' or type(rows[0].get('pid')) is not int
+            or rows[0]['pid'] <= 1 or type(rows[0].get('exitCode')) is not int
+            or rows[0]['exitCode'] != 0 or rows[0].get('reaped') is not True
+            or rows[0].get('forced') is not False or rows[0].get('cleanupError')):
+        raise ValueError('APPTAINER_VERSION_CLEANUP')
+    log = record['log']
+    if (not isinstance(log, dict) or set(log) != {'path', 'bytes', 'sha256'}
+            or log['path'] != 'version.log' or type(log['bytes']) is not int
+            or not 1 <= log['bytes'] <= 4096):
+        raise ValueError('APPTAINER_VERSION_LOG')
+    payload = _bytes(directory / 'version.log')
+    if (len(payload) != log['bytes']
+            or 'sha256:' + hashlib.sha256(payload).hexdigest() != log['sha256']
+            or payload.strip() != ('apptainer version ' + expected_version).encode('ascii')):
+        raise ValueError('APPTAINER_VERSION_MISMATCH')
+    return dict(version=expected_version, receiptDigest='sha256:' + hashlib.sha256(_bytes(path)).hexdigest(),
+                log=dict(log), qualification='RUNTIME_VERSION_COMPONENT_ONLY')
+
+
+def verify_runtime_version(profile, output, *, binding, seconds, cleanup_seconds):
+    """Observe once with the shared finite process owner, before container launch.
+
+    No container, image hash, native import or GPU operation is needed. Every
+    attempt retains its command output and group cleanup, including failures.
+    """
+    import hashlib
+    from runtime.identities import _credential_document
+    _version_binding(binding)
+    version = profile.get('apptainerVersion')
+    _version_expected(version)
+    executable = profile.get('apptainer')
+    if (not isinstance(executable, str) or not Path(executable).is_absolute()
+            or any(ord(c) < 32 for c in executable)):
+        raise ValueError('APPTAINER_VERSION_COMMAND')
+    for value in (seconds, cleanup_seconds):
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
+            raise ValueError('APPTAINER_VERSION_BUDGET')
+    directory = _directory(Path(output)) / 'runtime-version'
+    directory.mkdir(mode=0o700, exist_ok=False)
+    log = directory / 'version.log'
+    # Processes opens an existing log without changing its mode. Set the mode
+    # explicitly so the retained transport contract does not depend on umask.
+    os.close(os.open(str(log), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600))
+    record = dict(schema='tiger-yolo-runtime-version-v1', status='FAIL',
+                  binding=dict(binding), expected=version,
+                  argv=[executable, '--version'], cleanup=[], log=None)
+    try:
+        run_finite_application('apptainer-version', record['argv'], log, record['cleanup'],
+            seconds=min(10.0, seconds), env=container_env(), cleanup_seconds=cleanup_seconds)
+        if any(row.get('forced') or row.get('reaped') is not True or row.get('cleanupError')
+               for row in record['cleanup']):
+            raise ValueError('APPTAINER_VERSION_CLEANUP')
+        if not 1 <= log.stat().st_size <= 4096:
+            raise ValueError('APPTAINER_VERSION_LOG')
+        if log.read_bytes().strip() != ('apptainer version ' + version).encode('ascii'):
+            raise ValueError('APPTAINER_VERSION_MISMATCH')
+        record['status'] = 'MATCH'
+    finally:
+        if log.is_file() and log.stat().st_size <= 4096:
+            payload = log.read_bytes()
+            record['log'] = dict(path=log.name, bytes=len(payload),
+                                 sha256='sha256:' + hashlib.sha256(payload).hexdigest())
+        _credential_document(directory / 'receipt.json', record)
+    return read_runtime_version(output, expected_version=version, binding=binding)
+
+
 class StartupBarrier:
     """Bounded run-bound control records, never a data/activation transport.
 
@@ -204,6 +312,27 @@ class NodeRuntime:
         self.invocations = set()
         self.gpu_probe = None
         self.allocation = None
+        self.runtime_version = None
+
+    def verify_runtime(self, *, seconds):
+        if (self._preparation_binding is None or self.closed or self.started
+                or self.invocations or self.runtime_version is not None):
+            raise ValueError('WORKER_RUNTIME_VERSION_SCOPE')
+        self._verify_prepared_boundary()
+        plan, _, candidate = self._preparation_binding
+        self.runtime_version = verify_runtime_version(self.profile, self.output,
+            binding=dict(runId=plan['runId'], candidateDigest=candidate, rank=self.rank),
+            seconds=seconds, cleanup_seconds=self.cleanup_seconds)
+        self._runtime_version_profile = (self.profile['apptainer'], self.profile['apptainerVersion'])
+        return dict(self.runtime_version)
+
+    def _verify_runtime_boundary(self):
+        # Direct construction is a low-level lifecycle seam. Production
+        # from_preparation callers must verify once before any role launch.
+        if self._preparation_binding is not None and (
+                self.runtime_version is None or self._runtime_version_profile !=
+                (self.profile.get('apptainer'), self.profile.get('apptainerVersion'))):
+            raise ValueError('WORKER_RUNTIME_VERSION_REQUIRED')
 
     def run_user(self, invocation: str, argv: list[str], *, package: Path | None,
                  seconds: float, peer_failure: Path | None = None,
@@ -306,6 +435,7 @@ class NodeRuntime:
         if self.closed or role not in self.roles or role in self.started:
             raise ValueError('WORKER_USER_ROLE')
         self._verify_prepared_boundary()
+        self._verify_runtime_boundary()
         if not isinstance(invocation, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,64}', invocation):
             raise ValueError('WORKER_INVOCATION')
         if invocation in self.invocations:
@@ -455,6 +585,7 @@ class NodeRuntime:
         if self.closed:
             raise ValueError("WORKER_CLOSED")
         self._verify_prepared_boundary()
+        self._verify_runtime_boundary()
         if role not in self.roles or role == "user":
             raise ValueError("WORKER_SERVICE_ROLE")
         if role in self.started:

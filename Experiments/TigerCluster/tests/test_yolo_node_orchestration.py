@@ -16,12 +16,14 @@ def setup(tmp_path, monkeypatch, fail=False):
     events = []
     plan = {'case': 'local-cpu', 'runId': 'test-run', 'requests': [0,1]}
     binding = dict(runId='test-run', candidateDigest='sha256:'+'1'*64, probeId='a'*32)
-    startup = NS(binding=binding, rank=0, ranks=(0,), directory=tmp_path/'startup', _read=lambda *a: None)
+    startup = NS(binding=binding, rank=0, ranks=(0,), directory=tmp_path/'startup',
+                 remaining=lambda: 10, _read=lambda *a: None)
     completion = NS(binding=binding.copy(), rank=0, ranks=(0,), directory=tmp_path/'completion',
         remaining=lambda: 10, check=lambda: None, publish=lambda *a: events.append(('publish',a)),
         wait=lambda *a: {0: {'requestCount': 2}})
     state = NS(mode='local-cpu', rank=0, output=tmp_path,
         _preparation_binding=(plan, None, None),
+        verify_runtime=lambda **k: events.append('version'),
         close=lambda: events.append('close') or [])
     monkeypatch.setattr(yolo, 'configure_network', lambda *a, **k: events.append('network'))
     monkeypatch.setattr(yolo, 'start_workload', lambda *a, **k: events.append('startup'))
@@ -39,8 +41,24 @@ def test_normal_owner_orders_start_requests_cleanup_receipt(tmp_path, monkeypatc
     value = yolo.run_normal_node(state, startup, completion_factory=lambda: completion,
         endpoints=[], startup_options={}, request_options={}, accept_request=lambda *a: events.append('accept'))
     assert value == {'done': True}
-    assert events[:4] == ['network','startup','requests','accept']
+    assert events[:5] == ['version','network','startup','requests','accept']
     assert events[-2:] == ['close','receipt']
+
+
+@pytest.mark.parametrize('mode', ['local-cpu', 'single-node-gpu', 'two-node-gpu', 'negative-dependency'])
+def test_version_failure_prevents_network_allocation_and_workload(tmp_path, monkeypatch, mode):
+    state, startup, completion, events = setup(tmp_path, monkeypatch)
+    state.mode = state._preparation_binding[0]['case'] = mode
+    def reject(**kwargs):
+        events.append('version')
+        raise ValueError('APPTAINER_VERSION_MISMATCH')
+    state.verify_runtime = reject
+    with pytest.raises(ValueError, match='APPTAINER_VERSION_MISMATCH'):
+        yolo.run_normal_node(state, startup, completion_factory=lambda: completion,
+            endpoints=[], startup_options={}, request_options={}, accept_request=lambda *a: None)
+    assert events[0] == 'version' and 'close' in events
+    assert not any(e in events for e in ('network', 'startup', 'requests', 'receipt'))
+    assert (tmp_path/'node-failure.json').is_file()
 
 
 @pytest.mark.parametrize('failure', [False, True])
@@ -59,10 +77,10 @@ def test_gpu_probe_precedes_network_and_provider_start(tmp_path, monkeypatch, fa
             endpoints=[], startup_options={}, request_options={}, accept_request=lambda *a: None)
     if failure:
         with pytest.raises(ValueError, match='GPU unavailable'): run()
-        assert events == ['allocation', 'gpu-probe', 'close']
+        assert events == ['version', 'allocation', 'gpu-probe', 'close']
     else:
         run()
-        assert events[:4] == ['allocation', 'gpu-probe', 'network', 'startup']
+        assert events[:5] == ['version', 'allocation', 'gpu-probe', 'network', 'startup']
 
 
 def test_failure_still_closes_notifies_and_preserves_local_record(tmp_path, monkeypatch):
@@ -88,7 +106,7 @@ def test_allocation_failure_prevents_even_gpu_probe(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match='wrong allocation'):
         yolo.run_normal_node(state, startup, completion_factory=lambda: completion,
             endpoints=[], startup_options={}, request_options={}, accept_request=lambda *a: None)
-    assert events == ['allocation', 'close']
+    assert events == ['version', 'allocation', 'close']
 
 
 def test_completion_lane_cannot_reuse_startup_directory(tmp_path, monkeypatch):
@@ -126,6 +144,7 @@ def test_two_rank_real_barriers_keep_peer_alive_and_propagate_failure(tmp_path, 
     def state(rank):
         return NS(mode='two-node-gpu', rank=rank, output=tmp_path/('node'+str(rank)),
             _preparation_binding=(plan,None,None), close=lambda: closed[rank].set() or [],
+            verify_runtime=lambda **kwargs: None,
             probe_gpu_device=lambda **kwargs: None, verify_allocation=lambda *a, **k: None)
     monkeypatch.setattr(yolo, 'configure_network', lambda *a, **k: None)
     monkeypatch.setattr(yolo, 'start_workload', lambda *a, **k: None)

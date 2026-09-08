@@ -21,6 +21,7 @@ def prepared(tmp_path, rank=0, mode="two-node-gpu"):
         (home / ".ndn/ndnsec-key-file/key.privkey").write_bytes(b"not-a-private-key")
     launcher = tmp_path / "fake-apptainer"
     launcher.write_text("#!/usr/bin/python3\nimport os,sys\n"
+                        "if sys.argv[1:] == ['--version']: print('apptainer version 1.5.3'); sys.exit(0)\n"
                         "args=sys.argv[1:]; i=args.index('/usr/bin/env')\n"
                         + "args=[a.replace('PYTHONPATH=/bundle', 'PYTHONPATH=" + str(Path(__file__).resolve().parents[1]) + "') for a in args]\n"
                         +
@@ -30,7 +31,8 @@ def prepared(tmp_path, rank=0, mode="two-node-gpu"):
     launcher.chmod(0o700)
     for name in ("bundle", "public", "node"):
         (tmp_path / name).mkdir()
-    return dict(profile={"apptainer": str(launcher), "sif": str(tmp_path / "fixture.sif")},
+    return dict(profile={"apptainer": str(launcher), "apptainerVersion": "1.5.3",
+                         "sif": str(tmp_path / "fixture.sif")},
                 mode=mode, rank=rank, bundle=tmp_path / "bundle", homes=homes,
                 public=tmp_path / "public", output=tmp_path / "output", node=tmp_path / "node",
                 gpu_device=None if mode == "local-cpu" else "0", cleanup_seconds=1)

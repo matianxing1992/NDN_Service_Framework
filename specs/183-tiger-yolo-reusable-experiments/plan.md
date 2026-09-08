@@ -27,10 +27,10 @@ I/II：沿用动态 API 和现有鉴权/请求级密钥，不新建框架协议�
 | Owner/path | Existing or planned | Responsibility |
 | --- | --- | --- |
 | `Experiments/TigerCluster/runtime/baseline.py`, `identities.py` | existing; narrow extension | 公共进程/容器/身份/路由原语；保持已有 CPU v1 schema 及历史结果语义 |
-| `runtime/yolo_profile.py` | implemented; qualification open | I/R/E、effective profile、确定性case/run与冻结bundle已接；host语义gate和版本消费缺口见T007 N1/N3 |
+| `runtime/yolo_profile.py` | implemented; qualification open | I/R/E、effective profile、case/run与冻结bundle已接；版本已由issuer/rank/collector消费，剩host语义gate见T007 N1 |
 | `runtime/yolo_submission.py` | partial implementation | 共享根下candidate/gate提交状态和未知job恢复；只管理记录，不执行Slurm或验证模型 |
 | `runtime/yolo_bundle.py` | integrity implemented; production bundle pending | 显式小型脚本清单冻结/验证，dispatch已调用；不含模型/私钥/宿主库，不替代源/运行资格 |
-| `runtime/yolo_worker.py`, `yolo_result.py` | implemented; runtime unqualified | 共享生命周期、四角色和normal/negative留存DAG/GPU/数值/清理collector已接；每rank版本检查待补 |
+| `runtime/yolo_worker.py`, `yolo_result.py` | implemented; runtime unqualified | 共享生命周期、四角色和normal/negative留存collector已接；每rank先有界检查版本，public重算要求issuer及所有rank原记录 |
 | `apps/yolo.py` | implemented; runtime unqualified | 复用ACK-driven User/签发/准备，per-request独立graph reference已接；不另建模型规划或密钥owner |
 | `jobs/yolo/submit.py`, `run.sbatch` | implemented; runtime unqualified | 五命令、normal local/single/two、negative双rank、SSH接收/submit/query和终态已接；真实前置资格仍缺，见tasks.md |
 | `profiles/yolo-two-node.json`, `schemas/tiger-yolo-v1.schema.json` | implemented; candidate refresh pending | 一份操作者配置及验证格式；图/模型等外部输入仅以immutable引用出现；最终source/R/E尚未资格化 |

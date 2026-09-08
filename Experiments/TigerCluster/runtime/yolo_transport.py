@@ -191,6 +191,15 @@ def candidate_inventory(profile_path, profile, prepared, *, provision, gates):
         def locate(path):
             return Path(os.path.abspath(str(root/Path(path))))
         nodes = {int(rank):locate(row['root']) for rank,row in collection['nodes'].items()}
+        # Public reanalysis requires the issuer and each rank observation; a
+        # receiver must retain them along with the original immutable verdict.
+        version_roots = {'issuer': root/'prepare-output', **{str(rank):node for rank,node in nodes.items()}}
+        if set(verdict.get('runtimeVersions', {})) != set(version_roots):
+            raise ValueError('TRANSPORT_RUNTIME_VERSION_COVERAGE')
+        for key, version_root in version_roots.items():
+            observed = verdict['runtimeVersions'][key]
+            add(version_root/'runtime-version/receipt.json', {'sha256':observed['receiptDigest']})
+            add(version_root/'runtime-version/version.log', observed['log'])
         for node in nodes.values():
             receipt = document(node/'node-receipt.json')
             for launch in receipt['launches']:

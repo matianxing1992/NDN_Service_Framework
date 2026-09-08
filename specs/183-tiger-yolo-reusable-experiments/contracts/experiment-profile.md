@@ -267,6 +267,24 @@ small-file tests qualify this storage owner only, not a real SIF or GPU allocati
 
 ## Operator Interface
 
+### Runtime version observation (2026-09-08)
+
+`runtime.apptainerVersion` is a frozen behavior constraint. The local issuer and
+every YOLO rank must observe the exact `apptainer --version` value before any
+container workload. Use the shared finite-process owner with at most ten seconds
+and no more than the remaining staging/startup budget, plus the existing cleanup
+budget. A mismatch, nonzero exit, timeout or incomplete/forced cleanup rejects
+the run; never rewrite the expected version to accommodate the observation.
+
+Retain `runtime-version/receipt.json` and `runtime-version/version.log` under
+`prepare-output` and each `nodeN`, binding run/candidate/rank, command, version,
+log content and cleanup. Files are 0600 and attempts are not overwritten.
+Public normal/negative collection rechecks every record against the frozen
+effective version and includes `runtimeVersions` in the immutable verdict.
+Prerequisite transport must include those same files. The observation is only
+`RUNTIME_VERSION_COMPONENT_ONLY`; it does not replace actual SIF/GPU execution
+or the compute-version qualification required before building the candidate.
+
 唯一 planned 入口 `Experiments/TigerCluster/jobs/yolo/submit.py`，统一参数 `--profile PATH --run-id ID --output PATH`。子命令：
 
 | Command | Semantics |

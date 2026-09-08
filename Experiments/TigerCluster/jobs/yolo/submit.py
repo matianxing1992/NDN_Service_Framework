@@ -665,6 +665,17 @@ def _reanalyze_retained(root: Path, prepared: dict) -> dict:
     from runtime.yolo_bundle import reference_owner, verify_harness
     verify_harness(Path(prepared['bundle']),
                    expected_manifest_sha256=prepared['harnessManifestSha256'])
+    # A declared version or a prior allocation's observation is insufficient.
+    # Join this run's issuer and every node's exact command/cleanup evidence.
+    from runtime.yolo_worker import read_runtime_version
+    expected = prepared['plan']['effectiveBehavior']['profile']
+    version = expected['runtime']['apptainerVersion']
+    version_binding = dict(runId=prepared['runId'], candidateDigest=prepared['candidateDigest'])
+    runtime_versions = {'issuer': read_runtime_version(root / 'prepare-output',
+        expected_version=version, binding=dict(version_binding, rank='issuer'))}
+    for rank, row in collection['nodes'].items():
+        runtime_versions[str(rank)] = read_runtime_version(Path(row['root']),
+            expected_version=version, binding=dict(version_binding, rank=int(rank)))
     if collection['kind'] == 'normal':
         owner = reference_owner(Path(prepared['bundle']))
         references = [owner.load_reference(row['package'], row['repository'], row['inputSize'])
@@ -695,7 +706,8 @@ def _reanalyze_retained(root: Path, prepared: dict) -> dict:
     # JSON persists rank keys as strings. Normalize once at the public boundary
     # so rereading the immutable verdict compares the same representation.
     return json.loads(json.dumps(dict(final, runId=prepared['runId'], candidateDigest=prepared['candidateDigest'],
-        collectorSchema='tiger-yolo-collector-v1', collectionInputDigest=collection_digest),
+        collectorSchema='tiger-yolo-collector-v1', collectionInputDigest=collection_digest,
+        runtimeVersions=runtime_versions),
         sort_keys=True, allow_nan=False))
 
 

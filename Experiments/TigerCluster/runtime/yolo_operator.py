@@ -145,6 +145,11 @@ def provision_run(*, runtime_profile: dict, bundle: Path, harness_digest: str,
             or any(p.is_symlink() for p in (sif, *sif.parents))
             or digest(sif) != runtime_profile["sifSha256"]):
         raise OperatorError("OPERATOR_PREPARATION_SIF_DIGEST")
+    from .yolo_worker import verify_runtime_version
+    runtime_version = verify_runtime_version(runtime_profile, output,
+        binding=dict(runId=options['plan']['runId'],
+                     candidateDigest=options['runtime_candidate_digest'], rank='issuer'),
+        seconds=deadline-time.monotonic(), cleanup_seconds=cleanup_seconds)
     command = container_command(runtime_profile, bundle, private / "root", public,
         output, [PYTHON, "-m", "apps.yolo", "prepare", "--descriptor", "/inputs/prepare.json",
                  "--descriptor-sha256", descriptor_digest],
@@ -180,7 +185,8 @@ def provision_run(*, runtime_profile: dict, bundle: Path, harness_digest: str,
     if any(receipt.get(key) != value for key, value in expected.items()):
         raise OperatorError("OPERATOR_PREPARATION_RECEIPT_INPUTS")
     return {"status": "PREPARED", "qualification": "NOT_EVALUATED",
-            "receiptDigest": receipt_digest, "preparation": receipt}
+            "receiptDigest": receipt_digest, "preparation": receipt,
+            "runtimeVersion": runtime_version}
 
 
 def _validate_plan(plan: dict, *, mode: str, rank: int) -> tuple[tuple[str, ...], tuple[int, ...]]:

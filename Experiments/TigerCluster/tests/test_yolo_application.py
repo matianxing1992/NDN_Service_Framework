@@ -197,6 +197,7 @@ def scheduled_inputs(tmp_path, mode='two-node-gpu'):
         'candidateDigest': 'sha256:' + 'c' * 64,
         'placementCandidateId': 'test-candidate', 'placementCandidateDigest': 'sha256:' + 'a' * 64}))
     worker._verify_prepared_boundary = lambda: None  # Not a qualified SIF/credential fixture.
+    worker.verify_runtime(seconds=2)  # Actual tiny fake-runtime version command, no container.
     if mode != 'local-cpu':
         worker.allocation = {'fixture': True}
         worker.gpu_probe = {'fixture': True}
@@ -448,6 +449,9 @@ def test_run_normal_node_owns_ordered_lifecycle_and_request_callback(tmp_path, m
             self.output.mkdir()
             self.events = []
 
+        def verify_runtime(self, **kwargs):
+            self.events.append(('version',))
+
         def close(self):
             self.events.append(('close',))
             return []
@@ -491,7 +495,7 @@ def test_run_normal_node_owns_ordered_lifecycle_and_request_callback(tmp_path, m
     assert [index for index, _ in accepted] == [0, 1]
     assert ('publish', 'workload-complete', {'requestCount': 2}) in completion.events
     assert ('wait', 'workload-complete', None) in completion.events
-    assert worker.events == [('close',)]
+    assert worker.events == [('version',), ('close',)]
 
 
 def test_run_normal_node_records_startup_failure_and_closes_worker(tmp_path, monkeypatch):
@@ -507,6 +511,9 @@ def test_run_normal_node_records_startup_failure_and_closes_worker(tmp_path, mon
             self.output = tmp_path / 'node0'
             self.output.mkdir()
             self.closed = False
+
+        def verify_runtime(self, **kwargs):
+            pass
 
         def close(self):
             self.closed = True

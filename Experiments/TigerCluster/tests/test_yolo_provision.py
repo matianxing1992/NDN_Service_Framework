@@ -63,6 +63,7 @@ def fixture(tmp_path, behavior='success'):
     launcher = tmp_path / 'fake-apptainer'
     launcher.write_text('#!/usr/bin/python3\nimport sys, json, shutil, time\n'
         'from pathlib import Path\n'
+        "if sys.argv[1:] == ['--version']: print('apptainer version 1.5.3'); sys.exit(0)\n"
         f'behavior={behavior!r}\n'
         "args=sys.argv[1:]\nassert '--nv' not in args\n"
         "assert args[args.index('--pwd')+1] == '/bundle'\n"
@@ -76,7 +77,8 @@ def fixture(tmp_path, behavior='success'):
     launcher.chmod(0o700)
     sif = tmp_path / 'fixture.sif'
     sif.write_bytes(b'fake image: never a real SIF')
-    return dict(runtime_profile={'apptainer': str(launcher), 'sif': str(sif), 'sifSha256': sha(sif)[7:]},
+    return dict(runtime_profile={'apptainer': str(launcher), 'apptainerVersion': '1.5.3',
+                                'sif': str(sif), 'sifSha256': sha(sif)[7:]},
                 bundle=bundle, harness_digest=harness_digest,
                 descriptor_digest=sha(descriptor), **roots,
                 seconds=0.2 if behavior == 'timeout' else 3, cleanup_seconds=1)
