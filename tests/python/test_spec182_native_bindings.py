@@ -52,8 +52,15 @@ class Spec182NativeBindingsTest(unittest.TestCase):
         for name in (
                 "NativeRequestCatalog", "NativeRequestPreparation",
                 "NativeCanonicalPreparationCatalog", "NativeOfferAdmission",
-                "NativeAuthenticatedGrantClient"):
+                "NativeAuthenticatedGrantClient", "native_request_runtime_from_json"):
             self.assertTrue(hasattr(_ndnsf, name), name)
+
+    def test_runtime_config_facade_is_a_thin_native_pass_through(self):
+        source = (ROOT / "pythonWrapper/ndnsf/service.py").read_text(encoding="utf-8")
+        self.assertIn("def native_runtime_from_config", source)
+        self.assertIn("_ndnsf.native_request_runtime_from_json", source)
+        self.assertIn("NativeRequestRuntime nativeRequestRuntimeFromJson",
+                      (ROOT / "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPlanner.cpp").read_text(encoding="utf-8"))
 
     def test_catalog_loader_keeps_source_validation_native(self):
         sys.path.insert(0, str(ROOT / "pythonWrapper"))

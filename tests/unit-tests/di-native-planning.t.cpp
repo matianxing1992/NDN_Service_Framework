@@ -7,6 +7,8 @@
 #include "tests/fixtures/spec182/native-sealing-fixture.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanSealer.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestCatalog.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPlanner.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeAuthenticatedGrantClient.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/qwen/NativeQwenPlanner.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloPlanner.hpp"
 
@@ -15,6 +17,7 @@
 #include <chrono>
 #include <algorithm>
 #include <limits>
+#include <openssl/evp.h>
 
 namespace {
 
@@ -1230,6 +1233,102 @@ BOOST_AUTO_TEST_CASE(RequestCatalogLoadsPinnedSourceAndRejectsConfigurationDrift
   auto cancelled = control;
   cancelled.requireActive = [] { throw std::runtime_error("cancelled"); };
   BOOST_CHECK_THROW(NativeRequestCatalog::load(nativeCanonicalJson(configuration), source, cancelled), std::runtime_error);
+}
+
+BOOST_AUTO_TEST_CASE(NativeRequestRuntimeLoadsPinnedPolicyAndRejectsDrift)
+{
+  std::ifstream file("tests/fixtures/spec182/yolo-semantic-oracle.json");
+  BOOST_REQUIRE(file.good());
+  const auto oracle = NativeJson::parse(file);
+  NativeCanonicalSource source;
+  const auto hex = oracle.at("model_hex").get<std::string>();
+  for (std::size_t i = 0; i < hex.size(); i += 2)
+    source.modelBytes.push_back(std::stoul(hex.substr(i, 2), nullptr, 16));
+  const auto descriptor = model("yolo26n", "YOLOFixture", oracle.at("graph_digest").get<std::string>());
+  NativeAssemblyControl control{std::chrono::steady_clock::now() + std::chrono::seconds(30),
+    [] {}, 1024 * 1024, 1024 * 1024};
+  const auto identity = canonicalOnnxSourceIdentity(source, control);
+  const NativeJson catalogConfiguration{
+    {"schema", "ndnsf-di-native-request-catalog-v1"},
+    {"model", nativeParseJson(descriptor.canonicalJson())},
+    {"source", {{"data_name", "/fixture/source"},
+      {"digest", nativePlanningDigest(source.modelBytes.data(), source.modelBytes.size())},
+      {"model_manifest_digest", digest("fixture-manifest")}, {"canonical_graph_digest", identity.graphDigest}}},
+    {"recipe", {{"artifact_profile_digest", digest("fixture-profile")},
+      {"assembler_descriptor_digest", digest("fixture-assembler-v1")}, {"backend_abi", "fixture-abi"},
+      {"precision", descriptor.precision}, {"quantization", "none"}, {"layout", "NCHW"},
+      {"padding", "none"}, {"protection_epoch", "fixture-epoch"}, {"max_source_bytes", 1048576},
+      {"max_assembled_bytes", 1048576}, {"max_nodes", 100}}},
+    {"publication", {{"artifact_root", "/fixture/artifacts"}}},
+    {"input_format", "JSON"}, {"max_payload_bytes", 32},
+    {"splitter", {{"kind", "YOLO"}, {"components", NativeJson::array({{
+      {"candidate_id", "semantic-v1"}, {"priority", 1}, {"roles", {"Front", "Branch", "Merge"}},
+      {"node_names_by_role", NativeJson::object()}, {"input_ingress_role", "Front"},
+      {"result_egress_role", "Merge"}, {"merge_kind", "NATIVE_POSTPROCESS"},
+      {"candidate_digest", oracle.at("registered_digest")}, {"semantic_partition", oracle.at("partition")}
+    }})}}}};
+  const auto catalog = NativeRequestCatalog::load(nativeCanonicalJson(catalogConfiguration), source, control);
+
+  const auto key = [] (char seed) {
+    const std::string bytes(32, seed);
+    return std::shared_ptr<EVP_PKEY>(EVP_PKEY_new_raw_private_key(EVP_PKEY_ED25519, nullptr,
+      reinterpret_cast<const unsigned char*>(bytes.data()), bytes.size()), EVP_PKEY_free);
+  };
+  NativeGrantIssuerConfig issuer;
+  issuer.authorityIdentity = "/authority";
+  issuer.requesterIdentity = "/requester";
+  issuer.protectionEpoch = "fixture-epoch";
+  issuer.keyId = "fixture-key";
+  issuer.authorityPrivateKey = key('a');
+  issuer.requesterPublicKey = key('b');
+  issuer.allowedModelManifests = {digest("fixture-manifest")};
+  issuer.contentKey = [] (const auto&, const auto&) { return std::vector<std::uint8_t>(32, 42); };
+  std::string authorityPublic(32, '\0');
+  std::size_t authorityPublicSize = authorityPublic.size();
+  BOOST_REQUIRE_EQUAL(EVP_PKEY_get_raw_public_key(issuer.authorityPrivateKey.get(),
+    reinterpret_cast<unsigned char*>(authorityPublic.data()), &authorityPublicSize), 1);
+  const auto grants = std::make_shared<NativeAuthenticatedGrantClient>(
+    "/requester", key('b'), "/authority", authorityPublic,
+    std::make_shared<NativeArtifactGrantIssuer>(issuer),
+    [] (const auto& name, const auto&, const auto&) { return name; });
+
+  const NativeJson runtimeConfiguration{
+    {"schema", "ndnsf-di-native-request-runtime-v1"},
+    {"contract", {{"service_name", "/service"}, {"task_name", "task"},
+      {"adapter_name", descriptor.adapterId},
+      {"adapter_descriptor_digest", descriptor.adapter.descriptorDigest()},
+      {"adapter_composition_digest", digest("composition")},
+      {"task_descriptor_digest", digest("task")}, {"generation_mode", "TOKEN_DIAGNOSTIC"}}},
+    {"requester_identity", "/requester"}, {"protection_epoch", "fixture-epoch"},
+    {"input_layout_digest", digest("layout")},
+    {"security", {{"policy_digest", digest("policy")}, {"require_protected_artifacts", true}}},
+    {"budget", {{"max_candidates", 1}, {"max_policy_ms", 100}, {"max_reentries", 1}}},
+    {"state_mapping", {{"inputs", NativeJson::object()}, {"outputs", NativeJson::object()}}},
+    {"no_progress_ms", 5000}, {"max_segments", 4096}};
+  const auto runtime = nativeRequestRuntimeFromJson(
+    nativeCanonicalJson(runtimeConfiguration), catalog, grants);
+  BOOST_CHECK_EQUAL(runtime.contract.adapterName, descriptor.adapterId);
+  BOOST_CHECK_EQUAL(runtime.requesterIdentity, "/requester");
+  BOOST_CHECK_EQUAL(runtime.catalog.get(), catalog.preparation.get());
+  BOOST_CHECK_EQUAL(runtime.grants.get(), grants.get());
+
+  for (const auto& mutation : std::vector<std::function<void(NativeJson&)>>{
+         [] (auto& value) { value["unknown"] = true; },
+         [] (auto& value) { value["contract"]["adapter_name"] = "foreign"; },
+         [] (auto& value) { value["requester_identity"] = "/foreign"; },
+         [] (auto& value) { value["security"]["require_protected_artifacts"] = false; },
+         [] (auto& value) { value["budget"]["max_candidates"] = 0; },
+         [] (auto& value) { value["state_mapping"]["inputs"] = {{"role", {{"state", {"x"}}}}}; },
+         [] (auto& value) { value["contract"]["service_name"] = 7; },
+         [] (auto& value) { value["security"]["require_protected_artifacts"] = "true"; },
+         [] (auto& value) { value["protection_epoch"] = "foreign-epoch"; }}) {
+    auto broken = runtimeConfiguration;
+    mutation(broken);
+    BOOST_CHECK_THROW(nativeRequestRuntimeFromJson(nativeCanonicalJson(broken), catalog, grants),
+                      std::invalid_argument);
+  }
+  BOOST_CHECK_THROW(nativeRequestRuntimeFromJson(nativeCanonicalJson(runtimeConfiguration), catalog, {}),
+                    std::invalid_argument);
 }
 
 BOOST_AUTO_TEST_CASE(OwnedOnnxGraphMatchesMaintainedPlanningAndCanonicalIdentities)

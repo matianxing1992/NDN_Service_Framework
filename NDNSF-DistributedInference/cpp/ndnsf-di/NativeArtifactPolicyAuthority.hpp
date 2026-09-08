@@ -57,6 +57,10 @@ public:
   NativeKeyGrant issue(const NativeSignedGrantRequest& request,
                        std::uint64_t nowMs, std::uint64_t expiresAtMs,
                        const std::string& publishedManifestJson) const;
+
+  const std::string& requesterIdentity() const noexcept { return m_config.requesterIdentity; }
+  const std::string& protectionEpoch() const noexcept { return m_config.protectionEpoch; }
+
 private:
   NativeGrantIssuerConfig m_config;
 };

@@ -34,6 +34,12 @@ public:
   NativeGrantBinding acquire(const NativePlacementPlanCore& core,
     const NativeAdmittedOfferV3& offer, const NativeSecurityPolicySnapshot& security,
     const NativeGrantControl& control) const;
+
+  /** Identity bound to the requester key and grant issuer at construction. */
+  const std::string& requesterIdentity() const noexcept { return m_requester; }
+  /** Protection epoch accepted by the native grant issuer. */
+  const std::string& protectionEpoch() const noexcept { return m_issuer->protectionEpoch(); }
+
 private:
   std::string m_requester, m_authority, m_authorityPublicKey;
   std::shared_ptr<EVP_PKEY> m_requesterKey;
