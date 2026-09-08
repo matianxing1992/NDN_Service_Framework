@@ -39,6 +39,12 @@ public:
                         std::shared_ptr<NativeConversationCoordinator> conversations,
                         std::shared_ptr<NativeRequestPreparation> preparation,
                         std::shared_ptr<const NativeOfferAdmission> admission);
+  NativeInferenceClient(std::shared_ptr<ndn_service_framework::ServiceUser> user,
+                        std::shared_ptr<const NativeAdapterRegistry> adapters,
+                        const NativeRequestRuntime& runtime,
+                        std::shared_ptr<NativeConversationCoordinator> conversations,
+                        std::shared_ptr<NativeRequestPreparation> preparation,
+                        std::shared_ptr<const NativeOfferAdmission> admission);
   NativeInferenceHandle request(
       const NativeModelRef& model,
       const NativeApplicationInput& input,
@@ -64,7 +70,7 @@ public:
 | user | 应用已配置并启动的 Core ServiceUser；不再重复传 group/controller identity | shared ownership；client 不私自启动第二个 Face；close 不关闭共享 user |
 | adapters | 原生注册表提供模型差异，构造后只读 | 不允许模型名称分支散落于 client；未注册 adapter 在 Request 前拒绝 |
 | grants | 已配置原生权威 port；保护请求必须有 | 不接受明文 key dict；grant secrets 禁止进入 handle/日志 |
-| conversations | 可选的原生会话 owner | 无续接请求可为空；有 continuation 而未配置必须拒绝 |
+| conversations | 可选的原生会话 owner；runtime 构造通过同名重载注入 | 无续接请求可为空；有 continuation 而未配置必须拒绝 |
 | preparation / admission | CD-013 原生输入/工件 I/O 与 ACK policy owner；应用配置时构造 | 共享寿命，native ports；缺配置在 Request 前拒绝 |
 | model | 调用者给出 immutable model/adapter 引用 | URI、revision、digest 按认证模型契约校验；不能只给可变名称 |
 | input | application value、inline bytes 或认证 publication reference | 只允许声明 transport mode；禁止 caller 拼接伪造 REPO_REF |

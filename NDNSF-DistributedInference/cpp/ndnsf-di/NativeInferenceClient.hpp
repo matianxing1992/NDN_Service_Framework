@@ -157,6 +157,18 @@ public:
     std::shared_ptr<NativeRequestPreparation> preparation,
     std::shared_ptr<const NativeOfferAdmission> admission);
 
+  // Conversation requests use the same protected runtime as ordinary
+  // requests plus the native coordinator that owns parent/checkpoint state.
+  // Keep the five-argument runtime constructor above for non-conversation
+  // callers and compatibility tests.
+  NativeInferenceClient(
+    std::shared_ptr<ndn_service_framework::ServiceUser> user,
+    std::shared_ptr<const NativeAdapterRegistry> adapters,
+    const NativeRequestRuntime& runtime,
+    std::shared_ptr<NativeConversationCoordinator> conversations,
+    std::shared_ptr<NativeRequestPreparation> preparation,
+    std::shared_ptr<const NativeOfferAdmission> admission);
+
   NativeInferenceHandle request(
     const NativeModelRef& model,
     const NativeApplicationInput& input,

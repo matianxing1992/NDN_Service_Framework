@@ -255,20 +255,22 @@ COMMIT 后补偿窗口，可重发 ACK，或在匹配 checkpoint 的 ROLLBACK �
   ROLLBACK/FINALIZE 所需密钥；
 - replacement 已切换 coordinator attempt 但尚未安装到 operation 时，终态竞态会显式 abort
   新 turn，避免 pending owner 泄漏；无 runtime 的 conversation option 在 begin 前拒绝。
+- 公开 runtime 构造原先没有注入 coordinator，导致 conversation option 永远无法满足
+  runtime+owner 前置条件；新增六参数 runtime+coordinator overload，保留旧五参数 runtime
+  构造给非会话调用方。
 
 静态审查结果为 `STATIC_PASS / TESTS_DEFERRED`，随后批末验证通过：
 
 - `git diff --check`：exit 0；
 - `PATH=/usr/bin:/bin:/usr/sbin:/sbin /usr/bin/python3 ./waf -o build-nac182 build --targets=ndnsf-distributed-inference -j4 -v`：exit 0，当前 DI shared library 成功构建；
-- `./.codex-tmp/spec182-r4-b2/build/unit-tests --run_test='Spec182Conversation*,Spec182StreamAcceptance*,Spec182CanonicalJson*,Spec182EpochText*,Spec182Sampling*' --log_level=test_suite`：25 cases，exit 0；
-- `./.codex-tmp/spec182-r4-b2/build/unit-tests --run_test='Spec182ProviderHost*' --log_level=test_suite`：6 cases，exit 0；
+- `./.codex-tmp/spec182-r4-b2/build/unit-tests --run_test='Spec182NativeInferenceClient*,Spec182ClientState*,Spec182Conversation*,Spec182ProviderHost*,Spec182StreamAcceptance*,Spec182CanonicalJson*,Spec182EpochText*,Spec182Sampling*' --log_level=test_suite`：49 cases，exit 0；
 - `python3 tests/fixtures/spec182/build-conversation-oracle.py --check tests/fixtures/spec182/conversation-oracle.json`：exit 0；
 - 原始日志：[build-final.log](../../../.codex-tmp/spec182-r4-b4-current/build-final.log)、
   [tests-final-r2.log](../../../.codex-tmp/spec182-r4-b4-current/tests-final-r2.log)、
   [provider-host.log](../../../.codex-tmp/spec182-r4-b4-current/provider-host.log)、
   [oracle.log](../../../.codex-tmp/spec182-r4-b4-current/oracle.log)。
 
-这些结果证明当前 native library 的编译、会话 owner、流式接受和独立 oracle 没有回归；
+这些结果证明当前 native library 的编译、runtime/coordinator 构造、会话 owner、流式接受和独立 oracle 没有回归；
 尚未证明真实两轮请求、跨进程 receipt/control、Provider 运行时重算或 T016 qualification。
 CC-3B 与 T011-C 保持 `PARTIAL`，下一出口是补真实两轮/恢复 integration harness，再运行
 T015/T016 规定的完整 unit→integration→MiniNDN/no-Python gates。
