@@ -3332,6 +3332,14 @@ Core、两个 Python 扩展和内部原生检查均通过后，mksquashfs 使用
 身份编译 app。教训：Waf 命令行能力必须和 source seal 一起验证，入口失败不应
 复用其未完成缓存作为候选。
 
+## 2026-09-08: 外置 Controller Waf 目标缺少框架头文件目录
+
+NAC-ABE include 修复后，外置 `di` 构建在 `App_ServiceController.cpp` 进入下一步
+时失败：`ndn-service-framework/common.hpp` 的 `<NDNSFThreadPool.hpp>` 无法找到。
+该目标只声明了源根 `.`，而框架的裸头文件 include 需要同时加入
+`ndn-service-framework`；base 目标本身已有这两个 include。修复外置 Controller
+目标的 include 列表，并重新绑定 base/app source seal；该轮仍未生成 app bundle。
+
 ## 2026-09-08: ControllerVersion 父 SIF 在重解包时出现 zstd 读取失败
 
 使用已验证的 `base-runtime-controller-version.sif` 作为本次 `-j4` base 重建

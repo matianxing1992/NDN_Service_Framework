@@ -435,7 +435,8 @@ def build(bld):
                          'PROTOBUF NAC-ABE NDNSD OPENSSL DL')
         if component in ('di', 'all'):
             bld.program(name='App_ServiceController', target='examples/App_ServiceController',
-                        source=['examples/App_ServiceController.cpp'], includes=['.'],
+                        source=['examples/App_ServiceController.cpp'],
+                        includes=['.', 'ndn-service-framework'],
                         use=framework_use, install_path=None)
 
             di_sources = bld.path.ant_glob(
