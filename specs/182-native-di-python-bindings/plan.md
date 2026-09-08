@@ -90,6 +90,11 @@ fresh tree，不能复用不兼容对象。静态门及测试结果统一记录�
 T003-A/T003-C/T008-A 的既有 acceptance dependencies 保留；本批不运行 requester、
 integration、MiniNDN 或 Tiger，不把 catalog 声明当作 Core 来源认证。
 
+T003 局部验收已按 [local closure](evidence/t003-local-closure-20260908.md) 逐条核对通过；
+上述批次的历史前置描述不再表示 catalog semantic factory 未实现。T003-A/B/C 的
+LocalChecks 与 T016 FinalProof 分开；R1 的 source/state 映射阶段出口及 T008/T010
+生产组装与默认接线仍未完成，后续必须关闭，不能以局部卡 DONE 替代。
+
 ### Dependencies
 
 ~~~text

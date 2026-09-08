@@ -145,7 +145,7 @@ worker crash/cancel 等真实子进程案例也转 T016，卡内只运行纯 fra
 - **Write**: N/NativePlanning.hpp; N/NativePlanning.cpp; N/NativeV3Placement.hpp; N/NativeV3Placement.cpp; U/di-native-planning.t.cpp; U/di-native-v3-placement.t.cpp; U/di-native-preparation.t.cpp; U/di-native-canonical-publisher.t.cpp; U/di-native-plan-sealer.t.cpp; tests/fixtures/spec182/author-placement-v3-oracle.py; tests/fixtures/spec182/placement-v3-oracle.json; wscript。
 - **Steps**: 实现 registry 与默认 placement，固定同一 snapshot 时间，先兼容过滤再 residency 排序；不做 I/O、不授权、不把 has_model 当 exact residency。
 - **Resource contract**: NativeRoleResourceRequirement 对齐维护 splitter.RoleResourceRequirement：五类 uint64 optional（weight/workspace/kv/activation/transient），未知保留 null，默认 margin 1.1；规范 JSON 保留完整字段。共享 peak 为 int(sum(bytes) * margin)，未知返回 null；超出原生 uint64 范围明确拒绝，不能 wrap 或饱和。placement/preparation 均拒绝未知 peak，后者按整数向上取 MiB，不漏 KV。修复范围包含 NativeRequestPreparation.cpp、两个默认 splitter 及真实 Python resource oracle；定向检查须覆盖 canonical bytes、未知/零、KV 容量边界、浮点截断与溢出。
-- **Verify**: CPP(Spec182NativePlanning/*) 与 CPP(Spec182V3Placement/*)；lease/budget/device/ref tie-break、非法向量、同输入同结果；与冻结 Python proposal 对照。proposeRoles 接受完整 role/rank metadata 与 admitted offer，旧 candidate 的 metadata/主链迁移未闭合前 T003-C 保持 PARTIAL。
+- **Verify**: CPP(Spec182NativePlanning/*) 与 CPP(Spec182V3Placement/*)；lease/budget/device/ref tie-break、非法向量、同输入同结果；与冻结 Python proposal 对照。proposeRoles 接受完整 role/rank metadata 与 admitted offer；本卡关闭要求完整候选 metadata 与纯 placement 消费迁移通过。T008 拥有实际准备字段生成，T010 拥有默认 requester 接线，T016 拥有完整请求证明；不将这些下游任务循环设为 T003-C 的局部前置。见 [local closure](../evidence/t003-local-closure-20260908.md)。
 
 ### T004-A Canonical Plan Sealing
 
