@@ -12,6 +12,11 @@ std::uint64_t nowMs()
   return std::chrono::duration_cast<std::chrono::milliseconds>(
     std::chrono::system_clock::now().time_since_epoch()).count();
 }
+// ndn-cxx's DEFAULT_FRESHNESS_PERIOD is zero, while the Core APP-data
+// primitive requires a positive cache lifetime. Grants are issued with a
+// bounded lifetime by the authority, so keep the publication cache window
+// at the one-minute native grant default.
+constexpr auto kGrantFreshness = ndn::time::milliseconds(60000);
 NativeAuthenticatedGrantClient::Publish corePublisher(
   std::shared_ptr<ndn_service_framework::ServiceUser> user)
 {
@@ -40,7 +45,7 @@ NativeAuthenticatedGrantClient::Publish corePublisher(
       try {
         control.check();
         published = user->publishSignedAppData(ndn::Name(name),
-          ndn::Buffer(wire.begin(), wire.end())).toUri();
+          ndn::Buffer(wire.begin(), wire.end()), kGrantFreshness).toUri();
       } catch (...) { error = std::current_exception(); }
       std::lock_guard<std::mutex> lock(pending->mutex);
       if (pending->abandoned.load()) return;
