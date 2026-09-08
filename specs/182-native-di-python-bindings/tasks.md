@@ -17,6 +17,7 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 
 | Unit / Details | Status | Depends | Evidence / Remaining | Updated |
 | --- | --- | --- | --- | --- |
+| [R4-B1 Native Sampling Contract Repair](evidence/r4-b1-sampling-20260908.md) | DONE | R3-B1; T010-C/T011 acceptance retained | Local sampling batch：double惩罚与统一参数校验；4 cases/40 assertions、既有epoch 28 assertions PASS；增量unit与实际DI共享库构建PASS；stream/session仍待完成 | 2026-09-08 |
 | [R3-B1 Default Request Lifecycle](evidence/r3-b1-request-lifecycle-20260908.md#final-local-result) | DONE | R2-B4/B5/B6; T010-A/B acceptance retained | initial-request local batch：131 DI cases/2975 assertions经共享测试及失败单例重试通过，13 Core cases/183 assertions通过；2 request/4 grant/7 dataflow SDK oracle、CLI入口与加载检查PASS；真实网络/stream/bindings/旧路径退出仍待后续 | 2026-09-08 |
 | [R2-B6 Authorized Group Projection](evidence/r2-b6-group-projection-20260908.md) | DONE | R2-B5; R2-B3 | Initial-request local batch：group/model rank 分离、transfer operation/capability/endpoint 同源、实际 segment 消费；31 cases/1305 assertions PASS；默认 requester 与流式 feedback 未关闭 | 2026-09-08 |
 | [R2-B5 Native Group Key Admission](evidence/r2-b5-group-key-admission-20260908.md) | DONE | R2-B4; NativeOfferAdmission | Local batch only：同一认证 ACK key binding→Core RSA→Provider capability unwrap；19 cases/1216 assertions PASS；group rank/operation/endpoint 编排待闭合 | 2026-09-08 |
@@ -65,7 +66,7 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 | [T010-A Request Operation Terminal State](contracts/execution-units.md#t010-a-request-operation-terminal-state) | PARTIAL | T005-B, T008-B, T009-C | [Core I/O repair](evidence/t010-a-core-io-20260907.md)；postToIo/isOnIoThread、result I/O 等待拒绝、共享 user 寿命；-j4 构建 PASS，ClientState 11/11、既有 2/2 PASS；完整请求/成功竞争、有界通知待完成 | 2026-09-07 |
 | [T010-B Complete Request Orchestration](contracts/execution-units.md#t010-b-complete-request-orchestration) | PARTIAL | T010-A | [R3-B1](evidence/r3-b1-request-lifecycle-20260908.md#final-local-result)：配置化client的初始请求/签名ACK/规划授权/Core commit/Response及取消本地通过；无runtime旧入口仍拒绝，完整输入模式/stream/真实网络及调用方迁移待后续 | 2026-09-08 |
 | [T010-C Stream Acceptance and Replacement](contracts/execution-units.md#t010-c-stream-acceptance-and-replacement) | NOT_STARTED | T010-B | [baseline](evidence/task-progress-registry-20260907.md)；无本卡独立执行/验收记录；按依赖领取 | 2026-09-07 |
-| [T011-A Sampling Parity Repair](contracts/execution-units.md#t011-a-sampling-parity-repair) | PARTIAL | T010-C | [baseline](evidence/task-progress-registry-20260907.md)；已有相关源码切片；完整卡验收未完成 | 2026-09-07 |
+| [T011-A Sampling Parity Repair](contracts/execution-units.md#t011-a-sampling-parity-repair) | PARTIAL | T010-C | [R4-B1](evidence/r4-b1-sampling-20260908.md)：真实epoch采样4 cases/40 assertions与独立参考PASS；T010-C及完整卡验收依赖仍未关闭 | 2026-09-08 |
 | [T011-B Stable Epoch Emission](contracts/execution-units.md#t011-b-stable-epoch-emission) | PARTIAL | T011-A | [baseline](evidence/task-progress-registry-20260907.md)；已有相关源码切片；完整卡验收未完成 | 2026-09-07 |
 | [T011-C Conversation Journal and Continuation](contracts/execution-units.md#t011-c-conversation-journal-and-continuation) | PARTIAL | T011-B | [baseline](evidence/task-progress-registry-20260907.md)；已有相关源码切片；完整卡验收未完成 | 2026-09-07 |
 | [T012-A Native Binding Types and Lifetime](contracts/execution-units.md#t012-a-native-binding-types-and-lifetime) | PARTIAL | T011-C | [baseline](evidence/task-progress-registry-20260907.md) 保留；[descriptor binding](evidence/t003-model-descriptor-20260907.md) 暴露完整模型/adapter，源码语法编译 PASS；新 ABI extension 运行及整卡验收未完成 | 2026-09-07 |
@@ -79,6 +80,12 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 | [T017-A Development Handoff](contracts/execution-units.md#t017-a-development-handoff) | NOT_STARTED | T016-A | [baseline](evidence/task-progress-registry-20260907.md)；无本卡独立执行/验收记录；按依赖领取 | 2026-09-07 |
 
 ## Current Checkpoint
+
+2026-09-08 R4-B1 / **DONE (local sampling batch)**：double precision与统一参数校验修复；
+dedup/Top-P retained mass已有实现并保留。Spec182Sampling四个真实epoch用例40 assertions
+及既有epoch用例28 assertions PASS，独立Python参考一致。增量unit构建33.992s/16.161s、
+实际DI共享库构建16.304s PASS。下一步接stream acceptance、TOKEN_FEEDBACK与session；
+本局部修复不关闭T010-C或T011整体验收。见 [R4-B1](evidence/r4-b1-sampling-20260908.md)。
 
 2026-09-08 R3-B1 / **DONE (initial-request local batch only)**：配置化 native client、
 catalog 与 CLI 已接 Core Begin→ACK→prepare/place/seal/grant/project→commit→Response。

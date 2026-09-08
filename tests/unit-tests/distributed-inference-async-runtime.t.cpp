@@ -1,4 +1,5 @@
 #include "tests/boost-test.hpp"
+#include "tests/fixtures/spec182/native-sampling-epoch.hpp"
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/DependencyWaitScheduler.hpp"
@@ -7228,6 +7229,50 @@ BOOST_AUTO_TEST_CASE(NativeEpochCoordinatorProducesTextAndTerminalFeedback)
     seededA.events.begin(), seededA.events.end(), [] (const auto& event) {
       return event.find("sha256:native-terminal-sampling") != std::string::npos;
     }));
+}
+
+NativeEpochCoordinatorResult runSamplingEpochs(
+  std::vector<std::vector<float>> logits,
+  const std::function<void(NativeEpochCoordinatorConfig&)>& configure)
+{
+  NativeProviderRuntime runtime(1);
+  const auto identity = exactStateIdentity();
+  NativeModelRunnerSpec spec;
+  spec.role = identity.roleName; spec.kind = "onnx-model";
+  spec.backend = "test-sampling"; spec.path = "/fixture/sampling.onnx";
+  spec.metadata = {{"evidence.modelDigest", identity.modelDigest},
+    {"evidence.planDigest", stateDigest('0')}, {"evidence.providerName", identity.providerIdentity},
+    {"evidence.providerBootId", identity.providerBootId}, {"state.securityEpoch", "7"},
+    {"state.generationId", identity.generationId}, {"state.schemaDigest", identity.stateSchemaDigest}};
+  const auto count = logits.size();
+  runtime.registerRunner(spec, makeNativeModelRunner(
+    [logits = std::move(logits)](const RoleExecutionContext& context) {
+      const auto& values = logits.at(context.inferenceEpoch);
+      NamedTensor tensor;
+      tensor.name = "logits"; tensor.elementType = TensorElementType::Float32;
+      tensor.shape = {1, static_cast<std::int64_t>(values.size())};
+      tensor.payload.resize(values.size() * sizeof(float));
+      if (!tensor.payload.empty()) std::memcpy(tensor.payload.data(), values.data(), tensor.payload.size());
+      return std::map<std::string, TensorBundle>{{"onnx-output-bundle",
+        makeEncodedTensorBundle("onnx-output-bundle", {std::move(tensor)})}};
+    }));
+  NativeExecutionPlan plan; plan.roles = {spec.role};
+  NativeDependencySpec feedback;
+  feedback.producers = feedback.consumers = {spec.role};
+  feedback.keyScope = "token-feedback"; feedback.topicPrefix = "/ndnsf-di";
+  feedback.objectNameTemplate = "{producerProvider}/NDNSF/DI/FEEDBACK/{sessionId}/{producerRole}/bundle/{sequence}";
+  feedback.operationKind = "TOKEN_FEEDBACK"; plan.dependencies = {feedback};
+  NativeProviderAssignment assignment; assignment.providerByRole[spec.role] = identity.providerIdentity;
+  NativeEpochCoordinatorConfig config{runtime, plan, assignment, std::make_shared<BlockingDependencyIo>()};
+  config.sessionId = "sampling-session"; config.requestId = "sampling-request";
+  config.localProvider = identity.providerIdentity; config.role = spec.role;
+  config.lineagePlanDigest = stateDigest('0'); config.maxEpochs = count;
+  config.stateIdentityTemplate = identity; config.positionPolicyDigest = identity.positionDigest;
+  config.samplingDigest = stateDigest('1');
+  config.initialInputs = {{"input_ids", makeEncodedTensorBundle("prompt", {
+    NamedTensor{"input_ids", TensorElementType::Int64, {1, 3}, rawTensorPayload<std::int64_t>({11, 12, 13})}})}};
+  configure(config);
+  return runNativeEpochCoordinator(std::move(config));
 }
 
 } // namespace ndnsf::di::test
