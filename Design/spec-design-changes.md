@@ -14,6 +14,16 @@
 
 ## 索引
 
+## D-003：逐章可理解性审阅（2026-09-08）
+
+- 工作单元 D-DESIGN-CHAPTER-AUDIT；[审阅清单](reviews/chapter-audit-20260908.md)、
+  [证据](../specs/182-native-di-python-bindings/evidence/design-chapter-audit-20260908.md)。
+- 当前/目标 129 个章节位置按 67 个主题逐项阅读：KEEP 7、EXPAND 36、REWRITE 20、CORRECT 4。
+- 第 53 章只展开 cancel，生成/KV/会话方法和流程缺失；第 59 章外部 grant 参数与内部 ABE
+  完整策略物化混淆；目标历史说明与 TG 章节冲突。报告区分内容错误、完整性和可理解性。
+- 审阅工作完成；文档内容 NEEDS_REVISION。未改产品 API、目标决策、源码、快照和 PDF。
+  D-002 的技术检查为历史事实，不解释为逐章语义验收；后续修订按本清单收敛。
+
 R2 新增 D-002（文档校验与行为补充）及 TG-01 至 TG-05（PLANNED）。目标批准来自用户
 “先修复设计基线和校验机制，再补关键 API 行为契约，最后将架构改进逐项纳入目标设计”。
 

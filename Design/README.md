@@ -1,5 +1,9 @@
 # NDNSF 四模块设计
 
+**内容状态：NEEDS_REVISION。** [2026-09-08 逐章审阅](reviews/chapter-audit-20260908.md)
+发现 API 行为说明不足及若干勘误；R2 的构建/摘要检查 PASS 不代表开发者指南已经完整。
+审阅覆盖当前 62 章和目标 67 章，PDF 本轮未重写，具体补写顺序见报告。
+
 本目录保存中文设计，覆盖 NDNSF Core、NDNSF-UAV、NDNSF-DI 和 NDNSF-Repo 的完整子系统视图。
 
 - [当前设计](current-design.pdf)：按源码核对职责、接口、控制与数据流程、状态、安全、恢复及实现边界。
