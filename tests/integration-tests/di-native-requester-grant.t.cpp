@@ -219,6 +219,7 @@ BOOST_AUTO_TEST_CASE(ConcreteIssuerUsesCoreWorkerPublicationAndProviderUnwrap)
   });
   BOOST_CHECK_EQUAL(result.get(), grant.grantName);
   BOOST_REQUIRE(data);
+  BOOST_CHECK(data->getFreshnessPeriod() > ndn::time::milliseconds::zero());
   const auto& content = data->getContent();
   const std::string wire(reinterpret_cast<const char*>(content.value()), content.value_size());
   std::string authorityPublic(32, '\0'); std::size_t size = authorityPublic.size();

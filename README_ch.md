@@ -158,6 +158,10 @@ sudo ./waf install
 也不要清空构建目录或新建全量构建。只有共享头文件、生成输入、构建配置、ABI 或依赖
 变化时，才扩大到传递消费者，并在当前 Spec 证据中记录实际构建边界。
 
+`integration-tests` target 与可安装 DI library 使用同一个递归 DI core/adapters 源闭包。
+新增 native translation unit 时保持这个自动闭包，不要恢复手工子集；批次需要集成选择器时，
+在已验证构建树中显式执行 `./waf build --targets=integration-tests -j4`。
+
 如果手动安装，并且需要 Python API，请在 C++ 编译后安装这些 Python 包：
 
 ```bash

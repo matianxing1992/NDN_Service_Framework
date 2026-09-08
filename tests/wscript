@@ -114,53 +114,20 @@ def build(bld):
                     cxxflags=['-fPIC', '-O0', '-g0'],
                     install_path=None)
 
-    di_integration_sources = bld.path.parent.ant_glob([
-        'NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.cpp',
-        'NDNSF-DistributedInference/cpp/ndnsf-di/DependencyWaitScheduler.cpp',
-        'NDNSF-DistributedInference/cpp/ndnsf-di/ExecutionEvidence.cpp',
-        'NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.cpp',
-        'NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.cpp',
-        'NDNSF-DistributedInference/cpp/ndnsf-di/NativeSelectionJson.cpp',
-        'NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.cpp',
-        'NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanSealer.cpp',
-        'NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.cpp',
-        'NDNSF-DistributedInference/cpp/adapters/qwen/NativeQwenPlanner.cpp',
-        'NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloPlanner.cpp',
-        'NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.cpp',
-        'NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.cpp',
-        # prepareNativeCanonicalOnnxRole now activates through the OA02 worker
-        # subprocess transport, which lives in this TU.
-        'NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.cpp',
-        'NDNSF-DistributedInference/cpp/ndnsf-di/DistributedExecutionConsistency.cpp',
-        'NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.cpp',
-        'NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloMergeRunner.cpp',
-        'NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.cpp',
-        'NDNSF-DistributedInference/cpp/ndnsf-di/NativeStandaloneTokenizer.cpp',
-        'NDNSF-DistributedInference/cpp/adapters/qwen/NativeTokenizer.cpp',
-        # The integration target exercises the real CPU ONNX adapter when
-        # NDNSF_DI_TEST_ONNX_MODEL is set; keep the adapter object in the same
-        # target rather than accidentally testing only the fake runner.
-        'NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.cpp',
-        'NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.cpp',
-        'NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderOfferV3.cpp',
-        'NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.cpp',
-        'NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderSession.cpp',
-        'NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderRuntime.cpp',
-        'NDNSF-DistributedInference/cpp/ndnsf-di/NdnsfCollaborationDependencyIo.cpp',
-        'NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.cpp',
-        'NDNSF-DistributedInference/cpp/ndnsf-di/CollectiveRuntime.cpp',
-        'NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.cpp',
-        'NDNSF-DistributedInference/cpp/ndnsf-di/NdnsfCollectiveControl.cpp',
-        'NDNSF-DistributedInference/cpp/ndnsf-di/ProviderGroupCoordinator.cpp',
-        'NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.cpp',
-        'NDNSF-DistributedInference/cpp/ndnsf-di/NativeGrantVerifier.cpp',
-        'NDNSF-DistributedInference/cpp/ndnsf-di/NativeGrantClient.cpp',
-        'NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedArtifactStore.cpp',
-        'NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedProvider.cpp',
-        'NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedGrantCredentials.cpp',
-        'NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedGrantTransport.cpp',
-        'NDNSF-DistributedInference/cpp/ndnsf-di/NativeRunnerPreparation.cpp',
-    ])
+    # Keep integration binaries linked against the complete current DI source
+    # closure.  A hand-maintained subset silently went stale as conversation,
+    # request-preparation, catalog, and grant sources were added, producing
+    # link-only failures even though the installable DI library built cleanly.
+    # The compatibility OnnxRuntimeModelRunner.cpp source remains harmless and
+    # is retained by the same glob as the production library.
+    di_integration_sources = bld.path.parent.ant_glob(
+        'NDNSF-DistributedInference/cpp/ndnsf-di/*.cpp') + \
+        bld.path.parent.ant_glob(
+            'NDNSF-DistributedInference/cpp/adapters/onnx/*.cpp') + \
+        bld.path.parent.ant_glob(
+            'NDNSF-DistributedInference/cpp/adapters/yolo/*.cpp') + \
+        bld.path.parent.ant_glob(
+            'NDNSF-DistributedInference/cpp/adapters/qwen/*.cpp')
 
     # Exercise the shared native projection and model-specific merge contract
     bld.program(target='../spec181-exact-tensor-transport',

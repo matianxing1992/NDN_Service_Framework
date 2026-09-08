@@ -56,8 +56,11 @@ R1–R7 是能力阶段，不是固定执行批次或“每阶段只编译一次
 2026-09-08 当前执行批次为 R4-B4 CC-3B：在已验证的 conversation wire/journal/coordinator、
 stream acceptance 和 CC-3A planner projection 之上，接通 requester receipt/control、Provider
 COMMIT/ROLLBACK/FINALIZE 窗口及终态 scope 清理。该批已通过只读 `review-agent` 静态门、DI
-library/unit-tests `-j4` build 和 49-case requester/conversation/provider/stream regression，但保持 `PARTIAL`；下一独立出口是实际
-跨进程两轮请求/恢复 integration，之后才进入 T012/T013 caller migration 与 T015/T016。
+library/unit-tests `-j4` build、49-case requester/conversation/provider/stream regression，
+以及补齐完整 DI source closure 后的 `integration-tests -j4` 链接和
+`Spec182GrantClientFlow/*` 2-case 集成测试，但保持 `PARTIAL`；当前 integration target 尚无
+公开两轮 conversation selector，下一独立出口是实际跨进程两轮请求/恢复 integration，之后才
+进入 T012/T013 caller migration 与 T015/T016。
 不要把本批局部 PASS 写成 T010/T011 或全 Spec 完成。
 
 2026-09-07 implementation audit：T004-A 因真实 Selection wire/identity 不兼容重开，

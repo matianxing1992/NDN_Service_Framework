@@ -18,6 +18,13 @@
 - 沿用 system compiler/binutils、匹配 Boost/NAC-ABE/SVS 与 ABI 闭包要求。
   修改并行度不能修复缺头文件、缺符号或 ABI 错配；ABI 变化仍需按原规则重建依赖消费者。
 
+## Target Scope
+
+`integration-tests` 与可安装 DI library 共享递归的 DI core/adapters 源闭包。
+因此，新增 native translation unit 时不再维护第二份手工测试清单；在已验证树中按需选择
+`integration-tests` 或受影响的 DI target。只有共享头、生成输入、构建配置、ABI 或依赖变化
+才扩大到 Core、Repo、UAV 等传递消费者，并在 Spec 证据中记录边界。
+
 ## Why Time and Memory Grow
 
 2026-09-08 用户强调只重建受影响模块。日常批次复用同一已验证配置的 build tree，

@@ -79,6 +79,7 @@ testWorkerLocation()
   }
   BOOST_FAIL("DI_NativeOnnxAssemblyWorker binary not found: run the full waf "
              "build (with examples) before the integration suites");
+  return {};
 }
 
 std::string
@@ -125,12 +126,12 @@ recipeDigestFor(const NativeSelectionRoleV3& role)
 {
   // The tiny fixture has concrete integer dimensions and one symbolic axis.
   // Hash JSON integers for concrete axes, as required by the Python recipe.
-  const auto dimensionJson = [] (const std::string& dimension) {
-    if (dimension == "sequence") {
-      return jsonQuote(dimension);
+  const auto dimensionJson = [] (const auto& dimension) {
+    if (std::holds_alternative<std::string>(dimension)) {
+      return jsonQuote(std::get<std::string>(dimension));
     }
-    const auto value = std::stoull(dimension);
-    BOOST_REQUIRE_EQUAL(std::to_string(value), dimension);
+    const auto value = std::get<std::int64_t>(dimension);
+    BOOST_REQUIRE(value >= 0);
     return std::to_string(value);
   };
   std::ostringstream wire;

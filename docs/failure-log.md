@@ -1,5 +1,24 @@
 # Failure Log and Evidence Index
 
+## 2026-09-08 — Spec182 integration source closure and grant publication freshness
+
+集成目标首次重新链接在源文件编译完成后 exit1：`tests/wscript` 的手工
+`di_integration_sources` 漏掉会话、请求准备、request envelope、catalog 和授权等当前
+DI core TU，首个边界是链接器 undefined reference，不是协议或 Provider 运行结果。
+原始日志见 [build-integration-r2.log](../.codex-tmp/spec182-r4-b4-current/build-integration-r2.log)。
+改为与生产库相同的 DI core/adapters glob 后，`integration-tests -j4` exit0（52.565s）。
+
+随后 `Spec182GrantClientFlow/*` 首次运行 exit201：Core 发布器传给
+`publishSignedAppData` 的 ndn-cxx 默认 freshness 为 0，被已有正 freshness 门拒绝；首个
+运行边界是 `signed APP Data freshness must be positive`，不是签名或解包失败。原始日志见
+[integration-spec182-grant.log](../.codex-tmp/spec182-r4-b4-current/integration-spec182-grant.log)。
+固定授权发布 freshness 为 60000ms 后，DI 集成目标增量构建 exit0（20.599s），
+`Spec182GrantClientFlow/*` 2 cases exit0；结果见
+[integration-spec182-grant-r2.log](../.codex-tmp/spec182-r4-b4-current/integration-spec182-grant-r2.log)。
+随后加入正 freshness 回归断言，增量构建再次 exit0（20.546s），同一 2 cases 再次 exit0，
+详见 [integration-spec182-grant-r3.log](../.codex-tmp/spec182-r4-b4-current/integration-spec182-grant-r3.log)。
+当前集成目标没有公开两轮会话选择器，因此 T011-C/T016 仍保持 `PARTIAL`。
+
 ## 2026-09-08 — Spec182 R4-B4 conversation Unicode canonical boundary
 
 首次R4-B4增量构建使用旧`-j2`并成功完成；随后`Spec182Conversation*`运行9 cases，

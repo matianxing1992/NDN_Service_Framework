@@ -17,7 +17,7 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 
 | Unit / Details | Status | Depends | Evidence / Remaining | Updated |
 | --- | --- | --- | --- | --- |
-| [R4-B4 Authenticated Conversation Chain](evidence/r4-b4-conversation-chain-20260908.md) | IN_PROGRESS | R4-B3; T011-C acceptance retained | CC-1/CC-2 focused C++ 9 cases、CC-3A projection、CC-3B requester/provider transaction wiring 与 runtime+coordinator 构造均已构建验证；49 个 requester/conversation/provider/stream 回归 cases PASS。公开两轮、真实跨进程 receipt/control、T011-C/T016 资格仍未完成 | 2026-09-08 |
+| [R4-B4 Authenticated Conversation Chain](evidence/r4-b4-conversation-chain-20260908.md) | IN_PROGRESS | R4-B3; T011-C acceptance retained | CC-1/CC-2 focused C++ 9 cases、CC-3A projection、CC-3B requester/provider transaction wiring 与 runtime+coordinator 构造均已构建验证；49 个 requester/conversation/provider/stream 回归 cases PASS；`integration-tests -j4` 链接与 `Spec182GrantClientFlow/*` 2 cases PASS。公开两轮、真实跨进程 receipt/control、T011-C/T016 资格仍未完成 | 2026-09-08 |
 | [R4-B3 Epoch Text Commit Boundary](evidence/r4-b3-epoch-text-20260908.md#final-local-result) | DONE | R4-B2; T011-B acceptance retained | terminal stable flush前移至事件接受前；真实tokenizer/epoch及stream/sampling共24 cases/411 assertions PASS，unit与实际DI库增量build PASS；父任务仍未完整验收 | 2026-09-08 |
 | [R4-B2 Native Stream Production Chain](evidence/r4-b2-stream-production-20260908.md#final-local-result) | DONE | R3-B1; R4-B1 | Local requester stream batch：7 stream/190 assertions、2 options/21、29 regression/695 PASS；2 SDK recovery wires、CLI/loader PASS；真实Provider/会话/T016仍未完成 | 2026-09-08 |
 | [R4-B1 Native Sampling Contract Repair](evidence/r4-b1-sampling-20260908.md) | DONE | R3-B1; T010-C/T011 acceptance retained | Local sampling batch：double惩罚与统一参数校验；4 cases/40 assertions、既有epoch 28 assertions PASS；增量unit与实际DI共享库构建PASS；stream/session仍待完成 | 2026-09-08 |
@@ -91,7 +91,9 @@ focused边界，未关闭Provider确认或公开请求链。当前主机后续�
 共享回归`Spec182CanonicalJson*,Spec182Conversation*,Spec182EpochText*,Spec182StreamAcceptance*,
 Spec182Sampling*`共25 cases按默认`-j4`构建并PASS；`Spec182ProviderHost*`另有6 cases PASS。
 runtime+coordinator overload 编译验证后，requester/conversation/provider/stream 组合回归共49 cases PASS；
-保留CC-3及公开两轮请求为PARTIAL。
+`integration-tests -j4` 在补齐完整 DI source closure 后链接 PASS；`Spec182GrantClientFlow/*` 2 cases
+在修正 Core APP Data freshness 后 PASS。保留CC-3及公开两轮请求为PARTIAL；当前 integration
+目标仍无公开两轮 conversation selector，不能将授权集成 PASS 当作 T011-C/T016 资格。
 
 2026-09-08 R4-B4 CC-3B requester/provider transaction wiring / **PARTIAL**：Requester 已收集
 认证 receipt，严格核对 request/scope/topic/role/provider/conversation/epoch/generation/身份/期限，

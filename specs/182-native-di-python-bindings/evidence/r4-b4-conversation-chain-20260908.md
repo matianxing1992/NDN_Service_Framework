@@ -275,6 +275,28 @@ COMMIT 后补偿窗口，可重发 ACK，或在匹配 checkpoint 的 ROLLBACK �
 CC-3B 与 T011-C 保持 `PARTIAL`，下一出口是补真实两轮/恢复 integration harness，再运行
 T015/T016 规定的完整 unit→integration→MiniNDN/no-Python gates。
 
+### CC-3B Integration Build and Grant Boundary
+
+为验证当前源闭包，首次构建 `integration-tests` 在链接阶段发现旧的手工 DI 源清单漏掉
+会话、请求准备、request envelope、catalog 和授权 TU；修复 `tests/wscript` 为与生产库一致
+的 DI core/adapters glob 后，系统 toolchain 下 `integration-tests -j4` exit 0（52.565s）。
+这次扩展的是 integration target 的链接闭包，不是对生产协议资格的判定；原始失败保留于
+[build-integration-r2.log](../../../.codex-tmp/spec182-r4-b4-current/build-integration-r2.log)，
+修复构建见 [build-integration-r3.log](../../../.codex-tmp/spec182-r4-b4-current/build-integration-r3.log)。
+
+`Spec182GrantClientFlow/*` 首次运行在 Core APP Data 发布时被已有正 freshness 门拒绝，原因
+是 ndn-cxx 默认 freshness 为 0。原生授权发布器固定 60000ms freshness 后，DI 集成目标增量
+构建 exit 0（20.599s）；随后增加正 freshness 回归断言，再次增量构建 exit 0（20.546s），
+`Spec182GrantClientFlow/*` 2 cases exit 0；结果见
+[integration-spec182-grant-r3.log](../../../.codex-tmp/spec182-r4-b4-current/integration-spec182-grant-r3.log)。
+由于同一闭包也供三个 Spec181 独立目标使用，`spec181-exact-tensor-transport` 9 cases、
+`spec181-native-plan-closure` 34 cases 和 `spec181-protected-runtime-closure` 30 cases
+均已构建并 exit 0；原始结果见 [spec181-closure-build.log](../../../.codex-tmp/spec182-r4-b4-current/build-spec181-closures.log)
+及同目录的三个 selector 日志。
+该结果证明授权发布/Provider 解包集成边界可运行，但当前 integration binary 尚无公开两轮
+conversation selector；真实 FULL_CONTEXT→receipt→commit→APPEND_DELTA→restore 仍是下一批
+出口，T011-C、T015 和 T016 不变。
+
 ## Progress and Feasibility Audit
 
 （历史快照：pre-CC-3A/CC-3B）

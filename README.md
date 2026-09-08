@@ -188,6 +188,12 @@ batch identifier changed. Expand the rebuild to transitive consumers only for
 shared-header, generated-input, build-configuration, ABI, or dependency changes,
 and record the selected boundary in the active Spec evidence.
 
+The `integration-tests` target reuses the complete recursive DI core and adapter
+source closure used by the installable DI library. Keep that closure automatic
+when adding native translation units; build it explicitly from the verified tree
+with `./waf build --targets=integration-tests -j4` when an integration selector
+is part of the batch.
+
 If you install manually and also need Python APIs, install the Python packages
 after the C++ build:
 
