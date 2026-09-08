@@ -2,7 +2,7 @@
 """Freeze SDK placement using publicly reproducible signed test offers."""
 import base64
 import hashlib
-from dataclasses import replace
+from dataclasses import fields, replace
 import json
 from pathlib import Path
 import sys
@@ -16,6 +16,7 @@ from ndnsf_distributed_inference.sdk.placement import (
     DeviceResourceSnapshot, ResidencyProofV3, PlacementPlanCoreV3, canonical_digest)
 from ndnsf_distributed_inference.planner.presplit_first import PreSplitFirstStrategy
 from ndnsf_distributed_inference.app_sdk.provider import ProviderOfferTrustVerifier
+from ndnsf_distributed_inference.adapters.onnx.executor import CertifiedOnnxAssemblyRecipe
 
 signed = json.loads((root / 'signed-offer-oracle.json').read_text())
 base = json.loads((root / 'sealer-python-oracle.json').read_text())['unsigned_core']
@@ -108,6 +109,37 @@ for original in (c for c in cases if c['name'] in ('cpu', 'loaded_second_device'
         distinct = replace(core, roles=tuple(replace(r, graph_digest=canonical_graph) for r in core.roles))
         seal_cases.append(dict(seal_cases[-1], name='distinct_graph_spaces',
                                canonical_graph_digest=canonical_graph, core_digest=distinct.digest()))
+    # Real SDK recipe certification after publication of a new business root.
+    # Source bytes/names are transport fixtures, not ONNX assembly qualification.
+    metadata = {'canonicalSourceBytes': 6, 'canonicalSourceDataName': '/encrypted/source',
+                'canonicalSourceDigest': 'sha256:' + hashlib.sha256(b'source').hexdigest(),
+                'packageManifestDigest': role.model_manifest_digest}
+    if original['name'] == 'rank_cover':
+        metadata.update(canonicalInitializerBytes=7, canonicalInitializerDataName='/encrypted/initializer',
+            canonicalInitializerObjectDigest='sha256:' + hashlib.sha256(b'weights').hexdigest())
+    root_wire = json.dumps({'artifactProfileDigest': role.artifact_profile_digest, 'metadata': metadata,
+        'modelIdentityDigest': base['model_digest'], 'modelName': 'QwenFixture',
+        'schema': 'ndnsf-di-canonical-model-manifest-v1', 'state': 'ACTIVE'},
+        sort_keys=True, separators=(',', ':'), ensure_ascii=False)
+    manifest_digest = 'sha256:' + hashlib.sha256(root_wire.encode()).hexdigest()
+    refreshed = []
+    for placed in core.roles:
+        values = {f.name: getattr(placed, f.name) for f in fields(CertifiedOnnxAssemblyRecipe)
+                  if hasattr(placed, f.name)}
+        values.update(model_manifest_digest=manifest_digest,
+            input_names=tuple(t['name'] for t in placed.expected_inputs),
+            output_names=tuple(t['name'] for t in placed.expected_outputs),
+            max_source_bytes=placed.resource_envelope['maxSourceBytes'],
+            max_assembled_bytes=placed.resource_envelope['maxAssembledBytes'],
+            max_nodes=placed.resource_envelope['maxNodes'])
+        recipe = CertifiedOnnxAssemblyRecipe(**values)
+        refreshed.append(replace(placed, model_manifest_digest=manifest_digest, recipe_digest=recipe.digest))
+    updated = replace(core, roles=tuple(refreshed))
+    seal_cases.append(dict(original, name='published_' + original['name'],
+        offers=[o.to_bytes().decode() for o in offers], deadline_ms=2000000000000,
+        root_json=root_wire, published_manifest_digest=manifest_digest,
+        published_recipe_digests=[r.recipe_digest for r in refreshed], core_digest=updated.digest(),
+        publication_reject=original['name'] == 'loaded_second_device'))
 (root / 'placement-v3-oracle.json').write_text(json.dumps({'policy': policy, 'public_pem': signed['public_pem'],
     'key_id': signed['key_id'], 'candidate': signed['candidate'], 'role': base['roles'][0],
     'model_digest': base['model_digest'], 'graph_digest': base['graph_digest'],

@@ -157,6 +157,19 @@ BOOST_AUTO_TEST_CASE(AdmittedPlacementSealsSdkCoreAndRejectsTampering)
         inputs.assemblyByRole.emplace(std::to_string(i), input.roles[i]);
       unsigned publications = 0;
       auto published = inputs.artifacts;
+      if (sample.contains("root_json")) {
+        input.inspected.canonicalSourceBytes = 6;
+        published.canonicalManifestJson = sample.at("root_json");
+        published.manifestDigest = sample.at("published_manifest_digest");
+        if (sample.at("name") == "published_rank_cover") {
+          input.inspected.canonicalInitializerBytes = 7;
+          input.inspected.canonicalInitializerObjectDigest = nativePlanningDigest("weights");
+        }
+        for (auto& item : published.sourceByRole) {
+          published.artifactNameByRole[item.first] = "/artifact/stable/" + nativePlanningDigest(item.first).substr(7);
+          item.second = "/encrypted/root";
+        }
+      }
       published.requestId = "foreign-port-request"; published.attempt = 99;
       NativeRequestPreparation preparation(std::make_shared<NativeAdapterRegistry>(), {},
         [&](const NativeInspectedModel& model, const NativeSplitCandidate& candidate,
@@ -193,11 +206,59 @@ BOOST_AUTO_TEST_CASE(AdmittedPlacementSealsSdkCoreAndRejectsTampering)
       BOOST_CHECK_EQUAL(publications, 2);
       const auto seal = [&](const auto& value) { return NativePlanSealer::sealCore(input.inspected,
         input.split, value, execution, input.offers, input.ackDigest, inputs); };
+      if (sample.value("publication_reject", false)) {
+        // The previously loaded recipe is not the newly published certificate;
+        // ACCEPT_IF_EXACT_REUSE alone cannot authorize its preparation.
+        BOOST_CHECK_THROW(seal(proposal), std::invalid_argument);
+        continue;
+      }
       const auto core = seal(proposal);
       BOOST_CHECK_EQUAL(core.coreDigest, sample.at("core_digest").get<std::string>());
       BOOST_CHECK_EQUAL(core.graphDigest, input.context.graphDigest);
       BOOST_CHECK_EQUAL(core.artifacts.canonicalGraphDigest, input.inspected.canonicalGraphDigest);
       BOOST_CHECK_EQUAL(core.assemblyByRole.begin()->second.graphDigest, input.inspected.canonicalGraphDigest);
+      if (sample.contains("root_json")) {
+        BOOST_CHECK_NE(core.artifacts.manifestDigest, input.inspected.modelManifestDigest);
+        BOOST_CHECK(core.assignment.providerByRole == proposal.providerByRole);
+        for (std::size_t i = 0; i < proposal.roles.size(); ++i) {
+          const auto& before = proposal.roles[i];
+          const auto& after = core.assemblyByRole.at(before.selectedRole);
+          BOOST_CHECK_EQUAL(after.recipeDigest, sample.at("published_recipe_digests")[i].get<std::string>());
+          BOOST_CHECK_EQUAL(after.modelManifestDigest, core.artifacts.manifestDigest);
+          BOOST_CHECK_EQUAL(after.artifactDigest, before.artifactDigest);
+          BOOST_CHECK(after.deviceSet == before.deviceSet);
+          BOOST_CHECK_NE(core.artifacts.artifactNameByRole.at(before.selectedRole),
+                         core.artifacts.sourceByRole.at(before.selectedRole));
+        }
+        auto bad = inputs.artifacts;
+        const auto reject = [&] { NativeRequestPreparation::bindPublishedRoles(input.inspected,
+          input.split, proposal.roles, bad); };
+        bad.canonicalManifestJson += " ";
+        BOOST_CHECK_THROW(reject(), std::invalid_argument);
+        for (const auto& field : {"modelIdentityDigest", "modelName", "artifactProfileDigest", "state"}) {
+          bad = inputs.artifacts;
+          auto root = nativeParseJson(bad.canonicalManifestJson); root[field] = "foreign";
+          bad.canonicalManifestJson = root.dump(); bad.manifestDigest = nativePlanningDigest(bad.canonicalManifestJson);
+          BOOST_CHECK_THROW(reject(), std::invalid_argument);
+        }
+        for (const auto& field : {"canonicalSourceDigest", "canonicalSourceBytes", "packageManifestDigest"}) {
+          bad = inputs.artifacts;
+          auto root = nativeParseJson(bad.canonicalManifestJson); root["metadata"][field] = "foreign";
+          bad.canonicalManifestJson = root.dump(); bad.manifestDigest = nativePlanningDigest(bad.canonicalManifestJson);
+          BOOST_CHECK_THROW(reject(), std::invalid_argument);
+        }
+        bad = inputs.artifacts; bad.artifactNameByRole.clear();
+        BOOST_CHECK_THROW(reject(), std::invalid_argument);
+        bad = inputs.artifacts; bad.canonicalManifestJson.clear();
+        BOOST_CHECK_THROW(reject(), std::runtime_error);
+        if (sample.at("name") == "published_rank_cover") {
+          bad = inputs.artifacts;
+          auto root = nativeParseJson(bad.canonicalManifestJson);
+          root["metadata"]["canonicalInitializerObjectDigest"] = nativePlanningDigest("foreign");
+          bad.canonicalManifestJson = root.dump(); bad.manifestDigest = nativePlanningDigest(bad.canonicalManifestJson);
+          BOOST_CHECK_THROW(reject(), std::invalid_argument);
+        }
+      }
       if (sample.at("name") == "distinct_graph_spaces") {
         BOOST_CHECK_NE(core.graphDigest, core.artifacts.canonicalGraphDigest);
         auto changed = proposal;
@@ -211,7 +272,7 @@ BOOST_AUTO_TEST_CASE(AdmittedPlacementSealsSdkCoreAndRejectsTampering)
         if (!core.offerDigestByProvider.count(admitted.observation().provider)) continue;
         const auto grant = NativePlanSealer::grantView(core, admitted, {nativePlanningDigest("policy"), true});
         BOOST_CHECK_EQUAL(grant.provider, admitted.observation().provider);
-        BOOST_CHECK_EQUAL(grant.modelManifestDigest, input.inspected.modelManifestDigest);
+        BOOST_CHECK_EQUAL(grant.modelManifestDigest, core.artifacts.manifestDigest);
       }
       auto changed = proposal; changed.roles[0].artifactDigest = nativePlanningDigest("foreign");
       BOOST_CHECK_THROW(seal(changed), std::invalid_argument);

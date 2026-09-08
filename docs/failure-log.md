@@ -1,5 +1,12 @@
 # Failure Log and Evidence Index
 
+## 2026-09-07 — Spec182 publication fixture name
+
+publication recertification r1 新 ABI -j4 build PASS（302.273s）；定向测试在构造
+稳定工件名字的 fixture 失败：角色自带前导 /，拼接后含 //，被既有 NDN name 校验拒绝。
+修正 fixture 名字，保留 r1 失败后独立 r2 build 与 58 cases/710 assertions PASS；见
+[publication recertification](../specs/182-native-di-python-bindings/evidence/t008-publication-recertification-20260907.md)。
+
 ## 2026-09-07 — Spec182 graph identity source audit
 
 r2 首次定向运行在篡改 graph 的负例断言失败：产品正确抛 invalid_argument，fixture

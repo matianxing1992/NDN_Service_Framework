@@ -7,6 +7,15 @@
 
 ## Current Findings
 
+### Publication Recertification 2026-09-07
+
+原生已验证发布后业务 root 的原始字节及 source/initializer/model/profile 绑定，
+复用既有 recipe encoder 更新 manifest/recipe，并在封存前重验原 placement 和最终
+recipe 的 admitted offer 可行性。稳定工件名与 root fetch 名分开保存。
+相关 58 cases/710 assertions PASS，包括真实 SDK 摘要对照和旧 exact-reuse 拒绝。
+实际本地 source inspection、Core publisher 与 requester 主链仍未接通，T008-A/T004-A
+保持 PARTIAL，见 [publication evidence](evidence/t008-publication-recertification-20260907.md)。
+
 ### Planning and Canonical Graph Spaces 2026-09-07
 
 维护中的 YOLO binding 在 recipe 中使用 canonical ONNX graph，顶层保留 planning graph；

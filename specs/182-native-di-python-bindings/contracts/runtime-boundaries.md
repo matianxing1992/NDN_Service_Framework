@@ -51,8 +51,8 @@ NativeAdmittedOfferV3 verify(const ndn_service_framework::AckSelectionCandidate&
   modelManifestDigest。InspectPort 返回完整 inspected model，不允许 preparation 合成来源名。
   canonicalGraphDigest 单独绑定 ONNX 装配身份；graph.graphDigest 是 adapter 的 planning
   graph 身份，不能强制相等。角色 recipe 检查前者，request/offer/candidate 检查后者。
-  当前发布前必须存在 source name/固定 manifest 的实现仍不支持 request-scoped publisher；
-  维护入口的 pre/post publication describe 与重新认证必须由后续 owner 接线保留。
+  当前发布前仍必须存在实际 source name，本地 source inspection 与 request-scoped
+  publisher owner 仍待接线；发布后 manifest 的验证与重新认证规则见 ensureArtifacts。
 - prepareRoles 从 native catalog/recipe owner 获取候选完整角色契约，绑定 model/manifest、
   role/rank/artifact、adapter、节点与最低内存预算，再交给 proposeRoles；缺 port 明确失败。
   网络来源认证由既有 Core/catalog owner 完成，端口 DTO 本身不构成认证证明。
@@ -65,15 +65,28 @@ NativeAdmittedOfferV3 verify(const ndn_service_framework::AckSelectionCandidate&
   无 caller 提供的 trusted=true；网络或本地可信配置的验证证据由对应 owner 创建。
 - ensureArtifacts 在候选选定后、sealCore/grant 前执行；复用已存在 canonical 工件，
   或由原生 owner 完成所需 publication/encryption。
+  发布后业务 manifest 变更须附 canonicalManifestJson 原始字节，并绑定 inspection 的
+  source object digest/字节数、可选 initializer object digest/字节数、模型和 profile。
+  artifactNameByRole 保存稳定工件身份，sourceByRole 保存实际 root fetch name；两者
+  不能互相替代。1 MiB 以内的 root 须为 ACTIVE canonical-model-manifest-v1；其原始
+  字节 SHA-256 必须等于 manifestDigest，不把 Core transport manifest 当成业务摘要。
+  bindPublishedRoles 只更新 modelManifestDigest/recipeDigest，复用既有 canonical ONNX
+  recipe 编码。sealer 先验证原 proposal，再对更新后角色重新检查 admitted offers 的
+  device/residency 可行性；旧 recipe 的 exact-reuse 证明不能授权新 recipe。
+  缺 root 的既有不可变目录路径仍要求 manifest 完全相同。此接口不替代本地 source
+  inspection、Core 加密发布或 requester owner 的实际接线。
   发布 immutable 引用前，requester 必须用原始角色/已验证 offers 独立校验 V3 placement。
   ArtifactPort 只接收 inspected model、原 candidate、selected V3 roles 与 control；
   ensureArtifacts 检查 request/attempt/model/graph、完整 role/rank/assignment/offer identity，
   以及返回的每个 artifact digest 与选定角色一致；不构造旧 proposal。端口不是执行授权。
   只返回认证 manifest/recipe/input
   引用与清理 lease，不把 Provider 的角色 ONNX 装配提前到 Requester。
-  requester app 名字空间中的 publishing 复用 ServiceUser::publishSignedAppData；canonical
-  catalog 名字空间使用已有 Repo 端口，不绕过 Core app 发布的名字空间限制。
-  发布名、实际返回名、ciphertext digest、签名者与 model/recipe 绑定分别校验。
+  维护入口的请求级加密 publication 复用 ServiceUser::prepareServiceRequest 和
+  publishEncryptedLargeData；Core 返回 contentDigest 是明文字节摘要，manifestDigest
+  是传输描述摘要，均不能按名字误认成业务 root 摘要。小型 requester app 签名记录仍
+  复用 publishSignedAppData；canonical catalog 名字空间使用既有 Repo 端口，不能
+  绕过 Core app 发布的名字空间限制。实际返回名、内容摘要、签名者与 model/recipe
+  的绑定各自验证。
 - NativeModelAdapter::decodeResult 在 native 终态结果构造前执行；YOLO task decode、
   Qwen text/token 结果映射均由 adapter 实现，Python 不重新运行后处理或判定业务成功。
   模型预处理/后处理仅迁移现有已支持行为；不暗中增加图像格式或新模型能力。

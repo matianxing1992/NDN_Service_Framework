@@ -43,6 +43,12 @@ struct NativeInspectedModel
   // separate identities; inspection must resolve both from the model source.
   std::string canonicalGraphDigest;
 
+  // Resolved object facts required when a publisher replaces the business root.
+  // The initializer object hash differs from the normalized initializer identity.
+  std::uint64_t canonicalSourceBytes = 0;
+  std::string canonicalInitializerObjectDigest;
+  std::uint64_t canonicalInitializerBytes = 0;
+
   void validate() const;
 };
 
@@ -60,6 +66,11 @@ struct NativeArtifactBinding
   std::string graphDigest;
 
   std::string canonicalGraphDigest;
+
+  // Optional publication receipt: exact business root bytes, not Core transport
+  // metadata. Stable artifact identities are separate from sourceByRole fetch names.
+  std::string canonicalManifestJson;
+  std::map<std::string, std::string> artifactNameByRole;
 
   void validate() const;
 };
@@ -109,6 +120,12 @@ public:
                                         const NativeSplitCandidate& candidate,
                                         const NativeRolePlacementProposalV3& proposal,
                                         const NativeRequestControl& control) const;
+
+  // Validate publication against inspection and derive final certificates without
+  // changing the selected artifacts, devices, role cover or placement identity.
+  static std::vector<NativeSelectionRoleV3> bindPublishedRoles(
+    const NativeInspectedModel& model, const NativeSplitCandidate& candidate,
+    const std::vector<NativeSelectionRoleV3>& roles, const NativeArtifactBinding& artifacts);
 
 private:
   std::shared_ptr<const NativeAdapterRegistry> m_adapters;
