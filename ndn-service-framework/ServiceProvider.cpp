@@ -6410,10 +6410,13 @@ namespace ndn_service_framework
                     }
                 });
         };
-        if (m_handlerPool.getThreadCount() == 0 ||
-            !m_handlerPool.post(encryptAndPublish)) {
-            encryptAndPublish();
-        }
+        // Control-plane records are commonly published by a collaboration
+        // handler that then waits for the next control message.  Do not queue
+        // their small bounded encryption job on the same handler pool: with
+        // one worker that would make the publication wait behind the caller
+        // itself, delaying the receipt until the handler times out.  The
+        // encrypted packet is still handed to the Face event loop below.
+        encryptAndPublish();
     }
 
     ndn::Name ServiceProvider::publishCollaborationLargeData(
@@ -8646,20 +8649,25 @@ namespace ndn_service_framework
                 ok = false;
             }
 
-            boost::asio::post(m_face.getIoContext(),
-                [this, ok, data = std::move(data), dataName]() mutable {
-                    if (!ok) {
-                        NDN_LOG_ERROR("Collaboration data authentication failed for "
-                                      << dataName.toUri());
-                        return;
-                    }
-                    deliverCollaborationData(data);
-                });
+            if (!ok) {
+                NDN_LOG_ERROR("Collaboration data authentication failed for "
+                              << dataName.toUri());
+                return;
+            }
+            // The caller may be a one-worker collaboration handler waiting in
+            // waitFor().  Publish the decrypted record to the protected queue
+            // immediately so its condition variable can wake that handler;
+            // only user callbacks are dispatched asynchronously by
+            // deliverCollaborationData().
+            deliverCollaborationData(data);
         };
-        if (m_handlerPool.getThreadCount() == 0 ||
-            !m_handlerPool.post(decryptAndDeliver)) {
-            decryptAndDeliver();
-        }
+        // Collaboration handlers may synchronously wait for this record with
+        // waitFor().  Queueing decryption on the same handler pool would
+        // deadlock a one-worker provider: the waiting handler occupies the
+        // only worker while the control record waits behind it.  These
+        // bounded collaboration records are decrypted inline; callbacks
+        // remain asynchronous through deliverCollaborationData().
+        decryptAndDeliver();
     }
 
     bool ServiceProvider::maybeFetchCollaborationScopeKey(
@@ -9687,10 +9695,19 @@ namespace ndn_service_framework
                 }
             });
         };
-        if (m_handlerPool.getThreadCount() == 0 ||
-            !m_handlerPool.post(encryptAndPost)) {
-            encryptAndPost();
+        // Response/ACK publication can be called by a handler that is waiting
+        // for the peer's control messages.  Queueing encryption on the same
+        // handler pool would deadlock a single-worker provider until that
+        // wait expires. Keep the normal bounded envelope inline so the
+        // request can make progress; only an oversized response uses the
+        // independent fetch pool to avoid blocking the Face event loop.
+        const auto inlineLimit = responseLargeDataThresholdBytes();
+        if (inlineLimit > 0 && plaintext.size() > inlineLimit &&
+            m_fetchPool.getThreadCount() != 0 &&
+            m_fetchPool.post(encryptAndPost)) {
+            return;
         }
+        encryptAndPost();
     }
 
     bool ServiceProvider::decryptHybridMessage(const ndn::Name& messageName,
@@ -15106,11 +15123,11 @@ opaque_selection_committed:
             std::string regex_str =
                 "^(<>*)<NDNSF><REQUEST>" +
                 ndn_service_framework::NameToRegexString(sname) +
-                "(<>)$";
+                "(<>*)$";
             // V2 requests are published as:
             //   /<requester>/NDNSF/REQUEST/<serviceName...>/<requestId>
             // The service-specific regex keeps /HELLO subscribed as:
-            //   ^(<>*)<NDNSF><REQUEST><HELLO>(<>)$
+            //   ^(<>*)<NDNSF><REQUEST><HELLO>(<>*)$
             NDN_LOG_WARN("[ServiceProvider] SVS request subscription regex="
                       << regex_str);
             NDN_LOG_DEBUG(regex_str);
@@ -15164,13 +15181,15 @@ opaque_selection_committed:
 
         auto it = m_sessionIDMap.find(basePrefix);
         if (it != m_sessionIDMap.end()) {
-            if (it->second > sessionID) {
+            if (it->second.first > sessionID ||
+                (it->second.first == sessionID && subscription.seqNo <= it->second.second)) {
                 return false;
             }
         }
 
-        // Update
-        m_sessionIDMap[basePrefix] = sessionID;
+        // A higher producer session resets the sequence frontier; within the
+        // same session only strictly newer publications are fresh.
+        m_sessionIDMap[basePrefix] = {sessionID, subscription.seqNo};
         return true;
     }
 

@@ -78,3 +78,12 @@ evidence 中的旧并行度和耗时保持原事实。该同步不改产品契�
 命令上下文及历史/当前边界，结果为 `No findings`。`git diff --check` 和
 `specs/182-native-di-python-bindings/checklists/validate_design.py` 均通过；未执行
 产品构建或运行测试。
+
+## Follow-up Batch Boundary And Miss Taxonomy
+
+2026-09-08：根据 R4-B4/R4-B6 的实际执行记录，批次规则再补一条可复用约束：当同一
+行为已经有独立可观察出口时立即进入批末验证，不为了减少一次构建继续吸收无关职责；
+编译、链接和运行时发现分别记录，不能用任务数量、`STATIC_PASS` 或较短的单次构建时间
+推断效率收益。该规则及配套参考已在本地 checkpoint `db479981` 提交，个人安装入口
+同步完成；当前 R4-B6 的正向两轮结果同时验证了该出口规则，恢复/replacement 仍作为
+独立缺口保留。

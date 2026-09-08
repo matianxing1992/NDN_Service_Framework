@@ -584,6 +584,11 @@ void enqueueOperation(const std::shared_ptr<NativeInferenceHandle::Operation>& o
       if (operation->cancelled->load()) return;
       try { work(); }
       catch (const NativeDiError& error) { failOperation(operation, error); }
+      catch (const std::exception& error) {
+        failOperation(operation, NativeDiError("NATIVE_REQUEST_STAGE_FAILED", "runtime", boundary,
+          std::string("native request stage failed: ") + error.what(),
+          operation->requestId, operation->attempt));
+      }
       catch (...) {
         failOperation(operation, NativeDiError("NATIVE_REQUEST_STAGE_FAILED", "runtime", boundary,
           "native request stage failed", operation->requestId, operation->attempt));
@@ -1181,7 +1186,8 @@ void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& o
           }
           if (beginReplacement(operation, sourceAttempt, error)) return;
           throw NativeDiError("NATIVE_STREAM_FAILED", "provider", "stream",
-            "Core stream failed", operation->requestId, sourceAttempt);
+            std::string("Core stream failed: ") + error.message,
+            operation->requestId, sourceAttempt);
         }, "stream-error");
       };
       operation->user->BeginCollaboration(ndn::Name(operation->runtime->contract.serviceName),

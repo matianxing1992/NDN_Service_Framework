@@ -1959,7 +1959,10 @@ namespace ndn_service_framework{
 
             ConfigManager m_configManager;
 
-            std::map<ndn::Name, int> m_sessionIDMap;
+            // SVS may replay an older publication when a later sequence is
+            // synchronized. Freshness therefore binds both producer session
+            // and the highest accepted sequence number.
+            std::map<ndn::Name, std::pair<int, ndn::svs::SeqNo>> m_sessionIDMap;
 
             std::mutex svs_mutex;
 

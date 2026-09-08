@@ -65,15 +65,13 @@ library/unit-tests `-j4` build、49-case requester/conversation/provider/stream 
 `Spec182GrantClientFlow/*` 2-case 集成测试均通过。R4-B5 补出的本地公开 requester FULL_CONTEXT
 首轮仍使用预置认证 receipt/ACK，不能代替真实 Provider。
 
-下一批登记为 **R4-B6 Real Provider Conversation**：只闭合一个稳定出口——公开
-`NativeInferenceClient` 的 FULL_CONTEXT 首轮经真实 Provider receipt/control/commit，再以同一
-coordinator 发起 `APPEND_DELTA`，并覆盖恢复或单次 replacement 的首个失败边界。成员为
-T011-C/CC-4 的 integration harness；实现依赖为 R4-B4/R4-B5 已验证的 requester/coordinator
-接口和 Spec175 tiny ONNX Provider fixture，验收依赖为真实 SVS receipt/commit ACK、二轮状态
-引用和负例/恢复观测。静态门必须检查生产调用方、Provider handler、测试注册与完整
-integration source closure；批末使用 `integration-tests -j4` 的具名 selector，结果记录
-五 lane Coverage matrix。R4-B6 保持 `PARTIAL` 直到二轮与恢复真实通过；之后才进入 T012/T013
-caller migration 与 T015/T016。
+**R4-B6 Real Provider Conversation** 已完成正向稳定出口但保持 `PARTIAL`：公开
+`NativeInferenceClient` 的 FULL_CONTEXT 首轮经同一真实 `ServiceProvider` 完成
+receipt/control/commit，再由同一 coordinator 发起 `APPEND_DELTA` 并提交第二轮状态引用。
+具名 integration selector 和 V2 structured request/event/collaboration name 单测均通过；
+静态门还发现并修复 SVS session/seq replay、End 后 gap retry 误判及单 worker 控制面等待
+阻塞。CC-4c recovery 或 single replacement 负例尚未在真实 Provider harness 中运行，因而
+T011-C 与 T016 仍未关闭。下一步先补该失败边界，再依赖 T011-C 的稳定接口推进 T012/T013；
 不要把本批局部 PASS 写成 T010/T011 或全 Spec 完成。
 
 2026-09-07 implementation audit：T004-A 因真实 Selection wire/identity 不兼容重开，
