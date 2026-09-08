@@ -3522,3 +3522,15 @@ identity and rerun packaging against the existing incremental Waf cache.
 - Lesson: host privilege transitions must preserve the original run-owner
   binding explicitly; an effective-UID-only check can block before protocol
   evidence while hiding no security or data-plane defect.
+
+## 2026-09-08: MiniNDN owner rejected operator-owned envelope key
+
+- Symptom: after the state-root fix, the exact SIF Y-B launch stopped before
+  NFD startup with `REQUEST_ENVELOPE_KEY_OWNER_MISMATCH` and exit 78.
+- Root cause: the same root systemd boundary that owns the network namespace
+  also changes the effective UID used to validate the operator-owned 32-byte
+  request-envelope key.
+- Fix: reuse the wrapper-bound operator UID for this key ownership check while
+  keeping the no-symlink, mode-0600 and exact-size checks unchanged.
+- Lesson: all secret paths crossing the host owner boundary need the same
+  explicit run-owner binding, not only the state directory.

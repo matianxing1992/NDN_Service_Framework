@@ -1486,7 +1486,12 @@ def _validate_envelope_key_file(value: str) -> Path:
     if not path.is_file() or not os.access(path, os.R_OK):
         raise RunnerError("REQUEST_ENVELOPE_KEY_UNAVAILABLE")
     file_stat = path.stat()
-    if file_stat.st_uid != os.geteuid():
+    allowed_uids = {os.geteuid()}
+    if os.geteuid() == 0:
+        declared_owner = os.environ.get(STATE_ROOT_OWNER_ENV, "").strip()
+        if declared_owner.isdigit():
+            allowed_uids.add(int(declared_owner))
+    if file_stat.st_uid not in allowed_uids:
         raise RunnerError("REQUEST_ENVELOPE_KEY_OWNER_MISMATCH")
     if file_stat.st_mode & 0o077:
         raise RunnerError("REQUEST_ENVELOPE_KEY_PERMISSIONS_INVALID")
