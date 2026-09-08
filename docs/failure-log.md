@@ -1,5 +1,13 @@
 # Failure Log and Evidence Index
 
+## 2026-09-08 — Spec182 implicit rank publication mismatch
+
+源码审查发现普通候选省略 rank maps 虽可通过 candidate/role validation，
+preparation 和实际 canonical publisher 仍用 map.at 读取 degree，会在发布前失败。
+统一 implicit rank-one 语义，覆盖 inline/external 与两种 rank 表达；114 cases、
+2248 assertions PASS。此为源码契约缺陷修复，不是完整请求或网络资格结果。
+见 [publication evidence](../specs/182-native-di-python-bindings/evidence/t003-preparation-rank-20260908.md)。
+
 ## 2026-09-08 — Spec182 ONNX graph fixture control
 
 owned graph r1 build PASS，112/114 cases PASS；两个新 case 的 control 缺必需

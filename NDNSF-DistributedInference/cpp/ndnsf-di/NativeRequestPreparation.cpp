@@ -271,7 +271,9 @@ NativeArtifactBinding NativeRequestPreparation::ensureArtifacts(
   validateRoles(model, candidate, roles);
   for (const auto& role : roles) {
     validateNativeAssembly(role);
-    const auto degree = candidate.tensorDegreesByRole.at(role.role);
+    const auto explicitDegree = candidate.tensorDegreesByRole.find(role.role);
+    const auto degree = explicitDegree == candidate.tensorDegreesByRole.end()
+      ? 1 : explicitDegree->second;
     const auto key = degree == 1 ? role.role : role.role + "#" + std::to_string(role.rank);
     const auto assignment = proposal.providerByRole.find(key);
     if (role.selectedRole != key || assignment == proposal.providerByRole.end() ||

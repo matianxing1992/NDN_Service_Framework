@@ -28,7 +28,7 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 | [T002-A Installed Library Boundary](contracts/execution-units.md#t002-a-installed-library-boundary) | DONE | T001-C | [L0 evidence](evidence/t002-a-l0-20260907.md)；首次 L0 成功（r2 fresh staging）：consumer 独立编译 rc=0、运行打印 `SPEC182_INSTALLED_CONSUMER_NATIVE_DI_OK` rc=0、无 libpython、staging 无 DI `.cpp/.cc` 副本、NAC-ABE 5-symbol gate 通过；空 registry freeze 语义自修正（[failure-log](../../docs/failure-log.md) 2026-09-07） | 2026-09-07 |
 | [T003-A Qwen Split Candidates](contracts/execution-units.md#t003-a-qwen-split-candidates) | PARTIAL | T002-A | [真实 ONNX 图检查](evidence/t003-onnx-graph-inspection-20260908.md) 六组实际字节→adapter-bound graph/metadata/indices 对照，r3 114 cases/2212 assertions PASS；[完整候选身份](evidence/t003-candidate-identity-20260908.md) 保留；Qwen semantic layer 映射与 catalog/requester 接线仍待完成 | 2026-09-08 |
 | [T003-B Yolo Split Candidates](contracts/execution-units.md#t003-b-yolo-split-candidates) | PARTIAL | T003-A | [完整候选身份](evidence/t003-candidate-identity-20260908.md) 两组实际 YOLO 全候选字节/摘要对照，普通 rank metadata/成本/Merge 配置同步，87 cases PASS；[fragment evidence](evidence/t003-yolo-fragment-20260907.md) 保留；catalog/interface 与实际图映射仍待完成 | 2026-09-08 |
-| [T003-C Placement and Registry](contracts/execution-units.md#t003-c-placement-and-registry) | PARTIAL | T003-A, T003-B | [完整候选身份](evidence/t003-candidate-identity-20260908.md) 下游拒绝旧摘要，V3 core oracle 绑定实际 SplitCandidate；87 cases PASS；[资源契约](evidence/t003-resource-contract-20260908.md) 保留；依赖未放行，真实主链与整卡验收仍待完成 | 2026-09-08 |
+| [T003-C Placement and Registry](contracts/execution-units.md#t003-c-placement-and-registry) | PARTIAL | T003-A, T003-B | [普通候选发布](evidence/t003-preparation-rank-20260908.md) 修复 implicit rank-one 在 preparation/publisher 的异常，114 cases/2248 assertions PASS；[完整候选身份](evidence/t003-candidate-identity-20260908.md) 与[资源契约](evidence/t003-resource-contract-20260908.md) 保留；依赖未放行，真实主链与整卡验收仍待完成 | 2026-09-08 |
 | [T004-A Canonical Plan Sealing](contracts/execution-units.md#t004-a-canonical-plan-sealing) | PARTIAL | T003-C | [publication recertification](evidence/t008-publication-recertification-20260907.md)；发布后 recipe/core 与 SDK 对照、旧 exact-reuse 拒绝及相关 58 cases/710 assertions PASS；dataflow/device binding、真实 requester 主链与完整验收仍待完成 | 2026-09-07 |
 | [T005-A InProcess Authority](contracts/execution-units.md#t005-a-inprocess-authority) | PARTIAL | T004-A | [旧局部验收](evidence/t005-a-inprocess-authority-20260907.md) 6 cases PASS 保留；依赖 T004-A 因 [A8-01](evidence/t004-wire-reopened-20260907.md) 重开，修复真实 grantView/core identity 后需复核，不能维持整卡 DONE | 2026-09-07 |
 | [T005-B Requester Grant Publication](contracts/execution-units.md#t005-b-requester-grant-publication) | PARTIAL | T005-A | [旧局部验收](evidence/t005-b-requester-grant-20260907.md) 8 cases + publication/fetch 证据保留；随 T004-A/T005-A 依赖闭合回退，待真实 grantView 输入和 Provider 消费链复核；见 [A8-01](evidence/t004-wire-reopened-20260907.md) | 2026-09-07 |
@@ -60,6 +60,11 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 | [T017-A Development Handoff](contracts/execution-units.md#t017-a-development-handoff) | NOT_STARTED | T016-A | [baseline](evidence/task-progress-registry-20260907.md)；无本卡独立执行/验收记录；按依赖领取 | 2026-09-07 |
 
 ## Current Checkpoint
+
+2026-09-08 T003 ordinary candidate publication / **PARTIAL**：修复发布阶段对普通
+候选省略 rank map 的不一致处理，见 [rank evidence](evidence/t003-preparation-rank-20260908.md)。
+preparation 和实际 publisher 同类缺陷均修复，114 cases/2248 assertions PASS；
+完整 requester 接线仍未完成，没有新增 DONE。
 
 2026-09-08 T003 owned ONNX graph inspection / **PARTIAL**：增加实际 ONNX bytes 到
 规划图、语义名称、原始节点索引和 metadata 的原生入口，保留独立 canonical assembly

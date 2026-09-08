@@ -83,7 +83,9 @@ NativeArtifactBinding NativeCanonicalArtifactPublisher::operator()(const NativeI
   std::uint64_t assemblyLimit = roles.front().maxAssembledBytes;
   for (const auto& role : roles) {
     validateNativeAssembly(role);
-    const auto degree = candidate.tensorDegreesByRole.at(role.role);
+    const auto explicitDegree = candidate.tensorDegreesByRole.find(role.role);
+    const auto degree = explicitDegree == candidate.tensorDegreesByRole.end()
+      ? 1 : explicitDegree->second;
     const auto key = degree == 1 ? role.role : role.role + "#" + std::to_string(role.rank);
     if (role.selectedRole != key || role.artifactProfileDigest != roles.front().artifactProfileDigest)
       throw std::invalid_argument("native publication role alias or profile is inconsistent");
@@ -165,7 +167,9 @@ NativeArtifactBinding NativeCanonicalArtifactPublisher::operator()(const NativeI
     for (const auto& role : roles) {
       auto stable = ndn::Name(options.artifactRoot).append(candidate.candidateDigest.substr(7));
       stable.append(ndn::Name(role.role));
-      if (candidate.tensorDegreesByRole.at(role.role) > 1) stable.append("rank").appendNumber(role.rank);
+      const auto degree = candidate.tensorDegreesByRole.find(role.role);
+      if (degree != candidate.tensorDegreesByRole.end() && degree->second > 1)
+        stable.append("rank").appendNumber(role.rank);
       binding.artifactNameByRole.emplace(role.selectedRole, stable.toUri());
       binding.sourceByRole.emplace(role.selectedRole, rootName);
       binding.artifactDigestByRole.emplace(role.selectedRole, role.artifactDigest);
