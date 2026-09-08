@@ -23,6 +23,9 @@ source seal、source revision、base SHA 和编译参数；保留原编译器构
 跟随新应用的buildKey，下一次引用最新应用即可。Python启动器改动已有实证：
 configure6.728s、Waf0.837s、三原生二进制哈希不变，基础SIF不重建。
 外置应用的目录也冻结为0555；宿主编排禁写字节码，避免导入产生未登记缓存。
+固定注册的YOLO输入图片也是应用运行资产：打包时从完整源码封存复制到
+`repo/tests/fixtures/spec180/yolo26n/fixed-fixture.ppm`，由应用清单与参考加载器
+校验；只补齐漏包文件可复用同一源码/基础SIF的已验证应用，不重编原生程序。
 
 基础库自身只有 Python 改动时，使用
 `adapters/slurm-apptainer/scripts/repack-base-python.py render`，传入原基础SIF

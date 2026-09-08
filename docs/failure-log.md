@@ -1,5 +1,18 @@
 # Failure Log and Evidence Index
 
+## 2026-09-08 — External application omitted the registered YOLO fixture
+
+Full packaged run d passes Repo and four-Provider readiness, then User exits2
+with FileNotFoundError in load_reference. The fixed fixture is sealed but the
+app builder's explicit copy list omitted it. Add the registered PPM path and
+repackage the identical sealed source/base with --reuse-application; actual
+buildInvoked=false, exactly one file added, existing159 payload rows unchanged.
+Actual User input preparation passes fixture/oracle digests and shape checks.
+Its first reduced runpy probe missed the normal script-directory sys.path;
+correct the harness before treating the successful second probe as evidence.
+No base rebuild, C++ compilation or inference was needed for this boundary fix.
+All13 full-run operations are reaped with leases released, without force.
+
 ## 2026-09-08 — Protected Repo ACK and object-location selectors corrected
 
 Repo's authenticated ACK context now recognizes required request-scoped

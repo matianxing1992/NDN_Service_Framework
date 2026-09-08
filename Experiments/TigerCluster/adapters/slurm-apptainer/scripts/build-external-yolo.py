@@ -201,7 +201,8 @@ def run(args):
     for name in ('Experiments/NDNSF_DI_YoloAckDriven_Minindn.py',
                  'Experiments/NDNSF_DI_Yolo2x2_Minindn.py',
                  'Experiments/NDNSF_NewAPI_Minindn_Perf.py',
-                 'Experiments/minindn_network_resources.py', 'examples/trust-schema.conf'):
+                 'Experiments/minindn_network_resources.py', 'examples/trust-schema.conf',
+                 'tests/fixtures/spec180/yolo26n/fixed-fixture.ppm'):
         dest = partial / 'repo' / name
         dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(repo / name, dest)

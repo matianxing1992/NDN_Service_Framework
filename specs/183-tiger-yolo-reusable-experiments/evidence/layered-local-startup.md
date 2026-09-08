@@ -3,6 +3,40 @@
 Status: signed preparation and corrected Controller/Repo registration executed;
 full four-Provider inference and formal qualification remain open.
 
+## Packaged run d: all roles ready, User fixture omission
+
+Run `layered-host-20260908d` uses the independently verified c6dbeda8 base and
+38289c5f app; candidate SHA
+`0718da8b782421f6190639ccf9c1de9023ba4513fbe6d396715a2991d54b37e1`,
+signed preparation SHA
+`011908a654cbb5e4a4996a45c229afb7ec526193619a964a8bd49893093833a1`.
+Preparation and issuer execution succeed. The full run reaches Repo READY
+and all four Provider readiness markers, then exits2 at `APP_EXIT:user-0:2`.
+User `_prepare_yolo_input` calls `load_reference`, which cannot read the fixed
+fixture under `/app/repo/tests/fixtures/spec180/yolo26n/fixed-fixture.ppm`.
+All13 owned processes/operations are reaped, leases released, none forced;
+no inference request is accepted. The packaged Repo ACK fix is effective.
+
+The fixture was already in the complete source seal but absent from the app
+builder's explicit copy list. Add that one registered asset and use
+`--reuse-application app-repo-protected` with the same sealed source/base/flags.
+The actual repack reports buildInvoked=false. New app
+`app-repo-protected-fixture` manifest SHA is
+`71aecff6462e5b1e399e3bb8e9a235e3bad2b285676329dc31f8b01f0aa2cfc3`:
+160 files, precisely one added fixture, no removed or modified payload rows.
+The base SIF and native binaries remain unchanged.
+
+The actual installed User `_prepare_yolo_input` now validates the sealed
+fixture/oracle and produces shape[1,3,640,640], payload4915270 bytes,
+SHA `e94314abfc33eab99b0bd6f11c6a770dbd527d4d261748419a2fb6648d32e66a`.
+This tests input preparation only, not ORT inference. The initial reduced
+runpy harness omitted the script-directory import path and could not import
+yolo_2x2_lib; restoring normal script import semantics fixes that harness
+omission before the valid check. The failed full run and both probe logs remain.
+
+Next: reuse the unchanged input plane, render the new application binding and
+run a fresh full candidate e. Do not rebuild the base or rerun native suites.
+
 ## Protected Repo ACK source fix and actual STATUS response
 
 Repo now registers the existing authenticated ACK-context API. In required

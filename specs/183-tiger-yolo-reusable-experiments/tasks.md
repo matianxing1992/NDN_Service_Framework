@@ -6,20 +6,21 @@
 
 ## Detailed Execution Progress
 
-当前检查点：[分层本地启动实证](evidence/layered-local-startup.md)。签名准备已实跑；
-首次Controller认证退出134，已定位并修复角色HOME未挂载。相同基础库与应用的
-最小NFD+Controller实跑已成功发布签名回执，116项局部检查通过；未重编C++。
+当前检查点：[分层本地启动实证](evidence/layered-local-startup.md)。新SIF与外置应用已验证；
+完整运行d到达Repo及四Provider就绪，User因固定图片漏包退出2，13项操作全清理。
+已仅重打包应用补齐该图片，实际User输入准备通过；完整推理验收仍未完成。
 
 | 细分任务 | 状态 | 实证 / 下一步 |
 |---|---|---|
 | T004.local-tools：本机与Tiger工具版本绑定 | IMPLEMENTED | 本机1.5.3签名准备成功；Tiger版本要求保留 |
 | T009.prepare：实际分层候选签名准备 | EXECUTED | layered-host-20260908a，receipt46405701；非推理PASS |
 | T009.role-home：角色身份挂载修复 | VERIFIED_STARTUP | 同SIF内身份可见、根身份隔离；Controller签名发布成功并清理 |
-| T009.cpu-chain：完整CPU链 | IN_PROGRESS | 新候选c使用修正基础SIF，Controller发布成功、Repo注册拒绝消失，但STATUS探测退出2；9项操作回收，无推理请求获验收；已定位Repo在Selection前解析空输入及负ACK参数错位 |
+| T009.cpu-chain：完整CPU链 | IN_PROGRESS | 新候选d通过Repo及4Provider就绪，User输入文件缺失退出2；13项操作全清理，无推理获验收；漏包已修，待新候选e完整运行 |
 | T009.repo-order：Repo双Face管理命令顺序 | VERIFIED_STARTUP | 修复已装入ccdd4ac0基础SIF；候选c越过原注册故障；48项HA及新增失败清理检查沿用，STATUS响应仍待修复 |
 | T009.acceptance：开发入口请求结果验收 | IMPLEMENTED | 使用生产graph-reference/result校验后才记录accepted；保留结果目录；3项定向检查通过，不代表实际推理通过 |
 | T009.repo-ack：Repo保护模式ACK适配 | SOURCE_VERIFIED | 保护模式改为能力ACK、保留Selection后操作/身份校验；最小4进程诊断STATUS首次请求READY、User0、全清理；显式源码挂载，未封装或验收完整YOLO |
 | T009.repo-select：隐藏输入下对象定位 | IMPLEMENTED | manifest在总deadline内逐一尝试未知位置Provider，响应确认对象；delete使用确认副本；53项HA检查分两次完成（52通过、1新断言修正后通过）；待完整新组合运行 |
+| T009.fixture：外置应用固定输入资产 | VERIFIED_INPUT | app71aecff6只新增已封存固定图片，原159文件不变、buildInvoked=false；真实User生成[1,3,640,640]输入，未运行模型；完整候选待验 |
 | T011.protected-base：封装完整Repo ACK修复 | VERIFIED_COMPOSITION | 新SIF c6dbeda8独立验证6原生产物/NCCL/Repo源码；app38289c5f全部159文件不变，configure5.629s/Waf0.851s无C++编译；导入、User入口、3二进制闭包通过；完整CPU运行待验 |
 | T011.base-python：封装修正后的Repo库 | VERIFIED_COMPOSITION | [重封装](evidence/base-python-repack.md)：新SIF ccdd4ac0独立验证；6原生产物不变；app89c49f7a全部159文件不变，configure7.409s/Waf1.036s无C++编译；组合闭包/入口通过，完整运行待验 |
 

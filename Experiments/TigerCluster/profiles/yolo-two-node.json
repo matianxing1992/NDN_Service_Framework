@@ -3,19 +3,19 @@
  "profileId": "tiger-yolo-two-node-v1",
  "release": {
   "inputs": {
-   "path": "/home/tianxing/NDN/ndn-service-framework/Experiments/TigerCluster/.cache/layered-candidate-20260908/planes-repo-protected/inputs/plane.json",
+   "path": "/home/tianxing/NDN/ndn-service-framework/Experiments/TigerCluster/.cache/layered-candidate-20260908/planes-repo-fixture/inputs/plane.json",
    "bytes": 721,
    "sha256": "sha256:e55ca52e103b0d86413a372e04ac06e22696d2476cf18376b8d759fa80d32120"
   },
   "runtime": {
-   "path": "/home/tianxing/NDN/ndn-service-framework/Experiments/TigerCluster/.cache/layered-candidate-20260908/planes-repo-protected/runtime/plane.json",
+   "path": "/home/tianxing/NDN/ndn-service-framework/Experiments/TigerCluster/.cache/layered-candidate-20260908/planes-repo-fixture/runtime/plane.json",
    "bytes": 632,
    "sha256": "sha256:1f41b3a626dfc53671c3da9bc85c6077efcafc9f09887d0dcb34be41b415a214"
   },
   "dispatch": {
-   "path": "/home/tianxing/NDN/ndn-service-framework/Experiments/TigerCluster/.cache/layered-candidate-20260908/planes-repo-protected/dispatch/plane.json",
+   "path": "/home/tianxing/NDN/ndn-service-framework/Experiments/TigerCluster/.cache/layered-candidate-20260908/planes-repo-fixture/dispatch/plane.json",
    "bytes": 1354,
-   "sha256": "sha256:5ea72437e8d8f3540bc517bf7ad02e903869e10adc110f7b9163f3066c62bb79"
+   "sha256": "sha256:0809f804a301e1a10eac2b6f354600c75bd8fb930e7b0c76dba8b62a1d51f005"
   },
   "gates": {}
  },
@@ -48,9 +48,9 @@
   },
   "layout": "layered-v1",
   "applicationManifest": {
-   "path": "/home/tianxing/NDN/ndn-service-framework/Experiments/TigerCluster/.cache/layered-base-20260908/app-repo-protected/application-manifest.json",
-   "bytes": 35984,
-   "sha256": "sha256:38289c5f970f067652024065e25db87952ed1d106bb5da7d8ff6c80962abe277"
+   "path": "/home/tianxing/NDN/ndn-service-framework/Experiments/TigerCluster/.cache/layered-base-20260908/app-repo-protected-fixture/application-manifest.json",
+   "bytes": 36178,
+   "sha256": "sha256:71aecff6462e5b1e399e3bb8e9a235e3bad2b285676329dc31f8b01f0aa2cfc3"
   }
  },
  "cluster": {
@@ -151,7 +151,7 @@
    "sha256": "sha256:aad276e64faecd88a1cae5af8dad98e0bd6ec0ab4a5beeab4164217b35ff5d97"
   },
   "harnessManifest": {
-   "path": "/home/tianxing/NDN/ndn-service-framework/Experiments/TigerCluster/.cache/layered-candidate-20260908/planes-repo-protected/dispatch/harness/harness-manifest.json",
+   "path": "/home/tianxing/NDN/ndn-service-framework/Experiments/TigerCluster/.cache/layered-candidate-20260908/planes-repo-fixture/dispatch/harness/harness-manifest.json",
    "bytes": 3662,
    "sha256": "sha256:1227fded39ce4d9df56732a89892c6be5ad484ba88aeec799982b5d3fac4f93f"
   },
