@@ -12,6 +12,9 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeAuthenticatedGrantClient.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGrantVerifier.hpp"
 #include <openssl/evp.h>
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGroupKeyAdmission.hpp"
+#include "ndn-service-framework/HybridMessageCrypto.hpp"
+#include <ndn-cxx/security/key-params.hpp>
 
 namespace {
 using namespace ndnsf::di;
@@ -26,6 +29,7 @@ struct Input
   NativeOfferBindingContext context;
   std::vector<NativeSelectionRoleV3> roles;
   std::vector<NativeAdmittedOfferV3> offers;
+  std::vector<ndn_service_framework::AckSelectionCandidate> acks;
   std::string ackDigest;
   NativeInspectedModel inspected;
   NativeSplitCandidate split;
@@ -99,6 +103,7 @@ struct Input
       ack.authenticationEvidence = {offer.provider, offer.provider + "/KEY/fixture/issuer/v=1",
                                     "sha256:" + std::string(64, '1'), true};
       offers.push_back(admission.verify(ack, context, 200));
+      acks.push_back(ack);
     }
   }
 };
@@ -148,6 +153,81 @@ private:
 };
 }
 BOOST_AUTO_TEST_SUITE(Spec182V3Placement)
+BOOST_AUTO_TEST_CASE(AdmittedGroupKeysReachCoreRsaCapabilityUnwrap)
+{
+  const auto f = oracle();
+  Input input(f, f.at("cases")[0]);
+  NativeOfferAdmission admission(f.at("policy").dump(),
+    {{f.at("key_id").get<std::string>(), f.at("public_pem").get<std::string>()}}, f.at("candidate"));
+  ndn::security::KeyChain keyChain("pib-memory:spec182-group-key", "tpm-memory:spec182-group-key");
+  std::map<std::string, ndn::security::Certificate> certificates;
+  for (auto& ack : input.acks) {
+    const auto payload = ack.ack.getPayload();
+    const auto offer = decodeNativeProviderOfferV3(std::string(payload.begin(), payload.end()));
+    const auto certificate = keyChain.createIdentity(ndn::Name(offer.provider), ndn::RsaKeyParams(2048))
+      .getDefaultKey().getDefaultCertificate();
+    certificates.emplace(offer.provider, certificate);
+    const auto bytes = certificate.getPublicKey();
+    ndn_service_framework::SelectionInputKeyOffer keyOffer;
+    keyOffer.setField("schemaVersion", "1"); keyOffer.setField("recipient", offer.provider);
+    keyOffer.setField("recipientCertName", certificate.getName().toUri());
+    keyOffer.setField("recipientPublicKey", ndn_service_framework::selectionGatedHex(bytes));
+    keyOffer.setField("recipientCertDigest", nativePlanningDigest(
+      std::string(reinterpret_cast<const char*>(bytes.data()), bytes.size())));
+    keyOffer.setField("providerBootEpoch", offer.provider + ":" + offer.bootEpoch);
+    keyOffer.setField("ndnsfDataV1EndpointPrefix", offer.provider + "/NDNSF-DI/data/");
+    ack.ack.setSelectionInputKeyOffer(keyOffer);
+  }
+  NativeGroupKeyAdmission keys(admission, input.acks, input.context, 200);
+  std::vector<GroupMemberV1> members;
+  for (const auto& pair : certificates) {
+    members.push_back({pair.first, members.size(), keys.offer(pair.first).observation().offerDigest, keys.endpoint(pair.first)});
+    BOOST_CHECK_EQUAL(keys.endpoint(pair.first), pair.first + "/NDNSF-DI/data");
+  }
+  BOOST_REQUIRE_GE(members.size(), 2);
+  // The wrap closure outlives its admission object and owns the key snapshot.
+  auto options = [&] {
+    NativeGroupKeyAdmission temporary(admission, input.acks, input.context, 200);
+    return temporary.options();
+  }();
+  BOOST_CHECK_THROW(options.wrapEpochKey("/foreign", ProviderGroupBytes(32, 42)), std::out_of_range);
+  BOOST_CHECK_THROW(options.wrapEpochKey(members[0].provider, ProviderGroupBytes(1, 42)), std::invalid_argument);
+  ProviderGroupCoordinator producer(options);
+  const auto capability = producer.createCapability(input.context.requestId, "attempt-1",
+    nativePlanningDigest("sealed-group-plan"), "group-1", 1, members,
+    {{7, "PIPELINE", {"0"}, {"1"}, nativePlanningDigest("layout"), 1024, 16}}, 1024, 100, 500);
+  const auto provider = members[1].provider;
+  ProviderGroupCoordinatorOptions receiver;
+  receiver.localProvider = provider;
+  receiver.unwrapEpochKey = [&](const std::string& id, const ProviderGroupBytes& wrapped) {
+    const auto plain = ndn_service_framework::unwrapSelectionGatedInputKey(ndn::Buffer(wrapped.begin(), wrapped.end()),
+      certificates.at(id).getName(), keyChain);
+    return ProviderGroupBytes(plain.begin(), plain.end());
+  };
+  ProviderGroupCoordinator consumer(receiver);
+  const auto projected = capability.projectForProvider(provider);
+  BOOST_CHECK_EQUAL(projected.wrappedEpochKeyByProvider.size(), 1);
+  const auto wire = ProviderGroupCoordinator::encodeCapability(projected);
+  consumer.installCapability(ProviderGroupCoordinator::decodeCapability(wire), {}, true);
+  BOOST_CHECK(consumer.hasCapability());
+  BOOST_CHECK_EQUAL(consumer.capability().epochKeyId, capability.epochKeyId);
+  auto tampered = projected; tampered.sealerSignature[0] ^= 1;
+  ProviderGroupCoordinator rejecting(receiver);
+  BOOST_CHECK_THROW(rejecting.installCapability(tampered, {}, true), std::runtime_error);
+  for (const auto& change : std::vector<std::pair<std::string, std::string>>{
+      {"schemaVersion", "2"}, {"recipient", "/foreign"}, {"providerBootEpoch", "foreign"},
+      {"recipientCertName", "/foreign/KEY/a/issuer/v=1"}, {"ndnsfDataV1EndpointPrefix", "/foreign/data"},
+      {"recipientPublicKey", "ABC"}, {"recipientCertDigest", nativePlanningDigest("wrong-key")}}) {
+    auto changed = input.acks;
+    auto offer = changed.front().ack.getSelectionInputKeyOffer();
+    offer.setField(change.first, change.second); changed.front().ack.setSelectionInputKeyOffer(offer);
+    BOOST_CHECK_THROW(NativeGroupKeyAdmission(admission, changed, input.context, 200), std::exception);
+  }
+  auto duplicate = input.acks; duplicate.push_back(duplicate.front());
+  BOOST_CHECK_THROW(NativeGroupKeyAdmission(admission, duplicate, input.context, 200), std::exception);
+  auto unauthenticated = input.acks; unauthenticated.front().authenticationEvidence.trustSchemaValidated = false;
+  BOOST_CHECK_THROW(NativeGroupKeyAdmission(admission, unauthenticated, input.context, 200), std::exception);
+}
 BOOST_AUTO_TEST_CASE(ProjectionBuilderDerivesApplicationInputAndDependencyReadiness)
 {
   const auto f = oracle();
