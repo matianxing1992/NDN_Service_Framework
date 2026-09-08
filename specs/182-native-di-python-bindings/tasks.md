@@ -17,8 +17,9 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 
 | Unit / Details | Status | Depends | Evidence / Remaining | Updated |
 | --- | --- | --- | --- | --- |
-| [D-DESIGN-DIAGRAMS Visual Guide](evidence/design-diagrams-20260908.md) | DONE | User diagram request | 两侧各 9 个矢量视图；PDF 91/96 页，版面/目录/字体、API、460/350 文件还原、5 工具回归与视觉检查 PASS；不关闭产品任务 | 2026-09-08 |
+| [R1-B4 Catalog Task Adapter](evidence/r1-b4-catalog-task-adapter-20260908.md) | DONE | T002-A; C09/C18 contracts | CA-1/CA-2 batch only：production adapter→registry/preparation，45 C++ cases/944 assertions PASS；实际图/角色端口与原卡验收仍待完成 | 2026-09-08 |
 | [D-LAYERED-SIF Layered Runtime Delivery](contracts/layered-runtime-delivery.md) | DONE | User architecture request | 方案已同步 FR-014/Delivery/T017/Tiger/packaging，定向链接、diff 与 design validator PASS；仅设计完成，部署工具 PLANNED | 2026-09-08 |
+| [D-DESIGN-DIAGRAMS Visual Guide](evidence/design-diagrams-20260908.md) | DONE | User diagram request | 两侧各 9 个矢量视图；PDF 91/96 页，版面/目录/字体、API、460/350 文件还原、5 工具回归与视觉检查 PASS；不关闭产品任务 | 2026-09-08 |
 | [R1-B3 Native Merge Publication](evidence/r1-b3-native-merge-20260908.md) | DONE | R1-B2; existing shared role contract | NM-1/NM-2 batch only：r3 incremental build 与 68 C++ cases/800 assertions PASS；真实 adapter/requester 与 parent gates unchanged | 2026-09-08 |
 | [R1-B2 Candidate Role Semantics](evidence/r1-b2-role-semantics-20260908.md) | DONE | T002-A; existing candidate contract | CR-1/CR-2 batch only：官方静态门与 C++ 26 cases/546 assertions PASS；native Merge publication remains open，T003-C 不变 | 2026-09-08 |
 | [D-DISK-CLEANUP Build Object Cleanup](evidence/disk-cleanup-20260908.md) | DONE | User cleanup request | pip cache 及 2702 个旧对象已清理；磁盘可用 910 MB→30 GB；当前构建、二进制与原始证据保留 | 2026-09-08 |
@@ -69,6 +70,14 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 | [T017-A Development Handoff](contracts/execution-units.md#t017-a-development-handoff) | NOT_STARTED | T016-A | [baseline](evidence/task-progress-registry-20260907.md)；无本卡独立执行/验收记录；按依赖领取 | 2026-09-07 |
 
 ## Current Checkpoint
+
+2026-09-08 R1-B4 Catalog Task Adapter / **DONE (batch only)**：Owner 当前执行者。
+CA-1：immutable 模型目录与有界 opaque/JSON 字节入口；CA-2：实际 registry/preparation
+消费及 C++ 正负例。复用已通过 T002-A，不放行 T003/T008 硬门；官方逐成员静态审查后
+统一增量 -j4 build，执行 Spec182Preparation/Spec182NativePlanning。
+设计与剩余边界见 [R1-B4](evidence/r1-b4-catalog-task-adapter-20260908.md)。
+CA-1/CA-2 静态审查后单次增量 build 15.489s、45 cases/944 assertions PASS；
+实际 source/catalog→角色生产及默认 requester 仍待实现，不关闭 T003/T008 整卡。
 
 2026-09-08 R1-B3 Native Merge Publication / **DONE (batch only)**：Owner 当前执行者。
 成员 NM-1：共享 role codec 与 preparation/publisher 的完整非 ONNX 分支及 C++ 负例；

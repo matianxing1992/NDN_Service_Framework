@@ -9,6 +9,7 @@
 // the orchestration layer must never accept an inconsistent binding from.
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCatalogModelAdapter.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeV3Placement.hpp"
 #include "tests/fixtures/spec182/native-sealing-fixture.hpp"
 
@@ -419,6 +420,76 @@ BOOST_AUTO_TEST_CASE(NativePreparationBindsAdapterAndGraphPort)
   BOOST_CHECK_EQUAL(artifactCalls, 2u);
   BOOST_CHECK_EQUAL(ordinaryBinding.sourceByRole.at("role"), binding.sourceByRole.at("role"));
   BOOST_CHECK_EQUAL(ordinaryBinding.artifactDigestByRole.at("role"), digest("artifact"));
+}
+
+BOOST_AUTO_TEST_CASE(CatalogModelAdapterBindsExactRevisionThroughPreparation)
+{
+  using Format = NativeCatalogModelAdapter::Format;
+  auto first = fixture::completeModel({"model", digest("first"), digest("semantics"),
+    digest("graph"), "onnx", "float32", "catalog", "1"});
+  auto second = first;
+  second.contentDigest = digest("second");
+  std::vector<NativeModelDescriptor> models{first, second};
+  auto adapter = std::make_shared<NativeCatalogModelAdapter>(models, Format::OpaqueBytes, 4);
+  models[0].contentDigest = digest("mutated-after-bootstrap");
+  BOOST_CHECK_EQUAL(adapter->inspect(first.modelName, first.contentDigest).contentDigest, first.contentDigest);
+  BOOST_CHECK_EQUAL(adapter->inspect(second.modelName, second.contentDigest).contentDigest, second.contentDigest);
+  BOOST_CHECK_THROW(adapter->inspect(first.modelName, digest("unknown")), std::invalid_argument);
+  BOOST_CHECK_THROW(adapter->inspect("other", first.contentDigest), std::invalid_argument);
+  auto copy = adapter->inspect(first.modelName, first.contentDigest);
+  copy.graphDigest = digest("foreign");
+  BOOST_CHECK_EQUAL(adapter->inspect(first.modelName, first.contentDigest).graphDigest, first.graphDigest);
+  auto registry = std::make_shared<NativeAdapterRegistry>();
+  registry->registerAdapter(adapter); registry->freeze();
+  NativeRequestPreparation preparation(registry,
+    [](const auto&, const auto& descriptor) { return inspectedFor(descriptor); });
+  const std::vector<std::uint8_t> payload{0, 255, 128, 1};
+  const auto input = preparation.prepareInput(second, "generate", digest("input"), digest("options"),
+    payload, {}, deadline(1000));
+  BOOST_CHECK(input.payload == payload);
+  const auto inspected = preparation.inspectModel(input);
+  BOOST_CHECK_EQUAL(inspected.descriptor.contentDigest, second.contentDigest);
+  BOOST_CHECK(adapter->decodeResult(payload) == payload);
+  BOOST_CHECK_THROW(adapter->encodeInput({1, 2, 3, 4, 5}), std::invalid_argument);
+  BOOST_CHECK_THROW(adapter->decodeResult({1, 2, 3, 4, 5}), std::invalid_argument);
+  auto foreign = input;
+  foreign.expectedModel.contentDigest = foreign.modelDigest = digest("unknown");
+  BOOST_CHECK_THROW(preparation.inspectModel(foreign), std::invalid_argument);
+  BOOST_CHECK_THROW(NativeCatalogModelAdapter({}, Format::OpaqueBytes, 4), std::invalid_argument);
+  BOOST_CHECK_THROW(NativeCatalogModelAdapter({first}, Format::OpaqueBytes, 0), std::invalid_argument);
+  BOOST_CHECK_THROW(NativeCatalogModelAdapter({first, first}, Format::OpaqueBytes, 4), std::invalid_argument);
+  auto different = first;
+  different.adapterId = "different";
+  different.adapter = fixture::modelAdapter("different", "1", "onnx", "float32");
+  BOOST_CHECK_THROW(NativeCatalogModelAdapter({first, different}, Format::OpaqueBytes, 4), std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(CatalogJsonAdapterValidatesWithoutReencodingWireBytes)
+{
+  const auto model = fixture::completeModel({"yolo", digest("yolo"), digest("semantics"),
+    digest("graph"), "onnx", "float32", "json-catalog", "1"});
+  const auto payload = bytes(u8" {\"标签\": [1, true, null], \"score\": 0.5} ");
+  auto adapter = std::make_shared<NativeCatalogModelAdapter>(
+    std::vector<NativeModelDescriptor>{model}, NativeCatalogModelAdapter::Format::JsonBytes, payload.size());
+  auto registry = std::make_shared<NativeAdapterRegistry>();
+  registry->registerAdapter(adapter); registry->freeze();
+  NativeRequestPreparation preparation(registry,
+    [](const auto&, const auto& descriptor) { return inspectedFor(descriptor); });
+  const auto input = preparation.prepareInput(model, "detect", digest("input"), digest("options"),
+    payload, {}, deadline(1000));
+  BOOST_CHECK(input.payload == payload);
+  BOOST_CHECK(adapter->decodeResult(payload) == payload);
+  BOOST_CHECK_EQUAL(preparation.inspectModel(input).descriptor.modelName, model.modelName);
+  for (const auto& invalid : std::vector<std::vector<std::uint8_t>>{
+         {}, bytes("{"), bytes("{\"x\":1,\"x\":2}"), bytes("[NaN]"), {34, 255, 34}}) {
+    BOOST_CHECK_THROW(adapter->encodeInput(invalid), std::invalid_argument);
+    BOOST_CHECK_THROW(adapter->decodeResult(invalid), std::invalid_argument);
+  }
+  auto oversized = payload; oversized.push_back(' ');
+  BOOST_CHECK_THROW(adapter->encodeInput(oversized), std::invalid_argument);
+  BOOST_CHECK_THROW(adapter->decodeResult(oversized), std::invalid_argument);
+  const auto scalar = bytes("null");
+  BOOST_CHECK(adapter->encodeInput(scalar) == scalar);
 }
 
 BOOST_AUTO_TEST_CASE(PreparationBindsCandidatePostprocessingToEgressOnly)
