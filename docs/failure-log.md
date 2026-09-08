@@ -3704,3 +3704,15 @@ identity and rerun packaging against the existing incremental Waf cache.
 - Lesson: source-only validation inputs must be declared in the same canonical
   selector as the preflight contract, otherwise a valid library split cannot
   be rebuilt reproducibly.
+
+## 2026-09-08: SIF rebuild used the wrong definition boundary
+
+- Symptom: the first deferred-bootstrap rebuild stopped before Apptainer with
+  `WRONG_BUILD_BOUNDARY_MULTISTAGE_REQUIRED`.
+- Root cause: the generated definition was a single-stage library recipe, while
+  `build-local-sif.sh` enforces the maintained two-stage builder/final boundary
+  for the complete runtime SIF.
+- Fix: switch the rebuild to the maintained multistage development-runtime
+  template, rendered with the source8 seal and the exact v6 base image.
+- Lesson: the build entry point's boundary validator is part of the release
+  contract; a custom one-stage definition cannot stand in for it.
