@@ -39,7 +39,11 @@ active build tree, isolated install prefix, every build tree recreated per run.
 - [x] both Python extensions import outside any source tree
       (`NDNSF_EXT_OK`, `PY_REPOCLIENT_EXT_OK`).
 - [x] clean-root symbol inventory: core 1567 defined symbols, nac-abe 132.
-- [ ] `App_ServiceController --help` entrypoint executes on host (T009 scope)
+- [x] `App_ServiceController` entrypoint executes on host with the clean-root
+      libraries: prints the authority identity, starts, and reaches the NFD
+      socket boundary (`could not connect to NDN forwarder at
+      /run/nfd/nfd.sock` — expected on a host without NFD; the binary loaded
+      its full linked closure and reached the network layer).
 - [ ] NDNSF unit tests pass in the clean root (T009 scope)
 
 ## Record
