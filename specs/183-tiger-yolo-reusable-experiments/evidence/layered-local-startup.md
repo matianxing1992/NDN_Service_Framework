@@ -3,6 +3,48 @@
 Status: signed preparation and corrected Controller/Repo registration executed;
 full four-Provider inference and formal qualification remain open.
 
+## Run f: canonical request reaches ACK closure, rejected by all Providers
+
+`layered-host-20260908f` is terminal (runner exit 2), with unchanged
+base `c6dbeda8` and app `71aecff6`. Candidate:
+`77152d51ce91862e1cb43b9727be3dcac90dbcd62aef183749919ac24f8a6a38`.
+The refreshed harness uses canonical one-component request IDs. All four
+Provider logs under `qualification/layered-host-20260908f/node0/logs/`
+record `Reject request with stale ControllerVersion` for the same request
+ending `7603623c36b14d24f0c66284718c1790`. User reaches ACK closure with
+zero valid offers. This verifies that the request-ID fix advances execution,
+but does not establish inference success.
+
+Source audit: `RequestCollaboration` and `BeginCollaboration` construct fresh
+RequestMessage objects without calling `prepareRequestControllerVersion`,
+unlike ordinary request entrypoints. `PublishRequestV2` copies that message
+without supplying the missing version. The Provider requires the accepted
+service ControllerVersion. A focused C++ regression against the exact base
+fails for both entrypoints before changing Core. Preserve Provider checks; do not increase
+ACK timeouts to conceal rejection. Core changes require a new native base and
+consumer verification; the Python-only base repacker is inapplicable.
+
+修复及回归：两个协作入口在排队前复用普通请求的版本准备函数；未修改
+Provider、版本比较、超时或协议字段。新增注册单测
+`tests/unit-tests/generic-dynamic-api-collaboration-version.t.cpp` 通过公开
+协作 API 创建请求，检查 pending RequestMessage 的版本与已接受状态一致，
+并确认身份撤权后两个入口均返回空请求 ID。
+
+原始 c6dbeda8 SIF 库运行该回归：exit201，两入口均缺版本。相同 SIF SDK
+仅编译修复后的 ServiceUser.cpp 并链接测试与其余原库：exit0，新增撤权
+断言也通过（约0.664秒）。这是源文件级原生回归，不是新 SIF 或完整推理
+验收。日志、对象、测试二进制位于
+`results/yolo-layered-20260908/controller-version-regression/`（red.log、
+green.log、fixed-compile.log）。下一步：复用未变依赖，构建新原生基础层，
+验证扩展及应用消费者，再冻结新候选重跑完整 CPU 链。
+
+变更审计：plan.md 允许在所属模块修复必要 Core 缺陷；复用现有版本准备
+函数符合最小所有权边界，不引入 Tiger 专用协议或放宽权限。准许该定向
+修复；T007 其余生产接线及正式运行资格仍保持 open。CodeGraph 定位入口后
+核对实现，Spec Kit 记录需求/进度/证据，GSD handoff 保存恢复点；Context
+Mode 延用已记录的 active authority 失败后仓库回退。本轮是运行缺陷修复，
+不开展 ARS 统计实验设计。
+
 ## Run e: input published, request-ID representation mismatch
 
 `layered-host-20260908e` uses the fixture-corrected app71aecff6 and unchanged

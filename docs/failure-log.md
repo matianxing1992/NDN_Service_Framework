@@ -3283,3 +3283,21 @@ Use the same verified RAM SIF for I/R planes, copying only small cross-filesyste
 metadata. A first RAM link failed Linux protected-hardlink ownership checks;
 make the task-owned RAM file user-owned0444, preserving global protections.
 Actual public content check now yields VERIFIED/NOT_EVALUATED, exit78 as designed.
+
+## 2026-09-08: 协作请求遗漏 ControllerVersion，四 Provider 拒绝
+
+症状：Spec183 layered-host-20260908f 越过 ID 表示修复，四 Provider 全部
+记录 stale ControllerVersion，User 的 ACK 汇总没有有效候选，运行退出2。
+根因：RequestCollaboration / BeginCollaboration 没有像普通入口一样调用
+prepareRequestControllerVersion；PublishRequestV2 也不会补填版本。
+修复：两个入口在进入 pending/admission 前调用现有准备函数，保留版本、
+撤权和解密就绪检查。原 c6dbeda8 SIF 的 C++ 回归两处失败（exit201）；
+仅替换测试可执行文件链接的 ServiceUser 对象后，当前版本和撤权断言通过
+（exit0）。正式 SIF、消费者及全链运行尚未验证。
+
+回归构建探测还发现：手写命令最初漏用 NAC_ABE_CMAKE_BUILD 和 NAC-ABE、
+框架头路径，随后 packaged libndn-service-framework.pc 的 -lndnsf 与实际
+libndn-service-framework.so 名称不符。回归改用依赖 pkg-config flags 和
+真实库名，保存对象供链接复用；该 pkg-config 元数据问题尚未修复。
+教训：用实际 SDK 的构建参数建立最小回归，记录测试链接与正式镜像验证的
+边界；不能通过增大 ACK 超时或放宽 Provider 版本检查绕过协议缺陷。

@@ -7,15 +7,16 @@
 ## Detailed Execution Progress
 
 当前检查点：[分层本地启动实证](evidence/layered-local-startup.md)。新SIF与外置应用已验证；
-完整运行e到达Repo及四Provider就绪，并发布输入、发送V3规划请求；随后因请求ID
-表示不一致退出2，13项操作全清理。已修正计划ID生成；完整推理验收仍未完成。
+完整运行f已越过请求ID不一致问题，进入ACK汇总；四Provider均因ControllerVersion
+拒绝同一请求，退出2。协作入口版本绑定已完成原生红绿回归；新SIF组合及完整推理验收仍未完成。
 
 | 细分任务 | 状态 | 实证 / 下一步 |
 |---|---|---|
 | T004.local-tools：本机与Tiger工具版本绑定 | IMPLEMENTED | 本机1.5.3签名准备成功；Tiger版本要求保留 |
 | T009.prepare：实际分层候选签名准备 | EXECUTED | layered-host-20260908a，receipt46405701；非推理PASS |
 | T009.role-home：角色身份挂载修复 | VERIFIED_STARTUP | 同SIF内身份可见、根身份隔离；Controller签名发布成功并清理 |
-| T009.cpu-chain：完整CPU链 | IN_PROGRESS | 新候选e通过就绪、输入发布/V3请求发送，生命周期ID不一致退出2；13项操作全清理，无推理获验收；计划ID已修，待新候选f |
+| T009.cpu-chain：完整CPU链 | IN_PROGRESS | 候选f进入ACK汇总、0候选；四Provider明确拒绝ControllerVersion，原生回归及修复进行中；尚无完整推理验收 |
+| T009.controller-version：协作请求版本绑定 | SOURCE_VERIFIED | 原SIF两入口均缺版本，exit201；修复ServiceUser单对象后版本绑定及撤权拒绝断言exit0；待新原生基础层和应用消费者验证，Provider检查不变 |
 | T009.repo-order：Repo双Face管理命令顺序 | VERIFIED_STARTUP | 修复已装入ccdd4ac0基础SIF；候选c越过原注册故障；48项HA及新增失败清理检查沿用，STATUS响应仍待修复 |
 | T009.acceptance：开发入口请求结果验收 | IMPLEMENTED | 使用生产graph-reference/result校验后才记录accepted；保留结果目录；3项定向检查通过，不代表实际推理通过 |
 | T009.repo-ack：Repo保护模式ACK适配 | SOURCE_VERIFIED | 保护模式改为能力ACK、保留Selection后操作/身份校验；最小4进程诊断STATUS首次请求READY、User0、全清理；显式源码挂载，未封装或验收完整YOLO |

@@ -6619,6 +6619,9 @@ namespace ndn_service_framework
         ndn_service_framework::RequestMessage requestMessage;
         auto payload = initialRequest;
         requestMessage.setPayload(payload, payload.size());
+        if (!prepareRequestControllerVersion(requestMessage, service, requestId)) {
+            return ndn::Name();
+        }
         // Collaboration uses an explicit participantSelector after the ACK
         // collection window. Do not mark the request as RandomSelection here:
         // the legacy RandomSelection path installs a hard-coded 100 ms timer
@@ -6702,6 +6705,9 @@ namespace ndn_service_framework
         requestMessage.setStrategy(ndn_service_framework::tlv::AllSelected);
         if (!requestCapabilities.getFields().empty()) {
             requestMessage.setRequestCapabilities(requestCapabilities);
+        }
+        if (!prepareRequestControllerVersion(requestMessage, service, requestId)) {
+            return ndn::Name();
         }
 
         // A streamed collaboration carries the same request-scoped stream
