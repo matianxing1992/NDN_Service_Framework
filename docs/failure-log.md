@@ -3497,3 +3497,12 @@ definition, followed by the base runtime verifier and exact composition checks.
   extraction in `build-base-libraries.sh`, before any configure/build step.
 - Lesson: source sealing must validate executable semantics as well as bytes;
   the container build now repairs this known archive-mode boundary explicitly.
+
+
+## 2026-09-08: external app package rejected abbreviated source revision
+
+The rebuilt external DI targets all compiled and linked against base v6, but
+`verify_application` stopped at `APP_SOURCE_IDENTITY` because the regenerated
+source seal used an eight-character revision label. The application manifest
+contract requires a full 40-hex revision. Replace it with the owning commit
+identity and rerun packaging against the existing incremental Waf cache.
