@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+from contextlib import contextmanager
 from dataclasses import dataclass
 import hashlib
 import importlib
@@ -523,7 +524,6 @@ class MiniNdnCaseRuntime:
         if self._ndn is not None:
             raise RunnerError("CASE_RUNTIME_NETWORK_ALREADY_STARTED")
         legacy = self._legacy_module()
-        legacy.Minindn.cleanUp()
         legacy.Minindn.verifyDependencies()
         # MiniNDN's constructor parses the process-wide argv for its own
         # --work-dir/--result-dir options.  The Spec180 launcher has already
@@ -555,10 +555,6 @@ class MiniNdnCaseRuntime:
                 ndn.stop()
             except Exception as cleanup_exc:
                 cleanup_errors.append("network:" + str(cleanup_exc))
-            try:
-                legacy.Minindn.cleanUp()
-            except Exception as cleanup_exc:
-                cleanup_errors.append("minindn:" + str(cleanup_exc))
             detail = type(exc).__name__ + ":" + str(exc)
             if cleanup_errors:
                 detail += ";cleanup=" + ";".join(cleanup_errors)
@@ -1203,8 +1199,9 @@ class MiniNdnCaseRuntime:
 
         The live driver must call this from ``finally`` after every phase,
         publication, or request attempt.  Cleanup is idempotent and does not
-        depend on a successful ACK/Response, so a failed case cannot leave a
-        process group or a Mininet/NFD instance behind.
+        depend on a successful ACK/Response. This initiates owned teardown;
+        final child reaping and bounded cleanup qualification are separate
+        requirements, not proved by returning from the legacy helper.
         """
         if self._cleanup_complete:
             return
@@ -1228,10 +1225,9 @@ class MiniNdnCaseRuntime:
                 network.stop()
             except Exception as exc:
                 errors.append("network:" + str(exc))
-        try:
-            legacy.Minindn.cleanUp()
-        except Exception as exc:
-            errors.append("minindn:" + str(exc))
+        # Minindn.cleanUp() is host-global (including unrelated processes and
+        # interfaces). The network instance and tracked child handles above
+        # are the only resources this case is authorized to tear down.
         self._started_phases.clear()
         self._ready_phases.clear()
         self._catalogue_publication_digest = None
@@ -3520,6 +3516,31 @@ def run_minindn_case(case: str, output: Path, inputs: Mapping[str, Any]) -> int:
     return _run_live_case_once(case, output, inputs)
 
 
+@contextmanager
+def _case_cancellation():
+    """Turn operator/parent cancellation into the live driver's finally path.
+
+    Ignore subsequent cancellation signals while unwinding owned resources;
+    an external supervisor still owns the ultimate hard deadline. Restore the
+    caller's handlers on every exit, including failed setup or cleanup.
+    """
+    previous = {}
+
+    def cancel(signum, _frame):
+        for value in previous:
+            signal.signal(value, signal.SIG_IGN)
+        raise RunnerError("CASE_CANCELLED:" + str(signum))
+
+    try:
+        for signum in (signal.SIGINT, signal.SIGTERM):
+            previous[signum] = signal.getsignal(signum)
+            signal.signal(signum, cancel)
+        yield
+    finally:
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Spec180 ACK-driven YOLO MiniNDN case")
     parser.add_argument("--case", required=True, choices=CASE_IDS)
@@ -3552,7 +3573,8 @@ def main(argv: list[str] | None = None) -> int:
               + str(exc), flush=True)
         return 78
     try:
-        return run_minindn_case(args.case, output, inputs)
+        with _case_cancellation():
+            return run_minindn_case(args.case, output, inputs)
     except RunnerError as exc:
         print("SPEC180_CASE_RESULT status=UNQUALIFIED error=" + str(exc), flush=True)
         return 2

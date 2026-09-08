@@ -25,6 +25,45 @@ def load_runner():
     return module
 
 
+@pytest.mark.parametrize('cancel_signal', ['SIGINT', 'SIGTERM'])
+def test_main_cancellation_unwinds_owned_runtime_and_restores_handlers(
+        tmp_path, monkeypatch, capsys, cancel_signal):
+    module = load_runner()
+    sig = getattr(module.signal, cancel_signal)
+    previous = {s: module.signal.getsignal(s)
+                for s in (module.signal.SIGINT, module.signal.SIGTERM)}
+    calls = []
+    monkeypatch.setattr(module, '_assert_grant_wiring_or_plaintext', lambda _env: None)
+    monkeypatch.setattr(module, 'validate_inputs', lambda *_args: (tmp_path, {}))
+    monkeypatch.setattr(module, '_validate_native_library_closure', lambda: None)
+
+    def live(*_args):
+        try:
+            module.os.kill(module.os.getpid(), sig)
+            pytest.fail('cancellation must interrupt the workload')
+        finally:
+            calls.append('owned-cleanup')
+            # A second parent/operator signal must not abort cleanup halfway.
+            module.os.kill(module.os.getpid(), sig)
+            calls.append('cleanup-finished')
+
+    monkeypatch.setattr(module, 'run_minindn_case', live)
+    assert module.main(['--case', 'Y-B']) == 2
+    assert calls == ['owned-cleanup', 'cleanup-finished']
+    assert 'CASE_CANCELLED:' + str(int(sig)) in capsys.readouterr().out
+    assert all(module.signal.getsignal(s) == handler for s, handler in previous.items())
+
+
+def test_case_cancellation_restores_handlers_on_non_signal_failure():
+    module = load_runner()
+    previous = {s: module.signal.getsignal(s)
+                for s in (module.signal.SIGINT, module.signal.SIGTERM)}
+    with pytest.raises(RuntimeError, match='workload failed'):
+        with module._case_cancellation():
+            raise RuntimeError('workload failed')
+    assert all(module.signal.getsignal(s) == handler for s, handler in previous.items())
+
+
 def _negative_children(module, tmp_path, *, case="Y-N-P", marker_request="/request",
                        owner="user", sibling_exit=None):
     phase = "PROVIDER_EXECUTION_STARTED" if case == "Y-N-I" else "GRAPH_READY"
@@ -1591,8 +1630,7 @@ def test_start_network_failure_stops_partial_network_and_normalizes_error(
         runtime.start_network()
 
     assert calls == [
-        "minindn.cleanUp", "minindn.verifyDependencies", "network.start",
-        "network.stop", "minindn.cleanUp",
+        "minindn.verifyDependencies", "network.start", "network.stop",
     ]
     assert runtime._ndn is None
 
@@ -1630,7 +1668,7 @@ def test_runtime_stop_is_owned_idempotent_and_cleans_network(tmp_path: Path):
     runtime.stop()
     runtime.stop()
 
-    assert calls == ["processes:1", "network.stop", "minindn.cleanUp"]
+    assert calls == ["processes:1", "network.stop"]
     assert runtime._processes == []
     assert runtime._ndn is None
     assert runtime._started_phases == set()

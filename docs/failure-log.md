@@ -1,5 +1,23 @@
 # Failure Log and Evidence Index
 
+## 2026-09-08 — MiniNDN cancellation bypassed owned cleanup
+
+- Symptom: SIGTERM could terminate the driver outside its finally cleanup;
+  startup and teardown also invoked host-global nfd-stop / mn --clean.
+- Cause: default signal disposition and inherited global cleanup despite
+  per-run network/output ownership.
+- Fix: scoped cancellation handlers unwind the live driver, suppress repeated
+  signals while cleaning, restore caller handlers, and use only the existing
+  network instance and tracked application handles for teardown.
+- Validation: six component cases now have passing evidence. Initial two
+  signal assertions used enum strings on Python 3.8, while handlers correctly
+  received integers; fixed the assertion and reran only those two. Evidence:
+  Spec183 `evidence/t010-cancellation.md`. No real MiniNDN qualification.
+- Remaining: outer deadline and final child reaping are still N2 work; legacy
+  stop_process_group kills without waiting and cannot prove bounded cleanup.
+- Lesson: process cancellation and resource ownership must be checked at the
+  actual driver and dependency implementations, not inferred from a finally.
+
 ## 2026-09-08 — MiniNDN wrapper did not consume its actual prepared keys
 
 - Symptom: wrapper selected global offer-key paths although the issuer produces
