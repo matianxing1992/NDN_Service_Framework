@@ -4,6 +4,9 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeV3Placement.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp"
 #include "tests/unit-tests/generic-dynamic-api-fixture.hpp"
+#include "tests/fixtures/spec182/native-sealing-fixture.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeYoloMergeRunner.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp"
 
 #include <fstream>
 #include <future>
@@ -175,6 +178,124 @@ BOOST_AUTO_TEST_CASE(RejectsSourceAndCanonicalIdentityBeforePublication)
     auto publisher = NativeCanonicalPublisherTestAccess::create(io.transport(), input.options, input.resolver());
     BOOST_CHECK_THROW(publisher(input.model, input.candidate, input.roles, input.control), std::invalid_argument);
     BOOST_CHECK(io.payloads.empty());
+  }
+}
+
+BOOST_AUTO_TEST_CASE(NativeMergePublishesAndSealsWithoutOnnxRecipe)
+{
+  for (bool external : {false, true}) {
+    Input input(external); TransportFixture io;
+    auto merge = input.roles.front();
+    merge.role = merge.selectedRole = "/Merge";
+    merge.roleKind = "COMPONENT_SET"; merge.layerBegin = merge.layerEnd = 0;
+    merge.nodeIndices = {1};
+    merge.mergeKind = "NATIVE_POSTPROCESS";
+    merge.postprocessIdentity = "YOLO26n-canonical-detection-rows";
+    merge.postprocessOutputName = "predictions";
+    merge.postprocessConfidenceThreshold = .001;
+    merge.postprocessSort = "confidence-desc,class-asc,xyxy-asc";
+    merge.expectedOutputs = {{"predictions", "float32", {std::int64_t(1), std::int64_t(300), std::int64_t(6)}}};
+    merge.artifactDigest = nativePlanningDigest("native-merge-fragment");
+    merge.recipeDigest = nativePlanningDigest("native-merge-candidate-recipe");
+    merge.canonicalInitializerDigest.clear(); merge.assemblerDescriptorDigest.clear();
+    merge.backendAbi.clear(); merge.precision.clear(); merge.quantization.clear();
+    merge.layout.clear(); merge.padding.clear();
+    merge.maxSourceBytes = merge.maxAssembledBytes = merge.maxNodes = 0;
+    // Native Merge first exercises source-limit selection independently of role order.
+    input.roles.insert(input.roles.begin(), merge);
+    auto& candidate = input.candidate;
+    candidate.executionPlan.roles.insert(candidate.executionPlan.roles.begin(), merge.role);
+    candidate.nodeRoles["n1"] = merge.role;
+    candidate.artifactsByRole[merge.role] = {merge.artifactDigest};
+    candidate.rankArtifactDigestsByRole[merge.role] = {merge.artifactDigest};
+    candidate.tensorDegreesByRole[merge.role] = 1;
+    candidate.fragmentsByRole[merge.role] = merge.artifactDigest;
+    candidate.requirementsByRole[merge.role] = {{"onnxruntime"}, 1, 0, 0, 0, 0, 1.0};
+    candidate.inputIngressRole = "/role"; candidate.resultEgressRole = merge.role;
+    candidate.mergeKind = merge.mergeKind;
+    candidate.postprocessingJson = R"({"identity":"YOLO26n-canonical-detection-rows","outputName":"predictions","confidenceThreshold":0.001,"sort":"confidence-desc,class-asc,xyxy-asc"})";
+    candidate.candidateDigest = candidate.computedDigest();
+    std::ifstream file("tests/fixtures/spec182/native-merge-offers.json");
+    const auto signedOffers = NativeJson::parse(file);
+    NativeOfferAdmission admission(signedOffers.at("policy").dump(),
+      {{signedOffers.at("key_id"), signedOffers.at("public_pem")}}, signedOffers.at("candidate"));
+    const auto context = input.proposal().context;
+    std::vector<NativeAdmittedOfferV3> offers;
+    for (const auto& item : signedOffers.at("offers")) {
+      const auto wire = item.get<std::string>();
+      const auto offer = decodeNativeProviderOfferV3(wire);
+      AckSelectionCandidate ack;
+      ack.providerName = ndn::Name(offer.provider); ack.serviceName = ndn::Name(offer.service);
+      ack.requestId = ndn::Name(offer.requestId); ack.ack.setStatus(offer.status);
+      ndn::Buffer payload(wire.begin(), wire.end()); ack.ack.setPayload(payload, payload.size());
+      // Core authentication evidence fixture; the signature is checked by production admission.
+      ack.authenticationEvidence = {offer.provider, offer.provider + "/KEY/fixture/issuer/v=1",
+        "sha256:" + std::string(64, '1'), true};
+      offers.push_back(admission.verify(ack, context, 200));
+    }
+    const auto proposal = NativePreSplitFirstPlacement{}.proposeRoles(context,
+      nativePlanningDigest("ack"), input.roles, offers, 200);
+    auto publisher = NativeCanonicalPublisherTestAccess::create(io.transport(), input.options, input.resolver());
+    NativeRequestPreparation preparation(std::make_shared<NativeAdapterRegistry>(), {}, publisher.artifactPort());
+    const auto artifacts = preparation.ensureArtifacts(input.model, candidate, proposal, input.control);
+    BOOST_REQUIRE_EQUAL(io.payloads.size(), external ? 3 : 2);
+    NativePlanSealingInputs inputs;
+    inputs.artifacts = artifacts; inputs.requesterIdentity = "/requester";
+    inputs.protectionEpoch = merge.protectionEpoch; inputs.expiresAtMs = context.deadlineMs;
+    for (const auto& role : input.roles) inputs.assemblyByRole.emplace(role.selectedRole, role);
+    auto execution = candidate.executionPlan;
+    execution.roles.clear();
+    for (const auto& role : proposal.roles) execution.roles.push_back(role.selectedRole);
+    execution.serviceName = context.serviceName; execution.modelName = input.model.descriptor.modelName;
+    const auto core = NativePlanSealer::sealCore(input.model, candidate, proposal, execution,
+      offers, proposal.ackClosedDigest, inputs);
+    const auto& native = core.assemblyByRole.at(merge.role);
+    BOOST_CHECK_EQUAL(native.modelManifestDigest, artifacts.manifestDigest);
+    BOOST_CHECK_NE(native.modelManifestDigest, input.model.modelManifestDigest);
+    BOOST_CHECK_EQUAL(native.recipeDigest, merge.recipeDigest);
+    BOOST_CHECK(native.canonicalInitializerDigest.empty());
+    BOOST_CHECK(native.assemblerDescriptorDigest.empty());
+    BOOST_CHECK_EQUAL(native.maxSourceBytes, 0);
+    BOOST_CHECK_NE(core.assemblyByRole.at("/role").recipeDigest, input.roles.back().recipeDigest);
+    for (const auto& offer : offers)
+      BOOST_CHECK_EQUAL(NativePlanSealer::grantView(core, offer,
+        {nativePlanningDigest("policy"), true}).modelManifestDigest, artifacts.manifestDigest);
+    // Grant transport is a fixture; both bindings retain the protected epoch.
+    const auto sealed = NativePlanSealer::finalizeSecurity(core,
+      {{"/provider/a", "/role", "/grant/a", nativePlanningDigest("grant-a"), "/provider/a"},
+       {"/provider/b", "/Merge", "/grant/b", nativePlanningDigest("grant-b"), "/provider/b"}},
+      {nativePlanningDigest("policy"), true});
+    const auto projection = NativePlanSealer::project(sealed, "/provider/b",
+      fixture::projection(sealed, "/provider/b"));
+    const auto spec = nativeYoloMergeRunnerSpecFromProjection(projection);
+    BOOST_CHECK(!validateNativePreparedRunnerSpec(projection, spec));
+    BOOST_CHECK(spec.path.empty());
+    BOOST_CHECK_NO_THROW(NativePlanSealer::encode(projection));
+    auto poisoned = core;
+    poisoned.assemblyByRole.at(merge.role).modelManifestDigest = input.model.modelManifestDigest;
+    BOOST_CHECK_THROW(poisoned.validate(), std::invalid_argument);
+    poisoned = core;
+    poisoned.assemblyByRole.at(merge.role).postprocessOutputName = "other";
+    BOOST_CHECK_THROW(poisoned.validate(), std::invalid_argument);
+
+    for (unsigned poison = 0; poison != 4; ++poison) {
+      auto roles = input.roles;
+      if (poison == 0) roles.front().modelManifestDigest = nativePlanningDigest("foreign");
+      if (poison == 1) roles.front().mergeKind.clear();
+      if (poison == 2) roles.front().expectedOutputs.clear();
+      if (poison == 3) roles.front().graphDigest = nativePlanningDigest("foreign");
+      const auto published = io.payloads.size();
+      BOOST_CHECK_THROW(publisher(input.model, candidate, roles, input.control), std::exception);
+      BOOST_CHECK_EQUAL(io.payloads.size(), published);
+    }
+    // Without an ONNX role, publication has no certified source resource bound.
+    auto solo = candidate;
+    solo.executionPlan.roles = {merge.role}; solo.inputIngressRole = merge.role;
+    solo.artifactsByRole.erase("/role"); solo.rankArtifactDigestsByRole.erase("/role");
+    solo.tensorDegreesByRole.erase("/role"); solo.fragmentsByRole.erase("/role");
+    solo.requirementsByRole.erase("/role"); solo.nodeRoles["n0"] = merge.role;
+    solo.candidateDigest = solo.computedDigest();
+    BOOST_CHECK_THROW(publisher(input.model, solo, {merge}, input.control), std::invalid_argument);
   }
 }
 

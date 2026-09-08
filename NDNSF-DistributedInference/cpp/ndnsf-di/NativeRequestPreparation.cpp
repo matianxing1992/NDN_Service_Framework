@@ -214,6 +214,7 @@ void NativeRequestPreparation::validateRoles(const NativeInspectedModel& model,
     // The candidate, not an independently supplied role, owns postprocessing.
     // Keep the maintained egress-only projection for both ONNX and native merge.
     const bool egress = role.role == candidate.resultEgressRole;
+    const bool nativeMerge = egress && candidate.mergeKind == "NATIVE_POSTPROCESS";
     if (role.mergeKind != (egress ? candidate.mergeKind : "") ||
         role.postprocessIdentity != (egress ? postprocessing.value("identity", std::string{}) : "") ||
         role.postprocessOutputName != (egress ? postprocessing.value("outputName", std::string{}) : "") ||
@@ -224,10 +225,10 @@ void NativeRequestPreparation::validateRoles(const NativeInspectedModel& model,
         role.modelManifestDigest != model.modelManifestDigest ||
         role.adapterId != model.descriptor.adapterId || role.adapterVersion != model.descriptor.adapterVersion ||
         !digest(role.recipeDigest) || !digest(role.artifactProfileDigest) ||
-        !digest(role.canonicalInitializerDigest) || !digest(role.adapterDescriptorDigest) ||
-        !digest(role.assemblerDescriptorDigest) || role.backendAbi.empty() || role.precision.empty() ||
-        role.protectionEpoch.empty() || role.nodeIndices.empty() || !role.maxSourceBytes ||
-        !role.maxAssembledBytes || !role.maxNodes)
+        !digest(role.adapterDescriptorDigest) || role.protectionEpoch.empty() || role.nodeIndices.empty() ||
+        (!nativeMerge && (!digest(role.canonicalInitializerDigest) ||
+          !digest(role.assemblerDescriptorDigest) || role.backendAbi.empty() || role.precision.empty() ||
+          !role.maxSourceBytes || !role.maxAssembledBytes || !role.maxNodes)))
       throw std::runtime_error("DI_NATIVE_ROLE_BINDING_MISMATCH");
     const auto specific = candidate.rankArtifactDigestsByRole.find(role.role);
     const auto& artifacts = specific == candidate.rankArtifactDigestsByRole.end()
@@ -368,12 +369,14 @@ std::vector<NativeSelectionRoleV3> NativeRequestPreparation::bindPublishedRoles(
     const auto artifact = artifacts.artifactDigestByRole.find(role.selectedRole);
     if (root.value("artifactProfileDigest", NativeJson{}) != role.artifactProfileDigest ||
         artifact == artifacts.artifactDigestByRole.end() || artifact->second != role.artifactDigest ||
-        model.canonicalSourceBytes > role.maxSourceBytes || model.canonicalInitializerBytes > role.maxSourceBytes)
+        (role.mergeKind != "NATIVE_POSTPROCESS" &&
+          (model.canonicalSourceBytes > role.maxSourceBytes || model.canonicalInitializerBytes > role.maxSourceBytes)))
       throw std::invalid_argument("native published root differs from the selected role contract");
     // Only the business-root certificate changes; do not rerun strategy or alter
     // any assignment, device, artifact, graph, or resource requirement here.
     role.modelManifestDigest = artifacts.manifestDigest;
-    role.recipeDigest = nativePlanningDigest(canonicalNativeOnnxRecipeJson(role));
+    if (role.mergeKind != "NATIVE_POSTPROCESS")
+      role.recipeDigest = nativePlanningDigest(canonicalNativeOnnxRecipeJson(role));
   }
   return certified;
 }

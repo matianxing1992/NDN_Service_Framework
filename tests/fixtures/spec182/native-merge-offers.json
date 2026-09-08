@@ -1,0 +1,31 @@
+{
+  "candidate": "sha256:dda18a0e21ae47c53b4309434cbc02ae8bf764fa83a6defbb719431242722aa7",
+  "key_id": "sha256:56475aa75463474c0285df5dbf2bcab73da651358839e9b77481b2eab107708c",
+  "offers": [
+    "{\"accepted_roles\":[\"/role\"],\"ack_reservation\":false,\"attempt\":1,\"backends\":[\"onnxruntime-cpu\"],\"bandwidth_mbps\":0.0,\"boot_epoch\":\"fixture-boot\",\"can_provision\":false,\"captured_at_ms\":100,\"estimated_wait_ms\":0.0,\"execution_disposition\":\"ACCEPT_WITH_PREPARATION\",\"expires_at_ms\":2000000000000,\"graph_digest\":\"sha256:423614833cbdcee4c5d05f43520d155207e5f272fddb7225ada6caf7d6904dc2\",\"has_model\":false,\"model_digest\":\"sha256:9372c470eeadd5ecd9c3c74c2b3cb633f8e2f2fad799250a0f70d652b6b825e4\",\"preparation_accepted\":true,\"provider\":\"/provider/a\",\"queue_depth\":0,\"request_id\":\"/request\",\"residency\":[],\"resources\":[],\"rtt_ms\":0.0,\"schema\":\"DI_PLACEMENT_V3\",\"schema_version\":3,\"service\":\"/service\",\"signature\":\"oqtPNG9yr3WrYm2aWIvGhQFpI6LGhkCyfb5f5QSJ7K2stx+z+Hlfn9hVnEWthCTHpx3bS0qUQXtN8x0/2mL0AA==\",\"signer_key_id\":\"sha256:56475aa75463474c0285df5dbf2bcab73da651358839e9b77481b2eab107708c\",\"status\":true,\"topology\":{\"backend\":\"onnxruntime-cpu\",\"devices\":[],\"provider\":\"/provider/a\",\"topology_digest\":\"\"}}",
+    "{\"accepted_roles\":[\"/Merge\"],\"ack_reservation\":false,\"attempt\":1,\"backends\":[\"onnxruntime-cpu\"],\"bandwidth_mbps\":0.0,\"boot_epoch\":\"fixture-boot\",\"can_provision\":false,\"captured_at_ms\":100,\"estimated_wait_ms\":0.0,\"execution_disposition\":\"ACCEPT_WITH_PREPARATION\",\"expires_at_ms\":2000000000000,\"graph_digest\":\"sha256:423614833cbdcee4c5d05f43520d155207e5f272fddb7225ada6caf7d6904dc2\",\"has_model\":false,\"model_digest\":\"sha256:9372c470eeadd5ecd9c3c74c2b3cb633f8e2f2fad799250a0f70d652b6b825e4\",\"preparation_accepted\":true,\"provider\":\"/provider/b\",\"queue_depth\":0,\"request_id\":\"/request\",\"residency\":[],\"resources\":[],\"rtt_ms\":0.0,\"schema\":\"DI_PLACEMENT_V3\",\"schema_version\":3,\"service\":\"/service\",\"signature\":\"N02j0RUwMLQHV1qarIStYMD1s3K7/XvyLo0gVmuBdA+z1CKIaO1rCjh7GJFAWDWoA9gZg6slud6riwRfnVZjDA==\",\"signer_key_id\":\"sha256:56475aa75463474c0285df5dbf2bcab73da651358839e9b77481b2eab107708c\",\"status\":true,\"topology\":{\"backend\":\"onnxruntime-cpu\",\"devices\":[],\"provider\":\"/provider/b\",\"topology_digest\":\"\"}}"
+  ],
+  "policy": {
+    "candidateDigest": "sha256:dda18a0e21ae47c53b4309434cbc02ae8bf764fa83a6defbb719431242722aa7",
+    "candidateId": "fixture",
+    "entries": [
+      {
+        "certificateName": "/provider/a/KEY/fixture/issuer/v=1",
+        "keyLocatorPrefix": "/provider/a/KEY/fixture",
+        "provider": "/provider/a",
+        "service": "/service",
+        "signerKeyId": "sha256:56475aa75463474c0285df5dbf2bcab73da651358839e9b77481b2eab107708c"
+      },
+      {
+        "certificateName": "/provider/b/KEY/fixture/issuer/v=1",
+        "keyLocatorPrefix": "/provider/b/KEY/fixture",
+        "provider": "/provider/b",
+        "service": "/service",
+        "signerKeyId": "sha256:56475aa75463474c0285df5dbf2bcab73da651358839e9b77481b2eab107708c"
+      }
+    ],
+    "schema": "spec180-provider-offer-trust-v1",
+    "trustSchema": "/trust/schema"
+  },
+  "public_pem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAA6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=\n-----END PUBLIC KEY-----\n"
+}

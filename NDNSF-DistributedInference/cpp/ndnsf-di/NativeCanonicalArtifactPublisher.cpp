@@ -3,6 +3,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
 #include "ndn-service-framework/ServiceUser.hpp"
 
+#include <algorithm>
 #include <condition_variable>
 #include <mutex>
 #include <optional>
@@ -79,8 +80,13 @@ NativeArtifactBinding NativeCanonicalArtifactPublisher::operator()(const NativeI
   if (roles.empty() || (!m_options.packageManifestDigest.empty() &&
                        m_options.packageManifestDigest != model.modelManifestDigest))
     throw std::invalid_argument("native publication package or role contract differs from inspection");
-  std::uint64_t sourceLimit = roles.front().maxSourceBytes;
-  std::uint64_t assemblyLimit = roles.front().maxAssembledBytes;
+  const auto onnx = std::find_if(roles.begin(), roles.end(), [](const auto& role) {
+    return role.mergeKind != "NATIVE_POSTPROCESS";
+  });
+  if (onnx == roles.end())
+    throw std::invalid_argument("native canonical publication requires an ONNX source role");
+  std::uint64_t sourceLimit = onnx->maxSourceBytes;
+  std::uint64_t assemblyLimit = onnx->maxAssembledBytes;
   for (const auto& role : roles) {
     validateNativeAssembly(role);
     const auto explicitDegree = candidate.tensorDegreesByRole.find(role.role);
@@ -89,8 +95,10 @@ NativeArtifactBinding NativeCanonicalArtifactPublisher::operator()(const NativeI
     const auto key = degree == 1 ? role.role : role.role + "#" + std::to_string(role.rank);
     if (role.selectedRole != key || role.artifactProfileDigest != roles.front().artifactProfileDigest)
       throw std::invalid_argument("native publication role alias or profile is inconsistent");
-    sourceLimit = std::min(sourceLimit, role.maxSourceBytes);
-    assemblyLimit = std::min(assemblyLimit, role.maxAssembledBytes);
+    if (role.mergeKind != "NATIVE_POSTPROCESS") {
+      sourceLimit = std::min(sourceLimit, role.maxSourceBytes);
+      assemblyLimit = std::min(assemblyLimit, role.maxAssembledBytes);
+    }
   }
   const auto source = m_source(model, control);
   control.requireActive();
@@ -108,7 +116,8 @@ NativeArtifactBinding NativeCanonicalArtifactPublisher::operator()(const NativeI
   const auto identity = canonicalOnnxSourceIdentity(*source,
     {control.deadline, [&control] { control.requireActive(); }, sourceLimit, assemblyLimit});
   for (const auto& role : roles) {
-    if (identity.graphDigest != role.graphDigest || identity.initializerDigest != role.canonicalInitializerDigest)
+    if (identity.graphDigest != role.graphDigest ||
+        (role.mergeKind != "NATIVE_POSTPROCESS" && identity.initializerDigest != role.canonicalInitializerDigest))
       throw std::invalid_argument("native publication canonical graph or initializer identity differs from recipe");
   }
   control.requireActive();
