@@ -3546,3 +3546,18 @@ identity and rerun packaging against the existing incremental Waf cache.
   the exact-SIF MiniNDN command prefix. The base libraries remain image-owned.
 - Lesson: every external execution input needs both an identity reference and
   a container-visible mount; an absolute host path alone is not a runtime bind.
+
+## 2026-09-08: root MiniNDN driver lost operator ONNX dependency
+
+- Symptom: with the package mount fixed, Y-B still exited 78 before NFD with
+  `CANONICAL_CATALOGUE_VERIFY_FAILED`.
+- Root cause: the transient systemd service ran the outer Python driver as
+  root, so its Python user-site was `/root/.local/...` and did not contain the
+  host `onnx` package needed for read-only catalogue graph analysis. The
+  operator process had the dependency in `/home/tianxing/.local/...`.
+- Fix: forward the operator's existing user-site directory in the wrapper's
+  explicit `PYTHONPATH`; SIF child commands continue to replace it with the
+  image-owned Python path.
+- Lesson: the host validation process and image workload have separate Python
+  environments; privilege changes must preserve only the declared read-only
+  validation dependencies instead of relying on root's site discovery.

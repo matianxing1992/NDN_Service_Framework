@@ -15,6 +15,7 @@ import argparse
 import hashlib
 import json
 import os
+import site
 import sys
 from pathlib import Path
 from typing import Iterable
@@ -185,6 +186,14 @@ def main(argv: Iterable[str] | None = None) -> int:
     # Pass only the declared host inputs and executable/module search paths.
     # Inherited SIF bypass knobs or unrelated credentials are not host inputs.
     env = {name: os.environ[name] for name in ('PATH', 'PYTHONPATH') if name in os.environ}
+    # The systemd system manager executes the outer MiniNDN driver as root,
+    # whose Python user-site is different from the operator's.  The driver
+    # performs a read-only ONNX/catalogue validation before starting NFD; keep
+    # that dependency path explicit across the privilege boundary.  SIF child
+    # commands replace PYTHONPATH with the image-owned path in `sif_exec_prefix`.
+    operator_site = Path(site.getusersitepackages())
+    if operator_site.is_dir():
+        env['PYTHONPATH'] = ':'.join(filter(None, (str(operator_site), env.get('PYTHONPATH', ''))))
     env.update({
         "PYTHONDONTWRITEBYTECODE": "1",
         "LD_LIBRARY_PATH": args.library_path,
