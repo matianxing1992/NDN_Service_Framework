@@ -225,7 +225,7 @@ def preparation_arguments(descriptor: Path, expected_digest: str) -> dict:
 
 
 def run_user_with_reference(argv, *, backend, run_id, request_id,
-                            candidate_digest, output):
+                            candidate_digest, output, negative=False):
     """Compose the installed User with a bounded independent reference owner."""
     import importlib.util
     import sys
@@ -240,6 +240,23 @@ def run_user_with_reference(argv, *, backend, run_id, request_id,
     spec = importlib.util.spec_from_file_location('_spec183_installed_user', script)
     owner = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(owner)
+
+    if negative:
+        from runtime.yolo_negative import NegativeUserObserver
+        if (argv.count('--timeout-ms')!=1 or argv.index('--timeout-ms')+1>=len(argv)
+                or any(value.startswith('--timeout-ms=') for value in argv)):
+            raise ValueError('NEGATIVE_USER_TIMEOUT_ARGUMENT')
+        observer=NegativeUserObserver(run_id=run_id,request_id=request_id,
+            candidate_digest=candidate_digest,output=output,
+            placement_id=os.environ.get('SPEC180_CANDIDATE_ID',''),
+            placement_digest=os.environ.get('SPEC180_CANDIDATE_DIGEST',''),
+            deadline_ms=int(argv[argv.index('--timeout-ms')+1]))
+        # The installed User prepares the real input and canonical role binding,
+        # but a missing-output case needs no independent numerical ORT run.
+        result=owner.main(argv,terminal_handler=observer.terminal,
+                          dependency_no_progress_ms=observer.dependency_no_progress_ms)
+        observer.finish_after_shutdown(result)
+        return result
 
     def factory(**kwargs):
         return RequestReferenceBinding(owner.YoloCanonicalArtifactBinding(**kwargs),
@@ -266,6 +283,7 @@ def main(argv=None):
     user.add_argument('--reference-request-id', required=True)
     user.add_argument('--reference-candidate-digest', required=True)
     user.add_argument('--reference-output', type=Path, required=True)
+    user.add_argument('--expected-dependency-failure', action='store_true')
     user.add_argument('user_args', nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
     try:
@@ -284,7 +302,8 @@ def main(argv=None):
                     raise ValueError('REFERENCE_USER_ARGUMENT_BINDING')
             return run_user_with_reference(forwarded, backend=args.reference_backend,
                 run_id=args.reference_run_id, request_id=args.reference_request_id,
-                candidate_digest=args.reference_candidate_digest, output=args.reference_output)
+                candidate_digest=args.reference_candidate_digest, output=args.reference_output,
+                **({'negative':True} if args.expected_dependency_failure else {}))
         else:
             receipt = probe_repo_in_container(args.probe_id, args.seconds)
     except Exception as exc:
@@ -739,21 +758,20 @@ def run_requests(worker, plan: dict, *, package: Path, catalog_data_name: str,
         if (not isinstance(value, str) or not value.startswith('/') or value == '/'
                 or any(ord(c) < 33 or ord(c) == 127 for c in value)):
             raise ValueError('YOLO_CATALOG_NAME')
-    if plan.get('case') not in ('local-cpu', 'single-node-gpu', 'two-node-gpu'):
-        # Negative-dependency needs a separately wired post-Selection fault
-        # owner and validator; do not run it as a nominal success schedule.
+    if plan.get('case') not in ('local-cpu', 'single-node-gpu', 'two-node-gpu', 'negative-dependency'):
         raise ValueError('YOLO_NORMAL_CASE')
     if worker.mode != plan['case'] or worker.rank != 0:
         raise ValueError('YOLO_WORKER_CASE')
     requests = plan.get('requests')
-    expected = 4 if plan['case'] == 'two-node-gpu' else 2
+    negative=plan['case']=='negative-dependency'
+    expected = 1 if negative else 4 if plan['case'] == 'two-node-gpu' else 2
     if not isinstance(requests, list) or len(requests) != expected:
         raise ValueError('YOLO_REQUEST_COUNT')
     seen = set()
     for i, request in enumerate(requests):
         if (not isinstance(request, dict) or set(request) != {'index', 'warmup', 'requestId', 'output'}
                 or type(request['index']) is not int or request['index'] != i
-                or type(request['warmup']) is not bool or request['warmup'] != (i == 0)):
+                or type(request['warmup']) is not bool or request['warmup'] != (i == 0 and not negative)):
             raise ValueError('YOLO_REQUEST_SCHEDULE')
         identity = request['requestId']
         if (not isinstance(identity, str) or not identity.startswith('/') or identity == '/'
@@ -819,8 +837,13 @@ def run_requests(worker, plan: dict, *, package: Path, catalog_data_name: str,
             seconds = min(seconds, remaining_seconds() - worker.cleanup_seconds)
             if not math.isfinite(seconds) or seconds <= 0:
                 raise TimeoutError('YOLO_WORKLOAD_BUDGET')
-        worker.run_user(i, argv, package=package, seconds=seconds,
-                        peer_failure=peer_failure, reference_gpu=worker.mode != 'local-cpu')
+        if negative:
+            argv.insert(argv.index('--'),'--expected-dependency-failure')
+            argv.remove('--retain-numerical-response')
+        rc=worker.run_user(i, argv, package=package, seconds=seconds,
+                        peer_failure=peer_failure, reference_gpu=worker.mode != 'local-cpu' and not negative)
+        if negative and rc!=0:
+            raise RuntimeError('NEGATIVE_USER_PROCESS_EXIT')
         accept_request(request, Path(request['output']))
 
 
@@ -836,7 +859,7 @@ def run_normal_node(worker, startup, *, completion_factory, endpoints,
     """
     from runtime.yolo_result import write_worker_receipt
     if (worker._preparation_binding is None or worker.mode not in
-            ('local-cpu', 'single-node-gpu', 'two-node-gpu')
+            ('local-cpu', 'single-node-gpu', 'two-node-gpu', 'negative-dependency')
             or not callable(completion_factory) or not callable(accept_request)):
         raise ValueError('YOLO_NODE_OWNER_SCOPE')
     plan = worker._preparation_binding[0]

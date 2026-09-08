@@ -2786,3 +2786,13 @@ result root. The deployed native executable remains unqualified by this probe.
 Lesson: derive the full compile/link closure before inventing a standalone test
 command; the framework DSO is not the DI runtime archive. Keep component build
 errors distinct from actual model/runtime failures. See t004-dependency-cutpoint.md.
+
+## 2026-09-07 — Negative User schedule fixture used the wrong invocation-ID type
+
+Two newly added schedule checks expected integer 0, but the existing User process
+boundary deliberately receives string "0". Corrected only the fixture assertion;
+the two targeted reruns pass. The composition check already passed and was not
+repeated. Original output is retained with the negative User evidence. Lesson:
+distinguish the integer request index in the prepared plan from the string
+invocation identifier at the worker API; do not change production behavior to
+accommodate a test assumption. See t004-negative-user.md.

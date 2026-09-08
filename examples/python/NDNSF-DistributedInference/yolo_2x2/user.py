@@ -418,7 +418,8 @@ def _build_grant_seam(client, *, registry_path, model_manifest_digest,
     return provider, epoch
 
 
-def _load_yolo_ack_driven(client, args, *, canonical_binding_factory=None) -> int:
+def _load_yolo_ack_driven(client, args, *, canonical_binding_factory=None,
+                         terminal_handler=None, dependency_no_progress_ms=None) -> int:
     """Run the maintained model-first YOLO path.
 
     This path deliberately accepts only a canonical package, an authenticated
@@ -456,6 +457,12 @@ def _load_yolo_ack_driven(client, args, *, canonical_binding_factory=None) -> in
     if not str(args.request_id).startswith("/"):
         raise RuntimeError("ACK-driven YOLO request ID must be an absolute NDN name")
     mutation = _spec180_y_n_mutation(args)
+    if terminal_handler is not None and (not callable(terminal_handler) or mutation):
+        raise ValueError('CUSTOM_TERMINAL_HANDLER_OR_MUTATION')
+    if dependency_no_progress_ms is not None and (
+            type(dependency_no_progress_ms) is not int
+            or not 1 <= dependency_no_progress_ms <= int(args.timeout_ms)):
+        raise ValueError('CUSTOM_DEPENDENCY_PROGRESS_BUDGET')
     journal = LifecycleJournal(
         Path(args.lifecycle_output_dir).expanduser().resolve(),
         str(args.lifecycle_case),
@@ -604,12 +611,14 @@ def _load_yolo_ack_driven(client, args, *, canonical_binding_factory=None) -> in
         # encrypted input fetch and upstream compute. Use the caller's request
         # budget instead of an independent shorter timeout; DATA_V1 still
         # clamps every fetch to its hard deadline and observes cancellation.
-        data_v1_no_progress_ms=int(args.timeout_ms),
+        data_v1_no_progress_ms=(int(args.timeout_ms) if dependency_no_progress_ms is None
+                               else dependency_no_progress_ms),
         ack_coverage_roles=(),
         grant_binding_provider=grant_binding_provider,
         protection_epoch=protection_epoch,
         lifecycle_observer=_make_lifecycle_observer(journal),
     )
+    request_started_at = time.monotonic()
     try:
         handle = client.request_task(
             model=model,
@@ -669,6 +678,9 @@ def _load_yolo_ack_driven(client, args, *, canonical_binding_factory=None) -> in
         if getattr(response, "error", "") != "DI_INPUT_FETCH_ROLE_MISMATCH":
             raise RuntimeError("SPEC180_Y_N_I_REQUIRES_PROVIDER_EVIDENCE")
         return 91
+    if terminal_handler is not None:
+        return terminal_handler(handle=handle, journal=journal, args=args,
+                                request_started_at=request_started_at)
     response = handle.response(args.timeout_ms)
     journal.append(
         "TERMINAL_RESPONSE",
@@ -695,11 +707,14 @@ def _load_yolo_ack_driven(client, args, *, canonical_binding_factory=None) -> in
     return 0
 
 
-def main(argv=None, *, canonical_binding_factory=None) -> int:
+def main(argv=None, *, canonical_binding_factory=None, terminal_handler=None,
+         dependency_no_progress_ms=None) -> int:
     """Run the CLI or a trusted in-process application composition.
 
     The optional factory decorates the existing canonical artifact owner;
     it is supplied only by Python callers, never by wire data or a CLI import.
+    A trusted caller may also own terminal observation and choose a bounded
+    dependency-progress window. Shutdown still completes before main returns.
     """
     parser = parse_args_with_common("Run YOLO 2x2 user")
     # Keep explicit argument identity when an application composes this CLI.
@@ -800,7 +815,9 @@ def main(argv=None, *, canonical_binding_factory=None) -> int:
         if not args.offline_oracle:
             try:
                 return _load_yolo_ack_driven(
-                    client, args, canonical_binding_factory=canonical_binding_factory)
+                    client, args, canonical_binding_factory=canonical_binding_factory,
+                    terminal_handler=terminal_handler,
+                    dependency_no_progress_ms=dependency_no_progress_ms)
             finally:
                 client.shutdown()
         service = yolo_inference_service(client.deployment)

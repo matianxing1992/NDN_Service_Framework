@@ -1321,7 +1321,8 @@ def validate_certified_graph_coverage(observations, model_bindings, certified_gr
                 qualification='CERTIFIED_GRAPH_COMPONENT_ONLY')
 
 
-def validate_lifecycle(root, *, case, request_id, attempt_id, candidate_id, candidate_digest):
+def validate_lifecycle(root, *, case, request_id, attempt_id, candidate_id, candidate_digest,
+                       require_terminal=True):
     """Validate one externally bound, successful, no-reselection request.
 
     These User journal entries do not prove native execution, model loading,
@@ -1343,6 +1344,10 @@ def validate_lifecycle(root, *, case, request_id, attempt_id, candidate_id, cand
         'PROVIDER_EXECUTION_STARTED': {'roleDigest', 'providerCount'},
         'TERMINAL_RESPONSE': {'resultDigest', 'requestCount', 'status'},
     }
+    if type(require_terminal) is not bool or (not require_terminal and case != 'negative-dependency'):
+        raise EvidenceError('LIFECYCLE_TERMINAL_MODE')
+    if not require_terminal:
+        fields.pop('TERMINAL_RESPONSE')
     common = {'schema', 'caseId', 'requestId', 'attemptId', 'sequence', 'timestampUnix', 'milestone'}
     if (any(not isinstance(v, str) or not v for v in
             (case, request_id, attempt_id, candidate_id))
@@ -1396,11 +1401,12 @@ def validate_lifecycle(root, *, case, request_id, attempt_id, candidate_id, cand
                     raise EvidenceError('LIFECYCLE_COUNT')
     if (events[4]['candidateId'], events[4]['candidateDigest']) != (candidate_id, candidate_digest):
         raise EvidenceError('LIFECYCLE_CANDIDATE_MISMATCH')
-    if events[-1]['status'] is not True or events[-1]['requestCount'] != 1:
+    if require_terminal and (events[-1]['status'] is not True or events[-1]['requestCount'] != 1):
         raise EvidenceError('LIFECYCLE_TERMINAL_NOT_PASS')
     return dict(events=events, requestId=request_id, attemptId=attempt_id,
-                planDigest=events[6]['planDigest'], resultDigest=events[-1]['resultDigest'],
-                qualification='LIFECYCLE_COMPONENT_ONLY')
+                planDigest=events[6]['planDigest'],
+                resultDigest=events[-1]['resultDigest'] if require_terminal else None,
+                qualification='LIFECYCLE_COMPONENT_ONLY' if require_terminal else 'SELECTION_COMPONENT_ONLY')
 
 
 def reanalyze_numerical_response(root, reference, *, case, request_id, attempt_id,
