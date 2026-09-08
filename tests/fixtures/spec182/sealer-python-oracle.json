@@ -1,0 +1,81 @@
+{
+  "core_digest": "sha256:8d7a2999eb0a5e25a15c140f289c998460e9558d317524227ca25ff5465923d8",
+  "plan_digest": "sha256:1e20739d7a9c27938947eb15502dab6ceb4cc44ac937c8aca3cd95357f82aa31",
+  "schema": "spec182-real-sdk-sealer-oracle-v1",
+  "unsigned_core": {
+    "ack_closed_digest": "sha256:01a0f87fe4b273765ac24c1a9c497bae3aee0ce1680726390e20369881a070da",
+    "attempt": 1,
+    "candidate_digest": "sha256:dda18a0e21ae47c53b4309434cbc02ae8bf764fa83a6defbb719431242722aa7",
+    "dependencies": [],
+    "generation_contract": null,
+    "graph_digest": "sha256:eb39048e76e23f16bdd123ca37e0e32aedbe6d0c52d14c2e5bfd22aa88239b08",
+    "model_digest": "sha256:34e1b5468a63812c036a261b2659e44b658a5efe381ae110c6e72841d04ed6f2",
+    "provider_by_role": {
+      "/LLM/Pipeline/Stage/0": "provider-a"
+    },
+    "request_contract_digest": "",
+    "request_id": "oracle-request",
+    "roles": [
+      {
+        "adapter_descriptor_digest": "sha256:9a63593b7b52dc82acdf4e5e55f4f497e0c2105df11b76446c023b09b503881c",
+        "adapter_id": "qwen",
+        "adapter_version": "1",
+        "artifact_digest": "sha256:1f508a1852ecb01602ba7f3c3d2ef34c177caf21e316e8c65d1dd4fc42bd45cd",
+        "artifact_profile_digest": "sha256:4d5fd5739bc8977b9004af4061c14de70b37399e611c5515fa2d3b35a57e6364",
+        "assembler_descriptor_digest": "sha256:a47cd8fca0a8044afb7d408b758874573a49fc71eaafc13c868fa0cc98fa043e",
+        "backend": "onnxruntime-cpu",
+        "backend_abi": "onnxruntime-cpu-v1",
+        "canonical_initializer_digest": "sha256:0f8cdfc405caef74ba827db1c4e98e5f8554b6dbaeda912b239debdb1d2e0c39",
+        "device_set": [],
+        "expected_inputs": [
+          {
+            "dtype": "float32",
+            "name": "x",
+            "shape": [
+              1,
+              "batch"
+            ]
+          }
+        ],
+        "expected_outputs": [
+          {
+            "dtype": "float32",
+            "name": "y",
+            "shape": [
+              1,
+              "batch"
+            ]
+          }
+        ],
+        "graph_digest": "sha256:eb39048e76e23f16bdd123ca37e0e32aedbe6d0c52d14c2e5bfd22aa88239b08",
+        "layer_begin": 0,
+        "layer_end": 1,
+        "layout": "native",
+        "merge_kind": "",
+        "model_manifest_digest": "sha256:40a310a18cf042ffce64ab7dbfe7d6f08afd66df2e4a8fade46af74dcc574ba2",
+        "node_indices": [
+          0
+        ],
+        "padding": "none",
+        "postprocess_confidence_threshold": 0.0,
+        "postprocess_identity": "",
+        "postprocess_output_name": "",
+        "postprocess_sort": "",
+        "precision": "fp32",
+        "protection_epoch": "protected-v1",
+        "quantization": "none",
+        "rank": 0,
+        "recipe_digest": "sha256:b2d669b8459414976b05a0280e49ef75a12ae08391032a88446c0e6519f456e6",
+        "required_device_memory_mb": 0,
+        "resource_envelope": {
+          "maxAssembledBytes": 8192,
+          "maxNodes": 16,
+          "maxSourceBytes": 4096
+        },
+        "role": "/LLM/Pipeline/Stage/0",
+        "role_kind": "PIPELINE_RANGE"
+      }
+    ],
+    "strategy_digest": "sha256:5ac4fac5d4d56959ca9e880371cf3ce2eee7ac0a5bcd20983f1278cfe00e301e"
+  }
+}

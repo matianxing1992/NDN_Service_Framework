@@ -1,7 +1,7 @@
 # Implementation Plan: Native NDNSF-DI with Optional Python Bindings
 
 **Branch**: Experimental | **Revision**: 8 | **Date**: 2026-09-07
-**Status**: DRAFT / T001 DONE（产品实现按门仍 NOT_STARTED）
+**Status**: IN_PROGRESS / 当前实现与验收状态见 tasks.md 的 Task Progress Registry 和 Current Checkpoint
 **Spec**: [spec.md](spec.md)
 
 ## Summary
@@ -16,6 +16,9 @@ O-002--O-005 已于 2026-09-07 全部关闭（code-design Open Questions 无 OPE
 
 建立可安装ndnsf-distributed-inference库与独立C++ consumer，Python绑定可选。
 沿用Waf、C++/Boost/ndn-cxx/ORT；ONNX/tokenizer依赖及ABI锁由T001冻结。
+内部 typed JSON 使用固定 nlohmann/json 源与许可证；版本/哈希见 native-dependencies.json。
+T004 已接入完整 projection codec 与 canonical core/final identity；实际 planner metadata 和
+requester 接线仍按未完成任务推进，定向 PASS 不代表整体资格验收。
 原生构建使用核对后的system compiler/binutils、匹配Boost headers/libs、
 NAC-ABE prefix与NDN-SVS source/build pair，并包含直接消费SVS ABI的NDNSD；ABI变化重建全部传递消费者与绑定并核对实际加载路径/hash。四库版本及旧证据失效边界见[integrated baseline](contracts/integrated-baseline.md#current-source-identity)。
 本开发机默认-j4（6逻辑CPU/12GB RAM，2026-09-07用户授权），不并发操作同一Waf树或叠加原生构建。

@@ -82,10 +82,10 @@ client/provider 不可复制；handle/registration 通过 shared internal record
 | M16 inspect(const NativeModelDescriptor&) const → NativeGraphSnapshot | 读取已认证 source并验证 model/adapter/graph identity，不能使用 hint替代签名 | preparation.inspectModel，ACK后工作线程；I/O端口由 preparation提供 |
 | M17 encodeInput(const NativeApplicationInput&,const NativeRequestOptions&) const → NativePreparedInput | 校验 schema/transport；按 task进行一次 native编码；Qwen分词调用C15；已有 bytes不重复编码 | prepareInput；普通 metadata 不能覆盖认证字段 |
 | M18 decodeResult(const vector<uint8_t>&) const → NativeInferenceResult | 校验 result schema和 native model输出，按原任务语义映射；不从 marker构造成功 | client Core response后；Python只呈现返回值 |
-| M19 sealCore(snapshot,proposal) → NativePlacementPlanCore | 独立验证 cover/owner/DAG/ingress/device/ACK binding；构造 canonical core和digest | client；无授权副作用；失败不提交Selection |
+| M19 sealCore(snapshot,proposal,inputs) → NativePlacementPlanCore | 必填真实 artifact/request/assembly 输入；独立验证 cover/owner/DAG/ingress/device/ACK binding；构造 canonical core和digest | client；无授权副作用；失败不提交Selection；当前实际覆盖和剩余门见 T004 evidence |
 | M20 grantView(core,provider,policy) → NativeProviderGrantView | 只派生该Provider保护角色的准确视图；provider必须属于core | grant申请；不接受第二份 request/attempt/digest |
 | M21 finalizeSecurity(core,grants,policy) → NativeSealedPlan | grants覆盖所有保护角色且无冲突；保留当前Core授权前置；封印后只读 | client；缺/过期/错recipient失败，不能降plaintext |
-| M22 project(plan,provider) → NativeSelectionProjectionV3 | 从同一sealed plan派生角色/依赖/授权投影 | Core commit adapter；字段来源单一，Provider仍独立验证 |
+| M22 project(plan,provider,inputs) → NativeSelectionProjectionV3 | 从同一sealed plan派生 assembly/依赖/授权；执行 owner 提供 execution/dataflow/device/conversation inputs | Core commit adapter；不合成 CPU/adapter/rank，复用生产 parser 验证，Provider仍独立验证 |
 | M23 encode(projection) → vector<uint8_t> | 使用冻结canonical规则序列化，按已有边界校验长度/digest | publication/commit；bytes oracle由独立旧向量提供 |
 | M24 acquire(view,deadline) → NativeGrantBinding | 签名申请→authority issue→Core signed publication→确认实际名字/digest；在工作executor等待有界响应 | requester；终止时释放secretlease，已发布Data仅TTL失效 |
 | M25 issue(request,now) → NativeKeyGrant | 核对调用身份、工件policy、recipient、有效期，再用原密码原语封装/签名 | grantClient；失败不输出可用key，不持Core状态权威 |

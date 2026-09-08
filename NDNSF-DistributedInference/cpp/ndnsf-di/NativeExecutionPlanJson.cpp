@@ -1,5 +1,6 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
 
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/property_tree/ptree.hpp>
@@ -1196,6 +1197,15 @@ nativeSelectionProjectionV3FromJson(std::istream& input,
       "V3 Selection role/assembly/dataflow/device binding mismatch");
   }
   return projection;
+}
+
+void validateNativeAssembly(const NativeSelectionRoleV3& role)
+{
+  const auto wire = nativeCanonicalJson(nativeAssemblyJson(role));
+  std::istringstream input(wire);
+  boost::property_tree::ptree tree;
+  boost::property_tree::read_json(input, tree);
+  selectionRoleFromV3Json(tree, role.selectedRole);
 }
 
 void

@@ -48,6 +48,10 @@ struct NativePlacementPlanCore
   std::string protectionEpoch;
   std::uint64_t expiresAtMs = 0;
 
+  std::map<std::string, NativeSelectionRoleV3> assemblyByRole;
+  std::string requestContractDigest;
+  NativeGenerationExecutionContractV1 generationContract;
+
   void validate() const;
 };
 
@@ -60,6 +64,20 @@ struct NativePlanSealingInputs
   std::string requesterIdentity;
   std::string protectionEpoch;
   std::uint64_t expiresAtMs = 0;
+  std::map<std::string, NativeSelectionRoleV3> assemblyByRole;
+  std::string requestContractDigest;
+  NativeGenerationExecutionContractV1 generationContract;
+};
+
+/** Execution-owner contracts, bound after the plan digest is finalized. */
+struct NativeRoleProjectionInputs
+{
+  NativeExecutionRoleV3 executionRole;
+  NativeRoleDataflowContractV3 dataflow;
+  NativeDeviceBindingV3 deviceBinding;
+  std::string groupCapabilityV1;
+  std::optional<ConversationStateReferenceV1> conversationStateReference;
+  std::optional<ConversationTurnBindingV1> conversationTurnBinding;
 };
 
 struct NativeProviderGrantView
@@ -109,7 +127,8 @@ public:
     const NativeSecurityPolicySnapshot& security);
 
   static NativeSelectionProjectionV3 project(
-    const NativeSealedPlan& sealed, const std::string& provider);
+    const NativeSealedPlan& sealed, const std::string& provider,
+    const NativeRoleProjectionInputs& inputs);
 
   static std::vector<std::uint8_t> encode(
     const NativeSelectionProjectionV3& projection);

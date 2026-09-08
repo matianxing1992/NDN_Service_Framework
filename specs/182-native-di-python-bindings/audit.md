@@ -104,3 +104,9 @@ T001继续关闭O-002--005：固定ONNX/protobuf字节契约、tokenizer ABI、�
 已通过生产 parser 往返；77 cases、2521 assertions PASS。旧 sealer 的七字段 encode 与
 不完整 project 仍在原位，A8-01 保持 OPEN；不得将新 encoder 可用解释成 requester 链已闭合。
 见 [typed shape and wire evidence](evidence/t004-typed-shape-20260907.md)。
+## A8 Sealer Integration Verification
+
+2026-09-07：旧七字段 encoder 和硬编码 project 已移除。完整输入通过生产 parser；core/final
+摘要与真实 Python SDK oracle 一致；新 ABI 构建与 62 cases/2358 assertions PASS。
+上游真实 metadata、完整 generation/device/rank oracle 及 requester 主链尚未完成，
+T004 保持 PARTIAL。见 [integrated sealer evidence](evidence/t004-sealer-integrated-20260907.md)。

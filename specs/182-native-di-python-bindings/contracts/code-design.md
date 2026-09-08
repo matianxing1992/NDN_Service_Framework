@@ -419,3 +419,16 @@ I/O 语义比较仍沿用既有 normalize_shape_dimension，仅 wire identity �
 nativeSelectionProjectionV3ToJson 已提供完整 DTO 的 typed wire 编码，并在返回前复用生产
 parser 检查；包括 generation/conversation 可选字段，不输出 Core-only canonicalArtifactName。
 NativePlanSealer::project 的完整输入与旧 encode 切换仍是下一工作单元，不能假设已接通。
+## Sealer Complete Wire Integration
+
+2026-09-07：NativePlanSealingInputs 必须携带每个执行角色的真实 assembly 元数据及可选
+request/generation contract；sealCore 冻结精确角色覆盖、工件/manifest/graph/epoch/adapter，
+用既有 assembly parser 检查语义。NativeRoleProjectionInputs 由执行 owner 提供 execution/
+dataflow/device 和 conversation 字段；project 只使用封印 assembly 与原请求 expiry，
+不合成 CPU、adapter version、rank 或 dataflow。
+
+core 摘要采用 PlacementPlanCoreV3 unsigned JSON 字段，最终 plan 摘要使用既有
+core/grants/securityPolicySnapshotDigest 结构，grant tuple 排序；validate 重算摘要拒绝
+封印后的变更。encode 复用完整 nativeSelectionProjectionV3ToJson，删除七字段 encoder。
+离线 oracle 调用真实 Python PlacementPlanCoreV3/PlanSealerV3，独立冻结 core/final 摘要。
+本单元仍不证明所有 generation/device 场景或 requester 全链闭合，按实际验收保持 PARTIAL。
