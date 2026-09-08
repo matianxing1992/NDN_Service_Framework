@@ -243,7 +243,7 @@ def compile_application(command, jobs):
                    '--disable-local-dependency-prefix', '--nac-abe-prefix=/opt/ndnsf-di/current',
                    '--prefix=/opt/ndnsf-di/current', '--libdir=/opt/ndnsf-di/current/lib',
                    '--boost-includes=/usr/include', '--boost-libs=/usr/lib/x86_64-linux-gnu'], check=True)
-    subprocess.run(command + [f'-j{jobs}', '--targets=' + ','.join(TARGETS)], check=True)
+    subprocess.run(command + ['./waf', f'-j{jobs}', '--targets=' + ','.join(TARGETS)], check=True)
 
 
 if __name__ == '__main__':

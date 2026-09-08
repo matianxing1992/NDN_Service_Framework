@@ -3785,3 +3785,14 @@ identity and rerun packaging against the existing incremental Waf cache.
   `-j4` upper bound.
 - Lesson: parallelism is part of the compiler/toolchain identity and must be
   captured rather than hidden behind a fixed command.
+
+## 2026-09-08: bounded app jobs option omitted the Waf executable
+
+- Symptom: the first `--jobs 2` retry stopped before compilation because
+  Apptainer attempted to execute `-j2` as the command.
+- Root cause: the new argumentized Waf invocation appended the jobs flag and
+  targets but accidentally dropped `./waf`.
+- Fix: restore the executable in the parameterized invocation and keep the
+  selected jobs value in the build identity.
+- Lesson: command-line parallelism changes need an execution-path regression,
+  not only argument-range validation.
