@@ -1,4 +1,5 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -55,6 +56,34 @@ void NativeStrategyIdentity::validate() const
   requireDigest(configurationDigest, "strategy configurationDigest");
 }
 
+void NativeAdapterDescriptor::validate() const
+{
+  if (name.empty() || version.empty() || abi.empty() || modelFormats.empty() ||
+      tasks.empty() || backends.empty() || precisions.empty())
+    throw std::invalid_argument("model adapter descriptor is incomplete");
+  for (const auto* value : {&stateDigest, &inputSchemaDigest, &optionsSchemaDigest,
+                            &resultSchemaDigest, &graphSchemaDigest, &splitSchemaDigest, &stateSchemaDigest})
+    requireDigest(*value, "adapter schema/state digest");
+}
+
+std::string NativeAdapterDescriptor::canonicalJson() const
+{
+  validate();
+  return nativeCanonicalJson(NativeJson{
+    {"name", name}, {"version", version}, {"state_digest", stateDigest}, {"abi", abi},
+    {"model_formats", modelFormats}, {"tasks", tasks}, {"backends", backends}, {"precisions", precisions},
+    {"input_schema_digest", inputSchemaDigest}, {"options_schema_digest", optionsSchemaDigest},
+    {"result_schema_digest", resultSchemaDigest}, {"graph_schema_digest", graphSchemaDigest},
+    {"split_schema_digest", splitSchemaDigest}, {"state_schema_digest", stateSchemaDigest},
+    {"graph_inspectable", graphInspectable}, {"splittable", splittable},
+    {"deterministic_analysis", deterministicAnalysis}});
+}
+
+std::string NativeAdapterDescriptor::descriptorDigest() const
+{
+  return nativePlanningDigest(canonicalJson());
+}
+
 void NativeModelDescriptor::validate() const
 {
   if (modelName.empty() || modelFormat.empty() || precision.empty() ||
@@ -64,6 +93,25 @@ void NativeModelDescriptor::validate() const
   requireDigest(contentDigest, "model contentDigest");
   requireDigest(semanticsDigest, "model semanticsDigest");
   requireDigest(graphDigest, "model graphDigest");
+  adapter.validate();
+  if (adapterId != adapter.name || adapterVersion != adapter.version ||
+      std::find(adapter.modelFormats.begin(), adapter.modelFormats.end(), modelFormat) == adapter.modelFormats.end() ||
+      std::find(adapter.precisions.begin(), adapter.precisions.end(), precision) == adapter.precisions.end())
+    throw std::invalid_argument("model descriptor is incompatible with its adapter");
+}
+
+std::string NativeModelDescriptor::canonicalJson() const
+{
+  validate();
+  return nativeCanonicalJson(NativeJson{
+    {"model_name", modelName}, {"content_digest", contentDigest}, {"semantics_digest", semanticsDigest},
+    {"graph_digest", graphDigest}, {"model_format", modelFormat}, {"precision", precision},
+    {"adapter", nativeParseJson(adapter.canonicalJson())}, {"source_revision", sourceRevision}});
+}
+
+std::string NativeModelDescriptor::modelDigest() const
+{
+  return nativePlanningDigest(canonicalJson());
 }
 
 void NativeTensorContract::validate() const

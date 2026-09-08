@@ -43,6 +43,28 @@ bindDistributedInference(py::module_& module)
     .value("REPOSITORY_REFERENCE", di::NativeInputTransportMode::RepositoryReference)
     .export_values();
 
+  py::class_<di::NativeAdapterDescriptor>(module, "NativeAdapterDescriptor")
+    .def(py::init<>())
+    .def_readwrite("name", &di::NativeAdapterDescriptor::name)
+    .def_readwrite("version", &di::NativeAdapterDescriptor::version)
+    .def_readwrite("state_digest", &di::NativeAdapterDescriptor::stateDigest)
+    .def_readwrite("abi", &di::NativeAdapterDescriptor::abi)
+    .def_readwrite("model_formats", &di::NativeAdapterDescriptor::modelFormats)
+    .def_readwrite("tasks", &di::NativeAdapterDescriptor::tasks)
+    .def_readwrite("backends", &di::NativeAdapterDescriptor::backends)
+    .def_readwrite("precisions", &di::NativeAdapterDescriptor::precisions)
+    .def_readwrite("input_schema_digest", &di::NativeAdapterDescriptor::inputSchemaDigest)
+    .def_readwrite("options_schema_digest", &di::NativeAdapterDescriptor::optionsSchemaDigest)
+    .def_readwrite("result_schema_digest", &di::NativeAdapterDescriptor::resultSchemaDigest)
+    .def_readwrite("graph_schema_digest", &di::NativeAdapterDescriptor::graphSchemaDigest)
+    .def_readwrite("split_schema_digest", &di::NativeAdapterDescriptor::splitSchemaDigest)
+    .def_readwrite("state_schema_digest", &di::NativeAdapterDescriptor::stateSchemaDigest)
+    .def_readwrite("graph_inspectable", &di::NativeAdapterDescriptor::graphInspectable)
+    .def_readwrite("splittable", &di::NativeAdapterDescriptor::splittable)
+    .def_readwrite("deterministic_analysis", &di::NativeAdapterDescriptor::deterministicAnalysis)
+    .def("canonical_json", &di::NativeAdapterDescriptor::canonicalJson)
+    .def_property_readonly("descriptor_digest", &di::NativeAdapterDescriptor::descriptorDigest);
+
   py::class_<di::NativeModelDescriptor>(module, "NativeModelDescriptor")
     .def(py::init<>())
     .def_readwrite("model_name", &di::NativeModelDescriptor::modelName)
@@ -52,11 +74,14 @@ bindDistributedInference(py::module_& module)
     .def_readwrite("model_format", &di::NativeModelDescriptor::modelFormat)
     .def_readwrite("precision", &di::NativeModelDescriptor::precision)
     .def_readwrite("adapter_id", &di::NativeModelDescriptor::adapterId)
-    .def_readwrite("adapter_version", &di::NativeModelDescriptor::adapterVersion);
+    .def_readwrite("adapter_version", &di::NativeModelDescriptor::adapterVersion)
+    .def_readwrite("adapter", &di::NativeModelDescriptor::adapter)
+    .def_readwrite("source_revision", &di::NativeModelDescriptor::sourceRevision)
+    .def("canonical_json", &di::NativeModelDescriptor::canonicalJson)
+    .def_property_readonly("model_digest", &di::NativeModelDescriptor::modelDigest);
 
   py::class_<di::NativeModelRef, di::NativeModelDescriptor>(module, "NativeModelRef")
-    .def(py::init<>())
-    .def_readwrite("source_revision", &di::NativeModelRef::sourceRevision);
+    .def(py::init<>());
 
   py::class_<di::NativeApplicationInput>(module, "NativeApplicationInput")
     .def(py::init<>())

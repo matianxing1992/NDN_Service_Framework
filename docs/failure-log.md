@@ -1,5 +1,13 @@
 # Failure Log and Evidence Index
 
+## 2026-09-07 — Spec182 descriptor build termination
+
+model-descriptor r1 configure 通过；build 进程终态 rc=143，日志停在 74/173，
+没有 compiler error 或 Waf 成功记录，现场无残留 waf/cc1plus。终止来源未确认，
+不计代码失败或 OOM。保留 r1 后同一新 ABI tree 的 r2 build PASS（403.580s），
+r3 最终增量检查及 81 cases/1067 assertions PASS；见
+[descriptor evidence](../specs/182-native-di-python-bindings/evidence/t003-model-descriptor-20260907.md)。
+
 ## 2026-09-07 — Design R2 duplicate declaration identity
 
 覆盖检查 r1 拒绝同一函数两处前置声明共享 API ID；修复为每个 ID 一条状态并保留声明位置。

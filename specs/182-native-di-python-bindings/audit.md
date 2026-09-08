@@ -7,6 +7,14 @@
 
 ## Current Findings
 
+### Complete Model Descriptor Identity 2026-09-07
+
+新增完整 AdapterDescriptor 的规范 JSON/摘要，ModelDescriptor 保留 sourceRevision
+并严格绑定 adapter 兼容字段；prepare/inspect 不再仅比较简化模型字段。六组维护
+Python 规范字节/摘要与替换负例通过，相关 81 cases/1067 assertions PASS。
+graph adapter、splitter/candidate 全部字段及规范摘要仍待闭合，见
+[descriptor evidence](evidence/t003-model-descriptor-20260907.md)。
+
 ### Candidate Node Ownership and State 2026-09-07
 
 共享候选补 nodeRoles 与 state I/O，Qwen/YOLO 均验证全节点/全角色覆盖和依赖

@@ -1,4 +1,5 @@
 #include "tests/fixtures/spec182/native-sealing-fixture.hpp"
+#include "tests/fixtures/spec182/native-model-fixture.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include <fstream>
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
@@ -36,8 +37,8 @@ NativeModelDescriptor model(const std::string& adapter,
                             const std::string& name,
                             const std::string& graphDigest)
 {
-  return {name, digest(name + "-content"), digest(name + "-semantics"),
-          graphDigest, "onnx", "float32", adapter, "1"};
+  return fixture::completeModel({name, digest(name + "-content"), digest(name + "-semantics"),
+          graphDigest, "onnx", "float32", adapter, "1"});
 }
 
 NativeGraphSnapshot graph(const std::string& graphDigest,

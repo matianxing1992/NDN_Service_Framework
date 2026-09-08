@@ -34,10 +34,7 @@ bool ndnName(const std::string& value)
 
 bool sameModel(const NativeModelDescriptor& a, const NativeModelDescriptor& b)
 {
-  return a.modelName == b.modelName && a.contentDigest == b.contentDigest &&
-    a.semanticsDigest == b.semanticsDigest && a.graphDigest == b.graphDigest &&
-    a.modelFormat == b.modelFormat && a.precision == b.precision &&
-    a.adapterId == b.adapterId && a.adapterVersion == b.adapterVersion;
+  return a.canonicalJson() == b.canonicalJson();
 }
 
 NativeJson publicationRoot(const NativeArtifactBinding& artifacts)

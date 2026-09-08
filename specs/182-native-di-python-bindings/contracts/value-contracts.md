@@ -10,6 +10,13 @@
 
 ## V01 ModelDescriptor
 
+完整模型身份由 NativeModelDescriptor 的 canonicalJson/modelDigest 计算，包含
+NativeAdapterDescriptor 全部维护字段及 sourceRevision。adapterId/adapterVersion
+保留为原生入口兼容字段，但必须与 adapter.name/version 一致，不可分别改变身份。
+sourceRevision 属于共享描述符，NativeModelRef 不再遮蔽同名字段；prepare/inspect
+比较完整规范模型字节，拒绝 schema/ABI/能力或源版本被替换。contentDigest 仍表示
+既有内容身份，不能用新的 modelDigest 静默替换现有 wire 字段。
+
 Source: `NDNSF-DistributedInference/ndnsf_distributed_inference/splitter.py:142` → planned `NativeModelDescriptor`。
 
 | Field ID | Existing declaration | Meaning and native consumer obligation |

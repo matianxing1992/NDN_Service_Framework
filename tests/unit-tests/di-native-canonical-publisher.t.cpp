@@ -1,4 +1,5 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp"
+#include "tests/fixtures/spec182/native-model-fixture.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeV3Placement.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp"
@@ -62,6 +63,7 @@ struct Input
     roles = {role};
     model.descriptor = {"fixture-model", nativePlanningDigest("model"), nativePlanningDigest("semantics"),
       nativePlanningDigest("planning"), "onnx", "fp32", "fixture", "1"};
+    model.descriptor = fixture::completeModel(model.descriptor);
     model.graph.graphDigest = model.descriptor.graphDigest;
     model.graph.nodes = {{"n0", "Identity", 0}, {"n1", "Identity", 1}};
     model.graph.topologicalOrder = {"n0", "n1"};

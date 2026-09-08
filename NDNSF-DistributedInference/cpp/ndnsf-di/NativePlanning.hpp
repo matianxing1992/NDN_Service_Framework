@@ -29,6 +29,51 @@ struct NativeStrategyIdentity
   void validate() const;
 };
 
+struct NativeAdapterDescriptor
+{
+  /** Nonempty registry identity supplied by the inspected adapter. */
+  std::string name;
+  /** Nonempty adapter implementation version, independent of the model revision. */
+  std::string version;
+  /** Canonical SHA-256 identity of the adapter's configured state. */
+  std::string stateDigest;
+  /** Nonempty adapter ABI contract identifier supplied by its implementation. */
+  std::string abi;
+  /** Nonempty ordered format capabilities; model validation requires membership. */
+  std::vector<std::string> modelFormats;
+  /** Nonempty ordered task capabilities; preserved verbatim in descriptor identity. */
+  std::vector<std::string> tasks;
+  /** Nonempty ordered execution backend capabilities; not an authorization grant. */
+  std::vector<std::string> backends;
+  /** Nonempty ordered precision capabilities; model validation requires membership. */
+  std::vector<std::string> precisions;
+  /** Canonical SHA-256 identity of accepted application input schemas. */
+  std::string inputSchemaDigest;
+  /** Canonical SHA-256 identity of accepted application option schemas. */
+  std::string optionsSchemaDigest;
+  /** Canonical SHA-256 identity of the adapter's result schema. */
+  std::string resultSchemaDigest;
+  /** Canonical SHA-256 identity of its inspected graph schema. */
+  std::string graphSchemaDigest;
+  /** Canonical SHA-256 identity of its split candidate schema. */
+  std::string splitSchemaDigest;
+  /** Canonical SHA-256 identity of its persistent/model state schema. */
+  std::string stateSchemaDigest;
+  /** Whether the adapter declares graph inspection support; part of its identity. */
+  bool graphInspectable = false;
+  /** Whether the adapter declares model splitting support; part of its identity. */
+  bool splittable = false;
+  /** Whether its analysis is deterministic; mirrors the maintained default. */
+  bool deterministicAnalysis = true;
+
+  /** Reject incomplete identities or malformed digests before serialization. */
+  void validate() const;
+  /** Return the maintained Python AdapterDescriptor schema's canonical bytes. */
+  std::string canonicalJson() const;
+  /** SHA-256 of canonicalJson(), including every declared capability/schema. */
+  std::string descriptorDigest() const;
+};
+
 struct NativeModelDescriptor
 {
   std::string modelName;
@@ -39,8 +84,16 @@ struct NativeModelDescriptor
   std::string precision;
   std::string adapterId;
   std::string adapterVersion;
+  /** Full source-owned adapter contract; flat identity aliases must agree. */
+  NativeAdapterDescriptor adapter;
+  /** Optional source revision retained when a request is copied into a base descriptor. */
+  std::string sourceRevision;
 
   void validate() const;
+  /** Canonical Python ModelDescriptor schema, including adapter and source_revision. */
+  std::string canonicalJson() const;
+  /** Descriptor identity; distinct from the model's contentDigest and wire aliases. */
+  std::string modelDigest() const;
 };
 
 struct NativeGraphNode

@@ -25,7 +25,6 @@ class NativeOfferAdmission;
 
 struct NativeModelRef : NativeModelDescriptor
 {
-  std::string sourceRevision;
 };
 
 enum class NativeInputTransportMode { Inline, RepositoryReference };

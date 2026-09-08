@@ -1,4 +1,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
+#include "tests/fixtures/spec182/native-model-fixture.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
+#include <fstream>
 #include "tests/fixtures/spec182/native-sealing-fixture.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanSealer.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/qwen/NativeQwenPlanner.hpp"
@@ -23,8 +26,8 @@ NativeModelDescriptor model(const std::string& adapter,
                             const std::string& name,
                             const std::string& graphDigest)
 {
-  return {name, digest(name + "-content"), digest(name + "-semantics"),
-          graphDigest, "onnx", "float32", adapter, "1"};
+  return fixture::completeModel({name, digest(name + "-content"), digest(name + "-semantics"),
+          graphDigest, "onnx", "float32", adapter, "1"});
 }
 
 NativeGraphSnapshot graph(const std::string& graphDigest,
@@ -787,6 +790,55 @@ BOOST_AUTO_TEST_CASE(CandidateRejectsMissingNodeOwnersStateContractsAndRoleCycle
       }
     }
     BOOST_CHECK_THROW(candidate.validate(fixture.snapshot.graph), std::invalid_argument);
+  }
+}
+
+BOOST_AUTO_TEST_CASE(CompleteModelDescriptorMatchesMaintainedPythonCanonicalIdentity)
+{
+  std::ifstream file("tests/fixtures/spec182/model-descriptor-oracle.json");
+  BOOST_REQUIRE(file.good());
+  const auto cases = NativeJson::parse(file);
+  BOOST_REQUIRE_EQUAL(cases.size(), 6);
+  std::set<std::string> identities;
+  for (const auto& row : cases) {
+    const auto& m = row.at("model");
+    const auto& a = m.at("adapter");
+    NativeAdapterDescriptor adapter;
+    adapter.name = a.at("name"); adapter.version = a.at("version");
+    adapter.stateDigest = a.at("state_digest"); adapter.abi = a.at("abi");
+    adapter.modelFormats = a.at("model_formats").get<std::vector<std::string>>();
+    adapter.tasks = a.at("tasks").get<std::vector<std::string>>();
+    adapter.backends = a.at("backends").get<std::vector<std::string>>();
+    adapter.precisions = a.at("precisions").get<std::vector<std::string>>();
+    adapter.inputSchemaDigest = a.at("input_schema_digest");
+    adapter.optionsSchemaDigest = a.at("options_schema_digest");
+    adapter.resultSchemaDigest = a.at("result_schema_digest");
+    adapter.graphSchemaDigest = a.at("graph_schema_digest");
+    adapter.splitSchemaDigest = a.at("split_schema_digest");
+    adapter.stateSchemaDigest = a.at("state_schema_digest");
+    adapter.graphInspectable = a.at("graph_inspectable");
+    adapter.splittable = a.at("splittable");
+    adapter.deterministicAnalysis = a.at("deterministic_analysis");
+    NativeModelDescriptor value{m.at("model_name"), m.at("content_digest"), m.at("semantics_digest"),
+      m.at("graph_digest"), m.at("model_format"), m.at("precision"), adapter.name, adapter.version,
+      adapter, m.at("source_revision")};
+    BOOST_CHECK_EQUAL(adapter.canonicalJson(), row.at("adapter_json").get<std::string>());
+    BOOST_CHECK_EQUAL(adapter.descriptorDigest(), row.at("adapter_digest").get<std::string>());
+    BOOST_CHECK_EQUAL(value.canonicalJson(), row.at("model_json").get<std::string>());
+    BOOST_CHECK_EQUAL(value.modelDigest(), row.at("model_digest").get<std::string>());
+    identities.insert(value.modelDigest());
+  }
+  BOOST_CHECK_EQUAL(identities.size(), cases.size());
+  const auto valid = model("fixture", "model", digest("graph"));
+  for (unsigned mutation = 0; mutation != 6; ++mutation) {
+    auto broken = valid;
+    if (mutation == 0) broken.adapter.abi.clear();
+    if (mutation == 1) broken.adapter.stateSchemaDigest = "not-a-digest";
+    if (mutation == 2) broken.adapter.tasks.clear();
+    if (mutation == 3) broken.adapterId = "foreign";
+    if (mutation == 4) broken.adapterVersion = "foreign";
+    if (mutation == 5) broken.precision = "unsupported";
+    BOOST_CHECK_THROW(broken.canonicalJson(), std::invalid_argument);
   }
 }
 

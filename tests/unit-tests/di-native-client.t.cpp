@@ -1,4 +1,5 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp"
+#include "tests/fixtures/spec182/native-model-fixture.hpp"
 
 #include <boost/test/unit_test.hpp>
 #include "tests/unit-tests/generic-dynamic-api-fixture.hpp"
@@ -100,6 +101,7 @@ struct ClientStateFixture {
     model.precision = "float32";
     model.adapterId = "client-test";
     model.adapterVersion = "1";
+    model.adapter = fixture::modelAdapter(model.adapterId, model.adapterVersion, model.modelFormat, model.precision);
   }
   NativeClientTestAccess::Port port() {
     return {[this] { return now; },
