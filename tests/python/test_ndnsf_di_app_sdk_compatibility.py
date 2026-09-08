@@ -17,16 +17,20 @@ CANONICAL_CONTROLLER_MODULE = (
 from ndnsf_distributed_inference.app_sdk import (
     APPClient, APPDeployment, APPProvider, DistributedInferenceEngine,
     FileRequestEnvelopeKeyProvider, InfrastructureAllocationHandle,
-    RuntimeAllocationHandoff,
+    RuntimeAllocationHandoff, InferenceClient,
 )
 from ndnsf_distributed_inference.app_sdk.runtime_journal import (
     RequestEnvelopeKey,
+    RuntimeJournal,
     RuntimeJournalKeyError,
     RuntimeJournalUnsafeRootError,
     StaticRequestEnvelopeKeyProvider,
 )
 from ndnsf_distributed_inference.app_sdk.facades import (
     APPClient as RuntimeAPPClient,
+)
+from ndnsf_distributed_inference.app_sdk.client import (
+    InferenceClient as PublicInferenceClient,
 )
 from ndnsf_distributed_inference.planner.defaults import DefaultOptimizationSuite
 from ndnsf_distributed_inference.sdk import RunnerAdapterRegistry, ObserverRegistry
@@ -203,6 +207,43 @@ class AppSdkCompatibilityTest(unittest.TestCase):
     def test_public_facade_engine_suite_adapter_observer_construct(self):
         self.assertIsNotNone(DistributedInferenceEngine(DefaultOptimizationSuite()))
         self.assertIsNotNone(RunnerAdapterRegistry()); self.assertIsNotNone(ObserverRegistry())
+
+    def test_public_inference_client_exposes_explicit_native_route(self):
+        core = SimpleNamespace(
+            native_client=object(),
+            configure_native_requester=mock.Mock(return_value="native"),
+            request_native=mock.Mock(return_value="handle"),
+        )
+        client = PublicInferenceClient.__new__(PublicInferenceClient)
+        client._core = core
+        self.assertIs(client.native_client, core.native_client)
+        self.assertEqual(client.configure_native_requester("runtime", "admission"), "native")
+        self.assertEqual(client.request_native(
+            model="model", input="input", split_strategy="split",
+            placement_strategy="placement", options="options"), "handle")
+        core.configure_native_requester.assert_called_once_with("runtime", "admission")
+        core.request_native.assert_called_once_with(
+            model="model", input="input", split_strategy="split",
+            placement_strategy="placement", options="options")
+
+    def test_inference_client_is_exported_from_public_app_sdk(self):
+        self.assertIs(InferenceClient, PublicInferenceClient)
+
+    def test_core_native_route_does_not_fallback_to_automatic_planner(self):
+        with tempfile.TemporaryDirectory() as state_root:
+            native = SimpleNamespace(request=mock.Mock(return_value="handle"))
+            planner = SimpleNamespace(request=mock.Mock())
+            client = APPClient(
+                RuntimeJournal.for_test(state_root, "native"),
+                automatic_planner=planner,
+                native_client=native,
+            )
+            self.assertEqual(client.request_native(
+                model="model", input="input", split_strategy="split",
+                placement_strategy="placement", options="options"), "handle")
+            native.request.assert_called_once_with(
+                "model", "input", "split", "placement", "options")
+            planner.request.assert_not_called()
 
     def test_app_client_constructor_resolves_canonical_engine_and_defaults(self):
         client = RuntimeAPPClient(object(), object())
