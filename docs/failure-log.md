@@ -3808,3 +3808,19 @@ identity and rerun packaging against the existing incremental Waf cache.
   four-field manifests valid for compatibility.
 - Lesson: provenance fields must be added at both the producer and verifier
   boundary in the same change.
+
+## 2026-09-08: MiniNDN still aborted during inline NAC bootstrap
+
+- Symptom: the exact v10 base plus v15 application started NFD, Controller,
+  routes, and runtime publication, then the user process aborted with
+  `Fetched public parameters cannot be authenticated: Validator/policy did
+  not invoke success or failure callback`.
+- Root cause: moving `obtainDecryptionKey()` out of the ServiceUser and
+  ServiceProvider constructors was insufficient; their `init()` methods were
+  still called synchronously immediately before the native Python wrapper
+  entered its first Face event loop turn.
+- Fix: schedule the NAC bootstrap on the owning Face's zero-delay scheduler
+  event so the wrapper's first `processEvents()` dispatches it asynchronously.
+- Lesson: asynchronous NAC construction requires a completed event-loop turn,
+  not merely a post-constructor call; component tests that pump before
+  construction do not cover the native wrapper lifecycle.

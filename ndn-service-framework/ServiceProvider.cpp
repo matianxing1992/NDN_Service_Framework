@@ -1833,14 +1833,17 @@ namespace ndn_service_framework
     {
         registerServiceInfo();
         registerNDNSFMessages();
-        // Start NAC-ABE after construction so ValidatorConfig can complete
-        // its asynchronous callbacks on the provider's running Face.  The
-        // constructor must remain usable for an unprovisioned identity.
-        nacConsumer.obtainDecryptionKey();
-        if (nacConsumer.readyForDecryption())
-            NDN_LOG_INFO("DK_DECRYPT_SUCCESS provider=" << identity.toUri());
-        else
-            NDN_LOG_INFO("NDNSF_NAC_BOOTSTRAP_PENDING role=provider");
+        // Start NAC-ABE on the next Face turn.  Providers are initialized
+        // before their wrapper starts processEvents(), so an inline Consumer
+        // bootstrap can still destroy ValidatorConfig with a false callback
+        // error before the first event-loop turn.
+        m_scheduler.schedule(ndn::time::milliseconds(0), [this] {
+            nacConsumer.obtainDecryptionKey();
+            if (nacConsumer.readyForDecryption())
+                NDN_LOG_INFO("DK_DECRYPT_SUCCESS provider=" << identity.toUri());
+            else
+                NDN_LOG_INFO("NDNSF_NAC_BOOTSTRAP_PENDING role=provider");
+        });
     }
 
     ServiceProvider::~ServiceProvider()

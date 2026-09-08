@@ -1489,12 +1489,15 @@ namespace ndn_service_framework
     void ServiceUser::init()
     {
         registerNDNSFMessages();
-        // Start NAC-ABE only after the object is fully constructed.  The
-        // native/Python seam calls init() before its bounded Face pump, which
-        // gives public-parameter and DKEY validation a live event loop.
-        nacConsumer.obtainDecryptionKey();
-        if (!nacConsumer.readyForDecryption())
-            NDN_LOG_INFO("NDNSF_NAC_BOOTSTRAP_PENDING role=user");
+        // Start NAC-ABE on the next Face turn.  Native/Python wrappers call
+        // init() immediately before starting their Face pump; invoking the
+        // Consumer inline still leaves ValidatorConfig without a completed
+        // callback and aborts with the misleading "did not invoke" error.
+        m_scheduler.schedule(ndn::time::milliseconds(0), [this] {
+            nacConsumer.obtainDecryptionKey();
+            if (!nacConsumer.readyForDecryption())
+                NDN_LOG_INFO("NDNSF_NAC_BOOTSTRAP_PENDING role=user");
+        });
     }
 
     void
