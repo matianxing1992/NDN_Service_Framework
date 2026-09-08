@@ -266,6 +266,9 @@ NativeJson jsonValue(const ConversationTurnBindingV1& value)
 NativeJson nativeAssemblyJson(const NativeSelectionRoleV3& role) { return jsonValue(role); }
 NativeJson nativeDependenciesJson(const std::vector<NativeDependencySpec>& values) { return jsonArray(values); }
 NativeJson nativeGenerationJson(const NativeGenerationExecutionContractV1& value) { return jsonValue(value); }
+NativeJson nativeEndpointJson(const NativeTensorEndpointV3& value) { return jsonValue(value); }
+NativeJson nativeDataflowJson(const NativeRoleDataflowContractV3& value) { return jsonValue(value); }
+NativeJson nativeDeviceBindingJson(const NativeDeviceBindingV3& value) { return jsonValue(value); }
 
 std::string nativeSelectionProjectionV3ToJson(const NativeSelectionProjectionV3& value)
 {

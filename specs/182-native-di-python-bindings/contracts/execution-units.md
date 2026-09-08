@@ -149,6 +149,8 @@ worker crash/cancel 等真实子进程案例也转 T016，卡内只运行纯 fra
 
 ### T004-A Canonical Plan Sealing
 
+- **R2-B3 projection input owner**: `NativePlanProjectionBuilder::build(sealed,candidate,offers,context)` 生成 execution/dataflow/device inputs；context 由 request/Core group owner 提供时间、application-input identity、dependency group/namespace 与 capability，不能由 builder 自发授权。复用 NativeSelectionJson 和整体 DAG/终态校验；SDK 完整 device/dataflow 及非空 endpoint 对照见 [R2-B3](../evidence/r2-b3-projection-builder-20260908.md)。Write 扩展至 `N/NativePlanProjectionBuilder.hpp/.cpp` 与共享 `NativeSelectionJson.cpp`/`detail/NativeSelectionJsonValues.hpp`。
+
 - **Parent**: T004; **Depends**: T003-C; **Reviewer**: wire/security review
 - **Read**: CD-003 → Values；P/sdk/placement.py::PlanSealerV3；N/NativeExecutionPlanJson.cpp 的 projection parser/validator。
 - **Write**: N/NativePlanSealer.hpp; N/NativePlanSealer.cpp; N/NativeExecutionPlanJson.hpp; N/NativeExecutionPlanJson.cpp; N/NativeRequestPreparation.hpp; N/NativeRequestPreparation.cpp; N/NativeV3Placement.hpp; N/NativeV3Placement.cpp; U/di-native-plan-sealer.t.cpp; U/di-native-planning.t.cpp; U/di-native-v3-placement.t.cpp; tests/fixtures/spec182/author-placement-v3-oracle.py; tests/fixtures/spec182/placement-v3-oracle.json; wscript。
