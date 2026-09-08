@@ -1588,14 +1588,6 @@ namespace ndn_service_framework
         NDN_LOG_WARN("NDNSF_PROVIDER_INIT_STAGE stage=svs_pubsub_ready provider="
                      << identity.toUri());
 
-        // Permission renewal must remain reachable even without an initial
-        // grant/DKEY. Crypto readiness is asynchronous; admission remains
-        // fail-closed until permission, signed status and key installation.
-        nacConsumer.obtainDecryptionKey();
-        if (nacConsumer.readyForDecryption())
-            NDN_LOG_INFO("DK_DECRYPT_SUCCESS provider=" << identity.toUri());
-        else
-            NDN_LOG_INFO("NDNSF_NAC_BOOTSTRAP_PENDING role=provider");
         NDN_LOG_WARN("NDNSF_PROVIDER_INIT_STAGE stage=constructor_done provider="
                      << identity.toUri());
 
@@ -1841,6 +1833,14 @@ namespace ndn_service_framework
     {
         registerServiceInfo();
         registerNDNSFMessages();
+        // Start NAC-ABE after construction so ValidatorConfig can complete
+        // its asynchronous callbacks on the provider's running Face.  The
+        // constructor must remain usable for an unprovisioned identity.
+        nacConsumer.obtainDecryptionKey();
+        if (nacConsumer.readyForDecryption())
+            NDN_LOG_INFO("DK_DECRYPT_SUCCESS provider=" << identity.toUri());
+        else
+            NDN_LOG_INFO("NDNSF_NAC_BOOTSTRAP_PENDING role=provider");
     }
 
     ServiceProvider::~ServiceProvider()

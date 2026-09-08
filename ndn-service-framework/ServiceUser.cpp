@@ -1408,13 +1408,13 @@ namespace ndn_service_framework
             }
         }
 
-        // Construction must not wait for authorization: an unprovisioned
-        // identity needs a live application to request/renew permissions.
-        // The Consumer fetch and permission/status-driven refresh complete
-        // asynchronously; protected paths still require installed authority.
-        nacConsumer.obtainDecryptionKey();
-        if (!nacConsumer.readyForDecryption())
-            NDN_LOG_INFO("NDNSF_NAC_BOOTSTRAP_PENDING role=user");
+        // Construction must not start NAC-ABE validation.  Consumer startup
+        // expresses public-parameter and DKEY Interests, but its validator
+        // callbacks require the owning Face to be pumped.  Starting it from
+        // this constructor races that first event-loop turn and can destroy
+        // ValidatorConfig state with the misleading "did not invoke" error.
+        // init() starts the asynchronous bootstrap after construction has
+        // returned to the caller, while protected paths remain fail-closed.
 
         // Opt-in durable runtime status (NDNSF_PERSIST_RUNTIME_STATE, FR-039):
         // re-verify and seed statuses accepted by an earlier process of this
@@ -1489,6 +1489,12 @@ namespace ndn_service_framework
     void ServiceUser::init()
     {
         registerNDNSFMessages();
+        // Start NAC-ABE only after the object is fully constructed.  The
+        // native/Python seam calls init() before its bounded Face pump, which
+        // gives public-parameter and DKEY validation a live event loop.
+        nacConsumer.obtainDecryptionKey();
+        if (!nacConsumer.readyForDecryption())
+            NDN_LOG_INFO("NDNSF_NAC_BOOTSTRAP_PENDING role=user");
     }
 
     void

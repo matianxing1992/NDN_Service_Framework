@@ -3650,3 +3650,40 @@ identity and rerun packaging against the existing incremental Waf cache.
 - Lesson: the outer input owner and the privileged local child owner are
   separate security boundaries and need separate, explicitly scoped state
   roots.
+
+## 2026-09-08: runtime-publication User failed during NAC-ABE bootstrap
+
+- Symptom: exact-SIF MiniNDN Y-B reached `SPEC180_CONTROLLER_READY`, started
+  NFD and installed the expected routes, then the Controller aborted while
+  constructing its runtime-publication `ServiceUser` with
+  `Fetched public parameters cannot be authenticated: Validator/policy did
+  not invoke success or failure callback`.
+- Root cause: `ServiceUser` and `ServiceProvider` started the NAC-ABE DKEY
+  fetch from their constructors.  `ParamFetcher` and `ValidatorConfig` retain
+  asynchronous callbacks on the same Face, but the native/Python seam cannot
+  pump that Face until construction returns; the validation state was therefore
+  destroyed at the constructor boundary and reported the generic ndn-cxx
+  implementation error.  This is a real NDNSF-DI lifecycle defect, not an
+  Apptainer path or NFD routing failure.
+- Fix: defer the initial DKEY bootstrap to `init()`, after the object is fully
+  constructed and immediately before the existing bounded Face pump.  Keep
+  request admission fail-closed until the Consumer reports decryption
+  readiness.
+- Lesson: constructor success is not enough for an asynchronous NAC-ABE
+  runtime; initialization and its first event-loop turn must be one explicit
+  lifecycle boundary.  Component tests that never construct the runtime
+  publication User before a real Face pump can miss this defect.
+
+## 2026-09-08: host framework rebuild hit the known ndn-svs API split
+
+- Symptom: `./waf build -j4` compiled the modified ServiceUser/Provider units
+  but stopped at `ServiceProvider.cpp:6155` because the host-linked
+  `SVSPubSub` has no `subscribeToProducerWithCatchUp` member.
+- Root cause: this host build tree resolves the system/host NDN-SVS ABI, while
+  the Spec183 base SIF is built from the pinned Experimental NDN-SVS source
+  revision that provides the required API.
+- Fix: preserve this host failure as a non-qualification record and use the
+  exact dependency closure in the next base-SIF rebuild; no source fallback or
+  host-library override is allowed.
+- Lesson: a successful compile of one changed translation unit cannot certify
+  the framework closure when the host and sealed dependency revisions differ.
