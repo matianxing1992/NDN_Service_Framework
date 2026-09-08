@@ -194,9 +194,14 @@ def main(argv: Iterable[str] | None = None) -> int:
     operator_site = Path(site.getusersitepackages())
     if operator_site.is_dir():
         env['PYTHONPATH'] = ':'.join(filter(None, (str(operator_site), env.get('PYTHONPATH', ''))))
+    # In exact-SIF mode the outer validator is still the host Python process;
+    # do not inject a stale developer build root that can shadow its matching
+    # system ABI.  Every NFD/application child receives the image-owned
+    # LD_LIBRARY_PATH from `sif_exec_prefix`.
+    host_library_path = "" if os.environ.get("SPEC180_RUNTIME_SIF", "").strip() else args.library_path
     env.update({
         "PYTHONDONTWRITEBYTECODE": "1",
-        "LD_LIBRARY_PATH": args.library_path,
+        "LD_LIBRARY_PATH": host_library_path,
         "NDNSF_DI_STATE_ROOT": str(state),
         # The systemd system manager runs the MiniNDN owner as root so it can
         # create network namespaces.  The child must still bind its state

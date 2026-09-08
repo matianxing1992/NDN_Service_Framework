@@ -3561,3 +3561,17 @@ identity and rerun packaging against the existing incremental Waf cache.
 - Lesson: the host validation process and image workload have separate Python
   environments; privilege changes must preserve only the declared read-only
   validation dependencies instead of relying on root's site discovery.
+
+## 2026-09-08: MiniNDN host validator loaded stale developer ABI
+
+- Symptom: with package visibility and ONNX validation fixed, Y-B exited 78
+  before NFD with `CASE_CONFIG_POLICY_LOADER_INVALID` and an undefined
+  `SVSPubSub::subscribeToProducerWithCatchUp` symbol.
+- Root cause: the wrapper always set the outer host driver's
+  `LD_LIBRARY_PATH=/tmp/t008-build-root/lib`, an older ndn-svs/framework pair;
+  exact-SIF child commands already replace this path with image-owned libraries.
+- Fix: clear the outer host library override whenever `SPEC180_RUNTIME_SIF`
+  is active, leaving the host's matching installed ABI for preflight and the
+  sealed SIF ABI for every NFD/application child.
+- Lesson: a layered run has two deliberate ABI domains; the host preflight must
+  not shadow either domain with an unrelated incremental build root.
