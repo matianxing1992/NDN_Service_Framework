@@ -23,8 +23,9 @@ def frozen_bundle(tmp_path_factory):
 
 
 @pytest.mark.parametrize('fault', ['none', 'request', 'missing-request'])
+@pytest.mark.parametrize('mode', ['local-cpu', 'single-node-gpu'])
 def test_local_owner_stops_on_failed_request_and_publishes_only_after_cleanup(
-        tmp_path, monkeypatch, reference, frozen_bundle, fault):
+        tmp_path, monkeypatch, reference, frozen_bundle, fault, mode):
     from runtime import yolo_operator as operator, yolo_result, yolo_graph_reference
     from runtime.yolo_worker import assigned_roles
     package, _ = reference
@@ -32,13 +33,13 @@ def test_local_owner_stops_on_failed_request_and_publishes_only_after_cleanup(
     root.mkdir()
     bundle, harness_digest = frozen_bundle
     roles = assigned_roles('local-cpu', 0)
-    plan = dict(schema='tiger-yolo-run-plan-v1', runId='local-test', case='local-cpu',
+    plan = dict(schema='tiger-yolo-run-plan-v1', runId='local-test', case=mode,
         applicationName='/local-test', output=str(root), nodes=[dict(rank=0, roles=list(roles))],
         identities={role: '/local-test/' + role for role in roles},
         requests=[dict(index=i, warmup=i == 0, requestId='/local-test/' + str(i),
                        output=str(root / 'node0/user/requests' / str(i))) for i in range(2)])
     candidate = 'sha256:'+'a'*64
-    prepared = dict(plan=plan, case='local-cpu', runId=plan['runId'], candidateDigest=candidate,
+    prepared = dict(plan=plan, case=mode, runId=plan['runId'], candidateDigest=candidate,
                     bundle=str(bundle), harnessManifestSha256=harness_digest)
     profile = dict(timing=dict(stagingSeconds=5, startupSeconds=5, progressTimeoutSeconds=1,
         requestDeadlineMs=2000, cleanupSeconds=1), cluster=dict(wallTimeSeconds=30, tcpPort=16363),
@@ -72,7 +73,9 @@ def test_local_owner_stops_on_failed_request_and_publishes_only_after_cleanup(
         assert kwargs['runtime_candidate_digest'] == candidate
     def rank(**kwargs):
         events.append('rank')
-        assert kwargs['mode'] == 'local-cpu' and kwargs['rank'] == 0
+        assert kwargs['mode'] == mode and kwargs['rank'] == 0
+        if mode == 'single-node-gpu':
+            assert kwargs['gpu_device'] == '0' and kwargs['allocation_expected'] == expected
         assert kwargs['completion_seconds'] == 6
         try:
             if fault != 'missing-request':
@@ -94,18 +97,30 @@ def test_local_owner_stops_on_failed_request_and_publishes_only_after_cleanup(
     monkeypatch.setattr(operator, 'finalize_normal_collection', finish)
     monkeypatch.setattr(yolo_result, 'collect_request_result', numerical)
     monkeypatch.setattr(yolo_graph_reference, 'read_request_reference', graph)
+    expected = dict(job_id='123', submission_key='spec183-'+'a'*64,
+                    partition='bigTiger', gpu_type='rtx_6000')
+    from runtime import yolo_allocation
+    def capture(**kwargs):
+        assert kwargs == dict(expected, rank=0, node_count=1, seconds=1)
+        return {'receipt': {'visible': '0'}}
+    monkeypatch.setattr(yolo_allocation, 'capture_task_allocation', capture)
+    def execute():
+        if mode == 'local-cpu':
+            return operator.execute_local_run(prepared=prepared, profile=profile, resolved=resolved)
+        return operator.execute_single_gpu_run(prepared=prepared, profile=profile, resolved=resolved,
+                                               allocation_expected=expected)
     if fault == 'none':
-        assert operator.execute_local_run(prepared=prepared, profile=profile, resolved=resolved) == {
+        assert execute() == {
             'status': 'COLLECTION_READY_FIXTURE'}
         assert events == ['stage', 'provision', 'rank', 'request-0', 'request-1', 'cleanup', 'handoff']
     else:
         with pytest.raises(ValueError):
-            operator.execute_local_run(prepared=prepared, profile=profile, resolved=resolved)
+            execute()
         assert 'handoff' not in events and events[-1] == 'cleanup'
         assert json.loads((root / 'local-execution-failure.json').read_text())['status'] == 'FAIL'
     old_events = list(events)
     with pytest.raises(ValueError, match='LOCAL_RUN_ALREADY_STARTED'):
-        operator.execute_local_run(prepared=prepared, profile=profile, resolved=resolved)
+        execute()
     assert events == old_events
 
 

@@ -2604,3 +2604,18 @@ evidence/t004-effective-profile.md records the exact command. Initial test impor
 order caused collection failure (runtime path unavailable); fixed the fixture
 import order and retained the failed JUnit. Lesson: hash validity needs a binding
 to the intended semantic object, and generators must prove one-pass convergence.
+
+## 2026-09-07 — Spec183 batch runner had no path to the GPU worker
+
+Symptom: the private batch action always raised RUNNER_NOT_WIRED despite the
+existing allocation validator, CUDA probe and normal node lifecycle.
+Fix: bind the single-node GPU batch/task to shared prepared paths and the E/case
+journal, dispatch a finite srun task, and reuse the complete single-node owner
+with an actual Slurm capture before native preparation. Retain srun cleanup and
+require clean reaping plus matching collection job identity before reanalysis.
+Do not release the journal from inside a still-running batch allocation.
+63 focused tests then 11 final boundary tests passed; no runtime GPU execution.
+Lesson: a clean worker receipt is insufficient for its outer launch process;
+verify both, and keep task exit, numerical verdict and allocation termination
+separate. Remote staging/scratch/terminal observer and distributed cases remain
+unfinished; see evidence/t004-single-gpu-runner.md. No production gate was closed.

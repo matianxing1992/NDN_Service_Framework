@@ -434,7 +434,7 @@ def _enter_frozen(args, prepared, action):
     command = [sys.executable, '-B', str(bundle / 'jobs/yolo/submit.py'), action,
         '--profile', str(Path(args.profile).absolute()), '--run-id', args.run_id,
         '--output', str(_safe_output(args.output))]
-    if action in ('local', 'submit', 'run'):
+    if action in ('local', 'submit', 'run', 'rank'):
         command += ['--case', args.case]
     return subprocess.run(command, cwd=bundle, check=False).returncode
 
@@ -496,6 +496,10 @@ def _reanalyze_retained(root: Path, prepared: dict) -> dict:
         collection_path, root=root, prepared=prepared)
     from runtime import yolo_result
     if collection['kind'] == 'normal':
+        if prepared['case'] != 'local-cpu':
+            cleanup = _verify_srun_cleanup(root, prepared)
+            if cleanup['jobId'] != collection.get('allocationExpected', {}).get('job_id'):
+                raise ClosureError('SRUN_COLLECTION_JOB_BINDING')
         from runtime.yolo_bundle import reference_owner, verify_harness
         verify_harness(Path(prepared['bundle']),
                        expected_manifest_sha256=prepared['harnessManifestSha256'])
@@ -580,13 +584,95 @@ def _collect(args) -> int:
         return _not_ready("collect", "COLLECTION_REJECTED", {"reason": reason})
 
 
-def _run(args) -> int:
+def _verify_srun_cleanup(root, prepared):
+    value = _read_plane(root / 'srun-cleanup.json')
+    if (not isinstance(value, dict) or set(value) != {'runId', 'jobId', 'candidateDigest', 'cleanup'}
+            or value['runId'] != prepared['runId']
+            or value['candidateDigest'] != prepared['candidateDigest']
+            or not isinstance(value['jobId'], str)
+            or re.fullmatch(r'[1-9][0-9]{0,9}', value['jobId']) is None
+            or not isinstance(value['cleanup'], list) or len(value['cleanup']) != 1):
+        raise ClosureError('SRUN_CLEANUP_BINDING')
+    row = value['cleanup'][0]
+    if (not isinstance(row, dict) or row.get('name') != 'yolo-srun'
+            or row.get('kind') != 'finite' or row.get('reaped') is not True
+            or row.get('forced') is not False or type(row.get('exitCode')) is not int
+            or row['exitCode'] != 0 or 'cleanupError' in row or row.get('cleanupTimedOut')):
+        raise ClosureError('SRUN_CLEANUP_FAILED')
+    return value
+
+
+def _allocated_context(args, *, task=False):
     if not os.environ.get("SLURM_JOB_ID"):
         raise ClosureError("ALLOCATION_REQUIRED")
-    # The Slurm wrapper reaches this private action only after submit has a
-    # qualified staged bundle.  Until T012 wires the real worker, fail closed;
-    # never turn a job allocation into an unvalidated inference claim.
-    raise ClosureError("RUNNER_NOT_WIRED")
+    if args.case != 'single-node-gpu':
+        raise ClosureError('DISTRIBUTED_RUNNER_NOT_WIRED')
+    report, profile = _dispatch_report(Path(args.profile))
+    if report.get('integrity') != 'VERIFIED':
+        raise ClosureError('RUN_CONTENT_NOT_VERIFIED')
+    prepared = _load_prepared(args.output, args.run_id)
+    if (prepared['case'] != args.case or prepared['profileDigest'] != report['documentDigest']
+            or prepared['contentIdentities'] != report['identities']):
+        raise ClosureError('RUN_PREPARED_BINDING')
+    if _safe_output(args.output) != Path(profile['storage']['sharedRunRoot']):
+        raise ClosureError('RUN_SHARED_OUTPUT_BINDING')
+    if Path(prepared['bundle']) != _safe_output(args.output) / args.run_id / 'bundle':
+        raise ClosureError('RUN_SHARED_BUNDLE_BINDING')
+    from runtime.yolo_submission import SubmissionJournal
+    journal = SubmissionJournal(Path(profile['storage']['sharedLockRoot']),
+        candidate_id=prepared['contentIdentities']['dispatch'], gate=args.case)
+    row = journal.get(args.run_id)
+    expected_state = 'RUNNING' if task else 'SUBMITTED'
+    if row['state'] != expected_state or row['jobId'] != os.environ['SLURM_JOB_ID']:
+        raise ClosureError('RUN_JOURNAL_JOB_BINDING')
+    expected = dict(job_id=row['jobId'], submission_key=row['submissionKey'],
+                    partition=profile['cluster']['partition'], gpu_type=profile['cluster']['gpuClass'])
+    return profile, prepared, journal, expected
+
+
+def _rank(args) -> int:
+    """Internal srun entry; no qualification is inferred from its zero exit."""
+    profile, prepared, _, expected = _allocated_context(args, task=True)
+    result = _enter_frozen(args, prepared, 'rank')
+    if result is not None:
+        return result
+    from runtime.yolo_profile import resolve_provision_inputs
+    from runtime.yolo_operator import execute_single_gpu_run
+    resolved = resolve_provision_inputs(Path(args.profile), plan=prepared['plan'],
+                                        runtime_candidate_digest=prepared['candidateDigest'])
+    execute_single_gpu_run(prepared=prepared, profile=profile, resolved=resolved,
+                           allocation_expected=expected)
+    return 0
+
+
+def _run(args) -> int:
+    """Own one finite srun step and collect its actual retained outputs."""
+    profile, prepared, journal, expected = _allocated_context(args)
+    result = _enter_frozen(args, prepared, 'run')
+    if result is not None:
+        return result
+    _gate_receipt(Path(args.profile), profile, 'localSif', prepared=prepared)
+    from runtime.worker import run_finite_application
+    root = Path(prepared['plan']['output'])
+    command = ['/usr/bin/srun', '--exact', '--nodes=1', '--ntasks=1',
+        '--ntasks-per-node=1', '--kill-on-bad-exit=1', '--mpi=none',
+        '--cpus-per-task=' + str(profile['cluster']['cpusPerNode']), '--gpus-per-task=1',
+        '/usr/bin/python3', '-B', str(Path(prepared['bundle']) / 'jobs/yolo/submit.py'),
+        'rank', '--profile', str(Path(args.profile).absolute()), '--run-id', args.run_id,
+        '--output', str(_safe_output(args.output)), '--case', args.case]
+    journal.mark_running(args.run_id, expected['job_id'])
+    cleanup = []
+    try:
+        run_finite_application('yolo-srun', command, root / 'srun.log', cleanup,
+            seconds=profile['cluster']['wallTimeSeconds'] - profile['timing']['cleanupSeconds'],
+            cleanup_seconds=profile['timing']['cleanupSeconds'], cwd=Path(prepared['bundle']))
+    finally:
+        _write_readonly(root / 'srun-cleanup.json', dict(runId=args.run_id,
+            jobId=expected['job_id'], candidateDigest=prepared['candidateDigest'], cleanup=cleanup))
+    _verify_srun_cleanup(root, prepared)
+    # External collect/reconciliation must observe Slurm termination before
+    # releasing the shared journal. A batch still executing cannot close it.
+    return _collect(args)
 
 
 def _common(parser, *, case=False):
@@ -624,6 +710,8 @@ def main(argv=None):
     _common(collect)
     runner = commands.add_parser("run", help=argparse.SUPPRESS)
     _common(runner, case=True)
+    rank = commands.add_parser('rank', help=argparse.SUPPRESS)
+    _common(rank, case=True)
     args = parser.parse_args(argv)
     try:
         if args.action == "check":
@@ -647,6 +735,8 @@ def main(argv=None):
             return _submit(args)
         if args.action == "collect":
             return _collect(args)
+        if args.action == 'rank':
+            return _rank(args)
         return _run(args)
     except ClosureError as exc:
         return _error(exc)

@@ -368,9 +368,28 @@ def finalize_normal_collection(*, plan: dict, rank_results: dict, node_roots: di
 
 
 def execute_local_run(*, prepared: dict, profile: dict, resolved: dict) -> dict:
-    """Execute the exact-SIF CPU gate through the existing owners once.
+    return _execute_single_node(prepared=prepared, profile=profile, resolved=resolved,
+                                mode='local-cpu')
 
-    The public CLI must validate the source-bound host gate before entering
+
+def execute_single_gpu_run(*, prepared: dict, profile: dict, resolved: dict,
+                           allocation_expected: dict) -> dict:
+    """Run a normal GPU case inside the journal-bound single srun task."""
+    from .yolo_allocation import capture_task_allocation
+    observed = capture_task_allocation(**allocation_expected, rank=0, node_count=1,
+        seconds=profile['timing']['progressTimeoutSeconds'])
+    # Query before any issuer/native process, then let NodeRuntime retain and
+    # revalidate the allocation at the provider launch boundary as usual.
+    return _execute_single_node(prepared=prepared, profile=profile, resolved=resolved,
+        mode='single-node-gpu', allocation_expected=allocation_expected,
+        gpu_device=observed['receipt']['visible'])
+
+
+def _execute_single_node(*, prepared: dict, profile: dict, resolved: dict, mode: str,
+                         allocation_expected=None, gpu_device=None) -> dict:
+    """Execute one complete normal single-node case through existing owners.
+
+    The public CLI must validate the relevant prior gate before entering
     this internal boundary. This function produces retained collection input,
     never a PASS from process return codes. Partial output is not reusable.
     """
@@ -380,11 +399,12 @@ def execute_local_run(*, prepared: dict, profile: dict, resolved: dict) -> dict:
     from .yolo_graph_reference import read_request_reference
     from .identities import _credential_document
     plan = prepared['plan']
-    _validate_plan(plan, mode='local-cpu', rank=0)
+    _validate_plan(plan, mode=mode, rank=0)
     root = _directory(plan['output'], 'LOCAL_RUN_ROOT')
     bundle = _directory(prepared['bundle'], 'LOCAL_RUN_BUNDLE')
     verify_harness(bundle, expected_manifest_sha256=prepared['harnessManifestSha256'])
-    if (prepared['case'] != 'local-cpu' or prepared['runId'] != plan['runId']
+    if (mode not in ('local-cpu', 'single-node-gpu') or prepared['case'] != mode
+            or prepared['runId'] != plan['runId']
             or resolved['descriptor']['plan'] != plan
             or resolved['descriptor']['runtimeCandidateDigest'] != prepared['candidateDigest']):
         raise OperatorError('LOCAL_RUN_BINDING')
@@ -419,7 +439,7 @@ def execute_local_run(*, prepared: dict, profile: dict, resolved: dict) -> dict:
     paths = {name: root / name for name in names}
     if any(path.exists() or path.is_symlink() for path in paths.values()):
         raise OperatorError('LOCAL_RUN_ALREADY_STARTED')
-    started = dict(schema='tiger-yolo-local-execution-v1', status='STARTED',
+    started = dict(schema='tiger-yolo-local-execution-v1', status='STARTED', case=mode,
         runId=plan['runId'], candidateDigest=prepared['candidateDigest'])
     _credential_document(root / 'local-execution.json', started)
     try:
@@ -445,7 +465,7 @@ def execute_local_run(*, prepared: dict, profile: dict, resolved: dict) -> dict:
                 runtime_candidate_digest=prepared['candidateDigest'],
                 placement_candidate_digest=receipt['placementCandidateDigest'],
                 graph_digest=graph_digest)
-            collect_request_result(output, reference, case='local-cpu',
+            collect_request_result(output, reference, case=mode,
                 request_id=request['requestId'], attempt_id='attempt-1',
                 candidate_id=receipt['placementCandidateId'],
                 candidate_digest=receipt['placementCandidateDigest'],
@@ -453,7 +473,7 @@ def execute_local_run(*, prepared: dict, profile: dict, resolved: dict) -> dict:
             accepted.append(request['index'])
 
         merged = dict(profile, **resolved['runtimeProfile'])
-        rank_result = run_rank(plan=plan, profile=merged, mode='local-cpu', rank=0,
+        rank_result = run_rank(plan=plan, profile=merged, mode=mode, rank=0,
             bundle=bundle, public=paths['public'],
             homes={role: paths['private'] / role for role in plan['identities']},
             output=paths['node0'], node=paths['node'], startup_directory=paths['startup'],
@@ -466,7 +486,8 @@ def execute_local_run(*, prepared: dict, profile: dict, resolved: dict) -> dict:
             request_options=dict(package=package, catalog_data_name=receipt['catalogueDataName'],
                 catalog_signer=receipt['catalogueSigner'], permission_wait_ms=permission_ms,
                 request_deadline_ms=timing['requestDeadlineMs'], process_timeout_seconds=process_seconds,
-                protection_epoch=profile['security']['protectionEpoch']), accept_request=accept)
+                protection_epoch=profile['security']['protectionEpoch']), accept_request=accept,
+            allocation_expected=allocation_expected, gpu_device=gpu_device)
         if accepted != list(range(len(plan['requests']))):
             raise OperatorError('LOCAL_RUN_REQUEST_COVERAGE')
         return finalize_normal_collection(plan=plan, rank_results={0: rank_result},
@@ -476,7 +497,8 @@ def execute_local_run(*, prepared: dict, profile: dict, resolved: dict) -> dict:
             runtime_candidate_digest=prepared['candidateDigest'], providers_by_role=providers,
             placement_candidate_id=receipt['placementCandidateId'],
             placement_candidate_digest=receipt['placementCandidateDigest'], graph_digest=graph_digest,
-            catalogue_digest=catalogue_digest, certified_graph={'graphDigest': graph_digest})
+            catalogue_digest=catalogue_digest, certified_graph={'graphDigest': graph_digest},
+            allocation_expected=allocation_expected)
     except BaseException as exc:
         _credential_document(root / 'local-execution-failure.json', dict(started,
             status='FAIL', errorType=type(exc).__name__))

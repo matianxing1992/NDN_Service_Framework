@@ -26,6 +26,20 @@ references do not change behavior identity; declared file content and execution
 settings do. A rehashed stale or extra-field snapshot is rejected before prepare
 or execution. One render on unchanged sources must produce stable plane bytes.
 
+The private `run` action now dispatches the normal single-node GPU case through
+one finite `srun` task; `rank` is its internal task entry. Both bind current
+I/R/E, prepared profile, shared output/bundle and the shared journal's job ID.
+The journal key uses dispatch identity plus case, not the run-specific candidate.
+The task queries Slurm before the offline issuer/native workload and revalidates
+at the worker launch boundary. The batch retains its actual srun cleanup and
+invokes the normal collector only after clean reaping. GPU reanalysis must also
+join that cleanup record to the collection's actual job ID. Zero task exit is
+not an inference verdict; only the collector determines the result.
+The batch does not close the journal while its allocation remains active;
+external terminal-state reconciliation remains required. Remote staging,
+allocation scratch/capacity integration, distributed/negative runner and actual
+submission remain incomplete; this private entry is not release qualification.
+
 **Status**: T004 partial — schema、只读 `check`、确定性运行预览和提交记录组件已实现；
 完整五命令、合格不可变 bundle、实际 enabled profile 和生产提交接线尚未完成。
 没有启动资格。
