@@ -407,6 +407,18 @@ BOOST_AUTO_TEST_CASE(NativePreparationBindsAdapterAndGraphPort)
   BOOST_CHECK_EQUAL(artifactCalls, 1u);
   BOOST_CHECK_EQUAL(binding.sourceByRole.at("role"), "/ndnsf/catalog/root/1");
   BOOST_CHECK_EQUAL(binding.artifactDigestByRole.at("role"), digest("artifact"));
+
+  // Ordinary candidates omit hybrid rank maps. Publication must preserve the
+  // same implicit rank-one contract already accepted by role validation.
+  const auto proposal = proposalFor(control, inspected, {"role"});
+  auto ordinary = candidateFor(inspected, proposal);
+  ordinary.tensorDegreesByRole.clear();
+  ordinary.rankArtifactDigestsByRole.clear();
+  ordinary.candidateDigest = ordinary.computedDigest();
+  const auto ordinaryBinding = preparation.ensureArtifacts(inspected, ordinary, proposal, control);
+  BOOST_CHECK_EQUAL(artifactCalls, 2u);
+  BOOST_CHECK_EQUAL(ordinaryBinding.sourceByRole.at("role"), binding.sourceByRole.at("role"));
+  BOOST_CHECK_EQUAL(ordinaryBinding.artifactDigestByRole.at("role"), digest("artifact"));
 }
 
 // Qwen pipeline bytes are encoded exactly once and passed through unchanged

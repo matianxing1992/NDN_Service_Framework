@@ -130,7 +130,13 @@ BOOST_AUTO_TEST_SUITE(Spec182CanonicalPublisher)
 BOOST_AUTO_TEST_CASE(PublishesOwnedInlineAndExternalSourcesThroughPreparation)
 {
   for (bool external : {false, true}) {
+    for (bool explicitRanks : {false, true}) {
     Input input(external); TransportFixture io;
+    if (!explicitRanks) {
+      input.candidate.tensorDegreesByRole.clear();
+      input.candidate.rankArtifactDigestsByRole.clear();
+      input.candidate.candidateDigest = input.candidate.computedDigest();
+    }
     auto publisher = NativeCanonicalPublisherTestAccess::create(io.transport(), input.options, input.resolver());
     NativeRequestPreparation preparation(std::make_shared<NativeAdapterRegistry>(), {}, publisher.artifactPort());
     const auto result = preparation.ensureArtifacts(input.model, input.candidate, input.proposal(), input.control);
@@ -151,6 +157,8 @@ BOOST_AUTO_TEST_CASE(PublishesOwnedInlineAndExternalSourcesThroughPreparation)
     const auto certified = NativeRequestPreparation::bindPublishedRoles(input.model, input.candidate, input.roles, result);
     BOOST_CHECK_EQUAL(certified[0].modelManifestDigest, result.manifestDigest);
     BOOST_CHECK_NE(certified[0].recipeDigest, input.roles[0].recipeDigest);
+    BOOST_CHECK(result.artifactNameByRole.at("/role").find("/rank/") == std::string::npos);
+    }
   }
 }
 
