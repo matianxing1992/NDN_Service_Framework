@@ -1,5 +1,15 @@
 # Failure Log and Evidence Index
 
+## 2026-09-08 — Spec182 native Merge sealing fixture
+
+R1-B3 incremental build 29.838s PASS，67/68 cases PASS。新 mixed-role fixture 已完成
+publication，但调用 V3 sealer 时漏传 inputs.assemblyByRole，准备角色为空导致
+DI_NATIVE_ROLE_BINDING_MISMATCH；不是 publication/签名故障。补原始 prepared roles，
+不以发布后角色替代验收输入，原始日志见 [R1-B3](../specs/182-native-di-python-bindings/evidence/r1-b3-native-merge-20260908.md)。
+r2 build PASS、67/68 cases PASS：已通过重新封存和 grantView，fixture 又将 protected
+epoch 配成无 grant 的明文 policy，finalizeSecurity 正确拒绝。补两角色 protected grant
+binding fixture，不削弱生产安全检查；下一轮 r3 使用新日志。
+
 ## 2026-09-08 — Cleanup Python path compatibility
 
 旧对象清理脚本在删除前检查使用 Path.is_relative_to；系统 Python 3.8 不支持，

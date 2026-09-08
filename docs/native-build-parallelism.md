@@ -18,6 +18,15 @@
 
 ## Why Time and Memory Grow
 
+2026-09-08 用户强调只重建受影响模块。日常批次复用同一已验证配置的 build tree，
+显式选择目标；DI 改动不清空 Core/UAV 对象、不因新 batch ID 创建 fresh build。
+只有实际依赖变化（共享头文件、编译配置、ABI）才重建相应消费者。需要产出 DI 库时
+选择 `--targets=ndnsf-distributed-inference`；需要验证单测时选择 `--targets=unit-tests`，
+由 Waf 依赖图重编失效对象并链接，不能用“只编库成功”代替单测。
+Waf 的 `[n/total]` 是任务图编号，不是实际编译次数；报告 Compiling/Linking 实际行。
+R1-B2 首轮只编 DI preparation 与其测试，次轮只编测试；Core/UAV 没有重编，
+分别 16.928s/16.033s。原始日志见当前 Spec 的 R1-B2 证据；不作为 fresh build 测量。
+
 `-j2` 最多并行调度两个构建任务，不会把一个 C++ 源文件自动拆给多个核。
 大型 C++ 单元的头文件解析、模板实例化和优化需要时间及内存；多个编译进程叠加后峰值会增长。
 链接和依赖顺序限制可并行部分。编辑器、索引器及其他应用也共享物理内存。

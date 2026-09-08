@@ -244,8 +244,17 @@ selectionRoleFromV3Json(const boost::property_tree::ptree& node,
     throw std::invalid_argument(
       "V3 Selection projection contains an incomplete local role");
   }
-  if (hasAssemblyIdentity &&
-      (!completeAssemblyIdentity || !completeAssemblyRecipe)) {
+  const bool completeNativeIdentity = isSha256Digest(role.modelManifestDigest) &&
+    isSha256Digest(role.artifactProfileDigest) && isSha256Digest(role.graphDigest) &&
+    isSha256Digest(role.adapterDescriptorDigest);
+  if (validNativePostprocess &&
+      (!isCpuBackend(role.backend) || role.expectedInputs.empty() ||
+       role.expectedOutputs.size() != 1 ||
+       role.expectedOutputs.front().name != role.postprocessOutputName ||
+       role.expectedOutputs.front().dtype != "float32"))
+    throw std::invalid_argument("V3 native postprocess role has invalid CPU or tensor contracts");
+  if (hasAssemblyIdentity && (validNativePostprocess ? !completeNativeIdentity :
+      (!completeAssemblyIdentity || !completeAssemblyRecipe))) {
     throw std::invalid_argument(
       "V3 Selection projection contains an incomplete assembly identity");
   }

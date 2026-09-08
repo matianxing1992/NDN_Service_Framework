@@ -17,6 +17,7 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 
 | Unit / Details | Status | Depends | Evidence / Remaining | Updated |
 | --- | --- | --- | --- | --- |
+| [R1-B3 Native Merge Publication](evidence/r1-b3-native-merge-20260908.md) | DONE | R1-B2; existing shared role contract | NM-1/NM-2 batch only：r3 incremental build 与 68 C++ cases/800 assertions PASS；真实 adapter/requester 与 parent gates unchanged | 2026-09-08 |
 | [R1-B2 Candidate Role Semantics](evidence/r1-b2-role-semantics-20260908.md) | DONE | T002-A; existing candidate contract | CR-1/CR-2 batch only：官方静态门与 C++ 26 cases/546 assertions PASS；native Merge publication remains open，T003-C 不变 | 2026-09-08 |
 | [D-DISK-CLEANUP Build Object Cleanup](evidence/disk-cleanup-20260908.md) | DONE | User cleanup request | pip cache 及 2702 个旧对象已清理；磁盘可用 910 MB→30 GB；当前构建、二进制与原始证据保留 | 2026-09-08 |
 | [D-NATIVE-TEST-POLICY Native Test Ownership](contracts/proof-design.md#native-test-ownership) | DONE | User native testing request | 主要行为测试由 C++ 直接调用生产库；Python 兼容/离线 oracle/外部设施边界已明确，文档检查 PASS；实际测试迁移由各实现卡与 T013/T015/T016 负责 | 2026-09-08 |
@@ -66,6 +67,15 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 | [T017-A Development Handoff](contracts/execution-units.md#t017-a-development-handoff) | NOT_STARTED | T016-A | [baseline](evidence/task-progress-registry-20260907.md)；无本卡独立执行/验收记录；按依赖领取 | 2026-09-07 |
 
 ## Current Checkpoint
+
+2026-09-08 R1-B3 Native Merge Publication / **DONE (batch only)**：Owner 当前执行者。
+成员 NM-1：共享 role codec 与 preparation/publisher 的完整非 ONNX 分支及 C++ 负例；
+NM-2：发布后绑定、sealer/Provider 消费与组合验证。批次服务现有 T003-C/T008-A/T004-A
+共享契约修复，不放行未完成卡硬依赖。统一使用现有 -j4 build，选择器包含
+Preparation、CanonicalPublisher、V3Placement、PlanSealer 与 native plan/Merge 用例；
+逐成员静态门、批末统一测试。详见 [batch](evidence/r1-b3-native-merge-20260908.md)。
+NM-1/NM-2 r3 build 28.762s、68 cases/800 assertions PASS；r1/r2 fixture 首边界
+保留。下一步实际 adapter/catalog 角色生产与 requester 接线；本批不关闭原卡。
 
 2026-09-08 R1-B2 Candidate Role Semantics / **DONE (batch only)**：Owner 当前执行者。
 复用 T002-A 与已验证候选契约，修复 T003-C 角色消费边界；不放行 T003-A/B/C
