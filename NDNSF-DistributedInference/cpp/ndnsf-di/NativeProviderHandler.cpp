@@ -1920,7 +1920,8 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
         config.maxSegmentSize,
         config.freshnessMs,
         groupCoordinator,
-        protectedRuntime);
+        protectedRuntime,
+        config.outputPublicationGate);
       const auto assignmentExecutionPolicy = nativeProviderFieldValue(
         assignmentFields, {"executionPolicy"});
       const bool legacyPolicy =

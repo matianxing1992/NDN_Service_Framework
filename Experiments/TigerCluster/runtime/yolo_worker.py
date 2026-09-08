@@ -431,6 +431,18 @@ class NodeRuntime:
                 '--offer-backend', 'onnxruntime-cuda' if gpu else 'onnxruntime-cpu',
                 '--offer-device', 'cuda:0' if gpu else 'cpu',
                 '--offer-can-provision', '--permission-wait-ms', str(permission_wait_ms)]
+        if self.mode == 'negative-dependency' and role == 'DetectShard0':
+            if self._preparation_binding is None:
+                raise ValueError('WORKER_FAULT_PREPARATION_REQUIRED')
+            plan = self._preparation_binding[0]
+            requests = plan.get('requests')
+            if (plan.get('case') != self.mode or not isinstance(requests, list) or len(requests) != 1
+                    or not isinstance(requests[0], dict) or requests[0].get('index') != 0
+                    or requests[0].get('warmup') is not False
+                    or not isinstance(requests[0].get('requestId'), str)
+                    or not requests[0]['requestId'].startswith('/')):
+                raise ValueError('WORKER_FAULT_REQUEST_BINDING')
+            argv += ['--withhold-v3-output', requests[0]['requestId'], 'DetectShard0', 'Merge']
         return self._start_service(role, argv)
 
     def start_forwarder(self, port: int):

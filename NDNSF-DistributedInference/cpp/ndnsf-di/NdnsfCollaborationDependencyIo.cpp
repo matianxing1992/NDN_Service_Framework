@@ -186,13 +186,15 @@ NdnsfCollaborationDependencyIo::NdnsfCollaborationDependencyIo(
   std::size_t maxSegmentSize,
   int freshnessMs,
   std::shared_ptr<ProviderGroupCoordinator> groupCoordinator,
-  std::shared_ptr<ProtectedRuntime> protectedRuntime)
+  std::shared_ptr<ProtectedRuntime> protectedRuntime,
+  OutputPublicationGate outputPublicationGate)
   : m_ctx(ctx)
   , m_fetchTimeoutMs(fetchTimeoutMs)
   , m_maxSegmentSize(maxSegmentSize)
   , m_freshnessMs(freshnessMs)
   , m_groupCoordinator(std::move(groupCoordinator))
   , m_protectedRuntime(std::move(protectedRuntime))
+  , m_outputPublicationGate(std::move(outputPublicationGate))
 {
 }
 
@@ -819,6 +821,10 @@ NdnsfCollaborationDependencyIo::publishOutput(const std::string& sessionId,
           ndn::Name(exactNames[index]),
           ndn::Buffer(encodedSegments[index].begin(),
                       encodedSegments[index].end()));
+      }
+      if (m_outputPublicationGate && !m_outputPublicationGate(
+            sessionId, edge, manifest.contentDigest, bundle.payload.size())) {
+        return;
       }
       if (!m_ctx.publishSignedExactData(
             edge.transportScope.empty() ? edge.scope : edge.transportScope,

@@ -113,6 +113,7 @@ struct NativeProviderHandlerConfig
   // Selection-referenced KeyGrant, unwraps it inside the Provider boundary,
   // installs exact dataflow/capability bindings, and returns GrantVerified.
   ProtectedRuntimeFactory protectedRuntimeFactory;
+  NdnsfCollaborationDependencyIo::OutputPublicationGate outputPublicationGate;
   std::size_t workerCount = 1;
   std::size_t workerQueueCapacity = 1024;
   ndn_service_framework::ProviderExecutionLeaseTable* executionLeaseTable = nullptr;

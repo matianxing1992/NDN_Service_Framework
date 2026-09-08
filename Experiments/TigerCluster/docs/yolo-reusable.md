@@ -18,6 +18,11 @@ NOT_EVALUATED清单（exit 78）；不上传或提交。公开submit的SSH协调
 **Branch**: `TigerClusterExperiments`
 **Status**: IN_PROGRESS / NOT_QUALIFIED
 
+负例触发点已有源码和原生组件证据：`DetectShard0` 在真实V3输出校验后、
+首包发布前阻止该请求到 `Merge` 的对象，并保留绑定的触发记录。见Spec183
+`evidence/t004-dependency-cutpoint.md`。负例User终态、双rank接线与collector仍缺，
+公开提交仍拒绝NEGATIVE_RUNNER_NOT_WIRED；不能手工移除该保护来启动GPU。
+
 目标：一份profiles/yolo-two-node.json和一个jobs/yolo/submit.py入口，本地验证后，以同一完整SIF完成Tiger两节点四Provider推理并在新allocation复现。当前有实际输入 profile 和历史 base SIF，尚无本候选合格 SIF/GPU allocation；共享目录接收端submit已接，尚不具备真实提交资格。
 
 ## Current Checkpoint

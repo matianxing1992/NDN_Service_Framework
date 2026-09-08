@@ -219,8 +219,23 @@ runTransfer(const std::string& mode)
   for (std::size_t index = 0; index < original.payload.size(); ++index) {
     original.payload[index] = static_cast<std::uint8_t>(index * 31 + 7);
   }
+  std::size_t publicationGateCalls = 0;
+  NdnsfCollaborationDependencyIo::OutputPublicationGate publicationGate;
+  if (mode == "withhold" || mode == "gate-permit" || mode == "invalid-before-gate") {
+    publicationGate = [&](const std::string& session, const DependencyEdge& observed,
+                          const std::string& contentDigest, std::size_t bytes) {
+      ++publicationGateCalls;
+      BOOST_CHECK_EQUAL(session, "session-v3");
+      BOOST_CHECK_EQUAL(observed.requestId, edge.requestId);
+      BOOST_CHECK_EQUAL(observed.attemptEpoch, 1U);
+      BOOST_CHECK_EQUAL(observed.manifestDataName, edge.manifestDataName);
+      BOOST_CHECK_EQUAL(contentDigest, sha256TensorBytes(original.payload));
+      BOOST_CHECK_EQUAL(bytes, original.payload.size());
+      return mode == "gate-permit";
+    };
+  }
   NdnsfCollaborationDependencyIo producerIo(
-      producerContext, 5000, chunkSize, 60000, producerCoordinator);
+      producerContext, 5000, chunkSize, 60000, producerCoordinator, nullptr, publicationGate);
   NdnsfCollaborationDependencyIo consumerIo(
       consumerContext, 5000, chunkSize, 60000, consumerCoordinator);
   const auto expectedSegments = 1 + (original.payload.size() - 1) / chunkSize;
@@ -297,27 +312,40 @@ runTransfer(const std::string& mode)
     BOOST_REQUIRE(producerContext.publishSignedExactData(groupId, publications, 60000));
   }
   else {
+    if (mode == "invalid-before-gate") {
+      edge.endpointDigest.clear();
+      BOOST_CHECK_THROW(producerIo.publishOutput("session-v3", edge, original), std::invalid_argument);
+      BOOST_CHECK_EQUAL(publicationGateCalls, 0U);
+      BOOST_CHECK_EQUAL(packets, 0U);
+      return;
+    }
     BOOST_REQUIRE_NO_THROW(producerIo.publishOutput("session-v3", edge, original));
   }
+  if (mode == "withhold" || mode == "gate-permit") BOOST_CHECK_EQUAL(publicationGateCalls, 1U);
   if (mode == "context") edge.endpointDigest = sha('9');
 
   auto fetched = consumerIo.prefetchInput("session-v3", edge);
   environment.pumpUntil([&] {
     return fetched.wait_for(0ms) == std::future_status::ready;
   });
-  if (!mode.empty() && mode != "legacy") {
+  if (!mode.empty() && mode != "legacy" && mode != "gate-permit") {
     const auto expected = mode == "ciphertext" ? "ciphertext commitment mismatch" :
                           mode == "bounds" ? "does not match mustFetch authority" :
                           mode == "hmac" ? "HMAC verification failed" :
                           mode == "index" ? "index/rank/size mismatch" :
                           mode == "legacy-binding" ? "inner manifest mismatch" :
+                          mode == "withhold" ? "failed to fetch signed exact Data" :
                                              "producer signature mismatch";
     BOOST_CHECK_EXCEPTION(fetched.get(), std::runtime_error,
       [&] (const std::runtime_error& error) {
         BOOST_TEST_MESSAGE("Actual rejection: " << error.what());
         return std::string(error.what()).find(expected) != std::string::npos;
       });
-    if (mode != "context" && !manual) BOOST_CHECK_EQUAL(mutations, 1U);
+    if (mode != "context" && mode != "withhold" && !manual) BOOST_CHECK_EQUAL(mutations, 1U);
+    if (mode == "withhold") {
+      BOOST_CHECK_EQUAL(packets, 0U);
+      BOOST_CHECK_EQUAL(segmentInterests, 0U);
+    }
     if (mode == "bounds") BOOST_CHECK_EQUAL(segmentInterests, 0U);
     return;
   }
@@ -345,6 +373,9 @@ BOOST_AUTO_TEST_CASE(RejectsBoundsBeforeFetchingSegments) { runTransfer("bounds"
 BOOST_AUTO_TEST_CASE(RejectsInnerHmacWithValidOuterManifest) { runTransfer("hmac"); }
 BOOST_AUTO_TEST_CASE(RejectsSegmentIndexWithValidOuterManifest) { runTransfer("index"); }
 BOOST_AUTO_TEST_CASE(LegacyFieldsAreCheckedBeforeRestoration) { runTransfer("legacy-binding"); }
+BOOST_AUTO_TEST_CASE(WithheldValidatedOutputPublishesNoManifestOrSegments) { runTransfer("withhold"); }
+BOOST_AUTO_TEST_CASE(PublicationGatePermitPreservesTensorBytes) { runTransfer("gate-permit"); }
+BOOST_AUTO_TEST_CASE(MalformedEndpointRejectsBeforePublicationGate) { runTransfer("invalid-before-gate"); }
 
 BOOST_AUTO_TEST_SUITE_END()
 } // namespace ndnsf::di::tests

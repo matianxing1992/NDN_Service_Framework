@@ -14,6 +14,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeServiceManifest.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/OnnxRuntimeModelRunner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
 
 #include "ndn-service-framework/CertificateBootstrap.hpp"
 #include "ndn-service-framework/CertificatePublisher.hpp"
@@ -86,6 +87,9 @@ public:
 
 struct Options
 {
+  std::string withholdOutputRequest;
+  std::string withholdOutputProducer;
+  std::string withholdOutputConsumer;
   std::string planPath;
   std::string manifestPath;
   std::string serviceName = "/AI/YOLO/2x2Inference";
@@ -722,6 +726,17 @@ parseArgs(int argc, char** argv)
     else if (arg == "--repo-fetch-timeout-ms") {
       options.repoFetchTimeoutMs = parsePositiveInt(readValue(), "--repo-fetch-timeout-ms");
     }
+    else if (arg == "--withhold-v3-output") {
+      options.withholdOutputRequest = readValue();
+      options.withholdOutputProducer = readValue();
+      options.withholdOutputConsumer = readValue();
+      if (options.withholdOutputRequest.empty() || options.withholdOutputRequest[0] != '/' ||
+          options.withholdOutputRequest == "/" || options.withholdOutputProducer.empty() ||
+          options.withholdOutputConsumer.empty() ||
+          options.withholdOutputProducer == options.withholdOutputConsumer) {
+        throw std::invalid_argument("--withhold-v3-output requires request, producer and distinct consumer");
+      }
+    }
     else if (arg == "--repo-ack-timeout-ms") {
       options.repoAckTimeoutMs = parsePositiveInt(readValue(), "--repo-ack-timeout-ms");
     }
@@ -1155,6 +1170,7 @@ printUsage(const char* program)
     << "[--repo-fetch-timeout-ms <ms>] [--repo-ack-timeout-ms <ms>] "
     << "[--repo-permission-wait-ms <ms>] [--wiring-check-only] "
     << "[--permission-wait-ms <ms>] "
+    << "[--withhold-v3-output <request-id> <producer-role> <consumer-role>] "
     << "[--tracer-deterministic-runner] [--enable-admission-lease] "
     << "[--allow-preassembled-diagnostic] "
     << "[--require-execution-lease] "
@@ -1648,6 +1664,42 @@ main(int argc, char** argv)
             config.runnerSpecs = std::move(runners);
             config.localProviderName = options.providerName;
             config.providerBootId = providerBootId;
+            if (!options.withholdOutputRequest.empty()) {
+              config.outputPublicationGate = [request = options.withholdOutputRequest,
+                  producer = options.withholdOutputProducer, consumer = options.withholdOutputConsumer,
+                  provider = options.providerName, providerBootId](const std::string& session,
+                    const DependencyEdge& edge, const std::string& contentDigest, std::size_t bytes) {
+                if (edge.requestId != request || edge.producerRole != producer || edge.consumerRole != consumer) {
+                  return true;
+                }
+                if (!edge.declaredByV3 || !edge.useNdnsfDataV1 || edge.attemptEpoch != 1 ||
+                    (!edge.consumerRoles.empty() && edge.consumerRoles != std::vector<std::string>{consumer})) {
+                  throw std::runtime_error("OUTPUT_WITHHOLD_REQUIRES_ONE_V3_EDGE_FIRST_ATTEMPT");
+                }
+                boost::property_tree::ptree record;
+                record.put("schema", "ndnsf-di-withheld-output-v1");
+                record.put("session", session);
+                record.put("requestId", edge.requestId);
+                record.put("attempt", edge.attemptEpoch);
+                record.put("planDigest", edge.planDigest);
+                record.put("producerRole", edge.producerRole);
+                record.put("consumerRole", edge.consumerRole);
+                record.put("manifestDataName", edge.manifestDataName);
+                record.put("plannedDataName", edge.plannedDataName);
+                record.put("endpointDigest", edge.endpointDigest);
+                record.put("contentDigest", contentDigest);
+                record.put("bytes", bytes);
+                record.put("provider", provider);
+                record.put("providerBootId", providerBootId);
+                record.put("atMs", epochMs());
+                std::ostringstream wire;
+                boost::property_tree::write_json(wire, record, false);
+                auto encoded = wire.str();
+                if (!encoded.empty() && encoded.back() == '\n') encoded.pop_back();
+                logRuntimeEvidence("NDNSF_DI_OUTPUT_WITHHELD " + encoded);
+                return false;
+              };
+            }
             installNativeProtectedGrantFactory(config);
             config.planDigest = sha256File(options.planPath);
             if (const auto* mutation = std::getenv("SPEC180_YN_MUTATION")) {

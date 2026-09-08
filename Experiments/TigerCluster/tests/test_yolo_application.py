@@ -73,11 +73,42 @@ def test_native_provider_argv_reaches_process_boundary(tmp_path, monkeypatch, ro
         assert argv[argv.index('--offer-device') + 1] == ('cpu' if cpu or role == 'Merge' else 'cuda:0')
         assert ('--nv' in argv) == (not cpu and role != 'Merge')
         assert '--offer-has-model' not in argv
+        assert '--withhold-v3-output' not in argv
         assert 'SPEC181_GRANT_AUTHORITY_PUBLIC_KEY=/config/contracts/authority.pub' in argv
         assert ('SPEC181_PROVIDER_RECIPIENT_KEY_MAP=/identities/' + role + '/recipient-map.json') in argv
         assert not any(':/artifacts:' in arg for arg in argv)
     finally:
         assert all(row['reaped'] for row in worker.close())
+
+
+@pytest.mark.parametrize('role',['DetectShard0','DetectShard1'])
+def test_negative_provider_selects_only_bound_head0_output(tmp_path,monkeypatch,role):
+    worker=NodeRuntime(**application_inputs(tmp_path,1,'negative-dependency'))
+    worker._preparation_binding=({'case':'negative-dependency','requests':[
+        {'index':0,'warmup':False,'requestId':'/run/one-negative'}]},'fixture','fixture')
+    observed=[]
+    monkeypatch.setattr(worker,'_start_service',lambda role,argv:observed.append(argv))
+    try:
+        worker.start_provider(role,identity='/run/actual/'+role,service='/Detection/YOLO',
+            group='/run/sync',controller='/run/controller',permission_wait_ms=12000)
+        if role=='DetectShard0':
+            assert observed[0][-4:]==['--withhold-v3-output','/run/one-negative','DetectShard0','Merge']
+        else: assert '--withhold-v3-output' not in observed[0]
+    finally: worker.close()
+
+
+def test_negative_provider_requires_single_nonwarmup_prepared_request(tmp_path,monkeypatch):
+    worker=NodeRuntime(**application_inputs(tmp_path,1,'negative-dependency'))
+    monkeypatch.setattr(worker,'_start_service',lambda *a:pytest.fail('unbound fault launched'))
+    try:
+        for plan in (None,{'case':'negative-dependency','requests':[]},
+                     {'case':'two-node-gpu','requests':[{'index':0,'warmup':False,'requestId':'/r'}]},
+                     {'case':'negative-dependency','requests':[{'index':0,'warmup':True,'requestId':'/r'}]}):
+            worker._preparation_binding=None if plan is None else (plan,'fixture','fixture')
+            with pytest.raises(ValueError,match='WORKER_FAULT_'):
+                worker.start_provider('DetectShard0',identity='/run/actual/DetectShard0',service='/Detection/YOLO',
+                    group='/run/sync',controller='/run/controller',permission_wait_ms=12000)
+    finally: worker.close()
 
 
 @pytest.mark.parametrize('fault', ['missing-plan', 'missing-key', 'foreign-key',

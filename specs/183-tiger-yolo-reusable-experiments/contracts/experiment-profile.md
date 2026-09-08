@@ -500,6 +500,15 @@ allocation 和 qualification 继续明确列为 unresolved，不宣称已消费�
 
 ### Expected-rejection terminal record
 
+The native cutpoint is now implemented (evidence/t004-dependency-cutpoint.md):
+the generic V3 output callback executes after configured authorization and
+tensor-contract/sealing checks, before any exact Data is published. Tiger enables
+the native `--withhold-v3-output` option only for the bound request's
+DetectShard0→Merge edge. Its structured record describes actual invocation,
+not a PASS verdict. The negative User terminal path and collector remain unwired;
+the submit guard must stay until those owners are implemented. Changed native
+source and worker harness require fresh candidate identities before qualification.
+
 The `negative-dependency` case has a separate terminal contract; it MUST NOT be
 reported through the normal success verdict. `runtime/yolo_result.py::finalize_expected_rejection`
 requires a retained `tiger-yolo-expected-rejection-v1` record bound to the exact
@@ -520,11 +529,12 @@ sbatch，也不验证模型。所有操作者必须用同一已验证共享目�
 
 进程在 SUBMITTING 崩溃或响应丢失时不能重提；按唯一 submissionKey/comment
 查询，零匹配仍为 SUBMISSION_UNKNOWN，单一 jobId 才接回 SUBMITTED，多匹配
-明确报错并继续占用。submit 已接有界 sacct/squeue 查询和绑定解析；跨机器文件运输仍缺。
+明确报错并继续占用。submit 已接有界 sacct/squeue 查询、绑定解析和跨机器运输；
+完整候选的实际运行资格仍缺。
 尚处 PREPARED 可原子转为 `CANCELLED_BEFORE_SUBMIT` 释放预留；这是提交记录的
 终态，不是模型结果。进入 SUBMITTING 后禁止此取消出口。正常 finish 必须由
 上层先核对同一 job 真正终止和 collector verdict；jobId 不匹配、改写终态、
-未知提交直接 finish 均拒绝。已接收共享目录的提交入口已有组件证据；运输与完整运行仍缺，因此不构成 T004 完成。
+未知提交直接 finish 均拒绝。提交入口和运输已有分范围证据；负例终态与完整运行仍缺，因此不构成 T004 完成。
 
 ### Application Sync name and startup coordination
 

@@ -2771,3 +2771,18 @@ also verifies that --perms --chmod=F600 keeps staged payloads owner-only/writabl
 Lesson: immutable content includes directory behavior at the next real consumer,
 and fixture permissions must be explicit rather than depend on the host umask.
 Evidence: specs/183-tiger-yolo-reusable-experiments/evidence/t004-ssh-coordinator.md.
+
+## 2026-09-07 — Standalone native probe omitted original build closure
+
+The new exact-output suppression probe initially omitted NAC_ABE_CMAKE_BUILD
+and the framework include paths used by waf. After compilation, linking only
+libndn-service-framework also omitted DI objects that tests/wscript normally
+links separately. An unnecessary -lzstd flag and an assumption that ndn-cxx lived
+under the clean prefix caused further command-level failures. Fix: reconstruct
+the scoped build from actual waf settings, reuse stable unchanged DI objects in
+a private archive, and verify the real DSO paths/hashes. All three new native
+cases then passed; original logs are retained under the dependency-cutpoint
+result root. The deployed native executable remains unqualified by this probe.
+Lesson: derive the full compile/link closure before inventing a standalone test
+command; the framework DSO is not the DI runtime archive. Keep component build
+errors distinct from actual model/runtime failures. See t004-dependency-cutpoint.md.
