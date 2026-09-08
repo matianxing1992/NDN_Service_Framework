@@ -35,11 +35,15 @@ T001允许有界依赖探针；产品构建按设计门和各任务的验证范�
 ### Current Dispatch Policy 2026-09-08
 
 按用户要求暂停新增产品实现；本次只审查和重排，不重做 Spec182。剩余生产顺序
-以 [R1–R7 batch plan](evidence/production-chain-replan-20260908.md#remaining-batches)
+以 [R1–R7 capability stages](evidence/production-chain-replan-20260908.md#remaining-batches)
 为准：模型/候选→准备与授权计划→完整请求→流式/会话→同库调用方→旧路径退出及
 验证工具→最终资格交付。原 G0–G6、17 个父任务、36 张卡和硬验收门仍有效。
-该批次表重组执行，不自动更改 Depends、DONE 或 FR/SC/PO；映射和具体出口仅在该
-记录维护。用户明确恢复前不得因 goal 自动续跑领取产品实现。
+R1–R7 是能力阶段，不是固定执行批次或“每阶段只编译一次”。恢复后按
+[batch selection](evidence/production-chain-replan-20260908.md#executable-batch-selection)
+为当前阶段登记 R<n>-B<k>：同一行为、共享契约的生产者/消费者及共同验证一起闭合，
+有稳定接口和独立验收价值才拆批；各小任务静态门后继续同批，批末统一构建测试。
+不自动更改 Depends、DONE 或 FR/SC/PO；阶段出口和具体分批规则仅在该记录维护。
+用户明确恢复前不得因 goal 自动续跑领取产品实现。
 已通过的 B-G1-YOLO-SEMANTIC 定向结果作为 R1 输入复用，不重新起草或重复构建。
 
 2026-09-07 implementation audit：T004-A 因真实 Selection wire/identity 不兼容重开，

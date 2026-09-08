@@ -51,12 +51,14 @@ DI 负责模型语义、候选、数据流和授权绑定。没有证据支持�
 
 ## Remaining Batches
 
-以下批次重组执行顺序，不替换 17 个父任务或 36 个 execution cards。Owner 均为
-当前实现者；每小任务独立只读 review-agent 静态门，批末组合审查后统一构建和单测。
+以下 R1–R7 是能力阶段，不是七个预先固定的执行批次；保留本节 anchor 兼容已有链接。
+阶段重组执行顺序，不替换 17 个父任务或 36 个 execution cards。Owner 均为当前
+实现者。每阶段按下节规则领取具体逻辑批次，每小任务独立只读 review-agent 静态门，
+批末组合审查后统一构建和相关单测；既不每个小改动构建，也不等整个大阶段写完才测试。
 现有 Depends 和 ABI/安全硬门保留。R2 中 T008 与 T004 的顺序可按生产者先行，
 二者都须先满足 T003-C；不存在将未测试静态结果自动当作前置验收的授权。
 
-| Batch / Members | Exit behavior and coverage | Hard entry / shared validation |
+| Stage / Members | Stage exit behavior and coverage | Hard entry / available validation |
 | --- | --- | --- |
 | R1 Model and Candidate Closure / T003-A,B,C | 完成 Qwen semantic layer→实际装配节点/制品映射，复用 YOLO 实际图 factory；两模型策略产生完整、独立可验证的候选及 placement 输入；列清 source、role、artifact 字段生成方 | T002-A；按 A→B→C 既有依赖领取，仅补剩余验收。共享 Spec182NativePlanning、Spec182V3Placement；独立两模型 oracle，错身份/图/资源/rank 拒绝 |
 | R2 Preparation to Authorized Plan / T008-A,B; T004-A; T005-A,B | 实际 native ModelAdapter、catalog/recipe/source owner 配置，输入/结果语义；认证 ACK→role→placement→publication→重新认证→seal/grant/projection 的生产字段全链；输入不得由测试 backfill | T003-C、T006-D、T007-B；T004-A→T005-A→T005-B、T008-A→T008-B 的硬顺序不变。共享 Preparation、CanonicalPublisher、OfferAdmission、V3Placement、PlanSealer、GrantClient 与 case-manifest authority 选择器；actual grantView 和篡改拒绝 |
@@ -72,8 +74,39 @@ R3 的“接通”先指源码与相关单测中的编排完成，不能宣传�
 
 ## Dispatch and Stop Rule
 
+### Executable Batch Selection
+
+批内高内聚、批间依赖清楚；已有强关联代码一起改，目标不是增加架构耦合。
+恢复执行后，只为当前就绪阶段登记下一批 `R<n>-B<k>`，不一次性猜定全部细批。
+该登记复用 tasks.md 的 Current Checkpoint 和一份批次 evidence，不新增父任务或
+按文件/字段建行政卡。登记必须包含：
+
+- 一项完整可观察行为及出口，具体成员/符号与实际调用方，接口的生产者和消费者。
+- implementation dependencies 与必须已测试/已验 ABI/安全的 acceptance dependencies；
+  现有 Depends 不因新批次 ID 自动降级，未满足的硬门不得跨越。
+- 单一负责人、共享 build tree/ABI 边界、去重后的实际测试选择器和独立判据；
+  阶段表的 selectors 是候选集合，具体批次仅运行受影响范围，planned 用例先注册。
+- 既有证据复用范围、尚待 T016 的集成义务和本批完成条件。未测试仍为 PARTIAL。
+
+### Cohesion and Split Rules
+
+| Stage | Execution batch guidance |
+| --- | --- |
+| R1 | 共享 graph/candidate 契约及其两端一起改；在契约稳定且硬前置满足时，YOLO/Qwen 独立特殊逻辑分别验收，不为凑一批互相等待。不改变 T003-A/B/C 的冻结 Depends；若发现其只有名义依赖，先以源码证据修订卡片依赖再调度 |
+| R2 | 先确定 source/catalog/task adapter→role/placement→publication/recertification→seal/grant 的完整字段流。跨越同一契约的生产者、消费者、序列化和校验纳入同批；若前半段有稳定出口和独立行为判据，可先闭合再进入后一批。不能以缺省值或测试 backfill 把半条链当出口 |
+| R3–R4 | 围绕完整请求或状态转换分批，相关成功、失败、取消、晚回调和清理一起实现；不能把错误处理推到功能批次之外。基础请求与流/会话扩展按现有硬顺序推进 |
+| R5 | 先闭合本阶段冻结的原生 API/ABI 与绑定寿命，再在接口稳定、前置满足后按真实调用方族迁移；每族涵盖入口、参数/异常、结果和退出路径，不堆积全项目未验证改动。共享 API 变化时同批更新受影响调用方 |
+| R6–R7 | 退出旧路径与检测它的 collector/harness 保持同批关联；最终验证仍按完整unit→integration→MiniNDN/no-Python的原定顺序，不因实现批次数变化删减或反复执行无变化的资格用例 |
+
+仅因文件数量、模型名称或下一张卡开始，不触发拆批或重建。只有存在稳定接口、
+完整行为及独立验收价值时拆批；共享契约尚在变化、修复会同时影响两端时应合批。
+批次范围扩大或硬依赖变化，先更新该批登记和审查范围，保留已完成证据。
+每个小任务编码→官方 review-agent 只读审查→修复/复审→同批下一任务；整批入口到
+终态/清理审查通过后统一构建与相关单测。当前已闭合批次及时测试，不等待未来批次。
+模板/ABI/链接等具体阻塞才允许已记录的最小诊断；失败修复后只重跑受影响范围。
+
 产品新增实现保持暂停；本轮结束不自动领取 R1。用户明确恢复后，从 R1 的实际
-未完成边界领取，先冻结该批每个关键字段/接口的生产者和消费者，引用已有契约，
+未完成边界按上述规则登记 R1-B1，先冻结该批每个关键字段/接口的生产者和消费者，引用已有契约，
 不再围绕每个字段分别建卡、建报告、构建。新发现若改变共享契约，合入当前批次并
 重审受影响路径；无关优化另记，不扩张当前批次。批末记录新增能力、实际验证范围、
 剩余闭合边和 build 次数/时间，不以 case 数或提交数代表收敛。
@@ -85,12 +118,18 @@ R3 的“接通”先指源码与相关单测中的编排完成，不能宣传�
 审查覆盖默认 requester→准备端口→seal/grant 输入→Core 提交入口及 provider runtime
 接线，并核对后续任务责任；未重做全部 worker/tokenizer/security 数值或并发审计。
 不将部分读码写成 No findings 或全系统 STATIC_PASS。结构/链接检查只证明计划可解析；
-本轮不增加任何产品 DONE，不重置已有通过卡。新的批次注册是计划成果，不是运行成果。
+本轮不增加任何产品 DONE，不重置已有通过卡。阶段映射及分批规则是计划成果，不是运行成果。
 
 本轮 validation：validate_design.py、audit_speckit_structure.py --strict、
 check-prerequisites.sh --json --require-tasks --include-tasks 均 exit=0；git diff
---check PASS。自动核对 23 张未完成卡恰好映射到七批，无遗漏、无重复；与 HEAD
+--check PASS。自动核对 23 张未完成卡恰好映射到七个能力阶段，无遗漏、无重复；与 HEAD
 比较全部 36 张卡的 DONE/PARTIAL/NOT_STARTED 原值不变。原始结构/链接/前置结果见
 [design](../../../.codex-tmp/spec182-production-replan-20260908/design.json)、
 [structure](../../../.codex-tmp/spec182-production-replan-20260908/structure.json)、
 [prerequisites](../../../.codex-tmp/spec182-production-replan-20260908/prerequisites.json)。
+
+后续用户授权细化分批：R1–R7 明确为能力阶段，新增 R<n>-B<k> 领取规则及
+R1/R2/R5 等阶段的合批/拆批边界，不预先强制七次构建。仅修改计划/追踪文档。
+validate_design.py 与 strict structure check exit=0，diff check PASS；比较全部
+36 张原卡状态无变化。结果见 [design](../../../.codex-tmp/spec182-batch-selection-20260908/design.json)
+和 [structure](../../../.codex-tmp/spec182-batch-selection-20260908/structure.json)。

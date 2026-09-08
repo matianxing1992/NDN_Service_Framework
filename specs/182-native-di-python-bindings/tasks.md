@@ -17,7 +17,7 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 
 | Unit / Details | Status | Depends | Evidence / Remaining | Updated |
 | --- | --- | --- | --- | --- |
-| [D-CHAIN-REPLAN Production Chain Review](evidence/production-chain-replan-20260908.md) | DONE | User pause and replan request | 默认入口与接线缺口审查，23 张未完成卡重排为七批；36 张原卡状态不变；结构/链接/前置检查 PASS；产品新增实现暂停，等待明确恢复 | 2026-09-08 |
+| [D-CHAIN-REPLAN Production Chain Review](evidence/production-chain-replan-20260908.md) | DONE | User pause and replan request | 23 张未完成卡归入七个能力阶段；实际 R<n>-B<k> 按完整行为/共享契约/稳定出口领取，逐任务静态门、批末统一验证；36 张原卡状态不变，新增实现暂停 | 2026-09-08 |
 | [D-REVIEW-AGENT Official Skill](evidence/review-agent-install-20260908.md) | DONE | User installation request | 官方原版安装/字节身份/技能 schema PASS；逐任务静态门明确调用，文档校验 PASS；不关闭产品任务 | 2026-09-08 |
 | [D-SKILL-BATCH Workflow Revision](evidence/skill-batch-workflow-20260908.md) | DONE | User workflow request | 逐任务只读静态门、批末流程审查与统一测试已同步；共享技能 schema、链接、5 份安装同步、4 入口 YAML/路由及 diff PASS；旧验证器 compatibility 白名单限制已记录，不关闭产品任务 | 2026-09-08 |
 | [D-DESIGN-R3 Revision](evidence/design-r3-20260908.md) | PASS | User documentation request | 逐章修订、23 组关键契约、生成/KV/会话重写；双 PDF 82/87 页、5 工具回归、API/八份参考/460+350 源码还原/版面 PASS；不关闭产品任务或全量语义审计 | 2026-09-08 |
@@ -66,11 +66,11 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 
 2026-09-08 Remaining Production Chain Replan / **DONE (documentation only)**：
 用户要求暂停新增实现。已核对默认 requester、准备 port、model adapter、seal/grant
-字段与 Core/provider 接线，保留已验证成果，将未完成卡映射为七个能力批次。
+字段与 Core/provider 接线，保留已验证成果，将未完成卡映射为七个能力阶段。
 见 [review and batch exits](evidence/production-chain-replan-20260908.md)。本轮无产品
 源码/构建/实验，不新增产品 DONE；用户明确恢复后才领取下一批。
 
-| Remaining batch | Current state | Member cards / next boundary |
+| Remaining stage | Current state | Member cards / next boundary |
 | --- | --- | --- |
 | R1 Model and Candidate Closure | PARTIAL | T003-A/B/C；复用 YOLO PASS，关闭 Qwen 映射及剩余策略验收 |
 | R2 Preparation to Authorized Plan | PARTIAL | T008-A/B、T004-A、T005-A/B；实际 adapter/catalog/role 字段到授权计划 |
@@ -80,8 +80,10 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 | R6 Retirement and Qualification Tools | PARTIAL | T013-B、T014-A/B、T015-A；退出、harness 和跨批审查 |
 | R7 Final Qualification and Delivery | NOT_STARTED | T016-A、T017-A；完整原有资格与交付 |
 
-本表汇总已有卡的剩余工作，不是第二套任务完成计数；批次成员、硬前置、共享选择器、
-可观察出口与最终证明责任见上述单一记录。暂停调度不改卡的真实状态。
+本表汇总已有卡的剩余工作，不是第二套任务完成计数，也不直接定义编译次数。
+具体执行批次按 [selection rules](evidence/production-chain-replan-20260908.md#executable-batch-selection)
+在领取时登记成员、行为出口、依赖、共享构建/选择器和负责人；R1/R2/R5 不机械各做
+一个大批。阶段硬前置及最终证明责任保留。暂停调度不改卡的真实状态。
 
 2026-09-08 D-SKILL-BATCH / **DONE**：工作流按逻辑批次修订，逐小任务静态门、批末流程门与统一构建测试；定向文档检查 PASS，安装入口验证器限制及替代核对见 [workflow evidence](evidence/skill-batch-workflow-20260908.md)。本单元不重排产品任务或改变其验收状态。
 

@@ -6,7 +6,7 @@ source review 只证明 baseline 所述实现存在，不证明新实现或资�
 
 ## Requirement-to-task Map
 
-2026-09-08 剩余任务执行批次见 [production chain replan](evidence/production-chain-replan-20260908.md#remaining-batches)。
+2026-09-08 剩余任务能力阶段见 [production chain replan](evidence/production-chain-replan-20260908.md#remaining-batches)；具体执行批次在领取时按完整行为和稳定接口登记。
 FR-003/009→R1；FR-004/005→R2；FR-001/002/008→R3；FR-007/008/016→R4；
 FR-010/012→R5；FR-011/017→R6；FR-013/014/018/019 及完整 SC/PO→R7。
 此为执行层映射，不替换下方逐需求任务表；FR-006 的已验原生装配在 R2/R3 复用，
