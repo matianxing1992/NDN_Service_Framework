@@ -1,5 +1,12 @@
 # Failure Log and Evidence Index
 
+## 2026-09-08 — Spec182 R4-B5 public conversation build invocation
+
+首次重建命令将 `PATH=...` 置于 `/usr/bin/time` 后，`time` 把它当作待执行程序，
+在编译器启动前返回 `exit127`。原始 [r2日志](../.codex-tmp/spec182-r4-b5-public/build-r2.log)
+保留；这是执行器命令语法边界，不是源码编译或测试结果。重试使用 command-local
+PATH 并保持 `-j4`。
+
 ## 2026-09-08 — Spec182 integration source closure and grant publication freshness
 
 集成目标首次重新链接在源文件编译完成后 exit1：`tests/wscript` 的手工

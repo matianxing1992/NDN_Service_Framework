@@ -328,7 +328,9 @@ CC-1补充Write：N/NativeConversationWire.hpp、N/NativeConversationWire.cpp；
 CC-2补充Write：N/NativeConversationJournal.hpp、N/NativeConversationJournal.cpp；C16的
 旧格式持久化端口，负责lease/加密事务/恢复，不能替代C16的parent CAS与Provider晋升。
 CC-2 owner使用显式NativeConversationConfig、acceptTokenPrefix/replaceAttempt和真实
-pending turn；path-only无key构造拒绝。CC-3须实际调用owner及receipt/promotion端口，
+pending turn；path-only无key构造拒绝。Continuation 的 `requestContractDigest` 若为空，
+由 requester 在 native owner 分配 request ID 并编码 envelope 后填入真实 digest；调用方提供
+非空值时仍必须逐字节匹配该 envelope。CC-3须实际调用owner及receipt/promotion端口，
 不能只保存shared_ptr。ABI改动在批末按真实消费者处理，不提前按字段重编。
 
 - **Parent**: T011; **Depends**: T011-B; **Reviewer**: state/compatibility review

@@ -17,7 +17,7 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 
 | Unit / Details | Status | Depends | Evidence / Remaining | Updated |
 | --- | --- | --- | --- | --- |
-| [R4-B4 Authenticated Conversation Chain](evidence/r4-b4-conversation-chain-20260908.md) | IN_PROGRESS | R4-B3; T011-C acceptance retained | CC-1/CC-2 focused C++ 9 cases、CC-3A projection、CC-3B requester/provider transaction wiring 与 runtime+coordinator 构造均已构建验证；49 个 requester/conversation/provider/stream 回归 cases PASS；`integration-tests -j4` 链接与 `Spec182GrantClientFlow/*` 2 cases PASS。公开两轮、真实跨进程 receipt/control、T011-C/T016 资格仍未完成 | 2026-09-08 |
+| [R4-B4 Authenticated Conversation Chain](evidence/r4-b4-conversation-chain-20260908.md) | IN_PROGRESS | R4-B3; T011-C acceptance retained | CC-1/CC-2 focused C++ 9 cases、CC-3A projection、CC-3B requester/provider transaction wiring 与 runtime+coordinator 构造均已构建验证；49 个 requester/conversation/provider/stream 回归 cases PASS；`integration-tests -j4` 链接与 `Spec182GrantClientFlow/*` 2 cases PASS。R4-B5 已补本地公开 requester FULL_CONTEXT 成功出口；公开两轮、真实跨进程 receipt/control、T011-C/T016 资格仍未完成 | 2026-09-08 |
 | [R4-B3 Epoch Text Commit Boundary](evidence/r4-b3-epoch-text-20260908.md#final-local-result) | DONE | R4-B2; T011-B acceptance retained | terminal stable flush前移至事件接受前；真实tokenizer/epoch及stream/sampling共24 cases/411 assertions PASS，unit与实际DI库增量build PASS；父任务仍未完整验收 | 2026-09-08 |
 | [R4-B2 Native Stream Production Chain](evidence/r4-b2-stream-production-20260908.md#final-local-result) | DONE | R3-B1; R4-B1 | Local requester stream batch：7 stream/190 assertions、2 options/21、29 regression/695 PASS；2 SDK recovery wires、CLI/loader PASS；真实Provider/会话/T016仍未完成 | 2026-09-08 |
 | [R4-B1 Native Sampling Contract Repair](evidence/r4-b1-sampling-20260908.md) | DONE | R3-B1; T010-C/T011 acceptance retained | Local sampling batch：double惩罚与统一参数校验；4 cases/40 assertions、既有epoch 28 assertions PASS；增量unit与实际DI共享库构建PASS；stream/session仍待完成 | 2026-09-08 |
@@ -71,7 +71,7 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 | [T010-C Stream Acceptance and Replacement](contracts/execution-units.md#t010-c-stream-acceptance-and-replacement) | PARTIAL | T010-B | [R4-B2](evidence/r4-b2-stream-production-20260908.md#final-local-result)：client/Core回调接受/恢复/final 7 cases/190 assertions与SDK wire PASS；T010-B完整依赖及真实stream验收保留 | 2026-09-08 |
 | [T011-A Sampling Parity Repair](contracts/execution-units.md#t011-a-sampling-parity-repair) | PARTIAL | T010-C | [R4-B1](evidence/r4-b1-sampling-20260908.md)：真实epoch采样4 cases/40 assertions与独立参考PASS；T010-C及完整卡验收依赖仍未关闭 | 2026-09-08 |
 | [T011-B Stable Epoch Emission](contracts/execution-units.md#t011-b-stable-epoch-emission) | PARTIAL | T011-A | [R4-B2](evidence/r4-b2-stream-production-20260908.md#final-local-result)：paired factory接线、full-only回退移除、requester final一致性本地通过；真实epoch/三处integration验收仍待完成 | 2026-09-08 |
-| [T011-C Conversation Journal and Continuation](contracts/execution-units.md#t011-c-conversation-journal-and-continuation) | PARTIAL | T011-B | [R4-B4](evidence/r4-b4-conversation-chain-20260908.md#cc-3b-requester-provider-transaction-wiring)；C++ owner、planner projection、receipt/control、replacement/cancel cleanup 已接线并通过 25-case shared regression；真实两轮/恢复 integration 与 Provider runtime qualification 未完成 | 2026-09-08 |
+| [T011-C Conversation Journal and Continuation](contracts/execution-units.md#t011-c-conversation-journal-and-continuation) | PARTIAL | T011-B | [R4-B4](evidence/r4-b4-conversation-chain-20260908.md#cc-3b-requester-provider-transaction-wiring)；[R4-B5](evidence/r4-b5-public-conversation-20260908.md) 补齐本地公开 requester 的动态 envelope digest 与 FULL_CONTEXT 首轮成功；C++ owner、planner projection、receipt/control、replacement/cancel cleanup 已接线并通过 shared regression；真实两轮/恢复 integration 与 Provider runtime qualification 未完成 | 2026-09-08 |
 | [T012-A Native Binding Types and Lifetime](contracts/execution-units.md#t012-a-native-binding-types-and-lifetime) | PARTIAL | T011-C | [baseline](evidence/task-progress-registry-20260907.md) 保留；[descriptor binding](evidence/t003-model-descriptor-20260907.md) 暴露完整模型/adapter，源码语法编译 PASS；新 ABI extension 运行及整卡验收未完成 | 2026-09-07 |
 | [T012-B Compatible Python Facades](contracts/execution-units.md#t012-b-compatible-python-facades) | NOT_STARTED | T012-A | [baseline](evidence/task-progress-registry-20260907.md)；无本卡独立执行/验收记录；按依赖领取 | 2026-09-07 |
 | [T013-A Maintained Caller Migration](contracts/execution-units.md#t013-a-maintained-caller-migration) | NOT_STARTED | T012-B | [baseline](evidence/task-progress-registry-20260907.md)；无本卡独立执行/验收记录；按依赖领取 | 2026-09-07 |
@@ -89,6 +89,15 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 已统一为默认 `-j4`，仅按实测换页/卡顿降档，历史 evidence 的 `-j2` 保持原事实。
 本轮只读 review-agent 审查无 findings，结构验证与 `git diff --check` 通过；未改产品
 任务状态，未运行产品构建或测试。见[同步记录](evidence/skill-batch-workflow-20260908.md#follow-up-documentation-sync)。
+
+2026-09-08 R4-B5 Public conversation requester boundary / **PARTIAL**：公开
+`NativeInferenceClient` 现在在 native owner 分配 request ID 并编码 envelope 后，为空的
+`requestContractDigest` 填入真实 digest；非空值继续精确校验。新增本地
+`FULL_CONTEXT` requester→Core ACK/plan/commit→stream final→coordinator checkpoint/commit
+用例，定向 1 case/19 assertions、placement 9 cases/555 assertions、conversation 5 cases/39
+assertions PASS；system-first `-j4` unit build 188 tasks、30.69s PASS。receipt 与 Provider
+ACK 是已认证 `VerifiedCollaborationData` 预置，故本轮仅证明本地事务接线，不能关闭真实
+Provider 两轮、恢复/替换或 T016 资格；详见[R4-B5证据](evidence/r4-b5-public-conversation-20260908.md)。
 
 2026-09-08 R4-B4 CC-1/CC-2 focused validation / **PARTIAL**：canonical JSON Unicode修复后
 9个`Spec182Conversation*` C++ cases PASS，oracle check PASS；这只关闭Wire/Journal/Coordinator
