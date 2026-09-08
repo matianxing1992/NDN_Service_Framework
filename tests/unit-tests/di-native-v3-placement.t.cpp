@@ -56,7 +56,7 @@ struct Input
       r.at("model_manifest_digest"), inputs.artifacts.canonicalGraphDigest};
     split.model = descriptor; split.graphDigest = context.graphDigest;
     split.splitter = {"fixture", "1", nativePlanningDigest("split")};
-    split.candidateDigest = nativePlanningDigest("placed-candidate");
+    split.source = "PRE_SPLIT";
     split.nodeRoles = {{"node", roles.front().role}};
     for (const auto& role : roles) {
       if (!split.tensorDegreesByRole.count(role.role)) split.executionPlan.roles.push_back(role.role);
@@ -66,6 +66,13 @@ struct Input
       split.rankArtifactDigestsByRole[role.role].push_back(role.artifactDigest);
       split.requirementsByRole[role.role] = {{"onnxruntime"}, 1, 0, 0, 0, 0, 1.0};
     }
+    if (roles.size() > 1) {
+      NativeHybridPlan hybrid;
+      hybrid.stages = 1; hybrid.tensorDegrees = {std::uint64_t(roles.size())};
+      for (std::size_t rank = 0; rank < roles.size(); ++rank) hybrid.rankLabels.push_back("S0R" + std::to_string(rank));
+      split.hybridPlan = std::move(hybrid);
+    }
+    split.candidateDigest = split.computedDigest();
     NativeRequestPreparation preparation(std::make_shared<NativeAdapterRegistry>(), {}, {},
       [&](const NativeInspectedModel&, const NativeSplitCandidate&, const NativeRequestControl&) { return roles; });
     NativeRequestControl control{"request", 1, std::chrono::steady_clock::now() + std::chrono::seconds(10), {}};

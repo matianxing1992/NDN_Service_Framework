@@ -1,5 +1,14 @@
 # Failure Log and Evidence Index
 
+## 2026-09-08 — Spec182 Qwen candidate ingress identity
+
+candidate identity r1 build PASS，86/87 cases PASS；完整 Qwen oracle 发现 native
+inputIngressRole/resultEgressRole 额外填首末角色，维护 splitter 两字段为空，导致两条
+规范字节/摘要断言失败。按实际候选契约保留空值，真实请求的 ingress/终端检查仍归
+后续 sealed plan；不能为通过而改 oracle。r1 保留；r2 build 及 87 cases/1246 assertions
+PASS，修复与证据见
+[candidate identity](../specs/182-native-di-python-bindings/evidence/t003-candidate-identity-20260908.md)。
+
 ## 2026-09-08 — Design chapter semantic review
 
 R2 PDF/源码摘要检查曾通过，但逐章可理解性审阅结果 NEEDS_REVISION。

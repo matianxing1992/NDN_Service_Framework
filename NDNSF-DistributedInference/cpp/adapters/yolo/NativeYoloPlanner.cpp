@@ -25,9 +25,12 @@ bool contains(const std::vector<std::string>& values, const std::string& value)
 } // namespace
 
 NativeYoloComponentSplit::NativeYoloComponentSplit(
-  std::vector<NativeYoloComponentSpec> candidates)
+  std::vector<NativeYoloComponentSpec> candidates, std::string postprocessingJson)
   : m_candidates(std::move(candidates))
+  , m_postprocessingJson(std::move(postprocessingJson))
 {
+  if (!nativeParseJson(m_postprocessingJson).is_object())
+    throw std::invalid_argument("YOLO postprocessing must be an object");
   if (m_candidates.empty()) {
     throw std::invalid_argument("YOLO native splitter has no registered candidates");
   }
@@ -128,7 +131,9 @@ NativeYoloComponentSplit::enumerate(const NativeModelDescriptor& model,
     candidate.inputIngressRole = spec->inputIngressRole;
     candidate.resultEgressRole = spec->resultEgressRole;
     candidate.mergeKind = contains(spec->roles, "Merge") ? spec->mergeKind : "";
+    candidate.postprocessingJson = contains(spec->roles, "Merge") ? m_postprocessingJson : "{}";
     std::uint64_t knownBytes = 0;
+    std::uint64_t crossedBytes = 0;
     for (const auto& edge : graph.edges) {
       const auto size = edge.tensor.estimatedBytes.value_or(0);
       if (size > std::numeric_limits<std::uint64_t>::max() - knownBytes)
@@ -140,6 +145,7 @@ NativeYoloComponentSplit::enumerate(const NativeModelDescriptor& model,
         if (ownerByNode.at(consumer) != producerRole) consumerRoles.insert(ownerByNode.at(consumer));
       }
       if (consumerRoles.empty()) continue;
+      crossedBytes += size; // Bounded by the already overflow-checked total.
       if (!contains(graph.legalCutEdges, edge.id))
         throw std::invalid_argument("YOLO candidate crosses an illegal tensor edge");
       candidate.crossPartitionTensors.push_back(edge.id);
@@ -169,12 +175,10 @@ NativeYoloComponentSplit::enumerate(const NativeModelDescriptor& model,
         {"onnxruntime-cpu", "onnxruntime-cuda"},
         roleBytes, 256ULL * 1024ULL * 1024ULL, 0,
         256ULL * 1024ULL * 1024ULL, 64ULL * 1024ULL * 1024ULL, 1.1};
-      candidate.tensorDegreesByRole[role] = 1;
-      candidate.rankArtifactDigestsByRole[role] = candidate.artifactsByRole.at(role);
     }
-    // Registration identity is retained during migration. Full SplitCandidate
-    // canonical identity remains a separate T003 closure obligation.
-    candidate.candidateDigest = spec->candidateDigest;
+    candidate.estimatedCosts = {{"role_count", std::uint64_t(spec->roles.size())},
+      {"known_transfer_bytes", crossedBytes}};
+    candidate.candidateDigest = candidate.computedDigest();
     candidate.validate(graph);
     result.push_back(std::move(candidate));
   }

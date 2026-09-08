@@ -17,6 +17,9 @@ from ndnsf_distributed_inference.sdk.placement import (
 from ndnsf_distributed_inference.planner.presplit_first import PreSplitFirstStrategy
 from ndnsf_distributed_inference.app_sdk.provider import ProviderOfferTrustVerifier
 from ndnsf_distributed_inference.adapters.onnx.executor import CertifiedOnnxAssemblyRecipe
+from ndnsf_distributed_inference.splitter import SplitCandidate, SplitterDescriptor, RoleExecutionPlan, RoleResourceRequirement
+from ndnsf_distributed_inference.core.hybrid_contracts import HybridPlan
+from candidate_oracle_support import fixture_model, digest
 
 signed = json.loads((root / 'signed-offer-oracle.json').read_text())
 base = json.loads((root / 'sealer-python-oracle.json').read_text())['unsigned_core']
@@ -24,6 +27,18 @@ role = replace(RoleAssemblySpec(**base['roles'][0]), backend='onnxruntime', requ
 def ranked_role(rank):
     return replace(role, rank=rank, artifact_digest=(role.artifact_digest if rank == 0 else
         'sha256:' + hashlib.sha256(f'rank-artifact-{rank}'.encode()).hexdigest()))
+
+def split_candidate(ranks):
+    artifacts = {role.role: tuple(ranked_role(rank).artifact_digest for rank in ranks)}
+    model = fixture_model('QwenFixture', base['model_digest'], base['graph_digest'],
+        role.adapter_id, role.adapter_version, 'fp32', digest('semantics'))
+    return SplitCandidate('PRE_SPLIT', SplitterDescriptor('fixture', '1', digest('split')),
+        model, base['graph_digest'], RoleExecutionPlan((role.role,), (), {'node': role.role}),
+        {role.role: digest('fragment')}, artifacts,
+        {role.role: RoleResourceRequirement(('onnxruntime',), 1, 0, 0, 0, 0, 1.0)}, (), {},
+        tensor_degrees_by_role={role.role: len(ranks)}, rank_artifact_digests_by_role=artifacts,
+        hybrid_plan=(HybridPlan(1, (len(ranks),), tuple(f'S0R{i}' for i in range(len(ranks))))
+                     if len(ranks) > 1 else None))
 key = Ed25519PrivateKey.from_private_bytes(bytes(range(32)))
 policy = signed['policy']
 entry = dict(policy['entries'][0], provider='/provider/b',
@@ -102,7 +117,7 @@ for original in (c for c in cases if c['name'] in ('cpu', 'loaded_second_device'
     core = PlacementPlanCoreV3(request_id='request', attempt=1, model_digest=base['model_digest'],
         graph_digest=base['graph_digest'], roles=selected.roles, provider_by_role=selected.provider_by_role,
         dependencies=(), ack_closed_digest=base['ack_closed_digest'], strategy_digest=canonical_digest(strategy),
-        candidate_digest='sha256:' + hashlib.sha256(b'placed-candidate').hexdigest())
+        candidate_digest=split_candidate(original['ranks']).candidate_digest)
     seal_cases.append(dict(original, offers=[o.to_bytes().decode() for o in offers],
                            deadline_ms=2000000000000, core_digest=core.digest()))
     if original['name'] == 'cpu':

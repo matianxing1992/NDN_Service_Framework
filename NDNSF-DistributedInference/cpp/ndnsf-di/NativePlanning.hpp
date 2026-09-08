@@ -25,6 +25,8 @@ struct NativeStrategyIdentity
   std::string name;
   std::string version;
   std::string configurationDigest;
+  /** Splitter determinism is part of candidate identity, not placement wire metadata. */
+  bool deterministic = true;
 
   void validate() const;
 };
@@ -190,6 +192,21 @@ struct NativePlanningSnapshot
   void validate() const;
 };
 
+/** Candidate-stage rank topology; redistribution values are shared with dataflow. */
+struct NativeHybridPlan
+{
+  std::uint64_t stages = 0;
+  std::vector<std::uint64_t> tensorDegrees;
+  std::vector<std::string> rankLabels;
+  std::vector<RedistributionSpec> redistributions;
+
+  /** Validate canonical rank labels and complete adjacent-stage redistribution cover. */
+  void validate() const;
+  std::string canonicalJson() const;
+};
+
+using NativeEstimatedCost = std::variant<std::monostate, std::int64_t, std::uint64_t, double>;
+
 struct NativeSplitCandidate
 {
   std::string source;
@@ -207,7 +224,11 @@ struct NativeSplitCandidate
   std::string inputIngressRole;
   std::string resultEgressRole;
   std::string mergeKind;
-  std::string postprocessIdentity;
+  /** Owned JSON object; parsed strictly and canonicalized into the complete identity. */
+  std::string postprocessingJson = "{}";
+  std::map<std::string, NativeEstimatedCost> estimatedCosts;
+  std::optional<NativeHybridPlan> hybridPlan;
+  /** Caller-supplied claim, verified against computedDigest() at every candidate boundary. */
   std::string candidateDigest;
 
   // Planning node IDs, not canonical ONNX assembly indices. The adapter owns
@@ -217,6 +238,9 @@ struct NativeSplitCandidate
   std::map<std::string, std::vector<NativeTensorContract>> roleStateOutputsByRole;
 
   void validate(const NativeGraphSnapshot& graph) const;
+  /** Complete maintained SplitCandidate schema; excludes its derived candidateDigest. */
+  std::string canonicalJson() const;
+  std::string computedDigest() const;
 };
 
 struct NativePlacementProposal

@@ -141,11 +141,12 @@ NativeQwenLayerSplit::enumerate(const NativeModelDescriptor& model,
       m_weightBytesByRole.at(role), 1024ULL * 1024ULL * 1024ULL, 0,
       512ULL * 1024ULL * 1024ULL, 512ULL * 1024ULL * 1024ULL, 1.10};
   }
-  candidate.inputIngressRole = m_roles.front();
-  candidate.resultEgressRole = m_roles.back();
-  candidate.candidateDigest = nativePlanningDigest(
-    "qwen-candidate|" + model.contentDigest + "|" + graph.graphDigest + "|" +
-    identity().configurationDigest);
+  // The maintained Qwen splitter leaves candidate ingress/egress unspecified;
+  // request-scoped ownership is validated when the execution plan is sealed.
+  candidate.estimatedCosts = {{"role_count", std::uint64_t(m_roles.size())},
+    {"rank_count", std::uint64_t(m_roles.size())}, {"decoder_layers", std::uint64_t(m_layerRanges.back().second)},
+    {"known_transfer_bytes", std::uint64_t(0)}, {"unknown_transfer_tensors", std::uint64_t(2)}};
+  candidate.candidateDigest = candidate.computedDigest();
   candidate.validate(graph);
   return {std::move(candidate)};
 }

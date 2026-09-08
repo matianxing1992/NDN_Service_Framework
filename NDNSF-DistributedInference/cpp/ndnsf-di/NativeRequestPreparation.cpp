@@ -203,9 +203,10 @@ void NativeRequestPreparation::validateRoles(const NativeInspectedModel& model,
   std::set<std::pair<std::string, std::uint64_t>> expected;
   for (const auto& role : candidate.executionPlan.roles) {
     const auto degree = candidate.tensorDegreesByRole.find(role);
-    if (degree == candidate.tensorDegreesByRole.end() || !degree->second || degree->second > 1024)
+    const auto count = degree == candidate.tensorDegreesByRole.end() ? 1 : degree->second;
+    if (!count || count > 1024)
       throw std::runtime_error("DI_NATIVE_ROLE_BINDING_MISMATCH");
-    for (std::uint64_t rank = 0; rank < degree->second; ++rank) expected.emplace(role, rank);
+    for (std::uint64_t rank = 0; rank < count; ++rank) expected.emplace(role, rank);
   }
   if (roles.size() != expected.size()) throw std::runtime_error("DI_NATIVE_ROLE_BINDING_MISMATCH");
   for (const auto& role : roles) {

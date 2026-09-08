@@ -443,7 +443,7 @@
   },
   "seal_cases": [
     {
-      "core_digest": "sha256:27481aef2bc758952adb042d331d8ac7f1d58aae3322eac32c803527ef5426cc",
+      "core_digest": "sha256:7dcd88229fad232e45f5868af6a8c305dc2a8dce7cc964dbc131d77da813048b",
       "deadline_ms": 2000000000000,
       "expected": {
         "providers": {
@@ -470,7 +470,7 @@
     },
     {
       "canonical_graph_digest": "sha256:5c6731df8a59511e551a2d99dad9c98862ffc308a865ab4f252b3ed4f6574dff",
-      "core_digest": "sha256:a8350d14536dcdf8015b1b436bd9d7f60eb23ae9b84a989fb10fc12556e8d176",
+      "core_digest": "sha256:39a1249a7f8b2f556f322127c6a060e66657b2e6bd78f14fc3f538945b9dff78",
       "deadline_ms": 2000000000000,
       "expected": {
         "providers": {
@@ -496,7 +496,7 @@
       ]
     },
     {
-      "core_digest": "sha256:25bbe111eb9f1f2cbefe79143c59fa515cd10e65f4906288c0319600f6024adb",
+      "core_digest": "sha256:5c3d715cfa8743cc40a70746de9bc4b2660b7405b71753d38da3862852a6b413",
       "deadline_ms": 2000000000000,
       "expected": {
         "providers": {
@@ -528,7 +528,7 @@
       "root_json": "{\"artifactProfileDigest\":\"sha256:4d5fd5739bc8977b9004af4061c14de70b37399e611c5515fa2d3b35a57e6364\",\"metadata\":{\"canonicalSourceBytes\":6,\"canonicalSourceDataName\":\"/encrypted/source\",\"canonicalSourceDigest\":\"sha256:41cf6794ba4200b839c53531555f0f3998df4cbb01a4d5cb0b94e3ca5e23947d\",\"packageManifestDigest\":\"sha256:40a310a18cf042ffce64ab7dbfe7d6f08afd66df2e4a8fade46af74dcc574ba2\"},\"modelIdentityDigest\":\"sha256:34e1b5468a63812c036a261b2659e44b658a5efe381ae110c6e72841d04ed6f2\",\"modelName\":\"QwenFixture\",\"schema\":\"ndnsf-di-canonical-model-manifest-v1\",\"state\":\"ACTIVE\"}"
     },
     {
-      "core_digest": "sha256:92f73691852b5af1c1cb4399506eafe25e056caba9ea7e3d5a24b6bf2acfa87c",
+      "core_digest": "sha256:34b66921c2704bb7f8ec37d7ea09d2732c61cfbfcab76cc4e5444fb35871d835",
       "deadline_ms": 2000000000000,
       "expected": {
         "providers": {
@@ -556,7 +556,7 @@
       ]
     },
     {
-      "core_digest": "sha256:5c46c21158e1639a2a8909e860740cfb36b968d76e253f76c609d818a2dec2c5",
+      "core_digest": "sha256:f50a1d65f2af515fe3de93a47cd52bfe1f780c8d18a3bf9904866578e97cf0ea",
       "deadline_ms": 2000000000000,
       "expected": {
         "providers": {
@@ -590,7 +590,7 @@
       "root_json": "{\"artifactProfileDigest\":\"sha256:4d5fd5739bc8977b9004af4061c14de70b37399e611c5515fa2d3b35a57e6364\",\"metadata\":{\"canonicalSourceBytes\":6,\"canonicalSourceDataName\":\"/encrypted/source\",\"canonicalSourceDigest\":\"sha256:41cf6794ba4200b839c53531555f0f3998df4cbb01a4d5cb0b94e3ca5e23947d\",\"packageManifestDigest\":\"sha256:40a310a18cf042ffce64ab7dbfe7d6f08afd66df2e4a8fade46af74dcc574ba2\"},\"modelIdentityDigest\":\"sha256:34e1b5468a63812c036a261b2659e44b658a5efe381ae110c6e72841d04ed6f2\",\"modelName\":\"QwenFixture\",\"schema\":\"ndnsf-di-canonical-model-manifest-v1\",\"state\":\"ACTIVE\"}"
     },
     {
-      "core_digest": "sha256:a53bff6e9caf53443763846efa01ec400bf36cb16a6735f49c20bec0de0ec48c",
+      "core_digest": "sha256:e15e003ae11b4508153214b86830243df0f392d4b2a8e275bffe26345a6236e7",
       "deadline_ms": 2000000000000,
       "expected": {
         "providers": {
@@ -628,7 +628,7 @@
       ]
     },
     {
-      "core_digest": "sha256:4f69ca7c730970cdc4b43c5d6a4ab8b44b61acf985c9686abd963891ce1907a2",
+      "core_digest": "sha256:d305e2104ba2e7089037d9904ac33b9c51b652a3beeedd2fc48d6001f42f6cc5",
       "deadline_ms": 2000000000000,
       "expected": {
         "providers": {

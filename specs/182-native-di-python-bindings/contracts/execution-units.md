@@ -122,6 +122,7 @@ worker crash/cancel 等真实子进程案例也转 T016，卡内只运行纯 fra
 - **Write**: N/NativePlanning.hpp; N/NativePlanning.cpp; N/NativeInferenceClient.hpp; A/qwen/NativeQwenPlanner.hpp; A/qwen/NativeQwenPlanner.cpp; U/di-native-planning.t.cpp; U/di-native-client.t.cpp; tests/fixtures/spec182/native-model-fixture.hpp; tests/fixtures/spec182/author-model-descriptor-oracle.py; tests/fixtures/spec182/model-descriptor-oracle.json; wscript。
 - **Steps**: 按冻结类型声明 strategy/registry 端口，实现 Qwen cover 和确定性候选；保持支持范围和预算，不将模型名判断放入 Core。只声明其他 adapter 端口，不返回伪结果。
 - **Shared resource repair**: 本卡拥有 NativeRoleResourceRequirement；完整字段与消费者同步规则见 T003-C Resource contract。对照工件为 tests/fixtures/spec182/author-resource-budget-oracle.py、resource-budget-oracle.json，新增检查登记到 case-manifest.json；下游同步不表示其依赖已放行。
+- **Complete candidate identity**: NativeSplitCandidate canonicalJson/computedDigest 必须覆盖维护 splitter.SplitCandidate 的全部字段；validate 拒绝自报摘要与规范字节不符。补 deterministic splitter、estimatedCosts、postprocessingJson（严格 JSON object）、NativeHybridPlan（复用 RedistributionSpec）与 rank/stage/边界校验。execution_plan 的候选身份只包含 roles/dependencies/node_roles；请求相关 transport/control 字段由后续 sealed plan 绑定。YOLO 保留维护算法的空 rank metadata，preparation 对两张 rank 表都空的普通候选按 rank-one 处理；不能将注册摘要当完整候选摘要。同步两个 splitter、下游 preparation、现有 fixture 和真实 Python canonical/placement oracle；完整字节/摘要、合法字段变更后旧摘要拒绝、hybrid 正负例和放置后 core 身份一并检查。
 - **Verify**: CPP(Spec182QwenSplit/*)；固定小图合法 cover、边界 budget、非法 rank/图输入；expected 来自冻结旧 splitter。
 
 ### T003-B Yolo Split Candidates
