@@ -2,6 +2,38 @@
 
 ## Protected ACK follow-up, 2026-09-08
 
+Completion update: build session72354 and automatic composition session47283
+both terminate0. New base SHA is
+`c6dbeda82eaf5960bb8435a3d0395b54ffb430263ac316b3ac2c3efa2ba06ecd`.
+Independent completed-SIF verification passes: all6 native rows equal ccdd,
+Repo Python SHA `81dd6cefdd857a519619fe3415390a00f84d685c6300197c9ae6125da98105df`
+matches the new source seal, and NCCL retains its expected78df2f31 digest.
+The packaged ACK-context and manifest-locator entry points are present.
+
+App `app-repo-protected` manifest SHA is
+`38289c5f970f067652024065e25db87952ed1d106bb5da7d8ff6c80962abe277`.
+Its159 file rows are identical to app-repo-order, including all3 binaries.
+The new SDK configure takes5.629s; Waf takes0.851s with no C++ compile tasks.
+Packaged base imports, external DI import, real User--help and all3 native
+`ldd -r` checks pass with no unresolved dependencies. The app cache now belongs
+to app-repo-protected; use that application for the next incremental build.
+These are composition checks, not full CPU/MiniNDN/Tiger qualification.
+
+The new profile/planes are rendered under `planes-repo-protected`; canonical
+I/R/E identities are `d16f3d0fe1c3c7aebf60e08345ffbf93908ebf186948c888ee6a50ae222790ae`,
+`345a247b1b9f18c95a001056fc6038fecc95ce75ca7922eb3e23cfa5db9d64f5`,
+and `b26fe330a518d85fe6de4143965e6b51baaadebd64352b7db5df00264fca5668`.
+The frozen harness remains1227fded. Fresh development candidate
+`layered-host-20260908d` has started its prepare/provision/run-local pipeline;
+completion and accepted request evidence are still pending.
+
+The build's temporary copy is gone; after independent verification and checking
+for mounts, the owned repo-protected-rootfs is deleted. Disk returns to30GiB
+free. Source seals, actual built definition, scripts, manifests, previous SIFs
+and runtime evidence are retained. Logs/comparison records use the
+protected-base-* and app-repo-protected-* names under the preflight directory.
+The paragraphs below describe the earlier build-in-progress checkpoint.
+
 Source revision06f34412 seals the complete protected ACK/selector fix into
 `repo-protected-source` (base117 files) and `app-source-repo-protected`.
 The parent is the verified ccdd4ac0 SIF and `repo-order-source-r2` seal.
