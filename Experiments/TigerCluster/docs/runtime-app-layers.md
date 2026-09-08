@@ -10,7 +10,7 @@ Spec183 的旧“九个原生产物全部打入完整应用 SIF”是迁移前�
 本机采用单阶段 `library-runtime.def.in`，让基础 SIF 同时保留匹配的编译器和
 开发头文件，作为本地应用 SDK；这些稳定工具不是 DI/UAV 应用。这样不需要
 同时保留两份解包后的完整镜像。`build-external-yolo.py` 只在本机通过该 SIF
-编译应用，以 base SHA、构建入口和编译参数隔离缓存，基础源码变化则拒绝复用。
+编译应用，以 base SHA、构建入口和编译参数隔离缓存；原生源码或ABI变化须重建受影响程序。
 外部输出包含应用二进制、Python 源码和显式 base 绑定的 application manifest；
 `BUILT_APPLICATION_CANDIDATE` 不代表 ABI/import、MiniNDN 或 Tiger 资格通过。
 正式 launcher 的显式分层挂载、独立 app 清单和运输闭包已接入；正式资格回执
@@ -18,11 +18,27 @@ Spec183 的旧“九个原生产物全部打入完整应用 SIF”是迁移前�
 `build-external-yolo.py --reuse-application <已验证应用目录>`，但必须保持同一
 source seal、source revision、base SHA 和编译参数；保留原编译器构建身份，
 重新冻结应用清单，不执行编译。源码变化不能使用这个快捷入口。
-源码变化时可使用 `--build-cache-from <上次已验证应用目录>`：核对基础SHA、
+源码变化时可使用 `--build-cache-from <上次已验证应用目录>`：默认核对基础SHA、
 编译参数和缓存所有权，仍执行configure与Waf增量依赖检查。构建成功后缓存
 跟随新应用的buildKey，下一次引用最新应用即可。Python启动器改动已有实证：
 configure6.728s、Waf0.837s、三原生二进制哈希不变，基础SIF不重建。
 外置应用的目录也冻结为0555；宿主编排禁写字节码，避免导入产生未登记缓存。
+
+基础库自身只有 Python 改动时，使用
+`adapters/slurm-apptainer/scripts/repack-base-python.py render`，传入原基础SIF
+及其SHA、原/新完整源码封存和独占输出目录。它只接受现有 ndnsf/py_repoclient
+包内 `.py` 文件变动；依赖、原生源码、构建文件或文件集合改变均拒绝。
+保留原源码准备参数，包括既有 `--derive-ndn-svs-version`，不能靠忽略封存
+差异来复用。新镜像内部核对旧源码封存、已安装Python原字节、六个原生产物与
+链接闭包，再更新Python、wheel RECORD、源码封存及基础运行记录；不运行编译器。
+该入口只证明 Python 重封装边界，不能代替新组合的 MiniNDN/GPU 验收。
+
+重封装仍生成新的基础SIF身份。外部应用只有在原生ABI及基础相关源码保持一致、
+原程序字节再次验证之后才能重新绑定；禁止直接更改旧应用清单中的base摘要。
+运行时不得通过宿主库覆盖旧SIF来声称镜像已修复。
+上述Python重封装可显式追加 `--python-repacked-base`：构建器从新SIF内部读取
+父SIF和源码封存绑定，验证旧app及其缓存，再运行新SIF的基础验证、configure和
+Waf依赖检查。该模式不跳过构建检查，也不允许原生源码改动绕过重编译。
 
 MiniNDN 在本机系统 Python 环境中编排网络 namespace，再通过 Apptainer
 启动 NFD 和应用子进程。不要因容器没有 Mininet 而重建基础镜像；本机旧

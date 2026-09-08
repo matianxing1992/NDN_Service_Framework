@@ -41,12 +41,12 @@ def reusable_application(root, seal, base_sha256):
     return body
 
 
-def compatible_build_cache(cache, application, base_sha256):
+def compatible_build_cache(cache, application, base_sha256, *, previous_base_sha256=None):
     """Reuse Waf state, never skip configure/build, for matching base and flags."""
     application = application.resolve()
     body = verify_application(application,
         manifest_sha256=digest(application/'application-manifest.json'),
-        base_sif_sha256=base_sha256)
+        base_sif_sha256=previous_base_sha256 or base_sha256)
     identity = body['buildIdentity']
     if identity['flags'] != FLAGS:
         raise ValueError('APP_CACHE_FLAGS_CHANGED')
@@ -56,6 +56,41 @@ def compatible_build_cache(cache, application, base_sha256):
             or not marker.is_file() or json.loads(marker.read_text()) != identity):
         raise ValueError('APP_CACHE_IDENTITY')
     return work, identity
+
+
+def python_repack_parent(record, source_seal_sha256):
+    """Accept only the installed base repacker's narrow compatibility record.
+
+    The caller hashes the actual SIF and obtains this record from that image.
+    Native reuse still runs the new base verifier, configure, and Waf.
+    """
+    import re
+    if (not isinstance(record, dict) or set(record) != {'schema', 'parentSifSha256',
+            'previousSealSha256', 'sourceSealSha256', 'files'}
+            or record['schema'] != 'spec183-base-python-repack-v1'
+            or record['sourceSealSha256'] != source_seal_sha256
+            or not isinstance(record['files'], list) or not record['files']):
+        raise ValueError('APP_BASE_REPACK_RECORD')
+    for key in ('parentSifSha256', 'previousSealSha256', 'sourceSealSha256'):
+        if not re.fullmatch(r'sha256:[0-9a-f]{64}', str(record[key])):
+            raise ValueError('APP_BASE_REPACK_DIGEST')
+    seen = set()
+    for row in record['files']:
+        if (not isinstance(row, dict) or set(row) != {'path', 'installed',
+                'oldSha256', 'sha256', 'bytes'}):
+            raise ValueError('APP_BASE_REPACK_FILE')
+        name = row.get('path', '')
+        if (not name.startswith(('pythonWrapper/ndnsf/',
+                                 'NDNSF-DistributedRepo/pythonWrapper/py_repoclient/'))
+                or not name.endswith('.py') or '..' in Path(name).parts):
+            raise ValueError('APP_BASE_REPACK_NON_PYTHON')
+        if (name in seen or row['installed'] != name.split('pythonWrapper/', 1)[1]
+                or type(row['bytes']) is not int or row['bytes'] < 0
+                or any(not re.fullmatch(r'sha256:[0-9a-f]{64}', str(row[key]))
+                       for key in ('oldSha256', 'sha256'))):
+            raise ValueError('APP_BASE_REPACK_FILE')
+        seen.add(name)
+    return record['parentSifSha256']
 
 
 def publish_cache(cache, work, identity, key):
@@ -79,9 +114,10 @@ def run(args):
     validator.validate(source / 'source-seal.json')
     seal = json.loads((source / 'source-seal.json').read_text())
     assert seal.get('sourceSelection', 'legacy-complete') == 'legacy-complete', 'APP_SOURCE_SELECTION'
-    base_seal = json.loads(subprocess.check_output([
+    base_seal_wire = subprocess.check_output([
         str(args.apptainer), 'exec', '--cleanenv', str(base), 'cat',
-        '/opt/ndnsf-di/current/manifest/base-source-seal.json'], text=True))
+        '/opt/ndnsf-di/current/manifest/base-source-seal.json'])
+    base_seal = json.loads(base_seal_wire)
     source_files = {row['path']: row for row in seal['files']}
     for row in base_seal['files']:
         assert source_files.get(row['path']) == row, 'APP_CHANGED_BASE_SOURCE:' + row['path']
@@ -96,10 +132,20 @@ def run(args):
     work = cache / key
     cache_identity = build_identity
     cache_from = getattr(args, 'build_cache_from', None)
+    previous_base = None
+    if getattr(args, 'python_repacked_base', False):
+        if cache_from is None or reuse is not None:
+            raise ValueError('APP_BASE_REPACK_REQUIRES_INCREMENTAL_BUILD')
+        record = json.loads(subprocess.check_output([
+            str(args.apptainer), 'exec', '--cleanenv', str(base), 'cat',
+            '/opt/ndnsf-di/current/manifest/base-python-repack.json']))
+        previous_base = python_repack_parent(record,
+            'sha256:' + hashlib.sha256(base_seal_wire).hexdigest())
     if cache_from is not None:
         if reuse is not None:
             raise ValueError('APP_CACHE_AND_REPACKAGE_EXCLUSIVE')
-        work, cache_identity = compatible_build_cache(cache, cache_from, args.base_sha256)
+        work, cache_identity = compatible_build_cache(cache, cache_from, args.base_sha256,
+                                                      previous_base_sha256=previous_base)
         if work != cache/key and (cache/key).exists():
             raise ValueError('APP_CACHE_DESTINATION_EXISTS')
     work.mkdir(parents=True, exist_ok=True)
@@ -201,4 +247,6 @@ if __name__ == '__main__':
                         help='Repackage verified binaries only when source seal/base/flags are unchanged')
     parser.add_argument('--build-cache-from', type=Path,
                         help='Use a verified prior application build cache; configure and Waf still run')
+    parser.add_argument('--python-repacked-base', action='store_true',
+                        help='Allow a cache from the installed Python-repack parent; still configure/build')
     run(parser.parse_args())

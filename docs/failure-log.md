@@ -1,5 +1,22 @@
 # Failure Log and Evidence Index
 
+## 2026-09-08 — Python repack source identity and localimage extraction
+
+The first Python-only source seal omitted --derive-ndn-svs-version. Its pinned
+NDN-SVS files had identical bytes but VERSION.info derivation/archive differed;
+the repacker correctly refused native reuse. Prepare a fresh seal with the
+original option, preserving the rejected seal as evidence.
+
+Apptainer localimage bootstrap then failed decompressing libnccl.so.2 (gzip -5)
+before any update. The RAM base still has locked d4031191 SHA. Host unsquashfs4.4
+does not support the attempted -cat/-offset probe; use an owned read-only loop
+at partition offset49152. Single-processor file extraction and full extraction
+both succeed. Update that sandbox through the same checked script, then pack
+with two processors/512MiB memory. This bypasses the failing extraction path;
+its root cause remains unproven. Actual apply preserves all6 native hashes and
+passes imports/ldd. See evidence/base-python-repack.md for artifact provenance;
+do not claim the failed definition built the new candidate.
+
 ## 2026-09-08 — Repo management signatures reach NFD out of timestamp order
 
 The role-home-fixed full run layered-host-20260908b passes Controller publication
