@@ -3,6 +3,7 @@
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp"
 #include "ndn-service-framework/InvocationStream.hpp"
 
 #include <chrono>
@@ -21,7 +22,6 @@ namespace ndn_service_framework { class ServiceUser; }
 namespace ndnsf::di {
 
 class NativeGrantClient;
-class NativeConversationCoordinator;
 class NativeRequestPreparation;
 class NativeOfferAdmission;
 struct NativeRequestRuntime;
@@ -51,6 +51,10 @@ struct NativeRequestOptions
   std::string outputMode = "FULL";
   std::optional<NativeGenerationExecutionContractV1> generation;
   std::optional<ndn_service_framework::StreamRequestOptions> stream;
+  // A conversation turn is owned by the native coordinator. The caller only
+  // supplies the authenticated parent continuation; request/attempt/epoch
+  // identities are allocated and fenced by the requester.
+  std::optional<NativeConversationContinuation> conversation;
   // Runs after process-local acceptance on the request worker. An exception
   // fails the request without rolling back accepted tokens or replaying them.
   // This is distinct from the non-authoritative handle.observe() callback.

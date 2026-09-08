@@ -6,6 +6,8 @@
 
 namespace ndnsf::di {
 
+struct NativeConversationTurn;
+
 /** Operator-owned request runtime policy. Cryptographic/key owners are concrete
  * native clients; caller strategies cannot replace admission or grant checks. */
 struct NativeRequestRuntime
@@ -39,6 +41,7 @@ NativePlannedRequest planNativeRequest(
   const NativeRequestPreparation& preparation, const NativeOfferAdmission& admission,
   const ndn_service_framework::CollaborationAckClosure& closure,
   const NativeRequestControl& control, std::uint64_t wireDeadlineMs,
-  std::shared_ptr<const std::atomic<bool>> cancelled);
+  std::shared_ptr<const std::atomic<bool>> cancelled,
+  const NativeConversationTurn* conversationTurn = nullptr);
 
 } // namespace ndnsf::di

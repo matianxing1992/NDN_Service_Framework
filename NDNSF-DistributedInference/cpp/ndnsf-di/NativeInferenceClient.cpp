@@ -202,6 +202,9 @@ struct NativeInferenceHandle::Operation
   NativeRequestOptions coreOptions;
   std::optional<NativeInspectedModel> inspected;
   std::optional<NativePlannedRequest> planned;
+  std::shared_ptr<NativeConversationCoordinator> conversations;
+  std::optional<NativeConversationTurn> conversationTurn;
+  bool conversationCommitted = false;
   bool coreActive = false;
   mutable std::mutex mutex;
   std::condition_variable condition;
@@ -292,6 +295,9 @@ struct NativeInferenceHandle::Operation
     acceptedTokenIds.swap(tokens);
     acceptedText.swap(text);
     acceptedTerminalHint.swap(terminalHint);
+    if (conversationTurn && conversations) {
+      conversations->acceptTokenPrefix(*conversationTurn, acceptedTokenIds);
+    }
     return true;
   }
 
@@ -371,6 +377,9 @@ markTerminal(const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
   std::function<void()> cancelDeadline;
   bool cancelCore = false;
   std::vector<std::string> releaseScopes;
+  std::shared_ptr<NativeConversationCoordinator> conversations;
+  std::optional<NativeConversationTurn> conversationTurn;
+  bool conversationCommitted = false;
   {
     std::lock_guard<std::mutex> lock(operation->mutex);
     if (operation->status != NativeRequestStatus::Pending ||
@@ -387,6 +396,9 @@ markTerminal(const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
     operation->status = terminal;
     operation->cancelled->store(true);
     cancelCore = operation->coreActive;
+    conversations = operation->conversations;
+    conversationTurn = operation->conversationTurn;
+    conversationCommitted = operation->conversationCommitted;
     if (operation->planned) {
       for (const auto& scope : operation->planned->corePlan.keyScopes) releaseScopes.push_back(scope.name);
     }
@@ -395,6 +407,18 @@ markTerminal(const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
   }
   if (cancelDeadline) cancelDeadline();
   operation->condition.notify_all();
+  if (conversations && conversationTurn && !conversationCommitted) {
+    try {
+      const NativeDiError cancelledError(
+        terminal == NativeRequestStatus::Cancelled ? "CANCELLED" : "NATIVE_REQUEST_FAILED",
+        "conversation", "terminal", "native conversation turn terminated",
+        operation->requestId, conversationTurn->attempt);
+      conversations->abortTurn(*conversationTurn, cancelledError);
+    }
+    catch (...) {
+      // A terminal request must not be resurrected by an abort-side failure.
+    }
+  }
   if (cancelCore) {
     const auto user = operation->user;
     const auto id = ndn::Name(operation->coreRequestId);
@@ -574,7 +598,8 @@ void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& o
           auto planned = planNativeRequest(*operation->runtime, operation->coreOptions,
             *operation->inspected, *operation->encodedRequest, *operation->splitStrategy,
             *operation->placementStrategy, *operation->preparation, *operation->admission,
-            closure, control, operation->wireDeadlineMs, operation->cancelled);
+            closure, control, operation->wireDeadlineMs, operation->cancelled,
+            operation->conversationTurn ? &*operation->conversationTurn : nullptr);
           {
             std::lock_guard<std::mutex> lock(operation->mutex);
             if (operation->status != NativeRequestStatus::Pending) return;
@@ -836,6 +861,31 @@ dispatchOperation(const std::shared_ptr<NativeInferenceHandle::Operation>& opera
       return;
     }
   }
+  if (operation->options.conversation) {
+    if (!operation->conversations || !operation->options.generation ||
+        !operation->options.stream) {
+      failOperation(operation, NativeDiError(
+        "INVALID_CONVERSATION_OPTIONS", "conversation", "request",
+        "conversation requests require a native coordinator and authenticated streaming",
+        operation->requestId, operation->attempt));
+      return;
+    }
+    try {
+      auto turn = operation->conversations->beginTurn(
+        *operation->options.conversation, operation->coreRequestId, operation->attempt);
+      std::lock_guard<std::mutex> lock(operation->mutex);
+      if (operation->status != NativeRequestStatus::Pending) return;
+      operation->conversationTurn = std::move(turn);
+    }
+    catch (const NativeDiError&) { throw; }
+    catch (const std::exception&) {
+      failOperation(operation, NativeDiError(
+        "NATIVE_CONVERSATION_BEGIN_FAILED", "conversation", "begin",
+        "native conversation turn could not be opened", operation->requestId,
+        operation->attempt));
+      return;
+    }
+  }
   if (operation->runtime && operation->preparedInput && operation->encodedRequest) {
     auto inspected = operation->preparation->inspectModel(*operation->preparedInput);
     {
@@ -1079,6 +1129,7 @@ NativeInferenceHandle NativeInferenceClient::request(
     operation->runtime = m_runtime;
     operation->admission = m_admission;
     operation->adapters = m_adapters;
+    operation->conversations = m_conversations;
     operation->worker = m_executor;
     operation->notifications = m_notifications;
     // The requestId comes from a unique native owner allocated at submission
