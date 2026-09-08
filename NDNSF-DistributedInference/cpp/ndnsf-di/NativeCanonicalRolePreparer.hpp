@@ -11,6 +11,14 @@ struct NativeRoleRecipeProfile
   std::uint64_t maxSourceBytes = 0, maxAssembledBytes = 0, maxNodes = 0;
 };
 
+/** Authenticated export configuration maps semantic state families to actual
+ * source tensors. Shapes and dtypes are always read from the checked source. */
+struct NativeStateTensorMapping
+{
+  using Roles = std::map<std::string, std::map<std::string, std::vector<std::string>>>;
+  Roles inputs, outputs;
+};
+
 /** Source-checked recipe producer. Semantic node mappings come from the
  * authenticated adapter/catalog; ordinal equality is never assumed. The
  * owner retains inspected metadata only, not another copy of model bytes. */
@@ -21,6 +29,10 @@ public:
   NativeCanonicalRolePreparer(NativeInspectedModel model, const NativeCanonicalSource& source,
     NativeRoleRecipeProfile profile, const NativeAssemblyControl& control, NodeMap mapping = {});
   NativeRequestPreparation::RolePort rolePort() const;
+  // Before candidate selection only: returns a new, fully digested candidate.
+  NativeSplitCandidate bindStateContracts(const NativeInspectedModel& model,
+    const NativeSplitCandidate& candidate, const NativeStateTensorMapping& mapping,
+    const NativeRequestControl& control) const;
   std::vector<NativeSelectionRoleV3> prepare(const NativeInspectedModel& model,
     const NativeSplitCandidate& candidate, const NativeRequestControl& control) const;
 

@@ -1692,7 +1692,12 @@ inspectNativeOnnxSourceGraph(const NativeCanonicalSource& source,
     NativeGraphEdge edge;
     edge.id = producer.first; edge.producer = "onnx-node-" + std::to_string(producer.second);
     edge.tensor = contract(edge.id);
-    for (const auto user : users->second) edge.consumers.push_back("onnx-node-" + std::to_string(user));
+    // An ONNX node may consume one tensor in several operand slots. Keep
+    // that multiplicity in metadata/identity, but a dependency consumer is
+    // a node identity and must occur only once in the planning edge.
+    std::set<std::uint64_t> uniqueUsers;
+    for (const auto user : users->second)
+      if (uniqueUsers.insert(user).second) edge.consumers.push_back("onnx-node-" + std::to_string(user));
     result.graph.edges.push_back(std::move(edge));
     // Every forward edge crosses the sequential cut after its producer.
     // The union of all maintained cuts is therefore exactly this edge set;

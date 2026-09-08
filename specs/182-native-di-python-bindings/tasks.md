@@ -17,6 +17,7 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 
 | Unit / Details | Status | Depends | Evidence / Remaining | Updated |
 | --- | --- | --- | --- | --- |
+| [R2-B2 State Source Binding](evidence/r2-b2-state-source-binding-20260908.md) | DONE | R2-B1 | SB-1/SB-2/SB-3 batch only：显式状态映射与源图重复 operand 修复；r3 71 cases/1649 assertions PASS；真实模型 bootstrap/requester 仍待完成 | 2026-09-08 |
 | [R2-B1 Preparation Catalog](evidence/r2-b1-preparation-catalog-20260908.md) | DONE | T003-C; T006-D; T007-B | PC-1/PC-2/PC-3 batch only：源目录→完整 preparation 端口组合，70 C++ cases/1596 assertions PASS；真实 bootstrap/state/requester 仍待完成 | 2026-09-08 |
 | [D-T003-LOCAL Local Acceptance Audit](evidence/t003-local-closure-20260908.md) | DONE | e3640279; T003 frozen LocalChecks | 原卡 requirement→proof、测试清单/实际成功日志与 design/diff 检查 PASS；T003 局部关闭，source/state、默认 requester 与 PO-002 仍由既定下游 owner 完成 | 2026-09-08 |
 | [R1-B5 Canonical Role Preparation](evidence/r1-b5-canonical-role-preparation-20260908.md) | DONE | R1-B4; existing ONNX/candidate contracts | RP-1/RP-2/RP-3 batch only：实际源图→角色→发布后重新认证/抽取；69 C++ cases/1560 assertions PASS；默认 requester、Qwen state/rank source 仍待完成 | 2026-09-08 |
@@ -73,6 +74,13 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 | [T017-A Development Handoff](contracts/execution-units.md#t017-a-development-handoff) | NOT_STARTED | T016-A | [baseline](evidence/task-progress-registry-20260907.md)；无本卡独立执行/验收记录；按依赖领取 | 2026-09-07 |
 
 ## Current Checkpoint
+
+2026-09-08 R2-B2 State Source Binding / **DONE (batch only)**：candidate 选定前用显式
+export mapping 绑定源 boundary 的 state shape/dtype/bytes，并重算完整候选摘要。
+真实 causal ONNX 三类状态及 source 重复 operand 回归通过；r1 编译与 r2 graph
+拒绝已保留并修复。r3 增量 build 30.522s、71 cases/1649 assertions PASS；Core/UAV
+未重编。T008-A 未关闭：下一步实际模型配置调用、角色数据流与 requester 接线；
+详见 [R2-B2](evidence/r2-b2-state-source-binding-20260908.md)。
 
 2026-09-08 R2-B1 Preparation Catalog / **DONE (batch only)**：完整身份锁定目录，自动
 组合 registry/inspection/role/publisher；实际 inline/external 源、双模型查找、工厂销毁、

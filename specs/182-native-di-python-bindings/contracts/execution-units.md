@@ -221,6 +221,8 @@ worker crash/cancel 等真实子进程案例也转 T016，卡内只运行纯 fra
 
 ### T008-A Native Input and Artifact Preparation
 
+- **R2-B2 state export binding**: `NativeStateTensorMapping` 显式指定 semantic state 到 source tensor 的完整映射；`NativeCanonicalPreparationCatalog::bindStateContracts` 复用 source-checked role owner，在候选选定前产出具体 state contracts 与新 candidate digest。禁止在 ACK placement 后隐式改写；缺失、越界方向、重复、dtype 不符拒绝，具体 shape/bytes 从 source metadata 派生。真实 causal ONNX、重复 operand 与失败/修复证据见 [R2-B2](../evidence/r2-b2-state-source-binding-20260908.md)。Write 包含 `N/NativeCanonicalRolePreparer.hpp/.cpp` 与 source inspector 的规划 consumer 去重。
+
 - **R2-B1 composition entry**: `NativeCanonicalPreparationCatalog` 拥有 bootstrap 提供的认证目录事实和按值接收的 pinned source；复用 role producer 校验，`adapters()` 返回冻结 registry，`makePreparation(user, serviceName)` 返回同目录绑定的 inspect/role/真实 publisher 组合。目录工厂销毁不使返回端口悬空；完整 model/source identity、重复/冲突配置拒绝。接口、测试与剩余网络/state/bootstrap 责任见 [R2-B1](../evidence/r2-b1-preparation-catalog-20260908.md)。Write 扩展至 `N/NativeCanonicalPreparationCatalog.hpp/.cpp`。
 
 - **Parent**: T008; **Depends**: T003-C, T006-D, T007-B; **Reviewer**: adapter/identity review

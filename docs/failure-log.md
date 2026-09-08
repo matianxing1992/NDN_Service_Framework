@@ -1,5 +1,17 @@
 # Failure Log and Evidence Index
 
+## 2026-09-08 — Spec182 state mapping template call
+
+随后 r2 build PASS、70/71 cases PASS。真实 causal ONNX 的 Concat 重复引用同一输入，
+source inspector 将 operand 次数照搬为规划消费者次数，触发图重复消费者拒绝。
+仅对规划 edge consumer 去重；原始 node inputs、metadata 与 digest 域保留重复次数。
+真实源补 2 个 consumer/7 次引用断言，r2 原日志保留，r3 增量验证；同见 R2-B2。
+
+R2-B2 首轮增量构建 exit 1，首边界是 NativeCanonicalRolePreparer::bindStateContracts
+泛型 lambda 内 JSON size.get 缺 dependent-template 关键字，尚未进入测试。
+补 template 并静态复核，保留原始日志，后续使用独立 r2 目录；见
+[R2-B2](../specs/182-native-di-python-bindings/evidence/r2-b2-state-source-binding-20260908.md)。
+
 ## 2026-09-08 — Design diagram width
 
 后续 R3 版面已通过，API 门检测两份并发修改的 Tiger supporting docs 与快照

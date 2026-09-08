@@ -96,6 +96,64 @@ NativeRequestPreparation::RolePort NativeCanonicalRolePreparer::rolePort() const
   };
 }
 
+NativeSplitCandidate NativeCanonicalRolePreparer::bindStateContracts(const NativeInspectedModel& model,
+  const NativeSplitCandidate& candidate, const NativeStateTensorMapping& mapping,
+  const NativeRequestControl& control) const
+{
+  control.requireActive();
+  candidate.validate(m_model.graph);
+  // Reuse the checked source-boundary producer without treating abstract
+  // state shapes as concrete export shapes. This temporary candidate is never
+  // published or returned, and all non-state identity checks still run.
+  auto sourceCandidate = candidate;
+  sourceCandidate.roleStateInputsByRole.clear();
+  sourceCandidate.roleStateOutputsByRole.clear();
+  sourceCandidate.candidateDigest = sourceCandidate.computedDigest();
+  const auto roles = prepare(model, sourceCandidate, control);
+  const auto metadata = nativeParseJson(m_sourceGraph.graphMetadataJson);
+  auto result = candidate;
+  const auto bind = [&](const auto& declared, const NativeStateTensorMapping::Roles& mapped,
+                        auto& destination, bool input) {
+    if (declared.size() != mapped.size())
+      throw std::invalid_argument("native state mapping has an incomplete role cover");
+    destination.clear();
+    for (const auto& item : declared) {
+      control.requireActive();
+      const auto found = mapped.find(item.first);
+      if (found == mapped.end() || found->second.size() != item.second.size())
+        throw std::invalid_argument("native state mapping has an incomplete semantic cover");
+      const auto role = std::find_if(roles.begin(), roles.end(), [&](const auto& value) {
+        return value.role == item.first && value.rank == 0;
+      });
+      if (role == roles.end()) throw std::invalid_argument("native state mapping has a foreign role");
+      const auto& boundary = input ? role->expectedInputs : role->expectedOutputs;
+      auto& contracts = destination[item.first];
+      std::set<std::string> used;
+      for (const auto& semantic : item.second) {
+        const auto names = found->second.find(semantic.name);
+        if (names == found->second.end() || names->second.empty())
+          throw std::invalid_argument("native state mapping omits a semantic state");
+        for (const auto& name : names->second) {
+          const auto actual = std::find_if(boundary.begin(), boundary.end(), [&](const auto& value) {
+            return value.name == name;
+          });
+          if (actual == boundary.end() || actual->dtype != semantic.dtype || !used.insert(name).second)
+            throw std::invalid_argument("native state mapping differs from the source boundary");
+          const auto& size = metadata.at("tensors").at(name).at("sizeBytes");
+          contracts.push_back({actual->name, actual->dtype, actual->shape,
+            size.is_null() ? std::nullopt : std::optional<std::uint64_t>(size.template get<std::uint64_t>())});
+        }
+      }
+    }
+  };
+  bind(candidate.roleStateInputsByRole, mapping.inputs, result.roleStateInputsByRole, true);
+  bind(candidate.roleStateOutputsByRole, mapping.outputs, result.roleStateOutputsByRole, false);
+  result.candidateDigest = result.computedDigest();
+  result.validate(m_model.graph);
+  control.requireActive();
+  return result;
+}
+
 std::vector<NativeSelectionRoleV3> NativeCanonicalRolePreparer::prepare(const NativeInspectedModel& model,
   const NativeSplitCandidate& candidate, const NativeRequestControl& control) const
 {

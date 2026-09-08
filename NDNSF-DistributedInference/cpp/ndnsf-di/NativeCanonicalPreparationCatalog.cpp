@@ -82,6 +82,14 @@ std::shared_ptr<const NativeAdapterRegistry> NativeCanonicalPreparationCatalog::
   return m_state->adapters;
 }
 
+NativeSplitCandidate NativeCanonicalPreparationCatalog::bindStateContracts(const NativeInspectedModel& model,
+  const NativeSplitCandidate& candidate, const NativeStateTensorMapping& mapping,
+  const NativeRequestControl& control) const
+{
+  control.requireActive();
+  return m_state->find(model).roles.bindStateContracts(model, candidate, mapping, control);
+}
+
 std::shared_ptr<NativeRequestPreparation> NativeCanonicalPreparationCatalog::makePreparation(
   std::shared_ptr<ndn_service_framework::ServiceUser> user, std::string serviceName) const
 {
