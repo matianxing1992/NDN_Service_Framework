@@ -1,6 +1,6 @@
 # Tasks: Native NDNSF-DI with Optional Python Bindings
 
-**Revision**: 17 | **Status**: DRAFT / T001 DONE
+**Revision**: 18 | **Status**: DRAFT / T001 DONE
 **Input**: [spec](spec.md), [code design](contracts/code-design.md),
 [proof](contracts/proof-design.md), [work units](contracts/work-units.md)
 
@@ -79,6 +79,7 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 | [T012-B Compatible Python Facades](contracts/execution-units.md#t012-b-compatible-python-facades) | PARTIAL | T012-A | [R5-B2](evidence/r5-b2-native-runtime-binding-20260908.md)：native runtime construction、explicit facade route 和 public `InferenceClient` export 已完成 focused verification；真实 parity、maintained caller migration、旧路径退出与 T016 仍未验收 | 2026-09-08 |
 | [T013-A Maintained Caller Migration](contracts/execution-units.md#t013-a-maintained-caller-migration) | PARTIAL | T012-B | [R5-B3 caller audit](evidence/r5-b3-maintained-caller-audit-20260908.md)：七个登记入口已按 requester/provider/harness 分类；R5-B4 已固定 native runtime config parser/fixture，但当前仍未完成全量 native migration。下一步按 R5-B5→R5-B6 分族迁移；provider retirement 留 T013-B | 2026-09-08 |
 | [R5-B5 Maintained YOLO Native Requester](contracts/execution-units.md#r5-b5-maintained-yolo-native-requester) | PARTIAL | R5-B4; T010-B | [R5-B5 evidence](evidence/r5-b5-yolo-native-requester-20260908.md)：`DI_NativeRequester` runtime composition 已切换到 shared `nativeRequestRuntimeFromJson`；C++ parser selector、CLI help/usage/error、`-j4` build 和 25 Python binding/compatibility checks PASS；真实 Core/Provider request、维护中的 Python YOLO user、其余 caller 迁移与 T016 仍开放 | 2026-09-08 |
+| [R5-B6 Qwen and Streaming Native Requesters](contracts/execution-units.md#r5-b6-qwen-and-streaming-native-requesters) | NOT_STARTED | R5-B5; T011-C | [R5-B3 caller audit](evidence/r5-b3-maintained-caller-audit-20260908.md)：Qwen、streaming、conversation 入口仍使用 Python requester；待 native generation/stream/conversation 稳定出口后逐族迁移，Provider retirement 不纳入本卡 | 2026-09-08 |
 | [T013-B Legacy Runtime Retirement](contracts/execution-units.md#t013-b-legacy-runtime-retirement) | NOT_STARTED | T013-A | [baseline](evidence/task-progress-registry-20260907.md)；无本卡独立执行/验收记录；按依赖领取 | 2026-09-07 |
 | [T014-A Isolation Collector Semantics](contracts/execution-units.md#t014-a-isolation-collector-semantics) | PARTIAL | T013-B | [baseline](evidence/task-progress-registry-20260907.md)；已有相关源码切片；完整卡验收未完成 | 2026-09-07 |
 | [T014-B Qualification Harness Registration](contracts/execution-units.md#t014-b-qualification-harness-registration) | PARTIAL | T014-A | [baseline](evidence/task-progress-registry-20260907.md)；已有相关源码切片；完整卡验收未完成 | 2026-09-07 |
@@ -103,6 +104,11 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 | R5-B5 | production entry/callers: `examples/DI_NativeRequester.cpp` native CLI; implementation/wire: CLI composition delegates runtime policy to `nativeRequestRuntimeFromJson` and retains native catalog/grant/preparation/admission ownership; test/harness/oracle: C++ runtime parser selector plus CLI help/usage/error selectors and source/binding checks; build/source closure: `DI_NativeRequester` and unit target rebuilt with system-first `-j4`; migration/evidence: maintained Python YOLO caller, real Core/Provider request, T013-B and T016 remain open | static review checked parser is the only runtime construction boundary and no Python fallback is introduced; no actionable finding | none in final batch; the CLI probes are local entry/configuration checks only | C++ `Spec182NativePlanning/NativeRequestRuntimeLoadsPinnedPolicyAndRejectsDrift`, `DI_NativeRequester --help`, usage and invalid-schema selectors; Python source/binding checks | `PATH=/usr/bin:/bin:/usr/sbin:/sbin CXX=/usr/bin/g++ CC=/usr/bin/gcc ./waf build --out=build-nac182 --targets=DI_NativeRequester,unit-tests -j4` -> exit 0, Waf 14.173s; C++ selector -> exit 0; Python -> 25 passed | `STATIC_PASS`; `BUILD_PASS`; `FOCUSED_BEHAVIOR_PASS`; `PARTIAL`; not QUALIFICATION_PASS | [R5-B5 evidence](evidence/r5-b5-yolo-native-requester-20260908.md); next R5-B6 Qwen/streaming requester |
 
 ## Current Checkpoint
+
+2026-09-08 R5-B6 Qwen/streaming requester / **NOT_STARTED**：入口已登记为独立批次，依赖
+R5-B5 与 T011-C；当前 Qwen、streaming、conversation 仍由 Python requester 承担。必须先
+固定 native generation/stream/conversation 配置与 selector，再逐族迁移，不与 Provider
+retirement 合并。
 
 2026-09-08 R5-B5 maintained YOLO native requester / **PARTIAL**：`DI_NativeRequester`
 已切换到 shared `nativeRequestRuntimeFromJson`，由 C++ parser 统一绑定 catalog、grant、

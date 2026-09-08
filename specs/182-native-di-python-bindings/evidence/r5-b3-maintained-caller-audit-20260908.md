@@ -44,11 +44,13 @@ silently reintroduce the Python planner, both of which violate T013-A.
 1. **R5-B3 Caller Route Audit (this record)** — freeze the matrix and fail-closed boundary;
    exit is a reviewed inventory with no product source change. `T013-A` remains `PARTIAL`.
 2. **R5-B4 Native Requester Config Fixture** — materialize one operator-pinned catalog,
-   preparation, grant/admission and `NativeRequestRuntime` for the YOLO user; prove the
-   production C++ request target/selector against the same config before changing the caller.
-3. **R5-B5 YOLO Requester Migration** — switch only `yolo_2x2/user.py` and its harness call,
-   preserve arguments/oracles/cleanup, and run binding-route checks plus the named C++ request
-   selector. The Python route check cannot close native behavior by itself.
+   preparation, grant/admission and `NativeRequestRuntime` for the YOLO requester; prove the
+   production C++ request target/selector against the same config before changing a maintained
+   caller. Delivered by the R5-B4 parser/fixture batch.
+3. **R5-B5 YOLO Native Composition** — route the maintained C++ requester entry through the
+   shared runtime parser, preserve arguments/oracles/cleanup, and run binding-route checks plus
+   the named C++ selector. This does not yet switch `yolo_2x2/user.py`; that caller migration is
+   a remaining T013-A subtask and the Python route check cannot close native behavior by itself.
 4. **R5-B6 Qwen/streaming Requester Migration** — after native generation/stream options and
    conversation parity are available, migrate the two delegated harnesses and LLM user routes
    as separate stable exits; do not combine them with provider retirement.

@@ -373,6 +373,16 @@ pending turn；path-only无key构造拒绝。Continuation 的 `requestContractDi
 - **Verify**: 官方 `$review-agent` 只读静态门；`DI_NativeRequester --help` 与错误 schema/usage selector；按 system-first `-j4` 构建 `DI_NativeRequester` 与 `unit-tests`；C++ `Spec182NativePlanning/NativeRequestRuntimeLoadsPinnedPolicyAndRejectsDrift` 及 CLI source/binding checks。真实 Core/Provider request、caller 全量迁移、T016 继续留在后续卡。
 - **Done When**: 维护入口只存在一条 native runtime composition 路径，runtime identity/config drift 在提交请求前由 C++ parser 拒绝；构建、selector、静态审查和证据均记录，未完成的网络/资格验收保持 `PARTIAL`。
 
+### R5-B6 Qwen and Streaming Native Requesters
+
+- **Parent**: T013-A; **Depends**: R5-B5, T011-C; **Reviewer**: native generation/stream and caller migration review
+- **Outcome**: 在 native generation、stream acceptance/replacement 和 conversation continuation 契约具备稳定出口后，将 Qwen/streaming maintained requester 切换到 shared native runtime/client；保留 harness 参数、生命周期 oracle 和 cleanup。
+- **Read**: `examples/python/NDNSF-DistributedInference/llm_pipeline/user.py` → `Experiments/NDNSF_DI_QwenAckDriven_Minindn.py` → `Experiments/NDNSF_DI_StreamedGeneration_Minindn.py` → native token stream/conversation contracts；核对普通、streaming、conversation 三类调用边界。
+- **Write**: 仅修改上述 requester/harness 入口及其定向 tests；Provider migration 不纳入本卡。若 runtime config 或 native stream API 不足，先回对应 owner 卡补齐，不在 Python 复制 planner。
+- **Steps**: 先为每个入口登记 native runtime config、generation options、stream/recovery/conversation state owner；再逐族切换并验证旧 route 不被隐式 fallback。每族独立构建/selector，禁止把 Qwen、streaming 和 Provider retirement 合并为一个批次。
+- **Verify**: 官方 `$review-agent`；对应 C++ generation/stream/conversation selectors；binding/facade route checks；网络 harness 只编写不运行，真实跨进程与 T016 另行验收。
+- **Done When**: Qwen、streaming、conversation 入口各有一条明确 native route，缺配置时 fail-closed；旧 Python planner 仅保留登记的 offline oracle/兼容用途，证据能区分 focused behavior、caller migration 与资格验收。
+
 ### T013-B Legacy Runtime Retirement
 
 - **Parent**: T013; **Depends**: T013-A; **Reviewer**: migration/reachability review
