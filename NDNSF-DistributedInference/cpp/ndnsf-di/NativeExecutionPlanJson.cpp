@@ -959,7 +959,8 @@ nativeSelectionProjectionV3FromJson(std::istream& input,
         !validSampling || !validStops ||
         (!contract.generationId.empty() &&
          !isGenerationId(contract.generationId)) ||
-        contract.streamingOperationStride != projection.plan.dependencies.size() ||
+        contract.streamingOperationStride < projection.plan.dependencies.size() ||
+        contract.streamingOperationStride > (1U << 20) ||
         contract.committedPrefixTokenIds.size() >= contract.maxGeneratedTokens ||
         std::any_of(
           contract.committedPrefixTokenIds.begin(),

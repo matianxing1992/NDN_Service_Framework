@@ -5003,11 +5003,11 @@ runSpec175NativeTinyOneRoleCase()
   handlerConfig.generationEosTokenIds = {2};
   handlerConfig.generationSamplingDigest =
     runnerSpec.metadata.at("samplingDigest");
-  handlerConfig.generationTextDecoderFactory =
+  handlerConfig.generationDecodersFactory =
     [tokenizerPath] (const std::string& digest) {
       NativeStandaloneTokenizerOptions options;
       options.tokenizerPath = tokenizerPath.string();
-      return makeNativeStandaloneTokenizerDecoder(std::move(options), digest);
+      return makeNativeStandaloneTokenizerDecoders(std::move(options), digest);
     };
   handlerConfig.requireGenerationTextOutput = true;
   handlerConfig.allowPreassembledV3Compatibility = true;
@@ -5766,11 +5766,11 @@ runSpec175NativeTinyMultiProviderCase(std::size_t providerCount,
       caseOptions.samplingRepetitionPenalty;
     handlerConfig.generationSamplingSeed = caseOptions.samplingSeed;
     handlerConfig.generationStopStrings = caseOptions.stopStrings;
-    handlerConfig.generationTextDecoderFactory =
+    handlerConfig.generationDecodersFactory =
       [tokenizerPath] (const std::string& digest) {
         NativeStandaloneTokenizerOptions options;
         options.tokenizerPath = tokenizerPath.string();
-        return makeNativeStandaloneTokenizerDecoder(std::move(options), digest);
+        return makeNativeStandaloneTokenizerDecoders(std::move(options), digest);
       };
     handlerConfig.requireGenerationTextOutput = true;
     handlerConfig.allowPreassembledV3Compatibility = true;
@@ -5897,11 +5897,11 @@ runSpec175NativeTinyMultiProviderCase(std::size_t providerCount,
         caseOptions.samplingRepetitionPenalty;
       handlerConfig.generationSamplingSeed = caseOptions.samplingSeed;
       handlerConfig.generationStopStrings = caseOptions.stopStrings;
-      handlerConfig.generationTextDecoderFactory =
+      handlerConfig.generationDecodersFactory =
         [tokenizerPath] (const std::string& digest) {
           NativeStandaloneTokenizerOptions options;
           options.tokenizerPath = tokenizerPath.string();
-          return makeNativeStandaloneTokenizerDecoder(std::move(options), digest);
+          return makeNativeStandaloneTokenizerDecoders(std::move(options), digest);
         };
       handlerConfig.requireGenerationTextOutput = true;
       handlerConfig.generationCommittedPrefixTokenIds = {4, 5, 6};

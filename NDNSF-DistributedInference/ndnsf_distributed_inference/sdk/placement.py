@@ -1604,8 +1604,8 @@ class PlacementPlanCoreV3:
             for item in self.dependencies)
         if self.generation_contract is not None:
             if (feedback_count != 1
-                    or self.generation_contract.streaming_operation_stride
-                    != len(self.dependencies)):
+                    or not len(self.dependencies) <=
+                    self.generation_contract.streaming_operation_stride <= 2**20):
                 raise ValueError(
                     "generation contract does not match the TOKEN_FEEDBACK plan")
         elif feedback_count:
@@ -1868,8 +1868,8 @@ class ProviderSelectionProjectionV3:
             for item in self.dependencies)
         if self.generation_contract is not None:
             if (feedback_count != 1
-                    or self.generation_contract.streaming_operation_stride
-                    != len(self.dependencies)):
+                    or not len(self.dependencies) <=
+                    self.generation_contract.streaming_operation_stride <= 2**20):
                 raise ValueError(
                     "generation projection does not match TOKEN_FEEDBACK")
         elif feedback_count:

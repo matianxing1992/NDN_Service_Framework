@@ -1,6 +1,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPlanner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeV3Placement.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGroupProjectionBuilder.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include <algorithm>
 #include <set>
 
@@ -48,7 +49,10 @@ NativePlannedRequest planNativeRequest(
   NativeOfferBindingContext context{control.requestId, control.attempt, runtime.contract.serviceName,
     encoded.modelIntentDigest, model.graph.graphDigest, wireDeadlineMs};
   std::vector<NativeAdmittedOfferV3> offers;
-  for (const auto& ack : closure.candidates) offers.push_back(admission.verify(ack, context, epochMs()));
+  for (const auto& ack : closure.candidates) {
+    if (encoded.recovery && ack.providerName.toUri() == encoded.recovery->failedProvider) continue;
+    offers.push_back(admission.verify(ack, context, epochMs()));
+  }
   if (offers.empty()) throw std::runtime_error("DI_NATIVE_NO_ADMITTED_PROVIDER");
   const auto policyStart = std::chrono::steady_clock::now();
   auto candidates = splitter.enumerate(model.descriptor, model.graph, runtime.budget);
@@ -78,7 +82,6 @@ NativePlannedRequest planNativeRequest(
     policyUsed += std::chrono::steady_clock::now() - placementStart;
     if (policyUsed > policyLimit) throw std::runtime_error("DI_NATIVE_POLICY_BUDGET_EXCEEDED");
     validateNativeRolePlacement(proposal, roles, offers, epochMs());
-    auto artifacts = preparation.ensureArtifacts(model, candidate, proposal, control);
     NativeExecutionPlan execution = candidate.executionPlan;
     execution.serviceName = runtime.contract.serviceName;
     execution.modelName = model.descriptor.modelName;
@@ -100,12 +103,88 @@ NativePlannedRequest planNativeRequest(
       dependency.producers = expand(dependency.producers);
       dependency.consumers = expand(dependency.consumers);
     }
+    if (options.generation) {
+      if (!options.stream || !options.generation->enabled ||
+          options.generation->mode != "TOKEN_STREAMING")
+        throw std::invalid_argument("generation requires the authenticated streaming request path");
+      std::set<std::string> sources(execution.roles.begin(), execution.roles.end());
+      std::set<std::string> terminals = sources;
+      for (const auto& edge : execution.dependencies) {
+        if (edge.operationKind == "TOKEN_FEEDBACK")
+          throw std::invalid_argument("candidate cannot supply requester-owned generation feedback");
+        for (const auto& role : edge.consumers) sources.erase(role);
+        for (const auto& role : edge.producers) terminals.erase(role);
+      }
+      if (sources.size() != 1 || terminals.size() != 1)
+        throw std::invalid_argument("generation requires one pipeline source and terminal");
+      const auto& generation = *options.generation;
+      if (generation.tokenInputName.empty() || generation.stateInputNames.empty() ||
+          generation.stateInputNames.size() != generation.stateOutputNames.size() ||
+          std::set<std::string>(generation.stateInputNames.begin(), generation.stateInputNames.end()).size() != generation.stateInputNames.size() ||
+          std::set<std::string>(generation.stateOutputNames.begin(), generation.stateOutputNames.end()).size() != generation.stateOutputNames.size())
+        throw std::invalid_argument("generation state input/output contract is incomplete");
+      for (const auto& role : proposal.roles) {
+        const auto includes = [](const auto& tensors, const std::string& name) {
+          return std::any_of(tensors.begin(), tensors.end(), [&](const auto& tensor) { return tensor.name == name; });
+        };
+        if (role.selectedRole == *sources.begin() && !includes(role.expectedInputs, generation.tokenInputName))
+          throw std::invalid_argument("generation source omits the token input");
+        for (const auto& name : generation.stateInputNames)
+          if (name.empty() || !includes(role.expectedInputs, name))
+            throw std::invalid_argument("generation role omits a sealed state input");
+        for (const auto& name : generation.stateOutputNames)
+          if (name.empty() || !includes(role.expectedOutputs, name))
+            throw std::invalid_argument("generation role omits a sealed state output");
+      }
+      const auto hash = [](const NativeJson& value) {
+        return nativePlanningDigest(nativeCanonicalJson(value));
+      };
+      NativeDependencySpec feedback;
+      feedback.producers = {*terminals.begin()}; feedback.consumers = {*sources.begin()};
+      feedback.keyScope = "token-feedback-" + hash({{"request", control.requestId},
+        {"attempt", control.attempt}, {"producer", feedback.producers.front()},
+        {"consumer", feedback.consumers.front()}}).substr(7, 16);
+      feedback.topicPrefix = "/token-feedback";
+      feedback.objectNameTemplate = "{producerProvider}/NDNSF/DI/DATA/{sessionId}/{keyScope}/{producerRole}/{sequence}";
+      feedback.tensors = {"input_ids"}; feedback.operationKind = "TOKEN_FEEDBACK";
+      feedback.useNdnsfDataV1 = true;
+      // A dependency can carry several tensor transfers. Reserve a round for
+      // each transfer before the feedback round, rather than overlapping the
+      // next epoch whenever transfer count exceeds dependency count.
+      std::uint64_t transferCount = 0;
+      for (const auto& edge : execution.dependencies) {
+        transferCount += edge.redistributions.empty() ? edge.tensors.size() : edge.redistributions.size();
+        if (transferCount >= (1U << 20)) throw std::invalid_argument("generation operation bound exceeded");
+      }
+      feedback.collectiveOperationIndex = transferCount;
+      // A validated single-source/single-terminal DAG is connected. Group
+      // membership therefore uses this same sorted provider set, including a
+      // one-provider self-feedback group for a full-model request.
+      std::set<std::string> providers;
+      std::string terminalProvider;
+      for (const auto& role : proposal.roles) {
+        const auto& provider = proposal.providerByRole.at(role.selectedRole);
+        providers.insert(provider);
+        if (role.selectedRole == feedback.producers.front()) terminalProvider = provider;
+      }
+      if (terminalProvider.empty()) throw std::invalid_argument("generation terminal has no provider");
+      feedback.collectiveProducerRank = std::to_string(std::distance(providers.begin(), providers.find(terminalProvider)));
+      feedback.collectiveSourceLayoutDigest = feedback.collectiveTargetLayoutDigest =
+        hash({{"tensor", "input_ids"}, {"layout", "int64[1,1]"}, {"operation", "TOKEN_FEEDBACK"}});
+      feedback.collectiveTensorDigest = hash(NativeJson::array({"input_ids"}));
+      execution.dependencies.push_back(std::move(feedback));
+      execution.streamingOperationStride = transferCount + 1;
+    }
     NativePlanSealingInputs sealing;
-    sealing.artifacts = std::move(artifacts);
+    sealing.artifacts = preparation.ensureArtifacts(model, candidate, proposal, control);
     sealing.requesterIdentity = runtime.requesterIdentity;
     sealing.protectionEpoch = runtime.protectionEpoch;
     sealing.expiresAtMs = wireDeadlineMs;
     sealing.requestContractDigest = encoded.requestContractDigest;
+    if (options.generation) {
+      sealing.generationContract = *options.generation;
+      sealing.generationContract.streamingOperationStride = execution.streamingOperationStride;
+    }
     for (const auto& role : roles) sealing.assemblyByRole.emplace(role.selectedRole, role);
     auto core = NativePlanSealer::sealCore(model, candidate, proposal, execution, offers, closure.digest, sealing);
     std::vector<NativeGrantBinding> grants;

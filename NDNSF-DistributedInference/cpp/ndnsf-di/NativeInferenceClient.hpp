@@ -2,6 +2,8 @@
 #define NDNSF_DI_NATIVE_INFERENCE_CLIENT_HPP
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
+#include "ndn-service-framework/InvocationStream.hpp"
 
 #include <chrono>
 #include <condition_variable>
@@ -47,6 +49,12 @@ struct NativeRequestOptions
   std::uint64_t ackTimeoutMs = 5'000;
   std::string taskName;
   std::string outputMode = "FULL";
+  std::optional<NativeGenerationExecutionContractV1> generation;
+  std::optional<ndn_service_framework::StreamRequestOptions> stream;
+  // Runs after process-local acceptance on the request worker. An exception
+  // fails the request without rolling back accepted tokens or replaying them.
+  // This is distinct from the non-authoritative handle.observe() callback.
+  std::function<void(const std::vector<std::uint8_t>&)> onGenerationEvent;
 };
 
 /** Pinned service/task metadata supplied by the application's catalog owner.

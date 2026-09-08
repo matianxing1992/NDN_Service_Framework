@@ -313,6 +313,12 @@ BOOST_AUTO_TEST_CASE(NativeV3ProjectionNeverTakesRootAuthorityFromJson)
 
 BOOST_AUTO_TEST_CASE(NativeV3ProjectionBindsStreamedGenerationContract)
 {
+  auto multiTransfer = streamingProjectionJson();
+  const auto stride = multiTransfer.find("\"streaming_operation_stride\":1");
+  BOOST_REQUIRE_NE(stride, std::string::npos);
+  multiTransfer.replace(stride, std::string("\"streaming_operation_stride\":1").size(),
+                        "\"streaming_operation_stride\":3");
+  BOOST_CHECK_EQUAL(parseProjection(multiTransfer).plan.streamingOperationStride, 3);
   const auto value = parseProjection(streamingProjectionJson());
   BOOST_CHECK(value.generationContract.enabled);
   BOOST_CHECK_EQUAL(value.generationContract.maxGeneratedTokens, 8);

@@ -2,6 +2,8 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestEnvelope.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPlanner.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
 #include "ndn-service-framework/ServiceUser.hpp"
 
 #include <atomic>
@@ -13,6 +15,7 @@
 #include <mutex>
 #include <thread>
 #include <utility>
+#include <openssl/rand.h>
 
 namespace ndnsf::di {
 
@@ -203,6 +206,8 @@ struct NativeInferenceHandle::Operation
   mutable std::mutex mutex;
   std::condition_variable condition;
   std::string requestId;
+  std::string coreRequestId; // Per-attempt transport identity; public requestId remains stable.
+  std::optional<NativeGenerationRecovery> recovery;
   NativeRequestStatus status = NativeRequestStatus::Pending;
   DiRequestPhase phase = DiRequestPhase::New;
   std::uint64_t attempt = 1;
@@ -215,6 +220,119 @@ struct NativeInferenceHandle::Operation
   std::vector<NativeInferenceEvent> events; // bounded observer-only events, non-authoritative
   std::vector<ObserverEntry> observers;
   std::shared_ptr<SerialRequestExecutor> notifications;
+
+  // Requester acceptance is process-local state, not a Provider commit or a
+  // durable conversation checkpoint. Only the serial request worker accepts
+  // events; the mutex also fences concurrent cancel/deadline transitions.
+  std::vector<std::int64_t> acceptedTokenIds;
+  std::string acceptedText;
+  std::string acceptedTerminalHint = "NONE";
+  std::string generationId;
+  std::string samplingDigest;
+  std::size_t maxGenerationTokens = 0;
+  bool replacementStarted = false;
+  std::size_t queuedStreamEvents = 0;
+
+  bool acceptGenerationEvent(std::uint64_t sourceAttempt,
+                             const std::vector<std::uint8_t>& payload)
+  {
+    std::lock_guard<std::mutex> lock(mutex);
+    if (status != NativeRequestStatus::Pending || sourceAttempt != attempt) {
+      ++staleCallbacks;
+      return false;
+    }
+    const auto reject = [&](const char* message) {
+      throw NativeDiError("StreamEventLineageMismatch", "provider", "stream-accept",
+                          message, requestId, attempt);
+    };
+    // Bound allocation before JSON parsing; the transport applies its own
+    // smaller per-event wire limit as well.
+    if (payload.size() > (1U << 20)) reject("generation event exceeds wire bound");
+    const auto event = nativeParseJson(std::string(payload.begin(), payload.end()));
+    if (!event.is_object() || event.value("schema", std::string{}) != "GenerationTokenEventV1" ||
+        !event.contains("tokenId") || !event.at("tokenId").is_number_integer() ||
+        !event.contains("tokenEpoch") || !event.at("tokenEpoch").is_number_unsigned() ||
+        !event.contains("textDelta") || !event.at("textDelta").is_string() ||
+        !event.contains("finishHint") || !event.at("finishHint").is_string() ||
+        !event.contains("acceptedPrefixDigest") || !event.at("acceptedPrefixDigest").is_string())
+      reject("invalid generation event fields");
+    const auto& tokenValue = event.at("tokenId");
+    if ((tokenValue.is_number_unsigned() && tokenValue.get<std::uint64_t>() >
+         static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) ||
+        tokenValue.get<std::int64_t>() < 0)
+      reject("invalid generation token ID");
+    const auto token = tokenValue.get<std::int64_t>();
+    const auto hint = event.at("finishHint").get<std::string>();
+    if (acceptedTerminalHint != "NONE" || !maxGenerationTokens ||
+        acceptedTokenIds.size() >= maxGenerationTokens ||
+        event.at("tokenEpoch").get<std::uint64_t>() != acceptedTokenIds.size() + 1 ||
+        (hint != "NONE" && hint != "EOS" && hint != "STOP_SEQUENCE" && hint != "MAX_TOKENS"))
+      reject("generation epoch or terminal hint mismatch");
+    // Legacy GenerationTokenEventV1 omits request/generation IDs; Core's
+    // authenticated stream binding supplies them. If present, require equality.
+    for (const auto& identity : {std::pair<const char*, std::string>{"requestId", coreRequestId},
+                                 {"generationId", generationId}, {"samplingDigest", samplingDigest}}) {
+      if (event.contains(identity.first) &&
+          (!event.at(identity.first).is_string() || event.at(identity.first) != identity.second))
+        reject("generation event identity mismatch");
+    }
+    auto tokens = acceptedTokenIds;
+    tokens.push_back(token);
+    std::string transcript;
+    for (const auto id : tokens) {
+      if (!transcript.empty()) transcript += ',';
+      transcript += std::to_string(id);
+    }
+    if (event.at("acceptedPrefixDigest") != nativePlanningDigest(transcript))
+      reject("generation token prefix digest mismatch");
+    auto text = acceptedText + event.at("textDelta").get<std::string>();
+    if (text.size() > (16U << 20)) reject("generation text exceeds output bound");
+    // Prepare every allocation before committing any accepted state.
+    auto terminalHint = hint;
+    acceptedTokenIds.swap(tokens);
+    acceptedText.swap(text);
+    acceptedTerminalHint.swap(terminalHint);
+    return true;
+  }
+
+  bool validateGenerationFinal(std::uint64_t sourceAttempt,
+                               const std::vector<std::uint8_t>& payload)
+  {
+    std::lock_guard<std::mutex> lock(mutex);
+    if (status != NativeRequestStatus::Pending || sourceAttempt != attempt) {
+      ++staleCallbacks;
+      return false;
+    }
+    if (payload.size() > (64U << 20))
+      throw NativeDiError("StreamFinalMismatch", "provider", "stream-final",
+                          "generation final exceeds wire bound", requestId, attempt);
+    const auto value = nativeParseJson(std::string(payload.begin(), payload.end()));
+    bool tokensMatch = value.is_object() && value.contains("tokenIds") &&
+      value.at("tokenIds").is_array() && value.at("tokenIds").size() == acceptedTokenIds.size();
+    if (tokensMatch) {
+      for (std::size_t i = 0; i < acceptedTokenIds.size(); ++i) {
+        const auto& token = value.at("tokenIds").at(i);
+        if (!token.is_number_integer() || token != acceptedTokenIds[i]) {
+          tokensMatch = false;
+          break;
+        }
+      }
+    }
+    if (!tokensMatch || acceptedTerminalHint == "NONE" ||
+        value.value("schema", std::string{}) != "NDNSF-DI-FINAL-V1" ||
+        !value.contains("text") || !value.at("text").is_string() || value.at("text") != acceptedText ||
+        !value.contains("finishHint") || value.at("finishHint") != acceptedTerminalHint)
+      throw NativeDiError("StreamFinalMismatch", "provider", "stream-final",
+                          "final payload disagrees with accepted generation", requestId, attempt);
+    for (const auto& identity : {std::pair<const char*, std::string>{"requestId", coreRequestId},
+                                 {"generationId", generationId}}) {
+      if (value.contains(identity.first) &&
+          (!value.at(identity.first).is_string() || value.at(identity.first) != identity.second))
+        throw NativeDiError("StreamFinalMismatch", "provider", "stream-final",
+                            "generation final identity mismatch", requestId, attempt);
+    }
+    return true;
+  }
 };
 
 namespace {
@@ -247,14 +365,16 @@ bool
 markTerminal(const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
              NativeRequestStatus terminal,
              std::shared_ptr<NativeDiError> error = nullptr,
-             const NativeInferenceResult* result = nullptr)
+             const NativeInferenceResult* result = nullptr,
+             std::uint64_t expectedAttempt = 0)
 {
   std::function<void()> cancelDeadline;
   bool cancelCore = false;
   std::vector<std::string> releaseScopes;
   {
     std::lock_guard<std::mutex> lock(operation->mutex);
-    if (operation->status != NativeRequestStatus::Pending) {
+    if (operation->status != NativeRequestStatus::Pending ||
+        (expectedAttempt && operation->attempt != expectedAttempt)) {
       ++operation->staleCallbacks;
       return false;
     }
@@ -277,7 +397,7 @@ markTerminal(const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
   operation->condition.notify_all();
   if (cancelCore) {
     const auto user = operation->user;
-    const auto id = ndn::Name(operation->requestId);
+    const auto id = ndn::Name(operation->coreRequestId);
     user->postToIo([user, id, scopes = std::move(releaseScopes)] {
       user->CancelCollaboration(id);
       // Core may already have consumed the pending call before its terminal
@@ -319,10 +439,10 @@ publishEvent(const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
 
 void
 failOperation(const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
-              NativeDiError error)
+              NativeDiError error, std::uint64_t expectedAttempt = 0)
 {
   if (!markTerminal(operation, NativeRequestStatus::Failed,
-                    std::make_shared<NativeDiError>(std::move(error)))) {
+                    std::make_shared<NativeDiError>(std::move(error)), nullptr, expectedAttempt)) {
     return;
   }
   publishEvent(operation, makeTerminalEvent(*operation));
@@ -358,13 +478,79 @@ void enqueueOperation(const std::shared_ptr<NativeInferenceHandle::Operation>& o
   }
 }
 
+void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& operation);
+
+bool beginReplacement(const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
+                      std::uint64_t sourceAttempt,
+                      const ndn_service_framework::StreamedInvocationError& error)
+{
+  using Code = ndn_service_framework::StreamedInvocationErrorCode;
+  if (error.code != Code::EventTimeout && error.code != Code::EventOutsideRetention &&
+      error.code != Code::ProviderFailure) return false;
+  NativeGenerationRecovery recovery;
+  NativeApplicationInput input;
+  std::vector<std::string> oldScopes;
+  std::string oldRequest;
+  {
+    std::lock_guard<std::mutex> lock(operation->mutex);
+    if (operation->status != NativeRequestStatus::Pending || sourceAttempt != 1 ||
+        operation->attempt != sourceAttempt || operation->replacementStarted ||
+        operation->acceptedTerminalHint != "NONE" || !operation->options.generation ||
+        !operation->options.stream || !operation->options.stream->allowReplacement ||
+        operation->options.stream->maxReplacements != 1 || !operation->planned ||
+        !operation->preparedInput || !operation->encodedRequest || error.providerName.empty() ||
+        error.requestId != ndn::Name(operation->coreRequestId) ||
+        !operation->planned->sealed.core.offerDigestByProvider.count(error.providerName.toUri()) ||
+        std::chrono::steady_clock::now() + std::chrono::milliseconds(operation->options.ackTimeoutMs) >= operation->deadline)
+      return false;
+    oldRequest = operation->coreRequestId;
+    recovery = {operation->generationId, oldRequest,
+      operation->requestId + "/recovery/" + std::to_string(NEXT_REQUEST_ID.fetch_add(1)),
+      operation->encodedRequest->inputManifestDigest, operation->planned->sealed.planDigest,
+      error.providerName.toUri(), operation->acceptedTokenIds};
+    input = operation->input;
+    input.payload = operation->preparedInput->payload;
+    input.taskName = operation->preparedInput->taskName;
+    for (const auto& scope : operation->planned->corePlan.keyScopes) oldScopes.push_back(scope.name);
+  }
+  auto encoded = encodeNativeRequestEnvelope(operation->model, input, *operation->requestContract,
+    recovery.recoveryRequestId, 2, operation->wireDeadlineMs, recovery);
+  {
+    std::lock_guard<std::mutex> lock(operation->mutex);
+    if (operation->status != NativeRequestStatus::Pending || operation->attempt != sourceAttempt ||
+        operation->replacementStarted) return false;
+    operation->options.generation->committedPrefixTokenIds = recovery.committedTokenIds;
+    operation->coreRequestId = recovery.recoveryRequestId;
+    operation->recovery = std::move(recovery);
+    operation->encodedRequest = std::move(encoded);
+    operation->replacementStarted = true;
+    operation->attempt = 2;
+    operation->phase = DiRequestPhase::New;
+    operation->planned.reset();
+    operation->coreActive = false;
+    operation->options.stream->attemptEpoch = operation->options.stream->streamEpoch = 2;
+    operation->options.stream->allowReplacement = false;
+    operation->options.stream->maxReplacements = 0;
+  }
+  const auto user = operation->user;
+  user->postToIo([user, oldRequest, oldScopes = std::move(oldScopes)] {
+    const ndn::Name id(oldRequest);
+    user->CancelCollaboration(id);
+    for (const auto& scope : oldScopes) user->clearVerifiedCollaborationData(id, scope);
+  });
+  beginCoreRequest(operation);
+  return true;
+}
+
 void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& operation)
 {
-  operation->user->postToIo([operation] {
+  const auto sourceAttempt = operation->attempt;
+  const auto coreRequestId = operation->coreRequestId;
+  operation->user->postToIo([operation, sourceAttempt, coreRequestId] {
     try {
       {
         std::lock_guard<std::mutex> lock(operation->mutex);
-        if (operation->status != NativeRequestStatus::Pending) return;
+        if (operation->status != NativeRequestStatus::Pending || operation->attempt != sourceAttempt) return;
         const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
           operation->deadline - std::chrono::steady_clock::now()).count();
         if (remaining <= static_cast<std::int64_t>(operation->options.ackTimeoutMs))
@@ -375,14 +561,15 @@ void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& o
         operation->phase = DiRequestPhase::Requesting;
         operation->coreActive = true;
       }
-      const auto ackClosed = [operation](const ndn_service_framework::CollaborationAckClosure& closure) {
-        enqueueOperation(operation, [operation, closure] {
+      const auto ackClosed = [operation, sourceAttempt, coreRequestId](const ndn_service_framework::CollaborationAckClosure& closure) {
+        enqueueOperation(operation, [operation, sourceAttempt, coreRequestId, closure] {
           {
             std::lock_guard<std::mutex> lock(operation->mutex);
-            if (operation->status != NativeRequestStatus::Pending || operation->phase != DiRequestPhase::Requesting) return;
+            if (operation->status != NativeRequestStatus::Pending || operation->attempt != sourceAttempt ||
+                operation->phase != DiRequestPhase::Requesting) return;
             operation->phase = DiRequestPhase::Planning;
           }
-          NativeRequestControl control{operation->requestId, operation->attempt, operation->deadline,
+          NativeRequestControl control{coreRequestId, sourceAttempt, operation->deadline,
             [flag = operation->cancelled] { return flag->load(); }};
           auto planned = planNativeRequest(*operation->runtime, operation->coreOptions,
             *operation->inspected, *operation->encodedRequest, *operation->splitStrategy,
@@ -393,26 +580,33 @@ void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& o
             if (operation->status != NativeRequestStatus::Pending) return;
             operation->planned = std::move(planned);
           }
-          operation->user->postToIo([operation, digest = closure.digest] {
+          operation->user->postToIo([operation, sourceAttempt, coreRequestId, digest = closure.digest,
+                                    plan = operation->planned->corePlan] {
             try {
-              if (operation->cancelled->load()) return;
+              {
+                std::lock_guard<std::mutex> lock(operation->mutex);
+                if (operation->status != NativeRequestStatus::Pending || operation->attempt != sourceAttempt) return;
+              }
               if (std::chrono::steady_clock::now() >= operation->deadline)
                 throw NativeDiError("NATIVE_REQUEST_TIMEOUT", "local", "commit",
                   "request expired before commit", operation->requestId, operation->attempt);
-              if (!operation->user->CommitCollaborationPlan(ndn::Name(operation->requestId),
-                    digest, operation->planned->corePlan))
+              if (!operation->user->CommitCollaborationPlan(ndn::Name(coreRequestId), digest, plan))
                 throw std::runtime_error("Core rejected the sealed plan");
               std::lock_guard<std::mutex> lock(operation->mutex);
-              if (operation->status == NativeRequestStatus::Pending) operation->phase = DiRequestPhase::Committed;
+              if (operation->status == NativeRequestStatus::Pending && operation->attempt == sourceAttempt)
+                operation->phase = DiRequestPhase::Committed;
             }
-            catch (const NativeDiError& error) { failOperation(operation, error); }
+            catch (const NativeDiError& error) { failOperation(operation, error, sourceAttempt); }
             catch (...) { failOperation(operation, NativeDiError(
               "NATIVE_REQUEST_COMMIT_FAILED", "runtime", "commit", "Core plan commit failed",
-              operation->requestId, operation->attempt)); }
+              operation->requestId, sourceAttempt), sourceAttempt); }
           });
         }, "ACK_CLOSED");
       };
       const auto response = [operation](const ndn_service_framework::ResponseMessage& message) {
+        // Core's stream completion callback owns final acceptance; an ordinary
+        // Response must never bypass the accepted token/text transcript gate.
+        if (operation->options.stream) return;
         enqueueOperation(operation, [operation, message] {
           {
             std::lock_guard<std::mutex> lock(operation->mutex);
@@ -440,22 +634,95 @@ void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& o
             publishEvent(operation, makeTerminalEvent(*operation));
         }, "response");
       };
-      const auto timeout = [operation](const ndn::Name&) {
-        failOperation(operation, NativeDiError("NATIVE_REQUEST_TIMEOUT", "local", "Core",
-          "Core request deadline expired", operation->requestId, operation->attempt));
+      const auto timeout = [operation, sourceAttempt](const ndn::Name&) {
+        enqueueOperation(operation, [operation, sourceAttempt] {
+          {
+            std::lock_guard<std::mutex> lock(operation->mutex);
+            if (operation->status != NativeRequestStatus::Pending || operation->attempt != sourceAttempt) return;
+          }
+          throw NativeDiError("NATIVE_REQUEST_TIMEOUT", "local", "Core",
+            "Core request deadline expired", operation->requestId, sourceAttempt);
+        }, "Core-timeout");
       };
       ndn_service_framework::RequestCapabilities capabilities;
       capabilities.setField("NDNSF_DATA_V1", "required");
+      const auto streamEvent = [operation, sourceAttempt](const ndn::Buffer& bytes) {
+        bool overflow = false;
+        {
+          std::lock_guard<std::mutex> lock(operation->mutex);
+          if (operation->status != NativeRequestStatus::Pending || operation->attempt != sourceAttempt) {
+            ++operation->staleCallbacks;
+            return;
+          }
+          const auto capacity = operation->options.stream->callbackQueueCapacity;
+          overflow = operation->queuedStreamEvents >= capacity || bytes.size() > (1U << 20);
+          if (!overflow) ++operation->queuedStreamEvents;
+        }
+        if (overflow) {
+          failOperation(operation, NativeDiError("StreamDeliveryOverflow", "local", "stream-accept",
+            "stream callback queue capacity exceeded", operation->requestId, sourceAttempt));
+          return;
+        }
+        enqueueOperation(operation, [operation, sourceAttempt, payload = std::vector<std::uint8_t>(bytes.begin(), bytes.end())] {
+          {
+            std::lock_guard<std::mutex> lock(operation->mutex);
+            --operation->queuedStreamEvents;
+          }
+          if (operation->options.generation && !operation->acceptGenerationEvent(sourceAttempt, payload)) return;
+          if (operation->cancelled->load()) return;
+          try {
+            if (operation->options.onGenerationEvent) operation->options.onGenerationEvent(payload);
+          }
+          catch (...) {
+            throw NativeDiError("StreamCallbackFailed", "local", "stream-callback",
+              "application stream callback failed", operation->requestId, sourceAttempt);
+          }
+        }, "stream-event");
+      };
+      const auto streamComplete = [operation, sourceAttempt](const ndn::Buffer& bytes) {
+        enqueueOperation(operation, [operation, sourceAttempt, payload = std::vector<std::uint8_t>(bytes.begin(), bytes.end())] {
+          if (operation->options.generation && !operation->validateGenerationFinal(sourceAttempt, payload)) return;
+          {
+            std::lock_guard<std::mutex> lock(operation->mutex);
+            if (operation->status != NativeRequestStatus::Pending || operation->attempt != sourceAttempt) return;
+            if (!operation->planned) throw std::runtime_error("stream final preceded sealed plan");
+          }
+          NativeInferenceResult result;
+          result.payload = operation->adapters->find(operation->model.adapterId)->decodeResult(payload);
+          result.modelDigest = operation->encodedRequest->modelIntentDigest;
+          result.planDigest = operation->planned->sealed.planDigest;
+          if (std::chrono::steady_clock::now() >= operation->deadline)
+            throw NativeDiError("NATIVE_REQUEST_TIMEOUT", "local", "stream-final",
+              "request expired during stream result decoding", operation->requestId, sourceAttempt);
+          if (markTerminal(operation, NativeRequestStatus::Succeeded, nullptr, &result))
+            publishEvent(operation, makeTerminalEvent(*operation));
+        }, "stream-final");
+      };
+      const auto streamError = [operation, sourceAttempt](const ndn_service_framework::StreamedInvocationError& error) {
+        enqueueOperation(operation, [operation, sourceAttempt, error] {
+          {
+            std::lock_guard<std::mutex> lock(operation->mutex);
+            if (operation->status != NativeRequestStatus::Pending || operation->attempt != sourceAttempt) {
+              ++operation->staleCallbacks;
+              return;
+            }
+          }
+          if (beginReplacement(operation, sourceAttempt, error)) return;
+          throw NativeDiError("NATIVE_STREAM_FAILED", "provider", "stream",
+            "Core stream failed", operation->requestId, sourceAttempt);
+        }, "stream-error");
+      };
       operation->user->BeginCollaboration(ndn::Name(operation->runtime->contract.serviceName),
         ndn::Buffer(operation->encodedRequest->wire.begin(), operation->encodedRequest->wire.end()),
         static_cast<int>(operation->coreOptions.ackTimeoutMs),
         static_cast<int>(operation->coreOptions.timeoutMs), ackClosed, response, timeout,
-        ndn::Name(operation->requestId), {}, capabilities);
+        ndn::Name(coreRequestId), {}, capabilities, operation->options.stream,
+        streamEvent, streamComplete, streamError);
     }
-    catch (const NativeDiError& error) { failOperation(operation, error); }
+    catch (const NativeDiError& error) { failOperation(operation, error, sourceAttempt); }
     catch (...) { failOperation(operation, NativeDiError(
       "NATIVE_REQUEST_BEGIN_FAILED", "runtime", "begin", "Core request start failed",
-      operation->requestId, operation->attempt)); }
+      operation->requestId, sourceAttempt), sourceAttempt); }
   });
 }
 
@@ -544,8 +811,8 @@ dispatchOperation(const std::shared_ptr<NativeInferenceHandle::Operation>& opera
     NativeEncodedRequest encoded;
     try {
       encoded = encodeNativeRequestEnvelope(operation->model, input,
-        *operation->requestContract, operation->requestId, operation->attempt,
-        operation->wireDeadlineMs);
+        *operation->requestContract, operation->coreRequestId, operation->attempt,
+        operation->wireDeadlineMs, operation->recovery);
     }
     catch (const std::exception&) {
       failOperation(operation, NativeDiError(
@@ -819,6 +1086,7 @@ NativeInferenceHandle NativeInferenceClient::request(
     // operation then binds ACK/plan/grant/result to this stable URI.
     operation->requestId = "/NDNSF/DI/REQUEST/" +
       std::to_string(NEXT_REQUEST_ID.fetch_add(1));
+    operation->coreRequestId = operation->requestId;
     operation->attempt = 1;
     // Absolute budget: computed once from the submission clock; waits and
     // cancels never re-arm it (deadline / operation row, CD-007).
@@ -830,6 +1098,60 @@ NativeInferenceHandle NativeInferenceClient::request(
     if (epochMs <= 0) throw NativeDiError("INVALID_REQUEST_CLOCK", "local", "request",
                                         "request wall clock precedes the epoch");
     operation->wireDeadlineMs = static_cast<std::uint64_t>(epochMs) + options.timeoutMs;
+    if (operation->options.stream) {
+      auto& stream = *operation->options.stream;
+      const bool generationRequested = operation->options.generation.has_value() ||
+        (operation->requestContract && operation->requestContract->generationMode == "TOKEN_STREAMING");
+      if (stream.mode != ndn_service_framework::InvocationMode::Normal || stream.attemptEpoch != 1)
+        throw NativeDiError("INVALID_STREAM_OPTIONS", "local", "request",
+                            "stream collaboration must start in Normal attempt 1");
+      std::string requestedGenerationId = operation->options.generation ? operation->options.generation->generationId : "";
+      if (generationRequested && requestedGenerationId.empty()) {
+        const auto application = nativeParseJson(std::string(input.options.begin(), input.options.end()));
+        requestedGenerationId = application.value("generationId", application.value("generation_id", std::string{}));
+      }
+      if (stream.generationId == ndn_service_framework::StreamGenerationId{} && !requestedGenerationId.empty()) {
+        const auto& id = requestedGenerationId;
+        if (id.size() != stream.generationId.size() * 2 ||
+            id.find_first_not_of("0123456789abcdef") != std::string::npos)
+          throw NativeDiError("INVALID_GENERATION_OPTIONS", "local", "request",
+                              "generation identity must be lowercase 16-byte hex");
+        for (std::size_t i = 0; i < stream.generationId.size(); ++i)
+          stream.generationId[i] = static_cast<std::uint8_t>(std::stoul(id.substr(i * 2, 2), nullptr, 16));
+      }
+      if (stream.generationId == ndn_service_framework::StreamGenerationId{} &&
+          RAND_bytes(stream.generationId.data(), stream.generationId.size()) != 1)
+        throw NativeDiError("STREAM_ID_ALLOCATION_FAILED", "local", "request",
+                            "cannot allocate generation identity");
+      static constexpr char hex[] = "0123456789abcdef";
+      for (const auto byte : stream.generationId) {
+        operation->generationId += hex[byte >> 4];
+        operation->generationId += hex[byte & 15];
+      }
+      stream.streamEpoch = 1;
+      stream.deadlineEpochMs = operation->wireDeadlineMs;
+      if (generationRequested) {
+        auto derived = nativeGenerationFromOptions(input.options, operation->generationId);
+        if (operation->options.generation) {
+          auto requested = *operation->options.generation;
+          requested.generationId = operation->generationId;
+          requested.streamingOperationStride = 0; // Placement, not the caller, assigns operation indices.
+          if (!requested.enabled || nativeGenerationJson(requested) != nativeGenerationJson(derived))
+            throw NativeDiError("INVALID_GENERATION_OPTIONS", "local", "request",
+                                "explicit generation differs from bound application options");
+        }
+        operation->options.generation = std::move(derived);
+        auto& generation = *operation->options.generation;
+        if (!generation.enabled || !generation.maxGeneratedTokens ||
+            generation.maxGeneratedTokens > (1U << 20) ||
+            (!generation.generationId.empty() && generation.generationId != operation->generationId))
+          throw NativeDiError("INVALID_GENERATION_OPTIONS", "local", "request",
+                              "generation contract disagrees with stream identity or budget");
+        generation.generationId = operation->generationId;
+        operation->samplingDigest = generation.samplingDigest;
+        operation->maxGenerationTokens = generation.maxGeneratedTokens;
+      }
+    }
     m_operations.push_back(operation);
   }
   // Submission returns a Pending handle; the dispatch runs on the

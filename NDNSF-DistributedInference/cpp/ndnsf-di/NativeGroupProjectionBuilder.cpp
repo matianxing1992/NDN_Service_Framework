@@ -3,6 +3,7 @@
 #include "ndn-service-framework/HybridMessageCrypto.hpp"
 #include <algorithm>
 #include <limits>
+#include <optional>
 #include <set>
 
 namespace ndnsf::di {
@@ -19,6 +20,7 @@ struct Operation {
   std::string kind, source, target;
   std::set<std::string> producers, consumers;
   std::uint64_t index = 0;
+  std::optional<std::uint64_t> sealedIndex;
 };
 struct Group {
   std::vector<std::string> providers;
@@ -46,12 +48,11 @@ std::map<std::string, NativeRoleProjectionInputs> NativeGroupProjectionBuilder::
     return provider;
   };
   for (const auto& dependency : core.executionPlan.dependencies) {
-    if (dependency.operationKind == "TOKEN_FEEDBACK")
-      throw std::invalid_argument("group TOKEN_FEEDBACK requires generation endpoint composition");
     std::set<std::string> members;
     for (const auto& role : dependency.producers) members.insert(core.assignment.providerByRole.at(role));
     for (const auto& role : dependency.consumers) members.insert(core.assignment.providerByRole.at(role));
-    if (members.size() < 2) throw std::invalid_argument("group dependency has no cross-provider members");
+    if (members.empty() || (members.size() < 2 && dependency.operationKind != "TOKEN_FEEDBACK"))
+      throw std::invalid_argument("group dependency has no cross-provider members");
     for (const auto& member : members) parent.emplace(member, member);
     for (const auto& member : members) {
       const auto left = find(*members.begin()), right = find(member);
@@ -73,6 +74,9 @@ std::map<std::string, NativeRoleProjectionInputs> NativeGroupProjectionBuilder::
   }
   for (std::size_t i = 0; i < core.executionPlan.dependencies.size(); ++i) {
     const auto& dependency = core.executionPlan.dependencies[i];
+    // Feedback closes the epoch loop. It is authorized below, but must not
+    // become a one-epoch readiness endpoint (which would create a cycle).
+    if (dependency.operationKind == "TOKEN_FEEDBACK") continue;
     auto& binding = context.dependencies[i];
     binding.groupId = groupByProvider.at(core.assignment.providerByRole.at(dependency.producers.at(0)));
     binding.groupEpoch = "1"; binding.operationIndex = i;
@@ -90,6 +94,32 @@ std::map<std::string, NativeRoleProjectionInputs> NativeGroupProjectionBuilder::
     for (const auto& consumer : endpoint.consumerRoles)
       operation.consumers.insert(std::to_string(group.rank.at(core.assignment.providerByRole.at(consumer))));
   }
+  for (const auto& dependency : core.executionPlan.dependencies) {
+    if (dependency.operationKind != "TOKEN_FEEDBACK") continue;
+    if (!core.generationContract.enabled || !dependency.useNdnsfDataV1 ||
+        dependency.producers.size() != 1 || dependency.consumers.size() != 1 ||
+        dependency.tensors != std::vector<std::string>{"input_ids"} ||
+        dependency.collectiveOperationIndex >= core.generationContract.streamingOperationStride)
+      throw std::invalid_argument("group feedback execution contract is incomplete");
+    const auto& producer = core.assignment.providerByRole.at(dependency.producers.front());
+    const auto& consumer = core.assignment.providerByRole.at(dependency.consumers.front());
+    auto& group = groups.at(groupByProvider.at(producer));
+    const auto producerRank = std::to_string(group.rank.at(producer));
+    const auto feedbackLayout = hash(NativeJson{{"tensor", "input_ids"},
+      {"layout", "int64[1,1]"}, {"operation", "TOKEN_FEEDBACK"}});
+    if (dependency.collectiveProducerRank != producerRank ||
+        dependency.collectiveSourceLayoutDigest != feedbackLayout || dependency.collectiveTargetLayoutDigest != feedbackLayout ||
+        dependency.collectiveTensorDigest != hash(NativeJson::array({"input_ids"})))
+      throw std::invalid_argument("group feedback rank or tensor identity mismatch");
+    auto& operation = group.operations["feedback:" + dependency.keyScope];
+    if (operation.sealedIndex) throw std::invalid_argument("group feedback operation repeats a scope");
+    operation.kind = "TOKEN_FEEDBACK";
+    operation.source = dependency.collectiveSourceLayoutDigest;
+    operation.target = dependency.collectiveTargetLayoutDigest;
+    operation.producers.insert(producerRank);
+    operation.consumers.insert(std::to_string(group.rank.at(consumer)));
+    operation.sealedIndex = dependency.collectiveOperationIndex;
+  }
   for (auto& pair : groups) {
     auto& group = pair.second;
     std::vector<GroupOperationV1> operations;
@@ -105,8 +135,19 @@ std::map<std::string, NativeRoleProjectionInputs> NativeGroupProjectionBuilder::
         (epochs > 1 && stride > (std::numeric_limits<std::uint64_t>::max() - group.operations.size()) / (epochs - 1)))
       throw std::invalid_argument("group operation expansion exceeds wire bounds");
     std::uint64_t index = 0;
+    std::set<std::uint64_t> reserved;
+    for (const auto& item : group.operations)
+      if (item.second.sealedIndex && !reserved.insert(*item.second.sealedIndex).second)
+        throw std::invalid_argument("group feedback operation index collision");
     for (auto& item : group.operations) {
-      auto& op = item.second; op.index = index++;
+      auto& op = item.second;
+      if (op.sealedIndex) op.index = *op.sealedIndex;
+      else {
+        while (reserved.count(index)) ++index;
+        op.index = index++;
+      }
+      if (generation.enabled && op.index >= stride)
+        throw std::invalid_argument("group operation exceeds generation stride");
       for (std::uint64_t epoch = 0; epoch < epochs; ++epoch)
         operations.push_back({op.index + epoch * stride, op.kind,
           {op.producers.begin(), op.producers.end()}, {op.consumers.begin(), op.consumers.end()},
