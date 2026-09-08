@@ -219,6 +219,12 @@ selectionRoleFromV3Json(const boost::property_tree::ptree& node,
     role.postprocessConfidenceThreshold <= 1.0;
   const bool validMergeKind = role.mergeKind.empty() ||
     role.mergeKind == "ONNX_MERGE_GRAPH" || validNativePostprocess;
+  const bool validNativePostprocessIdentity =
+    validNativePostprocess && isSha256Digest(role.modelManifestDigest) &&
+    role.artifactProfileDigest.empty() && role.graphDigest.empty() &&
+    role.canonicalInitializerDigest.empty() &&
+    role.adapterDescriptorDigest.empty() &&
+    role.assemblerDescriptorDigest.empty() && role.backendAbi.empty();
   const bool validRoleCover = componentSet
     ? (role.layerBegin == 0 && role.layerEnd == 0 && !role.nodeIndices.empty())
     : role.layerEnd > role.layerBegin;
@@ -240,7 +246,7 @@ selectionRoleFromV3Json(const boost::property_tree::ptree& node,
     throw std::invalid_argument(
       "V3 Selection projection contains an incomplete local role");
   }
-  if (hasAssemblyIdentity &&
+  if (hasAssemblyIdentity && !validNativePostprocessIdentity &&
       (!completeAssemblyIdentity || !completeAssemblyRecipe)) {
     throw std::invalid_argument(
       "V3 Selection projection contains an incomplete assembly identity");

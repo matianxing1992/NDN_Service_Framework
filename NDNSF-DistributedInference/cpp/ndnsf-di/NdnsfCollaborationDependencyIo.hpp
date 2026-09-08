@@ -30,7 +30,11 @@ public:
   explicit NdnsfCollaborationDependencyIo(
     ndn_service_framework::ServiceProvider::CollaborationContext& ctx,
     int fetchTimeoutMs = 30000,
-    std::size_t maxSegmentSize = 7600,
+    // Keep encrypted exact-data content at the established 7000-byte
+    // application budget.  The compact segment envelope and signed Data
+    // name/signature add transport overhead; 7600 can exceed the 8800-byte
+    // ndn-cxx packet limit for production role names.
+    std::size_t maxSegmentSize = 7000,
     int freshnessMs = 60000,
     std::shared_ptr<ProviderGroupCoordinator> groupCoordinator = nullptr,
     std::shared_ptr<ProtectedRuntime> protectedRuntime = nullptr,
@@ -53,7 +57,7 @@ public:
 private:
   ndn_service_framework::ServiceProvider::CollaborationContext& m_ctx;
   int m_fetchTimeoutMs = 30000;
-  std::size_t m_maxSegmentSize = 7600;
+  std::size_t m_maxSegmentSize = 7000;
   int m_freshnessMs = 60000;
   std::shared_ptr<ProviderGroupCoordinator> m_groupCoordinator;
   std::shared_ptr<ProtectedRuntime> m_protectedRuntime;

@@ -286,6 +286,17 @@ BOOST_AUTO_TEST_CASE(NativeV3ProjectionParsesAndBindsNativePostprocess)
   BOOST_CHECK_EQUAL(value.assembly.postprocessOutputName, "y");
   BOOST_CHECK_EQUAL(value.assembly.postprocessConfidenceThreshold, .001);
 
+  auto modelBound = wire;
+  const std::string epoch = "\"protection_epoch\":\"plaintext-v1\"";
+  const std::string bound = epoch +
+    ",\"model_manifest_digest\":\"" + digest('m') + "\"";
+  BOOST_REQUIRE_NE(modelBound.find(epoch), std::string::npos);
+  for (auto pos = modelBound.find(epoch); pos != std::string::npos;
+       pos = modelBound.find(epoch, pos + bound.size())) {
+    modelBound.replace(pos, epoch.size(), bound);
+  }
+  BOOST_CHECK_NO_THROW(parseProjection(modelBound));
+
   auto mismatched = wire;
   const std::string outputName = "\"postprocess_output_name\":\"y\"";
   const auto output = mismatched.find(outputName);

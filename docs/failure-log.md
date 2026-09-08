@@ -3398,3 +3398,13 @@ v8 重跑在四个 CPU ACK、GRAPH_READY 和 placement decision 后进入
 backend ABI/assembler recipe）。修复为 NATIVE_POSTPROCESS 跳过 ONNX recipe 完整性
 门，同时继续禁止其余 assembly identity。该轮仍未进入 User selection，结果保留为
 负证据，需重新封存 app 并使用新 run-id。
+## 2026-09-08: native Merge parser and tensor wire budget blocked local CPU run
+
+v9 reached four CPU ACKs, GRAPH_READY, placement decision, artifacts ready, PLAN_SEALED,
+SELECTION_COMMITTED, and PROVIDER_EXECUTION_STARTED with the layered base plus app v6.
+The packaged native parser then rejected the model-manifest-only NATIVE_POSTPROCESS Merge
+projection as an incomplete assembly identity. In the same run BackboneNeck attempted an
+exact tensor Data packet with contentBytes=7784 and wireBytes=9238, above the 8800-byte
+NDN packet budget; DetectShard fetches exhausted retries and the User timed out. The parser
+fix is now staged in the app source; the wire-budget defect remains open and no numerical
+YOLO or GPU/TigerCluster PASS is established.

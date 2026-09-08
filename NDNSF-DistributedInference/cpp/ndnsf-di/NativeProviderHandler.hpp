@@ -99,7 +99,7 @@ struct NativeProviderHandlerConfig
   std::string conversationStateKeyScope = "ndnsf-di-conversation-state-v1";
   bool requireExecutionAttemptBinding = false;
   int fetchTimeoutMs = 30000;
-  std::size_t maxSegmentSize = 7600;
+  std::size_t maxSegmentSize = 7000;
   int freshnessMs = 60000;
   // Optional request-scoped cross-Provider data-plane coordinator.  When
   // absent, dependencies retain the ordinary COLLAB-LARGE path.
