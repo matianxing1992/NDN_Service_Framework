@@ -47,11 +47,13 @@ def test_frozen_entry_uses_configured_interpreter_and_rejects_profile_change(tmp
     prepared=dict(bundle=str(tmp_path/'bundle'),profileDigest=module._json_digest(raw),
                   harnessManifestSha256='sha256:'+'a'*64)
     args=SimpleNamespace(profile=profile,run_id='env-run',output=tmp_path/'runs',case='single-node-gpu',reconcile=reconcile)
+    args.plan_transport=action=='submit'
     monkeypatch.setattr(yolo_bundle,'verify_harness',lambda *a,**k: None)
     commands=[]
     monkeypatch.setattr(subprocess,'run',lambda command,**kwargs: commands.append(command) or SimpleNamespace(returncode=78))
     assert module._enter_frozen(args,prepared,action)==78
     assert commands[0][0]==(raw['runtime']['operatorPython'] if use_remote else sys.executable)
+    assert ('--plan-transport' in commands[0])==(action=='submit')
     raw['runtime']['operatorPython']=str(tmp_path/'other')
     profile.write_text(json.dumps(raw))
     with pytest.raises(module.ClosureError,match='FROZEN_PROFILE_CHANGED'):

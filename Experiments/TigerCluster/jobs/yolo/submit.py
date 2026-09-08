@@ -457,6 +457,8 @@ def _enter_frozen(args, prepared, action):
         command += ['--case', args.case]
     if action == 'collect' and getattr(args, 'reconcile', False):
         command += ['--reconcile']
+    if action == 'submit' and getattr(args, 'plan_transport', False):
+        command += ['--plan-transport']
     return subprocess.run(command, cwd=bundle, check=False).returncode
 
 
@@ -498,7 +500,19 @@ def _submit(args) -> int:
     if result is not None:
         return result
     gate_name = CASE_GATE[args.case]
-    _gate_receipt(profile_path, value, gate_name, prepared=prepared)
+    gate = _gate_receipt(profile_path, value, gate_name, prepared=prepared)
+    if getattr(args, 'plan_transport', False):
+        from runtime.yolo_profile import resolve_provision_inputs
+        from runtime.yolo_transport import candidate_inventory
+        gates = {gate_name: gate}
+        for name in value['release'].get('gates', {}):
+            if name not in gates:
+                gates[name] = _gate_receipt(profile_path, value, name, prepared=prepared)
+        provision = resolve_provision_inputs(profile_path, plan=prepared['plan'],
+            runtime_candidate_digest=prepared['candidateDigest'])
+        manifest = candidate_inventory(profile_path, value, prepared, provision=provision, gates=gates)
+        print(json.dumps(dict(status='PLANNED',qualification='NOT_EVALUATED',transport=manifest),sort_keys=True))
+        return INCOMPLETE
     if args.case == 'negative-dependency':
         return _not_ready('submit','NEGATIVE_RUNNER_NOT_WIRED')
     if not _shared_submission_paths(args,value,prepared):
@@ -969,6 +983,8 @@ def main(argv=None):
     _common(local, case=True)
     submit = commands.add_parser("submit", help="submit one qualified Slurm case")
     _common(submit, case=True)
+    submit.add_argument('--plan-transport', action='store_true',
+        help='after prerequisite validation, enumerate files without SSH, Slurm or model execution')
     collect = commands.add_parser("collect", help="recompute a retained verdict")
     _common(collect)
     collect.add_argument('--reconcile', action='store_true',

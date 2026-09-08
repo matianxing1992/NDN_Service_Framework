@@ -23,8 +23,12 @@ Implementation checkpoint: explicit inventory/no-overwrite receiver is present
 in runtime/yolo_transport.py with internal tools/spec183_transport.py. It verifies
 only operator-selected files. Fifteen focused checks and an actual two-file Tiger
 exercise are retained in evidence/t004-transport-receiver.md. Automatic semantic
-closure and the public submit SSH coordinator are still missing; end-to-end
-transport remains unimplemented. Managed-journal exclusion is now wired as below.
+closure enumeration is now wired through `submit --plan-transport` after normal
+gate verification (evidence/t004-transport-inventory.md). It emits a manifest with
+PLANNED/NOT_EVALUATED and exit 78, not a submission. The frozen harness includes
+runtime/yolo_transport.py (26 files). Public submit SSH coordination is still
+missing; end-to-end transport remains unimplemented. Managed-journal exclusion
+is wired as below.
 
 Receiver requires `--lock-root` equal to the profile's sharedLockRoot. It takes
 an exclusive `.transport.lock` across journal validation and all publication;

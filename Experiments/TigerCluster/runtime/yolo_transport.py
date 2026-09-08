@@ -112,6 +112,113 @@ def _matches(path, row):
     return all(identity[key] == row[key] for key in ('bytes', 'sha256', 'mode'))
 
 
+def candidate_inventory(profile_path, profile, prepared, *, provision, gates):
+    """Enumerate the current fixed workload after the public CLI verifies gates.
+
+    This consumes validated receipts; it does not infer PASS, walk result trees,
+    inspect role homes, or execute native/model code. All locators must already
+    use the declared same-name project layout.
+    """
+    from .yolo_profile import _read_plane
+    from .yolo_bundle import REQUIRED_HARNESS_FILES, MANIFEST
+    from .yolo_result import resolve_role_output
+    roots = _roots((profile['storage']['remoteArtifactRoot'], profile['storage']['sharedRunRoot']))
+    files = set()
+    expected = {}
+    def add(path, identity=None):
+        path = _destination(str(path), roots)
+        files.add(path)
+        if identity is not None:
+            row = {key:identity[key] for key in ('bytes','sha256') if key in identity}
+            previous = expected.setdefault(path, {})
+            if any(key in previous and previous[key] != value for key,value in row.items()):
+                raise ValueError('TRANSPORT_EXPECTED_IDENTITY_CONFLICT')
+            previous.update(row)
+        return path
+    def document(path):
+        return _read_plane(add(path))
+    def references(value):
+        if isinstance(value, dict):
+            if set(value) == {'path','bytes','sha256'}:
+                add(value['path'], value)
+            else:
+                for item in value.values(): references(item)
+        elif isinstance(value, list):
+            for item in value: references(item)
+    def bundle(path, harness_digest):
+        path = Path(path)
+        add(path/MANIFEST, {'sha256':harness_digest})
+        rows = document(path/MANIFEST)['files']
+        if set(rows) != REQUIRED_HARNESS_FILES:
+            raise ValueError('TRANSPORT_HARNESS_INVENTORY')
+        for name in REQUIRED_HARNESS_FILES: add(path/name, rows[name])
+    def reference(package, repository):
+        package = Path(package)
+        value = document(package/'manifest.json')
+        add(package/'oracle'/value['oracle']['outputPath'], {'sha256':value['oracle']['outputDigest']})
+        add(Path(repository)/value['fixture']['path'], {'sha256':'sha256:'+value['fixture']['sha256']})
+    add(Path(profile_path).absolute())
+    references(profile)
+    for plane in ('inputs','runtime','dispatch'):
+        path = Path(profile['release'][plane]['path'])
+        for row in document(path)['files'].values():
+            add(path.parent/row['path'], row)
+    # The E-plane harness is distinct from the prepared run's frozen copy.
+    bundle(Path(profile['evidence']['harnessManifest']['path']).parent,
+           profile['evidence']['harnessManifest']['sha256'])
+    add(Path(prepared['plan']['output'])/'prepare.json')
+    bundle(prepared['bundle'], prepared['harnessManifestSha256'])
+    references(provision['publicInputs'])
+    secret = add(provision['authorityPrivateKey'])
+    package = Path(provision['package'])
+    model = document(package/'manifest.json')
+    add(package/'canonical/yolo26n.onnx', {'bytes':model['graph']['graphBytes'],'sha256':model['graph']['graphDigest']})
+    add(package/model['weights']['path'], {'bytes':model['weights']['bytes'],'sha256':model['weights']['digest']})
+    add(package/'oracle'/model['oracle']['outputPath'], {'sha256':model['oracle']['outputDigest']})
+    for name, gate in gates.items():
+        path = add(gate['path'])
+        verdict = gate['receipt']
+        if name == 'hostMinindn':
+            add(verdict['sourceSeal']['path'], {'sha256':verdict['sourceSeal']['sha256']})
+            references(verdict['cases'])
+            continue
+        root = path.parent
+        saved = document(root/'prepare.json')
+        bundle(saved['bundle'], saved['harnessManifestSha256'])
+        collection = document(root/'collection-input.json')
+        if collection['kind'] != 'normal':
+            raise ValueError('TRANSPORT_NORMAL_PREREQUISITE_REQUIRED')
+        def locate(path):
+            return Path(os.path.abspath(str(root/Path(path))))
+        nodes = {int(rank):locate(row['root']) for rank,row in collection['nodes'].items()}
+        for node in nodes.values():
+            receipt = document(node/'node-receipt.json')
+            for launch in receipt['launches']:
+                add(node/launch['logPath'], {'bytes':launch['logBytes'],'sha256':launch['logDigest']})
+            if saved['case'] != 'local-cpu':
+                add(node/'slurm-allocation.json'); add(node/'gpu-probe.json')
+        for index, result in enumerate(verdict['requestResults']):
+            request = nodes[0]/'user/requests'/str(index)
+            for filename in ('graph-reference.json','lifecycle.jsonl','yolo-numerical.json',
+                             'yolo-response.bin','yolo-public-assignments.json'):
+                add(request/filename)
+            for role, observed in result['execution']['roles'].items():
+                if role != 'Merge':
+                    add(resolve_role_output(nodes[observed['rank']]/role,
+                        observed['native']['observation']['providerProfilePath']))
+        for row in collection['references']:
+            reference(locate(row['package']),locate(row['repository']))
+        if saved['case'] != 'local-cpu':
+            add(root/'allocation-terminal.json'); add(root/'srun-cleanup.json')
+            for rank in nodes: add(root/('storage-rank'+str(rank)+'.json'))
+    manifest = inventory(files, roots=roots, candidate_digest=prepared['candidateDigest'],
+                         private_paths=[secret])
+    for row in manifest['files']:
+        if any(row[key] != value for key,value in expected.get(Path(row['path']),{}).items()):
+            raise ValueError('TRANSPORT_EXPECTED_CONTENT_CHANGED')
+    return manifest
+
+
 def _capacity(pending):
     devices = {}
     for _, target, row in pending:

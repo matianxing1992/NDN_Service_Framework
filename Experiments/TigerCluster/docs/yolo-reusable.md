@@ -7,7 +7,9 @@
 一致的 `--lock-root`；未关闭/未知journal或并发提交与运输互斥。所有操作者必须
 使用同一新版锁协议；旧冻结脚本不能同时参与。登录节点验证见
 `evidence/t004-transport-guard.md`，跨计算节点仍待实际allocation检查。自动闭包
-枚举与公开submit的SSH协调尚未完成，不能用此工具替代正式前置门。
+枚举已接入 `submit --plan-transport`，先验证现有前置门，再输出PLANNED/
+NOT_EVALUATED清单（exit 78）；不上传或提交。公开submit的SSH协调尚未完成，
+不能用清单替代正式前置门。新harness为26文件，当前实际profile尚未重新冻结。
 
 **Branch**: `TigerClusterExperiments`
 **Status**: IN_PROGRESS / NOT_QUALIFIED
