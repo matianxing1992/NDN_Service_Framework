@@ -112,6 +112,15 @@ failure-log，记录 identity b6710fd6 稳定正确。deferred：远端 storage
 site roots 与 oracle 数值契约待 T005/T006/T012 wiring 验证；release.gates
 仍空，local-cpu 运行资格待真实 prepare+local 执行 receipt。
 
+2026-09-07 T008/T009 单测门达成（4ade12bf）：--with-tests 构建
+500/500 任务成功（1h25m），build/unit-tests RC0 与 build/integration-tests
+RC0（No errors detected，LD_LIBRARY_PATH 指干净根）。T009 剩余真实多进程
+CPU 集成（test_yolo_integration.py 尚未创建）与 T010 MiniNDN 为下一
+阶段：MiniNDN 环境齐备（minindn 包 + nfd/nfdc + Topology），驱动
+Experiments/NDNSF_DI_YoloAckDriven_Minindn.py --case Y-B 经 env 输入
+（validate_inputs 布局待侦查，spec181 R004 保护纪元断言需按 Spec183
+固定 key 集对应）。skill ndnsf-minindn-experiment 已加载。
+
 2026-09-07 T008 host-unit 构建通过（64df1581/5171450d）：
 spec183_host_build.sh 驱动干净根 -j2 全链——NAC-ABE（Experimental
 5ed23e68，-O1 规避 GCC9.4 ICE）→ NDN-SVS（9f2d8a47，系统 Boost 1.71
