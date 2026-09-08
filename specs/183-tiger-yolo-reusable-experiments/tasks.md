@@ -6,9 +6,10 @@
 
 ## Detailed Execution Progress
 
-当前检查点：[分层本地启动实证](evidence/layered-local-startup.md)。新SIF与外置应用已验证；
-完整运行f已越过请求ID不一致问题，进入ACK汇总；四Provider均因ControllerVersion
-拒绝同一请求，退出2。协作入口版本绑定已完成原生红绿回归；新SIF组合及完整推理验收仍未完成。
+当前检查点：[分层本地启动实证](evidence/layered-local-startup.md)。修复后的基础
+SIF与外置DI应用已通过精确组合闭包；v13 local-cpu 在持久Provider进程中完成
+warmup+measured 两次请求，均返回数值结果并通过 oracle 比较。该证据仍限于本机
+CPU 执行，不能关闭 MiniNDN、GPU 或 TigerCluster 资格门。
 
 2026-09-08 用户裁决将本仓库 TigerCluster 构建并行度上限从 `-j2` 调整为 `-j4`，
 用于缩短构建时间并保持可复现；同一构建树仍只允许一个构建进程。历史回执保留实际
@@ -19,9 +20,9 @@
 | T004.local-tools：本机与Tiger工具版本绑定 | IMPLEMENTED | 本机1.5.3签名准备成功；Tiger版本要求保留 |
 | T009.prepare：实际分层候选签名准备 | EXECUTED | layered-host-20260908a，receipt46405701；非推理PASS |
 | T009.role-home：角色身份挂载修复 | VERIFIED_STARTUP | 同SIF内身份可见、根身份隔离；Controller签名发布成功并清理 |
-| T009.cpu-chain：完整CPU链 | IN_PROGRESS | 候选f进入ACK汇总、0候选；四Provider明确拒绝ControllerVersion，原生回归及修复进行中；尚无完整推理验收 |
+| T009.cpu-chain：完整CPU链 | VERIFIED_LOCAL_CPU | v13 新基础+外置应用；warmup 与 measured 两请求均 `REQUEST_ACCEPTED`、`YOLO_ACK_DRIVEN_RESULT status=true`，每次 1267 bytes，`matched=true`，`maxAbsError=0.0005340576171875`；仍需 MiniNDN/单节点GPU/双节点GPU |
 | T009.controller-version：协作请求版本绑定 | SOURCE_VERIFIED | 原SIF两入口均缺版本，exit201；修复ServiceUser单对象后版本绑定及撤权拒绝断言exit0；待新原生基础层和应用消费者验证，Provider检查不变 |
-| T009.native-refresh：更新修复后的基础层 | IN_PROGRESS | 66554c42源码已封存；依赖复用5项边界检查通过；新SIF本机构建进行中，父镜像c6dbeda8，未改handoff依赖锁，尚无新镜像PASS |
+| T009.native-refresh：更新修复后的基础层 | VERIFIED_COMPOSITION | commit `2ffa36b7` 的 request-owned artifact 修复已编入 base v6；SIF `sha256:d6aab730…0b01d`，`BASE_LIBRARIES_ONLY` PASS；app v13 manifest/buildKey `58b54e2d…db013`，Python import 与三入口 `ldd -r` 均 PASS |
 | T009.repo-order：Repo双Face管理命令顺序 | VERIFIED_STARTUP | 修复已装入ccdd4ac0基础SIF；候选c越过原注册故障；48项HA及新增失败清理检查沿用，STATUS响应仍待修复 |
 | T009.acceptance：开发入口请求结果验收 | IMPLEMENTED | 使用生产graph-reference/result校验后才记录accepted；保留结果目录；3项定向检查通过，不代表实际推理通过 |
 | T009.repo-ack：Repo保护模式ACK适配 | SOURCE_VERIFIED | 保护模式改为能力ACK、保留Selection后操作/身份校验；最小4进程诊断STATUS首次请求READY、User0、全清理；显式源码挂载，未封装或验收完整YOLO |

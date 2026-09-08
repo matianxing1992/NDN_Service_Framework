@@ -1,5 +1,42 @@
 # Layered local startup, 2026-09-08
 
+## v13: request-scoped artifact cache fix passes repeated local-cpu requests
+
+The repaired base SIF is
+`base-runtime-controller-version-j4-v6.sif`, SHA-256
+`d6aab730ad1599dde0eaa1f662a73022351c10560ab6e9beaa10d56e5ae0b01d`.
+Its in-image verifier returned `{"status":"PASS","scope":"BASE_LIBRARIES_ONLY"}`.
+The external application candidate is
+`app-controller-version-j4-v13`, manifest buildKey
+`58b54e2de2aca63bc0c72cae4807dbe8c6747ba34ba47542021c7a3d693db013`;
+the exact composition check imported `ndnsf._ndnsf`, `py_repoclient`, and
+`ndnsf_distributed_inference`, then returned `ldd -r` code 0 for
+`App_ServiceController`, `di-native-provider`, and `di-native-fault-provider`.
+
+Run `layered-local-20260908-v13` used the frozen v13 profile and the real
+containerized issuer/Provider/Repo/User chain on local CPU. Both the warmup
+request (`8e1bbbfb…`) and measured request (`19c58a09…`) were accepted. Each
+User log records `YOLO_ACK_DRIVEN_RESULT status=true payload_bytes=1267`.
+Both `yolo-numerical.json` records report `matched=true`, shape `[1,50,6]`,
+`maxAbsError=0.0005340576171875`, and the same response digest. No
+`DI_CANONICAL_ROOT_DIGEST_MISMATCH`, deadline, traceback, or error marker occurs
+in the retained role logs. This is genuine repeated local CPU execution and
+numerical evidence, but remains `LOCAL_CPU_COMPONENT_ONLY`: it is not a
+MiniNDN cross-process campaign, GPU execution, or TigerCluster qualification.
+
+The source defect was in `ServiceProvider::CollaborationContext`: a
+provider-global map keyed by stable `assignedArtifact` reused request 0's
+canonical root bytes for request 1, although YOLO publishes a new
+request-scoped `artifactDataName` and root payload each time. The native
+assembler correctly rejected the stale bytes. Commit `2ffa36b7` makes the
+artifact payload request-owned and adds a repeated-context regression. A
+single-request MiniNDN/component path did not cross this lifetime boundary,
+which explains the earlier false confidence.
+
+Next: run the required MiniNDN three-scenario gate against this exact base+app
+composition, then bounded single-node and two-node Tiger GPU validation. Do not
+promote v13 from local CPU evidence alone.
+
 Status: signed preparation and corrected Controller/Repo registration executed;
 full four-Provider inference and formal qualification remain open.
 
