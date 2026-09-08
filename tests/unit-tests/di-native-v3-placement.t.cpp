@@ -153,6 +153,42 @@ BOOST_AUTO_TEST_CASE(AdmittedPlacementSealsSdkCoreAndRejectsTampering)
       }
       for (std::size_t i = 0; i < input.roles.size(); ++i)
         inputs.assemblyByRole.emplace(std::to_string(i), input.roles[i]);
+      unsigned publications = 0;
+      auto published = inputs.artifacts;
+      published.requestId = "foreign-port-request"; published.attempt = 99;
+      NativeRequestPreparation preparation(std::make_shared<NativeAdapterRegistry>(), {},
+        [&](const NativeInspectedModel& model, const NativeSplitCandidate& candidate,
+            const std::vector<NativeSelectionRoleV3>& selected, const NativeRequestControl&) {
+          ++publications;
+          BOOST_CHECK_EQUAL(&candidate, &input.split);
+          BOOST_CHECK_EQUAL(model.canonicalSourceName, input.inspected.canonicalSourceName);
+          BOOST_REQUIRE_EQUAL(selected.size(), proposal.roles.size());
+          for (std::size_t i = 0; i < selected.size(); ++i) {
+            BOOST_CHECK_EQUAL(selected[i].selectedRole, proposal.roles[i].selectedRole);
+            BOOST_CHECK(selected[i].deviceSet == proposal.roles[i].deviceSet);
+          }
+          return published;
+        });
+      NativeRequestControl control{input.context.requestId, input.context.attempt,
+        std::chrono::steady_clock::now() + std::chrono::seconds(10), {}};
+      // Authenticate/validate the placement first, then publish through the
+      // actual V3 preparation API. No legacy planning DTO is reconstructed.
+      validateNativeRolePlacement(proposal, input.roles, input.offers, now);
+      inputs.artifacts = preparation.ensureArtifacts(input.inspected, input.split, proposal, control);
+      BOOST_CHECK_EQUAL(inputs.artifacts.requestId, control.requestId);
+      BOOST_CHECK_EQUAL(inputs.artifacts.attempt, control.attempt);
+      auto foreign = proposal;
+      foreign.roles[0].artifactDigest = nativePlanningDigest("foreign-artifact");
+      BOOST_CHECK_THROW(preparation.ensureArtifacts(input.inspected, input.split, foreign, control),
+                        std::runtime_error);
+      foreign = proposal; foreign.providerByRole.clear();
+      BOOST_CHECK_THROW(preparation.ensureArtifacts(input.inspected, input.split, foreign, control),
+                        std::runtime_error);
+      BOOST_CHECK_EQUAL(publications, 1);
+      published.artifactDigestByRole.begin()->second = nativePlanningDigest("foreign-artifact");
+      BOOST_CHECK_THROW(preparation.ensureArtifacts(input.inspected, input.split, proposal, control),
+                        std::runtime_error);
+      BOOST_CHECK_EQUAL(publications, 2);
       const auto seal = [&](const auto& value) { return NativePlanSealer::sealCore(input.inspected,
         input.split, value, execution, input.offers, input.ackDigest, inputs); };
       const auto core = seal(proposal);

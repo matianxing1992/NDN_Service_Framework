@@ -105,8 +105,8 @@ client/provider 不可复制；handle/registration 通过 shared internal record
 | M39 bindDistributedInference(pybind11::module_&) → void | 注册native类/枚举/错误、方法docstrings；GIL仅类型转换/observer时持有 | _ndnsf module init；链接同一库，不编译第二份DI核心 |
 | M40 prepareInput(model,value,options) → NativePreparedInput | 解析认证model/task并调用M17；产生deadline/transport-owned值 | client Request前；错误时无网络Request |
 | M41 inspectModel(input) → NativeInspectedModel | ACK后原生M16产生认证graph，对应immutable source | planning准备；graph identity不来自Provider hint |
-| M42 ensureArtifacts(model,proposal,control) → NativeArtifactBinding | candidate选定后描述/发布canonical工件，核对实际引用；先于seal/grant | client；只准备canonical source，角色装配仍在Provider |
-| M43 verify(ack,policy,context) → NativeProviderPlanningView | Core provenance有效→policy signer/candidate/service→offer签名→request/model/graph/expiry→typed view | ACK admission；拒绝 caller trusted=true |
+| M42 ensureArtifacts(model,candidate,V3proposal,control) → NativeArtifactBinding | candidate选定后用完整 V3 roles 描述/发布canonical工件，逐项匹配返回 artifact digest；先于seal/grant | planned client 先独立验证 placement；只准备canonical source，角色装配仍在Provider |
+| M43 verify(ack,context,nowMs) → NativeAdmittedOfferV3 | Core provenance有效→构造期 policy signer/candidate/service→offer签名→request/model/graph/expiry→admitted observation | ACK admission；拒绝 caller trusted=true |
 | M44 NativeInferenceProvider(provider,adapters) | 保存现有Core/provider和native registry；不触发另一Face | bootstrap/binding；配置未闭合拒绝 |
 | M45 serve(service,config) → NativeServiceRegistration | 验证native runner/角色/能力，调用既有注册/handler/runtime工厂 | CLI/binding；重复service拒绝，不接受Python callable |
 | M46 stop() → void | 停止本host新admission，关闭自有registration，保留sharedCore；在途按guard/deadline清理 | 应用shutdown；不得停另一服务 |

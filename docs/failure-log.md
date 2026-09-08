@@ -1,5 +1,16 @@
 # Failure Log and Evidence Index
 
+## 2026-09-07 — Spec182 publication artifact identity audit
+
+首轮定向验证另发现旧 sealer fixture 的 1 MiB 不满足真实 Qwen candidate 的 2253 MiB
+最低预算，在 publication 前拒绝；保留 r1 build/focused 日志，修正 fixture 后独立 r2
+build 与 58-case 定向检查 PASS；未降低产品校验。
+
+旧 ensureArtifacts 接收简化 proposal，只检查返回摘要格式与 role cover，未匹配选定工件。
+现迁移完整 V3 输入并逐项检查 artifact digest；此为源码发现，无失败运行。
+真实 catalog/Repo 与 requester 主链仍未接通，见
+[publication evidence](../specs/182-native-di-python-bindings/evidence/t008-v3-artifact-publication-20260907.md)。
+
 ## 2026-09-07 — Spec182 inspection source audit
 
 inspectModel 合成 catalog source name 并丢失原请求完整 model descriptor，缺实际来源证据。

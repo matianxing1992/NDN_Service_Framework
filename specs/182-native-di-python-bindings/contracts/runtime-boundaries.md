@@ -32,7 +32,8 @@ NativeInspectedModel inspectModel(const NativePreparedInput& input);
 std::vector<NativeSelectionRoleV3> prepareRoles(const NativeInspectedModel& model,
     const NativeSplitCandidate& candidate, const NativeRequestControl& control);
 NativeArtifactBinding ensureArtifacts(const NativeInspectedModel& model,
-                                      const NativePlacementProposal& proposal,
+                                      const NativeSplitCandidate& candidate,
+                                      const NativeRolePlacementProposalV3& proposal,
                                       const NativeRequestControl& control);
 NativeAdmittedOfferV3 verify(const ndn_service_framework::AckSelectionCandidate& ack,
                             const NativeOfferBindingContext& context,
@@ -58,10 +59,16 @@ NativeAdmittedOfferV3 verify(const ndn_service_framework::AckSelectionCandidate&
   offers 和 Core owner 的原始 ACK_CLOSED digest；共用 validateRoles/feasibleChoices，
   不经旧简化 Provider view。grantView 对 admitted offer 保留 exact-reuse 可用性。
   无 caller 提供的 trusted=true；网络或本地可信配置的验证证据由对应 owner 创建。
-- ensureArtifacts 在候选选定后、sealCore/grant 前执行；复用已存在 canonical 工件或
-  原生完成当前运行时所需 publication/encryption。只返回认证 manifest/recipe/input
+- ensureArtifacts 在候选选定后、sealCore/grant 前执行；复用已存在 canonical 工件，
+  或由原生 owner 完成所需 publication/encryption。
+  发布 immutable 引用前，requester 必须用原始角色/已验证 offers 独立校验 V3 placement。
+  ArtifactPort 只接收 inspected model、原 candidate、selected V3 roles 与 control；
+  ensureArtifacts 检查 request/attempt/model/graph、完整 role/rank/assignment/offer identity，
+  以及返回的每个 artifact digest 与选定角色一致；不构造旧 proposal。端口不是执行授权。
+  只返回认证 manifest/recipe/input
   引用与清理 lease，不把 Provider 的角色 ONNX 装配提前到 Requester。
-  publishing 复用 ServiceUser::publishSignedAppData 或已有 Repo 端口；
+  requester app 名字空间中的 publishing 复用 ServiceUser::publishSignedAppData；canonical
+  catalog 名字空间使用已有 Repo 端口，不绕过 Core app 发布的名字空间限制。
   发布名、实际返回名、ciphertext digest、签名者与 model/recipe 绑定分别校验。
 - NativeModelAdapter::decodeResult 在 native 终态结果构造前执行；YOLO task decode、
   Qwen text/token 结果映射均由 adapter 实现，Python 不重新运行后处理或判定业务成功。

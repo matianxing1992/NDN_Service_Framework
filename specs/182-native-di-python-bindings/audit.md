@@ -7,6 +7,14 @@
 
 ## Current Findings
 
+### V3 Artifact Publication 2026-09-07
+
+ensureArtifacts/ArtifactPort 已移除旧简化 proposal 输入，直接使用候选与选定 V3 roles。
+返回工件必须逐项等于角色要求，修复“合法 SHA 但对应另一工件”仍可通过的缺口。
+新 ABI 构建与最终 58-case 定向验证 PASS；旧 sealer fixture 的内存预算失败与修正已留存。
+真实 catalog/Repo owner、网络发布与 requester 主链未完成，T008-A 保持 PARTIAL，见
+[publication evidence](evidence/t008-v3-artifact-publication-20260907.md)。
+
 ### V3 Strategy Interface 2026-09-07
 
 placement 基类已改为完整 V3 虚接口，默认实现和只实现 V3 的自定义原生策略都通过
