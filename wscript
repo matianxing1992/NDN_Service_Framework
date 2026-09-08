@@ -106,6 +106,8 @@ def options(opt):
                       help='Build examples')
     optgrp.add_option('--with-tests', action='store_true', default=False,
                       help='Build unit tests')
+    optgrp.add_option('--runtime-libraries-only', action='store_true', default=False,
+                      help='Build/install the shared framework without optional DI applications')
     optgrp.add_option('--toolchain-root', default='/usr/bin',
                       help='Required compiler/binutils root (default: /usr/bin)')
     optgrp.add_option('--ndn-svs-source-tree', default='',
@@ -155,6 +157,7 @@ def configure(conf):
 
     conf.env.WITH_EXAMPLES = conf.options.with_examples
     conf.env.WITH_TESTS = conf.options.with_tests
+    conf.env.RUNTIME_LIBRARIES_ONLY = conf.options.runtime_libraries_only
 
     conf.find_program('dot', mandatory=False)
 
@@ -402,7 +405,7 @@ int main() {
     conf.write_config_header('config.hpp')
 
 def build(bld):
-    if bld.env.HAVE_GSTREAMER:
+    if bld.env.HAVE_GSTREAMER and not bld.env.RUNTIME_LIBRARIES_ONLY:
         bld.program(
             target='uav-video-pipeline-probe',
             source='NDNSF-UAV-APP/tools/uav_video_pipeline_probe.cpp',
@@ -428,6 +431,21 @@ def build(bld):
 
     if bld.env.WITH_TESTS:
         bld.recurse('tests')
+
+    headers = bld.path.ant_glob('ndn-service-framework/**/*.hpp')
+    bld.install_files('${INCLUDEDIR}', headers, relative_trick=True)
+    bld.install_files('${INCLUDEDIR}/ndn-service-framework',
+                      bld.path.find_resource('config.hpp'))
+    bld(features='subst',
+        source='libndn-service-framework.pc.in',
+        target='libndn-service-framework.pc',
+        install_path='${LIBDIR}/pkgconfig',
+        VERSION=VERSION)
+
+    # The base SIF owns the framework library. Optional application source
+    # trees need not be present to configure its build graph or install it.
+    if bld.env.RUNTIME_LIBRARIES_ONLY:
+        return
 
     # Spec 111 ownership targets. These object groups keep the mechanism Core
     # and optional model adapters physically distinct without changing the
@@ -465,12 +483,6 @@ def build(bld):
 
     bld.recurse('examples')
 
-    headers = bld.path.ant_glob('ndn-service-framework/**/*.hpp')
-    bld.install_files('${INCLUDEDIR}', headers, relative_trick=True)
-
-    bld.install_files('${INCLUDEDIR}/ndn-service-framework',
-                      bld.path.find_resource('config.hpp'))
-
     bld.install_files(
         '${INCLUDEDIR}/NDNSF-DistributedInference/cpp/ndnsf-di',
         bld.path.ant_glob('NDNSF-DistributedInference/cpp/ndnsf-di/*.hpp'))
@@ -483,9 +495,3 @@ def build(bld):
     bld.install_files(
         '${INCLUDEDIR}/NDNSF-DistributedInference/cpp/adapters/qwen',
         bld.path.ant_glob('NDNSF-DistributedInference/cpp/adapters/qwen/*.hpp'))
-
-    bld(features='subst',
-        source='libndn-service-framework.pc.in',
-        target='libndn-service-framework.pc',
-        install_path='${LIBDIR}/pkgconfig',
-        VERSION=VERSION)

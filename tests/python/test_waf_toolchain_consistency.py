@@ -3,6 +3,7 @@ import runpy
 import shutil
 import subprocess
 import sys
+from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
@@ -11,6 +12,32 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 WAF_RUNTIME = next(ROOT.glob(".waf3-*"))
 sys.path.insert(0, str(WAF_RUNTIME))
+
+
+def test_runtime_only_build_needs_no_di_uav_or_example_source_tree():
+    recorded = []
+    class PathWithoutApplications:
+        def ant_glob(self, pattern):
+            assert pattern.startswith('ndn-service-framework/')
+            return ['core.hpp' if pattern.endswith('hpp') else 'core.cpp']
+        def find_resource(self, name):
+            assert name == 'config.hpp'
+            return name
+    class BaseBuild:
+        env = SimpleNamespace(HAVE_GSTREAMER=True, enable_shared=True,
+            enable_static=False, WITH_TESTS=False, RUNTIME_LIBRARIES_ONLY=True)
+        path = PathWithoutApplications()
+        def shlib(self, **kwargs): recorded.append(('library', kwargs['target']))
+        def install_files(self, destination, files, **kwargs):
+            recorded.append(('headers', destination))
+        def __call__(self, **kwargs): recorded.append(('metadata', kwargs['target']))
+        def program(self, **kwargs): pytest.fail('base build registered an application')
+        def objects(self, **kwargs): pytest.fail('base build registered DI objects')
+        def recurse(self, path): pytest.fail('base build entered optional source: ' + path)
+    runpy.run_path(str(ROOT / 'wscript'))['build'](BaseBuild())
+    assert ('library', 'ndn-service-framework') in recorded
+    assert ('metadata', 'libndn-service-framework.pc') in recorded
+    assert sum(kind == 'headers' for kind, _ in recorded) == 2
 
 
 def test_configured_compiler_resolves_matching_binutils_when_path_is_polluted(tmp_path):

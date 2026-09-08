@@ -17,3 +17,16 @@ Raw: `Experiments/TigerCluster/results/yolo-layered-20260908/preflight/`。
 两个SIF摘要结果分别保存在old-cache-sif-sha256.txt和recovery-sif-sha256.txt。
 去重仅替换recovery目录内重复缓存的目录项，原始SIF与两个plane的硬链接保留。
 不改旧manifest、源码或运行记录；完整分层组合仍未资格化。
+
+## Base build graph checkpoint
+
+`wscript --runtime-libraries-only` now registers the Core library, headers and
+pkg-config metadata without DI objects, UAV programs or optional app recursions.
+The default application build is retained. Three focused checks passed in
+`results/yolo-layered-20260908/base-build-graph.xml`; this is build-graph evidence,
+not a new SIF build or native runtime qualification. T011.layer remains open.
+
+The generic Python binding currently compiles `NativeGrantVerifier.cpp` directly;
+its two source/header files therefore remain a base binding dependency even when
+the rest of DI is external. Changes to that binding dependency invalidate the
+base. Directory names alone do not determine the deployment boundary.
