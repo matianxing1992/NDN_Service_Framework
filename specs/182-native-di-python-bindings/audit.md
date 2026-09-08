@@ -7,6 +7,14 @@
 
 ## Current Findings
 
+### V3 Strategy Interface 2026-09-07
+
+placement 基类已改为完整 V3 虚接口，默认实现和只实现 V3 的自定义原生策略都通过
+同一基类调用；新 ABI 构建及 58-case 定向验证 PASS。旧简化 propose 仅留在具体默认类
+供迁移 fixture，不能通过策略基类回退。publication port 仍接收旧 proposal，真实
+requester 尚未调用 placement；T003-C 保持 PARTIAL，见
+[strategy evidence](evidence/t003-v3-strategy-interface-20260907.md)。
+
 ### V3 Sealer Connection 2026-09-07
 
 完整 proposal/admitted offers 已直接连接 sealCore/grantView，复用准备角色和设备可行性

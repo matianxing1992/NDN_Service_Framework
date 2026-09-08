@@ -168,9 +168,10 @@ class NativePlacementStrategy
 public:
   virtual ~NativePlacementStrategy() = default;
   virtual NativeStrategyIdentity identity() const = 0;
-  virtual NativePlacementProposal propose(
-    const NativePlanningSnapshot& snapshot,
-    const NativeSplitCandidate& candidate) const = 0;
+  virtual NativeRolePlacementProposalV3 proposeRoles(
+    const NativeOfferBindingContext& context, const std::string& ackClosedDigest,
+    const std::vector<NativeSelectionRoleV3>& roles,
+    const std::vector<NativeAdmittedOfferV3>& offers, std::uint64_t nowMs) const = 0;
 };
 
 class NativePreSplitFirstPlacement final : public NativePlacementStrategy
@@ -181,13 +182,14 @@ public:
     "sha256:34a7cfcdea48eecebb78f1118ce89cf0b546e4cf08ca99da943daeff28a0dac9"});
 
   NativeStrategyIdentity identity() const override;
+  // Legacy concrete entry for migration fixtures; not the injectable strategy contract.
   NativePlacementProposal propose(const NativePlanningSnapshot& snapshot,
-                                  const NativeSplitCandidate& candidate) const override;
+                                  const NativeSplitCandidate& candidate) const;
 
   NativeRolePlacementProposalV3 proposeRoles(
     const NativeOfferBindingContext& context, const std::string& ackClosedDigest,
     const std::vector<NativeSelectionRoleV3>& roles,
-    const std::vector<NativeAdmittedOfferV3>& offers, std::uint64_t nowMs) const;
+    const std::vector<NativeAdmittedOfferV3>& offers, std::uint64_t nowMs) const override;
 
 private:
   NativeStrategyIdentity m_identity;

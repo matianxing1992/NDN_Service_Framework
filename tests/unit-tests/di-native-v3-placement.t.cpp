@@ -82,8 +82,49 @@ struct Input
     }
   }
 };
+// A native policy implements only the authenticated V3 contract. It does not
+// need a legacy planning view or a Python trampoline to be injected.
+class PreferProvider final : public NativePlacementStrategy
+{
+public:
+  explicit PreferProvider(std::string provider) : m_provider(std::move(provider)) {}
+  NativeStrategyIdentity identity() const override
+  { return {"prefer-provider-fixture", "1", nativePlanningDigest(m_provider)}; }
+  NativeRolePlacementProposalV3 proposeRoles(
+    const NativeOfferBindingContext& context, const std::string& ackClosedDigest,
+    const std::vector<NativeSelectionRoleV3>& roles,
+    const std::vector<NativeAdmittedOfferV3>& offers, std::uint64_t nowMs) const override
+  {
+    auto preferred = offers;
+    preferred.erase(std::remove_if(preferred.begin(), preferred.end(), [&](const auto& offer) {
+      return offer.observation().provider != m_provider;
+    }), preferred.end());
+    return NativePreSplitFirstPlacement(identity()).proposeRoles(
+      context, ackClosedDigest, roles, preferred, nowMs);
+  }
+private:
+  const std::string m_provider;
+};
 }
 BOOST_AUTO_TEST_SUITE(Spec182V3Placement)
+BOOST_AUTO_TEST_CASE(InjectedV3PolicyUsesAdmittedOffersAndIndependentValidation)
+{
+  const auto f = oracle();
+  Input input(f, f.at("seal_cases")[0]);
+  const std::shared_ptr<const NativePlacementStrategy> strategy =
+    std::make_shared<PreferProvider>("/provider/b");
+  const auto proposal = strategy->proposeRoles(input.context, input.ackDigest, input.roles, input.offers, 200);
+  BOOST_REQUIRE_EQUAL(proposal.providerByRole.size(), 1);
+  BOOST_CHECK_EQUAL(proposal.providerByRole.begin()->second, "/provider/b");
+  BOOST_CHECK_EQUAL(proposal.strategy.name, strategy->identity().name);
+  BOOST_CHECK_EQUAL(proposal.strategy.configurationDigest, nativePlanningDigest("/provider/b"));
+  BOOST_CHECK_NO_THROW(validateNativeRolePlacement(proposal, input.roles, input.offers, 200));
+  auto changed = proposal;
+  changed.offerDigestByProvider.begin()->second = nativePlanningDigest("foreign");
+  BOOST_CHECK_THROW(validateNativeRolePlacement(changed, input.roles, input.offers, 200), std::invalid_argument);
+  BOOST_CHECK_THROW(strategy->proposeRoles(input.context, input.ackDigest, input.roles, input.offers,
+    input.context.deadlineMs), std::invalid_argument);
+}
 BOOST_AUTO_TEST_CASE(AdmittedPlacementSealsSdkCoreAndRejectsTampering)
 {
   const auto f = oracle();
@@ -151,7 +192,8 @@ BOOST_AUTO_TEST_CASE(RealSdkPlacementAndExactReuseBoundaries)
   for (const auto& sample : f.at("cases")) {
     BOOST_TEST_CONTEXT(sample.at("name").get<std::string>()) {
       Input input(f, sample);
-      NativePreSplitFirstPlacement strategy;
+      const NativePreSplitFirstPlacement implementation;
+      const NativePlacementStrategy& strategy = implementation;
       if (sample.at("expected").is_null()) {
         BOOST_CHECK_THROW(strategy.proposeRoles(input.context, input.ackDigest, input.roles, input.offers, 200),
                           std::runtime_error);

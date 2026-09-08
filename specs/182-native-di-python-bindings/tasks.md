@@ -23,7 +23,7 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 | [T002-A Installed Library Boundary](contracts/execution-units.md#t002-a-installed-library-boundary) | DONE | T001-C | [L0 evidence](evidence/t002-a-l0-20260907.md)；首次 L0 成功（r2 fresh staging）：consumer 独立编译 rc=0、运行打印 `SPEC182_INSTALLED_CONSUMER_NATIVE_DI_OK` rc=0、无 libpython、staging 无 DI `.cpp/.cc` 副本、NAC-ABE 5-symbol gate 通过；空 registry freeze 语义自修正（[failure-log](../../docs/failure-log.md) 2026-09-07） | 2026-09-07 |
 | [T003-A Qwen Split Candidates](contracts/execution-units.md#t003-a-qwen-split-candidates) | DONE | T002-A | [acceptance](evidence/t003-a-qwen-split-20260907.md)；CPP(Spec182QwenSplit/*) 5 cases 全绿（合法 cover、边界 budget、非法 rank/图输入），expected 逐条对照冻结 `QwenThreeStageSplitter`，支持范围保持 rank-one；新增 2 case 于 di-native-planning.t.cpp | 2026-09-07 |
 | [T003-B Yolo Split Candidates](contracts/execution-units.md#t003-b-yolo-split-candidates) | DONE | T003-A | [acceptance](evidence/t003-b-yolo-split-20260907.md)；CPP(Spec182YoloSplit/*) 7 cases 全绿（固定 cover、错误 component/图/外来模型拒绝、确定性 + budget 截断），expected 对照冻结 `Yolo26Splitter`/`RegisteredYoloCandidate`；新增 2 case 于 di-native-planning.t.cpp | 2026-09-07 |
-| [T003-C Placement and Registry](contracts/execution-units.md#t003-c-placement-and-registry) | PARTIAL | T003-A, T003-B | [V3 placement](evidence/t003-v3-placement-20260907.md)；完整 role/rank 与 admitted offer 入口通过 SDK assignment/device 对照，相关 34 cases PASS；旧 candidate metadata/主链迁移、完整选择与封装验收仍待完成 | 2026-09-07 |
+| [T003-C Placement and Registry](contracts/execution-units.md#t003-c-placement-and-registry) | PARTIAL | T003-A, T003-B | [V3 strategy interface](evidence/t003-v3-strategy-interface-20260907.md)；基类提供完整 role/rank/admitted offer 虚接口，自定义策略与默认 SDK 对照通过，相关 58 cases PASS；旧 publication 输入、candidate metadata/主链迁移与完整验收仍待完成 | 2026-09-07 |
 | [T004-A Canonical Plan Sealing](contracts/execution-units.md#t004-a-canonical-plan-sealing) | PARTIAL | T003-C | [V3 sealer bridge](evidence/t004-v3-sealer-bridge-20260907.md)；完整 proposal/admitted offers 直连 core/grantView，CPU/GPU/multi-rank SDK core digest 对照与相关 55 cases PASS；真实 dataflow/device binding、requester 主链及完整验收仍待完成 | 2026-09-07 |
 | [T005-A InProcess Authority](contracts/execution-units.md#t005-a-inprocess-authority) | PARTIAL | T004-A | [旧局部验收](evidence/t005-a-inprocess-authority-20260907.md) 6 cases PASS 保留；依赖 T004-A 因 [A8-01](evidence/t004-wire-reopened-20260907.md) 重开，修复真实 grantView/core identity 后需复核，不能维持整卡 DONE | 2026-09-07 |
 | [T005-B Requester Grant Publication](contracts/execution-units.md#t005-b-requester-grant-publication) | PARTIAL | T005-A | [旧局部验收](evidence/t005-b-requester-grant-20260907.md) 8 cases + publication/fetch 证据保留；随 T004-A/T005-A 依赖闭合回退，待真实 grantView 输入和 Provider 消费链复核；见 [A8-01](evidence/t004-wire-reopened-20260907.md) | 2026-09-07 |
@@ -55,6 +55,12 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 | [T017-A Development Handoff](contracts/execution-units.md#t017-a-development-handoff) | NOT_STARTED | T016-A | [baseline](evidence/task-progress-registry-20260907.md)；无本卡独立执行/验收记录；按依赖领取 | 2026-09-07 |
 
 ## Current Checkpoint
+
+2026-09-07 T003 V3 strategy interface / **PARTIAL**：placement 基类改为必需的完整 V3
+虚接口，默认策略与自定义策略共享调用契约；旧简化入口不再由基类提供。
+新 ABI -j4 build PASS（310.850s），58 cases/498 assertions PASS，
+见 [V3 strategy interface](evidence/t003-v3-strategy-interface-20260907.md)。
+未新增 DONE，实际 requester 调用仍待接线。
 
 2026-09-07 T004 V3 sealer bridge / **PARTIAL**：新增完整 proposal/admitted offer 直连
 sealCore 和 grantView，复用角色及设备可行性检查，不再回填旧简化 view。-j4 build PASS

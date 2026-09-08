@@ -143,7 +143,8 @@ Source: `NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/placemen
 
 ## V09 ProviderPlanningViewV3
 
-Source: `NDNSF-DistributedInference/ndnsf_distributed_inference/sdk/placement.py:789` → planned `NativeProviderPlanningView`。
+Source: `NDNSF-DistributedInference/ndnsf_distributed_inference/sdk/placement.py:789` → current
+`NativeAdmittedOfferV3::observation()`；旧 `NativeProviderPlanningView` 不是完整 V3 字段载体。
 
 | Field ID | Existing declaration | Meaning and native consumer obligation |
 | --- | --- | --- |
@@ -168,7 +169,10 @@ Source: `NDNSF-DistributedInference/ndnsf_distributed_inference/sdk/placement.py
 
 ## V10 PlacementProposalV3
 
-Source: `NDNSF-DistributedInference/ndnsf_distributed_inference/sdk/placement.py:1428` → planned `NativePlacementProposal`。
+Source: `NDNSF-DistributedInference/ndnsf_distributed_inference/sdk/placement.py:1428` → current
+`NativeRolePlacementProposalV3` 的 context/roles/assignment/strategy；candidateDigest 和
+dependencies 当前分别由 NativeSplitCandidate、NativeExecutionPlan 传给 V3 sealCore。
+完整 requester 生成与绑定这些输入仍待接线；旧 NativePlacementProposal 不再是策略基类返回值。
 
 | Field ID | Existing declaration | Meaning and native consumer obligation |
 | --- | --- | --- |

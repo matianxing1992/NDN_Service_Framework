@@ -121,14 +121,19 @@ class NativePlacementStrategy {
 public:
   virtual ~NativePlacementStrategy() = default;
   virtual NativeStrategyIdentity identity() const = 0;
-  virtual NativePlacementProposal propose(
-      const NativePlanningSnapshot& snapshot,
-      const NativeSplitCandidate& candidate) const = 0;
+  virtual NativeRolePlacementProposalV3 proposeRoles(
+      const NativeOfferBindingContext& context, const std::string& ackClosedDigest,
+      const std::vector<NativeSelectionRoleV3>& roles,
+      const std::vector<NativeAdmittedOfferV3>& offers, std::uint64_t nowMs) const = 0;
 };
 ~~~
 
 两个策略职责不同：split 指定图如何形成 roles；placement 指定 roles 由谁执行。
 Python LayerSplit 等名字只是 native 类型绑定；不把 Python callable 包装后称为 native。
+
+placement 注入契约只使用完整 V3 role 和 admitted offer，不要求自定义策略实现旧简化
+propose。默认类保留的非虚 propose 仅供尚待迁移的旧定向 fixture；不经基类提供兼容回退。
+默认与自定义策略都由同一独立 sealer 检查输出可行性，合法自定义选择不必等于默认排序。
 
 **Inputs**：model/graph 来自认证目录与 canonical 工件；snapshot 仅包含一次 ACK_CLOSED 的
 认证 offers、其 digest、绝对 deadline 和不可变模型/图引用。

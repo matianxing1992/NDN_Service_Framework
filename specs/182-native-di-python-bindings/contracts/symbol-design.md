@@ -32,7 +32,7 @@ request/attempt、deadline、digest、secret lease、缓存失效和队列计数
 | C02 / CD-001 NativeInferenceHandle | 可复制的结果/取消/观察入口；不独立推进请求 | shared operation 引用；client 关闭后仍可读终态 | requestId/status/result/cancel/observe；说明等待超时不取消，observer 不控制成功 |
 | C03 / CD-001 NativeDiError | 稳定非秘密错误值/异常，替代跨语言文本判断 | code/domain/boundary/requestId/attempt；不可含 key/payload | 构造时验证原因码；bindings 映射同一类别，不从文本反推原因 |
 | C04 / CD-002 NativeModelSplitStrategy | 模型角色切分提案接口，不能授权 | immutable strategy identity；无网络状态 | identity/enumerate/virtual destructor；注释输入冻结、输出由 sealer 再校验 |
-| C05 / CD-002 NativePlacementStrategy | 角色到 Provider/device 的提案接口 | immutable strategy identity；只读 snapshot | identity/propose/virtual destructor；不持有发布/授权端口 |
+| C05 / CD-002 NativePlacementStrategy | 角色到 Provider/device 的提案接口 | immutable strategy identity；完整只读 roles/admitted offers/context | identity/proposeRoles/virtual destructor；不持有发布/授权端口；不提供旧 proposal 回退 |
 | C06 / CD-002 NativePreSplitFirstPlacement | 保留已支持 placement 排序与确定性 tie-break | 冻结参数，无 residency 权威缓存 | identity/proposeRoles 接受完整角色与 admitted offer；旧 propose 待 metadata 迁移后替换；has_model 不证明 exact residency |
 | C07 / CD-002 NativeQwenLayerSplit | Qwen cover/rank-one 默认切分；模型变化归 adapter | 已验证 split 参数 | identity/enumerate；未支持的 tensor parallel 拒绝，非本次新增能力 |
 | C08 / CD-002 NativeYoloComponentSplit | YOLO FullModel/component cover 与 ingress/egress | 已验证 split 参数 | identity/enumerate；保留 source candidate priority，不能被缓存排序覆盖 |
@@ -75,7 +75,7 @@ client/provider 不可复制；handle/registration 通过 shared internal record
 | M09 observe(function<void(const NativeInferenceEvent&)>) → void | 注册只读事件消费者到独立有界队列；异常隔离；溢出为 delivery error 不伪造业务结果 | telemetry/binding；捕获 lifetime、停止投递后释放 callback |
 | M10 identity() const → NativeStrategyIdentity | 根据固定 strategy name/version/参数 canonical digest 返回值 | planner/sealer；不从 mutable cache 构造身份 |
 | M11 enumerate(model,graph,budget) const → vector<NativeSplitCandidate> | 认证模型/graph匹配；按模型 cover规则生成有界候选；零候选/越预算明确失败 | client ACK后调用；无 I/O；非法输出由 sealer 拒绝 |
-| M12 propose(snapshot,candidate) const → NativePlacementProposal | 先过滤角色/backend/device/资源，再按冻结时刻有效 lease/residency 和 tie-break 排序；不得更改 candidate priority | client 每候选调用；无可行方案为 planning failure |
+| M12 proposeRoles(context,ackClosedDigest,roles,offers,nowMs) const → NativeRolePlacementProposalV3 | 默认策略先过滤角色/backend/device/资源，再按冻结时刻有效 lease/residency 和 tie-break 排序；独立 sealer 检查任意原生策略输出 | planned client 每候选通过基类调用；无可行方案为 planning failure；实际主链尚待接线 |
 | M13 registerAdapter(string id,shared_ptr<const NativeModelAdapter>) → void | 启动期校验 descriptor ID与注册键一致；空/重复/冻结后变更拒绝 | native bootstrap；写 entries；非 request 动态插件 |
 | M14 find(const string& id) const → shared_ptr<const NativeModelAdapter> | 只读查找，未注册显式错误；返回共享只读 lifetime | preparation/client；不能按模型名 switch 隐藏分支 |
 | M15 freeze() → void | 校验 entries 后设置只读；幂等；所有 client 构造前完成 | bootstrap；后续查找无锁写竞争 |
