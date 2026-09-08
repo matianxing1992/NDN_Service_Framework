@@ -621,6 +621,45 @@ BOOST_AUTO_TEST_CASE(ProviderDestructionFencesQueuedActiveAndPostedCollaboration
   }
 }
 
+BOOST_AUTO_TEST_CASE(CancelDeferredCollaborationRemovesPendingStateAndTimers)
+{
+  class CancelUser : public LocalServiceUser {
+  public:
+    using LocalServiceUser::LocalServiceUser;
+    void arm(const ndn::Name& id, unsigned& callbacks) {
+      auto& call = m_pendingCalls.at(id);
+      call.requestTimeoutEvent = m_scheduler.schedule(ndn::time::milliseconds(5), [&] { ++callbacks; });
+      call.responseAttemptTimeoutEvent = m_scheduler.schedule(ndn::time::milliseconds(5), [&] { ++callbacks; });
+      call.collaborationScopeKeys["scope"] = ndn::Buffer(32, 1);
+      m_userCollaborationScopeKeys[id]["scope"] = ndn::Buffer(32, 1);
+      m_verifiedCollaborationData[id] = {VerifiedCollaborationData{}};
+    }
+    bool hasRetainedData(const ndn::Name& id) {
+      return m_userCollaborationScopeKeys.count(id) || m_verifiedCollaborationData.count(id);
+    }
+  };
+  ndn::security::KeyChain keyChain("pib-memory:", "tpm-memory:");
+  ndn::DummyClientFace face(keyChain);
+  auto userCert = makeRsaIdentity(keyChain, ndn::Name("/user/cancel"));
+  auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa"));
+  CancelUser user(face, ndn::Name("/test/group"), userCert, aaCert, "examples/trust-any.conf");
+  for (bool closed : {false, true}) {
+    const ndn::Name id(closed ? "/request/closed" : "/request/open");
+    unsigned closures = 0, timerCallbacks = 0;
+    user.prepareDeferredCollaborationForTest(id, [&](const auto&) { ++closures; });
+    user.arm(id, timerCallbacks);
+    if (closed) BOOST_REQUIRE(user.closeDeferredAcksForTest(id));
+    BOOST_REQUIRE(user.CancelCollaboration(id));
+    BOOST_CHECK(!user.hasPendingCall(id));
+    BOOST_CHECK(!user.hasRetainedData(id));
+    BOOST_CHECK(!user.CancelCollaboration(id));
+    BOOST_CHECK_THROW(user.CommitCollaborationPlan(id, "late", {}), std::invalid_argument);
+    face.processEvents(ndn::time::milliseconds(20));
+    BOOST_CHECK_EQUAL(timerCallbacks, 0U);
+    BOOST_CHECK_EQUAL(closures, closed ? 1U : 0U);
+  }
+}
+
 BOOST_AUTO_TEST_CASE(DeferredCollaborationTracksAckDecryptBeforeClosure)
 {
   ndn::security::KeyChain keyChain(

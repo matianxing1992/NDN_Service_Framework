@@ -1,4 +1,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestEnvelope.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPlanner.hpp"
 #include "ndn-service-framework/ServiceUser.hpp"
 
 #include <atomic>
@@ -176,6 +179,27 @@ struct NativeInferenceHandle::Operation
   // The caller's Core owner survives asynchronous work and handle waits.
   // It does not transfer ownership of the application's Face to DI.
   std::shared_ptr<ndn_service_framework::ServiceUser> user;
+  // Submission values are owned snapshots. Worker/callback work must never
+  // read the caller's model/input/options or borrow the client's lifetime.
+  NativeModelRef model;
+  NativeApplicationInput input;
+  NativeRequestOptions options;
+  std::shared_ptr<const NativeModelSplitStrategy> splitStrategy;
+  std::shared_ptr<const NativePlacementStrategy> placementStrategy;
+  std::shared_ptr<NativeRequestPreparation> preparation;
+  std::optional<NativePreparedInput> preparedInput;
+  std::shared_ptr<const NativeRequestContract> requestContract;
+  std::uint64_t wireDeadlineMs = 0;
+  std::optional<NativeEncodedRequest> encodedRequest;
+  std::shared_ptr<const NativeRequestRuntime> runtime;
+  std::shared_ptr<const NativeOfferAdmission> admission;
+  std::shared_ptr<const NativeAdapterRegistry> adapters;
+  std::shared_ptr<SerialRequestExecutor> worker;
+  std::shared_ptr<std::atomic<bool>> cancelled = std::make_shared<std::atomic<bool>>(false);
+  NativeRequestOptions coreOptions;
+  std::optional<NativeInspectedModel> inspected;
+  std::optional<NativePlannedRequest> planned;
+  bool coreActive = false;
   mutable std::mutex mutex;
   std::condition_variable condition;
   std::string requestId;
@@ -226,6 +250,8 @@ markTerminal(const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
              const NativeInferenceResult* result = nullptr)
 {
   std::function<void()> cancelDeadline;
+  bool cancelCore = false;
+  std::vector<std::string> releaseScopes;
   {
     std::lock_guard<std::mutex> lock(operation->mutex);
     if (operation->status != NativeRequestStatus::Pending) {
@@ -239,11 +265,26 @@ markTerminal(const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
       operation->error = std::move(error);
     }
     operation->status = terminal;
+    operation->cancelled->store(true);
+    cancelCore = operation->coreActive;
+    if (operation->planned) {
+      for (const auto& scope : operation->planned->corePlan.keyScopes) releaseScopes.push_back(scope.name);
+    }
     operation->phase = DiRequestPhase::Terminal;
     cancelDeadline = std::move(operation->cancelDeadline);
   }
   if (cancelDeadline) cancelDeadline();
   operation->condition.notify_all();
+  if (cancelCore) {
+    const auto user = operation->user;
+    const auto id = ndn::Name(operation->requestId);
+    user->postToIo([user, id, scopes = std::move(releaseScopes)] {
+      user->CancelCollaboration(id);
+      // Core may already have consumed the pending call before its terminal
+      // callback. Release retained per-scope data independently of that map.
+      for (const auto& scope : scopes) user->clearVerifiedCollaborationData(id, scope);
+    });
+  }
   return true;
 }
 
@@ -296,6 +337,128 @@ cancelOperation(const std::shared_ptr<NativeInferenceHandle::Operation>& operati
   publishEvent(operation, makeTerminalEvent(*operation));
 }
 
+void enqueueOperation(const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
+                      std::function<void()> work, const std::string& boundary)
+{
+  try {
+    operation->worker->submit([operation, work = std::move(work), boundary] {
+      if (operation->cancelled->load()) return;
+      try { work(); }
+      catch (const NativeDiError& error) { failOperation(operation, error); }
+      catch (...) {
+        failOperation(operation, NativeDiError("NATIVE_REQUEST_STAGE_FAILED", "runtime", boundary,
+          "native request stage failed", operation->requestId, operation->attempt));
+      }
+    });
+  }
+  catch (const std::exception&) {
+    if (!operation->cancelled->load()) failOperation(operation, NativeDiError(
+      "NATIVE_REQUEST_DISPATCH_FAILED", "local", boundary, "request worker is unavailable",
+      operation->requestId, operation->attempt));
+  }
+}
+
+void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& operation)
+{
+  operation->user->postToIo([operation] {
+    try {
+      {
+        std::lock_guard<std::mutex> lock(operation->mutex);
+        if (operation->status != NativeRequestStatus::Pending) return;
+        const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+          operation->deadline - std::chrono::steady_clock::now()).count();
+        if (remaining <= static_cast<std::int64_t>(operation->options.ackTimeoutMs))
+          throw NativeDiError("NATIVE_REQUEST_TIMEOUT", "local", "begin",
+            "request budget cannot accommodate the ACK window", operation->requestId, operation->attempt);
+        operation->coreOptions = operation->options;
+        operation->coreOptions.timeoutMs = static_cast<std::uint64_t>(remaining);
+        operation->phase = DiRequestPhase::Requesting;
+        operation->coreActive = true;
+      }
+      const auto ackClosed = [operation](const ndn_service_framework::CollaborationAckClosure& closure) {
+        enqueueOperation(operation, [operation, closure] {
+          {
+            std::lock_guard<std::mutex> lock(operation->mutex);
+            if (operation->status != NativeRequestStatus::Pending || operation->phase != DiRequestPhase::Requesting) return;
+            operation->phase = DiRequestPhase::Planning;
+          }
+          NativeRequestControl control{operation->requestId, operation->attempt, operation->deadline,
+            [flag = operation->cancelled] { return flag->load(); }};
+          auto planned = planNativeRequest(*operation->runtime, operation->coreOptions,
+            *operation->inspected, *operation->encodedRequest, *operation->splitStrategy,
+            *operation->placementStrategy, *operation->preparation, *operation->admission,
+            closure, control, operation->wireDeadlineMs, operation->cancelled);
+          {
+            std::lock_guard<std::mutex> lock(operation->mutex);
+            if (operation->status != NativeRequestStatus::Pending) return;
+            operation->planned = std::move(planned);
+          }
+          operation->user->postToIo([operation, digest = closure.digest] {
+            try {
+              if (operation->cancelled->load()) return;
+              if (std::chrono::steady_clock::now() >= operation->deadline)
+                throw NativeDiError("NATIVE_REQUEST_TIMEOUT", "local", "commit",
+                  "request expired before commit", operation->requestId, operation->attempt);
+              if (!operation->user->CommitCollaborationPlan(ndn::Name(operation->requestId),
+                    digest, operation->planned->corePlan))
+                throw std::runtime_error("Core rejected the sealed plan");
+              std::lock_guard<std::mutex> lock(operation->mutex);
+              if (operation->status == NativeRequestStatus::Pending) operation->phase = DiRequestPhase::Committed;
+            }
+            catch (const NativeDiError& error) { failOperation(operation, error); }
+            catch (...) { failOperation(operation, NativeDiError(
+              "NATIVE_REQUEST_COMMIT_FAILED", "runtime", "commit", "Core plan commit failed",
+              operation->requestId, operation->attempt)); }
+          });
+        }, "ACK_CLOSED");
+      };
+      const auto response = [operation](const ndn_service_framework::ResponseMessage& message) {
+        enqueueOperation(operation, [operation, message] {
+          {
+            std::lock_guard<std::mutex> lock(operation->mutex);
+            if (operation->status != NativeRequestStatus::Pending) return;
+            if (operation->phase != DiRequestPhase::Committed || !operation->planned)
+              throw std::runtime_error("response preceded plan commit");
+          }
+          if (!message.getStatus()) throw NativeDiError("NATIVE_PROVIDER_FAILED", "provider", "response",
+            "selected Provider returned a failure", operation->requestId, operation->attempt);
+          if (message.getDataName().empty() || message.getSignerCertificate().empty() ||
+              message.getWireDigest().empty() || !ndn::Name(operation->planned->terminalProvider).isPrefixOf(
+                ndn::Name(message.getDataName())))
+            throw NativeDiError("NATIVE_RESPONSE_BINDING_REJECTED", "provider", "response",
+              "response lacks the terminal Provider transport binding", operation->requestId, operation->attempt);
+          auto adapter = operation->adapters->find(operation->model.adapterId);
+          NativeInferenceResult result;
+          const auto payload = message.getPayload();
+          result.payload = adapter->decodeResult(std::vector<std::uint8_t>(payload.begin(), payload.end()));
+          result.modelDigest = operation->encodedRequest->modelIntentDigest;
+          result.planDigest = operation->planned->sealed.planDigest;
+          if (std::chrono::steady_clock::now() >= operation->deadline)
+            throw NativeDiError("NATIVE_REQUEST_TIMEOUT", "local", "response",
+              "request expired during result decoding", operation->requestId, operation->attempt);
+          if (markTerminal(operation, NativeRequestStatus::Succeeded, nullptr, &result))
+            publishEvent(operation, makeTerminalEvent(*operation));
+        }, "response");
+      };
+      const auto timeout = [operation](const ndn::Name&) {
+        failOperation(operation, NativeDiError("NATIVE_REQUEST_TIMEOUT", "local", "Core",
+          "Core request deadline expired", operation->requestId, operation->attempt));
+      };
+      ndn_service_framework::RequestCapabilities capabilities;
+      capabilities.setField("NDNSF_DATA_V1", "required");
+      operation->user->BeginCollaboration(ndn::Name(operation->runtime->contract.serviceName),
+        ndn::Buffer(operation->encodedRequest->wire.begin(), operation->encodedRequest->wire.end()),
+        static_cast<int>(operation->coreOptions.ackTimeoutMs),
+        static_cast<int>(operation->coreOptions.timeoutMs), ackClosed, response, timeout,
+        ndn::Name(operation->requestId), {}, capabilities);
+    }
+    catch (const NativeDiError& error) { failOperation(operation, error); }
+    catch (...) { failOperation(operation, NativeDiError(
+      "NATIVE_REQUEST_BEGIN_FAILED", "runtime", "begin", "Core request start failed",
+      operation->requestId, operation->attempt)); }
+  });
+}
+
 // Serial dispatch driver, run on the executor worker or the unit-test pump.
 // The absolute per-request deadline is checked before any stage work: work
 // that can no longer finish inside the request budget is refused and the
@@ -324,6 +487,96 @@ dispatchOperation(const std::shared_ptr<NativeInferenceHandle::Operation>& opera
       "NATIVE_REQUEST_TIMEOUT", "local", "request",
       "native request budget expired before dispatch", operation->requestId,
       operation->attempt));
+    return;
+  }
+  if (operation->preparation) {
+    NativePreparedInput prepared;
+    try {
+      const auto& input = operation->input;
+      const auto& options = operation->options;
+      if (input.transportMode != NativeInputTransportMode::Inline)
+        throw std::invalid_argument("repository input resolution is not linked");
+      if (!options.taskName.empty() && !input.taskName.empty() &&
+          options.taskName != input.taskName)
+        throw std::invalid_argument("request task names disagree");
+      prepared = operation->preparation->prepareInput(
+        operation->model, options.taskName.empty() ? input.taskName : options.taskName,
+        input.inputSchemaDigest, input.optionsSchemaDigest, input.payload,
+        input.repositoryReference, operation->deadline);
+    }
+    catch (const NativeDiError&) { throw; }
+    catch (const std::exception&) {
+      if (now() >= operation->deadline) {
+        failOperation(operation, NativeDiError(
+          "NATIVE_REQUEST_TIMEOUT", "local", "request",
+          "native request budget expired during preparation", operation->requestId,
+          operation->attempt));
+        return;
+      }
+      failOperation(operation, NativeDiError(
+        "NATIVE_INPUT_PREPARATION_FAILED", "planning", "prepareInput",
+        "native request input preparation failed", operation->requestId, operation->attempt));
+      return;
+    }
+    // Encoding can invoke application adapters while close/cancel/deadline
+    // runs concurrently. Only the pending operation may retain its output.
+    {
+      std::lock_guard<std::mutex> lock(operation->mutex);
+      if (operation->status != NativeRequestStatus::Pending) {
+        ++operation->staleCallbacks;
+        return;
+      }
+      expired = now() >= operation->deadline;
+      if (!expired) operation->preparedInput = std::move(prepared);
+    }
+    if (expired) {
+      failOperation(operation, NativeDiError(
+        "NATIVE_REQUEST_TIMEOUT", "local", "request",
+        "native request budget expired during preparation", operation->requestId,
+        operation->attempt));
+      return;
+    }
+  }
+  if (operation->requestContract && operation->preparedInput) {
+    auto input = operation->input;
+    input.payload = operation->preparedInput->payload;
+    input.taskName = operation->preparedInput->taskName;
+    NativeEncodedRequest encoded;
+    try {
+      encoded = encodeNativeRequestEnvelope(operation->model, input,
+        *operation->requestContract, operation->requestId, operation->attempt,
+        operation->wireDeadlineMs);
+    }
+    catch (const std::exception&) {
+      failOperation(operation, NativeDiError(
+        "NATIVE_REQUEST_CONTRACT_INVALID", "planning", "requestWire",
+        "native request contract encoding failed", operation->requestId, operation->attempt));
+      return;
+    }
+    {
+      std::lock_guard<std::mutex> lock(operation->mutex);
+      if (operation->status != NativeRequestStatus::Pending) {
+        ++operation->staleCallbacks;
+        return;
+      }
+      expired = now() >= operation->deadline;
+      if (!expired) operation->encodedRequest = std::move(encoded);
+    }
+    if (expired) {
+      failOperation(operation, NativeDiError(
+        "NATIVE_REQUEST_TIMEOUT", "local", "request",
+        "native request budget expired during encoding", operation->requestId, operation->attempt));
+      return;
+    }
+  }
+  if (operation->runtime && operation->preparedInput && operation->encodedRequest) {
+    auto inspected = operation->preparation->inspectModel(*operation->preparedInput);
+    {
+      std::lock_guard<std::mutex> lock(operation->mutex);
+      if (operation->status != NativeRequestStatus::Pending) return;
+      operation->inspected = std::move(inspected);
+    }
+    beginCoreRequest(operation);
     return;
   }
   failOperation(operation, NativeDiError(
@@ -453,6 +706,40 @@ NativeInferenceClient::NativeInferenceClient(
 }
 
 NativeInferenceClient::NativeInferenceClient(
+  std::shared_ptr<ndn_service_framework::ServiceUser> user,
+  std::shared_ptr<const NativeAdapterRegistry> adapters,
+  const NativeRequestContract& contract,
+  std::shared_ptr<NativeRequestPreparation> preparation,
+  std::shared_ptr<const NativeOfferAdmission> admission)
+  : NativeInferenceClient(std::move(user), std::move(adapters), nullptr, nullptr,
+                          std::move(preparation), std::move(admission))
+{
+  if (!m_preparation || !m_admission || contract.serviceName.empty() ||
+      contract.serviceName.front() != '/' || contract.taskName.empty())
+    throw NativeDiError("INVALID_CLIENT_CONFIGURATION", "local", "constructor",
+                        "native requester requires service, task, preparation and admission");
+  m_requestContract = std::make_shared<const NativeRequestContract>(contract);
+}
+
+NativeInferenceClient::NativeInferenceClient(
+  std::shared_ptr<ndn_service_framework::ServiceUser> user,
+  std::shared_ptr<const NativeAdapterRegistry> adapters,
+  const NativeRequestRuntime& runtime,
+  std::shared_ptr<NativeRequestPreparation> preparation,
+  std::shared_ptr<const NativeOfferAdmission> admission)
+  : NativeInferenceClient(std::move(user), std::move(adapters), runtime.contract,
+                          std::move(preparation), std::move(admission))
+{
+  runtime.budget.validate();
+  if (!runtime.grants || !runtime.security.requireProtectedArtifacts || runtime.requesterIdentity.empty() ||
+      runtime.protectionEpoch.empty() || runtime.protectionEpoch == "plaintext-v1" ||
+      !runtime.maxSegments || !runtime.noProgressMs)
+    throw NativeDiError("INVALID_CLIENT_CONFIGURATION", "local", "constructor",
+      "native requester requires protected runtime policy and grant owner");
+  m_runtime = std::make_shared<const NativeRequestRuntime>(runtime);
+}
+
+NativeInferenceClient::NativeInferenceClient(
   const TestPort& testPort,
   std::shared_ptr<ndn_service_framework::ServiceUser> user,
   std::shared_ptr<const NativeAdapterRegistry> adapters,
@@ -515,6 +802,17 @@ NativeInferenceHandle NativeInferenceClient::request(
     }
     operation = std::make_shared<NativeInferenceHandle::Operation>();
     operation->user = m_user;
+    operation->model = model;
+    operation->input = input;
+    operation->options = options;
+    operation->splitStrategy = std::move(splitStrategy);
+    operation->placementStrategy = std::move(placementStrategy);
+    operation->preparation = m_preparation;
+    operation->requestContract = m_requestContract;
+    operation->runtime = m_runtime;
+    operation->admission = m_admission;
+    operation->adapters = m_adapters;
+    operation->worker = m_executor;
     operation->notifications = m_notifications;
     // The requestId comes from a unique native owner allocated at submission
     // (runtime-boundaries: Core allocation or unique native owner); the
@@ -525,6 +823,13 @@ NativeInferenceHandle NativeInferenceClient::request(
     // Absolute budget: computed once from the submission clock; waits and
     // cancels never re-arm it (deadline / operation row, CD-007).
     operation->deadline = m_now() + std::chrono::milliseconds(options.timeoutMs);
+    // Freeze the wire wall-clock expiry at the same submission boundary.
+    // Dispatch/ACK latency must not grant a new relative request budget.
+    const auto epochMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::system_clock::now().time_since_epoch()).count();
+    if (epochMs <= 0) throw NativeDiError("INVALID_REQUEST_CLOCK", "local", "request",
+                                        "request wall clock precedes the epoch");
+    operation->wireDeadlineMs = static_cast<std::uint64_t>(epochMs) + options.timeoutMs;
     m_operations.push_back(operation);
   }
   // Submission returns a Pending handle; the dispatch runs on the

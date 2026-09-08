@@ -2,10 +2,10 @@
   "cpu": {
     "dataflow": {
       "attempt": 1,
-      "dataflow_digest": "sha256:398866504ddac08a5602453a90e2749e3834697f1e869a34d0166d438f211caa",
+      "dataflow_digest": "sha256:cca1534dae54dabe758ccbab2bf2723eba9231523d581a85ad32c82f45287e9b",
       "may_publish": [],
       "must_fetch": [],
-      "plan_digest": "sha256:4ac3aee3a12d27b34d6c975861fd2fd13464f5a7ecbed2481f3e166e024d474f",
+      "plan_digest": "sha256:8e7e52a38a2f4b5d5cb4a1bf0e6a1c7b891e9fc4f44c982fe882ddcec98f24dc",
       "request_id": "request",
       "role": "/LLM/Pipeline/Stage/0",
       "terminal_response_owner": true,
@@ -13,7 +13,7 @@
     },
     "device": {
       "mode": "CPU",
-      "offer_digest": "sha256:01fae4f709b5db6f345b506a13e4ebc5eaf62130dfaa28a676796d195ab0e4d7",
+      "offer_digest": "sha256:b30c9d12ece29c01a5d3af52e320886783f7eb1fb8f1ce43abb15bc0132c4ce0",
       "offer_scoped_device_handle": "",
       "provider": "/provider/a",
       "resource_sequence": 1,
@@ -22,15 +22,15 @@
       "sharing_policy": "EXCLUSIVE_ROLE",
       "topology_profile_digest": "sha256:d428073a9a346c7e5b1d0d9703a9bdfb6b0f8871d5f2b944b2326bab790fb182"
     },
-    "plan_digest": "sha256:4ac3aee3a12d27b34d6c975861fd2fd13464f5a7ecbed2481f3e166e024d474f"
+    "plan_digest": "sha256:8e7e52a38a2f4b5d5cb4a1bf0e6a1c7b891e9fc4f44c982fe882ddcec98f24dc"
   },
   "distinct_graph_spaces": {
     "dataflow": {
       "attempt": 1,
-      "dataflow_digest": "sha256:dc3ce99ea8c8e3b80e40f66e0fd46bf22d72324c77c2e34acba7a784d6b9feba",
+      "dataflow_digest": "sha256:ea2bde458a3199f6200adbad8c9f53b1be687f5e3bdabfd4daadccd2d15f96cc",
       "may_publish": [],
       "must_fetch": [],
-      "plan_digest": "sha256:f3f67945517d0e584884b977e69d995fea82205c42f5846147cea350ae78b676",
+      "plan_digest": "sha256:776ef85f171a55af1e28d273d4433edc955fe55146b2300bb30744dbb0d3d5a3",
       "request_id": "request",
       "role": "/LLM/Pipeline/Stage/0",
       "terminal_response_owner": true,
@@ -38,7 +38,7 @@
     },
     "device": {
       "mode": "CPU",
-      "offer_digest": "sha256:01fae4f709b5db6f345b506a13e4ebc5eaf62130dfaa28a676796d195ab0e4d7",
+      "offer_digest": "sha256:b30c9d12ece29c01a5d3af52e320886783f7eb1fb8f1ce43abb15bc0132c4ce0",
       "offer_scoped_device_handle": "",
       "provider": "/provider/a",
       "resource_sequence": 1,
@@ -47,15 +47,15 @@
       "sharing_policy": "EXCLUSIVE_ROLE",
       "topology_profile_digest": "sha256:d428073a9a346c7e5b1d0d9703a9bdfb6b0f8871d5f2b944b2326bab790fb182"
     },
-    "plan_digest": "sha256:f3f67945517d0e584884b977e69d995fea82205c42f5846147cea350ae78b676"
+    "plan_digest": "sha256:776ef85f171a55af1e28d273d4433edc955fe55146b2300bb30744dbb0d3d5a3"
   },
   "loaded_second_device": {
     "dataflow": {
       "attempt": 1,
-      "dataflow_digest": "sha256:26c1a07fb7f6e007a7b0654f0769ac5ec44252b64289b422e1a4c54b8df2e6b0",
+      "dataflow_digest": "sha256:1c44909951d5fcc22eebd341b00fd32777ca00b95b61d6e3bbef6b9aa137a61f",
       "may_publish": [],
       "must_fetch": [],
-      "plan_digest": "sha256:da41f0b5f0489cd8093d9605b22c696796b7ad657411b46dafa5f2d11d7d8f65",
+      "plan_digest": "sha256:7c9cf230099905df367834803e6c27844721616d0172ae9084c331ae525b58b0",
       "request_id": "request",
       "role": "/LLM/Pipeline/Stage/0",
       "terminal_response_owner": true,
@@ -63,7 +63,7 @@
     },
     "device": {
       "mode": "SINGLE_DEVICE",
-      "offer_digest": "sha256:796810f9ae34000f32bd739c96dfafe3247d2d226fca520cffce27cd3785404b",
+      "offer_digest": "sha256:d2104f2208649036055c7f77c10f8684bc6be35155104c384b60c931ed9b0947",
       "offer_scoped_device_handle": "cuda:1",
       "provider": "/provider/a",
       "resource_sequence": 1,
@@ -72,15 +72,15 @@
       "sharing_policy": "EXCLUSIVE_ROLE",
       "topology_profile_digest": "sha256:aa110ee80fa2691b7ee0b71aaa021924767576d44845b967e01db3c33c653fb2"
     },
-    "plan_digest": "sha256:da41f0b5f0489cd8093d9605b22c696796b7ad657411b46dafa5f2d11d7d8f65"
+    "plan_digest": "sha256:7c9cf230099905df367834803e6c27844721616d0172ae9084c331ae525b58b0"
   },
   "published_cpu": {
     "dataflow": {
       "attempt": 1,
-      "dataflow_digest": "sha256:528a1885bafd6e12f801d4180b884c01e33a1023ba137911d257fd6ce63437a2",
+      "dataflow_digest": "sha256:225ee0049b5f31c22946240b94904e1c394b180c69065d51c7302265c60de506",
       "may_publish": [],
       "must_fetch": [],
-      "plan_digest": "sha256:d7f3391af8cf65998f2cd284a895c2a54faea756d6f3a7bb8df2e4ae59da454d",
+      "plan_digest": "sha256:0381dcfe975ad2cd63d414ac4a6389d58165df7cd82faca1ddee0c36e9394d90",
       "request_id": "request",
       "role": "/LLM/Pipeline/Stage/0",
       "terminal_response_owner": true,
@@ -88,7 +88,7 @@
     },
     "device": {
       "mode": "CPU",
-      "offer_digest": "sha256:01fae4f709b5db6f345b506a13e4ebc5eaf62130dfaa28a676796d195ab0e4d7",
+      "offer_digest": "sha256:b30c9d12ece29c01a5d3af52e320886783f7eb1fb8f1ce43abb15bc0132c4ce0",
       "offer_scoped_device_handle": "",
       "provider": "/provider/a",
       "resource_sequence": 1,
@@ -97,6 +97,6 @@
       "sharing_policy": "EXCLUSIVE_ROLE",
       "topology_profile_digest": "sha256:d428073a9a346c7e5b1d0d9703a9bdfb6b0f8871d5f2b944b2326bab790fb182"
     },
-    "plan_digest": "sha256:d7f3391af8cf65998f2cd284a895c2a54faea756d6f3a7bb8df2e4ae59da454d"
+    "plan_digest": "sha256:0381dcfe975ad2cd63d414ac4a6389d58165df7cd82faca1ddee0c36e9394d90"
   }
 }

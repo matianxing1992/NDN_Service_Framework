@@ -23,11 +23,20 @@ struct NativeSignedGrantRequest
   NativeSignedGrantRequest sign(EVP_PKEY& requesterPrivateKey) const;
 };
 
+struct NativeGrantPublicationSource
+{
+  std::string modelName, modelContentDigest, canonicalSourceDigest;
+  std::string initializerObjectDigest, artifactProfileDigest;
+};
+
 struct NativeGrantIssuerConfig
 {
   std::string authorityIdentity, requesterIdentity, protectionEpoch, keyId;
   std::shared_ptr<EVP_PKEY> authorityPrivateKey, requesterPublicKey;
   std::set<std::string> allowedModelManifests;
+  // Optional immutable authorization for republishing an already owned source.
+  // Indexed by the original allowed manifest; never populated by a request.
+  std::map<std::string, NativeGrantPublicationSource> publicationSources;
   std::set<std::string> allowedResidencyTiers{"DISK_CIPHERTEXT_ASSEMBLED"};
   std::map<std::string, std::shared_ptr<EVP_PKEY>> recipientPublicKeys;
   /** Return the already-owned model key, not a newly generated grant key. */
@@ -45,6 +54,9 @@ public:
   explicit NativeArtifactGrantIssuer(NativeGrantIssuerConfig config);
   NativeKeyGrant issue(const NativeSignedGrantRequest& request,
                        std::uint64_t nowMs, std::uint64_t expiresAtMs) const;
+  NativeKeyGrant issue(const NativeSignedGrantRequest& request,
+                       std::uint64_t nowMs, std::uint64_t expiresAtMs,
+                       const std::string& publishedManifestJson) const;
 private:
   NativeGrantIssuerConfig m_config;
 };

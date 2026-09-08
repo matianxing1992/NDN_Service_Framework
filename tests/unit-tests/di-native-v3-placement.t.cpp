@@ -1,4 +1,5 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeV3Placement.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPlanner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanProjectionBuilder.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
 #include "tests/fixtures/spec182/native-model-fixture.hpp"
@@ -16,6 +17,9 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGroupProjectionBuilder.hpp"
 #include "ndn-service-framework/HybridMessageCrypto.hpp"
 #include <ndn-cxx/security/key-params.hpp>
+#include "tests/unit-tests/generic-dynamic-api-fixture.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCatalogModelAdapter.hpp"
+#include <thread>
 
 namespace {
 using namespace ndnsf::di;
@@ -57,7 +61,7 @@ struct Input
       role.requiredDeviceMemoryMb = 1024;
       roles.push_back(role);
     }
-    NativeModelDescriptor descriptor{"QwenFixture", context.modelDigest, nativePlanningDigest("semantics"),
+    NativeModelDescriptor descriptor{"QwenFixture", f.at("source_content_digest"), nativePlanningDigest("semantics"),
       context.graphDigest, "onnx", "fp32", roles.front().adapterId, roles.front().adapterVersion};
     descriptor = fixture::completeModel(descriptor);
     NativeGraphSnapshot graph;
@@ -274,7 +278,7 @@ BOOST_AUTO_TEST_CASE(ProjectionBuilderDerivesApplicationInputAndDependencyReadin
     sealing.expiresAtMs = input.context.deadlineMs;
     auto& artifacts = sealing.artifacts;
     artifacts.requestId = input.context.requestId; artifacts.attempt = input.context.attempt;
-    artifacts.modelDigest = input.context.modelDigest; artifacts.graphDigest = input.context.graphDigest;
+    artifacts.modelDigest = input.inspected.descriptor.contentDigest; artifacts.graphDigest = input.context.graphDigest;
     artifacts.canonicalGraphDigest = input.inspected.canonicalGraphDigest;
     artifacts.manifestDigest = input.inspected.modelManifestDigest; artifacts.recipeDigest = input.roles.front().recipeDigest;
     for (const auto& role : proposal.roles) {
@@ -298,6 +302,13 @@ BOOST_AUTO_TEST_CASE(ProjectionBuilderDerivesApplicationInputAndDependencyReadin
         plan, input.offers, input.ackDigest, sealing));
     };
     const auto sealed = seal(execution);
+    BOOST_CHECK_EQUAL(sealed.core.modelDigest, input.inspected.descriptor.intentDigest());
+    BOOST_CHECK_EQUAL(sealed.core.sourceContentDigest, input.inspected.descriptor.contentDigest);
+    BOOST_CHECK(sealed.core.modelDigest != sealed.core.sourceContentDigest);
+    auto foreignSource = sealing;
+    foreignSource.artifacts.modelDigest = input.context.modelDigest;
+    BOOST_CHECK_THROW(NativePlanSealer::sealCore(input.inspected, input.split, proposal,
+      execution, input.offers, input.ackDigest, foreignSource), std::invalid_argument);
     const auto built = NativePlanProjectionBuilder::build(sealed, input.split, input.offers, context);
     recordProjectionOracle(built);
     BOOST_REQUIRE_EQUAL(built.size(), execution.roles.size());
@@ -435,6 +446,251 @@ BOOST_AUTO_TEST_CASE(InjectedV3PolicyUsesAdmittedOffersAndIndependentValidation)
   BOOST_CHECK_THROW(strategy->proposeRoles(input.context, input.ackDigest, input.roles, input.offers,
     input.context.deadlineMs), std::invalid_argument);
 }
+BOOST_AUTO_TEST_CASE(RequestPlannerComposesAuthenticatedGrantsAndCoreAssignments)
+{
+  const auto f = oracle();
+  const auto sample = std::find_if(f.at("seal_cases").begin(), f.at("seal_cases").end(),
+    [](const auto& value) { return value.at("name") == "cpu"; });
+  BOOST_REQUIRE(sample != f.at("seal_cases").end());
+  Input input(f, *sample);
+  class Splitter final : public NativeModelSplitStrategy {
+  public:
+    explicit Splitter(NativeSplitCandidate candidate) : value(std::move(candidate)) {}
+    NativeStrategyIdentity identity() const override { return value.splitter; }
+    std::vector<NativeSplitCandidate> enumerate(const NativeModelDescriptor&, const NativeGraphSnapshot&,
+        const NativeCandidateBudget&) const override { return {value}; }
+    NativeSplitCandidate value;
+  } splitter(input.split);
+  unsigned publications = 0, grantPublications = 0;
+  NativeArtifactBinding binding;
+  binding.manifestDigest = input.inspected.modelManifestDigest;
+  binding.recipeDigest = input.roles.front().recipeDigest;
+  for (const auto& role : input.roles) {
+    binding.sourceByRole[role.selectedRole] = "/catalog/root";
+    binding.artifactNameByRole[role.selectedRole] = "/catalog/artifact";
+    binding.artifactDigestByRole[role.selectedRole] = role.artifactDigest;
+  }
+  auto registry = std::make_shared<NativeAdapterRegistry>();
+  registry->freeze();
+  NativeRequestPreparation preparation(registry, {},
+    [&](const auto&, const auto&, const auto&, const auto&) { ++publications; return binding; },
+    [&](const auto&, const auto&, const auto&) { return input.roles; });
+  NativeOfferAdmission admission(f.at("policy").dump(), {{f.at("key_id"), f.at("public_pem")}}, f.at("candidate"));
+  const auto key = [](char c) {
+    const std::string bytes(32, c);
+    return std::shared_ptr<EVP_PKEY>(EVP_PKEY_new_raw_private_key(EVP_PKEY_ED25519, nullptr,
+      reinterpret_cast<const unsigned char*>(bytes.data()), bytes.size()), EVP_PKEY_free);
+  };
+  NativeGrantIssuerConfig issuerConfig;
+  issuerConfig.authorityIdentity = "/authority"; issuerConfig.requesterIdentity = "/requester";
+  issuerConfig.protectionEpoch = input.roles.front().protectionEpoch;
+  issuerConfig.keyId = "fixture-key"; issuerConfig.authorityPrivateKey = key('a');
+  issuerConfig.requesterPublicKey = key('b'); issuerConfig.allowedModelManifests = {binding.manifestDigest};
+  for (const auto& offer : input.offers) issuerConfig.recipientPublicKeys[offer.observation().provider] = key('c');
+  issuerConfig.contentKey = [](const auto&, const auto&) { return std::vector<std::uint8_t>(32, 42); };
+  std::string authorityPublic(32, '\0'); std::size_t publicSize = authorityPublic.size();
+  BOOST_REQUIRE_EQUAL(EVP_PKEY_get_raw_public_key(issuerConfig.authorityPrivateKey.get(),
+    reinterpret_cast<unsigned char*>(authorityPublic.data()), &publicSize), 1);
+  NativeRequestRuntime runtime;
+  runtime.contract = {input.context.serviceName, "task", input.inspected.descriptor.adapterId,
+    input.inspected.descriptor.adapter.descriptorDigest(), nativePlanningDigest("composition"), nativePlanningDigest("task")};
+  runtime.requesterIdentity = "/requester"; runtime.protectionEpoch = issuerConfig.protectionEpoch;
+  runtime.security = {nativePlanningDigest("runtime-policy"), true};
+  runtime.budget.maxPolicyMs = 1000;
+  runtime.grants = std::make_shared<NativeAuthenticatedGrantClient>("/requester", key('b'), "/authority",
+    authorityPublic, std::make_shared<NativeArtifactGrantIssuer>(issuerConfig),
+    [&](const auto& name, const auto&, const auto&) { ++grantPublications; return name; });
+  NativeApplicationInput application;
+  application.taskName = "task"; application.payload = {1};
+  application.inputSchemaDigest = input.inspected.descriptor.adapter.inputSchemaDigest;
+  application.optionsSchemaDigest = input.inspected.descriptor.adapter.optionsSchemaDigest;
+  const auto encoded = encodeNativeRequestEnvelope(input.inspected.descriptor, application, runtime.contract,
+    input.context.requestId, 1, input.context.deadlineMs);
+  ndn_service_framework::CollaborationAckClosure closure;
+  closure.requestId = ndn::Name(input.context.requestId); closure.candidates = input.acks; closure.digest = input.ackDigest;
+  auto cancelled = std::make_shared<std::atomic<bool>>(false);
+  NativeRequestControl control{input.context.requestId, 1, std::chrono::steady_clock::now() + std::chrono::seconds(30),
+    [cancelled] { return cancelled->load(); }};
+  const auto planned = planNativeRequest(runtime, {}, input.inspected, encoded, splitter,
+    NativePreSplitFirstPlacement(), preparation, admission, closure, control, input.context.deadlineMs, cancelled);
+  BOOST_CHECK_EQUAL(publications, 1U);
+  BOOST_CHECK_EQUAL(grantPublications, 1U);
+  BOOST_REQUIRE_EQUAL(planned.corePlan.roles.size(), 1U);
+  BOOST_CHECK(planned.corePlan.roles.front().terminalResponseOwner);
+  BOOST_CHECK_EQUAL(planned.sealed.core.modelDigest, encoded.modelIntentDigest);
+  BOOST_CHECK(planned.sealed.core.modelDigest != planned.sealed.core.sourceContentDigest);
+  const auto selected = planned.corePlan.participantSelector->select(closure.candidates, planned.corePlan.roles);
+  BOOST_REQUIRE_EQUAL(selected.size(), 1U);
+  BOOST_CHECK_EQUAL(selected.front().provider.toUri(), planned.terminalProvider);
+  BOOST_CHECK_EQUAL(selected.front().artifactDataName.toUri(), "/catalog/root");
+  BOOST_CHECK(!selected.front().assignmentPayload.empty());
+  cancelled->store(true);
+  BOOST_CHECK_THROW(planNativeRequest(runtime, {}, input.inspected, encoded, splitter,
+    NativePreSplitFirstPlacement(), preparation, admission, closure, control, input.context.deadlineMs, cancelled), std::runtime_error);
+  BOOST_CHECK_EQUAL(publications, 1U);
+  BOOST_CHECK_EQUAL(grantPublications, 1U);
+}
+
+BOOST_AUTO_TEST_CASE(PublicClientCommitsSignedOfferAndIgnoresLateTerminalCallbacks)
+{
+  using namespace ndn_service_framework;
+  class User final : public test::LocalServiceUser {
+  public:
+    using test::LocalServiceUser::LocalServiceUser;
+    void offer(const ndn::Name& id, const std::string& wire) {
+      auto& call = m_pendingCalls.at(id);
+      RequestAckMessage ack;
+      ack.setStatus(true); ack.setUserToken(call.requestMessage.getUserToken());
+      ack.setProviderToken("provider-token");
+      ndn::Buffer bytes(wire.begin(), wire.end()); ack.setPayload(bytes, bytes.size());
+      const auto decoded = decodeNativeProviderOfferV3(wire);
+      // This supplies the Core authentication boundary as a local fixture.
+      // Offer admission still verifies the actual Ed25519 signature below.
+      call.requestAcks.push_back({ndn::Name(decoded.provider), call.serviceName, id, ack,
+        {decoded.provider, decoded.provider + "/KEY/fixture/issuer/v=1", nativePlanningDigest(wire), true}});
+      call.providerTokens[decoded.provider] = "provider-token";
+      call.ackWindowExpired = true;
+      closeDeferredCollaborationAcks(id, call);
+    }
+    bool committed(const ndn::Name& id) const {
+      const auto it = m_pendingCalls.find(id);
+      return it != m_pendingCalls.end() && it->second.collaborationPlanCommitted;
+    }
+    ResponseHandler responseCallback(const ndn::Name& id) { return m_pendingCalls.at(id).responseHandler; }
+    TimeoutHandler timeoutCallback(const ndn::Name& id) { return m_pendingCalls.at(id).timeoutHandler; }
+    void deliver(const ndn::Name& id, const ndn::Name& provider, const ResponseMessage& response) {
+      handleResponse(id, provider, response);
+    }
+  };
+  const auto f = oracle();
+  const auto sample = std::find_if(f.at("seal_cases").begin(), f.at("seal_cases").end(),
+    [](const auto& value) { return value.at("name") == "cpu"; });
+  BOOST_REQUIRE(sample != f.at("seal_cases").end());
+  auto ownedInput = std::make_shared<Input>(f, *sample);
+  const auto& input = *ownedInput;
+  class Splitter final : public NativeModelSplitStrategy {
+  public:
+    explicit Splitter(NativeSplitCandidate candidate) : value(std::move(candidate)) {}
+    NativeStrategyIdentity identity() const override { return value.splitter; }
+    std::vector<NativeSplitCandidate> enumerate(const NativeModelDescriptor&, const NativeGraphSnapshot&,
+      const NativeCandidateBudget&) const override { return {value}; }
+    NativeSplitCandidate value;
+  };
+  ndn::security::KeyChain keyChain{"pib-memory:", "tpm-memory:"};
+  ndn::DummyClientFace face{keyChain};
+  auto user = std::make_shared<User>(face, ndn::Name("/client"),
+    test::makeRsaIdentity(keyChain, ndn::Name("/requester")),
+    test::makeRsaIdentity(keyChain, ndn::Name("/authority")), "examples/trust-any.conf");
+  auto registry = std::make_shared<NativeAdapterRegistry>();
+  registry->registerAdapter(std::make_shared<NativeCatalogModelAdapter>(
+    std::vector<NativeModelDescriptor>{input.inspected.descriptor}, NativeCatalogModelAdapter::Format::OpaqueBytes, 1024));
+  registry->freeze();
+  NativeArtifactBinding binding;
+  binding.manifestDigest = input.inspected.modelManifestDigest; binding.recipeDigest = input.roles.front().recipeDigest;
+  for (const auto& role : input.roles) {
+    binding.sourceByRole[role.selectedRole] = "/catalog/root";
+    binding.artifactNameByRole[role.selectedRole] = "/catalog/artifact";
+    binding.artifactDigestByRole[role.selectedRole] = role.artifactDigest;
+  }
+  auto preparation = std::make_shared<NativeRequestPreparation>(registry,
+    [ownedInput](const auto&, const auto&) { return ownedInput->inspected; },
+    [binding](const auto&, const auto&, const auto&, const auto&) { return binding; },
+    [ownedInput](const auto&, const auto&, const auto&) { return ownedInput->roles; });
+  auto admission = std::make_shared<NativeOfferAdmission>(f.at("policy").dump(),
+    std::map<std::string, std::string>{{f.at("key_id"), f.at("public_pem")}}, f.at("candidate"));
+  const auto key = [](char seed) {
+    const std::string bytes(32, seed);
+    return std::shared_ptr<EVP_PKEY>(EVP_PKEY_new_raw_private_key(EVP_PKEY_ED25519, nullptr,
+      reinterpret_cast<const unsigned char*>(bytes.data()), bytes.size()), EVP_PKEY_free);
+  };
+  NativeGrantIssuerConfig issuer;
+  issuer.authorityIdentity = "/authority"; issuer.requesterIdentity = "/requester";
+  issuer.protectionEpoch = input.roles.front().protectionEpoch; issuer.keyId = "fixture-key";
+  issuer.authorityPrivateKey = key('a'); issuer.requesterPublicKey = key('b');
+  issuer.allowedModelManifests = {binding.manifestDigest};
+  issuer.recipientPublicKeys = {{"/provider/a", key('c')}};
+  issuer.contentKey = [](const auto&, const auto&) { return std::vector<std::uint8_t>(32, 42); };
+  std::string authorityPublic(32, '\0'); std::size_t size = authorityPublic.size();
+  BOOST_REQUIRE_EQUAL(EVP_PKEY_get_raw_public_key(issuer.authorityPrivateKey.get(),
+    reinterpret_cast<unsigned char*>(authorityPublic.data()), &size), 1);
+  NativeRequestRuntime runtime;
+  runtime.contract = {"/service", "task", input.inspected.descriptor.adapterId,
+    input.inspected.descriptor.adapter.descriptorDigest(), nativePlanningDigest("composition"), nativePlanningDigest("task")};
+  runtime.requesterIdentity = "/requester"; runtime.protectionEpoch = issuer.protectionEpoch;
+  runtime.security = {nativePlanningDigest("policy"), true}; runtime.budget.maxPolicyMs = 1000;
+  runtime.grants = std::make_shared<NativeAuthenticatedGrantClient>("/requester", key('b'), "/authority", authorityPublic,
+    std::make_shared<NativeArtifactGrantIssuer>(issuer),
+    [](const auto& name, const auto&, const auto&) { return name; });
+  NativeModelRef model; static_cast<NativeModelDescriptor&>(model) = input.inspected.descriptor;
+  NativeApplicationInput application; application.taskName = "task"; application.payload = {1};
+  application.inputSchemaDigest = model.adapter.inputSchemaDigest;
+  application.optionsSchemaDigest = model.adapter.optionsSchemaDigest;
+  const auto pumpUntil = [&](const std::function<bool()>& done) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (!done() && std::chrono::steady_clock::now() < deadline) {
+      face.getIoContext().restart(); face.getIoContext().poll();
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return done();
+  };
+  for (int scenario = 0; scenario != 3; ++scenario) {
+    NativeInferenceClient client(user, registry, runtime, preparation, admission);
+    auto handle = client.request(model, application, std::make_shared<Splitter>(input.split),
+      std::make_shared<NativePreSplitFirstPlacement>(), NativeRequestOptions{});
+    const ndn::Name id(handle.requestId());
+    BOOST_REQUIRE(pumpUntil([&] { return user->hasPendingCall(id) || handle.status() != NativeRequestStatus::Pending; }));
+    if (handle.status() != NativeRequestStatus::Pending) handle.result(std::chrono::milliseconds(0));
+    BOOST_REQUIRE(user->hasPendingCall(id));
+    auto offer = nativeParseJson(sample->at("offers").front().get<std::string>());
+    offer["request_id"] = handle.requestId();
+    const auto unsignedWire = nativeCanonicalJson(offer);
+    const auto digest = decodeNativeProviderOfferV3(unsignedWire).offerDigest;
+    std::array<unsigned char, 32> seed{};
+    for (std::size_t i = 0; i < seed.size(); ++i) seed[i] = i;
+    std::unique_ptr<EVP_PKEY, decltype(&EVP_PKEY_free)> signingKey(
+      EVP_PKEY_new_raw_private_key(EVP_PKEY_ED25519, nullptr, seed.data(), seed.size()), EVP_PKEY_free);
+    std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)> signing(EVP_MD_CTX_new(), EVP_MD_CTX_free);
+    BOOST_REQUIRE_EQUAL(EVP_DigestSignInit(signing.get(), nullptr, nullptr, nullptr, signingKey.get()), 1);
+    std::array<unsigned char, 64> signature{}; std::size_t length = signature.size();
+    BOOST_REQUIRE_EQUAL(EVP_DigestSign(signing.get(), signature.data(), &length,
+      reinterpret_cast<const unsigned char*>(digest.data()), digest.size()), 1);
+    std::array<unsigned char, 89> encoded{};
+    BOOST_REQUIRE_EQUAL(EVP_EncodeBlock(encoded.data(), signature.data(), length), 88);
+    offer["signature"] = std::string(reinterpret_cast<char*>(encoded.data()), 88);
+    user->postToIo([&, wire = nativeCanonicalJson(offer)] { user->offer(id, wire); });
+    BOOST_REQUIRE(pumpUntil([&] { return user->committed(id) || handle.status() != NativeRequestStatus::Pending; }));
+    if (handle.status() != NativeRequestStatus::Pending) handle.result(std::chrono::milliseconds(0));
+    BOOST_REQUIRE(user->committed(id));
+    auto lateResponse = user->responseCallback(id);
+    auto lateTimeout = user->timeoutCallback(id);
+    ResponseMessage response; response.setStatus(true);
+    ndn::Buffer payload{42, 43}; response.setPayload(payload, payload.size());
+    response.setAuthenticatedTransportEvidence(scenario == 1 ? "/foreign/response" : "/provider/a/response",
+      "/provider/a/KEY/fixture/issuer/v=1", nativePlanningDigest("response-wire"));
+    if (scenario == 2) handle.cancel();
+    else user->postToIo([&, response] { user->deliver(id, ndn::Name("/provider/a"), response); });
+    BOOST_REQUIRE(pumpUntil([&] { return handle.status() != NativeRequestStatus::Pending && !user->hasPendingCall(id); }));
+    const auto terminal = handle.status();
+    if (scenario == 0) {
+      BOOST_CHECK(terminal == NativeRequestStatus::Succeeded);
+      const auto result = handle.result(std::chrono::milliseconds(0));
+      BOOST_CHECK(result.payload == std::vector<std::uint8_t>({42, 43}));
+      BOOST_CHECK_EQUAL(result.modelDigest, model.intentDigest());
+      BOOST_CHECK(!result.planDigest.empty());
+    }
+    else if (scenario == 1) {
+      BOOST_CHECK_EXCEPTION(handle.result(std::chrono::milliseconds(0)), NativeDiError,
+        [](const auto& error) { return error.code() == "NATIVE_RESPONSE_BINDING_REJECTED"; });
+    }
+    else BOOST_CHECK(terminal == NativeRequestStatus::Cancelled);
+    // Replay callbacks retained before Core erased its PendingCall.
+    lateResponse(response); lateTimeout(id); handle.cancel(); client.close();
+    face.getIoContext().restart(); face.getIoContext().poll();
+    BOOST_CHECK(handle.status() == terminal);
+    BOOST_CHECK(!user->hasPendingCall(id));
+  }
+}
+
 BOOST_AUTO_TEST_CASE(AdmittedPlacementSealsSdkCoreAndRejectsTampering)
 {
   const auto f = oracle();
@@ -453,7 +709,7 @@ BOOST_AUTO_TEST_CASE(AdmittedPlacementSealsSdkCoreAndRejectsTampering)
       inputs.requesterIdentity = "/requester"; inputs.protectionEpoch = input.roles.front().protectionEpoch;
       inputs.expiresAtMs = input.context.deadlineMs;
       inputs.artifacts.requestId = input.context.requestId; inputs.artifacts.attempt = input.context.attempt;
-      inputs.artifacts.modelDigest = input.context.modelDigest; inputs.artifacts.graphDigest = input.context.graphDigest;
+      inputs.artifacts.modelDigest = input.inspected.descriptor.contentDigest; inputs.artifacts.graphDigest = input.context.graphDigest;
       inputs.artifacts.manifestDigest = input.inspected.modelManifestDigest;
       inputs.artifacts.recipeDigest = input.roles.front().recipeDigest;
       for (const auto& role : proposal.roles) {

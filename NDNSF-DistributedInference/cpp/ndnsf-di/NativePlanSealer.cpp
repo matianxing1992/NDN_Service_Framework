@@ -61,7 +61,8 @@ void NativePlacementPlanCore::validate() const
 {
   artifacts.validate();
   if (artifacts.requestId != requestId || artifacts.attempt != attempt ||
-      artifacts.modelDigest != modelDigest || artifacts.graphDigest != graphDigest ||
+      !isDigest(sourceContentDigest) || artifacts.modelDigest != sourceContentDigest ||
+      artifacts.graphDigest != graphDigest ||
       !isDigest(artifacts.canonicalGraphDigest) ||
       artifacts.artifactDigestByRole != artifactDigestByRole ||
       requesterIdentity.empty() || requesterIdentity.front() != '/' ||
@@ -211,6 +212,7 @@ NativePlacementPlanCore NativePlanSealer::sealCore(
   core.requestId = snapshot.requestId;
   core.attempt = snapshot.attempt;
   core.modelDigest = snapshot.model.contentDigest;
+  core.sourceContentDigest = snapshot.model.contentDigest;
   core.graphDigest = snapshot.graph.graphDigest;
   core.ackClosedDigest = snapshot.ackClosedDigest;
   core.candidateDigest = proposal.candidateDigest;
@@ -274,7 +276,8 @@ NativePlacementPlanCore NativePlanSealer::sealCore(
     throw std::invalid_argument("execution role order differs from the V3 proposal");
   if (proposal.ackClosedDigest != expectedAckClosedDigest || !isDigest(expectedAckClosedDigest) ||
       context.requestId != inputs.artifacts.requestId || context.attempt != inputs.artifacts.attempt ||
-      context.modelDigest != model.descriptor.contentDigest || context.graphDigest != model.graph.graphDigest ||
+      context.modelDigest != model.descriptor.intentDigest() || context.graphDigest != model.graph.graphDigest ||
+      inputs.artifacts.modelDigest != model.descriptor.contentDigest ||
       context.deadlineMs != inputs.expiresAtMs || executionPlan.serviceName != context.serviceName ||
       executionPlan.modelName != model.descriptor.modelName ||
       inputs.artifacts.canonicalGraphDigest != model.canonicalGraphDigest || !isDigest(candidate.candidateDigest))
@@ -282,6 +285,7 @@ NativePlacementPlanCore NativePlanSealer::sealCore(
   NativePlacementPlanCore core;
   core.requestId = context.requestId; core.attempt = context.attempt;
   core.modelDigest = context.modelDigest; core.graphDigest = context.graphDigest;
+  core.sourceContentDigest = model.descriptor.contentDigest;
   core.ackClosedDigest = proposal.ackClosedDigest; core.candidateDigest = candidate.candidateDigest;
   core.strategy = proposal.strategy; core.executionPlan = executionPlan;
   core.assignment.providerByRole = proposal.providerByRole;

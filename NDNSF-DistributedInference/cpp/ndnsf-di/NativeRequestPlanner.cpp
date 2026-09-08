@@ -1,0 +1,173 @@
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPlanner.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeV3Placement.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGroupProjectionBuilder.hpp"
+#include <algorithm>
+#include <set>
+
+namespace ndnsf::di {
+namespace {
+std::uint64_t epochMs()
+{
+  const auto value = std::chrono::duration_cast<std::chrono::milliseconds>(
+    std::chrono::system_clock::now().time_since_epoch()).count();
+  if (value <= 0) throw std::runtime_error("invalid request wall clock");
+  return static_cast<std::uint64_t>(value);
+}
+class FrozenSelection final : public ndn_service_framework::ParticipantSelectionPolicy
+{
+public:
+  explicit FrozenSelection(std::vector<ndn_service_framework::SelectedParticipant> selected)
+    : m_selected(std::move(selected)) {}
+  std::vector<ndn_service_framework::SelectedParticipant> select(
+    const std::vector<ndn_service_framework::AckCandidate>&,
+    const std::vector<ndn_service_framework::CollaborationRoleSpec>&) const override
+  {
+    // Core independently compares every returned ACK with its immutable closure.
+    return m_selected;
+  }
+private:
+  const std::vector<ndn_service_framework::SelectedParticipant> m_selected;
+};
+}
+
+NativePlannedRequest planNativeRequest(
+  const NativeRequestRuntime& runtime, const NativeRequestOptions& options,
+  const NativeInspectedModel& model, const NativeEncodedRequest& encoded,
+  const NativeModelSplitStrategy& splitter, const NativePlacementStrategy& placement,
+  const NativeRequestPreparation& preparation, const NativeOfferAdmission& admission,
+  const ndn_service_framework::CollaborationAckClosure& closure,
+  const NativeRequestControl& control, std::uint64_t wireDeadlineMs,
+  std::shared_ptr<const std::atomic<bool>> cancelled)
+{
+  control.requireActive();
+  runtime.budget.validate();
+  if (closure.requestId != ndn::Name(control.requestId) || closure.digest.empty() ||
+      wireDeadlineMs <= epochMs() || !runtime.grants || !runtime.security.requireProtectedArtifacts ||
+      runtime.requesterIdentity.empty() || runtime.protectionEpoch.empty())
+    throw std::invalid_argument("native request runtime/ACK binding is incomplete");
+  NativeOfferBindingContext context{control.requestId, control.attempt, runtime.contract.serviceName,
+    encoded.modelIntentDigest, model.graph.graphDigest, wireDeadlineMs};
+  std::vector<NativeAdmittedOfferV3> offers;
+  for (const auto& ack : closure.candidates) offers.push_back(admission.verify(ack, context, epochMs()));
+  if (offers.empty()) throw std::runtime_error("DI_NATIVE_NO_ADMITTED_PROVIDER");
+  const auto policyStart = std::chrono::steady_clock::now();
+  auto candidates = splitter.enumerate(model.descriptor, model.graph, runtime.budget);
+  control.requireActive();
+  auto policyUsed = std::chrono::steady_clock::now() - policyStart;
+  const auto policyLimit = std::chrono::milliseconds(runtime.budget.maxPolicyMs);
+  if (policyUsed > policyLimit)
+    throw std::runtime_error("DI_NATIVE_POLICY_BUDGET_EXCEEDED");
+  if (candidates.empty() || candidates.size() > runtime.budget.maxCandidates)
+    throw std::runtime_error("DI_NATIVE_CANDIDATE_BUDGET_REJECTED");
+
+  // The splitter supplies its deterministic candidate preference order. No
+  // artifact publication happens until one complete placement is validated.
+  for (auto candidate : candidates) {
+    control.requireActive();
+    if (runtime.catalog)
+      candidate = runtime.catalog->bindStateContracts(model, candidate, runtime.stateMapping, control);
+    auto roles = preparation.prepareRoles(model, candidate, control);
+    NativeRolePlacementProposalV3 proposal;
+    const auto placementStart = std::chrono::steady_clock::now();
+    try { proposal = placement.proposeRoles(context, closure.digest, roles, offers, epochMs()); }
+    catch (const NativeNoFeasiblePlacement&) {
+      policyUsed += std::chrono::steady_clock::now() - placementStart;
+      if (policyUsed > policyLimit) throw std::runtime_error("DI_NATIVE_POLICY_BUDGET_EXCEEDED");
+      continue;
+    }
+    policyUsed += std::chrono::steady_clock::now() - placementStart;
+    if (policyUsed > policyLimit) throw std::runtime_error("DI_NATIVE_POLICY_BUDGET_EXCEEDED");
+    validateNativeRolePlacement(proposal, roles, offers, epochMs());
+    auto artifacts = preparation.ensureArtifacts(model, candidate, proposal, control);
+    NativeExecutionPlan execution = candidate.executionPlan;
+    execution.serviceName = runtime.contract.serviceName;
+    execution.modelName = model.descriptor.modelName;
+    execution.roles.clear();
+    std::map<std::string, std::vector<std::string>> selectedByStage;
+    for (const auto& role : proposal.roles) {
+      execution.roles.push_back(role.selectedRole);
+      selectedByStage[role.role].push_back(role.selectedRole);
+    }
+    const auto expand = [&](const std::vector<std::string>& stages) {
+      std::vector<std::string> result;
+      for (const auto& stage : stages) {
+        const auto& selected = selectedByStage.at(stage);
+        result.insert(result.end(), selected.begin(), selected.end());
+      }
+      return result;
+    };
+    for (auto& dependency : execution.dependencies) {
+      dependency.producers = expand(dependency.producers);
+      dependency.consumers = expand(dependency.consumers);
+    }
+    NativePlanSealingInputs sealing;
+    sealing.artifacts = std::move(artifacts);
+    sealing.requesterIdentity = runtime.requesterIdentity;
+    sealing.protectionEpoch = runtime.protectionEpoch;
+    sealing.expiresAtMs = wireDeadlineMs;
+    sealing.requestContractDigest = encoded.requestContractDigest;
+    for (const auto& role : roles) sealing.assemblyByRole.emplace(role.selectedRole, role);
+    auto core = NativePlanSealer::sealCore(model, candidate, proposal, execution, offers, closure.digest, sealing);
+    std::vector<NativeGrantBinding> grants;
+    NativeGrantControl grantControl{std::chrono::system_clock::time_point(std::chrono::milliseconds(wireDeadlineMs)), cancelled};
+    for (const auto& selected : core.offerDigestByProvider) {
+      control.requireActive();
+      const auto offer = std::find_if(offers.begin(), offers.end(), [&](const auto& value) {
+        return value.observation().provider == selected.first;
+      });
+      grants.push_back(runtime.grants->acquire(core, *offer, runtime.security, grantControl));
+    }
+    NativePlannedRequest result;
+    result.sealed = NativePlanSealer::finalizeSecurity(core, grants, runtime.security);
+    NativeProjectionContext projection{epochMs(), runtime.noProgressMs, runtime.maxSegments};
+    projection.logicalInputDigest = encoded.logicalInputDigest;
+    projection.inputLayoutDigest = runtime.inputLayoutDigest;
+    std::map<std::string, NativeRoleProjectionInputs> projections;
+    if (execution.dependencies.empty())
+      projections = NativePlanProjectionBuilder::build(result.sealed, candidate, offers, projection);
+    else {
+      std::vector<ndn_service_framework::AckSelectionCandidate> selectedAcks;
+      for (const auto& ack : closure.candidates)
+        if (core.offerDigestByProvider.count(ack.providerName.toUri())) selectedAcks.push_back(ack);
+      NativeGroupKeyAdmission keys(admission, selectedAcks, context, epochMs());
+      projections = NativeGroupProjectionBuilder::build(result.sealed, candidate, keys, projection);
+    }
+    auto& plan = result.corePlan;
+    plan.ackCollectionTimeMs = static_cast<int>(options.ackTimeoutMs);
+    plan.timeoutMs = static_cast<int>(options.timeoutMs);
+    std::vector<ndn_service_framework::SelectedParticipant> selected;
+    for (const auto& role : execution.roles) {
+      const auto& provider = core.assignment.providerByRole.at(role);
+      const auto ack = std::find_if(closure.candidates.begin(), closure.candidates.end(), [&](const auto& value) {
+        return value.providerName.toUri() == provider;
+      });
+      if (ack == closure.candidates.end()) throw std::invalid_argument("selected provider is outside ACK closure");
+      const auto wire = NativePlanSealer::encode(NativePlanSealer::project(result.sealed, provider, projections.at(role)));
+      ndn_service_framework::CollaborationRoleSpec spec;
+      spec.role = role; spec.service = ndn::Name(runtime.contract.serviceName);
+      spec.requiredArtifact = ndn::Name(core.artifacts.artifactNameByRole.at(role));
+      spec.assignmentPayload = ndn::Buffer(wire.begin(), wire.end());
+      spec.terminalResponseOwner = projections.at(role).dataflow.terminalResponseOwner;
+      if (spec.terminalResponseOwner) result.terminalProvider = provider;
+      plan.roles.push_back(spec);
+      ndn_service_framework::SelectedParticipant participant;
+      participant.role = role; participant.service = spec.service; participant.provider = ndn::Name(provider);
+      participant.assignedArtifact = spec.requiredArtifact; participant.assignmentPayload = spec.assignmentPayload;
+      participant.ack = *ack; participant.artifactDataName = ndn::Name(core.artifacts.sourceByRole.at(role));
+      selected.push_back(std::move(participant));
+    }
+    std::map<std::string, std::set<std::string>> scopes;
+    for (const auto& edge : execution.dependencies) {
+      plan.dependencies.push_back({edge.producers, edge.consumers, edge.keyScope, ndn::Name(edge.topicPrefix), true});
+      scopes[edge.keyScope].insert(edge.producers.begin(), edge.producers.end());
+      scopes[edge.keyScope].insert(edge.consumers.begin(), edge.consumers.end());
+    }
+    for (const auto& scope : scopes)
+      plan.keyScopes.push_back({scope.first, std::vector<std::string>(scope.second.begin(), scope.second.end())});
+    plan.participantSelector = std::make_shared<const FrozenSelection>(std::move(selected));
+    control.requireActive();
+    return result;
+  }
+  throw std::runtime_error("DI_NATIVE_NO_FEASIBLE_CANDIDATE");
+}
+} // namespace ndnsf::di

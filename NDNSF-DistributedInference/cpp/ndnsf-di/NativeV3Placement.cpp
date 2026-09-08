@@ -152,7 +152,7 @@ NativeRolePlacementProposalV3 NativePreSplitFirstPlacement::proposeRoles(
       const auto eligible = feasibleChoices(role, offer, nowMs);
       choices.insert(choices.end(), eligible.begin(), eligible.end());
     }
-    if (choices.empty()) throw std::runtime_error("no distinct feasible Provider for V3 role " + role.role);
+    if (choices.empty()) throw NativeNoFeasiblePlacement("no distinct feasible Provider for V3 role " + role.role);
     const auto choice = *std::min_element(choices.begin(), choices.end());
     const auto provider = std::get<8>(choice), device = std::get<9>(choice);
     const auto key = ranks.at(role.role).size() == 1 ? role.role : role.role + "#" + std::to_string(role.rank);

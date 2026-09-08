@@ -888,6 +888,13 @@ namespace ndn_service_framework{
                                          const std::string& ackClosedDigest,
                                          CollaborationPlan plan);
 
+            /** Cancel a locally pending collaboration on the Face I/O thread.
+             * Removes pending admission/timers and request keys, prevents a
+             * later commit, and invokes no success/timeout callback. Returns
+             * false for an absent or non-collaboration request. This is local
+             * cancellation, not a receipt proving remote execution stopped. */
+            bool CancelCollaboration(const RequestId& requestId);
+
             template<typename RequestT, typename ResponseT>
             ndn::Name RequestService(const ServiceName& service,
                                      const RequestT& request,

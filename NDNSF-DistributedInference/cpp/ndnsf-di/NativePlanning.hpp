@@ -96,6 +96,10 @@ struct NativeModelDescriptor
   std::string canonicalJson() const;
   /** Descriptor identity; distinct from the model's contentDigest and wire aliases. */
   std::string modelDigest() const;
+  /** SDK ModelRef identity used on request/offer wire; not source content or descriptor identity. */
+  std::string intentDigest() const;
+  /** Decode the complete SDK descriptor schema; reject unknown or lossy fields. */
+  static NativeModelDescriptor fromCanonicalJson(const std::string& json);
 };
 
 struct NativeGraphNode

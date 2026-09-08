@@ -1,5 +1,6 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
 #include <openssl/crypto.h>
 #include <openssl/evp.h>
 #include <algorithm>
@@ -64,25 +65,56 @@ NativeArtifactGrantIssuer::NativeArtifactGrantIssuer(NativeGrantIssuerConfig con
   for (const auto& entry : m_config.recipientPublicKeys)
     if (entry.first.empty() || !entry.second)
       throw reject("recipient registry entry is incomplete");
+  for (const auto& source : m_config.publicationSources) {
+    const auto& value = source.second;
+    if (!m_config.allowedModelManifests.count(source.first) || value.modelName.empty() ||
+        !digest(value.modelContentDigest) || !digest(value.canonicalSourceDigest) ||
+        !digest(value.artifactProfileDigest) ||
+        (!value.initializerObjectDigest.empty() && !digest(value.initializerObjectDigest)))
+      throw reject("publication source policy is incomplete");
+  }
   detail::signNativeGrantBytes(*m_config.authorityPrivateKey, "issuer-key-preflight");
 }
 
 NativeKeyGrant NativeArtifactGrantIssuer::issue(const NativeSignedGrantRequest& request,
   std::uint64_t nowMs, std::uint64_t expiresAtMs) const
 {
+  return issue(request, nowMs, expiresAtMs, {});
+}
+
+NativeKeyGrant NativeArtifactGrantIssuer::issue(const NativeSignedGrantRequest& request,
+  std::uint64_t nowMs, std::uint64_t expiresAtMs, const std::string& publishedManifestJson) const
+{
   const auto bytes = request.signingBytes();
   if (request.requesterIdentity != m_config.requesterIdentity ||
       request.providerIdentity == request.requesterIdentity ||
       request.protectionEpoch != m_config.protectionEpoch ||
-      !m_config.allowedModelManifests.count(request.modelManifestDigest) ||
       expiresAtMs <= nowMs || request.issuedAtMs > nowMs ||
       std::any_of(request.allowedResidencyTiers.begin(), request.allowedResidencyTiers.end(),
         [&](const auto& tier) { return !m_config.allowedResidencyTiers.count(tier); }) ||
       !detail::verifyNativeGrantBytes(*m_config.requesterPublicKey, bytes, request.requesterSignature))
     throw reject("request signature or operator policy rejected");
+  std::string keyManifest = request.modelManifestDigest;
+  if (!m_config.allowedModelManifests.count(keyManifest)) {
+    if (publishedManifestJson.empty() || publishedManifestJson.size() > 1024 * 1024 ||
+        nativePlanningDigest(publishedManifestJson) != request.modelManifestDigest)
+      throw reject("published manifest is not bound to the signed request");
+    const auto root = nativeParseJson(publishedManifestJson);
+    const auto& metadata = root.at("metadata");
+    keyManifest = metadata.at("packageManifestDigest").get<std::string>();
+    const auto source = m_config.publicationSources.find(keyManifest);
+    if (source == m_config.publicationSources.end()) throw reject("published source is not authorized");
+    const auto& policy = source->second;
+    if (root.at("schema") != "ndnsf-di-canonical-model-manifest-v1" || root.at("state") != "ACTIVE" ||
+        root.at("modelName") != policy.modelName || root.at("modelIdentityDigest") != policy.modelContentDigest ||
+        root.at("artifactProfileDigest") != policy.artifactProfileDigest ||
+        metadata.at("canonicalSourceDigest") != policy.canonicalSourceDigest ||
+        metadata.value("canonicalInitializerObjectDigest", std::string{}) != policy.initializerObjectDigest)
+      throw reject("published manifest differs from authorized source");
+  }
   const auto recipient = m_config.recipientPublicKeys.find(request.providerIdentity);
   if (recipient == m_config.recipientPublicKeys.end()) throw reject("recipient key is not configured");
-  auto secret = m_config.contentKey(request.modelManifestDigest, request.protectionEpoch);
+  auto secret = m_config.contentKey(keyManifest, request.protectionEpoch);
   struct Cleanse { std::vector<std::uint8_t>& v; ~Cleanse() { OPENSSL_cleanse(v.data(), v.size()); } } guard{secret};
   if (secret.empty() || secret.size() > 256) throw reject("content key is empty or oversized");
   return detail::issueNativeGrantWire(request, m_config.authorityIdentity, m_config.keyId,

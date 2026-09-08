@@ -14,6 +14,7 @@ sys.path[:0] = [str(repo / 'NDNSF-DistributedInference'),
                str(repo / 'NDNSF-DistributedRepo/pythonWrapper')]
 from ndnsf_distributed_inference.sdk.placement import ProviderOfferV3, DeviceTopologyProfile
 from ndnsf_distributed_inference.app_sdk.provider import ProviderOfferTrustVerifier
+from ndnsf_distributed_inference.core.contracts import canonical_digest
 
 def digest(text):
     return 'sha256:' + hashlib.sha256(text.encode()).hexdigest()
@@ -21,6 +22,8 @@ def digest(text):
 signed = json.loads((root / 'signed-offer-oracle.json').read_text())
 key = Ed25519PrivateKey.from_private_bytes(bytes(range(32)))
 policy = dict(signed['policy'], entries=[])
+model_intent = canonical_digest({'model_name': 'fixture-model', 'content_digest': digest('model'),
+    'semantics_digest': digest('semantics'), 'source_revision': None})
 offers = []
 for suffix, role in [('a', '/role'), ('b', '/Merge')]:
     provider = '/provider/' + suffix
@@ -28,7 +31,7 @@ for suffix, role in [('a', '/role'), ('b', '/Merge')]:
         keyLocatorPrefix=provider + '/KEY/fixture',
         certificateName=provider + '/KEY/fixture/issuer/v=1'))
     topology = DeviceTopologyProfile(provider, (), 'onnxruntime-cpu')
-    offer = ProviderOfferV3('/request', 1, '/service', provider, digest('model'), digest('planning'),
+    offer = ProviderOfferV3('/request', 1, '/service', provider, model_intent, digest('planning'),
         True, 'ACCEPT_WITH_PREPARATION', True, topology, accepted_roles=(role,),
         backends=('onnxruntime-cpu',), boot_epoch='fixture-boot', captured_at_ms=100,
         expires_at_ms=2000000000000, signer_key_id=signed['key_id'], signature='pending')

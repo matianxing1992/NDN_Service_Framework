@@ -1,6 +1,7 @@
 #include "ServiceUser.hpp"
 
 #include <boost/asio/post.hpp>
+#include <openssl/crypto.h>
 
 #include <algorithm>
 #include <atomic>
@@ -6805,6 +6806,36 @@ namespace ndn_service_framework
                   << " serviceName=" << service.toUri());
         admitOrQueuePendingCall(requestId, true, true);
         return requestId;
+    }
+
+    bool ServiceUser::CancelCollaboration(const RequestId& requestId)
+    {
+        auto pending = m_pendingCalls.find(requestId);
+        if (pending == m_pendingCalls.end() || !pending->second.isCollaboration) {
+            return false;
+        }
+        cancelStreamRequest(requestId);
+        for (auto& entry : pending->second.collaborationScopeKeys) {
+            if (!entry.second.empty()) OPENSSL_cleanse(entry.second.data(), entry.second.size());
+        }
+        if (!pending->second.streamEventKey.empty()) {
+            OPENSSL_cleanse(pending->second.streamEventKey.data(), pending->second.streamEventKey.size());
+        }
+        {
+            std::lock_guard<std::mutex> lock(m_verifiedCollaborationMutex);
+            m_verifiedCollaborationData.erase(requestId);
+            auto keys = m_userCollaborationScopeKeys.find(requestId);
+            if (keys != m_userCollaborationScopeKeys.end()) {
+                for (auto& entry : keys->second) {
+                    if (!entry.second.empty()) OPENSSL_cleanse(entry.second.data(), entry.second.size());
+                }
+                m_userCollaborationScopeKeys.erase(keys);
+            }
+        }
+        // Use the same cleanup as normal completion: release an admission
+        // slot, cancel pending timers and invalidate request-scoped nonces.
+        erasePendingCallWithTrace(requestId, pending, "caller_cancelled");
+        return true;
     }
 
     bool ServiceUser::CommitCollaborationPlan(

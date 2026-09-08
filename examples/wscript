@@ -249,6 +249,14 @@ def build(bld):
     if not bld.env.WITH_EXAMPLES:
         return
 
+    bld.program(name='DI_NativeRequester',
+                target='DI_NativeRequester',
+                source=['DI_NativeRequester.cpp'],
+                includes=['..'],
+                use='ndnsf-distributed-inference ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD OPENSSL DL',
+                linkflags=['-Wl,-rpath,$ORIGIN/..'],
+                install_path='${BINDIR}')
+
     di_native_session_sources = bld.path.parent.ant_glob([
         'NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.cpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/DependencyWaitScheduler.cpp',

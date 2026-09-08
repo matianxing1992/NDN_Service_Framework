@@ -267,7 +267,7 @@ NativeArtifactBinding NativeRequestPreparation::ensureArtifacts(
   const auto nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
     std::chrono::system_clock::now().time_since_epoch()).count();
   if (context.requestId != control.requestId || context.attempt != control.attempt ||
-      context.modelDigest != model.descriptor.contentDigest ||
+      context.modelDigest != model.descriptor.intentDigest() ||
       context.graphDigest != model.graph.graphDigest || context.serviceName.empty() ||
       nowMs < 0 || context.deadlineMs <= static_cast<std::uint64_t>(nowMs) ||
       !digest(proposal.ackClosedDigest)) {

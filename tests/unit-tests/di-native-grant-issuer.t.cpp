@@ -1,6 +1,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGrantVerifier.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
 #include <boost/test/unit_test.hpp>
 #include <openssl/ec.h>
 #include <openssl/evp.h>
@@ -75,6 +76,46 @@ void recordOracle(const char* kind, const NativeKeyGrant& grant, const NativeSig
 }
 
 BOOST_AUTO_TEST_SUITE(Spec182GrantIssuer)
+
+BOOST_AUTO_TEST_CASE(PublishedManifestMustBindAnExplicitlyAuthorizedSource)
+{
+  auto policy = config();
+  const auto original = request().modelManifestDigest;
+  NativeGrantPublicationSource source{"model", nativePlanningDigest("content"), nativePlanningDigest("source"),
+    "", nativePlanningDigest("profile")};
+  policy.publicationSources.emplace(original, source);
+  unsigned keyReads = 0;
+  policy.contentKey = [&](const auto& manifest, const auto&) {
+    ++keyReads; BOOST_CHECK_EQUAL(manifest, original);
+    return std::vector<std::uint8_t>(32, 42);
+  };
+  NativeArtifactGrantIssuer issuer(policy);
+  const NativeJson root{{"schema", "ndnsf-di-canonical-model-manifest-v1"}, {"state", "ACTIVE"},
+    {"modelName", source.modelName}, {"modelIdentityDigest", source.modelContentDigest},
+    {"artifactProfileDigest", source.artifactProfileDigest},
+    {"metadata", {{"packageManifestDigest", original}, {"canonicalSourceDigest", source.canonicalSourceDigest}}}};
+  const auto wire = root.dump();
+  auto r = request(); r.modelManifestDigest = nativePlanningDigest(wire);
+  const auto signedRequest = r.sign(*ed('b'));
+  BOOST_CHECK_THROW(issuer.issue(signedRequest, 1000, 2000), std::runtime_error);
+  const auto issued = issuer.issue(signedRequest, 1000, 2000, wire);
+  const auto opened = verifyAndUnwrapNativeGrant(issued.wireJson, publicBytes(ed('a')),
+    {NativeRecipientKey::Kind::Ed25519Seed, std::string(32, 'c')}, r.providerIdentity, r.requestId,
+    r.attempt, r.planCoreDigest, r.modelManifestDigest, r.protectionEpoch, 1001, "/authority", issued.grantDigest);
+  BOOST_REQUIRE_MESSAGE(opened.verified, opened.reason);
+  BOOST_CHECK(opened.contentKey == std::vector<std::uint8_t>(32, 42));
+  for (unsigned mutation = 0; mutation < 5; ++mutation) {
+    auto changed = root;
+    if (mutation == 0) changed["metadata"]["canonicalSourceDigest"] = nativePlanningDigest("foreign");
+    if (mutation == 1) changed["metadata"]["packageManifestDigest"] = nativePlanningDigest("foreign");
+    if (mutation == 2) changed["modelIdentityDigest"] = nativePlanningDigest("foreign");
+    if (mutation == 3) changed["artifactProfileDigest"] = nativePlanningDigest("foreign");
+    if (mutation == 4) changed["metadata"]["canonicalInitializerObjectDigest"] = nativePlanningDigest("foreign");
+    auto rejected = request(); rejected.modelManifestDigest = nativePlanningDigest(changed.dump());
+    BOOST_CHECK_THROW(issuer.issue(rejected.sign(*ed('b')), 1000, 2000, changed.dump()), std::runtime_error);
+  }
+  BOOST_CHECK_EQUAL(keyReads, 1U);
+}
 
 BOOST_AUTO_TEST_CASE(SignedIssuerReachesIndependentProviderUnwrap)
 {
