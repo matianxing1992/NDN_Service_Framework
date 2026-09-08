@@ -1,0 +1,36 @@
+[
+  {
+    "registered_digest": "sha256:b26e663f268f561e3ce8bda318cf2d936e8c4b9e1704a6b326ce8747fee44e2f",
+    "graph_digest": "sha256:a34c8fb3ea838bf48e3de3c4323ce961ba3874644ae0d744937e07aa72ff4bf5",
+    "nodes": [
+      "z-node",
+      "a-node",
+      "中-node"
+    ],
+    "fragment_digest": "sha256:5112e51daa79008982acf9928c0d3b6a115870b6d15bc972e72e04922aa881d9",
+    "backends": [
+      "onnxruntime-cpu",
+      "onnxruntime-cuda"
+    ],
+    "weight_bytes": 1,
+    "safety_margin": 1.1,
+    "merge_kind": ""
+  },
+  {
+    "registered_digest": "sha256:e0d2d7b15bf951d39d7e50283b4aa50ca37bf49cdf8e2ab11c1d4f91862063f8",
+    "graph_digest": "sha256:a34c8fb3ea838bf48e3de3c4323ce961ba3874644ae0d744937e07aa72ff4bf5",
+    "nodes": [
+      "z-node",
+      "a-node",
+      "中-node"
+    ],
+    "fragment_digest": "sha256:77b37f0337ab2a5ad65ef1527dab26d4553b241cd289da382d9bfdb77f074b47",
+    "backends": [
+      "onnxruntime-cpu",
+      "onnxruntime-cuda"
+    ],
+    "weight_bytes": 1,
+    "safety_margin": 1.1,
+    "merge_kind": ""
+  }
+]

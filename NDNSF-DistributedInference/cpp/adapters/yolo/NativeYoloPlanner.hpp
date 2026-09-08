@@ -18,6 +18,7 @@ struct NativeYoloComponentSpec
   std::string inputIngressRole;
   std::string resultEgressRole;
   std::string mergeKind;
+  /** Required registered-catalogue identity, not the complete SplitCandidate digest. */
   std::string candidateDigest;
 };
 

@@ -276,11 +276,11 @@ BOOST_AUTO_TEST_CASE(YoloComponentSplitRejectsUncoveredGraphAndSortsPriority)
   auto graphSnapshot = graph(graphDigest, {"backbone", "neck", "detect", "output"});
   auto modelDescriptor = model("yolo26n", "YOLO26n", graphDigest);
   yolo::NativeYoloComponentSpec atomic{
-    "atomic-v1", 10, {"FullModel"}, {}, "FullModel", "FullModel", "", {}};
+    "atomic-v1", 10, {"FullModel"}, {}, "FullModel", "FullModel", "", digest("registered-atomic")};
   yolo::NativeYoloComponentSpec split{
     "split-v1", 1, {"Backbone", "Head"},
     {{"Backbone", {"backbone", "neck"}}, {"Head", {"detect", "output"}}},
-    "Backbone", "Head", "NATIVE_POSTPROCESS", {}};
+    "Backbone", "Head", "NATIVE_POSTPROCESS", digest("registered-split")};
   yolo::NativeYoloComponentSplit splitter({atomic, split});
   const auto candidates = splitter.enumerate(modelDescriptor, graphSnapshot,
                                              NativeCandidateBudget{2, 100, 1});
@@ -292,7 +292,7 @@ BOOST_AUTO_TEST_CASE(YoloComponentSplitRejectsUncoveredGraphAndSortsPriority)
   yolo::NativeYoloComponentSpec invalid{
     "invalid", 0, {"Backbone", "Head"},
     {{"Backbone", {"backbone"}}, {"Head", {"output"}}},
-    "Backbone", "Head", "", {}};
+    "Backbone", "Head", "", digest("registered-invalid")};
   yolo::NativeYoloComponentSplit bad({invalid});
   BOOST_CHECK_THROW(bad.enumerate(modelDescriptor, graphSnapshot, {}),
                     std::invalid_argument);
@@ -374,7 +374,7 @@ BOOST_AUTO_TEST_CASE(YoloComponentSplitRejectsInvalidComponentsAndForeignModel)
   auto graphSnapshot = graph(graphDigest, {"backbone", "neck", "detect", "output"});
   auto yoloModel = model("yolo26n", "YOLO26n", graphDigest);
   const yolo::NativeYoloComponentSpec atomic{
-    "atomic-v1", 10, {"FullModel"}, {}, "FullModel", "FullModel", "", {}};
+    "atomic-v1", 10, {"FullModel"}, {}, "FullModel", "FullModel", "", digest("registered-atomic")};
 
   // Invalid construction: no candidates, duplicate ids, empty roles,
   // duplicate roles, undeclared ingress/egress, malformed candidate digest.
@@ -382,15 +382,15 @@ BOOST_AUTO_TEST_CASE(YoloComponentSplitRejectsInvalidComponentsAndForeignModel)
   BOOST_CHECK_THROW(yolo::NativeYoloComponentSplit({atomic, atomic}),
                     std::invalid_argument);
   yolo::NativeYoloComponentSpec emptyRoles{
-    "e", 1, {}, {}, "FullModel", "FullModel", "", {}};
+    "e", 1, {}, {}, "FullModel", "FullModel", "", digest("registered")};
   BOOST_CHECK_THROW(yolo::NativeYoloComponentSplit({emptyRoles}),
                     std::invalid_argument);
   yolo::NativeYoloComponentSpec dupRoles{
-    "d", 1, {"A", "A"}, {{"A", {"backbone"}}}, "A", "A", "", {}};
+    "d", 1, {"A", "A"}, {{"A", {"backbone"}}}, "A", "A", "", digest("registered")};
   BOOST_CHECK_THROW(yolo::NativeYoloComponentSplit({dupRoles}),
                     std::invalid_argument);
   yolo::NativeYoloComponentSpec noIngress{
-    "n", 1, {"A"}, {{"A", {"backbone"}}}, "", "A", "", {}};
+    "n", 1, {"A"}, {{"A", {"backbone"}}}, "", "A", "", digest("registered")};
   BOOST_CHECK_THROW(yolo::NativeYoloComponentSplit({noIngress}),
                     std::invalid_argument);
   yolo::NativeYoloComponentSpec badDigest{
@@ -410,26 +410,26 @@ BOOST_AUTO_TEST_CASE(YoloComponentSplitRejectsInvalidComponentsAndForeignModel)
   // the graph.
   const std::vector<std::string> rolesA = {"A", "B"};
   yolo::NativeYoloComponentSpec undeclared{
-    "u", 1, rolesA, {{"A", {"backbone"}}, {"B", {"neck"}}}, "C", "B", "", {}};
+    "u", 1, rolesA, {{"A", {"backbone"}}, {"B", {"neck"}}}, "C", "B", "", digest("registered")};
   BOOST_CHECK_THROW(yolo::NativeYoloComponentSplit({undeclared})
                       .enumerate(yoloModel, graphSnapshot, {}),
                     std::invalid_argument);
   yolo::NativeYoloComponentSpec emptySet{
-    "s", 1, rolesA, {{"A", {}}, {"B", {"neck"}}}, "A", "B", "", {}};
+    "s", 1, rolesA, {{"A", {}}, {"B", {"neck"}}}, "A", "B", "", digest("registered")};
   BOOST_CHECK_THROW(yolo::NativeYoloComponentSplit({emptySet})
                       .enumerate(yoloModel, graphSnapshot, {}),
                     std::invalid_argument);
   yolo::NativeYoloComponentSpec doubleAssign{
     "t", 1, rolesA,
     {{"A", {"backbone", "neck"}}, {"B", {"neck", "detect"}}},
-    "A", "B", "", {}};
+    "A", "B", "", digest("registered")};
   BOOST_CHECK_THROW(yolo::NativeYoloComponentSplit({doubleAssign})
                       .enumerate(yoloModel, graphSnapshot, {}),
                     std::invalid_argument);
   yolo::NativeYoloComponentSpec wrongNames{
     "w", 1, rolesA,
     {{"A", {"backbone", "neck"}}, {"B", {"detect", "extra"}}},
-    "A", "B", "", {}};
+    "A", "B", "", digest("registered")};
   BOOST_CHECK_THROW(yolo::NativeYoloComponentSplit({wrongNames})
                       .enumerate(yoloModel, graphSnapshot, {}),
                     std::invalid_argument);
@@ -443,8 +443,9 @@ BOOST_AUTO_TEST_CASE(YoloComponentSplitIsDeterministicAndBudgetTruncates)
   auto graphSnapshot = graph(graphDigest, {"backbone", "neck", "detect", "output"});
   auto yoloModel = model("yolo26n", "YOLO26n", graphDigest);
   const auto atomic = [] (std::string id, int priority) {
+    const auto registered = digest("registered-" + id);
     return yolo::NativeYoloComponentSpec{
-      std::move(id), priority, {"FullModel"}, {}, "FullModel", "FullModel", "", {}};
+      std::move(id), priority, {"FullModel"}, {}, "FullModel", "FullModel", "", registered};
   };
   yolo::NativeYoloComponentSplit splitter({atomic("z", 9), atomic("a", 1),
                                            atomic("m", 5), atomic("b", 1),
@@ -840,6 +841,37 @@ BOOST_AUTO_TEST_CASE(CompleteModelDescriptorMatchesMaintainedPythonCanonicalIden
     if (mutation == 5) broken.precision = "unsupported";
     BOOST_CHECK_THROW(broken.canonicalJson(), std::invalid_argument);
   }
+}
+
+BOOST_AUTO_TEST_CASE(YoloFragmentMatchesMaintainedSplitterAndBindsRegistration)
+{
+  std::ifstream file("tests/fixtures/spec182/yolo-fragment-oracle.json");
+  BOOST_REQUIRE(file.good());
+  const auto rows = NativeJson::parse(file);
+  BOOST_REQUIRE_EQUAL(rows.size(), 2);
+  std::set<std::string> fragments;
+  for (const auto& row : rows) {
+    const auto graphDigest = row.at("graph_digest").get<std::string>();
+    auto snapshot = graph(graphDigest, row.at("nodes").get<std::vector<std::string>>());
+    snapshot.edges.clear(); snapshot.legalCutEdges.clear();
+    const auto descriptor = model("yolo26n", "YOLOFixture", graphDigest);
+    yolo::NativeYoloComponentSpec registered{"atomic-v1", 1, {"FullModel"}, {},
+      "FullModel", "FullModel", "NATIVE_POSTPROCESS", row.at("registered_digest")};
+    const auto candidate = yolo::NativeYoloComponentSplit({registered}).enumerate(descriptor, snapshot, {}).front();
+    BOOST_CHECK_EQUAL(candidate.fragmentsByRole.at("FullModel"), row.at("fragment_digest").get<std::string>());
+    BOOST_CHECK(candidate.artifactsByRole.at("FullModel") == std::vector<std::string>({row.at("fragment_digest")}));
+    const auto& requirement = candidate.requirementsByRole.at("FullModel");
+    BOOST_CHECK(requirement.backends == row.at("backends").get<std::vector<std::string>>());
+    BOOST_CHECK_EQUAL(requirement.weightBytes, row.at("weight_bytes").get<std::uint64_t>());
+    BOOST_CHECK_EQUAL(requirement.safetyMargin, row.at("safety_margin").get<double>());
+    BOOST_CHECK_EQUAL(candidate.mergeKind, row.at("merge_kind").get<std::string>());
+    fragments.insert(candidate.fragmentsByRole.at("FullModel"));
+    registered.candidateDigest.clear();
+    BOOST_CHECK_THROW(yolo::NativeYoloComponentSplit({registered}), std::invalid_argument);
+  }
+  // Both rows have the same candidate ID, role and graph. Registration changes
+  // must change the fragment identity independently of these shared fields.
+  BOOST_CHECK_EQUAL(fragments.size(), 2);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
