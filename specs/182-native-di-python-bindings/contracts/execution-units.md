@@ -327,6 +327,9 @@ CC-1补充Write：N/NativeConversationWire.hpp、N/NativeConversationWire.cpp；
 及独立author负责旧格式期望，U/di-native-conversation.t.cpp负责原生行为验证。
 CC-2补充Write：N/NativeConversationJournal.hpp、N/NativeConversationJournal.cpp；C16的
 旧格式持久化端口，负责lease/加密事务/恢复，不能替代C16的parent CAS与Provider晋升。
+CC-2 owner使用显式NativeConversationConfig、acceptTokenPrefix/replaceAttempt和真实
+pending turn；path-only无key构造拒绝。CC-3须实际调用owner及receipt/promotion端口，
+不能只保存shared_ptr。ABI改动在批末按真实消费者处理，不提前按字段重编。
 
 - **Parent**: T011; **Depends**: T011-B; **Reviewer**: state/compatibility review
 - **Read**: CD-007 State Authority → runtime-boundaries Migration and Rollback Contract；P/conversation.py::ConversationCoordinator；P/app_sdk/runtime_journal.py；N/NativeProviderRuntime.hpp::ConversationStateStore。

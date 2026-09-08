@@ -119,3 +119,28 @@ writer lease竞争、torn tail、quota拒绝保留旧文件和完整record篡改
 计入旧兼容spool，不能只算新log。当前无C++编译/行为PASS，产品源码保持未提交。
 下一步CC-2剩余：替换NativeConversationCoordinator scaffold，创建真正pending turn/
 abort/prepare/CAS/restore owner并消费上述端口；随后CC-3公开接线，同批末统一构建测试。
+
+## CC-2 Coordinator Owner Checkpoint
+
+coordinator scaffold已替换为显式owner/key配置、pending map和opaque ticket：
+FULL_CONTEXT经begin创建首轮，APPEND_DELTA验证签名父记录和canonical prefix；
+接受前缀只可扩展，abort实际移除pending，旧副本不能prepare/commit；replacement
+最多一次，保留接受前缀。path-only构造因没有认证key明确拒绝，不明文降级。
+
+prepare收齐声明角色receipt，核对request/generation/共同scope/prefix，产生旧V1签名
+checkpoint/transcript，不再接受任意providerStateDigest或手工seed。commit核对owner中
+prepared值/parent，锁外执行Provider晋升，锁内复查取消/期限/parent，journal耐久后才
+晋升可见记录；失败调用rollback，rollback失败明确报错。restore全部验证后swap。
+journal append增加durable parent epoch检查，避免两个C16共享journal时仅凭内存CAS分叉。
+
+新接口NativeConversationConfig/acceptTokenPrefix/replaceAttempt改变新增会话类型布局，
+批末须处理真实消费者ABI，不能复用失效对象。旧手工seed测试已替换为3个
+Spec182Conversation case：真实两轮begin/accept/prepare/commit与恢复、abort旧副本/
+晋升期间cancel、一次replacement拒绝旧attempt。预期仍取Python oracle。quota用例改为
+合法下一epoch后撞额度，避免先触发CAS而伪称quota已测。
+
+按review-agent静态审查修正旧rollback失败可能删除同名新turn及前缀接受异常安全。
+一次工具patch同路径delete/add被拒（写入前），已顺序应用；文档patch上下文不匹配也
+在修改前被拒，重新读取尾部后修正。均无产品运行。当前全部C++仍未构建/未验收/未提交。
+下一步CC-3接NativeInferenceClient operation的continuation/accept/final/cancel/replacement，
+复用Provider receipt与晋升控制，再整批构建；仅保存m_conversations不算接线。
