@@ -1,6 +1,6 @@
 # Implementation Plan: Native NDNSF-DI with Optional Python Bindings
 
-**Branch**: Experimental | **Revision**: 10 | **Date**: 2026-09-08
+**Branch**: Experimental | **Revision**: 11 | **Date**: 2026-09-08
 **Status**: IN_PROGRESS / 当前实现与验收状态见 tasks.md 的 Task Progress Registry 和 Current Checkpoint
 **Spec**: [spec.md](spec.md)
 
@@ -82,6 +82,18 @@ T012-A 的候选 ABI 观察项已单独记录为 `PARTIAL`：显式候选 Core/D
 native preparation/offer-admission 构造、C++/Python parity、caller migration 及最终
 qualification 仍是后续 T012-B/T013/T016 的出口。该批次只复用 ABI 证据，不把 focused
 binding PASS 提升为生产调用链完成。
+
+### R5 Caller Route Boundary 2026-09-08
+
+R5-B2 已提供显式 `APPClient.request_native()` 和完整 runtime composition 的绑定出口，
+但七个登记 maintained caller 仍分别使用 `request_task()`、`request_streaming()`、
+`request()`、`distributed_inference()` 或 Python `APPProvider`。其中 YOLO harness 虽启动
+`di-native-provider`，其 User 仍走 Python requester；Qwen/streaming harness 仍委托旧
+Python runner。按 [R5-B3 caller audit](evidence/r5-b3-maintained-caller-audit-20260908.md)，
+先冻结 caller matrix，再分为 native runtime config fixture、YOLO requester、
+Qwen/streaming requester 和 Provider host 四个出口；不能为了少一次构建把它们合成一批。
+T013-A 当前保持 `PARTIAL`，直到至少一个真实 caller 具备 operator-pinned catalog、
+preparation、grant/admission、C++ request selector 和 rollback evidence。
 
 2026-09-07 implementation audit：T004-A 因真实 Selection wire/identity 不兼容重开，
 见 [A8-01](evidence/t004-wire-reopened-20260907.md)。在继续 T010 完整请求提交前，
