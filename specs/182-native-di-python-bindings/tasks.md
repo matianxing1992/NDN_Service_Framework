@@ -17,6 +17,7 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 
 | Unit / Details | Status | Depends | Evidence / Remaining | Updated |
 | --- | --- | --- | --- | --- |
+| [R2-B6 Authorized Group Projection](evidence/r2-b6-group-projection-20260908.md) | DONE | R2-B5; R2-B3 | Initial-request local batch：group/model rank 分离、transfer operation/capability/endpoint 同源、实际 segment 消费；31 cases/1305 assertions PASS；默认 requester 与流式 feedback 未关闭 | 2026-09-08 |
 | [R2-B5 Native Group Key Admission](evidence/r2-b5-group-key-admission-20260908.md) | DONE | R2-B4; NativeOfferAdmission | Local batch only：同一认证 ACK key binding→Core RSA→Provider capability unwrap；19 cases/1216 assertions PASS；group rank/operation/endpoint 编排待闭合 | 2026-09-08 |
 | [R2-B4 Production Grant Chain](evidence/r2-b4-grant-production-audit-20260908.md) | DONE | R2-B3; CD-004; T004 acceptance retained | Local batch only：真实 signed issuer/authenticated client + sealer/Provider unwrap 组合；37 cases/672 assertions、4 independent oracle grants PASS；Core publication integration authored/T016，默认 requester 待接线 | 2026-09-08 |
 | [R2-B3 Projection Builder](evidence/r2-b3-projection-builder-20260908.md) | DONE | T003-C; R2-B1/B2 | PB-1/PB-2/PB-3 batch only：73 cases/1735 assertions PASS；补充1 case/37 assertions + SDK 7 dataflows/11 endpoints PASS；Core group/grant/default requester 仍待接线 | 2026-09-08 |
@@ -77,6 +78,14 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 | [T017-A Development Handoff](contracts/execution-units.md#t017-a-development-handoff) | NOT_STARTED | T016-A | [baseline](evidence/task-progress-registry-20260907.md)；无本卡独立执行/验收记录；按依赖领取 | 2026-09-07 |
 
 ## Current Checkpoint
+
+2026-09-08 R2-B6 / **DONE (initial-request local batch only)**：已将 sealed dependencies
+与认证 key offers 组合为 group capability 和完整 projections，统一 group rank、
+operation index 与身份摘要。首次 test const 编译失败已修复；r2 增量24.302s，
+31 cases/1305 assertions PASS，既有7 dataflows/11 endpoints SDK 对照通过。
+默认 requester 仍未接通；下一步 R3 将现有组件连接至真实 Core commit/response，
+R4 接入 TOKEN_FEEDBACK/streaming，T004/T010/T016 未整体完成。
+见 [R2-B6](evidence/r2-b6-group-projection-20260908.md)。
 
 2026-09-08 R2-B5 / **DONE (local batch only)**：NativeGroupKeyAdmission 连接同一 ACK
 的 V3 admission 与 key offer 身份/epoch/公钥摘要/endpoint 检查，复用 Core RSA 封装；

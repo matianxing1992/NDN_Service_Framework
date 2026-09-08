@@ -1,5 +1,12 @@
 # Failure Log and Evidence Index
 
+## 2026-09-08 — Spec182 group projection fixture const proposal
+
+R2-B6 首轮 native build exit 1，新增 Provider 交换分配负/正例修改了 fixture 的
+const proposal，编译器拒绝 swap/restore；产品两个 cpp 已编译，测试尚未执行。
+改为可修改的测试局部 proposal，保留[原始 build](../.codex-tmp/spec182-r2-b6/build.log)，
+新 r2 目录增量重试，见 [R2-B6](../specs/182-native-di-python-bindings/evidence/r2-b6-group-projection-20260908.md)。
+
 ## 2026-09-08 — Spec182 grant oracle backend argument
 
 R2-B4 native 增量 build 和 37 C++ cases PASS；离线 Python oracle 在 P-256

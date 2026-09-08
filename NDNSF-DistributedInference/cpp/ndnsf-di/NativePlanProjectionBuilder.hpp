@@ -29,6 +29,9 @@ public:
   static std::map<std::string, NativeRoleProjectionInputs> build(
     const NativeSealedPlan& sealed, const NativeSplitCandidate& candidate,
     const std::vector<NativeAdmittedOfferV3>& offers, const NativeProjectionContext& context);
+  /** Refresh all endpoint, readiness and dataflow bindings after authorized remapping. */
+  static void certify(std::map<std::string, NativeRoleProjectionInputs>& projections,
+                      const NativeSealedPlan& sealed);
 };
 
 } // namespace ndnsf::di
