@@ -7,6 +7,12 @@ R2 PDF/源码摘要检查曾通过，但逐章可理解性审阅结果 NEEDS_REV
 目标历史叙述与 TG 冲突。审阅已完成，修订待办，不把文档问题判为产品运行失败。
 见 [chapter audit](../specs/182-native-di-python-bindings/evidence/design-chapter-audit-20260908.md)。
 
+## 2026-09-08 — Spec182 resource repair progress owner
+
+文档检查拒绝 T003-C IN_PROGRESS（T003-A/B 依赖未完成）。本轮实际修复 T003-A
+共享资源声明，已将执行状态归回该 owner，下游保持 PARTIAL，不越过依赖门。
+原始结果及后续验证见 [resource contract](../specs/182-native-di-python-bindings/evidence/t003-resource-contract-20260908.md)。
+
 ## 2026-09-07 — Spec182 YOLO fragment source audit
 
 原生 fragment 哈希缺注册摘要与有序节点，且 backend/安全余量/原子 Merge 与维护

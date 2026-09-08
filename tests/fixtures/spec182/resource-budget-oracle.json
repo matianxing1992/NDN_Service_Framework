@@ -1,0 +1,214 @@
+[
+  {
+    "name": "complete",
+    "input": {
+      "backends": [
+        "onnxruntime-cpu",
+        "onnxruntime-cuda"
+      ],
+      "weight_bytes": 1,
+      "workspace_bytes": 2,
+      "kv_bytes": 3,
+      "activation_bytes": 4,
+      "transient_bytes": 5,
+      "safety_margin": 1.1
+    },
+    "canonical_json": "{\"activation_bytes\":4,\"backends\":[\"onnxruntime-cpu\",\"onnxruntime-cuda\"],\"kv_bytes\":3,\"safety_margin\":1.1,\"transient_bytes\":5,\"weight_bytes\":1,\"workspace_bytes\":2}",
+    "peak": 16,
+    "native_overflow": false
+  },
+  {
+    "name": "kv-zero",
+    "input": {
+      "backends": [
+        "onnxruntime-cpu",
+        "onnxruntime-cuda"
+      ],
+      "weight_bytes": 1,
+      "workspace_bytes": 2,
+      "kv_bytes": 0,
+      "activation_bytes": 4,
+      "transient_bytes": 5,
+      "safety_margin": 1.1
+    },
+    "canonical_json": "{\"activation_bytes\":4,\"backends\":[\"onnxruntime-cpu\",\"onnxruntime-cuda\"],\"kv_bytes\":0,\"safety_margin\":1.1,\"transient_bytes\":5,\"weight_bytes\":1,\"workspace_bytes\":2}",
+    "peak": 13,
+    "native_overflow": false
+  },
+  {
+    "name": "truncate",
+    "input": {
+      "backends": [
+        "onnxruntime-cpu",
+        "onnxruntime-cuda"
+      ],
+      "weight_bytes": 1,
+      "workspace_bytes": 2,
+      "kv_bytes": 3,
+      "activation_bytes": 4,
+      "transient_bytes": 5,
+      "safety_margin": 1.01
+    },
+    "canonical_json": "{\"activation_bytes\":4,\"backends\":[\"onnxruntime-cpu\",\"onnxruntime-cuda\"],\"kv_bytes\":3,\"safety_margin\":1.01,\"transient_bytes\":5,\"weight_bytes\":1,\"workspace_bytes\":2}",
+    "peak": 15,
+    "native_overflow": false
+  },
+  {
+    "name": "zero",
+    "input": {
+      "backends": [
+        "onnxruntime"
+      ],
+      "weight_bytes": 0,
+      "workspace_bytes": 0,
+      "kv_bytes": 0,
+      "activation_bytes": 0,
+      "transient_bytes": 0,
+      "safety_margin": 1.1
+    },
+    "canonical_json": "{\"activation_bytes\":0,\"backends\":[\"onnxruntime\"],\"kv_bytes\":0,\"safety_margin\":1.1,\"transient_bytes\":0,\"weight_bytes\":0,\"workspace_bytes\":0}",
+    "peak": 0,
+    "native_overflow": false
+  },
+  {
+    "name": "binary64-round",
+    "input": {
+      "backends": [
+        "onnxruntime"
+      ],
+      "weight_bytes": 9007199254740993,
+      "workspace_bytes": 0,
+      "kv_bytes": 0,
+      "activation_bytes": 0,
+      "transient_bytes": 0,
+      "safety_margin": 1.0
+    },
+    "canonical_json": "{\"activation_bytes\":0,\"backends\":[\"onnxruntime\"],\"kv_bytes\":0,\"safety_margin\":1.0,\"transient_bytes\":0,\"weight_bytes\":9007199254740993,\"workspace_bytes\":0}",
+    "peak": 9007199254740992,
+    "native_overflow": false
+  },
+  {
+    "name": "sum-overflow",
+    "input": {
+      "backends": [
+        "onnxruntime"
+      ],
+      "weight_bytes": 18446744073709551615,
+      "workspace_bytes": 1,
+      "kv_bytes": 0,
+      "activation_bytes": 0,
+      "transient_bytes": 0,
+      "safety_margin": 1.0
+    },
+    "canonical_json": "{\"activation_bytes\":0,\"backends\":[\"onnxruntime\"],\"kv_bytes\":0,\"safety_margin\":1.0,\"transient_bytes\":0,\"weight_bytes\":18446744073709551615,\"workspace_bytes\":1}",
+    "peak": 18446744073709551616,
+    "native_overflow": true
+  },
+  {
+    "name": "peak-overflow",
+    "input": {
+      "backends": [
+        "onnxruntime"
+      ],
+      "weight_bytes": 9223372036854775808,
+      "workspace_bytes": 0,
+      "kv_bytes": 0,
+      "activation_bytes": 0,
+      "transient_bytes": 0,
+      "safety_margin": 2.0
+    },
+    "canonical_json": "{\"activation_bytes\":0,\"backends\":[\"onnxruntime\"],\"kv_bytes\":0,\"safety_margin\":2.0,\"transient_bytes\":0,\"weight_bytes\":9223372036854775808,\"workspace_bytes\":0}",
+    "peak": 18446744073709551616,
+    "native_overflow": true
+  },
+  {
+    "name": "unknown-weight_bytes",
+    "input": {
+      "backends": [
+        "onnxruntime-cpu",
+        "onnxruntime-cuda"
+      ],
+      "weight_bytes": null,
+      "workspace_bytes": 2,
+      "kv_bytes": 3,
+      "activation_bytes": 4,
+      "transient_bytes": 5,
+      "safety_margin": 1.1
+    },
+    "canonical_json": "{\"activation_bytes\":4,\"backends\":[\"onnxruntime-cpu\",\"onnxruntime-cuda\"],\"kv_bytes\":3,\"safety_margin\":1.1,\"transient_bytes\":5,\"weight_bytes\":null,\"workspace_bytes\":2}",
+    "peak": null,
+    "native_overflow": false
+  },
+  {
+    "name": "unknown-workspace_bytes",
+    "input": {
+      "backends": [
+        "onnxruntime-cpu",
+        "onnxruntime-cuda"
+      ],
+      "weight_bytes": 1,
+      "workspace_bytes": null,
+      "kv_bytes": 3,
+      "activation_bytes": 4,
+      "transient_bytes": 5,
+      "safety_margin": 1.1
+    },
+    "canonical_json": "{\"activation_bytes\":4,\"backends\":[\"onnxruntime-cpu\",\"onnxruntime-cuda\"],\"kv_bytes\":3,\"safety_margin\":1.1,\"transient_bytes\":5,\"weight_bytes\":1,\"workspace_bytes\":null}",
+    "peak": null,
+    "native_overflow": false
+  },
+  {
+    "name": "unknown-kv_bytes",
+    "input": {
+      "backends": [
+        "onnxruntime-cpu",
+        "onnxruntime-cuda"
+      ],
+      "weight_bytes": 1,
+      "workspace_bytes": 2,
+      "kv_bytes": null,
+      "activation_bytes": 4,
+      "transient_bytes": 5,
+      "safety_margin": 1.1
+    },
+    "canonical_json": "{\"activation_bytes\":4,\"backends\":[\"onnxruntime-cpu\",\"onnxruntime-cuda\"],\"kv_bytes\":null,\"safety_margin\":1.1,\"transient_bytes\":5,\"weight_bytes\":1,\"workspace_bytes\":2}",
+    "peak": null,
+    "native_overflow": false
+  },
+  {
+    "name": "unknown-activation_bytes",
+    "input": {
+      "backends": [
+        "onnxruntime-cpu",
+        "onnxruntime-cuda"
+      ],
+      "weight_bytes": 1,
+      "workspace_bytes": 2,
+      "kv_bytes": 3,
+      "activation_bytes": null,
+      "transient_bytes": 5,
+      "safety_margin": 1.1
+    },
+    "canonical_json": "{\"activation_bytes\":null,\"backends\":[\"onnxruntime-cpu\",\"onnxruntime-cuda\"],\"kv_bytes\":3,\"safety_margin\":1.1,\"transient_bytes\":5,\"weight_bytes\":1,\"workspace_bytes\":2}",
+    "peak": null,
+    "native_overflow": false
+  },
+  {
+    "name": "unknown-transient_bytes",
+    "input": {
+      "backends": [
+        "onnxruntime-cpu",
+        "onnxruntime-cuda"
+      ],
+      "weight_bytes": 1,
+      "workspace_bytes": 2,
+      "kv_bytes": 3,
+      "activation_bytes": 4,
+      "transient_bytes": null,
+      "safety_margin": 1.1
+    },
+    "canonical_json": "{\"activation_bytes\":4,\"backends\":[\"onnxruntime-cpu\",\"onnxruntime-cuda\"],\"kv_bytes\":3,\"safety_margin\":1.1,\"transient_bytes\":null,\"weight_bytes\":1,\"workspace_bytes\":2}",
+    "peak": null,
+    "native_overflow": false
+  }
+]

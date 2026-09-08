@@ -225,9 +225,11 @@ void NativeRequestPreparation::validateRoles(const NativeInspectedModel& model,
       throw std::runtime_error("DI_NATIVE_ROLE_BINDING_MISMATCH");
     const auto& backends = candidate.requirementsByRole.at(role.role).backends;
     const auto& budget = candidate.requirementsByRole.at(role.role);
-    const long double requiredMb = std::ceil((static_cast<long double>(budget.weightBytes) +
-      budget.workspaceBytes + budget.activationBytes + budget.transientBytes) * budget.safetyMargin / (1024 * 1024));
-    if (static_cast<long double>(role.requiredDeviceMemoryMb) < requiredMb)
+    const auto peak = budget.estimatedPeakGpuMemoryBytes();
+    if (!peak) throw std::runtime_error("DI_NATIVE_ROLE_BINDING_MISMATCH: unknown runtime peak");
+    constexpr std::uint64_t mib = 1024 * 1024;
+    const auto requiredMb = *peak / mib + (*peak % mib != 0);
+    if (role.requiredDeviceMemoryMb < requiredMb)
       throw std::runtime_error("DI_NATIVE_ROLE_BINDING_MISMATCH");
     if (std::none_of(backends.begin(), backends.end(), [&](const auto& backend) {
           return role.backend == backend || role.backend == backend + "-cpu" || role.backend == backend + "-cuda";

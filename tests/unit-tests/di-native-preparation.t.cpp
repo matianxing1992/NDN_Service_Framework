@@ -136,7 +136,7 @@ NativeSplitCandidate candidateFor(const NativeInspectedModel& model,
     candidate.artifactsByRole[role.role] = {digest(role.role == "role" ? "artifact" : "artifact-" + role.role)};
     candidate.tensorDegreesByRole[role.role] = 1;
     candidate.rankArtifactDigestsByRole[role.role] = candidate.artifactsByRole.at(role.role);
-    candidate.requirementsByRole[role.role] = {{"onnxruntime"}, 1, 0, 0, 0, 1.0};
+    candidate.requirementsByRole[role.role] = {{"onnxruntime"}, 1, 0, 0, 0, 0, 1.0};
   }
   for (std::size_t i = 0; !candidate.executionPlan.roles.empty() && i < model.graph.nodes.size(); ++i)
     candidate.nodeRoles[model.graph.nodes[i].id] = candidate.executionPlan.roles.at(i % candidate.executionPlan.roles.size());
@@ -311,7 +311,7 @@ BOOST_AUTO_TEST_CASE(CertifiedRolesBindManifestRankArtifactAndResourceBudget)
   candidate.artifactsByRole = {{"role", {digest("artifact")}}};
   candidate.tensorDegreesByRole = {{"role", 1}};
   candidate.rankArtifactDigestsByRole = candidate.artifactsByRole;
-  candidate.requirementsByRole = {{"role", {{"onnxruntime"}, 1024 * 1024, 0, 0, 0, 1.0}}};
+  candidate.requirementsByRole = {{"role", {{"onnxruntime"}, 1024 * 1024, 0, 0, 0, 0, 1.0}}};
   NativePlanSealingInputs fixtureInputs;
   fixtureInputs.artifacts.artifactDigestByRole = {{"role", digest("artifact")}};
   fixtureInputs.artifacts.manifestDigest = model.modelManifestDigest;
@@ -339,6 +339,15 @@ BOOST_AUTO_TEST_CASE(CertifiedRolesBindManifestRankArtifactAndResourceBudget)
     if (mutation == 7) returned.clear();
     BOOST_CHECK_THROW(preparation.prepareRoles(model, candidate, control), std::runtime_error);
   }
+  returned = {role};
+  auto& budget = candidate.requirementsByRole.at("role");
+  budget.kvBytes = 1;
+  BOOST_CHECK_THROW(preparation.prepareRoles(model, candidate, control), std::runtime_error);
+  returned[0].requiredDeviceMemoryMb = 2;
+  BOOST_REQUIRE_EQUAL(preparation.prepareRoles(model, candidate, control).size(), 1);
+  budget.kvBytes.reset();
+  BOOST_CHECK_THROW(preparation.prepareRoles(model, candidate, control), std::runtime_error);
+  budget.kvBytes = 0;
   returned = {role}; cancelled = true;
   BOOST_CHECK_THROW(preparation.prepareRoles(model, candidate, control), std::runtime_error);
   cancelled = false;

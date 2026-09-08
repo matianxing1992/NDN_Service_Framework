@@ -146,11 +146,20 @@ struct NativeCandidateBudget
 struct NativeRoleResourceRequirement
 {
   std::vector<std::string> backends;
-  std::uint64_t weightBytes = 0;
-  std::uint64_t workspaceBytes = 0;
-  std::uint64_t activationBytes = 0;
-  std::uint64_t transientBytes = 0;
-  double safetyMargin = 1.0;
+  // Absent means unknown, not a zero-cost allocation. Adapters must explicitly
+  // supply zero for budgets which do not apply to their execution profile.
+  std::optional<std::uint64_t> weightBytes;
+  std::optional<std::uint64_t> workspaceBytes;
+  std::optional<std::uint64_t> kvBytes;
+  std::optional<std::uint64_t> activationBytes;
+  std::optional<std::uint64_t> transientBytes;
+  double safetyMargin = 1.1;
+
+  void validate() const;
+  /** Complete maintained RoleResourceRequirement schema, preserving nulls. */
+  std::string canonicalJson() const;
+  /** Python-compatible integer peak; null if unknown, throws on uint64 overflow. */
+  std::optional<std::uint64_t> estimatedPeakGpuMemoryBytes() const;
 };
 
 struct NativeProviderPlanningView

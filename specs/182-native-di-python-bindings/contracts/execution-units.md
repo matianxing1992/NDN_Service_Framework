@@ -121,6 +121,7 @@ worker crash/cancel 等真实子进程案例也转 T016，卡内只运行纯 fra
 - **Read**: CD-002 → Symbols/Values；P/adapters/qwen/placement.py::QwenThreeStageSplitter；N/NativePlanning.hpp（由本卡新增共享声明）。
 - **Write**: N/NativePlanning.hpp; N/NativePlanning.cpp; N/NativeInferenceClient.hpp; A/qwen/NativeQwenPlanner.hpp; A/qwen/NativeQwenPlanner.cpp; U/di-native-planning.t.cpp; U/di-native-client.t.cpp; tests/fixtures/spec182/native-model-fixture.hpp; tests/fixtures/spec182/author-model-descriptor-oracle.py; tests/fixtures/spec182/model-descriptor-oracle.json; wscript。
 - **Steps**: 按冻结类型声明 strategy/registry 端口，实现 Qwen cover 和确定性候选；保持支持范围和预算，不将模型名判断放入 Core。只声明其他 adapter 端口，不返回伪结果。
+- **Shared resource repair**: 本卡拥有 NativeRoleResourceRequirement；完整字段与消费者同步规则见 T003-C Resource contract。对照工件为 tests/fixtures/spec182/author-resource-budget-oracle.py、resource-budget-oracle.json，新增检查登记到 case-manifest.json；下游同步不表示其依赖已放行。
 - **Verify**: CPP(Spec182QwenSplit/*)；固定小图合法 cover、边界 budget、非法 rank/图输入；expected 来自冻结旧 splitter。
 
 ### T003-B Yolo Split Candidates
@@ -138,6 +139,7 @@ worker crash/cancel 等真实子进程案例也转 T016，卡内只运行纯 fra
 - **Read**: CD-002 → Values；P/planner/presplit_first.py::propose_v3；N/NativePlanning.hpp。
 - **Write**: N/NativePlanning.hpp; N/NativePlanning.cpp; N/NativeV3Placement.hpp; N/NativeV3Placement.cpp; U/di-native-planning.t.cpp; U/di-native-v3-placement.t.cpp; U/di-native-preparation.t.cpp; U/di-native-canonical-publisher.t.cpp; U/di-native-plan-sealer.t.cpp; tests/fixtures/spec182/author-placement-v3-oracle.py; tests/fixtures/spec182/placement-v3-oracle.json; wscript。
 - **Steps**: 实现 registry 与默认 placement，固定同一 snapshot 时间，先兼容过滤再 residency 排序；不做 I/O、不授权、不把 has_model 当 exact residency。
+- **Resource contract**: NativeRoleResourceRequirement 对齐维护 splitter.RoleResourceRequirement：五类 uint64 optional（weight/workspace/kv/activation/transient），未知保留 null，默认 margin 1.1；规范 JSON 保留完整字段。共享 peak 为 int(sum(bytes) * margin)，未知返回 null；超出原生 uint64 范围明确拒绝，不能 wrap 或饱和。placement/preparation 均拒绝未知 peak，后者按整数向上取 MiB，不漏 KV。修复范围包含 NativeRequestPreparation.cpp、两个默认 splitter 及真实 Python resource oracle；定向检查须覆盖 canonical bytes、未知/零、KV 容量边界、浮点截断与溢出。
 - **Verify**: CPP(Spec182NativePlanning/*) 与 CPP(Spec182V3Placement/*)；lease/budget/device/ref tie-break、非法向量、同输入同结果；与冻结 Python proposal 对照。proposeRoles 接受完整 role/rank metadata 与 admitted offer，旧 candidate 的 metadata/主链迁移未闭合前 T003-C 保持 PARTIAL。
 
 ### T004-A Canonical Plan Sealing

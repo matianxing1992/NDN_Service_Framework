@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <openssl/sha.h>
 #include <set>
 #include <sstream>
@@ -42,10 +43,8 @@ bool canPlaceRole(const NativeProviderPlanningView& offer, const std::string& ro
                    [&offer] (const auto& backend) { return contains(offer.backends, backend); })) {
     return false;
   }
-  // Promote before addition: a wrapped byte sum must never admit an offer.
-  const long double bytes = static_cast<long double>(requirement.weightBytes) +
-    requirement.workspaceBytes + requirement.activationBytes + requirement.transientBytes;
-  return bytes * requirement.safetyMargin <= static_cast<long double>(offer.freeBytes);
+  const auto peak = requirement.estimatedPeakGpuMemoryBytes();
+  return peak && *peak <= offer.freeBytes;
 }
 
 } // namespace
@@ -54,6 +53,43 @@ void NativeStrategyIdentity::validate() const
 {
   if (name.empty() || version.empty()) throw std::invalid_argument("strategy identity is incomplete");
   requireDigest(configurationDigest, "strategy configurationDigest");
+}
+
+void NativeRoleResourceRequirement::validate() const
+{
+  if (backends.empty() || !std::isfinite(safetyMargin) || safetyMargin < 1.0)
+    throw std::invalid_argument("invalid role resource requirement");
+}
+
+std::string NativeRoleResourceRequirement::canonicalJson() const
+{
+  validate();
+  const auto value = [](const auto& bytes) { return bytes ? NativeJson(*bytes) : NativeJson(nullptr); };
+  return nativeCanonicalJson(NativeJson{
+    {"backends", backends}, {"weight_bytes", value(weightBytes)},
+    {"workspace_bytes", value(workspaceBytes)}, {"kv_bytes", value(kvBytes)},
+    {"activation_bytes", value(activationBytes)}, {"transient_bytes", value(transientBytes)},
+    {"safety_margin", safetyMargin}});
+}
+
+std::optional<std::uint64_t> NativeRoleResourceRequirement::estimatedPeakGpuMemoryBytes() const
+{
+  validate();
+  const auto values = {weightBytes, workspaceBytes, kvBytes, activationBytes, transientBytes};
+  if (std::any_of(values.begin(), values.end(), [](const auto& value) { return !value; }))
+    return std::nullopt;
+  std::uint64_t sum = 0;
+  for (const auto& value : values) {
+    if (*value > std::numeric_limits<std::uint64_t>::max() - sum)
+      throw std::overflow_error("role memory budget exceeds uint64");
+    sum += *value;
+  }
+  // Python converts the exact integer sum to binary64 before multiplication,
+  // then truncates to an integer. Do not substitute long-double or ceil here.
+  const double peak = static_cast<double>(sum) * safetyMargin;
+  if (!std::isfinite(peak) || peak >= std::ldexp(1.0, 64))
+    throw std::overflow_error("role memory peak exceeds uint64");
+  return static_cast<std::uint64_t>(peak);
 }
 
 void NativeAdapterDescriptor::validate() const
@@ -220,9 +256,8 @@ void NativeSplitCandidate::validate(const NativeGraphSnapshot& graph) const
         requirementsByRole.at(role).backends.empty()) {
       throw std::invalid_argument("split candidate role has no artifact or backend");
     }
-    const auto margin = requirementsByRole.at(role).safetyMargin;
-    if (!std::isfinite(margin) || margin < 1.0 ||
-        std::any_of(artifactsByRole.at(role).begin(), artifactsByRole.at(role).end(),
+    requirementsByRole.at(role).validate();
+    if (std::any_of(artifactsByRole.at(role).begin(), artifactsByRole.at(role).end(),
                     [] (const auto& digest) { return !isDigest(digest); })) {
       throw std::invalid_argument("split candidate artifact or resource requirement is invalid");
     }

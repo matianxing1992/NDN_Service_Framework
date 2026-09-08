@@ -167,7 +167,7 @@ NativeYoloComponentSplit::enumerate(const NativeModelDescriptor& model,
       candidate.artifactsByRole[role] = {candidate.fragmentsByRole[role]};
       candidate.requirementsByRole[role] = {
         {"onnxruntime-cpu", "onnxruntime-cuda"},
-        roleBytes, 256ULL * 1024ULL * 1024ULL,
+        roleBytes, 256ULL * 1024ULL * 1024ULL, 0,
         256ULL * 1024ULL * 1024ULL, 64ULL * 1024ULL * 1024ULL, 1.1};
       candidate.tensorDegreesByRole[role] = 1;
       candidate.rankArtifactDigestsByRole[role] = candidate.artifactsByRole.at(role);
