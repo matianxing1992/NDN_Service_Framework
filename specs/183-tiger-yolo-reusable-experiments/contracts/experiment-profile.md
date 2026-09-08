@@ -19,6 +19,13 @@ not supported.
 
 ### Cross-host transport layout (design fixed; transport not implemented)
 
+Implementation checkpoint: explicit inventory/no-overwrite receiver is present
+in runtime/yolo_transport.py with internal tools/spec183_transport.py. It verifies
+only operator-selected files. Fifteen focused checks and an actual two-file Tiger
+exercise are retained in evidence/t004-transport-receiver.md. Automatic semantic
+closure, active-allocation exclusion and the public submit SSH coordinator are
+still missing; end-to-end transport remains unimplemented.
+
 Use the declared project namespace on both the experiment host and Tiger before
 creating new qualifying runs: artifact inputs/profile under `remoteArtifactRoot`,
 run outputs and their frozen bundles under `sharedRunRoot`. These are separate

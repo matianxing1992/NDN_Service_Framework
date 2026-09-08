@@ -1,5 +1,18 @@
 # Failure Log and Evidence Index
 
+## 2026-09-07 — Standalone transport test lacked its canonical import root
+
+- Symptom: targeted receiver tests stopped during collection with
+  ModuleNotFoundError: runtime; no receiver test executed.
+- Cause: the new test lacked the import-root setup supplied by other tests
+  when a larger group runs.
+- Fix: explicitly insert the canonical Tiger root. Initial focused.xml retains
+  the failure; final.xml records 15 passing component checks.
+- Evidence: results/spec183-transport-receiver-20260907; separate real two-file
+  Tiger receive/reuse documented in t004-transport-receiver.md.
+- Lesson: targeted tests must collect independently; do not expand a suite
+  merely to get another module's sys.path side effect.
+
 ## 2026-09-07 — Sender submit selected a receiver-only Python path
 
 - Symptom: `_enter_frozen` selected the configured Tiger operator Python for

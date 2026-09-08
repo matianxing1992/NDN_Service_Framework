@@ -1,5 +1,11 @@
 # Reusable YOLO Distributed Inference
 
+内部运输组件 `tools/spec183_transport.py` 已有显式inventory/receive；输入清单
+只描述所选文件，不能证明完整candidate闭包。接收端先校验、测容量，再无覆盖
+发布；匹配文件可复用，结果仅CONTENT_VERIFIED/NOT_EVALUATED。真实两文件SSH
+验证见Spec183的 `evidence/t004-transport-receiver.md`。活动作业排除、自动闭包
+枚举与公开submit的SSH协调尚未完成，不能用此工具替代正式前置门。
+
 **Branch**: `TigerClusterExperiments`
 **Status**: IN_PROGRESS / NOT_QUALIFIED
 
