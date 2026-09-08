@@ -1,0 +1,30 @@
+\clearpage
+\subsection{G3：DI 原生入口与共享对象}
+\begin{center}
+\begin{tikzpicture}
+\node[dbox] (c) at (0,0) {NativeInferenceClient\\request / close};
+\node[dbox] (a) at (5,0) {NativeAdapterRegistry\\模型适配器查询};
+\node[dbox] (p) at (10,0) {NativeInferenceProvider\\serve / stop};
+\node[dbox] (u) at (0,-2.6) {ServiceUser\\Core 请求角色};
+\node[dbox] (h) at (5,-2.6) {HostState\\Provider 内部共享状态};
+\node[dbox] (v) at (10,-2.6) {ServiceProvider\\Core 服务角色};
+\node[dbox] (handle) at (0,-5.3) {NativeInferenceHandle\\result / cancel / observe};
+\node[dbox] (op) at (5,-5.3) {Operation\\状态、deadline 与通知};
+\node[dbox] (reg) at (10,-5.3) {NativeServiceRegistration\\close；注册状态句柄};
+\draw[down] (c)--node[dlabel,above]{共享只读}(a);
+\draw[down] (p)--node[dlabel,above]{共享只读}(a);
+\draw[down] (c)--node[dlabel,right]{共享持有}(u);
+\draw[down] (p)--node[dlabel,right]{共享持有}(v);
+\draw[down] (p)--node[dlabel,above,sloped]{共享持有}(h);
+\draw[dcall] (c.west)--(-2.4,0)--(-2.4,-5.3)--(handle.west);
+\draw[down] (handle)--node[dlabel,above]{共享持有}(op);
+\draw[dcall] (p.east)--(12.4,0)--(12.4,-5.3)--(reg.east);
+\end{tikzpicture}
+\end{center}
+\diagramnote{两侧虚线分别表示 request 返回 handle、serve 返回 registration。这是关键对象关系的选择性视图：Client 还持有准备、admission、grant、conversation
+等协作对象，未全部展开。Registration 持有自己的 State；不把它画成 HostState 本身，也不
+把注册句柄关闭等同于已经停止远端任务。}
+\callout{接线边界}{构造函数接收一个依赖，并不证明默认 request 路径已调用它。
+当前路径与目标调用阶段分别见各自 G7；Provider 局部能力不代表 requester 全链完成。}
+\diagramnote{源码：\code{NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp}、
+\code{NativeInferenceClient.cpp}、\code{NativeInferenceProvider.hpp}。详见 AC-14 与 AC-15。}

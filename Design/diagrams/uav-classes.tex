@@ -1,0 +1,24 @@
+\clearpage
+\subsection{G5：UAV 容器与设备适配}
+\begin{center}
+\begin{tikzpicture}
+\node[dbox] (gs) at (0,0) {GroundStation\\ServiceContainer\\地面站操作与订阅};
+\node[dbox] (dr) at (8,0) {DroneServiceContainer\\设备、命令与媒体};
+\node[dbox] (gu) at (0,-2.7) {ServiceUser\\unique\_ptr};
+\node[dbox] (dp) at (8,-2.7) {ServiceProvider\\unique\_ptr};
+\node[dbox] (back) at (8,-5.4) {FlightControllerBackend\\shared\_ptr};
+\node[dbox] (video) at (0,-5.4) {VideoPublisher\\unique\_ptr};
+\draw[down] (gs)--node[dlabel,right]{独占持有}(gu);
+\draw[down] (dr)--node[dlabel,right]{独占持有}(dp);
+\draw[dcall] (gu)--node[dlabel,above]{受保护的服务协议}(dp);
+\draw[down] (dr.east) to[bend left=30] node[dlabel,right]{共享持有}(back.east);
+\draw[down] (dr.west) to[bend right=12] node[dlabel,left]{独占持有}(video.north);
+\end{tikzpicture}
+\end{center}
+\diagramnote{图中为两侧成员子集：Drone 也有 ServiceUser，地面站也有检测 Provider；
+省略不等于不存在。backend 抽象飞控访问，具体设备实现与 mock/SITL 由部署配置选择，
+不是 ServiceProvider 的子类。}
+\callout{释放与真实设备}{容器对象释放、媒体流停止、mission 取消、飞控完成动作分别有
+自己的状态和清理契约。unique\_ptr 只能说明本地对象所有权，不能证明外部设备已停止。}
+\diagramnote{源码：\code{NDNSF-UAV-APP/drone/DroneServiceContainer.inc.hpp}、
+\code{ground-station/GroundStationServiceContainer.inc.hpp}。对应 UAV 容器、飞控与 AC-19。}

@@ -1,0 +1,22 @@
+\clearpage
+\subsection{G2：Core 角色组合与所有权}
+\begin{center}
+\begin{tikzpicture}
+\node[dwide] (sc) at (5,0) {ServiceContainer\\addUser / addProvider / addController\\进程内角色注册与生命周期编排};
+\node[dbox] (u) at (0,-3) {ServiceUser\\RequestService\\候选、选择和结果处理};
+\node[dbox] (p) at (5,-3) {ServiceProvider\\addService\\ACK 与业务处理器};
+\node[dbox] (c) at (10,-3) {ServiceController\\grant / revoke\\授权策略与密钥版本};
+\draw[down] (sc.south west)--node[dlabel,left]{注册持有}(u);
+\draw[down] (sc)--node[dlabel,right]{注册持有}(p);
+\draw[down] (sc.south east)--node[dlabel,right]{注册持有}(c);
+\draw[dcall] (u)--node[dlabel,above]{调用协议}(p);
+\draw[dcall] (p)--node[dlabel,above]{授权状态}(c);
+\end{tikzpicture}
+\end{center}
+\diagramnote{容器不是第四个 wire 角色，User/Provider/Controller 之间也不是继承关系。
+shared\_ptr 重载共享持有；unique\_ptr 重载转移到共享持有；引用重载使用不删除对象的包装，
+外部对象寿命须覆盖使用期。图中的“注册持有”不能统一解释成容器独占所有权。}
+\callout{生命周期}{调用者、处理器及底层 Face 的实际回调线程由各 API 契约决定。
+容器停止、一次 invocation 取消、权限撤回是不同动作，不能由对象连线推导其等价性。}
+\diagramnote{源码：\code{ndn-service-framework/ServiceContainer.hpp}、\code{ServiceUser.hpp}、
+\code{ServiceProvider.hpp}、\code{ServiceController.hpp}。详见 AC-01、Core 启动与角色章节。}

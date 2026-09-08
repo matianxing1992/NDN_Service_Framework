@@ -1610,7 +1610,7 @@ registerOnnxRuntimeBackend(RegistryNativeModelRunnerFactory& factory);
 
 ## NDNSF-DistributedInference/cpp/adapters/qwen/NativeQwenPlanner.hpp
 
-源码 SHA-256：`74beecb001218db221e0dabd2c430f2fcda481c46f46a83e6556357b1a9451f2`。
+源码 SHA-256：`5985e0204c7c226b4d772efa30d6ab981626787464f5c7a82b5f5214d1b4c66b`。
 
 ### API-d72c0621fc13 · ndnsf::di::qwen::NativeQwenLayerSplit
 
@@ -1651,9 +1651,34 @@ public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adap
 NativeStrategyIdentity identity() const override;
 ```
 
+### API-80771b0510b2 · ndnsf::di::qwen::NativeQwenLayerSplit::inspectGraph
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/qwen/NativeQwenPlanner.hpp#L36)
+
+```cpp
+NativeGraphSnapshot inspectGraph(const NativeModelDescriptor& model,
+    const std::string& revision, std::uint64_t maxNodes) const;
+```
+
+原始接口说明：
+
+```text
+/** Build the maintained semantic graph from pinned model metadata. This is
+   * not a mapping from decoder layers to canonical ONNX node indices. */
+```
+
+### API-4e1e8ac4cf33 · ndnsf::di::qwen::NativeQwenLayerSplit::enumerateFromMetadata
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/qwen/NativeQwenPlanner.hpp#L38)
+
+```cpp
+std::vector<NativeSplitCandidate> enumerateFromMetadata(const NativeModelDescriptor& model,
+    const std::string& revision, std::uint64_t maxNodes, const NativeCandidateBudget& budget) const;
+```
+
 ### API-e4ac032fe39f · ndnsf::di::qwen::NativeQwenLayerSplit::enumerate
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/qwen/NativeQwenPlanner.hpp#L34)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/qwen/NativeQwenPlanner.hpp#L40)
 
 ```cpp
 std::vector<NativeSplitCandidate> enumerate(
@@ -2942,11 +2967,11 @@ makeNativeYoloMergeRunner(const NativeModelRunnerSpec& spec);
 
 ## NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloPlanner.hpp
 
-源码 SHA-256：`57b033c6b182c4b1611ec21f0416045b90b1c8622b3017e5bbf8f45217c6995c`。
+源码 SHA-256：`0f40086aaebdde6adcd347e0c44956dca367c9922253ff819827f56769c5311a`。
 
 ### API-abebd006ae3a · ndnsf::di::yolo::NativeYoloComponentSpec
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloPlanner.hpp#L12)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloPlanner.hpp#L13)
 
 ```cpp
 struct NativeYoloComponentSpec
@@ -2954,7 +2979,7 @@ struct NativeYoloComponentSpec
 
 ### API-88d7ff48a2b5 · ndnsf::di::yolo::NativeYoloComponentSpec::candidateId
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloPlanner.hpp#L14)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloPlanner.hpp#L15)
 
 ```cpp
 std::string candidateId;
@@ -2962,7 +2987,7 @@ std::string candidateId;
 
 ### API-d5feb0357b47 · ndnsf::di::yolo::NativeYoloComponentSpec::priority
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloPlanner.hpp#L15)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloPlanner.hpp#L16)
 
 ```cpp
 int priority = 0;
@@ -2970,7 +2995,7 @@ int priority = 0;
 
 ### API-7f7b3564f979 · ndnsf::di::yolo::NativeYoloComponentSpec::roles
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloPlanner.hpp#L16)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloPlanner.hpp#L17)
 
 ```cpp
 std::vector<std::string> roles;
@@ -2978,7 +3003,7 @@ std::vector<std::string> roles;
 
 ### API-3f73318d6684 · ndnsf::di::yolo::NativeYoloComponentSpec::nodeNamesByRole
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloPlanner.hpp#L17)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloPlanner.hpp#L18)
 
 ```cpp
 std::map<std::string, std::vector<std::string>> nodeNamesByRole;
@@ -2986,7 +3011,7 @@ std::map<std::string, std::vector<std::string>> nodeNamesByRole;
 
 ### API-b0ac37deade7 · ndnsf::di::yolo::NativeYoloComponentSpec::inputIngressRole
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloPlanner.hpp#L18)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloPlanner.hpp#L19)
 
 ```cpp
 std::string inputIngressRole;
@@ -2994,7 +3019,7 @@ std::string inputIngressRole;
 
 ### API-5f7b68440012 · ndnsf::di::yolo::NativeYoloComponentSpec::resultEgressRole
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloPlanner.hpp#L19)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloPlanner.hpp#L20)
 
 ```cpp
 std::string resultEgressRole;
@@ -3002,7 +3027,7 @@ std::string resultEgressRole;
 
 ### API-716723e82fa5 · ndnsf::di::yolo::NativeYoloComponentSpec::mergeKind
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloPlanner.hpp#L20)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloPlanner.hpp#L21)
 
 ```cpp
 std::string mergeKind;
@@ -3010,7 +3035,7 @@ std::string mergeKind;
 
 ### API-ee4a68e9d920 · ndnsf::di::yolo::NativeYoloComponentSpec::candidateDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloPlanner.hpp#L22)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloPlanner.hpp#L23)
 
 ```cpp
 std::string candidateDigest;
@@ -3022,9 +3047,33 @@ std::string candidateDigest;
 /** Required registered-catalogue identity, not the complete SplitCandidate digest. */
 ```
 
+### API-f04a558e1125 · ndnsf::di::yolo::NativeYoloCatalogComponent
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloPlanner.hpp#L27)
+
+```cpp
+struct NativeYoloCatalogComponent
+```
+
+### API-fa3a274834c7 · ndnsf::di::yolo::NativeYoloCatalogComponent::component
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloPlanner.hpp#L29)
+
+```cpp
+NativeYoloComponentSpec component;
+```
+
+### API-a0239f9c3f60 · ndnsf::di::yolo::NativeYoloCatalogComponent::semanticPartitionJson
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloPlanner.hpp#L30)
+
+```cpp
+std::string semanticPartitionJson;
+```
+
 ### API-95630470fb82 · ndnsf::di::yolo::NativeYoloComponentSplit
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloPlanner.hpp#L26)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloPlanner.hpp#L34)
 
 ```cpp
 class NativeYoloComponentSplit final : public NativeModelSplitStrategy
@@ -3032,16 +3081,34 @@ class NativeYoloComponentSplit final : public NativeModelSplitStrategy
 
 ### API-f48539cd3086 · ndnsf::di::yolo::NativeYoloComponentSplit::NativeYoloComponentSplit
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloPlanner.hpp#L29)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloPlanner.hpp#L37)
 
 ```cpp
 explicit NativeYoloComponentSplit(
     std::vector<NativeYoloComponentSpec> candidates, std::string postprocessingJson = "{}");
 ```
 
+### API-5c9e13af2388 · ndnsf::di::yolo::NativeYoloComponentSplit::fromOnnxCatalog
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloPlanner.hpp#L42)
+
+```cpp
+static NativeYoloComponentSplit fromOnnxCatalog(
+    const NativeModelDescriptor& model, const NativeCanonicalSource& source,
+    const NativeAssemblyControl& control, std::vector<NativeYoloCatalogComponent> candidates,
+    std::string postprocessingJson = "{}");
+```
+
+原始接口说明：
+
+```text
+/** Inspect actual source bytes and bind registered semantic partitions to
+   * their graph. Source authentication remains with the native catalog owner. */
+```
+
 ### API-fe4dabba9068 · ndnsf::di::yolo::NativeYoloComponentSplit::identity
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloPlanner.hpp#L32)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloPlanner.hpp#L47)
 
 ```cpp
 NativeStrategyIdentity identity() const override;
@@ -3049,7 +3116,7 @@ NativeStrategyIdentity identity() const override;
 
 ### API-3a7ba864a1cf · ndnsf::di::yolo::NativeYoloComponentSplit::enumerate
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloPlanner.hpp#L33)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloPlanner.hpp#L48)
 
 ```cpp
 std::vector<NativeSplitCandidate> enumerate(

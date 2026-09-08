@@ -1,0 +1,24 @@
+\clearpage
+\subsection{G8：Repo 控制面与数据面的读取顺序}
+\begin{center}
+\begin{tikzpicture}
+\node (a) at (0,0) {应用消费者};
+\node (ctl) at (6,0) {Repo 控制入口};
+\node (data) at (12,0) {具备分段的节点};
+\foreach \x in {0,6,12} \draw[dlife] (\x,-.4)--(\x,-7.6);
+\draw[dcall] (0,-1)--node[dlabel,above]{查询 manifest / 目录}(6,-1);
+\draw[dcall] (6,-2)--node[dlabel,above]{描述、引用与位置线索}(0,-2);
+\node[dlabel] at (0,-2.8) {核对身份、版本及读取策略};
+\draw[dcall] (0,-3.6)--node[dlabel,above]{按精确名称获取 Data；必要时使用 hint}(12,-3.6);
+\draw[dcall] (12,-4.6)--node[dlabel,above]{保留原发布者签名的 Data}(0,-4.6);
+\node[dlabel] at (0,-5.6) {逐段校验；核对完整性与摘要};
+\node[dlabel] at (0,-6.7) {完整对象可交给业务层};
+\end{tikzpicture}
+\end{center}
+\diagramnote{这是职责级时序，网络 helper/Python 制品会话的具体入口各有支持范围，
+不承诺所有 C++ RepoClient 方法都实现图中全部步骤。目录回复只是元数据，
+并不证明全部分段可达；来源节点可能与控制节点相同，也可能不同。}
+\callout{失败与恢复}{缺段、错误签名、身份/摘要不匹配必须保留失败边界。
+恢复时沿既定操作身份核对已有内容；不能仅凭本地文件存在宣称下载完成。
+消费者负责业务解码，Repo 不解释张量或视频帧。}
+\diagramnote{正文：Repo 大制品传输、目录与副本；源码入口见 R2、R7 及 AC-10--AC-13。}

@@ -1,0 +1,27 @@
+\clearpage
+\subsection{G7：DI 目标原生流程（PLANNED）}
+\begin{center}
+\begin{tikzpicture}
+\node[dstate] (input) at (0,0) {输入与真实图准备};
+\node[dstate] (ack) at (5,0) {ACK 关闭\\admission};
+\node[dstate] (plan) at (10,0) {拆分与放置\\验证 proposal};
+\node[dstate] (art) at (10,-2.6) {ensureArtifacts\\bindPublishedRoles};
+\node[dstate] (seal) at (5,-2.6) {sealCore\\grant / security};
+\node[dstate] (submit) at (0,-2.6) {Core 提交选择\\等待执行结果};
+\node[dwide] (term) at (5,-5.3) {唯一 Operation 仲裁终态\\成功 / 失败 / 取消；同一 deadline、request 与 attempt 绑定};
+\draw[dcall] (input)--(ack);
+\draw[dcall] (ack)--(plan);
+\draw[dcall] (plan)--(art);
+\draw[dcall] (art)--(seal);
+\draw[dcall] (seal)--(submit);
+\draw[dcall] (submit)--(term);
+\end{tikzpicture}
+\end{center}
+\diagramnote{所有虚线步骤属于 TG-02 的目标组合，不是当前端到端实现证明。
+具体方法名复用目标契约；框内未给方法名的文字是逻辑阶段，不新增公开 API。
+每个耗时边界都需检查原有 deadline/cancel，不能给子步骤重置完整预算。}
+\callout{所有权目标}{Python 作为调用层复用同一原生操作，不再另建候选、attempt 和终态仲裁。
+任一阶段失败须经唯一终态 owner 处理；已发生的外部副作用按契约取消/补偿，
+不能把本地 Cancelled 当成远端资源全部回收。}
+\diagramnote{权威：TG-02、TG-03，Spec182 的 runtime-boundaries、requester 与 proof 契约。
+当前完成程度须回到当前设计 G7 和 Spec182 证据查阅，不能由本图反推。}

@@ -1,0 +1,26 @@
+\clearpage
+\subsection{G9：UAV 命令响应与设备结果分层}
+\begin{center}
+\begin{tikzpicture}
+\node (gs) at (0,0) {地面站};
+\node (dr) at (5,0) {Drone 服务};
+\node (back) at (9,0) {飞控 backend};
+\node (fc) at (13,0) {飞控设备};
+\foreach \x in {0,5,9,13} \draw[dlife] (\x,-.4)--(\x,-8);
+\draw[dcall] (0,-1)--node[dlabel,above]{Core 受保护调用}(5,-1);
+\node[dlabel] at (5,-2) {解析应用命令与实际前置检查};
+\draw[dcall] (5,-3)--node[dlabel,above]{请求设备动作}(9,-3);
+\draw[dcall] (9,-4)--node[dlabel,above]{设备协议}(13,-4);
+\draw[dcall] (9,-5)--node[dlabel,above]{本地处理结果}(5,-5);
+\draw[dcall] (5,-6)--node[dlabel,above]{服务响应}(0,-6);
+\draw[dcall] (13,-7)--node[dlabel,above]{ACK / 遥测按独立设备路径更新}(9,-7);
+\end{tikzpicture}
+\end{center}
+\diagramnote{此图强调两个结果通道，不承诺设备 ACK 总在服务响应之后到达，也不表示所有
+backend 都等待同一种 ACK。真实返回/等待语义依命令和 backend 契约；mock 与真实设备必须
+分开解释。图中的“实际前置检查”不把 operatorLease 等字段自动当成已强制执行的授权。}
+\callout{任务层}{一次服务响应不等于飞行完成；mission 含多个 invocation，
+补偿只处理缺失 part，并检查 task/attempt/assignment 绑定。取消本地操作不等同于
+无人机立即停止。真实飞行、断连恢复和 fail-safe 仍需对应实验验证。}
+\diagramnote{正文：UAV 飞控、巡逻与任务补偿；源码：DroneServiceContainer、
+FlightControllerBackend 及 GroundStationServiceContainer，详细契约 AC-19、AC-20。}
