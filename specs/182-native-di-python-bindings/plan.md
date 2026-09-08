@@ -74,6 +74,12 @@ receipt/control/commit，再由同一 coordinator 发起 `APPEND_DELTA` 并提�
 T011-C 与 T016 仍未关闭。下一步先补该失败边界，再依赖 T011-C 的稳定接口推进 T012/T013；
 不要把本批局部 PASS 写成 T010/T011 或全 Spec 完成。
 
+T012-A 的候选 ABI 观察项已单独记录为 `PARTIAL`：显式候选 Core/DI、NAC-ABE 与 SVS
+依赖下 extension 导入和 21 个 focused Python cases 通过，但默认 requester 的完整
+native preparation/offer-admission 构造、C++/Python parity、caller migration 及最终
+qualification 仍是后续 T012-B/T013/T016 的出口。该批次只复用 ABI 证据，不把 focused
+binding PASS 提升为生产调用链完成。
+
 2026-09-07 implementation audit：T004-A 因真实 Selection wire/identity 不兼容重开，
 见 [A8-01](evidence/t004-wire-reopened-20260907.md)。在继续 T010 完整请求提交前，
 先修复 T004 的完整 canonical wire、真实工件和 grant 输入，并复核受影响前置值契约；

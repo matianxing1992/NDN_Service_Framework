@@ -29,7 +29,7 @@ freshness，Provider 单 worker 控制面等待死锁，以及 End 事件后的 
 | implementation and wire | covered | V2 request/response/ACK/Selection parsers, event/collaboration names, SVS session/seq freshness, receipt/control/commit ACK and stream terminal handling; query: `git diff -- ndn-service-framework/ServiceProvider.cpp ndn-service-framework/utils.cpp ndn-service-framework/InvocationStream.cpp` |
 | test/harness/oracle | covered for positive path; gap for negative | real encrypted catalog publication, real receipt/control/commit, second-turn lineage and result text are asserted in `Spec182R4B6RealProviderConversation`; CC-4c recovery/replacement oracle remains absent |
 | build/source closure | covered | system-first `./waf -o build-nac182 build --targets=integration-tests -j4` and combined unit/integration target both succeeded; integration source is registered by the existing `tests/wscript` closure; focused unit selectors cover V2, collaboration and event names |
-| migration/evidence | gap | this evidence and `/tmp/spec182-r4b6-final.log` record the local run; T012/T013 caller migration, T014 isolation, T015 convergence and T016 qualification remain open |
+| migration/evidence | gap | this evidence and `.codex-tmp/spec182-r4-b6-real-provider-final-20260908/` record the local run; T012/T013 caller migration, T014 isolation, T015 convergence and T016 qualification remain open |
 
 ## Gate order
 
@@ -57,6 +57,22 @@ env PATH=/usr/bin:/bin:/usr/sbin:/sbin WAFLOCK=.lock-waf \
 turns use real Provider receipt/control/commit, while CC-4c recovery/replacement and all T016
 qualification gates are still open. A local seeded receipt or a successful link is not an
 acceptance result.
+
+## Related replacement boundary
+
+The existing native Provider replacement fixture was rerun against the refreshed candidate
+integration binary:
+
+```text
+integration-tests --run_test='Spec170NdnsfDiCoreFlow/Spec175NativeTinyOnnxI12ProviderUnavailableAfterEvent3WithReplacement'
+result: 1 case, 19 assertions, exit 0; requests=2 completed=1 failed=0,
+replacementExecutions=1, replacementEventsPublished=1
+```
+
+This is durable evidence that the shared stream Provider can detach after event 3 and complete
+through replacement. It is not the dedicated R4-B6 `NativeInferenceClient` continuation or a
+cross-process qualification run, so CC-4c/T011-C remains open. Raw output is retained at
+`.codex-tmp/spec182-r4-b6-cc4c-20260908/integration-cc4c.log` with `rc.txt`.
 
 ## Miss taxonomy
 
