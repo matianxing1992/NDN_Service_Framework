@@ -2619,3 +2619,17 @@ Lesson: a clean worker receipt is insufficient for its outer launch process;
 verify both, and keep task exit, numerical verdict and allocation termination
 separate. Remote staging/scratch/terminal observer and distributed cases remain
 unfinished; see evidence/t004-single-gpu-runner.md. No production gate was closed.
+
+## 2026-09-07 — Real prepared plan could not reach collection handoff
+
+Symptom: actual prepared plans omit candidateDigest, but the handoff writer
+accessed plan.candidateDigest. Old fixture plans supplied a fictional field,
+and composition tests doubled the final handoff, concealing the KeyError.
+Fix: use the explicit bound runtime candidate argument for receipt and handoff
+identity; test the actual plan shape and real retained receipt/file writer join.
+The two-node owner also revealed a 630-second minimum with the full permission
+windows; update the actual profile's insufficient 600-second walltime to 900,
+preserving 1 warmup + 3 measured requests and their original deadlines.
+41 focused owner/handoff and 53 CLI checks passed; no runtime tests were repeated.
+Lesson: test adjacent owners with production-shaped data, and budget the full
+invocation including permission acquisition. See t004-two-node-runner.md.

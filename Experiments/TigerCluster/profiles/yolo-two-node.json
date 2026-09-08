@@ -15,7 +15,7 @@
   "dispatch": {
    "path": "../.cache/planes/dispatch/plane.json",
    "bytes": 1216,
-   "sha256": "sha256:07a4c028e7d35606eacfb1b9921ece2c0852880f9dabc21631cb92c88b9856b3"
+   "sha256": "sha256:75aac9533fd4404929ff50622d4ef237af7ff62ca90f08eb4c49d0fb542910c0"
   },
   "gates": {}
  },
@@ -51,7 +51,7 @@
   "gpuClass": "rtx_6000",
   "cpusPerNode": 4,
   "memoryGiB": 4,
-  "wallTimeSeconds": 600,
+  "wallTimeSeconds": 900,
   "tcpPort": 16363
  },
  "roles": {
@@ -110,8 +110,8 @@
  "oracle": {
   "contract": {
    "path": "../../../specs/183-tiger-yolo-reusable-experiments/contracts/experiment-profile.md",
-   "bytes": 33944,
-   "sha256": "sha256:0364b9418ec698974637440636146e74ec83026bbcca15e0b4680c7aa5eb9adf"
+   "bytes": 35358,
+   "sha256": "sha256:7c4521ce3314e4101ca34e5a29753133750705a4efe27521b92217ab9937e3b0"
   },
   "reference": {
    "path": "../.cache/model/spec180-public/models/canonical-package/oracle/full-model-output.npy",
@@ -142,12 +142,12 @@
   "harnessManifest": {
    "path": "../.cache/planes/dispatch/harness/harness-manifest.json",
    "bytes": 3039,
-   "sha256": "sha256:c29bf499746dfbed5cb4362556e571131889b699237b1b49a646f056487096a6"
+   "sha256": "sha256:b522df6ddc5f2243193a6bae7ab6b9dcf2c17c388e87e089164bdb153210359c"
   },
   "validationContract": {
    "path": "../../../specs/183-tiger-yolo-reusable-experiments/contracts/experiment-profile.md",
-   "bytes": 33944,
-   "sha256": "sha256:0364b9418ec698974637440636146e74ec83026bbcca15e0b4680c7aa5eb9adf"
+   "bytes": 35358,
+   "sha256": "sha256:7c4521ce3314e4101ca34e5a29753133750705a4efe27521b92217ab9937e3b0"
   }
  }
 }

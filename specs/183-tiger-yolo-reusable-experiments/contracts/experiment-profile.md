@@ -40,6 +40,26 @@ external terminal-state reconciliation remains required. Remote staging,
 allocation scratch/capacity integration, distributed/negative runner and actual
 submission remain incomplete; this private entry is not release qualification.
 
+The normal two-node case now uses two tasks in the same srun step. The batch
+publishes one run/candidate/job-bound probe nonce; rank zero alone invokes the
+issuer and atomically publishes its preparation digest. Rank one waits within a
+monotonic staging budget and rejects a peer failure. Both ranks independently
+capture Slurm identity, resolve only scheduler-attested hosts through bounded
+getent queries, and reject loopback, duplicate or ambiguous IPv4 addresses.
+They consume the same verified preparation and probe nonce while using their
+assigned role homes and separate node outputs. Only rank zero issues/validates
+the four requests. The batch joins both retained node receipts after clean srun
+exit; it cannot publish a partial handoff while one rank remains running.
+
+The prepared run candidate is an explicit handoff argument, not a field invented
+inside the plan (which is itself part of the candidate hash). The writer binds
+node receipts and collection candidate to that argument. The actual profile's
+walltime is 900 seconds: its four permission/request windows plus stage/start/
+cleanup require at least 630 seconds, so the old 600-second setting could never
+satisfy the complete owner budget. Schedule and request deadlines are unchanged.
+Negative-dependency still fails as NEGATIVE_RUNNER_NOT_WIRED. Remote staging,
+scratch/capacity and allocation-terminal reconciliation remain prerequisites.
+
 **Status**: T004 partial — schema、只读 `check`、确定性运行预览和提交记录组件已实现；
 完整五命令、合格不可变 bundle、实际 enabled profile 和生产提交接线尚未完成。
 没有启动资格。

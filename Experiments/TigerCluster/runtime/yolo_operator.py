@@ -372,6 +372,192 @@ def execute_local_run(*, prepared: dict, profile: dict, resolved: dict) -> dict:
                                 mode='local-cpu')
 
 
+def _normal_reference(prepared, profile, resolved):
+    from .yolo_bundle import reference_owner
+    from .yolo_profile import _file_identity
+    package = _directory(resolved['package'], 'LOCAL_RUN_PACKAGE')
+    owner = reference_owner(Path(prepared['bundle']))
+    fixture = Path(profile['oracle']['input']['path'])
+    repository = fixture
+    for _ in Path(owner.FIXTURE_PATH).parts:
+        repository = repository.parent
+    if repository / owner.FIXTURE_PATH != fixture:
+        raise OperatorError('LOCAL_RUN_FIXTURE_LAYOUT')
+    for name in ('input', 'reference'):
+        record = profile['oracle'][name]
+        path = Path(record['path'])
+        _file_identity(path.parent, name, dict(record, path=path.name))
+    reference = owner.load_reference(package, repository, 640)
+    if (reference.manifest_digest != resolved['descriptor']['manifestDigest']
+            or reference.fixture_digest != profile['oracle']['input']['sha256']
+            or reference.oracle_digest != profile['oracle']['reference']['sha256']):
+        raise OperatorError('LOCAL_RUN_ORACLE_BINDING')
+    return reference, package, repository
+
+
+def _distributed_control(prepared, expected):
+    from .yolo_profile import _read_plane
+    root = Path(prepared['plan']['output'])
+    value = _read_plane(root / 'distributed-control.json')
+    if (not isinstance(value, dict) or set(value) != {'runId', 'candidateDigest', 'jobId', 'probeId'}
+            or value['runId'] != prepared['runId'] or value['candidateDigest'] != prepared['candidateDigest']
+            or value['jobId'] != expected['job_id'] or not isinstance(value['probeId'], str)
+            or re.fullmatch(r'[a-f0-9]{32}', value['probeId']) is None):
+        raise OperatorError('DISTRIBUTED_CONTROL_BINDING')
+    return value
+
+
+def _allocation_endpoints(hosts, port, seconds):
+    """Resolve only scheduler-attested hostnames within one bounded query budget."""
+    import ipaddress
+    import time
+    deadline = time.monotonic() + seconds
+    result = []
+    for rank, host in enumerate(hosts):
+        if not isinstance(host, str) or re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9.-]{0,252}', host) is None:
+            raise OperatorError('DISTRIBUTED_HOSTNAME')
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise OperatorError('DISTRIBUTED_DNS_TIMEOUT')
+        query = subprocess.run(['/usr/bin/getent', 'ahostsv4', host], check=True,
+            capture_output=True, timeout=remaining, env={'PATH': '/usr/bin:/bin', 'LC_ALL': 'C'})
+        if len(query.stdout) > 16384:
+            raise OperatorError('DISTRIBUTED_DNS_SIZE')
+        addresses = {str(ipaddress.IPv4Address(line.split()[0]))
+                     for line in query.stdout.decode('ascii').splitlines() if line.strip()}
+        if len(addresses) != 1:
+            raise OperatorError('DISTRIBUTED_DNS_AMBIGUOUS')
+        address = addresses.pop()
+        ip = ipaddress.IPv4Address(address)
+        if ip.is_loopback or ip.is_unspecified or ip.is_multicast:
+            raise OperatorError('DISTRIBUTED_DNS_ADDRESS')
+        result.append(dict(rank=rank, address=address, port=port))
+    if len(result) != 2 or result[0]['address'] == result[1]['address']:
+        raise OperatorError('DISTRIBUTED_DISTINCT_NODES')
+    return result
+
+
+def execute_distributed_rank(*, prepared, profile, resolved, allocation_expected, rank):
+    """One actual srun rank; rank zero signs once and both own their node lifecycle."""
+    import time
+    from .yolo_allocation import capture_task_allocation
+    from .yolo_bundle import verify_harness, verify_preparation
+    from .yolo_profile import _read_plane
+    from .identities import _credential_document
+    from .yolo_graph_reference import read_request_reference
+    from .yolo_result import collect_request_result
+    plan = prepared['plan']
+    _validate_plan(plan, mode='two-node-gpu', rank=rank)
+    root = _directory(plan['output'], 'DISTRIBUTED_ROOT')
+    bundle = _directory(prepared['bundle'], 'DISTRIBUTED_BUNDLE')
+    control = _distributed_control(prepared, allocation_expected)
+    verify_harness(bundle, expected_manifest_sha256=prepared['harnessManifestSha256'])
+    if (resolved['descriptor']['plan'] != plan or prepared['case'] != 'two-node-gpu'
+            or resolved['descriptor']['runtimeCandidateDigest'] != prepared['candidateDigest']):
+        raise OperatorError('DISTRIBUTED_PREPARED_BINDING')
+    timing = profile['timing']
+    permission_ms = min(120000, timing['progressTimeoutSeconds'] * 1000)
+    process_seconds = (permission_ms + timing['requestDeadlineMs']) / 1000
+    completion_seconds = len(plan['requests']) * process_seconds
+    if timing['stagingSeconds'] + timing['startupSeconds'] + completion_seconds + timing['cleanupSeconds'] > profile['cluster']['wallTimeSeconds']:
+        raise OperatorError('DISTRIBUTED_WALLTIME_BUDGET')
+    observed = capture_task_allocation(**allocation_expected, rank=rank, node_count=2,
+                                      seconds=timing['progressTimeoutSeconds'])
+    endpoints = _allocation_endpoints(observed['receipt']['hosts'], profile['cluster']['tcpPort'],
+                                     timing['progressTimeoutSeconds'])
+    provision_path = root / 'distributed-preparation.json'
+    try:
+        if rank == 0:
+            _credential_document(root / 'distributed-started.json', control)
+            descriptor = stage_provision_inputs(resolved, root / 'issuer-inputs')
+            for name in ('public', 'private', 'prepare-output', 'startup', 'completion'):
+                (root / name).mkdir(mode=0o700)
+            (root / 'private/root').mkdir(mode=0o700)
+            provision = provision_run(runtime_profile=resolved['runtimeProfile'], bundle=bundle,
+                harness_digest=prepared['harnessManifestSha256'], inputs=root/'issuer-inputs',
+                descriptor_digest=descriptor, package=Path(resolved['package']), public=root/'public',
+                private=root/'private', output=root/'prepare-output', seconds=timing['stagingSeconds'],
+                cleanup_seconds=timing['cleanupSeconds'])
+            _credential_document(provision_path, dict(control=control, provision=provision))
+        else:
+            deadline = time.monotonic() + timing['stagingSeconds'] + timing['cleanupSeconds']
+            while True:
+                if (root/'failed-0.json').exists():
+                    raise OperatorError('DISTRIBUTED_PREPARATION_PEER_FAILED')
+                if provision_path.exists():
+                    break
+                if time.monotonic() >= deadline:
+                    raise OperatorError('DISTRIBUTED_PREPARATION_TIMEOUT')
+                time.sleep(0.05)
+        stored = _read_plane(provision_path)
+        if not isinstance(stored, dict) or set(stored) != {'control', 'provision'} or stored['control'] != control:
+            raise OperatorError('DISTRIBUTED_PREPARATION_BINDING')
+        provision = stored['provision']
+        receipt = verify_preparation(root/'public', plan, expected_receipt_digest=provision['receiptDigest'],
+                                     candidate_digest=prepared['candidateDigest'])
+        if receipt != provision['preparation']:
+            raise OperatorError('DISTRIBUTED_PREPARATION_CHANGED')
+        reference = _normal_reference(prepared, profile, resolved)[0] if rank == 0 else None
+        output, node = root / ('node'+str(rank)), root / ('node-runtime-'+str(rank))
+        output.mkdir(mode=0o700)
+        node.mkdir(mode=0o700)
+        accepted = []
+        def accept(request, request_output):
+            if rank != 0:
+                raise OperatorError('DISTRIBUTED_USER_RANK')
+            read_request_reference(request_output/'graph-reference.json', run_id=plan['runId'],
+                request_id=request['requestId'], runtime_candidate_digest=prepared['candidateDigest'],
+                placement_candidate_digest=receipt['placementCandidateDigest'], graph_digest=receipt['graphDigest'])
+            collect_request_result(request_output, reference, case='two-node-gpu', request_id=request['requestId'],
+                attempt_id='attempt-1', candidate_id=receipt['placementCandidateId'],
+                candidate_digest=receipt['placementCandidateDigest'], graph_digest=receipt['graphDigest'],
+                catalogue_digest=receipt['catalogueDigest'])
+            accepted.append(request['index'])
+        result = run_rank(plan=plan, profile=dict(profile, **resolved['runtimeProfile']), mode='two-node-gpu',
+            rank=rank, bundle=bundle, public=root/'public',
+            homes={role: root/'private'/role for role in assigned_roles('two-node-gpu', rank)},
+            output=output, node=node, startup_directory=root/'startup', completion_directory=root/'completion',
+            preparation_digest=provision['receiptDigest'], candidate_digest=prepared['candidateDigest'],
+            endpoints=endpoints, startup_seconds=timing['startupSeconds'], completion_seconds=completion_seconds,
+            startup_options=dict(repo_free_bytes=profile['storage']['peakBytes']+profile['storage']['marginBytes'],
+                permission_wait_ms=permission_ms, network_probe_seconds=timing['progressTimeoutSeconds']),
+            request_options=dict(package=Path(resolved['package']), catalog_data_name=receipt['catalogueDataName'],
+                catalog_signer=receipt['catalogueSigner'], permission_wait_ms=permission_ms,
+                request_deadline_ms=timing['requestDeadlineMs'], process_timeout_seconds=process_seconds,
+                protection_epoch=profile['security']['protectionEpoch']), accept_request=accept,
+            allocation_expected=allocation_expected, probe_id=control['probeId'],
+            gpu_device=observed['receipt']['visible'])
+        if accepted != (list(range(len(plan['requests']))) if rank == 0 else []):
+            raise OperatorError('DISTRIBUTED_REQUEST_COVERAGE')
+        return result
+    except BaseException as exc:
+        _credential_document(root/('failed-'+str(rank)+'.json'), dict(control, errorType=type(exc).__name__))
+        raise
+
+
+def finalize_distributed_run(*, prepared, profile, resolved, allocation_expected):
+    """After srun exits, join both retained worker receipts and actual preparation."""
+    from .yolo_profile import _read_plane
+    from .yolo_bundle import verify_preparation
+    root, plan = Path(prepared['plan']['output']), prepared['plan']
+    control = _distributed_control(prepared, allocation_expected)
+    value = _read_plane(root/'distributed-preparation.json')
+    if value.get('control') != control:
+        raise OperatorError('DISTRIBUTED_PREPARATION_BINDING')
+    receipt = verify_preparation(root/'public', plan, expected_receipt_digest=value['provision']['receiptDigest'],
+                                 candidate_digest=prepared['candidateDigest'])
+    _, package, repository = _normal_reference(prepared, profile, resolved)
+    return finalize_normal_collection(plan=plan,
+        rank_results={rank: _read_plane(root/('node'+str(rank))/'node-receipt.json') for rank in (0, 1)},
+        node_roots={rank: root/('node'+str(rank)) for rank in (0, 1)}, collection_path=root/'collection-input.json',
+        references=[dict(package=package, repository=repository, inputSize=640) for _ in plan['requests']],
+        runtime_candidate_digest=prepared['candidateDigest'],
+        providers_by_role={role: plan['identities'][role] for role in ('BackboneNeck','DetectShard0','DetectShard1','Merge')},
+        placement_candidate_id=receipt['placementCandidateId'], placement_candidate_digest=receipt['placementCandidateDigest'],
+        graph_digest=receipt['graphDigest'], catalogue_digest=receipt['catalogueDigest'],
+        certified_graph={'graphDigest': receipt['graphDigest']}, allocation_expected=allocation_expected)
+
+
 def execute_single_gpu_run(*, prepared: dict, profile: dict, resolved: dict,
                            allocation_expected: dict) -> dict:
     """Run a normal GPU case inside the journal-bound single srun task."""
@@ -415,25 +601,7 @@ def _execute_single_node(*, prepared: dict, profile: dict, resolved: dict, mode:
     if (timing['stagingSeconds'] + timing['startupSeconds'] + completion_seconds
             + timing['cleanupSeconds'] > profile['cluster']['wallTimeSeconds']):
         raise OperatorError('LOCAL_RUN_WALLTIME_BUDGET')
-    package = _directory(resolved['package'], 'LOCAL_RUN_PACKAGE')
-    # Reuse the generic NumPy owner, frozen with the harness. No model or
-    # native DI initialization is needed on the operator host.
-    owner = reference_owner(bundle)
-    fixture = Path(profile['oracle']['input']['path'])
-    repository = fixture
-    for _ in Path(owner.FIXTURE_PATH).parts:
-        repository = repository.parent
-    if repository / owner.FIXTURE_PATH != fixture:
-        raise OperatorError('LOCAL_RUN_FIXTURE_LAYOUT')
-    for name in ('input', 'reference'):
-        record = profile['oracle'][name]
-        path = Path(record['path'])
-        _file_identity(path.parent, name, dict(record, path=path.name))
-    reference = owner.load_reference(package, repository, 640)
-    if (reference.manifest_digest != resolved['descriptor']['manifestDigest']
-            or reference.fixture_digest != profile['oracle']['input']['sha256']
-            or reference.oracle_digest != profile['oracle']['reference']['sha256']):
-        raise OperatorError('LOCAL_RUN_ORACLE_BINDING')
+    reference, package, repository = _normal_reference(prepared, profile, resolved)
     names = ('issuer-inputs', 'public', 'private', 'prepare-output', 'node',
              'startup', 'completion', 'node0')
     paths = {name: root / name for name in names}

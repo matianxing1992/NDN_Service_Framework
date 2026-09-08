@@ -605,8 +605,8 @@ def _verify_srun_cleanup(root, prepared):
 def _allocated_context(args, *, task=False):
     if not os.environ.get("SLURM_JOB_ID"):
         raise ClosureError("ALLOCATION_REQUIRED")
-    if args.case != 'single-node-gpu':
-        raise ClosureError('DISTRIBUTED_RUNNER_NOT_WIRED')
+    if args.case not in ('single-node-gpu', 'two-node-gpu'):
+        raise ClosureError('NEGATIVE_RUNNER_NOT_WIRED')
     report, profile = _dispatch_report(Path(args.profile))
     if report.get('integrity') != 'VERIFIED':
         raise ClosureError('RUN_CONTENT_NOT_VERIFIED')
@@ -637,11 +637,18 @@ def _rank(args) -> int:
     if result is not None:
         return result
     from runtime.yolo_profile import resolve_provision_inputs
-    from runtime.yolo_operator import execute_single_gpu_run
+    from runtime.yolo_operator import execute_single_gpu_run, execute_distributed_rank
     resolved = resolve_provision_inputs(Path(args.profile), plan=prepared['plan'],
                                         runtime_candidate_digest=prepared['candidateDigest'])
-    execute_single_gpu_run(prepared=prepared, profile=profile, resolved=resolved,
-                           allocation_expected=expected)
+    if args.case == 'single-node-gpu':
+        execute_single_gpu_run(prepared=prepared, profile=profile, resolved=resolved,
+                               allocation_expected=expected)
+    else:
+        rank = os.environ.get('SLURM_PROCID')
+        if rank not in ('0', '1'):
+            raise ClosureError('DISTRIBUTED_TASK_RANK')
+        execute_distributed_rank(prepared=prepared, profile=profile, resolved=resolved,
+                                 allocation_expected=expected, rank=int(rank))
     return 0
 
 
@@ -651,10 +658,16 @@ def _run(args) -> int:
     result = _enter_frozen(args, prepared, 'run')
     if result is not None:
         return result
-    _gate_receipt(Path(args.profile), profile, 'localSif', prepared=prepared)
+    _gate_receipt(Path(args.profile), profile, CASE_GATE[args.case], prepared=prepared)
     from runtime.worker import run_finite_application
     root = Path(prepared['plan']['output'])
-    command = ['/usr/bin/srun', '--exact', '--nodes=1', '--ntasks=1',
+    nodes = 2 if args.case == 'two-node-gpu' else 1
+    if nodes == 2:
+        import secrets
+        _write_readonly(root/'distributed-control.json', dict(runId=args.run_id,
+            candidateDigest=prepared['candidateDigest'], jobId=expected['job_id'],
+            probeId=secrets.token_hex(16)))
+    command = ['/usr/bin/srun', '--exact', '--nodes='+str(nodes), '--ntasks='+str(nodes),
         '--ntasks-per-node=1', '--kill-on-bad-exit=1', '--mpi=none',
         '--cpus-per-task=' + str(profile['cluster']['cpusPerNode']), '--gpus-per-task=1',
         '/usr/bin/python3', '-B', str(Path(prepared['bundle']) / 'jobs/yolo/submit.py'),
@@ -670,6 +683,13 @@ def _run(args) -> int:
         _write_readonly(root / 'srun-cleanup.json', dict(runId=args.run_id,
             jobId=expected['job_id'], candidateDigest=prepared['candidateDigest'], cleanup=cleanup))
     _verify_srun_cleanup(root, prepared)
+    if nodes == 2:
+        from runtime.yolo_profile import resolve_provision_inputs
+        from runtime.yolo_operator import finalize_distributed_run
+        resolved = resolve_provision_inputs(Path(args.profile), plan=prepared['plan'],
+                                            runtime_candidate_digest=prepared['candidateDigest'])
+        finalize_distributed_run(prepared=prepared, profile=profile, resolved=resolved,
+                                 allocation_expected=expected)
     # External collect/reconciliation must observe Slurm termination before
     # releasing the shared journal. A batch still executing cannot close it.
     return _collect(args)

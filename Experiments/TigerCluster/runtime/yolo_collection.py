@@ -138,7 +138,7 @@ def publish_normal_handoff(path: Path, *, plan: dict, node_roots: dict,
         if root != expected_root:
             raise CollectionHandoffError("HANDOFF_NODE_ROOT_BINDING")
         receipt_digest, preparation_digest = _node_receipt(
-            root, plan=plan, rank=rank, candidate_digest=plan["candidateDigest"])
+            root, plan=plan, rank=rank, candidate_digest=runtime_candidate_digest)
         nodes[str(rank)] = {"root": str(root), "receiptDigest": receipt_digest,
                             "preparationDigest": preparation_digest}
         if plan["case"] != "local-cpu":
@@ -171,7 +171,7 @@ def publish_normal_handoff(path: Path, *, plan: dict, node_roots: dict,
                 or set(allocation_expected) != {"job_id", "submission_key", "partition", "gpu_type"}):
             raise CollectionHandoffError("HANDOFF_ALLOCATION_SCHEMA")
     value = {"schema": "tiger-yolo-collection-input-v1", "status": "READY",
-             "runId": plan["runId"], "candidateDigest": plan["candidateDigest"],
+             "runId": plan["runId"], "candidateDigest": runtime_candidate_digest,
              "case": plan["case"], "kind": "normal",
              "runtimeCandidateDigest": runtime_candidate_digest,
              "placementCandidateId": placement_candidate_id,

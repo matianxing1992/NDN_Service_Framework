@@ -28,7 +28,7 @@ def plan_fixture(tmp_path, *, case="local-cpu"):
             "case": case, "rank": rank,
             "planDigest": "sha256:" + "1" * 64,
             "preparationDigest": "sha256:" + str(rank + 2) * 64,
-            "candidateDigest": "sha256:" + "a" * 64,
+            "candidateDigest": "sha256:" + "d" * 64,
             "launches": [{"role": "user", "invocation": "0", "pid": 100 + rank,
                           "argvDigest": "sha256:" + "b" * 64,
                           "logPath": "logs/user-0.log", "logDigest": "sha256:" + "c" * 64,
@@ -41,7 +41,7 @@ def plan_fixture(tmp_path, *, case="local-cpu"):
             (root / "slurm-allocation.json").write_text("{}")
             (root / "gpu-probe.json").write_text("{}")
     plan = {"schema": "tiger-yolo-run-plan-v1", "runId": "run-01", "case": case,
-            "candidateDigest": "sha256:" + "a" * 64, "output": str(run_root)}
+            "output": str(run_root)}
     return plan, run_root, nodes
 
 
