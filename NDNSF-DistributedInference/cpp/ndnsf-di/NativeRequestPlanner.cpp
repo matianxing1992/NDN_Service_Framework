@@ -1,6 +1,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPlanner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeV3Placement.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGroupProjectionBuilder.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include <algorithm>
 #include <set>
@@ -29,6 +30,94 @@ public:
 private:
   const std::vector<ndn_service_framework::SelectedParticipant> m_selected;
 };
+
+std::string conversationRoleMapDigest(
+  const std::map<std::string, std::string>& providersByRole)
+{
+  NativeJson roleMap = NativeJson::array();
+  for (const auto& [role, provider] : providersByRole)
+    roleMap.push_back(NativeJson::array({role, provider}));
+  return nativePlanningDigest(nativeCanonicalJson(roleMap));
+}
+
+void bindConversationProjections(
+  std::map<std::string, NativeRoleProjectionInputs>& projections,
+  const NativeSealedPlan& sealed,
+  const NativeConversationTurn& turn,
+  const std::string& requestContractDigest,
+  const std::string& serviceName,
+  const std::map<std::string, std::string>& providersByRole)
+{
+  if (turn.requestId.empty() || turn.requestId != sealed.core.requestId ||
+      turn.attempt != sealed.core.attempt || turn.parent.serviceName != serviceName ||
+      turn.parent.requestContractDigest != requestContractDigest)
+    throw std::invalid_argument("conversation turn/request binding mismatch");
+  if (turn.parent.expectedRoles.size() != providersByRole.size())
+    throw std::invalid_argument("conversation turn role map is incomplete");
+  std::set<std::string> expected(turn.parent.expectedRoles.begin(), turn.parent.expectedRoles.end());
+  std::set<std::string> actual;
+  for (const auto& [role, provider] : providersByRole) {
+    (void)provider;
+    actual.insert(role);
+  }
+  if (expected != actual)
+    throw std::invalid_argument("conversation turn role set does not match placement");
+  const auto roleMapDigest = conversationRoleMapDigest(providersByRole);
+  if (roleMapDigest != turn.parent.planRoleMapDigest)
+    throw std::invalid_argument("conversation turn plan-role map mismatch");
+
+  ConversationTurnBindingV1 binding;
+  binding.conversationId = turn.parent.conversationId;
+  binding.parentContextEpoch = turn.parent.parentContextEpoch;
+  binding.successorContextEpoch = turn.successorContextEpoch;
+  binding.serviceName = serviceName;
+  binding.planRoleMapDigest = roleMapDigest;
+  binding.requestContractDigest = requestContractDigest;
+  binding.retentionDeadlineMs = turn.parent.retentionDeadlineMs;
+  binding.parentCheckpointDigest = turn.parent.parentCheckpointDigest;
+  binding.validate();
+
+  std::map<std::string, std::string> parentReceipts;
+  if (binding.parentContextEpoch > 0) {
+    if (turn.parent.parentCheckpointWire.empty())
+      throw std::invalid_argument("conversation append parent checkpoint is missing");
+    const auto checkpoint = NativeJson::parse(turn.parent.parentCheckpointWire);
+    if (!checkpoint.is_object() || !checkpoint.contains("roleReceiptDigests") ||
+        !checkpoint.at("roleReceiptDigests").is_object())
+      throw std::invalid_argument("conversation append parent receipt map is missing");
+    for (const auto& item : checkpoint.at("roleReceiptDigests").items()) {
+      if (!item.value().is_string())
+        throw std::invalid_argument("conversation append parent receipt is malformed");
+      parentReceipts.emplace(item.key(), item.value().get<std::string>());
+    }
+    if (parentReceipts.size() != providersByRole.size())
+      throw std::invalid_argument("conversation append parent receipt set is incomplete");
+  }
+
+  for (const auto& [role, provider] : providersByRole) {
+    (void)provider;
+    auto projection = projections.find(role);
+    if (projection == projections.end())
+      throw std::invalid_argument("conversation projection role is missing");
+    projection->second.conversationTurnBinding = binding;
+    if (binding.parentContextEpoch > 0) {
+      ConversationStateReferenceV1 reference;
+      reference.conversationId = binding.conversationId;
+      reference.contextEpoch = binding.parentContextEpoch;
+      reference.serviceName = binding.serviceName;
+      reference.planRoleMapDigest = binding.planRoleMapDigest;
+      reference.checkpointDigest = binding.parentCheckpointDigest;
+      reference.roleName = role;
+      const auto receipt = parentReceipts.find(role);
+      if (receipt == parentReceipts.end())
+        throw std::invalid_argument("conversation append role receipt is missing");
+      reference.roleReceiptDigest = receipt->second;
+      reference.expiresAtMs = turn.parent.retentionDeadlineMs;
+      reference.validate();
+      projection->second.conversationStateReference = std::move(reference);
+    }
+  }
+}
 }
 
 NativePlannedRequest planNativeRequest(
@@ -38,7 +127,8 @@ NativePlannedRequest planNativeRequest(
   const NativeRequestPreparation& preparation, const NativeOfferAdmission& admission,
   const ndn_service_framework::CollaborationAckClosure& closure,
   const NativeRequestControl& control, std::uint64_t wireDeadlineMs,
-  std::shared_ptr<const std::atomic<bool>> cancelled)
+  std::shared_ptr<const std::atomic<bool>> cancelled,
+  const NativeConversationTurn* conversationTurn)
 {
   control.requireActive();
   runtime.budget.validate();
@@ -211,6 +301,11 @@ NativePlannedRequest planNativeRequest(
       NativeGroupKeyAdmission keys(admission, selectedAcks, context, epochMs());
       projections = NativeGroupProjectionBuilder::build(result.sealed, candidate, keys, projection);
     }
+    if (conversationTurn) {
+      bindConversationProjections(projections, result.sealed, *conversationTurn,
+        encoded.requestContractDigest, runtime.contract.serviceName,
+        core.assignment.providerByRole);
+    }
     auto& plan = result.corePlan;
     plan.ackCollectionTimeMs = static_cast<int>(options.ackTimeoutMs);
     plan.timeoutMs = static_cast<int>(options.timeoutMs);
@@ -243,6 +338,9 @@ NativePlannedRequest planNativeRequest(
     }
     for (const auto& scope : scopes)
       plan.keyScopes.push_back({scope.first, std::vector<std::string>(scope.second.begin(), scope.second.end())});
+    if (conversationTurn) {
+      plan.keyScopes.push_back({"ndnsf-di-conversation-state-v1", execution.roles});
+    }
     plan.participantSelector = std::make_shared<const FrozenSelection>(std::move(selected));
     control.requireActive();
     return result;

@@ -200,6 +200,24 @@ Spec182StreamAcceptance*,Spec182Sampling*`按`-j4`构建后的运行结果为**2
 这确认会话专用UTF-8编码没有改变既有框架canonical-json或已验收的epoch/stream/sampling行为；
 仍不授予真实Provider/Core网络或完整Spec资格。
 
+### CC-3A Requester-to-Projection Context
+
+在公开 requester 与 Provider 控制接线前，先把 continuation 的 owner 边界接入请求选项、
+operation 和 planner。`NativeInferenceClient` 现在在 ACK/plan 前由
+`NativeConversationCoordinator::beginTurn` 创建 request-scoped turn；planner 校验
+request/attempt/service/contract、完整 role/provider map 和排序 role-map digest，并将
+`ConversationTurnBindingV1` 投影到每个角色。APPEND_DELTA 还从已认证 parent checkpoint
+读取每个 role 的 receipt digest，形成 role-local state reference；conversation scope
+`ndnsf-di-conversation-state-v1` 同时加入 Core plan key scopes。旧 planner 调用保留默认空
+turn 参数，未提供 continuation 的请求行为不变。
+
+按只读静态门检查，未发现 caller 提供 attempt/plan digest 取代 owner 生成值、缺角色引用或
+把 plan digest 当 role-map digest 的路径。使用已验证 build tree 仅构建
+`ndnsf-distributed-inference`，系统 compiler/binutils、`-j4`，exit 0（24.489s）；
+`unit-tests --run_test='Spec182PlanSealer*'` 为 12 cases PASS，exit 0。该批尚未证明
+真实 continuation projection、receipt 收集或 Provider 网络事务，R4-B4 与 T011-C 仍为
+PARTIAL。
+
 ## Progress and Feasibility Audit
 
 2026-09-08；用户要求暂停新增实现、审计继续执行能否达成目标。
