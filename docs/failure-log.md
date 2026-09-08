@@ -3011,3 +3011,33 @@ successful result, even when the earlier action was expected to pass.
 Bounded recovery succeeded: file-specific cache eviction restored the pinned
 hash in an ordinary read and then in the independent renderer check. The local
 single-stage build could start. This does not establish a permanent host fix.
+
+## 2026-09-08 — Base SDK requested an unavailable Python development package
+
+The first layered base build stopped at APT: Ubuntu 20.04's configured archives
+do not provide python3.10-dev. The inherited Python is built under /usr/local,
+and its own sysconfig include directory already contains Python.h and pyconfig.h.
+Remove the unnecessary distro package and assert those actual interpreter
+headers before installation. No native compile occurred in this failed attempt;
+retain base-build-1.log. Check interpreter-owned SDK paths before adding packages.
+
+## 2026-09-08 — SIF extraction still fails after a matching buffered hash
+
+The second build failed to decompress libcudnn_adv.so.9.1.0. File-specific
+fadvise had restored buffered hashes but did not make extraction reliable.
+A direct-I/O copy into an owned tmpfs file passed the pinned hash check and
+the third build extracted successfully and reached APT. Preserve the failed
+log and matching renderer receipt. Remove only the exited attempt's owned
+temporary directories; retain the RAM source until active build FDs close.
+This is a bounded build workaround, not a proven permanent host repair.
+
+## 2026-09-08 — TF32 options owner was newer than the retained ORT SDK
+
+Read the actual SIF's ORT 1.20 C++ header: it has AppendExecutionProvider_CUDA_V2
+but lacks Ort::CUDAProviderOptions, which the earlier host-1.26 syntax check
+accepted. Replace that convenience owner with the existing V2 C API and a
+unique_ptr deleter, keeping use_tf32=0 and exception-safe release. The affected
+policy check passes (1 test); final compilation/link in the exact SDK is still
+required. A syntax-only command against copied 1.20 headers left an empty log,
+but its process handle expired across continuation, so its exit status is not
+claimed as evidence. No independent GPU reference was rerun for this API repair.

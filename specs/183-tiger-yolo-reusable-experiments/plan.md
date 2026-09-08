@@ -68,8 +68,8 @@ T001已完成接收清点（见evidence/input-inventory.md），发现两个必�
 2. G1 / T002–T006：实现配置闭包、launcher/生命周期、YOLO 适配/collector 及 focused 红绿回归。可做小型合成 child-process 测试。
    内部先完成T002内容完整性接口，再T003、T004配置/冻结/提交状态接口、T005/T006，回填T004实际五命令和T002真实命令边界及builder receipt dispatch测试。T004最终可执行命令需要T005应用和T006 collector，不能要求这些消费者存在前关闭T004；T002最终验收同样依赖T004/T006。所有任务仍须在G2前关闭，测试fixture不能冒充T010真实host receipt。
 3. G2 / T007：实现到生产调用路径收敛审计，必须 PASS。检查实际 argv/env、角色路由、secure grant/selection、harness/oracle、清理、数据路径。未接线不能算实现。
-4. G3 / T008–T010：按锁构建或复用基础闭包（`NAC-ABE + NDN-SVS → NDNSD → NDNSF/Repo及通用绑定 → 外部Apps`），unit→真实集成→CPU 小模型 MiniNDN。构建键未变时只增量编译受影响 app；ABI变更清理消费者。基础构建验收可复用，不把 app receipt 当作每次重建 base 的前置。
-5. G4 / T011：通过原入口构建或复用基础 SIF，在匹配容器/SDK 生成独立 app 包；合格 host-gate 后验证精确 base+app 的全部 DSO/import/help/CPU 小模型。两层产物清单替代“九产物都在SIF”检查。
+4. G3 / T008–T010：在本机匹配的基础容器/SDK 中按锁构建或复用闭包（`NAC-ABE + NDN-SVS → NDNSD → NDNSF/Repo及通用绑定 → 外部Apps`），相关unit→真实集成→CPU MiniNDN。不先重复编译一套主机 ORT 版本的应用。构建键未变时只增量编译受影响 app；ABI变更清理消费者。基础构建验收可复用，MiniNDN receipt 绑定实际 source/base/app 组合，用于后续运行资格，不是基础构建前置。
+5. G4 / T011：通过原构建 owner 下的分层入口构建或复用基础 SIF，在匹配容器/SDK 生成独立 app 包；DSO/import/help 是启动前检查，合格 MiniNDN gate 后完成精确 base+app 的本地 YOLO 资格。两层产物清单替代“九产物都在SIF”检查。基础/SDK构建可先独立推进；不得将其成功等同 G2 或完整组合资格。单阶段基础镜像保留稳定开发工具可同时作为本地SDK，不要求为同一ABI再生成一份SDK镜像。
 6. G5 / T012–T014：目标 compute 环境匹配→精确 SIF 上传/staging 校验→一节点 GPU 四 Provider→两节点 GPU 第一次正常运行。
 7. G6 / T015–T017：小规模负例→第二个独立双节点正常 allocation→离线重算和可复用交付。
 

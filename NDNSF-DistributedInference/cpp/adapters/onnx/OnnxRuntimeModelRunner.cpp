@@ -327,8 +327,18 @@ makeSessionOptions(const OnnxRuntimeProviderSelection& selection,
     // FP32 graph/oracle contracts must not silently use reduced-precision
     // TF32 kernels. Tiger YOLO run 209982 crossed the detection threshold
     // under the CUDA default; the same model passed with use_tf32=0 (209983).
-    Ort::CUDAProviderOptions cudaOptions;
-    cudaOptions.Update({{"device_id", std::to_string(deviceId)}, {"use_tf32", "0"}});
+    // ORT 1.20 exposes the V2 C API, but not the newer C++ options owner.
+    // Keep ownership exception-safe without requiring a newer runtime SDK.
+    OrtCUDAProviderOptionsV2* rawOptions = nullptr;
+    Ort::ThrowOnError(Ort::GetApi().CreateCUDAProviderOptions(&rawOptions));
+    const auto release = [](OrtCUDAProviderOptionsV2* value) {
+      Ort::GetApi().ReleaseCUDAProviderOptions(value);
+    };
+    std::unique_ptr<OrtCUDAProviderOptionsV2, decltype(release)> cudaOptions(rawOptions, release);
+    const auto device = std::to_string(deviceId);
+    const char* keys[] = {"device_id", "use_tf32"};
+    const char* values[] = {device.c_str(), "0"};
+    Ort::ThrowOnError(Ort::GetApi().UpdateCUDAProviderOptions(cudaOptions.get(), keys, values, 2));
     options.AppendExecutionProvider_CUDA_V2(*cudaOptions);
     if (!runnerMetadataBool(spec, {"allowCpuFallback", "allow_cpu_fallback"})) {
       options.AddConfigEntry("session.disable_cpu_ep_fallback", "1");

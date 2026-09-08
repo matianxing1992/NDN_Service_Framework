@@ -20,6 +20,15 @@ read also passed (`base-render.json`), allowing the local base build to start.
 This is a successful bounded recovery of the current input check, not proof of
 a permanent host repair.
 
+The next extraction nevertheless failed on `libcudnn_adv.so.9.1.0` with a gzip
+error (`base-build-2.log`). File-specific cache eviction alone is therefore not
+an adequate build workaround. A direct-I/O copy to the owned tmpfs file
+`/dev/shm/spec183-base-20260908/base.sif` passed the same locked digest check
+(`base-render-3.json`) and the third build successfully extracted it, reaching
+APT. The temporary copy is not a new release identity. Keep it while build FDs
+remain open and remove it after completion. Native compilation and final image
+verification remain separate checkpoints.
+
 ## Historical observations
 
 2026-09-07. Status: UNRESOLVED. No hash/lock or canonical cache link was replaced.

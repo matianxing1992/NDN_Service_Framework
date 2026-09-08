@@ -77,7 +77,9 @@ def test_options_follow_native_runner_source():
     assert 'options.SetIntraOpNumThreads(1);' in options
     assert 'options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_BASIC);' in options
     assert 'options.AddConfigEntry("session.disable_cpu_ep_fallback", "1");' in options
-    assert '{"use_tf32", "0"}' in options
+    assert 'const char* keys[] = {"device_id", "use_tf32"};' in options
+    assert 'const char* values[] = {device.c_str(), "0"};' in options
+    assert 'UpdateCUDAProviderOptions(cudaOptions.get(), keys, values, 2)' in options
     assert 'options.AppendExecutionProvider_CUDA_V2(*cudaOptions);' in options
 
 

@@ -3,9 +3,17 @@
 ## Decision And Status
 
 2026-09-08 用户要求：SIF 固定 NDNSF/Repo/NDN 依赖，频繁变化的 DI/UAV 应用
-放在镜像外，减少编译和镜像重建。此方案 **ACCEPTED / IMPLEMENTATION_PENDING**。
+放在镜像外，减少编译和镜像重建。此方案 **ACCEPTED / IMPLEMENTATION_IN_PROGRESS**。
 Spec183 的旧“九个原生产物全部打入完整应用 SIF”是迁移前实现，不再作为目标。
-本次修改文档与任务，不声称现有 YOLO builder/launcher 已支持分层发布。
+基础层源码选择和构建入口已开始实现；现有正式 YOLO launcher 尚未完成分层发布接线。
+
+本机采用单阶段 `library-runtime.def.in`，让基础 SIF 同时保留匹配的编译器和
+开发头文件，作为本地应用 SDK；这些稳定工具不是 DI/UAV 应用。这样不需要
+同时保留两份解包后的完整镜像。`build-external-yolo.py` 只在本机通过该 SIF
+编译应用，以 base SHA、构建入口和编译参数隔离缓存，基础源码变化则拒绝复用。
+外部输出包含应用二进制、Python 源码和显式 base 绑定的 application manifest；
+`BUILT_APPLICATION_CANDIDATE` 不代表 ABI/import、MiniNDN 或 Tiger 资格通过。
+正式 launcher、独立 app 清单验证和完整组合验收仍需完成。
 
 [C++ NDN 诊断](ndn-smoke.md) 的 Tiger 作业 209981 已验证：同一历史 SIF 加
 外部只读二进制可在两节点实际通信。它支持这个部署方向，但未验证 DI/UAV 的

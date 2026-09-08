@@ -16,11 +16,14 @@ export LIBRARY_PATH=/opt/ndnsf-di/current/lib
 export PYTHONNOUSERSITE=1 DEBIAN_FRONTEND=noninteractive
 
 /opt/venv/bin/python - <<'PY'
-import hashlib, json
+import hashlib, json, sysconfig
 from pathlib import Path
 root = Path('/build-input/source')
 seal = json.loads((root / 'source-seal.json').read_text())
 assert seal['sourceSelection'] == 'base-libraries-v1'
+include = Path(sysconfig.get_path('include'))
+assert (include / 'Python.h').is_file(), 'BASE_PYTHON_HEADERS_MISSING'
+assert (include / 'pyconfig.h').is_file(), 'BASE_PYTHON_CONFIG_MISSING'
 for filename, record in [('workspace.tar', seal['archive']),
                         *[(v['archive']['path'].split('/')[-1], v['archive'])
                           for v in seal['dependencies'].values()]]:
@@ -38,7 +41,7 @@ rm -rf /opt/venv/lib/python3.10/site-packages/{ndnsf,py_repoclient,ndnsf_distrib
 rm -rf /opt/venv/lib/python3.10/site-packages/{ndnsf,py_repoclient,ndnsf_di,ndnsf_distributed_inference}-*.dist-info
 sed -i 's|http://archive.ubuntu.com|https://archive.ubuntu.com|g; s|http://security.ubuntu.com|https://security.ubuntu.com|g' /etc/apt/sources.list
 apt-get -o Acquire::Retries=3 update
-apt-get install -y --no-install-recommends build-essential cmake pkg-config libgmp-dev libssl-dev libsqlite3-dev libboost-all-dev libpcap-dev protobuf-compiler libprotobuf-dev libgtkmm-3.0-dev ca-certificates python3.10-dev
+apt-get install -y --no-install-recommends build-essential cmake pkg-config libgmp-dev libssl-dev libsqlite3-dev libboost-all-dev libpcap-dev protobuf-compiler libprotobuf-dev libgtkmm-3.0-dev ca-certificates
 rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*.deb
 mkdir -p /src/{ndnsf,ndn-svs,nac-abe,ndn-sd}
 tar -xf /build-input/source/workspace.tar -C /src/ndnsf
