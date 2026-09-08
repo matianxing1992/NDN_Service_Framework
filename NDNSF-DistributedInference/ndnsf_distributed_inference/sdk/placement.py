@@ -1428,7 +1428,7 @@ class RoleAssemblySpec:
             if (self.merge_kind == "NATIVE_POSTPROCESS" and
                     self.postprocess_sort != "confidence-desc,class-asc,xyxy-asc"):
                 raise ValueError("RoleAssemblySpec native postprocessing sort is not canonical")
-        if any(identity_fields) and (
+        if self.merge_kind != "NATIVE_POSTPROCESS" and any(identity_fields) and (
                 not self.backend_abi or not indices
                 or not self.expected_inputs or not self.expected_outputs
                 or not self.precision or not self.quantization

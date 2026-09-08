@@ -3389,3 +3389,12 @@ native Merge 的 `RoleAssemblySpec` 按无 ONNX assembler 设计没有 `model_ma
 而公开 assignment 合同仍要求 model binding。修复为 native postprocess 只绑定 canonical
 model manifest，继续禁止 graph/initializer/assembler identity；同步更新 schema 回归。
 该失败不是 YOLO 数值结果，也不能据此宣称运行 PASS；需重新封存 app 后重跑。
+
+## 2026-09-08: native Merge manifest binding hit generic recipe completeness gate
+
+v8 重跑在四个 CPU ACK、GRAPH_READY 和 placement decision 后进入
+`_certify_v3_role_specs`；为 Merge 补 canonical model manifest 时又触发
+`RoleAssemblySpec` 的通用 certified-recipe completeness 检查（native Merge 没有
+backend ABI/assembler recipe）。修复为 NATIVE_POSTPROCESS 跳过 ONNX recipe 完整性
+门，同时继续禁止其余 assembly identity。该轮仍未进入 User selection，结果保留为
+负证据，需重新封存 app 并使用新 run-id。
