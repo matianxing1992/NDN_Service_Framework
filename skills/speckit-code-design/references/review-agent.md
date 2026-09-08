@@ -1,6 +1,12 @@
 # Pre-Test Review Agent Profile
 
-本项目逐任务静态门的只读配置，改编自 OpenAI Codex 的 [review-agent sample](https://github.com/openai/codex/blob/main/codex-rs/skills/src/assets/samples/review-agent/SKILL.md)（2026-09-08 核对）。由 `speckit-code-design` 直接加载，不假设同名技能已安装。官方 [code-review](https://github.com/openai/codex/blob/main/.codex/skills/code-review/SKILL.md) 面向最终 PR 多代理审查；本门禁不继承其代理数量、推理级别或 GitHub 操作。
+本项目逐任务静态门必须调用独立安装的官方 `review-agent`，来源为 OpenAI Codex 的 [review-agent sample](https://github.com/openai/codex/blob/main/codex-rs/skills/src/assets/samples/review-agent/SKILL.md)。本文件仅补充项目设计、批次和测试阶段约束，不替代官方技能。官方 `code-review` 的最终 PR 多代理流程不在本门禁范围内。
+
+## Invocation
+
+每个小任务编码完成后，明确使用 `$review-agent`：读取当前技能目录中的 `review-agent/SKILL.md` 并执行其只读协议，同时提供本文件、Task/Batch ID、契约、基线和完整差异范围。本机安装路径为 `/home/tianxing/.codex/skills/review-agent/SKILL.md`；其他机器按其技能目录解析，不能只凭名称假定已经加载。记录所用技能路径/版本或哈希与实际审查结果；不把模板存在视为已执行审查。
+
+原版技能保持不修改；项目设计缺口作为额外 gate 判断，与官方 introduced-regression findings 分开。审查结束后实现者修复并复审，仍遵守批末统一构建/测试。允许当前执行者明确切换只读阶段，不因技能名称自动生成子代理。安装缺失时先报告并补齐；未实际加载时不能声称调用了官方技能或通过该门禁。
 
 ## Review Contract
 
