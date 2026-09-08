@@ -7,6 +7,7 @@
 #include "tests/fixtures/spec182/native-sealing-fixture.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeYoloMergeRunner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalRolePreparer.hpp"
 
 #include <fstream>
 #include <future>
@@ -178,6 +179,89 @@ BOOST_AUTO_TEST_CASE(RejectsSourceAndCanonicalIdentityBeforePublication)
     auto publisher = NativeCanonicalPublisherTestAccess::create(io.transport(), input.options, input.resolver());
     BOOST_CHECK_THROW(publisher(input.model, input.candidate, input.roles, input.control), std::invalid_argument);
     BOOST_CHECK(io.payloads.empty());
+  }
+}
+
+BOOST_AUTO_TEST_CASE(CanonicalRoleProducerMapsSemanticNodesToActualOnnxSource)
+{
+  for (bool external : {false, true}) {
+    Input input(external);
+    // One semantic node owns two real ONNX nodes; source index 1 is not a
+    // planning ordinal. No recipe or tensor contract is injected into the port.
+    input.model.graph.nodes = {{"layer-00", "decoder-layer", 0}};
+    input.model.graph.topologicalOrder = {"layer-00"};
+    input.candidate.nodeRoles = {{"layer-00", "/role"}};
+    input.candidate.candidateDigest = input.candidate.computedDigest();
+    const auto& original = input.roles.front();
+    NativeRoleRecipeProfile profile{original.artifactProfileDigest, original.assemblerDescriptorDigest,
+      original.backendAbi, original.precision, original.quantization, original.layout, original.padding,
+      original.protectionEpoch, original.maxSourceBytes, original.maxAssembledBytes, original.maxNodes};
+    NativeAssemblyControl control{input.control.deadline, [&] { input.control.requireActive(); },
+      profile.maxSourceBytes, profile.maxAssembledBytes};
+    const auto sourceGraph = inspectNativeOnnxSourceGraph(*input.source, input.model.descriptor, control);
+    BOOST_CHECK_EQUAL(sourceGraph.graph.nodes.size(), 2);
+    BOOST_CHECK_NE(sourceGraph.graph.graphDigest, input.model.graph.graphDigest);
+    BOOST_CHECK_THROW(inspectNativeOnnxPlanningGraph(*input.source, input.model.descriptor, control), std::invalid_argument);
+    BOOST_CHECK_THROW(NativeCanonicalRolePreparer(input.model, *input.source, profile, control), std::invalid_argument);
+    const NativeCanonicalRolePreparer owner(input.model, *input.source, profile, control, {{"layer-00", {0, 1}}});
+    NativeRequestPreparation preparation(std::make_shared<NativeAdapterRegistry>(), {}, {}, owner.rolePort());
+    const auto roles = preparation.prepareRoles(input.model, input.candidate, input.control);
+    BOOST_REQUIRE_EQUAL(roles.size(), 1);
+    const auto& role = roles.front();
+    BOOST_CHECK(role.nodeIndices == std::vector<std::uint64_t>({0, 1}));
+    BOOST_CHECK_EQUAL(role.roleKind, "COMPONENT_SET");
+    BOOST_CHECK_EQUAL(role.layerBegin, 0); BOOST_CHECK_EQUAL(role.layerEnd, 0);
+    BOOST_REQUIRE_EQUAL(role.expectedInputs.size(), 1);
+    BOOST_CHECK_EQUAL(role.expectedInputs.front().name, "X");
+    BOOST_REQUIRE_EQUAL(role.expectedOutputs.size(), 1);
+    BOOST_CHECK_EQUAL(role.expectedOutputs.front().name, "Y");
+    BOOST_CHECK_EQUAL(role.adapterDescriptorDigest, input.model.descriptor.adapter.descriptorDigest());
+    const auto assembled = assembleNativeCertifiedOnnxModel(*input.source, role, control);
+    BOOST_CHECK_EQUAL(assembled.nodeCount, 2);
+    BOOST_CHECK_EQUAL(assembled.modelDigest, original.artifactDigest);
+    TransportFixture io;
+    auto publisher = NativeCanonicalPublisherTestAccess::create(io.transport(), input.options, input.resolver());
+    NativeRequestPreparation publishing(std::make_shared<NativeAdapterRegistry>(), {}, publisher.artifactPort(), owner.rolePort());
+    auto selected = input.proposal(); selected.roles = roles;
+    selected.roles.front().backend = original.backend; // Explicit CPU placement fixture.
+    const auto published = publishing.ensureArtifacts(input.model, input.candidate, selected, input.control);
+    const auto rebound = NativeRequestPreparation::bindPublishedRoles(input.model, input.candidate, selected.roles, published);
+    BOOST_CHECK_EQUAL(rebound.front().modelManifestDigest, published.manifestDigest);
+    BOOST_CHECK_EQUAL(assembleNativeCertifiedOnnxModel(*input.source, rebound.front(), control).modelDigest, original.artifactDigest);
+    // Resource-bound rejection is separate from exact source-node membership.
+    for (const auto& mapping : std::vector<NativeCanonicalRolePreparer::NodeMap>{
+           {{"layer-00", {0, 2}}}, {{"layer-00", {0, 0}}}, {{"layer-00", {0}}}, {{"foreign", {0, 1}}}})
+      BOOST_CHECK_THROW(NativeCanonicalRolePreparer(input.model, *input.source, profile, control, mapping), std::invalid_argument);
+    auto foreign = input.model; foreign.canonicalSourceDigest = nativePlanningDigest("foreign");
+    BOOST_CHECK_THROW(NativeCanonicalRolePreparer(foreign, *input.source, profile, control,
+      {{"layer-00", {0, 1}}}), std::invalid_argument);
+    foreign = input.model; foreign.modelManifestDigest = nativePlanningDigest("foreign");
+    BOOST_CHECK_THROW(owner.prepare(foreign, input.candidate, input.control), std::invalid_argument);
+    auto wrongState = input.candidate;
+    wrongState.roleStateInputsByRole["/role"] = {{"missing-state", "float32", {std::int64_t(1)}, 4}};
+    wrongState.candidateDigest = wrongState.computedDigest();
+    BOOST_CHECK_THROW(owner.prepare(input.model, wrongState, input.control), std::invalid_argument);
+    auto cancelled = input.control; cancelled.cancelled = [] { return true; };
+    BOOST_CHECK_THROW(owner.prepare(input.model, input.candidate, cancelled), std::runtime_error);
+    // A genuinely identical source/planning graph needs no semantic mapping.
+    auto direct = input.model;
+    direct.graph = sourceGraph.graph; direct.descriptor.graphDigest = direct.graph.graphDigest;
+    auto directCandidate = input.candidate;
+    directCandidate.model = direct.descriptor; directCandidate.graphDigest = direct.graph.graphDigest;
+    directCandidate.nodeRoles.clear();
+    for (const auto& node : direct.graph.nodes) directCandidate.nodeRoles[node.id] = "/role";
+    directCandidate.candidateDigest = directCandidate.computedDigest();
+    const NativeCanonicalRolePreparer directOwner(direct, *input.source, profile, control);
+    BOOST_CHECK(directOwner.prepare(direct, directCandidate, input.control).front().nodeIndices == role.nodeIndices);
+    auto aliases = input.model;
+    aliases.graph.nodes = {{"layer-00", "layer", 0}, {"layer-0", "layer", 1}};
+    aliases.graph.topologicalOrder = {"layer-00", "layer-0"};
+    auto aliasesCandidate = input.candidate;
+    aliasesCandidate.nodeRoles = {{"layer-00", "/role"}, {"layer-0", "/role"}};
+    aliasesCandidate.candidateDigest = aliasesCandidate.computedDigest();
+    const NativeCanonicalRolePreparer aliasesOwner(aliases, *input.source, profile, control,
+      {{"layer-00", {0}}, {"layer-0", {1}}});
+    BOOST_CHECK_THROW(aliasesOwner.prepare(aliases, aliasesCandidate, input.control), std::invalid_argument);
   }
 }
 
