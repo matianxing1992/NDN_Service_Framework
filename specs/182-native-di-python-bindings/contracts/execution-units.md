@@ -363,6 +363,16 @@ pending turn；path-only无key构造拒绝。Continuation 的 `requestContractDi
 - **Steps**: 按清单切换 native executable/binding，保留参数/oracle/清理；额外 maintained caller 如未在 Write 登记，先回 T001-C 补精确范围再分派。
 - **Verify**: PY(tests/python/test_spec182_legacy_exclusion.py, unit_routes)；入口/参数构造与默认路由单测，网络 harness 只编写不运行。
 
+### R5-B5 Maintained YOLO Native Requester
+
+- **Parent**: T013-A / R5 same-library callers; **Depends**: R5-B4, T010-B; **Reviewer**: native caller and configuration review
+- **Outcome**: 将维护中的 YOLO native requester 入口绑定到 operator-pinned catalog、native grant/admission、runtime configuration parser、split/placement 与 `NativeInferenceClient`；入口不得手工构造可绕过 parser 的 runtime，也不得回退 Python planner。
+- **Read**: [native requester configuration](native-requester-configuration.md) → CD-010/FLOW-001 → `examples/DI_NativeRequester.cpp` → `NativeRequestPlanner::nativeRequestRuntimeFromJson` → `NativeInferenceClient::request`；核对 YOLO catalog/state mapping 与现有 C++ selector。
+- **Write**: `examples/DI_NativeRequester.cpp`; `tests/python/test_spec182_native_bindings.py`; `specs/182-native-di-python-bindings/contracts/native-requester-configuration.md`; `specs/182-native-di-python-bindings/evidence/r5-b5-yolo-native-requester-20260908.md`。
+- **Steps**: 由 CLI 将已加载 catalog、grant owner 和 request fields 组成 runtime JSON，交给 native parser 做 exact schema、identity、digest、budget、protection 与 state mapping 校验；再以 parser 返回的 catalog/grants 构造 preparation/client。保留相对路径、取消、失败边界和输出契约；不运行网络资格，不在 Python 复制 planner。
+- **Verify**: 官方 `$review-agent` 只读静态门；`DI_NativeRequester --help` 与错误 schema/usage selector；按 system-first `-j4` 构建 `DI_NativeRequester` 与 `unit-tests`；C++ `Spec182NativePlanning/NativeRequestRuntimeLoadsPinnedPolicyAndRejectsDrift` 及 CLI source/binding checks。真实 Core/Provider request、caller 全量迁移、T016 继续留在后续卡。
+- **Done When**: 维护入口只存在一条 native runtime composition 路径，runtime identity/config drift 在提交请求前由 C++ parser 拒绝；构建、selector、静态审查和证据均记录，未完成的网络/资格验收保持 `PARTIAL`。
+
 ### T013-B Legacy Runtime Retirement
 
 - **Parent**: T013; **Depends**: T013-A; **Reviewer**: migration/reachability review

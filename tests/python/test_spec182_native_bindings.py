@@ -9,6 +9,7 @@ ROOT = Path(__file__).resolve().parents[2]
 BINDINGS = ROOT / "pythonWrapper/src/ndnsf/di_bindings.cpp"
 MODULE = ROOT / "pythonWrapper/src/ndnsf/_ndnsf.cpp"
 SETUP = ROOT / "pythonWrapper/setup.py"
+REQUESTER = ROOT / "examples/DI_NativeRequester.cpp"
 
 
 class Spec182NativeBindingsTest(unittest.TestCase):
@@ -82,6 +83,13 @@ class Spec182NativeBindingsTest(unittest.TestCase):
         self.assertIn(
             "native grant requester identity must match the ServiceUser identity",
             source)
+
+    def test_native_requester_cli_uses_shared_runtime_parser(self):
+        source = REQUESTER.read_text(encoding="utf-8")
+        self.assertIn("nativeRequestRuntimeFromJson", source)
+        self.assertIn('"ndnsf-di-native-request-runtime-v1"', source)
+        self.assertNotIn("NativeRequestRuntime runtime;", source)
+        self.assertIn("catalog.stateMapping.inputs", source)
 
 
 if __name__ == "__main__":
