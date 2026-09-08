@@ -1,0 +1,52 @@
+{
+  "cases": [
+    {
+      "canonicalTokenIds": [
+        10,
+        11
+      ],
+      "checkpointDigest": "sha256:22067cefc646ab381ee17c55da3cbc66730374a36547aba26a4070b56aeb4035",
+      "checkpointWire": "{\"checkpointDigest\":\"sha256:22067cefc646ab381ee17c55da3cbc66730374a36547aba26a4070b56aeb4035\",\"contextEpoch\":1,\"conversationId\":\"0123456789abcdef0123456789abcdef\",\"expiresAtMs\":2000000100001,\"issuedAtMs\":2000000000001,\"logicalPrefixDigest\":\"sha256:4e24a67ad602f7b7897fc5fcdd6f17c6bb151b3c4d6c06a36aa066bd9c05e5f6\",\"modelContractDigest\":\"sha256:9372c470eeadd5ecd9c3c74c2b3cb633f8e2f2fad799250a0f70d652b6b825e4\",\"parentContextEpoch\":0,\"planRoleMapDigest\":\"sha256:66cf5513b37462be52e7fe7b1791b7a6b704f97577680acc2f270e365a1b01e3\",\"prefixTokenCount\":2,\"requesterIdentity\":\"/requester/A\",\"roleReceiptDigests\":{\"/role/A\":\"sha256:3ba16e0b99fd0c9da0b19943ac3a124eb26dcf4e35891c00cf240e097a0c877b\",\"/role/B\":\"sha256:2de669db6c95aa290e245931162803ddae0d904b1f46f934be810d43a8a33f80\"},\"schema\":\"ndnsf-di-conversation-checkpoint-v1\",\"securityDomainDigest\":\"sha256:5d2d3ceb7abe552344276d47d36a8175b7aeb250a9bf0bf00e850cd23ecf2e43\",\"serviceName\":\"/service/会话\",\"signature\":\"3da2f412222b5263b720e06cb4d0cd840d582f778089e2c9d96866f6e9592fac\",\"version\":1}",
+      "continuation": {
+        "allowFullPrefillFallback": false,
+        "conversationId": "0123456789abcdef0123456789abcdef",
+        "expectedParentContextEpoch": null,
+        "fallbackFullInputDigest": null,
+        "mode": "full-context",
+        "parentCheckpoint": null,
+        "requestContractDigest": "",
+        "schema": "ndnsf-di-conversation-continuation-v1",
+        "turnInputDigest": "sha256:f7218970d1a5858b1d37bd7f2935222ceb12c787fc91ee5e9ebf03584d5b2a02"
+      },
+      "name": "first",
+      "signature": "3da2f412222b5263b720e06cb4d0cd840d582f778089e2c9d96866f6e9592fac"
+    },
+    {
+      "canonicalTokenIds": [
+        10,
+        11,
+        12,
+        13
+      ],
+      "checkpointDigest": "sha256:d737589fed8006f36330f207a176d0683f201186964ef7aa99a9c3aeaef393d1",
+      "checkpointWire": "{\"checkpointDigest\":\"sha256:d737589fed8006f36330f207a176d0683f201186964ef7aa99a9c3aeaef393d1\",\"contextEpoch\":2,\"conversationId\":\"0123456789abcdef0123456789abcdef\",\"expiresAtMs\":2000000100002,\"issuedAtMs\":2000000000002,\"logicalPrefixDigest\":\"sha256:06111dbb4239081aafd03962a59f5237a32b303a5aacdda7d2c352971bbf59d1\",\"modelContractDigest\":\"sha256:9372c470eeadd5ecd9c3c74c2b3cb633f8e2f2fad799250a0f70d652b6b825e4\",\"parentContextEpoch\":1,\"planRoleMapDigest\":\"sha256:66cf5513b37462be52e7fe7b1791b7a6b704f97577680acc2f270e365a1b01e3\",\"prefixTokenCount\":4,\"requesterIdentity\":\"/requester/A\",\"roleReceiptDigests\":{\"/role/A\":\"sha256:bc0a59a24f1edeac5c60b2c552cbc761c442d41bb930c80ed79499168d0c8a55\",\"/role/B\":\"sha256:522fb68f97dedec01a37311fab68db3bbd514fa0174cd962f0ce01fc76aad941\"},\"schema\":\"ndnsf-di-conversation-checkpoint-v1\",\"securityDomainDigest\":\"sha256:5d2d3ceb7abe552344276d47d36a8175b7aeb250a9bf0bf00e850cd23ecf2e43\",\"serviceName\":\"/service/会话\",\"signature\":\"e2c21628606deaa8f96078a143d96fc38850fcb342791eca76e5407cea5e267c\",\"version\":1}",
+      "continuation": {
+        "allowFullPrefillFallback": false,
+        "conversationId": "0123456789abcdef0123456789abcdef",
+        "expectedParentContextEpoch": 1,
+        "fallbackFullInputDigest": null,
+        "mode": "append-delta",
+        "parentCheckpoint": "eyJjaGVja3BvaW50RGlnZXN0Ijoic2hhMjU2OjIyMDY3Y2VmYzY0NmFiMzgxZWUxN2M1NWRhM2NiYzY2NzMwMzc0YTM2NTQ3YWJhMjZhNDA3MGI1NmFlYjQwMzUiLCJjb250ZXh0RXBvY2giOjEsImNvbnZlcnNhdGlvbklkIjoiMDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWYiLCJleHBpcmVzQXRNcyI6MjAwMDAwMDEwMDAwMSwiaXNzdWVkQXRNcyI6MjAwMDAwMDAwMDAwMSwibG9naWNhbFByZWZpeERpZ2VzdCI6InNoYTI1Njo0ZTI0YTY3YWQ2MDJmN2I3ODk3ZmM1ZmNkZDZmMTdjNmJiMTUxYjNjNGQ2YzA2YTM2YWEwNjZiZDljMDVlNWY2IiwibW9kZWxDb250cmFjdERpZ2VzdCI6InNoYTI1Njo5MzcyYzQ3MGVlYWRkNWVjZDljM2M3NGMyYjNjYjYzM2Y4ZTJmMmZhZDc5OTI1MGEwZjcwZDY1MmI2YjgyNWU0IiwicGFyZW50Q29udGV4dEVwb2NoIjowLCJwbGFuUm9sZU1hcERpZ2VzdCI6InNoYTI1Njo2NmNmNTUxM2IzNzQ2MmJlNTJlN2ZlN2IxNzkxYjdhNmI3MDRmOTc1Nzc2ODBhY2MyZjI3MGUzNjVhMWIwMWUzIiwicHJlZml4VG9rZW5Db3VudCI6MiwicmVxdWVzdGVySWRlbnRpdHkiOiIvcmVxdWVzdGVyL0EiLCJyb2xlUmVjZWlwdERpZ2VzdHMiOnsiL3JvbGUvQSI6InNoYTI1NjozYmExNmUwYjk5ZmQwYzlkYTBiMTk5NDNhYzNhMTI0ZWIyNmRjZjRlMzU4OTFjMDBjZjI0MGUwOTdhMGM4NzdiIiwiL3JvbGUvQiI6InNoYTI1NjoyZGU2NjlkYjZjOTVhYTI5MGUyNDU5MzExNjI4MDNkZGFlMGQ5MDRiMWY0NmY5MzRiZTgxMGQ0M2E4YTMzZjgwIn0sInNjaGVtYSI6Im5kbnNmLWRpLWNvbnZlcnNhdGlvbi1jaGVja3BvaW50LXYxIiwic2VjdXJpdHlEb21haW5EaWdlc3QiOiJzaGEyNTY6NWQyZDNjZWI3YWJlNTUyMzQ0Mjc2ZDQ3ZDM2YTgxNzViN2FlYjI1MGE5YmYwYmYwMGU4NTBjZDIzZWNmMmU0MyIsInNlcnZpY2VOYW1lIjoiL3NlcnZpY2Uv5Lya6K+dIiwic2lnbmF0dXJlIjoiM2RhMmY0MTIyMjJiNTI2M2I3MjBlMDZjYjRkMGNkODQwZDU4MmY3NzgwODllMmM5ZDk2ODY2ZjZlOTU5MmZhYyIsInZlcnNpb24iOjF9",
+        "requestContractDigest": "",
+        "schema": "ndnsf-di-conversation-continuation-v1",
+        "turnInputDigest": "sha256:c7eecf410e5f1762cd663f0095b8fd5afb11343a08218ab27a83085228d07e54"
+      },
+      "name": "append",
+      "signature": "e2c21628606deaa8f96078a143d96fc38850fcb342791eca76e5407cea5e267c"
+    }
+  ],
+  "schema": "spec182-conversation-oracle-v1",
+  "source": "NDNSF-DistributedInference/ndnsf_distributed_inference/conversation.py",
+  "sourceSha256": "c1cd4808733295ade4c4b415248aaa066b86dab557b078c4ea3b0a9dac4aa014",
+  "testOnlyAuthenticationKeyHex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+}
