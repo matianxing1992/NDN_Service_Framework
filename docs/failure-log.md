@@ -3380,3 +3380,12 @@ or directory`。`libnac-abe.pc` 只声明 `/opt/ndnsf-di/current/include`，而 
 `cpu`，CUDA 后端只接受 `cuda:<ordinal>`，并加入混合拓扑回归测试。该次运行
 证明 ControllerVersion admission 已越过，但不是数值 PASS；应在重新封存 app
 后以新 run-id 重跑本机链路。
+
+## 2026-09-08: native Merge public assignment lacked canonical model identity
+
+v7 本机链路已越过 CPU V3 topology、ACK、GRAPH_READY 和 Selection commit；User
+随后在 `_retain_public_assignments` 的 `public_assignment_projection` 退出，因
+native Merge 的 `RoleAssemblySpec` 按无 ONNX assembler 设计没有 `model_manifest_digest`，
+而公开 assignment 合同仍要求 model binding。修复为 native postprocess 只绑定 canonical
+model manifest，继续禁止 graph/initializer/assembler identity；同步更新 schema 回归。
+该失败不是 YOLO 数值结果，也不能据此宣称运行 PASS；需重新封存 app 后重跑。

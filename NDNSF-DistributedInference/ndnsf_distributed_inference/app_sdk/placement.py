@@ -4305,7 +4305,8 @@ class AutomaticPlanningCoordinator:
                 # model-layer artifact and must not enter the assembler, but
                 # a protected-epoch grant still binds the same model-manifest
                 # digest as the component roles (spec181 T008 Y-B).
-                certified.append(spec)
+                certified.append(replace(
+                    spec, model_manifest_digest=binding.model_manifest_digest))
                 continue
             owned = tuple(sorted(
                 order[node] for node, owner

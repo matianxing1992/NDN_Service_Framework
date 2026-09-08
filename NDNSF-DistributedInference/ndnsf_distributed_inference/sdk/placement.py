@@ -1373,7 +1373,17 @@ class RoleAssemblySpec:
             self.adapter_descriptor_digest,
             self.assembler_descriptor_digest,
         )
-        if any(identity_fields) and not all(identity_fields):
+        # Native postprocessing has no ONNX graph/assembler recipe, but its
+        # public assignment still binds the canonical model manifest.  Keep
+        # that one identity while rejecting any partial ONNX identity.
+        if self.merge_kind == "NATIVE_POSTPROCESS":
+            if any(identity_fields[1:]):
+                raise ValueError(
+                    "native postprocess must not carry ONNX assembly identity")
+            if self.model_manifest_digest:
+                _require_digest(self.model_manifest_digest,
+                                "model_manifest_digest")
+        elif any(identity_fields) and not all(identity_fields):
             raise ValueError("RoleAssemblySpec V3 assembly identity is incomplete")
         for name, value in (
             ("model_manifest_digest", self.model_manifest_digest),

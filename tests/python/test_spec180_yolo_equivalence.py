@@ -80,7 +80,7 @@ def test_native_merge_is_not_sent_through_python_onnx_assembly():
         candidate, graph, specs, binding.describe(candidate))
     merge = next(item for item in certified if item.role == "Merge")
     assert merge.merge_kind == "NATIVE_POSTPROCESS"
-    assert not merge.model_manifest_digest
+    assert merge.model_manifest_digest == binding.model_manifest_digest
     assert not merge.assembler_descriptor_digest
 
 
