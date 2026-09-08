@@ -1,0 +1,488 @@
+{
+  "revision": "R0",
+  "snapshot_utc": "2026-09-08T02:36:29.378589+00:00",
+  "snapshot_local_date": "2026-09-07",
+  "scope": [
+    "NDNSF Core",
+    "NDNSF-UAV",
+    "NDNSF-DI",
+    "NDNSF-Repo"
+  ],
+  "branch": "Experimental",
+  "baseline_commit": "d7fa9c8edef924a6cf29c12d3793049aa794a6be",
+  "local_source_archive": ".codex-tmp/design-source-20260908T023629378589Z/reviewed-source.tar.gz",
+  "archive_sha256": "2062cf3ab6845fb587f7c28d6d0b1b38cba4828a2d04f454cd9ffa031e7ecd2e",
+  "evidence_level": "重点流程源码核对；其余相关实现文件作为支持快照，不代表逐行审计；本轮无协议测试或运行资格验收",
+  "files": {
+    "docs/architecture.md": {
+      "sha256": "00f422069c1f6fe9b1cdc6471c245566a528ebd4c9700cfaf7ff99cc082cba1f",
+      "bytes": 19581,
+      "matches_head": true
+    },
+    "docs/ndnsf-core-app-boundary.md": {
+      "sha256": "b185d1d7cde02e0885adfcf592b3e8973c86c3cd7e2183a5715c4f1f5c6545b5",
+      "bytes": 15839,
+      "matches_head": true
+    },
+    "docs/native-build-parallelism.md": {
+      "sha256": "fb7da4bb431eb63357f82ca58d78aad58fd03fc44e7d3818aae0ec619f071efa",
+      "bytes": 3128,
+      "matches_head": true
+    },
+    "ndn-service-framework/ServiceController.cpp": {
+      "sha256": "c07f783fe2921a25beea46e92b5d2ff287a96213047a933742c866cddc287140",
+      "bytes": 72825,
+      "matches_head": true
+    },
+    "ndn-service-framework/ServiceController.hpp": {
+      "sha256": "d6457f484c152bb6b675ac42e693b1d6f011818c41260b4224e532b0bfda7a86",
+      "bytes": 10820,
+      "matches_head": true
+    },
+    "ndn-service-framework/ServiceUser.cpp": {
+      "sha256": "e8017cdfc635579920a8604d2a426d37690ca91493b7df52c6cc5515f7d9165c",
+      "bytes": 642287,
+      "matches_head": true
+    },
+    "ndn-service-framework/ServiceUser.hpp": {
+      "sha256": "ef797725a923b2058faa9f48d68cbc4591275154b78c995588c069080396a5c2",
+      "bytes": 92599,
+      "matches_head": true
+    },
+    "ndn-service-framework/ServiceProvider.cpp": {
+      "sha256": "ad3afcf78d43dffe9f20134bc6d969c2c87274770955aea8cbd4a252ab01821e",
+      "bytes": 749480,
+      "matches_head": true
+    },
+    "ndn-service-framework/ServiceProvider.hpp": {
+      "sha256": "dca865f89f9c3093b9bc35d1a24c38e3f291d9263fcba4009e430582b9169752",
+      "bytes": 101914,
+      "matches_head": true
+    },
+    "ndn-service-framework/ServiceContainer.hpp": {
+      "sha256": "fd9d2e0a5c42dd2823358671d191901a2c36f6d3ba0fe155eb561be82df7382e",
+      "bytes": 10702,
+      "matches_head": true
+    },
+    "ndn-service-framework/LocalServiceRegistry.hpp": {
+      "sha256": "90bde23b44864bc3cdb652a88c41976b0433b6d2efe3cdc9f75e665d4ef7f801",
+      "bytes": 8401,
+      "matches_head": true
+    },
+    "ndn-service-framework/NDNSFMessages.hpp": {
+      "sha256": "cd1399f6ed1e09f6cbdb08ee6ddff5d956ec31351875291b56cb598ae3e6cfc1",
+      "bytes": 29727,
+      "matches_head": true
+    },
+    "ndn-service-framework/ControllerVersion.cpp": {
+      "sha256": "0d164d8ced8b12959b562491208ba7010ba74ac9064afc899b70b1c47cde2e3b",
+      "bytes": 2095,
+      "matches_head": true
+    },
+    "ndn-service-framework/ControllerGenerationStore.cpp": {
+      "sha256": "05b8d7a3e29869ec8c91d044b6b574b93a9658a0fa635cb8ca62270c1aae6b8f",
+      "bytes": 7842,
+      "matches_head": true
+    },
+    "ndn-service-framework/PolicyStatus.cpp": {
+      "sha256": "f2f41f406885b38194e7b95c0bee7bf8dcfa6be3ed0634a8907dce5406f2bcab",
+      "bytes": 11334,
+      "matches_head": true
+    },
+    "ndn-service-framework/PolicyRefreshCoordinator.cpp": {
+      "sha256": "1daae1a71eb0a78c90511d47b4da305300dce0cf2d39a57edbcfa4446f3c525c",
+      "bytes": 7691,
+      "matches_head": true
+    },
+    "ndn-service-framework/RevocationState.cpp": {
+      "sha256": "10db552e3785c5b763785dd390805dd7b5faa3f7f53e3f06a1cf747e50cf55d9",
+      "bytes": 5337,
+      "matches_head": true
+    },
+    "ndn-service-framework/GenericSelectionTxnStore.hpp": {
+      "sha256": "05699eecd903a50fec0fe8303931719209bbf26656e0c9b5de9c662b352d0100",
+      "bytes": 4529,
+      "matches_head": true
+    },
+    "ndn-service-framework/GenericSelectionTxnStore.cpp": {
+      "sha256": "c47a08bd048a1aff5d3ad305698e6fb38d24608b237bc7d099d6388b9cadabc5",
+      "bytes": 28946,
+      "matches_head": true
+    },
+    "ndn-service-framework/RequestConfidentiality.cpp": {
+      "sha256": "1db3e87daa176a9170c98151278d4379dffc10da8689d9f19f21047038435687",
+      "bytes": 26136,
+      "matches_head": true
+    },
+    "ndn-service-framework/HybridMessageCrypto.cpp": {
+      "sha256": "7817d1905380c336d3d794ccc1f86e0ab1be522d0faacc0b999a5150dbfbf22d",
+      "bytes": 27283,
+      "matches_head": true
+    },
+    "ndn-service-framework/Stream.hpp": {
+      "sha256": "326d98d68459db9817265528e9c56bcf266f3b3681571f149af546c182b58b21",
+      "bytes": 55136,
+      "matches_head": true
+    },
+    "ndn-service-framework/Stream.cpp": {
+      "sha256": "1a3b791dd739339f3b61a7c2bc52257aedbb126e5afce99abf0ead63f9a0de80",
+      "bytes": 286239,
+      "matches_head": true
+    },
+    "ndn-service-framework/StreamFacade.hpp": {
+      "sha256": "e1fad4708bc24508eb38a3b730839c073e2c3ca58863b2a28a7177887e18d1dc",
+      "bytes": 9397,
+      "matches_head": true
+    },
+    "ndn-service-framework/StreamFacade.cpp": {
+      "sha256": "ff064cd65362373951fee16fede7594f5a2aa2bd2fb932cbf69aabbe52d366c6",
+      "bytes": 67282,
+      "matches_head": true
+    },
+    "ndn-service-framework/InvocationStream.hpp": {
+      "sha256": "47222788c5ace05054eeaead0bb36c95579bdc183322e096c0e66e698fd03291",
+      "bytes": 32565,
+      "matches_head": true
+    },
+    "ndn-service-framework/InvocationStream.cpp": {
+      "sha256": "c36e70474a3d223855ae2f6bdc5784e8e6359e20f4094e18515c338824783d6d",
+      "bytes": 81830,
+      "matches_head": true
+    },
+    "ndn-service-framework/ExecutionLease.hpp": {
+      "sha256": "7f4c32fcf13fdcd4e863efbabcab17ef4dfa85681e739b46ac0cc8f6bb9d5601",
+      "bytes": 6245,
+      "matches_head": true
+    },
+    "ndn-service-framework/NetworkTelemetry.hpp": {
+      "sha256": "dcd17c622c3708d2c5f794a432bcecc8b71aa8528b02003f050416413c9470cc",
+      "bytes": 3582,
+      "matches_head": true
+    },
+    "ndn-service-framework/TimelineTrace.hpp": {
+      "sha256": "c320167ef449add0fa653c803453496b22aa54c53a59abe934571371b03ad3f1",
+      "bytes": 1425,
+      "matches_head": true
+    },
+    "NDNSF-DistributedRepo/README_ch.md": {
+      "sha256": "5444f31b9bd659a7f803e68fe47e6646797c36c6737b2d8c0d8eac85bfea974e",
+      "bytes": 52681,
+      "matches_head": true
+    },
+    "NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoCore.hpp": {
+      "sha256": "68172acaf94a97a6d34b17499d782f59f60f31638961e6f9508cf609d31dc902",
+      "bytes": 3166,
+      "matches_head": true
+    },
+    "NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoStoreBackend.hpp": {
+      "sha256": "4d0f58e40516d8eb547bc075903369ed4adc7a8a42c6493ab5bb021d7b9a9e66",
+      "bytes": 4064,
+      "matches_head": true
+    },
+    "NDNSF-DistributedRepo/include/ndnsf-distributed-repo/FilesystemArtifactStore.hpp": {
+      "sha256": "d6705a458b8c783e24c35775422b74ac7dbe809e5722789130758f3ba9beb2f8",
+      "bytes": 3923,
+      "matches_head": true
+    },
+    "NDNSF-DistributedRepo/include/ndnsf-distributed-repo/ArtifactTransfer.hpp": {
+      "sha256": "76e16c82fbadd4bd43b31b1946967d4622b26afd9e35defa9ea20cba93e08869",
+      "bytes": 6184,
+      "matches_head": true
+    },
+    "NDNSF-DistributedRepo/include/ndnsf-distributed-repo/ArtifactManifest.hpp": {
+      "sha256": "681fea55c4c843f5d427f59a6883e110e1b1711d7c02eb72aad1c2b38aeb57b7",
+      "bytes": 5104,
+      "matches_head": true
+    },
+    "NDNSF-DistributedRepo/src/RepoNode.cpp": {
+      "sha256": "dc001dc837e6f0b9c39ad2251a7058772b008fb348b026c97ec971ed7228e268",
+      "bytes": 19535,
+      "matches_head": true
+    },
+    "NDNSF-DistributedRepo/src/RepoClient.cpp": {
+      "sha256": "dbc349e522ef7eec6e81b015cd6ae6b71e5fcea45bb2b25edd81fd9b0a409930",
+      "bytes": 23416,
+      "matches_head": true
+    },
+    "NDNSF-DistributedRepo/src/RepoCore.cpp": {
+      "sha256": "4f1be824ec3587ed163c91618d6e6aa993fa19ccd7c9d898c6741d3ea6acf713",
+      "bytes": 10663,
+      "matches_head": true
+    },
+    "NDNSF-DistributedRepo/src/RepoTypes.cpp": {
+      "sha256": "7e7e3c1ca029a455fc6bbe04ccc6f64a57f4ef90093ad8e9b0b5f07f40089ddf",
+      "bytes": 35053,
+      "matches_head": true
+    },
+    "NDNSF-DistributedRepo/pythonWrapper/py_repoclient/artifact_api.py": {
+      "sha256": "92420bbc20f1b1f153869c073fc3a4e8fa83285d4ec7452ae6385163d922fb81",
+      "bytes": 39064,
+      "matches_head": true
+    },
+    "NDNSF-DistributedRepo/pythonWrapper/py_repoclient/network_artifact_backend.py": {
+      "sha256": "140a9e4cfa0f2ebb32957b1175b8b8f075def481bccfc23d49c7ade450828e5b",
+      "bytes": 56021,
+      "matches_head": true
+    },
+    "NDNSF-DistributedRepo/pythonWrapper/py_repoclient/orchestration.py": {
+      "sha256": "2cc685017ee7f33a2f7ef819db2088c805121c87f22a5c496f84a35d23fe6095",
+      "bytes": 371265,
+      "matches_head": true
+    },
+    "NDNSF-DistributedRepo/pythonWrapper/py_repoclient/persistence.py": {
+      "sha256": "6c16c3d5b32d26e5c65b1f497d58509897fd3b0bf2cbe946a85fca6d2ff98eea",
+      "bytes": 118626,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/README_ch.md": {
+      "sha256": "a961f972f2838b62d44d45788acdfea9706d4238073a58673911984c96d0180a",
+      "bytes": 162195,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/api/__init__.py": {
+      "sha256": "0f910bb01bff3c18d20474b8d113871bf7b79cdfa8909442a081d1a89de279af",
+      "bytes": 1748,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/client.py": {
+      "sha256": "e34e941887ac0464256f9dcf791e02cfc8da2d1c522bbd16b0fd0b55972dce4d",
+      "bytes": 84759,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/application.py": {
+      "sha256": "ed51503aa63228c49b5fe68b4105eccc5f467d14cad00d838d172b71c171574d",
+      "bytes": 13588,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/provider.py": {
+      "sha256": "49c432a74f022ed654fc55e5eb420f95873953e1b0e93656eb352b1879b77775",
+      "bytes": 32956,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/placement.py": {
+      "sha256": "32c2960b2500bbfd57a35b67cabd37b7a281178d0672748dfc1dd784aa0429b4",
+      "bytes": 237248,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/sdk/placement.py": {
+      "sha256": "75c32038cb33e7ea3a59e3c3692adb3ca48b47638b0d6ef433fda9309b1fff9f",
+      "bytes": 102262,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/sdk/__init__.py": {
+      "sha256": "9ef113c3f3ca87612441dfed098a872c0b32cf67f810fc1aaaa462979d032493",
+      "bytes": 3878,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.cpp": {
+      "sha256": "6cc83d7914a95e6795935552a2dc8d03d6a25f826ad8499886193f8c4931dfea",
+      "bytes": 14073,
+      "matches_head": false
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeOfferAdmission.cpp": {
+      "sha256": "da60eea6b3628c0af4d7f2e6d59b25e5e98ff4b0cf3ad01fde679d09ce1c9229",
+      "bytes": 6868,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeV3Placement.cpp": {
+      "sha256": "512a59cc2adedff538e0ed9bd7f8bcf33557607c2614362dffa76be4749e65b7",
+      "bytes": 12048,
+      "matches_head": false
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanSealer.cpp": {
+      "sha256": "8923dc9422fb47a2a653aed11c0412e0c477650bdb0bc67e3e73108f03c99c93",
+      "bytes": 19026,
+      "matches_head": false
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGrantClient.cpp": {
+      "sha256": "c8f5d60ecc8abb4f8e1654b7ea8c9b7331fe0b479238dfe29d5f782b26488f32",
+      "bytes": 4773,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGrantVerifier.cpp": {
+      "sha256": "10711273c85a0b3966192e35217b121c774c68dad05da5062bec9f3f9cd4e99d",
+      "bytes": 25471,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.cpp": {
+      "sha256": "fd9849df683b1c9979ca933ca7b7580c66135be37040fe9fd0eb77a98ec89788",
+      "bytes": 16197,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedArtifactStore.cpp": {
+      "sha256": "24e472b04addd7654f9d6db76c82b858fa88e99c11ab6725646f5b51edae3bd3",
+      "bytes": 13286,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderSession.hpp": {
+      "sha256": "7ff728f8f475698a0a6a0cafc0f11d483f92ba97da618fb4d79db2274ce4889f",
+      "bytes": 2862,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderRuntime.cpp": {
+      "sha256": "c6406d806ac0e4cd083327ca3ac218632205af6dcc4d5c84be214716fd92f493",
+      "bytes": 69042,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.cpp": {
+      "sha256": "f009091cb61a80a343c4767062cd4596fdf007092b946b03eb0227fcc4290183",
+      "bytes": 144516,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.cpp": {
+      "sha256": "23851bf865b75db5ed1f7085be15a10749c9a2ba1a902b629efc7e4d51c128e0",
+      "bytes": 40576,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.cpp": {
+      "sha256": "bab37d6e210e681db7488b7e63cd5a9e38ffc4fd20016bd6addb6b6f0ce60ef3",
+      "bytes": 41582,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/DependencyWaitScheduler.cpp": {
+      "sha256": "82912764f54da8a5ca2c1053518cdc8c93628de9ebdab8a120798b6a76120477",
+      "bytes": 7838,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/CollectiveRuntime.cpp": {
+      "sha256": "f5f93c76f06e45f23e0c78535c131deab805c8a8307eb9e62cd0237e80a5b3c8",
+      "bytes": 11499,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.cpp": {
+      "sha256": "ad3a78b32a28670247d51addefa67dc8d184b923dd33980b9ac8a9106a518901",
+      "bytes": 43049,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.cpp": {
+      "sha256": "ce2f7848fb21155d6ccefe7cfd7f0a49accf0b58af17a35219983a31618e2cf6",
+      "bytes": 10123,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeStandaloneTokenizer.cpp": {
+      "sha256": "a98c2da023836825a85d9e40c42110cc26f1ed8181c9564081273da041d43265",
+      "bytes": 1248,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.cpp": {
+      "sha256": "313388615e470aa7eecded522d2444bd292ffcc3f16db18c811ba18582507e3e",
+      "bytes": 22931,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceProvider.cpp": {
+      "sha256": "5e8617891635f97cf95e58799152b50c44d195e1707e0d5d28e103afe914926e",
+      "bytes": 15128,
+      "matches_head": true
+    },
+    "NDNSF-UAV-APP/README_ch.md": {
+      "sha256": "3582ac83a5f7b72ea06b855f75e873222d4a4ea9f10b9246e376064d512bebec",
+      "bytes": 96299,
+      "matches_head": true
+    },
+    "NDNSF-UAV-APP/shared/UavNames.hpp": {
+      "sha256": "9570babd94ac8df407c2d700fdd99c899c46d1eb02e66034732ab2fa38f35c68",
+      "bytes": 7461,
+      "matches_head": true
+    },
+    "NDNSF-UAV-APP/shared/UavProtocol.hpp": {
+      "sha256": "e54782a9abdfc6e20fd55fd1f9794c78c6a4c1e93df8969fc24b0cf00b9b850c",
+      "bytes": 57353,
+      "matches_head": true
+    },
+    "NDNSF-UAV-APP/shared/UavMissionSession.cpp": {
+      "sha256": "f84b4106035c531fe295fb3da238fa8de2d2d03a571602095e00a4cd2a88def9",
+      "bytes": 33538,
+      "matches_head": true
+    },
+    "NDNSF-UAV-APP/shared/UavVideoPipeline.hpp": {
+      "sha256": "5f62b4a7fe7a6423a9f687dc1e0a76bf470a097bf10aaac97ce1d2cccf592a79",
+      "bytes": 4058,
+      "matches_head": true
+    },
+    "NDNSF-UAV-APP/shared/UavVideoPipeline.cpp": {
+      "sha256": "664b636122cbdb38e8c9b178fb9f40b8a9d37c01da871e606355f361196b2867",
+      "bytes": 20344,
+      "matches_head": true
+    },
+    "NDNSF-UAV-APP/shared/UavMultiViewRecognition.hpp": {
+      "sha256": "9f8907fe74428e6d992521d8f304a883a459f23476749f4eddc6a8427fb3e97d",
+      "bytes": 6406,
+      "matches_head": true
+    },
+    "NDNSF-UAV-APP/shared/UavMultiViewRecognition.cpp": {
+      "sha256": "95cedee00b5f07c379b26f87cc8b6ffad36d0762c38c9e43d5f332ae4448f56d",
+      "bytes": 26642,
+      "matches_head": true
+    },
+    "NDNSF-UAV-APP/shared/UavDetectorProvider.cpp": {
+      "sha256": "f407e5d8c4ebba7d58383944b5722644ef6dfb68256d1707295d6e08ff875626",
+      "bytes": 7946,
+      "matches_head": true
+    },
+    "NDNSF-UAV-APP/tools/mvcnn_onnx_worker.py": {
+      "sha256": "4a8b2025d3fe27e0613854b2534187fe0d44a0a1275a78b025817b19e02017ba",
+      "bytes": 15049,
+      "matches_head": true
+    },
+    "NDNSF-UAV-APP/drone/UavDroneApp.cpp": {
+      "sha256": "42741167d6bfb92ec351356b32062a425f4e67549c575bd0934e3389e02431e2",
+      "bytes": 26037,
+      "matches_head": true
+    },
+    "NDNSF-UAV-APP/drone/DroneServiceContainer.inc.hpp": {
+      "sha256": "54273acb7cbd9526c17b668594455cae5b70a4ea13a6bc50ff65440a4c979381",
+      "bytes": 223165,
+      "matches_head": true
+    },
+    "NDNSF-UAV-APP/drone/DroneWindow.inc.hpp": {
+      "sha256": "45fa715a74c8c1cb142b48b49352ef441151463f269c0604305a87517c2fe2e9",
+      "bytes": 3266,
+      "matches_head": true
+    },
+    "NDNSF-UAV-APP/drone/UavCollaborationParticipant.cpp": {
+      "sha256": "ccd42382a7fbc09e3080e4fca2dc1ab876dce53faec8c10dac2f2675545f3e99",
+      "bytes": 5787,
+      "matches_head": true
+    },
+    "NDNSF-UAV-APP/ground-station/UavGroundStationApp.cpp": {
+      "sha256": "37b93c95915659b0548d14d8b084c6b49f5cc4214e259cb6d149fd0203a06aad",
+      "bytes": 41665,
+      "matches_head": true
+    },
+    "NDNSF-UAV-APP/ground-station/GroundStationServiceContainer.inc.hpp": {
+      "sha256": "c76301414a80e6ccd79dda53e4353cfc3e56bef22526db3f089b06855f87101a",
+      "bytes": 394775,
+      "matches_head": true
+    },
+    "NDNSF-UAV-APP/ground-station/GroundStationWindow.inc.hpp": {
+      "sha256": "7b1e9be4c4980717b9a7fdeeeb632db3f64143e34e53ff70ac1110c8d039a214",
+      "bytes": 210146,
+      "matches_head": true
+    },
+    "NDNSF-UAV-APP/ground-station/UavIncidentCoordinator.cpp": {
+      "sha256": "0ba4dbda43887e061d20a8024046303dd53f84c2516f74579bd5c9db7f4a592c",
+      "bytes": 12968,
+      "matches_head": true
+    },
+    "Experiments/TigerCluster/README.md": {
+      "sha256": "813fe1d73fc9b0a05c514ff1c0656c94322547d35b749ddee9ef7aa99ab1ffdf",
+      "bytes": 3426,
+      "matches_head": true
+    },
+    "Experiments/TigerCluster/docs/sif-build.md": {
+      "sha256": "66fd76625d80c0b937d2c251b3570ca5f780aeb57808e0e69e3724402efa9d7c",
+      "bytes": 2194,
+      "matches_head": true
+    },
+    "tests/integration-tests/controller-revocation-flow.t.cpp": {
+      "sha256": "e4197109f21232d10b62b2eecca5c74bad344c6b459fc8d5326c76b36230cff0",
+      "bytes": 223466,
+      "matches_head": true
+    },
+    "tests/integration-tests/controller-version-refresh.t.cpp": {
+      "sha256": "f2079de9a2062e3ac3ee56297b4685546b414ad9c267145c93513c48fcdfc3b2",
+      "bytes": 5911,
+      "matches_head": true
+    }
+  }
+}
