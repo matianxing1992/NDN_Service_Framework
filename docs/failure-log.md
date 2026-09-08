@@ -3041,3 +3041,13 @@ policy check passes (1 test); final compilation/link in the exact SDK is still
 required. A syntax-only command against copied 1.20 headers left an empty log,
 but its process handle expired across continuation, so its exit status is not
 claimed as evidence. No independent GPU reference was rerun for this API repair.
+
+## 2026-09-08 — Context Mode has no post-restart real prompt event
+
+The authority indexing helper indexed the current spec/plan/tasks files, then
+health exited 5: NO_REAL_SESSION_EVENTS, no post-restart current-project
+user-prompt. Use repository documents, live processes and retained results as
+authority. Do not fabricate hook events, purge stores or restart the active
+build to make this retrieval layer green. Host capture needs a real client
+acceptance check; indexing alone does not prove it. Log: context-index-latest.log
+under results/yolo-layered-20260908.
