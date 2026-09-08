@@ -89,6 +89,19 @@ EXCLUDED_SUFFIXES = {".so", ".a", ".o", ".pyc", ".pyo"}
 # HANDOFF_SOURCE_UNTRACKED until that repository commits it.
 EXCLUDED_DEPENDENCY_FILES = {"examples/example-trust-anchor.cert"}
 
+# The binding's grant verifier is a native dependency, not a deployed DI app.
+# Keep this selection explicit so app-only edits do not enter the base archive.
+BASE_FILES = (
+    "waf", "wscript", "libndn-service-framework.pc.in", ".waf-tools",
+    "ndn-service-framework", "pythonWrapper/setup.py",
+    "pythonWrapper/pyproject.toml", "pythonWrapper/README.md",
+    "pythonWrapper/ndnsf", "pythonWrapper/src",
+    "NDNSF-DistributedRepo/pythonWrapper", "NDNSF-DistributedRepo/src",
+    "NDNSF-DistributedRepo/include",
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGrantVerifier.cpp",
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGrantVerifier.hpp",
+)
+
 
 def digest(path: Path) -> str:
     value = hashlib.sha256()
@@ -98,9 +111,11 @@ def digest(path: Path) -> str:
     return "sha256:" + value.hexdigest()
 
 
-def selected_files(workspace: Path) -> list[Path]:
+def selected_files(workspace: Path, selection: str = "legacy-complete") -> list[Path]:
+    if selection not in ("legacy-complete", "base-libraries-v1"):
+        raise ValueError("LOCAL_SIF_SOURCE_SELECTION_INVALID")
     selected: set[Path] = set()
-    for relative in FILES:
+    for relative in BASE_FILES if selection == "base-libraries-v1" else FILES:
         source = workspace / relative
         if not source.exists():
             raise SystemExit(f"LOCAL_SIF_SOURCE_MISSING:{relative}")
@@ -114,6 +129,9 @@ def selected_files(workspace: Path) -> list[Path]:
             if candidate.suffix in EXCLUDED_SUFFIXES:
                 continue
             selected.add(rel)
+    if selection == "base-libraries-v1":
+        # --runtime-libraries-only does not load optional bld.recurse graphs.
+        return sorted(selected, key=lambda value: value.as_posix())
     for candidate in (workspace / "examples").glob("DI_Native*"):
         if candidate.is_file() and candidate.suffix not in EXCLUDED_SUFFIXES:
             selected.add(candidate.relative_to(workspace))
@@ -291,6 +309,8 @@ def main() -> int:
     parser.add_argument("--nac-abe-workspace", type=Path)
     parser.add_argument("--ndnsd-workspace", type=Path)
     parser.add_argument("--derive-ndn-svs-version", action="store_true")
+    parser.add_argument("--selection", choices=("legacy-complete", "base-libraries-v1"),
+                        default="legacy-complete")
     parser.add_argument("--output-dir", required=True, type=Path)
     args = parser.parse_args()
 
@@ -302,7 +322,7 @@ def main() -> int:
         raise SystemExit("LOCAL_SIF_SOURCE_OUTPUT_NOT_EMPTY")
     output.mkdir(parents=True, exist_ok=True)
 
-    files = selected_files(workspace)
+    files = selected_files(workspace, args.selection)
     if not files:
         raise SystemExit("LOCAL_SIF_SOURCE_EMPTY")
     with tarfile.open(archive_path, "w", format=tarfile.PAX_FORMAT) as archive:
@@ -334,6 +354,8 @@ def main() -> int:
         "files": rows,
         "compiledPayloadCount": 0,
     }
+    if args.selection != "legacy-complete":
+        body["sourceSelection"] = args.selection
     dependency_reports: dict[str, dict] = {}
     if args.ndn_svs_workspace is not None:
         svs_entries = NDN_SVS_FILES

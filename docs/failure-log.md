@@ -2994,3 +2994,20 @@ is a real ABI mismatch, not evidence the delivered MiniNDN scenario failed.
 Base/app rebuild remains necessary; see layered-runtime-preflight.md. Both local
 full SIF cache files now independently hash to the retained b6710fd6; preserve old
 read-failure history and deduplicate only the identical recovery cache inode.
+
+## 2026-09-08 — Buffered SIF reads disagree with direct I/O
+
+The layered base renderer rejected BASE_INPUT_DIGEST before producing a recipe.
+Two ordinary SHA256 reads and one sudo read gave a2600783…; direct I/O on the same
+inode gave the locked b6710fd6…. This narrows the earlier unresolved fault to a
+buffered/direct read discrepancy, not a proven sandbox-only or permission issue.
+No matching recent kernel errors were observed. Request eviction of this file's
+cache with POSIX_FADV_DONTNEED and verify ordinary reads; preserve hashes and
+do not change the lock. Root cause remains unresolved until stability is shown.
+An incorrectly sequenced build call after the failed renderer only failed on
+the missing definition (no unpack/build); dependent actions must follow a
+successful result, even when the earlier action was expected to pass.
+
+Bounded recovery succeeded: file-specific cache eviction restored the pinned
+hash in an ordinary read and then in the independent renderer check. The local
+single-stage build could start. This does not establish a permanent host fix.

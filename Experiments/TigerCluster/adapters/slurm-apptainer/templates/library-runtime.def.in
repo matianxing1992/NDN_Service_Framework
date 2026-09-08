@@ -1,0 +1,24 @@
+Bootstrap: localimage
+From: @BASE_SIF@
+
+# layered-v1: stable libraries plus the matching local application SDK.
+# No application binaries, DI Python package, models or credentials are installed.
+%files
+    @SOURCE@ /build-input/source
+    @WHEELS@ /build-input/wheels
+    @SCRIPTS@/build-base-libraries.sh /build-input/build-base-libraries.sh
+    @SCRIPTS@/verify-base-runtime.py /build-input/verify-base-runtime.py
+
+%post
+    set -eu
+    echo '@SEAL_SHA256@  /build-input/source/source-seal.json' | sha256sum -c -
+    /bin/bash /build-input/build-base-libraries.sh
+
+%environment
+    export PATH=/opt/ndnsf-di/current/bin:/opt/venv/bin:/usr/bin:/bin:/usr/sbin:/sbin
+    export LD_LIBRARY_PATH=/opt/ndnsf-di/current/lib:/opt/onnxruntime/lib
+    export PKG_CONFIG_PATH=/opt/ndnsf-di/current/lib/pkgconfig:/opt/onnxruntime/lib/pkgconfig
+    export PYTHONNOUSERSITE=1
+
+%test
+    /opt/venv/bin/python /opt/ndnsf-di/current/manifest/verify-base-runtime.py verify

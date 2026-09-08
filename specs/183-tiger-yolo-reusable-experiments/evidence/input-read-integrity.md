@@ -1,5 +1,27 @@
 # Spec183 base-SIF read integrity investigation
 
+## 2026-09-08 follow-up
+
+After earlier same-day matching reads, the new base renderer again rejected the
+local image. Two ordinary reads and a sudo read returned
+`a2600783605752df995ec002f9eab915f35167196f9fc2e1cf62e6de6bd64e68`.
+A subsequent `dd iflag=direct bs=4M | sha256sum` returned the pinned
+`b6710fd696a7f962f67f67a54278d92a15babb856c4af428a3f04ba54dc83285`.
+Evidence: `results/yolo-layered-20260908/preflight/base-direct-read-sha256.txt`.
+This isolates a buffered/direct read discrepancy; it does not prove its kernel,
+hypervisor or physical-memory root cause. Sudo alone does not repair the issue.
+No matching kernel I/O/ext4/hardware/OOM messages appeared in the preceding
+30-minute bounded search. Request file-specific `POSIX_FADV_DONTNEED`, then verify
+ordinary reads before continuing; no global cache flush or lock change.
+
+The file-specific eviction completed, and the next ordinary SHA256 read returned
+the pinned b6710fd6 digest (`base-after-fadvise-sha256.txt`). A separate renderer
+read also passed (`base-render.json`), allowing the local base build to start.
+This is a successful bounded recovery of the current input check, not proof of
+a permanent host repair.
+
+## Historical observations
+
 2026-09-07. Status: UNRESOLVED. No hash/lock or canonical cache link was replaced.
 No runtime or GPU job was submitted. This is a historical base input, not the
 Spec183 final SIF.

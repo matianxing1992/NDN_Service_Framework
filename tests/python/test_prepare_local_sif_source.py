@@ -15,6 +15,30 @@ SCRIPT = (
 VALIDATOR = SCRIPT.with_name("validate-local-sif-source.py")
 
 
+def test_base_archive_contains_binding_closure_without_applications(tmp_path):
+    output = tmp_path / "base"
+    subprocess.run([sys.executable, str(SCRIPT), "--workspace", str(ROOT),
+                    "--selection", "base-libraries-v1", "--output-dir", str(output)],
+                   check=True, capture_output=True, text=True)
+    seal = json.loads((output / "source-seal.json").read_text())
+    assert seal["sourceSelection"] == "base-libraries-v1"
+    with tarfile.open(output / "workspace.tar") as archive:
+        names = set(archive.getnames())
+    assert "pythonWrapper/src/ndnsf/_ndnsf.cpp" in names
+    assert "NDNSF-DistributedRepo/pythonWrapper/setup.py" in names
+    assert {name for name in names if name.startswith("NDNSF-DistributedInference/")} == {
+        "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGrantVerifier.cpp",
+        "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGrantVerifier.hpp",
+    }
+    assert not any(name.startswith(("examples/", "Experiments/", "NDNSF-UAV-APP/"))
+                   for name in names)
+    assert "NDNSF-DistributedRepo/wscript" not in names
+    assert not any(name.endswith((".so", ".a", ".o", ".pyc")) for name in names)
+    subprocess.run([sys.executable, str(VALIDATOR), "--source-seal",
+                    str(output / "source-seal.json")],
+                   check=True, capture_output=True, text=True)
+
+
 def test_source_archive_excludes_host_binaries_and_build_output(tmp_path):
     output = tmp_path / "sealed"
     result = subprocess.run(
