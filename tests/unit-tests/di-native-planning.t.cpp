@@ -39,7 +39,9 @@ NativeGraphSnapshot graph(const std::string& graphDigest,
   // Explicit chain fixture. Production graph inspection supplies real edges;
   // the planner never invents adjacency or tensor names.
   for (std::size_t i = 1; i < result.nodes.size(); ++i) {
-    const auto id = "cut-" + std::to_string(i - 1);
+    const auto id = result.nodes[i - 1].id.find("layer-") == 0 && result.nodes[i].id.find("layer-") == 0
+      ? "hidden-layer-" + std::to_string(i - 2) + "-to-" + std::to_string(i - 1)
+      : "cut-" + std::to_string(i - 1);
     result.edges.push_back({id, result.nodes[i - 1].id, {result.nodes[i].id},
       {id, "float32", {std::int64_t(1)}, 4}});
     result.legalCutEdges.push_back(id);
@@ -689,6 +691,44 @@ BOOST_AUTO_TEST_CASE(PlacementRejectsInvalidAndOverflowingResourceBudgets)
   requirement.safetyMargin = 1.0;
   BOOST_CHECK_THROW(NativePreSplitFirstPlacement().propose(fixture.snapshot, fixture.candidate),
                     std::runtime_error);
+}
+
+BOOST_AUTO_TEST_CASE(CandidateRejectsIncompleteDependenciesAndRankArtifacts)
+{
+  const TwoRolePlacement fixture;
+  BOOST_CHECK_NO_THROW(fixture.candidate.validate(fixture.snapshot.graph));
+  for (unsigned mutation = 0; mutation != 16; ++mutation) {
+    auto candidate = fixture.candidate;
+    const auto& role = fixture.first;
+    switch (mutation) {
+      case 0: candidate.candidateDigest = "not-a-digest"; break;
+      case 1: candidate.fragmentsByRole[role] = "not-a-digest"; break;
+      case 2: candidate.inputIngressRole = "foreign"; break;
+      case 3: candidate.resultEgressRole.clear(); break;
+      case 4: candidate.crossPartitionTensors.push_back(candidate.crossPartitionTensors.front()); break;
+      case 5: candidate.crossPartitionTensors = {"foreign"}; break;
+      case 6: candidate.executionPlan.dependencies.clear(); break;
+      case 7: candidate.executionPlan.dependencies.front().tensors = {"foreign"}; break;
+      case 8: candidate.executionPlan.dependencies.front().producers = {"foreign"}; break;
+      case 9: candidate.executionPlan.dependencies.front().consumers.clear(); break;
+      case 10: candidate.rankArtifactDigestsByRole.clear(); break;
+      case 11: candidate.tensorDegreesByRole.clear(); break;
+      case 12: candidate.tensorDegreesByRole[role] = 0; break;
+      case 13: candidate.rankArtifactDigestsByRole[role] = {digest("foreign-artifact")}; break;
+      case 14:
+        candidate.tensorDegreesByRole[role] = 2;
+        candidate.rankArtifactDigestsByRole[role].push_back(candidate.rankArtifactDigestsByRole[role].front());
+        break;
+      case 15:
+        candidate.rankArtifactDigestsByRole.erase(role);
+        candidate.rankArtifactDigestsByRole["foreign"] = {digest("foreign-artifact")};
+        break;
+    }
+    BOOST_CHECK_THROW(candidate.validate(fixture.snapshot.graph), std::invalid_argument);
+  }
+  auto malformed = fixture.snapshot.graph;
+  malformed.edges.front().producer = "foreign";
+  BOOST_CHECK_THROW(fixture.candidate.validate(malformed), std::invalid_argument);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

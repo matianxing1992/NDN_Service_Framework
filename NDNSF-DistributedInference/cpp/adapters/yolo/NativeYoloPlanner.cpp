@@ -164,6 +164,7 @@ NativeYoloComponentSplit::enumerate(const NativeModelDescriptor& model,
         roleBytes, 256ULL * 1024ULL * 1024ULL,
         256ULL * 1024ULL * 1024ULL, 64ULL * 1024ULL * 1024ULL, 1.0};
       candidate.tensorDegreesByRole[role] = 1;
+      candidate.rankArtifactDigestsByRole[role] = candidate.artifactsByRole.at(role);
     }
     candidate.candidateDigest = spec->candidateDigest.empty()
       ? nativePlanningDigest("yolo-candidate|" + spec->candidateId + "|" +
