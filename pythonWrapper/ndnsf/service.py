@@ -2413,6 +2413,12 @@ class ServiceUser:
         """Bind catalog publication and inspection ports to this Core user."""
         return self._native.native_preparation(catalog, str(service_name))
 
+    @staticmethod
+    def native_runtime_from_config(configuration_json: str, catalog, grants):
+        """Parse native runtime policy while retaining catalog and key ownership in C++."""
+        return _ndnsf.native_request_runtime_from_json(
+            str(configuration_json), catalog, grants)
+
     def native_grant_client_from_config(
         self, configuration_json: str, base_directory: str = "."):
         """Construct the native grant owner from operator key-file config."""

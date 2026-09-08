@@ -198,6 +198,14 @@ bindDistributedInference(py::module_& module)
     .def_readwrite("no_progress_ms", &di::NativeRequestRuntime::noProgressMs)
     .def_readwrite("max_segments", &di::NativeRequestRuntime::maxSegments);
 
+  module.def("native_request_runtime_from_json",
+             [](const std::string& configuration_json,
+                const di::NativeRequestCatalog& catalog,
+                std::shared_ptr<const di::NativeAuthenticatedGrantClient> grants) {
+               return di::nativeRequestRuntimeFromJson(configuration_json, catalog,
+                                                        std::move(grants));
+             }, py::arg("configuration_json"), py::arg("catalog"), py::arg("grants"));
+
   py::class_<di::NativeInferenceResult>(module, "NativeInferenceResult")
     .def(py::init<>())
     .def_readonly("payload", &di::NativeInferenceResult::payload)

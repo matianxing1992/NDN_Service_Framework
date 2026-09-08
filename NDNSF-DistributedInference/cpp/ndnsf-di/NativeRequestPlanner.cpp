@@ -4,10 +4,63 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include <algorithm>
+#include <initializer_list>
+#include <limits>
 #include <set>
 
 namespace ndnsf::di {
 namespace {
+bool isDigestValue(const std::string& value)
+{
+  return value.size() == 71 && value.compare(0, 7, "sha256:") == 0 &&
+    std::all_of(value.begin() + 7, value.end(), [] (char c) {
+      return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+    });
+}
+
+void requireObject(const NativeJson& value, const char* field)
+{
+  if (!value.is_object())
+    throw std::invalid_argument(std::string(field) + " must be an object");
+}
+
+void requireExactKeys(const NativeJson& value,
+                      std::initializer_list<const char*> required,
+                      const char* field)
+{
+  requireObject(value, field);
+  std::set<std::string> expected;
+  for (const auto* key : required) expected.emplace(key);
+  for (const auto& item : value.items()) {
+    if (!expected.count(item.key()))
+      throw std::invalid_argument(std::string(field) + " contains an unknown field");
+  }
+  for (const auto* key : required) {
+    if (!value.contains(key))
+      throw std::invalid_argument(std::string(field) + " is missing a required field");
+  }
+}
+
+void requireDigestValue(const NativeJson& value, const char* field)
+{
+  if (!value.is_string() || !isDigestValue(value.get<std::string>()))
+    throw std::invalid_argument(std::string(field) + " must be a lowercase sha256 digest");
+}
+
+std::string readString(const NativeJson& value, const char* field)
+{
+  if (!value.is_string())
+    throw std::invalid_argument(std::string(field) + " must be a string");
+  return value.get<std::string>();
+}
+
+bool readBoolean(const NativeJson& value, const char* field)
+{
+  if (!value.is_boolean())
+    throw std::invalid_argument(std::string(field) + " must be a boolean");
+  return value.get<bool>();
+}
+
 std::uint64_t epochMs()
 {
   const auto value = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -118,6 +171,117 @@ void bindConversationProjections(
     }
   }
 }
+}
+
+NativeRequestRuntime nativeRequestRuntimeFromJson(
+  const std::string& configurationJson,
+  const NativeRequestCatalog& catalog,
+  std::shared_ptr<const NativeAuthenticatedGrantClient> grants)
+{
+  if (configurationJson.size() > 64 * 1024)
+    throw std::invalid_argument("native request runtime configuration exceeds limit");
+  if (!catalog.preparation || !catalog.splitter)
+    throw std::invalid_argument("native request runtime requires a complete catalog");
+  if (!grants)
+    throw std::invalid_argument("native request runtime requires a native grant client");
+  catalog.model.validate();
+
+  const auto root = nativeParseJson(configurationJson);
+  requireExactKeys(root,
+    {"schema", "contract", "requester_identity", "protection_epoch", "input_layout_digest",
+     "security", "budget", "state_mapping", "no_progress_ms", "max_segments"}, "runtime");
+  if (!root.at("schema").is_string() ||
+      root.at("schema").get<std::string>() != "ndnsf-di-native-request-runtime-v1")
+    throw std::invalid_argument("unsupported native request runtime schema");
+
+  const auto& contract = root.at("contract");
+  requireExactKeys(contract,
+    {"service_name", "task_name", "adapter_name", "adapter_descriptor_digest",
+     "adapter_composition_digest", "task_descriptor_digest", "generation_mode"}, "runtime.contract");
+  NativeRequestRuntime runtime;
+  runtime.contract.serviceName = readString(contract.at("service_name"), "runtime.contract.service_name");
+  runtime.contract.taskName = readString(contract.at("task_name"), "runtime.contract.task_name");
+  runtime.contract.adapterName = readString(contract.at("adapter_name"), "runtime.contract.adapter_name");
+  runtime.contract.adapterDescriptorDigest = readString(contract.at("adapter_descriptor_digest"), "runtime.contract.adapter_descriptor_digest");
+  runtime.contract.adapterCompositionDigest = readString(contract.at("adapter_composition_digest"), "runtime.contract.adapter_composition_digest");
+  runtime.contract.taskDescriptorDigest = readString(contract.at("task_descriptor_digest"), "runtime.contract.task_descriptor_digest");
+  runtime.contract.generationMode = readString(contract.at("generation_mode"), "runtime.contract.generation_mode");
+  if (runtime.contract.serviceName.empty() || runtime.contract.serviceName.front() != '/' ||
+      runtime.contract.taskName.empty() || runtime.contract.adapterName.empty() ||
+      runtime.contract.generationMode.empty())
+    throw std::invalid_argument("native request runtime contract identity is incomplete");
+  requireDigestValue(contract.at("adapter_descriptor_digest"), "runtime.contract.adapter_descriptor_digest");
+  requireDigestValue(contract.at("adapter_composition_digest"), "runtime.contract.adapter_composition_digest");
+  requireDigestValue(contract.at("task_descriptor_digest"), "runtime.contract.task_descriptor_digest");
+  if (runtime.contract.adapterName != catalog.model.descriptor.adapterId ||
+      runtime.contract.adapterDescriptorDigest != catalog.model.descriptor.adapter.descriptorDigest())
+    throw std::invalid_argument("native request runtime adapter identity does not match catalog");
+  if (std::find(catalog.model.descriptor.adapter.tasks.begin(),
+                catalog.model.descriptor.adapter.tasks.end(), runtime.contract.taskName) ==
+      catalog.model.descriptor.adapter.tasks.end())
+    throw std::invalid_argument("native request runtime task is not supported by catalog adapter");
+
+  runtime.requesterIdentity = readString(root.at("requester_identity"), "runtime.requester_identity");
+  runtime.protectionEpoch = readString(root.at("protection_epoch"), "runtime.protection_epoch");
+  runtime.inputLayoutDigest = readString(root.at("input_layout_digest"), "runtime.input_layout_digest");
+  if (runtime.requesterIdentity.empty() || runtime.requesterIdentity.front() != '/' ||
+      runtime.protectionEpoch.empty() || runtime.protectionEpoch == "plaintext-v1")
+    throw std::invalid_argument("native request runtime requester or protection identity is invalid");
+  requireDigestValue(root.at("input_layout_digest"), "runtime.input_layout_digest");
+  if (runtime.requesterIdentity != grants->requesterIdentity() ||
+      runtime.protectionEpoch != grants->protectionEpoch())
+    throw std::invalid_argument("native request runtime identity does not match grant client");
+
+  const auto& security = root.at("security");
+  requireExactKeys(security, {"policy_digest", "require_protected_artifacts"}, "runtime.security");
+  runtime.security.policyDigest = readString(security.at("policy_digest"), "runtime.security.policy_digest");
+  runtime.security.requireProtectedArtifacts = readBoolean(
+    security.at("require_protected_artifacts"), "runtime.security.require_protected_artifacts");
+  requireDigestValue(security.at("policy_digest"), "runtime.security.policy_digest");
+  if (!runtime.security.requireProtectedArtifacts)
+    throw std::invalid_argument("native request runtime cannot disable protected artifacts");
+
+  const auto& budget = root.at("budget");
+  requireExactKeys(budget, {"max_candidates", "max_policy_ms", "max_reentries"}, "runtime.budget");
+  const auto readUnsigned = [] (const NativeJson& value, const char* field) -> std::uint64_t {
+    if (value.is_number_unsigned()) return value.get<std::uint64_t>();
+    if (value.is_number_integer() && value.get<std::int64_t>() >= 0)
+      return static_cast<std::uint64_t>(value.get<std::int64_t>());
+    throw std::invalid_argument(std::string(field) + " must be a nonnegative integer");
+  };
+  const auto maxCandidates = readUnsigned(budget.at("max_candidates"), "runtime.budget.max_candidates");
+  const auto maxPolicyMs = readUnsigned(budget.at("max_policy_ms"), "runtime.budget.max_policy_ms");
+  const auto maxReentries = readUnsigned(budget.at("max_reentries"), "runtime.budget.max_reentries");
+  if (maxCandidates > std::numeric_limits<std::size_t>::max() ||
+      maxReentries > std::numeric_limits<std::size_t>::max())
+    throw std::invalid_argument("native request runtime budget exceeds host size limit");
+  runtime.budget = {static_cast<std::size_t>(maxCandidates), maxPolicyMs,
+                    static_cast<std::size_t>(maxReentries)};
+  runtime.budget.validate();
+
+  const auto& state = root.at("state_mapping");
+  requireExactKeys(state, {"inputs", "outputs"}, "runtime.state_mapping");
+  try {
+    runtime.stateMapping.inputs = state.at("inputs").get<NativeStateTensorMapping::Roles>();
+    runtime.stateMapping.outputs = state.at("outputs").get<NativeStateTensorMapping::Roles>();
+  }
+  catch (const std::exception& error) {
+    throw std::invalid_argument(std::string("runtime.state_mapping is malformed: ") + error.what());
+  }
+  if (runtime.stateMapping.inputs != catalog.stateMapping.inputs ||
+      runtime.stateMapping.outputs != catalog.stateMapping.outputs)
+    throw std::invalid_argument("native request runtime state mapping does not match catalog");
+
+  const auto noProgressMs = readUnsigned(root.at("no_progress_ms"), "runtime.no_progress_ms");
+  const auto maxSegments = readUnsigned(root.at("max_segments"), "runtime.max_segments");
+  if (noProgressMs == 0 || noProgressMs > 24ULL * 60ULL * 60ULL * 1000ULL ||
+      maxSegments == 0 || maxSegments > (1ULL << 20))
+    throw std::invalid_argument("native request runtime progress or segment limit is out of range");
+  runtime.noProgressMs = noProgressMs;
+  runtime.maxSegments = static_cast<std::size_t>(maxSegments);
+  runtime.grants = std::move(grants);
+  runtime.catalog = catalog.preparation;
+  return runtime;
 }
 
 NativePlannedRequest planNativeRequest(

@@ -1546,7 +1546,9 @@ NativeInferenceClient::NativeInferenceClient(
   runtime.budget.validate();
   if (!runtime.grants || !runtime.security.requireProtectedArtifacts || runtime.requesterIdentity.empty() ||
       runtime.protectionEpoch.empty() || runtime.protectionEpoch == "plaintext-v1" ||
-      !runtime.maxSegments || !runtime.noProgressMs)
+      !runtime.maxSegments || !runtime.noProgressMs ||
+      runtime.requesterIdentity != runtime.grants->requesterIdentity() ||
+      runtime.protectionEpoch != runtime.grants->protectionEpoch())
     throw NativeDiError("INVALID_CLIENT_CONFIGURATION", "local", "constructor",
       "native requester requires protected runtime policy and grant owner");
   m_runtime = std::make_shared<const NativeRequestRuntime>(runtime);

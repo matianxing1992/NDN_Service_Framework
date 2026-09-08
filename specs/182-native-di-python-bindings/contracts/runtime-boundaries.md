@@ -120,6 +120,51 @@ NativeAdmittedOfferV3 verify(const ndn_service_framework::AckSelectionCandidate&
 记录 ordered events 证明 ACK_CLOSED 先于 graph/candidate，ensure 后于 placement、
 Provider assembly 后于 Selection。不得让测试 harness 代做这些生产步骤。
 
+## R5-B4 Native Runtime Configuration Boundary
+
+The maintained requester may supply operator configuration through a thin
+binding, but the configuration is parsed and validated by the native owner.
+The schema is `ndnsf-di-native-request-runtime-v1` and contains only immutable
+runtime policy and identity values:
+
+```json
+{
+  "schema": "ndnsf-di-native-request-runtime-v1",
+  "contract": {
+    "service_name": "/service",
+    "task_name": "task",
+    "adapter_name": "adapter",
+    "adapter_descriptor_digest": "sha256:...",
+    "adapter_composition_digest": "sha256:...",
+    "task_descriptor_digest": "sha256:...",
+    "generation_mode": "TOKEN_DIAGNOSTIC"
+  },
+  "requester_identity": "/user",
+  "protection_epoch": "epoch-1",
+  "input_layout_digest": "sha256:...",
+  "security": {"policy_digest": "sha256:...", "require_protected_artifacts": true},
+  "budget": {"max_candidates": 1, "max_policy_ms": 100, "max_reentries": 1},
+  "state_mapping": {"inputs": {}, "outputs": {}},
+  "no_progress_ms": 5000,
+  "max_segments": 4096
+}
+```
+
+`catalog` and `grants` are native objects supplied by the composition root;
+they are not serialized into this JSON. The native parser rejects an unknown
+schema, missing or extra contract fields, invalid digest/identity/epoch values,
+plaintext protection, zero or out-of-range budgets, and a runtime whose
+catalog/grant owners do not match the contract and requester identity. It does
+not read model bytes, private keys, or public-key files. Catalog source checks
+remain in `NativeRequestCatalog::load`; grant key loading remains in
+`NativeServiceUser::nativeGrantClientFromConfig`.
+
+The Python facade may decode bytes and pass the JSON string, catalog and grant
+objects through. It must not create a plan, verify ACKs, or provide a Python
+strategy callback. Request execution still uses the catalog's bound C++ split
+strategy and `NativePreSplitFirstPlacement` (or another C++ strategy), and a
+missing runtime component fails closed.
+
 ## CD-014 Provider Host and Binding
 
 **Requirements**: FR-001,FR-009,FR-010,FR-012。

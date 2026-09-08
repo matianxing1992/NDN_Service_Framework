@@ -25,6 +25,14 @@ struct NativeRequestRuntime
   std::size_t maxSegments = 4096;
 };
 
+/** Parse an operator-owned runtime policy and bind it to an already checked
+ * catalog and native grant owner. JSON carries policy only; catalog/source
+ * and key material remain owned by their native loaders. */
+NativeRequestRuntime nativeRequestRuntimeFromJson(
+  const std::string& configurationJson,
+  const NativeRequestCatalog& catalog,
+  std::shared_ptr<const NativeAuthenticatedGrantClient> grants);
+
 struct NativePlannedRequest
 {
   NativeSealedPlan sealed;

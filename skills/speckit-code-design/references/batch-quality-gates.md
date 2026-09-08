@@ -51,6 +51,11 @@ Python focused test 的通过替代 native behavior、C++/Python parity 或跨�
 若某个 native requirement 只有 Python 测试或没有 C++ target/selector，Coverage
 matrix 的 `test/harness/oracle` lane 必须写 `gap`，对应任务保持 `PARTIAL`。
 
+当 Python extension 链接到仓库内的 native shared target 时，native 源码变化必须
+先重建该 shared target，再重建 extension；仅重编译或重链接 extension 不能证明
+source/link closure。批次记录应检查依赖库中包含变更符号（或等价的 source/hash
+身份），并把 stale-library 导致的导入或未定义符号列入 `Compile/build misses`。
+
 ## Batch Result Record
 
 每批只维护一份 tasks/evidence 结果记录。记录以下字段；没有发现时写 `none`
