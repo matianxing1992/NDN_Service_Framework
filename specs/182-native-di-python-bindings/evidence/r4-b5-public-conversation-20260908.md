@@ -21,6 +21,18 @@ LocalMock User，以便确定性地验证 requester 的等待、digest 绑定、
 测试 receipt/ACK 结构和 case-manifest 构建注册。结果：`No findings.`
 `git diff --check` 通过；未在静态门运行构建或测试。
 
+### Coverage matrix
+
+| Lane | Status | Files/symbols | Query/check |
+| --- | --- | --- | --- |
+| production entry/callers | covered | `NativeInferenceClient::request`, `NativeConversationCoordinator`, `tests/unit-tests/di-native-v3-placement.t.cpp` | CodeGraph request/coordinator exploration; `rg NativeInferenceClient` |
+| implementation and wire | covered | `NativeInferenceClient.cpp`, `NativeInferenceClient.hpp`, `NativeConversationCoordinator.hpp`, Core ACK/commit path | review-agent complete diff; `git diff --check` |
+| test/harness/oracle | covered | `Spec182V3Placement/PublicClientConversationCommitsSeededReceiptAndCheckpoint`, `tests/fixtures/spec182/case-manifest.json`, local receipt/ACK fixture | selector runs below; manifest lookup |
+| build/source closure | covered | unit-tests Waf target and DI source glob; case manifest registration | `./waf -o build-nac182 build --targets=unit-tests -j4 -v`; manifest validation |
+| migration/evidence | gap | no Provider cross-process transport, second-turn caller migration or T016 collector | `rg` confirms remaining T011-C/T012/T016 rows in `tasks.md` |
+
+矩阵中的 `gap` 是本批明确的剩余验收范围，因而本批保持 `PARTIAL`。
+
 ## Validation
 
 第一次重建命令错误地把 `PATH=...` 作为 `/usr/bin/time` 的待执行程序，编译器未启动，

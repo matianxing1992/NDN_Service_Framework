@@ -13,14 +13,15 @@
 
 1. 实现一个可审阅的小任务，同时编写或调整必要测试、注册与调用方。
 2. 每个小任务明确加载独立官方 `$review-agent`，按 [调用及项目补充规则](review-agent.md) 只读审查完整差异、足够上下文和设计契约。无需每次启动多个代理。
-3. 发现具体缺陷或必要设计/接线遗漏，由实现者修复，再重审受影响范围；不能带着已知控制性缺陷继续依赖它的任务。
-4. 审查覆盖充分且没有控制性问题，记录 `STATIC_PASS / TESTS_DEFERRED / Batch ID`；继续同批下一任务，不启动常规构建/测试。状态仍为 PARTIAL，保持未勾选并登记待执行选择器。
+3. 在同一审查结果中填写 [batch-quality-gates.md](batch-quality-gates.md) 的 Coverage matrix：逐项核对真实生产入口/调用方、实现与 wire、测试/harness/oracle、构建注册/source closure、迁移/证据路径；不适用项写理由，无法确认项写 `gap`。至少给出实际文件/符号和查询或检查命令，不能用“目录已看”代替。
+4. 发现具体缺陷或必要设计/接线遗漏，由实现者修复，再重审受影响范围；不能带着已知控制性缺陷继续依赖它的任务。
+5. 覆盖充分且没有控制性问题，记录 `STATIC_PASS / TESTS_DEFERRED / Batch ID`；继续同批下一任务，不启动常规构建/测试。状态仍为 PARTIAL，保持未勾选并登记待执行选择器。
 
 静态无法确认的运行假设留给批次测试；缺少明确接口、必要源码或关键路径覆盖时不能写 STATIC_PASS。No findings 不自动表示审查充分或验收完成。
 
 ## Batch Static Gate And Tests
 
-整批成员编码及逐任务静态门完成后，审查整批完整差异和组合流程：入口→校验→状态更新→副作用→回调/终态→清理。核对跨任务 API、字段、错误、身份和并发约束一致；生产调用方、默认注册、构建配置、序列化、迁移删除、测试/harness 均已接线，无占位实现或遗漏路径。静态门和批末门都必须注明实际覆盖；漏掉调用方、测试注册或 source closure 属于 coverage gap，不能以 No findings 放行。
+整批成员编码及逐任务静态门完成后，审查整批完整差异和组合流程：入口→校验→状态更新→副作用→回调/终态→清理。核对跨任务 API、字段、错误、身份和并发约束一致；生产调用方、默认注册、构建配置、序列化、迁移删除、测试/harness 均已接线，无占位实现或遗漏路径。批末必须更新同一份 Coverage matrix，明确成员新增或未覆盖的 lane；漏掉调用方、测试注册或 source closure 属于 coverage gap，不能以 No findings 放行。
 
 无已知控制性缺陷且验证命令、独立判据和必要负例明确，记录 `READY_FOR_BATCH_TESTS`，统一执行必要构建、相关单测及计划内静态工具。共享构建和重叠选择器合并执行，结果逐项映射成员；不按任务数重复命令。不得把后续批次全部写完才测试当前已闭合批次。
 
@@ -36,7 +37,7 @@
 
 ## One Completion Record
 
-每批复用 tasks.md 或一份 evidence：记录源码基线、任务/整批差异边界、成员静态覆盖与 findings/修复、编译/链接漏检、运行/测试漏检、批次流程结论、实际命令/target/source closure/`-j`/elapsed/退出码/日志、未执行项及下一步。每任务只需一行引用；不增加每小段一个报告或行政审查任务。字段定义见 [batch-quality-gates.md](batch-quality-gates.md)。
+每批复用 tasks.md 或一份 evidence：记录源码基线、任务/整批差异边界、Coverage matrix、成员静态覆盖与 findings/修复、编译/链接漏检、运行/测试漏检、批次流程结论、实际命令/target/source closure/`-j`/elapsed/退出码/日志、未执行项及下一步。每任务只需一行引用；不增加每小段一个报告或行政审查任务。字段定义见 [batch-quality-gates.md](batch-quality-gates.md)。
 
 `STATIC_PASS`、`READY_FOR_BATCH_TESTS` 是证据标记，不新增进度状态。测试待运行使用 PARTIAL；失败/阻塞如实记录，不能据静态通过勾选。该任务全部验收实际通过才 DONE/[x]；最终集成/实验义务须有明确负责的验证任务。阶段性交接可记录静态进展，checkpoint 遵守仓库规定。
 

@@ -1,6 +1,6 @@
 # Implementation Plan: Native NDNSF-DI with Optional Python Bindings
 
-**Branch**: Experimental | **Revision**: 8 | **Date**: 2026-09-07
+**Branch**: Experimental | **Revision**: 9 | **Date**: 2026-09-08
 **Status**: IN_PROGRESS / 当前实现与验收状态见 tasks.md 的 Task Progress Registry 和 Current Checkpoint
 **Spec**: [spec.md](spec.md)
 
@@ -49,6 +49,10 @@ R1–R7 是能力阶段，不是固定执行批次或“每阶段只编译一次
 [batch selection](evidence/production-chain-replan-20260908.md#executable-batch-selection)
 为当前阶段登记 R<n>-B<k>：同一行为、共享契约的生产者/消费者及共同验证一起闭合，
 有稳定接口和独立验收价值才拆批；各小任务静态门后继续同批，批末统一构建测试。
+每个小任务和批末审查还须在同一份 evidence 留下五 lane Coverage matrix，逐项给出
+实际文件/符号、查询或检查命令及 `covered`/`N/A`/`gap`；没有矩阵不能记录
+`STATIC_PASS` 或 `READY_FOR_BATCH_TESTS`。矩阵的 lane 为 production entry/callers、
+implementation/wire、test/harness/oracle、build/source closure、migration/evidence。
 不自动更改 Depends、DONE 或 FR/SC/PO；阶段出口和具体分批规则仅在该记录维护。
 本次新目标构成恢复授权；后续仍按具体批次及硬门领取，不恢复逐字段构建。
 已通过的 B-G1-YOLO-SEMANTIC 定向结果作为 R1 输入复用，不重新起草或重复构建。

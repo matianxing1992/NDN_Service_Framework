@@ -43,6 +43,28 @@ D-SKILL-BATCH；用户授权修改 Spec Kit 技能。基线 5adc6688；只修改
 
 检查通过后本地 checkpoint；后续实现沿登记的逻辑批次和硬依赖执行。并发会话已开始登记 B-G1-YOLO-SEMANTIC，本单元不代审或提交其批次计划。产品任务、正式资格和历史证据均未改为完成。
 
+## Follow-up Coverage Matrix Revision
+
+2026-09-08：复盘 R4-B4/R4-B5 后发现，仅要求静态审查“覆盖调用方、测试和构建注册”
+仍可能留下不可核对的 No findings。共享 `batch-quality-gates.md`、
+`pre-test-static-review.md`、code-design 主入口和 tasks/plan 模板现要求同一份 evidence
+提供五 lane Coverage matrix：`production entry/callers`、`implementation and wire`、
+`test/harness/oracle`、`build/source closure`、`migration/evidence`。每 lane 必须标记
+`covered`、附理由的 `N/A` 或 `gap`，给出实际文件/符号以及查询或检查命令；批末说明
+新增成员是否扩大覆盖。矩阵缺失或只有泛称目录时不得记录 `STATIC_PASS` 或
+`READY_FOR_BATCH_TESTS`。当前 Spec182 的 R4-B5 矩阵见其 evidence；历史批次不回填，
+不改变已有状态或资格结论。
+
+共享模板与仓库 skill 的定向链接、字段和 frontmatter 检查通过；本次规则修订仍为文档
+工作，不运行产品构建或实验。使用中的本机 Spec Kit 入口在同步后需再次核对 hash。
+按 `/home/tianxing/.codex/skills/review-agent/SKILL.md` 的只读协议检查本次共享 reference、
+模板、当前 Spec 记录及入口同步差异，结果为 `No findings`；产品源码与资格结论未被审查
+或改判。
+仓库与本机 `/home/tianxing/.codex/skills/speckit-code-design/` 的主入口及 references
+已逐文件同步；`SKILL.md` 与 `batch-quality-gates.md` SHA-256 均分别为
+`03247969c688a52c3b519fe91e656b4cf947097170b246ca5199e2f3542fbdb5` 和
+`37981efddc80a4f2288c10d542fbfd9e9affe482156a9d0d973816314857668e`。
+
 ## Follow-up Documentation Sync
 
 2026-09-08 文档复核确认当前开发机执行政策已统一为 `-j4`：

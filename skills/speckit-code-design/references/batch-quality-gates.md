@@ -19,6 +19,14 @@
 具体文件/符号或明确的 coverage gap。漏读真实调用方、测试接线或构建注册时，
 不能写 `STATIC_PASS`；No findings 也不能替代覆盖说明。
 
+每次静态门必须留下一个简短的 **Coverage matrix**（可放在同一份批次 evidence
+中，不为每个小任务另建报告）。矩阵至少列出以下五个 lane，并为每个 lane 标记
+`covered`、`N/A`（附理由）或 `gap`，同时给出实际文件/符号和查询或检查命令：
+`production entry/callers`、`implementation and wire`、`test/harness/oracle`、
+`build/source closure`、`migration/evidence`。批末矩阵还要说明新增成员是否扩大了
+覆盖范围。没有矩阵、只有泛称目录，或矩阵与实际差异不符，均属于 coverage gap，
+不能记录 `STATIC_PASS` 或 `READY_FOR_BATCH_TESTS`。
+
 ## Stable Batch Exit
 
 逻辑批次以行为边界结束，而不是以文件数或任务数结束。批次可以继续加入成员，
@@ -41,6 +49,7 @@
 
 | Field | Required content |
 | --- | --- |
+| `Coverage matrix` | 五个 coverage lane 的 `covered`/`N/A`/`gap`、实际文件/符号、查询或检查命令；批末注明新增范围 |
 | `Static findings` | 静态门实际发现、修复、复审范围；包括 coverage/design gap |
 | `Compile/build misses` | 编译器、链接器或构建接线发现而静态门未发现的问题 |
 | `Runtime/test misses` | 运行或测试才发现而静态/构建未发现的问题；注明首个边界 |
