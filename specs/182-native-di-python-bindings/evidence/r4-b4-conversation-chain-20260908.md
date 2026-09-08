@@ -144,3 +144,39 @@ Spec182Conversation case：真实两轮begin/accept/prepare/commit与恢复、ab
 在修改前被拒，重新读取尾部后修正。均无产品运行。当前全部C++仍未构建/未验收/未提交。
 下一步CC-3接NativeInferenceClient operation的continuation/accept/final/cancel/replacement，
 复用Provider receipt与晋升控制，再整批构建；仅保存m_conversations不算接线。
+
+## CC-3 Commit Boundary Repair
+
+接线前已确认原Provider handler在COMMIT ACK后立即退出wait，无法补偿后续journal失败。
+已按 [Conversation Commit Completion](../contracts/native-token-stream-design.md#conversation-commit-completion)
+编码FINALIZE/ROLLBACK有界窗口：COMMIT后可重发ACK，匹配checkpoint的ROLLBACK释放精确
+successor并发认证ACK，FINALIZE收尾。超时不能推断journal失败，保留已COMMIT状态至期限。
+旧协议参与方未验证此窗口，不因此获得新事务资格；新增Provider路径尚缺行为测试。
+
+同时修正handler原wait/rollback lambda对内层receipt/binding/role局部变量的引用捕获，
+改为值捕获；staged rollback失败不再默默发送成功ACK。仍复用runtime现有精确release，
+不删除旧parent、不增加另一个KV owner。COMMIT/ROLLBACK ACK使用原身份字段及typed JSON。
+
+coordinator新增durableCommitGate：operation可将journal/parent发布与其单终态门放在同一
+取消互斥区；新增finalizeProviderState负责成功后释放Provider等待slot。耐久发布后的
+通知/FINALIZE异常不再触发rollback。已编写gate拒绝与发布后异常C++用例，未运行。
+
+## CC-3 Remaining Wiring Map
+
+- NativeInferenceClient.cpp::Operation、acceptGenerationEvent、streamComplete、markTerminal：
+  目前仍未消费conversation owner。markTerminal立即CancelCollaboration及clear scopes，
+  会早于需要密钥的ROLLBACK/FINALIZE；必须将事务清理与串行worker收尾协调，不能只加回调。
+- ServiceUser::waitForVerifiedCollaborationData/publishCollaborationData为现成只读/控制端口；
+  返回requestId、keyScope、topic、producer、producerRole、signerCertificate、wireDigest。
+  receipt topic=/ndnsf-di/conversation/receipt，commit/rollback ACK对应同名前缀，control
+  topic=/ndnsf-di/conversation/control，scope=ndnsf-di-conversation-state-v1。
+- NativeRequestPlanner.cpp在生成每个NativeRoleProjectionInputs后、NativePlanSealer::project
+  前填conversationTurnBinding/stateReference；Core plan增加同scope与所选roles。
+  NativePlannedRequest需携带归一化turn上下文，owner begin须在commit前生效。
+- 旧plan-role-map digest是排序(role,provider)列表的canonical digest，不能简单用planDigest
+  代替；换Provider重算与APPEND_DELTA的旧state引用必须区分新旧map，明确full-prefill语义。
+- canonicalTokenIds必须与真实prepared input一致；NativePreparedInput当前只有payload，
+  不得把未核对的caller token列表当模型实际输入。完整输入/续接投影仍需按现有tensor格式接线。
+
+本轮无C++构建/行为结果。公开两轮请求仍未完成，继续CC-3输入/投影、receipt收集、
+控制及单终态接线后，才进入整批验证。不能把上述静态修复当作事务资格。

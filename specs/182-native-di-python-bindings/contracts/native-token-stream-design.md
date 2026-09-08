@@ -1,5 +1,16 @@
 # Native Token Stream Design
 
+## Conversation Commit Completion
+
+R4-B4接线核对发现Provider原COMMIT后立即退出等待，无法补偿随后的requester journal失败。
+原生会话控制沿用加密request scope及V1身份字段，补充FINALIZE动作：COMMIT晋升并发布
+认证ACK后，Provider继续有界等待FINALIZE或ROLLBACK；FINALIZE表示requester durable
+commit完成。ROLLBACK仅释放与同一request/role/receipt/checkpoint绑定的新增successor，
+不删除旧parent，并发布认证rollback ACK。等待超时或断连不能推断journal失败：已COMMIT
+的successor保留至原期限，不能自行回滚可能已耐久的会话。丢失FINALIZE只延迟slot收尾。
+旧Provider没有此确认窗口，不据旧COMMIT ACK授予新跨层回滚资格；T016验证新调用链。
+客户端必须在journal耐久点与operation单一终态门同步取消；耐久后不得因清理失败回滚。
+
 **Status**: ALGORITHM_DEFINED / T001 IN_PROGRESS / implementation NOT_STARTED
 **Scope**: CD-006, CD-007 / A7-08 / T007, T011, T016
 
