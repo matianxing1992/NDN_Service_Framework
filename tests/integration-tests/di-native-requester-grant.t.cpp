@@ -16,6 +16,10 @@
 #include "tests/boost-test.hpp"
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGrantClient.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeAuthenticatedGrantClient.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGrantVerifier.hpp"
+#include <openssl/evp.h>
+#include <future>
 #include "ndnsf-integration-fixture.hpp"
 
 #include <ndn-cxx/security/certificate.hpp>
@@ -173,6 +177,59 @@ BOOST_AUTO_TEST_CASE(RequesterAcquirePublishesSignedExactNameDataConsumedByProvi
                            binding.wireJson);
   BOOST_CHECK_EQUAL(binding.provider, view.provider);
   BOOST_CHECK_EQUAL(binding.grantDigest, digest("grant"));
+}
+
+// Authored during R2-B4; run by T016, after final implementation convergence.
+BOOST_AUTO_TEST_CASE(ConcreteIssuerUsesCoreWorkerPublicationAndProviderUnwrap)
+{
+  NdnsfIntegrationEnvironment environment;
+  environment.bootstrap();
+  BOOST_REQUIRE(environment.status() == EnvironmentStatus::Ready);
+  const auto key = [](char value) {
+    const std::string seed(32, value);
+    return std::shared_ptr<EVP_PKEY>(EVP_PKEY_new_raw_private_key(EVP_PKEY_ED25519, nullptr,
+      reinterpret_cast<const unsigned char*>(seed.data()), seed.size()), EVP_PKEY_free);
+  };
+  const auto requester = environment.profile().userIdentity.toUri();
+  NativeGrantIssuerConfig config;
+  config.requesterIdentity = requester; config.authorityIdentity = "/authority";
+  config.protectionEpoch = "epoch-1"; config.keyId = "public-test-key";
+  config.authorityPrivateKey = key('a'); config.requesterPublicKey = key('b');
+  config.allowedModelManifests = {digest("model-manifest")};
+  config.recipientPublicKeys = {{"/provider/test", key('c')}};
+  config.contentKey = [](const auto&, const auto&) { return std::vector<std::uint8_t>(32, 42); };
+  NativeSignedGrantRequest request;
+  request.requesterIdentity = requester; request.providerIdentity = "/provider/test";
+  request.requestId = "/grant/actual"; request.attempt = 1;
+  request.planCoreDigest = digest("core"); request.grantViewDigest = digest("view");
+  request.modelManifestDigest = digest("model-manifest"); request.protectionEpoch = "epoch-1";
+  request.issuedAtMs = nowMs(); request = request.sign(*key('b'));
+  const auto grant = NativeArtifactGrantIssuer(config).issue(request, nowMs(), nowMs() + 60000);
+  // The fixture owns ServiceUser until the bounded future is joined below.
+  auto user = std::shared_ptr<ndn_service_framework::ServiceUser>(&environment.user(), [](auto*) {});
+  const auto publish = NativeAuthenticatedGrantClient::publishThroughCore(user);
+  NativeGrantControl control{std::chrono::system_clock::now() + std::chrono::seconds(3), {}};
+  std::optional<ndn::Data> data;
+  auto observer = environment.userFace().onSendData.connect([&](const ndn::Data& value) {
+    if (value.getName().toUri() == grant.grantName) data = value;
+  });
+  auto result = std::async(std::launch::async, [&] { return publish(grant.grantName, grant.wireJson, control); });
+  environment.pumpUntil([&] {
+    return data && result.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready;
+  });
+  BOOST_CHECK_EQUAL(result.get(), grant.grantName);
+  BOOST_REQUIRE(data);
+  const auto& content = data->getContent();
+  const std::string wire(reinterpret_cast<const char*>(content.value()), content.value_size());
+  std::string authorityPublic(32, '\0'); std::size_t size = authorityPublic.size();
+  BOOST_REQUIRE_EQUAL(EVP_PKEY_get_raw_public_key(config.authorityPrivateKey.get(),
+    reinterpret_cast<unsigned char*>(authorityPublic.data()), &size), 1);
+  const auto opened = verifyAndUnwrapNativeGrant(wire, authorityPublic,
+    {NativeRecipientKey::Kind::Ed25519Seed, std::string(32, 'c')}, request.providerIdentity,
+    request.requestId, request.attempt, request.planCoreDigest, request.modelManifestDigest,
+    request.protectionEpoch, nowMs(), config.authorityIdentity, grant.grantDigest);
+  BOOST_REQUIRE_MESSAGE(opened.verified, opened.reason);
+  BOOST_CHECK(opened.contentKey == std::vector<std::uint8_t>(32, 42));
 }
 
 BOOST_AUTO_TEST_SUITE_END()
