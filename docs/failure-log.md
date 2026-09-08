@@ -1,5 +1,13 @@
 # Failure Log and Evidence Index
 
+## 2026-09-08 — Spec182 epoch text test optional payload
+
+R4-B3 增量构建 exit1：新增 C++ 测试直接 parse optional finalPayload，类型不匹配。
+生产 coordinator 编译完成，测试尚未执行。增加 has_value 必需断言后解引用；
+保留[原始编译日志](../.codex-tmp/spec182-r4-b3/build.log)，同树增量续建到 r2 日志。
+进度见[R4-B3](../specs/182-native-di-python-bindings/evidence/r4-b3-epoch-text-20260908.md)。
+修复后 unit/DI库增量构建及24 cases/411 assertions PASS；本地测试类型问题 RESOLVED。
+
 ## 2026-09-08 — Spec182 CLI probe output-path correction
 
 R4-B2 CLI smoke首次使用build/DI_NativeRequester，实际Waf输出为build/examples/DI_NativeRequester；

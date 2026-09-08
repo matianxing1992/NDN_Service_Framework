@@ -1001,12 +1001,6 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
       std::string textDelta;
       if (config.textDecoder) {
         candidateText = config.textDecoder(candidateTokenIds);
-        stableCandidateText = config.stableTextDecoder(candidateTokenIds, false);
-        if (stableCandidateText.size() < generatedText.size() ||
-            stableCandidateText.compare(0, generatedText.size(), generatedText) != 0) {
-          throw std::runtime_error("native tokenizer rewrote committed text prefix");
-        }
-        textDelta = stableCandidateText.substr(generatedText.size());
       }
       else if (config.requireTextOutput) {
         throw std::runtime_error("NATIVE_TEXT_DECODER_REQUIRED");
@@ -1024,6 +1018,20 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
         candidateText, config.stopStrings);
       finishHint = eos ? "EOS" : stopSequence ? "STOP_SEQUENCE" :
                    atMax ? "MAX_TOKENS" : "NONE";
+      if (config.textDecoder) {
+        // Flush withheld bytes into the terminal event before any acceptance
+        // or state commit. Stop detection above requires the complete decode.
+        stableCandidateText = config.stableTextDecoder(
+          candidateTokenIds, eos || stopSequence || atMax);
+        if ((eos || stopSequence || atMax) && stableCandidateText != candidateText) {
+          throw std::runtime_error("NATIVE_FINAL_TEXT_DECODE_MISMATCH");
+        }
+        if (stableCandidateText.size() < generatedText.size() ||
+            stableCandidateText.compare(0, generatedText.size(), generatedText) != 0) {
+          throw std::runtime_error("native tokenizer rewrote committed text prefix");
+        }
+        textDelta = stableCandidateText.substr(generatedText.size());
+      }
       if (replayingCommittedPrefix) {
         ++result.prefixTokensRecomputed;
       }
@@ -1097,12 +1105,6 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
         result.finalizedRole = executable;
       }
       if (eos || stopSequence || atMax) {
-        if (config.textDecoder) {
-          const auto finalStableText = config.stableTextDecoder(candidateTokenIds, true);
-          if (finalStableText != candidateText) {
-            throw std::runtime_error("NATIVE_FINAL_TEXT_DECODE_MISMATCH");
-          }
-        }
         result.finalPayload = makeFinalPayload(generated, finishHint,
                                                config.textDecoder ? candidateText : generatedText);
         return result;

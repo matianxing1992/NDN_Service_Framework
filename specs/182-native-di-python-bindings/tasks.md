@@ -17,6 +17,7 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 
 | Unit / Details | Status | Depends | Evidence / Remaining | Updated |
 | --- | --- | --- | --- | --- |
+| [R4-B3 Epoch Text Commit Boundary](evidence/r4-b3-epoch-text-20260908.md#final-local-result) | DONE | R4-B2; T011-B acceptance retained | terminal stable flush前移至事件接受前；真实tokenizer/epoch及stream/sampling共24 cases/411 assertions PASS，unit与实际DI库增量build PASS；父任务仍未完整验收 | 2026-09-08 |
 | [R4-B2 Native Stream Production Chain](evidence/r4-b2-stream-production-20260908.md#final-local-result) | DONE | R3-B1; R4-B1 | Local requester stream batch：7 stream/190 assertions、2 options/21、29 regression/695 PASS；2 SDK recovery wires、CLI/loader PASS；真实Provider/会话/T016仍未完成 | 2026-09-08 |
 | [R4-B1 Native Sampling Contract Repair](evidence/r4-b1-sampling-20260908.md) | DONE | R3-B1; T010-C/T011 acceptance retained | Local sampling batch：double惩罚与统一参数校验；4 cases/40 assertions、既有epoch 28 assertions PASS；增量unit与实际DI共享库构建PASS；stream/session仍待完成 | 2026-09-08 |
 | [R3-B1 Default Request Lifecycle](evidence/r3-b1-request-lifecycle-20260908.md#final-local-result) | DONE | R2-B4/B5/B6; T010-A/B acceptance retained | initial-request local batch：131 DI cases/2975 assertions经共享测试及失败单例重试通过，13 Core cases/183 assertions通过；2 request/4 grant/7 dataflow SDK oracle、CLI入口与加载检查PASS；真实网络/stream/bindings/旧路径退出仍待后续 | 2026-09-08 |
@@ -81,6 +82,13 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 | [T017-A Development Handoff](contracts/execution-units.md#t017-a-development-handoff) | NOT_STARTED | T016-A | [baseline](evidence/task-progress-registry-20260907.md)；无本卡独立执行/验收记录；按依赖领取 | 2026-09-07 |
 
 ## Current Checkpoint
+
+2026-09-08 R4-B3 / **DONE (local epoch text batch)**：终止 stable flush 和一致性校验
+先于事件接受，保留 feedback/state 顺序。真实 tokenizer MAX/EOS/stop/replay 与 mismatch
+回归及既有 epoch/stream/sampling 共24 cases/411 assertions PASS；增量 unit build
+24.266s，实际 DI 共享库增量构建 PASS。测试 optional 编译错误已修复，原始日志保留。
+证据见 [R4-B3](evidence/r4-b3-epoch-text-20260908.md#final-local-result)。下一步完成
+T011-B 接线核对及 T011-C 会话日志/续接；T011 和 T016 保持未完成。
 
 2026-09-08 R4-B2 / **DONE (local requester stream batch)**：Core stream回调已接
 operation接受/一次replacement/final，保留前缀和原deadline；generation从请求options派生，
