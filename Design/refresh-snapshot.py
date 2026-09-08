@@ -7,6 +7,10 @@ import difflib, hashlib, io, json, subprocess, tarfile
 root = Path(__file__).resolve().parent.parent
 dest = root / 'Design/source-baseline.json'
 manifest = json.loads(dest.read_text())
+api_inventory = root / 'Design/api/inventory.json'
+if api_inventory.exists():
+    for item in json.loads(api_inventory.read_text())['files']:
+        manifest['files'].setdefault(item['file'], {})
 now = datetime.now(timezone.utc)
 run = root / '.codex-tmp' / ('design-source-' + now.strftime('%Y%m%dT%H%M%S%fZ'))
 run.mkdir()

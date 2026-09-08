@@ -6,16 +6,17 @@
 \setmainfont{TeX Gyre Pagella}
 \setsansfont{TeX Gyre Heros}
 \setmonofont[Scale=0.84]{DejaVu Sans Mono}
-\usepackage{booktabs,tabularx,array,enumitem,xcolor,fancyhdr,tikz,xurl}
+\usepackage{booktabs,tabularx,array,enumitem,xcolor,fancyhdr,tikz,xurl,fvextra}
 \usetikzlibrary{positioning,arrows.meta}
 \definecolor{navy}{HTML}{17354A}
 \definecolor{teal}{HTML}{007F82}
 \definecolor{lightblue}{HTML}{EFF5F8}
 \usepackage[unicode,colorlinks=true,linkcolor=navy,urlcolor=teal]{hyperref}
-\hypersetup{pdfauthor={NDNSF},pdftitle={NDNSF 四模块完整设计：\DesignKind（R0）}}
+\hypersetup{pdfauthor={NDNSF},pdftitle={NDNSF 四模块开发者设计指南：\DesignKind（R1）}}
 \setlength{\parindent}{0pt}
 \setlength{\parskip}{6pt}
 \setlength{\emergencystretch}{3em}
+\setcounter{tocdepth}{1}
 \renewcommand{\arraystretch}{1.22}
 \setlist{nosep,leftmargin=*,itemsep=5pt}
 \setlist[description]{style=unboxed,leftmargin=0pt,labelwidth=0pt,itemindent=0pt}
@@ -23,7 +24,7 @@
 \pagestyle{fancy}
 \fancyhf{}
 \fancyhead[L]{\small\sffamily NDNSF / \DesignKind}
-\fancyhead[R]{\small R0 · 2026-09-07}
+\fancyhead[R]{\small R1 · 2026-09-07}
 \fancyfoot[L]{\footnotesize\color{navy} NDNSF · 通用框架 · 分布式存储 · 分布式推理 · 无人机应用}
 \fancyfoot[R]{\small\thepage}
 \newcommand{\code}[1]{{\small\nolinkurl{#1}}}

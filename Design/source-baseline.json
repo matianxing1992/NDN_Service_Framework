@@ -1,6 +1,6 @@
 {
-  "revision": "R0",
-  "snapshot_utc": "2026-09-08T02:36:29.378589+00:00",
+  "revision": "R1",
+  "snapshot_utc": "2026-09-08T03:47:37.548337+00:00",
   "snapshot_local_date": "2026-09-07",
   "scope": [
     "NDNSF Core",
@@ -9,9 +9,9 @@
     "NDNSF-Repo"
   ],
   "branch": "Experimental",
-  "baseline_commit": "d7fa9c8edef924a6cf29c12d3793049aa794a6be",
-  "local_source_archive": ".codex-tmp/design-source-20260908T023629378589Z/reviewed-source.tar.gz",
-  "archive_sha256": "2062cf3ab6845fb587f7c28d6d0b1b38cba4828a2d04f454cd9ffa031e7ecd2e",
+  "baseline_commit": "e9fe33994a6ca3ff81893591bd24c3fae43f933f",
+  "local_source_archive": ".codex-tmp/design-source-20260908T034737548337Z/reviewed-source.tar.gz",
+  "archive_sha256": "65c079ca83d6fc7a7742d51b8dfa4b5e18a2cef6ef5ad74d53b0e63cebc45a4e",
   "evidence_level": "重点流程源码核对；其余相关实现文件作为支持快照，不代表逐行审计；本轮无协议测试或运行资格验收",
   "files": {
     "docs/architecture.md": {
@@ -275,9 +275,9 @@
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.cpp": {
-      "sha256": "6cc83d7914a95e6795935552a2dc8d03d6a25f826ad8499886193f8c4931dfea",
-      "bytes": 14073,
-      "matches_head": false
+      "sha256": "95083f93ee4adffc41481fdd0c4b013fb62aedcd51d8abeb4385ee153f107280",
+      "bytes": 18990,
+      "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/NativeOfferAdmission.cpp": {
       "sha256": "da60eea6b3628c0af4d7f2e6d59b25e5e98ff4b0cf3ad01fde679d09ce1c9229",
@@ -287,12 +287,12 @@
     "NDNSF-DistributedInference/cpp/ndnsf-di/NativeV3Placement.cpp": {
       "sha256": "512a59cc2adedff538e0ed9bd7f8bcf33557607c2614362dffa76be4749e65b7",
       "bytes": 12048,
-      "matches_head": false
+      "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanSealer.cpp": {
-      "sha256": "8923dc9422fb47a2a653aed11c0412e0c477650bdb0bc67e3e73108f03c99c93",
-      "bytes": 19026,
-      "matches_head": false
+      "sha256": "9325f0cfebead6d9d09838dcbd76add2ef1582fa554955f1edcf3b4c57abbabe",
+      "bytes": 19365,
+      "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGrantClient.cpp": {
       "sha256": "c8f5d60ecc8abb4f8e1654b7ea8c9b7331fe0b479238dfe29d5f782b26488f32",
@@ -482,6 +482,1286 @@
     "tests/integration-tests/controller-version-refresh.t.cpp": {
       "sha256": "f2079de9a2062e3ac3ee56297b4685546b414ad9c267145c93513c48fcdfc3b2",
       "bytes": 5911,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/cpp/adapters/onnx/CudaDeviceIdentity.hpp": {
+      "sha256": "0c5782a292435655d760ea178110db57e68bb575d500d7ff7dd45eeb46f4f53e",
+      "bytes": 2515,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp": {
+      "sha256": "dd538c23e034046142ab9c1f0cf2fd1e4e9acabfa2e843212bc415fe85f0c096",
+      "bytes": 12695,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp": {
+      "sha256": "9a3545bd842a643daae06fd4f7da53e033f23560071649f1a430b92c35841906",
+      "bytes": 4504,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp": {
+      "sha256": "ec08fb90249abb0b920947ec9e7e60a968ad7ea5e604aa26d769fb2792b6821c",
+      "bytes": 7003,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/cpp/adapters/qwen/NativeQwenPlanner.hpp": {
+      "sha256": "74beecb001218db221e0dabd2c430f2fcda481c46f46a83e6556357b1a9451f2",
+      "bytes": 1573,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/cpp/adapters/qwen/NativeTokenizer.hpp": {
+      "sha256": "3e1989bc4f24ab1725caa0468856438f5a9f57b77eea2e13b18e14cefc4c61ea",
+      "bytes": 1749,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/cpp/adapters/qwen/QwenGenerationSession.hpp": {
+      "sha256": "c3ca1f25401a733339364c7d5961fc75af5e4b077983a6600fe5a84efb7800f7",
+      "bytes": 6111,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/cpp/adapters/qwen/tokenizer-bridge/tokenizer-abi.h": {
+      "sha256": "7ab79362f27ea84d81e50108bd6d6636248e518aa52605b49f0c55f77b174348",
+      "bytes": 967,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloMergeRunner.hpp": {
+      "sha256": "4845e7087a34e47f6ce36152d6b901bd98e6c4dd2ec02acd84639fdc7df2f9a3",
+      "bytes": 667,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloPlanner.hpp": {
+      "sha256": "ed6700326669deec2e70b425453b0be1d118793021d9da5e386f190829b687fe",
+      "bytes": 1158,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp": {
+      "sha256": "5519d1555b604a0c1f9c69f44d4aed98f76843ab3d1c48feaae1baaf9fde3ef3",
+      "bytes": 10976,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/CollectiveRuntime.hpp": {
+      "sha256": "1133f52a892f2441ba78623d15ccfcb00a661236d822a04e2838cae790e0987c",
+      "bytes": 5780,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/ConversationStateBinding.hpp": {
+      "sha256": "279f4defa4d6ce32a4c602c835cf8b9f9bf9eaf05ab6990ccdbdcef4d17c4ad6",
+      "bytes": 3563,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/DecodeStateIdentity.hpp": {
+      "sha256": "aa950231fca0b48537faa726685541b7933685e676a03d0b5ca784525c303a4c",
+      "bytes": 5773,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/DependencyWaitScheduler.hpp": {
+      "sha256": "29f2a1119724bf6baec52e3e0064bd1fc1e304a9c9a58efa7186abba625c9561",
+      "bytes": 3610,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/DiTimelineTrace.hpp": {
+      "sha256": "9c7ff205e528b09805764a128f0215d359d3499593ede7603f16df79e529a578",
+      "bytes": 2541,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/DistributedExecutionConsistency.hpp": {
+      "sha256": "935f5f12f6fba166dcd15c388c25acea4ae4dd0661789db6abadef78cbd697c8",
+      "bytes": 1343,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/ExecutionEvidence.hpp": {
+      "sha256": "4d9c4c73ae573fa39d800a7e5c15b51f92dcc89b468e3287f07c9bb09aa137a0",
+      "bytes": 4071,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/ExecutionLeaseService.hpp": {
+      "sha256": "d5055f1f3ae91d8313b7a9a40f5dd828e841fe67d74ad473c14255729416efcc",
+      "bytes": 3902,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/GenerationEpochLineage.hpp": {
+      "sha256": "1ab8f1c41430812d9ca864d4b33b6cae052ae96ab85c8e092a983a22df976d87",
+      "bytes": 1639,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactMaterializer.hpp": {
+      "sha256": "329d4747e20cae65d05f05fe823a03b6ac3234ac4cb35f033b4cae0697905698",
+      "bytes": 1051,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp": {
+      "sha256": "af841bfd888c7ed5da8706e77b9b9199a44ede407b8f3209b69dd9919815bb4b",
+      "bytes": 2429,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp": {
+      "sha256": "ea9ae087d474cfde3e5a341cffef2ac3d472f0426ea847c6002ad94adcfe9e81",
+      "bytes": 4434,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp": {
+      "sha256": "b304f46bfb2cc0eeebd8de0cf7c0795ef2f34c881dae45c9dd4e278af4e9825f",
+      "bytes": 3239,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp": {
+      "sha256": "8b5c2b8f1d977d4b22eebd6f99d9c0ac9be5971e2ebc30ef3a08ac5302787fbf",
+      "bytes": 2918,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp": {
+      "sha256": "e000a0e57e2a0f55dc9f320adcabd7c6a0aea80dbfe326df42e7c7f46f1b0ecc",
+      "bytes": 6752,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp": {
+      "sha256": "ce154d474a0800fdbf88dbeb4c97b56713feafcb001f75b25e4de803ae17f322",
+      "bytes": 11586,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp": {
+      "sha256": "f138ee8375aa9f401f81b61d0516311f002391632383549ce8e33a4a2304949a",
+      "bytes": 5468,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeFaultInjection.hpp": {
+      "sha256": "6af6496e6d9933262727e0741f020511043f49aa7550b016018af6bf2aebd4f7",
+      "bytes": 887,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGrantClient.hpp": {
+      "sha256": "0b0dfcd47bebe7049b5c86d4836349a475647b566101acb68ab4ff943bbc933e",
+      "bytes": 2044,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGrantVerifier.hpp": {
+      "sha256": "aebfb75dfdfe1606be529190f4cb3007b72595a7629cd5f34eccc9ba05b5d8cf",
+      "bytes": 2807,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp": {
+      "sha256": "47fcede90169314867c3a4a77e2690c97853fb53025c544898db0c4fb8e97035",
+      "bytes": 5521,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceProvider.hpp": {
+      "sha256": "f871e4a045b80509149891520b649ff8d0bc37b70ae7f7472383c77093e41f8d",
+      "bytes": 4897,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp": {
+      "sha256": "c57bccd28e0a14441f97e6ece91c714f8eefe6614ab2bfa8dfd33668bde16a0d",
+      "bytes": 6492,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeObservedOfferV3.hpp": {
+      "sha256": "835835c9857e776f89826065010eeaa7e24cba1e334c75f3e14e689631b58fa8",
+      "bytes": 2474,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeOfferAdmission.hpp": {
+      "sha256": "0d8b5af463c5c38b15a307467fecd1a68c18c34fe9279f94a2522e94d315ea9a",
+      "bytes": 1598,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanSealer.hpp": {
+      "sha256": "7735c320a5228804a8529caefb42e3b55dd1ed772cc48510381b48f487f03e9c",
+      "bytes": 4590,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp": {
+      "sha256": "4606cb13e15c0abda0c8d3086c48f621e8ca580a26456cc5fe7cce9ad67d9101",
+      "bytes": 6888,
+      "matches_head": false
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedArtifactStore.hpp": {
+      "sha256": "ea80db09e0098e93e9569e893ef5b93aa83d448c860be5b2e7deff37a7eb0ed6",
+      "bytes": 1423,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedProvider.hpp": {
+      "sha256": "d6beadea87945e769772069ce4fff60b19c60d35cf8f07d4f1f6f1b198c86890",
+      "bytes": 1440,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp": {
+      "sha256": "aebc1746bad5c9a59f2587c36b61e29545ce14b3f8458aaaf539e0400f8eb13d",
+      "bytes": 12923,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderOfferV3.hpp": {
+      "sha256": "7abc30f8e0c5682aaed8fa33e9f10a23257ae5096e621f43b4006417acf65375",
+      "bytes": 1185,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderReadiness.hpp": {
+      "sha256": "cbf4e95ce842ec42e73fbf4407c40b6b787d7b83f7e712108758bd90be031fa5",
+      "bytes": 3810,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderRuntime.hpp": {
+      "sha256": "18333155726fde685ec9ab67b00b33941de8abbc497bde37b8eddeee482702ca",
+      "bytes": 15569,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp": {
+      "sha256": "028ce6a8f7736dac5d41455431e5e43b4d0c6fed5ea29ccf6a0e4521270992ea",
+      "bytes": 5375,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRunnerPreparation.hpp": {
+      "sha256": "22b8fc00fdf1159453fc04cd45d4006f15c76933680fa5caeb29edae8aa2e90d",
+      "bytes": 1021,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeServiceManifest.hpp": {
+      "sha256": "3fdccd21b964989ca9eeca22233f6b07b4dad5dbc14620fd7436be762d4c6c33",
+      "bytes": 787,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeStandaloneTokenizer.hpp": {
+      "sha256": "250566671366ccb38b41a8ff3f56a639387bc54a536dc94b0179be4dd065904d",
+      "bytes": 1115,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeV3Placement.hpp": {
+      "sha256": "559b9ad36ebca873e022f8e79cb96dd33fce69f6eaaf3aac77127b80b9c6d91b",
+      "bytes": 983,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeYoloMergeRunner.hpp": {
+      "sha256": "08c968ef5d04453748044917ced3c7ea9b0b7fe92e483d7ccd19c2fef6b850e2",
+      "bytes": 358,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NdnsfCollaborationDependencyIo.hpp": {
+      "sha256": "c2847e4063456dd4e6b2eaefcc2f52350284607dbe59dfd8778b9ef7a38b5fa3",
+      "bytes": 2124,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NdnsfCollectiveControl.hpp": {
+      "sha256": "ac23f01ecad7a0c07663df1526bd67b1f4579c967b710d720124a041201ed602",
+      "bytes": 3674,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/OnnxRuntimeModelRunner.hpp": {
+      "sha256": "0c7799dffd30edd410b78a619981683290bb104c3ec7acd813f501786cb3a1f9",
+      "bytes": 96,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp": {
+      "sha256": "566ae74474bcc9042867e2e02f50fef535023f2d0bbc3a39cd9172867b494f79",
+      "bytes": 5147,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderGroupCoordinator.hpp": {
+      "sha256": "d1e5cb6e5bfcb59849a901cb8a2b69b43e40095b876ec384bf0c4dac44e51011",
+      "bytes": 10491,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderResourceProbe.hpp": {
+      "sha256": "680acb54e2d3f924932d57a476bdc48190490282d64437fcf09961363ab761a2",
+      "bytes": 4471,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp": {
+      "sha256": "167049e0f811a582f4f543b81ab8900c5a194337b164b38a293909c0bc88704c",
+      "bytes": 9468,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/QwenGenerationSession.hpp": {
+      "sha256": "0a36889d79db45b5fb2c94ad3379aeb322025e265300856dbd812f1289dfdc8d",
+      "bytes": 95,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp": {
+      "sha256": "cad3780d7114fa5bf8a1ac0320544e9c1fd28bf53de526bb11f9ce57d28f0e0c",
+      "bytes": 1253,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp": {
+      "sha256": "cfaa4296f882a22162b97b0a740a2ebf504e61d6b60193160e89649a30255733",
+      "bytes": 4558,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp": {
+      "sha256": "2db6e51898d32c305c70fb977ddb90302a71b6e0430d050ed1e0c81fe111a720",
+      "bytes": 501,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/__init__.py": {
+      "sha256": "daa80d5033de6117bb36dff34de8a34b33ea238f93a072281dcafcf6543cf34b",
+      "bytes": 738,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/__init__.py": {
+      "sha256": "7b7c2011f8bab639c0b83095e0b4e397a8d7464bacc4f6c4a6f6971167cf64de",
+      "bytes": 1608,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/base.py": {
+      "sha256": "6ae718f2e14c197832a51c002f936c9d579f9c0f44cea56939024f1e9035e3f7",
+      "bytes": 12451,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/builtin.py": {
+      "sha256": "deec7bbff7ed9141325f00b010c87a724ada0096485a3120b7781533ca04733f",
+      "bytes": 12675,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/llama/__init__.py": {
+      "sha256": "89cc6576709c14c026ad1d6c4a083ad433a8e2fd51b563ef83d188c6e4637a8d",
+      "bytes": 157,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/llama/runtime.py": {
+      "sha256": "00b2541e7f4f43e4517e0f9617685ec5ed6d50ed9d4a091ad142ef121b730dea",
+      "bytes": 6626,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/__init__.py": {
+      "sha256": "0ae21af9b8a827a2f42a5bd4574df536e7d07e2a6b4e9a26f64c17b076dec3fa",
+      "bytes": 442,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py": {
+      "sha256": "d65c37e01914d69d3615b2333b285f92784d6198eb1481ad46aae96d7d81b50d",
+      "bytes": 34054,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py": {
+      "sha256": "e5532328e8752bd626b5a668de8e4b826ee9d336367a091fdd7016f48480734d",
+      "bytes": 32393,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/qwen/__init__.py": {
+      "sha256": "660f77f30eba43b54a929c8443749a96f5ac5e0dbfa685e8164743e351310361",
+      "bytes": 1949,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/qwen/canonical_layers.py": {
+      "sha256": "b8a77803d8d16273fbcd22a8432f551d74defd4b5a2672980e50016200ba0dd1",
+      "bytes": 3339,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/qwen/generation.py": {
+      "sha256": "3affb6f438a4134bb8e69222d79b3f2ec5a6b256bf0022af636b065627397c11",
+      "bytes": 22345,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/qwen/parallel.py": {
+      "sha256": "d5d47aa449bb0b87a4ec071f5fbc6db8cbbaa37d2b1b4fab08350646deb195fb",
+      "bytes": 1062,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/qwen/pilot.py": {
+      "sha256": "337c4d56eaa01c0ae9712c5816ceb5661d328bff28dd3473a5c1bb882c351591",
+      "bytes": 17386,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/qwen/placement.py": {
+      "sha256": "06949e5845cebed80f45f9d29d2b9b493322d28e9e7f7321d670d78ce5b7390e",
+      "bytes": 16879,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/qwen/repo_registration.py": {
+      "sha256": "800e72041358d31057636552cca610321842b6402137bfa96e61affe8dfdb522",
+      "bytes": 8040,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/qwen/stateful_onnx.py": {
+      "sha256": "de53daae9ad27ba9b09577390c57f4ea0a357790681b980949a0607dfdef1dbd",
+      "bytes": 19810,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/qwen/tokenizer.py": {
+      "sha256": "5a0429743bdb7504f7668c628d415946dcd52009034323f7d21deed4b79ff6cb",
+      "bytes": 2020,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/yolo/__init__.py": {
+      "sha256": "1ed502adc6dd858b80a49f1dd442d9333b99d116956bc11dc962c41c605c3a53",
+      "bytes": 440,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/yolo/adapter.py": {
+      "sha256": "11c9e9c44190f8b2d41c9d208f7c98b45ce84ad33a6f3b355f92fcce3bb21926",
+      "bytes": 29689,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/yolo/candidates.py": {
+      "sha256": "daf957a55ed1f57ca8535d1ff03c3f82832e599a3c8650c3905adfc24d11b877",
+      "bytes": 14529,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/yolo/graph.py": {
+      "sha256": "175e0375d6a17ae12ee1ae85209f286590b64b60d92972e7460e9ff0b6d7f7e3",
+      "bytes": 1968,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/yolo/reference.py": {
+      "sha256": "8d4e1a15ce21369b1a1eb8c5d3d524ce8a65369327fe925703fbade8b039b320",
+      "bytes": 6394,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/app.py": {
+      "sha256": "dc543dc57de1b300ca64dadbc3309d76e6df743358a038cbec5ac47cdb00a304",
+      "bytes": 169,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/__init__.py": {
+      "sha256": "2e8389dd08763e0467ca6041adcf3de097abf25caddfc771bff5c5a1c4924887",
+      "bytes": 1305,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/canonical_artifacts.py": {
+      "sha256": "92f05907a79fde1c5505752bdfad602766d5ea3afc30f5c910b0aea13946200e",
+      "bytes": 50875,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/contracts.py": {
+      "sha256": "6a25d885b72eb09d88231af4ec3be96516cd9c8b878a3842c3647a0ed580faf5",
+      "bytes": 33737,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/controller.py": {
+      "sha256": "7506a1ca60bbb4c0796066d72c6648d8a6d44680ae8997cff195ca09fbf728a7",
+      "bytes": 3853,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/coordinator.py": {
+      "sha256": "cff134a74952faa302b61c6efb451be3d261ce56b8cff5f315f926a84f063bd9",
+      "bytes": 12405,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/deployment.py": {
+      "sha256": "84865bb8b1a7776c63368509670541b67f7263a5a220d06cda564cbb30fd2352",
+      "bytes": 74659,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/engine.py": {
+      "sha256": "12248f5a4b2095a40d269ffa44cc7b16acbf0c00c5a86153e3425974e65d77df",
+      "bytes": 3758,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/execution_control.py": {
+      "sha256": "2a313b686278b12688249a4053985be14feb0bd59a70a708bfc4736a432fd4cf",
+      "bytes": 5315,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/facades.py": {
+      "sha256": "1ad718b05860f4617eb8f4c514cf6b18d2239e720b2628100af3b344e856c2a3",
+      "bytes": 47419,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/gui.py": {
+      "sha256": "3d5a4b5969595e638b133d871737c040728dac2409014a2412a7c1a2c6cf0acb",
+      "bytes": 157449,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/policy.py": {
+      "sha256": "2b091ce54d31b65190d9e8dccd72f411b66d8720abb3350d84b4c437aa303e2b",
+      "bytes": 243,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/presplit.py": {
+      "sha256": "bcd127b99dc86057513371695695d9b1016659fcd899f7ddfb84b6be532b2908",
+      "bytes": 12603,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/runtime_journal.py": {
+      "sha256": "9c63fa6fa7225a40396a3edc7309b587d094df36720e60c292978685c28a4c60",
+      "bytes": 36507,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/status.py": {
+      "sha256": "af94d444481bad83acaa5e39011d0516e42512739fb16a19f2b324663aac9b35",
+      "bytes": 2870,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/artifact_deployment.py": {
+      "sha256": "1669b0dcdb4f064ce35d3aa5353bcaaf96a0fea6bd84fee0e74b34681601d8dd",
+      "bytes": 92073,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/backends/__init__.py": {
+      "sha256": "8356fa3cc6d3a34bedef772310bb976054c645dbfb7f0b2146b05998f41b1065",
+      "bytes": 55,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/backends/onnxruntime.py": {
+      "sha256": "5a14724f2cc0d50ddb5cb4e238c12a3d98c089df118eb81d1770e339b1e9522f",
+      "bytes": 2834,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/client.py": {
+      "sha256": "7c5d3be385c11e506d51f8c98d58fa8c465215ba2541f69f982a649dc62d2293",
+      "bytes": 32438,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/compatibility/__init__.py": {
+      "sha256": "54edd5637be4456d37f89d860c7beec061f8f49c2c022dac1f5a9b160c8ead83",
+      "bytes": 385,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/compatibility/adapters.py": {
+      "sha256": "6aa64f570c82bbde10801d0c2874d72287a009c59b9250cf6fa4d843020907fc",
+      "bytes": 3083,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/compatibility/execution_certificate.py": {
+      "sha256": "1ce4e9e25fb6bbfb3fffaee8a83e814f6ae586ce41c0fc187a679d22280f43e0",
+      "bytes": 797,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/compatibility/exports.py": {
+      "sha256": "d7f9ffc226d037acff5406ffab47f8ed46d8d507dbf39820ad8373e38ad4c101",
+      "bytes": 1949,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/controller.py": {
+      "sha256": "c4afb3bb62819144e570fd17d72d2cef1271936350139f58a99dbca362854cfd",
+      "bytes": 108,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/conversation.py": {
+      "sha256": "c1cd4808733295ade4c4b415248aaa066b86dab557b078c4ea3b0a9dac4aa014",
+      "bytes": 121365,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/core/__init__.py": {
+      "sha256": "ed255163d1b2f1acdeef75934323e5226f13eafde865eb82ff114ab9a499320e",
+      "bytes": 5104,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/core/accelerator_policy.py": {
+      "sha256": "3835d38724209ae793a9fcc4020905404e37671b15ce1792c72edc6b5161afa9",
+      "bytes": 2453,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/core/conflict_coordination.py": {
+      "sha256": "a035548c02934c58428b0dfb9dc5716341ae76b73868df4748f0348423fc0cf4",
+      "bytes": 29817,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/core/contracts.py": {
+      "sha256": "0cfacec5ae3f103ce39643f92cfa3b76c428c1c9e7d910534683abf6db0a3b83",
+      "bytes": 70751,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/core/decision_validation.py": {
+      "sha256": "a72ec18ddb5fbc89fce117f0e553c1e3086ffccd73e582e802275d3b765317ff",
+      "bytes": 11750,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/core/deployment_control.py": {
+      "sha256": "2e446f901f3640ff5dd35aad002eac18e149167bd994df926eef653c3454edc5",
+      "bytes": 74284,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/core/device_scheduler.py": {
+      "sha256": "808953e2c7b6940db2afd8e6f08f1a278292f04772f15c0fa7e4f91ce97f7fd0",
+      "bytes": 4630,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/core/eligibility.py": {
+      "sha256": "b90faa5f8b9f252d8179626482942815299fb9c974a5d32ed01a9d524cdea386",
+      "bytes": 4129,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/core/execution.py": {
+      "sha256": "77bd0126e9ac0250603d19ed308c8bca7b01f18234ecf6ab590bd3dc096869fc",
+      "bytes": 32047,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/core/execution_intent.py": {
+      "sha256": "cc769c34ad6756901f3a3a95ea6489bffa8f672073b1eac4f543155b97133720",
+      "bytes": 2437,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/core/group_capability.py": {
+      "sha256": "35f4c5ce7f7d45436d2194c226777b38421608b5342ff6c02f101bebb20130b7",
+      "bytes": 13741,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/core/hybrid_contracts.py": {
+      "sha256": "3462eb280b2b6128256619dd668c4fecbded2af13be075957b9329d4bc59b8c5",
+      "bytes": 17671,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/core/native.py": {
+      "sha256": "3887e64a2ff8846d74efbe173b556f2b6a08fabb60325e84a93fdb1bce1c324c",
+      "bytes": 966,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/core/placement.py": {
+      "sha256": "21fa43d1e89b57fbfb75648404b3a96af0ea66e52989bbf6888f0c36f580552f",
+      "bytes": 923,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/core/ports.py": {
+      "sha256": "59e7d70fbd8c6d0aa3575cfd097e63e1269174bbc7f389fc7918c7886bcf838f",
+      "bytes": 10772,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/core/protected_artifacts.py": {
+      "sha256": "86d2137dfec299d209c17660a3b91121b16d2a176e958e5c2c65addff5da5b17",
+      "bytes": 38091,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/core/recovery.py": {
+      "sha256": "a863f4007501994aab73c7dada658eba952453e860c4a7372e98c55ed0a5e890",
+      "bytes": 33964,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/core/runtime_contracts.py": {
+      "sha256": "dc926292907ec79aaee06573648778b02b1e4954dca545dc3d8483c37b4336ee",
+      "bytes": 26018,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/core/secure_status.py": {
+      "sha256": "8bf048391c8628c78ecd9a0a13ce6e0582a0ba9a07682c4fb3c0210edfd15b9f",
+      "bytes": 10592,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/core/state.py": {
+      "sha256": "695c219bab7e5cee11feead35bd2af83c8dbe29d7c31cc601bc361d29638c999",
+      "bytes": 8803,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/core/v3_lifecycle.py": {
+      "sha256": "35c844bdcefdf17502a51be68377106c54182e6d128791c7bfb2d9e83b32135b",
+      "bytes": 11928,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/deployment.py": {
+      "sha256": "76996c0f83fcc0b78bf511595d0fb2c69e8df18b1dec67ccde2429d21cfae752",
+      "bytes": 46542,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/experimental/__init__.py": {
+      "sha256": "6ca05fdff62b7675ff1420ab8c95298442a96d53898f9879b794a1ca2e7ad4a0",
+      "bytes": 115,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/experimental/semantic_cache/__init__.py": {
+      "sha256": "fe0766e5295a0148fe41ca56d782556686d0b5c3053cf2202f5df3fa4fbc1196",
+      "bytes": 1052,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/experimental/semantic_cache/implementation.py": {
+      "sha256": "fc6d48c2d32f0740577efca966e9582119b4c0637a1b9df4409767f01f94c0b9",
+      "bytes": 13609,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/gui.py": {
+      "sha256": "cdc3da585a26f9da8909280b07920dfbeca904d4ea4e25c0b1b2d707cf5a9e11",
+      "bytes": 94,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/llm_runtime.py": {
+      "sha256": "9fbbbe226eaee09da9ed5e4e317622144a0a38d20b4fc9c5aa2bfcc00c9054cf",
+      "bytes": 129,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/llm_stub_planner.py": {
+      "sha256": "26b13e28e26b28c756d3ac4b039683cfc145b575261cfa4c922818c9c0015172",
+      "bytes": 16188,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/native_assembly_helper.py": {
+      "sha256": "8d0164f23219089986b59ff11ba12efcb411fe48fa41683b7bb663d004400eb1",
+      "bytes": 10192,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/native_token_decode_helper.py": {
+      "sha256": "d68b2bc02d21fe37f3291e1f43301037b1a17f83d84c3c37bbf1f1d68e69791b",
+      "bytes": 2541,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/onnx_executor.py": {
+      "sha256": "8e915bcb671bcc488a1889913a048b8da1d29a1054c5b6c6b8b6c57d33fedc18",
+      "bytes": 130,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/onnx_graph.py": {
+      "sha256": "e8097c68aee6c267b427669ab45fbbdaff8197b393ad1251cf94eff0546e4b8f",
+      "bytes": 127,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/operations.py": {
+      "sha256": "13ebfe7fb790319c64e91d64dd74003dd71b9bd2359b86a27b686f651b7e0c9c",
+      "bytes": 3336,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/ops/__init__.py": {
+      "sha256": "36da83c416034c7a5c266226c0506e9bf4bdb2588c65bbefb17901e441205acd",
+      "bytes": 191,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/ops/cli.py": {
+      "sha256": "a90b0c7f883a289de9f6e7ef991300d8d5692e154da99d4908548e453ab4347a",
+      "bytes": 5094,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/ops/contract_smoke.py": {
+      "sha256": "a6648703f6b0a0fe8ec0229614624e6ca51b82e8c0352812d6fc58234f9435ae",
+      "bytes": 4940,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/plan.py": {
+      "sha256": "477c936ba974a99a9500be1d3d886497037291b343969ae939e3182bc165f60a",
+      "bytes": 25683,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/plan_security.py": {
+      "sha256": "a6ec87f642fac57a40628d25341b9004f3dac9a3476a721ce15050c51ffe0aa2",
+      "bytes": 5810,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/planner/__init__.py": {
+      "sha256": "d127fda452f98c14b1a6d8fe38bd9d4c086a28b9c4ec6bd65a86094d4ec54394",
+      "bytes": 560,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/planner/admission_policy.py": {
+      "sha256": "691b9914f4ea344690d96dc4902cb319f4b734b5f7aad1c47c73f647726e1c34",
+      "bytes": 812,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/planner/backend_registry.py": {
+      "sha256": "8d7791062f0f556fb72de3a334c7863ed71c7eee26c930479d6e4702e5c08193",
+      "bytes": 7727,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/planner/cache_policy.py": {
+      "sha256": "d7b0d153f5318972d3058ee515021522a9e3d185bb5b1b42dc5c466e60dafc5a",
+      "bytes": 743,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/planner/compatibility.py": {
+      "sha256": "d2832c5f23d8137012b84f7178d573a2e84177d860f4f3068a3efae4ddd6b07f",
+      "bytes": 1696,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/planner/cost_policy.py": {
+      "sha256": "7296db58f2654d6712366d94c37f86a6836360b623e5e7e6eb2849fbc36f1786",
+      "bytes": 1180,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/planner/defaults.py": {
+      "sha256": "fc36ac8161307b487d2fd76c614bea936ebaa661dfff8c62afdcb24dc172803d",
+      "bytes": 7113,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/planner/deployment_policy.py": {
+      "sha256": "386c936924a3bbe19a7e12e1f8125fda05ec88ef3b4b9a3cfab28e533bd8d51e",
+      "bytes": 1317,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/planner/execution_target_policy.py": {
+      "sha256": "d66262e52f8d2365124de303e0c5727ad461aebc3d4053ccb912b14cec160cf9",
+      "bytes": 1104,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/planner/execution_tuning_policy.py": {
+      "sha256": "a4b9b076425c0266a79c5667e533313ea8f1675651b28352c2dbbb7f1e066da0",
+      "bytes": 1207,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/planner/fixed_policy.py": {
+      "sha256": "413d771c8a181b35165be0e9e9fc8b4ad2401a080eb78037cd66c87487f7f5b0",
+      "bytes": 1029,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/planner/layer_reuse_first.py": {
+      "sha256": "bd3ba7c035a2ec1f7e1c3ffe7aa9af10328b05020e9309cde03b6ce5a34e56af",
+      "bytes": 1378,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/planner/model_variant_policy.py": {
+      "sha256": "f0b082bf9e15f654dc39ddcba26c94fd322fa9faead38d8f635d4e42fbe8d45b",
+      "bytes": 940,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/planner/presplit_first.py": {
+      "sha256": "e007c1585c51dbc3529056213a709c7f56bd856d56da52ab8a3be4bd9233c090",
+      "bytes": 30319,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/planner/provider_assignment_policy.py": {
+      "sha256": "e12d9081abb72f13ee3359b767a537d9b097ca8cd6d106f2816046cc1ba491cd",
+      "bytes": 1942,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/planner/recovery_policy.py": {
+      "sha256": "13bff64bd20d10c6a2a8293fa4ae6912dec0bca6fc646d19cc7b28d7120a35fb",
+      "bytes": 839,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/planner/scheduling_policy.py": {
+      "sha256": "d9ad637c3b74680bd8a4566245cde4cddfdb956a67c49dafb7e6867a928a2c9d",
+      "bytes": 1049,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/planner/sequential_split.py": {
+      "sha256": "9f955fff4fbd87da97601eb1b1893fd16fda0fcb5ad17ea9067ebc8673c77f54",
+      "bytes": 7335,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/planner/split_policy.py": {
+      "sha256": "f5a8dc2604e47a15f7b4634284c4007634f656bb7002637f39c4bb65fee02862",
+      "bytes": 873,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/planner_registry.py": {
+      "sha256": "b02495645fbabd96a5dafee371ecd78fb79fe863784182a3bdb9f17e9cd667b3",
+      "bytes": 155,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/policy.py": {
+      "sha256": "d2600fb36adf784729423552aa3f2f8a2cf8775cd9f95b5dd919e12054686633",
+      "bytes": 37160,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/provider.py": {
+      "sha256": "1c719e9bc130e41ab13a9624feb9f9d799fe3e7251dcb4e7fa472262cc40d961",
+      "bytes": 139720,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/qwen_pilot.py": {
+      "sha256": "81f8479cd57f471003c34a27a34d425a1bd6c769737737be0671a06c1d858d52",
+      "bytes": 123,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/release_gate.py": {
+      "sha256": "4be38da9f19109c52759a69bde6e66d151169e1bfc8358a33f77e89bfac44330",
+      "bytes": 7143,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/repo_reference.py": {
+      "sha256": "2d40384ca1fe865fea9c465009960a49f77555cf0ab917818a9314a503c8035b",
+      "bytes": 13125,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/retry.py": {
+      "sha256": "fdfe0d7a38039b4cea057dd3c2d0fbdda79840725b5d301f1a4dd49ad08112a1",
+      "bytes": 3670,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/runtime_compatibility.py": {
+      "sha256": "ffde13fc17de8e35c88ea594db5a8cef6821527308f8a2f68eadccbc977aa8b0",
+      "bytes": 2724,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/runtime_v1.py": {
+      "sha256": "6e8b463b82152b5424e8990f4e618fd9ff18cfdd26f2fae6fb7f45d308d703c3",
+      "bytes": 117435,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/runtime_v1_evidence.py": {
+      "sha256": "31023c46d60d07b55e82ea30247bb34221b6b57e689a116a84401f4c2e5928ac",
+      "bytes": 43304,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/sdk/adapters.py": {
+      "sha256": "c03a018c34c7e3cd9ea4681a91ec9be97bc776ee5825c0d188813d2475f0b4ea",
+      "bytes": 1448,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/sdk/contract_tests.py": {
+      "sha256": "082e047ada351d03b3274b7d483faa525b273729435014c93626db1d7d5db9c8",
+      "bytes": 734,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/sdk/contracts.py": {
+      "sha256": "3e37c82cf1b038223a2b5284dc0815833a2d7f647697438d0ea79518d33defd6",
+      "bytes": 3008,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/sdk/executor.py": {
+      "sha256": "8a573cf91b5286d27d252611ec9bf9a3832212204aa46139290b05da66765e77",
+      "bytes": 857,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/sdk/loader.py": {
+      "sha256": "949f57e3982306ba37e8d90b41804a69929c14afe138f52c891189a123ab5206",
+      "bytes": 5780,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/sdk/observer.py": {
+      "sha256": "2b2c37b43fabbd11fae1606259953295f0e738c00cd227a6ac53ce0d2ae0db36",
+      "bytes": 1825,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/sdk/registry.py": {
+      "sha256": "00f695cc1e57cbb0cd9ed3bb980c5f30a3fefadeaabd7f2a5fd11354711af46b",
+      "bytes": 1281,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/sdk/suite.py": {
+      "sha256": "725293fd4a24f1167b0e159f8808db609a7053c4a7a0f2f4153478c0c4e685d5",
+      "bytes": 4862,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/sdk/worker.py": {
+      "sha256": "5dbfc1321e9255013721883aee68620dc3910fbc5234d7d8cf03b1d86ac0501c",
+      "bytes": 2010,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/security/__init__.py": {
+      "sha256": "be7f72365bed46d2d13053a1aea7e4fcee4937c16894c6266839cfe66c8eaa06",
+      "bytes": 292,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/security/artifact_policy_authority.py": {
+      "sha256": "95587442c4d8d0f24f8ec14a73f31a2acfbfdaa6f7c96c09afd4f2bb176d71a7",
+      "bytes": 5372,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/security/grant_mutations.py": {
+      "sha256": "2c2736af22e19b664cbf67d9e95c6cc70c3d11b2802340d8ae58de6f3a358844",
+      "bytes": 6412,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/security/grant_provider.py": {
+      "sha256": "01a978d4e7d9d88d046c26ad51f4a6ae2312d02a14219e0f382003a70e725a88",
+      "bytes": 7828,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/security/registry_keys.py": {
+      "sha256": "cd0c35e012c6a7dac51f1233d2263d4a8615915db3c90d9cf73d2de6c1019d5f",
+      "bytes": 7417,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/security/requester_grant_pipeline.py": {
+      "sha256": "6402c26e3b092b6290db242ea169b03f4a3ba97b822c0f15e52ff00b16aa4e7e",
+      "bytes": 6674,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/split_planner.py": {
+      "sha256": "9f95c42c4d954baf01aee67360e70d8a1fed73dc56944032b372e6b287cb6edc",
+      "bytes": 162,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/splitter.py": {
+      "sha256": "4455deff2de6f27d52206e6cc074aa5aa2d89d6681435892358a73d6a78c2dbc",
+      "bytes": 31148,
+      "matches_head": true
+    },
+    "NDNSF-DistributedRepo/include/ndnsf-distributed-repo/ArtifactTypes.hpp": {
+      "sha256": "d0c5902ee17e9b78177bd6d4ca99ec0f8442e5e289da0d3aae4ad62381447042",
+      "bytes": 16487,
+      "matches_head": true
+    },
+    "NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp": {
+      "sha256": "a89eb7708c82d5b8d46241b5094c2daf697db3fc3738790fa4c8034a594769fc",
+      "bytes": 11103,
+      "matches_head": true
+    },
+    "NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoNode.hpp": {
+      "sha256": "9d2e986221293fc1be16416e61ab2b2c11970c284c7096a98be123e41747cea1",
+      "bytes": 3869,
+      "matches_head": true
+    },
+    "NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoProtocol.hpp": {
+      "sha256": "74ca1596c71cf9db0fb6750a4dce787737a32152ed6a7c437d4dfabdc0f4f038",
+      "bytes": 1929,
+      "matches_head": true
+    },
+    "NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp": {
+      "sha256": "5c794bdc744abcc73b2f3c5ee5472d8726d4e6d24139a4e2cac949979a2b8abc",
+      "bytes": 8936,
+      "matches_head": true
+    },
+    "NDNSF-DistributedRepo/pythonWrapper/py_repoclient/__init__.py": {
+      "sha256": "6a0c6dabc3c19809f23aecb8929eaac215108179a0773375d7ebe6e078853d35",
+      "bytes": 27357,
+      "matches_head": true
+    },
+    "NDNSF-DistributedRepo/pythonWrapper/py_repoclient/artifact_lifecycle.py": {
+      "sha256": "52512671257f0309628d3b607666cdacdde5c0e05a47b7ff43bf64c13a4e29f7",
+      "bytes": 40854,
+      "matches_head": true
+    },
+    "NDNSF-DistributedRepo/pythonWrapper/py_repoclient/artifact_transfer.py": {
+      "sha256": "8711b7007987a6da3ead1aac21967eb5d5f3d8486e887dbad5a9e61967db377a",
+      "bytes": 27786,
+      "matches_head": true
+    },
+    "NDNSF-DistributedRepo/pythonWrapper/py_repoclient/local_artifact_backend.py": {
+      "sha256": "385037d57795eeb5d4dbde0cc340e72309c294b4031413e9600d292ee56f62e2",
+      "bytes": 16229,
+      "matches_head": true
+    },
+    "NDNSF-DistributedRepo/pythonWrapper/py_repoclient/service_names.py": {
+      "sha256": "4f2dfdba1885ad3fcb2e3b5c1e132e2f5c02cca5119a0d2c43f5f604678207cc",
+      "bytes": 2976,
+      "matches_head": true
+    },
+    "NDNSF-DistributedRepo/pythonWrapper/setup.py": {
+      "sha256": "068f7b9d33ccd5beee231edd4f5602c9ffd2972466b13957c4d9b55c0e386151",
+      "bytes": 5395,
+      "matches_head": true
+    },
+    "NDNSF-UAV-APP/drone/UavCollaborationParticipant.hpp": {
+      "sha256": "777f60e7a9ee0f193b8d843b48988d5be0ac0fcfd7b55bdcb49364ec2a602d59",
+      "bytes": 1936,
+      "matches_head": true
+    },
+    "NDNSF-UAV-APP/ground-station/GroundStationRuntimeState.hpp": {
+      "sha256": "16a050a024f5f657a909d2aae03fb599269239575ed71c3e13ae4e3341ce27e7",
+      "bytes": 5664,
+      "matches_head": true
+    },
+    "NDNSF-UAV-APP/ground-station/UavIncidentCoordinator.hpp": {
+      "sha256": "22b373872d1789f7625860f9ea67eff34e3e1ba7d14651a242085d034f1f0cb5",
+      "bytes": 3613,
+      "matches_head": true
+    },
+    "NDNSF-UAV-APP/shared/UavCollaborationPolicy.hpp": {
+      "sha256": "10ad006907b9da3b86f5e5546f1b47521c223a65e07eb9ad4bfaf67bd6c33fd1",
+      "bytes": 1652,
+      "matches_head": true
+    },
+    "NDNSF-UAV-APP/shared/UavDetectorProvider.hpp": {
+      "sha256": "07ec628b4813ebcf89e0de0548f486409bb80e21e082cbdad02cfec0401ea801",
+      "bytes": 4023,
+      "matches_head": true
+    },
+    "NDNSF-UAV-APP/shared/UavDiagnostics.hpp": {
+      "sha256": "37e9afa819d47d6f6d7f5045a3ec71630837aa0cbc2d40666b1e5541fe8e34f5",
+      "bytes": 2610,
+      "matches_head": true
+    },
+    "NDNSF-UAV-APP/shared/UavMissionSession.hpp": {
+      "sha256": "8396a36dd4b640c84129d5ebd4b5d6d0888487b172c2d58eeebd869a4d577e47",
+      "bytes": 3723,
+      "matches_head": true
+    },
+    "NDNSF-UAV-APP/shared/UavSensorStreams.hpp": {
+      "sha256": "ecb718a403b241e9c3c9e1b9e90283f81f9f34f8fe970b088634552b13c425ba",
+      "bytes": 4395,
+      "matches_head": true
+    },
+    "NDNSF-UAV-APP/tools/evaluate_multiview_recognition.py": {
+      "sha256": "873e50bae8bdba8b455eeca55d335b6b3c681b3bbc9fb02fe4e536c43bbba21c",
+      "bytes": 15389,
+      "matches_head": true
+    },
+    "NDNSF-UAV-APP/tools/minindn_multiview_node.py": {
+      "sha256": "eb98c364fac2d7a90db4bb1985ce0541603019ee5e58dab855cd591e150a0de3",
+      "bytes": 30011,
+      "matches_head": true
+    },
+    "NDNSF-UAV-APP/tools/multiview_contract.py": {
+      "sha256": "b15b225f8ac061b658224ddd6d976c30b99b498d58f44cd74ae2edcb7cdfbab2",
+      "bytes": 12200,
+      "matches_head": true
+    },
+    "NDNSF-UAV-APP/tools/multiview_recognition_worker.py": {
+      "sha256": "eefad99c0ca5626d491d5d98fcb10184de084e4624d286ddbad41dc243704c8c",
+      "bytes": 12588,
+      "matches_head": true
+    },
+    "NDNSF-UAV-APP/tools/mvcnn_model.py": {
+      "sha256": "4a8610c47ed89159293cf5b36939360ca257b9cf391b0691add652d45ce05a76",
+      "bytes": 2208,
+      "matches_head": true
+    },
+    "NDNSF-UAV-APP/tools/prepare_coperception_uav.py": {
+      "sha256": "f66f338767a007a57c16c46fe5ef3b3a3a2a517d5d307a1de8bb9f04b2d1011b",
+      "bytes": 4253,
+      "matches_head": true
+    },
+    "NDNSF-UAV-APP/tools/prepare_memphis_offline_map.py": {
+      "sha256": "1f3c4dd93203c2578a7676d372fbf4ccd9c70d5ecd67fbef277f5d6794717452",
+      "bytes": 3132,
+      "matches_head": true
+    },
+    "NDNSF-UAV-APP/tools/prepare_mvcnn_artifact.py": {
+      "sha256": "bbdaeaf63db5b60d0c44a98390645f59603f1b761a641239ab5bf0bfbac620a0",
+      "bytes": 8194,
+      "matches_head": true
+    },
+    "NDNSF-UAV-APP/tools/run_multiview_fixture.py": {
+      "sha256": "fe01a89f40264ba1f3e012cc5a7c1f6aad66b9a0a9efb44554992ba91956259b",
+      "bytes": 1945,
+      "matches_head": true
+    },
+    "NDNSF-UAV-APP/tools/run_uav_multiview_minindn.py": {
+      "sha256": "a84ba479f41f58caf83999680e3672291a4cee2f3fe86679a8b9e7f23a06a49a",
+      "bytes": 28125,
+      "matches_head": true
+    },
+    "NDNSF-UAV-APP/tools/run_uav_px4_sitl_scenario.py": {
+      "sha256": "a64fe65bee0ffaefb952800333b3dbbea1551077d1a85d7dcd60c9bacc58e6e8",
+      "bytes": 8990,
+      "matches_head": true
+    },
+    "NDNSF-UAV-APP/tools/uav_deployment_check.py": {
+      "sha256": "8b2068a16c932846a5c76d673ed079604f0b978ab65c3649074da34f9ea24d56",
+      "bytes": 17933,
+      "matches_head": true
+    },
+    "NDNSF-UAV-APP/tools/yolo_detect_once.py": {
+      "sha256": "d2d20e010d1cd4483e70a81b5433c30767997c8b97e4dad61e69a6016028557a",
+      "bytes": 2807,
+      "matches_head": true
+    },
+    "NDNSF-UAV-APP/tools/yolo_detect_worker.py": {
+      "sha256": "67a159e18e4d1d7692576fa8a7b85b03fce1fee82cdfe139fde11183e0f55abd",
+      "bytes": 3314,
+      "matches_head": true
+    },
+    "ndn-service-framework/CertificateBootstrap.hpp": {
+      "sha256": "914a3ea04901a546e3a29d9a6b27b3ae9b77973efe283f416828621eb4eb0a2e",
+      "bytes": 4130,
+      "matches_head": true
+    },
+    "ndn-service-framework/CertificatePublisher.hpp": {
+      "sha256": "51e3a92ce53f267b544ec75d2786a5ca9519571c482527cea31897cecb0152dc",
+      "bytes": 1304,
+      "matches_head": true
+    },
+    "ndn-service-framework/ConfigManager.hpp": {
+      "sha256": "2b07e59c1cc939252ddab3b8c5522cc6eea7ba23b623792de64f457a31134d9d",
+      "bytes": 4255,
+      "matches_head": true
+    },
+    "ndn-service-framework/ControllerGenerationStore.hpp": {
+      "sha256": "58dff9d644d3cfedffef16086e81b7508f67610e8001876955ef9744ee8dd37f",
+      "bytes": 1659,
+      "matches_head": true
+    },
+    "ndn-service-framework/ControllerVersion.hpp": {
+      "sha256": "22e0351fc79033862636f7ad473c92cd812b5f1fea48d2031a9c759db1dd9675",
+      "bytes": 1108,
+      "matches_head": true
+    },
+    "ndn-service-framework/HybridMessageCrypto.hpp": {
+      "sha256": "9920dee2217633f5bdcba7cbaeb30c829d53b95a710396836d363c00a5544d54",
+      "bytes": 8506,
+      "matches_head": true
+    },
+    "ndn-service-framework/NDNSFThreadPool.hpp": {
+      "sha256": "825dc44d7ed7e91a00599c785752790f0b3b606c99d43c0e28dde6c644a752f5",
+      "bytes": 3632,
+      "matches_head": true
+    },
+    "ndn-service-framework/NegativeAckReason.hpp": {
+      "sha256": "eaefab4bbfb20ca2484bdf0b2f028af532207614006521a9d104d86eab0b952c",
+      "bytes": 1397,
+      "matches_head": true
+    },
+    "ndn-service-framework/PolicyParser.hpp": {
+      "sha256": "eff6d3972b43dea4b9a85fb15325f13cf5f33da2f7559f785fd5f3889dfaa74d",
+      "bytes": 932,
+      "matches_head": true
+    },
+    "ndn-service-framework/PolicyRefreshCoordinator.hpp": {
+      "sha256": "8a1f7661efc03b4ac94fc6e1cde2e5f1c3d4fc2407d9d56c1c91ef1005dc3a6e",
+      "bytes": 3418,
+      "matches_head": true
+    },
+    "ndn-service-framework/PolicyStatus.hpp": {
+      "sha256": "78cdf89328a964d419df58903803e8358f34db631038a0ed080693e55faf09bf",
+      "bytes": 3704,
+      "matches_head": true
+    },
+    "ndn-service-framework/RequestConfidentiality.hpp": {
+      "sha256": "cd37d9dd5baa68679a7e9710f5fcce7dc5351332743513e04d98f67414092d16",
+      "bytes": 4688,
+      "matches_head": true
+    },
+    "ndn-service-framework/RevocationState.hpp": {
+      "sha256": "7acb6df4c4e1e7e3163f109b0cb77375b93f307e1d6cd7839a29bd0d25ad5a05",
+      "bytes": 1645,
+      "matches_head": true
+    },
+    "ndn-service-framework/RuntimeStatusStore.hpp": {
+      "sha256": "f5fcfbef7c34c597c24641632b92d063a27f4ea4e56b7364a5c3225ef0f33fc4",
+      "bytes": 2801,
+      "matches_head": true
+    },
+    "ndn-service-framework/ServiceAuthorizationTable.hpp": {
+      "sha256": "e0be6a1d2ecd5776794752ea0c999680b675fcf6a6537d8e1165d43940a79e0f",
+      "bytes": 3753,
+      "matches_head": true
+    },
+    "ndn-service-framework/common.hpp": {
+      "sha256": "831e18aa8e8a0892343299ff872d3fe639b4f739e335f931b4c23a2b7010d48d",
+      "bytes": 36281,
+      "matches_head": true
+    },
+    "ndn-service-framework/nac-abe-config.hpp": {
+      "sha256": "bd856b209bef623753a1da2b015e257c48faeca82dd86ec577d178aaff166545",
+      "bytes": 301,
+      "matches_head": true
+    },
+    "ndn-service-framework/utils.hpp": {
+      "sha256": "59e5eec6db7096c99fac3f30822a0af1808565c22552687cf592258f1b54fd8c",
+      "bytes": 13335,
+      "matches_head": true
+    },
+    "pythonWrapper/ndnsf/__init__.py": {
+      "sha256": "60110c2159ed701b88c6df7da8dbf6adc6b3f545c24d033ff9d3565506c9103a",
+      "bytes": 10861,
+      "matches_head": true
+    },
+    "pythonWrapper/ndnsf/api.py": {
+      "sha256": "a3a8fbbacf7c05c51034f2b0dccefcac3d9e22a979fcb0c512fa0240bb35fc6b",
+      "bytes": 5491,
+      "matches_head": true
+    },
+    "pythonWrapper/ndnsf/deployment_control.py": {
+      "sha256": "0c167f8470fb9fc56fe4c3c47af64ae84a80fe698d765dc865d0d163a748b4cf",
+      "bytes": 1949,
+      "matches_head": true
+    },
+    "pythonWrapper/ndnsf/metrics.py": {
+      "sha256": "4d6d949f2c2e82e1bb370d5127671b67812f2b217fe0c7c020c1dc39615e309a",
+      "bytes": 7676,
+      "matches_head": true
+    },
+    "pythonWrapper/ndnsf/ndnsd_health.py": {
+      "sha256": "7408ebaf8bec76c1596d4bfa6a046d94e16e5b45dc6b12f6c85aed731eab9a97",
+      "bytes": 8704,
+      "matches_head": true
+    },
+    "pythonWrapper/ndnsf/progress_deadline.py": {
+      "sha256": "c0deef2af779cc230e84ae99a73ffe1252302f25b4c07520bcfaee2d7b1c115e",
+      "bytes": 7796,
+      "matches_head": true
+    },
+    "pythonWrapper/ndnsf/runtime.py": {
+      "sha256": "4f68e59df9f9b1570864a5bcdf35f2bacd0a04b01ebae021f8acaf691ebb30d6",
+      "bytes": 9082,
+      "matches_head": true
+    },
+    "pythonWrapper/ndnsf/runtime_telemetry.py": {
+      "sha256": "f5ee9f3950bbad5bdb6c2dcf2c4e78636e9c493ddcd053825e485b01d92ff999",
+      "bytes": 53425,
+      "matches_head": true
+    },
+    "pythonWrapper/ndnsf/service.py": {
+      "sha256": "5b8f4a999001da97d8eb5faa075f8a63456c5fc726aae9558c9094fd0c75a99a",
+      "bytes": 123521,
+      "matches_head": true
+    },
+    "pythonWrapper/ndnsf/service_discovery.py": {
+      "sha256": "207e1068a80894bef8ef772ab5c17657055efc4dfdc682d3c446c9270802868f",
+      "bytes": 9460,
+      "matches_head": true
+    },
+    "pythonWrapper/ndnsf/streaming.py": {
+      "sha256": "c1bad078774005a985a04629d2260bd93f30c863bdc38f6c0ad60ccd4bad40bc",
+      "bytes": 87746,
+      "matches_head": true
+    },
+    "pythonWrapper/ndnsf/tracing.py": {
+      "sha256": "b6deb4c9a31870ceb276641bf6db93174d631c4b931016b1bedb295f6974343b",
+      "bytes": 4387,
       "matches_head": true
     }
   }
