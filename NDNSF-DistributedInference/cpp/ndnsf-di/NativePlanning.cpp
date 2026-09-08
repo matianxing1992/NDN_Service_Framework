@@ -186,7 +186,7 @@ void NativeGraphSnapshot::validate(const NativeModelDescriptor& model) const
   }
   std::set<std::string> nodeIds;
   for (std::size_t i = 0; i < nodes.size(); ++i) {
-    if (nodes[i].id.empty() || !nodeIds.insert(nodes[i].id).second ||
+    if (nodes[i].id.empty() || nodes[i].opType.empty() || !nodeIds.insert(nodes[i].id).second ||
         nodes[i].ordinal != i || topologicalOrder[i] != nodes[i].id) {
       throw std::invalid_argument("graph node order or identity is invalid");
     }

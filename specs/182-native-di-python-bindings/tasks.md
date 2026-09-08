@@ -26,7 +26,7 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 | [T001-B Lifecycle and Capability Closure](contracts/execution-units.md#t001-b-lifecycle-and-capability-closure) | DONE | — | [closure](evidence/t001-ab-closure-20260907.md)；DOC + 双向映射核对通过；O-004 处置写入 runtime-boundaries（Rev 8）与 symbol-design（C21/Readiness）；registration generation/late ACK/Selection/共享 lease 已冻结于 lifecycle 设计；parity 按 owner 任务继续，不属本卡 | 2026-09-07 |
 | [T001-C Dispatch and Selector Freeze](contracts/execution-units.md#t001-c-dispatch-and-selector-freeze) | DONE | T001-A, T001-B | [closure](evidence/t001-c-freeze-20260907.md)；build identity/L0 命令/每卡 selector 已从实际 Waf 注册冻结到 [case-manifest](../../tests/fixtures/spec182/case-manifest.json)（23 cppSuites + 6 kexpr + 3 system，全部带 author/executeOwner）；proof/code-design/work-units Rev 8、O-002/O-004 关闭；DOC 通过 | 2026-09-07 |
 | [T002-A Installed Library Boundary](contracts/execution-units.md#t002-a-installed-library-boundary) | DONE | T001-C | [L0 evidence](evidence/t002-a-l0-20260907.md)；首次 L0 成功（r2 fresh staging）：consumer 独立编译 rc=0、运行打印 `SPEC182_INSTALLED_CONSUMER_NATIVE_DI_OK` rc=0、无 libpython、staging 无 DI `.cpp/.cc` 副本、NAC-ABE 5-symbol gate 通过；空 registry freeze 语义自修正（[failure-log](../../docs/failure-log.md) 2026-09-07） | 2026-09-07 |
-| [T003-A Qwen Split Candidates](contracts/execution-units.md#t003-a-qwen-split-candidates) | PARTIAL | T002-A | [完整候选身份](evidence/t003-candidate-identity-20260908.md) 全字段规范字节/摘要、hybrid 及真实 Qwen oracle；修复额外 ingress，r2 87 cases/1246 assertions PASS；graph adapter 绑定和装配映射仍待完成 | 2026-09-08 |
+| [T003-A Qwen Split Candidates](contracts/execution-units.md#t003-a-qwen-split-candidates) | PARTIAL | T002-A | [真实 ONNX 图检查](evidence/t003-onnx-graph-inspection-20260908.md) 六组实际字节→adapter-bound graph/metadata/indices 对照，r3 114 cases/2212 assertions PASS；[完整候选身份](evidence/t003-candidate-identity-20260908.md) 保留；Qwen semantic layer 映射与 catalog/requester 接线仍待完成 | 2026-09-08 |
 | [T003-B Yolo Split Candidates](contracts/execution-units.md#t003-b-yolo-split-candidates) | PARTIAL | T003-A | [完整候选身份](evidence/t003-candidate-identity-20260908.md) 两组实际 YOLO 全候选字节/摘要对照，普通 rank metadata/成本/Merge 配置同步，87 cases PASS；[fragment evidence](evidence/t003-yolo-fragment-20260907.md) 保留；catalog/interface 与实际图映射仍待完成 | 2026-09-08 |
 | [T003-C Placement and Registry](contracts/execution-units.md#t003-c-placement-and-registry) | PARTIAL | T003-A, T003-B | [完整候选身份](evidence/t003-candidate-identity-20260908.md) 下游拒绝旧摘要，V3 core oracle 绑定实际 SplitCandidate；87 cases PASS；[资源契约](evidence/t003-resource-contract-20260908.md) 保留；依赖未放行，真实主链与整卡验收仍待完成 | 2026-09-08 |
 | [T004-A Canonical Plan Sealing](contracts/execution-units.md#t004-a-canonical-plan-sealing) | PARTIAL | T003-C | [publication recertification](evidence/t008-publication-recertification-20260907.md)；发布后 recipe/core 与 SDK 对照、旧 exact-reuse 拒绝及相关 58 cases/710 assertions PASS；dataflow/device binding、真实 requester 主链与完整验收仍待完成 | 2026-09-07 |
@@ -60,6 +60,14 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 | [T017-A Development Handoff](contracts/execution-units.md#t017-a-development-handoff) | NOT_STARTED | T016-A | [baseline](evidence/task-progress-registry-20260907.md)；无本卡独立执行/验收记录；按依赖领取 | 2026-09-07 |
 
 ## Current Checkpoint
+
+2026-09-08 T003 owned ONNX graph inspection / **PARTIAL**：增加实际 ONNX bytes 到
+规划图、语义名称、原始节点索引和 metadata 的原生入口，保留独立 canonical assembly
+identity。六组真实 Python ONNX 对照及相关回归 114 cases/2212 assertions PASS；
+两轮 fixture 问题已修复并保留原始结果，最终 r3 增量 -j4 build PASS（23.480s），
+binding 语法与文档检查 PASS。见 [inspection evidence](evidence/t003-onnx-graph-inspection-20260908.md)。
+没有新增 DONE；默认 NativeModelAdapter/InspectPort、YOLO catalog/interface 与 Qwen
+semantic layer 映射仍待实现，不能把独立入口 PASS 当作 requester 已接通。
 
 2026-09-08 T003 complete candidate identity / **PARTIAL**：补全部候选字段及规范 JSON/摘要，
 复用 RedistributionSpec 校验 hybrid cover，两个默认 splitter 和 preparation/V3 输入同步。

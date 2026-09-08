@@ -1,5 +1,15 @@
 # Failure Log and Evidence Index
 
+## 2026-09-08 — Spec182 ONNX graph fixture control
+
+owned graph r1 build PASS，112/114 cases PASS；两个新 case 的 control 缺必需
+requireActive，既有 checkActive 在解析前返回 ASSEMBLY_TIMEOUT。此为 fixture 配置失败，
+不是实际耗时超限或协议结果。补回调并保留空回调拒绝负例，r1 原样保留，后续见
+[ONNX graph inspection](../specs/182-native-di-python-bindings/evidence/t003-onnx-graph-inspection-20260908.md)。
+r2 build PASS，113/114 cases PASS；剩余失败为 test reader 读取不存在的 op_type，
+维护 GraphNodeView 字段实际为 operation。修正 reader，保留 r2；独立 r3 build 及
+114 cases/2212 assertions PASS。
+
 ## 2026-09-08 — Design R3 table layout
 
 后续第三轮版面门通过；补可读目标参考后的 pre-build 门又检测到并行 ONNX 源码漂移，
