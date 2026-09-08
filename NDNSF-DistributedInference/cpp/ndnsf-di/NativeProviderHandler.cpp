@@ -1,4 +1,5 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedProvider.hpp"
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
@@ -401,7 +402,7 @@ parseConversationPromotionControl(const ndn::Buffer& payload)
   control.receiptDigest = root.get<std::string>("receiptDigest", "");
   control.checkpointDigest = root.get<std::string>("checkpointDigest", "");
   control.expiresAtMs = root.get<std::uint64_t>("expiresAtMs", 0);
-  if (control.action != "COMMIT" && control.action != "ROLLBACK") {
+  if (control.action != "COMMIT" && control.action != "ROLLBACK" && control.action != "FINALIZE") {
     throw std::invalid_argument("conversation promotion control action is invalid");
   }
   if (control.conversationId.empty() || control.conversationId.find('/') !=
@@ -2854,19 +2855,17 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
           logRuntimeInfo(record.str());
 
           conversationPromotionStaged = true;
-          rollbackConversationPromotion = [&] {
+          rollbackConversationPromotion = [&, state, conversationBinding] {
             if (!conversationPromotionStaged || conversationPromotionCommitted) {
               return;
             }
-            try {
-              state->runtime.rollbackStagedDecodeStatePromotion(conversationBinding);
-            }
-            catch (...) {
-              // Preserve the original failure; the runtime remains fail-closed.
-            }
+            if (!state->runtime.rollbackStagedDecodeStatePromotion(conversationBinding))
+              throw std::runtime_error("PROVIDER_CONVERSATION_STAGED_ROLLBACK_FAILED");
             conversationPromotionStaged = false;
           };
-          waitConversationPromotion = [&] {
+          waitConversationPromotion = [&, state, turn, finalized, identity, receipt,
+              conversationBinding, controlTopic, selectionProjection,
+              committedCheckpoint = std::string{}]() mutable {
             if (!conversationPromotionStaged || conversationPromotionCommitted) {
               return;
             }
@@ -2876,6 +2875,23 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
               std::max(1, collaborationFetchTimeoutMs(config.fetchTimeoutMs)));
             const auto controlDeadline = std::min(
               turn.retentionDeadlineMs, nowForControl + waitBudget);
+            const auto publishAck = [&](bool committed, const std::string& checkpointDigest) {
+              NativeJson ack{{"schema", committed ? "ndnsf-di-provider-conversation-commit-ack-v1" :
+                                                     "ndnsf-di-provider-conversation-rollback-ack-v1"},
+                {"requestId", selectionProjection->requestId}, {"attemptEpoch", selectionProjection->attempt},
+                {"generationId", selectionProjection->generationContract.generationId},
+                {"planDigest", selectionProjection->planDigest}, {"conversationId", turn.conversationId},
+                {"parentContextEpoch", turn.parentContextEpoch}, {"successorContextEpoch", turn.successorContextEpoch},
+                {"serviceName", turn.serviceName}, {"planRoleMapDigest", turn.planRoleMapDigest},
+                {"roleName", finalized.role}, {"receiptDigest", receipt.computedDigest()},
+                {"checkpointDigest", checkpointDigest}, {"providerIdentity", ctx.localProvider().toUri()},
+                {"providerBootId", identity.providerBootId}, {"cacheEpoch", identity.cacheEpoch}};
+              ack[committed ? "committed" : "rolledBack"] = true;
+              const auto wire = nativeCanonicalJson(ack);
+              ctx.publish(config.conversationStateKeyScope,
+                ndn::Name(committed ? "/ndnsf-di/conversation/commit" : "/ndnsf-di/conversation/rollback"),
+                ndn::Buffer(wire.begin(), wire.end()));
+            };
             while (true) {
               const auto now = static_cast<std::uint64_t>(
                 std::max<long long>(0, epochMs()));
@@ -2919,6 +2935,22 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
                 reference.roleReceiptDigest = control.receiptDigest;
                 reference.expiresAtMs = control.expiresAtMs;
                 try {
+                  if (conversationPromotionCommitted) {
+                    if (control.checkpointDigest != committedCheckpoint) continue;
+                    if (control.action == "FINALIZE") return;
+                    if (control.action == "COMMIT") {
+                      publishAck(true, committedCheckpoint);
+                      continue;
+                    }
+                    auto committedBinding = conversationBinding;
+                    committedBinding.checkpointDigest = committedCheckpoint;
+                    if (!state->runtime.releaseConversationState(committedBinding))
+                      throw std::runtime_error("PROVIDER_CONVERSATION_COMMITTED_ROLLBACK_FAILED");
+                    conversationPromotionCommitted = false;
+                    publishAck(false, committedCheckpoint);
+                    throw std::runtime_error("PROVIDER_CONVERSATION_PROMOTION_ROLLED_BACK");
+                  }
+                  if (control.action == "FINALIZE") continue;
                   const auto resolved = state->runtime
                     .resolveStagedConversationState(reference, now);
                   if (!resolved || resolved->receiptDigest != receipt.computedDigest()) {
@@ -2926,6 +2958,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
                   }
                   if (control.action == "ROLLBACK") {
                     rollbackConversationPromotion();
+                    publishAck(false, control.checkpointDigest);
                     throw std::runtime_error(
                       "PROVIDER_CONVERSATION_PROMOTION_ROLLED_BACK");
                   }
@@ -2935,39 +2968,13 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
                   }
                   conversationPromotionCommitted = true;
                   conversationPromotionStaged = false;
+                  committedCheckpoint = control.checkpointDigest;
                   // The requester needs an authenticated per-role commit
                   // acknowledgement.  Receipt publication proves only that
                   // a candidate was staged; this record is emitted after the
                   // Provider has atomically committed the successor and
                   // released its request-local owner.
-                  boost::property_tree::ptree commitAck;
-                  commitAck.put("schema",
-                                "ndnsf-di-provider-conversation-commit-ack-v1");
-                  commitAck.put("requestId", selectionProjection->requestId);
-                  commitAck.put("attemptEpoch", selectionProjection->attempt);
-                  commitAck.put("generationId",
-                                selectionProjection->generationContract.generationId);
-                  commitAck.put("planDigest", selectionProjection->planDigest);
-                  commitAck.put("conversationId", turn.conversationId);
-                  commitAck.put("parentContextEpoch", turn.parentContextEpoch);
-                  commitAck.put("successorContextEpoch", turn.successorContextEpoch);
-                  commitAck.put("serviceName", turn.serviceName);
-                  commitAck.put("planRoleMapDigest", turn.planRoleMapDigest);
-                  commitAck.put("roleName", finalized.role);
-                  commitAck.put("receiptDigest", receipt.computedDigest());
-                  commitAck.put("checkpointDigest", control.checkpointDigest);
-                  commitAck.put("providerIdentity", ctx.localProvider().toUri());
-                  commitAck.put("providerBootId", identity.providerBootId);
-                  commitAck.put("cacheEpoch", identity.cacheEpoch);
-                  commitAck.put("committed", true);
-                  std::ostringstream commitAckWire;
-                  boost::property_tree::write_json(commitAckWire, commitAck, false);
-                  const auto commitAckPayload = commitAckWire.str();
-                  ctx.publish(
-                    config.conversationStateKeyScope,
-                    ndn::Name("/ndnsf-di/conversation/commit"),
-                    ndn::Buffer(commitAckPayload.begin(),
-                                commitAckPayload.end()));
+                  publishAck(true, committedCheckpoint);
                   std::ostringstream record;
                   record << "NDNSF_DI_CONVERSATION_STATE"
                          << " event=promotion-committed"
@@ -2977,7 +2984,8 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
                          << " role=" << finalized.role
                          << " checkpointDigest=" << control.checkpointDigest;
                   logRuntimeInfo(record.str());
-                  return;
+                  // Keep a bounded authenticated compensation window open
+                  // until the requester confirms its durable journal commit.
                 }
                 catch (const std::runtime_error&) {
                   throw;
@@ -2987,6 +2995,9 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
                 }
               }
             }
+            // A lost FINALIZE cannot prove that the requester failed to commit.
+            // Keep a committed successor until its original retention deadline.
+            if (conversationPromotionCommitted) return;
             rollbackConversationPromotion();
             throw std::runtime_error(
               "PROVIDER_CONVERSATION_PROMOTION_COMMIT_TIMEOUT");
