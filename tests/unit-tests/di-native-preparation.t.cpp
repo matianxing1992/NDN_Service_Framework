@@ -132,6 +132,7 @@ NativeSplitCandidate candidateFor(const NativeInspectedModel& model,
     candidate.fragmentsByRole[role.role] = digest("fragment");
     candidate.artifactsByRole[role.role] = {digest(role.role == "role" ? "artifact" : "artifact-" + role.role)};
     candidate.tensorDegreesByRole[role.role] = 1;
+    candidate.rankArtifactDigestsByRole[role.role] = candidate.artifactsByRole.at(role.role);
     candidate.requirementsByRole[role.role] = {{"onnxruntime"}, 1, 0, 0, 0, 1.0};
   }
   return candidate;
@@ -291,6 +292,7 @@ BOOST_AUTO_TEST_CASE(CertifiedRolesBindManifestRankArtifactAndResourceBudget)
   candidate.fragmentsByRole = {{"role", digest("fragment")}};
   candidate.artifactsByRole = {{"role", {digest("artifact")}}};
   candidate.tensorDegreesByRole = {{"role", 1}};
+  candidate.rankArtifactDigestsByRole = candidate.artifactsByRole;
   candidate.requirementsByRole = {{"role", {{"onnxruntime"}, 1024 * 1024, 0, 0, 0, 1.0}}};
   NativePlanSealingInputs fixtureInputs;
   fixtureInputs.artifacts.artifactDigestByRole = {{"role", digest("artifact")}};

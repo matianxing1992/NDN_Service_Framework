@@ -590,7 +590,7 @@
       "root_json": "{\"artifactProfileDigest\":\"sha256:4d5fd5739bc8977b9004af4061c14de70b37399e611c5515fa2d3b35a57e6364\",\"metadata\":{\"canonicalSourceBytes\":6,\"canonicalSourceDataName\":\"/encrypted/source\",\"canonicalSourceDigest\":\"sha256:41cf6794ba4200b839c53531555f0f3998df4cbb01a4d5cb0b94e3ca5e23947d\",\"packageManifestDigest\":\"sha256:40a310a18cf042ffce64ab7dbfe7d6f08afd66df2e4a8fade46af74dcc574ba2\"},\"modelIdentityDigest\":\"sha256:34e1b5468a63812c036a261b2659e44b658a5efe381ae110c6e72841d04ed6f2\",\"modelName\":\"QwenFixture\",\"schema\":\"ndnsf-di-canonical-model-manifest-v1\",\"state\":\"ACTIVE\"}"
     },
     {
-      "core_digest": "sha256:0f9b59c1a6636eeeca7106b19a91ab3c91d8ddbb2ecfe3d2e75545d91b925e98",
+      "core_digest": "sha256:a53bff6e9caf53443763846efa01ec400bf36cb16a6735f49c20bec0de0ec48c",
       "deadline_ms": 2000000000000,
       "expected": {
         "providers": {
@@ -628,7 +628,7 @@
       ]
     },
     {
-      "core_digest": "sha256:a450a9a2f0ddde23a76ba4589e46b8c86f764d182ee1b9c36c73cf2f996c9f11",
+      "core_digest": "sha256:4f69ca7c730970cdc4b43c5d6a4ab8b44b61acf985c9686abd963891ce1907a2",
       "deadline_ms": 2000000000000,
       "expected": {
         "providers": {

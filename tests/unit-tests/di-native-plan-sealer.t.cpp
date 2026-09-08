@@ -50,7 +50,9 @@ NativeGraphSnapshot graph(const std::string& graphDigest,
   }
   result.topologicalOrder = std::move(nodeIds);
   for (std::size_t i = 1; i < result.nodes.size(); ++i) {
-    const auto id = "cut-" + std::to_string(i - 1);
+    const auto id = result.nodes[i - 1].id.find("layer-") == 0 && result.nodes[i].id.find("layer-") == 0
+      ? "hidden-layer-" + std::to_string(i - 2) + "-to-" + std::to_string(i - 1)
+      : "cut-" + std::to_string(i - 1);
     result.edges.push_back({id, result.nodes[i - 1].id, {result.nodes[i].id},
       {id, "float32", {std::int64_t(1)}, 4}});
     result.legalCutEdges.push_back(id);

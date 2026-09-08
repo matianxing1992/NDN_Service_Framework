@@ -7,6 +7,13 @@
 
 ## Current Findings
 
+### Shared Candidate Validation 2026-09-07
+
+补齐 graph/model、摘要格式、ingress/egress、合法 cut/dependency tensor 集合及
+rank 工件完整性校验。新校验揭示旧 SDK/native fixture 的重复 rank artifact；
+修复为独立工件后 68 cases/836 assertions PASS。完整候选字段/规范摘要仍未闭合，
+见 [candidate validation](evidence/t003-candidate-validation-20260907.md)。
+
 ### Graph Edges and Candidate Identity 2026-09-07
 
 源码对照发现原生 YOLO 按节点相邻关系合成依赖、按节点数估算预算，Qwen 又哈希

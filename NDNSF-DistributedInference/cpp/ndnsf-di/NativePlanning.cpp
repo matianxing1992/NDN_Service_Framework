@@ -150,8 +150,9 @@ void NativeSplitCandidate::validate(const NativeGraphSnapshot& graph) const
 {
   splitter.validate();
   model.validate();
+  graph.validate(model);
   if (graphDigest != graph.graphDigest || executionPlan.roles.empty() ||
-      candidateDigest.empty()) {
+      !isDigest(candidateDigest)) {
     throw std::invalid_argument("split candidate identity is incomplete");
   }
   std::set<std::string> roles(executionPlan.roles.begin(), executionPlan.roles.end());
@@ -165,7 +166,7 @@ void NativeSplitCandidate::validate(const NativeGraphSnapshot& graph) const
         requirementsByRole.count(role) == 0) {
       throw std::invalid_argument("split candidate role cover contains foreign roles");
     }
-    if (fragmentsByRole.at(role).empty() || artifactsByRole.at(role).empty() ||
+    if (role.empty() || !isDigest(fragmentsByRole.at(role)) || artifactsByRole.at(role).empty() ||
         requirementsByRole.at(role).backends.empty()) {
       throw std::invalid_argument("split candidate role has no artifact or backend");
     }
@@ -174,6 +175,42 @@ void NativeSplitCandidate::validate(const NativeGraphSnapshot& graph) const
         std::any_of(artifactsByRole.at(role).begin(), artifactsByRole.at(role).end(),
                     [] (const auto& digest) { return !isDigest(digest); })) {
       throw std::invalid_argument("split candidate artifact or resource requirement is invalid");
+    }
+  }
+  if (inputIngressRole.empty() != resultEgressRole.empty() ||
+      (!inputIngressRole.empty() && (!roles.count(inputIngressRole) || !roles.count(resultEgressRole))))
+    throw std::invalid_argument("split candidate ingress/egress role is undeclared");
+  const std::set<std::string> cuts(crossPartitionTensors.begin(), crossPartitionTensors.end());
+  const std::set<std::string> legal(graph.legalCutEdges.begin(), graph.legalCutEdges.end());
+  if (cuts.size() != crossPartitionTensors.size() ||
+      !std::includes(legal.begin(), legal.end(), cuts.begin(), cuts.end()))
+    throw std::invalid_argument("split candidate has duplicate or illegal cut tensors");
+  std::set<std::string> dependencyTensors;
+  for (const auto& dependency : executionPlan.dependencies) {
+    if (dependency.producers.empty() || dependency.consumers.empty() || dependency.tensors.empty())
+      throw std::invalid_argument("split candidate dependency is incomplete");
+    for (const auto& role : dependency.producers)
+      if (!roles.count(role)) throw std::invalid_argument("split candidate dependency producer is undeclared");
+    for (const auto& role : dependency.consumers)
+      if (!roles.count(role)) throw std::invalid_argument("split candidate dependency consumer is undeclared");
+    dependencyTensors.insert(dependency.tensors.begin(), dependency.tensors.end());
+  }
+  if (dependencyTensors != cuts)
+    throw std::invalid_argument("split candidate dependency tensors do not match its cuts");
+  if (!tensorDegreesByRole.empty() || !rankArtifactDigestsByRole.empty()) {
+    if (tensorDegreesByRole.size() != roles.size() || rankArtifactDigestsByRole.size() != roles.size())
+      throw std::invalid_argument("split candidate rank metadata cover is incomplete");
+    for (const auto& role : roles) {
+      if (!tensorDegreesByRole.count(role) || !rankArtifactDigestsByRole.count(role))
+        throw std::invalid_argument("split candidate rank metadata has foreign roles");
+      const auto degree = tensorDegreesByRole.at(role);
+      const auto& artifacts = rankArtifactDigestsByRole.at(role);
+      const std::set<std::string> unique(artifacts.begin(), artifacts.end());
+      if (!degree || artifacts.size() != degree || unique.size() != artifacts.size())
+        throw std::invalid_argument("split candidate rank artifacts are incomplete or duplicate");
+      for (const auto& artifact : artifacts)
+        if (std::find(artifactsByRole.at(role).begin(), artifactsByRole.at(role).end(), artifact) == artifactsByRole.at(role).end())
+          throw std::invalid_argument("split candidate rank artifact is absent from its role");
     }
   }
 }

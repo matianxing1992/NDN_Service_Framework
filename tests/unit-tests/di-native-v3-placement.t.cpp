@@ -40,6 +40,7 @@ struct Input
     for (const auto& rank : sample.at("ranks")) {
       auto role = inputs.assemblyByRole.begin()->second;
       role.rank = rank.get<std::uint64_t>();
+      if (role.rank != 0) role.artifactDigest = nativePlanningDigest("rank-artifact-" + std::to_string(role.rank));
       role.backend = "onnxruntime";
       role.requiredDeviceMemoryMb = 1024;
       roles.push_back(role);
@@ -59,6 +60,7 @@ struct Input
       ++split.tensorDegreesByRole[role.role];
       split.fragmentsByRole[role.role] = nativePlanningDigest("fragment");
       split.artifactsByRole[role.role].push_back(role.artifactDigest);
+      split.rankArtifactDigestsByRole[role.role].push_back(role.artifactDigest);
       split.requirementsByRole[role.role] = {{"onnxruntime"}, 1, 0, 0, 0, 1.0};
     }
     NativeRequestPreparation preparation(std::make_shared<NativeAdapterRegistry>(), {}, {},

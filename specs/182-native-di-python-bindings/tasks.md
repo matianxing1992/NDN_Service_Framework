@@ -25,7 +25,7 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 | [T002-A Installed Library Boundary](contracts/execution-units.md#t002-a-installed-library-boundary) | DONE | T001-C | [L0 evidence](evidence/t002-a-l0-20260907.md)；首次 L0 成功（r2 fresh staging）：consumer 独立编译 rc=0、运行打印 `SPEC182_INSTALLED_CONSUMER_NATIVE_DI_OK` rc=0、无 libpython、staging 无 DI `.cpp/.cc` 副本、NAC-ABE 5-symbol gate 通过；空 registry freeze 语义自修正（[failure-log](../../docs/failure-log.md) 2026-09-07） | 2026-09-07 |
 | [T003-A Qwen Split Candidates](contracts/execution-units.md#t003-a-qwen-split-candidates) | PARTIAL | T002-A | [candidate source audit](evidence/t003-yolo-tensor-edges-20260907.md)；撤回过早 DONE；fragment 保留 artifact、backend family 已修复并定向通过；完整 candidate/state/identity 仍未闭合 | 2026-09-07 |
 | [T003-B Yolo Split Candidates](contracts/execution-units.md#t003-b-yolo-split-candidates) | PARTIAL | T003-A | [tensor-edge audit](evidence/t003-yolo-tensor-edges-20260907.md)；撤回过早 DONE；真实 tensor 边/分支依赖/已知字节预算已修复，相关 67 cases/818 assertions PASS；catalog/interface/候选身份完整对照仍待完成 | 2026-09-07 |
-| [T003-C Placement and Registry](contracts/execution-units.md#t003-c-placement-and-registry) | PARTIAL | T003-A, T003-B | [V3 strategy interface](evidence/t003-v3-strategy-interface-20260907.md)；基类提供完整 role/rank/admitted offer 虚接口，自定义策略与默认 SDK 对照通过，相关 58 cases PASS；candidate metadata/主链迁移与完整验收仍待完成；publication 输入已由 T008-A 迁移 | 2026-09-07 |
+| [T003-C Placement and Registry](contracts/execution-units.md#t003-c-placement-and-registry) | PARTIAL | T003-A, T003-B | [V3 strategy interface](evidence/t003-v3-strategy-interface-20260907.md)；共享 [candidate validation](evidence/t003-candidate-validation-20260907.md) 补 cut/dependency/rank 工件校验，68 cases/836 assertions PASS；完整 candidate 字段/身份及主链仍待完成 | 2026-09-07 |
 | [T004-A Canonical Plan Sealing](contracts/execution-units.md#t004-a-canonical-plan-sealing) | PARTIAL | T003-C | [publication recertification](evidence/t008-publication-recertification-20260907.md)；发布后 recipe/core 与 SDK 对照、旧 exact-reuse 拒绝及相关 58 cases/710 assertions PASS；dataflow/device binding、真实 requester 主链与完整验收仍待完成 | 2026-09-07 |
 | [T005-A InProcess Authority](contracts/execution-units.md#t005-a-inprocess-authority) | PARTIAL | T004-A | [旧局部验收](evidence/t005-a-inprocess-authority-20260907.md) 6 cases PASS 保留；依赖 T004-A 因 [A8-01](evidence/t004-wire-reopened-20260907.md) 重开，修复真实 grantView/core identity 后需复核，不能维持整卡 DONE | 2026-09-07 |
 | [T005-B Requester Grant Publication](contracts/execution-units.md#t005-b-requester-grant-publication) | PARTIAL | T005-A | [旧局部验收](evidence/t005-b-requester-grant-20260907.md) 8 cases + publication/fetch 证据保留；随 T004-A/T005-A 依赖闭合回退，待真实 grantView 输入和 Provider 消费链复核；见 [A8-01](evidence/t004-wire-reopened-20260907.md) | 2026-09-07 |
@@ -57,6 +57,12 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 | [T017-A Development Handoff](contracts/execution-units.md#t017-a-development-handoff) | NOT_STARTED | T016-A | [baseline](evidence/task-progress-registry-20260907.md)；无本卡独立执行/验收记录；按依赖领取 | 2026-09-07 |
 
 ## Current Checkpoint
+
+2026-09-07 T003 candidate validation / **PARTIAL**：补共享候选的合法 cut、依赖
+tensor 集合与 rank-artifact 覆盖校验。r1 旧 V3 fixture 重复 rank artifact 的失败
+已修复并保留日志；r2 -j4 build PASS（32.605s），68 cases/836 assertions PASS，
+含 SDK 多 rank core 对照；见 [candidate validation](evidence/t003-candidate-validation-20260907.md)。
+执行归属 T003-A/B/C；完整 node/state/interface 和规范候选摘要仍待完成，不新增 DONE。
 
 2026-09-07 D-DESIGN-API / **PASS**：完成声明参考和 23 组中文契约，两份 PDF 各 63 页，
 58 目录项/正文/字体/版面、295 文件声明与 350 文件源码还原检查 PASS；AGENTS 本机规则与 MANAGEMENT.md 已同步。

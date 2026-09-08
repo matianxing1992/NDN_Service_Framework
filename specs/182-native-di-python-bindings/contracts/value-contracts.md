@@ -45,6 +45,11 @@ Source: `NDNSF-DistributedInference/ndnsf_distributed_inference/splitter.py:211`
 
 ## V03 SplitCandidate
 
+候选边界必须调用 graph.validate(model)，拒绝非法/重复 cut，并核对 dependencies
+中的 tensor 集合等于 crossPartitionTensors。rank 元数据出现时 degree/rank-artifact
+均须完整覆盖角色，rank 工件数量等于 degree、互不重复且属于对应 artifacts。
+此共享校验适用于默认和注入策略，不由准备/发布 owner 猜测修补。
+
 Source: `NDNSF-DistributedInference/ndnsf_distributed_inference/splitter.py:341` → planned `NativeSplitCandidate`。
 
 | Field ID | Existing declaration | Meaning and native consumer obligation |

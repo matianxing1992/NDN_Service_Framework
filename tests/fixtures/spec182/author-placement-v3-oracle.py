@@ -21,6 +21,9 @@ from ndnsf_distributed_inference.adapters.onnx.executor import CertifiedOnnxAsse
 signed = json.loads((root / 'signed-offer-oracle.json').read_text())
 base = json.loads((root / 'sealer-python-oracle.json').read_text())['unsigned_core']
 role = replace(RoleAssemblySpec(**base['roles'][0]), backend='onnxruntime', required_device_memory_mb=1024)
+def ranked_role(rank):
+    return replace(role, rank=rank, artifact_digest=(role.artifact_digest if rank == 0 else
+        'sha256:' + hashlib.sha256(f'rank-artifact-{rank}'.encode()).hexdigest()))
 key = Ed25519PrivateKey.from_private_bytes(bytes(range(32)))
 policy = signed['policy']
 entry = dict(policy['entries'][0], provider='/provider/b',
@@ -32,7 +35,7 @@ cases = []
 for name in ('cpu', 'loaded_second_device', 'assembled', 'canonical', 'insufficient_memory',
              'wrong_boot', 'wrong_topology', 'wrong_epoch', 'wrong_artifact', 'wrong_recipe',
              'missing_fence', 'rank_cover', 'has_model_only', 'expired_proof', 'future_proof'):
-    roles = (role, replace(role, rank=1)) if name == 'rank_cover' else (role,)
+    roles = (role, ranked_role(1)) if name == 'rank_cover' else (role,)
     offers = []
     for provider in ('/provider/a', '/provider/b'):
         is_a = provider.endswith('/a')
@@ -93,7 +96,7 @@ for original in (c for c in cases if c['name'] in ('cpu', 'loaded_second_device'
         offers.append(offer)
     selected = PreSplitFirstStrategy().propose_v3(request_id='request', attempt=1,
         model_digest=base['model_digest'], graph_digest=base['graph_digest'],
-        roles=tuple(replace(role, rank=rank) for rank in original['ranks']),
+        roles=tuple(ranked_role(rank) for rank in original['ranks']),
         providers=tuple(ProviderPlanningViewV3.from_offer(o, verify_signature=verifier) for o in offers),
         ack_closed_digest=base['ack_closed_digest'])
     core = PlacementPlanCoreV3(request_id='request', attempt=1, model_digest=base['model_digest'],

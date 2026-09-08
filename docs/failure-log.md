@@ -1,5 +1,13 @@
 # Failure Log and Evidence Index
 
+## 2026-09-07 — Spec182 candidate rank fixture
+
+候选校验 r1 build PASS（41.485s），66/68 cases PASS；两个 V3 case 在共享候选
+入口拒绝重复 rank artifact。旧 oracle 给两个 rank 复用同一 artifact，违背维护
+SplitCandidate 唯一性约束。保留 r1，修复 SDK/native fixture 后独立 r2 build 与
+68 cases/836 assertions PASS；
+见 [candidate validation](../specs/182-native-di-python-bindings/evidence/t003-candidate-validation-20260907.md)。
+
 ## 2026-09-07 — Design API selector
 
 API 契约首轮渲染使用不存在的 ExecutionLease::release；源码 owner 为 ProviderExecutionLeaseTable。
