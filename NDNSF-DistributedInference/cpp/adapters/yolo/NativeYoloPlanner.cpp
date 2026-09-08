@@ -1,6 +1,7 @@
 #include "NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloPlanner.hpp"
 
 #include <algorithm>
+#include <limits>
 #include <set>
 #include <stdexcept>
 
@@ -125,28 +126,35 @@ NativeYoloComponentSplit::enumerate(const NativeModelDescriptor& model,
     candidate.inputIngressRole = spec->inputIngressRole;
     candidate.resultEgressRole = spec->resultEgressRole;
     candidate.mergeKind = spec->mergeKind;
-    for (std::size_t i = 0; i + 1 < graph.nodes.size(); ++i) {
-      const auto& producer = graph.nodes[i].id;
-      const auto& consumer = graph.nodes[i + 1].id;
-      const auto producerRole = ownerByNode.at(producer);
-      const auto consumerRole = ownerByNode.at(consumer);
-      if (producerRole == consumerRole) continue;
-      const auto edgeId = "tensor-" + producer + "-to-" + consumer;
-      NativeDependencySpec dependency;
-      dependency.producers = {producerRole};
-      dependency.consumers = {consumerRole};
-      dependency.keyScope = "native-yolo-activation";
-      dependency.topicPrefix = "/NDNSF/DI/YOLO";
-      dependency.objectNameTemplate =
-        "{producerProvider}/NDNSF/DI/YOLO/{sessionId}/{producerRole}/{consumerRole}/{sequence}";
-      dependency.tensors = {edgeId};
-      dependency.operationKind = "ACTIVATION";
-      candidate.executionPlan.dependencies.push_back(std::move(dependency));
-      candidate.crossPartitionTensors.push_back(edgeId);
+    std::uint64_t knownBytes = 0;
+    for (const auto& edge : graph.edges) {
+      const auto size = edge.tensor.estimatedBytes.value_or(0);
+      if (size > std::numeric_limits<std::uint64_t>::max() - knownBytes)
+        throw std::invalid_argument("YOLO graph tensor byte estimate overflows");
+      knownBytes += size;
+      const auto& producerRole = ownerByNode.at(edge.producer);
+      std::set<std::string> consumerRoles;
+      for (const auto& consumer : edge.consumers) {
+        if (ownerByNode.at(consumer) != producerRole) consumerRoles.insert(ownerByNode.at(consumer));
+      }
+      if (consumerRoles.empty()) continue;
+      if (!contains(graph.legalCutEdges, edge.id))
+        throw std::invalid_argument("YOLO candidate crosses an illegal tensor edge");
+      candidate.crossPartitionTensors.push_back(edge.id);
+      for (const auto& consumerRole : consumerRoles) {
+        NativeDependencySpec dependency;
+        dependency.producers = {producerRole};
+        dependency.consumers = {consumerRole};
+        dependency.keyScope = "native-yolo-activation";
+        dependency.topicPrefix = "/NDNSF/DI/YOLO";
+        dependency.objectNameTemplate =
+          "{producerProvider}/NDNSF/DI/YOLO/{sessionId}/{producerRole}/{consumerRole}/{sequence}";
+        dependency.tensors = {edge.id};
+        dependency.operationKind = "ACTIVATION";
+        candidate.executionPlan.dependencies.push_back(std::move(dependency));
+      }
     }
-    const auto roleBytes = std::max<std::uint64_t>(1,
-      static_cast<std::uint64_t>(graph.nodes.size()) * 1024 * 1024 /
-      static_cast<std::uint64_t>(spec->roles.size()));
+    const auto roleBytes = std::max<std::uint64_t>(1, knownBytes / spec->roles.size());
     for (const auto& role : spec->roles) {
       candidate.fragmentsByRole[role] = nativePlanningDigest(
         "yolo-fragment|" + spec->candidateId + "|" + role + "|" + graph.graphDigest);

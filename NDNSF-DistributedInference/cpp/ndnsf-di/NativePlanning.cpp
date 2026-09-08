@@ -82,6 +82,31 @@ void NativeGraphSnapshot::validate(const NativeModelDescriptor& model) const
   }
   std::set<std::string> cuts(legalCutEdges.begin(), legalCutEdges.end());
   if (cuts.size() != legalCutEdges.size()) throw std::invalid_argument("duplicate graph cut edge");
+  const auto tensorValid = [](const NativeTensorContract& tensor) {
+    if (tensor.name.empty() || tensor.dtype.empty()) throw std::invalid_argument("incomplete graph tensor contract");
+    // Preserve the graph owner's integer/symbolic representation. Assembly and
+    // runtime shape contracts apply their constraints at their own boundaries.
+  };
+  for (const auto& tensor : modelInputs) tensorValid(tensor);
+  for (const auto& tensor : modelOutputs) tensorValid(tensor);
+  std::map<std::string, std::size_t> position;
+  for (std::size_t i = 0; i < nodes.size(); ++i) position.emplace(nodes[i].id, i);
+  std::set<std::string> edgeIds;
+  for (const auto& edge : edges) {
+    if (edge.id.empty() || !edgeIds.insert(edge.id).second || edge.tensor.name != edge.id ||
+        !position.count(edge.producer) || edge.consumers.empty())
+      throw std::invalid_argument("invalid graph tensor edge identity or producer");
+    tensorValid(edge.tensor);
+    std::set<std::string> consumers;
+    for (const auto& consumer : edge.consumers) {
+      if (!position.count(consumer) || !consumers.insert(consumer).second ||
+          position.at(consumer) <= position.at(edge.producer))
+        throw std::invalid_argument("invalid graph tensor consumer or topological direction");
+    }
+  }
+  for (const auto& cut : cuts) {
+    if (!edgeIds.count(cut)) throw std::invalid_argument("graph cut does not refer to a tensor edge");
+  }
 }
 
 void NativeCandidateBudget::validate() const

@@ -49,7 +49,12 @@ NativeGraphSnapshot graph(const std::string& graphDigest,
     result.nodes.push_back({nodeIds[i], "op", static_cast<std::uint64_t>(i)});
   }
   result.topologicalOrder = std::move(nodeIds);
-  result.legalCutEdges = {"cut-0", "cut-1"};
+  for (std::size_t i = 1; i < result.nodes.size(); ++i) {
+    const auto id = "cut-" + std::to_string(i - 1);
+    result.edges.push_back({id, result.nodes[i - 1].id, {result.nodes[i].id},
+      {id, "float32", {std::int64_t(1)}, 4}});
+    result.legalCutEdges.push_back(id);
+  }
   return result;
 }
 
