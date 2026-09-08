@@ -1,0 +1,26 @@
+{
+  "run": ".codex-tmp/design-pdf-20260908T024454038889Z",
+  "runtime_tests": "not run",
+  "current-design": {
+    "pages": 35,
+    "warnings": [],
+    "fonts_embedded": true,
+    "sha256": "658fcdcfdb4605c28315deaa062c5709c4ed5111572c3b8273e93dc38b562812"
+  },
+  "target-design": {
+    "pages": 35,
+    "warnings": [],
+    "fonts_embedded": true,
+    "sha256": "395fccb803f90824b0158bc9af0f199548223be38460771d42ca9b1595445e52"
+  },
+  "technical_body_equal": true,
+  "source_reconstruction": {
+    "result": "PASS",
+    "files_verified": 94,
+    "baseline_commit": "d7fa9c8edef924a6cf29c12d3793049aa794a6be",
+    "patch_sha256": "93dbd58cde5b5dfcd0e3d1e58790680ac25515d6b0a57d4a9e45b433d27b5abe"
+  },
+  "source_archive_verified": 94,
+  "source_drift_after_snapshot": [],
+  "snapshot_commit": "d7fa9c8edef924a6cf29c12d3793049aa794a6be"
+}

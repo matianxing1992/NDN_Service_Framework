@@ -1,5 +1,17 @@
 # Failure Log and Evidence Index
 
+## 2026-09-07 — Design source patch whitespace
+
+设计入 Git 的首轮 staged diff 检查因补丁空白上下文行返回 rc=2；改用零上下文补丁，94 文件还原与 staged diff 重验 PASS。
+见 [design evidence](../specs/182-native-di-python-bindings/evidence/design-pdf-baseline-20260907.md#git-patch-whitespace-check)。
+
+## 2026-09-07 — Full Design PDF TeX syntax
+
+完整中文设计 r3 因 Repo 标识符裸下划线触发 `Missing $ inserted`，编译 rc=1。
+修复后 r4 双份 35 页编译成功，但 abort 标识符仍有 24.15834pt 横向溢出；继续修复排版。
+r5 修复完成，双份 35 页编译、无警告/溢出/缺字、文本一致与版面检查 PASS。
+原始失败目录与修复边界见 [design evidence](../specs/182-native-di-python-bindings/evidence/design-pdf-baseline-20260907.md)。
+
 ## 2026-09-07 — Spec182 publication artifact identity audit
 
 首轮定向验证另发现旧 sealer fixture 的 1 MiB 不满足真实 Qwen candidate 的 2253 MiB
@@ -10,6 +22,12 @@ build 与 58-case 定向检查 PASS；未降低产品校验。
 现迁移完整 V3 输入并逐项检查 artifact digest；此为源码发现，无失败运行。
 真实 catalog/Repo 与 requester 主链仍未接通，见
 [publication evidence](../specs/182-native-di-python-bindings/evidence/t008-v3-artifact-publication-20260907.md)。
+
+## 2026-09-07 — Design PDF long-symbol overflow
+
+Design R0 首次双 PDF 编译成功，但长测试符号导致第 7 页两个 Overfull hbox；
+属文档排版失败，原始构建保留。改用允许断行的内联符号后 r2 双份 7 页 PDF 检查 PASS，
+见 [design evidence](../specs/182-native-di-python-bindings/evidence/design-pdf-baseline-20260907.md)。
 
 ## 2026-09-07 — Spec182 inspection source audit
 

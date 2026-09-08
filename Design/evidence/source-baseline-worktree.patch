@@ -1,0 +1,28 @@
+--- a/NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.cpp
++++ b/NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.cpp
+@@ -64 +64,2 @@
+-  if (!ndnName(canonicalSourceName) || !digest(canonicalSourceDigest) || !digest(modelManifestDigest)) {
++  if (!ndnName(canonicalSourceName) || !digest(canonicalSourceDigest) ||
++      !digest(modelManifestDigest) || !digest(canonicalGraphDigest)) {
+@@ -189 +190 @@
+-    if (!expected.erase({role.role, role.rank}) || role.graphDigest != model.graph.graphDigest ||
++    if (!expected.erase({role.role, role.rank}) || role.graphDigest != model.canonicalGraphDigest ||
+@@ -284,0 +286 @@
++  result.canonicalGraphDigest = model.canonicalGraphDigest;
+--- a/NDNSF-DistributedInference/cpp/ndnsf-di/NativeV3Placement.cpp
++++ b/NDNSF-DistributedInference/cpp/ndnsf-di/NativeV3Placement.cpp
+@@ -112 +112,2 @@
+-        !digest(role.recipeDigest) || (!role.graphDigest.empty() && role.graphDigest != context.graphDigest) ||
++        !digest(role.recipeDigest) || !digest(role.graphDigest) ||
++        role.graphDigest != roles.front().graphDigest ||
+--- a/NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanSealer.cpp
++++ b/NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanSealer.cpp
+@@ -64,0 +65 @@
++      !isDigest(artifacts.canonicalGraphDigest) ||
+@@ -103 +104 @@
+-        assembly->second.graphDigest != graphDigest ||
++        assembly->second.graphDigest != artifacts.canonicalGraphDigest ||
+@@ -274 +275,2 @@
+-      inputs.artifacts.manifestDigest != model.modelManifestDigest || !isDigest(candidate.candidateDigest))
++      inputs.artifacts.manifestDigest != model.modelManifestDigest ||
++      inputs.artifacts.canonicalGraphDigest != model.canonicalGraphDigest || !isDigest(candidate.candidateDigest))

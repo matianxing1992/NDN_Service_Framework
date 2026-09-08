@@ -1,0 +1,31 @@
+\documentclass[UTF8,fontset=none,11pt,a4paper]{ctexart}
+\usepackage[margin=21mm,headheight=17pt]{geometry}
+\setCJKmainfont{Noto Serif CJK SC}
+\setCJKsansfont{Noto Sans CJK SC}
+\setCJKmonofont{Noto Sans Mono CJK SC}
+\setmainfont{TeX Gyre Pagella}
+\setsansfont{TeX Gyre Heros}
+\setmonofont[Scale=0.84]{DejaVu Sans Mono}
+\usepackage{booktabs,tabularx,array,enumitem,xcolor,fancyhdr,tikz,xurl}
+\usetikzlibrary{positioning,arrows.meta}
+\definecolor{navy}{HTML}{17354A}
+\definecolor{teal}{HTML}{007F82}
+\definecolor{lightblue}{HTML}{EFF5F8}
+\usepackage[unicode,colorlinks=true,linkcolor=navy,urlcolor=teal]{hyperref}
+\hypersetup{pdfauthor={NDNSF},pdftitle={NDNSF 四模块完整设计：\DesignKind（R0）}}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{6pt}
+\setlength{\emergencystretch}{3em}
+\renewcommand{\arraystretch}{1.22}
+\setlist{nosep,leftmargin=*,itemsep=5pt}
+\setlist[description]{style=unboxed,leftmargin=0pt,labelwidth=0pt,itemindent=0pt}
+\ctexset{section={format=\Large\bfseries\sffamily\color{navy},beforeskip=10pt,afterskip=10pt},subsection={format=\normalsize\bfseries\sffamily\color{navy},beforeskip=11pt,afterskip=3pt}}
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small\sffamily NDNSF / \DesignKind}
+\fancyhead[R]{\small R0 · 2026-09-07}
+\fancyfoot[L]{\footnotesize\color{navy} NDNSF · 通用框架 · 分布式存储 · 分布式推理 · 无人机应用}
+\fancyfoot[R]{\small\thepage}
+\newcommand{\code}[1]{{\small\nolinkurl{#1}}}
+\newcommand{\lead}[1]{{\large\sffamily\color{teal}#1}\par\vspace{4pt}}
+\newcommand{\callout}[2]{\par\smallskip\noindent{\color{teal}\rule{\linewidth}{0.7pt}}\par{\bfseries #1}\quad #2\par}

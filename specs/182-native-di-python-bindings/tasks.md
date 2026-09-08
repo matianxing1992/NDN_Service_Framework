@@ -17,6 +17,7 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 
 | Unit / Details | Status | Depends | Evidence / Remaining | Updated |
 | --- | --- | --- | --- | --- |
+| [D-DESIGN-R0 Framework Design PDFs](evidence/design-pdf-baseline-20260907.md#work-unit-d-design-r0) | PASS | User request; documentation only | 四模块中文双 PDF 各 35 页；正文/字体/版面与 94 文件基线检查通过；新增 Spec 设计变更记录，用户已授权 Design 完整入 Git；不关闭功能任务 | 2026-09-07 |
 | [T001-A Identity and Dependency Closure](contracts/execution-units.md#t001-a-identity-and-dependency-closure) | DONE | — | [closure](evidence/t001-ab-closure-20260907.md)；DOC + 依赖契约 vs 持久探针核对通过；onnx 4/4 与 tokenizer 84+14 全新复现 PASS；rust 1.90.0 独立工具链核验；Cargo 边界已在 rust-prefix 上重跑通过（tokenizer-r2） | 2026-09-07 |
 | [T001-B Lifecycle and Capability Closure](contracts/execution-units.md#t001-b-lifecycle-and-capability-closure) | DONE | — | [closure](evidence/t001-ab-closure-20260907.md)；DOC + 双向映射核对通过；O-004 处置写入 runtime-boundaries（Rev 8）与 symbol-design（C21/Readiness）；registration generation/late ACK/Selection/共享 lease 已冻结于 lifecycle 设计；parity 按 owner 任务继续，不属本卡 | 2026-09-07 |
 | [T001-C Dispatch and Selector Freeze](contracts/execution-units.md#t001-c-dispatch-and-selector-freeze) | DONE | T001-A, T001-B | [closure](evidence/t001-c-freeze-20260907.md)；build identity/L0 命令/每卡 selector 已从实际 Waf 注册冻结到 [case-manifest](../../tests/fixtures/spec182/case-manifest.json)（23 cppSuites + 6 kexpr + 3 system，全部带 author/executeOwner）；proof/code-design/work-units Rev 8、O-002/O-004 关闭；DOC 通过 | 2026-09-07 |
@@ -61,6 +62,11 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 与取消边界。新 ABI build PASS（280.317s）；修正旧 sealer fixture 的预算后，r2 增量
 build PASS（16.139s）、58 cases/553 assertions PASS，首轮失败日志保留。见
 [V3 artifact publication](evidence/t008-v3-artifact-publication-20260907.md)。未新增 DONE。
+
+2026-09-07 D-DESIGN-R0 / **PASS**：Core/UAV/DI/Repo 完整中文双 PDF 各 35 页，
+新增 Spec 设计变更记录；用户已授权 Design 完整入 Git。更新后双 PDF 编译、正文一致、字体/版面及 94 文件基线检查通过；
+见 [design evidence](evidence/design-pdf-baseline-20260907.md)。创建文档本地 checkpoint，不纳入并行源码修改。
+无 runtime 修改、无协议测试或资格验收结论。
 
 2026-09-07 T003 V3 strategy interface / **PARTIAL**：placement 基类改为必需的完整 V3
 虚接口，默认策略与自定义策略共享调用契约；旧简化入口不再由基类提供。
