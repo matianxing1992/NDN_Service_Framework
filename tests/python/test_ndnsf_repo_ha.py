@@ -78,6 +78,64 @@ class RepoNegativeAckBindingTest(unittest.TestCase):
 
 
 class ControlDispatcherTest(unittest.TestCase):
+    def test_manifest_tries_unknown_presence_once_and_delete_uses_confirmed_replicas(self) -> None:
+        from ndnsf import AckCandidate, ServiceResponse
+
+        manifest = RepoObjectManifest(
+            object_name="/object", object_type="artifact", sha256="a" * 64,
+            size=1, replica_nodes=("/repo/b", "/repo/c"))
+        candidates = [AckCandidate(
+            provider_name=f"/provider/{name}", service_name="/repo/service",
+            request_id="/request", status=True,
+            payload=json.dumps({"repoNode": f"/repo/{name}"}).encode())
+            for name in ("a", "b")]
+        choices = []
+
+        def request(service, payload, selector, **kwargs):
+            selected = selector(candidates)
+            choices.append(selected)
+            if selected == ["/provider/b"]:
+                return ServiceResponse(True, manifest.to_bytes())
+            return ServiceResponse(False, b"", "not-found")
+
+        user = Mock(user="/user", request_service_select=Mock(side_effect=request))
+        client = NetworkDistributedRepoClient(user=user, timeout_ms=1000)
+        try:
+            with patch.object(client, "_parse_ack_payload", side_effect=json.loads):
+                self.assertEqual(client.manifest("/object"),
+                                 RepoObjectManifest.from_dict(manifest.to_dict()))
+                self.assertEqual(choices, [["/provider/a"], ["/provider/b"]])
+                with patch.object(client, "_request_specific_repo", side_effect=[
+                    ServiceResponse(True, b'{"status":"not-found"}'),
+                    ServiceResponse(True, b'{"status":"deleted"}'),
+                ]) as delete:
+                    self.assertTrue(client.delete("/object"))
+                    self.assertEqual([c.kwargs["repo_node"] for c in delete.call_args_list],
+                                     ["/repo/b", "/repo/c"])
+        finally:
+            client.close()
+
+    def test_manifest_stops_when_no_eligible_provider_remains(self) -> None:
+        from ndnsf import AckCandidate, ServiceResponse
+
+        candidate = AckCandidate(provider_name="/provider/a", service_name="/repo/service",
+                                 request_id="/request", status=True, payload=b"{}")
+        choices = []
+
+        def request(service, payload, selector, **kwargs):
+            choices.append(selector([candidate]))
+            return ServiceResponse(False, b"", "not-found")
+
+        user = Mock(user="/user", request_service_select=Mock(side_effect=request))
+        client = NetworkDistributedRepoClient(user=user, timeout_ms=1000)
+        try:
+            with patch.object(client, "_parse_ack_payload", return_value={"repoNode": "/repo/a"}):
+                with self.assertRaisesRegex(RuntimeError, "not-found"):
+                    client.manifest("/missing")
+            self.assertEqual(choices, [["/provider/a"], []])
+        finally:
+            client.close()
+
     def test_control_metrics_can_reset_after_warmup(self) -> None:
         class FakeUser:
             user = "/publisher"
@@ -356,6 +414,31 @@ def make_repo(database: Path, *, budget: int = 4096) -> RepoNodeApp:
 
 
 class RepoContractTest(unittest.TestCase):
+    def test_protected_ack_advertises_capacity_without_decoding_input(self) -> None:
+        from ndnsf.service import _to_native_ack
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo = make_repo(Path(temp_dir) / "repo.sqlite3")
+            try:
+                service = "/NDNSF/DistributedRepo/Object/v1/STATUS"
+                context = {"request_capabilities": {
+                    "RequestScopedConfidentialityV1": "required"}}
+                with patch.object(repo, "_validate_versioned_request",
+                                  side_effect=AssertionError("ACK cannot inspect input")):
+                    decision = repo._ack_context(context, b"", service)
+                self.assertTrue(_to_native_ack(decision).status)
+                fields = NetworkDistributedRepoClient._parse_ack_payload(decision.payload)
+                self.assertEqual(fields["repoNode"], repo.repo_node)
+                self.assertNotIn("hasObject", fields)
+                self.assertNotIn("hasManifest", fields)
+                response = repo._handle_versioned_context(
+                    service, {"requesterIdentity": "/user"},
+                    encode_repo_request("DELETE", objectName="/secret"))
+                self.assertFalse(response.status)
+                self.assertIn("repo-operation-service-mismatch", response.error)
+            finally:
+                repo._db.close()
+
     def test_run_advertises_one_stable_data_plane_locator(self) -> None:
         events = []
 
@@ -366,7 +449,7 @@ class RepoContractTest(unittest.TestCase):
             def add_collaboration_handler(self, *args) -> None:
                 del args
 
-            def set_ack_handler(self, *args) -> None:
+            def set_ack_context_handler(self, *args) -> None:
                 del args
 
             def start(self) -> None:

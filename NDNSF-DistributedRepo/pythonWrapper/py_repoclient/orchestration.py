@@ -4555,6 +4555,17 @@ class RepoNodeApp:
                     f"repo-peer-identity-required: requester={requester}")
         return request
 
+    def _ack_context(self, context: dict, payload: bytes,
+                     service_name: str) -> AckDecision:
+        capabilities = context.get("request_capabilities", {})
+        if capabilities.get("RequestScopedConfidentialityV1") == "required":
+            # Core authenticates the service and delivers input only after
+            # Selection. Capacity is known now; object presence is not.
+            if payload or service_name not in repo_versioned_services(self.service_name):
+                return AckDecision(status=False, message="repo-bad-request")
+            return self._capability_ack(service_name)
+        return self._ack(payload, service_name)
+
     def _ack(self, payload: bytes, service_name: str | None = None) -> AckDecision:
         has_manifest = False
         has_object = False
@@ -4588,6 +4599,13 @@ class RepoNodeApp:
                 return AckDecision(status=False, message="repo-packet-miss")
         except Exception:
             return AckDecision(status=False, message="repo-bad-request")
+        return self._capability_ack(
+            service_name or repo_service_for_operation(operation, self.service_name),
+            has_manifest=has_manifest, has_object=has_object)
+
+    def _capability_ack(self, service_name: str, *,
+                        has_manifest: bool | None = None,
+                        has_object: bool | None = None) -> AckDecision:
         capability = self._capability()
         cache_status = self._cache_status()
         runtime = self._runtime_snapshot()
@@ -4606,8 +4624,6 @@ class RepoNodeApp:
             "storageBackend": cache_status["storageBackend"],
             "authoritativeBackend": cache_status["authoritativeBackend"],
             "cachePolicy": cache_status["cachePolicy"],
-            "hasManifest": 1 if has_manifest else 0,
-            "hasObject": 1 if has_object else 0,
             "exactDataValidationPolicy": getattr(
                 self, "exact_data_validation_policy",
                 "wire-name-and-request-digest"),
@@ -4615,10 +4631,13 @@ class RepoNodeApp:
             "artifactMigration": migration,
             **runtime,
         }
+        if has_manifest is not None:
+            capability_fields["hasManifest"] = 1 if has_manifest else 0
+        if has_object is not None:
+            capability_fields["hasObject"] = 1 if has_object else 0
         capability_hint = ProviderCapabilityHint(
             provider_name=capability.repo_node,
-            service_name=(service_name or repo_service_for_operation(
-                operation, self.service_name)),
+            service_name=service_name,
             ready=True,
             message="repo-ready",
             runtime_hint=GenericProviderRuntimeHint(
@@ -5450,10 +5469,10 @@ class RepoNodeApp:
                 lambda context, payload, registered=service_name:
                 self._handle_versioned_context(registered, context, payload),
             )
-            self.provider.set_ack_handler(
+            self.provider.set_ack_context_handler(
                 service_name,
-                lambda payload, registered=service_name:
-                self._ack(payload, registered),
+                lambda context, payload, registered=service_name:
+                self._ack_context(context, payload, registered),
             )
         try:
             # Flush the Provider's queued registrations before a second Face
@@ -7224,24 +7243,53 @@ class NetworkDistributedRepoClient:
             intent, committed_manifest, validated)
 
     def manifest(self, object_name: str) -> RepoObjectManifest:
-        def selector(candidates: list[AckCandidate]) -> list[str]:
-            for candidate in candidates:
-                fields = self._parse_ack_payload(candidate.payload)
-                if fields.get("hasManifest") == "1":
-                    return [candidate.provider_name]
-            return []
+        return self._locate_manifest(object_name)[0]
 
-        response = self._control_call(lambda: self.user.request_service_select(
-            self._service_for("MANIFEST"),
-            encode_repo_request("MANIFEST", objectName=object_name),
-            selector,
-            ack_timeout_ms=self.ack_timeout_ms,
-            timeout_ms=self.timeout_ms,
-            request_strategy="first-responding",
-        ))
-        if not response.status:
-            raise RuntimeError(response.error)
-        return RepoObjectManifest.from_dict(json.loads(response.payload.decode()))
+    def _locate_manifest(self, object_name: str) -> tuple[RepoObjectManifest, str]:
+        # Protected ACKs cannot know which object is requested. Try each
+        # eligible Provider once within one overall deadline; only its
+        # post-Selection response establishes object presence.
+        attempted: set[str] = set()
+        deadline = time.monotonic() + self.timeout_ms / 1000
+        last_error = "repo manifest unavailable"
+        while (remaining_ms := int((deadline - time.monotonic()) * 1000)) > 0:
+            selected: list[str] = []
+
+            def selector(candidates: list[AckCandidate]) -> list[str]:
+                for candidate in candidates:
+                    if not candidate.status or candidate.provider_name in attempted:
+                        continue
+                    fields = self._parse_ack_payload(candidate.payload)
+                    if fields.get("hasManifest") not in (None, 1, "1"):
+                        continue
+                    repo_node = str(fields.get("repoNode", ""))
+                    if not repo_node:
+                        continue
+                    attempted.add(candidate.provider_name)
+                    selected.append(repo_node)
+                    return [candidate.provider_name]
+                return []
+
+            try:
+                response = self._control_call(lambda: self.user.request_service_select(
+                    self._service_for("MANIFEST"),
+                    encode_repo_request("MANIFEST", objectName=object_name),
+                    selector,
+                    ack_timeout_ms=min(self.ack_timeout_ms, remaining_ms),
+                    timeout_ms=remaining_ms,
+                    request_strategy="all-selected",
+                ))
+                if response.status and selected:
+                    manifest = RepoObjectManifest.from_dict(json.loads(response.payload.decode()))
+                    if manifest.object_name != object_name:
+                        raise ValueError("repo manifest object mismatch")
+                    return manifest, selected[0]
+                last_error = response.error
+            except (RuntimeError, TimeoutError) as exc:
+                last_error = str(exc)
+            if not selected:
+                break
+        raise RuntimeError(last_error)
 
     def inventory(self) -> dict[str, RepoObjectManifest]:
         def selector(candidates: list[AckCandidate]) -> list[str]:
@@ -7503,6 +7551,9 @@ class NetworkDistributedRepoClient:
         replica_nodes: Iterable[str] = (),
     ) -> bool:
         selected_replicas = [str(repo) for repo in replica_nodes if str(repo)]
+        if not selected_replicas:
+            manifest, owner = self._locate_manifest(object_name)
+            selected_replicas = list(manifest.replica_nodes) or [owner]
         if selected_replicas:
             removed = False
             payload = encode_repo_request("DELETE", objectName=object_name)
@@ -7519,30 +7570,6 @@ class NetworkDistributedRepoClient:
                     removed = removed or response.payload.decode(
                         errors="replace") == "deleted"
             return removed
-
-        def selector(candidates: list[AckCandidate]) -> list[str]:
-            selected = []
-            for candidate in candidates:
-                fields = self._parse_ack_payload(candidate.payload)
-                if fields.get("hasManifest") == "1" or fields.get("hasObject") == "1":
-                    selected.append(candidate.provider_name)
-            return selected
-
-        response = self._control_call(lambda: self.user.request_service_select(
-            self._service_for("DELETE"),
-            encode_repo_request("DELETE", objectName=object_name),
-            selector,
-            ack_timeout_ms=self.ack_timeout_ms,
-            timeout_ms=self.timeout_ms,
-            request_strategy="all-selected",
-        ))
-        if not response.status:
-            raise RuntimeError(response.error)
-        try:
-            obj = json.loads(response.payload.decode())
-            return str(obj.get("status", "")) == "deleted"
-        except Exception:
-            return response.payload.decode(errors="replace") == "deleted"
 
     def fetch(self, object_name: str, manifest: RepoObjectManifest | None = None) -> bytes:
         manifest = manifest or self.manifest(object_name)

@@ -1,5 +1,24 @@
 # Failure Log and Evidence Index
 
+## 2026-09-08 — Protected Repo ACK and object-location selectors corrected
+
+Repo's authenticated ACK context now recognizes required request-scoped
+confidentiality and returns capacity without parsing hidden input or claiming
+object presence. Post-Selection service/operation and ownership checks remain.
+The minimal four-process source-composition run repo-protected-ack-source
+returns STATUS READY on attempt1, User exits0, all four children are reaped
+without force. This is an explicit one-file source diagnostic, not a new SIF.
+
+Manifest/delete selectors also depended on pre-Selection object presence.
+Manifest lookup now tries eligible Providers once under one total deadline,
+checks returned object identity, and deletion uses the confirmed manifest's
+replicas or responding Repo. Tests cover misses, failover and exhaustion.
+The new manifest test initially compared the decoded normalized model against
+an unnormalized constructor; use the established codec's canonical form.
+The HA run passes52/53 and the corrected isolated test passes. No source change
+was needed for that assertion failure. Repack the complete Python fix once;
+do not repeat the native build or claim the packaged runtime already contains it.
+
 ## 2026-09-08 — Repo negative ACK argument order hides protected-input mismatch
 
 The effective timing-r3 probe observes an ACK callback completing in1.2ms,

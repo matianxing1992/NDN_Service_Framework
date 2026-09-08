@@ -3,6 +3,48 @@
 Status: signed preparation and corrected Controller/Repo registration executed;
 full four-Provider inference and formal qualification remain open.
 
+## Protected Repo ACK source fix and actual STATUS response
+
+Repo now registers the existing authenticated ACK-context API. In required
+RequestScopedConfidentialityV1 mode it advertises service/capacity only,
+without decoding input or claiming `hasObject`/`hasManifest`. Nonempty
+pre-Selection input and unregistered services are rejected. The normal
+post-Selection handler still checks the operation/service binding and
+requester ownership. Legacy plaintext fixture behavior retains its decoder.
+No Core protocol, confidentiality, replay or permission checks are disabled.
+
+`repo-protected-ack-source` runs NFD+Controller+Repo+User using base ccdd/app89,
+with an explicitly recorded one-file diagnostic Repo override SHA
+`9f4c82033d5f865e6417e2f4f2570380215d525b9196fda9cd8eee8e10c2fe13`.
+Its actual `user/requests/repo-readiness/receipt.json` has status READY,
+attempts1, the expected Repo identity and probeId. User exits0; all four
+processes are reaped without forced cleanup. This snapshot contains the ACK
+fix before the subsequent client selector changes. It proves the original
+STATUS timeout is resolved at the source seam, not new-SIF or YOLO qualification.
+
+Client manifest lookup now treats absent object-presence fields as unknown,
+tries each eligible Provider once within one total deadline, and establishes
+presence from the selected Provider's response. It verifies the returned
+object name. Default deletion discovers the finalized manifest first, then
+uses its replicas (or the responding Repo if the list is empty), preserving
+the existing explicit-replica deletion path. This removes the remaining
+selectors that assumed plaintext was available during protected ACK.
+
+The protected-ACK regression fails before implementation, then passes with
+real native ACK conversion and post-Selection wrong-operation rejection.
+The HA suite has53 distinct checks:52 pass initially, one new test incorrectly
+compares an unnormalized manifest with a decoded canonical manifest. Correct
+that expectation to the existing codec's normalization; its isolated rerun
+passes. Selection tests exercise first-Repo miss/second-Repo success, confirmed
+replica deletion, and exhaustion without repeatedly selecting the same Provider.
+These use a request transport double, not distributed runtime evidence.
+All tests use packaged native libraries with only the changed Repo Python
+source mounted; no C++ compilation or SIF rebuild has occurred for these fixes.
+
+Next: seal and repack the complete Repo Python changes once, bind the unchanged
+application to the new base provenance, and run the full local CPU chain.
+The formal MiniNDN gates and Tiger four-Provider campaign remain incomplete.
+
 ## Latest checkpoint: repacked composition, run c
 
 `layered-host-20260908c` uses base `ccdd4ac0` and app manifest `89c49f7a`
