@@ -173,13 +173,13 @@ related tool earlier in `PATH` from being combined with system GTK/UAV
 libraries. For an intentional alternate toolchain, set `CXX` explicitly and
 pass its common root with `--toolchain-root`; do not mix roots.
 
-For an 8 GB development VM, keep 4 GB of swap available as an OOM safety net
-(increase a 2 GB swap allocation to 4 GB), and use `./waf build -j2` for routine
-builds. Reduce large dependency builds or memory-heavy link steps to
-`./waf build -j1` if necessary; avoid the default `-j4` concurrency on this VM
-profile. Because the full-stack installer currently derives its job count from
-`nproc`, run it as `sudo taskset -c 0,1 ./install_ndnsf_stack.sh` to hold it to
-two jobs.
+On the current development host (6 logical CPUs, 12 GB RAM), use
+`./waf build -j4` for routine native builds. Keep one build process per Waf tree and do not
+stack independent native builds. Observe available memory and `vmstat 1`; if
+sustained swap-in/out or desktop stalls appear, let the current invocation
+finish or stop safely and use `-j2` for the next invocation. This is a host
+policy, not a measured speedup guarantee; other hosts and container builders
+must be checked separately.
 
 If you install manually and also need Python APIs, install the Python packages
 after the C++ build:
