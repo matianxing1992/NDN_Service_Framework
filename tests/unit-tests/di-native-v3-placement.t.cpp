@@ -20,9 +20,12 @@ struct Input
   std::vector<NativeSelectionRoleV3> roles;
   std::vector<NativeAdmittedOfferV3> offers;
   std::string ackDigest;
+  NativeInspectedModel inspected;
+  NativeSplitCandidate split;
   Input(const NativeJson& f, const NativeJson& sample)
   {
     context = {"request", 1, "/service", f.at("model_digest"), f.at("graph_digest"), 900};
+    context.deadlineMs = sample.value<std::uint64_t>("deadline_ms", 900);
     ackDigest = f.at("ack_digest");
     const auto& r = f.at("role");
     NativePlanSealingInputs inputs;
@@ -44,12 +47,11 @@ struct Input
     NativeGraphSnapshot graph;
     graph.graphDigest = context.graphDigest; graph.nodes = {{"node", "Identity", 0}};
     graph.topologicalOrder = {"node"};
-    NativeInspectedModel inspected{descriptor, graph, "/catalog/model", nativePlanningDigest("source"),
+    inspected = {descriptor, graph, "/catalog/model", nativePlanningDigest("source"),
       r.at("model_manifest_digest")};
-    NativeSplitCandidate split;
     split.model = descriptor; split.graphDigest = context.graphDigest;
     split.splitter = {"fixture", "1", nativePlanningDigest("split")};
-    split.candidateDigest = nativePlanningDigest("candidate");
+    split.candidateDigest = nativePlanningDigest("placed-candidate");
     for (const auto& role : roles) {
       if (!split.tensorDegreesByRole.count(role.role)) split.executionPlan.roles.push_back(role.role);
       ++split.tensorDegreesByRole[role.role];
@@ -82,6 +84,67 @@ struct Input
 };
 }
 BOOST_AUTO_TEST_SUITE(Spec182V3Placement)
+BOOST_AUTO_TEST_CASE(AdmittedPlacementSealsSdkCoreAndRejectsTampering)
+{
+  const auto f = oracle();
+  const NativeStrategyIdentity identity{f["strategy"]["name"], f["strategy"]["version"], f["strategy"]["state"]};
+  for (const auto& sample : f.at("seal_cases")) {
+    BOOST_TEST_CONTEXT(sample.at("name").get<std::string>()) {
+      Input input(f, sample);
+      const auto now = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count());
+      const auto proposal = NativePreSplitFirstPlacement(identity).proposeRoles(
+        input.context, input.ackDigest, input.roles, input.offers, now);
+      NativeExecutionPlan execution = input.split.executionPlan;
+      execution.roles.clear(); execution.serviceName = input.context.serviceName;
+      execution.modelName = input.inspected.descriptor.modelName;
+      NativePlanSealingInputs inputs;
+      inputs.requesterIdentity = "/requester"; inputs.protectionEpoch = input.roles.front().protectionEpoch;
+      inputs.expiresAtMs = input.context.deadlineMs;
+      inputs.artifacts.requestId = input.context.requestId; inputs.artifacts.attempt = input.context.attempt;
+      inputs.artifacts.modelDigest = input.context.modelDigest; inputs.artifacts.graphDigest = input.context.graphDigest;
+      inputs.artifacts.manifestDigest = input.inspected.modelManifestDigest;
+      inputs.artifacts.recipeDigest = input.roles.front().recipeDigest;
+      for (const auto& role : proposal.roles) {
+        execution.roles.push_back(role.selectedRole);
+        inputs.artifacts.sourceByRole[role.selectedRole] = "/catalog/source";
+        inputs.artifacts.artifactDigestByRole[role.selectedRole] = role.artifactDigest;
+      }
+      for (std::size_t i = 0; i < input.roles.size(); ++i)
+        inputs.assemblyByRole.emplace(std::to_string(i), input.roles[i]);
+      const auto seal = [&](const auto& value) { return NativePlanSealer::sealCore(input.inspected,
+        input.split, value, execution, input.offers, input.ackDigest, inputs); };
+      const auto core = seal(proposal);
+      BOOST_CHECK_EQUAL(core.coreDigest, sample.at("core_digest").get<std::string>());
+      for (const auto& admitted : input.offers) {
+        if (!core.offerDigestByProvider.count(admitted.observation().provider)) continue;
+        const auto grant = NativePlanSealer::grantView(core, admitted, {nativePlanningDigest("policy"), true});
+        BOOST_CHECK_EQUAL(grant.provider, admitted.observation().provider);
+        BOOST_CHECK_EQUAL(grant.modelManifestDigest, input.inspected.modelManifestDigest);
+      }
+      auto changed = proposal; changed.roles[0].artifactDigest = nativePlanningDigest("foreign");
+      BOOST_CHECK_THROW(seal(changed), std::invalid_argument);
+      changed = proposal; changed.ackClosedDigest = nativePlanningDigest("foreign");
+      BOOST_CHECK_THROW(seal(changed), std::invalid_argument);
+      changed = proposal; changed.offerDigestByProvider.begin()->second = nativePlanningDigest("foreign");
+      BOOST_CHECK_THROW(seal(changed), std::invalid_argument);
+      if (sample.at("name") == "loaded_second_device") {
+        changed = proposal; changed.roles[0].deviceSet = {"cuda:0"};
+        BOOST_CHECK_THROW(seal(changed), std::invalid_argument);
+      }
+      if (sample.at("name") == "cpu") {
+        changed = proposal; changed.providerByRole.begin()->second = "/provider/b";
+        changed.offerDigestByProvider = {{"/provider/b", input.offers[1].observation().offerDigest}};
+        // A feasible custom choice need not equal default cost ordering.
+        BOOST_CHECK_NO_THROW(seal(changed));
+      }
+      if (sample.at("name") == "rank_cover") {
+        std::reverse(execution.roles.begin(), execution.roles.end());
+        BOOST_CHECK_THROW(seal(proposal), std::invalid_argument);
+      }
+    }
+  }
+}
 BOOST_AUTO_TEST_CASE(RealSdkPlacementAndExactReuseBoundaries)
 {
   const auto f = oracle();

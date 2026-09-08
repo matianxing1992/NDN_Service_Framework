@@ -14,4 +14,9 @@ struct NativeRolePlacementProposalV3
   std::map<std::string, std::string> providerByRole;
   std::map<std::string, std::string> offerDigestByProvider;
 };
+
+/** Policy-neutral validation: feasible custom assignments need not equal the default ranking. */
+void validateNativeRolePlacement(const NativeRolePlacementProposalV3& proposal,
+  const std::vector<NativeSelectionRoleV3>& preparedRoles,
+  const std::vector<NativeAdmittedOfferV3>& offers, std::uint64_t nowMs);
 } // namespace ndnsf::di

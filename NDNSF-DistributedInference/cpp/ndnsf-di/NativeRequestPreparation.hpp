@@ -96,6 +96,9 @@ public:
   std::vector<NativeSelectionRoleV3> prepareRoles(const NativeInspectedModel& model,
     const NativeSplitCandidate& candidate, const NativeRequestControl& control) const;
 
+  static void validateRoles(const NativeInspectedModel& model, const NativeSplitCandidate& candidate,
+    const std::vector<NativeSelectionRoleV3>& roles);
+
   NativeArtifactBinding ensureArtifacts(const NativeInspectedModel& model,
                                         const NativePlacementProposal& proposal,
                                         const NativeRequestControl& control) const;
