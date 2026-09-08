@@ -104,6 +104,10 @@ def _sif_bind_args() -> list[str]:
         operator_home = Path("/home") / sudo_user
     bind_roots = [
         ROOT / "results",
+        # Spec183 run outputs live under the canonical TigerCluster owner;
+        # bind that tree explicitly because the repository root has no
+        # top-level results directory in this checkout.
+        ROOT / "Experiments/TigerCluster/results",
         ROOT / "specs",
         Path("/run/nfd"),
         operator_home / ".local/state/ndnsf/spec180",

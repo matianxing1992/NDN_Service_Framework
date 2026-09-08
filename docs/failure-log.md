@@ -3619,3 +3619,17 @@ identity and rerun packaging against the existing incremental Waf cache.
   values remain controlled by the existing wrapper.
 - Lesson: legacy helpers that read process-global launch state need an explicit
   compatibility default at the privilege boundary.
+
+## 2026-09-08: exact-SIF application could not read TigerCluster run output
+
+- Symptom: NFD startup succeeded, then the Controller child exited with
+  `FileNotFoundError` for the absolute `.../Experiments/TigerCluster/results/
+  <run>/case-policy.json` path.
+- Root cause: the exact-SIF bind list assumed a top-level repository
+  `results/` directory, while the Spec183 owner stores all run state under the
+  canonical `Experiments/TigerCluster/results/` tree. The child therefore had
+  no mounted policy/configuration path even though the host file existed.
+- Fix: bind the canonical TigerCluster results tree explicitly, preserving the
+  existing read-write evidence output and the image-owned base libraries.
+- Lesson: container path checks must follow the repository's canonical artifact
+  owner, not a historical compatibility path that may be absent.
