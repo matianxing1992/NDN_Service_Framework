@@ -99,3 +99,19 @@ Native Test Ownership：原生运行时、协议、状态机、并发、密码�
 推断效率收益。该规则及配套参考已在本地 checkpoint `db479981` 提交，个人安装入口
 同步完成；当前 R4-B6 的正向两轮结果同时验证了该出口规则，恢复/replacement 仍作为
 独立缺口保留。
+
+## Follow-up Requirements And Convergence Coverage
+
+2026-09-08：复核发现需求形成与收敛入口仍需显式继承同一条 native test ownership
+边界。已同步本机 `.agents/skills/speckit-{specify,clarify,checklist,converge}/SKILL.md`：
+需求中的 native NDNSF-DI 运行时、协议、状态、并发、密码或模型行为必须指定生产
+C++ target/selector 及 evidence owner；Python 仅可声明 binding/facade、离线 oracle 或
+外部设施边界。`speckit-converge` 追加任务时还要在 append-only Convergence section
+提供 `Convergence Progress Delta`，列出状态、依赖、证据/剩余项和批次结果，之后由
+tasks/implement 合并回顶部 `Execution Progress`，不把新任务预标完成。
+
+静态复核按 `/home/tianxing/.codex/skills/review-agent/SKILL.md` 的只读协议完成：逐文件
+检查四个入口的适用范围、append-only 约束、共享 reference 路由、Python/C++ 证据边界，
+结果为 `No findings`。定向检查确认四个入口均保留原有 frontmatter，且新增规则只影响
+代码接线/原生行为需求；旧 Spec Kit frontmatter compatibility 白名单仍是验证器限制，
+不改变安装文件。未运行产品构建、单测或实验；本次修改是流程文档层更新。
