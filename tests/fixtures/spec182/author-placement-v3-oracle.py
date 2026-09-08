@@ -23,6 +23,10 @@ from candidate_oracle_support import fixture_model, digest
 
 signed = json.loads((root / 'signed-offer-oracle.json').read_text())
 base = json.loads((root / 'sealer-python-oracle.json').read_text())['unsigned_core']
+source_content_digest = base['model_digest']
+base['model_digest'] = canonical_digest({
+    'model_name': 'QwenFixture', 'content_digest': source_content_digest,
+    'semantics_digest': digest('semantics'), 'source_revision': None})
 role = replace(RoleAssemblySpec(**base['roles'][0]), backend='onnxruntime', required_device_memory_mb=1024)
 def ranked_role(rank):
     return replace(role, rank=rank, artifact_digest=(role.artifact_digest if rank == 0 else
@@ -30,7 +34,7 @@ def ranked_role(rank):
 
 def split_candidate(ranks):
     artifacts = {role.role: tuple(ranked_role(rank).artifact_digest for rank in ranks)}
-    model = fixture_model('QwenFixture', base['model_digest'], base['graph_digest'],
+    model = fixture_model('QwenFixture', source_content_digest, base['graph_digest'],
         role.adapter_id, role.adapter_version, 'fp32', digest('semantics'))
     return SplitCandidate('PRE_SPLIT', SplitterDescriptor('fixture', '1', digest('split')),
         model, base['graph_digest'], RoleExecutionPlan((role.role,), (), {'node': role.role}),
@@ -136,7 +140,7 @@ for original in (c for c in cases if c['name'] in ('cpu', 'loaded_second_device'
         metadata.update(canonicalInitializerBytes=7, canonicalInitializerDataName='/encrypted/initializer',
             canonicalInitializerObjectDigest='sha256:' + hashlib.sha256(b'weights').hexdigest())
     root_wire = json.dumps({'artifactProfileDigest': role.artifact_profile_digest, 'metadata': metadata,
-        'modelIdentityDigest': base['model_digest'], 'modelName': 'QwenFixture',
+        'modelIdentityDigest': source_content_digest, 'modelName': 'QwenFixture',
         'schema': 'ndnsf-di-canonical-model-manifest-v1', 'state': 'ACTIVE'},
         sort_keys=True, separators=(',', ':'), ensure_ascii=False)
     manifest_digest = 'sha256:' + hashlib.sha256(root_wire.encode()).hexdigest()
@@ -160,6 +164,7 @@ for original in (c for c in cases if c['name'] in ('cpu', 'loaded_second_device'
         publication_reject=original['name'] == 'loaded_second_device'))
 (root / 'placement-v3-oracle.json').write_text(json.dumps({'policy': policy, 'public_pem': signed['public_pem'],
     'key_id': signed['key_id'], 'candidate': signed['candidate'], 'role': base['roles'][0],
-    'model_digest': base['model_digest'], 'graph_digest': base['graph_digest'],
+    'model_digest': base['model_digest'], 'source_content_digest': source_content_digest,
+    'graph_digest': base['graph_digest'],
     'ack_digest': base['ack_closed_digest'], 'cases': cases, 'strategy': strategy,
     'seal_cases': seal_cases}, indent=2, sort_keys=True) + '\n')

@@ -6,6 +6,7 @@
 #include <fstream>
 #include "tests/fixtures/spec182/native-sealing-fixture.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanSealer.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestCatalog.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/qwen/NativeQwenPlanner.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloPlanner.hpp"
 
@@ -831,6 +832,13 @@ BOOST_AUTO_TEST_CASE(CompleteModelDescriptorMatchesMaintainedPythonCanonicalIden
     BOOST_CHECK_EQUAL(adapter.descriptorDigest(), row.at("adapter_digest").get<std::string>());
     BOOST_CHECK_EQUAL(value.canonicalJson(), row.at("model_json").get<std::string>());
     BOOST_CHECK_EQUAL(value.modelDigest(), row.at("model_digest").get<std::string>());
+    const auto loaded = NativeModelDescriptor::fromCanonicalJson(row.at("model_json").get<std::string>());
+    BOOST_CHECK_EQUAL(loaded.modelDigest(), row.at("model_digest").get<std::string>());
+    BOOST_CHECK_EQUAL(loaded.adapterId, adapter.name);
+    auto unknown = m; unknown["unrecognized_policy"] = true;
+    BOOST_CHECK_THROW(NativeModelDescriptor::fromCanonicalJson(nativeCanonicalJson(unknown)), std::invalid_argument);
+    unknown = m; unknown["adapter"]["splittable"] = 1;
+    BOOST_CHECK_THROW(NativeModelDescriptor::fromCanonicalJson(nativeCanonicalJson(unknown)), std::exception);
     identities.insert(value.modelDigest());
   }
   BOOST_CHECK_EQUAL(identities.size(), cases.size());
@@ -1153,6 +1161,75 @@ BOOST_AUTO_TEST_CASE(YoloCatalogConsumesActualOnnxSemanticPartition)
         {{component, nativeCanonicalJson(broken)}}), std::invalid_argument);
     }
   }
+}
+
+BOOST_AUTO_TEST_CASE(RequestCatalogLoadsPinnedSourceAndRejectsConfigurationDrift)
+{
+  std::ifstream file("tests/fixtures/spec182/yolo-semantic-oracle.json");
+  BOOST_REQUIRE(file.good());
+  const auto oracle = NativeJson::parse(file);
+  NativeCanonicalSource source;
+  const auto hex = oracle.at("model_hex").get<std::string>();
+  for (std::size_t i = 0; i < hex.size(); i += 2)
+    source.modelBytes.push_back(std::stoul(hex.substr(i, 2), nullptr, 16));
+  const auto descriptor = model("yolo26n", "YOLOFixture", oracle.at("graph_digest").get<std::string>());
+  NativeAssemblyControl control{std::chrono::steady_clock::now() + std::chrono::seconds(30),
+    [] {}, 1024 * 1024, 1024 * 1024};
+  const auto identity = canonicalOnnxSourceIdentity(source, control);
+  const NativeJson configuration{
+    {"schema", "ndnsf-di-native-request-catalog-v1"},
+    {"model", nativeParseJson(descriptor.canonicalJson())},
+    {"source", {{"data_name", "/fixture/source"},
+      {"digest", nativePlanningDigest(source.modelBytes.data(), source.modelBytes.size())},
+      {"model_manifest_digest", digest("fixture-manifest")}, {"canonical_graph_digest", identity.graphDigest}}},
+    {"recipe", {{"artifact_profile_digest", digest("fixture-profile")},
+      {"assembler_descriptor_digest", digest("fixture-assembler-v1")}, {"backend_abi", "fixture-abi"},
+      {"precision", descriptor.precision}, {"quantization", "none"}, {"layout", "NCHW"},
+      {"padding", "none"}, {"protection_epoch", "fixture-epoch"}, {"max_source_bytes", 1048576},
+      {"max_assembled_bytes", 1048576}, {"max_nodes", 100}}},
+    {"publication", {{"artifact_root", "/fixture/artifacts"}}},
+    {"input_format", "JSON"}, {"max_payload_bytes", 32},
+    {"splitter", {{"kind", "YOLO"}, {"components", NativeJson::array({{
+      {"candidate_id", "semantic-v1"}, {"priority", 1}, {"roles", {"Front", "Branch", "Merge"}},
+      {"node_names_by_role", NativeJson::object()}, {"input_ingress_role", "Front"},
+      {"result_egress_role", "Merge"}, {"merge_kind", "NATIVE_POSTPROCESS"},
+      {"candidate_digest", oracle.at("registered_digest")}, {"semantic_partition", oracle.at("partition")}
+    }})}}}};
+  const auto loaded = NativeRequestCatalog::load(nativeCanonicalJson(configuration), source, control);
+  BOOST_REQUIRE(loaded.preparation);
+  BOOST_REQUIRE(loaded.splitter);
+  BOOST_CHECK(loaded.preparation->adapters()->frozen());
+  const auto candidates = loaded.splitter->enumerate(loaded.model.descriptor, loaded.model.graph, {});
+  BOOST_REQUIRE_EQUAL(candidates.size(), 1);
+  BOOST_CHECK_EQUAL(candidates.front().canonicalJson(), oracle.at("candidate_json").get<std::string>());
+  const auto adapter = loaded.preparation->adapters()->find(descriptor.adapterId);
+  BOOST_REQUIRE(adapter);
+  const std::vector<std::uint8_t> payload{'{', '}'};
+  BOOST_CHECK(adapter->encodeInput(payload) == payload);
+  BOOST_CHECK_EQUAL(adapter->inspect(descriptor.modelName, descriptor.contentDigest).canonicalJson(), descriptor.canonicalJson());
+  BOOST_CHECK_THROW(adapter->encodeInput(std::vector<std::uint8_t>{'{'}), std::exception);
+  BOOST_CHECK_THROW(adapter->encodeInput(std::vector<std::uint8_t>(33, ' ')), std::exception);
+  for (int mutation = 0; mutation != 7; ++mutation) {
+    auto broken = configuration;
+    switch (mutation) {
+      case 0: broken["source"]["digest"] = digest("foreign-source"); break;
+      case 1: broken["source"]["canonical_graph_digest"] = digest("foreign-graph"); break;
+      case 2: broken["source"]["initializer_digest"] = digest("missing-initializers"); break;
+      case 3: broken["publication"]["package_manifest_digest"] = digest("foreign-package"); break;
+      case 4: broken["input_format"] = "foreign-format"; break;
+      case 5: broken["splitter"]["kind"] = "foreign-splitter"; break;
+      case 6: broken["model"]["unknown_field"] = true; break;
+    }
+    BOOST_TEST_CONTEXT("request catalog mutation " << mutation) {
+      BOOST_CHECK_THROW(NativeRequestCatalog::load(nativeCanonicalJson(broken), source, control), std::invalid_argument);
+    }
+  }
+  auto corrupt = source;
+  corrupt.modelBytes.front() ^= 1;
+  BOOST_CHECK_THROW(NativeRequestCatalog::load(nativeCanonicalJson(configuration), corrupt, control), std::invalid_argument);
+  auto cancelled = control;
+  cancelled.requireActive = [] { throw std::runtime_error("cancelled"); };
+  BOOST_CHECK_THROW(NativeRequestCatalog::load(nativeCanonicalJson(configuration), source, cancelled), std::runtime_error);
 }
 
 BOOST_AUTO_TEST_CASE(OwnedOnnxGraphMatchesMaintainedPlanningAndCanonicalIdentities)

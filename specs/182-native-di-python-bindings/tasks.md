@@ -17,6 +17,7 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 
 | Unit / Details | Status | Depends | Evidence / Remaining | Updated |
 | --- | --- | --- | --- | --- |
+| [R3-B1 Default Request Lifecycle](evidence/r3-b1-request-lifecycle-20260908.md#final-local-result) | DONE | R2-B4/B5/B6; T010-A/B acceptance retained | initial-request local batch：131 DI cases/2975 assertions经共享测试及失败单例重试通过，13 Core cases/183 assertions通过；2 request/4 grant/7 dataflow SDK oracle、CLI入口与加载检查PASS；真实网络/stream/bindings/旧路径退出仍待后续 | 2026-09-08 |
 | [R2-B6 Authorized Group Projection](evidence/r2-b6-group-projection-20260908.md) | DONE | R2-B5; R2-B3 | Initial-request local batch：group/model rank 分离、transfer operation/capability/endpoint 同源、实际 segment 消费；31 cases/1305 assertions PASS；默认 requester 与流式 feedback 未关闭 | 2026-09-08 |
 | [R2-B5 Native Group Key Admission](evidence/r2-b5-group-key-admission-20260908.md) | DONE | R2-B4; NativeOfferAdmission | Local batch only：同一认证 ACK key binding→Core RSA→Provider capability unwrap；19 cases/1216 assertions PASS；group rank/operation/endpoint 编排待闭合 | 2026-09-08 |
 | [R2-B4 Production Grant Chain](evidence/r2-b4-grant-production-audit-20260908.md) | DONE | R2-B3; CD-004; T004 acceptance retained | Local batch only：真实 signed issuer/authenticated client + sealer/Provider unwrap 组合；37 cases/672 assertions、4 independent oracle grants PASS；Core publication integration authored/T016，默认 requester 待接线 | 2026-09-08 |
@@ -62,7 +63,7 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 | [T009-B Shared Execution Lease State](contracts/execution-units.md#t009-b-shared-execution-lease-state) | DONE | T009-A | [acceptance](evidence/t009-b-shared-execution-lease-state-20260907.md)；CPP(Spec182SharedLease/*) 3 cases 全绿（新 suite di-native-provider-host.t.cpp）：SharedExecutionLeaseState（Core table + prepare mutex，host boot epoch，原四参数 constructor 保留并委托自有 state）+ shared_state overload + 非 Prepare 操作 find-then-route target 绑定检查（跨 target 行 LEASE_SERVICE_MISMATCH 且响应不泄漏 lease 细节，未知 lease 走 Core LEASE_NOT_FOUND，requester/epoch/state/replay 仍全由 Core 判定）；3 cases 覆盖双 target 争同物理槽 FIFO 等待队列（只允许一个 Prepare、host 不能双订、owner Abort/Release 后对称易主、retryAfterMs 100）、Executing lease 上另一 target 的 Commit/Abort/Renew/Release 全拒 + Released 行仍绑定 + 同 target 幂等 replay（状态未变窗口）与 Core 授权（REQUESTER_MISMATCH/STALE_EPOCH）、target 实例析构不释放执行中槽（shared state 保留 Executing 行、B 与重新 serve 的 A 都不能盗用、A owner 流 Release 后 B 继续 Prepare/执行）；旧 DiExecutionLeaseService 3 cases 零改动全绿（单 target 回归）；902 cases 完整回归（除环境性 StreamFacade）；关键修正：boost 1.71 逗号组合 selector 不可靠改单 selector 执行、FIFO 等待需同 requestId 重试、Core replay state 再验证使弃 idempotency 重放得 INVALID_TRANSITION（用例按真实语义修正）；跨服务真实双服务 PO-014 留 T016 | 2026-09-07 |
 | [T009-C Shared Provider Host Wiring](contracts/execution-units.md#t009-c-shared-provider-host-wiring) | DONE | T009-B | [acceptance](evidence/t009-c-shared-provider-host-wiring-20260907.md)；CPP(Spec182ProviderHost/*) 6 cases 全绿（新 suite di-native-provider-host.t.cpp）：NativeInferenceProvider host 单例落地（首次 serve 发布单固定 lease 入口 addScopedService EXECUTION_LEASE_SERVICE_NAME + SharedExecutionLeaseState(host boot epoch)，makeLeaseRouter 按 targetServiceName 路由——miss=LEASE_SERVICE_MISMATCH、draining 且非 Abort/Release=LEASE_TARGET_DRAINING、内部错误 in-band LEASE_INTERNAL_ERROR、wire 恒 status=true 无异常跨 Core 回调）+ serve fence 族（boot 身份/槽位一致性 invalid_argument、同名 active duplicate logic_error 先于 config 检查、executionLeaseTargetService==serviceName 且 table 必须 null 由 host 注入共享表、draining record 替换不继承旧 lease/fence/bindings、guard handler 只盖 drain 窗口）+ close/stop 幂等（registration move-only RAII、close 抬 draining 再 core close、generation 直通、valid()=state 非空 close 后仍 true、stop 全关 + serve→runtime_error、provider owner reset 不提前关闭、host dtor 后 handle 安全）+ example 迁移（DI_NativeProviderExecutable.cpp serve 提前到 installTask、main 等待 serveCompleted cv、删旧 exec-lease 双注册块、config 不再注入 lease table、ackHandler/runtimeObserver 经 def seam、单一注册路径 CD-014）；6 cases 覆盖双 target 共享 host/duplicate 拒不波及 sibling、config 一致性三拒绝 + 顺序优先、close→同 name re-serve（generation 递增、旧 handle 保持 closed）、stop 语义全族、close 后晚到 ack 真实 Core 边界（ack 仍被询问/pending 到 cleanup boundary，fence 在 dispatch 层同 Spec182Registration selector 1/2）、固定入口真实 Core 全链 dispatch（A/B 双 target、close A 后 B 仍 Completed=PO-014、draining 晚到 Prepare 应答不牵连、re-serve 后新 target 正常）；collab handler 真实执行与真实 NFD 多入口（I/di-native-provider-host.t.cpp）留 T016；旧 Spec182Registration 6/Spec182SharedLease 3/DiExecutionLeaseService 3 零改动全绿；908 cases 完整回归（除环境性 StreamFacade）；wscript 零改动（unit-tests ant_glob ndnsf-di/*.cpp 自动收录）；case-manifest T009-C file 落位 + 6 named cases；失败修正：build-nac182 13:03 重配置丢 --with-examples 使 di-native-provider target 消失（补 configure 6.6s 恢复，非代码）、Core close fence 位置假设错误改测真实边界、dot-style provider. 遗留两处、测试常量与 T009-B 冲突 rename | 2026-09-07 |
 | [T010-A Request Operation Terminal State](contracts/execution-units.md#t010-a-request-operation-terminal-state) | PARTIAL | T005-B, T008-B, T009-C | [Core I/O repair](evidence/t010-a-core-io-20260907.md)；postToIo/isOnIoThread、result I/O 等待拒绝、共享 user 寿命；-j4 构建 PASS，ClientState 11/11、既有 2/2 PASS；完整请求/成功竞争、有界通知待完成 | 2026-09-07 |
-| [T010-B Complete Request Orchestration](contracts/execution-units.md#t010-b-complete-request-orchestration) | PARTIAL | T010-A | [baseline](evidence/task-progress-registry-20260907.md)；request 仍返回 NATIVE_REQUEST_PIPELINE_NOT_READY；编排未接通 | 2026-09-07 |
+| [T010-B Complete Request Orchestration](contracts/execution-units.md#t010-b-complete-request-orchestration) | PARTIAL | T010-A | [R3-B1](evidence/r3-b1-request-lifecycle-20260908.md#final-local-result)：配置化client的初始请求/签名ACK/规划授权/Core commit/Response及取消本地通过；无runtime旧入口仍拒绝，完整输入模式/stream/真实网络及调用方迁移待后续 | 2026-09-08 |
 | [T010-C Stream Acceptance and Replacement](contracts/execution-units.md#t010-c-stream-acceptance-and-replacement) | NOT_STARTED | T010-B | [baseline](evidence/task-progress-registry-20260907.md)；无本卡独立执行/验收记录；按依赖领取 | 2026-09-07 |
 | [T011-A Sampling Parity Repair](contracts/execution-units.md#t011-a-sampling-parity-repair) | PARTIAL | T010-C | [baseline](evidence/task-progress-registry-20260907.md)；已有相关源码切片；完整卡验收未完成 | 2026-09-07 |
 | [T011-B Stable Epoch Emission](contracts/execution-units.md#t011-b-stable-epoch-emission) | PARTIAL | T011-A | [baseline](evidence/task-progress-registry-20260907.md)；已有相关源码切片；完整卡验收未完成 | 2026-09-07 |
@@ -78,6 +79,38 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 | [T017-A Development Handoff](contracts/execution-units.md#t017-a-development-handoff) | NOT_STARTED | T016-A | [baseline](evidence/task-progress-registry-20260907.md)；无本卡独立执行/验收记录；按依赖领取 | 2026-09-07 |
 
 ## Current Checkpoint
+
+2026-09-08 R3-B1 / **DONE (initial-request local batch only)**：配置化 native client、
+catalog 与 CLI 已接 Core Begin→ACK→prepare/place/seal/grant/project→commit→Response。
+131 DI cases/2975 assertions 的最终通过证据由130个共享PASS与1个SDK派生fixture
+修复后的单例PASS组成，另13 Core cases/183 assertions PASS。2 request/4 grant/
+7 dataflow（11 endpoints）独立oracle、CLI help/usage/错误schema/加载闭包检查PASS。
+保留全部编译/测试首轮失败及重试记录，见 [Final Local Result](evidence/r3-b1-request-lifecycle-20260908.md#final-local-result)。
+当前没有运行中的构建或测试；下一步 R4 接 streaming/TOKEN_FEEDBACK/session。
+T010整体、T012/T013调用方与旧路径退出、T014–T017最终验收交付保持未完成。
+
+Earlier R3-B1 checkpoints below are historical; the result above supersedes their next steps.
+
+2026-09-08 R3-B1 / **PARTIAL / TESTS_DEFERRED**：默认 operation 已持有提交的
+model/input/options/策略，并调用配置的 preparation；取消/超时后不接收编码结果。
+后续新增 service/task contract 与兼容 V2 wire 的 client 调用、C++/SDK oracle 用例；
+尚未构建/执行；无 runtime 配置的旧入口仍明确失败。新 private owner 涉及 client ABI。
+sealer/preparation 的 intent/content 绑定已修复并更新 SDK 对照数据；Core 本地取消
+接口及 open/closed 清理用例已编写。配置化 client 已接 Core ACK→native 规划/授权→
+commit/response/取消，新增 planner 组合用例；下一步补 CLI/bootstrap 和完整回调用例，
+限定编译诊断发现并修复 Core Buffer 转换错误，r2 四源码语法检查 PASS（27.272s），
+未链接/执行，不计 ABI 或业务验收。原始 r1/r2 记录均保留。
+随后已补 catalog/CLI 与 state binding，并修复 publication manifest 改变后 issuer
+allowlist 不匹配的问题；新增源身份策略/负例，尚未编译。现已补
+[配置契约](contracts/native-requester-configuration.md)、help 和 catalog 配置正向/负例；
+catalog/CLI/planning tests 限定 syntax 全部 PASS（17.330s），未链接/执行。
+随后补公开 client→Core Begin→空 ACK/取消→pending 清理用例，新增测试尚未编译/执行。
+随后补重新签名 ACK→实际规划/授权→Core commit→成功/错误绑定 Response、commit 后取消、
+晚到回调重放用例（传输/source 为 local fixtures，非网络资格）。整批进入
+READY_FOR_BATCH_TESTS；fresh configure PASS 5.934s，unit-tests/CLI -j4 build 已启动。
+下一步读取构建首边界或执行共享单测与 oracle，不重复启动同一构建。
+按同批门完成后统一构建。源码未验收、不创建产品 checkpoint，详见
+[本批记录](evidence/r3-b1-request-lifecycle-20260908.md)。
 
 2026-09-08 R2-B6 / **DONE (initial-request local batch only)**：已将 sealed dependencies
 与认证 key offers 组合为 group capability 和完整 projections，统一 group rank、

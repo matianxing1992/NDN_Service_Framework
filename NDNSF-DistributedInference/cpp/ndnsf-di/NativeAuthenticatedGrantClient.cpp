@@ -116,7 +116,7 @@ NativeGrantBinding NativeAuthenticatedGrantClient::acquire(const NativePlacement
     {"model_manifest_digest", view.modelManifestDigest}, {"protection_epoch", view.protectionEpoch}}));
   request = request.sign(*m_requesterKey);
   control.check();
-  const auto grant = m_issuer->issue(request, m_clock(), view.expiresAtMs);
+  const auto grant = m_issuer->issue(request, m_clock(), view.expiresAtMs, core.artifacts.canonicalManifestJson);
   control.check();
   detail::verifyNativeIssuedGrant(grant, request, m_authority, m_authorityPublicKey,
     m_clock(), view.expiresAtMs);

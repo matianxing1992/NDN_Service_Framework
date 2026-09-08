@@ -34,6 +34,9 @@ struct NativePlacementPlanCore
   std::string requestId;
   std::uint64_t attempt = 0;
   std::string modelDigest;
+  // Source binding checked by the sealer against inspection. V3 modelDigest
+  // is the request intent; the legacy snapshot overload retains its old wire.
+  std::string sourceContentDigest;
   std::string graphDigest;
   std::string ackClosedDigest;
   std::string candidateDigest;

@@ -281,7 +281,7 @@ BOOST_AUTO_TEST_CASE(PreparedArtifactsReachGrantAcquisitionWithoutBackfill)
   NativeRequestControl control{plan.snapshot.requestId, plan.snapshot.attempt,
                                 plan.snapshot.deadline, {}};
   NativeRolePlacementProposalV3 placed;
-  placed.context = {control.requestId, control.attempt, "/service", inspected.descriptor.contentDigest,
+  placed.context = {control.requestId, control.attempt, "/service", inspected.descriptor.intentDigest(),
     inspected.graph.graphDigest, plan.inputs.expiresAtMs};
   placed.ackClosedDigest = plan.snapshot.ackClosedDigest;
   placed.strategy = plan.proposal.strategy;

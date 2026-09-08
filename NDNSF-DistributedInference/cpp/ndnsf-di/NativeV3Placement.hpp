@@ -1,9 +1,16 @@
 #pragma once
+#include <stdexcept>
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeOfferAdmission.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
 
 namespace ndnsf::di {
+/** Expected feasibility outcome, distinct from malformed or unauthenticated input. */
+class NativeNoFeasiblePlacement : public std::runtime_error
+{
+public:
+  using std::runtime_error::runtime_error;
+};
 /** Complete role/rank proposal from admitted observations. No lease authority. */
 struct NativeRolePlacementProposalV3
 {

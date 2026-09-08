@@ -291,7 +291,7 @@ worker crash/cancel 等真实子进程案例也转 T016，卡内只运行纯 fra
 - **Read**: CD-001 FLOW-001/FLOW-002 → CD-013；P/app_sdk/placement.py::_request_v3；前置 native planner/sealer/grant/preparation/admission API。
 - **Write**: N/NativeInferenceClient.cpp; examples/DI_NativeRequester.cpp; examples/wscript; U/di-native-client.t.cpp; I/di-native-request.t.cpp。
 - **Steps**: 接 model/input→ACK_CLOSED→prepare/admit→split/place→seal/grant→commit→Response；CLI 只处理公开参数。保留每个首拒绝边界，不能只实现 preplanned 快捷路径。
-- **Verify**: CPP(Spec182ClientRequest/*)；冻结 port 输入/输出与拒绝后无 commit；编写真实 Core/Provider 完整请求 case，T016 运行。
+- **Verify**: CPP(Spec182V3Placement/PublicClientCommitsSignedOfferAndIgnoresLateTerminalCallbacks)、CPP(Spec182ClientState/ConfiguredClientClosesEmptyAckAndCancelsActualCorePendingCall)；冻结 port 输入/输出与拒绝后无 commit；编写真实 Core/Provider 完整请求 case，T016 运行。前两项已有 R3-B1 本地通过证据，真实网络 case 仍待编写/验收，不由 local fixture 替代。
 
 ### T010-C Stream Acceptance and Replacement
 

@@ -1,5 +1,79 @@
 # Failure Log and Evidence Index
 
+## 2026-09-08 — Spec182 stale dependent projection oracle
+
+r5 build PASS /30.971s；共享测试130/131通过、2963/2975断言通过，1个投影 oracle
+用例12断言失败，无 SIGSEGV。placement-v3 oracle 已改为 intent identity，但依赖它的
+projection-oracle.json 未重新生成。核对既有 SDK author 从 placement core_digest
+独立计算 plan/dataflow 后重生成；不从 C++ 输出抄期望值，不重编无源码变化的二进制。
+[原始失败](../.codex-tmp/spec182-r3-b1-r5/focused.log)，单例重试与后续 oracle 见 R3-B1。
+后续 r6 失败单例282/282断言PASS；累计131 DI/13 Core cases及三个独立oracle已通过。
+本地批次修复结果见 [Final Local Result](../specs/182-native-di-python-bindings/evidence/r3-b1-request-lifecycle-20260908.md#final-local-result)；不授予T016或真实网络资格。
+
+## 2026-09-08 — Spec182 client fixture task capability
+
+r4 build PASS /46.092s；隔离 client 空 ACK/取消例 exit201，requestWire 报
+`NATIVE_REQUEST_CONTRACT_INVALID`。fixture adapter 明确只声明 `task`，新用例却请求
+`inference`，被正确拒绝。修用例 task 字段，不放宽生产 capability 检查。原始
+[诊断](../.codex-tmp/spec182-r3-b1-r4/client-diagnostic.log)；同见 R3-B1。
+
+## 2026-09-08 — Spec182 request projection identity and lifecycle tests
+
+R3-B1 r3 build PASS /126.721s；首轮 focused process 在5.548s 后 SIGSEGV。
+此前已有明确失败：NativeMerge 签名 fixture 的旧 model identity 被拒绝，projection builder
+仍比较 source content 与新 intent digest，两个新 client 用例提前终止。不能把末尾崩溃
+归为某个已通过协议结果。原始 [focused log](../.codex-tmp/spec182-r3-b1-r3/focused.log)
+与 focused-record.json 保留；先修正 identity consumer/fixture，并隔离重跑客户端失败
+取得结构化原因。检查测试异步回调捕获所有权，避免 fatal assert 后悬空 fixture。
+见 [R3-B1](../specs/182-native-di-python-bindings/evidence/r3-b1-request-lifecycle-20260908.md)。
+
+## 2026-09-08 — Spec182 client fixture crypto declarations
+
+R3-B1 r2 build exit 1 / 232.870s：client 新测试直接调用 EVP，却只间接获得 EVP_PKEY
+前置声明，缺 `<openssl/evp.h>`。另在测试前静态发现同例旧 adapter.inspect 返回空模型，
+无法抵达 Core；改为真实 NativeCatalogModelAdapter。保留
+[r2 log](../.codex-tmp/spec182-r3-b1-r2/build.log)，修复后同树增量 r3。无测试结果。
+同见 [R3-B1](../specs/182-native-di-python-bindings/evidence/r3-b1-request-lifecycle-20260908.md)。
+
+## 2026-09-08 — Spec182 requester lifecycle test options
+
+R3-B1 fresh build exit 1 / 506.101s，首个编译错误位于新增 V3 lifecycle test：
+`NativeInferenceClient::request` 要求显式 options，第五个参数遗漏；同类 client
+空 ACK/取消用例也需修正。原始 [build log](../.codex-tmp/spec182-r3-b1/build.log)
+与 [record](../.codex-tmp/spec182-r3-b1/build-record.json) 保留。未链接完成、未运行测试。
+修复后在同一构建树增量续建，新日志使用 r2；详见
+[R3-B1](../specs/182-native-di-python-bindings/evidence/r3-b1-request-lifecycle-20260908.md)。
+
+## 2026-09-08 — Spec182 published manifest issuer binding
+
+CLI/bootstrap 静态审查发现：canonical publication 产生新 manifest，而固定 issuer
+allowlist 仅含原 catalog manifest，会在真实 grant 请求处拒绝。已补显式受信 source
+policy，经 publication hash 与 model/source/initializer/profile 绑定后签发新 manifest
+grant；不扩充任意 manifest 权限。源码与负例未执行，验收保持 PARTIAL；见
+[R3-B1](../specs/182-native-di-python-bindings/evidence/r3-b1-request-lifecycle-20260908.md)。
+
+## 2026-09-08 — Spec182 requester Core buffer conversion
+
+R3-B1 限定 `-fsyntax-only` 首次 exit 1（7.278s）：NativeRequestPlanner 将
+std::vector<uint8_t> 直接赋给 ndn::Buffer，两个 Core assignment 字段编译失败。
+尚未生成二进制或运行测试。保留
+[原始诊断](../.codex-tmp/spec182-r3-b1-syntax/NativeRequestPlanner.log)；
+改显式 iterator 拷贝并检查 Begin/Response 同类边界，后续独立 r2 目录重试。
+批次状态及命令见 [R3-B1](../specs/182-native-di-python-bindings/evidence/r3-b1-request-lifecycle-20260908.md)。
+后续 r2 四源码语法检查全部 exit 0（27.272s）；只关闭此类型错误，不代表链接或请求验收。
+
+## 2026-09-08 — Spec182 requester wire and sealer identity mismatch
+
+R3-B1 静态接线审计发现 SDK V2 model_identity_hash 为 ModelRef intent digest，
+现有 V3 sealCore 却比较 descriptor.contentDigest；不能把兼容请求改为 content hash
+绕过此边界。需区分 source content 与 request intent，并同步 artifacts/core 绑定。
+同时 Core cancelStreamRequest 不移除 pending collaboration，RL-3 必须补清理接线。
+这是代码审计发现，未运行请求、构建或实验；证据与未执行项见
+[R3-B1](../specs/182-native-di-python-bindings/evidence/r3-b1-request-lifecycle-20260908.md)。
+后续源码已区分 V3 intent/source content，重生成当前 SDK V3 对照数据；Core 已补
+CancelCollaboration 的 pending 清理接口及用例。尚未构建/测试、尚未完成默认 requester
+接线，本项保留未验收。
+
 ## 2026-09-08 — Spec182 group projection fixture const proposal
 
 R2-B6 首轮 native build exit 1，新增 Provider 交换分配负/正例修改了 fixture 的

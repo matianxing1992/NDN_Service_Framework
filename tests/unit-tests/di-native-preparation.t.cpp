@@ -100,7 +100,7 @@ NativeRolePlacementProposalV3 proposalFor(const NativeRequestControl& control,
   NativeRolePlacementProposalV3 proposal;
   // Explicit long-lived test context; publication fixtures are not live ACK evidence.
   proposal.context = {control.requestId, control.attempt, "/service",
-    model.descriptor.contentDigest, model.graph.graphDigest, 2000000000000ULL};
+    model.descriptor.intentDigest(), model.graph.graphDigest, 2000000000000ULL};
   proposal.ackClosedDigest = digest("ack");
   proposal.strategy = {"fixture", "1", digest("strategy")};
   for (const auto& name : roles) {

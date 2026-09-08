@@ -22,6 +22,7 @@ class NativeGrantClient;
 class NativeConversationCoordinator;
 class NativeRequestPreparation;
 class NativeOfferAdmission;
+struct NativeRequestRuntime;
 
 struct NativeModelRef : NativeModelDescriptor
 {
@@ -46,6 +47,19 @@ struct NativeRequestOptions
   std::uint64_t ackTimeoutMs = 5'000;
   std::string taskName;
   std::string outputMode = "FULL";
+};
+
+/** Pinned service/task metadata supplied by the application's catalog owner.
+ * Composition/task identities cannot be inferred from a model content hash. */
+struct NativeRequestContract
+{
+  std::string serviceName;
+  std::string taskName;
+  std::string adapterName;
+  std::string adapterDescriptorDigest;
+  std::string adapterCompositionDigest;
+  std::string taskDescriptorDigest;
+  std::string generationMode = "TOKEN_DIAGNOSTIC";
 };
 
 enum class NativeRequestStatus { Pending, Succeeded, Failed, Cancelled };
@@ -117,6 +131,20 @@ public:
     std::shared_ptr<const NativeOfferAdmission> admission = nullptr);
   ~NativeInferenceClient() noexcept;
 
+  NativeInferenceClient(
+    std::shared_ptr<ndn_service_framework::ServiceUser> user,
+    std::shared_ptr<const NativeAdapterRegistry> adapters,
+    const NativeRequestContract& contract,
+    std::shared_ptr<NativeRequestPreparation> preparation,
+    std::shared_ptr<const NativeOfferAdmission> admission);
+
+  NativeInferenceClient(
+    std::shared_ptr<ndn_service_framework::ServiceUser> user,
+    std::shared_ptr<const NativeAdapterRegistry> adapters,
+    const NativeRequestRuntime& runtime,
+    std::shared_ptr<NativeRequestPreparation> preparation,
+    std::shared_ptr<const NativeOfferAdmission> admission);
+
   NativeInferenceHandle request(
     const NativeModelRef& model,
     const NativeApplicationInput& input,
@@ -150,6 +178,8 @@ private:
   std::shared_ptr<NativeConversationCoordinator> m_conversations;
   std::shared_ptr<NativeRequestPreparation> m_preparation;
   std::shared_ptr<const NativeOfferAdmission> m_admission;
+  std::shared_ptr<const NativeRequestContract> m_requestContract;
+  std::shared_ptr<const NativeRequestRuntime> m_runtime;
   std::function<std::chrono::steady_clock::time_point()> m_now;
   std::shared_ptr<SerialRequestExecutor> m_executor;
   std::shared_ptr<SerialRequestExecutor> m_notifications;

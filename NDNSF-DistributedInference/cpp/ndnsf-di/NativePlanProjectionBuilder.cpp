@@ -40,7 +40,8 @@ std::map<std::string, NativeRoleProjectionInputs> NativePlanProjectionBuilder::b
   sealed.validate();
   const auto& core = sealed.core;
   if (candidate.computedDigest() != candidate.candidateDigest || candidate.candidateDigest != core.candidateDigest ||
-      candidate.model.contentDigest != core.modelDigest || candidate.graphDigest != core.graphDigest ||
+      candidate.model.intentDigest() != core.modelDigest ||
+      candidate.model.contentDigest != core.sourceContentDigest || candidate.graphDigest != core.graphDigest ||
       !context.nowMs || context.nowMs >= core.expiresAtMs || !context.noProgressMs || !context.maxSegments)
     throw std::invalid_argument("projection candidate or request bounds differ from sealed plan");
   std::map<std::string, const NativeAdmittedOfferV3*> admitted;

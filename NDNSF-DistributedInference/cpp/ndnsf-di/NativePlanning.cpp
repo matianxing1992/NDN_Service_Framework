@@ -140,6 +140,53 @@ std::string NativeAdapterDescriptor::descriptorDigest() const
   return nativePlanningDigest(canonicalJson());
 }
 
+NativeModelDescriptor NativeModelDescriptor::fromCanonicalJson(const std::string& json)
+{
+  if (json.size() > 1024 * 1024) throw std::invalid_argument("model descriptor exceeds limit");
+  const auto root = nativeParseJson(json);
+  const auto& a = root.at("adapter");
+  NativeModelDescriptor model;
+  model.modelName = root.at("model_name").get<std::string>();
+  model.contentDigest = root.at("content_digest").get<std::string>();
+  model.semanticsDigest = root.at("semantics_digest").get<std::string>();
+  model.graphDigest = root.at("graph_digest").get<std::string>();
+  model.modelFormat = root.at("model_format").get<std::string>();
+  model.precision = root.at("precision").get<std::string>();
+  model.sourceRevision = root.at("source_revision").get<std::string>();
+  auto& adapter = model.adapter;
+  adapter.name = a.at("name").get<std::string>();
+  adapter.version = a.at("version").get<std::string>();
+  adapter.stateDigest = a.at("state_digest").get<std::string>();
+  adapter.abi = a.at("abi").get<std::string>();
+  adapter.modelFormats = a.at("model_formats").get<std::vector<std::string>>();
+  adapter.tasks = a.at("tasks").get<std::vector<std::string>>();
+  adapter.backends = a.at("backends").get<std::vector<std::string>>();
+  adapter.precisions = a.at("precisions").get<std::vector<std::string>>();
+  adapter.inputSchemaDigest = a.at("input_schema_digest").get<std::string>();
+  adapter.optionsSchemaDigest = a.at("options_schema_digest").get<std::string>();
+  adapter.resultSchemaDigest = a.at("result_schema_digest").get<std::string>();
+  adapter.graphSchemaDigest = a.at("graph_schema_digest").get<std::string>();
+  adapter.splitSchemaDigest = a.at("split_schema_digest").get<std::string>();
+  adapter.stateSchemaDigest = a.at("state_schema_digest").get<std::string>();
+  adapter.graphInspectable = a.at("graph_inspectable").get<bool>();
+  adapter.splittable = a.at("splittable").get<bool>();
+  adapter.deterministicAnalysis = a.at("deterministic_analysis").get<bool>();
+  model.adapterId = adapter.name; model.adapterVersion = adapter.version;
+  model.validate();
+  if (nativeCanonicalJson(root) != model.canonicalJson())
+    throw std::invalid_argument("model descriptor contains unknown or lossy fields");
+  return model;
+}
+
+std::string NativeModelDescriptor::intentDigest() const
+{
+  validate();
+  return nativePlanningDigest(nativeCanonicalJson(NativeJson{
+    {"model_name", modelName}, {"content_digest", contentDigest},
+    {"semantics_digest", semanticsDigest},
+    {"source_revision", sourceRevision.empty() ? NativeJson(nullptr) : NativeJson(sourceRevision)}}));
+}
+
 void NativeModelDescriptor::validate() const
 {
   if (modelName.empty() || modelFormat.empty() || precision.empty() ||

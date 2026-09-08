@@ -109,7 +109,7 @@ struct Input
   NativeRolePlacementProposalV3 proposal() const
   {
     NativeRolePlacementProposalV3 p;
-    p.context = {control.requestId, control.attempt, "/service", model.descriptor.contentDigest,
+    p.context = {control.requestId, control.attempt, "/service", model.descriptor.intentDigest(),
       model.graph.graphDigest, 2000000000000ULL};
     p.ackClosedDigest = nativePlanningDigest("ack"); p.strategy = candidate.splitter;
     p.roles = roles; p.providerByRole = {{roles[0].selectedRole, "/provider"}};
