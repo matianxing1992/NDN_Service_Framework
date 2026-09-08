@@ -121,6 +121,7 @@
         "sharedRunRoot": {"$ref": "#/definitions/path"},
         "sharedLockRoot": {"$ref": "#/definitions/path"},
         "scratchRoot": {"$ref": "#/definitions/path"},
+        "transferTimeoutSeconds": {"type": "integer", "minimum": 10, "maximum": 86400},
         "peakBytes": {"type": "integer", "minimum": 1},
         "marginBytes": {"type": "integer", "minimum": 0}
       }

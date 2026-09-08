@@ -14,6 +14,7 @@ from runtime.yolo_submission import SubmissionJournal, observe_submission
 @pytest.fixture
 def shared(allocated,monkeypatch):
     module,args,prepared,profile,_,root=allocated
+    args.remote_receiver=True
     monkeypatch.delenv('SLURM_JOB_ID')
     artifact=root.parent.parent/'artifacts'
     artifact.mkdir()
@@ -140,6 +141,29 @@ def test_matching_comment_with_wrong_owner_is_rejected(monkeypatch):
     monkeypatch.setattr(subprocess,'run',run)
     with pytest.raises(ValueError,match='SUBMISSION_QUERY_BINDING'):
         observe_submission(submission_key=key,partition='bigTiger',since='2026-09-07',seconds=2)
+
+
+@pytest.mark.parametrize('fault',[False,True])
+def test_local_submit_coordinates_transport_after_gates_without_local_sbatch(shared,monkeypatch,fault):
+    from runtime import yolo_ssh
+    module,args,prepared,profile,journal,root,events=shared
+    args.remote_receiver=False
+    original=Path.is_file
+    monkeypatch.setattr(Path,'is_file',lambda p:False if str(p)=='/usr/bin/scontrol' else original(p))
+    def manifest(*a):
+        assert events==['gate']
+        events.append('inventory')
+        return {'fixture':'already gate-checked'}
+    monkeypatch.setattr(module,'_transport_manifest',manifest)
+    def coordinate(value,**kwargs):
+        assert events==['gate','inventory'] and kwargs['prepared'] is prepared
+        events.append('ssh')
+        if fault: raise subprocess.TimeoutExpired('ssh',30)
+        return dict(exitCode=78,stdout='receiver observation\n',stderr='')
+    monkeypatch.setattr(yolo_ssh,'coordinate',coordinate)
+    monkeypatch.setattr(module,'_submit_shared',lambda *a:pytest.fail('sender called receiver locally'))
+    assert module._submit(args)==78
+    assert events==['gate','inventory','ssh'] and not journal.path.exists()
 
 
 def test_batch_waits_for_submitter_ack_without_claiming_its_own_job(allocated,monkeypatch):

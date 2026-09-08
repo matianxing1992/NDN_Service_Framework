@@ -2752,3 +2752,22 @@ Actual Tiger installation and reuse passed; local dependency pins also passed.
 separately. No Slurm/SIF/GPU execution or host/native library replacement occurred.
 Lesson: verify the exact interpreter at every relevant boundary and reuse a valid
 environment instead of installing packages repeatedly. See t004-operator-env.md.
+
+## 2026-09-07 — SSH transport omitted frozen directory permissions
+
+Source review found that the new bootstrap and ordinary file receiver created
+writable harness directories. Even correct file hashes/modes would therefore
+fail verify_harness before the runtime entry. Fix: seal bootstrap directories;
+after exact manifest/content checks, seal received harness directories under the
+same publication lock. Already sealed, matching retries remain read-only so an
+active unknown submission can reach its query owner. Real receive/seal/retry and
+Tiger login-node transport now pass; no runtime qualification is inferred.
+
+The first new test run had 14 setup errors and one pass because profile/prepare
+fixtures inherited group-writable modes rejected by the declared transport
+contract. Set explicit fixture modes; the subsequent 15 checks pass. Preserve
+first.xml/log rather than hiding that failure. Real local rsync prefix resume
+also verifies that --perms --chmod=F600 keeps staged payloads owner-only/writable.
+Lesson: immutable content includes directory behavior at the next real consumer,
+and fixture permissions must be explicit rather than depend on the host umask.
+Evidence: specs/183-tiger-yolo-reusable-experiments/evidence/t004-ssh-coordinator.md.

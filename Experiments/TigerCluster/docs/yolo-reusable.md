@@ -8,8 +8,12 @@
 使用同一新版锁协议；旧冻结脚本不能同时参与。登录节点验证见
 `evidence/t004-transport-guard.md`，跨计算节点仍待实际allocation检查。自动闭包
 枚举已接入 `submit --plan-transport`，先验证现有前置门，再输出PLANNED/
-NOT_EVALUATED清单（exit 78）；不上传或提交。公开submit的SSH协调尚未完成，
-不能用清单替代正式前置门。新harness为26文件，当前实际profile尚未重新冻结。
+NOT_EVALUATED清单（exit 78）；不上传或提交。公开submit的SSH协调已接入：
+使用原始同名绝对路径、冻结bootstrap和rsync断点续传，接收端独立校验后才进入
+原有唯一提交入口。真实31文件运输与复用见 `evidence/t004-ssh-coordinator.md`；
+只证明登录节点运输，不替代正式前置门。新harness为27文件，当前实际profile
+尚未重新冻结。`storage.transferTimeoutSeconds`默认1800秒，是总运输观察预算；
+超时保留REMOTE_STATE_UNRESOLVED与暂存目录，同一run重试不得重复sbatch。
 
 **Branch**: `TigerClusterExperiments`
 **Status**: IN_PROGRESS / NOT_QUALIFIED

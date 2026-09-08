@@ -459,6 +459,8 @@ def _enter_frozen(args, prepared, action):
         command += ['--reconcile']
     if action == 'submit' and getattr(args, 'plan_transport', False):
         command += ['--plan-transport']
+    if action == 'submit' and getattr(args, 'remote_receiver', False):
+        command += ['--remote-receiver']
     return subprocess.run(command, cwd=bundle, check=False).returncode
 
 
@@ -482,6 +484,18 @@ def _execute_local(args, profile, prepared):
         raise ClosureError('LOCAL_EXECUTION_FAILED:' + type(exc).__name__) from exc
 
 
+def _transport_manifest(profile_path, value, prepared, gate_name, gate):
+    from runtime.yolo_profile import resolve_provision_inputs
+    from runtime.yolo_transport import candidate_inventory
+    gates = {gate_name: gate}
+    for name in value['release'].get('gates', {}):
+        if name not in gates:
+            gates[name] = _gate_receipt(profile_path, value, name, prepared=prepared)
+    provision = resolve_provision_inputs(profile_path, plan=prepared['plan'],
+        runtime_candidate_digest=prepared['candidateDigest'])
+    return candidate_inventory(profile_path, value, prepared, provision=provision, gates=gates)
+
+
 def _submit(args) -> int:
     if args.case not in CASE_GATE:
         raise ClosureError("SUBMIT_CASE")
@@ -502,22 +516,24 @@ def _submit(args) -> int:
     gate_name = CASE_GATE[args.case]
     gate = _gate_receipt(profile_path, value, gate_name, prepared=prepared)
     if getattr(args, 'plan_transport', False):
-        from runtime.yolo_profile import resolve_provision_inputs
-        from runtime.yolo_transport import candidate_inventory
-        gates = {gate_name: gate}
-        for name in value['release'].get('gates', {}):
-            if name not in gates:
-                gates[name] = _gate_receipt(profile_path, value, name, prepared=prepared)
-        provision = resolve_provision_inputs(profile_path, plan=prepared['plan'],
-            runtime_candidate_digest=prepared['candidateDigest'])
-        manifest = candidate_inventory(profile_path, value, prepared, provision=provision, gates=gates)
+        manifest = _transport_manifest(profile_path, value, prepared, gate_name, gate)
         print(json.dumps(dict(status='PLANNED',qualification='NOT_EVALUATED',transport=manifest),sort_keys=True))
         return INCOMPLETE
     if args.case == 'negative-dependency':
         return _not_ready('submit','NEGATIVE_RUNNER_NOT_WIRED')
     if not _shared_submission_paths(args,value,prepared):
         return _not_ready('submit','SHARED_STAGING_REQUIRED')
-    return _submit_shared(args,value,prepared)
+    if getattr(args,'remote_receiver',False) or Path('/usr/bin/scontrol').is_file():
+        return _submit_shared(args,value,prepared)
+    from runtime.yolo_ssh import coordinate
+    manifest = _transport_manifest(profile_path,value,prepared,gate_name,gate)
+    try:
+        result = coordinate(manifest,profile_path=profile_path,profile=value,prepared=prepared)
+    except (OSError,ValueError,subprocess.SubprocessError) as exc:
+        return _not_ready('submit','REMOTE_STATE_UNRESOLVED',{'errorType':type(exc).__name__})
+    if result.get('stdout'): print(result['stdout'],end='')
+    if result.get('stderr'): print(result['stderr'],file=sys.stderr,end='')
+    return result['exitCode']
 
 
 def _shared_submission_paths(args,profile,prepared):
@@ -985,6 +1001,7 @@ def main(argv=None):
     _common(submit, case=True)
     submit.add_argument('--plan-transport', action='store_true',
         help='after prerequisite validation, enumerate files without SSH, Slurm or model execution')
+    submit.add_argument('--remote-receiver', action='store_true',help=argparse.SUPPRESS)
     collect = commands.add_parser("collect", help="recompute a retained verdict")
     _common(collect)
     collect.add_argument('--reconcile', action='store_true',

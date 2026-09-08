@@ -17,7 +17,7 @@ These checks do not replace actual stage execution. Prepared output paths remain
 bound. The transport layout below preserves those paths; arbitrary relocation is
 not supported.
 
-### Cross-host transport layout (design fixed; transport not implemented)
+### Cross-host transport layout (wired; full candidate not qualified)
 
 Implementation checkpoint: explicit inventory/no-overwrite receiver is present
 in runtime/yolo_transport.py with internal tools/spec183_transport.py. It verifies
@@ -26,9 +26,29 @@ exercise are retained in evidence/t004-transport-receiver.md. Automatic semantic
 closure enumeration is now wired through `submit --plan-transport` after normal
 gate verification (evidence/t004-transport-inventory.md). It emits a manifest with
 PLANNED/NOT_EVALUATED and exit 78, not a submission. The frozen harness includes
-runtime/yolo_transport.py (26 files). Public submit SSH coordination is still
-missing; end-to-end transport remains unimplemented. Managed-journal exclusion
-is wired as below.
+runtime/yolo_transport.py and runtime/yolo_ssh.py (27 files). Public submit now
+coordinates authenticated SSH bootstrap, rsync blob transfer and the frozen
+receiver entry. The small actual login-node exercise and its reuse are recorded
+in evidence/t004-ssh-coordinator.md; they do not qualify a complete candidate.
+Managed-journal exclusion is wired as below.
+
+The control packet binds the original manifest, profile/run/bundle/lock paths,
+case and frozen harness digest. The receiver independently checks the exact
+itiger cluster and configured operator dependencies. A deterministic project
+`.incoming/<digest>` retains bootstrap, content-addressed blobs and observations.
+Rsync uses partial/append verification, protected arguments and private staging
+modes; every final file is independently hashed before no-overwrite publication.
+Unexpected final bytes reject; a corrupt complete staged blob is retained under
+a rejected name before retransmission. Frozen harness directories are checked
+for exact contents and sealed under the publication lock before execution.
+An entirely matching and already sealed retry is read-only, so an active unknown
+submission can reach the existing journal-query owner without rewriting files.
+Only the receiver's original submit path can call sbatch. An SSH observation
+timeout is REMOTE_STATE_UNRESOLVED, not evidence of job termination or permission
+to submit again. Local transport-attempt records and remote observations persist.
+Optional storage.transferTimeoutSeconds is a total sender budget (10..86400,
+default 1800); it is separate from allocation timing.stagingSeconds. Internal
+transport-only fixtures return STAGED/NOT_EVALUATED and never satisfy a gate.
 
 Receiver requires `--lock-root` equal to the profile's sharedLockRoot. It takes
 an exclusive `.transport.lock` across journal validation and all publication;
@@ -80,8 +100,8 @@ alone cannot authorize a GPU run or release a submission journal.
 Sender-side submit uses the invoking host's verified interpreter. Remote
 coordination must invoke the configured Tiger interpreter explicitly over SSH;
 batch/rank retain that selection. This avoids executing a Tiger-only absolute
-Python path on the local sender. The transport coordinator/receiver publication
-and recovery tests remain T004 work, not an implemented gate in this checkpoint.
+Python path on the local sender. The coordinator is wired; full candidate and
+actual scheduler recovery qualification remain T004/later runtime work.
 
 The dispatch `effectiveProfile` must equal the shared canonical behavior document
 computed from the current operator profile, not merely have a valid file hash.
@@ -103,8 +123,9 @@ join that cleanup record to the collection's actual job ID. Zero task exit is
 not an inference verdict; only the collector determines the result.
 The batch does not close the journal while its allocation remains active;
 external `collect --reconcile` owns terminal-state reconciliation. Receiver-side
-submission is wired for already verified shared paths. Remote transport and the
-negative runner remain incomplete; this is not release qualification.
+submission is wired for already verified shared paths and the SSH coordinator
+feeds that same owner. The negative runner remains incomplete; this is not release
+qualification.
 
 The normal two-node case now uses two tasks in the same srun step. The batch
 publishes one run/candidate/job-bound probe nonce; rank zero alone invokes the
@@ -123,8 +144,8 @@ node receipts and collection candidate to that argument. The actual profile's
 walltime is 900 seconds: its four permission/request windows plus stage/start/
 cleanup require at least 630 seconds, so the old 600-second setting could never
 satisfy the complete owner budget. Schedule and request deadlines are unchanged.
-Negative-dependency still fails as NEGATIVE_RUNNER_NOT_WIRED. Remote transport
-and portable prerequisite evidence remain prerequisites.
+Negative-dependency still fails as NEGATIVE_RUNNER_NOT_WIRED. Transport is wired;
+actual candidate prerequisite evidence and the negative runner remain incomplete.
 
 ## External allocation termination (2026-09-07)
 
@@ -180,8 +201,9 @@ zero matches remain UNKNOWN, one distinct job ID reconnects, multiple IDs fail
 and remain reserved. A late valid acknowledgment may resolve UNKNOWN. No query
 result authorizes resubmission. Final failure remains a separate collect action.
 
-This receiver does not upload files or relocate local prerequisite runs. Those
-transport owners and actual shared-filesystem qualification remain unfinished.
+This receiver does not relocate local prerequisite runs. The SSH coordinator
+transports the original same-path evidence to it. Actual shared-filesystem and
+full candidate qualification remain unfinished.
 
 ## Operator Python environment (2026-09-07)
 
