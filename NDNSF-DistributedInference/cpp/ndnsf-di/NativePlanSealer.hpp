@@ -116,10 +116,19 @@ public:
     const NativePlacementProposal& proposal,
     const NativePlanSealingInputs& inputs);
 
+  static NativePlacementPlanCore sealCore(
+    const NativeInspectedModel& model, const NativeSplitCandidate& candidate,
+    const NativeRolePlacementProposalV3& proposal, const NativeExecutionPlan& executionPlan,
+    const std::vector<NativeAdmittedOfferV3>& offers, const std::string& expectedAckClosedDigest,
+    const NativePlanSealingInputs& inputs);
+
   static NativeProviderGrantView grantView(
     const NativePlacementPlanCore& core,
     const NativeProviderPlanningView& provider,
     const NativeSecurityPolicySnapshot& security);
+
+  static NativeProviderGrantView grantView(const NativePlacementPlanCore& core,
+    const NativeAdmittedOfferV3& provider, const NativeSecurityPolicySnapshot& security);
 
   static NativeSealedPlan finalizeSecurity(
     const NativePlacementPlanCore& core,

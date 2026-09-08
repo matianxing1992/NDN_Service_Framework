@@ -160,6 +160,21 @@ std::vector<NativeSelectionRoleV3> NativeRequestPreparation::prepareRoles(
   if (!m_roles) throw std::runtime_error("DI_NATIVE_ROLE_PORT_NOT_CONFIGURED");
   auto result = m_roles(model, candidate, control);
   control.requireActive();
+  validateRoles(model, candidate, result);
+  std::sort(result.begin(), result.end(), [](const auto& a, const auto& b) {
+    return std::tie(a.role, a.rank) < std::tie(b.role, b.rank);
+  });
+  return result;
+}
+
+
+void NativeRequestPreparation::validateRoles(const NativeInspectedModel& model,
+  const NativeSplitCandidate& candidate, const std::vector<NativeSelectionRoleV3>& roles)
+{
+  model.validate();
+  candidate.validate(model.graph);
+  if (!sameModel(candidate.model, model.descriptor))
+    throw std::runtime_error("DI_NATIVE_ROLE_BINDING_MISMATCH");
   std::set<std::pair<std::string, std::uint64_t>> expected;
   for (const auto& role : candidate.executionPlan.roles) {
     const auto degree = candidate.tensorDegreesByRole.find(role);
@@ -167,8 +182,8 @@ std::vector<NativeSelectionRoleV3> NativeRequestPreparation::prepareRoles(
       throw std::runtime_error("DI_NATIVE_ROLE_BINDING_MISMATCH");
     for (std::uint64_t rank = 0; rank < degree->second; ++rank) expected.emplace(role, rank);
   }
-  if (result.size() != expected.size()) throw std::runtime_error("DI_NATIVE_ROLE_BINDING_MISMATCH");
-  for (const auto& role : result) {
+  if (roles.size() != expected.size()) throw std::runtime_error("DI_NATIVE_ROLE_BINDING_MISMATCH");
+  for (const auto& role : roles) {
     if (!expected.erase({role.role, role.rank}) || role.graphDigest != model.graph.graphDigest ||
         role.modelManifestDigest != model.modelManifestDigest ||
         role.adapterId != model.descriptor.adapterId || role.adapterVersion != model.descriptor.adapterVersion ||
@@ -195,10 +210,6 @@ std::vector<NativeSelectionRoleV3> NativeRequestPreparation::prepareRoles(
           return index >= model.graph.nodes.size();
         })) throw std::runtime_error("DI_NATIVE_ROLE_BINDING_MISMATCH");
   }
-  std::sort(result.begin(), result.end(), [](const auto& a, const auto& b) {
-    return std::tie(a.role, a.rank) < std::tie(b.role, b.rank);
-  });
-  return result;
 }
 
 NativeArtifactBinding NativeRequestPreparation::ensureArtifacts(

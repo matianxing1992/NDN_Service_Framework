@@ -7,6 +7,13 @@
 
 ## Current Findings
 
+### V3 Sealer Connection 2026-09-07
+
+完整 proposal/admitted offers 已直接连接 sealCore/grantView，复用准备角色和设备可行性
+校验，合法 exact reuse 不再被旧 preparationAccepted 条件拒绝。CPU/GPU/multi-rank
+SDK core digest 对照及相关 55-case 定向检查通过。真实 requester/catalog 与 device/dataflow
+生成仍缺，T004-A 保持 PARTIAL；见 [V3 bridge evidence](evidence/t004-v3-sealer-bridge-20260907.md)。
+
 ### Inspection Source Checkpoint 2026-09-07
 
 **A8-03 / HIGH / PARTIAL**：inspectModel 原先拼造 catalog 名称，并丢失请求完整模型描述。

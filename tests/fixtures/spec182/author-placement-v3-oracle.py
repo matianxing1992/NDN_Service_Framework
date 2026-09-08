@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Freeze SDK placement using publicly reproducible signed test offers."""
 import base64
+import hashlib
 from dataclasses import replace
 import json
 from pathlib import Path
@@ -12,7 +13,7 @@ repo = Path(__file__).resolve().parents[3]
 sys.path[:0] = [str(repo / 'NDNSF-DistributedInference'), str(repo / 'NDNSF-DistributedRepo/pythonWrapper')]
 from ndnsf_distributed_inference.sdk.placement import (
     RoleAssemblySpec, ProviderOfferV3, ProviderPlanningViewV3, DeviceTopologyProfile,
-    DeviceResourceSnapshot, ResidencyProofV3)
+    DeviceResourceSnapshot, ResidencyProofV3, PlacementPlanCoreV3, canonical_digest)
 from ndnsf_distributed_inference.planner.presplit_first import PreSplitFirstStrategy
 from ndnsf_distributed_inference.app_sdk.provider import ProviderOfferTrustVerifier
 
@@ -77,7 +78,31 @@ for name in ('cpu', 'loaded_second_device', 'assembled', 'canonical', 'insuffici
         pass
     cases.append({'name': name, 'ranks': [r.rank for r in roles], 'offers': [o.to_bytes().decode() for o in offers],
                   'expected': None if native_freshness else expected, 'native_freshness': native_freshness})
+strategy = {'name': 'bridge-fixture', 'version': '1',
+            'state': 'sha256:' + hashlib.sha256(b'bridge-strategy').hexdigest()}
+seal_cases = []
+for original in (c for c in cases if c['name'] in ('cpu', 'loaded_second_device', 'rank_cover')):
+    offers = []
+    for wire in original['offers']:
+        offer = ProviderOfferV3.from_bytes(wire.encode())
+        offer = replace(offer, expires_at_ms=2000000000000,
+                        residency=tuple(replace(p, expires_at_ms=2000000000000) for p in offer.residency))
+        offer = replace(offer, signature=base64.b64encode(key.sign(offer.digest().encode())).decode())
+        assert verifier(offer)
+        offers.append(offer)
+    selected = PreSplitFirstStrategy().propose_v3(request_id='request', attempt=1,
+        model_digest=base['model_digest'], graph_digest=base['graph_digest'],
+        roles=tuple(replace(role, rank=rank) for rank in original['ranks']),
+        providers=tuple(ProviderPlanningViewV3.from_offer(o, verify_signature=verifier) for o in offers),
+        ack_closed_digest=base['ack_closed_digest'])
+    core = PlacementPlanCoreV3(request_id='request', attempt=1, model_digest=base['model_digest'],
+        graph_digest=base['graph_digest'], roles=selected.roles, provider_by_role=selected.provider_by_role,
+        dependencies=(), ack_closed_digest=base['ack_closed_digest'], strategy_digest=canonical_digest(strategy),
+        candidate_digest='sha256:' + hashlib.sha256(b'placed-candidate').hexdigest())
+    seal_cases.append(dict(original, offers=[o.to_bytes().decode() for o in offers],
+                           deadline_ms=2000000000000, core_digest=core.digest()))
 (root / 'placement-v3-oracle.json').write_text(json.dumps({'policy': policy, 'public_pem': signed['public_pem'],
     'key_id': signed['key_id'], 'candidate': signed['candidate'], 'role': base['roles'][0],
     'model_digest': base['model_digest'], 'graph_digest': base['graph_digest'],
-    'ack_digest': base['ack_closed_digest'], 'cases': cases}, indent=2, sort_keys=True) + '\n')
+    'ack_digest': base['ack_closed_digest'], 'cases': cases, 'strategy': strategy,
+    'seal_cases': seal_cases}, indent=2, sort_keys=True) + '\n')

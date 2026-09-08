@@ -143,7 +143,7 @@ worker crash/cancel 等真实子进程案例也转 T016，卡内只运行纯 fra
 
 - **Parent**: T004; **Depends**: T003-C; **Reviewer**: wire/security review
 - **Read**: CD-003 → Values；P/sdk/placement.py::PlanSealerV3；N/NativeExecutionPlanJson.cpp 的 projection parser/validator。
-- **Write**: N/NativePlanSealer.hpp; N/NativePlanSealer.cpp; N/NativeExecutionPlanJson.hpp; N/NativeExecutionPlanJson.cpp; N/NativeRequestPreparation.hpp; N/NativeRequestPreparation.cpp; U/di-native-plan-sealer.t.cpp; U/di-native-planning.t.cpp; wscript。
+- **Write**: N/NativePlanSealer.hpp; N/NativePlanSealer.cpp; N/NativeExecutionPlanJson.hpp; N/NativeExecutionPlanJson.cpp; N/NativeRequestPreparation.hpp; N/NativeRequestPreparation.cpp; N/NativeV3Placement.hpp; N/NativeV3Placement.cpp; U/di-native-plan-sealer.t.cpp; U/di-native-planning.t.cpp; U/di-native-v3-placement.t.cpp; tests/fixtures/spec182/author-placement-v3-oracle.py; tests/fixtures/spec182/placement-v3-oracle.json; wscript。
 - **Steps**: 实现 sealCore/grantView/finalizeSecurity/project/encode 这一条规范封印能力；共享字段定义，保留 Provider 独立校验和所有 scope/endpoint/ACK 绑定。
 - **Verify**: CPP(Spec182PlanSealer/*)；固定 wire/签名字节精确一致，错误 endpoint、缺 grant、错 ACK digest 拒绝；真实 Core commit 留 T016。 辅助 CPP(Spec182CanonicalJson/*) 只验 typed canonical 字节，不替代完整计划验收。
 

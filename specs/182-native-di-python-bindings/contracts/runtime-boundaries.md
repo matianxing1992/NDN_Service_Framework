@@ -51,6 +51,9 @@ NativeAdmittedOfferV3 verify(const ndn_service_framework::AckSelectionCandidate&
 - prepareRoles 从 native catalog/recipe owner 获取候选完整角色契约，绑定 model/manifest、
   role/rank/artifact、adapter、节点与最低内存预算，再交给 proposeRoles；缺 port 明确失败。
   网络来源认证由既有 Core/catalog owner 完成，端口 DTO 本身不构成认证证明。
+- V3 sealCore 直接使用 inspected model/candidate、完整 proposal/execution plan、admitted
+  offers 和 Core owner 的原始 ACK_CLOSED digest；共用 validateRoles/feasibleChoices，
+  不经旧简化 Provider view。grantView 对 admitted offer 保留 exact-reuse 可用性。
   无 caller 提供的 trusted=true；网络或本地可信配置的验证证据由对应 owner 创建。
 - ensureArtifacts 在候选选定后、sealCore/grant 前执行；复用已存在 canonical 工件或
   原生完成当前运行时所需 publication/encryption。只返回认证 manifest/recipe/input

@@ -1,3 +1,4 @@
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeV3Placement.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanSealer.hpp"
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
@@ -143,6 +144,37 @@ void NativeSealedPlan::validate() const
   }
 }
 
+namespace {
+NativeProviderGrantView grantViewForIdentity(const NativePlacementPlanCore& core,
+  const std::string& providerName, const std::string& offerDigest,
+  const NativeSecurityPolicySnapshot& security)
+{
+  core.validate();
+  if (!isDigest(security.policyDigest)) {
+    throw std::invalid_argument("security policy digest is invalid");
+  }
+  const auto role = std::find_if(core.assignment.providerByRole.begin(),
+                                core.assignment.providerByRole.end(),
+                                [&providerName] (const auto& item) {
+                                  return item.second == providerName;
+                                });
+  if (role == core.assignment.providerByRole.end()) {
+    throw std::invalid_argument("provider is not assigned by the plan");
+  }
+  if (core.offerDigestByProvider.at(providerName) != offerDigest) {
+    throw std::invalid_argument("grant view offer differs from the sealed ACK offer");
+  }
+  if (security.requireProtectedArtifacts == (core.protectionEpoch == "plaintext-v1")) {
+    throw std::invalid_argument("grant view protection epoch disagrees with policy");
+  }
+  return {providerName, role->first, core.coreDigest, security.policyDigest,
+          core.modelDigest, core.graphDigest, core.artifactDigestByRole.at(role->first),
+          core.requesterIdentity, core.requestId, core.attempt, core.artifacts.manifestDigest,
+          core.protectionEpoch, core.expiresAtMs};
+}
+
+} // namespace
+
 NativePlacementPlanCore NativePlanSealer::sealCore(
   const NativePlanningSnapshot& snapshot,
   const NativePlacementProposal& proposal,
@@ -215,34 +247,71 @@ NativePlacementPlanCore NativePlanSealer::sealCore(
   return core;
 }
 
+
+NativePlacementPlanCore NativePlanSealer::sealCore(
+  const NativeInspectedModel& model, const NativeSplitCandidate& candidate,
+  const NativeRolePlacementProposalV3& proposal, const NativeExecutionPlan& executionPlan,
+  const std::vector<NativeAdmittedOfferV3>& offers, const std::string& expectedAckClosedDigest,
+  const NativePlanSealingInputs& inputs)
+{
+  std::vector<NativeSelectionRoleV3> prepared;
+  for (const auto& item : inputs.assemblyByRole) prepared.push_back(item.second);
+  NativeRequestPreparation::validateRoles(model, candidate, prepared);
+  const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+    std::chrono::system_clock::now().time_since_epoch()).count();
+  if (now < 0) throw std::invalid_argument("invalid sealing clock");
+  validateNativeRolePlacement(proposal, prepared, offers, static_cast<std::uint64_t>(now));
+  const auto& context = proposal.context;
+  std::vector<std::string> selectedOrder;
+  for (const auto& role : proposal.roles) selectedOrder.push_back(role.selectedRole);
+  if (executionPlan.roles != selectedOrder)
+    throw std::invalid_argument("execution role order differs from the V3 proposal");
+  if (proposal.ackClosedDigest != expectedAckClosedDigest || !isDigest(expectedAckClosedDigest) ||
+      context.requestId != inputs.artifacts.requestId || context.attempt != inputs.artifacts.attempt ||
+      context.modelDigest != model.descriptor.contentDigest || context.graphDigest != model.graph.graphDigest ||
+      context.deadlineMs != inputs.expiresAtMs || executionPlan.serviceName != context.serviceName ||
+      executionPlan.modelName != model.descriptor.modelName ||
+      inputs.artifacts.manifestDigest != model.modelManifestDigest || !isDigest(candidate.candidateDigest))
+    throw std::invalid_argument("V3 sealing inputs differ from the request or inspected model");
+  NativePlacementPlanCore core;
+  core.requestId = context.requestId; core.attempt = context.attempt;
+  core.modelDigest = context.modelDigest; core.graphDigest = context.graphDigest;
+  core.ackClosedDigest = proposal.ackClosedDigest; core.candidateDigest = candidate.candidateDigest;
+  core.strategy = proposal.strategy; core.executionPlan = executionPlan;
+  core.assignment.providerByRole = proposal.providerByRole;
+  core.offerDigestByProvider = proposal.offerDigestByProvider;
+  core.artifacts = inputs.artifacts; core.artifactDigestByRole = inputs.artifacts.artifactDigestByRole;
+  core.requesterIdentity = inputs.requesterIdentity; core.protectionEpoch = inputs.protectionEpoch;
+  core.expiresAtMs = inputs.expiresAtMs; core.requestContractDigest = inputs.requestContractDigest;
+  core.generationContract = inputs.generationContract;
+  for (const auto& role : proposal.roles) {
+    if (!core.assemblyByRole.emplace(role.selectedRole, role).second)
+      throw std::invalid_argument("duplicate selected V3 execution role");
+  }
+  core.coreDigest = nativePlanningDigest(canonicalCore(core));
+  core.validate();
+  return core;
+}
+
 NativeProviderGrantView NativePlanSealer::grantView(
   const NativePlacementPlanCore& core,
   const NativeProviderPlanningView& provider,
   const NativeSecurityPolicySnapshot& security)
 {
-  core.validate();
   provider.validate();
-  if (!isDigest(security.policyDigest)) {
-    throw std::invalid_argument("security policy digest is invalid");
-  }
-  const auto role = std::find_if(core.assignment.providerByRole.begin(),
-                                core.assignment.providerByRole.end(),
-                                [&provider] (const auto& item) {
-                                  return item.second == provider.provider;
-                                });
-  if (role == core.assignment.providerByRole.end()) {
-    throw std::invalid_argument("provider is not assigned by the plan");
-  }
-  if (core.offerDigestByProvider.at(provider.provider) != provider.offerDigest) {
-    throw std::invalid_argument("grant view offer differs from the sealed ACK offer");
-  }
-  if (security.requireProtectedArtifacts == (core.protectionEpoch == "plaintext-v1")) {
-    throw std::invalid_argument("grant view protection epoch disagrees with policy");
-  }
-  return {provider.provider, role->first, core.coreDigest, security.policyDigest,
-          core.modelDigest, core.graphDigest, core.artifactDigestByRole.at(role->first),
-          core.requesterIdentity, core.requestId, core.attempt, core.artifacts.manifestDigest,
-          core.protectionEpoch, core.expiresAtMs};
+  return grantViewForIdentity(core, provider.provider, provider.offerDigest, security);
+}
+
+NativeProviderGrantView NativePlanSealer::grantView(const NativePlacementPlanCore& core,
+  const NativeAdmittedOfferV3& provider, const NativeSecurityPolicySnapshot& security)
+{
+  const auto& offer = provider.observation();
+  if (offer.requestId != core.requestId || offer.attempt != core.attempt ||
+      offer.modelDigest != core.modelDigest || offer.service != core.executionPlan.serviceName ||
+      (offer.graphDigest != core.graphDigest && offer.graphDigest != "sha256:" + std::string(64, '0')) ||
+      offer.expiresAtMs < core.expiresAtMs || !offer.status)
+    throw std::invalid_argument("grant offer is not bound to this request");
+  return grantViewForIdentity(core, offer.provider, offer.offerDigest, security);
 }
 
 NativeSealedPlan NativePlanSealer::finalizeSecurity(
