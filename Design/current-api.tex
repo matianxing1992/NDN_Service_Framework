@@ -15,7 +15,7 @@ C++ 覆盖规范模块头文件的 public/protected 声明和数据字段；Pyth
 \subsection{参考来源}
 组织方式参考 NFD Developer’s Guide 的组件、数据结构、处理管线以及 Strategy API 的触发/动作说明。本次参考的是官方维护 PDF（Revision 12 标为 TBD）；只借鉴组织方法，NDNSF 契约全部依据本项目源码。详见 references.md。
 
-完整重载、数据字段和原始注释：\path{api/core-reference.md}。
+完整声明查询：\path{api/core-reference.md}。
 
 \section{Core API：容器与角色生命周期}
 \lead{AC-02 · Core 接口契约}
@@ -54,7 +54,7 @@ RuntimeConfig 中 containerIdentity、groupPrefix、controllerPrefix 与 trustSc
 \subsection{扩展点}
 新增模块通过本地服务或生命周期 hook 组合，避免让容器理解模型图、航点或 Repo manifest。先核对 start/stop 的异常与重复调用分支，再设计自定义 hook 的幂等性。
 
-完整重载、数据字段和原始注释：\path{api/core-reference.md}。
+完整声明查询：\path{api/core-reference.md}。
 
 \section{Core API：请求发起与 Targeted 调用}
 \lead{AC-03 · Core 接口契约}
@@ -94,7 +94,7 @@ provider 与 serviceName 均为 NDN Name；requestMessage 或模板 RequestT 携
 \subsection{线程与安全}
 User 提供 postToIo/isOnIoThread；涉及 Face 的操作遵守其执行上下文。模板请求/结果须满足具体序列化路径。request、service、Provider 证书及 ControllerVersion 的绑定由 Core 检查，应用不能只用 payload 自报身份替代。
 
-完整重载、数据字段和原始注释：\path{api/core-reference.md}。
+完整声明查询：\path{api/core-reference.md}。
 
 \section{Core API：Provider 注册与作用域回收}
 \lead{AC-04 · Core 接口契约}
@@ -139,7 +139,7 @@ close 或 handle 析构先关闭 generation，阻止新的 ACK/Selection/排队�
 \subsection{线程与扩展}
 这些注册方法按头文件约定只在 Face 线程或事件循环启动前调用。handler 可以使用线程池，但必须遵守 generation、deadline 和停止边界。新增模型/飞控业务通过 handler 扩展，不修改 Core 的领域语义。
 
-完整重载、数据字段和原始注释：\path{api/core-reference.md}。
+完整声明查询：\path{api/core-reference.md}。
 
 \section{Core API：延迟规划与协作提交}
 \lead{AC-05 · Core 接口契约}
@@ -177,7 +177,7 @@ BeginCollaboration 的 ackCollectionTimeMs 控制 ACK 窗口，timeoutMs 控制�
 \subsection{时序示意}
 User Begin → Provider ACK → User ACK\_CLOSED → 应用验证报价/规划 → CommitCollaborationPlan → Provider Selection 校验 → 各角色执行 → 终端结果。DI 在 ACK 后 inspect/规划；UAV 使用有限 job，不能把长期 mission 直接映射为永不结束的 invocation。
 
-完整重载、数据字段和原始注释：\path{api/core-reference.md}。
+完整声明查询：\path{api/core-reference.md}。
 
 \section{Core API：调用流的事件和终态}
 \lead{AC-06 · Core 接口契约}
@@ -221,7 +221,7 @@ Core 管理 cursor、重排序、转录摘要、AEAD 与签名 Data，并通过�
 \subsection{扩展约束}
 应用编码事件语义，Core 保留请求/\code{attempt/ControllerVersion} 绑定。业务若需要恢复，应明确恢复身份与新 attempt，不使用旧 handle 伪装连续成功。
 
-完整重载、数据字段和原始注释：\path{api/core-reference.md}。
+完整声明查询：\path{api/core-reference.md}。
 
 \section{Core API：命名对象与连续流}
 \lead{AC-07 · Core 接口契约}
@@ -264,7 +264,7 @@ publishSignedAppData 以 dataName 发布带签名载荷，freshness 使用 ndn::
 \subsection{生命周期}
 发布者队列与订阅缓存有界；内容编码、可丢帧/必须完整等应用约束由 UAV 或其他模块选择。取到一个分段不等于完整对象，取到某个最新样本不意味着消费了所有历史事件。
 
-完整重载、数据字段和原始注释：\path{api/core-reference.md}。
+完整声明查询：\path{api/core-reference.md}。
 
 \section{Core API：在线授权与版本状态}
 \lead{AC-08 · Core 接口契约}
@@ -301,7 +301,7 @@ bool 返回值用于区分是否产生变更或是否存在待完成处理；不
 \subsection{传播与调用影响}
 远端通过 PolicyStatus 拉取、启用的周期发现或经过认证的业务 hint 获知版本，hint 不是权威。无关身份可跳过 DKEY 重取，但安装新服务版本仍可使请求/流缓存失效。具体分支见第 9–13 章，不能把局部取钥优化写成完全无感更新。
 
-完整重载、数据字段和原始注释：\path{api/core-reference.md}。
+完整声明查询：\path{api/core-reference.md}。
 
 \section{Core API：执行租约、观测与并发}
 \lead{AC-09 · Core 接口契约}
@@ -327,7 +327,7 @@ setHandlerThreads、setAckProcessingThreads、setAckThreads 的作用域不同�
 \subsection{检查}
 使用 scoped registration 与租约生命周期检查确认关闭、重复释放和过期行为；统计值不能替代 selected Provider 的实际执行/终端结果。完整类型和 setter 参数见 Core 参考。
 
-完整重载、数据字段和原始注释：\path{api/core-reference.md}。
+完整声明查询：\path{api/core-reference.md}。
 
 \section{Repo API：对象与精确 Data packet}
 \lead{AC-10 · Repo 接口契约}
@@ -361,7 +361,7 @@ putDataPacket 保存签名 Data 的原始 wire，并使用其中编码的精确�
 \subsection{安全与单位}
 SHA-256、segmentCount、size、objectType 和 policyEpoch 不能互相替代身份字段；metadata 的声明不证明 payload 已经加密。调用者需要明确精确字节、签名者和授权要求。
 
-完整重载、数据字段和原始注释：\path{api/repo-reference.md}。
+完整声明查询：\path{api/repo-reference.md}。
 
 \section{Repo API：制品上传与提交}
 \lead{AC-11 · Repo 接口契约}
@@ -411,7 +411,7 @@ begin\_upload(descriptor) 返回 ArtifactUploadSession；随后 upload\_file，�
 \subsection{恢复身份}
 幂等键、artifact/root digest、chunk 参数和 lease 联合约束恢复；同路径文件被替换后不能沿用旧进度。进度回调反映阶段，不替代完整 hash 与副本 receipt 校验。
 
-完整重载、数据字段和原始注释：\path{api/repo-reference.md}。
+完整声明查询：\path{api/repo-reference.md}。
 
 \section{Repo API：下载、验证与传输状态机}
 \lead{AC-12 · Repo 接口契约}
@@ -453,7 +453,7 @@ ArtifactResumeSession 的 restoreVerified、markVerified、renewLease、resume�
 \subsection{存储边界}
 \code{PayloadStore/MetadataStore} 与 FilesystemArtifactStore 维护 staging 和元数据，区别于普通对象 SQLite。重试需保存 first failure；旧缓存存在不证明恢复后的文件与引用匹配。
 
-完整重载、数据字段和原始注释：\path{api/repo-reference.md}。
+完整声明查询：\path{api/repo-reference.md}。
 
 \section{Repo API：目录、副本与缓存控制}
 \lead{AC-13 · Repo 接口契约}
@@ -477,7 +477,7 @@ RepoCatalogEntry catalogLookup(const std::string& objectName) const;
 \textbf{源码：}\path{NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoCore.hpp}，第 64 行。\par
 
 \subsection{目录数据}
-catalogStatus 报告本 Repo 的模式、epoch 和对象数；snapshot 是完整本地目录，delta 按目录 epoch 提供变化，lookup 以名称/类型/类别等字段过滤。目录 epoch 不是 Core ControllerVersion。
+catalogStatus 报告本 Repo 的模式、epoch 和对象数；snapshot 是完整本地目录，delta 按目录 epoch 提供变化。C++ RepoCore::catalogLookup 只接受 objectName 并精确读取一个对象，不提供类型/类别组合过滤；Python 目录查询能力须按其独立入口核对。目录 epoch 不是 Core ControllerVersion。
 
 \subsection{跨 Repo 行为}
 目录交换、同步和 repair 的 Python 编排不因为 C++ DTO 存在就自动启动。Replica metadata 声明、实际 Data 可读性、保留/删除状态必须分别核对。共享目录不意味着每个节点都拥有全部对象。
@@ -488,7 +488,7 @@ catalogStatus 报告本 Repo 的模式、epoch 和对象数；snapshot 是完整
 \subsection{失败}
 缺失对象、校验错误、过期 lease、副本不足和控制命令拒绝不是同一错误。调用者按明确 operation/status 响应处理，不以空结果一概解释全部失败。
 
-完整重载、数据字段和原始注释：\path{api/repo-reference.md}。
+完整声明查询：\path{api/repo-reference.md}。
 
 \section{DI API：Python 应用入口与原生句柄}
 \lead{AC-14 · DI 接口契约}
@@ -520,13 +520,13 @@ NativeInferenceHandle request(
     std::shared_ptr<const NativePlacementStrategy> placementStrategy,
     const NativeRequestOptions& options);
 \end{Verbatim}
-\textbf{源码：}\path{NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp}，第 121 行。\par
+\textbf{源码：}\path{NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp}，第 120 行。\par
 
 \textbf{API-c0c25988d534}\quad public\par
 \begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
 NativeInferenceResult result(std::chrono::milliseconds waitTimeout) const;
 \end{Verbatim}
-\textbf{源码：}\path{NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp}，第 95 行。\par
+\textbf{源码：}\path{NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp}，第 94 行。\par
 
 \subsection{应用入口}
 APPClient.request 以 model、task、input、timeout\_ms 为必需业务输入，\code{options/objective/constraints/strategy} 按路径处理。InferenceClient 的 request\_model、request\_task 和 request(deployment, ...) 是不同入口；api 包的重导出不改变真实 owner。
@@ -540,7 +540,7 @@ NativeApplicationInput 区分 Inline 与 RepositoryReference，携带任务和 s
 \subsection{生命周期}
 cancel 请求取消，observe 注册事件观察，close 停止 client；捕获资源须覆盖异步生命周期。Python 编排和 native 迁移的实际差异由 Spec182 跟踪，目标 PDF 本轮仍不自动增加尚未获用户单独确认的迁移设计。
 
-完整重载、数据字段和原始注释：\path{api/di-reference.md}。
+完整声明查询：\path{api/di-reference.md}。
 
 \section{DI API：模型适配与角色放置扩展}
 \lead{AC-15 · DI 接口契约}
@@ -552,7 +552,7 @@ virtual std::vector<NativeSplitCandidate> enumerate(
     const NativeGraphSnapshot& graph,
     const NativeCandidateBudget& budget) const = 0;
 \end{Verbatim}
-\textbf{源码：}\path{NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp}，第 172 行。\par
+\textbf{源码：}\path{NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp}，第 209 行。\par
 
 \textbf{API-0f4ac0e590fd}\quad public\par
 \begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
@@ -561,7 +561,7 @@ virtual NativeRolePlacementProposalV3 proposeRoles(
     const std::vector<NativeSelectionRoleV3>& roles,
     const std::vector<NativeAdmittedOfferV3>& offers, std::uint64_t nowMs) const = 0;
 \end{Verbatim}
-\textbf{源码：}\path{NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp}，第 183 行。\par
+\textbf{源码：}\path{NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp}，第 220 行。\par
 
 \subsection{切分输入}
 enumerate 输入模型描述、已检查的图快照和候选预算，输出 NativeSplitCandidate 集合。候选描述应与 adapter 的真实图、工件及预算绑定；不是先任意创造角色再让执行器猜测如何运行。
@@ -575,7 +575,7 @@ ACK\_CLOSED → adapter inspect/候选枚举 → offer admission → placement �
 \subsection{扩展规则}
 新增策略实现 identity 与虚接口，保持确定的输入绑定、预算和拒绝行为。已有 \code{NativePreSplitFirstPlacement} 不代表所有模型都支持同一种切分；ONNX、Qwen、YOLO、Python llama 的后端支持分别核对。
 
-完整重载、数据字段和原始注释：\path{api/di-reference.md}。
+完整声明查询：\path{api/di-reference.md}。
 
 \section{DI API：准备、发布后再绑定与封存}
 \lead{AC-16 · DI 接口契约}
@@ -618,7 +618,7 @@ bindPublishedRoles 在保持角色、候选、Provider 和设备不变的条件�
 \subsection{封存与边界}
 sealCore、grantView、finalizeSecurity、project、encode 构成计划/安全投影的不同步骤。端口测试通过不等于真实 catalog/Repo、Core publisher 与 requester 默认链已接通；新准备/发布组件的接线状态仍需 Spec182 证据。
 
-完整重载、数据字段和原始注释：\path{api/di-reference.md}。
+完整声明查询：\path{api/di-reference.md}。
 
 \section{DI API：Provider 注册、授权与执行}
 \lead{AC-17 · DI 接口契约}
@@ -666,7 +666,7 @@ NativeProviderHandler → NativeProviderSession → \code{NativeProviderRuntime/
 \subsection{失败与关闭}
 错误 grant、过期 lease、角色不符、模型未准备和执行错误保留不同边界。关闭注册要阻止过期 generation 的 queued work 发布结果。默认模型配置可能使用 plaintext-v1，不能仅因存在 ProtectedRuntime 就声称所有工件均已加密。
 
-完整重载、数据字段和原始注释：\path{api/di-reference.md}。
+完整声明查询：\path{api/di-reference.md}。
 
 \section{DI API：生成、KV 与会话延续}
 \lead{AC-18 · DI 接口契约}
@@ -675,7 +675,7 @@ NativeProviderHandler → NativeProviderSession → \code{NativeProviderRuntime/
 \begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
 void cancel();
 \end{Verbatim}
-\textbf{源码：}\path{NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp}，第 96 行。\par
+\textbf{源码：}\path{NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp}，第 95 行。\par
 
 \subsection{状态 owner}
 NativeEpochCoordinator、GenerationEpochLineage、DecodeStateIdentity 与 \code{ConversationStateBinding} 分别管理 generation 轮次、谱系、解码状态及会话绑定。QwenGenerationSession 处理模型执行/KV，tokenizer 和采样策略属于 DI，不进入 Core。
@@ -689,7 +689,7 @@ pin、release、restore 与会话 journal 是不同阶段；恢复需核对绑�
 \subsection{验证边界}
 当前原生 generation/tokenizer 组件已有局部实现和定向证据，但完整 requester/no-Python、流式与会话资格由 Spec182 控制。本轮 API 文档不升级这些运行结论。完整方法与字段分别见相应 C++ 及 Python 声明参考。
 
-完整重载、数据字段和原始注释：\path{api/di-reference.md}。
+完整声明查询：\path{api/di-reference.md}。
 
 \section{UAV API：飞控边界与操作权限}
 \lead{AC-19 · UAV 接口契约}
@@ -729,7 +729,7 @@ Core 的 User/Provider 权限、UAV OperatorAuthorityLease、飞行 readiness/sa
 \subsection{生命周期与失败}
 持续接收链路、串口/UDP worker、Qt UI 回调有不同执行上下文。链路断开、设备拒绝、操作 lease 到期和服务超时应保留原边界。新增飞控 backend 需实现能力、状态和停机行为，不在 Core 中加入 MAVLink 指令解释。
 
-完整重载、数据字段和原始注释：\path{api/uav-reference.md}。
+完整声明查询：\path{api/uav-reference.md}。
 
 \section{UAV API：任务、补偿与终端报告}
 \lead{AC-20 · UAV 接口契约}
@@ -766,7 +766,7 @@ snapshot/restore 和 \code{reconcileVehicleAndStreams} 将持久任务状态与�
 \subsection{协作扩展}
 新增任务类型保持 mission/part/job 各自身份和状态机；使用 Core Begin/Commit 协作原语，应用定义航点和证据。不要把长期 mission 绑为一个无限存活的 Core invocation。
 
-完整重载、数据字段和原始注释：\path{api/uav-reference.md}。
+完整声明查询：\path{api/uav-reference.md}。
 
 \section{UAV API：视频管线、遥测与录像}
 \lead{AC-21 · UAV 接口契约}
@@ -802,7 +802,7 @@ CompactTelemetrySample 的 latitudeE7/longitudeE7、altitudeMm、groundSpeedMmps
 \subsection{录像链}
 录像保存原始带签名/保护的 packet 与应用 manifest，再通过 Repo API 写入。录制开关独立于直播显示；gap、retention 和 playback 游标属于应用管理。Camera/Repo 完整产品链不能自动外推所有传感器录制都已实现。
 
-完整重载、数据字段和原始注释：\path{api/uav-reference.md}。
+完整声明查询：\path{api/uav-reference.md}。
 
 \section{UAV API：检测与多视角识别扩展}
 \lead{AC-22 · UAV 接口契约}
@@ -838,7 +838,7 @@ executeMultiViewJob 输入 job、model profile、已验证 views、terminalOwner
 \subsection{失败与验证}
 缺视角、模型/输入摘要不符、任务过期、错误 owner 与模型失败分别报告。新增算法保留输入绑定、结果字段与可复核模型身份；接口存在不证明真实硬件准确率或分布式运行资格。
 
-完整重载、数据字段和原始注释：\path{api/uav-reference.md}。
+完整声明查询：\path{api/uav-reference.md}。
 
 \section{API 扩展与跨模块调用检查}
 \lead{AC-23 · Core 接口契约}
@@ -855,4 +855,4 @@ executeMultiViewJob 输入 job、model profile、已验证 views、terminalOwner
 \subsection{文档管理}
 执行 MANAGEMENT.md 与 AGENTS.md 的同步要求。API 变更不仅是改函数名；默认值、线程承诺、权限门、状态和错误语义改变也必须登记。当前/目标必须独立维护，完整声明参考更新后人工审查差异。
 
-完整重载、数据字段和原始注释：\path{api/core-reference.md}。
+完整声明查询：\path{api/core-reference.md}。

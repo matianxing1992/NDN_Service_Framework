@@ -1,0 +1,20 @@
+--- a/NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp
++++ b/NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp
+@@ -10,0 +11 @@
++#include <optional>
+@@ -12,0 +14 @@
++#include <variant>
+@@ -55 +57,10 @@
+-  std::vector<std::int64_t> shape;
++  std::vector<std::variant<std::int64_t, std::string>> shape;
++  std::optional<std::uint64_t> estimatedBytes;
++};
++
++struct NativeGraphEdge
++{
++  std::string id;
++  std::string producer;
++  std::vector<std::string> consumers;
++  NativeTensorContract tensor;
+@@ -65,0 +77 @@
++  std::vector<NativeGraphEdge> edges;

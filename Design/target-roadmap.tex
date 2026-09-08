@@ -1,0 +1,91 @@
+\clearpage
+\section{TG-01：授权版本与影响范围}
+\lead{PLANNED · Core；当前基线仍采用全局 ControllerVersion}
+目标是让无关主体不因一次局部授权调整而清除业务状态。ServiceController::grant、revoke、
+getPolicyStatus 和 User/Provider 的状态安装是迁移边界；现有签名先保持兼容。
+新状态契约须分别表达密钥版本、服务策略版本、主体授权版本及受影响服务/主体，
+不能把目录 epoch、请求 attempt 或通知序号当作授权版本。
+
+\subsection{API 行为与兼容要求}
+grant 成功后仅受影响主体更新授权视图；未变的权限不触发 DKEY 获取。
+密钥轮换仍可影响全部使用该密钥的参与者，不能因局部通知而跳过必要撤销。
+getPolicyStatus 返回带签名的权威状态；新增字段必须定义旧客户端的保守处理及不支持版本错误。
+状态安装应先验证签名、主体/服务绑定、单调版本和有效期，再原子切换。
+通知接口仅携带版本线索和影响范围，收到通知不直接安装授权。
+NDN-SVS 可作为通知承载候选，是否采用由后续 Spec 决定；必须保留断连重连后的权威拉取。
+
+\subsection{验收与未决项}
+验证局部 grant、全局轮换、撤销后重授、乱序/重复通知、丢通知、离线恢复和旧客户端。
+记录每个节点的安装版本、权限刷新次数与密钥刷新次数；“无关节点不更新”须有定向证据。
+版本字段的线格式、密钥轮换粒度和兼容协商尚未定稿，本章不声称现有实现满足目标。
+
+\section{TG-02：DI 原生请求链与唯一状态所有者}
+\lead{PLANNED · DI；关联 Spec182，不能据此关闭原有任务}
+NativeInferenceClient 的请求入口负责驱动准备、ACK 收集关闭、候选选择、发布后绑定、
+封存、提交和终态；适配器提供模型检查和拆分能力，Core 继续处理通用通信与权限。
+Python APPClient 逐步调用同一原生状态机，不另行维护第二套候选和终态规则。
+
+\subsection{API 迁移契约}
+\code{NativeInferenceHandle::result} 保留局部等待超时与请求 deadline 的区别；cancel 幂等，
+observe 保留迟注册历史回放和串行通知规则。接通 dispatch 之前保留明确的
+\code{NATIVE_REQUEST_PIPELINE_NOT_READY} 错误，禁止静默改走测试执行器。
+\code{NativeModelSplitStrategy::enumerate} 的输出由共享候选 validator 校验；模型适配器不能
+越过角色覆盖、依赖、资源和身份约束。Python 入口签名、别名、默认值与异常映射逐项登记。
+\code{PlanningGraphDigest}、\code{CanonicalGraphDigest}、\code{ArtifactRootDigest} 和 RequestAttempt
+建议采用不同类型，转换必须经过对应 owner 验证，禁止仅因底层都是字符串而互换。
+
+\subsection{验收与迁移边界}
+先以独立 SDK oracle 校验候选和角色映射，再检查真实 requester 调用路径、授权拒绝、
+晚到 ACK、发布失败和取消竞争。组件测试、网络集成、模型执行及硬件资格分别记录。
+新旧路径切换必须显式配置和可观测，兼容入口删除须先证明维护调用方已经迁移。
+
+\section{TG-03：跨模块异步 API 契约}
+\lead{PLANNED · Core / DI / Repo / UAV}
+统一描述规则，不强制所有组件使用同一个线程池。每个异步入口登记调用线程、回调执行器、
+重入许可、资源所有者、deadline 来源、取消传播范围和终态后的回调策略。
+RequestServiceStreaming、NativeInferenceHandle、artifact transfer 和 UAV mission/job
+优先应用此规则；实际签名及 wire 变化分别由后续 Spec 审查。
+
+\subsection{状态和错误}
+局部等待超时不隐式取消业务请求。请求 deadline 到期禁止产生新的下游工作；已经提交的
+外部副作用通过显式取消/补偿处理，不能把本地句柄结束等同于远端工作已停止。
+终态只能提交一次，迟到回调按 request/attempt/generation 过滤；重复取消无新增副作用。
+队列达到容量时明确拒绝、丢弃旧帧或等待的策略，禁止无界增长。
+
+\subsection{验收}
+使用可控时钟和调度器覆盖 cancel/complete/close 竞争、回调重入、观察者异常、
+排队超时和资源释放。远端取消须有实际协议路径证据，不能只依赖本地状态测试。
+
+\section{TG-04：Repo 能力、提交与恢复}
+\lead{PLANNED · Repo；保留接收、验证、提交的阶段边界}
+C++ RepoCore::catalogLookup 继续表示精确对象名查询；组合过滤由单独的查询契约承载，
+不改变旧接口参数含义。建立 local C++、network service、Python orchestration 三列能力表，
+每项查询、上传、下载、复制和 repair 标明 supported / unsupported / partial。
+
+\subsection{API 行为}
+begin\_upload、publish\_file、begin\_fetch、fetch\_file 和 abort 应明确 operation identity、
+恢复凭据、重复调用结果和进度保留策略。相同 operation 与相同摘要重试返回相同已提交结果；
+相同 operation 携带不同摘要必须拒绝。目录可见性与 COMMITTED 状态关联，目录声明不能
+替代实际 Data 完整性验证。条件更新和恢复记录的落盘原子性需要独立设计。
+
+\subsection{验收}
+覆盖传输中止、验证后崩溃、提交后响应丢失、重复提交、目录存在但数据缺失、删除与读取竞争。
+不得把 Python repair 编排自动归入 C++ 对等能力；存储格式变更需提供迁移或版本拒绝路径。
+
+\section{TG-05：UAV 类型边界与独立状态机}
+\lead{PLANNED · UAV；飞控、任务、视频与界面通过显式接口协作}
+FlightControllerBackend::command/sendMavlink 的应用参数逐步由字符串字段映射改为
+经验证的命令/结果类型；在兼容适配器中完成旧 Fields 转换，未知字段、缺字段、单位不符
+及不支持的 schema version 明确报错。原始 MAVLink 帧通道保持独立能力和权限检查。
+
+\subsection{API 行为}
+mission 保持长期状态，有限 job 保持独立 attempt 与终态 owner。
+compensateMissingParts 仅对缺失部分发起新 attempt，旧结果不得覆盖新状态。
+操作租约、Core 授权和飞控 readiness 分别验证，不因 GUI 按钮可用就跳过后端检查。
+视频队列的丢帧策略与任务结果交付分离；界面订阅状态，领域层不依赖 Qt 生命周期。
+
+\subsection{验收与落地顺序}
+先验证 Mock backend 的类型转换、租约过期、失联和迟到结果，再验证真实飞控适配器。
+视频性能和真实飞行安全边界另行验收。本轮只接受改进方向，不宣称硬件链路已通过。
+优先完成文档基线和关键契约，再沿当前 Spec 落地 TG-02；TG-01/03/04/05 各自通过
+后续 Spec 确定具体接口、兼容迁移和任务，不创建虚构的 Spec 编号。

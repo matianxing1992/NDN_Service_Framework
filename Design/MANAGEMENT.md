@@ -26,6 +26,23 @@
 
 ## 验证与 Git
 
+R2 起，当前 API 和目标 API 分别使用 api/inventory.json 与 api/target-inventory.json。
+目标源码身份保存在 target-source-baseline.json 与独立补丁，target-snapshot.tex 不随当前刷新。
+只有已接受的目标变更可以更新目标快照；禁止用当前清单覆盖目标。目标 TG-01 至 TG-05
+是 PLANNED，当前实现与运行资格仍由源码、Spec 和证据决定。
+
+源码范围由 design_state.py 定义：四模块维护源文件和配置，包含 .cpp 实现，排除测试、
+vendor、模型和构建输出；另外保留已明确登记的支撑文件。新增/删除入口、实现或配置必须
+检查集合差异。未跟踪的新产品文件先归入对应源码工作单元，不能仅靠 git ls-files 宣称覆盖。
+快照范围不等于逐行语义审查；基线刷新必须保留未提交差异及实际资格状态。
+
+当前更新顺序：build-api-reference.py → build-behavior-coverage.py → refresh-snapshot.py；
+目标按需运行 render-api-contracts.py --target。检查 test_design_state.py、verify-api-reference.py
+和两侧 verify-source-baseline.py 后，build.py 构建双 PDF，verify.py 核对同一次构建。
+build-provenance.json 绑定所有 TeX/JSON/脚本/补丁输入与双 PDF；任何输入改变必须重建。
+behavior-coverage.json 为每个函数登记 SIGNATURE_ONLY 或 CONTRACT_REFERENCED；不得把后者
+解释为完整语义或运行验证。新工作单元应补行为缺口及验证证据，不能自动批量提升状态。
+
 提交前检查源码摘要、API 签名与引用、当前/目标的预期差异、双 PDF 构建、文字/字体/分页/图表与链接；源码改变须运行适当测试，单纯文档修改不触发大型运行实验。
 把 PDF、TeX、API 参考、生成/检查脚本、覆盖矩阵、Spec 追踪与精简证据作为同一文档单元提交到 Experimental。暂存显式路径或本单元 hunk，不能带入并行源码改动；不自动 push。
 不提交原始日志、预览图片、源码压缩包、模型、密钥和构建缓存。AGENTS.md 若是本机忽略文件，只在本机维护规则入口，可交付内容以本文件为准，不为文档任务强行改变仓库指令文件追踪策略。

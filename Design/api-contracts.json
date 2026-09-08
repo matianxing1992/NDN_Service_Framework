@@ -423,7 +423,7 @@
       "sections": [
         {
           "title": "目录数据",
-          "text": "catalogStatus 报告本 Repo 的模式、epoch 和对象数；snapshot 是完整本地目录，delta 按目录 epoch 提供变化，lookup 以名称/类型/类别等字段过滤。目录 epoch 不是 Core ControllerVersion。"
+          "text": "catalogStatus 报告本 Repo 的模式、epoch 和对象数；snapshot 是完整本地目录，delta 按目录 epoch 提供变化。C++ RepoCore::catalogLookup 只接受 objectName 并精确读取一个对象，不提供类型/类别组合过滤；Python 目录查询能力须按其独立入口核对。目录 epoch 不是 Core ControllerVersion。"
         },
         {
           "title": "跨 Repo 行为",

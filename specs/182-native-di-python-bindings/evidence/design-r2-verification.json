@@ -1,0 +1,42 @@
+{
+  "run": ".codex-tmp/design-pdf-20260908T043646760539Z",
+  "runtime_tests": "not run",
+  "current-design": {
+    "pages": 66,
+    "warnings": [],
+    "fonts_embedded": true,
+    "sha256": "879b5b47c128ea9b1aa439f46c56edad2a134676f56e040ec3eb0dec4fb3d8cb",
+    "toc_sections_verified": 62
+  },
+  "target-design": {
+    "pages": 69,
+    "warnings": [],
+    "fonts_embedded": true,
+    "sha256": "0662984b30fb0d84262b565b2895f72d342da4d51730ab05ded1cd7f8aaf869b",
+    "toc_sections_verified": 67
+  },
+  "technical_body_equal": false,
+  "api_verification": {
+    "result": "PASS",
+    "files": 295,
+    "entries": 16586,
+    "bindings": 852,
+    "functions": 5744,
+    "errors": []
+  },
+  "source_reconstruction": {
+    "result": "PASS",
+    "files_verified": 460,
+    "baseline_commit": "ca585ab5365189203325a8462d8726d2ea32c98f",
+    "patch_sha256": "69bdb7e5e0d497945ab8444ec7edf59ec677968734db2881f04508b77236d0ba"
+  },
+  "target_source_reconstruction": {
+    "result": "PASS",
+    "files_verified": 350,
+    "baseline_commit": "e9fe33994a6ca3ff81893591bd24c3fae43f933f",
+    "patch_sha256": "f48a8c1a1b81be4e0cb7d5c4c0c7fd6d0da20d881728b1785fdc12e4ea7b53aa"
+  },
+  "source_archive_verified": 460,
+  "source_drift_after_snapshot": [],
+  "snapshot_commit": "ca585ab5365189203325a8462d8726d2ea32c98f"
+}

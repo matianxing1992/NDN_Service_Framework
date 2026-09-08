@@ -1,20 +1,138 @@
+--- a/NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp
++++ b/NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp
+@@ -28 +27,0 @@
+-  std::string sourceRevision;
+--- a/NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.cpp
++++ b/NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.cpp
+@@ -1,0 +2 @@
++#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
+@@ -57,0 +59,28 @@
++void NativeAdapterDescriptor::validate() const
++{
++  if (name.empty() || version.empty() || abi.empty() || modelFormats.empty() ||
++      tasks.empty() || backends.empty() || precisions.empty())
++    throw std::invalid_argument("model adapter descriptor is incomplete");
++  for (const auto* value : {&stateDigest, &inputSchemaDigest, &optionsSchemaDigest,
++                            &resultSchemaDigest, &graphSchemaDigest, &splitSchemaDigest, &stateSchemaDigest})
++    requireDigest(*value, "adapter schema/state digest");
++}
++
++std::string NativeAdapterDescriptor::canonicalJson() const
++{
++  validate();
++  return nativeCanonicalJson(NativeJson{
++    {"name", name}, {"version", version}, {"state_digest", stateDigest}, {"abi", abi},
++    {"model_formats", modelFormats}, {"tasks", tasks}, {"backends", backends}, {"precisions", precisions},
++    {"input_schema_digest", inputSchemaDigest}, {"options_schema_digest", optionsSchemaDigest},
++    {"result_schema_digest", resultSchemaDigest}, {"graph_schema_digest", graphSchemaDigest},
++    {"split_schema_digest", splitSchemaDigest}, {"state_schema_digest", stateSchemaDigest},
++    {"graph_inspectable", graphInspectable}, {"splittable", splittable},
++    {"deterministic_analysis", deterministicAnalysis}});
++}
++
++std::string NativeAdapterDescriptor::descriptorDigest() const
++{
++  return nativePlanningDigest(canonicalJson());
++}
++
+@@ -66,0 +96,19 @@
++  adapter.validate();
++  if (adapterId != adapter.name || adapterVersion != adapter.version ||
++      std::find(adapter.modelFormats.begin(), adapter.modelFormats.end(), modelFormat) == adapter.modelFormats.end() ||
++      std::find(adapter.precisions.begin(), adapter.precisions.end(), precision) == adapter.precisions.end())
++    throw std::invalid_argument("model descriptor is incompatible with its adapter");
++}
++
++std::string NativeModelDescriptor::canonicalJson() const
++{
++  validate();
++  return nativeCanonicalJson(NativeJson{
++    {"model_name", modelName}, {"content_digest", contentDigest}, {"semantics_digest", semanticsDigest},
++    {"graph_digest", graphDigest}, {"model_format", modelFormat}, {"precision", precision},
++    {"adapter", nativeParseJson(adapter.canonicalJson())}, {"source_revision", sourceRevision}});
++}
++
++std::string NativeModelDescriptor::modelDigest() const
++{
++  return nativePlanningDigest(canonicalJson());
 --- a/NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp
 +++ b/NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp
-@@ -10,0 +11 @@
-+#include <optional>
-@@ -12,0 +14 @@
-+#include <variant>
-@@ -55 +57,10 @@
--  std::vector<std::int64_t> shape;
-+  std::vector<std::variant<std::int64_t, std::string>> shape;
-+  std::optional<std::uint64_t> estimatedBytes;
+@@ -31,0 +32,25 @@
++struct NativeAdapterDescriptor
++{
++  std::string name;
++  std::string version;
++  std::string stateDigest;
++  std::string abi;
++  std::vector<std::string> modelFormats;
++  std::vector<std::string> tasks;
++  std::vector<std::string> backends;
++  std::vector<std::string> precisions;
++  std::string inputSchemaDigest;
++  std::string optionsSchemaDigest;
++  std::string resultSchemaDigest;
++  std::string graphSchemaDigest;
++  std::string splitSchemaDigest;
++  std::string stateSchemaDigest;
++  bool graphInspectable = false;
++  bool splittable = false;
++  bool deterministicAnalysis = true;
++
++  void validate() const;
++  std::string canonicalJson() const;
++  std::string descriptorDigest() const;
 +};
 +
-+struct NativeGraphEdge
-+{
-+  std::string id;
-+  std::string producer;
-+  std::vector<std::string> consumers;
-+  NativeTensorContract tensor;
-@@ -65,0 +77 @@
-+  std::vector<NativeGraphEdge> edges;
+@@ -42,2 +67,6 @@
+-
+-  void validate() const;
++  NativeAdapterDescriptor adapter;
++  std::string sourceRevision;
++
++  void validate() const;
++  std::string canonicalJson() const;
++  std::string modelDigest() const;
+--- a/NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.cpp
++++ b/NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.cpp
+@@ -37,4 +37 @@
+-  return a.modelName == b.modelName && a.contentDigest == b.contentDigest &&
+-    a.semanticsDigest == b.semanticsDigest && a.graphDigest == b.graphDigest &&
+-    a.modelFormat == b.modelFormat && a.precision == b.precision &&
+-    a.adapterId == b.adapterId && a.adapterVersion == b.adapterVersion;
++  return a.canonicalJson() == b.canonicalJson();
+--- a/pythonWrapper/src/ndnsf/di_bindings.cpp
++++ b/pythonWrapper/src/ndnsf/di_bindings.cpp
+@@ -45,0 +46,22 @@
++  py::class_<di::NativeAdapterDescriptor>(module, "NativeAdapterDescriptor")
++    .def(py::init<>())
++    .def_readwrite("name", &di::NativeAdapterDescriptor::name)
++    .def_readwrite("version", &di::NativeAdapterDescriptor::version)
++    .def_readwrite("state_digest", &di::NativeAdapterDescriptor::stateDigest)
++    .def_readwrite("abi", &di::NativeAdapterDescriptor::abi)
++    .def_readwrite("model_formats", &di::NativeAdapterDescriptor::modelFormats)
++    .def_readwrite("tasks", &di::NativeAdapterDescriptor::tasks)
++    .def_readwrite("backends", &di::NativeAdapterDescriptor::backends)
++    .def_readwrite("precisions", &di::NativeAdapterDescriptor::precisions)
++    .def_readwrite("input_schema_digest", &di::NativeAdapterDescriptor::inputSchemaDigest)
++    .def_readwrite("options_schema_digest", &di::NativeAdapterDescriptor::optionsSchemaDigest)
++    .def_readwrite("result_schema_digest", &di::NativeAdapterDescriptor::resultSchemaDigest)
++    .def_readwrite("graph_schema_digest", &di::NativeAdapterDescriptor::graphSchemaDigest)
++    .def_readwrite("split_schema_digest", &di::NativeAdapterDescriptor::splitSchemaDigest)
++    .def_readwrite("state_schema_digest", &di::NativeAdapterDescriptor::stateSchemaDigest)
++    .def_readwrite("graph_inspectable", &di::NativeAdapterDescriptor::graphInspectable)
++    .def_readwrite("splittable", &di::NativeAdapterDescriptor::splittable)
++    .def_readwrite("deterministic_analysis", &di::NativeAdapterDescriptor::deterministicAnalysis)
++    .def("canonical_json", &di::NativeAdapterDescriptor::canonicalJson)
++    .def_property_readonly("descriptor_digest", &di::NativeAdapterDescriptor::descriptorDigest);
++
+@@ -55 +77,5 @@
+-    .def_readwrite("adapter_version", &di::NativeModelDescriptor::adapterVersion);
++    .def_readwrite("adapter_version", &di::NativeModelDescriptor::adapterVersion)
++    .def_readwrite("adapter", &di::NativeModelDescriptor::adapter)
++    .def_readwrite("source_revision", &di::NativeModelDescriptor::sourceRevision)
++    .def("canonical_json", &di::NativeModelDescriptor::canonicalJson)
++    .def_property_readonly("model_digest", &di::NativeModelDescriptor::modelDigest);
+@@ -58,2 +84 @@
+-    .def(py::init<>())
+-    .def_readwrite("source_revision", &di::NativeModelRef::sourceRevision);
++    .def(py::init<>());

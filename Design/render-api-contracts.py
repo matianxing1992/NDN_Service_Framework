@@ -4,7 +4,8 @@ from pathlib import Path
 import json, re, sys
 design = Path(__file__).resolve().parent
 dest = design / 'api'
-inventory = json.loads((dest / 'inventory.json').read_text())
+target='--target' in sys.argv
+inventory = json.loads((dest / ('target-inventory.json' if target else 'inventory.json')).read_text())
 
 def tex(text):
     def escape(value):
@@ -31,7 +32,8 @@ for card in cards:
         parts.append('\n\\textbf{目标接口：PLANNED}\\par\n\\begin{Verbatim}[fontsize=\\footnotesize,breaklines,breakanywhere]\n'+signature+'\n\\end{Verbatim}\n')
     for section in card['sections']:
         parts.append('\n\\subsection{'+tex(section['title'])+'}\n'+tex(section['text'])+'\n')
-    parts.append('\n完整重载、数据字段和原始注释：\\path{api/'+card['module'].lower()+'-reference.md}。\n')
+    reference = 'target-inventory.json' if target else card['module'].lower()+'-reference.md'
+    parts.append('\n完整声明查询：\\path{api/'+reference+'}。\n')
     coverage.append(dict(contract=card['id'],title=card['title'],api_ids=selected))
 (design/('target-api.tex' if target else 'current-api.tex')).write_text(''.join(parts))
 (dest/('target-contract-map.json' if target else 'contract-map.json')).write_text(json.dumps(coverage,ensure_ascii=False,indent=2)+'\n')

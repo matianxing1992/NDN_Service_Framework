@@ -1,0 +1,80 @@
+\clearpage
+\section{BC-01：Core 授权安装与失效范围}
+\lead{existing · AC-08 补充；源码核对，不新增运行资格}
+ServiceController::grant 更新指定身份的权限集合并推进 ControllerVersion。
+调用者应提交该身份的完整预期策略，不把它理解为任意字段的增量合并。
+revoke 先持久化撤销/版本，再执行 ABE 轮换与有效身份密钥重发；轮换失败时保留
+撤销和待轮换状态，不能把函数失败解释为撤销自动回滚。
+
+\subsection{调用与状态}
+getPolicyStatus 提供服务相关撤销状态与全局版本，policyDigest 取自策略配置摘要，
+并非全部动态授权状态的规范摘要。User/Provider 必须验证取得的状态后才能安装。
+installControllerStatus 的版本推进会使服务范围运行状态失效；权限内容不变可避免
+重新获取 DKEY，但不能推导出“无关节点完全不刷新”。密钥名称/摘要变化有独立刷新影响。
+业务消息里的版本提示用于请求权威状态，不能代替签名验证。
+
+\subsection{时序与证据边界}
+周期重新校验由 NDNSF\_POLICY\_REVALIDATION\_PERIOD\_MS 控制，默认 0；
+精确旧版本拉取不能独立保证发现新版本。控制器没有在这里建立通用 SVS epoch 广播契约。
+调用线程、重入与回调异常的统一保证尚未声明，不能据此在任意线程调用角色对象。
+核对入口：ServiceController.cpp 的 grant/revoke/getPolicyStatus；ServiceUser.cpp、
+ServiceProvider.cpp 的 installControllerStatus、applyPermissionResponse 及失效处理。
+验证范围为本轮源码审查；丢通知、恢复时延和高并发撤销效果未在本轮测量。
+
+\section{BC-02：DI 句柄的等待、取消与观察}
+\lead{existing · AC-14 / AC-18 补充；NativeInferenceClient.cpp}
+\code{NativeInferenceHandle::result} 的 waitTimeout 是本次等待预算；局部等待超时抛
+\code{LOCAL_WAIT_TIMEOUT}，请求仍可继续、再次等待或被取消。正数等待预算在 Core I/O
+线程上抛 \code{CORE_IO_WAIT_FORBIDDEN}，避免阻塞该线程。请求 deadline 到期另行形成请求错误。
+等待者持有 operation 的共享引用；释放最后一个用户句柄不代表等待中的 operation 立即销毁。
+
+\subsection{观察、取消和关闭}
+observe 拒绝空 observer，并回放已经记录的历史事件；新事件与回放在独立通知队列串行排序。
+回调异常被捕获，不向注册调用者传播；捕获的外部资源必须覆盖回调执行期。
+cancel 对空句柄无操作，对已终态请求不重新提交终态。close 取消当前操作并关闭调度资源；
+已排队的通知与持有的资源应按执行器生命周期理解，不能假设 cancel 返回即远端计算停止。
+迟到 dispatch 在状态或 phase 不匹配时计入 staleCallbacks 并退出，不复活请求。
+
+\subsection{生产路径限制}
+当前 dispatch 在 deadline 检查后仍返回 NATIVE\_REQUEST\_PIPELINE\_NOT\_READY。
+因此这些行为是已实现句柄/执行器契约，不是完整原生推理请求的成功承诺。
+源码入口为 NativeInferenceClient.cpp；定向测试入口为 tests/unit-tests 中 Spec182NativeInferenceClient。
+本轮未重跑产品测试，既有测试存在不等于本轮或完整网络资格通过。
+
+\subsection{当前模型描述符工作区增补}
+采样时 NativePlanning.hpp 新增 NativeAdapterDescriptor，并把 sourceRevision 归入
+NativeModelDescriptor；NativeModelRef 继承该字段，不再重复声明。
+NativeRequestPreparation 的 sameModel 使用模型 canonicalJson 比较，新增描述符提供
+规范序列化与摘要入口。字段已纳入当前 API 清单和源码快照；这是并行开发中的源码事实，
+完整 canonical identity、跨语言等价和请求接通仍以 Spec182 当前任务及证据为准。
+
+\section{BC-03：Repo 精确目录查询与能力边界}
+\lead{existing · AC-13 补充；RepoCore.cpp}
+RepoCore::catalogLookup(const std::string\& objectName) const 返回 RepoCatalogEntry。
+它先向 store 读取该 objectName 的 manifest，再在目录互斥锁内生成 AVAILABLE 条目并
+附本 Repo 的 catalogEpoch。没有类型、类别、前缀或组合过滤参数。
+handleCatalogLookup 将请求字节转为对象名，再将条目序列化为 JSON 字节。
+
+\subsection{失败与并发}
+store 读取失败沿调用路径传播；本接口没有独立的业务超时或 cancel 参数，也没有定义
+“不存在时返回空集合”的契约。store 读取在目录锁之外，不能据此承诺整个存储与目录的
+线性一致快照。epoch 的跨 Repo 比较和 Controller 授权版本比较均不成立。
+Python 目录过滤、同步和 repair 属于独立编排能力，不能由 C++ DTO 或函数名推定已支持。
+本轮核对精确 lookup 实现与参数，不增加 Python/C++ 全能力对等或并发压力验收结论。
+
+\section{BC-04：UAV 扩展边界与行为审查覆盖}
+\lead{existing · AC-19 至 AC-22 补充}
+FlightControllerBackend 的 MAVLink 帧和 command 字段是应用适配边界；字段集合不等于
+已建立静态命令类型系统。Mock、UDP、串口实现的错误和阻塞行为应分别审查；本轮不声明
+它们具有相同实时性、可取消性或线程安全保证。
+mission 与有限 job 保持不同生命周期；补偿是针对缺失部分的新 attempt，结果归属应
+结合任务身份、attempt 与终端 owner 判定。操作权限、飞控 readiness 与网络授权分别检查。
+核对入口为 DroneServiceContainer.inc.hpp、UavMissionSession.hpp 和 UavMultiViewRecognition.hpp。
+本轮没有执行真实飞行、视频压力测试或多视角模型资格验收。
+
+\subsection{逐项覆盖状态}
+api/behavior-coverage.json 登记当前全部函数 API ID：CONTRACT\_REFERENCED 表示有
+人工契约引用，SIGNATURE\_ONLY 表示只有声明清单。前者也不表示每项线程、安全、运行
+语义均已验证；契约中的未声明/未验证边界仍然有效。纯值访问器可分组审查，不能自动
+把整个类的未检查方法升级为行为审查完成。
+本轮优先补齐上述关键行为，余项随 Spec 修改逐项收敛，不宣称全部函数均已完成语义审计。

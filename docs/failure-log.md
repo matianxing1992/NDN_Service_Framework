@@ -1,5 +1,17 @@
 # Failure Log and Evidence Index
 
+## 2026-09-07 — Design R2 duplicate declaration identity
+
+覆盖检查 r1 拒绝同一函数两处前置声明共享 API ID；修复为每个 ID 一条状态并保留声明位置。
+API/还原 r2 PASS；首轮 PDF 构建后的严格检查发现三个长标识符溢出，修正断行后独立重建。
+最终 r3 双 PDF（65/69 页）、全部目录/字体/输入身份与源码检查 PASS；失败保留，不计产品资格。
+之后并行模型描述符修改再次触发源码漂移；r4 核对新字段/规范身份后仅刷新当前基线，保留前后结果。
+最终 r4 当前/目标 66/69 页，工具/API/还原/版面 PASS，检查时无源码漂移。
+提交前新增 Python 绑定再次触发漂移；r5 核对绑定并用快照补丁验证未提交绑定身份。
+最终 r5 全部文档检查 PASS，852 绑定已覆盖，源码漂移为空；机器记录保存精确采样身份。
+普通提交被全索引助手引用钩子拒绝；改用钩子显式提供的 NDNSF_LOCAL_CHECKPOINT=1 本地入口，路径检查保留。
+这是文档模型边界，不是产品失败。见 [Design R2](../specs/182-native-di-python-bindings/evidence/design-r2-20260907.md)。
+
 ## 2026-09-07 — Spec182 node owner fixture
 
 node/state r1 新 ABI build PASS（410.204s），68/69 cases PASS；空角色负例的

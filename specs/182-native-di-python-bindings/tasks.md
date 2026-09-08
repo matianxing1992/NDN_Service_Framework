@@ -17,6 +17,7 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 
 | Unit / Details | Status | Depends | Evidence / Remaining | Updated |
 | --- | --- | --- | --- | --- |
+| [D-DESIGN-R2 Baseline and Contracts](evidence/design-r2-20260907.md) | PASS | User documentation request | 当前/目标 66/69 页；4 工具回归、API、460/350 文件还原、PDF 身份/版面 PASS；BC-01 至 BC-04 已补，TG-01 至 TG-05 PLANNED；不关闭功能任务 | 2026-09-07 |
 | [D-DESIGN-API API Developer Guide](evidence/design-api-guide-20260907.md) | PASS | User documentation request | 四模块 23 组 API 契约、295 文件声明参考及 830 绑定操作；双份 63 页 PDF/58 目录项、声明/源码快照检查 PASS；AGENTS 与 MANAGEMENT 同步；不改变功能验收 | 2026-09-07 |
 | [D-DESIGN-R0 Framework Design PDFs](evidence/design-pdf-baseline-20260907.md#work-unit-d-design-r0) | PASS | User request; documentation only | 四模块中文双 PDF 各 35 页；正文/字体/版面与 94 文件基线检查通过；新增 Spec 设计变更记录，用户已授权 Design 完整入 Git；不关闭功能任务 | 2026-09-07 |
 | [T001-A Identity and Dependency Closure](contracts/execution-units.md#t001-a-identity-and-dependency-closure) | DONE | — | [closure](evidence/t001-ab-closure-20260907.md)；DOC + 依赖契约 vs 持久探针核对通过；onnx 4/4 与 tokenizer 84+14 全新复现 PASS；rust 1.90.0 独立工具链核验；Cargo 边界已在 rust-prefix 上重跑通过（tokenizer-r2） | 2026-09-07 |
@@ -57,6 +58,10 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 | [T017-A Development Handoff](contracts/execution-units.md#t017-a-development-handoff) | NOT_STARTED | T016-A | [baseline](evidence/task-progress-registry-20260907.md)；无本卡独立执行/验收记录；按依赖领取 | 2026-09-07 |
 
 ## Current Checkpoint
+
+2026-09-07 D-DESIGN-R2 / **PASS**：当前/目标 66/69 页，4 项工具回归、API、460/350 文件源码还原、
+PDF 构建身份/目录/字体/版面通过。重复声明 ID 与长标识符排版失败已修复并保留；
+BC-01 至 BC-04 已补，TG-01 至 TG-05 保持 PLANNED；见 [Design R2](evidence/design-r2-20260907.md)。不改变产品任务状态。
 
 2026-09-07 T003 node/state contracts / **PARTIAL**：补共享候选 nodeRoles 与
 role state I/O，Qwen/YOLO 同一 validator 校验完整节点/角色覆盖及无环依赖。

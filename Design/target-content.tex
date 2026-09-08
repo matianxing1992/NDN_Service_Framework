@@ -3,8 +3,8 @@
 本文覆盖四个模块的职责、主要接口、控制与数据流程、安全、状态、恢复、配置、部署和实现边界。按子系统解释设计，不逐行转录源代码。代码标识、协议字段和文件名保留原名，其余叙述使用中文。
 
 \begin{description}
-\item[版本] R1；当前设计与目标设计使用完全一致的技术正文。新增 API 契约与声明参考，目标仍未增加相对当前代码的新行为。
-\item[基线] \SnapshotDate，\code{Experimental} 分支。采样时提交为 \texttt{\SourceBaseline}；逐文件摘要、工作树差异与本地源码快照见 \code{source-baseline.json}。
+\item[版本] R2；本主体保留 R1 冻结基线及本轮勘误、行为补充，TG-01 至 TG-05 单独说明已接受的 PLANNED 改进。未被目标章节覆盖的内容沿用冻结行为；计划不代表已实现。
+\item[基线] \SnapshotDate，\code{Experimental} 分支。冻结提交为 \texttt{\SourceBaseline}；逐文件摘要与独立补丁见 \code{target-source-baseline.json}。目标 API 查询使用 \code{api/target-inventory.json}，不随当前源码刷新。
 \item[事实口径] 主要流程核对源码；已有接口与已接通流程分别说明。历史测试仅作为检索入口，不冒充本轮结果。
 \item[版本维护] 本目录完整纳入 Git。两份正文独立保存；修改目标设计不自动修改当前设计或代码。
 \end{description}

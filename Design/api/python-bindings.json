@@ -1,7 +1,7 @@
 [
   {
     "file": "pythonWrapper/src/ndnsf/_ndnsf.cpp",
-    "baseline_commit": "e9fe33994a6ca3ff81893591bd24c3fae43f933f",
+    "baseline_commit": "ca585ab5365189203325a8462d8726d2ea32c98f",
     "matches_commit": true,
     "sha256": "4cd84559f3469c85ceb9e4cc5cbbb898390f8dc76989b524c53602d97f893db7",
     "entries": [
@@ -5469,9 +5469,9 @@
   },
   {
     "file": "pythonWrapper/src/ndnsf/di_bindings.cpp",
-    "baseline_commit": "e9fe33994a6ca3ff81893591bd24c3fae43f933f",
-    "matches_commit": true,
-    "sha256": "f20305f8cc08e78b6d30a47b42f228b71db2a007616a3a7371d697dc50562461",
+    "baseline_commit": "ca585ab5365189203325a8462d8726d2ea32c98f",
+    "matches_commit": false,
+    "sha256": "58847625fc73fca2760ec96205743b1a0ce5fc131fc2fd91b4ee5f2a650e92c3",
     "entries": [
       {
         "owner": "NativeRequestStatus",
@@ -5516,311 +5516,465 @@
         "signature": "value(\"INLINE\",\ndi::NativeInputTransportMode::Inline)"
       },
       {
+        "owner": "NativeAdapterDescriptor",
+        "name": "\"descriptor_digest\"",
+        "operation": "def_property_readonly",
+        "line": 66,
+        "signature": "def_property_readonly(\"descriptor_digest\",\n&di::NativeAdapterDescriptor::descriptorDigest)"
+      },
+      {
+        "owner": "NativeAdapterDescriptor",
+        "name": "\"canonical_json\"",
+        "operation": "def",
+        "line": 65,
+        "signature": "def(\"canonical_json\",\n&di::NativeAdapterDescriptor::canonicalJson)"
+      },
+      {
+        "owner": "NativeAdapterDescriptor",
+        "name": "\"deterministic_analysis\"",
+        "operation": "def_readwrite",
+        "line": 64,
+        "signature": "def_readwrite(\"deterministic_analysis\",\n&di::NativeAdapterDescriptor::deterministicAnalysis)"
+      },
+      {
+        "owner": "NativeAdapterDescriptor",
+        "name": "\"splittable\"",
+        "operation": "def_readwrite",
+        "line": 63,
+        "signature": "def_readwrite(\"splittable\",\n&di::NativeAdapterDescriptor::splittable)"
+      },
+      {
+        "owner": "NativeAdapterDescriptor",
+        "name": "\"graph_inspectable\"",
+        "operation": "def_readwrite",
+        "line": 62,
+        "signature": "def_readwrite(\"graph_inspectable\",\n&di::NativeAdapterDescriptor::graphInspectable)"
+      },
+      {
+        "owner": "NativeAdapterDescriptor",
+        "name": "\"state_schema_digest\"",
+        "operation": "def_readwrite",
+        "line": 61,
+        "signature": "def_readwrite(\"state_schema_digest\",\n&di::NativeAdapterDescriptor::stateSchemaDigest)"
+      },
+      {
+        "owner": "NativeAdapterDescriptor",
+        "name": "\"split_schema_digest\"",
+        "operation": "def_readwrite",
+        "line": 60,
+        "signature": "def_readwrite(\"split_schema_digest\",\n&di::NativeAdapterDescriptor::splitSchemaDigest)"
+      },
+      {
+        "owner": "NativeAdapterDescriptor",
+        "name": "\"graph_schema_digest\"",
+        "operation": "def_readwrite",
+        "line": 59,
+        "signature": "def_readwrite(\"graph_schema_digest\",\n&di::NativeAdapterDescriptor::graphSchemaDigest)"
+      },
+      {
+        "owner": "NativeAdapterDescriptor",
+        "name": "\"result_schema_digest\"",
+        "operation": "def_readwrite",
+        "line": 58,
+        "signature": "def_readwrite(\"result_schema_digest\",\n&di::NativeAdapterDescriptor::resultSchemaDigest)"
+      },
+      {
+        "owner": "NativeAdapterDescriptor",
+        "name": "\"options_schema_digest\"",
+        "operation": "def_readwrite",
+        "line": 57,
+        "signature": "def_readwrite(\"options_schema_digest\",\n&di::NativeAdapterDescriptor::optionsSchemaDigest)"
+      },
+      {
+        "owner": "NativeAdapterDescriptor",
+        "name": "\"input_schema_digest\"",
+        "operation": "def_readwrite",
+        "line": 56,
+        "signature": "def_readwrite(\"input_schema_digest\",\n&di::NativeAdapterDescriptor::inputSchemaDigest)"
+      },
+      {
+        "owner": "NativeAdapterDescriptor",
+        "name": "\"precisions\"",
+        "operation": "def_readwrite",
+        "line": 55,
+        "signature": "def_readwrite(\"precisions\",\n&di::NativeAdapterDescriptor::precisions)"
+      },
+      {
+        "owner": "NativeAdapterDescriptor",
+        "name": "\"backends\"",
+        "operation": "def_readwrite",
+        "line": 54,
+        "signature": "def_readwrite(\"backends\",\n&di::NativeAdapterDescriptor::backends)"
+      },
+      {
+        "owner": "NativeAdapterDescriptor",
+        "name": "\"tasks\"",
+        "operation": "def_readwrite",
+        "line": 53,
+        "signature": "def_readwrite(\"tasks\",\n&di::NativeAdapterDescriptor::tasks)"
+      },
+      {
+        "owner": "NativeAdapterDescriptor",
+        "name": "\"model_formats\"",
+        "operation": "def_readwrite",
+        "line": 52,
+        "signature": "def_readwrite(\"model_formats\",\n&di::NativeAdapterDescriptor::modelFormats)"
+      },
+      {
+        "owner": "NativeAdapterDescriptor",
+        "name": "\"abi\"",
+        "operation": "def_readwrite",
+        "line": 51,
+        "signature": "def_readwrite(\"abi\",\n&di::NativeAdapterDescriptor::abi)"
+      },
+      {
+        "owner": "NativeAdapterDescriptor",
+        "name": "\"state_digest\"",
+        "operation": "def_readwrite",
+        "line": 50,
+        "signature": "def_readwrite(\"state_digest\",\n&di::NativeAdapterDescriptor::stateDigest)"
+      },
+      {
+        "owner": "NativeAdapterDescriptor",
+        "name": "\"version\"",
+        "operation": "def_readwrite",
+        "line": 49,
+        "signature": "def_readwrite(\"version\",\n&di::NativeAdapterDescriptor::version)"
+      },
+      {
+        "owner": "NativeAdapterDescriptor",
+        "name": "\"name\"",
+        "operation": "def_readwrite",
+        "line": 48,
+        "signature": "def_readwrite(\"name\",\n&di::NativeAdapterDescriptor::name)"
+      },
+      {
+        "owner": "NativeModelDescriptor",
+        "name": "\"model_digest\"",
+        "operation": "def_property_readonly",
+        "line": 81,
+        "signature": "def_property_readonly(\"model_digest\",\n&di::NativeModelDescriptor::modelDigest)"
+      },
+      {
+        "owner": "NativeModelDescriptor",
+        "name": "\"canonical_json\"",
+        "operation": "def",
+        "line": 80,
+        "signature": "def(\"canonical_json\",\n&di::NativeModelDescriptor::canonicalJson)"
+      },
+      {
+        "owner": "NativeModelDescriptor",
+        "name": "\"source_revision\"",
+        "operation": "def_readwrite",
+        "line": 79,
+        "signature": "def_readwrite(\"source_revision\",\n&di::NativeModelDescriptor::sourceRevision)"
+      },
+      {
+        "owner": "NativeModelDescriptor",
+        "name": "\"adapter\"",
+        "operation": "def_readwrite",
+        "line": 78,
+        "signature": "def_readwrite(\"adapter\",\n&di::NativeModelDescriptor::adapter)"
+      },
+      {
         "owner": "NativeModelDescriptor",
         "name": "\"adapter_version\"",
         "operation": "def_readwrite",
-        "line": 55,
+        "line": 77,
         "signature": "def_readwrite(\"adapter_version\",\n&di::NativeModelDescriptor::adapterVersion)"
       },
       {
         "owner": "NativeModelDescriptor",
         "name": "\"adapter_id\"",
         "operation": "def_readwrite",
-        "line": 54,
+        "line": 76,
         "signature": "def_readwrite(\"adapter_id\",\n&di::NativeModelDescriptor::adapterId)"
       },
       {
         "owner": "NativeModelDescriptor",
         "name": "\"precision\"",
         "operation": "def_readwrite",
-        "line": 53,
+        "line": 75,
         "signature": "def_readwrite(\"precision\",\n&di::NativeModelDescriptor::precision)"
       },
       {
         "owner": "NativeModelDescriptor",
         "name": "\"model_format\"",
         "operation": "def_readwrite",
-        "line": 52,
+        "line": 74,
         "signature": "def_readwrite(\"model_format\",\n&di::NativeModelDescriptor::modelFormat)"
       },
       {
         "owner": "NativeModelDescriptor",
         "name": "\"graph_digest\"",
         "operation": "def_readwrite",
-        "line": 51,
+        "line": 73,
         "signature": "def_readwrite(\"graph_digest\",\n&di::NativeModelDescriptor::graphDigest)"
       },
       {
         "owner": "NativeModelDescriptor",
         "name": "\"semantics_digest\"",
         "operation": "def_readwrite",
-        "line": 50,
+        "line": 72,
         "signature": "def_readwrite(\"semantics_digest\",\n&di::NativeModelDescriptor::semanticsDigest)"
       },
       {
         "owner": "NativeModelDescriptor",
         "name": "\"content_digest\"",
         "operation": "def_readwrite",
-        "line": 49,
+        "line": 71,
         "signature": "def_readwrite(\"content_digest\",\n&di::NativeModelDescriptor::contentDigest)"
       },
       {
         "owner": "NativeModelDescriptor",
         "name": "\"model_name\"",
         "operation": "def_readwrite",
-        "line": 48,
+        "line": 70,
         "signature": "def_readwrite(\"model_name\",\n&di::NativeModelDescriptor::modelName)"
-      },
-      {
-        "owner": "NativeModelRef",
-        "name": "\"source_revision\"",
-        "operation": "def_readwrite",
-        "line": 59,
-        "signature": "def_readwrite(\"source_revision\",\n&di::NativeModelRef::sourceRevision)"
       },
       {
         "owner": "NativeApplicationInput",
         "name": "\"repository_reference\"",
         "operation": "def_readwrite",
-        "line": 69,
+        "line": 94,
         "signature": "def_readwrite(\"repository_reference\",\n&di::NativeApplicationInput::repositoryReference)"
       },
       {
         "owner": "NativeApplicationInput",
         "name": "\"transport_mode\"",
         "operation": "def_readwrite",
-        "line": 68,
+        "line": 93,
         "signature": "def_readwrite(\"transport_mode\",\n&di::NativeApplicationInput::transportMode)"
       },
       {
         "owner": "NativeApplicationInput",
         "name": "\"options\"",
         "operation": "def_readwrite",
-        "line": 67,
+        "line": 92,
         "signature": "def_readwrite(\"options\",\n&di::NativeApplicationInput::options)"
       },
       {
         "owner": "NativeApplicationInput",
         "name": "\"payload\"",
         "operation": "def_readwrite",
-        "line": 66,
+        "line": 91,
         "signature": "def_readwrite(\"payload\",\n&di::NativeApplicationInput::payload)"
       },
       {
         "owner": "NativeApplicationInput",
         "name": "\"options_schema_digest\"",
         "operation": "def_readwrite",
-        "line": 65,
+        "line": 90,
         "signature": "def_readwrite(\"options_schema_digest\",\n&di::NativeApplicationInput::optionsSchemaDigest)"
       },
       {
         "owner": "NativeApplicationInput",
         "name": "\"input_schema_digest\"",
         "operation": "def_readwrite",
-        "line": 64,
+        "line": 89,
         "signature": "def_readwrite(\"input_schema_digest\",\n&di::NativeApplicationInput::inputSchemaDigest)"
       },
       {
         "owner": "NativeApplicationInput",
         "name": "\"task_name\"",
         "operation": "def_readwrite",
-        "line": 63,
+        "line": 88,
         "signature": "def_readwrite(\"task_name\",\n&di::NativeApplicationInput::taskName)"
       },
       {
         "owner": "NativeRequestOptions",
         "name": "\"output_mode\"",
         "operation": "def_readwrite",
-        "line": 76,
+        "line": 101,
         "signature": "def_readwrite(\"output_mode\",\n&di::NativeRequestOptions::outputMode)"
       },
       {
         "owner": "NativeRequestOptions",
         "name": "\"task_name\"",
         "operation": "def_readwrite",
-        "line": 75,
+        "line": 100,
         "signature": "def_readwrite(\"task_name\",\n&di::NativeRequestOptions::taskName)"
       },
       {
         "owner": "NativeRequestOptions",
         "name": "\"ack_timeout_ms\"",
         "operation": "def_readwrite",
-        "line": 74,
+        "line": 99,
         "signature": "def_readwrite(\"ack_timeout_ms\",\n&di::NativeRequestOptions::ackTimeoutMs)"
       },
       {
         "owner": "NativeRequestOptions",
         "name": "\"timeout_ms\"",
         "operation": "def_readwrite",
-        "line": 73,
+        "line": 98,
         "signature": "def_readwrite(\"timeout_ms\",\n&di::NativeRequestOptions::timeoutMs)"
       },
       {
         "owner": "NativeInferenceResult",
         "name": "\"plan_digest\"",
         "operation": "def_readonly",
-        "line": 82,
+        "line": 107,
         "signature": "def_readonly(\"plan_digest\",\n&di::NativeInferenceResult::planDigest)"
       },
       {
         "owner": "NativeInferenceResult",
         "name": "\"model_digest\"",
         "operation": "def_readonly",
-        "line": 81,
+        "line": 106,
         "signature": "def_readonly(\"model_digest\",\n&di::NativeInferenceResult::modelDigest)"
       },
       {
         "owner": "NativeInferenceResult",
         "name": "\"payload\"",
         "operation": "def_readonly",
-        "line": 80,
+        "line": 105,
         "signature": "def_readonly(\"payload\",\n&di::NativeInferenceResult::payload)"
       },
       {
         "owner": "NativeInferenceEvent",
         "name": "\"terminal\"",
         "operation": "def_readonly",
-        "line": 87,
+        "line": 112,
         "signature": "def_readonly(\"terminal\",\n&di::NativeInferenceEvent::terminal)"
       },
       {
         "owner": "NativeInferenceEvent",
         "name": "\"payload\"",
         "operation": "def_readonly",
-        "line": 86,
+        "line": 111,
         "signature": "def_readonly(\"payload\",\n&di::NativeInferenceEvent::payload)"
       },
       {
         "owner": "NativeInferenceEvent",
         "name": "\"request_id\"",
         "operation": "def_readonly",
-        "line": 85,
+        "line": 110,
         "signature": "def_readonly(\"request_id\",\n&di::NativeInferenceEvent::requestId)"
       },
       {
         "owner": "NativeAdapterRegistry",
         "name": "\"frozen\"",
         "operation": "def_property_readonly",
-        "line": 94,
+        "line": 119,
         "signature": "def_property_readonly(\"frozen\",\n&di::NativeAdapterRegistry::frozen)"
       },
       {
         "owner": "NativeAdapterRegistry",
         "name": "\"find\"",
         "operation": "def",
-        "line": 93,
+        "line": 118,
         "signature": "def(\"find\",\n&di::NativeAdapterRegistry::find)"
       },
       {
         "owner": "NativeAdapterRegistry",
         "name": "\"freeze\"",
         "operation": "def",
-        "line": 92,
+        "line": 117,
         "signature": "def(\"freeze\",\n&di::NativeAdapterRegistry::freeze)"
       },
       {
         "owner": "NativeYoloComponentSpec",
         "name": "\"candidate_digest\"",
         "operation": "def_readwrite",
-        "line": 132,
+        "line": 157,
         "signature": "def_readwrite(\"candidate_digest\",\n&di::yolo::NativeYoloComponentSpec::candidateDigest)"
       },
       {
         "owner": "NativeYoloComponentSpec",
         "name": "\"merge_kind\"",
         "operation": "def_readwrite",
-        "line": 131,
+        "line": 156,
         "signature": "def_readwrite(\"merge_kind\",\n&di::yolo::NativeYoloComponentSpec::mergeKind)"
       },
       {
         "owner": "NativeYoloComponentSpec",
         "name": "\"result_egress_role\"",
         "operation": "def_readwrite",
-        "line": 129,
+        "line": 154,
         "signature": "def_readwrite(\"result_egress_role\",\n&di::yolo::NativeYoloComponentSpec::resultEgressRole)"
       },
       {
         "owner": "NativeYoloComponentSpec",
         "name": "\"input_ingress_role\"",
         "operation": "def_readwrite",
-        "line": 127,
+        "line": 152,
         "signature": "def_readwrite(\"input_ingress_role\",\n&di::yolo::NativeYoloComponentSpec::inputIngressRole)"
       },
       {
         "owner": "NativeYoloComponentSpec",
         "name": "\"node_names_by_role\"",
         "operation": "def_readwrite",
-        "line": 125,
+        "line": 150,
         "signature": "def_readwrite(\"node_names_by_role\",\n&di::yolo::NativeYoloComponentSpec::nodeNamesByRole)"
       },
       {
         "owner": "NativeYoloComponentSpec",
         "name": "\"roles\"",
         "operation": "def_readwrite",
-        "line": 124,
+        "line": 149,
         "signature": "def_readwrite(\"roles\",\n&di::yolo::NativeYoloComponentSpec::roles)"
       },
       {
         "owner": "NativeYoloComponentSpec",
         "name": "\"priority\"",
         "operation": "def_readwrite",
-        "line": 123,
+        "line": 148,
         "signature": "def_readwrite(\"priority\",\n&di::yolo::NativeYoloComponentSpec::priority)"
       },
       {
         "owner": "NativeYoloComponentSpec",
         "name": "\"candidate_id\"",
         "operation": "def_readwrite",
-        "line": 122,
+        "line": 147,
         "signature": "def_readwrite(\"candidate_id\",\n&di::yolo::NativeYoloComponentSpec::candidateId)"
       },
       {
         "owner": "NativeInferenceHandle",
         "name": "\"status_name\"",
         "operation": "def_property_readonly",
-        "line": 155,
+        "line": 180,
         "signature": "def_property_readonly(\"status_name\",\n[](const di::NativeInferenceHandle& handle) { implementation omitted })"
       },
       {
         "owner": "NativeInferenceHandle",
         "name": "\"cancel\"",
         "operation": "def",
-        "line": 154,
+        "line": 179,
         "signature": "def(\"cancel\",\n&di::NativeInferenceHandle::cancel)"
       },
       {
         "owner": "NativeInferenceHandle",
         "name": "\"result\"",
         "operation": "def",
-        "line": 150,
+        "line": 175,
         "signature": "def(\"result\",\n[](const di::NativeInferenceHandle& handle,\n                       std::uint64_t wait_timeout_ms) { implementation omitted },\npy::arg(\"wait_timeout_ms\") = 0)"
       },
       {
         "owner": "NativeInferenceHandle",
         "name": "\"status\"",
         "operation": "def_property_readonly",
-        "line": 149,
+        "line": 174,
         "signature": "def_property_readonly(\"status\",\n&di::NativeInferenceHandle::status)"
       },
       {
         "owner": "NativeInferenceHandle",
         "name": "\"request_id\"",
         "operation": "def_property_readonly",
-        "line": 148,
+        "line": 173,
         "signature": "def_property_readonly(\"request_id\",\n&di::NativeInferenceHandle::requestId)"
       },
       {
         "owner": "NativeInferenceClient",
         "name": "\"request\"",
         "operation": "def",
-        "line": 162,
+        "line": 187,
         "signature": "def(\"request\",\n&di::NativeInferenceClient::request,\npy::arg(\"model\"),\npy::arg(\"input\"),\npy::arg(\"split_strategy\"),\npy::arg(\"placement_strategy\"),\npy::arg(\"options\"))"
       },
       {
         "owner": "NativeInferenceClient",
         "name": "\"close\"",
         "operation": "def",
-        "line": 161,
+        "line": 186,
         "signature": "def(\"close\",\n&di::NativeInferenceClient::close)"
       }
     ]
