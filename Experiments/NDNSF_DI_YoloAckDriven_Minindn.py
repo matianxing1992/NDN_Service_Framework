@@ -60,7 +60,11 @@ from Experiments import minindn_network_resources as network_resources
 SIF_RUNTIME_SIF = os.environ.get("SPEC180_RUNTIME_SIF", "")
 SIF_RUNTIME_APPTAINER = os.environ.get(
     "SPEC180_RUNTIME_APPTAINER", "/opt/apptainer/1.5.3/bin/apptainer")
-SIF_RUNTIME_REPO = "/opt/ndnsf-di/replay/repo"
+# The outer launch owner verifies the base/application content identities.
+# This generic command provider only maps that selected immutable application.
+SIF_RUNTIME_APP_ROOT = os.environ.get("SPEC180_RUNTIME_APP_ROOT", "")
+SIF_RUNTIME_REPO = "/app/repo" if SIF_RUNTIME_APP_ROOT else "/opt/ndnsf-di/replay/repo"
+SIF_RUNTIME_BIN = "/app/bin" if SIF_RUNTIME_APP_ROOT else "/opt/ndnsf-di/current/bin"
 SIF_RUNTIME_PYTHON = "/opt/venv/bin/python"
 SIF_RUNTIME_PYTHONPATH = ":".join((
     "/opt/venv/lib/python3.10/site-packages",
@@ -80,8 +84,8 @@ def sif_runtime_enabled() -> bool:
 def _sif_bind_args() -> list[str]:
     """Return data/control-plane bind mounts for the candidate image.
 
-    These are data trees, not source overlays: the complete source/runtime is
-    sealed in the candidate SIF and never bound from the host.
+    A selected external application is mounted read-only at /app; foundational
+    libraries remain inside the base image. The outer owner verifies identities.
     """
     if not sif_runtime_enabled():
         return []
@@ -99,6 +103,13 @@ def _sif_bind_args() -> list[str]:
         operator_home / ".config/ndnsf/spec180",
     ]
     result: list[str] = []
+    if SIF_RUNTIME_APP_ROOT:
+        app = Path(SIF_RUNTIME_APP_ROOT)
+        if (not app.is_absolute() or '..' in app.parts or not app.is_dir()
+                or any(p.is_symlink() for p in (app, *app.parents))
+                or not re.fullmatch(r'[A-Za-z0-9_./-]+', str(app))):
+            raise RunnerError('SIF_APPLICATION_PATH_INVALID')
+        result.extend(['--bind', f'{app}:/app:ro'])
     seen: set[str] = set()
     for raw in bind_roots:
         path = Path(raw).expanduser().resolve()
@@ -138,9 +149,11 @@ def sif_exec_prefix(base_env: Mapping[str, str] | None = None,
     ])
     for key, value in sorted(env.items()):
         if not (key.startswith("NDNSF_") or key.startswith("SPEC180_")
+                or key.startswith("SPEC181_")
                 or key == "NDN_LOG"):
             continue
-        if key in {"SPEC180_RUNTIME_SIF", "SPEC180_RUNTIME_APPTAINER"}:
+        if key in {"SPEC180_RUNTIME_SIF", "SPEC180_RUNTIME_APPTAINER",
+                   "SPEC180_RUNTIME_APP_ROOT"}:
             continue
         pieces.extend(["--env", f"{key}={value}"])
     pieces.extend([
@@ -768,7 +781,7 @@ class MiniNdnCaseRuntime:
             generated_manifest = generated / "service-manifest.json"
             generated_trust_schema = generated / "trust-schema.conf"
             if sif_runtime_enabled():
-                executable = "/opt/ndnsf-di/current/bin/di-native-provider"
+                executable = SIF_RUNTIME_BIN + "/di-native-provider"
             else:
                 executable = os.environ.get(
                     "SPEC180_NATIVE_PROVIDER_BINARY",

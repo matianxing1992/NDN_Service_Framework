@@ -1988,3 +1988,43 @@ def test_exact_sif_prefix_binds_per_node_home_and_sealed_pwd(
     assert "--env NDNSF_DI_STATE_ROOT=/tmp/state" in module.sif_exec_prefix(
         {"NDNSF_DI_STATE_ROOT": "/tmp/state",
          "SPEC180_RUNTIME_SIF": "/opt/sifs/spec180.sif"})
+
+
+def test_external_application_uses_readonly_mount_and_container_paths(tmp_path, monkeypatch):
+    app = tmp_path/'application'
+    app.mkdir()
+    monkeypatch.setenv('SPEC180_RUNTIME_SIF', '/base/runtime.sif')
+    monkeypatch.setenv('SPEC180_RUNTIME_APP_ROOT', str(app))
+    module = load_runner()
+    prefix = module.sif_exec_prefix({'SPEC180_RUNTIME_APP_ROOT': str(app)},
+                                    home_dir=str(tmp_path/'node-home'))
+    assert f'--bind {app}:/app:ro' in prefix
+    assert '--pwd /app/repo' in prefix
+    assert module.SIF_RUNTIME_BIN == '/app/bin'
+    assert '/app/repo/NDNSF-DistributedInference' in prefix
+    assert '--env SPEC180_RUNTIME_APP_ROOT=' not in prefix
+    assert 'LD_LIBRARY_PATH=/opt/ndnsf-di/current/lib:/opt/onnxruntime/lib' in prefix
+    protected = module.sif_exec_prefix({'SPEC181_PROTECTION_EPOCH': 'test-epoch',
+        'SPEC181_REQUESTER_PRIVATE_KEY': '/private/requester.key'})
+    assert '--env SPEC181_PROTECTION_EPOCH=test-epoch' in protected
+    assert '--env SPEC181_REQUESTER_PRIVATE_KEY=/private/requester.key' in protected
+    output, inputs = _binding_inputs(tmp_path, module, 'Y-B')
+    binding = module.CaseRuntimeBinding.from_inputs('Y-B', output, inputs)
+    commands = module.MiniNdnCaseRuntime(binding, inputs).process_specs()
+    providers = [item.command for item in commands if item.name.startswith('provider-')]
+    assert len(providers) == 4
+    assert all(command.startswith('/app/bin/di-native-provider ') for command in providers)
+    user = next(item.command for item in commands if item.name == 'user')
+    assert user.startswith('/app/repo/examples/python/NDNSF-DistributedInference/yolo_2x2/user.py ')
+
+
+def test_external_application_symlink_is_rejected_before_launch(tmp_path, monkeypatch):
+    target = tmp_path/'actual'
+    target.mkdir()
+    app = tmp_path/'application'
+    app.symlink_to(target, target_is_directory=True)
+    monkeypatch.setenv('SPEC180_RUNTIME_SIF', '/base/runtime.sif')
+    monkeypatch.setenv('SPEC180_RUNTIME_APP_ROOT', str(app))
+    module = load_runner()
+    with pytest.raises(module.RunnerError, match='SIF_APPLICATION_PATH_INVALID'):
+        module.sif_exec_prefix({})

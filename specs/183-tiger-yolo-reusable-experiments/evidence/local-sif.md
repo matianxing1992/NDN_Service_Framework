@@ -80,6 +80,23 @@ environment choice without another image build. The generic driver's legacy
 SIF command paths and Tiger wrapper still need explicit layered wiring before
 a real scenario; this is not a MiniNDN case PASS.
 
+## Generic MiniNDN child command migration
+
+The maintained ACK-driven driver now accepts an outer-owner-selected
+`SPEC180_RUNTIME_APP_ROOT`, mounts it at `/app:ro`, and uses `/app/repo` plus
+`/app/bin/di-native-provider`. Symlink/unsafe application paths reject before
+launch. Base library search paths remain fixed inside the SIF. Source tests
+exercise actual `process_specs()` for all four Providers and the User;5passed
+(`minindn-layered-commands.xml`). The child environment also preserves
+`SPEC181_*` protected-epoch/requester inputs previously dropped by the prefix.
+Four final command/environment checks pass in `minindn-layered-protected-env.xml`.
+
+This is a generic command mapping, not a content-qualification owner: the Tiger
+wrapper must verify the profile/base/application identities before setting the
+selection. That wrapper connection and run-scoped bind closure remain pending.
+The r2 sealed application predates this driver edit; do not claim the new
+commands were exercised through r2 or silently mutate that frozen bundle.
+
 `runtime/application.py` now verifies the producer's application manifest before
 publication. Four component checks pass: candidate-only scope, wrong base,
 changed binary, and declared foundational-library shadowing. An initial test

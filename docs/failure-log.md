@@ -3085,3 +3085,13 @@ minindn-venv lack Mininet; system Python3.8 on the host imports successfully.
 Keep host MiniNDN orchestration and container application execution distinct.
 Evidence: app-repackage-r2.log, app-minindn-lazy-import.log,
 app-host-minindn-import.log; six repackage boundary checks pass.
+
+## 2026-09-08 — MiniNDN SIF prefix retained obsolete app paths
+
+The generic ACK-driven MiniNDN provider still selected binaries and Python
+scripts inside the legacy full SIF. Add the explicit external-app mapping,
+readonly mount and unsafe/symlink path rejection. The same command prefix
+dropped SPEC181 protected-epoch/requester environment variables; preserve them
+for the actual protected runtime. Tests exercise four Provider commands, User,
+base library paths and authorization environment. Source checks do not update
+the already sealed application or prove any MiniNDN scenario has passed.
