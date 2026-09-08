@@ -50,6 +50,26 @@ T001允许有界依赖探针；产品构建按设计门和各任务的验证范�
 实现任务[x]表示实现/审查/单测完成；完整PO与feature验收直到T016才关闭。
 任务开始本身不会使前项单测失效；实际变化决定重审和回归范围。
 
+### B-G1-YOLO-SEMANTIC
+
+2026-09-08：当前生产适配器接线的直接前置是 T003-B 尚缺的真实 catalog semantic
+partition 消费。先完成该既有 PARTIAL 单元的修复批次，再推进 T008-A；不以共享
+ONNX helper 的局部 PASS 放行 T003-A 或 T003-C 的完整验收。
+
+| Member | Behavior boundary | Implementation dependency |
+| --- | --- | --- |
+| YS-1 / T003-B | 将注册 partition 的语义节点名映射到实际 inspection 的 planning node ID；核对完整 cover | 已通过定向测试的 owned ONNX inspection API；保持其完整输入/graph identity 绑定 |
+| YS-2 / T003-B | 对照实际图与 metadata 验证 tensorInterfaces、dependencyEdges、safeCuts、roleInterfaces | YS-1 静态门；不得只有 node cover 就接受 catalog |
+| YS-3 / T003-B | 注册 catalog 消费入口接入 NativeYoloComponentSplit，并编写实际 Python splitter 对照及篡改负例 | YS-1/YS-2 静态门；不能只测试独立转换 helper |
+
+Owner：当前执行者。共享测试选择器：Spec182YoloSplit、Spec182NativePlanning、
+Spec182Preparation、Spec182CanonicalPublisher、Spec182V3Placement；同一批次最后
+统一 `waf build --targets=unit-tests -j4`。ABI 变化仍按 toolchain preflight 选择
+fresh tree，不能复用不兼容对象。静态门及测试结果统一记录于
+[batch evidence](evidence/t003-yolo-semantic-batch-20260908.md)。
+T003-A/T003-C/T008-A 的既有 acceptance dependencies 保留；本批不运行 requester、
+integration、MiniNDN 或 Tiger，不把 catalog 声明当作 Core 来源认证。
+
 ### Dependencies
 
 ~~~text
