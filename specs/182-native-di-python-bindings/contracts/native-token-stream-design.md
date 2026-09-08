@@ -61,6 +61,13 @@ epoch对candidate IDs先完整decode以计算现有stop suffix，加EOS/MAX_TOKE
 
 ### Requester Acceptance and Recovery Resolution
 
+2026-09-08 R4-B2 operation stride补充：每条普通dependency可含多个tensor transfer，
+故streaming_operation_stride为每epoch操作编号的容量，至少为dependency数量且不大于
+2**20，不再要求恰等于dependency数量。planner按各dependency的tensor/redistribution
+数量预留普通操作，再预留唯一feedback round；group builder核对实际操作编号小于stride，
+各epoch以同一stride偏移。旧单tensor/单dependency值仍有效。native parser与过渡SDK
+解析器同步此界限，冻结历史wire/证据不回写。feedback不加入单轮readiness。
+
 当前`app_sdk/placement.py::AutomaticStreamingHandle._accept_event`在condition锁内校验attempt/request/generation、连续tokenEpoch和acceptedPrefixDigest，再追加`_token_ids/_events`，锁外调用用户callback。`_begin_replacement`从这份内存前缀创建attempt2；`AutomaticPlanningCoordinator.request_streaming::run_replacement`构造GenerationRecoveryV1并排除失败Provider。此路径**没有逐token runtime journal写入**。`app_sdk/runtime_journal.py::append_many`本身有flush/fsync，但不是当前token接受调用链，不能因此宣称流式前缀跨Requester进程崩溃持久化。
 
 T010的NativeInferenceOperation::State增加/明确`acceptedTokenIds`、`acceptedText`、`acceptedTerminalHint`、`currentAttempt`及`replacementStarted`；由同一serial executor写入，和既有bounded events队列共用operation寿命。`acceptedTerminalHint`初值NONE；不是持久化record。新增private `acceptGenerationEvent(attempt,payload)`、`beginReplacement(attempt,error)`、`validateGenerationFinal(attempt,payload)`处理现有Core callbacks，不另建网络协议。

@@ -151,7 +151,9 @@ Name相同但作用域不同的字段不能共享可写状态。
 | splitStrategy,placementStrategy / M02 | shared_ptr<const strategy>，caller选择native实例 | 指定方法，实现C++执行 | 非空；request期间shared；identity不可变 |
 | timeoutMs,ackTimeoutMs / NativeRequestOptions | int，已验证config/显式参数 | 总调用预算与ACK收集预算 | timeout>ack>0；无未经验证数字默认 |
 | task / NativeRequestOptions | InferenceTaskDescriptor的native值 | 输入/选项/结果schema引用 | 原字段逐项映射；不允许任务名猜schema |
-| generation / NativeRequestOptions | optional<NativeGenerationOptions> | token限额/采样/tokenizer/stream规则 | 无则stateless；字段来自generation contract，不含Python callable |
+| generation / NativeRequestOptions | optional<NativeGenerationExecutionContractV1> | 复用V11 token限额/采样/tokenizer值，由实际options派生并核对显式值 | stride由planner填入，recovery前缀由operation填入，不含Python callable |
+| stream / NativeRequestOptions | optional<Core StreamRequestOptions> | 复用Core认证流参数，operation冻结generation/attempt/原deadline | 仅Normal协作；事件key由Core分配，不能由DI另造transport |
+| onGenerationEvent / NativeRequestOptions | native function(owned bytes) | 生成事件接受后的应用回调；不同于handle.observe | serial worker调用，异常使operation失败但不撤回前缀；Core线程不调用用户代码 |
 | continuation / NativeRequestOptions | optional<NativeConversationContinuation> | 已认证旧会话引用 | 有值必须配置C16；parent/attempt/freshness校验 |
 | entries,frozen / C10 | map<string,shared_ptr<const adapter>>；bool=false | 启动期注册，freeze后纯读 | 重名拒绝；freeze后无写，避免请求间策略漂移 |
 | journalRoot / C16,M38 | filesystem::path，显式配置 | 本地会话持久化目录 | 不等于Core RuntimeStatusStore路径；权限与单写lease校验 |

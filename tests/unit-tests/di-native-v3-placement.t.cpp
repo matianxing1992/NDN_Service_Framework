@@ -20,6 +20,7 @@
 #include "tests/unit-tests/generic-dynamic-api-fixture.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCatalogModelAdapter.hpp"
 #include <thread>
+#include <atomic>
 
 namespace {
 using namespace ndnsf::di;
@@ -531,12 +532,13 @@ BOOST_AUTO_TEST_CASE(RequestPlannerComposesAuthenticatedGrantsAndCoreAssignments
   BOOST_CHECK_EQUAL(grantPublications, 1U);
 }
 
-BOOST_AUTO_TEST_CASE(PublicClientCommitsSignedOfferAndIgnoresLateTerminalCallbacks)
+void runPublicClientScenario(int scenario)
 {
   using namespace ndn_service_framework;
   class User final : public test::LocalServiceUser {
   public:
     using test::LocalServiceUser::LocalServiceUser;
+    std::map<std::string, SelectionInputKeyOffer> groupKeys;
     void offer(const ndn::Name& id, const std::string& wire) {
       auto& call = m_pendingCalls.at(id);
       RequestAckMessage ack;
@@ -544,6 +546,7 @@ BOOST_AUTO_TEST_CASE(PublicClientCommitsSignedOfferAndIgnoresLateTerminalCallbac
       ack.setProviderToken("provider-token");
       ndn::Buffer bytes(wire.begin(), wire.end()); ack.setPayload(bytes, bytes.size());
       const auto decoded = decodeNativeProviderOfferV3(wire);
+      if (groupKeys.count(decoded.provider)) ack.setSelectionInputKeyOffer(groupKeys.at(decoded.provider));
       // This supplies the Core authentication boundary as a local fixture.
       // Offer admission still verifies the actual Ed25519 signature below.
       call.requestAcks.push_back({ndn::Name(decoded.provider), call.serviceName, id, ack,
@@ -558,6 +561,16 @@ BOOST_AUTO_TEST_CASE(PublicClientCommitsSignedOfferAndIgnoresLateTerminalCallbac
     }
     ResponseHandler responseCallback(const ndn::Name& id) { return m_pendingCalls.at(id).responseHandler; }
     TimeoutHandler timeoutCallback(const ndn::Name& id) { return m_pendingCalls.at(id).timeoutHandler; }
+    auto streamCallbacks(const ndn::Name& id) { return m_streamStates.at(id); }
+    std::vector<ndn::Name> pendingIds() const {
+      std::vector<ndn::Name> result;
+      for (const auto& pair : m_pendingCalls) result.push_back(pair.first);
+      return result;
+    }
+    std::string requestWire(const ndn::Name& id) {
+      const auto bytes = m_pendingCalls.at(id).requestMessage.getPayload();
+      return std::string(bytes.begin(), bytes.end());
+    }
     void deliver(const ndn::Name& id, const ndn::Name& provider, const ResponseMessage& response) {
       handleResponse(id, provider, response);
     }
@@ -581,6 +594,21 @@ BOOST_AUTO_TEST_CASE(PublicClientCommitsSignedOfferAndIgnoresLateTerminalCallbac
   auto user = std::make_shared<User>(face, ndn::Name("/client"),
     test::makeRsaIdentity(keyChain, ndn::Name("/requester")),
     test::makeRsaIdentity(keyChain, ndn::Name("/authority")), "examples/trust-any.conf");
+  if (scenario >= 3) {
+    for (const auto& provider : {std::string("/provider/a"), std::string("/provider/b")}) {
+      const auto cert = keyChain.createIdentity(ndn::Name(provider), ndn::RsaKeyParams(2048))
+        .getDefaultKey().getDefaultCertificate();
+      const auto bytes = cert.getPublicKey();
+      auto& value = user->groupKeys[provider];
+      value.setField("schemaVersion", "1"); value.setField("recipient", provider);
+      value.setField("recipientCertName", cert.getName().toUri());
+      value.setField("recipientPublicKey", selectionGatedHex(bytes));
+      value.setField("recipientCertDigest", nativePlanningDigest(std::string(reinterpret_cast<const char*>(bytes.data()), bytes.size())));
+      const auto offer = decodeNativeProviderOfferV3(sample->at("offers").front().get<std::string>());
+      value.setField("providerBootEpoch", provider + ":" + offer.bootEpoch);
+      value.setField("ndnsfDataV1EndpointPrefix", provider + "/NDNSF-DI/data");
+    }
+  }
   auto registry = std::make_shared<NativeAdapterRegistry>();
   registry->registerAdapter(std::make_shared<NativeCatalogModelAdapter>(
     std::vector<NativeModelDescriptor>{input.inspected.descriptor}, NativeCatalogModelAdapter::Format::OpaqueBytes, 1024));
@@ -609,6 +637,7 @@ BOOST_AUTO_TEST_CASE(PublicClientCommitsSignedOfferAndIgnoresLateTerminalCallbac
   issuer.authorityPrivateKey = key('a'); issuer.requesterPublicKey = key('b');
   issuer.allowedModelManifests = {binding.manifestDigest};
   issuer.recipientPublicKeys = {{"/provider/a", key('c')}};
+  if (scenario >= 3) issuer.recipientPublicKeys.emplace("/provider/b", key('d'));
   issuer.contentKey = [](const auto&, const auto&) { return std::vector<std::uint8_t>(32, 42); };
   std::string authorityPublic(32, '\0'); std::size_t size = authorityPublic.size();
   BOOST_REQUIRE_EQUAL(EVP_PKEY_get_raw_public_key(issuer.authorityPrivateKey.get(),
@@ -616,6 +645,7 @@ BOOST_AUTO_TEST_CASE(PublicClientCommitsSignedOfferAndIgnoresLateTerminalCallbac
   NativeRequestRuntime runtime;
   runtime.contract = {"/service", "task", input.inspected.descriptor.adapterId,
     input.inspected.descriptor.adapter.descriptorDigest(), nativePlanningDigest("composition"), nativePlanningDigest("task")};
+  if (scenario >= 3) runtime.contract.generationMode = "TOKEN_STREAMING";
   runtime.requesterIdentity = "/requester"; runtime.protectionEpoch = issuer.protectionEpoch;
   runtime.security = {nativePlanningDigest("policy"), true}; runtime.budget.maxPolicyMs = 1000;
   runtime.grants = std::make_shared<NativeAuthenticatedGrantClient>("/requester", key('b'), "/authority", authorityPublic,
@@ -633,16 +663,35 @@ BOOST_AUTO_TEST_CASE(PublicClientCommitsSignedOfferAndIgnoresLateTerminalCallbac
     }
     return done();
   };
-  for (int scenario = 0; scenario != 3; ++scenario) {
+  {
     NativeInferenceClient client(user, registry, runtime, preparation, admission);
+    NativeRequestOptions requestOptions;
+    std::atomic<unsigned> accepted{0};
+    if (scenario >= 3) {
+      const auto values = nativeCanonicalJson(NativeJson{{"useCache", true}, {"outputMode", "TOKEN_STREAMING"},
+        {"maxNewTokens", 4}, {"eosTokenIds", {2}}, {"tokenizerDigest", nativePlanningDigest("tokenizer")},
+        {"tokenInputName", "x"}, {"stateInputNames", {"x"}}, {"stateOutputNames", {"y"}}});
+      application.options.assign(values.begin(), values.end());
+      requestOptions.stream = StreamRequestOptions{};
+      requestOptions.stream->generationId.fill(0x11);
+      requestOptions.stream->allowReplacement = true;
+      requestOptions.stream->maxReplacements = 1;
+      requestOptions.generation = nativeGenerationFromOptions(application.options, std::string(32, '1'));
+      requestOptions.onGenerationEvent = [&](const auto&) {
+        ++accepted;
+        if (scenario == 7) throw std::runtime_error("application callback fixture failure");
+      };
+    }
     auto handle = client.request(model, application, std::make_shared<Splitter>(input.split),
-      std::make_shared<NativePreSplitFirstPlacement>(), NativeRequestOptions{});
+      std::make_shared<NativePreSplitFirstPlacement>(), requestOptions);
     const ndn::Name id(handle.requestId());
     BOOST_REQUIRE(pumpUntil([&] { return user->hasPendingCall(id) || handle.status() != NativeRequestStatus::Pending; }));
     if (handle.status() != NativeRequestStatus::Pending) handle.result(std::chrono::milliseconds(0));
     BOOST_REQUIRE(user->hasPendingCall(id));
+    const auto submitOffer = [&](const ndn::Name& attemptId, const std::string& provider, std::uint64_t attempt) {
     auto offer = nativeParseJson(sample->at("offers").front().get<std::string>());
-    offer["request_id"] = handle.requestId();
+    offer["request_id"] = attemptId.toUri(); offer["provider"] = provider; offer["attempt"] = attempt;
+    offer["topology"]["provider"] = provider;
     const auto unsignedWire = nativeCanonicalJson(offer);
     const auto digest = decodeNativeProviderOfferV3(unsignedWire).offerDigest;
     std::array<unsigned char, 32> seed{};
@@ -657,10 +706,106 @@ BOOST_AUTO_TEST_CASE(PublicClientCommitsSignedOfferAndIgnoresLateTerminalCallbac
     std::array<unsigned char, 89> encoded{};
     BOOST_REQUIRE_EQUAL(EVP_EncodeBlock(encoded.data(), signature.data(), length), 88);
     offer["signature"] = std::string(reinterpret_cast<char*>(encoded.data()), 88);
-    user->postToIo([&, wire = nativeCanonicalJson(offer)] { user->offer(id, wire); });
+    user->postToIo([&, attemptId, wire = nativeCanonicalJson(offer)] { user->offer(attemptId, wire); });
+    };
+    submitOffer(id, "/provider/a", 1);
     BOOST_REQUIRE(pumpUntil([&] { return user->committed(id) || handle.status() != NativeRequestStatus::Pending; }));
     if (handle.status() != NativeRequestStatus::Pending) handle.result(std::chrono::milliseconds(0));
     BOOST_REQUIRE(user->committed(id));
+    if (scenario >= 3) {
+      const auto callbacks = user->streamCallbacks(id);
+      const auto tokenEvent = [&](std::int64_t token, std::size_t epoch, const std::string& prefix,
+                                  const std::string& delta, const std::string& hint) {
+        const auto wire = nativeCanonicalJson(NativeJson{{"schema", "GenerationTokenEventV1"},
+          {"tokenId", token}, {"tokenEpoch", epoch}, {"acceptedPrefixDigest", nativePlanningDigest(prefix)},
+          {"textDelta", delta}, {"finishHint", hint}, {"samplingDigest", requestOptions.generation->samplingDigest}});
+        return ndn::Buffer(wire.begin(), wire.end());
+      };
+      const auto finalPayload = [&](const std::string& text) {
+        const auto wire = nativeCanonicalJson(NativeJson{{"schema", "NDNSF-DI-FINAL-V1"},
+          {"tokenIds", {1, 2}}, {"text", text}, {"finishHint", "EOS"}, {"finishReason", "eos"}});
+        return ndn::Buffer(wire.begin(), wire.end());
+      };
+      const auto firstToken = tokenEvent(1, 1, "1", "a", scenario == 5 ? "EOS" : "NONE");
+      if (scenario != 9) callbacks->onEvent(firstToken);
+      if (scenario != 9)
+        BOOST_REQUIRE(pumpUntil([&] { return accepted.load() == 1 || handle.status() != NativeRequestStatus::Pending; }));
+      if (scenario == 4) callbacks->onEvent(tokenEvent(3, 3, "1,3", "bad", "NONE"));
+      else if (scenario >= 10) {
+        auto invalid = tokenEvent(2, 2, "1,2", "b", "EOS");
+        if (scenario == 10) invalid = firstToken; // Duplicate accepted epoch.
+        else if (scenario == 11) invalid = tokenEvent(2, 2, "1,9", "b", "EOS");
+        else {
+          auto value = nativeParseJson(std::string(invalid.begin(), invalid.end()));
+          if (scenario == 12) value["requestId"] = "/foreign/request";
+          else value["tokenId"] = 2.0; // Numeric equality must not erase the integer wire contract.
+          const auto wire = nativeCanonicalJson(value); invalid.assign(wire.begin(), wire.end());
+        }
+        callbacks->onEvent(invalid);
+      }
+      else if (scenario == 5 || scenario == 8 || scenario == 9) {
+        callbacks->onError(StreamedInvocationError(StreamedInvocationErrorCode::ProviderFailure,
+          "provider commit fixture failure", id, 0, ndn::Name("/provider/a")));
+        if (scenario != 5) {
+          BOOST_REQUIRE(pumpUntil([&] {
+            const auto ids = user->pendingIds();
+            return std::any_of(ids.begin(), ids.end(), [&](const auto& value) { return value != id; }) ||
+              handle.status() != NativeRequestStatus::Pending;
+          }));
+          if (handle.status() != NativeRequestStatus::Pending) handle.result(std::chrono::milliseconds(0));
+          const auto ids = user->pendingIds();
+          const auto replacement = std::find_if(ids.begin(), ids.end(), [&](const auto& value) { return value != id; });
+          BOOST_REQUIRE(replacement != ids.end());
+          const auto nextId = *replacement;
+          const auto request = nativeParseJson(user->requestWire(nextId));
+          if (const auto path = std::getenv("NDNSF_STREAM_REQUEST_WIRE")) {
+            std::ofstream output(path, std::ios::app);
+            BOOST_REQUIRE(output.good());
+            output << user->requestWire(nextId) << '\n';
+          }
+          const auto& recovery = request.at("task").at("generation_recovery");
+          BOOST_CHECK_EQUAL(recovery.at("attempt"), 2);
+          BOOST_CHECK_EQUAL(recovery.at("failed_provider"), "/provider/a");
+          BOOST_CHECK_EQUAL(recovery.at("committed_token_count"), scenario == 9 ? 0 : 1);
+          BOOST_CHECK(recovery.at("committed_token_ids") == (scenario == 9 ? NativeJson::array() : NativeJson::array({1})));
+          BOOST_CHECK_EQUAL(handle.requestId(), id.toUri());
+          // These retained callbacks come from the old Core attempt.
+          callbacks->onEvent(tokenEvent(9, 2, "1,9", "stale", "NONE"));
+          callbacks->onComplete(finalPayload("stale"));
+          submitOffer(nextId, "/provider/b", 2);
+          BOOST_REQUIRE(pumpUntil([&] { return user->committed(nextId) || handle.status() != NativeRequestStatus::Pending; }));
+          if (handle.status() != NativeRequestStatus::Pending) handle.result(std::chrono::milliseconds(0));
+          BOOST_REQUIRE(user->committed(nextId));
+          const auto next = user->streamCallbacks(nextId);
+          if (scenario == 9) next->onEvent(tokenEvent(1, 1, "1", "a", "NONE"));
+          next->onEvent(tokenEvent(2, 2, "1,2", "b", "EOS"));
+          next->onComplete(finalPayload("ab"));
+        }
+      }
+      else if (scenario != 7) {
+        callbacks->onEvent(tokenEvent(2, 2, "1,2", "b", "EOS"));
+        callbacks->onComplete(finalPayload(scenario == 6 ? "wrong" : "ab"));
+      }
+      BOOST_REQUIRE(pumpUntil([&] { return handle.status() != NativeRequestStatus::Pending; }));
+      if (scenario == 3 || scenario == 8 || scenario == 9) {
+        BOOST_CHECK(handle.status() == NativeRequestStatus::Succeeded);
+        BOOST_CHECK_EQUAL(accepted.load(), 2);
+        const auto result = handle.result(std::chrono::milliseconds(0));
+        BOOST_CHECK_EQUAL(nativeParseJson(std::string(result.payload.begin(), result.payload.end())).at("text"), "ab");
+      }
+      else {
+        BOOST_CHECK(handle.status() == NativeRequestStatus::Failed);
+        BOOST_CHECK_EQUAL(accepted.load(), scenario == 6 ? 2 : 1);
+        const auto expected = scenario == 6 ? "StreamFinalMismatch" : scenario == 7 ? "StreamCallbackFailed" :
+          scenario == 5 ? "NATIVE_STREAM_FAILED" : "StreamEventLineageMismatch";
+        BOOST_CHECK_EXCEPTION(handle.result(std::chrono::milliseconds(0)), NativeDiError,
+          [&](const auto& error) { return error.code() == expected; });
+      }
+      callbacks->onEvent(firstToken); callbacks->onComplete(finalPayload("ab"));
+      client.close();
+      BOOST_REQUIRE(pumpUntil([&] { return user->pendingIds().empty(); }));
+      return;
+    }
     auto lateResponse = user->responseCallback(id);
     auto lateTimeout = user->timeoutCallback(id);
     ResponseMessage response; response.setStatus(true);
@@ -689,6 +834,11 @@ BOOST_AUTO_TEST_CASE(PublicClientCommitsSignedOfferAndIgnoresLateTerminalCallbac
     BOOST_CHECK(handle.status() == terminal);
     BOOST_CHECK(!user->hasPendingCall(id));
   }
+}
+
+BOOST_AUTO_TEST_CASE(PublicClientCommitsSignedOfferAndIgnoresLateTerminalCallbacks)
+{
+  for (int scenario = 0; scenario != 3; ++scenario) runPublicClientScenario(scenario);
 }
 
 BOOST_AUTO_TEST_CASE(AdmittedPlacementSealsSdkCoreAndRejectsTampering)

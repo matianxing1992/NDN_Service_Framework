@@ -1727,11 +1727,9 @@ generationConfigFromAuthenticatedRequest(
       result.stableTextDecoder = decoders.stable;
     }
     else if (result.textDecoderFactory) {
+      if (result.requireTextOutput)
+        throw std::invalid_argument("streamed generation requires paired full/stable token decoders");
       result.textDecoder = result.textDecoderFactory(sealed.tokenizerDigest);
-      // Legacy fixtures supplied only a complete decoder.  Keep them working
-      // while requiring the paired factory for production streaming paths.
-      result.stableTextDecoder = [decoder = result.textDecoder](
-        const std::vector<std::int64_t>& ids, bool) { return decoder(ids); };
     }
     result.committedPrefixTokenIds = sealed.committedPrefixTokenIds;
   }

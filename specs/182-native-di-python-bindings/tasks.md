@@ -17,7 +17,7 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 
 | Unit / Details | Status | Depends | Evidence / Remaining | Updated |
 | --- | --- | --- | --- | --- |
-| [R4-B2 Native Stream Production Chain](evidence/r4-b2-stream-production-20260908.md) | IN_PROGRESS | R3-B1; R4-B1 | 实际Core stream回调、operation接受边界、TOKEN_FEEDBACK与replacement缺口已核对；ST-1--4统一接线/验证，产品尚未修改 | 2026-09-08 |
+| [R4-B2 Native Stream Production Chain](evidence/r4-b2-stream-production-20260908.md#final-local-result) | DONE | R3-B1; R4-B1 | Local requester stream batch：7 stream/190 assertions、2 options/21、29 regression/695 PASS；2 SDK recovery wires、CLI/loader PASS；真实Provider/会话/T016仍未完成 | 2026-09-08 |
 | [R4-B1 Native Sampling Contract Repair](evidence/r4-b1-sampling-20260908.md) | DONE | R3-B1; T010-C/T011 acceptance retained | Local sampling batch：double惩罚与统一参数校验；4 cases/40 assertions、既有epoch 28 assertions PASS；增量unit与实际DI共享库构建PASS；stream/session仍待完成 | 2026-09-08 |
 | [R3-B1 Default Request Lifecycle](evidence/r3-b1-request-lifecycle-20260908.md#final-local-result) | DONE | R2-B4/B5/B6; T010-A/B acceptance retained | initial-request local batch：131 DI cases/2975 assertions经共享测试及失败单例重试通过，13 Core cases/183 assertions通过；2 request/4 grant/7 dataflow SDK oracle、CLI入口与加载检查PASS；真实网络/stream/bindings/旧路径退出仍待后续 | 2026-09-08 |
 | [R2-B6 Authorized Group Projection](evidence/r2-b6-group-projection-20260908.md) | DONE | R2-B5; R2-B3 | Initial-request local batch：group/model rank 分离、transfer operation/capability/endpoint 同源、实际 segment 消费；31 cases/1305 assertions PASS；默认 requester 与流式 feedback 未关闭 | 2026-09-08 |
@@ -66,9 +66,9 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 | [T009-C Shared Provider Host Wiring](contracts/execution-units.md#t009-c-shared-provider-host-wiring) | DONE | T009-B | [acceptance](evidence/t009-c-shared-provider-host-wiring-20260907.md)；CPP(Spec182ProviderHost/*) 6 cases 全绿（新 suite di-native-provider-host.t.cpp）：NativeInferenceProvider host 单例落地（首次 serve 发布单固定 lease 入口 addScopedService EXECUTION_LEASE_SERVICE_NAME + SharedExecutionLeaseState(host boot epoch)，makeLeaseRouter 按 targetServiceName 路由——miss=LEASE_SERVICE_MISMATCH、draining 且非 Abort/Release=LEASE_TARGET_DRAINING、内部错误 in-band LEASE_INTERNAL_ERROR、wire 恒 status=true 无异常跨 Core 回调）+ serve fence 族（boot 身份/槽位一致性 invalid_argument、同名 active duplicate logic_error 先于 config 检查、executionLeaseTargetService==serviceName 且 table 必须 null 由 host 注入共享表、draining record 替换不继承旧 lease/fence/bindings、guard handler 只盖 drain 窗口）+ close/stop 幂等（registration move-only RAII、close 抬 draining 再 core close、generation 直通、valid()=state 非空 close 后仍 true、stop 全关 + serve→runtime_error、provider owner reset 不提前关闭、host dtor 后 handle 安全）+ example 迁移（DI_NativeProviderExecutable.cpp serve 提前到 installTask、main 等待 serveCompleted cv、删旧 exec-lease 双注册块、config 不再注入 lease table、ackHandler/runtimeObserver 经 def seam、单一注册路径 CD-014）；6 cases 覆盖双 target 共享 host/duplicate 拒不波及 sibling、config 一致性三拒绝 + 顺序优先、close→同 name re-serve（generation 递增、旧 handle 保持 closed）、stop 语义全族、close 后晚到 ack 真实 Core 边界（ack 仍被询问/pending 到 cleanup boundary，fence 在 dispatch 层同 Spec182Registration selector 1/2）、固定入口真实 Core 全链 dispatch（A/B 双 target、close A 后 B 仍 Completed=PO-014、draining 晚到 Prepare 应答不牵连、re-serve 后新 target 正常）；collab handler 真实执行与真实 NFD 多入口（I/di-native-provider-host.t.cpp）留 T016；旧 Spec182Registration 6/Spec182SharedLease 3/DiExecutionLeaseService 3 零改动全绿；908 cases 完整回归（除环境性 StreamFacade）；wscript 零改动（unit-tests ant_glob ndnsf-di/*.cpp 自动收录）；case-manifest T009-C file 落位 + 6 named cases；失败修正：build-nac182 13:03 重配置丢 --with-examples 使 di-native-provider target 消失（补 configure 6.6s 恢复，非代码）、Core close fence 位置假设错误改测真实边界、dot-style provider. 遗留两处、测试常量与 T009-B 冲突 rename | 2026-09-07 |
 | [T010-A Request Operation Terminal State](contracts/execution-units.md#t010-a-request-operation-terminal-state) | PARTIAL | T005-B, T008-B, T009-C | [Core I/O repair](evidence/t010-a-core-io-20260907.md)；postToIo/isOnIoThread、result I/O 等待拒绝、共享 user 寿命；-j4 构建 PASS，ClientState 11/11、既有 2/2 PASS；完整请求/成功竞争、有界通知待完成 | 2026-09-07 |
 | [T010-B Complete Request Orchestration](contracts/execution-units.md#t010-b-complete-request-orchestration) | PARTIAL | T010-A | [R3-B1](evidence/r3-b1-request-lifecycle-20260908.md#final-local-result)：配置化client的初始请求/签名ACK/规划授权/Core commit/Response及取消本地通过；无runtime旧入口仍拒绝，完整输入模式/stream/真实网络及调用方迁移待后续 | 2026-09-08 |
-| [T010-C Stream Acceptance and Replacement](contracts/execution-units.md#t010-c-stream-acceptance-and-replacement) | PARTIAL | T010-B | [R4-B2](evidence/r4-b2-stream-production-20260908.md)：已核对真实Core/operation/旧SDK边界并登记生产批次；实现和验收未完成，T010-B完整验收依赖保留 | 2026-09-08 |
+| [T010-C Stream Acceptance and Replacement](contracts/execution-units.md#t010-c-stream-acceptance-and-replacement) | PARTIAL | T010-B | [R4-B2](evidence/r4-b2-stream-production-20260908.md#final-local-result)：client/Core回调接受/恢复/final 7 cases/190 assertions与SDK wire PASS；T010-B完整依赖及真实stream验收保留 | 2026-09-08 |
 | [T011-A Sampling Parity Repair](contracts/execution-units.md#t011-a-sampling-parity-repair) | PARTIAL | T010-C | [R4-B1](evidence/r4-b1-sampling-20260908.md)：真实epoch采样4 cases/40 assertions与独立参考PASS；T010-C及完整卡验收依赖仍未关闭 | 2026-09-08 |
-| [T011-B Stable Epoch Emission](contracts/execution-units.md#t011-b-stable-epoch-emission) | PARTIAL | T011-A | [baseline](evidence/task-progress-registry-20260907.md)；已有相关源码切片；完整卡验收未完成 | 2026-09-07 |
+| [T011-B Stable Epoch Emission](contracts/execution-units.md#t011-b-stable-epoch-emission) | PARTIAL | T011-A | [R4-B2](evidence/r4-b2-stream-production-20260908.md#final-local-result)：paired factory接线、full-only回退移除、requester final一致性本地通过；真实epoch/三处integration验收仍待完成 | 2026-09-08 |
 | [T011-C Conversation Journal and Continuation](contracts/execution-units.md#t011-c-conversation-journal-and-continuation) | PARTIAL | T011-B | [baseline](evidence/task-progress-registry-20260907.md)；已有相关源码切片；完整卡验收未完成 | 2026-09-07 |
 | [T012-A Native Binding Types and Lifetime](contracts/execution-units.md#t012-a-native-binding-types-and-lifetime) | PARTIAL | T011-C | [baseline](evidence/task-progress-registry-20260907.md) 保留；[descriptor binding](evidence/t003-model-descriptor-20260907.md) 暴露完整模型/adapter，源码语法编译 PASS；新 ABI extension 运行及整卡验收未完成 | 2026-09-07 |
 | [T012-B Compatible Python Facades](contracts/execution-units.md#t012-b-compatible-python-facades) | NOT_STARTED | T012-A | [baseline](evidence/task-progress-registry-20260907.md)；无本卡独立执行/验收记录；按依赖领取 | 2026-09-07 |
@@ -82,10 +82,14 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 
 ## Current Checkpoint
 
-2026-09-08 R4-B2 / **IN_PROGRESS / TESTS_DEFERRED**：已登记ST-1--4生产流式批次。
-Core已有stream回调入口；client未注册、operation未维护接受前缀、group仍拒绝TOKEN_FEEDBACK。
-下一步在同一operation实现接受与终态验证，并接规划/反馈/replacement；保留普通observe异常隔离。
-本批没有产品构建或测试，详见[R4-B2](evidence/r4-b2-stream-production-20260908.md)。
+2026-09-08 R4-B2 / **DONE (local requester stream batch)**：Core stream回调已接
+operation接受/一次replacement/final，保留前缀和原deadline；generation从请求options派生，
+反馈操作授权同源且排除单轮readiness。7 stream cases/190 assertions、2 options/21、
+29 regression/695 PASS，共38 cases/906 assertions（分三个运行）；两个实际recovery wire
+SDK对照及CLI/loader检查PASS。首轮fixture topology错误已修，原始失败保留。
+新ABI构建879.773s，后续增量32.338s/32.730s均PASS；未启用-O2，不计发布/性能资格。
+当前无运行中构建或测试；下一步T011 stable epoch/会话，真实Provider重算与T016未关闭。
+证据见[R4-B2 Final Local Result](evidence/r4-b2-stream-production-20260908.md#final-local-result)。
 
 2026-09-08 R4-B1 / **DONE (local sampling batch)**：double precision与统一参数校验修复；
 dedup/Top-P retained mass已有实现并保留。Spec182Sampling四个真实epoch用例40 assertions

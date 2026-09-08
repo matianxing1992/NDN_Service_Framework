@@ -1,5 +1,25 @@
 # Failure Log and Evidence Index
 
+## 2026-09-08 — Spec182 CLI probe output-path correction
+
+R4-B2 CLI smoke首次使用build/DI_NativeRequester，实际Waf输出为build/examples/DI_NativeRequester；
+探针在进程创建前FileNotFoundError，未执行产品。按build.log Linking行修正探针路径，
+不修改或重编代码。原始[路径诊断](../.codex-tmp/spec182-r4-b2-r3/cli-path-error.json)；
+续检查结果见R4-B2的cli-record.json。本条不改变已通过的C++测试结果。
+修正后CLI help/ldd exit0，实际加载本次DI库，local probe RESOLVED。
+
+## 2026-09-08 — Spec182 stream replacement fixture topology identity
+
+R4-B2新ABI build PASS/879.773s，generation options 2 cases/21 assertions PASS；
+stream 5/7 cases、104/106 assertions PASS，两个replacement case在构造Provider B
+测试offer时抛topology Provider mismatch。fixture仅改了offer.provider，嵌套topology
+仍指向Provider A；此边界发生在新offer签名前，不是Provider重算或恢复协议失败。
+保留[stream原始日志](../.codex-tmp/spec182-r4-b2/stream.log)和同目录build/options/stream
+record。下一步修fixture绑定后增量编译并重试两个失败case，不放宽生产身份校验。
+进度见[R4-B2](../specs/182-native-di-python-bindings/evidence/r4-b2-stream-production-20260908.md)。
+r2修复及r3补验均PASS；最终stream 7/7 cases/190 assertions，两个SDK恢复wire PASS，
+本地fixture问题RESOLVED，不扩大为真实Provider重算资格。
+
 ## 2026-09-08 — Spec182 stale dependent projection oracle
 
 r5 build PASS /30.971s；共享测试130/131通过、2963/2975断言通过，1个投影 oracle
