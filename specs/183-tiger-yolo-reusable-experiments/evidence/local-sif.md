@@ -26,3 +26,21 @@ exact-composition local YOLO or Tiger NDNSF-DI qualification is claimed by this
 base receipt. T011 remains unchecked. Next: build the already sealed app source
 with this exact base, inspect its native/Python closure and real entrypoints,
 then complete the production wiring and the registered runtime gates.
+
+## Application build in progress
+
+The first application attempt rejected `APP_BASE_DIGEST` before compilation,
+despite the earlier agreeing reads of this new image. The buffered-read problem
+also affects newly built SIFs; do not call the host permanently repaired.
+Direct-copy the new SIF to `/dev/shm/spec183-sdk-d4031191/base-runtime.sif` and
+check it against the same d4031191 digest. The second attempt passed the digest,
+base source/ABI checks and configure, and is compiling the external targets with
+`-j2`. Logs: `app-build-1.log` (rejection) and `app-build-2.log` (live compilation).
+Keep the owned RAM source until the build and exact-composition checks finish.
+
+`runtime/application.py` now verifies the producer's application manifest before
+publication. Four component checks pass: candidate-only scope, wrong base,
+changed binary, and declared foundational-library shadowing. An initial test
+collection import-path error is retained separately; the final/strict XMLs
+contain four passing checks. These content fixtures contain no real ELF or
+runtime proof. Profile/dispatch integration of the application layer is pending.

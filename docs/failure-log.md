@@ -3051,3 +3051,13 @@ authority. Do not fabricate hook events, purge stores or restart the active
 build to make this retrieval layer green. Host capture needs a real client
 acceptance check; indexing alone does not prove it. Log: context-index-latest.log
 under results/yolo-layered-20260908.
+
+## 2026-09-08 — New base SIF also hits the buffered-read discrepancy
+
+The finished 3,900,682,240-byte base passed native verification and one buffered/
+direct digest pair (d4031191…). The subsequent application builder nevertheless
+rejected APP_BASE_DIGEST before any compilation. An exact direct-I/O tmpfs copy
+passed the same builder guard and reached configure/compilation. Retain both
+application logs and use the verified memory snapshot for this host's current
+build/qualification work. Do not rebuild the base or alter its locked hash to
+hide the read-path problem; a permanent host repair remains unproven.
