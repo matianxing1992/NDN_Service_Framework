@@ -3107,3 +3107,13 @@ edits would otherwise cause a cold build. Explicit verified --build-cache-from
 reuses Waf state with the same base/flags and still runs configure/build. Keep
 the latest application's cache identity usable after relocation. Real result:
 configure6.728s/build0.837s, no C++ tasks, unchanged binary hashes, no SIF rebuild.
+
+## 2026-09-08 — Legacy real-input test repeats unstable SIF reads
+
+While testing explicit layered renderers, the input module also selected its
+legacy real-received-input test. Rendering and subsequent validation disagreed
+on disk baseSif bytes (FILE_DIGEST:baseSif). This is the existing host read-path
+failure; do not refresh its recorded digest or rerun the same unchanged test.
+The new fixture initially needed its seed directory created; after correction,
+three targeted render/source-descriptor tests pass. Use precise test selection
+so component checks do not unintentionally reread multi-GB legacy inputs.

@@ -57,14 +57,26 @@ def _sha256(path: Path) -> str:
     return "sha256:" + digest.hexdigest()
 
 
-def render(root: Path, *, verify: bool = False) -> dict:
+def source_files(path: Path, expected: set[str]) -> dict:
+    """Read explicit artifact paths relative to their descriptor, not cwd."""
+    value = json.loads(path.read_text())
+    if (not isinstance(value, dict) or set(value) != expected
+            or any(not isinstance(item, str) or not item for item in value.values())):
+        raise ValueError('PLANE_SOURCE_FILES')
+    return {name: path.absolute().parent/Path(item) for name, item in value.items()}
+
+
+def render(root: Path, *, verify: bool = False, sources=None, layout=None) -> dict:
     """Assemble the four real files under ``root`` and write plane.json."""
     root = Path(root).resolve()
     if any(part.is_symlink() for part in (root, *root.parents)):
         raise RuntimeError("plane root lies below a symlink")
     root.mkdir(mode=0o700, parents=True, exist_ok=True)
     files: dict[str, dict] = {}
-    for name, relative in SOURCES.items():
+    selected = SOURCES if sources is None else sources
+    if set(selected) != set(SOURCES) or layout not in (None, 'layered-v1'):
+        raise ValueError('PLANE_SOURCE_FILES')
+    for name, relative in selected.items():
         source = _REPO_ROOT / relative
         if not source.is_file() or source.is_symlink():
             raise RuntimeError(f"real input missing for {name}: {source}")
@@ -89,6 +101,8 @@ def render(root: Path, *, verify: bool = False) -> dict:
                        "sha256": observed}
     document = {"schema": PLANE_SCHEMA, "stage": "inputs", "parentId": None,
                 "files": files, "parameters": {"maxBuildJobs": 2}}
+    if layout is not None:
+        document['parameters']['layout'] = layout
     payload = json.dumps(document, sort_keys=True, separators=(",", ":")).encode()
     plane = root / "plane.json"
     if plane.exists() and plane.read_bytes() != payload:
@@ -115,12 +129,17 @@ def main(argv: Iterable[str] | None = None) -> int:
         child = sub.add_parser(name, help="assemble / validate the inputs plane")
         child.add_argument("--root", default=None,
                            help="plane root, absolute or repo-root-relative")
+        if name == 'render':
+            child.add_argument('--source-files', type=Path,
+                               help='JSON mapping of the four input names to explicit paths')
+            child.add_argument('--layout', choices=('layered-v1',))
     args = parser.parse_args(argv)
     root = Path(args.root or str(_REPO_ROOT / DEFAULT_PLANE_REL))
     if not root.is_absolute():
         root = _REPO_ROOT / root
     if args.command == "render":
-        document = render(root)
+        selected = source_files(args.source_files, set(SOURCES)) if args.source_files else None
+        document = render(root, sources=selected, layout=args.layout)
         print(json.dumps({"status": "RENDERED",
                           "id": _sha256(root / "plane.json"),
                           "files": {n: row["sha256"] for n, row in

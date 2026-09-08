@@ -227,7 +227,7 @@ def _sync_profile_rows(profile_path: Path, plane_root: Path, *, skip_release=Fal
     return updated
 
 
-def render(plane_root: Path, profile_path: Path) -> dict:
+def render(plane_root: Path, profile_path: Path, *, runtime_sources=None, application=None) -> dict:
     """Render runtime + dispatch planes and synchronize the profile rows."""
     plane_root = Path(plane_root).resolve()
     if any(p.is_symlink() for p in (plane_root, *plane_root.parents)):
@@ -237,22 +237,46 @@ def render(plane_root: Path, profile_path: Path) -> dict:
     from runtime.yolo_profile import check_chain
     check_chain({"inputs": inputs_root / "plane.json"}, through="inputs")
     inputs_id = _stage_id(inputs_root, "inputs", parent_id=None)
+    layout = 'layered-v1' if application is not None else None
+    if json.loads((inputs_root/'plane.json').read_text())['parameters'].get('layout') != layout:
+        raise ValueError('APP_LAYOUT_BINDING')
+    selected_runtime = RUNTIME_SOURCES if runtime_sources is None else runtime_sources
+    if set(selected_runtime) != set(RUNTIME_SOURCES):
+        raise ValueError('PLANE_SOURCE_FILES')
+    if layout and (runtime_root.exists() or dispatch_root.exists()):
+        raise ValueError('LAYERED_PLANE_OUTPUT_EXISTS')
 
     # Runtime plane: the three real CAS sources, hard-linked.
     if runtime_root.exists():
         _rmtree_force(runtime_root)
     runtime_root.mkdir(mode=0o700)
     runtime_files = {}
-    for name, relative in RUNTIME_SOURCES.items():
+    for name, relative in selected_runtime.items():
         runtime_files[name] = _link_into(
             _REPO_ROOT / relative, runtime_root / relative.name, name)
-    _write_plane(runtime_root, "runtime", inputs_id, runtime_files)
+    _write_plane(runtime_root, "runtime", inputs_id, runtime_files, layout=layout)
     runtime_id = _stage_id(runtime_root, "runtime", parent_id=inputs_id)
 
     # Dispatch plane: effective-behavior document, sealed harness, real sources.
     if dispatch_root.exists():
         _rmtree_force(dispatch_root)
     dispatch_root.mkdir(mode=0o700)
+    app_ref = None
+    if layout:
+        from runtime.application import verify_application
+        application = Path(application).absolute()
+        app_manifest = application/'application-manifest.json'
+        app_ref = dict(path=str(app_manifest), bytes=app_manifest.stat().st_size,
+                       sha256=_sha256(app_manifest))
+        verify_application(application, manifest_sha256=app_ref['sha256'],
+                           base_sif_sha256=runtime_files['sif']['sha256'])
+        profile = json.loads(profile_path.read_text())
+        profile['runtime'].update(layout=layout, applicationManifest=app_ref,
+                                  nativeProvider='/app/bin/di-native-provider')
+        for stage in ('inputs', 'runtime', 'dispatch'):
+            profile['release'][stage]['path'] = str(plane_root/stage/'plane.json')
+        profile['evidence']['harnessManifest']['path'] = str(dispatch_root/HARNESS_REL/'harness-manifest.json')
+        profile_path.write_text(json.dumps(profile, indent=1)+'\n')
     # Seal the executable owners and refresh all non-release identities before
     # snapshotting behavior. Only release rows depend on the completed E plane;
     # they are excluded from the behavior document and synchronized last.
@@ -262,7 +286,15 @@ def render(plane_root: Path, profile_path: Path) -> dict:
     effective = dispatch_root / "effective-profile.json"
     effective.write_text(json.dumps(_effective_document(profile), indent=1) + "\n")
     dispatch_files = {}
-    for name, relative in DISPATCH_SOURCES.items():
+    selected_dispatch = DISPATCH_SOURCES
+    if layout:
+        references = dict(modelManifest=profile['workload']['packageManifest'],
+            oracle=profile['oracle']['reference'], fixture=profile['oracle']['input'],
+            trustPolicy=profile['security']['trustPolicy'],
+            validationContract=profile['evidence']['validationContract'])
+        selected_dispatch = {name: profile_path.absolute().parent/Path(row['path'])
+                             for name, row in references.items()}
+    for name, relative in selected_dispatch.items():
         dispatch_files[name] = _link_into(
             _REPO_ROOT / relative, dispatch_root / relative.name, name)
     dispatch_files["effectiveProfile"] = {
@@ -272,7 +304,10 @@ def render(plane_root: Path, profile_path: Path) -> dict:
     dispatch_files["harnessManifest"] = {
         "path": str(HARNESS_REL / "harness-manifest.json"),
         "bytes": sealed_manifest.stat().st_size, "sha256": _sha256(sealed_manifest)}
-    _write_plane(dispatch_root, "dispatch", runtime_id, dispatch_files)
+    if app_ref is not None:
+        dispatch_files['applicationManifest'] = _link_into(
+            Path(app_ref['path']), dispatch_root/'application-manifest.json', 'applicationManifest')
+    _write_plane(dispatch_root, "dispatch", runtime_id, dispatch_files, layout=layout)
     dispatch_id = _stage_id(dispatch_root, "dispatch", parent_id=runtime_id)
 
     updated = sorted(set(updated + _sync_profile_rows(profile_path, plane_root)))
@@ -281,10 +316,11 @@ def render(plane_root: Path, profile_path: Path) -> dict:
             "inputs": inputs_id, "profileRowsUpdated": updated}
 
 
-def _write_plane(root: Path, stage: str, parent_id, files: dict) -> None:
+def _write_plane(root: Path, stage: str, parent_id, files: dict, *, layout=None) -> None:
     """Write plane.json; its stage id is the canonical document sha, which
     ``check_plane`` recomputes (never the raw file bytes)."""
-    payload = json.dumps(_plane_document(stage, parent_id, files, {}),
+    parameters = {} if layout is None else {'layout': layout}
+    payload = json.dumps(_plane_document(stage, parent_id, files, parameters),
                          sort_keys=True, separators=(",", ":")).encode()
     (root / "plane.json").write_bytes(payload)
 
@@ -347,6 +383,10 @@ def main(argv: Iterable[str] | None = None) -> int:
         if name == "render":
             child.add_argument("--profile", default=None,
                                help="profile path (default: repo profiles/yolo-two-node.json)")
+            child.add_argument('--runtime-source-files', type=Path,
+                               help='JSON mapping of sif/nativeManifest/libraryLock to explicit paths')
+            child.add_argument('--application', type=Path,
+                               help='Frozen external application; requires a fresh layered input plane')
     native = sub.add_parser("extract-native",
                             help="extract container-native-build.json from the base SIF")
     native.add_argument("--apptainer", default=DEFAULT_APPTAINER)
@@ -372,7 +412,9 @@ def main(argv: Iterable[str] | None = None) -> int:
         profile = (_REPO_ROOT / Path(args.profile)).resolve()
     if not profile.is_file():
         raise SystemExit(f"profile not found: {profile}")
-    result = render(root, profile)
+    from tools.spec183_inputs_plane import source_files
+    selected = source_files(args.runtime_source_files, set(RUNTIME_SOURCES)) if args.runtime_source_files else None
+    result = render(root, profile, runtime_sources=selected, application=args.application)
     print(json.dumps(result, sort_keys=True))
     return 0
 
