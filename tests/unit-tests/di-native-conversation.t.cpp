@@ -1,4 +1,8 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp"
+#include "tests/fixtures/spec182/native-sampling-epoch.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
+#include <cmath>
+#include <limits>
 
 #include <boost/test/unit_test.hpp>
 #include <openssl/sha.h>
@@ -61,3 +65,88 @@ BOOST_AUTO_TEST_CASE(NativeConversation_rejects_wrong_parent)
 }
 
 } // namespace ndnsf::di
+
+namespace {
+using namespace ndnsf::di;
+std::vector<std::int64_t> sampled(std::vector<std::vector<float>> logits,
+  const std::function<void(NativeEpochCoordinatorConfig&)>& configure = [](auto&) {})
+{
+  const auto result = test::runSamplingEpochs(std::move(logits), configure);
+  if (!result.finalPayload) throw std::runtime_error("sampling epoch did not finish");
+  return nativeParseJson(std::string(result.finalPayload->begin(), result.finalPayload->end()))
+    .at("tokenIds").get<std::vector<std::int64_t>>();
+}
+}
+
+BOOST_AUTO_TEST_SUITE(Spec182Sampling)
+BOOST_AUTO_TEST_CASE(Spec182SamplingTopPRetainedMass)
+{
+  const auto tokens = sampled({{float(std::log(.6)), float(std::log(.3)), float(std::log(.1))}}, [](auto& c) {
+    c.samplingMode = "SeededTopKTopP"; c.samplingTemperature = 1;
+    c.samplingTopK = 3; c.samplingTopP = .8; c.samplingSeed = 8;
+  });
+  BOOST_CHECK(tokens == std::vector<std::int64_t>{0});
+}
+BOOST_AUTO_TEST_CASE(Spec182SamplingPenaltyOncePerToken)
+{
+  BOOST_CHECK(sampled({{100, -100}, {100, -100}, {4, 1.5}}, [](auto& c) {
+    c.samplingRepetitionPenalty = 2;
+  }) == std::vector<std::int64_t>({0, 0, 0}));
+  BOOST_CHECK(sampled({{100, -100}, {100, -100}, {-1, -1.5}}, [](auto& c) {
+    c.samplingRepetitionPenalty = 2;
+  }) == std::vector<std::int64_t>({0, 0, 1}));
+}
+BOOST_AUTO_TEST_CASE(Spec182SamplingValidationParity)
+{
+  for (const auto& mode : {std::string("Greedy"), std::string("SeededTopKTopP")}) {
+    for (int bad = 0; bad != 13; ++bad) {
+      BOOST_TEST_CONTEXT(mode << " invalid parameter " << bad) {
+        BOOST_CHECK_THROW(sampled({{1, 0}}, [&](auto& c) {
+          c.samplingMode = mode; c.samplingTemperature = mode == "Greedy" ? 0 : 1;
+          switch (bad) {
+            case 0: c.samplingTopK = 0; break;
+            case 1: c.samplingTopK = 3; break;
+            case 2: c.samplingTopP = 0; break;
+            case 3: c.samplingTopP = std::numeric_limits<double>::quiet_NaN(); break;
+            case 4: c.samplingTopP = 1.1; break;
+            case 5: c.samplingRepetitionPenalty = .09; break;
+            case 6: c.samplingRepetitionPenalty = 2.1; break;
+            case 7: c.samplingRepetitionPenalty = std::numeric_limits<double>::infinity(); break;
+            case 8: c.samplingTemperature = std::numeric_limits<double>::quiet_NaN(); break;
+            case 9: c.samplingMode = "unknown"; break;
+            case 10: c.samplingTemperature = mode == "Greedy" ? 1 : 0; break;
+            case 11: c.samplingTemperature = 5.1; break;
+            case 12: c.samplingRepetitionPenalty = std::numeric_limits<double>::quiet_NaN(); break;
+          }
+        }), std::invalid_argument);
+      }
+    }
+  }
+  for (const auto value : {std::numeric_limits<float>::quiet_NaN(),
+                          std::numeric_limits<float>::infinity(),
+                          -std::numeric_limits<float>::infinity()})
+    BOOST_CHECK_THROW(sampled({{value, 0}}), std::invalid_argument);
+  BOOST_CHECK_THROW(sampled({{}}), std::exception);
+  for (double penalty : {.1, 2.0})
+    BOOST_CHECK(sampled({{1, 0}}, [&](auto& c) {
+      c.samplingRepetitionPenalty = penalty; c.samplingTopK = 2;
+    }) == std::vector<std::int64_t>{0});
+}
+BOOST_AUTO_TEST_CASE(Spec182SamplingDoublePrecisionAndTies)
+{
+  // float32(1.1)/double(1.1) is greater than 1; float division rounds to a tie.
+  BOOST_CHECK(sampled({{0, 100}, {0, 100}, {1, 1.1F}}, [](auto& c) {
+    c.samplingRepetitionPenalty = 1.1;
+  }) == std::vector<std::int64_t>({1, 1, 1}));
+  BOOST_CHECK(sampled({{1, 1}}) == std::vector<std::int64_t>{0});
+  BOOST_CHECK(sampled({{1, 1}}, [](auto& c) {
+    c.samplingMode = "SeededTopKTopP"; c.samplingTemperature = 1;
+    c.samplingTopK = 1; c.samplingTopP = 1;
+  }) == std::vector<std::int64_t>{0});
+  for (const auto seed : {std::uint64_t(0), std::numeric_limits<std::uint64_t>::max()})
+    BOOST_CHECK(sampled({{100, -100}, {100, -100}, {1, 1}}, [&](auto& c) {
+      c.samplingMode = "SeededTopKTopP"; c.samplingTemperature = 1;
+      c.samplingTopK = 2; c.samplingSeed = seed;
+    }) == std::vector<std::int64_t>({0, 0, 1}));
+}
+BOOST_AUTO_TEST_SUITE_END()

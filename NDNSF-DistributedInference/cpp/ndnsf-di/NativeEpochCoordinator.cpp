@@ -547,7 +547,20 @@ sampleToken(const std::map<std::string, TensorBundle>& outputs,
             const std::vector<std::int64_t>& generated,
             std::size_t step)
 {
-  auto logits = lastLogits(outputs);
+  const auto inputLogits = lastLogits(outputs);
+  if (inputLogits.empty() || config.samplingTopK == 0 ||
+      config.samplingTopK > inputLogits.size() ||
+      !std::isfinite(config.samplingTopP) || config.samplingTopP <= 0.0 || config.samplingTopP > 1.0 ||
+      !std::isfinite(config.samplingRepetitionPenalty) || config.samplingRepetitionPenalty < 0.1 ||
+      config.samplingRepetitionPenalty > 2.0 || !std::isfinite(config.samplingTemperature) ||
+      (config.samplingMode == "Greedy" ? config.samplingTemperature != 0.0 :
+        config.samplingMode != "SeededTopKTopP" || config.samplingTemperature <= 0.0 ||
+        config.samplingTemperature > 5.0)) {
+    throw std::invalid_argument("invalid native sampling contract");
+  }
+  // Preserve the exact transported float32 values, then apply the reference
+  // sampler's double-precision arithmetic without rounding penalties to float.
+  std::vector<double> logits(inputLogits.begin(), inputLogits.end());
   std::set<std::int64_t> penalized;
   for (const auto token : generated) {
     if (token < 0 || static_cast<std::size_t>(token) >= logits.size()) {
@@ -558,28 +571,16 @@ sampleToken(const std::map<std::string, TensorBundle>& outputs,
     }
     if (config.samplingRepetitionPenalty != 1.0) {
       auto& value = logits[static_cast<std::size_t>(token)];
-      value = value >= 0.0F
-        ? value / static_cast<float>(config.samplingRepetitionPenalty)
-        : value * static_cast<float>(config.samplingRepetitionPenalty);
+      value = value >= 0.0
+        ? value / config.samplingRepetitionPenalty
+        : value * config.samplingRepetitionPenalty;
     }
   }
   if (config.samplingMode == "Greedy") {
-    if (config.samplingTemperature != 0.0 || config.samplingTopK == 0 ||
-        config.samplingTopP <= 0.0 || config.samplingTopP > 1.0) {
-      throw std::invalid_argument("invalid Greedy sampling contract");
-    }
     return static_cast<std::int64_t>(std::distance(
       logits.begin(), std::max_element(logits.begin(), logits.end())));
   }
-  if (config.samplingMode != "SeededTopKTopP" ||
-      !(config.samplingTemperature > 0.0) ||
-      config.samplingTemperature > 5.0 || config.samplingTopK == 0 ||
-      !(config.samplingTopP > 0.0) || config.samplingTopP > 1.0 ||
-      !(config.samplingRepetitionPenalty >= 0.1) ||
-      config.samplingRepetitionPenalty > 2.0) {
-    throw std::invalid_argument("unsupported native sampling contract");
-  }
-  const auto count = std::min<std::size_t>(config.samplingTopK, logits.size());
+  const auto count = config.samplingTopK;
   std::vector<std::size_t> candidates(logits.size());
   std::iota(candidates.begin(), candidates.end(), 0);
   std::stable_sort(candidates.begin(), candidates.end(), [&logits] (auto left, auto right) {
