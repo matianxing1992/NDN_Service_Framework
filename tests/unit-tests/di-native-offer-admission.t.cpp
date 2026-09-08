@@ -1,326 +1,145 @@
-// Spec182OfferAdmission: frozen admission gate of NativeOfferAdmission against
-// the Core-authenticated ACK evidence shape.  The suite mirrors the Python
-// oracle (ProviderOfferTrustVerifier::verify_ack in app_sdk/provider.py):
-// Trust-Schema validation is a precondition, the signer identity/key locator/
-// validated wire digest must be present and coherent, the ACK must be signed
-// by the provider it claims, every authenticated identity must fall inside the
-// immutable offer policy, and the wall-clock validity of ACK and policy is
-// checked before an immutable planning view is produced.  Real Core admission
-// (evidence produced by the validated ServiceUser subscription path) runs at
-// T016; here every rejected fixture targets exactly one rule with all other
-// dimensions valid.
-
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeOfferAdmission.hpp"
-
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
+#include "ndn-service-framework/ServiceUser.hpp"
 #include <boost/test/unit_test.hpp>
-#include <openssl/sha.h>
+#include <fstream>
+#include <type_traits>
 
-#include <functional>
-#include <string>
-#include <vector>
-
-namespace ndnsf::di {
 namespace {
-
-std::string digest(const std::string& value)
+using namespace ndnsf::di;
+using ndn_service_framework::AckSelectionCandidate;
+NativeJson fixture()
 {
-  unsigned char hash[SHA256_DIGEST_LENGTH];
-  SHA256(reinterpret_cast<const unsigned char*>(value.data()), value.size(), hash);
-  std::string result = "sha256:";
-  for (const auto byte : hash) {
-    result += "0123456789abcdef"[byte >> 4];
-    result += "0123456789abcdef"[byte & 15];
-  }
-  return result;
+  std::ifstream input("tests/fixtures/spec182/signed-offer-oracle.json");
+  if (!input) throw std::runtime_error("missing signed SDK offer fixture");
+  return NativeJson::parse(input);
 }
-
-NativeOfferPolicySnapshot policyFor()
+NativeOfferAdmission admission(const NativeJson& f)
 {
-  NativeOfferPolicySnapshot policy;
-  policy.policyDigest = digest("policy");
-  policy.acceptedSignerIdentities = {"/provider"};
-  policy.acceptedProviders = {"/provider"};
-  policy.acceptedServices = {"/service"};
-  policy.acceptedRoles = {"role-a", "role-b"};
-  policy.backends = {"onnxruntime"};
-  policy.residencyDigests = {digest("resident")};
-  policy.freeBytes = 4096;
-  policy.resourceSequence = 1;
-  policy.expiresAtMs = 2000;
-  return policy;
+  return NativeOfferAdmission(f.at("policy").dump(),
+    {{f.at("key_id").get<std::string>(), f.at("public_pem").get<std::string>()}},
+    f.at("candidate").get<std::string>());
 }
-
-NativeOfferBindingContext contextFor()
+NativeOfferBindingContext context(const NativeJson& sample)
 {
-  return {"/request", 1, "/service", digest("model"), digest("graph")};
+  const auto v = nativeParseJson(sample.at("wire").get<std::string>());
+  return {v.at("request_id"), v.at("attempt"), v.at("service"),
+          v.at("model_digest"), v.at("graph_digest"), 900};
 }
-
-NativeAckEvidence ackFor(const NativeOfferBindingContext& context)
+AckSelectionCandidate candidate(const std::string& wire)
 {
-  NativeAckEvidence ack;
-  ack.trustSchemaValidated = true;
-  ack.requestId = context.requestId;
-  ack.attempt = context.attempt;
-  ack.provider = "/provider";
-  ack.serviceName = context.serviceName;
-  ack.signerIdentity = "/provider";
-  ack.signerKeyLocator = "/provider/KEY/1";
-  ack.wireDigest = digest("wire");
-  ack.controllerVersion = "controller-v1";
-  ack.offerDigest = digest("offer");
-  ack.modelDigest = context.modelDigest;
-  ack.graphDigest = context.graphDigest;
-  ack.capturedAtMs = 500;
-  ack.expiresAtMs = 1500;
+  const auto v = nativeParseJson(wire);
+  AckSelectionCandidate ack;
+  ack.providerName = ndn::Name(v.at("provider").get<std::string>());
+  ack.serviceName = ndn::Name(v.at("service").get<std::string>());
+  ack.requestId = ndn::Name(v.at("request_id").get<std::string>());
+  ack.ack.setStatus(v.at("status").get<bool>());
+  ndn::Buffer payload(wire.begin(), wire.end());
+  ack.ack.setPayload(payload, payload.size());
+  // Explicit test fixture of Core output, not proof of real subscription validation.
+  ack.authenticationEvidence = {"/provider/a", "/provider/a/KEY/fixture/issuer/v=1",
+                                "sha256:" + std::string(64, '1'), true};
   return ack;
 }
-
-void expectCode(const std::function<void()>& fn, const std::string& code)
-{
-  bool thrown = false;
-  try {
-    fn();
-  } catch (const std::runtime_error& error) {
-    thrown = true;
-    BOOST_REQUIRE_EQUAL(std::string(error.what()), code);
-  }
-  if (!thrown) BOOST_ERROR("expected rejection " + code);
 }
-
-const std::string kUnauthenticated = "DI_NATIVE_OFFER_REJECTED_UNAUTHENTICATED";
-const std::string kRejected = "DI_NATIVE_OFFER_REJECTED";
-
 BOOST_AUTO_TEST_SUITE(Spec182OfferAdmission)
-
-// Resident gate: an ACK that never passed the Core-validated subscription
-// path (trustSchemaValidated false, as Core leaves direct/unit fixtures) can
-// never produce a planning view, no matter what its other fields claim.
-BOOST_AUTO_TEST_CASE(NativeOfferAdmissionRejectsUnauthenticatedAck)
+BOOST_AUTO_TEST_CASE(RealSdkSignaturesAndImmutableObservations)
 {
-  NativeOfferAdmission admission;
-  const auto context = contextFor();
-  auto ack = ackFor(context);
-  ack.trustSchemaValidated = false;
-  expectCode([&] { admission.verify(ack, policyFor(), context, 1000); }, kUnauthenticated);
-}
-
-// A caller-declared "verified" claim is not provenance: without the signer
-// identity there is nothing to bind to policy.
-BOOST_AUTO_TEST_CASE(RejectsAuthenticatedClaimWithoutSignerIdentity)
-{
-  NativeOfferAdmission admission;
-  const auto context = contextFor();
-  auto ack = ackFor(context);
-  ack.signerIdentity.clear();
-  expectCode([&] { admission.verify(ack, policyFor(), context, 1000); }, kUnauthenticated);
-}
-
-// A signed ACK must carry its signer key locator; an empty locator is not
-// authenticated provenance.
-BOOST_AUTO_TEST_CASE(RejectsAuthenticatedClaimWithoutKeyLocator)
-{
-  NativeOfferAdmission admission;
-  const auto context = contextFor();
-  auto ack = ackFor(context);
-  ack.signerKeyLocator.clear();
-  expectCode([&] { admission.verify(ack, policyFor(), context, 1000); }, kUnauthenticated);
-}
-
-// The validated wire digest must be present and take the canonical sha256
-// digest shape; anything else is a fabricated provenance claim.
-BOOST_AUTO_TEST_CASE(RejectsMalformedOrMissingWireDigest)
-{
-  NativeOfferAdmission admission;
-  const auto context = contextFor();
-  for (const auto& wire : {"", "not-a-digest", "sha256:zz", "sha256:"}) {
-    auto ack = ackFor(context);
-    ack.wireDigest = wire;
-    expectCode([&] { admission.verify(ack, policyFor(), context, 1000); }, kUnauthenticated);
+  static_assert(!std::is_default_constructible_v<NativeAdmittedOfferV3>);
+  const auto f = fixture();
+  const auto verifier = admission(f);
+  for (const auto& sample : f.at("vectors")) {
+    auto ack = candidate(sample.at("wire"));
+    const auto result = verifier.verify(ack, context(sample), 200);
+    BOOST_CHECK_EQUAL(result.observation().offerDigest, sample.at("digest").get<std::string>());
+    BOOST_CHECK_EQUAL(result.observation().status, ack.ack.getStatus());
+    if (sample.at("name") == "cuda") {
+      BOOST_REQUIRE_EQUAL(result.observation().resources.size(), 1);
+      BOOST_CHECK_EQUAL(result.observation().resources[0].freeMemoryMb, 9000);
+      BOOST_CHECK_EQUAL(result.observation().residency[0].runtimeGeneration, 7);
+    }
+    else BOOST_CHECK(result.observation().resources.empty());
+    ack.authenticationEvidence = {};
+    BOOST_CHECK_EQUAL(result.observation().provider, "/provider/a");
   }
 }
-
-// The key locator must sit under the signer identity's /KEY/ namespace (the
-// shape Core's identity extraction produces from key and certificate names);
-// an out-of-namespace or non-NDN locator is incoherent provenance.
-BOOST_AUTO_TEST_CASE(RejectsKeyLocatorOutsideSignerKeyNamespace)
+BOOST_AUTO_TEST_CASE(RejectMissingOrForeignCoreProvenance)
 {
-  NativeOfferAdmission admission;
-  const auto context = contextFor();
-  for (const auto& locator : {"/other/KEY/1", "/provider/keys/1",
-                              "/provider", "provider/KEY/1", "/a//b/KEY/1"}) {
-    auto ack = ackFor(context);
-    ack.signerKeyLocator = locator;
-    expectCode([&] { admission.verify(ack, policyFor(), context, 1000); }, kUnauthenticated);
+  const auto f = fixture(), sample = f.at("vectors")[0];
+  const auto verifier = admission(f);
+  const auto original = candidate(sample.at("wire"));
+  const auto ctx = context(sample);
+  auto ack = original; ack.authenticationEvidence.trustSchemaValidated = false;
+  BOOST_CHECK_THROW(verifier.verify(ack, ctx, 200), std::runtime_error);
+  ack = original; ack.authenticationEvidence.signerIdentity.clear();
+  BOOST_CHECK_THROW(verifier.verify(ack, ctx, 200), std::runtime_error);
+  ack = original; ack.authenticationEvidence.signerIdentity = "/provider/b";
+  BOOST_CHECK_THROW(verifier.verify(ack, ctx, 200), std::runtime_error);
+  ack = original; ack.authenticationEvidence.wireDigest = "invalid";
+  BOOST_CHECK_THROW(verifier.verify(ack, ctx, 200), std::runtime_error);
+  ack = original; ack.authenticationEvidence.signerKeyLocator = "/provider/a/KEY/fixture-foreign";
+  BOOST_CHECK_THROW(verifier.verify(ack, ctx, 200), std::runtime_error);
+  ack = original; ack.providerName = ndn::Name("/provider/b");
+  BOOST_CHECK_THROW(verifier.verify(ack, ctx, 200), std::runtime_error);
+  ack = original; ack.serviceName = ndn::Name("/other");
+  BOOST_CHECK_THROW(verifier.verify(ack, ctx, 200), std::runtime_error);
+  ack = original; ack.requestId = ndn::Name("/other");
+  BOOST_CHECK_THROW(verifier.verify(ack, ctx, 200), std::runtime_error);
+  ack = original; ack.ack.setStatus(false);
+  BOOST_CHECK_THROW(verifier.verify(ack, ctx, 200), std::runtime_error);
+}
+BOOST_AUTO_TEST_CASE(RejectRequestBindingsAndExpiry)
+{
+  const auto f = fixture(), sample = f.at("vectors")[0];
+  const auto verifier = admission(f);
+  const auto ack = candidate(sample.at("wire"));
+  const auto original = context(sample);
+  for (unsigned i = 0; i < 7; ++i) {
+    auto ctx = original;
+    switch (i) {
+      case 0: ctx.requestId = "foreign"; break;
+      case 1: ctx.attempt = 2; break;
+      case 2: ctx.serviceName = "/other"; break;
+      case 3: ctx.modelDigest = "sha256:" + std::string(64, '1'); break;
+      case 4: ctx.graphDigest = "sha256:" + std::string(64, '1'); break;
+      case 5: ctx.deadlineMs = 1001; break;
+      case 6: ctx.deadlineMs = 200; break;
+    }
+    BOOST_CHECK_THROW(verifier.verify(ack, ctx, 200), std::runtime_error);
+  }
+  BOOST_CHECK_THROW(verifier.verify(ack, original, 99), std::runtime_error);
+  BOOST_CHECK_THROW(verifier.verify(ack, original, 1000), std::runtime_error);
+}
+BOOST_AUTO_TEST_CASE(RejectTamperingAndInvalidSignatureEncoding)
+{
+  const auto f = fixture(), sample = f.at("vectors")[0];
+  const auto verifier = admission(f);
+  const auto original = nativeParseJson(sample.at("wire").get<std::string>());
+  const auto ctx = context(sample);
+  auto v = original; v["has_model"] = false;
+  BOOST_CHECK_THROW(verifier.verify(candidate(nativeCanonicalJson(v)), ctx, 200), std::runtime_error);
+  v = original; v["signer_key_id"] = "sha256:" + std::string(64, '1');
+  BOOST_CHECK_THROW(verifier.verify(candidate(nativeCanonicalJson(v)), ctx, 200), std::runtime_error);
+  for (const auto& sig : {std::string(88, 'A'), std::string("bad"), std::string(86, 'A') + "==",
+                         std::string(85, 'A') + "!=="} ) {
+    v = original; v["signature"] = sig;
+    BOOST_CHECK_THROW(verifier.verify(candidate(nativeCanonicalJson(v)), ctx, 200), std::runtime_error);
   }
 }
-
-// The ACK must have been signed by the provider it claims (frozen
-// ProviderOfferTrustVerifier::verify_ack signer==provider rule): a coherent
-// foreign signature is a binding failure, not valid provenance for planning.
-BOOST_AUTO_TEST_CASE(RejectsAckSignedByOtherThanClaimedProvider)
+BOOST_AUTO_TEST_CASE(RejectPolicyAndKeySubstitution)
 {
-  NativeOfferAdmission admission;
-  const auto context = contextFor();
-  auto policy = policyFor();
-  policy.acceptedSignerIdentities = {"/provider", "/other"};
-  auto ack = ackFor(context);
-  ack.signerIdentity = "/other";
-  ack.signerKeyLocator = "/other/KEY/1";
-  expectCode([&] { admission.verify(ack, policy, context, 1000); }, kRejected);
+  const auto original = fixture();
+  auto f = original; f["candidate"] = "sha256:" + std::string(64, '1');
+  BOOST_CHECK_THROW(admission(f), std::runtime_error);
+  f = original; f["key_id"] = "sha256:" + std::string(64, '1');
+  BOOST_CHECK_THROW(admission(f), std::runtime_error);
+  f = original; f["public_pem"] = "invalid";
+  BOOST_CHECK_THROW(admission(f), std::runtime_error);
+  f = original; f["policy"]["entries"].push_back(f["policy"]["entries"][0]);
+  BOOST_CHECK_THROW(admission(f), std::runtime_error);
+  f = original; f["policy"]["entries"][0]["keyLocatorPrefix"] = "/foreign/KEY/k";
+  BOOST_CHECK_THROW(admission(f), std::runtime_error);
+  f = original; f["policy"]["freeBytes"] = 1000000;
+  BOOST_CHECK_THROW(admission(f), std::runtime_error);
 }
-
-// Even a provider-signed ACK is rejected when its signer identity is outside
-// the immutable policy's accepted signer identities.
-BOOST_AUTO_TEST_CASE(RejectsSignerNotAcceptedByPolicy)
-{
-  NativeOfferAdmission admission;
-  const auto context = contextFor();
-  auto policy = policyFor();
-  policy.acceptedSignerIdentities = {"/other"};
-  expectCode([&] { admission.verify(ackFor(context), policy, context, 1000); }, kRejected);
-}
-
-BOOST_AUTO_TEST_CASE(RejectsProviderNotAcceptedByPolicy)
-{
-  NativeOfferAdmission admission;
-  const auto context = contextFor();
-  auto policy = policyFor();
-  policy.acceptedProviders = {"/other"};
-  expectCode([&] { admission.verify(ackFor(context), policy, context, 1000); }, kRejected);
-}
-
-BOOST_AUTO_TEST_CASE(RejectsServiceNotAcceptedByPolicy)
-{
-  NativeOfferAdmission admission;
-  const auto context = contextFor();
-  auto policy = policyFor();
-  policy.acceptedServices = {"/other-service"};
-  expectCode([&] { admission.verify(ackFor(context), policy, context, 1000); }, kRejected);
-}
-
-// The ACK must be bound to this very request/attempt over the inspected
-// model and graph; a foreign binding must not reach planning.
-BOOST_AUTO_TEST_CASE(RejectsRequestOrModelBindingMismatch)
-{
-  NativeOfferAdmission admission;
-  auto context = contextFor();
-  auto ack = ackFor(context);
-
-  context.requestId = "/foreign-request";
-  expectCode([&] { admission.verify(ack, policyFor(), context, 1000); }, kRejected);
-  context = contextFor();
-  context.attempt = 2;
-  expectCode([&] { admission.verify(ack, policyFor(), context, 1000); }, kRejected);
-  context = contextFor();
-  context.serviceName = "/other-service";
-  expectCode([&] { admission.verify(ack, policyFor(), context, 1000); }, kRejected);
-  context = contextFor();
-  context.modelDigest = digest("other-model");
-  expectCode([&] { admission.verify(ack, policyFor(), context, 1000); }, kRejected);
-  context = contextFor();
-  context.graphDigest = digest("other-graph");
-  expectCode([&] { admission.verify(ack, policyFor(), context, 1000); }, kRejected);
-}
-
-// A policy snapshot that cannot produce an executable planning view (no bound
-// digest, no roles, no backend, zero resource sequence, dirty residency
-// digests) fails closed before any view is formed.
-BOOST_AUTO_TEST_CASE(RejectsUnusablePolicySnapshot)
-{
-  NativeOfferAdmission admission;
-  const auto context = contextFor();
-  auto policy = policyFor();
-  policy.policyDigest = "not-a-digest";
-  expectCode([&] { admission.verify(ackFor(context), policy, context, 1000); }, kRejected);
-  policy = policyFor();
-  policy.acceptedRoles.clear();
-  expectCode([&] { admission.verify(ackFor(context), policy, context, 1000); }, kRejected);
-  policy = policyFor();
-  policy.backends.clear();
-  expectCode([&] { admission.verify(ackFor(context), policy, context, 1000); }, kRejected);
-  policy = policyFor();
-  policy.resourceSequence = 0;
-  expectCode([&] { admission.verify(ackFor(context), policy, context, 1000); }, kRejected);
-  policy = policyFor();
-  policy.residencyDigests = {digest("resident"), "dirty"};
-  expectCode([&] { admission.verify(ackFor(context), policy, context, 1000); }, kRejected);
-}
-
-// Wall-clock validity: an ACK captured in the future is a forged clock claim
-// and an already-expired ACK can never be admitted.
-BOOST_AUTO_TEST_CASE(RejectsFutureDatedOrExpiredAck)
-{
-  NativeOfferAdmission admission;
-  const auto context = contextFor();
-  auto ack = ackFor(context);
-  ack.capturedAtMs = 1500;
-  expectCode([&] { admission.verify(ack, policyFor(), context, 1000); }, kRejected);
-  ack = ackFor(context);
-  ack.expiresAtMs = 1000;
-  expectCode([&] { admission.verify(ack, policyFor(), context, 1000); }, kRejected);
-}
-
-BOOST_AUTO_TEST_CASE(RejectsPolicyAlreadyExpired)
-{
-  NativeOfferAdmission admission;
-  const auto context = contextFor();
-  auto policy = policyFor();
-  policy.expiresAtMs = 1000;
-  expectCode([&] { admission.verify(ackFor(context), policy, context, 1000); }, kRejected);
-}
-
-// The certified offer identity (controller version and offer digest) is part
-// of the evidence; a claim without them is rejected with the policy family.
-BOOST_AUTO_TEST_CASE(RejectsMissingControllerVersionOrOfferDigest)
-{
-  NativeOfferAdmission admission;
-  const auto context = contextFor();
-  auto ack = ackFor(context);
-  ack.controllerVersion.clear();
-  expectCode([&] { admission.verify(ack, policyFor(), context, 1000); }, kRejected);
-  ack = ackFor(context);
-  ack.offerDigest.clear();
-  expectCode([&] { admission.verify(ack, policyFor(), context, 1000); }, kRejected);
-  ack = ackFor(context);
-  ack.offerDigest = "bogus";
-  expectCode([&] { admission.verify(ack, policyFor(), context, 1000); }, kRejected);
-}
-
-// The one valid path: a fully coherent Core-validated ACK inside the policy
-// produces the same immutable planning view on every call, and the view is
-// derived only from the authenticated ACK and the policy snapshot.
-BOOST_AUTO_TEST_CASE(AcceptsCoreValidatedAckIntoImmutablePlanningView)
-{
-  NativeOfferAdmission admission;
-  const auto context = contextFor();
-  const auto policy = policyFor();
-  const auto ack = ackFor(context);
-  const auto view = admission.verify(ack, policy, context, 1000);
-  view.validate();
-  BOOST_CHECK_EQUAL(view.provider, "/provider");
-  BOOST_CHECK_EQUAL(view.offerDigest, digest("offer"));
-  BOOST_CHECK_EQUAL(view.acceptedRoles.size(), 2u);
-  BOOST_CHECK_EQUAL(view.acceptedRoles[0], "role-a");
-  BOOST_CHECK_EQUAL(view.acceptedRoles[1], "role-b");
-  BOOST_CHECK_EQUAL(view.backends.size(), 1u);
-  BOOST_CHECK_EQUAL(view.backends[0], "onnxruntime");
-  BOOST_CHECK_EQUAL(view.residencyDigests.size(), 1u);
-  BOOST_CHECK_EQUAL(view.residencyDigests[0], digest("resident"));
-  BOOST_CHECK_EQUAL(view.freeBytes, 4096u);
-  BOOST_CHECK_EQUAL(view.resourceSequence, 1u);
-  BOOST_CHECK(view.preparationAccepted);
-  BOOST_CHECK(view.executionAllowed);
-  const auto again = admission.verify(ack, policy, context, 1000);
-  BOOST_CHECK_EQUAL(again.provider, view.provider);
-  BOOST_CHECK_EQUAL(again.offerDigest, view.offerDigest);
-  BOOST_CHECK(again.acceptedRoles == view.acceptedRoles);
-  BOOST_CHECK(again.backends == view.backends);
-  BOOST_CHECK(again.residencyDigests == view.residencyDigests);
-  BOOST_CHECK_EQUAL(again.freeBytes, view.freeBytes);
-  BOOST_CHECK_EQUAL(again.resourceSequence, view.resourceSequence);
-}
-
 BOOST_AUTO_TEST_SUITE_END()
-
-} // namespace
-} // namespace ndnsf::di
