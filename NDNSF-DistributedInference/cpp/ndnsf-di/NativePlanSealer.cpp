@@ -62,6 +62,7 @@ void NativePlacementPlanCore::validate() const
   artifacts.validate();
   if (artifacts.requestId != requestId || artifacts.attempt != attempt ||
       artifacts.modelDigest != modelDigest || artifacts.graphDigest != graphDigest ||
+      !isDigest(artifacts.canonicalGraphDigest) ||
       artifacts.artifactDigestByRole != artifactDigestByRole ||
       requesterIdentity.empty() || requesterIdentity.front() != '/' ||
       protectionEpoch.empty() || expiresAtMs == 0) {
@@ -100,7 +101,7 @@ void NativePlacementPlanCore::validate() const
     const auto assembly = assemblyByRole.find(role);
     if (assembly == assemblyByRole.end() || assembly->second.selectedRole != role ||
         assembly->second.artifactDigest != artifact->second ||
-        assembly->second.graphDigest != graphDigest ||
+        assembly->second.graphDigest != artifacts.canonicalGraphDigest ||
         assembly->second.modelManifestDigest != artifacts.manifestDigest ||
         assembly->second.protectionEpoch != protectionEpoch) {
       throw std::invalid_argument("native sealed assembly differs from authenticated artifact context");
@@ -271,7 +272,8 @@ NativePlacementPlanCore NativePlanSealer::sealCore(
       context.modelDigest != model.descriptor.contentDigest || context.graphDigest != model.graph.graphDigest ||
       context.deadlineMs != inputs.expiresAtMs || executionPlan.serviceName != context.serviceName ||
       executionPlan.modelName != model.descriptor.modelName ||
-      inputs.artifacts.manifestDigest != model.modelManifestDigest || !isDigest(candidate.candidateDigest))
+      inputs.artifacts.manifestDigest != model.modelManifestDigest ||
+      inputs.artifacts.canonicalGraphDigest != model.canonicalGraphDigest || !isDigest(candidate.candidateDigest))
     throw std::invalid_argument("V3 sealing inputs differ from the request or inspected model");
   NativePlacementPlanCore core;
   core.requestId = context.requestId; core.attempt = context.attempt;

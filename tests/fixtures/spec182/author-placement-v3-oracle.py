@@ -101,6 +101,13 @@ for original in (c for c in cases if c['name'] in ('cpu', 'loaded_second_device'
         candidate_digest='sha256:' + hashlib.sha256(b'placed-candidate').hexdigest())
     seal_cases.append(dict(original, offers=[o.to_bytes().decode() for o in offers],
                            deadline_ms=2000000000000, core_digest=core.digest()))
+    if original['name'] == 'cpu':
+        # The maintained YOLO coordinator certifies the canonical ONNX graph
+        # after planning. The top-level planning digest stays unchanged.
+        canonical_graph = 'sha256:' + hashlib.sha256(b'canonical-onnx-graph').hexdigest()
+        distinct = replace(core, roles=tuple(replace(r, graph_digest=canonical_graph) for r in core.roles))
+        seal_cases.append(dict(seal_cases[-1], name='distinct_graph_spaces',
+                               canonical_graph_digest=canonical_graph, core_digest=distinct.digest()))
 (root / 'placement-v3-oracle.json').write_text(json.dumps({'policy': policy, 'public_pem': signed['public_pem'],
     'key_id': signed['key_id'], 'candidate': signed['candidate'], 'role': base['roles'][0],
     'model_digest': base['model_digest'], 'graph_digest': base['graph_digest'],

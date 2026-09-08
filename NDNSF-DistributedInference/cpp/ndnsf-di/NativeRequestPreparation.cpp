@@ -61,7 +61,8 @@ void NativeInspectedModel::validate() const
 {
   descriptor.validate();
   graph.validate(descriptor);
-  if (!ndnName(canonicalSourceName) || !digest(canonicalSourceDigest) || !digest(modelManifestDigest)) {
+  if (!ndnName(canonicalSourceName) || !digest(canonicalSourceDigest) ||
+      !digest(modelManifestDigest) || !digest(canonicalGraphDigest)) {
     throw std::invalid_argument("native inspected model source identity is incomplete");
   }
 }
@@ -186,7 +187,7 @@ void NativeRequestPreparation::validateRoles(const NativeInspectedModel& model,
   }
   if (roles.size() != expected.size()) throw std::runtime_error("DI_NATIVE_ROLE_BINDING_MISMATCH");
   for (const auto& role : roles) {
-    if (!expected.erase({role.role, role.rank}) || role.graphDigest != model.graph.graphDigest ||
+    if (!expected.erase({role.role, role.rank}) || role.graphDigest != model.canonicalGraphDigest ||
         role.modelManifestDigest != model.modelManifestDigest ||
         role.adapterId != model.descriptor.adapterId || role.adapterVersion != model.descriptor.adapterVersion ||
         !digest(role.recipeDigest) || !digest(role.artifactProfileDigest) ||
@@ -282,6 +283,7 @@ NativeArtifactBinding NativeRequestPreparation::ensureArtifacts(
   result.attempt = control.attempt;
   result.modelDigest = model.descriptor.contentDigest;
   result.graphDigest = model.graph.graphDigest;
+  result.canonicalGraphDigest = model.canonicalGraphDigest;
   return result;
 }
 
