@@ -8,6 +8,7 @@
 // the orchestration layer must never accept an inconsistent binding from.
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeV3Placement.hpp"
 #include "tests/fixtures/spec182/native-sealing-fixture.hpp"
 
 #include <boost/property_tree/json_parser.hpp>
@@ -88,18 +89,58 @@ NativeInspectedModel inspectedFor(const NativeModelDescriptor& model)
           digest("catalog-source-bytes"), digest("manifest")};
 }
 
-NativePlacementProposal proposalFor(const NativeRequestControl& control,
-                                    const NativeInspectedModel& model,
-                                    std::vector<std::string> roles)
+NativeRolePlacementProposalV3 proposalFor(const NativeRequestControl& control,
+                                         const NativeInspectedModel& model,
+                                         std::vector<std::string> roles)
 {
-  NativePlacementProposal proposal;
-  proposal.requestId = control.requestId;
-  proposal.attempt = control.attempt;
-  proposal.modelDigest = model.descriptor.contentDigest;
-  proposal.graphDigest = model.graph.graphDigest;
-  proposal.candidateDigest = digest("candidate");
-  proposal.executionPlan.roles = std::move(roles);
+  NativeRolePlacementProposalV3 proposal;
+  // Explicit long-lived test context; publication fixtures are not live ACK evidence.
+  proposal.context = {control.requestId, control.attempt, "/service",
+    model.descriptor.contentDigest, model.graph.graphDigest, 2000000000000ULL};
+  proposal.ackClosedDigest = digest("ack");
+  proposal.strategy = {"fixture", "1", digest("strategy")};
+  for (const auto& name : roles) {
+    NativePlanSealingInputs inputs;
+    inputs.artifacts.artifactDigestByRole = {{name, digest(name == "role" ? "artifact" : "artifact-" + name)}};
+    inputs.artifacts.manifestDigest = model.modelManifestDigest;
+    inputs.artifacts.graphDigest = model.graph.graphDigest;
+    inputs.artifacts.recipeDigest = digest("recipe");
+    inputs.protectionEpoch = "protected";
+    fixture::assemblies(inputs);
+    auto role = inputs.assemblyByRole.at(name);
+    role.requiredDeviceMemoryMb = 1;
+    role.adapterId = model.descriptor.adapterId;
+    role.adapterVersion = model.descriptor.adapterVersion;
+    proposal.roles.push_back(role);
+    const auto provider = "/provider/" + std::to_string(proposal.roles.size());
+    proposal.providerByRole[name] = provider;
+    proposal.offerDigestByProvider[provider] = digest(provider);
+  }
   return proposal;
+}
+
+NativeSplitCandidate candidateFor(const NativeInspectedModel& model,
+                                  const NativeRolePlacementProposalV3& proposal)
+{
+  NativeSplitCandidate candidate;
+  candidate.model = model.descriptor; candidate.graphDigest = model.graph.graphDigest;
+  candidate.splitter = {"fixture", "1", digest("strategy")};
+  candidate.candidateDigest = digest("candidate");
+  for (const auto& role : proposal.roles) {
+    candidate.executionPlan.roles.push_back(role.role);
+    candidate.fragmentsByRole[role.role] = digest("fragment");
+    candidate.artifactsByRole[role.role] = {digest(role.role == "role" ? "artifact" : "artifact-" + role.role)};
+    candidate.tensorDegreesByRole[role.role] = 1;
+    candidate.requirementsByRole[role.role] = {{"onnxruntime"}, 1, 0, 0, 0, 1.0};
+  }
+  return candidate;
+}
+
+NativeArtifactBinding ensureArtifacts(const NativeRequestPreparation& preparation,
+  const NativeInspectedModel& model, const NativeRolePlacementProposalV3& proposal,
+  const NativeRequestControl& control)
+{
+  return preparation.ensureArtifacts(model, candidateFor(model, proposal), proposal, control);
 }
 
 // Parameterized model task adapter: mirrors the frozen Python task adapters
@@ -297,7 +338,7 @@ BOOST_AUTO_TEST_CASE(NativePreparationBindsAdapterAndGraphPort)
     [] (const NativePreparedInput&, const NativeModelDescriptor& model) {
       return inspectedFor(model);
     },
-    [&artifactCalls] (const NativeInspectedModel&, const NativePlacementProposal&,
+    [&artifactCalls] (const NativeInspectedModel&, const NativeSplitCandidate&, const std::vector<NativeSelectionRoleV3>&,
                       const NativeRequestControl&) {
       ++artifactCalls;
       return NativeArtifactBinding{{{"role", "/ndnsf/catalog/root/1"}},
@@ -317,7 +358,7 @@ BOOST_AUTO_TEST_CASE(NativePreparationBindsAdapterAndGraphPort)
                     "/catalog/authenticated/model/42");
 
   NativeRequestControl control{"/request/1", 1, deadline(1000), {}};
-  const auto binding = preparation.ensureArtifacts(
+  const auto binding = ensureArtifacts(preparation,
     inspected, proposalFor(control, inspected, {"role"}), control);
   BOOST_CHECK_EQUAL(artifactCalls, 1u);
   BOOST_CHECK_EQUAL(binding.sourceByRole.at("role"), "/ndnsf/catalog/root/1");
@@ -376,7 +417,7 @@ BOOST_AUTO_TEST_CASE(QwenStageRolesCoveredByCanonicalBinding)
     [] (const NativePreparedInput&, const NativeModelDescriptor& model) {
       return inspectedFor(model);
     },
-    [&roles] (const NativeInspectedModel&, const NativePlacementProposal&,
+    [&roles] (const NativeInspectedModel&, const NativeSplitCandidate&, const std::vector<NativeSelectionRoleV3>&,
               const NativeRequestControl&) {
       NativeArtifactBinding binding;
       for (const auto& role : roles) {
@@ -395,7 +436,7 @@ BOOST_AUTO_TEST_CASE(QwenStageRolesCoveredByCanonicalBinding)
     deadline(1000));
   const auto inspected = preparation.inspectModel(input);
   NativeRequestControl control{"/request/qwen", 1, deadline(1000), {}};
-  const auto binding = preparation.ensureArtifacts(
+  const auto binding = ensureArtifacts(preparation,
     inspected, proposalFor(control, inspected, roles), control);
   BOOST_CHECK_EQUAL(binding.sourceByRole.size(), roles.size());
   BOOST_CHECK_EQUAL(binding.artifactDigestByRole.at(roles[1]),
@@ -452,7 +493,7 @@ BOOST_AUTO_TEST_CASE(PreparationRejectsForeignRequestOrModelProposal)
     [] (const NativePreparedInput&, const NativeModelDescriptor& model) {
       return inspectedFor(model);
     },
-    [&artifactCalls] (const NativeInspectedModel&, const NativePlacementProposal&,
+    [&artifactCalls] (const NativeInspectedModel&, const NativeSplitCandidate&, const std::vector<NativeSelectionRoleV3>&,
                       const NativeRequestControl&) {
       ++artifactCalls;
       return NativeArtifactBinding{{{"role", "/ndnsf/catalog/root/1"}},
@@ -468,20 +509,20 @@ BOOST_AUTO_TEST_CASE(PreparationRejectsForeignRequestOrModelProposal)
   const auto valid = proposalFor(control, inspected, {"role"});
 
   auto foreign = valid;
-  foreign.requestId = "/request/other";
-  BOOST_CHECK_THROW(preparation.ensureArtifacts(inspected, foreign, control),
+  foreign.context.requestId = "/request/other";
+  BOOST_CHECK_THROW(ensureArtifacts(preparation, inspected, foreign, control),
                     std::runtime_error);
   foreign = valid;
-  foreign.attempt = 2;
-  BOOST_CHECK_THROW(preparation.ensureArtifacts(inspected, foreign, control),
+  foreign.context.attempt = 2;
+  BOOST_CHECK_THROW(ensureArtifacts(preparation, inspected, foreign, control),
                     std::runtime_error);
   foreign = valid;
-  foreign.modelDigest = digest("other-model");
-  BOOST_CHECK_THROW(preparation.ensureArtifacts(inspected, foreign, control),
+  foreign.context.modelDigest = digest("other-model");
+  BOOST_CHECK_THROW(ensureArtifacts(preparation, inspected, foreign, control),
                     std::runtime_error);
   foreign = valid;
-  foreign.graphDigest = digest("other-graph");
-  BOOST_CHECK_THROW(preparation.ensureArtifacts(inspected, foreign, control),
+  foreign.context.graphDigest = digest("other-graph");
+  BOOST_CHECK_THROW(ensureArtifacts(preparation, inspected, foreign, control),
                     std::runtime_error);
   BOOST_CHECK_EQUAL(artifactCalls, 0u);   // rejected before the port was reached
 }
@@ -503,7 +544,7 @@ BOOST_AUTO_TEST_CASE(PreparationRejectsEmptyOrDuplicatePlanRoles)
     [] (const NativePreparedInput&, const NativeModelDescriptor& model) {
       return inspectedFor(model);
     },
-    [&artifactCalls] (const NativeInspectedModel&, const NativePlacementProposal&,
+    [&artifactCalls] (const NativeInspectedModel&, const NativeSplitCandidate&, const std::vector<NativeSelectionRoleV3>&,
                       const NativeRequestControl&) {
       ++artifactCalls;
       return NativeArtifactBinding{};
@@ -516,11 +557,11 @@ BOOST_AUTO_TEST_CASE(PreparationRejectsEmptyOrDuplicatePlanRoles)
   NativeRequestControl control{"/request/1", 1, deadline(1000), {}};
 
   expectCode([&] {
-    preparation.ensureArtifacts(
+    ensureArtifacts(preparation,
       inspected, proposalFor(control, inspected, {}), control);
   }, "DI_NATIVE_ARTIFACT_BINDING_MISMATCH");
   expectCode([&] {
-    preparation.ensureArtifacts(
+    ensureArtifacts(preparation,
       inspected, proposalFor(control, inspected, {"role", "role"}), control);
   }, "DI_NATIVE_ARTIFACT_BINDING_MISMATCH");
   BOOST_CHECK_EQUAL(artifactCalls, 0u);
@@ -542,9 +583,10 @@ BOOST_AUTO_TEST_CASE(PreparationRejectsBindingRoleGapExtraForeignRoles)
     [] (const NativePreparedInput&, const NativeModelDescriptor& model) {
       return inspectedFor(model);
     },
-    [] (const NativeInspectedModel&, const NativePlacementProposal& proposal,
+    [] (const NativeInspectedModel&, const NativeSplitCandidate&, const std::vector<NativeSelectionRoleV3>& selectedRoles,
         const NativeRequestControl&) {
-      const auto& roles = proposal.executionPlan.roles;
+      std::vector<std::string> roles;
+      for (const auto& role : selectedRoles) roles.push_back(role.selectedRole);
       NativeArtifactBinding binding;
       for (const auto& role : roles) {
         binding.sourceByRole[role] = "/ndnsf/catalog/root/" + role;
@@ -584,7 +626,7 @@ BOOST_AUTO_TEST_CASE(PreparationRejectsBindingRoleGapExtraForeignRoles)
          {"role-a", "role-b"}, {"role-a"}, {"a", "b", "c"}}) {
     NativeRequestControl control{"/request/1", 1, deadline(1000), {}};
     expectCode([&] {
-      preparation.ensureArtifacts(
+      ensureArtifacts(preparation,
         inspected, proposalFor(control, inspected, roles), control);
     }, "DI_NATIVE_ARTIFACT_BINDING_MISMATCH");
   }
@@ -606,7 +648,7 @@ BOOST_AUTO_TEST_CASE(PreparationRejectsNonNdnBindingSourceNames)
     [] (const NativePreparedInput&, const NativeModelDescriptor& model) {
       return inspectedFor(model);
     },
-    [] (const NativeInspectedModel&, const NativePlacementProposal&,
+    [] (const NativeInspectedModel&, const NativeSplitCandidate&, const std::vector<NativeSelectionRoleV3>&,
         const NativeRequestControl&) {
       return NativeArtifactBinding{{{"role", "catalog-root-without-slash"}},
                                    {{"role", digest("artifact")}},
@@ -627,9 +669,9 @@ BOOST_AUTO_TEST_CASE(PreparationRejectsNonNdnBindingSourceNames)
                                          {{"role", digest("artifact")}},
                                          digest("manifest"), digest("recipe")};
     NativeRequestPreparation bound(registry, {}, [&binding] (
-      const NativeInspectedModel&, const NativePlacementProposal&,
+      const NativeInspectedModel&, const NativeSplitCandidate&, const std::vector<NativeSelectionRoleV3>&,
       const NativeRequestControl&) { return binding; });
-    BOOST_CHECK_THROW(bound.ensureArtifacts(inspected, proposal, control),
+    BOOST_CHECK_THROW(ensureArtifacts(bound, inspected, proposal, control),
                       std::invalid_argument);
   }
 }
@@ -674,9 +716,9 @@ BOOST_AUTO_TEST_CASE(PreparationRejectsMalformedBindingDigests)
   };
   for (const auto& make : variants) {
     NativeRequestPreparation bound(registry, {}, [&make] (
-      const NativeInspectedModel&, const NativePlacementProposal&,
+      const NativeInspectedModel&, const NativeSplitCandidate&, const std::vector<NativeSelectionRoleV3>&,
       const NativeRequestControl&) { return make(); });
-    BOOST_CHECK_THROW(bound.ensureArtifacts(inspected, proposal, control),
+    BOOST_CHECK_THROW(ensureArtifacts(bound, inspected, proposal, control),
                       std::invalid_argument);
   }
 }
@@ -708,7 +750,7 @@ BOOST_AUTO_TEST_CASE(PreparationFailsClosedWithoutConfiguredPorts)
   const auto inspected = graphOnly.inspectModel(input);
   NativeRequestControl control{"/request/1", 1, deadline(1000), {}};
   expectCode([&] {
-    graphOnly.ensureArtifacts(inspected, proposalFor(control, inspected, {"role"}),
+    ensureArtifacts(graphOnly, inspected, proposalFor(control, inspected, {"role"}),
                               control);
   }, "DI_NATIVE_ARTIFACT_PORT_NOT_CONFIGURED");
 }
@@ -764,7 +806,7 @@ BOOST_AUTO_TEST_CASE(PreparationCleanupBoundaryReleasesRequestState)
       return inspectedFor(model);
     },
     [&artifactCalls, &cancelled, &cancelAtPort] (const NativeInspectedModel&,
-                                                 const NativePlacementProposal&,
+                                                 const NativeSplitCandidate&, const std::vector<NativeSelectionRoleV3>&,
                                                  const NativeRequestControl&) {
       ++artifactCalls;
       if (cancelAtPort) cancelled = true;   // cancel lands while the port runs
@@ -781,7 +823,7 @@ BOOST_AUTO_TEST_CASE(PreparationCleanupBoundaryReleasesRequestState)
   // Expired or empty controls never reach the catalog port.
   NativeRequestControl expired{"/request/1", 1, deadline(-1000), {}};
   expectCode([&] {
-    preparation.ensureArtifacts(
+    ensureArtifacts(preparation,
       inspected, proposalFor(expired, inspected, {"role"}), expired);
   }, "DI_NATIVE_REQUEST_CANCELLED_OR_EXPIRED");
   BOOST_CHECK_EQUAL(artifactCalls, 0u);
@@ -790,7 +832,7 @@ BOOST_AUTO_TEST_CASE(PreparationCleanupBoundaryReleasesRequestState)
     [&cancelled] { return cancelled; }};
   cancelled = true;
   expectCode([&] {
-    preparation.ensureArtifacts(
+    ensureArtifacts(preparation,
       inspected, proposalFor(cancelledControl, inspected, {"role"}),
       cancelledControl);
   }, "DI_NATIVE_REQUEST_CANCELLED_OR_EXPIRED");
@@ -801,7 +843,7 @@ BOOST_AUTO_TEST_CASE(PreparationCleanupBoundaryReleasesRequestState)
   cancelled = false;
   cancelAtPort = true;
   expectCode([&] {
-    preparation.ensureArtifacts(
+    ensureArtifacts(preparation,
       inspected, proposalFor(cancelledControl, inspected, {"role"}),
       cancelledControl);
   }, "DI_NATIVE_REQUEST_CANCELLED_OR_EXPIRED");
@@ -811,7 +853,7 @@ BOOST_AUTO_TEST_CASE(PreparationCleanupBoundaryReleasesRequestState)
   cancelled = false;
   NativeRequestControl nameless{"", 1, deadline(1000), {}};
   expectCode([&] {
-    preparation.ensureArtifacts(
+    ensureArtifacts(preparation,
       inspected, proposalFor(nameless, inspected, {"role"}), nameless);
   }, "DI_NATIVE_REQUEST_CANCELLED_OR_EXPIRED");
 
@@ -819,7 +861,7 @@ BOOST_AUTO_TEST_CASE(PreparationCleanupBoundaryReleasesRequestState)
   // binding survived the rejected attempts.
   cancelAtPort = false;
   NativeRequestControl fresh{"/request/2", 1, deadline(1000), {}};
-  const auto binding = preparation.ensureArtifacts(
+  const auto binding = ensureArtifacts(preparation,
     inspected, proposalFor(fresh, inspected, {"role"}), fresh);
   BOOST_CHECK_EQUAL(binding.sourceByRole.at("role"), "/ndnsf/catalog/root/1");
 }

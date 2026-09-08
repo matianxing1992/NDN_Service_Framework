@@ -76,7 +76,8 @@ public:
   using InspectPort = std::function<NativeInspectedModel(
     const NativePreparedInput&, const NativeModelDescriptor&)>;
   using ArtifactPort = std::function<NativeArtifactBinding(
-    const NativeInspectedModel&, const NativePlacementProposal&, const NativeRequestControl&)>;
+    const NativeInspectedModel&, const NativeSplitCandidate&,
+    const std::vector<NativeSelectionRoleV3>&, const NativeRequestControl&)>;
   using RolePort = std::function<std::vector<NativeSelectionRoleV3>(
     const NativeInspectedModel&, const NativeSplitCandidate&, const NativeRequestControl&)>;
 
@@ -100,7 +101,8 @@ public:
     const std::vector<NativeSelectionRoleV3>& roles);
 
   NativeArtifactBinding ensureArtifacts(const NativeInspectedModel& model,
-                                        const NativePlacementProposal& proposal,
+                                        const NativeSplitCandidate& candidate,
+                                        const NativeRolePlacementProposalV3& proposal,
                                         const NativeRequestControl& control) const;
 
 private:

@@ -1,4 +1,6 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeV3Placement.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -213,7 +215,8 @@ void NativeRequestPreparation::validateRoles(const NativeInspectedModel& model,
 }
 
 NativeArtifactBinding NativeRequestPreparation::ensureArtifacts(
-  const NativeInspectedModel& model, const NativePlacementProposal& proposal,
+  const NativeInspectedModel& model, const NativeSplitCandidate& candidate,
+  const NativeRolePlacementProposalV3& proposal,
   const NativeRequestControl& control) const
 {
   model.validate();
@@ -221,18 +224,45 @@ NativeArtifactBinding NativeRequestPreparation::ensureArtifacts(
   // Publication must be driven by the placement of this very request/attempt
   // over the inspected model; a stale or foreign proposal must never reach
   // the catalog port.
-  if (proposal.requestId != control.requestId || proposal.attempt != control.attempt ||
-      proposal.modelDigest != model.descriptor.contentDigest ||
-      proposal.graphDigest != model.graph.graphDigest) {
+  const auto& context = proposal.context;
+  const auto nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+    std::chrono::system_clock::now().time_since_epoch()).count();
+  if (context.requestId != control.requestId || context.attempt != control.attempt ||
+      context.modelDigest != model.descriptor.contentDigest ||
+      context.graphDigest != model.graph.graphDigest || context.serviceName.empty() ||
+      nowMs < 0 || context.deadlineMs <= static_cast<std::uint64_t>(nowMs) ||
+      !digest(proposal.ackClosedDigest)) {
     throw std::runtime_error("DI_NATIVE_ARTIFACT_BINDING_MISMATCH");
   }
-  const auto& roles = proposal.executionPlan.roles;
-  if (roles.empty() ||
-      std::set<std::string>(roles.begin(), roles.end()).size() != roles.size()) {
+  const auto& roles = proposal.roles;
+  std::set<std::string> selected, providers;
+  for (const auto& role : roles) selected.insert(role.selectedRole);
+  if (roles.empty() || selected.size() != roles.size() ||
+      proposal.providerByRole.size() != roles.size()) {
     throw std::runtime_error("DI_NATIVE_ARTIFACT_BINDING_MISMATCH");
   }
+  proposal.strategy.validate();
+  validateRoles(model, candidate, roles);
+  for (const auto& role : roles) {
+    validateNativeAssembly(role);
+    const auto degree = candidate.tensorDegreesByRole.at(role.role);
+    const auto key = degree == 1 ? role.role : role.role + "#" + std::to_string(role.rank);
+    const auto assignment = proposal.providerByRole.find(key);
+    if (role.selectedRole != key || assignment == proposal.providerByRole.end() ||
+        assignment->second.empty() || !providers.insert(assignment->second).second)
+      throw std::runtime_error("DI_NATIVE_ARTIFACT_BINDING_MISMATCH");
+    const auto offer = proposal.offerDigestByProvider.find(assignment->second);
+    if (offer == proposal.offerDigestByProvider.end() || !digest(offer->second))
+      throw std::runtime_error("DI_NATIVE_ARTIFACT_BINDING_MISMATCH");
+  }
+  if (providers.size() != proposal.offerDigestByProvider.size())
+    throw std::runtime_error("DI_NATIVE_ARTIFACT_BINDING_MISMATCH");
+  // The requester validates placement against admitted observations before
+  // this call. Publication receives only the checked candidate/role contract;
+  // publishing canonical objects never authorizes a Provider to execute.
   if (!m_artifacts) throw std::runtime_error("DI_NATIVE_ARTIFACT_PORT_NOT_CONFIGURED");
-  auto result = m_artifacts(model, proposal, control);
+  control.requireActive();
+  auto result = m_artifacts(model, candidate, roles, control);
   control.requireActive();
   result.validate();
   // The binding must cover exactly the roles the placed plan requires: a
@@ -242,7 +272,9 @@ NativeArtifactBinding NativeRequestPreparation::ensureArtifacts(
     throw std::runtime_error("DI_NATIVE_ARTIFACT_BINDING_MISMATCH");
   }
   for (const auto& role : roles) {
-    if (result.sourceByRole.find(role) == result.sourceByRole.end()) {
+    const auto artifact = result.artifactDigestByRole.find(role.selectedRole);
+    if (result.sourceByRole.find(role.selectedRole) == result.sourceByRole.end() ||
+        artifact == result.artifactDigestByRole.end() || artifact->second != role.artifactDigest) {
       throw std::runtime_error("DI_NATIVE_ARTIFACT_BINDING_MISMATCH");
     }
   }

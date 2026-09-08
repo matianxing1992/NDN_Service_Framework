@@ -2,6 +2,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include <fstream>
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeV3Placement.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanSealer.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGrantClient.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/qwen/NativeQwenPlanner.hpp"
@@ -60,6 +61,7 @@ const std::uint64_t GB = 1024ULL * 1024ULL * 1024ULL;
 struct OneRolePlan
 {
   NativePlanningSnapshot snapshot;
+  NativeSplitCandidate candidate;
   NativePlacementProposal proposal;
   NativePlanSealingInputs inputs;
   std::string role;
@@ -80,6 +82,7 @@ OneRolePlan oneRolePlan(const std::string& tag, const std::string& ackDigest,
   const auto candidate =
     splitter.enumerate(modelDescriptor, graphSnapshot,
                        NativeCandidateBudget{1, 100, 1}).front();
+  result.candidate = candidate;
   result.snapshot.model = modelDescriptor;
   result.snapshot.graph = graphSnapshot;
   result.snapshot.requestId = tag + "-request";
@@ -261,14 +264,26 @@ BOOST_AUTO_TEST_CASE(PreparedArtifactsReachGrantAcquisitionWithoutBackfill)
   published.attempt = 99;
   unsigned publications = 0, issues = 0;
   NativeRequestPreparation preparation(registry, {},
-    [&](const NativeInspectedModel&, const NativePlacementProposal&,
+    [&](const NativeInspectedModel&, const NativeSplitCandidate&,
+        const std::vector<NativeSelectionRoleV3>&,
         const NativeRequestControl&) { ++publications; return published; });
   NativeInspectedModel inspected{plan.snapshot.model, plan.snapshot.graph,
                                   "/canonical/model", plan.snapshot.model.contentDigest,
                                   published.manifestDigest};
   NativeRequestControl control{plan.snapshot.requestId, plan.snapshot.attempt,
                                 plan.snapshot.deadline, {}};
-  plan.inputs.artifacts = preparation.ensureArtifacts(inspected, plan.proposal, control);
+  NativeRolePlacementProposalV3 placed;
+  placed.context = {control.requestId, control.attempt, "/service", inspected.descriptor.contentDigest,
+    inspected.graph.graphDigest, plan.inputs.expiresAtMs};
+  placed.ackClosedDigest = plan.snapshot.ackClosedDigest;
+  placed.strategy = plan.proposal.strategy;
+  placed.roles = {plan.inputs.assemblyByRole.at(plan.role)};
+  // Frozen Qwen budget: ceil((1 byte + 1 GiB + 512 MiB + 512 MiB) * 1.10 / MiB).
+  placed.roles[0].requiredDeviceMemoryMb = 2253;
+  plan.inputs.assemblyByRole.at(plan.role) = placed.roles[0];
+  placed.providerByRole = plan.proposal.assignment.providerByRole;
+  placed.offerDigestByProvider = {{"provider-a", plan.snapshot.offers.front().offerDigest}};
+  plan.inputs.artifacts = preparation.ensureArtifacts(inspected, plan.candidate, placed, control);
   const auto core = NativePlanSealer::sealCore(plan.snapshot, plan.proposal, plan.inputs);
   const NativeSecurityPolicySnapshot security{digest("policy"), true};
   const auto view = NativePlanSealer::grantView(core, plan.snapshot.offers.front(), security);
