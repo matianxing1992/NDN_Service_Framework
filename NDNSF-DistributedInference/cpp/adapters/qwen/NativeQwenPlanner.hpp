@@ -31,6 +31,12 @@ public:
     std::vector<std::uint64_t> tensorDegrees = {1, 1, 1});
 
   NativeStrategyIdentity identity() const override;
+  /** Build the maintained semantic graph from pinned model metadata. This is
+   * not a mapping from decoder layers to canonical ONNX node indices. */
+  NativeGraphSnapshot inspectGraph(const NativeModelDescriptor& model,
+    const std::string& revision, std::uint64_t maxNodes) const;
+  std::vector<NativeSplitCandidate> enumerateFromMetadata(const NativeModelDescriptor& model,
+    const std::string& revision, std::uint64_t maxNodes, const NativeCandidateBudget& budget) const;
   std::vector<NativeSplitCandidate> enumerate(
     const NativeModelDescriptor& model,
     const NativeGraphSnapshot& graph,

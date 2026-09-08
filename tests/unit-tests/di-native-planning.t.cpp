@@ -1048,6 +1048,60 @@ BOOST_AUTO_TEST_CASE(HybridCandidateRejectsIncompleteRankAndRedistributionContra
   BOOST_CHECK_THROW(base.validate(snapshot), std::invalid_argument);
 }
 
+BOOST_AUTO_TEST_CASE(QwenMetadataBuildsMaintainedGraphAndCandidate)
+{
+  std::ifstream file("tests/fixtures/spec182/qwen-metadata-oracle.json");
+  BOOST_REQUIRE(file.good());
+  const auto rows = NativeJson::parse(file);
+  BOOST_REQUIRE_EQUAL(rows.size(), 2);
+  for (const auto& row : rows) {
+    std::vector<qwen::NativeQwenLayerSplit::LayerRange> ranges;
+    for (const auto& range : row.at("ranges"))
+      ranges.emplace_back(range.at(0).get<std::uint64_t>(), range.at(1).get<std::uint64_t>());
+    qwen::NativeQwenLayerSplit splitter(ranges,
+      {{"front", digest("qwen-front")}, {"end", digest("qwen-end")}},
+      {{"front", 1}, {"end", 1}}, {"front", "end"}, {1, 1});
+    const auto& expected = row.at("graph");
+    auto descriptor = model("qwen", "QwenFixture", expected.at("graph_digest").get<std::string>());
+    const auto inspected = splitter.inspectGraph(descriptor, "pinned-r1", 100);
+    BOOST_CHECK(inspected.topologicalOrder == expected.at("topological_order").get<std::vector<std::string>>());
+    BOOST_CHECK(inspected.legalCutEdges == expected.at("legal_cut_edges").get<std::vector<std::string>>());
+    BOOST_REQUIRE_EQUAL(inspected.nodes.size(), expected.at("nodes").size());
+    for (std::size_t i = 0; i < inspected.nodes.size(); ++i)
+      BOOST_CHECK_EQUAL(inspected.nodes[i].opType, expected.at("nodes").at(i).at("operation").get<std::string>());
+    BOOST_REQUIRE_EQUAL(inspected.modelInputs.size(), 1);
+    BOOST_REQUIRE_EQUAL(inspected.modelOutputs.size(), 1);
+    BOOST_CHECK_EQUAL(inspected.modelInputs.front().name, "input_ids");
+    BOOST_CHECK_EQUAL(inspected.modelOutputs.front().name, "logits");
+    const auto tensorJson = [](const NativeTensorContract& tensor) {
+      auto shape = NativeJson::array();
+      for (const auto& dim : tensor.shape) std::visit([&](const auto& v) { shape.push_back(v); }, dim);
+      return NativeJson{{"name", tensor.name}, {"dtype", tensor.dtype}, {"shape", shape},
+        {"estimated_bytes", tensor.estimatedBytes ? NativeJson(*tensor.estimatedBytes) : NativeJson(nullptr)}};
+    };
+    BOOST_CHECK(tensorJson(inspected.modelInputs.front()) == expected.at("model_inputs").at(0));
+    BOOST_CHECK(tensorJson(inspected.modelOutputs.front()) == expected.at("model_outputs").at(0));
+    BOOST_REQUIRE_EQUAL(inspected.edges.size(), expected.at("edges").size());
+    for (std::size_t i = 0; i < inspected.edges.size(); ++i) {
+      const auto& edge = inspected.edges[i];
+      auto value = tensorJson(edge.tensor);
+      value.erase("name");
+      value["edge_id"] = edge.id; value["producer"] = edge.producer; value["consumers"] = edge.consumers;
+      BOOST_CHECK(value == expected.at("edges").at(i));
+    }
+    const auto candidates = splitter.enumerateFromMetadata(descriptor, "pinned-r1", 100, {});
+    BOOST_REQUIRE_EQUAL(candidates.size(), 1);
+    BOOST_CHECK(candidates.front().canonicalJson() == row.at("candidate_json").get<std::string>());
+    BOOST_CHECK_EQUAL(candidates.front().candidateDigest, row.at("candidate_digest").get<std::string>());
+    BOOST_CHECK_THROW(splitter.inspectGraph(descriptor, "foreign", 100), std::invalid_argument);
+    BOOST_CHECK_THROW(splitter.inspectGraph(descriptor, "", 100), std::invalid_argument);
+    BOOST_CHECK_THROW(splitter.inspectGraph(descriptor, "pinned-r1", inspected.nodes.size() - 1), std::invalid_argument);
+    BOOST_CHECK_THROW(splitter.enumerateFromMetadata(descriptor, "pinned-r1", 100, {0, 100, 1}), std::invalid_argument);
+    descriptor.graphDigest = digest("foreign-graph");
+    BOOST_CHECK_THROW(splitter.inspectGraph(descriptor, "pinned-r1", 100), std::invalid_argument);
+  }
+}
+
 BOOST_AUTO_TEST_CASE(YoloCatalogConsumesActualOnnxSemanticPartition)
 {
   std::ifstream file("tests/fixtures/spec182/yolo-semantic-oracle.json");
