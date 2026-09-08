@@ -215,9 +215,9 @@ worker crash/cancel 等真实子进程案例也转 T016，卡内只运行纯 fra
 
 - **Parent**: T008; **Depends**: T003-C, T006-D, T007-B; **Reviewer**: adapter/identity review
 - **Read**: CD-013 → Symbols/Values；P/artifact_deployment.py::CanonicalCatalogEnsurer；P/adapters/yolo/adapter.py::YoloCanonicalArtifactBinding；examples/python/NDNSF-DistributedInference/llm_pipeline/user.py::_TinyCanonicalArtifactEnsurer；P/app_sdk/placement.py::_certify_v3_role_specs；P/adapters/base.py 的 GraphAdapter/TaskAdapter。维护路径支持发布后 manifest 更新及 canonical/planning graph 分离，不能仅从 generic catalog 推定不变身份。
-- **Write**: N/NativeRequestPreparation.hpp; N/NativeRequestPreparation.cpp; N/NativePlanning.hpp; A/qwen/NativeQwenPlanner.hpp; A/qwen/NativeQwenPlanner.cpp; A/yolo/NativeYoloPlanner.hpp; A/yolo/NativeYoloPlanner.cpp; U/di-native-preparation.t.cpp; U/di-native-plan-sealer.t.cpp; U/di-native-v3-placement.t.cpp; I/di-native-preparation.t.cpp; wscript。
+- **Write**: N/NativeRequestPreparation.hpp; N/NativeRequestPreparation.cpp; N/NativeCanonicalArtifactPublisher.hpp; N/NativeCanonicalArtifactPublisher.cpp; N/NativePlanning.hpp; N/NativePlanning.cpp; A/qwen/NativeQwenPlanner.hpp; A/qwen/NativeQwenPlanner.cpp; A/yolo/NativeYoloPlanner.hpp; A/yolo/NativeYoloPlanner.cpp; U/di-native-preparation.t.cpp; U/di-native-canonical-publisher.t.cpp; U/di-native-plan-sealer.t.cpp; U/di-native-v3-placement.t.cpp; I/di-native-preparation.t.cpp; wscript。
 - **Steps**: 实现 inspect/encodeInput/decodeResult 与 prepareInput/inspectModel/prepareRoles/ensureArtifacts 的冻结端口，复用两 adapter；inspection 返回实际 source/manifest、绑定完整请求模型；prepareRoles 校验候选 role/rank/artifact 与最低资源预算；认证 name/digest 绑定，I/O 位于 preparation，不移入纯策略。
-- **Verify**: CPP(Spec182Preparation/*)；两模型 input/result mapping、错 catalog/publication name/digest、清理边界；真实 publication 在 T016。
+- **Verify**: CPP(Spec182Preparation/*, Spec182CanonicalPublisher/*)；两模型 input/result mapping、错 catalog/publication name/digest、清理边界；进程内 DummyClientFace/LocalMock-key 的 Core API 检查不等于网络 publication 或授权资格，真实 publication 在 T016。
 
 ### T008-B Authenticated Offer Admission
 

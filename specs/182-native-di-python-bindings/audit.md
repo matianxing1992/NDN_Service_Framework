@@ -7,6 +7,15 @@
 
 ## Current Findings
 
+### Native Core Artifact Publication 2026-09-07
+
+新增 native publisher，作为既有 ArtifactPort 复用 Core prepared-request、加密大对象
+发布和 I/O 调度。冻结 ONNX inline/external 源通过实际 native 身份核验；排队取消/
+超时释放与停止后续 publication、Core 失败原因保留、真实 Core LocalMock-key 发布
+均已定向检查。65 cases/779 assertions PASS；此为 native API/单元证据，不是 NAC
+bootstrap、网络权限或完整 requester 资格。模型 source inspection、发布配置和
+requester 主链仍待接线，见 [Core publisher](evidence/t008-core-artifact-publisher-20260907.md)。
+
 ### Publication Recertification 2026-09-07
 
 原生已验证发布后业务 root 的原始字节及 source/initializer/model/profile 绑定，

@@ -65,6 +65,18 @@ NativeAdmittedOfferV3 verify(const ndn_service_framework::AckSelectionCandidate&
   无 caller 提供的 trusted=true；网络或本地可信配置的验证证据由对应 owner 创建。
 - ensureArtifacts 在候选选定后、sealCore/grant 前执行；复用已存在 canonical 工件，
   或由原生 owner 完成所需 publication/encryption。
+  NativeCanonicalArtifactPublisher 是可直接注入 ArtifactPort 的原生 Core owner。
+  SourcePort 返回请求拥有的 const canonical ONNX/initializer 字节；publisher 先核对
+  inspection object digest/大小和既有 canonicalOnnxSourceIdentity，再在 Core I/O
+  context 内用同一 PreparedServiceRequest 发布 source、可选 initializer 和 root。
+  NativeRequestControl.cancelled 是线程安全的 request-owner predicate，捕获状态须覆盖
+  排队及执行中的回调寿命；preparation 与 Core I/O 可能并发读取它。
+  publisher 的同步调用禁止来自 Core I/O 线程；等待使用原单调 deadline，并定期检查
+  取消。排队工作在取消后释放源字节；已进入 Core 的一次加密调用由 Core 收尾，之后
+  不发布下一对象，也不把迟到结果交给 requester。它不创建第二个 Face/密钥系统。
+  返回内容须为 encrypted/success，字节数、明文摘要、scope、epoch、transport manifest
+  和实际名字完整。稳定名字由配置 root/candidate/logical role/rank 形成有效 NDN name。
+  可选 package manifest 和 layer manifest 元数据由原生模型 owner 配置，不按模型名猜测。
   发布后业务 manifest 变更须附 canonicalManifestJson 原始字节，并绑定 inspection 的
   source object digest/字节数、可选 initializer object digest/字节数、模型和 profile。
   artifactNameByRole 保存稳定工件身份，sourceByRole 保存实际 root fetch name；两者
