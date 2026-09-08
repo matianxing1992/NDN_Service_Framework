@@ -58,7 +58,7 @@ tasks.md 顶部完整登记执行单元、依赖、状态、证据和剩余项�
 已有上层任务与正式验收保持；执行卡不自动表示设计已就绪。
 
 唯一执行规则见 [pre-test-static-review.md](references/pre-test-static-review.md)。
-每个实现任务读源码对照设计后做必要构建和相关单测；集成测试与真实实验在全部实现完成后统一执行。
+每个小任务编码后应用只读 review-agent profile 静态门，通过后继续同一逻辑批次；整批逻辑/流程审查通过后统一构建和相关测试。批次测试未完成保持 PARTIAL；集成与真实实验沿用最终验证阶段。
 Static review PASS != Behavior PASS。
 
 接口、职责、状态或验收改变时先修订对应契约；普通局部实现选择无需新报告或批准。

@@ -1,5 +1,12 @@
 # Failure Log and Evidence Index
 
+## 2026-09-08 — Skill validator compatibility field mismatch
+
+工作流修订时，skill-creator quick_validate 拒绝已安装 Spec Kit 技能的既有
+`compatibility` frontmatter 字段，退出 1；尚未进入工作流语义检查。
+保留安装元数据，改用 YAML/必需字段与定向工作流检查；不影响产品资格。
+见 [workflow evidence](../specs/182-native-di-python-bindings/evidence/skill-batch-workflow-20260908.md)。
+
 ## 2026-09-08 — Spec182 implicit rank publication mismatch
 
 源码审查发现普通候选省略 rank maps 虽可通过 candidate/role validation，

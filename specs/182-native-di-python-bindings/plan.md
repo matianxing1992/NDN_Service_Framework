@@ -38,7 +38,7 @@ T001允许有界依赖探针；产品构建按设计门和各任务的验证范�
 不得将七字段片段包装为可执行计划。其余阶段及 T016 正式运行顺序保持。
 
 1. G0 / T001：复用已关闭O-001的源码身份与181承接，关闭O-002--005，冻结schema/调用方/依赖与单测、集成、实验选择器。181旧完整资格不作为前置门；源码基线关闭不表示新依赖组合运行PASS。
-2. G1 / T002--009：库、策略、sealer/grant、assembler/tokenizer、准备/admission和Provider host；每任务实现→静态审查→相关单测及必要构建。
+2. G1 / T002--009：库、策略、sealer/grant、assembler/tokenizer、准备/admission和Provider host；按已登记逻辑批次执行：逐小任务实现→只读静态门→继续同批；整批逻辑/流程审查后统一构建及相关单测。
 3. G2 / T010--012：requester、会话/恢复与绑定；完成接线、相关单测，同时编写注册后续集成用例。
 4. G3 / T013--014：迁移旧入口、实现隔离gate和MiniNDN harness/collector；完成静态审查与本地单测，真实跨进程/no-Python用例尚不运行。
 5. G4 / T015：全部实现与测试工具完成后，补审跨任务调用链、effective config、测试/oracle/harness和依赖；复用有效局部审查，控制性缺陷修复后进入T016。

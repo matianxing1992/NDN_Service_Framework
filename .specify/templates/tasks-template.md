@@ -23,6 +23,10 @@ them.
 **Organization**: Tasks are grouped by user story and expressed as cohesive,
 reviewable behavioral outcomes. Do not optimize for a high task count.
 
+## Logical Batches
+
+生成时应用 `skills/speckit-code-design/references/pre-test-static-review.md` 及其中的只读 review-agent profile。在本节登记每批 ID、成员、连贯行为边界、implementation / acceptance dependencies、共享构建/测试选择器及负责人。逐任务静态通过后继续同批，整批流程审查后统一构建/测试；测试待运行保持 PARTIAL，并在 Evidence / Remaining 写 `STATIC_PASS / TESTS_DEFERRED / Batch ID`。硬验收依赖不自动降级；不能把整个 Spec 默认作为一批。具体批次表取代本段提示。
+
 ## Execution Progress
 
 本表是所有模型和执行者共用的当前执行进度入口，必须列全所有可执行单元。
@@ -255,7 +259,7 @@ Examples of foundational tasks (adjust based on your project):
 
 ### Within Each User Story
 
-- Within a behavioral task, tests (if included) MUST be written and fail before implementation
+- 每个小任务编码及测试编写后使用只读 review-agent profile 静态门；同批成员静态通过后继续编码，整批逻辑/流程审查通过后统一构建和相关测试。仅用户或 Spec 明确要求 TDD 时执行具名 RED。
 - Respect model, service, endpoint, and integration dependencies inside the task
 - Split those steps into separate tasks only when they meet the Task Cohesion Rule
 - Story complete before moving to next priority
@@ -317,7 +321,7 @@ With multiple developers:
 - [P] tasks = different files, no dependencies
 - [Story] label maps task to specific user story for traceability
 - Each user story should be independently completable and testable
-- Verify tests fail before implementing
-- Commit after each task or logical group
+- 明确要求 TDD 时按具名 RED 规则执行；默认逐任务静态门、批末构建测试
+- 逻辑批次验收后按仓库规则 checkpoint；静态通过但测试待执行不提前标 DONE
 - Stop at any checkpoint to validate story independently
 - Avoid: vague tasks, same file conflicts, cross-story dependencies that break independence, and mechanical test/implementation/evidence fragmentation

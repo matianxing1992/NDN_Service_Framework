@@ -9,6 +9,7 @@
 | --- | --- |
 | Outcome / dependencies | 完成后的行为；实际前置任务与尚未关闭的设计缺口 |
 | Scope / design | 具体文件或符号、增改删移及目的；引用 CD/接口/字段契约 |
+| Batch | 逻辑批次 ID、成员与行为边界；区分 implementation / acceptance dependency；共享构建/测试选择器及负责人只定义一次 |
 | Constraints | 该任务特有的架构边界、兼容/删除路径和恢复要求 |
 | Verification | 需求/PO、真实入口、独立判据、必要负例及具体命令或 planned 工具 |
 | Result | tasks.md 中简短结果或一份 evidence 链接 |
@@ -35,5 +36,5 @@
 [pre-test-static-review.md](pre-test-static-review.md)。
 已有审查和测试证据仍适用于当前源码及运行条件时可以复用。
 变化时说明影响到的 PO/调用方及需要重跑的范围，不默认重跑全部测试。
-实现任务按实现、静态审查、相关单测验收；尚待真实集成/实验的 PO 明确转交最终验证任务。
+小任务编码后逐项静态审查，同批实现依赖满足后继续编码；批末审查组合流程并统一构建/测试。测试待运行保持 PARTIAL，验收依赖不能被静态通过替代；尚待真实集成/实验的 PO 明确转交最终验证任务。
 最终验证任务保留全部真实运行要求，通过后才声明 feature 验收；不把局部完成写成完整 PO PASS。

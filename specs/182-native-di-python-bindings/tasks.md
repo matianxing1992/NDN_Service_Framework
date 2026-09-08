@@ -17,6 +17,7 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 
 | Unit / Details | Status | Depends | Evidence / Remaining | Updated |
 | --- | --- | --- | --- | --- |
+| [D-SKILL-BATCH Workflow Revision](evidence/skill-batch-workflow-20260908.md) | DONE | User workflow request | 逐任务只读静态门、批末流程审查与统一测试已同步；共享技能 schema、链接、5 份安装同步、4 入口 YAML/路由及 diff PASS；旧验证器 compatibility 白名单限制已记录，不关闭产品任务 | 2026-09-08 |
 | [D-DESIGN-R3 Revision](evidence/design-r3-20260908.md) | PASS | User documentation request | 逐章修订、23 组关键契约、生成/KV/会话重写；双 PDF 82/87 页、5 工具回归、API/八份参考/460+350 源码还原/版面 PASS；不关闭产品任务或全量语义审计 | 2026-09-08 |
 | [D-DESIGN-CHAPTER-AUDIT Chapter Review](evidence/design-chapter-audit-20260908.md) | PASS | User document review request | 审阅完成：当前/目标 62/67 章；7 KEEP、36 EXPAND、20 REWRITE、4 CORRECT；被审文档 NEEDS_REVISION，PDF 未改写，不关闭产品任务 | 2026-09-08 |
 | [D-DESIGN-R2 Baseline and Contracts](evidence/design-r2-20260907.md) | PASS | User documentation request | 当前/目标 66/69 页；4 工具回归、API、460/350 文件还原、PDF 身份/版面 PASS；BC-01 至 BC-04 已补，TG-01 至 TG-05 PLANNED；不关闭功能任务 | 2026-09-07 |
@@ -60,6 +61,8 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 | [T017-A Development Handoff](contracts/execution-units.md#t017-a-development-handoff) | NOT_STARTED | T016-A | [baseline](evidence/task-progress-registry-20260907.md)；无本卡独立执行/验收记录；按依赖领取 | 2026-09-07 |
 
 ## Current Checkpoint
+
+2026-09-08 D-SKILL-BATCH / **DONE**：工作流按逻辑批次修订，逐小任务静态门、批末流程门与统一构建测试；定向文档检查 PASS，安装入口验证器限制及替代核对见 [workflow evidence](evidence/skill-batch-workflow-20260908.md)。本单元不重排产品任务或改变其验收状态。
 
 2026-09-08 B-G1-YOLO-SEMANTIC / **PARTIAL**：生产接线审查确认注册语义名称与
 planning IDs 尚未映射，完整 catalog interface 也没有 C++ 消费入口。已在 plan

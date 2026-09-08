@@ -1,5 +1,7 @@
 # Implementation Plan: [FEATURE]
 
+<!-- 工作流采用 skills/speckit-code-design/references/pre-test-static-review.md：设计先行；声明逻辑批次及实现/验收依赖；每小任务只读静态审查后继续同批；整批逻辑/流程审查后统一构建和相关测试。批次表在 plan 或 tasks 只定义一次，另一处引用；未测试不标 DONE。 -->
+
 <!--
   DOCUMENT LANGUAGE POLICY (constitution 1.4.0, 2026-09-05):
   中文写叙述性内容：Summary、Architecture Decisions 的动机与取舍、修订历史、
