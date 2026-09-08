@@ -48,6 +48,48 @@ std::string publicBytes(EVP_PKEY& key)
     throw std::runtime_error("requester requires an Ed25519 authority key");
   return bytes;
 }
+
+NativeJson runtimeConfiguration(const NativeJson& config,
+                                const NativeRequestCatalog& catalog,
+                                const std::string& requester,
+                                const std::string& protectionEpoch)
+{
+  const auto& request = config.at("request");
+  const auto& model = catalog.model.descriptor;
+  // The CLI owns only composition.  Runtime policy is parsed and bound by
+  // the same native boundary used by the public binding, so this adapter
+  // cannot silently construct a partially pinned runtime.
+  return NativeJson{
+    {"schema", "ndnsf-di-native-request-runtime-v1"},
+    {"contract", {
+      {"service_name", request.at("service")},
+      {"task_name", request.at("task")},
+      {"adapter_name", model.adapterId},
+      {"adapter_descriptor_digest", model.adapter.descriptorDigest()},
+      {"adapter_composition_digest", request.at("adapter_composition_digest")},
+      {"task_descriptor_digest", request.at("task_descriptor_digest")},
+      {"generation_mode", request.value("generation_mode", "TOKEN_DIAGNOSTIC")},
+    }},
+    {"requester_identity", requester},
+    {"protection_epoch", protectionEpoch},
+    {"input_layout_digest", request.at("input_layout_digest")},
+    {"security", {
+      {"policy_digest", request.at("security_policy_digest")},
+      {"require_protected_artifacts", true},
+    }},
+    {"budget", {
+      {"max_candidates", request.at("max_candidates")},
+      {"max_policy_ms", request.at("max_policy_ms")},
+      {"max_reentries", request.value("max_reentries", 1)},
+    }},
+    {"state_mapping", {
+      {"inputs", catalog.stateMapping.inputs},
+      {"outputs", catalog.stateMapping.outputs},
+    }},
+    {"no_progress_ms", request.value("no_progress_ms", 5000)},
+    {"max_segments", request.value("max_segments", 4096)},
+  };
+}
 }
 
 int main(int argc, char** argv)
@@ -126,18 +168,13 @@ int main(int argc, char** argv)
       keyChain.getPib().getIdentity(ndn::Name(core.at("authority_identity").get<std::string>())).getDefaultKey().getDefaultCertificate(),
       (base / core.at("trust_schema_file").get<std::string>()).string()),
       [face](auto* owner) { delete owner; });
-    NativeRequestRuntime runtime;
     const auto& request = config.at("request");
     const auto& model = catalog.model.descriptor;
-    runtime.contract = {request.at("service"), request.at("task"), model.adapterId,
-      model.adapter.descriptorDigest(), request.at("adapter_composition_digest"), request.at("task_descriptor_digest")};
-    runtime.requesterIdentity = requester; runtime.protectionEpoch = epoch;
-    runtime.inputLayoutDigest = request.at("input_layout_digest");
-    runtime.security = {request.at("security_policy_digest"), true};
-    runtime.budget = {request.at("max_candidates"), request.at("max_policy_ms"), 1};
-    runtime.catalog = catalog.preparation; runtime.stateMapping = catalog.stateMapping;
-    runtime.grants = std::make_shared<NativeAuthenticatedGrantClient>(requester, requesterKey,
+    auto grants = std::make_shared<NativeAuthenticatedGrantClient>(requester, requesterKey,
       grant.at("authority_identity"), publicBytes(*authorityKey), issuer, user);
+    const auto runtime = nativeRequestRuntimeFromJson(
+      nativeCanonicalJson(runtimeConfiguration(config, catalog, requester, epoch)),
+      catalog, grants);
     NativeInferenceClient client(user, catalog.preparation->adapters(), runtime,
       catalog.preparation->makePreparation(user, runtime.contract.serviceName), admission);
     NativeModelRef modelRef;
