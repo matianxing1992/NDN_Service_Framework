@@ -15,7 +15,7 @@
 - Storage：源码、profile/小型证据跟踪；SIF/模型内容寻址缓存，run 输出隔离，秘密为 run 私有 0700 路径。
 - Testing：pytest 配置/launcher mutation，Boost 单元/真实集成，MiniNDN，最终 SIF 本地 CPU 和 Slurm GPU。
 - Target：两节点、每节点一 GPU、四个独立 Provider；不做 Qwen/扩展性能矩阵。
-- Constraints：最多 `-j2`，同构建树串行；Container native build；本地 SIF→Tiger verify/run；无隐式 CPU fallback；禁止 Spec182 迁移。
+- Constraints：最多 `-j2`，同构建树串行；本地匹配 base 的容器/SDK 构建；基础 SIF + 外部只读 app→Tiger verify/run；无隐式 CPU fallback；禁止 Spec182 迁移。
 - Performance goals：本 Spec 无速度优越性门槛。记录冷启动、warmup、每请求耗时及失败，主要判据为正确性和复用。
 
 ## Constitution Check
@@ -45,6 +45,12 @@ I/II：沿用动态 API 和现有鉴权/请求级密钥，不新建框架协议�
 
 ## Gate Order
 
+2026-09-08 用户确认采用[稳定基础 SIF + 外置应用](../../Experiments/TigerCluster/docs/runtime-app-layers.md)。
+状态 ACCEPTED / IMPLEMENTATION_PENDING；以下分层要求替代“应用全烘焙入SIF”目标。
+基础库、通用 Python 绑定、NFD/依赖随 base 固定；DI/UAV 应用及自有扩展独立构建。
+当前 builder 九产物安装/preflight 与外部 bundle 校验尚未迁移，T002/T004/T011
+必须接线后由 T007 复审，不能将这次文档修改或 NDN 小例子记为 DI 分层资格。
+
 2026-09-08 用户明确要求先做简单 C++ NDN 多节点 SIF 实跑。允许独立的
 CPU-only 两节点 transport diagnostic 先于剩余 YOLO 门禁执行，范围仅三条
 Interest/Data、容器/NFD/TCP/清理；见 evidence/cpp-ndn-smoke.md。使用已存在
@@ -56,8 +62,8 @@ T001已完成接收清点（见evidence/input-inventory.md），发现两个必�
 2. G1 / T002–T006：实现配置闭包、launcher/生命周期、YOLO 适配/collector 及 focused 红绿回归。可做小型合成 child-process 测试。
    内部先完成T002内容完整性接口，再T003、T004配置/冻结/提交状态接口、T005/T006，回填T004实际五命令和T002真实命令边界及builder receipt dispatch测试。T004最终可执行命令需要T005应用和T006 collector，不能要求这些消费者存在前关闭T004；T002最终验收同样依赖T004/T006。所有任务仍须在G2前关闭，测试fixture不能冒充T010真实host receipt。
 3. G2 / T007：实现到生产调用路径收敛审计，必须 PASS。检查实际 argv/env、角色路由、secure grant/selection、harness/oracle、清理、数据路径。未接线不能算实现。
-4. G3 / T008–T010：按锁干净构建（`NAC-ABE + NDN-SVS → NDNSD → NDNSF → Apps/两个 Python 扩展`），unit→真实集成→CPU 小模型 MiniNDN。宿主库路径和编译/链接工具闭包要实测。
-5. G4 / T011：合格 host-gate manifest 后通过原入口本地构建完整 SIF，容器内九原生产物/所有 DSO/import/help/CPU 小模型验证。
+4. G3 / T008–T010：按锁构建或复用基础闭包（`NAC-ABE + NDN-SVS → NDNSD → NDNSF/Repo及通用绑定 → 外部Apps`），unit→真实集成→CPU 小模型 MiniNDN。构建键未变时只增量编译受影响 app；ABI变更清理消费者。基础构建验收可复用，不把 app receipt 当作每次重建 base 的前置。
+5. G4 / T011：通过原入口构建或复用基础 SIF，在匹配容器/SDK 生成独立 app 包；合格 host-gate 后验证精确 base+app 的全部 DSO/import/help/CPU 小模型。两层产物清单替代“九产物都在SIF”检查。
 6. G5 / T012–T014：目标 compute 环境匹配→精确 SIF 上传/staging 校验→一节点 GPU 四 Provider→两节点 GPU 第一次正常运行。
 7. G6 / T015–T017：小规模负例→第二个独立双节点正常 allocation→离线重算和可复用交付。
 
@@ -80,13 +86,20 @@ Provider mount。发布方的 canonical package 与通用脚本 bundle 分离，
 
 使用 [candidate contract](contracts/experiment-profile.md#candidate-identity) 的 input/runtime/experiment 三阶段身份；每次 final candidate 关联同一输入身份。构建输入清单和运行资格清单用途不同，不人工填 PASS。
 
-Spec183 外部 Python job/应用适配器可以作为 E 中的只读脚本 bundle 挂载到固定 R；须通过该 R 的实际已安装 API/import 检查，不能夹带宿主 `.so`。`447f7584`只保留为旧交付来源；后续User/DI/native cutpoint修复必须纳入新的I/source lock与R，不能把旧运行库身份继续称为当前候选。镜像内应用或Core/DI变化须先重seal并构建R，再验证E；不能在旧SIF上临时覆盖native/runtime文件。
+Spec183 的 R 只固定基础运行库；E 包含只读 appManifest 与 harness。应用包可以
+包含 DI 自有原生产物，必须在匹配 base 的容器/SDK 编译并验证 ABI，不能夹带
+宿主依赖或遮蔽基础库。`447f7584`保留为旧交付来源；DI/app 修复改变 appManifest/E，
+基础 Core/Repo/通用绑定修复才改变 I/R 并重建消费者。分层清单显式版本化，旧
+R/E 回执不重解释。混合仓库按实际基础源码闭包 seal，不能用 app commit 强迫
+重建未变基础库，也不能遗漏基础构建输入。禁止覆盖 SIF 内 native/runtime 路径。
 
 | Changed plane | Earliest restart | Evidence retained/reused |
 | --- | --- | --- |
 | 纯文档、run ID、等价 artifact 物理位置 | schema/path/hash 检查 | 不重编译；新 run identity，旧执行记录保留 |
-| Core/DI/dependency/toolchain/native build definition | T007 → T008 | 旧运行标历史，干净重建 ABI consumers，再 SIF/下游 |
-| Python entrypoint/打包内容、SIF bytes | T007 → T011；若宿主同路径变化则 T008 | 只重跑受影响本地 gates，但最终新 SIF 必须重新验证 |
+| Core/Repo通用库或绑定、基础dependency/toolchain/build definition | T007 → T008 | 新base，干净重建受影响 ABI consumers，再验证精确组合 |
+| DI/UAV app C++或自有扩展 | T007、相关T008–T011 | 只增量构建受影响app目标及消费者；base不变，验证app ABI/行为 |
+| app Python entrypoint/打包内容 | T007、相关import/行为门 | 冻结新app/E，不重编C++或重建SIF；网络/安全变更补对应门 |
+| SIF bytes | T007 → T011，基础源码变化则 T008 | 新R身份，验证对应app组合；不可复用旧E执行PASS |
 | harness/launcher/身份或路由/effective config | T007，相关 focused/unit/integration/MiniNDN | 无 native 变化可复用 SIF；不能复用旧正式运行 |
 | 模型/输入/预处理/oracle/tolerance | T001 → T007、相关本地数值/网络 gates | 无 ABI 变化不重建 SIF；重新注册 workload 后再运行 |
 | host/GPU/driver/Apptainer/scratch | T012 allocation preflight | 文件身份可复用；新节点的环境必须实测 |

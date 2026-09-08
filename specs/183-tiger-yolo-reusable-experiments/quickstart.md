@@ -1,5 +1,12 @@
 # Quickstart: Planned Operator Workflow
 
+2026-09-08 **ACCEPTED / IMPLEMENTATION_PENDING**：部署目标改为基础库SIF与
+外部只读app包，见[runtime layers](../../Experiments/TigerCluster/docs/runtime-app-layers.md)。
+当前命令是既有入口，尚不能把新布局参数填进去运行；T002/T004/T011须先接线。
+应用变化只构建/运输变化包；基础/ABI变化才构建base。最终`local/submit`验收
+绑定同一base+app+模型/harness组合，不能只检查SIF。旧完整应用镜像命令保留
+为迁移前记录，不能宣称已实现分层。独立C++两节点probe209981已通过，不必重跑。
+
 **Status**: PARTIAL。T004 已提供只读 `check`；其余命令仍是接口目标，不可执行。
 尚无真实 enabled profile、合格 bundle 或模型运行结果，不能提交实验。
 

@@ -15,7 +15,7 @@
 | V09 | integration T009 | 新 Controller/角色 bootstrap 与 prepared fixture 分开；真实 CPU YOLO 多进程 | input→ACK→Selection→四阶段→response/numeric，bootstrap 就绪本身不替代 inference |
 | V10 | integration T009 | 初始未授权/撤销旧 epoch、错 Selection、activation missing/tamper/late | 独立当前生产错误码/事件；超时不冒充 auth rejection；无假响应 |
 | V11 | MiniNDN T010 | 正常 CPU 四角色、权限拒绝和缺依赖 cutpoint | 实际 NFD 消息/edge/role 及数值；核对源版本、命令、exit、清理 |
-| V12 | SIF T011 | 容器九产物、全部 DSO/SONAME/RPATH、两个扩展、entrypoint、cwd/模型 | 不是 host import；显式 CUDA driver 例外，旧库/host prefix/缺模块拒绝 |
+| V12 | base+app T011 | 基础/app分层清单、required R、全部 DSO/SONAME/RPATH、通用与应用扩展、entrypoint、只读/app与模型 | 精确组合内验证；显式CUDA driver例外，旧app/错base/host prefix/基础库遮蔽拒绝；不能只测host import |
 | V13 | exact-SIF local T011 | 同候选 CPU 真实图及 oracle，empty home/scratch 重建 | LOCAL_CPU_PASS；记录 CPU 与 GPU case 不同，无 GPU 资格推断 |
 | V14 | compute T012 | 实分配 host/GPU、同 Apptainer、容量、SIF/staging、双向签名 Data/服务就绪 | 两节点实际版本/route/permission；失配在 Provider 前失败 |
 | V15 | single-node T013 | 四 Provider、1 warmup+1 measured、实际模型 CUDA、Merge CPU | SINGLE_NODE_GPU_PASS，全图/数值/退出/清理；不是跨节点证明 |
@@ -23,6 +23,7 @@
 | V17 | remote negative T015 | Selection 后所需中间 Data 缺失 | 有受控 cutpoint 证据、有限失败、零成功响应/静默重选、正常清理 |
 | V18 | independent reuse T016 | 新 allocation 和身份，原正常 E/config/case 1+3 请求 | 两正常 run hashes 一致，8/8 全部成功；失败不得从统计中消失 |
 | V19 | operator T017 | 干净 checkout 获取配置/固定 artifact、离线重算、缓存复用 | 无个人路径/插件依赖；结果可再判定；没有重复 SIF/模型复制 |
+| V20 | layered T002/T004/T011 | 一次app-only改动；错base/ABI、基础库遮蔽、旧layout或回执混搭 | app源/产物/E更新，R/SIF hash不变；只编译受影响目标；拒错零workload/上传/提交；新组合实际import/入口通过；PLANNED |
 
 ## Evidence Rules
 

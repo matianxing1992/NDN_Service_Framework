@@ -1,5 +1,15 @@
 # Local SIF Build
 
+## Accepted Layered Target — 2026-09-08
+
+用户要求采用[基础库SIF + 外部应用](runtime-app-layers.md)。SIF包含NDN/NDNSF/
+Repo通用库及运行依赖；DI/UAV程序、包及自有扩展独立构建、冻结和只读挂载。
+应用变化仅增量编译受影响目标，基础ABI/依赖变化才重建SIF及消费者。
+此决策已进入Spec183 FR-005/006与T002/T004/T011；**IMPLEMENTATION_PENDING**。
+以下builder/完整应用镜像命令描述迁移前现状，尚不是分层构建命令。
+实现时沿用这些owner拆分输出与预检，禁止临时注入宿主基础库；最终检查针对
+精确base+app组合。已有合格base缓存可复用，不因每次app发布而重新打包。
+
 构建入口：`Experiments/TigerCluster/adapters/slurm-apptainer/scripts/build-local-sif.sh`。
 构建前准备源码seal并核对definition、依赖和工具链，沿用 [runtime package](../../../packaging/ndnsf-di-container/README.md) 的原生ABI与候选规则。
 

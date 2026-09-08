@@ -15,6 +15,14 @@
 
 ## Evidence And Decisions
 
+2026-09-08 部署决策更新（用户明确要求，工程方案，不新增统计研究）：采用
+[基础SIF + 外置app](../../Experiments/TigerCluster/docs/runtime-app-layers.md)。
+理由：DI/UAV频繁变化不应迫使基础NDN/NDNSF库重建；209981已证明同一历史SIF
+加外置C++二进制可完成两物理节点通信。其证据不涵盖DI ABI或GPU。
+旧全量应用SIF路径仍在代码，须迁移；应用自己的.so允许受控部署，临时覆盖
+基础库或从活跃宿主venv取依赖仍不接受。回退选择完整合格组合。见T002.layer、
+T004.layer、T011.layer与T007.layer；不为文档改动重复任何运行实验。
+
 | Current source / document | Finding | Decision |
 | --- | --- | --- |
 | `Experiments/TigerCluster/development-handoff.lock.json` | 固定四库/5 wheels/base SIF；完整新组合未验收 | 沿用锁，不把最新 branch HEAD 隐式当运行源码；有必要修复才登记新 lock |

@@ -1,5 +1,13 @@
 # Reusable YOLO Distributed Inference
 
+## Current Deployment Decision — 2026-09-08
+
+用户确认[基础SIF + 外置DI/UAV应用](runtime-app-layers.md)，设计ACCEPTED，
+迁移IMPLEMENTATION_PENDING。以下旧“完整应用SIF/九产物”描述是已有实现记录；
+以Spec183最新tasks/plan为执行入口。后续app-only改动只更新独立包，不重建
+基础库SIF；最终验收绑定base+app+harness/model。C++小例子209981已在itiger01/02
+实跑3条Data并清理成功，基础传输证据复用。正式YOLO/GPU仍未资格化。
+
 内部运输组件 `tools/spec183_transport.py` 已有显式inventory/receive；输入清单
 只描述所选文件，不能证明完整candidate闭包。接收端先校验、测容量，再无覆盖
 发布；匹配文件可复用，结果仅CONTENT_VERIFIED/NOT_EVALUATED。真实两文件SSH

@@ -28,7 +28,7 @@
 
 ### User Story 2 - Verified Local Runtime And Real Model (Priority: P1)
 
-在实验机器完成当前源码 unit/integration/MiniNDN 验证及完整 SIF 本地构建，确认真实 YOLO、应用入口和库加载一致。
+在实验机器完成当前源码 unit/integration/MiniNDN 验证，构建或复用基础库 SIF，独立构建外部应用包，确认真实 YOLO、应用入口和库加载一致。
 
 **Why this priority**: Python import 或单个 native 目标通过不足以证明真实路径。
 **Independent Test**: 小型真实 YOLO ONNX CPU 多进程执行请求、ACK、Selection、中间数据和最终数值输出；最终 SIF 再执行同一 CPU 诊断路径。
@@ -69,8 +69,8 @@
 - **FR-002**: **Single profile.** 版本化 profile MUST 固定全部行为选择并引用有 hash 的输入；启动仅允许 run ID、输出位置和经核对的物理路径。未知/未消费字段 MUST 拒绝。
 - **FR-003**: **Immutable candidate.** MUST 绑定四库源码、工具链/依赖、SIF、脚本/harness、有效配置、模型/输入/oracle、安全规则和验证契约；区分交付文档与构建源码，按变更平面失效证据。
 - **FR-004**: **Fail-before-side-effects.** MUST 提供分阶段可执行检查和零外部调用 mutation tests；坏输入在昂贵构建/上传/staging/sbatch 前拒绝。构建前不要求尚不存在的 SIF，提交前必须验证最终 SIF。
-- **FR-005**: **Dependency closure.** MUST 拓扑顺序干净构建、验证 C++/Python 闭包；最多 `-j2`、同一树只允许一次构建。容器原生产物由本地 container builder 编译，不能注入宿主 `.so`/venv。
-- **FR-006**: **Local SIF route.** MUST 在本地实验机器用匹配目标 compute 节点版本的 Apptainer 构建完整 SIF；Tiger 仅验证和执行。base SIF、能力探测和旧结果不算新候选。
+- **FR-005**: **Dependency closure.** MUST 验证基础库及外置应用的 C++/Python 闭包；最多 `-j2`、同一树只允许一次构建。应用原生产物由本地匹配 base 的容器/SDK 构建，允许清单内应用专属 `.so`，禁止携带宿主 venv/替代基础库。构建键不变时增量编译受影响 app 目标，基础 ABI/工具链改变时干净重建受影响消费者。
+- **FR-006**: **Local SIF route.** MUST 在本地实验机器用匹配目标 compute 的 Apptainer 构建或复用合格基础运行库 SIF，NDNSF-DI/YOLO 与以后 UAV 应用以独立不可变只读包部署；Tiger 仅校验并执行同一 base+app 组合。应用变化不得强制重建未变的 SIF；旧镜像存在或小例子通过不算新 YOLO 组合合格。基础/应用归属与变更失效规则见 [runtime layers](../../Experiments/TigerCluster/docs/runtime-app-layers.md)。
 - **FR-007**: **Real-path security and readiness.** MUST 验证独立角色身份、Controller 签名状态/权限、真实 socket/route 和服务路径；禁止 auth bypass 或固定 sleep 替代 readiness。
 - **FR-008**: **Distributed graph.** MUST 执行 BackboneNeck → DetectShard0/DetectShard1 → Merge；四个独立 Provider 放在两真实节点，模型阶段有 CUDA 执行证据。Merge 显式 CPU 后处理不等于模型 CPU fallback。
 - **FR-009**: **NDN data path.** MUST 用现有 NDNSF-DI/Repo 命名、安全及依赖规则传递输入/激活/结果；共享文件系统只用于部署 artifact 和证据，不能替代跨节点激活传输或向 Provider 注入 oracle。

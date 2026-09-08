@@ -1,5 +1,23 @@
 # T007 Design-Code Convergence Audit
 
+## Accepted Deployment Change — 2026-09-08
+
+用户确认[基础SIF + 外置app](../../../Experiments/TigerCluster/docs/runtime-app-layers.md)。
+**新增控制项 N4 / HIGH / BLOCK，IMPLEMENTATION_PENDING**；此次为方案更新，
+不是生产审计PASS。旧N1/N2修复仍需完成，不因分层设计自动关闭。
+
+源码事实：`adapters/slurm-apptainer/templates/development-runtime.def.in` 的
+166/202/481行仍构建DI provider、安装DI Python包并用九产物清单封装SIF；
+`runtime/yolo_bundle.py`仍是小型text-only harness冻结器。两者均在
+`Experiments/TigerCluster/`下；当前代码不能声称实现新外部native app契约。
+CodeGraph探索后核对了这些具体脚本。外置C++诊断209981仅证明基本部署可行。
+
+控制要求FR-005/006，任务T002.layer/T004.layer/T011.layer，验收V12/V20：
+分开基础/app源码与产物闭包、版本化身份，构建器增量输出app，运输和worker
+实际验证required R并挂载`/app:ro`；错ABI/遮蔽基础库/混用旧回执均拒绝。
+T007.layer复审所有实际消费者后才正式验收新组合。不要为了文档更新重建SIF
+或重新运行已通过的NDN小例子。下方“立即工作”为此次用户调整前的历史入口。
+
 ## Current audit — 2026-09-08
 
 **Source checkpoint**: `0e22b210`, `TigerClusterExperiments`.

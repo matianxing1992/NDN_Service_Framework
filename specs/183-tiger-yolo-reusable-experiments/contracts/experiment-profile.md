@@ -1,5 +1,12 @@
 # Experiment Profile And Run Contract
 
+## Accepted Layout Revision — 2026-09-08
+
+分层目标以本文 Candidate Identity 与 [runtime layers](../../../Experiments/TigerCluster/docs/runtime-app-layers.md)
+为准：base SIF固定基础库，app包外置。当前下述已实现接口仍描述迁移前行为；
+“九产物/旧六产物拒绝/容器内已安装DI”相关条件须在T002/T004/T011改为分层闭包
+判定，不能直接删除预检放行。既有receipt与来源原样保留；新布局尚未可执行。
+
 ## Prepared identity and prerequisite reuse (2026-09-07)
 
 New preparation receipts use `tiger-yolo-prepared-run-v2`. `contentIdentities`
@@ -360,7 +367,17 @@ the base/model/signature inputs remain missing.
 
 ## Candidate Identity
 
-I = digest(四库 exact revisions+source seals、依赖/工具链/base/build definition、wheels)；R = digest(I、最终 SIF hash+native/library manifest)；E = digest(R、所有执行脚本/harness、profile 的有效行为字段、模型/input/oracle、安全规则、validation contract)。
+目标布局 `layered-v1`（2026-09-08 ACCEPTED，生产实现待T002/T004/T011）：
+I = digest(基础源码闭包 seals、依赖/工具链/base/build definition、基础wheels)；
+R = digest(I、基础 SIF hash+基础native/library manifest)；
+E = digest(R、appManifest摘要、所有执行脚本/harness、profile有效行为字段、模型/input/oracle、安全规则、validation contract)。
+appManifest 绑定应用源码/二进制/自有扩展/包、构建SDK及参数、required R、入口和
+依赖闭包。混合仓库按被基础构建实际消费的文件闭包 seal，完整revision另记来源。
+`/app:ro`为应用，`/bundle:ro`为harness；app可含ABI验证的自有.so，不能覆盖基础库。
+详见[runtime layers](../../../Experiments/TigerCluster/docs/runtime-app-layers.md)。
+下方 v1 内容平面/脚本冻结实现仍是旧单体布局的实现记录：必须显式增加布局版本、
+appManifest及传递文件验证，不能假称现有 text-only bundle 已接纳原生产物。
+旧I/R/E与receipt不改写、不自动转换；新旧布局混用拒绝。正式候选验证针对完整组合。
 阶段化检查：inputs 需要 I 和构建所需现存文件，runtime 需要 R，dispatch 需要 E 和之前 gate receipts。profile 文件自身摘要单独记录；E 以明确字段集计算，不将 E 自身/未来 result hash 纳入自身摘要。input→runtime→experiment 为单向引用，不循环。
 身份私钥每 run 单独生成不属于可复用候选；trust-policy 与生成规则固定，公开证书摘要属于 ResolvedRun。分配的 host/IP/GPU UUID、run ID、物理 artifact 位置进入 ResolvedRun，不改变 E；物理文件内容必须仍匹配 E。任何超时/角色/容差/GPU class/env 行为变更都改变 E。
 检查后执行必须使用只读/不可变 bundle；提交前核对 bundle inventory，worker 再验证关键输入。路径别名不能让 checks 检 A、exec 跑 B。

@@ -8,7 +8,9 @@
 
 用户指定的 [C++ NDN/SIF 两节点小例子](evidence/cpp-ndn-smoke.md)已实跑通过：
 209981，itiger01/02，三次 Interest/Data，Slurm 0:0，清理完成。
-接下来复用这套容器/NFD/TCP/Slurm配置推进最小 NDNSF 服务与 YOLO。
+2026-09-08 用户进一步确认“基础库SIF + 外置DI/UAV应用”方案：
+[runtime layers](../../Experiments/TigerCluster/docs/runtime-app-layers.md)，设计已记录，代码迁移未完成。
+下一步先接T002/T004/T011分层清单、ABI及构建/挂载，再复用这套配置推进最小NDNSF服务与YOLO。
 原 17 项验收及既有 MiniNDN 交付证据不被替换。
 
 更新：2026-09-08；进度表初始审计基线 `d1f1504a`，`cc638d00`审计后N3源码修复，见
@@ -73,7 +75,7 @@ T007 复核确认正常/负例/SSH 接线已存在；N3 issuer/rank版本检查�
 | T010.a | T010 | MiniNDN 正常 CPU 图、权限拒绝、缺依赖三个注册场景 | BLOCKED | [输入绑定](evidence/t010-input-binding.md)、[取消](evidence/t010-cancellation.md)、[reap](evidence/t010-reaping.md)、[systemd整树时限](evidence/t010-host-supervisor.md)已接；2个实际小进程probe与12项组件边界通过；仅Y-B，V11 NOT_RUN | 剩三场景与实际网络资源清理证据；T007前完成源码，T009后实跑；cgroup空不等于协议/网络PASS | 不重复正常/setsid超时probe；复用其他边界证据，后续仅测试变化的网络/场景语义 |
 | T010.b | T010 | 同源 host qualification manifest 绑定命令、结果与清理 | NOT_STARTED | [审计 N1/N2](evidence/design-code-convergence.md)；现wrapper未产生manifest；NOT_RUN | 先实现同一producer/语义validator契约，再从T010.a同次实跑生成供builder消费的回执 | 生成清单不额外跑模型；不得把COMPONENT_ONLY改token冒充PASS |
 | T011.a | T011 | development-20260907 source seal 与 definition 准备 | IMPLEMENTED | 后文 SOURCE_READY checkpoint：`2aea8a0e` / `c4f33beb`，非 SIF PASS | 后续源码改变须重 seal；旧锁不覆盖 | 纯任务表修改按输入清单判断，不无条件重建 SIF |
-| T011.b | T011 | 本机构建一个完整 SIF、九产物/DSO/两个扩展/入口闭包 | NOT_STARTED | V12；NOT_RUN | T010 receipt 后使用匹配 compute 的 Apptainer 构建 | 固定同一合格 SIF；无运行库变更不重复构建 |
+| T011.b | T011 | 构建或复用基础SIF，在匹配SDK构建独立app并验证组合闭包 | NOT_STARTED | V12；NOT_RUN；旧九产物builder未迁移 | 基础/app分层清单与挂载接线，T010后验证精确组合 | app增量构建；基础库/ABI未变不重建SIF |
 | T011.c | T011 | exact-SIF 本地 CPU YOLO 与 empty HOME/scratch | NOT_STARTED | V13；NOT_RUN | T011.b 后执行，取得 LOCAL_CPU_PASS | 容器环境新增证据，不能以 host 结果替代 |
 | T012.a | T012 | GPU/Apptainer/容量 substrate 实值清点 | IMPLEMENTED | [input inventory](evidence/input-inventory.md) 有早期 probe 记录，非最终环境资格 | 正式 allocation 仍需实测；早期 probe 不抵消 T007 | 静态输入复用，不重复下载/拷贝 |
 | T012.b | T012 | exact-SIF staging、目标节点/GPU/路由与服务就绪 | NOT_STARTED | V14；NOT_RUN | T011 后核验实际 allocation 与哈希 | 每个新 allocation 检查环境，不重建同一镜像 |
@@ -362,6 +364,22 @@ T005/T006追加调用次数约束：正常ACK-driven User一次只执行一请�
 
 - [ ] T007 Audit production wiring before formal validation in `specs/183-tiger-yolo-reusable-experiments/evidence/design-code-convergence.md`: compare accepted spec/contract to actual submit→worker→application→Core/DI/Repo→collector and all effective fields through CodeGraph and exact source; register severity, owner and focused regression for each discrepancy. Review all wrappers/helpers and local/remote paths once as a closure, including scripts used by later substrate probes. Close only on PASS with zero controlling semantic/security/wiring/evidence gaps; actual changes reopen this task. Depends on T002–T006. This task is not satisfied by the planning audit.
 
+### Accepted Layered Deployment Revision — 2026-09-08
+
+本表是原任务的新增必要子步骤，不新增顶层任务，也不撤销T001/T003历史验收。
+目标见FR-005/FR-006及[runtime layers](../../Experiments/TigerCluster/docs/runtime-app-layers.md)。
+现有“九产物全在SIF”、text-only harness及旧R/E是待迁移实现，不是目标要求。
+
+| Step | Parent | Concrete outcome / path | State | Evidence / verification scope | Blocker / next action | Reuse / rerun trigger |
+| --- | --- | --- | --- | --- | --- | --- |
+| T002.layer | T002 | 原source sealer/`runtime/yolo_profile.py`分离base/app闭包、显式layout版本和required R | NOT_STARTED | 仅设计；FR-005/006、Candidate Identity | 错base、app漏文件、旧layout混搭在副作用前拒绝；基础源码闭包不得遗漏 | app变更只失效E；基础变更才失效I/R |
+| T004.layer | T004 | 原bundle/operator/worker/transport验证并只读挂载app原生产物，保留harness归属 | NOT_STARTED | 仅设计；`/app:ro`不覆盖基础前缀 | 连接builder输出到实际local/rank入口；app own DSO允许、基础库遮蔽拒绝 | 只传变化app；复用相同base、模型与既有运输owner |
+| T011.layer | T011 | 原prepare/build definition/preflight拆base与app构建、清单及资格；SDK键隔离增量缓存 | NOT_STARTED | 仅设计；C++ probe证明可挂载执行，不证明DI闭包 | 去除Spec183“app改动必重建SIF”；验证一处app变更仅重编受影响目标且base hash不变 | 无工具链/ABI变化不清空全部构建树；变更才补对应门 |
+| T007.layer | T007 | 审计分层producer→manifest→transport→rank→collector全链及回退 | NOT_STARTED | 仅设计；既有T007 BLOCK仍保留 | 上三项接线后复审；错base/混搭/宿主库/旧回执均不可放行 | 复用未受影响组件证据，不启动文档性重测 |
+
+UAV仅复用同一部署边界；本Spec不实现UAV应用或Spec182。正式YOLO运行继续等待
+原安全、数值与runtime门，不用小例子或布局标签替代它们。
+
 ## Phase 6: User Story 2 - Formal Local Qualification
 
 **Independent Test**: current dependency build, real CPU multi-process graph and same-SIF app path. Record one evidence receipt per independently meaningful gate.
@@ -369,7 +387,7 @@ T005/T006追加调用次数约束：正常ACK-driven User一次只执行一请�
 - [ ] T008 [US2] Build and qualify the locked dependency/native/Python closure using existing build owners and `Experiments/TigerCluster/docs/yolo-reusable.md`, recording `specs/183-tiger-yolo-reusable-experiments/evidence/host-unit.md`: clean ABI consumers in isolated build roots, system toolchain/Boost, at most `-j2` total per active build tree; record both Python extension imports, actual entrypoint checks, ldd/readelf/loaded hashes and all selected dependency/NDNSF/Tiger unit results. Preserve build failures; no stale incremental objects or manual PASS manifests. Depends on T007 and complete T001 inputs.
 - [ ] T009 [US2] Execute real multi-process CPU integration in `Experiments/TigerCluster/tests/test_yolo_integration.py` and existing NDNSF integration fixtures, recording `specs/183-tiger-yolo-reusable-experiments/evidence/integration.md`: separate identity/bootstrap tests from a prepared authorized fixture; real signed messages, encrypted dependency Data, actual small ONNX execution and final oracle. Cover fresh Controller/epoch, denied role, wrong selection, activation loss/tamper and process cleanup. No mocked inference final PASS. Depends on T008.
 - [ ] T010 [US2] Run bounded CPU MiniNDN YOLO through `Experiments/NDNSF_DI_YoloAckDriven_Minindn.py` with Spec183-owned case configuration/driver in `Experiments/TigerCluster/tests` and record `specs/183-tiger-yolo-reusable-experiments/evidence/minindn.md`: normal four-role graph plus registered permission/dependency-failure cases, request-to-response IDs/edge hashes, route snapshots and cleanup; freeze the actual same-source host qualification manifest accepted by the existing build gate. Do not rerun all historical campaigns or substitute echo. Depends on T009.
-- [ ] T011 [US2] Build one complete local SIF via `Experiments/TigerCluster/adapters/slurm-apptainer/scripts/prepare-development-handoff.py` and `build-local-sif.sh`; record `specs/183-tiger-yolo-reusable-experiments/evidence/local-sif.md`: input gate, verified base and compute-matched Apptainer, container-built nine outputs, every packaged DSO closure, two extension imports/actual entrypoints, then exact-SIF local CPU YOLO. Keep model outside SIF, register final SIF/runtime identity and tests before promotion. Host/SIF hashes need not equal, but each must derive from its declared source/ABI. Depends on T010; reviewed short version-only allocation may precede build under plan exception.
+- [ ] T011 [US2] Split base-runtime and application production in the existing `Experiments/TigerCluster/adapters/slurm-apptainer/scripts/prepare-development-handoff.py`, `build-local-sif.sh`, definition and preflight owners; record `specs/183-tiger-yolo-reusable-experiments/evidence/local-sif.md`: build/reuse the locked base SIF, container/SDK-build only affected external app targets, freeze required-R app manifest, verify base/app DSO and Python closures and actual entrypoints in the exact read-only composition. Replace the all-nine-in-SIF assumption. Prove an app-only change preserves the base hash and rebuilds only affected targets; wrong base/ABI, shadowed foundational libraries and mixed legacy receipts reject before workload. Keep models outside both layers. Final composition CPU YOLO qualification depends on T010; base construction/reuse does not depend on each changed app's future receipt. No host-library injection or Tiger build. Use the existing bounded builder and at most -j2.
 
 ## Phase 7: User Story 3 - GPU And Cross-Node Execution
 
