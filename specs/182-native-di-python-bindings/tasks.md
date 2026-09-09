@@ -1262,3 +1262,12 @@ T003--009 → T010 → T011 → T012 → T013 → T014 → T015 PASS → T016 �
 没有修改论文/slides 或重跑实验，没有据此关闭任何实现/资格验收任务。
 原始审查产物保留于 `.codex-tmp/proposal-reviewed-20260909/`；下一步先统一 RQ 和最终贡献范围，
 再依据已有证据确定必要的补充验证，不自动扩大工程或实验范围。
+
+## Related Official Defense Criteria Checkpoint — 2026-09-09
+
+按用户要求联网核对本校 CS 答辩评价表、PhD 程序及论文准备指南，并参考 CMU/UMD CS 文件；
+已在 [review §20](../../docs/PAPER/proposal-defense/review.md#20-根据公开的计算机系-final-defense-要求重新校准)
+区分本校要求、外校参考和 NDNSF 审查建议，新增 FD17–FD20。
+完整 Graduate Catalog 正文未获取，不宣称已核实全部学位规则；DOCX/HTML 提取工具边界见 failure log。
+文档检查核对 C01–C26、FD01–FD20、来源层级、本地证据及冻结 PDF 摘要；
+本轮未修改论文/slides、运行实验或关闭实现验收门。下一步为贡献归属、统一 RQ 和模拟问答准备。

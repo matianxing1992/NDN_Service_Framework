@@ -1,5 +1,18 @@
 # Failure Log and Evidence Index
 
+## 2026-09-09 — Official defense criteria document extraction
+
+Web DOCX parsing was unsupported; urllib plus ZIP/XML extraction succeeded.
+A supplementary HTML extraction failed before fetching because `bs4` was absent.
+The standard-library HTMLParser fallback succeeded without installing dependencies.
+Graduate Catalog retrieval still produced no valid requirements text (web 403);
+the report explicitly leaves the complete catalog rules unverified.
+A progress-record patch with an unmatched failure-log context was rejected without
+changes; after reading the exact lines, the corrected patch was applied separately.
+This is a document-tool boundary, not research or protocol evidence. See
+`.codex-tmp/proposal-reviewed-20260909/official-criteria/extraction-boundary.md` and
+[source-based review](PAPER/proposal-defense/review.md).
+
 ## 2026-09-08 — Spec182 R7-B1 replacement expectation boundary
 
 The first `Spec182R4B6RealProviderConversationReplacement` run built successfully but exited
