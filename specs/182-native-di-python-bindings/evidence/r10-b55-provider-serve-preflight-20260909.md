@@ -23,6 +23,15 @@ Controller 未安装 `/Inference/NativeTracer` Provider permission，打印
 `NDNSF_DI_NATIVE_PROVIDER_PROVISION_FAILED`；事件循环直到 timeout，返回 `124`。该首个
 运行边界在 `serve-retry.log` 保留，不能解释为请求失败或资格失败。
 
+随后启动已有 `App_ServiceController` 的本地实例，使用 raw 目录中的临时 policy 只授予
+`/example/native-provider` 的 `/SERVICE/Inference/NativeTracer`，再以同样的 Provider
+命令运行。该 Controller-assisted retry 在 timeout 前打印
+`NDNSF_DI_NATIVE_PROVIDER_PERMISSION_READY`、`NDNSF_DI_PROVIDER_BOOT_READY`、
+`NDNSF_DI_NATIVE_PROVIDER_PROVISION_READY` 和 `NDNSF_DI_NATIVE_PROVIDER_READY`；Provider
+仍因 serve 事件循环常驻而由 `timeout` 返回 `124`，Controller `--run-for-ms` 正常返回 `0`。
+这证明 readiness 的授权前置可由真实 Controller/Core path 满足，但没有启动 requester 或
+发送 Selection/Response。
+
 ## Coverage matrix
 
 | Lane | Covered files/symbols and check | Result |
@@ -31,7 +40,7 @@ Controller 未安装 `/Inference/NativeTracer` Provider permission，打印
 | implementation/wire | metadata-only manifest, DATA_DRIVEN_V2 serve preconditions, provider host registration, lease service and readiness markers | covered |
 | test/harness/oracle | generated metadata-only manifest, bounded timeout probe, explicit startup/serve/provision markers and first-boundary classification | covered |
 | build/source closure | repaired R10-B50 `di-native-provider` SHA `4be6b29...`; `ldd` reports no `not found`; no rebuild in this batch | covered |
-| migration/evidence | first missing-mode CLI boundary and corrected serve log/result retained; no Python, requester or terminal response | covered |
+| migration/evidence | first missing-mode CLI boundary, permission-failure run and Controller-assisted ready run retained; no Python, requester or terminal response | covered |
 
 ## Review trace
 
@@ -60,6 +69,14 @@ timeout --kill-after=2s 12s env PATH=/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bi
   --permission-wait-ms 2000 --offer-backend onnxruntime-cpu
 -> exit 124 (timeout); Face/ServiceProvider/host/serve markers present; permission not installed
    and provisioning failed; no terminal request/result
+
+# Controller-assisted retry (temporary policy, same metadata-only manifest)
+App_ServiceController --policy-file native-tracer-controller.policies \
+  --controller-prefix /NDNSF-DistributeInference/example/controller \
+  --ensure-identities /example/native-provider --run-for-ms 14000
+di-native-provider ... --serve --permission-wait-ms 7000
+-> controller exit 0; provider timeout exit 124 after printing `PERMISSION_READY`,
+   `PROVISION_READY`, and `NDNSF_DI_NATIVE_PROVIDER_READY`; no requester/Selection/Response
 ```
 
 The Provider binary SHA-256 is
@@ -73,8 +90,12 @@ libraries. Raw manifest, command output and exit records are under
   remained after the explicit-mode review.
 - `compile/link`: none; the repaired Provider binary was reused and its SHA/`ldd` closure checked.
 - `runtime/test`: the first probe only exposed a missing CLI mode; the corrected probe reached
-  `SERVE_READY` and then exposed the real Controller permission boundary (`rc=124` after bounded
-  timeout, with `PROVISION_FAILED` recorded). No protocol request was attempted.
+  `SERVE_READY` and exposed the real Controller permission boundary (`PROVISION_FAILED`). The
+  Controller-assisted retry then reached `PERMISSION_READY`, `PROVISION_READY`, and final
+  `NATIVE_PROVIDER_READY`; both serve runs ended with bounded timeout `124` because the event loop
+  is intentionally persistent. No protocol request was attempted. The first retry's `rg` marker
+  extraction also missed because the runtime PATH omitted `rg`; direct system reads recovered the
+  preserved logs.
 - `unobserved`: authenticated Selection, post-Selection worker/model assembly, requester/Provider
   transport, terminal Response, maintained caller/no-Python and T016 qualification remain open.
 
@@ -83,8 +104,8 @@ qualification members. The timeout is a bounded runtime observation, not an effi
 
 ## Closure decision
 
-`CLOSED_FOR_VALIDATION` for Provider Face/ServiceProvider/NativeInferenceProvider serve registration
-and explicit permission/readiness failure classification under the repaired binary.
-`OPEN_FOR_NEXT_BATCH` for Controller permission installation, authenticated Selection, post-Selection
-assembly, independent requester/Provider transport, terminal Response and T016 qualification.
+`CLOSED_FOR_VALIDATION` for Provider Face/ServiceProvider/NativeInferenceProvider serve registration,
+Controller permission/readiness success and explicit failure classification under the repaired binary.
+`OPEN_FOR_NEXT_BATCH` for authenticated Selection, post-Selection assembly, independent
+requester/Provider transport, terminal Response and T016 qualification.
 This focused result does not close T009-C, T010-B or any parent task.

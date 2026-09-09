@@ -2938,3 +2938,10 @@ are still unobserved.
 - **Changed gate before retry**: assert the explicit `--serve` mode in the command and retain the
   metadata-only manifest (no preassembled artifact paths); classify only startup markers and the
   first NFD/certificate/permission/readiness boundary from the corrected bounded probe.
+
+- **Follow-up collection boundary**: the Controller-assisted retry itself reached
+  `NDNSF_DI_NATIVE_PROVIDER_READY` and the Controller exited cleanly, but the command's post-run
+  `rg` marker extraction returned `command not found` because the runtime-only PATH intentionally
+  omitted the developer `rg` location. Provider/Controller logs and exit codes were preserved;
+  marker extraction was repeated with system `grep`/direct file reads. This is a harness collection
+  issue, not a Provider or permission result.
