@@ -97,6 +97,11 @@ entry/caller, test/harness/oracle, and build/source registration. If one lane is
 not applicable, record `N/A` with a reason in the batch result record; if it is
 unknown, keep the task `PARTIAL` until the gap is closed.
 
+Before implementation, record why each member belongs to its batch: shared
+production entry/caller, interface/state/ownership contract, independent
+oracle/test selector, source/build closure, and acceptance exit. Split when one
+of these differs; never keep a stable batch open only to avoid another build.
+
 Example:
 
 ```text
