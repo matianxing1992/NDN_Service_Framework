@@ -1253,3 +1253,12 @@ T003--009 → T010 → T011 → T012 → T013 → T014 → T015 PASS → T016 �
 原始证据和旧交付物位于 `.codex-tmp/proposal-authorization-20260908-docs/`。
 明确 DNMP 原文与对照设计的区别，保留传播/重新发钥成本；实验数字未改，未重跑协议实验。
 本工作不改变 API、当前/目标设计或任何实现任务验收状态；下一步为论证反馈及管理成本评估。
+
+## Related Final Defense Review Checkpoint — 2026-09-09
+
+按用户要求扩展 [proposal review](../../docs/PAPER/proposal-defense/review.md)：保留 26 条老师批注，
+新增 FD01–FD16 问题、贡献/证据对应、验证边界及论文和答辩 slides 的组织建议。
+定向检查覆盖审查条目完整性、本地证据链接、输入 PDF 摘要及三个关键页的渲染；
+没有修改论文/slides 或重跑实验，没有据此关闭任何实现/资格验收任务。
+原始审查产物保留于 `.codex-tmp/proposal-reviewed-20260909/`；下一步先统一 RQ 和最终贡献范围，
+再依据已有证据确定必要的补充验证，不自动扩大工程或实验范围。
