@@ -7430,6 +7430,9 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
     const auto result = first.result(std::chrono::milliseconds(0));
     BOOST_CHECK_EQUAL(std::string(result.payload.begin(), result.payload.end()),
                       "native-unary-response");
+    // The closure runner consumes this marker as an independent business
+    // oracle. Emit it only after the unary native result assertion succeeds.
+    std::cout << "SPEC182_NATIVE_DI_REQUEST_RESULT_OK\n" << std::flush;
     client.close();
     return;
   }
@@ -7440,6 +7443,9 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
       std::string(result.payload.begin(), result.payload.end()));
     BOOST_CHECK_EQUAL(resultJson.at("text").get<std::string>(), "ab");
     BOOST_CHECK(!conversations->find("r4-b6-conversation-001").has_value());
+    // The closure runner consumes this marker as an independent business
+    // oracle. Emit it only after the stream-only native result assertions.
+    std::cout << "SPEC182_NATIVE_DI_REQUEST_RESULT_OK\n" << std::flush;
     client.close();
     return;
   }
