@@ -1,6 +1,6 @@
 # Implementation Plan: Native NDNSF-DI with Optional Python Bindings
 
-**Branch**: Experimental | **Revision**: 70 | **Date**: 2026-09-09
+**Branch**: Experimental | **Revision**: 71 | **Date**: 2026-09-09
 **Status**: IN_PROGRESS / 当前实现与验收状态见 tasks.md 的 Task Progress Registry 和 Current Checkpoint
 **Spec**: [spec.md](spec.md)
 
@@ -777,6 +777,22 @@ build/source closure 对文档/checker 写 `N/A`；migration/evidence 是本机�
 native source、构建、maintained caller migration、跨进程 transport 或 T016 qualification。
 `py_compile`、强制 checker、validator 和 `git diff --check` 通过；官方静态复核没有 P1/P2/P3。
 详见 [R10-B45 evidence](evidence/r10-b45-entrypoint-preflight-enforcement-20260909.md)。
+
+### R10-B49 Spec182 C++ Unit Suite 2026-09-09
+
+本批复用现有 `.codex-tmp/spec182-r4-b2/build/unit-tests`，精确运行 Boost.Test
+`--run_test='Spec182*'`，覆盖当前注册的 NativeInferenceClient、ClientState、Conversation、
+NativePlanning、Preparation、PlanSealer、Onnx、Grant、ProviderHost 及相关 C++ native
+contract suites。249 个 case 全部退出 `0` 并报告 `*** No errors detected`，耗时 `27.72s`；
+二进制 SHA 为 `f10e68b47d9ba48c7ebe155d09c133f959d8d1f952c8645a96d3ac37c567b0fc`，运行时源提交
+为 `6c7ba388f4a87e436b1972f3a21b8dcee5bb7571`。本批没有源码变化，故不重建；官方
+`review-agent` 五 lane 只读检查未发现 P1/P2/P3。
+
+该出口只关闭 C++ unit contract 的 focused behavior 回归。独立 requester/Provider transport、
+maintained caller/no-Python、完整输入模式和 T016 qualification 仍未观察。测试后的独立
+`vmstat` 快照在忽略首行后出现 `si/so=528/0`、`4800/0`、`132/0`，因此下一次 native
+build 必须按资源策略使用 `-j2`，直到新的连续观察证明可以恢复 `-j4`。详见
+[R10-B49 evidence](evidence/r10-b49-spec182-cpp-unit-suite-20260909.md)。
 
 ### R10-B46 Real Provider Native Suite 2026-09-09
 
