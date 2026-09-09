@@ -222,7 +222,10 @@ makeNativeIngressTestRunnerFactory(
           // the exact upstream scope before producing the next scope.  This
           // prevents a four-role test from passing when roles execute as four
           // independent functions.
-          if (observedInputs != nullptr) {
+          const bool dataflowObserved = observedInputs != nullptr &&
+            (role == "/Backbone" || role == "/Head/Shard/0" ||
+             role == "/Head/Shard/1" || role == "/Aux" || role == "/Merge");
+          if (dataflowObserved) {
             auto requiredInput = [&context, &payloadText] (const char* scope) {
               const auto found = context.inputsByScope.find(scope);
               if (found == context.inputsByScope.end()) {
@@ -493,13 +496,14 @@ struct NativeIngressCaseResult
   bool assignmentFetchCompleted = false;
   bool handlerEntered = false;
   bool responseReceived = false;
+  bool providerInputMatches = false;
   bool timedOut = false;
   bool statusFailed = false;
   std::string statusMessage;
 };
 
 NativeIngressCaseResult
-runNativeIngressCase(bool mismatch)
+runNativeIngressCase(bool mismatch, bool useRepositoryReference = false)
 {
   test::BootstrapProfile profile;
   profile.serviceName = ndn::Name("/Inference/NativeIngress");
@@ -543,10 +547,15 @@ runNativeIngressCase(bool mismatch)
   // separate real-ORT/CUDA validation gate.
   runnerSpec.metadata["test.deviceId"] = "0";
 
+  auto observedInputMutex = std::make_shared<std::mutex>();
+  auto observedInputs = std::make_shared<
+    std::map<std::string, std::map<std::string, std::string>>>();
+
   NativeProviderHandlerConfig handlerConfig;
   handlerConfig.plan = plan;
   handlerConfig.assignment = baseAssignment;
-  handlerConfig.runnerFactory = makeNativeIngressTestRunnerFactory();
+  handlerConfig.runnerFactory = makeNativeIngressTestRunnerFactory(
+    observedInputMutex, nullptr, observedInputs);
   handlerConfig.runnerSpecs = {runnerSpec};
   handlerConfig.localProviderName = providerName.toUri();
   handlerConfig.providerBootId = runnerSpec.metadata["test.providerBootId"];
@@ -578,6 +587,9 @@ runNativeIngressCase(bool mismatch)
   // key wrapping.  The Provider receives the exact test key through the
   // existing test-only receive-key hook; SegmentFetcher and AES-GCM still run
   // through the production assignment-preparation path.
+  const std::string inputText = useRepositoryReference
+    ? "native-ingress-repository-input" : "native-ingress-request";
+  std::string requestWireText = inputText;
   const std::vector<uint8_t> artifactPayload(12000, 0x5a);
   HybridMessageCrypto artifactCrypto;
   HybridCryptoCounters artifactCounters;
@@ -624,6 +636,55 @@ runNativeIngressCase(bool mismatch)
         environment.user().cacheDataForTest(
             *data, ndn::time::milliseconds(60000));
         environment.userFace().put(*data);
+  }
+
+  if (useRepositoryReference) {
+    const std::vector<uint8_t> inputPayload(inputText.begin(), inputText.end());
+    ndn::Name inputDataName(requesterName);
+    inputDataName.append("NDNSF").append("LARGE-DATA").append(serviceName);
+    inputDataName.append(requestId).append("native-request-input");
+    inputDataName.appendVersion();
+    const auto inputAdText = inputDataName.toUri() + "|REQUEST-LARGE|" +
+                             serviceName.toUri();
+    const ndn::Buffer inputAd(
+      reinterpret_cast<const uint8_t*>(inputAdText.data()), inputAdText.size());
+    const auto encryptedInput = hybridAesGcmEncrypt(
+      artifactKey.key,
+      ndn::span<const uint8_t>(inputPayload.data(), inputPayload.size()),
+      ndn::span<const uint8_t>(inputAd.data(), inputAd.size()));
+    HybridMessageEnvelope inputEnvelope;
+    inputEnvelope.setKeyId(artifactKey.keyId);
+    inputEnvelope.setEpochId(artifactKey.epochId);
+    inputEnvelope.setMessageType("REQUEST-LARGE");
+    inputEnvelope.setNonce(encryptedInput.nonce);
+    inputEnvelope.setCipherText(encryptedInput.ciphertext);
+    inputEnvelope.setAuthTag(encryptedInput.tag);
+    const auto inputBlock = inputEnvelope.WireEncode();
+    const ndn::Buffer inputWire(inputBlock.data(), inputBlock.size());
+    const auto inputSegments = artifactSegmenter.segment(
+      ndn::span<const uint8_t>(inputWire.data(), inputWire.size()),
+      inputDataName,
+      64,
+      ndn::time::milliseconds(60000));
+    if (inputSegments.empty()) {
+      throw std::runtime_error("native ingress test produced no input segments");
+    }
+    for (const auto& data : inputSegments) {
+      environment.user().cacheDataForTest(
+        *data, ndn::time::milliseconds(60000));
+      environment.userFace().put(*data);
+    }
+
+    // The only request bytes on the wire are the reference envelope; the
+    // published plaintext is available only through Provider fetch/decrypt.
+    std::ostringstream referenceEnvelope;
+    referenceEnvelope << "{\"input_reference\":{\"dataName\":\""
+                      << inputDataName.toUri()
+                      << "\",\"plaintextSize\":" << inputPayload.size()
+                      << "},\"input_transport\":\"REPO_REF\","
+                         "\"schema\":\"ndnsf-di-request-envelope-v2\","
+                         "\"schema_version\":2}";
+    requestWireText = referenceEnvelope.str();
   }
 
   environment.providerPubSub().subscribeToProducer(
@@ -696,9 +757,8 @@ runNativeIngressCase(bool mismatch)
     true);
 
   RequestMessage request;
-  const std::string requestText = "native-ingress-request";
   ndn::Buffer requestPayload(
-    reinterpret_cast<const uint8_t*>(requestText.data()), requestText.size());
+    reinterpret_cast<const uint8_t*>(requestWireText.data()), requestWireText.size());
   request.setPayload(requestPayload, requestPayload.size());
   request.setPolicyEpoch(environment.user().getCurrentPolicyEpoch());
 
@@ -781,6 +841,15 @@ runNativeIngressCase(bool mismatch)
     }
     return result.responseReceived || result.statusFailed || result.timedOut;
   });
+  {
+    std::lock_guard<std::mutex> lock(*observedInputMutex);
+    const auto roleIt = observedInputs->find(role);
+    if (roleIt != observedInputs->end()) {
+      const auto inputIt = roleIt->second.find("request-input");
+      result.providerInputMatches = inputIt != roleIt->second.end() &&
+        inputIt->second == inputText;
+    }
+  }
   return result;
 }
 
@@ -799,6 +868,18 @@ BOOST_AUTO_TEST_CASE(ProductionIngressRunsNativePostSelectionAssignmentFetch)
   BOOST_CHECK(result.requestObserved);
   BOOST_CHECK(result.assignmentFetchCompleted);
   BOOST_CHECK(result.handlerEntered);
+  BOOST_CHECK(result.responseReceived);
+  BOOST_CHECK(!result.statusFailed);
+  BOOST_CHECK(!result.timedOut);
+}
+
+BOOST_AUTO_TEST_CASE(ProductionIngressRunsNativeRepositoryReferenceIntoProvider)
+{
+  const auto result = runNativeIngressCase(false, true);
+  BOOST_CHECK(result.requestObserved);
+  BOOST_CHECK(result.assignmentFetchCompleted);
+  BOOST_CHECK(result.handlerEntered);
+  BOOST_CHECK(result.providerInputMatches);
   BOOST_CHECK(result.responseReceived);
   BOOST_CHECK(!result.statusFailed);
   BOOST_CHECK(!result.timedOut);
