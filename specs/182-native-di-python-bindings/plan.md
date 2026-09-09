@@ -91,6 +91,15 @@ Provider 环境当成可成功替换，真实运行先暴露 `DI_NATIVE_NO_ADMIT
 保留 exit201 原始证据后，负例与原有正向两轮均通过。下一批必须在多 Provider 配置下另行
 证明成功 replacement，或沿稳定 owner/caller 依赖推进；不重用这次负例来宣称恢复资格。
 
+### R7-B2 Alternate-Provider Replacement 2026-09-08
+
+R7-B1 的 failure boundary 还揭示了 replacement map 契约缺口：`NativeConversationTurn`
+只有父 checkpoint 的 `planRoleMapDigest`，`replaceAttempt` 切换 Provider 后 planner、receipt
+和 control ACK 仍比较旧 map，导致备用 Provider 无法形成 successor。R7-B2 只修正这一共享
+状态边界并加双 Provider positive/negative selectors：父 CAS 继续核对旧 checkpoint，当前
+attempt 单独保存新 map，successor wire/record 使用新 map；失败、过期、旧 attempt 和无
+admitted Provider 仍 fail-closed。该批不吸收 Python caller migration 或 T016 跨进程资格。
+
 T012-A 的候选 ABI 观察项已单独记录为 `PARTIAL`：显式候选 Core/DI、NAC-ABE 与 SVS
 依赖下 extension 导入和 21 个 focused Python cases 通过，但默认 requester 的完整
 native preparation/offer-admission 构造、C++/Python parity、caller migration 及最终
