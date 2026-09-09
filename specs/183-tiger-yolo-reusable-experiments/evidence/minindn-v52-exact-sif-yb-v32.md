@@ -33,6 +33,20 @@ python3 -u Experiments/TigerCluster/tools/spec183_minindn.py \
   --preparation-sha256 "$PREP" --case Y-B
 ```
 
+The exact APP/SIF entrypoint check used the same read-only composition before
+the network run:
+
+```bash
+AP=/opt/apptainer/1.5.3/bin/apptainer
+"$AP" exec --cleanenv --bind "$ROOT/app-controller-version-j4-v32:/app:ro" \
+  "$ROOT/base-runtime-controller-version-j4-v22.sif" env \
+  PYTHONPATH=/app/repo/NDNSF-DistributedInference:/app/repo/examples/python \
+  /opt/venv/bin/python /app/repo/examples/python/NDNSF-DistributedInference/yolo_2x2/user.py --help
+```
+
+This entrypoint check exited `0`; the Y-B command above then exercised the
+same APP binary set through the registered Controller/Repo/Provider graph.
+
 The maintained owner returned `T010_DONE` with return code `0`.  The run
 started four cross-process providers and a User over MiniNDN, completed one
 request, and cleaned all children and network resources.  The numerical
