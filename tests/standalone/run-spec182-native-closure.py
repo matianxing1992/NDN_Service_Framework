@@ -30,6 +30,7 @@ REQUIRED_EVIDENCE = {
     "business-oracle", "cleanup",
 }
 FORBIDDEN_ENV_PREFIXES = ("PYTHON", "VIRTUAL_ENV", "CONDA_", "LD_PRELOAD", "LD_AUDIT")
+PROCESS_ROLES = frozenset({"requester", "provider", "authority", "nfd", "repo", "controller"})
 TRACE_EXEC = re.compile(r"(?:execve|execveat)\([^)]*\)\s*=\s*(-?\d+)")
 TRACE_EXIT = re.compile(r"(?:exit_group|exit)\((-?\d+)\)")
 TRACE_PID = re.compile(r"^\s*(?:\[pid\s+)?(\d+)(?:\]|\s)")
@@ -73,9 +74,10 @@ def _read_proc_start_ticks(pid: int) -> int:
     return start_ticks
 
 
-def _validate_node_context(case: dict[str, Any], node: dict[str, Any]) -> dict[str, Any]:
+def _validate_node_context(case: dict[str, Any], node: dict[str, Any],
+                           process: dict[str, Any] | None = None) -> dict[str, Any]:
     """Validate the MiniNDN node identity that will own a declared process."""
-    process = case["isolation"]["processes"][0]
+    process = process or case["isolation"]["processes"][0]
     process_node = process.get("node")
     _require(isinstance(process_node, str) and process_node,
              "declared process node is missing")
@@ -188,15 +190,27 @@ def load_case(manifest_path: Path, case_id: str) -> dict[str, Any]:
     for process in processes:
         _require(isinstance(process, dict), "process entry is invalid")
         pid = str(process.get("id", ""))
-        _require(pid and pid not in seen_processes, "process id is not unique")
+        _require(re.fullmatch(r"[A-Za-z0-9_.-]+", pid) is not None and
+                 pid not in seen_processes, "process id is not unique and safe")
         seen_processes.add(pid)
+        _require(process.get("role") in PROCESS_ROLES, "process role is invalid")
         executable = str(process.get("executable", ""))
         _require(executable in artifact_targets, "process executable is undeclared")
+        argv = process.get("argv", [])
+        _require(isinstance(argv, list) and all(isinstance(value, str) for value in argv),
+                 "process argv is invalid")
         env = process.get("env", {})
         _require(isinstance(env, dict), "process environment is invalid")
         for key in env:
             _require(key in allowed_env and not key.startswith(FORBIDDEN_ENV_PREFIXES),
                      f"forbidden process environment: {key}")
+            _require(isinstance(env[key], str) and "\x00" not in env[key],
+                     "process environment value is invalid")
+            if key in {"NDN_CLIENT_CONF", "NDN_DAEMON_CONF"}:
+                value = env[key]
+                _require(value == "/tmp" or value == "/probe-root" or
+                         value.startswith("/probe-root/"),
+                         "NDN configuration must be staged or in /tmp")
         working_directory = process.get("workingDirectory")
         if working_directory is not None:
             _require(isinstance(working_directory, str) and working_directory.startswith("/"),
@@ -206,6 +220,67 @@ def load_case(manifest_path: Path, case_id: str) -> dict[str, Any]:
                      working_directory.startswith("/probe-root/"),
                      "workingDirectory must stay inside staged root or /tmp")
     return case
+
+
+def _process_for_id(case: dict[str, Any], process_id: str | None) -> dict[str, Any]:
+    processes = case["isolation"]["processes"]
+    if process_id is None:
+        return processes[0]
+    selected = [process for process in processes if process.get("id") == process_id]
+    _require(len(selected) == 1, "process id is not declared")
+    return selected[0]
+
+
+def _process_environment(process: dict[str, Any]) -> dict[str, str]:
+    """Build the explicit environment for one isolated business process."""
+    environment = {"HOME": "/tmp", "TMPDIR": "/tmp", "LC_ALL": "C"}
+    for key, value in process.get("env", {}).items():
+        _require(isinstance(key, str) and isinstance(value, str),
+                 "process environment entry is invalid")
+        _require("\x00" not in value, "process environment value contains NUL")
+        environment[key] = value
+    return environment
+
+
+def _start_supervisor() -> tuple[int, int]:
+    """Create a stable process-group leader owned by this harness."""
+    hold_read, hold_write = os.pipe()
+    ready_read, ready_write = os.pipe()
+    try:
+        supervisor_pid = os.fork()
+    except OSError as exc:
+        for fd in (hold_read, hold_write, ready_read, ready_write):
+            os.close(fd)
+        raise PreflightError("runner supervisor fork failed") from exc
+    if supervisor_pid == 0:
+        os.close(hold_write)
+        os.close(ready_read)
+        try:
+            # Keep the group in the parent's session so declared children can
+            # join it with setpgid before their own bubblewrap session starts.
+            os.setpgid(0, os.getpid())
+            os.write(ready_write, b"1")
+            os.close(ready_write)
+            while os.read(hold_read, 4096):
+                pass
+        except OSError:
+            os._exit(127)
+        finally:
+            os.close(hold_read)
+        os._exit(0)
+    os.close(hold_read)
+    os.close(ready_write)
+    ready = os.read(ready_read, 1)
+    os.close(ready_read)
+    if ready != b"1":
+        try:
+            os.kill(supervisor_pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        os.waitpid(supervisor_pid, 0)
+        os.close(hold_write)
+        raise PreflightError("runner supervisor failed to start")
+    return supervisor_pid, hold_write
 
 
 def stage_root(case: dict[str, Any], output: Path) -> dict[str, Any]:
@@ -234,8 +309,8 @@ def stage_root(case: dict[str, Any], output: Path) -> dict[str, Any]:
 
 
 def make_launch(case: dict[str, Any], staged: dict[str, Any], node: dict[str, Any],
-                trace_path: Path) -> list[str]:
-    process = case["isolation"]["processes"][0]
+                trace_path: Path, process_id: str | None = None) -> list[str]:
+    process = _process_for_id(case, process_id)
     _require(process.get("node") in {None, node.get("id")}, "process/node binding mismatch")
     if process.get("node") is not None:
         namespace_fd_path = str(node.get("_namespaceFdPath", ""))
@@ -280,69 +355,182 @@ def make_launch(case: dict[str, Any], staged: dict[str, Any], node: dict[str, An
 def run_case(case: dict[str, Any], staged: dict[str, Any], output: Path,
              nodes: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
     nodes = nodes or {}
-    trace_path = output / "trace.txt"
-    process_node = case["isolation"]["processes"][0].get("node")
-    node = nodes.get(str(process_node), {"id": ""})
-    namespace_fd: int | None = None
-    node_record: dict[str, Any] | None = None
-    if process_node is not None:
-        _require(str(process_node) in nodes, "node context is missing")
-        node_record = _validate_node_context(case, node)
-        try:
-            namespace_fd = os.open(node_record["netnsPath"], os.O_RDONLY | os.O_CLOEXEC)
-            _require(os.fstat(namespace_fd).st_ino == node_record["netnsInode"],
-                     "node netns inode changed before launch")
-            node = dict(node_record)
-            node["_namespaceFdPath"] = f"/proc/self/fd/{namespace_fd}"
-        except OSError as exc:
-            if namespace_fd is not None:
-                os.close(namespace_fd)
-                namespace_fd = None
-            raise PreflightError("node netns FD cannot be opened") from exc
-        except PreflightError:
-            if namespace_fd is not None:
-                os.close(namespace_fd)
-                namespace_fd = None
-            raise
-    try:
-        command = make_launch(case, staged, node, trace_path)
-    except Exception:
-        if namespace_fd is not None:
-            os.close(namespace_fd)
-            namespace_fd = None
-        raise
-    env = {"HOME": "/tmp", "TMPDIR": "/tmp", "LC_ALL": "C"}
+    processes = case["isolation"]["processes"]
+    _require(output.is_dir(), "run output directory is missing")
+    opened_fds: list[int] = []
+    prepared: list[tuple[dict[str, Any], dict[str, Any], int | None]] = []
+    children: list[dict[str, Any]] = []
+    files: list[tuple[Any, Any]] = []
+    trace_paths: list[Path] = []
     start = time.monotonic()
-    try:
-        process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                   stderr=subprocess.PIPE, env=env, start_new_session=True,
-                                   pass_fds=(() if namespace_fd is None else (namespace_fd,)),
-                                   text=True)
+    timed_out = False
+    leader_pid: int | None = None
+    supervisor_hold_fd: int | None = None
+
+    def terminate_group(sig: int) -> None:
+        if leader_pid is None:
+            return
         try:
-            stdout, stderr = process.communicate(
-                timeout=int(case["isolation"]["limits"]["runSeconds"]))
-            timed_out = False
-        except subprocess.TimeoutExpired:
-            timed_out = True
-            os.killpg(process.pid, signal.SIGTERM)
+            os.killpg(leader_pid, sig)
+        except ProcessLookupError:
+            pass
+
+    try:
+        leader_pid, supervisor_hold_fd = _start_supervisor()
+        for process_spec in processes:
+            process_node = process_spec.get("node")
+            node = nodes.get(str(process_node), {"id": ""})
+            node_record: dict[str, Any] | None = None
+            namespace_fd: int | None = None
+            if process_node is not None:
+                _require(str(process_node) in nodes, "node context is missing")
+                node_record = _validate_node_context(case, node, process_spec)
+                try:
+                    namespace_fd = os.open(node_record["netnsPath"], os.O_RDONLY | os.O_CLOEXEC)
+                    _require(os.fstat(namespace_fd).st_ino == node_record["netnsInode"],
+                             "node netns inode changed before launch")
+                except (OSError, PreflightError) as exc:
+                    if namespace_fd is not None:
+                        os.close(namespace_fd)
+                    if isinstance(exc, PreflightError):
+                        raise
+                    raise PreflightError("node netns FD cannot be opened") from exc
+                node = dict(node_record)
+                node["_namespaceFdPath"] = f"/proc/self/fd/{namespace_fd}"
+                opened_fds.append(namespace_fd)
+            prepared.append((process_spec, node, namespace_fd))
+
+        for process_spec, node, namespace_fd in prepared:
+            process_id = str(process_spec["id"])
+            trace_path = output / ("trace.txt" if len(prepared) == 1
+                                   else f"trace.{process_id}.txt")
+            trace_paths.append(trace_path)
+            stdout_path = output / ("stdout.log" if len(prepared) == 1
+                                    else f"stdout.{process_id}.log")
+            stderr_path = output / ("stderr.log" if len(prepared) == 1
+                                    else f"stderr.{process_id}.log")
+            stdout_file = stdout_path.open("w", encoding="utf-8")
+            stderr_file = stderr_path.open("w", encoding="utf-8")
+            files.append((stdout_file, stderr_file))
+            command = make_launch(case, staged, node, trace_path, process_id)
+            popen_kwargs: dict[str, Any] = {
+                "stdin": subprocess.DEVNULL,
+                "stdout": stdout_file,
+                "stderr": stderr_file,
+                "env": _process_environment(process_spec),
+                "start_new_session": False,
+                "pass_fds": (() if namespace_fd is None else (namespace_fd,)),
+                "text": True,
+            }
+            # Join the stable harness supervisor's process group before exec
+            # so a timeout terminates every declared requester/provider peer.
+            popen_kwargs["preexec_fn"] = lambda pgid=leader_pid: os.setpgid(0, pgid)
+            child = subprocess.Popen(command, **popen_kwargs)
+            children.append({"id": process_id, "role": process_spec["role"],
+                             "pid": child.pid, "process": child,
+                             "command": command, "executable": process_spec["executable"],
+                             "argv": list(process_spec.get("argv", [])),
+                             "stdout": str(stdout_path), "stderr": str(stderr_path),
+                             "trace": str(trace_path),
+                             **({"node": node_record} if node_record is not None else {})})
+
+        deadline = start + int(case["isolation"]["limits"]["runSeconds"])
+        for child in children:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                timed_out = True
+                break
             try:
-                stdout, stderr = process.communicate(
-                    timeout=int(case["isolation"]["limits"]["cleanupSeconds"]))
+                child["process"].wait(timeout=remaining)
             except subprocess.TimeoutExpired:
-                os.killpg(process.pid, signal.SIGKILL)
-                stdout, stderr = process.communicate()
+                timed_out = True
+                break
+        if timed_out:
+            terminate_group(signal.SIGTERM)
+            cleanup_deadline = time.monotonic() + int(
+                case["isolation"]["limits"]["cleanupSeconds"])
+            for child in children:
+                remaining = cleanup_deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                try:
+                    child["process"].wait(timeout=remaining)
+                except subprocess.TimeoutExpired:
+                    continue
+            if any(child["process"].poll() is None for child in children):
+                terminate_group(signal.SIGKILL)
+                for child in children:
+                    child["process"].wait()
+    except Exception:
+        terminate_group(signal.SIGTERM)
+        if leader_pid is not None:
+            try:
+                terminate_group(signal.SIGKILL)
+            except OSError:
+                pass
+        for child in children:
+            try:
+                child["process"].wait(timeout=1)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+        raise
     finally:
-        if namespace_fd is not None:
+        if supervisor_hold_fd is not None:
+            os.close(supervisor_hold_fd)
+            supervisor_hold_fd = None
+        if leader_pid is not None:
+            try:
+                os.waitpid(leader_pid, 0)
+            except ChildProcessError:
+                pass
+        for stdout_file, stderr_file in files:
+            stdout_file.close()
+            stderr_file.close()
+        for namespace_fd in opened_fds:
             os.close(namespace_fd)
-    (output / "stdout.log").write_text(stdout or "", encoding="utf-8")
-    (output / "stderr.log").write_text(stderr or "", encoding="utf-8")
-    result = {"command": command, "supervisorPid": process.pid,
-              "returncode": process.returncode, "timedOut": timed_out,
-              "durationMs": int((time.monotonic() - start) * 1000),
-              "trace": str(trace_path), "stdout": str(output / "stdout.log"),
-              "stderr": str(output / "stderr.log")}
-    if node_record is not None:
-        result["node"] = node_record
+
+    process_records: list[dict[str, Any]] = []
+    for child in children:
+        process = child["process"]
+        process_records.append({key: value for key, value in child.items()
+                                if key != "process"})
+        process_records[-1]["returncode"] = process.returncode
+    if len(process_records) > 1:
+        merged_trace = output / "trace.txt"
+        trace_chunks = []
+        for path in trace_paths:
+            try:
+                trace_chunks.append(path.read_text(encoding="utf-8", errors="replace"))
+            except OSError:
+                # Keep the canonical path absent/empty for collect_trace to
+                # classify as an observation boundary; do not discard exit
+                # status or process records because an observer failed.
+                continue
+        merged_trace.write_text("\n".join(trace_chunks), encoding="utf-8")
+        merged_stdout = "\n".join(Path(record["stdout"]).read_text(
+            encoding="utf-8", errors="replace") for record in process_records)
+        merged_stderr = "\n".join(Path(record["stderr"]).read_text(
+            encoding="utf-8", errors="replace") for record in process_records)
+        (output / "stdout.log").write_text(merged_stdout, encoding="utf-8")
+        (output / "stderr.log").write_text(merged_stderr, encoding="utf-8")
+    else:
+        merged_trace = trace_paths[0]
+    returncodes = [record["returncode"] for record in process_records]
+    returncode = next((code for code in returncodes if code != 0), 0)
+    result: dict[str, Any] = {
+        "command": process_records[0]["command"],
+        "commands": [record["command"] for record in process_records],
+        "supervisorPid": leader_pid,
+        "returncode": returncode,
+        "returncodes": returncodes,
+        "timedOut": timed_out,
+        "durationMs": int((time.monotonic() - start) * 1000),
+        "trace": str(merged_trace), "traceFiles": [str(path) for path in trace_paths],
+        "stdout": str(output / "stdout.log"), "stderr": str(output / "stderr.log"),
+        "processes": process_records,
+    }
+    if process_records and process_records[0].get("node") is not None:
+        result["node"] = process_records[0]["node"]
     return result
 
 
@@ -421,6 +609,29 @@ def collect_trace(case: dict[str, Any], run: dict[str, Any]) -> dict[str, Any]:
                 pass
         if isinstance(marker, str) and marker in output_text:
             evidence.append("business-oracle")
+    observed_roles: list[str] = []
+    role_candidates: dict[str, list[dict[str, Any]]] = {}
+    for process in run.get("processes", []):
+        if not isinstance(process, dict):
+            continue
+        expected = "/probe-root" + str(process.get("executable", ""))
+        role_candidates.setdefault(expected, []).append(process)
+    for expected, candidates in role_candidates.items():
+        if not expected:
+            continue
+        expected_marker = f'"{expected}"'
+        matches = [item for item in successful_execs
+                   if expected_marker in item["line"]]
+        # A shared executable cannot identify which role ran from a single
+        # trace line.  Require one successful exec per declared process before
+        # reporting the complete role set; this keeps missing peer startup
+        # observable instead of allowing a requester exec to cover a provider.
+        if len(matches) < len(candidates):
+            continue
+        for process in candidates:
+            role = process.get("role")
+            if isinstance(role, str) and role not in observed_roles:
+                observed_roles.append(role)
     return {
         # Completeness describes whether the observer delivered a trustworthy
         # trace.  Policy violations are still a complete observation and must
@@ -434,6 +645,7 @@ def collect_trace(case: dict[str, Any], run: dict[str, Any]) -> dict[str, Any]:
         "pids": sorted(pids),
         "successfulExecs": len(successful_execs),
         "exitEvents": exit_events,
+        "roles": observed_roles,
     }
 
 
