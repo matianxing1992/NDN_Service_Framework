@@ -509,6 +509,18 @@ T001–T004形成 profile/launcher 实现骨架；可操作 MVP 还要求 T006 �
 
 ## Current Checkpoint
 
+2026-09-09 Tiger v69 deployment diagnosis checkpoint: the same v22 base SIF +
+v32 external APP candidate passed the exact local CPU/SIF gate (v66) and the
+transport plan after project-storage permissions were normalized. The first
+submit stopped at sender-side `TRANSPORT_FILE_ROW` (two shared gate files were
+`0664`); the first receiver attempt stopped at missing shared lock root
+(`JOURNAL_ROOT`). Those project-storage prerequisites were corrected without
+changing candidate bytes, and the retry is in real rsync transfer. No Slurm,
+Apptainer, CUDA, or Tiger workload evidence exists yet, so T012/T013 remain
+unchecked and no local MiniNDN PASS is promoted to Tiger qualification. See
+[tiger-deployment-diagnosis-v69](evidence/tiger-deployment-diagnosis-v69.md)
+and the failure log for the exact boundary and next gate.
+
 2026-09-07 Spec183 输入门关闭 checkpoint：T001 evidence（input-inventory.md）所列
 缺口 —— `model-manifest.json` 仅绑定 atomic-v1 且无 signature envelope —— 已关闭。
 现按同一固定权威重签 `shared-backbone-two-shard-v1`-bound model manifest
