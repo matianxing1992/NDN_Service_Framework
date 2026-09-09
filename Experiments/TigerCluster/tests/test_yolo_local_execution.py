@@ -207,6 +207,10 @@ def test_host_receipt_consumption_accepts_layered_base_native_manifest(tmp_path)
                            'runtime': file_ref(runtime)}}
     result = module._gate_receipt(tmp_path / 'profile.json', profile, 'hostMinindn')
     assert result['receipt']['qualification'] == 'YOLO_HOST_GATE_COMPONENT_ONLY'
+    native['artifacts'][0]['path'] = '/opt/ndnsf-di/current/bin/di-native-provider'
+    native_path.write_text(json.dumps(native))
+    with pytest.raises(ValueError, match='GATE_HOST_SOURCE_BINDING'):
+        module._gate_receipt(tmp_path / 'profile.json', profile, 'hostMinindn')
 
 
 @pytest.mark.parametrize('action', ['local', 'collect'])
