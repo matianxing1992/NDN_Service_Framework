@@ -233,7 +233,15 @@ def main(argv: Iterable[str] | None = None) -> int:
     # do not inject a stale developer build root that can shadow its matching
     # system ABI.  Every NFD/application child receives the image-owned
     # LD_LIBRARY_PATH from `sif_exec_prefix`.
-    host_library_path = "" if os.environ.get("SPEC180_RUNTIME_SIF", "").strip() else args.library_path
+    # Exact-SIF children receive their library path from ``sif_exec_prefix``.
+    # The outer host driver still imports the policy loader before any child
+    # starts; when the host has a matching development closure, allow the
+    # operator to bind it explicitly instead of accidentally loading a stale
+    # extension/core pair from the working tree.
+    host_library_path = os.environ.get("SPEC180_HOST_LIBRARY_PATH", "").strip()
+    if not host_library_path:
+        host_library_path = ("" if os.environ.get("SPEC180_RUNTIME_SIF", "").strip()
+                             else args.library_path)
     env.update({
         "PYTHONDONTWRITEBYTECODE": "1",
         "LD_LIBRARY_PATH": host_library_path,

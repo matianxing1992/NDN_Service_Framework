@@ -4040,3 +4040,65 @@ identity and rerun packaging against the existing incremental Waf cache.
 - Lesson: a negative Provider result can leave asynchronous Controller work in
   flight, so process cleanup must synchronize the loop owner before Face
   teardown rather than relying on a successful terminal response.
+
+## 2026-09-08: base-layer rebuild diagnostics hit two host-side failures
+
+- Symptom: the first rebuild invocation passed `build-local-sif.sh` to
+  Python and stopped with a shell `SyntaxError`; the corrected invocation then
+  rejected the layered definition with `WRONG_BUILD_BOUNDARY_MULTISTAGE_REQUIRED`.
+- Root cause: `build-local-sif.sh` is the legacy complete application-SIF
+  boundary, while `library-runtime.def.in` is the accepted single-stage
+  BASE_BUILD_ONLY owner and must be driven directly by Apptainer.
+- Fix: use the library-runtime renderer and direct host Apptainer build for the
+  base layer; keep the complete-SIF boundary validator out of this diagnostic
+  path.
+- Lesson: layered base construction and legacy monolithic application
+  construction have different ownership contracts and must not share a
+  validator entry point.
+
+## 2026-09-08: disk SIF copies failed Apptainer decompression
+
+- Symptom: rebuilding from the disk v10/v12 hard-linked SIF copies failed
+  while unsquashing CUDA libraries with `gzip uncompress failed with error
+  code -3`; the disk copy hash had drifted from the previously recorded digest.
+- Root cause: those disk copies were not a stable byte source for a new image;
+  their compressed rootfs could not be read to completion.  The independent
+  `/dev/shm` copy retained the earlier stable digest and executed successfully.
+- Fix: bind the stable direct-copy `/dev/shm/spec183-sdk-d4031191/base-runtime.sif`
+  as the parent input and reject the unstable disk copies for rebuild use.
+- Lesson: a SIF that answers `inspect` or a shallow `exec` probe is not enough;
+  parent-image reuse requires a stable full unsquash and digest check.
+
+## 2026-09-09: v31 Y-N-C still aborts the APP Controller during cleanup
+
+- Symptom: the v31 exact-SIF Y-N-O control subcase passed its four-ACK
+  request, terminal response, and numerical oracle.  Y-N-C's real User also
+  logged `SPEC180_YN_NEGATIVE_RESULT status=PASS ...
+  reason=NO_FEASIBLE_CANDIDATE` and exited 91, but the Controller exited -6
+  after `terminate called without an active exception`; the subcase remained
+  `UNQUALIFIED` and the matrix stopped there.
+- Root cause: the event-loop/Face shutdown fix removed the original direct
+  teardown race, but this negative path still reaches APP Controller cleanup
+  while the other MiniNDN-owned processes are being signalled.  The retained
+  evidence does not show a request, placement, or tensor computation defect.
+- Fix status: no new application behavior was promoted from this run.  Keep
+  the failure as a separate run identity and isolate the Controller owner
+  shutdown/teardown ordering before claiming the Y-N matrix is complete.
+- Lesson: a valid fail-closed User marker is insufficient when the APP owner
+  exits through SIGABRT; request correctness and process-lifecycle correctness
+  must be reported as separate gates.
+
+## 2026-09-09: host application regression was run without its ABI closure
+
+- Symptom: collecting `test_spec180_yolo_application.py` under the default
+  shell environment failed during import with an undefined
+  `nacabe::Consumer::clearCache` symbol from the working-tree extension.
+- Root cause: the host extension resolves the stale `/usr/local/lib`
+  `libnac-abe.so` unless the T008 development closure is placed first in
+  `LD_LIBRARY_PATH`; this is a host invocation error, not an exact-SIF child
+  failure.
+- Fix: rerun with
+  `/tmp/t008-build-root/lib:/home/tianxing/NDN/ndn-svs/build:/home/tianxing/NDN/NAC-ABE/build:/usr/local/lib`,
+  yielding 15 application tests and 7 Controller-readiness tests passed.
+- Lesson: every host-side Python import must carry the matching extension,
+  Core, NAC-ABE, NDN-SVS, and system-library closure explicitly.

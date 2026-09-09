@@ -161,3 +161,25 @@ def test_main_maps_verified_inputs_into_exclusive_host_output(inputs, monkeypatc
     assert json.loads(capsys.readouterr().out.splitlines()[-1])['qualification']=='NOT_EVALUATED'
     with pytest.raises(FileExistsError): runner.main(argv)
     assert len(called)==1
+
+
+def test_exact_sif_keeps_explicit_host_policy_loader_closure(inputs, monkeypatch,
+                                                              capsys):
+    """The outer policy preflight may use a separately declared host closure."""
+    from runtime import host_minindn
+    called = []
+
+    def run(command, env, output, **kwargs):
+        called.append(dict(env))
+        return 0
+
+    monkeypatch.setattr(host_minindn, 'supervise', run)
+    monkeypatch.setenv('SPEC180_RUNTIME_SIF', '/base/runtime.sif')
+    monkeypatch.setenv('SPEC180_RUNTIME_APP_ROOT', str(inputs['output']))
+    monkeypatch.setenv('SPEC180_HOST_LIBRARY_PATH', '/tmp/matching-core:/usr/local/lib')
+    argv = ['--run-id', inputs['run_id'], '--output', str(inputs['output']),
+            '--profile', str(inputs['profile_path']),
+            '--preparation-sha256', inputs['preparation_sha256']]
+    assert runner.main(argv) == 0
+    assert called[0]['LD_LIBRARY_PATH'] == '/tmp/matching-core:/usr/local/lib'
+    assert json.loads(capsys.readouterr().out.splitlines()[-1])['qualification'] == 'NOT_EVALUATED'
