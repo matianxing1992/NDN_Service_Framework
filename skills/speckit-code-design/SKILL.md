@@ -55,6 +55,13 @@ description: Define reviewable code design and coherent implementation tasks, th
 tasks.md 顶部完整登记执行单元、依赖、状态、证据和剩余项，每个工作单元结束后同步。
 此规则不取决于模型或 bounded-executor 模式；详细卡片与当前进度分工明确。
 
+创建或更新 Spec Kit feature 前，先从仓库根运行
+`python3 skills/speckit-code-design/scripts/verify-spec-kit-sync.py --require-entrypoints`
+检查版本化模板和本机入口副本；若要验证个人安装副本，再加
+`--require-personal`。检查失败时必须先修复同步或在证据中登记明确的 workflow
+`gap`，不能继续生成 `STATIC_PASS` 或 `DONE`。该检查只验证技能/模板同步，不构成
+产品实现、编译、运行或资格证据。
+
 用户要求 Spark 或有限范围执行时，应用 [bounded executor](references/bounded-executor.md)：
 设计者冻结决策，按行为提供定向阅读/精确写入范围/检查命令，执行者一次完成一张就绪卡。
 已有上层任务与正式验收保持；执行卡不自动表示设计已就绪。

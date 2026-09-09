@@ -1,6 +1,6 @@
 # Implementation Plan: Native NDNSF-DI with Optional Python Bindings
 
-**Branch**: Experimental | **Revision**: 65 | **Date**: 2026-09-09
+**Branch**: Experimental | **Revision**: 66 | **Date**: 2026-09-09
 **Status**: IN_PROGRESS / 当前实现与验收状态见 tasks.md 的 Task Progress Registry 和 Current Checkpoint
 **Spec**: [spec.md](spec.md)
 
@@ -752,6 +752,15 @@ build/source closure 对文档/checker 写 `N/A`；migration/evidence 是个人�
 native build、caller migration 或 T016 qualification。首轮静态复核发现 source 文件缺失会
 抛异常，已改为显式 finding；最终同步、`py_compile`、validator 和 `git diff --check` 通过。
 详见 [R10-B43 evidence](evidence/r10-b43-speckit-sync-check-20260909.md)。
+
+### R10-B44 Spec Kit Entrypoint Preflight 2026-09-09
+
+共享 `speckit-code-design/SKILL.md` 现在要求在创建或更新 Spec Kit feature 前运行
+`verify-spec-kit-sync.py --require-entrypoints`；需要核对个人安装副本时加
+`--require-personal`。同步失败只能记录 workflow `gap`，不能生成产品 `STATIC_PASS` 或
+`DONE`。本批已同步个人 `CODEX_HOME` 副本并通过正常强制检查；这是 workflow preflight
+出口，不改变 T004/T008/T010/T011/T013/T014/T015/T016/T017 或 native qualification。
+详见 [R10-B44 evidence](evidence/r10-b44-speckit-entrypoint-preflight-20260909.md)。
 
 ### R10-B33 Native Unary Repository Reference Request 2026-09-09
 
