@@ -1,6 +1,6 @@
 # Implementation Plan: Native NDNSF-DI with Optional Python Bindings
 
-**Branch**: Experimental | **Revision**: 27 | **Date**: 2026-09-09
+**Branch**: Experimental | **Revision**: 28 | **Date**: 2026-09-09
 **Status**: IN_PROGRESS / 当前实现与验收状态见 tasks.md 的 Task Progress Registry 和 Current Checkpoint
 **Spec**: [spec.md](spec.md)
 
@@ -233,6 +233,20 @@ Allocation remains within `runNativeIngressCase`, the existing native ingress ru
 the scoped test timeout guard, and one `Spec170NativePostSelection` selector family. The cases
 share the same encrypted input fixture, handler, Waf target, and failure oracle; cross-process
 behavior and final T016 qualification remain outside this batch.
+
+### R10-B7 Caller Route Contract Synchronization 2026-09-09
+
+R10-B3 and R10-B4 moved maintained YOLO/Qwen native callers from inline payload submission to
+encrypted repository references, but one Qwen configuration log marker and the T013 execution-unit
+description still named `request_native_payload`. This batch synchronizes the current caller
+contract and emitted route marker with `publish_application_input_reference` plus
+`request_native_reference`, while preserving the R5 historical evidence and the explicit legacy
+ACK-driven route. No native requester, Provider, or wire implementation changes here.
+
+Allocation is limited to the maintained Qwen log marker, the T013-D/T013-F execution-unit text,
+the task registry, and one documentation evidence record. The independent exit is source/route
+validation, `py_compile`, and design-link checks; real maintained caller execution, cross-process
+behavior, legacy retirement, and T016 remain open.
 
 ### R8-SKILL Review Coverage Contract 2026-09-09
 

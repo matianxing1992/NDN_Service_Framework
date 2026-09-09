@@ -407,7 +407,7 @@ pending turn；path-only无key构造拒绝。Continuation 的 `requestContractDi
 
 - **Parent**: T013; **Depends**: T013-C, T012-B; **Reviewer**: maintained Qwen caller and callback-lifetime review
 - **Outcome**: 维护中的 Qwen full-generation native route forwards the C++ observer facade, validates accepted `GenerationTokenEventV1` snapshots, and preserves the final response/result boundary without reintroducing Python planning.
-- **Read**: `examples/python/NDNSF-DistributedInference/llm_pipeline/user.py` `_native_qwen_request` and `full_generation_call` → `APPClient.request_native_payload` → `NativeInferenceHandle::observe`; R5-B6/R5-B7 evidence.
+- **Read**: `examples/python/NDNSF-DistributedInference/llm_pipeline/user.py` `_native_qwen_request` and `full_generation_call` → `APPClient.request_native_reference` → `NativeInferenceHandle::observe`; R5-B6/R5-B7 and R10-B4 evidence.
 - **Write**: `examples/python/NDNSF-DistributedInference/llm_pipeline/user.py`; `tests/python/test_spec182_legacy_exclusion.py`; this execution card and R5-B8 evidence.
 - **Steps**: allow the maintained native Qwen helper to pass an optional observer; for the full-generation native branch, record only non-terminal token snapshots, validate their schema at the application boundary, and wait for the terminal observer notification before reporting the bounded stream count; keep diagnostic one-token calls and conversation fail-closed behavior unchanged.
 - **Verify**: official `$review-agent` static gate covering caller, facade, callback lifetime and source route; Python source/route checks; C++ observer/token-order selectors remain the native behavior evidence. No real Provider or cross-process qualification is claimed here.
@@ -423,15 +423,15 @@ pending turn；path-only无key构造拒绝。Continuation 的 `requestContractDi
 - **Verify**: 官方 `$review-agent` 覆盖配置 parser、key/path ownership、opaque binding、client constructor 和 maintained caller；C++ `Spec182ConversationJournal/*`、`Spec182ConversationWire/*` 及新增 owner-config selector；强制重建 shared DI target 与 `_ndnsf` extension；Python binding/facade source and construction checks。真实 Provider receipt/control、cross-process two-turn、recovery/replacement 仍留 T016。
 - **Done When**: 配置请求能在产生 network side effect 前由 C++ 构造并注入唯一 conversation owner，缺失/错误 key、identity、digest 或路径权限被拒绝；静态审查、构建和 focused selectors 有证据。真实两轮请求未通过前保持 `PARTIAL`。
 
-### T013-F Maintained YOLO Native Payload Route (R5-B10)
+### T013-F Maintained YOLO Native Reference Route (R5-B10/R10-B3)
 
 - **Parent**: T013; **Depends**: T013-A, T008-A, T010-B; **Reviewer**: maintained YOLO caller and route review
-- **Outcome**: 维护中的 `examples/python/NDNSF-DistributedInference/yolo_2x2/user.py` 在显式提供 operator-pinned native requester configuration 时，直接把 native tensor payload 交给 `APPClient.request_native_payload`；缺少该配置时不得从这个分支隐式回退到 Python planner。
-- **Read**: [native requester configuration](native-requester-configuration.md) → `APPClient.configure_native_requester_from_config`/`request_native_payload` → YOLO `_load_yolo_ack_driven` and lifecycle oracle；核对输入 bytes、task identity、timeout、结果解码和 shutdown ownership。
+- **Outcome**: 维护中的 `examples/python/NDNSF-DistributedInference/yolo_2x2/user.py` 在显式提供 operator-pinned native requester configuration 时，先发布加密 tensor bundle，再把 journal-bound reference 交给 `APPClient.request_native_reference`；缺少该配置时不得从这个分支隐式回退到 Python planner。
+- **Read**: [native requester configuration](native-requester-configuration.md) → `APPClient.configure_native_requester_from_config`/`publish_application_input_reference`/`request_native_reference` → YOLO `_load_yolo_ack_driven` and lifecycle oracle；核对输入 reference、task identity、timeout、结果解码和 shutdown ownership。
 - **Write**: `examples/python/NDNSF-DistributedInference/yolo_2x2/user.py`; `tests/python/test_spec182_legacy_exclusion.py`; this execution card and R5-B10 evidence.
-- **Steps**: 增加显式 `--native-requester-config`；在 User 初始化后先配置 native requester，再以 inline native tensor bytes 提交；保留 canonical package/input oracle and bounded output reporting；native branch 不调用 `configure_automatic_planning`、`request_task` 或 Python strategy，配置错误直接失败并执行 client shutdown。未提供配置的既有 ACK-driven path 保持登记的兼容入口，直到 T013-B/T016 关闭默认迁移。
+- **Steps**: 增加显式 `--native-requester-config`；在 User 初始化后先配置 native requester，再一次发布加密 tensor bundle 并提交 reference；保留 canonical package/input oracle and bounded output reporting；native branch 不调用 `configure_automatic_planning`、`request_task` 或 Python strategy，配置错误直接失败并执行 client shutdown。未提供配置的既有 ACK-driven path 保持登记的兼容入口，直到 T013-B/T016 关闭默认迁移。
 - **Verify**: 官方 `$review-agent` 只读静态门覆盖 branch ordering、payload/option mapping、exception/shutdown lifetime and no fallback；Python source/route checks and `py_compile`; no network harness run in this batch.
-- **Done When**: YOLO maintained caller has one explicit native payload route with fail-closed configuration handling and focused source evidence; real Core/Provider request, numeric parity, legacy retirement and T016 remain `PARTIAL`.
+- **Done When**: YOLO maintained caller has one explicit native reference route with fail-closed configuration handling and focused source evidence; real Core/Provider request, numeric parity, legacy retirement and T016 remain `PARTIAL`.
 
 ### T013-B Legacy Runtime Retirement
 

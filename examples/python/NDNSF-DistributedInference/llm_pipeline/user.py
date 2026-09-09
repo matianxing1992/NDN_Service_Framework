@@ -4101,7 +4101,7 @@ def main() -> int:
         print(
             "LLM_PIPELINE_NATIVE_REQUESTER_CONFIGURED",
             f"config={Path(args.native_requester_config).expanduser().resolve()}",
-            "route=request_native_payload",
+            "route=request_native_reference",
             flush=True,
         )
     elif args.automatic_planning_manifest:
