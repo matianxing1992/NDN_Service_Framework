@@ -82,9 +82,27 @@ truncated SIF remains in the candidate directory. Repeated SIF uploads should be
 avoided by content-addressed project caching or a one-time pre-stage. This is an
 operational transport bottleneck and does not indicate a bad SIF.
 
+## Dispatch gate
+
+After freezing run `tiger-yolo-single-20260909-v34`, the public
+`submit --plan-transport` action returned:
+
+```json
+{"qualification":"NOT_EVALUATED","reason":"GATE_MISSING:localSif","status":"REJECTED"}
+```
+
+No SSH transport, `sbatch`, or GPU workload was attempted by that command. The
+rejection is intentional fail-closed behavior: the existing v52 CPU record is
+an exact-composition execution record, but it is still `NOT_EVALUATED` and does
+not provide the independent `localSif` promotion verdict required before a
+Tiger submission. This gate is currently the immediate software-side reason a
+normal Spec183 submission does not start.
+
 ## Verdict
 
 The Tiger GPU, Apptainer version, scratch write, raw cross-node TCP, APP import,
 and writable NFD socket path are now evidenced. The exact v22 base SIF has not
 yet completed staging, and no single-node or two-node NDNSF-DI + YOLO request was
-run. T012.b, T013.a, and T014.a therefore remain open.
+run. The `localSif` gate must be closed after the final local empty-HOME/scratch
+run, then the staged v22 SIF can be checked on Tiger. T012.b, T013.a, and T014.a
+therefore remain open.
