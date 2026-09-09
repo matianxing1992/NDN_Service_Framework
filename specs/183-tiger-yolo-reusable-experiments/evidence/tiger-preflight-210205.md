@@ -39,12 +39,17 @@ only as a substrate diagnostic, with the current v32 APP mounted read-only:
 - `_ndnsf` and `ndnsf_distributed_inference` import: PASS (`210174`)
 - real YOLO `user.py --help` entrypoint: PASS (`210174`)
 - APP Provider, fault Provider, and Controller `ldd`: no `not found` entries (`210178`)
+- ONNX Runtime `1.20.0` reported `TensorrtExecutionProvider`,
+  `CUDAExecutionProvider`, and `CPUExecutionProvider` inside `--nv` (`210206`)
 - Provider `--help` returned exit 2 because that binary intentionally exposes
   `--check-only`/`--serve`, not a `--help` option; this is expected and is not a
   runtime success marker.
 
 These results show that the compute node can run the APP boundary, but they do
-not qualify the v22 base SIF or a distributed YOLO request.
+not qualify the v22 base SIF or a distributed YOLO request. The one-GPU probe did
+not receive a `CUDA_VISIBLE_DEVICES` value from Slurm; because the allocation
+contained one GPU, the container-visible device was still unambiguous. A
+multi-GPU profile must bind and record an explicit device map.
 
 ## NFD socket failure and fix
 
