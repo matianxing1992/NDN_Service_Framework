@@ -14,6 +14,7 @@ the fixed base image:
 | Base SIF | `base-runtime-controller-version-j4-v22.sif` / `sha256:2c07a9f14d48fabd9fb58036c1634f3cc3282dd28c6470add9f8a7da0cb829b5` |
 | APP manifest | `sha256:3f81b1c5203bc2f4117dd38a4c7a20ad53027cfeac20f526cb4f27d926afbf4d` |
 | APP source revision | `311318f3e867689059e9c80b25e9d6aa418e4a56` |
+| APP binaries | `/app/bin/App_ServiceController`, `/app/bin/di-native-provider`, `/app/bin/di-native-fault-provider` |
 
 The command used for the completed run was:
 
