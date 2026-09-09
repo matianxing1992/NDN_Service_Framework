@@ -1,0 +1,168 @@
+% 中文语义对应稿；研究问题、状态、数值和限制与英文母版一致。
+\chapter{引言}
+\label{chap:introduction}
+\section{从具体任务提出问题}
+操作员希望获得某个地面位置的多角度图像，并由具备算力的 UAV 或边缘节点完成分析。附近 UAV 的视角、传感器、电量与可用性不同。请求者知道需要哪些服务，却不能预先假定哪些 Provider 此刻可达并愿意参与。应用因此需要发现候选、分配采集与处理角色，并明确每张中间图像的生产者和使用者。多视角识别是验证任务，不是本文声称新发明的识别算法。
+
+discovery descriptor 是 Provider 判断是否参与所需的信息，例如区域、截止时间、传感器和算力要求；application input 是被选中后执行任务所需的输入。这是用途上的划分，并非固定字段列表。判断覆盖所需的位置属于 descriptor，仅处理阶段需要的图像可以等到 Selection 后提供。即使没有原始图像，区域和时间也可能暴露操作意图。因此本研究保护 descriptor Content 不被缺少相应解密能力的公众读取；获准但未选中的候选仍能读取，名字和流量模式也不会因此隐藏。
+
+\section{NDN 已有能力及其边界}
+NDN 通过 Interest 按名获取 Data；签名在适当信任规则下支持完整性和生产者认证~\cite{ndn,ndnpacket}。缓存可代替原生产者满足后续 Interest，但不保证持久存储或截止时间内交付。签名本身不证明执行权限、特定任务的新鲜性或结果语义正确。Sync 帮助发现数据集更新，再通过 Interest 获取相应 Data~\cite{li2018brief,moll2022sok}；它不改变 NDN 为无请求的 Data 推送网络。
+
+NFN、NFaaS、RICE 和 NSC 已经研究命名计算或服务调用~\cite{nfn,nfaas,rice,nsc}。NDNSF 的动机不是“没有其他 NDN 服务框架”。研究对象是运行时发现、服务授权与任务依赖检查的结合及其代价。也不能断言主机导向框架不支持动态发现；例如 gRPC 支持可扩展名字解析~\cite{grpcresolver}。比较必须面向完整配置。
+
+\section{论点与研究问题}
+拟验证的论点是：服务框架可以用命名且可验证的对象，把运行时 Provider 选择连接到明确的执行规则，并区分服务级发现保密性和请求级输入／结果保密性。收益具有条件；必须以任务需求说明额外发现、验证和密钥管理成本为何值得承担。
+\begin{enumerate}[label=RQ\arabic*.,leftmargin=*]
+\item 请求者如何在不公开 discovery descriptor 的情况下发现并授权当前愿意参与的 Provider？相对完整替代授权方案，其成本是什么？
+\item 如何让运行时选定的 Provider 按任务角色和命名依赖执行，而不依赖中间 Data 来自生产者还是缓存？
+\item 在何种任务和网络条件下，这些机制改善完成率、时延或执行效率？何时成本超过收益？
+\end{enumerate}
+UAV 与分布式推理是共同验证这三个问题的两类工作负载，不因实现了两个应用就自动形成两项研究贡献。恢复是协议与评价的一部分，不预设为独立创新。
+
+\section{贡献与证据边界}
+预期贡献为：有比较依据的发现／授权设计；把运行时分工转为命名对象准入规则的协议；有配置边界的实证结论。ABE、Trust Schema、Sync、缓存、模型切分与 challenge-response 均为复用机制。最终论文需区分本人、合作者及已有软件的贡献；本稿不虚构共享代码的个人归属。
+
+这是修订后的 Proposal，不是已经完成的 dissertation。v0.1、后续实测活动、当前实现与目标验收是不同类别。已有 request ID 提供请求绑定，不能把假设的旧恢复轮次混用说成历史单次 attempt 协议已证实的缺陷。协作与原生 DI 必须独立通过端到端验收。
+
+\chapter{相关工作与完整替代方案}
+\section{不能把调用本身当作尚未解决的问题}
+NFN 研究命名计算与表达式求值，NFaaS 研究命名函数执行放置~\cite{nfn,nfaas}。RICE 握手支持认证与安全信息交换~\cite{rice}。NSC 使用应用提供的 Trust Schema 验证签名调用 Interest，并讨论输入和结果保护~\cite{nsc}。实验中的简化 harness 不等同于完整 NSC 设计。
+
+NDNSF 的较窄问题是：如何先收集当前意愿与可行性，再选择执行角色，并约束中间对象的使用。长期服务权限并不确定本次哪个 Provider 是指定前驱；request ID 和单独的合法签名也不表达该分工。但把字段写入 manifest 并不自动构成创新。最终需逐项比较 CaSCON~\cite{cascon} 等服务组合、工作流安全及 capability 系统，而非声称首个 NDN 服务框架。
+
+\begin{table}[htbp]\centering\small
+\caption{在相同需求下比较三种完整设计。}
+\begin{tabularx}{\textwidth}{p{.19\textwidth}XXX}
+\toprule 方案 & 执行授权 & 非公开发现 & 管理成本\\\midrule
+DNMP 式角色方案 & 角色与命令规则验证签名 & 另加加密和组密钥分发 & 角色凭证、规则、状态／有效期及加密密钥\\\midrule
+每服务角色证书 & 验证服务角色、消息类型、身份与请求状态 & 同样补齐发现保密机制 & 多项服务角色凭证、加密与撤销状态\\\midrule
+NDNSF ABE-backed & 身份签名、加密 challenge、请求及授权状态 & 按服务权限保护 descriptor，无需列出现时所有候选身份 & 身份凭证、ABE policy／DKEY、状态传播与换钥\\\bottomrule
+\end{tabularx}\end{table}
+
+DNMP 是角色约束命令签名的具体先例~\cite{dnmp}。一个角色可以覆盖多种操作，并非每服务必建一个角色或证书。“每服务角色证书”是本 Proposal 的替代设计，不是所有 Trust Schema 的固有限制。该方案中 User 使用 caller-role certificate 签名 Request／Selection，Provider 使用 provider-role certificate 签名 ACK／Response。接收方验证签发链、服务／消息规则、有效期／状态、请求身份和生命周期后才允许操作。选定后的交换使用接收者专属加密；发现阶段还需组加密或属性加密。Trust Schema 单独不提供保密性，但加上相应加密后可以满足完整需求。
+
+证书式撤销需要验证者获取足够新的撤销状态，或者等待证书过期。删除仓库中的证书不能使已缓存副本自动失效。这是公平替代方案的生命周期要求，不是声称 DNMP 原论文实现了 NDNSF 的运行时撤销流程。
+
+\section{为何继续复用 ABE 解密能力}
+增强 NAC-ABE 库提供 KP-ABE 支持~\cite{dulal2023nacabe}。当发现描述信息已经按服务权限加密时，可用 challenge 交换将该解密能力继续用于执行授权，避免仅为重复表达同一服务权限而另维护一套服务角色签名凭证。身份签名、请求状态和密钥生命周期仍然必要。这是待测量的管理收益，不是已证明任何场景都更快或更简单。
+
+小而稳定的接收组可能适合普通组密钥；已知 Provider 且权限简单时，签名调用加接收者加密可能更直接。ABE 适合先按服务权限描述接收者、再发现具体身份，以及将多项服务权限与身份签名凭证解耦的需求。策略规模、成员变化、加密成本和 authority 可用性构成限制。
+
+\chapter{系统模型与协议}
+\section{参与者、信任与不保证的性质}
+这些是协议角色，不是必须分开的硬件；一个节点可以同时担任 User 和 Provider。管理组织登记身份并批准服务权限，Controller 管理这些策略。参与者预先配置可信锚及身份凭证／Controller 材料验证规则。不知道本次哪些候选会回复，不等于授权机构从未登记它们。计费、任意业务事务、全局最优调度和抵抗所有拒绝服务流量不在本研究主张范围内。
+User 请求并协调调用；Provider 提供并执行服务；Controller 管理授权材料与签名状态。转发器和缓存可交付对象，但不负责应用执行授权。模型信任 Controller 和 User 的规划决定，不引入抵抗恶意协调者的共识协议。攻击者可能观察可见名字／流量、注入非法对象、重放合法旧消息或在缺少权限时尝试调用。凭证泄露及获准实体主动共享密钥不由 ABE 单独解决。
+
+认证识别签名身份，授权决定是否允许操作，保密性限制谁能恢复 Content。合法凭证不保证负载报告真实、推理正确或图像内容可信。签名状态只有被获取和验证后才影响本地授权；断连节点不可能被假定立即获知撤销。期限判断必须明确时钟及容许偏差。
+
+\begin{figure}[htbp]
+\centering\resizebox{\linewidth}{!}{\input{\proposalroot/protocol-overview}}
+\caption{逻辑调用依赖；箭头表示应用因果，不表示未经 Interest 请求的网络 Data 推送。}
+\end{figure}
+\begin{table}[htbp]\centering\small
+\caption{NDNSF 逻辑消息职责，不是完整 wire-format 规范。}
+\begin{tabularx}{\textwidth}{p{.14\textwidth}XX}
+\toprule Data & 用途 & 接受条件\\\midrule
+Request & 服务需求、最小必要 descriptor、请求标识和 Requester Challenge & 验证身份和授权上下文，解密后判断参与意愿\\\midrule
+ACK & positive／negative 参与决定；positive ACK 提供选择信息和 Provider Challenge & 验证发送者、请求绑定；只有合格 positive ACK 进入规划\\\midrule
+Selection & 授予选定角色，交付受保护输入／引用及请求级密钥 & 验证接收者、challenge、状态和计划；执行前检查资源\\\midrule
+Response & 完成状态、结果或结果引用 & 验证生产者、请求／计划、对象身份和解密范围\\\bottomrule
+\end{tabularx}\end{table}
+
+Sync 帮助获知名字，然后用 Interest 获取这些 Data。negative ACK 是应用参与决定，不是网络 Nack。非法、无权限、重复和过期 Request 仍受验证与状态规则约束，不能声称所有观察到的 Request 必须回复。positive ACK 不直接启动任务，也不保证稍后的资源可用性。
+
+\section{授权与保密性}
+\input{\proposalroot/ch/chapters/authorization-rationale}
+发现 descriptor 的保密范围是缺少相应 ABE 解密能力的实体，不排除其他获准候选，也不隐藏流量。选定后设计使用请求级对称密钥保护输入和结果，将所需密钥加密给经过认证的选定 Provider 公钥。图像对称加密与公钥封装图像密钥不是同一操作。响应密钥由 User 和选定 Provider 共享，因此不能说只有 User 知道结果明文；准确说法是其他 User 在密钥未泄露的假设下不能解密。此处描述目标保护路径，不回填为全部 v0.1 路径的历史行为。
+
+\section{ACK 集合到协作计划}
+应用提供角色／依赖模板、所需服务、约束和期限。模板可以手工编写，不要求新发明自动规划算法。ACK 窗口关闭后，可替换策略从合格 positive ACK 中分配 Provider。冻结的是本次已观察到的候选，不是全网所有可能参与者；执行时仍需重新检查资源。
+
+拟议签名 Plan Manifest 绑定请求、候选快照、角色分配、命名依赖边、授权／密钥范围与执行身份。摘要来自不含自身 digest 字段的规范化计划正文。本地准入规则由计划导出，而非只从长期证书推测本次分工。受信 User 对每个执行身份只作一次逻辑提交，约束本地冲突；签名本身不证明全局唯一，也不抵抗 User 故意签两个冲突计划。
+
+\section{命名对象准入与恢复}
+下游接受依赖前必须验证 Data 签名、当前请求／计划、指定前驱角色的生产者、允许的名字／数据格式／密钥范围及声明的依赖边。分段不完整或格式错误不能满足依赖。直接获取、缓存获取和仓库获取执行相同检查。对象使用实际生产者的授权命名空间，消费者通过引用复用对象，不把别人生产的数据改名为自己的 Data。
+
+\begin{table}[htbp]\centering\small
+\caption{拟议状态约束及所需反例，不代表全部生产路径已验收。}
+\begin{tabularx}{\textwidth}{p{.22\textwidth}X}
+\toprule 状态／事件 & 规则\\\midrule
+收集 ACK & 窗口关闭后迟到 ACK 不静默修改已提交计划\\\midrule
+收到 Selection & 身份、challenge、授权和资源检查通过才开始；ACK 本身不启动任务\\\midrule
+等待依赖 & 所需合法边满足才推进；错误角色、边、对象或执行身份必须拒绝\\\midrule
+完成／取消 & 重复消息按已记录状态处理，不隐式重复副作用\\\midrule
+失败／重分配 & 显式终止或新授权；旧执行不能获得新分配的权限，结果复用必须被明确允许\\\bottomrule
+\end{tabularx}\end{table}
+
+网络重取不等于重新计算。取消、fencing 与结果复用要有明确语义：新计划可显式允许使用已经产生的图像，不能因其来自缓存就一律拒绝或一律接受。compensation 不提供分布式原子事务或物理操作 exactly-once。RQ1 由授权取舍回答；RQ2 由上述契约及反例检验回答，已有调用实验不能替代协作验收。
+
+\section{有条件的正确性论证}
+假定签名密钥未泄露、信任／授权检查正确执行、Provider 遵守状态机：只有全部 handler 启动入口检查活动分配及未使用的一次性授权状态，才能得到先 Selection 后执行；只有全部输入入口包括缓存命中都检查指定生产者和声明边，才能得到依赖完整性。重分配隔离还要求旧 worker 和迟到回调不能继续使用新执行的权限。重启必须保留相关一次性状态或安全失效，签名及缓存 FreshnessPeriod 不足以替代它。
+
+这些是有条件的不变量和实现论证义务，不是完整系统的密码学证明。反例应包括同请求错误角色、合法签名生产者提供未声明边、重分配后迟到回调，分别检验 request ID 本身不表达的性质。应用结果语义及物理副作用仍不属于该论证。
+
+\chapter{应用验证}
+\section{UAV：多视角采集、处理与返回}
+主案例是地图上的地面位置请求，而非完整自主任务系统。发现时只提供判断覆盖、视角、传感器及时间可行性所需的受服务权限保护的信息。候选返回 ACK，计划选择互补采集角色和处理角色，Selection 交付执行细节及密钥。
+
+采集 UAV 在自己的命名空间发布加密签名 ViewImage，附观察时间以及可用姿态／标定元数据。GPS 不足以独立确定视线、相机方向、深度或跨视角对应；应用需规定采集容差、视角质量和失败处理。处理 Provider 按授权边获取图像，执行规定分析并发布 Annotation Data，返回原图引用并安全分享允许 User 使用的原图密钥。User 获取原图和标注后绘制叠加结果，不要求重新发布同一原图。
+
+框架主指标是截止时间内完成授权的采集—处理—返回。只有声称提高识别／定位精度时，才另外要求 ground truth、单视角对照与确定的融合算法。MiniNDN~\cite{minindn} 和 PX4 SITL~\cite{px4} 可分别检验网络及应用／飞控接口，但不等同实飞安全认证。控制、直播、录制与巡逻功能是支持工程，不全部变成毕业验收项。
+
+\section{DI：计算、数据与状态依赖}
+pipeline 切分分配连续层或层组；tensor 切分分割算子／张量并需要相应 collective。ONNX~\cite{onnx} 表示计算图，导出模型本身不会完成跨节点 collective 或证明数值正确。模型切分已有相关工作~\cite{neurosurgeon,ddnn}；NDNSF 的候选增量是运行时分配和命名依赖检查。
+
+规划器结合支持的模型／切分说明与 ACK 能力，Provider 准备授权模型片段，通过声明边交换 activation 或 collective 输入。Repo 是受管理的存储；Content Store 是机会缓存。模型文件复用与请求级 activation／状态复用必须区分。自回归模型计算 K/V，运行时代码保留并交给后续 decoding；权重驻留不取消该状态依赖。若保留 LLM 流式主张，需另报 prefill、首 token、后续 token 和 KV 驻留／传输成本。
+
+截至本次 2026 年 9 月修订，原生 V3／兼容性和集成验收仍未全部关闭。本地测试不等同跨进程、多设备或封装环境资格。较早小模型实测不证明 canonical-layer reuse、tensor/hybrid、多加速器放置或 LLM 恢复。最终固定模型、精度、切分、显存、网络、冷热状态和输出容差；单设备能运行则保留基线，不能运行则只论证分布式可行性，不计算虚构加速比。
+
+\chapter{已有证据与待完成评价}
+\label{chap:evaluation}
+下列数值来自已有记录，本轮未重做实验~\cite{ndnsfevidence}。独立实验单位为 seed／run，同一运行中的多条请求不能视为独立重复；成功条件化时延必须结合完成率和超时分析。harness 名称只代表被测配置。
+
+\begin{table}[htbp]\centering\small
+\caption{保留数值及其可支持的有限结论。}
+\begin{tabularx}{\textwidth}{p{.19\textwidth}XX}
+\toprule 实验 & 观察 & 边界\\\midrule
+10 seed 切换 holdout & 1,312 条匹配切换请求；NDNSF 减 gRPC 的 seed-p95：$-597$ ms，95\% CI $[-992,-200]$；减 NSC：$-2618$ ms，CI $[-2916,-2315]$ & 限于所测四 Provider 配置和预定切换子集，不证明普遍移动性或完成率优势\\\midrule
+6 seed 执行效率 & NDNSF 完成 1,798/1,800，启动 1,800 次；gRPC-PAR-4 完成 1,800/1,800，启动 7,180 次 & 相对并行策略减少冗余启动；启动次数不等于包、字节、CPU 时间或能耗\\\midrule
+早期小模型 DI & 每布局 10 次成功运行；均值分布式 259.4 ms、单 Provider 186.8 ms；p95 分别 283.9／206.3 ms & 此配置切分更慢；小样本与成功条件化不能支撑一般尾时延结论\\\bottomrule
+\end{tabularx}\end{table}
+
+执行效率实验中的 NSC-4 同样完成 1,800/1,800，平均启动 1.002 次／请求（舍入值），不据此声称优于 NSC。移动实验使用共同 trace、发布时间、期限和四个 Provider。切换子集按可达性及登记规则划分，不按 NDNSF 是否更快选样本。最终保留整体覆盖控制及失败／排除部分。小模型较慢与通信或准备成本的解释相容，但本节无独立 profiling 来证明因果。
+
+transition 实验中，无预登记 Provider 地址的 NDNSF 完成 357/357，静态名单对照 0/357，预登记对照变体 357/357。这隔离了发现配置；gRPC resolver 等机制同样能更新候选~\cite{grpcresolver}，不能据此声称对方框架做不到发现。历史 v0.1 在 1\%、3\% 每链路丢包下完成 599/600、598/600；10\% 下最佳记录为 539/600，不是新聚合或匹配比较。$1-(1-\ell)^4$ 假定四次独立且等概率丢包传输，不是包含重试后的服务失败率。没有干预分析不能把超时唯一归因于网络或排除协议／策略影响。
+
+\begin{table}[htbp]\centering\small
+\caption{按主张确定剩余评价，不把计划列为完成。}
+\begin{tabularx}{\textwidth}{p{.07\textwidth}XXX}
+\toprule RQ & 完整对照 & 正确性／失败 & 成本与结果\\\midrule
+RQ1 & ABE；角色规则加等价加密；合适组密钥方案 & 无权限不启动 handler；challenge／replay／撤销／状态延迟 & 完成率、发现时延、凭证／policy 大小、密码学与换钥流量\\\midrule
+RQ2 & 相同图的静态／动态分配；逐项准入检查消融 & 错角色／边／名字／密钥／执行；缓存与直接一致；取消与重分配 & 验证开销、字节、完成率、冗余工作、恢复轨迹\\\midrule
+RQ3 & 同候选数、负载、能力、期限、失败安排和可行单机基线 & 包含失败超时；区分网络、准入、执行和结果获取 & 完成率及时延、冷热成本、run 级不确定性、无收益条件\\\bottomrule
+\end{tabularx}\end{table}
+
+保存源码、依赖、模型、配置、seed、测量起止点、运行证据和分析脚本。按主张选择 Provider／服务数或依赖边／对象大小等扩展维度。不安全消融不是推荐部署。启动或 collector 失败属于实验边界，不计作协议失败率。
+
+\chapter{研究计划与决策门}
+\label{chap:timeline}
+先固定一个 UAV 图和一个支持的 DI 切分，形成可运行和可验证基线，而不是完成所有开发功能。tensor/hybrid、LLM 流式和复杂恢复只有证据足够才保留为最终主张。负面性能结果在条件清楚时也是有效研究结论。
+
+\begin{table}[htbp]\centering\small
+\caption{内部目标，不代表学校 deadline 或已具备答辩资格。}
+\begin{tabularx}{\textwidth}{p{.23\textwidth}X}
+\toprule 时段 & 可交付结果／决策\\\midrule
+September 2026 & 与导师确认 RQ 和范围；冻结任务图及源码／证据基线；解决正确性阻塞\\\midrule
+October 2026 & 执行登记的正确性和匹配实验；核心未通过则减少可选范围\\\midrule
+November 2026 & 冻结结果与来源；逐项形成答案、代价和限制；缺证据仍标未验证\\\midrule
+December 2026 & 向导师提交整合完整稿；不再为叙事新增可选功能\\\midrule
+January 2027 & 导师／委员会审阅；确认答辩准备度和学校最新提交／通知要求\\\midrule
+February 2027 & 证据闭环及审阅满足要求后目标答辩；留足修改时间\\\midrule
+Spring 2027 & 按 Graduate School 当期要求完成修改和最终提交；另行核实精确日期\\\bottomrule
+\end{tabularx}\end{table}
+
+CS 指南要求答辩两周前向委员会发送导师批准的完整稿~\cite{memphiscsdefense}；Graduate School 当前公布 Spring 2027 的已答辩终稿 ProQuest 截止日期为 March 26, 2027~\cite{memphisgraduation}，实际提交前需再次核实。如 January 2027 审阅时仍缺核心端到端证据，需要与委员会重新决定范围或时间。Final defense 应将计划转为实际答案，不能只修改完成标签。ABE 换钥与断连撤销、虚假 ACK、缓存可用性、UAV 安全／识别精度、硬件和模型外部有效性均须保留明确限制。
+
+\chapter{结论}
+NDNSF 的候选贡献是服务协议及有证据支持的机制选择，不是新密码学原语或首次命名计算。RQ1 比较受保护发现与 ABE 权限复用的适用条件；RQ2 把运行时分工变成本地命名依赖准入规则；RQ3 测量完成、时延、执行效率与代价。已有实验支持有限调用结论；协作与跨应用主张仍需其声明的端到端证据。本 Proposal 据此给出可核查的 dissertation 完成路径。

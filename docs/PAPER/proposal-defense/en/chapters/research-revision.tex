@@ -1,0 +1,212 @@
+% Canonical English research narrative. Loaded by main.tex and en/main.tex.
+\chapter{Introduction}
+\label{chap:introduction}
+\section{A Task That Requires Runtime Decisions}
+Consider an operator requesting several views of a ground location. Nearby UAVs may have different viewing directions, sensors, battery levels, and availability. A compute-capable UAV or edge node can analyze the collected images. The operator knows the required services but cannot assume which Providers will be reachable and willing to participate when the request is issued. The application must discover candidates, assign distinct collection and processing roles, and associate each intermediate image with its assigned producer and consumer. This is the motivating workload, not a claim that multi-view recognition itself is new.
+
+A discovery descriptor contains the information needed to decide whether to offer service: for example, a sufficiently precise area, deadline, sensor requirement, and processing requirement. Application input contains the material needed to execute the selected task. The boundary is semantic, not a fixed field list: a location needed for feasibility belongs in the descriptor, whereas an image needed only for processing can be provided after Selection. Disclosure of an area and deadline can reveal an operator's intended activity even without revealing the images. We therefore study discovery that keeps descriptor Content confidential from parties lacking the required decryption capability. Authorized candidates, including those not selected, can read it; names and traffic patterns are not thereby hidden.
+
+\section{What NDN Already Provides}
+Named Data Networking (NDN) provides Interest-based retrieval of named Data, with signatures that support integrity and producer authentication under a trust policy~\cite{ndn,ndnpacket}. Caching can satisfy a later Interest without contacting the original producer; it does not guarantee persistent storage or delivery before a deadline. A signature alone does not establish execution permission, freshness for a particular task, or semantic correctness of a result. NDN Sync announces changes in distributed datasets so applications can retrieve newly available Data~\cite{li2018brief,moll2022sok}; it is not an unsolicited Data-push primitive.
+
+NDN service and computation frameworks already exist, including NFN, NFaaS, RICE, and NSC~\cite{nfn,nfaas,rice,nsc}. NDNSF is not motivated by their absence. The research concerns the integration and evaluation of runtime candidate discovery, service authorization, and task-specific dependency enforcement. A broad claim that host-oriented systems cannot support these functions would also be incorrect: for example, gRPC supports extensible name resolution~\cite{grpcresolver}. Comparisons must examine complete configurations and their costs.
+
+\section{Thesis and Research Questions}
+The thesis to be evaluated is that a service framework can use named, verifiable objects to connect runtime Provider selection to explicit execution rules, while separating service-level discovery confidentiality from request-specific input and result confidentiality. The expected benefit is conditional: additional discovery, validation, and key-management work must be justified by the task's mobility, authorization, or collaboration requirements.
+
+\begin{enumerate}[label=RQ\arabic*.,leftmargin=*]
+\item How can a requester discover and authorize currently willing Providers without making the discovery descriptor public, and what are the costs relative to complete alternative authorization designs?
+\item How can Providers selected at runtime execute a task according to its roles and named dependencies, whether intermediate Data is retrieved from producers or caches?
+\item Under what workload and network conditions do these mechanisms improve completion, latency, or execution efficiency, and when do their costs outweigh their benefits?
+\end{enumerate}
+
+UAV sensing and distributed inference are complementary validation workloads for these questions, not separate research contributions simply because two applications are implemented. Recovery is part of the protocol and evaluation scope; it is not assumed to be an independent novel contribution.
+
+\section{Contribution and Evidence Boundary}
+The intended contributions are (1) a justified and evaluated discovery/authorization design, (2) a protocol that converts runtime role assignments into enforceable named-object admission rules, and (3) bounded empirical findings about their benefits and costs. ABE, Trust Schema, Sync, caching, model partitioning, and challenge-response are reused mechanisms, not newly invented primitives. The work claimed here concerns their NDNSF-specific design and evaluation. The final dissertation must identify the candidate's implementation, analysis, and experiments separately from collaborators' work and reused software; this proposal does not assign unverified personal ownership to shared code.
+
+This is a revised proposal, not a completed dissertation. The submitted v0.1 implementation, subsequent measured campaigns, current implementation work, and proposed acceptance conditions are separate evidence categories. Existing request IDs already provide request-level binding; a hypothetical stale recovery attempt is not a defect established in a single-attempt historical protocol. Current collaboration and native distributed-inference work must pass its own end-to-end gates. Chapter~\ref{chap:evaluation} reports only the limited findings presently available.
+
+\chapter{Related Work and Design Alternatives}
+\label{chap:related-work}
+\section{Invocation Is Not the Unsolved Problem by Itself}
+NFN studies named computation and expression evaluation; NFaaS studies execution placement in a named-function environment~\cite{nfn,nfaas}. RICE provides an invocation handshake with support for authentication and security information~\cite{rice}. NSC specifies signed invocation Interests validated using an application-provided Trust Schema, and discusses protected input and result exchange~\cite{nsc}. These are positive precedents for invocation and authorization, not insecure straw-man baselines. A workload-specific implementation of NSC used in an experiment is not the entire NSC design.
+
+For NDNSF, the narrower question is how a service request gathers current willingness and feasibility information before selecting execution roles, and how the resulting assignment constrains intermediate-object use. Long-term permission to offer a service does not by itself determine which authorized Provider is assigned to a particular predecessor role. Neither a request ID nor a valid signature alone expresses that assignment. Conversely, role and edge checks are not automatically novel merely because their fields are placed in a manifest. A final novelty claim requires a feature-level comparison with service composition, workflow security, and capability-based systems, including CaSCON~\cite{cascon}, rather than a claim of being the first NDN service framework.
+
+\section{Three Complete Authorization Designs}
+\begin{table}[htbp]
+\centering\small
+\caption{Alternatives under the same discovery and execution requirements.}
+\begin{tabularx}{\textwidth}{p{.19\textwidth}XXX}
+\toprule
+Design & Execution decision & Non-public discovery & Management cost\\\midrule
+DNMP-inspired roles & Validate signed commands against role and command rules & Add encryption and a group/key-distribution design; signatures alone do not conceal Content & Role credentials, trust rules, status or expiry checks, and encryption keys\\\midrule
+Per-service role certificates & Validate message type, service role, identity, and request state & Add the same confidentiality functionality before comparing costs & Potentially multiple service-role credentials per identity, plus encryption and revocation state\\\midrule
+NDNSF ABE-backed & Validate identity signatures, encrypted challenges, and request/authorization state & Encrypt a descriptor for a service-authorized receiver set without listing current candidates & Identity credentials, ABE policies/DKEYs, status distribution, and rekeying\\\bottomrule
+\end{tabularx}
+\end{table}
+
+DNMP is a concrete example of role-constrained command signing and verification~\cite{dnmp}. A role can cover multiple actions; different permission sets do not necessarily require one new role or certificate per service. The per-service certificate alternative in this proposal is our design choice, not a limitation inherent to every Trust Schema. In that alternative, a User uses a caller-role certificate for Request and Selection; a Provider uses a provider-role certificate for ACK and Response. Validators check the issuer chain, service and message-type rules, validity/status, request identity, and message lifecycle before accepting an action. Recipient-specific encryption protects selected exchanges. Protected discovery additionally needs a group-distribution or attribute-based encryption mechanism. Trust Schema alone is therefore insufficient for confidentiality, but a complete schema-based system can satisfy it with encryption.
+
+For revocation, a credential-based alternative must reject a revoked credential using sufficiently current status information or wait for expiry. Removing a certificate from a repository cannot invalidate copies already held by a validator. This is a proposed lifecycle requirement for a fair alternative, not a claim that the original DNMP paper implements NDNSF's runtime revocation protocol.
+
+\section{Why Reuse ABE Capability for Authorization?}
+NAC-ABE supplies attribute-based control of Data decryption; the enhanced library includes KP-ABE support~\cite{dulal2023nacabe}. When NDNSF already encrypts the descriptor for a service-authorized set, a challenge exchange can reuse that capability as part of execution authorization. This avoids maintaining an additional service-role signing-credential system solely to express the same service entitlements. It does not remove identity-signature validation, request state, or key-lifecycle work. It is a design rationale to measure, not a demonstrated universal reduction in runtime or administration cost.
+
+The comparison must include group-key or broadcast-encryption alternatives where appropriate. A stable, small group can make conventional group encryption attractive; known Providers and simple permissions can favor signed invocation with recipient encryption. ABE becomes attractive when recipients are identified by service entitlement before their current identities are known, and multiple entitlements should remain independent of identity-signing credentials. Policy size, membership churn, encryption cost, and authority availability bound this argument.
+
+\chapter{NDNSF System Model and Protocol}
+\label{chap:ndnsf}
+\section{Participants, Trust, and Exclusions}
+These are protocol roles, not necessarily separate devices: one node may be both a User and a Provider. The managed organization registers identities and approves service permissions; the Controller administers that policy. Participants require a provisioned trust anchor and validation rules for identity certificates and Controller material. Not knowing which candidates will respond to this invocation does not mean that the authorization authority has never enrolled those entities. Billing, arbitrary business transactions, globally optimal scheduling, and protection against all denial-of-service traffic are outside the claimed scope.
+The User requests and coordinates an invocation. Providers offer and execute services. A Controller administers authorization material and signed status. Forwarders and caches can deliver Data without being trusted to authorize execution. The model trusts the Controller and the User's planning decision; it does not claim consensus against a malicious coordinator. An attacker may observe visible names and traffic, inject invalid objects, replay previously valid messages, or operate without the needed service permission. Credential compromise and intentional sharing by an authorized principal require additional controls and are not prevented by ABE alone.
+
+Authorization is permission to perform an operation, authentication establishes the signing identity under trust rules, and confidentiality limits who can recover Content. Valid credentials do not prove honest load reports, correct inference, or truthful sensor observations. Signed status must be obtained and validated before it can affect local authorization; a disconnected participant cannot be assumed to learn revocation immediately. Deadline/expiry checks require an explicit clock policy. Tests must report the allowed skew and failure behavior rather than silently assume synchronized clocks.
+
+\section{Four Named Message Types}
+\begin{figure}[htbp]
+\centering\resizebox{\linewidth}{!}{\input{\proposalroot/protocol-overview}}
+\caption{Logical invocation dependencies. Arrows express application causality, not unsolicited network Data delivery.}
+\end{figure}
+\begin{table}[htbp]
+\centering\small
+\caption{Logical message responsibilities; this is not a wire-format listing.}
+\begin{tabularx}{\textwidth}{p{.14\textwidth}XX}
+\toprule
+Data & Purpose & Acceptance condition\\\midrule
+Request & Publish service requirements, minimized discovery descriptor, request identity, and Requester Challenge & Validate signature and current authorization context; recover the protected descriptor before evaluating willingness\\\midrule
+ACK & Report positive or negative participation decision; a positive ACK carries selection information and Provider Challenge & Validate sender and request binding; only eligible positive ACKs enter planning\\\midrule
+Selection & Authorize the chosen Provider/role and supply protected input or input references and request-scoped key material & Check intended Provider, challenge, request state, authorization status, and applicable plan rules before execution\\\midrule
+Response & Publish completion/result metadata or references to protected results & Check authorized producer, request/plan context, result identity, and decryption scope\\\bottomrule
+\end{tabularx}
+\end{table}
+
+These are NDNSF Data objects. Sync supports discovery of their names, after which Interests retrieve Data, possibly from a cache. A negative ACK is an application participation decision, not a network Nack. Not every observed Request must receive a reply: invalid, unauthorized, duplicate, or expired messages are subject to validation and state checks. A positive ACK expresses willingness; it does not itself start the selected task or guarantee later resource availability.
+
+\section{Authorization and Confidentiality}
+\input{\proposalroot/en/chapters/authorization-rationale}
+
+Discovery confidentiality applies to descriptor Content against parties lacking the required ABE decryption capability. It does not conceal the descriptor from other authorized candidates or provide traffic-analysis resistance. After Selection, the design uses request-scoped symmetric keys for application input and results; the selected Provider receives the necessary key material protected for its authenticated public key. Encrypting an image symmetrically and delivering its key in Selection is distinct from encrypting the image directly with a public key. The response key is shared by the requesting User and the selected Provider: other Users are excluded under the key-secrecy assumptions, but the Provider necessarily knows the plaintext it produces. This paragraph specifies the intended protected exchange, not retroactive behavior of every v0.1 path.
+
+\section{From ACKs to a Collaboration Plan}
+The application supplies a role/dependency template, required services, feasibility constraints, and deadline. The template may be written manually; automatic generation is not necessary to establish the framework contribution. A replaceable planning policy selects among eligible positive ACKs after the collection window closes. Closing the window freezes the candidates observed for that decision, not all possible Providers in the network. ACK claims can become stale, so a selected Provider still performs execution-time admission and may reject work it can no longer execute.
+
+The proposed signed Plan Manifest identifies the request, the accepted candidate snapshot, exact role-to-Provider assignments, permitted named dependency edges, authorization/key scope, and execution identity. Its digest is computed over a canonical plan body that excludes the digest field itself. Provider-local rules are derived from this plan; they are not inferred merely from a producer's long-term certificate. One User-side logical commitment per execution identity prevents accidental conflicting local commits under the trusted-User model. A signature alone does not prove globally unique commitment or protect against a Byzantine User signing two plans.
+
+\section{Object Admission and Execution State}
+A downstream Provider accepts a dependency only if its Data signature validates under the applicable trust rules, its request/plan identity matches the active assignment, the signer is assigned to the predecessor role, and its name, schema, and key scope match a declared edge. Required segments must validate, and incomplete or malformed objects cannot satisfy an edge. The same checks apply to Data fetched from a producer, cache, or repository. Names belong to the actual producer's authorized namespace; the plan references those names rather than relabeling another producer's object as the consumer's own Data.
+
+\begin{table}[htbp]
+\centering\small
+\caption{Proposed task-state contract and required negative checks.}
+\begin{tabularx}{\textwidth}{p{.2\textwidth}XX}
+\toprule
+State/event & Permitted transition & Required rejection or bounded behavior\\\midrule
+Collecting ACKs & Close window and validate candidate set & Late ACK does not silently alter a committed plan\\\midrule
+Selected & Validate Selection and perform local admission & Positive ACK alone, wrong Provider, or spent challenge cannot start work\\\midrule
+Waiting for dependencies & Execute when required authorized edges are satisfied & Wrong role, undeclared edge, incomplete object, or wrong active execution is rejected\\\midrule
+Completed/cancelled & Return recorded status under duplicate-message policy & Duplicate publication does not implicitly repeat a side effect\\\midrule
+Failure/reassignment & Explicitly terminate or authorize a replacement execution & Old execution must not acquire authority from the new assignment; allowed result reuse is explicit\\\bottomrule
+\end{tabularx}
+\end{table}
+
+These are proposed acceptance conditions, not a claim that every production path is qualified. Network re-retrieval is not identical to repeating computation. If a task is reassigned, cancellation, fencing, and result-reuse rules must be explicit. An already computed image may remain useful when the new plan explicitly authorizes its reuse; an old object is not automatically invalid solely because it is cached. Application-defined compensation can limit side effects but does not provide distributed atomic transactions or exactly-once physical action.
+
+RQ1 is addressed by the authorization design and its qualified tradeoffs. RQ2 is addressed by the proposed plan/state contract. Existing invocation evidence does not establish collaboration correctness; wrong-role, wrong-edge, replay, cancellation, and direct/cache tests remain separate acceptance obligations.
+
+\section{Conditional Correctness Argument}
+Assume uncompromised signing keys, correctly enforced trust/authorization checks, and Providers that obey the specified state machine. Selection-before-execution follows only if every handler-start path checks an active assignment and unspent authorization state. Dependency integrity follows only if every input path, including a cache hit, checks the assigned producer and declared edge before satisfying the dependency. Replacement isolation additionally requires old workers and late callbacks to lose authority under the new execution identity. Restart recovery must preserve or safely invalidate the relevant one-time state; signature validity and cache FreshnessPeriod alone are insufficient.
+
+These are conditional invariants and implementation proof obligations, not a cryptographic proof of a complete system. Tests should inject a wrong-role object within the same request, an undeclared edge from a correctly signed producer, and a late callback after replacement. Each isolates a property that a request ID alone cannot express. Application result correctness and physical side effects remain outside this argument.
+
+\chapter{Application Validation}
+\label{chap:applications}
+\section{UAV: Multi-View Collection, Processing, and Return}
+The primary UAV case is a ground-location request, not a complete autonomous mission system. An operator chooses a target location or area on a map. The Request reveals only the service-level-protected information needed to assess coverage, viewing feasibility, sensor capability, and timing. Eligible UAVs return positive ACKs; a planner assigns complementary viewing roles and a processing role. Selection delivers the execution details and appropriate keys to the chosen Providers.
+
+Each sensing UAV publishes encrypted, signed ViewImage Data in its own namespace, with observation time and available pose/calibration metadata. GPS helps relate platforms and target areas, but does not by itself establish line of sight, camera direction, accurate depth, or correspondence between views. The application must define capture tolerances, view adequacy, and failure handling. Different views cannot be treated as identical cropped inputs without matching or geometric reasoning.
+
+The compute Provider retrieves the authorized images by their named dependencies, performs detection or other specified analysis, and publishes signed annotation Data. Its result references the original image Data and securely supplies the requesting User with the permitted image keys. This reuses the original signed images; it does not republish them under a false producer identity. The User retrieves those images and annotations and renders the overlay. Improved recognition or localization accuracy is not assumed: such a claim requires ground truth, a single-view control, and a specified fusion method.
+
+MiniNDN~\cite{minindn} tests named-data execution under controlled connectivity; PX4 SITL~\cite{px4} can test the application/autopilot interaction. Neither is a real-flight safety certification. The framework-level endpoint is authorized multi-view collection, processing, and return before a deadline. Other flight-control, video, recording, and patrol features remain supporting engineering, not independent dissertation completion conditions.
+
+\section{Distributed Inference: Explicit Data and State Dependencies}
+The second workload partitions a specified model across Providers and exchanges named intermediate objects. Pipeline partitioning assigns sequential layers or layer groups; tensor partitioning divides operations/tensors and requires the appropriate communication and collectives. The terms describe different execution structures, not interchangeable drawing orientations. ONNX~\cite{onnx} represents computation graphs, but export alone does not implement cross-Provider collectives or prove distributed numerical correctness. Model partitioning has substantial prior work~\cite{neurosurgeon,ddnn}; the proposed NDNSF increment is runtime assignment and checked named dependency execution, not partitioning itself.
+
+In the proposed execution, the planner combines a supported model/partition description with ACK capabilities. Providers obtain authorized artifact references, prepare their assigned fragments, and exchange activations or collective inputs over the declared edges. A repository provides managed artifact storage; the forwarding Content Store is opportunistic caching, not a persistence guarantee. Reuse must distinguish an identical model artifact from request-specific activation or execution state.
+
+For autoregressive generation, the model computes K/V tensors; the runtime retains and supplies the relevant cache state to later decoding steps. Keeping model weights resident does not eliminate this state dependency. Pipeline execution still has a temporal feedback loop: generated-token/state information is needed for the next step. If LLM streaming is retained in the final claim, evaluation must separate prefill, time to first token, per-token decoding, and KV storage/transfer. It is not necessary to qualify every model or hybrid partition merely to validate RQ2.
+
+\section{Current Scope and Completion Gates}
+Current native implementation work and local tests are evidence of engineering progress, not interchangeable with cross-process, multi-device, or sealed-container qualification. As of the September 2026 revision, the V3/native integration and compatibility gates are not all closed. The historical small-model campaign in Chapter~\ref{chap:evaluation} does not qualify canonical-layer reuse, tensor/hybrid execution, multi-accelerator placement, or recovery of a large language model.
+
+The final campaign will freeze model version, precision, supported partition, device memory, network conditions, warm/cold state, and an output-comparison tolerance. It will include a single-Provider baseline when feasible. If the model cannot fit one device, distributed feasibility is meaningful, but no speedup ratio against a non-running baseline is claimed. UAV and DI jointly test the role/dependency abstraction; their task algorithms and device-specific adapters remain application responsibilities.
+
+\chapter{Available Evidence and Required Evaluation}
+\label{chap:evaluation}
+\section{Measured Findings Are Configuration-Specific}
+The following numbers are retained from recorded campaigns, not new experiments in this revision~\cite{ndnsfevidence}. The independent unit for comparative uncertainty is the seed/run, not each correlated request. Success-conditioned latency must be read with completion and timeout rates. A baseline label identifies the evaluated harness configuration, not every feature of the framework named in that label.
+
+\begin{table}[htbp]
+\centering\small
+\caption{Selected evidence and limits; values are unchanged from their records.}
+\begin{tabularx}{\textwidth}{p{.2\textwidth}p{.36\textwidth}X}
+\toprule
+Campaign & Observation & Supported interpretation / limit\\\midrule
+Ten-seed switching holdout & 1,312 matched switching requests; NDNSF minus gRPC seed-p95 difference: $-597$ ms, 95\% CI $[-992,-200]$; versus NSC: $-2618$ ms, CI $[-2916,-2315]$ & Lower conditional tail latency in the tested four-Provider configuration, not universal mobility or success-rate superiority\\\midrule
+Six-seed work-efficiency repeat & NDNSF: 1,798/1,800 completed, 1,800 execution starts; gRPC-PAR-4: 1,800/1,800, 7,180 starts & Selection avoids redundant starts relative to this parallel policy; starts are not messages, bytes, CPU time, or energy\\\midrule
+Earlier small-model DI diagnostic & Ten successful runs/layout: mean 259.4 ms distributed versus 186.8 ms single Provider; p95 283.9 versus 206.3 ms & Splitting was slower for this model/configuration; small success-conditioned sample does not establish a general tail-latency result\\\bottomrule
+\end{tabularx}
+\end{table}
+
+In the work-efficiency comparison, NSC-4 also completed 1,800/1,800 requests, with 1.002 execution starts per request (rounded). This does not establish a work-efficiency advantage over NSC. The mobility campaign uses common traces, publication times, deadlines, and four Providers per system. The switching subset is defined by reachability and the registered classification, not chosen because NDNSF wins. Overall coverage controls and excluded/failed requests must remain alongside this conditional result in the final analysis. The reported small-model difference is consistent with communication/setup overhead, but no isolated profiling result here establishes its cause.
+
+The transition experiment reports 357/357 completions for NDNSF without pre-registering Provider addresses, 0/357 for static-list baselines, and 357/357 for pre-registered baseline variants. It isolates the discovery configuration. A gRPC resolver or other discovery integration can update a candidate list~\cite{grpcresolver}; the result does not prove that gRPC or NSC cannot discover a new Provider.
+
+Historical v0.1 loss results include 599/600 completions at 1\% per-link loss, 598/600 at 3\%, and a best recorded 539/600 at 10\%. The last is a selected historical run, not a current aggregate estimate or a matched comparison against later baseline data. The expression $1-(1-\ell)^4$ assumes four independent packet traversals with equal loss $\ell$; it is not the full service-failure probability after retries. Timeouts under heavy loss do not, without further interventions, identify one exclusive cause or rule out protocol/policy effects.
+
+\section{Evidence Needed for Each Research Question}
+\begin{table}[htbp]
+\centering\small
+\caption{Claim-driven evaluation plan, not a completed-results checklist.}
+\begin{tabularx}{\textwidth}{p{.07\textwidth}XXX}
+\toprule
+RQ & Comparison & Correctness / failure observation & Costs and outcomes\\\midrule
+RQ1 & ABE-backed; role-schema plus equivalent encryption; suitable group-key alternative & Unauthorized call never starts handler; replay, wrong challenge, revoked/expired state, status delay & Completion, discovery delay, crypto work, credential/policy size, renewal and withdrawal traffic\\\midrule
+RQ2 & Same task graph with static/dynamic assignment; controlled removal of each admission check & Wrong role, edge, name, key or execution; direct/cache parity; incomplete objects; cancellation or reassignment & End-to-end completion, validation cost, intermediate bytes, redundant work, bounded recovery\\\midrule
+RQ3 & Matched Provider counts, tasks, capacities, deadlines and failure schedules; feasible single-device control & Include failed and timed-out requests; distinguish network, admission, execution and result-retrieval failures & Completion and latency together; cold/warm costs; per-run uncertainty; conditions with no benefit\\\bottomrule
+\end{tabularx}
+\end{table}
+
+Each campaign must preserve its source/dependency/model identity, configurations, seeds, measurement start/end points, raw-run references, and analysis scripts. Scaling dimensions should follow the actual claim: candidates and services for discovery/authorization, edges and object sizes for collaboration. Ablation diagnoses a mechanism; an intentionally insecure variant is not a recommended deployment. An unqualified runtime start or collector failure is a harness failure, not a protocol failure rate.
+
+\chapter{Research Plan, Risks, and Decision Gates}
+\label{chap:timeline}
+\section{Scope Before More Features}
+The immediate priority is a frozen, runnable baseline for the final claims, not completion of every development feature. Select one UAV collection--processing graph and one supported DI partition first. Keep pipeline/tensor/hybrid generality, LLM streaming, and sophisticated recovery only where the implementation and evidence can support them. A negative performance result is an acceptable research finding when its conditions and costs are explained.
+
+\begin{table}[htbp]
+\centering\small
+\caption{Revised internal targets; defense is conditional on evidence and committee approval.}
+\begin{tabularx}{\textwidth}{p{.22\textwidth}X}
+\toprule
+Period & Deliverable / decision gate\\\midrule
+September 2026 & Agree on three RQs and bounded claims; freeze supported application graphs and implementation/evidence baseline; resolve correctness blockers\\\midrule
+October 2026 & Execute registered correctness and matched comparison cases; reduce optional scope if an end-to-end gate remains open\\\midrule
+November 2026 & Freeze accepted results and provenance; write RQ answers, costs, and limitations; keep missing results visibly unverified\\\midrule
+December 2026 & Deliver an integrated complete draft to the advisor; no new optional feature branch in the research argument\\\midrule
+January 2027 & Advisor/committee review, revisions, defense readiness decision, and confirmation of current university submission/notice requirements\\\midrule
+February 2027 & Target defense only after required reviews and evidence closure; allow time for substantive corrections\\\midrule
+Spring 2027 & Complete approved corrections and final submission by the applicable Graduate School deadlines; confirm exact dates separately\\\bottomrule
+\end{tabularx}
+\end{table}
+
+The February 2027 defense is a target, not a statement of readiness or an institutional deadline. CS guidance calls for an advisor-approved complete dissertation to reach committee members two weeks before the defense~\cite{memphiscsdefense}. The Graduate School currently lists March 26, 2027 for the defended final ProQuest submission in Spring 2027~\cite{memphisgraduation}; confirm current instructions before filing. If core end-to-end evidence is still missing at the January review, the committee must reconsider scope or timing. Final-defense slides must replace planned tests with actual answers; changing a label from ``planned'' to ``completed'' cannot satisfy that gate.
+
+\section{Limits That Must Remain Visible}
+ABE adds authority, computation, and rekeying costs; disconnected revocation has propagation limits. Candidate ACKs do not prove future capacity or honest reporting. Cache availability does not guarantee task completion. Local tests do not qualify distributed failure behavior. UAV safety and perception accuracy need evidence beyond service-message delivery. Hardware/model-specific findings cannot establish unlimited framework generality. These are conditions for interpreting the research, not reasons to omit an unfavorable result.
+
+\chapter{Conclusion}
+\label{chap:conclusion}
+NDNSF's proposed research contribution is a service-level protocol and evidence-backed design rationale, not a new encryption primitive or the first use of named computation. RQ1 asks when protected discovery and reuse of ABE capability are preferable to complete alternatives. RQ2 asks how runtime assignments become local rules for accepting named dependencies. RQ3 asks where the resulting costs buy useful completion, latency, or execution-efficiency benefits. Existing campaigns establish limited invocation findings; the collaboration and cross-application claims still require their declared end-to-end evidence. This separation provides a concrete route from the present proposal to a defensible dissertation.

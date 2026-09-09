@@ -498,3 +498,13 @@ FD17 的正式合著声明要求具有适用条件；即使不采用文章分章
 - HTML 辅助解析一度因缺少 BeautifulSoup 失败；改用标准库 HTMLParser 后读取成功。未安装依赖。Catalog 仍未取得有效正文，不以网页访问成功代替内容验证。工具边界另记于 `.codex-tmp/proposal-reviewed-20260909/official-criteria/extraction-boundary.md`。
 - 对 E/E-split/Z/S/N 的材料判断沿用第 19 节的冻结版本；本轮新增的是官方标准核对与报告校准，不声称重新验证全部代码、重算实验或完成现场口试。
 - 本次定向检查通过：C01–C26、FD01–FD20 均保留，5 项官方来源均列入，所有本地证据链接存在，5 份冻结 PDF 摘要保持一致，`git diff --check` 通过。本轮只改 review 和审查进度/工具边界记录，没有改论文、slides 或实现任务的验收状态。
+
+## 21. Research-first Revision — 2026-09-09
+
+以上第 1–20 节是对应冻结输入的审查记录，保留原页码和原判断。本轮按用户新授权重写 Proposal 与 slides，不能再把旧页码当作修订稿位置。最新处置、来源和未闭合项见 [research revision audit](research-revision-audit.md)，构建／渲染／文本一致性结果见 `research-revision-validation.json`。
+
+修订后的共同主线为：具体多视角任务 → NDN 已有能力与剩余要求 → 运行时发现／授权、角色依赖执行、条件性收益／成本三个 RQ → 完整替代方案 → 协议、状态与反例 → UAV/DI 验证 → 已有有限结果 → 剩余验收和 Spring 2027 决策门。RQ 不预设 ABE 或 ACK 为必然答案；恢复并入协作和评价，不强行计为第三项独立创新。
+
+正文移除笼统的“NDN 没有服务框架”“host/channel 本身就是缺陷”与未经支持的因果结论。主讲不再以 API／配置清单组织。授权比较承认 DNMP 角色规则及 schema＋加密替代设计；保护对象、获准但未选中的 Provider、密钥更新和状态传播限制均明确。request ID 已有保护、同请求错误角色／边、合法缓存复用及新执行权限分开描述。
+
+**完成的是文档修订，不是研究验收。** C12 的最近工作逐特性比较、C22 的实测完整多 UAV 轨迹、最终授权成本／扩展性及原生协作资格仍保留 OPEN/PARTIAL。历史小模型原始 run provenance 本轮未重建，不能计为新 V3 证据；本人／合作者贡献归属也需确认。不得据本轮“已修订”推导已具备 final-defense 准备度。

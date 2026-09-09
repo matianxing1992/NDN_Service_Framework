@@ -1,5 +1,50 @@
 # Failure Log and Evidence Index
 
+## 2026-09-09 — Proposal shared bibliography build boundary
+
+The first EN/CH research-revision build reached BibTeX but failed to resolve
+`./research-references.bib` from the isolated output directory. No protocol or
+experiment was run. The source now uses an unqualified bibliography basename;
+the alternate language build directories link to the same shared bibliography.
+Initial logs are retained at `.codex-tmp/proposal-research-revision-20260909/en-build.log`
+and `ch-build.log`; later attempts use separately named logs. This document-only
+boundary is tracked in [the revision audit](PAPER/proposal-defense/research-revision-audit.md).
+
+The EN/CH second build passed. A later multi-hunk wording patch was rejected
+because a paragraph fragment was supplied as a whole-line match; it changed
+nothing and was reapplied with the exact complete table row. A broad read-only
+result-file discovery also hit protected runtime-state directories; no permission
+changes were made. The audit uses named evidence paths, and marks the older DI
+raw-run provenance as not re-established rather than assuming a result from that search.
+
+The initial `review_rendered.py` invocation failed at import because the default
+Python lacked PyMuPDF (`fitz`). This is a rendering-tool environment boundary;
+the PDF build had succeeded. The dependency-verified interpreter is used for
+rendering and PPTX generation; no research result is inferred from this check.
+
+The first PPTX export was stopped by the generator's approved-build-root guard
+before conversion. The supplied `.codex-tmp/.../ndnsf-pptx-build` path was not
+an allowed reset target; no output was cleared. Retry uses a newly allocated
+`/tmp/ndnsf-*` build directory. The first visual review also caught an obsolete
+three-seed chart selected for a ten-seed caption; it is replaced with a table
+derived from the exact ten-seed aggregates before delivery.
+
+The second PPTX invocation reached the next safety guard: an existing `mktemp`
+directory lacks the generator's ownership marker. It was not cleared. The next
+invocation uses a nonexistent `ndnsf-build` child inside that dedicated temporary
+directory, allowing the generator to establish its own marker safely.
+
+The third PPTX attempt completed conversion but failed before publication because
+the existing notes parser did not accept generated one-line `slideentry` blocks.
+The generated notes are adjusted to the parser's documented multiline form;
+the protected staged output was not published as a completed deck.
+
+Presenter-notes PDF compilation then exposed PDF-extracted Unicode ligatures and
+the mathematical ell character that pdfLaTeX did not accept. The generator now
+normalizes ligatures and spells out ell in notes. This affects derived presenter
+text only, not the source slide formula or experimental values. Original failure
+log: `.codex-tmp/proposal-research-revision-20260909/notes-build.log`.
+
 ## 2026-09-09 — Official defense criteria document extraction
 
 Web DOCX parsing was unsupported; urllib plus ZIP/XML extraction succeeded.
