@@ -4539,3 +4539,29 @@ the receipt; private keys and the rest of the run remain restricted.
 Lesson: a source-bound receipt is consumable only when every referenced public
 evidence path has a readable permission chain; preserve private run material
 permissions separately.
+
+## 2026-09-09 — Tiger default NFD socket was read-only
+
+Symptom: a bounded Tiger container probe initialized NFD faces and TCP/UDP
+channels, then exited with `UnixStreamChannel::listen: bind: Read-only file
+system [/run/nfd/nfd.sock]`; historical candidates consequently reported
+`NFD_READINESS_TIMEOUT` or an abort.
+Root cause: the stock image configuration uses `/run/nfd/nfd.sock`, while
+`--containall` leaves `/run` read-only in this user job.
+Fix status: a generated per-run configuration with the Unix socket at the
+writable bound path `/work/state/nfd.sock` stayed alive through the bounded
+probe on job 210205. The current Spec183 worker already has this socket-path
+generation; the Tiger wrapper must pass that config explicitly.
+Lesson: NFD readiness depends on the container mount/configuration contract;
+never invoke the image default socket path inside `--containall`.
+
+## 2026-09-09 — v22 base SIF staging was bandwidth-bound
+
+Symptom: the 3.7 GiB exact base SIF sustained about 1.2--1.4 MiB/s over the
+SSH-to-project-storage path and was canceled after roughly 255 MiB.
+Root cause: the current staging path is limited by the project transport/NFS
+write rate; the APP bundle itself transferred normally.
+Fix status: the partial SIF was removed and no truncated candidate remains;
+the base image still needs one durable content-addressed pre-stage.
+Lesson: stage a verified SIF once and reuse its hash-bound project copy; do not
+repeat a multi-gigabyte upload for each diagnostic allocation.
