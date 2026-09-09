@@ -1,7 +1,7 @@
 {
   "schema": "spec182-compatibility-manifest-v1",
   "sourceInventory": "contracts/public-export-inventory.json",
-  "sourceCommit": "45f93d809b1dee3f8dc06e763cb132765cf72b47",
+  "sourceCommit": "31fe172a884b937ea0f2e14c4a16bfe1a28f1746",
   "coverage": {
     "explicitApiSdkRoot": 277,
     "dynamicAppSdkExports": 67,
@@ -23003,14 +23003,14 @@
         "owner": "ndnsf_distributed_inference.app_sdk.client",
         "symbol": "InferenceClient",
         "path": "NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/client.py",
-        "line": 1849,
-        "sourceSha256": "7a0f83e77c3d97c2ba2a8796f1852852c45e6bdead5288607fd04576faa6654c",
+        "line": 1868,
+        "sourceSha256": "e1093a8820b3abb4603d4312deeab1f5fe644d5212e0b8ba4211d2c813bacb54",
         "kind": "ClassDef",
         "bases": [],
         "methods": [
           {
             "name": "__init__",
-            "line": 1857,
+            "line": 1876,
             "arguments": [
               "self",
               "core"
@@ -23052,7 +23052,7 @@
           },
           {
             "name": "from_application_config",
-            "line": 1870,
+            "line": 1889,
             "arguments": [
               "cls",
               "runtime"
@@ -23116,7 +23116,7 @@
           },
           {
             "name": "from_config",
-            "line": 1886,
+            "line": 1905,
             "arguments": [
               "cls",
               "config"
@@ -23174,7 +23174,7 @@
           },
           {
             "name": "deployments",
-            "line": 1914,
+            "line": 1933,
             "arguments": [
               "self"
             ],
@@ -23196,7 +23196,7 @@
           },
           {
             "name": "requests",
-            "line": 1918,
+            "line": 1937,
             "arguments": [
               "self"
             ],
@@ -23218,7 +23218,7 @@
           },
           {
             "name": "native_client",
-            "line": 1922,
+            "line": 1941,
             "arguments": [
               "self"
             ],
@@ -23240,7 +23240,7 @@
           },
           {
             "name": "configure_native_requester",
-            "line": 1926,
+            "line": 1945,
             "arguments": [
               "self",
               "runtime",
@@ -23281,7 +23281,7 @@
           },
           {
             "name": "request_native",
-            "line": 1933,
+            "line": 1952,
             "arguments": [
               "self"
             ],
@@ -23337,7 +23337,7 @@
           },
           {
             "name": "request_native_reference",
-            "line": 1940,
+            "line": 1959,
             "arguments": [
               "self",
               "reference"
@@ -23346,7 +23346,8 @@
               "options",
               "task_name",
               "application_options",
-              "on_event"
+              "on_event",
+              "request_id"
             ],
             "parameters": [
               {
@@ -23384,6 +23385,12 @@
                 "kind": "keyword-only",
                 "annotation": null,
                 "default": "None"
+              },
+              {
+                "name": "request_id",
+                "kind": "keyword-only",
+                "annotation": "str | None",
+                "default": "None"
               }
             ],
             "vararg": null,
@@ -23393,7 +23400,7 @@
           },
           {
             "name": "deploy",
-            "line": 1949,
+            "line": 1975,
             "arguments": [
               "self",
               "definition"
@@ -23420,7 +23427,7 @@
           },
           {
             "name": "request_model",
-            "line": 2001,
+            "line": 2027,
             "arguments": [
               "self"
             ],
@@ -23476,7 +23483,7 @@
           },
           {
             "name": "request_task",
-            "line": 2012,
+            "line": 2038,
             "arguments": [
               "self"
             ],
@@ -23546,7 +23553,7 @@
           },
           {
             "name": "request_preplanned",
-            "line": 2033,
+            "line": 2059,
             "arguments": [
               "self",
               "deployment"
@@ -23602,7 +23609,7 @@
           },
           {
             "name": "request",
-            "line": 2041,
+            "line": 2067,
             "arguments": [
               "self",
               "deployment"
@@ -23658,7 +23665,7 @@
           },
           {
             "name": "run",
-            "line": 2257,
+            "line": 2283,
             "arguments": [
               "self",
               "deployment"
@@ -23714,7 +23721,7 @@
           },
           {
             "name": "run_async",
-            "line": 2264,
+            "line": 2290,
             "arguments": [
               "self",
               "deployment"
@@ -24097,6 +24104,12 @@
                 "name": "on_event",
                 "kind": "keyword-only",
                 "annotation": null,
+                "default": "None"
+              },
+              {
+                "name": "request_id",
+                "kind": "keyword-only",
+                "annotation": "str | None",
                 "default": "None"
               }
             ],
@@ -24899,14 +24912,14 @@
         "owner": "ndnsf_distributed_inference.app_sdk.client",
         "symbol": "InferenceRequestHandle",
         "path": "NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/client.py",
-        "line": 1792,
-        "sourceSha256": "7a0f83e77c3d97c2ba2a8796f1852852c45e6bdead5288607fd04576faa6654c",
+        "line": 1811,
+        "sourceSha256": "e1093a8820b3abb4603d4312deeab1f5fe644d5212e0b8ba4211d2c813bacb54",
         "kind": "ClassDef",
         "bases": [],
         "methods": [
           {
             "name": "__init__",
-            "line": 1795,
+            "line": 1814,
             "arguments": [
               "self",
               "client",
@@ -24947,7 +24960,7 @@
           },
           {
             "name": "ref",
-            "line": 1802,
+            "line": 1821,
             "arguments": [
               "self"
             ],
@@ -24969,7 +24982,7 @@
           },
           {
             "name": "status",
-            "line": 1806,
+            "line": 1825,
             "arguments": [
               "self"
             ],
@@ -24989,7 +25002,7 @@
           },
           {
             "name": "deployment_status",
-            "line": 1809,
+            "line": 1828,
             "arguments": [
               "self"
             ],
@@ -25009,7 +25022,7 @@
           },
           {
             "name": "events",
-            "line": 1813,
+            "line": 1832,
             "arguments": [
               "self"
             ],
@@ -25037,7 +25050,7 @@
           },
           {
             "name": "wait",
-            "line": 1829,
+            "line": 1848,
             "arguments": [
               "self"
             ],
@@ -25065,7 +25078,7 @@
           },
           {
             "name": "result",
-            "line": 1833,
+            "line": 1852,
             "arguments": [
               "self"
             ],
@@ -25093,7 +25106,7 @@
           },
           {
             "name": "result_async",
-            "line": 1839,
+            "line": 1858,
             "arguments": [
               "self"
             ],
@@ -25121,7 +25134,7 @@
           },
           {
             "name": "cancel",
-            "line": 1844,
+            "line": 1863,
             "arguments": [
               "self",
               "reason"
