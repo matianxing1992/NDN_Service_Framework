@@ -799,9 +799,6 @@ parseArgs(int argc, char** argv)
     else if (arg == "--disable-tokens") {
       options.disableTokens = true;
     }
-    else if (arg == "--bootstrap-token") {
-      options.bootstrapToken = readValue();
-    }
     else if (arg == "--wiring-check-only") {
       options.wiringCheckOnly = true;
     }
@@ -1613,8 +1610,12 @@ main(int argc, char** argv)
       // waits on serveCompleted below), then polls the Controller permission
       // and marks readiness once the event loop is running.
       auto serveCompleted = std::make_shared<std::atomic<bool>>(false);
+      auto provisionFailed = std::make_shared<std::atomic<bool>>(false);
+      auto provisioningDone = std::make_shared<std::atomic<bool>>(false);
       auto serveCompletedMutex = std::make_shared<std::mutex>();
       auto serveCompletedCv = std::make_shared<std::condition_variable>();
+      auto provisioningDoneMutex = std::make_shared<std::mutex>();
+      auto provisioningDoneCv = std::make_shared<std::condition_variable>();
       auto signalServeCompleted = [serveCompleted, serveCompletedMutex,
                                    serveCompletedCv] {
         {
@@ -1622,6 +1623,14 @@ main(int argc, char** argv)
           *serveCompleted = true;
         }
         serveCompletedCv->notify_all();
+      };
+      auto signalProvisioningDone = [provisioningDone, provisioningDoneMutex,
+                                     provisioningDoneCv] {
+        {
+          std::lock_guard<std::mutex> lock(*provisioningDoneMutex);
+          provisioningDone->store(true, std::memory_order_release);
+        }
+        provisioningDoneCv->notify_all();
       };
       auto installTask =
         [options,
@@ -1641,7 +1650,10 @@ main(int argc, char** argv)
          providerHost,
          nativeService,
          registrationOut = &nativeRegistration,
+         provisionFailed,
          signalServeCompleted,
+         signalProvisioningDone,
+         &face,
          &keyChain] () mutable {
           try {
             provisioningState->markInstalling(
@@ -1875,15 +1887,24 @@ main(int argc, char** argv)
                       << " provider=" << options.providerName
                       << " activeRoles=" << allowedRoles.size()
                       << std::endl;
+            signalProvisioningDone();
           }
           catch (const std::exception& exc) {
             provisioningState->markFailed(exc.what());
+            provisionFailed->store(true, std::memory_order_release);
             std::cerr << "NDNSF_DI_NATIVE_PROVIDER_PROVISION_FAILED"
                       << " error=\"" << exc.what() << "\""
                       << std::endl;
+            // A producer Face may keep its io_context alive indefinitely. Stop
+            // it directly so processEvents() returns even when another
+            // ServiceProvider scheduler has outstanding retry work. The main
+            // thread performs scheduler cancellation after the event loop has
+            // stopped, where the scheduler is no longer accessed concurrently.
+            face.getIoContext().stop();
             // The main thread waits for serve below even when assembly
             // failed; otherwise it would never enter the event loop.
             signalServeCompleted();
+            signalProvisioningDone();
           }
         };
 
@@ -1905,6 +1926,17 @@ main(int argc, char** argv)
         serveCompletedCv->wait(lock,
                                [&serveCompleted] { return serveCompleted->load(); });
       }
+      if (provisionFailed->load(std::memory_order_acquire)) {
+        provider->stopNdnsdPeriodicPublish();
+        face.shutdown();
+        std::unique_lock<std::mutex> lock(*provisioningDoneMutex);
+        provisioningDoneCv->wait(lock,
+                                  [&provisioningDone] {
+                                    return provisioningDone->load(
+                                      std::memory_order_acquire);
+                                  });
+        return 2;
+      }
       std::cout << "NDNSF_DI_NATIVE_PROVIDER_SERVE_READY service="
                 << options.serviceName
                 << " identity=" << options.providerName
@@ -1914,9 +1946,12 @@ main(int argc, char** argv)
                 << " ackThreads=" << options.ackThreads
                 << " runtimeStatus=installing"
                 << std::endl;
-      while (true) {
+      while (!provisionFailed->load(std::memory_order_acquire)) {
         try {
-          face.processEvents();
+          // Keep the event loop responsive to an asynchronous provisioning
+          // failure. An unbounded processEvents() would leave a failed Provider
+          // looking alive until another network event arrived.
+          face.processEvents(ndn::time::milliseconds(100));
         }
         catch (const std::exception& exc) {
           std::cerr << "NDNSF_DI_NATIVE_PROVIDER_EVENT_LOOP_EXCEPTION"
@@ -1926,6 +1961,17 @@ main(int argc, char** argv)
                     << std::endl;
         }
       }
+      provider->stopNdnsdPeriodicPublish();
+      face.shutdown();
+      {
+        std::unique_lock<std::mutex> lock(*provisioningDoneMutex);
+        provisioningDoneCv->wait(lock,
+                                  [&provisioningDone] {
+                                    return provisioningDone->load(
+                                      std::memory_order_acquire);
+                                  });
+      }
+      return 2;
     }
 
     specs = withExecutionEvidenceContext(

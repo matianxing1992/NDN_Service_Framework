@@ -10380,6 +10380,18 @@ namespace ndn_service_framework
             ndn::time::seconds(intervalSeconds), *recurring);
     }
 
+    void ServiceProvider::stopNdnsdPeriodicPublish()
+    {
+        if (m_ndnsdScheduler == nullptr) {
+            return;
+        }
+        m_ndnsdHeartbeatEvent = {};
+        m_ndnsdScheduler->cancelAllEvents();
+        m_ndnsdScheduler.reset();
+        m_ndnsdHeartbeatIntervalSeconds = 0;
+        NDN_LOG_INFO("[ServiceProvider] NDNSD periodic publish stopped");
+    }
+
     void ServiceProvider::OnRequest(const ndn::svs::SVSPubSub::SubscriptionData &subscription)
     {
         if(!isFresh(subscription)) return;

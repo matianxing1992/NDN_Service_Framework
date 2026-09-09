@@ -827,6 +827,10 @@ namespace ndn_service_framework{
             /// Meta is read from the internal dict (updated via updateNdnsdMeta).
             void startNdnsdPeriodicPublish(int intervalSeconds);
 
+            /// Stop the periodic NDNSD heartbeat. Must be called on the Face
+            /// event-loop thread because the scheduler is not thread-safe.
+            void stopNdnsdPeriodicPublish();
+
             /**
              * Opaque move-only RAII handle for a scoped registration.  The
              * handle keeps the registration generation alive; close() (also
