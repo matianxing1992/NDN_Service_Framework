@@ -82,6 +82,7 @@ def write_receipt(tmp_path):
                     "requestId": request_id, "provider": "/example/yolo/run-1/BackboneNeck",
                     "boundary": boundary, "reason": reason}
                 if case == "negative-dependency":
+                    value.pop("provider")
                     value.update({
                         "observedAfterSelection": True,
                         "reselected": False,
@@ -98,7 +99,7 @@ def write_receipt(tmp_path):
                             "endpointDigest": "sha256:" + "3" * 64,
                             "contentDigest": "sha256:" + "4" * 64,
                             "bytes": "64",
-                            "provider": "/example/yolo/run-1/BackboneNeck",
+                            "provider": "/example/yolo/run-1/DetectShard0",
                             "providerBootId": "boot-1",
                             "atMs": "100",
                         },

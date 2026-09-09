@@ -191,6 +191,40 @@ def test_dependency_negative_requires_one_bound_withheld_edge(tmp_path):
     assert "subcase=Y-N-D" in result
 
 
+def test_dependency_negative_accepts_multiple_tensor_records_on_one_edge(tmp_path):
+    module = load_runner()
+    started = list(_negative_children(module, tmp_path, case="Y-N-D"))
+    records = []
+    for index in range(2):
+        records.append({
+            "schema": "ndnsf-di-withheld-output-v1",
+            "session": "session-1",
+            "requestId": "/request",
+            "attempt": "1",
+            "planDigest": "sha256:" + "a" * 64,
+            "producerRole": "DetectShard0",
+            "consumerRole": "Merge",
+            "manifestDataName": f"/tensor/head{index}/MANIFEST",
+            "plannedDataName": f"/tensor/head{index}",
+            "endpointDigest": "sha256:" + str(index + 1) * 64,
+            "contentDigest": "sha256:" + str(index + 3) * 64,
+            "bytes": "64",
+            "provider": "/example/provider/DetectShard0",
+            "providerBootId": "boot-1",
+            "atMs": str(100 + index),
+        })
+    provider_log = tmp_path / "provider-DetectShard0.log"
+    provider_log.write_text("\n".join(
+        "NDNSF_DI_OUTPUT_WITHHELD " + json.dumps(record) for record in records
+    ) + "\n")
+    started.append((module.CaseProcessSpec(
+        "provider-DetectShard0", "node",
+        "di-native-provider --provider /example/provider/DetectShard0", "",
+        "providers"), SimpleNamespace(poll=lambda: None), provider_log))
+    result = module._wait_for_negative_result(tuple(started), "Y-N-D", 0.01)
+    assert "subcase=Y-N-D" in result
+
+
 def test_dependency_negative_rejects_timeout_without_native_edge(tmp_path):
     module = load_runner()
     started = _negative_children(module, tmp_path, case="Y-N-D")

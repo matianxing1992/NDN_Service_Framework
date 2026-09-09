@@ -246,17 +246,25 @@ def _validate_semantic_evidence(case: str, evidence: dict[str, Path], *, applica
         if (failure.get("status") != "PASS"
                 or failure.get("schema") != "spec180-negative-evidence-v1"
                 or failure.get("requestId") != lifecycle_id
-                or not isinstance(failure.get("reason"), str)
-                or not isinstance(failure.get("provider"), str)
-                or not failure["provider"].startswith(application_name + "/")
-                or ("/" + case_run_id + "/") not in failure["provider"]):
+                or not isinstance(failure.get("reason"), str)):
             raise YoloHostGateError("YOLO_HOST_GATE_FAILURE_RECORD")
         boundary = failure.get("boundary")
         if case == "permission-rejection":
-            if boundary != "PROVIDER_GRANT_VERIFICATION" or not failure["reason"].startswith("DI_PROTECTED_GRANT_REJECTED"):
+            provider = failure.get("provider")
+            if (boundary != "PROVIDER_GRANT_VERIFICATION"
+                    or not failure["reason"].startswith("DI_PROTECTED_GRANT_REJECTED")
+                    or not isinstance(provider, str)
+                    or not provider.startswith(application_name + "/")
+                    or ("/" + case_run_id + "/") not in provider):
                 raise YoloHostGateError("YOLO_HOST_GATE_PERMISSION_BOUNDARY")
         elif boundary not in _NEGATIVE_BOUNDARIES:
             raise YoloHostGateError("YOLO_HOST_GATE_DEPENDENCY_BOUNDARY")
+        elif boundary == "PEER_FAILURE":
+            provider = failure.get("provider")
+            if (not isinstance(provider, str)
+                    or not provider.startswith(application_name + "/")
+                    or ("/" + case_run_id + "/") not in provider):
+                raise YoloHostGateError("YOLO_HOST_GATE_FAILURE_RECORD")
         elif boundary == "DEPENDENCY_DATA_MISSING":
             dependency = failure.get("dependency")
             expected_fields = {
@@ -277,7 +285,9 @@ def _validate_semantic_evidence(case: str, evidence: dict[str, Path], *, applica
                     or dependency.get("planDigest") != (plan or {}).get("planDigest")
                     or dependency.get("producerRole") != "DetectShard0"
                     or dependency.get("consumerRole") != "Merge"
-                    or dependency.get("provider") != failure.get("provider")
+                    or not isinstance(dependency.get("provider"), str)
+                    or not dependency["provider"].startswith(application_name + "/")
+                    or ("/" + case_run_id + "/") not in dependency["provider"]
                     or not isinstance(dependency.get("session"), str)
                     or not dependency["session"]
                     or not isinstance(dependency.get("providerBootId"), str)

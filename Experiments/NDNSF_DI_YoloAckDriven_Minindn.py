@@ -3192,11 +3192,13 @@ def _run_focused_y_n_negative(subcase: str, output: Path,
 
 
 def _read_y_n_d_withheld_record(user_log, request_id, events):
-    """Return the one native DetectShard0->Merge suppression record.
+    """Return one native DetectShard0->Merge suppression record.
 
     This is intentionally separate from the User marker: a negative exit can
-    be produced by a timeout or an unrelated failed response.  The native
-    record is the owner-side proof that one selected V3 edge was withheld.
+    be produced by a timeout or an unrelated failed response.  A single
+    request may publish more than one tensor on the selected edge, so accept
+    the complete set of records for that edge and return its first record as
+    the compact evidence representative.
     """
     withheld = []
     for path in sorted(user_log.parent.glob("provider-*.log")):
@@ -3214,9 +3216,8 @@ def _read_y_n_d_withheld_record(user_log, request_id, events):
             except (UnicodeError, ValueError):
                 raise RunnerError("Y_N_D_WITHHELD_RECORD_INVALID") from None
             withheld.append(record)
-    if len(withheld) != 1 or not isinstance(withheld[0], dict):
+    if not withheld or any(not isinstance(record, dict) for record in withheld):
         raise RunnerError("Y_N_D_WITHHELD_RECORD_COVERAGE")
-    record = withheld[0]
     expected_fields = {
         "schema", "session", "requestId", "attempt", "planDigest",
         "producerRole", "consumerRole", "manifestDataName", "plannedDataName",
@@ -3225,28 +3226,36 @@ def _read_y_n_d_withheld_record(user_log, request_id, events):
     }
     plan = next((event for event in events
                  if event.get("milestone") == "PLAN_SEALED"), None)
-    if (set(record) != expected_fields
-            or record.get("schema") != "ndnsf-di-withheld-output-v1"
-            or record.get("requestId") != request_id
-            or str(record.get("attempt")) != "1"
-            or record.get("producerRole") != "DetectShard0"
-            or record.get("consumerRole") != "Merge"
-            or not isinstance(plan, dict)
-            or record.get("planDigest") != plan.get("planDigest")
-            or not isinstance(record.get("session"), str)
-            or not record["session"]
-            or not isinstance(record.get("provider"), str)
-            or not record["provider"].startswith("/")
-            or not isinstance(record.get("providerBootId"), str)
-            or not record["providerBootId"]
-            or any(not isinstance(record.get(key), str)
-                   or not re.fullmatch(r"sha256:[0-9a-f]{64}", record[key])
-                   for key in ("endpointDigest", "contentDigest"))
-            or any(not isinstance(record.get(key), str)
-                   or not re.fullmatch(r"[1-9][0-9]{0,19}", record[key])
-                   for key in ("bytes", "atMs"))):
+    if not isinstance(plan, dict):
         raise RunnerError("Y_N_D_WITHHELD_RECORD_BINDING")
-    return record
+    identities = set()
+    for record in withheld:
+        if (set(record) != expected_fields
+                or record.get("schema") != "ndnsf-di-withheld-output-v1"
+                or record.get("requestId") != request_id
+                or str(record.get("attempt")) != "1"
+                or record.get("producerRole") != "DetectShard0"
+                or record.get("consumerRole") != "Merge"
+                or record.get("planDigest") != plan.get("planDigest")
+                or not isinstance(record.get("session"), str)
+                or not record["session"]
+                or not isinstance(record.get("provider"), str)
+                or not record["provider"].startswith("/")
+                or not isinstance(record.get("providerBootId"), str)
+                or not record["providerBootId"]
+                or any(not isinstance(record.get(key), str)
+                       or not re.fullmatch(r"sha256:[0-9a-f]{64}", record[key])
+                       for key in ("endpointDigest", "contentDigest"))
+                or any(not isinstance(record.get(key), str)
+                       or not re.fullmatch(r"[1-9][0-9]{0,19}", record[key])
+                       for key in ("bytes", "atMs"))):
+            raise RunnerError("Y_N_D_WITHHELD_RECORD_BINDING")
+        identity = (record["manifestDataName"], record["plannedDataName"],
+                    record["endpointDigest"], record["contentDigest"])
+        if identity in identities:
+            raise RunnerError("Y_N_D_WITHHELD_RECORD_DUPLICATE")
+        identities.add(identity)
+    return withheld[0]
 
 
 def _validate_negative_marker(line, spec, subcase, user_spec, user_log):

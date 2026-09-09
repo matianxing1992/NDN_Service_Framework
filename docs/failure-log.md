@@ -4473,3 +4473,31 @@ Fix status: reuse the verified v31 cache root with its matching `-j4` build
 identity while emitting the new v32 application bundle.
 Lesson: keep cache-root identity and application-output identity separate;
 changing the output bundle does not require inventing an empty cache root.
+
+## 2026-09-09 — v32 profile retained the v31 dispatch plane
+
+Symptom: `submit.py prepare` rejected the new profile with
+`APP_DISPATCH_BINDING` before freezing a run.
+Root cause: changing the external application manifest without rerendering the
+dispatch content plane left its application row bound to v31.
+Fix status: create a new dispatch plane identity with the v32 manifest and
+effective-profile snapshot while reusing unchanged inputs/runtime planes.
+Lesson: an external APP update changes the dispatch E plane even when the base
+SIF and execution inputs are unchanged.
+
+## 2026-09-09 — Y-N-D emitted multiple tensors and no User provider field
+
+Symptom: v51 exact-SIF reached Selection, withheld two DetectShard0 tensor
+outputs, and the User emitted `DEPENDENCY_DATA_MISSING`, but the driver exited
+before writing negative evidence; the host semantic check also rejected the
+retained evidence because the User marker has no `provider` field.
+Root cause: one request legitimately produces multiple records on the same
+withheld edge, while the new helper required exactly one record and the host
+validator assumed every negative marker named a provider.
+Fix status: validate every unique record for the same request/plan/edge and
+retain one representative; for dependency failures derive provider identity
+from the native dependency record. Recovered v51 evidence from its immutable
+logs and validated it with the corrected gate.
+Lesson: negative evidence contracts must follow the actual multi-tensor wire
+cardinality and must distinguish User admission fields from provider-owned
+failure identity.
