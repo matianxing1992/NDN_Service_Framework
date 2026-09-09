@@ -1,6 +1,6 @@
 # Implementation Plan: Native NDNSF-DI with Optional Python Bindings
 
-**Branch**: Experimental | **Revision**: 21 | **Date**: 2026-09-09
+**Branch**: Experimental | **Revision**: 22 | **Date**: 2026-09-09
 **Status**: IN_PROGRESS / 当前实现与验收状态见 tasks.md 的 Task Progress Registry 和 Current Checkpoint
 **Spec**: [spec.md](spec.md)
 
@@ -149,6 +149,23 @@ Qwen/YOLO facade 可继续使用 inline，repository caller 获得明确的 C++ 
 
 批末必须完成五 lane 静态审查、root-cwd focused selectors 和一次 system-first `-j4`
 增量构建；任何 provider/network 未观测不得标为 qualification PASS。
+
+### R10-B2 Native REPO_REF Facade 2026-09-09
+
+R10-B1 opened the C++ preparation boundary for encrypted repository references,
+but the public Python SDK still exposes only the inline `request_native_payload`
+helper.  This batch adds a thin reference facade that accepts the validated
+`LargeDataReference` returned by `publish_application_input_reference`, checks
+the journal publication binding, serializes the canonical reference, and calls
+the existing C++ `NativeInferenceClient` route.  It does not resolve or decrypt
+repository data, invoke the Python planner, or change Provider ownership.
+
+Allocation is intentionally limited to the canonical `APPClient` facade, the
+public `InferenceClient` forwarding surface, the Python compatibility selector,
+and their source/evidence records.  The independent exit is a mocked binding
+boundary that observes `REPOSITORY_REFERENCE` plus canonical JSON and proves
+that the native client is called without planner fallback; real encrypted fetch,
+Provider execution, caller migration, and T016 remain open for later batches.
 
 ### R8-SKILL Review Coverage Contract 2026-09-09
 

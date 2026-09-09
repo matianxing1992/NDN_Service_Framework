@@ -1,5 +1,15 @@
 # Failure Log and Evidence Index
 
+## 2026-09-09 — Spec182 R10-B2 facade test-double boundary
+
+The first R10-B2 focused Python run failed in the new native reference facade
+test because its fake `NativeApplicationInput` did not model the C++ class's
+default empty `payload` and `options` fields. This was a test-harness boundary,
+not a native or protocol failure. The fake was corrected, the same suite was
+rerun with 17 passing cases, and the raw retry output is retained at
+`.codex-tmp/spec182-r10-b2/app_sdk.log`; the batch evidence records the first
+failure boundary and the changed test-double check.
+
 ## 2026-09-09 — Proposal shared bibliography build boundary
 
 The first EN/CH research-revision build reached BibTeX but failed to resolve
