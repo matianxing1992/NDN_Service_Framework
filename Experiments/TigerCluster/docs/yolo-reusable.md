@@ -71,7 +71,15 @@ export SPEC180_RUNTIME_APP_ROOT="$ROOT/app-controller-version-j4-v32"
 export SPEC180_HOST_LIBRARY_PATH=/tmp/t008-build-root/lib:/home/tianxing/NDN/ndn-svs/build:/home/tianxing/NDN/NAC-ABE/build:/usr/local/lib
 export PYTHONPATH="$PWD/NDNSF-DistributedInference:$PWD/NDNSF-DistributedRepo/pythonWrapper:$PWD/pythonWrapper"
 
-# The run must first contain public/preparation.json from the provision step.
+# Freeze one new run; prepare intentionally exits 78/NOT_EVALUATED.
+python3 Experiments/TigerCluster/jobs/yolo/submit.py prepare \
+  --profile Experiments/TigerCluster/profiles/yolo-two-node-controller-v32.json \
+  --run-id "$RUN" --output "$OUT" --case local-cpu || test $? -eq 78
+python3 Experiments/TigerCluster/tools/spec183_dev_provision.py provision \
+  --profile Experiments/TigerCluster/profiles/yolo-two-node-controller-v32.json \
+  --run-id "$RUN" --output "$OUT" --apptainer "$SPEC180_RUNTIME_APPTAINER"
+
+# The provision step writes public/preparation.json and its SHA is an input.
 PREP=$(sha256sum "$OUT/$RUN/public/preparation.json" | awk '{print "sha256:"$1}')
 python3 -u Experiments/TigerCluster/tools/spec183_minindn.py \
   --run-id "$RUN" --output "$OUT" \
