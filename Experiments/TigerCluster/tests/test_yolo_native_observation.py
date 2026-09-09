@@ -131,10 +131,25 @@ def test_cpu_and_merge_execution_component(kind):
     else:
         role = 'Merge'
         row['artifactDigests'] = {role: 'sha256:'+'b'*64}
-        row.update(roles=[role], realCompute='false', nodeProviderAssignments='')
+        row.update(roles=[role], realCompute='false', loadCompleted='false',
+                    warmupCompleted='false', nodeProviderAssignments='')
     value = result.validate_native_observation(json.dumps(row), provider='/app/worker-a',
         role=role, request_id='/app/request/1', attempt=1,
         plan_digest='sha256:'+'1'*64, pid=123, runner_kind=kind)
+    assert value['qualification'] == 'NATIVE_OBSERVATION_COMPONENT_ONLY'
+
+
+def test_native_merge_does_not_require_ort_load_or_warmup():
+    row = observation()
+    row.update(
+        roles=['Merge'], runnerKind='native-yolo-postprocess', realCompute='false',
+        loadCompleted='false', warmupCompleted='false',
+        nodeProviderAssignments='', gpuUuid='', cudaVisibleDevices='',
+        artifactDigests={'Merge': 'sha256:'+'b'*64})
+    value = result.validate_native_observation(json.dumps(row), provider='/app/worker-a',
+        role='Merge', request_id='/app/request/1', attempt=1,
+        plan_digest='sha256:'+'1'*64, pid=123,
+        runner_kind='native-yolo-postprocess')
     assert value['qualification'] == 'NATIVE_OBSERVATION_COMPONENT_ONLY'
 
 

@@ -32,9 +32,10 @@ before a receipt can be consumed.  The focused host-gate, builder, and
 producer suite passes with 18 tests, and the v33 dispatch consumer accepts the
 source-bound receipt.
 
-N2 is closed for the host/MiniNDN evidence boundary.  Exact-SIF v52 Y-B is a
-real cross-process normal MiniNDN run with v32 APP/CPU ORT execution and
-numerical match.  Retained v51 Y-N reaches `SELECTION_COMMITTED` and
+N2 is closed for the host/MiniNDN evidence boundary.  Exact-SIF v58 is a
+formal `submit.py local` collector PASS for the v22 base + v32 APP: it is a
+real cross-process normal MiniNDN run with CPU ORT execution, numerical match,
+dependency pairing, and clean process teardown.  Retained v51 Y-N reaches `SELECTION_COMMITTED` and
 `PROVIDER_EXECUTION_STARTED`, records two native withheld tensor outputs, and
 fails closed at `DEPENDENCY_DATA_MISSING`; Y-N-C remains correctly classified
 as a placement failure.  The first v51 aggregate driver returned 2 because its
@@ -96,8 +97,8 @@ creating a second validator. Generic packaging validation keeps its owner.
 | Previous finding | Current disposition | Remaining obligation |
 | --- | --- | --- |
 | G1: certified graph producer disconnected | Source wiring repaired. `RequestReferenceBinding` wraps post-ACK canonical binding, prepares references through the DI assembler, binds actual published MODELROOT and writes per-request graph-reference.json; public collection reads it. [Request wiring](t005-request-reference-wiring.md) includes tiny CPU ONNX/ORT component evidence. | Actual native YOLO acceptance in T008–T011; source wiring alone does not close those gates. |
-| G2: old base Controller lacks receipt flag | Closed for the current layered composition: the v32 APP carries the current Controller/User entrypoints and the v52 exact-SIF run reached the real publication/terminal path. | Keep the v22 base immutable; recheck the same flag on each new APP manifest. |
-| G3: no hostMinindn/localSif receipts | HostMinindn is now source-bound and consumed by the v33 dispatch profile; `localSif` remains intentionally empty because exact-SIF CPU evidence is not a formal promotion verdict. | Run the final T007 audit, then complete the empty HOME/scratch local gate before GPU promotion. |
+| G2: old base Controller lacks receipt flag | Closed for the current layered composition: the v32 APP carries the current Controller/User entrypoints and the v58 exact-SIF run reached the real publication/terminal path. | Keep the v22 base immutable; recheck the same flag on each new APP manifest. |
+| G3: no hostMinindn/localSif receipts | HostMinindn is source-bound and consumed by the v33 dispatch profile; v58 supplies a formal local CPU collector PASS, while `localSif` promotion remains closed until the independent empty HOME/scratch isolation check. | Run the final T007 audit, then complete the empty HOME/scratch local gate before GPU promotion. |
 | G4: negative User/collector/ranks disconnected | Source wiring repaired in `0e22b210`; [negative collection](t004-negative-collection.md). Both ranks reuse provision/startup/storage/cleanup; rejection derives from retained Selection/cutpoint/fetch failure/node/GPU records, not raw operator assertions. | Full candidate qualification and actual T015 run. |
 | G5: project/scratch unqualified | Retain as T012 environment obligation. [Node storage](t004-node-storage.md) and [SSH coordinator](t004-ssh-coordinator.md) have component/login scopes only. | Observe actual allocated node storage and writable project capacity. |
 
@@ -280,7 +281,7 @@ either real defects (fixed) or stale assertions of the old `--home` form
 |---|----------|-------|-------------|------------|
 | G1 | HIGH | T005/T006 | `prepare_role_reference` (runtime/yolo_graph_reference.py:22) produces ORT graph references (COMPONENT_ONLY) but no production owner publishes a certifiedGraph into the collector path; the final verdict consumes certifiedGraph that no wired producer generates (evidence/certified-graph-owner-gap.md). | A test that runs the collector with a graph reference produced by the wired owner and rejects a synthetic one. |
 | G2 | HIGH | T011 | The base SIF's in-image controller.py predates `--spec180-runtime-receipt-file` (host sources: examples/python/NDNSF-DistributedInference/yolo_2x2/controller.py:116); the full application layer cannot execute against the Spec183 harness until the T011 local SIF rebuild. | A post-rebuild container run that reaches wait_controller_publication with the real receipt file written. |
-| G3 | HIGH | T010/T011 | The v33 profile now binds a source- and layer-verified `hostMinindn` receipt; `localSif` remains closed because the v52 CPU run is `NOT_EVALUATED`, not a promotion verdict. | Finish T007, run the empty HOME/scratch local gate, and bind only its independently verified verdict. |
+| G3 | HIGH | T010/T011 | The v33 profile binds a source- and layer-verified `hostMinindn` receipt; v58 is a formal local CPU collector PASS, but `localSif` remains closed until the independent empty HOME/scratch isolation verdict is bound. | Finish T007, run the empty HOME/scratch local gate, and bind only its independently verified verdict. |
 | G4 | MEDIUM | T004/T012 | Updated 2026-09-07: normal runners, storage, terminal reconciliation, shared receiver/query recovery, SSH transport and native dependency cutpoint are wired; negative User/collector/rank dispatch and full-candidate qualification remain incomplete. | t004-ssh-coordinator.md records login transport; t004-dependency-cutpoint.md records 3 actual in-process native transport checks. Neither is a Slurm/GPU gate. Re-audit required. |
 | G5 | LOW | T012 | Remote project roots remain unqualified; scratch now uses locally checked SLURM_TMPDIR or /tmp. statvfs observations do not establish quota/reservation. | T012 must verify the same SIF, actual allocated node-local storage and writable project capacity. |
 

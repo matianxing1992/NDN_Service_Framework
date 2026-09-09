@@ -39,6 +39,8 @@ def test_container_has_only_own_home_and_in_image_tools(tmp_path):
     assert str(tmp_path / "private/user") + ":/identities/user:rw" in command
     assert "--cleanenv" in command and "--containall" in command
     assert not any(x.startswith("HOME=") for x in command)
+    assert command[command.index("NDN_LOG=ndn_service_framework.*=ERROR:ndnsf.di.RuntimeEvidence=WARN")] \
+        == "NDN_LOG=ndn_service_framework.*=ERROR:ndnsf.di.RuntimeEvidence=WARN"
     assert not any(":/identities:rw" in x or "root.key" in x for x in command)
     assert command[-2:] == ["/opt/ndnsf-di/current/bin/nfdc", "status"]
 

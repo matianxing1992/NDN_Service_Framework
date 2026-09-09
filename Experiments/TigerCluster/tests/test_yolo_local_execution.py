@@ -218,7 +218,11 @@ def test_operator_enters_frozen_cli_and_preserves_its_exit_code(tmp_path, monkey
     import subprocess
     module = submit_module()
     bundle, digest = frozen_bundle
-    prepared = dict(bundle=str(bundle), harnessManifestSha256=digest)
+    raw_profile = {'runtime': {}, 'timing': {'progressTimeoutSeconds': 1}}
+    profile_path = tmp_path / 'profile.json'
+    profile_path.write_text(json.dumps(raw_profile))
+    prepared = dict(bundle=str(bundle), harnessManifestSha256=digest,
+                    profileDigest=module._json_digest(raw_profile))
     args = SimpleNamespace(profile=tmp_path / 'profile.json', output=tmp_path / 'results',
                            run_id='local-test', case='local-cpu')
     seen = []
@@ -231,6 +235,8 @@ def test_operator_enters_frozen_cli_and_preserves_its_exit_code(tmp_path, monkey
     monkeypatch.setattr(subprocess, 'run', boundary)
     assert module._enter_frozen(args, prepared, action) == 17
     assert len(seen) == 1 and not args.output.exists()
+    from runtime import yolo_submission
+    monkeypatch.setattr(yolo_submission, 'verify_operator_python', lambda *a, **k: None)
     monkeypatch.setattr(module, 'BUNDLE', bundle)
     assert module._enter_frozen(args, prepared, action) is None
     with pytest.raises(ValueError, match='HARNESS_MANIFEST_DIGEST'):

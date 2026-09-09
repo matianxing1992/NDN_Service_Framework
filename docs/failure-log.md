@@ -4565,3 +4565,50 @@ Fix status: the partial SIF was removed and no truncated candidate remains;
 the base image still needs one durable content-addressed pre-stage.
 Lesson: stage a verified SIF once and reuse its hash-bound project copy; do not
 repeat a multi-gigabyte upload for each diagnostic allocation.
+
+## 2026-09-09 — v55 local collector suppressed native dependency evidence
+
+Symptom: the exact-SIF v55 MiniNDN run launched the Controller, User, and all
+four native Providers and returned the correct YOLO tensor, but collection
+failed with no `NDNSF_DI_DEPENDENCY_OBJECT` markers.
+Root cause: the baseline injected `NDN_LOG=ndn_service_framework.*=ERROR`,
+which also disabled the backend-owned `ndnsf.di.RuntimeEvidence` logger before
+the collector could observe its dependency objects.
+Fix status: the container command now keeps Core logs at `ERROR` while enabling
+`ndnsf.di.RuntimeEvidence=WARN`; the focused baseline regression and the v58
+frozen exact-SIF run both retain the markers.
+Lesson: log suppression is part of the evidence contract; a successful model
+response cannot substitute for backend-owned dependency observations.
+
+## 2026-09-09 — v56/v57 native dependency records used different wire forms
+
+Symptom: after logging was restored, the collector rejected v56/v57 retained
+records even though the graph executed. Native records used exact NDN direction
+names (`publish-exact-ndn`/`fetch-exact-ndn`), a leading-slash request session
+without the public `/attempt/<n>` suffix, and ndn-cxx NNI Name components such as
+`%00`/`%01`; the public Python projection used generic directions, a normalized
+session, and decimal components.
+Root cause: the semantic collector compared two valid representations as raw
+text instead of binding them to one canonical edge identity.
+Fix status: `runtime/yolo_result.py` now normalizes only these documented native
+wire forms while retaining exact role, edge, status, byte-count, and request
+prefix checks. New focused regressions cover direction, session, and NNI
+normalization; the v58 frozen bundle returns `NORMAL_EXPERIMENT_PASS`.
+Lesson: collector normalization must be narrow and explicit; broad fuzzy matching
+would hide a wrong edge, while raw text equality rejects valid native evidence.
+
+## 2026-09-09 — full TigerCluster suite exposed a stale frozen-profile fixture
+
+Symptom: the first full `Experiments/TigerCluster/tests` run failed during
+collection with `ModuleNotFoundError: runtime`; rerunning with the documented
+`PYTHONPATH=Experiments/TigerCluster` exposed two failures because the frozen
+CLI test supplied a profile path that did not exist.
+Root cause: `_enter_frozen` now re-reads and digest-binds the profile before
+entering a frozen harness, but the older test fixture only populated the
+prepared harness fields and also allowed the operator-dependency subprocess
+double to intercept the in-process verification branch.
+Fix status: the fixture now writes a minimal profile, binds its digest, and
+stubs `verify_operator_python` only for the same-bundle branch. The full suite
+then passed with 1299 tests and one skip.
+Lesson: frozen-entry tests must model the immutable profile binding and keep
+nested subprocess verification separate from the outer CLI boundary double.

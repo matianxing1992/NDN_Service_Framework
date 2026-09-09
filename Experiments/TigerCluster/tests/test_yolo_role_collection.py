@@ -46,6 +46,7 @@ def test_real_launcher_pid_and_output_join(tmp_path, mode, role):
     row['artifactDigests'] = {role: 'sha256:'+'b'*64}
     if role == 'Merge':
         row.update(runnerKind='native-yolo-postprocess', realCompute='false',
+                   loadCompleted='false', warmupCompleted='false',
                    nodeProviderAssignments='', gpuUuid='', cudaVisibleDevices='')
     else:
         backend = 'CPUExecutionProvider' if mode == 'local-cpu' else 'CUDAExecutionProvider'

@@ -157,7 +157,10 @@ def container_command(profile: dict, bundle: Path, home: Path, public: Path,
                 "NDN_CLIENT_TRANSPORT=unix:///node/nfd.sock",
                 "NDNSF_CONFIG=" + role_home + "/session.conf",
                 "NDNSF_CONTROLLER_CERT_FILE=/config/controller.cert",
-                "NDN_LOG=ndn_service_framework.*=ERROR"]
+                # RuntimeEvidence starts at ndn-cxx's NONE level.  Keep the
+                # application framework quiet while explicitly retaining the
+                # backend-owned dependency records required by the collector.
+                "NDN_LOG=ndn_service_framework.*=ERROR:ndnsf.di.RuntimeEvidence=WARN"]
     if app is not None:
         command += ["NDNSF_APP_LAYOUT=layered-v1"]
     if gpu:

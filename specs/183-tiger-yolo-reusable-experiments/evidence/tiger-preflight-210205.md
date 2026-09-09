@@ -98,11 +98,24 @@ not provide the independent `localSif` promotion verdict required before a
 Tiger submission. This gate is currently the immediate software-side reason a
 normal Spec183 submission does not start.
 
+## Local exact-SIF closure after this preflight
+
+After the preflight, run `minindn-local-20260909-v58-final` executed the same
+v22 base SIF and v32 read-only APP through the maintained `submit.py local`
+collector. It returned `status=PASS` and
+`qualification=NORMAL_EXPERIMENT_PASS` for two real MiniNDN CPU requests, with
+the `[1,50,6]` numerical oracle, nine dependency edges per request, four native
+providers, and clean process cleanup. The complete receipt is recorded in
+[minindn-local-v58-exact-sif-pass.md](minindn-local-v58-exact-sif-pass.md).
+This closes the local exact-SIF execution evidence gap only; it does not change
+the remote staging or GPU qualification state described above.
+
 ## Verdict
 
 The Tiger GPU, Apptainer version, scratch write, raw cross-node TCP, APP import,
 and writable NFD socket path are now evidenced. The exact v22 base SIF has not
-yet completed staging, and no single-node or two-node NDNSF-DI + YOLO request was
-run. The `localSif` gate must be closed after the final local empty-HOME/scratch
-run, then the staged v22 SIF can be checked on Tiger. T012.b, T013.a, and T014.a
-therefore remain open.
+yet completed remote staging, and no single-node or two-node NDNSF-DI + YOLO
+request was run on Tiger. The v58 local exact-SIF collector PASS is not the
+independent empty-HOME/scratch `localSif` promotion verdict; that isolation
+check must still run before the staged v22 SIF can be checked on Tiger.
+T012.b, T013.a, and T014.a therefore remain open.

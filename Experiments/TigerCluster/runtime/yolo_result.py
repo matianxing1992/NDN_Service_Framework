@@ -134,17 +134,58 @@ def validate_dependency_edges(logs_by_role, edges, *, session_id):
     if (not isinstance(edges, list) or not 0 < len(edges) <= 64
             or not isinstance(session_id, str) or not session_id or any(c.isspace() for c in session_id)):
         raise EvidenceError('DEPENDENCY_EXPECTED_CONTRACT')
+    def native_name(value):
+        """Canonicalize numeric NNI components emitted by ndn-cxx.
+
+        The Python public projection renders integer path components as
+        decimal URI text (for example ``ATTEMPT/1``), while ndn-cxx's
+        ``appendNumber`` renders the same component as an escaped NNI byte
+        (``ATTEMPT/%01``).  They identify the same planned Name; normalize
+        only the labelled numeric fields and leave opaque components exact.
+        """
+        labels = {'ATTEMPT', 'ROUND', 'RANK', 'MICROBATCH'}
+        parts = value.split('/')
+        for index in range(len(parts) - 1):
+            if parts[index] in labels and re.fullmatch(r'[0-9]+', parts[index + 1]):
+                number = int(parts[index + 1])
+                width = max(1, (number.bit_length() + 7) // 8)
+                parts[index + 1] = ''.join(
+                    f'%{byte:02X}' for byte in number.to_bytes(width, 'big'))
+        return '/'.join(parts)
+
+    def edge_key(edge):
+        return tuple(native_name(edge[k]) if k == 'planned_name' else edge[k]
+                     for k in sorted(edge_fields))
+
     keys = []
     for edge in edges:
         if (not isinstance(edge, dict) or set(edge) != edge_fields
                 or any(not isinstance(v, str) or not v or any(c.isspace() for c in v) for v in edge.values())
                 or not edge['planned_name'].startswith('/') or edge['producer'] == edge['consumer']):
             raise EvidenceError('DEPENDENCY_EXPECTED_EDGE')
-        key = tuple(edge[k] for k in sorted(edge_fields))
+        key = edge_key(edge)
         if key in keys:
             raise EvidenceError('DEPENDENCY_EXPECTED_DUPLICATE')
         keys.append(key)
     marker = 'NDNSF_DI_DEPENDENCY_OBJECT '
+    # V3 exact signed Data is the production transport for declared tensor
+    # endpoints.  The native IO keeps its more precise direction names;
+    # normalize them here to the same publish/fetch pair semantics used by
+    # the legacy DATA_V1 segment path.
+    direction_kind = {
+        'publish-ndnsf-data-v1': 'publish',
+        'fetch-ndnsf-data-v1': 'fetch',
+        'publish-exact-ndn': 'publish',
+        'fetch-exact-ndn': 'fetch',
+    }
+    expected_sessions = {session_id.strip('/')}
+    # Native providers currently log the request identity and carry the
+    # attempt epoch in the signed plan, while the public assignment contract
+    # appends ``/attempt/<n>`` to its session identity.  Accept that producer
+    # form only as the exact request prefix; an unrelated request still fails
+    # the binding.
+    if '/attempt/' in session_id:
+        expected_sessions.add(session_id.strip('/').rsplit('/attempt/', 1)[0])
     records = {}
     log_digests = {}
     for role, filename in logs_by_role.items():
@@ -165,26 +206,31 @@ def validate_dependency_edges(logs_by_role, edges, *, session_id):
                 row[key] = value
             if set(row) != fields:
                 raise EvidenceError('DEPENDENCY_LOG_FIELDS')
-            if row['session'] != session_id:
+            # Request names are URI-like and production native logs retain
+            # the leading slash, while the public assignment contract uses
+            # the slash-free canonical form.  Compare the canonical content
+            # without weakening the request/session binding.
+            if row['session'].strip('/') not in expected_sessions:
                 continue
-            key = tuple(row[k] for k in sorted(edge_fields))
+            key = edge_key(row)
             if key not in keys:
                 raise EvidenceError('DEPENDENCY_UNPLANNED_EDGE')
             direction = row['direction']
-            expected_role = row['producer'] if direction == 'publish-ndnsf-data-v1' else row['consumer']
-            if (direction not in ('publish-ndnsf-data-v1', 'fetch-ndnsf-data-v1')
+            kind = direction_kind.get(direction)
+            expected_role = row['producer'] if kind == 'publish' else row['consumer']
+            if (kind is None
                     or role != expected_role or row['status'] != 'ok'
                     or not re.fullmatch(r'[1-9][0-9]{0,19}', row['payload_bytes'])):
                 raise EvidenceError('DEPENDENCY_TRANSPORT_OR_OWNER')
-            pair = (key, direction)
+            pair = (key, kind)
             if pair in records:
                 raise EvidenceError('DEPENDENCY_DUPLICATE_OBSERVATION')
             if int(row['payload_bytes']) >= 2**64:
                 raise EvidenceError('DEPENDENCY_BYTES_RANGE')
             records[pair] = int(row['payload_bytes'])
     for key in keys:
-        published = records.get((key, 'publish-ndnsf-data-v1'))
-        fetched = records.get((key, 'fetch-ndnsf-data-v1'))
+        published = records.get((key, 'publish'))
+        fetched = records.get((key, 'fetch'))
         if published is None or published != fetched:
             raise EvidenceError('DEPENDENCY_PAIR_MISSING_OR_BYTES')
     return dict(edgeCount=len(keys), logDigests=log_digests, qualification='DEPENDENCY_COMPONENT_ONLY')
@@ -1217,11 +1263,14 @@ def validate_native_observation(payload, *, provider, role, request_id, attempt,
             or runner_kind not in ('onnxruntime-cpu', 'onnxruntime-cuda', 'native-yolo-postprocess')):
         raise EvidenceError('NATIVE_EXPECTED_BINDING')
     row = decode_native_observation(payload)
+    is_native_merge = runner_kind == 'native-yolo-postprocess'
     expected = dict(providerName=provider, roles=[role], requestId=request_id,
         attemptEpoch=attempt, planDigest=plan_digest, processId=pid, runnerKind=runner_kind,
-        executionCompleted=True, exactForwardCacheHit=False, loadCompleted=True,
-        warmupCompleted=True, cpuFallbackUsed=False,
-        realCompute=runner_kind != 'native-yolo-postprocess')
+        executionCompleted=True, exactForwardCacheHit=False,
+        # Merge is a native postprocess owner; it intentionally has no ORT
+        # model load or warmup lifecycle.  ORT roles must report both stages.
+        loadCompleted=not is_native_merge, warmupCompleted=not is_native_merge,
+        cpuFallbackUsed=False, realCompute=not is_native_merge)
     if any(row.get(k) != v for k,v in expected.items()):
         raise EvidenceError('NATIVE_EXECUTION_BINDING_OR_STATUS')
     # These fields come from the native Selection assembly. Require their
