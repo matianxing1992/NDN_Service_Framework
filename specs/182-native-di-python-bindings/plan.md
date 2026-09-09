@@ -1,6 +1,6 @@
 # Implementation Plan: Native NDNSF-DI with Optional Python Bindings
 
-**Branch**: Experimental | **Revision**: 74 | **Date**: 2026-09-09
+**Branch**: Experimental | **Revision**: 75 | **Date**: 2026-09-09
 **Status**: IN_PROGRESS / 当前实现与验收状态见 tasks.md 的 Task Progress Registry 和 Current Checkpoint
 **Spec**: [spec.md](spec.md)
 
@@ -810,6 +810,18 @@ elapsed `255.25s`，SHA 为 `94b94c8ca5be3b3eca9c0107213f39db35a83b34d90ae8b8142
 `ldd` 无 `not found`。本批只关闭 standalone Provider 的 build/link boundary；Provider `--serve`、
 独立 requester/Provider transport、maintained caller/no-Python 和 T016 仍需下一批真实运行。
 详见 [R10-B50 evidence](evidence/r10-b50-provider-link-closure-20260909.md)。
+
+### R10-B53 Native Plan and ONNX Session Smoke 2026-09-09
+
+本批将 R10-B50 的 Provider source closure 推进到本地原生 plan/session 行为，直接运行
+四角色 `spec174-exact-bundle-gpu-v5`。86/86 个 system-first `-j2` 任务构建成功；首次
+运行保留 `/usr/local` framework loader 缺少 `ServiceUser::publishSignedAppData` 的
+`rc=127`，候选库重试又暴露相对 artifact cwd 的 `rc=2`。改变 `LD_LIBRARY_PATH` 并从
+bundle 根目录重试后，四个 ONNX role 全部执行，发布 4 个 dependency objects、产生
+440 bytes output，marker `NDNSF_DI_NATIVE_PLAN_ONNX_SMOKE_OK`，exit `0`。官方
+`review-agent` 五 lane 检查 source/target、loader 身份和 artifact 路径，没有 P1/P2/P3；
+两次失败均在重试前写入 failure-log。该批不代表 Provider `--serve`、requester/Provider
+transport、maintained caller/no-Python 或 T016 qualification；详见 [R10-B53 evidence](evidence/r10-b53-plan-onnx-smoke-20260909.md)。
 
 ### R10-B52 Native Requester CLI Build and Fail-Closed Boundary 2026-09-09
 

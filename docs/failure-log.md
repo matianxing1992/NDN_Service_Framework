@@ -2876,3 +2876,26 @@ are still unobserved.
   `NativePlanProjectionBuilder::build`, `NativeGroupKeyAdmission`, and
   `NativeGroupProjectionBuilder::build`. The definitions are in five additional native source
   files recorded in the R10-B50 Changed gate; no Provider process started.
+
+## 2026-09-09 — Spec182 R10-B53 plan/ONNX smoke runtime loader boundary
+
+- **Area**: local `di-native-plan-onnx-smoke` executable after its source/link build.
+- **First boundary**: the target compiled and linked 86/86 tasks, but process startup failed with
+  `symbol lookup error: undefined symbol: ServiceUser::publishSignedAppData`, exit `127`, before
+  plan parsing or model execution. `ldd` resolved `libndn-service-framework.so.0.1.0` from
+  `/usr/local/lib`; that library does not export the required symbol. No protocol or model result
+  was observed.
+- **Interpretation**: this is a runtime shared-library identity/RUNPATH mismatch between the
+  Spec182 build tree and `/usr/local`, not an ONNX or Provider behavior failure. The raw command,
+  loader output and build log are retained under `.codex-tmp/spec182-r10-b53-plan-onnx-smoke-20260909/`.
+- **Changed gate before retry**: verify the candidate build-tree `libndn-service-framework.so`
+  exports the symbol and run the same binary with an explicit candidate `LD_LIBRARY_PATH`; compare
+  `ldd` paths and symbol lookup before classifying any smoke result. Do not overwrite the first
+  `rc=127` log or treat a corrected loader path as a protocol qualification.
+
+- **Follow-up boundary**: with the candidate library explicitly loaded, the process passed dynamic
+  symbol resolution but failed during ONNX model load because manifest artifact paths are relative
+  (`artifacts/qwen-native-tracer-backbone.onnx`) and the retry was launched from the repository
+  root. Exit `2`; no role executed. The output is retained as `smoke-candidate-lib.log` in the same
+  raw run directory. The changed gate is to launch from the bundle root and recheck `ldd` selects
+  the candidate framework library before interpreting model/session behavior.
