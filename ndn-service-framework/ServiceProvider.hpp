@@ -1960,9 +1960,14 @@ namespace ndn_service_framework{
             ConfigManager m_configManager;
 
             // SVS may replay an older publication when a later sequence is
-            // synchronized. Freshness therefore binds both producer session
-            // and the highest accepted sequence number.
+            // synchronized. Freshness binds producer session and each
+            // publication name's highest accepted sequence.  The sequence
+            // frontier is per name because independent valid publications can
+            // arrive out of order on separate face/event-loop paths; a global
+            // frontier would discard an unseen lower-sequence publication.
             std::map<ndn::Name, std::pair<int, ndn::svs::SeqNo>> m_sessionIDMap;
+            std::map<ndn::Name, std::map<ndn::Name, ndn::svs::SeqNo>>
+                m_publicationSeqMap;
 
             std::mutex svs_mutex;
 

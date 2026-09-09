@@ -15179,17 +15179,29 @@ opaque_selection_committed:
 
         ndn::Name basePrefix = producerPrefix.getPrefix(-1); // 去掉最后一个component作为key
 
+        std::lock_guard<std::mutex> lock(svs_mutex);
         auto it = m_sessionIDMap.find(basePrefix);
-        if (it != m_sessionIDMap.end()) {
-            if (it->second.first > sessionID ||
-                (it->second.first == sessionID && subscription.seqNo <= it->second.second)) {
-                return false;
-            }
+        if (it != m_sessionIDMap.end() && it->second.first > sessionID) {
+            return false;
         }
 
-        // A higher producer session resets the sequence frontier; within the
-        // same session only strictly newer publications are fresh.
-        m_sessionIDMap[basePrefix] = {sessionID, subscription.seqNo};
+        // A higher producer session resets all per-name frontiers.  Within a
+        // session, independent publications may legitimately arrive out of
+        // order; reject only an older sequence for the same publication name.
+        if (it == m_sessionIDMap.end() || it->second.first < sessionID) {
+            m_sessionIDMap[basePrefix] = {sessionID, subscription.seqNo};
+            m_publicationSeqMap[basePrefix].clear();
+        }
+        else {
+            it->second.second = std::max(it->second.second, subscription.seqNo);
+        }
+
+        auto& byName = m_publicationSeqMap[basePrefix];
+        const auto publicationIt = byName.find(subscription.name);
+        if (publicationIt != byName.end() && subscription.seqNo <= publicationIt->second) {
+            return false;
+        }
+        byName[subscription.name] = subscription.seqNo;
         return true;
     }
 
