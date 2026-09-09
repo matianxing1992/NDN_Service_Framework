@@ -1167,6 +1167,15 @@ T017 的 evidence/development-handoff.md 包含 exact commit、clean source clos
 
 ## Current Execution Checkpoint
 
+2026-09-09 R10-B71 PO-001 stream owner recheck / **CLOSED_FOR_VALIDATION (isolated owner boundary)**：
+使用新的临时 artifact hashes 在 MiniNDN owner namespace 中启动 PO-001 stream，collector
+返回 `evaluation.status=PASS`、`observation.complete=true`、无 failures，业务 marker
+`SPEC182_NATIVE_DI_REQUEST_RESULT_OK` 存在。当前 integration target 在 `7505fcad` 上以
+system-first `-j2` 重查通过。该结果只证明隔离 native integration process 与已有
+in-process real Provider fixture 及 collector 完整性，不证明独立 `DI_NativeRequester`/
+`di-native-provider` 跨进程传输、两轮会话、I02--I08、PO-002--PO-014、no-Python 或 T016。
+详见 [R10-B71 evidence](evidence/r10-b71-po001-stream-owner-pass-20260909.md)。
+
 2026-09-09 R10-B70 native requester identity configuration / **CLOSED_FOR_VALIDATION (CLI composition boundary)**：
 独立 `DI_NativeRequester` 现在读取可选 `request.application_request_id` 并传入
 `NativeRequestOptions.applicationRequestId`；权威 Core request ID 仍只由 native owner 分配。
