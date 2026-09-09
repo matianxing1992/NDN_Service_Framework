@@ -502,9 +502,64 @@ struct NativeIngressCaseResult
   std::string statusMessage;
 };
 
-NativeIngressCaseResult
-runNativeIngressCase(bool mismatch, bool useRepositoryReference = false)
+enum class NativeIngressReferenceCase
 {
+  Inline,
+  Valid,
+  Missing,
+  SizeMismatch,
+  Malformed,
+};
+
+class ScopedNativeIngressFetchTimeout
+{
+public:
+  explicit ScopedNativeIngressFetchTimeout(bool enabled)
+    : m_enabled(enabled)
+  {
+    if (!m_enabled) {
+      return;
+    }
+    if (const char* previous = std::getenv("NDNSF_REQUEST_LARGE_FETCH_TIMEOUT_MS")) {
+      m_hadPrevious = true;
+      m_previous = previous;
+    }
+    // A genuinely missing object otherwise waits through the default 30 s
+    // transport budget, which exceeds this fixture's 3 s event-loop pump.
+    // Keep the production fallback path intact while bounding this negative
+    // oracle to a deterministic local fetch deadline.
+    ::setenv("NDNSF_REQUEST_LARGE_FETCH_TIMEOUT_MS", "1000", 1);
+  }
+
+  ScopedNativeIngressFetchTimeout(const ScopedNativeIngressFetchTimeout&) = delete;
+  ScopedNativeIngressFetchTimeout& operator=(const ScopedNativeIngressFetchTimeout&) = delete;
+
+  ~ScopedNativeIngressFetchTimeout()
+  {
+    if (!m_enabled) {
+      return;
+    }
+    if (m_hadPrevious) {
+      ::setenv("NDNSF_REQUEST_LARGE_FETCH_TIMEOUT_MS", m_previous.c_str(), 1);
+    }
+    else {
+      ::unsetenv("NDNSF_REQUEST_LARGE_FETCH_TIMEOUT_MS");
+    }
+  }
+
+private:
+  bool m_enabled = false;
+  bool m_hadPrevious = false;
+  std::string m_previous;
+};
+
+NativeIngressCaseResult
+runNativeIngressCase(
+  bool mismatch,
+  NativeIngressReferenceCase referenceCase = NativeIngressReferenceCase::Inline)
+{
+  ScopedNativeIngressFetchTimeout fetchTimeout(
+    referenceCase == NativeIngressReferenceCase::Missing);
   test::BootstrapProfile profile;
   profile.serviceName = ndn::Name("/Inference/NativeIngress");
   test::NdnsfIntegrationEnvironment environment(profile);
@@ -587,7 +642,7 @@ runNativeIngressCase(bool mismatch, bool useRepositoryReference = false)
   // key wrapping.  The Provider receives the exact test key through the
   // existing test-only receive-key hook; SegmentFetcher and AES-GCM still run
   // through the production assignment-preparation path.
-  const std::string inputText = useRepositoryReference
+  const std::string inputText = referenceCase != NativeIngressReferenceCase::Inline
     ? "native-ingress-repository-input" : "native-ingress-request";
   std::string requestWireText = inputText;
   const std::vector<uint8_t> artifactPayload(12000, 0x5a);
@@ -638,53 +693,63 @@ runNativeIngressCase(bool mismatch, bool useRepositoryReference = false)
         environment.userFace().put(*data);
   }
 
-  if (useRepositoryReference) {
+  if (referenceCase != NativeIngressReferenceCase::Inline) {
     const std::vector<uint8_t> inputPayload(inputText.begin(), inputText.end());
     ndn::Name inputDataName(requesterName);
     inputDataName.append("NDNSF").append("LARGE-DATA").append(serviceName);
     inputDataName.append(requestId).append("native-request-input");
     inputDataName.appendVersion();
-    const auto inputAdText = inputDataName.toUri() + "|REQUEST-LARGE|" +
-                             serviceName.toUri();
-    const ndn::Buffer inputAd(
-      reinterpret_cast<const uint8_t*>(inputAdText.data()), inputAdText.size());
-    const auto encryptedInput = hybridAesGcmEncrypt(
-      artifactKey.key,
-      ndn::span<const uint8_t>(inputPayload.data(), inputPayload.size()),
-      ndn::span<const uint8_t>(inputAd.data(), inputAd.size()));
-    HybridMessageEnvelope inputEnvelope;
-    inputEnvelope.setKeyId(artifactKey.keyId);
-    inputEnvelope.setEpochId(artifactKey.epochId);
-    inputEnvelope.setMessageType("REQUEST-LARGE");
-    inputEnvelope.setNonce(encryptedInput.nonce);
-    inputEnvelope.setCipherText(encryptedInput.ciphertext);
-    inputEnvelope.setAuthTag(encryptedInput.tag);
-    const auto inputBlock = inputEnvelope.WireEncode();
-    const ndn::Buffer inputWire(inputBlock.data(), inputBlock.size());
-    const auto inputSegments = artifactSegmenter.segment(
-      ndn::span<const uint8_t>(inputWire.data(), inputWire.size()),
-      inputDataName,
-      64,
-      ndn::time::milliseconds(60000));
-    if (inputSegments.empty()) {
-      throw std::runtime_error("native ingress test produced no input segments");
-    }
-    for (const auto& data : inputSegments) {
-      environment.user().cacheDataForTest(
-        *data, ndn::time::milliseconds(60000));
-      environment.userFace().put(*data);
+    if (referenceCase == NativeIngressReferenceCase::Valid ||
+        referenceCase == NativeIngressReferenceCase::SizeMismatch) {
+      const auto inputAdText = inputDataName.toUri() + "|REQUEST-LARGE|" +
+                               serviceName.toUri();
+      const ndn::Buffer inputAd(
+        reinterpret_cast<const uint8_t*>(inputAdText.data()), inputAdText.size());
+      const auto encryptedInput = hybridAesGcmEncrypt(
+        artifactKey.key,
+        ndn::span<const uint8_t>(inputPayload.data(), inputPayload.size()),
+        ndn::span<const uint8_t>(inputAd.data(), inputAd.size()));
+      HybridMessageEnvelope inputEnvelope;
+      inputEnvelope.setKeyId(artifactKey.keyId);
+      inputEnvelope.setEpochId(artifactKey.epochId);
+      inputEnvelope.setMessageType("REQUEST-LARGE");
+      inputEnvelope.setNonce(encryptedInput.nonce);
+      inputEnvelope.setCipherText(encryptedInput.ciphertext);
+      inputEnvelope.setAuthTag(encryptedInput.tag);
+      const auto inputBlock = inputEnvelope.WireEncode();
+      const ndn::Buffer inputWire(inputBlock.data(), inputBlock.size());
+      const auto inputSegments = artifactSegmenter.segment(
+        ndn::span<const uint8_t>(inputWire.data(), inputWire.size()),
+        inputDataName,
+        64,
+        ndn::time::milliseconds(60000));
+      if (inputSegments.empty()) {
+        throw std::runtime_error("native ingress test produced no input segments");
+      }
+      for (const auto& data : inputSegments) {
+        environment.user().cacheDataForTest(
+          *data, ndn::time::milliseconds(60000));
+        environment.userFace().put(*data);
+      }
     }
 
-    // The only request bytes on the wire are the reference envelope; the
-    // published plaintext is available only through Provider fetch/decrypt.
-    std::ostringstream referenceEnvelope;
-    referenceEnvelope << "{\"input_reference\":{\"dataName\":\""
-                      << inputDataName.toUri()
-                      << "\",\"plaintextSize\":" << inputPayload.size()
-                      << "},\"input_transport\":\"REPO_REF\","
-                         "\"schema\":\"ndnsf-di-request-envelope-v2\","
-                         "\"schema_version\":2}";
-    requestWireText = referenceEnvelope.str();
+    if (referenceCase == NativeIngressReferenceCase::Malformed) {
+      requestWireText = "{\"schema\":\"ndnsf-di-request-envelope-v2\"";
+    }
+    else {
+      // The only request bytes on the wire are the reference envelope; the
+      // published plaintext is available only through Provider fetch/decrypt.
+      const auto declaredSize = referenceCase == NativeIngressReferenceCase::SizeMismatch
+        ? inputPayload.size() + 1 : inputPayload.size();
+      std::ostringstream referenceEnvelope;
+      referenceEnvelope << "{\"input_reference\":{\"dataName\":\""
+                        << inputDataName.toUri()
+                        << "\",\"plaintextSize\":" << declaredSize
+                        << "},\"input_transport\":\"REPO_REF\","
+                           "\"schema\":\"ndnsf-di-request-envelope-v2\","
+                           "\"schema_version\":2}";
+      requestWireText = referenceEnvelope.str();
+    }
   }
 
   environment.providerPubSub().subscribeToProducer(
@@ -875,13 +940,59 @@ BOOST_AUTO_TEST_CASE(ProductionIngressRunsNativePostSelectionAssignmentFetch)
 
 BOOST_AUTO_TEST_CASE(ProductionIngressRunsNativeRepositoryReferenceIntoProvider)
 {
-  const auto result = runNativeIngressCase(false, true);
+  const auto result = runNativeIngressCase(
+    false, NativeIngressReferenceCase::Valid);
   BOOST_CHECK(result.requestObserved);
   BOOST_CHECK(result.assignmentFetchCompleted);
   BOOST_CHECK(result.handlerEntered);
   BOOST_CHECK(result.providerInputMatches);
   BOOST_CHECK(result.responseReceived);
   BOOST_CHECK(!result.statusFailed);
+  BOOST_CHECK(!result.timedOut);
+}
+
+BOOST_AUTO_TEST_CASE(ProductionIngressRejectsMissingNativeRepositoryReference)
+{
+  const auto result = runNativeIngressCase(
+    false, NativeIngressReferenceCase::Missing);
+  BOOST_CHECK(result.requestObserved);
+  BOOST_CHECK(result.assignmentFetchCompleted);
+  BOOST_CHECK(result.handlerEntered);
+  BOOST_CHECK(!result.providerInputMatches);
+  BOOST_CHECK(result.statusFailed);
+  BOOST_CHECK(result.statusMessage.find(
+    "failed to fetch native DI request input reference") != std::string::npos);
+  BOOST_CHECK(!result.responseReceived);
+  BOOST_CHECK(!result.timedOut);
+}
+
+BOOST_AUTO_TEST_CASE(ProductionIngressRejectsNativeRepositoryReferenceSizeMismatch)
+{
+  const auto result = runNativeIngressCase(
+    false, NativeIngressReferenceCase::SizeMismatch);
+  BOOST_CHECK(result.requestObserved);
+  BOOST_CHECK(result.assignmentFetchCompleted);
+  BOOST_CHECK(result.handlerEntered);
+  BOOST_CHECK(!result.providerInputMatches);
+  BOOST_CHECK(result.statusFailed);
+  BOOST_CHECK_EQUAL(result.statusMessage,
+                    "native DI request input plaintext size mismatch");
+  BOOST_CHECK(!result.responseReceived);
+  BOOST_CHECK(!result.timedOut);
+}
+
+BOOST_AUTO_TEST_CASE(ProductionIngressRejectsMalformedNativeRepositoryEnvelope)
+{
+  const auto result = runNativeIngressCase(
+    false, NativeIngressReferenceCase::Malformed);
+  BOOST_CHECK(result.requestObserved);
+  BOOST_CHECK(result.assignmentFetchCompleted);
+  BOOST_CHECK(result.handlerEntered);
+  BOOST_CHECK(!result.providerInputMatches);
+  BOOST_CHECK(result.statusFailed);
+  BOOST_CHECK(result.statusMessage.find(
+    "malformed native DI request envelope") != std::string::npos);
+  BOOST_CHECK(!result.responseReceived);
   BOOST_CHECK(!result.timedOut);
 }
 
