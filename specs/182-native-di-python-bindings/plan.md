@@ -1,6 +1,6 @@
 # Implementation Plan: Native NDNSF-DI with Optional Python Bindings
 
-**Branch**: Experimental | **Revision**: 56 | **Date**: 2026-09-09
+**Branch**: Experimental | **Revision**: 57 | **Date**: 2026-09-09
 **Status**: IN_PROGRESS / 当前实现与验收状态见 tasks.md 的 Task Progress Registry 和 Current Checkpoint
 **Spec**: [spec.md](spec.md)
 
@@ -566,6 +566,23 @@ fixture/driver/oracle ownership；`AGENTS.md` 也已加入同一执行契约，�
 工具和共享批次契约的一致描述；本批 `CLOSED_FOR_VALIDATION` 只适用于文档规则，不改变
 T004/T008/T010/T011/T013/T016/T017 状态，也不替代 review-agent 实际执行或产品资格证据。
 详见 [R10-B28 evidence](evidence/r10-b28-workflow-authority-alignment-20260909.md)。
+
+### R10-B29 Runner Multi-Process Lifecycle 2026-09-09
+
+T016 的 canonical runner 已可校验多进程 manifest，却此前只启动第一个 process，且没有
+传递每个 process 的显式 NDN 配置环境。该批按 native-isolation-design 的 process/node
+contract 收敛这一 harness 边界：`make_launch` 可按声明 ID 生成命令；`run_case` 为每个
+requester/provider 等业务进程核对并持有 node namespace FD，使用显式环境，加入同一
+supervisor process group，按统一 run/cleanup deadline 进行 TERM→KILL，并保留每进程
+trace/output/returncode 后归并 canonical inputs。collector 对共享 executable 只有在每个
+声明进程都有成功 exec 时才报告完整 role coverage，避免一个 requester exec 覆盖缺失
+provider。新增三个 Python harness fixtures；36 个 `test_spec182_native_closure.py` cases、
+`py_compile` 和 `git diff --check` 通过。没有 native build 或 MiniNDN 运行；真实
+requester/provider transport、I02--I08、maintained caller/no-Python 和 T016 仍开放。
+
+本批在 T014-A/B 范围内 `CLOSED_FOR_VALIDATION`，不改变 T014/T016 的 `PARTIAL` 状态。
+官方 `review-agent` 的五 lane 只读审查没有留下 P1/P2/P3；证据见
+[R10-B29 evidence](evidence/r10-b29-runner-multiprocess-lifecycle-20260909.md)。
 
 ### R8-SKILL Review Coverage Contract 2026-09-09
 

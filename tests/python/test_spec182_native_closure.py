@@ -185,6 +185,66 @@ def test_external_harness_excluded(tmp_path: Path) -> None:
     assert all(process["role"] != "harness" for process in case["isolation"]["processes"])
 
 
+def test_multi_process_manifest_selects_each_native_process_and_environment(tmp_path: Path) -> None:
+    manifest = _manifest(tmp_path)
+    document = json.loads(manifest.read_text(encoding="utf-8"))
+    document["cases"][0]["isolation"]["processes"].append({
+        "id": "provider", "role": "provider", "executable": "/bin/true",
+        "argv": ["/probe-root/bin/true", "provider"],
+        "env": {"NDN_CLIENT_CONF": "/probe-root/etc/client.conf"},
+    })
+    manifest.write_text(json.dumps(document), encoding="utf-8")
+    case = runner.load_case(manifest, "positive")
+    staged = runner.stage_root(case, tmp_path / "run")
+    command = runner.make_launch(case, staged, {"id": ""},
+                                 tmp_path / "run/provider.trace", "provider")
+    assert command[-2:] == ["/probe-root/bin/true", "provider"]
+    assert runner._process_environment(case["isolation"]["processes"][1])["NDN_CLIENT_CONF"] \
+        == "/probe-root/etc/client.conf"
+
+
+def test_run_case_keeps_all_process_records_when_observer_trace_is_missing(
+        tmp_path: Path, monkeypatch) -> None:
+    manifest = _manifest(tmp_path)
+    document = json.loads(manifest.read_text(encoding="utf-8"))
+    document["cases"][0]["isolation"]["processes"].append({
+        "id": "provider", "role": "provider", "executable": "/bin/true",
+        "argv": ["/probe-root/bin/true", "provider"], "env": {},
+    })
+    manifest.write_text(json.dumps(document), encoding="utf-8")
+    case = runner.load_case(manifest, "positive")
+    staged = runner.stage_root(case, tmp_path / "run")
+    monkeypatch.setattr(runner, "make_launch",
+                        lambda *_args, **_kwargs: ["/bin/true"])
+    result = runner.run_case(case, staged, tmp_path / "run")
+    assert result["returncodes"] == [0, 0]
+    assert [process["id"] for process in result["processes"]] == ["requester", "provider"]
+    assert Path(result["trace"]).is_file()
+
+
+def test_trace_observes_roles_for_all_declared_processes(tmp_path: Path) -> None:
+    case = runner.load_case(_manifest(tmp_path), "positive")
+    case["isolation"]["processes"].append({
+        "id": "provider", "role": "provider", "executable": "/bin/true",
+        "argv": ["/probe-root/bin/true", "provider"], "env": {},
+    })
+    trace = tmp_path / "trace.txt"
+    trace.write_text(
+        '123 execve("/probe-root/bin/true", ["true"], 0x0) = 0\n'
+        '124 execve("/probe-root/bin/true", ["true", "provider"], 0x0) = 0\n'
+        '123 exit_group(0) = ?\n124 exit_group(0) = ?\n', encoding="utf-8")
+    observation = runner.collect_trace(case, {
+        "trace": str(trace), "stdout": str(tmp_path / "stdout.log"),
+        "returncode": 0, "timedOut": False, "supervisorPid": 123,
+        "command": ["strace", "bwrap", "--unshare-all"],
+        "processes": [
+            {"id": "requester", "role": "requester", "executable": "/bin/true", "pid": 123},
+            {"id": "provider", "role": "provider", "executable": "/bin/true", "pid": 124},
+        ],
+    })
+    assert observation["roles"] == ["requester", "provider"]
+
+
 def _node_context(tmp_path: Path, *, start_ticks: int | None = None) -> tuple[dict, socket.socket]:
     socket_path = tmp_path / "nfd.sock"
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
