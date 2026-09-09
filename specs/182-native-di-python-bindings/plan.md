@@ -1,6 +1,6 @@
 # Implementation Plan: Native NDNSF-DI with Optional Python Bindings
 
-**Branch**: Experimental | **Revision**: 51 | **Date**: 2026-09-09
+**Branch**: Experimental | **Revision**: 53 | **Date**: 2026-09-09
 **Status**: IN_PROGRESS / 当前实现与验收状态见 tasks.md 的 Task Progress Registry 和 Current Checkpoint
 **Spec**: [spec.md](spec.md)
 
@@ -509,6 +509,26 @@ request/result、Python/C++ parity 或 qualification PASS。共享 `batch-qualit
 分配依据是文档规则、批次结果字段和模板示例共享同一 reference；五 lane 对文档变更均
 记录为 `N/A` 并说明理由。独立出口是定向链接/格式检查、Spec validator 和安装副本 hash
 一致性；真实 C++ 请求和 T016 资格仍由产品任务负责。
+
+### R10-B25 DI_NativeRequester Build and CLI Boundary 2026-09-09
+
+R10-B24 建立了现有 native suite 基线，但当前 `build-nac182` 尚未包含独立
+`DI_NativeRequester` 可执行文件。本批只重建已登记的 `examples/DI_NativeRequester.cpp`
+Waf target，并执行 `--help`、usage 和错误 schema 的命令级检查。由于 R10-B24 的
+`vmstat` 观察出现持续换页，按资源策略使用 `-j2`；不并入 unit/integration 全量构建，
+也不把 CLI smoke 写成真实 Core/Provider 请求结果。
+
+分配依据固定为同一 executable target、同一 source closure、同一 CLI oracle 和同一
+构建出口。独立出口是 target 成功链接、CLI 解析边界可观察且错误配置 fail-closed；真实
+模型、Provider、跨进程请求和 T016 资格仍保持开放。
+
+本批已按登记范围完成：修正静态检查脚本后，`DI_NativeRequester` 目标使用 system-first
+环境和 `-j2` 构建成功（Waf 报告 `1m17.740s`），`ldd` 无缺失依赖；`--help` 返回 0，
+空参数返回 2，错误 schema 返回 1 且不产生输出文件。构建实际输出为
+`.codex-tmp/spec182-r4-b2/build/examples/DI_NativeRequester`。第二次 `vmstat` 样本有
+`si=372`、`so=0`，下一次 native build 继续采用 `-j2`，除非新的资源观察证明可升档。
+这些结果只关闭 executable/CLI wiring boundary，不关闭真实 Core/Provider 请求、维护调用方、
+跨进程、I02--I08、no-Python 或 T016；详见 [R10-B25 evidence](evidence/r10-b25-native-requester-cli-20260909.md)。
 
 ### R8-SKILL Review Coverage Contract 2026-09-09
 
