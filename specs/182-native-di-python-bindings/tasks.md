@@ -147,6 +147,12 @@ ACK-driven planner/lifecycle 分支保持独立。源分支检查、py_compile�
 scoped diff check 和设计校验通过；未执行网络、Provider、跨进程或 T016。该局部出口
 `CLOSED_FOR_VALIDATION`，详见 [R10-B3 evidence](evidence/r10-b3-yolo-native-reference-caller-20260909.md)。
 
+2026-09-09 R10-B4 Qwen native reference caller / **PARTIAL**：Qwen native helper 的 typed
+context bundle 现发布为加密 REPO_REF 后进入 C++ requester，generation options、observer
+与 conversation fail-closed 保持不变。相关源检查、py_compile、25 个兼容/legacy 测试、
+scoped diff check 和设计校验通过；真实 Provider/stream/conversation/cross-process/T016
+仍开放。详见 [R10-B4 evidence](evidence/r10-b4-qwen-native-reference-caller-20260909.md)。
+
 2026-09-09 R10-B2 native REPO_REF facade / **PARTIAL**：公开 `APPClient` 与 `InferenceClient`
 现在可以把 journal 已发布的 `LargeDataReference` 以 canonical JSON 送入 C++ native
 requester，并明确设置 `REPOSITORY_REFERENCE`；发布摘要绑定、planner 绕过、observer 和
