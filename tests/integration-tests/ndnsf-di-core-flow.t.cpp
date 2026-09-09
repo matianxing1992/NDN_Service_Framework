@@ -6814,7 +6814,8 @@ r4B6SignDigest(const std::shared_ptr<EVP_PKEY>& key, const std::string& digest)
 
 void
 runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
-                                    bool alternateProvider = false)
+                                    bool alternateProvider = false,
+                                    bool repositoryInput = false)
 {
   using namespace ndn_service_framework;
   test::BootstrapProfile profile;
@@ -6953,6 +6954,23 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
       return std::vector<NativeSelectionRoleV3>{preparedRole};
     });
 
+  std::string repositoryReference;
+  if (repositoryInput) {
+    const NativeJson reference = {
+      {"source", "repo-manifest"},
+      {"dataName", catalogPublished.encryptedDataName.toUri()},
+      {"manifestDigest", catalogPublished.manifestDigest},
+      {"plaintextSize", catalogPublished.plaintextSize},
+      {"ciphertextDigest", catalogPublished.contentDigest},
+      {"authorizationScope", catalogPublished.authorizationScope},
+      {"protectionEpoch", catalogPublished.protectionEpoch},
+      {"encrypted", true},
+      {"objectType", "DI_INPUT"},
+      {"objectId", catalogPublished.objectId},
+    };
+    repositoryReference = nativeCanonicalJson(reference);
+  }
+
   const auto offerKey = makeR4B6Ed25519Key(0x31);
   std::array<unsigned char, 32> offerPublic{};
   std::size_t offerPublicSize = offerPublic.size();
@@ -7040,6 +7058,10 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
   auto ackCalls = std::make_shared<std::atomic<unsigned>>(0);
   auto collaborationCalls = std::make_shared<std::atomic<unsigned>>(0);
   auto conversationAttempts = std::make_shared<std::atomic<unsigned>>(0);
+  auto repositoryReferenceObserved = std::make_shared<std::atomic<bool>>(false);
+  auto observedRequestWireSize = std::make_shared<std::atomic<std::size_t>>(0);
+  const auto expectedReferenceDataName = catalogPublished.encryptedDataName.toUri();
+  const auto expectedReferenceManifestDigest = catalogPublished.manifestDigest;
   NativeProviderOfferV3Config alternateOfferConfig;
   if (alternateProvider) {
     alternateOfferConfig = offerConfig;
@@ -7053,10 +7075,34 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
     const auto localProviderBootId = localOfferConfig.provider + "-boot";
     provider.addCollaborationHandler(
     ndn::Name(serviceName),
-    [localOfferConfig, ackCalls] (const RequestMessage& request) {
+    [localOfferConfig, ackCalls, repositoryReferenceObserved, observedRequestWireSize,
+     expectedReferenceDataName, expectedReferenceManifestDigest] (const RequestMessage& request) {
       ackCalls->fetch_add(1, std::memory_order_relaxed);
-      ServiceProvider::AckDecision decision;
       const auto payload = request.getPayload();
+      observedRequestWireSize->store(payload.size(), std::memory_order_relaxed);
+      if (!payload.empty()) {
+        const std::string requestWire(payload.begin(), payload.end());
+        try {
+          const auto root = nativeParseJson(requestWire);
+          std::string dataName;
+          std::string manifestDigest;
+          if (root.contains("input_reference") && root.at("input_reference").is_object())
+          {
+            dataName = root.at("input_reference").value("dataName", std::string{});
+            manifestDigest = root.at("input_reference").value("manifestDigest", std::string{});
+          }
+          if (root.value("input_transport", std::string{}) == "REPO_REF" &&
+              root.value("input_payload_b64", std::string{}).empty() &&
+              dataName == expectedReferenceDataName &&
+              manifestDigest == expectedReferenceManifestDigest)
+            repositoryReferenceObserved->store(true, std::memory_order_relaxed);
+        }
+        catch (...) {
+          // The offer issuer below remains the authoritative request parser;
+          // this is a narrow observation oracle and must not alter it.
+        }
+      }
+      ServiceProvider::AckDecision decision;
       const auto issued = issueNativeProviderOfferV3(
         std::vector<std::uint8_t>(payload.begin(), payload.end()), localOfferConfig,
         static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -7257,7 +7303,13 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
   application.taskName = "task";
   application.inputSchemaDigest = model.adapter.inputSchemaDigest;
   application.optionsSchemaDigest = model.adapter.optionsSchemaDigest;
-  application.payload = {1, 2, 3};
+  if (repositoryInput) {
+    application.transportMode = NativeInputTransportMode::RepositoryReference;
+    application.repositoryReference = repositoryReference;
+  }
+  else {
+    application.payload = {1, 2, 3};
+  }
   const auto generationOptions = nativeCanonicalJson(NativeJson{
     {"useCache", true}, {"outputMode", "TOKEN_STREAMING"}, {"maxNewTokens", 2},
     {"eosTokenIds", NativeJson::array({2})}, {"tokenizerDigest", tokenizerDigest},
@@ -7319,6 +7371,7 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
                         << " boundary=" << error.boundary()
                         << " message=" << error.what()
                         << " ackCalls=" << ackCalls->load()
+                        << " requestWireBytes=" << observedRequestWireSize->load()
                         << " collaborationCalls=" << collaborationCalls->load());
     }
   }
@@ -7345,6 +7398,8 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
   }
 
   BOOST_REQUIRE(first.status() == NativeRequestStatus::Succeeded);
+  if (repositoryInput)
+    BOOST_REQUIRE(repositoryReferenceObserved->load(std::memory_order_relaxed));
   const auto firstResult = first.result(std::chrono::milliseconds(0));
   const auto firstJson = nativeParseJson(
     std::string(firstResult.payload.begin(), firstResult.payload.end()));
@@ -7429,6 +7484,11 @@ BOOST_AUTO_TEST_CASE(Spec182R4B6RealProviderConversationReplacement)
 BOOST_AUTO_TEST_CASE(Spec182R4B6RealProviderConversationAlternateReplacement)
 {
   runR4B6RealProviderConversationCase(true, true);
+}
+
+BOOST_AUTO_TEST_CASE(Spec182R4B6RealProviderRepositoryReference)
+{
+  runR4B6RealProviderConversationCase(false, false, true);
 }
 
 BOOST_AUTO_TEST_CASE(Spec175NativeTinyOnnxI01OneProvider)
