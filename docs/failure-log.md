@@ -2548,9 +2548,10 @@ parser 修复后增加结构化 recovery、结构化 decision 和 legacy `reques
   `ProductionNativeHandlersRunD2h212ToCompleteOracleResponse` selector each exited 0 in isolated
   runs; raw logs are under `.codex-tmp/spec182-r6-b9/`.
 - **Remaining failure boundary**: the first unfiltered `Spec170NdnsfDiCoreFlow/*` attempt reached
-  the D2h production case with a missing response/role and `double free or corruption`; it was
-  interrupted after that boundary. Two subsequent fresh unfiltered runs exited 0, so this remains
-  an intermittent independent runtime/test observation rather than an attributed D2b regression.
+  the D2h production case with a missing response/role and `double free or corruption`; the same
+  boundary reproduced in `2/20` isolated D2h212 repeats. Two subsequent fresh unfiltered runs and
+  all `50/50` D2b repeats exited 0, so this remains an intermittent independent runtime/test
+  observation rather than an attributed D2b regression.
 - **Interpretation**: R6-B9 is `CLOSED_FOR_VALIDATION` only for the local D2b freshness behavior;
   T013-B/T013-C, cross-process compatibility and T016 qualification remain `PARTIAL`/open.
   See [R6-B9 evidence](../specs/182-native-di-python-bindings/evidence/r6-b9-legacy-d2b-freshness-20260909.md).

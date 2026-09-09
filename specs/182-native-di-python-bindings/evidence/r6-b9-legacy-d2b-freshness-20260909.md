@@ -72,6 +72,11 @@ The following named selectors also exited 0 individually: `ProductionIngressReje
 `ProductionNativeHandlersRunD2h212ToCompleteOracleResponse`. Their logs are
 `.codex-tmp/spec182-r6-b9/individual-1.log` through `individual-5.log`.
 
+Each of the five D2b selectors was then run ten times in a fresh process: `50/50` runs exited 0
+with no timeout. The D2h212 selector was repeated separately: `18/20` exited 0 and `2/20`
+reproduced the callback/role loss followed by `double free or corruption`; logs are named
+`d2b-<selector>-NN.log` and `d2h212-repeat-NN.log` in the same run directory.
+
 The first unfiltered `Spec170NdnsfDiCoreFlow/*` attempt reported missing response, one missing
 role and then `double free or corruption` in a later
 `ProductionNativeHandlersRunD2h212ToCompleteOracleResponse` instance; it was interrupted after
@@ -87,10 +92,10 @@ bounded D2b repair; it is not treated as a deterministic regression without a du
 - `compile/link`: no compiler or linker defect was found. Adding the header map caused the expected
   transitive rebuild; the Waf target registered the current source correctly.
 - `runtime/test`: only the named D2b runtime selector exposed the lost provider1 callback. After the
-  repair, all five D2b selectors and the named D2h212 selector passed individually; two subsequent
-  unfiltered Spec170 suite runs also passed. The first unfiltered attempt exposed an intermittent
-  D2h callback/lifetime crash, retained as an open reproducibility boundary rather than attributed to
-  this D2b repair.
+  repair, all five D2b selectors passed `10/10` each, while the named D2h212 selector passed in
+  isolation but reproduced the callback/lifetime failure `2/20` times. Two subsequent unfiltered
+  Spec170 suite runs passed. The D2h failure is retained as an open reproducibility boundary rather
+  than attributed to this D2b repair.
 - `unobserved`: cross-process SVS delivery, long-lived publication-map growth, legacy caller zero-use,
   and T016 namespace/NFD execution were not observed here.
 
