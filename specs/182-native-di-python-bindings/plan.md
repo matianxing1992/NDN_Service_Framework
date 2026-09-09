@@ -676,6 +676,21 @@ P1–P4 是四个不同的生产入口/进程边界/selector，不能为了少�
 前置真实结果闭合后推进。该顺序与父任务依赖兼容，未将任何局部 fixture、CLI smoke 或
 Python compatibility PASS 提升为 native qualification。详见 [R10-B36 evidence](evidence/r10-b36-production-chain-reorder-20260909.md)。
 
+### R10-B37 Native Client Streaming Provider Request 2026-09-09
+
+P1 的下一个稳定出口是把已有 native requester/Core/Provider 单进程链扩展到**无会话
+的真实流式请求**。本批只在 R4-B6 真实 Provider fixture 中增加一个明确的 stream-only
+分支：请求仍经过 preparation、grant/admission、Core commit 和 Provider callback，
+Provider 发布 `GenerationTokenEventV1` 与 `NDNSF-DI-FINAL-V1`，requester 由原生
+`acceptGenerationEvent`/`validateGenerationFinal` 验证并返回结果；不伪造 conversation
+binding，也不宣称跨进程或 maintained caller 已迁移。
+
+该批次与已有 unary、conversation、replacement selector 分开登记，因为 caller 选项、
+状态契约和结果 oracle 不同。静态门必须覆盖 helper 分支、真实 Provider callback、
+stream/final schema、selector 注册和 integration target source closure；批末只运行该
+selector及同 helper 的相关回归。若运行暴露 Provider worker、跨进程或 NFD 依赖，保留首个
+失败边界并拆到 P2/T016 owner，不扩大本批职责。详见 [R10-B37 evidence](evidence/r10-b37-native-client-streaming-request-20260909.md)。
+
 ### R10-B33 Native Unary Repository Reference Request 2026-09-09
 
 R10-B31 已补齐不带 stream 或 conversation state 的普通 native `Response`，R10-B11
