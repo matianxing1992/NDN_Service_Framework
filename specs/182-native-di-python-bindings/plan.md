@@ -1,6 +1,6 @@
 # Implementation Plan: Native NDNSF-DI with Optional Python Bindings
 
-**Branch**: Experimental | **Revision**: 69 | **Date**: 2026-09-09
+**Branch**: Experimental | **Revision**: 70 | **Date**: 2026-09-09
 **Status**: IN_PROGRESS / 当前实现与验收状态见 tasks.md 的 Task Progress Registry 和 Current Checkpoint
 **Spec**: [spec.md](spec.md)
 
@@ -813,6 +813,20 @@ callback 作为 R4-B6 in-process fixture；独立 requester/Provider transport�
 PO-002-PO-014、maintained caller/no-Python、numeric parity 和完整 T016 仍开放。官方
 `review-agent` 五 lane 只读审查无 P1/P2/P3。详见
 [R10-B47 evidence](evidence/r10-b47-t016-po001-owner-pass-20260909.md)。
+
+### R10-B48 T016 I01 Installed Consumer Owner/Runner Pass 2026-09-09
+
+本批使用现有 I01 `spec182-installed-consumer` manifest，在 root-enabled MiniNDN owner 的
+requester namespace 中执行 canonical runner。staged consumer 返回 `0`（`344ms`），输出
+`SPEC182_INSTALLED_CONSUMER_NATIVE_DI_OK`；collector 观察到完整 identity/process-tree/
+namespace/exec-map/endpoints/business-oracle/cleanup evidence，trace integrity 与 policy
+violations 均为空。
+
+该结果是 I01 installed-consumer 的 focused qualification pass，不是 DI protocol 请求，也不
+证明独立 requester/Provider transport。I02-I08、PO-001-PO-014、maintained caller/no-Python、
+numeric parity 与完整 T016 仍开放；本批无源码变化和 native rebuild。官方 `review-agent`
+只读审查无 P1/P2/P3。详见
+[R10-B48 evidence](evidence/r10-b48-t016-i01-consumer-owner-pass-20260909.md)。
 
 ### R10-B33 Native Unary Repository Reference Request 2026-09-09
 
