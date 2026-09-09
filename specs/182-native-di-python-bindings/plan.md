@@ -1,6 +1,6 @@
 # Implementation Plan: Native NDNSF-DI with Optional Python Bindings
 
-**Branch**: Experimental | **Revision**: 49 | **Date**: 2026-09-09
+**Branch**: Experimental | **Revision**: 50 | **Date**: 2026-09-09
 **Status**: IN_PROGRESS / 当前实现与验收状态见 tasks.md 的 Task Progress Registry 和 Current Checkpoint
 **Spec**: [spec.md](spec.md)
 
@@ -488,8 +488,8 @@ T016 qualification.
 
 After R10-B23 closed the runner working-directory/config boundary, the existing `build-nac182`
 native binaries were rerun with exact Spec182 selectors. The Spec182 unit selection passed 247
-cases, the Spec182 integration selection passed 2 cases, and the named two-turn
-`Spec182R4B6RealProviderConversation` selector passed 1 case. No native source changed, so no
+cases, the Spec182 integration selection passed 2 cases, the named conversation/replacement
+selection passed 3 cases, and the repository-reference selector passed 1 case. No native source changed, so no
 rebuild was performed; raw logs are retained under `.codex-tmp/spec182-r10-b24-native-suite-20260909/`.
 
 The second `vmstat` sample showed `si=35780` and `so=0`. This is recorded as resource pressure,

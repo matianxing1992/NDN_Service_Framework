@@ -32,6 +32,8 @@ unchanged native test target and the recorded selectors. All five lanes are acco
 | `./build-nac182/unit-tests --run_test='Spec182*' --log_level=test_suite` | exit `0`; 247 C++ test cases; 28.460685 s; `*** No errors detected` |
 | `./build-nac182/integration-tests --run_test='Spec182*' --log_level=test_suite` | exit `0`; 2 C++ test cases; 0.747949 s; `*** No errors detected` |
 | `./build-nac182/integration-tests --run_test='Spec170NdnsfDiCoreFlow/Spec182R4B6RealProviderConversation' --log_level=test_suite` | exit `0`; 1 C++ test case; 7.072403 s; `*** No errors detected` |
+| `./build-nac182/integration-tests --run_test='Spec170NdnsfDiCoreFlow/Spec182R4B6RealProviderConversation*' --log_level=test_suite` | exit `0`; 3 C++ cases (success, replacement, alternate replacement); 20.559532 s; `*** No errors detected` |
+| `./build-nac182/integration-tests --run_test='Spec170NdnsfDiCoreFlow/Spec182R4B6RealProviderRepositoryReference' --log_level=test_suite` | exit `0`; 1 C++ repository-reference case; 6.814152 s; `*** No errors detected` |
 | `vmstat 1 2` after the run | second sample showed `si=35780`, `so=0`; no build was started in this batch, and the next native build must follow the documented `-j2` fallback if swap persists |
 
 Raw logs are preserved in `.codex-tmp/spec182-r10-b24-native-suite-20260909/`.
@@ -45,7 +47,8 @@ counterexamples, legacy retirement, no-Python qualification or T016 completion.
 - `static`: no source change; selector and target boundaries were checked before execution.
 - `compile/link`: intentionally not run; no native source changed. Rebuild is required after the
   next native edit and should use `-j2` if the observed swap pressure remains.
-- `runtime/test`: 250 C++ cases passed, including the two-turn native DI fixture.
+- `runtime/test`: 254 C++ cases passed in the recorded selections, including the two-turn native
+  DI fixture, replacement and alternate-provider replacement, and the repository-reference path.
 - `unobserved`: maintained callers, separate requester/provider processes, isolation counterexamples,
   and the complete T016 matrix.
 
