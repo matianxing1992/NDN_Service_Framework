@@ -2838,6 +2838,10 @@ def _run_qwen_transformer_generation_sample(
     use_token_diagnostic = bool(
         getattr(args, "diagnostic_token_loop", False)
         or not hasattr(args, "diagnostic_token_loop"))
+    if use_token_diagnostic and getattr(args, "native_requester_config", ""):
+        raise RuntimeError(
+            "native Qwen requester route requires full TOKEN_STREAMING generation; "
+            "--diagnostic-token-loop is unsupported")
     if not use_token_diagnostic:
         def full_generation_call(context, max_new_tokens, request_id):
             context_payload = bytes(request_payload) if request_payload is not None else (
@@ -3956,6 +3960,9 @@ def main() -> int:
             QWEN_TRANSFORMERS_RUNTIME, QWEN_ONNX_RUNTIME):
         raise SystemExit(
             "native requester route currently supports only Qwen runtimes")
+    if args.native_requester_config and args.diagnostic_token_loop:
+        raise SystemExit(
+            "native requester route does not support --diagnostic-token-loop")
     if args.startup_barrier_timeout_s <= 0:
         raise SystemExit("--startup-barrier-timeout-s must be positive")
     if args.initial_sync_settle_s < 0.0:

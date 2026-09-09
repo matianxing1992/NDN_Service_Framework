@@ -1321,6 +1321,7 @@ BOOST_AUTO_TEST_CASE(NativeRequestRuntimeLoadsPinnedPolicyAndRejectsDrift)
          [] (auto& value) { value["state_mapping"]["inputs"] = {{"role", {{"state", {"x"}}}}}; },
          [] (auto& value) { value["contract"]["service_name"] = 7; },
          [] (auto& value) { value["security"]["require_protected_artifacts"] = "true"; },
+         [] (auto& value) { value["contract"]["generation_mode"] = "UNSUPPORTED"; },
          [] (auto& value) { value["protection_epoch"] = "foreign-epoch"; }}) {
     auto broken = runtimeConfiguration;
     mutation(broken);

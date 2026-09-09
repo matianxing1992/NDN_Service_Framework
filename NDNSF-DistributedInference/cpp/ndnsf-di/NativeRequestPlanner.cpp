@@ -214,6 +214,10 @@ NativeRequestRuntime nativeRequestRuntimeFromJson(
       runtime.contract.taskName.empty() || runtime.contract.adapterName.empty() ||
       runtime.contract.generationMode.empty())
     throw std::invalid_argument("native request runtime contract identity is incomplete");
+  if (runtime.contract.generationMode != "TOKEN_DIAGNOSTIC" &&
+      runtime.contract.generationMode != "TOKEN_STREAMING")
+    throw std::invalid_argument(
+      "native request runtime generation mode must be TOKEN_DIAGNOSTIC or TOKEN_STREAMING");
   requireDigestValue(contract.at("adapter_descriptor_digest"), "runtime.contract.adapter_descriptor_digest");
   requireDigestValue(contract.at("adapter_composition_digest"), "runtime.contract.adapter_composition_digest");
   requireDigestValue(contract.at("task_descriptor_digest"), "runtime.contract.task_descriptor_digest");
