@@ -1,5 +1,20 @@
 # Failure Log and Evidence Index
 
+## 2026-09-08 — Spec182 R5-B7 placement selector transient SIGSEGV
+
+R5-B7 首次运行完整 `Spec182V3Placement/*` 选择器时，测试进程在
+`PublicClientCommitsSignedOfferAndIgnoresLateTerminalCallbacks`、
+`tests/unit-tests/di-native-v3-placement.t.cpp:1026` 处发生 SIGSEGV，约 0.85s
+后 exit201。首个边界是测试进程内存访问错误；没有进入可据此判断的 Provider、协议或
+qualification 结果。原始输出保留在
+[r0 placement log](../.codex-tmp/spec182-r5-b7-placement-suite-20260908-r0/placement.log)。
+
+随后隔离该 selector（r1）和再次运行完整 9-case selector（r2）均 exit0、无错误；记录见
+`.codex-tmp/spec182-r5-b7-placement-suite-20260908-r1/` 与
+`.codex-tmp/spec182-r5-b7-placement-suite-20260908-r2/`。因此本次按瞬时测试边界保留，
+不将重试通过升级为真实 Provider 或跨进程资格结论；若再次出现，需先比较新的原始运行
+目录和首个失败边界，再决定是否修复测试或产品代码。
+
 ## 2026-09-08 — Spec182 R4-B5 public conversation build invocation
 
 首次重建命令将 `PATH=...` 置于 `/usr/bin/time` 后，`time` 把它当作待执行程序，

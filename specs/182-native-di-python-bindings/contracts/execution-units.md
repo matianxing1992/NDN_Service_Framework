@@ -396,10 +396,10 @@ pending turn；path-only无key构造拒绝。Continuation 的 `requestContractDi
 ### T013-C Native Stream Observer Facade
 
 - **Parent**: T013; **Depends**: T012-A, T013-A, T010-A; **Reviewer**: native handle lifetime and binding review
-- **Outcome**: 将已有 C++ `NativeInferenceHandle::observe` 以受控的 Python facade 暴露，并让 `APPClient.request_native_payload` 可选接收 observer；事件顺序、replay、终态、异常隔离和 handle 寿命继续由 C++ owner 负责。
+- **Outcome**: 将已有 C++ `NativeInferenceHandle::observe` 以受控的 Python facade 暴露，并让 `APPClient.request_native_payload` 可选接收 observer；已接受的 stream token event 与 terminal event 均可被观察，事件顺序、replay、终态、异常隔离和 handle 寿命继续由 C++ owner 负责。
 - **Read**: `NativeInferenceClient.hpp/.cpp` 的 `NativeInferenceHandle::observe`/`publishEvent` → `pythonWrapper/src/ndnsf/di_bindings.cpp` → `app_sdk/client.py` → `tests/unit-tests/di-native-client.t.cpp` observer cases。
 - **Write**: `pythonWrapper/src/ndnsf/di_bindings.cpp`; `NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/client.py`; `tests/python/test_spec182_native_bindings.py`; `tests/python/test_spec182_legacy_exclusion.py`; 本执行卡 evidence。
-- **Steps**: 仅绑定非 secret 的 request id、bytes payload 和 terminal 标志；在提交 native request 前校验 observer callable，提交后立即挂载 observer；不把 Python callback 变成 planner、strategy 或协议状态 owner，不改变无 observer 的返回和失败语义。
+- **Steps**: 仅绑定非 secret 的 request id、bytes payload 和 terminal 标志；在 C++ stream acceptance 后发布有界 token event；在提交 native request 前校验 observer callable，提交后立即挂载 observer；不把 Python callback 变成 planner、strategy 或协议状态 owner，不改变无 observer 的返回和失败语义。
 - **Verify**: 官方 `$review-agent` 只读静态门；C++ `Spec182ClientState/SlowObserverDoesNotBlockCancelAndLateReplaySurvivesClientClose` 与 `Spec182ClientState/RealDeadlineDoesNotWaitForWorkOrSlowObserver`；强制重建 shared DI target 与 `_ndnsf` extension；28-case Python binding/facade suite 和导出 smoke check。真实跨进程 token stream 仍留 T016。
 - **Done When**: Python 可在 native handle 上注册 observer，C++ observer selectors 与 extension source closure 通过；callback lifetime/真实 Provider streaming 未完成时保持 `PARTIAL`，不宣称完整 streaming qualification。
 
