@@ -22,6 +22,10 @@ unverified runtime risk (allocated CUDA/ORT, NFD socket, mounts, and scheduler),
 but they have not caused the observed failures because no workload reached
 those stages.
 
+The focused transport/SSH/submit regression set passes 92 tests after the
+diagnosis, including rejection of invalid modes and journal roots. This checks
+the guard behavior; it does not substitute for the still-running Tiger job.
+
 ## Required next observation
 
 Let the same candidate finish transfer, then retain the receiver preflight,
