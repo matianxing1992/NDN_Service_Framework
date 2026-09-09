@@ -1,6 +1,6 @@
 # Implementation Plan: Native NDNSF-DI with Optional Python Bindings
 
-**Branch**: Experimental | **Revision**: 76 | **Date**: 2026-09-09
+**Branch**: Experimental | **Revision**: 78 | **Date**: 2026-09-09
 **Status**: IN_PROGRESS / 当前实现与验收状态见 tasks.md 的 Task Progress Registry 和 Current Checkpoint
 **Spec**: [spec.md](spec.md)
 
@@ -810,6 +810,17 @@ elapsed `255.25s`，SHA 为 `94b94c8ca5be3b3eca9c0107213f39db35a83b34d90ae8b8142
 `ldd` 无 `not found`。本批只关闭 standalone Provider 的 build/link boundary；Provider `--serve`、
 独立 requester/Provider transport、maintained caller/no-Python 和 T016 仍需下一批真实运行。
 详见 [R10-B50 evidence](evidence/r10-b50-provider-link-closure-20260909.md)。
+
+### R10-B55 Provider Serve Preflight 2026-09-09
+
+本批以 metadata-only manifest 探测 repaired standalone Provider 的真实 `--serve` 启动、
+Face/ServiceProvider/NativeInferenceProvider 注册和权限 readiness 边界，避免把 R10-B51
+check-only 的预装 artifact 路径带入 serving。修正首个漏传 `--serve` 的 CLI probe 后，
+bounded run 成功打印 `PLAN_READY`、`EXECUTION_LEASE_SERVICE_READY` 和
+`NDNSF_DI_NATIVE_PROVIDER_SERVE_READY`；随后当前 Controller 未安装 Provider permission，
+以 `PROVISION_FAILED` 暴露并在 timeout `124` 结束。该结果只关闭 serve 注册与 readiness
+失败分类；跨进程 requester/Provider、真实 Response 和 T016 仍留在后续批次。详见
+[R10-B55 evidence](evidence/r10-b55-provider-serve-preflight-20260909.md)。
 
 ### R10-B54 Native Plan and Manifest Smoke 2026-09-09
 

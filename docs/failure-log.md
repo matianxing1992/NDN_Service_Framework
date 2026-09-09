@@ -2924,3 +2924,17 @@ are still unobserved.
   add the target RUNPATH, then run a fresh target link and default-loader `ldd` check before
   interpreting smoke output. This source-definition map and target registration check is now a
   required feedback item for the shared Spec Kit build/source-closure gate.
+
+## 2026-09-09 — Spec182 R10-B55 Provider serve preflight argument boundary
+
+- **Area**: bounded startup probe for the repaired standalone Provider `--serve` path.
+- **First boundary**: the first probe supplied plan/manifest and serving options but omitted the
+  required `--serve` mode flag. `parseArgs` rejected the invocation with
+  `exactly one of --check-only or --serve is required` (exit `2`), before Face creation or any
+  Provider registration. Raw output is retained in
+  `.codex-tmp/spec182-r10-b55-provider-serve-preflight-20260909/serve.log`.
+- **Interpretation**: this is a harness command-construction/CLI boundary, not a serving,
+  permission, protocol or qualification result.
+- **Changed gate before retry**: assert the explicit `--serve` mode in the command and retain the
+  metadata-only manifest (no preassembled artifact paths); classify only startup markers and the
+  first NFD/certificate/permission/readiness boundary from the corrected bounded probe.
