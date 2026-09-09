@@ -1,6 +1,6 @@
 # Implementation Plan: Native NDNSF-DI with Optional Python Bindings
 
-**Branch**: Experimental | **Revision**: 48 | **Date**: 2026-09-09
+**Branch**: Experimental | **Revision**: 49 | **Date**: 2026-09-09
 **Status**: IN_PROGRESS / 当前实现与验收状态见 tasks.md 的 Task Progress Registry 和 Current Checkpoint
 **Spec**: [spec.md](spec.md)
 
@@ -483,6 +483,20 @@ trace, all seven evidence classes and `SPEC182_NATIVE_DI_REQUEST_RESULT_OK` afte
 `examples/trust-any.conf` and changing into `/probe-root`. The result remains an isolated-process
 business observation and does not close multi-process transport, maintained callers, I02--I08 or
 T016 qualification.
+
+### R10-B24 Spec182 Native Suite Baseline 2026-09-09
+
+After R10-B23 closed the runner working-directory/config boundary, the existing `build-nac182`
+native binaries were rerun with exact Spec182 selectors. The Spec182 unit selection passed 247
+cases, the Spec182 integration selection passed 2 cases, and the named two-turn
+`Spec182R4B6RealProviderConversation` selector passed 1 case. No native source changed, so no
+rebuild was performed; raw logs are retained under `.codex-tmp/spec182-r10-b24-native-suite-20260909/`.
+
+The second `vmstat` sample showed `si=35780` and `so=0`. This is recorded as resource pressure,
+not as a product failure; if swap-in persists, the next native build follows the documented `-j2`
+fallback. The baseline confirms local C++ behavior only and leaves maintained callers, true
+requester/provider process transport, I02--I08, legacy retirement, no-Python proof and T016
+qualification open.
 
 ### R8-SKILL Review Coverage Contract 2026-09-09
 
