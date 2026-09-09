@@ -1,6 +1,8 @@
 #include "di_bindings.hpp"
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestCatalog.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp"
@@ -12,12 +14,43 @@
 #include "NDNSF-DistributedInference/cpp/adapters/qwen/NativeQwenPlanner.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloPlanner.hpp"
 
+#include "ndn-service-framework/ControllerVersion.hpp"
+#include "ndn-service-framework/InvocationStream.hpp"
+
+#include <ndn-cxx/encoding/block.hpp>
 #include <pybind11/stl.h>
 
 namespace py = pybind11;
 namespace di = ndnsf::di;
 
 namespace {
+
+py::object
+blockWireOrNone(const std::optional<ndn::Block>& block)
+{
+  if (!block)
+    return py::none();
+  auto copy = *block;
+  if (!copy.hasWire())
+    copy.encode();
+  return py::bytes(reinterpret_cast<const char*>(copy.data()), copy.size());
+}
+
+void
+setBlockWire(std::optional<ndn::Block>& destination, const py::object& value)
+{
+  if (value.is_none()) {
+    destination.reset();
+    return;
+  }
+  const std::string bytes = value.cast<py::bytes>();
+  if (bytes.empty())
+    throw std::invalid_argument("event_key_grant_wire must contain one TLV block");
+  ndn::Block block(ndn::span<const uint8_t>(
+    reinterpret_cast<const uint8_t*>(bytes.data()), bytes.size()));
+  block.parse();
+  destination = std::move(block);
+}
 
 const char*
 requestStatusName(di::NativeRequestStatus status)
@@ -49,6 +82,139 @@ bindDistributedInference(py::module_& module)
     .value("INLINE", di::NativeInputTransportMode::Inline)
     .value("REPOSITORY_REFERENCE", di::NativeInputTransportMode::RepositoryReference)
     .export_values();
+
+  py::enum_<ndn_service_framework::InvocationMode>(module, "NativeInvocationMode")
+    .value("NORMAL", ndn_service_framework::InvocationMode::Normal)
+    .value("TARGETED", ndn_service_framework::InvocationMode::Targeted)
+    .export_values();
+
+  py::class_<ndn_service_framework::ControllerVersion>(module, "NativeControllerVersion")
+    .def(py::init<>())
+    .def_readwrite("controller_generation_timestamp",
+                   &ndn_service_framework::ControllerVersion::controllerGenerationTimestamp)
+    .def_readwrite("controller_epoch",
+                   &ndn_service_framework::ControllerVersion::controllerEpoch)
+    .def("is_valid", &ndn_service_framework::ControllerVersion::isValid)
+    .def("to_string", &ndn_service_framework::ControllerVersion::toString);
+
+  py::class_<di::NativeGenerationExecutionContractV1>(
+      module, "NativeGenerationExecutionContractV1")
+    .def(py::init<>())
+    .def_readwrite("enabled", &di::NativeGenerationExecutionContractV1::enabled)
+    .def_readwrite("mode", &di::NativeGenerationExecutionContractV1::mode)
+    .def_readwrite("max_generated_tokens",
+                   &di::NativeGenerationExecutionContractV1::maxGeneratedTokens)
+    .def_readwrite("token_input_name",
+                   &di::NativeGenerationExecutionContractV1::tokenInputName)
+    .def_readwrite("state_input_names",
+                   &di::NativeGenerationExecutionContractV1::stateInputNames)
+    .def_readwrite("state_output_names",
+                   &di::NativeGenerationExecutionContractV1::stateOutputNames)
+    .def_readwrite("eos_token_ids",
+                   &di::NativeGenerationExecutionContractV1::eosTokenIds)
+    .def_readwrite("sampling_digest",
+                   &di::NativeGenerationExecutionContractV1::samplingDigest)
+    .def_readwrite("tokenizer_digest",
+                   &di::NativeGenerationExecutionContractV1::tokenizerDigest)
+    .def_readwrite("sampling_mode",
+                   &di::NativeGenerationExecutionContractV1::samplingMode)
+    .def_readwrite("sampling_temperature",
+                   &di::NativeGenerationExecutionContractV1::samplingTemperature)
+    .def_readwrite("sampling_top_k",
+                   &di::NativeGenerationExecutionContractV1::samplingTopK)
+    .def_readwrite("sampling_top_p",
+                   &di::NativeGenerationExecutionContractV1::samplingTopP)
+    .def_readwrite("sampling_repetition_penalty",
+                   &di::NativeGenerationExecutionContractV1::samplingRepetitionPenalty)
+    .def_readwrite("sampling_seed",
+                   &di::NativeGenerationExecutionContractV1::samplingSeed)
+    .def_readwrite("stop_strings",
+                   &di::NativeGenerationExecutionContractV1::stopStrings)
+    .def_readwrite("generation_id",
+                   &di::NativeGenerationExecutionContractV1::generationId)
+    .def_readwrite("committed_prefix_token_ids",
+                   &di::NativeGenerationExecutionContractV1::committedPrefixTokenIds)
+    .def_readwrite("streaming_operation_stride",
+                   &di::NativeGenerationExecutionContractV1::streamingOperationStride);
+
+  py::class_<di::NativeConversationContinuation>(
+      module, "NativeConversationContinuation")
+    .def(py::init<>())
+    .def_readwrite("conversation_id", &di::NativeConversationContinuation::conversationId)
+    .def_readwrite("parent_context_epoch",
+                   &di::NativeConversationContinuation::parentContextEpoch)
+    .def_readwrite("service_name", &di::NativeConversationContinuation::serviceName)
+    .def_readwrite("plan_role_map_digest",
+                   &di::NativeConversationContinuation::planRoleMapDigest)
+    .def_readwrite("parent_checkpoint_digest",
+                   &di::NativeConversationContinuation::parentCheckpointDigest)
+    .def_readwrite("request_contract_digest",
+                   &di::NativeConversationContinuation::requestContractDigest)
+    .def_readwrite("retention_deadline_ms",
+                   &di::NativeConversationContinuation::retentionDeadlineMs)
+    .def_readwrite("mode", &di::NativeConversationContinuation::mode)
+    .def_readwrite("parent_checkpoint_wire",
+                   &di::NativeConversationContinuation::parentCheckpointWire)
+    .def_readwrite("generation_id", &di::NativeConversationContinuation::generationId)
+    .def_readwrite("canonical_token_ids",
+                   &di::NativeConversationContinuation::canonicalTokenIds)
+    .def_readwrite("expected_roles", &di::NativeConversationContinuation::expectedRoles);
+
+  py::class_<ndn_service_framework::StreamRequestOptions>(
+      module, "NativeStreamRequestOptions")
+    .def(py::init<>())
+    .def_readwrite("version", &ndn_service_framework::StreamRequestOptions::version)
+    .def_readwrite("mode", &ndn_service_framework::StreamRequestOptions::mode)
+    .def_readwrite("generation_id", &ndn_service_framework::StreamRequestOptions::generationId)
+    .def_readwrite("attempt_epoch", &ndn_service_framework::StreamRequestOptions::attemptEpoch)
+    .def_readwrite("stream_epoch", &ndn_service_framework::StreamRequestOptions::streamEpoch)
+    .def_readwrite("event_key_commitment",
+                   &ndn_service_framework::StreamRequestOptions::eventKeyCommitment)
+    .def_readwrite("deadline_epoch_ms",
+                   &ndn_service_framework::StreamRequestOptions::deadlineEpochMs)
+    .def_readwrite("controller_version",
+                   &ndn_service_framework::StreamRequestOptions::controllerVersion)
+    .def_property("event_key_grant_wire",
+      [] (const ndn_service_framework::StreamRequestOptions& options) {
+        return blockWireOrNone(options.eventKeyGrant);
+      },
+      [] (ndn_service_framework::StreamRequestOptions& options, const py::object& value) {
+        setBlockWire(options.eventKeyGrant, value);
+      })
+    .def_readwrite("max_events", &ndn_service_framework::StreamRequestOptions::maxEvents)
+    .def_readwrite("interest_window", &ndn_service_framework::StreamRequestOptions::interestWindow)
+    .def_readwrite("interest_lifetime_ms",
+                   &ndn_service_framework::StreamRequestOptions::interestLifetimeMs)
+    .def_readwrite("max_event_retries",
+                   &ndn_service_framework::StreamRequestOptions::maxEventRetries)
+    .def_readwrite("publisher_queue_capacity",
+                   &ndn_service_framework::StreamRequestOptions::publisherQueueCapacity)
+    .def_readwrite("callback_queue_capacity",
+                   &ndn_service_framework::StreamRequestOptions::callbackQueueCapacity)
+    .def_readwrite("reorder_capacity",
+                   &ndn_service_framework::StreamRequestOptions::reorderCapacity)
+    .def_readwrite("retention_ms", &ndn_service_framework::StreamRequestOptions::retentionMs)
+    .def_readwrite("completion_grace_ms",
+                   &ndn_service_framework::StreamRequestOptions::completionGraceMs)
+    .def_readwrite("max_event_wire_bytes",
+                   &ndn_service_framework::StreamRequestOptions::maxEventWireBytes)
+    .def_readwrite("allow_replacement",
+                   &ndn_service_framework::StreamRequestOptions::allowReplacement)
+    .def_readwrite("max_replacements",
+                   &ndn_service_framework::StreamRequestOptions::maxReplacements)
+    .def("validate", &ndn_service_framework::StreamRequestOptions::validate)
+    .def("wire_encode", [] (const ndn_service_framework::StreamRequestOptions& options) {
+      const auto wire = options.wireEncode();
+      return py::bytes(reinterpret_cast<const char*>(wire.data()), wire.size());
+    })
+    .def("wire_decode", [] (ndn_service_framework::StreamRequestOptions& options,
+                              const py::bytes& wireBytes) {
+      const std::string bytes = wireBytes;
+      ndn::Block wire(ndn::span<const uint8_t>(
+        reinterpret_cast<const uint8_t*>(bytes.data()), bytes.size()));
+      wire.parse();
+      return options.wireDecode(wire);
+    });
 
   py::class_<di::NativeAdapterDescriptor>(module, "NativeAdapterDescriptor")
     .def(py::init<>())
@@ -105,7 +271,10 @@ bindDistributedInference(py::module_& module)
     .def_readwrite("timeout_ms", &di::NativeRequestOptions::timeoutMs)
     .def_readwrite("ack_timeout_ms", &di::NativeRequestOptions::ackTimeoutMs)
     .def_readwrite("task_name", &di::NativeRequestOptions::taskName)
-    .def_readwrite("output_mode", &di::NativeRequestOptions::outputMode);
+    .def_readwrite("output_mode", &di::NativeRequestOptions::outputMode)
+    .def_readwrite("generation", &di::NativeRequestOptions::generation)
+    .def_readwrite("stream", &di::NativeRequestOptions::stream)
+    .def_readwrite("conversation", &di::NativeRequestOptions::conversation);
 
   py::class_<di::NativeRequestContract>(module, "NativeRequestContract")
     .def(py::init<>())
