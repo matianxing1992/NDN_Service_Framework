@@ -1,6 +1,6 @@
 # Implementation Plan: Native NDNSF-DI with Optional Python Bindings
 
-**Branch**: Experimental | **Revision**: 33 | **Date**: 2026-09-09
+**Branch**: Experimental | **Revision**: 34 | **Date**: 2026-09-09
 **Status**: IN_PROGRESS / 当前实现与验收状态见 tasks.md 的 Task Progress Registry 和 Current Checkpoint
 **Spec**: [spec.md](spec.md)
 
@@ -307,6 +307,18 @@ legacy zero-use and T016 ownership explicit. Historical audit findings remain da
 Allocation is limited to `audit.md`, the task/progress registry and one evidence record. The
 independent exit is link/status consistency plus the design validator; no product or qualification
 status is promoted.
+
+### R10-B13 Integration Recipe Oracle Repair 2026-09-09
+
+The first full integration run after R10-B11 found four `Spec175NativeAssembly` failures at the
+worker recipe boundary. The test helper independently sorted input/output names, while the
+production canonical serializer binds names to contract order. This batch aligns the helper with
+the production contract, records the first failure in `docs/failure-log.md`, and revalidates the
+affected integration suite with a lower-concurrency rebuild after observed host swap-in.
+
+Allocation is limited to the integration test helper, failure index, task/progress record and one
+evidence file. No production serializer or protocol behavior changes; T016 qualification remains
+open until the complete same-source matrix passes.
 
 ### R8-SKILL Review Coverage Contract 2026-09-09
 

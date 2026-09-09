@@ -1,5 +1,22 @@
 # Failure Log and Evidence Index
 
+## 2026-09-09 — Spec182 full integration stale recipe-oracle boundary
+
+The first full `integration-tests --log_level=test_suite` run after the R10-B11 checkpoint
+completed the suite but exited `201` with four failures in
+`Spec175NativeAssembly/{AssignmentBoundRootSourceAndCachePath,RegisteredOneProviderAssemblyLoadsOrt,RegisteredTwoProviderAssemblyLoadsOrt,RegisteredFourProviderAssemblyLoadsOrt}`.
+Each failed before ORT execution with `DI_NATIVE_ONNX_RECIPE`: the integration fixture's
+`recipeDigestFor` helper sorted input/output names while the production
+`canonicalNativeOnnxRecipeJson` binds those names to contract order. This is a stale test
+oracle boundary, not a protocol result. The raw complete run and vmstat are retained under
+`.codex-tmp/spec182-t016-r3/`; the unit suite in the same checkpoint passed.
+
+The helper was corrected to preserve contract order and the stale graph digest/adapter identity
+in the same fixture was aligned with the current source identity. A system-first `-j2` rebuild
+completed successfully and the affected `Spec175NativeAssembly/*` suite passed 7/7; the complete
+integration suite is still a separate retry. The lower concurrency was selected because the full
+unit/integration attempts produced sustained swap-in on this host.
+
 ## 2026-09-09 — Spec182 R10-B9 requester REPO_REF oracle boundary
 
 The first R10-B9 repository-reference selector failed in its test oracle: the
