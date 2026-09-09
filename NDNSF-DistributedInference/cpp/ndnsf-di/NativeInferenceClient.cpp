@@ -1254,8 +1254,14 @@ dispatchOperation(const std::shared_ptr<NativeInferenceHandle::Operation>& opera
     try {
       const auto& input = operation->input;
       const auto& options = operation->options;
-      if (input.transportMode != NativeInputTransportMode::Inline)
-        throw std::invalid_argument("repository input resolution is not linked");
+      if ((input.transportMode == NativeInputTransportMode::Inline &&
+           !input.repositoryReference.empty()) ||
+          (input.transportMode == NativeInputTransportMode::RepositoryReference &&
+           input.repositoryReference.empty()))
+        throw std::invalid_argument("native input transport and reference disagree");
+      if (input.transportMode != NativeInputTransportMode::Inline &&
+          input.transportMode != NativeInputTransportMode::RepositoryReference)
+        throw std::invalid_argument("native input transport is invalid");
       if (!options.taskName.empty() && !input.taskName.empty() &&
           options.taskName != input.taskName)
         throw std::invalid_argument("request task names disagree");
@@ -1621,7 +1627,11 @@ NativeInferenceHandle NativeInferenceClient::request(
     if (!splitStrategy || !placementStrategy || options.timeoutMs == 0 ||
         options.ackTimeoutMs == 0 || options.ackTimeoutMs >= options.timeoutMs ||
         options.timeoutMs > static_cast<std::uint64_t>(std::numeric_limits<int>::max()) ||
-        (input.payload.empty() && input.repositoryReference.empty())) {
+        (input.payload.empty() && input.repositoryReference.empty()) ||
+        (input.transportMode == NativeInputTransportMode::Inline &&
+         (!input.repositoryReference.empty() || input.payload.empty())) ||
+        (input.transportMode == NativeInputTransportMode::RepositoryReference &&
+         (!input.payload.empty() || input.repositoryReference.empty()))) {
       throw NativeDiError("INVALID_REQUEST", "local", "request",
                           "native request arguments are invalid");
     }
