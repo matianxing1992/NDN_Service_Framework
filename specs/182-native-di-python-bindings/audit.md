@@ -1,8 +1,8 @@
 # Spec182 Design Audit
 
-**Revision**: 21 | **Mode**: source alignment / cross-task convergence
+**Revision**: 22 | **Mode**: source alignment / cross-task convergence
 **Verdict**: DRAFT / PARTIAL; T016 preflight UNQUALIFIED
-**Source**: `3acae7ef` implementation/docs checkpoint / Experimental
+**Source**: `1ab9b12a` implementation/docs checkpoint / Experimental
 **Evidence**: [current source and dependency baseline](contracts/integrated-baseline.md)
 
 ## Current Findings
@@ -117,6 +117,22 @@ trust-config 缺失的首个失败边界；修正 `/lib/<SONAME>` 闭包后，�
 不是多进程 requester/provider transport，也不是 maintained caller、I02-I08 或 T016 资格。
 manifest 目标、loader、搜索路径和 config 失败均写入 [R10-B22 evidence](evidence/r10-b22-native-di-business-case-20260909.md)，
 下一批必须为 runner 增加有界的工作目录/config 绑定后用新 output 重试。
+
+### R10-B23 Runner Working Directory and Config Boundary 2026-09-09
+
+R10-B23 关闭了 R10-B22 首个 owner/runner setup 边界。runner 对 manifest 的
+`workingDirectory` 只允许 `/probe-root` 子路径或 `/tmp`，并把声明的
+`examples/trust-any.conf` data/config artifact 放入 staged root；没有增加宿主路径或任意
+环境注入。官方 `review-agent` 按五条审查 lane 复核 runner、manifest 校验、launch argv、
+artifact staging、测试注册与 evidence 记录，没有发现新增缺陷。
+
+33 个 focused Python cases、`py_compile` 与设计 validator 通过。新的 root owner/runner
+`PO-001` 输出目录 `.codex-tmp/spec182-r10-b23-runner-working-dir-owner/` 中，native
+`Spec182R4B6RealProviderConversation` selector 返回 0，trace `complete=true`，evaluator
+返回 `PASS`，七类运行 evidence 和 `SPEC182_NATIVE_DI_REQUEST_RESULT_OK` 均满足，且无
+integrity/policy violation。该结果只关闭有界的 working-directory/config harness boundary；
+它仍不是多进程 requester/provider transport、maintained caller、I02-I08 或 T016 qualification。
+详见 [R10-B23 evidence](evidence/r10-b23-runner-working-directory-20260909.md)。
 
 ### MiniNDN Owner Context Producer 2026-09-09
 
