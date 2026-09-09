@@ -1,6 +1,6 @@
 # Implementation Plan: Native NDNSF-DI with Optional Python Bindings
 
-**Branch**: Experimental | **Revision**: 17 | **Date**: 2026-09-09
+**Branch**: Experimental | **Revision**: 18 | **Date**: 2026-09-09
 **Status**: IN_PROGRESS / 当前实现与验收状态见 tasks.md 的 Task Progress Registry 和 Current Checkpoint
 **Spec**: [spec.md](spec.md)
 
@@ -104,6 +104,17 @@ admitted Provider 仍 fail-closed。静态复核还补上 coordinator 对 expect
 parser、单 Provider negative、双 Provider alternate replacement 与原有正向两轮 selectors
 均通过；批次按 `CLOSED_FOR_VALIDATION` 关闭。该批不吸收 Python caller migration 或
 T016 跨进程资格。
+
+### R8-SKILL Review Coverage Contract 2026-09-09
+
+本轮根据 R4-B4/R3-B1 的流程复盘，补强可复用的 Spec Kit skill，而不是改变产品契约或
+重做 Spec182。`review-agent.md` 新增固定的 Minimum Review Record：每次小任务与批末组合
+审查必须逐行记录 `production entry/callers`、`implementation and wire`、`test/harness/oracle`、
+`build/source closure`、`migration/evidence` 的实际文件/符号与查询命令；缺少测试注册、
+source closure 或未解释的 `gap` 时不得产生 `STATIC_PASS`。plan/tasks 模板同步要求这张表和
+四类 `Batch Retrospective`。本机 `speckit-analyze`、`speckit-taskstoissues`、
+`speckit-implement`、`speckit-constitution` 副本也已同步入口说明；同步只改变审查记录格式，
+不改变现有任务状态或把局部 C++/Python 测试提升为资格验收。
 
 T012-A 的候选 ABI 观察项已单独记录为 `PARTIAL`：显式候选 Core/DI、NAC-ABE 与 SVS
 依赖下 extension 导入和 21 个 focused Python cases 通过，但默认 requester 的完整

@@ -155,7 +155,7 @@ Python 绑定可选构建，禁止依赖主工作区未提交文件。
 
 - **FR-017**: **Symbol Documentation and Usage Closure**. System MUST 在每个实施单元开始前冻结受影响类、方法、字段和关键局部状态的职责、变更原因、签名、类型/单位/边界、所有权、失败/取消、调用方、注释及前后用法；新增/修改/复用/退出路径均可追踪，未决项阻塞对应实现。不得用堆砌符号名或转述方法名代替解释。
 
-- **FR-018**: **Pre-Test Static Code Review**. System MUST 在每个小任务编码后，以只读 review-agent profile 读实际生产/测试逻辑对照设计，检查职责、正确性和检错能力；修复控制性缺陷并复审后继续同一已登记逻辑批次。整批逻辑/流程审查通过才统一构建和相关单测，测试待运行保持 PARTIAL，硬验收依赖不降级。全部实现与接线完成后，T015审查整体调用链，再由T016统一执行集成与MiniNDN。lint/编译/文档扫描不能替代读码。
+- **FR-018**: **Pre-Test Static Code Review**. System MUST 在每个小任务编码后，以只读 review-agent profile 读实际生产/测试逻辑对照设计，检查职责、正确性和检错能力；修复控制性缺陷并复审后继续同一已登记逻辑批次。整批逻辑/流程审查通过才统一构建和相关单测，测试待运行保持 PARTIAL，硬验收依赖不降级。每次小任务与批末审查必须使用 `skills/speckit-code-design/references/review-agent.md` 的 Minimum Review Record，逐行给出五个 coverage lane 的实际文件/符号与查询命令；缺少测试注册或 target/source closure 时不得记 `STATIC_PASS`。全部实现与接线完成后，T015审查整体调用链，再由T016统一执行集成与MiniNDN。lint/编译/文档扫描不能替代读码。
 
 - **FR-019**: **Phased Verification Closure**. System MUST 将实现阶段限定为实现、静态审查、相关unit及必要构建检查；完整integration与MiniNDN在全部实现后集中执行。结果记录合并，关键风险按实际需要关联检错测试，不规定数量；既定运行用例/负例不得删减。最终diff与验收证据一致且必要PO通过即可交付，变化或失败只重审和回归受影响范围。
 
@@ -192,7 +192,7 @@ Python 绑定可选构建，禁止依赖主工作区未提交文件。
 
 - **SC-009**: **Reviewable Symbol Contracts**. 每个变更符号有覆盖条目和任务/证明映射，所有非 LOCAL_DETAIL 字段有语义说明；公开 C++/Python 文档及使用示例经实际构建/运行验收。设计阶段只计文档检查，不计编译通过。
 
-- **SC-010**: **Static Review Before Runtime Checks**. T002--T014完成各自实现、静态审查及相关单测，且每个小任务与批末结果记录五 lane Coverage matrix（production entry/callers、implementation/wire、test/harness/oracle、build/source closure、migration/evidence）；集成测试与harness已编写并登记但尚未运行。T015整体审查无控制性缺陷后，T016按完整unit→integration→MiniNDN执行。静态PASS不计运行PASS；最小诊断例外不计正式资格。
+- **SC-010**: **Static Review Before Runtime Checks**. T002--T014完成各自实现、静态审查及相关单测，且每个小任务与批末结果记录五 lane Coverage matrix（production entry/callers、implementation/wire、test/harness/oracle、build/source closure、migration/evidence），格式遵循 Minimum Review Record；批末另记录 static、compile/link、runtime/test、unobserved 四类 Batch Retrospective。集成测试与harness已编写并登记但尚未运行。T015整体审查无控制性缺陷后，T016按完整unit→integration→MiniNDN执行。静态PASS不计运行PASS；最小诊断例外不计正式资格。
 
 - **SC-011**: **No False-Green Completion**. 实现任务[x]只表示本阶段实现、审查、单测完成；完整PO的集成/实验义务集中由T016关闭。只用一份任务结果记录说明实际检查、证据与未执行项，最终核对diff和必需行为。Static review PASS != Behavior PASS；T016全部本地验收通过后才可T017交付。
 

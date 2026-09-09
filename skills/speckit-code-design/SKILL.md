@@ -70,10 +70,15 @@ Static review PASS != Behavior PASS。
 closure、验收出口）；任一项不一致就拆成新的批次，不以少一次构建为合批理由。
 每个静态门和批末门还必须留下五 lane Coverage matrix；没有实际文件/符号和查询
 命令的覆盖声称不能产生 `STATIC_PASS`。
+矩阵格式统一采用 [review-agent.md](references/review-agent.md) 的 **Minimum Review Record**；
+测试 lane 必须同时检查 harness/oracle 与测试注册，build lane 必须检查
+target/source closure。缺少任一项时先记 `gap`，不得用 `No findings` 补齐。
 批次已经有独立可观察出口后应立即进入批末验证，不得为了少一次构建继续吸收无关职责；
 复盘必须把静态、编译/链接、运行/测试漏检和可比构建耗时分开记录；每个成员和批末组合门
 还要记录 review-agent 的路径、SHA、基线和实际差异范围，以及 `CLOSED_FOR_VALIDATION` /
 `OPEN_FOR_NEXT_BATCH` 的关闭决定和触发条件。
+批末记录必须包含四类 **Batch Retrospective**（`static`、`compile/link`、`runtime/test`、
+`unobserved`）及其首个失败边界；缺少分类时保持 `PARTIAL`。
 维护中的 legacy/compatibility 回归同样必须经过真实调用方和迁移 lane：当前源码探针
 发现的运行时失败要保留首个边界、原始日志和 `PARTIAL` 状态，并交给
 `speckit-converge` 追加有独立出口的修复/迁移任务；在 receipt、newness、状态或兼容契约

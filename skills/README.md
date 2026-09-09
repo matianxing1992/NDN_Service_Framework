@@ -21,6 +21,11 @@
 维护 `tasks.md` 的 `Execution Progress`，并把静态、编译/链接、运行/测试漏检分开记录。
 每个批次还要记录共同入口/调用方、契约、oracle/selector、source closure 和验收出口；
 这些依据不一致时拆批，不能只为减少一次构建继续合并职责。
+静态审查的唯一记录格式是
+[review-agent Minimum Review Record](speckit-code-design/references/review-agent.md)：
+五个 lane 必须列出实际文件/符号、查询命令和 findings；测试 lane 包含 harness/oracle
+及注册，build lane 包含 target/source closure。缺行或未解释的 `gap` 不得产生
+`STATIC_PASS`，批末还必须记录四类 `Batch Retrospective`。
 NDNSF-DI 原生行为由生产 C++ target/selector 验收，Python 只覆盖 binding/facade、
 offline oracle 或外部设施边界。
 维护中的 legacy/compatibility 探针若暴露运行时回归，必须保留首个失败边界和原始证据，

@@ -1,6 +1,6 @@
 # Tasks: Native NDNSF-DI with Optional Python Bindings
 
-**Revision**: 40 | **Status**: DRAFT / T001 DONE
+**Revision**: 41 | **Status**: DRAFT / T001 DONE
 **Input**: [spec](spec.md), [code design](contracts/code-design.md),
 [proof](contracts/proof-design.md), [work units](contracts/work-units.md)
 
@@ -46,6 +46,7 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 | [D-CHAIN-REPLAN Production Chain Review](evidence/production-chain-replan-20260908.md) | DONE | User pause and replan request | 23 张未完成卡归入七个能力阶段；实际 R<n>-B<k> 按完整行为/共享契约/稳定出口领取，逐任务静态门、批末统一验证；36 张原卡状态不变，新增实现暂停 | 2026-09-08 |
 | [D-REVIEW-AGENT Official Skill](evidence/review-agent-install-20260908.md) | DONE | User installation request | 官方原版安装/字节身份/技能 schema PASS；逐任务静态门明确调用，文档校验 PASS；不关闭产品任务 | 2026-09-08 |
 | [D-SKILL-BATCH Workflow Revision](evidence/skill-batch-workflow-20260908.md) | DONE | User workflow request | 共享 batch-quality-gates、11 个 Spec Kit 入口、code-design references 与 Spec 模板已同步；覆盖生产调用方、测试/harness/oracle、构建注册、稳定出口、批次分配依据、静态/编译/运行漏检及匹配耗时；新增 native test ownership：NDNSF-DI 行为须由 C++ production target/selector 验收，Python 仅作 binding/facade/oracle/外部设施边界；新增 `Review trace` 与 `Closure decision` 的可追溯批次门；旧验证器 compatibility 白名单限制已记录，不关闭产品任务 | 2026-09-08 |
+| [D-SKILL-REVIEW-COVERAGE Minimum Review Record](evidence/skill-review-coverage-20260909.md) | DONE | User workflow review request | 共享 `review-agent.md` 新增五 lane Minimum Review Record；`plan-template`/`tasks-template` 明确测试注册、target/source closure、四类 Batch Retrospective；本机 `speckit-analyze`、`speckit-taskstoissues`、`speckit-implement`、`speckit-constitution` 入口已同步；仅收紧静态证据格式，不改变产品任务状态 | 2026-09-09 |
 | [D-DESIGN-R3 Revision](evidence/design-r3-20260908.md) | PASS | User documentation request | 逐章修订、23 组关键契约、生成/KV/会话重写；双 PDF 82/87 页、5 工具回归、API/八份参考/460+350 源码还原/版面 PASS；不关闭产品任务或全量语义审计 | 2026-09-08 |
 | [D-DESIGN-CHAPTER-AUDIT Chapter Review](evidence/design-chapter-audit-20260908.md) | PASS | User document review request | 审阅完成：当前/目标 62/67 章；7 KEEP、36 EXPAND、20 REWRITE、4 CORRECT；被审文档 NEEDS_REVISION，PDF 未改写，不关闭产品任务 | 2026-09-08 |
 | [D-DESIGN-R2 Baseline and Contracts](evidence/design-r2-20260907.md) | PASS | User documentation request | 当前/目标 66/69 页；4 工具回归、API、460/350 文件还原、PDF 身份/版面 PASS；BC-01 至 BC-04 已补，TG-01 至 TG-05 PLANNED；不关闭功能任务 | 2026-09-07 |
