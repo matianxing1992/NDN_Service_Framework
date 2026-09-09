@@ -23,6 +23,9 @@
 这些依据不一致时拆批，不能只为减少一次构建继续合并职责。
 NDNSF-DI 原生行为由生产 C++ target/selector 验收，Python 只覆盖 binding/facade、
 offline oracle 或外部设施边界。
+维护中的 legacy/compatibility 探针若暴露运行时回归，必须保留首个失败边界和原始证据，
+在 migration/evidence lane 维持 `PARTIAL`，并由 `speckit-converge` 追加独立出口任务；
+不能因测试属于旧 Spec 就忽略，也不能在边界明确前修改共享 freshness 或重试逻辑。
 
 `.agents/skills/` 是本机 Spec Kit 命令安装副本并按仓库策略保持未跟踪；它们只引用这份
 受版本控制的共享契约。修改治理原则或模板时，同时检查本机副本是否仍包含对应入口说明，
