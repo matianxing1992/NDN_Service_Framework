@@ -4070,11 +4070,21 @@ public:
       m_startFinished = true;
     }
     m_startCv.notify_all();
-    m_face.shutdown();
-    m_face.getIoContext().stop();
+    // ``run()`` is invoked on the Python background thread, not on
+    // ``m_thread`` (which is used only by ``start()``).  Shutting down the
+    // Face from this thread while ``runControllerLoop`` is dispatching a
+    // callback races ndn-cxx teardown and can abort with
+    // ``terminate called without an active exception``.  Stop the owned
+    // event loop first; only touch Face state after the loop has left.
     if (m_thread.joinable()) {
       m_thread.join();
     }
+    {
+      std::unique_lock<std::mutex> lock(m_runMutex);
+      m_runCv.wait(lock, [this] { return !m_runActive; });
+    }
+    m_face.shutdown();
+    m_face.getIoContext().stop();
   }
 
   void
@@ -4090,6 +4100,17 @@ public:
   void
   runControllerLoop(bool propagateError)
   {
+    {
+      std::lock_guard<std::mutex> lock(m_runMutex);
+      m_runActive = true;
+    }
+    const auto markFinished = [this] {
+      {
+        std::lock_guard<std::mutex> lock(m_runMutex);
+        m_runActive = false;
+      }
+      m_runCv.notify_all();
+    };
     try {
       // spec180 r36-r42 repair (restored on the spec181 branch): drain the
       // Controller Face BEFORE start() so the Unix transport is connected
@@ -4123,9 +4144,15 @@ public:
       }
       m_startCv.notify_all();
       if (propagateError) {
+        markFinished();
         throw;
       }
     }
+    catch (...) {
+      markFinished();
+      throw;
+    }
+    markFinished();
   }
 
   ndn::Face m_face;
@@ -4143,6 +4170,9 @@ public:
   std::thread m_thread;
   std::mutex m_startMutex;
   std::condition_variable m_startCv;
+  std::mutex m_runMutex;
+  std::condition_variable m_runCv;
+  bool m_runActive = false;
   bool m_started = false;
   // Idle before the Python background thread enters run() is not a terminal
   // startup result. Only ready, failure, or explicit stop wakes the waiter.

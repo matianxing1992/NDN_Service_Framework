@@ -4011,3 +4011,32 @@ identity and rerun packaging against the existing incremental Waf cache.
 - Fix: assert the conditional fallback contract instead of a removed literal.
 - Lesson: source-shape tests for runtime budgets must follow the behavior
   contract when an explicit override is introduced.
+
+## 2026-09-08: external app builder was invoked inside the base SIF
+
+- Symptom: the v19 app rebuild failed before reading the base seal with
+  `FileNotFoundError: /opt/apptainer/1.5.3/bin/apptainer`.
+- Root cause: the builder is a host-side orchestrator that invokes the host
+  Apptainer binary; wrapping the builder itself in `apptainer exec --cleanenv`
+  hid that host path inside the SIF.
+- Fix: invoke `build-external-yolo.py` with the host Python and let its own
+  Apptainer calls enter the base image for verification and compilation.
+- Lesson: layered app builds cross the host/container boundary once at the
+  builder's command boundary; do not run the orchestrator inside the image it
+  is responsible for inspecting.
+
+## 2026-09-08: Y-N-I exact-SIF cleanup hit Controller SIGABRT
+
+- Symptom: v28 reached the real Provider-owned `DI_INPUT_FETCH_ROLE_MISMATCH`
+  rejection, but the Controller exited `-6` with `terminate called without an
+  active exception`; the root systemd owner timed out after 300 seconds.
+- Root cause: the Python `start_background()` path executes the native
+  Controller event loop on a Python thread that is not `NativeServiceController`
+  `m_thread`. `stop()` shut down the ndn-cxx Face from the signal-handling
+  thread while that loop was still dispatching a callback.
+- Fix: make native Controller shutdown wait for the event loop to leave before
+  shutting down the Face; retain the existing join for the explicit `start()`
+  thread path and signal completion on all loop exits.
+- Lesson: a negative Provider result can leave asynchronous Controller work in
+  flight, so process cleanup must synchronize the loop owner before Face
+  teardown rather than relying on a successful terminal response.
