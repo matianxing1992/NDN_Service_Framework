@@ -66,9 +66,9 @@ READY 必须满足依赖和阶段门禁；DONE 必须有完整单元验收证据
 批末填写以下字段；没有发现时写 `none` 或 `not observed`，不留空。耗时只能用于相同
 target/source closure、toolchain、配置和工作树条件下的对照，不能由单次运行推导总体提速。
 
-| Batch ID | Coverage matrix | Static findings | Compile/build misses | Runtime/test misses | Build scope / target / `-j` / elapsed / exit | Behavior result | Evidence / remaining |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| B-01 | [five lanes: status, file/symbol, query/check] | [found/fixed/gaps] | [compiler/linker/wiring misses] | [runtime/test misses and first boundary] | [command, closure, toolchain, timing, log] | [STATIC_PASS / BUILD_PASS / FOCUSED_BEHAVIOR_PASS / QUALIFICATION_PASS] | [links and next step] |
+| Batch ID | Coverage matrix | Static findings | Compile/build misses | Runtime/test misses | Build scope / target / `-j` / elapsed / exit | Review trace / closure decision | Behavior result | Evidence / remaining |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| B-01 | [five lanes: status, file/symbol, query/check] | [found/fixed/gaps] | [compiler/linker/wiring misses] | [runtime/test misses and first boundary] | [command, closure, toolchain, timing, log] | [review-agent path/SHA, baseline/diff; CLOSED_FOR_VALIDATION or OPEN_FOR_NEXT_BATCH and trigger] | [STATIC_PASS / BUILD_PASS / FOCUSED_BEHAVIOR_PASS / QUALIFICATION_PASS] | [links and next step] |
 
 ## Format: `[ID] [P?] [Story] Description`
 

@@ -117,9 +117,9 @@ be stricter but must not weaken its PASS/BLOCK boundary.
   only binding/facade, offline oracle, or external-facility boundaries.
 -->
 
-| Batch ID | Behavior boundary / stable exit | Members | Implementation dependencies | Acceptance dependencies | Coverage matrix scope | Shared build/test selector and owner | Result record / evidence owner |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| B-01 | [observable behavior and exit] | [task IDs] | [IDs or —] | [hard gates or —] | [five lanes: status, files/symbols, query/check] | [selector / owner] | [evidence path / owner] |
+| Batch ID | Behavior boundary / stable exit | Members | Implementation dependencies | Acceptance dependencies | Coverage matrix scope | Shared build/test selector and owner | Review trace / closure decision | Result record / evidence owner |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| B-01 | [observable behavior and exit] | [task IDs] | [IDs or —] | [hard gates or —] | [five lanes: status, files/symbols, query/check] | [selector / owner] | [skill path/SHA, baseline/diff; CLOSED_FOR_VALIDATION or OPEN_FOR_NEXT_BATCH and trigger] | [evidence path / owner] |
 
 ## Project Structure
 
