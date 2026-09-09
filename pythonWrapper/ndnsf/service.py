@@ -2426,10 +2426,20 @@ class ServiceUser:
             configuration_json, str(base_directory))
 
     def native_inference_client_configured(
-        self, runtime, preparation, admission):
+        self, runtime, preparation, admission, conversations=None):
         """Create a fully configured native requester without Python planning."""
         return self._native.native_inference_client_configured(
-            runtime, preparation, admission)
+            runtime, preparation, admission, conversations)
+
+    def native_conversation_coordinator_from_config(
+        self, configuration_json: str, base_directory: str = "."):
+        """Load the operator-pinned conversation owner in C++.
+
+        Key files, journal permissions, and checkpoint ownership never cross
+        the Python boundary; this returns only an opaque native coordinator.
+        """
+        return self._native.native_conversation_coordinator_from_config(
+            str(configuration_json), str(base_directory))
 
     def open_live_stream(
         self,

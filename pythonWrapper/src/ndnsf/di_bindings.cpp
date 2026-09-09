@@ -315,6 +315,13 @@ bindDistributedInference(py::module_& module)
              std::shared_ptr<di::NativeAuthenticatedGrantClient>>(
     module, "NativeAuthenticatedGrantClient");
 
+  // The coordinator is an opaque C++ owner.  Python may retain and pass the
+  // handle when composing a requester, but cannot construct or mutate its
+  // journal, keys, checkpoints, or state machine.
+  py::class_<di::NativeConversationCoordinator,
+             std::shared_ptr<di::NativeConversationCoordinator>>(
+    module, "NativeConversationCoordinator");
+
   py::class_<di::NativeOfferAdmission,
              std::shared_ptr<di::NativeOfferAdmission>>(
     module, "NativeOfferAdmission")

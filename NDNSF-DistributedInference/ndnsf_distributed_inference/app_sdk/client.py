@@ -75,6 +75,7 @@ class APPClient:
         self._native_runtime = None
         self._native_model = None
         self._native_splitter = None
+        self._native_conversations = None
         self._network_futures = {}
         self._result_cache: dict[str, bytes] = {}
         self._selection_acceptance_trackers: dict[
@@ -318,7 +319,7 @@ class APPClient:
         """Return the configured native requester, if one was injected."""
         return self._native_client
 
-    def configure_native_requester(self, runtime, admission):
+    def configure_native_requester(self, runtime, admission, conversations=None):
         """Bind the existing Core user to a complete native DI runtime.
 
         Catalog inspection, artifact publication, offer admission and grant
@@ -335,11 +336,12 @@ class APPClient:
         preparation = service_user.native_preparation(
             catalog, contract.service_name)
         self._native_client = service_user.native_inference_client_configured(
-            runtime, preparation, admission)
+            runtime, preparation, admission, conversations)
         self._native_catalog = catalog
         self._native_runtime = runtime
         self._native_model = getattr(catalog, "model_ref", None)
         self._native_splitter = getattr(catalog, "splitter", None)
+        self._native_conversations = conversations
         return self._native_client
 
     @staticmethod
@@ -471,9 +473,18 @@ class APPClient:
                 json.dumps(offer["policy"], sort_keys=True, separators=(",", ":"),
                             ensure_ascii=False),
                 offer_keys, str(offer["candidate_digest"]))
+            conversations = None
+            if "conversation" in root:
+                conversation_config = root["conversation"]
+                if not isinstance(conversation_config, dict):
+                    raise ValueError("native conversation configuration must be an object")
+                conversations = service_user.native_conversation_coordinator_from_config(
+                    json.dumps(conversation_config, sort_keys=True,
+                               separators=(",", ":"), ensure_ascii=False),
+                    str(config_path.parent))
         except (KeyError, TypeError, OSError) as exc:
             raise ValueError("native requester configuration is incomplete") from exc
-        return self.configure_native_requester(runtime, admission)
+        return self.configure_native_requester(runtime, admission, conversations)
 
     def request_native(self, *, model, input, split_strategy,
                        placement_strategy, options):
@@ -1832,9 +1843,9 @@ class InferenceClient:
         """Return the explicitly configured native requester, if any."""
         return self._core.native_client
 
-    def configure_native_requester(self, runtime, admission):
+    def configure_native_requester(self, runtime, admission, conversations=None):
         """Configure the native requester through the canonical core owner."""
-        return self._core.configure_native_requester(runtime, admission)
+        return self._core.configure_native_requester(runtime, admission, conversations)
 
     def request_native(self, *, model, input, split_strategy,
                        placement_strategy, options):
