@@ -1,6 +1,6 @@
 # Implementation Plan: Native NDNSF-DI with Optional Python Bindings
 
-**Branch**: Experimental | **Revision**: 55 | **Date**: 2026-09-09
+**Branch**: Experimental | **Revision**: 56 | **Date**: 2026-09-09
 **Status**: IN_PROGRESS / 当前实现与验收状态见 tasks.md 的 Task Progress Registry 和 Current Checkpoint
 **Spec**: [spec.md](spec.md)
 
@@ -551,6 +551,21 @@ SHA 一致。详见 [R10-B27 evidence](evidence/r10-b27-native-cpp-test-ownershi
 
 本批是文档/技能边界的 `CLOSED_FOR_VALIDATION`，不改变任何产品任务状态，也不把已有
 Python focused、CLI smoke、局部 C++ selector 或 T016 preflight 提升为 native qualification。
+
+### R10-B28 Workflow Authority Alignment 2026-09-09
+
+当前工作流总览曾把 GSD Core 写成默认四道强制门，与 constitution 1.5.0 已采用的 Spec Kit
+`Execution Progress`/持久证据规则不一致。现已修正 `docs/agentic_workflow.md` 和本机
+`CLAUDE.md`：Context Mode、CodeGraph、Spec Kit 是默认门；GSD 仅在长时或需要其 phase/state
+模型时使用，ARS 只在研究范围适用时使用。总览同时引用共享 `batch-quality-gates.md`，明确
+逐任务 review-agent 静态门、批末组合审查、四类漏检复盘和 NDNSF-DI native C++
+fixture/driver/oracle ownership；`AGENTS.md` 也已加入同一执行契约，并保留原有 `-j4` 与增量
+构建规则。
+
+分配依据是同一工作流权威、无产品源码或 target 变化、独立出口为当前入口文档对必需/可选
+工具和共享批次契约的一致描述；本批 `CLOSED_FOR_VALIDATION` 只适用于文档规则，不改变
+T004/T008/T010/T011/T013/T016/T017 状态，也不替代 review-agent 实际执行或产品资格证据。
+详见 [R10-B28 evidence](evidence/r10-b28-workflow-authority-alignment-20260909.md)。
 
 ### R8-SKILL Review Coverage Contract 2026-09-09
 
