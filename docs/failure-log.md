@@ -2411,3 +2411,23 @@ part of task context. Format per entry:
   configure + build and verify mtimes) before trusting a test run; frozen
   per-prefix expectations for ByteLevel must be authored with Rust-std
   utf-8 semantics, not python codec semantics.
+
+## 2026-09-08 — Spec182 T016 preflight: MiniNDN node context unavailable
+
+- **Area**: T016-A local qualification preflight;
+  `Experiments/NDNSF_DI_NativeClosure_Minindn.py` campaign owner.
+- **Command**: `python3 Experiments/NDNSF_DI_NativeClosure_Minindn.py
+  --manifest .codex-tmp/spec182-t016-r2/manifest.json
+  --output .codex-tmp/spec182-t016-r2/result` with `campaignCase=I01`.
+- **Observed boundary**: exit `2`, result status `UNQUALIFIED`, reason
+  `MININDN_NODE_CONTEXT_NOT_PROVIDED`; `/usr/bin/bwrap`, `strace` and `nsenter`
+  are installed, but `/run/nfd/nfd.sock` is absent and no real MiniNDN
+  `node/netns` metadata was supplied.
+- **Interpretation**: this is a harness/environment preflight boundary, not an
+  I01 protocol result and not a native no-Python PASS/FAIL. No business process,
+  namespace or network request was started.
+- **Raw evidence**: `.codex-tmp/spec182-t016-r2/` (manifest, stdout/stderr and
+  persisted result.json). Keep this run immutable; a later retry must use a new
+  run directory after node/NFD context is available.
+- **Next step**: provide the externally owned MiniNDN node/netns/socket context,
+  then rerun the complete T016 matrix with a fresh raw run directory.
