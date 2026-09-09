@@ -1,15 +1,15 @@
 # Spec182 Design Audit
 
-**Revision**: 20 | **Mode**: source alignment / cross-task convergence
+**Revision**: 21 | **Mode**: source alignment / cross-task convergence
 **Verdict**: DRAFT / PARTIAL; T016 preflight UNQUALIFIED
-**Source**: `40438a82` implementation/docs checkpoint / Experimental
+**Source**: `3acae7ef` implementation/docs checkpoint / Experimental
 **Evidence**: [current source and dependency baseline](contracts/integrated-baseline.md)
 
 ## Current Findings
 
 ### Remaining Production Chain Review 2026-09-09
 
-本次复核以 `40438a82` 为当前 source checkpoint，当前文档状态由 R10-B21 更新。R10-B1--R10-B6 已在本地关闭
+本次复核以 `3acae7ef` 为当前 source checkpoint，当前文档状态由 R10-B22 更新。R10-B1--R10-B6 已在本地关闭
 准备、公开 facade、YOLO/Qwen maintained caller 的 `REPO_REF` 路由、真实 Provider 正向
 消费和三个 Provider fail-closed 负例；R10-B7 同步了当前 route marker 与 T013-D/T013-F
 契约文字，R10-B9 又在真实 Provider conversation fixture 中观察到 configured
@@ -102,6 +102,21 @@ R10-B21 使用现有同源 `build-nac182/spec182-installed-consumer` 及递归�
 requester/provider DI 请求、grant/selection、I02-I08 反例、maintained caller、no-Python
 业务或 T016 qualification。candidate manifest 和原始输出保存在本机 `.codex-tmp/`，未把
 二进制、私有依赖或机器路径提交到仓库；详见 [R10-B21 evidence](evidence/r10-b21-native-consumer-i01-pass-20260909.md)。
+
+### R10-B22 Native DI Business Case 2026-09-09
+
+R10-B22 在真实 `Spec182R4B6RealProviderConversation` C++ selector 的成功路径末尾加入独立
+`SPEC182_NATIVE_DI_REQUEST_RESULT_OK` marker，并以系统工具链 `-j4` 重建
+`integration-tests`。直接 selector rc=0、6.801 秒，marker 在第二轮 native result 断言后出现。
+owner/runner 的四次新输出保留了 process-target、ELF interpreter、最小 root loader 搜索和
+trust-config 缺失的首个失败边界；修正 `/lib/<SONAME>` 闭包后，测试进程在 fixture setup
+因为相对 `examples/trust-any.conf` 不在最小 root 而以 returncode=201 退出，evaluator 保持
+`UNQUALIFIED`。
+
+该批证明的是隔离进程内 native requester→Core→Provider→result 的直接 business selector，
+不是多进程 requester/provider transport，也不是 maintained caller、I02-I08 或 T016 资格。
+manifest 目标、loader、搜索路径和 config 失败均写入 [R10-B22 evidence](evidence/r10-b22-native-di-business-case-20260909.md)，
+下一批必须为 runner 增加有界的工作目录/config 绑定后用新 output 重试。
 
 ### MiniNDN Owner Context Producer 2026-09-09
 
