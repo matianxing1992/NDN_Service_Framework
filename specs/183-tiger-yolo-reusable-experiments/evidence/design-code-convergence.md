@@ -42,7 +42,8 @@ as a placement failure.  The first v51 aggregate driver returned 2 because its
 helper required one tensor; the helper is fixed and the retained evidence is
 validated, but a fresh aggregate Y-N returncode-0 campaign is still required.
 
-**Source checkpoint**: `80203f80`, `TigerClusterExperiments`.
+**Source checkpoint**: `93c8630b`, `TigerClusterExperiments` (v58 collector
+closure and native evidence normalization).
 
 **Verdict**: **BLOCK (HIGH)** — host/MiniNDN receipt is verified, while the
 final T007 production audit, fresh post-fix aggregate Y-N run, empty
