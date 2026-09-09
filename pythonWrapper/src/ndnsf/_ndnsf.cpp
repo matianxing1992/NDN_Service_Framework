@@ -13,6 +13,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPlanner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
 #include "di_bindings.hpp"
 
@@ -60,6 +61,8 @@
 #include <tuple>
 #include <utility>
 #include <vector>
+#include <sys/stat.h>
+#include <unistd.h>
 
 namespace py = pybind11;
 namespace nsf = ndn_service_framework;
@@ -4321,7 +4324,8 @@ public:
   nativeInferenceClientConfigured(
     const ndnsf::di::NativeRequestRuntime& runtime,
     std::shared_ptr<ndnsf::di::NativeRequestPreparation> preparation,
-    std::shared_ptr<const ndnsf::di::NativeOfferAdmission> admission)
+    std::shared_ptr<const ndnsf::di::NativeOfferAdmission> admission,
+    std::shared_ptr<ndnsf::di::NativeConversationCoordinator> conversations = nullptr)
   {
     if (!m_user) throw std::runtime_error("user is not initialized");
     if (!runtime.catalog)
@@ -4331,7 +4335,76 @@ public:
     auto user = std::shared_ptr<nsf::ServiceUser>(m_user.get(), [] (nsf::ServiceUser*) {});
     return std::make_shared<ndnsf::di::NativeInferenceClient>(
       std::move(user), runtime.catalog->adapters(), runtime,
-      std::move(preparation), std::move(admission));
+      std::move(conversations), std::move(preparation), std::move(admission));
+  }
+
+  std::shared_ptr<ndnsf::di::NativeConversationCoordinator>
+  nativeConversationCoordinatorFromConfig(const std::string& configurationJson,
+                                           const std::string& baseDirectory)
+  {
+    if (!m_user) throw std::runtime_error("user is not initialized");
+    const auto root = ndnsf::di::nativeParseJson(configurationJson);
+    if (root.value("schema", std::string{}) != "ndnsf-di-native-conversation-v1")
+      throw std::invalid_argument("unsupported native conversation schema");
+    const auto base = std::filesystem::absolute(baseDirectory).lexically_normal();
+    const auto path = [&base] (const std::string& value, const char* field) {
+      if (value.empty() || value.find('\0') != std::string::npos)
+        throw std::invalid_argument(std::string("native conversation ") + field + " path is invalid");
+      const auto candidate = std::filesystem::path(value);
+      if (candidate.is_absolute()) return candidate.lexically_normal();
+      const auto resolved = (base / candidate).lexically_normal();
+      const auto relative = resolved.lexically_relative(base);
+      if (relative.empty() || relative == ".." ||
+          relative.string().compare(0, 3, "../") == 0)
+        throw std::invalid_argument(std::string("native conversation ") + field +
+                                    " path escapes configuration directory");
+      return resolved;
+    };
+    const auto& journal = root.at("journal");
+    const auto& owner = root.at("owner");
+    if (!journal.is_object() || !owner.is_object() || !journal.at("keys").is_array() ||
+        journal.at("keys").empty())
+      throw std::invalid_argument("native conversation owner configuration is incomplete");
+    const auto requester = owner.at("requester_identity").get<std::string>();
+    if (requester != m_userIdentity)
+      throw std::invalid_argument(
+        "native conversation requester identity must match the ServiceUser identity");
+
+    std::vector<ndnsf::di::NativeConversationJournalKey> keys;
+    std::set<std::string> keyIds;
+    for (const auto& entry : journal.at("keys")) {
+      if (!entry.is_object())
+        throw std::invalid_argument("native conversation key entry is invalid");
+      const auto id = entry.at("id").get<std::string>();
+      if (!keyIds.insert(id).second)
+        throw std::invalid_argument("native conversation key id is duplicated");
+      const auto keyPath = path(entry.at("file").get<std::string>(), "key");
+      struct stat status{};
+      if (::lstat(keyPath.c_str(), &status) != 0 || !S_ISREG(status.st_mode) ||
+          status.st_uid != ::geteuid() || status.st_nlink != 1 || (status.st_mode & 077) != 0)
+        throw std::invalid_argument("native conversation key file must be owner-only");
+      auto bytes = readNativeFile(keyPath, 32);
+      if (bytes.size() != 32)
+        throw std::invalid_argument("native conversation key must contain exactly 32 bytes");
+      keys.push_back({id, std::move(bytes)});
+    }
+
+    ndnsf::di::NativeConversationJournalConfig journalConfig;
+    journalConfig.stateRoot = path(journal.at("state_root").get<std::string>(), "state root");
+    journalConfig.identity = journal.at("identity").get<std::string>();
+    journalConfig.keys = std::move(keys);
+    journalConfig.quotaBytes = journal.value("quota_bytes", std::size_t{64 * 1024 * 1024});
+    journalConfig.testOnlyAllowEphemeralRoot =
+      journal.value("test_only_allow_ephemeral_state_root", false);
+
+    ndnsf::di::NativeConversationConfig ownerConfig;
+    ownerConfig.journal = std::make_shared<ndnsf::di::NativeConversationJournal>(
+      std::move(journalConfig));
+    ownerConfig.requesterIdentity = requester;
+    ownerConfig.serviceName = owner.at("service_name").get<std::string>();
+    ownerConfig.securityDomainDigest = owner.at("security_domain_digest").get<std::string>();
+    return std::make_shared<ndnsf::di::NativeConversationCoordinator>(
+      std::move(ownerConfig));
   }
 
   std::shared_ptr<const ndnsf::di::NativeAuthenticatedGrantClient>
@@ -8047,9 +8120,14 @@ PYBIND11_MODULE(_ndnsf, m)
          &NativeServiceUser::nativeGrantClientFromConfig,
          py::arg("configuration_json"), py::arg("base_directory") = ".",
          py::keep_alive<0, 1>())
-	    .def("native_inference_client_configured",
+    .def("native_inference_client_configured",
          &NativeServiceUser::nativeInferenceClientConfigured,
          py::arg("runtime"), py::arg("preparation"), py::arg("admission"),
+         py::arg("conversations") = nullptr,
+         py::keep_alive<0, 1>())
+    .def("native_conversation_coordinator_from_config",
+         &NativeServiceUser::nativeConversationCoordinatorFromConfig,
+         py::arg("configuration_json"), py::arg("base_directory") = ".",
          py::keep_alive<0, 1>())
 	    .def("open_live_stream", &NativeServiceUser::openLiveStream,
          py::arg("descriptor"), py::arg("on_item"),

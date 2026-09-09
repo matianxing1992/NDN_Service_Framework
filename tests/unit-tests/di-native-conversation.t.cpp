@@ -266,6 +266,17 @@ struct ConversationOwnerFixture
 }
 
 BOOST_AUTO_TEST_SUITE(Spec182Conversation)
+BOOST_AUTO_TEST_CASE(ExplicitOwnerConfigurationFencesPathOnlyConstruction)
+{
+  ConversationOwnerFixture fixture;
+  BOOST_CHECK_THROW(NativeConversationCoordinator(fixture.root), std::invalid_argument);
+  NativeConversationCoordinator owner(fixture.config);
+  BOOST_CHECK(owner.find("0123456789abcdef0123456789abcdef") == std::nullopt);
+  auto invalid = fixture.config;
+  invalid.requesterIdentity.clear();
+  BOOST_CHECK_THROW(NativeConversationCoordinator(std::move(invalid)), std::exception);
+}
+
 BOOST_AUTO_TEST_CASE(NativeStateReceiptsRetainOriginalPromptBoundaryAcrossRestore)
 {
   ConversationOwnerFixture fixture;

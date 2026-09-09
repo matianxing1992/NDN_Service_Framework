@@ -30,6 +30,41 @@ DI_NativeRequester --config requester.json --input application-input.bin --outpu
 | grant | authority_identity、requester_private_key_file、authority_private_key_file、content_key_id、content_key_file、protection_epoch、recipient_public_key_files |
 | offer_admission | policy（既有 offer policy JSON）、public_key_files（signer key ID→PEM 文件）、candidate_digest |
 | request | service、task、adapter_composition_digest、task_descriptor_digest、input_layout_digest、security_policy_digest、max_candidates、max_policy_ms、timeout_ms、ack_timeout_ms；可选 generation_mode、max_reentries、no_progress_ms、max_segments、options_file。未提供后三个 runtime limit 时由 CLI 使用受限默认值，再由 native parser 校验 |
+| conversation | 可选的 `ndnsf-di-native-conversation-v1` owner 配置；由 C++ 读取 operator-owned journal/key files 并把 opaque coordinator 注入 `NativeInferenceClient`。省略时 conversation requests 必须 fail-closed，不得使用 Python `ConversationCoordinator` |
+
+### Native Conversation Owner Schema
+
+当需要 FULL_CONTEXT/APPEND_DELTA continuation 时，顶层 requester config 可增加
+`conversation` 对象。它必须完整包含以下结构；Python 只转发 JSON，不能读取或派生 key
+bytes，也不能创建第二份 journal。
+
+```json
+{
+  "schema": "ndnsf-di-native-conversation-v1",
+  "journal": {
+    "state_root": "state/conversation",
+    "identity": "requester-a",
+    "keys": [{"id": "active", "file": "keys/conversation.key"}],
+    "quota_bytes": 67108864,
+    "test_only_allow_ephemeral_state_root": false
+  },
+  "owner": {
+    "requester_identity": "/example/user",
+    "service_name": "/example/service",
+    "security_domain_digest": "sha256:<64 lowercase hex characters>"
+  }
+}
+```
+
+`state_root` and key `file` paths are relative to `requester.json` and may be absolute only
+when explicitly operator-owned. Each key file must be a regular file owned by the current user,
+mode `0600` (no group/other bits), and contain exactly 32 bytes. `journal.identity` is a
+single path component used for the journal directory and key derivation; it is distinct from
+the NDN `owner.requester_identity`. `owner.requester_identity` must equal the configured
+ServiceUser identity, `service_name` must be an absolute service name, and the security digest
+must pass the native coordinator's exact digest validation. The native journal enforces its own
+0700 directory/0600 file, writer lease, quota, encryption and restore rules. Volatile roots are
+accepted only with the explicit test flag and are never a production qualification result.
 
 requester 与 Core AA 的身份及证书须已在 PIB 中；CLI 不创建身份。grant 两个身份/签名
 密钥独立，当前私钥为无交互读取的 Ed25519 PEM；encrypted PEM 不触发终端口令提示。
@@ -90,7 +125,9 @@ deployment/
 
 该配置入口支持本地已固定源；它不认证来自任意远程 URL 的配置。当前 CLI 输入为 INLINE；
 REPO_REF 取数、完整 generation/feedback/conversation 验收继续由未完成任务负责，不能因
-配置/请求 wire 支持某字段就宣称端到端能力完成。
+配置/请求 wire 支持某字段就宣称端到端能力完成。conversation owner 的配置接线只证明
+native journal/coordinator 被 C++ 构造并注入；真实 Provider receipt/control、跨进程两轮
+请求、恢复与 replacement 仍属于 T011-C/T016 的验收边界。
 
 ## Validation Ownership
 

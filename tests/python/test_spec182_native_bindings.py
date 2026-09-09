@@ -115,7 +115,8 @@ class Spec182NativeBindingsTest(unittest.TestCase):
         for name in (
                 "NativeRequestCatalog", "NativeRequestPreparation",
                 "NativeCanonicalPreparationCatalog", "NativeOfferAdmission",
-                "NativeAuthenticatedGrantClient", "native_request_runtime_from_json"):
+                "NativeAuthenticatedGrantClient", "NativeConversationCoordinator",
+                "native_request_runtime_from_json"):
             self.assertTrue(hasattr(_ndnsf, name), name)
 
     def test_runtime_config_facade_is_a_thin_native_pass_through(self):
@@ -145,6 +146,20 @@ class Spec182NativeBindingsTest(unittest.TestCase):
         self.assertIn(
             "native grant requester identity must match the ServiceUser identity",
             source)
+
+    def test_native_conversation_owner_stays_in_cpp_and_is_injected(self):
+        source = MODULE.read_text(encoding="utf-8")
+        self.assertIn("nativeConversationCoordinatorFromConfig", source)
+        self.assertIn('ndnsf-di-native-conversation-v1', source)
+        self.assertIn("native conversation key file must be owner-only", source)
+        self.assertIn("path escapes configuration directory", source)
+        self.assertIn("NativeConversationJournalConfig", source)
+        self.assertIn("NativeConversationCoordinator", source)
+        service = (ROOT / "pythonWrapper/ndnsf/service.py").read_text(encoding="utf-8")
+        self.assertIn("native_conversation_coordinator_from_config", service)
+        client = (ROOT / "NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/client.py").read_text(encoding="utf-8")
+        self.assertIn("native_conversation_coordinator_from_config", client)
+        self.assertIn("_native_conversations", client)
 
     def test_native_requester_cli_uses_shared_runtime_parser(self):
         source = REQUESTER.read_text(encoding="utf-8")

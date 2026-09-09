@@ -413,6 +413,16 @@ pending turn；path-only无key构造拒绝。Continuation 的 `requestContractDi
 - **Verify**: official `$review-agent` static gate covering caller, facade, callback lifetime and source route; Python source/route checks; C++ observer/token-order selectors remain the native behavior evidence. No real Provider or cross-process qualification is claimed here.
 - **Done When**: native Qwen full-generation caller has one explicit callback-aware route with no planner fallback, its callback/result ordering is covered by focused tests and evidence, and unobserved Provider/cross-process gaps remain `PARTIAL`.
 
+### T013-E Native Conversation Owner Configuration
+
+- **Parent**: T013-A; **Depends**: T011-C, T012-B; **Reviewer**: native owner/configuration review
+- **Outcome**: 将 operator-pinned conversation journal、key ring 和 owner identity 通过一个 C++ configuration boundary 注入 `NativeInferenceClient`；Python 只转发配置与保留 opaque coordinator，缺 owner 时 continuation 继续 fail-closed。
+- **Read**: [native requester configuration](native-requester-configuration.md) → `NativeConversationJournal.hpp/.cpp` → `NativeConversationCoordinator.hpp/.cpp` → `NativeInferenceClient.hpp/.cpp` → `pythonWrapper/src/ndnsf/_ndnsf.cpp` → `pythonWrapper/ndnsf/service.py` → `app_sdk/client.py`。
+- **Write**: `pythonWrapper/src/ndnsf/_ndnsf.cpp`; `pythonWrapper/src/ndnsf/di_bindings.cpp`; `pythonWrapper/ndnsf/service.py`; `NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/client.py`; `tests/unit-tests/di-native-conversation.t.cpp`; `tests/python/test_spec182_native_bindings.py`; `specs/182-native-di-python-bindings/contracts/native-requester-configuration.md`; this execution card and R5-B9 evidence.
+- **Steps**: 由 C++ 读取 owner-only 32-byte key files，构造受权限/配额/lease 约束的 `NativeConversationJournal` 和显式 `NativeConversationConfig`，核对 ServiceUser identity、service name 与 security digest，再把 coordinator 传入 configured client；禁止 Python 读取 secret bytes、使用 Python journal 或 path-only coordinator。保留无 conversation 配置的明确拒绝边界。
+- **Verify**: 官方 `$review-agent` 覆盖配置 parser、key/path ownership、opaque binding、client constructor 和 maintained caller；C++ `Spec182ConversationJournal/*`、`Spec182ConversationWire/*` 及新增 owner-config selector；强制重建 shared DI target 与 `_ndnsf` extension；Python binding/facade source and construction checks。真实 Provider receipt/control、cross-process two-turn、recovery/replacement 仍留 T016。
+- **Done When**: 配置请求能在产生 network side effect 前由 C++ 构造并注入唯一 conversation owner，缺失/错误 key、identity、digest 或路径权限被拒绝；静态审查、构建和 focused selectors 有证据。真实两轮请求未通过前保持 `PARTIAL`。
+
 ### T013-B Legacy Runtime Retirement
 
 - **Parent**: T013; **Depends**: T013-A; **Reviewer**: migration/reachability review

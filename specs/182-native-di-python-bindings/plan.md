@@ -1,6 +1,6 @@
 # Implementation Plan: Native NDNSF-DI with Optional Python Bindings
 
-**Branch**: Experimental | **Revision**: 14 | **Date**: 2026-09-08
+**Branch**: Experimental | **Revision**: 15 | **Date**: 2026-09-08
 **Status**: IN_PROGRESS / 当前实现与验收状态见 tasks.md 的 Task Progress Registry 和 Current Checkpoint
 **Spec**: [spec.md](spec.md)
 
@@ -107,6 +107,16 @@ conversation owner 或跨进程资格；它们使用不同 owner/selector，继�
 `Closure decision`（`CLOSED_FOR_VALIDATION` 或 `OPEN_FOR_NEXT_BATCH`、稳定出口及触发条件）。
 Revision 13 之前的历史批次记录保持原事实，不回填虚构的审查身份或验收；下一次重开这些批次
 时才按新字段补齐。
+
+### R5-B9 Native Conversation Owner 2026-09-08
+
+R5-B8 之后先推进 T013-E/R5-B9：将 requester configuration 中明确的 journal root、
+owner-only key files、requester/service identity 和 security-domain digest 在 C++ 中组合为
+唯一 `NativeConversationCoordinator`，再注入 `NativeInferenceClient`。Python facade 只转发
+配置 JSON 与保留 opaque coordinator；未配置 owner 的 continuation 仍必须 fail-closed，不能
+调用 Python `ConversationCoordinator`。本批稳定出口是配置错误在 network side effect 前被 C++
+拒绝且正确配置能完成 native client composition；Provider receipt/control、跨进程两轮请求、
+恢复/replacement 和 T016 不纳入本批，完成后保持 `PARTIAL`。
 
 2026-09-07 implementation audit：T004-A 因真实 Selection wire/identity 不兼容重开，
 见 [A8-01](evidence/t004-wire-reopened-20260907.md)。在继续 T010 完整请求提交前，
