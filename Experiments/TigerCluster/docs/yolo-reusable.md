@@ -68,7 +68,6 @@ OUT=Experiments/TigerCluster/results
 export SPEC180_RUNTIME_SIF="$ROOT/base-runtime-controller-version-j4-v22.sif"
 export SPEC180_RUNTIME_APPTAINER=/opt/apptainer/1.5.3/bin/apptainer
 export SPEC180_RUNTIME_APP_ROOT="$ROOT/app-controller-version-j4-v32"
-export SPEC180_HOST_LIBRARY_PATH=/tmp/t008-build-root/lib:/home/tianxing/NDN/ndn-svs/build:/home/tianxing/NDN/NAC-ABE/build:/usr/local/lib
 export PYTHONPATH="$PWD/NDNSF-DistributedInference:$PWD/NDNSF-DistributedRepo/pythonWrapper:$PWD/pythonWrapper"
 
 # Freeze one new run; prepare intentionally exits 78/NOT_EVALUATED.
@@ -90,8 +89,10 @@ python3 -u Experiments/TigerCluster/tools/spec183_minindn.py \
 `spec183_minindn.py` starts the registered four-provider MiniNDN graph; the
 provider/controller binaries come from the APP bundle and stable libraries
 come from the SIF.  Do not replace the APP with host binaries or inject host
-libraries.  This command demonstrates local CPU inference; it does not claim
-Tiger GPU qualification.
+libraries.  With `SPEC180_RUNTIME_SIF` set, the child processes receive the
+SIF-owned library path; leave `SPEC180_HOST_LIBRARY_PATH` unset unless the host
+operator has a separately verified matching closure.  This command
+demonstrates local CPU inference; it does not claim Tiger GPU qualification.
 
 提交回执丢失时使用同一run ID重试submit，只会按唯一comment查询原job，不重提。
 默认collect离线重算；作业结束后显式collect --reconcile核对scheduler终态并释放
