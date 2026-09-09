@@ -85,5 +85,35 @@
     {"card": "T014/T016", "file": "tests/standalone/run-spec182-native-closure.py", "existing": true, "command": "python3 tests/standalone/run-spec182-native-closure.py --manifest <case-manifest> --case <case-id> --output <new-run-dir>", "owner": "T014 write / T016 execute"},
     {"card": "T014/T016", "file": "Experiments/NDNSF_DI_NativeClosure_Minindn.py", "existing": true, "command": "python3 Experiments/NDNSF_DI_NativeClosure_Minindn.py --manifest <case-manifest> --output <new-run-dir>", "owner": "T014 review + collector unit / T016 execute L3/4/5"},
     {"card": "T002-A", "file": "tests/standalone/spec182-installed-consumer.cpp", "existing": true, "owner": "T002-A; L0"}
-  ]
+  ],
+  "qualification": {
+    "schema": "spec182-native-qualification-v1",
+    "runner": "tests/standalone/run-spec182-native-closure.py",
+    "owner": "T014 registration / T016 execution",
+    "limits": {"runSeconds": 180, "cleanupSeconds": 15, "traceBytes": 268435456},
+    "cases": [
+      {"id": "I01", "kind": "counterexample", "expectedStatus": "PASS", "executeOwner": "T016"},
+      {"id": "I02", "kind": "counterexample", "expectedStatus": "FAIL", "executeOwner": "T016"},
+      {"id": "I03", "kind": "counterexample", "expectedStatus": "FAIL", "executeOwner": "T016"},
+      {"id": "I04", "kind": "counterexample", "expectedStatus": "FAIL", "executeOwner": "T016"},
+      {"id": "I05", "kind": "counterexample", "expectedStatus": "UNQUALIFIED", "executeOwner": "T016"},
+      {"id": "I06", "kind": "counterexample", "expectedStatus": "FAIL", "executeOwner": "T016"},
+      {"id": "I07", "kind": "counterexample", "expectedStatus": "PASS", "executeOwner": "T016"},
+      {"id": "I08", "kind": "counterexample", "expectedStatus": "FAIL", "executeOwner": "T016"},
+      {"id": "PO-001", "kind": "acceptance", "expectedStatus": "PASS", "executeOwner": "T016"},
+      {"id": "PO-002", "kind": "acceptance", "expectedStatus": "PASS", "executeOwner": "T016"},
+      {"id": "PO-003", "kind": "acceptance", "expectedStatus": "PASS", "executeOwner": "T016"},
+      {"id": "PO-004", "kind": "acceptance", "expectedStatus": "PASS", "executeOwner": "T016"},
+      {"id": "PO-005", "kind": "acceptance", "expectedStatus": "PASS", "executeOwner": "T016"},
+      {"id": "PO-006", "kind": "acceptance", "expectedStatus": "PASS", "executeOwner": "T016"},
+      {"id": "PO-007", "kind": "acceptance", "expectedStatus": "PASS", "executeOwner": "T016"},
+      {"id": "PO-008", "kind": "acceptance", "expectedStatus": "PASS", "executeOwner": "T016"},
+      {"id": "PO-009", "kind": "acceptance", "expectedStatus": "PASS", "executeOwner": "T016"},
+      {"id": "PO-010", "kind": "acceptance", "expectedStatus": "PASS", "executeOwner": "T016"},
+      {"id": "PO-011", "kind": "acceptance", "expectedStatus": "PASS", "executeOwner": "T016"},
+      {"id": "PO-012", "kind": "acceptance", "expectedStatus": "PASS", "executeOwner": "T016"},
+      {"id": "PO-013", "kind": "acceptance", "expectedStatus": "PASS", "executeOwner": "T016"},
+      {"id": "PO-014", "kind": "acceptance", "expectedStatus": "PASS", "executeOwner": "T016"}
+    ]
+  }
 }

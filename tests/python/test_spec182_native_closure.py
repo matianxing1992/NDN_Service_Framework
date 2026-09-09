@@ -166,3 +166,45 @@ def test_minindn_owner_does_not_fake_native_qualification(tmp_path: Path) -> Non
     output = tmp_path / "campaign"
     assert minindn.run_campaign(manifest, output) == 2
     assert json.loads((output / "result.json").read_text())["status"] == "UNQUALIFIED"
+
+
+def test_minindn_registration_covers_counterexamples_and_proof_cases() -> None:
+    manifest = ROOT / "tests/fixtures/spec182/case-manifest.json"
+    registration = minindn.load_registration(manifest)
+    ids = {case["id"] for case in registration["cases"]}
+    assert set(minindn.COUNTEREXAMPLES) <= ids
+    assert set(minindn.PROOF_CASES) <= ids
+    assert registration["runner"] == "tests/standalone/run-spec182-native-closure.py"
+    assert registration["limits"] == {
+        "runSeconds": 180, "cleanupSeconds": 15, "traceBytes": 268435456,
+    }
+
+
+def test_minindn_registration_writes_fresh_unqualified_record(tmp_path: Path) -> None:
+    manifest = ROOT / "tests/fixtures/spec182/case-manifest.json"
+    document = json.loads(manifest.read_text(encoding="utf-8"))
+    document["campaignCase"] = "I01"
+    selected = tmp_path / "manifest.json"
+    selected.write_text(json.dumps(document), encoding="utf-8")
+    output = tmp_path / "campaign"
+    assert minindn.run_campaign(selected, output) == 2
+    result = json.loads((output / "result.json").read_text(encoding="utf-8"))
+    assert result["status"] == "UNQUALIFIED"
+    assert result["reason"] == "MININDN_NODE_CONTEXT_NOT_PROVIDED"
+    assert result["campaignCase"] == "I01"
+    assert len(result["registeredCases"]) == 22
+
+
+def test_minindn_registration_refuses_existing_output(tmp_path: Path) -> None:
+    manifest = ROOT / "tests/fixtures/spec182/case-manifest.json"
+    document = json.loads(manifest.read_text(encoding="utf-8"))
+    document["campaignCase"] = "I01"
+    selected = tmp_path / "manifest.json"
+    selected.write_text(json.dumps(document), encoding="utf-8")
+    output = tmp_path / "campaign"
+    output.mkdir()
+    marker = output / "existing.txt"
+    marker.write_text("keep", encoding="utf-8")
+    assert minindn.run_campaign(selected, output) == 2
+    assert marker.read_text(encoding="utf-8") == "keep"
+    assert not (output / "result.json").exists()
