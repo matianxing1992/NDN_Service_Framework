@@ -11,6 +11,21 @@
 | [codegraph-first](codegraph-first/SKILL.md) | 有索引时优先图查询，没有时精确源码检索 |
 | [review](review/SKILL.md) | 基于明确Git差异分别审查Standards和Spec |
 
+## Spec Kit Command Contract
+
+项目内的 `speckit-specify`、`speckit-clarify`、`speckit-plan`、`speckit-tasks`、
+`speckit-analyze`、`speckit-audit`、`speckit-implement`、`speckit-converge`、
+`speckit-checklist`、`speckit-constitution` 和 `speckit-taskstoissues` 使用同一份
+[batch-quality-gates](speckit-code-design/references/batch-quality-gates.md)。需求和计划
+必须写明真实入口、可观察结果、独立 oracle、负例/恢复边界及证据责任；任务和执行必须
+维护 `tasks.md` 的 `Execution Progress`，并把静态、编译/链接、运行/测试漏检分开记录。
+NDNSF-DI 原生行为由生产 C++ target/selector 验收，Python 只覆盖 binding/facade、
+offline oracle 或外部设施边界。
+
+`.agents/skills/` 是本机 Spec Kit 命令安装副本并按仓库策略保持未跟踪；它们只引用这份
+受版本控制的共享契约。修改治理原则或模板时，同时检查本机副本是否仍包含对应入口说明，
+但不要把个人安装路径写入提交。
+
 ## Immediate Use
 
 无需安装即可在目标仓库会话明确要求：

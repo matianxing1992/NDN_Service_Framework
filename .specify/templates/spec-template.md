@@ -84,6 +84,20 @@
 
 [Add more user stories as needed, each with an assigned priority]
 
+## Acceptance Evidence Contract *(required for code-backed stories)*
+
+<!--
+  为每个有代码接线的 story/FR 填一行。纯文档需求写 N/A 及理由。
+  Production entry/callers 必须是实际入口或参与者；oracle 必须能独立判定结果。
+  Native NDNSF-DI runtime/protocol/state/concurrency/crypto/model behavior 必须填写生产
+  C++ target/selector；Python 只可作为 binding/facade、offline oracle 或外部设施边界。
+  五 lane Coverage matrix 在 plan/tasks 的批次结果记录中维护，此处引用对应 Batch。
+-->
+
+| Story / FR | Production entry / callers | Observable outcome | Independent oracle / C++ selector | Negative / recovery boundary | Evidence owner / path | Batch / Coverage reference |
+| --- | --- | --- | --- | --- | --- | --- |
+| US1 / FR-001 | [actual entry/caller or N/A + reason] | [observable result] | [oracle and C++ target/selector, or N/A + reason] | [failure, cancellation, rollback, or N/A + reason] | [owner and evidence path] | [Batch ID / tasks.md result row] |
+
 ### Edge Cases
 
 <!--

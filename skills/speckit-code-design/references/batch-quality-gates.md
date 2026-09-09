@@ -86,6 +86,14 @@ source/link closure。批次记录应检查依赖库中包含变更符号（或�
 尚未观测的风险，并注明首次失败边界。任务数量、静态通过数量或单次构建更快都不能
 单独作为流程提效结论。
 
+## Resource-Constrained Builds
+
+构建记录必须采用仓库 `AGENTS.md` 指定的 system-first compiler/linker 和资源预算。
+在本项目 6 logical CPUs / 12 GB RAM 的开发机上，默认使用 `-j4`；用 `vmstat 1`（忽略
+首行）观察后续样本，若持续 swap-in/out 或桌面停顿，下一次降到 `-j2`。不得让并行
+构建争用同一个 Waf tree。`-j`、toolchain、target/source closure、配置和 elapsed 必须
+写入批次记录；资源策略本身不是性能提升或资格通过的证据。
+
 ## Skill Responsibilities
 
 | Skill | Required use of this reference |
@@ -98,3 +106,6 @@ source/link closure。批次记录应检查依赖库中包含变更符号（或�
 | `speckit-implement` | 小任务静态门后继续同批；稳定出口后执行批末组合审查、统一构建/测试并填写全部结果字段 |
 | `speckit-converge` | 对生产接线、测试/harness、构建 closure 的遗漏追加有独立出口的修复任务，不用大而泛的补漏卡掩盖边界 |
 | `speckit-checklist` | 把入口、可观察结果、独立 oracle、负例、依赖和可测指标作为需求质量检查项，而不是检查实现是否运行 |
+| `speckit-clarify` | 在需求仍可澄清时补齐入口、oracle、负例/恢复边界和 native C++ selector；不把澄清写成已实现证据 |
+| `speckit-constitution` | 修改原则时同步 plan/spec/tasks 模板和相关 skill，保留本 reference 的批次、证据和 native-test 不变量 |
+| `speckit-taskstoissues` | 保留任务 ID、行为出口、依赖、selector 和 evidence owner；跳过重复 issue，不创建行政拆分 |

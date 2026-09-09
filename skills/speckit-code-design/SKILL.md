@@ -21,6 +21,8 @@ description: Define reviewable code design and coherent implementation tasks, th
 遵守用户当前授权。仅设计或审查时不启动实现、构建或实验；不自动回填旧 Spec。
 先读仓库指令、constitution、活动 feature、现有设计和相关架构证据。
 代码设计章节允许必要实现细节，但用户成果与可观察验收仍是依据。
+本 skill 是所有 Spec Kit 入口的共同规则来源；新 Spec 使用的需求、计划、任务和
+审查 skill 必须引用同一套 references，不在单个命令中另建批次或测试状态定义。
 
 ## Single Source Of Truth
 
@@ -70,6 +72,12 @@ Static review PASS != Behavior PASS。
 复盘必须把静态、编译/链接、运行/测试漏检和可比构建耗时分开记录。
 NDNSF-DI 原生运行时和协议行为由直接调用生产 C++ target 的测试验收；Python 只证明
 绑定/兼容/离线 oracle 或外部设施边界，不能替代 C++ 行为或跨进程资格测试。
+
+需求成形（`speckit-specify`、`speckit-clarify`、`speckit-checklist`）、计划与任务生成
+（`speckit-plan`、`speckit-tasks`）、代码现实分析（`speckit-analyze`、`speckit-audit`、
+`speckit-converge`）以及执行（`speckit-implement`）都必须使用这份 reference。
+`speckit-constitution` 修改治理规则时要同步模板和依赖 skill；`speckit-taskstoissues`
+只能转换已有行为任务，不能把审查、构建或证据记录拆成无行为出口的行政 issue。
 
 接口、职责、状态或验收改变时先修订对应契约；普通局部实现选择无需新报告或批准。
 完成时核对最终 diff 和实际证据，同步 tasks.md。未完成的实现/验证保持未勾选。
