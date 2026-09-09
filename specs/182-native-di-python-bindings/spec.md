@@ -3,7 +3,7 @@
 **Feature Branch**: `Experimental`
 **Feature Directory**: `182-native-di-python-bindings`
 **Created**: 2026-09-06
-**Revision**: 7
+**Revision**: 8
 **Status**: DRAFT
 **Execution Status**: implementation IN_PROGRESS; current unit T010-A PARTIAL; final qualification NOT_RUN; authority: [Execution Progress](tasks.md#execution-progress)
 **Activation**: active design; source baseline audited; dependency and interface design closure pending
@@ -155,7 +155,7 @@ Python 绑定可选构建，禁止依赖主工作区未提交文件。
 
 - **FR-017**: **Symbol Documentation and Usage Closure**. System MUST 在每个实施单元开始前冻结受影响类、方法、字段和关键局部状态的职责、变更原因、签名、类型/单位/边界、所有权、失败/取消、调用方、注释及前后用法；新增/修改/复用/退出路径均可追踪，未决项阻塞对应实现。不得用堆砌符号名或转述方法名代替解释。
 
-- **FR-018**: **Pre-Test Static Code Review**. System MUST 在每个小任务编码后，以只读 review-agent profile 读实际生产/测试逻辑对照设计，检查职责、正确性和检错能力；修复控制性缺陷并复审后继续同一已登记逻辑批次。整批逻辑/流程审查通过才统一构建和相关单测，测试待运行保持 PARTIAL，硬验收依赖不降级。每次小任务与批末审查必须使用 `skills/speckit-code-design/references/review-agent.md` 的 Minimum Review Record，逐行给出五个 coverage lane 的实际文件/符号与查询命令；缺少测试注册或 target/source closure 时不得记 `STATIC_PASS`。全部实现与接线完成后，T015审查整体调用链，再由T016统一执行集成与MiniNDN。lint/编译/文档扫描不能替代读码。
+- **FR-018**: **Pre-Test Static Code Review**. System MUST 在每个小任务编码后，以只读 review-agent profile 读实际生产/测试逻辑对照设计，检查职责、正确性和检错能力；修复控制性缺陷并复审后继续同一已登记逻辑批次。整批逻辑/流程审查通过才统一构建和相关单测，测试待运行保持 PARTIAL，硬验收依赖不降级。每次小任务与批末审查必须使用 `skills/speckit-code-design/references/review-agent.md` 的 Minimum Review Record，逐行给出五个 coverage lane 的实际文件/符号与查询命令；缺少测试注册或 target/source closure 时不得记 `STATIC_PASS`。全部实现与接线完成后，T015审查整体调用链，再由T016统一执行集成与MiniNDN。lint/编译/文档扫描不能替代读码。若编译/链接或运行/测试才发现静态门漏检，重试或下一批 MUST 链接首个失败边界并登记改变的静态检查；同类漏检再次出现时先修订共享 skill、模板或 checklist，或记录替代门禁。
 
 - **FR-019**: **Phased Verification Closure**. System MUST 将实现阶段限定为实现、静态审查、相关unit及必要构建检查；完整integration与MiniNDN在全部实现后集中执行。结果记录合并，关键风险按实际需要关联检错测试，不规定数量；既定运行用例/负例不得删减。最终diff与验收证据一致且必要PO通过即可交付，变化或失败只重审和回归受影响范围。
 
@@ -192,7 +192,7 @@ Python 绑定可选构建，禁止依赖主工作区未提交文件。
 
 - **SC-009**: **Reviewable Symbol Contracts**. 每个变更符号有覆盖条目和任务/证明映射，所有非 LOCAL_DETAIL 字段有语义说明；公开 C++/Python 文档及使用示例经实际构建/运行验收。设计阶段只计文档检查，不计编译通过。
 
-- **SC-010**: **Static Review Before Runtime Checks**. T002--T014完成各自实现、静态审查及相关单测，且每个小任务与批末结果记录五 lane Coverage matrix（production entry/callers、implementation/wire、test/harness/oracle、build/source closure、migration/evidence），格式遵循 Minimum Review Record；批末另记录 static、compile/link、runtime/test、unobserved 四类 Batch Retrospective。集成测试与harness已编写并登记但尚未运行。T015整体审查无控制性缺陷后，T016按完整unit→integration→MiniNDN执行。静态PASS不计运行PASS；最小诊断例外不计正式资格。
+- **SC-010**: **Static Review Before Runtime Checks**. T002--T014完成各自实现、静态审查及相关单测，且每个小任务与批末结果记录五 lane Coverage matrix（production entry/callers、implementation/wire、test/harness/oracle、build/source closure、migration/evidence），格式遵循 Minimum Review Record；批末另记录 static、compile/link、runtime/test、unobserved 四类 Batch Retrospective。集成测试与harness已编写并登记但尚未运行。T015整体审查无控制性缺陷后，T016按完整unit→integration→MiniNDN执行。静态PASS不计运行PASS；最小诊断例外不计正式资格。复盘发现的编译/链接或运行/测试漏检必须在后续批次形成可核对的新增静态检查；单次构建耗时、任务数或静态通过数不构成提效证据。
 
 - **SC-011**: **No False-Green Completion**. 实现任务[x]只表示本阶段实现、审查、单测完成；完整PO的集成/实验义务集中由T016关闭。只用一份任务结果记录说明实际检查、证据与未执行项，最终核对diff和必需行为。Static review PASS != Behavior PASS；T016全部本地验收通过后才可T017交付。
 
@@ -301,6 +301,8 @@ T016统一执行完整unit→integration→MiniNDN和必要负例，T017核对�
 本轮核对`81e251a4ef1d8e6a394dc5f0c38bc44e44bfc973`：修正已完成合并与历史失败的混淆，固定SVS/NDNSD依赖及ABI失效范围，明确现有Provider接线和缺失的逐服务注销接口，保留原生requester/装配/tokenizer为planned。12类137字段与当前源码一致，但不表示嵌套类型、兼容清单或依赖设计已完成。结论与后续工作见[audit](audit.md)。
 
 ## Revision History
+
+- Revision 8：根据 R3-B1、R4-B4、R6-B9 与 R9-B1 的批次复盘，补充漏检反馈闭环：编译/链接和运行/测试首边界必须进入重试或下一批的覆盖检查；重复同类漏检需修订共享 skill、模板或 checklist，或记录替代门禁。该修订不改变现有产品任务状态或资格边界。
 
 - Revision 6：合并重复审查/报告规则；取消固定风险数量和独立S0/S1报告。各实现任务只做静态审查及单测，集成与MiniNDN在全部实现完成后统一执行；保留所有真实运行义务和符号设计，区分实现完成与整体验收。
 

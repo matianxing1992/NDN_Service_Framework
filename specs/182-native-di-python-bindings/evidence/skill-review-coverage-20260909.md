@@ -52,3 +52,36 @@ Execution Progress；`speckit-taskstoissues` 保留五 lane、Review trace、Clo
 R8-SKILL 只关闭公共审查记录格式。Spec182 的生产 requester、maintained caller migration、
 跨进程/no-Python qualification 和 T016 仍按 [tasks.md](../tasks.md) 保持 `PARTIAL`，不得
 因为技能同步或文档校验通过而勾选产品任务。
+
+## Retrospective Feedback Loop
+
+本次复盘把已有批次的漏检按首个边界归类，并将反馈规则提升到共享 skill/template：
+
+| Category | Existing observation | Required follow-up |
+| --- | --- | --- |
+| `static` | CC-3B 曾提前发现锁顺序、scope key 清理、replacement 状态和 token 前缀一致性问题；静态门本身有效但不能覆盖全部运行假设 | 继续使用五 lane matrix，并把测试实现、真实 caller/default wiring 和构建注册/source closure 纳入同一只读审查 |
+| `compile/link` | R3-B1/R4-B4 批次曾在编译或链接阶段暴露缺参数、缺头文件和 integration source 注册遗漏 | 重试前链接原始日志并登记新增的注册/closure 检查；只重跑原命令不算修复 |
+| `runtime/test` | R4-B4/R6-B9 的 freshness 默认值、D2h callback/allocator 边界，以及 R9-B1 的 selection-status 并发 UAF 只能在运行或 ASAN 观测 | 在下一批覆盖矩阵中写明新增 caller/harness/oracle 或并发回归，并保留失败目录；局部通过仍保持 `PARTIAL` |
+| `unobserved` | 默认 requester 完整生产链、跨进程 stream/conversation 和 T016 资格尚未观测 | 继续列为 `unobserved`/`gap`，不由构建耗时、任务数或 `STATIC_PASS` 推断完成 |
+
+若同类漏检再次发生，下一批开始前必须修订共享 skill、模板或 checklist，或者在证据中
+写出替代门禁及理由。批次耗时只有在 target/source closure、toolchain、配置和工作树可比时
+才能作为观测；本记录不支持总体效率百分比。
+
+## Review trace
+
+- **Skill**: `/home/tianxing/.codex/skills/review-agent/SKILL.md`, SHA-256
+  `07079efd0dc76f05fade424e5dfb048dce1de2df7626e1a4f56292a4f3f92228`。
+- **Baseline**: `c3fd5a3a`；**Diff scope**: `skills/speckit-code-design/{SKILL.md,references/batch-quality-gates.md,references/pre-test-static-review.md}`, `skills/README.md`, `.specify/templates/{plan-template.md,tasks-template.md}`, and the active Spec182 `spec.md`, `plan.md`, `tasks.md`, and this evidence record.
+- **Coverage queries**: `rg` over all twelve `.agents/skills/speckit-*/SKILL.md` entry copies for the shared reference/header; `git diff --check` on the scoped paths; `validate_design.py`; prerequisite JSON check; SHA-256 comparison of the three versioned code-design files with `/home/tianxing/.codex/skills/speckit-code-design/`.
+- **Findings / re-review**: No actionable findings. The five lanes remain explicit; this amendment adds the miss-feedback rule without changing native behavior, task status, or qualification claims.
+
+## Closure decision
+
+`CLOSED_FOR_VALIDATION` for the workflow/documentation unit. The stable exit is the shared
+miss-feedback contract being present in the versioned skill, both templates, and the active
+Spec record, with synchronized personal code-design references. A future compile/link or
+runtime/test miss must link its first boundary and changed check; repeated misses must trigger
+another skill/template/checklist revision or an explicit substitute gate. Spec182 production
+requester, maintained caller migration, cross-process/no-Python execution, and T016 remain
+`PARTIAL`/`NOT_RUN` as recorded in `tasks.md`.

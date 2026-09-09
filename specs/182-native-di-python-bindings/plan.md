@@ -1,6 +1,6 @@
 # Implementation Plan: Native NDNSF-DI with Optional Python Bindings
 
-**Branch**: Experimental | **Revision**: 19 | **Date**: 2026-09-09
+**Branch**: Experimental | **Revision**: 20 | **Date**: 2026-09-09
 **Status**: IN_PROGRESS / 当前实现与验收状态见 tasks.md 的 Task Progress Registry 和 Current Checkpoint
 **Spec**: [spec.md](spec.md)
 
@@ -145,6 +145,12 @@ T012-A 的候选 ABI 观察项已单独记录为 `PARTIAL`：显式候选 Core/D
 native preparation/offer-admission 构造、C++/Python parity、caller migration 及最终
 qualification 仍是后续 T012-B/T013/T016 的出口。该批次只复用 ABI 证据，不把 focused
 binding PASS 提升为生产调用链完成。
+
+本次复盘进一步把漏检反馈写成后续批次的强制输入：R3-B1 的缺参数/缺头文件与集成 source
+注册遗漏属于 `compile/link`，R4-B4 的 freshness 默认值和 R6-B9/R9-B1 的运行崩溃属于
+`runtime/test` 或并发边界；重试必须链接首个失败证据并登记改变的静态检查。若同类漏检
+再次出现，下一批开始前先修订共享 skill、模板或 checklist，或记录替代门禁。该规则不把
+历史批次回填为 PASS，也不把单次耗时解释为总体提效。详见 [R8 feedback evidence](evidence/skill-review-coverage-20260909.md#retrospective-feedback-loop)。
 
 ### R5 Caller Route Boundary 2026-09-08
 

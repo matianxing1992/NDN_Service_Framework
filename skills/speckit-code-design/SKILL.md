@@ -79,6 +79,9 @@ target/source closure。缺少任一项时先记 `gap`，不得用 `No findings`
 `OPEN_FOR_NEXT_BATCH` 的关闭决定和触发条件。
 批末记录必须包含四类 **Batch Retrospective**（`static`、`compile/link`、`runtime/test`、
 `unobserved`）及其首个失败边界；缺少分类时保持 `PARTIAL`。
+编译/链接或运行/测试漏检在重试前必须链接原始边界并登记改变的静态检查；同类漏检再次
+出现时先修订共享 skill、模板或 checklist，或在证据中说明替代门禁。只重跑原命令不能
+关闭漏检，单次构建耗时也不能证明流程提效。
 维护中的 legacy/compatibility 回归同样必须经过真实调用方和迁移 lane：当前源码探针
 发现的运行时失败要保留首个边界、原始日志和 `PARTIAL` 状态，并交给
 `speckit-converge` 追加有独立出口的修复/迁移任务；在 receipt、newness、状态或兼容契约

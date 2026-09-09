@@ -115,6 +115,9 @@ be stricter but must not weaken its PASS/BLOCK boundary.
   Review trace must use the Minimum Review Record in
   skills/speckit-code-design/references/review-agent.md; a missing lane remains a
   coverage gap. Close each batch with the four-category Batch Retrospective.
+  If a batch retries a prior miss, link the first failure boundary and record the changed
+  static check; repeated miss classes require a shared skill/template/checklist revision or
+  an explicit substitute gate.
   For native NDNSF-DI runtime/protocol/state/concurrency/crypto/model behavior,
   name the production C++ target/selector in the batch row; Python selectors cover
   only binding/facade, offline oracle, or external-facility boundaries.

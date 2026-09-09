@@ -1,6 +1,6 @@
 # Tasks: Native NDNSF-DI with Optional Python Bindings
 
-**Revision**: 44 | **Status**: DRAFT / T001 DONE
+**Revision**: 45 | **Status**: DRAFT / T001 DONE
 **Input**: [spec](spec.md), [code design](contracts/code-design.md),
 [proof](contracts/proof-design.md), [work units](contracts/work-units.md)
 
@@ -46,7 +46,7 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 | [D-CHAIN-REPLAN Production Chain Review](evidence/production-chain-replan-20260908.md) | DONE | User pause and replan request | 23 张未完成卡归入七个能力阶段；实际 R<n>-B<k> 按完整行为/共享契约/稳定出口领取，逐任务静态门、批末统一验证；36 张原卡状态不变，新增实现暂停 | 2026-09-08 |
 | [D-REVIEW-AGENT Official Skill](evidence/review-agent-install-20260908.md) | DONE | User installation request | 官方原版安装/字节身份/技能 schema PASS；逐任务静态门明确调用，文档校验 PASS；不关闭产品任务 | 2026-09-08 |
 | [D-SKILL-BATCH Workflow Revision](evidence/skill-batch-workflow-20260908.md) | DONE | User workflow request | 共享 batch-quality-gates、11 个 Spec Kit 入口、code-design references 与 Spec 模板已同步；覆盖生产调用方、测试/harness/oracle、构建注册、稳定出口、批次分配依据、静态/编译/运行漏检及匹配耗时；新增 native test ownership：NDNSF-DI 行为须由 C++ production target/selector 验收，Python 仅作 binding/facade/oracle/外部设施边界；新增 `Review trace` 与 `Closure decision` 的可追溯批次门；旧验证器 compatibility 白名单限制已记录，不关闭产品任务 | 2026-09-08 |
-| [D-SKILL-REVIEW-COVERAGE Minimum Review Record](evidence/skill-review-coverage-20260909.md) | DONE | User workflow review request | 共享 `review-agent.md` 新增五 lane Minimum Review Record；`plan-template`/`tasks-template` 明确测试注册、target/source closure、四类 Batch Retrospective；本机 `speckit-analyze`、`speckit-taskstoissues`、`speckit-implement`、`speckit-constitution` 入口已同步；仅收紧静态证据格式，不改变产品任务状态 | 2026-09-09 |
+| [D-SKILL-REVIEW-COVERAGE Minimum Review Record](evidence/skill-review-coverage-20260909.md) | DONE | User workflow review request | 共享 `review-agent.md` 新增五 lane Minimum Review Record；`plan-template`/`tasks-template` 明确测试注册、target/source closure、四类 Batch Retrospective；本轮再补漏检反馈闭环：重试链接首边界并登记改变的静态检查，同类漏检触发 skill/template/checklist 修订或替代门禁；本机入口保持同步；不改变产品任务状态 | 2026-09-09 |
 | [D-DESIGN-R3 Revision](evidence/design-r3-20260908.md) | PASS | User documentation request | 逐章修订、23 组关键契约、生成/KV/会话重写；双 PDF 82/87 页、5 工具回归、API/八份参考/460+350 源码还原/版面 PASS；不关闭产品任务或全量语义审计 | 2026-09-08 |
 | [D-DESIGN-CHAPTER-AUDIT Chapter Review](evidence/design-chapter-audit-20260908.md) | PASS | User document review request | 审阅完成：当前/目标 62/67 章；7 KEEP、36 EXPAND、20 REWRITE、4 CORRECT；被审文档 NEEDS_REVISION，PDF 未改写，不关闭产品任务 | 2026-09-08 |
 | [D-DESIGN-R2 Baseline and Contracts](evidence/design-r2-20260907.md) | PASS | User documentation request | 当前/目标 66/69 页；4 工具回归、API、460/350 文件还原、PDF 身份/版面 PASS；BC-01 至 BC-04 已补，TG-01 至 TG-05 PLANNED；不关闭功能任务 | 2026-09-07 |
@@ -104,7 +104,8 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 `Closure decision`。前者包括 review-agent skill 路径/SHA、基线、完整 diff 范围、覆盖查询
 和复审结果；后者使用 `CLOSED_FOR_VALIDATION` 或 `OPEN_FOR_NEXT_BATCH`，说明稳定行为出口、
 触发条件、未纳入成员及下一批依赖。Revision 23 及更早的历史行不回填不可核对的信息；
-重开时按共享 reference 补齐。
+重开时按共享 reference 补齐。若批次是失败重试或同类漏检后的下一批，`Evidence / remaining`
+还必须链接首个失败边界并写明本次改变的静态检查；只重跑原命令不能关闭漏检。
 
 | Batch ID | Coverage matrix | Static findings | Compile/build misses | Runtime/test misses | Build scope / target / `-j` / elapsed / exit | Behavior result | Evidence / remaining |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -135,6 +136,12 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 | R9-B1 | production entry/callers: `ServiceProvider::CollaborationContext::reportOperationStatus`, `NativeProviderHandler` worker reports, `replySelectionExecutionStatus`; implementation/wire: dedicated `m_selectionExecutionStatusMutex` around status map/vector and snapshot reads; test/harness/oracle: `SelectionSnapshotConcurrentMembersRemainOwned` plus `ProductionNativeHandlersRunD2h212ToCompleteOracleResponse`; build/source closure: current `ServiceProvider.cpp/.hpp`, `unit-tests` and `integration-tests` Waf targets; migration/evidence: R6-B9 historical crash, this evidence, `tasks.md`, `docs/failure-log.md` | DONE for this bounded local selection-status ownership repair; T010/T013/T016 and cross-process qualification remain open | no status wire or state-transition contract changed; only concurrent ownership protection and regression test added | ASAN first-boundary trace identified heap-use-after-free during concurrent `memberStatuses` growth; unit selector passes; D2h212 passes 50/50 fresh processes after fix; ASAN-preload follow-up passes 20/20 with type-size mismatch diagnostics disabled | system-first `-j4` unit-tests 188/188 (3m3.636s) and integration-tests 118/118 (1m44.786s); vmstat no sustained swap-out | `STATIC_PASS`; `BUILD_PASS`; `FOCUSED_BEHAVIOR_PASS`; `CLOSED_FOR_VALIDATION` for local status ownership; not `QUALIFICATION_PASS` | [R9-B1 evidence](evidence/r9-b1-selection-status-concurrency-20260909.md); historical R6-B9 raw failures preserved; T013/T016 remain open |
 
 ## Current Checkpoint
+
+2026-09-09 R8-SKILL retrospective feedback / **DONE**：根据 R3-B1 的编译/链接漏检、R4-B4
+的批次膨胀与运行时漏检、R6-B9/R9-B1 的 legacy 并发边界，已将首个失败证据与改变的静态
+检查写入共享 `batch-quality-gates`、`pre-test-static-review`、code-design、模板及本 Spec
+记录。重复同类漏检需先更新 skill/template/checklist 或记录替代门禁；不改变产品任务状态，
+不以单次耗时推导提效。详见 [skill review evidence](evidence/skill-review-coverage-20260909.md#retrospective-feedback-loop)。
 
 2026-09-09 R9-B1 selection-status concurrency ownership / **PARTIAL**：ASAN 首次复现定位到
 `ServiceProvider::reportSelectionOperationStatus` 并发扩展 `memberStatuses` 时的
