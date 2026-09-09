@@ -207,6 +207,20 @@ def test_node_context_binds_namespace_and_nfd_identity(tmp_path: Path) -> None:
         sock.close()
 
 
+def test_dynamic_shared_libraries_are_bound_at_absolute_elf_paths(tmp_path: Path) -> None:
+    case = runner.load_case(_manifest(tmp_path), "positive")
+    library = Path("/lib/x86_64-linux-gnu/libc.so.6")
+    case["isolation"]["artifacts"].append({
+        "source": str(library), "target": str(library),
+        "sha256": "sha256:" + hashlib.sha256(library.read_bytes()).hexdigest(),
+        "kind": "shared-library", "mode": "0555",
+    })
+    staged = runner.stage_root(case, tmp_path / "run")
+    command = runner.make_launch(case, staged, {"id": ""}, tmp_path / "run/trace.txt")
+    mount_index = command.index("--ro-bind", command.index("--ro-bind") + 1)
+    assert str(library) in command[mount_index:mount_index + 4]
+
+
 def test_node_context_rejects_stale_owner_starttime(tmp_path: Path) -> None:
     case = runner.load_case(_manifest(tmp_path), "positive")
     case["isolation"]["processes"][0]["node"] = "requester"
@@ -288,6 +302,26 @@ def test_trace_integrity_is_separate_from_policy_violation(tmp_path: Path) -> No
     assert observation["complete"] is True
     assert observation["integrityViolations"] == []
     assert observation["policyViolations"] == ["UNDECLARED_ENDPOINT"]
+
+
+def test_trace_integrity_accepts_paired_unfinished_syscalls(tmp_path: Path) -> None:
+    trace = tmp_path / "trace.txt"
+    trace.write_text(
+        '123 openat(AT_FDCWD, "x", O_RDONLY <unfinished ...>\n'
+        '123 <... openat resumed>)          = 3\n'
+        '123 execve("/probe-root/bin/true", ["true"], 0x0) = 0\n'
+        '123 exit_group(0)                   = ?\n', encoding="utf-8")
+    observation = runner.collect_trace({}, {"trace": str(trace)})
+    assert observation["complete"] is True
+    assert observation["integrityViolations"] == []
+
+
+def test_trace_integrity_rejects_unpaired_unfinished_syscall(tmp_path: Path) -> None:
+    trace = tmp_path / "trace.txt"
+    trace.write_text('123 openat(AT_FDCWD, "x", O_RDONLY <unfinished ...>\n', encoding="utf-8")
+    observation = runner.collect_trace({}, {"trace": str(trace)})
+    assert observation["complete"] is False
+    assert observation["integrityViolations"] == ["TRACE_UNPAIRED"]
 
 
 def test_minindn_owner_does_not_fake_native_qualification(tmp_path: Path) -> None:

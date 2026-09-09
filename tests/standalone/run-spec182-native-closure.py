@@ -32,6 +32,8 @@ REQUIRED_EVIDENCE = {
 FORBIDDEN_ENV_PREFIXES = ("PYTHON", "VIRTUAL_ENV", "CONDA_", "LD_PRELOAD", "LD_AUDIT")
 TRACE_EXEC = re.compile(r"(?:execve|execveat)\([^)]*\)\s*=\s*(-?\d+)")
 TRACE_EXIT = re.compile(r"(?:exit_group|exit)\((-?\d+)\)")
+TRACE_PID = re.compile(r"^\s*(?:\[pid\s+)?(\d+)(?:\]|\s)")
+TRACE_RESUMED = re.compile(r"<\.\.\. [^>]+ resumed>")
 
 
 class PreflightError(ValueError):
@@ -234,6 +236,19 @@ def make_launch(case: dict[str, Any], staged: dict[str, Any], node: dict[str, An
             "--die-with-parent", "--ro-bind", staged["root"], "/probe-root",
             "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
             "--chdir", "/tmp", "--", *argv]
+    # The executable lives under /probe-root, but ELF PT_INTERP and DT_NEEDED
+    # entries are absolute paths.  Bind each declared shared library at its
+    # canonical absolute target without exposing the host's whole /lib tree.
+    insert_at = launch.index("--proc")
+    shared_mounts: list[str] = []
+    for artifact in case["isolation"]["artifacts"]:
+        if artifact["kind"] != "shared-library":
+            continue
+        target = str(artifact["target"])
+        source = str(Path(staged["root"]) / target.lstrip("/"))
+        _require(Path(source).is_file(), f"staged shared library is missing: {target}")
+        shared_mounts.extend(["--ro-bind", source, target])
+    launch[insert_at:insert_at] = shared_mounts
     namespace_fd_path = node.get("_namespaceFdPath")
     if process.get("node") is not None and namespace_fd_path:
         nsenter = str(case["isolation"].get("tools", {}).get("nsenter", "nsenter"))
@@ -318,10 +333,21 @@ def collect_trace(case: dict[str, Any], run: dict[str, Any]) -> dict[str, Any]:
     text = trace_path.read_text(encoding="utf-8", errors="replace")
     integrity_violations: list[str] = []
     policy_violations: list[str] = []
-    if "unfinished ..." in text or "<..." in text:
-        integrity_violations.append("TRACE_UNPAIRED")
+    unfinished_by_pid: dict[str, int] = {}
     events = []
     for line in text.splitlines():
+        pid_match = TRACE_PID.match(line)
+        pid = pid_match.group(1) if pid_match else None
+        if "<unfinished ...>" in line:
+            if pid is None:
+                integrity_violations.append("TRACE_UNPAIRED")
+            else:
+                unfinished_by_pid[pid] = unfinished_by_pid.get(pid, 0) + 1
+        elif TRACE_RESUMED.search(line):
+            if pid is None or unfinished_by_pid.get(pid, 0) <= 0:
+                integrity_violations.append("TRACE_UNPAIRED")
+            else:
+                unfinished_by_pid[pid] -= 1
         if "execve" in line or "execveat" in line:
             match = TRACE_EXEC.search(line)
             events.append({"kind": "exec", "line": line})
@@ -334,6 +360,8 @@ def collect_trace(case: dict[str, Any], run: dict[str, Any]) -> dict[str, Any]:
         match = TRACE_EXIT.search(line)
         if match:
             events.append({"kind": "exit", "code": int(match.group(1)), "line": line})
+    if any(count > 0 for count in unfinished_by_pid.values()):
+        integrity_violations.append("TRACE_UNPAIRED")
     return {
         # Completeness describes whether the observer delivered a trustworthy
         # trace.  Policy violations are still a complete observation and must

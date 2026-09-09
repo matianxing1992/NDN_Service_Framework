@@ -1,5 +1,24 @@
 # Failure Log and Evidence Index
 
+## 2026-09-09 — Spec182 R10-B18 runner dynamic-ELF and trace-integrity boundaries
+
+Three exploratory runner probes exposed sequential harness boundaries before the final retry:
+
+- `.codex-tmp/spec182-runner-probe-20260909051337/` exited before bwrap because the minimal
+  runner environment had no `PATH` and the manifest used relative `bwrap`/`strace` names.
+- `.codex-tmp/spec182-runner-probe2-20260909051429/` reached bwrap but dynamic `/bin/true`
+  failed `execve` with `ENOENT`; loader and libc were staged only below `/probe-root`, while ELF
+  absolute interpreter/DT_NEEDED paths were not mounted.
+- `.codex-tmp/spec182-runner-probe3-20260909051640/` executed `/bin/true` with return code 0,
+  but the collector marked normal strace `<unfinished ...>`/`<... resumed>` pairs as
+  `TRACE_UNPAIRED`, producing `UNQUALIFIED` before evaluation.
+
+These are runner tool/observation boundaries, not DI protocol results. The retained retry
+`.codex-tmp/spec182-runner-probe4-20260909051727/` passed dynamic execution (`returncode=0`) and
+reported a complete trace after absolute shared-library mounts and per-PID unfinished/resumed
+pairing were repaired. The result remains `UNQUALIFIED` because this probe intentionally lacks
+business evidence.
+
 ## 2026-09-09 — Spec182 R10-B17 owner invocation preflight boundary
 
 The first explicit R10-B17 owner invocation used the frozen registration manifest without a
