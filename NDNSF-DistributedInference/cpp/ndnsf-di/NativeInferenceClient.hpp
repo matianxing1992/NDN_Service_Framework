@@ -78,6 +78,10 @@ struct NativeRequestContract
   std::string adapterCompositionDigest;
   std::string taskDescriptorDigest;
   std::string generationMode = "TOKEN_DIAGNOSTIC";
+  // Operator-pinned tokenizer identity.  The native requester owns this
+  // value and compares every derived generation contract against it; model
+  // semantics and automatic-planner metadata are never substitutes.
+  std::string tokenizerDigest;
 };
 
 enum class NativeRequestStatus { Pending, Succeeded, Failed, Cancelled };

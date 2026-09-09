@@ -2,6 +2,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestEnvelope.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPlanner.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/DecodeStateIdentity.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
 #include "ndn-service-framework/ServiceUser.hpp"
@@ -1646,6 +1647,25 @@ NativeInferenceHandle NativeInferenceClient::request(
       throw NativeDiError("INVALID_REQUEST", "local", "request",
                           "native request arguments are invalid");
     }
+    const NativeRequestContract* requestContract =
+      m_runtime ? &m_runtime->contract : m_requestContract.get();
+    if (requestContract) {
+      const auto& contract = *requestContract;
+      if (!contract.tokenizerDigest.empty() &&
+          !decode_state_identity_detail::isSha256Digest(contract.tokenizerDigest))
+        throw NativeDiError("INVALID_CLIENT_CONFIGURATION", "local", "request",
+                            "native requester tokenizer digest is not canonical");
+      if (contract.generationMode == "TOKEN_STREAMING" &&
+          (contract.tokenizerDigest.empty() || !options.stream))
+        throw NativeDiError("INVALID_STREAM_OPTIONS", "local", "request",
+                            "TOKEN_STREAMING runtime requires pinned tokenizer digest and stream options");
+      if (contract.generationMode != "TOKEN_STREAMING" && options.generation)
+        throw NativeDiError("INVALID_GENERATION_OPTIONS", "local", "request",
+                            "generation options require a TOKEN_STREAMING runtime contract");
+    }
+    if (options.generation && !options.stream)
+      throw NativeDiError("INVALID_GENERATION_OPTIONS", "local", "request",
+                          "generation options require stream options");
     model.validate();
     if (!m_adapters->find(model.adapterId)) {
       throw NativeDiError("ADAPTER_NOT_REGISTERED", "planning", "request",
@@ -1696,14 +1716,15 @@ NativeInferenceHandle NativeInferenceClient::request(
         const auto application = nativeParseJson(std::string(input.options.begin(), input.options.end()));
         requestedGenerationId = application.value("generationId", application.value("generation_id", std::string{}));
       }
+      if (!requestedGenerationId.empty() &&
+          (requestedGenerationId.size() != stream.generationId.size() * 2 ||
+           requestedGenerationId.find_first_not_of("0123456789abcdef") != std::string::npos))
+        throw NativeDiError("INVALID_GENERATION_OPTIONS", "local", "request",
+                            "generation identity must be lowercase 16-byte hex");
       if (stream.generationId == ndn_service_framework::StreamGenerationId{} && !requestedGenerationId.empty()) {
-        const auto& id = requestedGenerationId;
-        if (id.size() != stream.generationId.size() * 2 ||
-            id.find_first_not_of("0123456789abcdef") != std::string::npos)
-          throw NativeDiError("INVALID_GENERATION_OPTIONS", "local", "request",
-                              "generation identity must be lowercase 16-byte hex");
         for (std::size_t i = 0; i < stream.generationId.size(); ++i)
-          stream.generationId[i] = static_cast<std::uint8_t>(std::stoul(id.substr(i * 2, 2), nullptr, 16));
+          stream.generationId[i] = static_cast<std::uint8_t>(
+            std::stoul(requestedGenerationId.substr(i * 2, 2), nullptr, 16));
       }
       if (stream.generationId == ndn_service_framework::StreamGenerationId{} &&
           RAND_bytes(stream.generationId.data(), stream.generationId.size()) != 1)
@@ -1714,10 +1735,18 @@ NativeInferenceHandle NativeInferenceClient::request(
         operation->generationId += hex[byte >> 4];
         operation->generationId += hex[byte & 15];
       }
+      if (!requestedGenerationId.empty() && requestedGenerationId != operation->generationId)
+        throw NativeDiError("INVALID_GENERATION_OPTIONS", "local", "request",
+                            "generation identity disagrees with stream identity");
       stream.streamEpoch = 1;
       stream.deadlineEpochMs = operation->wireDeadlineMs;
       if (generationRequested) {
         auto derived = nativeGenerationFromOptions(input.options, operation->generationId);
+        if (operation->runtime &&
+            !operation->runtime->contract.tokenizerDigest.empty() &&
+            derived.tokenizerDigest != operation->runtime->contract.tokenizerDigest)
+          throw NativeDiError("TOKENIZER_DIGEST_MISMATCH", "local", "request",
+                              "generation tokenizer digest disagrees with operator-pinned runtime digest");
         if (operation->options.generation) {
           auto requested = *operation->options.generation;
           requested.generationId = operation->generationId;

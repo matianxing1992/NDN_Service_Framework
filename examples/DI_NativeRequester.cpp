@@ -4,6 +4,7 @@
 #include <ndn-cxx/security/key-chain.hpp>
 #include <openssl/pem.h>
 #include <csignal>
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -69,6 +70,7 @@ NativeJson runtimeConfiguration(const NativeJson& config,
       {"adapter_composition_digest", request.at("adapter_composition_digest")},
       {"task_descriptor_digest", request.at("task_descriptor_digest")},
       {"generation_mode", request.value("generation_mode", "TOKEN_DIAGNOSTIC")},
+      {"tokenizer_digest", request.value("tokenizer_digest", std::string{})},
     }},
     {"requester_identity", requester},
     {"protection_epoch", protectionEpoch},
@@ -187,6 +189,30 @@ int main(int argc, char** argv)
     options.timeoutMs = request.at("timeout_ms"); options.ackTimeoutMs = request.at("ack_timeout_ms");
     if (request.contains("application_request_id"))
       options.applicationRequestId = request.at("application_request_id").get<std::string>();
+    if (runtime.contract.generationMode == "TOKEN_STREAMING") {
+      if (input.options.empty())
+        throw std::invalid_argument("TOKEN_STREAMING requester requires options_file");
+      const auto applicationOptions = nativeParseJson(
+        std::string(input.options.begin(), input.options.end()));
+      const auto generationId = applicationOptions.value(
+        "generationId", applicationOptions.value("generation_id", std::string{}));
+      if (generationId.size() != 32 ||
+          generationId.find_first_not_of("0123456789abcdef") != std::string::npos)
+        throw std::invalid_argument("TOKEN_STREAMING options require lowercase 16-byte generationId");
+      options.outputMode = "TOKEN_STREAMING";
+      options.generation = nativeGenerationFromOptions(input.options, generationId);
+      options.stream = ndn_service_framework::StreamRequestOptions{};
+      for (std::size_t i = 0; i < options.stream->generationId.size(); ++i)
+        options.stream->generationId[i] = static_cast<std::uint8_t>(
+          std::stoul(generationId.substr(i * 2, 2), nullptr, 16));
+      const auto maxTokens = options.generation->maxGeneratedTokens;
+      options.stream->maxEvents = static_cast<std::uint32_t>(maxTokens + 1);
+      options.stream->interestWindow = static_cast<std::uint16_t>(
+        std::min<std::size_t>(64, std::max<std::size_t>(1, maxTokens + 1)));
+      options.stream->callbackQueueCapacity = static_cast<std::uint16_t>(
+        std::max<std::size_t>(16, maxTokens + 1));
+      options.stream->reorderCapacity = options.stream->interestWindow;
+    }
     std::signal(SIGINT, onSignal); std::signal(SIGTERM, onSignal);
     user->init();
     auto handle = client.request(modelRef, input, catalog.splitter, std::make_shared<NativePreSplitFirstPlacement>(), options);

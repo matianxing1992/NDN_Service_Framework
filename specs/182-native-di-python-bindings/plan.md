@@ -260,6 +260,23 @@ Allocation is limited to `audit.md`, its task/progress entry, and one evidence r
 independent exit is source/status/link consistency plus the design validator. No product code,
 wire contract, task completion claim, or external qualification result changes.
 
+### R10-B73 Native Config Qwen Real Provider Stream 2026-09-09
+
+This batch freezes the operator-pinned tokenizer digest at the native runtime contract and
+proves one real native-config Qwen stream through the existing in-process Core/Provider fixture.
+The selector loads a source-bound ONNX catalog, Qwen semantic splitter, canonical preparation,
+and runtime JSON before `NativeInferenceClient::request`; the Provider emits authenticated token
+events and one terminal final payload. `DI_NativeRequester` uses the same options-file generation
+and stream DTO contract. A first fixture run failed at the semantic graph digest boundary because
+the one-role configuration used a two-role oracle digest; the corrected digest was re-reviewed,
+rebuilt, and passed.
+
+The stable exit is limited to the local native-config Qwen requester/Core/real-Provider stream and
+tokenizer-digest consistency. It does not close independent requester/Provider worker transport,
+cross-process continuation/recovery, maintained caller migration, legacy zero-use, I02–I08, T016,
+or T017. Detailed commands, hashes, and the retry boundary are recorded in
+[R10-B73 evidence](evidence/r10-b73-native-config-qwen-real-provider-20260909.md).
+
 ### R10-B9 Requester REPO_REF Core-Wire Boundary 2026-09-09
 
 The existing R4-B6 real-Provider conversation fixture used inline application input, while
@@ -1166,6 +1183,18 @@ T017 的 evidence/development-handoff.md 包含 exact commit、clean source clos
 分层清单、构建方法、组合验证及外部工具接续步骤；文档接受不授予部署 PASS。
 
 ## Current Execution Checkpoint
+
+2026-09-09 R10-B73 native-config Qwen real Provider stream / **CLOSED_FOR_VALIDATION (local in-process boundary)**：
+固定 `runtime.contract.tokenizer_digest` 为 native runtime contract 的 operator-pinned
+来源；`NativeInferenceClient` 从已认证 options 派生 generation DTO，并在 digest 不一致时
+拒绝请求，`DI_NativeRequester` 同步补齐 stream/generation DTO 组合。新增 source-bound Qwen
+ONNX fixture 和 native catalog/runtime JSON 真实 selector，经过 Core `BeginCollaboration`
+及 R4-B6 `ServiceProvider` 返回两个 token 与 terminal final；Qwen selector 1 case/5
+assertions，R10-B* unary/repository/stream sweep 4 cases/15 assertions，integration target
+以 system-first `-j4` 118/118 构建通过。首轮 one-role fixture digest 错配在 graph validation
+边界失败，已记录并修正后重跑。该结果只闭合 native-config Qwen 单进程真实流，不证明独立
+worker/cross-process、continuation/recovery、maintained caller/no-Python、legacy zero-use
+或 T016/T017。详见 [R10-B73 evidence](evidence/r10-b73-native-config-qwen-real-provider-20260909.md)。
 
 2026-09-09 R10-B72 Provider plan check / **CLOSED_FOR_VALIDATION (metadata readiness boundary)**：
 复用四角色 bundle 首轮因默认 service 与 plan 不符在解析边界 `rc=2`；显式传入

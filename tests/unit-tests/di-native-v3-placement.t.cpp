@@ -713,7 +713,10 @@ void runPublicClientScenario(int scenario)
   NativeRequestRuntime runtime;
   runtime.contract = {"/service", "task", input.inspected.descriptor.adapterId,
     input.inspected.descriptor.adapter.descriptorDigest(), nativePlanningDigest("composition"), nativePlanningDigest("task")};
-  if (scenario >= 3) runtime.contract.generationMode = "TOKEN_STREAMING";
+  if (scenario >= 3) {
+    runtime.contract.generationMode = "TOKEN_STREAMING";
+    runtime.contract.tokenizerDigest = nativePlanningDigest("tokenizer");
+  }
   runtime.requesterIdentity = "/requester"; runtime.protectionEpoch = issuer.protectionEpoch;
   runtime.security = {nativePlanningDigest("policy"), true}; runtime.budget.maxPolicyMs = 1000;
   runtime.grants = std::make_shared<NativeAuthenticatedGrantClient>("/requester", key('b'), "/authority", authorityPublic,

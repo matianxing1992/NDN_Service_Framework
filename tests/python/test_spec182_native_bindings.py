@@ -116,6 +116,7 @@ class Spec182NativeBindingsTest(unittest.TestCase):
         runtime.security = _ndnsf.NativeSecurityPolicySnapshot()
         runtime.budget = _ndnsf.NativeCandidateBudget()
         runtime.state_mapping = _ndnsf.NativeStateTensorMapping()
+        runtime.contract.tokenizer_digest = "sha256:" + "a" * 64
         self.assertIsInstance(runtime, _ndnsf.NativeRequestRuntime)
         for name in (
                 "NativeRequestCatalog", "NativeRequestPreparation",

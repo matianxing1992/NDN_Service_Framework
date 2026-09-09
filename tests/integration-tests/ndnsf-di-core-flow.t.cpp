@@ -19,6 +19,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPlanner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestEnvelope.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/qwen/NativeQwenPlanner.hpp"
 #include "tests/fixtures/spec182/native-model-fixture.hpp"
 #include "ndn-service-framework/HybridMessageCrypto.hpp"
 #include "ndn-service-framework/InvocationStream.hpp"
@@ -38,7 +39,9 @@
 #include <functional>
 #include <future>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <iterator>
 #include <limits>
 #include <map>
 #include <mutex>
@@ -6818,7 +6821,8 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
                                     bool alternateProvider = false,
                                     bool repositoryInput = false,
                                     bool unaryRequest = false,
-                                    bool conversationRequest = true)
+                                    bool conversationRequest = true,
+                                    bool nativeConfigQwen = false)
 {
   using namespace ndn_service_framework;
   test::BootstrapProfile profile;
@@ -6957,6 +6961,74 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
       return std::vector<NativeSelectionRoleV3>{preparedRole};
     });
 
+  // The maintained native-config Qwen path uses the same real Core/Provider
+  // harness, but obtains its model/split/runtime owners from the strict native
+  // catalog and runtime JSON loaders.  The fixture is a small source-bound ONNX
+  // graph with symbolic Qwen state shapes, so canonical preparation remains a
+  // real source identity check rather than a mock transport shortcut.
+  std::shared_ptr<NativeRequestCatalog> configuredCatalog;
+  std::shared_ptr<const NativeModelSplitStrategy> configuredSplitter;
+  std::shared_ptr<const NativeAdapterRegistry> configuredRegistry;
+  std::string configuredSourceDigest;
+  if (nativeConfigQwen) {
+    std::ifstream sourceFile("tests/fixtures/spec182/qwen-native-config.onnx", std::ios::binary);
+    BOOST_REQUIRE(sourceFile.good());
+    const std::string sourceBytes((std::istreambuf_iterator<char>(sourceFile)),
+                                  std::istreambuf_iterator<char>());
+    NativeCanonicalSource qwenSource;
+    qwenSource.modelBytes.assign(sourceBytes.begin(), sourceBytes.end());
+    NativeAssemblyControl qwenControl{std::chrono::steady_clock::now() + std::chrono::seconds(30),
+      [] {}, 1U << 20, 1U << 20};
+    const auto sourceIdentity = canonicalOnnxSourceIdentity(qwenSource, qwenControl);
+    // This is the canonical digest for QwenFixture/pinned-r1, layer range
+    // [0,2], and the native Qwen semantic graph.  It is independent of the
+    // source ONNX identity below and is checked again by the splitter.
+    const auto qwenGraphDigest = std::string(
+      "sha256:8f901f484f07440aef844373c95d64b6462bcbc90c0070087b4c85c78a0de2b2");
+    model = fixture::completeModel({"QwenFixture", nativePlanningDigest("qwen-native-config-content"),
+      nativePlanningDigest("qwen-native-config-semantics"), qwenGraphDigest, "onnx", "float32", "qwen", "1"});
+    model.sourceRevision = "pinned-r1";
+    qwenSource.modelBytes.shrink_to_fit();
+    const auto qwenArtifactDigest = nativePlanningDigest("qwen-native-config-artifact");
+    const NativeJson stateInputs = {{role, {{"attention_kv_in", {"attention_kv_in"}},
+      {"recurrent_state_in", {"recurrent_state_in"}},
+      {"convolution_state_in", {"convolution_state_in"}}}}};
+    const NativeJson stateOutputs = {{role, {{"attention_kv_out", {"attention_kv_out"}},
+      {"recurrent_state_out", {"recurrent_state_out"}},
+      {"convolution_state_out", {"convolution_state_out"}}}}};
+    configuredSourceDigest = nativePlanningDigest(qwenSource.modelBytes.data(), qwenSource.modelBytes.size());
+    const NativeJson catalogConfiguration{
+      {"schema", "ndnsf-di-native-request-catalog-v1"},
+      {"model", nativeParseJson(model.canonicalJson())},
+      {"source", {{"data_name", "/r4-b6/qwen/model"},
+        {"digest", configuredSourceDigest},
+        {"model_manifest_digest", manifestDigest},
+        {"canonical_graph_digest", sourceIdentity.graphDigest}}},
+      {"recipe", {{"artifact_profile_digest", artifactProfileDigest},
+        {"assembler_descriptor_digest", nativePlanningDigest("qwen-native-config-assembler")},
+        {"backend_abi", "onnxruntime-cpu-v1"}, {"precision", "float32"},
+        {"quantization", "none"}, {"layout", "native"}, {"padding", "none"},
+        {"protection_epoch", protectionEpoch}, {"max_source_bytes", 1U << 20},
+        {"max_assembled_bytes", 1U << 20}, {"max_nodes", 64}}},
+      {"publication", {{"artifact_root", "/r4-b6/qwen/artifacts"}}},
+      {"input_format", "OPAQUE"}, {"max_payload_bytes", 4096},
+      {"splitter", {{"kind", "QWEN"}, {"layer_ranges", NativeJson::array({NativeJson::array({0, 2})})},
+        {"artifact_digests_by_role", {{role, qwenArtifactDigest}}},
+        {"weight_bytes_by_role", {{role, 1}}}, {"roles", {role}}, {"tensor_degrees", {1}}}},
+      {"node_mapping", {{"embedding", {0}}, {"layer-00", {1}}, {"layer-01", {2}},
+        {"final-norm-head", {3, 4, 5, 6}}}},
+      {"state_inputs", stateInputs}, {"state_outputs", stateOutputs}};
+    configuredCatalog = std::make_shared<NativeRequestCatalog>(NativeRequestCatalog::load(
+      nativeCanonicalJson(catalogConfiguration), std::move(qwenSource), qwenControl));
+    model = configuredCatalog->model.descriptor;
+    graph = configuredCatalog->model.graph;
+    inspected = configuredCatalog->model;
+    candidate = configuredCatalog->splitter->enumerate(
+      model, graph, NativeCandidateBudget{1, 1000, 1}).front();
+    configuredRegistry = configuredCatalog->preparation->adapters();
+    configuredSplitter = configuredCatalog->splitter;
+  }
+
   std::string repositoryReference;
   std::string repositoryPlaintext;
   if (repositoryInput) {
@@ -7036,6 +7108,11 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
   issuerConfig.authorityPrivateKey = authorityKey;
   issuerConfig.requesterPublicKey = requesterKey;
   issuerConfig.allowedModelManifests = {manifestDigest};
+  if (configuredCatalog) {
+    issuerConfig.publicationSources.emplace(manifestDigest,
+      NativeGrantPublicationSource{model.modelName, model.contentDigest,
+                                   configuredSourceDigest, {}, artifactProfileDigest});
+  }
   issuerConfig.recipientPublicKeys = {{providerName, recipientKey}};
   if (alternateProvider)
     issuerConfig.recipientPublicKeys.emplace(alternateProviderName, recipientKey);
@@ -7060,6 +7137,9 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
     std::move(publishGrant));
 
   auto user = std::shared_ptr<ServiceUser>(&environment.user(), [] (ServiceUser*) {});
+  if (configuredCatalog) {
+    preparation = configuredCatalog->preparation->makePreparation(user, serviceName);
+  }
   auto ackCalls = std::make_shared<std::atomic<unsigned>>(0);
   auto collaborationCalls = std::make_shared<std::atomic<unsigned>>(0);
   auto conversationAttempts = std::make_shared<std::atomic<unsigned>>(0);
@@ -7331,17 +7411,39 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
       selectionKey.keyId, selectionKey.epochId, selectionKey.key);
 
   NativeRequestRuntime runtime;
-  runtime.contract = {serviceName, "task", model.adapterId,
-    model.adapter.descriptorDigest(), nativePlanningDigest("r4-b6-composition"),
-    nativePlanningDigest("r4-b6-task"), unaryRequest ? "TOKEN_DIAGNOSTIC" : "TOKEN_STREAMING"};
-  runtime.requesterIdentity = requesterName;
-  runtime.protectionEpoch = protectionEpoch;
-  runtime.inputLayoutDigest = nativePlanningDigest("r4-b6-input-layout");
-  runtime.security = {policyDigest, true};
-  runtime.budget = {1, 1000, 1};
-  runtime.grants = grants;
-  runtime.noProgressMs = 5000;
-  runtime.maxSegments = 64;
+  if (configuredCatalog) {
+    const NativeJson runtimeConfiguration{
+      {"schema", "ndnsf-di-native-request-runtime-v1"},
+      {"contract", {{"service_name", serviceName}, {"task_name", "task"},
+        {"adapter_name", model.adapterId},
+        {"adapter_descriptor_digest", model.adapter.descriptorDigest()},
+        {"adapter_composition_digest", nativePlanningDigest("qwen-native-config-composition")},
+        {"task_descriptor_digest", nativePlanningDigest("qwen-native-config-task")},
+        {"generation_mode", "TOKEN_STREAMING"}, {"tokenizer_digest", tokenizerDigest}}},
+      {"requester_identity", requesterName}, {"protection_epoch", protectionEpoch},
+      {"input_layout_digest", nativePlanningDigest("qwen-native-config-input-layout")},
+      {"security", {{"policy_digest", policyDigest}, {"require_protected_artifacts", true}}},
+      {"budget", {{"max_candidates", 1}, {"max_policy_ms", 1000}, {"max_reentries", 1}}},
+      {"state_mapping", {{"inputs", configuredCatalog->stateMapping.inputs},
+                          {"outputs", configuredCatalog->stateMapping.outputs}}},
+      {"no_progress_ms", 5000}, {"max_segments", 64}};
+    runtime = nativeRequestRuntimeFromJson(nativeCanonicalJson(runtimeConfiguration),
+                                           *configuredCatalog, grants);
+  }
+  else {
+    runtime.contract = {serviceName, "task", model.adapterId,
+      model.adapter.descriptorDigest(), nativePlanningDigest("r4-b6-composition"),
+      nativePlanningDigest("r4-b6-task"), unaryRequest ? "TOKEN_DIAGNOSTIC" : "TOKEN_STREAMING",
+      unaryRequest ? std::string{} : tokenizerDigest};
+    runtime.requesterIdentity = requesterName;
+    runtime.protectionEpoch = protectionEpoch;
+    runtime.inputLayoutDigest = nativePlanningDigest("r4-b6-input-layout");
+    runtime.security = {policyDigest, true};
+    runtime.budget = {1, 1000, 1};
+    runtime.grants = grants;
+    runtime.noProgressMs = 5000;
+    runtime.maxSegments = 64;
+  }
 
   NativeModelRef modelRef;
   static_cast<NativeModelDescriptor&>(modelRef) = model;
@@ -7395,7 +7497,9 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
   conversationConfig.securityDomainDigest = policyDigest;
   auto conversations = std::make_shared<NativeConversationCoordinator>(
     std::move(conversationConfig));
-  NativeInferenceClient client(user, registry, runtime, conversations,
+  const std::shared_ptr<const NativeAdapterRegistry> requestRegistry =
+    configuredRegistry ? configuredRegistry : registry;
+  NativeInferenceClient client(user, requestRegistry, runtime, conversations,
                                preparation, admission);
   class R4B6Splitter final : public NativeModelSplitStrategy {
   public:
@@ -7406,7 +7510,8 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
   private:
     NativeSplitCandidate m_value;
   };
-  auto splitter = std::make_shared<R4B6Splitter>(candidate);
+  std::shared_ptr<const NativeModelSplitStrategy> splitter = configuredSplitter ?
+    configuredSplitter : std::make_shared<R4B6Splitter>(candidate);
   auto placement = std::make_shared<NativePreSplitFirstPlacement>();
   const auto first = client.request(modelRef, application,
                                     splitter, placement, options);
@@ -7581,6 +7686,11 @@ BOOST_AUTO_TEST_CASE(Spec182R10B33RealProviderUnaryRepositoryReferenceRequest)
 BOOST_AUTO_TEST_CASE(Spec182R10B37RealProviderNativeStreamRequest)
 {
   runR4B6RealProviderConversationCase(false, false, false, false, false);
+}
+
+BOOST_AUTO_TEST_CASE(Spec182R10B73NativeConfigQwenRealProviderStream)
+{
+  runR4B6RealProviderConversationCase(false, false, false, false, false, true);
 }
 
 BOOST_AUTO_TEST_CASE(Spec175NativeTinyOnnxI01OneProvider)

@@ -267,6 +267,39 @@ BOOST_AUTO_TEST_CASE(ConfiguredClientClosesEmptyAckAndCancelsActualCorePendingCa
   application.taskName = "task"; application.payload = {1};
   application.inputSchemaDigest = model.adapter.inputSchemaDigest;
   application.optionsSchemaDigest = model.adapter.optionsSchemaDigest;
+  NativeRequestOptions diagnosticGeneration;
+  diagnosticGeneration.stream = ndn_service_framework::StreamRequestOptions{};
+  diagnosticGeneration.generation = NativeGenerationExecutionContractV1{};
+  NativeInferenceClient diagnosticClient(user, configuredAdapters, runtime,
+                                         preparation, admission);
+  BOOST_CHECK_EXCEPTION(
+    diagnosticClient.request(model, application,
+      std::make_shared<ClientTestSplit>(),
+      std::make_shared<NativePreSplitFirstPlacement>(), diagnosticGeneration),
+    NativeDiError,
+    [](const auto& error) {
+      return error.code() == "INVALID_GENERATION_OPTIONS" &&
+             std::string(error.what()).find("TOKEN_STREAMING runtime contract") != std::string::npos;
+    });
+  auto streamingRuntime = runtime;
+  streamingRuntime.contract.generationMode = "TOKEN_STREAMING";
+  streamingRuntime.contract.tokenizerDigest = nativePlanningDigest("tokenizer");
+  NativeInferenceClient streamingClient(user, configuredAdapters, streamingRuntime,
+                                        preparation, admission);
+  NativeRequestOptions mismatchedGeneration;
+  mismatchedGeneration.stream = ndn_service_framework::StreamRequestOptions{};
+  mismatchedGeneration.stream->generationId.fill(0x11);
+  mismatchedGeneration.generation = NativeGenerationExecutionContractV1{};
+  mismatchedGeneration.generation->generationId = std::string(32, '2');
+  BOOST_CHECK_EXCEPTION(
+    streamingClient.request(model, application,
+      std::make_shared<ClientTestSplit>(),
+      std::make_shared<NativePreSplitFirstPlacement>(), mismatchedGeneration),
+    NativeDiError,
+    [](const auto& error) {
+      return error.code() == "INVALID_GENERATION_OPTIONS" &&
+             std::string(error.what()).find("stream identity") != std::string::npos;
+    });
   const auto pumpUntil = [&](const std::function<bool()>& done) {
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
     while (!done() && std::chrono::steady_clock::now() < deadline) {

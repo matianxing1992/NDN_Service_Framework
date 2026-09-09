@@ -137,7 +137,8 @@ runtime policy and identity values:
     "adapter_descriptor_digest": "sha256:...",
     "adapter_composition_digest": "sha256:...",
     "task_descriptor_digest": "sha256:...",
-    "generation_mode": "TOKEN_DIAGNOSTIC"
+    "generation_mode": "TOKEN_DIAGNOSTIC",
+    "tokenizer_digest": ""
   },
   "requester_identity": "/user",
   "protection_epoch": "epoch-1",

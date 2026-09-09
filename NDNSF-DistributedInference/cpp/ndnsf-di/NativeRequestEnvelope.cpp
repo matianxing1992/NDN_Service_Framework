@@ -126,6 +126,8 @@ NativeEncodedRequest encodeNativeRequestEnvelope(
       contract.taskName.empty() || contract.taskName != input.taskName || requestId.empty() ||
       !attempt || !deadlineMs ||
       !isSupportedNativeGenerationMode(contract.generationMode) ||
+      (!contract.tokenizerDigest.empty() && !digest(contract.tokenizerDigest)) ||
+      (contract.generationMode == "TOKEN_STREAMING" && contract.tokenizerDigest.empty()) ||
       contract.adapterName != model.adapterId ||
       contract.adapterDescriptorDigest != model.adapter.descriptorDigest() ||
       !digest(contract.adapterCompositionDigest) || !digest(contract.taskDescriptorDigest) ||
