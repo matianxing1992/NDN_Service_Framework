@@ -61,6 +61,9 @@ _YN_NEGATIVE_BOUNDARIES = {
     # before this subcase may record the registered PASS.
     "Y-N-E": ("PROVIDER_GRANT_VERIFICATION", "DI_PROTECTED_GRANT_REJECTED"),
     "Y-N-L": ("EVIDENCE_ACCEPTANCE", "REDACTION_REJECTED"),
+    # Native DetectShard0 withholds one selected V3 output; the User observes
+    # the bounded missing-dependency response after Selection.
+    "Y-N-D": ("DEPENDENCY_DATA_MISSING", "DEPENDENCY_DATA_MISSING"),
 }
 # Child exit code, kept identical to the runner's Y-N constant: 91 = a
 # registered negative PASS (every subcase, including the T006 Y-N-E).
@@ -677,6 +680,19 @@ def _load_yolo_ack_driven(client, args, *, canonical_binding_factory=None,
         # A generic failed Response does not identify the input-fetch boundary.
         if getattr(response, "error", "") != "DI_INPUT_FETCH_ROLE_MISMATCH":
             raise RuntimeError("SPEC180_Y_N_I_REQUIRES_PROVIDER_EVIDENCE")
+        return 91
+    if locals().get("mutation") == "Y-N-D":
+        try:
+            response = handle.response(args.timeout_ms)
+        except Exception:
+            # The independent native withheld-output record is checked by the
+            # MiniNDN owner.  A timeout here only lets that record prove the
+            # exact edge; a User exit alone is never qualification evidence.
+            _emit_spec180_y_n_negative(args, mutation, journal=journal)
+            return 91
+        if response.status:
+            raise RuntimeError("DEPENDENCY_FAILURE_WAS_NOT_OBSERVED")
+        _emit_spec180_y_n_negative(args, mutation, journal=journal)
         return 91
     if terminal_handler is not None:
         return terminal_handler(handle=handle, journal=journal, args=args,

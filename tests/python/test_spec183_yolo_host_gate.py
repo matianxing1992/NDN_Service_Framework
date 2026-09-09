@@ -50,6 +50,8 @@ def write_receipt(tmp_path):
                            "sequence": sequence, "milestone": milestone}
                     if milestone == "TERMINAL_RESPONSE":
                         row.update(status=True, requestCount=1)
+                    if milestone == "PLAN_SEALED":
+                        row["planDigest"] = "sha256:" + "2" * 64
                     rows.append(json.dumps(row))
                 path.write_text("\n".join(rows) + "\n", encoding="utf-8")
             elif kind == "execution":
@@ -75,10 +77,33 @@ def write_receipt(tmp_path):
                             else "DEPENDENCY_DATA_MISSING")
                 reason = ("DI_PROTECTED_GRANT_REJECTED: test"
                           if case == "permission-rejection" else "DEPENDENCY_DATA_MISSING")
-                path.write_text(json.dumps({
+                value = {
                     "schema": "spec180-negative-evidence-v1", "status": "PASS",
                     "requestId": request_id, "provider": "/example/yolo/run-1/BackboneNeck",
-                    "boundary": boundary, "reason": reason}), encoding="utf-8")
+                    "boundary": boundary, "reason": reason}
+                if case == "negative-dependency":
+                    value.update({
+                        "observedAfterSelection": True,
+                        "reselected": False,
+                        "dependency": {
+                            "schema": "ndnsf-di-withheld-output-v1",
+                            "session": "run-1/session/1",
+                            "requestId": request_id,
+                            "attempt": "1",
+                            "planDigest": "sha256:" + "2" * 64,
+                            "producerRole": "DetectShard0",
+                            "consumerRole": "Merge",
+                            "manifestDataName": "/tensor/head0/MANIFEST",
+                            "plannedDataName": "/tensor/head0",
+                            "endpointDigest": "sha256:" + "3" * 64,
+                            "contentDigest": "sha256:" + "4" * 64,
+                            "bytes": "64",
+                            "provider": "/example/yolo/run-1/BackboneNeck",
+                            "providerBootId": "boot-1",
+                            "atMs": "100",
+                        },
+                    })
+                path.write_text(json.dumps(value), encoding="utf-8")
             elif kind == "cleanup":
                 path.write_text(json.dumps({
                     "schema": "minindn-owned-cleanup-v1", "errors": [],

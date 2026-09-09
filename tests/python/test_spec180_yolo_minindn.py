@@ -66,7 +66,8 @@ def test_case_cancellation_restores_handlers_on_non_signal_failure():
 
 def _negative_children(module, tmp_path, *, case="Y-N-P", marker_request="/request",
                        owner="user", sibling_exit=None):
-    phase = "PROVIDER_EXECUTION_STARTED" if case == "Y-N-I" else "GRAPH_READY"
+    phase = ("PROVIDER_EXECUTION_STARTED"
+             if case in {"Y-N-I", "Y-N-D"} else "GRAPH_READY")
     journal = module.LifecycleJournal(tmp_path, case, require_protocol_binding=True)
     journal.bind_protocol_identity(request_id="/request", attempt_id="attempt-1")
     for milestone in module.MILESTONES:
@@ -156,6 +157,45 @@ def test_input_negative_accepts_native_logger_prefixed_marker(tmp_path):
     started.append((spec, SimpleNamespace(poll=lambda: None), provider_log))
     result = module._wait_for_negative_result(tuple(started), "Y-N-I", 0.01)
     assert result.startswith("SPEC180_YN_NEGATIVE_RESULT status=PASS")
+
+
+def test_dependency_negative_requires_one_bound_withheld_edge(tmp_path):
+    module = load_runner()
+    started = list(_negative_children(module, tmp_path, case="Y-N-D"))
+    user_log = started[0][2]
+    record = {
+        "schema": "ndnsf-di-withheld-output-v1",
+        "session": "session-1",
+        "requestId": "/request",
+        "attempt": "1",
+        "planDigest": "sha256:" + "a" * 64,
+        "producerRole": "DetectShard0",
+        "consumerRole": "Merge",
+        "manifestDataName": "/tensor/head0/MANIFEST",
+        "plannedDataName": "/tensor/head0",
+        "endpointDigest": "sha256:" + "b" * 64,
+        "contentDigest": "sha256:" + "c" * 64,
+        "bytes": "64",
+        "provider": "/example/provider/DetectShard0",
+        "providerBootId": "boot-1",
+        "atMs": "100",
+    }
+    provider_log = tmp_path / "provider-DetectShard0.log"
+    provider_log.write_text(
+        "NDNSF_DI_OUTPUT_WITHHELD " + json.dumps(record) + "\n")
+    started.append((module.CaseProcessSpec(
+        "provider-DetectShard0", "node",
+        "di-native-provider --provider /example/provider/DetectShard0", "",
+        "providers"), SimpleNamespace(poll=lambda: None), provider_log))
+    result = module._wait_for_negative_result(tuple(started), "Y-N-D", 0.01)
+    assert "subcase=Y-N-D" in result
+
+
+def test_dependency_negative_rejects_timeout_without_native_edge(tmp_path):
+    module = load_runner()
+    started = _negative_children(module, tmp_path, case="Y-N-D")
+    with pytest.raises(module.RunnerError, match="WITHHELD_RECORD"):
+        module._wait_for_negative_result(started, "Y-N-D", 0.01)
 
 
 def test_missing_candidate_environment_fails_before_output_creation(tmp_path: Path):
@@ -513,6 +553,7 @@ def test_y_n_matrix_is_fixed_and_ordered():
     module = load_runner()
     assert module.YN_SUBCASES == (
         "Y-N-O", "Y-N-C", "Y-N-P", "Y-N-R", "Y-N-I", "Y-N-E", "Y-N-L",
+        "Y-N-D",
     )
     assert module.MILESTONES.index("INPUT_REFERENCE_PUBLISHED") < module.MILESTONES.index(
         "ACK_CLOSED") < module.MILESTONES.index("TERMINAL_RESPONSE")
@@ -578,7 +619,8 @@ def test_case_plan_y_n_records_fixed_subcase_outcomes():
 
 def test_y_n_focused_probes_cannot_qualify_provider_grants(tmp_path: Path):
     module = load_runner()
-    cases = [item for item in module.YN_SUBCASES[1:] if item != "Y-N-E"]
+    cases = [item for item in module.YN_SUBCASES[1:]
+             if item not in {"Y-N-E", "Y-N-D"}]
     results = [
         module._run_focused_y_n_negative(subcase, tmp_path, {})
         for subcase in cases
@@ -593,6 +635,8 @@ def test_y_n_focused_probes_cannot_qualify_provider_grants(tmp_path: Path):
                for item in cases)
     with pytest.raises(module.RunnerError, match="PRODUCTION_VERIFIER_REQUIRED"):
         module._run_focused_y_n_negative("Y-N-E", tmp_path, {})
+    with pytest.raises(module.RunnerError, match="PRODUCTION_RUNTIME_REQUIRED"):
+        module._run_focused_y_n_negative("Y-N-D", tmp_path, {})
 
 
 def test_y_n_qualification_matrix_dispatches_every_negative_to_live_runner(
@@ -1183,6 +1227,24 @@ def test_y_n_c_mutates_native_provider_capabilities_at_process_boundary(
     assert "--roles BackboneNeck" in commands["provider-Merge"]
     assert "--roles FullModel,BackboneNeck" not in commands["provider-FullModel"]
     assert "--roles Merge" not in commands["provider-Merge"]
+
+
+def test_y_n_d_withholds_only_bound_detect_shard_output(tmp_path: Path):
+    module = load_runner()
+    output, inputs = _binding_inputs(tmp_path, module, "Y-N")
+    inputs["subcase"] = "Y-N-D"
+    inputs["lifecycle_case"] = "Y-N-D"
+    binding = module.CaseRuntimeBinding.from_inputs("Y-N", output, inputs)
+
+    specs = module.MiniNdnCaseRuntime(binding, inputs).process_specs("providers")
+    commands = {item.name: item.command for item in specs}
+    request_id = "/spec180-y-n-d-" + module.hashlib.sha256(
+        str(output).encode("utf-8")).hexdigest()[:16]
+    assert ("--withhold-v3-output " + request_id
+            + " DetectShard0 Merge") in commands["provider-DetectShard0"]
+    assert all("--withhold-v3-output" not in command
+               for name, command in commands.items()
+               if name != "provider-DetectShard0")
 
 
 def test_request_envelope_key_must_be_owner_only_and_exactly_32_bytes(

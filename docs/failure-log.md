@@ -4409,3 +4409,16 @@ run is available.
 Lesson: a passing negative matrix entry is not interchangeable with the
 registered negative-dependency case; preserve the boundary and keep host/SIF
 authorization closed.
+
+## 2026-09-09 — Y-N-D focused regression used the incomplete host closure
+
+Symptom: the focused MiniNDN/host-gate pytest command stopped during collection
+while importing `ndnsf._ndnsf`, reporting undefined symbol
+`ndnsd::discovery::ServiceDiscoveryD1Ev` from
+`/usr/local/lib/libndn-service-framework.so.0.1.0`.
+Root cause: the shell did not select the verified T008 native dependency
+closure; this is independent of the new Y-N-D wiring.
+Fix status: rerun with `/tmp/t008-build-root/lib` plus the pinned NDN-SVS,
+NAC-ABE and `/usr/local/lib` paths, without changing APP source.
+Lesson: host import failures must be isolated from APP behavior; exact-SIF
+and host tests need the same recorded loader closure before interpreting reds.

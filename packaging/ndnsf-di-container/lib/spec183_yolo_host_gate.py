@@ -149,7 +149,7 @@ def _read_lifecycle(path: Path, *, case: str) -> tuple[str, list[dict[str, Any]]
             raise YoloHostGateError("YOLO_HOST_GATE_LIFECYCLE_JSON") from exc
         if (not isinstance(row, dict)
                 or row.get("schema") != "spec180-yolo-lifecycle-event-v1"
-                or row.get("caseId") not in {"Y-A", "Y-B", "Y-N", "Y-N-O", "Y-N-E", "Y-N-C"}
+                or row.get("caseId") not in {"Y-A", "Y-B", "Y-N", "Y-N-O", "Y-N-E", "Y-N-C", "Y-N-D"}
                 or not isinstance(row.get("requestId"), str)
                 or not row["requestId"].startswith("/")
                 or not isinstance(row.get("attemptId"), str)
@@ -257,6 +257,38 @@ def _validate_semantic_evidence(case: str, evidence: dict[str, Path], *, applica
                 raise YoloHostGateError("YOLO_HOST_GATE_PERMISSION_BOUNDARY")
         elif boundary not in _NEGATIVE_BOUNDARIES:
             raise YoloHostGateError("YOLO_HOST_GATE_DEPENDENCY_BOUNDARY")
+        elif boundary == "DEPENDENCY_DATA_MISSING":
+            dependency = failure.get("dependency")
+            expected_fields = {
+                "schema", "session", "requestId", "attempt", "planDigest",
+                "producerRole", "consumerRole", "manifestDataName",
+                "plannedDataName", "endpointDigest", "contentDigest", "bytes",
+                "provider", "providerBootId", "atMs",
+            }
+            plan = next((event for event in lifecycle
+                         if event.get("milestone") == "PLAN_SEALED"), None)
+            if (failure.get("observedAfterSelection") is not True
+                    or failure.get("reselected") is not False
+                    or not isinstance(dependency, dict)
+                    or set(dependency) != expected_fields
+                    or dependency.get("schema") != "ndnsf-di-withheld-output-v1"
+                    or dependency.get("requestId") != lifecycle_id
+                    or str(dependency.get("attempt")) != "1"
+                    or dependency.get("planDigest") != (plan or {}).get("planDigest")
+                    or dependency.get("producerRole") != "DetectShard0"
+                    or dependency.get("consumerRole") != "Merge"
+                    or dependency.get("provider") != failure.get("provider")
+                    or not isinstance(dependency.get("session"), str)
+                    or not dependency["session"]
+                    or not isinstance(dependency.get("providerBootId"), str)
+                    or not dependency["providerBootId"]
+                    or any(not isinstance(dependency.get(key), str)
+                           or SHA256.fullmatch(dependency[key]) is None
+                           for key in ("endpointDigest", "contentDigest"))
+                    or any(not isinstance(dependency.get(key), str)
+                           or re.fullmatch(r"[1-9][0-9]{0,19}", dependency[key]) is None
+                           for key in ("bytes", "atMs"))):
+                raise YoloHostGateError("YOLO_HOST_GATE_DEPENDENCY_CUTPOINT")
     cleanup = _read_bound_json(evidence["cleanup"], "cleanup")
     children = cleanup.get("children")
     observations = cleanup.get("networkResourceObservations")

@@ -288,7 +288,7 @@ def _child_process_environment(base: Mapping[str, str]) -> dict[str, str]:
     env["NDN_LOG"] = child_ndn_log
     return env
 CASE_IDS = ("Y-A", "Y-B", "Y-N")
-YN_SUBCASES = ("Y-N-O", "Y-N-C", "Y-N-P", "Y-N-R", "Y-N-I", "Y-N-E", "Y-N-L")
+YN_SUBCASES = ("Y-N-O", "Y-N-C", "Y-N-P", "Y-N-R", "Y-N-I", "Y-N-E", "Y-N-L", "Y-N-D")
 YN_SUBCASE_BOUNDARIES = {
     "Y-N-O": "TERMINAL_RESPONSE",
     "Y-N-C": "PLACEMENT_DECISION",
@@ -297,6 +297,7 @@ YN_SUBCASE_BOUNDARIES = {
     "Y-N-I": "PROVIDER_EXECUTION_STARTED",
     "Y-N-E": "PROVIDER_GRANT_VERIFICATION",
     "Y-N-L": "EVIDENCE_ACCEPTANCE",
+    "Y-N-D": "DEPENDENCY_DATA_MISSING",
 }
 # Y-N-E requires a selected Provider verifier record; User-local probes
 # and synthetic PROTECTION_EPOCH_REJECTED markers are not evidence.
@@ -309,6 +310,7 @@ YN_NEGATIVE_REASONS = {
     # are rejected at the authorization boundary (before assembly).
     "Y-N-E": "DI_PROTECTED_GRANT_REJECTED",
     "Y-N-L": "REDACTION_REJECTED",
+    "Y-N-D": "DEPENDENCY_DATA_MISSING",
 }
 # Expected User exit code in Y-N runs. This exit alone does not prove PASS;
 # Y-N-E additionally requires the selected Provider verifier evidence.
@@ -985,10 +987,22 @@ class MiniNdnCaseRuntime:
             node = str(nodes["providers"][identity])
             # Both epochs exercise the native production owner. Protected
             # assignments must pass its grant factory before preparation.
+            provider_command = native_provider_command(
+                identity=identity, roles=roles, key_path=key_path)
+            # Y-N-D is the registered post-Selection dependency fault. The
+            # native Provider withholds exactly one V3 DetectShard0->Merge
+            # output and records the signed edge metadata. The request ID is
+            # deterministic and is shared with the User command below.
+            if (str(self.inputs.get("subcase", "")) == "Y-N-D"
+                    and "DetectShard0" in roles):
+                request_id = "/spec180-" + str(
+                    self.inputs.get("lifecycle_case", self.binding.case)).lower() + "-" + hashlib.sha256(
+                        str(self.binding.output).encode("utf-8")).hexdigest()[:16]
+                provider_command += " " + " ".join(shlex.quote(item) for item in (
+                    "--withhold-v3-output", request_id, "DetectShard0", "Merge"))
             commands.append(CaseProcessSpec(
                 "provider-" + provider_id, node,
-                native_provider_command(
-                    identity=identity, roles=roles, key_path=key_path),
+                provider_command,
                 "NDNSF_DI_NATIVE_PROVIDER_READY", "providers", "native",
             ))
 
@@ -3151,6 +3165,11 @@ def _run_focused_y_n_negative(subcase: str, output: Path,
                               inputs: Mapping[str, Any]) -> Mapping[str, Any]:
     if subcase == "Y-N-E":
         raise RunnerError("Y_N_E_PRODUCTION_VERIFIER_REQUIRED")
+    if subcase == "Y-N-D":
+        # A dependency cutpoint is owned by the native Provider and its
+        # consumer.  There is no focused probe that can stand in for the
+        # post-Selection cross-process edge.
+        raise RunnerError("Y_N_D_PRODUCTION_RUNTIME_REQUIRED")
     del inputs  # The focused probes use only fixed, non-secret contract fixtures.
     target = _new_y_n_subcase_dir(output, subcase)
     probes = {
@@ -3170,6 +3189,64 @@ def _run_focused_y_n_negative(subcase: str, output: Path,
         target, subcase=subcase, status="PASS", outcome="FAIL_CLOSED",
         reason=YN_NEGATIVE_REASONS[subcase],
     )
+
+
+def _read_y_n_d_withheld_record(user_log, request_id, events):
+    """Return the one native DetectShard0->Merge suppression record.
+
+    This is intentionally separate from the User marker: a negative exit can
+    be produced by a timeout or an unrelated failed response.  The native
+    record is the owner-side proof that one selected V3 edge was withheld.
+    """
+    withheld = []
+    for path in sorted(user_log.parent.glob("provider-*.log")):
+        try:
+            lines = path.read_text(errors="replace").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            marker = "NDNSF_DI_OUTPUT_WITHHELD "
+            position = line.find(marker)
+            if position < 0:
+                continue
+            try:
+                record = json.loads(line[position + len(marker):])
+            except (UnicodeError, ValueError):
+                raise RunnerError("Y_N_D_WITHHELD_RECORD_INVALID") from None
+            withheld.append(record)
+    if len(withheld) != 1 or not isinstance(withheld[0], dict):
+        raise RunnerError("Y_N_D_WITHHELD_RECORD_COVERAGE")
+    record = withheld[0]
+    expected_fields = {
+        "schema", "session", "requestId", "attempt", "planDigest",
+        "producerRole", "consumerRole", "manifestDataName", "plannedDataName",
+        "endpointDigest", "contentDigest", "bytes", "provider",
+        "providerBootId", "atMs",
+    }
+    plan = next((event for event in events
+                 if event.get("milestone") == "PLAN_SEALED"), None)
+    if (set(record) != expected_fields
+            or record.get("schema") != "ndnsf-di-withheld-output-v1"
+            or record.get("requestId") != request_id
+            or str(record.get("attempt")) != "1"
+            or record.get("producerRole") != "DetectShard0"
+            or record.get("consumerRole") != "Merge"
+            or not isinstance(plan, dict)
+            or record.get("planDigest") != plan.get("planDigest")
+            or not isinstance(record.get("session"), str)
+            or not record["session"]
+            or not isinstance(record.get("provider"), str)
+            or not record["provider"].startswith("/")
+            or not isinstance(record.get("providerBootId"), str)
+            or not record["providerBootId"]
+            or any(not isinstance(record.get(key), str)
+                   or not re.fullmatch(r"sha256:[0-9a-f]{64}", record[key])
+                   for key in ("endpointDigest", "contentDigest"))
+            or any(not isinstance(record.get(key), str)
+                   or not re.fullmatch(r"[1-9][0-9]{0,19}", record[key])
+                   for key in ("bytes", "atMs"))):
+        raise RunnerError("Y_N_D_WITHHELD_RECORD_BINDING")
+    return record
 
 
 def _validate_negative_marker(line, spec, subcase, user_spec, user_log):
@@ -3207,7 +3284,8 @@ def _validate_negative_marker(line, spec, subcase, user_spec, user_log):
     expected_phase = {"Y-N-C": "GRAPH_READY", "Y-N-P": "GRAPH_READY",
                       "Y-N-R": "PLACEMENT_DECISION",
                       "Y-N-I": "PROVIDER_EXECUTION_STARTED",
-                      "Y-N-L": "INPUT_REFERENCE_PUBLISHED"}[subcase]
+                      "Y-N-L": "INPUT_REFERENCE_PUBLISHED",
+                      "Y-N-D": "PROVIDER_EXECUTION_STARTED"}[subcase]
     try:
         events = [json.loads(row) for row in
                   (user_log.parent / "lifecycle.jsonl").read_text().splitlines()]
@@ -3237,6 +3315,11 @@ def _validate_negative_marker(line, spec, subcase, user_spec, user_log):
                 or fields["planDigest"] != plan.get("planDigest")
                 or fields.get("errorCode") != "DI_INPUT_FETCH_ROLE_MISMATCH"):
             raise RunnerError("Y_N_NEGATIVE_PROVIDER_BINDING_MISMATCH:" + subcase)
+    if subcase == "Y-N-D":
+        # The User marker is necessary but insufficient.  Require one native
+        # withheld-output record for this exact request and signed edge; this
+        # proves the failure happened after Selection on DetectShard0->Merge.
+        _read_y_n_d_withheld_record(user_log, request_id, events)
 
 
 def _validate_grant_rejection(record, publication, *, spec, user_spec,
@@ -3611,6 +3694,10 @@ def _run_live_case_once(case: str, output: Path, inputs: Mapping[str, Any], *,
         )
         started = runtime.start_processes(ndn, env, processes, phase="user")
         phase_started.extend(started)
+        user_log = next((path for spec, _proc, path in started
+                         if spec.name == "user"), None)
+        if user_log is None:
+            raise RunnerError("CASE_RUNTIME_USER_LOG_MISSING")
         if subcase in YN_SUBCASES[1:]:
             negative_marker = _wait_for_negative_result(tuple(phase_started), subcase, 120.0)
             # A negative marker is only an admission decision.  Close the
@@ -3630,6 +3717,20 @@ def _run_live_case_once(case: str, output: Path, inputs: Mapping[str, Any], *,
                 "lifecycleSha256": digest_file(binding.output / "lifecycle.jsonl"),
                 "children": children,
             }
+            if subcase == "Y-N-D":
+                # Retain the native edge proof alongside the User decision so
+                # the host producer can bind the dependency failure without
+                # rereading mutable provider logs later.
+                lifecycle_events = [json.loads(row) for row in
+                                    (binding.output / "lifecycle.jsonl")
+                                    .read_text(encoding="utf-8").splitlines()]
+                withheld = _read_y_n_d_withheld_record(
+                    user_log, marker_fields["requestId"], lifecycle_events)
+                negative_evidence.update({
+                    "observedAfterSelection": True,
+                    "reselected": False,
+                    "dependency": withheld,
+                })
             (binding.output / "negative-evidence.json").write_text(
                 json.dumps(negative_evidence, sort_keys=True, indent=2) + "\n",
                 encoding="utf-8")
@@ -3641,7 +3742,6 @@ def _run_live_case_once(case: str, output: Path, inputs: Mapping[str, Any], *,
                   flush=True)
             return 0
         runtime.wait_for_ready(started, 120.0)
-        user_log = started[0][2]
         text = user_log.read_text(errors="replace") if user_log.exists() else ""
         result_lines = [line for line in text.splitlines()
                         if line.startswith("YOLO_ACK_DRIVEN_RESULT ")]
