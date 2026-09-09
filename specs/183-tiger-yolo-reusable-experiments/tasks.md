@@ -2,7 +2,7 @@
 
 **Input**: [spec.md](spec.md), [plan.md](plan.md), [profile contract](contracts/experiment-profile.md), [validation matrix](validation-matrix.md)
 **Branch**: `TigerClusterExperiments`
-**Status**: 2/17 parent tasks complete (T001 inventory and T003 focused component acceptance); IN_PROGRESS. Exact-SIF MiniNDN v58 now has a formal local `submit.py local` collector PASS for the v22 base + v32 layered APP, while the source-bound three-case host receipt remains producer- and consumer-verified. T010 remains partial because the Y-N-D aggregate driver needs a fresh post-fix zero-exit campaign, and no GPU/Tiger qualification PASS exists. Standalone C++ NDN/SIF diagnostic passed in Tiger job 209981.
+**Status**: 2/17 parent tasks complete (T001 inventory and T003 focused component acceptance); IN_PROGRESS. Exact-SIF MiniNDN v58 has a formal local `submit.py local` collector PASS for the v22 base + v32 layered APP, and v59 adds a fresh zero-exit Y-N aggregate with all registered control/negative subcases. The source-bound three-case host receipt remains producer- and consumer-verified; no GPU/Tiger qualification PASS exists. Standalone C++ NDN/SIF diagnostic passed in Tiger job 209981.
 
 ## Detailed Execution Progress
 
@@ -54,6 +54,14 @@ grant、跨角色依赖和 terminal response 均有保留证据；两次均为 `
 `CLEAN`，最终 `qualification=NORMAL_EXPERIMENT_PASS`。该结果关闭本机 exact-SIF
 CPU collector 这一证据缺口，但仍不关闭 T010 Y-N aggregate、T011 empty HOME/scratch、
 单节点 GPU、双节点 GPU 或 TigerCluster staging。
+
+新增检查点：[v59 exact-SIF Y-N aggregate](evidence/minindn-local-v59-exact-sif-yn.md)。
+在同一 v22 base SIF、只读 v32 APP、同一冻结 harness/profile 和新签发 preparation
+receipt 下，`spec183_minindn.py --case Y-N` 完成 `T010_DONE`、`returncode=0`。
+八个注册子案（含 Y-N-E 的 EXPIRED/WRONG_RECIPIENT/FORGED_AUTHORITY 三种变体）
+均为 `status=PASS`；Y-N-D 保留 Selection 后 DetectShard0→Merge 的真实 withheld
+Data 证据。该结果关闭 fresh aggregate 这一局部缺口，但仍是本机 CPU/MiniNDN、
+`qualification=NOT_EVALUATED`，不替代 empty HOME/scratch、GPU 或 Tiger 资格。
 
 当前仓库 TigerCluster 构建并行度上限为 `-j2`，同一构建树仍只允许一个构建进程；
 历史回执保留其实际使用的命令，不因规则更新改写执行证据。
@@ -133,8 +141,8 @@ T007 复核确认正常/负例/SSH 接线已存在；N3 issuer/rank版本检查�
 | T005.c | T005 | 新 SIF 内 Controller 写真实 publication receipt | VERIFIED_LOCAL_SIF | [v52 exact-SIF Y-B](evidence/minindn-v52-exact-sif-yb-v32.md)；v32 APP Controller 在 v22 base SIF 中完成真实 publication、terminal response 与 clean cleanup | 每个新 APP manifest 仍需重验 publication flag；不把 local CPU receipt 升级为 GPU 资格 | 旧 base 不反复尝试同一不支持参数 |
 | T006.a | T006 | `yolo_result.py` 数值、角色、边、GPU、退出与负例判定 | IMPLEMENTED | [native observation](evidence/t006-native-observation.md)、[numerical reanalysis](evidence/t006-numerical-reanalysis.md) | 组件证据不能代替生产数据来源和真实运行 | 仅重测变化的 oracle/collector 行为 |
 | T006.b | T006 | collector 读取每次 User 留存的独立 graph-reference.json | IMPLEMENTED | [request wiring](evidence/t005-request-reference-wiring.md)；核验 run/request/runtime/placement/graph，缺文件拒绝共享图替代 | 仍依赖 T004.b 实际调度和完整 retained-native 验收；不以 helper 关闭父任务 | 与 T005.b 共用 176 项证据，不单独启动 GPU 采集 |
-| T007.a | T007 | 生产路径设计—代码审计报告 | READY_FOR_FINAL_AUDIT | [2026-09-09 follow-up](evidence/design-code-convergence.md)：N1/N2 host evidence and layered consumer now verified; residual G1/certified-graph, aggregate Y-N rerun, and formal gate ordering remain explicit | Run final CodeGraph/design-code audit and record PASS/BLOCK with exact owners; do not open T008+ physical gates before PASS | 复用已通过版本检查与 v52/v51 evidence；仅重审变化边界 |
-| T007.b | T007 | T002/T004/T005/T006 生产接线收敛为 PASS | READY_FOR_AUDIT | N1 and N2 are now backed by the [source-bound host receipt](evidence/t010-host-gate-producer.md); v51 Y-N-D reaches post-Selection dependency failure and v33 consumer accepts the layered base closure | Run the final CodeGraph/design-code audit and record any remaining controlling gap; keep formal T008+ gates closed until T007 itself is PASS | 只重审/重测变化边界；未PASS不开展正式T008+验收 |
+| T007.a | T007 | 生产路径设计—代码审计报告 | READY_FOR_FINAL_AUDIT | [2026-09-09 follow-up](evidence/design-code-convergence.md)：N1/N2 host evidence and layered consumer now verified; residual G1/certified-graph, empty HOME/scratch, and formal gate ordering remain explicit | Run final CodeGraph/design-code audit and record PASS/BLOCK with exact owners; do not open T008+ physical gates before PASS | 复用已通过版本检查与 v52/v51/v59 evidence；仅重审变化边界 |
+| T007.b | T007 | T002/T004/T005/T006 生产接线收敛为 PASS | READY_FOR_AUDIT | N1 and N2 are now backed by the [source-bound host receipt](evidence/t010-host-gate-producer.md) and [v59 Y-N aggregate](evidence/minindn-local-v59-exact-sif-yn.md); v59 reaches `T010_DONE/returncode=0` with post-Selection dependency failure and v33 consumer accepts the layered base closure | Run the final CodeGraph/design-code audit and record any remaining controlling gap; keep formal T008+ gates closed until T007 itself is PASS | 只重审/重测变化边界；未PASS不开展正式T008+验收 |
 
 ### T008–T017：逐级取得运行证据
 
@@ -145,10 +153,10 @@ T007 复核确认正常/负例/SSH 接线已存在；N3 issuer/rank版本检查�
 | T008.c | T008 | `_ndnsf` 与 `_py_repoclient`、真实入口、ldd/readelf/hash、注册 unit | BLOCKED | [host-unit](evidence/host-unit.md) 与4ade12bf已记录树外import/ldd、unit-tests和integration-tests RC0；本轮未重跑 | T007与最终source身份仍须闭合；二进制suite通过不等于T009多进程YOLO | 复用匹配候选的测试记录；不重复已有loader或unit集合 |
 | T009.a | T009 | 多进程 CPU YOLO 正常 ACK/Selection→四角色→数值结果 | NOT_STARTED | V09；NOT_RUN | T008 后执行；bootstrap 与 inference 分开判定 | 不重跑全部历史 DI 集成 |
 | T009.b | T009 | 当前 epoch/权限拒绝、错 Selection、activation loss/tamper 与清理 | NOT_STARTED | V10；NOT_RUN | 与 T009.a 共用 fixture，逐个保留独立判定 | 只跑注册安全/故障场景 |
-| T010.a | T010 | MiniNDN 正常 CPU 图、权限拒绝、缺依赖三个注册场景 | PARTIAL_REAL_YB_YN | [v58 exact-SIF local PASS](evidence/minindn-local-v58-exact-sif-pass.md) 已正式收集正常 CPU 图；[v52 exact-SIF Y-B](evidence/minindn-v52-exact-sif-yb-v32.md) 与 [v51 exact-SIF Y-N](evidence/minindn-v51-exact-sif-yn-v32.md) 仍绑定注册矩阵和 Y-N-D post-Selection 证据；v58 两请求 returncode 0、process cleanup clean、数值 oracle 与 9 条依赖边通过 | v51 首次聚合 driver 因旧 helper 对两 tensor cardinality 返回 2；已修复并重算保留证据，但仍需一次修复后的完整 Y-N aggregate returncode 0；GPU/Tiger资格未完成 | 复用同一 base/app 只重跑修复后的 Y-N；改变base/ABI/app行为才重新跑已通过矩阵 |
+| T010.a | T010 | MiniNDN 正常 CPU 图、权限拒绝、缺依赖三个注册场景 | VERIFIED_REAL_YB_YN | [v58 exact-SIF local PASS](evidence/minindn-local-v58-exact-sif-pass.md) 收集正常 CPU 图；[v52 exact-SIF Y-B](evidence/minindn-v52-exact-sif-yb-v32.md)、[v51 exact-SIF Y-N](evidence/minindn-v51-exact-sif-yn-v32.md) 与 [v59 exact-SIF Y-N aggregate](evidence/minindn-local-v59-exact-sif-yn.md) 绑定注册矩阵、Y-N-D post-Selection withheld Data、数值 oracle 和 clean cleanup；v59 `T010_DONE/returncode=0`，八个注册子案全 PASS | 本行的 fresh aggregate 已完成；父 T010 仍受 T007/T008 正式顺序与 `qualification=NOT_EVALUATED` 约束；GPU/Tiger资格未完成 | base/app/harness 不变不重跑 Y-B 或 v58；仅在 aggregate driver、base/ABI/app 行为变化时重跑对应矩阵 |
 | T010.b | T010 | 同源 host qualification manifest 绑定命令、结果与清理 | VERIFIED_HOST_RECEIPT | [host-gate producer](evidence/t010-host-gate-producer.md)；真实 v52/v51 三场景 receipt、shared validator/producer focused tests、v33 profile consumer 均通过；qualification 明确为 `YOLO_HOST_GATE_COMPONENT_ONLY` | 不把 COMPONENT_ONLY 改成正式 PASS；正式 GPU/Tiger 资格仍需后续 gates | 生成清单不额外跑模型；不得把COMPONENT_ONLY改token冒充PASS |
 | T011.a | T011 | development-20260907 source seal 与 definition 准备 | IMPLEMENTED | 后文 SOURCE_READY checkpoint：`2aea8a0e` / `c4f33beb`，非 SIF PASS | 后续源码改变须重 seal；旧锁不覆盖 | 纯任务表修改按输入清单判断，不无条件重建 SIF |
-| T011.b | T011 | 构建或复用基础SIF，在匹配SDK构建独立app并验证组合闭包 | VERIFIED_COMPOSITION | [local-sif](evidence/local-sif.md) + [v58 exact-SIF local PASS](evidence/minindn-local-v58-exact-sif-pass.md)：base six-library manifest 与 v32 external APP 闭包通过；同一只读 SIF/app 完成真实 MiniNDN 两请求、协议、依赖和数值回执 | T011.c 的 empty HOME/scratch 专项、T010 aggregate Y-N、GPU/Tiger资格仍未完成；不把本地 CPU 结果升级为 GPU/Tiger qualification | 基础库/ABI未变复用SIF；仅应用改动重建受影响targets |
+| T011.b | T011 | 构建或复用基础SIF，在匹配SDK构建独立app并验证组合闭包 | VERIFIED_COMPOSITION | [local-sif](evidence/local-sif.md) + [v58 exact-SIF local PASS](evidence/minindn-local-v58-exact-sif-pass.md) + [v59 exact-SIF Y-N aggregate](evidence/minindn-local-v59-exact-sif-yn.md)：base six-library manifest 与 v32 external APP 闭包通过；同一只读 SIF/app 完成真实 MiniNDN 正常/负例、协议、依赖和数值回执 | T011.c 的 empty HOME/scratch 专项、GPU/Tiger资格仍未完成；不把本地 CPU 结果升级为 GPU/Tiger qualification | 基础库/ABI未变复用SIF；仅应用改动重建受影响targets |
 | T011.b2 | T011 | 同源应用补包复用与MiniNDN延迟导入闭包 | VERIFIED | [local-sif](evidence/local-sif.md)：r2包159文件，3二进制不变、compiled:false；6复用边界测试；本机系统Python导入成功 | 仅补包/导入范围；分层MiniNDN命令和真实场景仍待完成 | 不因缺辅助Python文件或本机工具环境而重编译/重建基础SIF |
 | T011.b3 | T011 | Python应用改动复用C++构建缓存，冻结后实际命令加载 | VERIFIED | [local-sif](evidence/local-sif.md)：d9be0bfa应用，configure6.728s/Waf0.837s，三二进制哈希不变；冻结driver→SIF内User入口exit0；25focused通过 | 仅增量构建与实际入口；四Provider/MiniNDN推理仍待执行 | 基础SIF与未变C++均未重建；下一次使用最新app的缓存 |
 | T011.c | T011 | exact-SIF 本地 CPU YOLO 与 empty HOME/scratch | PARTIAL_LOCAL_CPU | [v58 exact-SIF local PASS](evidence/minindn-local-v58-exact-sif-pass.md) 已取得正式 `submit.py local` collector PASS、两请求数值/依赖/清理回执 | 仍需 empty HOME/scratch 专项；容器环境证据不能以 host 结果替代；本行保持 partial 直到该隔离门通过 | 只补空 HOME/scratch；base/app 不变不重跑已通过 v58 |
@@ -451,7 +459,7 @@ T005/T006追加调用次数约束：正常ACK-driven User一次只执行一请�
 | --- | --- | --- | --- | --- | --- | --- |
 | T002.layer | T002 | 原source sealer/`runtime/yolo_profile.py`分离base/app闭包、显式layout版本和required R | NOT_STARTED | 仅设计；FR-005/006、Candidate Identity | 错base、app漏文件、旧layout混搭在副作用前拒绝；基础源码闭包不得遗漏 | app变更只失效E；基础变更才失效I/R |
 | T004.layer | T004 | 原bundle/operator/worker/transport验证并只读挂载app原生产物，保留harness归属 | NOT_STARTED | 仅设计；`/app:ro`不覆盖基础前缀 | 连接builder输出到实际local/rank入口；app own DSO允许、基础库遮蔽拒绝 | 只传变化app；复用相同base、模型与既有运输owner |
-| T011.layer | T011 | 原prepare/build definition/preflight拆base与app构建、清单及资格；SDK键隔离增量缓存 | VERIFIED_COMPOSITION | v22 base SIF 与 v32 external APP 已按 `layered-v1` 闭包绑定；只读 `/app` 组合完成 v58 exact-SIF local PASS，v33 dispatch/host receipt 消费通过，见 [v58 evidence](evidence/minindn-local-v58-exact-sif-pass.md) 与 [T010 producer](evidence/t010-host-gate-producer.md) | empty HOME/scratch、T010 aggregate Y-N、GPU/Tiger资格仍未完成；不把本地 CPU 证据升级为正式资格 | 基础库/ABI未变复用SIF；仅应用改动重建受影响targets |
+| T011.layer | T011 | 原prepare/build definition/preflight拆base与app构建、清单及资格；SDK键隔离增量缓存 | VERIFIED_COMPOSITION | v22 base SIF 与 v32 external APP 已按 `layered-v1` 闭包绑定；只读 `/app` 组合完成 v58 exact-SIF local PASS 与 v59 Y-N aggregate，v33 dispatch/host receipt 消费通过，见 [v58 evidence](evidence/minindn-local-v58-exact-sif-pass.md)、[v59 evidence](evidence/minindn-local-v59-exact-sif-yn.md) 与 [T010 producer](evidence/t010-host-gate-producer.md) | empty HOME/scratch、GPU/Tiger资格仍未完成；不把本地 CPU 证据升级为正式资格 | 基础库/ABI未变复用SIF；仅应用改动重建受影响targets |
 | T007.layer | T007 | 审计分层producer→manifest→transport→rank→collector全链及回退 | NOT_STARTED | 仅设计；既有T007 BLOCK仍保留 | 上三项接线后复审；错base/混搭/宿主库/旧回执均不可放行 | 复用未受影响组件证据，不启动文档性重测 |
 
 UAV仅复用同一部署边界；本Spec不实现UAV应用或Spec182。正式YOLO运行继续等待

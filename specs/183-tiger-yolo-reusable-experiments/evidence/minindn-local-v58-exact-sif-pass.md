@@ -55,8 +55,10 @@ and request-prefix checks. The frozen v58 bundle includes these fixes.
 
 ## Remaining gates
 
-T010 aggregate Y-N still needs its fresh zero-exit run. T011 empty-HOME and
-scratch isolation remains a separate check. Tiger exact-SIF staging, one-node
-GPU, and two-node GPU qualification have not run; the old remote SIF staging
-attempt was canceled and must be replaced by one verified content-addressed
-copy before submission.
+The fresh aggregate Y-N follow-up is recorded in
+[v59 exact-SIF Y-N aggregate](minindn-local-v59-exact-sif-yn.md), including a
+zero-exit `T010_DONE` and all registered control/negative subcases. T011
+empty-HOME and scratch isolation remains a separate check. Tiger exact-SIF
+staging, one-node GPU, and two-node GPU qualification have not run; the old
+remote SIF staging attempt was canceled and must be replaced by one verified
+content-addressed copy before submission.

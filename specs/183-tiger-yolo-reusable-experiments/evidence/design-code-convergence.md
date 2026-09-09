@@ -38,15 +38,15 @@ real cross-process normal MiniNDN run with CPU ORT execution, numerical match,
 dependency pairing, and clean process teardown.  Retained v51 Y-N reaches `SELECTION_COMMITTED` and
 `PROVIDER_EXECUTION_STARTED`, records two native withheld tensor outputs, and
 fails closed at `DEPENDENCY_DATA_MISSING`; Y-N-C remains correctly classified
-as a placement failure.  The first v51 aggregate driver returned 2 because its
-helper required one tensor; the helper is fixed and the retained evidence is
-validated, but a fresh aggregate Y-N returncode-0 campaign is still required.
+as a placement failure.  The fresh v59 aggregate now runs the repaired helper
+through all eight registered Y-N subcases and returns `T010_DONE/returncode=0`;
+its supervisor records `processCleanup=CLEAN`.
 
 **Source checkpoint**: `93c8630b`, `TigerClusterExperiments` (v58 collector
 closure and native evidence normalization).
 
-**Verdict**: **BLOCK (HIGH)** — host/MiniNDN receipt is verified, while the
-final T007 production audit, fresh post-fix aggregate Y-N run, empty
+**Verdict**: **BLOCK (HIGH)** — host/MiniNDN receipt and the fresh Y-N
+aggregate are verified, while the final T007 production audit, empty
 HOME/scratch check, and GPU/Tiger gates remain open.
 
 **Progress**: 2/17 parent tasks complete; no current-candidate runtime qualification.
@@ -70,18 +70,19 @@ negative rank dispatch or certified graph references.
 
 | ID / severity | Source evidence at this checkpoint | Owner and concrete closure | Smallest useful verification |
 | --- | --- | --- | --- |
-| N1 / HIGH | `validate_yolo_host_gate` binds file sizes/hashes but does not interpret lifecycle, execution, numeric, failure or cleanup content. Negative `failureBoundary` accepts any nonempty string. The existing `test_spec183_yolo_host_gate.py::write_receipt` positive fixture contains only `{case, kind}` in each evidence file and is expected to validate. The return scope is `YOLO_HOST_GATE_COMPONENT_ONLY`; `jobs/yolo/submit.py::_gate_receipt` and `build-local-sif.sh` consume it as the host prerequisite. | T002/T006 with T010 producer: derive qualification from retained real protocol/numeric/fault/exit/cleanup records, bound to source/build/run. Keep file-integrity validation separate. Both public local entry and builder must consume the same semantic validator. | At both actual consumers reject hash-valid but empty evidence, wrong failure boundary, unrelated request/source or failed cleanup before Apptainer/model calls. Real T010 executions later supply the accepted records; fixtures cannot close the runtime gate. |
-| N2 / HIGH | Wrapper still accepts only Y-B; three registered cases, actual network resource cleanup evidence and semantic manifest remain missing. [Input binding](t010-input-binding.md), cancellation, tracked-child reaping and [systemd process-tree owner](t010-host-supervisor.md) are now wired. RuntimeMaxSec/TimeoutStopSec bound the unit, exact identity gates stop, cgroup membership is retained. Inherited SIF bypass/environment credentials are excluded. | T004/T005/T010: complete network cleanup observations and three registered selectors against the maintained driver. Produce N1's receipt from those same executions. Do not substitute unrelated ingress failure for missing dependency Data. | Two actual tiny systemd probes: normal exit and deadline-killed setsid descendant; 12 component boundaries passed. No MiniNDN/model/SIF/GPU qualification. Reuse input/cancellation/reaping evidence; after T007/T008/T009 run exactly three registered cases and collect evidence in those runs. |
+| N1 / HIGH | At the previous checkpoint `validate_yolo_host_gate` accepted hash-valid but semantically empty evidence and arbitrary negative boundaries; the return scope was `YOLO_HOST_GATE_COMPONENT_ONLY`. | Closed at T002/T006/T010: the shared validator now binds lifecycle, execution, numeric, failure, request/source identity, and owner cleanup, and both the producer and v33 consumer invoke it. | Focused validator/builder/producer checks pass; the source-bound v52/v51 receipt is consumed successfully. The qualification label remains component-only by contract. |
+| N2 / HIGH | At the previous checkpoint the wrapper accepted only Y-B and the registered negative matrix was not driven by one aggregate command. | Closed at T004/T005/T010: the maintained driver now records network cleanup and all eight Y-N subcases, including the post-Selection dependency cutpoint, under one bounded systemd owner. | v59 exact-SIF aggregate records `T010_DONE/returncode=0`, `processCleanup=CLEAN`, and PASS rows for Y-N-O/C/P/R/I/E/L/D; evidence is in [v59 evidence](minindn-local-v59-exact-sif-yn.md). |
 | N3 / HIGH | `runtime.apptainerVersion` is accepted and copied into `resolve_provision_inputs().runtimeProfile`; neither `provision_run` nor `NodeRuntime` checks it before container launch. Legacy `runtime/worker.py` checks its own separate path. The builder checks its supplied expected version, which does not establish the allocated YOLO rank's version. | T004/T012: enforce the frozen version on local issuer and every YOLO rank before workload side effects, with bounded execution and retained observation. Actual compute-version qualification remains T011/T012; do not change the expected value merely to make a check pass. | Wrong version, exit failure and timeout must start zero issuer/Provider processes; matching version reaches the existing owner. No full SIF hash or GPU/model run is needed for these command-boundary checks. |
 
-N1 is a source-proven validation gap, not a claim that forged evidence was used
-in a real run. The current profile has no host gate, so its normal entry remains
-closed. N2 is a code gap even before MiniNDN execution. Its
-[cancellation/ownership follow-up](t010-cancellation.md) routes SIGINT/SIGTERM
-through cleanup and removes host-global cleanup. [Tracked-child reaping](t010-reaping.md)
-now waits after kill and retains retryable failures. The
-[systemd owner](t010-host-supervisor.md) bounds the process tree; actual MiniNDN
-network resource cleanup and three-case semantics remain missing. N3 concerned the YOLO path,
+N1 and N2 were source-proven gaps, not claims that forged evidence was used
+in a real run. Their code and current real-run closure are now recorded above;
+the current profile still keeps formal entry closed until the ordered audit
+gate is satisfied. The [cancellation/ownership follow-up](t010-cancellation.md)
+routes SIGINT/SIGTERM through cleanup and removes host-global cleanup.
+[Tracked-child reaping](t010-reaping.md) now waits after kill and retains
+retryable failures. The [systemd owner](t010-host-supervisor.md) bounds the
+process tree, and v59 supplies the actual MiniNDN network cleanup and
+registered-case semantics. N3 concerned the YOLO path,
 not the legacy worker's own version check. The finding row preserves the initial
 defect; its source repair is now closed: issuer and every rank observe the exact
 version before workload, public reanalysis requires their bound raw records, and
@@ -164,13 +165,12 @@ structural PASS does not override this semantic BLOCK.
 - ARS is not applicable to this implementation/qualification-path audit; no
   statistical design, literature comparison or scientific claim was added.
 
-Next: implement N1/N2 together at the existing MiniNDN producer and shared host
-validator. N3's version owner is implemented; reuse its focused evidence unless
-that boundary changes. Re-audit affected consumers and update
-T002/T004/T005/T006 acceptance before closing T007. Run only new boundary
-regressions during repair. Then qualify matching source through T008–T017 in
-order, resolving the base input condition before relying on those bytes. This
-report itself requires no native build, SIF transfer/hash or model rerun.
+Next: complete the final T007 audit and update T002/T004/T005/T006 acceptance
+against the v59 evidence. N3's version owner is implemented; reuse its focused
+evidence unless that boundary changes. Then qualify the matching source through
+T008–T017 in order, starting with the independent empty HOME/scratch check and
+resolving the base input condition before relying on those bytes. This report
+requires no native build, SIF transfer/hash, or repeated local model run.
 
 ## Historical audit — 2026-09-07 (superseded by the current section)
 
@@ -289,5 +289,5 @@ either real defects (fixed) or stale assertions of the old `--home` form
 ## Unblock path
 
 T007 final audit (including G1) → T008 host-unit closure → T009 integration →
-fresh post-fix T010 aggregate Y-N → T011 empty HOME/scratch local gate → T012
+T011 empty HOME/scratch local gate → T012
 allocation qualification → T013-T017 Tiger GPU deployment.

@@ -4612,3 +4612,16 @@ stubs `verify_operator_python` only for the same-bundle branch. The full suite
 then passed with 1299 tests and one skip.
 Lesson: frozen-entry tests must model the immutable profile binding and keep
 nested subprocess verification separate from the outer CLI boundary double.
+
+## 2026-09-09 — v59 aggregate was started before issuer preparation
+
+Symptom: the first direct `spec183_minindn.py --case Y-N` invocation returned
+`ValueError: MININDN_PREPARATION_DIGEST` because
+`public/preparation.json` did not exist under the newly frozen run.
+Root cause: `submit.py prepare` intentionally freezes the harness and writes
+`prepare.json`; it does not run the offline issuer or create public credentials.
+Fix status: staged the small issuer inputs and ran the maintained
+`stage_provision_inputs`/`provision_run` boundary once, then reran Y-N. The v59
+aggregate completed `T010_DONE/returncode=0` with all registered subcases PASS.
+Lesson: a Y-N-only rerun may reuse the unchanged base/app, but it still needs a
+fresh run-scoped preparation receipt before the MiniNDN driver can start.
