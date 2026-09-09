@@ -176,6 +176,39 @@ def test_host_receipt_consumption_binds_existing_owner_to_native_source(tmp_path
             module._gate_receipt(tmp_path / 'profile.json', profile, 'hostMinindn')
 
 
+def test_host_receipt_consumption_accepts_layered_base_native_manifest(tmp_path):
+    module = submit_module()
+    source, path, value = write_receipt(tmp_path)
+    native = {
+        'schemaVersion': 'spec183-base-runtime-v1',
+        'scope': 'BASE_LIBRARIES_ONLY',
+        'sourceSealSha256': file_ref(source)['sha256'],
+        'artifacts': [
+            {'path': artifact, 'bytes': 1,
+             'sha256': 'sha256:' + 'a' * 64}
+            for artifact in (
+                '/opt/ndnsf-di/current/lib/libndn-service-framework.so',
+                '/opt/ndnsf-di/current/lib/libnac-abe.so',
+                '/opt/ndnsf-di/current/lib/libndn-svs.so',
+                '/opt/ndnsf-di/current/lib/libndnsd.so',
+                '/opt/venv/lib/python3.10/site-packages/ndnsf/'
+                '_ndnsf.cpython-310-x86_64-linux-gnu.so',
+                '/opt/venv/lib/python3.10/site-packages/py_repoclient/'
+                '_py_repoclient.cpython-310-x86_64-linux-gnu.so',
+            )
+        ],
+    }
+    path.write_text(json.dumps(value))
+    native_path = tmp_path / 'native.json'
+    native_path.write_text(json.dumps(native))
+    runtime = tmp_path / 'runtime.json'
+    runtime.write_text(json.dumps({'files': {'nativeManifest': file_ref(native_path)}}))
+    profile = {'release': {'gates': {'hostMinindn': file_ref(path)},
+                           'runtime': file_ref(runtime)}}
+    result = module._gate_receipt(tmp_path / 'profile.json', profile, 'hostMinindn')
+    assert result['receipt']['qualification'] == 'YOLO_HOST_GATE_COMPONENT_ONLY'
+
+
 @pytest.mark.parametrize('action', ['local', 'collect'])
 def test_operator_enters_frozen_cli_and_preserves_its_exit_code(tmp_path, monkeypatch, frozen_bundle, action):
     import subprocess

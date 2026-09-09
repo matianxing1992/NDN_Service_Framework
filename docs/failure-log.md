@@ -4501,3 +4501,41 @@ logs and validated it with the corrected gate.
 Lesson: negative evidence contracts must follow the actual multi-tensor wire
 cardinality and must distinguish User admission fields from provider-owned
 failure identity.
+
+## 2026-09-09 — host-gate producer receipt root excluded retained runs
+
+Symptom: the first v32 producer invocation stopped with
+`HOST_GATE_EVIDENCE_OUTSIDE_RECEIPT` while joining the v51 permission run.
+Root cause: the receipt was placed under a separate `host-gate-v32/` directory,
+but the producer intentionally stores relative evidence paths and requires
+its receipt parent to contain every retained run directory.
+Fix status: retry with the receipt directly under the shared `results/` root;
+the empty staging directory remains ignored and contains no receipt.
+Lesson: choose the producer root before joining evidence; path scope is part
+of the source-bound host receipt contract.
+
+## 2026-09-09 — layered base manifest was rejected by host receipt consumer
+
+Symptom: the v32 host receipt producer returned `PASS`, but the dispatch
+consumer stopped with `GATE_HOST_SOURCE_BINDING/HOST_SIF_NATIVE_CLOSURE`.
+The profile's base SIF intentionally contains six stable libraries under the
+`spec183-base-runtime-v1` `BASE_LIBRARIES_ONLY` boundary; the consumer only
+accepted the nine-artifact monolithic `spec170-container-native-build-v1`
+shape.
+Fix status: accept the exact six-path layered base closure and keep the
+monolithic nine-artifact validation unchanged.  The v33 dispatch profile now
+consumes the source-bound receipt successfully.
+Lesson: host receipt validation must follow the declared base-plus-APP layer
+boundary; external application binaries are authenticated by the APP manifest.
+
+## 2026-09-09 — retained host evidence was root-readable only
+
+Symptom: profile consumption could not open retained lifecycle and failure
+records after the producer ran them as root (`PermissionError`).
+Root cause: evidence files were mode `0600` inside mode `0700` output
+directories, although the receipt itself was readable.
+Fix status: grant read/execute access only to the public evidence paths used by
+the receipt; private keys and the rest of the run remain restricted.
+Lesson: a source-bound receipt is consumable only when every referenced public
+evidence path has a readable permission chain; preserve private run material
+permissions separately.

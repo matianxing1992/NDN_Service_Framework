@@ -138,19 +138,47 @@ def _gate_receipt(profile_path: Path, profile: dict, gate: str, *, prepared=None
             native_path = _file_ref(runtime_path, 'nativeManifest', native_ref)
             native = _read_plane(native_path)
             artifacts = native.get('artifacts')
-            names = {'provider', 'faultProvider', 'controller', 'framework',
-                     'ndn-svs', 'nac-abe', 'ndn-sd', 'extension', 'repoExtension'}
-            if (native.get('schemaVersion') != 'spec170-container-native-build-v1'
-                    or native.get('buildBoundary') != 'container-runtime-in-sif'
-                    or native.get('status') != 'PASS'
-                    or native.get('sourceSealSha256') != validated['sourceSeal']['sha256']):
+            if native.get('sourceSealSha256') != validated['sourceSeal']['sha256']:
                 raise ValueError('HOST_SIF_SOURCE_MISMATCH')
-            if (not isinstance(artifacts, list) or len(artifacts) != len(names)
-                    or {item.get('name') for item in artifacts if isinstance(item, dict)} != names
-                    or any(not isinstance(item.get('sha256'), str)
-                           or not HASH.fullmatch(item['sha256'])
-                           or item.get('finalSha256') != item['sha256']
-                           for item in artifacts)):
+            schema = native.get('schemaVersion')
+            if schema == 'spec170-container-native-build-v1':
+                # Monolithic runtime images keep the historical nine-artifact
+                # closure and require immutable final hashes.
+                names = {'provider', 'faultProvider', 'controller', 'framework',
+                         'ndn-svs', 'nac-abe', 'ndn-sd', 'extension', 'repoExtension'}
+                valid = (isinstance(artifacts, list) and len(artifacts) == len(names)
+                         and {item.get('name') for item in artifacts
+                             if isinstance(item, dict)} == names
+                         and native.get('buildBoundary') == 'container-runtime-in-sif'
+                         and native.get('status') == 'PASS'
+                         and all(isinstance(item.get('sha256'), str)
+                                 and HASH.fullmatch(item['sha256'])
+                                 and item.get('finalSha256') == item['sha256']
+                                 for item in artifacts))
+            elif schema == 'spec183-base-runtime-v1':
+                # Layered releases deliberately keep only stable libraries in
+                # the SIF.  The changing provider/controller binaries are
+                # bound separately by the external application manifest.
+                paths = {
+                    '/opt/ndnsf-di/current/lib/libndn-service-framework.so',
+                    '/opt/ndnsf-di/current/lib/libnac-abe.so',
+                    '/opt/ndnsf-di/current/lib/libndn-svs.so',
+                    '/opt/ndnsf-di/current/lib/libndnsd.so',
+                    '/opt/venv/lib/python3.10/site-packages/ndnsf/_ndnsf.cpython-310-x86_64-linux-gnu.so',
+                    '/opt/venv/lib/python3.10/site-packages/py_repoclient/_py_repoclient.cpython-310-x86_64-linux-gnu.so',
+                }
+                valid = (native.get('scope') == 'BASE_LIBRARIES_ONLY'
+                         and isinstance(artifacts, list) and len(artifacts) == len(paths)
+                         and {item.get('path') for item in artifacts
+                             if isinstance(item, dict)} == paths
+                         and all(isinstance(item.get('sha256'), str)
+                                 and HASH.fullmatch(item['sha256'])
+                                 and type(item.get('bytes')) is int
+                                 and item['bytes'] > 0
+                                 for item in artifacts))
+            else:
+                valid = False
+            if not valid:
                 raise ValueError('HOST_SIF_NATIVE_CLOSURE')
         except (KeyError, TypeError, ValueError, OSError) as exc:
             raise ClosureError('GATE_HOST_SOURCE_BINDING') from exc
