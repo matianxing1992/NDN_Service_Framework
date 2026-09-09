@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -88,3 +89,27 @@ def test_maintained_yolo_native_route_is_explicit_and_fail_closed() -> None:
         "def main()")]
     assert "configure_automatic_planning" not in native_branch
     assert "request_task" not in native_branch
+
+
+def test_legacy_runtime_removal_stays_blocked_by_manifest_consumers() -> None:
+    manifest = json.loads(
+        (ROOT / "specs/182-native-di-python-bindings/contracts/compatibility-manifest.json")
+        .read_text(encoding="utf-8"))
+    legacy_paths = {
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/provider.py",
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/runtime_v1.py",
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/facades.py",
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/placement.py",
+    }
+    entries = [
+        entry for entry in manifest["entries"]
+        if entry.get("source", {}).get("path") in legacy_paths
+    ]
+    assert entries
+    assert all(entry.get("removalEligible") is False for entry in entries)
+    assert all(entry.get("status") in {
+        "RETAINED_UNTIL_MIGRATION", "PLANNED_NATIVE"
+    } for entry in entries)
+    assert all(entry.get("externalUseStatus") in {
+        "repository_callers_found", "external_use_unknown"
+    } for entry in entries)
