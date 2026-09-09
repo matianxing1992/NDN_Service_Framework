@@ -11,6 +11,11 @@
 | [codegraph-first](codegraph-first/SKILL.md) | 有索引时优先图查询，没有时精确源码检索 |
 | [review](review/SKILL.md) | 基于明确Git差异分别审查Standards和Spec |
 
+`speckit-agent-context-update` 是本机安装的运维入口：它只维护 `AGENTS.md` 等上下文文件中的
+托管 Spec Kit plan 指针，不属于行为批次或产品验收。更新后仍须运行 `git diff --check`，并在
+可用时执行共享入口同步检查；plan 或活动 feature 指针变化还要刷新 Context Mode authority
+index。它不能把上下文指针、skill 同步或文档状态写成 `STATIC_PASS`、`BUILD_PASS` 或 `DONE`。
+
 ## Spec Kit Command Contract
 
 项目内的 `speckit-specify`、`speckit-clarify`、`speckit-plan`、`speckit-tasks`、
