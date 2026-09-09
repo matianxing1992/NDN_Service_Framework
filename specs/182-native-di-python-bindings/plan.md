@@ -1,6 +1,6 @@
 # Implementation Plan: Native NDNSF-DI with Optional Python Bindings
 
-**Branch**: Experimental | **Revision**: 46 | **Date**: 2026-09-09
+**Branch**: Experimental | **Revision**: 48 | **Date**: 2026-09-09
 **Status**: IN_PROGRESS / 当前实现与验收状态见 tasks.md 的 Task Progress Registry 和 Current Checkpoint
 **Spec**: [spec.md](spec.md)
 
@@ -463,6 +463,26 @@ The result does not claim true multi-process requester/provider transport, maint
 migration, I02--I08/PO completion, or T016 qualification. The evidence record preserves the exact
 target, source/ELF closure, elapsed time, owner/runner commands, five-lane review matrix, and four
 retrospective miss categories.
+
+### R10-B23 Runner Working Directory and Config Boundary 2026-09-09
+
+R10-B23 repairs the first runtime boundary observed after the native DI binary reached the isolated
+runner: the integration fixture loads the relative `examples/trust-any.conf`, while the minimal root
+deliberately hides the host working tree. The runner gains an optional process `workingDirectory`
+field constrained to `/probe-root` descendants or `/tmp`; the manifest declares the trust config as a
+data artifact under `/probe-root/examples/`, and the launch command changes directory into the staged
+root before starting the test. No host path, arbitrary cwd, or environment-based config injection is
+accepted.
+
+The stable exit is a fresh owner/runner `PO-001` execution that reaches the existing native DI
+selector with complete trace and the independent business marker. This harness repair has no native
+build lane; it must pass its focused Python tests and `py_compile` after the read-only review gate.
+That exit passed: 33 focused Python cases, `py_compile`, design validation and the official
+`review-agent` re-review passed; the fresh owner/runner output records returncode `0`, complete
+trace, all seven evidence classes and `SPEC182_NATIVE_DI_REQUEST_RESULT_OK` after staging
+`examples/trust-any.conf` and changing into `/probe-root`. The result remains an isolated-process
+business observation and does not close multi-process transport, maintained callers, I02--I08 or
+T016 qualification.
 
 ### R8-SKILL Review Coverage Contract 2026-09-09
 
