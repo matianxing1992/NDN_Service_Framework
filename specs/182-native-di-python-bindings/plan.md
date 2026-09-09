@@ -1,6 +1,6 @@
 # Implementation Plan: Native NDNSF-DI with Optional Python Bindings
 
-**Branch**: Experimental | **Revision**: 37 | **Date**: 2026-09-09
+**Branch**: Experimental | **Revision**: 38 | **Date**: 2026-09-09
 **Status**: IN_PROGRESS / 当前实现与验收状态见 tasks.md 的 Task Progress Registry 和 Current Checkpoint
 **Spec**: [spec.md](spec.md)
 
@@ -361,6 +361,13 @@ the task/plan/evidence record and the runner's standalone documentation. It does
 missing DI qualification cases or change the MiniNDN owner topology. The stable exit is a tested
 preflight/launch command that either carries a validated held namespace FD or returns an explicit
 `UNQUALIFIED` boundary.
+
+R10-B16 completed this bounded runner boundary in local checkpoint `9a50ab3d`. The implementation
+validates node/process binding, namespace inode, owner PID/start ticks, NFD socket type and peer
+metadata; it holds the namespace FD across `nsenter` launch and closes it on all launch/timeout
+paths. Twenty-three focused Python cases, bytecode compilation and `git diff --check` passed. The
+owner still supplies no real MiniNDN context, so topology, business cases, cross-process execution,
+and T016 qualification remain open.
 
 ### R8-SKILL Review Coverage Contract 2026-09-09
 

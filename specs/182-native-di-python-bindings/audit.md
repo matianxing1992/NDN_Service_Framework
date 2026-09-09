@@ -1,15 +1,15 @@
 # Spec182 Design Audit
 
-**Revision**: 13 | **Mode**: source alignment / cross-task convergence
+**Revision**: 14 | **Mode**: source alignment / cross-task convergence
 **Verdict**: DRAFT / PARTIAL; T016 preflight UNQUALIFIED
-**Source**: `298220b9` implementation/docs checkpoint / Experimental
+**Source**: `9a50ab3d` implementation/docs checkpoint / Experimental
 **Evidence**: [current source and dependency baseline](contracts/integrated-baseline.md)
 
 ## Current Findings
 
 ### Remaining Production Chain Review 2026-09-09
 
-本次复核以 `298220b9` 为当前 source checkpoint，当前文档状态由 R10-B15 更新。R10-B1--R10-B6 已在本地关闭
+本次复核以 `9a50ab3d` 为当前 source checkpoint，当前文档状态由 R10-B16 更新。R10-B1--R10-B6 已在本地关闭
 准备、公开 facade、YOLO/Qwen maintained caller 的 `REPO_REF` 路由、真实 Provider 正向
 消费和三个 Provider fail-closed 负例；R10-B7 同步了当前 route marker 与 T013-D/T013-F
 契约文字，R10-B9 又在真实 Provider conversation fixture 中观察到 configured
@@ -27,8 +27,24 @@ T004/T008/T010/T011/T013 与 T016。`NATIVE_REQUEST_PIPELINE_NOT_READY` 继续�
 runtime/configuration 构造时的显式 fail-closed 行为，不把兼容构造误认为生产成功。下一批应
 外部 NFD socket 现在已可用，且新的 owner 重试确认其状态检查成功；但 MiniNDN owner 尚未
 提供冻结要求的 node/netns metadata，campaign 仍在业务启动前给出
-`UNQUALIFIED` / `MININDN_NODE_CONTEXT_NOT_PROVIDED`。下一步需由 owner 建立隔离节点后
+`UNQUALIFIED` / `MININDN_NODE_CONTEXT_NOT_PROVIDED`。R10-B16 已将该边界落实到 runner：owner
+提供的 node context 必须通过 inode、PID/start ticks、NFD socket 和 peer 校验，并以 held FD
+经 `nsenter` 进入既有观测命令。下一步需由 owner 建立隔离节点后
 推进 T016，并补齐 maintained caller 的跨进程执行；不再把组件数量或静态标记当作整链完成。
+
+### Native Closure Runner Boundary 2026-09-09
+
+R10-B16 的只读审查覆盖 `run_case` → `make_launch`、所有当前 Python 调用点、node contract
+和 23 个 focused cases。runner 现在拒绝缺失、过期或不匹配的 MiniNDN node context，持有
+namespace FD 直到 `nsenter` 启动完成，并在构造命令、正常完成、超时和异常路径关闭 FD；未声明
+node 的 case 不会采用偶然传入的 namespace 标记，见
+[R10-B16 evidence](evidence/r10-b16-native-closure-node-context-20260909.md)。审查无
+actionable finding。
+
+该批只证明 runner 的 preflight/launch boundary；测试未执行特权 MiniNDN topology，当前 owner
+仍在 `MININDN_NODE_CONTEXT_NOT_PROVIDED` 边界退出，manifest 也没有可运行的真实 DI cases。
+多进程生命周期、endpoint/socket 绑定、maintained caller 两轮请求、no-Python 和 T016 资格
+继续保持 `OPEN_FOR_NEXT_BATCH` / `UNQUALIFIED`。
 
 ### CrossTask Convergence 2026-09-08
 
