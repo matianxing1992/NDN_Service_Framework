@@ -1,5 +1,30 @@
 # Failure Log and Evidence Index
 
+## 2026-09-09 — Tiger v69 deployment stopped at project transport prerequisites
+
+Symptom: the first v69 submit was rejected locally with `TRANSPORT_FILE_ROW`;
+the candidate inventory contained two shared host-gate files with mode `0664`,
+which is outside the transport contract's allowed file modes. After those files
+were changed to `0444`, the transport plan passed for 331 files with the same
+candidate digest. The first real receiver attempt then returned `JOURNAL_ROOT`
+because the declared remote `/project/tma1/ndnsf-di/locks` directory did not
+exist. Creating that directory allowed the retry to enter rsync file transfer.
+
+Root cause: the project-storage staging/locking prerequisites were incomplete;
+the failure occurred before any Tiger Slurm allocation, Apptainer execution,
+CUDA provider launch, or MiniNDN workload. No SIF or application bytes changed.
+
+Fix status: normalized only the ignored project-storage copies and created the
+declared remote shared lock root. The exact v22 base SIF + v32 external APP
+candidate is now in real transfer; the resulting Tiger GPU qualification is
+still pending and must not be inferred from this transport progress.
+
+Lesson: a valid local exact-SIF/MiniNDN receipt proves the composition and host
+runner, but Tiger requires a separately provisioned project namespace, allowed
+transport modes, and a shared lock root before the same immutable candidate can
+reach Slurm. Diagnose sender/receiver boundary failures separately from runtime
+or MiniNDN behavior.
+
 ## 2026-09-08 — Planned request name differs from canonical V2 wire ID
 
 Fixture-fixed run e publishes its encrypted input and sends the V3 request,
