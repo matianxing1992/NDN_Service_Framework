@@ -474,7 +474,10 @@ def build(bld):
                 # live in the framework library; link it like the test targets.
                 use='BOOST ONNXRUNTIME ONNX NDN_CXX NDN_SVS PROTOBUF OPENSSL DL ndn-service-framework TOKENIZER_BRIDGE',
                 cxxflags=['-fPIC', '-pthread'],
-                linkflags=['-pthread'],
+                # Keep the smoke executable bound to the framework library
+                # produced by this build tree (and to the matching installed
+                # lib/ sibling) instead of silently loading /usr/local.
+                linkflags=['-pthread', '-Wl,-rpath,$ORIGIN/..'],
                 install_path=None)
 
     bld.program(name='di-native-provider',
