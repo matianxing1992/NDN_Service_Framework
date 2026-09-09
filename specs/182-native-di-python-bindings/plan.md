@@ -1,6 +1,6 @@
 # Implementation Plan: Native NDNSF-DI with Optional Python Bindings
 
-**Branch**: Experimental | **Revision**: 59 | **Date**: 2026-09-09
+**Branch**: Experimental | **Revision**: 60 | **Date**: 2026-09-09
 **Status**: IN_PROGRESS / 当前实现与验收状态见 tasks.md 的 Task Progress Registry 和 Current Checkpoint
 **Spec**: [spec.md](spec.md)
 
@@ -616,6 +616,22 @@ R4-B6 已经证明 streaming/conversation requester 能够通过真实 Core/Prov
 T010-B 的 bounded native-client unary 观察，Provider worker/业务执行、maintained caller、
 跨进程 transport、T016 与完整请求矩阵仍开放。详见
 [R10-B31 evidence](evidence/r10-b31-native-client-unary-request-20260909.md)。
+
+### R10-B32 Shared Spec Kit Skill Feedback Loop 2026-09-09
+
+R4-B4/R3-B1 的复盘显示，静态审查虽然已要求检查 caller、测试/harness 和 build/source
+closure，但执行记录仍可能只写 `No findings`，而编译/运行漏检后的重试也容易变成同一
+命令的重复运行。本批不改产品代码，补强共享 `review-agent` reference 的 Static Gate
+Release Checklist：写入 `STATIC_PASS` 前必须逐 lane 落实真实查询或检查；若此前存在
+编译/链接或运行/测试漏检，必须记录 `Changed gate` 并说明它如何覆盖首个失败边界。
+批次结果同时显式记录 `Batch growth decision`，在稳定出口出现后，下一入口、状态机、
+selector、source closure 或硬验收依赖必须拆到新的 Batch ID。
+
+更新范围是版本化 `skills/speckit-code-design`、Spec Kit plan/tasks 模板、`skills/README.md`
+及同步的个人安装副本；文档校验、引用扫描和 SHA-256 对照通过，没有 native build 或
+runtime test。该批 `CLOSED_FOR_VALIDATION` 只适用于共享 skill/template 规则，T004/T008/
+T010/T011/T013/T014/T015/T016/T017 及资格状态不变。详见
+[R10-B32 evidence](evidence/r10-b32-skill-feedback-loop-20260909.md)。
 
 ### R8-SKILL Review Coverage Contract 2026-09-09
 

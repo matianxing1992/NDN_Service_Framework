@@ -115,6 +115,11 @@ Python/C++ parity 或 qualification PASS。若没有真实生产请求进入 Cor
 | `Review trace` | 每个成员的 review-agent skill 路径及 SHA-256、审查基线 commit、实际 diff 范围、覆盖查询、findings 与复审结果；批末组合审查同样记录基线和范围 |
 | `Closure decision` | `CLOSED_FOR_VALIDATION` 或 `OPEN_FOR_NEXT_BATCH`、达到或未达到的稳定行为出口、触发观察、未纳入成员及下一批 ID/依赖；没有独立出口时不得启动共享构建 |
 
+每批还要显式记录 `Batch growth decision`：说明本批在获得稳定出口前为何继续吸收成员，
+以及在出口出现后是否立即停止扩张。若出口出现后仍加入不同入口、状态机、selector、
+source closure 或硬验收依赖的成员，必须标记为批次膨胀并拆到新的 Batch ID；不能用一次
+共享构建或相邻文件作为继续合批的理由。
+
 `STATIC_PASS` 只有在 `Review trace` 真实存在且所声明静态审查范围没有未解释的 `gap` 时才有效。
 尚未执行的真实运行、跨进程或资格验收可以在矩阵中保留明确的 `gap`，但必须使批次保持
 `PARTIAL`，不能把该 gap 包装成静态或行为通过。
@@ -142,6 +147,10 @@ Python/C++ parity 或 qualification PASS。若没有真实生产请求进入 Cor
 必须保留首个失败边界、原始证据和受影响的调用/target，并在重试或下一批的覆盖矩阵中
 登记一项实际改变的检查（例如新增 caller、测试注册、source closure 或反事实回归）。
 仅重新运行同一命令不能关闭漏检。
+
+`Changed gate` 是重试的必填项：它必须指向一个真实新增或改变的 caller、测试注册、
+source-closure、oracle 或反事实检查，并说明该检查如何覆盖上一次的首个失败边界。若
+无法提出改变的门禁，应保持 `PARTIAL` 并先修订共享 skill、模板或 checklist。
 
 同类漏检再次出现时，下一批开始前必须修订共享 skill、模板或 checklist，或者在证据中
 写出不修订的明确理由和替代门禁；未完成这项反馈时保持 `PARTIAL`。仍未观测的风险必须
