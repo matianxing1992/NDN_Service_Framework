@@ -6,8 +6,10 @@ PARTIAL / T011-C CC-4。该批已经闭合一个真实可观察出口：公开
 `NativeInferenceClient` 发起 FULL_CONTEXT 首轮，由同一测试环境中的真实 `ServiceProvider`
 接收并发布 authenticated receipt，Requester 完成 COMMIT/commit ACK 后，以同一
 `NativeConversationCoordinator` 发起 APPEND_DELTA 二轮并解析新的 Provider 状态引用。
-预置 `VerifiedCollaborationData` 没有用于这条出口。正向两轮已通过；恢复或 replacement
-负例仍未在本批真实 Provider harness 中运行，因此 T011-C 和 T016 继续保持未关闭。
+预置 `VerifiedCollaborationData` 没有用于这条出口。正向两轮已通过；CC-4c 的单 Provider
+replacement 负例已在后续 R7-B1 批次运行并通过，详见
+[R7-B1 evidence](r7-b1-r4b6-replacement-20260908.md)。成功的 alternate-provider recovery、
+跨进程资格和 T016 仍未关闭。
 
 本批还修复并验证了结构化 request ID 的 V2、event/collaboration name 编码，SVS session/seq
 freshness，Provider 单 worker 控制面等待死锁，以及 End 事件后的 stream gap 重试误判。
@@ -19,7 +21,7 @@ freshness，Provider 单 worker 控制面等待死锁，以及 End 事件后的 
 | --- | --- | --- | --- |
 | CC-4a | `NdnsfIntegrationEnvironment` 中真实 Provider 与公开 NativeInferenceClient 首轮接线 | implemented and focused-tested | `Spec170NdnsfDiCoreFlow/Spec182R4B6RealProviderConversation` |
 | CC-4b | 同一 coordinator 的 `APPEND_DELTA` 与 receipt/control/commit ACK lineage | implemented and focused-tested | `Spec170NdnsfDiCoreFlow/Spec182R4B6RealProviderConversation` |
-| CC-4c | recovery 或 single replacement 负例，记录首个失败边界并保持父 checkpoint | remaining | no dedicated real-Provider selector yet |
+| CC-4c | recovery 或 single replacement 负例，记录首个失败边界并保持父 checkpoint | completed for single-provider negative | `Spec182R4B6RealProviderConversationReplacement`; positive alternate-provider recovery remains open |
 
 ## Coverage matrix
 
@@ -27,7 +29,7 @@ freshness，Provider 单 worker 控制面等待死锁，以及 End 事件后的 
 | --- | --- | --- |
 | production entry/callers | covered | `NativeInferenceClient::request`, `NativeConversationCoordinator`, `NdnsfIntegrationEnvironment`, and the registered `ServiceProvider` collaboration handler are exercised by `runR4B6RealProviderConversationCase`; query: `rg -n 'runR4B6RealProviderConversationCase|NativeInferenceClient client|addCollaborationHandler' tests/integration-tests/ndnsf-di-core-flow.t.cpp` |
 | implementation and wire | covered | V2 request/response/ACK/Selection parsers, event/collaboration names, SVS session/seq freshness, receipt/control/commit ACK and stream terminal handling; query: `git diff -- ndn-service-framework/ServiceProvider.cpp ndn-service-framework/utils.cpp ndn-service-framework/InvocationStream.cpp` |
-| test/harness/oracle | covered for positive path; gap for negative | real encrypted catalog publication, real receipt/control/commit, second-turn lineage and result text are asserted in `Spec182R4B6RealProviderConversation`; CC-4c recovery/replacement oracle remains absent |
+| test/harness/oracle | covered for positive path and bounded negative | real encrypted catalog publication, real receipt/control/commit, second-turn lineage and result text are asserted in `Spec182R4B6RealProviderConversation`; CC-4c asserts the single-provider `DI_NATIVE_NO_ADMITTED_PROVIDER` boundary and no checkpoint |
 | build/source closure | covered | system-first `./waf -o build-nac182 build --targets=integration-tests -j4` and combined unit/integration target both succeeded; integration source is registered by the existing `tests/wscript` closure; focused unit selectors cover V2, collaboration and event names |
 | migration/evidence | gap | this evidence and `.codex-tmp/spec182-r4-b6-real-provider-final-20260908/` record the local run; T012/T013 caller migration, T014 isolation, T015 convergence and T016 qualification remain open |
 
@@ -54,9 +56,9 @@ env PATH=/usr/bin:/bin:/usr/sbin:/sbin WAFLOCK=.lock-waf \
 ```
 
 `git diff --check` and `validate_design.py` also pass. The batch remains `PARTIAL`: both positive
-turns use real Provider receipt/control/commit, while CC-4c recovery/replacement and all T016
-qualification gates are still open. A local seeded receipt or a successful link is not an
-acceptance result.
+turns use real Provider receipt/control/commit, and CC-4c now has a bounded single-provider
+negative. A successful alternate-provider recovery and all T016 qualification gates are still
+open. A local seeded receipt or a successful link is not an acceptance result.
 
 ## Related replacement boundary
 
@@ -71,7 +73,9 @@ replacementExecutions=1, replacementEventsPublished=1
 
 This is durable evidence that the shared stream Provider can detach after event 3 and complete
 through replacement. It is not the dedicated R4-B6 `NativeInferenceClient` continuation or a
-cross-process qualification run, so CC-4c/T011-C remains open. Raw output is retained at
+cross-process qualification run, so successful alternate-provider recovery and T011-C remain
+open. The dedicated single-provider negative is recorded in
+[R7-B1 evidence](r7-b1-r4b6-replacement-20260908.md). Raw output is retained at
 `.codex-tmp/spec182-r4-b6-cc4c-20260908/integration-cc4c.log` with `rc.txt`.
 
 ## Miss taxonomy

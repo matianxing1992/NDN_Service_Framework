@@ -1,5 +1,23 @@
 # Failure Log and Evidence Index
 
+## 2026-09-08 — Spec182 R7-B1 replacement expectation boundary
+
+The first `Spec182R4B6RealProviderConversationReplacement` run built successfully but exited
+201 at the assertion that a one-Provider fixture would complete a successful replacement. Its
+first runtime boundary was the recovery `ACK_CLOSED` planning step:
+`NATIVE_REQUEST_STAGE_FAILED` with cause `DI_NATIVE_NO_ADMITTED_PROVIDER`; the failed Provider
+was excluded from the recovery admission set, so no alternate Provider could be selected.
+This was a test expectation boundary, not permission to retry the same Provider or publish a
+partial checkpoint. The raw failure is retained at
+`.codex-tmp/spec182-r7-b1-r4b6-replacement-20260908/replacement.log` with
+`replacement.rc=201`.
+
+The test was corrected to assert the contract's bounded single-Provider negative: one Provider
+collaboration call, two ACK calls, `NATIVE_REQUEST_STAGE_FAILED`/`ACK_CLOSED`, and no conversation
+checkpoint. The final selector passed. A successful alternate-Provider recovery still needs a
+separate multi-Provider harness and remains open under T011-C/T016. See
+[R7-B1 evidence](../specs/182-native-di-python-bindings/evidence/r7-b1-r4b6-replacement-20260908.md).
+
 ## 2026-09-08 — Authorization comparison documentation checkpoint
 
 论文比较文档首次 `git add` 被既有 `docs/*` ignore 规则拒绝，随后仅对用户要求的

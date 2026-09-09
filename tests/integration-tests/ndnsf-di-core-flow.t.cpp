@@ -6621,7 +6621,7 @@ r4B6SignDigest(const std::shared_ptr<EVP_PKEY>& key, const std::string& digest)
 }
 
 void
-runR4B6RealProviderConversationCase()
+runR4B6RealProviderConversationCase(bool exerciseReplacement = false)
 {
   using namespace ndn_service_framework;
   test::BootstrapProfile profile;
@@ -6833,6 +6833,7 @@ runR4B6RealProviderConversationCase()
   const auto providerBootId = providerName + "-boot";
   auto ackCalls = std::make_shared<std::atomic<unsigned>>(0);
   auto collaborationCalls = std::make_shared<std::atomic<unsigned>>(0);
+  auto conversationAttempts = std::make_shared<std::atomic<unsigned>>(0);
   environment.provider().addCollaborationHandler(
     ndn::Name(serviceName),
     [offerConfig, ackCalls] (const RequestMessage& request) {
@@ -6853,10 +6854,12 @@ runR4B6RealProviderConversationCase()
       decision.pendingStateTtlMs = issued->pendingStateTtlMs;
       return decision;
     },
-    [model, policyDigest, protectionEpoch, role, providerBootId, collaborationCalls] (
+    [model, policyDigest, protectionEpoch, role, providerBootId, collaborationCalls,
+     conversationAttempts, exerciseReplacement] (
       ServiceProvider::CollaborationContext& ctx, const RequestMessage& request) {
       try {
         collaborationCalls->fetch_add(1, std::memory_order_relaxed);
+        conversationAttempts->fetch_add(1, std::memory_order_relaxed);
         const auto assignment = ctx.assignment().assignmentPayload;
         std::istringstream input(std::string(assignment.begin(), assignment.end()));
         const auto projection = nativeSelectionProjectionV3FromJson(input, role);
@@ -6867,6 +6870,13 @@ runR4B6RealProviderConversationCase()
         ctx.subscribe("ndnsf-di-conversation-state-v1",
                       ndn::Name("/ndnsf-di/conversation/control"),
                       [] (const ServiceProvider::CollaborationData&) {});
+        if (exerciseReplacement && projection.attempt == 1) {
+          if (!ctx.failStream(StreamedInvocationErrorCode::ProviderFailure,
+                              "R4-B6 injected provider failure before first event")) {
+            throw std::runtime_error("R4-B6 replacement failure injection rejected");
+          }
+          return;
+        }
         const bool append = binding.parentContextEpoch != 0;
         const std::vector<std::int64_t> fullTokens = append
           // The continuation carries the reconstructed context [1,2,3];
@@ -7041,8 +7051,8 @@ runR4B6RealProviderConversationCase()
   options.stream->maxEvents = 8;
   options.stream->interestWindow = 4;
   options.stream->retentionMs = 5000;
-  options.stream->allowReplacement = false;
-  options.stream->maxReplacements = 0;
+  options.stream->allowReplacement = exerciseReplacement;
+  options.stream->maxReplacements = exerciseReplacement ? 1 : 0;
   options.generation = nativeGenerationFromOptions(application.options,
                                                      std::string(32, '1'));
   const auto retentionDeadlineMs = static_cast<std::uint64_t>(
@@ -7088,6 +7098,28 @@ runR4B6RealProviderConversationCase()
                         << " collaborationCalls=" << collaborationCalls->load());
     }
   }
+  if (exerciseReplacement) {
+    // This fixture deliberately has one Provider.  A failed Provider is
+    // excluded from the recovery ACK, so the native client must reject the
+    // replacement before publishing a conversation checkpoint.
+    BOOST_REQUIRE(first.status() == NativeRequestStatus::Failed);
+    try {
+      (void)first.result(std::chrono::milliseconds(0));
+      BOOST_FAIL("single-provider replacement unexpectedly succeeded");
+    }
+    catch (const NativeDiError& error) {
+      BOOST_CHECK_EQUAL(error.code(), "NATIVE_REQUEST_STAGE_FAILED");
+      BOOST_CHECK(error.what() != nullptr);
+      BOOST_CHECK(std::string(error.what()).find("DI_NATIVE_NO_ADMITTED_PROVIDER") !=
+                  std::string::npos);
+      BOOST_CHECK_EQUAL(error.boundary(), "ACK_CLOSED");
+    }
+    BOOST_CHECK_EQUAL(conversationAttempts->load(std::memory_order_relaxed), 1U);
+    BOOST_CHECK(!conversations->find("r4-b6-conversation-001").has_value());
+    client.close();
+    return;
+  }
+
   BOOST_REQUIRE(first.status() == NativeRequestStatus::Succeeded);
   const auto firstResult = first.result(std::chrono::milliseconds(0));
   const auto firstJson = nativeParseJson(
@@ -7095,7 +7127,6 @@ runR4B6RealProviderConversationCase()
   BOOST_CHECK_EQUAL(firstJson.at("text").get<std::string>(), "ab");
   const auto record = conversations->find("r4-b6-conversation-001");
   BOOST_REQUIRE(record.has_value());
-
   auto secondOptions = options;
   secondOptions.generation = nativeGenerationFromOptions(application.options,
                                                          std::string(32, '1'));
@@ -7154,6 +7185,11 @@ BOOST_AUTO_TEST_CASE(ProductionNativeHandlersPrepareRolesAfterSelection)
 BOOST_AUTO_TEST_CASE(Spec182R4B6RealProviderConversation)
 {
   runR4B6RealProviderConversationCase();
+}
+
+BOOST_AUTO_TEST_CASE(Spec182R4B6RealProviderConversationReplacement)
+{
+  runR4B6RealProviderConversationCase(true);
 }
 
 BOOST_AUTO_TEST_CASE(Spec175NativeTinyOnnxI01OneProvider)
