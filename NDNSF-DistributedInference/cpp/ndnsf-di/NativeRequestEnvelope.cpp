@@ -30,6 +30,12 @@ std::string base64(const std::vector<std::uint8_t>& bytes)
 }
 }
 
+bool
+isSupportedNativeGenerationMode(const std::string& mode) noexcept
+{
+  return mode == "TOKEN_DIAGNOSTIC" || mode == "TOKEN_STREAMING";
+}
+
 NativeGenerationExecutionContractV1 nativeGenerationFromOptions(
   const std::vector<std::uint8_t>& options, const std::string& generationId)
 {
@@ -118,7 +124,8 @@ NativeEncodedRequest encodeNativeRequestEnvelope(
   model.validate();
   if (contract.serviceName.empty() || contract.serviceName.front() != '/' ||
       contract.taskName.empty() || contract.taskName != input.taskName || requestId.empty() ||
-      !attempt || !deadlineMs || contract.generationMode.empty() ||
+      !attempt || !deadlineMs ||
+      !isSupportedNativeGenerationMode(contract.generationMode) ||
       contract.adapterName != model.adapterId ||
       contract.adapterDescriptorDigest != model.adapter.descriptorDigest() ||
       !digest(contract.adapterCompositionDigest) || !digest(contract.taskDescriptorDigest) ||

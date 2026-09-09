@@ -25,6 +25,13 @@ struct NativeEncodedRequest
   std::optional<NativeGenerationRecovery> recovery;
 };
 
+/** Return whether a request contract uses a generation mode understood by the
+ * native requester/provider wire contract.  All public construction paths use
+ * this predicate so direct C++ callers cannot bypass the JSON configuration
+ * gate. */
+bool
+isSupportedNativeGenerationMode(const std::string& mode) noexcept;
+
 /** Derive the generation values from the same application options bytes bound
  * into the request envelope. Placement adds stride and authenticated recovery
  * prefixes later; it cannot substitute different sampling or tokenizer data. */

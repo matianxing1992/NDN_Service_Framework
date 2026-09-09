@@ -16,6 +16,7 @@
 #include <thread>
 #include <fstream>
 #include <cstdlib>
+#include <mutex>
 
 namespace ndnsf::di {
 // This friend is defined only in the unit test; no configurable production
@@ -30,6 +31,11 @@ public:
     return std::unique_ptr<NativeInferenceClient>(
       new NativeInferenceClient(port, std::move(user), std::move(adapters),
                                 nullptr, nullptr, std::move(preparation)));
+  }
+  static std::size_t operationEntryCount(const NativeInferenceClient& client)
+  {
+    std::lock_guard<std::mutex> lock(client.m_mutex);
+    return client.m_operations.size();
   }
 };
 }
@@ -247,6 +253,16 @@ BOOST_AUTO_TEST_CASE(ConfiguredClientClosesEmptyAckAndCancelsActualCorePendingCa
       return NativeInspectedModel{descriptor, graph, "/fixture/source", nativePlanningDigest("source"),
         nativePlanningDigest("manifest"), nativePlanningDigest("canonical-graph")};
     });
+  auto invalidContract = runtime.contract;
+  invalidContract.generationMode = "UNSUPPORTED";
+  BOOST_CHECK_EXCEPTION(
+    NativeInferenceClient(user, configuredAdapters, invalidContract,
+                          preparation, admission),
+    NativeDiError,
+    [](const auto& error) {
+      return error.code() == "INVALID_CLIENT_CONFIGURATION" &&
+             std::string(error.what()).find("generation mode") != std::string::npos;
+    });
   NativeApplicationInput application;
   application.taskName = "task"; application.payload = {1};
   application.inputSchemaDigest = model.adapter.inputSchemaDigest;
@@ -288,6 +304,25 @@ BOOST_AUTO_TEST_CASE(ConfiguredClientClosesEmptyAckAndCancelsActualCorePendingCa
     face.getIoContext().restart(); face.getIoContext().poll();
     BOOST_CHECK(!user->hasPendingCall(id));
   }
+}
+
+BOOST_AUTO_TEST_CASE(ExpiredOperationEntriesAreCompactedForLongLivedClient)
+{
+  now = std::chrono::steady_clock::now();
+  auto client = NativeClientTestAccess::create(
+    port(), user, adapters, std::make_shared<NativeRequestPreparation>(adapters));
+  for (std::size_t i = 0; i < 128; ++i) {
+    {
+      auto handle = request(*client);
+      BOOST_REQUIRE_EQUAL(work.size(), 1U);
+      auto dispatch = std::move(work.front());
+      work.pop_front();
+      dispatch();
+      BOOST_CHECK(handle.status() == NativeRequestStatus::Failed);
+    }
+  }
+  BOOST_CHECK_LE(NativeClientTestAccess::operationEntryCount(*client), 1U);
+  client->close();
 }
 
 BOOST_AUTO_TEST_CASE(SubmissionOwnsInputsAndStrategiesBeforeWorkerPreparation)

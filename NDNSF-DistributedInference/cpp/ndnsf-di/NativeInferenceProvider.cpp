@@ -254,12 +254,14 @@ NativeInferenceProvider::serve(const NativeServiceDefinition& service,
     throw std::runtime_error("NativeInferenceProvider host is stopped");
   }
 
-  // The first serve publishes the host singleton and registers the single
-  // fixed lease entry. Registration happens on this thread, on the Face
-  // event thread or before the event loop starts, exactly the constraint the
-  // Core scoped registration APIs require.
-  if (!m_host) {
-    auto host = std::make_shared<HostState>();
+  // The first serve builds the host singleton and its fixed lease entry in a
+  // local transaction.  Do not publish m_host until the target runtime and
+  // scoped Core registration have both succeeded; otherwise a failed first
+  // serve would pin an identity/lease table that has no usable target.
+  auto host = m_host;
+  bool hostCreated = false;
+  if (!host) {
+    host = std::make_shared<HostState>();
     host->providerName = config.localProviderName;
     host->providerBootId = config.providerBootId;
     host->workerSlots = std::max<std::size_t>(1, config.workerCount);
@@ -274,97 +276,96 @@ NativeInferenceProvider::serve(const NativeServiceDefinition& service,
           ServiceProvider::ServiceInvocationMode::NormalAndTargeted));
     }
     catch (...) {
-      m_host.reset();
       throw;
     }
-    m_host = std::move(host);
-  }
-  const auto host = m_host;
-
-  // A serve must not silently reshape the host's shared boot identity or its
-  // compute-slot range: the slot range is host resources configured at boot,
-  // not a sum over serves.
-  if (!config.localProviderName.empty() &&
-      config.localProviderName != host->providerName) {
-    throw std::invalid_argument("native service config providerName '"
-      + config.localProviderName + "' conflicts with the host's '"
-      + host->providerName + "'");
-  }
-  if (!config.providerBootId.empty() &&
-      config.providerBootId != host->providerBootId) {
-    throw std::invalid_argument(
-      "native service config providerBootId conflicts with the host's");
-  }
-  if (std::max<std::size_t>(1, config.workerCount) != host->workerSlots) {
-    throw std::invalid_argument(
-      "native service config workerCount conflicts with the host's "
-      "compute-slot range");
+    hostCreated = true;
   }
 
-  // Same-name re-serve: an active target is refused; a draining (closed)
-  // record may be replaced below by a fresh registration that never reuses
-  // the old target's lease instance, draining fence, or bindings.
-  {
-    std::lock_guard<std::mutex> routerLock(host->routerMutex);
-    const auto existing = host->targets.find(service.serviceName);
-    if (existing != host->targets.end() &&
-        !existing->second->draining->load(std::memory_order_relaxed)) {
-      throw std::logic_error("native service is already registered: "
-                             + service.serviceName);
-    }
-  }
-
-  // The host owns the shared lease table: when the configuration opts into
-  // execution leases, inject the host table and bind the lease target to
-  // this service. The table outlives every handler state because each
-  // collaboration closure below captures the host (and therefore the shared
-  // state) and is detached by Core only after the handler itself is gone.
-  NativeProviderHandlerConfig effectiveConfig = config;
-  if (!config.executionLeaseTargetService.empty()) {
-    if (config.executionLeaseTargetService != service.serviceName) {
-      throw std::invalid_argument("executionLeaseTargetService '"
-        + config.executionLeaseTargetService
-        + "' must equal the served serviceName '" + service.serviceName
-        + "'");
-    }
-    if (config.executionLeaseTable != nullptr) {
-      throw std::invalid_argument(
-        "executionLeaseTable is owned by the host; pass a null table");
-    }
-    effectiveConfig.executionLeaseTable = &host->sharedLease->table;
-  }
-  else if (config.executionLeaseTable != nullptr) {
-    throw std::invalid_argument(
-      "executionLeaseTable requires a non-empty executionLeaseTargetService");
-  }
-
-  // Assemble the native runtime first; nothing is registered until the
-  // runtime and the observation seam both succeed.
-  auto runtime = makeNativeProviderCollaborationRuntime(
-    std::move(effectiveConfig));
-  if (service.runtimeObserver) {
-    service.runtimeObserver(runtime);
-  }
-
-  auto draining = std::make_shared<std::atomic<bool>>(false);
-  auto guardedHandler =
-    [host, draining, handler = runtime.handler](
-      ServiceProvider::CollaborationContext& ctx,
-      const ndn_service_framework::RequestMessage& request) {
-      // The Core registration gate is authoritative; this fence only covers
-      // the tiny window between draining and the Core entry detaching.
-      if (draining->load(std::memory_order_relaxed)) {
-        ctx.fail("native service is closing");
-        return;
-      }
-      handler(ctx, request);
-    };
-  const auto ackHandler = service.ackHandler
-    ? service.ackHandler
-    : acceptingAckHandler("native provider ready");
-
+  std::shared_ptr<std::atomic<bool>> draining;
   std::shared_ptr<ServiceProvider::ServiceRegistration> core;
   try {
+    // A serve must not silently reshape the host's shared boot identity or its
+    // compute-slot range: the slot range is host resources configured at boot,
+    // not a sum over serves.
+    if (!config.localProviderName.empty() &&
+        config.localProviderName != host->providerName) {
+      throw std::invalid_argument("native service config providerName '"
+        + config.localProviderName + "' conflicts with the host's '"
+        + host->providerName + "'");
+    }
+    if (!config.providerBootId.empty() &&
+        config.providerBootId != host->providerBootId) {
+      throw std::invalid_argument(
+        "native service config providerBootId conflicts with the host's");
+    }
+    if (std::max<std::size_t>(1, config.workerCount) != host->workerSlots) {
+      throw std::invalid_argument(
+        "native service config workerCount conflicts with the host's "
+        "compute-slot range");
+    }
+
+    // Same-name re-serve: an active target is refused; a draining (closed)
+    // record may be replaced below by a fresh registration that never reuses
+    // the old target's lease instance, draining fence, or bindings.
+    {
+      std::lock_guard<std::mutex> routerLock(host->routerMutex);
+      const auto existing = host->targets.find(service.serviceName);
+      if (existing != host->targets.end() &&
+          !existing->second->draining->load(std::memory_order_relaxed)) {
+        throw std::logic_error("native service is already registered: "
+                               + service.serviceName);
+      }
+    }
+
+    // The host owns the shared lease table: when the configuration opts into
+    // execution leases, inject the host table and bind the lease target to
+    // this service. The table outlives every handler state because each
+    // collaboration closure below captures the host (and therefore the shared
+    // state) and is detached by Core only after the handler itself is gone.
+    NativeProviderHandlerConfig effectiveConfig = config;
+    if (!config.executionLeaseTargetService.empty()) {
+      if (config.executionLeaseTargetService != service.serviceName) {
+        throw std::invalid_argument("executionLeaseTargetService '"
+          + config.executionLeaseTargetService
+          + "' must equal the served serviceName '" + service.serviceName
+          + "'");
+      }
+      if (config.executionLeaseTable != nullptr) {
+        throw std::invalid_argument(
+          "executionLeaseTable is owned by the host; pass a null table");
+      }
+      effectiveConfig.executionLeaseTable = &host->sharedLease->table;
+    }
+    else if (config.executionLeaseTable != nullptr) {
+      throw std::invalid_argument(
+        "executionLeaseTable requires a non-empty executionLeaseTargetService");
+    }
+
+    // Assemble the native runtime first; nothing is registered until the
+    // runtime and the observation seam both succeed.
+    auto runtime = makeNativeProviderCollaborationRuntime(
+      std::move(effectiveConfig));
+    if (service.runtimeObserver) {
+      service.runtimeObserver(runtime);
+    }
+
+    draining = std::make_shared<std::atomic<bool>>(false);
+    auto guardedHandler =
+      [host, draining, handler = runtime.handler](
+        ServiceProvider::CollaborationContext& ctx,
+        const ndn_service_framework::RequestMessage& request) {
+        // The Core registration gate is authoritative; this fence only covers
+        // the tiny window between draining and the Core entry detaching.
+        if (draining->load(std::memory_order_relaxed)) {
+          ctx.fail("native service is closing");
+          return;
+        }
+        handler(ctx, request);
+      };
+    const auto ackHandler = service.ackHandler
+      ? service.ackHandler
+      : acceptingAckHandler("native provider ready");
+
     core = std::make_shared<ServiceProvider::ServiceRegistration>(
       m_provider->addScopedCollaborationHandler(
         ndn::Name(service.serviceName), service.allowedRoles,
@@ -379,11 +380,26 @@ NativeInferenceProvider::serve(const NativeServiceDefinition& service,
       std::lock_guard<std::mutex> routerLock(host->routerMutex);
       host->targets[service.serviceName] = std::move(target);
     }
+    // Publish only after the full first target is installed.  m_mutex is held
+    // for the entire serve call, so a concurrent serve cannot observe a half
+    // initialized host.
+    if (hostCreated) {
+      m_host = host;
+      hostCreated = false;
+    }
   }
   catch (...) {
-    draining->store(true, std::memory_order_relaxed);
+    if (draining) {
+      draining->store(true, std::memory_order_relaxed);
+    }
     if (core) {
       core->close();
+    }
+    if (hostCreated) {
+      if (host->fixedLease) {
+        host->fixedLease->close();
+      }
+      m_host.reset();
     }
     throw;
   }
