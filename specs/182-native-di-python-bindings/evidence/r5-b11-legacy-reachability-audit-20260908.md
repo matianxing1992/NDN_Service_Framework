@@ -7,7 +7,8 @@ runtime，也不运行网络资格。
 
 `checklists/build_api_migration_manifest.py` 从当前源码重新生成
 `contracts/compatibility-manifest.json`，输出 344 个 entries（explicit SDK 277、dynamic
-SDK 67），`sourceCommit` 在生成时为 `d4e224fb146d9b9d49c0fc5381cf25ce4279fcd8`。
+SDK 67）。本次在流程 checkpoint `436dc449` 后重新生成，`sourceCommit` 为
+`436dc4493c8c443eaae6352b097e2e17698e9be4`。
 以下四个 T013-B 目标路径的 entries 均仍保留（状态为
 `RETAINED_UNTIL_MIGRATION` 或 `PLANNED_NATIVE`），且 `removalEligible=false`：
 
@@ -33,7 +34,7 @@ offline oracle、Provider 或 planner consumer。
 ## Validation
 
 ```text
-timeout 30s python3 specs/182-native-di-python-bindings/checklists/build_api_migration_manifest.py  # exit 0, entries=344
+timeout 120s python3 specs/182-native-di-python-bindings/checklists/build_api_migration_manifest.py  # exit 0, entries=344, elapsed=32.74s
 PYTHONPATH=pythonWrapper:NDNSF-DistributedInference python3 -m pytest -q \
   tests/python/test_spec182_legacy_exclusion.py                                                    # 6 passed
 python3 specs/182-native-di-python-bindings/checklists/validate_design.py                           # ok=true
@@ -41,7 +42,8 @@ git diff --check                                                                
 ```
 
 本批次没有 native source/header 变化，因此无 C++ 或 extension build；manifest 的 source
-identity 需在本批最终提交后再次生成并核对。
+identity 对应本批生成前的 `436dc449` source baseline；生成耗时已记录，不能将本清单
+提交本身再写入 source identity。
 
 ## Result
 

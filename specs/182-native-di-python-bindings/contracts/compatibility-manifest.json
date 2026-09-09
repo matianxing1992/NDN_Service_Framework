@@ -1,7 +1,7 @@
 {
   "schema": "spec182-compatibility-manifest-v1",
   "sourceInventory": "contracts/public-export-inventory.json",
-  "sourceCommit": "62157804fca46ac332592b0519a6162d4151bd19",
+  "sourceCommit": "436dc4493c8c443eaae6352b097e2e17698e9be4",
   "coverage": {
     "explicitApiSdkRoot": 277,
     "dynamicAppSdkExports": 67,
@@ -661,7 +661,8 @@
         "tests/python/test_spec175_conversation.py",
         "tests/python/test_spec175_real_minindn_gate.py",
         "tests/python/test_spec180_ack_provenance.py",
-        "tests/python/test_spec180_generic_request_api.py"
+        "tests/python/test_spec180_generic_request_api.py",
+        "tests/python/test_spec182_legacy_exclusion.py"
       ],
       "callerInventory": {
         "maintainedCandidates": [
@@ -693,7 +694,8 @@
           "tests/python/test_spec175_conversation.py",
           "tests/python/test_spec175_real_minindn_gate.py",
           "tests/python/test_spec180_ack_provenance.py",
-          "tests/python/test_spec180_generic_request_api.py"
+          "tests/python/test_spec180_generic_request_api.py",
+          "tests/python/test_spec182_legacy_exclusion.py"
         ],
         "generatedCopies": [
           "NDNSF-DistributedInference/packaging/python/app/build/lib/ndnsf_distributed_inference/app_sdk/__init__.py",
@@ -943,7 +945,8 @@
         "tests/python/test_spec175_conversation.py",
         "tests/python/test_spec175_real_minindn_gate.py",
         "tests/python/test_spec180_ack_provenance.py",
-        "tests/python/test_spec180_generic_request_api.py"
+        "tests/python/test_spec180_generic_request_api.py",
+        "tests/python/test_spec182_legacy_exclusion.py"
       ],
       "status": "RETAINED_UNTIL_MIGRATION",
       "removalEligible": false,
@@ -8068,11 +8071,13 @@
       "callers": [
         "NDNSF-DistributedInference/cpp/ndnsf-di/ExecutionLeaseService.cpp",
         "NDNSF-DistributedInference/cpp/ndnsf-di/ExecutionLeaseService.hpp",
+        "NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceProvider.cpp",
         "NDNSF-DistributedInference/packaging/python/app/build/lib/ndnsf_distributed_inference/deployment.py",
         "tests/python/test_ndnsf_di_execution_lease_codec.py",
         "tests/python/test_ndnsf_di_execution_lease_restart.py",
         "tests/python/test_ndnsf_di_execution_lease_transaction.py",
-        "tests/unit-tests/di-execution-lease-service.t.cpp"
+        "tests/unit-tests/di-execution-lease-service.t.cpp",
+        "tests/unit-tests/di-native-provider-host.t.cpp"
       ],
       "callerInventory": {
         "maintainedCandidates": [],
@@ -8080,14 +8085,16 @@
           "tests/python/test_ndnsf_di_execution_lease_codec.py",
           "tests/python/test_ndnsf_di_execution_lease_restart.py",
           "tests/python/test_ndnsf_di_execution_lease_transaction.py",
-          "tests/unit-tests/di-execution-lease-service.t.cpp"
+          "tests/unit-tests/di-execution-lease-service.t.cpp",
+          "tests/unit-tests/di-native-provider-host.t.cpp"
         ],
         "generatedCopies": [
           "NDNSF-DistributedInference/packaging/python/app/build/lib/ndnsf_distributed_inference/deployment.py"
         ],
         "other": [
           "NDNSF-DistributedInference/cpp/ndnsf-di/ExecutionLeaseService.cpp",
-          "NDNSF-DistributedInference/cpp/ndnsf-di/ExecutionLeaseService.hpp"
+          "NDNSF-DistributedInference/cpp/ndnsf-di/ExecutionLeaseService.hpp",
+          "NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceProvider.cpp"
         ]
       },
       "externalUseStatus": "repository_callers_found",
@@ -8107,7 +8114,8 @@
         "tests/python/test_ndnsf_di_execution_lease_codec.py",
         "tests/python/test_ndnsf_di_execution_lease_restart.py",
         "tests/python/test_ndnsf_di_execution_lease_transaction.py",
-        "tests/unit-tests/di-execution-lease-service.t.cpp"
+        "tests/unit-tests/di-execution-lease-service.t.cpp",
+        "tests/unit-tests/di-native-provider-host.t.cpp"
       ],
       "status": "RETAINED_UNTIL_MIGRATION",
       "removalEligible": false,
@@ -8223,12 +8231,14 @@
       "callers": [
         "NDNSF-DistributedInference/cpp/ndnsf-di/ExecutionLeaseService.cpp",
         "NDNSF-DistributedInference/cpp/ndnsf-di/ExecutionLeaseService.hpp",
+        "NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceProvider.cpp",
         "NDNSF-DistributedInference/packaging/python/app/build/lib/ndnsf_distributed_inference/deployment.py",
         "tests/python/test_ndnsf_di_execution_lease_codec.py",
         "tests/python/test_ndnsf_di_execution_lease_restart.py",
         "tests/python/test_ndnsf_di_execution_lease_stress.py",
         "tests/python/test_ndnsf_di_execution_lease_transaction.py",
-        "tests/unit-tests/di-execution-lease-service.t.cpp"
+        "tests/unit-tests/di-execution-lease-service.t.cpp",
+        "tests/unit-tests/di-native-provider-host.t.cpp"
       ],
       "callerInventory": {
         "maintainedCandidates": [],
@@ -8237,14 +8247,16 @@
           "tests/python/test_ndnsf_di_execution_lease_restart.py",
           "tests/python/test_ndnsf_di_execution_lease_stress.py",
           "tests/python/test_ndnsf_di_execution_lease_transaction.py",
-          "tests/unit-tests/di-execution-lease-service.t.cpp"
+          "tests/unit-tests/di-execution-lease-service.t.cpp",
+          "tests/unit-tests/di-native-provider-host.t.cpp"
         ],
         "generatedCopies": [
           "NDNSF-DistributedInference/packaging/python/app/build/lib/ndnsf_distributed_inference/deployment.py"
         ],
         "other": [
           "NDNSF-DistributedInference/cpp/ndnsf-di/ExecutionLeaseService.cpp",
-          "NDNSF-DistributedInference/cpp/ndnsf-di/ExecutionLeaseService.hpp"
+          "NDNSF-DistributedInference/cpp/ndnsf-di/ExecutionLeaseService.hpp",
+          "NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceProvider.cpp"
         ]
       },
       "externalUseStatus": "repository_callers_found",
@@ -8294,7 +8306,8 @@
         "tests/python/test_ndnsf_di_execution_lease_restart.py",
         "tests/python/test_ndnsf_di_execution_lease_stress.py",
         "tests/python/test_ndnsf_di_execution_lease_transaction.py",
-        "tests/unit-tests/di-execution-lease-service.t.cpp"
+        "tests/unit-tests/di-execution-lease-service.t.cpp",
+        "tests/unit-tests/di-native-provider-host.t.cpp"
       ],
       "status": "RETAINED_UNTIL_MIGRATION",
       "removalEligible": false,
@@ -8405,24 +8418,28 @@
       "callers": [
         "NDNSF-DistributedInference/cpp/ndnsf-di/ExecutionLeaseService.cpp",
         "NDNSF-DistributedInference/cpp/ndnsf-di/ExecutionLeaseService.hpp",
+        "NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceProvider.cpp",
         "NDNSF-DistributedInference/packaging/python/app/build/lib/ndnsf_distributed_inference/deployment.py",
         "tests/python/test_ndnsf_di_execution_lease_codec.py",
         "tests/python/test_ndnsf_di_execution_lease_restart.py",
-        "tests/python/test_ndnsf_di_execution_lease_transaction.py"
+        "tests/python/test_ndnsf_di_execution_lease_transaction.py",
+        "tests/unit-tests/di-native-provider-host.t.cpp"
       ],
       "callerInventory": {
         "maintainedCandidates": [],
         "tests": [
           "tests/python/test_ndnsf_di_execution_lease_codec.py",
           "tests/python/test_ndnsf_di_execution_lease_restart.py",
-          "tests/python/test_ndnsf_di_execution_lease_transaction.py"
+          "tests/python/test_ndnsf_di_execution_lease_transaction.py",
+          "tests/unit-tests/di-native-provider-host.t.cpp"
         ],
         "generatedCopies": [
           "NDNSF-DistributedInference/packaging/python/app/build/lib/ndnsf_distributed_inference/deployment.py"
         ],
         "other": [
           "NDNSF-DistributedInference/cpp/ndnsf-di/ExecutionLeaseService.cpp",
-          "NDNSF-DistributedInference/cpp/ndnsf-di/ExecutionLeaseService.hpp"
+          "NDNSF-DistributedInference/cpp/ndnsf-di/ExecutionLeaseService.hpp",
+          "NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceProvider.cpp"
         ]
       },
       "externalUseStatus": "repository_callers_found",
@@ -8469,7 +8486,8 @@
       "verificationSelectors": [
         "tests/python/test_ndnsf_di_execution_lease_codec.py",
         "tests/python/test_ndnsf_di_execution_lease_restart.py",
-        "tests/python/test_ndnsf_di_execution_lease_transaction.py"
+        "tests/python/test_ndnsf_di_execution_lease_transaction.py",
+        "tests/unit-tests/di-native-provider-host.t.cpp"
       ],
       "status": "RETAINED_UNTIL_MIGRATION",
       "removalEligible": false,
@@ -15533,7 +15551,9 @@
         "NDNSF-DistributedInference/packaging/python/app/build/lib/ndnsf_distributed_inference/app_sdk/gui.py",
         "examples/python/NDNSF-DistributedInference/pytorch_eager_2x2/pytorch_2x2_lib.py",
         "examples/python/NDNSF-DistributedInference/yolo_2x2/yolo_2x2_lib.py",
-        "examples/python/NDNSF-DistributedInference/yolo_split/yolo_split_lib.py"
+        "examples/python/NDNSF-DistributedInference/yolo_split/yolo_split_lib.py",
+        "tests/fixtures/spec182/author-onnx-planning-graph-oracle.py",
+        "tests/fixtures/spec182/author-yolo-semantic-oracle.py"
       ],
       "callerInventory": {
         "maintainedCandidates": [
@@ -15543,7 +15563,10 @@
           "examples/python/NDNSF-DistributedInference/yolo_2x2/yolo_2x2_lib.py",
           "examples/python/NDNSF-DistributedInference/yolo_split/yolo_split_lib.py"
         ],
-        "tests": [],
+        "tests": [
+          "tests/fixtures/spec182/author-onnx-planning-graph-oracle.py",
+          "tests/fixtures/spec182/author-yolo-semantic-oracle.py"
+        ],
         "generatedCopies": [
           "NDNSF-DistributedInference/packaging/python/adapters/onnx/build/lib/ndnsf_distributed_inference/adapters/onnx/graph.py",
           "NDNSF-DistributedInference/packaging/python/app/build/lib/ndnsf_distributed_inference/app_sdk/gui.py"
@@ -15566,7 +15589,9 @@
       "verificationSelectors": [
         "examples/python/NDNSF-DistributedInference/pytorch_eager_2x2/pytorch_2x2_lib.py",
         "examples/python/NDNSF-DistributedInference/yolo_2x2/yolo_2x2_lib.py",
-        "examples/python/NDNSF-DistributedInference/yolo_split/yolo_split_lib.py"
+        "examples/python/NDNSF-DistributedInference/yolo_split/yolo_split_lib.py",
+        "tests/fixtures/spec182/author-onnx-planning-graph-oracle.py",
+        "tests/fixtures/spec182/author-yolo-semantic-oracle.py"
       ],
       "status": "RETAINED_UNTIL_MIGRATION",
       "removalEligible": false,
@@ -22975,14 +23000,14 @@
         "owner": "ndnsf_distributed_inference.app_sdk.client",
         "symbol": "InferenceClient",
         "path": "NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/client.py",
-        "line": 1536,
-        "sourceSha256": "e34e941887ac0464256f9dcf791e02cfc8da2d1c522bbd16b0fd0b55972dce4d",
+        "line": 1769,
+        "sourceSha256": "969286809187f77cb6de2a50fd2a9ab180d919da736a6ea69752825c33c96c39",
         "kind": "ClassDef",
         "bases": [],
         "methods": [
           {
             "name": "__init__",
-            "line": 1544,
+            "line": 1777,
             "arguments": [
               "self",
               "core"
@@ -23024,7 +23049,7 @@
           },
           {
             "name": "from_application_config",
-            "line": 1557,
+            "line": 1790,
             "arguments": [
               "cls",
               "runtime"
@@ -23088,7 +23113,7 @@
           },
           {
             "name": "from_config",
-            "line": 1573,
+            "line": 1806,
             "arguments": [
               "cls",
               "config"
@@ -23146,7 +23171,7 @@
           },
           {
             "name": "deployments",
-            "line": 1601,
+            "line": 1834,
             "arguments": [
               "self"
             ],
@@ -23168,7 +23193,7 @@
           },
           {
             "name": "requests",
-            "line": 1605,
+            "line": 1838,
             "arguments": [
               "self"
             ],
@@ -23189,8 +23214,127 @@
             "returns": null
           },
           {
+            "name": "native_client",
+            "line": 1842,
+            "arguments": [
+              "self"
+            ],
+            "keywordOnly": [],
+            "parameters": [
+              {
+                "name": "self",
+                "kind": "positional-or-keyword",
+                "annotation": null,
+                "default": null
+              }
+            ],
+            "vararg": null,
+            "kwarg": null,
+            "decorators": [
+              "property"
+            ],
+            "returns": null
+          },
+          {
+            "name": "configure_native_requester",
+            "line": 1846,
+            "arguments": [
+              "self",
+              "runtime",
+              "admission",
+              "conversations"
+            ],
+            "keywordOnly": [],
+            "parameters": [
+              {
+                "name": "self",
+                "kind": "positional-or-keyword",
+                "annotation": null,
+                "default": null
+              },
+              {
+                "name": "runtime",
+                "kind": "positional-or-keyword",
+                "annotation": null,
+                "default": null
+              },
+              {
+                "name": "admission",
+                "kind": "positional-or-keyword",
+                "annotation": null,
+                "default": null
+              },
+              {
+                "name": "conversations",
+                "kind": "positional-or-keyword",
+                "annotation": null,
+                "default": "None"
+              }
+            ],
+            "vararg": null,
+            "kwarg": null,
+            "decorators": [],
+            "returns": null
+          },
+          {
+            "name": "request_native",
+            "line": 1850,
+            "arguments": [
+              "self"
+            ],
+            "keywordOnly": [
+              "model",
+              "input",
+              "split_strategy",
+              "placement_strategy",
+              "options"
+            ],
+            "parameters": [
+              {
+                "name": "self",
+                "kind": "positional-or-keyword",
+                "annotation": null,
+                "default": null
+              },
+              {
+                "name": "model",
+                "kind": "keyword-only",
+                "annotation": null,
+                "default": null
+              },
+              {
+                "name": "input",
+                "kind": "keyword-only",
+                "annotation": null,
+                "default": null
+              },
+              {
+                "name": "split_strategy",
+                "kind": "keyword-only",
+                "annotation": null,
+                "default": null
+              },
+              {
+                "name": "placement_strategy",
+                "kind": "keyword-only",
+                "annotation": null,
+                "default": null
+              },
+              {
+                "name": "options",
+                "kind": "keyword-only",
+                "annotation": null,
+                "default": null
+              }
+            ],
+            "vararg": null,
+            "kwarg": null,
+            "decorators": [],
+            "returns": null
+          },
+          {
             "name": "deploy",
-            "line": 1608,
+            "line": 1857,
             "arguments": [
               "self",
               "definition"
@@ -23217,7 +23361,7 @@
           },
           {
             "name": "request_model",
-            "line": 1660,
+            "line": 1909,
             "arguments": [
               "self"
             ],
@@ -23273,7 +23417,7 @@
           },
           {
             "name": "request_task",
-            "line": 1671,
+            "line": 1920,
             "arguments": [
               "self"
             ],
@@ -23343,7 +23487,7 @@
           },
           {
             "name": "request_preplanned",
-            "line": 1692,
+            "line": 1941,
             "arguments": [
               "self",
               "deployment"
@@ -23399,7 +23543,7 @@
           },
           {
             "name": "request",
-            "line": 1700,
+            "line": 1949,
             "arguments": [
               "self",
               "deployment"
@@ -23455,7 +23599,7 @@
           },
           {
             "name": "run",
-            "line": 1916,
+            "line": 2165,
             "arguments": [
               "self",
               "deployment"
@@ -23511,7 +23655,7 @@
           },
           {
             "name": "run_async",
-            "line": 1923,
+            "line": 2172,
             "arguments": [
               "self",
               "deployment"
@@ -23570,10 +23714,12 @@
       },
       "callers": [
         "NDNSF-DistributedInference/ndnsf_distributed_inference/api/__init__.py",
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/__init__.py",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/application.py",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/compatibility/adapters.py",
         "NDNSF-DistributedInference/packaging/python/app/build/lib/ndnsf_distributed_inference/app_sdk/application.py",
         "NDNSF-DistributedInference/packaging/python/app/build/lib/ndnsf_distributed_inference/app_sdk/client.py",
+        "tests/python/test_ndnsf_di_app_sdk_compatibility.py",
         "tests/python/test_ndnsf_di_deployment_catalog.py",
         "tests/python/test_ndnsf_di_documented_api.py",
         "tests/python/test_ndnsf_di_public_api_contract.py",
@@ -23583,10 +23729,12 @@
       "callerInventory": {
         "maintainedCandidates": [
           "NDNSF-DistributedInference/ndnsf_distributed_inference/api/__init__.py",
+          "NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/__init__.py",
           "NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/application.py",
           "NDNSF-DistributedInference/ndnsf_distributed_inference/compatibility/adapters.py"
         ],
         "tests": [
+          "tests/python/test_ndnsf_di_app_sdk_compatibility.py",
           "tests/python/test_ndnsf_di_deployment_catalog.py",
           "tests/python/test_ndnsf_di_documented_api.py",
           "tests/python/test_ndnsf_di_public_api_contract.py",
@@ -23611,6 +23759,9 @@
           "from_config",
           "deployments",
           "requests",
+          "native_client",
+          "configure_native_requester",
+          "request_native",
           "deploy",
           "request_model",
           "request_task",
@@ -23759,6 +23910,90 @@
               {
                 "name": "self",
                 "kind": "positional-or-keyword",
+                "annotation": null,
+                "default": null
+              }
+            ],
+            "returns": null
+          },
+          {
+            "name": "native_client",
+            "parameters": [
+              {
+                "name": "self",
+                "kind": "positional-or-keyword",
+                "annotation": null,
+                "default": null
+              }
+            ],
+            "returns": null
+          },
+          {
+            "name": "configure_native_requester",
+            "parameters": [
+              {
+                "name": "self",
+                "kind": "positional-or-keyword",
+                "annotation": null,
+                "default": null
+              },
+              {
+                "name": "runtime",
+                "kind": "positional-or-keyword",
+                "annotation": null,
+                "default": null
+              },
+              {
+                "name": "admission",
+                "kind": "positional-or-keyword",
+                "annotation": null,
+                "default": null
+              },
+              {
+                "name": "conversations",
+                "kind": "positional-or-keyword",
+                "annotation": null,
+                "default": "None"
+              }
+            ],
+            "returns": null
+          },
+          {
+            "name": "request_native",
+            "parameters": [
+              {
+                "name": "self",
+                "kind": "positional-or-keyword",
+                "annotation": null,
+                "default": null
+              },
+              {
+                "name": "model",
+                "kind": "keyword-only",
+                "annotation": null,
+                "default": null
+              },
+              {
+                "name": "input",
+                "kind": "keyword-only",
+                "annotation": null,
+                "default": null
+              },
+              {
+                "name": "split_strategy",
+                "kind": "keyword-only",
+                "annotation": null,
+                "default": null
+              },
+              {
+                "name": "placement_strategy",
+                "kind": "keyword-only",
+                "annotation": null,
+                "default": null
+              },
+              {
+                "name": "options",
+                "kind": "keyword-only",
                 "annotation": null,
                 "default": null
               }
@@ -24053,6 +24288,7 @@
       "mappingStatus": "PARTIAL_EXISTING_TYPE",
       "mappingReference": "contracts/code-design.md#cd-001-public-api",
       "verificationSelectors": [
+        "tests/python/test_ndnsf_di_app_sdk_compatibility.py",
         "tests/python/test_ndnsf_di_deployment_catalog.py",
         "tests/python/test_ndnsf_di_documented_api.py",
         "tests/python/test_ndnsf_di_public_api_contract.py",
@@ -24561,14 +24797,14 @@
         "owner": "ndnsf_distributed_inference.app_sdk.client",
         "symbol": "InferenceRequestHandle",
         "path": "NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/client.py",
-        "line": 1479,
-        "sourceSha256": "e34e941887ac0464256f9dcf791e02cfc8da2d1c522bbd16b0fd0b55972dce4d",
+        "line": 1712,
+        "sourceSha256": "969286809187f77cb6de2a50fd2a9ab180d919da736a6ea69752825c33c96c39",
         "kind": "ClassDef",
         "bases": [],
         "methods": [
           {
             "name": "__init__",
-            "line": 1482,
+            "line": 1715,
             "arguments": [
               "self",
               "client",
@@ -24609,7 +24845,7 @@
           },
           {
             "name": "ref",
-            "line": 1489,
+            "line": 1722,
             "arguments": [
               "self"
             ],
@@ -24631,7 +24867,7 @@
           },
           {
             "name": "status",
-            "line": 1493,
+            "line": 1726,
             "arguments": [
               "self"
             ],
@@ -24651,7 +24887,7 @@
           },
           {
             "name": "deployment_status",
-            "line": 1496,
+            "line": 1729,
             "arguments": [
               "self"
             ],
@@ -24671,7 +24907,7 @@
           },
           {
             "name": "events",
-            "line": 1500,
+            "line": 1733,
             "arguments": [
               "self"
             ],
@@ -24699,7 +24935,7 @@
           },
           {
             "name": "wait",
-            "line": 1516,
+            "line": 1749,
             "arguments": [
               "self"
             ],
@@ -24727,7 +24963,7 @@
           },
           {
             "name": "result",
-            "line": 1520,
+            "line": 1753,
             "arguments": [
               "self"
             ],
@@ -24755,7 +24991,7 @@
           },
           {
             "name": "result_async",
-            "line": 1526,
+            "line": 1759,
             "arguments": [
               "self"
             ],
@@ -24783,7 +25019,7 @@
           },
           {
             "name": "cancel",
-            "line": 1531,
+            "line": 1764,
             "arguments": [
               "self",
               "reason"
@@ -24813,6 +25049,7 @@
       },
       "callers": [
         "NDNSF-DistributedInference/ndnsf_distributed_inference/api/__init__.py",
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/__init__.py",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/contracts.py",
         "NDNSF-DistributedInference/packaging/python/app/build/lib/ndnsf_distributed_inference/app_sdk/application.py",
         "NDNSF-DistributedInference/packaging/python/app/build/lib/ndnsf_distributed_inference/app_sdk/client.py",
@@ -24822,6 +25059,7 @@
       "callerInventory": {
         "maintainedCandidates": [
           "NDNSF-DistributedInference/ndnsf_distributed_inference/api/__init__.py",
+          "NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/__init__.py",
           "NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/contracts.py"
         ],
         "tests": [
@@ -25462,6 +25700,7 @@
         ]
       },
       "callers": [
+        "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/api/__init__.py",
         "NDNSF-DistributedInference/packaging/python/app/build/lib/ndnsf_distributed_inference/app_sdk/placement.py",
         "examples/python/NDNSF-DistributedInference/llm_pipeline/user.py",
@@ -25490,7 +25729,9 @@
         "generatedCopies": [
           "NDNSF-DistributedInference/packaging/python/app/build/lib/ndnsf_distributed_inference/app_sdk/placement.py"
         ],
-        "other": []
+        "other": [
+          "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
+        ]
       },
       "externalUseStatus": "repository_callers_found",
       "disposition": "NATIVE_REQUIRED",
@@ -26812,6 +27053,7 @@
       "callers": [
         "examples/python/NDNSF-DistributedInference/llm_pipeline/provider.py",
         "examples/python/NDNSF-DistributedInference/llm_pipeline/user.py",
+        "tests/fixtures/spec182/build-conversation-oracle.py",
         "tests/python/test_spec175_conversation.py",
         "tests/python/test_spec175_real_minindn_gate.py"
       ],
@@ -26821,6 +27063,7 @@
           "examples/python/NDNSF-DistributedInference/llm_pipeline/user.py"
         ],
         "tests": [
+          "tests/fixtures/spec182/build-conversation-oracle.py",
           "tests/python/test_spec175_conversation.py",
           "tests/python/test_spec175_real_minindn_gate.py"
         ],
@@ -26843,6 +27086,7 @@
       "verificationSelectors": [
         "examples/python/NDNSF-DistributedInference/llm_pipeline/provider.py",
         "examples/python/NDNSF-DistributedInference/llm_pipeline/user.py",
+        "tests/fixtures/spec182/build-conversation-oracle.py",
         "tests/python/test_spec175_conversation.py",
         "tests/python/test_spec175_real_minindn_gate.py"
       ],
@@ -27096,6 +27340,7 @@
       "callers": [
         "NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/placement.py",
         "examples/python/NDNSF-DistributedInference/llm_pipeline/user.py",
+        "tests/fixtures/spec182/build-conversation-oracle.py",
         "tests/python/test_spec175_conversation.py"
       ],
       "callerInventory": {
@@ -27104,6 +27349,7 @@
           "examples/python/NDNSF-DistributedInference/llm_pipeline/user.py"
         ],
         "tests": [
+          "tests/fixtures/spec182/build-conversation-oracle.py",
           "tests/python/test_spec175_conversation.py"
         ],
         "generatedCopies": [],
@@ -27241,6 +27487,7 @@
       "mappingReference": "contracts/public-api-migration-review.md",
       "verificationSelectors": [
         "examples/python/NDNSF-DistributedInference/llm_pipeline/user.py",
+        "tests/fixtures/spec182/build-conversation-oracle.py",
         "tests/python/test_spec175_conversation.py"
       ],
       "status": "RETAINED_OR_OFFLINE",
@@ -27409,6 +27656,7 @@
         "NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/placement.py",
         "examples/python/NDNSF-DistributedInference/llm_pipeline/provider.py",
         "examples/python/NDNSF-DistributedInference/llm_pipeline/user.py",
+        "tests/fixtures/spec182/build-conversation-oracle.py",
         "tests/python/test_ndnsf_di_automatic_collaboration_plan.py",
         "tests/python/test_spec168_provider_generation.py",
         "tests/python/test_spec175_conversation.py"
@@ -27421,6 +27669,7 @@
           "examples/python/NDNSF-DistributedInference/llm_pipeline/user.py"
         ],
         "tests": [
+          "tests/fixtures/spec182/build-conversation-oracle.py",
           "tests/python/test_ndnsf_di_automatic_collaboration_plan.py",
           "tests/python/test_spec168_provider_generation.py",
           "tests/python/test_spec175_conversation.py"
@@ -27522,6 +27771,7 @@
       "verificationSelectors": [
         "examples/python/NDNSF-DistributedInference/llm_pipeline/provider.py",
         "examples/python/NDNSF-DistributedInference/llm_pipeline/user.py",
+        "tests/fixtures/spec182/build-conversation-oracle.py",
         "tests/python/test_ndnsf_di_automatic_collaboration_plan.py",
         "tests/python/test_spec168_provider_generation.py",
         "tests/python/test_spec175_conversation.py"
@@ -27997,6 +28247,7 @@
       "callers": [
         "NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/client.py",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/placement.py",
+        "tests/fixtures/spec182/build-conversation-oracle.py",
         "tests/python/test_spec175_conversation.py",
         "tests/python/test_spec175_real_minindn_gate.py"
       ],
@@ -28006,6 +28257,7 @@
           "NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/placement.py"
         ],
         "tests": [
+          "tests/fixtures/spec182/build-conversation-oracle.py",
           "tests/python/test_spec175_conversation.py",
           "tests/python/test_spec175_real_minindn_gate.py"
         ],
@@ -28372,6 +28624,7 @@
       "mappingStatus": "DYNAMIC_OR_COMPATIBILITY_REVIEW",
       "mappingReference": "contracts/public-api-migration-review.md",
       "verificationSelectors": [
+        "tests/fixtures/spec182/build-conversation-oracle.py",
         "tests/python/test_spec175_conversation.py",
         "tests/python/test_spec175_real_minindn_gate.py"
       ],
@@ -28448,6 +28701,7 @@
       "callers": [
         "NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/placement.py",
         "examples/python/NDNSF-DistributedInference/llm_pipeline/user.py",
+        "tests/fixtures/spec182/build-conversation-oracle.py",
         "tests/python/test_spec175_conversation.py",
         "tests/unit-tests/invocation-stream-message.t.cpp"
       ],
@@ -28457,6 +28711,7 @@
           "examples/python/NDNSF-DistributedInference/llm_pipeline/user.py"
         ],
         "tests": [
+          "tests/fixtures/spec182/build-conversation-oracle.py",
           "tests/python/test_spec175_conversation.py",
           "tests/unit-tests/invocation-stream-message.t.cpp"
         ],
@@ -28478,6 +28733,7 @@
       "mappingReference": "contracts/public-api-migration-review.md",
       "verificationSelectors": [
         "examples/python/NDNSF-DistributedInference/llm_pipeline/user.py",
+        "tests/fixtures/spec182/build-conversation-oracle.py",
         "tests/python/test_spec175_conversation.py",
         "tests/unit-tests/invocation-stream-message.t.cpp"
       ],
@@ -29359,9 +29615,12 @@
         "NDNSF-DistributedInference/cpp/ndnsf-di/ConversationStateBinding.hpp",
         "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.cpp",
         "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp",
+        "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanSealer.hpp",
         "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.cpp",
         "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderRuntime.cpp",
         "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderRuntime.hpp",
+        "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPlanner.cpp",
+        "NDNSF-DistributedInference/cpp/ndnsf-di/NativeSelectionJson.cpp",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/placement.py",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/sdk/placement.py",
         "examples/python/NDNSF-DistributedInference/llm_pipeline/provider.py",
@@ -29383,9 +29642,12 @@
           "NDNSF-DistributedInference/cpp/ndnsf-di/ConversationStateBinding.hpp",
           "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.cpp",
           "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp",
+          "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanSealer.hpp",
           "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.cpp",
           "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderRuntime.cpp",
-          "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderRuntime.hpp"
+          "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderRuntime.hpp",
+          "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPlanner.cpp",
+          "NDNSF-DistributedInference/cpp/ndnsf-di/NativeSelectionJson.cpp"
         ]
       },
       "externalUseStatus": "repository_callers_found",
@@ -29697,14 +29959,18 @@
           }
         ]
       },
-      "callers": [],
+      "callers": [
+        "tests/fixtures/spec182/build-conversation-oracle.py"
+      ],
       "callerInventory": {
         "maintainedCandidates": [],
-        "tests": [],
+        "tests": [
+          "tests/fixtures/spec182/build-conversation-oracle.py"
+        ],
         "generatedCopies": [],
         "other": []
       },
-      "externalUseStatus": "external_use_unknown",
+      "externalUseStatus": "repository_callers_found",
       "disposition": "OFFLINE_REFERENCE",
       "nativeOwner": "Python compatibility owner retained",
       "ownerTask": "T013-B",
@@ -29781,7 +30047,9 @@
       },
       "mappingStatus": "DYNAMIC_OR_COMPATIBILITY_REVIEW",
       "mappingReference": "contracts/public-api-migration-review.md",
-      "verificationSelectors": [],
+      "verificationSelectors": [
+        "tests/fixtures/spec182/build-conversation-oracle.py"
+      ],
       "status": "RETAINED_OR_OFFLINE",
       "removalEligible": false,
       "removalCondition": "owner task acceptance plus two zero-caller snapshots and rollback evidence",
@@ -29929,7 +30197,10 @@
         "NDNSF-DistributedInference/cpp/ndnsf-di/ConversationStateBinding.hpp",
         "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.cpp",
         "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp",
+        "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanSealer.hpp",
         "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderRuntime.cpp",
+        "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPlanner.cpp",
+        "NDNSF-DistributedInference/cpp/ndnsf-di/NativeSelectionJson.cpp",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/placement.py",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/sdk/placement.py",
         "examples/python/NDNSF-DistributedInference/llm_pipeline/provider.py",
@@ -29951,7 +30222,10 @@
           "NDNSF-DistributedInference/cpp/ndnsf-di/ConversationStateBinding.hpp",
           "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.cpp",
           "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp",
-          "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderRuntime.cpp"
+          "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanSealer.hpp",
+          "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderRuntime.cpp",
+          "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPlanner.cpp",
+          "NDNSF-DistributedInference/cpp/ndnsf-di/NativeSelectionJson.cpp"
         ]
       },
       "externalUseStatus": "repository_callers_found",
@@ -30090,7 +30364,7 @@
         "symbol": "DIProviderOfferV2",
         "path": "NDNSF-DistributedInference/ndnsf_distributed_inference/sdk/placement.py",
         "line": 144,
-        "sourceSha256": "75c32038cb33e7ea3a59e3c3692adb3ca48b47638b0d6ef433fda9309b1fff9f",
+        "sourceSha256": "7f08333585d4ae30eb878424acc9ae8cfa56856a8d26851315b775e9e8697390",
         "kind": "ClassDef",
         "bases": [],
         "methods": [
@@ -33900,6 +34174,7 @@
       },
       "callers": [
         "NDNSF-DistributedInference/ndnsf_distributed_inference/api/__init__.py",
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/__init__.py",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/client.py",
         "NDNSF-DistributedInference/packaging/python/app/build/lib/ndnsf_distributed_inference/app_sdk/application.py",
         "NDNSF-DistributedInference/packaging/python/app/build/lib/ndnsf_distributed_inference/app_sdk/client.py",
@@ -33909,6 +34184,7 @@
       "callerInventory": {
         "maintainedCandidates": [
           "NDNSF-DistributedInference/ndnsf_distributed_inference/api/__init__.py",
+          "NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/__init__.py",
           "NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/client.py"
         ],
         "tests": [
@@ -34621,7 +34897,7 @@
         "symbol": "ModelPlacementStrategy",
         "path": "NDNSF-DistributedInference/ndnsf_distributed_inference/sdk/placement.py",
         "line": 2198,
-        "sourceSha256": "75c32038cb33e7ea3a59e3c3692adb3ca48b47638b0d6ef433fda9309b1fff9f",
+        "sourceSha256": "7f08333585d4ae30eb878424acc9ae8cfa56856a8d26851315b775e9e8697390",
         "kind": "ClassDef",
         "bases": [
           "ABC"
@@ -34925,7 +35201,7 @@
         "symbol": "PlacementDecision",
         "path": "NDNSF-DistributedInference/ndnsf_distributed_inference/sdk/placement.py",
         "line": 471,
-        "sourceSha256": "75c32038cb33e7ea3a59e3c3692adb3ca48b47638b0d6ef433fda9309b1fff9f",
+        "sourceSha256": "7f08333585d4ae30eb878424acc9ae8cfa56856a8d26851315b775e9e8697390",
         "kind": "ClassDef",
         "bases": [],
         "methods": [
@@ -35125,7 +35401,7 @@
         "symbol": "PlacementRequest",
         "path": "NDNSF-DistributedInference/ndnsf_distributed_inference/sdk/placement.py",
         "line": 393,
-        "sourceSha256": "75c32038cb33e7ea3a59e3c3692adb3ca48b47638b0d6ef433fda9309b1fff9f",
+        "sourceSha256": "7f08333585d4ae30eb878424acc9ae8cfa56856a8d26851315b775e9e8697390",
         "kind": "ClassDef",
         "bases": [],
         "methods": [
@@ -35939,7 +36215,7 @@
         "symbol": "ProviderAssignment",
         "path": "NDNSF-DistributedInference/ndnsf_distributed_inference/sdk/placement.py",
         "line": 379,
-        "sourceSha256": "75c32038cb33e7ea3a59e3c3692adb3ca48b47638b0d6ef433fda9309b1fff9f",
+        "sourceSha256": "7f08333585d4ae30eb878424acc9ae8cfa56856a8d26851315b775e9e8697390",
         "kind": "ClassDef",
         "bases": [],
         "methods": [
@@ -37871,12 +38147,16 @@
       },
       "callers": [
         "NDNSF-DistributedInference/cpp/ndnsf-di/ConversationStateBinding.hpp",
+        "NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.cpp",
         "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.cpp",
         "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderRuntime.cpp",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/placement.py",
         "examples/python/NDNSF-DistributedInference/llm_pipeline/provider.py",
         "examples/python/NDNSF-DistributedInference/llm_pipeline/user.py",
+        "tests/fixtures/spec182/build-conversation-oracle.py",
+        "tests/integration-tests/ndnsf-di-core-flow.t.cpp",
         "tests/python/test_spec175_conversation.py",
+        "tests/unit-tests/di-native-v3-placement.t.cpp",
         "tests/unit-tests/distributed-inference-async-runtime.t.cpp"
       ],
       "callerInventory": {
@@ -37886,12 +38166,16 @@
           "examples/python/NDNSF-DistributedInference/llm_pipeline/user.py"
         ],
         "tests": [
+          "tests/fixtures/spec182/build-conversation-oracle.py",
+          "tests/integration-tests/ndnsf-di-core-flow.t.cpp",
           "tests/python/test_spec175_conversation.py",
+          "tests/unit-tests/di-native-v3-placement.t.cpp",
           "tests/unit-tests/distributed-inference-async-runtime.t.cpp"
         ],
         "generatedCopies": [],
         "other": [
           "NDNSF-DistributedInference/cpp/ndnsf-di/ConversationStateBinding.hpp",
+          "NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.cpp",
           "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.cpp",
           "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderRuntime.cpp"
         ]
@@ -38037,7 +38321,10 @@
       "verificationSelectors": [
         "examples/python/NDNSF-DistributedInference/llm_pipeline/provider.py",
         "examples/python/NDNSF-DistributedInference/llm_pipeline/user.py",
+        "tests/fixtures/spec182/build-conversation-oracle.py",
+        "tests/integration-tests/ndnsf-di-core-flow.t.cpp",
         "tests/python/test_spec175_conversation.py",
+        "tests/unit-tests/di-native-v3-placement.t.cpp",
         "tests/unit-tests/distributed-inference-async-runtime.t.cpp"
       ],
       "status": "RETAINED_OR_OFFLINE",
@@ -38468,7 +38755,7 @@
         "symbol": "ProviderPlanningView",
         "path": "NDNSF-DistributedInference/ndnsf_distributed_inference/sdk/placement.py",
         "line": 280,
-        "sourceSha256": "75c32038cb33e7ea3a59e3c3692adb3ca48b47638b0d6ef433fda9309b1fff9f",
+        "sourceSha256": "7f08333585d4ae30eb878424acc9ae8cfa56856a8d26851315b775e9e8697390",
         "kind": "ClassDef",
         "bases": [],
         "methods": [
@@ -40200,7 +40487,7 @@
         "symbol": "ArtifactPreparationMode",
         "path": "NDNSF-DistributedInference/ndnsf_distributed_inference/sdk/placement.py",
         "line": 458,
-        "sourceSha256": "75c32038cb33e7ea3a59e3c3692adb3ca48b47638b0d6ef433fda9309b1fff9f",
+        "sourceSha256": "7f08333585d4ae30eb878424acc9ae8cfa56856a8d26851315b775e9e8697390",
         "kind": "ClassDef",
         "bases": [
           "str",
@@ -40668,7 +40955,7 @@
         "symbol": "DIProviderOfferV2",
         "path": "NDNSF-DistributedInference/ndnsf_distributed_inference/sdk/placement.py",
         "line": 144,
-        "sourceSha256": "75c32038cb33e7ea3a59e3c3692adb3ca48b47638b0d6ef433fda9309b1fff9f",
+        "sourceSha256": "7f08333585d4ae30eb878424acc9ae8cfa56856a8d26851315b775e9e8697390",
         "kind": "ClassDef",
         "bases": [],
         "methods": [
@@ -41106,13 +41393,15 @@
         "symbol": "DI_PLACEMENT_V3",
         "path": "NDNSF-DistributedInference/ndnsf_distributed_inference/sdk/placement.py",
         "line": 507,
-        "sourceSha256": "75c32038cb33e7ea3a59e3c3692adb3ca48b47638b0d6ef433fda9309b1fff9f",
+        "sourceSha256": "7f08333585d4ae30eb878424acc9ae8cfa56856a8d26851315b775e9e8697390",
         "expression": "\"DI_PLACEMENT_V3\""
       },
       "callers": [
+        "NDNSF-DistributedInference/cpp/ndnsf-di/NativeObservedOfferV3.cpp",
         "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderOfferV3.cpp",
         "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderOfferV3.hpp",
         "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderReadiness.cpp",
+        "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestEnvelope.cpp",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/client.py",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/placement.py",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/core/__init__.py",
@@ -41123,6 +41412,7 @@
         "NDNSF-DistributedInference/ndnsf_distributed_inference/sdk/__init__.py",
         "examples/python/NDNSF-DistributedInference/spec170_v3_cpu_provider.py",
         "examples/python/NDNSF-DistributedInference/spec170_v3_cpu_user.py",
+        "tests/fixtures/spec182/check-request-envelope-wire.py",
         "tests/integration-tests/ndnsf-di-native-assembly.t.cpp",
         "tests/python/test_ndnsf_di_public_api_contract.py",
         "tests/python/test_spec170_default_application_path.py",
@@ -41145,6 +41435,7 @@
           "examples/python/NDNSF-DistributedInference/spec170_v3_cpu_user.py"
         ],
         "tests": [
+          "tests/fixtures/spec182/check-request-envelope-wire.py",
           "tests/integration-tests/ndnsf-di-native-assembly.t.cpp",
           "tests/python/test_ndnsf_di_public_api_contract.py",
           "tests/python/test_spec170_default_application_path.py",
@@ -41155,9 +41446,11 @@
         ],
         "generatedCopies": [],
         "other": [
+          "NDNSF-DistributedInference/cpp/ndnsf-di/NativeObservedOfferV3.cpp",
           "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderOfferV3.cpp",
           "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderOfferV3.hpp",
-          "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderReadiness.cpp"
+          "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderReadiness.cpp",
+          "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestEnvelope.cpp"
         ]
       },
       "externalUseStatus": "repository_callers_found",
@@ -41176,6 +41469,7 @@
       "verificationSelectors": [
         "examples/python/NDNSF-DistributedInference/spec170_v3_cpu_provider.py",
         "examples/python/NDNSF-DistributedInference/spec170_v3_cpu_user.py",
+        "tests/fixtures/spec182/check-request-envelope-wire.py",
         "tests/integration-tests/ndnsf-di-native-assembly.t.cpp",
         "tests/python/test_ndnsf_di_public_api_contract.py",
         "tests/python/test_spec170_default_application_path.py",
@@ -41460,7 +41754,7 @@
         "symbol": "DeviceResourceSnapshot",
         "path": "NDNSF-DistributedInference/ndnsf_distributed_inference/sdk/placement.py",
         "line": 563,
-        "sourceSha256": "75c32038cb33e7ea3a59e3c3692adb3ca48b47638b0d6ef433fda9309b1fff9f",
+        "sourceSha256": "7f08333585d4ae30eb878424acc9ae8cfa56856a8d26851315b775e9e8697390",
         "kind": "ClassDef",
         "bases": [],
         "methods": [
@@ -41527,6 +41821,8 @@
         "NDNSF-DistributedInference/ndnsf_distributed_inference/provider.py",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/sdk/__init__.py",
         "examples/python/NDNSF-DistributedInference/llm_pipeline/provider.py",
+        "tests/fixtures/spec182/author-offer-python-oracle.py",
+        "tests/fixtures/spec182/author-placement-v3-oracle.py",
         "tests/python/test_spec170_ack_no_reservation.py",
         "tests/python/test_spec170_layer_reuse_first.py",
         "tests/python/test_spec170_placement_v3.py",
@@ -41539,6 +41835,8 @@
           "examples/python/NDNSF-DistributedInference/llm_pipeline/provider.py"
         ],
         "tests": [
+          "tests/fixtures/spec182/author-offer-python-oracle.py",
+          "tests/fixtures/spec182/author-placement-v3-oracle.py",
           "tests/python/test_spec170_ack_no_reservation.py",
           "tests/python/test_spec170_layer_reuse_first.py",
           "tests/python/test_spec170_placement_v3.py",
@@ -41585,6 +41883,8 @@
       "mappingReference": null,
       "verificationSelectors": [
         "examples/python/NDNSF-DistributedInference/llm_pipeline/provider.py",
+        "tests/fixtures/spec182/author-offer-python-oracle.py",
+        "tests/fixtures/spec182/author-placement-v3-oracle.py",
         "tests/python/test_spec170_ack_no_reservation.py",
         "tests/python/test_spec170_layer_reuse_first.py",
         "tests/python/test_spec170_placement_v3.py",
@@ -41606,7 +41906,7 @@
         "symbol": "DeviceTopologyProfile",
         "path": "NDNSF-DistributedInference/ndnsf_distributed_inference/sdk/placement.py",
         "line": 533,
-        "sourceSha256": "75c32038cb33e7ea3a59e3c3692adb3ca48b47638b0d6ef433fda9309b1fff9f",
+        "sourceSha256": "7f08333585d4ae30eb878424acc9ae8cfa56856a8d26851315b775e9e8697390",
         "kind": "ClassDef",
         "bases": [],
         "methods": [
@@ -41699,6 +41999,9 @@
         "NDNSF-DistributedInference/ndnsf_distributed_inference/sdk/__init__.py",
         "examples/python/NDNSF-DistributedInference/spec170_v3_cpu_user.py",
         "examples/python/NDNSF-DistributedInference/yolo_2x2/provider.py",
+        "tests/fixtures/spec182/author-native-merge-offers.py",
+        "tests/fixtures/spec182/author-offer-python-oracle.py",
+        "tests/fixtures/spec182/author-placement-v3-oracle.py",
         "tests/python/test_spec170_ack_no_reservation.py",
         "tests/python/test_spec170_default_application_path.py",
         "tests/python/test_spec170_integrated_flows.py",
@@ -41718,6 +42021,9 @@
           "examples/python/NDNSF-DistributedInference/yolo_2x2/provider.py"
         ],
         "tests": [
+          "tests/fixtures/spec182/author-native-merge-offers.py",
+          "tests/fixtures/spec182/author-offer-python-oracle.py",
+          "tests/fixtures/spec182/author-placement-v3-oracle.py",
           "tests/python/test_spec170_ack_no_reservation.py",
           "tests/python/test_spec170_default_application_path.py",
           "tests/python/test_spec170_integrated_flows.py",
@@ -41796,6 +42102,9 @@
       "verificationSelectors": [
         "examples/python/NDNSF-DistributedInference/spec170_v3_cpu_user.py",
         "examples/python/NDNSF-DistributedInference/yolo_2x2/provider.py",
+        "tests/fixtures/spec182/author-native-merge-offers.py",
+        "tests/fixtures/spec182/author-offer-python-oracle.py",
+        "tests/fixtures/spec182/author-placement-v3-oracle.py",
         "tests/python/test_spec170_ack_no_reservation.py",
         "tests/python/test_spec170_default_application_path.py",
         "tests/python/test_spec170_integrated_flows.py",
@@ -41823,7 +42132,7 @@
         "symbol": "ExecutionDisposition",
         "path": "NDNSF-DistributedInference/ndnsf_distributed_inference/sdk/placement.py",
         "line": 511,
-        "sourceSha256": "75c32038cb33e7ea3a59e3c3692adb3ca48b47638b0d6ef433fda9309b1fff9f",
+        "sourceSha256": "7f08333585d4ae30eb878424acc9ae8cfa56856a8d26851315b775e9e8697390",
         "kind": "ClassDef",
         "bases": [
           "str",
@@ -42487,7 +42796,7 @@
         "symbol": "GenerationExecutionContractV1",
         "path": "NDNSF-DistributedInference/ndnsf_distributed_inference/sdk/placement.py",
         "line": 1471,
-        "sourceSha256": "75c32038cb33e7ea3a59e3c3692adb3ca48b47638b0d6ef433fda9309b1fff9f",
+        "sourceSha256": "7f08333585d4ae30eb878424acc9ae8cfa56856a8d26851315b775e9e8697390",
         "kind": "ClassDef",
         "bases": [],
         "methods": [
@@ -42725,7 +43034,7 @@
         "symbol": "ModelPlacementStrategy",
         "path": "NDNSF-DistributedInference/ndnsf_distributed_inference/sdk/placement.py",
         "line": 2198,
-        "sourceSha256": "75c32038cb33e7ea3a59e3c3692adb3ca48b47638b0d6ef433fda9309b1fff9f",
+        "sourceSha256": "7f08333585d4ae30eb878424acc9ae8cfa56856a8d26851315b775e9e8697390",
         "kind": "ClassDef",
         "bases": [
           "ABC"
@@ -44430,7 +44739,7 @@
         "symbol": "PlacementDecision",
         "path": "NDNSF-DistributedInference/ndnsf_distributed_inference/sdk/placement.py",
         "line": 471,
-        "sourceSha256": "75c32038cb33e7ea3a59e3c3692adb3ca48b47638b0d6ef433fda9309b1fff9f",
+        "sourceSha256": "7f08333585d4ae30eb878424acc9ae8cfa56856a8d26851315b775e9e8697390",
         "kind": "ClassDef",
         "bases": [],
         "methods": [
@@ -44630,7 +44939,7 @@
         "symbol": "PlacementPlanCoreV3",
         "path": "NDNSF-DistributedInference/ndnsf_distributed_inference/sdk/placement.py",
         "line": 1567,
-        "sourceSha256": "75c32038cb33e7ea3a59e3c3692adb3ca48b47638b0d6ef433fda9309b1fff9f",
+        "sourceSha256": "7f08333585d4ae30eb878424acc9ae8cfa56856a8d26851315b775e9e8697390",
         "kind": "ClassDef",
         "bases": [],
         "methods": [
@@ -44767,6 +45076,8 @@
         "NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/core/v3_lifecycle.py",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/sdk/__init__.py",
+        "tests/fixtures/spec182/author-placement-v3-oracle.py",
+        "tests/fixtures/spec182/author-sealer-python-oracle.py",
         "tests/python/test_spec170_ack_no_reservation.py"
       ],
       "callerInventory": {
@@ -44775,6 +45086,8 @@
           "NDNSF-DistributedInference/ndnsf_distributed_inference/sdk/__init__.py"
         ],
         "tests": [
+          "tests/fixtures/spec182/author-placement-v3-oracle.py",
+          "tests/fixtures/spec182/author-sealer-python-oracle.py",
           "tests/python/test_spec170_ack_no_reservation.py"
         ],
         "generatedCopies": [],
@@ -44858,6 +45171,8 @@
       "mappingStatus": "INVENTORY_ONLY",
       "mappingReference": null,
       "verificationSelectors": [
+        "tests/fixtures/spec182/author-placement-v3-oracle.py",
+        "tests/fixtures/spec182/author-sealer-python-oracle.py",
         "tests/python/test_spec170_ack_no_reservation.py"
       ],
       "status": "PLANNED_NATIVE",
@@ -44876,7 +45191,7 @@
         "symbol": "PlacementProposalV3",
         "path": "NDNSF-DistributedInference/ndnsf_distributed_inference/sdk/placement.py",
         "line": 1428,
-        "sourceSha256": "75c32038cb33e7ea3a59e3c3692adb3ca48b47638b0d6ef433fda9309b1fff9f",
+        "sourceSha256": "7f08333585d4ae30eb878424acc9ae8cfa56856a8d26851315b775e9e8697390",
         "kind": "ClassDef",
         "bases": [],
         "methods": [
@@ -45086,7 +45401,7 @@
         "symbol": "PlacementRequest",
         "path": "NDNSF-DistributedInference/ndnsf_distributed_inference/sdk/placement.py",
         "line": 393,
-        "sourceSha256": "75c32038cb33e7ea3a59e3c3692adb3ca48b47638b0d6ef433fda9309b1fff9f",
+        "sourceSha256": "7f08333585d4ae30eb878424acc9ae8cfa56856a8d26851315b775e9e8697390",
         "kind": "ClassDef",
         "bases": [],
         "methods": [
@@ -45498,7 +45813,7 @@
         "symbol": "PlanSealerV3",
         "path": "NDNSF-DistributedInference/ndnsf_distributed_inference/sdk/placement.py",
         "line": 1959,
-        "sourceSha256": "75c32038cb33e7ea3a59e3c3692adb3ca48b47638b0d6ef433fda9309b1fff9f",
+        "sourceSha256": "7f08333585d4ae30eb878424acc9ae8cfa56856a8d26851315b775e9e8697390",
         "kind": "ClassDef",
         "bases": [],
         "methods": [
@@ -45752,6 +46067,7 @@
         "NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/placement.py",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/sdk/__init__.py",
         "examples/python/NDNSF-DistributedInference/spec170_v3_cpu_user.py",
+        "tests/fixtures/spec182/author-sealer-python-oracle.py",
         "tests/python/test_spec170_integrated_flows.py",
         "tests/python/test_spec170_plan_sealer.py"
       ],
@@ -45762,6 +46078,7 @@
           "examples/python/NDNSF-DistributedInference/spec170_v3_cpu_user.py"
         ],
         "tests": [
+          "tests/fixtures/spec182/author-sealer-python-oracle.py",
           "tests/python/test_spec170_integrated_flows.py",
           "tests/python/test_spec170_plan_sealer.py"
         ],
@@ -45969,6 +46286,7 @@
       "mappingReference": null,
       "verificationSelectors": [
         "examples/python/NDNSF-DistributedInference/spec170_v3_cpu_user.py",
+        "tests/fixtures/spec182/author-sealer-python-oracle.py",
         "tests/python/test_spec170_integrated_flows.py",
         "tests/python/test_spec170_plan_sealer.py"
       ],
@@ -46299,7 +46617,7 @@
         "symbol": "ProviderAssignment",
         "path": "NDNSF-DistributedInference/ndnsf_distributed_inference/sdk/placement.py",
         "line": 379,
-        "sourceSha256": "75c32038cb33e7ea3a59e3c3692adb3ca48b47638b0d6ef433fda9309b1fff9f",
+        "sourceSha256": "7f08333585d4ae30eb878424acc9ae8cfa56856a8d26851315b775e9e8697390",
         "kind": "ClassDef",
         "bases": [],
         "methods": [
@@ -46745,7 +47063,7 @@
         "symbol": "ProviderGrantViewV1",
         "path": "NDNSF-DistributedInference/ndnsf_distributed_inference/sdk/placement.py",
         "line": 1635,
-        "sourceSha256": "75c32038cb33e7ea3a59e3c3692adb3ca48b47638b0d6ef433fda9309b1fff9f",
+        "sourceSha256": "7f08333585d4ae30eb878424acc9ae8cfa56856a8d26851315b775e9e8697390",
         "kind": "ClassDef",
         "bases": [],
         "methods": [
@@ -46937,7 +47255,7 @@
         "symbol": "ProviderOfferV3",
         "path": "NDNSF-DistributedInference/ndnsf_distributed_inference/sdk/placement.py",
         "line": 692,
-        "sourceSha256": "75c32038cb33e7ea3a59e3c3692adb3ca48b47638b0d6ef433fda9309b1fff9f",
+        "sourceSha256": "7f08333585d4ae30eb878424acc9ae8cfa56856a8d26851315b775e9e8697390",
         "kind": "ClassDef",
         "bases": [],
         "methods": [
@@ -47202,6 +47520,11 @@
         "NDNSF-DistributedInference/ndnsf_distributed_inference/sdk/__init__.py",
         "examples/python/NDNSF-DistributedInference/spec170_v3_cpu_user.py",
         "examples/python/NDNSF-DistributedInference/yolo_2x2/provider.py",
+        "tests/fixtures/spec182/author-native-merge-offers.py",
+        "tests/fixtures/spec182/author-offer-python-oracle.py",
+        "tests/fixtures/spec182/author-placement-v3-oracle.py",
+        "tests/fixtures/spec182/author-projection-oracle.py",
+        "tests/fixtures/spec182/author-signed-offer-oracle.py",
         "tests/python/test_spec170_ack_no_reservation.py",
         "tests/python/test_spec170_default_application_path.py",
         "tests/python/test_spec170_integrated_flows.py",
@@ -47224,6 +47547,11 @@
           "examples/python/NDNSF-DistributedInference/yolo_2x2/provider.py"
         ],
         "tests": [
+          "tests/fixtures/spec182/author-native-merge-offers.py",
+          "tests/fixtures/spec182/author-offer-python-oracle.py",
+          "tests/fixtures/spec182/author-placement-v3-oracle.py",
+          "tests/fixtures/spec182/author-projection-oracle.py",
+          "tests/fixtures/spec182/author-signed-offer-oracle.py",
           "tests/python/test_spec170_ack_no_reservation.py",
           "tests/python/test_spec170_default_application_path.py",
           "tests/python/test_spec170_integrated_flows.py",
@@ -47362,6 +47690,11 @@
       "verificationSelectors": [
         "examples/python/NDNSF-DistributedInference/spec170_v3_cpu_user.py",
         "examples/python/NDNSF-DistributedInference/yolo_2x2/provider.py",
+        "tests/fixtures/spec182/author-native-merge-offers.py",
+        "tests/fixtures/spec182/author-offer-python-oracle.py",
+        "tests/fixtures/spec182/author-placement-v3-oracle.py",
+        "tests/fixtures/spec182/author-projection-oracle.py",
+        "tests/fixtures/spec182/author-signed-offer-oracle.py",
         "tests/python/test_spec170_ack_no_reservation.py",
         "tests/python/test_spec170_default_application_path.py",
         "tests/python/test_spec170_integrated_flows.py",
@@ -47389,7 +47722,7 @@
         "symbol": "ProviderPlanningView",
         "path": "NDNSF-DistributedInference/ndnsf_distributed_inference/sdk/placement.py",
         "line": 280,
-        "sourceSha256": "75c32038cb33e7ea3a59e3c3692adb3ca48b47638b0d6ef433fda9309b1fff9f",
+        "sourceSha256": "7f08333585d4ae30eb878424acc9ae8cfa56856a8d26851315b775e9e8697390",
         "kind": "ClassDef",
         "bases": [],
         "methods": [
@@ -47687,7 +48020,7 @@
         "symbol": "ProviderPlanningViewV3",
         "path": "NDNSF-DistributedInference/ndnsf_distributed_inference/sdk/placement.py",
         "line": 789,
-        "sourceSha256": "75c32038cb33e7ea3a59e3c3692adb3ca48b47638b0d6ef433fda9309b1fff9f",
+        "sourceSha256": "7f08333585d4ae30eb878424acc9ae8cfa56856a8d26851315b775e9e8697390",
         "kind": "ClassDef",
         "bases": [],
         "methods": [
@@ -47882,6 +48215,7 @@
         "NDNSF-DistributedInference/ndnsf_distributed_inference/planner/presplit_first.py",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/sdk/__init__.py",
         "examples/python/NDNSF-DistributedInference/spec170_v3_cpu_user.py",
+        "tests/fixtures/spec182/author-placement-v3-oracle.py",
         "tests/python/test_spec170_integrated_flows.py",
         "tests/python/test_spec170_layer_reuse_first.py",
         "tests/python/test_spec170_placement_v3.py",
@@ -47896,6 +48230,7 @@
           "examples/python/NDNSF-DistributedInference/spec170_v3_cpu_user.py"
         ],
         "tests": [
+          "tests/fixtures/spec182/author-placement-v3-oracle.py",
           "tests/python/test_spec170_integrated_flows.py",
           "tests/python/test_spec170_layer_reuse_first.py",
           "tests/python/test_spec170_placement_v3.py",
@@ -48015,6 +48350,7 @@
       "mappingReference": null,
       "verificationSelectors": [
         "examples/python/NDNSF-DistributedInference/spec170_v3_cpu_user.py",
+        "tests/fixtures/spec182/author-placement-v3-oracle.py",
         "tests/python/test_spec170_integrated_flows.py",
         "tests/python/test_spec170_layer_reuse_first.py",
         "tests/python/test_spec170_placement_v3.py",
@@ -48037,7 +48373,7 @@
         "symbol": "ProviderSelectionProjectionV3",
         "path": "NDNSF-DistributedInference/ndnsf_distributed_inference/sdk/placement.py",
         "line": 1700,
-        "sourceSha256": "75c32038cb33e7ea3a59e3c3692adb3ca48b47638b0d6ef433fda9309b1fff9f",
+        "sourceSha256": "7f08333585d4ae30eb878424acc9ae8cfa56856a8d26851315b775e9e8697390",
         "kind": "ClassDef",
         "bases": [],
         "methods": [
@@ -48732,7 +49068,7 @@
         "symbol": "ResidencyProofV3",
         "path": "NDNSF-DistributedInference/ndnsf_distributed_inference/sdk/placement.py",
         "line": 582,
-        "sourceSha256": "75c32038cb33e7ea3a59e3c3692adb3ca48b47638b0d6ef433fda9309b1fff9f",
+        "sourceSha256": "7f08333585d4ae30eb878424acc9ae8cfa56856a8d26851315b775e9e8697390",
         "kind": "ClassDef",
         "bases": [],
         "methods": [
@@ -48974,6 +49310,8 @@
         "NDNSF-DistributedInference/ndnsf_distributed_inference/provider.py",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/sdk/__init__.py",
         "examples/python/NDNSF-DistributedInference/llm_pipeline/provider.py",
+        "tests/fixtures/spec182/author-offer-python-oracle.py",
+        "tests/fixtures/spec182/author-placement-v3-oracle.py",
         "tests/python/test_spec170_ack_no_reservation.py",
         "tests/python/test_spec170_integrated_flows.py",
         "tests/python/test_spec170_layer_reuse_first.py",
@@ -48988,6 +49326,8 @@
           "examples/python/NDNSF-DistributedInference/llm_pipeline/provider.py"
         ],
         "tests": [
+          "tests/fixtures/spec182/author-offer-python-oracle.py",
+          "tests/fixtures/spec182/author-placement-v3-oracle.py",
           "tests/python/test_spec170_ack_no_reservation.py",
           "tests/python/test_spec170_integrated_flows.py",
           "tests/python/test_spec170_layer_reuse_first.py",
@@ -49119,6 +49459,8 @@
       "mappingReference": null,
       "verificationSelectors": [
         "examples/python/NDNSF-DistributedInference/llm_pipeline/provider.py",
+        "tests/fixtures/spec182/author-offer-python-oracle.py",
+        "tests/fixtures/spec182/author-placement-v3-oracle.py",
         "tests/python/test_spec170_ack_no_reservation.py",
         "tests/python/test_spec170_integrated_flows.py",
         "tests/python/test_spec170_layer_reuse_first.py",
@@ -49141,7 +49483,7 @@
         "symbol": "ResidencyTierV3",
         "path": "NDNSF-DistributedInference/ndnsf_distributed_inference/sdk/placement.py",
         "line": 517,
-        "sourceSha256": "75c32038cb33e7ea3a59e3c3692adb3ca48b47638b0d6ef433fda9309b1fff9f",
+        "sourceSha256": "7f08333585d4ae30eb878424acc9ae8cfa56856a8d26851315b775e9e8697390",
         "kind": "ClassDef",
         "bases": [
           "str",
@@ -49215,7 +49557,7 @@
         "symbol": "RoleAssemblySpec",
         "path": "NDNSF-DistributedInference/ndnsf_distributed_inference/sdk/placement.py",
         "line": 1304,
-        "sourceSha256": "75c32038cb33e7ea3a59e3c3692adb3ca48b47638b0d6ef433fda9309b1fff9f",
+        "sourceSha256": "7f08333585d4ae30eb878424acc9ae8cfa56856a8d26851315b775e9e8697390",
         "kind": "ClassDef",
         "bases": [],
         "methods": [
@@ -49420,6 +49762,8 @@
         "examples/python/NDNSF-DistributedInference/native_di_tracer/user_driver.py",
         "examples/python/NDNSF-DistributedInference/spec170_v3_cpu_user.py",
         "examples/python/NDNSF-DistributedInference/yolo_2x2/user.py",
+        "tests/fixtures/spec182/author-placement-v3-oracle.py",
+        "tests/fixtures/spec182/author-sealer-python-oracle.py",
         "tests/python/test_ndnsf_di_provider_v3_boundary.py",
         "tests/python/test_spec170_ack_no_reservation.py",
         "tests/python/test_spec170_integrated_flows.py",
@@ -49450,6 +49794,8 @@
           "examples/python/NDNSF-DistributedInference/yolo_2x2/user.py"
         ],
         "tests": [
+          "tests/fixtures/spec182/author-placement-v3-oracle.py",
+          "tests/fixtures/spec182/author-sealer-python-oracle.py",
           "tests/python/test_ndnsf_di_provider_v3_boundary.py",
           "tests/python/test_spec170_ack_no_reservation.py",
           "tests/python/test_spec170_integrated_flows.py",
@@ -49538,6 +49884,8 @@
         "examples/python/NDNSF-DistributedInference/native_di_tracer/user_driver.py",
         "examples/python/NDNSF-DistributedInference/spec170_v3_cpu_user.py",
         "examples/python/NDNSF-DistributedInference/yolo_2x2/user.py",
+        "tests/fixtures/spec182/author-placement-v3-oracle.py",
+        "tests/fixtures/spec182/author-sealer-python-oracle.py",
         "tests/python/test_ndnsf_di_provider_v3_boundary.py",
         "tests/python/test_spec170_ack_no_reservation.py",
         "tests/python/test_spec170_integrated_flows.py",
@@ -50335,7 +50683,7 @@
         "symbol": "UNBOUND_GRAPH_DIGEST_V3",
         "path": "NDNSF-DistributedInference/ndnsf_distributed_inference/sdk/placement.py",
         "line": 508,
-        "sourceSha256": "75c32038cb33e7ea3a59e3c3692adb3ca48b47638b0d6ef433fda9309b1fff9f",
+        "sourceSha256": "7f08333585d4ae30eb878424acc9ae8cfa56856a8d26851315b775e9e8697390",
         "expression": "\"sha256:\" + (\"0\" * 64)"
       },
       "callers": [
@@ -50397,7 +50745,7 @@
         "symbol": "build_provider_planning_view",
         "path": "NDNSF-DistributedInference/ndnsf_distributed_inference/sdk/placement.py",
         "line": 328,
-        "sourceSha256": "75c32038cb33e7ea3a59e3c3692adb3ca48b47638b0d6ef433fda9309b1fff9f",
+        "sourceSha256": "7f08333585d4ae30eb878424acc9ae8cfa56856a8d26851315b775e9e8697390",
         "kind": "FunctionDef",
         "parameters": [
           {
@@ -50506,7 +50854,7 @@
         "symbol": "decode_placement_wire",
         "path": "NDNSF-DistributedInference/ndnsf_distributed_inference/sdk/placement.py",
         "line": 2181,
-        "sourceSha256": "75c32038cb33e7ea3a59e3c3692adb3ca48b47638b0d6ef433fda9309b1fff9f",
+        "sourceSha256": "7f08333585d4ae30eb878424acc9ae8cfa56856a8d26851315b775e9e8697390",
         "kind": "FunctionDef",
         "parameters": [
           {
@@ -50901,7 +51249,7 @@
         "symbol": "evaluate_placement_strategy",
         "path": "NDNSF-DistributedInference/ndnsf_distributed_inference/sdk/placement.py",
         "line": 2231,
-        "sourceSha256": "75c32038cb33e7ea3a59e3c3692adb3ca48b47638b0d6ef433fda9309b1fff9f",
+        "sourceSha256": "7f08333585d4ae30eb878424acc9ae8cfa56856a8d26851315b775e9e8697390",
         "kind": "FunctionDef",
         "parameters": [
           {
