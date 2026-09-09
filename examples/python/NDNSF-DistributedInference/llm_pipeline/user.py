@@ -196,7 +196,14 @@ def _native_qwen_request(client, args, payload: bytes, *, request_id: str,
     }
     if on_event is not None:
         request_kwargs["on_event"] = on_event
-    native = client.request_native_payload(bytes(payload), **request_kwargs)
+    reference = client.publish_application_input_reference(
+        SERVICE,
+        bytes(payload),
+        object_label="qwen-context-input",
+        object_type="application/x-ndnsf-di-qwen-context+json",
+        freshness_ms=120000,
+    )
+    native = client.request_native_reference(reference, **request_kwargs)
     result = native.result(int(args.timeout_ms))
     return type("NativeInferenceResult", (), {
         "status": True,
@@ -3847,7 +3854,7 @@ def main() -> int:
         default="",
         help=(
             "Operator-pinned ndnsf-di-native-requester-v1 configuration. "
-            "When set, Qwen requests use APPClient.request_native_payload "
+            "When set, Qwen requests use APPClient.request_native_reference "
             "and never fall back to the Python planner."
         ),
     )

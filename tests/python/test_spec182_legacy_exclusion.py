@@ -53,7 +53,7 @@ def test_maintained_qwen_routes_use_explicit_native_config_without_fallback() ->
         encoding="utf-8")
     assert "--native-requester-config" in user
     assert "configure_native_requester_from_config" in user
-    assert "request_native_payload" in user
+    assert "request_native_reference" in user
     assert "refusing Python planner fallback" in client
     assert "native-requester-config" in qwen_harness
     assert "native-requester-config" in stream_harness
@@ -67,6 +67,18 @@ def test_maintained_qwen_routes_use_explicit_native_config_without_fallback() ->
     # remains explicit in the maintained caller source.
     assert user.index("if args.native_requester_config:") < user.index(
         "elif args.automatic_planning_manifest:")
+
+
+def test_maintained_qwen_native_route_uses_repository_reference() -> None:
+    user = (ROOT / "examples/python/NDNSF-DistributedInference/llm_pipeline/user.py").read_text(
+        encoding="utf-8")
+    native_helper = user[user.index("def _native_qwen_request"):user.index(
+        "def _qwen_model_type_from_documents")]
+    assert "publish_application_input_reference" in native_helper
+    assert "request_native_reference" in native_helper
+    assert "request_native_payload" not in native_helper
+    assert native_helper.index("publish_application_input_reference") < native_helper.index(
+        "request_native_reference")
 
 
 def test_maintained_yolo_native_route_is_explicit_and_fail_closed() -> None:
