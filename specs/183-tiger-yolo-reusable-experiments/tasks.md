@@ -17,6 +17,14 @@ selection、protected grant、terminal response、数值 oracle 与 clean cleanu
 回执。该结果确认正常 APP/NDNSF-DI 数据路径已运行；Y-A/Y-N、host qualification
 manifest、GPU 与 TigerCluster 资格仍未完成。
 
+新增检查点：`minindn-local-20260909-v40-yn36` exact-SIF Y-N 矩阵。使用同一 v21
+基础 SIF 与 v24 外置应用，Y-N-O/C/P/R/I/E/L 七个注册子案全部 `status=PASS`；
+正常控制、选择/ACK/角色拒绝、非 ingress 输入拒绝、三种 grant 拒绝和 redaction
+拒绝均有独立回执。systemd supervisor `returncode=0`、`processCleanup=CLEAN`，
+九个 Controller 日志无 traceback/abort。该回执仍是 `qualification=NOT_EVALUATED`
+的本地 MiniNDN 证据，不能关闭 Y-A、同源 host qualification manifest、GPU 或
+TigerCluster 资格门。
+
 2026-09-08 用户裁决将本仓库 TigerCluster 构建并行度上限从 `-j2` 调整为 `-j4`，
 用于缩短构建时间并保持可复现；同一构建树仍只允许一个构建进程。历史回执保留实际
 使用的 `-j2` 命令，不改写为新规则下的执行证据。
@@ -108,7 +116,7 @@ T007 复核确认正常/负例/SSH 接线已存在；N3 issuer/rank版本检查�
 | T008.c | T008 | `_ndnsf` 与 `_py_repoclient`、真实入口、ldd/readelf/hash、注册 unit | BLOCKED | [host-unit](evidence/host-unit.md) 与4ade12bf已记录树外import/ldd、unit-tests和integration-tests RC0；本轮未重跑 | T007与最终source身份仍须闭合；二进制suite通过不等于T009多进程YOLO | 复用匹配候选的测试记录；不重复已有loader或unit集合 |
 | T009.a | T009 | 多进程 CPU YOLO 正常 ACK/Selection→四角色→数值结果 | NOT_STARTED | V09；NOT_RUN | T008 后执行；bootstrap 与 inference 分开判定 | 不重跑全部历史 DI 集成 |
 | T009.b | T009 | 当前 epoch/权限拒绝、错 Selection、activation loss/tamper 与清理 | NOT_STARTED | V10；NOT_RUN | 与 T009.a 共用 fixture，逐个保留独立判定 | 只跑注册安全/故障场景 |
-| T010.a | T010 | MiniNDN 正常 CPU 图、权限拒绝、缺依赖三个注册场景 | PARTIAL_YB_PASS | [v25 exact-SIF Y-B](evidence/minindn-v25-exact-sif-yb.md)；T010_DONE/returncode 0，四 ACK、selection、protected grant、terminal response、数值 `matched=true`、cleanup clean；Y-A/Y-N NOT_RUN | 仍需两个注册负例、同源 host qualification manifest 及正式语义门；不能把 `qualification=NOT_EVALUATED`升级为T010 PASS | 复用同一SIF/app只跑未决场景；改变base/ABI/app行为才重新跑Y-B |
+| T010.a | T010 | MiniNDN 正常 CPU 图、权限拒绝、缺依赖三个注册场景 | PARTIAL_YB_YN_PASS | [v25 exact-SIF Y-B](evidence/minindn-v25-exact-sif-yb.md)；v40 `Experiments/TigerCluster/results/yolo-minindn-20260909-v40-yn36/.../output/y-n-matrix-result.json` 的 Y-N-O/C/P/R/I/E/L 全部 `status=PASS`，supervisor returncode 0、process cleanup clean、Controller 无 traceback/abort | Y-A、同源 host qualification manifest 及正式语义门仍未完成；不能把 `qualification=NOT_EVALUATED`升级为T010 PASS | 复用同一SIF/app只跑未决场景；改变base/ABI/app行为才重新跑已通过矩阵 |
 | T010.b | T010 | 同源 host qualification manifest 绑定命令、结果与清理 | NOT_STARTED | [审计 N1/N2](evidence/design-code-convergence.md)；现wrapper未产生manifest；NOT_RUN | 先实现同一producer/语义validator契约，再从T010.a同次实跑生成供builder消费的回执 | 生成清单不额外跑模型；不得把COMPONENT_ONLY改token冒充PASS |
 | T011.a | T011 | development-20260907 source seal 与 definition 准备 | IMPLEMENTED | 后文 SOURCE_READY checkpoint：`2aea8a0e` / `c4f33beb`，非 SIF PASS | 后续源码改变须重 seal；旧锁不覆盖 | 纯任务表修改按输入清单判断，不无条件重建 SIF |
 | T011.b | T011 | 构建或复用基础SIF，在匹配SDK构建独立app并验证组合闭包 | VERIFIED_COMPOSITION | [local-sif](evidence/local-sif.md) + [v25 exact-SIF Y-B](evidence/minindn-v25-exact-sif-yb.md)：基础6产物与外置应用闭包通过；同一SIF/app完成真实MiniNDN启动、协议和数值回执；app-only复用证据保留 | T011.c 的 empty HOME/scratch 专项、T010 完整场景、GPU/Tiger资格仍未完成；不把本地Y-B升级为正式qualification | 基础库/ABI未变复用SIF；仅应用改动重建受影响targets |

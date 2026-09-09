@@ -1373,7 +1373,29 @@ class MiniNdnCaseRuntime:
         if self._network_resources:
             try:
                 combined = network_resources.combine([row[1] for row in self._network_resources])
-                observation = network_resources.inspect(combined)
+                # ``Minindn.stop()`` asks NFD and its namespace workers to
+                # leave asynchronously.  A single immediate /proc scan can
+                # therefore observe a process that is already in teardown
+                # and turn an otherwise clean case into a false cleanup red.
+                # Give owned resources a short, explicit settle window while
+                # retaining the fail-closed result for anything that remains
+                # after the bound.
+                settle_deadline = time.monotonic() + 5.0
+                observation = None
+                while True:
+                    remaining = settle_deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    observation = network_resources.inspect(
+                        combined, seconds=max(0.1, remaining))
+                    if observation['clean']:
+                        break
+                    remaining = settle_deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    time.sleep(min(0.2, remaining))
+                if observation is None:
+                    raise RuntimeError('NETWORK_RESOURCE_SETTLE_TIMEOUT')
                 observations.append(dict(resourceSnapshots=[row[0] for row in self._network_resources],
                                          observation=observation))
                 if not observation['clean']:
@@ -3363,8 +3385,15 @@ def _wait_for_negative_result(
             text = log_path.read_text(errors="replace") if log_path.exists() else ""
             if "YOLO_ACK_DRIVEN_RESULT status=true" in text:
                 raise RunnerError("Y_N_NEGATIVE_TERMINAL_SUCCESS:" + subcase)
-            negative_lines = [line for line in text.splitlines()
-                              if line.startswith("SPEC180_YN_NEGATIVE_RESULT ")]
+            # Python children print the marker as a raw line, while native
+            # RuntimeEvidence routes it through the logger and prefixes a
+            # timestamp/level.  Keep the marker's validated field grammar,
+            # but strip only the logger prefix before parsing it.
+            negative_lines = []
+            for line in text.splitlines():
+                marker = line.find("SPEC180_YN_NEGATIVE_RESULT ")
+                if marker >= 0:
+                    negative_lines.append(line[marker:])
             for line in negative_lines:
                 _validate_negative_marker(line, spec, subcase, user_spec, user_log)
                 accepted.append(line)

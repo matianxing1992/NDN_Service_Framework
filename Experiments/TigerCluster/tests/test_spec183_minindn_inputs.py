@@ -99,6 +99,15 @@ def test_inputs_bind_real_per_run_keys_and_preserve_source_files(inputs):
     assert not (inputs['output']/'run-1/host-minindn').exists()
 
 
+def test_y_n_matrix_uses_declared_cluster_walltime_budget(inputs):
+    profile = json.loads(inputs['profile_path'].read_text())
+    assert runner._case_runtime_seconds(profile, 'Y-B') == 300
+    assert runner._case_runtime_seconds(profile, 'Y-N') == 900
+    profile['cluster'].pop('wallTimeSeconds')
+    with pytest.raises(ValueError, match='MININDN_MATRIX_WALLTIME'):
+        runner._case_runtime_seconds(profile, 'Y-N')
+
+
 @pytest.mark.parametrize('fault', ['receipt-pin', 'prepare-marker', 'prepared-run', 'profile',
     'public-file', 'package', 'offer-key', 'recipient-key', 'authority-key', 'private-mode', 'private-symlink'])
 def test_invalid_input_starts_no_driver_and_writes_no_host_state(inputs, monkeypatch, fault):

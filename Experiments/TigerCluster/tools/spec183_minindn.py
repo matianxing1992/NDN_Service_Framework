@@ -30,6 +30,26 @@ DRIVER_REL = _REPO_ROOT / "Experiments/NDNSF_DI_YoloAckDriven_Minindn.py"
 ROLES = ("BackboneNeck", "DetectShard0", "DetectShard1", "Merge")
 
 
+def _case_runtime_seconds(profile: dict, case: str) -> int:
+    """Return the owner deadline for one case invocation.
+
+    Y-N is an ordered matrix of independent MiniNDN processes.  Its seven
+    subcases cannot fit inside the single-case request budget even though
+    each subcase has its own bounded cleanup.  Keep that matrix under the
+    profile's declared cluster wall-time budget so the outer systemd owner
+    does not cancel a valid later subcase at the single-case deadline.
+    """
+    timing = profile['timing']
+    seconds = (timing['stagingSeconds'] + timing['startupSeconds']
+               + (timing['requestDeadlineMs'] + 999) // 1000)
+    if case == 'Y-N':
+        wall_time = profile.get('cluster', {}).get('wallTimeSeconds')
+        if type(wall_time) is not int or wall_time <= 0:
+            raise ValueError('MININDN_MATRIX_WALLTIME')
+        seconds = max(seconds, wall_time)
+    return seconds
+
+
 def _prepared(output: Path, run_id: str) -> dict:
     from jobs.yolo.submit import _load_prepared
     return _load_prepared(output, run_id)
@@ -289,8 +309,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     print(json.dumps({"status": "T010_START", "case": args.case,
                       "driver": str(DRIVER_REL)}, sort_keys=True))
     timing = checked['profile']['timing']
-    seconds = (timing['stagingSeconds'] + timing['startupSeconds']
-               + (timing['requestDeadlineMs'] + 999) // 1000)
+    seconds = _case_runtime_seconds(checked['profile'], args.case)
     returncode = supervise(command, env, host_root/'supervisor', cwd=_REPO_ROOT,
                           seconds=seconds, cleanup_seconds=timing['cleanupSeconds'])
     print(json.dumps({"status": "T010_DONE", "returncode": returncode,

@@ -130,7 +130,10 @@ class AppSdkCompatibilityTest(unittest.TestCase):
         offenders = []
         for base in (ROOT / "Experiments", ROOT / "examples/python"):
             for path in base.rglob("*.py"):
-                if "build" in path.parts:
+                # TigerCluster retains ignored application/build caches under
+                # Experiments/.cache.  They are historical bundles, not
+                # maintained callers, and may contain pre-migration imports.
+                if "build" in path.parts or ".cache" in path.parts:
                     continue
                 text = path.read_text(encoding="utf-8")
                 if "ndnsf_distributed_inference.app_sdk.facades" in text:
@@ -176,7 +179,7 @@ class AppSdkCompatibilityTest(unittest.TestCase):
         checked = []
         for base in (ROOT / "Experiments", ROOT / "examples/python"):
             for path in base.rglob("*.py"):
-                if "build" in path.parts:
+                if "build" in path.parts or ".cache" in path.parts:
                     continue
                 text = path.read_text(encoding="utf-8")
                 if "APPController" not in text:

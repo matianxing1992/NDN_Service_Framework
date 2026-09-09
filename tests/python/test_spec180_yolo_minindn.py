@@ -138,6 +138,26 @@ def test_input_negative_binds_provider_and_sealed_plan(tmp_path, plan):
             module._wait_for_negative_result(tuple(started), "Y-N-I", 0.01)
 
 
+def test_input_negative_accepts_native_logger_prefixed_marker(tmp_path):
+    module = load_runner()
+    started = list(_negative_children(module, tmp_path, case="Y-N-I"))
+    user_log = started[0][2]
+    marker = user_log.read_text().strip()
+    user_log.write_text("")
+    provider_log = tmp_path / "provider.log"
+    provider_log.write_text(
+        "1788941008.873876 ERROR: [ndnsf.di.RuntimeEvidence] "
+        + marker + " provider=/example/provider/Shard planDigest=sha256:"
+        + "a" * 64 + " errorCode=DI_INPUT_FETCH_ROLE_MISMATCH\n")
+    spec = module.CaseProcessSpec(
+        "provider-Shard", "node",
+        "di-native-provider --provider /example/provider/Shard", "",
+        "providers")
+    started.append((spec, SimpleNamespace(poll=lambda: None), provider_log))
+    result = module._wait_for_negative_result(tuple(started), "Y-N-I", 0.01)
+    assert result.startswith("SPEC180_YN_NEGATIVE_RESULT status=PASS")
+
+
 def test_missing_candidate_environment_fails_before_output_creation(tmp_path: Path):
     module = load_runner()
     output = tmp_path / "case-output"
@@ -1613,7 +1633,8 @@ def test_start_network_failure_stops_partial_network_and_normalizes_error(
     runtime = module.MiniNdnCaseRuntime(binding, inputs)
     monkeypatch.setattr(module.network_resources, 'capture', lambda _network: dict(
         observerNamespace='net:[1]', namespaces=['net:[2]'], interfaces=[]))
-    monkeypatch.setattr(module.network_resources, 'inspect', lambda _resources: {'clean': True})
+    monkeypatch.setattr(module.network_resources, 'inspect',
+                        lambda _resources, **_kwargs: {'clean': True})
     calls = []
 
     class Network:
@@ -1819,19 +1840,50 @@ def test_runtime_network_observation_prevents_false_cleanup(tmp_path, monkeypatc
         runtime._network_resources.append((name, inventory))
         module.network_resources.write_exclusive(output/name, inventory)
     calls = []
-    def inspect(combined):
+    def inspect(combined, **_kwargs):
         calls.append(combined)
         if len(calls) == 1 and fault == 'unreadable': raise PermissionError('fixture')
-        return dict(clean=len(calls)>1, references=[], interfaces=[])
+        return dict(clean=False, references=[], interfaces=[])
     monkeypatch.setattr(module.network_resources, 'inspect', inspect)
     with pytest.raises(module.RunnerError, match='network-resources:'):
         runtime.stop()
-    assert not runtime._cleanup_complete and len(calls) == 1
+    assert not runtime._cleanup_complete and len(calls) >= 1
+    monkeypatch.setattr(module.network_resources, 'inspect',
+                        lambda *_args, **_kwargs:
+                        dict(clean=True, references=[], interfaces=[]))
     runtime.stop()
-    assert runtime._cleanup_complete and len(calls) == 2
+    assert runtime._cleanup_complete and len(calls) >= (
+        2 if fault == 'remaining' else 1)
     record = json.loads((output/'cleanup-attempt-002.json').read_text())
     assert record['networkResourceObservations'][0]['resourceSnapshots'] == [
         'network-resources-created.json', 'network-resources-started.json']
+
+
+def test_runtime_network_observation_allows_transient_namespace_teardown(
+        tmp_path, monkeypatch):
+    module = load_runner()
+    output, inputs = _binding_inputs(tmp_path, module, 'Y-B')
+    binding = module.CaseRuntimeBinding.from_inputs('Y-B', output, inputs)
+    runtime = module.MiniNdnCaseRuntime(binding, inputs)
+    runtime._legacy = SimpleNamespace()
+    inventory = dict(observerNamespace='net:[1]', namespaces=['net:[2]'], interfaces=[])
+    for label in ('created', 'started'):
+        name = 'network-resources-' + label + '.json'
+        runtime._network_resources.append((name, inventory))
+        module.network_resources.write_exclusive(output / name, inventory)
+    calls = []
+
+    def inspect(combined, **_kwargs):
+        calls.append(combined)
+        return dict(clean=len(calls) > 1, references=[], interfaces=[])
+
+    monkeypatch.setattr(module.network_resources, 'inspect', inspect)
+    runtime.stop()
+    assert runtime._cleanup_complete
+    assert len(calls) == 2
+    record = json.loads((output / 'cleanup-attempt-001.json').read_text())
+    assert record['errors'] == []
+    assert record['networkResourceObservations'][0]['observation']['clean']
 
 
 def test_case_process_specs_reject_repo_identity_not_in_provider_namespace(tmp_path: Path):

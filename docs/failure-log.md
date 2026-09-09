@@ -4102,3 +4102,116 @@ identity and rerun packaging against the existing incremental Waf cache.
   yielding 15 application tests and 7 Controller-readiness tests passed.
 - Lesson: every host-side Python import must carry the matching extension,
   Core, NAC-ABE, NDN-SVS, and system-library closure explicitly.
+
+## 2026-09-09: incremental host Core build used an incompatible SVS tree
+
+- Symptom: `./waf build -j2 --targets=ndn-service-framework` stopped in
+  `ServiceProvider.cpp` because the resolved `ndn::svs::SVSPubSub` lacked
+  `subscribeToProducerWithCatchUp`.
+- Root cause: the repository's incremental `build-spec183-core-fix` tree was
+  configured against a different NDN-SVS ABI than the current source; it was
+  not a valid consumer rebuild for the v18 base closure.
+- Fix: do not reuse that tree for this change; the isolated base build must
+  rebuild the pinned dependency chain and Core together with the existing
+  maximum `-j2` bound.
+- Lesson: a target-level Waf invocation can expose stale dependency ABI before
+  reaching the changed translation unit; clean closure identity is a required
+  build precondition.
+
+## 2026-09-09: Y-N-I marker was hidden by native logger framing
+
+- Symptom: exact-SIF v36 completed Y-N-O/C/P/R with PASS and the native
+  Provider logged `DI_INPUT_FETCH_ROLE_MISMATCH` plus a PASS marker for Y-N-I,
+  but the matrix reported `Y_N_MATRIX_INCOMPLETE:Y-N-I`.
+- Root cause: the native RuntimeEvidence logger prefixes marker lines with a
+  timestamp and level; the MiniNDN collector only accepted a marker at column
+  zero and therefore timed out after the real rejection.
+- Fix: strip only the logger prefix before applying the existing strict marker
+  field and lifecycle/owner validation; add a regression test for a prefixed
+  native marker.
+- Lesson: evidence collectors must accept the framing produced by every
+  registered child owner while keeping the semantic marker grammar strict.
+
+## 2026-09-09: exact-SIF v35 used an invalid child logging environment
+
+- Symptom: Controller failed immediately with `malformed logging config: '=' is
+  missing`.
+- Root cause: `SPEC180_CHILD_NDN_LOG` was set to a file path, but the child
+  runtime interprets it as an ndn-cxx logging configuration string.
+- Fix: omit the variable for the v36 rerun; preserve the failure as launch
+  configuration evidence rather than attributing it to APP code.
+- Lesson: diagnostic environment variables crossing the systemd/SIF boundary
+  must use the child library's value grammar, not a host log-file convention.
+
+## 2026-09-09: SIF copy integrity was unstable on the experiment host
+
+- Symptom: physical copies of the 3.9-GB base SIF differed from their source
+  by a single byte at changing offsets, and repeated full hashes of a copied
+  file were not stable until the source copy was used directly.
+- Root cause: the host storage/runtime path was mutating or returning unstable
+  bytes during large SIF copy/verification; no ext4 I/O error was reported.
+- Fix status: do not use those copies as release inputs; v36 reused the
+  previously validated v23 runtime plane and all release checks still bound
+  base hash `5c6e53ca...`.
+- Lesson: SIF immutability requires a distinct physical copy plus repeated
+  digest verification before execution; a hard link or one successful copy is
+  insufficient evidence.
+
+## 2026-09-09: Y-N matrix hit the single-case owner deadline
+
+- Symptom: exact-SIF v38 produced real PASS evidence for Y-N-O/C/P/R/I, then
+  the systemd owner cancelled the first Y-N-E mutation at its 300-second
+  `RuntimeMaxSec`; the run ended `Y_N_MATRIX_INCOMPLETE:Y-N-E` with no APP
+  success response.
+- Root cause: `spec183_minindn.py` derived one-case staging/startup/request
+  time (300 s) even though Y-N intentionally runs seven independent
+  MiniNDN subcases in sequence. The cancellation closed the Controller
+  socket while the grant verifier was still working, which is why the
+  Controller log showed a socket EOF traceback.
+- Fix: reserve the profile's declared 900-second cluster wall-time budget for
+  the Y-N matrix; treat the Controller traceback as cancellation fallout, not
+  an application acceptance failure. The same run already showed the EXPIRED
+  grant was rejected before assembly.
+- Lesson: a matrix runner needs a matrix-level owner deadline; a valid
+  single-case deadline can cancel later security subcases and create a false
+  APP-lifecycle diagnosis.
+
+## 2026-09-09: v39 runtime plane referenced a drifted SIF copy
+
+- Symptom: `submit.py prepare` rejected v39 with `FILE_DIGEST:sif` before
+  starting the issuer or any MiniNDN/APP process.  The declared v21 digest was
+  `5c6e53ca...`, while `planes-v23/runtime/base-runtime-controller-version-j4-v21.sif`
+  had changed to a different full digest and was root-owned.
+- Root cause: the scratch runtime plane pointed at an unstable large-file copy;
+  its plane metadata still claimed the original SIF bytes.
+- Fix: point the scratch profile at the independently verified v21 runtime
+  plane, rerun the full closure check, and then prepare/provision v40.  The
+  exact-SIF v40 matrix completed with all seven Y-N subcases PASS.
+- Lesson: a plane's JSON metadata and a successful earlier run do not pin the
+  current SIF bytes; rehash the actual file immediately before preparation.
+
+## 2026-09-09: APP compatibility scan included ignored Tiger caches
+
+- Symptom: the host APP compatibility suite failed on an old cached
+  `ndnsf_distributed_inference/app.py` that still imported `APPController`
+  through the retired `app_sdk` alias; the maintained source tree had no such
+  caller.
+- Root cause: the test recursively scanned `Experiments/.cache`, where prior
+  application bundles are intentionally retained for evidence and are not
+  current source.
+- Fix: exclude `.cache` paths from the maintained-caller scan and rerun the
+  suite; this leaves historical bundles untouched.
+- Lesson: source-ownership tests must exclude ignored artifact caches or they
+  turn retained historical evidence into false regressions.
+
+## 2026-09-09: cleanup settle-window regression fixture used the old inspect signature
+
+- Symptom: the full MiniNDN runner suite failed one partial-network-cleanup
+  case with `network-resources:TypeError` after the bounded settle retry began
+  passing a `seconds` keyword.
+- Root cause: that test double still accepted only the former positional
+  `inspect(resources)` signature.
+- Fix: make the fixture accept keyword options and rerun the suite; the
+  production cleanup behavior is unchanged.
+- Lesson: lifecycle API extensions need compatible doubles in every cleanup
+  failure path, not only in the new happy-path test.

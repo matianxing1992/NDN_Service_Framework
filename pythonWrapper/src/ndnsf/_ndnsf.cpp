@@ -4083,8 +4083,6 @@ public:
       std::unique_lock<std::mutex> lock(m_runMutex);
       m_runCv.wait(lock, [this] { return !m_runActive; });
     }
-    m_face.shutdown();
-    m_face.getIoContext().stop();
   }
 
   void
@@ -4111,6 +4109,13 @@ public:
       }
       m_runCv.notify_all();
     };
+    // Face teardown must run on the same thread that owns the event loop.
+    // Calling shutdown() from the signal-handling Python thread after the
+    // loop has been asked to stop can still race ndn-cxx callback cleanup.
+    const auto shutdownFace = [this] {
+      m_face.shutdown();
+      m_face.getIoContext().stop();
+    };
     try {
       // spec180 r36-r42 repair (restored on the spec181 branch): drain the
       // Controller Face BEFORE start() so the Unix transport is connected
@@ -4131,8 +4136,14 @@ public:
         m_face.getIoContext().restart();
         m_face.processEvents(ndn::time::milliseconds(1000));
       }
+      shutdownFace();
     }
     catch (const std::exception& e) {
+      try {
+        shutdownFace();
+      }
+      catch (...) {
+      }
       {
         std::lock_guard<std::mutex> errorLock(m_errorMutex);
         m_error = e.what();
@@ -4149,6 +4160,11 @@ public:
       }
     }
     catch (...) {
+      try {
+        shutdownFace();
+      }
+      catch (...) {
+      }
       markFinished();
       throw;
     }

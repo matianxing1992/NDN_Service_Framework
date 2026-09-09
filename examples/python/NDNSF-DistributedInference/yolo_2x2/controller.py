@@ -140,7 +140,11 @@ def main() -> int:
             and not args.spec180_runtime_publication_file):
         return controller.run()
 
-    controller._controller.start_background()
+    # Keep the Python owner thread so teardown can join it after the native
+    # event loop has stopped.  Dropping this handle leaves a daemon thread
+    # racing interpreter shutdown, which can surface as a native abort even
+    # after the serving loop has published its readiness marker.
+    controller_thread = controller.start_background()
     # This marker means the controller process has entered its serving loop;
     # the Spec180 runner uses it to release the repository startup barrier.
     # The signed catalogue publication has a separate receipt barrier below.
@@ -193,7 +197,14 @@ def main() -> int:
         # normal finally path without surfacing an application traceback.
         pass
     finally:
-        controller.stop()
+        try:
+            controller.stop()
+        finally:
+            if controller_thread is not None:
+                controller_thread.join(timeout=5.0)
+                if controller_thread.is_alive():
+                    raise RuntimeError(
+                        "APP controller background thread did not stop")
 
 
 def _publish_spec180_runtime(config: str, generated_policy_dir: str,
