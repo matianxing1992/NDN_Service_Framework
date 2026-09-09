@@ -1,6 +1,6 @@
 # Implementation Plan: Native NDNSF-DI with Optional Python Bindings
 
-**Branch**: Experimental | **Revision**: 67 | **Date**: 2026-09-09
+**Branch**: Experimental | **Revision**: 68 | **Date**: 2026-09-09
 **Status**: IN_PROGRESS / 当前实现与验收状态见 tasks.md 的 Task Progress Registry 和 Current Checkpoint
 **Spec**: [spec.md](spec.md)
 
@@ -777,6 +777,22 @@ build/source closure 对文档/checker 写 `N/A`；migration/evidence 是本机�
 native source、构建、maintained caller migration、跨进程 transport 或 T016 qualification。
 `py_compile`、强制 checker、validator 和 `git diff --check` 通过；官方静态复核没有 P1/P2/P3。
 详见 [R10-B45 evidence](evidence/r10-b45-entrypoint-preflight-enforcement-20260909.md)。
+
+### R10-B46 Real Provider Native Suite 2026-09-09
+
+本批复用已经登记的 R4-B6 production fixture，对 `NativeInferenceClient` 到真实
+`ServiceProvider` callback 的七个 Spec182 selector 做同口径回归：unary inline、unary
+`REPO_REF`、stream、conversation、replacement 与 alternate replacement。selector 只在
+native result assertion 成功后输出 `SPEC182_NATIVE_DI_REQUEST_RESULT_OK`；单 Provider
+replacement 的 `DI_NATIVE_NO_ADMITTED_PROVIDER` 是预期 ACK-closed failure。
+
+构建使用现有 `.codex-tmp/spec182-r4-b2/build/integration-tests`，system-first Waf
+`--targets=integration-tests -j4` 增量检查 exit `0`（`0.851s`），七 selector suite exit
+`0`（`37.97s`）。本批没有源码失效或 Python runtime，故不宣称 fresh-build speed、跨进程
+transport、Provider worker、maintained caller/no-Python、numeric parity 或 T016 qualification。
+官方 `review-agent` 五 lane 只读审查没有 P1/P2/P3。该出口为
+`CLOSED_FOR_VALIDATION`，后续必须另建批次接通独立 requester/Provider 进程与资格矩阵；详见
+[R10-B46 evidence](evidence/r10-b46-real-provider-native-suite-20260909.md)。
 
 ### R10-B33 Native Unary Repository Reference Request 2026-09-09
 
