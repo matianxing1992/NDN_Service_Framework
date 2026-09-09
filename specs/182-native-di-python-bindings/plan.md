@@ -1,6 +1,6 @@
 # Implementation Plan: Native NDNSF-DI with Optional Python Bindings
 
-**Branch**: Experimental | **Revision**: 60 | **Date**: 2026-09-09
+**Branch**: Experimental | **Revision**: 61 | **Date**: 2026-09-09
 **Status**: IN_PROGRESS / 当前实现与验收状态见 tasks.md 的 Task Progress Registry 和 Current Checkpoint
 **Spec**: [spec.md](spec.md)
 
@@ -632,6 +632,33 @@ selector、source closure 或硬验收依赖必须拆到新的 Batch ID。
 runtime test。该批 `CLOSED_FOR_VALIDATION` 只适用于共享 skill/template 规则，T004/T008/
 T010/T011/T013/T014/T015/T016/T017 及资格状态不变。详见
 [R10-B32 evidence](evidence/r10-b32-skill-feedback-loop-20260909.md)。
+
+### R10-B33 Native Unary Repository Reference Request 2026-09-09
+
+R10-B31 已补齐不带 stream 或 conversation state 的普通 native `Response`，R10-B11
+已验证 streaming `REPO_REF` 的 Provider fetch/decrypt 边界；本批把两者组合为一个普通
+请求出口。复用 `runR4B6RealProviderConversationCase` 的真实 catalog、grant/admission、
+preparation、Core commit 和 Provider handler，只把 `repositoryInput=true` 与
+`unaryRequest=true` 同时打开，并新增具名 selector。这样可以观察 native requester 产生的
+v2 `REPO_REF` 在非 streaming 请求中的完整恢复/消费，不把 repository publication 当作
+成功标志，也不引入新的 Python 路径。
+
+本批新增一项 C++ integration selector，按默认 system-first `-j4` 只重建
+`integration-tests`；静态门逐项检查 helper 分支、Provider fetch、结果断言、selector
+注册和 target/source closure。稳定出口仅是单进程普通 `REPO_REF` 请求；Provider worker、
+跨进程 transport、maintained caller/no-Python 和 T016 qualification 仍由后续批次负责。
+
+实现和验证已完成：`integration-tests` system-first `-j4` 构建 exit 0（36.514 s），新
+selector 通过（3 assertions，3.510 s），conversation、replacement、alternate replacement、
+streaming repository reference 与 unary inline 回归共 6 cases 全部通过。首次未带 suite
+前缀的过滤器只触发 Boost.Test no-match setup code 200，随后按 `--list_content` 注册名重跑；
+这不是产品失败。官方 `review-agent` 五 lane 静态审查无 P1/P2/P3。该批
+`CLOSED_FOR_VALIDATION` 仅适用于单进程 unary `REPO_REF` 边界，详见
+[R10-B33 evidence](evidence/r10-b33-native-unary-repository-reference-20260909.md)。
+
+Batch growth decision：该边界已有稳定出口，下一批不得继续把 Provider worker、跨进程
+transport 或 maintained caller 迁移并入本批；这些改变调用方/进程生命周期/资格依赖，必须
+使用新的 Batch ID，并各自登记 C++ fixture、selector、source closure 和真实验收出口。
 
 ### R8-SKILL Review Coverage Contract 2026-09-09
 

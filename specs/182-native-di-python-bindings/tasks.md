@@ -1,6 +1,6 @@
 # Tasks: Native NDNSF-DI with Optional Python Bindings
 
-**Revision**: 82 | **Status**: DRAFT / T001 DONE
+**Revision**: 83 | **Status**: DRAFT / T001 DONE
 **Input**: [spec](spec.md), [code design](contracts/code-design.md),
 [proof](contracts/proof-design.md), [work units](contracts/work-units.md)
 
@@ -20,6 +20,7 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 
 | Unit / Details | Status | Depends | Evidence / Remaining | Updated |
 | --- | --- | --- | --- | --- |
+| [R10-B33 Native Unary Repository Reference Request](evidence/r10-b33-native-unary-repository-reference-20260909.md) | DONE | R10-B31; R10-B11; T010-B | Existing R4-B6 real Provider fixture now covers native unary `REPO_REF`: published encrypted object is fetched and checked before the native terminal `Response`; six related selectors pass after system-first `-j4` integration rebuild. This closes only the single-process unary repository boundary; Provider worker, cross-process, maintained caller/no-Python and T016 remain open | 2026-09-09 |
 | [R10-B32 Shared Spec Kit Skill Feedback Loop](evidence/r10-b32-skill-feedback-loop-20260909.md) | DONE | R10-B31; R10-B27/R10-B28 skill workflow | `Static Gate Release Checklist`, required `Changed gate` on compile/runtime retries, and `Batch growth decision` are now in the shared code-design references, templates, README, and installed copy; product parents and T016 remain PARTIAL/UNQUALIFIED | 2026-09-09 |
 | [R5-B2 Native Runtime Construction Binding](contracts/execution-units.md#t012-b-compatible-python-facades) | PARTIAL | R5-B1; T012-A | [batch evidence](evidence/r5-b2-native-runtime-binding-20260908.md)：native catalog/preparation/admission/runtime/grant owners 已可组合，公开 `InferenceClient.request_native()` 明确拒绝 planner fallback；24 binding cases、32-case compatibility selection PASS；真实请求 parity、maintained caller 全量迁移与 T016 仍未验收 | 2026-09-08 |
 | [R5-B1 Native Binding ABI Rebuild](evidence/t012-a-binding-abi-20260908.md) | PARTIAL | R4-B6; T012-A | Explicit candidate Core/DI + NAC-ABE/SVS rebuild, extension import and four focused Python suites 21/21 PASS；完整 native requester construction、caller migration、cross-process closure 与 T016 仍开放 | 2026-09-08 |
@@ -171,6 +172,14 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 | R10-B10 | production entry/callers: current source-alignment audit after R10-B9; implementation/wire: audit summary names configured requester `REPO_REF` and Provider fetch/decrypt as the next boundary; test/harness/oracle: audit/task/evidence link consistency and validator; build/source closure: documentation-only; migration/evidence: current `9f80a1ce` checkpoint and remaining T004/T008/T010/T011/T013/T016 owners | DONE for this bounded audit checkpoint refresh | R10-B9; current tasks/evidence registry | audit must reflect the newest requester/Core-wire exit without rewriting historical findings or promoting qualification | static review covers source checkpoint, current route, remaining chain and historical section dates | documentation-only: `git diff --check`; `python3 specs/182-native-di-python-bindings/checklists/validate_design.py` | `STATIC_PASS`; `BUILD_NOT_APPLICABLE`; `CLOSED_FOR_VALIDATION` locally; not `QUALIFICATION_PASS` | [R10-B10 evidence](evidence/r10-b10-current-audit-refresh-20260909.md); product execution and T016 remain open |
 
 ## Current Checkpoint
+
+2026-09-09 R10-B33 Native unary repository-reference request / **DONE (bounded boundary)**：在
+R4-B6 真实 Provider fixture 中新增具名 C++ selector，同时启用非 streaming 与 `REPO_REF`。
+system-first `-j4` integration rebuild 通过（36.514 s），新 selector 的 Provider fetch、
+plaintext identity 与 terminal Response 三项断言通过；conversation、replacement、
+alternate replacement、streaming repository reference、unary inline 回归同样通过（6 cases）。
+本批只关闭单进程 unary repository boundary；Provider worker、跨进程 transport、maintained
+caller/no-Python 与 T016 仍保持 PARTIAL/UNQUALIFIED。详见 [R10-B33 evidence](evidence/r10-b33-native-unary-repository-reference-20260909.md)。
 
 2026-09-09 R10-B32 Shared Spec Kit skill feedback loop / **DONE (documentation boundary)**：根据
 R4-B4/R3-B1 的漏检复盘，共享 `review-agent` reference 新增 Static Gate Release Checklist，
