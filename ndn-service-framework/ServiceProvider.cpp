@@ -4048,6 +4048,7 @@ namespace ndn_service_framework
             status.detailsPayload.size() > 4096) {
             throw std::invalid_argument("invalid collaboration operation status");
         }
+        std::lock_guard<std::mutex> lock(m_selectionExecutionStatusMutex);
         auto found = m_selectionExecutionStatuses.find(selectionDigest);
         if (found == m_selectionExecutionStatuses.end()) {
             throw std::invalid_argument("selection status binding is unknown");
@@ -4123,6 +4124,7 @@ namespace ndn_service_framework
     ServiceProvider::getSelectionExecutionStatus(
         const std::string& selectionDigest) const
     {
+        std::lock_guard<std::mutex> lock(m_selectionExecutionStatusMutex);
         auto it = m_selectionExecutionStatuses.find(selectionDigest);
         if (it == m_selectionExecutionStatuses.end()) {
             return std::nullopt;
@@ -4142,6 +4144,7 @@ namespace ndn_service_framework
         if (selectionDigest.empty()) {
             return;
         }
+        std::lock_guard<std::mutex> lock(m_selectionExecutionStatusMutex);
         auto& status = m_selectionExecutionStatuses[selectionDigest];
         status.providerName = providerName;
         status.serviceName = serviceName;

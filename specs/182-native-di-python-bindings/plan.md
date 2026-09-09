@@ -118,6 +118,17 @@ Spec170 suite 均 exit 0。首次未过滤运行曾间歇性暴露 D2h callback/
 `CLOSED_FOR_VALIDATION`；T013-B/T013-C、跨进程兼容和 T016 仍是 `OPEN_FOR_NEXT_BATCH`。
 批次证据见 [R6-B9 evidence](evidence/r6-b9-legacy-d2b-freshness-20260909.md)。
 
+### R9-B1 Selection Status Concurrency Ownership 2026-09-09
+
+R6-B9 后续的 ASAN allocator 复现把 D2h212 的间歇性 `double free or corruption` 收敛到
+`ServiceProvider::reportSelectionOperationStatus`：多个 Provider worker 并发追加
+`memberStatuses` 时，vector 扩容释放旧存储，另一 worker 仍在写旧元素；Face 查询也没有
+统一快照锁。R9-B1 增加独立 `m_selectionExecutionStatusMutex`，覆盖 report/update/get 三个
+入口，并加入 8×8 并发成员回归。当前 `unit-tests` 188/188、`integration-tests` 118/118
+均以 system-first `-j4` 构建通过；D2h212 新鲜进程 50/50、ASAN-preload 20/20 通过。历史
+失败仍保留在 R6-B9 目录，不能据此宣称跨进程或 T016 qualification；本批只关闭本地
+selection-status ownership 出口。批次证据见 [R9-B1 evidence](evidence/r9-b1-selection-status-concurrency-20260909.md)。
+
 ### R8-SKILL Review Coverage Contract 2026-09-09
 
 本轮根据 R4-B4/R3-B1 的流程复盘，补强可复用的 Spec Kit skill，而不是改变产品契约或

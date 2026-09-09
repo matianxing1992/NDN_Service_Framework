@@ -1929,6 +1929,10 @@ namespace ndn_service_framework{
                 m_providerRequestLifecycleStatuses;
             std::map<std::string, SelectionExecutionStatus>
                 m_selectionExecutionStatuses;
+            // Selection operation status is updated by collaboration worker
+            // threads and may be queried from the Face thread concurrently.
+            // Keep map/vector lifetime and snapshot reads under one lock.
+            mutable std::mutex m_selectionExecutionStatusMutex;
             ProviderRequestLifecycleCallback m_providerRequestLifecycleCallback;
             std::map<std::string, uint64_t> m_providerAdmissionCounters;
             ProviderAdmissionLeaseTable m_genericAdmissionLeases;

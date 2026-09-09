@@ -2564,3 +2564,19 @@ with callback/role loss and `double free or corruption`). A later fresh-process 
 enabled, passed `20/20` without timeout; logs are under
 `.codex-tmp/spec182-r6-b9/d2h212-dep-repeat20/`. This narrows current reproducibility but does
 not explain the historical interleaving, prove cross-process behavior, or close T016.
+
+### 2026-09-09 — R9-B1 D2h212 selection-status UAF
+
+The longer D2h212 sample reproduced `SIGABRT`/`double free or corruption`. An ASAN allocator
+preload identified the first invalid access as a heap-use-after-free in
+`ServiceProvider::reportSelectionOperationStatus`: concurrent Provider workers appended to the
+same `memberStatuses` vector while another worker wrote an element from storage invalidated by
+reallocation. The status map was also read by the Face query path without a snapshot lock. The
+repair added `m_selectionExecutionStatusMutex` around report/update/get, without changing the
+status wire or state-transition contract.
+
+After the repair, the concurrent unit selector passed, D2h212 passed `50/50` fresh processes,
+and an ASAN-preload follow-up passed `20/20` with allocator type-size mismatch diagnostics
+disabled (the uninstrumented SVSPubSub dependency otherwise reports a non-product size warning).
+The original R6-B9 logs remain preserved; cross-process status publication and T016 qualification
+are still unobserved.
