@@ -3,7 +3,9 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import os
 from pathlib import Path
+import socket
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -156,6 +158,95 @@ def test_duplicate_role_observation_is_unqualified(tmp_path: Path) -> None:
 def test_external_harness_excluded(tmp_path: Path) -> None:
     case = runner.load_case(_manifest(tmp_path), "positive")
     assert all(process["role"] != "harness" for process in case["isolation"]["processes"])
+
+
+def _node_context(tmp_path: Path, *, start_ticks: int | None = None) -> tuple[dict, socket.socket]:
+    socket_path = tmp_path / "nfd.sock"
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    sock.bind(str(socket_path))
+    netns_path = Path("/proc/self/ns/net")
+    return ({
+        "id": "requester",
+        "netnsPath": str(netns_path),
+        "netnsInode": netns_path.stat().st_ino,
+        "ownerPid": os.getpid(),
+        "ownerStartTicks": (runner._read_proc_start_ticks(os.getpid())
+                             if start_ticks is None else start_ticks),
+        "nfdSocket": str(socket_path),
+        "peerNodeIds": ["provider"],
+        "_namespaceFdPath": "/proc/self/fd/9",
+    }, sock)
+
+
+def test_declared_node_requires_valid_context(tmp_path: Path) -> None:
+    case = runner.load_case(_manifest(tmp_path), "positive")
+    case["isolation"]["processes"][0]["node"] = "requester"
+    staged = runner.stage_root(case, tmp_path / "run")
+    try:
+        runner.run_case(case, staged, tmp_path / "run", nodes={})
+    except runner.PreflightError as exc:
+        assert "node context is missing" in str(exc)
+    else:
+        raise AssertionError("missing node context was accepted")
+
+
+def test_node_context_binds_namespace_and_nfd_identity(tmp_path: Path) -> None:
+    case = runner.load_case(_manifest(tmp_path), "positive")
+    case["isolation"]["processes"][0]["node"] = "requester"
+    node, sock = _node_context(tmp_path)
+    try:
+        validated = runner._validate_node_context(case, node)
+        assert validated["netnsInode"] == node["netnsInode"]
+        command = runner.make_launch(case, runner.stage_root(case, tmp_path / "run"),
+                                     node, tmp_path / "run/trace.txt")
+        assert command[0] == "nsenter"
+        assert command[1] == "--net=/proc/self/fd/9"
+        assert "--unshare-all" in command
+    finally:
+        sock.close()
+
+
+def test_node_context_rejects_stale_owner_starttime(tmp_path: Path) -> None:
+    case = runner.load_case(_manifest(tmp_path), "positive")
+    case["isolation"]["processes"][0]["node"] = "requester"
+    node, sock = _node_context(tmp_path, start_ticks=1)
+    try:
+        try:
+            runner._validate_node_context(case, node)
+        except runner.PreflightError as exc:
+            assert "starttime changed" in str(exc)
+        else:
+            raise AssertionError("stale owner identity was accepted")
+    finally:
+        sock.close()
+
+
+def test_node_context_rejects_unheld_namespace_path(tmp_path: Path) -> None:
+    case = runner.load_case(_manifest(tmp_path), "positive")
+    case["isolation"]["processes"][0]["node"] = "requester"
+    node, sock = _node_context(tmp_path)
+    node["_namespaceFdPath"] = "/proc/1/ns/net"
+    try:
+        try:
+            runner.make_launch(case, runner.stage_root(case, tmp_path / "run"),
+                               node, tmp_path / "run/trace.txt")
+        except runner.PreflightError as exc:
+            assert "namespace FD" in str(exc)
+        else:
+            raise AssertionError("unheld namespace path was accepted")
+    finally:
+        sock.close()
+
+
+def test_unbound_process_does_not_adopt_incidental_namespace_fd(tmp_path: Path) -> None:
+    case = runner.load_case(_manifest(tmp_path), "positive")
+    node, sock = _node_context(tmp_path)
+    try:
+        command = runner.make_launch(case, runner.stage_root(case, tmp_path / "run"),
+                                     node, tmp_path / "run/trace.txt")
+        assert command[0] != "nsenter"
+    finally:
+        sock.close()
 
 
 def test_descendant_cleanup_required(tmp_path: Path) -> None:
