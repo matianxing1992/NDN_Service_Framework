@@ -79,6 +79,7 @@ def test_transient_python_mapping_rejected(tmp_path: Path) -> None:
         case, {"returncode": 0, "timedOut": False,
                "evidence": sorted(runner.REQUIRED_EVIDENCE)},
         {"complete": True, "violations": ["PYTHON_MAPPING"]})
+    assert result["status"] == "FAIL"
     assert "PYTHON_MAPPING" in result["failures"]
 
 
@@ -97,6 +98,7 @@ def test_incomplete_observation_unqualified(tmp_path: Path) -> None:
         case, {"returncode": 0, "timedOut": False,
                "evidence": sorted(runner.REQUIRED_EVIDENCE)},
         {"complete": False, "violations": []})
+    assert result["status"] == "UNQUALIFIED"
     assert "OBSERVATION_UNQUALIFIED" in result["failures"]
 
 
@@ -121,7 +123,39 @@ def test_descendant_cleanup_required(tmp_path: Path) -> None:
     result = runner.evaluate_case(
         case, {"returncode": 0, "timedOut": False},
         {"complete": False, "violations": ["OWNED_PROCESS_ALIVE"]})
+    assert result["status"] == "UNQUALIFIED"
     assert "OBSERVATION_UNQUALIFIED" in result["failures"]
+
+
+def test_missing_evidence_is_unqualified(tmp_path: Path) -> None:
+    case = runner.load_case(_manifest(tmp_path), "positive")
+    result = runner.evaluate_case(
+        case, {"returncode": 0, "timedOut": False, "evidence": []},
+        {"complete": True, "violations": []})
+    assert result["status"] == "UNQUALIFIED"
+    assert "MISSING_EVIDENCE:identity" in result["failures"]
+
+
+def test_timeout_is_unqualified(tmp_path: Path) -> None:
+    case = runner.load_case(_manifest(tmp_path), "positive")
+    result = runner.evaluate_case(
+        case, {"returncode": 0, "timedOut": True,
+               "evidence": sorted(runner.REQUIRED_EVIDENCE)},
+        {"complete": True, "violations": []})
+    assert result["status"] == "UNQUALIFIED"
+    assert "RUN_TIMEOUT" in result["failures"]
+
+
+def test_trace_integrity_is_separate_from_policy_violation(tmp_path: Path) -> None:
+    trace = tmp_path / "trace.txt"
+    trace.write_text(
+        '123 execve("/probe-root/bin/true", ["true"], 0x0) = 0\n'
+        '123 connect(3, {sa_family=AF_INET, sin_port=80}, 0) = 0\n'
+        '123 exit_group(0) = ?\n', encoding="utf-8")
+    observation = runner.collect_trace({}, {"trace": str(trace)})
+    assert observation["complete"] is True
+    assert observation["integrityViolations"] == []
+    assert observation["policyViolations"] == ["UNDECLARED_ENDPOINT"]
 
 
 def test_minindn_owner_does_not_fake_native_qualification(tmp_path: Path) -> None:
