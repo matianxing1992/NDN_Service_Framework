@@ -1,6 +1,6 @@
 # Implementation Plan: Native NDNSF-DI with Optional Python Bindings
 
-**Branch**: Experimental | **Revision**: 45 | **Date**: 2026-09-09
+**Branch**: Experimental | **Revision**: 46 | **Date**: 2026-09-09
 **Status**: IN_PROGRESS / 当前实现与验收状态见 tasks.md 的 Task Progress Registry 和 Current Checkpoint
 **Spec**: [spec.md](spec.md)
 
@@ -442,6 +442,27 @@ evaluator `PASS`: trace completeness and integrity/policy checks passed, all sev
 classes were present, and `SPEC182_INSTALLED_CONSUMER_NATIVE_DI_OK` matched. This is a native
 installed-library consumer/closure proof and does not exercise a requester/provider DI request,
 I02--I08 counterexamples, maintained callers or the T016 qualification matrix; those remain open.
+
+### R10-B22 Native DI Business Case 2026-09-09
+
+R10-B22 extends the owner-alive runner with an executable native DI business case. The existing
+`Spec182R4B6RealProviderConversation` integration selector is the production C++ requester/provider
+fixture: it constructs a configured `NativeRequestRuntime`, submits two native requests through the
+real `NativeInferenceClient`, services them through `ServiceProvider` production ingress, and checks
+the first and continuation results. A marker is emitted only after both result assertions succeed;
+the runner treats that marker as an independent business oracle alongside complete process and
+namespace observation.
+
+The batch boundary is the isolated-process native DI request/result observation. The marker change
+was rebuilt in 37.778 seconds with the repository system-first toolchain and default `-j4`; the
+direct selector passed in 6.801 seconds. Four fresh owner/runner directories preserve the first
+manifest and ELF closure failures; the corrected closure reached the test process, which then
+failed at setup because the relative `examples/trust-any.conf` file is outside the minimal root
+(`returncode=201`). This runtime/config boundary is recorded as a miss for the next runner batch.
+The result does not claim true multi-process requester/provider transport, maintained Python caller
+migration, I02--I08/PO completion, or T016 qualification. The evidence record preserves the exact
+target, source/ELF closure, elapsed time, owner/runner commands, five-lane review matrix, and four
+retrospective miss categories.
 
 ### R8-SKILL Review Coverage Contract 2026-09-09
 

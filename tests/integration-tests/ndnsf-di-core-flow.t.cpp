@@ -38,6 +38,7 @@
 #include <functional>
 #include <future>
 #include <filesystem>
+#include <iostream>
 #include <limits>
 #include <map>
 #include <mutex>
@@ -7464,6 +7465,9 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
   const auto secondJson = nativeParseJson(
     std::string(secondResult.payload.begin(), secondResult.payload.end()));
   BOOST_CHECK_EQUAL(secondJson.at("text").get<std::string>(), "c");
+  // The closure runner consumes this marker as an independent business oracle.
+  // Emit it only after the second native result assertion has completed.
+  std::cout << "SPEC182_NATIVE_DI_REQUEST_RESULT_OK\n" << std::flush;
   client.close();
 }
 
