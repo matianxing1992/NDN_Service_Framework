@@ -1,8 +1,8 @@
 # R10-B5 Provider REPO_REF Execution Evidence
 
-**Date**: 2026-09-09  
-**Batch**: R10-B5  
-**Baseline**: `afea5053` (R10-B4 documentation checkpoint)  
+**Date**: 2026-09-09
+**Batch**: R10-B5
+**Baseline**: `afea5053` (R10-B4 documentation checkpoint)
 **Scope**: `tests/integration-tests/ndnsf-di-core-flow.t.cpp` native ingress fixture and
 the existing `integration-tests` target.  The pre-existing contract files and unrelated
 proposal worktree changes are outside this batch.
