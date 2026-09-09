@@ -300,10 +300,13 @@ def build_delegate_argv(*, stage_manifest: Path, model_root: Path,
     """Build the fixed request-first Qwen command; caller supplies no options."""
     if not request_id or not _SAFE_ID_RE.fullmatch(request_id):
         raise QwenInputError("REQUEST_ID_INVALID")
+    native_requester = bool(native_requester_config)
     argv = [
         sys.executable,
         str(REPO / "Experiments/NDNSF_DI_LlmPipeline_Minindn.py"),
-        "--runtime", "qwen-onnx",
+        "--runtime", (
+            "qwen-onnx-cpu-native" if native_requester else "qwen-onnx"
+        ),
         "--stages", "3",
         "--qwen-model", model,
         "--qwen-revision", revision,
@@ -311,7 +314,6 @@ def build_delegate_argv(*, stage_manifest: Path, model_root: Path,
         "--qwen-device-ids", "0,1,2",
         "--qwen-stage-manifest", str(stage_manifest),
         "--qwen-stage-root", str(model_root),
-        "--selection-dataflow-v3",
         "--request-id", request_id,
         "--max-new-tokens", "8",
         "--initial-sync-settle-s", "5",
@@ -325,6 +327,8 @@ def build_delegate_argv(*, stage_manifest: Path, model_root: Path,
         "--model-identity-digest", model_digest,
         "--output-dir", str(output_root),
     ]
+    if not native_requester:
+        argv.insert(argv.index("--request-id"), "--selection-dataflow-v3")
     if native_requester_config:
         argv += ["--native-requester-config", native_requester_config]
     return argv
@@ -349,6 +353,10 @@ def run_from_environment() -> int:
     if (not model or not revision or not model_digest or not prompt_digest
             or not workload_digest_raw):
         raise QwenInputError("QWEN_IDENTITY_ENVIRONMENT_MISSING")
+    if native_requester_config:
+        config_path = Path(native_requester_config).expanduser()
+        if not config_path.is_file():
+            raise QwenInputError("NATIVE_REQUESTER_CONFIG_MISSING")
     workload_digest = _digest(workload_digest_raw, "WORKLOAD")
     validated = validate_manifest(
         manifest_path, model_root, expected_model=model,
