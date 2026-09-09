@@ -1167,6 +1167,16 @@ T017 的 evidence/development-handoff.md 包含 exact commit、clean source clos
 
 ## Current Execution Checkpoint
 
+2026-09-09 R10-B68 R4-B6 real Provider recheck / **CLOSED_FOR_VALIDATION (local fixture boundary)**：
+在 `606230fbe783217e140499bc7ac4e9a3e65f72b0` 上以 system-first `-j2` 重建
+`integration-tests`（118/118 tasks），并运行成功会话、预期首轮拒绝 replacement、alternate
+replacement 三个 R4-B6 selector，均 `rc=0`。成功用例输出
+`SPEC182_NATIVE_DI_REQUEST_RESULT_OK`；负例保留并断言
+`NATIVE_REQUEST_STAGE_FAILED / DI_NATIVE_NO_ADMITTED_PROVIDER`。本批次确认 R10-B66/B67
+修复没有让本进程 real-Provider 接线回退，但不证明独立 Provider worker、跨进程传输、
+maintained caller/no-Python 或 T010--T017 资格。详见
+[R10-B68 evidence](evidence/r10-b68-r4b6-real-provider-recheck-20260909.md)。
+
 2026-09-09 R10-B67 native/application request identity mapping / **PARTIAL (local mapping boundary)**：
 native owner 继续唯一分配 Core `requestId`；`NativeRequestOptions.applicationRequestId`
 只保存维护 caller 的 `wire_request_id` correlation，handle 暴露两层 ID，Qwen native
