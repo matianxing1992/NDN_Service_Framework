@@ -22,6 +22,16 @@ def load_runner():
     return module
 
 
+def load_pipeline():
+    script = ROOT / "Experiments/NDNSF_DI_LlmPipeline_Minindn.py"
+    spec = importlib.util.spec_from_file_location("spec182_llm_pipeline", script)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 def digest(path: Path) -> str:
     return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
 
@@ -150,6 +160,53 @@ def test_valid_manifest_checks_objects_and_builds_fixed_delegate(tmp_path: Path)
     ]
     assert "--spec175-case" not in argv
     assert argv[argv.index("--measured-requests") + 1] == "2"
+
+
+def test_native_config_delegate_contract_selects_native_provider(tmp_path: Path):
+    module, manifest_path, model_root, model_digest, prompt_digest, prompt = valid_inputs(tmp_path)
+    validated = module.validate_manifest(
+        manifest_path, model_root,
+        expected_model=module.MODEL_ID,
+        expected_revision="revision-v1",
+        expected_model_digest=model_digest,
+        expected_prompt_digest=prompt_digest,
+        verifier=lambda path: None,
+    )
+    output = tmp_path / "evidence"
+    output.mkdir()
+    stage_manifest, _ = module._legacy_stage_manifest(
+        validated["manifest"], model_root, output)
+    config = tmp_path / "native-requester.json"
+    config.write_text("{}", encoding="utf-8")
+    argv = module.build_delegate_argv(
+        stage_manifest=stage_manifest,
+        model_root=model_root,
+        tokenizer_root=validated["tokenizerRoot"],
+        output_root=output,
+        model=module.MODEL_ID,
+        revision="revision-v1",
+        prompt=prompt,
+        request_id="run-native",
+        workload_digest="sha256:" + "b" * 64,
+        model_digest=model_digest,
+        native_requester_config=str(config),
+    )
+    assert argv[argv.index("--runtime") + 1] == "qwen-onnx-cpu-native"
+    assert "--selection-dataflow-v3" not in argv
+    assert argv[argv.index("--native-requester-config") + 1] == str(config)
+
+    pipeline = load_pipeline()
+    parsed = pipeline.build_parser().parse_args([
+        "--runtime", "qwen-onnx-cpu-native",
+        "--native-requester-config", str(config),
+    ])
+    assert parsed.native_requester_config == str(config)
+    source = (ROOT / "Experiments/NDNSF_DI_LlmPipeline_Minindn.py").read_text(
+        encoding="utf-8")
+    assert "native_user_args +=" in source
+    assert "--native-requester-config" in source
+    assert "selection_bundle is not None and not args.native_requester_config" in source
+    assert "selection_bundle is None or args.native_requester_config" in source
 
 
 @pytest.mark.parametrize("field, value, error", [

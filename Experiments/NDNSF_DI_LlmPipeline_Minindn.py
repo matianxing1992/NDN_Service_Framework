@@ -562,6 +562,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--qwen-stage-manifest", default="")
     parser.add_argument("--qwen-stage-root", default="")
     parser.add_argument(
+        "--native-requester-config",
+        default="",
+        help=(
+            "Operator-pinned ndnsf-di-native-requester-v1 configuration for "
+            "the maintained Qwen native requester route."
+        ),
+    )
+    parser.add_argument(
         "--tiny-onnx-fixture-root",
         default=str(REPO / "tests/fixtures/spec175/tiny-causal-lm-v1"),
         help="Checked-in deterministic Spec175 ONNX fixture for the host gate.",
@@ -2832,6 +2840,18 @@ def main() -> int:
             "--spec175-case requires four-stage tiny-onnx V3 execution")
     if args.spec175_case and args.seed <= 0:
         raise SystemExit("--spec175-case requires a positive --seed")
+    if args.native_requester_config:
+        if args.runtime != "qwen-onnx-cpu-native":
+            raise SystemExit(
+                "native requester configuration requires qwen-onnx-cpu-native")
+        native_config = Path(args.native_requester_config).expanduser()
+        if not native_config.is_file():
+            raise SystemExit(
+                "native requester configuration does not exist: "
+                f"{native_config}")
+        if args.selection_dataflow_v2 or args.selection_dataflow_v3:
+            raise SystemExit(
+                "native requester configuration cannot use selection dataflow")
     if args.selection_dataflow_v2 or args.selection_dataflow_v3:
         profile = "selection-dataflow-v3" if args.selection_dataflow_v3 else "selection-dataflow-v2"
         if args.runtime == "tiny-onnx":
@@ -3920,6 +3940,11 @@ def main() -> int:
                 perf.shell_quote(OUT / "qwen-onnx-service-manifest.json"))
             if args.runtime == "qwen-onnx-cpu-native" else ""
         )
+        if args.native_requester_config:
+            native_user_args += (
+                " --native-requester-config "
+                + perf.shell_quote(args.native_requester_config)
+            )
         spec107_user_args = (
             "--spec107-candidate-id {} --spec107-diagnostic-timing-jsonl {}".format(
                 perf.shell_quote(spec107_candidate_id),
@@ -3961,7 +3986,7 @@ def main() -> int:
         qwen_summary_user_args = (
             "--qwen-runtime-summary "
             + perf.shell_quote(OUT / "qwen-pipeline-runtime.json")
-            if selection_bundle is None else ""
+            if selection_bundle is None or args.native_requester_config else ""
         )
         if args.runtime == "tiny-onnx":
             qwen_summary_user_args = (
@@ -3969,7 +3994,7 @@ def main() -> int:
                 + perf.shell_quote(args.tiny_onnx_fixture_root)
             )
         selection_user_args = ""
-        if selection_bundle is not None:
+        if selection_bundle is not None and not args.native_requester_config:
             if args.runtime != "tiny-onnx" and repo_user_bootstrap is None:
                 raise RuntimeError("Repo User bootstrap token is unavailable")
             if args.runtime == "tiny-onnx":
