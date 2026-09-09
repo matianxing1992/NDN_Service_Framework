@@ -1,6 +1,6 @@
 # Implementation Plan: Native NDNSF-DI with Optional Python Bindings
 
-**Branch**: Experimental | **Revision**: 61 | **Date**: 2026-09-09
+**Branch**: Experimental | **Revision**: 62 | **Date**: 2026-09-09
 **Status**: IN_PROGRESS / 当前实现与验收状态见 tasks.md 的 Task Progress Registry 和 Current Checkpoint
 **Spec**: [spec.md](spec.md)
 
@@ -632,6 +632,15 @@ selector、source closure 或硬验收依赖必须拆到新的 Batch ID。
 runtime test。该批 `CLOSED_FOR_VALIDATION` 只适用于共享 skill/template 规则，T004/T008/
 T010/T011/T013/T014/T015/T016/T017 及资格状态不变。详见
 [R10-B32 evidence](evidence/r10-b32-skill-feedback-loop-20260909.md)。
+
+### R10-B34 Spec182 Regression Sweep 2026-09-09
+
+在 R10-B33 后执行一次不改产品源码的批末回归：Spec182 专属 C++ unit、完整
+`Spec170NdnsfDiCoreFlow/*` integration 和 Python binding/compatibility suite 均退出 0。
+这次运行只证明当前本地边界没有回归；日志中的预期 negative case 保持其原始
+`ACK_CLOSED`/stream failure boundary，不把断言内失败解释为套件失败或资格通过。
+跨进程 Provider worker、maintained caller/no-Python 与 T016 仍需在其 owner 环境执行。
+详见 [R10-B34 evidence](evidence/r10-b34-regression-sweep-20260909.md)。
 
 ### R10-B33 Native Unary Repository Reference Request 2026-09-09
 
