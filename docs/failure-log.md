@@ -1,5 +1,20 @@
 # Failure Log and Evidence Index
 
+## 2026-09-09 — Spec182 T016 MiniNDN owner preflight recheck
+
+A fresh T016 campaign preflight was run after starting the local NFD. The socket check and
+`nfdc status report` both succeeded (`/run/nfd/nfd.sock`, NFD 24.07-14-g2b43d675), but
+`Experiments/NDNSF_DI_NativeClosure_Minindn.py` still exited `2` before starting any business
+process or namespace run with `MININDN_NODE_CONTEXT_NOT_PROVIDED` for `campaignCase=I01`.
+`ip netns list` contained no campaign namespace, and the owner supplied no node/netns metadata
+for `tests/standalone/run-spec182-native-closure.py`; therefore this is an owner-preflight
+boundary, not a protocol, requester, Provider, or qualification result.
+
+The complete raw retry is retained under `.codex-tmp/spec182-t016-r5/`, with the NFD startup
+record under `.codex-tmp/spec182-t016-preflight-20260909/`. NFD availability changes the prior
+socket blocker, but does not close the missing MiniNDN node-context requirement. T016 remains
+`UNQUALIFIED` and must be retried only after a real isolated node/netns/socket context is created.
+
 ## 2026-09-09 — Spec182 full integration stale recipe-oracle boundary
 
 The first full `integration-tests --log_level=test_suite` run after the R10-B11 checkpoint

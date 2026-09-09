@@ -1,6 +1,6 @@
 # Spec182 Design Audit
 
-**Revision**: 12 | **Mode**: source alignment / cross-task convergence
+**Revision**: 13 | **Mode**: source alignment / cross-task convergence
 **Verdict**: DRAFT / PARTIAL; T016 preflight UNQUALIFIED
 **Source**: `298220b9` implementation/docs checkpoint / Experimental
 **Evidence**: [current source and dependency baseline](contracts/integrated-baseline.md)
@@ -9,7 +9,7 @@
 
 ### Remaining Production Chain Review 2026-09-09
 
-本次复核以 `298220b9` 为当前 source/docs checkpoint。R10-B1--R10-B6 已在本地关闭
+本次复核以 `298220b9` 为当前 source checkpoint，当前文档状态由 R10-B15 更新。R10-B1--R10-B6 已在本地关闭
 准备、公开 facade、YOLO/Qwen maintained caller 的 `REPO_REF` 路由、真实 Provider 正向
 消费和三个 Provider fail-closed 负例；R10-B7 同步了当前 route marker 与 T013-D/T013-F
 契约文字，R10-B9 又在真实 Provider conversation fixture 中观察到 configured
@@ -25,8 +25,9 @@ requester→Provider fetch 已有局部观察，但真实 stream
 callback、conversation owner/recovery、legacy zero-use 和 no-Python qualification 仍分别归
 T004/T008/T010/T011/T013 与 T016。`NATIVE_REQUEST_PIPELINE_NOT_READY` 继续是无完整
 runtime/configuration 构造时的显式 fail-closed 行为，不把兼容构造误认为生产成功。下一批应
-外部 NFD socket 已可用，但 MiniNDN owner 尚未提供冻结要求的 node/netns metadata，因此
-T016 campaign 仍只能在业务启动前给出 `UNQUALIFIED`。下一步需由 owner 建立隔离节点后
+外部 NFD socket 现在已可用，且新的 owner 重试确认其状态检查成功；但 MiniNDN owner 尚未
+提供冻结要求的 node/netns metadata，campaign 仍在业务启动前给出
+`UNQUALIFIED` / `MININDN_NODE_CONTEXT_NOT_PROVIDED`。下一步需由 owner 建立隔离节点后
 推进 T016，并补齐 maintained caller 的跨进程执行；不再把组件数量或静态标记当作整链完成。
 
 ### CrossTask Convergence 2026-09-08

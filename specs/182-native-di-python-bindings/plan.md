@@ -1,6 +1,6 @@
 # Implementation Plan: Native NDNSF-DI with Optional Python Bindings
 
-**Branch**: Experimental | **Revision**: 35 | **Date**: 2026-09-09
+**Branch**: Experimental | **Revision**: 36 | **Date**: 2026-09-09
 **Status**: IN_PROGRESS / 当前实现与验收状态见 tasks.md 的 Task Progress Registry 和 Current Checkpoint
 **Spec**: [spec.md](spec.md)
 
@@ -330,6 +330,21 @@ node/netns metadata.
 
 Allocation is limited to the audit, task/progress registry and one evidence record. No task is
 promoted to final qualification solely from unit/integration success.
+
+### R10-B15 T016 MiniNDN Owner Preflight Recheck 2026-09-09
+
+After local NFD was started and `/run/nfd/nfd.sock` became available, the T016 campaign owner was
+retried from a fresh output directory with `campaignCase=I01`. NFD status succeeded, but the
+owner still returned `UNQUALIFIED` / `MININDN_NODE_CONTEXT_NOT_PROVIDED` before starting any
+MiniNDN node, namespace, child process, or protocol request. The root cause is now narrower:
+the campaign owner has no real node/netns metadata to pass to the canonical closure runner;
+NFD socket availability alone is insufficient.
+
+Allocation is limited to a fresh preflight evidence record, failure index, audit, and task/plan
+status. No product source, test target, or qualification status is promoted. The next owner work
+must create and validate an isolated MiniNDN node context (namespace inode, owner PID/start ticks,
+NFD socket and peer metadata) before invoking the existing runner; until then T016 remains
+`OPEN_FOR_NEXT_BATCH` / `UNQUALIFIED`.
 
 ### R8-SKILL Review Coverage Contract 2026-09-09
 
