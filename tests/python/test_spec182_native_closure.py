@@ -269,6 +269,53 @@ def test_trace_records_lifecycle_syscalls_and_matches_declared_endpoint(tmp_path
     assert observation["policyViolations"] == []
 
 
+def test_trace_binds_declared_child_exec_to_clone_parent(tmp_path: Path) -> None:
+    manifest = _manifest(tmp_path)
+    document = json.loads(manifest.read_text(encoding="utf-8"))
+    isolation = document["cases"][0]["isolation"]
+    isolation["processes"].append({
+        "id": "provider", "role": "provider", "executable": "/bin/true",
+        "argv": ["/probe-root/bin/true", "provider"], "env": {},
+    })
+    isolation["childProcesses"] = [{
+        "role": "assembly-worker", "executable": "/bin/true",
+        "parentProcessIds": ["provider"], "maxConcurrentPerParent": 1,
+    }]
+    manifest.write_text(json.dumps(document), encoding="utf-8")
+    case = runner.load_case(manifest, "positive")
+    trace = tmp_path / "trace.txt"
+    trace.write_text(
+        '123 clone(child_stack=NULL, flags=0) = 124\n'
+        '124 execve("/probe-root/bin/true", ["true"], 0x0) = 0\n'
+        '124 exit_group(0) = ?\n', encoding="utf-8")
+    observation = runner.collect_trace(case, {"trace": str(trace)})
+    assert observation["childLinks"] == [{"parentPid": "123", "childPid": "124",
+                                           "syscall": "clone"}]
+    assert observation["childProcessCoverage"][0]["observed"] is True
+
+
+def test_missing_declared_child_is_an_observed_failure(tmp_path: Path) -> None:
+    manifest = _manifest(tmp_path)
+    document = json.loads(manifest.read_text(encoding="utf-8"))
+    isolation = document["cases"][0]["isolation"]
+    isolation["processes"].append({
+        "id": "provider", "role": "provider", "executable": "/bin/true",
+        "argv": ["/probe-root/bin/true", "provider"], "env": {},
+    })
+    isolation["childProcesses"] = [{
+        "role": "assembly-worker", "executable": "/bin/true",
+        "parentProcessIds": ["provider"], "maxConcurrentPerParent": 1,
+    }]
+    manifest.write_text(json.dumps(document), encoding="utf-8")
+    case = runner.load_case(manifest, "positive")
+    trace = tmp_path / "trace.txt"
+    trace.write_text('123 exit_group(0) = ?\n', encoding="utf-8")
+    observation = runner.collect_trace(case, {"trace": str(trace)})
+    result = runner.evaluate_case(case, {"returncode": 0, "timedOut": False}, observation)
+    assert result["status"] == "UNQUALIFIED"
+    assert "CHILD_PROCESS_MISSING" in result["failures"]
+
+
 def test_trace_observes_roles_for_all_declared_processes(tmp_path: Path) -> None:
     case = runner.load_case(_manifest(tmp_path), "positive")
     case["isolation"]["processes"].append({
