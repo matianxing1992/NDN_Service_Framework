@@ -170,9 +170,21 @@ def _native_qwen_request(client, args, payload: bytes, *, request_id: str,
         raise RuntimeError(
             "native requester requires a configured NativeConversationCoordinator "
             "for conversation continuation")
-    digest = str(getattr(args, "_automatic_tokenizer_digest", "") or "")
+    # Native-config generation must use the digest pinned by the operator's
+    # requester configuration.  The automatic planner's model metadata is a
+    # separate compatibility path and must never silently fill this field.
+    digest = str(getattr(client, "native_tokenizer_digest", "") or "")
+    if not digest and not getattr(args, "native_requester_config", ""):
+        digest = str(getattr(args, "_automatic_tokenizer_digest", "") or "")
+        if not digest:
+            digest = str(getattr(args, "tokenizer_digest", "") or "")
     if not digest:
-        digest = str(getattr(args, "tokenizer_digest", "") or "")
+        raise RuntimeError(
+            "native Qwen requester requires an operator-pinned tokenizer digest")
+    if (len(digest) != 71 or not digest.startswith("sha256:") or
+            any(c not in "0123456789abcdef" for c in digest[7:])):
+        raise ValueError(
+            "native Qwen requester tokenizer digest must be canonical sha256")
     generation_id = hashlib.sha256(str(request_id).encode("utf-8")).hexdigest()[:32]
     options = _native_qwen_options(
         args,

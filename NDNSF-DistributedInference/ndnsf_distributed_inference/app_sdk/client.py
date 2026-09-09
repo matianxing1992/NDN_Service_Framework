@@ -10,6 +10,7 @@ import time
 import uuid
 import asyncio
 import warnings
+import re
 from concurrent.futures import Future
 from dataclasses import replace
 from datetime import timedelta
@@ -76,6 +77,11 @@ class APPClient:
         self._native_model = None
         self._native_splitter = None
         self._native_conversations = None
+        # The tokenizer identity is operator-pinned in the native requester
+        # configuration.  Keep it separate from the model descriptor's
+        # semantics digest: the latter is a model identity field and is not a
+        # safe substitute for the tokenizer artifact used by generation.
+        self._native_tokenizer_digest = ""
         self._network_futures = {}
         self._result_cache: dict[str, bytes] = {}
         self._selection_acceptance_trackers: dict[
@@ -344,6 +350,11 @@ class APPClient:
         self._native_conversations = conversations
         return self._native_client
 
+    @property
+    def native_tokenizer_digest(self) -> str:
+        """Return the operator-pinned tokenizer digest for native generation."""
+        return self._native_tokenizer_digest
+
     @staticmethod
     def _native_config_path(root: Path, value: str, field: str) -> Path:
         """Resolve one operator-owned native config path."""
@@ -378,6 +389,17 @@ class APPClient:
         if not isinstance(root, dict) or root.get("schema") != "ndnsf-di-native-requester-v1":
             raise ValueError("unsupported native requester configuration")
         try:
+            request = dict(root["request"])
+            tokenizer_digest = str(request.get("tokenizer_digest", "")).strip()
+            if tokenizer_digest and not re.fullmatch(
+                    r"sha256:[0-9a-f]{64}", tokenizer_digest):
+                raise ValueError(
+                    "native requester request.tokenizer_digest must be a canonical sha256 digest")
+            generation_mode = str(
+                request.get("generation_mode", "TOKEN_DIAGNOSTIC"))
+            if generation_mode == "TOKEN_STREAMING" and not tokenizer_digest:
+                raise ValueError(
+                    "native requester request.tokenizer_digest is required for TOKEN_STREAMING")
             catalog_config = dict(root["catalog"])
             source_config = dict(catalog_config["source"])
             model_path = self._native_config_path(
@@ -425,7 +447,6 @@ class APPClient:
             grants = service_user.native_grant_client_from_config(
                 json.dumps(grant_config, sort_keys=True, separators=(",", ":"),
                            ensure_ascii=False), str(config_path.parent))
-            request = dict(root["request"])
             runtime_config = {
                 "schema": "ndnsf-di-native-request-runtime-v1",
                 "contract": {
@@ -436,8 +457,7 @@ class APPClient:
                     "adapter_composition_digest": request[
                         "adapter_composition_digest"],
                     "task_descriptor_digest": request["task_descriptor_digest"],
-                    "generation_mode": request.get(
-                        "generation_mode", "TOKEN_DIAGNOSTIC"),
+                    "generation_mode": generation_mode,
                 },
                 "requester_identity": root["core"]["requester_identity"],
                 "protection_epoch": grant["protection_epoch"],
@@ -484,7 +504,9 @@ class APPClient:
                     str(config_path.parent))
         except (KeyError, TypeError, OSError) as exc:
             raise ValueError("native requester configuration is incomplete") from exc
-        return self.configure_native_requester(runtime, admission, conversations)
+        result = self.configure_native_requester(runtime, admission, conversations)
+        self._native_tokenizer_digest = tokenizer_digest
+        return result
 
     def request_native(self, *, model, input, split_strategy,
                        placement_strategy, options):

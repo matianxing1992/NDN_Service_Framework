@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 import unittest
 import sys
+from types import SimpleNamespace
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -167,6 +169,165 @@ class Spec182NativeBindingsTest(unittest.TestCase):
         self.assertIn('"ndnsf-di-native-request-runtime-v1"', source)
         self.assertNotIn("NativeRequestRuntime runtime;", source)
         self.assertIn("catalog.stateMapping.inputs", source)
+
+    def test_native_config_qwen_helper_uses_operator_pinned_tokenizer_digest(self):
+        # Execute the maintained helper with the real pybind DTOs.  The fake
+        # transport only terminates the request; assertions inspect the exact
+        # options and application bytes handed to the native facade.
+        sys.path.insert(0, str(ROOT / "NDNSF-DistributedRepo/pythonWrapper"))
+        sys.path.insert(0, str(ROOT / "NDNSF-DistributedInference"))
+        sys.path.insert(0, str(ROOT / "pythonWrapper"))
+        sys.path.insert(0, str(ROOT / "examples/python/NDNSF-DistributedInference/llm_pipeline"))
+        import user
+
+        tokenizer_digest = "sha256:" + "a" * 64
+        observed = {}
+
+        class Handle:
+            request_id = "native-qwen-test"
+
+            def result(self, _timeout):
+                return SimpleNamespace(payload=b"native-result")
+
+        class Client:
+            native_tokenizer_digest = tokenizer_digest
+
+            def publish_application_input_reference(self, *args, **kwargs):
+                observed["publication"] = (args, kwargs)
+                return {"reference": "pinned"}
+
+            def request_native_reference(self, reference, **kwargs):
+                observed["reference"] = reference
+                observed["options"] = kwargs["options"]
+                observed["application_options"] = kwargs["application_options"]
+                return Handle()
+
+        args = SimpleNamespace(
+            timeout_ms=1000,
+            ack_timeout_ms=100,
+            max_new_tokens=2,
+            native_requester_config="operator-pinned.json",
+        )
+        result = user._native_qwen_request(
+            Client(), args, b"qwen-context",
+            request_id="0123456789abcdef0123456789abcdef")
+
+        self.assertEqual(result.payload, b"native-result")
+        self.assertEqual(
+            observed["options"].generation.tokenizer_digest,
+            tokenizer_digest)
+        application_options = json.loads(
+            observed["application_options"].decode("utf-8"))
+        self.assertEqual(application_options["tokenizerDigest"], tokenizer_digest)
+
+        args.native_requester_config = "operator-pinned.json"
+        with self.assertRaisesRegex(RuntimeError, "operator-pinned tokenizer digest"):
+            user._native_qwen_request(
+                type("UnconfiguredClient", (), {
+                    "native_tokenizer_digest": "",
+                    "publish_application_input_reference": Client.publish_application_input_reference,
+                    "request_native_reference": Client.request_native_reference,
+                })(), args, b"qwen-context",
+                request_id="0123456789abcdef0123456789abcdef")
+
+    def test_native_requester_config_binds_streaming_tokenizer_digest(self):
+        sys.path.insert(0, str(ROOT / "NDNSF-DistributedRepo/pythonWrapper"))
+        sys.path.insert(0, str(ROOT / "NDNSF-DistributedInference"))
+        sys.path.insert(0, str(ROOT / "pythonWrapper"))
+        from ndnsf import _ndnsf
+        from ndnsf_distributed_inference.app_sdk.client import APPClient
+
+        digest = "sha256:" + "b" * 64
+        with self.subTest("missing digest fails closed"):
+            client = object.__new__(APPClient)
+            client._network_client = object()
+            config = {"schema": "ndnsf-di-native-requester-v1", "request": {
+                "generation_mode": "TOKEN_STREAMING"}}
+            path = ROOT / ".codex-tmp" / "spec182-native-config-missing-digest.json"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(config), encoding="utf-8")
+            try:
+                with self.assertRaisesRegex(ValueError, "tokenizer_digest is required"):
+                    client.configure_native_requester_from_config(path)
+            finally:
+                path.unlink(missing_ok=True)
+
+        with self.subTest("configured digest is retained"):
+            from unittest import mock
+            from types import SimpleNamespace
+            import tempfile
+
+            class Adapter:
+                adapter_id = "qwen"
+                descriptor_digest = digest
+
+            class Model:
+                model_name = "Qwen/Fixture"
+                content_digest = digest
+                adapter_id = "qwen"
+                adapter = Adapter()
+
+            class Catalog:
+                model_ref = Model()
+                model_manifest_digest = digest
+                canonical_source_digest = digest
+                canonical_initializer_object_digest = digest
+                state_mapping = SimpleNamespace(inputs={}, outputs={})
+
+            class ServiceUser:
+                def load_native_request_catalog(self, *_args, **_kwargs):
+                    return Catalog()
+
+                def native_grant_client_from_config(self, *_args, **_kwargs):
+                    return object()
+
+                def native_runtime_from_config(self, *_args, **_kwargs):
+                    return SimpleNamespace(
+                        catalog=Catalog(),
+                        contract=SimpleNamespace(service_name="/Qwen"))
+
+            class Network:
+                service_user = ServiceUser()
+
+            with tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                for name in ("model.bin", "trust", "requester.pem", "authority.pem",
+                             "content.key", "offer.pem"):
+                    (root / name).write_bytes(b"fixture")
+                config = {
+                    "schema": "ndnsf-di-native-requester-v1",
+                    "core": {"requester_identity": "/user", "authority_identity": "/aa",
+                             "group": "/group", "trust_schema_file": "trust"},
+                    "limits": {"max_source_bytes": 1024, "max_assembled_bytes": 2048},
+                    "catalog": {"source": {"file": "model.bin"},
+                                "recipe": {"artifact_profile_digest": digest}},
+                    "grant": {"authority_identity": "/aa", "protection_epoch": "epoch",
+                              "content_key_id": "content", "requester_private_key_file": "requester.pem",
+                              "authority_private_key_file": "authority.pem", "content_key_file": "content.key"},
+                    "offer_admission": {"policy": {}, "public_key_files": {"offer": "offer.pem"},
+                                        "candidate_digest": digest},
+                    "request": {"service": "/Qwen", "task": "generate",
+                                "adapter_composition_digest": digest, "task_descriptor_digest": digest,
+                                "input_layout_digest": digest, "security_policy_digest": digest,
+                                "max_candidates": 1, "max_policy_ms": 100, "timeout_ms": 1000,
+                                "ack_timeout_ms": 100, "generation_mode": "TOKEN_STREAMING",
+                                "tokenizer_digest": digest},
+                }
+                config_path = root / "requester.json"
+                config_path.write_text(json.dumps(config), encoding="utf-8")
+                client = object.__new__(APPClient)
+                client._network_client = Network()
+                client.configure_native_requester = mock.Mock(return_value="native")
+                original_admission = _ndnsf.NativeOfferAdmission
+                _ndnsf.NativeOfferAdmission = lambda *_args: "admission"
+                try:
+                    self.assertEqual(
+                        client.configure_native_requester_from_config(config_path),
+                        "native")
+                    self.assertEqual(client.native_tokenizer_digest, digest)
+                    client.configure_native_requester.assert_called_once()
+                finally:
+                    _ndnsf.NativeOfferAdmission = original_admission
 
 
 if __name__ == "__main__":
