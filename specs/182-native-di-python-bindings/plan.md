@@ -1,6 +1,6 @@
 # Implementation Plan: Native NDNSF-DI with Optional Python Bindings
 
-**Branch**: Experimental | **Revision**: 53 | **Date**: 2026-09-09
+**Branch**: Experimental | **Revision**: 54 | **Date**: 2026-09-09
 **Status**: IN_PROGRESS / 当前实现与验收状态见 tasks.md 的 Task Progress Registry 和 Current Checkpoint
 **Spec**: [spec.md](spec.md)
 
@@ -529,6 +529,15 @@ Waf target，并执行 `--help`、usage 和错误 schema 的命令级检查。�
 `si=372`、`so=0`，下一次 native build 继续采用 `-j2`，除非新的资源观察证明可升档。
 这些结果只关闭 executable/CLI wiring boundary，不关闭真实 Core/Provider 请求、维护调用方、
 跨进程、I02--I08、no-Python 或 T016；详见 [R10-B25 evidence](evidence/r10-b25-native-requester-cli-20260909.md)。
+
+### R10-B26 Missing REPO_REF Negative Recheck 2026-09-09
+
+R10-B6 的首轮缺失对象负例曾因默认 30 秒 fetch budget 超过 fixture 的 3 秒 pump 而停在
+测试边界；修复后的 source 已包含 1 秒、RAII 恢复的测试作用域预算。本批不重建 binary，
+直接用现有 `integration-tests` 的 `ProductionIngressRejectsMissingNativeRepositoryReference`
+selector 复核该首失败边界。selector 进入真实 Provider handler，返回缺失对象 failure，
+没有 runner input 或成功 Response，exit 0（testing time 1.946850s）。这只关闭本地负例
+重试证据，不关闭跨进程、maintained caller 或 T016；详见 [R10-B26 evidence](evidence/r10-b26-missing-repo-ref-recheck-20260909.md)。
 
 ### R8-SKILL Review Coverage Contract 2026-09-09
 

@@ -1,5 +1,20 @@
 # Failure Log and Evidence Index
 
+## 2026-09-09 — Spec182 R10-B26 missing `REPO_REF` negative recheck
+
+The old R10-B6 missing-object failure was a test-boundary observation: the fixture's fixed
+three-second pump ended before the production fetch exhausted its default 30-second budget. The
+current source already scopes `NDNSF_REQUEST_LARGE_FETCH_TIMEOUT_MS=1000` with RAII for this
+negative case. A fresh run of
+`.codex-tmp/spec182-r4-b2/build/integration-tests --run_test=Spec170NativePostSelection/ProductionIngressRejectsMissingNativeRepositoryReference`
+entered the real Provider handler and exited `0` in 1.946850 seconds with the expected fetch
+failure, no runner input, no successful Response, and no test errors. The raw retry is retained
+under `.codex-tmp/spec182-r10-b26-missing-repo-ref-20260909/`.
+
+This closes the local missing-object negative recheck while preserving the original R10-B6
+failure as history. Cross-process transport, maintained callers and T016 qualification remain
+unobserved.
+
 ## 2026-09-09 — Spec182 R10-B18 runner dynamic-ELF and trace-integrity boundaries
 
 Three exploratory runner probes exposed sequential harness boundaries before the final retry:
