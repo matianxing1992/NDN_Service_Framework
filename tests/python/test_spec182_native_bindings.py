@@ -172,6 +172,8 @@ class Spec182NativeBindingsTest(unittest.TestCase):
         self.assertIn('"ndnsf-di-native-request-runtime-v1"', source)
         self.assertNotIn("NativeRequestRuntime runtime;", source)
         self.assertIn("catalog.stateMapping.inputs", source)
+        self.assertIn('request.contains("application_request_id")', source)
+        self.assertIn("options.applicationRequestId", source)
 
     def test_native_config_qwen_helper_uses_operator_pinned_tokenizer_digest(self):
         # Execute the maintained helper with the real pybind DTOs.  The fake

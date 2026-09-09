@@ -185,6 +185,8 @@ int main(int argc, char** argv)
     if (request.contains("options_file")) input.options = read(base / request.at("options_file").get<std::string>(), 4 * 1024 * 1024);
     NativeRequestOptions options;
     options.timeoutMs = request.at("timeout_ms"); options.ackTimeoutMs = request.at("ack_timeout_ms");
+    if (request.contains("application_request_id"))
+      options.applicationRequestId = request.at("application_request_id").get<std::string>();
     std::signal(SIGINT, onSignal); std::signal(SIGTERM, onSignal);
     user->init();
     auto handle = client.request(modelRef, input, catalog.splitter, std::make_shared<NativePreSplitFirstPlacement>(), options);
