@@ -2985,3 +2985,22 @@ are still unobserved.
   omitted the developer `rg` location. Provider/Controller logs and exit codes were preserved;
   marker extraction was repeated with system `grep`/direct file reads. This is a harness collection
   issue, not a Provider or permission result.
+
+## 2026-09-09 — Spec182 R10-B75 Provider failure-exit repair build boundary
+
+- **Area**: Provider failure-observability repair after the R10-B74 static audit.
+- **First boundary**: the first rebuild after adding the scheduler-stop API failed during
+  `ServiceProvider.cpp` compilation because `ndn::scheduler::ScopedEventId` has no `reset()`
+  member. No executable was linked from that attempt. The raw command and compiler boundary are
+  retained under `.codex-tmp/spec182-r10-b75-provider-failure-exit-20260909-r0-build-j4-fail/`.
+- **Changed gate before retry**: check the exact ndn-cxx handle API, replace `reset()` with move
+  assignment to an empty scoped event, and reduce the next build to `-j2` after `vmstat` showed
+  sustained swap-in/out on this host.
+- **Follow-up behavior boundary**: after the compile repair, the first standalone Provider
+  failure probe still timed out because the Face event loop was restarted by the NDNSF heartbeat
+  and permission retry schedulers. The raw timeout runs are retained under
+  `.codex-tmp/spec182-r10-b75-provider-failure-exit-20260909-r1` through `r10`.
+- **Final result**: stopping the Face `io_context` from the failure task, then cancelling the
+  Provider heartbeat scheduler on the main thread, produced rc=2 in 1.08 seconds after
+  `NDNSF_DI_NATIVE_PROVIDER_PROVISION_FAILED`. This closes failure observability for this bounded
+  CLI boundary; it does not establish requester/Provider transport or qualification.
