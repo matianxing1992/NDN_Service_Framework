@@ -140,6 +140,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--workload-digest", default="")
     parser.add_argument("--model-identity-digest", default="")
     parser.add_argument("--request-id", default="")
+    parser.add_argument(
+        "--native-requester-config", default="",
+        help="Operator-pinned native requester config forwarded to the maintained runner.",
+    )
     parser.add_argument("--runtime-sif", default=os.environ.get("SPEC175_RUNTIME_SIF", ""))
     parser.add_argument("--runtime-apptainer", default=os.environ.get("SPEC175_APPTAINER", ""))
     parser.add_argument("--topology-file", default=str(
@@ -189,6 +193,8 @@ def qualification_command(args: argparse.Namespace) -> list[str]:
         command += ["--workload-digest", args.workload_digest]
     if args.model_identity_digest:
         command += ["--model-identity-digest", args.model_identity_digest]
+    if args.native_requester_config:
+        command += ["--native-requester-config", args.native_requester_config]
     return command
 
 

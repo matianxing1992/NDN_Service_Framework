@@ -112,6 +112,95 @@ def _cancel_invocation_from_worker(invocation) -> None:
 from ndnsf import StreamedInvocationOptions, StreamedInvocationError
 
 
+def _native_qwen_options(args, *, generation_id: str,
+                         tokenizer_digest: str, max_new_tokens: int):
+    """Build native generation/stream options without planner state.
+
+    The native requester allocates no Python callback or strategy.  The
+    deterministic generation identity is supplied in both DTOs and in the
+    application options so the C++ owner can compare them after submission.
+    """
+    from ndnsf import _ndnsf
+
+    generation_id = str(generation_id).strip().lower()
+    if len(generation_id) != 32 or any(
+            c not in "0123456789abcdef" for c in generation_id):
+        raise ValueError("native generation_id must be lowercase 16-byte hex")
+    options = _ndnsf.NativeRequestOptions()
+    options.timeout_ms = int(args.timeout_ms)
+    options.ack_timeout_ms = int(args.ack_timeout_ms)
+    options.output_mode = "TOKEN_STREAMING"
+    stream = _ndnsf.NativeStreamRequestOptions()
+    stream.mode = _ndnsf.NativeInvocationMode.NORMAL
+    stream.generation_id = list(bytes.fromhex(generation_id))
+    stream.max_events = max(2, int(max_new_tokens) + 1)
+    stream.interest_window = min(64, max(1, stream.max_events))
+    stream.callback_queue_capacity = max(16, stream.max_events)
+    stream.reorder_capacity = max(stream.interest_window, stream.max_events)
+    options.stream = stream
+    generation = _ndnsf.NativeGenerationExecutionContractV1()
+    generation.enabled = True
+    generation.mode = "TOKEN_STREAMING"
+    generation.max_generated_tokens = int(max_new_tokens)
+    generation.token_input_name = "input_ids"
+    generation.state_input_names = [
+        "attention_kv_in", "recurrent_state_in", "convolution_state_in"]
+    generation.state_output_names = [
+        "attention_kv_out", "recurrent_state_out", "convolution_state_out"]
+    generation.eos_token_ids = [2]
+    generation.tokenizer_digest = str(tokenizer_digest)
+    generation.sampling_mode = "Greedy"
+    generation.sampling_temperature = 0.0
+    generation.sampling_top_k = 1
+    generation.sampling_top_p = 1.0
+    generation.sampling_repetition_penalty = 1.0
+    generation.sampling_seed = 1750001
+    generation.generation_id = generation_id
+    options.generation = generation
+    return options
+
+
+def _native_qwen_request(client, args, payload: bytes, *, request_id: str,
+                         max_new_tokens: int | None = None,
+                         conversation=None):
+    """Submit one Qwen payload on the explicit native requester route."""
+    if conversation is not None:
+        # NativeServiceUser currently has no configured NativeConversationConfig
+        # port.  Falling back to the Python coordinator would hide that gap.
+        raise RuntimeError(
+            "native requester requires a configured NativeConversationCoordinator "
+            "for conversation continuation")
+    digest = str(getattr(args, "_automatic_tokenizer_digest", "") or "")
+    if not digest:
+        digest = str(getattr(args, "tokenizer_digest", "") or "")
+    generation_id = hashlib.sha256(str(request_id).encode("utf-8")).hexdigest()[:32]
+    options = _native_qwen_options(
+        args,
+        generation_id=generation_id,
+        tokenizer_digest=digest,
+        max_new_tokens=int(max_new_tokens or args.max_new_tokens),
+    )
+    application_options = json.dumps({
+        "generationId": generation_id,
+        "maxNewTokens": int(max_new_tokens or args.max_new_tokens),
+        "eosTokenIds": [2],
+        "tokenizerDigest": digest,
+        "useCache": True,
+        "outputMode": "TOKEN_STREAMING",
+        "greedy": True,
+    }, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    native = client.request_native_payload(
+        bytes(payload), options=options, task_name="generate",
+        application_options=application_options)
+    result = native.result(int(args.timeout_ms))
+    return type("NativeInferenceResult", (), {
+        "status": True,
+        "payload": bytes(result.payload),
+        "error": "",
+        "request_id": native.request_id,
+    })()
+
+
 def _qwen_model_type_from_documents(*documents: object) -> str:
     """Resolve the model-family position contract without loading a model.
 
@@ -1073,6 +1162,9 @@ def _run_tiny_onnx_stream(
         cancel_during_prefetch: bool = False,
         pre_network_rejection: bool = False):
     """Drive one real Core streamed request through the host ORT fixture."""
+    if getattr(args, "native_requester_config", ""):
+        raise RuntimeError(
+            "native requester route currently supports only Qwen runtimes")
     done = threading.Event()
     events: list[dict] = []
     completed: list[dict] = []
@@ -1176,7 +1268,8 @@ def _run_tiny_onnx_stream(
                 on_complete=lambda value: (completed.append(value), done.set()),
                 on_error=lambda error: (failures.append(error), done.set()),
             )
-        invocation_holder["invocation"] = invocation
+        if invocation is not None:
+            invocation_holder["invocation"] = invocation
         if cancel_during_prefetch:
             # M14's Provider control delays HOST->GPU prefetch.  Cancel only
             # after the native handle exists, so the cancellation is sent
@@ -2746,6 +2839,17 @@ def _run_qwen_transformer_generation_sample(
             # the wire Name gains its leading slash internally.  Generation
             # IDs contain only the permitted component characters.
             wire_request_id = str(request_id).strip().lstrip("/")
+            if getattr(args, "native_requester_config", ""):
+                if conversation is not None:
+                    raise RuntimeError(
+                        "native Qwen conversation route requires native continuation owner")
+                result = _native_qwen_request(
+                    client, args, context_payload,
+                    request_id=wire_request_id,
+                    max_new_tokens=max_new_tokens,
+                )
+                response_payload = result.payload
+                return decode(response_payload)
             if getattr(args, "automatic_planning_manifest", ""):
                 application_input = args._automatic_adapter.task.encode_input(
                     context_payload,
@@ -2868,6 +2972,23 @@ def _run_qwen_transformer_generation_sample(
             context_epoch=token_epoch,
             model_type=model_type,
         )
+        if getattr(args, "native_requester_config", ""):
+            result = _native_qwen_request(
+                client, args, request_payload,
+                request_id=wire_request_id,
+                max_new_tokens=1,
+            )
+            response = decode_payload(result.payload)
+            return {
+                "topToken": int(response["topToken"]),
+                "wireRequestId": str(result.request_id or wire_request_id),
+                "attempt": 1,
+                "planId": args.deployment_revision,
+                "modelIdentityDigest": getattr(args, "model_identity_digest", ""),
+                "responseSchema": str(response.get("schema", "")),
+                "stageCount": int(response.get("stageCount", 0) or 0),
+                "layerRanges": response.get("layerRanges", []),
+            }
         if getattr(args, "automatic_planning_manifest", ""):
             application_input = args._automatic_adapter.task.encode_input(
                 request_payload,
@@ -3678,6 +3799,15 @@ def main() -> int:
         help="Spec 162 exact model/graph/pre-split manifest for DEFERRED planning.",
     )
     parser.add_argument(
+        "--native-requester-config",
+        default="",
+        help=(
+            "Operator-pinned ndnsf-di-native-requester-v1 configuration. "
+            "When set, Qwen requests use APPClient.request_native_payload "
+            "and never fall back to the Python planner."
+        ),
+    )
+    parser.add_argument(
         "--qwen-stage-manifest", default="",
         help="Sealed Qwen stage inputs used by the deferred materializer.",
     )
@@ -3744,6 +3874,13 @@ def main() -> int:
             args.selection_offer_key_map):
         raise SystemExit(
             "automatic planning requires both manifest and offer key map")
+    if args.native_requester_config and args.automatic_planning_manifest:
+        raise SystemExit(
+            "native requester configuration and automatic planning are exclusive")
+    if args.native_requester_config and args.runtime not in (
+            QWEN_TRANSFORMERS_RUNTIME, QWEN_ONNX_RUNTIME):
+        raise SystemExit(
+            "native requester route currently supports only Qwen runtimes")
     if args.startup_barrier_timeout_s <= 0:
         raise SystemExit("--startup-barrier-timeout-s must be positive")
     if args.initial_sync_settle_s < 0.0:
@@ -3907,7 +4044,16 @@ def main() -> int:
             args.test_only_allow_ephemeral_app_state),
     )
     _publish_identity_certificate_and_wait(client, args)
-    if args.automatic_planning_manifest:
+    if args.native_requester_config:
+        client.configure_native_requester_from_config(
+            args.native_requester_config)
+        print(
+            "LLM_PIPELINE_NATIVE_REQUESTER_CONFIGURED",
+            f"config={Path(args.native_requester_config).expanduser().resolve()}",
+            "route=request_native_payload",
+            flush=True,
+        )
+    elif args.automatic_planning_manifest:
         if args.runtime == TINY_ONNX_RUNTIME:
             _configure_tiny_onnx_automatic_planning(client, args)
         else:
@@ -4265,7 +4411,14 @@ def main() -> int:
                     return 0
                 response = decode_payload(result.payload)
             else:
-                if args.durable_app_submit:
+                if args.native_requester_config:
+                    native_result = _native_qwen_request(
+                        client, args, request_payload,
+                        request_id=f"{args.request_id}-{index}",
+                        max_new_tokens=int(args.max_new_tokens),
+                    )
+                    result = native_result
+                elif args.durable_app_submit:
                     handle = client.submit(
                         service=SERVICE,
                         input=request_payload,
