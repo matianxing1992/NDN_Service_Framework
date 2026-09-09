@@ -1,6 +1,6 @@
 # Implementation Plan: Native NDNSF-DI with Optional Python Bindings
 
-**Branch**: Experimental | **Revision**: 32 | **Date**: 2026-09-09
+**Branch**: Experimental | **Revision**: 33 | **Date**: 2026-09-09
 **Status**: IN_PROGRESS / 当前实现与验收状态见 tasks.md 的 Task Progress Registry 和 Current Checkpoint
 **Spec**: [spec.md](spec.md)
 
@@ -296,6 +296,17 @@ publisher's plaintext. The inline R4-B6 conversation selector remains a regressi
 Allocation is limited to the existing integration fixture and its evidence/progress records.
 R10-B5/B6 continue to own the independent malformed/missing/size-mismatch negatives; cross-process
 maintained-caller execution and T016 qualification remain open.
+
+### R10-B12 Current Audit Refresh 2026-09-09
+
+After R10-B11, the source-alignment audit is refreshed to the `0656c2e4` checkpoint. It records
+the observed one-process requester → Core → Provider fetch/decrypt → conversation result boundary
+and keeps the remaining maintained-caller cross-process execution, stream/recovery qualification,
+legacy zero-use and T016 ownership explicit. Historical audit findings remain dated and unchanged.
+
+Allocation is limited to `audit.md`, the task/progress registry and one evidence record. The
+independent exit is link/status consistency plus the design validator; no product or qualification
+status is promoted.
 
 ### R8-SKILL Review Coverage Contract 2026-09-09
 
