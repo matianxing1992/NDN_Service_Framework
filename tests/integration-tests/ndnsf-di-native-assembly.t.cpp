@@ -166,9 +166,11 @@ recipeDigestFor(const NativeSelectionRoleV3& role)
   }
   wire << "],\"graphDigest\":" << jsonQuote(role.graphDigest)
        << ",\"inputNames\":[";
+  // The production canonical serializer binds inputNames/outputNames to the
+  // contract order.  Do not sort this helper independently: that would make
+  // the fixture's certified recipe digest disagree with the worker payload.
   std::vector<std::string> inputNames;
   for (const auto& item : role.expectedInputs) inputNames.push_back(item.name);
-  std::sort(inputNames.begin(), inputNames.end());
   for (std::size_t index = 0; index < inputNames.size(); ++index) {
     if (index != 0) wire << ',';
     wire << jsonQuote(inputNames[index]);
@@ -188,7 +190,6 @@ recipeDigestFor(const NativeSelectionRoleV3& role)
   wire << "],\"outputNames\":[";
   std::vector<std::string> outputNames;
   for (const auto& item : role.expectedOutputs) outputNames.push_back(item.name);
-  std::sort(outputNames.begin(), outputNames.end());
   for (std::size_t index = 0; index < outputNames.size(); ++index) {
     if (index != 0) wire << ',';
     wire << jsonQuote(outputNames[index]);
@@ -248,6 +249,7 @@ makeProjection(const std::string& rootDigest,
   role.layerBegin = 0;
   role.layerEnd = 2;
   role.backend = "onnxruntime";
+  role.adapterId = "onnx";
   role.deviceSet = {"cpu"};
   role.artifactDigest = zeroDigest('c');
   role.roleKind = "PIPELINE_RANGE";
@@ -295,7 +297,7 @@ runRegisteredProviderAssemblyCase(std::size_t providerCount)
   const auto sourceDigest = digest(source);
   const auto profileDigest = zeroDigest('b');
   const auto graphDigest =
-    "sha256:557dd7e11bd9e7b083356aeaab4f823ddb2e6c2b66ec0426032497dbe357c682";
+    "sha256:39bea16fd2b8d6163cda5e9c3875a05a83936fc163dff2c0406b92c22364103d";
   const auto initializerDigest =
     "sha256:074d3acd4acd13d94c4d27e9a201255ed9fd72f1783e4a056b7c6509deb6be9b";
   const auto suffix = std::to_string(providerCount);
@@ -397,7 +399,7 @@ BOOST_AUTO_TEST_CASE(AssignmentBoundRootSourceAndCachePath)
   const auto sourceDigest = digest(source);
   const auto profileDigest = zeroDigest('b');
   const auto graphDigest =
-    "sha256:557dd7e11bd9e7b083356aeaab4f823ddb2e6c2b66ec0426032497dbe357c682";
+    "sha256:39bea16fd2b8d6163cda5e9c3875a05a83936fc163dff2c0406b92c22364103d";
   const auto initializerDigest =
     "sha256:074d3acd4acd13d94c4d27e9a201255ed9fd72f1783e4a056b7c6509deb6be9b";
   const auto rootJson = std::string(
