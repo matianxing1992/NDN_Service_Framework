@@ -1,6 +1,6 @@
 # Implementation Plan: Native NDNSF-DI with Optional Python Bindings
 
-**Branch**: Experimental | **Revision**: 28 | **Date**: 2026-09-09
+**Branch**: Experimental | **Revision**: 29 | **Date**: 2026-09-09
 **Status**: IN_PROGRESS / 当前实现与验收状态见 tasks.md 的 Task Progress Registry 和 Current Checkpoint
 **Spec**: [spec.md](spec.md)
 
@@ -247,6 +247,18 @@ Allocation is limited to the maintained Qwen log marker, the T013-D/T013-F execu
 the task registry, and one documentation evidence record. The independent exit is source/route
 validation, `py_compile`, and design-link checks; real maintained caller execution, cross-process
 behavior, legacy retirement, and T016 remain open.
+
+### R10-B8 Cross-Task Audit Status Refresh 2026-09-09
+
+The source-alignment audit still described the pre-R10 paused state and named the superseded inline
+route as current. This documentation batch refreshes `audit.md` to the `7251f9ca` checkpoint,
+records the R10-B1--R10-B7 local exits, and restates the remaining T004/T008/T010/T011/T013/T016
+production boundaries. Historical audit sections retain their original dates and evidence; only
+the current finding and convergence summary are updated.
+
+Allocation is limited to `audit.md`, its task/progress entry, and one evidence record. The
+independent exit is source/status/link consistency plus the design validator. No product code,
+wire contract, task completion claim, or external qualification result changes.
 
 ### R8-SKILL Review Coverage Contract 2026-09-09
 
