@@ -62,6 +62,22 @@ git diff --check -> exit 0
 | Build measurement | native build N/A for this Python-only batch; prior R5-B7 shared/extension builds remain valid for unchanged native sources |
 | Behavior result | `STATIC_PASS; FOCUSED_BEHAVIOR_PASS; PARTIAL`; not `QUALIFICATION_PASS` |
 
+## Review trace and closure decision
+
+- **review-agent**: `/home/tianxing/.codex/skills/review-agent/SKILL.md`
+  SHA-256 `07079efd0dc76f05fade424e5dfb048dce1de2df7626e1a4f56292a4f3f92228`
+- **Baseline / diff**: baseline `54b859511a10db7e10c2413090eb642a25d36f7b`, reviewed
+  implementation diff through commit `04be23ed93d446d94593be481c52034ed94e85a7` for
+  `examples/python/NDNSF-DistributedInference/llm_pipeline/user.py` and its focused test;
+  composition scope also covered `APPClient.request_native_payload` and the native observer
+  path named in this record.
+- **Review result**: `No findings`; callback lifetime, terminal ordering, route selection,
+  source gate and test selector registration were rechecked after the implementation review.
+- **Closure decision**: `OPEN_FOR_NEXT_BATCH`. The local Qwen callback exit is observable and
+  validated, but a real Core/Provider stream, cross-process delivery and native conversation owner
+  are not yet present. The next caller-shaped batch must provide those selectors before T013-A or
+  T016 can advance.
+
 ## Remaining boundary
 
 The maintained Qwen caller now has one explicit callback-aware native full-generation route,

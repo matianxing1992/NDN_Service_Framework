@@ -69,7 +69,9 @@ Static review PASS != Behavior PASS。
 每个静态门和批末门还必须留下五 lane Coverage matrix；没有实际文件/符号和查询
 命令的覆盖声称不能产生 `STATIC_PASS`。
 批次已经有独立可观察出口后应立即进入批末验证，不得为了少一次构建继续吸收无关职责；
-复盘必须把静态、编译/链接、运行/测试漏检和可比构建耗时分开记录。
+复盘必须把静态、编译/链接、运行/测试漏检和可比构建耗时分开记录；每个成员和批末组合门
+还要记录 review-agent 的路径、SHA、基线和实际差异范围，以及 `CLOSED_FOR_VALIDATION` /
+`OPEN_FOR_NEXT_BATCH` 的关闭决定和触发条件。
 NDNSF-DI 原生运行时和协议行为由直接调用生产 C++ target 的测试验收；Python 只证明
 绑定/兼容/离线 oracle 或外部设施边界，不能替代 C++ 行为或跨进程资格测试。
 

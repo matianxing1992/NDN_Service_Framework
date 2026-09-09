@@ -71,6 +71,19 @@ source/link closure。批次记录应检查依赖库中包含变更符号（或�
 | `Behavior result` | 成员逐项映射到 `STATIC_PASS`、`BUILD_PASS`、`FOCUSED_BEHAVIOR_PASS` 或 `QUALIFICATION_PASS` |
 | `Evidence / remaining` | 持久证据链接、未执行项、硬验收依赖和下一步 |
 
+批次还必须附带以下两项可追溯信息；它们不能只由“审查通过”或“批次完成”一句话代替：
+
+| Field | Required content |
+| --- | --- |
+| `Review trace` | 每个成员的 review-agent skill 路径及 SHA-256、审查基线 commit、实际 diff 范围、覆盖查询、findings 与复审结果；批末组合审查同样记录基线和范围 |
+| `Closure decision` | `CLOSED_FOR_VALIDATION` 或 `OPEN_FOR_NEXT_BATCH`、达到或未达到的稳定行为出口、触发观察、未纳入成员及下一批 ID/依赖；没有独立出口时不得启动共享构建 |
+
+`STATIC_PASS` 只有在 `Review trace` 真实存在且所声明静态审查范围没有未解释的 `gap` 时才有效。
+尚未执行的真实运行、跨进程或资格验收可以在矩阵中保留明确的 `gap`，但必须使批次保持
+`PARTIAL`，不能把该 gap 包装成静态或行为通过。
+`READY_FOR_BATCH_TESTS` 还要求批末组合审查和 `Closure decision` 均已记录；技能文件、
+模板或任务框本身的存在不构成审查执行证据。
+
 这些标记是证据标签，不是任务状态。测试未执行或仅局部通过时保持
 `PARTIAL`；`QUALIFICATION_PASS` 只能由计划指定的完整资格门产生。
 

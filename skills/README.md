@@ -26,6 +26,11 @@ offline oracle 或外部设施边界。
 受版本控制的共享契约。修改治理原则或模板时，同时检查本机副本是否仍包含对应入口说明，
 但不要把个人安装路径写入提交。
 
+共享 reference 或模板变化后，使用中的 `.agents/skills/` 和个人安装副本必须重新同步并逐文件
+核对 SHA-256；入口副本只负责路由，版本化的 `skills/speckit-code-design/` 才是规则权威。
+同步检查要确认所有 Spec Kit 入口仍引用同一份 `batch-quality-gates.md`，而不是复制旧门禁。
+同步成功不等于 review-agent 已执行，也不改变当前 Spec 的任务或验收状态。
+
 ## Immediate Use
 
 无需安装即可在目标仓库会话明确要求：

@@ -140,3 +140,25 @@ matrix scope 和 result/evidence owner；`tasks-template.md` 明确 native NDNSF
 返回 `ok: true`（17 parent tasks、36 execution cards、36 progress units、0 errors），
 `git diff --check` 返回 0；未运行产品构建、单测、集成或实验，产品任务仍保持原有
 `PARTIAL`/`DONE` 状态。
+
+## Follow-up Review Trace And Closure Contract
+
+2026-09-08：R4-B4/R4-B6 的批次复盘显示，虽然已经要求五 lane Coverage matrix，仍可能只
+留下无法核对的 `No findings`。本轮将共享规则进一步收紧：每个小任务和批末组合门必须在
+同一 evidence 记录 `Review trace`（官方 review-agent 路径/SHA、基线、完整 diff 范围、
+覆盖查询、findings 与复审），并记录 `Closure decision`（`CLOSED_FOR_VALIDATION` 或
+`OPEN_FOR_NEXT_BATCH`、稳定出口、触发条件和下一批依赖）。只有声明的静态范围没有未解释
+gap 时才能写 `STATIC_PASS`；延后的真实运行或资格范围可以保留 gap，但必须保持 `PARTIAL`。
+
+版本化的 `batch-quality-gates.md`、`pre-test-static-review.md`、code-design 主入口和
+`.specify/templates/plan-template.md`、`tasks-template.md` 已同步。当前计划升至 Revision 14，
+tasks 升至 Revision 24；R5-B8 evidence 已补齐实际 review-agent SHA、`54b85951` 基线、
+`04be23ed` 实现差异和 `OPEN_FOR_NEXT_BATCH` 决定。历史批次不回填不可核对的身份，重开时
+才采用新字段。
+
+定向检查结果：仓库与个人安装的 code-design 三文件逐字同步；11 个本机 Spec Kit 入口均
+包含追踪说明；模板表头/分隔符、frontmatter、相对路径与 `git diff --check` 通过；
+`specs/182-native-di-python-bindings/checklists/validate_design.py` 返回 `ok: true`
+（17 parent tasks、38 execution cards、38 progress units、0 errors）。官方
+`skill-creator quick_validate.py` 对仓库和个人 code-design skill 均返回 `Skill is valid!`。
+本轮仍未运行产品构建、单测、集成或实验；产品任务状态保持原有 `DONE`/`PARTIAL`/`NOT_STARTED`。

@@ -1,6 +1,6 @@
 # Tasks: Native NDNSF-DI with Optional Python Bindings
 
-**Revision**: 23 | **Status**: DRAFT / T001 DONE
+**Revision**: 24 | **Status**: DRAFT / T001 DONE
 **Input**: [spec](spec.md), [code design](contracts/code-design.md),
 [proof](contracts/proof-design.md), [work units](contracts/work-units.md)
 
@@ -42,7 +42,7 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 | [D-NATIVE-TEST-POLICY Native Test Ownership](contracts/proof-design.md#native-test-ownership) | DONE | User native testing request | 主要行为测试由 C++ 直接调用生产库；Python 兼容/离线 oracle/外部设施边界已明确，文档检查 PASS；实际测试迁移由各实现卡与 T013/T015/T016 负责 | 2026-09-08 |
 | [D-CHAIN-REPLAN Production Chain Review](evidence/production-chain-replan-20260908.md) | DONE | User pause and replan request | 23 张未完成卡归入七个能力阶段；实际 R<n>-B<k> 按完整行为/共享契约/稳定出口领取，逐任务静态门、批末统一验证；36 张原卡状态不变，新增实现暂停 | 2026-09-08 |
 | [D-REVIEW-AGENT Official Skill](evidence/review-agent-install-20260908.md) | DONE | User installation request | 官方原版安装/字节身份/技能 schema PASS；逐任务静态门明确调用，文档校验 PASS；不关闭产品任务 | 2026-09-08 |
-| [D-SKILL-BATCH Workflow Revision](evidence/skill-batch-workflow-20260908.md) | DONE | User workflow request | 共享 batch-quality-gates、9 个执行/质量入口、code-design references 与 Spec 模板已同步；覆盖生产调用方、测试/harness/oracle、构建注册、稳定出口、静态/编译/运行漏检及匹配耗时；新增 native test ownership：NDNSF-DI 行为须由 C++ production target/selector 验收，Python 仅作 binding/facade/oracle/外部设施边界；旧验证器 compatibility 白名单限制已记录，不关闭产品任务 | 2026-09-08 |
+| [D-SKILL-BATCH Workflow Revision](evidence/skill-batch-workflow-20260908.md) | DONE | User workflow request | 共享 batch-quality-gates、11 个 Spec Kit 入口、code-design references 与 Spec 模板已同步；覆盖生产调用方、测试/harness/oracle、构建注册、稳定出口、静态/编译/运行漏检及匹配耗时；新增 native test ownership：NDNSF-DI 行为须由 C++ production target/selector 验收，Python 仅作 binding/facade/oracle/外部设施边界；新增 `Review trace` 与 `Closure decision` 的可追溯批次门；旧验证器 compatibility 白名单限制已记录，不关闭产品任务 | 2026-09-08 |
 | [D-DESIGN-R3 Revision](evidence/design-r3-20260908.md) | PASS | User documentation request | 逐章修订、23 组关键契约、生成/KV/会话重写；双 PDF 82/87 页、5 工具回归、API/八份参考/460+350 源码还原/版面 PASS；不关闭产品任务或全量语义审计 | 2026-09-08 |
 | [D-DESIGN-CHAPTER-AUDIT Chapter Review](evidence/design-chapter-audit-20260908.md) | PASS | User document review request | 审阅完成：当前/目标 62/67 章；7 KEEP、36 EXPAND、20 REWRITE、4 CORRECT；被审文档 NEEDS_REVISION，PDF 未改写，不关闭产品任务 | 2026-09-08 |
 | [D-DESIGN-R2 Baseline and Contracts](evidence/design-r2-20260907.md) | PASS | User documentation request | 当前/目标 66/69 页；4 工具回归、API、460/350 文件还原、PDF 身份/版面 PASS；BC-01 至 BC-04 已补，TG-01 至 TG-05 PLANNED；不关闭功能任务 | 2026-09-07 |
@@ -94,7 +94,11 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 
 批次结果沿共享 [batch-quality-gates](../../skills/speckit-code-design/references/batch-quality-gates.md)
 维护；Coverage matrix 是静态门与批末门的必要证据，不另建每任务报告。历史批次未回填
-矩阵，保持其原始证据和状态；从本修订起的新批次必须填写五个 lane。
+矩阵，保持其原始证据和状态；从本修订起的新批次必须填写五个 lane、`Review trace` 和
+`Closure decision`。前者包括 review-agent skill 路径/SHA、基线、完整 diff 范围、覆盖查询
+和复审结果；后者使用 `CLOSED_FOR_VALIDATION` 或 `OPEN_FOR_NEXT_BATCH`，说明稳定行为出口、
+触发条件、未纳入成员及下一批依赖。Revision 23 及更早的历史行不回填不可核对的信息；
+重开时按共享 reference 补齐。
 
 | Batch ID | Coverage matrix | Static findings | Compile/build misses | Runtime/test misses | Build scope / target / `-j` / elapsed / exit | Behavior result | Evidence / remaining |
 | --- | --- | --- | --- | --- | --- | --- | --- |

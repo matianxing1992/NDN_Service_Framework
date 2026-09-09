@@ -1,6 +1,6 @@
 # Implementation Plan: Native NDNSF-DI with Optional Python Bindings
 
-**Branch**: Experimental | **Revision**: 13 | **Date**: 2026-09-08
+**Branch**: Experimental | **Revision**: 14 | **Date**: 2026-09-08
 **Status**: IN_PROGRESS / 当前实现与验收状态见 tasks.md 的 Task Progress Registry 和 Current Checkpoint
 **Spec**: [spec.md](spec.md)
 
@@ -101,6 +101,12 @@ full-generation callback 接线：其稳定出口是维护入口能把已接受 
 通知交给 C++ observer facade，并在最终响应前完成顺序核对。该批不吸收 Provider retirement、
 conversation owner 或跨进程资格；它们使用不同 owner/selector，继续保持 `PARTIAL` 并在
 后续批次单独验收。
+
+自本计划 Revision 14 起，新建或更新的逻辑批次必须在唯一 evidence 记录中附带
+`Review trace`（review-agent 路径/SHA、基线、完整 diff 范围、复审结果）和
+`Closure decision`（`CLOSED_FOR_VALIDATION` 或 `OPEN_FOR_NEXT_BATCH`、稳定出口及触发条件）。
+Revision 13 之前的历史批次记录保持原事实，不回填虚构的审查身份或验收；下一次重开这些批次
+时才按新字段补齐。
 
 2026-09-07 implementation audit：T004-A 因真实 Selection wire/identity 不兼容重开，
 见 [A8-01](evidence/t004-wire-reopened-20260907.md)。在继续 T010 完整请求提交前，
