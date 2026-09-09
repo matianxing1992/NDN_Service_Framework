@@ -12,6 +12,18 @@ description: Define reviewable code design and coherent implementation tasks, th
 读取 root 的 `AGENTS.md`、`.specify/feature.json`、`.specify/memory/constitution.md`
 和 `docs/architecture-reading-guide.md`；活动 feature 以指针及当前用户授权为准，不固定旧 Spec。
 
+## Context Pointer Updates
+
+使用 `speckit-agent-context-update` 时，只维护 `AGENTS.md` 或其他 coding-agent context
+文件中的托管 Spec Kit plan 指针；它是运维同步，不是 feature artifact、逻辑批次、产品实现
+或资格验收。托管区只保留指针和必要的上下文说明，不复制任务状态、审查发现、构建输出、
+秘密或产品结论。更新后检查恰好一对 start/end marker、指针是否指向活动 feature 的
+`plan.md`，并运行 `git diff --check` 与
+`python3 skills/speckit-code-design/scripts/verify-spec-kit-sync.py --require-entrypoints`。
+若活动 feature 或 plan 指针变化，先刷新 Context Mode authority index，再运行 project 和
+active health checks；这些检查只证明指针/工作流一致性，不能产生 `STATIC_PASS`、
+`BUILD_PASS` 或 `DONE`。
+
 ## Outcome
 
 让接手者知道改什么、为什么、怎么改、如何调用、怎样验收。设计覆盖受影响的接口、职责、重要字段与状态；不预写普通局部变量或每行实现。

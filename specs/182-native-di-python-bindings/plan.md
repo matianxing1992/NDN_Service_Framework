@@ -1,6 +1,6 @@
 # Implementation Plan: Native NDNSF-DI with Optional Python Bindings
 
-**Branch**: Experimental | **Revision**: 79 | **Date**: 2026-09-09
+**Branch**: Experimental | **Revision**: 80 | **Date**: 2026-09-09
 **Status**: IN_PROGRESS / 当前实现与验收状态见 tasks.md 的 Task Progress Registry 和 Current Checkpoint
 **Spec**: [spec.md](spec.md)
 
@@ -824,6 +824,23 @@ bounded run 成功打印 `PLAN_READY`、`EXECUTION_LEASE_SERVICE_READY` 和
 timeout `124` 收尾。该结果只关闭 serve 注册与 readiness 成功/失败分类；跨进程 requester/
 Provider、真实 Response 和 T016 仍留在后续批次。详见
 [R10-B55 evidence](evidence/r10-b55-provider-serve-preflight-20260909.md)。
+
+### D-SKILL-CONTEXT-POINTER Context Pointer Workflow Boundary 2026-09-09
+
+本批把上下文指针更新规则写入版本化 `skills/speckit-code-design/SKILL.md`，并同步个人
+共享副本；`.agents/skills/speckit-agent-context-update/SKILL.md` 继续作为本机运维入口。
+规则限定托管区只保留活动 feature 的 plan 指针和必要上下文，不得复制任务状态、审查发现、
+构建输出、秘密或产品结论。更新后必须检查 marker 对、活动 plan、`git diff --check` 和
+`verify-spec-kit-sync.py --require-entrypoints`；活动 feature/plan 指针变化时还要刷新
+Context Mode authority index 并运行 project/active health。上述检查只证明指针及工作流一致，
+不产生 `STATIC_PASS`、`BUILD_PASS` 或 `DONE` 产品证据。
+
+分配依据固定为同一 skill、同一入口同步 contract 和同一文档出口；没有生产入口、target、
+runtime 或 qualification 依赖，形成稳定出口后不再扩张。五 lane 矩阵、官方
+`review-agent` 路径/SHA、四类 Batch Retrospective 和关闭决定记录在
+[Context pointer evidence](evidence/skill-context-pointer-20260909.md)。本批只关闭共享
+工作流边界，Spec182 的 native request/result、跨进程 transport、maintained caller/no-Python
+和 T016 仍由产品批次完成。
 
 ### R10-B54 Native Plan and Manifest Smoke 2026-09-09
 
