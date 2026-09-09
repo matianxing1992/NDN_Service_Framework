@@ -6955,6 +6955,7 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
     });
 
   std::string repositoryReference;
+  std::string repositoryPlaintext;
   if (repositoryInput) {
     const NativeJson reference = {
       {"source", "repo-manifest"},
@@ -6969,6 +6970,7 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
       {"objectId", catalogPublished.objectId},
     };
     repositoryReference = nativeCanonicalJson(reference);
+    repositoryPlaintext.assign(catalogRootPayload.begin(), catalogRootPayload.end());
   }
 
   const auto offerKey = makeR4B6Ed25519Key(0x31);
@@ -7117,12 +7119,30 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
       decision.pendingStateTtlMs = issued->pendingStateTtlMs;
       return decision;
     },
-    [model, policyDigest, protectionEpoch, role, localProviderBootId, collaborationCalls,
-     conversationAttempts, failFirst] (
+    [model, policyDigest, protectionEpoch, role, serviceName, localProviderBootId, collaborationCalls,
+     conversationAttempts, failFirst, repositoryInput, expectedReferenceDataName,
+     repositoryPlaintext] (
       ServiceProvider::CollaborationContext& ctx, const RequestMessage& request) {
       try {
         collaborationCalls->fetch_add(1, std::memory_order_relaxed);
         conversationAttempts->fetch_add(1, std::memory_order_relaxed);
+        if (repositoryInput) {
+          const auto requestPayload = request.getPayload();
+          const auto requestRoot = nativeParseJson(std::string(
+            requestPayload.begin(), requestPayload.end()));
+          if (requestRoot.value("input_transport", std::string{}) != "REPO_REF" ||
+              !requestRoot.contains("input_reference") ||
+              !requestRoot.at("input_reference").is_object())
+            throw std::runtime_error("R4-B6 repository reference missing at Provider");
+          const auto dataName = requestRoot.at("input_reference").value(
+            "dataName", std::string{});
+          if (dataName != expectedReferenceDataName)
+            throw std::runtime_error("R4-B6 repository reference identity changed");
+          const auto fetched = ctx.fetchEncryptedLargeData(
+            ndn::Name(dataName), ndn::Name(serviceName));
+          if (!fetched || std::string(fetched->begin(), fetched->end()) != repositoryPlaintext)
+            throw std::runtime_error("R4-B6 repository reference fetch mismatch");
+        }
         const auto assignment = ctx.assignment().assignmentPayload;
         std::istringstream input(std::string(assignment.begin(), assignment.end()));
         const auto projection = nativeSelectionProjectionV3FromJson(input, role);
