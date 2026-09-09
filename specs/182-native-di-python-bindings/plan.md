@@ -1,6 +1,6 @@
 # Implementation Plan: Native NDNSF-DI with Optional Python Bindings
 
-**Branch**: Experimental | **Revision**: 29 | **Date**: 2026-09-09
+**Branch**: Experimental | **Revision**: 30 | **Date**: 2026-09-09
 **Status**: IN_PROGRESS / 当前实现与验收状态见 tasks.md 的 Task Progress Registry 和 Current Checkpoint
 **Spec**: [spec.md](spec.md)
 
@@ -259,6 +259,20 @@ the current finding and convergence summary are updated.
 Allocation is limited to `audit.md`, its task/progress entry, and one evidence record. The
 independent exit is source/status/link consistency plus the design validator. No product code,
 wire contract, task completion claim, or external qualification result changes.
+
+### R10-B9 Requester REPO_REF Core-Wire Boundary 2026-09-09
+
+The existing R4-B6 real-Provider conversation fixture used inline application input, while
+R10-B5/B6 exercised Provider repository ingress through a separate manual request path. This
+batch adds one sibling selector that constructs a canonical `NativeApplicationInput::RepositoryReference`
+from the native publisher metadata and drives the same configured requester/Core/Provider
+conversation. The Provider ACK oracle checks the exact `REPO_REF` transport, empty inline payload,
+and published data/manifest identity.
+
+Allocation is limited to the integration fixture, selector registration, task/progress row and one
+evidence record. Provider fetch/decrypt remains owned by the R10-B5/B6 boundaries; cross-process
+maintained-caller execution and T016 qualification remain open. The first test-oracle iterator
+boundary is retained in `docs/failure-log.md` and does not count as a protocol failure.
 
 ### R8-SKILL Review Coverage Contract 2026-09-09
 

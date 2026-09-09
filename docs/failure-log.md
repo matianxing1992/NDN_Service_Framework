@@ -1,5 +1,21 @@
 # Failure Log and Evidence Index
 
+## 2026-09-09 — Spec182 R10-B9 requester REPO_REF oracle boundary
+
+The first R10-B9 repository-reference selector failed in its test oracle: the
+observer built a `std::string` from `begin()` and `end()` iterators obtained from
+two temporary `RequestMessage` payload buffers.  That undefined test behavior
+first appeared as a missing observation and then as an empty-JSON planning
+error, even though the request wire had been produced.  The raw attempts are
+retained under `.codex-tmp/spec182-r10-b9/` (`selector-r2.log` and
+`selector-r3.log`).  The oracle now copies one payload buffer before inspecting
+it; the existing inline selector and the new `REPO_REF` selector both pass.
+
+A separate comma-separated Boost.Test filter attempt returned the setup error
+“no test cases matching filter”; it was a selector syntax boundary, not a
+product or protocol result.  The final evidence uses separate selector
+commands and records the corrected test-harness boundary.
+
 ## 2026-09-09 — Spec182 R10-B2 facade test-double boundary
 
 The first R10-B2 focused Python run failed in the new native reference facade
