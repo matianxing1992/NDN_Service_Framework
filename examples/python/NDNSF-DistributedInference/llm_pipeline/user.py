@@ -2909,7 +2909,19 @@ def _run_qwen_transformer_generation_sample(
                         "native observer event validation failed: "
                         + "; ".join(native_stream_errors))
                 response_payload = result.payload
-                response = decode(response_payload)
+                response = decode_payload(response_payload)
+                if response.get("schema") != "NDNSF-DI-FINAL-V1":
+                    raise RuntimeError(
+                        "native streamed response has an unexpected schema")
+                raw_tokens = response.get("tokenIds")
+                if not isinstance(raw_tokens, list):
+                    raise RuntimeError(
+                        "native streamed response lacks tokenIds")
+                # ``run_full_qwen_generation`` consumes the stable public
+                # helper key.  The native wire response deliberately keeps
+                # ``tokenIds`` as its protocol field, so normalize it at this
+                # caller boundary before reference and text validation.
+                response["generatedTokenIds"] = list(raw_tokens)
                 response["streamEventCount"] = len(native_stream_events)
                 response["generationMode"] = "TOKEN_STREAMING"
                 return response

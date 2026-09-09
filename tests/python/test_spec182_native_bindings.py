@@ -230,6 +230,90 @@ class Spec182NativeBindingsTest(unittest.TestCase):
                 })(), args, b"qwen-context",
                 request_id="0123456789abcdef0123456789abcdef")
 
+    def test_native_config_qwen_full_generation_runs_production_branch(self):
+        """Execute the maintained native-config full-generation caller path."""
+        sys.path.insert(0, str(ROOT / "NDNSF-DistributedRepo/pythonWrapper"))
+        sys.path.insert(0, str(ROOT / "NDNSF-DistributedInference"))
+        sys.path.insert(0, str(ROOT / "pythonWrapper"))
+        sys.path.insert(0, str(ROOT / "examples/python/NDNSF-DistributedInference/llm_pipeline"))
+        import user
+
+        tokenizer_digest = "sha256:" + "c" * 64
+        observed = {}
+        request_id = "qwen-native-full"
+
+        class Handle:
+            def __init__(self):
+                self.request_id = request_id
+
+            def result(self, _timeout):
+                return SimpleNamespace(
+                    request_id=request_id,
+                    payload=json.dumps({
+                        "schema": "NDNSF-DI-FINAL-V1",
+                        "tokenIds": [7, 2],
+                        "text": "ok",
+                        "finishHint": "EOS",
+                        "finishReason": "eos",
+                    }, sort_keys=True, separators=(",", ":")).encode("utf-8"))
+
+        class Client:
+            native_tokenizer_digest = tokenizer_digest
+
+            def publish_application_input_reference(self, *args, **kwargs):
+                observed["publication"] = (args, kwargs)
+                return {"reference": "native-qwen-full"}
+
+            def request_native_reference(self, reference, **kwargs):
+                observed["reference"] = reference
+                observed["options"] = kwargs["options"]
+                observed["application_options"] = kwargs["application_options"]
+                observer = kwargs.get("on_event")
+                if observer is not None:
+                    observer({
+                        "terminal": False,
+                        "payload": json.dumps({
+                            "schema": "GenerationTokenEventV1",
+                            "tokenId": 7,
+                            "tokenEpoch": 1,
+                        }, sort_keys=True, separators=(",", ":")).encode("utf-8"),
+                    })
+                    observer({"terminal": True})
+                return Handle()
+
+        args = SimpleNamespace(
+            timeout_ms=1000,
+            ack_timeout_ms=100,
+            max_new_tokens=2,
+            native_requester_config="operator-pinned.json",
+            diagnostic_token_loop=False,
+            automatic_planning_manifest="",
+            _qwen_model_type="qwen3_5",
+        )
+        outcome = user._run_qwen_transformer_generation_sample(
+            Client(), args,
+            prompt_case={
+                "formattedInputIds": [1],
+                "referenceGeneratedTokenIds": [7, 2],
+                "eosTokenIds": [2],
+            },
+            generation_id="generation-native-full",
+            decoder=lambda token_ids: "ok",
+            request_id=request_id,
+        )
+
+        self.assertEqual(outcome.status, "OK")
+        self.assertEqual(outcome.generated_token_ids, (7, 2))
+        self.assertEqual(outcome.decoded_text, "ok")
+        self.assertEqual(outcome.stop_reason, "EOS")
+        self.assertEqual(outcome.token_steps[0]["metadata"]["streamEventCount"], 1)
+        self.assertEqual(
+            observed["options"].generation.tokenizer_digest,
+            tokenizer_digest)
+        application_options = json.loads(
+            observed["application_options"].decode("utf-8"))
+        self.assertEqual(application_options["tokenizerDigest"], tokenizer_digest)
+
     def test_native_requester_config_binds_streaming_tokenizer_digest(self):
         sys.path.insert(0, str(ROOT / "NDNSF-DistributedRepo/pythonWrapper"))
         sys.path.insert(0, str(ROOT / "NDNSF-DistributedInference"))
