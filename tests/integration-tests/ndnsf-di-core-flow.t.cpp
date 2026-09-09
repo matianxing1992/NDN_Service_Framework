@@ -6816,7 +6816,8 @@ r4B6SignDigest(const std::shared_ptr<EVP_PKEY>& key, const std::string& digest)
 void
 runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
                                     bool alternateProvider = false,
-                                    bool repositoryInput = false)
+                                    bool repositoryInput = false,
+                                    bool unaryRequest = false)
 {
   using namespace ndn_service_framework;
   test::BootstrapProfile profile;
@@ -7121,7 +7122,7 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
       return decision;
     },
     [model, policyDigest, protectionEpoch, role, serviceName, localProviderBootId, collaborationCalls,
-     conversationAttempts, failFirst, repositoryInput, expectedReferenceDataName,
+     conversationAttempts, failFirst, repositoryInput, unaryRequest, expectedReferenceDataName,
      repositoryPlaintext] (
       ServiceProvider::CollaborationContext& ctx, const RequestMessage& request) {
       try {
@@ -7143,6 +7144,13 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
             ndn::Name(dataName), ndn::Name(serviceName));
           if (!fetched || std::string(fetched->begin(), fetched->end()) != repositoryPlaintext)
             throw std::runtime_error("R4-B6 repository reference fetch mismatch");
+        }
+        if (unaryRequest) {
+          const std::string responseText = "native-unary-response";
+          const ndn::Buffer responsePayload(
+            reinterpret_cast<const uint8_t*>(responseText.data()), responseText.size());
+          ctx.publishFinalResponse(responsePayload);
+          return;
         }
         const auto assignment = ctx.assignment().assignmentPayload;
         std::istringstream input(std::string(assignment.begin(), assignment.end()));
@@ -7308,7 +7316,7 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
   NativeRequestRuntime runtime;
   runtime.contract = {serviceName, "task", model.adapterId,
     model.adapter.descriptorDigest(), nativePlanningDigest("r4-b6-composition"),
-    nativePlanningDigest("r4-b6-task"), "TOKEN_STREAMING"};
+    nativePlanningDigest("r4-b6-task"), unaryRequest ? "TOKEN_DIAGNOSTIC" : "TOKEN_STREAMING"};
   runtime.requesterIdentity = requesterName;
   runtime.protectionEpoch = protectionEpoch;
   runtime.inputLayoutDigest = nativePlanningDigest("r4-b6-input-layout");
@@ -7343,21 +7351,23 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
   options.taskName = "task";
   options.timeoutMs = 20000;
   options.ackTimeoutMs = 3000;
-  options.stream = StreamRequestOptions{};
-  options.stream->generationId.fill(0x11);
-  options.stream->maxEvents = 8;
-  options.stream->interestWindow = 4;
-  options.stream->retentionMs = 5000;
-  options.stream->allowReplacement = exerciseReplacement;
-  options.stream->maxReplacements = exerciseReplacement ? 1 : 0;
-  options.generation = nativeGenerationFromOptions(application.options,
-                                                     std::string(32, '1'));
-  const auto retentionDeadlineMs = static_cast<std::uint64_t>(
-    std::chrono::duration_cast<std::chrono::milliseconds>(
-      std::chrono::system_clock::now().time_since_epoch()).count()) + 60000;
-  options.conversation = NativeConversationContinuation{
-    "r4-b6-conversation-001", 0, serviceName, roleMapDigest, {}, {},
-    retentionDeadlineMs, "FULL_CONTEXT", {}, std::string(32, '1'), {}, {role}};
+  if (!unaryRequest) {
+    options.stream = StreamRequestOptions{};
+    options.stream->generationId.fill(0x11);
+    options.stream->maxEvents = 8;
+    options.stream->interestWindow = 4;
+    options.stream->retentionMs = 5000;
+    options.stream->allowReplacement = exerciseReplacement;
+    options.stream->maxReplacements = exerciseReplacement ? 1 : 0;
+    options.generation = nativeGenerationFromOptions(application.options,
+                                                       std::string(32, '1'));
+    const auto retentionDeadlineMs = static_cast<std::uint64_t>(
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count()) + 60000;
+    options.conversation = NativeConversationContinuation{
+      "r4-b6-conversation-001", 0, serviceName, roleMapDigest, {}, {},
+      retentionDeadlineMs, "FULL_CONTEXT", {}, std::string(32, '1'), {}, {role}};
+  }
 
   NativeConversationConfig conversationConfig;
   conversationConfig.authenticationKeys = {std::vector<std::uint8_t>(32, 0x5a)};
@@ -7395,6 +7405,14 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
                         << " requestWireBytes=" << observedRequestWireSize->load()
                         << " collaborationCalls=" << collaborationCalls->load());
     }
+  }
+  if (unaryRequest) {
+    BOOST_REQUIRE(first.status() == NativeRequestStatus::Succeeded);
+    const auto result = first.result(std::chrono::milliseconds(0));
+    BOOST_CHECK_EQUAL(std::string(result.payload.begin(), result.payload.end()),
+                      "native-unary-response");
+    client.close();
+    return;
   }
   if (exerciseReplacement && !alternateProvider) {
     // This fixture deliberately has one Provider.  A failed Provider is
@@ -7513,6 +7531,11 @@ BOOST_AUTO_TEST_CASE(Spec182R4B6RealProviderConversationAlternateReplacement)
 BOOST_AUTO_TEST_CASE(Spec182R4B6RealProviderRepositoryReference)
 {
   runR4B6RealProviderConversationCase(false, false, true);
+}
+
+BOOST_AUTO_TEST_CASE(Spec182R10B31RealProviderUnaryRequest)
+{
+  runR4B6RealProviderConversationCase(false, false, false, true);
 }
 
 BOOST_AUTO_TEST_CASE(Spec175NativeTinyOnnxI01OneProvider)
