@@ -1167,6 +1167,14 @@ T017 的 evidence/development-handoff.md 包含 exact commit、clean source clos
 
 ## Current Execution Checkpoint
 
+2026-09-09 R10-B70 native requester identity configuration / **CLOSED_FOR_VALIDATION (CLI composition boundary)**：
+独立 `DI_NativeRequester` 现在读取可选 `request.application_request_id` 并传入
+`NativeRequestOptions.applicationRequestId`；权威 Core request ID 仍只由 native owner 分配。
+requester target（13.915 秒）和 provider target（34.309 秒）均以 system-first `-j2` 构建通过，
+requester help、候选 `ldd`、native binding 16/16 与 diff check 通过。该批次只闭合 CLI
+身份映射组合，不宣称独立 Provider worker/跨进程、两轮会话、maintained caller/no-Python
+或 T010--T017 资格。详见 [R10-B70 evidence](evidence/r10-b70-native-requester-identity-cli-20260909.md)。
+
 2026-09-09 R10-B68 R4-B6 real Provider recheck / **CLOSED_FOR_VALIDATION (local fixture boundary)**：
 在 `606230fbe783217e140499bc7ac4e9a3e65f72b0` 上以 system-first `-j2` 重建
 `integration-tests`（118/118 tasks），并运行成功会话、预期首轮拒绝 replacement、alternate

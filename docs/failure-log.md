@@ -1,5 +1,16 @@
 # Failure Log and Evidence Index
 
+## 2026-09-09 — Spec182 R10-B70 local checkpoint hook boundary
+
+The first checkpoint commit attempt for the R10-B68 evidence was rejected before commit by
+the repository pre-commit hook's full-index development-assistant text scan. The reported
+matches were pre-existing `.specify/memory` references to `AGENTS/CLAUDE`; no R10-B68 file or
+product source was implicated. The hook explicitly supports `NDNSF_LOCAL_CHECKPOINT=1` for
+local checkpoints, so the same three explicit Spec paths were staged and committed with that
+flag. This is a repository hook boundary, not a product, protocol, or qualification result;
+the raw terminal output remains in the session and the retry checkpoint is
+`13d0c1b5`.
+
 ## 2026-09-09 — Spec182 R10-B67 Python extension loader boundary
 
 The first post-mapping extension test invocation loaded `/usr/local/lib/libnac-abe.so`
