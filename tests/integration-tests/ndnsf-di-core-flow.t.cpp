@@ -7159,6 +7159,9 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
         if (!ctx.isStreamed()) {
           throw std::runtime_error("R4-B6 stream projection missing");
         }
+        if (conversationRequest && !projection.conversationTurnBinding) {
+          throw std::runtime_error("R4-B6 conversation projection missing");
+        }
         if (failFirst && projection.attempt == 1) {
           if (!ctx.failStream(StreamedInvocationErrorCode::ProviderFailure,
                               "R4-B6 injected provider failure before first event")) {
@@ -7193,9 +7196,6 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
             throw std::runtime_error("R4-B6 stream-only final publication failed");
           }
           return;
-        }
-        if (!projection.conversationTurnBinding) {
-          throw std::runtime_error("R4-B6 conversation projection missing");
         }
         const auto binding = *projection.conversationTurnBinding;
         ctx.subscribe("ndnsf-di-conversation-state-v1",

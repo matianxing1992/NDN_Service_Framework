@@ -701,6 +701,15 @@ campaign 仍明确返回 `MININDN_NODE_CONTEXT_NOT_PROVIDED`；显式 `--execute
 由 root MiniNDN owner 提供 requester/provider 的 namespace、PID starttime、独立 NFD
 socket 和 peer metadata，再运行完整 I01–I08/PO matrix。详见 [R10-B38 evidence](evidence/r10-b38-t016-runtime-context-recheck-20260909.md)。
 
+### R10-B39 R4-B6 Fixture Contract Guard 2026-09-09
+
+R10-B37 提交后的只读复核发现，R4-B6 handler 把 `failFirst` replacement 注入放在
+conversation binding 检查之前；因此一个缺少 `conversationTurnBinding` 的首轮负例可能
+直接进入预期的 ProviderFailure，掩盖测试夹具契约破坏。本批只移动该检查顺序：
+conversation 请求必须先验证 binding，stream-only 请求仍明确不要求 binding；不改变生产
+代码、wire 或请求状态机。按共享规则记录 `Changed gate`，重建 integration target 并重跑
+stream-only、conversation/replacement、unary/repository selectors。详见 [R10-B39 evidence](evidence/r10-b39-r4b6-fixture-contract-guard-20260909.md)。
+
 ### R10-B33 Native Unary Repository Reference Request 2026-09-09
 
 R10-B31 已补齐不带 stream 或 conversation state 的普通 native `Response`，R10-B11
