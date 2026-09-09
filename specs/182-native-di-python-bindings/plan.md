@@ -1,6 +1,6 @@
 # Implementation Plan: Native NDNSF-DI with Optional Python Bindings
 
-**Branch**: Experimental | **Revision**: 43 | **Date**: 2026-09-09
+**Branch**: Experimental | **Revision**: 44 | **Date**: 2026-09-09
 **Status**: IN_PROGRESS / 当前实现与验收状态见 tasks.md 的 Task Progress Registry 和 Current Checkpoint
 **Spec**: [spec.md](spec.md)
 
@@ -413,6 +413,21 @@ case as `UNQUALIFIED` because the probe has no DI business evidence. Twenty-nine
 `py_compile`, `git diff --check` and the design validator passed. This batch closes only the
 owner-to-runner composition boundary; executable native DI cases, maintained caller execution,
 cross-process/no-Python evidence and T016 qualification remain open.
+
+### R10-B20 Collector Evidence Boundary 2026-09-09
+
+R10-B20 addresses the remaining T014-A harness gap exposed by R10-B19: the canonical runner
+observed a successful native process and complete trace but returned no derived evidence, so every
+composed case was necessarily `UNQUALIFIED`. The collector now derives identity, process-tree,
+namespace, exec-map, endpoint and cleanup evidence only from the actual run/trace records. A case
+may additionally declare an independent stdout business marker; the marker can satisfy only
+`business-oracle` and cannot promote a protocol or T016 result.
+
+The stable boundary is fail-closed: missing trace, incomplete syscall pairing, timeout, policy
+violation or missing declared marker remains `UNQUALIFIED`/`FAIL` according to the existing
+evaluator rules. This batch is Python collector/harness work and has no native build lane; real DI
+business requests, maintained caller execution, no-Python proof and T016 qualification remain
+downstream obligations.
 
 ### R8-SKILL Review Coverage Contract 2026-09-09
 
