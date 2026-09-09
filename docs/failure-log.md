@@ -2635,3 +2635,18 @@ and an ASAN-preload follow-up passed `20/20` with allocator type-size mismatch d
 disabled (the uninstrumented SVSPubSub dependency otherwise reports a non-product size warning).
 The original R6-B9 logs remain preserved; cross-process status publication and T016 qualification
 are still unobserved.
+
+## 2026-09-09 — Spec182 R10-B5 Boost.Test filter setup miss
+
+- **Area**: R10-B5 Provider REPO_REF execution selector; regression command boundary.
+- **First boundary**: the command combining three `--run_test` values with commas returned
+  Boost.Test setup code `200` (`no test cases matching filter or all test cases were disabled`)
+  before entering any test case. No Provider, network, or native execution started.
+- **Interpretation**: this is a test-command syntax/harness miss, not a product failure. The
+  corrected suite selector `Spec170NativePostSelection` entered all five cases and passed,
+  including the new REPO_REF case.
+- **Raw evidence**: `.codex-tmp/spec182-r10-b5/invalid-filter.log` and
+  `.codex-tmp/spec182-r10-b5/regression-suite.log`; keep both immutable with the build and
+  `vmstat` logs in the same run directory.
+- **Next step**: use suite selectors or verified Boost.Test filter syntax for this target; retain
+  the failed command in the batch retrospective as a `runtime/test` setup miss.

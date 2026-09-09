@@ -1,6 +1,6 @@
 # Implementation Plan: Native NDNSF-DI with Optional Python Bindings
 
-**Branch**: Experimental | **Revision**: 24 | **Date**: 2026-09-09
+**Branch**: Experimental | **Revision**: 25 | **Date**: 2026-09-09
 **Status**: IN_PROGRESS / 当前实现与验收状态见 tasks.md 的 Task Progress Registry 和 Current Checkpoint
 **Spec**: [spec.md](spec.md)
 
@@ -199,6 +199,25 @@ facade validation that the Qwen native helper uses repository references while
 the automatic-planning and legacy routes remain separate.  Real Provider fetch,
 streaming/conversation cross-process behavior, caller retirement, and T016
 remain open.
+
+### R10-B5 Provider REPO_REF Execution Boundary 2026-09-09
+
+R10-B1 through R10-B4 establish the requester preparation, public facade, and maintained
+YOLO/Qwen caller route for encrypted repository references. The remaining local boundary is
+Provider consumption: a real `ServiceProvider` handler must receive the v2
+`ndnsf-di-request-envelope-v2` with `input_transport=REPO_REF`, fetch the named encrypted
+`REQUEST-LARGE` object through `CollaborationContext::fetchEncryptedLargeData`, enforce the
+declared plaintext size, and pass the recovered bytes to the production native handler and
+runner. This batch adds that integration selector to the existing native ingress fixture; it
+does not add requester-side resolution, alter NAC-ABE ownership, or claim cross-process
+qualification.
+
+Allocation is limited to the native ingress helper, its existing production C++ runner factory,
+and the integration selector that observes the recovered `request-input` scope. They share the
+same Provider handler, encrypted large-data transport, `integration-tests` target, and an
+independent positive oracle. The stable exit is a successful real Provider execution whose
+runner input equals the published plaintext; malformed/missing reference negatives and full
+cross-process/T016 qualification remain separate work.
 
 ### R8-SKILL Review Coverage Contract 2026-09-09
 
