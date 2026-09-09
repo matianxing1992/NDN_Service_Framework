@@ -226,6 +226,20 @@ class AppSdkCompatibilityTest(unittest.TestCase):
             model="model", input="input", split_strategy="split",
             placement_strategy="placement", options="options")
 
+    def test_public_inference_client_forwards_conversation_owner(self):
+        core = SimpleNamespace(
+            configure_native_requester=mock.Mock(return_value="native"),
+        )
+        client = PublicInferenceClient.__new__(PublicInferenceClient)
+        client._core = core
+        conversations = object()
+
+        self.assertEqual(
+            client.configure_native_requester(
+                "runtime", "admission", conversations), "native")
+        core.configure_native_requester.assert_called_once_with(
+            "runtime", "admission", conversations)
+
     def test_inference_client_is_exported_from_public_app_sdk(self):
         self.assertIs(InferenceClient, PublicInferenceClient)
 
