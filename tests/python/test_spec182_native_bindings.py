@@ -314,6 +314,83 @@ class Spec182NativeBindingsTest(unittest.TestCase):
             observed["application_options"].decode("utf-8"))
         self.assertEqual(application_options["tokenizerDigest"], tokenizer_digest)
 
+    def test_native_config_qwen_observer_rejects_non_mapping_payload(self):
+        """Malformed decoded observer values must remain a caller-visible error."""
+        sys.path.insert(0, str(ROOT / "NDNSF-DistributedRepo/pythonWrapper"))
+        sys.path.insert(0, str(ROOT / "NDNSF-DistributedInference"))
+        sys.path.insert(0, str(ROOT / "pythonWrapper"))
+        sys.path.insert(0, str(ROOT / "examples/python/NDNSF-DistributedInference/llm_pipeline"))
+        import user
+
+        class Handle:
+            request_id = "qwen-native-malformed-event"
+
+            def result(self, _timeout):
+                return SimpleNamespace(
+                    request_id=self.request_id,
+                    payload=b"{}")
+
+        class Client:
+            native_tokenizer_digest = "sha256:" + "d" * 64
+
+            def publish_application_input_reference(self, *_args, **_kwargs):
+                return {"reference": "malformed-event"}
+
+            def request_native_reference(self, _reference, **kwargs):
+                observer = kwargs["on_event"]
+                observer([])
+                observer({"terminal": True})
+                return Handle()
+
+        args = SimpleNamespace(
+            timeout_ms=1000,
+            ack_timeout_ms=100,
+            max_new_tokens=1,
+            native_requester_config="operator-pinned.json",
+            diagnostic_token_loop=False,
+            automatic_planning_manifest="",
+            _qwen_model_type="qwen3_5",
+        )
+        outcome = user._run_qwen_transformer_generation_sample(
+            Client(), args,
+            prompt_case={
+                "formattedInputIds": [1],
+                "referenceGeneratedTokenIds": [2],
+                "eosTokenIds": [2],
+            },
+            generation_id="generation-malformed-event",
+            decoder=lambda token_ids: "ok",
+            request_id="qwen-native-malformed-event",
+        )
+        self.assertEqual(outcome.status, "FAILED")
+        self.assertIn("observer event validation failed", outcome.error)
+
+    def test_native_config_qwen_rejects_legacy_diagnostic_loop(self):
+        sys.path.insert(0, str(ROOT / "NDNSF-DistributedRepo/pythonWrapper"))
+        sys.path.insert(0, str(ROOT / "NDNSF-DistributedInference"))
+        sys.path.insert(0, str(ROOT / "pythonWrapper"))
+        sys.path.insert(0, str(ROOT / "examples/python/NDNSF-DistributedInference/llm_pipeline"))
+        import user
+
+        args = SimpleNamespace(
+            timeout_ms=1000,
+            max_new_tokens=1,
+            native_requester_config="operator-pinned.json",
+            diagnostic_token_loop=True,
+            _qwen_model_type="qwen3_5",
+        )
+        with self.assertRaisesRegex(RuntimeError, "diagnostic-token-loop is unsupported"):
+            user._run_qwen_transformer_generation_sample(
+                object(), args,
+                prompt_case={
+                    "formattedInputIds": [1],
+                    "referenceGeneratedTokenIds": [2],
+                    "eosTokenIds": [2],
+                },
+                generation_id="generation-diagnostic-rejected",
+                decoder=lambda token_ids: "ok",
+            )
+
     def test_native_requester_config_binds_streaming_tokenizer_digest(self):
         sys.path.insert(0, str(ROOT / "NDNSF-DistributedRepo/pythonWrapper"))
         sys.path.insert(0, str(ROOT / "NDNSF-DistributedInference"))
@@ -332,6 +409,20 @@ class Spec182NativeBindingsTest(unittest.TestCase):
             path.write_text(json.dumps(config), encoding="utf-8")
             try:
                 with self.assertRaisesRegex(ValueError, "tokenizer_digest is required"):
+                    client.configure_native_requester_from_config(path)
+            finally:
+                path.unlink(missing_ok=True)
+
+        with self.subTest("unsupported generation mode fails closed"):
+            client = object.__new__(APPClient)
+            client._network_client = object()
+            config = {"schema": "ndnsf-di-native-requester-v1", "request": {
+                "generation_mode": "UNSUPPORTED"}}
+            path = ROOT / ".codex-tmp" / "spec182-native-config-unsupported-mode.json"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(config), encoding="utf-8")
+            try:
+                with self.assertRaisesRegex(ValueError, "generation_mode"):
                     client.configure_native_requester_from_config(path)
             finally:
                 path.unlink(missing_ok=True)
@@ -410,6 +501,11 @@ class Spec182NativeBindingsTest(unittest.TestCase):
                         "native")
                     self.assertEqual(client.native_tokenizer_digest, digest)
                     client.configure_native_requester.assert_called_once()
+
+                    config["request"]["generation_mode"] = "TOKEN_DIAGNOSTIC"
+                    config_path.write_text(json.dumps(config), encoding="utf-8")
+                    with self.assertRaisesRegex(ValueError, "Qwen.*TOKEN_STREAMING"):
+                        client.configure_native_requester_from_config(config_path)
                 finally:
                     _ndnsf.NativeOfferAdmission = original_admission
 

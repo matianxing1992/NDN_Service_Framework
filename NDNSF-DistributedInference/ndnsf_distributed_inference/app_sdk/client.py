@@ -397,6 +397,10 @@ class APPClient:
                     "native requester request.tokenizer_digest must be a canonical sha256 digest")
             generation_mode = str(
                 request.get("generation_mode", "TOKEN_DIAGNOSTIC"))
+            if generation_mode not in {"TOKEN_DIAGNOSTIC", "TOKEN_STREAMING"}:
+                raise ValueError(
+                    "native requester request.generation_mode must be "
+                    "TOKEN_DIAGNOSTIC or TOKEN_STREAMING")
             if generation_mode == "TOKEN_STREAMING" and not tokenizer_digest:
                 raise ValueError(
                     "native requester request.tokenizer_digest is required for TOKEN_STREAMING")
@@ -421,6 +425,10 @@ class APPClient:
                 max_assembled_bytes=int(root["limits"]["max_assembled_bytes"]),
             )
             model = catalog.model_ref
+            if (str(getattr(model, "adapter_id", "")).lower().startswith("qwen") and
+                    generation_mode != "TOKEN_STREAMING"):
+                raise ValueError(
+                    "native Qwen requester configuration requires TOKEN_STREAMING")
             grant = dict(root["grant"])
             grant_config = {
                 "schema": "ndnsf-di-native-grant-client-v1",

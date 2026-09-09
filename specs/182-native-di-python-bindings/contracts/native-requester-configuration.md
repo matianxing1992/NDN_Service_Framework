@@ -29,7 +29,7 @@ DI_NativeRequester --config requester.json --input application-input.bin --outpu
 | catalog | 以下 catalog schema；包含模型与已有 Qwen/YOLO splitter 配置 |
 | grant | authority_identity、requester_private_key_file、authority_private_key_file、content_key_id、content_key_file、protection_epoch、recipient_public_key_files |
 | offer_admission | policy（既有 offer policy JSON）、public_key_files（signer key ID→PEM 文件）、candidate_digest |
-| request | service、task、adapter_composition_digest、task_descriptor_digest、input_layout_digest、security_policy_digest、max_candidates、max_policy_ms、timeout_ms、ack_timeout_ms；可选 generation_mode、max_reentries、no_progress_ms、max_segments、options_file。`TOKEN_STREAMING` 必须同时提供 operator-pinned `tokenizer_digest`（`sha256:` + 64 位小写十六进制）；该摘要直接进入 native generation contract，不能从 model semantics digest 或 automatic planner 临时状态推导。未提供后三个 runtime limit 时由 CLI 使用受限默认值，再由 native parser 校验 |
+| request | service、task、adapter_composition_digest、task_descriptor_digest、input_layout_digest、security_policy_digest、max_candidates、max_policy_ms、timeout_ms、ack_timeout_ms；可选 generation_mode、max_reentries、no_progress_ms、max_segments、options_file。`generation_mode` 只能是 `TOKEN_DIAGNOSTIC` 或 `TOKEN_STREAMING`；Qwen catalog 必须使用 `TOKEN_STREAMING`，并同时提供 operator-pinned `tokenizer_digest`（`sha256:` + 64 位小写十六进制）。该摘要直接进入 native generation contract，不能从 model semantics digest 或 automatic planner 临时状态推导。未提供后三个 runtime limit 时由 CLI 使用受限默认值，再由 native parser 校验 |
 | conversation | 可选的 `ndnsf-di-native-conversation-v1` owner 配置；由 C++ 读取 operator-owned journal/key files 并把 opaque coordinator 注入 `NativeInferenceClient`。省略时 conversation requests 必须 fail-closed，不得使用 Python `ConversationCoordinator` |
 
 ### Native Conversation Owner Schema
