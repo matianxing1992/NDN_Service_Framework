@@ -1,6 +1,6 @@
 # Implementation Plan: Native NDNSF-DI with Optional Python Bindings
 
-**Branch**: Experimental | **Revision**: 23 | **Date**: 2026-09-09
+**Branch**: Experimental | **Revision**: 24 | **Date**: 2026-09-09
 **Status**: IN_PROGRESS / 当前实现与验收状态见 tasks.md 的 Task Progress Registry 和 Current Checkpoint
 **Spec**: [spec.md](spec.md)
 
@@ -182,6 +182,23 @@ and its maintained-caller source selector.  The independent exit is source and
 mock validation that the native branch publishes once, uses `REPO_REF`, and
 cannot call `request_native_payload` or `request_task`; real MiniNDN Provider
 execution, cross-process behavior, and T016 remain open.
+
+### R10-B4 Qwen Native Reference Caller 2026-09-09
+
+The maintained Qwen native helper uses the same configured `APPClient` and
+currently submits every generation payload inline.  This batch publishes each
+typed Qwen context bundle as an encrypted repository reference and routes it
+through `request_native_reference`, including the existing event observer and
+generation options.  Conversation continuation remains fail-closed until a
+native conversation owner is configured; no Python planner or requester-side
+decrypt path is introduced.
+
+Allocation is limited to `_native_qwen_request`, its CLI route description, and
+the maintained-caller source selector.  The independent exit is source and
+facade validation that the Qwen native helper uses repository references while
+the automatic-planning and legacy routes remain separate.  Real Provider fetch,
+streaming/conversation cross-process behavior, caller retirement, and T016
+remain open.
 
 ### R8-SKILL Review Coverage Contract 2026-09-09
 
