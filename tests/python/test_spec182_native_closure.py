@@ -24,7 +24,8 @@ MININDN_SPEC.loader.exec_module(minindn)
 
 
 def _manifest(tmp_path: Path, *, source: Path | None = None,
-              business_marker: str | None = None) -> Path:
+              business_marker: str | None = None,
+              working_directory: str | None = None) -> Path:
     source = source or Path("/bin/true")
     digest = "sha256:" + hashlib.sha256(source.read_bytes()).hexdigest()
     case = {
@@ -49,6 +50,8 @@ def _manifest(tmp_path: Path, *, source: Path | None = None,
     }
     if business_marker is not None:
         case["businessOracle"] = {"stdoutMarker": business_marker}
+    if working_directory is not None:
+        case["isolation"]["processes"][0]["workingDirectory"] = working_directory
     document = {
         "schema": runner.MANIFEST_SCHEMA,
         "cases": [case],
@@ -68,6 +71,23 @@ def test_native_positive(tmp_path: Path) -> None:
                "evidence": sorted(runner.REQUIRED_EVIDENCE)},
         {"complete": True, "violations": []})
     assert result["status"] == "PASS"
+
+
+def test_working_directory_can_be_bound_to_staged_root(tmp_path: Path) -> None:
+    case = runner.load_case(_manifest(tmp_path, working_directory="/probe-root"), "positive")
+    staged = runner.stage_root(case, tmp_path / "run")
+    command = runner.make_launch(case, staged, {"id": ""}, tmp_path / "run/trace.txt")
+    assert command[command.index("--chdir") + 1] == "/probe-root"
+
+
+def test_working_directory_rejects_host_path(tmp_path: Path) -> None:
+    manifest = _manifest(tmp_path, working_directory="/home/tianxing")
+    try:
+        runner.load_case(manifest, "positive")
+    except runner.PreflightError as exc:
+        assert "staged root or /tmp" in str(exc)
+    else:
+        raise AssertionError("host working directory was accepted")
 
 
 def test_helper_exec_rejected(tmp_path: Path) -> None:

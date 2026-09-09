@@ -197,6 +197,14 @@ def load_case(manifest_path: Path, case_id: str) -> dict[str, Any]:
         for key in env:
             _require(key in allowed_env and not key.startswith(FORBIDDEN_ENV_PREFIXES),
                      f"forbidden process environment: {key}")
+        working_directory = process.get("workingDirectory")
+        if working_directory is not None:
+            _require(isinstance(working_directory, str) and working_directory.startswith("/"),
+                     "workingDirectory must be absolute")
+            _require(working_directory == "/tmp" or
+                     working_directory == "/probe-root" or
+                     working_directory.startswith("/probe-root/"),
+                     "workingDirectory must stay inside staged root or /tmp")
     return case
 
 
@@ -238,11 +246,17 @@ def make_launch(case: dict[str, Any], staged: dict[str, Any], node: dict[str, An
     _require(argv and argv[0] == executable, "argv must begin with staged executable")
     bwrap = str(case["isolation"].get("tools", {}).get("bubblewrap", "bwrap"))
     strace = str(case["isolation"].get("tools", {}).get("strace", "strace"))
+    working_directory = process.get("workingDirectory", "/tmp")
+    _require(isinstance(working_directory, str) and working_directory.startswith("/"),
+             "workingDirectory must be absolute")
+    _require(working_directory == "/tmp" or working_directory == "/probe-root" or
+             working_directory.startswith("/probe-root/"),
+             "workingDirectory must stay inside staged root or /tmp")
     launch = [strace, "-f", "-o", str(trace_path), bwrap,
             "--unshare-all", "--cap-drop", "ALL", "--new-session",
             "--die-with-parent", "--ro-bind", staged["root"], "/probe-root",
             "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
-            "--chdir", "/tmp", "--", *argv]
+            "--chdir", working_directory, "--", *argv]
     # The executable lives under /probe-root, but ELF PT_INTERP and DT_NEEDED
     # entries are absolute paths.  Bind each declared shared library at its
     # canonical absolute target without exposing the host's whole /lib tree.
