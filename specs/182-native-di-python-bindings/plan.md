@@ -1,6 +1,6 @@
 # Implementation Plan: Native NDNSF-DI with Optional Python Bindings
 
-**Branch**: Experimental | **Revision**: 58 | **Date**: 2026-09-09
+**Branch**: Experimental | **Revision**: 59 | **Date**: 2026-09-09
 **Status**: IN_PROGRESS / 当前实现与验收状态见 tasks.md 的 Task Progress Registry 和 Current Checkpoint
 **Spec**: [spec.md](spec.md)
 
@@ -598,6 +598,24 @@ injection、I02--I08、maintained caller/no-Python 与 T016 仍开放。
 
 本批只在 T014-A/B harness 语义范围 `CLOSED_FOR_VALIDATION`，不改变 T014/T016 的 `PARTIAL`
 状态；详见 [R10-B30 evidence](evidence/r10-b30-runner-child-endpoint-observation-20260909.md)。
+
+### R10-B31 Native Client Unary Provider Request 2026-09-09
+
+R4-B6 已经证明 streaming/conversation requester 能够通过真实 Core/Provider fixture 完成
+两轮请求，但 T010-B 仍缺少不带 generation、stream 或 conversation state 的普通请求出口。
+本批复用同一 native catalog、grant/admission、placement 和 Provider transport setup，为
+`runR4B6RealProviderConversationCase` 增加 unary 分支：runtime 使用 `TOKEN_DIAGNOSTIC`，
+`NativeInferenceClient` 不设置 stream/conversation，Provider callback 通过真实
+`CollaborationContext::publishFinalResponse` 返回结果。新增的
+`Spec182R10B31RealProviderUnaryRequest` selector 验证 ACK、Core commit、Provider callback、
+最终 Response 和结果 payload；没有修改协议或 Python facade，也没有宣称跨进程资格。
+
+本批 `integration-tests` 以 system-first `-j4` 增量构建成功（35.584s）；unary selector
+通过（3.559s），R4-B6 conversation/replacement 三例通过（20.366s），repository-reference
+回归通过（6.939s）。官方 `review-agent` 五 lane 只读审查没有发现 P1/P2/P3；该批只关闭
+T010-B 的 bounded native-client unary 观察，Provider worker/业务执行、maintained caller、
+跨进程 transport、T016 与完整请求矩阵仍开放。详见
+[R10-B31 evidence](evidence/r10-b31-native-client-unary-request-20260909.md)。
 
 ### R8-SKILL Review Coverage Contract 2026-09-09
 
