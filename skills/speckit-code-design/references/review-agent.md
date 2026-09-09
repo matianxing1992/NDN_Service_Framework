@@ -72,6 +72,7 @@ closure；这些未读时写 coverage gap，不能仅凭 No findings 记 `STATIC
 - **Call-path tracing**：从生产入口追到副作用与清理，再反查调用方；核对默认工厂、注册、配置分支，避免只审孤立 helper/mock。CodeGraph 用于定位，结论以源码为据。
 - **State and decision tables**：列前置状态、输入、下一状态和返回；手推空值、边界、重复、乱序、溢出、单位/编码转换，查遗漏分支和错误优先级。若多个 publication name 共享 producer/session，必须单独推导跨名称乱序、重复和旧 session 交错；不能用一个全局 sequence frontier 代替该反事实检查，除非 wire 契约明确保证全局顺序。
 - **Ownership and concurrency**：追踪 RAII、move、引用/回调捕获、异常释放；手推 cancel/complete/close 交错、锁顺序、线程归属、代次失效与一次性终态。
+- 对 detached 或延迟回调的 native fixture，还要画出 `Face`/`io_context`/scheduler/timer service 与 production owner 的存活顺序，确认 fixture 有 shared owner 或可核对的 join/drain barrier；栈对象先析构属于 coverage/control defect，不得靠重试掩盖。
 - **Contract and trust boundaries**：对照签名、默认值、字段来源、授权主体、request/plan/digest 绑定与验证先后；核对跨语言、wire/config、兼容别名和旧调用方迁移。
 - **Build and wiring inspection**：核对声明/定义、命名空间、include、target/link、生成文件和测试注册。静态判断不能证明模板实例化、ABI 或真实链接成功。
 - **Oracle review**：连接需求→生产路径→观测→断言；检查 fixture 能否进入目标分支、负例是否因目标行为失败、期望是否独立于被测实现、collector 是否误判启动失败。若 helper/fixture 复算 canonical bytes、digest 或 identity，逐项对照生产 serializer 的字段集合、顺序、规范化和 source identity；过期 hardcode 或错误排序必须成为可检出的负例，否则 `test/harness/oracle` 为 coverage gap。

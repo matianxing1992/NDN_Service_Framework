@@ -1,6 +1,6 @@
 # Implementation Plan: Native NDNSF-DI with Optional Python Bindings
 
-**Branch**: Experimental | **Revision**: 80 | **Date**: 2026-09-09
+**Branch**: Experimental | **Revision**: 83 | **Date**: 2026-09-09
 **Status**: IN_PROGRESS / 当前实现与验收状态见 tasks.md 的 Task Progress Registry 和 Current Checkpoint
 **Spec**: [spec.md](spec.md)
 
@@ -842,6 +842,34 @@ runtime 或 qualification 依赖，形成稳定出口后不再扩张。五 lane 
 工作流边界，Spec182 的 native request/result、跨进程 transport、maintained caller/no-Python
 和 T016 仍由产品批次完成。
 
+### R10-B57 Native V3 Placement Lifetime Recheck 2026-09-09
+
+本批针对 Spec182 C++ unit suite 在 `Spec182V3Placement/` 的
+`PublicClientCommitsSignedOfferAndIgnoresLateTerminalCallbacks` 偶发 SIGSEGV 首个运行边界。
+GDB 将崩溃定位到异步 `NativeInferenceClient` operation 仍持有 `ServiceUser` 时，外部
+`DummyClientFace` 已开始析构，导致 `ndn::Scheduler` timer service 与 Face reactor 并发销毁。
+修复应保持生产所有权语义不变，只让该 C++ fixture 由 `User` 持有 heap Face，保证 detached
+request worker 释放最后一个 `ServiceUser` 引用前 Face 仍然存活；不以重试通过掩盖生命周期
+问题，也不放宽 native callback/close 约束。
+
+稳定出口已达到：该 selector 连续 10 次通过，随后同一 `build-nac182` source/build identity
+下的 Spec182 unit suite（249/249 cases、6781/6781 assertions）与既有 integration flow
+（55/55 cases、978/978 assertions）均通过。该结果仅关闭本地 fixture lifetime boundary；
+cross-process ownership、maintained caller/no-Python 和 T016 qualification 仍开放。原始
+SIGSEGV、GDB backtrace 及无锁 Waf 输出均保留在 [R10-B57 evidence](evidence/r10-b57-native-v3-placement-lifetime-20260909.md)。
+
+### R10-B58 Shared Async Fixture Lifetime Rule 2026-09-09
+
+R10-B57 的 runtime destructor race 表明，已有 shared ownership/concurrency 文字没有要求
+每个异步 native fixture 明确保存外部 `Face`、`io_context`、scheduler/timer 和 callback
+依赖。现已将 owner 或 join/drain barrier、析构顺序静态检查和重复 selector 要求同步到
+versioned `speckit-code-design`、batch/review references、Spec/plan/tasks templates、
+`skills/README.md` 以及本机 `AGENTS.md`/`CLAUDE.md`/`docs/agentic_workflow.md`。同步检查和
+设计 validator 通过；这是 workflow/documentation boundary，不改变产品实现、批次状态或
+T016 qualification。
+
+详见 [R10-B58 evidence](evidence/skill-async-fixture-lifetime-20260909.md)。
+
 ### R10-B54 Native Plan and Manifest Smoke 2026-09-09
 
 本批沿 R10-B53 的本地原生 plan/session 出口，验证 manifest 解析、四角色注册、依赖发布和
@@ -1136,6 +1164,23 @@ T017 的 evidence/development-handoff.md 包含 exact commit、clean source clos
 既有容器内 ABI/build boundary 仍适用，不把 host .so 或 venv 装入镜像充当构建。
 仅应用改动不重新打包未变基础镜像；依赖/ABI 变化仍重建相应闭包。T017 包含
 分层清单、构建方法、组合验证及外部工具接续步骤；文档接受不授予部署 PASS。
+
+## Current Execution Checkpoint
+
+2026-09-09 R10-B58 shared workflow rule / **DONE (documentation boundary)**：已将异步或
+detached native fixture 的 external Face/io_context/scheduler/timer/callback ownership、
+join/drain barrier、析构顺序和重复 selector 要求同步到 shared skill、Spec Kit templates
+及本机 agent 文档；`verify-spec-kit-sync.py --require-entrypoints --require-personal` 与
+`validate_design.py` 通过。该规则不改变产品或 T016 状态，详见
+[R10-B58 evidence](evidence/skill-async-fixture-lifetime-20260909.md)。
+
+2026-09-09 R10-B57 已完成本地 fixture lifetime recheck：canonical `build-nac182` unit 与
+integration targets 均以 `WAFLOCK=.lock-waf -j4` 构建成功；placement selector 连续 10 次
+通过，Spec182 unit 为 249/249 cases、6781/6781 assertions，`Spec170NdnsfDiCoreFlow`
+为 55/55 cases、978/978 assertions。修复只让 C++ `User` 持有 heap `DummyClientFace`，
+没有改变生产 requester、Provider、callback 或 close 语义。R10-B57 已在 tasks.md 标为
+DONE（仅本地 fixture boundary），而 T010-B/T011-C/T016、cross-process 和 maintained
+caller/no-Python 仍保持开放；详见 [R10-B57 evidence](evidence/r10-b57-native-v3-placement-lifetime-20260909.md)。
 
 ## Current Planning Result
 

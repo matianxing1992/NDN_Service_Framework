@@ -122,6 +122,9 @@ NDNSF-DI 原生运行时和协议行为的 unit/integration/regression 测试，
 fixture/driver 与 oracle 必须用 C++ 实现并直接调用生产 C++ target；Python 可以编排
 外部设施、启动 C++ 测试 executable，或证明绑定/兼容/离线 oracle 边界，但不能替代
 C++ 行为、C++/Python parity 或跨进程资格测试。
+对 detached 或延迟 native worker，fixture 还必须显式拥有外部 Face、io_context、scheduler
+及回调依赖，或证明 join/drain 后再析构；静态门检查 ownership/destructor 顺序，重复
+selector 检查 runtime 稳定性，不能为测试竞态改动生产 close/callback 语义。
 CLI `--help`、usage/schema rejection、target/link smoke 或 harness 启动只证明接线边界，
 不能写成 native request/result 或 qualification PASS；没有真实生产请求与独立结果时保持
 对应 production/qualification lane 的 `PARTIAL` 或 `gap`。
