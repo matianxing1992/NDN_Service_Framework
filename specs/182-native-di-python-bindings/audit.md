@@ -1,6 +1,6 @@
 # Spec182 Design Audit
 
-**Revision**: 7 | **Mode**: source alignment / pre-implementation
+**Revision**: 8 | **Mode**: source alignment / cross-task convergence
 **Verdict**: DRAFT / BLOCK for implementation
 **Source**: `81e251a4ef1d8e6a394dc5f0c38bc44e44bfc973` / Experimental
 **Evidence**: [current source and dependency baseline](contracts/integrated-baseline.md)
@@ -14,6 +14,26 @@
 未接通、生产 adapter/port 缺口、局部卡与最终接线责任混淆，以及字段消费方先于
 生产来源闭合的问题。这里只审查相关入口和执行计划，不重签 T015 或历史资格。
 保持全部已通过证据和真实运行要求，暂停产品调度，等待明确恢复。
+
+### CrossTask Convergence 2026-09-08
+
+R6-B3 按 T015-A 对当前生产调用链做一次整体静态收敛审查。C++
+`NativeInferenceClient::request`、公开 `APPClient.request_native_payload`、维护中的
+YOLO/Qwen native branches 与 `ServiceProvider` registration 均能在源码中定位；R5/R6
+证据也已固定 native owner、C++ test ownership、legacy manifest 和统一 collector/harness
+入口。R6-B1 将 observation integrity 与 policy violation 分开，R6-B2 将 I01--I08 与
+PO-001--PO-014 注册到唯一 manifest；这些是局部出口，不是完整请求资格。
+
+审查确认以下缺口仍是真实且有明确 owner 的未闭合项，而非文档漏记：默认 public
+`distributed_inference`/ACK-driven Python routes 仍保留；native requester 尚未以维护入口
+完成真实 Core→Provider 两轮；stream callback 的跨进程 delivery、conversation recovery/
+replacement、legacy zero-use、真实 namespace/child/socket/cleanup 和全部 PO 仍由相应实现卡
+或 T016 负责。`NATIVE_REQUEST_PIPELINE_NOT_READY` 是当前显式 fail-closed 边界，不应被解释
+为 native migration 完成。
+
+没有发现新的跨任务控制性缺陷，也没有把单测、manifest 或静态状态升级为资格结论。T015-A
+保持 PARTIAL，只有在上述 owner 收齐生产证据并完成 T016 真实运行后，才可进入最终 convergence
+与 handoff。
 
 ### YOLO Fragment Registration Binding 2026-09-07
 

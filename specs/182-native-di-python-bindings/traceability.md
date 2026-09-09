@@ -1,8 +1,13 @@
 # Spec182 Traceability Matrix
 
-**Revision**: 7 | **Status**: DRAFT / NOT_STARTED
+**Revision**: 8 | **Status**: DRAFT / PARTIAL
 source review 只证明 baseline 所述实现存在，不证明新实现或资格。
 任务运行证据均为planned；本轮源码对照与文档检查见[audit](audit.md)和[tasks checkpoint](tasks.md#current-checkpoint)。历史证据不改写。
+
+2026-09-08 R6-B3：T015-A 收敛审查核对 native requester、维护中的 YOLO/Qwen branches、
+Provider registration、legacy manifest、collector/harness 与 T016 出口。局部 C++/Python
+selectors 和 22 个 qualification IDs 只证明其各自边界；默认 Python route、真实 Provider
+两轮/stream/recovery、legacy zero-use、namespace/cleanup 与完整 PO 仍按下表 owner 开放。
 
 ## Requirement-to-task Map
 
