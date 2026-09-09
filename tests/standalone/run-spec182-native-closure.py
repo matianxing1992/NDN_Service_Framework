@@ -36,6 +36,7 @@ TRACE_EXIT = re.compile(r"(?:exit_group|exit)\((-?\d+)\)")
 TRACE_PID = re.compile(r"^\s*(?:\[pid\s+)?(\d+)(?:\]|\s)")
 TRACE_RESUMED = re.compile(r"<\.\.\. [^>]+ resumed>")
 TRACE_SYSCALL = re.compile(r"^\s*(?:\[pid\s+)?\d+(?:\])?\s+([A-Za-z_][A-Za-z0-9_]*)\(")
+TRACE_CALL_RESULT = re.compile(r"\)\s*=\s*(-?\d+)")
 OBSERVED_SYSCALLS = frozenset({
     "clone", "clone3", "fork", "vfork", "open", "openat", "close", "dup",
     "dup2", "dup3", "mmap", "mprotect", "munmap", "socket", "connect",
@@ -595,6 +596,7 @@ def collect_trace(case: dict[str, Any], run: dict[str, Any]) -> dict[str, Any]:
     unfinished_by_pid: dict[str, int] = {}
     pids: set[str] = set()
     successful_execs: list[dict[str, Any]] = []
+    child_links: list[dict[str, str]] = []
     exit_events = 0
     events = []
     for line in text.splitlines():
@@ -630,8 +632,16 @@ def collect_trace(case: dict[str, Any], run: dict[str, Any]) -> dict[str, Any]:
                 policy_violations.append("UNDECLARED_ENDPOINT")
         syscall_match = TRACE_SYSCALL.match(line)
         if syscall_match and syscall_match.group(1) in OBSERVED_SYSCALLS:
-            events.append({"kind": "syscall", "name": syscall_match.group(1),
-                           "pid": pid, "line": line})
+            syscall_name = syscall_match.group(1)
+            event = {"kind": "syscall", "name": syscall_name,
+                     "pid": pid, "line": line}
+            result_match = TRACE_CALL_RESULT.search(line)
+            if syscall_name in {"clone", "clone3", "fork", "vfork"} and \
+                    pid is not None and result_match and int(result_match.group(1)) > 0:
+                child_links.append({"parentPid": pid, "childPid": result_match.group(1),
+                                    "syscall": syscall_name})
+                event["childPid"] = result_match.group(1)
+            events.append(event)
         match = TRACE_EXIT.search(line)
         if match:
             exit_events += 1
@@ -689,6 +699,22 @@ def collect_trace(case: dict[str, Any], run: dict[str, Any]) -> dict[str, Any]:
             role = process.get("role")
             if isinstance(role, str) and role not in observed_roles:
                 observed_roles.append(role)
+    child_coverage: list[dict[str, Any]] = []
+    for child in case.get("isolation", {}).get("childProcesses", []):
+        if not isinstance(child, dict):
+            continue
+        expected = "/probe-root" + str(child.get("executable", ""))
+        matching_execs = [item for item in successful_execs
+                          if f'"{expected}"' in item["line"]]
+        linked_pids = {link["childPid"] for link in child_links}
+        observed = any(item.get("pid") in linked_pids for item in matching_execs)
+        child_coverage.append({
+            "role": child.get("role"), "executable": child.get("executable"),
+            "parentProcessIds": list(child.get("parentProcessIds", [])),
+            "observed": observed,
+            "execPids": [item.get("pid") for item in matching_execs],
+            "childLinks": child_links,
+        })
     return {
         # Completeness describes whether the observer delivered a trustworthy
         # trace.  Policy violations are still a complete observation and must
@@ -703,6 +729,8 @@ def collect_trace(case: dict[str, Any], run: dict[str, Any]) -> dict[str, Any]:
         "successfulExecs": len(successful_execs),
         "exitEvents": exit_events,
         "roles": observed_roles,
+        "childLinks": child_links,
+        "childProcessCoverage": child_coverage,
     }
 
 
@@ -735,6 +763,9 @@ def evaluate_case(case: dict[str, Any], run: dict[str, Any], observation: dict[s
             unqualified_observation = True
         elif observation["coldVerified"] != case["cold"]:
             failures.append("COLD_PATH_MISMATCH")
+    for child in observation.get("childProcessCoverage", []):
+        if isinstance(child, dict) and not child.get("observed", False):
+            failures.append("CHILD_PROCESS_MISSING")
     if run.get("timedOut"):
         failures.append("RUN_TIMEOUT")
     if run.get("returncode") != int(case.get("expectedExit", 0)):

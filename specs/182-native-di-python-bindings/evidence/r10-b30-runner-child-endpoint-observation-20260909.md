@@ -13,11 +13,12 @@ Python binding 或业务 oracle。
 - `load_case` now validates child role/executable/Provider parent/concurrency and endpoint
   owner/peer/transport/address/purpose. Abstract UNIX endpoints and malformed addresses fail
   closed before launch.
-- `collect_trace` records the frozen lifecycle syscall set and matches successful `connect`
-  lines against declared endpoint addresses. Undeclared filesystem, TCP or abstract endpoint
-  attempts remain policy violations.
-- Tests add valid/invalid child and endpoint declarations plus a lifecycle-syscall trace with a
-  declared UNIX endpoint.
+- `collect_trace` records the frozen lifecycle syscall set, binds clone/fork child PIDs to
+  successful child execs, and matches successful `connect` lines against declared endpoint
+  addresses. A missing declared child becomes an observed `CHILD_PROCESS_MISSING` failure;
+  undeclared filesystem, TCP or abstract endpoint attempts remain policy violations.
+- Tests add valid/invalid child and endpoint declarations, lifecycle-syscall and child-binding
+  traces, and the missing-child verdict.
 
 The official `/home/tianxing/.codex/skills/review-agent/SKILL.md` (SHA-256
 `07079efd0dc76f05fade424e5dfb048dce1de2df7626e1a4f56292a4f3f92228`) was used for the
@@ -29,7 +30,7 @@ review found no introduced P1/P2/P3 finding.
 
 ```text
 python3 -m pytest -q tests/python/test_spec182_native_closure.py
-38 passed in 0.16s
+40 passed in 0.23s
 python3 -m py_compile tests/standalone/run-spec182-native-closure.py
 python3 specs/182-native-di-python-bindings/checklists/validate_design.py
 git diff --check
@@ -44,7 +45,7 @@ endpoint allowlists, I02--I08, maintained callers, no-Python execution and T016 
 | --- | --- | --- |
 | Static | PASS | Changed manifest/collector code, callers, child ownership, endpoint policy and tests |
 | Compile | PASS | `py_compile`; design validator `ok=true` |
-| Focused runtime | PASS | 38 Python harness/collector tests |
+| Focused runtime | PASS | 40 Python harness/collector tests |
 | Integration | NOT RUN | Needs real MiniNDN contexts and executable DI cases |
 | Qualification | NOT RUN | T016 remains owner |
 

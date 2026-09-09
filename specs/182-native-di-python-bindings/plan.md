@@ -592,7 +592,7 @@ Provider、并校验并发上限；endpoint 必须声明 owner/peer、transport�
 UNIX 地址在 launch 前拒绝。`collect_trace` 保留 clone/fork/vfork、open/openat、close/dup、
 mmap/mprotect/munmap、socket/connect 等冻结系统调用，并把成功 connect 与 manifest 地址
 逐项核对，未声明 endpoint 仍为 policy violation。新增 child/endpoint 正负夹具和生命周期
-trace 检查；38 个 `test_spec182_native_closure.py` cases、`py_compile`、设计 validator 与
+trace 检查；40 个 `test_spec182_native_closure.py` cases、`py_compile`、设计 validator 与
 `git diff --check` 通过。没有 native build 或 MiniNDN 运行，真实 worker parentage、endpoint
 injection、I02--I08、maintained caller/no-Python 与 T016 仍开放。
 
