@@ -1238,3 +1238,13 @@ T003--009 → T010 → T011 → T012 → T013 → T014 → T015 PASS → T016 �
 本工作仅为独立论文材料，未修改协议/API、当前/目标设计或上述实现任务状态。
 定向检查覆盖表格结构、引用/本地链接、源码摘要及文档 diff；后续需统一论文引用编号，
 总体管理成本优势仍待单独实验。该条不关闭任何 Spec182 acceptance gate。
+
+## Related Proposal Authorization Checkpoint — 2026-09-08
+
+用户授权的中英文 Proposal 及对应 slides 已按保密发现、权限聚合/身份凭证复用、
+运行时撤销三个方面更新，见 [revision evidence](../../docs/PAPER/proposal-defense/authorization-revision.md)。
+正文、长/短 slides 与讲稿构建无未定义引用；新增页经渲染检查。
+长版 PPTX 为 64 页，1944/1944 文本 spans 分配通过；LibreOffice 重导出授权页无缺失或重叠。
+原始证据和旧交付物位于 `.codex-tmp/proposal-authorization-20260908-docs/`。
+明确 DNMP 原文与对照设计的区别，保留传播/重新发钥成本；实验数字未改，未重跑协议实验。
+本工作不改变 API、当前/目标设计或任何实现任务验收状态；下一步为论证反馈及管理成本评估。

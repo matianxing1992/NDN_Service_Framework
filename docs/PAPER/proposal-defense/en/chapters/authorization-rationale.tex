@@ -1,0 +1,89 @@
+\subsection{Rationale for ABE-Backed Service Authorization}
+\label{sec:abe-rationale}
+
+NDNSF adopts ABE-backed authorization to support confidential discovery among
+authorized service Providers and to manage service permissions separately from
+identity-signing credentials. This is a choice for NDNSF's invocation workflow,
+not a claim that ABE is universally preferable to role-based authorization.
+Execution authorization determines whether an entity may invoke or provide a
+service; content confidentiality determines who can read protected message
+content. Signature validation, service permission checks, and invocation-state
+checks remain distinct requirements.
+
+\paragraph{Confidential discovery.}
+Before Provider selection, the User publishes a discovery descriptor containing
+the location, deadline, and resource requirements needed for a Provider's
+positive-ACK decision. For example, nearby UAVs need an observation area and
+arrival deadline to decide whether to participate, but do not yet need the full
+application input. ABE protects this descriptor for Providers authorized for the
+service without enumerating their identities. Confidentiality is against parties
+lacking the required decryption capability: authorized but unselected Providers
+can still read the descriptor. Content encryption does not hide outer Data names
+or traffic patterns. In the request-scoped confidentiality path, the full
+application input and its decryption material are restricted to selected
+Providers through Selection. A Trust Schema alone does
+not encrypt content; a role-authorized design can also use ABE or service-group
+encryption to provide discovery confidentiality.
+
+\paragraph{Permission aggregation and credential reuse.}
+In KP-ABE, ciphertext is associated with attributes and a decryption key (DKEY)
+encodes an access policy~\cite{dulal2023nacabe}. NDNSF associates Provider access
+with \texttt{/SERVICE/<service>} and User access with
+\texttt{/PERMISSION/<service>}. Within one authority and ABE parameter
+generation, it combines an entity's service entitlements into an OR policy for
+its individually issued DKEY, while reusing its identity-signing credentials.
+DNMP instead constrains command targets and actions through role signing keys
+and a Trust Schema~\cite{dnmp}. Existing roles may cover several permissions;
+different entitlements may require changes to role assignments, credentials,
+or rules, not necessarily one new role per service.
+
+For comparison, our per-service role-certificate alternative would issue each
+entity a certificate for each authorized service role. A User would use its
+service-role key to sign Request and Selection Data; a Provider would use its
+service-role key to sign ACK and Response Data. Validators would check the
+service, message type, certified role, certificate status, and invocation state;
+encryption would be supplied separately. ABE avoids these additional
+service-specific signing credentials, but still requires DKEY issuance and
+updates, with size and processing costs that can grow with policy complexity.
+Certificate-based designs can also reuse credentials; fewer credential objects
+alone do not establish lower total cost.
+
+\paragraph{Why retain ABE-backed challenges?}
+The Requester Challenge (\texttt{UserToken} in the implementation) and Provider
+Challenge (\texttt{ProviderToken}) check access to the required service and
+permission decryption capabilities in the current exchange. Signatures identify
+the participants, while matching and one-time-state checks reject mismatched
+or replayed messages. This reuses attribute-based permission management instead
+of adding service-role signing credentials. It is not cost-free: confidential
+discovery already needs Provider DKEYs, whereas User permission DKEYs and
+challenge processing are additional authorization costs. ABE confidentiality
+combined with role-certificate authorization remains a valid alternative.
+
+\subsection{Runtime Permission Withdrawal}
+\label{sec:authorization-withdrawal}
+
+The current runtime implements permission withdrawal through Controller-signed
+authorization status and checks at invocation processing points. A participant
+must retrieve and validate updated status before enforcing the newly withdrawn
+authority. ABE parameter rotation and refreshed DKEYs protect subsequent
+exchanges encrypted under the new generation. The present rotation is
+Controller-wide, so other authorized members may also need refreshed DKEYs;
+it is not a zero-fan-out revocation scheme.
+
+DNMP describes encryption-key rotation to restrict subsequent access to
+measurement data, but does not detail a comparable online command-authorization
+revocation protocol~\cite{dnmp}. A role-certificate comparison design can revoke
+the relevant credential and require execution nodes to check signed revocation
+status or reject expired certificates. This invalidates authority at the
+validator; it does not physically retrieve distributed certificates.
+Both approaches require update propagation, and neither retracts previously
+disclosed keys or plaintext.
+
+Focused integration tests exercise NDNSF's runtime revocation checks, including
+identity-, certificate-, and service-scoped withdrawal. These tests establish
+behavior at the exercised runtime boundaries, not network-wide instantaneous
+revocation or lower cost than certificate-based alternatives. The remaining
+evaluation should measure status-propagation delay, rejection delay, rekeying
+traffic, and effects on unaffected members. Runtime status validation and key
+rotation therefore extend NDNSF to permission withdrawal, with explicit
+propagation and rekeying costs.

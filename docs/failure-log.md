@@ -18,6 +18,15 @@ checkpoint. The final selector passed. A successful alternate-Provider recovery 
 separate multi-Provider harness and remains open under T011-C/T016. See
 [R7-B1 evidence](../specs/182-native-di-python-bindings/evidence/r7-b1-r4b6-replacement-20260908.md).
 
+## Proposal authorization documentation patch validation
+
+首次 apply_patch 因同一 patch 重复声明 main.tex 被结构验证拒绝，未写入目标文件。
+将同一文件的修改合并为一个操作后重试；不是构建、测试或协议失败。
+见 [revision evidence](PAPER/proposal-defense/authorization-revision.md#editing-boundary)。
+
+正文首次 latexmk exit0 但新增文献引用仍 undefined，不能视为通过；
+重试使用独立辅助目录和禁用旧 latexmk 配置，日志及原因见上述 revision evidence。
+
 ## 2026-09-08 — Authorization comparison documentation checkpoint
 
 论文比较文档首次 `git add` 被既有 `docs/*` ignore 规则拒绝，随后仅对用户要求的
@@ -2488,3 +2497,11 @@ part of task context. Format per entry:
   make a bounded compatibility repair with an independent selector or retain
   the failure as a T013-B migration prerequisite. See
   `specs/182-native-di-python-bindings/evidence/r6-b7-legacy-d2b-regression-20260908.md`.
+
+## Proposal authorization PPTX build-path preflight — 2026-09-08
+
+生成器拒绝末级名称不以 `ndnsf-` 开头的临时目录，未覆盖交付物。
+首个失败边界为目录安全检查，不是 slides 内容错误。
+原始日志：`.codex-tmp/proposal-authorization-20260908-docs/logs/pptx-build.log`。
+采用新的合规目录后生成通过，1944/1944 文本 spans 分配通过；详见
+`docs/PAPER/proposal-defense/authorization-revision.md`。前述正文引用失败也已通过隔离重建解决。

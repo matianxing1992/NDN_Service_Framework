@@ -1,0 +1,304 @@
+\chapter{Frameworks for Service-Oriented Applications}
+\label{chap:soa}
+
+\section{Purpose of This Review}
+
+This chapter is not intended to be a broad survey of every service framework.
+Instead, it reviews what existing systems have already achieved and identifies
+the open issues that motivate NDNSF. The key question is not whether systems
+such as gRPC, ROS, microservices, or NDN Service Call are useful; they clearly
+are. The key question is why dynamic, secure, collaborative applications still
+require another framework despite the existence of those systems.
+
+\section{Host-Centric RPC and Microservice Frameworks}
+
+RPC systems such as gRPC~\cite{grpc}, HTTP/REST systems~\cite{fielding2000rest},
+and microservice platforms have become the dominant way to build distributed
+software. They provide typed APIs, transport bindings, load balancing, service
+registration, and production tooling. These systems work very well when
+services can be identified by stable endpoints, when channels can be
+established and maintained, and when security can be expressed as channel
+security plus service-side authorization.
+
+However, the abstraction becomes less natural for applications with mobility
+and intermittent connectivity. A user of a UAV video service may care about the
+latest frames from drone A, not whether drone A is currently reachable through
+a particular IP address. A distributed inference client may care about the
+service name for a model stage, not a fixed GPU server. A mission-planning
+application may need any available drone that satisfies a role, not exactly one
+preconfigured endpoint. Host-centric frameworks can support these scenarios,
+but the burden shifts to external discovery, retry, state tracking, and
+application-specific coordination.
+
+\subsection{What These Systems Solve}
+
+RPC and microservice systems solve several problems that NDNSF should not
+ignore. First, they give developers a familiar programming model: a service has
+an interface, a request type, a response type, error handling, and often a
+deadline. Second, production systems around gRPC and REST provide mature
+tooling for load balancing, logging, monitoring, deployment, and versioning.
+Third, channel security such as TLS gives a practical and widely deployed way
+to protect client-server communication. For stable cloud services, these
+features are often sufficient.
+
+NDNSF does not attempt to replace this engineering knowledge. Instead, it asks
+which assumptions break when service providers are mobile, intermittently
+connected, replicated, or embedded in resource-constrained edge environments.
+In these settings, a service call is not only a channel operation. It is also a
+decision about which provider is currently authorized, reachable, capable, and
+worth selecting. Existing host-centric frameworks can implement this behavior,
+but the logic is typically distributed across service discovery systems,
+load-balancers, application retries, middleware plugins, and service-specific
+policy code.
+
+\subsection{Open Issues for NDNSF}
+
+The first issue is endpoint dependence. Even if modern service meshes hide IP
+addresses behind logical service names, the underlying communication still
+depends on reaching an endpoint through host-centric routing. The second issue
+is data lifetime. Once a response, video chunk, model shard, or telemetry log is
+stored outside the original channel, applications must add their own
+verification and encryption model. The third issue is provider multiplicity.
+RPC normally selects a single server before the request is sent; NDNSF instead
+allows multiple providers to observe a request, decide whether to acknowledge
+it, and expose metadata that helps the user choose. These differences motivate
+a data-centric service framework rather than another IP endpoint wrapper.
+
+\section{Robotics Middleware and Service Composition}
+
+Robotics middleware, including ROS and ROS2~\cite{ros,ros2}, provides a more
+application-aware model for robot components. Nodes can publish topics, call
+services, and interact through standardized message types. ROS2 improves
+quality-of-service control and deployment flexibility compared with earlier
+ROS systems. These frameworks are important precedents for UAV applications
+because they treat sensors, control, telemetry, and perception as composable
+modules.
+
+The remaining gap is that robotics middleware is not a general data-centric
+network security framework. Trust anchors, certificate deployment, data-at-rest
+protection, multi-provider service selection, and cross-domain service
+authorization are not the main abstractions. In addition, a UAV application
+deployed across a ground station, multiple drones, and intermittent wireless
+links still needs naming, verification, and recovery mechanisms that are robust
+outside a single local robotics domain.
+
+\subsection{Lessons for UAV Service Containers}
+
+ROS is particularly important for this dissertation because it shows that
+robotics applications are naturally service-oriented. A UAV system is not a
+single communication flow. It contains flight-control commands, telemetry
+streams, camera frames, mapping, mission planning, object detection, logging,
+and health monitoring. ROS-style composition validates the idea that UAV
+software should be decomposed into services.
+
+However, NDNSF targets a different layer. ROS and ROS2 are strong middleware
+systems for local and distributed robot components, while NDNSF focuses on
+named, secure, network-visible service invocation over NDN. In the proposed
+UAV application, the drone app can still be viewed as a service container, but
+external interactions such as ground-station commands, telemetry discovery,
+video retrieval, and cross-drone collaboration use NDNSF service names and
+data-centric verification. This distinction is important: NDNSF is not a
+replacement for flight controllers or robotics middleware, but a network
+service framework that can connect such components across dynamic NDN
+environments.
+
+\section{Message Queues and Event Systems}
+
+Message queues and publish-subscribe systems decouple producers and consumers
+in time~\cite{messagequeue}. They are useful for telemetry, logs,
+asynchronous workflows, and elastic back-end processing. This is relevant to
+NDNSF because many service applications include both request-response actions
+and event streams. For example, a drone may receive a command as a service
+request while publishing telemetry or video metadata asynchronously. A
+distributed inference pipeline may publish intermediate results and execution
+events while serving user requests.
+
+However, many message queue deployments rely on brokers or logically
+centralized infrastructure. Security is often enforced by broker access control
+and channel encryption rather than by data objects that remain verifiable
+wherever they are stored or forwarded. For mobile or disconnected edge
+environments, broker availability and placement can become a limiting
+assumption. Moreover, queues do not by themselves define how a user should
+choose among multiple providers, verify that a provider is authorized to serve
+a specific service, or retrieve large service artifacts as independently
+verifiable data.
+
+\section{NDN Computation and Service Frameworks}
+
+NDN already provides useful primitives for service-oriented systems:
+hierarchical names, receiver-driven retrieval, in-network caching, adaptive
+forwarding, and data signatures~\cite{ndn}. A service framework over NDN must
+bridge the gap between these primitives and application-level service
+semantics. Prior NDN work explores several regions of this design space.
+
+\subsection{Function-Centric Computation}
+
+Named Function Networking (NFN) treats computation as a first-class named
+object by embedding function expressions in names~\cite{nfn}. This model is
+powerful because it allows computation and data retrieval to be composed within
+the naming system itself. It also suggests a deep integration between content
+names and computation names, which is attractive for in-network processing.
+
+The trade-off is complexity. Function-centric naming can make names highly
+expressive, but it also makes execution semantics, trust, caching, and
+deployment more difficult to reason about. UAV control, live video, and
+distributed AI inference require explicit service authorization, provider
+selection, long-running state, and application-defined execution policies.
+NDNSF therefore chooses a service-invocation abstraction rather than a fully
+general function-expression abstraction.
+
+\subsection{Serverless and Edge-Oriented NDN Frameworks}
+
+NFaaS extends NDN toward serverless computing by treating functions as
+deployable units that may be executed at edge locations~\cite{nfaas}. Other
+edge-oriented frameworks, such as CFEC for information-centric Internet of
+Vehicles, explore low-latency microservice execution and dynamic placement in
+edge environments~\cite{cfec}. These systems highlight an important direction:
+service execution should move closer to users, data sources, or resource-rich
+edge nodes.
+
+The open issue is that dynamic placement is only one part of service-oriented
+application support. Applications also need a stable API, authorization for
+both users and providers, multi-provider selection, large-object handling, and
+clear deployment procedures. NDNSF focuses on these runtime service semantics.
+It can coexist with future placement mechanisms; for example, a placement
+algorithm could decide which drones, storage components, or inference providers
+should advertise a given NDNSF service.
+
+\subsection{Remote Invocation Frameworks}
+
+RICE provides remote method invocation in ICN using mechanisms such as
+handshakes and thunks to represent computation parameters and
+results~\cite{rice}. NSC proposes Named Service Calls for NDN and offers an
+RPC-like abstraction for remote execution~\cite{nsc}. These systems are close
+to NDNSF's goals because they directly address service invocation rather than
+only content retrieval.
+
+The key limitation is that they do not provide the complete set of mechanisms
+needed by the application classes targeted in this dissertation. NSC is
+primarily one-to-one: a caller contacts an executor, and the protocol is not
+designed around simultaneous provider discovery, provider ACK metadata, or
+multi-provider selection. RICE provides stronger invocation semantics but
+requires changes to the forwarding plane. NDNSF keeps the framework at the
+application/runtime layer and uses NDN Data publication and Sync to support
+one-to-many service request dissemination without modifying NFD.
+
+\subsection{Application-Specific NDN Frameworks}
+
+Other NDN systems focus on particular domains. DNMP builds a secure network
+measurement framework using NDN synchronization and hierarchical
+topics~\cite{dnmp}. MIA-NDN explores microservice-centric Interest aggregation
+for NDN~\cite{miandn}. SECaaS studies security-as-a-service in multi-access
+edge environments~\cite{secaas}. These projects demonstrate that NDN can be
+adapted to practical service-like workloads, especially when names and
+application semantics are designed together.
+
+The limitation is generality. Application-specific frameworks often make
+assumptions about a particular data type, service domain, aggregation pattern,
+or deployment topology. NDNSF instead aims to provide a reusable framework
+layer that can support different application services, including UAV control,
+video, object detection, distributed inference, storage, and collaboration.
+The proposed UAV and DistributedInference applications are intended to test
+whether the framework is general enough for multiple domains rather than only
+one carefully tuned application.
+
+\subsection{Security and Access-Control Mechanisms}
+
+NDN signs Data packets by design, but signatures alone do not answer all
+service questions. A service framework must decide who may request a service,
+who may provide a service, what data should be encrypted, how keys should be
+distributed, and how replayed messages should be rejected. Prior work on
+attribute-based encryption and NAC-ABE shows how fine-grained access control
+can be integrated with NDN data names~\cite{goyal2006abe,dulal2023nacabe}. These ideas
+are central to NDNSF.
+
+The open issue is integration with the service workflow. If access control is
+bolted onto individual applications, every application must separately handle
+permission retrieval, encryption attributes, message verification, and replay
+protection. NDNSF makes these part of the runtime: ServiceController
+distributes permissions, service messages are protected according to
+service-level attributes, and one-time user/provider tokens bind ACK,
+selection, targeted fast-path, and response messages to the current invocation.
+
+\section{NDN-Based Service Systems}
+
+NDN Service Call (NSC)~\cite{nsc} and other NDN application frameworks show
+that NDN can support service invocation without IP endpoint binding. NDN's
+Interest/Data exchange, name-based routing, in-network caching, and data
+signatures address several issues in IP-based systems. These systems are
+therefore important evidence that NDN is a promising foundation for services.
+
+The remaining gap is that existing NDN service systems have not provided a
+general-purpose runtime that combines:
+
+\begin{itemize}
+  \item generic dynamic service APIs,
+  \item controller-authorized user and provider permissions,
+  \item one-to-many request publication,
+  \item provider ACK metadata,
+  \item application-defined selection strategies,
+  \item adaptive admission control,
+  \item large-data references,
+  \item provider collaboration, and
+  \item service containers that can be evaluated in realistic settings.
+\end{itemize}
+
+\section{Design Patterns and Trade-offs}
+
+The related work suggests several recurring design patterns. First, service
+frameworks must decouple service names from provider locations. Second, large
+inputs and outputs should be represented as named data objects rather than
+embedded directly in small request payloads. Third, service state usually
+cannot rely only on NDN's Pending Interest Table because service execution may
+be long-running, multi-step, or collaborative. Fourth, security must be part of
+the invocation workflow rather than an afterthought.
+
+These patterns also expose trade-offs. Function-centric names are expressive
+but can be difficult to deploy. Serverless placement is flexible but requires
+orchestration. RPC-style invocation is easy to understand but can favor
+one-to-one execution. Broker-based systems decouple time but may introduce
+infrastructure dependencies. NDNSF's design point is to combine an RPC-like
+developer API with NDN's data-centric names, signed Data, Sync-based
+publication, and application-visible provider selection.
+
+\section{Open Issues}
+
+Table~\ref{tab:framework-gaps} summarizes the open issues motivating NDNSF.
+
+\begin{table}[H]
+\centering
+\caption{Open issues in existing service-oriented frameworks.}
+\label{tab:framework-gaps}
+\begin{tabularx}{\textwidth}{p{0.25\textwidth}X}
+\toprule
+Issue & Why It Matters \\
+\midrule
+Endpoint binding & Mobile services and intermittently connected providers
+should be invoked by name and capability rather than by stable host address. \\
+One-to-many invocation & Reliability and collaboration often require multiple
+providers to hear a request and allow the user to select one or more of them. \\
+Data-centric security & Data should remain signed, verifiable, and optionally
+encrypted at rest, not only while moving through a secure channel. \\
+Provider authorization & A user must verify not only that it is allowed to
+call a service, but also that the selected provider is authorized to offer it. \\
+Provider selection & Provider metadata such as load, queue size, location, and
+availability should be part of the service workflow. \\
+Large data & Models, video, images, logs, and intermediate tensors should not
+be forced into small request payloads. \\
+Collaboration & Tasks may require multiple providers, compensation requests,
+or aggregation of partial results. \\
+Operational validation & Real systems need repeatable certificate, routing,
+configuration, and experiment setup to validate the framework outside toy
+examples. \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+NDNSF is designed to address these issues using NDN names, verifiable Data,
+sync-based publication, and service-level authorization.
+
+This chapter supports RQ1 by turning the related-work review into a set of
+framework requirements rather than a survey checklist. It also prepares RQ2
+and RQ3 by identifying which properties must be provided by the NDNSF runtime
+instead of being reimplemented separately by each UAV or inference
+application.

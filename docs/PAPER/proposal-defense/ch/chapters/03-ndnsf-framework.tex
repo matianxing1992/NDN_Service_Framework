@@ -1,0 +1,375 @@
+\chapter{NDNSF 框架}
+\label{chap:ndnsf-ch}
+
+\section{设计目标}
+
+NDNSF 的设计目标如下：
+
+\begin{enumerate}[leftmargin=*]
+  \item \textbf{通用服务抽象。}应用应能用统一 service name、请求对象和
+  响应对象表达服务，而不是依赖为每个服务生成的静态 stub。
+  \item \textbf{数据中心安全。}服务消息和权限对象应作为 NDN Data 被签名、
+  加密和验证。
+  \item \textbf{协作与韧性。}框架应支持多个提供者、选择性 ACK、自定义选
+  择和补偿请求。
+  \item \textbf{低延迟路径。}对已知提供者的控制命令，应通过 Targeted
+  invocation 减少消息轮次，同时保持权限和 token 验证。
+  \item \textbf{操作验证。}框架应支持 MiniNDN 评估、选择性真机实验、证
+  书 bootstrap 和可复现配置。
+\end{enumerate}
+
+\section{NDNSF v0.1 基线}
+
+NDNSF v0.1 包括：
+
+\begin{itemize}
+  \item ServiceController、ServiceUser 和 ServiceProvider 运行时；
+  \item 通用动态 C++ 服务 API；
+  \item 基于 NDN Data 和 Sync 的 Request、ACK、Selection 和 Response
+  消息；
+  \item 基于 NAC-ABE 的服务级访问控制；
+  \item 提供者权限和用户权限获取；
+  \item 选择性 ACK 和自定义选择策略；
+  \item 自适应 admission control；
+  \item 与 NSC 和 gRPC 的 MiniNDN 对比评估。
+\end{itemize}
+
+这个 baseline 的意义在于，它已经把数据中心服务框架必须协调的主要部分连
+接起来：service naming、service-message publication、用户和提供者授权、
+加密服务 payload、provider metadata、provider selection 和 response
+verification。换言之，NDNSF v0.1 不只是一个 API 草图，而是一个可运行的
+runtime，展示了如何把 NDN name、Sync、signed Data、NAC-ABE attribute 和
+service-level policy 组合成一个完整服务调用 workflow。因此，本 proposal
+可以把重点放在扩展和验证 framework，而不是从零开始设计。
+
+图~\ref{fig:ndnsf-v01-architecture-ch} 总结了 v0.1 baseline 中的三个运
+行时角色。Controller 管理 policy 并分发权限；Provider 订阅有权限处理的
+请求并发布服务结果；User 发布请求、收集 ACK metadata、选择 provider 并
+验证 response。这个角色划分是后续 UAV service container 和分布式推理服
+务协作的基础。
+
+\begin{figure}[H]
+\centering
+\begin{subfigure}[t]{0.78\textwidth}
+  \centering
+  \includegraphics[width=\linewidth]{figures/NDNSF_ServiceController.png}
+  \caption{Controller}
+\end{subfigure}
+
+\vspace{0.8em}
+
+\begin{subfigure}[t]{0.78\textwidth}
+  \centering
+  \includegraphics[width=\linewidth]{figures/NDNSF_ServiceProvider.png}
+  \caption{Provider}
+\end{subfigure}
+
+\vspace{0.8em}
+
+\begin{subfigure}[t]{0.78\textwidth}
+  \centering
+  \includegraphics[width=\linewidth]{figures/NDNSF_ServiceUser.png}
+  \caption{User}
+\end{subfigure}
+\caption{作为 proposal baseline 的 NDNSF v0.1 运行时角色。}
+\label{fig:ndnsf-v01-architecture-ch}
+\end{figure}
+
+\section{作为核心扩展的服务提供者协作}
+
+NDNSF v0.1 之后最核心的扩展是 provider collaboration。在协作服务中，一个
+逻辑 request 不一定只由单个 endpoint 完成，而可以由多个已授权 provider
+共同参与。Provider 可以发布 ACK metadata，例如可用性、队列状态、位置或
+role capability；User 可以在 ACK collection interval 之后选择一个或多个
+provider；当一个逻辑任务只完成了一部分时，应用可以发出 compensation
+request。对于耗时较长的 selection，User 还应能诊断被选中的 provider 当
+前是未收到 selection、排队中、执行中、出错，还是已经发布 response。
+
+这个协作模型应保持 application-independent。多无人机巡逻可以用它分配任
+务段并从部分失败中恢复；分布式推理可以用它分配模型 role 并协调中间
+artifact。两类应用都不应把自己的领域语义写入 NDNSF core。NDNSF 提供的
+通用语义是 request publication、provider metadata、provider selection、
+authorization、status diagnosis 和 response verification；具体领域工作由
+应用定义。
+
+\section{通用动态 API}
+
+NDNSF 当前使用通用动态 API。服务提供者注册 typed handler：
+
+\begin{lstlisting}[language=C++]
+provider.addHandler<RequestT, ResponseT>(
+    ndn::Name("/ObjectDetection/YOLOv8"),
+    handler);
+\end{lstlisting}
+
+服务用户请求服务：
+
+\begin{lstlisting}[language=C++]
+user.RequestService<RequestT, ResponseT>(
+    providers,
+    ndn::Name("/ObjectDetection/YOLOv8"),
+    request,
+    onResponse,
+    onTimeout,
+    timeoutMs,
+    strategy);
+\end{lstlisting}
+
+这个 API 将应用对象与框架消息分离。应用数据位于 typed request/response
+对象或 RequestMessage/ResponseMessage payload 中。框架负责命名、发布、
+加密、验证、provider selection 和 timeout。
+
+\section{服务消息模型}
+
+NDNSF v0.1 使用四类框架消息，将服务发布、provider admission、provider
+selection 和结果返回分开。这一消息模型是 one-to-many service design 的
+核心：同一个请求可以被多个有权限的 provider 观察到，provider 可以在真正
+执行之前暴露可用性和运行时 metadata，用户则显式选择一个或多个 provider。
+
+\begin{table}[H]
+\centering
+\caption{NDNSF v0.1 服务消息。}
+\label{tab:ndnsf-message-model-ch}
+\begin{tabularx}{\textwidth}{p{0.30\textwidth}p{0.16\textwidth}X}
+\toprule
+消息 & 生产者 & 作用 \\
+\midrule
+RequestMessage & User & 发布命名服务请求和应用 payload。 \\
+RequestAckMessage & Provider & 表示 provider 是否愿意处理请求，并携带用于
+选择的运行时 metadata。 \\
+SelectionMessage & User & 选择一个或多个 provider，并用 provider token
+将请求绑定到被选中的 provider。 \\
+ResponseMessage & Provider & 被选中的 provider 返回服务执行结果。 \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\begin{table}[H]
+\centering
+\caption{四类消息携带的代表性字段。}
+\label{tab:ndnsf-message-fields-ch}
+\begin{tabularx}{\textwidth}{p{0.30\textwidth}X}
+\toprule
+消息 & 代表性字段 \\
+\midrule
+RequestMessage & service name、request ID、requester identity、payload、
+UserToken \\
+RequestAckMessage & service name、request ID、provider identity、status、
+message、metadata payload、回显的 UserToken、ProviderToken \\
+SelectionMessage & service name、request ID、selected provider identity、
+ProviderToken \\
+ResponseMessage & service name、request ID、provider identity、result
+payload、回显的 UserToken \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+这些字段保持 service-independent。应用相关数据留在 payload 或 typed
+request/response 对象中；框架则使用 service name、request ID、identity
+和一次性 token 完成授权检查、防重放和 response verification。
+
+\section{服务调用流程}
+
+普通 NDNSF 服务调用包括以下步骤：
+
+\begin{enumerate}[leftmargin=*]
+  \item 用户发布 RequestMessage，并携带一次性 UserToken。
+  \item 有权限的提供者解密请求，检查 provider permission，并根据 ACK 策
+  略决定是否回应。
+  \item 提供者发布 RequestAckMessage，返回 UserToken、一次性
+  ProviderToken 和 ACK metadata。
+  \item 用户在 ACK timeout 内收集候选者，根据策略选择一个或多个提供者。
+  \item 用户发布 SelectionMessage，并携带被选中提供者的 ProviderToken。
+  \item 提供者验证 ProviderToken，执行服务并发布 ResponseMessage。
+  \item 用户验证 response 中的 UserToken 并交付应用结果。
+\end{enumerate}
+
+该流程支持一对多发现、应用自定义选择和防重放保护。对已知提供者的低延迟
+调用，Targeted API 先通过 normal bootstrap 获取一批 token pair，然后后续
+请求可走 REQUEST 到 RESPONSE 的 fast path。
+
+\section{安全模型}
+
+NDNSF 使用 controller 授权的权限模型。ServiceController 维护用户和提供者
+policy，向目标 identity 生成加密的 PermissionResponse。服务消息根据服务
+级授权 namespace 映射到 NAC-ABE attribute。一次性 user/provider token 将
+调用流程绑定到特定 request，防止 replay。
+
+图~\ref{fig:ndnsf-policy-example-ch} 展示了 NDNSF 中 provider policy 和
+user policy 的关系：provider permission 决定一个实体可以提供哪些命名服
+务，user permission 决定一个实体可以访问哪些命名服务。本文后续 UAV 和
+DistributedInference 扩展都沿用这种以 service name 为中心的 policy 模型，
+同时补充更明确的 trust root、publisher namespace 和部署流程。
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.82\textwidth]{figures/policy-examples.png}
+\caption{NDNSF provider 和 user access-control policy 示例。}
+\label{fig:ndnsf-policy-example-ch}
+\end{figure}
+
+该模型区分：
+
+\begin{itemize}
+  \item \textbf{用户授权}：用户是否可以请求某服务；
+  \item \textbf{提供者授权}：提供者是否可以提供某服务；
+  \item \textbf{消息机密性}：只有具有相应 attribute 的实体可以解密服务
+  消息；
+  \item \textbf{消息完整性和来源认证}：NDN Data signature 和 trust schema
+  保护消息；
+  \item \textbf{防重放}：UserToken 和 ProviderToken 一次性使用。
+\end{itemize}
+
+\input{chapters/authorization-rationale}
+
+\section{已完成基础：NDNSF v0.1 评估}
+
+已完成的 NDNSF 评估在 MiniNDN 中将 NDNSF 与 NSC 和 gRPC 进行对比。评估
+关注有线、丢包、间歇提供者、无线移动、自适应 admission、选择性 ACK 和
+自定义选择场景中的服务延迟和成功率。证据支持的结论是有条件的：在丢包、
+间歇 provider 和单一 endpoint 绑定容易失效的场景中，provider 多样性可以
+提高可靠性；这并不等价于 NDNSF 在所有动态环境中都具有更高的终端成功率或
+更低的延迟。
+
+最有说服力的证据来自 endpoint binding 或单一 provider 变脆弱的场景。在
+Memphis--CSU--UCLA 的有线丢包路径中，如果每条 link 的 one-way loss 是
+$\ell$，packet round-trip loss 是 $1-(1-\ell)^4$。1\% link loss 时，
+packet round-trip loss 为 3.94\%，NDNSF 完成 599/600 个 request；3\%
+link loss 时，packet round-trip loss 为 11.47\%，NDNSF 在启用 SVS retry
+后仍完成 598/600 个 request。10\% link loss 时，packet round-trip loss
+上升到 34.39\%，最佳 NDNSF 结果为 539/600。这说明高丢包下的主要边界是
+SVS-based service invocation 的 bounded-time delivery，而不是 NDNSF service
+model 本身失败。在有线多 provider 的间歇失效实验中，provider failure probability 为 20\% 时，
+NDNSF 仍保持 99.46\% success rate；失效概率为 30\% 时仍有 96.70\%，而单
+provider baseline 会下降到约三分之二或更低。无线移动表中的数值属于已投稿
+NDNSF v0.1 的历史诊断，拓扑、provider 数量和计时来源与当前公平的 Spec171
+四-provider campaign 不完全一致，因此不能把它们作为当前 mobility superiority
+的直接证据。当前校正后的单 AP、50\,m 覆盖、2\,m/s 移动、三 seed 复现实验中，
+NDNSF success rate 为 75.33\%，相对 gRPC 的 71.78\% 提高 3.55 个百分点，
+相对 NSC 的 70.11\% 提高 5.22 个百分点；但在 50\,m/15\,m/s 和
+100\,m/15\,m/s 条件下并不占优，因此这里应表述为条件性结果，而非普遍
+mobility 优势。Adaptive
+admission 和 Selective ACK 进一步说明 runtime metadata 的价值：过载时
+admission control 将 P95 latency 保持在 270\,ms 以下；当最近 provider 过
+载时，Selective ACK 将 success rate 从 1.82\% 提高到 100\%。这些结果共同
+支撑较窄的结论：one-to-many invocation、provider metadata 和显式 selection
+能在保持数据中心安全的同时，为特定 provider-diversity 和间歇可用性场景提供
+可靠性收益；当前证据还不足以支持普遍的无线 mobility 优势。
+
+\begin{table}[H]
+\centering
+\caption{从已投稿 NDNSF v0.1 历史评估中总结的代表性可靠性结果；无线行不作为当前公平 mobility superiority 的证据。}
+\label{tab:ndnsf-v01-reliability-ch}
+\begin{tabularx}{\textwidth}{p{0.27\textwidth}p{0.21\textwidth}ccc}
+\toprule
+场景 & 条件 & NSC & gRPC & NDNSF \\
+\midrule
+有线多 provider 间歇失效 & 10\% 失效概率 & 83.25\% & 83.35\% & \textbf{99.82\%} \\
+有线多 provider 间歇失效 & 20\% 失效概率 & 66.58\% & 66.69\% & \textbf{99.46\%} \\
+有线多 provider 间歇失效 & 30\% 失效概率 & 49.92\% & 65.36\% & \textbf{96.70\%} \\
+无线移动 provider & 100\,m AP range & 45.42\% & 45.23\% & \textbf{96.25\%} \\
+无线移动 provider & 150\,m AP range & 68.75\% & 68.05\% & \textbf{100.00\%} \\
+无线移动 provider & 200\,m AP range & 88.33\% & 87.14\% & \textbf{100.00\%} \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\begin{table}[H]
+\centering
+\caption{从已投稿 NDNSF v0.1 评估中总结的代表性机制结果。}
+\label{tab:ndnsf-v01-mechanisms-ch}
+\begin{tabularx}{\textwidth}{p{0.24\textwidth}p{0.29\textwidth}X}
+\toprule
+机制 & Baseline 行为 & NDNSF 行为 \\
+\midrule
+100 RPS offered load 下的 adaptive admission & 关闭 admission control 时，P95 latency 达到 4254.39\,ms，timeout rate 达到 3.55\%。 & 开启 admission control 后，实际 admitted rate 限制在约 81 RPS，P95 latency 为 268.12\,ms，timeout rate 为 0.00\%。 \\
+最近 provider 过载时的 Selective ACK & ACK-all 机制把 2250 个请求中的 2209 个选到最近但过载的 provider，success rate 只有 1.82\%。 & Selective ACK 抑制过载 provider 的 ACK，把 selection 转移到可用 provider，并达到 100.00\% success rate。 \\
+真机间歇可用性实验 & 单 provider NSC/gRPC 在绑定 provider 半程不可用时 success rate 接近 50\%。 & NDNSF 在两个 provider 中动态选择，10 RPS 下达到 74.62\%，30 RPS 下达到 73.73\%，接近预期可用窗口。 \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\section{NDNSF v0.1 的局限}
+
+NDNSF v0.1 证明了方向可行，但还没有完全覆盖受控框架测试之外的动态服务
+应用需求。
+推动后续博士论文工作的主要局限包括：
+
+\begin{itemize}
+  \item \textbf{已知提供者的低延迟控制}：normal
+  Request/ACK/Selection/Response workflow 适合 provider discovery，但发
+  往已知无人机或设备的控制命令需要更快的 Targeted path，同时仍要保留授
+  权和防重放保护。
+  \item \textbf{服务提供者协作}：v0.1 支持 provider selection，但更大的
+  任务需要多个 provider 协作、处理部分失败并发出 compensation request。
+  \item \textbf{Service-container 组合}：真实应用通常在同一受信任进程内
+  包含多个服务。这些服务需要高效本地组合，但不能向远程 caller 暴露绕过
+  网络安全机制的路径。
+  \item \textbf{大 artifact}：v0.1 service payload 不适合承载模型、录制
+  视频、图片或中间张量。应用应在 service payload 中放置 typed object
+  reference，再使用 NDN 原生 segmented retrieval 获取大型签名和加密对象。
+  \item \textbf{操作验证}：v0.1 展示了安全模型，但更广泛的验证还需要更
+  清晰的证书 bootstrap、trust-schema 指导、配置流程和可复现实验。
+  \item \textbf{应用级验证}：v0.1 的 MiniNDN 评估证明核心框架可运行，但
+  博士论文还需要评估该设计是否能支撑 UAV 和分布式推理这类高压力 workflow。
+\end{itemize}
+
+\section{Provider Collaboration 的支撑机制}
+
+以下机制用于支撑 provider collaboration 在特定运行条件下成立。它们由 UAV
+和分布式推理 workload 驱动，但不是独立博士论文主线，也不应成为应用专用
+shortcut，而应保持为通用 framework mechanism。
+
+\subsection{Targeted Invocation}
+
+对于面向已知 provider 的控制服务，例如 MAVLink 命令，完整 ACK/Selection
+流程会增加延迟。Targeted invocation 使用 normal 流程进行首次 bootstrap，
+获取一批一次性 token pair，随后每个 request 携带未使用的 ProviderToken，
+response 返回对应 UserToken。这样可以减少消息轮次，同时保留权限验证和防
+重放语义。
+
+\subsection{Trusted Local Invocation}
+
+Service container 内部的服务组合不需要走网络。同一受信任进程内的一个服
+务组件调用另一个内部服务组件时，不应发布 NDNSF Request。拟实现的本地调
+用机制支持同进程 trusted local invocation，包括同步和异步调用。该路径不
+生成 wire message，不使用 NAC-ABE，也不消耗 token；外部节点不能要求
+provider 使用该路径，它只用于同一受信任进程内的服务组合。
+
+\subsection{大数据引用抽象}
+
+服务请求 payload 不应承载模型、视频、图片或大张量。拟采用的通用模式是：
+数据生产者先把对象分段发布为具名 NDN Data，然后在 NDNSF request 或
+response 中只放 typed object reference。该 reference 可以包含对象名字、
+对象类型、version 或 session id、digest、expected size、final segment 信
+息、source type 以及可选加密 metadata。接收方收到 request/response 后，
+使用 NDN 原生 segmented fetching，例如 ndn-cxx SegmentFetcher 逻辑，按名
+字拉取对象。
+
+该抽象应作为 NDNSF 的通用机制，而不是某个特定存储服务的 API。小型
+request/response payload 仍适合控制消息和紧凑 typed object；当 payload
+变成模型、视频、activation 或日志这类大 artifact 时，同一个逻辑服务调用
+应携带 reference，而不是直接携带字节。应用或 helper 可以把 payload 转换
+成命名 Data segment，对这些 segment 签名并可选加密，然后通过 NDNSF 传递
+typed reference。这样，服务选择、授权、token 检查和 timeout 诊断仍属于
+普通 NDNSF 路径，而大字节传输则走 NDN 原生 named-data retrieval 路径。
+
+同一种 reference 格式应能覆盖 UAV 录制、相机 artifact、模型分片、runtime
+artifact、中间 activation 和日志。因此，UAV-APP 与 DistributedInference
+可以共享同一套框架级大数据词汇：object type、object name、producer、
+session 或 version、size、digest、final segment hint 和可选 encryption
+metadata。这避免在 service payload 中嵌入应用特定的裸 Data-name 字符串，
+也让不熟悉 NDN packet 细节的应用能够审查大对象行为。
+
+该设计可以选择使用持久化存储，但存储在本 proposal 中只是大对象实现支撑
+组件，而不是单独的研究主线。如果使用持久化存储，它应保存 opaque 的 NDN
+Data segment；这些 Data 已由应用或框架 helper 命名、签名，并可选加密。
+安全性不由存储专用接口单独承担，而是由 NDNSF 通用混合加密、签名、token、
+权限和 trust-schema 验证保护 service message 及其引用的数据。Discovery
+metadata 仍可作为应用层发现和验证加速工具存在，但大对象传输本身应基于
+typed object reference 和 NDN 原生分段获取。
+
+本章通过预览可复用 NDNSF 机制来支持 RQ2，包括安全服务调用、provider 授
+权、provider collaboration 以及相关支撑机制。它也支持 RQ3，因为 provider
+collaboration 会引入可靠性、安全性和延迟 tradeoff，而支撑机制需要在不削
+弱核心服务语义的前提下控制开销。

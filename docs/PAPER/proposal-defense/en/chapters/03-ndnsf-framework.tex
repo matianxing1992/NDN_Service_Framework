@@ -1,0 +1,472 @@
+\chapter{NDNSF Framework}
+\label{chap:ndnsf}
+
+\section{Design Goals}
+
+NDNSF is designed around five goals.
+
+\begin{enumerate}[leftmargin=*]
+  \item \textbf{Application-facing simplicity.} Developers should register and
+  invoke typed services without writing service-specific NDN protocols.
+  \item \textbf{Data-centric security.} Service messages and permissions
+  should be signed, verifiable, and encrypted where appropriate.
+  \item \textbf{Dynamic provider selection.} A request should be able to reach
+  multiple providers and select the best one according to strategy.
+  \item \textbf{Collaboration and resilience.} The framework should support
+  multiple providers, compensation after partial failure, and cross-validation.
+  \item \textbf{Operational validation.} The framework should support MiniNDN
+  evaluation, selected real-machine experiments, certificate management, and
+  reproducible configuration.
+\end{enumerate}
+
+\section{NDNSF v0.1 Baseline}
+
+NDNSF v0.1 includes:
+
+\begin{itemize}
+  \item a generic dynamic C++ service API;
+  \item ServiceController, ServiceUser, and ServiceProvider runtimes;
+  \item service request publication over NDN synchronization;
+  \item Request, ACK, Selection, and Response message flow;
+  \item user and provider permission distribution;
+  \item NAC-ABE-based service-level access control;
+  \item selective ACK and provider metadata support;
+  \item built-in provider-selection strategies;
+  \item adaptive admission control;
+  \item an NDN-SVS patch used by the evaluation path;
+  \item Python bindings for experiment and workload integration;
+  \item MiniNDN evaluation against NSC and gRPC.
+\end{itemize}
+
+This baseline is substantial because it already connects the main pieces that a
+data-centric service framework must coordinate: service naming, service-message
+publication, user and provider authorization, encrypted service payloads,
+provider metadata, provider selection, and response verification. In other
+words, NDNSF v0.1 is not only an API sketch; it is an executable runtime that
+shows how NDN names, Sync, signed Data, NAC-ABE attributes, and service-level
+policy can be combined into one service-invocation workflow. This is why the
+proposal can focus on extending and validating the framework rather than
+starting from a blank design.
+
+A paper describing this completed foundation has been submitted to ICNP. The
+proposal therefore treats NDNSF v0.1 as prior completed dissertation work and
+uses the remaining chapters to define how that foundation will be extended and
+validated through application-driven workloads.
+
+Figure~\ref{fig:ndnsf-v01-architecture} summarizes the three runtime roles
+implemented in the baseline. The controller manages policies and distributes
+permissions, providers subscribe for authorized requests and publish service
+results, and users publish requests, collect ACK metadata, select providers,
+and verify responses. This role separation is the foundation for the later UAV
+and distributed-inference service-container work.
+
+\begin{figure}[H]
+\centering
+\begin{subfigure}[t]{0.78\textwidth}
+  \centering
+  \includegraphics[width=\linewidth]{figures/NDNSF_ServiceController.png}
+  \caption{Controller}
+\end{subfigure}
+
+\vspace{0.8em}
+
+\begin{subfigure}[t]{0.78\textwidth}
+  \centering
+  \includegraphics[width=\linewidth]{figures/NDNSF_ServiceProvider.png}
+  \caption{Provider}
+\end{subfigure}
+
+\vspace{0.8em}
+
+\begin{subfigure}[t]{0.78\textwidth}
+  \centering
+  \includegraphics[width=\linewidth]{figures/NDNSF_ServiceUser.png}
+  \caption{User}
+\end{subfigure}
+\caption{NDNSF v0.1 runtime roles used as the proposal baseline.}
+\label{fig:ndnsf-v01-architecture}
+\end{figure}
+
+\section{Provider Collaboration as the Central Extension}
+
+The central extension beyond NDNSF v0.1 is provider collaboration. In a
+collaborative service, one logical request may involve multiple authorized
+providers rather than a single endpoint. Providers may advertise ACK metadata
+such as availability, queue state, location, or role capability; the user may
+select one or more providers after an ACK collection interval; and the
+application may issue compensation requests when only part of a logical task
+is completed. Long-running selected work should also be diagnosable: after a
+timeout, the user should be able to learn whether a selected provider has not
+seen the selection, is queued, is executing, has failed, or has already
+published a response.
+
+This collaboration model is intentionally application-independent. Multi-UAV
+patrol can use it to assign mission segments and recover from partial failure,
+while distributed inference can use it to assign model roles and coordinate
+intermediate artifacts. In both cases, NDNSF should provide the generic service
+semantics: request publication, provider metadata, provider selection,
+authorization, status diagnosis, and response verification. The application
+defines the domain-specific work; the framework defines how selected providers
+participate in one logical service workflow.
+
+\section{Generic Dynamic API}
+
+NDNSF v0.1 moved toward a generic dynamic API instead of generated,
+service-specific stubs. A provider can register a typed service handler:
+
+\begin{lstlisting}[language=C++]
+provider.addHandler<RequestT, ResponseT>(
+    ndn::Name("/ObjectDetection/YOLOv8"),
+    handler);
+\end{lstlisting}
+
+A user can invoke a service through the generic runtime:
+
+\begin{lstlisting}[language=C++]
+user.RequestService<RequestT, ResponseT>(
+    providers,
+    ndn::Name("/ObjectDetection/YOLOv8"),
+    request,
+    onResponse,
+    onTimeout,
+    timeoutMs,
+    strategy);
+\end{lstlisting}
+
+This API is intended to keep application data in application-defined request
+and response objects while the framework handles naming, publication,
+permission checks, tokens, provider selection, and response delivery.
+
+\section{Service Message Model}
+
+NDNSF v0.1 uses four framework messages to separate service publication,
+provider admission, provider selection, and result delivery. This message model
+is central to the one-to-many service design: a request can be observed by
+multiple authorized providers, providers can expose availability and metadata
+before execution, and the user can explicitly bind the request to selected
+providers.
+
+\begin{table}[H]
+\centering
+\caption{NDNSF v0.1 service messages.}
+\label{tab:ndnsf-message-model}
+\begin{tabularx}{\textwidth}{p{0.22\textwidth}p{0.16\textwidth}X}
+\toprule
+Message & Producer & Purpose \\
+\midrule
+RequestMessage & User & Publishes a named service request and application
+payload. \\
+RequestAckMessage & Provider & Reports whether the provider is willing to
+serve the request and exposes runtime metadata for selection. \\
+SelectionMessage & User & Selects one or more providers and binds the request
+to the selected provider tokens. \\
+ResponseMessage & Provider & Returns the service result from a selected
+provider. \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\begin{table}[H]
+\centering
+\caption{Representative fields carried by the four message types.}
+\label{tab:ndnsf-message-fields}
+\begin{tabularx}{\textwidth}{p{0.22\textwidth}X}
+\toprule
+Message & Representative Fields \\
+\midrule
+RequestMessage & service name, request ID, requester identity, payload,
+UserToken \\
+RequestAckMessage & service name, request ID, provider identity, status,
+message, metadata payload, echoed UserToken, ProviderToken \\
+SelectionMessage & service name, request ID, selected provider identity,
+ProviderToken \\
+ResponseMessage & service name, request ID, provider identity, result payload,
+echoed UserToken \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+The message fields are intentionally service-independent. Application-specific
+data remains in the payload or in typed request/response objects, while the
+framework uses service names, request IDs, identities, and one-time tokens to
+provide authorization checks, replay resistance, and response verification.
+
+\section{Service Invocation Workflow}
+
+The normal NDNSF invocation workflow is:
+
+\begin{enumerate}[leftmargin=*]
+  \item The user publishes a service request under a service name.
+  \item Providers with permission to serve the service receive the request.
+  \item Providers decide whether to ACK based on availability, local state, and
+  application-defined metadata.
+  \item The user collects ACKs during an ACK window.
+  \item A selection strategy chooses one or more providers.
+  \item Selected providers execute the request and publish responses.
+  \item The user verifies tokens, provider identity, and response data.
+\end{enumerate}
+
+This workflow supports both one-to-one and one-to-many service models. The same
+request can reach multiple providers, enabling the user to select the first
+available provider, randomly balance load, select all providers, or use a
+custom strategy based on metadata.
+
+The implemented provider-selection strategies are deliberately generic. The
+\emph{First Responding} strategy selects the first successful ACK, which is
+useful when low latency is the main goal. \emph{Random Selection} chooses among
+valid ACK candidates, which can spread load without requiring detailed provider
+state. \emph{All Selected} chooses every provider that returned a valid ACK,
+which supports cooperative or redundant execution. A \emph{Custom Selection}
+strategy runs after the ACK collection window and can use ACK metadata such as
+latency, queue length, load, location, model availability, safety state, memory,
+or accelerator capacity. The key design point is that readiness reporting and
+final provider choice are separate framework steps: providers decide whether and
+how to ACK, and the user-side strategy decides which ACK candidates should be
+selected.
+
+\section{Security Model}
+
+NDNSF uses a controller-authorized permission model. The ServiceController
+issues encrypted permission responses to target identities. Users and providers
+fetch their respective permissions, and permission Data is signed by the
+controller. NAC-ABE attributes map service messages to service-level
+authorization namespaces. ABE-protected challenges, validated signatures, and
+invocation-state checks jointly enforce service-level authorization and reject
+replayed or mismatched Request/ACK/Selection/Response messages.
+
+NAC-ABE enforcement is tied to the invocation tokens rather than to a separate
+permission list carried in every service message. A Request message includes a
+fresh \texttt{UserToken} encrypted under the service attribute, so only an
+authorized provider can decrypt the request and return that token. The ACK
+echoes the \texttt{UserToken} and carries a fresh \texttt{ProviderToken}
+encrypted under the permission attribute. The user proves selection authority by
+returning the selected provider's \texttt{ProviderToken} in the Selection
+message, and the final Response echoes the \texttt{UserToken}. In this way,
+NAC-ABE attributes gate who can decrypt each authorization token, while one-time
+tokens bind that authorization check to a single service invocation.
+
+Figure~\ref{fig:ndnsf-policy-example} illustrates the intended policy model:
+provider permissions specify which named services an entity may offer, while
+user permissions specify which named services an entity may access. This
+proposal keeps that service-name-centered policy model in the UAV and
+distributed-inference extensions, while adding deployment procedures that make
+the trust root and publisher namespaces explicit.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.82\textwidth]{figures/policy-examples.png}
+\caption{Example provider and user access-control policies in NDNSF.}
+\label{fig:ndnsf-policy-example}
+\end{figure}
+
+The current model separates:
+
+\begin{itemize}
+  \item \textbf{user authorization}: whether the user may request a service;
+  \item \textbf{provider authorization}: whether a provider may serve a
+  service;
+  \item \textbf{message integrity}: whether a service message is signed and
+  valid;
+  \item \textbf{data confidentiality}: whether the payload is encrypted for
+  authorized participants;
+  \item \textbf{replay protection}: whether one-time tokens have already been
+  consumed.
+\end{itemize}
+
+\input{chapters/authorization-rationale}
+
+\section{Completed Foundation and Current NDNSF Validation}
+
+The NDNSF evaluation compares NDNSF against NSC and gRPC in MiniNDN. It covers
+service latency and success under wired loss, intermittent Providers, wireless
+mobility, adaptive admission, selective ACK, and Provider-selection scenarios.
+The current evidence supports three bounded multi-Provider claims: NDNSF can
+discover Providers through a service namespace without a pre-registered
+address list, can reduce tail latency when mobility actually requires a
+Provider switch, and can avoid redundant Provider execution. It does not claim
+that NDNSF is universally more reliable or faster under mobility.
+
+The strongest evidence comes from scenarios where endpoint binding or a single
+provider becomes fragile. In the lossy wired Memphis--CSU--UCLA path, packet
+round-trip loss is $1-(1-\ell)^4$ for per-link loss $\ell$. NDNSF completed
+599 of 600 requests at 1\% link loss, where the packet round-trip loss is
+3.94\%, and 598 of 600 requests at 3\% link loss, where the packet round-trip
+loss is 11.47\%. At 10\% link loss, where packet round-trip loss rises to
+34.39\%, the best measured NDNSF result was 539 of 600 requests. This
+identifies the bounded-time delivery limit of SVS-based service invocation
+under heavy loss, rather than a failure of the NDNSF service model. In a wired multi-provider
+experiment with intermittent provider rejection, NDNSF maintained 99.46\%
+success at 20\% provider-failure probability and 96.70\% success at 30\%,
+whereas the single-provider baselines dropped to roughly two-thirds success or
+lower. The wireless rows below remain historical diagnostics because their
+single-Provider baselines and timing provenance were not matched. The current
+fair campaign uses byte-identical traces, four Providers per system, common
+publication times, and matched deadlines. Its unconditional 50/100/150\,m
+controls show that coverage dominates all-request success. In the registered
+ten-seed 100\,m, 2\,m/s holdout, the 1,312 requests unanimously classified as
+requiring a Provider switch show an NDNSF seed-p95 latency reduction of
+597\,ms versus gRPC-SEQ-4 (95\% CI $[-992,-200]$\,ms) and 2,618\,ms versus
+NSC-4 (95\% CI $[-2916,-2315]$\,ms). The success comparison does not establish
+superiority. In a separate transition test, NDNSF completes 357/357 requests
+with zero pre-registered Provider endpoints after a new Provider becomes solely
+reachable; static gRPC/NSC complete 0/357, whereas their pre-registered variants
+complete 357/357. This establishes native service-namespace discovery while
+recognizing that an external resolver can supply equivalent endpoint updates
+to gRPC or NSC. The adaptive-admission and Selective ACK
+experiments further show why the framework needs runtime metadata: admission
+control kept P95 latency below 270\,ms under overload, and Selective ACK raised
+success from 1.82\% to 100\% when the nearest provider was overloaded.
+Together with the capacity-matched six-seed repeat (NDNSF: 1,798/1,800
+successes and 1,800 provider executions; gRPC-PAR-4: 1,800/1,800 successes and
+7,180 server executions; seed-level bootstrap 95\% interval $[-0.22,0.00]$ pp),
+the evidence also supports a Provider-work-efficiency mechanism claim. These
+results jointly support native discovery, conditional switching latency, and
+execution efficiency, with explicit limits on general mobility claims.
+
+\begin{table}[H]
+\centering
+\caption{Selected reliability results from the submitted NDNSF v0.1 evaluation; wireless rows are historical diagnostics.}
+\label{tab:ndnsf-v01-reliability}
+\begin{tabularx}{\textwidth}{p{0.25\textwidth}p{0.20\textwidth}ccc}
+\toprule
+Scenario & Condition & NSC & gRPC & NDNSF \\
+\midrule
+Intermittent wired providers & 10\% failure probability & 83.25\% & 83.35\% & \textbf{99.82\%} \\
+Intermittent wired providers & 20\% failure probability & 66.58\% & 66.69\% & \textbf{99.46\%} \\
+Intermittent wired providers & 30\% failure probability & 49.92\% & 65.36\% & \textbf{96.70\%} \\
+Wireless mobile providers & 100\,m AP range & 45.42\% & 45.23\% & \textbf{96.25\%} \\
+Wireless mobile providers & 150\,m AP range & 68.75\% & 68.05\% & \textbf{100.00\%} \\
+Wireless mobile providers & 200\,m AP range & 88.33\% & 87.14\% & \textbf{100.00\%} \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\begin{table}[H]
+\centering
+\caption{Selected mechanism results from the submitted NDNSF v0.1 evaluation.}
+\label{tab:ndnsf-v01-mechanisms}
+\begin{tabularx}{\textwidth}{p{0.24\textwidth}p{0.27\textwidth}X}
+\toprule
+Mechanism & Baseline Behavior & NDNSF Behavior \\
+\midrule
+Adaptive admission under 100 RPS offered load & Without admission control,
+P95 latency reached 4254.39\,ms and timeout rate reached 3.55\%. & With
+admission control, admitted rate was limited to about 81 RPS, P95 latency
+stayed at 268.12\,ms, and timeout rate was 0.00\%. \\
+Selective ACK with nearest provider overloaded & ACK-all selected the nearest
+overloaded provider for 2209 of 2250 requests and achieved 1.82\% success. &
+Selective ACK suppressed overloaded ACKs, shifted selection to available
+providers, and achieved 100.00\% success. \\
+Real-machine intermittent availability & Single-provider NSC/gRPC stayed near
+50\% success when the chosen provider was unavailable for half the run. &
+NDNSF selected among two providers and reached 74.62\% success at 10 RPS and
+73.73\% at 30 RPS, close to the expected availability window. \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\section{Limitations of NDNSF v0.1}
+
+NDNSF v0.1 establishes feasibility, but it does not yet fully address the
+requirements of dynamic service applications beyond controlled framework
+tests. The main limitations
+that motivate the remaining dissertation work are:
+
+\begin{itemize}
+  \item \textbf{Low-latency known-provider control}: the normal
+  Request/ACK/Selection/Response workflow is appropriate for provider
+  discovery, but control commands to a known drone or device need a faster
+  Targeted path while preserving authorization and replay protection.
+  \item \textbf{Provider collaboration}: v0.1 supports selecting providers, but
+  larger tasks need collaboration among multiple providers, partial failure
+  handling, and compensation requests.
+  \item \textbf{Service-container composition}: real applications often contain
+  multiple services in one trusted process. Those services need efficient local
+  composition without exposing a network bypass to remote callers.
+  \item \textbf{Large artifacts}: v0.1 service payloads are not intended to
+  carry models, recordings, images, or intermediate tensors. Applications need
+  typed references to named Data objects plus native NDN segmented retrieval
+  for large signed and encrypted objects.
+  \item \textbf{Operational validation}: v0.1 demonstrates the security
+  model, but broader validation needs clearer certificate bootstrapping,
+  trust-schema guidance, configuration procedures, and reproducible
+  experiments.
+  \item \textbf{Application-level validation}: v0.1 evaluation shows the core
+  framework works in MiniNDN, but the dissertation must evaluate whether the
+  design supports demanding UAV and distributed-inference workflows.
+\end{itemize}
+
+\section{Supporting Mechanisms for Provider Collaboration}
+
+The following mechanisms support provider collaboration in specific operating
+conditions. They are motivated by the UAV and distributed-inference workloads,
+but they are not separate dissertation threads and should remain generic
+framework mechanisms rather than application-specific shortcuts.
+
+\subsection{Targeted Invocation}
+
+Some services, such as UAV flight-control commands, are directed at a known
+provider and must minimize latency. The proposed Targeted invocation path keeps
+NDNSF permissions, one-time user/provider tokens, and replay protection, but
+avoids repeated ACK/Selection rounds after a token batch has been bootstrapped
+through the normal flow. This gives known-provider commands a fast path while
+keeping the security semantics of normal NDNSF invocation.
+
+\subsection{Trusted Local Invocation}
+
+A service-container application may contain several services in the same
+trusted process. A local call from one internal service component to another
+should not need to publish an NDN request. The proposed local invocation path
+therefore provides synchronous and asynchronous in-process invocation for
+explicitly registered local services. It is not a wire-protocol mode: remote
+callers cannot request it, and it bypasses NDNSF network security only inside
+the trusted local container boundary.
+
+\subsection{Large-Data Reference Abstraction}
+
+Models, video, images, activations, and logs should not be placed in small
+request payloads. The proposed pattern is to let the producer segment the
+object as named NDN Data and place only a typed object reference in the NDNSF
+request or response. The reference can include the object name, object type,
+version or session id, expected digest, expected size, final segment
+information, source type, and optional encryption metadata. The receiver then
+uses normal NDN segmented fetching, such as ndn-cxx segment fetch logic, to
+retrieve the object by name.
+
+This abstraction is intended to be a generic NDNSF mechanism, not an API for a
+particular storage service. Small request and response payloads remain useful
+for control messages and compact typed objects. When the payload becomes a
+large artifact, the same logical service invocation should carry a
+\emph{reference} rather than the artifact bytes. The application or helper can
+turn a payload into named Data segments, sign and optionally encrypt those
+segments, and then pass a typed reference through NDNSF. This keeps service
+selection, authorization, token checks, and timeout diagnosis in the normal
+NDNSF path, while large bytes move through NDN's native named-data retrieval
+path.
+
+The same reference format should be usable across UAV recordings, camera
+artifacts, model shards, runtime artifacts, intermediate activations, and logs.
+As a result, UAV-APP and DistributedInference can share one framework-level
+large-data vocabulary: object type, object name, producer, session or version,
+size, digest, final segment hint, and optional encryption metadata. This avoids
+embedding application-specific conventions such as raw Data-name strings inside
+service payloads and makes large-object behavior inspectable by applications
+that do not understand NDN packet details.
+
+This design can optionally use persistent storage, but storage is an
+implementation support component rather than a separate research direction in
+this proposal. If persistent storage is used, it stores opaque NDN Data
+segments that have already been named, signed, and optionally encrypted by the
+application or by a framework helper. Security is not handled by a storage-
+specific path: NDNSF's normal hybrid encryption, signatures, tokens,
+permissions, and trust-schema validation protect the service message and the
+referenced Data. Discovery metadata can still accelerate validation, but large-
+object transfer itself is based on typed object references and native NDN
+segmented retrieval.
+
+This chapter supports RQ2 by previewing the reusable NDNSF mechanisms that the
+dissertation will refine: secure invocation, provider authorization,
+provider collaboration, and its supporting mechanisms. It supports RQ3 by
+identifying where collaboration introduces reliability, security, and latency
+tradeoffs, and where supporting mechanisms are needed to control overhead
+without weakening the core service semantics.
