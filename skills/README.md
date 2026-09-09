@@ -58,6 +58,16 @@ CLI `--help`、usage/schema rejection、target/link smoke 或 harness 启动只�
 同步检查要确认所有 Spec Kit 入口仍引用同一份 `batch-quality-gates.md`，而不是复制旧门禁。
 同步成功不等于 review-agent 已执行，也不改变当前 Spec 的任务或验收状态。
 
+可从仓库根运行共享同步检查器；它会检查三份模板、已安装的 11 个 Spec Kit 入口以及
+`CODEX_HOME`（默认 `~/.codex`）中的共享 skill。缺少本机安装时只报告 warning；已有副本
+内容不一致会失败。需要把安装缺失也作为门禁时加 `--require-entrypoints --require-personal`：
+
+```bash
+python3 skills/speckit-code-design/scripts/verify-spec-kit-sync.py
+```
+
+该检查器只验证规则与副本同步，不产生 `STATIC_PASS`、`BUILD_PASS` 或产品资格证据。
+
 ## Immediate Use
 
 无需安装即可在目标仓库会话明确要求：

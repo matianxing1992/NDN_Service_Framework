@@ -200,6 +200,17 @@ Spec 文档或唯一 evidence record。每次创建或修改 code-backed artifac
 若入口 skill 不能生成这些字段，应停止写入 `STATIC_PASS`/`DONE`，保留当前状态并报告
 缺失产物。skill 安装副本可以路由到本 reference，但不能以副本存在代替结果记录。
 
+## Entrypoint Synchronization
+
+共享 reference、模板或入口规则变化后，运行仓库内的
+`skills/speckit-code-design/scripts/verify-spec-kit-sync.py`。它检查三份 Spec Kit 模板、
+已安装的 11 个需求/计划/分析/审计/执行入口，以及 `CODEX_HOME` 下的共享
+`speckit-code-design` 文件是否仍与版本化副本一致。只负责更新 agent context 指针的
+`speckit-agent-context-update` 不生成或验收 Spec，因此不属于这 11 个入口。缺少本机安装
+默认只报告 warning；已有副本过期或缺文件必须失败，必要时使用
+`--require-entrypoints --require-personal` 将缺失安装提升为失败。该检查只证明工作流
+同步，不产生 `STATIC_PASS`、`BUILD_PASS` 或产品资格证据。
+
 ## Skill Responsibilities
 
 | Skill | Required use of this reference |

@@ -1,6 +1,6 @@
 # Implementation Plan: Native NDNSF-DI with Optional Python Bindings
 
-**Branch**: Experimental | **Revision**: 64 | **Date**: 2026-09-09
+**Branch**: Experimental | **Revision**: 65 | **Date**: 2026-09-09
 **Status**: IN_PROGRESS / 当前实现与验收状态见 tasks.md 的 Task Progress Registry 和 Current Checkpoint
 **Spec**: [spec.md](spec.md)
 
@@ -736,6 +736,22 @@ tree、endpoints、trace 和 cleanup 均存在。r15 使用旧 `build-nac182` ar
 此批只关闭 stream/unary marker 与一个隔离 native-process 出口；Provider callback 仍是
 in-process fixture，独立 requester/Provider transport、I01-I08、PO-002-PO-014、maintained
 caller/no-Python 和完整 T016 继续开放。详见 [R10-B41 evidence](evidence/r10-b41-stream-business-oracle-20260909.md)。
+
+### R10-B43 Spec Kit Entrypoint Synchronization Check 2026-09-09
+
+R10-B42 已把 artifact source identity 纳入共享批次规则；本批继续把规则副本核对固化为
+可重复检查。`skills/speckit-code-design/scripts/verify-spec-kit-sync.py` 检查三份 Spec Kit
+模板、11 个生成/澄清/计划/任务/分析/审计/执行入口，以及 `CODEX_HOME` 下的共享
+`speckit-code-design` 文件。只负责更新 agent context 指针的 `speckit-agent-context-update`
+不生成或验收 feature artifact，明确排除在入口集合之外。
+
+分配依据固定为：production entry/callers 是上述 Spec Kit 入口；implementation/wire 是
+版本化 reference、README 和 checker；test/harness/oracle 是正常、过期副本和缺失安装探针；
+build/source closure 对文档/checker 写 `N/A`；migration/evidence 是个人副本 SHA-256 和
+本批 evidence。稳定出口是强制模式报告 11/11 入口及个人副本一致；不吸收任何产品实现、
+native build、caller migration 或 T016 qualification。首轮静态复核发现 source 文件缺失会
+抛异常，已改为显式 finding；最终同步、`py_compile`、validator 和 `git diff --check` 通过。
+详见 [R10-B43 evidence](evidence/r10-b43-speckit-sync-check-20260909.md)。
 
 ### R10-B33 Native Unary Repository Reference Request 2026-09-09
 
