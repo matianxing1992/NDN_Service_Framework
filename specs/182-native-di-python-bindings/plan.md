@@ -1,6 +1,6 @@
 # Implementation Plan: Native NDNSF-DI with Optional Python Bindings
 
-**Branch**: Experimental | **Revision**: 63 | **Date**: 2026-09-09
+**Branch**: Experimental | **Revision**: 64 | **Date**: 2026-09-09
 **Status**: IN_PROGRESS / 当前实现与验收状态见 tasks.md 的 Task Progress Registry 和 Current Checkpoint
 **Spec**: [spec.md](spec.md)
 
@@ -655,6 +655,26 @@ closure，批末同一记录必须包含四类 `Batch Retrospective`、可比构
 本机 `.agents/skills/speckit-*` 入口副本；通过定向文本/引用/SHA 检查后，保持本批
 `CLOSED_FOR_VALIDATION` 仅适用于工作流输出契约。T004/T008/T010/T011/T013/T014/T015/
 T016/T017 和 native qualification 状态不变。详见 [R10-B35 evidence](evidence/r10-b35-command-output-contract-20260909.md)。
+
+### R10-B36 Remaining Production Chain Reorder 2026-09-09
+
+暂停新增实现期间，按“真实结果出口”重排剩余生产链；这张表只改变执行优先级，不改变
+17 个父任务、既有依赖或验收门。每一行都必须在自己的 Batch ID 中完成静态五 lane、C++
+selector/source closure 和真实结果观察，未达到出口继续保持 `PARTIAL`。
+
+| Order | Existing cards | Stable production exit | Depends / split trigger |
+| --- | --- | --- | --- |
+| P1 | `T004-A`, `T008-A/B`, `T010-A/B` | 一个 native requester 从准备/授权进入真实 Core，并从 Provider 得到 unary/stream 结果；保留 cancel/deadline/terminal 负例 | 复用现有 R10-B31/R10-B33 作为局部基线；增加 Provider worker、caller 或新 selector 即拆新批 |
+| P2 | `T010-C`, `T011-C` | 同一请求契约跨 Provider worker/进程完成首轮与续接，含 receipt/control/commit、恢复和清理 | 依赖 P1 的请求边界；需要 NFD/MiniNDN 或跨进程 transport 时在 owner 环境执行，不用本地 fixture 替代 |
+| P3 | `T012-A/B`, `T013-A`, `T013-F` | 一个维护中的 YOLO caller 使用 native facade/`REPO_REF` 完成真实请求、结果回收和 rollback evidence | 依赖 P1/P2 与 binding source closure；Python source/compatibility 检查不能单独关闭 caller |
+| P4 | `T013-C`, `T013-D`, `T013-E`, `T011-C` | Qwen/streaming caller 通过 native observer 交付 token/terminal 顺序；配置 continuation owner 后完成跨进程两轮和 replacement | 依赖 P2；conversation metadata 不由 Python 猜测，缺 owner 时继续 fail-closed |
+| P5 | `T013-B` | maintained callers 零使用旧 runtime/default import graph，并保留兼容退出与回滚证据 | 仅在 P3/P4 各有真实 native 结果后执行；legacy manifest 不能替代零调用观察 |
+| P6 | `T014-A/B` | 隔离 collector/harness 观察 native scope、子进程、endpoint、清理和必要反例 | 依赖 P5；I02–I08 与真实 no-Python 反例由 T016 owner 执行 |
+| P7 | `T015-A` → `T016-A` → `T017-A` | 跨任务收敛 PASS 后，完成 unit→integration→MiniNDN/no-Python 资格，再生成唯一 handoff | 每一步都保留首个失败边界；T016 缺 NFD/node context 时保持 `UNQUALIFIED`，不前移 T017 |
+
+P1–P4 是四个不同的生产入口/进程边界/selector，不能为了少一次构建合并；P5–P7 只在
+前置真实结果闭合后推进。该顺序与父任务依赖兼容，未将任何局部 fixture、CLI smoke 或
+Python compatibility PASS 提升为 native qualification。详见 [R10-B36 evidence](evidence/r10-b36-production-chain-reorder-20260909.md)。
 
 ### R10-B33 Native Unary Repository Reference Request 2026-09-09
 
