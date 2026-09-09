@@ -2439,3 +2439,34 @@ part of task context. Format per entry:
   run directory after node/NFD context is available.
 - **Next step**: provide the externally owned MiniNDN node/netns/socket context,
   then rerun the complete T016 matrix with a fresh raw run directory.
+
+## 2026-09-08 — Spec182 R6-B7: current binary drops one legacy D2b Selection before provider1 callback
+
+- **Area**: legacy Spec170 `DATA_V1` compatibility path exercised by the
+  current Spec182-linked `integration-tests` binary;
+  `Spec170NdnsfDiCoreFlow/ProductionIngressRunsD2bSelectionIntoSvsDataV1`.
+- **Symptom**: current `build-nac182/integration-tests` returns rc=201. ACK
+  collection and collaboration plan commit pass, and provider0 receives,
+  decrypts, queues, and completes its Selection. User trace records both
+  provider1 and provider0 Selection publications, but provider1 records no
+  Selection callback; `provider0Published`, `provider1HandlerCalled`, and the
+  bounded DATA_V1 fetch assertion fail. The older `build-system-j2` binary
+  passes the isolated selector.
+- **First boundary**: after User `PublishServiceSelectionMessageV2` publication
+  (both `SVS_PUBLISH_DONE` entries are present) and before provider1's
+  `ServiceProvider::handleServiceSelectionMessage` callback. ACK, plan, and
+  provider0 execution are not the failing boundary.
+- **Attempts**: isolated run with User/Provider TRACE; repeat with
+  `NDNSF_HANDLER_THREADS=0`. The handler-thread override did not change the
+  failure. An exploratory full `-j4` rebuild was interrupted after `vmstat 1`
+  showed sustained swap-in/out; no build result from that attempt is used as
+  validation. Raw immutable logs are under
+  `.codex-tmp/spec182-r6-b7-legacy-d2b-20260908/`.
+- **Interpretation**: preserve this as a current-source compatibility/runtime
+  boundary. Do not change `ServiceProvider::isFresh` or claim a Spec182
+  qualification result until a focused probe identifies the provider1
+  receipt/newness ordering and a named regression selector is added.
+- **Next step**: inspect the exact SVS delivery/newness interleaving, then either
+  make a bounded compatibility repair with an independent selector or retain
+  the failure as a T013-B migration prerequisite. See
+  `specs/182-native-di-python-bindings/evidence/r6-b7-legacy-d2b-regression-20260908.md`.
