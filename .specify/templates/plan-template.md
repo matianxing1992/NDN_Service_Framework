@@ -112,6 +112,8 @@ be stricter but must not weaken its PASS/BLOCK boundary.
   (production callers, implementation/wire, test/harness/oracle, build/source
   closure, migration/evidence) and its evidence owner. For documentation-only
   work, record N/A with the reason instead of inventing a code batch.
+  If a test helper or fixture reconstructs canonical bytes/digests/identity, name the
+  production serializer and record field order, normalization, and source-identity checks.
   Review trace must use the Minimum Review Record in
   skills/speckit-code-design/references/review-agent.md; a missing lane remains a
   coverage gap. Close each batch with the four-category Batch Retrospective.

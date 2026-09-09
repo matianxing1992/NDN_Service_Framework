@@ -73,6 +73,8 @@ closure、验收出口）；任一项不一致就拆成新的批次，不以少�
 矩阵格式统一采用 [review-agent.md](references/review-agent.md) 的 **Minimum Review Record**；
 测试 lane 必须同时检查 harness/oracle 与测试注册，build lane 必须检查
 target/source closure。缺少任一项时先记 `gap`，不得用 `No findings` 补齐。
+测试 helper 或 fixture 若复算 production serializer 的 canonical bytes/digest/identity，
+还必须对照生产字段集合、顺序、规范化和 source identity；对照不完整时保持 `gap`。
 批次已经有独立可观察出口后应立即进入批末验证，不得为了少一次构建继续吸收无关职责；
 复盘必须把静态、编译/链接、运行/测试漏检和可比构建耗时分开记录；每个成员和批末组合门
 还要记录 review-agent 的路径、SHA、基线和实际差异范围，以及 `CLOSED_FOR_VALIDATION` /

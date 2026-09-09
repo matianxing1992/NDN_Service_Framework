@@ -107,6 +107,9 @@ Every code-backed task description must identify the applicable production
 entry/caller, test/harness/oracle, and build/source registration. If one lane is
 not applicable, record `N/A` with a reason in the batch result record; if it is
 unknown, keep the task `PARTIAL` until the gap is closed.
+When a fixture or oracle reconstructs canonical bytes, digests, or identities,
+the batch record must name the production serializer and check its field order,
+normalization, and source identity; an unverified reconstruction is a coverage gap.
 
 Before implementation, record why each member belongs to its batch: shared
 production entry/caller, interface/state/ownership contract, independent

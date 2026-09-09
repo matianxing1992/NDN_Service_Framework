@@ -26,6 +26,8 @@
 五个 lane 必须列出实际文件/符号、查询命令和 findings；测试 lane 包含 harness/oracle
 及注册，build lane 包含 target/source closure。缺行或未解释的 `gap` 不得产生
 `STATIC_PASS`，批末还必须记录四类 `Batch Retrospective`。
+若 fixture/oracle 复算 canonical bytes、digest 或 identity，还必须对照 production serializer
+的字段集合、顺序、规范化和 source identity；不完整对照保持 `gap`。
 若编译/链接或运行/测试才发现漏检，重试/下一批必须链接首个失败边界并登记改变的静态
 检查；同类漏检再次发生时先修订共享 skill、模板或 checklist，或记录替代门禁。
 NDNSF-DI 原生行为由生产 C++ target/selector 验收，Python 只覆盖 binding/facade、

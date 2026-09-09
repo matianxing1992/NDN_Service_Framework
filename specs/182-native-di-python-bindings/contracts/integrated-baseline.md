@@ -51,7 +51,7 @@ O-001 的合并提交、当前源差异与本页181承接表已核对 CLOSED；T
 | MiniNDN grant-only advance | PASS / dedicated grant gate | 新授权可调用；无关主体不重取 DKEY；ABE 参数不变 |
 | MiniNDN provider revocation | PASS / 14 checks | 含主动 SIGINT 后重启，旧 Provider exit -2，重启后仍拒绝 |
 
-实际 native closure 使用 system GCC/binutils、Boost1.71、明确 NAC prefix 和 NDN-SVS source/build pair，最大 `-j2`。Core SHA256 `5fa424800613f697ecffb04b0b4b43b17f6bed06adbd0a59903558ba97da74fd`；完整库列表见 JSON。AGENTS 保留路径/ABI 前置检查；MiniNDN 的 root PATH 还必须包含 `/usr/sbin:/sbin`。
+实际 native closure 使用 system GCC/binutils、Boost1.71、明确 NAC prefix 和 NDN-SVS source/build pair，历史记录中的最大 `-j2` 仅描述当时的构建边界，不是当前主机的默认并行度。当前 6 logical CPU / 12 GB 主机默认 `-j4`；观察到持续换页或桌面停顿时，下一次构建才降为 `-j2`，详见 [native build parallelism](../../../docs/native-build-parallelism.md)。Core SHA256 `5fa424800613f697ecffb04b0b4b43b17f6bed06adbd0a59903558ba97da74fd`；完整库列表见 JSON。AGENTS 保留路径/ABI 前置检查；MiniNDN 的 root PATH 还必须包含 `/usr/sbin:/sbin`。
 
 ## Existing Core Contracts to Preserve
 

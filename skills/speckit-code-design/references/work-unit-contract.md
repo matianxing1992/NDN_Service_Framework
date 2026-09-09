@@ -25,7 +25,9 @@
 
 每个关键成果说明输入、生产调用路径、可观察结果及检错断言。
 覆盖适用的失败、重试、重复、寿命和清理路径；明确已有测试与 planned 测试。
-独立 oracle 来自协议、需求或参考结果，不能直接复用被测函数制造期望值。
+独立 oracle 来自协议、需求或参考结果，不能直接复用被测函数制造期望值。若它复算生产
+serializer 的 canonical bytes/digest/identity，必须记录字段集合、顺序、规范化和 source
+identity 的对照；过期 hardcode 或错误排序应有明确负例。
 必要的真实 integration/system/MiniNDN 不得由 mock、导入成功或结构扫描替代。
 保留明确要求的 counterfactual；其失败必须来自目标行为断言，而非启动/编译错误。
 无需为了填表对每个风险再新增一套 mutation。
