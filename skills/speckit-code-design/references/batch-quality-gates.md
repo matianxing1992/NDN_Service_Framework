@@ -27,6 +27,13 @@
 覆盖范围。没有矩阵、只有泛称目录，或矩阵与实际差异不符，均属于 coverage gap，
 不能记录 `STATIC_PASS` 或 `READY_FOR_BATCH_TESTS`。
 
+维护中的 legacy/compatibility 路径也属于真实调用方和迁移覆盖范围。若当前源码的
+探针、回归选择器或旧 oracle 暴露出它在生产接线之后的运行时失败，必须记录首个失败
+边界和原始证据，并在 `migration/evidence` lane 保持 `PARTIAL`；`speckit-converge`
+应为该边界追加有独立出口的修复或迁移任务。不能因为路径来自旧 Spec、旧测试或非主
+调用方就把失败标成“无关”，也不能在没有定位 receipt/newness、状态或兼容契约边界前
+直接修改共享 freshness、重试或发布逻辑。
+
 ## Stable Batch Exit
 
 逻辑批次以行为边界结束，而不是以文件数或任务数结束。批次可以继续加入成员，

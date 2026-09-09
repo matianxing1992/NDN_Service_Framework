@@ -74,6 +74,10 @@ closure、验收出口）；任一项不一致就拆成新的批次，不以少�
 复盘必须把静态、编译/链接、运行/测试漏检和可比构建耗时分开记录；每个成员和批末组合门
 还要记录 review-agent 的路径、SHA、基线和实际差异范围，以及 `CLOSED_FOR_VALIDATION` /
 `OPEN_FOR_NEXT_BATCH` 的关闭决定和触发条件。
+维护中的 legacy/compatibility 回归同样必须经过真实调用方和迁移 lane：当前源码探针
+发现的运行时失败要保留首个边界、原始日志和 `PARTIAL` 状态，并交给
+`speckit-converge` 追加有独立出口的修复/迁移任务；在 receipt、newness、状态或兼容契约
+边界明确前，不直接改共享 freshness、重试或发布逻辑。
 NDNSF-DI 原生运行时和协议行为由直接调用生产 C++ target 的测试验收；Python 只证明
 绑定/兼容/离线 oracle 或外部设施边界，不能替代 C++ 行为或跨进程资格测试。
 
