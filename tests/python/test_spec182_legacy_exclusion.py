@@ -24,7 +24,10 @@ def test_legacy_default_routes_are_explicitly_inventory_owned() -> None:
 def test_native_binding_has_no_python_strategy_or_legacy_import() -> None:
     source = (ROOT / "pythonWrapper/src/ndnsf/di_bindings.cpp").read_text(
         encoding="utf-8")
-    assert "py::function" not in source
+    # A Python callback is allowed only at the terminal observer facade; model
+    # selection, planning, and execution strategy remain native-owned.
+    assert 'py::function observer' in source
+    assert 'NativeInferenceHandle::observe' not in source
     assert "placement.py" not in source
     assert "runtime_v1" not in source
     assert "subprocess" not in source
@@ -55,6 +58,7 @@ def test_maintained_qwen_routes_use_explicit_native_config_without_fallback() ->
     assert "native-requester-config" in stream_harness
     assert "native requester route currently supports only Qwen runtimes" in user
     assert "NativeServiceUser currently has no configured NativeConversationConfig" in user
+    assert "on_event" in client
     # The native branch is selected before the automatic planner branch and
     # remains explicit in the maintained caller source.
     assert user.index("if args.native_requester_config:") < user.index(

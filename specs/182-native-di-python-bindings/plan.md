@@ -1,6 +1,6 @@
 # Implementation Plan: Native NDNSF-DI with Optional Python Bindings
 
-**Branch**: Experimental | **Revision**: 11 | **Date**: 2026-09-08
+**Branch**: Experimental | **Revision**: 12 | **Date**: 2026-09-08
 **Status**: IN_PROGRESS / 当前实现与验收状态见 tasks.md 的 Task Progress Registry 和 Current Checkpoint
 **Spec**: [spec.md](spec.md)
 
@@ -19,7 +19,7 @@ O-002--O-005 已于 2026-09-07 全部关闭（code-design Open Questions 无 OPE
 测试，T013/T015 核对覆盖，T016 分开执行原生主套件与绑定兼容套件；见
 [native test ownership](contracts/proof-design.md#native-test-ownership)。
 该 ownership 规则现已同步到共享 `batch-quality-gates` 及 plan/tasks/implement/
-analyze/audit skills：native requirement 必须登记生产 C++ target/selector；Python
+analyze/audit/converge skills：native requirement 必须登记生产 C++ target/selector；Python
 focused 结果只能作为 binding/facade、离线 oracle 或外部设施证据。
 
 建立可安装ndnsf-distributed-inference库与独立C++ consumer，Python绑定可选。
@@ -47,7 +47,8 @@ T001允许有界依赖探针；产品构建按设计门和各任务的验证范�
 此前暂停和重排成果保留，不重做 Spec182。剩余生产顺序
 以 [R1–R7 capability stages](evidence/production-chain-replan-20260908.md#remaining-batches)
 为准：模型/候选→准备与授权计划→完整请求→流式/会话→同库调用方→旧路径退出及
-验证工具→最终资格交付。原 G0–G6、17 个父任务、36 张卡和硬验收门仍有效。
+验证工具→最终资格交付。原 G0–G6、17 个父任务、36 张基线卡和硬验收门仍有效；
+当前执行表在此基础上新增 T013-C observer remediation card。
 R1–R7 是能力阶段，不是固定执行批次或“每阶段只编译一次”。恢复后按
 [batch selection](evidence/production-chain-replan-20260908.md#executable-batch-selection)
 为当前阶段登记 R<n>-B<k>：同一行为、共享契约的生产者/消费者及共同验证一起闭合，

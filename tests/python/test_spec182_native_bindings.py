@@ -22,10 +22,10 @@ class Spec182NativeBindingsTest(unittest.TestCase):
         self.assertIn('"src/ndnsf/di_bindings.cpp"', setup)
         self.assertIn('"ndnsf-distributed-inference"', setup)
         self.assertNotIn("NativeGrantVerifier.cpp", setup)
-        # The DI binding must not introduce a Python callback strategy or a
-        # second planner implementation.  Native callbacks remain an explicit
-        # C++ API concern and are deliberately not exported here.
-        self.assertNotIn("py::function", source)
+        # A Python callback is exposed only as a terminal observer on an
+        # already-created native handle; planning and execution remain native.
+        self.assertIn("py::function observer", source)
+        self.assertIn('.def("observe"', source)
         self.assertNotIn("subprocess", source)
 
     def test_binding_source_has_no_python_strategy_trampoline(self):
