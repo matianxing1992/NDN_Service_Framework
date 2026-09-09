@@ -2,7 +2,9 @@
 
 **Revision**: 8 | **Status**: DRAFT / PARTIAL
 source review 只证明 baseline 所述实现存在，不证明新实现或资格。
-任务运行证据均为planned；本轮源码对照与文档检查见[audit](audit.md)和[tasks checkpoint](tasks.md#current-checkpoint)。历史证据不改写。
+任务状态和运行证据以 `tasks.md` 各行及其 linked evidence 为准；当前仍有局部
+`FOCUSED_BEHAVIOR_PASS` 与 `PARTIAL`，不把它们合并为最终资格。本轮源码对照与文档检查见
+[audit](audit.md)和[tasks checkpoint](tasks.md#current-checkpoint)。历史证据不改写。
 
 2026-09-08 R6-B3：T015-A 收敛审查核对 native requester、维护中的 YOLO/Qwen branches、
 Provider registration、legacy manifest、collector/harness 与 T016 出口。局部 C++/Python

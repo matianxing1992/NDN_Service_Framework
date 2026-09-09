@@ -1,15 +1,15 @@
 # Spec182 Design Audit
 
 **Revision**: 8 | **Mode**: source alignment / cross-task convergence
-**Verdict**: DRAFT / BLOCK for implementation
-**Source**: `81e251a4ef1d8e6a394dc5f0c38bc44e44bfc973` / Experimental
+**Verdict**: DRAFT / PARTIAL; T016 preflight UNQUALIFIED
+**Source**: `6171cf4d` implementation baseline / Experimental
 **Evidence**: [current source and dependency baseline](contracts/integrated-baseline.md)
 
 ## Current Findings
 
 ### Remaining Production Chain Review 2026-09-08
 
-用户要求暂停新增实现并重排剩余链。当前基线 ac962cc8，见
+用户要求暂停新增实现并重排剩余链。当前实现基线 6171cf4d，见
 [RC-01–RC-05 and R1–R7](evidence/production-chain-replan-20260908.md)：默认 requester
 未接通、生产 adapter/port 缺口、局部卡与最终接线责任混淆，以及字段消费方先于
 生产来源闭合的问题。这里只审查相关入口和执行计划，不重签 T015 或历史资格。
@@ -217,8 +217,12 @@ T006真实worker反例统一由T016执行；T006仍须交付case及纯unit，父
 
 ## Next Action
 
-T001继续关闭O-002--005：固定ONNX/protobuf字节契约、tokenizer ABI、完整兼容/注册/状态设计与独立测试selector、no-Python隔离方案。无需重开合并或续跑181资格；各设计项满足其完整关闭条件后才关闭。
-任务完成 **0/17**；T001依赖探针单独记录，T015产品收敛审查及产品构建/unit/integration/MiniNDN **NOT_RUN**。
+继续按 `tasks.md` 的依赖顺序关闭剩余生产调用链：T004/T008/T009/T010/T011/T013 的
+真实 requester/provider/stream/conversation 接线和 legacy zero-use 证据先由各自 owner
+补齐；随后在外部 MiniNDN node/netns/NFD context 可用时，以新 run directory 重试 T016
+完整 unit/integration/MiniNDN/no-Python matrix。当前 Execution Progress 为 16 个 DONE、
+23 个 PARTIAL、1 个 NOT_STARTED；T016 preflight 已明确为 `UNQUALIFIED`，不能代替协议结果。
+无需重开合并或续跑181资格，T017 仍依赖有效 T016 evidence。
 
 ## Progress Registry Amendment
 
