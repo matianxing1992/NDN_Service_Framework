@@ -54,10 +54,13 @@ BOOST_AUTO_TEST_CASE(BothCollaborationEntrypointsBindAcceptedServiceVersion)
   const auto planned = user.RequestCollaboration(
       service, ndn::Buffer{1}, plan, [](const ResponseMessage&) {},
       [](const ndn::Name&) {}, ndn::Name("/planned-version"));
+  RequestCapabilities scopedCapabilities;
+  scopedCapabilities.setField("RequestScopedConfidentialityV1", "required");
   const auto deferred = user.BeginCollaboration(
       service, ndn::Buffer{1}, 200, 5000,
       [](const CollaborationAckClosure&) {}, [](const ResponseMessage&) {},
-      [](const ndn::Name&) {}, ndn::Name("/deferred-version"));
+      [](const ndn::Name&) {}, ndn::Name("/deferred-version"),
+      CollaborationAckCoverageHandler(), scopedCapabilities);
 
   for (const auto& id : {planned, deferred}) {
     BOOST_REQUIRE(!id.empty());
@@ -67,6 +70,13 @@ BOOST_AUTO_TEST_CASE(BothCollaborationEntrypointsBindAcceptedServiceVersion)
       BOOST_CHECK(request.getControllerVersion() == status.getControllerVersion());
     }
   }
+  const auto& deferredRequest = user.pendingRequest(deferred);
+  BOOST_REQUIRE(deferredRequest.hasRequestCapabilities());
+  BOOST_CHECK_EQUAL(
+      deferredRequest.getRequestCapabilities().getField(
+          "RequestScopedConfidentialityV1"),
+      "required");
+  BOOST_CHECK(deferredRequest.getPayload().empty());
 
   auto revoked = status;
   revoked.setControllerVersion(ControllerVersion{1000, 8});

@@ -6631,6 +6631,9 @@ namespace ndn_service_framework
         if (!prepareRequestControllerVersion(requestMessage, service, requestId)) {
             return ndn::Name();
         }
+        ndn::Buffer requestScopedPlaintext;
+        const bool requestScopedConfidentiality = prepareRequestScopedRequest(
+            requestMessage, service, requestId, requestScopedPlaintext);
         // Collaboration uses an explicit participantSelector after the ACK
         // collection window. Do not mark the request as RandomSelection here:
         // the legacy RandomSelection path installs a hard-coded 100 ms timer
@@ -6641,6 +6644,8 @@ namespace ndn_service_framework
         PendingCall pendingCall;
         pendingCall.serviceName = service;
         pendingCall.requestMessage = std::move(requestMessage);
+        pendingCall.requestScopedPlaintext = std::move(requestScopedPlaintext);
+        pendingCall.requestScopedConfidentiality = requestScopedConfidentiality;
         pendingCall.strategy = ndn_service_framework::tlv::AllSelected;
         pendingCall.timeoutMs = plan.timeoutMs;
         pendingCall.ackTimeoutMs = plan.ackCollectionTimeMs;
@@ -6718,6 +6723,14 @@ namespace ndn_service_framework
         if (!prepareRequestControllerVersion(requestMessage, service, requestId)) {
             return ndn::Name();
         }
+        // Deferred collaboration publishes the discovery Request first and
+        // creates the selected Provider's input envelope later, when the ACK
+        // window closes.  Prepare the request-scoped state before storing the
+        // PendingCall so PublishServiceSelectionMessageV2 can seal that same
+        // payload after provider selection.
+        ndn::Buffer requestScopedPlaintext;
+        const bool requestScopedConfidentiality = prepareRequestScopedRequest(
+            requestMessage, service, requestId, requestScopedPlaintext);
 
         // A streamed collaboration carries the same request-scoped stream
         // options as the ordinary streaming API.  Allocate its event-key
@@ -6758,6 +6771,8 @@ namespace ndn_service_framework
         PendingCall pendingCall;
         pendingCall.serviceName = service;
         pendingCall.requestMessage = std::move(requestMessage);
+        pendingCall.requestScopedPlaintext = std::move(requestScopedPlaintext);
+        pendingCall.requestScopedConfidentiality = requestScopedConfidentiality;
         pendingCall.strategy = ndn_service_framework::tlv::AllSelected;
         pendingCall.timeoutMs = timeoutMs;
         pendingCall.ackTimeoutMs = ackCollectionTimeMs;

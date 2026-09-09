@@ -4263,3 +4263,36 @@ identity and rerun packaging against the existing incremental Waf cache.
 - Lesson: distinguish canonical artifact identity from optional transport
   fetch identity in APP tests; local preparation intentionally has no fetch
   name.
+
+## 2026-09-09 — Deferred collaboration lost request-scoped input state
+
+Symptom: the v41 exact-SIF Y-A run reached ACK/Selection, then the Provider
+rejected the Selection with `missing request-scoped capability, certificate,
+version, or envelope`; User never published `NDNSF_REQUEST_SCOPED_INPUT` and
+returned `REMOTE_RESPONSE_FAILED`.
+Root cause: `BeginCollaboration` stored the RequestMessage without calling
+`prepareRequestScopedRequest`, so its PendingCall had neither the retained
+plaintext nor the request-scoped flag. The selection publisher therefore
+could not create the selected Provider's input envelope. `RequestCollaboration`
+had the same missing preparation step.
+Fix: prepare both collaboration entrypoints after ControllerVersion binding and
+store the resulting state in PendingCall; the collaboration-version regression
+now checks that deferred discovery carries the capability and empty payload.
+The first test revision over-assumed that a Controller-free LocalMock would
+inject the default capability into the planned entrypoint; scope the assertion
+to the explicit deferred capability instead.
+Lesson: every path that defers Selection must run the same request-scoped
+preparation boundary as ordinary RequestService and Targeted requests.
+
+## 2026-09-09 — Core build initially selected an incompatible NDN-SVS prefix
+
+Symptom: the first `build-spec183-core-fix` attempt failed in ServiceProvider
+because `/usr/local`'s ndn-svs headers lacked
+`subscribeToProducerWithCatchUp`.
+Root cause: the build tree was configured through pkg-config without the
+repository's pinned Experimental ndn-svs source/build pair.
+Fix: reconfigure with `/home/tianxing/NDN/ndn-svs` and its build tree, then
+build and link the Core library successfully; the direct Boost regression uses
+the same include/library closure.
+Lesson: native Core changes require an explicit ndn-svs source/library pair;
+an apparently installed ABI is not sufficient evidence.
