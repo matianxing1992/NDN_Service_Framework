@@ -537,6 +537,64 @@ class APPClient:
             handle.observe(on_event)
         return handle
 
+    def request_native_reference(self, reference, *, options,
+                                 task_name: str | None = None,
+                                 application_options: bytes | None = None,
+                                 on_event=None):
+        """Submit a published encrypted repository reference natively.
+
+        ``reference`` must be the value returned by
+        :meth:`publish_application_input_reference` (or an equivalent
+        ``LargeDataReference`` object).  The requester forwards canonical
+        metadata only; repository resolution and decryption remain Provider
+        responsibilities in the C++ runtime.
+        """
+        if (self._native_client is None or self._native_model is None or
+                self._native_splitter is None):
+            raise RuntimeError(
+                "native requester is not configured; refusing Python planner fallback")
+        from ndnsf import _ndnsf
+        from ..repo_reference import LargeDataReference
+        if on_event is not None and not callable(on_event):
+            raise TypeError("native event observer must be callable")
+        if isinstance(reference, LargeDataReference):
+            checked = reference
+        else:
+            checked = LargeDataReference.from_mapping(reference)
+        publication_digest = checked.digest()
+        published = {
+            str(record.get("payload", {}).get("referenceDigest", ""))
+            for record in self.journal.records()
+            if record.get("kind") == "application-input-publication"
+        }
+        if publication_digest not in published:
+            raise RuntimeError("DI_INPUT_PUBLICATION_MISSING")
+        wire = json.dumps(
+            checked.to_dict(), sort_keys=True, separators=(",", ":"),
+            ensure_ascii=False)
+        native_input = _ndnsf.NativeApplicationInput()
+        native_input.task_name = str(
+            task_name or getattr(self._native_runtime.contract, "task_name", ""))
+        native_input.input_schema_digest = self._native_model.adapter.input_schema_digest
+        native_input.options_schema_digest = self._native_model.adapter.options_schema_digest
+        native_input.transport_mode = _ndnsf.NativeInputTransportMode.REPOSITORY_REFERENCE
+        native_input.repository_reference = wire
+        if application_options is not None:
+            if not isinstance(application_options, (bytes, bytearray, memoryview)):
+                raise TypeError("native application options must be bytes-like")
+            native_input.options = bytes(application_options)
+        options.task_name = native_input.task_name
+        handle = self.request_native(
+            model=self._native_model,
+            input=native_input,
+            split_strategy=self._native_splitter,
+            placement_strategy=_ndnsf.NativePreSplitFirstPlacement(),
+            options=options,
+        )
+        if on_event is not None:
+            handle.observe(on_event)
+        return handle
+
     def request(
         self,
         *,
@@ -1856,6 +1914,15 @@ class InferenceClient:
         return self._core.request_native(
             model=model, input=input, split_strategy=split_strategy,
             placement_strategy=placement_strategy, options=options)
+
+    def request_native_reference(self, reference, *, options,
+                                 task_name: str | None = None,
+                                 application_options: bytes | None = None,
+                                 on_event=None):
+        """Submit a published encrypted repository reference natively."""
+        return self._core.request_native_reference(
+            reference, options=options, task_name=task_name,
+            application_options=application_options, on_event=on_event)
 
     def deploy(self, definition):
         return self._deployments.ensure(definition)

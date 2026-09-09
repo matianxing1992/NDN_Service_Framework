@@ -8,6 +8,7 @@ import warnings
 from unittest import mock
 import tempfile
 from types import SimpleNamespace
+import json
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -225,6 +226,87 @@ class AppSdkCompatibilityTest(unittest.TestCase):
         core.request_native.assert_called_once_with(
             model="model", input="input", split_strategy="split",
             placement_strategy="placement", options="options")
+
+    def test_public_inference_client_forwards_native_reference_route(self):
+        core = SimpleNamespace(request_native_reference=mock.Mock(return_value="handle"))
+        client = PublicInferenceClient.__new__(PublicInferenceClient)
+        client._core = core
+        callback = mock.Mock()
+        self.assertEqual(
+            client.request_native_reference(
+                {"dataName": "/input", "manifestDigest": "manifest"},
+                options="options", task_name="task",
+                application_options=b"opts", on_event=callback),
+            "handle")
+        core.request_native_reference.assert_called_once_with(
+            {"dataName": "/input", "manifestDigest": "manifest"},
+            options="options", task_name="task",
+            application_options=b"opts", on_event=callback)
+
+    def test_core_native_reference_route_preserves_identity_and_avoids_planner(self):
+        from ndnsf_distributed_inference.app_sdk.client import APPClient as CoreAPPClient
+        from ndnsf_distributed_inference.repo_reference import LargeDataReference
+        import ndnsf
+
+        reference = LargeDataReference(
+            data_name="/service/input/v=1",
+            manifest_digest="sha256:" + "a" * 64,
+            plaintext_size=4,
+            ciphertext_digest="sha256:" + "b" * 64,
+            authorization_scope="/SERVICE/service",
+            protection_epoch="epoch-1",
+            object_id="object-1",
+        )
+        with tempfile.TemporaryDirectory() as state_root:
+            journal = RuntimeJournal.for_test(state_root, "native")
+            journal.append("application-input-publication", {
+                "referenceDigest": reference.digest(),
+            })
+            handle = SimpleNamespace(observe=mock.Mock())
+            native = SimpleNamespace(request=mock.Mock(return_value=handle))
+            planner = SimpleNamespace(request=mock.Mock())
+            client = CoreAPPClient(
+                journal, automatic_planner=planner, native_client=native)
+            client._native_model = SimpleNamespace(adapter=SimpleNamespace(
+                input_schema_digest="sha256:" + "c" * 64,
+                options_schema_digest="sha256:" + "d" * 64))
+            client._native_runtime = SimpleNamespace(
+                contract=SimpleNamespace(task_name="default-task"))
+            client._native_splitter = "split"
+            options = SimpleNamespace(task_name="")
+            callback = mock.Mock()
+
+            class FakeInput:
+                def __init__(self):
+                    self.payload = []
+                    self.options = []
+
+            fake_ndnsf = SimpleNamespace(
+                NativeApplicationInput=FakeInput,
+                NativeInputTransportMode=SimpleNamespace(
+                    REPOSITORY_REFERENCE="repo"),
+                NativePreSplitFirstPlacement=lambda: "placement",
+            )
+            with mock.patch.object(ndnsf, "_ndnsf", fake_ndnsf):
+                returned = client.request_native_reference(
+                    reference, options=options, application_options=b"cfg",
+                    on_event=callback)
+
+            self.assertIs(returned, handle)
+            planner.request.assert_not_called()
+            native.request.assert_called_once()
+            args, kwargs = native.request.call_args
+            self.assertEqual(args[0], client._native_model)
+            native_input = args[1]
+            self.assertEqual(native_input.transport_mode, "repo")
+            self.assertEqual(native_input.payload, [])
+            self.assertEqual(native_input.options, b"cfg")
+            self.assertEqual(
+                native_input.repository_reference,
+                json.dumps(reference.to_dict(), sort_keys=True,
+                           separators=(",", ":"), ensure_ascii=False))
+            self.assertEqual(options.task_name, "default-task")
+            handle.observe.assert_called_once_with(callback)
 
     def test_public_inference_client_forwards_conversation_owner(self):
         core = SimpleNamespace(
