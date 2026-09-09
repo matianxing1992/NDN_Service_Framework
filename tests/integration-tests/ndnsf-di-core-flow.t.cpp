@@ -6621,7 +6621,8 @@ r4B6SignDigest(const std::shared_ptr<EVP_PKEY>& key, const std::string& digest)
 }
 
 void
-runR4B6RealProviderConversationCase(bool exerciseReplacement = false)
+runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
+                                    bool alternateProvider = false)
 {
   using namespace ndn_service_framework;
   test::BootstrapProfile profile;
@@ -6633,12 +6634,15 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false)
   profile.providerIdentity = ndn::Name("/spec182/r4-b6/provider");
   profile.attributeAuthority = ndn::Name("/spec182/r4-b6/aa");
   profile.serviceName = ndn::Name("/Spec182/R4B6/Conversation");
+  profile.providerCount = alternateProvider ? 2 : 1;
   test::NdnsfIntegrationEnvironment environment(profile);
   environment.bootstrap();
 
   const auto serviceName = environment.profile().serviceName.toUri();
   const auto requesterName = environment.user().getName().toUri();
   const auto providerName = environment.provider().getName().toUri();
+  const auto alternateProviderName = alternateProvider ?
+    environment.provider(1).getName().toUri() : std::string{};
   const std::string role = "/LLM/Pipeline/Stage/0";
   const std::string protectionEpoch = "protected-r4-b6";
   const std::string policyDigest = nativePlanningDigest("r4-b6-policy");
@@ -6776,7 +6780,7 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false)
   offerConfig.signDigest = [offerKey] (const std::string& value) {
     return r4B6SignDigest(offerKey, value);
   };
-  const auto policyJson = nativeCanonicalJson(NativeJson{
+  auto policyJson = nativeCanonicalJson(NativeJson{
     {"schema", "spec180-provider-offer-trust-v1"},
     {"candidateId", "r4-b6"}, {"candidateDigest", nativePlanningDigest("r4-b6-candidate-policy")},
     {"trustSchema", "/r4-b6/trust"},
@@ -6785,6 +6789,15 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false)
       {"keyLocatorPrefix", environment.provider().getSigningKeyName().toUri()},
       {"signerKeyId", offerKeyId},
       {"certificateName", environment.provider().getSigningCertificateName().toUri()}}})}});
+  if (alternateProvider) {
+    auto policy = nativeParseJson(policyJson);
+    policy.at("entries").push_back(NativeJson{
+      {"provider", alternateProviderName}, {"service", serviceName},
+      {"keyLocatorPrefix", environment.provider(1).getSigningKeyName().toUri()},
+      {"signerKeyId", offerKeyId},
+      {"certificateName", environment.provider(1).getSigningCertificateName().toUri()}});
+    policyJson = nativeCanonicalJson(policy);
+  }
   const auto candidatePolicyDigest = nativeParseJson(policyJson).at("candidateDigest").get<std::string>();
   auto admission = std::make_shared<NativeOfferAdmission>(
     policyJson, std::map<std::string, std::string>{{offerKeyId, r4B6PublicPem(offerKey)}},
@@ -6809,6 +6822,8 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false)
   issuerConfig.requesterPublicKey = requesterKey;
   issuerConfig.allowedModelManifests = {manifestDigest};
   issuerConfig.recipientPublicKeys = {{providerName, recipientKey}};
+  if (alternateProvider)
+    issuerConfig.recipientPublicKeys.emplace(alternateProviderName, recipientKey);
   issuerConfig.contentKey = [] (const auto&, const auto&) {
     return std::vector<std::uint8_t>(32, 0x77);
   };
@@ -6830,18 +6845,28 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false)
     std::move(publishGrant));
 
   auto user = std::shared_ptr<ServiceUser>(&environment.user(), [] (ServiceUser*) {});
-  const auto providerBootId = providerName + "-boot";
   auto ackCalls = std::make_shared<std::atomic<unsigned>>(0);
   auto collaborationCalls = std::make_shared<std::atomic<unsigned>>(0);
   auto conversationAttempts = std::make_shared<std::atomic<unsigned>>(0);
-  environment.provider().addCollaborationHandler(
+  NativeProviderOfferV3Config alternateOfferConfig;
+  if (alternateProvider) {
+    alternateOfferConfig = offerConfig;
+    alternateOfferConfig.provider = alternateProviderName;
+    alternateOfferConfig.bootEpoch = alternateProviderName + ":" +
+      environment.provider(1).getProviderBootEpoch();
+  }
+  const auto installProviderHandler = [&] (
+    ServiceProvider& provider, const NativeProviderOfferV3Config& localOfferConfig,
+    bool failFirst) {
+    const auto localProviderBootId = localOfferConfig.provider + "-boot";
+    provider.addCollaborationHandler(
     ndn::Name(serviceName),
-    [offerConfig, ackCalls] (const RequestMessage& request) {
+    [localOfferConfig, ackCalls] (const RequestMessage& request) {
       ackCalls->fetch_add(1, std::memory_order_relaxed);
       ServiceProvider::AckDecision decision;
       const auto payload = request.getPayload();
       const auto issued = issueNativeProviderOfferV3(
-        std::vector<std::uint8_t>(payload.begin(), payload.end()), offerConfig,
+        std::vector<std::uint8_t>(payload.begin(), payload.end()), localOfferConfig,
         static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
           std::chrono::system_clock::now().time_since_epoch()).count()));
       if (!issued || !issued->status) {
@@ -6854,8 +6879,8 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false)
       decision.pendingStateTtlMs = issued->pendingStateTtlMs;
       return decision;
     },
-    [model, policyDigest, protectionEpoch, role, providerBootId, collaborationCalls,
-     conversationAttempts, exerciseReplacement] (
+    [model, policyDigest, protectionEpoch, role, localProviderBootId, collaborationCalls,
+     conversationAttempts, failFirst] (
       ServiceProvider::CollaborationContext& ctx, const RequestMessage& request) {
       try {
         collaborationCalls->fetch_add(1, std::memory_order_relaxed);
@@ -6870,7 +6895,7 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false)
         ctx.subscribe("ndnsf-di-conversation-state-v1",
                       ndn::Name("/ndnsf-di/conversation/control"),
                       [] (const ServiceProvider::CollaborationData&) {});
-        if (exerciseReplacement && projection.attempt == 1) {
+        if (failFirst && projection.attempt == 1) {
           if (!ctx.failStream(StreamedInvocationErrorCode::ProviderFailure,
                               "R4-B6 injected provider failure before first event")) {
             throw std::runtime_error("R4-B6 replacement failure injection rejected");
@@ -6935,7 +6960,7 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false)
         receipt.layoutDigest = projection.selectedRole.artifactProfileDigest;
         receipt.planRoleMapDigest = binding.planRoleMapDigest;
         receipt.providerIdentity = ctx.localProvider().toUri();
-        receipt.providerBootId = providerBootId;
+        receipt.providerBootId = localProviderBootId;
         receipt.cacheEpoch = append ? 2 : 1;
         receipt.prefixDigest = nativeConversationPrefixDigest(fullTokens);
         receipt.prefixTokenCount = static_cast<std::uint32_t>(fullTokens.size());
@@ -6982,7 +7007,7 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false)
               {"roleName", role}, {"receiptDigest", receipt.computedDigest()},
               {"checkpointDigest", control.value("checkpointDigest", std::string{})},
               {"providerIdentity", ctx.localProvider().toUri()},
-              {"providerBootId", providerBootId}, {"cacheEpoch", receipt.cacheEpoch},
+              {"providerBootId", localProviderBootId}, {"cacheEpoch", receipt.cacheEpoch},
               {"committed", true}});
             ctx.publish("ndnsf-di-conversation-state-v1", commitTopic,
                         ndn::Buffer(ack.begin(), ack.end()));
@@ -6995,24 +7020,31 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false)
         throw std::runtime_error("R4-B6 conversation control timeout");
       }
       catch (const std::exception& error) {
-      ctx.fail(std::string("R4-B6 handler failure: ") + error.what());
+        ctx.fail(std::string("R4-B6 handler failure: ") + error.what());
       }
     });
+  };
+  installProviderHandler(environment.provider(), offerConfig,
+                         exerciseReplacement);
+  if (alternateProvider)
+    installProviderHandler(environment.provider(1), alternateOfferConfig, false);
 
   environment.enableProductionIngressForTest();
-  environment.provider().markHybridResponseKeyWrappedForTest(serviceName);
+  for (std::size_t index = 0; index < environment.providerCount(); ++index) {
+    auto& provider = environment.provider(index);
+    provider.markHybridResponseKeyWrappedForTest(serviceName);
+    const auto ackKey = provider.prepareHybridSendKeyForTest(serviceName, "ACK");
+    const auto responseKey = provider.prepareHybridSendKeyForTest(serviceName, "RESPONSE");
+    environment.user().cacheHybridReceiveKeyForTest(
+      ackKey.keyId, ackKey.epochId, ackKey.key);
+    environment.user().cacheHybridReceiveKeyForTest(
+      responseKey.keyId, responseKey.epochId, responseKey.key);
+  }
   const auto selectionKey = environment.user().prepareHybridSendKeyForTest(
     serviceName, "SELECTION");
-  const auto ackKey = environment.provider().prepareHybridSendKeyForTest(
-    serviceName, "ACK");
-  environment.user().cacheHybridReceiveKeyForTest(
-    ackKey.keyId, ackKey.epochId, ackKey.key);
-  const auto responseKey = environment.provider().prepareHybridSendKeyForTest(
-    serviceName, "RESPONSE");
-  environment.user().cacheHybridReceiveKeyForTest(
-    responseKey.keyId, responseKey.epochId, responseKey.key);
-  environment.provider().cacheHybridReceiveKeyForTest(
-    selectionKey.keyId, selectionKey.epochId, selectionKey.key);
+  for (std::size_t index = 0; index < environment.providerCount(); ++index)
+    environment.provider(index).cacheHybridReceiveKeyForTest(
+      selectionKey.keyId, selectionKey.epochId, selectionKey.key);
 
   NativeRequestRuntime runtime;
   runtime.contract = {serviceName, "task", model.adapterId,
@@ -7098,7 +7130,7 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false)
                         << " collaborationCalls=" << collaborationCalls->load());
     }
   }
-  if (exerciseReplacement) {
+  if (exerciseReplacement && !alternateProvider) {
     // This fixture deliberately has one Provider.  A failed Provider is
     // excluded from the recovery ACK, so the native client must reject the
     // replacement before publishing a conversation checkpoint.
@@ -7127,6 +7159,16 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false)
   BOOST_CHECK_EQUAL(firstJson.at("text").get<std::string>(), "ab");
   const auto record = conversations->find("r4-b6-conversation-001");
   BOOST_REQUIRE(record.has_value());
+  if (alternateProvider) {
+    const auto replacementRoleMapDigest = nativePlanningDigest(nativeCanonicalJson(
+      NativeJson::array({NativeJson::array({role, alternateProviderName})})));
+    BOOST_CHECK_EQUAL(conversationAttempts->load(std::memory_order_relaxed), 2U);
+    BOOST_CHECK_EQUAL(record->planRoleMapDigest, replacementRoleMapDigest);
+    BOOST_CHECK(record->checkpoint.requestId.find(first.requestId() + "/recovery/") == 0);
+    BOOST_CHECK_NE(record->checkpoint.requestId, first.requestId());
+    client.close();
+    return;
+  }
   auto secondOptions = options;
   secondOptions.generation = nativeGenerationFromOptions(application.options,
                                                          std::string(32, '1'));
@@ -7190,6 +7232,11 @@ BOOST_AUTO_TEST_CASE(Spec182R4B6RealProviderConversation)
 BOOST_AUTO_TEST_CASE(Spec182R4B6RealProviderConversationReplacement)
 {
   runR4B6RealProviderConversationCase(true);
+}
+
+BOOST_AUTO_TEST_CASE(Spec182R4B6RealProviderConversationAlternateReplacement)
+{
+  runR4B6RealProviderConversationCase(true, true);
 }
 
 BOOST_AUTO_TEST_CASE(Spec175NativeTinyOnnxI01OneProvider)

@@ -489,10 +489,14 @@ namespace ndn_service_framework
         // retains the attempt for authority checks.
         if (serviceSelectionName.size() >= 2) {
             const auto attempt = serviceSelectionName[-1].toUri();
-            if (!attempt.empty() &&
-                std::all_of(attempt.begin(), attempt.end(), [] (char ch) {
+            const auto previous = serviceSelectionName[-2].toUri();
+            const auto isNumeric = [] (const std::string& value) {
+                return !value.empty() && std::all_of(value.begin(), value.end(), [] (char ch) {
                     return ch >= '0' && ch <= '9';
-                }) && attempt != "0") {
+                });
+            };
+            if (!attempt.empty() &&
+                isNumeric(attempt) && attempt != "0" && isNumeric(previous)) {
                 const auto marker = findNdnsfMessageMarker(serviceSelectionName, "SELECTION");
                 const auto structured = marker ?
                     findStructuredRequestIdStart(serviceSelectionName, *marker + 3) :
@@ -578,7 +582,11 @@ namespace ndn_service_framework
         const auto marker = findNdnsfMessageMarker(name, "SELECTION");
         if (marker) {
             const auto structured = findStructuredRequestIdStart(name, *marker + 3);
-            if (structured && name.size() - (*structured + 3) < 2) {
+            // Legacy request IDs may be arbitrary components (for example
+            // "request-1"); preserve their final numeric decision suffix.
+            // A structured native request identity is a decision only when
+            // exactly one decision component follows its numeric counter.
+            if (structured && name.size() - (*structured + 3) != 2) {
                 return std::nullopt;
             }
         }

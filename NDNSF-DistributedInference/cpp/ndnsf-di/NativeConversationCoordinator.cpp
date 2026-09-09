@@ -1,4 +1,5 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
 #include <openssl/crypto.h>
 #include <openssl/rand.h>
 #include <chrono>
@@ -52,6 +53,7 @@ struct NativeConversationCoordinator::Impl
     std::function<void(const std::function<void()>&)> commitGate;
     std::function<void()> finalize;
     bool committing = false;
+    std::string parentPlanRoleMapDigest;
   };
   explicit Impl(NativeConversationConfig value) : config(std::move(value)) {}
   ~Impl() { for (auto& key : config.authenticationKeys) OPENSSL_cleanse(key.data(), key.size()); }
@@ -71,14 +73,17 @@ struct NativeConversationCoordinator::Impl
     require(cp.at("requesterIdentity") == config.requesterIdentity && cp.at("serviceName") == config.serviceName &&
       cp.at("securityDomainDigest") == config.securityDomainDigest, "DI_NATIVE_CONVERSATION_SCOPE_MISMATCH");
   }
-  void parent(const NativeConversationTurn& turn) const
+  void parent(const NativeConversationTurn& turn,
+              const std::string* expectedPlanRoleMapDigest = nullptr) const
   {
     const auto current = records.find(turn.parent.conversationId);
     if (!turn.parent.parentContextEpoch)
       require(current == records.end(), "DI_NATIVE_CONVERSATION_STATE_CHANGED");
     else require(current != records.end() &&
       current->second.checkpoint.successorContextEpoch == turn.parent.parentContextEpoch &&
-      current->second.checkpoint.checkpointDigest == turn.parent.parentCheckpointDigest,
+      current->second.checkpoint.checkpointDigest == turn.parent.parentCheckpointDigest &&
+      current->second.planRoleMapDigest ==
+        (expectedPlanRoleMapDigest ? *expectedPlanRoleMapDigest : turn.parent.planRoleMapDigest),
       "DI_NATIVE_CONVERSATION_STATE_CHANGED");
   }
 };
@@ -140,7 +145,8 @@ NativeConversationTurn NativeConversationCoordinator::beginTurn(
       "conversation append prefix mismatch");
   }
   s.parent(turn);
-  s.pending.emplace(turn.requestId, Impl::Pending{turn, {}, {}, {}, {}, {}, false});
+  Impl::Pending pending{turn, {}, {}, {}, {}, {}, false, turn.parent.planRoleMapDigest};
+  s.pending.emplace(turn.requestId, std::move(pending));
   return turn;
 }
 void NativeConversationCoordinator::abortTurn(const NativeConversationTurn& turn, const NativeDiError&)
@@ -164,14 +170,45 @@ void NativeConversationCoordinator::acceptTokenPrefix(const NativeConversationTu
   pending.turn.acceptedTokenIds.swap(candidate); pending.turn.prefixDigest.swap(hash);
 }
 NativeConversationTurn NativeConversationCoordinator::replaceAttempt(const NativeConversationTurn& turn,
-  std::string executionRequestId)
+  std::string executionRequestId, std::string requestContractDigest)
 {
   auto& s = *m_impl;
   std::lock_guard<std::mutex> guard(s.mutex);
   auto& pending = s.find(turn);
   require(pending.turn.attempt == 1 && !pending.prepared && !pending.committing &&
     !executionRequestId.empty() && executionRequestId != pending.turn.executionRequestId, "conversation replacement invalid");
-  pending.turn.attempt = 2; pending.turn.executionRequestId = std::move(executionRequestId);
+  if (!requestContractDigest.empty()) digestField(requestContractDigest);
+  pending.turn.attempt = 2;
+  pending.turn.executionRequestId = std::move(executionRequestId);
+  if (!requestContractDigest.empty())
+    pending.turn.parent.requestContractDigest = std::move(requestContractDigest);
+  return pending.turn;
+}
+
+NativeConversationTurn NativeConversationCoordinator::bindAttemptPlanRoleMap(
+  const NativeConversationTurn& turn,
+  const std::map<std::string, std::string>& providersByRole) const
+{
+  auto& s = *m_impl;
+  std::lock_guard<std::mutex> guard(s.mutex);
+  auto& pending = s.find(turn);
+  require(pending.turn.attempt == 2 && !pending.prepared && !pending.committing &&
+    pending.turn.parent.planRoleMapDigest == pending.parentPlanRoleMapDigest &&
+    !providersByRole.empty(), "conversation replacement plan map binding invalid");
+  std::set<std::string> expectedRoles(pending.turn.parent.expectedRoles.begin(),
+                                      pending.turn.parent.expectedRoles.end());
+  require(expectedRoles.size() == providersByRole.size(),
+    "conversation replacement plan map role cover invalid");
+  NativeJson roleMap = NativeJson::array();
+  for (const auto& [role, provider] : providersByRole) {
+    require(expectedRoles.erase(role) == 1 && !provider.empty(),
+      "conversation replacement plan map role binding invalid");
+    roleMap.push_back(NativeJson::array({role, provider}));
+  }
+  require(expectedRoles.empty(), "conversation replacement plan map role cover invalid");
+  const auto digest = nativePlanningDigest(nativeCanonicalJson(roleMap));
+  require(digest != pending.parentPlanRoleMapDigest, "conversation replacement plan map unchanged");
+  pending.turn.parent.planRoleMapDigest = digest;
   return pending.turn;
 }
 
@@ -188,7 +225,7 @@ NativeConversationCheckpoint NativeConversationCoordinator::prepareCheckpoint(
     completed.generationId == owned.parent.generationId && completed.commitProviderState &&
     completed.rollbackProviderState && now > 0 && owned.parent.retentionDeadlineMs > now,
     "conversation completion not bound to live turn");
-  s.parent(owned);
+  s.parent(owned, &pending.parentPlanRoleMapDigest);
   auto tokens = owned.parent.canonicalTokenIds;
   tokens.insert(tokens.end(), owned.acceptedTokenIds.begin(), owned.acceptedTokenIds.end());
   require(tokens == completed.tokenIds, "conversation completed prefix mismatch");
@@ -250,7 +287,7 @@ NativeConversationRecord NativeConversationCoordinator::commitTurn(
   auto& pending = s.find(turn);
   require(pending.prepared && !pending.committing && pending.prepared->wire == checkpoint.wire &&
     pending.prepared->transcript == checkpoint.transcript, "conversation checkpoint not prepared by owner");
-  s.parent(pending.turn);
+  s.parent(pending.turn, &pending.parentPlanRoleMapDigest);
   auto cp = nativeReadConversationCheckpoint(pending.prepared->wire, s.config.authenticationKeys, s.config.nowMs());
   auto record = recordFromWire(cp, pending.prepared->wire, pending.prepared->transcript);
   record.checkpoint.nativeInitialPromptTokenCount = pending.prepared->nativeInitialPromptTokenCount;
@@ -271,14 +308,14 @@ NativeConversationRecord NativeConversationCoordinator::commitTurn(
     promote(record.checkpoint.checkpointDigest);
     guard.lock();
     auto& current = s.find(turn);
-    s.parent(current.turn);
+    s.parent(current.turn, &current.parentPlanRoleMapDigest);
     guard.unlock();
     nativeReadConversationCheckpoint(record.checkpoint.wire, s.config.authenticationKeys, s.config.nowMs());
     const auto publish = [&] {
       require(!published, "conversation commit gate called twice");
       std::lock_guard<std::mutex> publishGuard(s.mutex);
       auto& current = s.find(turn);
-      s.parent(current.turn);
+      s.parent(current.turn, &current.parentPlanRoleMapDigest);
       if (s.config.journal) s.config.journal->appendConversation(record.checkpoint.wire,
         record.checkpoint.transcript, s.config.nowMs(), record.checkpoint.nativeInitialPromptTokenCount);
       const auto found = s.records.find(record.checkpoint.conversationId);
