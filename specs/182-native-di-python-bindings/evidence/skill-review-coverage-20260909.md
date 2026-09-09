@@ -73,7 +73,7 @@ R8-SKILL 只关闭公共审查记录格式。Spec182 的生产 requester、maint
 - **Skill**: `/home/tianxing/.codex/skills/review-agent/SKILL.md`, SHA-256
   `07079efd0dc76f05fade424e5dfb048dce1de2df7626e1a4f56292a4f3f92228`。
 - **Baseline**: `c3fd5a3a`；**Diff scope**: `skills/speckit-code-design/{SKILL.md,references/batch-quality-gates.md,references/pre-test-static-review.md}`, `skills/README.md`, `.specify/templates/{plan-template.md,tasks-template.md}`, and the active Spec182 `spec.md`, `plan.md`, `tasks.md`, and this evidence record.
-- **Coverage queries**: `rg` over all twelve `.agents/skills/speckit-*/SKILL.md` entry copies for the shared reference/header; `git diff --check` on the scoped paths; `validate_design.py`; prerequisite JSON check; SHA-256 comparison of the three versioned code-design files with `/home/tianxing/.codex/skills/speckit-code-design/`.
+- **Coverage queries**: `rg` over the eleven batch-aware `.agents/skills/speckit-*/SKILL.md` entry copies (the separate `speckit-agent-context-update` utility is not a batch executor) for the shared reference/header; `git diff --check` on the scoped paths; `validate_design.py`; prerequisite JSON check; SHA-256 comparison of the three versioned code-design files with `/home/tianxing/.codex/skills/speckit-code-design/`.
 - **Findings / re-review**: No actionable findings. The five lanes remain explicit; this amendment adds the miss-feedback rule without changing native behavior, task status, or qualification claims.
 
 ## Closure decision
