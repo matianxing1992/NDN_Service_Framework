@@ -710,6 +710,17 @@ conversation 请求必须先验证 binding，stream-only 请求仍明确不要�
 代码、wire 或请求状态机。按共享规则记录 `Changed gate`，重建 integration target 并重跑
 stream-only、conversation/replacement、unary/repository selectors。详见 [R10-B39 evidence](evidence/r10-b39-r4b6-fixture-contract-guard-20260909.md)。
 
+### R10-B40 T016 PO-001 Native Owner/Runner Pass 2026-09-09
+
+R10-B38 确认当前会话 UID 不能直接进入 MiniNDN owner 后，使用 passwordless root owner
+重新执行一个 bounded qualification case。registration manifest 增加 `campaignCase=PO-001`；
+旧 raw runner manifest 的两个首拒绝边界（缺 `process.role`、integration executable digest
+过期）保留在 `r10`/`r11`，fresh `r12` manifest 只修正这两个可核对身份字段。root owner 成功
+创建 requester/provider namespace、NFD socket 和 peer context，canonical runner 在 owner
+存活期间启动 native `integration-tests`，PO-001 业务 marker、process/namespace/trace/cleanup
+均通过并返回 `PASS`。这只关闭一个真实 cross-process native acceptance 出口；I01-I08、
+PO-002-PO-014、maintained caller/no-Python 和完整 T016 仍需逐 case 执行。详见 [R10-B40 evidence](evidence/r10-b40-t016-po001-native-owner-pass-20260909.md)。
+
 ### R10-B33 Native Unary Repository Reference Request 2026-09-09
 
 R10-B31 已补齐不带 stream 或 conversation state 的普通 native `Response`，R10-B11

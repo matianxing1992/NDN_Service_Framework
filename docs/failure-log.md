@@ -2781,3 +2781,20 @@ are still unobserved.
 - **Next step**: provide a root MiniNDN owner context with identity-bound namespaces, PID starttimes,
   independent NFD sockets and peer metadata, then run the complete I01–I08/PO matrix in a new run
   directory.
+
+## 2026-09-09 — Spec182 R10-B40 PO-001 raw manifest preflight retries
+
+- **Area**: T016-A PO-001 owner/runner execution after root owner access was available.
+- **First boundaries**: fresh `.codex-tmp/spec182-t016-r10/` reached the canonical runner but stopped
+  at `PreflightError: process role is invalid`; fresh `.codex-tmp/spec182-t016-r11/` then stopped at
+  `PreflightError: artifact digest mismatch` for the existing `integration-tests` executable.
+- **Interpretation**: both failures were runner-manifest identity/configuration boundaries, not native
+  protocol results. The old manifest omitted the required `process.role` and carried a stale binary
+  digest; neither attempt is qualification evidence.
+- **Repair and result**: `.codex-tmp/spec182-t016-r12/` used a fresh manifest with the requester role
+  and current executable digest. PO-001 then completed with runner evaluation `PASS`, rc `0`, the
+  `SPEC182_NATIVE_DI_REQUEST_RESULT_OK` marker, and complete namespace/process/trace/cleanup evidence.
+- **Raw evidence**: preserve `r10`, `r11`, and `r12` under `.codex-tmp/spec182-t016-*`; the durable
+  bounded result is [R10-B40 evidence](../specs/182-native-di-python-bindings/evidence/r10-b40-t016-po001-native-owner-pass-20260909.md).
+- **Next step**: generate each remaining I01–I08/PO-002–PO-014 manifest from the current build
+  identity before execution; do not reuse the stale raw manifest.
