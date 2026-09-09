@@ -1,15 +1,15 @@
 # Spec182 Design Audit
 
-**Revision**: 15 | **Mode**: source alignment / cross-task convergence
+**Revision**: 16 | **Mode**: source alignment / cross-task convergence
 **Verdict**: DRAFT / PARTIAL; T016 preflight UNQUALIFIED
-**Source**: `ec76b229` implementation/docs checkpoint / Experimental
+**Source**: `a6e9681f` implementation/docs checkpoint / Experimental
 **Evidence**: [current source and dependency baseline](contracts/integrated-baseline.md)
 
 ## Current Findings
 
 ### Remaining Production Chain Review 2026-09-09
 
-本次复核以 `ec76b229` 为当前 source checkpoint，当前文档状态由 R10-B17 更新。R10-B1--R10-B6 已在本地关闭
+本次复核以 `a6e9681f` 为当前 source checkpoint，当前文档状态由 R10-B18 更新。R10-B1--R10-B6 已在本地关闭
 准备、公开 facade、YOLO/Qwen maintained caller 的 `REPO_REF` 路由、真实 Provider 正向
 消费和三个 Provider fail-closed 负例；R10-B7 同步了当前 route marker 与 T013-D/T013-F
 契约文字，R10-B9 又在真实 Provider conversation fixture 中观察到 configured
@@ -46,6 +46,14 @@ actionable finding。
 仍在 `MININDN_NODE_CONTEXT_NOT_PROVIDED` 边界退出，manifest 也没有可运行的真实 DI cases。
 多进程生命周期、endpoint/socket 绑定、maintained caller 两轮请求、no-Python 和 T016 资格
 继续保持 `OPEN_FOR_NEXT_BATCH` / `UNQUALIFIED`。
+
+### Native ELF and Trace Integrity Boundary 2026-09-09
+
+R10-B18 复核了 runner 的绝对工具路径、shared-library artifact 挂载、`run_case`→`collect_trace`
+调用及 trace 完整性判定。声明的 loader/libc 现在逐文件挂到 ELF 绝对路径；正常按 PID
+配对的 strace `<unfinished ...>`/`<... resumed>` 不再误报，悬挂或孤立事件仍保持
+`UNQUALIFIED`。root `/bin/true` probe 实际返回 0 且 observation complete，但缺少业务 evidence，
+因此没有提升任何 I/PO 状态，详见 [R10-B18 evidence](evidence/r10-b18-runner-elf-trace-boundary-20260909.md)。
 
 ### MiniNDN Owner Context Producer 2026-09-09
 

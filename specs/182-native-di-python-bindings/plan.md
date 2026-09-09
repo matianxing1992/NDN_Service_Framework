@@ -1,6 +1,6 @@
 # Implementation Plan: Native NDNSF-DI with Optional Python Bindings
 
-**Branch**: Experimental | **Revision**: 40 | **Date**: 2026-09-09
+**Branch**: Experimental | **Revision**: 42 | **Date**: 2026-09-09
 **Status**: IN_PROGRESS / 当前实现与验收状态见 tasks.md 的 Task Progress Registry 和 Current Checkpoint
 **Spec**: [spec.md](spec.md)
 
@@ -382,6 +382,20 @@ The bounded exit was observed in root run `20260909050945`: both node contexts w
 `NATIVE_CLOSURE_CASE_DEFINITION_MISSING` returned exit 2 and the network was cleaned up. The next
 batch must freeze runner-compatible cases and invoke the canonical runner before the owner teardown;
 this batch does not claim any I/PO or no-Python qualification.
+
+### R10-B18 Runner Native ELF and Trace Integrity Boundary 2026-09-09
+
+The first dynamic-ELF runner probes exposed two harness defects: relative tool names were invisible
+under the intentionally minimal environment, and shared libraries mounted only below `/probe-root`
+could not satisfy absolute ELF interpreter paths. A third probe showed that normal strace
+`<unfinished ...>`/`<... resumed>` pairs were being treated as incomplete observations. R10-B18
+mounts each declared shared library at its canonical absolute target and tracks unfinished/resumed
+events per PID, preserving `UNQUALIFIED` for genuinely incomplete traces.
+
+The repaired root probe (`.codex-tmp/spec182-runner-probe4-20260909051727/`) executed `/bin/true`
+with return code 0 and a complete trace. It intentionally lacks business evidence, so this batch
+closes only the native process/observation boundary; an executable DI case and owner-alive runner
+invocation remain required for T016.
 
 ### R8-SKILL Review Coverage Contract 2026-09-09
 
