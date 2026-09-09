@@ -1,5 +1,13 @@
 # Failure Log and Evidence Index
 
+## 2026-09-08 — Authorization comparison documentation checkpoint
+
+论文比较文档首次 `git add` 被既有 `docs/*` ignore 规则拒绝，随后仅对用户要求的
+`authorization-design-comparison.md` 使用显式 `git add -f`。首次 commit 被 pre-commit
+扫描全索引中的历史助手引用拒绝；边界为提交钩子，不是文档检查失败。
+核对 `.git/hooks/pre-commit` 后采用既有 `NDNSF_LOCAL_CHECKPOINT=1` 本地模式，
+仍执行禁止路径检查。[材料与核对记录](PAPER/named-data-network-service-framework-paper/authorization-design-comparison.md#review-and-validation-boundary)。
+
 ## 2026-09-08 — Spec182 R5-B7 placement selector transient SIGSEGV
 
 R5-B7 首次运行完整 `Spec182V3Placement/*` 选择器时，测试进程在

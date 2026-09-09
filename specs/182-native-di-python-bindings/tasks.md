@@ -1204,3 +1204,13 @@ T003/T006/T007 → T008；T006/T007 → T009；
 T003--009 → T010 → T011 → T012 → T013 → T014 → T015 PASS → T016 → T017。
 所有任务遵循FR-018/019和统一验证规则；每任务具体范围见work-units。只有最早未关闭门可进入其对应实施。每次失败先保留新 raw/evidence、更新本 tasks/failure index。
 最终 checkpoint 前核对 task 状态与实际 diff/PO；不得 blanket stage 预存修改。
+
+## Related Paper Comparison Checkpoint — 2026-09-08
+
+用户要求的 ABE-backed、DNMP-inspired 和 per-service role-certificate 论文级比较已形成
+[standalone section and evidence](../../docs/PAPER/named-data-network-service-framework-paper/authorization-design-comparison.md)。
+核对了 DNMP/NAC-ABE 原文、当前 Controller 聚合策略与 grant/revoke 路径，并记录源码摘要；
+补充 User permission DKEY 的额外成本，未把凭证数量推导写成性能测量。
+本工作仅为独立论文材料，未修改协议/API、当前/目标设计或上述实现任务状态。
+定向检查覆盖表格结构、引用/本地链接、源码摘要及文档 diff；后续需统一论文引用编号，
+总体管理成本优势仍待单独实验。该条不关闭任何 Spec182 acceptance gate。
