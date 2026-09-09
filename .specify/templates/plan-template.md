@@ -115,6 +115,8 @@ be stricter but must not weaken its PASS/BLOCK boundary.
   For native NDNSF-DI runtime/protocol/state/concurrency/crypto/model behavior,
   name the production C++ target/selector in the batch row; Python selectors cover
   only binding/facade, offline oracle, or external-facility boundaries.
+  在成员进入同一批前写明共同入口/调用方、契约、oracle/selector、source closure 和
+  验收出口；任一项不一致就登记新的 Batch ID，不为少一次构建强行合批。
 -->
 
 | Batch ID | Behavior boundary / stable exit | Members | Implementation dependencies | Acceptance dependencies | Coverage matrix scope | Shared build/test selector and owner | Review trace / closure decision | Result record / evidence owner |

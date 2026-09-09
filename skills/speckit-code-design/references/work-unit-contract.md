@@ -9,7 +9,7 @@
 | --- | --- |
 | Outcome / dependencies | 完成后的行为；实际前置任务与尚未关闭的设计缺口 |
 | Scope / design | 具体文件或符号、增改删移及目的；引用 CD/接口/字段契约 |
-| Batch | 逻辑批次 ID、成员与行为边界；区分 implementation / acceptance dependency；共享构建/测试选择器及负责人只定义一次 |
+| Batch | 逻辑批次 ID、成员与行为边界；写明共同入口/调用方、契约、oracle/selector、source closure 和验收出口；区分 implementation / acceptance dependency；共享构建/测试选择器及负责人只定义一次 |
 | Constraints | 该任务特有的架构边界、兼容/删除路径和恢复要求 |
 | Verification | 需求/PO、真实入口、独立判据、必要负例及具体命令或 planned 工具；适用时包含调用方、测试/harness 与构建注册 |
 | Result | tasks.md 中简短结果或一份 evidence 链接；批次记录按 [batch-quality-gates.md](batch-quality-gates.md) 分类静态/编译/运行漏检并记录构建边界与耗时 |

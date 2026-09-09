@@ -19,6 +19,8 @@
 [batch-quality-gates](speckit-code-design/references/batch-quality-gates.md)。需求和计划
 必须写明真实入口、可观察结果、独立 oracle、负例/恢复边界及证据责任；任务和执行必须
 维护 `tasks.md` 的 `Execution Progress`，并把静态、编译/链接、运行/测试漏检分开记录。
+每个批次还要记录共同入口/调用方、契约、oracle/selector、source closure 和验收出口；
+这些依据不一致时拆批，不能只为减少一次构建继续合并职责。
 NDNSF-DI 原生行为由生产 C++ target/selector 验收，Python 只覆盖 binding/facade、
 offline oracle 或外部设施边界。
 

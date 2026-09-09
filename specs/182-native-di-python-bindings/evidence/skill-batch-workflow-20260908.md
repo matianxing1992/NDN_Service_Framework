@@ -162,3 +162,31 @@ tasks 升至 Revision 24；R5-B8 evidence 已补齐实际 review-agent SHA、`54
 （17 parent tasks、38 execution cards、38 progress units、0 errors）。官方
 `skill-creator quick_validate.py` 对仓库和个人 code-design skill 均返回 `Skill is valid!`。
 本轮仍未运行产品构建、单测、集成或实验；产品任务状态保持原有 `DONE`/`PARTIAL`/`NOT_STARTED`。
+
+## Follow-up Batch Allocation Basis
+
+2026-09-08：R4-B4/R4-B6/R5-B10 的复盘进一步说明，仅有“同一 user story”或“可共用一次
+构建”不足以判断批次合理。版本化 `batch-quality-gates` 现要求在编码前为每批登记五项
+分配依据：共同生产入口/调用方、接口/状态/所有权或数据契约、独立 oracle/测试 selector、
+源码/构建 closure、验收出口。每个成员必须映射到实际文件、符号和查询/命令；引入不同
+调用方、状态/错误边界、C++ selector、构建 target 或硬验收依赖时，先关闭当前批次并登记
+新的 Batch ID。
+
+该规则已同步版本化 `skills/speckit-code-design` 的主入口、`batch-quality-gates`、
+`work-unit-contract`、`bounded-executor`、`skills/README.md`，以及
+`.specify/templates/plan-template.md` 和 `tasks-template.md`；个人安装副本随后按文件
+同步。当前 Spec182 `plan.md` Revision 16、`tasks.md` Revision 28 已把分配依据写入
+调度约定，保留既有任务状态和验收边界。
+
+定向检查：共享 skill 与模板相对引用、frontmatter、批次字段、Spec182 validator 和
+`git diff --check` 均 PASS；未运行产品构建、单测、集成或实验。本轮只是流程约束增强，
+不能把现有 `PARTIAL` 任务提升为完成，也不改变 T016 的最终资格门。
+
+Review trace：按 `/home/tianxing/.codex/skills/review-agent/SKILL.md`（SHA-256
+`07079efd0dc76f05fade424e5dfb048dce1de2df7626e1a4f56292a4f3f92228`）只读检查，基线为
+`ea7fc019`，差异范围为共享 code-design skill 的主入口及三个 references、两份 Spec Kit
+模板、`skills/README.md`、Spec182 `plan.md`/`tasks.md` 和本记录；覆盖查询核对了所有
+入口对 `batch-quality-gates` 的引用、分配依据字段、状态/链接校验和未暂存的设计文档。
+发现为 none，复核结果为 No findings。Closure decision：`CLOSED_FOR_VALIDATION`（流程
+文档出口已形成；触发条件是后续批次若共同入口、契约、selector、source closure 或验收
+出口不一致，必须登记新的 Batch ID）；产品实现与 T016 继续 `OPEN_FOR_NEXT_BATCH`。

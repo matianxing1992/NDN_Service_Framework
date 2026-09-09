@@ -1,6 +1,6 @@
 # Implementation Plan: Native NDNSF-DI with Optional Python Bindings
 
-**Branch**: Experimental | **Revision**: 15 | **Date**: 2026-09-08
+**Branch**: Experimental | **Revision**: 16 | **Date**: 2026-09-08
 **Status**: IN_PROGRESS / 当前实现与验收状态见 tasks.md 的 Task Progress Registry 和 Current Checkpoint
 **Spec**: [spec.md](spec.md)
 
@@ -53,6 +53,9 @@ R1–R7 是能力阶段，不是固定执行批次或“每阶段只编译一次
 [batch selection](evidence/production-chain-replan-20260908.md#executable-batch-selection)
 为当前阶段登记 R<n>-B<k>：同一行为、共享契约的生产者/消费者及共同验证一起闭合，
 有稳定接口和独立验收价值才拆批；各小任务静态门后继续同批，批末统一构建测试。
+每批登记分配依据：共同生产入口/调用方、接口/状态/所有权或数据契约、独立
+oracle/测试 selector、源码/构建 closure 和验收出口。任一项不一致，或出现新的硬验收
+依赖，就在当前批次关闭后登记新的 Batch ID；不以减少一次构建为合批理由。
 每个小任务和批末审查还须在同一份 evidence 留下五 lane Coverage matrix，逐项给出
 实际文件/符号、查询或检查命令及 `covered`/`N/A`/`gap`；没有矩阵不能记录
 `STATIC_PASS` 或 `READY_FOR_BATCH_TESTS`。矩阵的 lane 为 production entry/callers、

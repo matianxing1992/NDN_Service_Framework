@@ -17,6 +17,7 @@
 | Field | Content |
 | --- | --- |
 | ID / Parent / Outcome | 稳定 ID、上层任务、一个可观察成果 |
+| Allocation basis | 与同批成员共同的生产入口/调用方、契约、oracle/selector、source closure 和验收出口；不一致时的拆分触发条件 |
 | Depends / Readiness | 前置卡与上层任务、控制性缺口；READY 必须有当前证据，不能由存在文档推断 |
 | Read | 按顺序列契约章节、源码文件及符号、可复用实现、独立 oracle；区分 existing 与 planned |
 | Write | 精确文件与预期新增/修改/删除；只读参考不能进入修改范围 |
