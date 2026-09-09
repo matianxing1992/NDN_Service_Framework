@@ -173,6 +173,30 @@ target/source closure、toolchain、配置和工作树条件。只有完成这�
 构建争用同一个 Waf tree。`-j`、toolchain、target/source closure、配置和 elapsed 必须
 写入批次记录；资源策略本身不是性能提升或资格通过的证据。
 
+## Command Output Contract
+
+入口 skill 不能只在提示词中引用本 reference；它必须把适用的结果字段写入正在维护的
+Spec 文档或唯一 evidence record。每次创建或修改 code-backed artifact 时，执行者按下面
+的最小产物集合核对；纯文档操作对不适用的 lane 写 `N/A` 及理由：
+
+1. **Before editing**：确认活动 feature、当前 checkpoint、任务/批次基线和既有失败边界；
+   为新增或修改的批次登记 `Batch ID`、行为出口、共同入口/调用方、实现/验收依赖、
+   selector/source closure、负责人，并写出 `Batch growth decision`。没有稳定出口的组件
+   只能保持 `PARTIAL`，不能通过扩大批次来掩盖缺少调用方或结果。
+2. **During review**：每个小任务和批末组合审查都写 `Minimum Review Record` 的五个 lane，
+   列出实际文件/符号及查询或检查命令；`test/harness/oracle` 必须包含测试注册，
+   `build/source closure` 必须包含真实 target 和 source list/link 依赖。
+3. **At batch close**：在同一结果记录中写 `Static findings`、`Compile/build misses`、
+   `Runtime/test misses`、`Build measurement`、`Behavior result`、`Evidence / remaining`、
+   `Review trace`、`Closure decision`，并附 `Batch Retrospective` 的 `static`、
+   `compile/link`、`runtime/test`、`unobserved` 四类；说明是否在稳定出口后继续吸收职责。
+4. **On retry or convergence**：链接首个失败边界，登记真实改变的 `Changed gate` 及其
+   覆盖 lane；若同类漏检再次出现，先修订 shared skill/template/checklist，或在 evidence
+   中说明替代门禁。只重新运行原命令、增加测试数量或更新文字不能升级状态。
+
+若入口 skill 不能生成这些字段，应停止写入 `STATIC_PASS`/`DONE`，保留当前状态并报告
+缺失产物。skill 安装副本可以路由到本 reference，但不能以副本存在代替结果记录。
+
 ## Skill Responsibilities
 
 | Skill | Required use of this reference |
