@@ -71,6 +71,10 @@ class APPClient:
         # remains available only for instances that have not opted into this
         # native path and is never used as a silent fallback by that surface.
         self._native_client = native_client
+        self._native_catalog = None
+        self._native_runtime = None
+        self._native_model = None
+        self._native_splitter = None
         self._network_futures = {}
         self._result_cache: dict[str, bytes] = {}
         self._selection_acceptance_trackers: dict[
@@ -332,7 +336,144 @@ class APPClient:
             catalog, contract.service_name)
         self._native_client = service_user.native_inference_client_configured(
             runtime, preparation, admission)
+        self._native_catalog = catalog
+        self._native_runtime = runtime
+        self._native_model = getattr(catalog, "model_ref", None)
+        self._native_splitter = getattr(catalog, "splitter", None)
         return self._native_client
+
+    @staticmethod
+    def _native_config_path(root: Path, value: str, field: str) -> Path:
+        """Resolve one operator-owned native config path."""
+        if not isinstance(value, str) or not value or "\x00" in value:
+            raise ValueError(f"native requester {field} path is invalid")
+        candidate = Path(value)
+        # The native requester contract permits operator-owned absolute paths;
+        # only relative paths are confined to the configuration directory.
+        if candidate.is_absolute():
+            return candidate.resolve()
+        resolved = (root / candidate).resolve()
+        try:
+            resolved.relative_to(root.resolve())
+        except ValueError as exc:
+            raise ValueError(f"native requester {field} path escapes config directory") from exc
+        return resolved
+
+    def configure_native_requester_from_config(self, configuration: str | Path):
+        """Compose a native requester from one pinned requester configuration.
+
+        Python performs bounded file/path composition only. Catalog, grant,
+        runtime identity, state mapping, and offer admission validation remain
+        in the native owners; this method never invokes the Python planner.
+        """
+        if self._network_client is None:
+            raise RuntimeError("native requester requires a network client")
+        config_path = Path(configuration).expanduser().resolve()
+        try:
+            root = json.loads(config_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise ValueError("native requester configuration is unreadable") from exc
+        if not isinstance(root, dict) or root.get("schema") != "ndnsf-di-native-requester-v1":
+            raise ValueError("unsupported native requester configuration")
+        try:
+            catalog_config = dict(root["catalog"])
+            source_config = dict(catalog_config["source"])
+            model_path = self._native_config_path(
+                config_path.parent, source_config["file"], "catalog source")
+            initializer_path = None
+            if "initializer_file" in source_config:
+                initializer_path = self._native_config_path(
+                    config_path.parent, source_config["initializer_file"],
+                    "catalog initializer")
+            service_user = self._network_client.service_user
+            model_bytes = model_path.read_bytes()
+            initializer_bytes = (
+                initializer_path.read_bytes() if initializer_path is not None else None)
+            catalog = service_user.load_native_request_catalog(
+                json.dumps(catalog_config, sort_keys=True, separators=(",", ":"),
+                           ensure_ascii=False),
+                model_bytes, initializer_bytes,
+                max_source_bytes=int(root["limits"]["max_source_bytes"]),
+                max_assembled_bytes=int(root["limits"]["max_assembled_bytes"]),
+            )
+            model = catalog.model_ref
+            grant = dict(root["grant"])
+            grant_config = {
+                "schema": "ndnsf-di-native-grant-client-v1",
+                "requester_identity": root["core"]["requester_identity"],
+                "authority_identity": grant["authority_identity"],
+                "protection_epoch": grant["protection_epoch"],
+                "content_key_id": grant["content_key_id"],
+                "requester_private_key_file": grant["requester_private_key_file"],
+                "authority_private_key_file": grant["authority_private_key_file"],
+                "content_key_file": grant["content_key_file"],
+                "model_manifest_digest": catalog.model_manifest_digest,
+                "recipient_public_key_files": dict(
+                    grant.get("recipient_public_key_files", {})),
+                "publication_source": {
+                    "model_name": model.model_name,
+                    "model_content_digest": model.content_digest,
+                    "canonical_source_digest": catalog.canonical_source_digest,
+                    "initializer_object_digest": (
+                        catalog.canonical_initializer_object_digest),
+                    "artifact_profile_digest": catalog_config["recipe"][
+                        "artifact_profile_digest"],
+                },
+            }
+            grants = service_user.native_grant_client_from_config(
+                json.dumps(grant_config, sort_keys=True, separators=(",", ":"),
+                           ensure_ascii=False), str(config_path.parent))
+            request = dict(root["request"])
+            runtime_config = {
+                "schema": "ndnsf-di-native-request-runtime-v1",
+                "contract": {
+                    "service_name": request["service"],
+                    "task_name": request["task"],
+                    "adapter_name": model.adapter_id,
+                    "adapter_descriptor_digest": model.adapter.descriptor_digest,
+                    "adapter_composition_digest": request[
+                        "adapter_composition_digest"],
+                    "task_descriptor_digest": request["task_descriptor_digest"],
+                    "generation_mode": request.get(
+                        "generation_mode", "TOKEN_DIAGNOSTIC"),
+                },
+                "requester_identity": root["core"]["requester_identity"],
+                "protection_epoch": grant["protection_epoch"],
+                "input_layout_digest": request["input_layout_digest"],
+                "security": {
+                    "policy_digest": request["security_policy_digest"],
+                    "require_protected_artifacts": True,
+                },
+                "budget": {
+                    "max_candidates": request["max_candidates"],
+                    "max_policy_ms": request["max_policy_ms"],
+                    "max_reentries": request.get("max_reentries", 1),
+                },
+                "state_mapping": {
+                    "inputs": dict(catalog.state_mapping.inputs),
+                    "outputs": dict(catalog.state_mapping.outputs),
+                },
+                "no_progress_ms": request.get("no_progress_ms", 5000),
+                "max_segments": request.get("max_segments", 4096),
+            }
+            runtime = service_user.native_runtime_from_config(
+                json.dumps(runtime_config, sort_keys=True, separators=(",", ":")),
+                catalog, grants)
+            offer = dict(root["offer_admission"])
+            offer_keys = {
+                str(key): self._native_config_path(
+                    config_path.parent, value, f"offer key {key}")
+                .read_text(encoding="utf-8")
+                for key, value in dict(offer["public_key_files"]).items()
+            }
+            from ndnsf import _ndnsf
+            admission = _ndnsf.NativeOfferAdmission(
+                json.dumps(offer["policy"], sort_keys=True, separators=(",", ":"),
+                            ensure_ascii=False),
+                offer_keys, str(offer["candidate_digest"]))
+        except (KeyError, TypeError, OSError) as exc:
+            raise ValueError("native requester configuration is incomplete") from exc
+        return self.configure_native_requester(runtime, admission)
 
     def request_native(self, *, model, input, split_strategy,
                        placement_strategy, options):
@@ -342,6 +483,35 @@ class APPClient:
                 "native requester is not configured; refusing Python planner fallback")
         return self._native_client.request(
             model, input, split_strategy, placement_strategy, options)
+
+    def request_native_payload(self, payload: bytes, *, options,
+                               task_name: str | None = None,
+                               application_options: bytes | None = None):
+        """Submit one payload using the configured native catalog and splitter."""
+        if self._native_client is None or self._native_model is None or self._native_splitter is None:
+            raise RuntimeError(
+                "native requester is not configured; refusing Python planner fallback")
+        from ndnsf import _ndnsf
+        if not isinstance(payload, (bytes, bytearray, memoryview)):
+            raise TypeError("native request payload must be bytes-like")
+        native_input = _ndnsf.NativeApplicationInput()
+        native_input.task_name = str(
+            task_name or getattr(self._native_runtime.contract, "task_name", ""))
+        native_input.input_schema_digest = self._native_model.adapter.input_schema_digest
+        native_input.options_schema_digest = self._native_model.adapter.options_schema_digest
+        native_input.payload = bytes(payload)
+        if application_options is not None:
+            if not isinstance(application_options, (bytes, bytearray, memoryview)):
+                raise TypeError("native application options must be bytes-like")
+            native_input.options = bytes(application_options)
+        options.task_name = native_input.task_name
+        return self.request_native(
+            model=self._native_model,
+            input=native_input,
+            split_strategy=self._native_splitter,
+            placement_strategy=_ndnsf.NativePreSplitFirstPlacement(),
+            options=options,
+        )
 
     def request(
         self,

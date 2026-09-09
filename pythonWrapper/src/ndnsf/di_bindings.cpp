@@ -325,6 +325,24 @@ bindDistributedInference(py::module_& module)
 
   py::class_<di::NativeRequestCatalog>(module, "NativeRequestCatalog")
     .def_readonly("model", &di::NativeRequestCatalog::model)
+    // NativeInspectedModel is intentionally kept as a C++ inspection detail.
+    // Callers need only the immutable model descriptor to submit a request;
+    // exporting a copied NativeModelRef avoids leaking an unbound graph type
+    // or asking Python to reconstruct descriptor identity.
+    .def_property_readonly("model_ref", [] (const di::NativeRequestCatalog& catalog) {
+      di::NativeModelRef ref;
+      static_cast<di::NativeModelDescriptor&>(ref) = catalog.model.descriptor;
+      return ref;
+    })
+    .def_property_readonly("model_manifest_digest", [] (const di::NativeRequestCatalog& catalog) {
+      return catalog.model.modelManifestDigest;
+    })
+    .def_property_readonly("canonical_source_digest", [] (const di::NativeRequestCatalog& catalog) {
+      return catalog.model.canonicalSourceDigest;
+    })
+    .def_property_readonly("canonical_initializer_object_digest", [] (const di::NativeRequestCatalog& catalog) {
+      return catalog.model.canonicalInitializerObjectDigest;
+    })
     .def_readonly("preparation", &di::NativeRequestCatalog::preparation)
     .def_readonly("splitter", &di::NativeRequestCatalog::splitter)
     .def_readonly("state_mapping", &di::NativeRequestCatalog::stateMapping)

@@ -378,10 +378,10 @@ pending turn；path-only无key构造拒绝。Continuation 的 `requestContractDi
 - **Parent**: T013-A; **Depends**: R5-B5, R5-B6A, T011-C; **Reviewer**: native generation/stream and caller migration review
 - **Outcome**: 在 native generation、stream acceptance/replacement 和 conversation continuation 契约具备稳定出口后，将 Qwen/streaming maintained requester 切换到 shared native runtime/client；保留 harness 参数、生命周期 oracle 和 cleanup。
 - **Read**: `examples/python/NDNSF-DistributedInference/llm_pipeline/user.py` → `Experiments/NDNSF_DI_QwenAckDriven_Minindn.py` → `Experiments/NDNSF_DI_StreamedGeneration_Minindn.py` → native token stream/conversation contracts；核对普通、streaming、conversation 三类调用边界。
-- **Write**: 仅修改上述 requester/harness 入口及其定向 tests；Provider migration 不纳入本卡。若 runtime config 或 native stream API 不足，先回对应 owner 卡补齐，不在 Python 复制 planner。
-- **Steps**: 先为每个入口登记 native runtime config、generation options、stream/recovery/conversation state owner；再逐族切换并验证旧 route 不被隐式 fallback。每族独立构建/selector，禁止把 Qwen、streaming 和 Provider retirement 合并为一个批次。
+- **Write**: `NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/client.py`; `examples/python/NDNSF-DistributedInference/llm_pipeline/user.py`; `Experiments/NDNSF_DI_QwenAckDriven_Minindn.py`; `Experiments/NDNSF_DI_StreamedGeneration_Minindn.py`; `tests/python/test_spec182_legacy_exclusion.py`; Provider migration 不纳入本卡。若 runtime config 或 native stream API 不足，先回对应 owner 卡补齐，不在 Python 复制 planner。
+- **Steps**: 先为每个入口登记 native runtime config、generation options、stream/recovery/conversation state owner；再逐族切换并验证旧 route 不被隐式 fallback。当前批次完成 Qwen 普通请求的 native payload 接线，并让 streaming harness 转发配置但在其固定 tiny runtime 上显式拒绝；conversation 缺少 native continuation owner 时同样 fail-closed。每族独立构建/selector，禁止把 Qwen、streaming 和 Provider retirement 合并为一个批次。
 - **Verify**: 官方 `$review-agent`；对应 C++ generation/stream/conversation selectors；binding/facade route checks；网络 harness 只编写不运行，真实跨进程与 T016 另行验收。
-- **Done When**: Qwen、streaming、conversation 入口各有一条明确 native route，缺配置时 fail-closed；旧 Python planner 仅保留登记的 offline oracle/兼容用途，证据能区分 focused behavior、caller migration 与资格验收。
+- **Done When**: Qwen、streaming、conversation 入口各有一条明确 native route，缺配置时 fail-closed；若 conversation continuation owner 尚未配置，入口必须明确拒绝且不得回退 Python coordinator。旧 Python planner 仅保留登记的 offline oracle/兼容用途，证据能区分 focused behavior、caller migration 与资格验收。
 
 ### R5-B6A Native Generation Stream Conversation Option Binding
 

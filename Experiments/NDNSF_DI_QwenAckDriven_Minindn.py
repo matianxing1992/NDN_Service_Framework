@@ -295,11 +295,12 @@ def build_delegate_argv(*, stage_manifest: Path, model_root: Path,
                         tokenizer_root: Path, output_root: Path,
                         model: str, revision: str,
                         prompt: str, request_id: str,
-                        workload_digest: str, model_digest: str) -> list[str]:
+                        workload_digest: str, model_digest: str,
+                        native_requester_config: str = "") -> list[str]:
     """Build the fixed request-first Qwen command; caller supplies no options."""
     if not request_id or not _SAFE_ID_RE.fullmatch(request_id):
         raise QwenInputError("REQUEST_ID_INVALID")
-    return [
+    argv = [
         sys.executable,
         str(REPO / "Experiments/NDNSF_DI_LlmPipeline_Minindn.py"),
         "--runtime", "qwen-onnx",
@@ -324,6 +325,9 @@ def build_delegate_argv(*, stage_manifest: Path, model_root: Path,
         "--model-identity-digest", model_digest,
         "--output-dir", str(output_root),
     ]
+    if native_requester_config:
+        argv += ["--native-requester-config", native_requester_config]
+    return argv
 
 
 def run_from_environment() -> int:
@@ -336,6 +340,8 @@ def run_from_environment() -> int:
     model = os.environ.get("SPEC180_QWEN_MODEL", "")
     revision = os.environ.get("SPEC180_QWEN_REVISION", "")
     model_digest = os.environ.get("SPEC180_QWEN_MODEL_IDENTITY_DIGEST", "")
+    native_requester_config = os.environ.get(
+        "SPEC180_NATIVE_REQUESTER_CONFIG", "")
     prompt_digest = os.environ.get("SPEC180_QWEN_PROMPT_DIGEST", "")
     workload_digest_raw = os.environ.get("SPEC180_WORKLOAD_SHA256", "")
     if not output_root.is_absolute() or not output_root.is_dir():
@@ -356,7 +362,8 @@ def run_from_environment() -> int:
         tokenizer_root=validated["tokenizerRoot"], output_root=output_root,
         model=model, revision=revision,
         prompt=validated["prompt"], request_id=request_id,
-        workload_digest=workload_digest, model_digest=model_digest)
+        workload_digest=workload_digest, model_digest=model_digest,
+        native_requester_config=native_requester_config)
     print("SPEC180_QWEN_INPUTS_VALIDATED backend=onnxruntime-cuda "
           "stages=3 cpuFallback=false", flush=True)
     os.execvpe(argv[0], argv, os.environ.copy())
