@@ -1,6 +1,6 @@
 # Implementation Plan: Native NDNSF-DI with Optional Python Bindings
 
-**Branch**: Experimental | **Revision**: 18 | **Date**: 2026-09-09
+**Branch**: Experimental | **Revision**: 19 | **Date**: 2026-09-09
 **Status**: IN_PROGRESS / 当前实现与验收状态见 tasks.md 的 Task Progress Registry 和 Current Checkpoint
 **Spec**: [spec.md](spec.md)
 
@@ -104,6 +104,19 @@ admitted Provider 仍 fail-closed。静态复核还补上 coordinator 对 expect
 parser、单 Provider negative、双 Provider alternate replacement 与原有正向两轮 selectors
 均通过；批次按 `CLOSED_FOR_VALIDATION` 关闭。该批不吸收 Python caller migration 或
 T016 跨进程资格。
+
+### R6-B9 Legacy D2b Freshness Repair 2026-09-09
+
+R6-B7 的当前源码 trace 确认：同一 producer/session 的两个合法 Selection publication
+使用不同 name，provider0 的 sequence 4 先到会让旧的全局 frontier 丢弃 provider1 的
+sequence 3。R6-B9 只在 `ServiceProvider::isFresh` 内增加受 `svs_mutex` 保护的 per-name
+frontier；更旧 session 和同名旧序列仍拒绝，更高 session 清空该 producer 的 name map，
+不改变 User publication、wire、解密或 T016。`integration-tests` system-first `-j4`
+构建 118/118 通过；五个 D2b selector、具名 D2h212 selector 及两次新鲜的未过滤
+Spec170 suite 均 exit 0。首次未过滤运行曾间歇性暴露 D2h callback/`double free`，作为
+未归因的运行稳定性边界保留。该批仅将本地 D2b freshness 标为
+`CLOSED_FOR_VALIDATION`；T013-B/T013-C、跨进程兼容和 T016 仍是 `OPEN_FOR_NEXT_BATCH`。
+批次证据见 [R6-B9 evidence](evidence/r6-b9-legacy-d2b-freshness-20260909.md)。
 
 ### R8-SKILL Review Coverage Contract 2026-09-09
 

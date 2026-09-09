@@ -2534,3 +2534,23 @@ checkpoint 提交；完整 trace 保留在
 parser 修复后增加结构化 recovery、结构化 decision 和 legacy `request-1/3` 回归，全部
 通过。最终批次结果与未观测的跨进程/T016边界见
 [R7-B2 evidence](../specs/182-native-di-python-bindings/evidence/r7-b2-alternate-provider-replacement-20260909.md)。
+
+## 2026-09-09 — Spec182 R6-B9: bounded repair passes D2b but broad suite exposes later D2h crash
+
+- **Area**: current-source legacy Spec170 D2b Selection freshness and `DATA_V1` ingress;
+  `ServiceProvider::isFresh`.
+- **First boundary and repair**: R6-B7's trace showed provider0 sequence 4 arriving before
+  provider1 sequence 3. The old single producer/session frontier discarded the unseen provider1
+  publication before its callback. The bounded repair keeps old-session rejection and same-name
+  duplicate fencing, while storing sequence frontiers per publication name under `svs_mutex`.
+- **Focused result**: current `integration-tests` was rebuilt with system-first `-j4` (118/118,
+  exit 0, Waf 1m37.712s). The five D2b selectors and the named
+  `ProductionNativeHandlersRunD2h212ToCompleteOracleResponse` selector each exited 0 in isolated
+  runs; raw logs are under `.codex-tmp/spec182-r6-b9/`.
+- **Remaining failure boundary**: the first unfiltered `Spec170NdnsfDiCoreFlow/*` attempt reached
+  the D2h production case with a missing response/role and `double free or corruption`; it was
+  interrupted after that boundary. Two subsequent fresh unfiltered runs exited 0, so this remains
+  an intermittent independent runtime/test observation rather than an attributed D2b regression.
+- **Interpretation**: R6-B9 is `CLOSED_FOR_VALIDATION` only for the local D2b freshness behavior;
+  T013-B/T013-C, cross-process compatibility and T016 qualification remain `PARTIAL`/open.
+  See [R6-B9 evidence](../specs/182-native-di-python-bindings/evidence/r6-b9-legacy-d2b-freshness-20260909.md).

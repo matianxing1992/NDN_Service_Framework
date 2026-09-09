@@ -32,7 +32,9 @@
 边界和原始证据，并在 `migration/evidence` lane 保持 `PARTIAL`；`speckit-converge`
 应为该边界追加有独立出口的修复或迁移任务。不能因为路径来自旧 Spec、旧测试或非主
 调用方就把失败标成“无关”，也不能在没有定位 receipt/newness、状态或兼容契约边界前
-直接修改共享 freshness、重试或发布逻辑。
+直接修改共享 freshness、重试或发布逻辑。涉及多个 publication name 时，静态门还必须
+明确检查同一 producer/session 的跨名称乱序、同名重复和旧 session 交错；只有 wire 契约
+明确保证全局顺序时才可采用单一 sequence frontier。
 
 ## Stable Batch Exit
 
