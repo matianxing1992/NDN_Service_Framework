@@ -1,26 +1,28 @@
 # Spec182 Design Audit
 
-**Revision**: 9 | **Mode**: source alignment / cross-task convergence
+**Revision**: 10 | **Mode**: source alignment / cross-task convergence
 **Verdict**: DRAFT / PARTIAL; T016 preflight UNQUALIFIED
-**Source**: `7251f9ca` implementation/docs checkpoint / Experimental
+**Source**: `9f80a1ce` implementation/docs checkpoint / Experimental
 **Evidence**: [current source and dependency baseline](contracts/integrated-baseline.md)
 
 ## Current Findings
 
 ### Remaining Production Chain Review 2026-09-09
 
-本次复核以 `7251f9ca` 为当前 source/docs checkpoint。R10-B1--R10-B6 已在本地关闭
+本次复核以 `9f80a1ce` 为当前 source/docs checkpoint。R10-B1--R10-B6 已在本地关闭
 准备、公开 facade、YOLO/Qwen maintained caller 的 `REPO_REF` 路由、真实 Provider 正向
-消费和三个 Provider fail-closed 负例；R10-B7 又同步了当前 route marker 与 T013-D/T013-F
-契约文字。它们都是可独立验证的局部出口，不等于默认 public route、跨进程或 T016 资格。
+消费和三个 Provider fail-closed 负例；R10-B7 同步了当前 route marker 与 T013-D/T013-F
+契约文字，R10-B9 又在真实 Provider conversation fixture 中观察到 configured
+`NativeInferenceClient` 发出的 `REPO_REF` Core envelope。它们都是可独立验证的局部出口，
+不等于 Provider fetch/decrypt、默认 public route、跨进程或 T016 资格。
 
 当前仍未闭合的生产主链是：真实 catalog/source → plan/offer/grant → configured native
-requester → Core ACK/Selection → Provider execution/result；真实 stream callback、conversation
-owner/recovery、legacy zero-use 和 no-Python qualification 仍分别归 T004/T008/T010/T011/T013
-与 T016。`NATIVE_REQUEST_PIPELINE_NOT_READY` 继续是无完整 runtime/configuration 构造时的显式
-fail-closed 行为，不把兼容构造误认为生产成功。下一批应围绕一个带真实 configured runtime
-的 native requester request 出口，或在外部 node/NFD 可用后推进 T016；不再把组件数量或
-静态标记当作整链完成。
+requester → Core ACK/Selection → Provider fetch/decrypt → execution/result；真实 stream
+callback、conversation owner/recovery、legacy zero-use 和 no-Python qualification 仍分别归
+T004/T008/T010/T011/T013 与 T016。`NATIVE_REQUEST_PIPELINE_NOT_READY` 继续是无完整
+runtime/configuration 构造时的显式 fail-closed 行为，不把兼容构造误认为生产成功。下一批应
+围绕 requester-produced reference 的 Provider consumption，或在外部 node/NFD 可用后推进
+T016；不再把组件数量或静态标记当作整链完成。
 
 ### CrossTask Convergence 2026-09-08
 
@@ -33,7 +35,8 @@ PO-001--PO-014 注册到唯一 manifest；这些是局部出口，不是完整�
 
 审查确认以下缺口仍是真实且有明确 owner 的未闭合项，而非文档漏记：默认 public
 `distributed_inference`/ACK-driven Python routes 仍保留；维护 caller 已具备
-`request_native_reference` source route，但真实 Core→Provider 两轮仍未在维护入口完成；
+`request_native_reference` source route，真实 fixture 已观察 Core envelope 的 `REPO_REF`
+边界，但 Provider fetch/decrypt 和维护入口的完整两轮仍未完成；
 stream callback 的跨进程 delivery、conversation recovery/replacement、legacy zero-use、
 真实 namespace/child/socket/cleanup 和全部 PO 仍由相应实现卡或 T016 负责。
 `NATIVE_REQUEST_PIPELINE_NOT_READY` 是当前显式 fail-closed 边界，不应被解释为 native

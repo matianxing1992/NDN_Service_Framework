@@ -1,6 +1,6 @@
 # Implementation Plan: Native NDNSF-DI with Optional Python Bindings
 
-**Branch**: Experimental | **Revision**: 30 | **Date**: 2026-09-09
+**Branch**: Experimental | **Revision**: 31 | **Date**: 2026-09-09
 **Status**: IN_PROGRESS / 当前实现与验收状态见 tasks.md 的 Task Progress Registry 和 Current Checkpoint
 **Spec**: [spec.md](spec.md)
 
@@ -273,6 +273,18 @@ Allocation is limited to the integration fixture, selector registration, task/pr
 evidence record. Provider fetch/decrypt remains owned by the R10-B5/B6 boundaries; cross-process
 maintained-caller execution and T016 qualification remain open. The first test-oracle iterator
 boundary is retained in `docs/failure-log.md` and does not count as a protocol failure.
+
+### R10-B10 Current Audit Checkpoint Refresh 2026-09-09
+
+After R10-B9, the source-alignment audit is refreshed to the `9f80a1ce` implementation/docs
+checkpoint so its current finding names the new requester `REPO_REF` Core-wire boundary. The
+remaining chain now explicitly includes Provider fetch/decrypt and keeps maintained caller
+execution, cross-process behavior, and T016 qualification open. Historical dated findings remain
+unchanged.
+
+Allocation is limited to `audit.md`, the task/progress registry, and this evidence record. The
+independent exit is link/status consistency plus the design validator; no product or qualification
+status is promoted.
 
 ### R8-SKILL Review Coverage Contract 2026-09-09
 
