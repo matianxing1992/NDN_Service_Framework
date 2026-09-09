@@ -70,10 +70,12 @@ digest 或 identity，`test/harness/oracle` lane 还必须逐项对照生产符�
 
 ## Native Test Ownership
 
-对于 NDNSF-DI 的原生运行时、协议、状态机、并发、密码和模型行为，验收测试必须
-直接调用生产 C++ target，并登记真实的 C++ suite/selector。Python 测试可以覆盖
-pybind API 形状、facade 转发、离线 oracle、配置拒绝和外部设施适配，但不能以
-Python focused test 的通过替代 native behavior、C++/Python parity 或跨进程资格。
+对于 NDNSF-DI 的原生运行时、协议、状态机、并发、密码和模型行为，相关 unit、
+integration 和 regression 测试的断言主体、fixture/driver 与 oracle 必须用 C++ 实现，
+直接调用生产 C++ target，并登记真实的 C++ suite/selector。Python 可以编排外部设施、
+启动一个 C++ 测试 executable，或覆盖 pybind API 形状、facade 转发、离线 oracle 和
+配置拒绝，但 Python focused test 不能实现 native behavior 的主要断言，也不能替代
+C++/Python parity 或跨进程资格。
 若某个 native requirement 只有 Python 测试或没有 C++ target/selector，Coverage
 matrix 的 `test/harness/oracle` lane 必须写 `gap`，对应任务保持 `PARTIAL`。
 
