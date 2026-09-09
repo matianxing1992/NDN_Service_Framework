@@ -1,6 +1,6 @@
 # Implementation Plan: Native NDNSF-DI with Optional Python Bindings
 
-**Branch**: Experimental | **Revision**: 34 | **Date**: 2026-09-09
+**Branch**: Experimental | **Revision**: 35 | **Date**: 2026-09-09
 **Status**: IN_PROGRESS / 当前实现与验收状态见 tasks.md 的 Task Progress Registry 和 Current Checkpoint
 **Spec**: [spec.md](spec.md)
 
@@ -319,6 +319,17 @@ affected integration suite with a lower-concurrency rebuild after observed host 
 Allocation is limited to the integration test helper, failure index, task/progress record and one
 evidence file. No production serializer or protocol behavior changes; T016 qualification remains
 open until the complete same-source matrix passes.
+
+### R10-B14 Same-Source Unit and Integration Validation 2026-09-09
+
+After the R10-B13 fixture repair, the complete `unit-tests` suite and complete `integration-tests`
+suite are rerun from the same `build-nac182` source closure. This batch records the full green
+result and host resource observations, while keeping MiniNDN/no-Python, maintained-caller
+cross-process execution and T016 qualification separate because the campaign owner still lacks
+node/netns metadata.
+
+Allocation is limited to the audit, task/progress registry and one evidence record. No task is
+promoted to final qualification solely from unit/integration success.
 
 ### R8-SKILL Review Coverage Contract 2026-09-09
 
