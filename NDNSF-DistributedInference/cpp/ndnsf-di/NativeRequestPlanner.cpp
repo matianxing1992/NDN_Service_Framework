@@ -201,7 +201,8 @@ NativeRequestRuntime nativeRequestRuntimeFromJson(
   const auto& contract = root.at("contract");
   requireExactKeys(contract,
     {"service_name", "task_name", "adapter_name", "adapter_descriptor_digest",
-     "adapter_composition_digest", "task_descriptor_digest", "generation_mode"}, "runtime.contract");
+     "adapter_composition_digest", "task_descriptor_digest", "generation_mode",
+     "tokenizer_digest"}, "runtime.contract");
   NativeRequestRuntime runtime;
   runtime.contract.serviceName = readString(contract.at("service_name"), "runtime.contract.service_name");
   runtime.contract.taskName = readString(contract.at("task_name"), "runtime.contract.task_name");
@@ -210,6 +211,7 @@ NativeRequestRuntime nativeRequestRuntimeFromJson(
   runtime.contract.adapterCompositionDigest = readString(contract.at("adapter_composition_digest"), "runtime.contract.adapter_composition_digest");
   runtime.contract.taskDescriptorDigest = readString(contract.at("task_descriptor_digest"), "runtime.contract.task_descriptor_digest");
   runtime.contract.generationMode = readString(contract.at("generation_mode"), "runtime.contract.generation_mode");
+  runtime.contract.tokenizerDigest = readString(contract.at("tokenizer_digest"), "runtime.contract.tokenizer_digest");
   if (runtime.contract.serviceName.empty() || runtime.contract.serviceName.front() != '/' ||
       runtime.contract.taskName.empty() || runtime.contract.adapterName.empty() ||
       runtime.contract.generationMode.empty())
@@ -217,6 +219,12 @@ NativeRequestRuntime nativeRequestRuntimeFromJson(
   if (!isSupportedNativeGenerationMode(runtime.contract.generationMode))
     throw std::invalid_argument(
       "native request runtime generation mode must be TOKEN_DIAGNOSTIC or TOKEN_STREAMING");
+  if (!runtime.contract.tokenizerDigest.empty())
+    requireDigestValue(contract.at("tokenizer_digest"), "runtime.contract.tokenizer_digest");
+  if (runtime.contract.generationMode == "TOKEN_STREAMING" &&
+      runtime.contract.tokenizerDigest.empty())
+    throw std::invalid_argument(
+      "native request runtime TOKEN_STREAMING requires tokenizer digest");
   requireDigestValue(contract.at("adapter_descriptor_digest"), "runtime.contract.adapter_descriptor_digest");
   requireDigestValue(contract.at("adapter_composition_digest"), "runtime.contract.adapter_composition_digest");
   requireDigestValue(contract.at("task_descriptor_digest"), "runtime.contract.task_descriptor_digest");

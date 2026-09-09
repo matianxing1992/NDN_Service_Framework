@@ -1298,7 +1298,8 @@ BOOST_AUTO_TEST_CASE(NativeRequestRuntimeLoadsPinnedPolicyAndRejectsDrift)
       {"adapter_name", descriptor.adapterId},
       {"adapter_descriptor_digest", descriptor.adapter.descriptorDigest()},
       {"adapter_composition_digest", digest("composition")},
-      {"task_descriptor_digest", digest("task")}, {"generation_mode", "TOKEN_DIAGNOSTIC"}}},
+      {"task_descriptor_digest", digest("task")}, {"generation_mode", "TOKEN_STREAMING"},
+      {"tokenizer_digest", digest("tokenizer")}}},
     {"requester_identity", "/requester"}, {"protection_epoch", "fixture-epoch"},
     {"input_layout_digest", digest("layout")},
     {"security", {{"policy_digest", digest("policy")}, {"require_protected_artifacts", true}}},
@@ -1308,6 +1309,7 @@ BOOST_AUTO_TEST_CASE(NativeRequestRuntimeLoadsPinnedPolicyAndRejectsDrift)
   const auto runtime = nativeRequestRuntimeFromJson(
     nativeCanonicalJson(runtimeConfiguration), catalog, grants);
   BOOST_CHECK_EQUAL(runtime.contract.adapterName, descriptor.adapterId);
+  BOOST_CHECK_EQUAL(runtime.contract.tokenizerDigest, digest("tokenizer"));
   BOOST_CHECK_EQUAL(runtime.requesterIdentity, "/requester");
   BOOST_CHECK_EQUAL(runtime.catalog.get(), catalog.preparation.get());
   BOOST_CHECK_EQUAL(runtime.grants.get(), grants.get());
@@ -1322,6 +1324,7 @@ BOOST_AUTO_TEST_CASE(NativeRequestRuntimeLoadsPinnedPolicyAndRejectsDrift)
          [] (auto& value) { value["contract"]["service_name"] = 7; },
          [] (auto& value) { value["security"]["require_protected_artifacts"] = "true"; },
          [] (auto& value) { value["contract"]["generation_mode"] = "UNSUPPORTED"; },
+         [] (auto& value) { value["contract"]["tokenizer_digest"] = ""; },
          [] (auto& value) { value["protection_epoch"] = "foreign-epoch"; }}) {
     auto broken = runtimeConfiguration;
     mutation(broken);

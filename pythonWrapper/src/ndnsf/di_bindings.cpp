@@ -285,7 +285,8 @@ bindDistributedInference(py::module_& module)
     .def_readwrite("adapter_descriptor_digest", &di::NativeRequestContract::adapterDescriptorDigest)
     .def_readwrite("adapter_composition_digest", &di::NativeRequestContract::adapterCompositionDigest)
     .def_readwrite("task_descriptor_digest", &di::NativeRequestContract::taskDescriptorDigest)
-    .def_readwrite("generation_mode", &di::NativeRequestContract::generationMode);
+    .def_readwrite("generation_mode", &di::NativeRequestContract::generationMode)
+    .def_readwrite("tokenizer_digest", &di::NativeRequestContract::tokenizerDigest);
 
   py::class_<di::NativeSecurityPolicySnapshot>(module, "NativeSecurityPolicySnapshot")
     .def(py::init<>())

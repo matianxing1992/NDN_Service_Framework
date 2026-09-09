@@ -466,6 +466,7 @@ class APPClient:
                         "adapter_composition_digest"],
                     "task_descriptor_digest": request["task_descriptor_digest"],
                     "generation_mode": generation_mode,
+                    "tokenizer_digest": tokenizer_digest,
                 },
                 "requester_identity": root["core"]["requester_identity"],
                 "protection_epoch": grant["protection_epoch"],
