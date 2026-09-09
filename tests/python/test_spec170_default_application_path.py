@@ -576,13 +576,22 @@ class DefaultApplicationPathTest(unittest.TestCase):
             request_id="spec170-v3-cross-provider",
         ))
 
-        self.assertEqual(
-            user.begin_kwargs["request_capabilities"],
-            {
-                "NDNSF_DATA_V1": "required",
-                "RequestScopedConfidentialityV1": "required",
-            },
-        )
+        capabilities = user.begin_kwargs["request_capabilities"]
+        self.assertEqual(capabilities["NDNSF_DATA_V1"], "required")
+        # V3 uses deferred collaboration.  The Core request-scoped
+        # confidentiality carrier is reserved for normal unary invocations;
+        # collaboration Selection carries a separate assignment projection.
+        self.assertNotIn("RequestScopedConfidentialityV1", capabilities)
+        metadata = json.loads(
+            capabilities["NDNSF_DI_V3_REQUEST_METADATA"])
+        self.assertEqual(metadata["schema"], "ndnsf-di-request-envelope-v2")
+        self.assertEqual(metadata["request_id"], "/spec170-v3-cross-provider")
+        self.assertEqual(metadata["service"], "/inference")
+        self.assertEqual(metadata["model_identity_hash"], model.intent_digest)
+        self.assertEqual(metadata["attempt"], 1)
+        self.assertEqual(metadata["placementProfile"], "DI_PLACEMENT_V3")
+        self.assertNotIn("input_payload_b64", metadata)
+        self.assertNotIn("options_payload_b64", metadata)
         commit = user.collaboration.commits[0]
         self.assertEqual(
             set(commit["role_provider_assignments"].values()),

@@ -196,6 +196,27 @@ bufferText(const ndn::Buffer& payload)
   return std::string(reinterpret_cast<const char*>(payload.data()), payload.size());
 }
 
+std::vector<std::uint8_t>
+v3OfferRequestPayload(const ndn_service_framework::RequestMessage& request)
+{
+  const auto payload = request.getPayload();
+  if (!payload.empty()) {
+    return std::vector<std::uint8_t>(payload.begin(), payload.end());
+  }
+
+  // RequestScopedConfidentialityV1 intentionally strips application input
+  // from the discovery Request.  V3 offer issuance still needs a small,
+  // non-sensitive request envelope (identity, model binding, attempt, and
+  // deadline), which the DI application carries in this capability field.
+  constexpr const char* metadataField = "NDNSF_DI_V3_REQUEST_METADATA";
+  if (request.hasRequestCapabilities() &&
+      request.getRequestCapabilities().hasField(metadataField)) {
+    const auto& metadata = request.getRequestCapabilities().getField(metadataField);
+    return std::vector<std::uint8_t>(metadata.begin(), metadata.end());
+  }
+  return {};
+}
+
 struct NativeOfferSigner
 {
   std::string keyId;
@@ -1521,9 +1542,9 @@ main(int argc, char** argv)
                                                              serviceName);
           bool issuedV3Offer = false;
           if (decision.status && nativeOfferConfig) {
-            const auto requestPayload = request.getPayload();
+            const auto requestPayload = v3OfferRequestPayload(request);
             const auto offer = issueNativeProviderOfferV3(
-              std::vector<std::uint8_t>(requestPayload.begin(), requestPayload.end()),
+              requestPayload,
               *nativeOfferConfig,
               static_cast<std::uint64_t>(std::max<long long>(0, epochMs())));
             if (offer) {

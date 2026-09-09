@@ -1411,7 +1411,8 @@ class RoleAssemblySpec:
         if any(not name or value < 0 for name, value in envelope.items()):
             raise ValueError("RoleAssemblySpec resource envelope is invalid")
         object.__setattr__(self, "resource_envelope", _freeze(envelope))
-        if self.merge_kind not in {"", "NATIVE_POSTPROCESS", "ONNX_MERGE_GRAPH"}:
+        if self.merge_kind not in {
+                "", "NATIVE_POSTPROCESS", "ONNX_POSTPROCESS", "ONNX_MERGE_GRAPH"}:
             raise ValueError("RoleAssemblySpec merge_kind is not allowlisted")
         if self.merge_kind == "":
             if any((self.postprocess_identity, self.postprocess_output_name,

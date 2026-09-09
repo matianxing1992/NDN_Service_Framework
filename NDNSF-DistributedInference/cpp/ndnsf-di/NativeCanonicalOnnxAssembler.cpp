@@ -856,6 +856,28 @@ prepareNativeCanonicalOnnxRole(
       {"assemblySignature", signature},
       {"assembledFrom", "canonical-root-post-selection"},
     };
+    if (projection.assembly.mergeKind == "ONNX_POSTPROCESS") {
+      if (projection.assembly.expectedOutputs.size() != 1 ||
+          projection.assembly.postprocessOutputName.empty() ||
+          projection.assembly.postprocessIdentity.empty() ||
+          projection.assembly.postprocessSort.empty() ||
+          projection.assembly.expectedOutputs.front().shape.size() < 2) {
+        throw std::runtime_error("DI_ONNX_POSTPROCESS_CONTRACT_INCOMPLETE");
+      }
+      const auto& output = projection.assembly.expectedOutputs.front();
+      std::size_t consumed = 0;
+      const auto maxRows = std::stoull(output.shape[1], &consumed);
+      if (consumed != output.shape[1].size() || maxRows == 0) {
+        throw std::runtime_error("DI_ONNX_POSTPROCESS_ROW_BUDGET_INVALID");
+      }
+      spec.metadata["mergeKind"] = projection.assembly.mergeKind;
+      spec.metadata["postprocessIdentity"] = projection.assembly.postprocessIdentity;
+      spec.metadata["postprocessOutputName"] = projection.assembly.postprocessOutputName;
+      spec.metadata["postprocessConfidenceThreshold"] =
+        std::to_string(projection.assembly.postprocessConfidenceThreshold);
+      spec.metadata["postprocessSort"] = projection.assembly.postprocessSort;
+      spec.metadata["postprocessMaxRows"] = std::to_string(maxRows);
+    }
     if (projection.dataflow.terminalResponseOwner) {
       // The V3 dataflow contract is the authority for terminal ownership.
       // Bind the assembled ONNX output to the same sealed scope consumed by

@@ -160,4 +160,31 @@ BOOST_AUTO_TEST_CASE(NativeYoloMergeRejectsMissingOrMalformedDependency)
   bundle = makeEncodedTensorBundle(context.inputEdgesByScope.begin()->first, tensors);
   BOOST_CHECK_THROW(runner->run(context), std::invalid_argument);
 }
+
+BOOST_AUTO_TEST_CASE(NativeYoloAtomicPostprocessCanonicalizesPredictions)
+{
+  const std::vector<float> values{
+    2, 3, 4, 5, .8f, 1,
+    1, 2, 3, 4, .9f, 0,
+    9, 9, 9, 9, .0005f, 2,
+  };
+  std::vector<std::uint8_t> payload(values.size() * sizeof(float));
+  std::memcpy(payload.data(), values.data(), payload.size());
+  const auto output = nativeYoloCanonicalizePredictions(
+    makeFloat32Tensor("predictions", {1, 3, 6}, payload),
+    "predictions", .001, 300);
+  BOOST_CHECK(output.shape == std::vector<std::int64_t>({1, 2, 6}));
+  const std::vector<float> expected{
+    1, 2, 3, 4, .9f, 0,
+    2, 3, 4, 5, .8f, 1,
+  };
+  BOOST_REQUIRE_EQUAL(output.payload.size(), expected.size() * sizeof(float));
+  BOOST_CHECK_EQUAL(std::memcmp(output.payload.data(), expected.data(),
+                                output.payload.size()), 0);
+
+  auto malformed = makeFloat32Tensor("predictions", {1, 1, 6},
+                                     float32Payload({1, 2, 3, 4, .5f, .5f}));
+  BOOST_CHECK_THROW(nativeYoloCanonicalizePredictions(
+    malformed, "predictions", .001, 300), std::invalid_argument);
+}
 } // namespace ndnsf::di::test

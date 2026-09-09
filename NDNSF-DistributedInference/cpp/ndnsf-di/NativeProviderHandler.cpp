@@ -1391,6 +1391,50 @@ validateNativePreparedRunnerSpec(
   if (projection.canonicalArtifactName.empty()) {
     return "DI_PROVIDER_ASSEMBLY_ROOT_MISSING";
   }
+  if (assembly.mergeKind == "ONNX_POSTPROCESS") {
+    if (assembly.expectedOutputs.size() != 1 ||
+        assembly.expectedOutputs.front().name != assembly.postprocessOutputName ||
+        assembly.expectedOutputs.front().dtype != "float32" ||
+        assembly.expectedOutputs.front().shape.size() < 2 ||
+        assembly.postprocessIdentity.empty() || assembly.postprocessOutputName.empty() ||
+        assembly.postprocessSort != "confidence-desc,class-asc,xyxy-asc" ||
+        !std::isfinite(assembly.postprocessConfidenceThreshold) ||
+        assembly.postprocessConfidenceThreshold < 0.0 ||
+        assembly.postprocessConfidenceThreshold > 1.0) {
+      return "DI_PROVIDER_ONNX_POSTPROCESS_METADATA_MISMATCH";
+    }
+    std::string expectedOutputShape;
+    for (const auto& dimension : assembly.expectedOutputs.front().shape) {
+      if (!expectedOutputShape.empty()) expectedOutputShape += ',';
+      expectedOutputShape += dimension;
+    }
+    std::size_t consumed = 0;
+    const auto maxRows = std::stoull(
+      assembly.expectedOutputs.front().shape[1], &consumed);
+    if (consumed != assembly.expectedOutputs.front().shape[1].size() ||
+        maxRows == 0) {
+      return "DI_PROVIDER_ONNX_POSTPROCESS_METADATA_MISMATCH";
+    }
+    const auto matchesPostprocess = [&spec] (
+      std::initializer_list<const char*> keys, const std::string& expected) {
+      const auto actual = metadataValue(spec, keys);
+      return !actual.empty() && actual == expected;
+    };
+    if (!matchesPostprocess({"mergeKind", "merge_kind"}, assembly.mergeKind) ||
+        !matchesPostprocess({"postprocessIdentity", "postprocess_identity"},
+                            assembly.postprocessIdentity) ||
+        !matchesPostprocess({"postprocessOutputName", "postprocess_output_name"},
+                            assembly.postprocessOutputName) ||
+        !matchesPostprocess({"postprocessSort", "postprocess_sort"},
+                            assembly.postprocessSort) ||
+        !matchesPostprocess({"postprocessMaxRows", "postprocess_max_rows"},
+                            std::to_string(maxRows)) ||
+        !matchesPostprocess({"postprocessConfidenceThreshold",
+                             "postprocess_confidence_threshold"},
+                            std::to_string(assembly.postprocessConfidenceThreshold))) {
+      return "DI_PROVIDER_ONNX_POSTPROCESS_METADATA_MISMATCH";
+    }
+  }
   if (assembly.modelManifestDigest.empty() ||
       assembly.artifactProfileDigest.empty() || assembly.graphDigest.empty() ||
       assembly.canonicalInitializerDigest.empty() ||

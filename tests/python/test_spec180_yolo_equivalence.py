@@ -60,6 +60,25 @@ def test_native_merge_metadata_reaches_the_selected_role():
     assert all(item.merge_kind == "" for item in specs if item.role != "Merge")
 
 
+def test_atomic_full_model_keeps_onnx_execution_and_terminal_postprocessing():
+    from ndnsf_distributed_inference.app_sdk.placement import (
+        AutomaticPlanningCoordinator,
+    )
+
+    _, _, graph, _ = _adapter_and_candidate()
+    adapter, model, _, _ = _adapter_and_candidate()
+    atomic = next(item for item in adapter.splitter.enumerate_candidates(model, graph)
+                  if item.execution_plan.roles == ("FullModel",))
+    specs = AutomaticPlanningCoordinator._v3_role_specs(atomic, graph)
+    assert len(specs) == 1
+    full_model = specs[0]
+    assert full_model.merge_kind == "ONNX_POSTPROCESS"
+    assert full_model.postprocess_identity == "YOLO26n-canonical-detection-rows"
+    assert full_model.postprocess_output_name == "predictions"
+    assert full_model.postprocess_confidence_threshold == pytest.approx(0.001)
+    assert full_model.postprocess_sort == "confidence-desc,class-asc,xyxy-asc"
+
+
 def test_native_merge_is_not_sent_through_python_onnx_assembly():
     from ndnsf_distributed_inference.app_sdk.placement import (
         AutomaticPlanningCoordinator,

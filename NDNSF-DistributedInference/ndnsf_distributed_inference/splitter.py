@@ -386,7 +386,8 @@ class SplitCandidate:
         object.__setattr__(self, "input_ingress_role", input_role)
         object.__setattr__(self, "result_egress_role", result_role)
         merge_kind = str(self.merge_kind)
-        if merge_kind not in {"", "NATIVE_POSTPROCESS", "ONNX_MERGE_GRAPH"}:
+        if merge_kind not in {
+                "", "NATIVE_POSTPROCESS", "ONNX_POSTPROCESS", "ONNX_MERGE_GRAPH"}:
             raise ValueError("split candidate merge kind is not allowlisted")
         object.__setattr__(self, "merge_kind", merge_kind)
         if not isinstance(self.postprocessing, Mapping):

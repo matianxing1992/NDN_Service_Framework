@@ -217,8 +217,16 @@ selectionRoleFromV3Json(const boost::property_tree::ptree& node,
     std::isfinite(role.postprocessConfidenceThreshold) &&
     role.postprocessConfidenceThreshold >= 0.0 &&
     role.postprocessConfidenceThreshold <= 1.0;
+  const bool validOnnxPostprocess =
+    role.mergeKind == "ONNX_POSTPROCESS" && componentSet &&
+    !role.postprocessIdentity.empty() && !role.postprocessOutputName.empty() &&
+    role.postprocessSort == "confidence-desc,class-asc,xyxy-asc" &&
+    std::isfinite(role.postprocessConfidenceThreshold) &&
+    role.postprocessConfidenceThreshold >= 0.0 &&
+    role.postprocessConfidenceThreshold <= 1.0;
   const bool validMergeKind = role.mergeKind.empty() ||
-    role.mergeKind == "ONNX_MERGE_GRAPH" || validNativePostprocess;
+    role.mergeKind == "ONNX_MERGE_GRAPH" || validNativePostprocess ||
+    validOnnxPostprocess;
   const bool validNativePostprocessIdentity =
     validNativePostprocess && isSha256Digest(role.modelManifestDigest) &&
     role.artifactProfileDigest.empty() && role.graphDigest.empty() &&
@@ -241,7 +249,7 @@ selectionRoleFromV3Json(const boost::property_tree::ptree& node,
       !hasCompleteAdapterIdentity(role.adapterId, role.adapterVersion) ||
       role.protectionEpoch.empty() || !validMergeKind ||
       (!role.mergeKind.empty() && !validNativePostprocess &&
-       role.mergeKind != "ONNX_MERGE_GRAPH") ||
+       !validOnnxPostprocess && role.mergeKind != "ONNX_MERGE_GRAPH") ||
       (role.mergeKind.empty() && hasPostprocessMetadata)) {
     throw std::invalid_argument(
       "V3 Selection projection contains an incomplete local role");

@@ -50,6 +50,8 @@ def test_yolo_adapter_enumerates_only_registered_candidates(tmp_path: Path):
     assert candidates[1].cross_partition_tensors
     assert candidates[0].input_ingress_role == "FullModel"
     assert candidates[0].result_egress_role == "FullModel"
+    assert candidates[0].merge_kind == "ONNX_POSTPROCESS"
+    assert candidates[0].postprocessing["outputName"] == "predictions"
     assert candidates[1].input_ingress_role == "BackboneNeck"
     assert candidates[1].result_egress_role == "Merge"
 

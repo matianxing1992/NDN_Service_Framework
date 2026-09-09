@@ -1,4 +1,5 @@
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloMergeRunner.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/CudaDeviceIdentity.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
@@ -9,6 +10,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <cmath>
 #include <cstring>
 #include <mutex>
 #include <optional>
@@ -1422,6 +1424,50 @@ OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
     if (duplicate == namedOutputs.end()) {
       namedOutputs.push_back(passthroughTensorFor(effectiveContext, name));
     }
+  }
+
+  // Atomic YOLO execution owns the complete ONNX graph, but the graph's
+  // [1,300,6] predictions are still an intermediate result. Apply the
+  // adapter-certified terminal contract before the response-size guard sees
+  // the payload. Shared candidates use the standalone native Merge runner;
+  // this branch preserves real ORT execution evidence for FullModel.
+  const auto postprocessKind = metadataValue(
+    m_spec, {"mergeKind", "merge_kind"});
+  if (postprocessKind == "ONNX_POSTPROCESS") {
+    const auto identity = metadataValue(
+      m_spec, {"postprocessIdentity", "postprocess_identity"});
+    const auto outputName = metadataValue(
+      m_spec, {"postprocessOutputName", "postprocess_output_name"});
+    const auto sort = metadataValue(m_spec, {"postprocessSort", "postprocess_sort"});
+    const auto thresholdText = metadataValue(
+      m_spec, {"postprocessConfidenceThreshold", "postprocess_confidence_threshold"});
+    const auto maxRowsText = metadataValue(
+      m_spec, {"postprocessMaxRows", "postprocess_max_rows"});
+    if (identity != "YOLO26n-canonical-detection-rows" || outputName.empty() ||
+        sort != "confidence-desc,class-asc,xyxy-asc" || thresholdText.empty() ||
+        maxRowsText.empty()) {
+      throw std::invalid_argument("ONNX postprocessing contract is incomplete");
+    }
+    std::size_t thresholdConsumed = 0;
+    const auto threshold = std::stod(thresholdText, &thresholdConsumed);
+    if (thresholdConsumed != thresholdText.size() || !std::isfinite(threshold) ||
+        threshold < 0.0 || threshold > 1.0) {
+      throw std::invalid_argument("ONNX postprocessing confidence threshold is invalid");
+    }
+    std::size_t rowsConsumed = 0;
+    const auto maxRows = std::stoull(maxRowsText, &rowsConsumed);
+    if (rowsConsumed != maxRowsText.size() || maxRows == 0) {
+      throw std::invalid_argument("ONNX postprocessing row budget is invalid");
+    }
+    const auto output = std::find_if(
+      namedOutputs.begin(), namedOutputs.end(), [&outputName] (const NamedTensor& tensor) {
+        return tensor.name == outputName;
+      });
+    if (output == namedOutputs.end()) {
+      throw std::invalid_argument("ONNX postprocessing output tensor is missing");
+    }
+    *output = nativeYoloCanonicalizePredictions(
+      *output, outputName, threshold, static_cast<std::size_t>(maxRows));
   }
 
   std::map<std::string, TensorBundle> result;

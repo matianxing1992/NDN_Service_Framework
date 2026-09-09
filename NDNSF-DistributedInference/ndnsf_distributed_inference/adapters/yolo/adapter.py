@@ -249,11 +249,14 @@ class Yolo26Splitter:
             selection_priority=registered.priority,
             input_ingress_role=registered.input_ingress_role,
             result_egress_role=registered.result_egress_role,
-            # The atomic candidate's FullModel already includes the complete
-            # graph output. Only the explicit dependency-consumer Merge role
-            # receives the native postprocessing contract.
-            merge_kind=(registered.merge_kind if "Merge" in roles else ""),
-            postprocessing=(self.postprocessing if "Merge" in roles else {}),
+            # The signed catalogue names both terminal postprocessing cases
+            # as NATIVE_POSTPROCESS. A dependency-only Merge is a standalone
+            # native consumer; atomic FullModel still executes the ONNX graph
+            # and therefore carries the same contract as ONNX_POSTPROCESS.
+            merge_kind=(registered.merge_kind if "Merge" in roles
+                        else ("ONNX_POSTPROCESS" if self.postprocessing else "")),
+            postprocessing=(self.postprocessing
+                            if registered.result_egress_role in roles else {}),
         )
         candidate.validate_against(graph)
         return candidate

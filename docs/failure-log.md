@@ -4241,13 +4241,40 @@ identity and rerun packaging against the existing incremental Waf cache.
   `NDNSF_DATA_V1`.  Because an explicit capability map suppresses the native
   default capability injection, the request had no
   `RequestScopedConfidentialityV1` carrier for the large encrypted response.
-- Fix status: source fix adds `RequestScopedConfidentialityV1: required` to the
-  V3 request and updates the focused application-path assertion.  The frozen
-  external app bundle must be rebuilt app-only and rerun through exact-SIF Y-A
-  before this gate can be called PASS.
+- Superseded fix status: an intermediate APP revision added
+  `RequestScopedConfidentialityV1: required`, but that combination is invalid
+  for deferred collaboration because Core request-scoped input dispatch is
+  restricted to normal unary services. The current APP contract keeps
+  `NDNSF_DATA_V1` for cross-Provider transport and fixes the terminal output
+  with `ONNX_POSTPROCESS`; the frozen app/core composition still requires a
+  fresh exact-SIF Y-A run.
 - Lesson: an exact SIF and a valid native ABI do not prove APP protocol
   capability completeness; inspect the provider's fail-closed reason and
   request-scoped markers at the real process boundary.
+
+## 2026-09-09 — App cache marker retained a stale base SIF identity
+
+Symptom: rebuilding the external application with `--build-cache-from`
+`app-controller-version-j4-v29` stopped at `APP_CACHE_IDENTITY` before Waf.
+Root cause: the reusable cache marker still declared the superseded base SIF
+digest `sha256:d6db3a...`, while the exact SIF and v29 application manifest
+declared `sha256:2c07a9...`; the cache validator correctly refused to mix those
+identities.
+Fix: build v30/v31 with fresh identity-bound cache roots and no stale
+`--build-cache-from` reuse. Lesson: an application cache is tied to the exact
+base SIF and builder identity; a changed base digest requires a new cache root.
+
+## 2026-09-09 — Atomic YOLO candidate construction referenced itself
+
+Symptom: the first v30 provision failed inside the container before the
+Controller could publish its preparation receipt with `UnboundLocalError` at
+`Yolo26Splitter._candidate`.
+Root cause: the `SplitCandidate` constructor expression tested
+`candidate.result_egress_role` while `candidate` was still being assigned.
+Fix: use the already validated `registered.result_egress_role` in the
+constructor; v31 rebuilt successfully and v47 exact-SIF provision completed.
+Lesson: APP-only Python changes still require a fresh containerized provision
+smoke before any MiniNDN claim.
 
 ## 2026-09-09: application-path regression fixture assumed every role fetches
 
@@ -4296,3 +4323,69 @@ build and link the Core library successfully; the direct Boost regression uses
 the same include/library closure.
 Lesson: native Core changes require an explicit ndn-svs source/library pair;
 an apparently installed ABI is not sufficient evidence.
+
+## 2026-09-09 — Request-scoped V3 discovery exposed an APP offer-input bug
+
+Symptom: the v42 exact-SIF Y-A run reached ACK closure, but the Python planner
+raised `ValueError: malformed V3 Provider offer`; the native Provider's ACK was
+only `providerCapabilityHint=...`, even though its V3 offer signer was ready.
+Root cause: request-scoped confidentiality correctly removed the application
+payload from the discovery Request, while the native APP provider still tried
+to parse that payload as the V3 request envelope. Its issuer therefore returned
+no canonical `ProviderOfferV3`.
+Fix status: carry a bounded `NDNSF_DI_V3_REQUEST_METADATA` capability containing
+only request identity, model digest, attempt, service, placement profile, and
+deadline; the native APP provider falls back to this metadata when the
+protected discovery payload is empty. Focused V3 application tests pass; the
+rebuilt external APP and exact-SIF Y-A rerun remain the acceptance gate.
+Lesson: request-scoped discovery must expose a non-sensitive planning metadata
+channel; APP providers must never depend on the stripped application payload.
+
+## 2026-09-09 — Atomic YOLO terminal output exceeded the response bound
+
+Symptom: fresh exact-SIF Y-A v45 completed V3 ACK closure, authenticated
+Selection, request-scoped input fetch, and real ONNX Runtime CPU execution, but
+the User received `REMOTE_RESPONSE_FAILED`. The Provider rejected the terminal
+response because its payload exceeded the 6000-byte large-response threshold
+without a request-scoped response-key carrier.
+Root cause: the atomic FullModel APP path executed the canonical ONNX graph but
+published its raw `predictions` tensor with shape `[1,300,6]` (7200 float bytes)
+instead of applying the Spec180 YOLO canonical confidence filter and ordering.
+The shared candidate already had a native Merge postprocessor; atomic output
+had no equivalent terminal contract.
+Fix status: add the explicit `ONNX_POSTPROCESS` contract for atomic FullModel,
+carry it through V3 selection and Provider assembly, and apply the bounded
+canonical `[1,N,6]` postprocessor after real ORT execution. The standalone
+native Merge path remains `NATIVE_POSTPROCESS`.
+Lesson: a successful model execution and valid SIF do not imply a deliverable
+application result; terminal APP postprocessing must be explicit and run before
+NDNSF response-size and confidentiality gates.
+
+## 2026-09-09 — v47 exact-SIF Y-A passed after APP fixes
+
+Evidence: `minindn-local-20260909-v47-ya44` used the unchanged base SIF
+`sha256:2c07a9...` with rebuilt external APP v31. The real MiniNDN process
+returned `returncode=0`; `subcase-result.json` is `status=PASS` with a verified
+terminal response, and `yolo-numerical.json` reports `shape=[1,50,6]`,
+`matched=true`, `maxAbsError=0.0005340576171875`. The User log records
+`YOLO_ACK_DRIVEN_RESULT status=true`, while the Provider records
+`runnerKind=onnxruntime-cpu`, `realCompute=true`, and `loadCompleted=true`.
+Scope: this is exact-SIF local CPU execution evidence only; the run remains
+`qualification=NOT_EVALUATED` and does not close host manifest, GPU, or Tiger
+qualification gates.
+
+## 2026-09-09 — Host adapter pytest is blocked by an unrelated library closure
+
+Symptom: rerunning `test_spec180_yolo_adapter.py` and
+`test_spec180_yolo_equivalence.py` on the host stopped while importing
+`ndnsf._ndnsf` with undefined symbol
+`ndnsd::discovery::ServiceDiscoveryD1Ev` from
+`/usr/local/lib/libndn-service-framework.so.0.1.0`.
+Root cause: the host `LD_LIBRARY_PATH` selected an incomplete shared-library
+closure; the exact-SIF v47 run uses the sealed `/opt/ndnsf-di/current` closure
+and passed the APP path.
+Fix status: no source workaround was applied. The C++ focused unit tests,
+containerized provision, and exact-SIF MiniNDN Y-A are the valid evidence for
+this checkpoint; host linker closure remains a separate T008 issue.
+Lesson: do not convert a host import/linker failure into an APP protocol
+failure when the sealed runtime has independently exercised the path.

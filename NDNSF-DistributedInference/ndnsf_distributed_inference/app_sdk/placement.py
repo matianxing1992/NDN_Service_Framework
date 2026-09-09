@@ -3083,6 +3083,27 @@ class AutomaticPlanningCoordinator:
             placement_profile=DI_PLACEMENT_V3, attempt=_attempt,
             generation_recovery=_generation_recovery,
             conversation=conversation)
+        # Native V3 offer issuers still need the request identity and deadline
+        # to produce a signed ProviderOfferV3. Carry only that non-sensitive
+        # envelope metadata in the capability container; never duplicate the
+        # input payload or options there. V3 is a deferred collaboration
+        # request; the Core request-scoped confidentiality carrier is reserved
+        # for normal unary invocations because collaboration Selection carries
+        # a separate assignment projection. NDNSF_DATA_V1 still protects the
+        # cross-Provider tensor path here.
+        v3_request_metadata = json.dumps(
+            {
+                "schema": "ndnsf-di-request-envelope-v2",
+                "request_id": request_id,
+                "service": self.service_name,
+                "model_identity_hash": model.intent_digest,
+                "attempt": int(_attempt),
+                "plan_deadline_ms": deadline_ms,
+                "placementProfile": DI_PLACEMENT_V3,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
         ack_close_policy = str((constraints or {}).get("ack_close_policy", "")).upper()
         ack_coverage_predicate = self.ack_coverage_predicate
         if ack_close_policy not in {"DEADLINE", "ACK_TIMEOUT"} \
@@ -3103,15 +3124,9 @@ class AutomaticPlanningCoordinator:
             self.service_name, request_payload, mode="DEFERRED",
             ack_timeout_ms=self.ack_timeout_ms, timeout_ms=timeout_ms,
             request_id=request_id, fail_fast_terminal_selection=True,
-            # V3 carries large model responses as request-scoped encrypted
-            # Data.  Declaring the confidentiality capability here is
-            # required because the native binding preserves an explicitly
-            # supplied capability container; an omitted field would leave a
-            # large FullModel response without the request key bundle after
-            # the legacy service-wide response-key carrier was removed.
             request_capabilities={
                 "NDNSF_DATA_V1": "required",
-                "RequestScopedConfidentialityV1": "required",
+                "NDNSF_DI_V3_REQUEST_METADATA": v3_request_metadata,
             },
             **({"ack_coverage_predicate": ack_coverage_predicate}
                if ack_coverage_predicate is not None else {}),

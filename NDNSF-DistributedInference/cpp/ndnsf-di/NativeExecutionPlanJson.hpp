@@ -52,7 +52,8 @@ struct NativeSelectionRoleV3
   std::string padding;
   std::string protectionEpoch = "plaintext-v1";
   // Adapter-declared terminal postprocessing. NATIVE_POSTPROCESS has no
-  // model-layer artifact; the Provider consumes dependency tensors directly.
+  // model-layer artifact; ONNX_POSTPROCESS runs after an assembled model
+  // output. Both forms bind the same canonical adapter contract.
   std::string mergeKind;
   std::string postprocessIdentity;
   std::string postprocessOutputName;
