@@ -181,26 +181,39 @@ def run_case(case: dict[str, Any], staged: dict[str, Any], output: Path,
 def collect_trace(case: dict[str, Any], run: dict[str, Any]) -> dict[str, Any]:
     trace_path = Path(run["trace"])
     if not trace_path.is_file():
-        return {"complete": False, "violations": ["TRACE_MISSING"], "events": []}
+        return {"complete": False, "violations": ["TRACE_MISSING"],
+                "integrityViolations": ["TRACE_MISSING"], "policyViolations": [],
+                "events": [], "evidence": []}
     text = trace_path.read_text(encoding="utf-8", errors="replace")
-    violations: list[str] = []
+    integrity_violations: list[str] = []
+    policy_violations: list[str] = []
     if "unfinished ..." in text or "<..." in text:
-        violations.append("TRACE_UNPAIRED")
+        integrity_violations.append("TRACE_UNPAIRED")
     events = []
     for line in text.splitlines():
         if "execve" in line or "execveat" in line:
             match = TRACE_EXEC.search(line)
             events.append({"kind": "exec", "line": line})
             if match and match.group(1) == "0" and ("python" in line.lower() or "libpython" in line.lower()):
-                violations.append("PYTHON_EXEC")
+                policy_violations.append("PYTHON_EXEC")
         if "libpython" in line.lower() or "python3" in line.lower():
-            violations.append("PYTHON_MAPPING")
+            policy_violations.append("PYTHON_MAPPING")
         if "connect(" in line and "= 0" in line and "/run/" not in line:
-            violations.append("UNDECLARED_ENDPOINT")
+            policy_violations.append("UNDECLARED_ENDPOINT")
         match = TRACE_EXIT.search(line)
         if match:
             events.append({"kind": "exit", "code": int(match.group(1)), "line": line})
-    return {"complete": not violations, "violations": sorted(set(violations)), "events": events}
+    return {
+        # Completeness describes whether the observer delivered a trustworthy
+        # trace.  Policy violations are still a complete observation and must
+        # therefore become a business/isolation FAIL rather than UNQUALIFIED.
+        "complete": not integrity_violations,
+        "violations": sorted(set(integrity_violations + policy_violations)),
+        "integrityViolations": sorted(set(integrity_violations)),
+        "policyViolations": sorted(set(policy_violations)),
+        "events": events,
+        "evidence": [],
+    }
 
 
 def evaluate_case(case: dict[str, Any], run: dict[str, Any], observation: dict[str, Any]) -> dict[str, Any]:
@@ -215,7 +228,17 @@ def evaluate_case(case: dict[str, Any], run: dict[str, Any], observation: dict[s
     failures.extend(observation.get("violations", []))
     if not observation.get("complete"):
         failures.append("OBSERVATION_UNQUALIFIED")
-    return {"status": "PASS" if not failures else "FAIL", "failures": sorted(set(failures))}
+    failures = sorted(set(failures))
+    # A missing/invalid observation cannot be interpreted as a protocol or
+    # isolation result.  Keep this separate from an observed policy/business
+    # violation so the CLI's exit-2 boundary remains meaningful.
+    unqualified = (
+        bool(run.get("timedOut"))
+        or not observation.get("complete")
+        or any(item.startswith("MISSING_EVIDENCE:") for item in failures)
+    )
+    status = "UNQUALIFIED" if unqualified else ("PASS" if not failures else "FAIL")
+    return {"status": status, "failures": failures}
 
 
 def main(argv: list[str] | None = None) -> int:
