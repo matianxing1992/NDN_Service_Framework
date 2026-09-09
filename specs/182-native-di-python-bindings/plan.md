@@ -1,6 +1,6 @@
 # Implementation Plan: Native NDNSF-DI with Optional Python Bindings
 
-**Branch**: Experimental | **Revision**: 75 | **Date**: 2026-09-09
+**Branch**: Experimental | **Revision**: 76 | **Date**: 2026-09-09
 **Status**: IN_PROGRESS / 当前实现与验收状态见 tasks.md 的 Task Progress Registry 和 Current Checkpoint
 **Spec**: [spec.md](spec.md)
 
@@ -810,6 +810,19 @@ elapsed `255.25s`，SHA 为 `94b94c8ca5be3b3eca9c0107213f39db35a83b34d90ae8b8142
 `ldd` 无 `not found`。本批只关闭 standalone Provider 的 build/link boundary；Provider `--serve`、
 独立 requester/Provider transport、maintained caller/no-Python 和 T016 仍需下一批真实运行。
 详见 [R10-B50 evidence](evidence/r10-b50-provider-link-closure-20260909.md)。
+
+### R10-B54 Native Plan and Manifest Smoke 2026-09-09
+
+本批沿 R10-B53 的本地原生 plan/session 出口，验证 manifest 解析、四角色注册、依赖发布和
+output-tensor accounting。首次 55/55 编译任务后的 linker failure 暴露 target source/link
+closure 漏项；该边界及 project-symbol definition map 已写入
+[R10-B54 evidence](evidence/r10-b54-plan-manifest-smoke-20260909.md)，并作为 shared
+Spec Kit build/source-closure feedback gate 的改变项。修复 `examples/wscript` 的 source
+list、framework/ONNX/Protobuf link closure 和 `$ORIGIN/..` RUNPATH 后，retry 以 `-j2`
+完成 85/85 tasks（`170.09s`），默认 loader 选择候选 framework，bundle-root smoke 输出
+`NDNSF_DI_NATIVE_PLAN_MANIFEST_SMOKE_OK roles=4 artifacts=4 outputTensors=8`，exit `0`
+（`0.06s`）。本批只关闭本地 plan/manifest 与角色输出边界；Provider `--serve`、独立
+requester/Provider transport、maintained caller/no-Python 和 T016 qualification 仍开放。
 
 ### R10-B53 Native Plan and ONNX Session Smoke 2026-09-09
 

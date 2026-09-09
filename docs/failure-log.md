@@ -2906,3 +2906,21 @@ are still unobserved.
   This is a harness command construction error; its raw output is in
   `.codex-tmp/spec182-r10-b53-rpath-retry-20260909/`. The corrected retry fixes the repository
   root path before `cd` and keeps the bundle cwd only for artifact resolution.
+
+## 2026-09-09 — Spec182 R10-B54 plan/manifest smoke source-closure boundary
+
+- **Area**: local `di-native-plan-manifest-smoke` executable covering native plan/manifest
+  parsing, role registration and dependency publication.
+- **First boundary**: the initial 55/55-task `-j2` link stopped with unresolved native ONNX
+  planning/recipe helpers and `ServiceUser` publication/collaboration methods. No smoke process
+  or protocol request started; the raw linker output is retained in
+  `.codex-tmp/spec182-r10-b54-plan-manifest-smoke-20260909/build.log`.
+- **Interpretation**: this was a target source/link closure miss. The target's source list omitted
+  `di_native_onnx_assembly_sources`, and its link closure omitted the candidate
+  `ndn-service-framework`/ONNX/Protobuf dependencies. It is not a plan, manifest or protocol
+  behavior result.
+- **Changed gate before retry**: map every unresolved project symbol to its defining translation
+  unit, add that source set and the shared framework/dependency closure to `examples/wscript`,
+  add the target RUNPATH, then run a fresh target link and default-loader `ldd` check before
+  interpreting smoke output. This source-definition map and target registration check is now a
+  required feedback item for the shared Spec Kit build/source-closure gate.
