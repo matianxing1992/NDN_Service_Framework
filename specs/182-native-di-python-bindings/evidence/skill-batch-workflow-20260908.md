@@ -115,3 +115,28 @@ tasks/implement 合并回顶部 `Execution Progress`，不把新任务预标完�
 结果为 `No findings`。定向检查确认四个入口均保留原有 frontmatter，且新增规则只影响
 代码接线/原生行为需求；旧 Spec Kit frontmatter compatibility 白名单仍是验证器限制，
 不改变安装文件。未运行产品构建、单测或实验；本次修改是流程文档层更新。
+
+## Follow-up Skill Contract
+
+2026-09-08：根据批次复盘，规则不再只停留在当前 Spec。版本化的
+`skills/speckit-code-design/SKILL.md` 与 `references/batch-quality-gates.md` 现明确列出
+全部 Spec Kit 入口的职责：需求形成要写真实入口、可观察结果、独立 oracle、负例/恢复
+边界和 evidence owner；plan 要冻结稳定出口、五 lane Coverage matrix、selector 与
+结果责任人；tasks/implement 要保持 `Execution Progress`、C++ native test ownership
+和静态/编译/运行漏检分类；constitution 修改必须同步模板/skill；taskstoissues 不得
+产生行政拆分。资源受限的本机 native build 统一记录 system-first toolchain、默认
+`-j4`、`vmstat` 观察和降档条件，不能把资源策略当成性能或资格证据。
+
+`.specify/templates/spec-template.md` 新增结构化 Acceptance Evidence Contract，并要求
+引用 plan/tasks 的 Batch/Coverage 结果；`plan-template.md` 的批次表新增 Coverage
+matrix scope 和 result/evidence owner；`tasks-template.md` 明确 native NDNSF-DI 行为
+必须由生产 C++ target/selector 验收，Python 仅作 binding/facade、oracle 或外部设施
+边界。当前 `.agents/skills/` 本机副本以及个人
+`/home/tianxing/.codex/skills/speckit-code-design/` 已同步；个人安装目录保持未跟踪，
+版本化规则仍以仓库 `skills/` 和 `.specify/templates/` 为准。
+
+定向审查覆盖共享 skill、三份模板、入口职责引用和当前 Spec 进度记录；结果
+`No findings`。`python3 specs/182-native-di-python-bindings/checklists/validate_design.py`
+返回 `ok: true`（17 parent tasks、36 execution cards、36 progress units、0 errors），
+`git diff --check` 返回 0；未运行产品构建、单测、集成或实验，产品任务仍保持原有
+`PARTIAL`/`DONE` 状态。

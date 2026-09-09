@@ -1,6 +1,6 @@
 # Tasks: Native NDNSF-DI with Optional Python Bindings
 
-**Revision**: 18 | **Status**: DRAFT / T001 DONE
+**Revision**: 19 | **Status**: DRAFT / T001 DONE
 **Input**: [spec](spec.md), [code design](contracts/code-design.md),
 [proof](contracts/proof-design.md), [work units](contracts/work-units.md)
 
@@ -164,8 +164,10 @@ T012 caller/binding 依赖推进，不把本地两轮 PASS 写成资格 PASS。
 2026-09-08 Shared workflow/build policy documentation sync / **PASS**：共享 Spec Kit
 技能与模板沿 `91bb428f` 的批次质量门继续作为新 Spec 的统一标准；当前开发机文档示例
 已统一为默认 `-j4`，仅按实测换页/卡顿降档，历史 evidence 的 `-j2` 保持原事实。
-本轮只读 review-agent 审查无 findings，结构验证与 `git diff --check` 通过；未改产品
-任务状态，未运行产品构建或测试。见[同步记录](evidence/skill-batch-workflow-20260908.md#follow-up-documentation-sync)。
+本轮又将需求的 Acceptance Evidence Contract、计划的 Coverage matrix/result owner、
+任务的 native C++ selector 与 lane 完整性写入模板，并把 constitution 与 taskstoissues
+入口纳入共享职责矩阵。本轮只读 review-agent 协议检查无 findings，结构验证与
+`git diff --check` 通过；未改产品任务状态，未运行产品构建或测试。见[同步记录](evidence/skill-batch-workflow-20260908.md#follow-up-skill-contract)。
 
 2026-09-08 R4-B5 Public conversation requester boundary / **PARTIAL**：公开
 `NativeInferenceClient` 现在在 native owner 分配 request ID 并编码 envelope 后，为空的

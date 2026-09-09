@@ -112,11 +112,14 @@ be stricter but must not weaken its PASS/BLOCK boundary.
   (production callers, implementation/wire, test/harness/oracle, build/source
   closure, migration/evidence) and its evidence owner. For documentation-only
   work, record N/A with the reason instead of inventing a code batch.
+  For native NDNSF-DI runtime/protocol/state/concurrency/crypto/model behavior,
+  name the production C++ target/selector in the batch row; Python selectors cover
+  only binding/facade, offline oracle, or external-facility boundaries.
 -->
 
-| Batch ID | Behavior boundary / stable exit | Members | Implementation dependencies | Acceptance dependencies | Shared build/test selector and owner |
-| --- | --- | --- | --- | --- | --- |
-| B-01 | [observable behavior and exit] | [task IDs] | [IDs or —] | [hard gates or —] | [selector / owner] |
+| Batch ID | Behavior boundary / stable exit | Members | Implementation dependencies | Acceptance dependencies | Coverage matrix scope | Shared build/test selector and owner | Result record / evidence owner |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| B-01 | [observable behavior and exit] | [task IDs] | [IDs or —] | [hard gates or —] | [five lanes: status, files/symbols, query/check] | [selector / owner] | [evidence path / owner] |
 
 ## Project Structure
 

@@ -17,8 +17,10 @@ description: "Task list template for feature implementation"
 **Prerequisites**: plan.md (required), spec.md (required for user stories), research.md, data-model.md, contracts/
 
 **Tests**: The examples below include test-first work inside behavioral tasks.
-Tests are OPTIONAL - include them only when the feature specification requests
-them.
+Tests may be omitted only when the feature has no code-backed acceptance. For
+native NDNSF-DI runtime, protocol, state, concurrency, crypto, or model behavior,
+the task MUST name and run a production C++ target/selector; Python-only checks
+remain binding/facade, oracle, or external-facility evidence.
 
 **Organization**: Tasks are grouped by user story and expressed as cohesive,
 reviewable behavioral outcomes. Do not optimize for a high task count.
@@ -89,6 +91,11 @@ tasks merely to:
 - write a test, implement its behavior, run that test, and record its result;
 - run multiple commands that form one validation gate;
 - update a contract and its directly corresponding implementation.
+
+Every code-backed task description must identify the applicable production
+entry/caller, test/harness/oracle, and build/source registration. If one lane is
+not applicable, record `N/A` with a reason in the batch result record; if it is
+unknown, keep the task `PARTIAL` until the gap is closed.
 
 Example:
 
