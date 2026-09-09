@@ -185,7 +185,10 @@ Spec 文档或唯一 evidence record。每次创建或修改 code-backed artifac
    只能保持 `PARTIAL`，不能通过扩大批次来掩盖缺少调用方或结果。
 2. **During review**：每个小任务和批末组合审查都写 `Minimum Review Record` 的五个 lane，
    列出实际文件/符号及查询或检查命令；`test/harness/oracle` 必须包含测试注册，
-   `build/source closure` 必须包含真实 target 和 source list/link 依赖。
+   `build/source closure` 必须包含真实 target、source list/link 依赖、实际生成的输出路径、
+   source identity 和可复算的 artifact digest；凡是 runner/qualification manifest 引用
+   executable 或 shared library，都必须由该实际输出重生成 manifest 并核对 digest，不能用
+   逻辑 target 名或旧 build alias 代替。
 3. **At batch close**：在同一结果记录中写 `Static findings`、`Compile/build misses`、
    `Runtime/test misses`、`Build measurement`、`Behavior result`、`Evidence / remaining`、
    `Review trace`、`Closure decision`，并附 `Batch Retrospective` 的 `static`、

@@ -723,6 +723,20 @@ R10-B38 确认当前会话 UID 不能直接进入 MiniNDN owner 后，使用 pas
 这只关闭一个真实 isolated native-process acceptance 出口；I01-I08、PO-002-PO-014、
 maintained caller/no-Python 和完整 T016 仍需逐 case 执行。详见 [R10-B40 evidence](evidence/r10-b40-t016-po001-native-owner-pass-20260909.md)。
 
+### R10-B41 Native Stream Business-Oracle Closure 2026-09-09
+
+R10-B37 的 stream-only 和 R10-B31/R10-B33 的 unary 分支已经断言真实 native result，但
+只有 conversation 分支输出了 closure runner 所需的业务 marker。本批在两个非会话分支中
+把 `SPEC182_NATIVE_DI_REQUEST_RESULT_OK` 放到结果断言之后，并用实际新链接的
+`.codex-tmp/spec182-r4-b2/build/integration-tests` 及重算 digest 执行隔离 owner/runner。
+`-j2` integration build 118/118、stream/unary/conversation/repository/replacement selectors
+均通过；fresh PO-001 owner/runner 返回 `PASS`，业务 marker、namespace、identity、process
+tree、endpoints、trace 和 cleanup 均存在。r15 使用旧 `build-nac182` artifact 的
+`MISSING_EVIDENCE:business-oracle` 保留为 manifest identity 首边界，不计为协议失败。
+此批只关闭 stream/unary marker 与一个隔离 native-process 出口；Provider callback 仍是
+in-process fixture，独立 requester/Provider transport、I01-I08、PO-002-PO-014、maintained
+caller/no-Python 和完整 T016 继续开放。详见 [R10-B41 evidence](evidence/r10-b41-stream-business-oracle-20260909.md)。
+
 ### R10-B33 Native Unary Repository Reference Request 2026-09-09
 
 R10-B31 已补齐不带 stream 或 conversation state 的普通 native `Response`，R10-B11

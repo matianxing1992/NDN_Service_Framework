@@ -24,7 +24,8 @@
 静态审查的唯一记录格式是
 [review-agent Minimum Review Record](speckit-code-design/references/review-agent.md)：
 五个 lane 必须列出实际文件/符号、查询命令和 findings；测试 lane 包含 harness/oracle
-及注册，build lane 包含 target/source closure。缺行或未解释的 `gap` 不得产生
+及注册，build lane 包含 target/source closure、实际输出路径、source identity 和 artifact
+digest；runner/qualification manifest 必须从该实际输出重生成并核对 digest。缺行或未解释的 `gap` 不得产生
 `STATIC_PASS`，批末还必须记录四类 `Batch Retrospective`。
 写入 `STATIC_PASS` 前还必须完成 `Static Gate Release Checklist`；发生编译/链接或运行/测试
 漏检时，重试记录 `Changed gate`，说明新增的 caller、测试注册、source-closure、oracle

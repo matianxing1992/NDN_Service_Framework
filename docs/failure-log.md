@@ -2801,3 +2801,25 @@ are still unobserved.
   prove independent requester/Provider process transport.
 - **Next step**: generate each remaining I01–I08/PO-002–PO-014 manifest from the current build
   identity before execution; do not reuse the stale raw manifest.
+
+## 2026-09-09 — Spec182 R10-B41 stream business-oracle and artifact identity retry
+
+- **Area**: T016 PO-001 stream-only owner/runner after the native result-marker repair.
+- **First boundaries**: r13/r14 preserved the earlier stale-selector and missing-marker observations.
+  After adding the marker to the unary and stream-only result branches, r15 still returned
+  `UNQUALIFIED/MISSING_EVIDENCE:business-oracle` because its fresh runner staged the older
+  `build-nac182/integration-tests` artifact. Structural observation was complete and the native
+  process returned `0`; the failure was an artifact-source identity boundary, not a protocol
+  failure.
+- **Changed gate and result**: r16 bound the runner manifest to the actual fresh linked output
+  `.codex-tmp/spec182-r4-b2/build/integration-tests` and recomputed its digest. PO-001 then
+  returned `PASS` with `SPEC182_NATIVE_DI_REQUEST_RESULT_OK`, complete namespace/identity/
+  process-tree/endpoint/trace/cleanup evidence, and owner exit `0`.
+- **Interpretation**: close only the stream/unary business-oracle and one isolated native-process
+  acceptance boundary. The Provider callback remains in the in-process fixture; independent
+  requester/Provider transport, I01–I08, PO-002–PO-014, maintained caller/no-Python and full
+  T016 qualification remain open.
+- **Durable evidence**: [R10-B41 evidence](../specs/182-native-di-python-bindings/evidence/r10-b41-stream-business-oracle-20260909.md).
+- **Raw runs**: `.codex-tmp/spec182-r10-b41/`, `.codex-tmp/spec182-t016-r13/`,
+  `.codex-tmp/spec182-t016-r14/`, `.codex-tmp/spec182-t016-r15/`, and
+  `.codex-tmp/spec182-t016-r16/`.
