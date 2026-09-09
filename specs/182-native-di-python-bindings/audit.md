@@ -1,15 +1,15 @@
 # Spec182 Design Audit
 
-**Revision**: 19 | **Mode**: source alignment / cross-task convergence
+**Revision**: 20 | **Mode**: source alignment / cross-task convergence
 **Verdict**: DRAFT / PARTIAL; T016 preflight UNQUALIFIED
-**Source**: `0f30e37a` implementation/docs checkpoint / Experimental
+**Source**: `40438a82` implementation/docs checkpoint / Experimental
 **Evidence**: [current source and dependency baseline](contracts/integrated-baseline.md)
 
 ## Current Findings
 
 ### Remaining Production Chain Review 2026-09-09
 
-本次复核以 `0f30e37a` 为当前 source checkpoint，当前文档状态由 R10-B21 更新。R10-B1--R10-B6 已在本地关闭
+本次复核以 `40438a82` 为当前 source checkpoint，当前文档状态由 R10-B21 更新。R10-B1--R10-B6 已在本地关闭
 准备、公开 facade、YOLO/Qwen maintained caller 的 `REPO_REF` 路由、真实 Provider 正向
 消费和三个 Provider fail-closed 负例；R10-B7 同步了当前 route marker 与 T013-D/T013-F
 契约文字，R10-B9 又在真实 Provider conversation fixture 中观察到 configured
