@@ -758,6 +758,53 @@ BOOST_AUTO_TEST_CASE(SelectionSnapshotRejectsStaleMemberAndKeepsLatest)
   BOOST_CHECK_EQUAL(snapshot->memberStatuses.front().sequence, 2);
 }
 
+BOOST_AUTO_TEST_CASE(SelectionSnapshotConcurrentMembersRemainOwned)
+{
+  ndn::security::KeyChain keyChain("pib-memory:collab-status-concurrent",
+                                   "tpm-memory:collab-status-concurrent");
+  ndn::DummyClientFace face(keyChain);
+  auto providerCert = makeRsaIdentity(keyChain, ndn::Name("/provider/concurrent"));
+  auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa-concurrent"));
+  LocalServiceProvider provider(face, ndn::Name("/test/group"),
+                                providerCert, aaCert,
+                                "examples/trust-any.conf");
+  const std::string selectionDigest = "sha256:selection-concurrent";
+  provider.seedSelectionStatusForTest(selectionDigest,
+                                      ndn::Name("/LLM/Qwen"),
+                                      ndn::Name("/request/concurrent"));
+
+  constexpr std::size_t threadCount = 8;
+  constexpr std::size_t membersPerThread = 8;
+  std::vector<std::thread> workers;
+  workers.reserve(threadCount);
+  for (std::size_t thread = 0; thread < threadCount; ++thread) {
+    workers.emplace_back([&, thread] {
+      for (std::size_t index = 0; index < membersPerThread; ++index) {
+        ServiceProvider::ServiceOperationStatus status;
+        status.operationId = "prepare:" + std::to_string(thread) + ":" +
+                             std::to_string(index);
+        status.operation = "MODEL_PREPARE";
+        status.role = "role-" + std::to_string(thread);
+        status.attempt = 1;
+        status.epoch = 1;
+        status.sequence = index + 1;
+        status.state = "RUNNING";
+        status.progressKnown = true;
+        status.progress = static_cast<double>(index + 1) /
+                          static_cast<double>(membersPerThread);
+        provider.reportSelectionOperationStatus(selectionDigest,
+                                                std::move(status));
+      }
+    });
+  }
+  for (auto& worker : workers) worker.join();
+
+  const auto snapshot = provider.getSelectionExecutionStatus(selectionDigest);
+  BOOST_REQUIRE(snapshot);
+  BOOST_CHECK_EQUAL(snapshot->memberStatuses.size(),
+                    threadCount * membersPerThread);
+}
+
 BOOST_AUTO_TEST_CASE(CollaborationFailureUpdatesSelectionStatus)
 {
   ndn::security::KeyChain keyChain("pib-memory:collab-failure",
