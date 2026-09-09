@@ -1845,7 +1845,10 @@ class InferenceClient:
 
     def configure_native_requester(self, runtime, admission, conversations=None):
         """Configure the native requester through the canonical core owner."""
-        return self._core.configure_native_requester(runtime, admission, conversations)
+        if conversations is None:
+            return self._core.configure_native_requester(runtime, admission)
+        return self._core.configure_native_requester(
+            runtime, admission, conversations)
 
     def request_native(self, *, model, input, split_strategy,
                        placement_strategy, options):
