@@ -74,6 +74,9 @@ target/source closure、toolchain、配置和工作树条件下的对照，不�
 和 unobserved 漏检（无观察写 `none`/`not observed`），说明是否在稳定出口后继续吸收职责，
 并注明耗时是否可比。缺少该复盘时保持 `PARTIAL`；它不能由任务数、静态通过数或单次构建
 时长替代。
+`--help`、usage/schema rejection、可执行文件存在或 harness-start smoke 只能证明命令、
+target/link 或外部设施接线；没有真实生产请求/结果时，不得把它们写成 native behavior、
+Python/C++ parity 或 qualification PASS。
 若本批是失败重试或同类漏检后的下一批，`Evidence / remaining` 还必须链接首个失败边界，
 写明本次改变的静态检查及其覆盖 lane；重复同类漏检时先修订共享 skill、模板或 checklist，
 或记录明确的替代门禁。只重跑原命令不构成漏检修复。

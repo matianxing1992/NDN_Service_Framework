@@ -1,6 +1,6 @@
 # Implementation Plan: Native NDNSF-DI with Optional Python Bindings
 
-**Branch**: Experimental | **Revision**: 50 | **Date**: 2026-09-09
+**Branch**: Experimental | **Revision**: 51 | **Date**: 2026-09-09
 **Status**: IN_PROGRESS / 当前实现与验收状态见 tasks.md 的 Task Progress Registry 和 Current Checkpoint
 **Spec**: [spec.md](spec.md)
 
@@ -497,6 +497,18 @@ not as a product failure; if swap-in persists, the next native build follows the
 fallback. The baseline confirms local C++ behavior only and leaves maintained callers, true
 requester/provider process transport, I02--I08, legacy retirement, no-Python proof and T016
 qualification open.
+
+### D-SKILL-CLI-BOUNDARY CLI and Harness Evidence Boundary 2026-09-09
+
+本次流程复盘把命令级证据单独定界：`--help`、usage/schema rejection、可执行文件存在、
+target/link smoke 或 harness 启动只证明命令、构建接线或外部设施边界，不能写成 native
+request/result、Python/C++ parity 或 qualification PASS。共享 `batch-quality-gates`、
+`speckit-code-design`、plan/tasks templates 和 `skills/README.md` 已同步该规则，个人
+安装入口按 SHA-256 对照。此修改不改变产品契约、调用链或现有任务状态。
+
+分配依据是文档规则、批次结果字段和模板示例共享同一 reference；五 lane 对文档变更均
+记录为 `N/A` 并说明理由。独立出口是定向链接/格式检查、Spec validator 和安装副本 hash
+一致性；真实 C++ 请求和 T016 资格仍由产品任务负责。
 
 ### R8-SKILL Review Coverage Contract 2026-09-09
 

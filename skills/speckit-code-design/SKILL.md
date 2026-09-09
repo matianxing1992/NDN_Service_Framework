@@ -90,6 +90,9 @@ target/source closure。缺少任一项时先记 `gap`，不得用 `No findings`
 边界明确前，不直接改共享 freshness、重试或发布逻辑。
 NDNSF-DI 原生运行时和协议行为由直接调用生产 C++ target 的测试验收；Python 只证明
 绑定/兼容/离线 oracle 或外部设施边界，不能替代 C++ 行为或跨进程资格测试。
+CLI `--help`、usage/schema rejection、target/link smoke 或 harness 启动只证明接线边界，
+不能写成 native request/result 或 qualification PASS；没有真实生产请求与独立结果时保持
+对应 production/qualification lane 的 `PARTIAL` 或 `gap`。
 
 需求成形（`speckit-specify`、`speckit-clarify`、`speckit-checklist`）、计划与任务生成
 （`speckit-plan`、`speckit-tasks`）、代码现实分析（`speckit-analyze`、`speckit-audit`、

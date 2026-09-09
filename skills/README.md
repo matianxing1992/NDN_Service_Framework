@@ -32,6 +32,8 @@
 检查；同类漏检再次发生时先修订共享 skill、模板或 checklist，或记录替代门禁。
 NDNSF-DI 原生行为由生产 C++ target/selector 验收，Python 只覆盖 binding/facade、
 offline oracle 或外部设施边界。
+CLI `--help`、usage/schema rejection、target/link smoke 或 harness 启动只证明接线，
+不能替代真实 native request/result、parity 或 qualification 证据。
 维护中的 legacy/compatibility 探针若暴露运行时回归，必须保留首个失败边界和原始证据，
 在 migration/evidence lane 维持 `PARTIAL`，并由 `speckit-converge` 追加独立出口任务；
 不能因测试属于旧 Spec 就忽略，也不能在边界明确前修改共享 freshness 或重试逻辑。

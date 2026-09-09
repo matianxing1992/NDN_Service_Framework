@@ -82,6 +82,15 @@ matrix 的 `test/harness/oracle` lane 必须写 `gap`，对应任务保持 `PART
 source/link closure。批次记录应检查依赖库中包含变更符号（或等价的 source/hash
 身份），并把 stale-library 导致的导入或未定义符号列入 `Compile/build misses`。
 
+## CLI And Harness Boundary
+
+`--help`、usage/schema rejection、可执行文件存在或仅能启动 harness 的 smoke 只证明
+命令解析、target/link 接线或外部设施边界。它们不能写成 native request/result behavior、
+Python/C++ parity 或 qualification PASS。若没有真实生产请求进入 Core/provider 并得到
+独立结果，批次最多记录受限的 `BUILD_PASS` 或 `FOCUSED_BEHAVIOR_PASS`，并在
+`Evidence / remaining` 保留生产调用、跨进程或资格 lane 的 `PARTIAL`/`gap`；同一批次
+不得用 CLI smoke 覆盖这些未观测边界。
+
 ## Batch Result Record
 
 每批只维护一份 tasks/evidence 结果记录。记录以下字段；没有发现时写 `none`
