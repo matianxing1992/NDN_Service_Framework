@@ -1,6 +1,6 @@
 # Implementation Plan: Native NDNSF-DI with Optional Python Bindings
 
-**Branch**: Experimental | **Revision**: 22 | **Date**: 2026-09-09
+**Branch**: Experimental | **Revision**: 23 | **Date**: 2026-09-09
 **Status**: IN_PROGRESS / 当前实现与验收状态见 tasks.md 的 Task Progress Registry 和 Current Checkpoint
 **Spec**: [spec.md](spec.md)
 
@@ -166,6 +166,22 @@ and their source/evidence records.  The independent exit is a mocked binding
 boundary that observes `REPOSITORY_REFERENCE` plus canonical JSON and proves
 that the native client is called without planner fallback; real encrypted fetch,
 Provider execution, caller migration, and T016 remain open for later batches.
+
+### R10-B3 YOLO Native Reference Caller 2026-09-09
+
+The maintained YOLO 2x2 native branch already composes the C++ catalog, grant,
+admission, preparation, and split owners, but it still sends its tensor bundle
+through `request_native_payload`.  This batch changes that one branch to publish
+the same bytes with `publish_application_input_reference` and submit the bound
+reference through `request_native_reference`, so the selected Provider can own
+encrypted fetch/decrypt.  The ACK-driven Python planner branch and lifecycle
+negative cases remain unchanged.
+
+Allocation is limited to `examples/python/NDNSF-DistributedInference/yolo_2x2/user.py`
+and its maintained-caller source selector.  The independent exit is source and
+mock validation that the native branch publishes once, uses `REPO_REF`, and
+cannot call `request_native_payload` or `request_task`; real MiniNDN Provider
+execution, cross-process behavior, and T016 remain open.
 
 ### R8-SKILL Review Coverage Contract 2026-09-09
 

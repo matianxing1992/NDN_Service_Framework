@@ -75,7 +75,7 @@ def test_maintained_yolo_native_route_is_explicit_and_fail_closed() -> None:
     assert "--native-requester-config" in user
     assert "_load_yolo_native_payload" in user
     assert "configure_native_requester_from_config" in user
-    assert "request_native_payload" in user
+    assert "request_native_reference" in user
     assert "native YOLO requester model identity does not match package" in user
     assert "does not yet support Spec180 lifecycle journaling" in user
     assert "requires --native-tensor-input" in user
@@ -89,6 +89,19 @@ def test_maintained_yolo_native_route_is_explicit_and_fail_closed() -> None:
         "def main()")]
     assert "configure_automatic_planning" not in native_branch
     assert "request_task" not in native_branch
+
+
+def test_maintained_yolo_native_route_uses_repository_reference() -> None:
+    user = (ROOT / "examples/python/NDNSF-DistributedInference/yolo_2x2/user.py").read_text(
+        encoding="utf-8")
+    native_branch = user[user.index("def _load_yolo_native_payload"):user.index(
+        "def main()")]
+    assert "publish_application_input_reference" in native_branch
+    assert "request_native_reference" in native_branch
+    assert "request_native_payload" not in native_branch
+    assert native_branch.index("publish_application_input_reference") < native_branch.index(
+        "request_native_reference")
+    assert "fetch/decrypt" in native_branch
 
 
 def test_legacy_runtime_removal_stays_blocked_by_manifest_consumers() -> None:

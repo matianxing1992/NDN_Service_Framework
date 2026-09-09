@@ -641,9 +641,11 @@ def _load_yolo_native_payload(client, args) -> int:
 
     The native configuration is the only composition authority in this branch:
     catalog, grant/admission, preparation and split/placement owners are
-    constructed by ``APPClient`` and the request is submitted as inline native
-    tensor bytes.  The historical ACK-driven Python planner remains a separate
-    explicitly selected path when this option is absent.
+    constructed by ``APPClient``.  The tensor bundle is published once as an
+    encrypted repository object and the bound reference is submitted through
+    the native requester; the selected Provider owns fetch/decrypt.  The
+    historical ACK-driven Python planner remains a separate explicitly
+    selected path when this option is absent.
     """
     if not args.native_requester_config:
         raise RuntimeError("native YOLO route requires --native-requester-config")
@@ -689,8 +691,16 @@ def _load_yolo_native_payload(client, args) -> int:
     if not task_name:
         raise RuntimeError("native YOLO runtime has no task identity")
 
-    handle = client.request_native_payload(
+    service = yolo_inference_service(client.deployment)
+    reference = client.publish_application_input_reference(
+        service,
         payload,
+        object_label="inference-input-image",
+        object_type="application/x-ndnsf-di-input+native-tensor",
+        freshness_ms=120000,
+    )
+    handle = client.request_native_reference(
+        reference,
         options=options,
         task_name=task_name,
         application_options=b"{}",
