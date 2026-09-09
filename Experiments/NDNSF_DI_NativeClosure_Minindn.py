@@ -173,7 +173,24 @@ def _wait_for_nfd_sockets(app_manager: Any, timeout_s: float = 20.0) -> dict[str
     raise ValueError("MiniNDN NFD sockets are not ready: " + ",".join(missing))
 
 
-def _run_owned_campaign(manifest_path: Path, output: Path) -> int:
+def _execute_runner_case(runner_manifest: Path, case_id: str, output: Path,
+                         contexts: Mapping[str, dict[str, Any]]) -> dict[str, Any]:
+    """Run the canonical closure runner while MiniNDN owner namespaces live."""
+    runner = _runner_module()
+    case = runner.load_case(runner_manifest, case_id)
+    closure_output = output / "closure-run"
+    staged = runner.stage_root(case, closure_output)
+    run = runner.run_case(case, staged, closure_output, nodes=dict(contexts))
+    observation = runner.collect_trace(case, run)
+    evaluation = runner.evaluate_case(case, run, observation)
+    return {"case": case_id, "manifest": str(runner_manifest),
+            "staged": staged, "run": run, "observation": observation,
+            "evaluation": evaluation}
+
+
+def _run_owned_campaign(manifest_path: Path, output: Path,
+                        runner_manifest: Path | None = None,
+                        runner_case: str | None = None) -> int:
     """Create the owner topology and export context, without inventing a case."""
     output = output.resolve()
     if output.exists():
@@ -218,6 +235,23 @@ def _run_owned_campaign(manifest_path: Path, output: Path) -> int:
         (output / "node-context.json").write_text(
             json.dumps({"topology": str(topology), "nodes": contexts},
                        indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        if runner_manifest is not None:
+            selected_runner_case = runner_case or case_id
+            runner_result = _execute_runner_case(
+                runner_manifest.resolve(), selected_runner_case, output, contexts)
+            (output / "runner-result.json").write_text(
+                json.dumps(runner_result, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8")
+            evaluation_status = str(runner_result["evaluation"].get("status", "UNQUALIFIED"))
+            exit_code = {"PASS": 0, "FAIL": 1, "UNQUALIFIED": 2}.get(evaluation_status, 2)
+            (output / "result.json").write_text(
+                json.dumps({"status": evaluation_status,
+                            "reason": "CANONICAL_RUNNER_RESULT_RECORDED",
+                            "campaignCase": case_id, "runnerCase": selected_runner_case,
+                            "runnerResult": "runner-result.json",
+                            "nodeContext": "node-context.json"},
+                           indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            return exit_code
         (output / "result.json").write_text(
             json.dumps({"status": "UNQUALIFIED",
                         "reason": "NATIVE_CLOSURE_CASE_DEFINITION_MISSING",
@@ -240,7 +274,9 @@ def _run_owned_campaign(manifest_path: Path, output: Path) -> int:
                 pass
 
 
-def run_campaign(manifest_path: Path, output: Path, *, execute_owner: bool = False) -> int:
+def run_campaign(manifest_path: Path, output: Path, *, execute_owner: bool = False,
+                 runner_manifest: Path | None = None,
+                 runner_case: str | None = None) -> int:
     """Run one manifest-selected case after an external MiniNDN owner setup.
 
     The default mode preserves the registration-only preflight.  Explicit
@@ -249,7 +285,7 @@ def run_campaign(manifest_path: Path, output: Path, *, execute_owner: bool = Fal
     """
     if execute_owner:
         try:
-            return _run_owned_campaign(manifest_path, output)
+            return _run_owned_campaign(manifest_path, output, runner_manifest, runner_case)
         except (OSError, ValueError, json.JSONDecodeError) as exc:
             output = output.resolve()
             if output.exists():
@@ -307,8 +343,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--execute-owner", action="store_true",
                         help="create the isolated MiniNDN owner topology and export node context")
+    parser.add_argument("--runner-manifest", type=Path,
+                        help="optional canonical runner case manifest to execute while owner is alive")
+    parser.add_argument("--runner-case",
+                        help="case ID in --runner-manifest (defaults to campaignCase)")
     args = parser.parse_args(argv)
-    return run_campaign(args.manifest, args.output, execute_owner=args.execute_owner)
+    if args.runner_manifest is not None and not args.execute_owner:
+        parser.error("--runner-manifest requires --execute-owner")
+    return run_campaign(args.manifest, args.output, execute_owner=args.execute_owner,
+                        runner_manifest=args.runner_manifest, runner_case=args.runner_case)
 
 
 if __name__ == "__main__":
