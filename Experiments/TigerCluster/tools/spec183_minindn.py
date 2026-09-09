@@ -186,6 +186,11 @@ def main(argv: Iterable[str] | None = None) -> int:
     # Pass only the declared host inputs and executable/module search paths.
     # Inherited SIF bypass knobs or unrelated credentials are not host inputs.
     env = {name: os.environ[name] for name in ('PATH', 'PYTHONPATH') if name in os.environ}
+    # Keep the diagnostic selector explicit across the systemd boundary.  The
+    # MiniNDN driver deliberately removes runner-wide NDN_LOG and consumes
+    # this dedicated setting for child processes only.
+    if os.environ.get("SPEC180_CHILD_NDN_LOG", "").strip():
+        env["SPEC180_CHILD_NDN_LOG"] = os.environ["SPEC180_CHILD_NDN_LOG"]
     # The systemd system manager executes the outer MiniNDN driver as root,
     # whose Python user-site is different from the operator's.  The driver
     # performs a read-only ONNX/catalogue validation before starting NFD; keep

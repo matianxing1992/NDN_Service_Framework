@@ -13,9 +13,10 @@ Repo通用库及运行依赖；DI/UAV程序、包及自有扩展独立构建、�
 仓库根 `wscript` 现在提供分层构建边界：基础层使用
 `--runtime-libraries-only`（NDNSF Core、Repo 通用静态库和绑定），外置层使用
 `--external-application-only --application-component=<di|uav|repo|all>`。YOLO
-入口固定选择 `di`，并行度统一为 `-j4`；同一构建树不可同时运行两个 Waf/CMake
-构建。外置模式通过 base 安装的 pkg-config/库闭包，不把 Core 或 Repo 源码重新
-编进 DI 应用。
+入口固定选择 `di`；TigerCluster 构建并行度上限为 `-j4`，基础层默认使用
+`-j2` 以避免 Ubuntu 20.04 GCC 9 的资源敏感 ICE，外置应用可在 1–4 之间显式选择。
+同一构建树不可同时运行两个 Waf/CMake 构建。外置模式通过 base 安装的
+pkg-config/库闭包，不把 Core 或 Repo 源码重新编进 DI 应用。
 
 构建入口：`Experiments/TigerCluster/adapters/slurm-apptainer/scripts/build-local-sif.sh`。
 构建前准备源码seal并核对definition、依赖和工具链，沿用 [runtime package](../../../packaging/ndnsf-di-container/README.md) 的原生ABI与候选规则。

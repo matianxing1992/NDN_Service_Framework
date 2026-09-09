@@ -86,6 +86,28 @@ fnv1aPolicyHash(const std::string& path)
 }
 
 size_t
+fnv1aStringHash(std::string_view value)
+{
+  constexpr uint64_t offsetBasis = 1469598103934665603ULL;
+  constexpr uint64_t prime = 1099511628211ULL;
+  uint64_t hash = offsetBasis;
+
+  for (const unsigned char ch : value) {
+    hash ^= ch;
+    hash *= prime;
+  }
+
+  if (hash == 0) {
+    hash = 1;
+  }
+  if constexpr (sizeof(size_t) < sizeof(uint64_t)) {
+    hash ^= hash >> (sizeof(size_t) * 8);
+  }
+  return static_cast<size_t>(
+    hash & static_cast<uint64_t>(std::numeric_limits<size_t>::max()));
+}
+
+size_t
 computePolicyEpoch(const std::string& path)
 {
   if (const char* envEpoch = std::getenv("NDNSF_POLICY_EPOCH")) {
@@ -264,7 +286,11 @@ ServiceController::initializeControllerGeneration()
     statePath = configured;
   }
   else {
-    const auto key = fnv1aPolicyHash(m_configFilePath + identity.toUri());
+    // The default state path is keyed by configuration identity, not by the
+    // bytes of a file at the concatenated path.  Hashing that non-existent
+    // path as a file collapses every Controller onto the same FNV offset
+    // basis and creates a cross-process writer lock collision.
+    const auto key = fnv1aStringHash(m_configFilePath + identity.toUri());
     statePath = fs::path("/tmp") /
                 ("ndnsf-controller-generation-" + std::to_string(key) + ".state");
   }

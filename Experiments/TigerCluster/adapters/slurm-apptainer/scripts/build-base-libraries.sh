@@ -6,6 +6,11 @@ export NDNSF_CONTAINER_BUILD=1
 unset PYTHONPATH PYTHONHOME PYTHONOPTIMIZE
 export PATH=/usr/bin:/bin:/usr/sbin:/sbin:/opt/venv/bin
 export CC=/usr/bin/gcc CXX=/usr/bin/g++
+BUILD_JOBS="${NDNSF_BUILD_JOBS:-2}"
+case "${BUILD_JOBS}" in
+    1|2|3|4) ;;
+    *) echo "BASE_BUILD_JOBS must be an integer in [1,4]" >&2; exit 2 ;;
+esac
 export CFLAGS='-O1 -g0 -B/usr/bin/'
 export CXXFLAGS='-O1 -g0 -B/usr/bin/ -DBOOST_PHOENIX_DONT_USE_PREPROCESSED_FILES'
 export LDFLAGS='-B/usr/bin/ -Wl,-rpath,/opt/ndnsf-di/current/lib'
@@ -78,14 +83,14 @@ cmake -S /src/nac-abe -B /src/nac-abe/build -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_CXX_FLAGS_RELEASE='-O1 -DNDEBUG -g0' -DHAVE_TESTS=OFF -DBUILD_EXAMPLES=OFF \
     -DCMAKE_INSTALL_PREFIX=/opt/ndnsf-di/current -DCMAKE_INSTALL_LIBDIR=lib \
     -DCMAKE_PREFIX_PATH=/opt/ndnsf-di/current
-cmake --build /src/nac-abe/build --parallel 4
+cmake --build /src/nac-abe/build --parallel "${BUILD_JOBS}"
 cmake --install /src/nac-abe/build
 for project in ndn-svs ndn-sd; do
     cd /src/"$project"
     ./waf configure --prefix=/opt/ndnsf-di/current --libdir=/opt/ndnsf-di/current/lib \
         --boost-includes=/usr/include --boost-libs=/usr/lib/x86_64-linux-gnu
-    ./waf -j4
-    ./waf install -j4
+    ./waf -j"${BUILD_JOBS}"
+    ./waf install -j"${BUILD_JOBS}"
 done
 fi
 cd /src/ndnsf
@@ -93,8 +98,8 @@ cd /src/ndnsf
     --prefix=/opt/ndnsf-di/current --libdir=/opt/ndnsf-di/current/lib \
     --nac-abe-prefix=/opt/ndnsf-di/current \
     --boost-includes=/usr/include --boost-libs=/usr/lib/x86_64-linux-gnu
-./waf -j4
-./waf install -j4
+./waf -j"${BUILD_JOBS}"
+./waf install -j"${BUILD_JOBS}"
 export NDNSF_NAC_ABE_PREFIX=/opt/ndnsf-di/current
 export NDNSF_LIBRARY_DIR=/opt/ndnsf-di/current/lib
 /opt/venv/bin/pip install --no-index --no-deps /build-input/wheels/pybind11-2.13.6-py3-none-any.whl

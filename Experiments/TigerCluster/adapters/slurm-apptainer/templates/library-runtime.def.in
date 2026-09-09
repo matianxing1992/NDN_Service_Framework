@@ -15,6 +15,9 @@ From: @BASE_SIF@
     echo '@SEAL_SHA256@  /build-input/source/source-seal.json' | sha256sum -c -
     export NDNSF_REUSE_BASE_DEPENDENCIES=@REUSE_DEPENDENCIES@
     export NDNSF_PARENT_SIF_SHA256=@PARENT_SIF_SHA256@
+    # Keep the repository-wide -j4 ceiling while using a stable lower bound
+    # for GCC 9's resource-sensitive base-library build.
+    export NDNSF_BUILD_JOBS=2
     /bin/bash /build-input/build-base-libraries.sh
 
 %environment

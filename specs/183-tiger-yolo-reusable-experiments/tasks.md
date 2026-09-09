@@ -2,7 +2,7 @@
 
 **Input**: [spec.md](spec.md), [plan.md](plan.md), [profile contract](contracts/experiment-profile.md), [validation matrix](validation-matrix.md)
 **Branch**: `TigerClusterExperiments`
-**Status**: 2/17 tasks complete (T001 inventory and T003 focused component acceptance); IN_PROGRESS, no formal YOLO runtime PASS. Standalone C++ NDN/SIF diagnostic passed in Tiger job 209981.
+**Status**: 2/17 parent tasks complete (T001 inventory and T003 focused component acceptance); IN_PROGRESS. Exact-SIF MiniNDN normal Y-B now has a local runtime PASS, but no formal T010 qualification or Tiger GPU PASS. Standalone C++ NDN/SIF diagnostic passed in Tiger job 209981.
 
 ## Detailed Execution Progress
 
@@ -10,6 +10,12 @@
 SIF与外置DI应用已通过精确组合闭包；v13 local-cpu 在持久Provider进程中完成
 warmup+measured 两次请求，均返回数值结果并通过 oracle 比较。该证据仍限于本机
 CPU 执行，不能关闭 MiniNDN、GPU 或 TigerCluster 资格门。
+
+新增检查点：[v25 exact-SIF MiniNDN Y-B](evidence/minindn-v25-exact-sif-yb.md)。
+同一基础 SIF 与外置应用在真实 MiniNDN 进程边界完成正常 Y-B：T010_DONE、四 ACK、
+selection、protected grant、terminal response、数值 oracle 与 clean cleanup 均有
+回执。该结果确认正常 APP/NDNSF-DI 数据路径已运行；Y-A/Y-N、host qualification
+manifest、GPU 与 TigerCluster 资格仍未完成。
 
 2026-09-08 用户裁决将本仓库 TigerCluster 构建并行度上限从 `-j2` 调整为 `-j4`，
 用于缩短构建时间并保持可复现；同一构建树仍只允许一个构建进程。历史回执保留实际
@@ -102,10 +108,10 @@ T007 复核确认正常/负例/SSH 接线已存在；N3 issuer/rank版本检查�
 | T008.c | T008 | `_ndnsf` 与 `_py_repoclient`、真实入口、ldd/readelf/hash、注册 unit | BLOCKED | [host-unit](evidence/host-unit.md) 与4ade12bf已记录树外import/ldd、unit-tests和integration-tests RC0；本轮未重跑 | T007与最终source身份仍须闭合；二进制suite通过不等于T009多进程YOLO | 复用匹配候选的测试记录；不重复已有loader或unit集合 |
 | T009.a | T009 | 多进程 CPU YOLO 正常 ACK/Selection→四角色→数值结果 | NOT_STARTED | V09；NOT_RUN | T008 后执行；bootstrap 与 inference 分开判定 | 不重跑全部历史 DI 集成 |
 | T009.b | T009 | 当前 epoch/权限拒绝、错 Selection、activation loss/tamper 与清理 | NOT_STARTED | V10；NOT_RUN | 与 T009.a 共用 fixture，逐个保留独立判定 | 只跑注册安全/故障场景 |
-| T010.a | T010 | MiniNDN 正常 CPU 图、权限拒绝、缺依赖三个注册场景 | BLOCKED | [输入绑定](evidence/t010-input-binding.md)、[取消](evidence/t010-cancellation.md)、[reap](evidence/t010-reaping.md)、[systemd整树时限](evidence/t010-host-supervisor.md)、[网络资源](evidence/t010-network-resources.md)已接；真实FD保留/释放netns probe通过；仅Y-B，V11 NOT_RUN | 剩三场景及完整协议/数值实跑；T007前完成源码，T009后实跑 | 不重复正常/setsid/namespace小probe；复用既有证据 |
+| T010.a | T010 | MiniNDN 正常 CPU 图、权限拒绝、缺依赖三个注册场景 | PARTIAL_YB_PASS | [v25 exact-SIF Y-B](evidence/minindn-v25-exact-sif-yb.md)；T010_DONE/returncode 0，四 ACK、selection、protected grant、terminal response、数值 `matched=true`、cleanup clean；Y-A/Y-N NOT_RUN | 仍需两个注册负例、同源 host qualification manifest 及正式语义门；不能把 `qualification=NOT_EVALUATED`升级为T010 PASS | 复用同一SIF/app只跑未决场景；改变base/ABI/app行为才重新跑Y-B |
 | T010.b | T010 | 同源 host qualification manifest 绑定命令、结果与清理 | NOT_STARTED | [审计 N1/N2](evidence/design-code-convergence.md)；现wrapper未产生manifest；NOT_RUN | 先实现同一producer/语义validator契约，再从T010.a同次实跑生成供builder消费的回执 | 生成清单不额外跑模型；不得把COMPONENT_ONLY改token冒充PASS |
 | T011.a | T011 | development-20260907 source seal 与 definition 准备 | IMPLEMENTED | 后文 SOURCE_READY checkpoint：`2aea8a0e` / `c4f33beb`，非 SIF PASS | 后续源码改变须重 seal；旧锁不覆盖 | 纯任务表修改按输入清单判断，不无条件重建 SIF |
-| T011.b | T011 | 构建或复用基础SIF，在匹配SDK构建独立app并验证组合闭包 | IN_PROGRESS | [local-sif](evidence/local-sif.md)：基础6产物验证、外置3程序编译完成；157文件内容复核、User入口成功；分层挂载/清单/运输组件33+38+11通过 | 完整原生启动、MiniNDN与精确组合回执及增量构建证明待完成；不计runtime PASS | 复用已编译app；权限归一化不重编译；基础库/ABI未变不重建SIF |
+| T011.b | T011 | 构建或复用基础SIF，在匹配SDK构建独立app并验证组合闭包 | VERIFIED_COMPOSITION | [local-sif](evidence/local-sif.md) + [v25 exact-SIF Y-B](evidence/minindn-v25-exact-sif-yb.md)：基础6产物与外置应用闭包通过；同一SIF/app完成真实MiniNDN启动、协议和数值回执；app-only复用证据保留 | T011.c 的 empty HOME/scratch 专项、T010 完整场景、GPU/Tiger资格仍未完成；不把本地Y-B升级为正式qualification | 基础库/ABI未变复用SIF；仅应用改动重建受影响targets |
 | T011.b2 | T011 | 同源应用补包复用与MiniNDN延迟导入闭包 | VERIFIED | [local-sif](evidence/local-sif.md)：r2包159文件，3二进制不变、compiled:false；6复用边界测试；本机系统Python导入成功 | 仅补包/导入范围；分层MiniNDN命令和真实场景仍待完成 | 不因缺辅助Python文件或本机工具环境而重编译/重建基础SIF |
 | T011.b3 | T011 | Python应用改动复用C++构建缓存，冻结后实际命令加载 | VERIFIED | [local-sif](evidence/local-sif.md)：d9be0bfa应用，configure6.728s/Waf0.837s，三二进制哈希不变；冻结driver→SIF内User入口exit0；25focused通过 | 仅增量构建与实际入口；四Provider/MiniNDN推理仍待执行 | 基础SIF与未变C++均未重建；下一次使用最新app的缓存 |
 | T011.c | T011 | exact-SIF 本地 CPU YOLO 与 empty HOME/scratch | NOT_STARTED | V13；NOT_RUN | T011.b 后执行，取得 LOCAL_CPU_PASS | 容器环境新增证据，不能以 host 结果替代 |

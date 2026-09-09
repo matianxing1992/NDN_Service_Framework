@@ -88,7 +88,7 @@ def sif_runtime_enabled() -> bool:
     return bool(SIF_RUNTIME_SIF)
 
 
-def _sif_bind_args() -> list[str]:
+def _sif_bind_args(base_env: Mapping[str, str] | None = None) -> list[str]:
     """Return data/control-plane bind mounts for the candidate image.
 
     A selected external application is mounted read-only at /app; foundational
@@ -102,6 +102,7 @@ def _sif_bind_args() -> list[str]:
     sudo_user = os.environ.get("SUDO_USER", "")
     if sudo_user and os.geteuid() == 0 and (Path("/home") / sudo_user).is_dir():
         operator_home = Path("/home") / sudo_user
+    environment = os.environ if base_env is None else base_env
     bind_roots = [
         ROOT / "results",
         # Spec183 run outputs live under the canonical TigerCluster owner;
@@ -114,6 +115,21 @@ def _sif_bind_args() -> list[str]:
         operator_home / ".config/ndnsf/spec180",
     ]
     result: list[str] = []
+    # Generated trust schemas use the stable in-container anchor path
+    # ``/config/root.cert``.  The exact-SIF replay otherwise binds the run
+    # tree only at its host absolute path, so ValidatorConfig sees a missing
+    # anchor and reports the misleading "policy did not invoke" error.  Bind
+    # the candidate's public directory explicitly for every application
+    # child; NFD receives an empty base environment and does not need it.
+    trust_root_value = str(environment.get(
+        "SPEC180_YOLO_OFFER_TRUST_ROOT", "") or "").strip()
+    if trust_root_value:
+        trust_root = Path(trust_root_value).expanduser().resolve()
+        if (not trust_root.is_file()
+                or any(p.is_symlink() for p in (trust_root, *trust_root.parents))):
+            raise RunnerError("SIF_TRUST_ROOT_PATH_INVALID")
+        public_dir = trust_root.parent
+        result.extend(["--bind", f"{public_dir}:/config:ro"])
     if SIF_RUNTIME_APP_ROOT:
         app = Path(SIF_RUNTIME_APP_ROOT)
         if (not app.is_absolute() or '..' in app.parts or not app.is_dir()
@@ -168,7 +184,7 @@ def sif_exec_prefix(base_env: Mapping[str, str] | None = None,
     pieces = [
         shutil.which(SIF_RUNTIME_APPTAINER) or SIF_RUNTIME_APPTAINER,
         "exec", "--cleanenv",
-        *_sif_bind_args(),
+        *_sif_bind_args(base_env),
     ]
     if home_dir:
         selected_home_path = Path(home_dir).expanduser().resolve()
@@ -199,10 +215,11 @@ def sif_exec_prefix(base_env: Mapping[str, str] | None = None,
     return " ".join(pieces)
 
 
-def sif_python_prefix(base_env: Mapping[str, str]) -> str:
+def sif_python_prefix(base_env: Mapping[str, str], *, home_dir: str | None = None) -> str:
     """Fail-closed Python command prefix for MiniNDN node processes."""
     if sif_runtime_enabled():
-        return sif_exec_prefix(base_env) + " " + SIF_RUNTIME_PYTHON + " "
+        return (sif_exec_prefix(base_env, home_dir=home_dir)
+                + " " + SIF_RUNTIME_PYTHON + " ")
     return ""
 
 
@@ -223,7 +240,7 @@ class Spec180SifNfd:
                 if not sif_runtime_enabled():
                     return super().start()
                 command = (
-                    sif_exec_prefix({}, home_dir=self.homeDir)
+                    "exec " + sif_exec_prefix({}, home_dir=self.homeDir)
                     + " nfd --config " + self.confFile
                 )
                 # Application.start splits string commands, which would
@@ -1006,6 +1023,33 @@ class MiniNdnCaseRuntime:
             return tuple(commands)
         return tuple(item for item in commands if item.startup_phase == phase)
 
+    def _sif_role_home(self, process_name: str) -> str:
+        """Return the provisioned PIB/TPM home for one exact-SIF child.
+
+        MiniNDN assigns each node a fresh ``minindn-work/<node>`` HOME for
+        NFD.  Application children need the issuer-signed role material from
+        the provision stage instead; using the node HOME silently creates a
+        second self-signed trust domain.  Keep NFD on its node HOME and bind
+        only the application child to this immutable role HOME.
+        """
+        if process_name in {"controller", "repo", "user"}:
+            role = process_name
+        elif process_name.startswith("provider-"):
+            role = process_name[len("provider-"):]
+        else:
+            raise RunnerError("SIF_ROLE_NAME_INVALID:" + process_name)
+        if (not role or "/" in role or ".." in role
+                or not re.fullmatch(r"[A-Za-z0-9_.-]+", role)):
+            raise RunnerError("SIF_ROLE_NAME_INVALID:" + process_name)
+        private_root = self.binding.output.parent.parent / "private"
+        home = private_root / role
+        if (home.is_symlink() or not home.is_dir()
+                or any(parent.is_symlink() for parent in (home, *home.parents))
+                or not (home / ".ndn/pib.db").is_file()
+                or not (home / ".ndn/ndnsec-key-file").is_dir()):
+            raise RunnerError("SIF_ROLE_HOME_INVALID:" + process_name)
+        return str(home.resolve())
+
     def mark_catalogue_published(self, *, data_name: str, signer: str,
                                  data_digest: str) -> None:
         """Record a validated catalogue publication before starting User.
@@ -1184,19 +1228,32 @@ class MiniNdnCaseRuntime:
                 # its node socket instead of relying on whichever client.conf
                 # a native ndn-cxx build happens to discover through HOME.
                 node_env = dict(env)
+                # Protected Y-B User consumes the candidate-bound public
+                # recipient map.  Providers consume their private recipient
+                # map; exposing both through one shared environment makes the
+                # User's fail-closed map selector reject an otherwise valid
+                # startup.  Keep the private map for Provider children only.
+                if (spec.name == "user"
+                        and self.inputs.get("protection_epoch", PLAINTEXT_EPOCH)
+                        != PLAINTEXT_EPOCH):
+                    node_env.pop("SPEC181_PROVIDER_RECIPIENT_KEY_MAP", None)
                 node_env["NDN_CLIENT_TRANSPORT"] = (
                     "unix:///run/nfd/" + str(spec.node) + ".sock")
+                sif_home = (self._sif_role_home(spec.name)
+                            if sif_runtime_enabled() else None)
                 node_transport = node_env["NDN_CLIENT_TRANSPORT"]
                 # The exact-SIF replay contract prefixes every application
                 # child with the Apptainer command provider; the host process
                 # fallback marker guards the replay driver's contract check.
                 if spec.runtime == "native" and sif_runtime_enabled():
-                    app_prefix = sif_exec_prefix(node_env) + " "
+                    app_prefix = sif_exec_prefix(
+                        node_env, home_dir=sif_home) + " "
                 else:
-                    app_prefix = sif_python_prefix(node_env)
+                    app_prefix = sif_python_prefix(
+                        node_env, home_dir=sif_home)
                 node_command = (
                     "export NDN_CLIENT_TRANSPORT='" + node_transport + "'; "
-                    + (app_prefix if app_prefix else "")
+                    + ("exec " + app_prefix if app_prefix else "")
                     + spec.command)
                 proc, log_path = legacy.start(
                     node_handles[spec.node], spec.name, node_command,
@@ -1537,6 +1594,43 @@ def _validate_envelope_key_file(value: str) -> Path:
     if key_size != 32:
         raise RunnerError("REQUEST_ENVELOPE_KEY_SIZE_INVALID")
     return path
+
+
+def _stage_sif_owner_key(source: Path, output: Path) -> Path:
+    """Create a root-owned exact-SIF copy for a root-launched child.
+
+    MiniNDN needs root for network namespaces, while the application runtime
+    deliberately requires its request-envelope key to be owned by the process
+    euid.  Keep the operator-owned source as the provenance input and stage
+    the same bytes in the root-owned case output only for the SIF child.
+    """
+    if os.geteuid() != 0:
+        return source
+    if (not source.is_file() or source.is_symlink()
+            or any(parent.is_symlink() for parent in source.parents)):
+        raise RunnerError("SIF_ENVELOPE_KEY_SOURCE_INVALID")
+    stage_dir = output / ".sif-runtime-inputs"
+    if stage_dir.exists() or stage_dir.is_symlink():
+        raise RunnerError("SIF_ENVELOPE_KEY_STAGE_REUSED")
+    try:
+        stage_dir.mkdir(mode=0o700, parents=False, exist_ok=False)
+        os.chown(stage_dir, os.geteuid(), os.getegid())
+        destination = stage_dir / "request-envelope.key"
+        key_bytes = source.read_bytes()
+        fd = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                     0o600)
+        try:
+            written = os.write(fd, key_bytes)
+            if written != len(key_bytes):
+                raise OSError("short request-envelope key write")
+            os.fchmod(fd, 0o600)
+            os.fchown(fd, os.geteuid(), os.getegid())
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    except (OSError, ValueError) as exc:
+        raise RunnerError("SIF_ENVELOPE_KEY_STAGE_FAILED") from exc
+    return destination
 
 
 def _ldd_library_map(binary: Path) -> dict[str, Path]:
@@ -3335,6 +3429,13 @@ def _run_live_case_once(case: str, output: Path, inputs: Mapping[str, Any], *,
             raise RunnerError("GRANT_MUTATION_REQUIRES_PROTECTED_EPOCH")
     if (case == "Y-B" or subcase == "Y-N-E") and requested_epoch and requested_epoch != PLAINTEXT_EPOCH:
         runtime_inputs["protection_epoch"] = requested_epoch
+    # MiniNDN's systemd owner is root so it can create network namespaces.
+    # RuntimeJournal intentionally rejects a key owned by another euid; stage
+    # one root-owned copy for exact-SIF children while retaining the original
+    # operator-owned key as the validated input and digest source.
+    if sif_runtime_enabled() and os.geteuid() == 0:
+        runtime_inputs["envelope_key_file"] = _stage_sif_owner_key(
+            Path(runtime_inputs["envelope_key_file"]), output)
     binding = CaseRuntimeBinding.from_inputs(case, output, runtime_inputs)
     publication = build_runtime_publication_file(binding, runtime_inputs)
     runtime_inputs["runtime_publication_file"] = publication
@@ -3413,6 +3514,9 @@ def _run_live_case_once(case: str, output: Path, inputs: Mapping[str, Any], *,
     # controller/repository construction remains read-compatible.
     env["NDNSF_DI_STATE_ROOT"] = str(
         runtime_inputs.get("state_root") or os.environ.get("NDNSF_DI_STATE_ROOT", ""))
+    if sif_runtime_enabled() and os.geteuid() == 0:
+        env["NDNSF_DI_ENVELOPE_KEY_FILE"] = str(
+            runtime_inputs["envelope_key_file"])
     # The local MiniNDN supervisor is root so it can create network
     # namespaces, while RuntimeJournal inside an exact-SIF application binds
     # its root to the process UID. Keep the operator-owned outer state root
@@ -3443,7 +3547,14 @@ def _run_live_case_once(case: str, output: Path, inputs: Mapping[str, Any], *,
         _validate_local_native_build(env)
         ndn = runtime.start_network()
         runtime.configure_routing(ndn)
-        runtime.initialize_keychains(ndn)
+        # The provision stage already installs the issuer-signed PIB/TPM for
+        # every role under its private HOME.  Regenerating a root and child
+        # certificates here (the legacy MiniNDN helper) would silently replace
+        # those files with a second trust domain, so the exact-SIF Validator
+        # follows a chain that is absent from the prepared /config/root.cert.
+        # Keep the legacy generator for host-source compatibility runs only.
+        if not sif_runtime_enabled():
+            runtime.initialize_keychains(ndn)
         phase_started: list[tuple[CaseProcessSpec, object, Path]] = []
         started = runtime.start_processes(ndn, env, processes, phase="control")
         phase_started.extend(started)

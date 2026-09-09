@@ -3824,3 +3824,147 @@ identity and rerun packaging against the existing incremental Waf cache.
 - Lesson: asynchronous NAC construction requires a completed event-loop turn,
   not merely a post-constructor call; component tests that pump before
   construction do not cover the native wrapper lifecycle.
+
+## 2026-09-08: MiniNDN exposed global Controller generation lock
+
+- Symptom: the exact v11 base plus v16 application reached Controller startup,
+  but protected permission issuance was refused because the Controller
+  generation writer was unavailable at
+  `/tmp/ndnsf-controller-generation-1469598103934665603.state`.
+- Root cause: the default state key called the file-content hash helper on the
+  concatenated configuration-path and identity string.  That path does not
+  exist, so every Controller hashed empty input and converged on the same FNV
+  offset basis; an aborted process could leave the shared lock behind.
+- Fix: hash the configuration-path and identity bytes directly for the default
+  state filename while retaining file-content hashing for the policy epoch.
+- Lesson: tests that inject unique `NDNSF_CONTROLLER_GENERATION_STATE` paths
+  do not exercise the production default-path collision across processes.
+
+## 2026-09-08: layered base rebuild hit GCC ICE in Python extension
+
+- Symptom: the matching-dependency base rebuild compiled the framework and
+  repository libraries, then GCC 9.4.0 aborted while building
+  `pythonWrapper/src/ndnsf/_ndnsf.cpp` with `internal compiler error: in
+  ggc_set_mark`.
+- Root cause: this Ubuntu 20.04 GCC compiler has a resource-sensitive ICE in
+  the large pybind11 translation unit; the source compiler and dependency ABI
+  checks had already passed.
+- Fix: retain the failed build as a diagnostic and retry the same sealed base
+  definition after the failure is recorded; do not substitute host libraries
+  or alter the source boundary.
+- Lesson: a completed native-library compile does not imply that the Python
+  extension compiler phase is stable under the same memory pressure.
+
+## 2026-09-08: base rebuild retry hit transient SIF extraction failure
+
+- Symptom: a retry of the same base definition stopped while unpacking the
+  verified v11 parent SIF with `gzip uncompress failed with error code -3` for
+  `libcudnn_engines_precompiled.so.9.1.0`.
+- Root cause: the parent file still matched its locked SHA-256 and had already
+  executed successfully, so this retry failure is an extraction/resource
+  failure rather than a changed source or dependency input.
+- Fix: retain the diagnostic and retry the bounded build from the same verified
+  parent; no host-library override or source change is introduced.
+- Lesson: exact SIF provenance checks must precede each retry so a transient
+  unpack failure is not mistaken for a reproducibility or ABI failure.
+
+## 2026-09-08: bounded base retry hit a second GCC ICE
+
+- Symptom: after a clean parent extraction, the same `-j4` base build reached
+  `NetworkTelemetry.cpp` and GCC 9.4.0 aborted with `internal compiler error:
+  Segmentation fault` in `/usr/include/wchar.h`.
+- Root cause: the ICE moved between translation units across retries, which is
+  consistent with compiler memory pressure rather than a deterministic source
+  error.
+- Fix: lower the sealed base build's Waf/CMake parallelism to a recorded value
+  within the repository's maximum of four jobs, then rebuild and reverify the
+  exact SIF composition.
+- Lesson: the TigerCluster rule is an upper bound; reproducible builds also
+  need a stable lower parallelism setting when GCC 9 is resource-sensitive.
+
+## 2026-09-08: exact-SIF replay replaced the provisioned trust domain
+
+- Symptom: the v20 exact MiniNDN replay mounted `/config/root.cert` and
+  fetched controller parameters, but NAC-ABE validation still ended with
+  `ValidationState ... Loop detected in certification chain` and the generic
+  `Validator/policy did not invoke success or failure callback` error.
+- Root cause: the replay called the legacy `initialize_di_keychains` helper
+  after provisioning.  That helper generated a fresh root and child PIB/TPM
+  for the private role homes, while the read-only `/config/root.cert` belonged
+  to the issuer domain created by provision.  The validator therefore fetched
+  a runtime root outside the configured anchor and could not terminate the
+  chain.  The earlier missing `/config` mount was a separate harness defect;
+  mounting it exposed this second identity-lifecycle defect.
+- Fix: when exact SIF runtime is enabled, preserve the provisioned PIB/TPM and
+  skip the legacy keychain generator; retain it only for host-source
+  compatibility runs.  Keep the `/config` trust-anchor bind and TRACE child
+  log selector available for diagnosis.
+- Lesson: prepared identity material is an immutable cross-process input.
+  Component tests that generate a local certificate domain or do not compare
+  the public trust root with the exact child PIB cannot qualify this boundary.
+
+## 2026-09-08: exact-SIF children used MiniNDN node homes instead of role homes
+
+- Symptom: after preserving the provisioned role directories, v21 still
+  published a fresh self-signed controller key and failed NAC-ABE public
+  parameter validation.  The provisioned `private/controller/.ndn/pib.db`
+  contained the issuer-signed controller certificate, while the application
+  child selected a different key from `host-minindn/output/minindn-work`.
+- Root cause: `getPopen()` sets `HOME` to MiniNDN's per-node directory.  The
+  exact-SIF application prefix kept that HOME, so skipping the legacy helper
+  left each child on MiniNDN's newly generated self-signed PIB.  NFD needs the
+  node HOME for its socket/configuration, but application children need their
+  provisioned role HOME.
+- Fix: bind Controller, Repo, User, and each native Provider child to the
+  matching `private/<role>` home with Apptainer `--home`; leave NFD on its
+  MiniNDN node home.  Validate the role PIB and TPM directory before launch.
+- Lesson: an identity directory can be present and correct yet unused if the
+  process HOME is not explicitly bound at the application boundary.
+
+## 2026-09-08: exact-SIF User rejected the operator-owned envelope key
+
+- Symptom: v22 passed public-parameter validation, policy installation, and
+  permission delivery, then User exited before the first YOLO request with
+  `RuntimeJournalKeyError: request-envelope key file must be owner-controlled`.
+- Root cause: the exact MiniNDN supervisor runs as root for network namespace
+  setup, but provisioned request-envelope keys are owned by the operator UID.
+  The APP security check correctly compares the key owner with its process
+  euid, exposing a harness privilege-boundary mismatch rather than a model or
+  request-path failure.
+- Fix: retain the operator-owned key as the validated provenance input and
+  stage an identical mode-0600 root-owned copy inside the case output for
+  root-launched exact-SIF children.  Tiger application processes remain on
+  their normal operator UID and do not use this staging path.
+- Lesson: exact-SIF qualification must validate both identity material and the
+  UID under which each child consumes owner-controlled APP secrets.
+
+## 2026-09-08: exact-SIF User received both recipient key maps
+
+- Symptom: v23 passed the owner-controlled envelope-key check, then User
+  exited during `APPClient.from_config()` with `ValueError: configure only one
+  recipient key map`.
+- Root cause: the shared child environment exposed the candidate-bound public
+  recipient map and the Provider-only private recipient map to every process.
+  The User correctly rejects this ambiguous configuration, while Providers
+  need the private map for protected grant verification.
+- Fix: remove `SPEC181_PROVIDER_RECIPIENT_KEY_MAP` only from the protected
+  User child environment; retain it for native Providers and keep the public
+  map for User grant construction.
+- Lesson: process-specific secret inputs must be separated at launch even
+  when all processes share one MiniNDN case environment.
+
+## 2026-09-08: v24 completed YOLO but cleanup observed a live namespace
+
+- Symptom: v24 produced `YOLO_ACK_DRIVEN_RESULT status=true`, a terminal
+  response, and numerical agreement (`matched=true`, max absolute error
+  `0.0005340576171875`), but T010 returned 2 because teardown recorded
+  `CASE_RUNTIME_CLEANUP_FAILED:network-resources:REMAINING`.
+- Root cause: exact-SIF NFD and application commands were launched through a
+  shell without replacing it.  MiniNDN stopped the tracked shell handle while
+  an Apptainer descendant still held a node network namespace during the
+  immediate ownership scan.
+- Fix: use shell `exec` for every exact-SIF NFD/application command so the
+  tracked process is the Apptainer owner and receives teardown signals directly.
+- Lesson: a successful request and correct tensor output still require
+  descendant and namespace cleanup before an exact runtime case can be
+  considered complete.
