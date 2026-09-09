@@ -58,6 +58,9 @@ def test_maintained_qwen_routes_use_explicit_native_config_without_fallback() ->
     assert "native-requester-config" in stream_harness
     assert "native requester route currently supports only Qwen runtimes" in user
     assert "NativeServiceUser currently has no configured NativeConversationConfig" in user
+    assert "on_event=on_native_event" in user
+    assert "native observer terminal notification did not arrive" in user
+    assert 'response["streamEventCount"]' in user
     assert "on_event" in client
     # The native branch is selected before the automatic planner branch and
     # remains explicit in the maintained caller source.

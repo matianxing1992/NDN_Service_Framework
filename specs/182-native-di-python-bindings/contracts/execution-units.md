@@ -403,6 +403,16 @@ pending turn；path-only无key构造拒绝。Continuation 的 `requestContractDi
 - **Verify**: 官方 `$review-agent` 只读静态门；C++ `Spec182ClientState/SlowObserverDoesNotBlockCancelAndLateReplaySurvivesClientClose` 与 `Spec182ClientState/RealDeadlineDoesNotWaitForWorkOrSlowObserver`；强制重建 shared DI target 与 `_ndnsf` extension；28-case Python binding/facade suite 和导出 smoke check。真实跨进程 token stream 仍留 T016。
 - **Done When**: Python 可在 native handle 上注册 observer，C++ observer selectors 与 extension source closure 通过；callback lifetime/真实 Provider streaming 未完成时保持 `PARTIAL`，不宣称完整 streaming qualification。
 
+### T013-D Native Qwen Stream Callback Route
+
+- **Parent**: T013; **Depends**: T013-C, T012-B; **Reviewer**: maintained Qwen caller and callback-lifetime review
+- **Outcome**: 维护中的 Qwen full-generation native route forwards the C++ observer facade, validates accepted `GenerationTokenEventV1` snapshots, and preserves the final response/result boundary without reintroducing Python planning.
+- **Read**: `examples/python/NDNSF-DistributedInference/llm_pipeline/user.py` `_native_qwen_request` and `full_generation_call` → `APPClient.request_native_payload` → `NativeInferenceHandle::observe`; R5-B6/R5-B7 evidence.
+- **Write**: `examples/python/NDNSF-DistributedInference/llm_pipeline/user.py`; `tests/python/test_spec182_legacy_exclusion.py`; this execution card and R5-B8 evidence.
+- **Steps**: allow the maintained native Qwen helper to pass an optional observer; for the full-generation native branch, record only non-terminal token snapshots, validate their schema at the application boundary, and wait for the terminal observer notification before reporting the bounded stream count; keep diagnostic one-token calls and conversation fail-closed behavior unchanged.
+- **Verify**: official `$review-agent` static gate covering caller, facade, callback lifetime and source route; Python source/route checks; C++ observer/token-order selectors remain the native behavior evidence. No real Provider or cross-process qualification is claimed here.
+- **Done When**: native Qwen full-generation caller has one explicit callback-aware route with no planner fallback, its callback/result ordering is covered by focused tests and evidence, and unobserved Provider/cross-process gaps remain `PARTIAL`.
+
 ### T013-B Legacy Runtime Retirement
 
 - **Parent**: T013; **Depends**: T013-A; **Reviewer**: migration/reachability review

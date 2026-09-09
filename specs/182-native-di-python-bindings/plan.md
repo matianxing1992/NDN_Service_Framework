@@ -1,6 +1,6 @@
 # Implementation Plan: Native NDNSF-DI with Optional Python Bindings
 
-**Branch**: Experimental | **Revision**: 12 | **Date**: 2026-09-08
+**Branch**: Experimental | **Revision**: 13 | **Date**: 2026-09-08
 **Status**: IN_PROGRESS / 当前实现与验收状态见 tasks.md 的 Task Progress Registry 和 Current Checkpoint
 **Spec**: [spec.md](spec.md)
 
@@ -95,6 +95,12 @@ Python runner。按 [R5-B3 caller audit](evidence/r5-b3-maintained-caller-audit-
 Qwen/streaming requester 和 Provider host 四个出口；不能为了少一次构建把它们合成一批。
 T013-A 当前保持 `PARTIAL`，直到至少一个真实 caller 具备 operator-pinned catalog、
 preparation、grant/admission、C++ request selector 和 rollback evidence。
+
+R5-B7 已先闭合 native handle observer 的局部出口；R5-B8 只处理同一调用链的 Qwen
+full-generation callback 接线：其稳定出口是维护入口能把已接受 token snapshot 与 terminal
+通知交给 C++ observer facade，并在最终响应前完成顺序核对。该批不吸收 Provider retirement、
+conversation owner 或跨进程资格；它们使用不同 owner/selector，继续保持 `PARTIAL` 并在
+后续批次单独验收。
 
 2026-09-07 implementation audit：T004-A 因真实 Selection wire/identity 不兼容重开，
 见 [A8-01](evidence/t004-wire-reopened-20260907.md)。在继续 T010 完整请求提交前，

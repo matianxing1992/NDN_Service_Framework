@@ -162,7 +162,7 @@ def _native_qwen_options(args, *, generation_id: str,
 
 def _native_qwen_request(client, args, payload: bytes, *, request_id: str,
                          max_new_tokens: int | None = None,
-                         conversation=None):
+                         conversation=None, on_event=None):
     """Submit one Qwen payload on the explicit native requester route."""
     if conversation is not None:
         # NativeServiceUser currently has no configured NativeConversationConfig
@@ -189,9 +189,14 @@ def _native_qwen_request(client, args, payload: bytes, *, request_id: str,
         "outputMode": "TOKEN_STREAMING",
         "greedy": True,
     }, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    native = client.request_native_payload(
-        bytes(payload), options=options, task_name="generate",
-        application_options=application_options)
+    request_kwargs = {
+        "options": options,
+        "task_name": "generate",
+        "application_options": application_options,
+    }
+    if on_event is not None:
+        request_kwargs["on_event"] = on_event
+    native = client.request_native_payload(bytes(payload), **request_kwargs)
     result = native.result(int(args.timeout_ms))
     return type("NativeInferenceResult", (), {
         "status": True,
@@ -2843,13 +2848,52 @@ def _run_qwen_transformer_generation_sample(
                 if conversation is not None:
                     raise RuntimeError(
                         "native Qwen conversation route requires native continuation owner")
+                native_stream_events: list[dict] = []
+                native_stream_errors: list[str] = []
+                native_terminal = threading.Event()
+
+                def on_native_event(event) -> None:
+                    """Validate the bounded C++ observer snapshot at the caller edge."""
+                    if not isinstance(event, dict):
+                        native_stream_errors.append("observer event is not a mapping")
+                        return
+                    if bool(event.get("terminal", False)):
+                        native_terminal.set()
+                        return
+                    raw_payload = event.get("payload")
+                    if not isinstance(raw_payload, (bytes, bytearray, memoryview)):
+                        native_stream_errors.append("observer payload is not bytes-like")
+                        return
+                    try:
+                        token_event = decode_payload(bytes(raw_payload))
+                    except (TypeError, ValueError, UnicodeError) as exc:
+                        native_stream_errors.append(
+                            f"observer payload is not JSON: {type(exc).__name__}")
+                        return
+                    if token_event.get("schema") != "GenerationTokenEventV1":
+                        native_stream_errors.append("observer payload schema mismatch")
+                        return
+                    native_stream_events.append(token_event)
+
                 result = _native_qwen_request(
                     client, args, context_payload,
                     request_id=wire_request_id,
                     max_new_tokens=max_new_tokens,
+                    on_event=on_native_event,
                 )
+                if not native_terminal.wait(
+                        timeout=max(1.0, min(float(args.timeout_ms) / 1000.0, 5.0))):
+                    raise RuntimeError(
+                        "native observer terminal notification did not arrive")
+                if native_stream_errors:
+                    raise RuntimeError(
+                        "native observer event validation failed: "
+                        + "; ".join(native_stream_errors))
                 response_payload = result.payload
-                return decode(response_payload)
+                response = decode(response_payload)
+                response["streamEventCount"] = len(native_stream_events)
+                response["generationMode"] = "TOKEN_STREAMING"
+                return response
             if getattr(args, "automatic_planning_manifest", ""):
                 application_input = args._automatic_adapter.task.encode_input(
                     context_payload,
