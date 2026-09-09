@@ -1,6 +1,6 @@
 # Implementation Plan: Native NDNSF-DI with Optional Python Bindings
 
-**Branch**: Experimental | **Revision**: 72 | **Date**: 2026-09-09
+**Branch**: Experimental | **Revision**: 73 | **Date**: 2026-09-09
 **Status**: IN_PROGRESS / 当前实现与验收状态见 tasks.md 的 Task Progress Registry 和 Current Checkpoint
 **Spec**: [spec.md](spec.md)
 
@@ -810,6 +810,21 @@ elapsed `255.25s`，SHA 为 `94b94c8ca5be3b3eca9c0107213f39db35a83b34d90ae8b8142
 `ldd` 无 `not found`。本批只关闭 standalone Provider 的 build/link boundary；Provider `--serve`、
 独立 requester/Provider transport、maintained caller/no-Python 和 T016 仍需下一批真实运行。
 详见 [R10-B50 evidence](evidence/r10-b50-provider-link-closure-20260909.md)。
+
+### R10-B51 Provider Check-Only With Real ONNX Bundle 2026-09-09
+
+本批复用 R10-B50 修复后的 standalone Provider binary 和已有四角色
+`spec174-exact-bundle-gpu-v5`，从 `parseArgs`、plan/manifest loader、ONNX Runtime
+factory 到 `NativeProviderSession::registerRunner` 执行真实 `--check-only`。四个
+`DATA_DRIVEN_V2` roles（`/Backbone`、`/Head/Shard/0`、`/Head/Shard/1`、`/Merge`）全部
+加载、预热并输出带 artifact/plan digest 的 execution evidence，随后打印
+`NDNSF_DI_NATIVE_PROVIDER_CHECK_OK`；进程 exit `0`，elapsed `0.05s`，`ldd` 无未解析依赖。
+
+官方 `review-agent` 五 lane 只读检查覆盖参数模式、service/role 对齐、相对 artifact
+路径、evidence 聚合、注册输出和 source/binary 身份，没有 P1/P2/P3。该批不启动 NDN
+Face 或 Provider `--serve`，不观察 requester/Provider transport、终端 Response、
+maintained caller/no-Python 或 T016 qualification；这些仍由后续生产批次负责。完整命令、
+binary SHA、raw log 和 closure decision 见 [R10-B51 evidence](evidence/r10-b51-provider-check-only-20260909.md)。
 
 ### R10-B46 Real Provider Native Suite 2026-09-09
 
