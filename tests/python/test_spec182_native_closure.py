@@ -23,31 +23,35 @@ minindn = importlib.util.module_from_spec(MININDN_SPEC)
 MININDN_SPEC.loader.exec_module(minindn)
 
 
-def _manifest(tmp_path: Path, *, source: Path | None = None) -> Path:
+def _manifest(tmp_path: Path, *, source: Path | None = None,
+              business_marker: str | None = None) -> Path:
     source = source or Path("/bin/true")
     digest = "sha256:" + hashlib.sha256(source.read_bytes()).hexdigest()
+    case = {
+        "id": "positive",
+        "expectedExit": 0,
+        "isolation": {
+            "schema": runner.ISOLATION_SCHEMA,
+            "artifacts": [{
+                "source": str(source), "target": "/bin/true",
+                "sha256": digest, "kind": "executable", "mode": "0555",
+            }],
+            "processes": [{
+                "id": "requester", "role": "requester",
+                "executable": "/bin/true",
+                "argv": ["/probe-root/bin/true"], "env": {},
+            }],
+            "childProcesses": [], "endpoints": [], "tools": {},
+            "limits": {"runSeconds": 10, "cleanupSeconds": 5,
+                        "traceBytes": 1024 * 1024},
+            "requiredEvidence": sorted(runner.REQUIRED_EVIDENCE),
+        },
+    }
+    if business_marker is not None:
+        case["businessOracle"] = {"stdoutMarker": business_marker}
     document = {
         "schema": runner.MANIFEST_SCHEMA,
-        "cases": [{
-            "id": "positive",
-            "expectedExit": 0,
-            "isolation": {
-                "schema": runner.ISOLATION_SCHEMA,
-                "artifacts": [{
-                    "source": str(source), "target": "/bin/true",
-                    "sha256": digest, "kind": "executable", "mode": "0555",
-                }],
-                "processes": [{
-                    "id": "requester", "role": "requester",
-                    "executable": "/bin/true",
-                    "argv": ["/probe-root/bin/true"], "env": {},
-                }],
-                "childProcesses": [], "endpoints": [], "tools": {},
-                "limits": {"runSeconds": 10, "cleanupSeconds": 5,
-                            "traceBytes": 1024 * 1024},
-                "requiredEvidence": sorted(runner.REQUIRED_EVIDENCE),
-            },
-        }],
+        "cases": [case],
     }
     path = tmp_path / "case-manifest.json"
     path.write_text(json.dumps(document), encoding="utf-8")
@@ -322,6 +326,39 @@ def test_trace_integrity_rejects_unpaired_unfinished_syscall(tmp_path: Path) -> 
     observation = runner.collect_trace({}, {"trace": str(trace)})
     assert observation["complete"] is False
     assert observation["integrityViolations"] == ["TRACE_UNPAIRED"]
+
+
+def test_trace_derives_runtime_evidence_and_accepts_declared_marker(tmp_path: Path) -> None:
+    case = runner.load_case(_manifest(tmp_path, business_marker="NATIVE_OK"), "positive")
+    trace = tmp_path / "trace.txt"
+    trace.write_text(
+        '123 execve("/probe-root/bin/true", ["true"], 0x0) = 0\n'
+        '123 exit_group(0)                   = ?\n', encoding="utf-8")
+    stdout = tmp_path / "stdout.log"
+    stdout.write_text("NATIVE_OK\n", encoding="utf-8")
+    run = {"trace": str(trace), "stdout": str(stdout), "returncode": 0,
+           "timedOut": False, "supervisorPid": 123,
+           "command": ["strace", "bwrap", "--unshare-all"]}
+    observation = runner.collect_trace(case, run)
+    assert observation["complete"] is True
+    assert set(runner.REQUIRED_EVIDENCE) <= set(observation["evidence"])
+    assert runner.evaluate_case(case, run, observation)["status"] == "PASS"
+
+
+def test_declared_business_marker_missing_keeps_case_unqualified(tmp_path: Path) -> None:
+    case = runner.load_case(_manifest(tmp_path, business_marker="NATIVE_OK"), "positive")
+    trace = tmp_path / "trace.txt"
+    trace.write_text(
+        '123 execve("/probe-root/bin/true", ["true"], 0x0) = 0\n'
+        '123 exit_group(0)                   = ?\n', encoding="utf-8")
+    run = {"trace": str(trace), "stdout": str(tmp_path / "stdout.log"),
+           "returncode": 0, "timedOut": False, "supervisorPid": 123,
+           "command": ["strace", "bwrap", "--unshare-all"]}
+    (tmp_path / "stdout.log").write_text("", encoding="utf-8")
+    observation = runner.collect_trace(case, run)
+    result = runner.evaluate_case(case, run, observation)
+    assert result["status"] == "UNQUALIFIED"
+    assert "MISSING_EVIDENCE:business-oracle" in result["failures"]
 
 
 def test_minindn_owner_does_not_fake_native_qualification(tmp_path: Path) -> None:

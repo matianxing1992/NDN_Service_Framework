@@ -158,6 +158,13 @@ def load_case(manifest_path: Path, case_id: str) -> dict[str, Any]:
                  "requiredRoles contains a duplicate role")
     if "cold" in case:
         _require(isinstance(case["cold"], bool), "cold marker must be boolean")
+    if "businessOracle" in case:
+        oracle = case["businessOracle"]
+        _require(isinstance(oracle, dict), "businessOracle must be an object")
+        marker = oracle.get("stdoutMarker")
+        _require(isinstance(marker, str) and bool(marker) and "\n" not in marker
+                 and "\r" not in marker and len(marker) <= 4096,
+                 "businessOracle.stdoutMarker is invalid")
     limits = isolation.get("limits", {})
     _require(isinstance(limits, dict), "isolation limits are invalid")
     _require(0 < int(limits.get("runSeconds", 0)) <= 3600,
@@ -315,7 +322,8 @@ def run_case(case: dict[str, Any], staged: dict[str, Any], output: Path,
             os.close(namespace_fd)
     (output / "stdout.log").write_text(stdout or "", encoding="utf-8")
     (output / "stderr.log").write_text(stderr or "", encoding="utf-8")
-    result = {"command": command, "returncode": process.returncode, "timedOut": timed_out,
+    result = {"command": command, "supervisorPid": process.pid,
+              "returncode": process.returncode, "timedOut": timed_out,
               "durationMs": int((time.monotonic() - start) * 1000),
               "trace": str(trace_path), "stdout": str(output / "stdout.log"),
               "stderr": str(output / "stderr.log")}
@@ -334,10 +342,15 @@ def collect_trace(case: dict[str, Any], run: dict[str, Any]) -> dict[str, Any]:
     integrity_violations: list[str] = []
     policy_violations: list[str] = []
     unfinished_by_pid: dict[str, int] = {}
+    pids: set[str] = set()
+    successful_execs: list[dict[str, Any]] = []
+    exit_events = 0
     events = []
     for line in text.splitlines():
         pid_match = TRACE_PID.match(line)
         pid = pid_match.group(1) if pid_match else None
+        if pid is not None:
+            pids.add(pid)
         if "<unfinished ...>" in line:
             if pid is None:
                 integrity_violations.append("TRACE_UNPAIRED")
@@ -350,8 +363,11 @@ def collect_trace(case: dict[str, Any], run: dict[str, Any]) -> dict[str, Any]:
                 unfinished_by_pid[pid] -= 1
         if "execve" in line or "execveat" in line:
             match = TRACE_EXEC.search(line)
-            events.append({"kind": "exec", "line": line})
-            if match and match.group(1) == "0" and ("python" in line.lower() or "libpython" in line.lower()):
+            successful = bool(match and match.group(1) == "0")
+            events.append({"kind": "exec", "pid": pid, "success": successful, "line": line})
+            if successful:
+                successful_execs.append({"pid": pid, "line": line})
+            if successful and ("python" in line.lower() or "libpython" in line.lower()):
                 policy_violations.append("PYTHON_EXEC")
         if "libpython" in line.lower() or "python3" in line.lower():
             policy_violations.append("PYTHON_MAPPING")
@@ -359,9 +375,38 @@ def collect_trace(case: dict[str, Any], run: dict[str, Any]) -> dict[str, Any]:
             policy_violations.append("UNDECLARED_ENDPOINT")
         match = TRACE_EXIT.search(line)
         if match:
+            exit_events += 1
             events.append({"kind": "exit", "code": int(match.group(1)), "line": line})
     if any(count > 0 for count in unfinished_by_pid.values()):
         integrity_violations.append("TRACE_UNPAIRED")
+    command = [str(value) for value in run.get("command", [])]
+    evidence: list[str] = []
+    if pids and run.get("supervisorPid") is not None:
+        evidence.append("identity")
+    if successful_execs and exit_events:
+        evidence.append("process-tree")
+    if "nsenter" in command or "--unshare-all" in command:
+        evidence.append("namespace")
+    if successful_execs and not any(item in policy_violations
+                                    for item in ("PYTHON_EXEC", "PYTHON_MAPPING")):
+        evidence.append("exec-map")
+    if "UNDECLARED_ENDPOINT" not in policy_violations:
+        evidence.append("endpoints")
+    if not run.get("timedOut") and run.get("returncode") is not None:
+        evidence.append("cleanup")
+    oracle = case.get("businessOracle")
+    if isinstance(oracle, dict):
+        marker = oracle.get("stdoutMarker")
+        output_text = ""
+        output_path = run.get("stdout")
+        if output_path:
+            try:
+                output_text = Path(str(output_path)).read_text(
+                    encoding="utf-8", errors="replace")
+            except OSError:
+                pass
+        if isinstance(marker, str) and marker in output_text:
+            evidence.append("business-oracle")
     return {
         # Completeness describes whether the observer delivered a trustworthy
         # trace.  Policy violations are still a complete observation and must
@@ -371,7 +416,10 @@ def collect_trace(case: dict[str, Any], run: dict[str, Any]) -> dict[str, Any]:
         "integrityViolations": sorted(set(integrity_violations)),
         "policyViolations": sorted(set(policy_violations)),
         "events": events,
-        "evidence": [],
+        "evidence": sorted(set(evidence)),
+        "pids": sorted(pids),
+        "successfulExecs": len(successful_execs),
+        "exitEvents": exit_events,
     }
 
 
