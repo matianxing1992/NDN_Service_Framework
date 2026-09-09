@@ -1,15 +1,15 @@
 # Spec182 Design Audit
 
-**Revision**: 18 | **Mode**: source alignment / cross-task convergence
+**Revision**: 19 | **Mode**: source alignment / cross-task convergence
 **Verdict**: DRAFT / PARTIAL; T016 preflight UNQUALIFIED
-**Source**: `b98d7461` implementation/docs checkpoint / Experimental
+**Source**: `0f30e37a` implementation/docs checkpoint / Experimental
 **Evidence**: [current source and dependency baseline](contracts/integrated-baseline.md)
 
 ## Current Findings
 
 ### Remaining Production Chain Review 2026-09-09
 
-本次复核以 `b98d7461` 为当前 source checkpoint，当前文档状态由 R10-B20 更新。R10-B1--R10-B6 已在本地关闭
+本次复核以 `0f30e37a` 为当前 source checkpoint，当前文档状态由 R10-B21 更新。R10-B1--R10-B6 已在本地关闭
 准备、公开 facade、YOLO/Qwen maintained caller 的 `REPO_REF` 路由、真实 Provider 正向
 消费和三个 Provider fail-closed 负例；R10-B7 同步了当前 route marker 与 T013-D/T013-F
 契约文字，R10-B9 又在真实 Provider conversation fixture 中观察到 configured
@@ -89,6 +89,19 @@ probe 没有 DI business marker，仍为 `UNQUALIFIED` / `MISSING_EVIDENCE:busin
 覆盖五条 required lane，无 introduced regression；build/source lane 对 Python-only collector
 标记 `N/A`。T014、真实 native DI case、maintained caller、no-Python 与 T016 资格仍未关闭，详见
 [R10-B20 evidence](evidence/r10-b20-collector-evidence-boundary-20260909.md)。
+
+### I01 Native Consumer Positive Case 2026-09-09
+
+R10-B21 使用现有同源 `build-nac182/spec182-installed-consumer` 及递归解析出的 31 项 ELF
+依赖生成 candidate runner manifest，在 tracked MiniNDN owner 的 requester namespace 存活期间
+执行 I01。canonical runner 通过 held namespace FD 启动 C++ consumer；returncode=0，trace
+`complete=true`，integrity/policy violations 为空，六类运行 evidence 加上独立 stdout marker
+`SPEC182_INSTALLED_CONSUMER_NATIVE_DI_OK` 全部满足，evaluator 返回 `PASS`。
+
+该结果证明了真实 native C++ installed-consumer 的 owner→runner→collector 闭合，不能外推为
+requester/provider DI 请求、grant/selection、I02-I08 反例、maintained caller、no-Python
+业务或 T016 qualification。candidate manifest 和原始输出保存在本机 `.codex-tmp/`，未把
+二进制、私有依赖或机器路径提交到仓库；详见 [R10-B21 evidence](evidence/r10-b21-native-consumer-i01-pass-20260909.md)。
 
 ### MiniNDN Owner Context Producer 2026-09-09
 
