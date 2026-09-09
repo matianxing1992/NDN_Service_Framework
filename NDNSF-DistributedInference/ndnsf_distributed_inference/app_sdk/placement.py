@@ -3103,7 +3103,16 @@ class AutomaticPlanningCoordinator:
             self.service_name, request_payload, mode="DEFERRED",
             ack_timeout_ms=self.ack_timeout_ms, timeout_ms=timeout_ms,
             request_id=request_id, fail_fast_terminal_selection=True,
-            request_capabilities={"NDNSF_DATA_V1": "required"},
+            # V3 carries large model responses as request-scoped encrypted
+            # Data.  Declaring the confidentiality capability here is
+            # required because the native binding preserves an explicitly
+            # supplied capability container; an omitted field would leave a
+            # large FullModel response without the request key bundle after
+            # the legacy service-wide response-key carrier was removed.
+            request_capabilities={
+                "NDNSF_DATA_V1": "required",
+                "RequestScopedConfidentialityV1": "required",
+            },
             **({"ack_coverage_predicate": ack_coverage_predicate}
                if ack_coverage_predicate is not None else {}),
             **({"stream_options": stream_options,

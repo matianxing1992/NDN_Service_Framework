@@ -54,13 +54,15 @@ class _V3Collaboration:
 class _V3ServiceUser:
     def __init__(self, *, accepted_roles=("stage-0", "stage-1"),
                  backends=("cpu",),
-                 providers=("/provider/a", "/provider/b")):
+                 providers=("/provider/a", "/provider/b"),
+                 can_provision=False):
         self.collaboration = None
         self.publish_calls = []
         self.begin_kwargs = None
         self.accepted_roles = tuple(accepted_roles)
         self.backends = tuple(backends)
         self.providers = tuple(providers)
+        self.can_provision = bool(can_provision)
 
     def begin_collaboration(self, service, payload, **kwargs):
         self.begin_kwargs = dict(kwargs)
@@ -87,6 +89,7 @@ class _V3ServiceUser:
                 expires_at_ms=10**15,
                 signer_key_id="test-key",
                 signature="test-signature",
+                can_provision=self.can_provision,
             )
             public_key = (provider + ":selection-key").encode()
             self.collaboration.closed.candidates.append(SimpleNamespace(
@@ -425,7 +428,8 @@ class DefaultApplicationPathTest(unittest.TestCase):
             provider_calls.append("catalog")
             return snapshots
 
-        user = _V3ServiceUser()
+        # Catalog publication is fetched after Selection in this path.
+        user = _V3ServiceUser(can_provision=True)
         coordinator = AutomaticPlanningCoordinator(
             service_user=user,
             service_name="/inference",
@@ -469,7 +473,9 @@ class DefaultApplicationPathTest(unittest.TestCase):
             "example/detector", "sha256:" + "a" * 64,
             "sha256:" + "b" * 64, source_revision="immutable-revision",
         )
-        user = _V3ServiceUser()
+        # This fixture represents a Provider that must fetch the canonical
+        # publication after Selection, so the transport reference is present.
+        user = _V3ServiceUser(can_provision=True)
         ensurer = _CanonicalEnsurer()
         coordinator = AutomaticPlanningCoordinator(
             service_user=user,
@@ -572,7 +578,10 @@ class DefaultApplicationPathTest(unittest.TestCase):
 
         self.assertEqual(
             user.begin_kwargs["request_capabilities"],
-            {"NDNSF_DATA_V1": "required"},
+            {
+                "NDNSF_DATA_V1": "required",
+                "RequestScopedConfidentialityV1": "required",
+            },
         )
         commit = user.collaboration.commits[0]
         self.assertEqual(

@@ -4230,3 +4230,36 @@ identity and rerun packaging against the existing incremental Waf cache.
   to the declared `5c6e53ca...` without rebuilding the image.
 - Lesson: rehash the exact runtime path immediately before every preparation;
   a prior exact-SIF PASS does not authorize a later mutable inode.
+
+## 2026-09-09: Y-A exact-SIF run exposed an APP V3 capability omission
+
+- Symptom: exact-SIF Y-A reached the real four-role MiniNDN graph, but the
+  FullModel provider returned `REMOTE_RESPONSE_FAILED`; the provider reported
+  `large response requires request-scoped confidentiality` and no
+  `NDNSF_REQUEST_SCOPED_*` markers were emitted.
+- Root cause: the APP V3 placement path explicitly supplied only
+  `NDNSF_DATA_V1`.  Because an explicit capability map suppresses the native
+  default capability injection, the request had no
+  `RequestScopedConfidentialityV1` carrier for the large encrypted response.
+- Fix status: source fix adds `RequestScopedConfidentialityV1: required` to the
+  V3 request and updates the focused application-path assertion.  The frozen
+  external app bundle must be rebuilt app-only and rerun through exact-SIF Y-A
+  before this gate can be called PASS.
+- Lesson: an exact SIF and a valid native ABI do not prove APP protocol
+  capability completeness; inspect the provider's fail-closed reason and
+  request-scoped markers at the real process boundary.
+
+## 2026-09-09: application-path regression fixture assumed every role fetches
+
+- Symptom: the focused APP suite failed because the canonical-artifact test
+  expected `/canonical/...` transport names, while the V3 commit contained
+  empty `artifactDataName` values for Providers advertising prepared local
+  material.
+- Root cause: the fixture left `can_provision=False`, which correctly selects
+  the local-preparation branch introduced by the protected transport contract;
+  the assertion was testing the remote-fetch branch without declaring it.
+- Fix: expose the fixture's `can_provision` flag and enable it only for the
+  catalog/canonical tests that require a post-Selection fetch reference.
+- Lesson: distinguish canonical artifact identity from optional transport
+  fetch identity in APP tests; local preparation intentionally has no fetch
+  name.
