@@ -1,6 +1,6 @@
 # Implementation Plan: Native NDNSF-DI with Optional Python Bindings
 
-**Branch**: Experimental | **Revision**: 66 | **Date**: 2026-09-09
+**Branch**: Experimental | **Revision**: 67 | **Date**: 2026-09-09
 **Status**: IN_PROGRESS / 当前实现与验收状态见 tasks.md 的 Task Progress Registry 和 Current Checkpoint
 **Spec**: [spec.md](spec.md)
 
@@ -761,6 +761,22 @@ native build、caller migration 或 T016 qualification。首轮静态复核发�
 `DONE`。本批已同步个人 `CODEX_HOME` 副本并通过正常强制检查；这是 workflow preflight
 出口，不改变 T004/T008/T010/T011/T013/T014/T015/T016/T017 或 native qualification。
 详见 [R10-B44 evidence](evidence/r10-b44-speckit-entrypoint-preflight-20260909.md)。
+
+### R10-B45 Spec Kit Entrypoint Preflight Enforcement 2026-09-09
+
+R10-B44 把同步预检写入共享 `speckit-code-design`，但实际安装的 11 个 Spec Kit 入口仍可能只
+引用共享规则而不显式执行该命令。本批把相同的 `Feature Sync Preflight` 说明补到每个
+feature-facing `.agents/skills/speckit-*` 入口，并让 `verify-spec-kit-sync.py` 的
+`ENTRYPOINT_MARKER_GROUPS` 强制检查 `verify-spec-kit-sync.py` 与 `--require-entrypoints` 两项。
+只负责更新 agent context 指针的入口继续排除。
+
+分配依据固定为：production entry/callers 是 11 个实际入口；implementation/wire 是版本化
+README 和 checker marker；test/harness/oracle 是正常及删除 marker 的 checker probes；
+build/source closure 对文档/checker 写 `N/A`；migration/evidence 是本机副本和本批证据。
+稳定出口是强制检查在 11/11 入口及个人共享副本通过，并能拒绝缺 marker 的入口。该批不吸收
+native source、构建、maintained caller migration、跨进程 transport 或 T016 qualification。
+`py_compile`、强制 checker、validator 和 `git diff --check` 通过；官方静态复核没有 P1/P2/P3。
+详见 [R10-B45 evidence](evidence/r10-b45-entrypoint-preflight-enforcement-20260909.md)。
 
 ### R10-B33 Native Unary Repository Reference Request 2026-09-09
 

@@ -54,6 +54,8 @@ ENTRYPOINT_MARKER_GROUPS = (
     ("Command Output Contract",),
     ("review-agent",),
     ("Coverage matrix", "five-lane coverage"),
+    ("verify-spec-kit-sync.py",),
+    ("--require-entrypoints",),
 )
 
 TEMPLATE_MARKER_GROUPS = {
