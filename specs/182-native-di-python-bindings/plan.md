@@ -77,9 +77,19 @@ library/unit-tests `-j4` build、49-case requester/conversation/provider/stream 
 receipt/control/commit，再由同一 coordinator 发起 `APPEND_DELTA` 并提交第二轮状态引用。
 具名 integration selector 和 V2 structured request/event/collaboration name 单测均通过；
 静态门还发现并修复 SVS session/seq replay、End 后 gap retry 误判及单 worker 控制面等待
-阻塞。CC-4c recovery 或 single replacement 负例尚未在真实 Provider harness 中运行，因而
-T011-C 与 T016 仍未关闭。下一步先补该失败边界，再依赖 T011-C 的稳定接口推进 T012/T013；
-不要把本批局部 PASS 写成 T010/T011 或全 Spec 完成。
+阻塞。R7-B1 已在真实 Provider harness 中补齐 CC-4c 的单 Provider replacement 负例：失败
+Provider 被排除后在 `ACK_CLOSED` 返回 `DI_NATIVE_NO_ADMITTED_PROVIDER`，且不写入 successor
+checkpoint。成功 alternate-provider recovery、跨进程资格和 T016 仍未关闭。不要把本批局部
+PASS 写成 T010/T011 或全 Spec 完成。
+
+### R7-B1 Single-Provider Replacement Negative 2026-09-08
+
+R7-B1 将 CC-4c 作为独立批次收口：同一公开 `NativeInferenceClient`/真实 `ServiceProvider`
+fixture 注入 `ProviderFailure`，开启一次 replacement，验证恢复 ACK 排除失败 Provider、
+`NATIVE_REQUEST_STAGE_FAILED`/`ACK_CLOSED` 原因和空 conversation journal。首次测试误把单
+Provider 环境当成可成功替换，真实运行先暴露 `DI_NATIVE_NO_ADMITTED_PROVIDER`；修正测试并
+保留 exit201 原始证据后，负例与原有正向两轮均通过。下一批必须在多 Provider 配置下另行
+证明成功 replacement，或沿稳定 owner/caller 依赖推进；不重用这次负例来宣称恢复资格。
 
 T012-A 的候选 ABI 观察项已单独记录为 `PARTIAL`：显式候选 Core/DI、NAC-ABE 与 SVS
 依赖下 extension 导入和 21 个 focused Python cases 通过，但默认 requester 的完整
