@@ -1,6 +1,6 @@
 # Implementation Plan: Native NDNSF-DI with Optional Python Bindings
 
-**Branch**: Experimental | **Revision**: 36 | **Date**: 2026-09-09
+**Branch**: Experimental | **Revision**: 37 | **Date**: 2026-09-09
 **Status**: IN_PROGRESS / 当前实现与验收状态见 tasks.md 的 Task Progress Registry 和 Current Checkpoint
 **Spec**: [spec.md](spec.md)
 
@@ -345,6 +345,22 @@ status. No product source, test target, or qualification status is promoted. The
 must create and validate an isolated MiniNDN node context (namespace inode, owner PID/start ticks,
 NFD socket and peer metadata) before invoking the existing runner; until then T016 remains
 `OPEN_FOR_NEXT_BATCH` / `UNQUALIFIED`.
+
+### R10-B16 Native Closure Node Context Boundary 2026-09-09
+
+The T016 retry showed that the canonical runner accepts a `nodes` parameter in its internal
+signature but does not yet validate MiniNDN node identity or enter the supplied network namespace.
+This batch adds the frozen node-context preflight (namespace inode, owner PID/start ticks, NFD
+socket and peer metadata) and passes a held namespace descriptor through `nsenter` before the
+existing bubblewrap/strace launch. Cases without a declared node remain available to the local
+harness tests; a qualification case with a declared node fails closed when context is missing or
+stale.
+
+Allocation is limited to `tests/standalone/run-spec182-native-closure.py`, its Python harness tests,
+the task/plan/evidence record and the runner's standalone documentation. It does not invent the
+missing DI qualification cases or change the MiniNDN owner topology. The stable exit is a tested
+preflight/launch command that either carries a validated held namespace FD or returns an explicit
+`UNQUALIFIED` boundary.
 
 ### R8-SKILL Review Coverage Contract 2026-09-09
 
