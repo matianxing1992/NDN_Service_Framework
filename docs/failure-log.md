@@ -4422,3 +4422,54 @@ Fix status: rerun with `/tmp/t008-build-root/lib` plus the pinned NDN-SVS,
 NAC-ABE and `/usr/local/lib` paths, without changing APP source.
 Lesson: host import failures must be isolated from APP behavior; exact-SIF
 and host tests need the same recorded loader closure before interpreting reds.
+
+## 2026-09-09 — v50 used an APP layer older than the Y-N-D driver
+
+Symptom: the fresh v50 exact-SIF Y-N matrix passed Y-N-O through Y-N-L but
+stopped at Y-N-D with `SPEC180_YN_MUTATION_INVALID` before a request was
+issued. The exact-SIF user process was `/app/repo/.../user.py` from
+`app-controller-version-j4-v31`, while the host driver had already registered
+Y-N-D.
+Root cause: the APP layer is immutable and v31 predates the new Y-N-D branch;
+the base SIF and native provider were not the source of this rejection.
+Fix status: keep the base SIF unchanged, rebuild only the external APP layer
+from the current source seal, and rerun the full exact-SIF matrix with the
+matching app manifest.
+Lesson: every exact-SIF result must bind the APP manifest/source revision to
+the driver semantics; a stale application layer is a composition failure, not
+evidence that NDNSF-DI or the dependency cutpoint is broken.
+
+## 2026-09-09 — v32 source seal used an ndn-svs subdirectory
+
+Symptom: `prepare-local-sif-source.py` stopped before writing a valid source
+seal with `FileNotFoundError` for `/home/tianxing/NDN/ndn-svs/ndn-svs/wscript`.
+Root cause: the pinned ndn-svs checkout is the parent directory
+`/home/tianxing/NDN/ndn-svs`; its child is not the Git workspace expected by
+the sealer.
+Fix status: rerun with the lock-matching parent checkout after confirming its
+revision and clean tracked state.
+Lesson: source sealing must use the exact lock checkout root, especially when
+a repository contains a nested source directory.
+
+## 2026-09-09 — v32 source seal used an ndnsd subdirectory
+
+Symptom: the corrected ndn-svs input reached dependency sealing but stopped
+with `LOCAL_SIF_DEPENDENCY_SOURCE_MISSING:waf` for the NDNSD archive.
+Root cause: the pinned NDNSD checkout is `/home/tianxing/NDN/NDNSD`; the
+`ndnsd` child is only its source subdirectory and does not contain the build
+entrypoints required by `NDNSD_FILES`.
+Fix status: rerun with the lock-matching NDNSD repository root.
+Lesson: every dependency archive must be sealed from its Git checkout root,
+not from a nested package directory.
+
+## 2026-09-09 — v32 app build used an empty cache root
+
+Symptom: `build-external-yolo.py` stopped before configure with
+`APP_CACHE_IDENTITY` when `--build-cache-from` referenced v31 but `--cache`
+was a new empty v32 directory.
+Root cause: the incremental cache option validates the prior application's
+build key inside the cache root; it does not copy a cache into a new root.
+Fix status: reuse the verified v31 cache root with its matching `-j4` build
+identity while emitting the new v32 application bundle.
+Lesson: keep cache-root identity and application-output identity separate;
+changing the output bundle does not require inventing an empty cache root.
