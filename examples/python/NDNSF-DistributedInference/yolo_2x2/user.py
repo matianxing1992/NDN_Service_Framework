@@ -636,6 +636,95 @@ def _load_yolo_ack_driven(client, args) -> int:
     return 0
 
 
+def _load_yolo_native_payload(client, args) -> int:
+    """Submit the maintained YOLO payload through the native requester.
+
+    The native configuration is the only composition authority in this branch:
+    catalog, grant/admission, preparation and split/placement owners are
+    constructed by ``APPClient`` and the request is submitted as inline native
+    tensor bytes.  The historical ACK-driven Python planner remains a separate
+    explicitly selected path when this option is absent.
+    """
+    if not args.native_requester_config:
+        raise RuntimeError("native YOLO route requires --native-requester-config")
+    if not args.canonical_package or not args.catalogue_registry:
+        raise RuntimeError(
+            "native YOLO route requires --canonical-package and --catalogue-registry")
+    if not args.native_tensor_input:
+        raise RuntimeError(
+            "native YOLO route requires --native-tensor-input")
+    if args.lifecycle_output_dir or args.lifecycle_case or args.request_id:
+        raise RuntimeError(
+            "native YOLO route does not yet support Spec180 lifecycle journaling")
+
+    package = Path(args.canonical_package).expanduser().resolve()
+    registry = Path(args.catalogue_registry).expanduser().resolve()
+    adapter = build_yolo26n_adapter(package, registry_path=registry)
+    numerical_reference, payload = _prepare_yolo_input(args, package)
+
+    # This call is intentionally before any request construction.  It binds
+    # the native catalog/runtime/grant owner and fails closed on configuration
+    # drift; no Python planner is consulted by the native branch.
+    client.configure_native_requester_from_config(args.native_requester_config)
+    from ndnsf import _ndnsf
+
+    native_model = getattr(client, "_native_model", None)
+    manifest = json.loads((package / "manifest.json").read_text(encoding="utf-8"))
+    source = manifest.get("source")
+    expected_digest = (
+        "sha256:" + str(source.get("checkpointSha256", ""))
+        if isinstance(source, dict) else "")
+    if (native_model is None or native_model.model_name != "YOLO26n" or
+            native_model.adapter_id != adapter.descriptor.name or
+            native_model.content_digest != expected_digest):
+        raise RuntimeError("native YOLO requester model identity does not match package")
+
+    options = _ndnsf.NativeRequestOptions()
+    options.timeout_ms = int(args.timeout_ms)
+    options.ack_timeout_ms = int(args.ack_timeout_ms)
+    options.output_mode = "FULL"
+    runtime = getattr(client, "_native_runtime", None)
+    contract = getattr(runtime, "contract", None)
+    task_name = str(getattr(contract, "task_name", ""))
+    if not task_name:
+        raise RuntimeError("native YOLO runtime has no task identity")
+
+    handle = client.request_native_payload(
+        payload,
+        options=options,
+        task_name=task_name,
+        application_options=b"{}",
+    )
+    try:
+        result = handle.result(int(args.timeout_ms))
+    except Exception as exc:
+        print(
+            "YOLO_NATIVE_REQUEST_RESULT status=false "
+            f"request={handle.request_id} error={exc}",
+            flush=True,
+        )
+        return 3
+    response_payload = bytes(result.payload)
+    matched = False
+    try:
+        _, actual = decode_yolo_output(response_payload, native_predictions_only=True)
+        oracle = compare_reference(numerical_reference, actual)
+        matched = bool(oracle["matched"])
+        max_diff = oracle["maxAbsError"]
+        mean_diff = None
+    except (ValueError, KeyError, UnicodeError, OverflowError):
+        max_diff = float("inf")
+        mean_diff = float("inf")
+    print(
+        "YOLO_NATIVE_REQUEST_RESULT "
+        f"status={str(bool(result.payload) and matched).lower()} "
+        f"request={handle.request_id} payload_bytes={len(response_payload)} "
+        f"max_diff={max_diff} mean_diff={mean_diff}",
+        flush=True,
+    )
+    return 0 if matched else 4
+
+
 def main() -> int:
     parser = parse_args_with_common("Run YOLO 2x2 user")
     parser.add_argument("--ack-timeout-ms", type=int, default=1500)
@@ -676,6 +765,13 @@ def main() -> int:
     parser.add_argument("--native-tensor-input", action="store_true",
                         help="publish request input as an NDNSF-DI native tensor bundle")
     parser.add_argument(
+        "--native-requester-config", default="",
+        help=(
+            "operator-pinned ndnsf-di-native-requester-v1 configuration; "
+            "when set, submit inline YOLO tensor bytes through the native "
+            "requester without Python planner fallback"),
+    )
+    parser.add_argument(
         "--offline-oracle", action="store_true",
         help="run the historical service-policy path as an offline oracle only",
     )
@@ -709,6 +805,9 @@ def main() -> int:
     parser.add_argument("--catalog-snapshot-file", default="",
                         help="offline-oracle fixture only; never used by ACK-driven mode")
     args = parser.parse_args()
+    if args.native_requester_config and args.offline_oracle:
+        raise SystemExit(
+            "--native-requester-config and --offline-oracle are mutually exclusive")
     if args.dry_run:
         print("Run YOLO 2x2 user")
         print("config:", args.config)
@@ -727,6 +826,11 @@ def main() -> int:
         )
         if trace_init:
             print("NDNSF_DI_INIT_TRACE stage=user_after_client", flush=True)
+        if args.native_requester_config:
+            try:
+                return _load_yolo_native_payload(client, args)
+            finally:
+                client.shutdown()
         if not args.offline_oracle:
             try:
                 return _load_yolo_ack_driven(client, args)

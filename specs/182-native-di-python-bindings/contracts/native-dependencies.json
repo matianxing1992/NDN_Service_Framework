@@ -21,7 +21,8 @@
     "toolSearchPrefix": "/usr/bin",
     "cxxVersion": "9.4.0",
     "binutilsVersion": "2.34",
-    "maxJobs": 2,
+    "maxJobs": 4,
+    "parallelismPolicy": "default -j4 on the authorized 6 logical CPU/12 GB host; use -j2 only after sustained swap or desktop stall",
     "hostPythonAllowed": "build generation and offline oracle only",
     "runtimePythonAllowed": false
   },
