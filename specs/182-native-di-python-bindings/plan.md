@@ -1,6 +1,6 @@
 # Implementation Plan: Native NDNSF-DI with Optional Python Bindings
 
-**Branch**: Experimental | **Revision**: 31 | **Date**: 2026-09-09
+**Branch**: Experimental | **Revision**: 32 | **Date**: 2026-09-09
 **Status**: IN_PROGRESS / 当前实现与验收状态见 tasks.md 的 Task Progress Registry 和 Current Checkpoint
 **Spec**: [spec.md](spec.md)
 
@@ -285,6 +285,17 @@ unchanged.
 Allocation is limited to `audit.md`, the task/progress registry, and this evidence record. The
 independent exit is link/status consistency plus the design validator; no product or qualification
 status is promoted.
+
+### R10-B11 Requester REPO_REF Provider Fetch 2026-09-09
+
+The R10-B9 requester/Core-wire selector is extended at the same stable exit so its real
+`ServiceProvider` collaboration handler resolves the emitted reference through
+`CollaborationContext::fetchEncryptedLargeData` and compares the recovered bytes with the native
+publisher's plaintext. The inline R4-B6 conversation selector remains a regression case.
+
+Allocation is limited to the existing integration fixture and its evidence/progress records.
+R10-B5/B6 continue to own the independent malformed/missing/size-mismatch negatives; cross-process
+maintained-caller execution and T016 qualification remain open.
 
 ### R8-SKILL Review Coverage Contract 2026-09-09
 
