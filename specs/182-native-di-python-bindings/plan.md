@@ -1,6 +1,6 @@
 # Implementation Plan: Native NDNSF-DI with Optional Python Bindings
 
-**Branch**: Experimental | **Revision**: 44 | **Date**: 2026-09-09
+**Branch**: Experimental | **Revision**: 45 | **Date**: 2026-09-09
 **Status**: IN_PROGRESS / 当前实现与验收状态见 tasks.md 的 Task Progress Registry 和 Current Checkpoint
 **Spec**: [spec.md](spec.md)
 
@@ -428,6 +428,20 @@ violation or missing declared marker remains `UNQUALIFIED`/`FAIL` according to t
 evaluator rules. This batch is Python collector/harness work and has no native build lane; real DI
 business requests, maintained caller execution, no-Python proof and T016 qualification remain
 downstream obligations.
+
+### R10-B21 I01 Native Consumer Positive Case 2026-09-09
+
+R10-B21 runs the first real native C++ consumer through the owner-alive composition. A manifest
+generated from the current `build-nac182/spec182-installed-consumer` and its resolved ELF closure
+declares the executable, shared libraries, absolute tools, requester node and an independent
+stdout marker. MiniNDN keeps requester/provider namespaces and NFD applications alive while the
+canonical runner stages, launches and evaluates I01.
+
+The fresh run `.codex-tmp/spec182-r10-b21-native-consumer-owner/` returned process code 0 and
+evaluator `PASS`: trace completeness and integrity/policy checks passed, all seven required evidence
+classes were present, and `SPEC182_INSTALLED_CONSUMER_NATIVE_DI_OK` matched. This is a native
+installed-library consumer/closure proof and does not exercise a requester/provider DI request,
+I02--I08 counterexamples, maintained callers or the T016 qualification matrix; those remain open.
 
 ### R8-SKILL Review Coverage Contract 2026-09-09
 
