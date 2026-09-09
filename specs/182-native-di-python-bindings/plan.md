@@ -1,6 +1,6 @@
 # Implementation Plan: Native NDNSF-DI with Optional Python Bindings
 
-**Branch**: Experimental | **Revision**: 38 | **Date**: 2026-09-09
+**Branch**: Experimental | **Revision**: 40 | **Date**: 2026-09-09
 **Status**: IN_PROGRESS / 当前实现与验收状态见 tasks.md 的 Task Progress Registry 和 Current Checkpoint
 **Spec**: [spec.md](spec.md)
 
@@ -365,9 +365,23 @@ preflight/launch command that either carries a validated held namespace FD or re
 R10-B16 completed this bounded runner boundary in local checkpoint `9a50ab3d`. The implementation
 validates node/process binding, namespace inode, owner PID/start ticks, NFD socket type and peer
 metadata; it holds the namespace FD across `nsenter` launch and closes it on all launch/timeout
-paths. Twenty-three focused Python cases, bytecode compilation and `git diff --check` passed. The
-owner still supplies no real MiniNDN context, so topology, business cases, cross-process execution,
-and T016 qualification remain open.
+paths. Twenty-three focused Python cases, bytecode compilation and `git diff --check` passed. At
+that checkpoint the owner still supplied no real MiniNDN context; R10-B17 now provides the context
+producer, while topology-driven business cases, cross-process execution and T016 qualification
+remain open.
+
+### R10-B17 MiniNDN Owner Context Producer 2026-09-09
+
+R10-B17 adds an explicit `--execute-owner` mode to the campaign owner and a tracked two-node
+requester/provider topology. It starts MiniNDN and per-node NFD applications, waits for their real
+filesystem sockets, and exports `/proc` namespace inode, owner PID/start ticks, socket and peer
+metadata through one `collect_node_context` function. The owner keeps the existing registration-only
+mode and stops at `UNQUALIFIED` when the manifest has no executable closure artifact/process case.
+
+The bounded exit was observed in root run `20260909050945`: both node contexts were written, then
+`NATIVE_CLOSURE_CASE_DEFINITION_MISSING` returned exit 2 and the network was cleaned up. The next
+batch must freeze runner-compatible cases and invoke the canonical runner before the owner teardown;
+this batch does not claim any I/PO or no-Python qualification.
 
 ### R8-SKILL Review Coverage Contract 2026-09-09
 
