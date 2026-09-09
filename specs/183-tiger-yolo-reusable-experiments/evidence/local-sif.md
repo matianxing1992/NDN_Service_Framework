@@ -128,4 +128,24 @@ publication. Four component checks pass: candidate-only scope, wrong base,
 changed binary, and declared foundational-library shadowing. An initial test
 collection import-path error is retained separately; the final/strict XMLs
 contain four passing checks. These content fixtures contain no real ELF or
-runtime proof. Profile/dispatch integration of the application layer is pending.
+runtime proof. Profile/dispatch integration of the application layer is now
+exercised by the v33 dispatch/host receipt consumer below.
+
+## v22 base plus v32 APP composition
+
+The current layered candidate reuses the stable base without rebuilding it:
+
+| Item | Identity |
+| --- | --- |
+| Base SIF | `base-runtime-controller-version-j4-v22.sif`, `sha256:2c07a9f14d48fabd9fb58036c1634f3cc3282dd28c6470add9f8a7da0cb829b5` |
+| Base native manifest | `spec183-base-runtime-v1`, `BASE_LIBRARIES_ONLY`, six stable library/extension rows |
+| External APP | `app-controller-version-j4-v32`, manifest `sha256:3f81b1c5203bc2f4117dd38a4c7a20ad53027cfeac20f526cb4f27d926afbf4d` |
+| APP source | revision `311318f3e867689059e9c80b25e9d6aa418e4a56`; buildKey `6e2c6141921923efd3d95da8d03640f0b2500b621a963eb6a049ca4c7549a50c` |
+
+The application was built in the matching SDK with the verified v31 cache and
+`-j4`; the base SHA stayed unchanged.  The exact composition imports
+`ndnsf._ndnsf` from the SIF, loads the v32 User entrypoint through a read-only
+`/app` mount, and starts the real four-provider MiniNDN graph in
+[v52 evidence](minindn-v52-exact-sif-yb-v32.md).  The source-bound host receipt
+and v33 dispatch consumer both validate this base/app pairing.  Empty
+HOME/scratch isolation and GPU/Tiger qualification remain open.

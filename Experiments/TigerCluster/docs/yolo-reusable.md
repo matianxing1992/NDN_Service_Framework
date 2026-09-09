@@ -46,12 +46,44 @@ Spec183 T001输入/接口清点完成。后续已接收锁定 source seal、本�
 验证返回文件并保留进程清理记录；它是内部调用边界，不是新的公开命令。
 local 已连接 profile 输入、私钥 locator、冻结 bundle 和 SIF worker：消费同源
 hostMinindn receipt 后执行签发、两个 CPU 请求、清理及 collector 重算。缺门或
-旧六产物镜像在启动前拒绝。实际 T010 receipt/新 SIF 尚未产生，不能把组件用例
-当成真实 SIF 内身份签发及请求验证。正常单/双GPU run、节点scratch、外部
+错误的 native manifest 在启动前拒绝。v52 已用 v32 APP + v22 base SIF 完成一次
+真实 exact-SIF MiniNDN Y-B；v51 的 Y-N-D 也已从同一 APP 的保留日志重算出
+post-Selection 缺依赖证据。正常单/双GPU run、节点scratch、外部
 collect --reconcile 和共享目录接收端submit已接；跨机器文件运输、可移植前置
 证据和负例仍缺。新机器必须安装冻结 requirements-operator.txt 对应的操作者
 依赖并保证batch解释器一致。Tiger已建立独立环境，当前profile的
 runtime.operatorPython指向它；系统Python仍不作为该环境的替代。
+
+## Direct local YOLO example
+
+要向其他人演示构建物，使用固定 base SIF，并把独立 APP bundle 以只读方式挂载到
+`/app`。完整的已实跑命令、SHA256、数值回执和清理证据见
+[v52 exact-SIF evidence](../../../specs/183-tiger-yolo-reusable-experiments/evidence/minindn-v52-exact-sif-yb-v32.md)。
+最小入口如下（`RUN` 必须是新建的、不可复用的 run ID）：
+
+```bash
+ROOT=$(readlink -f Experiments/TigerCluster/.cache/layered-base-20260909)
+RUN=minindn-local-<date>-<id>
+OUT=Experiments/TigerCluster/results
+export SPEC180_RUNTIME_SIF="$ROOT/base-runtime-controller-version-j4-v22.sif"
+export SPEC180_RUNTIME_APPTAINER=/opt/apptainer/1.5.3/bin/apptainer
+export SPEC180_RUNTIME_APP_ROOT="$ROOT/app-controller-version-j4-v32"
+export SPEC180_HOST_LIBRARY_PATH=/tmp/t008-build-root/lib:/home/tianxing/NDN/ndn-svs/build:/home/tianxing/NDN/NAC-ABE/build:/usr/local/lib
+export PYTHONPATH="$PWD/NDNSF-DistributedInference:$PWD/NDNSF-DistributedRepo/pythonWrapper:$PWD/pythonWrapper"
+
+# The run must first contain public/preparation.json from the provision step.
+PREP=$(sha256sum "$OUT/$RUN/public/preparation.json" | awk '{print "sha256:"$1}')
+python3 -u Experiments/TigerCluster/tools/spec183_minindn.py \
+  --run-id "$RUN" --output "$OUT" \
+  --profile Experiments/TigerCluster/profiles/yolo-two-node-controller-v32.json \
+  --preparation-sha256 "$PREP" --case Y-B
+```
+
+`spec183_minindn.py` starts the registered four-provider MiniNDN graph; the
+provider/controller binaries come from the APP bundle and stable libraries
+come from the SIF.  Do not replace the APP with host binaries or inject host
+libraries.  This command demonstrates local CPU inference; it does not claim
+Tiger GPU qualification.
 
 提交回执丢失时使用同一run ID重试submit，只会按唯一comment查询原job，不重提。
 默认collect离线重算；作业结束后显式collect --reconcile核对scheduler终态并释放
@@ -90,4 +122,4 @@ profile选择同一解释器。submit协调、本地CPU和普通离线collect使
   `/group`，也不从缺失文件或退出码推断 PASS。
 - 最大-j4；SIF本地构建、Tiger只验证/运行；CAS缓存不按run复制模型，容量按实际峰值检查。
 
-真实参数、命令和成功示例在验收后补充；未运行继续NOT_RUN，不复制历史PASS。计划见[Spec183](../../../specs/183-tiger-yolo-reusable-experiments/plan.md)。
+真实参数、命令和成功示例见 [Spec183 evidence](../../../specs/183-tiger-yolo-reusable-experiments/evidence/minindn-v52-exact-sif-yb-v32.md)；未运行继续NOT_RUN，不复制历史PASS。计划见[Spec183](../../../specs/183-tiger-yolo-reusable-experiments/plan.md)。
