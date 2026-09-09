@@ -1,6 +1,6 @@
 # Implementation Plan: Native NDNSF-DI with Optional Python Bindings
 
-**Branch**: Experimental | **Revision**: 73 | **Date**: 2026-09-09
+**Branch**: Experimental | **Revision**: 74 | **Date**: 2026-09-09
 **Status**: IN_PROGRESS / 当前实现与验收状态见 tasks.md 的 Task Progress Registry 和 Current Checkpoint
 **Spec**: [spec.md](spec.md)
 
@@ -810,6 +810,18 @@ elapsed `255.25s`，SHA 为 `94b94c8ca5be3b3eca9c0107213f39db35a83b34d90ae8b8142
 `ldd` 无 `not found`。本批只关闭 standalone Provider 的 build/link boundary；Provider `--serve`、
 独立 requester/Provider transport、maintained caller/no-Python 和 T016 仍需下一批真实运行。
 详见 [R10-B50 evidence](evidence/r10-b50-provider-link-closure-20260909.md)。
+
+### R10-B52 Native Requester CLI Build and Fail-Closed Boundary 2026-09-09
+
+本批对 `DI_NativeRequester` 执行 system-first `-j2` Waf target 检查，并复用当前 native
+binary 做三种 CLI 探针：help 正常返回 `0`，裸调用返回 `2`，错误 schema 在创建 Face 前
+返回 `1` 且不写 output。target SHA 与 `ldd` closure 均核对，无未解析依赖；官方
+`review-agent` 五 lane 只读审查参数顺序、schema、相对路径、output 时机、target 注册和
+native binding 接线，没有 P1/P2/P3。
+
+该批只关闭 requester 的可构建和 fail-closed CLI 边界，不等同于合法 catalog/grant 配置、
+Core/Provider transport、terminal Response、maintained caller/no-Python、conversation 或
+T016 qualification；命令、原始输出和 closure decision 见 [R10-B52 evidence](evidence/r10-b52-requester-cli-build-20260909.md)。
 
 ### R10-B51 Provider Check-Only With Real ONNX Bundle 2026-09-09
 
