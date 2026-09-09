@@ -1,15 +1,15 @@
 # Spec182 Design Audit
 
-**Revision**: 17 | **Mode**: source alignment / cross-task convergence
+**Revision**: 18 | **Mode**: source alignment / cross-task convergence
 **Verdict**: DRAFT / PARTIAL; T016 preflight UNQUALIFIED
-**Source**: `1fed7929` implementation/docs checkpoint / Experimental
+**Source**: `b98d7461` implementation/docs checkpoint / Experimental
 **Evidence**: [current source and dependency baseline](contracts/integrated-baseline.md)
 
 ## Current Findings
 
 ### Remaining Production Chain Review 2026-09-09
 
-本次复核以 `1fed7929` 为当前 source checkpoint，当前文档状态由 R10-B19 更新。R10-B1--R10-B6 已在本地关闭
+本次复核以 `b98d7461` 为当前 source checkpoint，当前文档状态由 R10-B20 更新。R10-B1--R10-B6 已在本地关闭
 准备、公开 facade、YOLO/Qwen maintained caller 的 `REPO_REF` 路由、真实 Provider 正向
 消费和三个 Provider fail-closed 负例；R10-B7 同步了当前 route marker 与 T013-D/T013-F
 契约文字，R10-B9 又在真实 Provider conversation fixture 中观察到 configured
@@ -74,6 +74,21 @@ root run `.codex-tmp/spec182-r10-b19-20260909052040/` 的 `/bin/true` probe 返�
 R10-B19 的官方 `review-agent` 只读审查无 actionable finding，覆盖 production entry/callers、
 implementation/wire、test/harness/oracle、build/source closure 与 migration/evidence 五条 lane；
 build lane 对 Python-only handoff 标为 `N/A`，并记录了 owner-alive root run 作为运行证据。
+
+### Collector Evidence Boundary 2026-09-09
+
+R10-B20 修复了 R10-B19 暴露的 evidence-generation 缺口：`collect_trace` 从实际 trace/run
+推导 `identity`、`process-tree`、`namespace`、`exec-map`、`endpoints` 与 `cleanup`，而不是
+把空 evidence 交给 evaluator。case 若显式声明 `businessOracle.stdoutMarker`，只有捕获的
+stdout 命中该独立 marker 才补 `business-oracle`；这项 marker 不替代协议 oracle、native DI
+结果或 T016 资格。
+
+31 个 focused cases、Python compilation、design validator 与 `git diff --check` 通过。fresh
+root owner/runner run 的 trace complete、returncode 0、六类运行 evidence 齐全，但 `/bin/true`
+probe 没有 DI business marker，仍为 `UNQUALIFIED` / `MISSING_EVIDENCE:business-oracle`。审查
+覆盖五条 required lane，无 introduced regression；build/source lane 对 Python-only collector
+标记 `N/A`。T014、真实 native DI case、maintained caller、no-Python 与 T016 资格仍未关闭，详见
+[R10-B20 evidence](evidence/r10-b20-collector-evidence-boundary-20260909.md)。
 
 ### MiniNDN Owner Context Producer 2026-09-09
 
