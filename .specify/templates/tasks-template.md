@@ -75,6 +75,9 @@ target/source closure、toolchain、配置和工作树条件下的对照，不�
 和 unobserved 漏检（无观察写 `none`/`not observed`），说明是否在稳定出口后继续吸收职责，
 并注明耗时是否可比。缺少该复盘时保持 `PARTIAL`；它不能由任务数、静态通过数或单次构建
 时长替代。
+批次还要写 `Batch growth decision`，说明稳定出口前的成员分配依据，以及出口出现后是否
+立即停止扩张；若新增成员改变入口、状态机、selector、source closure 或硬验收依赖，先
+关闭当前批次并登记新的 Batch ID。
 `--help`、usage/schema rejection、可执行文件存在或 harness-start smoke 只能证明命令、
 target/link 或外部设施接线；没有真实生产请求/结果时，不得把它们写成 native behavior、
 Python/C++ parity 或 qualification PASS。

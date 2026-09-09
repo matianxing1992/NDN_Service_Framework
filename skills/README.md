@@ -26,6 +26,10 @@
 五个 lane 必须列出实际文件/符号、查询命令和 findings；测试 lane 包含 harness/oracle
 及注册，build lane 包含 target/source closure。缺行或未解释的 `gap` 不得产生
 `STATIC_PASS`，批末还必须记录四类 `Batch Retrospective`。
+写入 `STATIC_PASS` 前还必须完成 `Static Gate Release Checklist`；发生编译/链接或运行/测试
+漏检时，重试记录 `Changed gate`，说明新增的 caller、测试注册、source-closure、oracle
+或反事实检查。每批另写 `Batch growth decision`，在稳定出口出现后停止吸收不同入口或验收
+依赖的成员并建立新的 Batch ID。
 若 fixture/oracle 复算 canonical bytes、digest 或 identity，还必须对照 production serializer
 的字段集合、顺序、规范化和 source identity；不完整对照保持 `gap`。
 若编译/链接或运行/测试才发现漏检，重试/下一批必须链接首个失败边界并登记改变的静态

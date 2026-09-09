@@ -120,6 +120,9 @@ be stricter but must not weaken its PASS/BLOCK boundary.
   If a batch retries a prior miss, link the first failure boundary and record the changed
   static check; repeated miss classes require a shared skill/template/checklist revision or
   an explicit substitute gate.
+  Record a Batch growth decision for every batch: stop at the first stable observable exit and
+  create a new Batch ID when the next member changes the caller, state machine, selector, source
+  closure, or hard acceptance dependency.
   For native NDNSF-DI runtime/protocol/state/concurrency/crypto/model behavior,
   name the production C++ target/selector in the batch row; Python selectors cover
   only binding/facade, offline oracle, or external-facility boundaries.

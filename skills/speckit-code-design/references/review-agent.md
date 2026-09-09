@@ -41,6 +41,27 @@ closure；这些未读时写 coverage gap，不能仅凭 No findings 记 `STATIC
 `runtime/test`、`unobserved` 的首个失败边界；它们不是审查意见的替代品，也不是
 效率百分比。
 
+## Static Gate Release Checklist
+
+在写入 `STATIC_PASS` 前，实现者必须把五 lane 的“已覆盖”判断落到可复核的门禁动作，
+并在结果记录中注明命令或查询：
+
+1. `production entry/callers`：用 CodeGraph 或精确源码查询从真实入口反查至少一个
+   caller、默认工厂/注册和有效配置；没有 caller 时写出 `N/A` 的边界，而不是把孤立
+   helper 当作生产接线。
+2. `test/harness/oracle`：列出测试源文件、fixture/driver、独立 oracle、必要负例和
+   suite/selector 注册，并检查 selector 能命中声明的测试；只看到测试文件或通过
+   `--help` 不算注册覆盖。
+3. `build/source closure`：列出实际 target、构建脚本的 source list/link 依赖和生成/安装
+   入口，确认本次修改的源文件属于该 closure；Python extension 依赖仓库 native 库时，
+   先确认 native target 再确认 extension 的链接身份。
+4. `migration/evidence`：若存在旧 caller、兼容别名或历史失败，保留首个失败边界和
+   原始证据，说明本批是否改变迁移检查；未知项保持 `gap`。
+
+若此前批次在编译/链接或运行/测试阶段才发现问题，复审还必须写一行
+`Changed gate: ...`，说明新增或改变了哪一个静态检查及其 lane。只重新执行原命令、
+只增加测试数量或只更新审查文字，都不能把该漏检升级为 `covered`。
+
 ## Techniques
 
 按受影响行为选择并实际使用，不机械填全表：
