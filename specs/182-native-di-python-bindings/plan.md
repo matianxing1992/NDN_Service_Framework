@@ -1,6 +1,6 @@
 # Implementation Plan: Native NDNSF-DI with Optional Python Bindings
 
-**Branch**: Experimental | **Revision**: 68 | **Date**: 2026-09-09
+**Branch**: Experimental | **Revision**: 69 | **Date**: 2026-09-09
 **Status**: IN_PROGRESS / 当前实现与验收状态见 tasks.md 的 Task Progress Registry 和 Current Checkpoint
 **Spec**: [spec.md](spec.md)
 
@@ -793,6 +793,26 @@ transport、Provider worker、maintained caller/no-Python、numeric parity 或 T
 官方 `review-agent` 五 lane 只读审查没有 P1/P2/P3。该出口为
 `CLOSED_FOR_VALIDATION`，后续必须另建批次接通独立 requester/Provider 进程与资格矩阵；详见
 [R10-B46 evidence](evidence/r10-b46-real-provider-native-suite-20260909.md)。
+
+### R10-B47 T016 PO-001 Owner/Runner Pass 2026-09-09
+
+本批在 root-enabled MiniNDN owner 中重试 T016 的 PO-001。首次运行分别暴露了 owner runtime
+`PATH` 缺少 `/usr/local/bin/infoconv`、历史 manifest process role 不在 runner 允许集合、
+以及当前增量 `integration-tests` executable SHA 与旧 manifest 不一致三个边界；每个失败都
+在新的 raw run 目录中以 `UNQUALIFIED` 保留。修复后的 transient manifest 只绑定合法
+`requester` role 并重算当前 executable digest，没有修改冻结源码或历史 manifest。
+
+最终命令使用 `sudo -n` 和包含 `infoconv` 的 runtime `PATH`，owner 创建真实 requester/provider
+MiniNDN namespace 与 NFD socket，canonical runner 在 requester namespace 中启动 staged
+`integration-tests`。PO-001 返回 `PASS`，native process rc `0`、耗时 `8001ms`，输出
+`SPEC182_NATIVE_DI_REQUEST_RESULT_OK`；collector 的 identity/process-tree/namespace/exec-map/
+endpoints/business-oracle/cleanup 七类证据齐全，trace integrity 与 policy violations 均为空。
+
+该批只关闭 PO-001 的 `FOCUSED_QUALIFICATION_PASS`，因为被执行的 selector 仍将 Provider
+callback 作为 R4-B6 in-process fixture；独立 requester/Provider transport、I02-I08、
+PO-002-PO-014、maintained caller/no-Python、numeric parity 和完整 T016 仍开放。官方
+`review-agent` 五 lane 只读审查无 P1/P2/P3。详见
+[R10-B47 evidence](evidence/r10-b47-t016-po001-owner-pass-20260909.md)。
 
 ### R10-B33 Native Unary Repository Reference Request 2026-09-09
 

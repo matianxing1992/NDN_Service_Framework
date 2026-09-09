@@ -1,5 +1,32 @@
 # Failure Log and Evidence Index
 
+## 2026-09-09 — Spec182 R10-B47 PO-001 owner/runner retry boundaries and pass
+
+The first root-enabled retry of the T016 owner reached MiniNDN setup but failed before a
+business process because the command-local system-first `PATH` omitted `/usr/local/bin/infoconv`;
+the owner recorded `MININDN_OWNER_FAILED:JSONDecodeError` in
+`.codex-tmp/spec182-t016-r10-b46-owner5`'s predecessor run. Adding the installed runtime tool
+path exposed the next runner contract boundary: the historical PO-001 manifest used process role
+`native-di-integration`, which is outside the runner's declared role vocabulary. A corrected
+transient manifest bound the same process to role `requester`, then failed its artifact digest
+preflight because the current incremental `integration-tests` binary had changed.
+
+Those failures are preserved in the fresh run directories
+`.codex-tmp/spec182-t016-r10-b46-owner/`, `owner3/`, and `owner4/`; none was classified as a
+protocol result. After recomputing only the executable artifact hash and retaining the explicit
+role binding, `sudo -n env PATH=/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin python3
+Experiments/NDNSF_DI_NativeClosure_Minindn.py ... --execute-owner` completed PO-001 in
+`.codex-tmp/spec182-t016-r10-b46-owner5/`: owner namespaces and NFD sockets were live, the
+staged native process returned `0` in `8001ms`, the business marker
+`SPEC182_NATIVE_DI_REQUEST_RESULT_OK` was present, and the collector reported complete identity,
+process-tree, namespace, exec-map, endpoint, business-oracle and cleanup evidence with no
+integrity/policy violations.
+
+This is a real isolated native-process PO-001 observation for the existing in-process
+requester/Provider fixture. It does not prove independent requester/Provider transport, I02-I08,
+PO-002-PO-014, maintained caller/no-Python migration or full T016 qualification; those remain
+open. See [R10-B47 evidence](../specs/182-native-di-python-bindings/evidence/r10-b47-t016-po001-owner-pass-20260909.md).
+
 ## 2026-09-09 — Spec182 R10-B26 missing `REPO_REF` negative recheck
 
 The old R10-B6 missing-object failure was a test-boundary observation: the fixture's fixed
