@@ -1,5 +1,16 @@
 # Failure Log and Evidence Index
 
+## 2026-09-09 — Spec182 R10-B17 owner invocation preflight boundary
+
+The first explicit R10-B17 owner invocation used the frozen registration manifest without a
+`campaignCase` selector. The owner rejected it with exit `2` / `campaignCase is required` before
+MiniNDN, NFD, or any namespace was started. This is an operator invocation boundary, not a
+protocol or qualification result.
+
+Raw stdout/stderr are retained as `.codex-tmp/spec182-t016-r10-b17-20260909050906.stdout` and
+`.codex-tmp/spec182-t016-r10-b17-20260909050906.stderr`; the output directory contains only the
+explicit `UNQUALIFIED` result. The retry must use a fresh manifest copy with `campaignCase=I01`.
+
 ## 2026-09-09 — Spec182 T016 MiniNDN owner preflight recheck
 
 A fresh T016 campaign preflight was run after starting the local NFD. The socket check and

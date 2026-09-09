@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import socket
+from types import SimpleNamespace
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -339,3 +340,60 @@ def test_minindn_registration_refuses_existing_output(tmp_path: Path) -> None:
     assert minindn.run_campaign(selected, output) == 2
     assert marker.read_text(encoding="utf-8") == "keep"
     assert not (output / "result.json").exists()
+
+
+def test_minindn_owner_exports_identity_bound_node_context(tmp_path: Path) -> None:
+    socket_paths = {}
+    sockets = []
+    for name in ("requester", "provider"):
+        path = tmp_path / f"{name}.sock"
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.bind(str(path))
+        socket_paths[name] = path
+        sockets.append(sock)
+    try:
+        nodes = [SimpleNamespace(name=name, inNamespace=True, pid=os.getpid())
+                 for name in ("requester", "provider")]
+        contexts = minindn.collect_node_context(
+            nodes, socket_paths,
+            {"requester": ["provider"], "provider": ["requester"]})
+        assert set(contexts) == {"requester", "provider"}
+        assert contexts["requester"]["netnsInode"] == Path("/proc/self/ns/net").stat().st_ino
+        assert contexts["requester"]["ownerStartTicks"] > 0
+    finally:
+        for sock in sockets:
+            sock.close()
+
+
+def test_minindn_owner_rejects_host_namespace_node(tmp_path: Path) -> None:
+    path = tmp_path / "requester.sock"
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    sock.bind(str(path))
+    try:
+        node = SimpleNamespace(name="requester", inNamespace=False, pid=os.getpid())
+        try:
+            minindn.collect_node_context([node], {"requester": path},
+                                         {"requester": ["provider"]})
+        except ValueError as exc:
+            assert "namespace-isolated" in str(exc)
+        else:
+            raise AssertionError("host namespace node was accepted")
+    finally:
+        sock.close()
+
+
+def test_minindn_owner_rejects_peer_outside_topology(tmp_path: Path) -> None:
+    path = tmp_path / "requester.sock"
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    sock.bind(str(path))
+    try:
+        node = SimpleNamespace(name="requester", inNamespace=True, pid=os.getpid())
+        try:
+            minindn.collect_node_context([node], {"requester": path},
+                                         {"requester": ["ghost"]})
+        except ValueError as exc:
+            assert "peer metadata" in str(exc)
+        else:
+            raise AssertionError("peer outside topology was accepted")
+    finally:
+        sock.close()

@@ -90,6 +90,7 @@
     "schema": "spec182-native-qualification-v1",
     "runner": "tests/standalone/run-spec182-native-closure.py",
     "owner": "T014 registration / T016 execution",
+    "topology": "Experiments/Topology/spec182-native-closure.conf",
     "limits": {"runSeconds": 180, "cleanupSeconds": 15, "traceBytes": 268435456},
     "cases": [
       {"id": "I01", "kind": "counterexample", "expectedStatus": "PASS", "executeOwner": "T016"},
