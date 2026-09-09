@@ -2762,3 +2762,22 @@ are still unobserved.
   `vmstat.log`.
 - **Next step**: repair the negative fixture so its missing-reference boundary is deterministic,
   then rerun the complete `Spec170NativePostSelection` suite before closing R10-B6.
+
+## 2026-09-09 — Spec182 R10-B38 T016 runtime context recheck remains unqualified
+
+- **Area**: T016-A MiniNDN qualification owner preflight after R10-B37.
+- **First boundaries**: a fresh default run in `.codex-tmp/spec182-t016-r6/` returned exit `2`,
+  `UNQUALIFIED/MININDN_NODE_CONTEXT_NOT_PROVIDED` before business startup. A separate fresh
+  `--execute-owner` run in `.codex-tmp/spec182-t016-r7/` returned exit `2`,
+  `UNQUALIFIED/MININDN_REQUIRES_ROOT` because the current process is UID 1000.
+- **Observed host state**: `/run/nfd/nfd.sock` exists and a system `nfd` process is running, but
+  no MiniNDN requester/provider node PID/starttime, network namespace, per-node NFD socket or peer
+  metadata is available. The socket alone does not satisfy the owner contract.
+- **Interpretation**: these are campaign preflight/environment boundaries, not protocol PASS/FAIL
+  and not no-Python evidence. No requester/provider business process, namespace, network request or
+  product build was started.
+- **Raw evidence**: `.codex-tmp/spec182-t016-r6/` and `.codex-tmp/spec182-t016-r7/`; keep both
+  immutable and do not overwrite the earlier R6-B4 preflight.
+- **Next step**: provide a root MiniNDN owner context with identity-bound namespaces, PID starttimes,
+  independent NFD sockets and peer metadata, then run the complete I01–I08/PO matrix in a new run
+  directory.

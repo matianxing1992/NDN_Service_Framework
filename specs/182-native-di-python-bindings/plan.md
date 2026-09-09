@@ -691,6 +691,16 @@ stream/final schema、selector 注册和 integration target source closure；批
 selector及同 helper 的相关回归。若运行暴露 Provider worker、跨进程或 NFD 依赖，保留首个
 失败边界并拆到 P2/T016 owner，不扩大本批职责。详见 [R10-B37 evidence](evidence/r10-b37-native-client-streaming-request-20260909.md)。
 
+### R10-B38 T016 Runtime Context Recheck 2026-09-09
+
+R10-B37 后对 T016 重新执行启动前 preflight，使用新的 raw run 目录。主机现在能看到
+`/run/nfd/nfd.sock` 和运行中的系统 `nfd`，但这不等同于 MiniNDN owner context：默认
+campaign 仍明确返回 `MININDN_NODE_CONTEXT_NOT_PROVIDED`；显式 `--execute-owner` 又在
+非 root 边界返回 `MININDN_REQUIRES_ROOT`。本批只记录这两个真实首拒绝边界，不启动业务
+进程、不修改 qualification manifest，也不把 NFD socket 的存在提升为 T016 PASS。后续必须
+由 root MiniNDN owner 提供 requester/provider 的 namespace、PID starttime、独立 NFD
+socket 和 peer metadata，再运行完整 I01–I08/PO matrix。详见 [R10-B38 evidence](evidence/r10-b38-t016-runtime-context-recheck-20260909.md)。
+
 ### R10-B33 Native Unary Repository Reference Request 2026-09-09
 
 R10-B31 已补齐不带 stream 或 conversation state 的普通 native `Response`，R10-B11
