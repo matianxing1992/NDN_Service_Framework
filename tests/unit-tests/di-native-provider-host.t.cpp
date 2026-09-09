@@ -1082,6 +1082,36 @@ BOOST_AUTO_TEST_CASE(Spec182ProviderHostDualTargetSharedHostFencesDuplicate)
   BOOST_CHECK(!regB.closed());
 }
 
+BOOST_AUTO_TEST_CASE(Spec182ProviderHostFirstServeFailureRollsBackHost)
+{
+  ndn::security::KeyChain keyChain("pib-memory:spec182-host-rollback",
+                                   "tpm-memory:spec182-host-rollback");
+  ndn::DummyClientFace face(keyChain);
+  auto providerCert = makeRsaIdentity(keyChain, ndn::Name(HOST_PROVIDER_NAME));
+  auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/spec182/aa-host-rollback"));
+  auto provider = std::make_shared<LocalServiceProvider>(
+    face, ndn::Name("/spec182/group"), providerCert, aaCert,
+    "examples/trust-any.conf");
+  auto host = std::make_shared<NativeInferenceProvider>(
+    provider, std::make_shared<NativeAdapterRegistry>());
+  auto service = makeHostService(HOST_SERVICE_A, makeAcceptingAckHandler());
+  service.runtimeObserver = [] (const auto&) {
+    throw std::runtime_error("intentional runtime observer failure");
+  };
+
+  auto failedConfig = makeHostConfig(HOST_SERVICE_A);
+  failedConfig.localProviderName = "/spec182/provider/failed-first-serve";
+  BOOST_CHECK_THROW(host->serve(service, failedConfig), std::runtime_error);
+
+  // A failed first serve must not pin the failed identity or leave the fixed
+  // lease entry registered. A clean retry with the normal host identity must
+  // create a usable target.
+  service.runtimeObserver = {};
+  auto registration = host->serve(service, makeHostConfig(HOST_SERVICE_A));
+  BOOST_REQUIRE(registration.valid());
+  BOOST_CHECK(!registration.closed());
+}
+
 // Host 共享 boot 身份与 compute-slot 范围：后续 serve 不得悄悄重塑。
 BOOST_AUTO_TEST_CASE(Spec182ProviderHostHostConfigConsistencyFences)
 {

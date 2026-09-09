@@ -1536,9 +1536,10 @@ NativeInferenceClient::NativeInferenceClient(
                           std::move(preparation), std::move(admission))
 {
   if (!m_preparation || !m_admission || contract.serviceName.empty() ||
-      contract.serviceName.front() != '/' || contract.taskName.empty())
+      contract.serviceName.front() != '/' || contract.taskName.empty() ||
+      !isSupportedNativeGenerationMode(contract.generationMode))
     throw NativeDiError("INVALID_CLIENT_CONFIGURATION", "local", "constructor",
-                        "native requester requires service, task, preparation and admission");
+                        "native requester contract has unsupported generation mode or missing service/task/owners");
   m_requestContract = std::make_shared<const NativeRequestContract>(contract);
 }
 
@@ -1726,6 +1727,14 @@ NativeInferenceHandle NativeInferenceClient::request(
         operation->maxGenerationTokens = generation.maxGeneratedTokens;
       }
     }
+    // Keep only live handles in the close-tracking index.  The index is weak
+    // by design so a client does not own completed operations, but without
+    // compaction every fire-and-forget request would leave an expired entry
+    // until client shutdown.
+    m_operations.erase(
+      std::remove_if(m_operations.begin(), m_operations.end(),
+                     [] (const auto& weak) { return weak.expired(); }),
+      m_operations.end());
     m_operations.push_back(operation);
   }
   // Submission returns a Pending handle; the dispatch runs on the
