@@ -147,5 +147,8 @@ The application was built in the matching SDK with the verified v31 cache and
 `ndnsf._ndnsf` from the SIF, loads the v32 User entrypoint through a read-only
 `/app` mount, and starts the real four-provider MiniNDN graph in
 [v52 evidence](minindn-v52-exact-sif-yb-v32.md).  The source-bound host receipt
-and v33 dispatch consumer both validate this base/app pairing.  Empty
-HOME/scratch isolation and GPU/Tiger qualification remain open.
+and v33 dispatch consumer both validate this base/app pairing.  The independent
+[v60 empty-HOME/scratch probe](minindn-local-v60-empty-home-scratch.md) now
+verifies the same composition with an initially empty HOME, scratch fsync and
+full SIF copy/hash, User entrypoint, NFD scratch socket, and clean scratch
+teardown. GPU/Tiger qualification remains open.

@@ -46,8 +46,8 @@ its supervisor records `processCleanup=CLEAN`.
 closure and native evidence normalization).
 
 **Verdict**: **BLOCK (HIGH)** — host/MiniNDN receipt and the fresh Y-N
-aggregate are verified, while the final T007 production audit, empty
-HOME/scratch check, and GPU/Tiger gates remain open.
+aggregate are verified, and v60 closes the empty-HOME/scratch local boundary;
+the final T007 production audit and GPU/Tiger gates remain open.
 
 **Progress**: 2/17 parent tasks complete; no current-candidate runtime qualification.
 
@@ -100,12 +100,13 @@ creating a second validator. Generic packaging validation keeps its owner.
 | --- | --- | --- |
 | G1: certified graph producer disconnected | Source wiring repaired. `RequestReferenceBinding` wraps post-ACK canonical binding, prepares references through the DI assembler, binds actual published MODELROOT and writes per-request graph-reference.json; public collection reads it. [Request wiring](t005-request-reference-wiring.md) includes tiny CPU ONNX/ORT component evidence. | Actual native YOLO acceptance in T008–T011; source wiring alone does not close those gates. |
 | G2: old base Controller lacks receipt flag | Closed for the current layered composition: the v32 APP carries the current Controller/User entrypoints and the v58 exact-SIF run reached the real publication/terminal path. | Keep the v22 base immutable; recheck the same flag on each new APP manifest. |
-| G3: no hostMinindn/localSif receipts | HostMinindn is source-bound and consumed by the v33 dispatch profile; v58 supplies a formal local CPU collector PASS, while `localSif` promotion remains closed until the independent empty HOME/scratch isolation check. | Run the final T007 audit, then complete the empty HOME/scratch local gate before GPU promotion. |
+| G3: no hostMinindn/localSif receipts | HostMinindn is source-bound and consumed by the v33 dispatch profile; v58 supplies a formal local CPU collector PASS and v60 supplies the independent empty-HOME/scratch isolation PASS. | Run the final T007 audit, then promote only after the exact SIF is staged and verified on the target allocation. |
 | G4: negative User/collector/ranks disconnected | Source wiring repaired in `0e22b210`; [negative collection](t004-negative-collection.md). Both ranks reuse provision/startup/storage/cleanup; rejection derives from retained Selection/cutpoint/fetch failure/node/GPU records, not raw operator assertions. | Full candidate qualification and actual T015 run. |
 | G5: project/scratch unqualified | Retain as T012 environment obligation. [Node storage](t004-node-storage.md) and [SSH coordinator](t004-ssh-coordinator.md) have component/login scopes only. | Observe actual allocated node storage and writable project capacity. |
 
 T007 must not demand a physical T010/T011 PASS before allowing those tasks to
-run. Their actual source/validation gaps N1/N2 still block T007. The unresolved
+run. N1/N2 implementation and runtime evidence are now closed at their declared
+scope; the final audit still controls formal ordering. The unresolved
 [base-SIF read instability](input-read-integrity.md) is a separate physical input
 condition; no blind rehash/download/build retry is justified.
 
@@ -116,17 +117,17 @@ its original acceptance criteria in tasks.md.
 
 | Requirements / success criteria | Owners and implementation boundary | Remaining acceptance |
 | --- | --- | --- |
-| FR-001, FR-018; SC-006; US1/US4 | T001/T004/T017: canonical entry/profile, generic Core/DI reuse | N2 and library target above; final clean-checkout instructions/offline reproduction |
-| FR-002, FR-003, FR-004; SC-001 | T002/T004: I/R/E, frozen harness/effective profile, prepared binding, builder dispatch; N3 enforced at issuer/ranks/collection | N1; final candidate refresh after source closure; other fields retain their original audit scope |
+| FR-001, FR-018; SC-006; US1/US4 | T001/T004/T017: canonical entry/profile, generic Core/DI reuse | Library target above; final clean-checkout instructions/offline reproduction |
+| FR-002, FR-003, FR-004; SC-001 | T002/T004: I/R/E, frozen harness/effective profile, prepared binding, builder dispatch; N3 enforced at issuer/ranks/collection | Final candidate refresh after source closure; other fields retain their original audit scope |
 | FR-005, FR-006; SC-002; US2 | T008/T011: isolated host/container build owners, nine outputs/two extensions | Current source/ABI closure, exact new SIF and compute-matched version |
-| FR-007, FR-009; SC-002/SC-005 | T005/T009/T010: role credentials, public recipients, signed readiness, secure NDN/Repo path | N2; real multi-process YOLO and registered permission/dependency failures |
+| FR-007, FR-009; SC-002/SC-005 | T005/T009/T010: role credentials, public recipients, signed readiness, secure NDN/Repo path | Real multi-process YOLO and registered permission/dependency failures are recorded in v58/v59; formal candidate qualification remains later. |
 | FR-008; SC-003; US3 | T004/T005/T012–T014: four Providers, A backbone/merge, B heads, allocation/CUDA readers | Actual single/two-node GPU execution; no shared-file activation shortcut or model CPU fallback |
-| FR-010, FR-011; SC-002/SC-003 | T005/T006: independent request references, retained numerical response, role/edge/cleanup reanalysis | N1 at host gate; complete actual runtime records for normal collection |
-| FR-012, FR-017; SC-005 | T003/T004/T012: process/HOME ownership, once-only journal, unknown-job query, transport lock/storage | N2 host wrapper; real allocation/terminal/capacity observations |
+| FR-010, FR-011; SC-002/SC-003 | T005/T006: independent request references, retained numerical response, role/edge/cleanup reanalysis | Complete actual runtime records for later GPU/Tiger collection; host gate semantics are closed at the declared component-only scope. |
+| FR-012, FR-017; SC-005 | T003/T004/T012: process/HOME ownership, once-only journal, unknown-job query, transport lock/storage | Real allocation/terminal/capacity observations remain for T012; v60 covers local HOME/scratch isolation. |
 | FR-013; SC-004; US4 | T014/T016: two immutable normal allocations, each 1 warmup + 3 measured | Both actual allocations; second run is required reuse acceptance, not discretionary benchmarking |
-| FR-014; SC-002 | T007–T015: audit → unit → integration → MiniNDN → exact-SIF → GPU stages | N1/N2 before T007 PASS; N3 source repaired, physical receipts remain later |
-| FR-015; SC-001/SC-005 | T002/T006/T009/T010/T015: mutation contracts and retained negative collector | N1/N2; actual registered failures, independent evidence, bounded cleanup |
-| FR-016; SC-006 | T006/T017: immutable collection, raw references, terminal reconciliation/failure log | N1/N2 host evidence; final index and offline reconstruction |
+| FR-014; SC-002 | T007–T015: audit → unit → integration → MiniNDN → exact-SIF → GPU stages | N1/N2 source/runtime scope is closed; final T007 ordering, physical allocation, and GPU receipts remain later |
+| FR-015; SC-001/SC-005 | T002/T006/T009/T010/T015: mutation contracts and retained negative collector | Registered failures and bounded cleanup are evidenced in v59; the remote T015 case remains later |
+| FR-016; SC-006 | T006/T017: immutable collection, raw references, terminal reconciliation/failure log | Host evidence is retained; final index and offline reconstruction remain T017 work |
 
 All 18 FRs, six SCs, four stories and 17 parent tasks are covered. Spec Kit's
 structural check found 18/18 FR traceability and two completed parent tasks;
@@ -140,14 +141,14 @@ structural PASS does not override this semantic BLOCK.
 | Necessity / Occam | Repair the three actual boundaries, reuse owners and prior evidence; no new supervisor/planner/transport. |
 | Architecture / ownership | Generic native cutpoint/User binding retain generic owners. Old claim that Core/DI source is untouched is superseded. Respect library compatibility during N1 repair. |
 | Cross-document consistency | Current report, plan and progress table supersede obsolete disconnected-owner claims; chronological checkpoints remain historical. |
-| Code reality | Normal/negative/SSH joins exist; N3 now enforced at its actual owners. N2 remains an executable gap; source presence does not prove native compatibility. |
-| Security / distributed correctness | Preserve isolation/request binding; N1 cannot equate content hashes with qualification; N2 must verify prepared identities. |
-| Executability | N2 controls. Require executable later-stage code, not future physical results, at T007. |
+| Code reality | Normal/negative/SSH joins exist; N3 now enforced at its actual owners; v59 exercises the maintained N2 aggregate owner with real native evidence. |
+| Security / distributed correctness | Preserve isolation/request binding; v59 binds prepared identities and exact negative boundaries while the host label remains component-only. |
+| Executability | N1/N2 runtime scope is executable and evidenced. The final T007 audit still controls opening later physical gates. |
 | Validation design | Existing stage order/case counts suffice; only affected boundary regressions during repair. |
-| Evidence quality | Keep historical scopes explicit; component-only host evidence is over-consumed (N1). |
+| Evidence quality | Keep historical scopes explicit; component-only host evidence remains deliberately separate from GPU/Tiger qualification. |
 | Frozen evidence protection | Preserve failed runs, reanalyze matching records, never rewrite old profile paths or combine partial runs into PASS. |
 | Migration / rollback | Preserve baseline/Spec175 and old import compatibility; native changes require resealing/rebuilding affected consumers. |
-| Operations / verdict | BLOCK N1/N2; N3 focused acceptance recorded; base read instability remains unresolved; no blind retries. |
+| Operations / verdict | BLOCK final T007/GPU/Tiger gates; N1/N2 and N3 focused acceptance recorded; base read instability remains unresolved; no blind retries. |
 
 ### Verification and next checkpoint
 
@@ -166,10 +167,10 @@ structural PASS does not override this semantic BLOCK.
   statistical design, literature comparison or scientific claim was added.
 
 Next: complete the final T007 audit and update T002/T004/T005/T006 acceptance
-against the v59 evidence. N3's version owner is implemented; reuse its focused
-evidence unless that boundary changes. Then qualify the matching source through
-T008–T017 in order, starting with the independent empty HOME/scratch check and
-resolving the base input condition before relying on those bytes. This report
+against the v59/v60 evidence. N3's version owner is implemented; reuse its
+focused evidence unless that boundary changes. Then qualify the matching source
+through T008–T017 in order, starting with one verified Tiger staging copy and
+allocation preflight after the base input condition is resolved. This report
 requires no native build, SIF transfer/hash, or repeated local model run.
 
 ## Historical audit — 2026-09-07 (superseded by the current section)
@@ -281,13 +282,12 @@ either real defects (fixed) or stale assertions of the old `--home` form
 | # | Severity | Owner | Discrepancy | Regression |
 |---|----------|-------|-------------|------------|
 | G1 | HIGH | T005/T006 | `prepare_role_reference` (runtime/yolo_graph_reference.py:22) produces ORT graph references (COMPONENT_ONLY) but no production owner publishes a certifiedGraph into the collector path; the final verdict consumes certifiedGraph that no wired producer generates (evidence/certified-graph-owner-gap.md). | A test that runs the collector with a graph reference produced by the wired owner and rejects a synthetic one. |
-| G2 | HIGH | T011 | The base SIF's in-image controller.py predates `--spec180-runtime-receipt-file` (host sources: examples/python/NDNSF-DistributedInference/yolo_2x2/controller.py:116); the full application layer cannot execute against the Spec183 harness until the T011 local SIF rebuild. | A post-rebuild container run that reaches wait_controller_publication with the real receipt file written. |
-| G3 | HIGH | T010/T011 | The v33 profile binds a source- and layer-verified `hostMinindn` receipt; v58 is a formal local CPU collector PASS, but `localSif` remains closed until the independent empty HOME/scratch isolation verdict is bound. | Finish T007, run the empty HOME/scratch local gate, and bind only its independently verified verdict. |
+| G2 | HIGH | T011 | The v22 base intentionally contains stable libraries only; the v32 external APP carries the current Controller/User entrypoints and the v58 exact-SIF run reached the real publication/terminal path. | Recheck the same controller receipt flag against each new APP manifest; no base rebuild is required for this unchanged composition. |
+| G3 | HIGH | T010/T011 | The v33 profile binds a source- and layer-verified `hostMinindn` receipt; v58 is a formal local CPU collector PASS and v60 independently verifies empty HOME/scratch isolation. | Finish T007, then bind the exact SIF/APP hashes to one verified Tiger allocation before GPU promotion. |
 | G4 | MEDIUM | T004/T012 | Updated 2026-09-07: normal runners, storage, terminal reconciliation, shared receiver/query recovery, SSH transport and native dependency cutpoint are wired; negative User/collector/rank dispatch and full-candidate qualification remain incomplete. | t004-ssh-coordinator.md records login transport; t004-dependency-cutpoint.md records 3 actual in-process native transport checks. Neither is a Slurm/GPU gate. Re-audit required. |
 | G5 | LOW | T012 | Remote project roots remain unqualified; scratch now uses locally checked SLURM_TMPDIR or /tmp. statvfs observations do not establish quota/reservation. | T012 must verify the same SIF, actual allocated node-local storage and writable project capacity. |
 
 ## Unblock path
 
 T007 final audit (including G1) → T008 host-unit closure → T009 integration →
-T011 empty HOME/scratch local gate → T012
-allocation qualification → T013-T017 Tiger GPU deployment.
+T012 allocation qualification → T013-T017 Tiger GPU deployment.

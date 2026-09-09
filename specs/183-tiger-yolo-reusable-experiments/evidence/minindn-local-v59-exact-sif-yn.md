@@ -76,7 +76,7 @@ The aggregate file is
 This closes the fresh Y-N aggregate and completes the local MiniNDN negative
 matrix at the declared scope. It does not change the host receipt's
 `YOLO_HOST_GATE_COMPONENT_ONLY` qualification, and it does not close T007's
-formal ordering gate. The next minimal runtime check is the independent exact-
-SIF empty-HOME/scratch isolation probe; only after that should the unchanged
-composition be staged once to Tiger and tested on a bounded single-node GPU
-allocation.
+formal ordering gate. The paired v60 [empty-HOME/scratch isolation probe](minindn-local-v60-empty-home-scratch.md)
+now closes that local boundary. The next gate is one content-addressed staging
+of this exact SIF and APP to Tiger, followed by a bounded single-node GPU
+preflight and request.

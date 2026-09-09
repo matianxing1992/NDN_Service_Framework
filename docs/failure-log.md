@@ -4625,3 +4625,18 @@ Fix status: staged the small issuer inputs and ran the maintained
 aggregate completed `T010_DONE/returncode=0` with all registered subcases PASS.
 Lesson: a Y-N-only rerun may reuse the unchanged base/app, but it still needs a
 fresh run-scoped preparation receipt before the MiniNDN driver can start.
+
+## 2026-09-09 — first empty-HOME probe used the wrong entrypoint check
+
+Symptom: the first v60 exact-SIF isolation probe reached an empty HOME,
+scratch fsync, and `ndnsf` import, but `/app/bin/App_ServiceController --help`
+returned exit `1` before NFD was started.
+Root cause: that Controller binary requires its configuration file even for the
+`--help`-shaped invocation; it is not the maintained no-configuration
+entrypoint check.
+Fix status: retained the failed probe, switched the check to the v32 User
+`--help` entrypoint, placed the NFD socket under the writable scratch bind, and
+reran as v60-c. The rerun copied and hash-verified the full SIF, observed NFD
+startup/exit `0`, and returned `PASS`.
+Lesson: entrypoint probes must use the declared application command and its
+required configuration contract; a binary name alone is not a help check.
