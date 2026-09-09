@@ -2555,3 +2555,12 @@ parser 修复后增加结构化 recovery、结构化 decision 和 legacy `reques
 - **Interpretation**: R6-B9 is `CLOSED_FOR_VALIDATION` only for the local D2b freshness behavior;
   T013-B/T013-C, cross-process compatibility and T016 qualification remain `PARTIAL`/open.
   See [R6-B9 evidence](../specs/182-native-di-python-bindings/evidence/r6-b9-legacy-d2b-freshness-20260909.md).
+
+### 2026-09-09 — R6-B9 follow-up stability observation
+
+The historical D2h212 boundary remains preserved in the R6-B9 run directory (`2/20` failures
+with callback/role loss and `double free or corruption`). A later fresh-process rerun of
+`ProductionNativeHandlersRunD2h212ToCompleteOracleResponse`, with dependency and NDNSF tracing
+enabled, passed `20/20` without timeout; logs are under
+`.codex-tmp/spec182-r6-b9/d2h212-dep-repeat20/`. This narrows current reproducibility but does
+not explain the historical interleaving, prove cross-process behavior, or close T016.

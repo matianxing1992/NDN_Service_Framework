@@ -140,10 +140,10 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 sequence 3。现已按 session 与 publication name 分开记录 sequence，在 `svs_mutex` 下
 拒绝旧 session 和同名旧序列，同时允许不同 publication 的合法乱序。五个 D2b selector
 及具名 D2h212 selector 单独运行通过，`integration-tests` 118/118 的 `-j4` 构建通过；
-未过滤的整套 Spec170 suite 首次尝试以及具名 D2h212 的 2/20 重复在 D2h 用例暴露 callback
-缺失和 `double free`，但两次后续 suite 重跑和五个 D2b 各 10 次均通过；该间歇性边界仍
-需独立修复，因此批次仅对本地 D2b freshness 出口 `CLOSED_FOR_VALIDATION`，T013/T016
-与整套运行稳定性仍开放。
+未过滤的整套 Spec170 suite 首次尝试以及历史具名 D2h212 的 2/20 重复在 D2h 用例暴露
+callback 缺失和 `double free`；两次后续 suite 重跑、五个 D2b 各 10 次，以及带依赖追踪的
+具名 D2h212 新鲜进程 20/20 均通过。历史边界仍保留为未解释的可复现性风险，因此批次仅
+对本地 D2b freshness 出口 `CLOSED_FOR_VALIDATION`，T013/T016 与整套运行稳定性仍开放。
 详见 [R6-B9 evidence](evidence/r6-b9-legacy-d2b-freshness-20260909.md)。
 
 2026-09-09 R7-B2 alternate-provider replacement / **DONE (local batch)**：实现并接通

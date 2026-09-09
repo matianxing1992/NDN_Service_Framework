@@ -73,9 +73,16 @@ The following named selectors also exited 0 individually: `ProductionIngressReje
 `.codex-tmp/spec182-r6-b9/individual-1.log` through `individual-5.log`.
 
 Each of the five D2b selectors was then run ten times in a fresh process: `50/50` runs exited 0
-with no timeout. The D2h212 selector was repeated separately: `18/20` exited 0 and `2/20`
-reproduced the callback/role loss followed by `double free or corruption`; logs are named
-`d2b-<selector>-NN.log` and `d2h212-repeat-NN.log` in the same run directory.
+with no timeout. The D2h212 selector was repeated separately: the historical run recorded
+`18/20` exits 0 and `2/20` reproductions of callback/role loss followed by `double free or
+corruption`; those logs remain named `d2b-<selector>-NN.log` and `d2h212-repeat-NN.log` in the
+same run directory.
+
+As a follow-up stability observation after the source rebuild, the same D2h212 selector was run
+in 20 fresh processes with `NDNSF_DI_DEPENDENCY_OBJECT_TRACE=1` and `NDNSF_TRACE=1`; all
+`20/20` exited 0 with no timeout. Raw logs are in
+`.codex-tmp/spec182-r6-b9/d2h212-dep-repeat20/`. This reduces the current reproducibility of
+the historical boundary but does not erase it or establish cross-process qualification.
 
 The first unfiltered `Spec170NdnsfDiCoreFlow/*` attempt reported missing response, one missing
 role and then `double free or corruption` in a later
@@ -92,10 +99,11 @@ bounded D2b repair; it is not treated as a deterministic regression without a du
 - `compile/link`: no compiler or linker defect was found. Adding the header map caused the expected
   transitive rebuild; the Waf target registered the current source correctly.
 - `runtime/test`: only the named D2b runtime selector exposed the lost provider1 callback. After the
-  repair, all five D2b selectors passed `10/10` each, while the named D2h212 selector passed in
-  isolation but reproduced the callback/lifetime failure `2/20` times. Two subsequent unfiltered
-  Spec170 suite runs passed. The D2h failure is retained as an open reproducibility boundary rather
-  than attributed to this D2b repair.
+  repair, all five D2b selectors passed `10/10` each. The historical D2h212 run reproduced the
+  callback/lifetime failure `2/20` times, while a later fresh-process run passed `20/20` with
+  dependency tracing enabled; two subsequent unfiltered Spec170 suite runs also passed. The
+  historical D2h failure remains recorded as an unresolved reproducibility boundary rather than
+  being attributed to this D2b repair.
 - `unobserved`: cross-process SVS delivery, long-lived publication-map growth, legacy caller zero-use,
   and T016 namespace/NFD execution were not observed here.
 
