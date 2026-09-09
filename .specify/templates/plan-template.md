@@ -129,6 +129,9 @@ be stricter but must not weaken its PASS/BLOCK boundary.
   For native NDNSF-DI runtime/protocol/state/concurrency/crypto/model behavior,
   name the production C++ target/selector in the batch row; Python selectors cover
   only binding/facade, offline oracle, or external-facility boundaries.
+  For asynchronous or detached native paths, the batch must also name the fixture owner or
+  join/drain barrier for Face/io_context/scheduler/timer/callback dependencies and the
+  destructor-order selector/recheck; production close/callback semantics stay unchanged.
   CLI --help/usage/schema checks and harness-start smoke only prove command/target or
   facility wiring; they cannot be recorded as native request/result or qualification PASS.
   在成员进入同一批前写明共同入口/调用方、契约、oracle/selector、source closure 和

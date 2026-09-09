@@ -541,6 +541,10 @@ void runPublicClientScenario(int scenario)
   class User final : public test::LocalServiceUser {
   public:
     using test::LocalServiceUser::LocalServiceUser;
+    // NativeInferenceClient dispatches request work on a detached executor.
+    // Keep the externally supplied Face alive with the ServiceUser so a late
+    // worker release cannot race the Face's scheduler/reactor destruction.
+    std::shared_ptr<ndn::DummyClientFace> faceOwner;
     std::map<std::string, SelectionInputKeyOffer> groupKeys;
     void offer(const ndn::Name& id, const std::string& wire) {
       auto& call = m_pendingCalls.at(id);
@@ -627,11 +631,13 @@ void runPublicClientScenario(int scenario)
     NativeSplitCandidate value;
   };
   ndn::security::KeyChain keyChain{"pib-memory:", "tpm-memory:"};
-  ndn::DummyClientFace face{keyChain};
+  auto faceOwner = std::make_shared<ndn::DummyClientFace>(keyChain);
+  auto& face = *faceOwner;
   const auto requesterCert = test::makeRsaIdentity(keyChain, ndn::Name("/requester"));
   const auto authorityCert = test::makeRsaIdentity(keyChain, ndn::Name("/authority"));
   auto user = std::make_shared<User>(face, ndn::Name("/client"),
     requesterCert, authorityCert, "examples/trust-any.conf");
+  user->faceOwner = std::move(faceOwner);
   std::shared_ptr<NativeConversationCoordinator> conversations;
   std::optional<NativeConversationContinuation> conversation;
   if (scenario == 13) {

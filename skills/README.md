@@ -56,6 +56,9 @@ NDNSF-DI 原生行为的 unit/integration/regression 测试由 C++ fixture/drive
 直接调用生产 C++ target/selector 验收；Python 可编排外部设施或启动 C++ executable，
 也可覆盖 binding/facade、offline oracle 边界，但不能替代 native behavior、parity 或
 跨进程资格断言。
+异步 native fixture 必须显式保持外部 Face、io_context、scheduler 和回调依赖到 detached
+worker 完成，或提供 join/drain barrier；静态门要检查析构顺序，重复 selector 要覆盖
+生命周期竞态，且不得为 fixture 修改生产 close/callback 语义。
 CLI `--help`、usage/schema rejection、target/link smoke 或 harness 启动只证明接线，
 不能替代真实 native request/result、parity 或 qualification 证据。
 维护中的 legacy/compatibility 探针若暴露运行时回归，必须保留首个失败边界和原始证据，

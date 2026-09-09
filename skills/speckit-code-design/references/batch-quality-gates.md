@@ -76,6 +76,14 @@ integration 和 regression 测试的断言主体、fixture/driver 与 oracle 必
 启动一个 C++ 测试 executable，或覆盖 pybind API 形状、facade 转发、离线 oracle 和
 配置拒绝，但 Python focused test 不能实现 native behavior 的主要断言，也不能替代
 C++/Python parity 或跨进程资格。
+异步 native 测试还必须显式记录外部 `Face`、`io_context`、scheduler、timer service 和
+回调对象的 owner 及析构顺序。若生产 executor 可 detached、延迟释放或在回调线程继续
+持有 `ServiceUser`，fixture 必须以 RAII/shared owner 保持这些依赖存活，或提供可核对的
+join/drain barrier；不能让栈对象在 worker 释放最后一个 production owner 前先析构。静态
+门要从 selector 入口检查该 ownership map 和 cleanup path，运行门要对具名 selector 做
+重复运行；析构竞态、SIGSEGV 或 UAF 首次出现在 runtime/test 时，必须保留首个 backtrace，
+并把 fixture lifetime 作为下一次重试的 `Changed gate`。这项检查只约束测试边界，不授权
+为迁就 fixture 改变生产 `close()`、callback 或线程语义。
 若某个 native requirement 只有 Python 测试或没有 C++ target/selector，Coverage
 matrix 的 `test/harness/oracle` lane 必须写 `gap`，对应任务保持 `PARTIAL`。
 
