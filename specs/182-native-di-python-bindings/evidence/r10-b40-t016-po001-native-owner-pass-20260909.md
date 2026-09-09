@@ -20,7 +20,7 @@ fresh raw run 使用，不修改仓库源码或冻结 fixture。
 | `implementation and wire` | covered: owner namespace/PID/NFD socket context, bubblewrap/strace launch, native R4-B6 real Provider request and terminal result |
 | `test/harness/oracle` | covered: `businessOracle.stdoutMarker=SPEC182_NATIVE_DI_REQUEST_RESULT_OK`; evaluator returned no failures |
 | `build/source closure` | covered for the existing native executable and declared ELF closure; no source changed and no rebuild was needed in this batch |
-| `migration/evidence` | partial: this is one cross-process native acceptance case; maintained YOLO/Qwen callers, all remaining cases and no-Python matrix remain open |
+| `migration/evidence` | partial: this is one isolated native-process owner/runner acceptance case; the PO-001 Provider callback remains in-process fixture behavior, while independent Provider transport, maintained YOLO/Qwen callers, all remaining cases and the no-Python matrix remain open |
 
 ## Review and result
 
@@ -35,7 +35,9 @@ Command result for `r12` was exit `0`; `result.json` is `PASS`, `runner-result.j
 stdout business marker is present. The result also records requester namespace inode/PID/start ticks,
 NFD socket and peer identity, per-process trace/output, declared ELF mounts, and cleanup.
 
-The observed behavior is therefore `FOCUSED_QUALIFICATION_PASS` for PO-001 only. T016 remains
+The observed behavior is therefore `FOCUSED_QUALIFICATION_PASS` for PO-001 only. The MiniNDN
+namespace/process boundary is real, but this fixture does not prove independent requester-to-
+Provider process transport. T016 remains
 `PARTIAL` until the registered I01--I08 and PO-001--PO-014 matrix, full same-source suites, no-Python
 and maintained-caller boundaries are executed and reviewed.
 

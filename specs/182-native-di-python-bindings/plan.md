@@ -718,8 +718,10 @@ R10-B38 确认当前会话 UID 不能直接进入 MiniNDN owner 后，使用 pas
 过期）保留在 `r10`/`r11`，fresh `r12` manifest 只修正这两个可核对身份字段。root owner 成功
 创建 requester/provider namespace、NFD socket 和 peer context，canonical runner 在 owner
 存活期间启动 native `integration-tests`，PO-001 业务 marker、process/namespace/trace/cleanup
-均通过并返回 `PASS`。这只关闭一个真实 cross-process native acceptance 出口；I01-I08、
-PO-002-PO-014、maintained caller/no-Python 和完整 T016 仍需逐 case 执行。详见 [R10-B40 evidence](evidence/r10-b40-t016-po001-native-owner-pass-20260909.md)。
+均通过并返回 `PASS`。此处的独立边界是 MiniNDN owner 与被测 native 进程；Provider callback
+仍由同一 integration fixture 提供，因此不把本批描述为 requester/Provider 独立进程传输。
+这只关闭一个真实 isolated native-process acceptance 出口；I01-I08、PO-002-PO-014、
+maintained caller/no-Python 和完整 T016 仍需逐 case 执行。详见 [R10-B40 evidence](evidence/r10-b40-t016-po001-native-owner-pass-20260909.md)。
 
 ### R10-B33 Native Unary Repository Reference Request 2026-09-09
 

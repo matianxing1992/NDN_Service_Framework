@@ -2796,5 +2796,8 @@ are still unobserved.
   `SPEC182_NATIVE_DI_REQUEST_RESULT_OK` marker, and complete namespace/process/trace/cleanup evidence.
 - **Raw evidence**: preserve `r10`, `r11`, and `r12` under `.codex-tmp/spec182-t016-*`; the durable
   bounded result is [R10-B40 evidence](../specs/182-native-di-python-bindings/evidence/r10-b40-t016-po001-native-owner-pass-20260909.md).
+- **Scope correction**: r12 proves an isolated native process inside an owner-created namespace;
+  the PO-001 Provider callback is still supplied by the in-process integration fixture. It does not
+  prove independent requester/Provider process transport.
 - **Next step**: generate each remaining I01–I08/PO-002–PO-014 manifest from the current build
   identity before execution; do not reuse the stale raw manifest.
