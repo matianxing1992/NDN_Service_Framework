@@ -53,7 +53,7 @@ PYTHONPATH=pythonWrapper:NDNSF-DistributedInference /usr/bin/python3 -m pytest -
   tests/python/test_spec182_legacy_exclusion.py \
   tests/python/test_spec182_native_bindings.py \
   tests/python/test_ndnsf_di_app_sdk_compatibility.py
--> 28 passed in 1.24s
+-> 28 passed in 1.21s
 ```
 
 Native option construction/import was also checked with the candidate extension; pybind represents
