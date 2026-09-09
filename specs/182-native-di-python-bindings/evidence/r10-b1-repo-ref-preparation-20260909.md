@@ -58,6 +58,12 @@ compile boundary is in `.codex-tmp/spec182-r10-b1-build-r1/result.txt`. The incr
 used the cached system-first compiler closure (`/usr/bin/g++ -B/usr/bin`); `vmstat 1` during the
 retry showed no sustained swap-in/out or stall.
 
+As a post-build regression check, the existing real-Provider conversation selector
+`Spec170NdnsfDiCoreFlow/Spec182R4B6RealProviderConversation*` also passed all three cases
+(FULL_CONTEXT→receipt/control/commit→APPEND_DELTA, single-provider negative, and alternate
+replacement). Its raw output is `.codex-tmp/spec182-r10-b1/r4b6.log`; this is additional
+regression evidence and does not convert the R4-B6 or T016 qualification gaps into PASS.
+
 ## Batch retrospective (pending)
 
 - Static review found: missing test header closure, fixed before retry; revised diff had no
