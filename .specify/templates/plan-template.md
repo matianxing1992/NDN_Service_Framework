@@ -120,6 +120,9 @@ be stricter but must not weaken its PASS/BLOCK boundary.
   If a batch retries a prior miss, link the first failure boundary and record the changed
   static check; repeated miss classes require a shared skill/template/checklist revision or
   an explicit substitute gate.
+  For any target with a new entry point, cross-library call, or link retry, the build/source
+  closure scope must include a project-symbol definition map (symbol, defining translation
+  unit, target/library) and exact `rg`/CodeGraph plus `nm -C`/`readelf` checks.
   Record a Batch growth decision for every batch: stop at the first stable observable exit and
   create a new Batch ID when the next member changes the caller, state machine, selector, source
   closure, or hard acceptance dependency.

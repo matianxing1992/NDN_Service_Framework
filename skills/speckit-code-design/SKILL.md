@@ -82,6 +82,9 @@ closure、验收出口）；任一项不一致就拆成新的批次，不以少�
 target/source closure。缺少任一项时先记 `gap`，不得用 `No findings` 补齐。
 build lane 还必须记录实际输出路径、source identity 和 artifact digest；runner/qualification
 manifest 必须从该实际输出重生成并核对 digest。
+当目标有新增入口、跨库调用或历史链接漏项时，build lane 还必须附 project-symbol
+definition map（符号→定义 translation unit→target/library），并用 `rg`/CodeGraph 与
+`nm -C`/`readelf` 核对；链接漏检重试前必须把该 map 作为 `Changed gate`，不能只重跑构建。
 在写 `STATIC_PASS` 前还要完成该 reference 的 **Static Gate Release Checklist**，并在
 重试编译/运行漏检时记录 `Changed gate`；只重跑原命令不能关闭漏检。
 测试 helper 或 fixture 若复算 production serializer 的 canonical bytes/digest/identity，

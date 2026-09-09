@@ -86,7 +86,9 @@ Python/C++ parity 或 qualification PASS。
 或记录明确的替代门禁。只重跑原命令不构成漏检修复。
 `Review trace` 必须链接 `references/review-agent.md` 的 Minimum Review Record，并在
 `test/harness/oracle` lane 中列出测试注册，在 `build/source closure` lane 中列出实际
-target/source closure；只有 `No findings` 而没有这些行时仍属于 coverage gap。
+target/source closure；对于新增入口、跨库调用或链接重试，还要列出 project-symbol
+definition map（符号→定义 translation unit→target/library）及 `rg`/CodeGraph、
+`nm -C`/`readelf` 查询；只有 `No findings` 而没有这些行时仍属于 coverage gap。
 
 ## Format: `[ID] [P?] [Story] Description`
 

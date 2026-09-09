@@ -53,8 +53,11 @@ closure；这些未读时写 coverage gap，不能仅凭 No findings 记 `STATIC
    suite/selector 注册，并检查 selector 能命中声明的测试；只看到测试文件或通过
    `--help` 不算注册覆盖。
 3. `build/source closure`：列出实际 target、构建脚本的 source list/link 依赖和生成/安装
-   入口，确认本次修改的源文件属于该 closure；Python extension 依赖仓库 native 库时，
-   先确认 native target 再确认 extension 的链接身份。
+   入口，确认本次修改的源文件属于该 closure；对新增入口、跨库调用或既有链接漏项，附上
+   project-symbol definition map（未解析符号→定义 translation unit→提供该定义的
+   target/library），并用 `rg`/CodeGraph 与 `nm -C`/`readelf` 等精确查询核对。Python
+   extension 依赖仓库 native 库时，先确认 native target、导出符号及加载身份，再确认
+   extension 的链接身份。只列目录或 source list、没有定义映射时，build lane 记为 `gap`。
 4. `migration/evidence`：若存在旧 caller、兼容别名或历史失败，保留首个失败边界和
    原始证据，说明本批是否改变迁移检查；未知项保持 `gap`。
 

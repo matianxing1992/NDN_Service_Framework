@@ -27,6 +27,9 @@
 及注册，build lane 包含 target/source closure、实际输出路径、source identity 和 artifact
 digest；runner/qualification manifest 必须从该实际输出重生成并核对 digest。缺行或未解释的 `gap` 不得产生
 `STATIC_PASS`，批末还必须记录四类 `Batch Retrospective`。
+目标新增入口、跨库调用或链接重试时，build lane 还必须附 project-symbol definition map
+（符号→定义 translation unit→target/library）以及 `rg`/CodeGraph、`nm -C`/`readelf`
+核对；该 map 是重试的 `Changed gate`，不能只重跑构建。
 写入 `STATIC_PASS` 前还必须完成 `Static Gate Release Checklist`；发生编译/链接或运行/测试
 漏检时，重试记录 `Changed gate`，说明新增的 caller、测试注册、source-closure、oracle
 或反事实检查。每批另写 `Batch growth decision`，在稳定出口出现后停止吸收不同入口或验收

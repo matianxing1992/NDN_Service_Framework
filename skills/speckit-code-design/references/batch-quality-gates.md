@@ -93,6 +93,21 @@ Python/C++ parity 或 qualification PASS。若没有真实生产请求进入 Cor
 `Evidence / remaining` 保留生产调用、跨进程或资格 lane 的 `PARTIAL`/`gap`；同一批次
 不得用 CLI smoke 覆盖这些未观测边界。
 
+## Source-Closure Feedback Gate
+
+`build/source closure` 的覆盖不能只抄写 Waf/CMake 的 source list。对 executable、shared
+library 或 Python extension 只要发生了新增入口、跨库调用或链接失败，静态门必须建立一份
+可复核的 project-symbol definition map：列出目标实际编译的 translation units、每个未解析
+project symbol 的定义文件，以及提供这些定义的 library/target。可用精确 `rg`/CodeGraph
+查询结合 `nm -C`/`readelf` 验证；不要求在静态阶段重新构建，但不能把“源文件在相邻目录”当作
+闭包证据。若依赖 shared library，还要检查选定 artifact 的导出符号、RUNPATH/加载路径和
+实际输出身份。该 map、命令和结果写入同一批次记录，供 review-agent 复审。
+
+若编译/链接随后发现 source-closure 漏项，首个失败必须保留；重试前除了补 source/link
+配置，还必须把上述 definition-map 检查作为 `Changed gate`，并在下一批继续执行。重复出现
+同类遗漏时，先修订本 reference、模板或 checklist，或记录等价的自动化替代门禁；仅重新
+运行构建不能关闭该反馈环。
+
 ## Batch Result Record
 
 每批只维护一份 tasks/evidence 结果记录。记录以下字段；没有发现时写 `none`
