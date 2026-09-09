@@ -1,6 +1,6 @@
 # Implementation Plan: Native NDNSF-DI with Optional Python Bindings
 
-**Branch**: Experimental | **Revision**: 57 | **Date**: 2026-09-09
+**Branch**: Experimental | **Revision**: 58 | **Date**: 2026-09-09
 **Status**: IN_PROGRESS / 当前实现与验收状态见 tasks.md 的 Task Progress Registry 和 Current Checkpoint
 **Spec**: [spec.md](spec.md)
 
@@ -583,6 +583,21 @@ requester/provider transport、I02--I08、maintained caller/no-Python 和 T016 �
 本批在 T014-A/B 范围内 `CLOSED_FOR_VALIDATION`，不改变 T014/T016 的 `PARTIAL` 状态。
 官方 `review-agent` 的五 lane 只读审查没有留下 P1/P2/P3；证据见
 [R10-B29 evidence](evidence/r10-b29-runner-multiprocess-lifecycle-20260909.md)。
+
+### R10-B30 Runner Child and Endpoint Observation 2026-09-09
+
+R10-B29 接通了每个声明业务进程的启动、环境、namespace FD 和统一 supervisor cleanup；本批
+继续补齐其 T014 观察契约。`load_case` 现在要求 `assembly-worker` child 绑定已声明
+Provider、并校验并发上限；endpoint 必须声明 owner/peer、transport、地址和用途，抽象
+UNIX 地址在 launch 前拒绝。`collect_trace` 保留 clone/fork/vfork、open/openat、close/dup、
+mmap/mprotect/munmap、socket/connect 等冻结系统调用，并把成功 connect 与 manifest 地址
+逐项核对，未声明 endpoint 仍为 policy violation。新增 child/endpoint 正负夹具和生命周期
+trace 检查；38 个 `test_spec182_native_closure.py` cases、`py_compile`、设计 validator 与
+`git diff --check` 通过。没有 native build 或 MiniNDN 运行，真实 worker parentage、endpoint
+injection、I02--I08、maintained caller/no-Python 与 T016 仍开放。
+
+本批只在 T014-A/B harness 语义范围 `CLOSED_FOR_VALIDATION`，不改变 T014/T016 的 `PARTIAL`
+状态；详见 [R10-B30 evidence](evidence/r10-b30-runner-child-endpoint-observation-20260909.md)。
 
 ### R8-SKILL Review Coverage Contract 2026-09-09
 
