@@ -328,6 +328,42 @@ BOOST_AUTO_TEST_CASE(SubmissionOwnsInputsAndStrategiesBeforeWorkerPreparation)
     [](const auto& e) { return e.code() == "NATIVE_REQUEST_PIPELINE_NOT_READY"; });
 }
 
+BOOST_AUTO_TEST_CASE(RepositoryReferenceReachesNativePreparationBoundary)
+{
+  now = std::chrono::steady_clock::now();
+  auto client = NativeClientTestAccess::create(port(), user, adapters,
+    std::make_shared<NativeRequestPreparation>(adapters));
+  NativeApplicationInput input;
+  input.taskName = "task";
+  input.inputSchemaDigest = model.adapter.inputSchemaDigest;
+  input.optionsSchemaDigest = model.adapter.optionsSchemaDigest;
+  input.transportMode = NativeInputTransportMode::RepositoryReference;
+  input.repositoryReference = nativeCanonicalJson({
+    {"authorizationScope", "/SERVICE/di"},
+    {"ciphertextDigest", nativePlanningDigest("ciphertext")},
+    {"dataName", "/user/NDNSF/DI/DATA/request/object"},
+    {"encrypted", true},
+    {"manifestDigest", nativePlanningDigest("manifest")},
+    {"plaintextSize", 17},
+    {"protectionEpoch", "epoch-1"},
+  });
+  NativeRequestOptions options;
+  options.taskName = input.taskName;
+  auto handle = client->request(model, input, std::make_shared<ClientTestSplit>(),
+    std::make_shared<NativePreSplitFirstPlacement>(), options);
+  BOOST_REQUIRE_EQUAL(work.size(), 1U);
+  auto dispatch = std::move(work.front());
+  work.pop_front();
+  dispatch();
+  // With no runtime configured this remains a deliberate not-ready boundary;
+  // the repository reference must reach preparation instead of failing with
+  // the old "resolution is not linked" sentinel.
+  BOOST_CHECK_EXCEPTION(handle.result(std::chrono::milliseconds(0)), NativeDiError,
+    [](const auto& error) {
+      return error.code() == "NATIVE_REQUEST_PIPELINE_NOT_READY";
+    });
+}
+
 BOOST_AUTO_TEST_CASE(DeadlineDuringAdapterEncodingDoesNotRequireTimerDelivery)
 {
   now = std::chrono::steady_clock::now();

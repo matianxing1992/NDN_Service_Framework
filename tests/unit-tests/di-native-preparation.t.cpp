@@ -11,6 +11,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCatalogModelAdapter.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeV3Placement.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "tests/fixtures/spec182/native-sealing-fixture.hpp"
 
 #include <boost/property_tree/json_parser.hpp>
@@ -420,6 +421,47 @@ BOOST_AUTO_TEST_CASE(NativePreparationBindsAdapterAndGraphPort)
   BOOST_CHECK_EQUAL(artifactCalls, 2u);
   BOOST_CHECK_EQUAL(ordinaryBinding.sourceByRole.at("role"), binding.sourceByRole.at("role"));
   BOOST_CHECK_EQUAL(ordinaryBinding.artifactDigestByRole.at("role"), digest("artifact"));
+}
+
+BOOST_AUTO_TEST_CASE(RepositoryReferencePreparationPreservesEncryptedIdentity)
+{
+  auto adapter = std::make_shared<TaskFixtureAdapter>(
+    "fixture", "1", "fixture", "float32", "semantics", "graph",
+    identityBytes, identityBytes);
+  auto registry = std::make_shared<NativeAdapterRegistry>();
+  registry->registerAdapter(adapter);
+  registry->freeze();
+  NativeRequestPreparation preparation(registry,
+    [] (const NativePreparedInput&, const NativeModelDescriptor& model) {
+      return inspectedFor(model);
+    });
+  const auto reference = nativeCanonicalJson({
+    {"authorizationScope", "/SERVICE/di"},
+    {"ciphertextDigest", digest("ciphertext")},
+    {"dataName", "/user/NDNSF/DI/DATA/request/object"},
+    {"encrypted", true},
+    {"manifestDigest", digest("manifest")},
+    {"plaintextSize", 17},
+    {"protectionEpoch", "epoch-1"},
+  });
+  const auto input = preparation.prepareInput(
+    modelDescriptor(*adapter), "task", digest("schema"), digest("schema"),
+    {}, reference, deadline(1000));
+  BOOST_CHECK(input.encoded);
+  BOOST_CHECK(input.payload.empty());
+  BOOST_CHECK_EQUAL(input.repositoryReference, reference);
+  BOOST_CHECK_NO_THROW(input.validate());
+  BOOST_CHECK_NO_THROW(preparation.inspectModel(input));
+
+  auto nonCanonical = reference + " ";
+  BOOST_CHECK_THROW(preparation.prepareInput(
+    modelDescriptor(*adapter), "task", digest("schema"), digest("schema"),
+    {}, nonCanonical, deadline(1000)), std::invalid_argument);
+  auto inlineMix = preparation.prepareInput(
+    modelDescriptor(*adapter), "task", digest("schema"), digest("schema"),
+    {1}, {}, deadline(1000));
+  inlineMix.repositoryReference = reference;
+  BOOST_CHECK_THROW(inlineMix.validate(), std::invalid_argument);
 }
 
 BOOST_AUTO_TEST_CASE(CatalogModelAdapterBindsExactRevisionThroughPreparation)

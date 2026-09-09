@@ -1,6 +1,6 @@
 # Implementation Plan: Native NDNSF-DI with Optional Python Bindings
 
-**Branch**: Experimental | **Revision**: 20 | **Date**: 2026-09-09
+**Branch**: Experimental | **Revision**: 21 | **Date**: 2026-09-09
 **Status**: IN_PROGRESS / 当前实现与验收状态见 tasks.md 的 Task Progress Registry 和 Current Checkpoint
 **Spec**: [spec.md](spec.md)
 
@@ -128,6 +128,27 @@ R6-B9 后续的 ASAN allocator 复现把 D2h212 的间歇性 `double free or cor
 均以 system-first `-j4` 构建通过；D2h212 新鲜进程 50/50、ASAN-preload 20/20 通过。历史
 失败仍保留在 R6-B9 目录，不能据此宣称跨进程或 T016 qualification；本批只关闭本地
 selection-status ownership 出口。批次证据见 [R9-B1 evidence](evidence/r9-b1-selection-status-concurrency-20260909.md)。
+
+### R10-B1 Native REPO_REF Preparation 2026-09-09
+
+T010 的 native requester 已能编码 `REPO_REF` envelope，但 dispatch 仍在准备边界无条件
+拒绝 repository input，导致 provider 已支持的加密大数据引用无法进入同一 C++ 请求链。
+本批只修复这一稳定输入边界：`NativeRequestPreparation` 验证加密引用的完整身份并保留
+reference，inline 输入继续由 adapter 编码；`NativeInferenceClient::dispatchOperation`
+移除错误的“not linked”拒绝。不会在 requester 侧解密数据，也不新增 Python planner 或
+改变 Provider 的 fetch/decrypt 权限边界。
+
+分配依据固定为：production entry/caller 是
+`NativeInferenceClient::request`→`dispatchOperation`→`NativeRequestPreparation::prepareInput`
+及 `NativeRequestEnvelope`；implementation/wire 是 `NativePreparedInput` 的 INLINE/REPO_REF
+状态与 v2 envelope；test/oracle 是 `Spec182NativeInferenceClient`、`Spec182Preparation` 和
+REPO_REF envelope selector；build/source closure 是 `NativeRequestPreparation.cpp/.hpp`、
+`NativeInferenceClient.cpp` 及 `unit-tests` Waf target；migration/evidence 出口是 native
+Qwen/YOLO facade 可继续使用 inline，repository caller 获得明确的 C++ preparation route，
+真实 encrypted fetch、Provider 两轮和 T016 仍保持开放。
+
+批末必须完成五 lane 静态审查、root-cwd focused selectors 和一次 system-first `-j4`
+增量构建；任何 provider/network 未观测不得标为 qualification PASS。
 
 ### R8-SKILL Review Coverage Contract 2026-09-09
 

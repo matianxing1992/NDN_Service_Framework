@@ -32,6 +32,32 @@ bool ndnName(const std::string& value)
   return true;
 }
 
+NativeJson validateRepositoryReference(const std::string& wire)
+{
+  if (wire.empty() || wire.size() > 1024 * 1024)
+    throw std::invalid_argument("native encrypted input reference is invalid");
+  NativeJson reference;
+  try {
+    reference = nativeParseJson(wire);
+  }
+  catch (const std::exception&) {
+    throw std::invalid_argument("native encrypted input reference is invalid");
+  }
+  if (!reference.is_object() || !ndnName(reference.value("dataName", std::string{})) ||
+      reference.value("encrypted", false) != true ||
+      !reference.contains("plaintextSize") || !reference.at("plaintextSize").is_number_unsigned() ||
+      reference.at("plaintextSize").get<std::uint64_t>() == 0 ||
+      reference.value("authorizationScope", std::string{}).empty() ||
+      reference.value("protectionEpoch", std::string{}).empty() ||
+      reference.value("protectionEpoch", std::string{}) == "plaintext-v1" ||
+      !digest(reference.value("manifestDigest", std::string{})) ||
+      !digest(reference.value("ciphertextDigest", std::string{})) ||
+      nativeCanonicalJson(reference) != wire) {
+    throw std::invalid_argument("native encrypted input reference is invalid");
+  }
+  return reference;
+}
+
 bool sameModel(const NativeModelDescriptor& a, const NativeModelDescriptor& b)
 {
   return a.canonicalJson() == b.canonicalJson();
@@ -59,12 +85,18 @@ void NativePreparedInput::validate() const
     throw std::invalid_argument("prepared input model binding is inconsistent");
   if (modelName.empty() || !digest(modelDigest) || taskName.empty() ||
       !digest(inputSchemaDigest) || !digest(optionsSchemaDigest) ||
-      payload.empty() || adapterId.empty() || adapterVersion.empty() || !encoded ||
+      adapterId.empty() || adapterVersion.empty() || !encoded ||
       deadline <= std::chrono::steady_clock::now()) {
     throw std::invalid_argument("native prepared input is incomplete");
   }
-  if (!repositoryReference.empty()) {
-    throw std::invalid_argument("prepared input cannot retain an unverified repository reference");
+  if (repositoryReference.empty()) {
+    if (payload.empty())
+      throw std::invalid_argument("native prepared input is incomplete");
+  }
+  else {
+    if (!payload.empty())
+      throw std::invalid_argument("native prepared input mixes inline payload and repository reference");
+    validateRepositoryReference(repositoryReference);
   }
 }
 
@@ -131,7 +163,8 @@ NativePreparedInput NativeRequestPreparation::prepareInput(
 {
   model.validate();
   if (taskName.empty() || !digest(inputSchemaDigest) || !digest(optionsSchemaDigest) ||
-      payload.empty() || !repositoryReference.empty()) {
+      (payload.empty() && repositoryReference.empty()) ||
+      (!payload.empty() && !repositoryReference.empty())) {
     throw std::invalid_argument("native application input is invalid");
   }
   auto adapter = m_adapters->find(model.adapterId);
@@ -141,11 +174,18 @@ NativePreparedInput NativeRequestPreparation::prepareInput(
   if (deadline <= std::chrono::steady_clock::now()) {
     throw std::runtime_error("DI_NATIVE_REQUEST_DEADLINE_EXPIRED");
   }
-  auto encoded = adapter->encodeInput(payload);
-  if (encoded.empty()) throw std::runtime_error("DI_NATIVE_INPUT_ENCODING_EMPTY");
+  std::vector<std::uint8_t> encoded;
+  if (!repositoryReference.empty()) {
+    validateRepositoryReference(repositoryReference);
+  }
+  else {
+    encoded = adapter->encodeInput(payload);
+    if (encoded.empty()) throw std::runtime_error("DI_NATIVE_INPUT_ENCODING_EMPTY");
+  }
   NativePreparedInput result{model.modelName, model.contentDigest, std::move(taskName),
                              std::move(inputSchemaDigest),
-                             std::move(optionsSchemaDigest), std::move(encoded), {},
+                             std::move(optionsSchemaDigest), std::move(encoded),
+                             std::move(repositoryReference),
                              deadline, model.adapterId, model.adapterVersion, true, model};
   result.validate();
   return result;
