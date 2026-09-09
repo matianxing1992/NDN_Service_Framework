@@ -1167,6 +1167,14 @@ T017 的 evidence/development-handoff.md 包含 exact commit、clean source clos
 
 ## Current Execution Checkpoint
 
+2026-09-09 R10-B72 Provider plan check / **CLOSED_FOR_VALIDATION (metadata readiness boundary)**：
+复用四角色 bundle 首轮因默认 service 与 plan 不符在解析边界 `rc=2`；显式传入
+`/Inference/NativeTracer` 后 `--check-only` 返回 `rc=0`，输出 `PLAN_READY`、四角色/四
+artifacts/四 runners 和 `CHECK_OK` execution evidence。该结果只证明 plan/manifest metadata
+readiness，不证明 Provider serve permission、独立 requester/Provider transport、会话、
+caller migration/no-Python 或 T010--T017。详见
+[R10-B72 evidence](evidence/r10-b72-provider-plan-check-20260909.md)。
+
 2026-09-09 R10-B71 PO-001 stream owner recheck / **CLOSED_FOR_VALIDATION (isolated owner boundary)**：
 使用新的临时 artifact hashes 在 MiniNDN owner namespace 中启动 PO-001 stream，collector
 返回 `evaluation.status=PASS`、`observation.complete=true`、无 failures，业务 marker

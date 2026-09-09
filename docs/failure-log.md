@@ -1,5 +1,17 @@
 # Failure Log and Evidence Index
 
+## 2026-09-09 — Spec182 R10-B72 Provider plan service-selection boundary
+
+The first metadata-only Provider `--check-only` probe used the executable default service
+`/AI/YOLO/2x2Inference` while the reused four-role bundle plan declares
+`/Inference/NativeTracer`; the parser stopped before role registration with
+`native execution plan has no service` (exit `2`). The raw output is retained under
+`.codex-tmp/spec182-r10-b72-provider-check-20260909/check-only.log`. Supplying the declared
+service name reached `NDNSF_DI_NATIVE_PROVIDER_PLAN_READY` and
+`NDNSF_DI_NATIVE_PROVIDER_CHECK_OK` (exit `0`). This is a command/configuration boundary,
+not a Provider protocol or qualification result; see
+[R10-B72 evidence](../specs/182-native-di-python-bindings/evidence/r10-b72-provider-plan-check-20260909.md).
+
 ## 2026-09-09 — Spec182 R10-B70 local checkpoint hook boundary
 
 The first checkpoint commit attempt for the R10-B68 evidence was rejected before commit by
