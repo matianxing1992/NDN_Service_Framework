@@ -2650,3 +2650,22 @@ are still unobserved.
   `vmstat` logs in the same run directory.
 - **Next step**: use suite selectors or verified Boost.Test filter syntax for this target; retain
   the failed command in the batch retrospective as a `runtime/test` setup miss.
+
+## 2026-09-09 — Spec182 R10-B6 missing REPO_REF negative exceeded local pump boundary
+
+- **Area**: R10-B6 Provider REPO_REF fail-closed negative; missing encrypted input object.
+- **First boundary**: the production handler entered and did not enter the runner, but the
+  missing-object fetch did not reach `CollaborationContext::fail` before the fixture's fixed
+  200-round (about 3 s) pump ended. The assertions for `statusFailed` and the failure reason
+  therefore failed; no successful response was observed. The size-mismatch and malformed-envelope
+  cases in the same suite passed.
+- **Interpretation**: this is an observed fetch-timeout/test-harness boundary, not a Provider
+  success. `ServiceProvider::fetchAndDecryptLargeData` uses the shared
+  `NDNSF_REQUEST_LARGE_FETCH_TIMEOUT_MS` budget (default 30 s) and may try the legacy fallback,
+  while the helper pump stops earlier. The missing-object result remains unqualified until the
+  test uses a deterministic parser-level missing-reference case or an explicitly bounded fetch
+  budget.
+- **Raw evidence**: `.codex-tmp/spec182-r10-b6/suite-missing-failure.log`, `build.log`, and
+  `vmstat.log`.
+- **Next step**: repair the negative fixture so its missing-reference boundary is deterministic,
+  then rerun the complete `Spec170NativePostSelection` suite before closing R10-B6.

@@ -1,6 +1,6 @@
 # Implementation Plan: Native NDNSF-DI with Optional Python Bindings
 
-**Branch**: Experimental | **Revision**: 25 | **Date**: 2026-09-09
+**Branch**: Experimental | **Revision**: 27 | **Date**: 2026-09-09
 **Status**: IN_PROGRESS / 当前实现与验收状态见 tasks.md 的 Task Progress Registry 和 Current Checkpoint
 **Spec**: [spec.md](spec.md)
 
@@ -218,6 +218,21 @@ same Provider handler, encrypted large-data transport, `integration-tests` targe
 independent positive oracle. The stable exit is a successful real Provider execution whose
 runner input equals the published plaintext; malformed/missing reference negatives and full
 cross-process/T016 qualification remain separate work.
+
+### R10-B6 Provider REPO_REF Fail-Closed Negatives 2026-09-09
+
+R10-B5 proves the positive Provider fetch/decrypt path. This batch exercises the same production
+handler with three invalid v2 reference envelopes: a missing object, an incorrect declared
+plaintext size, and malformed JSON. Each case must fail at the Provider fetch/parser boundary,
+publish no successful response, and expose its own deterministic reason. The runner must not be
+entered for any negative case. The missing-object fixture scopes
+`NDNSF_REQUEST_LARGE_FETCH_TIMEOUT_MS=1000` with an RAII guard so the production fallback remains
+unchanged while the local oracle completes before the fixture's three-second event-loop pump.
+
+Allocation remains within `runNativeIngressCase`, the existing native ingress runner observer,
+the scoped test timeout guard, and one `Spec170NativePostSelection` selector family. The cases
+share the same encrypted input fixture, handler, Waf target, and failure oracle; cross-process
+behavior and final T016 qualification remain outside this batch.
 
 ### R8-SKILL Review Coverage Contract 2026-09-09
 
