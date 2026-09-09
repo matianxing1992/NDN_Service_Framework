@@ -28,8 +28,8 @@ std::atomic<std::uint64_t> NEXT_REQUEST_ID{1};
 // Bounded observer delivery capacity (CD-001 M09 / CD-007 notified event
 // queue): only bounded non-secret observation events are queued.  A terminal
 // is a single event per operation, so saturation is unreachable until
-// token/progress events arrive with the stream tasks (T010-C); when it
-// happens it records DELIVERY_OVERFLOW and drops the event instead of
+// token/progress events are accepted by the stream path; when the observer
+// queue saturates it records DELIVERY_OVERFLOW and drops the event instead of
 // fabricating a business result.
 constexpr std::size_t kObservedEventCapacity = 64;
 constexpr char kConversationStateScope[] = "ndnsf-di-conversation-state-v1";
@@ -534,10 +534,14 @@ markTerminal(const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
 // outcome; observer exceptions are isolated.
 void
 publishEvent(const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
-             NativeInferenceEvent event)
+             NativeInferenceEvent event, bool requirePending = false)
 {
   {
     std::lock_guard<std::mutex> lock(operation->mutex);
+    if (requirePending && operation->status != NativeRequestStatus::Pending) {
+      ++operation->staleCallbacks;
+      return;
+    }
     if (operation->events.size() >= kObservedEventCapacity) {
       ++operation->deliveryOverflows;
       return;
@@ -1139,6 +1143,11 @@ void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& o
           }
           if (operation->options.generation && !operation->acceptGenerationEvent(sourceAttempt, payload)) return;
           if (operation->cancelled->load()) return;
+          NativeInferenceEvent observed;
+          observed.requestId = operation->requestId;
+          observed.payload = payload;
+          observed.terminal = false;
+          publishEvent(operation, std::move(observed), true);
           try {
             if (operation->options.onGenerationEvent) operation->options.onGenerationEvent(payload);
           }

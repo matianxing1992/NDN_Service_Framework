@@ -23,6 +23,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCatalogModelAdapter.hpp"
 #include <thread>
 #include <atomic>
+#include <future>
 
 namespace {
 using namespace ndnsf::di;
@@ -760,6 +761,19 @@ void runPublicClientScenario(int scenario)
     }
     auto handle = client.request(model, application, std::make_shared<Splitter>(input.split),
       std::make_shared<NativePreSplitFirstPlacement>(), requestOptions);
+    std::shared_ptr<std::vector<NativeInferenceEvent>> observedEvents;
+    std::shared_ptr<std::promise<void>> observedTerminal;
+    std::future<void> observedDone;
+    if (scenario >= 3) {
+      observedEvents = std::make_shared<std::vector<NativeInferenceEvent>>();
+      observedTerminal = std::make_shared<std::promise<void>>();
+      observedDone = observedTerminal->get_future();
+      handle.observe([observedEvents, observedTerminal](const NativeInferenceEvent& event) {
+        observedEvents->push_back(event);
+        if (event.terminal)
+          observedTerminal->set_value();
+      });
+    }
     const ndn::Name id(handle.requestId());
     BOOST_REQUIRE(pumpUntil([&] { return user->hasPendingCall(id) || handle.status() != NativeRequestStatus::Pending; }));
     if (handle.status() != NativeRequestStatus::Pending) handle.result(std::chrono::milliseconds(0));
@@ -951,6 +965,21 @@ void runPublicClientScenario(int scenario)
       BOOST_REQUIRE(pumpUntil([&] { return handle.status() != NativeRequestStatus::Pending; }));
       if (scenario == 3 || scenario == 8 || scenario == 9 || scenario == 13) {
         BOOST_CHECK(handle.status() == NativeRequestStatus::Succeeded);
+        if (scenario == 13) {
+          BOOST_REQUIRE(observedDone.wait_for(std::chrono::seconds(2)) == std::future_status::ready);
+          BOOST_REQUIRE_GE(observedEvents->size(), 3U);
+          BOOST_CHECK(!observedEvents->at(0).terminal);
+          BOOST_CHECK(!observedEvents->at(1).terminal);
+          BOOST_CHECK(observedEvents->back().terminal);
+          BOOST_CHECK_EQUAL(observedEvents->at(0).requestId, handle.requestId());
+          BOOST_CHECK_EQUAL(observedEvents->at(1).requestId, handle.requestId());
+          BOOST_CHECK(nativeParseJson(std::string(
+            observedEvents->at(0).payload.begin(), observedEvents->at(0).payload.end()))
+            .at("schema") == "GenerationTokenEventV1");
+          BOOST_CHECK(nativeParseJson(std::string(
+            observedEvents->at(1).payload.begin(), observedEvents->at(1).payload.end()))
+            .at("schema") == "GenerationTokenEventV1");
+        }
         BOOST_CHECK_EQUAL(accepted.load(), 2);
         const auto result = handle.result(std::chrono::milliseconds(0));
         BOOST_CHECK_EQUAL(nativeParseJson(std::string(result.payload.begin(), result.payload.end())).at("text"), "ab");
