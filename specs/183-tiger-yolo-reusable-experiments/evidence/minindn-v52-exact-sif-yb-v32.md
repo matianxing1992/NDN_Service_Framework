@@ -37,6 +37,7 @@ The exact APP/SIF entrypoint check used the same read-only composition before
 the network run:
 
 ```bash
+ROOT=$(readlink -f Experiments/TigerCluster/.cache/layered-base-20260909)
 AP=/opt/apptainer/1.5.3/bin/apptainer
 "$AP" exec --cleanenv --bind "$ROOT/app-controller-version-j4-v32:/app:ro" \
   "$ROOT/base-runtime-controller-version-j4-v22.sif" env \
