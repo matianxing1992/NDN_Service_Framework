@@ -1,6 +1,6 @@
 # Implementation Plan: Native NDNSF-DI with Optional Python Bindings
 
-**Branch**: Experimental | **Revision**: 42 | **Date**: 2026-09-09
+**Branch**: Experimental | **Revision**: 43 | **Date**: 2026-09-09
 **Status**: IN_PROGRESS / 当前实现与验收状态见 tasks.md 的 Task Progress Registry 和 Current Checkpoint
 **Spec**: [spec.md](spec.md)
 
@@ -396,6 +396,23 @@ The repaired root probe (`.codex-tmp/spec182-runner-probe4-20260909051727/`) exe
 with return code 0 and a complete trace. It intentionally lacks business evidence, so this batch
 closes only the native process/observation boundary; an executable DI case and owner-alive runner
 invocation remain required for T016.
+
+### R10-B19 Owner-to-Runner Handoff 2026-09-09
+
+R10-B19 connects the explicit MiniNDN owner mode to the canonical closure runner while the
+requester/provider namespaces and NFD applications are still alive. The owner passes the
+identity-bound node context into `run_case`, persists the runner observation/evaluation, and maps
+`PASS`/`FAIL`/`UNQUALIFIED` to the campaign exit boundary before the `finally` cleanup. The
+registration-only mode and canonical runner remain separate; no second collector or business
+oracle is introduced.
+
+The fresh root run `.codex-tmp/spec182-r10-b19-20260909052040/` used an executable `/bin/true`
+isolation probe. It handed a held namespace descriptor through `nsenter`, returned code 0 from the
+process with a complete trace and no integrity/policy violations, then correctly classified the
+case as `UNQUALIFIED` because the probe has no DI business evidence. Twenty-nine focused cases,
+`py_compile`, `git diff --check` and the design validator passed. This batch closes only the
+owner-to-runner composition boundary; executable native DI cases, maintained caller execution,
+cross-process/no-Python evidence and T016 qualification remain open.
 
 ### R8-SKILL Review Coverage Contract 2026-09-09
 

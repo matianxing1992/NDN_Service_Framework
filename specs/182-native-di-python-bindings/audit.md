@@ -1,15 +1,15 @@
 # Spec182 Design Audit
 
-**Revision**: 16 | **Mode**: source alignment / cross-task convergence
+**Revision**: 17 | **Mode**: source alignment / cross-task convergence
 **Verdict**: DRAFT / PARTIAL; T016 preflight UNQUALIFIED
-**Source**: `a6e9681f` implementation/docs checkpoint / Experimental
+**Source**: `1fed7929` implementation/docs checkpoint / Experimental
 **Evidence**: [current source and dependency baseline](contracts/integrated-baseline.md)
 
 ## Current Findings
 
 ### Remaining Production Chain Review 2026-09-09
 
-本次复核以 `a6e9681f` 为当前 source checkpoint，当前文档状态由 R10-B18 更新。R10-B1--R10-B6 已在本地关闭
+本次复核以 `1fed7929` 为当前 source checkpoint，当前文档状态由 R10-B19 更新。R10-B1--R10-B6 已在本地关闭
 准备、公开 facade、YOLO/Qwen maintained caller 的 `REPO_REF` 路由、真实 Provider 正向
 消费和三个 Provider fail-closed 负例；R10-B7 同步了当前 route marker 与 T013-D/T013-F
 契约文字，R10-B9 又在真实 Provider conversation fixture 中观察到 configured
@@ -54,6 +54,26 @@ R10-B18 复核了 runner 的绝对工具路径、shared-library artifact 挂载�
 配对的 strace `<unfinished ...>`/`<... resumed>` 不再误报，悬挂或孤立事件仍保持
 `UNQUALIFIED`。root `/bin/true` probe 实际返回 0 且 observation complete，但缺少业务 evidence，
 因此没有提升任何 I/PO 状态，详见 [R10-B18 evidence](evidence/r10-b18-runner-elf-trace-boundary-20260909.md)。
+
+### Owner-to-Runner Handoff 2026-09-09
+
+R10-B19 复核了 `main --execute-owner --runner-manifest` → `_run_owned_campaign` →
+`_execute_runner_case` → canonical `run_case` 的完整接线。owner 在 MiniNDN requester/provider
+namespace 和 NFD 仍存活时传入经过 inode、PID/start ticks、socket 与 peer 校验的 node context，
+runner 负责 staging、launch、trace collection 和 evaluation；owner 只持久化 runner 结果并在
+`finally` 清理网络。`PASS`/`FAIL`/`UNQUALIFIED` 的退出映射保持显式，默认 registration-only
+入口未改变，也没有新增第二套 collector 或业务 oracle。
+
+root run `.codex-tmp/spec182-r10-b19-20260909052040/` 的 `/bin/true` probe 返回 0，trace
+`complete=true` 且 integrity/policy violations 为空，但因为没有 DI business evidence，结果为
+`UNQUALIFIED` / `CANONICAL_RUNNER_RESULT_RECORDED`。29 个 focused cases、`py_compile`、
+`git diff --check` 和 design validator 通过。该批只关闭 owner→runner composition boundary；
+真实 native DI case、maintained caller 两轮、cross-process/no-Python 及 T016 资格仍为
+`PARTIAL`/`UNQUALIFIED`，详见 [R10-B19 evidence](evidence/r10-b19-owner-runner-handoff-20260909.md)。
+
+R10-B19 的官方 `review-agent` 只读审查无 actionable finding，覆盖 production entry/callers、
+implementation/wire、test/harness/oracle、build/source closure 与 migration/evidence 五条 lane；
+build lane 对 Python-only handoff 标为 `N/A`，并记录了 owner-alive root run 作为运行证据。
 
 ### MiniNDN Owner Context Producer 2026-09-09
 
