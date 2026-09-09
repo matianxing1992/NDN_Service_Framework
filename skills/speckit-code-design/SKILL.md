@@ -83,6 +83,10 @@ target/source closure。缺少任一项时先记 `gap`，不得用 `No findings`
 `OPEN_FOR_NEXT_BATCH` 的关闭决定和触发条件。
 批末记录必须包含四类 **Batch Retrospective**（`static`、`compile/link`、`runtime/test`、
 `unobserved`）及其首个失败边界；缺少分类时保持 `PARTIAL`。
+各 Spec Kit 入口还必须遵守该 reference 的 **Command Output Contract**：编辑前登记
+`Batch growth decision`，审查时留下五 lane 的实际查询，批末在同一结果记录中写完整字段，
+重试时登记 `Changed gate`。入口 skill 只引用规则而未生成这些字段时，不得写入
+`STATIC_PASS` 或 `DONE`；技能副本同步本身不构成执行证据。
 编译/链接或运行/测试漏检在重试前必须链接原始边界并登记改变的静态检查；同类漏检再次
 出现时先修订共享 skill、模板或 checklist，或在证据中说明替代门禁。只重跑原命令不能
 关闭漏检，单次构建耗时也不能证明流程提效。

@@ -1,6 +1,6 @@
 # Implementation Plan: Native NDNSF-DI with Optional Python Bindings
 
-**Branch**: Experimental | **Revision**: 62 | **Date**: 2026-09-09
+**Branch**: Experimental | **Revision**: 63 | **Date**: 2026-09-09
 **Status**: IN_PROGRESS / 当前实现与验收状态见 tasks.md 的 Task Progress Registry 和 Current Checkpoint
 **Spec**: [spec.md](spec.md)
 
@@ -641,6 +641,20 @@ T010/T011/T013/T014/T015/T016/T017 及资格状态不变。详见
 `ACK_CLOSED`/stream failure boundary，不把断言内失败解释为套件失败或资格通过。
 跨进程 Provider worker、maintained caller/no-Python 与 T016 仍需在其 owner 环境执行。
 详见 [R10-B34 evidence](evidence/r10-b34-regression-sweep-20260909.md)。
+
+### R10-B35 Spec Kit Command Output Contract 2026-09-09
+
+R10-B34 复盘确认，当前共享规则已经要求五 lane、漏检分类和批次增长判断，但入口
+skill 仍可能只引用规则而不生成这些字段。本批把入口输出契约写入版本化
+`batch-quality-gates` reference，并在 code-design skill 与本机 Spec Kit 入口副本中明确：
+编辑前登记 `Batch growth decision`，审查记录必须列真实 caller、测试注册和 source
+closure，批末同一记录必须包含四类 `Batch Retrospective`、可比构建测量和关闭决定；重试
+必须登记 `Changed gate`。该规则不改变产品接口或验收依赖。
+
+更新范围是共享 reference、`skills/README.md`、版本化 code-design skill、安装副本和
+本机 `.agents/skills/speckit-*` 入口副本；通过定向文本/引用/SHA 检查后，保持本批
+`CLOSED_FOR_VALIDATION` 仅适用于工作流输出契约。T004/T008/T010/T011/T013/T014/T015/
+T016/T017 和 native qualification 状态不变。详见 [R10-B35 evidence](evidence/r10-b35-command-output-contract-20260909.md)。
 
 ### R10-B33 Native Unary Repository Reference Request 2026-09-09
 

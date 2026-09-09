@@ -30,6 +30,10 @@
 漏检时，重试记录 `Changed gate`，说明新增的 caller、测试注册、source-closure、oracle
 或反事实检查。每批另写 `Batch growth decision`，在稳定出口出现后停止吸收不同入口或验收
 依赖的成员并建立新的 Batch ID。
+所有 Spec Kit 入口还遵守
+[Command Output Contract](speckit-code-design/references/batch-quality-gates.md#command-output-contract)：
+编辑前登记批次分配依据，审查时写实际五 lane 查询，批末在同一记录中写四类漏检复盘、
+构建测量和关闭决定；缺少这些字段时保留 `PARTIAL`，不把 skill/template 同步当作执行证据。
 若 fixture/oracle 复算 canonical bytes、digest 或 identity，还必须对照 production serializer
 的字段集合、顺序、规范化和 source identity；不完整对照保持 `gap`。
 若编译/链接或运行/测试才发现漏检，重试/下一批必须链接首个失败边界并登记改变的静态
