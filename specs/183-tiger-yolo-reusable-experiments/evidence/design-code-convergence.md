@@ -1,10 +1,23 @@
 # T007 Design-Code Convergence Audit
 
+## Final T007 closure — 2026-09-09
+
+The final CodeGraph/source/evidence review is **PASS** for the design and
+production-wiring gate. The former N1/N2/N3 findings and the G1
+request-scoped certified-graph producer are closed at their declared scope;
+the v22 base + v32 external application contract is verified through transport,
+worker, and collector. The exact evidence and method are recorded in
+[t007-final-audit-v61](t007-final-audit-v61.md).
+
+This PASS only opens the ordered qualification sequence. T008/T009 formal host
+and integration closure, T012 allocated-node staging, and T013–T016 GPU/Tiger
+runs remain unchecked. No GPU or Tiger runtime PASS is inferred from T007.
+
 ## Accepted Deployment Change — 2026-09-08
 
 用户确认[基础SIF + 外置app](../../../Experiments/TigerCluster/docs/runtime-app-layers.md)。
-**新增控制项 N4 / HIGH / BLOCK，IMPLEMENTATION_PENDING**；此次为方案更新，
-不是生产审计PASS。旧N1/N2修复仍需完成，不因分层设计自动关闭。
+历史上的 N4 / HIGH / BLOCK 迁移提示已由 v22 + v32 的真实分层组合和
+[t007-final-audit-v61](t007-final-audit-v61.md) 收敛；本段保留作时间线记录。
 
 源码事实：`adapters/slurm-apptainer/templates/development-runtime.def.in` 的
 166/202/481行仍构建DI provider、安装DI Python包并用九产物清单封装SIF；
@@ -45,11 +58,12 @@ its supervisor records `processCleanup=CLEAN`.
 **Source checkpoint**: `93c8630b`, `TigerClusterExperiments` (v58 collector
 closure and native evidence normalization).
 
-**Verdict**: **BLOCK (HIGH)** — host/MiniNDN receipt and the fresh Y-N
-aggregate are verified, and v60 closes the empty-HOME/scratch local boundary;
-the final T007 production audit and GPU/Tiger gates remain open.
+**Verdict**: **PASS** for T007 — host/MiniNDN receipts, the fresh Y-N aggregate,
+empty-HOME/scratch isolation, and the layered consumer are verified. GPU/Tiger
+qualification remains a later gate.
 
-**Progress**: 2/17 parent tasks complete; no current-candidate runtime qualification.
+**Progress**: 3/17 parent tasks complete; no current-candidate GPU/Tiger
+qualification.
 
 This section supersedes the September 7 current-state claims retained below.
 Source wiring, component acceptance, exact-SIF CPU execution, and physical
@@ -166,12 +180,9 @@ structural PASS does not override this semantic BLOCK.
 - ARS is not applicable to this implementation/qualification-path audit; no
   statistical design, literature comparison or scientific claim was added.
 
-Next: complete the final T007 audit and update T002/T004/T005/T006 acceptance
-against the v59/v60 evidence. N3's version owner is implemented; reuse its
-focused evidence unless that boundary changes. Then qualify the matching source
-through T008–T017 in order, starting with one verified Tiger staging copy and
-allocation preflight after the base input condition is resolved. This report
-requires no native build, SIF transfer/hash, or repeated local model run.
+Next: qualify the matching source through T008–T017 in order, starting with one
+verified Tiger staging copy and allocation preflight. This report requires no
+native build, SIF rebuild, or repeated local model run.
 
 ## Historical audit — 2026-09-07 (superseded by the current section)
 

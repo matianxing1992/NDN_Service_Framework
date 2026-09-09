@@ -99,8 +99,8 @@ YOLO collector 配对，关闭 V13 的本机 isolation 缺口；仍不代表 GPU
 既定容差不变。精度修复已同步native/reference源码，正式NDNSF-DI四Provider仍未通过。
 原 17 项验收及既有 MiniNDN 交付证据不被替换。
 
-更新：2026-09-08；进度表初始审计基线 `d1f1504a`，`cc638d00`审计后N3源码修复，见
-[runtime version](evidence/t004-runtime-version.md)；[生产审计](evidence/design-code-convergence.md)仍BLOCK于N1/N2。其他客户端已在
+更新：2026-09-09；进度表初始审计基线 `d1f1504a`，`cc638d00`审计后N3源码修复，见
+[runtime version](evidence/t004-runtime-version.md)；[最终生产审计](evidence/design-code-convergence.md)已对 T007 给出 PASS，物理 GPU/Tiger 门仍保持独立。其他客户端已在
 `64df1581` / `5171450d` 提交 [host-unit](evidence/host-unit.md) 的构建与加载证据；
 下表记录其已声明范围，未重复运行构建，也不将它升级为正式 runtime 资格。
 下表是当前执行入口；后文 checkpoint 是历史证据，不应把旧“下一步”当作当前指令。
@@ -110,10 +110,10 @@ YOLO collector 配对，关闭 V13 的本机 isolation 缺口；仍不代表 GPU
 
 ### T001–T007：关闭实际 GPU YOLO 执行路径
 
-T007 复核确认正常/负例/SSH 接线已存在；N3 issuer/rank版本检查及collection/运输已修，
-当前控制项为 N1 host gate 语义重算、N2 MiniNDN 三场景及有界准备/执行。
-旧“运输/负例/certified graph 未接”的历史状态不再适用。T010/T011 实际回执是
-后续验收，不倒置为 T007 的物理前置；完整候选运输、SIF 与 GPU 资格仍未验收。
+T007 最终审计已确认正常/负例/SSH 接线、N1 host-gate 语义、N2 MiniNDN 聚合、
+N3 issuer/rank 版本检查、certified graph 生产者和分层 transport/worker/collector
+均在声明范围内闭合。旧“运输/负例/certified graph 未接”的历史状态不再适用。
+T010/T011 的本机证据不升级为 GPU/Tiger 资格；完整候选运输与 GPU 资格仍未验收。
 
 | Step | Parent | Concrete outcome / path | State | Evidence / verification scope | Blocker / next action | Reuse / rerun trigger |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -147,8 +147,8 @@ T007 复核确认正常/负例/SSH 接线已存在；N3 issuer/rank版本检查�
 | T005.c | T005 | 新 SIF 内 Controller 写真实 publication receipt | VERIFIED_LOCAL_SIF | [v52 exact-SIF Y-B](evidence/minindn-v52-exact-sif-yb-v32.md)；v32 APP Controller 在 v22 base SIF 中完成真实 publication、terminal response 与 clean cleanup | 每个新 APP manifest 仍需重验 publication flag；不把 local CPU receipt 升级为 GPU 资格 | 旧 base 不反复尝试同一不支持参数 |
 | T006.a | T006 | `yolo_result.py` 数值、角色、边、GPU、退出与负例判定 | IMPLEMENTED | [native observation](evidence/t006-native-observation.md)、[numerical reanalysis](evidence/t006-numerical-reanalysis.md) | 组件证据不能代替生产数据来源和真实运行 | 仅重测变化的 oracle/collector 行为 |
 | T006.b | T006 | collector 读取每次 User 留存的独立 graph-reference.json | IMPLEMENTED | [request wiring](evidence/t005-request-reference-wiring.md)；核验 run/request/runtime/placement/graph，缺文件拒绝共享图替代 | 仍依赖 T004.b 实际调度和完整 retained-native 验收；不以 helper 关闭父任务 | 与 T005.b 共用 176 项证据，不单独启动 GPU 采集 |
-| T007.a | T007 | 生产路径设计—代码审计报告 | READY_FOR_FINAL_AUDIT | [2026-09-09 follow-up](evidence/design-code-convergence.md)：N1/N2 host evidence and layered consumer now verified; residual G1/certified-graph and formal gate ordering remain explicit; v60 closes the local isolation check | Run final CodeGraph/design-code audit and record PASS/BLOCK with exact owners; do not open T008+ physical gates before PASS | 复用已通过版本检查与 v52/v51/v59/v60 evidence；仅重审变化边界 |
-| T007.b | T007 | T002/T004/T005/T006 生产接线收敛为 PASS | READY_FOR_AUDIT | N1 and N2 are now backed by the [source-bound host receipt](evidence/t010-host-gate-producer.md) and [v59 Y-N aggregate](evidence/minindn-local-v59-exact-sif-yn.md); v59 reaches `T010_DONE/returncode=0` with post-Selection dependency failure and v33 consumer accepts the layered base closure | Run the final CodeGraph/design-code audit and record any remaining controlling gap; keep formal T008+ gates closed until T007 itself is PASS | 只重审/重测变化边界；未PASS不开展正式T008+验收 |
+| T007.a | T007 | 生产路径设计—代码审计报告 | VERIFIED_PASS | [final audit](evidence/t007-final-audit-v61.md)：CodeGraph/source/evidence review found no controlling semantic, security, wiring, or evidence gap; v34/v38 dispatch chain is VERIFIED | T008+ physical gates are open in order; GPU/Tiger results remain separate | 仅生产路径或 contract 变化时重审 |
+| T007.b | T007 | T002/T004/T005/T006 生产接线收敛为 PASS | VERIFIED_PASS | N1/N2/N3/G1 and layered base/app consumer are bound by [v58](evidence/minindn-local-v58-exact-sif-pass.md), [v59](evidence/minindn-local-v59-exact-sif-yn.md), [v60](evidence/minindn-local-v60-empty-home-scratch.md), and [v62](evidence/minindn-local-v62-exact-sif-local-gate.md) | Continue T008–T017; do not promote local evidence to GPU/Tiger PASS | 只重审/重测变化边界 |
 
 ### T008–T017：逐级取得运行证据
 
@@ -182,7 +182,7 @@ T007 复核确认正常/负例/SSH 接线已存在；N3 issuer/rank版本检查�
 
 方向审计：目标与 TigerCluster GPU YOLO 一致；原计划的 correctness/reuse 范围和
 单节点 1+1、双节点两次各 1+3 已有界，不增加模型、GPU 型号或性能比较矩阵。
-当前应先完成 **T007 的最终 CodeGraph/生产接线审计 → PASS**，然后
+T007 已通过最终 CodeGraph/生产接线审计；下一步按顺序执行
 **T008 → T009 → T010 → T011 → T012 → T013 → T014 → T015 → T016 → T017**。
 后文将 T008 称为“下一个实现块”的历史 checkpoint 不取消 T007 前置。
 既有构建驱动初稿和开发探测不作为正式资格；本轮未干预可能存在的构建进程。
@@ -453,7 +453,7 @@ T005 partial checkpoint：新增 `runtime/yolo_operator.py` 作为唯一 rank-le
 
 T005/T006追加调用次数约束：正常ACK-driven User一次只执行一请求。warmup/measured用独立User调用、request/attempt/输出目录及数值文件，Provider持续运行；focused test从生产入口证明实际调用次数，不能仅检查legacy sequential参数存在。
 
-- [ ] T007 Audit production wiring before formal validation in `specs/183-tiger-yolo-reusable-experiments/evidence/design-code-convergence.md`: compare accepted spec/contract to actual submit→worker→application→Core/DI/Repo→collector and all effective fields through CodeGraph and exact source; register severity, owner and focused regression for each discrepancy. Review all wrappers/helpers and local/remote paths once as a closure, including scripts used by later substrate probes. Close only on PASS with zero controlling semantic/security/wiring/evidence gaps; actual changes reopen this task. Depends on T002–T006. This task is not satisfied by the planning audit.
+- [x] T007 Audit production wiring before formal validation in `specs/183-tiger-yolo-reusable-experiments/evidence/design-code-convergence.md`: compare accepted spec/contract to actual submit→worker→application→Core/DI/Repo→collector and all effective fields through CodeGraph and exact source; register severity, owner and focused regression for each discrepancy. Review all wrappers/helpers and local/remote paths once as a closure, including scripts used by later substrate probes. Closed with PASS and zero controlling semantic/security/wiring/evidence gaps in [t007-final-audit-v61](evidence/t007-final-audit-v61.md); actual changes reopen this task. Depends on T002–T006. This task is not satisfied by the planning audit.
 
 ### Accepted Layered Deployment Revision — 2026-09-08
 
@@ -463,10 +463,10 @@ T005/T006追加调用次数约束：正常ACK-driven User一次只执行一请�
 
 | Step | Parent | Concrete outcome / path | State | Evidence / verification scope | Blocker / next action | Reuse / rerun trigger |
 | --- | --- | --- | --- | --- | --- | --- |
-| T002.layer | T002 | 原source sealer/`runtime/yolo_profile.py`分离base/app闭包、显式layout版本和required R | NOT_STARTED | 仅设计；FR-005/006、Candidate Identity | 错base、app漏文件、旧layout混搭在副作用前拒绝；基础源码闭包不得遗漏 | app变更只失效E；基础变更才失效I/R |
-| T004.layer | T004 | 原bundle/operator/worker/transport验证并只读挂载app原生产物，保留harness归属 | NOT_STARTED | 仅设计；`/app:ro`不覆盖基础前缀 | 连接builder输出到实际local/rank入口；app own DSO允许、基础库遮蔽拒绝 | 只传变化app；复用相同base、模型与既有运输owner |
+| T002.layer | T002 | 原source sealer/`runtime/yolo_profile.py`分离base/app闭包、显式layout版本和required R | VERIFIED_LOCAL_COMPOSITION | [layered plane render](evidence/layered-plane-render.md) 与 [final audit](evidence/t007-final-audit-v61.md)；base/app identities、layout 和 shadowing checks verified | 继续复用同一 base/app；基础源码变化才失效 I/R | app变更只失效E；基础变更才失效I/R |
+| T004.layer | T004 | 原bundle/operator/worker/transport验证并只读挂载app原生产物，保留harness归属 | VERIFIED_LOCAL_COMPOSITION | v58/v59/v62 exact-SIF executions and `candidate_inventory` bind the APP manifest and enumerate its files; `/app` remains read-only | Tiger project staging and allocated-node observation remain T012 | 只传变化app；复用相同base、模型与既有运输owner |
 | T011.layer | T011 | 原prepare/build definition/preflight拆base与app构建、清单及资格；SDK键隔离增量缓存 | VERIFIED_COMPOSITION | v22 base SIF 与 v32 external APP 已按 `layered-v1` 闭包绑定；只读 `/app` 组合完成 v58 exact-SIF local PASS、v59 Y-N aggregate 与 v60 isolation，v33 dispatch/host receipt 消费通过，见 [v58 evidence](evidence/minindn-local-v58-exact-sif-pass.md)、[v59 evidence](evidence/minindn-local-v59-exact-sif-yn.md)、[v60 evidence](evidence/minindn-local-v60-empty-home-scratch.md) 与 [T010 producer](evidence/t010-host-gate-producer.md) | GPU/Tiger资格仍未完成；不把本地 CPU 证据升级为正式资格 | 基础库/ABI未变复用SIF；仅应用改动重建受影响targets |
-| T007.layer | T007 | 审计分层producer→manifest→transport→rank→collector全链及回退 | NOT_STARTED | 仅设计；既有T007 BLOCK仍保留 | 上三项接线后复审；错base/混搭/宿主库/旧回执均不可放行 | 复用未受影响组件证据，不启动文档性重测 |
+| T007.layer | T007 | 审计分层producer→manifest→transport→rank→collector全链及回退 | VERIFIED_PASS | [final audit](evidence/t007-final-audit-v61.md)；v34/v38 dispatch chain and v62 localSif collector consume the exact layered tuple | T012 must repeat SIF/app equality and allocated-node checks | 仅分层 contract、base ABI 或 app manifest 变化时重审 |
 
 UAV仅复用同一部署边界；本Spec不实现UAV应用或Spec182。正式YOLO运行继续等待
 原安全、数值与runtime门，不用小例子或布局标签替代它们。

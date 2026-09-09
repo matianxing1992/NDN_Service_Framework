@@ -4640,3 +4640,40 @@ reran as v60-c. The rerun copied and hash-verified the full SIF, observed NFD
 startup/exit `0`, and returned `PASS`.
 Lesson: entrypoint probes must use the declared application command and its
 required configuration contract; a binary name alone is not a help check.
+
+## 2026-09-09 — manual remote-version profile edit broke effective binding
+
+Symptom: changing the generated profile's remote Apptainer value from
+`1.3.4-1.el9` to the compute-node value `1.5.3-1.el9` made the direct dispatch
+consumer reject the profile with `ClosureError: EFFECTIVE_PROFILE_BINDING`.
+Root cause: the effective behavior document and dispatch plane identity bind
+the frozen profile; changing a behavior field without re-rendering those
+documents creates a mixed profile/plane tuple.
+Fix status: regenerated a fresh layered inputs/runtime/dispatch plane with the
+maintained renderers and explicit v22 source mapping; v34 now passes the full
+dispatch check and `_dispatch_report`.
+Lesson: a compute-version correction requires a new rendered profile/plane
+identity; never hand-edit one profile row or reuse a stale effective profile.
+
+## 2026-09-09 — duplicate v61 prepare processes raced on one run id
+
+Symptom: a second `submit.py prepare` was started while the first was still
+hashing the exact SIF for `minindn-local-20260909-v61-local-gate`.
+Root cause: the first command's session id was not surfaced by the wrapper,
+so the retry was launched before checking the original process.
+Fix status: stopped the duplicate process, retained the first prepared run,
+and used a fresh v62 run id for the actual local gate.
+Lesson: inspect the process/session state before retrying a long hash-bound
+operation; one run id may have only one writer.
+
+## 2026-09-09 — v61 local gate received pre-created issuer directories
+
+Symptom: `submit.py local` returned `LOCAL_EXECUTION_FAILED:OperatorError`
+without a worker receipt.
+Root cause: a manual `provision` step created `issuer-inputs`, `public`,
+`private`, and `prepare-output`, but the maintained local runner owns those
+directories and rejects an already-started run with `LOCAL_RUN_ALREADY_STARTED`.
+Fix status: retained the failed v61 run, prepared v62 only, and let
+`submit.py local` perform issuer preparation and execution itself; v62 passed.
+Lesson: use either the maintained local operator or the development provision
+helper, never both for one prepared run.
