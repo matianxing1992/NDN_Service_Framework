@@ -4215,3 +4215,18 @@ identity and rerun packaging against the existing incremental Waf cache.
   production cleanup behavior is unchanged.
 - Lesson: lifecycle API extensions need compatible doubles in every cleanup
   failure path, not only in the new happy-path test.
+
+## 2026-09-09: declared v21 SIF inode drifted after exact-SIF replay
+
+- Symptom: the next `submit.py prepare` rejected the unchanged v24 profile
+  with `FILE_DIGEST:sif`; the runtime plane declared `5c6e53ca...`, while its
+  3.9-GB SIF hashed to `186de8bb...` and differed from the matching input at
+  one observed byte.
+- Root cause: an earlier large-file runtime copy was mutable on the experiment
+  host, so the hard-linked v21 runtime inode no longer matched its plane
+  metadata.
+- Fix: restore the v21 runtime/base/inputs hard-linked paths from the
+  independently verified v24-manual input copy; the runtime path now hashes
+  to the declared `5c6e53ca...` without rebuilding the image.
+- Lesson: rehash the exact runtime path immediately before every preparation;
+  a prior exact-SIF PASS does not authorize a later mutable inode.
