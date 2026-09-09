@@ -1,6 +1,6 @@
 # Implementation Plan: Native NDNSF-DI with Optional Python Bindings
 
-**Branch**: Experimental | **Revision**: 54 | **Date**: 2026-09-09
+**Branch**: Experimental | **Revision**: 55 | **Date**: 2026-09-09
 **Status**: IN_PROGRESS / 当前实现与验收状态见 tasks.md 的 Task Progress Registry 和 Current Checkpoint
 **Spec**: [spec.md](spec.md)
 
@@ -538,6 +538,19 @@ R10-B6 的首轮缺失对象负例曾因默认 30 秒 fetch budget 超过 fixtur
 selector 复核该首失败边界。selector 进入真实 Provider handler，返回缺失对象 failure，
 没有 runner input 或成功 Response，exit 0（testing time 1.946850s）。这只关闭本地负例
 重试证据，不关闭跨进程、maintained caller 或 T016；详见 [R10-B26 evidence](evidence/r10-b26-missing-repo-ref-recheck-20260909.md)。
+
+### R10-B27 Native C++ Test Ownership Skill Sync 2026-09-09
+
+根据 R4-B4/R3-B1 的流程复盘和用户对 NDNSF-DI 测试语言的要求，共享
+`batch-quality-gates.md` 现明确：凡断言 native runtime、protocol、state、concurrency、
+crypto 或 model 行为的 unit/integration/regression 测试，其 fixture/driver/oracle 必须
+用 C++ 实现并直接调用生产 C++ target；Python 只能编排外部设施、启动 C++ executable，
+或覆盖 binding/facade、offline oracle 和配置拒绝。`speckit-code-design`、README 及
+spec/tasks templates 已同步该措辞，installed shared skill copy 与 versioned source
+SHA 一致。详见 [R10-B27 evidence](evidence/r10-b27-native-cpp-test-ownership-20260909.md)。
+
+本批是文档/技能边界的 `CLOSED_FOR_VALIDATION`，不改变任何产品任务状态，也不把已有
+Python focused、CLI smoke、局部 C++ selector 或 T016 preflight 提升为 native qualification。
 
 ### R8-SKILL Review Coverage Contract 2026-09-09
 

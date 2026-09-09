@@ -30,8 +30,10 @@
 的字段集合、顺序、规范化和 source identity；不完整对照保持 `gap`。
 若编译/链接或运行/测试才发现漏检，重试/下一批必须链接首个失败边界并登记改变的静态
 检查；同类漏检再次发生时先修订共享 skill、模板或 checklist，或记录替代门禁。
-NDNSF-DI 原生行为由生产 C++ target/selector 验收，Python 只覆盖 binding/facade、
-offline oracle 或外部设施边界。
+NDNSF-DI 原生行为的 unit/integration/regression 测试由 C++ fixture/driver/oracle
+直接调用生产 C++ target/selector 验收；Python 可编排外部设施或启动 C++ executable，
+也可覆盖 binding/facade、offline oracle 边界，但不能替代 native behavior、parity 或
+跨进程资格断言。
 CLI `--help`、usage/schema rejection、target/link smoke 或 harness 启动只证明接线，
 不能替代真实 native request/result、parity 或 qualification 证据。
 维护中的 legacy/compatibility 探针若暴露运行时回归，必须保留首个失败边界和原始证据，

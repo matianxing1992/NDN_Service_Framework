@@ -88,8 +88,10 @@ target/source closure。缺少任一项时先记 `gap`，不得用 `No findings`
 发现的运行时失败要保留首个边界、原始日志和 `PARTIAL` 状态，并交给
 `speckit-converge` 追加有独立出口的修复/迁移任务；在 receipt、newness、状态或兼容契约
 边界明确前，不直接改共享 freshness、重试或发布逻辑。
-NDNSF-DI 原生运行时和协议行为由直接调用生产 C++ target 的测试验收；Python 只证明
-绑定/兼容/离线 oracle 或外部设施边界，不能替代 C++ 行为或跨进程资格测试。
+NDNSF-DI 原生运行时和协议行为的 unit/integration/regression 测试，其断言主体、
+fixture/driver 与 oracle 必须用 C++ 实现并直接调用生产 C++ target；Python 可以编排
+外部设施、启动 C++ 测试 executable，或证明绑定/兼容/离线 oracle 边界，但不能替代
+C++ 行为、C++/Python parity 或跨进程资格测试。
 CLI `--help`、usage/schema rejection、target/link smoke 或 harness 启动只证明接线边界，
 不能写成 native request/result 或 qualification PASS；没有真实生产请求与独立结果时保持
 对应 production/qualification lane 的 `PARTIAL` 或 `gap`。

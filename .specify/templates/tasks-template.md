@@ -19,8 +19,9 @@ description: "Task list template for feature implementation"
 **Tests**: The examples below include test-first work inside behavioral tasks.
 Tests may be omitted only when the feature has no code-backed acceptance. For
 native NDNSF-DI runtime, protocol, state, concurrency, crypto, or model behavior,
-the task MUST name and run a production C++ target/selector; Python-only checks
-remain binding/facade, oracle, or external-facility evidence.
+the task MUST provide C++ fixture/driver/oracle code that names and runs a production
+C++ target/selector. Python may orchestrate an external facility or launch that C++
+executable; Python-only checks remain binding/facade, oracle, or external-facility evidence.
 
 **Organization**: Tasks are grouped by user story and expressed as cohesive,
 reviewable behavioral outcomes. Do not optimize for a high task count.

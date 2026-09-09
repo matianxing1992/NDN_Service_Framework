@@ -90,7 +90,9 @@
   为每个有代码接线的 story/FR 填一行。纯文档需求写 N/A 及理由。
   Production entry/callers 必须是实际入口或参与者；oracle 必须能独立判定结果。
   Native NDNSF-DI runtime/protocol/state/concurrency/crypto/model behavior 必须填写生产
-  C++ target/selector；Python 只可作为 binding/facade、offline oracle 或外部设施边界。
+  C++ target/selector；相关 unit/integration/regression 的断言主体、fixture/driver 与
+  oracle 必须用 C++ 实现。Python 只可编排外部设施、启动 C++ executable，或作为
+  binding/facade、offline oracle 边界。
   五 lane Coverage matrix 在 plan/tasks 的批次结果记录中维护，此处引用对应 Batch。
 -->
 
