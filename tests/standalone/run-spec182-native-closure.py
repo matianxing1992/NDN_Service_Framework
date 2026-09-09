@@ -35,6 +35,11 @@ TRACE_EXEC = re.compile(r"(?:execve|execveat)\([^)]*\)\s*=\s*(-?\d+)")
 TRACE_EXIT = re.compile(r"(?:exit_group|exit)\((-?\d+)\)")
 TRACE_PID = re.compile(r"^\s*(?:\[pid\s+)?(\d+)(?:\]|\s)")
 TRACE_RESUMED = re.compile(r"<\.\.\. [^>]+ resumed>")
+TRACE_SYSCALL = re.compile(r"^\s*(?:\[pid\s+)?\d+(?:\])?\s+([A-Za-z_][A-Za-z0-9_]*)\(")
+OBSERVED_SYSCALLS = frozenset({
+    "clone", "clone3", "fork", "vfork", "open", "openat", "close", "dup",
+    "dup2", "dup3", "mmap", "mprotect", "munmap", "socket", "connect",
+})
 
 
 class PreflightError(ValueError):
@@ -185,6 +190,7 @@ def load_case(manifest_path: Path, case_id: str) -> dict[str, Any]:
         _require(re.fullmatch(r"sha256:[0-9a-f]{64}", str(artifact.get("sha256", "")))
                  is not None, "artifact digest is not canonical")
     seen_processes: set[str] = set()
+    process_roles: dict[str, str] = {}
     artifact_targets = seen_targets
     allowed_env = {"HOME", "TMPDIR", "LC_ALL", "NDN_CLIENT_CONF", "NDN_DAEMON_CONF"}
     for process in processes:
@@ -194,6 +200,7 @@ def load_case(manifest_path: Path, case_id: str) -> dict[str, Any]:
                  pid not in seen_processes, "process id is not unique and safe")
         seen_processes.add(pid)
         _require(process.get("role") in PROCESS_ROLES, "process role is invalid")
+        process_roles[pid] = str(process["role"])
         executable = str(process.get("executable", ""))
         _require(executable in artifact_targets, "process executable is undeclared")
         argv = process.get("argv", [])
@@ -219,6 +226,48 @@ def load_case(manifest_path: Path, case_id: str) -> dict[str, Any]:
                      working_directory == "/probe-root" or
                      working_directory.startswith("/probe-root/"),
                      "workingDirectory must stay inside staged root or /tmp")
+    child_processes = isolation.get("childProcesses", [])
+    _require(isinstance(child_processes, list), "childProcesses is invalid")
+    for child in child_processes:
+        _require(isinstance(child, dict), "child process entry is invalid")
+        _require(child.get("role") == "assembly-worker",
+                 "child process role is invalid")
+        _require(str(child.get("executable", "")) in artifact_targets,
+                 "child process executable is undeclared")
+        parents = child.get("parentProcessIds")
+        _require(isinstance(parents, list) and parents and
+                 all(isinstance(parent, str) and parent in seen_processes
+                     for parent in parents),
+                 "child process parents are invalid")
+        _require(all(process_roles[parent] == "provider" for parent in parents),
+                 "child process parent role is invalid")
+        try:
+            max_concurrent = int(child.get("maxConcurrentPerParent", 0))
+        except (TypeError, ValueError) as exc:
+            raise PreflightError("child process concurrency is invalid") from exc
+        _require(0 < max_concurrent <= 1024, "child process concurrency is invalid")
+    endpoints = isolation.get("endpoints", [])
+    _require(isinstance(endpoints, list), "endpoints is invalid")
+    for endpoint in endpoints:
+        _require(isinstance(endpoint, dict), "endpoint entry is invalid")
+        _require(endpoint.get("ownerProcess") in seen_processes,
+                 "endpoint owner is undeclared")
+        transport = endpoint.get("transport")
+        address = endpoint.get("address")
+        _require(isinstance(transport, str) and bool(transport),
+                 "endpoint transport is invalid")
+        _require(isinstance(address, str) and bool(address) and
+                 "\x00" not in address and "\n" not in address and
+                 "\r" not in address, "endpoint address is invalid")
+        if transport == "unix":
+            _require(address.startswith("/") and not address.startswith("@"),
+                     "filesystem UNIX endpoint must be absolute")
+        peers = endpoint.get("peerProcessIds")
+        _require(isinstance(peers, list) and peers and
+                 all(isinstance(peer, str) and peer in seen_processes for peer in peers),
+                 "endpoint peers are invalid")
+        _require(isinstance(endpoint.get("purpose"), str) and
+                 bool(endpoint["purpose"]), "endpoint purpose is invalid")
     return case
 
 
@@ -573,8 +622,16 @@ def collect_trace(case: dict[str, Any], run: dict[str, Any]) -> dict[str, Any]:
                 policy_violations.append("PYTHON_EXEC")
         if "libpython" in line.lower() or "python3" in line.lower():
             policy_violations.append("PYTHON_MAPPING")
-        if "connect(" in line and "= 0" in line and "/run/" not in line:
-            policy_violations.append("UNDECLARED_ENDPOINT")
+        if "connect(" in line and "= 0" in line:
+            declared_endpoints = case.get("isolation", {}).get("endpoints", [])
+            if not any(isinstance(endpoint, dict) and
+                       str(endpoint.get("address", "")) in line
+                       for endpoint in declared_endpoints):
+                policy_violations.append("UNDECLARED_ENDPOINT")
+        syscall_match = TRACE_SYSCALL.match(line)
+        if syscall_match and syscall_match.group(1) in OBSERVED_SYSCALLS:
+            events.append({"kind": "syscall", "name": syscall_match.group(1),
+                           "pid": pid, "line": line})
         match = TRACE_EXIT.search(line)
         if match:
             exit_events += 1

@@ -222,6 +222,53 @@ def test_run_case_keeps_all_process_records_when_observer_trace_is_missing(
     assert Path(result["trace"]).is_file()
 
 
+def test_manifest_validates_child_process_and_endpoint_ownership(tmp_path: Path) -> None:
+    manifest = _manifest(tmp_path)
+    document = json.loads(manifest.read_text(encoding="utf-8"))
+    isolation = document["cases"][0]["isolation"]
+    isolation["processes"].append({
+        "id": "provider", "role": "provider", "executable": "/bin/true",
+        "argv": ["/probe-root/bin/true", "provider"], "env": {},
+    })
+    isolation["childProcesses"] = [{
+        "role": "assembly-worker", "executable": "/bin/true",
+        "parentProcessIds": ["provider"], "maxConcurrentPerParent": 1,
+    }]
+    isolation["endpoints"] = [{
+        "ownerProcess": "requester", "transport": "unix", "address": "/run/nfd.sock",
+        "peerProcessIds": ["provider"], "purpose": "private NFD",
+    }]
+    manifest.write_text(json.dumps(document), encoding="utf-8")
+    runner.load_case(manifest, "positive")
+    isolation["endpoints"][0]["address"] = "@host-helper"
+    manifest.write_text(json.dumps(document), encoding="utf-8")
+    try:
+        runner.load_case(manifest, "positive")
+    except runner.PreflightError as exc:
+        assert "filesystem UNIX endpoint" in str(exc)
+    else:
+        raise AssertionError("abstract UNIX endpoint was accepted")
+
+
+def test_trace_records_lifecycle_syscalls_and_matches_declared_endpoint(tmp_path: Path) -> None:
+    case = runner.load_case(_manifest(tmp_path), "positive")
+    case["isolation"]["endpoints"] = [{
+        "ownerProcess": "requester", "transport": "unix", "address": "/run/nfd.sock",
+        "peerProcessIds": ["requester"], "purpose": "private NFD",
+    }]
+    trace = tmp_path / "trace.txt"
+    trace.write_text(
+        '123 clone(child_stack=NULL, flags=0) = 124\n'
+        '123 openat(AT_FDCWD, "/run/nfd.sock", O_RDONLY) = 3\n'
+        '123 connect(3, {sa_family=AF_UNIX, sun_path="/run/nfd.sock"}, 0) = 0\n'
+        '123 exit_group(0) = ?\n', encoding="utf-8")
+    observation = runner.collect_trace(case, {"trace": str(trace)})
+    names = [event.get("name") for event in observation["events"]
+             if event.get("kind") == "syscall"]
+    assert {"clone", "openat", "connect"} <= set(names)
+    assert observation["policyViolations"] == []
+
+
 def test_trace_observes_roles_for_all_declared_processes(tmp_path: Path) -> None:
     case = runner.load_case(_manifest(tmp_path), "positive")
     case["isolation"]["processes"].append({
