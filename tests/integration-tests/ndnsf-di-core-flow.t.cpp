@@ -6817,7 +6817,8 @@ void
 runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
                                     bool alternateProvider = false,
                                     bool repositoryInput = false,
-                                    bool unaryRequest = false)
+                                    bool unaryRequest = false,
+                                    bool conversationRequest = true)
 {
   using namespace ndn_service_framework;
   test::BootstrapProfile profile;
@@ -7122,8 +7123,8 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
       return decision;
     },
     [model, policyDigest, protectionEpoch, role, serviceName, localProviderBootId, collaborationCalls,
-     conversationAttempts, failFirst, repositoryInput, unaryRequest, expectedReferenceDataName,
-     repositoryPlaintext] (
+     conversationAttempts, failFirst, repositoryInput, unaryRequest, conversationRequest,
+     expectedReferenceDataName, repositoryPlaintext] (
       ServiceProvider::CollaborationContext& ctx, const RequestMessage& request) {
       try {
         collaborationCalls->fetch_add(1, std::memory_order_relaxed);
@@ -7155,13 +7156,9 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
         const auto assignment = ctx.assignment().assignmentPayload;
         std::istringstream input(std::string(assignment.begin(), assignment.end()));
         const auto projection = nativeSelectionProjectionV3FromJson(input, role);
-        if (!projection.conversationTurnBinding || !ctx.isStreamed()) {
-          throw std::runtime_error("R4-B6 conversation projection missing");
+        if (!ctx.isStreamed()) {
+          throw std::runtime_error("R4-B6 stream projection missing");
         }
-        const auto binding = *projection.conversationTurnBinding;
-        ctx.subscribe("ndnsf-di-conversation-state-v1",
-                      ndn::Name("/ndnsf-di/conversation/control"),
-                      [] (const ServiceProvider::CollaborationData&) {});
         if (failFirst && projection.attempt == 1) {
           if (!ctx.failStream(StreamedInvocationErrorCode::ProviderFailure,
                               "R4-B6 injected provider failure before first event")) {
@@ -7169,13 +7166,6 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
           }
           return;
         }
-        const bool append = binding.parentContextEpoch != 0;
-        const std::vector<std::int64_t> fullTokens = append
-          // The continuation carries the reconstructed context [1,2,3];
-          // the streamed delta contributes token 3 as the next generated
-          // token, so the coordinator's completed prefix is [1,2,3,3].
-          ? std::vector<std::int64_t>{1, 2, 3, 3}
-          : std::vector<std::int64_t>{1, 2};
         const auto publishToken = [&ctx, &projection] (std::int64_t token,
                                                         std::uint64_t epoch,
                                                         const std::string& prefix,
@@ -7191,6 +7181,33 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
             throw std::runtime_error("R4-B6 stream event publication failed");
           }
         };
+        if (!conversationRequest) {
+          publishToken(1, 1, "1", "a", "NONE");
+          publishToken(2, 2, "1,2", "b", "EOS");
+          const auto final = nativeCanonicalJson(NativeJson{
+            {"schema", "NDNSF-DI-FINAL-V1"}, {"tokenIds", NativeJson::array({1, 2})},
+            {"text", "ab"}, {"finishHint", "EOS"}, {"finishReason", "eos"},
+            {"generationId", projection.generationContract.generationId}});
+          if (!ctx.finishStream(ndn::Buffer(final.begin(), final.end()),
+                                StreamFinishReason::ApplicationComplete)) {
+            throw std::runtime_error("R4-B6 stream-only final publication failed");
+          }
+          return;
+        }
+        if (!projection.conversationTurnBinding) {
+          throw std::runtime_error("R4-B6 conversation projection missing");
+        }
+        const auto binding = *projection.conversationTurnBinding;
+        ctx.subscribe("ndnsf-di-conversation-state-v1",
+                      ndn::Name("/ndnsf-di/conversation/control"),
+                      [] (const ServiceProvider::CollaborationData&) {});
+        const bool append = binding.parentContextEpoch != 0;
+        const std::vector<std::int64_t> fullTokens = append
+          // The continuation carries the reconstructed context [1,2,3];
+          // the streamed delta contributes token 3 as the next generated
+          // token, so the coordinator's completed prefix is [1,2,3,3].
+          ? std::vector<std::int64_t>{1, 2, 3, 3}
+          : std::vector<std::int64_t>{1, 2};
         if (append) {
           publishToken(3, 1, "3", "c", "EOS");
         }
@@ -7361,12 +7378,14 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
     options.stream->maxReplacements = exerciseReplacement ? 1 : 0;
     options.generation = nativeGenerationFromOptions(application.options,
                                                        std::string(32, '1'));
-    const auto retentionDeadlineMs = static_cast<std::uint64_t>(
-      std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::system_clock::now().time_since_epoch()).count()) + 60000;
-    options.conversation = NativeConversationContinuation{
-      "r4-b6-conversation-001", 0, serviceName, roleMapDigest, {}, {},
-      retentionDeadlineMs, "FULL_CONTEXT", {}, std::string(32, '1'), {}, {role}};
+    if (conversationRequest) {
+      const auto retentionDeadlineMs = static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::system_clock::now().time_since_epoch()).count()) + 60000;
+      options.conversation = NativeConversationContinuation{
+        "r4-b6-conversation-001", 0, serviceName, roleMapDigest, {}, {},
+        retentionDeadlineMs, "FULL_CONTEXT", {}, std::string(32, '1'), {}, {role}};
+    }
   }
 
   NativeConversationConfig conversationConfig;
@@ -7411,6 +7430,16 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
     const auto result = first.result(std::chrono::milliseconds(0));
     BOOST_CHECK_EQUAL(std::string(result.payload.begin(), result.payload.end()),
                       "native-unary-response");
+    client.close();
+    return;
+  }
+  if (!conversationRequest) {
+    BOOST_REQUIRE(first.status() == NativeRequestStatus::Succeeded);
+    const auto result = first.result(std::chrono::milliseconds(0));
+    const auto resultJson = nativeParseJson(
+      std::string(result.payload.begin(), result.payload.end()));
+    BOOST_CHECK_EQUAL(resultJson.at("text").get<std::string>(), "ab");
+    BOOST_CHECK(!conversations->find("r4-b6-conversation-001").has_value());
     client.close();
     return;
   }
@@ -7541,6 +7570,11 @@ BOOST_AUTO_TEST_CASE(Spec182R10B31RealProviderUnaryRequest)
 BOOST_AUTO_TEST_CASE(Spec182R10B33RealProviderUnaryRepositoryReferenceRequest)
 {
   runR4B6RealProviderConversationCase(false, false, true, true);
+}
+
+BOOST_AUTO_TEST_CASE(Spec182R10B37RealProviderNativeStreamRequest)
+{
+  runR4B6RealProviderConversationCase(false, false, false, false, false);
 }
 
 BOOST_AUTO_TEST_CASE(Spec175NativeTinyOnnxI01OneProvider)
