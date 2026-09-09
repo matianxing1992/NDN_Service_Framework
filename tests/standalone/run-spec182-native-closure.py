@@ -70,6 +70,16 @@ def load_case(manifest_path: Path, case_id: str) -> dict[str, Any]:
     _require(isinstance(processes, list) and processes, "isolation processes are missing")
     _require(set(isolation.get("requiredEvidence", [])) >= REQUIRED_EVIDENCE,
              "required evidence list is incomplete")
+    if "requiredRoles" in case:
+        required_roles = case["requiredRoles"]
+        _require(isinstance(required_roles, list) and required_roles,
+                 "requiredRoles must be a non-empty list")
+        _require(all(isinstance(role, str) and role for role in required_roles),
+                 "requiredRoles contains an invalid role")
+        _require(len(set(required_roles)) == len(required_roles),
+                 "requiredRoles contains a duplicate role")
+    if "cold" in case:
+        _require(isinstance(case["cold"], bool), "cold marker must be boolean")
     limits = isolation.get("limits", {})
     _require(isinstance(limits, dict), "isolation limits are invalid")
     _require(0 < int(limits.get("runSeconds", 0)) <= 3600,
@@ -220,7 +230,31 @@ def evaluate_case(case: dict[str, Any], run: dict[str, Any], observation: dict[s
     required = set(case["isolation"]["requiredEvidence"])
     evidence = set(run.get("evidence", [])) | set(observation.get("evidence", []))
     failures = []
+    unqualified_observation = False
     failures.extend("MISSING_EVIDENCE:" + item for item in sorted(required - evidence))
+    required_roles = set(case.get("requiredRoles", []))
+    if required_roles:
+        observed_roles = observation.get("roles")
+        if observed_roles is None:
+            failures.append("ROLE_OBSERVATION_MISSING")
+            unqualified_observation = True
+        elif not isinstance(observed_roles, (list, tuple, set, frozenset)) or \
+                any(not isinstance(role, str) or not role for role in observed_roles) or \
+                (not isinstance(observed_roles, (set, frozenset)) and
+                 len(set(observed_roles)) != len(observed_roles)):
+            failures.append("ROLE_OBSERVATION_INVALID")
+            unqualified_observation = True
+        elif set(observed_roles) != required_roles:
+            failures.append("ROLE_COVERAGE_MISMATCH")
+    if "cold" in case:
+        if "coldVerified" not in observation:
+            failures.append("COLD_PATH_OBSERVATION_MISSING")
+            unqualified_observation = True
+        elif not isinstance(observation["coldVerified"], bool):
+            failures.append("COLD_PATH_OBSERVATION_INVALID")
+            unqualified_observation = True
+        elif observation["coldVerified"] != case["cold"]:
+            failures.append("COLD_PATH_MISMATCH")
     if run.get("timedOut"):
         failures.append("RUN_TIMEOUT")
     if run.get("returncode") != int(case.get("expectedExit", 0)):
@@ -235,6 +269,7 @@ def evaluate_case(case: dict[str, Any], run: dict[str, Any], observation: dict[s
     unqualified = (
         bool(run.get("timedOut"))
         or not observation.get("complete")
+        or unqualified_observation
         or any(item.startswith("MISSING_EVIDENCE:") for item in failures)
     )
     status = "UNQUALIFIED" if unqualified else ("PASS" if not failures else "FAIL")

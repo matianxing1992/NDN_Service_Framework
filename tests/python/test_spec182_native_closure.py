@@ -110,7 +110,47 @@ def test_cold_path_and_role_coverage_required(tmp_path: Path) -> None:
         case, {"returncode": 0, "timedOut": False,
                "evidence": sorted(runner.REQUIRED_EVIDENCE)},
         {"complete": True, "violations": []})
+    assert result["status"] == "UNQUALIFIED"
+    assert "ROLE_OBSERVATION_MISSING" in result["failures"]
+    assert "COLD_PATH_OBSERVATION_MISSING" in result["failures"]
+
+
+def test_cold_path_and_role_coverage_passes_with_verified_observation(tmp_path: Path) -> None:
+    case = runner.load_case(_manifest(tmp_path), "positive")
+    case["cold"] = True
+    case["requiredRoles"] = ["requester", "provider"]
+    result = runner.evaluate_case(
+        case, {"returncode": 0, "timedOut": False,
+               "evidence": sorted(runner.REQUIRED_EVIDENCE)},
+        {"complete": True, "violations": [],
+         "roles": ["requester", "provider"], "coldVerified": True})
     assert result["status"] == "PASS"
+
+
+def test_role_or_cold_mismatch_is_a_complete_failure(tmp_path: Path) -> None:
+    case = runner.load_case(_manifest(tmp_path), "positive")
+    case["cold"] = True
+    case["requiredRoles"] = ["requester", "provider"]
+    result = runner.evaluate_case(
+        case, {"returncode": 0, "timedOut": False,
+               "evidence": sorted(runner.REQUIRED_EVIDENCE)},
+        {"complete": True, "violations": [],
+         "roles": ["requester"], "coldVerified": False})
+    assert result["status"] == "FAIL"
+    assert "ROLE_COVERAGE_MISMATCH" in result["failures"]
+    assert "COLD_PATH_MISMATCH" in result["failures"]
+
+
+def test_duplicate_role_observation_is_unqualified(tmp_path: Path) -> None:
+    case = runner.load_case(_manifest(tmp_path), "positive")
+    case["requiredRoles"] = ["requester", "provider"]
+    result = runner.evaluate_case(
+        case, {"returncode": 0, "timedOut": False,
+               "evidence": sorted(runner.REQUIRED_EVIDENCE)},
+        {"complete": True, "violations": [],
+         "roles": ["requester", "requester"], "coldVerified": False})
+    assert result["status"] == "UNQUALIFIED"
+    assert "ROLE_OBSERVATION_INVALID" in result["failures"]
 
 
 def test_external_harness_excluded(tmp_path: Path) -> None:
