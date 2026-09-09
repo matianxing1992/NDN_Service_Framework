@@ -269,15 +269,24 @@ O-003固定tokenizers0.20.3/Rust1.90.0、Cargo.lock与上表私有C ABI；84个�
 
 | Operation | Exact paths | Symbols |
 | --- | --- | --- |
-| ADD | NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp; NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.cpp | beginTurn, abortTurn, prepareCheckpoint, commitTurn, restore |
+| ADD | NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp; NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.cpp | beginTurn, abortTurn, acceptTokenPrefix, replaceAttempt, bindAttemptPlanRoleMap, prepareCheckpoint, commitTurn, restore |
 | REUSE | NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp; NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.cpp; NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderRuntime.hpp | runNativeEpochCoordinator；ConversationStateStore 在 NativeProviderRuntime.hpp 内声明，现有 Provider 状态 owner |
 | RETIRE default execution | NDNSF-DistributedInference/ndnsf_distributed_inference/conversation.py; NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/placement.py; NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/runtime_journal.py | ConversationCoordinator；AutomaticStreamingHandle 的业务推进；Python journal authority |
 
-planned beginTurn(const NativeConversationContinuation&, const NativeApplicationInput&) →
+planned beginTurn(const NativeConversationContinuation&, std::string requestId, uint64_t attempt) →
 NativeConversationTurn；abortTurn(const NativeConversationTurn&, const NativeDiError&) → void；
+acceptTokenPrefix(const NativeConversationTurn&, const std::vector<int64_t>&) → void；
+replaceAttempt(const NativeConversationTurn&, std::string executionRequestId,
+std::string requestContractDigest) → NativeConversationTurn；
+bindAttemptPlanRoleMap(const NativeConversationTurn&, const std::map<std::string, std::string>&)
+→ NativeConversationTurn；
 prepareCheckpoint(const NativeConversationTurn&, const NativeCompletedAttempt&) → NativeConversationCheckpoint；
 commitTurn(const NativeConversationTurn&, const NativeConversationCheckpoint&) → NativeConversationRecord；
 restore(const std::filesystem::path& journalRoot) → void。
+Replacement keeps the original parent role-map digest in pending state for parent CAS. The
+planner-selected map is bound only after a replacement plan passes role-set validation; the
+successor checkpoint carries that current map while parent validation continues to use the
+original map. The replacement request contract digest is updated with the newly encoded envelope.
 所有 token lineage、parent digest、attempt 和 checkpoint format 必须从现有契约映射，
 未冻结的持久化字段/旧 journal 兼容列入 O-004，不能直接逐对象 dump C++ 内存。
 

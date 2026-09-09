@@ -117,6 +117,15 @@ source/link closure。批次记录应检查依赖库中包含变更符号（或�
 尚未观测的风险，并注明首次失败边界。任务数量、静态通过数量或单次构建更快都不能
 单独作为流程提效结论。
 
+## Batch Retrospective
+
+关闭批次时，结果记录必须各写一项 `static`、`compile/link`、`runtime/test` 和
+`unobserved` 的漏检复盘；没有观察到时明确写 `none` 或 `not observed`。复盘还要说明
+批次是否在获得稳定出口后仍吸收了新职责，以及这次构建耗时是否具备可比的
+target/source closure、toolchain、配置和工作树条件。只有完成这四类分类、Review trace
+和 Closure decision，才能将批次记为 `CLOSED_FOR_VALIDATION`；它们不是效率百分比，不能
+用任务数、静态通过数或单次耗时替代。
+
 ## Resource-Constrained Builds
 
 构建记录必须采用仓库 `AGENTS.md` 指定的 system-first compiler/linker 和资源预算。

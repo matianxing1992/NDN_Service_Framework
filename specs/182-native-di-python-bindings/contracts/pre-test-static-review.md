@@ -21,7 +21,7 @@
 
 ## One Completion Record
 
-逐任务调用独立官方 `$review-agent`，使用 [项目调用规则](../../../skills/speckit-code-design/references/review-agent.md) 提供设计与批次上下文。每批只维护一份结果，具体字段复用 [共享记录规则](../../../skills/speckit-code-design/references/pre-test-static-review.md#one-completion-record)。保留此 anchor 供现有 proof-design 与校验器引用。
+逐任务调用独立官方 `$review-agent`，使用 [项目调用规则](../../../skills/speckit-code-design/references/review-agent.md) 提供设计与批次上下文。每批只维护一份结果，具体字段复用 [共享记录规则](../../../skills/speckit-code-design/references/pre-test-static-review.md#one-completion-record)。批次关闭前还要按 [Batch Quality Gates](../../../skills/speckit-code-design/references/batch-quality-gates.md#batch-retrospective) 分别记录 static、compile/link、runtime/test 与 unobserved 漏检；缺项保持 `PARTIAL`。保留此 anchor 供现有 proof-design 与校验器引用。
 
 最小具名诊断仅用于静态无法解除的具体阻塞，范围和原因先记录；例外、失败重试规则统一见 [Exceptions And Retry](../../../skills/speckit-code-design/references/pre-test-static-review.md#exceptions-and-retry)，不降低正式验收。
 

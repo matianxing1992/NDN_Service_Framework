@@ -608,6 +608,18 @@ BOOST_AUTO_TEST_CASE(V2RequestAndResponseNames)
   BOOST_CHECK_EQUAL(parsedStructuredSelection->serviceName, serviceName);
   BOOST_CHECK_EQUAL(parsedStructuredSelection->requestId, structuredRequestId);
 
+  // Recovery request IDs contain a non-numeric lineage component followed by
+  // a numeric attempt counter.  The final counter is part of requestId here,
+  // not a SelectionDecision suffix.
+  const ndn::Name recoveryRequestId("/NDNSF/DI/REQUEST/7/recovery/2");
+  const auto recoverySelection = makeServiceSelectionNameV2(
+    requester, provider, serviceName, recoveryRequestId);
+  const auto parsedRecoverySelection = parseServiceSelectionNameV2(
+    recoverySelection);
+  BOOST_REQUIRE(parsedRecoverySelection);
+  BOOST_CHECK_EQUAL(parsedRecoverySelection->requestId, recoveryRequestId);
+  BOOST_CHECK(!parseServiceSelectionDecisionNameV2(recoverySelection));
+
   // A plain provider-bound Selection name ends with the structured request
   // counter; it must not be mistaken for a decision attempt.
   BOOST_CHECK(!parseServiceSelectionDecisionNameV2(structuredSelection));
@@ -620,6 +632,13 @@ BOOST_AUTO_TEST_CASE(V2RequestAndResponseNames)
   BOOST_CHECK_EQUAL(parsedStructuredDecision->serviceName, serviceName);
   BOOST_CHECK_EQUAL(parsedStructuredDecision->requestId, structuredRequestId);
   BOOST_CHECK_EQUAL(parsedStructuredDecision->attempt, 2U);
+
+  const auto legacyDecision = makeServiceSelectionDecisionNameV2(
+    requester, provider, serviceName, requestId, 3);
+  const auto parsedLegacyDecision = parseServiceSelectionDecisionNameV2(legacyDecision);
+  BOOST_REQUIRE(parsedLegacyDecision);
+  BOOST_CHECK_EQUAL(parsedLegacyDecision->requestId, requestId);
+  BOOST_CHECK_EQUAL(parsedLegacyDecision->attempt, 3U);
 
   const auto compactSelectionName =
     makeCompactServiceSelectionNameV2(requester, serviceName, requestId);

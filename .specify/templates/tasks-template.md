@@ -70,6 +70,11 @@ target/source closure、toolchain、配置和工作树条件下的对照，不�
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | B-01 | [five lanes: status, file/symbol, query/check] | [found/fixed/gaps] | [compiler/linker/wiring misses] | [runtime/test misses and first boundary] | [command, closure, toolchain, timing, log] | [review-agent path/SHA, baseline/diff; CLOSED_FOR_VALIDATION or OPEN_FOR_NEXT_BATCH and trigger] | [STATIC_PASS / BUILD_PASS / FOCUSED_BEHAVIOR_PASS / QUALIFICATION_PASS] | [links and next step] |
 
+每条批次结果还必须附一段 `Batch Retrospective`：分别记录 static、compile/link、runtime/test
+和 unobserved 漏检（无观察写 `none`/`not observed`），说明是否在稳定出口后继续吸收职责，
+并注明耗时是否可比。缺少该复盘时保持 `PARTIAL`；它不能由任务数、静态通过数或单次构建
+时长替代。
+
 ## Format: `[ID] [P?] [Story] Description`
 
 - **[P]**: Can run in parallel (different files, no dependencies)

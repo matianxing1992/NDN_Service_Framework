@@ -25,6 +25,10 @@
 
 整批成员编码及逐任务静态门完成后，审查整批完整差异和组合流程：入口→校验→状态更新→副作用→回调/终态→清理。核对跨任务 API、字段、错误、身份和并发约束一致；生产调用方、默认注册、构建配置、序列化、迁移删除、测试/harness 均已接线，无占位实现或遗漏路径。批末必须更新同一份 Coverage matrix，明确成员新增或未覆盖的 lane；漏掉调用方、测试注册或 source closure 属于 coverage gap，不能以 No findings 放行。
 
+因此，只有阅读了真实 caller/default wiring、测试注册及 harness/oracle、构建 target/source
+closure 后，官方 review-agent 的 `No findings` 才能成为静态门结果；只审生产函数或只看
+测试文件的 clean review 必须记为 coverage gap。
+
 无已知控制性缺陷且验证命令、独立判据和必要负例明确，记录 `READY_FOR_BATCH_TESTS`，并填写
 批末 `Review trace` 与 `Closure decision: CLOSED_FOR_VALIDATION`，再统一执行必要构建、相关
 单测及计划内静态工具。共享构建和重叠选择器合并执行，结果逐项映射成员；不按任务数重复命令。
@@ -46,6 +50,10 @@
 每批复用 tasks.md 或一份 evidence：记录源码基线、任务/整批差异边界、Coverage matrix、成员静态覆盖与 findings/修复、
 `Review trace`、`Closure decision`、编译/链接漏检、运行/测试漏检、批次流程结论、实际命令/target/source closure/`-j`/elapsed/退出码/日志、
 未执行项及下一步。每任务只需一行引用；不增加每小段一个报告或行政审查任务。字段定义见 [batch-quality-gates.md](batch-quality-gates.md)。
+
+批次关闭前还要完成该 reference 的 `Batch Retrospective`，把静态提前发现、编译/链接才
+发现、运行/测试才发现和仍未观测风险分开记录；未完成分类时保持 `PARTIAL`，不因局部
+测试通过而升级。
 
 `STATIC_PASS`、`READY_FOR_BATCH_TESTS` 是证据标记，不新增进度状态。测试待运行使用 PARTIAL；失败/阻塞如实记录，不能据静态通过勾选。该任务全部验收实际通过才 DONE/[x]；最终集成/实验义务须有明确负责的验证任务。阶段性交接可记录静态进展，checkpoint 遵守仓库规定。
 

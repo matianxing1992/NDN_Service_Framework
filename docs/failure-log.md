@@ -2505,3 +2505,19 @@ part of task context. Format per entry:
 原始日志：`.codex-tmp/proposal-authorization-20260908-docs/logs/pptx-build.log`。
 采用新的合规目录后生成通过，1944/1944 文本 spans 分配通过；详见
 `docs/PAPER/proposal-defense/authorization-revision.md`。前述正文引用失败也已通过隔离重建解决。
+
+## 2026-09-09 — Spec182 R7-B2 alternate replacement boundaries
+
+R7-B2 首次批次构建在 `tests/integration-tests/ndnsf-di-core-flow.t.cpp:952` 触发
+helper brace/syntax cascade，首个边界是 C++ 编译器解析失败；原始输出保留在
+`.codex-tmp/spec182-r7-b2-replacement-map-20260909/build.log`，修复后同一 source
+closure 构建通过。
+
+随后双 Provider alternate selector 首次运行到 recovery Selection，但旧的 V2 parser
+把 `/NDNSF/DI/REQUEST/1/recovery/2` 截短为 `/NDNSF/DI/REQUEST/1/recovery`，在
+provider1 callback 前以 `SELECTION_NO_PENDING` 暴露。首个运行边界不是 Provider 执行或
+checkpoint 提交；完整 trace 保留在
+`.codex-tmp/spec182-r7-b2-replacement-map-20260909-r4/integration-alternate-trace2.log`。
+parser 修复后增加结构化 recovery、结构化 decision 和 legacy `request-1/3` 回归，全部
+通过。最终批次结果与未观测的跨进程/T016边界见
+[R7-B2 evidence](../specs/182-native-di-python-bindings/evidence/r7-b2-alternate-provider-replacement-20260909.md)。

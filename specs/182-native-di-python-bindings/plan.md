@@ -1,6 +1,6 @@
 # Implementation Plan: Native NDNSF-DI with Optional Python Bindings
 
-**Branch**: Experimental | **Revision**: 16 | **Date**: 2026-09-08
+**Branch**: Experimental | **Revision**: 17 | **Date**: 2026-09-09
 **Status**: IN_PROGRESS / 当前实现与验收状态见 tasks.md 的 Task Progress Registry 和 Current Checkpoint
 **Spec**: [spec.md](spec.md)
 
@@ -91,14 +91,19 @@ Provider 环境当成可成功替换，真实运行先暴露 `DI_NATIVE_NO_ADMIT
 保留 exit201 原始证据后，负例与原有正向两轮均通过。下一批必须在多 Provider 配置下另行
 证明成功 replacement，或沿稳定 owner/caller 依赖推进；不重用这次负例来宣称恢复资格。
 
-### R7-B2 Alternate-Provider Replacement 2026-09-08
+### R7-B2 Alternate-Provider Replacement 2026-09-09
 
 R7-B1 的 failure boundary 还揭示了 replacement map 契约缺口：`NativeConversationTurn`
 只有父 checkpoint 的 `planRoleMapDigest`，`replaceAttempt` 切换 Provider 后 planner、receipt
-和 control ACK 仍比较旧 map，导致备用 Provider 无法形成 successor。R7-B2 只修正这一共享
+和 control ACK 仍比较旧 map，导致备用 Provider 无法形成 successor。R7-B2 已修正这一共享
 状态边界并加双 Provider positive/negative selectors：父 CAS 继续核对旧 checkpoint，当前
 attempt 单独保存新 map，successor wire/record 使用新 map；失败、过期、旧 attempt 和无
-admitted Provider 仍 fail-closed。该批不吸收 Python caller migration 或 T016 跨进程资格。
+admitted Provider 仍 fail-closed。静态复核还补上 coordinator 对 expected role set/provider
+非空的直接校验，并加入 legacy `request-1/3` 与结构化 recovery name 的 parser 回归。
+最终 `unit-tests`/`integration-tests` 以 system-first `-j4` 构建通过，具名 coordinator、
+parser、单 Provider negative、双 Provider alternate replacement 与原有正向两轮 selectors
+均通过；批次按 `CLOSED_FOR_VALIDATION` 关闭。该批不吸收 Python caller migration 或
+T016 跨进程资格。
 
 T012-A 的候选 ABI 观察项已单独记录为 `PARTIAL`：显式候选 Core/DI、NAC-ABE 与 SVS
 依赖下 extension 导入和 21 个 focused Python cases 通过，但默认 requester 的完整

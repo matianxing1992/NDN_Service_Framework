@@ -121,7 +121,14 @@ public:
   void acceptTokenPrefix(const NativeConversationTurn& turn,
                          const std::vector<std::int64_t>& tokenIds);
   NativeConversationTurn replaceAttempt(const NativeConversationTurn& turn,
-                                         std::string executionRequestId);
+                                         std::string executionRequestId,
+                                         std::string requestContractDigest = {});
+  // Bind the replacement attempt to the role/provider map selected by the
+  // planner. The parent checkpoint CAS remains bound to the map saved at
+  // beginTurn, while the successor checkpoint carries this current map.
+  NativeConversationTurn bindAttemptPlanRoleMap(
+    const NativeConversationTurn& turn,
+    const std::map<std::string, std::string>& providersByRole) const;
   NativeConversationCheckpoint prepareCheckpoint(
     const NativeConversationTurn& turn, const NativeCompletedAttempt& completed) const;
   NativeConversationRecord commitTurn(const NativeConversationTurn& turn,

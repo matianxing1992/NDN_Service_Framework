@@ -359,9 +359,17 @@ BOOST_AUTO_TEST_CASE(ReplacementFencesOldAttemptAndPreservesAcceptedPrefix)
   const auto replacement = owner.replaceAttempt(turn, "/request/replacement");
   BOOST_CHECK_EQUAL(replacement.attempt, 2);
   BOOST_CHECK(replacement.acceptedTokenIds == std::vector<std::int64_t>{11});
+  BOOST_CHECK_THROW(owner.bindAttemptPlanRoleMap(
+    replacement, {{"/role/A", "/provider/replacement"}}), std::runtime_error);
+  const auto rebound = owner.bindAttemptPlanRoleMap(
+    replacement, {{"/role/A", "/provider/replacement"}, {"/role/B", "/provider/B"}});
+  BOOST_CHECK_NE(rebound.parent.planRoleMapDigest, turn.parent.planRoleMapDigest);
+  BOOST_CHECK_THROW(owner.bindAttemptPlanRoleMap(
+    rebound, {{"/role/A", "/provider/another"}, {"/role/B", "/provider/B"}}),
+    std::runtime_error);
   BOOST_CHECK_THROW(owner.prepareCheckpoint(turn, fixture.completed(1)), std::runtime_error);
   BOOST_CHECK_THROW(owner.prepareCheckpoint(replacement, fixture.completed(1)), std::runtime_error);
-  BOOST_CHECK_THROW(owner.replaceAttempt(replacement, "/request/third"), std::runtime_error);
+  BOOST_CHECK_THROW(owner.replaceAttempt(rebound, "/request/third"), std::runtime_error);
 }
 
 BOOST_AUTO_TEST_CASE(DurableGateRejectsCancellationAndNeverRollsBackPublishedParent)

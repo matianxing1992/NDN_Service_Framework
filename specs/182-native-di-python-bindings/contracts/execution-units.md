@@ -336,8 +336,8 @@ pending turn；path-only无key构造拒绝。Continuation 的 `requestContractDi
 - **Parent**: T011; **Depends**: T011-B; **Reviewer**: state/compatibility review
 - **Read**: CD-007 State Authority → runtime-boundaries Migration and Rollback Contract；P/conversation.py::ConversationCoordinator；P/app_sdk/runtime_journal.py；N/NativeProviderRuntime.hpp::ConversationStateStore。
 - **Write**: N/NativeConversationCoordinator.hpp; N/NativeConversationCoordinator.cpp; N/NativeInferenceClient.hpp; N/NativeInferenceClient.cpp; U/di-native-conversation.t.cpp; I/di-native-conversation.t.cpp; wscript。
-- **Steps**: 实现 begin/abort/prepareCheckpoint/commit/restore 和 client 接线；Requester journal 与 Provider KV owner 分离，旧格式按冻结兼容处置，单次受支持 replacement 有界。
-- **Verify**: CPP(Spec182Conversation/*)；wrong-parent、lineage/prefix、cancel、旧 journal/重复 commit；编写真实两轮续接与恢复，T016 执行。
+- **Steps**: 实现 begin/abort/acceptTokenPrefix/replaceAttempt/bindAttemptPlanRoleMap/prepareCheckpoint/commit/restore 和 client 接线；Requester journal 与 Provider KV owner 分离，旧格式按冻结兼容处置，单次受支持 replacement 有界。Replacement 的新 execution request/contract digest 与 planner 选出的 role map 必须绑定到当前 attempt；parent CAS 仍使用 beginTurn 保存的原始 map。
+- **Verify**: CPP(Spec182Conversation/*)；wrong-parent、lineage/prefix、cancel、旧 journal/重复 commit、role-map cover；真实 Provider 双节点 replacement selector `Spec170NdnsfDiCoreFlow/Spec182R4B6RealProviderConversationAlternateReplacement` 与单 Provider no-admitted negative selector；跨进程两轮续接及 T016 仍为 acceptance dependency。
 
 ### T012-A Native Binding Types and Lifetime
 
