@@ -112,6 +112,9 @@ be stricter but must not weaken its PASS/BLOCK boundary.
   (production callers, implementation/wire, test/harness/oracle, build/source
   closure, migration/evidence) and its evidence owner. For documentation-only
   work, record N/A with the reason instead of inventing a code batch.
+  Review trace must use the Minimum Review Record in
+  skills/speckit-code-design/references/review-agent.md; a missing lane remains a
+  coverage gap. Close each batch with the four-category Batch Retrospective.
   For native NDNSF-DI runtime/protocol/state/concurrency/crypto/model behavior,
   name the production C++ target/selector in the batch row; Python selectors cover
   only binding/facade, offline oracle, or external-facility boundaries.

@@ -74,6 +74,9 @@ target/source closure、toolchain、配置和工作树条件下的对照，不�
 和 unobserved 漏检（无观察写 `none`/`not observed`），说明是否在稳定出口后继续吸收职责，
 并注明耗时是否可比。缺少该复盘时保持 `PARTIAL`；它不能由任务数、静态通过数或单次构建
 时长替代。
+`Review trace` 必须链接 `references/review-agent.md` 的 Minimum Review Record，并在
+`test/harness/oracle` lane 中列出测试注册，在 `build/source closure` lane 中列出实际
+target/source closure；只有 `No findings` 而没有这些行时仍属于 coverage gap。
 
 ## Format: `[ID] [P?] [Story] Description`
 

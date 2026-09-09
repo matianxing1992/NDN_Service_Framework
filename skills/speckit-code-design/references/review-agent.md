@@ -21,6 +21,26 @@
 closure；这些未读时写 coverage gap，不能仅凭 No findings 记 `STATIC_PASS`。批次漏检与
 构建测量按 [batch-quality-gates.md](batch-quality-gates.md) 的结果字段归档，不在本参考另建报告。
 
+## Minimum Review Record
+
+每次小任务或批末组合审查都必须在唯一批次结果中留下以下五行 Coverage matrix；
+不得只写 `No findings` 或“已检查目录”。每行都要有实际文件/符号和执行过的查询或
+检查命令：
+
+| Lane | Status | Files / symbols | Query or check | Findings / re-review |
+| --- | --- | --- | --- | --- |
+| `production entry/callers` | `covered` / `N/A` / `gap` | [入口、真实 caller、默认 wiring] | [CodeGraph/rg/配置检查] | [结果] |
+| `implementation and wire` | `covered` / `N/A` / `gap` | [实现、头文件、wire/序列化] | [查询或静态检查] | [结果] |
+| `test/harness/oracle` | `covered` / `N/A` / `gap` | [fixture、oracle、负例、注册] | [selector/注册检查] | [结果] |
+| `build/source closure` | `covered` / `N/A` / `gap` | [target、source list、生成/安装入口] | [构建注册/依赖检查] | [结果] |
+| `migration/evidence` | `covered` / `N/A` / `gap` | [兼容 caller、退出路径、证据] | [迁移探针/证据链接] | [结果] |
+
+`N/A` 必须说明为什么该 lane 不适用；缺少真实 caller、测试注册或 source closure
+时必须写 `gap`。任何未解释的 `gap` 都阻止 `STATIC_PASS` 和 `READY_FOR_BATCH_TESTS`。
+批末记录还必须附 `Batch Retrospective`，分别写 `static`、`compile/link`、
+`runtime/test`、`unobserved` 的首个失败边界；它们不是审查意见的替代品，也不是
+效率百分比。
+
 ## Techniques
 
 按受影响行为选择并实际使用，不机械填全表：
