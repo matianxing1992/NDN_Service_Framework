@@ -470,6 +470,22 @@ bindDistributedInference(py::module_& module)
       return handle.result(std::chrono::milliseconds(wait_timeout_ms));
     }, py::arg("wait_timeout_ms") = 0)
     .def("cancel", &di::NativeInferenceHandle::cancel)
+    .def("observe", [] (di::NativeInferenceHandle& handle,
+                         py::function observer) {
+      if (!observer)
+        throw std::invalid_argument("native observer is empty");
+      handle.observe([observer = std::move(observer)] (
+          const di::NativeInferenceEvent& event) {
+        py::gil_scoped_acquire gil;
+        py::dict value;
+        value["request_id"] = event.requestId;
+        value["payload"] = py::bytes(
+          reinterpret_cast<const char*>(event.payload.data()),
+          event.payload.size());
+        value["terminal"] = event.terminal;
+        observer(value);
+      });
+    }, py::arg("observer"))
     .def_property_readonly("status_name", [](const di::NativeInferenceHandle& handle) {
       return requestStatusName(handle.status());
     });

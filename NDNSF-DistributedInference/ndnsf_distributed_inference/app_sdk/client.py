@@ -486,14 +486,24 @@ class APPClient:
 
     def request_native_payload(self, payload: bytes, *, options,
                                task_name: str | None = None,
-                               application_options: bytes | None = None):
-        """Submit one payload using the configured native catalog and splitter."""
+                               application_options: bytes | None = None,
+                               on_event=None):
+        """Submit one payload and optionally observe native result events.
+
+        The callback receives a non-secret event snapshot from the native
+        handle: ``request_id`` (str), ``payload`` (bytes), and ``terminal``
+        (bool).  Native code owns event ordering, replay, and callback
+        isolation; this facade only attaches the observer before returning the
+        handle.
+        """
         if self._native_client is None or self._native_model is None or self._native_splitter is None:
             raise RuntimeError(
                 "native requester is not configured; refusing Python planner fallback")
         from ndnsf import _ndnsf
         if not isinstance(payload, (bytes, bytearray, memoryview)):
             raise TypeError("native request payload must be bytes-like")
+        if on_event is not None and not callable(on_event):
+            raise TypeError("native event observer must be callable")
         native_input = _ndnsf.NativeApplicationInput()
         native_input.task_name = str(
             task_name or getattr(self._native_runtime.contract, "task_name", ""))
@@ -505,13 +515,16 @@ class APPClient:
                 raise TypeError("native application options must be bytes-like")
             native_input.options = bytes(application_options)
         options.task_name = native_input.task_name
-        return self.request_native(
+        handle = self.request_native(
             model=self._native_model,
             input=native_input,
             split_strategy=self._native_splitter,
             placement_strategy=_ndnsf.NativePreSplitFirstPlacement(),
             options=options,
         )
+        if on_event is not None:
+            handle.observe(on_event)
+        return handle
 
     def request(
         self,
