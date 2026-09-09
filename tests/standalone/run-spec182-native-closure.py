@@ -16,6 +16,7 @@ from pathlib import Path
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import time
 from typing import Any
@@ -48,6 +49,81 @@ def _sha256(path: Path) -> str:
 def _require(condition: bool, message: str) -> None:
     if not condition:
         raise PreflightError(message)
+
+
+def _read_proc_start_ticks(pid: int) -> int:
+    """Read Linux ``/proc/<pid>/stat`` starttime without trusting a PID alone."""
+    _require(pid > 0, "node owner PID is invalid")
+    try:
+        text = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+    except OSError as exc:
+        raise PreflightError(f"node owner PID is not readable: {pid}") from exc
+    closing = text.rfind(")")
+    _require(closing > 0, "node owner stat record is malformed")
+    fields = text[closing + 2:].split()
+    # The tail starts at field 3 (state); field 22 (starttime) is index 19.
+    _require(len(fields) > 19, "node owner stat record has no starttime")
+    try:
+        start_ticks = int(fields[19])
+    except ValueError as exc:
+        raise PreflightError("node owner starttime is not numeric") from exc
+    _require(start_ticks > 0, "node owner starttime is invalid")
+    return start_ticks
+
+
+def _validate_node_context(case: dict[str, Any], node: dict[str, Any]) -> dict[str, Any]:
+    """Validate the MiniNDN node identity that will own a declared process."""
+    process = case["isolation"]["processes"][0]
+    process_node = process.get("node")
+    _require(isinstance(process_node, str) and process_node,
+             "declared process node is missing")
+    _require(node.get("id") == process_node, "process/node binding mismatch")
+    required = ("netnsPath", "netnsInode", "ownerPid", "ownerStartTicks",
+                "nfdSocket", "peerNodeIds")
+    _require(all(key in node for key in required), "node context is incomplete")
+    netns_path = Path(str(node["netnsPath"]))
+    _require(netns_path.is_absolute(), "node netns path must be absolute")
+    try:
+        netns_stat = netns_path.stat()
+    except OSError as exc:
+        raise PreflightError("node netns path is not readable") from exc
+    try:
+        netns_inode = int(node["netnsInode"])
+        owner_pid = int(node["ownerPid"])
+        owner_start_ticks = int(node["ownerStartTicks"])
+    except (TypeError, ValueError) as exc:
+        raise PreflightError("node numeric metadata is invalid") from exc
+    _require(netns_inode == netns_stat.st_ino,
+             "node netns inode changed")
+    try:
+        owner_netns_inode = Path(f"/proc/{owner_pid}/ns/net").stat().st_ino
+    except OSError as exc:
+        raise PreflightError("node owner network namespace is not readable") from exc
+    _require(owner_netns_inode == netns_inode,
+             "node netns does not belong to owner PID")
+    _require(_read_proc_start_ticks(owner_pid) == owner_start_ticks,
+             "node owner starttime changed")
+    nfd_socket = Path(str(node["nfdSocket"]))
+    _require(nfd_socket.is_absolute(), "node NFD socket must be absolute")
+    try:
+        nfd_mode = nfd_socket.stat().st_mode
+    except OSError as exc:
+        raise PreflightError("node NFD socket is not readable") from exc
+    _require(stat.S_ISSOCK(nfd_mode), "node NFD socket is not a socket")
+    peer_ids = node["peerNodeIds"]
+    _require(isinstance(peer_ids, list) and
+             all(isinstance(peer, str) and peer for peer in peer_ids) and
+             len(set(peer_ids)) == len(peer_ids),
+             "node peer metadata is invalid")
+    return {
+        "id": process_node,
+        "netnsPath": str(netns_path),
+        "netnsInode": netns_stat.st_ino,
+        "ownerPid": owner_pid,
+        "ownerStartTicks": owner_start_ticks,
+        "nfdSocket": str(nfd_socket),
+        "peerNodeIds": list(peer_ids),
+    }
 
 
 def load_case(manifest_path: Path, case_id: str) -> dict[str, Any]:
@@ -144,48 +220,93 @@ def make_launch(case: dict[str, Any], staged: dict[str, Any], node: dict[str, An
                 trace_path: Path) -> list[str]:
     process = case["isolation"]["processes"][0]
     _require(process.get("node") in {None, node.get("id")}, "process/node binding mismatch")
+    if process.get("node") is not None:
+        namespace_fd_path = str(node.get("_namespaceFdPath", ""))
+        _require(re.fullmatch(r"/proc/self/fd/[0-9]+", namespace_fd_path) is not None,
+                 "node namespace FD was not prepared")
     executable = "/probe-root" + process["executable"]
     argv = [str(value) for value in process.get("argv", [])]
     _require(argv and argv[0] == executable, "argv must begin with staged executable")
     bwrap = str(case["isolation"].get("tools", {}).get("bubblewrap", "bwrap"))
     strace = str(case["isolation"].get("tools", {}).get("strace", "strace"))
-    return [strace, "-f", "-o", str(trace_path), bwrap,
+    launch = [strace, "-f", "-o", str(trace_path), bwrap,
             "--unshare-all", "--cap-drop", "ALL", "--new-session",
             "--die-with-parent", "--ro-bind", staged["root"], "/probe-root",
             "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
             "--chdir", "/tmp", "--", *argv]
+    namespace_fd_path = node.get("_namespaceFdPath")
+    if process.get("node") is not None and namespace_fd_path:
+        nsenter = str(case["isolation"].get("tools", {}).get("nsenter", "nsenter"))
+        return [nsenter, f"--net={namespace_fd_path}", "--", *launch]
+    return launch
 
 
 def run_case(case: dict[str, Any], staged: dict[str, Any], output: Path,
              nodes: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
     nodes = nodes or {}
     trace_path = output / "trace.txt"
-    node = nodes.get(str(case["isolation"]["processes"][0].get("node", "")), {"id": ""})
-    command = make_launch(case, staged, node, trace_path)
+    process_node = case["isolation"]["processes"][0].get("node")
+    node = nodes.get(str(process_node), {"id": ""})
+    namespace_fd: int | None = None
+    node_record: dict[str, Any] | None = None
+    if process_node is not None:
+        _require(str(process_node) in nodes, "node context is missing")
+        node_record = _validate_node_context(case, node)
+        try:
+            namespace_fd = os.open(node_record["netnsPath"], os.O_RDONLY | os.O_CLOEXEC)
+            _require(os.fstat(namespace_fd).st_ino == node_record["netnsInode"],
+                     "node netns inode changed before launch")
+            node = dict(node_record)
+            node["_namespaceFdPath"] = f"/proc/self/fd/{namespace_fd}"
+        except OSError as exc:
+            if namespace_fd is not None:
+                os.close(namespace_fd)
+                namespace_fd = None
+            raise PreflightError("node netns FD cannot be opened") from exc
+        except PreflightError:
+            if namespace_fd is not None:
+                os.close(namespace_fd)
+                namespace_fd = None
+            raise
+    try:
+        command = make_launch(case, staged, node, trace_path)
+    except Exception:
+        if namespace_fd is not None:
+            os.close(namespace_fd)
+            namespace_fd = None
+        raise
     env = {"HOME": "/tmp", "TMPDIR": "/tmp", "LC_ALL": "C"}
     start = time.monotonic()
-    process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                               stderr=subprocess.PIPE, env=env, start_new_session=True,
-                               text=True)
     try:
-        stdout, stderr = process.communicate(
-            timeout=int(case["isolation"]["limits"]["runSeconds"]))
-        timed_out = False
-    except subprocess.TimeoutExpired:
-        timed_out = True
-        os.killpg(process.pid, signal.SIGTERM)
+        process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE, env=env, start_new_session=True,
+                                   pass_fds=(() if namespace_fd is None else (namespace_fd,)),
+                                   text=True)
         try:
             stdout, stderr = process.communicate(
-                timeout=int(case["isolation"]["limits"]["cleanupSeconds"]))
+                timeout=int(case["isolation"]["limits"]["runSeconds"]))
+            timed_out = False
         except subprocess.TimeoutExpired:
-            os.killpg(process.pid, signal.SIGKILL)
-            stdout, stderr = process.communicate()
+            timed_out = True
+            os.killpg(process.pid, signal.SIGTERM)
+            try:
+                stdout, stderr = process.communicate(
+                    timeout=int(case["isolation"]["limits"]["cleanupSeconds"]))
+            except subprocess.TimeoutExpired:
+                os.killpg(process.pid, signal.SIGKILL)
+                stdout, stderr = process.communicate()
+    finally:
+        if namespace_fd is not None:
+            os.close(namespace_fd)
     (output / "stdout.log").write_text(stdout or "", encoding="utf-8")
     (output / "stderr.log").write_text(stderr or "", encoding="utf-8")
-    return {"command": command, "returncode": process.returncode, "timedOut": timed_out,
-            "durationMs": int((time.monotonic() - start) * 1000),
-            "trace": str(trace_path), "stdout": str(output / "stdout.log"),
-            "stderr": str(output / "stderr.log")}
+    result = {"command": command, "returncode": process.returncode, "timedOut": timed_out,
+              "durationMs": int((time.monotonic() - start) * 1000),
+              "trace": str(trace_path), "stdout": str(output / "stdout.log"),
+              "stderr": str(output / "stderr.log")}
+    if node_record is not None:
+        result["node"] = node_record
+    return result
 
 
 def collect_trace(case: dict[str, Any], run: dict[str, Any]) -> dict[str, Any]:
