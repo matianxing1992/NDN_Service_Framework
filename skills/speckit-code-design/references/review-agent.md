@@ -50,7 +50,7 @@ closure；这些未读时写 coverage gap，不能仅凭 No findings 记 `STATIC
 - **Ownership and concurrency**：追踪 RAII、move、引用/回调捕获、异常释放；手推 cancel/complete/close 交错、锁顺序、线程归属、代次失效与一次性终态。
 - **Contract and trust boundaries**：对照签名、默认值、字段来源、授权主体、request/plan/digest 绑定与验证先后；核对跨语言、wire/config、兼容别名和旧调用方迁移。
 - **Build and wiring inspection**：核对声明/定义、命名空间、include、target/link、生成文件和测试注册。静态判断不能证明模板实例化、ABI 或真实链接成功。
-- **Oracle review**：连接需求→生产路径→观测→断言；检查 fixture 能否进入目标分支、负例是否因目标行为失败、期望是否独立于被测实现、collector 是否误判启动失败。
+- **Oracle review**：连接需求→生产路径→观测→断言；检查 fixture 能否进入目标分支、负例是否因目标行为失败、期望是否独立于被测实现、collector 是否误判启动失败。若 helper/fixture 复算 canonical bytes、digest 或 identity，逐项对照生产 serializer 的字段集合、顺序、规范化和 source identity；过期 hardcode 或错误排序必须成为可检出的负例，否则 `test/harness/oracle` 为 coverage gap。
 - **Composition review**：批末连起跨任务接口与状态，核对读写双方、成功/失败、恢复/清理的一致性；局部 PASS 不能掩盖未接线实现、stub 或遗留双路径。
 
 记录实际检查路径和关键发现，不以清单全绿或工具无输出替代阅读。无需为每个风险新建 mutation test，但既定负例及反事实判据必须保留。

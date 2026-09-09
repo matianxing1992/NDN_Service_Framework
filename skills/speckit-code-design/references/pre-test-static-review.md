@@ -13,7 +13,7 @@
 
 1. 实现一个可审阅的小任务，同时编写或调整必要测试、注册与调用方。
 2. 每个小任务明确加载独立官方 `$review-agent`，按 [调用及项目补充规则](review-agent.md) 只读审查完整差异、足够上下文和设计契约。无需每次启动多个代理。
-3. 在同一审查结果中填写 [batch-quality-gates.md](batch-quality-gates.md) 的 Coverage matrix：逐项核对真实生产入口/调用方、实现与 wire、测试/harness/oracle、构建注册/source closure、迁移/证据路径；不适用项写理由，无法确认项写 `gap`。至少给出实际文件/符号和查询或检查命令，不能用“目录已看”代替。
+3. 在同一审查结果中填写 [batch-quality-gates.md](batch-quality-gates.md) 的 Coverage matrix：逐项核对真实生产入口/调用方、实现与 wire、测试/harness/oracle、构建注册/source closure、迁移/证据路径；对复算 canonical bytes/digest/identity 的 helper 还要对照生产 serializer 的字段集合、顺序、规范化和 source identity。不适用项写理由，无法确认项写 `gap`。至少给出实际文件/符号和查询或检查命令，不能用“目录已看”代替。
 4. 发现具体缺陷或必要设计/接线遗漏，由实现者修复，再重审受影响范围；不能带着已知控制性缺陷继续依赖它的任务。
 5. 覆盖充分且没有控制性问题，记录 `STATIC_PASS / TESTS_DEFERRED / Batch ID`，并在同一结果
    记录中写入 `Review trace`（skill 路径/SHA、基线、diff 范围、查询和复审结论）；继续同批

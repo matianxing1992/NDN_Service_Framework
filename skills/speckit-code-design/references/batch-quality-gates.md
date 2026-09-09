@@ -27,6 +27,12 @@
 覆盖范围。没有矩阵、只有泛称目录，或矩阵与实际差异不符，均属于 coverage gap，
 不能记录 `STATIC_PASS` 或 `READY_FOR_BATCH_TESTS`。
 
+若 test helper、fixture 或 oracle 会复算 production serializer 生成的 canonical bytes、
+digest 或 identity，`test/harness/oracle` lane 还必须逐项对照生产符号的字段集合、字段顺序、
+规范化规则和 source identity。独立 oracle 可以不调用被测 serializer，但必须记录这组对照
+和一个能暴露过期 hardcode、错误排序或缺失身份字段的检查；不得仅凭测试数量或旧 fixture
+摘要写 `covered`。无法完成对照时写 `gap`，批次保持 `PARTIAL`。
+
 维护中的 legacy/compatibility 路径也属于真实调用方和迁移覆盖范围。若当前源码的
 探针、回归选择器或旧 oracle 暴露出它在生产接线之后的运行时失败，必须记录首个失败
 边界和原始证据，并在 `migration/evidence` lane 保持 `PARTIAL`；`speckit-converge`
