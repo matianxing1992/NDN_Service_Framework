@@ -982,6 +982,22 @@ def test_case_runtime_binding_consumes_explicit_nodes_and_identities(tmp_path: P
     assert "/NDNSF/DistributedRepo/Object" in origins["neu"]
 
 
+def test_sif_role_home_resolves_run_private_tree_for_nested_y_n_subcase(
+        tmp_path: Path, monkeypatch):
+    module = load_runner()
+    output, inputs = _binding_inputs(tmp_path, module)
+    nested = tmp_path / "run" / "host-minindn" / "output" / "subcases" / "Y-N-O"
+    nested.mkdir(parents=True)
+    private = tmp_path / "run" / "private" / "controller" / ".ndn"
+    private.mkdir(parents=True)
+    (private / "pib.db").write_bytes(b"pib")
+    (private / "ndnsec-key-file").mkdir()
+    binding = module.CaseRuntimeBinding.from_inputs("Y-B", nested, inputs)
+    runtime = module.MiniNdnCaseRuntime(binding, inputs)
+    monkeypatch.setattr(module, "sif_runtime_enabled", lambda: True)
+    assert runtime._sif_role_home("controller") == str(private.parent)
+
+
 def test_case_runtime_binding_rejects_native_catalogue_contract_drift(tmp_path: Path):
     module = load_runner()
     output, inputs = _binding_inputs(tmp_path, module)

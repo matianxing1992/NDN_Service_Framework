@@ -1,13 +1,12 @@
-"""Spec183 T010: validate per-run inputs for the maintained CPU MiniNDN Y-B driver.
+"""Spec183 T010: run registered CPU MiniNDN cases through the maintained driver.
 
 Maps the containerized-issuer products (case.json, offer trust/maps, role
 certificates, catalogue names) plus the actual per-run offer private keys
-onto the maintained ACK-driven MiniNDN driver
-(``Experiments/NDNSF_DI_YoloAckDriven_Minindn.py --case Y-B``), which runs
-the four-role graph over the clean-root host binaries. A transient systemd
-service bounds the process tree. Three-case execution, network resource cleanup
-evidence and semantic host qualification remain T007 N1/N2 work;
-a successful driver exit alone is not a host, GPU or SIF qualification.
+onto the maintained ACK-driven MiniNDN driver. ``Y-B`` runs the four-role
+graph; ``Y-N`` runs the registered control and fail-closed mutation matrix.
+A transient systemd service bounds the process tree. Semantic host
+qualification remains a separate receipt-validation step; a successful driver
+exit alone is not a host, GPU or SIF qualification.
 """
 from __future__ import annotations
 
@@ -135,7 +134,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     parser.add_argument("--profile", type=Path, default=PROFILE_REL)
     parser.add_argument("--preparation-sha256", required=True,
                         help="Retained issuer digest of public/preparation.json")
-    parser.add_argument("--case", choices=("Y-B",), default="Y-B")
+    parser.add_argument("--case", choices=("Y-A", "Y-B", "Y-N"), default="Y-B")
     parser.add_argument("--library-path", default="/tmp/t008-build-root/lib")
     args = parser.parse_args(argv)
 
@@ -149,20 +148,51 @@ def main(argv: Iterable[str] | None = None) -> int:
     identities = case["runtime"]["identities"]
 
     private_map, host_offer_map = checked['privateMap'], checked['offerMap']
-    # The MiniNDN driver needs a deployment config in the spec181 Y-B layout:
-    # the Spec183 identities from case.json plus a MiniNDN node placement.
+    # The MiniNDN driver needs a deployment config in the registered Spec181
+    # case layout. Provision currently emits the shared four-provider Y-B
+    # policy; derive the selected case view without changing signed identity
+    # material. Y-N gives BackboneNeck the FullModel capability so the atomic
+    # candidate is covered by the same issuer-created role HOME.
     namespace = prepared["plan"]["namespace"]
-    provider_identities = {identities[role]: identities[role] for role in ROLES}
     deploy = json.loads(json.dumps(case))
+    inference = [item for item in deploy.get("services", [])
+                 if isinstance(item, dict)
+                 and not str(item.get("name", "")).startswith("/NDNSF/DistributedRepo")]
+    if len(inference) != 1:
+        raise ValueError("MININDN_INFERENCE_SERVICE")
+    service = inference[0]
+    if args.case == "Y-A":
+        provider_roles = {identities["BackboneNeck"]: ["FullModel"]}
+        service["roles"] = ["FullModel"]
+    elif args.case == "Y-N":
+        provider_roles = {
+            identities["BackboneNeck"]: ["FullModel", "BackboneNeck"],
+            identities["DetectShard0"]: ["DetectShard0"],
+            identities["DetectShard1"]: ["DetectShard1"],
+            identities["Merge"]: ["Merge"],
+        }
+        service["roles"] = ["FullModel", "BackboneNeck", "DetectShard0",
+                             "DetectShard1", "Merge"]
+    else:
+        provider_roles = {
+            identities[role]: [role]
+            for role in ROLES
+        }
+        service["roles"] = list(ROLES)
+    service["providers"] = [
+        {"identity": identity, "roles": roles}
+        for identity, roles in sorted(provider_roles.items())
+    ]
     deploy["runtime"]["nodes"] = {
         "controller": "memphis", "user": "memphis", "repo": "neu",
-        "providers": {
+        "providers": {identity: node for identity, node in {
             identities["BackboneNeck"]: "ucla",
             identities["DetectShard0"]: "neu",
             identities["DetectShard1"]: "arizona",
             identities["Merge"]: "wustl",
-        },
+        }.items() if identity in provider_roles},
     }
+    provider_identities = {identity: identity for identity in provider_roles}
     deploy["runtime"]["identities"] = {
         "controller": identities["controller"],
         "group": case["group"],

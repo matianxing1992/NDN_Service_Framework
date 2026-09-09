@@ -3968,3 +3968,18 @@ identity and rerun packaging against the existing incremental Waf cache.
 - Lesson: a successful request and correct tensor output still require
   descendant and namespace cleanup before an exact runtime case can be
   considered complete.
+
+## 2026-09-08: nested Y-N subcase could not resolve exact-SIF role HOME
+
+- Symptom: the first registered Y-N MiniNDN subcase stopped before starting
+  Controller with `SIF_ROLE_HOME_INVALID:controller`; the top-level Y-B case
+  had already passed with the same SIF and application bundle.
+- Root cause: the driver assumed `host-minindn/output` was always the binding
+  directory and derived `private` at one fixed parent depth.  Y-N stores each
+  subcase under `output/subcases/<id>`, so that expression pointed at the
+  nonexistent `host-minindn/private` directory.
+- Fix: resolve the run-scoped `private` directory by walking binding-output
+  ancestors and retain the existing symlink, PIB, and TPM checks.
+- Lesson: matrix cases must use path resolution based on the run boundary,
+  not a fixed evidence-directory depth; nested negative cases are part of the
+  exact application launch surface.

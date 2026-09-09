@@ -1041,7 +1041,19 @@ class MiniNdnCaseRuntime:
         if (not role or "/" in role or ".." in role
                 or not re.fullmatch(r"[A-Za-z0-9_.-]+", role)):
             raise RunnerError("SIF_ROLE_NAME_INVALID:" + process_name)
-        private_root = self.binding.output.parent.parent / "private"
+        # A Y-N matrix owns one nested output directory per subcase, while
+        # Y-B keeps its evidence directly under host-minindn/output.  Resolve
+        # the run-scoped private tree by walking ancestors instead of assuming
+        # one fixed depth; otherwise nested SIF cases look for
+        # ``host-minindn/private`` and fail before the first child starts.
+        private_root = None
+        for ancestor in (self.binding.output, *self.binding.output.parents):
+            candidate = ancestor / "private"
+            if candidate.is_dir() and not candidate.is_symlink():
+                private_root = candidate
+                break
+        if private_root is None:
+            raise RunnerError("SIF_PRIVATE_ROOT_MISSING")
         home = private_root / role
         if (home.is_symlink() or not home.is_dir()
                 or any(parent.is_symlink() for parent in (home, *home.parents))
