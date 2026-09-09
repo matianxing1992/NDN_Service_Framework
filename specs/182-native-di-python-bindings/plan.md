@@ -1167,6 +1167,16 @@ T017 的 evidence/development-handoff.md 包含 exact commit、clean source clos
 
 ## Current Execution Checkpoint
 
+2026-09-09 R10-B67 native/application request identity mapping / **PARTIAL (local mapping boundary)**：
+native owner 继续唯一分配 Core `requestId`；`NativeRequestOptions.applicationRequestId`
+只保存维护 caller 的 `wire_request_id` correlation，handle 暴露两层 ID，Qwen native
+helper 转发并 fail-closed 核对。`unit-tests` `-j4`、共享 DI library `-j2`、pybind
+扩展和显式 NAC-ABE/ndn-svs loader closure 均通过；C++ mapping selector、Python
+native bindings 16/16、APP SDK compatibility 18/18 通过。初始 dynamic-library
+边界已记录并按同一 source checkpoint 修复。该记录关闭 F-05 local contract，不关闭
+真实 worker/cross-process、caller migration、conversation、legacy zero-use 或 T016；
+详见 [R10-B67 evidence](evidence/r10-b67-native-application-request-mapping-20260909.md)。
+
 2026-09-09 R10-B58 shared workflow rule / **DONE (documentation boundary)**：已将异步或
 detached native fixture 的 external Face/io_context/scheduler/timer/callback ownership、
 join/drain barrier、析构顺序和重复 selector 要求同步到 shared skill、Spec Kit templates

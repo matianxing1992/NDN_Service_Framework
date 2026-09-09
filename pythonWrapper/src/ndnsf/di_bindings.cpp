@@ -272,6 +272,7 @@ bindDistributedInference(py::module_& module)
     .def_readwrite("ack_timeout_ms", &di::NativeRequestOptions::ackTimeoutMs)
     .def_readwrite("task_name", &di::NativeRequestOptions::taskName)
     .def_readwrite("output_mode", &di::NativeRequestOptions::outputMode)
+    .def_readwrite("application_request_id", &di::NativeRequestOptions::applicationRequestId)
     .def_readwrite("generation", &di::NativeRequestOptions::generation)
     .def_readwrite("stream", &di::NativeRequestOptions::stream)
     .def_readwrite("conversation", &di::NativeRequestOptions::conversation);
@@ -471,6 +472,7 @@ bindDistributedInference(py::module_& module)
   py::class_<di::NativeInferenceHandle,
              std::shared_ptr<di::NativeInferenceHandle>>(module, "NativeInferenceHandle")
     .def_property_readonly("request_id", &di::NativeInferenceHandle::requestId)
+    .def_property_readonly("application_request_id", &di::NativeInferenceHandle::applicationRequestId)
     .def_property_readonly("status", &di::NativeInferenceHandle::status)
     .def("result", [](const di::NativeInferenceHandle& handle,
                        std::uint64_t wait_timeout_ms) {

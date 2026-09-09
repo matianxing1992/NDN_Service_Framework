@@ -292,6 +292,7 @@ struct NativeInferenceHandle::Operation
   mutable std::mutex mutex;
   std::condition_variable condition;
   std::string requestId;
+  std::string applicationRequestId;
   std::string coreRequestId; // Per-attempt transport identity; public requestId remains stable.
   std::optional<NativeGenerationRecovery> recovery;
   NativeRequestStatus status = NativeRequestStatus::Pending;
@@ -1435,6 +1436,13 @@ std::string NativeInferenceHandle::requestId() const
   return m_operation->requestId;
 }
 
+std::string NativeInferenceHandle::applicationRequestId() const
+{
+  if (!m_operation) return {};
+  std::lock_guard<std::mutex> lock(m_operation->mutex);
+  return m_operation->applicationRequestId;
+}
+
 NativeRequestStatus NativeInferenceHandle::status() const
 {
   if (!m_operation) throw NativeDiError("INVALID_HANDLE", "local", "handle",
@@ -1628,6 +1636,8 @@ NativeInferenceHandle NativeInferenceClient::request(
     if (!splitStrategy || !placementStrategy || options.timeoutMs == 0 ||
         options.ackTimeoutMs == 0 || options.ackTimeoutMs >= options.timeoutMs ||
         options.timeoutMs > static_cast<std::uint64_t>(std::numeric_limits<int>::max()) ||
+        options.applicationRequestId.size() > 256 ||
+        options.applicationRequestId.find('\0') != std::string::npos ||
         (input.payload.empty() && input.repositoryReference.empty()) ||
         (input.transportMode == NativeInputTransportMode::Inline &&
          (!input.repositoryReference.empty() || input.payload.empty())) ||
@@ -1656,6 +1666,7 @@ NativeInferenceHandle NativeInferenceClient::request(
     operation->conversations = m_conversations;
     operation->worker = m_executor;
     operation->notifications = m_notifications;
+    operation->applicationRequestId = options.applicationRequestId;
     // The requestId comes from a unique native owner allocated at submission
     // (runtime-boundaries: Core allocation or unique native owner); the
     // operation then binds ACK/plan/grant/result to this stable URI.

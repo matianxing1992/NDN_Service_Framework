@@ -277,8 +277,11 @@ BOOST_AUTO_TEST_CASE(ConfiguredClientClosesEmptyAckAndCancelsActualCorePendingCa
   };
   for (const bool cancel : {false, true}) {
     NativeInferenceClient client(user, configuredAdapters, runtime, preparation, admission);
+    NativeRequestOptions requestOptions;
+    requestOptions.applicationRequestId = "qwen-wire-id";
     auto handle = client.request(model, application, std::make_shared<ClientTestSplit>(),
-      std::make_shared<NativePreSplitFirstPlacement>(), NativeRequestOptions{});
+      std::make_shared<NativePreSplitFirstPlacement>(), requestOptions);
+    BOOST_CHECK_EQUAL(handle.applicationRequestId(), "qwen-wire-id");
     const ndn::Name id(handle.requestId());
     BOOST_REQUIRE(pumpUntil([&] { return user->hasPendingCall(id) || handle.status() != NativeRequestStatus::Pending; }));
     if (handle.status() != NativeRequestStatus::Pending) handle.result(std::chrono::milliseconds(0));

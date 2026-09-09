@@ -242,7 +242,11 @@ CD-001/FLOW-002 的 cancel 不代表已向远端发送取消或已完成清理�
 若现有受支持能力要求立即远端取消，O-004 必须先列出已经存在的 authenticated control
 及 Provider handler，再接线和注册负例；本 Spec 不凭一个本地方法虚构新控制协议。
 请求 handle 可早于 ACK 完成返回；requestId 只能来自 Core 分配或唯一 native request owner，
-T001 固定创建时序。close 与 callback 的 join/unsubscribe 实现必须具备明确线程所有权。
+T001 固定创建时序。维护调用方如果已有 `wire_request_id`，只能通过
+`NativeRequestOptions.applicationRequestId` 作为非权威 correlation；handle 同时暴露
+`requestId()`（native owner/Core identity）和 `applicationRequestId()`，两者必须在
+调用边界显式配对，不能把 caller 字符串写入或冒充 Core requestId。close 与 callback
+的 join/unsubscribe 实现必须具备明确线程所有权。
 
 ## Migration and Rollback Contract
 

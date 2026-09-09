@@ -274,7 +274,7 @@ Source: `NDNSF-DistributedInference/ndnsf_distributed_inference/sdk/placement.py
 | NativeModelRef / NativeInspectedModel | NativeModelRef 使用认证 model/adapter 引用，不重复保存可覆盖的摘要；inspect 产出 V01/V02 与已认证源引用。输入引用和解析结果分型。 | O-004：目录引用嵌套字段与证书绑定逐项映射 |
 | NativePlanningSnapshot | 拥有 V01/V02、V09 集合、ACK digest、请求身份及单调 deadline；来自同一 ACK_CLOSED，不接收 mutable Provider 对象。 | O-004：Core ACK 到 V09 精确转换 |
 | NativeStrategyIdentity | name、version、规范配置摘要；策略构造后不可变，参数变更须新实例。 | O-004：策略参数规范编码与旧算法映射 |
-| NativeRequestOptions / NativeRequestControl | task、timeoutMs、ackTimeoutMs、可选 generation/continuation；control 持 requestId、attempt、deadline、取消/fencing generation。前者用户配置，后者 native owner 独占。 | C01/M02 及 state dictionary；禁止公开覆盖 ACK digest |
+| NativeRequestOptions / NativeRequestControl | task、timeoutMs、ackTimeoutMs、可选 generation/continuation 与可选 `applicationRequestId` caller correlation；control 持 requestId、attempt、deadline、取消/fencing generation。Core requestId 仍由 native owner 独占分配，application correlation 只建立 caller wire ID → owner ID 的可审计映射。 | C01/M02 及 state dictionary；禁止公开覆盖 ACK digest 或 owner requestId |
 | NativeInferenceResult / NativeInferenceEvent / NativeRequestStatus | result 为已认证最终 payload 与执行元数据；event 为只读进度/文本快照；status 为 CD-007 单一终态机。原始异常/日志不是 Response。 | O-004：全部事件枚举及 Python 错误/返回兼容映射 |
 | NativeDiError | code、domain、boundary、requestId、attempt；复用原因码，不携带密钥或明文敏感输入。 | C03；O-004：旧异常到原因码完整表 |
 | Core AckSelectionCandidate / NativeOfferBindingContext / NativeAdmittedOfferV3 / NativeSecurityPolicySnapshot | 持已有 Core 验证结果及绑定 request/attempt；admission 拥有不可变 candidate policy/public-key registry。verified offer 仅 admission 可构造，不接受独立 caller evidence DTO 或 policy 伪观测。ControllerVersion 仍由 Core 消息契约持有。 | CD-013；O-004：生命周期、generation fence 与真实回调签名 |

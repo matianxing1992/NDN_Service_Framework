@@ -57,6 +57,7 @@ public:
 class NativeInferenceHandle {
 public:
   std::string requestId() const;
+  std::string applicationRequestId() const;
   NativeRequestStatus status() const;
   NativeInferenceResult result(std::chrono::milliseconds waitTimeout) const;
   void cancel();
@@ -81,9 +82,11 @@ public:
 | close | client 生命周期结束 | 阻止新请求，对存活请求发取消并清理自有资源；不可在 Core I/O 线程同步等待网络回调 |
 
 NativeRequestOptions planned fields：task descriptor reference、timeoutMs、ackTimeoutMs、
-optional generation options、optional conversation reference。请求 ID、attempt、deadline、ACK digest
-均由 owner 生成/推导，禁止调用方提供互相矛盾的冗余值。测试可注入 clock/entropy 于非公开 test port，
-生产 API 不暴露“跳过认证”“指定假身份”参数。
+optional generation options、optional conversation reference，以及可选的
+`applicationRequestId` caller correlation。请求 ID、attempt、deadline、ACK digest
+均由 native owner 生成/推导；`applicationRequestId` 只用于把维护调用方的
+`wire_request_id` 与返回 handle 关联，绝不能替代或覆盖 owner 的 Core requestId。
+测试可注入 clock/entropy 于非公开 test port，生产 API 不暴露“跳过认证”“指定假身份”参数。
 
 **Output/error**：handle 创建后的网络/规划/授权失败进入单一终态；参数类型/配置缺失在调用前抛
 NativeDiError。其 code/domain/boundary/requestId/attempt 为结构化非秘密数据，

@@ -49,6 +49,10 @@ struct NativeRequestOptions
   std::uint64_t ackTimeoutMs = 5'000;
   std::string taskName;
   std::string outputMode = "FULL";
+  // Optional caller correlation only. The native owner still allocates the
+  // authoritative Core requestId; this value is carried locally so a
+  // maintained caller can prove its wire request maps to that owner.
+  std::string applicationRequestId;
   std::optional<NativeGenerationExecutionContractV1> generation;
   std::optional<ndn_service_framework::StreamRequestOptions> stream;
   // A conversation turn is owned by the native coordinator. The caller only
@@ -118,6 +122,7 @@ class NativeInferenceHandle
 public:
   NativeInferenceHandle() = default;
   std::string requestId() const;
+  std::string applicationRequestId() const;
   NativeRequestStatus status() const;
   NativeInferenceResult result(std::chrono::milliseconds waitTimeout) const;
   void cancel();

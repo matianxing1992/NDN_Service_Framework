@@ -205,6 +205,9 @@ def _native_qwen_request(client, args, payload: bytes, *, request_id: str,
         "options": options,
         "task_name": "generate",
         "application_options": application_options,
+        # Keep the caller's wire correlation explicit while the native owner
+        # allocates the authoritative Core request identity.
+        "request_id": request_id,
     }
     if on_event is not None:
         request_kwargs["on_event"] = on_event
@@ -217,11 +220,22 @@ def _native_qwen_request(client, args, payload: bytes, *, request_id: str,
     )
     native = client.request_native_reference(reference, **request_kwargs)
     result = native.result(int(args.timeout_ms))
+    native_request_id = str(getattr(native, "request_id", "") or "")
+    mapped_request_id = str(
+        getattr(native, "application_request_id", request_id) or "")
+    if mapped_request_id != request_id:
+        raise RuntimeError(
+            "native/application request ID mapping mismatch: "
+            f"expected={request_id} actual={mapped_request_id}")
     return type("NativeInferenceResult", (), {
         "status": True,
         "payload": bytes(result.payload),
         "error": "",
-        "request_id": native.request_id,
+        # The caller-facing result preserves its supplied wire correlation;
+        # the native owner identity remains available for audit diagnostics.
+        "request_id": mapped_request_id,
+        "application_request_id": mapped_request_id,
+        "native_request_id": native_request_id,
     })()
 
 

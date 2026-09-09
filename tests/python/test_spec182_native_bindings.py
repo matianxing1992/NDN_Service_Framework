@@ -39,7 +39,8 @@ class Spec182NativeBindingsTest(unittest.TestCase):
         source = BINDINGS.read_text(encoding="utf-8")
         for field in (
                 "model_name", "content_digest", "adapter_id", "payload",
-                "transport_mode", "timeout_ms", "ack_timeout_ms"):
+                "transport_mode", "timeout_ms", "ack_timeout_ms",
+                "application_request_id"):
             self.assertIn(f'"{field}"', source)
 
     def test_native_generation_stream_and_conversation_options_are_typed(self):
@@ -86,12 +87,14 @@ class Spec182NativeBindingsTest(unittest.TestCase):
         self.assertEqual(decoded.event_key_commitment, stream.event_key_commitment)
 
         options = _ndnsf.NativeRequestOptions()
+        options.application_request_id = "wire-request"
         options.generation = generation
         options.stream = stream
         options.conversation = continuation
         self.assertEqual(options.generation.generation_id, "generation-1")
         self.assertEqual(options.stream.stream_epoch, 1)
         self.assertEqual(options.conversation.mode, "APPEND_DELTA")
+        self.assertEqual(options.application_request_id, "wire-request")
 
     def test_native_stream_key_grant_uses_wire_bytes_and_none(self):
         sys.path.insert(0, str(ROOT / "pythonWrapper"))
@@ -200,6 +203,7 @@ class Spec182NativeBindingsTest(unittest.TestCase):
                 observed["reference"] = reference
                 observed["options"] = kwargs["options"]
                 observed["application_options"] = kwargs["application_options"]
+                observed["request_id"] = kwargs["request_id"]
                 return Handle()
 
         args = SimpleNamespace(
@@ -213,6 +217,10 @@ class Spec182NativeBindingsTest(unittest.TestCase):
             request_id="0123456789abcdef0123456789abcdef")
 
         self.assertEqual(result.payload, b"native-result")
+        self.assertEqual(
+            result.request_id, "0123456789abcdef0123456789abcdef")
+        self.assertEqual(
+            observed["request_id"], "0123456789abcdef0123456789abcdef")
         self.assertEqual(
             observed["options"].generation.tokenizer_digest,
             tokenizer_digest)
@@ -268,6 +276,7 @@ class Spec182NativeBindingsTest(unittest.TestCase):
                 observed["reference"] = reference
                 observed["options"] = kwargs["options"]
                 observed["application_options"] = kwargs["application_options"]
+                observed["request_id"] = kwargs["request_id"]
                 observer = kwargs.get("on_event")
                 if observer is not None:
                     observer({
@@ -306,6 +315,7 @@ class Spec182NativeBindingsTest(unittest.TestCase):
         self.assertEqual(outcome.generated_token_ids, (7, 2))
         self.assertEqual(outcome.decoded_text, "ok")
         self.assertEqual(outcome.stop_reason, "EOS")
+        self.assertEqual(observed["request_id"], request_id)
         self.assertEqual(outcome.token_steps[0]["metadata"]["streamEventCount"], 1)
         self.assertEqual(
             observed["options"].generation.tokenizer_digest,

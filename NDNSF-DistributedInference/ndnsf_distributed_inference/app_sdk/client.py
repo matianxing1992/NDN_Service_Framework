@@ -528,7 +528,8 @@ class APPClient:
     def request_native_payload(self, payload: bytes, *, options,
                                task_name: str | None = None,
                                application_options: bytes | None = None,
-                               on_event=None):
+                               on_event=None,
+                               request_id: str | None = None):
         """Submit one payload and optionally observe native result events.
 
         The callback receives a non-secret event snapshot from the native
@@ -545,6 +546,10 @@ class APPClient:
             raise TypeError("native request payload must be bytes-like")
         if on_event is not None and not callable(on_event):
             raise TypeError("native event observer must be callable")
+        if request_id is not None:
+            if not isinstance(request_id, str) or not request_id or "\x00" in request_id:
+                raise ValueError("native application request_id must be a non-empty string")
+            options.application_request_id = request_id
         native_input = _ndnsf.NativeApplicationInput()
         native_input.task_name = str(
             task_name or getattr(self._native_runtime.contract, "task_name", ""))
@@ -570,7 +575,8 @@ class APPClient:
     def request_native_reference(self, reference, *, options,
                                  task_name: str | None = None,
                                  application_options: bytes | None = None,
-                                 on_event=None):
+                                 on_event=None,
+                                 request_id: str | None = None):
         """Submit a published encrypted repository reference natively.
 
         ``reference`` must be the value returned by
@@ -587,6 +593,10 @@ class APPClient:
         from ..repo_reference import LargeDataReference
         if on_event is not None and not callable(on_event):
             raise TypeError("native event observer must be callable")
+        if request_id is not None:
+            if not isinstance(request_id, str) or not request_id or "\x00" in request_id:
+                raise ValueError("native application request_id must be a non-empty string")
+            options.application_request_id = request_id
         if isinstance(reference, LargeDataReference):
             checked = reference
         else:
@@ -1948,11 +1958,18 @@ class InferenceClient:
     def request_native_reference(self, reference, *, options,
                                  task_name: str | None = None,
                                  application_options: bytes | None = None,
-                                 on_event=None):
+                                 on_event=None,
+                                 request_id: str | None = None):
         """Submit a published encrypted repository reference natively."""
-        return self._core.request_native_reference(
-            reference, options=options, task_name=task_name,
-            application_options=application_options, on_event=on_event)
+        kwargs = {
+            "options": options,
+            "task_name": task_name,
+            "application_options": application_options,
+            "on_event": on_event,
+        }
+        if request_id is not None:
+            kwargs["request_id"] = request_id
+        return self._core.request_native_reference(reference, **kwargs)
 
     def deploy(self, definition):
         return self._deployments.ensure(definition)

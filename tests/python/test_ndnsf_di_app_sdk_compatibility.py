@@ -243,6 +243,21 @@ class AppSdkCompatibilityTest(unittest.TestCase):
             options="options", task_name="task",
             application_options=b"opts", on_event=callback)
 
+    def test_public_inference_client_forwards_native_application_request_id(self):
+        core = SimpleNamespace(request_native_reference=mock.Mock(return_value="handle"))
+        client = PublicInferenceClient.__new__(PublicInferenceClient)
+        client._core = core
+
+        self.assertEqual(
+            client.request_native_reference(
+                {"dataName": "/input", "manifestDigest": "manifest"},
+                options="options", request_id="wire-request"),
+            "handle")
+        core.request_native_reference.assert_called_once_with(
+            {"dataName": "/input", "manifestDigest": "manifest"},
+            options="options", task_name=None, application_options=None,
+            on_event=None, request_id="wire-request")
+
     def test_core_native_reference_route_preserves_identity_and_avoids_planner(self):
         from ndnsf_distributed_inference.app_sdk.client import APPClient as CoreAPPClient
         from ndnsf_distributed_inference.repo_reference import LargeDataReference
@@ -290,7 +305,7 @@ class AppSdkCompatibilityTest(unittest.TestCase):
             with mock.patch.object(ndnsf, "_ndnsf", fake_ndnsf):
                 returned = client.request_native_reference(
                     reference, options=options, application_options=b"cfg",
-                    on_event=callback)
+                    on_event=callback, request_id="wire-request")
 
             self.assertIs(returned, handle)
             planner.request.assert_not_called()
@@ -306,6 +321,7 @@ class AppSdkCompatibilityTest(unittest.TestCase):
                 json.dumps(reference.to_dict(), sort_keys=True,
                            separators=(",", ":"), ensure_ascii=False))
             self.assertEqual(options.task_name, "default-task")
+            self.assertEqual(options.application_request_id, "wire-request")
             handle.observe.assert_called_once_with(callback)
 
     def test_public_inference_client_forwards_conversation_owner(self):

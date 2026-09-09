@@ -1,5 +1,22 @@
 # Failure Log and Evidence Index
 
+## 2026-09-09 — Spec182 R10-B67 Python extension loader boundary
+
+The first post-mapping extension test invocation loaded `/usr/local/lib/libnac-abe.so`
+through the candidate build tree and stopped before any Python test body with the missing
+`ndn::nacabe::Consumer::clearCache` symbol (exit `1`). Re-running with the explicit
+`/home/tianxing/NDN/nac-abe-integration-182/install/lib` runtime prefix reached the candidate
+extension, then stopped before test execution because the stale
+`.codex-tmp/spec182-r4-b2/build/libndnsf-distributed-inference.so` did not yet export
+`NativeInferenceHandle::applicationRequestId()` (exit `1`). No native request, Core packet,
+or Qwen behavior was observed. Raw output and return code are retained under
+`.codex-tmp/spec182-r10-b67-binding-boundary-20260909/`.
+
+The next retry gate is to rebuild the candidate `ndnsf-distributed-inference` shared library
+from the same source checkpoint as `unit-tests`, then run `ldd`/`nm` with the explicit NAC-ABE
+prefix before interpreting Python binding results. This is a dependency/source-closure issue,
+not a protocol result.
+
 ## 2026-09-09 — Spec182 R10-B47 PO-001 owner/runner retry boundaries and pass
 
 The first root-enabled retry of the T016 owner reached MiniNDN setup but failed before a
