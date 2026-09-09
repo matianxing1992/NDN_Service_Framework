@@ -40,6 +40,68 @@ class Spec182NativeBindingsTest(unittest.TestCase):
                 "transport_mode", "timeout_ms", "ack_timeout_ms"):
             self.assertIn(f'"{field}"', source)
 
+    def test_native_generation_stream_and_conversation_options_are_typed(self):
+        sys.path.insert(0, str(ROOT / "pythonWrapper"))
+        from ndnsf import _ndnsf
+
+        generation = _ndnsf.NativeGenerationExecutionContractV1()
+        generation.enabled = True
+        generation.mode = "TOKEN_DIAGNOSTIC"
+        generation.max_generated_tokens = 32
+        generation.token_input_name = "input_ids"
+        generation.state_input_names = ["past_key_values.0"]
+        generation.state_output_names = ["present.0"]
+        generation.eos_token_ids = [2]
+        generation.sampling_mode = "Greedy"
+        generation.sampling_top_k = 1
+        generation.sampling_seed = 1750001
+        generation.generation_id = "generation-1"
+        generation.committed_prefix_token_ids = [4, 5]
+
+        continuation = _ndnsf.NativeConversationContinuation()
+        continuation.conversation_id = "conversation-1"
+        continuation.parent_context_epoch = 7
+        continuation.service_name = "qwen"
+        continuation.mode = "APPEND_DELTA"
+        continuation.canonical_token_ids = [4, 5, 6]
+        continuation.expected_roles = ["/LLM/Pipeline/Stage/0"]
+
+        stream = _ndnsf.NativeStreamRequestOptions()
+        stream.mode = _ndnsf.NativeInvocationMode.NORMAL
+        stream.generation_id = [1] * 16
+        stream.attempt_epoch = 1
+        stream.stream_epoch = 1
+        stream.event_key_commitment = [2] * 32
+        stream.deadline_epoch_ms = 4102444800000
+        stream.controller_version = _ndnsf.NativeControllerVersion()
+        stream.controller_version.controller_generation_timestamp = 1
+        stream.controller_version.controller_epoch = 1
+        stream.validate()
+        encoded = stream.wire_encode()
+        decoded = _ndnsf.NativeStreamRequestOptions()
+        self.assertTrue(decoded.wire_decode(encoded))
+        self.assertEqual(decoded.generation_id, stream.generation_id)
+        self.assertEqual(decoded.event_key_commitment, stream.event_key_commitment)
+
+        options = _ndnsf.NativeRequestOptions()
+        options.generation = generation
+        options.stream = stream
+        options.conversation = continuation
+        self.assertEqual(options.generation.generation_id, "generation-1")
+        self.assertEqual(options.stream.stream_epoch, 1)
+        self.assertEqual(options.conversation.mode, "APPEND_DELTA")
+
+    def test_native_stream_key_grant_uses_wire_bytes_and_none(self):
+        sys.path.insert(0, str(ROOT / "pythonWrapper"))
+        from ndnsf import _ndnsf
+
+        stream = _ndnsf.NativeStreamRequestOptions()
+        self.assertIsNone(stream.event_key_grant_wire)
+        stream.event_key_grant_wire = b"\x80\x00"
+        self.assertEqual(stream.event_key_grant_wire, b"\x80\x00")
+        stream.event_key_grant_wire = None
+        self.assertIsNone(stream.event_key_grant_wire)
+
     def test_native_runtime_composition_types_are_exported(self):
         sys.path.insert(0, str(ROOT / "pythonWrapper"))
         from ndnsf import _ndnsf
