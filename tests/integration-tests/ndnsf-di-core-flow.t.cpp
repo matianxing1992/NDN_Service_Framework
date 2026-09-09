@@ -7538,6 +7538,11 @@ BOOST_AUTO_TEST_CASE(Spec182R10B31RealProviderUnaryRequest)
   runR4B6RealProviderConversationCase(false, false, false, true);
 }
 
+BOOST_AUTO_TEST_CASE(Spec182R10B33RealProviderUnaryRepositoryReferenceRequest)
+{
+  runR4B6RealProviderConversationCase(false, false, true, true);
+}
+
 BOOST_AUTO_TEST_CASE(Spec175NativeTinyOnnxI01OneProvider)
 {
   const auto result = runSpec175NativeTinyOneRoleCase();
