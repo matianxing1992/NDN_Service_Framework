@@ -1,6 +1,6 @@
 # Implementation Plan: Native NDNSF-DI with Optional Python Bindings
 
-**Branch**: Experimental | **Revision**: 71 | **Date**: 2026-09-09
+**Branch**: Experimental | **Revision**: 72 | **Date**: 2026-09-09
 **Status**: IN_PROGRESS / 当前实现与验收状态见 tasks.md 的 Task Progress Registry 和 Current Checkpoint
 **Spec**: [spec.md](spec.md)
 
@@ -793,6 +793,23 @@ maintained caller/no-Python、完整输入模式和 T016 qualification 仍未观
 `vmstat` 快照在忽略首行后出现 `si/so=528/0`、`4800/0`、`132/0`，因此下一次 native
 build 必须按资源策略使用 `-j2`，直到新的连续观察证明可以恢复 `-j4`。详见
 [R10-B49 evidence](evidence/r10-b49-spec182-cpp-unit-suite-20260909.md)。
+
+### R10-B50 Standalone Provider Link Closure 2026-09-09
+
+P2 的独立 Provider executable 首次构建在最终链接阶段发现 examples source closure 不完整：
+conversation journal/wire、selection JSON、request envelope、placement、grant authority、
+request planner、offer admission、group projection 和 canonical catalog 等实现没有全部加入
+`di_native_session_sources`。这些失败均发生在编译完成后的 `ld` 阶段，未启动 Provider 进程，
+并已在 R10-B50 evidence 和 failure-log 中保留首边界。
+
+按改变的 source-closure 静态门补齐缺失 translation units 后，同一 system-first `-j2` 构建
+80/80 tasks 成功，elapsed `39.34s`，产物 `di-native-provider` SHA 为
+`4be6b29acb10b29792757a23ce0ffc4f098f39e9cec2f0f47f4175d03bdae75a`；`ldd` 关键依赖无
+`not found`。复用该 source list 的 `di-native-fault-provider` 也以 `-j2` 完成 91/91 tasks，
+elapsed `255.25s`，SHA 为 `94b94c8ca5be3b3eca9c0107213f39db35a83b34d90ae8b81421f7f1cce9b681`，
+`ldd` 无 `not found`。本批只关闭 standalone Provider 的 build/link boundary；Provider `--serve`、
+独立 requester/Provider transport、maintained caller/no-Python 和 T016 仍需下一批真实运行。
+详见 [R10-B50 evidence](evidence/r10-b50-provider-link-closure-20260909.md)。
 
 ### R10-B46 Real Provider Native Suite 2026-09-09
 

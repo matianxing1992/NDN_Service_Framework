@@ -2850,3 +2850,29 @@ are still unobserved.
 - **Raw runs**: `.codex-tmp/spec182-r10-b41/`, `.codex-tmp/spec182-t016-r13/`,
   `.codex-tmp/spec182-t016-r14/`, `.codex-tmp/spec182-t016-r15/`, and
   `.codex-tmp/spec182-t016-r16/`.
+
+## 2026-09-09 — Spec182 R10-B50 Provider executable link closure
+
+- **Area**: P2 preparation for an independent native Provider executable.
+- **First boundary**: `./waf build --targets=di-native-provider -j2` compiled all 72 tasks but
+  failed at the final link with unresolved conversation journal/wire, selection JSON, request
+  envelope, and placement symbols. No Provider process or protocol request started.
+- **Interpretation**: this is an examples `source` registration/link-closure miss. It is not a
+  protocol result, MiniNDN result, or qualification failure. The missing translation units were
+  identified by symbol-definition lookup and added to `di_native_session_sources`.
+- **Raw evidence**: `.codex-tmp/spec182-r10-b50-provider-build/` plus the durable
+  [R10-B50 evidence](../specs/182-native-di-python-bindings/evidence/r10-b50-provider-link-closure-20260909.md).
+- **Next step**: rerun the same system-first `-j2` target build, then record a fresh source/link
+  identity and run only a bounded Provider executable smoke before attempting cross-process T016.
+
+- **Follow-up boundary**: the first repair removed the initial six unresolved symbol groups, but
+  the next `-j2` link still stopped on `NativeSignedGrantRequest::sign`,
+  `NativeArtifactGrantIssuer::issue`, and `planNativeRequest`. These map to
+  `NativeArtifactPolicyAuthority.cpp` and `NativeRequestPlanner.cpp`; preserve this second link
+  boundary in the same R10-B50 evidence before retrying.
+
+- **Follow-up boundary 2**: after adding those two translation units, the next link stopped on
+  `NativeOfferAdmission::verify`, `NativeCanonicalPreparationCatalog::bindStateContracts`,
+  `NativePlanProjectionBuilder::build`, `NativeGroupKeyAdmission`, and
+  `NativeGroupProjectionBuilder::build`. The definitions are in five additional native source
+  files recorded in the R10-B50 Changed gate; no Provider process started.
