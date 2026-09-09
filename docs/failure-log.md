@@ -2899,3 +2899,10 @@ are still unobserved.
   root. Exit `2`; no role executed. The output is retained as `smoke-candidate-lib.log` in the same
   raw run directory. The changed gate is to launch from the bundle root and recheck `ldd` selects
   the candidate framework library before interpreting model/session behavior.
+
+- **RPATH retry command boundary**: after adding the target `$ORIGIN/..` RUNPATH, the relink and
+  `ldd` check succeeded, but the first no-`LD_LIBRARY_PATH` retry expanded `$PWD` after changing
+  into the bundle directory and therefore pointed at a nonexistent nested binary path (`rc=127`).
+  This is a harness command construction error; its raw output is in
+  `.codex-tmp/spec182-r10-b53-rpath-retry-20260909/`. The corrected retry fixes the repository
+  root path before `cd` and keeps the bundle cwd only for artifact resolution.

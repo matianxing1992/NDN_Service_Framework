@@ -16,8 +16,10 @@
 
 按 failure-log 登记的改变门禁，候选 build-tree framework library 导出该符号，随后用显式
 `LD_LIBRARY_PATH` 运行；第二次尝试越过 loader 后因从仓库根启动而找不到 manifest 的相对
-artifact 路径（`rc=2`），输出保留在 `smoke-candidate-lib.log`。最终从 bundle 根目录启动，
-并用 `LD_LIBRARY_PATH` 复查 `ldd` 选中候选 framework library。
+artifact 路径（`rc=2`），输出保留在 `smoke-candidate-lib.log`。随后在
+`examples/wscript` 为该 target 增加 `$ORIGIN/..` RUNPATH（源码修复 checkpoint
+`085359eb`），从 bundle 根目录且不设置 `LD_LIBRARY_PATH` 重链并复测，`ldd` 默认选中
+候选 framework library。
 
 ## Coverage matrix
 
@@ -44,21 +46,21 @@ identity 和 bundle-relative artifact contract。五 lane 检查无 P1/P2/P3；�
 env PATH=/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin \
   ./waf -o .codex-tmp/spec182-r4-b2/build build \
   --targets=di-native-plan-onnx-smoke -j2
--> exit 0; 86/86 tasks; elapsed 153.14s
+-> exit 0; 86/86 tasks; elapsed 153.14s; RPATH relink exit 0; elapsed 5.80s
 
-LD_LIBRARY_PATH=.codex-tmp/spec182-r4-b2/build:... \
-  .codex-tmp/spec182-r4-b2/build/examples/di-native-plan-onnx-smoke \
+./.codex-tmp/spec182-r4-b2/build/examples/di-native-plan-onnx-smoke \
   native-execution-plan.json service-manifest.json /Inference/NativeTracer
   (cwd=.codex-tmp/spec174-exact-bundle-gpu-v5)
--> exit 0; elapsed 0.05s
+-> exit 0; elapsed 0.06s (no `LD_LIBRARY_PATH`)
 NDNSF_DI_NATIVE_PLAN_ONNX_SMOKE_OK roles=4 artifacts=4 dependencyObjects=4 encodedBundleOutputs=3 outputBytes=440
 ```
 
 The smoke binary SHA-256 is
 `ed6825008ba23af86c0c158896af42002d2d7b3a2a2025c0553ada7bef29bbbe`; the candidate framework
 library SHA-256 is `e87e27d0f485020088fa428b4bc834a24d742ca560ec87fa7db954003fdc8865`.
-With the explicit library path, `ldd` resolves `libndn-service-framework.so.0.1.0` to the
-candidate build tree and reports no `not found`. Raw logs and result files are under
+The target `$ORIGIN/..` RUNPATH makes `ldd` resolve `libndn-service-framework.so.0.1.0` to the
+candidate build tree without environment injection and reports no `not found`. Raw logs and
+result files are under
 `.codex-tmp/spec182-r10-b53-plan-onnx-smoke-20260909/`.
 
 ## Closure decision
