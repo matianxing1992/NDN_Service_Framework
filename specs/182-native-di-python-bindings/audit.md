@@ -1,8 +1,8 @@
 # Spec182 Design Audit
 
-**Revision**: 22 | **Mode**: source alignment / cross-task convergence
+**Revision**: 23 | **Mode**: source alignment / cross-task convergence
 **Verdict**: DRAFT / PARTIAL; T016 preflight UNQUALIFIED
-**Source**: `1ab9b12a` implementation/docs checkpoint / Experimental
+**Source**: `c8ebfb08` implementation/docs checkpoint / Experimental
 **Evidence**: [current source and dependency baseline](contracts/integrated-baseline.md)
 
 ## Current Findings
@@ -133,6 +133,18 @@ artifact staging、测试注册与 evidence 记录，没有发现新增缺陷。
 integrity/policy violation。该结果只关闭有界的 working-directory/config harness boundary；
 它仍不是多进程 requester/provider transport、maintained caller、I02-I08 或 T016 qualification。
 详见 [R10-B23 evidence](evidence/r10-b23-runner-working-directory-20260909.md)。
+
+### R10-B24 Native Suite Baseline 2026-09-09
+
+在 R10-B23 之后复跑现有 `build-nac182` native binary：`Spec182*` unit 通过 247 个
+case，`Spec182*` integration 通过 2 个 case，具名 `Spec182R4B6RealProviderConversation`
+通过 1 个 case，均无错误。该批没有 native source 变更，因此没有重建；原始日志保存在
+`.codex-tmp/spec182-r10-b24-native-suite-20260909/`。第二个 `vmstat` 采样出现
+`si=35780`、`so=0`，按资源策略记录为换页压力；若下一次构建仍持续换页，应降至 `-j2`。
+
+这只是同源 C++ 局部与本地 integration 基线，不代表 maintained caller、真正跨进程
+requester/provider transport、I02-I08、legacy retirement、no-Python 或 T016 qualification。
+详见 [R10-B24 evidence](evidence/r10-b24-native-suite-baseline-20260909.md)。
 
 ### MiniNDN Owner Context Producer 2026-09-09
 
