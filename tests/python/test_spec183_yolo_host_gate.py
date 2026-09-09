@@ -26,17 +26,71 @@ def write_receipt(tmp_path):
         "sealDigest": "sha256:" + "f" * 64,
     }
     source.write_text(json.dumps(source_body), encoding="utf-8")
+    base = tmp_path / "base.sif"
+    base.write_bytes(b"base")
+    application = tmp_path / "application-manifest.json"
+    application.write_text(json.dumps({"schema": "spec183-external-application-v1"}), encoding="utf-8")
     evidence = {}
     for case, kinds in gate.CASE_EVIDENCE.items():
         for kind in kinds:
             path = tmp_path / (case + "-" + kind + ".json")
-            path.write_text(json.dumps({"case": case, "kind": kind}), encoding="utf-8")
+            request_id = "/example/yolo/run-1/" + case
+            if kind == "lifecycle":
+                milestones = [
+                    "INPUT_REFERENCE_PUBLISHED", "REQUEST_SENT", "ACK_CLOSED",
+                    "GRAPH_READY", "PLACEMENT_DECISION", "ARTIFACTS_READY",
+                    "PLAN_SEALED", "SELECTION_COMMITTED", "PROVIDER_EXECUTION_STARTED",
+                ]
+                if case == "normal":
+                    milestones.append("TERMINAL_RESPONSE")
+                rows = []
+                for sequence, milestone in enumerate(milestones):
+                    row = {"schema": "spec180-yolo-lifecycle-event-v1", "caseId": "Y-B",
+                           "requestId": request_id, "attemptId": "attempt-1",
+                           "sequence": sequence, "milestone": milestone}
+                    if milestone == "TERMINAL_RESPONSE":
+                        row.update(status=True, requestCount=1)
+                    rows.append(json.dumps(row))
+                path.write_text("\n".join(rows) + "\n", encoding="utf-8")
+            elif kind == "execution":
+                rows = []
+                for role in ("BackboneNeck", "DetectShard0", "DetectShard1", "Merge"):
+                    merge = role == "Merge"
+                    rows.append("NDNSF_DI_EXECUTION_EVIDENCE_UPDATE " + json.dumps({
+                        "providerName": "/example/yolo/run-1/" + role,
+                        "requestId": request_id,
+                        "cpuFallbackUsed": "false", "executionCompleted": "true",
+                        "runnerKind": "native-yolo-postprocess" if merge else "onnxruntime-cpu",
+                        "realCompute": "false" if merge else "true",
+                        "loadCompleted": "false" if merge else "true",
+                        "warmupCompleted": "false" if merge else "true"}))
+                path.write_text("\n".join(rows) + "\n", encoding="utf-8")
+            elif kind == "numeric":
+                path.write_text(json.dumps({
+                    "schemaVersion": "spec180-yolo-numerical-v1", "matched": True,
+                    "requestId": request_id, "shape": [1, 50, 6],
+                    "responseDigest": "sha256:" + "1" * 64}), encoding="utf-8")
+            elif kind == "failure":
+                boundary = ("PROVIDER_GRANT_VERIFICATION" if case == "permission-rejection"
+                            else "DEPENDENCY_DATA_MISSING")
+                reason = ("DI_PROTECTED_GRANT_REJECTED: test"
+                          if case == "permission-rejection" else "DEPENDENCY_DATA_MISSING")
+                path.write_text(json.dumps({
+                    "schema": "spec180-negative-evidence-v1", "status": "PASS",
+                    "requestId": request_id, "provider": "/example/yolo/run-1/BackboneNeck",
+                    "boundary": boundary, "reason": reason}), encoding="utf-8")
+            elif kind == "cleanup":
+                path.write_text(json.dumps({
+                    "schema": "minindn-owned-cleanup-v1", "errors": [],
+                    "networkStopped": True,
+                    "children": [{"reaped": True, "forced": False}],
+                    "networkResourceObservations": [{"observation": {"clean": True}}]}), encoding="utf-8")
             evidence[(case, kind)] = {"path": path.name, "bytes": path.stat().st_size,
                                       "sha256": digest(path), "kind": kind}
     cases = []
     for case in gate.CASES:
         cases.append({
-            "case": case, "status": "PASS", "requestCount": 1,
+            "case": case, "runId": "run-1", "status": "PASS", "requestCount": 1,
             "responseStatus": "PASS" if case == "normal" else "REJECTED",
             "success": case == "normal",
             "failureBoundary": None if case == "normal" else (
@@ -50,7 +104,9 @@ def write_receipt(tmp_path):
         "sourceSeal": {"path": str(source), "sha256": digest(source),
                         "sealDigest": source_body["sealDigest"],
                         "sourceRevision": source_body["sourceRevision"]},
-        "applicationName": "/example/yolo/run-1", "providerCount": 4,
+        "runId": "run-1", "baseSifSha256": digest(base),
+        "applicationManifestSha256": digest(application),
+        "applicationName": "/example/yolo", "providerCount": 4,
         "graph": gate.GRAPH, "cases": cases,
     }
 
@@ -107,4 +163,35 @@ def test_yolo_host_gate_rejects_evidence_symlink(tmp_path):
     original.symlink_to(target)
     receipt.write_text(json.dumps(value), encoding="utf-8")
     with pytest.raises(ValueError):
+        gate.validate_yolo_host_gate(receipt, source_seal_path=source)
+
+
+def test_yolo_host_gate_rejects_hash_valid_but_semantically_empty_evidence(tmp_path):
+    source, receipt, value = write_receipt(tmp_path)
+    row = next(item for item in value["cases"][0]["evidence"]
+               if item["kind"] == "numeric")
+    target = tmp_path / row["path"]
+    target.write_text(json.dumps({"case": "normal", "kind": "numeric"}), encoding="utf-8")
+    row["bytes"] = target.stat().st_size
+    row["sha256"] = digest(target)
+    receipt.write_text(json.dumps(value), encoding="utf-8")
+    with pytest.raises(ValueError, match="YOLO_HOST_GATE_NUMERICAL"):
+        gate.validate_yolo_host_gate(receipt, source_seal_path=source)
+
+
+def test_yolo_host_gate_rejects_wrong_negative_boundary(tmp_path):
+    source, receipt, value = write_receipt(tmp_path)
+    row = next(item for item in value["cases"][2]["evidence"]
+               if item["kind"] == "failure")
+    target = tmp_path / row["path"]
+    target.write_text(json.dumps({
+        "schema": "spec180-negative-evidence-v1", "status": "PASS",
+        "requestId": "/example/yolo/run-1/negative-dependency",
+        "provider": "/example/yolo/run-1/Merge",
+        "boundary": "PLACEMENT_DECISION", "reason": "NO_FEASIBLE_CANDIDATE",
+    }), encoding="utf-8")
+    row["bytes"] = target.stat().st_size
+    row["sha256"] = digest(target)
+    receipt.write_text(json.dumps(value), encoding="utf-8")
+    with pytest.raises(ValueError, match="YOLO_HOST_GATE_DEPENDENCY_BOUNDARY"):
         gate.validate_yolo_host_gate(receipt, source_seal_path=source)

@@ -4389,3 +4389,23 @@ containerized provision, and exact-SIF MiniNDN Y-A are the valid evidence for
 this checkpoint; host linker closure remains a separate T008 issue.
 Lesson: do not convert a host import/linker failure into an APP protocol
 failure when the sealed runtime has independently exercised the path.
+
+## 2026-09-09 — Host receipt producer rejected a placement failure as dependency loss
+
+Symptom: the semantic host-gate tests initially rejected the positive fixture
+because it omitted the permission provider and treated the native Merge record
+as an ORT execution.  After those fixture and role rules were corrected, an
+attempt to join real v48 Y-B, v49 Y-N-E, and v49 Y-N-C outputs stopped with
+`HOST_GATE_FAILURE_BOUNDARY`.
+Root cause: Merge is a native postprocess role and must carry
+`realCompute=false`, while the registered Y-N-C mutation fails at
+`PLACEMENT_DECISION/NO_FEASIBLE_CANDIDATE`; Spec183 requires a dependency or
+peer failure after Selection.
+Fix status: the shared validator now checks role-specific execution semantics,
+requires the exact post-Selection dependency boundaries, and the producer
+prevalidates negative selectors before creating a combined log.  The real
+join remains intentionally unqualified until a genuine dependency cutpoint
+run is available.
+Lesson: a passing negative matrix entry is not interchangeable with the
+registered negative-dependency case; preserve the boundary and keep host/SIF
+authorization closed.

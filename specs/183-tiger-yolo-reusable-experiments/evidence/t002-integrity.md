@@ -30,6 +30,29 @@
 
 ## Spec183 dispatch checkpoint (2026-09-07)
 
+## Host semantic gate follow-up (2026-09-09)
+
+The Spec183 host receipt validator is now `tiger-yolo-host-minindn-manifest-v2`.
+It still performs source/file no-follow and digest binding, and additionally
+re-reads the retained lifecycle, numerical, execution, failure, and cleanup
+records.  A normal case must contain the ten ordered lifecycle milestones,
+`matched=true` numerical output with shape `[1,50,6]`, all four role execution
+records bound to the same request/run, and clean owner reaping.  The Merge role
+is accepted only as the native postprocess runner; the three model roles must
+show completed ORT execution.  Permission rejection requires the protected
+grant boundary; dependency rejection requires `DEPENDENCY_DATA_MISSING` or
+`PEER_FAILURE` after Selection.  A hash-valid `{case, kind}` fixture is
+rejected.
+
+`Experiments/TigerCluster/tools/spec183_host_gate.py` is the maintained producer
+for joining one normal, one permission, and one dependency output tree.  It
+revalidates the resulting receipt with the same validator used by the local
+builder and the submit consumer.  Producer/consumer boundary tests and the
+semantic mutation tests pass (`18 passed`).  This closes the N1 implementation
+gap but does not create runtime qualification: the producer intentionally
+rejects the current Y-N-C placement failure because it is not a
+post-Selection dependency failure.
+
 新增 `packaging/ndnsf-di-container/lib/spec183_yolo_host_gate.py`，对
 `tiger-yolo-host-minindn-manifest-v1` 做 fail-closed 校验：固定 workload、应用名、四 Provider、shared-backbone 图、normal/permission-rejection/negative-dependency 三 case、源 seal digest/revision，以及每个 retained evidence 文件的大小/hash/路径/no-follow 绑定。返回值明确标为
 `YOLO_HOST_GATE_COMPONENT_ONLY`，不把 fixture 变成真实 MiniNDN 资格。

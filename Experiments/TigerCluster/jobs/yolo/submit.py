@@ -114,7 +114,25 @@ def _gate_receipt(profile_path: Path, profile: dict, gate: str, *, prepared=None
             if (not source_path.is_absolute()
                     or any(p.is_symlink() for p in (source_path, *source_path.parents))):
                 raise ValueError('HOST_SOURCE_PATH')
-            validated = validate_yolo_host_gate(path, source_seal_path=source_path)
+            # Bind the host execution to the exact layered base and external
+            # application manifest selected by this profile.  The receipt's
+            # own hashes are not accepted as self-authenticating claims.
+            app_ref = profile.get('runtime', {}).get('applicationManifest')
+            expected = {}
+            # Older focused consumer tests intentionally exercise only the
+            # host/native binding.  A production profile carries both layered
+            # references; when present, bind them as additional subjects.
+            inputs_ref = profile.get('release', {}).get('inputs')
+            if isinstance(inputs_ref, dict) and isinstance(app_ref, dict):
+                inputs_path = _file_ref(profile_path, 'inputs', inputs_ref)
+                inputs_plane = _read_plane(inputs_path)
+                base_ref = inputs_plane['files']['baseSif']
+                _file_ref(profile_path, 'applicationManifest', app_ref)
+                expected = {
+                    'expected_base_sif_sha256': base_ref['sha256'],
+                    'expected_application_manifest_sha256': app_ref['sha256'],
+                }
+            validated = validate_yolo_host_gate(path, source_seal_path=source_path, **expected)
             runtime_path = _file_ref(profile_path, 'runtime', profile['release']['runtime'])
             native_ref = _read_plane(runtime_path)['files']['nativeManifest']
             native_path = _file_ref(runtime_path, 'nativeManifest', native_ref)

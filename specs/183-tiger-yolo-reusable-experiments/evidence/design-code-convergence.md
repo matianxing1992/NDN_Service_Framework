@@ -20,6 +20,27 @@ T007.layer复审所有实际消费者后才正式验收新组合。不要为了�
 
 ## Current audit — 2026-09-08
 
+## Follow-up audit — 2026-09-09
+
+The host-gate implementation gap N1 is closed at the code boundary.  The
+shared `spec183_yolo_host_gate.py` validator now interprets lifecycle order,
+request/run binding, numerical shape and match status, role-specific execution
+evidence, exact negative boundaries, and owner network/process cleanup.  The
+Tiger producer joins the three retained output trees and invokes that same
+validator before a receipt can be consumed.  The focused host-gate, builder,
+and producer suite passes with 18 tests.
+
+N2 remains open at the runtime boundary.  Exact-SIF v48 Y-B is a real
+cross-process normal MiniNDN run with ORT CPU execution and numerical match;
+exact-SIF v49 Y-N provides the protected-grant rejection and all seven
+registered mutation results.  The current Y-N-C output is
+`PLACEMENT_DECISION/NO_FEASIBLE_CANDIDATE`, so the producer correctly rejects
+it as a substitute for the required post-Selection
+`DEPENDENCY_DATA_MISSING`/`PEER_FAILURE` record.  The attempted real join
+therefore failed closed and produced no host qualification or build
+authorization.  Verdict remains **BLOCK (HIGH)** until one genuine
+negative-dependency run and one same-campaign source-bound receipt exist.
+
 **Source checkpoint**: `0e22b210`, `TigerClusterExperiments`.
 
 **Verdict**: **BLOCK (HIGH)** — N1/N2 remain; N3 source repair is verified below.
