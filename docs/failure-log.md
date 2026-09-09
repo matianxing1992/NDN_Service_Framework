@@ -3983,3 +3983,31 @@ identity and rerun packaging against the existing incremental Waf cache.
 - Lesson: matrix cases must use path resolution based on the run boundary,
   not a fixed evidence-directory depth; nested negative cases are part of the
   exact application launch surface.
+
+## 2026-09-08: Y-N control cleanup surfaced Controller SIGABRT
+
+- Symptom: v27 completed the Y-N-O request with four validated ACKs, terminal
+  response, and numerical agreement, but cleanup reported Controller exit
+  status `-6` after SIGINT and the matrix stopped at `Y_N_MATRIX_INCOMPLETE:Y-N-O`.
+- Root cause: the Python Controller let `KeyboardInterrupt` escape its serving
+  loop.  Its `finally` path stopped the C++ controller while the interpreter
+  was unwinding, and the exact-SIF process sometimes aborted with
+  `terminate called without an active exception` instead of the expected
+  signal-interrupted status.
+- Fix: make the Controller catch the owner SIGINT as a normal serving-loop
+  exit, then run the existing `finally` shutdown path.  Rebuild the external
+  application bundle from the changed source seal before replaying the matrix.
+- Lesson: application shutdown is part of Spec183 cleanup evidence; a
+  successful request cannot qualify a bundle whose owner signal path is
+  nondeterministic.
+
+## 2026-09-08: YOLO application test lagged the bounded dependency budget
+
+- Symptom: the focused application suite failed because it searched for the
+  old literal `data_v1_no_progress_ms=int(args.timeout_ms),` call form.
+- Root cause: `user.py` now permits an explicit bounded override and falls
+  back to `args.timeout_ms`; the test still encoded the pre-override source
+  spelling.
+- Fix: assert the conditional fallback contract instead of a removed literal.
+- Lesson: source-shape tests for runtime budgets must follow the behavior
+  contract when an explicit override is introduced.

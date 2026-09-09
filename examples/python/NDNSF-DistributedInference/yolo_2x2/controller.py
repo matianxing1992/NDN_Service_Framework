@@ -187,6 +187,11 @@ def main() -> int:
         print("YOLO_2X2_CONTROLLER_REPO_DEPLOYED", args.deploy_to_repo_manifest, flush=True)
         while True:
             time.sleep(3600)
+    except KeyboardInterrupt:
+        # SIGINT is the bounded owner shutdown used by MiniNDN.  Treat it as
+        # a clean serving-loop exit so the C++ controller is stopped from the
+        # normal finally path without surfacing an application traceback.
+        pass
     finally:
         controller.stop()
 

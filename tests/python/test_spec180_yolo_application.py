@@ -44,7 +44,8 @@ def test_yolo_example_has_model_first_ack_driven_entrypoint():
     assert "ack_coverage_roles=()," in source
     assert 'parser.add_argument("--ack-timeout-ms", type=int, default=1500)' in source
     # The dependency fetch budget follows the request's deadline budget.
-    assert "data_v1_no_progress_ms=int(args.timeout_ms)," in ack_helper
+    assert ("data_v1_no_progress_ms=(int(args.timeout_ms) if "
+            "dependency_no_progress_ms is None" in ack_helper)
     assert "NetworkCatalogSnapshotResolver(" in source
     assert "service_user.fetch_signed_app_data" in source
     assert "LifecycleJournal" in source
