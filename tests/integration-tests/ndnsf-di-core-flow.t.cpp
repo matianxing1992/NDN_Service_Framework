@@ -7585,6 +7585,15 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
   BOOST_CHECK_EQUAL(firstJson.at("text").get<std::string>(), "ab");
   const auto record = conversations->find("r4-b6-conversation-001");
   BOOST_REQUIRE(record.has_value());
+  if (nativeConfigQwen) {
+    BOOST_REQUIRE(record->checkpoint.transcript.is_object());
+    BOOST_REQUIRE(record->checkpoint.transcript.contains("tokenizerDigest"));
+    // The persisted transcript must carry the operator runtime contract's
+    // tokenizer identity; model semantics are a separate authority.
+    BOOST_CHECK_EQUAL(record->checkpoint.transcript.at("tokenizerDigest").get<std::string>(),
+                      tokenizerDigest);
+    BOOST_CHECK_NE(tokenizerDigest, model.semanticsDigest);
+  }
   if (alternateProvider) {
     const auto replacementRoleMapDigest = nativePlanningDigest(nativeCanonicalJson(
       NativeJson::array({NativeJson::array({role, alternateProviderName})})));
@@ -7691,6 +7700,11 @@ BOOST_AUTO_TEST_CASE(Spec182R10B37RealProviderNativeStreamRequest)
 BOOST_AUTO_TEST_CASE(Spec182R10B73NativeConfigQwenRealProviderStream)
 {
   runR4B6RealProviderConversationCase(false, false, false, false, false, true);
+}
+
+BOOST_AUTO_TEST_CASE(Spec182R10B80NativeConfigQwenRealProviderConversation)
+{
+  runR4B6RealProviderConversationCase(false, false, false, false, true, true);
 }
 
 BOOST_AUTO_TEST_CASE(Spec175NativeTinyOnnxI01OneProvider)
