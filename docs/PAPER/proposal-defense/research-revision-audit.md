@@ -1,5 +1,16 @@
 # Research-first Proposal Revision and Evidence Audit
 
+## 2026-09-10 Challenge Terminology Clarification
+
+按用户指出的术语歧义，将摘要中的 `verification of responses to encrypted challenges`
+改为 `ABE-backed challenge verification`，避免与服务结果 `Response Data` 混淆。
+同步两份英文及两份中文入口。NDN Slides Review 用于检查协议对象名称，ARS 摘要
+准则用于保持中英文含义一致；这是措辞修正，不改变挑战核验机制。
+正文/slides 中明确位于 ACK 或 Selection 的 challenge 说明及标准术语
+`challenge-response` 保留，不进行无差别替换。四份正文 PDF 重建与摘要页检查见
+validation 的 `challenge_terminology_revision`；本轮不重建未改动的 slides/PPTX。
+原始记录：`.codex-tmp/proposal-challenge-term-20260910/`。下一步研究证据要求不变。
+
 ## 2026-09-10 Full Language and Logic Revision
 
 最新逐项记录见 [language review](language-review-20260910.md)。摘要、正文和 slides
