@@ -52,6 +52,57 @@ class RequestRecoveryError(RuntimeError):
     """Typed fail-closed request recovery error."""
 
 
+class NativeRequestHandle:
+    """Thin compatibility handle over the C++ native inference handle.
+
+    The native handle remains the owner of request state, cancellation and
+    result bytes.  This facade only preserves the historical ``response()`` /
+    ``result()`` shape used by generic application callers; it does not expose
+    planner-only fields such as a sealed plan or Provider map.
+    """
+
+    def __init__(self, native_handle, *, timeout_ms: int):
+        self._native_handle = native_handle
+        self._timeout_ms = int(timeout_ms)
+
+    @property
+    def native_handle(self):
+        return self._native_handle
+
+    @property
+    def request_id(self) -> str:
+        return str(getattr(self._native_handle, "request_id", ""))
+
+    @property
+    def application_request_id(self) -> str:
+        return str(getattr(self._native_handle, "application_request_id", ""))
+
+    @property
+    def status(self):
+        return getattr(self._native_handle, "status_name", "UNKNOWN")
+
+    def _wait_timeout(self, timeout_ms: int | None) -> int:
+        value = self._timeout_ms if timeout_ms is None else int(timeout_ms)
+        if value < 0:
+            raise ValueError("native result timeout_ms must be nonnegative")
+        return value
+
+    def result(self, timeout_ms: int | None = None) -> InferenceResult:
+        native_result = self._native_handle.result(self._wait_timeout(timeout_ms))
+        return InferenceResult(
+            True,
+            bytes(native_result.payload),
+            "",
+            self.request_id,
+        )
+
+    def response(self, timeout_ms: int | None = None) -> InferenceResult:
+        return self.result(timeout_ms)
+
+    def cancel(self) -> None:
+        self._native_handle.cancel()
+
+
 class APPClient:
     def __init__(self, journal: RuntimeJournal, *, executor=None, engine=None,
                  observers=None, intent_coordinator=None, network_client=None,
@@ -639,6 +690,106 @@ class APPClient:
             handle.observe(on_event)
         return handle
 
+    def _native_request_task(self, *, model, task, input, timeout_ms: int,
+                             options=None, strategy=None,
+                             request_id: str = ""):
+        """Route one validated ``ApplicationInput`` through the native owner.
+
+        This compatibility seam preserves the generic API shape while the
+        native client owns planning, authorization, transport and result
+        state.  Incomplete configuration or identity drift fails closed; the
+        automatic planner is never an implicit fallback after this seam is
+        selected.
+        """
+        from ..adapters import InputTransportMode
+        from .placement import TaskOptions
+
+        native_model = getattr(self, "_native_model", None)
+        native_splitter = getattr(self, "_native_splitter", None)
+        native_runtime = getattr(self, "_native_runtime", None)
+        if native_model is None or native_splitter is None or native_runtime is None:
+            raise RuntimeError("native requester configuration is incomplete")
+        if strategy is not None:
+            raise ValueError(
+                "native generic task does not accept a Python placement strategy")
+        timeout_ms = int(timeout_ms)
+        if timeout_ms <= 1:
+            raise ValueError(
+                "native generic task timeout_ms must be greater than one")
+
+        native_adapter = getattr(native_model, "adapter", None)
+        for input_name, native_name in (
+                ("input_schema_digest", "input_schema_digest"),
+                ("options_schema_digest", "options_schema_digest")):
+            expected = str(getattr(input, input_name, "") or "")
+            actual = str(getattr(native_adapter, native_name, "") or "")
+            if expected and actual and expected != actual:
+                raise RuntimeError("NATIVE_INPUT_SCHEMA_IDENTITY_MISMATCH")
+
+        # Compatibility model/task objects must describe the operator-pinned
+        # native catalog exactly.  Never silently replace a caller identity
+        # with whichever model happens to be loaded in the native requester.
+        for python_name, native_name in (
+                ("model_name", "model_name"),
+                ("content_digest", "content_digest"),
+                ("semantics_digest", "semantics_digest"),
+                ("source_revision", "source_revision")):
+            expected = str(getattr(model, python_name, "") or "")
+            actual = str(getattr(native_model, native_name, "") or "")
+            if expected and actual and expected != actual:
+                raise RuntimeError("NATIVE_MODEL_IDENTITY_MISMATCH")
+
+        task_name = str(getattr(task, "task_name", "") or "")
+        if not task_name or task_name != input.task_name:
+            raise RuntimeError("NATIVE_TASK_IDENTITY_MISMATCH")
+        runtime_task_name = str(
+            getattr(getattr(native_runtime, "contract", None), "task_name", "")
+            or "")
+        if runtime_task_name and runtime_task_name != input.task_name:
+            raise RuntimeError("NATIVE_TASK_IDENTITY_MISMATCH")
+        runtime_contract = getattr(native_runtime, "contract", None)
+        for task_name, contract_name in (
+                ("adapter_name", "adapter_name"),
+                ("adapter_descriptor_digest", "adapter_descriptor_digest"),
+                ("adapter_composition_digest", "adapter_composition_digest"),
+                ("task_descriptor_digest", "task_descriptor_digest")):
+            expected = str(getattr(task, task_name, "") or "")
+            actual = str(getattr(runtime_contract, contract_name, "") or "")
+            if expected and actual and expected != actual:
+                raise RuntimeError("NATIVE_TASK_IDENTITY_MISMATCH")
+
+        if options is not None:
+            if not isinstance(options, TaskOptions):
+                raise TypeError("generic request options must be TaskOptions")
+            if (options.schema_digest != input.options_schema_digest or
+                    bytes(options.payload) != bytes(input.options)):
+                raise RuntimeError("NATIVE_OPTIONS_IDENTITY_MISMATCH")
+
+        from ndnsf import _ndnsf
+        native_options = _ndnsf.NativeRequestOptions()
+        native_options.timeout_ms = timeout_ms
+        native_options.ack_timeout_ms = max(1, min(5_000, timeout_ms // 2))
+        native_options.task_name = input.task_name
+        effective_request_id = str(request_id or ("ndnsf-di-" + uuid.uuid4().hex))
+
+        if input.transport_mode is InputTransportMode.REPO_REF:
+            native_handle = self.request_native_reference(
+                input.repo_reference,
+                options=native_options,
+                task_name=input.task_name,
+                application_options=input.options,
+                request_id=effective_request_id,
+            )
+        else:
+            native_handle = self.request_native_payload(
+                input.payload,
+                options=native_options,
+                task_name=input.task_name,
+                application_options=input.options,
+                request_id=effective_request_id,
+            )
+        return NativeRequestHandle(native_handle, timeout_ms=timeout_ms)
+
     def request(
         self,
         *,
@@ -769,6 +920,16 @@ class APPClient:
                 f"manifestDigest={reference.manifest_digest}",
                 f"plaintextSize={reference.plaintext_size}",
                 flush=True,
+            )
+        if getattr(self, "_native_client", None) is not None:
+            return self._native_request_task(
+                model=model,
+                task=task,
+                input=input,
+                timeout_ms=int(timeout_ms),
+                options=options,
+                strategy=strategy,
+                request_id=request_id,
             )
         effective_request_id = str(request_id or ("ndnsf-di-" + uuid.uuid4().hex))
         return self.request(
@@ -2048,6 +2209,16 @@ class InferenceClient:
         not accept Provider lists, deployment records, or role assignments;
         those remain post-ACK coordinator decisions.
         """
+        if getattr(self._core, "native_client", None) is not None:
+            return self._core.request_task(
+                model=model,
+                task=task,
+                input=input,
+                timeout_ms=int(timeout_ms),
+                options=options,
+                strategy=strategy,
+                request_id=request_id,
+            )
         if self._core._automatic_planner is None:
             raise RuntimeError(
                 "model-first request requires an AutomaticPlanningCoordinator")

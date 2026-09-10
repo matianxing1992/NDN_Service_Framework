@@ -357,6 +357,151 @@ class AppSdkCompatibilityTest(unittest.TestCase):
                 "model", "input", "split", "placement", "options")
             planner.request.assert_not_called()
 
+    def test_generic_task_native_route_preserves_input_identity_and_handle_shape(self):
+        from ndnsf_distributed_inference.adapters import ApplicationInput
+        from ndnsf_distributed_inference.app_sdk.client import APPClient as CoreAPPClient
+        from ndnsf_distributed_inference.app_sdk.placement import InferenceTaskRef, TaskOptions
+        import ndnsf
+
+        digest = lambda char: "sha256:" + char * 64
+        input_value = ApplicationInput.from_inline(
+            task_name="object-detection",
+            input_schema_digest=digest("a"),
+            options_schema_digest=digest("b"),
+            payload=b"encoded-input",
+            options=b"{}",
+        )
+        task = InferenceTaskRef(
+            task_name="object-detection",
+            adapter_name="yolo",
+            adapter_descriptor_digest=digest("c"),
+            adapter_composition_digest=digest("d"),
+            task_descriptor_digest=digest("e"),
+        )
+        model = SimpleNamespace(
+            model_name="yolo26n",
+            content_digest=digest("f"),
+            semantics_digest=digest("1"),
+            source_revision="rev-1",
+        )
+        native_model = SimpleNamespace(
+            model_name="yolo26n",
+            content_digest=digest("f"),
+            semantics_digest=digest("1"),
+            source_revision="rev-1",
+            adapter=SimpleNamespace(
+                input_schema_digest=digest("a"),
+                options_schema_digest=digest("b"),
+            ),
+        )
+
+        class FakeOptions:
+            def __init__(self):
+                self.timeout_ms = 30000
+                self.ack_timeout_ms = 5000
+                self.task_name = ""
+                self.output_mode = "FULL"
+                self.application_request_id = ""
+
+        class FakeInput:
+            def __init__(self):
+                self.task_name = ""
+                self.input_schema_digest = ""
+                self.options_schema_digest = ""
+                self.payload = b""
+                self.options = b""
+                self.transport_mode = "inline"
+                self.repository_reference = ""
+
+        class FakePlacement:
+            pass
+
+        native_result = SimpleNamespace(payload=b"native-result")
+        native_handle = SimpleNamespace(
+            request_id="/NDNSF/DI/REQUEST/test-1",
+            application_request_id="compat-request",
+            status_name="SUCCEEDED",
+            result=mock.Mock(return_value=native_result),
+            cancel=mock.Mock(),
+        )
+        native = SimpleNamespace(request=mock.Mock(return_value=native_handle))
+        planner = SimpleNamespace(request=mock.Mock())
+        with tempfile.TemporaryDirectory() as state_root:
+            client = CoreAPPClient(
+                RuntimeJournal.for_test(state_root, "native"),
+                automatic_planner=planner,
+                native_client=native,
+            )
+            client._native_model = native_model
+            client._native_runtime = SimpleNamespace(
+                contract=SimpleNamespace(task_name="object-detection"))
+            client._native_splitter = "split"
+            fake_ndnsf = SimpleNamespace(
+                NativeRequestOptions=FakeOptions,
+                NativeApplicationInput=FakeInput,
+                NativePreSplitFirstPlacement=FakePlacement,
+            )
+            with mock.patch.object(ndnsf, "_ndnsf", fake_ndnsf):
+                returned = client.request_task(
+                    model=model,
+                    task=task,
+                    input=input_value,
+                    timeout_ms=4000,
+                    options=TaskOptions(digest("b"), b"{}"),
+                    request_id="compat-request",
+                )
+
+        self.assertEqual(returned.request_id, "/NDNSF/DI/REQUEST/test-1")
+        self.assertEqual(returned.response(1000).payload, b"native-result")
+        planner.request.assert_not_called()
+        native.request.assert_called_once()
+        native_input = native.request.call_args.args[1]
+        native_options = native.request.call_args.args[4]
+        self.assertEqual(native_input.task_name, "object-detection")
+        self.assertEqual(native_input.payload, b"encoded-input")
+        self.assertEqual(native_input.options, b"{}")
+        self.assertEqual(native_options.timeout_ms, 4000)
+        self.assertEqual(native_options.ack_timeout_ms, 2000)
+        self.assertEqual(native_options.application_request_id, "compat-request")
+
+    def test_generic_task_native_route_rejects_model_or_option_drift(self):
+        from ndnsf_distributed_inference.adapters import ApplicationInput
+        from ndnsf_distributed_inference.app_sdk.client import APPClient as CoreAPPClient
+        from ndnsf_distributed_inference.app_sdk.placement import InferenceTaskRef, TaskOptions
+
+        digest = lambda char: "sha256:" + char * 64
+        value = ApplicationInput.from_inline(
+            task_name="task",
+            input_schema_digest=digest("a"),
+            options_schema_digest=digest("b"), payload=b"x", options=b"{}")
+        task = InferenceTaskRef(
+            task_name="task", adapter_name="adapter",
+            adapter_descriptor_digest=digest("c"),
+            adapter_composition_digest=digest("d"),
+            task_descriptor_digest=digest("e"))
+        with tempfile.TemporaryDirectory() as state_root:
+            client = CoreAPPClient(
+                RuntimeJournal.for_test(state_root, "native"),
+                automatic_planner=SimpleNamespace(request=mock.Mock()),
+                native_client=object(),
+            )
+            client._native_model = SimpleNamespace(
+                model_name="native-model", content_digest=digest("f"),
+                semantics_digest=digest("1"), source_revision="rev",
+                adapter=SimpleNamespace(
+                    input_schema_digest=digest("a"),
+                    options_schema_digest=digest("b")))
+            client._native_runtime = SimpleNamespace(
+                contract=SimpleNamespace(task_name="task"))
+            client._native_splitter = object()
+            with self.assertRaisesRegex(RuntimeError, "NATIVE_MODEL_IDENTITY_MISMATCH"):
+                client.request_task(
+                    model=SimpleNamespace(
+                        model_name="other-model", content_digest=digest("f"),
+                        semantics_digest=digest("1"), source_revision="rev"),
+                    task=task, input=value, timeout_ms=1000,
+                    options=TaskOptions(digest("b"), b"{}"))
+
     def test_app_client_constructor_resolves_canonical_engine_and_defaults(self):
         client = RuntimeAPPClient(object(), object())
 
