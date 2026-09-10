@@ -1,5 +1,11 @@
 # 修订记录
 
+## TG-02 Native-First Execution · 2026-09-10
+
+目标设计补充独立 artifact authority、真实 C++ 跨进程链路先于调用方迁移、
+C++ 行为测试先于 Python wrapper checks。关联 Spec182 R11-B1 至 B9；状态 PLANNED。
+当前实现/API 快照与冻结目标 API 不变，本次不计产品资格进展。
+
 ## R3 图解补充 · 2026-09-08
 
 新增四模块图解章，两份 PDF 各 9 个视图：模块依赖、Core/DI/Repo/UAV 核心对象关系、

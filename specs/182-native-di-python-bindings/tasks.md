@@ -6,6 +6,26 @@
 
 ## Execution Progress
 
+### Native-First Dispatch 2026-09-10
+
+剩余调度权威为 [N1--N5 / R11 cards](contracts/native-first-execution.md)。下一项 R11-B1：
+先冻结独立 authority 端口/配置并移除 requester 私钥边界；随后 R11-B2 完成真实 C++
+跨进程 unary。不得在 N1--N3 通过前以旧调用方批量迁移、Python 数量或全仓库扫描
+代替原生出口。已有局部 PASS 及下面历史记录保留，父任务不因本轮文档修订升级。
+
+| Unit / Details | Status | Depends | Evidence / Remaining | Updated |
+| --- | --- | --- | --- | --- |
+| [D-NATIVE-FIRST Replan](evidence/native-first-replan-20260910.md) | DONE | User execution-order decision | 文档依赖/链接、旧勾选状态、11/11 workflow 同步及双 PDF 构建检查通过；产品 NOT_RUN | 2026-09-10 |
+| [R11-B1 Independent Authority](contracts/native-first-execution.md#dispatch-cards) | NOT_STARTED | T001 valid closure; existing T005 implementation | T005 新硬门：端口/配置冻结、独立签发密钥 owner、C++ grant 正反例；requester 无私钥/本地 issuer | 2026-09-10 |
+| [R11-B2 Native Unary Process](contracts/native-first-execution.md#dispatch-cards) | NOT_STARTED | R11-B1; existing T008/T009/T010 implementation | 独立 DI_NativeRequester / authority / di-native-provider；真实 ACK/Selection/handler/Response 和数值 oracle | 2026-09-10 |
+| [R11-B3 Native Stream Process](contracts/native-first-execution.md#dispatch-cards) | NOT_STARTED | R11-B2 | 同一生产链的有序事件、final、gap/timeout/重复/错 generation | 2026-09-10 |
+| [R11-B4 Native Continuation Process](contracts/native-first-execution.md#dispatch-cards) | NOT_STARTED | R11-B3 | 两轮 FULL_CONTEXT→APPEND_DELTA、真实 receipt/control/journal、错 parent | 2026-09-10 |
+| [R11-B5 Native Recovery Process](contracts/native-first-execution.md#dispatch-cards) | NOT_STARTED | R11-B4 | 真实中断/重启与状态恢复或明确拒绝，无重复提交 | 2026-09-10 |
+| [R11-B6 Native Replacement Process](contracts/native-first-execution.md#dispatch-cards) | NOT_STARTED | R11-B5 | 第二独立 Provider 成功替换、旧 attempt fencing、无候选失败 | 2026-09-10 |
+| [R11-B7 Native Cleanup Process](contracts/native-first-execution.md#dispatch-cards) | NOT_STARTED | R11-B6 | 终态/取消/超时/替换后 drain、secret 清理及共享服务隔离 | 2026-09-10 |
+| [R11-B8 Maintained Callers](contracts/native-first-execution.md#dispatch-cards) | NOT_STARTED | R11-B7; corresponding T012 ABI | 原 16 callers 按组分批；先 C++ 对照，再 wrapper/兼容/旧路径零使用 | 2026-09-10 |
+| [R11-B9 Native Closure](contracts/native-first-execution.md#dispatch-cards) | NOT_STARTED | R11-B8 | T014 no-Python/依赖闭包工具 → T015 → T016 → T017；最终资格未开始 | 2026-09-10 |
+
 文档旁路记录（2026-09-10，DOCUMENT PASS）：Proposal／slides 收敛为 DNMP-inspired
 授权加配套加密与 NDNSF ABE-backed 两种设计。正文与 slides 六入口及两份讲稿构建
 通过；修正 PPTX 输入路径后，38 页可编辑文本与 notes、重导出截图、全文残留检查

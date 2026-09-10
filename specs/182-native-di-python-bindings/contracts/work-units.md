@@ -16,8 +16,8 @@ runner 调用见 proof-design Revision 7），实现按冻结身份执行。
 成功/失败/取消等适用用法随实现维护。普通局部helper不改变契约时无需额外设计审批。
 
 执行顺序和短记录统一见 [validation workflow](pre-test-static-review.md)。
-T002--T014只做实现、静态审查、相关unit及必要构建，任务[x]仅表示这些完成。
-各PO的真实跨组件/跨进程和实验义务一律由T016关闭；本文件LocalChecks不替代完整PO。
+T002--T014 按 [native-first order](native-first-execution.md) 逐批静态审查后运行相应 C++ unit/integration/process tests，再做 Python wrapper checks。
+N1--N3 跨进程出口是迁移前硬门；任务 [x] 须满足本卡实际行为验收。T016 保留全部 PO 最终资格，本文件 LocalChecks 不替代完整 PO。
 集成用例与harness随所属任务编写注册；不能只登记将来写测试的TODO。
 具体命令与测试路径见 [test inventory](proof-design.md#planned-test-and-build-inventory)；
 unit/integration按实际调用边界分类，不按文件名或smoke标签分类。
@@ -53,7 +53,7 @@ T001 的 FinalProof PO-012（交付身份）与全部行为证据仍由 T016/T01
 - **Changes**: NativeInferenceClient公开头、CD-009构建/pc及安装链接consumer；request完整实现由T010负责。
 - **ForbiddenChanges**: 复制一份 DI 实现进 extension；以 stub 返回成功冒充完整请求。
 - **LocalChecks**: 必要编译/安装/链接检查及已有runtime接口单测；完整request/isolation在T016。
-- **FinalProof**: PO-001 的 installed-library L0 子门；完整请求和 isolation 由 T010/T014/T016 收口。 本任务只完成局部单测；其余运行证据由T016统一产生。
+- **FinalProof**: PO-001 的 installed-library L0 子门；完整请求和 isolation 由 T010/T014/T016 收口。 本任务按所属 native-first 阶段完成局部 C++ 行为出口；T016 负责完整 PO 资格。
 
 ## T003 Native Split and Placement Decisions
 
@@ -62,7 +62,7 @@ T001 的 FinalProof PO-012（交付身份）与全部行为证据仍由 T016/T01
 - **Changes**: NativePlanning、NativeQwenPlanner、NativeYoloPlanner 声明/源和 di-native-planning
 - **ForbiddenChanges**: Python callback；has_model 代替 exact residency；在 Core 写模型分支。
 - **LocalChecks**: 固定小图cover、budget/device/lease/ref排序及非法向量单测；单元级既定检错。
-- **FinalProof**: PO-002。 本任务只完成局部单测；其余运行证据由T016统一产生。
+- **FinalProof**: PO-002。 本任务按所属 native-first 阶段完成局部 C++ 行为出口；T016 负责完整 PO 资格。
 
 ## T004 Canonical Native Plan Sealing
 
@@ -71,16 +71,16 @@ T001 的 FinalProof PO-012（交付身份）与全部行为证据仍由 T016/T01
 - **Changes**: NativePlanSealer 与 NativeExecutionPlanJson 头/源，di-native-plan-sealer
 - **ForbiddenChanges**: 修改 wire/schema；重生成 oracle 掩盖差异；移除 Provider 独立校验。
 - **LocalChecks**: canonical JSON/签名字节、非法投影/endpoint/ACK摘要单测；真实Core commit与Provider parser协作在T016。
-- **FinalProof**: PO-003。 本任务只完成局部单测；其余运行证据由T016统一产生。
+- **FinalProof**: PO-003。 本任务按所属 native-first 阶段完成局部 C++ 行为出口；T016 负责完整 PO 资格。
 
 ## T005 Native Requester Grant Path
 
 - **Outcome**: 原生 requester 签名/申请/发布 grant，实际 Provider 验证并消费密钥。
 - **Design**: FR-005; CD-004; INV-001,INV-003,INV-004,INV-005; FLOW-001, FLOW-002。
 - **Changes**: NativeGrantClient、NativeArtifactPolicyAuthority 头/源和 di-native-requester-grant
-- **ForbiddenChanges**: 新网络权威服务；自写密码算法；保护路径 fallback plaintext。
-- **LocalChecks**: grant构造、签名/原因码、wrong-key/recipient/expiry单测；真实authority publication/fetch及Provider消费在T016。
-- **FinalProof**: PO-004。 本任务只完成局部单测；其余运行证据由T016统一产生。
+- **ForbiddenChanges**: requester 持有 authority 签发私钥/进程内自签 fallback；平行 DI 协议；自写密码算法；保护路径 fallback plaintext。
+- **LocalChecks**: R11-B1 独立 authority 配置/密钥隔离、签发及真实 grant 验证的 C++ 正反例；R11-B2 验证 Provider 消费；保持 T016 全面覆盖。
+- **FinalProof**: PO-004。 本任务按所属 native-first 阶段完成局部 C++ 行为出口；T016 负责完整 PO 资格。
 
 ## T006 Native Cold ONNX Assembly
 
@@ -89,7 +89,7 @@ T001 的 FinalProof PO-012（交付身份）与全部行为证据仍由 T016/T01
 - **Changes**: NativeCanonicalOnnxAssembler、NativeOnnxRecipeAssembler、NativeOnnxAssemblyWorker头/源、DI_NativeOnnxAssemblyWorker.cpp及Waf安装目标、di-native-onnx-recipe；精确OA函数/类型/协议按[native ONNX assembly design](native-onnx-assembly-design.md)。
 - **ForbiddenChanges**: 全部提前离线切分；临时明文绕过授权；改 recipe digest。
 - **LocalChecks**: 固定recipe/identity/manifest字节、inline/external/local function及错误输入；worker framing/取消状态机纯unit与必要安装链接属于本任务；真实worker子进程cancel/超时/crash/partial frame和Selection后Provider装配由T016执行，T006必须编写注册这些用例。
-- **FinalProof**: PO-005。 本任务只完成局部单测；其余运行证据由T016统一产生。
+- **FinalProof**: PO-005。 本任务按所属 native-first 阶段完成局部 C++ 行为出口；T016 负责完整 PO 资格。
 
 ## T007 Native Tokenizer Execution
 
@@ -98,7 +98,7 @@ T001 的 FinalProof PO-012（交付身份）与全部行为证据仍由 T016/T01
 - **Changes**: NativeTokenizer、NativeStandaloneTokenizer 头/源和 decoder factory，di-native-tokenizer
 - **ForbiddenChanges**: 仍调用 Python module；只返回 token IDs；每 token fork helper。
 - **LocalChecks**: Unicode/special/byte-fallback/digest encode/decode单测；完整adapter请求和进程依赖隔离在T016。
-- **FinalProof**: PO-006。 本任务只完成局部单测；其余运行证据由T016统一产生。
+- **FinalProof**: PO-006。 本任务按所属 native-first 阶段完成局部 C++ 行为出口；T016 负责完整 PO 资格。
 
 ## T008 Native Request Preparation and Admission
 
@@ -107,7 +107,7 @@ T001 的 FinalProof PO-012（交付身份）与全部行为证据仍由 T016/T01
 - **Changes**: 4 个新增生产文件及已列 adapter 接线，约 400--900 行
 - **ForbiddenChanges**: caller trusted=true、策略自行 I/O、离线预生成结果替代 runtime、提前角色装配。
 - **LocalChecks**: 输入/工件名称绑定、ACK policy与provenance单测；真实publication及准备/准入协作在T016。
-- **FinalProof**: PO-013。 本任务只完成局部单测；其余运行证据由T016统一产生。
+- **FinalProof**: PO-013。 本任务按所属 native-first 阶段完成局部 C++ 行为出口；T016 负责完整 PO 资格。
 
 ## T009 Shared Native Provider Host
 
@@ -116,7 +116,7 @@ T001 的 FinalProof PO-012（交付身份）与全部行为证据仍由 T016/T01
 - **Changes**: NativeInferenceProvider头/源与DI_NativeProviderExecutable接线，删除重复宿主逻辑；完整提取ACK/lease/readiness/权限与runtime.handler，范围及注册寿命缺口见[CD-014 source boundary](runtime-boundaries.md#current-registration-boundary)。O-004关闭前不得实施。
 - **ForbiddenChanges**: 重写 Provider runtime、把管理权限合并进 serving facade、销毁共享 Face、Python runner trampoline。允许的Core扩展仅限[lifecycle contract](native-provider-lifecycle-design.md#registration-generation-decision)的scoped registration和本地代次fence；完整设计关闭后方可实现，不增加DI wire知识。
 - **LocalChecks**: host配置、重复注册、stop/共享资源所有权单测；真实NFD注册/ACK/Selection及多入口协作在T016。
-- **FinalProof**: PO-014。 本任务只完成局部单测；其余运行证据由T016统一产生。
+- **FinalProof**: PO-014。 本任务按所属 native-first 阶段完成局部 C++ 行为出口；T016 负责完整 PO 资格。
 
 ## T010 Complete Native Request Lifecycle
 
@@ -124,8 +124,8 @@ T001 的 FinalProof PO-012（交付身份）与全部行为证据仍由 T016/T01
 - **Design**: FR-001,FR-002,FR-008; CD-001,CD-013,CD-014; INV-001,INV-002,INV-003,INV-005; FLOW-001, FLOW-002。
 - **Changes**: NativeInferenceClient 头/源和 DI_NativeRequester.cpp，di-native-request；NativeInferenceOperation的stream accept/replacement/final校验按[token stream recovery](native-token-stream-design.md#requester-acceptance-and-recovery-resolution)实现。
 - **ForbiddenChanges**: 在 Face 线程阻塞规划或 result；以低层 preplanned 调用代替完整 model request。
-- **LocalChecks**: client状态机、cancel/deadline/late callback单测；完整真实Core/Provider请求在T016。
-- **FinalProof**: PO-001,PO-003,PO-007。 本任务只完成局部单测；其余运行证据由T016统一产生。
+- **LocalChecks**: R11-B2 的独立 requester/provider protected unary，真实 ACK/Selection/handler/Response 和独立数值 oracle；R11-B3 stream；C++ 状态机负例及 T016 全面覆盖保留。
+- **FinalProof**: PO-001,PO-003,PO-007。 本任务按所属 native-first 阶段完成局部 C++ 行为出口；T016 负责完整 PO 资格。
 
 ## T011 Native Conversation Continuation
 
@@ -133,8 +133,8 @@ T001 的 FinalProof PO-012（交付身份）与全部行为证据仍由 T016/T01
 - **Design**: FR-008,FR-016; CD-007; INV-003,INV-004,INV-005; FLOW-001, FLOW-003。
 - **Changes**: NativeConversationCoordinator 头/源及 NativeInferenceClient 接线，di-native-conversation；现有NativeEpochCoordinator私有sampleToken按[generation contract](native-generation-design.md)修复采样差异，不新增生成runtime。
 - **ForbiddenChanges**: 新生成运行时；Python journal authority；悄悄丢弃旧会话格式。
-- **LocalChecks**: journal/lineage、prefix、cancel、wrong-parent、replacement状态转换单测；真实两轮续接在T016。
-- **FinalProof**: PO-007,PO-008。 本任务只完成局部单测；其余运行证据由T016统一产生。
+- **LocalChecks**: R11-B4--B7 同一 C++ 原生跨进程链的 continuation/recovery/replacement/cleanup 正反例；journal/lineage/prefix/错 parent 及原状态单测保留。
+- **FinalProof**: PO-007,PO-008。 本任务按所属 native-first 阶段完成局部 C++ 行为出口；T016 负责完整 PO 资格。
 
 ## T012 Thin Python Native Bindings
 
@@ -143,7 +143,7 @@ T001 的 FinalProof PO-012（交付身份）与全部行为证据仍由 T016/T01
 - **Changes**: di_bindings.cpp、_ndnsf.cpp、setup.py 和五个已列 Python 导出/入口，test_spec182_native_bindings
 - **ForbiddenChanges**: 重新编译复制 DI 源；Python override；重新计算计划/判定成功。
 - **LocalChecks**: 绑定参数/异常/生命周期映射及禁止callback单测、必要同库链接检查；真实C++/Python请求一致性在T016。
-- **FinalProof**: PO-009。 本任务只完成局部单测；其余运行证据由T016统一产生。
+- **FinalProof**: PO-009。 本任务按所属 native-first 阶段完成局部 C++ 行为出口；T016 负责完整 PO 资格。
 
 ## T013 Default Route and Legacy Retirement
 
@@ -151,8 +151,8 @@ T001 的 FinalProof PO-012（交付身份）与全部行为证据仍由 T016/T01
 - **Design**: FR-011,FR-016; CD-010; INV-002,INV-004,INV-005,INV-007; FLOW-001, FLOW-002。
 - **Changes**: CD-010 全部列明 caller/runners 和旧路径，test_spec182_legacy_exclusion
 - **ForbiddenChanges**: 批量删除未知 consumers；移动算法到工具包后继续默认调用；双默认。
-- **LocalChecks**: 调用清单、默认路由和legacy排除逻辑单测；阻断旧模块后的真实maintained callers运行在T016。
-- **FinalProof**: PO-010。 本任务只完成局部单测；其余运行证据由T016统一产生。
+- **LocalChecks**: R11-B7 通过后，R11-B8 按原 16 caller 分组迁移并检查真实入口、同库转发和 legacy 零使用；对应 C++ 行为先通过，再做 Python checks，完整排除资格仍归 T016。
+- **FinalProof**: PO-010。 本任务按所属 native-first 阶段完成局部 C++ 行为出口；T016 负责完整 PO 资格。
 
 ## T014 Runtime Dependency Exclusion Gate
 
@@ -162,7 +162,7 @@ T001 的 FinalProof PO-012（交付身份）与全部行为证据仍由 T016/T01
 - 具体函数/内部状态/manifest字段与I01--I08 selector按[native isolation design](native-isolation-design.md)执行；复用同一runner/collector，不建立第二份判定逻辑。
 - **ForbiddenChanges**: 只看 PATH/字符串就 PASS；隐藏 Python 服务；混用源/依赖身份。
 - **LocalChecks**: collector判定、manifest和隔离gate解析逻辑单测，编写并注册所有真实反例；warm-only/rename-helper/embedded-libpython与隔离运行均在T016。
-- **FinalProof**: PO-001,PO-010,PO-012。 本任务只完成局部单测；其余运行证据由T016统一产生。
+- **FinalProof**: PO-001,PO-010,PO-012。 本任务按所属 native-first 阶段完成局部 C++ 行为出口；T016 负责完整 PO 资格。
 
 ## T015 Design-code Convergence Audit
 

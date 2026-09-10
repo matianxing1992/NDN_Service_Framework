@@ -1,6 +1,6 @@
 # Proof Design
 
-**Revision**: 7 | **Status**: planned; behavioral verification NOT_RUN
+**Revision**: 8 | **Status**: planned; behavioral verification NOT_RUN
 本契约定义将来证明，不记录虚构测试结果。source review 不等于行为通过。
 Revision 7 由 T001-C（2026-09-07）冻结实际 runner/build 身份、L0 命令与每卡
 planned suite/case selector，总表见 [case-manifest](../../../tests/fixtures/spec182/case-manifest.json)；
@@ -51,16 +51,16 @@ frozen 不改写本契约的 planned 性质，所有命令与用例在对应实�
 执行与记录仅定义于 [validation workflow](pre-test-static-review.md)，不逐层新增报告。
 - L0：必要公共头/库/consumer编译、安装链接和依赖检查，不证明完整请求。
 - L1：各实现任务的编码、策略、资源/状态及适用负例unit。
-- L2：受影响既有回归；unit部分随任务执行，跨组件/跨进程部分由T016运行。
-- L3：全部实现后T016运行真实requester/authority/Core/Provider协作，不mock被测链。
+- L2：每批受影响 C++ unit/integration 回归在静态组合门后执行，先于对应 Python wrapper 检查。
+- L3：N1--N3 在调用方迁移前运行独立 C++ requester/authority/Provider 的真实 process tests；先 unary，再同链状态行为，不 mock 被测链。
 - L4：T016在完整unit和integration通过后运行真实MiniNDN。
 - L5：T016完成全部FR/能力的同源证明与no-Python/legacy-exclusion，T017交接。
 - L6：保留PO-001--014及下表规定的负例/counterfactual；
-  单元级随实现，涉及真实协作/隔离/实验的在T016。
+  定向原生正反例随对应批次执行；完整隔离/实验资格由 T016 最终关闭。
   检错成功必须来自目标语义断言；编译/启动/collector失败不算。
   工作流PO-015/016无需为了报告额外制造mutant。
 
-T002--T014不提前执行L3/L4；T015整体静态检查后，T016执行完整unit→integration→MiniNDN。
+T002--T014 的 N1--N3 必须执行 L3，不能等所有调用方迁移后才首次跨进程验证。T015 后 T016 执行完整 C++ unit→integration/process→MiniNDN/no-Python→Python wrapper checks。阶段与状态门见 [native-first order](native-first-execution.md)。
 测试编写与执行分开；同一文件有不同层级时使用 T001-C 冻结的独立 selector
 （case-manifest 的 `selector` 字段，2026-09-07 冻结）。
 

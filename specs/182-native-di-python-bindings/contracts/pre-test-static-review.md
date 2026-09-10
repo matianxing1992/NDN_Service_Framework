@@ -1,6 +1,6 @@
 # Source Review And Runtime Validation
 
-**Revision**: 7 | **Status**: planned; product STATIC_REVIEW NOT_RUN
+**Revision**: 8 | **Status**: planned; product STATIC_REVIEW NOT_RUN
 
 本文件统一 FR-018/019、SC-010/011、PO-015/016 的执行顺序，不新增产品 API。
 2026-09-08 按用户要求改为逻辑批次；既有通过证据和任务验收保持原义。
@@ -8,15 +8,15 @@
 ## Workflow
 
 唯一通用规则为 [pre-test-static-review](../../../skills/speckit-code-design/references/pre-test-static-review.md)，逐任务读取其中的 [review-agent profile](../../../skills/speckit-code-design/references/review-agent.md)。
-每个小任务编码后只读静态审查，同批实现依赖满足后继续；整批逻辑/流程审查通过再统一构建与相关单测。
+每个小任务编码后只读静态审查，同批实现依赖满足后继续；整批逻辑/流程审查通过再统一构建与相关 C++ unit/integration/process tests，最后 Python wrapper checks。
 执行前在 tasks.md 当前 checkpoint 登记批次 ID、成员、行为边界、共享 selectors/owner 及实现/验收依赖。此修订未把既有 Depends 自动转为实现依赖，也未将 T002--T014 合成一个大批次；T001 release、卡片硬前置和设计缺口仍控制执行。
 
 ## Spec182 Ownership
 
 - T001：冻结基线、具体 unit/integration selectors 与负例归属，关闭既有 O-001--005。
-- T002--T014：按逻辑批次实施；每小任务编写/注册测试及静态审查，批末统一构建/相关 unit；集成/实验用例交 T016。
+- T002--T014：按 [native-first order](native-first-execution.md) 的 N1--N5 实施；N1--N3 在迁移调用方前完成定向 C++ process 出口。每小任务静态门，批末 C++ unit/integration/process，再做 wrapper checks；Python 用例数不推进 native 任务。
 - T015：补审跨任务生产接线、测试/oracle/harness 和依赖；复用有效逐任务/批次审查。
-- T016：全部实现完成后，执行一次最终完整 unit suite → integration → MiniNDN/no-Python 及既定检错用例，核对同源证据和最终 diff。
+- T016：全部实现完成后，执行一次最终完整 C++ unit suite → integration/process → MiniNDN/no-Python → Python wrapper checks 及既定检错用例，核对同源证据和最终 diff。
 - T017：复用 T016 结果交接；SIF/Tiger 留实验机器。
 
 ## One Completion Record

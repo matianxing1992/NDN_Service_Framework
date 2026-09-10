@@ -1,6 +1,15 @@
 # Spec182 Design Audit
 
-## Current Whole-Chain Review 2026-09-10
+## Native-First Replan 2026-09-10
+
+用户确认的剩余顺序见 [native-first execution](contracts/native-first-execution.md)，
+修订与定向一致性证据见 [replan record](evidence/native-first-replan-20260910.md)。
+修正 CD-004 允许 requester 本地持 authority 私钥的部署边界，并替换 FR-019/SC-010
+把所有 process tests 推迟到 T016 的规则。R11-B1/B2 是下一生产出口；R10-B83/B84
+保留各自局部结果，原 16 callers、no-Python、依赖闭包和 T016 仍未关闭。
+本轮是定向文档修订，不宣称重新完成全仓库源码审计。
+
+## Previous Whole-Chain Review 2026-09-10
 
 **Revision**: 28 | **Mode**: source alignment / whole-chain static review
 **Verdict**: DRAFT / PARTIAL; T016 preflight UNQUALIFIED

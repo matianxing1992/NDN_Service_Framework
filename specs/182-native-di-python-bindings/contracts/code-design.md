@@ -1,6 +1,6 @@
 # Code Design Contract
 
-**Revision**: 8 | **Status**: DRAFT
+**Revision**: 9 | **Status**: DRAFT
 **Normative parent**: [spec.md](../spec.md)
 **Baseline**: [integrated baseline](integrated-baseline.md)；旧revision快照和[merge validation](../evidence/merge-validation-20260906.json)保留历史意义，不证明新SVS/NDNSD组合的运行资格。
 
@@ -220,12 +220,16 @@ planned acquire(const NativeProviderGrantView&, std::chrono::system_clock::time_
 → NativeGrantBinding（工作 executor 等待，publication post 至 Face；deadline/cancel 终止等待）；issue(const NativeGrantRequest&, std::chrono::system_clock::time_point now)
 → NativeKeyGrant。认证证书、私钥 handle 和 issuer policy 在构造时注入；禁止把私钥字节作为 request 参数。
 
-按已有 seal core → 签名请求 → policy 检查 → recipient encryption → 规范名 signed Data 发布 →
-grant binding → finalize 的顺序。NativeGrantClient 使用现有 ServiceUser::publishSignedAppData，
-不得引入新的网络 authority 服务作为迁移捷径。
-进程内 authority 仍为独立职责；requester 不可绕过 policy 签发，Provider 不可把“字段相等”当验证成功。
+按已有 seal core → 签名请求 → 独立 authority policy 检查 → recipient encryption →
+规范名 signed Data 发布 → grant binding → finalize 的顺序。复用现有 Core signed
+application Data/publication/fetch，authority 在独立 C++ 进程持有签发私钥和工件密钥；
+生产 requester 仅持自身凭证、authority 公钥和寻址配置，不得读取或注入 authority
+私钥，不构造本地 issuer。Provider 不可把“字段相等”当验证成功。
+进程内 issuer 仅保留组件测试用途；隔离、失败语义和配置迁移按
+[Independent Authority Boundary](native-first-execution.md#independent-authority-boundary)。
 key 只能经已有安全原语消费和零化；不自写替代密码算法。算法/字段复用 Spec170/181，
-合并 Core 的请求级撤销、ControllerVersion 校验与权限刷新必须保持；DI 工件 grant 的独立撤销扩展和独立网络 authority 部署不由本迁移自动增加，不能混写为全部撤销尚未实现。
+合并 Core 的请求级撤销、ControllerVersion 校验与权限刷新必须保持；独立 C++ authority
+部署已由 2026-09-10 用户确认纳入剩余迁移，独立工件撤销协议重设计仍不自动增加。
 
 ## CD-005 Assembly
 

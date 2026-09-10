@@ -1,6 +1,6 @@
 # Implementation Plan: Native NDNSF-DI with Optional Python Bindings
 
-**Branch**: Experimental | **Revision**: 85 | **Date**: 2026-09-10
+**Branch**: Experimental | **Revision**: 86 | **Date**: 2026-09-10
 **Status**: IN_PROGRESS / 当前实现与验收状态见 tasks.md 的 Task Progress Registry 和 Current Checkpoint
 **Spec**: [spec.md](spec.md)
 
@@ -41,7 +41,17 @@ T001允许有界依赖探针；产品构建按设计门和各任务的验证范�
 
 ## Gate Order
 
-### Current Dispatch Policy 2026-09-08
+### Current Dispatch Policy 2026-09-10
+
+剩余工作按 [Native-First Execution Order](contracts/native-first-execution.md) 的 N1--N5
+及 R11-B1--B9 执行：独立 artifact authority → C++ 跨进程 unary → 同链 stream/
+continuation/recovery/replacement/cleanup → 16 个 maintained callers → no-Python/
+依赖闭包/T015/T016。下一张卡为 R11-B1；本次只修订 Spec，不启动实现或实验。
+原生验收次序为 C++ production code → C++ unit/integration/process tests → Python
+wrapper checks。各小任务仍先过 review-agent 静态门，整批组合审查后统一构建和相应测试。
+Python 用例数量不推进 native 状态。旧 R1--R10 局部结果按原证据范围保留。
+
+### Historical Dispatch Policy 2026-09-08
 
 用户重新设定“完成 Spec182 全部任务”目标后恢复调度，从 tasks.md 登记的 R1-B1 开始，
 此前暂停和重排成果保留，不重做 Spec182。剩余生产顺序
@@ -1081,15 +1091,15 @@ owner-only key files、requester/service identity 和 security-domain digest 在
 
 1. G0 / T001：复用已关闭O-001的源码身份与181承接，关闭O-002--005，冻结schema/调用方/依赖与单测、集成、实验选择器。181旧完整资格不作为前置门；源码基线关闭不表示新依赖组合运行PASS。
 2. G1 / T002--009：库、策略、sealer/grant、assembler/tokenizer、准备/admission和Provider host；按已登记逻辑批次执行：逐小任务实现→只读静态门→继续同批；整批逻辑/流程审查后统一构建及相关单测。
-3. G2 / T010--012：requester、会话/恢复与绑定；完成接线、相关单测，同时编写注册后续集成用例。
-4. G3 / T013--014：迁移旧入口、实现隔离gate和MiniNDN harness/collector；完成静态审查与本地单测，真实跨进程/no-Python用例尚不运行。
+3. G2 / T005,T010--011：按 N1--N3 分离 authority，先完成原生跨进程 unary，再在同链验证 stream、continuation、recovery、replacement、cleanup；每批 C++ unit/integration/process 先于对应 Python 检查。
+4. G3 / T012--014：N3 出口通过后迁移原 16 个调用方及薄绑定，清退旧默认运行时，再完成 no-Python/依赖闭包工具与验收准备；不再把首次真实跨进程请求推迟到此后。
 5. G4 / T015：全部实现与测试工具完成后，补审跨任务调用链、effective config、测试/oracle/harness和依赖；复用有效局部审查，控制性缺陷修复后进入T016。
-6. G5 / T016：统一执行完整unit→integration→MiniNDN/no-Python及既定负例，核对实际证据和最终diff；不另写测试后报告。
+6. G5 / T016：统一执行完整 C++ unit→integration/process→MiniNDN/no-Python，再检查 Python wrappers 及既定负例，核对实际证据和最终diff；不另写测试后报告。
 7. G6 / T017：交付已验证版本、说明与示例；外部SIF/Tiger由实验机器接手。
 
 审查内容、最小诊断例外、变化/失败处理和唯一结果记录见
 [validation workflow](contracts/pre-test-static-review.md)。
-实现任务[x]表示实现/审查/单测完成；完整PO与feature验收直到T016才关闭。
+实现任务[x]表示该卡要求的实现/静态审查/相应 C++ 行为测试均完成；要求 process 出口的卡不能只凭单测关闭。完整PO与feature验收仍由T016关闭。
 任务开始本身不会使前项单测失效；实际变化决定重审和回归范围。
 
 ### B-G1-YOLO-SEMANTIC
@@ -1126,8 +1136,11 @@ T002 -> T006
 T002 -> T007
 T003/T006/T007 -> T008
 T006/T007 -> T009
-T003/T004/T005/T006/T007/T008/T009 -> T010 -> T011 -> T012
-T012 -> T013 -> T014 -> T015 -> T016 -> T017
+T003/T004/T006/T007/T008/T009 existing implementations -> R11-B1 (T005 authority separation)
+R11-B1 -> R11-B2 (T010 C++ unary process)
+R11-B2 -> R11-B3 -> R11-B4 -> R11-B5 -> R11-B6 -> R11-B7 (T010/T011 stateful process exits)
+R11-B7 -> R11-B8 (T012/T013 maintained callers and wrappers)
+R11-B8 -> R11-B9 (T014 closure tools -> T015 -> T016 -> T017)
 ~~~
 
 T006/T007 的原生依赖设计必须先由 T001 关闭，不能一边猜 ABI 一边并入 requester。
@@ -1142,11 +1155,11 @@ T003--011 中的大算法迁移为设计批次，超过工作单元阈值时按 
 T001由设计者关闭未决契约与选择器；设计冻结后的实现按依赖分派，ABI、安全、生命周期和整体收敛由相应审查者复核。
 每卡记录实际源码身份与证据；依赖或设计变化只重新检查受影响卡。卡完成不提前关闭父任务或T016。
 执行卡覆盖与链接检查不证明产品完成；当前子任务状态统一记录在 tasks.md 的 Execution Progress。
-原 G0--G6 顺序与上方父任务依赖保持。本文件引用的共享设计技能为本仓库版本。
+G0--G6 父任务范围保持，剩余实施依赖已按 N1--N5 调整。本文件引用的共享设计技能为本仓库版本。
 
 ## Migration and Compatibility
 
-在本地候选版本中将Python默认入口一次切换到同库；独立消费者的完整运行与迁移正确性由T016统一验收后交付。
+先由 N1--N3 验证独立 C++ requester/authority/Provider 原生链，再在 N4 按调用方子批次将 Python 默认入口切换到同库并核对行为；最终完整迁移资格由 T016 验收后交付。
 旧实现仅在迁移窗口保留；T013 关闭时删除无生产消费者的运行实现，离线对照不进入运行包。
 无长期双默认路径。公开 API 未实现的兼容项由 inventory 显式 BLOCK，不静默 fallback。
 旧 journal/model/contract 格式使用原版本规则；字节不一致先修订设计，不能改 oracle 消除差异。
@@ -1183,6 +1196,8 @@ T017 的 evidence/development-handoff.md 包含 exact commit、clean source clos
 分层清单、构建方法、组合验证及外部工具接续步骤；文档接受不授予部署 PASS。
 
 ## Current Execution Checkpoint
+
+2026-09-10：本轮仅修订执行设计，当前调度以 [Native-First Dispatch](tasks.md#native-first-dispatch-2026-09-10) 和 [N1–N5 契约](contracts/native-first-execution.md) 为准；下一批 R11-B1。下列 R10 checkpoint 保留为已执行工作的证据，不代表新的 authority/process 门已通过。
 
 2026-09-10 R10-B84 native request identity scope / **CLOSED_FOR_VALIDATION (C++ identity boundary)**：
 `NativeInferenceClient` now allocates a fresh owner scope in each production C++ client constructor and

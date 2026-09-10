@@ -5,6 +5,12 @@
 
 ## Authority and Dispatch
 
+2026-09-10 剩余调度采用 [native-first execution](native-first-execution.md)：R11-B1--B9
+补齐独立 authority、C++ process 链和迁移前硬门。旧卡的局部已完成内容仍有效，但
+下述 T005 的进程内测试不再是生产部署边界；任何“首次集成交给 T016”的旧注释仅为
+历史调度，现以 N1--N3 定向 process、N4 wrappers/callers、N5 最终资格顺序为准。
+当前卡与新增阶段的验收依赖取并集，已有 Python 测试数量不推进 native 状态。
+
 本文件将 T001--T017 展开为可分派行为卡，不改 FR/SC/CD/PO、父任务依赖或正式验收。
 接口与算法仍以各详细契约为准；[work units](work-units.md)定义父任务验收，
 [tasks](../tasks.md)是进度唯一入口。卡的存在不表示 READY。
@@ -171,19 +177,19 @@ worker crash/cancel 等真实子进程案例也转 T016，卡内只运行纯 fra
 - **Read**: CD-004 → Symbols/Values；P/security/artifact_policy_authority.py::ArtifactPolicyAuthority.issue；N/NativeGrantVerifier.cpp。
 - **Write**: N/NativeArtifactPolicyAuthority.hpp; N/NativeArtifactPolicyAuthority.cpp; U/di-native-grant.t.cpp; wscript。
 - **Steps**: 按冻结 request/policy 构造 issue，调用既有签名/recipient encryption 原语；密钥 handle 注入，拒绝 caller 自授权限。
-- **Verify**: CPP(Spec182GrantAuthority/*)；固定证书/时钟向量、wrong-recipient/key/expiry 原因码，secret 生命周期；不引入网络 authority。
+- **Verify**: CPP(Spec182GrantAuthority/*) 保留组件证据；固定证书/时钟向量、wrong-recipient/key/expiry 原因码与 secret 生命周期；生产独立 authority 验收必须再通过 R11-B1。
 
 ### T005-B Requester Grant Publication
 
-- **R2-B4 concrete client**: `N/NativeAuthenticatedGrantClient.hpp/.cpp` 从 sealed core/admitted offer 构造签名请求并认证答复；生产构造调用 Core publication factory。新类型避免破坏旧 client ABI，T010/T013 必须将默认 requester 从旧 wrapper 切到此 owner 并清理无消费者路径。Write 含此新类、V3 placement unit test、`I/di-native-requester-grant.t.cpp` 新具名 case 和离线 `check-grant-issuer-wire.py`；Core transport 的运行门仍归 T016。
+- **R2-B4 concrete client**: `N/NativeAuthenticatedGrantClient.hpp/.cpp` 从 sealed core/admitted offer 构造签名请求并认证答复；生产构造调用 Core publication factory。新类型避免破坏旧 client ABI，T010/T013 必须将默认 requester 从旧 wrapper 切到此 owner 并清理无消费者路径。Write 含此新类、V3 placement unit test、`I/di-native-requester-grant.t.cpp` 新具名 case 和离线 `check-grant-issuer-wire.py`；运行门更新为 R11-B1 authority 进程隔离、R11-B2 Core 跨进程 unary，再由 T016 完整资格复验。
 
 - **Production gap / R2-B4**: 同一 [R2-B4](../evidence/r2-b4-grant-production-audit-20260908.md) 的 GA-03/04 控制答复验证及 publication 生命周期；历史 wrong-recipient fixture 只证明端口转发，须改为真实绑定负例。
 
 - **Parent**: T005; **Depends**: T005-A; **Reviewer**: security/lifetime review
 - **Read**: CD-004 → runtime-boundaries Cancellation and Observer Contract；P/security/requester_grant_pipeline.py；ndn-service-framework/ServiceUser.hpp::publishSignedAppData。
 - **Write**: N/NativeGrantClient.hpp; N/NativeGrantClient.cpp; U/di-native-grant.t.cpp; I/di-native-requester-grant.t.cpp; wscript。
-- **Steps**: 实现 acquire 的签名请求、进程内 issue、Face publication port、grant binding；工作 executor 等待且可取消，晚到回调不恢复成功。编写真实 Provider 消费 case。
-- **Verify**: CPP(Spec182GrantClient/*)；publication port 单测与 timeout/cancel/reject；真实 publication/fetch/Provider 用例由 T016 运行。
+- **Steps**: 实现 acquire 的签名请求、独立 authority issue、Face publication/fetch port、grant binding；requester 不持 authority 私钥。工作 executor 等待且可取消，晚到回调不恢复成功。编写真实 Provider 消费 case。
+- **Verify**: CPP(Spec182GrantClient/*)；publication port 单测与 timeout/cancel/reject；R11-B1/B2 运行真实 authority grant 和 Provider 消费，T016 保留完整资格。
 
 ### T006-A Canonical Source Identity
 
@@ -291,7 +297,7 @@ worker crash/cancel 等真实子进程案例也转 T016，卡内只运行纯 fra
 - **Read**: CD-001 FLOW-001/FLOW-002 → CD-013；P/app_sdk/placement.py::_request_v3；前置 native planner/sealer/grant/preparation/admission API。
 - **Write**: N/NativeInferenceClient.cpp; examples/DI_NativeRequester.cpp; examples/wscript; U/di-native-client.t.cpp; I/di-native-request.t.cpp。
 - **Steps**: 接 model/input→ACK_CLOSED→prepare/admit→split/place→seal/grant→commit→Response；CLI 只处理公开参数。保留每个首拒绝边界，不能只实现 preplanned 快捷路径。
-- **Verify**: CPP(Spec182V3Placement/PublicClientCommitsSignedOfferAndIgnoresLateTerminalCallbacks)、CPP(Spec182ClientState/ConfiguredClientClosesEmptyAckAndCancelsActualCorePendingCall)；冻结 port 输入/输出与拒绝后无 commit；编写真实 Core/Provider 完整请求 case，T016 运行。前两项已有 R3-B1 本地通过证据，真实网络 case 仍待编写/验收，不由 local fixture 替代。
+- **Verify**: CPP(Spec182V3Placement/PublicClientCommitsSignedOfferAndIgnoresLateTerminalCallbacks)、CPP(Spec182ClientState/ConfiguredClientClosesEmptyAckAndCancelsActualCorePendingCall)；冻结 port 输入/输出与拒绝后无 commit；真实 Core/Provider 跨进程完整请求在 R11-B2 运行，T016 再做整体复验。前两项 R3-B1 本地证据保留，不由 local fixture 替代真实进程验收。
 
 ### T010-C Stream Acceptance and Replacement
 
