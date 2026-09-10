@@ -2,6 +2,7 @@
 set -euo pipefail
 repo=$(CDPATH= cd -- "$(dirname -- "$0")/../../../.." && pwd)
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/spec110-network.XXXXXX")
+mkdir -p "$tmp/workdir"
 supervisor_scratch=$(mktemp -d /tmp/ndnsf-di-supervisor.XXXXXX)
 cleanup() {
   rc=$?
@@ -57,6 +58,9 @@ if [[ ${1:-} == test && ${2:-} == -S ]]; then
   exit $?
 fi
 if [[ ${SPEC110_FAIL_WORKDIR:-0} == 1 && ${1:-} == test && ${2:-} == -d ]]; then
+  exit 1
+fi
+if [[ ${SPEC110_FAIL_WORKDIR_DIGEST:-0} == 1 && ${1:-} == python3 && ${2:-} == -c && $# -ge 4 ]]; then
   exit 1
 fi
 if [[ ${SPEC110_FAIL_PORT_PROBE:-0} == 1 && ${1:-} == python3 && ${2:-} == -c ]]; then
@@ -132,7 +136,7 @@ PATH="$tmp/bin:$PATH" SLURM_JOB_ID=test SLURM_JOB_NODELIST='allocation-node-[0-1
   "$repo/packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/run-allocation-topology.sh" \
   --process-map "$fixture" --scratch "$order_scratch" \
   --evidence "$tmp/supervisor-order-fail" --nfd-template "$repo/Experiments/TigerCluster/adapters/slurm-apptainer/templates/nfd.conf.in" \
-  --workdir "$tmp" >"$tmp/order.stdout" 2>"$tmp/order.stderr"
+  --workdir "$tmp/workdir" >"$tmp/order.stdout" 2>"$tmp/order.stderr"
 order_rc=$?
 set -e
 [[ $order_rc -eq 4 ]]
@@ -217,7 +221,7 @@ supervisor="$repo/packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/
 template="$repo/packaging/ndnsf-di-container/adapters/slurm-apptainer/templates/nfd.conf.in"
 PATH="$tmp/bin:$PATH" SLURM_JOB_ID=test SLURM_NNODES=1 NDNSF_SPEC110_TEST_MODE=1 NDNSF_SPEC110_READINESS_SETTLE_SECONDS=0.1 \
   "$supervisor" --process-map "$supervisor_scratch/process-map.json" --scratch "$supervisor_scratch" \
-  --evidence "$tmp/supervisor-normal" --nfd-template "$template" --workdir "$tmp"
+  --evidence "$tmp/supervisor-normal" --nfd-template "$template" --workdir "$tmp/workdir"
 python3 - "$tmp/supervisor-normal/teardown.json" <<'PY'
 import json,sys
 value=json.load(open(sys.argv[1]));assert value['status']=='PASS' and value['survivors']==0 and value['exitCode']==0
@@ -227,10 +231,37 @@ for launcher in nfd-0 controller user provider-0 provider-1 provider-2; do
 done
 grep -q CANDIDATE_PROCESS_GRAPH_COMPLETED "$tmp/supervisor-normal/readiness-verdict.txt"
 
+rm -f "$supervisor_scratch/log/nfd-0.log"
+set +e
+PATH="$tmp/bin:$PATH" SLURM_JOB_ID=test SLURM_NNODES=1 NDNSF_SPEC110_TEST_MODE=1 SPEC110_FAIL_WORKDIR_DIGEST=1 \
+  "$supervisor" --process-map "$supervisor_scratch/process-map.json" --scratch "$supervisor_scratch" \
+  --evidence "$tmp/supervisor-workdir-digest-fail" --nfd-template "$template" --workdir "$tmp/workdir"
+workdir_digest_rc=$?
+set -e
+[[ $workdir_digest_rc -eq 4 ]]
+python3 - "$tmp/supervisor-workdir-digest-fail/teardown.json" <<'PY'
+import json,sys
+value=json.load(open(sys.argv[1]));assert value['status']=='FAIL' and value['survivors']==0 and value['exitCode']==4
+PY
+[[ ! -e "$supervisor_scratch/log/nfd-0.log" ]]
+
+set +e
+PATH="$tmp/bin:$PATH" SLURM_JOB_ID=test SLURM_NNODES=1 NDNSF_SPEC110_TEST_MODE=1 \
+  "$supervisor" --process-map "$supervisor_scratch/process-map.json" --scratch "$supervisor_scratch" \
+  --evidence "$tmp/workdir/evidence-overlap" --nfd-template "$template" --workdir "$tmp/workdir"
+workdir_overlap_rc=$?
+set -e
+[[ $workdir_overlap_rc -eq 3 ]]
+python3 - "$tmp/workdir/evidence-overlap/teardown.json" <<'PY'
+import json,sys
+value=json.load(open(sys.argv[1]));assert value['status']=='FAIL' and value['survivors']==0 and value['exitCode']==3
+PY
+[[ ! -e "$supervisor_scratch/log/nfd-0.log" ]]
+
 set +e
 PATH="$tmp/bin:$PATH" SLURM_JOB_ID=test SLURM_NNODES=1 NDNSF_SPEC110_TEST_MODE=1 SPEC110_FAIL_WORKDIR=1 \
   "$supervisor" --process-map "$supervisor_scratch/process-map.json" --scratch "$supervisor_scratch" \
-  --evidence "$tmp/supervisor-workdir-fail" --nfd-template "$template" --workdir "$tmp"
+  --evidence "$tmp/supervisor-workdir-fail" --nfd-template "$template" --workdir "$tmp/workdir"
 workdir_rc=$?
 set -e
 [[ $workdir_rc -eq 4 ]]
@@ -265,7 +296,7 @@ PY
 set +e
 PATH="$tmp/bin:$PATH" SLURM_JOB_ID=test SLURM_NNODES=1 NDNSF_SPEC110_TEST_MODE=1 NDNSF_SPEC110_READINESS_SETTLE_SECONDS=5 \
   "$supervisor" --process-map "$signal_scratch/process-map.json" --scratch "$signal_scratch" \
-  --evidence "$tmp/supervisor-signal" --nfd-template "$template" --workdir "$tmp" &
+  --evidence "$tmp/supervisor-signal" --nfd-template "$template" --workdir "$tmp/workdir" &
 supervisor_pid=$!
 sleep 0.5
 kill -TERM "$supervisor_pid"
@@ -299,7 +330,7 @@ set +e
 PATH="$tmp/bin:$PATH" SLURM_JOB_ID=test SLURM_NNODES=1 SLURM_JOB_NODELIST='allocation-node-0' \
   SPEC110_FAKE_NODELIST='allocation-node-0' NDNSF_SPEC110_TEST_MODE=0 \
   "$supervisor" --process-map "$identity_scratch/process-map.json" --scratch "$identity_scratch" \
-  --evidence "$tmp/supervisor-identity-fail" --nfd-template "$template" --workdir "$tmp"
+  --evidence "$tmp/supervisor-identity-fail" --nfd-template "$template" --workdir "$tmp/workdir"
 identity_rc=$?
 set -e
 [[ $identity_rc -eq 4 ]]
@@ -316,7 +347,7 @@ scratch_job_scratch=$(mktemp -d /tmp/ndnsf-di-test-mismatch.XXXXXX)
 cp "$supervisor_scratch/process-map.json" "$scratch_job_scratch/process-map.json"
 PATH="$tmp/bin:$PATH" SLURM_JOB_ID=999 SLURM_NNODES=1 NDNSF_SPEC110_TEST_MODE=0 \
   "$supervisor" --process-map "$scratch_job_scratch/process-map.json" --scratch "$scratch_job_scratch" \
-  --evidence "$tmp/supervisor-scratch-job-fail" --nfd-template "$template" --workdir "$tmp"
+  --evidence "$tmp/supervisor-scratch-job-fail" --nfd-template "$template" --workdir "$tmp/workdir"
 scratch_job_rc=$?
 set -e
 [[ $scratch_job_rc -eq 3 ]]
@@ -335,7 +366,7 @@ ln -s "$scratch_symlink_target" "$scratch_symlink"
 set +e
 PATH="$tmp/bin:$PATH" SLURM_JOB_ID=test SLURM_NNODES=1 NDNSF_SPEC110_TEST_MODE=1 \
   "$supervisor" --process-map "$supervisor_scratch/process-map.json" --scratch "$scratch_symlink" \
-  --evidence "$tmp/supervisor-scratch-symlink-fail" --nfd-template "$template" --workdir "$tmp"
+  --evidence "$tmp/supervisor-scratch-symlink-fail" --nfd-template "$template" --workdir "$tmp/workdir"
 scratch_symlink_rc=$?
 set -e
 [[ $scratch_symlink_rc -eq 3 ]]
@@ -368,7 +399,7 @@ PY
 PATH="$tmp/bin:$PATH" SLURM_JOB_ID=test SLURM_NNODES=1 SLURM_JOB_NODELIST='allocation-node-0' \
   SPEC110_FAKE_NODELIST='allocation-node-0' NDNSF_SPEC110_TEST_MODE=0 SPEC110_FAIL_ADDRESS_PROBE=1 \
   "$supervisor" --process-map "$address_scratch/process-map.json" --scratch "$address_scratch" \
-  --evidence "$tmp/supervisor-address-fail" --nfd-template "$template" --workdir "$tmp"
+  --evidence "$tmp/supervisor-address-fail" --nfd-template "$template" --workdir "$tmp/workdir"
 address_rc=$?
 set -e
 [[ $address_rc -eq 4 ]]
@@ -399,7 +430,7 @@ PY
 set +e
 PATH="$tmp/bin:$PATH" SLURM_JOB_ID=test SLURM_NNODES=1 NDNSF_SPEC110_TEST_MODE=1 SPEC110_FAIL_PORT_PROBE=1 \
   "$supervisor" --process-map "$port_scratch/process-map.json" --scratch "$port_scratch" \
-  --evidence "$tmp/supervisor-port-fail" --nfd-template "$template" --workdir "$tmp"
+  --evidence "$tmp/supervisor-port-fail" --nfd-template "$template" --workdir "$tmp/workdir"
 port_rc=$?
 set -e
 [[ $port_rc -eq 4 ]]
@@ -431,7 +462,7 @@ set +e
 PATH="$tmp/bin:$PATH" SLURM_JOB_ID=test SLURM_NNODES=1 SLURM_JOB_NODELIST='allocation-node-0' \
   SPEC110_FAKE_NODELIST='allocation-node-0' NDNSF_SPEC110_TEST_MODE=0 SPEC110_FAIL_IDENTITY_SYMLINK=1 \
   "$supervisor" --process-map "$symlink_scratch/process-map.json" --scratch "$symlink_scratch" \
-  --evidence "$tmp/supervisor-symlink-fail" --nfd-template "$template" --workdir "$tmp"
+  --evidence "$tmp/supervisor-symlink-fail" --nfd-template "$template" --workdir "$tmp/workdir"
 symlink_rc=$?
 set -e
 [[ $symlink_rc -eq 4 ]]

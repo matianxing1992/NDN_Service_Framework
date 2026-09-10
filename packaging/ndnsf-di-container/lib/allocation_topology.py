@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import ipaddress
 import json
+import os
 from pathlib import Path
 import re
 import shlex
@@ -35,8 +36,63 @@ def command_digest(command: list[str]) -> str:
     return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
 
+def directory_digest(root: Path | str) -> str:
+    """Return a deterministic digest of a directory's paths and file bytes.
+
+    Deployment bundles and identity roots are shared inputs, not writable
+    runtime state.  Hashing relative paths and bytes lets a target-node
+    preflight detect a locally mounted revision that differs from the
+    submitter's sealed input without depending on filesystem metadata.
+    Symbolic links and special files are rejected so the digest cannot hide a
+    node-specific redirect or device-backed input.
+    """
+    root_path = Path(root)
+    if not root_path.is_dir():
+        _fail("TOPOLOGY_DIRECTORY_MISSING", root)
+    rows: list[tuple[str, str]] = []
+
+    def visit(directory: Path, prefix: str) -> None:
+        try:
+            entries = sorted(os.scandir(directory), key=lambda entry: entry.name)
+        except OSError as exc:
+            _fail("TOPOLOGY_DIRECTORY_READ_FAILED", prefix or ".")
+            raise AssertionError("unreachable") from exc
+        for entry in entries:
+            relative = f"{prefix}/{entry.name}" if prefix else entry.name
+            path = Path(entry.path)
+            try:
+                if entry.is_symlink():
+                    _fail("TOPOLOGY_DIRECTORY_SYMLINK_INVALID", relative)
+                if entry.is_dir(follow_symlinks=False):
+                    rows.append(("d", relative))
+                    visit(path, relative)
+                    continue
+                if not entry.is_file(follow_symlinks=False):
+                    _fail("TOPOLOGY_DIRECTORY_ENTRY_INVALID", relative)
+                digest = hashlib.sha256()
+                with path.open("rb") as source:
+                    for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                        digest.update(chunk)
+            except OSError as exc:
+                _fail("TOPOLOGY_DIRECTORY_READ_FAILED", relative)
+                raise AssertionError("unreachable") from exc
+            rows.append(("f", relative + "\0" + digest.hexdigest()))
+
+    visit(root_path, "")
+    encoded = json.dumps(rows, separators=(",", ":")).encode("utf-8")
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
 def _fail(code: str, detail: object = "") -> None:
     raise TopologyError(code + (":" + str(detail) if detail != "" else ""))
+
+
+def _path_is_within(path: Path, parent: Path) -> bool:
+    try:
+        path.relative_to(parent)
+    except ValueError:
+        return False
+    return True
 
 
 def _safe_command(command: object, process_id: str) -> list[str]:
@@ -376,6 +432,11 @@ def render_process_launcher(process: Mapping[str, Any], scratch: Path | str,
     if (not workdir_path.is_absolute() or ".." in workdir_path.parts or
             any(char in str(workdir_path) for char in "\x00\n\r")):
         _fail("TOPOLOGY_WORKDIR_INVALID", workdir)
+    resolved_workdir = workdir_path.resolve()
+    if (resolved_workdir == resolved_scratch or
+            _path_is_within(resolved_workdir, resolved_scratch) or
+            _path_is_within(resolved_scratch, resolved_workdir)):
+        _fail("TOPOLOGY_WORKDIR_SCRATCH_OVERLAP", process_id)
     if not str(socket_path).startswith(str(scratch_path).rstrip("/") + "/"):
         _fail("TOPOLOGY_SOCKET_SCOPE_INVALID", process_id)
 
@@ -480,7 +541,7 @@ def load_process_map(path: Path | str) -> dict[str, Any]:
 
 
 __all__ = [
-    "TopologyError", "command_digest", "evaluate_transport_probe", "load_process_map",
+    "TopologyError", "command_digest", "directory_digest", "evaluate_transport_probe", "load_process_map",
     "render_multiprog", "render_nfd_config", "render_process_launcher",
     "validate_allocation_node_order", "validate_process_map",
 ]

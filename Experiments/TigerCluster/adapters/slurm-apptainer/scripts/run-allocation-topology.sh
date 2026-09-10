@@ -58,6 +58,16 @@ scratch_real=$(readlink -f -- "$scratch" 2>/dev/null || true)
 [[ -n $scratch_real && $scratch_real == "$scratch_input" ]] || {
   echo SPEC110_TOPOLOGY_SCRATCH_SYMLINK_FORBIDDEN >&2; exit 3;
 }
+workdir_real=$(readlink -f -- "$workdir" 2>/dev/null || true)
+evidence_real=$(readlink -f -- "$evidence" 2>/dev/null || true)
+path_overlaps() {
+  local left=$1 right=$2
+  [[ -n $left && -n $right && ( "$left" == "$right" || "$left" == "$right/"* || "$right" == "$left/"* ) ]]
+}
+if path_overlaps "$workdir_real" "$scratch_real" || path_overlaps "$workdir_real" "$evidence_real"; then
+  echo SPEC110_WORKDIR_STATE_OVERLAP >&2
+  exit 3
+fi
 
 container_root=$(CDPATH= cd -- "$(dirname -- "$0")/../../.." && pwd)
 lib="$container_root/lib"
@@ -140,12 +150,45 @@ for node in load_process_map(sys.argv[1])['nodes']:
  print(node['nodeRank'])
 PY
 )
+# A path can be mounted at every node while still resolving to different
+# bundle revisions.  MiniNDN's single filesystem hides this; hash the sealed
+# input once on the submit host and compare the same relative-path/file-byte
+# digest on every target node before any NFD starts.  Materialize the helper
+# from the frozen source so submit and target use one implementation even when
+# the checkout itself is not mounted on compute nodes.
+read -r -d '' directory_digest_probe <<'PY' || true
+import sys
+from allocation_topology import directory_digest
+
+observed=directory_digest(sys.argv[1])
+if len(sys.argv) == 3 and observed != sys.argv[2]:
+    raise SystemExit('SPEC110_DIRECTORY_CONTENT_MISMATCH:expected=' + sys.argv[2] + ':observed=' + observed)
+print(observed)
+PY
+mkdir -p "$scratch/generated"
+for rank in "${workdir_ranks[@]}"; do
+  srun_node "$rank" mkdir -p "$scratch/generated"
+  srun_node "$rank" tee "$scratch/generated/allocation_topology.py" <"$lib/allocation_topology.py" >/dev/null
+done
+if ! workdir_digest=$(PYTHONPATH="$lib" python3 -c "$directory_digest_probe" "$workdir"); then
+  echo SPEC110_WORKDIR_CONTENT_UNAVAILABLE >&2
+  exit 4
+fi
+printf '%s\n' "$workdir_digest" >"$evidence/workdir-digest.txt"
 for rank in "${workdir_ranks[@]}"; do
   # The application bundle may be on submit-host storage. Check visibility on
   # every target node before starting even one NFD, so a partial startup cannot
   # masquerade as a later application or protocol failure.
   srun_node "$rank" test -d "$workdir" || {
     echo "SPEC110_WORKDIR_NOT_VISIBLE:$rank" >&2
+    exit 4
+  }
+  if ! observed_workdir_digest=$(srun_node "$rank" env PYTHONPATH="$scratch/generated" python3 -c "$directory_digest_probe" "$workdir" "$workdir_digest"); then
+    echo "SPEC110_WORKDIR_CONTENT_MISMATCH:$rank" >&2
+    exit 4
+  fi
+  [[ "$observed_workdir_digest" == "$workdir_digest" ]] || {
+    echo "SPEC110_WORKDIR_CONTENT_MISMATCH:$rank" >&2
     exit 4
   }
 done
@@ -181,6 +224,7 @@ for process in load_process_map(sys.argv[1])['processes']:
   print(process['nodeRank'],process['identityRef'],sep='\t')
 PY
   )
+  : >"$evidence/identity-digests.tsv"
   for row in "${identity_rows[@]}"; do
     IFS=$'\t' read -r rank identity <<<"$row"
     srun_node "$rank" test -r "$identity/.ndn/pib.db" || {
@@ -197,6 +241,19 @@ PY
     }
     srun_node "$rank" sh -c 'test -z "$(find "$1" -type l -print -quit)"' sh "$identity/.ndn" || {
       echo "SPEC110_IDENTITY_SYMLINK_FORBIDDEN:$rank:$identity" >&2
+      exit 4
+    }
+    if ! identity_digest=$(PYTHONPATH="$lib" python3 -c "$directory_digest_probe" "$identity"); then
+      echo "SPEC110_IDENTITY_CONTENT_UNAVAILABLE:$rank:$identity" >&2
+      exit 4
+    fi
+    printf '%s\t%s\t%s\n' "$rank" "$identity" "$identity_digest" >>"$evidence/identity-digests.tsv"
+    if ! observed_identity_digest=$(srun_node "$rank" env PYTHONPATH="$scratch/generated" python3 -c "$directory_digest_probe" "$identity" "$identity_digest"); then
+      echo "SPEC110_IDENTITY_CONTENT_MISMATCH:$rank:$identity" >&2
+      exit 4
+    fi
+    [[ "$observed_identity_digest" == "$identity_digest" ]] || {
+      echo "SPEC110_IDENTITY_CONTENT_MISMATCH:$rank:$identity" >&2
       exit 4
     }
   done

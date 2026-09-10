@@ -34,6 +34,31 @@ class AllocationTopologyTest(unittest.TestCase):
         self.assertEqual(2, sum(row["kind"] == "nfd" for row in multi["processes"]))
         self.assertEqual(3, sum(row["kind"] == "provider" for row in multi["processes"]))
 
+    def test_directory_digest_is_content_and_path_bound(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / "nested").mkdir()
+            (root / "nested" / "config.json").write_text("{}\n")
+            first = topology.directory_digest(root)
+            (root / "nested" / "config.json").write_text("{\"revision\":2}\n")
+            self.assertNotEqual(first, topology.directory_digest(root))
+
+    def test_directory_digest_rejects_symlink_entries(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            target = root / "target"
+            target.mkdir()
+            (root / "alias").symlink_to(target, target_is_directory=True)
+            with self.assertRaisesRegex(topology.TopologyError, "TOPOLOGY_DIRECTORY_SYMLINK_INVALID"):
+                topology.directory_digest(root)
+
+    def test_process_launcher_rejects_workdir_state_overlap(self) -> None:
+        process = load("single-node.json")["processes"][1]
+        with tempfile.TemporaryDirectory(prefix="ndnsf-di-") as raw:
+            scratch = Path(raw)
+            with self.assertRaisesRegex(topology.TopologyError, "TOPOLOGY_WORKDIR_SCRATCH_OVERLAP"):
+                topology.render_process_launcher(process, scratch, scratch / "bundle")
+
     def test_udp_is_an_independent_selected_transport_variant(self) -> None:
         value = load("multi-node-tcp.json")
         value.update(load("variants.json")["udp"])
