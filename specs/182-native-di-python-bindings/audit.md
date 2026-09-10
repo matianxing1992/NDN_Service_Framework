@@ -1,6 +1,17 @@
 # Spec182 Design Audit
 
-**Revision**: 43 | **Current source**: R11-B8-G35 scheduler-order checkpoint on `Experimental`
+**Revision**: 44 | **Current source**: R11-B8-G36 runner-scratch checkpoint on `Experimental`
+
+## R11-B8-G36 Runner Scratch Name Parity Review 2026-09-10
+
+静态审查发现批处理模板生成 `/tmp/ndnsf-di-${SLURM_JOB_ID}-${RUN_ID}`，而 canonical
+`run-container.sh` 只接受无后缀的 `/tmp/ndnsf-di-${SLURM_JOB_ID}`。因此 supervisor 通过后，
+runner 仍会在 Apptainer 启动前返回 `APPTAINER_SCRATCH_INVALID`；绕过 Slurm 模板的 MiniNDN
+不会暴露这一分叉。现已让 runner 接受精确 job basename 或 `-<RUN_ID>` 后缀，同时保持 `/tmp/`
+根和当前 `SLURM_JOB_ID` 绑定。9 个 focused runner tests、shell syntax 和 diff check 通过。
+
+该修复只关闭入口命名契约，不证明真实 SIF/Slurm/跨节点 NDN route、GPU、no-Python 或 T016/T017
+资格。详见 [R11-B8-G36 evidence](evidence/r11-b8-g36-run-container-scratch-parity-20260910.md)。
 
 ## R11-B8-G35 Scheduler Allocation Order Binding Review 2026-09-10
 

@@ -131,3 +131,84 @@ def test_run_container_rejects_legacy_record_before_sif_staging(tmp_path: Path) 
     assert result.returncode == 4
     assert "SCHEMA_MISMATCH" in result.stderr
     assert not invocation.exists()
+
+
+@pytest.mark.parametrize("scratch_suffix", ["", "-runA"])
+def test_run_container_accepts_template_job_scoped_scratch_names(
+    tmp_path: Path, scratch_suffix: str,
+) -> None:
+    sif = tmp_path / "runtime.sif"
+    sif.write_bytes(b"candidate")
+    project = tmp_path / "project" / "ndnsf-di"
+    for relative in ("releases", "models", "artifacts", "identities/provider", "evidence"):
+        (project / relative).mkdir(parents=True, exist_ok=True)
+    validator_copy = project / "packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts"
+    validator_copy.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(SCRIPT, validator_copy / SCRIPT.name)
+    record = _write_record(project / "releases", sif)
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    invocation = tmp_path / "apptainer-invocation.log"
+    fake = fake_bin / "apptainer"
+    fake.write_text(
+        f"#!/bin/sh\nprintf '%s\\n' \"$*\" >> {invocation}\n",
+        encoding="utf-8",
+    )
+    fake.chmod(0o755)
+    job = "99173"
+    scratch = Path("/tmp") / f"ndnsf-di-{job}{scratch_suffix}"
+    scratch.mkdir(parents=True, exist_ok=True)
+    try:
+        result = subprocess.run(
+            [
+                str(ROOT / "packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/run-container.sh"),
+                "--sif", str(sif), "--sif-sha256", _digest(sif),
+                "--build-record", str(record), "--project", str(project),
+                "--scratch", str(scratch), "--identity", str(project / "identities/provider"),
+                "--", "/bin/true",
+            ],
+            cwd=ROOT,
+            env={**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}",
+                 "NDNSF_SPEC110_ALLOW_TEST_ROOT": "1", "SLURM_JOB_ID": job,
+                 "NDNSF_SIF_CACHE_DIR": str(tmp_path / "cache")},
+            check=False, capture_output=True, text=True,
+        )
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+    assert result.returncode == 0, result.stderr
+    assert invocation.exists()
+
+
+def test_run_container_rejects_scratch_from_another_job(tmp_path: Path) -> None:
+    sif = tmp_path / "runtime.sif"
+    sif.write_bytes(b"candidate")
+    project = tmp_path / "project" / "ndnsf-di"
+    for relative in ("releases", "models", "artifacts", "identities/provider", "evidence"):
+        (project / relative).mkdir(parents=True, exist_ok=True)
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    invocation = tmp_path / "apptainer-invocation.log"
+    fake = fake_bin / "apptainer"
+    fake.write_text(f"#!/bin/sh\nprintf '%s\\n' \"$*\" >> {invocation}\n", encoding="utf-8")
+    fake.chmod(0o755)
+    scratch = Path("/tmp") / "ndnsf-di-99172-runA"
+    scratch.mkdir(parents=True, exist_ok=True)
+    try:
+        result = subprocess.run(
+            [
+                str(ROOT / "packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/run-container.sh"),
+                "--sif", str(sif), "--sif-sha256", _digest(sif),
+                "--project", str(project), "--scratch", str(scratch),
+                "--identity", str(project / "identities/provider"), "--", "/bin/true",
+            ],
+            cwd=ROOT,
+            env={**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}",
+                 "NDNSF_SPEC110_ALLOW_TEST_ROOT": "1", "SLURM_JOB_ID": "99173",
+                 "NDNSF_SIF_CACHE_DIR": str(tmp_path / "cache")},
+            check=False, capture_output=True, text=True,
+        )
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+    assert result.returncode == 1
+    assert "APPTAINER_SCRATCH_INVALID" in result.stderr
+    assert not invocation.exists()

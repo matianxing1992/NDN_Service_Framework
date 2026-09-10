@@ -87,7 +87,9 @@ NFD socket 还必须位于当前作业的 `--scratch` 目录内；仅有 `/tmp/n
 跨作业复用或含有 `..` 路径组件的 process map 会在启动前被拒绝，NFD state directory
 也执行同样的路径组件检查。真实 Slurm allocation 中 scratch basename 还必须是
 `ndnsf-di-<SLURM_JOB_ID>` 或以 `ndnsf-di-<SLURM_JOB_ID>-` 开头；离线 test mode 才允许
-fixture basename，避免清理旧 socket 时误伤其他作业。
+fixture basename，避免清理旧 socket 时误伤其他作业。canonical `run-container.sh` 也必须
+执行同一规则，接受模板生成的 `ndnsf-di-<SLURM_JOB_ID>-<RUN_ID>`，否则 supervisor 通过
+后会在 Apptainer 启动前因命名不一致失败。
 在启动 NFD 前，supervisor 还必须在每个对应目标节点将声明的 IPv4 address 绑定到临时端口；
 地址格式正确但未分配给该节点时，以 `SPEC110_NODE_ADDRESS_NOT_LOCAL` 在 pre-start 失败。
 这只是节点地址归属门，不替代后续 NDN face/route 连通性验收。
