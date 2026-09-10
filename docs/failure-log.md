@@ -3252,6 +3252,11 @@ are still unobserved.
 - **Evidence**:
   [`r11-b8-g6-native-process-fixture-startup-20260910.md`](../specs/182-native-di-python-bindings/evidence/r11-b8-g6-native-process-fixture-startup-20260910.md)
 
+- **Corrective result**: the shared process fixture now selects a short
+  per-process `/tmp` socket pathname whenever the retained run root is too
+  deep. The corrected conversation/recovery and unary process runs reached
+  their declared C++ protocol boundaries; see G7/G8 evidence.
+
 ## 2026-09-10 — Spec182 R11-B1 independent authority process fixture boundaries
 
 - **Area**: C++ requester to independent `DI_NativeArtifactAuthority` grant process over a

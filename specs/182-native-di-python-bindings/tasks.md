@@ -1,6 +1,6 @@
 # Tasks: Native NDNSF-DI with Optional Python Bindings
 
-**Revision**: 141 | **Status**: DRAFT / T001 DONE
+**Revision**: 142 | **Status**: DRAFT / T001 DONE
 **Input**: [spec](spec.md), [code design](contracts/code-design.md),
 [proof](contracts/proof-design.md), [work units](contracts/work-units.md)
 
@@ -40,6 +40,7 @@ R11-B8 现开始按 caller group 批次执行；G4 已形成 native checkpoint h
 | [R11-B8-G4 Native Checkpoint Handle Export](evidence/r11-b8-g4-native-checkpoint-handle-20260910.md) | CLOSED_FOR_VALIDATION | R11-B8-G3; R11-B4 continuation contract | **C++ primary:** native handle stores only the coordinator's committed checkpoint wire and exposes it only after `Succeeded`; empty, cancelled and ordinary handles remain empty. Full `Spec182*` unit regression 257 cases and real Provider conversation selector pass. **Python secondary:** pybind export, SDK bytes forwarding, extension rebuild/import and 81 focused wrapper/compatibility tests pass; the first stale shared-library import failure was repaired by relinking the current DI library. APPEND_DELTA caller, 15 maintained callers, legacy zero-use, no-Python and T016 remain open | 2026-09-10 |
 | [R11-B8-G5 Native Qwen Conversation Caller](evidence/r11-b8-g5-native-qwen-append-caller-20260910.md) | CLOSED_FOR_VALIDATION | R11-B8-G4; R11-B4 continuation contract | **Native-first caller seam:** Qwen native-config FULL_CONTEXT/APPEND_DELTA now constructs the typed C++ continuation, validates authenticated parent checkpoint metadata, removes the generation oracle suffix from APPEND_DELTA canonical input, and forwards only the native opaque checkpoint bytes. Python focused tests 29/29 pass; this is caller mapping evidence only. Real Provider second turn, unavailable-role control, 15 maintained callers, legacy zero-use, no-Python and T016 remain open | 2026-09-10 |
 | [R11-B8-G7 Native Cross-Process Revalidation](evidence/r11-b8-g7-native-cross-process-revalidation-20260910.md) | CLOSED_FOR_VALIDATION | R11-B8-G5; R11-B4/R11-B5 process contracts | **C++ primary:** fresh independent unary and conversation process runs passed; FULL_CONTEXT and APPEND_DELTA both succeeded in one Provider process, wrong parent rejected, Provider restart rejected missing durable state without duplicate execution. This validates the current process boundary only; 15 maintained callers, legacy zero-use, no-Python and T016 remain open | 2026-09-10 |
+| [R11-B8-G8 Native Process Socket Guard](evidence/r11-b8-g8-native-process-socket-guard-20260910.md) | CLOSED_FOR_VALIDATION | R11-B8-G6; T014-A | **Harness:** shared process helper bounds NFD Unix socket paths for retained deep run roots; short/long path boundary checks and all three driver `py_compile` checks pass. No protocol or qualification status is advanced | 2026-09-10 |
 | [R11-B8 Maintained Callers](contracts/native-first-execution.md#dispatch-cards) | PARTIAL | R11-B7; corresponding T012 ABI | G1 generic unary 与 G2 generic stream 已形成稳定出口；仍需 15 个 caller group 的 native entry、实际行为、兼容 wrapper 及旧路径零使用证据，不能按子批次数量计全量完成 | 2026-09-10 |
 | [R11-B9 Native Closure](contracts/native-first-execution.md#dispatch-cards) | NOT_STARTED | R11-B8 | T014 no-Python/依赖闭包工具 → T015 → T016 → T017；最终资格未开始 | 2026-09-10 |
 
@@ -308,6 +309,11 @@ without duplicate execution. See [G7 evidence](evidence/r11-b8-g7-native-cross-p
 and the [G6 startup boundary](evidence/r11-b8-g6-native-process-fixture-startup-20260910.md).
 This does not close the 15 maintained caller groups, legacy zero-use,
 no-Python, T015, T016, or T017 gates.
+
+2026-09-10 R11-B8-G8 native process socket guard / **CLOSED_FOR_VALIDATION** for
+fixture path handling. Deep retained run roots now use a bounded short NFD
+socket path; normal roots remain colocated. This repairs the G6 startup
+boundary and does not change native protocol behavior or qualification state.
 
 2026-09-10 R11-B8-G5 native Qwen conversation caller / **CLOSED_FOR_VALIDATION**（仅限
 Qwen native-config caller 的 continuation DTO 映射）：FULL_CONTEXT 和 APPEND_DELTA 均通过

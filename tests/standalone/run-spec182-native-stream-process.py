@@ -74,7 +74,7 @@ provider_dirs=[('provider', provider_a)]
 if args.replacement and not args.replacement_no_backup: provider_dirs.append(('provider-b', provider_b))
 for n in ['shared','bootstrap-store','authority','requester']+[d for d,_ in provider_dirs]:(run_root/n).mkdir(mode=0o700)
 (run_root/'shared/home').mkdir(); (run_root/'bootstrap-store/home').mkdir()
-nfd_socket=run_root/'nfd.sock'; nfdconf=run_root/'nfd.conf'; b.nfd_config(nfdconf,nfd_socket); policy=run_root/'hello.policies'; b.write(policy,policy_text(),0o600)
+nfd_socket=b.bounded_nfd_socket(run_root); nfdconf=run_root/'nfd.conf'; b.nfd_config(nfdconf,nfd_socket); policy=run_root/'hello.policies'; b.write(policy,policy_text(),0o600)
 # bootstrap identities
 bootenv=os.environ.copy(); bootenv.update({'HOME':str(run_root/'bootstrap-store/home'),'NDN_CLIENT_PIB':'pib-sqlite3:'+str(run_root/'bootstrap-store/pib'),'NDN_CLIENT_TPM':'tpm-file:'+str(run_root/'bootstrap-store/tpm'),'PATH':'/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin'})
 for ident in ['/example/hello/controller','/example/hello/authority']+provider_names+['/example/hello/user']:
