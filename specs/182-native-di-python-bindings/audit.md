@@ -2,10 +2,20 @@
 
 ## Current Whole-Chain Review 2026-09-10
 
-**Revision**: 25 | **Mode**: source alignment / whole-chain static review
+**Revision**: 26 | **Mode**: source alignment / whole-chain static review
 **Verdict**: DRAFT / PARTIAL; T016 preflight UNQUALIFIED
-**Source**: `e596b645` implementation/docs checkpoint / Experimental
-**Evidence**: [R10-B82 whole-chain static audit](evidence/r10-b82-whole-chain-static-audit-20260910.md)
+**Source**: `007d9981` plus R10-B83 worktree / Experimental
+**Evidence**: [R10-B83 native conversation config loader](evidence/r10-b83-native-conversation-config-20260910.md)
+
+R10-B83 closes the direct entry-point mismatch identified by R10-B82: the standalone C++ requester
+now consumes the documented `conversation` object, and both it and the Python binding delegate to
+one C++ loader that validates schema, requester identity, path containment, owner-only key files,
+and journal construction before injecting the coordinator. This is a bounded composition result;
+it does not alter the whole-Spec verdict. The large static scan found no new confirmed algorithmic
+defect. It retained the existing authority-placement, 16 maintained old-route callers,
+independent worker/process, no-Python, and host-bound dependency findings. The next stable exit
+remains one independent requester/Provider process case with artifact identity and dependency
+closure recorded.
 
 R10-B82 reviewed the native requester and Provider entry points, Core handoff,
 conversation/grant ownership, maintained callers, build registration, and dependency

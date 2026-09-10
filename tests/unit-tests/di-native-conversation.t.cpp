@@ -200,6 +200,48 @@ BOOST_AUTO_TEST_CASE(LegacyReadNativeAppendAndWriterLease)
 }
 BOOST_AUTO_TEST_SUITE_END()
 
+BOOST_AUTO_TEST_SUITE(Spec182ConversationConfig)
+BOOST_AUTO_TEST_CASE(SharedNativeConfigLoaderEnforcesOwnerAndPathIdentity)
+{
+  char directory[] = "/tmp/spec182-conversation-config-XXXXXX";
+  BOOST_REQUIRE(::mkdtemp(directory) != nullptr);
+  struct Cleanup {
+    std::filesystem::path root;
+    ~Cleanup() { std::error_code ec; std::filesystem::remove_all(root, ec); }
+  } cleanup{directory};
+  const auto root = std::filesystem::path(directory);
+  std::filesystem::create_directories(root / "keys");
+  const auto keyPath = root / "keys" / "conversation.key";
+  {
+    std::ofstream output(keyPath, std::ios::binary);
+    const std::string key(32, '\x01');
+    output.write(key.data(), key.size());
+  }
+  BOOST_REQUIRE(::chmod(keyPath.c_str(), 0600) == 0);
+  const auto configuration = NativeJson{
+    {"schema", "ndnsf-di-native-conversation-v1"},
+    {"journal", {
+      {"state_root", "state"}, {"identity", "fixture-owner"},
+      {"keys", NativeJson::array({NativeJson{{"id", "active"}, {"file", "keys/conversation.key"}}})},
+      {"quota_bytes", 64 * 1024 * 1024}, {"test_only_allow_ephemeral_state_root", true},
+    }},
+    {"owner", {
+      {"requester_identity", "/requester/A"}, {"service_name", "/service/test"},
+      {"security_domain_digest", digest("security")},
+    }},
+  };
+  auto coordinator = nativeConversationCoordinatorFromConfig(
+    nativeCanonicalJson(configuration), root, "/requester/A");
+  BOOST_REQUIRE(coordinator != nullptr);
+  BOOST_CHECK_THROW(nativeConversationCoordinatorFromConfig(
+    nativeCanonicalJson(configuration), root, "/requester/B"), std::invalid_argument);
+  auto escaped = configuration;
+  escaped["journal"]["keys"][0]["file"] = "../outside.key";
+  BOOST_CHECK_THROW(nativeConversationCoordinatorFromConfig(
+    nativeCanonicalJson(escaped), root, "/requester/A"), std::invalid_argument);
+}
+BOOST_AUTO_TEST_SUITE_END()
+
 namespace {
 struct ConversationOwnerFixture
 {

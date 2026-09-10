@@ -143,6 +143,15 @@ private:
   std::unique_ptr<Impl> m_impl;
 };
 
+// Parse the operator-owned native conversation configuration and construct
+// the single coordinator used by C++ requesters and optional bindings.
+// ``expectedRequesterIdentity`` is checked when non-empty so an entry point
+// cannot accidentally attach a journal to another ServiceUser.
+std::shared_ptr<NativeConversationCoordinator> nativeConversationCoordinatorFromConfig(
+  const std::string& configurationJson,
+  const std::filesystem::path& baseDirectory,
+  const std::string& expectedRequesterIdentity = {});
+
 } // namespace ndnsf::di
 
 #endif // NDNSF_DI_NATIVE_CONVERSATION_COORDINATOR_HPP

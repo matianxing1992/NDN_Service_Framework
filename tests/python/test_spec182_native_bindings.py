@@ -155,12 +155,13 @@ class Spec182NativeBindingsTest(unittest.TestCase):
 
     def test_native_conversation_owner_stays_in_cpp_and_is_injected(self):
         source = MODULE.read_text(encoding="utf-8")
+        coordinator = (ROOT / "NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.cpp").read_text(encoding="utf-8")
         self.assertIn("nativeConversationCoordinatorFromConfig", source)
-        self.assertIn('ndnsf-di-native-conversation-v1', source)
-        self.assertIn("native conversation key file must be owner-only", source)
-        self.assertIn("path escapes configuration directory", source)
-        self.assertIn("NativeConversationJournalConfig", source)
-        self.assertIn("NativeConversationCoordinator", source)
+        self.assertIn('ndnsf-di-native-conversation-v1', coordinator)
+        self.assertIn("native conversation key file must be owner-only", coordinator)
+        self.assertIn("path escapes configuration directory", coordinator)
+        self.assertIn("NativeConversationJournalConfig", coordinator)
+        self.assertIn("NativeConversationCoordinator", coordinator)
         service = (ROOT / "pythonWrapper/ndnsf/service.py").read_text(encoding="utf-8")
         self.assertIn("native_conversation_coordinator_from_config", service)
         client = (ROOT / "NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/client.py").read_text(encoding="utf-8")

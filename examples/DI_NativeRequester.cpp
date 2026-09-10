@@ -172,12 +172,19 @@ int main(int argc, char** argv)
       [face](auto* owner) { delete owner; });
     const auto& request = config.at("request");
     const auto& model = catalog.model.descriptor;
+    std::shared_ptr<NativeConversationCoordinator> conversations;
+    if (config.contains("conversation")) {
+      conversations = nativeConversationCoordinatorFromConfig(
+        nativeCanonicalJson(config.at("conversation")), base,
+        requester);
+    }
     auto grants = std::make_shared<NativeAuthenticatedGrantClient>(requester, requesterKey,
       grant.at("authority_identity"), publicBytes(*authorityKey), issuer, user);
     const auto runtime = nativeRequestRuntimeFromJson(
       nativeCanonicalJson(runtimeConfiguration(config, catalog, requester, epoch)),
       catalog, grants);
     NativeInferenceClient client(user, catalog.preparation->adapters(), runtime,
+      std::move(conversations),
       catalog.preparation->makePreparation(user, runtime.contract.serviceName), admission);
     NativeModelRef modelRef;
     static_cast<NativeModelDescriptor&>(modelRef) = model;

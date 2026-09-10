@@ -1,6 +1,6 @@
 # Spec182 Traceability Matrix
 
-**Revision**: 8 | **Status**: DRAFT / PARTIAL
+**Revision**: 9 | **Status**: DRAFT / PARTIAL
 source review 只证明 baseline 所述实现存在，不证明新实现或资格。
 任务状态和运行证据以 `tasks.md` 各行及其 linked evidence 为准；当前仍有局部
 `FOCUSED_BEHAVIOR_PASS` 与 `PARTIAL`，不把它们合并为最终资格。本轮源码对照与文档检查见
@@ -88,6 +88,12 @@ FR-018/SC-010/PO-015由 [validation workflow](contracts/pre-test-static-review.m
 配置未接线、requester-held artifact authority、16 个旧 route caller、独立 worker/process 与
 依赖闭包缺口；这些发现仍由 T010/T011/T013/T014/T015/T016/T017 持有，不提升任何资格状态。
 详见 [audit](audit.md#current-whole-chain-review-2026-09-10) 与 [R10-B82 evidence](evidence/r10-b82-whole-chain-static-audit-20260910.md)。
+
+2026-09-10 R10-B83：共享 C++ conversation config loader 已接入 standalone requester 与
+Python binding；schema、requester identity、路径和 owner-only key 检查由同一实现负责。该
+局部边界记为 `CLOSED_FOR_VALIDATION`，不提升 T010/T011/T013/T014/T015/T016/T017；authority
+分离、独立 worker/process、maintained caller/no-Python 与依赖闭包继续按原 owner 开放。详见
+[R10-B83 evidence](evidence/r10-b83-native-conversation-config-20260910.md)。
 
 ## Adversarial Closure Traceability
 
