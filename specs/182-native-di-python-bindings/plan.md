@@ -1,6 +1,6 @@
 # Implementation Plan: Native NDNSF-DI with Optional Python Bindings
 
-**Branch**: Experimental | **Revision**: 84 | **Date**: 2026-09-10
+**Branch**: Experimental | **Revision**: 85 | **Date**: 2026-09-10
 **Status**: IN_PROGRESS / 当前实现与验收状态见 tasks.md 的 Task Progress Registry 和 Current Checkpoint
 **Spec**: [spec.md](spec.md)
 
@@ -1186,11 +1186,13 @@ T017 的 evidence/development-handoff.md 包含 exact commit、clean source clos
 
 2026-09-10 R10-B84 native request identity scope / **CLOSED_FOR_VALIDATION (C++ identity boundary)**：
 `NativeInferenceClient` now allocates a fresh owner scope in each production C++ client constructor and
-binds it into the Core request URI before ACK, attempt, recovery, or result state is published. A child
-created by `fork()` therefore does not inherit a cached parent scope. The private test port retains
-deterministic counter-only names for state-machine fixtures. The new native
-identity selector, the existing native client-state selector, and the complete `Spec182*` C++ selector
-pass after the `unit-tests` target build with `-j2`; no Python test is used as native behavior proof.
+binds it into one final request-name component (`<32-hex-owner-scope>-<counter>`) before ACK, attempt,
+recovery, or result state is published. A child created by `fork()` therefore does not inherit a cached
+parent scope. The private test port retains deterministic counter-only names for state-machine fixtures.
+The new native identity selector, the complete `Spec182*` C++ unit selector, and the 9-case
+`Spec170NdnsfDiCoreFlow/Spec182*` C++ integration selector pass after repaired `unit-tests` and
+`integration-tests` builds with `-j2`; an initial multi-component form failed at the integration boundary
+and is retained in the failure log. No Python test is used as native behavior proof.
 This batch does not advance a parent task. Independent requester/Provider worker transport, artifact
 authority separation, maintained caller/no-Python migration, dependency closure, and T016/T017 remain
 open. See [R10-B84 evidence](evidence/r10-b84-native-request-id-scope-20260910.md).

@@ -26,8 +26,9 @@ each production client using `RAND_bytes`; a monotonic-clock/PID fallback is
 retained only for uniqueness if OpenSSL random initialization is unavailable.
 Generating the scope at construction also prevents a child created by `fork()`
 from inheriting a cached parent scope. Production names are
-`/NDNSF/DI/REQUEST/<32-hex-owner-scope>/<counter>`, and recovery IDs inherit
-that base operation identity.
+`/NDNSF/DI/REQUEST/<32-hex-owner-scope>-<counter>`: the scope and counter stay
+in one final Name component so existing Core/Provider suffix matching remains
+wire-compatible. Recovery IDs inherit that base operation identity.
 
 ## Five-lane static review
 
@@ -44,15 +45,23 @@ project review references were also checked (`review-agent.md` SHA-256
 | Production entry/callers | `NativeInferenceClient` production constructors and `request()`; standalone requester and binding remain callers of this native owner | A fresh owner scope is allocated in each native client, before Core/ACK/attempt identity is published |
 | Implementation/wire | `processRequestOwnerScope()`, `m_requestOwnerScope`, and request-id construction in `NativeInferenceClient.cpp` | Static review found no introduced control defect; test-port compatibility is explicit and bounded to the private port |
 | Test/harness/oracle | `Spec182NativeRequestIdentity/ProductionRequestIdsCarryProcessOwnerScope`; existing `Spec182ClientState/*`; full `Spec182*` C++ selector | The new C++ identity case and existing native state cases pass; Python is not the behavior authority |
-| Build/source closure | Waf `unit-tests` target with system-first PATH and `-j2`; changed translation unit registered in the target | The unit-test target built successfully from the current native source tree; no unregistered source was found |
+| Build/source closure | Waf `unit-tests` and `integration-tests` targets with system-first PATH and `-j2`; changed translation unit registered in both targets | Both targets rebuilt successfully from the current native source tree; no unregistered source was found |
 | Migration/evidence | request identity is only native-owned; SA-02/SA-03/SA-04/SA-05 findings remain linked to the next production-chain batches | This batch closes only identity scope; no caller retirement, worker/process transport, or deployment qualification is claimed |
 
 The changed translation units were checked with Cppcheck (`warning,style,
 performance,portability,inconclusive`, C++17, system include suppression). It
-returned zero; the only diagnostics were three pre-existing STL-style notes in
-unchanged `NativeInferenceClient.cpp` lines. The broader maintained C++ scan
-also returned zero after excluding the known third-party header syntax noise.
-`git diff --check` passed.
+returned zero with no diagnostics after excluding the known third-party header
+syntax noise. `git diff --check` passed.
+
+A read-only Cppcheck sweep over the maintained native C++ sources also completed
+with exit `0` (`1073` diagnostic lines: `159` style, `34` performance, `9`
+warning, and `2` inconclusive error reports). The warning/error reports are in
+unchanged files outside this batch, including a possible null promise at
+`ProviderRoleWorker.cpp:616`, undefined 64-bit shifting and iterator checks in
+`ServiceController.cpp`, moved-state checks in `ServiceProvider.cpp`, null
+pointer arithmetic in `NDNSFMessages.cpp`, and an iterator check in
+`Stream.cpp`. They are retained as separate follow-up static work; none overlaps
+the R10-B84 diff, so this batch does not silently classify them as repaired.
 
 ## Native C++ validation
 
@@ -77,6 +86,20 @@ env PATH=/usr/bin:/bin:/usr/sbin:/sbin \
   --run_test='Spec182*' --log_level=test_suite
 -> PASS; complete Spec182 C++ selector, Boost log ends with
    `*** No errors detected` (testing time about 36.4 s)
+
+env PATH=/usr/bin:/bin:/usr/sbin:/sbin \
+  ./waf -o .codex-tmp/spec182-r10-b84c-request-id-repair-build build \
+  --targets=integration-tests,unit-tests -j2
+-> PASS; both native targets linked from the current source tree (49.340 s).
+
+.codex-tmp/spec182-r4-b2/build/integration-tests \
+  --run_test='Spec170NdnsfDiCoreFlow/Spec182*' --log_level=test_suite
+-> Initial nested-component identity attempt: FAIL, exit 201; all 9 C++
+   cases received ACK but had no collaboration. Raw output is retained in
+   `.codex-tmp/spec182-r10-b84b-request-id-integration.log`.
+-> Repaired one-component identity: PASS, 9/9 C++ cases, `*** No errors
+   detected`. Raw output is retained in
+   `.codex-tmp/spec182-r10-b84c-request-id-integration-repaired.log`.
 ```
 
 The test list contains the new `Spec182NativeRequestIdentity` suite. The
@@ -91,11 +114,12 @@ The initial implementation cached one scope in a function-local `static`. The
 read-only follow-up review identified that a process which calls `fork()` after
 that initialization could inherit the parent's scope. The cache was removed;
 each production client now generates its own scope at construction, so a child
-created after `fork()` obtains a new value. The follow-up C++ build completed
-with Waf `-j2` in 1m32.091s, the identity selector passed, and the full
-`Spec182*` selector exited `0` with `*** No errors detected` in about 36.4s.
-Cppcheck returned `0`; its output contained only the known third-party
-`nlohmann/json.hpp` configuration noise.
+created after `fork()` obtains a new value. A second integration review then
+found that representing the scope as another Name component broke the existing
+Core/Provider suffix contract. The identity was repaired to one final
+`<scope>-<counter>` component; the rebuilt C++ unit and integration selectors
+passed. Cppcheck returned `0` with no remaining diagnostics under the stated
+suppression profile.
 
 ## Retained findings and next exit
 

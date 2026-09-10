@@ -2,16 +2,18 @@
 
 ## Current Whole-Chain Review 2026-09-10
 
-**Revision**: 27 | **Mode**: source alignment / whole-chain static review
+**Revision**: 28 | **Mode**: source alignment / whole-chain static review
 **Verdict**: DRAFT / PARTIAL; T016 preflight UNQUALIFIED
-**Source**: `4762fe0f` implementation/docs checkpoint / Experimental
+**Source**: `56cf6076` implementation/docs checkpoint / Experimental
 **Evidence**: [R10-B84 native request identity scope](evidence/r10-b84-native-request-id-scope-20260910.md)
 
 R10-B84 closes one native C++ identity defect found during the whole-chain review: production
-`NativeInferenceClient` request names now include a fresh owner scope per native client, while the
-private test port retains deterministic IDs for native state fixtures. The per-client construction
-also avoids inheriting a cached scope across `fork()`. The new identity selector and the complete
-`Spec182*` C++ selector pass. This is a C++ production/test result; Python remains a wrapper or oracle
+`NativeInferenceClient` request names now include a fresh owner scope per native client in one final
+`<scope>-<counter>` Name component, while the private test port retains deterministic IDs for native
+state fixtures. The per-client construction also avoids inheriting a cached scope across `fork()`. The
+new identity selector, complete `Spec182*` C++ unit selector, and 9-case native Core/Provider integration
+selector pass after repair of an initial multi-component wire regression. This is a C++ production/test
+result; Python remains a wrapper or oracle
 and contributes no native behavior qualification here. The fix does not change the whole-Spec verdict
 or advance a parent task. Independent requester/Provider worker transport, authority separation,
 maintained caller/no-Python migration, and deployment dependency closure remain open.

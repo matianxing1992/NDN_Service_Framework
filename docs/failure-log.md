@@ -1,5 +1,16 @@
 # Failure Log and Evidence Index
 
+## 2026-09-10 — Spec182 R10-B84 native request-scope wire compatibility boundary
+
+After adding a fresh per-client owner scope to the production C++ request identity, the
+shared-library `Spec170NdnsfDiCoreFlow/Spec182*` selector rebuilt successfully but exited
+`201`: all nine C++ cases received an ACK and then stopped before collaboration (`collaborationCalls=0`),
+with stream gaps, unary timeouts, or `DI_NATIVE_NO_ADMITTED_PROVIDER`. The raw output is retained at
+`.codex-tmp/spec182-r10-b84b-request-id-integration.log`. The C++ unit identity selector still passed,
+so this is a native Core/Provider name-contract regression, not evidence of Python binding failure or
+qualification. The next retry must preserve the failure, locate the first parser/filter boundary, and
+prove the repaired request identity through the same C++ integration selector.
+
 ## 2026-09-10 — Spec182 R10-B83 integration target selection boundary
 
 The first post-loader integration rebuild used the current Waf cache's default output tree and
