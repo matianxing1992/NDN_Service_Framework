@@ -1,5 +1,32 @@
 # Failure Log and Evidence Index
 
+## 2026-09-10 — Spec182 R11-B6 native replacement validation boundaries
+
+The first replacement harness attempt could not find Provider A's public key because the
+encoded PIB key names were compared as raw bytes. The driver stopped with `StopIteration` while
+decoding the Name blobs; the raw attempt is retained under
+`/tmp/spec182-r11-b6-replacement-1789043701/`. The repair decodes the PIB Name and selects the
+candidate URI, then reruns with independent A/B identities.
+
+The next harness attempt reached Provider B's real `attempt-2` execution but asserted a text
+form that did not match the JSON log (`"attemptEpoch":"2"` and `attempt-2`). The raw diagnostic
+is `.codex-tmp/spec182-r11-b6-build/replacement-2.log`; the assertion now accepts the actual
+attempt marker and still requires B grant verification, CPU ONNX execution, and the stream oracle.
+
+The no-backup branch initially expected `NATIVE_STREAM_FAILED`, but the native requester
+correctly reports its first boundary as
+`NATIVE_REQUEST_STAGE_FAILED boundary=ACK_CLOSED ... DI_NATIVE_NO_ADMITTED_PROVIDER`. The
+expected marker was corrected in the driver; raw output is
+`.codex-tmp/spec182-r11-b6-build/no-backup.log` and the checked negative run is recorded in
+[R11-B6 evidence](../specs/182-native-di-python-bindings/evidence/r11-b6-native-replacement-20260910.md).
+
+The broad C++ `Spec182*` selector remains red in six existing sampling/epoch-text fixtures. All
+six throw `std::invalid_argument: NativeProviderRuntime requires a runner preparation callback`
+before the relevant assertions; raw output is `.codex-tmp/spec182-r11-b6-build/unit-selector.log`.
+The focused `Spec182StreamAcceptance` selector and the
+`Spec170NdnsfDiCoreFlow/Spec182*` integration selector pass, so this is preserved as a fixture
+boundary rather than attributed to native replacement.
+
 ## 2026-09-10 — Spec182 R11-B5 Provider restart recovery boundary
 
 After the first C++ `FULL_CONTEXT` turn persisted the requester checkpoint, the Provider was
