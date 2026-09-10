@@ -1,6 +1,6 @@
 # Tasks: Native NDNSF-DI with Optional Python Bindings
 
-**Revision**: 163 | **Status**: DRAFT / T001 DONE
+**Revision**: 164 | **Status**: DRAFT / T001 DONE
 **Input**: [spec](spec.md), [code design](contracts/code-design.md),
 [proof](contracts/proof-design.md), [work units](contracts/work-units.md)
 
@@ -61,6 +61,7 @@ R11-B8 现开始按 caller group 批次执行；G4 已形成 native checkpoint h
 | [R11-B8-G25 Slurm Step Resource Sharing](evidence/r11-b8-g25-slurm-step-resource-sharing-20260910.md) | CLOSED_FOR_VALIDATION | R11-B8-G24; Spec110 topology contract | **Deployment harness:** removed `--exclusive` from topology, route, and network-probe steps; all use `--overlap --exact --ntasks=1 --cpus-per-task=1`, retaining `--relative` node placement and Provider GPU binding. The fake-srun integration rejects exclusive steps and all launcher/network checks pass. Real Slurm/SIF multi-machine qualification remains open | 2026-09-10 |
 | [R11-B8-G26 Host Path Command Boundary](evidence/r11-b8-g26-host-path-command-boundary-20260910.md) | CLOSED_FOR_VALIDATION | R11-B8-G25; Spec110 allocation topology | **Deployment harness:** map validation and direct launcher rendering now reject host/build prefixes in application arguments, while allowing only exact `identityRef` and NFD config tokens that are rebound to scratch. New wrong-identity and `--model=/project/...` counterexamples plus 20/20 topology unit, network integration, Python syntax and shell syntax pass. Content digest, exact-SIF, real Slurm/GPU, cross-node NDN, no-Python and T016/T017 remain open | 2026-09-10 |
 | [R11-B8-G27 Routable IPv4 Address Boundary](evidence/r11-b8-g27-routable-ipv4-boundary-20260910.md) | CLOSED_FOR_VALIDATION | R11-B8-G26; Spec110 allocation topology | **Deployment harness:** v1 map now requires IPv4 and rejects unspecified/multicast addresses, plus loopback/link-local addresses for multi-node placement because the route launcher emits `tcp4`/`udp4`. Four address counterexamples, 21/21 topology unit, network integration and Python syntax pass. Real cross-node route, ports, SIF/GPU, no-Python and T016/T017 remain open | 2026-09-10 |
+| [R11-B8-G28 Per-Node Readiness Deadline](evidence/r11-b8-g28-per-node-readiness-deadline-20260910.md) | CLOSED_FOR_VALIDATION | R11-B8-G27; Spec110 topology contract | **Deployment harness:** each NFD row now receives an independent 30-second readiness window; the integration check asserts the deadline is scoped inside the row loop. Shell syntax and network integration pass (`NETWORK_SCRIPT_PASS`). Real Slurm/SIF multi-machine qualification remains open | 2026-09-10 |
 | [R11-B9-G2 Cross-Process Native Main Chain](evidence/r11-b9-g2-cross-process-native-chain-20260910.md) | CLOSED_FOR_VALIDATION | R11-B8-G25; R11-B2--B6 process contracts | **C++ primary:** fresh independent requester/Core/Authority/Provider runs passed unary numerical oracle, stream, FULL_CONTEXT/APPEND_DELTA conversation, alternate-provider replacement, and no-backup fail-closed boundaries; Provider logged grant verification and real ORT CPU evidence. Tiny fixture only; maintained callers, legacy zero-use, T014 I02--I08/no-Python, exact-SIF, MiniNDN/Slurm/GPU and final T016/T017 remain open | 2026-09-10 |
 | [R11-B8 Maintained Callers](contracts/native-first-execution.md#dispatch-cards) | PARTIAL | R11-B7; corresponding T012 ABI | G1 generic unary 与 G2 generic stream 已形成稳定出口；仍需 15 个 caller group 的 native entry、实际行为、兼容 wrapper 及旧路径零使用证据，不能按子批次数量计全量完成 | 2026-09-10 |
 | [R11-B9 Native Closure](contracts/native-first-execution.md#dispatch-cards) | NOT_STARTED | R11-B8 | T014 no-Python/依赖闭包工具 → T015 → T016 → T017；最终资格未开始 | 2026-09-10 |
@@ -345,6 +346,13 @@ P1–P4 是不同的生产入口、进程边界或 selector，不能为了少一
 | R10-B76 | production entry/callers: compatibility manifest → maintained Python API inventory; implementation/wire: `checklists/build_api_migration_manifest.py` regenerated all 344 entries and rebounded source line/hash metadata to checkpoint `31fe172a`; test/harness/oracle: generator output, `sourceCommit` equality, design validator and diff check; build/source closure: manifest-only, no ABI or runtime change; migration/evidence: closes stale provenance from R10-B74 while semantic caller mapping, native default migration and legacy retirement remain open | DONE for this bounded manifest provenance boundary; parent T001/O-004/T013-B remain PARTIAL | static review confirms current HEAD identity and 344-entry coverage; manifest remains routing evidence and cannot promote runtime compatibility or qualification | generator PASS (`entries=344`, `dynamicAppSdk=67`); sourceCommit equality PASS; `validate_design.py --json` PASS; `git diff --check` PASS | no product build, requester/Provider transport, maintained caller/no-Python or T016/T017 run | documentation/generator artifact only | `STATIC_PASS`; `FOCUSED_BEHAVIOR_PASS`; `BUILD_NOT_APPLICABLE`; `OPEN_FOR_NEXT_BATCH`; not `QUALIFICATION_PASS` | [R10-B76 evidence](evidence/r10-b76-compatibility-manifest-refresh-20260909.md); next: map and migrate maintained native callers, then regenerate after each source checkpoint |
 
 ## Current Checkpoint
+
+2026-09-10 R11-B8-G28 per-node readiness deadline / **CLOSED_FOR_VALIDATION**（仅限
+deployment harness）：修复 NFD readiness loop 共用一个全局 30 秒 deadline 的跨节点耦合；每个
+target node 在自己的 row 内建立有界窗口，避免前一节点的慢启动挤压后续节点。shell syntax、
+integration 及防回归 source assertion 通过，最终输出 `NETWORK_SCRIPT_PASS`。这只修复 preflight
+时限边界，不推进真实 Slurm/SIF/跨节点 NDN/GPU/no-Python 或 T016/T017；详见
+[R11-B8-G28 evidence](evidence/r11-b8-g28-per-node-readiness-deadline-20260910.md)。
 
 2026-09-10 R11-B8-G27 routable IPv4 address boundary / **CLOSED_FOR_VALIDATION**（仅限
 多机 topology preflight）：静态审查发现 v1 map 接受 IPv6、loopback、unspecified 和 multicast，

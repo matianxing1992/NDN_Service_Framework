@@ -160,9 +160,11 @@ for row in "${node_rows[@]}"; do
   step_pids+=("$!")
 done
 
-deadline=$((SECONDS+30))
 for row in "${node_rows[@]}"; do
   IFS=$'\t' read -r rank socket <<<"$row"
+  # Give each node its own bounded readiness window.  A slow first node must
+  # not consume the entire budget for later nodes in a multi-node allocation.
+  deadline=$((SECONDS+30))
   ready=0
   while ((SECONDS < deadline)); do
     if srun_node "$rank" test -S "$socket"; then ready=1; break; fi

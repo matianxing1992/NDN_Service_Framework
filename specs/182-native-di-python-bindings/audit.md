@@ -1,6 +1,17 @@
 # Spec182 Design Audit
 
-**Revision**: 35 | **Current source**: R11-B8-G27 routable-IPv4 checkpoint on `Experimental`
+**Revision**: 36 | **Current source**: R11-B8-G28 per-node-readiness checkpoint on `Experimental`
+
+## R11-B8-G28 Per-Node Readiness Deadline Review 2026-09-10
+
+静态审查发现 `run-allocation-topology.sh` 在 NFD readiness loop 外创建一个全局 30 秒
+deadline。多节点部署中，前一节点的慢启动会消耗后续节点的预算；MiniNDN 单机快速启动
+不会暴露这个时序耦合。现已把 deadline 创建移入每个 node row 的 loop，并在网络集成脚本
+加入 source assertion 防止回退。shell syntax 与 network integration 通过，最终为
+`NETWORK_SCRIPT_PASS`。
+
+该修复只收紧预启动 readiness 计时边界，不证明真实 Slurm/SIF、跨节点 NFD route、GPU、
+no-Python 或 T016/T017 资格。详见 [R11-B8-G28 evidence](evidence/r11-b8-g28-per-node-readiness-deadline-20260910.md)。
 
 ## R11-B8-G27 Routable IPv4 Address Boundary Review 2026-09-10
 
