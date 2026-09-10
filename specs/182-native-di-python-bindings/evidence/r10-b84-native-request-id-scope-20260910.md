@@ -84,8 +84,8 @@ env PATH=/usr/bin:/bin:/usr/sbin:/sbin \
 
 .codex-tmp/spec182-r4-b2/build/unit-tests \
   --run_test='Spec182*' --log_level=test_suite
--> PASS; complete Spec182 C++ selector, Boost log ends with
-   `*** No errors detected` (testing time about 36.4 s)
+-> PASS; complete Spec182 C++ selector, 253 test cases, Boost log ends with
+   `*** No errors detected` (testing time about 34.3 s)
 
 env PATH=/usr/bin:/bin:/usr/sbin:/sbin \
   ./waf -o .codex-tmp/spec182-r10-b84c-request-id-repair-build build \
@@ -105,7 +105,7 @@ env PATH=/usr/bin:/bin:/usr/sbin:/sbin \
 The test list contains the new `Spec182NativeRequestIdentity` suite. The
 production constructor path was exercised by constructing two native clients
 and checking the URI prefix, exact 32-character lowercase hexadecimal owner
-scope, and distinct request names. A separate two-process executable run was
+scope, distinct owner scopes, and distinct request names. A separate two-process executable run was
 not performed in this batch; the cross-process transport gate remains open.
 
 ### Static follow-up
