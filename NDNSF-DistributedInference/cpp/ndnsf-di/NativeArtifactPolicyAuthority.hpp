@@ -43,6 +43,22 @@ struct NativeGrantIssuerConfig
   std::function<std::vector<std::uint8_t>(const std::string&, const std::string&)> contentKey;
 };
 
+/** Canonical request/response envelope used by the independent authority
+ * service.  The request contains only the requester signature and public
+ * policy fields; the authority's private key and content key remain in the
+ * authority process. */
+struct NativeGrantAuthorityRequest
+{
+  NativeSignedGrantRequest request;
+  std::uint64_t expiresAtMs = 0;
+  std::string publishedManifestJson;
+};
+
+std::string nativeGrantAuthorityRequestJson(const NativeGrantAuthorityRequest& request);
+NativeGrantAuthorityRequest nativeGrantAuthorityRequestFromJson(const std::string& wire);
+std::string nativeKeyGrantJson(const NativeKeyGrant& grant);
+NativeKeyGrant nativeKeyGrantFromJson(const std::string& wire);
+
 /** Concrete in-process policy/crypto owner, backing the requester authority seam.
  * Keys are native handles with shared lifetime and must not be mutated by their
  * caller after construction. Policy containers are copied into the owner.

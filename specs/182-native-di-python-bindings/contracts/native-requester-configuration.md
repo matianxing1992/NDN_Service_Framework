@@ -2,11 +2,13 @@
 
 ## Status and Entry
 
-R5-B5 / LOCAL_NATIVE_COMPOSITION_VERIFIED。源码入口为 `examples/DI_NativeRequester.cpp`，Waf target 为
-`DI_NativeRequester`，链接 `ndnsf-distributed-inference`；CLI 先由 native loader 完成 catalog、
-grant 和 admission 组合，再把 request fields 交给 `nativeRequestRuntimeFromJson` 做统一 runtime
-schema/identity/budget/state 校验；已构建并验证 help/usage/错误schema，
-真实模型与网络请求尚未验收，详见 [本地结果](../evidence/r3-b1-request-lifecycle-20260908.md#final-local-result)。
+R11-B1 / INDEPENDENT_AUTHORITY_BOUNDARY_PARTIAL。源码入口为 `examples/DI_NativeRequester.cpp`，
+Waf target 为 `DI_NativeRequester`，链接 `ndnsf-distributed-inference`；CLI 先由 native loader
+完成 catalog、grant 和 admission 组合，再把 request fields 交给
+`nativeRequestRuntimeFromJson` 做统一 runtime schema/identity/budget/state 校验。grant 的签发
+私钥和 model content key 由独立的 C++ authority 进程持有，requester 只持有自己的签名私钥和
+authority 公钥。当前已构建并验证 help/usage/错误 schema 及本地 C++ 组合；真实 authority
+网络交互和 requester→Core→Provider 请求仍未验收，详见 [R11-B1 evidence](../evidence/r11-b1-independent-authority-20260910.md)。
 
 ```bash
 DI_NativeRequester --help
@@ -27,7 +29,7 @@ DI_NativeRequester --config requester.json --input application-input.bin --outpu
 | core | group、requester_identity、authority_identity、trust_schema_file；authority_identity 是 Core AA，不是下行 grant issuer 的身份 |
 | limits | bootstrap_ms（1..3600000）、max_source_bytes、max_assembled_bytes |
 | catalog | 以下 catalog schema；包含模型与已有 Qwen/YOLO splitter 配置 |
-| grant | authority_identity、requester_private_key_file、authority_private_key_file、content_key_id、content_key_file、protection_epoch、recipient_public_key_files |
+| grant | authority_identity、authority_service、authority_public_key_file、requester_private_key_file、protection_epoch |
 | offer_admission | policy（既有 offer policy JSON）、public_key_files（signer key ID→PEM 文件）、candidate_digest |
 | request | service、task、adapter_composition_digest、task_descriptor_digest、input_layout_digest、security_policy_digest、max_candidates、max_policy_ms、timeout_ms、ack_timeout_ms；可选 `application_request_id`（维护调用方的 caller correlation，最多 256 字节，由 native owner 另行分配权威 Core request ID）、generation_mode、max_reentries、no_progress_ms、max_segments、options_file。`generation_mode` 只能是 `TOKEN_DIAGNOSTIC` 或 `TOKEN_STREAMING`；Qwen catalog 必须使用 `TOKEN_STREAMING`，并同时提供 operator-pinned `tokenizer_digest`（`sha256:` + 64 位小写十六进制）。该摘要直接进入 native generation contract，不能从 model semantics digest 或 automatic planner 临时状态推导。未提供后三个 runtime limit 时由 CLI 使用受限默认值，再由 native parser 校验 |
 | conversation | 可选的 `ndnsf-di-native-conversation-v1` owner 配置；由 C++ 读取 operator-owned journal/key files 并把 opaque coordinator 注入 `NativeInferenceClient`。省略时 conversation requests 必须 fail-closed，不得使用 Python `ConversationCoordinator` |
@@ -66,11 +68,12 @@ must pass the native coordinator's exact digest validation. The native journal e
 0700 directory/0600 file, writer lease, quota, encryption and restore rules. Volatile roots are
 accepted only with the explicit test flag and are never a production qualification result.
 
-requester 与 Core AA 的身份及证书须已在 PIB 中；CLI 不创建身份。grant 两个身份/签名
-密钥独立，当前私钥为无交互读取的 Ed25519 PEM；encrypted PEM 不触发终端口令提示。
-recipient_public_key_files 的键是 Provider NDN identity，值是其 grant recipient 公钥
-文件；该注册表与 ACK 内用于 Core group wrapping 的 RSA key offer 是不同用途。
-content_key_file 是已拥有的模型内容密钥，不是 CLI 新生成的随机 key。
+requester 与 Core AA 的身份及证书须已在 PIB 中；CLI 不创建身份。requester 的签名私钥和
+authority 的签名公钥均为无交互读取的 Ed25519 PEM；encrypted PEM 不触发终端口令提示。
+Provider recipient 公钥、authority 签发私钥、content key 和 immutable publication policy
+只出现在独立 authority 配置中，见 [Native Authority Configuration](native-authority-configuration.md)。
+requester 通过既有 Core signed service transport 请求 authority，不在本地构造 issuer 或
+生成替代 grant。
 
 ## Catalog Schema
 
@@ -109,18 +112,16 @@ deployment/
   model/initializers.bin          # only when the pinned source uses it
   policy/trust-schema.conf
   keys/requester-signing.pem
-  keys/authority-signing.pem
-  keys/provider-recipient-public.pem
   keys/provider-offer-public.pem
-  keys/model-content.key
+  keys/authority-public.pem
   input/application-input.bin
 ```
 
 ## Publication Authorization
 
-发布会生成新 manifest hash。issuer 的 immutable publicationSources 固定原允许 manifest
-对应的 model name/content、canonical source、initializer object 和 artifact profile。
-新请求的签名绑定新 manifest hash，issuer 核对实际 publication bytes 与这些源身份后，
+发布会生成新 manifest hash。独立 authority 的 immutable publicationSources 固定原允许
+manifest 对应的 model name/content、canonical source、initializer object 和 artifact profile。
+新请求的签名绑定新 manifest hash，authority 核对实际 publication bytes 与这些源身份后，
 才使用原模型 key 签发新 manifest 的 grant。不因请求到来扩充 allowlist。
 
 该配置入口支持本地已固定源；它不认证来自任意远程 URL 的配置。当前 CLI 输入为 INLINE；
@@ -131,7 +132,8 @@ native journal/coordinator 被 C++ 构造并注入；真实 Provider receipt/con
 
 ## Validation Ownership
 
-R3-B1 负责配置读取、native library 接线、CLI build/help/error 及 unit 组合检查；R5-B5
-负责 CLI 与 shared runtime parser 的组合边界；T016
-负责真实 Core/Provider 与 MiniNDN 请求、失败/取消的验收。所有实际结果写入
-[R3-B1 evidence](../evidence/r3-b1-request-lifecycle-20260908.md)。静态配置说明不能替代它。
+R11-B1 负责 requester/authority 配置边界、native wire 和独立 authority target 的 C++
+组合检查；R11-B2 负责 authority 与 requester/Core/Provider 的真实跨进程 unary；R5-B5
+保留 CLI 与 shared runtime parser 的组合边界；T016 负责真实 Core/Provider 与 MiniNDN
+请求、失败/取消的最终资格验收。所有实际结果写入对应 evidence；静态配置说明不能替代
+进程或网络验收。

@@ -1,5 +1,23 @@
 # Spec182 Design Audit
 
+**Revision**: 29 | **Current source**: uncommitted R11-B1 working tree on `Experimental`
+
+## R11-B1 Independent Authority Review 2026-09-10
+
+本轮按 Native-First Execution Order 做限定范围 source review，范围是 requester grant
+composition、authority wire、独立 C++ authority entry、Waf registration、C++ tests 和
+配置契约。R11-B1 已形成可构建的独立 owner 边界：requester 不再读取 authority signing
+private key 或 model content key，也不构造 `NativeArtifactGrantIssuer`；authority 进程
+独立持有这些 material，并在 ProviderPermission 就绪后注册 TargetedOnly service。
+
+编译期间发现 requester 使用了未定义的 `epoch`，完整 C++ selector 又发现 local issuer
+兼容构造路径使用了错误时钟；两项均已修复并通过回归。静态检查没有发现新的已确认控制
+缺陷，但 Cppcheck 1.90 在 vendor nlohmann/json 与 Boost 预处理边界失败，不能作为本轮
+通过证据。真实 authority↔requester process 签发、拒绝、不可达和隔离反例尚未运行，故
+本轮结论为 `OPEN_FOR_NEXT_BATCH`，不推进 T005、T010 或 N2。
+
+详细五 lane、命令、原始日志和 closure decision 见 [R11-B1 evidence](evidence/r11-b1-independent-authority-20260910.md)。
+
 ## Native-First Replan 2026-09-10
 
 用户确认的剩余顺序见 [native-first execution](contracts/native-first-execution.md)，
@@ -8,6 +26,11 @@
 把所有 process tests 推迟到 T016 的规则。R11-B1/B2 是下一生产出口；R10-B83/B84
 保留各自局部结果，原 16 callers、no-Python、依赖闭包和 T016 仍未关闭。
 本轮是定向文档修订，不宣称重新完成全仓库源码审计。
+
+## Current Whole-Chain Review 2026-09-10
+
+此锚点保留跨任务全链审查的稳定链接；本轮 R11-B1 是其后的限定 authority 批次，
+不替换该审查的全链结论。历史全链内容如下。
 
 ## Previous Whole-Chain Review 2026-09-10
 

@@ -128,32 +128,23 @@ int main(int argc, char** argv)
       source.initializerBytes = read(base / catalogConfig.at("source").at("initializer_file").get<std::string>(), control.maxSourceBytes);
     const auto catalog = NativeRequestCatalog::load(nativeCanonicalJson(catalogConfig), std::move(source), control);
     const auto& grant = config.at("grant");
+    if (grant.contains("authority_private_key_file") || grant.contains("content_key_file") ||
+        grant.contains("content_key_id")) {
+      throw std::invalid_argument(
+        "requester configuration must not contain authority signing or model content keys");
+    }
+    if (!grant.contains("authority_service") || !grant.contains("authority_public_key_file")) {
+      throw std::invalid_argument(
+        "requester configuration requires authority_service and authority_public_key_file");
+    }
+    const auto epoch = grant.at("protection_epoch").get<std::string>();
     const auto requesterKey = key(base / grant.at("requester_private_key_file").get<std::string>(), true);
-    const auto authorityKey = key(base / grant.at("authority_private_key_file").get<std::string>(), true);
-    NativeGrantIssuerConfig issuerConfig;
-    issuerConfig.authorityIdentity = grant.at("authority_identity");
-    issuerConfig.requesterIdentity = config.at("core").at("requester_identity");
-    issuerConfig.protectionEpoch = grant.at("protection_epoch");
-    issuerConfig.keyId = grant.at("content_key_id");
-    issuerConfig.authorityPrivateKey = authorityKey;
-    issuerConfig.requesterPublicKey = requesterKey;
-    issuerConfig.allowedModelManifests = {catalog.model.modelManifestDigest};
-    issuerConfig.publicationSources.emplace(catalog.model.modelManifestDigest, NativeGrantPublicationSource{
-      catalog.model.descriptor.modelName, catalog.model.descriptor.contentDigest, catalog.model.canonicalSourceDigest,
-      catalog.model.canonicalInitializerObjectDigest, catalogConfig.at("recipe").at("artifact_profile_digest")});
-    for (const auto& recipient : grant.at("recipient_public_key_files").items())
-      issuerConfig.recipientPublicKeys.emplace(recipient.key(), key(base / recipient.value().get<std::string>(), false));
-    auto contentKey = std::shared_ptr<std::vector<std::uint8_t>>(
-      new std::vector<std::uint8_t>(read(base / grant.at("content_key_file").get<std::string>(), 256)),
-      [](auto* bytes) { if (!bytes->empty()) OPENSSL_cleanse(bytes->data(), bytes->size()); delete bytes; });
-    if (contentKey->empty()) throw std::invalid_argument("owned model content key is empty");
-    const auto manifest = catalog.model.modelManifestDigest;
-    const auto epoch = issuerConfig.protectionEpoch;
-    issuerConfig.contentKey = [contentKey, manifest, epoch](const auto& requestedModel, const auto& requestedEpoch) {
-      if (requestedModel != manifest || requestedEpoch != epoch) throw std::invalid_argument("unowned content key request");
-      return *contentKey;
-    };
-    auto issuer = std::make_shared<NativeArtifactGrantIssuer>(std::move(issuerConfig));
+    // The requester owns only its signing key and the authority verification
+    // key.  Authority signing/content keys are deliberately absent from this
+    // configuration and process; grants arrive through the independent native
+    // authority service below.
+    const auto authorityPublicKey = key(
+      base / grant.at("authority_public_key_file").get<std::string>(), false);
     const auto& offer = config.at("offer_admission");
     std::map<std::string, std::string> offerKeys;
     for (const auto& entry : offer.at("public_key_files").items())
@@ -179,7 +170,12 @@ int main(int argc, char** argv)
         requester);
     }
     auto grants = std::make_shared<NativeAuthenticatedGrantClient>(requester, requesterKey,
-      grant.at("authority_identity"), publicBytes(*authorityKey), issuer, user);
+      grant.at("authority_identity"), publicBytes(*authorityPublicKey),
+      epoch,
+      NativeAuthenticatedGrantClient::issueThroughCore(
+        user, grant.at("authority_identity").get<std::string>(),
+        grant.at("authority_service").get<std::string>()),
+      NativeAuthenticatedGrantClient::publishThroughCore(user));
     const auto runtime = nativeRequestRuntimeFromJson(
       nativeCanonicalJson(runtimeConfiguration(config, catalog, requester, epoch)),
       catalog, grants);
