@@ -5015,5 +5015,7 @@ The first focused Boost.Test invocation used the wrong suite path and returned
 `Spec175NativeAssembly`. Rerunning
 `Spec175NativeAssembly/NativeProviderOfferV3CarriesDeviceCapacitySnapshot`
 against the pinned `/tmp/t008-build-root` configuration passed with no errors.
-The lesson is to query the test registry before selecting a focused filter and
-to bind the same dependency prefix used by the production APP builder.
+The complete `Spec175NativeAssembly` suite (9 cases, 13.86 s) passed under the
+same pinned configuration. The lesson is to query the test registry before
+selecting a focused filter and to bind the same dependency prefix used by the
+production APP builder.
