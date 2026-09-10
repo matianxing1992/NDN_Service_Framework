@@ -3,7 +3,8 @@ set -eu
 scratch=''; gpu_type=''; gpu_count=''
 while [ "$#" -gt 0 ]; do case "$1" in --scratch) scratch=$2;shift 2;;--gpu-type) gpu_type=$2;shift 2;;--gpu-count) gpu_count=$2;shift 2;;*) exit 2;;esac;done
 [ -n "${SLURM_JOB_ID:-}" ] || { echo COMPUTE_PREFLIGHT_REQUIRES_SLURM >&2; exit 3; }
-# Batch templates use a job-bound basename with an optional run-id suffix.
+# The canonical batch template uses a job-bound basename with an optional
+# run-id suffix.
 # Keep the preflight contract aligned with run-container.sh and the topology
 # supervisor, while rejecting nested paths and another job's scratch.
 scratch_name=${scratch#/tmp/}
