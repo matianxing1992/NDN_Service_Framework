@@ -5132,3 +5132,15 @@ reprepare the GPU run before retrying; no remote bytes were published.
 Lesson: every profile evidence locator must agree with the current plane
 manifest before SSH transport; a valid plane alone cannot repair stale profile
 metadata.
+
+## 2026-09-10 — profile refresh invalidated the earlier local gate
+
+Symptom: after the operator-lock and dispatch-plane refresh, the next GPU
+submission stopped with `GATE_RETAINED_EVIDENCE:localSif` before SSH staging.
+Root cause: the earlier shared local CPU verdict was prepared against the old
+profile/document digest, so retained reanalysis correctly rejected it after
+the profile changed.
+Fix status: keep the old run as historical evidence, create a fresh local CPU
+run from the refreshed profile, and bind its new verdict before GPU submission.
+Lesson: any profile or plane identity change invalidates downstream retained
+gates; rerun the gate from the new frozen profile instead of editing a verdict.
