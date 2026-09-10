@@ -178,6 +178,7 @@ def test_run_container_accepts_template_job_scoped_scratch_names(
         shutil.rmtree(scratch, ignore_errors=True)
     assert result.returncode == 0, result.stderr
     assert invocation.exists()
+    assert (tmp_path / "cache" / f"u{os.getuid()}" / _digest(sif).split(":", 1)[1]).is_dir()
 
 
 def test_run_container_rejects_scratch_from_another_job(tmp_path: Path) -> None:

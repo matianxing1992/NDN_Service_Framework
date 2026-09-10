@@ -92,8 +92,18 @@ sif_cache_key=${sif_sha#sha256:}
 case "$sif_cache_key" in
   ''|*[!0-9a-fA-F]*) echo SIF_DIGEST_INVALID >&2; exit 4 ;;
 esac
-sif_cache_dir="${NDNSF_SIF_CACHE_DIR:-/tmp/ndnsf-di-sif-cache}/$sif_cache_key"
+sif_cache_root="${NDNSF_SIF_CACHE_DIR:-/tmp/ndnsf-di-sif-cache}"
+# The digest is immutable, but a shared cache parent is still writable by
+# other cluster users on many /tmp configurations. Scope the cache below the
+# numeric uid and make that directory private before opening the lock; this
+# prevents another user from planting a stage.lock symlink or replacing a
+# partially staged image for this job.
+sif_cache_user_root="$sif_cache_root/u$(id -u)"
+mkdir -p "$sif_cache_user_root"
+chmod 700 "$sif_cache_user_root"
+sif_cache_dir="$sif_cache_user_root/$sif_cache_key"
 mkdir -p "$sif_cache_dir"
+chmod 700 "$sif_cache_dir"
 local_sif="$sif_cache_dir/runtime.sif"
 if [ -n "$build_record" ]; then
   # The metadata-only validator deliberately does not stat the shared SIF.
