@@ -109,10 +109,31 @@ class AllocationTopologyTest(unittest.TestCase):
         nfd_rendered = topology.render_process_launcher(nfd, "/tmp/ndnsf-di-job", workdir)
         self.assertIn("kind=nfd", nfd_rendered)
         self.assertNotIn("identity_source=", nfd_rendered)
+        self.assertIn('runtime_config=/tmp/ndnsf-di-job/generated/nfd-0.conf', nfd_rendered)
+        self.assertIn('exec nfd --config "$runtime_config"', nfd_rendered)
+        self.assertNotIn("/tmp/spec110/", nfd_rendered)
         self.assertEqual(
             subprocess.run(["bash", "-n"], input=nfd_rendered, text=True, check=False).returncode,
             0,
         )
+
+    def test_nfd_config_is_rebound_to_job_scratch(self) -> None:
+        value = load("single-node.json")
+        nfd = next(row for row in value["processes"] if row["kind"] == "nfd")
+        rendered = topology.render_process_launcher(
+            nfd, "/tmp/ndnsf-di-job", "/project/tma1/ndnsf-di/bundle"
+        )
+        self.assertIn('exec nfd --config "$runtime_config"', rendered)
+        nfd["command"] = ["nfd", "--config=/tmp/spec110/shared.conf"]
+        rendered = topology.render_process_launcher(
+            nfd, "/tmp/ndnsf-di-job", "/project/tma1/ndnsf-di/bundle"
+        )
+        self.assertIn('exec nfd --config="$runtime_config"', rendered)
+        nfd["command"] = ["nfd", "--config"]
+        with self.assertRaisesRegex(topology.TopologyError, "TOPOLOGY_NFD_CONFIG_INVALID"):
+            topology.render_process_launcher(
+                nfd, "/tmp/ndnsf-di-job", "/project/tma1/ndnsf-di/bundle"
+            )
 
     def test_process_launcher_rebinds_explicit_identity_argument(self) -> None:
         value = load("single-node.json")
