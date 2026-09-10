@@ -169,6 +169,21 @@ class AllocationTopologyTest(unittest.TestCase):
                 process, "/tmp/ndnsf-di-current-job", "/project/tma1/ndnsf-di/bundle"
             )
 
+    def test_process_launcher_rejects_socket_path_traversal(self) -> None:
+        value = load("single-node.json")
+        process = next(row for row in value["processes"] if row["kind"] == "nfd")
+        process["nfdSocket"] = "/tmp/ndnsf-di-current-job/../other/nfd.sock"
+        with self.assertRaisesRegex(topology.TopologyError, "TOPOLOGY_NFD_SOCKET_INVALID"):
+            topology.render_process_launcher(
+                process, "/tmp/ndnsf-di-current-job", "/project/tma1/ndnsf-di/bundle"
+            )
+
+    def test_nfd_state_path_traversal_is_rejected(self) -> None:
+        value = load("single-node.json")
+        template = (REPO / "packaging/ndnsf-di-container/adapters/slurm-apptainer/templates/nfd.conf.in").read_text()
+        with self.assertRaisesRegex(topology.TopologyError, "TOPOLOGY_NFD_TEMPLATE_INVALID"):
+            topology.render_nfd_config(template, value["nodes"][0], "/tmp/ndnsf-di-job/../other")
+
     def test_process_launcher_copies_read_only_identity_before_exec(self) -> None:
         value = load("multi-node-tcp.json")
         provider = next(row for row in value["processes"] if row["kind"] == "provider")
@@ -234,6 +249,13 @@ class AllocationTopologyTest(unittest.TestCase):
         value = load("single-node.json")
         value["processes"][1]["identityRef"] = "/project/tma1/../shared/controller"
         with self.assertRaisesRegex(topology.TopologyError, "TOPOLOGY_IDENTITY_BINDING_INVALID"):
+            topology.validate_process_map(value)
+
+        value = load("single-node.json")
+        value["nodes"][0]["nfdSocket"] = "/tmp/ndnsf-di-job/../other/nfd.sock"
+        for process in value["processes"]:
+            process["nfdSocket"] = value["nodes"][0]["nfdSocket"]
+        with self.assertRaisesRegex(topology.TopologyError, "TOPOLOGY_NFD_SOCKET_INVALID"):
             topology.validate_process_map(value)
 
 

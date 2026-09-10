@@ -69,7 +69,8 @@ keychain 环境。NFD 使用独立 scratch `HOME` 且不继承角色 keychain。
 相信 `--gpu-bind` 的编号；TCP/UDP 诊断必须分别使用各自节点端口，不能用已选传输的端口
 冒充另一种传输。失败均停在 pre-exec/probe 边界，不得生成 READY 或资格 PASS。
 NFD socket 还必须位于当前作业的 `--scratch` 目录内；仅有 `/tmp/ndnsf-di-*` 前缀而
-跨作业复用 socket 的 process map 会在启动前被拒绝。
+跨作业复用或含有 `..` 路径组件的 process map 会在启动前被拒绝，NFD state directory
+也执行同样的路径组件检查。
 
 ## Independent Authority Boundary
 

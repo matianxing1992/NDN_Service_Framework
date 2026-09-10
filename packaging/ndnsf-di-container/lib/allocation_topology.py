@@ -104,7 +104,8 @@ def validate_process_map(value: Mapping[str, Any]) -> dict[str, Any]:
             ipaddress.ip_address(node["address"])
         except ValueError:
             _fail("TOPOLOGY_NODE_ADDRESS_INVALID", node["name"])
-        if not str(node["nfdSocket"]).startswith("/tmp/ndnsf-di-"):
+        if (not str(node["nfdSocket"]).startswith("/tmp/ndnsf-di-") or
+                ".." in Path(node["nfdSocket"]).parts):
             _fail("TOPOLOGY_NFD_SOCKET_INVALID", node["name"])
         if any(not isinstance(node[key], int) or not 1024 <= node[key] <= 65535 for key in ("tcpPort", "udpPort")):
             _fail("TOPOLOGY_PORT_INVALID", node["name"])
@@ -233,7 +234,10 @@ def render_nfd_config(template: str, node: Mapping[str, Any], state_dir: str) ->
     rendered = template
     for key, value in values.items():
         rendered = rendered.replace("@@" + key + "@@", str(value))
-    if "@@" in rendered or not str(state_dir).startswith("/tmp/ndnsf-di-"):
+    if ("@@" in rendered or
+            not str(state_dir).startswith("/tmp/ndnsf-di-") or
+            ".." in Path(state_dir).parts or
+            any(char in str(state_dir) for char in "\x00\n\r")):
         _fail("TOPOLOGY_NFD_TEMPLATE_INVALID")
     return rendered
 
@@ -265,7 +269,8 @@ def render_process_launcher(process: Mapping[str, Any], scratch: Path | str,
         _fail("TOPOLOGY_PROCESS_ID_INVALID", process_id)
     if kind not in {"nfd", "controller", "user", "provider"}:
         _fail("TOPOLOGY_PROCESS_KIND_INVALID", process_id)
-    if not isinstance(socket_path, str) or not socket_path.startswith("/tmp/ndnsf-di-"):
+    if (not isinstance(socket_path, str) or not socket_path.startswith("/tmp/ndnsf-di-") or
+            ".." in Path(socket_path).parts):
         _fail("TOPOLOGY_NFD_SOCKET_INVALID", process_id)
     command = _safe_command(command, process_id)
     if kind == "nfd":
