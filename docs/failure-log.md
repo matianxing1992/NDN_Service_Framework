@@ -5049,3 +5049,17 @@ rerendered the plane successfully.
 Lesson: never trust a cache filename alone; verify the content hash before
 rendering or submitting and isolate repaired inputs from historical cache
 links.
+
+## 2026-09-10 — v34 MiniNDN was started before issuer provisioning
+
+Symptom: the first direct v34 Y-B invocation returned
+`MININDN_PREPARATION_DIGEST` because `public/preparation.json` did not yet
+exist.
+Root cause: `submit.py prepare` freezes the harness only; the maintained
+containerized issuer still has to materialize the signed preparation under a
+fresh run before `spec183_minindn.py` can consume it.
+Fix status: the run has no execution record and remains recoverable; run the
+registered `spec183_dev_provision.py provision` step first, then invoke the
+MiniNDN driver with the retained preparation digest.
+Lesson: distinguish offline prepare from issuer provisioning and never derive a
+preparation digest from a nonexistent or hand-written file.
