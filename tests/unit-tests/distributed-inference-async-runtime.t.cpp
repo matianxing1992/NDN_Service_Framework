@@ -7245,7 +7245,7 @@ NativeEpochCoordinatorResult runSamplingEpochs(
     {"evidence.providerBootId", identity.providerBootId}, {"state.securityEpoch", "7"},
     {"state.generationId", identity.generationId}, {"state.schemaDigest", identity.stateSchemaDigest}};
   const auto count = logits.size();
-  runtime.registerRunner(spec, makeNativeModelRunner(
+  auto samplingRunner = makeNativeModelRunner(
     [logits = std::move(logits)](const RoleExecutionContext& context) {
       const auto& values = logits.at(context.inferenceEpoch);
       NamedTensor tensor;
@@ -7255,7 +7255,8 @@ NativeEpochCoordinatorResult runSamplingEpochs(
       if (!tensor.payload.empty()) std::memcpy(tensor.payload.data(), values.data(), tensor.payload.size());
       return std::map<std::string, TensorBundle>{{"onnx-output-bundle",
         makeEncodedTensorBundle("onnx-output-bundle", {std::move(tensor)})}};
-    }));
+    });
+  runtime.registerRunner(spec, samplingRunner);
   NativeExecutionPlan plan; plan.roles = {spec.role};
   NativeDependencySpec feedback;
   feedback.producers = feedback.consumers = {spec.role};
@@ -7271,6 +7272,11 @@ NativeEpochCoordinatorResult runSamplingEpochs(
   config.samplingDigest = stateDigest('1');
   config.initialInputs = {{"input_ids", makeEncodedTensorBundle("prompt", {
     NamedTensor{"input_ids", TensorElementType::Int64, {1, 3}, rawTensorPayload<std::int64_t>({11, 12, 13})}})}};
+  // NativeEpochCoordinator always uses the prepared-role seam.  Keep this
+  // fixture on the same production boundary while reusing the deterministic
+  // runner registered above; a missing callback would test only the guard and
+  // fail before sampling behavior is exercised.
+  config.prepareRunner = [samplingRunner] { return samplingRunner; };
   configure(config);
   return runNativeEpochCoordinator(std::move(config));
 }
