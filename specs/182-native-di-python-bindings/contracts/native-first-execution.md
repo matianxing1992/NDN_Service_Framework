@@ -92,6 +92,9 @@ NFD 的 `--config` 参数也必须改写到该作业 scratch 的配置副本，�
 之间复用；配置文件写入和 launcher 使用必须指向同一节点本地路径。
 同一启动器还必须在启动 NFD 前用目标节点的 `srun` 验证显式 `--workdir` 可见；提交节点存在
 而计算节点不存在的 bundle 不能进入 readiness 阶段。
+同样，在启动任何 NFD 前必须在每个目标节点检查所有非 NFD `identityRef` 的
+`.ndn/pib.db` 与 `.ndn/ndnsec-key-file` 可读；身份源只在提交节点可见或不可读时，必须在
+pre-start 边界失败并保持零 NFD 启动，不能等业务进程 `exec` 后才暴露绑定错误。
 在任何子进程启动前发生的可见性、materialization 或 map-render 失败也必须写出包含原始退出码
 和 `survivors: 0` 的 `teardown.json`，不能以无证据的直接退出代替失败边界。
 

@@ -1,6 +1,18 @@
 # Spec182 Design Audit
 
-**Revision**: 36 | **Current source**: R11-B8-G28 per-node-readiness checkpoint on `Experimental`
+**Revision**: 37 | **Current source**: R11-B8-G29 prestart-identity checkpoint on `Experimental`
+
+## R11-B8-G29 Pre-Start Identity Visibility Review 2026-09-10
+
+静态审查发现身份源原先只在 Controller/Provider/User 的 launcher `exec` 前检查；如果计算
+节点未挂载某个 `/project/.../.ndn`，监督器仍会先启动全部 NFD，形成部分拓扑并把绑定错误
+推迟到业务阶段。现已在首个 NFD 启动前，以每个目标节点的 `srun` 检查所有非 NFD 身份的
+可读 `pib.db` 和 `ndnsec-key-file`。缺失时以 `SPEC110_IDENTITY_NOT_VISIBLE` 在 pre-start
+失败，并验证 `teardown.json` 为原始 exit 4、`survivors: 0` 且无 NFD 日志。21/21 topology
+unit、network integration 和 shell syntax 通过。
+
+该修复只收紧身份输入的启动顺序，不证明真实共享存储、Slurm/SIF/GPU、跨节点 NDN、
+no-Python 或 T016/T017 资格。详见 [R11-B8-G29 evidence](evidence/r11-b8-g29-prestart-identity-visibility-20260910.md)。
 
 ## R11-B8-G28 Per-Node Readiness Deadline Review 2026-09-10
 

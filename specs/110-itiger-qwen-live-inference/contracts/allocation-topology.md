@@ -55,6 +55,13 @@ target-node `srun` step into that node's job scratch and executed from the
 scratch copy; an evidence or submit-host path that is not mounted on a compute
 node is a pre-start failure.
 
+Before starting any NFD, the supervisor MUST also verify on each target node
+that every non-NFD `identityRef` exposes readable `.ndn/pib.db` and
+`.ndn/ndnsec-key-file` files. An identity source that is visible on the submit
+host but absent or unreadable on a compute node is a pre-start failure; the
+supervisor must not leave NFDs running while waiting for a later business
+process to discover that binding error.
+
 Each NFD configuration MUST also be materialized under the current job's
 scratch directory. If the frozen command contains `--config PATH` or
 `--config=PATH`, the launcher rewrites that argument to its scratch-local
