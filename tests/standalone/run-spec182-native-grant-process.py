@@ -35,6 +35,22 @@ def write(path: Path, data, mode=None):
         path.chmod(mode)
 
 
+def bounded_nfd_socket(run_root: Path) -> Path:
+    """Choose a Unix socket path that stays below AF_UNIX pathname limits.
+
+    Retained Spec182 run roots can be deeply nested under the repository. NFD
+    rejects an overlong socket pathname before creating the socket, which is a
+    fixture-startup failure rather than a native protocol result. Keep the
+    normal colocated path when it is safe and use a short per-process path for
+    long roots.
+    """
+    candidate = run_root / "nfd.sock"
+    if len(os.fsencode(str(candidate))) <= 100:
+        return candidate
+    digest = hashlib.sha256(str(run_root).encode("utf-8")).hexdigest()[:16]
+    return Path(tempfile.gettempdir()) / f"s182-nfd-{digest}-{os.getpid()}.sock"
+
+
 def run(command, env, log, *, wait=True):
     handle = log.open("w", buffering=1)
     process = subprocess.Popen(command, cwd=ROOT, env=env, stdout=handle,
