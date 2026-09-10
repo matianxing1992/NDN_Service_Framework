@@ -54,7 +54,10 @@ std::map<std::string, NativeRoleProjectionInputs> NativePlanProjectionBuilder::b
     const auto& spec = core.assemblyByRole.at(role);
     const auto found = admitted.find(assignment.second);
     if (found == admitted.end()) throw std::invalid_argument("projection has no admitted assigned provider");
-    NativePlanSealer::grantView(core, *found->second, sealed.security);
+    // The same Provider may own several roles.  Validate the grant view
+    // against this exact role so a valid grant for the first co-located role
+    // cannot accidentally stand in for another role's artifact identity.
+    NativePlanSealer::grantView(core, *found->second, sealed.security, role);
     const auto& offer = found->second->observation();
     if (offer.capturedAtMs > context.nowMs || offer.expiresAtMs <= context.nowMs)
       throw std::invalid_argument("projection offer is outside the frozen time window");

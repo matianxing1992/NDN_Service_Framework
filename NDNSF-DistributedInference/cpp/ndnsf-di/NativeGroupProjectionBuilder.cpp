@@ -40,8 +40,16 @@ std::map<std::string, NativeRoleProjectionInputs> NativeGroupProjectionBuilder::
       !context.nowMs || context.nowMs >= core.expiresAtMs || !context.noProgressMs)
     throw std::invalid_argument("group projection bounds or caller authorization are invalid");
   context.noProgressMs = std::min(context.noProgressMs, core.expiresAtMs - context.nowMs);
+  // A Provider may own more than one role.  Keep one admitted offer per
+  // Provider because the projection builder treats offers as identity-keyed
+  // observations; repeating the same offer for each role would be rejected as
+  // a forged duplicate before group construction starts.
   std::vector<NativeAdmittedOfferV3> offers;
-  for (const auto& assignment : core.assignment.providerByRole) offers.push_back(keys.offer(assignment.second));
+  std::set<std::string> admittedProviders;
+  for (const auto& assignment : core.assignment.providerByRole) {
+    if (admittedProviders.insert(assignment.second).second)
+      offers.push_back(keys.offer(assignment.second));
+  }
   std::map<std::string, std::string> parent;
   const auto find = [&](std::string provider) {
     while (parent.at(provider) != provider) provider = parent.at(provider);
@@ -51,8 +59,8 @@ std::map<std::string, NativeRoleProjectionInputs> NativeGroupProjectionBuilder::
     std::set<std::string> members;
     for (const auto& role : dependency.producers) members.insert(core.assignment.providerByRole.at(role));
     for (const auto& role : dependency.consumers) members.insert(core.assignment.providerByRole.at(role));
-    if (members.empty() || (members.size() < 2 && dependency.operationKind != "TOKEN_FEEDBACK"))
-      throw std::invalid_argument("group dependency has no cross-provider members");
+    if (members.empty())
+      throw std::invalid_argument("group dependency has no assigned members");
     for (const auto& member : members) parent.emplace(member, member);
     for (const auto& member : members) {
       const auto left = find(*members.begin()), right = find(member);

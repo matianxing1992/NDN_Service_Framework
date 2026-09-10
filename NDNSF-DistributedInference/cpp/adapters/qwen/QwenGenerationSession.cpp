@@ -225,14 +225,11 @@ QwenGenerationSessionSpec::validate() const
   const std::array<std::string, 3> expectedRoles{
     "/LLM/Pipeline/Stage/0", "/LLM/Pipeline/Stage/1", "/LLM/Pipeline/Stage/2",
   };
-  std::set<std::string> providers;
   for (std::size_t index = 0; index < roles.size(); ++index) {
     const auto& binding = roles[index];
     require(binding.role == expectedRoles[index], "qwen generation role order mismatch");
     require(!binding.provider.empty() && !binding.providerBootId.empty(),
             "qwen generation provider binding missing");
-    require(providers.insert(binding.provider).second,
-            "qwen generation provider binding duplicate");
   }
 }
 

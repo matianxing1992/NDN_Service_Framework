@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <limits>
+#include <map>
 #include <set>
 #include <tuple>
 
@@ -144,15 +145,44 @@ NativeRolePlacementProposalV3 NativePreSplitFirstPlacement::proposeRoles(
     return std::tie(a.role, a.rank) < std::tie(b.role, b.rank);
   });
   std::set<std::string> used;
+  std::set<std::pair<std::string, std::string>> usedDevices;
+  std::map<std::pair<std::string, std::string>, std::uint64_t> reservedMemory;
   for (auto role : ordered) {
     std::vector<Cost> choices;
+    std::vector<Cost> distinctChoices;
+    const auto fitsReservation = [&](const Cost& choice) {
+      const auto& provider = std::get<8>(choice);
+      const auto& device = std::get<9>(choice);
+      if (device == "cpu" || role.requiredDeviceMemoryMb == 0) return true;
+      const auto offer = std::find_if(offers.begin(), offers.end(), [&](const auto& item) {
+        return item.observation().provider == provider;
+      });
+      if (offer == offers.end()) return false;
+      const auto resource = std::find_if(offer->observation().resources.begin(),
+        offer->observation().resources.end(), [&](const auto& item) { return item.device == device; });
+      if (resource == offer->observation().resources.end()) return false;
+      const auto key = std::make_pair(provider, device);
+      const auto reserved = reservedMemory.find(key);
+      const auto alreadyReserved = reserved == reservedMemory.end() ? 0 : reserved->second;
+      return alreadyReserved <= resource->freeMemoryMb &&
+        role.requiredDeviceMemoryMb <= resource->freeMemoryMb - alreadyReserved;
+    };
     for (const auto& admitted : offers) {
       const auto& offer = admitted.observation();
-      if (used.count(offer.provider)) continue;
       const auto eligible = feasibleChoices(role, offer, nowMs);
-      choices.insert(choices.end(), eligible.begin(), eligible.end());
+      for (const auto& choice : eligible) {
+        if (!fitsReservation(choice)) continue;
+        const auto device = std::get<9>(choice);
+        if (device != "cpu" && usedDevices.count(std::make_pair(offer.provider, device))) continue;
+        choices.push_back(choice);
+        if (!used.count(offer.provider)) distinctChoices.push_back(choice);
+      }
     }
-    if (choices.empty()) throw NativeNoFeasiblePlacement("no distinct feasible Provider for V3 role " + role.role);
+    // Prefer spreading roles across Providers when the topology permits it,
+    // but allow a smaller deployment to co-locate roles on one admitted
+    // Provider.  The per-role device/resource contract remains authoritative.
+    if (!distinctChoices.empty()) choices.swap(distinctChoices);
+    if (choices.empty()) throw NativeNoFeasiblePlacement("no feasible Provider for V3 role " + role.role);
     const auto choice = *std::min_element(choices.begin(), choices.end());
     const auto provider = std::get<8>(choice), device = std::get<9>(choice);
     const auto key = ranks.at(role.role).size() == 1 ? role.role : role.role + "#" + std::to_string(role.rank);
@@ -163,6 +193,15 @@ NativeRolePlacementProposalV3 NativePreSplitFirstPlacement::proposeRoles(
     role.backend = std::get<10>(choice);
     role.deviceSet = device == "cpu" ? std::vector<std::string>{} : std::vector<std::string>{device};
     validateNativeAssembly(role);
+    if (device != "cpu" && role.requiredDeviceMemoryMb != 0) {
+      const auto reservationKey = std::make_pair(provider, device);
+      const auto reserved = reservedMemory.find(reservationKey);
+      const auto alreadyReserved = reserved == reservedMemory.end() ? 0 : reserved->second;
+      if (alreadyReserved > std::numeric_limits<std::uint64_t>::max() - role.requiredDeviceMemoryMb)
+        throw std::overflow_error("V3 Provider device reservation overflows uint64");
+      reservedMemory[reservationKey] = alreadyReserved + role.requiredDeviceMemoryMb;
+    }
+    if (device != "cpu") usedDevices.insert(std::make_pair(provider, device));
     result.roles.push_back(std::move(role));
     const auto selected = std::find_if(offers.begin(), offers.end(), [&](const auto& offer) {
       return offer.observation().provider == provider;
@@ -181,7 +220,9 @@ void validateNativeRolePlacement(
   proposal.strategy.validate();
   if (proposal.roles.size() != preparedRoles.size() || proposal.providerByRole.size() != preparedRoles.size())
     throw std::invalid_argument("V3 proposal role cover differs from prepared roles");
-  std::set<std::string> seenRoles, used;
+  std::set<std::string> seenRoles;
+  std::set<std::pair<std::string, std::string>> usedDevices;
+  std::map<std::pair<std::string, std::string>, std::uint64_t> reservedMemory;
   std::map<std::string, std::string> offerDigests;
   for (const auto& role : proposal.roles) {
     validateNativeAssembly(role);
@@ -192,16 +233,31 @@ void validateNativeRolePlacement(
     const auto key = ranks.at(role.role).size() == 1 ? role.role : role.role + "#" + std::to_string(role.rank);
     const auto assignment = proposal.providerByRole.find(key);
     if (role.selectedRole != key || !seenRoles.insert(key).second || assignment == proposal.providerByRole.end() ||
-        !used.insert(assignment->second).second) throw std::invalid_argument("invalid V3 proposal assignment");
+        assignment->second.empty()) throw std::invalid_argument("invalid V3 proposal assignment");
     const auto admitted = std::find_if(offers.begin(), offers.end(), [&](const auto& o) {
       return o.observation().provider == assignment->second;
     });
     if (admitted == offers.end()) throw std::invalid_argument("V3 proposal Provider was not admitted");
     const auto choices = feasibleChoices(*original, admitted->observation(), nowMs);
     const auto device = role.deviceSet.empty() ? "cpu" : role.deviceSet.front();
+    if (device != "cpu" && !usedDevices.insert(std::make_pair(assignment->second, device)).second)
+      throw std::invalid_argument("V3 proposal reuses an exclusive Provider device");
     if (std::none_of(choices.begin(), choices.end(), [&](const auto& choice) {
       return std::get<9>(choice) == device && std::get<10>(choice) == role.backend;
     })) throw std::invalid_argument("V3 proposal selected an infeasible device or backend");
+    if (device != "cpu" && role.requiredDeviceMemoryMb != 0) {
+      const auto resource = std::find_if(admitted->observation().resources.begin(),
+        admitted->observation().resources.end(), [&](const auto& item) { return item.device == device; });
+      const auto keyMemory = std::make_pair(assignment->second, device);
+      const auto reserved = reservedMemory.find(keyMemory);
+      const auto alreadyReserved = reserved == reservedMemory.end() ? 0 : reserved->second;
+      if (resource == admitted->observation().resources.end() || alreadyReserved > resource->freeMemoryMb ||
+          role.requiredDeviceMemoryMb > resource->freeMemoryMb - alreadyReserved)
+        throw std::invalid_argument("V3 proposal exceeds Provider device memory");
+      if (alreadyReserved > std::numeric_limits<std::uint64_t>::max() - role.requiredDeviceMemoryMb)
+        throw std::overflow_error("V3 Provider device reservation overflows uint64");
+      reservedMemory[keyMemory] = alreadyReserved + role.requiredDeviceMemoryMb;
+    }
     auto expected = *original;
     expected.backend = role.backend; expected.deviceSet = role.deviceSet;
     if (nativeCanonicalJson(nativeAssemblyJson(expected)) != nativeCanonicalJson(nativeAssemblyJson(role)))

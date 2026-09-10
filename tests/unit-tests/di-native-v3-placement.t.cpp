@@ -341,6 +341,37 @@ BOOST_AUTO_TEST_CASE(ProjectionBuilderDerivesApplicationInputAndDependencyReadin
           {{f.at("key_id").get<std::string>(), f.at("public_pem").get<std::string>()}}, f.at("candidate"));
         NativeGroupKeyAdmission keys(admission, input.acks, input.context, now);
         const auto original = proposal.providerByRole;
+        {
+          // A small deployment may place both stages in one Provider.  The
+          // group contract must remain role-scoped even though its member
+          // list and wrapped key projection contain one Provider identity.
+          auto colocated = proposal;
+          // The fixture's normal placement uses cuda:0 on both machines.  Use
+          // the second device on the co-located Provider so the placement
+          // invariant remains explicit rather than weakening device fencing.
+          BOOST_REQUIRE_EQUAL(colocated.roles.size(), 2);
+          colocated.roles.back().deviceSet = {"cuda:1"};
+          const auto originalProposal = proposal;
+          const auto originalDeviceSet = sealing.assemblyByRole.at("1").deviceSet;
+          sealing.assemblyByRole.at("1").deviceSet = {"cuda:1"};
+          const auto provider = original.at(execution.roles.front());
+          colocated.providerByRole.at(execution.roles.back()) = provider;
+          const auto offer = std::find_if(input.offers.begin(), input.offers.end(),
+            [&](const auto& item) { return item.observation().provider == provider; });
+          BOOST_REQUIRE(offer != input.offers.end());
+          colocated.offerDigestByProvider = {{provider, offer->observation().offerDigest}};
+          proposal = colocated;
+          const auto colocatedPlan = seal(execution);
+          NativeProjectionContext colocatedContext{now, 1000, 4096};
+          const auto colocatedGroups = NativeGroupProjectionBuilder::build(
+            colocatedPlan, input.split, keys, colocatedContext, 4096);
+          BOOST_REQUIRE_EQUAL(colocatedGroups.size(), execution.roles.size());
+          BOOST_CHECK(!colocatedGroups.at(execution.roles.front()).groupCapabilityV1.empty());
+          BOOST_CHECK_EQUAL(colocatedGroups.at(execution.roles.front()).dataflow.mayPublish.size(), 2);
+          BOOST_CHECK_EQUAL(colocatedGroups.at(execution.roles.back()).dataflow.mustFetch.size(), 2);
+          proposal = originalProposal;
+          sealing.assemblyByRole.at("1").deviceSet = originalDeviceSet;
+        }
         std::swap(proposal.providerByRole.at(execution.roles.front()), proposal.providerByRole.at(execution.roles.back()));
         const auto swapped = seal(execution);
         NativeProjectionContext requestContext{now, 1000, 4096};
@@ -1321,6 +1352,27 @@ BOOST_AUTO_TEST_CASE(RealSdkPlacementAndExactReuseBoundaries)
     }
   }
 }
+
+BOOST_AUTO_TEST_CASE(V3PlacementCoLocatesRanksOnDistinctDevicesWhenTopologyIsSmall)
+{
+  const auto f = oracle();
+  Input input(f, f.at("cases")[11]); // rank_cover: two ranks, two GPU devices per offer
+  input.offers.erase(input.offers.begin() + 1, input.offers.end());
+  const auto now = std::uint64_t{200};
+  const auto proposal = NativePreSplitFirstPlacement().proposeRoles(
+    input.context, input.ackDigest, input.roles, input.offers, now);
+  BOOST_REQUIRE_EQUAL(proposal.roles.size(), 2);
+  BOOST_CHECK_EQUAL(proposal.providerByRole.at(proposal.roles[0].selectedRole),
+                    input.offers.front().observation().provider);
+  BOOST_CHECK_EQUAL(proposal.providerByRole.at(proposal.roles[1].selectedRole),
+                    input.offers.front().observation().provider);
+  BOOST_REQUIRE_EQUAL(proposal.roles[0].deviceSet.size(), 1);
+  BOOST_REQUIRE_EQUAL(proposal.roles[1].deviceSet.size(), 1);
+  BOOST_CHECK_NE(proposal.roles[0].deviceSet.front(), proposal.roles[1].deviceSet.front());
+  BOOST_CHECK_NO_THROW(validateNativeRolePlacement(
+    proposal, input.roles, input.offers, now));
+}
+
 BOOST_AUTO_TEST_CASE(RejectForeignSnapshotAndIncompleteRankCover)
 {
   const auto f = oracle();

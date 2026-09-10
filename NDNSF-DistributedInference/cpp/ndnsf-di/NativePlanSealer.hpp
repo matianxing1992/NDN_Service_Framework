@@ -128,10 +128,12 @@ public:
   static NativeProviderGrantView grantView(
     const NativePlacementPlanCore& core,
     const NativeProviderPlanningView& provider,
-    const NativeSecurityPolicySnapshot& security);
+    const NativeSecurityPolicySnapshot& security,
+    const std::string& role = {});
 
   static NativeProviderGrantView grantView(const NativePlacementPlanCore& core,
-    const NativeAdmittedOfferV3& provider, const NativeSecurityPolicySnapshot& security);
+    const NativeAdmittedOfferV3& provider, const NativeSecurityPolicySnapshot& security,
+    const std::string& role = {});
 
   static NativeSealedPlan finalizeSecurity(
     const NativePlacementPlanCore& core,

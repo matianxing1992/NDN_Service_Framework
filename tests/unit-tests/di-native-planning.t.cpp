@@ -681,7 +681,7 @@ BOOST_AUTO_TEST_CASE(PlacementAssignsDistinctRoleSpecificProvidersAndSeals)
   }
 }
 
-BOOST_AUTO_TEST_CASE(PlacementNeverReusesProviderAndIsOrderIndependent)
+BOOST_AUTO_TEST_CASE(PlacementSpreadsWhenPossibleAndCoLocatesWhenNecessary)
 {
   TwoRolePlacement fixture;
   for (auto& offer : fixture.snapshot.offers) offer.acceptedRoles = {fixture.first, fixture.second};
@@ -694,8 +694,13 @@ BOOST_AUTO_TEST_CASE(PlacementNeverReusesProviderAndIsOrderIndependent)
   const auto reversed = NativePreSplitFirstPlacement().propose(fixture.snapshot, fixture.candidate);
   BOOST_CHECK(first.assignment.providerByRole == reversed.assignment.providerByRole);
   fixture.snapshot.offers.resize(1);
-  BOOST_CHECK_THROW(NativePreSplitFirstPlacement().propose(fixture.snapshot, fixture.candidate),
-                    std::runtime_error);
+  fixture.snapshot.offers.front().freeBytes = 8ULL << 30;
+  const auto colocated = NativePreSplitFirstPlacement().propose(fixture.snapshot, fixture.candidate);
+  BOOST_CHECK_EQUAL(colocated.assignment.providerByRole.at(fixture.first),
+                    fixture.snapshot.offers.front().provider);
+  BOOST_CHECK_EQUAL(colocated.assignment.providerByRole.at(fixture.second),
+                    fixture.snapshot.offers.front().provider);
+  BOOST_CHECK_NO_THROW(colocated.validate(fixture.snapshot, fixture.candidate));
 }
 
 BOOST_AUTO_TEST_CASE(PlacementRejectsForgedAssignmentsAndDuplicateOffers)
@@ -703,7 +708,9 @@ BOOST_AUTO_TEST_CASE(PlacementRejectsForgedAssignmentsAndDuplicateOffers)
   TwoRolePlacement fixture;
   auto proposal = NativePreSplitFirstPlacement().propose(fixture.snapshot, fixture.candidate);
   proposal.assignment.providerByRole[fixture.second] = "provider-a";
-  BOOST_CHECK_THROW(proposal.validate(fixture.snapshot, fixture.candidate), std::invalid_argument);
+  fixture.snapshot.offers.front().acceptedRoles = {fixture.first, fixture.second};
+  fixture.snapshot.offers.front().freeBytes = 8ULL << 30;
+  BOOST_CHECK_NO_THROW(proposal.validate(fixture.snapshot, fixture.candidate));
   proposal.assignment.providerByRole[fixture.second] = "foreign";
   BOOST_CHECK_THROW(proposal.validate(fixture.snapshot, fixture.candidate), std::invalid_argument);
   proposal.assignment.providerByRole[fixture.second] = "provider-b";

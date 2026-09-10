@@ -48,7 +48,7 @@ public:
 
   NativeGrantBinding acquire(const NativePlacementPlanCore& core,
     const NativeAdmittedOfferV3& offer, const NativeSecurityPolicySnapshot& security,
-    const NativeGrantControl& control) const;
+    const NativeGrantControl& control, const std::string& role = {}) const;
 
   /** Identity bound to the requester key and grant issuer at construction. */
   const std::string& requesterIdentity() const noexcept { return m_requester; }

@@ -823,12 +823,11 @@ BOOST_AUTO_TEST_CASE(TensorObjectManifestContextCompactFitsAndRoundTrips)
   BOOST_CHECK(decoded.orderedSegmentDigests.empty());
 }
 
-BOOST_AUTO_TEST_CASE(NativeV3ProjectionSetRejectsDuplicateProviderOrRole)
+BOOST_AUTO_TEST_CASE(NativeV3ProjectionSetAllowsProviderColocationButRejectsDuplicateRole)
 {
   auto duplicateProvider = validProjectionSet();
   duplicateProvider[1].provider = duplicateProvider[0].provider;
-  BOOST_CHECK_THROW(validateNativeSelectionProjectionSetV3(duplicateProvider),
-                    std::invalid_argument);
+  BOOST_CHECK_NO_THROW(validateNativeSelectionProjectionSetV3(duplicateProvider));
 
   auto duplicateRole = validProjectionSet();
   duplicateRole[1].selectedRole.selectedRole = "S0R0";

@@ -4,6 +4,8 @@
 
 namespace ndnsf::di {
 /** Connect sealed dependencies to Core-wrapped group capabilities and dataflow.
+ * Group membership is keyed by Provider identity, while projections remain
+ * keyed by role; a one-Provider group is valid for a co-located dependency.
  * This initial-request owner rejects TOKEN_FEEDBACK until generation supplies
  * its dedicated endpoint contract; it never silently omits that authorization.
  */

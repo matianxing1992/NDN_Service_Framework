@@ -138,8 +138,9 @@ NativeSelectionProjectionV3
 nativeSelectionProjectionV3FromJson(std::istream& input,
                                     const std::string& selectedRole);
 
-/** Validate the global one-role/one-Provider cover and complete named tensor
- * graph after all per-Provider projections have been decoded.
+/** Validate the global one-projection-per-role cover and complete named tensor
+ * graph after all per-Provider projections have been decoded. Multiple roles
+ * may be projected to one Provider when placement assigns them there.
  */
 void
 validateNativeSelectionProjectionSetV3(

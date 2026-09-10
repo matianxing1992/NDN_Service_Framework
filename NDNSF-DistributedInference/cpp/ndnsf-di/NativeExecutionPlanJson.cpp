@@ -1226,7 +1226,6 @@ validateNativeSelectionProjectionSetV3(
     throw std::invalid_argument("V3 projection set is empty");
   }
   const auto& first = projections.front();
-  std::set<std::string> providers;
   std::set<std::string> roles;
   std::map<std::string, std::vector<const NativeTensorEndpointV3*>> publishers;
   std::map<std::string, std::set<std::string>> edges;
@@ -1238,12 +1237,11 @@ validateNativeSelectionProjectionSetV3(
     if (projection.requestId != first.requestId ||
         projection.attempt != first.attempt ||
         projection.planDigest != first.planDigest ||
-        !providers.insert(projection.provider).second ||
         !roles.insert(role).second ||
         projection.selectedRole.selectedRole != role ||
         projection.dataflow.role != role) {
       throw std::invalid_argument(
-        "V3 projection set violates one-role/one-Provider ownership");
+        "V3 projection set violates one-projection-per-role ownership");
     }
     incoming.emplace(role, 0);
     terminalOwners += projection.dataflow.terminalResponseOwner ? 1 : 0;
