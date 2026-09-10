@@ -18,21 +18,11 @@ while (($#)); do
 done
 for value in "$process_map" "$scratch" "$evidence" "$nfd_template" "$workdir"; do [[ -n $value ]] || usage; done
 [[ -f $process_map && -f $nfd_template ]] || usage
-[[ -d $workdir && $workdir = /* ]] || { echo SPEC110_WORKDIR_INVALID >&2; exit 3; }
-[[ -n ${SLURM_JOB_ID:-} || ${NDNSF_SPEC110_TEST_MODE:-0} == 1 ]] || {
-  echo SPEC110_TOPOLOGY_REQUIRES_ALLOCATION >&2; exit 3;
-}
-case "$scratch" in /tmp/ndnsf-di-*) ;; *) echo SPEC110_TOPOLOGY_SCRATCH_INVALID >&2; exit 3 ;; esac
 
-container_root=$(CDPATH= cd -- "$(dirname -- "$0")/../../.." && pwd)
-lib="$container_root/lib"
-route_config="$container_root/adapters/slurm-apptainer/scripts/configure-allocation-routes.sh"
-mkdir -p "$scratch/log" "$scratch/readiness" "$evidence/processes" "$evidence/generated"
-chmod 700 "$scratch"
-
-# Keep a durable failure boundary even while the submit-host preflight is
-# running. No child exists yet, so this records a zero-survivor failure rather
-# than silently exiting without the teardown artifact.
+# Install the pre-start evidence trap before validating allocation-specific
+# paths. Invalid workdir/scratch or allocation mode is still an entered
+# topology attempt and must retain its original failure boundary.
+mkdir -p "$evidence"
 prestart_cleanup() {
   rc=$?
   trap - EXIT INT TERM
@@ -46,6 +36,18 @@ prestart_signal_exit() {
 trap prestart_cleanup EXIT
 trap 'prestart_signal_exit TERM' TERM
 trap 'prestart_signal_exit INT' INT
+
+[[ -d $workdir && $workdir = /* ]] || { echo SPEC110_WORKDIR_INVALID >&2; exit 3; }
+[[ -n ${SLURM_JOB_ID:-} || ${NDNSF_SPEC110_TEST_MODE:-0} == 1 ]] || {
+  echo SPEC110_TOPOLOGY_REQUIRES_ALLOCATION >&2; exit 3;
+}
+case "$scratch" in /tmp/ndnsf-di-*) ;; *) echo SPEC110_TOPOLOGY_SCRATCH_INVALID >&2; exit 3 ;; esac
+
+container_root=$(CDPATH= cd -- "$(dirname -- "$0")/../../.." && pwd)
+lib="$container_root/lib"
+route_config="$container_root/adapters/slurm-apptainer/scripts/configure-allocation-routes.sh"
+mkdir -p "$scratch/log" "$scratch/readiness" "$evidence/processes" "$evidence/generated"
+chmod 700 "$scratch"
 
 PYTHONPATH="$lib" python3 - "$process_map" "$nfd_template" "$scratch" "$evidence" "$workdir" <<'PY'
 import json,sys

@@ -148,6 +148,18 @@ import json,sys
 value=json.load(open(sys.argv[1]));assert value['status']=='FAIL' and value['survivors']==0 and value['exitCode']==4
 PY
 
+set +e
+PATH="$tmp/bin:$PATH" SLURM_JOB_ID=test SLURM_NNODES=1 NDNSF_SPEC110_TEST_MODE=1 \
+  "$supervisor" --process-map "$supervisor_scratch/process-map.json" --scratch "$supervisor_scratch" \
+  --evidence "$tmp/supervisor-invalid-workdir" --nfd-template "$template" --workdir relative-workdir
+invalid_workdir_rc=$?
+set -e
+[[ $invalid_workdir_rc -eq 3 ]]
+python3 - "$tmp/supervisor-invalid-workdir/teardown.json" <<'PY'
+import json,sys
+value=json.load(open(sys.argv[1]));assert value['status']=='FAIL' and value['survivors']==0 and value['exitCode']==3
+PY
+
 signal_scratch=$(mktemp -d /tmp/ndnsf-di-signal.XXXXXX)
 cp "$supervisor_scratch/process-map.json" "$signal_scratch/process-map.json"
 python3 - "$repo" "$signal_scratch/process-map.json" "$signal_scratch" <<'PY'
