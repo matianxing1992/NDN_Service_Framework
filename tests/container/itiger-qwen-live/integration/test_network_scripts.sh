@@ -210,4 +210,35 @@ import json,sys
 value=json.load(open(sys.argv[1]));assert value['status']=='FAIL' and value['survivors']==0 and value['exitCode']==143
 PY
 rm -rf "$signal_scratch"
+
+identity_scratch=$(mktemp -d /tmp/ndnsf-di-identity.XXXXXX)
+cp "$supervisor_scratch/process-map.json" "$identity_scratch/process-map.json"
+python3 - "$repo" "$identity_scratch/process-map.json" "$identity_scratch" <<'PY'
+import json,sys
+sys.path.insert(0,sys.argv[1]+'/packaging/ndnsf-di-container/lib')
+from allocation_topology import command_digest
+path,root=sys.argv[2:]
+value=json.load(open(path)); socket=root+'/nfd/0/nfd.sock'
+value['nodes'][0]['nfdSocket']=socket
+for process in value['processes']:
+    process['nfdSocket']=socket
+    if process['kind']=='nfd':
+        process['command']=['nfd','--config',root+'/nfd/0/nfd.conf']
+        process['commandDigest']=command_digest(process['command'])
+json.dump(value,open(path,'w'))
+PY
+set +e
+PATH="$tmp/bin:$PATH" SLURM_JOB_ID=test SLURM_NNODES=1 NDNSF_SPEC110_TEST_MODE=0 \
+  "$supervisor" --process-map "$identity_scratch/process-map.json" --scratch "$identity_scratch" \
+  --evidence "$tmp/supervisor-identity-fail" --nfd-template "$template" --workdir "$tmp"
+identity_rc=$?
+set -e
+[[ $identity_rc -eq 4 ]]
+python3 - "$tmp/supervisor-identity-fail/teardown.json" <<'PY'
+import json,sys
+value=json.load(open(sys.argv[1]))
+assert value['status']=='FAIL' and value['exitCode']==4 and value['survivors']==0
+PY
+[[ ! -e "$identity_scratch/log/nfd-0.log" ]]
+rm -rf "$identity_scratch"
 printf 'NETWORK_SCRIPT_PASS\n'

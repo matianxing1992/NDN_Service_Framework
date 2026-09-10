@@ -113,6 +113,31 @@ for row in "${process_rows[@]}"; do
     "$scratch/generated/$process_id.sh"
 done
 
+# Identity sources live on the execution nodes, not on the submit host.  Check
+# the complete read-only PIB/TPM input set before starting any NFD, so an
+# unmounted identity directory cannot leave a partially started topology.
+if [[ ${NDNSF_SPEC110_TEST_MODE:-0} != 1 ]]; then
+  mapfile -t identity_rows < <(PYTHONPATH="$lib" python3 - "$process_map" <<'PY'
+import sys
+from allocation_topology import load_process_map
+for process in load_process_map(sys.argv[1])['processes']:
+ if process['kind'] != 'nfd':
+  print(process['nodeRank'],process['identityRef'],sep='\t')
+PY
+  )
+  for row in "${identity_rows[@]}"; do
+    IFS=$'\t' read -r rank identity <<<"$row"
+    srun_node "$rank" test -r "$identity/.ndn/pib.db" || {
+      echo "SPEC110_IDENTITY_NOT_VISIBLE:$rank:$identity" >&2
+      exit 4
+    }
+    srun_node "$rank" test -r "$identity/.ndn/ndnsec-key-file" || {
+      echo "SPEC110_IDENTITY_NOT_VISIBLE:$rank:$identity" >&2
+      exit 4
+    }
+  done
+fi
+
 trap - EXIT INT TERM
 step_pids=()
 cleanup() {
