@@ -516,14 +516,12 @@ markTerminal(const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
   if (cancelCore && !deferConversationCleanup) {
     const auto user = operation->user;
     const auto id = ndn::Name(operation->coreRequestId);
-    user->postToIo([user, id, scopes = std::move(releaseScopes), deferConversationCleanup] {
+    user->postToIo([user, id, scopes = std::move(releaseScopes)] {
       user->CancelCollaboration(id);
       // A conversation commit may still need the request-scope key for
       // ROLLBACK/FINALIZE. The transaction owner clears it after its callback
       // leaves the coordinator; ordinary terminal paths clear immediately.
-      if (!deferConversationCleanup) {
-        for (const auto& scope : scopes) user->clearVerifiedCollaborationData(id, scope);
-      }
+      for (const auto& scope : scopes) user->clearVerifiedCollaborationData(id, scope);
     });
   }
   return true;
