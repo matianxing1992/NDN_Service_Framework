@@ -3244,6 +3244,7 @@ namespace ndn_service_framework
                           serviceUri) == m_serviceNames.end()) {
                 m_serviceNames.push_back(serviceUri);
             }
+            registerRequestSubscription(serviceName);
             NDN_LOG_WARN("[ServiceProvider] registered scoped service prefix="
                          << serviceUri
                          << " generation=" << state->generation);
@@ -3310,6 +3311,7 @@ namespace ndn_service_framework
                           serviceUri) == m_serviceNames.end()) {
                 m_serviceNames.push_back(serviceUri);
             }
+            registerRequestSubscription(serviceName);
             NDN_LOG_WARN("[ServiceProvider] registered scoped collaboration "
                          "service prefix="
                          << serviceUri
@@ -15133,29 +15135,19 @@ opaque_selection_committed:
         // log register
         NDN_LOG_WARN("Register NDNSF Messages in ndn-svs");
         for(auto serviceName:m_serviceNames){
-            // register Request Message
-            ndn::Name sname(serviceName);
-            std::string regex_str =
-                "^(<>*)<NDNSF><REQUEST>" +
-                ndn_service_framework::NameToRegexString(sname) +
-                "(<>*)$";
-            // V2 requests are published as:
-            //   /<requester>/NDNSF/REQUEST/<serviceName...>/<requestId>
-            // The service-specific regex keeps /HELLO subscribed as:
-            //   ^(<>*)<NDNSF><REQUEST><HELLO>(<>*)$
-            NDN_LOG_WARN("[ServiceProvider] SVS request subscription regex="
-                      << regex_str);
-            NDN_LOG_DEBUG(regex_str);
-            m_svsps->subscribeWithRegex(ndn::Regex(regex_str),
-                                        std::bind(&ServiceProvider::OnRequest, this, _1),
-                                        true, false);
-            // register Service Selection Message
-            std::string regex_str2 = "^(<>*)<NDNSF><SELECTION>(<>*)$";
-            NDN_LOG_DEBUG(regex_str2);
-            m_svsps->subscribeWithRegex(ndn::Regex(regex_str2),
-                                        std::bind(&ServiceProvider::onServiceSelectionMessage, this, _1),
-                                        true, false);
+            registerRequestSubscription(ndn::Name(serviceName));
         }
+        // Selection names carry the selected provider and service in their
+        // suffix, so one provider-wide subscription covers services that are
+        // registered after init() as well as the legacy init-time list.  The
+        // previous per-service registration silently missed selections for
+        // dynamically added scoped DI services.
+        std::string selectionRegex = "^(<>*)<NDNSF><SELECTION>(<>*)$";
+        NDN_LOG_DEBUG(selectionRegex);
+        m_svsps->subscribeWithRegex(
+            ndn::Regex(selectionRegex),
+            std::bind(&ServiceProvider::onServiceSelectionMessage, this, _1),
+            true, false);
         std::string collabRegex = "^(<>*)<NDNSF><COLLAB>(<>*)$";
         NDN_LOG_DEBUG(collabRegex);
         m_svsps->subscribeWithRegex(ndn::Regex(collabRegex),
@@ -15168,6 +15160,27 @@ opaque_selection_committed:
         m_svsps->subscribeWithRegex(ndn::Regex(eventRegex),
                                     std::bind(&ServiceProvider::onStreamEvent, this, _1),
                                     true, true);
+    }
+
+    void ServiceProvider::registerRequestSubscription(const ndn::Name& serviceName)
+    {
+        if (serviceName.empty() || !m_svsps) {
+            return;
+        }
+        ndn::Name regexServiceName(serviceName);
+        const std::string regex =
+            "^(<>*)<NDNSF><REQUEST>" +
+            ndn_service_framework::NameToRegexString(regexServiceName) +
+            "(<>*)$";
+        // V2 requests are published as:
+        //   /<requester>/NDNSF/REQUEST/<serviceName...>/<requestId>
+        NDN_LOG_WARN("[ServiceProvider] SVS request subscription regex="
+                     << regex);
+        NDN_LOG_DEBUG(regex);
+        m_svsps->subscribeWithRegex(
+            ndn::Regex(regex),
+            std::bind(&ServiceProvider::OnRequest, this, _1),
+            true, false);
     }
 
     bool ServiceProvider::isFresh(const ndn::svs::SVSPubSub::SubscriptionData& subscription)

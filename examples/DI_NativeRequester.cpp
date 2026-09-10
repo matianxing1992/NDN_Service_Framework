@@ -1,10 +1,13 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPlanner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
 #include <ndn-cxx/face.hpp>
 #include <ndn-cxx/security/key-chain.hpp>
 #include <openssl/pem.h>
+#include <cmath>
 #include <csignal>
 #include <algorithm>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -192,6 +195,18 @@ int main(int argc, char** argv)
     options.timeoutMs = request.at("timeout_ms"); options.ackTimeoutMs = request.at("ack_timeout_ms");
     if (request.contains("application_request_id"))
       options.applicationRequestId = request.at("application_request_id").get<std::string>();
+    if (request.contains("provider_names")) {
+      if (!request.at("provider_names").is_array())
+        throw std::invalid_argument("request.provider_names must be an array");
+      for (const auto& value : request.at("provider_names")) {
+        if (!value.is_string())
+          throw std::invalid_argument("request.provider_names entries must be strings");
+        const auto provider = value.get<std::string>();
+        if (provider.empty() || provider.front() != '/')
+          throw std::invalid_argument("request.provider_names entries must be absolute names");
+        options.providerNames.emplace_back(provider);
+      }
+    }
     if (runtime.contract.generationMode == "TOKEN_STREAMING") {
       if (input.options.empty())
         throw std::invalid_argument("TOKEN_STREAMING requester requires options_file");
@@ -218,6 +233,30 @@ int main(int argc, char** argv)
     }
     std::signal(SIGINT, onSignal); std::signal(SIGTERM, onSignal);
     user->init();
+    // User permissions are an explicit Controller-signed input to the Core
+    // request path.  Bootstrap them before publishing the deferred
+    // collaboration; otherwise the requester enters ACK collection without
+    // an authorized service and closes an empty candidate set.
+    user->fetchPermissionsFromController(
+      ndn::Name(core.at("authority_identity").get<std::string>()));
+    const auto requestService = ndn::Name(request.at("service").get<std::string>());
+    bool permissionReady = false;
+    while (!interrupted && std::chrono::steady_clock::now() < bootstrapDeadline) {
+      const auto allowed = user->getAllowedServices();
+      permissionReady = user->getCurrentPolicyEpoch(requestService) != 0 &&
+        user->getControllerVersion(requestService).has_value() &&
+        std::any_of(allowed.begin(), allowed.end(),
+          [&requestService](const auto& entry) {
+            return std::get<1>(entry) == requestService.toUri();
+          });
+      if (permissionReady) break;
+      face->processEvents(ndn::time::milliseconds(20));
+    }
+    if (!permissionReady) {
+      throw NativeDiError("NATIVE_REQUEST_PERMISSION_BOOTSTRAP_FAILED", "runtime",
+        "permission-bootstrap", "requester did not receive current Controller permission",
+        {}, 0);
+    }
     auto handle = client.request(modelRef, input, catalog.splitter, std::make_shared<NativePreSplitFirstPlacement>(), options);
     while (handle.status() == NativeRequestStatus::Pending) {
       if (interrupted) handle.cancel();
@@ -229,11 +268,37 @@ int main(int argc, char** argv)
     std::ofstream output(argv[6], std::ios::binary | std::ios::trunc);
     if (!output || !output.write(reinterpret_cast<const char*>(result.payload.data()), result.payload.size()))
       throw std::runtime_error("requester output could not be written");
+    if (config.contains("oracle")) {
+      const auto& oracle = config.at("oracle");
+      const auto tensorName = oracle.at("tensor").get<std::string>();
+      const auto expected = oracle.at("float32").get<std::vector<float>>();
+      const auto tolerance = oracle.value("tolerance", 1e-5);
+      if (tensorName.empty() || expected.empty() || !std::isfinite(tolerance) || tolerance < 0.0)
+        throw std::invalid_argument("requester numerical oracle is invalid");
+      const auto tensors = decodeTensorBundle(
+        std::vector<std::uint8_t>(result.payload.begin(), result.payload.end()));
+      const auto& tensor = findTensor(tensors, tensorName);
+      if (tensor.elementType != TensorElementType::Float32 ||
+          tensor.payload.size() != expected.size() * sizeof(float))
+        throw std::runtime_error("NATIVE_NUMERICAL_ORACLE_FAILED: tensor type or size mismatch");
+      for (std::size_t i = 0; i < expected.size(); ++i) {
+        float actual = 0.0F;
+        std::memcpy(&actual, tensor.payload.data() + i * sizeof(float), sizeof(float));
+        if (!std::isfinite(actual) || std::fabs(static_cast<double>(actual) - expected[i]) > tolerance)
+          throw std::runtime_error("NATIVE_NUMERICAL_ORACLE_FAILED: tensor value mismatch");
+      }
+      std::cout << "NATIVE_NUMERICAL_ORACLE_PASS tensor=" << tensorName
+                << " values=";
+      for (std::size_t i = 0; i < expected.size(); ++i)
+        std::cout << (i == 0 ? "" : ",") << expected[i];
+      std::cout << '\n';
+    }
     std::cout << "NATIVE_REQUEST_SUCCEEDED request=" << handle.requestId() << " plan=" << result.planDigest << '\n';
     return 0;
   }
   catch (const ndnsf::di::NativeDiError& error) {
-    std::cerr << error.code() << " boundary=" << error.boundary() << '\n';
+    std::cerr << error.code() << " boundary=" << error.boundary()
+              << " message=" << error.what() << '\n';
     return interrupted ? 130 : 1;
   }
   catch (const std::exception& error) {

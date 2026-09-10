@@ -1251,6 +1251,10 @@ namespace ndn_service_framework{
             
             // Register NDNSF Messages in the ndn-svs
             void registerNDNSFMessages();
+            // Scoped services may be added after init(). Keep their V2
+            // request subscription aligned with the service table so a
+            // dynamically served collaboration can receive Requests.
+            void registerRequestSubscription(const ndn::Name& serviceName);
 
             // Register service info using ndnsd(). Generic dynamic providers may use the no-op
             // default; legacy generated providers may still override it.

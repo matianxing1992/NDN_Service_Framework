@@ -1,6 +1,6 @@
 # Tasks: Native NDNSF-DI with Optional Python Bindings
 
-**Revision**: 122 | **Status**: DRAFT / T001 DONE
+**Revision**: 123 | **Status**: DRAFT / T001 DONE
 **Input**: [spec](spec.md), [code design](contracts/code-design.md),
 [proof](contracts/proof-design.md), [work units](contracts/work-units.md)
 
@@ -9,8 +9,8 @@
 ### Native-First Dispatch 2026-09-10
 
 剩余调度权威为 [N1--N5 / R11 cards](contracts/native-first-execution.md)。当前 R11-B1
-已完成独立 authority↔requester process 的 C++ 正例、负例和不可达边界；下一项是 R11-B2
-的真实 C++ 跨进程 unary。不得在 N1--N3 通过前以旧
+已完成独立 authority↔requester process 的 C++ 正例、负例和不可达边界，R11-B2 已完成
+真实 C++ 跨进程 unary 的本地 process 出口；下一项是 R11-B3 stream。不得在 N1--N3 通过前以旧
 调用方批量迁移、Python 数量或全仓库扫描代替原生出口。已有局部 PASS 及下面历史记录
 保留，父任务不因本轮局部实现升级。
 
@@ -18,7 +18,7 @@
 | --- | --- | --- | --- | --- |
 | [D-NATIVE-FIRST Replan](evidence/native-first-replan-20260910.md) | DONE | User execution-order decision | 文档依赖/链接、旧勾选状态、11/11 workflow 同步及双 PDF 构建检查通过；产品 NOT_RUN | 2026-09-10 |
 | [R11-B1 Independent Authority](contracts/native-first-execution.md#dispatch-cards) | CLOSED_FOR_VALIDATION | T001 valid closure; existing T005 implementation | C++ 独立 authority/requester process 经真实 NFD/Controller 通过 1 正例、5 个 Authority handler 拒绝例和 1 个 authority 不可达超时；bwrap requester 隔离、角色 PIB/TPM 快照与 C++ grant 验证通过。T005 父任务、R11-B2 及完整 Spec qualification 仍未关闭 | 2026-09-10 |
-| [R11-B2 Native Unary Process](contracts/native-first-execution.md#dispatch-cards) | NOT_STARTED | R11-B1; existing T008/T009/T010 implementation | 独立 DI_NativeRequester / authority / di-native-provider；真实 ACK/Selection/handler/Response 和数值 oracle | 2026-09-10 |
+| [R11-B2 Native Unary Process](contracts/native-first-execution.md#dispatch-cards) | CLOSED_FOR_VALIDATION | R11-B1; existing T008/T009/T010 implementation | 独立 C++ DI_NativeRequester / authority / di-native-provider；真实 ACK/Selection/handler/Response、受保护 grant、ONNX Runtime CPU evidence 和 C++ numerical oracle `[4,0,12]`；Provider 缺 role 的拒绝例也 fail-closed。T010 父任务、R11-B3 及完整 Spec qualification 仍未关闭 | 2026-09-10 |
 | [R11-B3 Native Stream Process](contracts/native-first-execution.md#dispatch-cards) | NOT_STARTED | R11-B2 | 同一生产链的有序事件、final、gap/timeout/重复/错 generation | 2026-09-10 |
 | [R11-B4 Native Continuation Process](contracts/native-first-execution.md#dispatch-cards) | NOT_STARTED | R11-B3 | 两轮 FULL_CONTEXT→APPEND_DELTA、真实 receipt/control/journal、错 parent | 2026-09-10 |
 | [R11-B5 Native Recovery Process](contracts/native-first-execution.md#dispatch-cards) | NOT_STARTED | R11-B4 | 真实中断/重启与状态恢复或明确拒绝，无重复提交 | 2026-09-10 |
@@ -283,6 +283,17 @@ P1–P4 是不同的生产入口、进程边界或 selector，不能为了少一
 
 ## Current Checkpoint
 
+2026-09-10 R11-B2 native unary process / **CLOSED_FOR_VALIDATION**（仅限本地
+process 出口）：独立 Controller、artifact authority、DI_NativeRequester 和 di-native-provider
+经私有 NFD/PIB/TPM 完成真实 `/Inference/NativeUnary`；同一 requestId
+`/NDNSF/DI/REQUEST/15cb4c52e8fe435592879d4aae68fd1f-1`、`attempt-1` 和 plan digest
+`sha256:5a6bdc0145ffd3f1db93b3d6c8d435fc0b550d0215067a7fb0117d5db3bd6628` 贯穿 ACK、Selection、
+grant verification、Provider handler、ONNX Runtime CPU execution 和最终 Response；C++ oracle
+验证 `predictions=[4,0,12]`。缺少 Provider `FullModel` role 的同链拒绝例返回
+`NATIVE_PROVIDER_FAILED`，没有成功或 oracle 标记。详见
+[R11-B2 evidence](evidence/r11-b2-native-unary-process-20260910.md)。T010 父任务、R11-B3--B9
+和完整 qualification 仍未关闭。
+
 2026-09-10 R11-B1 independent artifact authority / **CLOSED_FOR_VALIDATION**（仅限本地
 process 出口）：C++ requester 只读取自身签名私钥与 authority 公钥，通过既有 Core
 `RequestServiceTargeted` 请求 `ndnsf-di-native-grant-authority-v1`；authority 独立持有签发
@@ -290,8 +301,9 @@ process 出口）：C++ requester 只读取自身签名私钥与 authority 公�
 ProviderPermission 就绪后提供 TargetedOnly service。真实独立 Controller/Authority/requester
 进程经私有 NFD 通过 1 个正例、5 个 handler 拒绝例和 1 个 authority 不可达超时；C++ probe
 验证 grant，bwrap 隔离与角色 PIB/TPM 快照通过。完整 `Spec182*` C++ unit 选择器为 256/256，
-`Spec170NdnsfDiCoreFlow/Spec182*` integration 选择器为 9/9。T005 父任务仍为 `PARTIAL`，
-R11-B2 的 ACK/Selection/handler/Response 和完整 Spec qualification 仍未开始；详见
+`Spec170NdnsfDiCoreFlow/Spec182*` integration 选择器为 9/9。T005 父任务仍为 `PARTIAL`；
+R11-B2 已在后续批次完成本地 ACK/Selection/handler/Response 出口，完整 Spec qualification
+仍未关闭；详见
 [R11-B1 evidence](evidence/r11-b1-independent-authority-20260910.md)。
 
 2026-09-10 R10-B84 native request identity scope / **CLOSED_FOR_VALIDATION**（仅限 C++ request identity 边界）：

@@ -6684,7 +6684,7 @@ namespace ndn_service_framework
             CollaborationAckCoverageHandler());
     }
 
-    ndn::Name ServiceUser::BeginCollaboration(
+    ndn::Name ServiceUser::BeginCollaborationWithProviders(
         const ServiceName& service,
         const RequestPayload& initialRequest,
         int ackCollectionTimeMs,
@@ -6698,12 +6698,18 @@ namespace ndn_service_framework
         const std::optional<StreamRequestOptions>& requestedStreamOptions,
         std::function<void(const ndn::Buffer&)> onStreamEvent,
         std::function<void(const ndn::Buffer&)> onStreamComplete,
-        std::function<void(const StreamedInvocationError&)> onStreamError)
+        std::function<void(const StreamedInvocationError&)> onStreamError,
+        const std::vector<ndn::Name>& providerNames)
     {
         if (!onAckClosed || ackCollectionTimeMs <= 0 ||
             timeoutMs <= ackCollectionTimeMs) {
             throw std::invalid_argument(
                 "deferred collaboration requires valid ACK and request deadlines");
+        }
+        if (std::any_of(providerNames.begin(), providerNames.end(),
+                        [](const ndn::Name& provider) { return provider.empty(); })) {
+            throw std::invalid_argument(
+                "deferred collaboration Provider candidates must be non-empty");
         }
         const ndn::Name requestId = requestedRequestId.empty() ?
             makeRequestId() : requestedRequestId;
@@ -6756,7 +6762,17 @@ namespace ndn_service_framework
             requestMessage.setStreamRequestOptions(*streamOptions);
         }
 
+        // Deferred collaboration publishes its initial Request only after
+        // admission. Bind the current ControllerVersion before that publish,
+        // just as the ordinary RequestService paths do; otherwise a Provider
+        // correctly rejects the decrypted request as versionless.
+        if (!prepareRequestControllerVersion(requestMessage, service, requestId)) {
+            throw std::runtime_error(
+                "deferred collaboration ControllerVersion is not ready");
+        }
+
         PendingCall pendingCall;
+        pendingCall.providers = providerNames;
         pendingCall.serviceName = service;
         pendingCall.requestMessage = std::move(requestMessage);
         pendingCall.strategy = ndn_service_framework::tlv::AllSelected;
@@ -6806,6 +6822,31 @@ namespace ndn_service_framework
                   << " serviceName=" << service.toUri());
         admitOrQueuePendingCall(requestId, true, true);
         return requestId;
+    }
+
+    ndn::Name ServiceUser::BeginCollaboration(
+        const ServiceName& service,
+        const RequestPayload& initialRequest,
+        int ackCollectionTimeMs,
+        int timeoutMs,
+        CollaborationAckClosedHandler onAckClosed,
+        ResponseHandler onFinalResponse,
+        TimeoutHandler onTimeout,
+        const RequestId& requestedRequestId,
+        CollaborationAckCoverageHandler onAckCoverage,
+        const RequestCapabilities& requestCapabilities,
+        const std::optional<StreamRequestOptions>& requestedStreamOptions,
+        std::function<void(const ndn::Buffer&)> onStreamEvent,
+        std::function<void(const ndn::Buffer&)> onStreamComplete,
+        std::function<void(const StreamedInvocationError&)> onStreamError)
+    {
+        return BeginCollaborationWithProviders(
+            service, initialRequest, ackCollectionTimeMs, timeoutMs,
+            std::move(onAckClosed), std::move(onFinalResponse),
+            std::move(onTimeout), requestedRequestId,
+            std::move(onAckCoverage), requestCapabilities,
+            requestedStreamOptions, std::move(onStreamEvent),
+            std::move(onStreamComplete), std::move(onStreamError), {});
     }
 
     bool ServiceUser::CancelCollaboration(const RequestId& requestId)

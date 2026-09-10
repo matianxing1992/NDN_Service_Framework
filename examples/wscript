@@ -238,12 +238,13 @@ def build(bld):
                         bld.path.parent.ant_glob([
                             'NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.cpp',
                             'NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.cpp',
+                            'NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.cpp',
                         ])),
                 includes=['..', '../ndn-service-framework',
                           '../NDNSF-DistributedInference/cpp/adapters/onnx'],
                 use='BOOST ONNXRUNTIME ONNX NDN_CXX NDN_SVS PROTOBUF OPENSSL DL',
-                cxxflags=['-fPIC', '-pthread'],
-                linkflags=['-pthread'],
+                cxxflags=['-fPIC', '-pthread', '-ffunction-sections', '-fdata-sections'],
+                linkflags=['-pthread', '-Wl,--gc-sections'],
                 install_path='${LIBEXECDIR}/ndnsf-di')
 
     if not bld.env.WITH_EXAMPLES:
@@ -278,6 +279,7 @@ def build(bld):
         'NDNSF-DistributedInference/cpp/ndnsf-di/NativeGrantClient.cpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/NativeAuthenticatedGrantClient.cpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.cpp',
+        'NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactAuthorityWire.cpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.cpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalPreparationCatalog.cpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalRolePreparer.cpp',
