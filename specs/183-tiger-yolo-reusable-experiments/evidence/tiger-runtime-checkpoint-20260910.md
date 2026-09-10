@@ -111,3 +111,49 @@ been created. After creating that root, the same run resumed with rsync
 append/verify; no second Slurm submission was issued. Until a Slurm job ID,
 compute node, CUDA probe, terminal verdict and cleanup receipt are present, the
 run is `RUNNING`, not GPU PASS.
+
+## Fresh v49 Tiger GPU and negative results
+
+The remote execution continued with append-only profile records. The base SIF
+and APP bytes stayed unchanged; only the profile gate references and runtime
+run IDs changed. The following table records the terminal boundary for every
+attempt, including transport failures that never reached Slurm.
+
+| Run | Slurm / hosts | Terminal evidence | Result |
+| --- | --- | --- | --- |
+| `tiger-single-node-gpu-v49-r7` | `210364` / `itiger02` | Provider launch returned 126: `/usr/bin/env: '/app/bin/di-native-provider': Permission denied`; the transported APP binaries were `0444` | FAIL before request; executable modes restored to `0555` |
+| `tiger-single-node-gpu-v49-r8` | `210365` / `itiger02` | Verdict 230987 bytes, SHA `sha256:e7e2809fee7623c6131ec64d3c7df7c6b7994b3fb40c61bb6f830f9061d19649`; candidate `sha256:00db0251e0e4eb98f0b8067fc5c2dcd9d3d55778c7bea5365c11932241646922`; two requests; model roles CUDA, Merge CPU; shape `[1,50,6]`, `maxAbsError=0.00042724609375`; GPU UUID `GPU-519e5825-d84a-8e55-670c-c53433c4a71c`; cleanup closed | `NORMAL_EXPERIMENT_PASS`; closes T013/V15 |
+| `tiger-two-node-gpu-v49-r9` | no job | `SSH_DESTINATION_CONFLICT` against the immutable remote candidate/profile root | FAIL in transport |
+| `tiger-two-node-gpu-v49-r10` | no job | `FILE_SIZE_OR_TYPE:hostMinindn` after a rewritten host gate retained stale bytes/hash | FAIL in transport preflight |
+| `tiger-two-node-gpu-v49-r11` | no job | `TRANSPORT_OUTSIDE_ROOTS` because retained r8 gate references still named the old root | FAIL in transport preflight |
+| `tiger-two-node-gpu-v49-r12` | no job | Remote `.incoming` was accidentally `0555`; staging raised `PermissionError` | FAIL in receiver staging; mode restored to `0700` |
+| `tiger-two-node-gpu-v49-r13` | `210366` / `itiger02`, `itiger03` | Verdict 464828 bytes, SHA `sha256:c8e4487127096e938f438745746b7735dc6082c502389b010d3a48f325916e92`; candidate `sha256:08c7df48dfa6e89bcbd54dab9b061c5f861394121dd6eb012fd596216e0d970d`; four requests (one warmup + three measured), four roles, nine edges/request, both GPU UUIDs, shape `[1,50,6]`, `maxAbsError=0.00042724609375`, no CPU fallback, cleanup closed | `NORMAL_EXPERIMENT_PASS`; closes T014/V16 |
+| `tiger-negative-dependency-v49-r14` | `210373` / `itiger05`, `itiger06` | `srun.log` SHA `sha256:c623cc08a511a050467f87e343daed5f8976c686f705bab043657640eb946d51`; Selection committed; DetectShard0 wrote one bound `NDNSF_DI_OUTPUT_WITHHELD`; Merge wrote exact `NDNSF_DI_NATIVE_FAILURE` for the signed Data name. Rank1 had already published `workload-complete` while rank0 was still in cold request preparation; rank1 then failed with `TimeoutError('STARTUP_DEADLINE')`. No `negative-user.json`, `collection-input.json` or verdict was produced | `FAILED_BOUNDARY`; T015 remains open |
+
+The r14 failure is an operator-harness budget defect. `completion_seconds` for
+one negative request was 120 seconds (`90` seconds process budget plus `30`
+seconds cleanup), but the rank1 completion clock started at its
+`providers-ready` record (`23:33:54`) while rank0 did not write the User
+request lifecycle until `23:35:12`. The native dependency failure itself was
+observed at `23:35:45`; the outer completion deadline expired at `23:35:54`
+before the User observer could write its post-shutdown record. This is not a
+SIF, CUDA, transport or DI numerical failure. The corrective action is to
+reserve the cold preparation interval in the negative completion budget (or
+arm the barrier after both ranks are ready), then run one new T015 allocation.
+No base SIF rebuild is required for that harness-only correction.
+
+## Reproducible order after this checkpoint
+
+1. Keep the v23 SIF and v49 APP immutable; use the canonical candidate root and
+   append-only profile gate records.
+2. Verify candidate inventory, executable APP modes, remote `.incoming` mode,
+   host-gate bytes/hashes and transport-root closure before `sbatch`.
+3. Run `prepare`, then one exact local owner; collect only after the scheduler
+   terminal state and both rank receipts are present.
+4. For normal GPU qualification, require single-node T013, first normal
+   two-node T014, then a separate negative T015. Do not count transport or
+   component records as runtime PASS.
+5. Retry T015 with the corrected completion budget and require all of
+   `negative-user.json`, one logical withheld edge, exact Merge native failure,
+   no response/reselection and clean cleanup. Only then run T016 with a new
+   two-node allocation and unchanged base/APP/profile/model/oracle.

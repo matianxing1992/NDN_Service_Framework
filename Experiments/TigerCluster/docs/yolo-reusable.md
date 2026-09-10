@@ -7,9 +7,10 @@
 以Spec183最新tasks/plan为执行入口。后续app-only改动只更新独立包，不重建
 基础库SIF；最终验收绑定base+app+harness/model。C++小例子209981已在itiger01/02
 实跑3条Data并清理成功，基础传输证据复用。历史 APP v35 + v22 base 已完成 exact-SIF
-本机/host gate、Tiger 单节点 GPU `210340` 以及首个双节点正常 `210341`；完整
-可复用交付仍未资格化，因为负例 `210342` 暴露了 completion budget 和逻辑 edge
-cardinality 两个 harness 缺陷，T016 尚未运行。
+本机/host gate、Tiger 单节点 GPU `210340` 以及首个双节点正常 `210341`；v49 已在
+同一分层边界完成正式 local、单节点 GPU `210365` 和双节点正常 `210366`。完整
+可复用交付仍未资格化：负例 `210342` 暴露了 edge cardinality，`210373` 暴露了
+rank 间冷准备造成的 completion budget 消耗，T015 需重跑且 T016 尚未运行。
 
 内部运输组件 `tools/spec183_transport.py` 已有显式inventory/receive；输入清单
 只描述所选文件，不能证明完整candidate闭包。接收端先校验、测容量，再无覆盖
@@ -27,7 +28,7 @@ NOT_EVALUATED清单（exit 78）；不上传或提交。公开submit的SSH协调
 超时保留REMOTE_STATE_UNRESOLVED与暂存目录，同一run重试不得重复sbatch。
 
 **Branch**: `TigerClusterExperiments`
-**Status**: IN_PROGRESS / LOCAL_PUBLICATION_BLOCKED / NEGATIVE_HARNESS_BLOCKED
+**Status**: IN_PROGRESS / LOCAL_EXACT_SIF_PASS / TIGER_SINGLE_NODE_GPU_PASS / TIGER_TWO_NODE_PASS / NEGATIVE_PENDING / REUSE_PENDING
 
 ## 2026-09-10 current execution update
 
@@ -64,18 +65,25 @@ The prior v110 publication callback failure, cache/extraction mistakes, stale
 NFD selection, and the first remote candidate-root transport failure remain
 immutable diagnostic records. The v49 Tiger order is formal local PASS →
 single-node GPU → fresh two-node normal → negative T015 → independent normal
-reuse T016. Submission `tiger-single-node-gpu-v49-r7` is currently transferring
-the same candidate; no remote GPU PASS is claimed until Slurm/CUDA/cleanup
-receipts are collected. Full hashes and retained failures are in the
-[Spec183 checkpoint](../../../specs/183-tiger-yolo-reusable-experiments/evidence/tiger-runtime-checkpoint-20260910.md).
+reuse T016. Single-node `210365` / `tiger-single-node-gpu-v49-r8` and normal
+two-node `210366` / `tiger-two-node-gpu-v49-r13` now have complete Slurm,
+CUDA/backend, numerical and cleanup receipts. Negative `210373` /
+`tiger-negative-dependency-v49-r14` reached the exact native withheld edge and
+Merge failure, but rank1's completion deadline expired while rank0 was still in
+cold preparation; it has no User observation or collector verdict and does not
+close T015. Full hashes and retained failures are in the [Spec183
+checkpoint](../../../specs/183-tiger-yolo-reusable-experiments/evidence/tiger-runtime-checkpoint-20260910.md).
 
 负例触发点已有源码和原生组件证据：`DetectShard0` 在真实V3输出校验后、
 首包发布前阻止该请求到 `Merge` 的对象，并保留绑定的触发记录。见Spec183
 `evidence/t004-dependency-cutpoint.md`。当前远端负例 `210342` 已真实走到
 Selection/withheld，但因 User completion budget 和逻辑 edge cardinality 缺陷未
-形成 collector 终态；不能手工移除保护或把部分日志标为 PASS。
+形成 collector 终态；v49 的 `210373` 已把逻辑 edge 收敛为一条，却暴露出
+completion timer 在两 rank 到达时间不一致时过早开始：rank1 于 23:33:54
+进入 barrier，rank0 到 23:35:12 才写入 User 生命周期。下一次 T015 必须把冷准备
+时间纳入预算或延迟 arm barrier，不能手工移除保护或把部分日志标为 PASS。
 
-目标：一份profiles/yolo-two-node.json和一个jobs/yolo/submit.py入口，本地验证后，以同一分层 base+APP 组合完成Tiger两节点四Provider推理并在新allocation复现。历史 v35 候选已有单节点和首个双节点正常 PASS；当前 v39 候选仍等待正式 local publication 修复、负例和第二次正常 allocation。
+目标：一份profiles/yolo-two-node.json和一个jobs/yolo/submit.py入口，本地验证后，以同一分层 base+APP 组合完成Tiger两节点四Provider推理并在新allocation复现。v49 已完成正式 local、单节点 GPU 和首次双节点正常 PASS；T015 需要一次有界负例重跑，T016 需要第二次不变配置的正常 allocation。
 
 ## Current Checkpoint
 
@@ -94,22 +102,23 @@ hostMinindn receipt 后执行签发、两个 CPU 请求、清理及 collector �
 真实 exact-SIF MiniNDN Y-B；v51 的 Y-N-D 也已从同一 APP 的保留日志重算出
 post-Selection 缺依赖证据。正常单/双GPU run、节点scratch、外部
 collect --reconcile 和共享目录接收端submit已接；跨机器文件运输和可移植前置
-证据已在实际 allocation 使用。负例 `210342` 仍缺 User/collection 终态：外层
-60 秒预算覆盖不了 60 秒观察加 shutdown，且生产图有两个同源 DetectShard0→Merge
-逻辑 edge。新机器必须安装冻结 requirements-operator.txt 对应的操作者
+证据已在实际 allocation 使用。负例 `210342` 仍保留为历史失败；v49 负例
+`210373` 已只有一条 bound DetectShard0→Merge edge，并且 Merge 写出精确 native
+failure，但 rank1 的 completion budget 在 rank0 冷准备完成前耗尽，仍缺 User/
+collection 终态。下一次 T015 必须把冷准备时间纳入 completion budget。新机器必须安装冻结 requirements-operator.txt 对应的操作者
 依赖并保证batch解释器一致。Tiger已建立独立环境，当前profile的
 runtime.operatorPython指向它；系统Python仍不作为该环境的替代。
 
 历史 APP v35 已完成 host gate、exact-SIF MiniNDN Y-B/Y-N，以及
 共享 `tiger-local-cpu-v35` 的 `NORMAL_EXPERIMENT_PASS`。它复用内容锁定的
-v22 base SIF，只重建外置 APP 和受影响 planes。Tiger single-node GPU
-`210340`（startup=300）完成 1+1；首个 two-node normal `210341`
-（`itiger02`/`itiger03`，1 warmup + 3 measured）完成四角色 backend、9 条依赖
-边/请求、数值与清理闭环。负例 `210342` 通过 Selection、GPU/provider readiness
-并在 DetectShard0 记录两个 bound withheld，但 User 在 59.9946 秒外层预算被杀，
-没有 `negative-user.json`；collector 还把同源两条逻辑 edge 当成单 edge。因此
-当前状态还包括 formal local publication 阻塞；不能把单节点或一次双节点 PASS 升级为
-最终可复用交付。
+v22 base SIF，只重建外置 APP 和受影响 planes。新的 v49 候选已在
+`210365` 完成单节点 1+1，在 `210366` 的 `itiger02`/`itiger03` 完成双节点
+1 warmup + 3 measured；四角色 backend、9 条依赖边/请求、数值与清理均闭合。
+负例 `210342` 的两个同源逻辑 edge 问题已在 v49 收敛，`210373` 进一步证明
+DetectShard0→Merge 的单 edge withholding 和 Merge native failure 可到达，但
+completion timer 因 rank 间冷准备偏斜提前耗尽，仍没有 `negative-user.json`。
+因此单节点和首次双节点门已关闭，T015 需一次预算修正后的重跑，T016 仍未运行；
+不能把一次正常双节点 PASS 升级为最终可复用交付。
 
 ## Direct local YOLO example
 

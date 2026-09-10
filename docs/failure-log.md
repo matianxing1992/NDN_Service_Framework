@@ -5568,3 +5568,108 @@ owner with a fresh run ID.
 Lesson: every manual exact-SIF reproduction must reap all children before a
 formal MiniNDN run; a fresh run ID preserves the failed boundary and avoids
 reusing partially initialized state.
+
+## 2026-09-10 — v49 Tiger provider lost executable mode during transport
+
+Symptom: fresh v49 Tiger job `210364` allocated `itiger02`, passed Apptainer,
+NFD, repo readiness and the CUDA probe, then the first Provider launch exited
+126. Its retained log is `/usr/bin/env: ‘/app/bin/di-native-provider’:
+Permission denied`; Slurm ended `FAILED 1:0` after 2:53, before any YOLO request.
+
+Root cause: transport preparation normalized every regular candidate file to
+`0444`. The APP manifest records content but the runtime also requires the
+three `/app/bin/*` native programs to retain an executable mode. The SIF,
+application bytes and GPU allocation were otherwise valid.
+
+Fix status: retain `210364` unchanged as a pre-request failure; restore APP
+binary modes to `0555` in the local and already published project candidate,
+verify the candidate inventory and submit a fresh run ID. The corrected retry
+must reuse the same SIF and APP bytes and must not issue a second Slurm submit
+for `210364`.
+
+Lesson: transport identity includes file mode even when an application
+manifest hashes only bytes. Preserve executable bits for entrypoints and
+validate a real container launch before attributing a failure to CUDA or DI.
+
+## 2026-09-10 — v49 two-node profile rewrite hit immutable destination conflict
+
+Symptom: `tiger-two-node-gpu-v49-r9` stopped in the SSH receiver with
+`SSH_DESTINATION_CONFLICT`; no Slurm job was submitted.
+
+Root cause: the retry used a new remote candidate/profile root while the
+declared destination already contained an immutable candidate from the prior
+transport attempt. The receiver correctly refused to overwrite it.
+
+Fix status: keep the original candidate immutable, use its canonical root, and
+append a new profile record instead of rewriting an existing destination.
+
+Lesson: a profile path change is a new transport identity; never force a
+receiver overwrite to rescue a failed staging attempt.
+
+## 2026-09-10 — v49 host-gate reference retained stale bytes/hash
+
+Symptom: `tiger-two-node-gpu-v49-r10` failed before submission with
+`FILE_SIZE_OR_TYPE:hostMinindn`.
+
+Root cause: after the profile root rewrite, the host-gate path changed but its
+recorded byte count and SHA-256 were not regenerated from the new file.
+
+Fix status: regenerate the profile-bound host-gate reference and verify its
+bytes/hash before transport; retain r10 as a pre-Slurm failure.
+
+Lesson: every path rewrite requires a fresh content identity. A matching file
+name is not evidence of a matching gate.
+
+## 2026-09-10 — v49 retained r8 gate references escaped the transport root
+
+Symptom: `tiger-two-node-gpu-v49-r11` failed before submission with
+`TRANSPORT_OUTSIDE_ROOTS`.
+
+Root cause: the new profile's declared `remoteArtifactRoot` did not contain
+the retained r8 gate paths referenced by the dispatch manifest.
+
+Fix status: rebind all retained gate references to the canonical candidate root
+and verify the complete transport closure; no Slurm job was created for r11.
+
+Lesson: append-only profiles must carry a closed reference graph. Updating the
+root field alone cannot make old absolute paths valid.
+
+## 2026-09-10 — v49 receiver staging directory lost write permission
+
+Symptom: `tiger-two-node-gpu-v49-r12` failed in the receiver with
+`PermissionError: [Errno 13] Permission denied` while creating its `.incoming`
+staging directory; no Slurm job was submitted.
+
+Root cause: a broad mode normalization made the remote `.incoming` directory
+`0555`, although the receiver needs `0700` to create an isolated staging child.
+
+Fix status: restore `.incoming` to `0700`, verify the canonical candidate modes,
+and retain r12 as a receiver failure.
+
+Lesson: candidate files and receiver control directories have different mode
+contracts; mode checks must cover staging parents before transport.
+
+## 2026-09-10 — v49 negative run exhausted completion budget during cold preparation
+
+Symptom: `tiger-negative-dependency-v49-r14` (`210373`) reached Selection,
+DetectShard0's one bound output-withheld record and Merge's exact native
+dependency failure, but Slurm ended `FAILED 1:0` with rank1
+`TimeoutError('STARTUP_DEADLINE')`. No `negative-user.json`,
+`collection-input.json` or verdict was produced.
+
+Root cause: the negative completion timer started when rank1 reached
+`providers-ready` at 23:33:54, while rank0 spent roughly 100 seconds in cold
+request preparation and did not write the User lifecycle until 23:35:12. The
+120-second budget (`90` seconds process plus `30` seconds cleanup) therefore
+expired before the User observer could finish. Native Merge correctly emitted
+`failed to fetch signed exact Data`; this was an outer harness timing failure,
+not an SIF, CUDA, transport or numerical failure.
+
+Fix status: retain r14 unchanged as a real boundary failure. Add the cold
+preparation interval to the negative completion budget or arm the barrier only
+after both ranks are ready, then run one fresh T015 allocation. No base SIF
+rebuild is needed.
+
+Lesson: a completion budget must include rank skew and pre-request preparation,
+not only the User wait and cleanup windows. Partial native failure evidence
+never upgrades to `EXPECTED_REJECTION_PASS`.

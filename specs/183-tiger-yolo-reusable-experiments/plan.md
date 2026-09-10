@@ -1,7 +1,7 @@
 # Implementation Plan: Reusable TigerCluster YOLO Distributed Inference
 
 **Branch**: `TigerClusterExperiments` | **Date**: 2026-09-06 | **Spec**: [spec.md](spec.md)
-**Status**: IN_PROGRESS / LOCAL_EXACT_SIF_PASS / TIGER_GPU_PENDING
+**Status**: IN_PROGRESS / LOCAL_EXACT_SIF_PASS / TIGER_SINGLE_NODE_GPU_PASS / TIGER_TWO_NODE_PASS / NEGATIVE_PENDING / REUSE_PENDING
 
 ## Summary
 
@@ -28,22 +28,31 @@ Real MiniNDN Y-B/Y-N and the fresh shared exact-SIF local owner run
 maximum absolute error `0.0005340576171875`). The earlier v110 publication
 callback failure, packaging/extraction failures, stale NFD selection and the
 first remote-root transport failure remain immutable diagnostic records.
-Historical Tiger single-node `210340` and first normal two-node `210341` remain
-provenance only; fresh v49 GPU submission is in progress and T015/T016 still
-require new remote receipts. Full evidence and the order are in [the
-checkpoint](evidence/tiger-runtime-checkpoint-20260910.md).
+Fresh v49 Tiger single-node `210365` / `tiger-single-node-gpu-v49-r8` is a
+`NORMAL_EXPERIMENT_PASS` with one warmup and one measured request on
+`itiger02`; all three model roles used CUDA and Merge used CPU. Fresh v49
+two-node `210366` / `tiger-two-node-gpu-v49-r13` is a
+`NORMAL_EXPERIMENT_PASS` with one warmup and three measured requests on
+`itiger02`/`itiger03`; the four-role graph, cross-node dependencies, CUDA
+bindings, numerical oracle and cleanup all closed. The negative run
+`210373` / `tiger-negative-dependency-v49-r14` reached the intended native
+withheld edge and exact Merge dependency failure, but the rank1 completion
+budget expired while rank0 was still in cold request preparation, so no User
+observation or collector verdict was produced. T015 remains blocked after a
+real attempt and T016 reuse has not started. Full evidence and the order are
+in [the checkpoint](evidence/tiger-runtime-checkpoint-20260910.md).
 
 ### 2026-09-10 execution checkpoint
 
-The bounded sequence now has a fresh local owner PASS for v49. The earlier v35
-single-node and first two-node records remain useful substrate provenance, but
-they do not qualify the new v23+v49 composition. The new Tiger run must retain
-the allocation, node, GPU UUID, Apptainer version, Slurm terminal state and the
-same candidate digest before it can close T013. The registered negative
-allocation `210342` remains a retained FAIL: it reached Selection and native
-withholding, then lost the User observation at 59.9946 s; the current harness
-adds cleanup to the completion barrier and the native producer binds one logical
-edge. T015 must still be run on a fresh two-node allocation before T016.
+The bounded sequence now has fresh local, single-node GPU and first two-node
+normal PASS evidence for v49. The earlier v35 candidate records remain useful
+substrate provenance only. The registered negative allocation `210373` retains
+the corrected one-edge native cutpoint and exact Merge failure, but failed at
+the operator completion boundary because rank1's 120-second negative budget
+started before rank0 finished cold preparation. The next negative attempt must
+reserve preparation time in the completion budget (or arm that budget after
+both ranks are ready), then collect the User observation and cleanup before
+T016. No SIF rebuild is required for this harness-only timing correction.
 
 ## Technical Context
 
@@ -108,8 +117,8 @@ T001已完成接收清点（见evidence/input-inventory.md），发现两个必�
 3. G2 / T007：实现到生产调用路径收敛审计，必须 PASS。检查实际 argv/env、角色路由、secure grant/selection、harness/oracle、清理、数据路径。未接线不能算实现。
 4. G3 / T008–T010：在本机匹配的基础容器/SDK 中按锁构建或复用闭包（`NAC-ABE + NDN-SVS → NDNSD → NDNSF/Repo及通用绑定 → 外部Apps`），相关unit→真实集成→CPU MiniNDN。不先重复编译一套主机 ORT 版本的应用。构建键未变时只增量编译受影响 app；ABI变更清理消费者。基础构建验收可复用，MiniNDN receipt 绑定实际 source/base/app 组合，用于后续运行资格，不是基础构建前置。
 5. G4 / T011：通过原构建 owner 下的分层入口构建或复用基础 SIF，在匹配容器/SDK 生成独立 app 包；DSO/import/help 是启动前检查，合格 MiniNDN gate 后完成精确 base+app 的本地 YOLO 资格。两层产物清单替代“九产物都在SIF”检查。基础/SDK构建可先独立推进；不得将其成功等同 G2 或完整组合资格。单阶段基础镜像保留稳定开发工具可同时作为本地SDK，不要求为同一ABI再生成一份SDK镜像。
-6. G5 / T012–T014：目标 compute 环境匹配→精确 SIF 上传/staging 校验→一节点 GPU 四 Provider→两节点 GPU 第一次正常运行（`210340`/`210341` 已闭合）。
-7. G6 / T015–T017：先修复并通过一次远端负例（`210342` 暴露 completion-budget 与逻辑 edge cardinality 缺陷），再做第二个独立双节点正常 allocation，最后离线重算和可复用交付；负例未 PASS 前不得启动 T016。
+6. G5 / T012–T014：目标 compute 环境匹配→精确 SIF 上传/staging 校验→一节点 GPU 四 Provider→两节点 GPU 第一次正常运行。v49 的 `210365`/`210366` 已闭合；历史 `210340`/`210341` 只作 provenance。
+7. G6 / T015–T017：先修复并通过一次远端负例（`210342` 暴露 edge cardinality，`210373` 暴露 rank 间冷准备造成的 completion-budget 消耗），再做第二个独立双节点正常 allocation，最后离线重算和可复用交付；负例未 PASS 前不得启动 T016。
 
 Apptainer 版本探测可能在 T011 前必要。只允许先通过 G2 且 probe 自身的输入/脚本检查，再做有界 substrate allocation；其独立证据不是模型资格，不能要求不存在的 SIF。这消除“先有镜像才能获取构建器版本”的循环依赖。无目标权限/配额则记录 WAITING_EXTERNAL_INPUT，保留可做的本地工作。
 

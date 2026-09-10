@@ -2,15 +2,15 @@
 
 **Input**: [spec.md](spec.md), [plan.md](plan.md), [profile contract](contracts/experiment-profile.md), [validation matrix](validation-matrix.md)
 **Branch**: `TigerClusterExperiments`
-**Status**: IN_PROGRESS / TIGER_GPU_SINGLE_NODE_RUNNING / NEGATIVE_PENDING.
+**Status**: IN_PROGRESS / TIGER_SINGLE_NODE_GPU_PASS / TIGER_TWO_NODE_PASS / NEGATIVE_PENDING / REUSE_PENDING.
 The current candidate is APP v39 layered over the rebuilt v23 base SIF. The
 fresh shared exact-SIF local owner run `tiger-local-cpu-v49-r1` is a
 `NORMAL_EXPERIMENT_PASS`; it binds the v23 base, v49 application bundle, two
 requests, nine dependency edges per request, `[1,50,6]` output and
 `maxAbsError=0.0005340576171875`. The earlier v22/v35 Tiger PASS records remain
-historical provenance. A new v49 single-node GPU submission is transferring
-the exact candidate to Tiger; T015/T016 remain open until fresh remote receipts
-are collected. Every failed attempt remains immutable evidence.
+historical provenance. Fresh v49 single-node and first two-node normal receipts
+are now collected; T015 has one real failed attempt and T016 remains gated on a
+bounded negative PASS. Every failed attempt remains immutable evidence.
 
 ## 2026-09-10 final task execution ledger
 
@@ -25,9 +25,9 @@ evidence.
 | T010 | MiniNDN protocol qualification | REAL_MININDN_PASS | `Experiments/TigerCluster/results/minindn-local-20260910-v105-v37` and `v107-v37`; RC0, ACK/Selection, oracle, cleanup | Do not promote direct MiniNDN evidence to formal local or GPU qualification |
 | T011 | v23 base + APP v49, shared profile v49, fresh formal `submit.py local` | PASS | `/project/tma1/ndnsf-di/runs/tiger-local-cpu-v49-r1/verdict.json`, `sha256:d15b41c1e853584de893d996741b31d9ee95b4ec89804e0373ad623486c17ebe`; `NORMAL_EXPERIMENT_PASS`, candidate `sha256:ed7967c65e6c765f74f4ad64fd45154b5094dbdc380a03a49a75eee0bd985384`, 2 requests, 9 edges/request, shape `[1,50,6]`, max abs error `0.0005340576171875` | Validate the same frozen composition on Tiger single-node GPU |
 | T012 | Reuse Tiger substrate and staging evidence | VERIFIED_REUSED | Earlier allocation preflight and staging evidence bound to v22 base; per-allocation checks remain mandatory | Repeat environment/capacity/route checks for the next allocation |
-| T013 | Single-node GPU, 1 warmup + 1 measured | RUNNING (fresh v49) | Submit run `tiger-single-node-gpu-v49-r7`; exact v23 SIF SHA `sha256:44b44d564c64387716a17588ea387ee2a255948ee744855291c8e7a0676907b0`, APP manifest `sha256:4a6c3af0c2cc24620c28519404f1a472074ebf354608372934339ae241942db7`; remote transfer is in progress, no Slurm receipt yet | Collect remote job only after the transport journal reaches terminal state |
-| T014 | First two-node normal, 1 warmup + 3 measured | PASS (first allocation) | `210341` / `tiger-two-node-gpu-v35-r5`, `itiger02`/`itiger03`, nine dependency edges/request, oracle, cleanup | Preserve this run; do not count it as T016 reuse |
-| T015 | Registered two-node `negative-dependency` | NOT_STARTED (fresh v49 pending T014) | Historical `210342` remains a retained FAIL: Selection, two withheld records, User timeout at 59.9946 s, no collection terminal. Current v49 harness includes the completion-budget reservation fix and native first-edge withholding; no new allocation has been run | Run after fresh v49 normal two-node PASS; require one complete edge identity and User `OBSERVATION_ONLY` record |
+| T013 | Single-node GPU, 1 warmup + 1 measured | PASS (fresh v49) | `210365` / `tiger-single-node-gpu-v49-r8`; `itiger02`; verdict `sha256:e7e2809fee7623c6131ec64d3c7df7c6b7994b3fb40c61bb6f830f9061d19649`; three model roles used CUDA, Merge CPU, shape `[1,50,6]`, max abs error `0.00042724609375`, clean cleanup | Preserve as the single-node gate; do not use it as two-node evidence |
+| T014 | First two-node normal, 1 warmup + 3 measured | PASS (fresh v49) | `210366` / `tiger-two-node-gpu-v49-r13`; `itiger02`/`itiger03`; verdict `sha256:c8e4487127096e938f438745746b7735dc6082c502389b010d3a48f325916e92`; four requests, nine dependency edges/request, shape `[1,50,6]`, max abs error `0.00042724609375`, no CPU fallback, clean cleanup | Preserve this run; do not count it as T016 reuse |
+| T015 | Registered two-node `negative-dependency` | FAILED_BOUNDARY (real v49 attempt) | `210373` / `tiger-negative-dependency-v49-r14`; Selection, one bound DetectShard0→Merge withheld edge and exact Merge native failure were observed. Rank1 completion expired while rank0 was still in cold preparation; no User `OBSERVATION_ONLY` or collector terminal. `srun.log` SHA `sha256:c623cc08a511a050467f87e343daed5f8976c686f705bab043657640eb946d51` | Add preparation time to the negative completion budget (harness-only; no SIF rebuild), then run one fresh T015 and require complete User/cutpoint/cleanup evidence |
 | T016 | Second independent normal two-node allocation | NOT STARTED | Must wait for T015 `EXPECTED_REJECTION_PASS` | New allocation with unchanged profile/base/APP/model/oracle and new identities |
 | T017 | Operator handoff and reusable documentation | IN PROGRESS | This ledger plus [runtime checkpoint](evidence/tiger-runtime-checkpoint-20260910.md), failure log and Tiger guide | Refresh after callback fix, T015 and T016; retain all failed runs |
 
@@ -75,6 +75,31 @@ two requests, four providers, nine dependency edges per request, numeric shape
 `[1,50,6]`, `matched=true`, `maxAbsError=0.0005340576171875`, no CPU fallback in
 the CPU role observations, and controlled cleanup. This closes T011 only;
 Tiger GPU and reuse gates still require their own retained receipts.
+
+## 2026-09-10 Tiger v49 remote results
+
+| Run | Slurm / hosts | Result | Boundary evidence | Qualification effect |
+| --- | --- | --- | --- | --- |
+| `tiger-single-node-gpu-v49-r7` | `210364` / `itiger02` | FAIL before request | Apptainer, NFD, CUDA probe and readiness passed; APP `/app/bin/*` had mode `0444`, so `di-native-provider` exited 126 with `Permission denied` | Retained transport/runtime failure; modes corrected to `0555`, then rerun as r8 |
+| `tiger-single-node-gpu-v49-r8` | `210365` / `itiger02` | PASS | 1 warmup + 1 measured; model roles `BackboneNeck`, `DetectShard0`, `DetectShard1` used `CUDAExecutionProvider`; Merge used CPU; shape `[1,50,6]`, `maxAbsError=0.00042724609375`, GPU UUID recorded, cleanup closed | Closes T013/V15 for v23+v49 |
+| `tiger-two-node-gpu-v49-r9` | no Slurm job | FAIL in transport | Immutable remote candidate conflicted with the rewritten profile root (`SSH_DESTINATION_CONFLICT`) | No execution; preserve and do not retry same immutable profile |
+| `tiger-two-node-gpu-v49-r10` | no Slurm job | FAIL in transport preflight | Rewritten host gate retained stale bytes/hash (`FILE_SIZE_OR_TYPE:hostMinindn`) | No execution; regenerate the profile-bound gate before the next run |
+| `tiger-two-node-gpu-v49-r11` | no Slurm job | FAIL in transport preflight | Retained r8 gate references escaped the new declared remote artifact root (`TRANSPORT_OUTSIDE_ROOTS`) | No execution; all retained references were rebound to the canonical root |
+| `tiger-two-node-gpu-v49-r12` | no Slurm job | FAIL in receiver staging | An earlier mode normalization made remote `.incoming` `0555`, so staging returned `PermissionError` | No execution; `.incoming` restored to `0700` |
+| `tiger-two-node-gpu-v49-r13` | `210366` / `itiger02`, `itiger03` | PASS | 1 warmup + 3 measured; four roles and nine dependency edges/request closed across two hosts, both GPU UUIDs recorded, shape `[1,50,6]`, `maxAbsError=0.00042724609375`, no CPU fallback, cleanup closed | Closes T014/V16 for v23+v49; T016 still requires a second unchanged normal allocation |
+| `tiger-negative-dependency-v49-r14` | `210373` / `itiger05`, `itiger06` | FAILED_BOUNDARY | Selection committed; DetectShard0 emitted one exact withheld edge; Merge emitted `NDNSF_DI_NATIVE_FAILURE` for the signed exact Data name. Rank1 reached `workload-complete` before rank0 cold preparation finished, then completion expired with `TimeoutError`; no `negative-user.json` or collection input | T015 remains open; this is real fault-boundary evidence, not `EXPECTED_REJECTION_PASS` |
+
+The remote sequence exposed two independent operator concerns. Candidate
+transport is immutable and append-only: profile rewrites must update every
+retained gate reference and preserve executable modes, while a stale or
+unwritable `.incoming` directory must stop before Slurm. Once those checks were
+fixed, the same base SIF and external APP ran successfully on one GPU and on
+two real nodes. The remaining T015 defect is a harness budget issue: the
+negative completion timer began when the faster rank reached provider
+readiness, but the other rank spent about 100 seconds in cold request
+preparation before the User lifecycle started. The next negative run must
+reserve that preparation interval (or arm the completion timer after both
+ranks are ready); rebuilding the base SIF is unnecessary.
 
 ## Detailed Execution Progress
 
