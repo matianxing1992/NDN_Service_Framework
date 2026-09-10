@@ -1,6 +1,6 @@
 # Implementation Plan: Native NDNSF-DI with Optional Python Bindings
 
-**Branch**: Experimental | **Revision**: 83 | **Date**: 2026-09-09
+**Branch**: Experimental | **Revision**: 84 | **Date**: 2026-09-10
 **Status**: IN_PROGRESS / 当前实现与验收状态见 tasks.md 的 Task Progress Registry 和 Current Checkpoint
 **Spec**: [spec.md](spec.md)
 
@@ -1183,6 +1183,16 @@ T017 的 evidence/development-handoff.md 包含 exact commit、clean source clos
 分层清单、构建方法、组合验证及外部工具接续步骤；文档接受不授予部署 PASS。
 
 ## Current Execution Checkpoint
+
+2026-09-10 R10-B84 native request identity scope / **CLOSED_FOR_VALIDATION (C++ identity boundary)**：
+`NativeInferenceClient` now allocates a process-local owner scope in its production C++ constructor and
+binds it into the Core request URI before ACK, attempt, recovery, or result state is published. The
+private test port retains deterministic counter-only names for state-machine fixtures. The new native
+identity selector, the existing native client-state selector, and the complete `Spec182*` C++ selector
+pass after the `unit-tests` target build with `-j2`; no Python test is used as native behavior proof.
+This batch does not advance a parent task. Independent requester/Provider worker transport, artifact
+authority separation, maintained caller/no-Python migration, dependency closure, and T016/T017 remain
+open. See [R10-B84 evidence](evidence/r10-b84-native-request-id-scope-20260910.md).
 
 2026-09-10 R10-B83 native conversation config loader / **CLOSED_FOR_VALIDATION (C++ composition boundary)**：
 将 `ndnsf-di-native-conversation-v1` 的 schema、requester identity、路径、owner-only key 和

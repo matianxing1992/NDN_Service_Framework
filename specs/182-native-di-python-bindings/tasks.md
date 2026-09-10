@@ -1,6 +1,6 @@
 # Tasks: Native NDNSF-DI with Optional Python Bindings
 
-**Revision**: 118 | **Status**: DRAFT / T001 DONE
+**Revision**: 119 | **Status**: DRAFT / T001 DONE
 **Input**: [spec](spec.md), [code design](contracts/code-design.md),
 [proof](contracts/proof-design.md), [work units](contracts/work-units.md)
 
@@ -25,6 +25,7 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 
 | Unit / Details | Status | Depends | Evidence / Remaining | Updated |
 | --- | --- | --- | --- | --- |
+| [R10-B84 Native Request Identity Scope](evidence/r10-b84-native-request-id-scope-20260910.md) | CLOSED_FOR_VALIDATION | R10-B83; T010/T011 | **C++ primary:** production `NativeInferenceClient` request names now carry a process-local owner scope; new identity selector, existing native client-state selector, and complete `Spec182*` C++ selector pass after the `unit-tests` target build. **Python secondary:** no Python test was used as native behavior evidence. Cross-process executable transport, independent artifact authority, 16 maintained old callers, no-Python, dependency closure and T016/T017 remain open; no parent advanced | 2026-09-10 |
 | [R10-B83 Native Conversation Config Loader](evidence/r10-b83-native-conversation-config-20260910.md) | CLOSED_FOR_VALIDATION | R10-B82; T010/T011 | **C++ primary:** shared loader, 252 `Spec182*` unit cases, 9 native Core/Provider integration cases, requester help and exported-symbol check pass. **Python secondary:** 72 wrapper/contract tests pass. Standalone requester and Python binding both inject the same coordinator; artifact-authority separation, independent worker/process, 16 maintained old callers, no-Python and T016/T017 remain open; no parent advanced | 2026-09-10 |
 | [R10-B82 Whole-Chain Static Audit](evidence/r10-b82-whole-chain-static-audit-20260910.md) | OPEN_FOR_NEXT_BATCH | R10-B81; T010/T011/T013/T014/T015/T016/T017 | Its standalone conversation-config mismatch is repaired by R10-B83; requester still composes the artifact-authority private key/issuer, 16 maintained inference calls remain on old routes, and independent worker/process, cross-process recovery, no-Python and host/container dependency closure remain open. No parent task advanced | 2026-09-10 |
 | [R10-B34 Spec182 Regression Sweep](evidence/r10-b34-regression-sweep-20260909.md) | DONE | R10-B33; R10-B32 | Spec182 C++ unit suite, full `Spec170NdnsfDiCoreFlow/*` integration suite, and 76 Python binding/compatibility tests all exit 0; expected negative boundaries remain asserted in raw logs. This is regression evidence only; cross-process transport, maintained caller/no-Python and T016 remain open | 2026-09-09 |
@@ -253,6 +254,15 @@ P1–P4 是不同的生产入口、进程边界或 selector，不能为了少一
 | R10-B76 | production entry/callers: compatibility manifest → maintained Python API inventory; implementation/wire: `checklists/build_api_migration_manifest.py` regenerated all 344 entries and rebounded source line/hash metadata to checkpoint `31fe172a`; test/harness/oracle: generator output, `sourceCommit` equality, design validator and diff check; build/source closure: manifest-only, no ABI or runtime change; migration/evidence: closes stale provenance from R10-B74 while semantic caller mapping, native default migration and legacy retirement remain open | DONE for this bounded manifest provenance boundary; parent T001/O-004/T013-B remain PARTIAL | static review confirms current HEAD identity and 344-entry coverage; manifest remains routing evidence and cannot promote runtime compatibility or qualification | generator PASS (`entries=344`, `dynamicAppSdk=67`); sourceCommit equality PASS; `validate_design.py --json` PASS; `git diff --check` PASS | no product build, requester/Provider transport, maintained caller/no-Python or T016/T017 run | documentation/generator artifact only | `STATIC_PASS`; `FOCUSED_BEHAVIOR_PASS`; `BUILD_NOT_APPLICABLE`; `OPEN_FOR_NEXT_BATCH`; not `QUALIFICATION_PASS` | [R10-B76 evidence](evidence/r10-b76-compatibility-manifest-refresh-20260909.md); next: map and migrate maintained native callers, then regenerate after each source checkpoint |
 
 ## Current Checkpoint
+
+2026-09-10 R10-B84 native request identity scope / **CLOSED_FOR_VALIDATION**（仅限 C++ request identity 边界）：
+`NativeInferenceClient` 的生产构造路径为 `/NDNSF/DI/REQUEST/<32-hex-owner-scope>/<counter>`，
+由原生 C++ owner 在请求创建时分配；私有测试 port 保留确定性的 counter-only 名称以维持既有状态机断言。
+新增 `Spec182NativeRequestIdentity`，并重跑 `Spec182ClientState/*` 与完整 `Spec182*` C++ selector，
+均无错误；本批不使用 Python 测试证明 native 行为。跨进程 requester/Provider worker、authority 分离、
+16 个 maintained caller、no-Python、依赖闭包和 T016/T017 仍开放，未推进任何父任务。详见
+[R10-B84 evidence](evidence/r10-b84-native-request-id-scope-20260910.md)。下一步仍是执行带有
+artifact identity/source closure 的独立 requester/Provider process case。
 
 2026-09-10 R10-B83 native conversation config loader / **CLOSED_FOR_VALIDATION**（仅限该接线边界）：
 将 `ndnsf-di-native-conversation-v1` 解析、路径与 owner-only key 校验集中到

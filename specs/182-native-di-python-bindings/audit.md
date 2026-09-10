@@ -2,10 +2,18 @@
 
 ## Current Whole-Chain Review 2026-09-10
 
-**Revision**: 26 | **Mode**: source alignment / whole-chain static review
+**Revision**: 27 | **Mode**: source alignment / whole-chain static review
 **Verdict**: DRAFT / PARTIAL; T016 preflight UNQUALIFIED
-**Source**: `4c248c85` implementation/docs checkpoint / Experimental
-**Evidence**: [R10-B83 native conversation config loader](evidence/r10-b83-native-conversation-config-20260910.md)
+**Source**: `4762fe0f` implementation/docs checkpoint / Experimental
+**Evidence**: [R10-B84 native request identity scope](evidence/r10-b84-native-request-id-scope-20260910.md)
+
+R10-B84 closes one native C++ identity defect found during the whole-chain review: production
+`NativeInferenceClient` request names now include a process-local owner scope, while the private test
+port retains deterministic IDs for native state fixtures. The new identity selector and the complete
+`Spec182*` C++ selector pass. This is a C++ production/test result; Python remains a wrapper or oracle
+and contributes no native behavior qualification here. The fix does not change the whole-Spec verdict
+or advance a parent task. Independent requester/Provider worker transport, authority separation,
+maintained caller/no-Python migration, and deployment dependency closure remain open.
 
 R10-B83 closes the direct entry-point mismatch identified by R10-B82: the standalone C++ requester
 now consumes the documented `conversation` object, and both it and the Python binding delegate to
