@@ -16,6 +16,46 @@ done
 }
 container_root=$(CDPATH= cd -- "$(dirname -- "$0")/../../.." && pwd)
 lib="$container_root/lib"; mkdir -p "$evidence"
+
+# Route commands also use ``--relative=<fromNodeRank>``.  Keep this direct
+# entry point subject to the same scheduler-order binding as the supervisor;
+# otherwise a standalone route retry could silently configure the wrong NFD on
+# a real multi-node allocation even though the supervisor had validated a
+# different order.
+if [[ ${NDNSF_SPEC110_TEST_MODE:-0} != 1 ]]; then
+  [[ -n ${SLURM_JOB_NODELIST:-} ]] || {
+    echo SPEC110_ALLOCATION_NODELIST_MISSING >&2
+    exit 4
+  }
+  command -v scontrol >/dev/null 2>&1 || {
+    echo SPEC110_ALLOCATION_NODELIST_UNAVAILABLE >&2
+    exit 4
+  }
+  if ! allocation_nodes_output=$(scontrol show hostnames "$SLURM_JOB_NODELIST"); then
+    echo SPEC110_ALLOCATION_NODELIST_QUERY_FAILED >&2
+    exit 4
+  fi
+  [[ -n $allocation_nodes_output ]] || {
+    echo SPEC110_ALLOCATION_NODELIST_EMPTY >&2
+    exit 4
+  }
+  mapfile -t allocation_nodes <<<"$allocation_nodes_output"
+  if ! PYTHONPATH="$lib" python3 - "$process_map" "${allocation_nodes[@]}" <<'PY'
+import sys
+from allocation_topology import load_process_map, validate_allocation_node_order
+
+try:
+    validate_allocation_node_order(load_process_map(sys.argv[1]), sys.argv[2:])
+except Exception as exc:
+    print(exc, file=sys.stderr)
+    raise SystemExit(4)
+PY
+  then
+    echo SPEC110_ALLOCATION_NODE_ORDER_MISMATCH >&2
+    exit 4
+  fi
+fi
+
 routes="$evidence/routes.tsv"
 PYTHONPATH="$lib" python3 - "$process_map" >"$routes" <<'PY'
 import sys

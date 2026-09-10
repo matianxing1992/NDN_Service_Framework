@@ -41,6 +41,16 @@ class AllocationTopologyTest(unittest.TestCase):
         self.assertEqual("udp", result["selectedTransport"])
         self.assertTrue(all(route["transport"] == "udp" for route in result["routes"]))
 
+    def test_node_rank_is_bound_to_slurm_allocation_order(self) -> None:
+        value = load("multi-node-tcp.json")
+        allocation = [node["name"] for node in value["nodes"]]
+        result = topology.validate_allocation_node_order(value, allocation)
+        self.assertEqual(allocation, [node["name"] for node in result["nodes"]])
+        with self.assertRaisesRegex(
+            topology.TopologyError, "TOPOLOGY_ALLOCATION_NODE_ORDER_INVALID"
+        ):
+            topology.validate_allocation_node_order(value, list(reversed(allocation)))
+
     def test_duplicate_identity_fails_closed(self) -> None:
         value = load("single-node.json")
         value["processes"][3]["identityRef"] = value["processes"][2]["identityRef"]

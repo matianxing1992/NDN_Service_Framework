@@ -109,6 +109,36 @@ assert stale < launch < alive
 assert 'srun_node "$rank" test ! -L "$identity"' in source
 assert 'SPEC110_NODE_ADDRESS_NOT_LOCAL' in source
 PY
+python3 - "$repo/packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/run-allocation-topology.sh" \
+  "$repo/packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/configure-allocation-routes.sh" <<'PY'
+import pathlib, sys
+for path in map(pathlib.Path, sys.argv[1:]):
+    source = path.read_text()
+    assert 'scontrol show hostnames "$SLURM_JOB_NODELIST"' in source
+    assert 'SPEC110_ALLOCATION_NODE_ORDER_MISMATCH' in source
+PY
+
+cat >"$tmp/bin/scontrol" <<'SH'
+#!/bin/sh
+printf '%s\n' ${SPEC110_FAKE_NODELIST:-allocation-node-0 allocation-node-1}
+SH
+chmod 0755 "$tmp/bin/scontrol"
+order_scratch=$(mktemp -d /tmp/ndnsf-di-test-order.XXXXXX)
+set +e
+PATH="$tmp/bin:$PATH" SLURM_JOB_ID=test SLURM_JOB_NODELIST='allocation-node-[0-1]' \
+  SPEC110_FAKE_NODELIST='allocation-node-1 allocation-node-0' \
+  NDNSF_SPEC110_TEST_MODE=0 \
+  "$repo/packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/run-allocation-topology.sh" \
+  --process-map "$fixture" --scratch "$order_scratch" \
+  --evidence "$tmp/supervisor-order-fail" --nfd-template "$repo/Experiments/TigerCluster/adapters/slurm-apptainer/templates/nfd.conf.in" \
+  --workdir "$tmp" >"$tmp/order.stdout" 2>"$tmp/order.stderr"
+order_rc=$?
+set -e
+[[ $order_rc -eq 4 ]]
+grep -q 'SPEC110_ALLOCATION_NODE_ORDER_MISMATCH' "$tmp/order.stderr"
+[[ ! -e "$order_scratch/log/nfd-0.log" ]]
+rm -rf "$order_scratch"
+
 for repetition in 1 2; do
   PATH="$tmp/bin:$PATH" SLURM_JOB_ID=test NDNSF_SPEC110_TEST_MODE=1 \
     "$repo/packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/configure-allocation-routes.sh" \
@@ -252,7 +282,8 @@ for process in value['processes']:
 json.dump(value,open(path,'w'))
 PY
 set +e
-PATH="$tmp/bin:$PATH" SLURM_JOB_ID=test SLURM_NNODES=1 NDNSF_SPEC110_TEST_MODE=0 \
+PATH="$tmp/bin:$PATH" SLURM_JOB_ID=test SLURM_NNODES=1 SLURM_JOB_NODELIST='allocation-node-0' \
+  SPEC110_FAKE_NODELIST='allocation-node-0' NDNSF_SPEC110_TEST_MODE=0 \
   "$supervisor" --process-map "$identity_scratch/process-map.json" --scratch "$identity_scratch" \
   --evidence "$tmp/supervisor-identity-fail" --nfd-template "$template" --workdir "$tmp"
 identity_rc=$?
@@ -300,7 +331,8 @@ for process in value['processes']:
         process['commandDigest']=command_digest(process['command'])
 json.dump(value,open(path,'w'))
 PY
-PATH="$tmp/bin:$PATH" SLURM_JOB_ID=test SLURM_NNODES=1 NDNSF_SPEC110_TEST_MODE=0 SPEC110_FAIL_ADDRESS_PROBE=1 \
+PATH="$tmp/bin:$PATH" SLURM_JOB_ID=test SLURM_NNODES=1 SLURM_JOB_NODELIST='allocation-node-0' \
+  SPEC110_FAKE_NODELIST='allocation-node-0' NDNSF_SPEC110_TEST_MODE=0 SPEC110_FAIL_ADDRESS_PROBE=1 \
   "$supervisor" --process-map "$address_scratch/process-map.json" --scratch "$address_scratch" \
   --evidence "$tmp/supervisor-address-fail" --nfd-template "$template" --workdir "$tmp"
 address_rc=$?
@@ -362,7 +394,8 @@ for process in value['processes']:
 json.dump(value,open(path,'w'))
 PY
 set +e
-PATH="$tmp/bin:$PATH" SLURM_JOB_ID=test SLURM_NNODES=1 NDNSF_SPEC110_TEST_MODE=0 SPEC110_FAIL_IDENTITY_SYMLINK=1 \
+PATH="$tmp/bin:$PATH" SLURM_JOB_ID=test SLURM_NNODES=1 SLURM_JOB_NODELIST='allocation-node-0' \
+  SPEC110_FAKE_NODELIST='allocation-node-0' NDNSF_SPEC110_TEST_MODE=0 SPEC110_FAIL_IDENTITY_SYMLINK=1 \
   "$supervisor" --process-map "$symlink_scratch/process-map.json" --scratch "$symlink_scratch" \
   --evidence "$tmp/supervisor-symlink-fail" --nfd-template "$template" --workdir "$tmp"
 symlink_rc=$?
