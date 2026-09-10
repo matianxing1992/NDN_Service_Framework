@@ -2835,6 +2835,11 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
           if (!state->runtime.stageDecodeStatePromotion(
                 executionSessionId, finalized, conversationBinding,
                 static_cast<std::uint64_t>(std::max<long long>(0, epochMs())))) {
+            // The conversation-enabled coordinator retained the final
+            // request-local decode state for this handoff.  A failed stage
+            // must release that state before surfacing the boundary error.
+            (void)state->runtime.releaseDecodeState(executionSessionId,
+                                                     finalized.role);
             throw std::runtime_error(
               "PROVIDER_CONVERSATION_PROMOTION_STAGE_FAILED");
           }
@@ -2876,6 +2881,8 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
             }
             if (!state->runtime.rollbackStagedDecodeStatePromotion(conversationBinding))
               throw std::runtime_error("PROVIDER_CONVERSATION_STAGED_ROLLBACK_FAILED");
+            (void)state->runtime.releaseDecodeState(executionSessionId,
+                                                     conversationBinding.identity.roleName);
             conversationPromotionStaged = false;
           };
           waitConversationPromotion = [&, state, turn, finalized, identity, receipt,
@@ -2907,6 +2914,11 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
                 ndn::Name(committed ? "/ndnsf-di/conversation/commit" : "/ndnsf-di/conversation/rollback"),
                 ndn::Buffer(wire.begin(), wire.end()));
             };
+            // waitFor returns the complete matching collaboration history on each
+            // poll.  Keep control handling idempotent at the wire-sequence level so
+            // a committed turn emits one acknowledgement per requester control,
+            // rather than replaying the same historical COMMIT until the deadline.
+            std::set<std::uint64_t> processedControlSequences;
             while (true) {
               const auto now = static_cast<std::uint64_t>(
                 std::max<long long>(0, epochMs()));
@@ -2920,6 +2932,9 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
               for (const auto& item : controls) {
                 if (!item.producer.equals(ctx.requesterName()) ||
                     item.producerRole != "user-control-v1") {
+                  continue;
+                }
+                if (!processedControlSequences.insert(item.sequence).second) {
                   continue;
                 }
                 ConversationPromotionControl control;

@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <sys/stat.h>
 
 namespace {
 using namespace ndnsf::di;
@@ -95,6 +96,74 @@ NativeJson runtimeConfiguration(const NativeJson& config,
     {"max_segments", request.value("max_segments", 4096)},
   };
 }
+
+std::optional<NativeConversationContinuation> conversationContinuationFromConfig(
+  const NativeJson& conversation, const std::filesystem::path& base)
+{
+  if (!conversation.contains("turn")) return std::nullopt;
+  const auto& turn = conversation.at("turn");
+  if (!turn.is_object())
+    throw std::invalid_argument("native conversation turn must be an object");
+
+  NativeConversationContinuation continuation;
+  continuation.mode = turn.value("mode", "FULL_CONTEXT");
+  continuation.generationId = turn.at("generation_id").get<std::string>();
+  if (turn.contains("parent_state_file")) {
+    const auto state = nativeParseJson(text(
+      base / turn.at("parent_state_file").get<std::string>(), 4 * 1024 * 1024));
+    if (state.value("schema", std::string{}) != "ndnsf-di-native-conversation-state-v1" ||
+        !state.contains("checkpoint_wire") || !state.contains("transcript"))
+      throw std::invalid_argument("native conversation parent state is malformed");
+    continuation.parentCheckpointWire = state.at("checkpoint_wire").get<std::string>();
+    const auto checkpoint = nativeParseJson(continuation.parentCheckpointWire);
+    continuation.conversationId = checkpoint.at("conversationId").get<std::string>();
+    continuation.parentContextEpoch = checkpoint.at("contextEpoch").get<std::uint64_t>();
+    continuation.serviceName = checkpoint.at("serviceName").get<std::string>();
+    continuation.planRoleMapDigest = checkpoint.at("planRoleMapDigest").get<std::string>();
+    continuation.parentCheckpointDigest = checkpoint.at("checkpointDigest").get<std::string>();
+    continuation.retentionDeadlineMs = checkpoint.at("expiresAtMs").get<std::uint64_t>();
+    const auto& transcript = state.at("transcript");
+    continuation.canonicalTokenIds = transcript.at("canonicalTokenIds").get<std::vector<std::int64_t>>();
+    for (const auto& item : checkpoint.at("roleReceiptDigests").items())
+      continuation.expectedRoles.push_back(item.key());
+    if (turn.contains("delta_token_ids")) {
+      const auto delta = turn.at("delta_token_ids").get<std::vector<std::int64_t>>();
+      continuation.canonicalTokenIds.insert(
+        continuation.canonicalTokenIds.end(), delta.begin(), delta.end());
+    }
+  }
+  else {
+    continuation.conversationId = turn.at("conversation_id").get<std::string>();
+    continuation.parentContextEpoch = turn.value("parent_context_epoch", std::uint64_t{0});
+    continuation.serviceName = turn.at("service_name").get<std::string>();
+    continuation.planRoleMapDigest = turn.at("plan_role_map_digest").get<std::string>();
+    continuation.parentCheckpointDigest = turn.value("parent_checkpoint_digest", std::string{});
+    continuation.retentionDeadlineMs = turn.at("retention_deadline_ms").get<std::uint64_t>();
+    if (turn.contains("parent_checkpoint_wire"))
+      continuation.parentCheckpointWire = turn.at("parent_checkpoint_wire").get<std::string>();
+    if (turn.contains("canonical_token_ids"))
+      continuation.canonicalTokenIds = turn.at("canonical_token_ids").get<std::vector<std::int64_t>>();
+    if (turn.contains("expected_roles"))
+      continuation.expectedRoles = turn.at("expected_roles").get<std::vector<std::string>>();
+  }
+  if (turn.contains("request_contract_digest"))
+    continuation.requestContractDigest = turn.at("request_contract_digest").get<std::string>();
+  if (turn.contains("parent_context_epoch"))
+    continuation.parentContextEpoch = turn.at("parent_context_epoch").get<std::uint64_t>();
+  if (turn.contains("parent_checkpoint_digest"))
+    continuation.parentCheckpointDigest = turn.at("parent_checkpoint_digest").get<std::string>();
+  if (turn.contains("service_name"))
+    continuation.serviceName = turn.at("service_name").get<std::string>();
+  if (turn.contains("plan_role_map_digest"))
+    continuation.planRoleMapDigest = turn.at("plan_role_map_digest").get<std::string>();
+  if (turn.contains("retention_deadline_ms"))
+    continuation.retentionDeadlineMs = turn.at("retention_deadline_ms").get<std::uint64_t>();
+  if (turn.contains("canonical_token_ids"))
+    continuation.canonicalTokenIds = turn.at("canonical_token_ids").get<std::vector<std::int64_t>>();
+  if (turn.contains("expected_roles"))
+    continuation.expectedRoles = turn.at("expected_roles").get<std::vector<std::string>>();
+  return continuation;
+}
 }
 
 int main(int argc, char** argv)
@@ -172,6 +241,7 @@ int main(int argc, char** argv)
         nativeCanonicalJson(config.at("conversation")), base,
         requester);
     }
+    const auto conversationOwner = conversations;
     auto grants = std::make_shared<NativeAuthenticatedGrantClient>(requester, requesterKey,
       grant.at("authority_identity"), publicBytes(*authorityPublicKey),
       epoch,
@@ -193,6 +263,10 @@ int main(int argc, char** argv)
     if (request.contains("options_file")) input.options = read(base / request.at("options_file").get<std::string>(), 4 * 1024 * 1024);
     NativeRequestOptions options;
     options.timeoutMs = request.at("timeout_ms"); options.ackTimeoutMs = request.at("ack_timeout_ms");
+    if (config.contains("conversation")) {
+      const auto continuation = conversationContinuationFromConfig(config.at("conversation"), base);
+      if (continuation) options.conversation = *continuation;
+    }
     if (request.contains("application_request_id"))
       options.applicationRequestId = request.at("application_request_id").get<std::string>();
     if (request.contains("provider_names")) {
@@ -292,6 +366,26 @@ int main(int argc, char** argv)
     client.close();
     face->processEvents(ndn::time::milliseconds(1));
     const auto result = handle.result(std::chrono::milliseconds(0));
+    if (conversationOwner && config.at("conversation").contains("checkpoint_output_file")) {
+      if (!options.conversation)
+        throw std::runtime_error("native conversation checkpoint output requires a turn");
+      const auto conversationId = options.conversation->conversationId;
+      const auto record = conversationOwner->find(conversationId);
+      if (!record)
+        throw std::runtime_error("native conversation checkpoint was not committed");
+      const NativeJson state{
+        {"schema", "ndnsf-di-native-conversation-state-v1"},
+        {"checkpoint_wire", record->checkpoint.wire},
+        {"transcript", record->checkpoint.transcript}};
+      const auto statePath = base / config.at("conversation").at("checkpoint_output_file").get<std::string>();
+      std::ofstream stateFile(statePath, std::ios::binary | std::ios::trunc);
+      if (!stateFile || !(stateFile << nativeCanonicalJson(state)))
+        throw std::runtime_error("native conversation checkpoint state could not be written");
+      stateFile.close();
+      (void)::chmod(statePath.c_str(), 0600);
+      std::cout << "NATIVE_CONVERSATION_CHECKPOINT_WRITTEN id=" << conversationId
+                << " epoch=" << record->checkpoint.successorContextEpoch << '\n';
+    }
     std::ofstream output(argv[6], std::ios::binary | std::ios::trunc);
     if (!output || !output.write(reinterpret_cast<const char*>(result.payload.data()), result.payload.size()))
       throw std::runtime_error("requester output could not be written");

@@ -222,6 +222,20 @@ KvStateStore::lookup(const KvStateBinding& binding)
 }
 
 std::optional<TensorBundle>
+KvStateStore::lookupCandidate(const KvStateBinding& binding)
+{
+  binding.validate();
+  std::lock_guard<std::mutex> lock(m_mutex);
+  const auto found = m_entries.find(keyFor(binding));
+  if (found == m_entries.end() || !found->second.candidate ||
+      !(found->second.candidate->first == binding)) {
+    return std::nullopt;
+  }
+  found->second.lastAccess = ++m_accessSequence;
+  return found->second.candidate->second;
+}
+
+std::optional<TensorBundle>
 KvStateStore::beginTransition(const KvStateBinding& predecessor)
 {
   predecessor.validate();
@@ -365,8 +379,9 @@ KvStateStore::erase(const std::string& sessionId, const std::string& stage)
   std::lock_guard<std::mutex> lock(m_mutex);
   bool erased = false;
   for (auto found = m_entries.begin(); found != m_entries.end();) {
-    if (found->second.binding.sessionId != sessionId ||
-        found->second.binding.stage != stage) {
+    const auto& binding = found->second.candidate
+      ? found->second.candidate->first : found->second.binding;
+    if (binding.sessionId != sessionId || binding.stage != stage) {
       ++found;
       continue;
     }

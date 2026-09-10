@@ -1423,10 +1423,12 @@ dispatchOperation(const std::shared_ptr<NativeInferenceHandle::Operation>& opera
       }
     }
     catch (const NativeDiError&) { throw; }
-    catch (const std::exception&) {
+    catch (const std::exception& exc) {
+      std::string detail = exc.what();
+      if (detail.empty()) detail = "unknown native conversation error";
       failOperation(operation, NativeDiError(
         "NATIVE_CONVERSATION_BEGIN_FAILED", "conversation", "begin",
-        "native conversation turn could not be opened", operation->requestId,
+        "native conversation turn could not be opened: " + detail, operation->requestId,
         operation->attempt));
       return;
     }
