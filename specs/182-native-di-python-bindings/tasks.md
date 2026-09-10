@@ -44,6 +44,14 @@ R11-B8 现开始按 caller group 批次执行；G4 已形成 native checkpoint h
 | [R11-B8 Maintained Callers](contracts/native-first-execution.md#dispatch-cards) | PARTIAL | R11-B7; corresponding T012 ABI | G1 generic unary 与 G2 generic stream 已形成稳定出口；仍需 15 个 caller group 的 native entry、实际行为、兼容 wrapper 及旧路径零使用证据，不能按子批次数量计全量完成 | 2026-09-10 |
 | [R11-B9 Native Closure](contracts/native-first-execution.md#dispatch-cards) | NOT_STARTED | R11-B8 | T014 no-Python/依赖闭包工具 → T015 → T016 → T017；最终资格未开始 | 2026-09-10 |
 
+文档旁路记录（2026-09-10，LANGUAGE REVIEW）：Proposal／slides 全文区分加密、
+服务授权、信任验证与请求状态，明确规划/签名主体及拟议协作证据边界。
+四份正文入口、两份 slides 和讲稿同步；39 页 PPTX 保留可编辑文本及 notes。
+编译、同语言文本一致性、实验数值保留和逐页检查见
+[language review](../../docs/PAPER/proposal-defense/language-review-20260910.md)及
+[validation](../../docs/PAPER/proposal-defense/research-revision-validation.json)。
+本轮仅文档修订，不修改产品任务勾选或原生验收结论。
+
 文档旁路记录（2026-09-10，DOCUMENT PASS）：Proposal／slides 收敛为 DNMP-inspired
 授权加配套加密与 NDNSF ABE-backed 两种设计。正文与 slides 六入口及两份讲稿构建
 通过；修正 PPTX 输入路径后，38 页可编辑文本与 notes、重导出截图、全文残留检查

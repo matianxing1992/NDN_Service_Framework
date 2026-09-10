@@ -1,5 +1,19 @@
 # Research-first Proposal Revision and Evidence Audit
 
+## 2026-09-10 Full Language and Logic Revision
+
+最新逐项记录见 [language review](language-review-20260910.md)。摘要、正文和 slides
+统一区分 ABE 内容加密与 ABE-backed 服务授权；补充双向 challenge response、
+签名信任验证、权限和请求状态的各自职责。明确 User/Controller/Provider 的主体、
+可信 User 下的唯一提交状态规则、拟议协作证据边界，并修正缓存、图像密钥共享和
+实验标题中的不充分推论。普通 slides 保持低密度；新增权限检查页后共 39 页。
+
+本轮同步中英文四入口、slides 双入口、讲稿双入口和可编辑 PPTX。产品实现和
+实验数值未改，未运行新产品实验。最终构建、逐页渲染、同语言一致性及 PPTX
+转换检查见 `research-revision-validation.json`；原始记录位于
+`.codex-tmp/proposal-language-20260910/`。以下各节保留历史范围和当时页数，
+其中“仅修改摘要”“38 页”等不描述本轮最终交付。
+
 ## 2026-09-10 Abstract Narrative Revision
 
 按用户确认的逻辑，将中英文摘要改为“运行时服务需求 → NDNSF 研究方向 →

@@ -1,6 +1,8 @@
 # NDNSF 论文与 slides 审查：老师批注及 Final Defense 标准
 
-审查日期：2026-09-09。状态：分析与修订建议，尚未修改论文或 slides。
+原始审查日期：2026-09-09。本文件保留当时的分析与修订建议，不表示后续仍未修改。
+2026-09-10 的全文措辞修订及当前页号见 [language review](language-review-20260910.md)，
+交付与检查见 [validation](research-revision-validation.json)。历史页号和未完成研究要求仍按下文保留。
 
 原件：[NDNSF_proposal_reviewed.pptx](../NDNSF_proposal_reviewed.pptx)。
 以下 P1–P62 均指老师这个版本，不是上一轮更新的 64 页版本。

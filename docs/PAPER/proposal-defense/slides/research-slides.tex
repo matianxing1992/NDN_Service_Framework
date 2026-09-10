@@ -26,7 +26,7 @@
 \begin{enumerate}
 \item \textbf{Discover current willingness:} reachability, sensors, load, and deadlines affect participation.
 \item \textbf{Authorize before execution:} exposing a service does not grant everyone permission to use it.
-\item \textbf{Enforce the chosen collaboration:} an authentic image is useful only if it satisfies an assigned dependency.
+\item \textbf{Check task inputs:} a valid image signature does not show that its producer was assigned to this task's dependency.
 \end{enumerate}
 \vspace{4mm}\bluebox{The contribution must explain the mechanism and its cost, not just demonstrate that two UAVs can exchange images.}
 \end{frame}
@@ -35,10 +35,10 @@
 \small
 \begin{tabularx}{\linewidth}{p{.39\linewidth}X}
 \toprule NDN building block & Remaining application responsibility\\\midrule
-Named Data and signatures [1] & Decide which signer may perform which task; validate content under trust rules\\\midrule
+Named Data and signatures [1] & Validate signatures and signing-key relationships under trust rules; check task permissions separately\\\midrule
 Interest retrieval and caching [1,26] & Enforce task identity, dependencies, and deadlines; caching is not persistent storage\\\midrule
 Dataset synchronization / SVS [2,3] & Discover new names, then retrieve Data; define service-message state transitions\\\midrule
-NAC [4] / enhanced NAC-ABE [19] & Relate decryption permission to execution authorization and key lifecycle\\\bottomrule
+NAC [4] / enhanced NAC-ABE [19] & Use content encryption for read access; separately check service-invocation permissions and state\\\bottomrule
 \end{tabularx}
 \vspace{2mm}\scriptsize NAC: Name-based Access Control; ABE: attribute-based encryption; SVS: State Vector Sync.
 \vspace{2mm}\bluebox{\small NDNSF builds on these mechanisms; it does not invent them.}
@@ -46,11 +46,11 @@ NAC [4] / enhanced NAC-ABE [19] & Relate decryption permission to execution auth
 
 \begin{frame}{Three Research Questions}
 \begin{itemize}
-\item \textbf{RQ1:} How can a requester discover and authorize currently willing Providers without making the discovery descriptor public, and at what cost?
+\item \textbf{RQ1:} How can NDNSF discover willing Providers, keep descriptors confidential from unauthorized readers, and check service permissions before execution, and at what cost?
 \item \textbf{RQ2:} How can Providers selected at runtime follow task roles and named dependencies, whether Data comes from producers or caches?
 \item \textbf{RQ3:} When do these mechanisms improve completion, latency, or execution efficiency, and when do their costs outweigh the benefits?
 \end{itemize}
-\vspace{3mm}\bluebox{UAV and distributed inference test the same questions. They are not separate contributions merely because both are implemented.}
+\vspace{3mm}\bluebox{UAV and distributed inference are validation workloads for the same questions; implementing two applications alone does not establish two research contributions.}
 \end{frame}
 
 \begin{frame}{Related Work Already Provides Important Pieces}
@@ -93,10 +93,10 @@ Cross-case empirical findings & Existing mobility/work-efficiency and small-mode
 \toprule Data & Logical purpose\\\midrule
 Request & Describe required service and participation constraints; include protected discovery information and Requester Challenge\\\midrule
 ACK & Report positive or negative participation; positive ACK supplies selection information and Provider Challenge\\\midrule
-Selection & Authorize selected execution; provide input/references and protected request-scoped keys\\\midrule
-Response & Return status, result Data, or authorized result references\\\bottomrule
+Selection & Assign selected execution; provide input/references, challenge response and protected request-scoped keys\\\midrule
+Response & Return status, results or result references; the User still validates them before use\\\bottomrule
 \end{tabularx}
-\vspace{3mm}\bluebox{Sync helps discover names; Interests retrieve the Data. A positive ACK does not itself start execution.}
+\vspace{3mm}\bluebox{Sync helps discover names; Interests retrieve Data. The Provider checks Selection before execution; a positive ACK alone does not start the task.}
 \end{frame}
 
 \begin{frame}{Descriptor Before Selection; Input After Selection}
@@ -117,28 +117,37 @@ Needed to execute the selected task: images, detailed processing parameters, or 
 \begin{itemize}
 \item The User knows the service, but not yet the currently willing Provider identities.
 \item An observation area and deadline can reveal intended activity even without the full application input.
-\item ABE can protect one descriptor for a service-authorized receiver set without listing those identities. [19]
+\item The User encrypts the descriptor using ABE and the service attribute, without listing Provider identities. [19]
 \end{itemize}
 \vspace{3mm}\bluebox{Confidential from parties lacking the required decryption capability. Authorized but unselected Providers can read it; names and traffic patterns remain visible.}
 \end{frame}
 
 \begin{frame}{Reason 2: Separate Dissemination from Access}
 \begin{itemize}
-\item Nodes may retrieve the same encrypted Request Data; only matching decryption capabilities expose its descriptor.
+\item Nodes may retrieve the same Request ciphertext; only holders of matching decryption keys can read its descriptor.
 \item The User encrypts by service attributes, without listing Provider identities. The Controller still authorizes entities and issues keys. [19]
 \item Different entities retain overlapping service permissions in individual policy keys, independently of identity-signing credentials.
 \end{itemize}
-\vspace{3mm}\bluebox{Architectural benefit: shared dissemination with distinct access scopes. Aggregation preserves distinctions only while objects retain separate encryption scopes.}
+\vspace{3mm}\bluebox{Dissemination and read access are separate. Combining permissions in one key does not require encrypting all services' content under one shared condition.}
 \end{frame}
 
-\begin{frame}{A Fair Comparison Includes Encryption on Both Sides}
+\begin{frame}{How NDNSF Checks Service Permissions}
+\begin{enumerate}
+\item The User places a Requester Challenge in ABE-protected Request content.
+\item The Provider returns it in ACK Data; the User checks the value against the active request.
+\item The Provider encrypts its challenge in ACK content. The User answers in Selection; the Provider checks that response before execution.
+\end{enumerate}
+\vspace{3mm}\bluebox{Both sides also validate signatures under trust rules and check service permissions and request state. Challenge responses show access to protected values; they do not grant permissions or prevent deliberate sharing.}
+\end{frame}
+
+\begin{frame}{Compare Authorization and Encryption Separately}
 \small
 \begin{tabularx}{\linewidth}{p{.27\linewidth}XX}
 \toprule Design & Execution authorization & Discovery confidentiality\\\midrule
-DNMP-inspired roles [12] & Role/command signing rules, credential and request-state checks & Add encryption and group/key distribution\\\midrule
-NDNSF ABE-backed & Identity signature, encrypted challenges, and authorization/request state & Service-level ABE protection of descriptor Content\\\bottomrule
+DNMP-inspired roles [12] & Validator checks role/command signing rules; add invocation-state checks & Add content encryption and key distribution\\\midrule
+NDNSF ABE-backed & User/Provider check signatures, challenge responses, service permissions and request state & User encrypts descriptor content with service-level ABE\\\bottomrule
 \end{tabularx}
-\vspace{3mm}\bluebox{Trust Schema [16] validates signing relationships; it alone does not encrypt Content. NAC [4] also protects distributed content. ABE contributes attribute-policy-based decryption.}
+\vspace{3mm}\bluebox{Trust Schema [16] defines permitted Data-name/signing-key relationships; validators apply its rules. It does not encrypt Content. Encryption and request-state checks are additions to the DNMP-inspired comparison, not capabilities attributed to the original DNMP implementation.}
 \end{frame}
 
 \begin{frame}{When Another Authorization Design May Be Better}
@@ -148,14 +157,14 @@ NDNSF ABE-backed & Identity signature, encrypted challenges, and authorization/r
 \item Rich command-argument restrictions: DNMP-style rules make those constraints explicit. [12]
 \item Many changing entitlements: measure both policy/key updates and credential/rule updates before claiming a management advantage.
 \end{itemize}
-\vspace{3mm}\bluebox{ABE is a justified option for NDNSF's requirements, not universally superior authorization.}
+\vspace{3mm}\bluebox{Compare complete combinations of authorization and encryption. ABE-backed authorization is one design choice, not a universally superior solution.}
 \end{frame}
 
 \begin{frame}{Authorization Lifecycle and Costs}
 \begin{itemize}
-\item Challenges check decryption capability; signatures, service permissions and request state still determine invocation acceptance.
+\item The Controller publishes signed permission updates; participants apply them only after retrieval and validation.
 \item Request-scoped keys protect input/results. Selection delivers keys to selected Providers; the requesting User retains access.
-\item Withdrawal requires retrieved, validated Controller status. Current ABE rotation is Controller-wide. [28]
+\item Status checks reject withdrawn permissions; key rotation restricts future encrypted exchanges. Current ABE rotation is Controller-wide. [28]
 \end{itemize}
 \vspace{3mm}\bluebox{Lifecycle requirement, not a third advantage: measure policy/key size, challenge cost, propagation and rekeying. No immediate disconnected revocation or recall of old plaintext/keys.}
 \end{frame}
@@ -174,17 +183,17 @@ NDNSF ABE-backed & Identity signature, encrypted challenges, and authorization/r
 \begin{enumerate}
 \item Application supplies roles, dependency template, constraints and deadline; the template may be handwritten.
 \item Close the ACK collection window and validate eligible positive ACKs.
-\item A replaceable policy assigns Providers to roles and produces a signed plan.
-\item Each Provider derives its permitted input edges and rechecks local resource admission before starting.
+\item The User applies a replaceable planning policy and signs the resulting role assignments and dependencies.
+\item Each Provider validates the plan, derives permitted inputs and rechecks its resources before starting.
 \end{enumerate}
 \vspace{3mm}\bluebox{The snapshot freezes observed candidates for this decision, not every Provider in the network or their future availability.}
 \end{frame}
 
 \begin{frame}{A Plan Is More Than a Request ID}
 \small
-\begin{tabularx}{\linewidth}{p{.3\linewidth}X}
+\begin{tabularx}{\linewidth}{>{\raggedright\arraybackslash}p{.3\linewidth}X}
 \toprule Existing request ID & Proposed task-specific plan rules\\\midrule
-Binds messages to a request & Assigns exact Providers to collection and processing roles\\\midrule
+Identifies the request; requires a validated message & Assigns exact Providers to collection and processing roles\\\midrule
 Does not alone specify predecessors & Declares which producer role may supply each named dependency\\\midrule
 Does not alone describe key scope & Associates permitted objects, execution identity, and authorization/key scope\\\bottomrule
 \end{tabularx}
@@ -196,7 +205,7 @@ Does not alone describe key scope & Associates permitted objects, execution iden
 \item Validate the Data signature using the appropriate trust rules.
 \item Match the current request, plan and execution identity.
 \item Verify that the signer is the assigned predecessor Provider.
-\item Match the declared dependency edge, name, data schema and key scope.
+\item Check that the object matches the declared edge, permitted name, data format and key scope.
 \item Require complete validated input before the dependent computation starts.
 \end{enumerate}
 \vspace{3mm}\bluebox{Apply the same rules to direct, cached and repository-fetched Data. This is a proposed acceptance contract; full end-to-end qualification remains required.}
@@ -209,7 +218,7 @@ Does not alone describe key scope & Associates permitted objects, execution iden
 Late ACK & Do not silently change the committed plan\\\midrule
 Duplicate Selection & Follow recorded one-time state; do not implicitly repeat a side effect\\\midrule
 Incomplete dependency & Wait within policy/deadline, recover, or fail; do not execute on partial data\\\midrule
-Provider replacement & Authorize a new assignment; define fencing and whether existing results may be reused\\\midrule
+Provider replacement & Authorize a new assignment; reject old execution actions and specify permitted result reuse\\\midrule
 Cancellation & Prevent late messages from reauthorizing cancelled work\\\bottomrule
 \end{tabularx}
 \vspace{3mm}\bluebox{Network re-retrieval is not task re-execution. Compensation is not an atomic transaction or exactly-once physical action.}
@@ -217,9 +226,9 @@ Cancellation & Prevent late messages from reauthorizing cancelled work\\\bottomr
 
 \begin{frame}{Proposed UAV Flow: Capture, Analyze and Return}
 \begin{enumerate}
-\item Sensing UAVs publish encrypted ViewImage Data in their own authorized namespaces.
+\item Each sensing UAV signs ViewImage Data containing encrypted image content and publishes it in its own authorized namespace.
 \item The compute Provider retrieves images over assigned edges and publishes Annotation Data.
-\item The result references the original images and securely provides permitted image keys to the requester.
+\item The compute Provider includes original image names and permitted image keys in its encrypted result for the requester.
 \item The requester retrieves the original images and displays the annotations.
 \end{enumerate}
 \vspace{3mm}\bluebox{No need to republish the same images as if the compute Provider produced them. GPS alone does not establish camera visibility or accurate triangulation.}
@@ -229,7 +238,7 @@ Cancellation & Prevent late messages from reauthorizing cancelled work\\\bottomr
 \begin{itemize}
 \item A complete authorized collection--processing--return task before the deadline.
 \item Correct handling of unavailable views, delayed images and a failed processing Provider.
-\item Wrong-role/edge rejection without rejecting an authorized cached image.
+\item Reject wrong-role/edge inputs; accept cached images only when they satisfy the same task checks.
 \item MiniNDN [22] and PX4 SITL [23] results clearly distinguished from physical-flight evidence.
 \end{itemize}
 \vspace{3mm}\bluebox{Higher recognition/localization accuracy is a separate claim requiring ground truth and a single-view control. It is not assumed here.}
@@ -257,7 +266,7 @@ Cancellation & Prevent late messages from reauthorizing cancelled work\\\bottomr
 \begin{itemize}
 \item Model weights, reusable artifacts, request activations and KV state have different lifetimes.
 \item Autoregressive decoding requires retained K/V and next-step inputs; resident weights do not remove that state dependency.
-\item Native/local tests are not cross-process or multi-device qualification.
+\item An in-process test does not establish correct execution across processes or devices.
 \item Freeze one supported model/partition first; tensor/hybrid and LLM streaming need their own evidence if claimed.
 \end{itemize}
 \vspace{3mm}\bluebox{Earlier small-model measurements do not qualify all current V3/native features. [28]}
@@ -298,7 +307,7 @@ NDNSF minus NSC-4 & $-2618$ ms & $[-2916,-2315]$ ms\\\bottomrule
 \vspace{4mm}\bluebox{This is a conditional latency result, not general completion-rate superiority. Preserve the registered subset definition, overall coverage controls, and failed requests.}
 \end{frame}
 
-\begin{frame}{Selection Avoids Redundant Starts in This Comparison}
+\begin{frame}{Fewer Execution Starts than the Parallel Baseline}
 \small Six-seed, capacity-matched comparison; 1,800 requests per system. [28]
 \vspace{4mm}
 \begin{tabularx}{\linewidth}{Xrr}
@@ -348,7 +357,7 @@ February 2027 & Target defense, conditional on evidence and committee approval\\
 
 \begin{frame}{What a Final Defense Must Be Able to Claim}
 \begin{itemize}
-\item \textbf{RQ1 answer:} when ABE-backed discovery/authorization is preferable, including management and revocation costs.
+\item \textbf{RQ1 answer:} when ABE-encrypted discovery and ABE-backed service authorization justify their management and revocation costs.
 \item \textbf{RQ2 answer:} exactly which task-assignment mistakes are rejected and which recovery behavior is supported.
 \item \textbf{RQ3 answer:} measured benefits, negative results and deployment limits.
 \item Distinguish the candidate's research from shared implementations and reused NDN/AI libraries.

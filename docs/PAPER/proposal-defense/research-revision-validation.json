@@ -1,4 +1,9 @@
 {
+  "date": "2026-09-10",
+  "scope": "Full current bilingual proposal and shared slide language/logic revision; documents only",
+  "verdict": "DOCUMENT_REVISION_PASS_RESEARCH_GATES_OPEN",
+  "observed_repository_head": "ac49b04efbd51a6cde77b846500b7026165b5b35",
+  "raw_evidence_root": ".codex-tmp/proposal-language-20260910",
   "research_limits": [
     "Nearest-work feature-level novelty comparison remains open",
     "Qualified multi-UAV/DI role-edge and recovery evidence remains open",
@@ -6,29 +11,51 @@
     "Historical small-model raw-run provenance not re-established",
     "Advisor approval and final-defense readiness not certified"
   ],
+  "implementation_source_check_scope": "Read-only ACK, Selection and OR-policy paths; no new native runtime test",
   "implementation_sources_observed": {
+    "ndn-service-framework/ServiceUser.cpp": "ed3fc7aa7ca79a686cb5ee72d2b4ec9629e7017278f5b0b23ab02b48509b3fd0",
+    "ndn-service-framework/ServiceProvider.cpp": "15b50770bea7955154c66634087a4c69c855d0c8b1460e9032ed8fc11c0cd014",
     "ndn-service-framework/ServiceController.cpp": "c07f783fe2921a25beea46e92b5d2ff287a96213047a933742c866cddc287140"
   },
-  "date": "2026-09-10",
-  "verdict": "DOCUMENT_REVISION_PASS_RESEARCH_GATES_OPEN",
-  "observed_repository_head": "f525e0139369d458424adfc53985c8a2d56d3a59",
-  "scope": "Two-design authorization comparison and research-first bilingual abstract; documents only",
   "checks": {
     "english_entry_text_equal": true,
     "chinese_entry_text_equal": true,
     "slide_entry_text_equal": true,
     "notes_entry_text_equal": true,
-    "no_overfull_missing_char_or_undefined_citation": true,
-    "only_comparison_slide_13_changed": true,
-    "custom_alternative_absent_in_current_sources_pdfs_pptx_and_notes": true,
-    "pptx_38_slides_and_notes": true,
-    "two_reasons_and_lifecycle_preserved": true
+    "final_latex_logs_clean": true,
+    "experimental_page_numbers_unchanged": true,
+    "experimental_page_mapping": [
+      {
+        "before": 26,
+        "after": 27
+      },
+      {
+        "before": 27,
+        "after": 28
+      },
+      {
+        "before": 28,
+        "after": 29
+      },
+      {
+        "before": 29,
+        "after": 30
+      },
+      {
+        "before": 34,
+        "after": 35
+      },
+      {
+        "before": 35,
+        "after": 36
+      }
+    ],
+    "ordinary_slides_at_most_100_words": true,
+    "max_ordinary_slide_words": 100,
+    "static_text_findings_reviewed": 15,
+    "pptx_39_slides_and_notes": true,
+    "obsolete_abstract_claim_absent": true
   },
-  "changed_slide_pages": [
-    13
-  ],
-  "raw_evidence_root": ".codex-tmp/proposal-two-designs-20260910",
-  "implementation_source_check_scope": "Prior audit observation retained; no new code-behavior claim or native test in this revision",
   "pdfs": {
     "main.pdf": {
       "pages": 29,
@@ -47,87 +74,119 @@
       "text_outside_page": []
     },
     "slides/main.pdf": {
-      "pages": 38,
+      "pages": 39,
       "text_outside_page": []
     },
     "slides/main_35min.pdf": {
-      "pages": 38,
+      "pages": 39,
       "text_outside_page": []
     },
     "slides/speaker_notes.pdf": {
-      "pages": 7,
+      "pages": 8,
       "text_outside_page": []
     },
     "slides/speaker_notes_35min.pdf": {
-      "pages": 7,
+      "pages": 8,
       "text_outside_page": []
     }
   },
   "pptx": {
-    "source_spans": 791,
-    "assigned_exactly_once": 791,
-    "editable_textboxes": 546,
-    "native_triangle_bullets": 47,
+    "source_span_count": 817,
+    "assigned_once_count": 817,
+    "adjacent_pairs_grouped": 212,
+    "multi_span_textboxes": 164,
+    "svs_citation_textboxes": 0,
     "background_extractable_text_characters": 0,
-    "notes_pages": 38,
-    "visual_review": "All 38 LibreOffice-exported pages inspected; comparison page 13 enlarged; no missing or overlapping text",
-    "export_pages": 38,
+    "independent_visual_region_count": 0,
+    "editable_textboxes": 558,
+    "native_triangle_bullets": 47,
+    "notes_pages": 39,
+    "export_pages": 39,
     "export_text_outside_page": 0,
-    "client_limit": "LibreOffice export only; not native Microsoft PowerPoint or Google Slides"
+    "client_limit": "LibreOffice export reviewed; Microsoft PowerPoint and Google Slides not run"
+  },
+  "visual_review": {
+    "latex_pages_reviewed": {
+      "english": 29,
+      "chinese": 21,
+      "slides": 39,
+      "notes": 8
+    },
+    "libreoffice_slides_reviewed": 39,
+    "enlarged_checks": "Bilingual abstracts; authorization comparisons; challenge flow; request-ID table; Chinese chapter break",
+    "issues_found_and_fixed": "Three-line Chinese spill page removed by concision; request-ID table spacing corrected",
+    "remaining_observed_overlap_or_clipping": false
+  },
+  "text_preflight": "All ordinary LaTeX slide pages <=100 words; reference pages exempt. LibreOffice tokenization differs.",
+  "historical_checks": {
+    "two_design_revision": {
+      "checks": {
+        "english_entry_text_equal": true,
+        "chinese_entry_text_equal": true,
+        "slide_entry_text_equal": true,
+        "notes_entry_text_equal": true,
+        "no_overfull_missing_char_or_undefined_citation": true,
+        "only_comparison_slide_13_changed": true,
+        "custom_alternative_absent_in_current_sources_pdfs_pptx_and_notes": true,
+        "pptx_38_slides_and_notes": true,
+        "two_reasons_and_lifecycle_preserved": true
+      },
+      "scope": "Comparison/PPTX checks above were run for the two-design revision; current abstract-only checks are recorded separately below."
+    },
+    "abstract_revision": {
+      "date": "2026-09-10",
+      "raw_evidence_root": ".codex-tmp/proposal-abstract-20260910",
+      "english_words": 235,
+      "english_pages": 29,
+      "chinese_pages": 21,
+      "four_latex_entries_pass": true,
+      "same_language_entries_text_equal": true,
+      "only_pdf_page_2_changed": true,
+      "final_logs_clean": true,
+      "rendered_abstracts_reviewed": true,
+      "text_outside_page": false,
+      "slides_and_body_unchanged": true,
+      "no_new_runtime_qualification": true
+    }
   },
   "files": {
-    "main.tex": "187bf3d058a13dd95f48c450883dac87caa74f0b42ace1cc1635f9b66260a197",
-    "main_ch.tex": "72f8a455aa78c59d3b022d47928f160097c6898f4f604c37bbf4cc078c04bf4b",
-    "main.pdf": "5cc328eb9c40db1793d66e372e6c3df71daefe29fbfdd4d66374208d2fc066af",
-    "main_ch.pdf": "11c732af3b130d6beb204bc3d368b813d9518b4c769cb5a2b79b9b6d0578a2de",
-    "en/main.tex": "0fcd8a3b530f020d575427aeedc9a6ef5c8f7693388c51bdaab83e3d3088baf6",
-    "en/main.pdf": "8a6ccfe2205fcd4092e23f1caf848b7e5bf94fd9ccb9c9e6e70c0c21eecbeb4c",
-    "ch/main.tex": "ab1b08e2a06897cd5833872cd57acd1bb4eb6f77135de38f21791a9b267330e4",
-    "ch/main.pdf": "1219c54715b94bbd188c08d7234c5aea235eb4e8a8ebcb574459b55ea811c4c0",
-    "en/chapters/research-revision.tex": "64c0823f528f7baf497b73cea70bb48e2d8240787c600f5fab6884cddcd60ca3",
-    "ch/chapters/research-revision.tex": "34eff2a72abd184315935bd695ea4b427f6fca4c347c489b70d2ac79f6df9b07",
-    "en/chapters/authorization-rationale.tex": "b0c4417efcbd7898d2b51795f571b1089fb1e0b359d45f63a5cb77b2b8d3bb5c",
-    "ch/chapters/authorization-rationale.tex": "38aeef721be7590f5cdc1845bfa00be1a99155e27c00a1cea751b0a099cd6f1d",
-    "protocol-overview.tex": "4c7324e2784df78e704f7115b8b8fd8cf20d2cdd578f816dd8127a4cb56c0609",
-    "research-references.bib": "84297fb8b8bc58bc3753fcb7ffe9b17a85daeb025f1aaf9ae04c201a79451df2",
-    "ref.bib": "947043b33770fa99f5567ab3fa732303bcccc4ed9c0d20e3ec22459628375e96",
-    "uofm.cls": "85d127e17c01d48088c9d2828498577e0a5bf4e537490371e357945840d2f563",
-    "en/uofm.cls": "85d127e17c01d48088c9d2828498577e0a5bf4e537490371e357945840d2f563",
-    "ch/uofm.cls": "85d127e17c01d48088c9d2828498577e0a5bf4e537490371e357945840d2f563",
-    "bibstyle.bst": "694645ce80313afbe1aa9d14f2990bc080cf5c2b1669449df840ef08080ee3ad",
-    "slides/main.tex": "4356eb5b22f67bff9d615f722a07cf324ee765e345bac07f0d2a62f3c284e296",
-    "slides/research-slides.tex": "12b75280800e81479221ba9be00b44755bfcb6f0e202d1b6888bf3d4a2328658",
-    "slides/main.pdf": "4ccab8b88471cb0dbd50eaecdabb81e7db4e01f7ec05fd7e8e94a7fd660707d5",
-    "slides/main_35min.pdf": "6230cee0932329d1b5f3a496be0fc3c570ce40649310b3963dc7cd4f7b83ed22",
-    "slides/NDNSF_proposal_hybrid_editable.pptx": "74c648ed684d7b20d5e597e91d56357058771bfdb987fd4089b6d43743209444",
-    "slides/speaker_notes.tex": "bc0f6b45a7f6bc2dd36b38b10fd0386e7b58093b376921c25fb6184be00f9ec3",
-    "slides/speaker_notes.pdf": "5f72b43a8a7a2870c771171356fad0abfb4cac88a9199d83a53fd8b77ff70dc0",
-    "slides/speaker_notes_35min.tex": "bc0f6b45a7f6bc2dd36b38b10fd0386e7b58093b376921c25fb6184be00f9ec3",
-    "slides/speaker_notes_35min.pdf": "9512391ed76c019bb80cb26ab048111e613f3ff7b5d5296dc3f991afc892186b",
-    "slides/generate_hybrid_editable_pptx.py": "7943cbd16bcdce110f141d74f56f466e59a82ad8a3d5e29ba8975c2f2a2447d7",
-    "slides/add_speaker_notes_to_pptx.py": "e05f024861008aa94dccaa80bbcb7e3ea584678895d5287e6b27da9b96d9bb5e",
-    "slides/test_notes_parsing.py": "1ac86242fc969e65d5b01fb65b3b589cecb27176b9d0fa376636b63177d019a4",
-    "review_rendered.py": "e24daf06bf78f06cc72c7169a4c1cba3ecb7b04e12f9999921772f6bcb14d26f",
-    "research-revision-audit.md": "0bc67b33dd23f6963b3822a262175b26955fbbbacc2cf671a496440441e8d66c",
     "BUILD-RESEARCH.md": "311ba0b03b1ce87ade00645c3b6a556739143b43893c4c8d6acd78f41554f0fa",
     "authorization-revision.md": "f6a37f2755ce3d2182409fc61bbc258658e5d1828be7e9d81e5e7a8ec99296f1",
-    "review.md": "233a1b44cbb9813be4f9829736c404712bf3a56ed90a1c084048610e829bb9c4"
-  },
-  "text_preflight": "LaTeX PDF content slides below 100 words; reference pages 36/37 exempt; no text outside pages. PPTX export tokenization differs.",
-  "checks_scope": "Comparison/PPTX checks above were run for the two-design revision; current abstract-only checks are recorded separately below.",
-  "abstract_revision": {
-    "date": "2026-09-10",
-    "raw_evidence_root": ".codex-tmp/proposal-abstract-20260910",
-    "english_words": 235,
-    "english_pages": 29,
-    "chinese_pages": 21,
-    "four_latex_entries_pass": true,
-    "same_language_entries_text_equal": true,
-    "only_pdf_page_2_changed": true,
-    "final_logs_clean": true,
-    "rendered_abstracts_reviewed": true,
-    "text_outside_page": false,
-    "slides_and_body_unchanged": true,
-    "no_new_runtime_qualification": true
+    "bibstyle.bst": "694645ce80313afbe1aa9d14f2990bc080cf5c2b1669449df840ef08080ee3ad",
+    "ch/chapters/authorization-rationale.tex": "fcab90cdb2a41610e5a3f405b802e00d1ff391371ee3422f65a0087c99de910e",
+    "ch/chapters/research-revision.tex": "1615cefdc4503ee756d68d7e9355139d5f5b55c5d6ad94bde7dbb40bbedbacf0",
+    "ch/main.pdf": "b961c5f1dfd4998589bd74f79b2976861d80d6e3baf6cd27c32fa391964e828c",
+    "ch/main.tex": "083ddbf886f7c9727ad948ba4588d095591aa98e1aa8229066bbcc19e6bd4d12",
+    "ch/uofm.cls": "85d127e17c01d48088c9d2828498577e0a5bf4e537490371e357945840d2f563",
+    "en/chapters/authorization-rationale.tex": "6368b2dbb486b8378c1599247ffa7ca91f6e378d018c42843f4d21ae0f84f5bc",
+    "en/chapters/research-revision.tex": "9c63e40df849209fff54f589c90275ac40351330c1a2b64985e277c2c353d99f",
+    "en/main.pdf": "69a5406d2073417b7b32fc1d0ced03bd22c2170b85e9316272a9adc1171d46d6",
+    "en/main.tex": "5d50fdd6606e80f35e836166cb02c68a28cae67b1b86f758c387fc0df8a6b7df",
+    "en/uofm.cls": "85d127e17c01d48088c9d2828498577e0a5bf4e537490371e357945840d2f563",
+    "language-review-20260910.md": "bee8cc80184687daa285c8583dfa949c2984f3b0e969c749e8fb68cc7a0e6612",
+    "main.pdf": "110835b66b40729589c292b683b65b2d0d0803380deb192895ccba072b739697",
+    "main.tex": "e592e23ce961db8659a91d024870ceb19dd477acea8329afe72f58c235c02275",
+    "main_ch.pdf": "58a99abda41bb447302f4002cb5411a5eeeccebbf2aeeca5e9546bb9e1a4ad01",
+    "main_ch.tex": "edadc3f912ba0e88add74011caf5de2103b4567576935441591236c1fc3d2e15",
+    "protocol-overview.tex": "4c3afde9b456c7b5c4d4c9efaa0f21da4d4430aeb403f311cb1919df3cf26480",
+    "ref.bib": "947043b33770fa99f5567ab3fa732303bcccc4ed9c0d20e3ec22459628375e96",
+    "research-references.bib": "84297fb8b8bc58bc3753fcb7ffe9b17a85daeb025f1aaf9ae04c201a79451df2",
+    "research-revision-audit.md": "c806018d5505c32f9aa03a93d122829face25c22cc7463fb98f9fa4c13b909c5",
+    "review.md": "fea8b49c9f60a6bf8bb064702f7c8617d1d10bc9a88369efd3d32222ec966613",
+    "review_rendered.py": "e24daf06bf78f06cc72c7169a4c1cba3ecb7b04e12f9999921772f6bcb14d26f",
+    "slides/NDNSF_proposal_hybrid_editable.pptx": "b3829be35aa3dcb5fea5b26672030ea51e637893fb0156f2f665ffb0452bdee2",
+    "slides/add_speaker_notes_to_pptx.py": "e05f024861008aa94dccaa80bbcb7e3ea584678895d5287e6b27da9b96d9bb5e",
+    "slides/generate_hybrid_editable_pptx.py": "7943cbd16bcdce110f141d74f56f466e59a82ad8a3d5e29ba8975c2f2a2447d7",
+    "slides/main.pdf": "a5648b50cc4f8d66c35de1601bf393e4d0710a22c8eaa63b0230f356db3f8eaf",
+    "slides/main.tex": "4356eb5b22f67bff9d615f722a07cf324ee765e345bac07f0d2a62f3c284e296",
+    "slides/main_35min.pdf": "46afb7ae94f4aec2bd20d61f2fc461c93ca235b7df2ce16c470b491e15f1072b",
+    "slides/main_35min.tex": "fdc2fbeee6a689114c392f6a404e5f2b44f69710351d7edb5efa7cd3983cedba",
+    "slides/research-slides.tex": "4ddfd18053cf029215377691080f367a830a2948d49d19633fc5c317be77eca3",
+    "slides/speaker_notes.pdf": "59c09eeba299cdaadbd675ddf20f8949ea8b6bd0ee057bf4ca31d3f37e4a221d",
+    "slides/speaker_notes.tex": "2b164a20c6f435249fef50fd735710fc1caa5d1193ff9c9df0cca56afe6f7e33",
+    "slides/speaker_notes_35min.pdf": "6fa4ac82d635023657640bbb75e740fd0199bb7715416bd3d1a95e0e8c3ee892",
+    "slides/speaker_notes_35min.tex": "2b164a20c6f435249fef50fd735710fc1caa5d1193ff9c9df0cca56afe6f7e33",
+    "slides/test_notes_parsing.py": "1ac86242fc969e65d5b01fb65b3b589cecb27176b9d0fa376636b63177d019a4",
+    "uofm.cls": "85d127e17c01d48088c9d2828498577e0a5bf4e537490371e357945840d2f563"
   }
 }

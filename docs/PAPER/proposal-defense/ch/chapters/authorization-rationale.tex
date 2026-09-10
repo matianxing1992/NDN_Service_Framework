@@ -5,20 +5,21 @@ NDNSF 的论证包含两个相互关联的部分：选择 Provider 之前保密�
 以及将数据分发与细粒度内容访问控制分离的架构收益。前者说明哪些信息需要保密，
 后者说明如何让不同访问范围与共享分发机制并存。两者并非 ABE 普遍优越性的
 两个独立证明。权限聚合和身份凭证复用支撑第二点；权限撤销属于具有成本的
-生命周期要求，不作为选择 ABE 的第三条理由。执行授权决定实体是否可以调用或提供某项
-服务；内容机密性决定谁能读取受保护的消息内容。签名验证、服务权限检查和
-调用状态检查仍是不同的要求。
+生命周期要求，不作为选择 ABE 的第三条理由。执行授权决定 User 是否可以调用服务，
+Provider 授权决定实体是否可以提供该服务；内容机密性限制谁能读取受保护内容。
+Controller 管理服务权限，User 和 Provider 在调用过程中检查这些权限，并执行
+信任规则下的签名验证与调用状态检查。获准提供服务不等于被选中执行某一次任务。
 
 \paragraph{理由一：选择 Provider 之前的保密发现。}
 在选择 Provider 之前，User 发布 discovery descriptor（发现描述），其中
 包含 Provider 决定是否返回 positive ACK 所需的位置、截止时间和资源要求。
 例如，附近 UAV 需要知道观察区域和到达时限才能决定是否参与，但此时不需要
-完整应用输入。ABE 无需逐一列出 Provider 身份，即可将发现描述的读取权限
-限制为获准提供该服务的 Providers。这里的保密对象是缺少相应解密能力的外部
+完整应用输入。User 使用 ABE 和所请求服务的属性加密发现描述，无需逐一列出
+Provider 身份。这里的保密对象是缺少相应解密能力的外部
 观察者；获准但最终未被选中的 Providers 仍可读取。内容加密不隐藏外层 Data
-名称或流量模式。在请求级机密性路径中，完整应用输入及其解密材料通过
-Selection 限定给选中的
-Providers。Trust Schema 本身不加密内容；角色授权方案也可以配合 ABE 或
+名称或流量模式。在请求级机密性路径中，应用输入使用请求级密钥加密，Selection
+将该密钥保护给选中的 Provider，请求方 User 仍保留访问能力。Trust Schema
+本身不加密内容；角色授权方案也可以配合 ABE 或
 服务组加密来实现发现阶段的保密性。
 
 \paragraph{理由二：将数据分发与细粒度访问控制分离。}
@@ -39,7 +40,8 @@ KP-ABE 将属性关联到密文，将访问策略编码到解密密钥
 \texttt{/PERMISSION/<service>} 表示 User 的调用相关解密权限。在同一授权
 机构和 ABE 参数代际内，一个实体的多项服务权限被合并为 OR 策略，编码到
 单独为该实体签发的 DKEY 中，同时复用其身份签名凭证。
-Trust Schema 规定可接受的签名关系，本身不限制谁能读取复制后的
+Trust Schema 规定 Data 名称与允许签名的密钥名称之间的关系；验证器应用这些
+规则并检查至信任锚的证书链。Schema 本身不限制谁能读取复制后的
 Content~\cite{trustschema}。这个区别不限于角色授权。Trust Schema 可以表达
 细粒度规则，也可以配合加密。NAC 同样通过内容加密和密钥分发保护分布式
 数据~\cite{nac}；ABE 在这里的特色是基于属性和策略的解密能力，而不是独有的
@@ -60,10 +62,16 @@ DNMP 通过角色签名
 \label{sec:authorization-withdrawal-ch}
 
 \paragraph{将解密能力关联到调用授权。}
-Requester Challenge（实现中的 \texttt{UserToken}）和 Provider Challenge
-（\texttt{ProviderToken}）用于检查参与者在当前交换中是否具有相应的服务和
-调用权限解密能力。签名标识参与身份，匹配检查和一次性状态检查拒绝不匹配或
-重放的消息。这沿用了属性化权限管理，而不是另设一套基于角色的调用规则，但
+在 ABE-backed 调用路径中，User 将 Requester Challenge（\texttt{UserToken}）
+放入受保护的 Request 内容。Provider 恢复该值后在 ACK 中返回，User 将其与
+活动请求中的值比较。Provider 将自己的 Challenge（\texttt{ProviderToken}）
+放入受保护的 ACK 内容，并在执行前检查 Selection 中对应的 challenge response。
+
+这些检查表明参与者能够获得受保护的 challenge 值，不会创建新权限，也不是
+密钥独占持有的形式化证明。双方还需按信任规则验证消息签名和证书链，检查当前
+服务权限，并匹配请求及其状态。一次性状态只有被保留或在重启时安全失效，才能
+防止重复消息授权另一次执行；获准实体主动共享密钥或 challenge 不在所声称的
+防护范围内。这沿用了属性化权限管理，而不是另设一套基于角色的调用规则，但
 并非没有额外成本：保密发现已需要 Provider DKEY，而 User 的调用权限 DKEY
 和 challenge 处理仍是额外授权成本。ABE 保密配合 DNMP-inspired 角色授权同样是有效的
 替代方案。

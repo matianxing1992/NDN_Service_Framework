@@ -9,23 +9,26 @@ different access scopes can coexist with shared dissemination. These are not
 two independent proofs of ABE's superiority. Permission aggregation and
 identity-credential reuse support the second part; permission withdrawal is
 a lifecycle requirement with costs, not a third reason to prefer ABE.
-Execution authorization determines whether an entity may invoke or provide a
-service; content confidentiality determines who can read protected message
-content. Signature validation, service permission checks, and invocation-state
-checks remain distinct requirements.
+Execution authorization determines whether a User may invoke a service;
+Provider authorization determines whether an entity may offer that service.
+Content confidentiality limits who can read protected content. The Controller
+administers these service permissions; the User and Provider check them during
+invocation. Signature validation under trust rules and invocation-state checks
+remain necessary. Permission to offer a service is distinct from selection for
+one particular task.
 
 \paragraph{Reason 1: confidential discovery before Provider selection.}
 Before Provider selection, the User publishes a discovery descriptor containing
 the location, deadline, and resource requirements needed for a Provider's
 positive-ACK decision. For example, nearby UAVs need an observation area and
 arrival deadline to decide whether to participate, but do not yet need the full
-application input. ABE protects this descriptor for Providers authorized for the
-service without enumerating their identities. Confidentiality is against parties
+application input. The User encrypts this descriptor using ABE and the requested
+service's attribute, without enumerating Provider identities. Confidentiality is against parties
 lacking the required decryption capability: authorized but unselected Providers
 can still read the descriptor. Content encryption does not hide outer Data names
 or traffic patterns. In the request-scoped confidentiality path, the full
-application input and its decryption material are restricted to selected
-Providers through Selection. A Trust Schema alone does
+application input is encrypted with a request-scoped key; Selection protects
+that key for the selected Provider. The requesting User retains access. A Trust Schema alone does
 not encrypt content; a role-authorized design can also use ABE or service-group
 encryption to provide discovery confidentiality.
 
@@ -53,7 +56,9 @@ with \texttt{/SERVICE/<service>} and User access with
 \texttt{/PERMISSION/<service>}. Within one authority and ABE parameter
 generation, it combines an entity's service entitlements into an OR policy for
 its individually issued DKEY, while reusing its identity-signing credentials.
-Trust Schema specifies acceptable signing relationships; by itself it does not
+Trust Schema specifies permitted relationships between Data names and signing
+key names; a validator applies those rules and checks the chain to a trust anchor.
+The schema by itself does not
 restrict who can read copied Content~\cite{trustschema}. This distinction
 applies beyond role-based designs. Trust Schema can express fine-grained
 rules and can be combined with encryption. NAC also protects distributed
@@ -79,11 +84,21 @@ can reuse credentials; credential counts alone do not establish lower total cost
 \label{sec:authorization-withdrawal}
 
 \paragraph{Connecting decryption capability to invocation authorization.}
-The Requester Challenge (\texttt{UserToken} in the implementation) and Provider
-Challenge (\texttt{ProviderToken}) check access to the required service and
-permission decryption capabilities in the current exchange. Signatures identify
-the participants, while matching and one-time-state checks reject mismatched
-or replayed messages. This reuses attribute-based permission management rather
+In the ABE-backed invocation path, the User includes a Requester Challenge
+(\texttt{UserToken}) in protected Request content. A Provider that recovers it
+returns it in ACK Data; the User checks it against the active request.
+The Provider places its own Challenge (\texttt{ProviderToken}) in protected
+ACK content. The Provider checks the corresponding challenge response in
+Selection before starting the selected task.
+
+These checks demonstrate access to protected challenge values, not the creation
+of new permissions or a formal proof of exclusive key possession. The User and
+Provider also validate message signatures and certificate chains under trust
+rules, check current service permissions, and match the request and its state.
+One-time state prevents a repeated message from authorizing another execution
+only while that state is preserved or safely invalidated on restart. Authorized
+key or challenge sharing is outside the claimed threat protection. This reuses
+attribute-based permission management rather
 than a separate set of role-based invocation rules. It is not cost-free: confidential
 discovery already needs Provider DKEYs, whereas User permission DKEYs and
 challenge processing are additional authorization costs. ABE confidentiality
