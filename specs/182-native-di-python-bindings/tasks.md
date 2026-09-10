@@ -1,6 +1,6 @@
 # Tasks: Native NDNSF-DI with Optional Python Bindings
 
-**Revision**: 129 | **Status**: DRAFT / T001 DONE
+**Revision**: 130 | **Status**: DRAFT / T001 DONE
 **Input**: [spec](spec.md), [code design](contracts/code-design.md),
 [proof](contracts/proof-design.md), [work units](contracts/work-units.md)
 
@@ -11,7 +11,7 @@
 剩余调度权威为 [N1--N5 / R11 cards](contracts/native-first-execution.md)。当前 R11-B1
 已完成独立 authority↔requester process 的 C++ 正例、负例和不可达边界，R11-B2 已完成
 真实 C++ 跨进程 unary 的本地 process 出口；R11-B3 stream 已形成独立出口，当前继续收敛
-R11-B4 continuation 已形成独立双轮出口，下一批转入 R11-B5 recovery。不得在 N1--N3 通过前以旧
+R11-B4 continuation 与 R11-B5 recovery 已形成独立出口，下一批转入 R11-B6 replacement。不得在 N1--N3 通过前以旧
 调用方批量迁移、Python 数量或全仓库扫描代替原生出口。已有局部 PASS 及下面历史记录
 保留，父任务不因本轮局部实现升级。
 
@@ -22,7 +22,7 @@ R11-B4 continuation 已形成独立双轮出口，下一批转入 R11-B5 recover
 | [R11-B2 Native Unary Process](contracts/native-first-execution.md#dispatch-cards) | CLOSED_FOR_VALIDATION | R11-B1; existing T008/T009/T010 implementation | 独立 C++ DI_NativeRequester / authority / di-native-provider；真实 ACK/Selection/handler/Response、受保护 grant、ONNX Runtime CPU evidence 和 C++ numerical oracle `[4,0,12]`；Provider 缺 role 的拒绝例也 fail-closed。T010 父任务、R11-B3 及完整 Spec qualification 仍未关闭 | 2026-09-10 |
 | [R11-B3 Native Stream Process](contracts/native-first-execution.md#dispatch-cards) | CLOSED_FOR_VALIDATION | R11-B2 | 独立 C++ requester/Core/Provider process 通过 8 个有序 token 事件、final response、grant verification、post-selection preparation、decode-state commit 和 CPU ORT execution；C++ oracle 与构建/单测/集成证据已记录。gap/timeout/重复/错 generation、父 T010/T011 及完整 qualification 仍未关闭 | 2026-09-10 |
 | [R11-B4 Native Continuation Process](contracts/native-first-execution.md#dispatch-cards) | CLOSED_FOR_VALIDATION | R11-B3 | 独立 C++ 双轮 process 已通过第一轮 `FULL_CONTEXT`（stream oracle、COMMIT/FINALIZE、持久 journal checkpoint）及新 generation 的第二轮 `APPEND_DELTA`；错误 parent 进程按预期以 `NATIVE_CONVERSATION_BEGIN_FAILED` 拒绝；publisher stable artifact identity 已绑定 canonical manifest digest。父 T010/T011、R11-B5 及完整 Spec qualification 仍未关闭 | 2026-09-10 |
-| [R11-B5 Native Recovery Process](contracts/native-first-execution.md#dispatch-cards) | NOT_STARTED | R11-B4 | 真实中断/重启与状态恢复或明确拒绝，无重复提交 | 2026-09-10 |
+| [R11-B5 Native Recovery Process](contracts/native-first-execution.md#dispatch-cards) | CLOSED_FOR_VALIDATION | R11-B4 | 第一轮 C++ `FULL_CONTEXT` checkpoint 后对 Provider 进程执行 SIGKILL/restart；重启 Provider 以 `PROVIDER_CONVERSATION_STATE_MISSING` 明确拒绝 `APPEND_DELTA`，requester 以 `NATIVE_STREAM_FAILED` 退出且无重复 execution/stream marker。未宣称 Provider KV durable recovery；R11-B6 及完整 Spec qualification 仍未关闭 | 2026-09-10 |
 | [R11-B6 Native Replacement Process](contracts/native-first-execution.md#dispatch-cards) | NOT_STARTED | R11-B5 | 第二独立 Provider 成功替换、旧 attempt fencing、无候选失败 | 2026-09-10 |
 | [R11-B7 Native Cleanup Process](contracts/native-first-execution.md#dispatch-cards) | NOT_STARTED | R11-B6 | 终态/取消/超时/替换后 drain、secret 清理及共享服务隔离 | 2026-09-10 |
 | [R11-B8 Maintained Callers](contracts/native-first-execution.md#dispatch-cards) | NOT_STARTED | R11-B7; corresponding T012 ABI | 原 16 callers 按组分批；先 C++ 对照，再 wrapper/兼容/旧路径零使用 | 2026-09-10 |
@@ -302,6 +302,14 @@ generation identity 完成 `APPEND_DELTA`，错误 parent 进程以非零状态�
 复用 request-scoped canonical root。构建、C++ unit/integration selector 和 raw run 见
 [R11-B4 evidence](evidence/r11-b4-native-continuation-20260910.md)。父 T010/T011、R11-B5
 recovery、maintained callers、no-Python 及完整 qualification 仍未关闭。
+
+2026-09-10 R11-B5 native recovery / **CLOSED_FOR_VALIDATION**（仅限 Provider restart
+safe-rejection）：第一轮 `FULL_CONTEXT` 成功写入 requester journal checkpoint 后，driver 对
+Provider 执行 SIGKILL 并以同一配置重启；重启 Provider 报 `PROVIDER_CONVERSATION_STATE_MISSING`，
+第二轮 `APPEND_DELTA` 以 `NATIVE_STREAM_FAILED` 明确拒绝，且重启日志没有
+`NDNSF_DI_EXECUTION_EVIDENCE_OBSERVED` 或 `STREAM_EVENT_OBSERVED`。详见
+[R11-B5 evidence](evidence/r11-b5-native-recovery-20260910.md)。该卡不证明 Provider KV
+跨重启恢复；R11-B6--B9、maintained callers、no-Python 和完整 qualification 仍未关闭。
 
 2026-09-10 R11-B2 native unary process / **CLOSED_FOR_VALIDATION**（仅限本地
 process 出口）：独立 Controller、artifact authority、DI_NativeRequester 和 di-native-provider

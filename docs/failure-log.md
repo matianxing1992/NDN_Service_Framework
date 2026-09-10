@@ -1,5 +1,18 @@
 # Failure Log and Evidence Index
 
+## 2026-09-10 — Spec182 R11-B5 Provider restart recovery boundary
+
+After the first C++ `FULL_CONTEXT` turn persisted the requester checkpoint, the Provider was
+terminated with SIGKILL and restarted from the same configuration. The restarted Provider had no
+durable KV state and rejected the resumed role with `PROVIDER_CONVERSATION_STATE_MISSING`; the
+requester returned `NATIVE_STREAM_FAILED` without a second success/checkpoint. The restart log
+contained no execution-evidence or stream-event marker, so no duplicate prefix was executed or
+published. The first harness attempt exposed an overly narrow expected error marker and was
+repaired before the checked run. Raw output and the durable result are recorded in
+[R11-B5 evidence](../specs/182-native-di-python-bindings/evidence/r11-b5-native-recovery-20260910.md).
+This is the designed safe-rejection boundary, not proof of durable Provider KV recovery or whole
+Spec qualification.
+
 ## 2026-09-10 — Spec182 R11-B4 repeated-request artifact identity boundary
 
 The fresh-generation retry completed the first native continuation turn and accepted the
