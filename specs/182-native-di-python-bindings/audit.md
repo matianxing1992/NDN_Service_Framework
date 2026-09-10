@@ -1,6 +1,25 @@
 # Spec182 Design Audit
 
-**Revision**: 50 | **Current source**: R11-B8-G44 frozen-topology and probe-count checkpoint on `Experimental`
+**Revision**: 51 | **Current source**: R11-B9-G3 current-build cross-process revalidation checkpoint on `Experimental`
+
+## R11-B9-G3 Current-Build Cross-Process Revalidation Review 2026-09-10
+
+本轮先复核了独立 C++ process driver 的角色 PIB/TPM、进程 ownership、cleanup、会话 parent
+绑定、Provider restart 和 replacement 断言。首次运行在 Python import 的动态加载边界失败：
+继承的 `LD_LIBRARY_PATH` 让不匹配的 `/usr/local/lib/libnac-abe.so` 抢先于 build 配置的
+NAC-ABE 前缀，缺少 `Consumer::clearCache(...)`。该失败已作为 loader/dependency 边界保存，
+没有计入协议结果；修正前缀顺序后 `ldd` 解析到匹配 NAC-ABE 安装和 NDN-SVS build。
+
+四组独立本地运行均通过声明的 C++ 边界：conversation 首轮和 `APPEND_DELTA` 成功、错误
+parent 拒绝；Provider restart 后续接安全失败且报告 `PROVIDER_CONVERSATION_STATE_MISSING`；
+备用 Provider 完成 `attempt-2`；无备用 Provider 返回 `DI_NATIVE_NO_ADMITTED_PROVIDER`。
+Provider 日志包含 assembly 前 grant verification 和 real ONNX Runtime CPU execution，C++
+stream oracle 通过。Python 只负责进程生命周期和 fixture 文件。
+
+该结果只提升当前构建的本地跨进程证据，不代表 Qwen3-0.6B、MiniNDN、真实 Slurm/SIF/GPU、
+maintained callers、legacy zero-use、no-Python 或 T015--T017 资格。详见
+[R11-B9-G3 evidence](evidence/r11-b9-g3-cross-process-current-build-20260910.md) 及
+[loader failure evidence](evidence/r11-b9-g3-cross-process-dependency-boundary-20260910.md)。
 
 ## R11-B8-G44 Frozen Topology and Probe Count Integrity Review 2026-09-10
 

@@ -3333,3 +3333,20 @@ are still unobserved.
   the failed build directory, then rebuild the same Waf target with the system-first `-j2` command.
 - **Evidence**:
   [`r11-b8-g11-provider-colocation-20260910.md`](../specs/182-native-di-python-bindings/evidence/r11-b8-g11-provider-colocation-20260910.md)
+
+## 2026-09-10 — Spec182 R11-B9-G3 independent process dependency boundary
+
+- **Area**: fresh C++ requester/Provider cross-process conversation validation.
+- **First boundary**: the Python driver failed while importing the current `_ndnsf`
+  extension because the environment selected `/usr/local/lib/libnac-abe.so`, which lacks
+  `ndn::nacabe::Consumer::clearCache(...)` required by the build. The run returned `rc=1`
+  before Controller, Authority, Provider, requester, or NFD protocol startup.
+- **Interpretation**: dynamic-loader dependency mismatch only; no protocol result is counted.
+  Raw command, output, return code, and `ldd` capture are retained under
+  `.codex-tmp/spec182-r11-b9-cross-process-current-20260910-r0/`.
+- **Changed gate before retry**: put the matching
+  `/home/tianxing/NDN/nac-abe-integration-182/install/lib` and
+  `/home/tianxing/NDN/ndn-svs/build` prefixes first in `LD_LIBRARY_PATH`; retain
+  `/usr/local/lib` only after them for remaining ndn-cxx/ndnsd dependencies.
+- **Evidence**:
+  [`r11-b9-g3-cross-process-dependency-boundary-20260910.md`](../specs/182-native-di-python-bindings/evidence/r11-b9-g3-cross-process-dependency-boundary-20260910.md)

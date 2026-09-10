@@ -1,6 +1,6 @@
 # Tasks: Native NDNSF-DI with Optional Python Bindings
 
-**Revision**: 180 | **Status**: DRAFT / T001 DONE
+**Revision**: 181 | **Status**: DRAFT / T001 DONE
 **Input**: [spec](spec.md), [code design](contracts/code-design.md),
 [proof](contracts/proof-design.md), [work units](contracts/work-units.md)
 
@@ -19,7 +19,7 @@ PDF P2 变化。见[审计](../../docs/PAPER/proposal-defense/research-revision-
 R11-B4 continuation、R11-B5 recovery 与 R11-B6 replacement 已形成独立出口，下一批转入
 R11-B7 cleanup。不得在 N1--N3 通过前以旧
 调用方批量迁移、Python 数量或全仓库扫描代替原生出口。R11-B7 已形成 cleanup 出口；
-R11-B8 现开始按 caller group 批次执行；G4 已形成 native checkpoint handle export 出口，G5 已接通 Qwen caller 的 FULL_CONTEXT/APPEND_DELTA DTO 映射；真实 Provider 第二轮仍需独立验证。已有局部 PASS 及下面历史记录
+R11-B8 现开始按 caller group 批次执行；G4 已形成 native checkpoint handle export 出口，G5 已接通 Qwen caller 的 FULL_CONTEXT/APPEND_DELTA DTO 映射；R11-B9-G3 已用当前构建独立验证真实 Provider 的第二轮、恢复和 replacement 边界。已有局部 PASS 及下面历史记录
 保留，父任务不因本轮局部实现升级。
 
 | Unit / Details | Status | Depends | Evidence / Remaining | Updated |
@@ -79,6 +79,7 @@ R11-B8 现开始按 caller group 批次执行；G4 已形成 native checkpoint h
 | [R11-B8-G43 Network Probe Observation Integrity](evidence/r11-b8-g43-network-probe-observation-integrity-20260910.md) | CLOSED_FOR_VALIDATION | R11-B8-G42; Spec110 topology contract | **Deployment harness:** live network probe now derives each target node's source IPv4 through a bounded target-node UDP route probe, compares `allocationAddresses` in rank order, requires node array order to match `nodeRank`, rejects duplicate node addresses, and forbids offline observation files outside `NDNSF_SPEC110_TEST_MODE=1`; workdir/identity digests also bind root and regular-file permission bits. 84 related Python tests, network integration, shell syntax and diff checks pass; real Slurm/SIF/NDN route qualification remains open | 2026-09-10 |
 | [R11-B8-G44 Frozen Topology and Probe Count Integrity](evidence/r11-b8-g44-frozen-topology-probe-count-20260910.md) | CLOSED_FOR_VALIDATION | R11-B8-G43; Spec110 topology contract | **Deployment harness:** supervisor snapshots the validated process map and uses the read-only copy for every later rank/process/port/placement/route lookup; exact duplicate route tuples and malformed route node ranks are rejected; transport observations now require strict status/port/count consistency (`reachableRoutes = routeCount - len(closedPorts)`). 88 focused Python tests, network integration, shell/Python syntax and diff checks pass; real Slurm/SIF/NDN route qualification remains open | 2026-09-10 |
 | [R11-B9-G2 Cross-Process Native Main Chain](evidence/r11-b9-g2-cross-process-native-chain-20260910.md) | CLOSED_FOR_VALIDATION | R11-B8-G25; R11-B2--B6 process contracts | **C++ primary:** fresh independent requester/Core/Authority/Provider runs passed unary numerical oracle, stream, FULL_CONTEXT/APPEND_DELTA conversation, alternate-provider replacement, and no-backup fail-closed boundaries; Provider logged grant verification and real ORT CPU evidence. Tiny fixture only; maintained callers, legacy zero-use, T014 I02--I08/no-Python, exact-SIF, MiniNDN/Slurm/GPU and final T016/T017 remain open | 2026-09-10 |
+| [R11-B9-G3 Current-Build Cross-Process Revalidation](evidence/r11-b9-g3-cross-process-current-build-20260910.md) | CLOSED_FOR_VALIDATION | R11-B9-G2; explicit NAC-ABE/SVS build closure | **C++ primary:** corrected loader-prefix gate and four retained independent runs passed current-build conversation/append, wrong-parent rejection, Provider restart fail-closed, alternate-provider `attempt-2`, and no-backup terminal failure. Real ORT CPU evidence and C++ stream oracle present; first mismatched `/usr/local` NAC-ABE import failure is retained separately. Tiny fixture only; maintained callers, legacy zero-use, T014/no-Python, exact-SIF, MiniNDN/Slurm/GPU and T015--T017 remain open | 2026-09-10 |
 | [R11-B8 Maintained Callers](contracts/native-first-execution.md#dispatch-cards) | PARTIAL | R11-B7; corresponding T012 ABI | G1 generic unary 与 G2 generic stream 已形成稳定出口；仍需 15 个 caller group 的 native entry、实际行为、兼容 wrapper 及旧路径零使用证据，不能按子批次数量计全量完成 | 2026-09-10 |
 | [R11-B9 Native Closure](contracts/native-first-execution.md#dispatch-cards) | NOT_STARTED | R11-B8 | T014 no-Python/依赖闭包工具 → T015 → T016 → T017；最终资格未开始 | 2026-09-10 |
 
@@ -362,6 +363,17 @@ P1–P4 是不同的生产入口、进程边界或 selector，不能为了少一
 | R10-B76 | production entry/callers: compatibility manifest → maintained Python API inventory; implementation/wire: `checklists/build_api_migration_manifest.py` regenerated all 344 entries and rebounded source line/hash metadata to checkpoint `31fe172a`; test/harness/oracle: generator output, `sourceCommit` equality, design validator and diff check; build/source closure: manifest-only, no ABI or runtime change; migration/evidence: closes stale provenance from R10-B74 while semantic caller mapping, native default migration and legacy retirement remain open | DONE for this bounded manifest provenance boundary; parent T001/O-004/T013-B remain PARTIAL | static review confirms current HEAD identity and 344-entry coverage; manifest remains routing evidence and cannot promote runtime compatibility or qualification | generator PASS (`entries=344`, `dynamicAppSdk=67`); sourceCommit equality PASS; `validate_design.py --json` PASS; `git diff --check` PASS | no product build, requester/Provider transport, maintained caller/no-Python or T016/T017 run | documentation/generator artifact only | `STATIC_PASS`; `FOCUSED_BEHAVIOR_PASS`; `BUILD_NOT_APPLICABLE`; `OPEN_FOR_NEXT_BATCH`; not `QUALIFICATION_PASS` | [R10-B76 evidence](evidence/r10-b76-compatibility-manifest-refresh-20260909.md); next: map and migrate maintained native callers, then regenerate after each source checkpoint |
 
 ## Current Checkpoint
+
+2026-09-10 R11-B9-G3 current-build cross-process revalidation / **CLOSED_FOR_VALIDATION**（仅限
+本地独立 C++ process 边界）：首个运行因继承的 `LD_LIBRARY_PATH` 让 `/usr/local/lib` 的
+不匹配 NAC-ABE 抢先加载而在 Python import 边界失败；该失败已保存并加入
+`docs/failure-log.md`。修正前缀顺序后，conversation 首轮与 `APPEND_DELTA` 均成功，错误
+parent 被拒绝；Provider 重启后的续接以 `NATIVE_STREAM_FAILED` 结束且报告
+`PROVIDER_CONVERSATION_STATE_MISSING`；alternate Provider 完成 `attempt-2`，无备用 Provider
+以 `DI_NATIVE_NO_ADMITTED_PROVIDER` fail closed。四组 raw run、C++ stream oracle、grant
+verification 和 real ORT CPU evidence 均保留。tiny fixture 不代表 Qwen3-0.6B 或 MiniNDN；
+maintained caller、legacy zero-use、T014 no-Python/依赖闭包、exact-SIF、真实 Slurm/SIF/GPU、
+T015--T017 仍开放。详见 [R11-B9-G3 evidence](evidence/r11-b9-g3-cross-process-current-build-20260910.md)。
 
 2026-09-10 R11-B8-G44 frozen topology and probe-count integrity / **CLOSED_FOR_VALIDATION**（仅限
 deployment harness）：静态追踪发现 supervisor 在初次渲染后反复读取可变的 submit-host

@@ -1,6 +1,6 @@
 # Implementation Plan: Native NDNSF-DI with Optional Python Bindings
 
-**Branch**: Experimental | **Revision**: 89 | **Date**: 2026-09-10
+**Branch**: Experimental | **Revision**: 90 | **Date**: 2026-09-10
 **Status**: IN_PROGRESS / 当前实现与验收状态见 tasks.md 的 Task Progress Registry 和 Current Checkpoint
 **Spec**: [spec.md](spec.md)
 
@@ -46,10 +46,10 @@ T001允许有界依赖探针；产品构建按设计门和各任务的验证范�
 剩余工作按 [Native-First Execution Order](contracts/native-first-execution.md) 的 N1--N5
 及 R11-B1--B9 执行：独立 artifact authority → C++ 跨进程 unary → 同链 stream/
 continuation/recovery/replacement/cleanup → 16 个 maintained callers → no-Python/
-依赖闭包/T015/T016。当前 R11-B1 已完成本地独立 process 出口：真实 Controller、Authority
-和 C++ requester 经私有 NFD 通过正例、Authority 拒绝例与不可达超时，requester 在 C++ 内
-验证 grant，bwrap 与角色 PIB/TPM 隔离通过。下一步进入 R11-B2；父任务 T005 和完整资格
-仍保持未完成。
+依赖闭包/T015/T016。R11-B9-G3 已在显式 NAC-ABE/SVS 前缀顺序下完成当前构建的独立
+conversation、recovery、replacement 和 fail-closed process 出口；首个错误动态库加载边界
+已记录，未被计为协议结果。下一步转入 maintained caller groups 和 T014 closure；父任务
+T004/T008/T009/T010/T011/T013 及最终资格仍保持未完成。
 原生验收次序为 C++ production code → C++ unit/integration/process tests → Python
 wrapper checks。各小任务仍先过 review-agent 静态门，整批组合审查后统一构建和相应测试。
 Python 用例数量不推进 native 状态。旧 R1--R10 局部结果按原证据范围保留。
