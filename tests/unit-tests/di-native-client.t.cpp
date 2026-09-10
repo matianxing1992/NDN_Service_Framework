@@ -152,8 +152,16 @@ BOOST_AUTO_TEST_CASE(ProductionRequestIdsCarryProcessOwnerScope)
   BOOST_CHECK_NE(firstHandle.requestId(), secondHandle.requestId());
   BOOST_CHECK(firstHandle.requestId().find("/NDNSF/DI/REQUEST/") == 0);
   const auto firstSuffix = firstHandle.requestId().substr(std::string("/NDNSF/DI/REQUEST/").size());
-  BOOST_CHECK_EQUAL(firstSuffix.find('/'), 32U);
-  BOOST_CHECK(firstSuffix.find_first_not_of("0123456789abcdef") == 32U);
+  const auto secondSuffix = secondHandle.requestId().substr(std::string("/NDNSF/DI/REQUEST/").size());
+  BOOST_REQUIRE(firstSuffix.size() > 33);
+  BOOST_REQUIRE(secondSuffix.size() > 33);
+  BOOST_CHECK_EQUAL(firstSuffix[32], '-');
+  BOOST_CHECK_EQUAL(secondSuffix[32], '-');
+  BOOST_CHECK_NE(firstSuffix.substr(0, 32), secondSuffix.substr(0, 32));
+  BOOST_CHECK(firstSuffix.substr(0, 32).find_first_not_of("0123456789abcdef") ==
+              std::string::npos);
+  BOOST_CHECK(firstSuffix.substr(33).find_first_not_of("0123456789") ==
+              std::string::npos);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
