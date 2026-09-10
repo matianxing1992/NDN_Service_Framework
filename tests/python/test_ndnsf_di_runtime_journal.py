@@ -213,7 +213,9 @@ class RuntimeJournalTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as root:
             journal = RuntimeJournal.for_test(root, "alice")
-            with journal.lock_path.open("rb") as lock:
+            # LOCK_EX on TigerCluster's NFS requires a writable descriptor;
+            # mirror the production lock opener so contention remains typed.
+            with journal.lock_path.open("r+b") as lock:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 with self.assertRaises(RuntimeJournalLockError):
                     journal.append("x", {"n": 1})

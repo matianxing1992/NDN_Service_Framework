@@ -1,11 +1,24 @@
 # Implementation Plan: Reusable TigerCluster YOLO Distributed Inference
 
 **Branch**: `TigerClusterExperiments` | **Date**: 2026-09-06 | **Spec**: [spec.md](spec.md)
-**Status**: IN_PROGRESS / runtime NOT_RUN
+**Status**: IN_PROGRESS / Tiger runtime qualification OPEN
 
 ## Summary
 
 复用已有身份/路由/进程管理，以及 ACK-driven YOLO、native Provider 和数值比较器；增加一份严格 profile 和薄 YOLO job 入口，补齐 allocation/GPU/跨节点证据。现有 CPU baseline 不是 GPU launcher，旧 `jobs/spec180/yolo-functional.sbatch` 是单节点；不直接改节点数后宣称可用。
+
+### 2026-09-10 execution checkpoint
+
+The bounded sequence has now reached a real Tiger single-node allocation. v79
+is a valid exact-SIF local CPU PASS for the v32 application. v80 passed exact
+SIF staging, capacity, socket, CUDA visibility and four-Provider startup, then
+the User failed `RuntimeJournalLockError` because the NFS lock was opened `rb`.
+The production lock opener is fixed to `r+b`; APP v33 was rebuilt without
+rebuilding the unchanged base SIF. Its candidate-bound local/host gate is still
+open because v81 rejected the old v79 receipt, and login-node Apptainer paths in
+v83/v84 did not match the compute-node declaration. The next plan step is one
+fresh v33 local/host gate followed by a shared-layout Tiger single-node run;
+there is no GPU YOLO qualification PASS yet.
 
 ## Technical Context
 

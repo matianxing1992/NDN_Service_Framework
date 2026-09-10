@@ -1,5 +1,145 @@
 # Failure Log and Evidence Index
 
+## 2026-09-10 — v80 reached Tiger CUDA/provider readiness but User failed on NFS flock
+
+Symptom: Tiger Slurm job `210273` on `itiger02` copied and verified the exact
+`3901079552`-byte SIF, passed XFS/scratch/socket checks and the CUDA device
+probe, and started all four native Providers. The first User exited with
+`RuntimeError: APP_EXIT:user-0:2`; its retained JSON is
+`RuntimeJournalLockError` from `runtime_journal.py`, so no warmup or measured
+YOLO response was produced.
+
+Root cause: the runtime journal opened its NFS-backed lock file with `rb` and
+then requested `flock(LOCK_EX|LOCK_NB)`. Tiger project storage returns
+`OSError: [Errno 9] Bad file descriptor` for that combination, while the local
+filesystem accepts it and therefore hid the deployment defect. A direct remote
+probe reproduced the failure with `rb` and passed with `r+b`.
+
+Fix status: `_ExclusiveJournalLock` now opens the existing lock file with
+`r+b`; the lock contents are unchanged and the change is covered by the
+contention regression. External APP v33 was rebuilt against the unchanged v22
+base SIF and staged as a new immutable application candidate. v80 remains a
+`FAILED` component-readiness run, not a YOLO inference PASS.
+
+Lesson: a visible GPU, successful CUDA probe, and ready Providers establish
+substrate readiness only. The User journal, numerical response, and cleanup
+must pass before recording `SINGLE_NODE_GPU_PASS`.
+
+## 2026-09-10 — v81/v83/v84 post-fix qualification gates were rejected before inference
+
+Symptom: after building APP v33 with the journal fix, v81 was prepared with a
+new candidate but submit rejected the retained v79 `localSif` gate because its
+profile/app identity was still bound to the previous candidate. A refreshed
+host gate could not be provisioned: v83 referenced the absent login-node path
+`/opt/apptainer/1.5.3/bin/apptainer`, while v84 used `/usr/bin/apptainer` and
+was rejected because the login node reports `1.3.4-1.el9` instead of the
+profile's required compute-node `1.5.3`.
+
+Root cause: the candidate-bound gate chain correctly prevents reusing a local
+PASS after an application change, and the login node's Apptainer installation
+is not the allocated compute-node toolchain.
+
+Fix status: no remote run directory or old receipt was overwritten. APP v33 is
+staged, and the next step is to refresh the local/host MiniNDN gate with the
+same v33 manifest while preserving the explicit local and compute-node
+Apptainer declarations, then submit a fresh Tiger run.
+
+Lesson: application-only changes invalidate the local gate identity but do not
+require rebuilding the unchanged base SIF; tool discovery must happen on the
+owner environment for each gate.
+
+## 2026-09-10 — host runtime-journal suite could not collect against stale native libraries
+
+Symptom: `pytest -q tests/python/test_ndnsf_di_runtime_journal.py` stopped at
+collection while importing `ndnsf`, with
+`/usr/local/lib/libndn-service-framework.so.0.1.0: undefined symbol:
+_ZN5ndnsd9discovery16ServiceDiscoveryD1Ev`.
+
+Root cause: the host Python path loads a pre-existing `/usr/local` native
+library whose NDNSD symbol set does not match the current source checkout. This
+is an environment/linkage mismatch and is independent of the `r+b` journal
+change.
+
+Fix status: the source was syntax-checked and the Tiger-focused baseline,
+prepare-entrypoint and runtime tests pass (`90 passed`). The full runtime
+suite remains unqualified until it runs inside the locked base SDK/SIF with a
+matching native closure; no host library was overwritten.
+
+Lesson: distinguish a collection/linkage failure from a behavioral test red;
+use the matching container closure for native Python tests and do not claim the
+host import proves the SIF runtime.
+
+## 2026-09-09 — v79 exact-SIF local CPU gate passed
+
+Observation: `tiger-local-cpu-v79` returned `PASS` /
+`NORMAL_EXPERIMENT_PASS` with two requests, candidate digest
+`sha256:d88c0fb9c3ab699f57d54bd0cf009e12ccbe2cc8046905535c7f3384b4f81ac8`,
+`shape=[1,50,6]`, `matched=true` for both requests, and
+`maxAbsError=0.0005340576171875`.
+
+Interpretation: the exact local CPU composition and collector are healthy for
+that frozen app/profile. This is a prerequisite and regression oracle only; it
+does not close Tiger GPU qualification, and the post-v80 APP v33 change needs
+a new local gate.
+
+## 2026-09-09 — v77 lost Apptainer CUDA driver injection
+
+Symptom: v77 job `210269` passed storage, SIF and socket checks but the CUDA
+probe failed with `OSError: libcuda.so.1: cannot open shared object file`.
+
+Root cause: the wrapper replaced `LD_LIBRARY_PATH` and omitted Apptainer's
+`/.singularity.d/libs` directory, which is where `--nv` exposes the host CUDA
+driver libraries.
+
+Fix status: `runtime/baseline.py` now preserves the sealed runtime paths and
+appends `/.singularity.d/libs`; focused Tiger tests cover the exact value.
+
+Lesson: never diagnose a CUDA or ORT failure from the host environment alone;
+inspect the final `--nv` container argv and injected library path.
+
+## 2026-09-09 — v76 used a non-shared output root
+
+Symptom: v76 preparation was rejected with `SHARED_STAGING_REQUIRED` because
+the output root was `/project/tma1/ndnsf-di/runs/tiger-single-node-gpu-v76`
+instead of the declared shared root `/project/tma1/ndnsf-di/runs`.
+
+Root cause: the run-specific directory was supplied where the submit contract
+expects the shared parent and creates the run identity beneath it.
+
+Fix status: v77 and later preparations use the declared shared layout; no
+candidate bytes changed.
+
+Lesson: validate the storage layout before hashing or submitting; local path
+similarity does not satisfy the receiver's shared-root contract.
+
+## 2026-09-09 — v75 exact-SIF local CPU gate reconfirmed the corrected wrapper
+
+Observation: a fresh local exact-SIF CPU run using the corrected profile and
+wrapper passed the two-request numeric oracle. This reconfirmed the local path
+after the v70 executable-mode repair; it did not exercise Tiger CUDA.
+
+## 2026-09-09 — v73 reproduced the identity preparation failure on a fresh run
+
+Symptom: fresh Tiger job `210259` passed SIF staging, capacity, XFS/scratch and
+socket checks, then `apps.yolo prepare` exited 2 while `identities.issue`
+removed `/identities/root/.ndn`. The error left `.nfs*` entries and reported
+`OSError(39) Directory not empty` / `OSError(16) Device or resource busy`.
+
+Root cause: Apptainer's `--home /identities/root` creates a tmpfs at the nested
+home path. Importing `ndnsf` creates an open PIB database there; on the
+NFS-backed identity bind, `shutil.rmtree` cannot remove the open file. This is
+an Apptainer HOME/mount interaction, not stale run state and not an SIF/APP
+graph defect.
+
+Fix status: offline preparation now uses the throwaway container HOME
+`/tmp/ndnsf-di-preparation-home` while preserving each role's real
+`/identities/<role>` path for issued credentials. Focused tests cover this
+argv boundary.
+
+Lesson: reproduce preparation failures on the allocated node with `findmnt`
+and the same container command before changing candidate bytes or retrying a
+run directory.
+
 ## 2026-09-09 — Tiger v69 allocation rejected stale SIF storage budget
 
 Symptom: Slurm job `210254` reached `itiger02` and entered the real YOLO
@@ -23,6 +163,43 @@ or large re-transfer is required.
 Lesson: a submitted Slurm job proves only that transport and scheduling were
 reached. Check the allocation-owned storage receipt before diagnosing SIF,
 APP, CUDA, or MiniNDN behavior, and keep render/seal phases distinct.
+
+## 2026-09-09 — v70 local gate found non-executable external APP binaries
+
+Symptom: the v70 exact-SIF local run reached NFD and the controller, then the
+BackboneNeck provider exited with `/usr/bin/env: /app/bin/di-native-provider:
+Permission denied`; startup recorded `RuntimeError` before any request.
+
+Root cause: the project-storage copy of the external APP had all three `bin/*`
+entrypoints normalized to `0444`, even though the canonical external-app
+builder seals binaries as executable read-only `0555`. The transport receiver
+faithfully preserved that invalid source mode.
+
+Fix status: restored `App_ServiceController`, `di-native-provider`, and
+`di-native-fault-provider` to `0555` in the local and remote immutable project
+copies. The next local gate uses a fresh run identity; APP bytes, manifest, and
+base SIF digest are unchanged.
+
+Lesson: content hashes do not encode executable permission. Keep application
+entrypoint modes in the staged artifact and inspect the received mode before
+starting providers.
+
+## 2026-09-09 — v72 retained the first identity preparation failure
+
+Symptom: v72 passed SIF staging, capacity, and socket checks on `itiger02`,
+then `apps.yolo prepare` exited 2 while removing the `root/.ndn` tree; the
+allocation ended `1:0` before the four Provider processes launched.
+
+Root cause: the preparation command used the nested Apptainer HOME described
+in the v73 entry above. The fresh v73 run reproduced the same failure, proving
+that residual state was not the primary cause.
+
+Fix status: job `210258` was reconciled as `FAIL` and its shared journal closed;
+the v73 fresh run was also reconciled as `FAIL`. The preparation HOME fix is
+carried in the next application/runtime candidate.
+
+Lesson: retain each failed run, but verify the failure on a fresh identity
+before attributing it to residual state or repairing the candidate.
 
 ## 2026-09-09 — Tiger v69 deployment stopped at project transport prerequisites
 

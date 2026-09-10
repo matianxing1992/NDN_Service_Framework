@@ -1,39 +1,82 @@
-# Tiger v69 deployment diagnosis
+# TigerCluster deployment diagnosis: v69–v84
 
-Status at 2026-09-09: **v69 reached a real allocation but failed the storage
-budget gate; v70 is prepared for a bounded retry with the corrected profile**.
+**Updated 2026-09-10.** This record separates local CPU evidence, Tiger
+substrate evidence, and the end-to-end YOLO qualification verdict. The latest
+real Tiger run reached CUDA and Provider readiness but did **not** produce a
+YOLO numerical response.
 
 ## Boundary evidence
 
-| Boundary | Observation | Interpretation |
+| Run / boundary | Observation | Qualification meaning |
 | --- | --- | --- |
-| Exact local SIF + external APP | `tiger-local-cpu-v66` is `PASS` / `NORMAL_EXPERIMENT_PASS`; two requests, candidate `sha256:50f2cca0…30f69`; numerical receipts report `maxAbsError=0.0005340576171875` under `atol=0.001`. | The v22 base plus v32 APP composition is executable locally. This does not prove GPU qualification. |
-| Local MiniNDN | v62 local gate is `PASS` / `NORMAL_EXPERIMENT_PASS` with two requests and the same independent oracle bound. | The local multi-process protocol path and collector pass; this is CPU/MiniNDN evidence, not Tiger evidence. |
-| Tiger allocated substrate probe | A real `srun` probe reached `itiger04` with Apptainer `1.5.3-1.el9`; the login node reports `1.3.4-1.el9`. The declared profile uses the allocated-node version. | The version difference is a deployment concern, but it is handled by the compute-node owner and has not caused v69's observed failures. |
-| Tiger transport | v69 first submit failed before SSH with `TRANSPORT_FILE_ROW`; two shared files had mode `0664`, outside the allowed set. After chmod to `0444`, the 331-file transport plan passed with candidate `sha256:b79c691e…4d30c4`. | Sender-side staging metadata was invalid; SIF bytes and APP bytes were unchanged. |
-| Tiger receiver bootstrap | The first real receiver attempt reached the frozen bootstrap and failed with `JOURNAL_ROOT`: declared `/project/tma1/ndnsf-di/locks` did not exist. | Remote project namespace configuration was incomplete; no Slurm or Apptainer workload ran. |
-| Tiger retry | The lock root was created with mode `0700`; the retry entered rsync and is transferring the immutable base SIF into `.incoming`. | The deployment has now passed the earlier config boundaries. GPU/Slurm outcome remains pending. |
-| Slurm submission | After correcting the received wrapper to executable read-only mode `0555`, the same candidate was accepted as Slurm job `210254` on the `bigTiger` RTX 6000 partition. | The transport/configuration boundary is now crossed; only the job's GPU execution verdict remains. |
-| Tiger v69 allocation | Job `210254` ran on `itiger02`, but rank 0 recorded `STAGING_FAILED` / `ValueError: STORAGE_SIF_BUDGET`; declared `3525861376` bytes was below the `3901079552`-byte SIF. | The first runtime failure is a stale profile capacity value, before Provider or CUDA launch; it is not evidence of an invalid SIF or APP. |
-| v70 correction | Profile v39 declares `storage.peakBytes=3901079552`, reuses the same v22 SIF by project-storage hardlink, and seals the wrapper at mode `0555`. | The corrected candidate is ready for one fresh Slurm allocation; GPU qualification remains open until its retained verdict. |
+| v69 / job `210254` | `itiger02` reached the runner, then rank 0 stopped at `STAGING_FAILED` / `ValueError: STORAGE_SIF_BUDGET`; profile declared `3525861376` bytes for a `3901079552`-byte SIF. | Stale capacity metadata; failure occurred before Provider/CUDA launch. |
+| v70 / APP staging | External APP entrypoints arrived as `0444`; `/app/bin/di-native-provider` returned `Permission denied`. | Transport mode error; APP/SIF bytes were not invalid. Binaries were restored to executable read-only `0555`. |
+| v71 / local exact-SIF CPU | Fresh local two-request run passed `NORMAL_EXPERIMENT_PASS` after the mode repair. | Local composition/oracle gate passed; not Tiger GPU evidence. |
+| v72 / job `210258` | Exact SIF, capacity, XFS/scratch and NFD socket passed; `apps.yolo prepare` exited 2 while removing `root/.ndn`. | Preparation failed before Provider launch. |
+| v73 / job `210259` | Fresh run reproduced the same `OSError(39)` / `OSError(16)` during `identities.issue`. `findmnt` showed `/identities/root` as a 64 MiB tmpfs; importing `ndnsf` created an open PIB there. | Reproduction on a new run rules out stale residual state as the primary cause. The fault is the nested Apptainer HOME plus an open NFS-backed PIB. |
+| v75 / local exact-SIF CPU | Corrected wrapper/profile again passed the two-request CPU oracle. | Local regression remained green before the later journal fix. |
+| v76 / shared staging | Preparation rejected `SHARED_STAGING_REQUIRED` because the output argument named a run directory instead of `/project/tma1/ndnsf-di/runs`. | Layout contract failure; no candidate bytes changed. |
+| v77 / job `210269` | Storage/SIF/socket gates passed; CUDA probe failed `OSError: libcuda.so.1: cannot open shared object file`. | The wrapper had overwritten `LD_LIBRARY_PATH` and hidden Apptainer `--nv`'s `/.singularity.d/libs`; no Provider inference ran. |
+| v79 / local exact-SIF CPU | `tiger-local-cpu-v79` returned `PASS` / `NORMAL_EXPERIMENT_PASS`; candidate `sha256:d88c0fb9c3ab699f57d54bd0cf009e12ccbe2cc8046905535c7f3384b4f81ac8`; both requests were `shape=[1,50,6]`, `matched=true`, `maxAbsError=0.0005340576171875`. | Exact local CPU graph and collector passed for the v32 APP/profile. This is a prerequisite, not Tiger qualification. |
+| v80 / job `210273` | Exact SIF bytes `3901079552`, SIF hash `sha256:2c07a9f14d48fabd9fb58036c1634f3cc3282dd28c6470add9f8a7da0cb829b5`, socket and allocation receipts passed. CUDA probe observed GPU UUID `GPU-254d5117-9a30-dfd1-5c38-51d196853e8b`, visible device `0`. BackboneNeck, DetectShard0 and DetectShard1 reported `onnxruntime-cuda`; Merge reported CPU and all four Providers became ready. | Tiger substrate and role startup passed. This is still not a YOLO result. |
+| v80 / User boundary | User exited `APP_EXIT:user-0:2`; retained JSON classified `RuntimeJournalLockError` at `_ExclusiveJournalLock.__enter__`, before warmup/measured requests. A remote probe reproduced `flock(LOCK_EX)` failure on an `rb` descriptor and success on `r+b`. | Real Tiger end-to-end run failed at the shared journal lock. No `SINGLE_NODE_GPU_PASS` receipt exists. |
+| v81 / post-fix submit | APP v33 (journal `r+b` fix; manifest `sha256:2df82daa7f5684ebda690fa325e054ca3d992da1d36a6b2fcbda54af343f2b42`) was built against the unchanged v22 SIF and prepared, but submit rejected retained v79 `localSif` evidence because its app/profile identity was old. | Candidate-bound gate correctly failed closed; a new local/host gate is required. |
+| v83/v84 / gate provisioning | v83 could not find `/opt/apptainer/1.5.3/bin/apptainer` on the login node. v84 used `/usr/bin/apptainer` but the login node reports `1.3.4-1.el9`, while the allocated compute-node declaration is `1.5.3`. | Login-node tool discovery cannot replace compute-node verification; no new Tiger inference was started. |
 
-## Diagnosis
+## Root causes and fixes
 
-The observed failures are Tiger project-storage, transport metadata, and then
-one stale profile capacity value. They are not evidence of a broken SIF, APP,
-or MiniNDN graph: v69 reached an allocation but failed before Provider/CUDA
-startup. MiniNDN/Tiger differences remain an unverified runtime risk (allocated
-CUDA/ORT, NFD socket, mounts, and scheduler), so v70 is the first corrected
-attempt that can produce the requested end-to-end evidence.
+1. **Capacity and staging metadata.** v69 used a stale SIF peak value and v70
+   lost executable bits. The profile now records the measured SIF size and the
+   wrapper/app launchers are sealed executable read-only. v76 additionally
+   confirms that the shared output parent must be supplied exactly.
+2. **Offline identity preparation.** Apptainer's `--home /identities/root`
+   mounted a tmpfs below the writable identity bind. Import-time PIB creation
+   left an open file that NFS could not remove. `baseline.py` now uses
+   `/tmp/ndnsf-di-preparation-home` only during offline preparation; issued
+   credentials still use `/identities/<role>`.
+3. **CUDA library visibility.** The wrapper now appends
+   `/.singularity.d/libs` to the sealed runtime `LD_LIBRARY_PATH`, preserving
+   `--nv` driver injection.
+4. **NFS journal locking.** `_ExclusiveJournalLock` now opens the existing lock
+   file with `r+b`, which satisfies Tiger NFS's `flock` requirement without
+   changing journal bytes. The focused contention regression mirrors this
+   descriptor mode.
 
-The focused transport/SSH/submit regression set passes 92 tests after the
-diagnosis, including rejection of invalid modes and journal roots. This checks
-the guard behavior; it does not substitute for the still-running Tiger job.
+## Reproducible execution flow
 
-## Required next observation
+Run one candidate through these gates in order; stop and retain the first
+failure, then use a fresh run identity after a partial prepare or allocation:
 
-Run v70 once the receiver accepts its corrected profile, then retain the
-receiver preflight, Slurm allocation, Apptainer/CUDA readiness, per-role backend
-receipts, numeric oracle, and cleanup records. Only a `SINGLE_NODE_GPU_PASS`
-receipt can close T013. A transport `PASS`, v69 allocation, or local MiniNDN
-`PASS` must not be promoted to that qualification.
+| Stage | Required observation | Stop condition |
+| --- | --- | --- |
+| 1. `check` | Profile schema, source/input/runtime/dispatch hashes, exact SIF size, modes, tool declarations and shared output root. | Any mismatch, stale gate identity or unknown field. |
+| 2. `prepare` | Offline issuer receipt, role homes, preparation digest and sealed run bundle. | Residual/open PIB, non-empty private path, or digest mismatch. |
+| 3. `local` | Exact base+app SIF composition, MiniNDN process boundary, two CPU requests, independent numeric oracle and clean cleanup. | Import/entrypoint, protocol, dependency, numeric or cleanup failure. |
+| 4. `submit` / allocation | Shared transport modes, exact byte/hash receipt, XFS and scratch capacity, NFD socket, node/GPU and Apptainer observation. | Sender/receiver/layout, storage, socket or toolchain mismatch. |
+| 5. `apps.yolo prepare` on compute node | Fresh identity preparation with the temporary HOME, role configuration and signed permissions. | Any preparation exit or cleanup residue. |
+| 6. Provider startup | Three model roles report CUDA execution; Merge reports CPU post-processing; all four identities/routes are ready. | Missing CUDA/ORT, wrong role placement, route/readiness timeout or early exit. |
+| 7. User warmup + measured | ACK/Selection, cross-role dependency Data, terminal response and independent oracle (`shape=[1,50,6]`, tolerance contract). | `RuntimeJournalLockError`, missing dependency, timeout, numeric mismatch or CPU fallback. |
+| 8. `collect` / reconcile | Per-request identity, backend/GPU, exit codes, cleanup and accounting/queue digests agree; write immutable evidence under the run root. | Any missing receipt, unknown job state or cleanup failure. |
+
+Only a complete run through stage 8 may be recorded as
+`SINGLE_NODE_GPU_PASS`. v80 is explicitly `FAILED` at stage 7 and remains a
+diagnostic component-readiness result.
+
+## Current status and next gate
+
+- **Local CPU:** v79 is a valid historical `NORMAL_EXPERIMENT_PASS` for v32;
+  APP v33 requires a new local/host gate because the journal code changed.
+- **Tiger single-node GPU:** T012.b/T013.a remain **IN_PROGRESS**. v80 proves
+  exact staging, CUDA visibility and four-Provider startup, but no numerical
+  YOLO inference passed.
+- **Current candidate:** APP v33 is built and staged with the unchanged base
+  SIF; its manifest is `sha256:2df82daa7f5684ebda690fa325e054ca3d992da1d36a6b2fcbda54af343f2b42`.
+  No base rebuild is required for this app-only fix.
+- **Next action:** refresh the host MiniNDN/local exact-SIF gate for v33 using
+  the explicit local Apptainer declaration, then submit one fresh shared-layout
+  Tiger run using the same base+app composition. Do not reuse v79 evidence or
+  any failed run directory.
+
+See [`tasks.md`](../tasks.md) for task ownership/status and
+[`docs/failure-log.md`](../../../docs/failure-log.md) for symptom/root-cause/
+lesson entries.

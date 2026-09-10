@@ -867,7 +867,13 @@ class _ExclusiveJournalLock:
         self.stream = None
 
     def __enter__(self):
-        self.stream = self.path.open("rb")
+        # NFS-backed TigerCluster project storage rejects an exclusive flock
+        # requested through a read-only descriptor (EBADF).  Local filesystems
+        # commonly accept that combination, which hid the deployment bug in
+        # MiniNDN/local tests.  The lock file is created by RuntimeJournal
+        # before use, so opening it read/write does not alter its contents and
+        # works on both local and NFS filesystems.
+        self.stream = self.path.open("r+b")
         try:
             fcntl.flock(
                 self.stream, fcntl.LOCK_EX | fcntl.LOCK_NB)

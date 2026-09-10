@@ -2,7 +2,13 @@
 
 **Input**: [spec.md](spec.md), [plan.md](plan.md), [profile contract](contracts/experiment-profile.md), [validation matrix](validation-matrix.md)
 **Branch**: `TigerClusterExperiments`
-**Status**: 2/17 parent tasks complete (T001 inventory and T003 focused component acceptance); IN_PROGRESS. Exact-SIF MiniNDN v58 has a formal local `submit.py local` collector PASS for the v22 base + v32 layered APP, v59 adds a fresh zero-exit Y-N aggregate with all registered control/negative subcases, and v60 closes the paired empty-HOME/scratch isolation probe. The source-bound three-case host receipt remains producer- and consumer-verified; no GPU/Tiger qualification PASS exists. Standalone C++ NDN/SIF diagnostic passed in Tiger job 209981.
+**Status**: IN_PROGRESS. Exact-SIF MiniNDN/local CPU evidence is green for the
+v22 base + v32 layered APP (latest v79); the real Tiger v80 run passed
+staging/CUDA/four-Provider startup but failed at the User's NFS journal lock
+before any YOLO response. No `SINGLE_NODE_GPU_PASS` or two-node qualification
+exists. APP v33 contains the journal fix and is staged, but its candidate-bound
+local/host gate must be refreshed before the next Tiger run. Standalone C++
+NDN/SIF diagnostic passed in Tiger job 209981.
 
 ## Detailed Execution Progress
 
@@ -69,8 +75,31 @@ Data 证据。该结果关闭 fresh aggregate 这一局部缺口，但仍是本�
 在 scratch Unix socket 启动/退出 0，清理后 scratch 为空。该结果与 v58 正常
 YOLO collector 配对，关闭 V13 的本机 isolation 缺口；仍不代表 GPU/Tiger 资格。
 
-当前仓库 TigerCluster 构建并行度上限为 `-j2`，同一构建树仍只允许一个构建进程；
+当前仓库 TigerCluster 构建并行度上限为 `-j4`，同一构建树仍只允许一个构建进程；
 历史回执保留其实际使用的命令，不因规则更新改写执行证据。
+
+## 2026-09-10 实验检查点与执行流程
+
+下表是今天实际走过的边界。每一行只关闭它声明的门；失败保留原 run，
+修复后必须生成新的 candidate/gate 身份。
+
+| Run | 结果 | 关闭的边界 / 首失败 |
+|---|---|---|
+| v69 / job 210254 | FAIL | Tiger allocation 到达后因 `storage.peakBytes=3525861376` 小于实际 `3901079552`-byte SIF，在 Provider/CUDA 前停止。 |
+| v70 | FAIL→修复 | 外置 APP `bin/*` 为 `0444`，Provider 无法执行；恢复为 `0555`。 |
+| v71、v75、v79 | PASS（local CPU） | 精确 SIF+外置 APP 的两请求数值 oracle 通过；只作本机 CPU gate。v79 candidate digest 为 `sha256:d88c0fb9…f81ac8`。 |
+| v72 / job 210258、v73 / job 210259 | FAIL | staging/SIF/scratch/socket 通过；`identities.issue` 在嵌套 `--home /identities/root` 下清理开放 PIB 失败。v73 新 run 复现，确认为 Apptainer HOME/NFS 交互。 |
+| v76 | FAIL | 输出参数使用 run 子目录而非共享父目录，触发 `SHARED_STAGING_REQUIRED`。 |
+| v77 / job 210269 | FAIL | `--nv` CUDA probe 找不到 `libcuda.so.1`；`LD_LIBRARY_PATH` 覆盖了 `/.singularity.d/libs`。 |
+| v80 / job 210273 | FAIL（Tiger component readiness） | SIF/hash/capacity/socket/CUDA probe 和四 Provider startup 通过；User 在 `_ExclusiveJournalLock` 以 `rb` descriptor 加独占 flock 时失败，未产生 warmup/measured YOLO 数值。 |
+| v81、v83、v84 | BLOCKED before inference | APP v33 改变了 app identity，v79 local gate 被正确拒绝复用；登录节点又缺少 profile 指定的 Apptainer 1.5.3 路径/版本。 |
+
+标准流程固定为：`check → prepare → local → submit/allocation → compute-node
+prepare → Provider readiness → User warmup+measured → collect/reconcile`。在
+每一阶段保留精确命令、hash、节点/GPU、首失败、退出码和清理 receipt；任何
+失败都停止当前 run，不能用 transport、CUDA probe、Provider READY 或 local
+CPU PASS 代替最终数值和清理门。详细判据见
+[Tiger deployment diagnosis](evidence/tiger-deployment-diagnosis-v69.md)。
 
 | 细分任务 | 状态 | 实证 / 下一步 |
 |---|---|---|
@@ -162,16 +191,16 @@ T010/T011 的本机证据不升级为 GPU/Tiger 资格；完整候选运输与 G
 | T010.a | T010 | MiniNDN 正常 CPU 图、权限拒绝、缺依赖三个注册场景 | VERIFIED_REAL_YB_YN | [v58 exact-SIF local PASS](evidence/minindn-local-v58-exact-sif-pass.md) 收集正常 CPU 图；[v52 exact-SIF Y-B](evidence/minindn-v52-exact-sif-yb-v32.md)、[v51 exact-SIF Y-N](evidence/minindn-v51-exact-sif-yn-v32.md) 与 [v59 exact-SIF Y-N aggregate](evidence/minindn-local-v59-exact-sif-yn.md) 绑定注册矩阵、Y-N-D post-Selection withheld Data、数值 oracle 和 clean cleanup；v59 `T010_DONE/returncode=0`，八个注册子案全 PASS | 本行的 fresh aggregate 已完成；父 T010 仍受 T007/T008 正式顺序与 `qualification=NOT_EVALUATED` 约束；GPU/Tiger资格未完成 | base/app/harness 不变不重跑 Y-B 或 v58；仅在 aggregate driver、base/ABI/app 行为变化时重跑对应矩阵 |
 | T010.b | T010 | 同源 host qualification manifest 绑定命令、结果与清理 | VERIFIED_HOST_RECEIPT | [host-gate producer](evidence/t010-host-gate-producer.md)；真实 v52/v51 三场景 receipt、shared validator/producer focused tests、v33 profile consumer 均通过；qualification 明确为 `YOLO_HOST_GATE_COMPONENT_ONLY` | 不把 COMPONENT_ONLY 改成正式 PASS；正式 GPU/Tiger 资格仍需后续 gates | 生成清单不额外跑模型；不得把COMPONENT_ONLY改token冒充PASS |
 | T011.a | T011 | development-20260907 source seal 与 definition 准备 | IMPLEMENTED | 后文 SOURCE_READY checkpoint：`2aea8a0e` / `c4f33beb`，非 SIF PASS | 后续源码改变须重 seal；旧锁不覆盖 | 纯任务表修改按输入清单判断，不无条件重建 SIF |
-| T011.b | T011 | 构建或复用基础SIF，在匹配SDK构建独立app并验证组合闭包 | VERIFIED_COMPOSITION | [local-sif](evidence/local-sif.md) + [v58 exact-SIF local PASS](evidence/minindn-local-v58-exact-sif-pass.md) + [v59 exact-SIF Y-N aggregate](evidence/minindn-local-v59-exact-sif-yn.md) + [v60 isolation](evidence/minindn-local-v60-empty-home-scratch.md)：base six-library manifest 与 v32 external APP 闭包通过；同一只读 SIF/app 完成真实 MiniNDN 正常/负例、协议、依赖、数值和隔离回执 | GPU/Tiger资格仍未完成；不把本地 CPU 结果升级为 GPU/Tiger qualification | 基础库/ABI未变复用SIF；仅应用改动重建受影响targets |
+| T011.b | T011 | 构建或复用基础SIF，在匹配SDK构建独立app并验证组合闭包 | VERIFIED_COMPOSITION | [local-sif](evidence/local-sif.md) + [v58 exact-SIF local PASS](evidence/minindn-local-v58-exact-sif-pass.md) + [v59 exact-SIF Y-N aggregate](evidence/minindn-local-v59-exact-sif-yn.md) + [v60 isolation](evidence/minindn-local-v60-empty-home-scratch.md)：base six-library manifest 与 v32 external APP 闭包通过；同一只读 SIF/app 完成真实 MiniNDN 正常/负例、协议、依赖、数值和隔离回执。v80 暴露的 NFS journal 修复已在 app v33 重新构建并与同一 base SIF 闭包通过。 | GPU/Tiger资格仍未完成；v33 的本地/host gate 尚未重做，不把 v79/v80 组件结果升级为 qualification | 基础库/ABI未变复用SIF；仅应用改动重建受影响targets |
 | T011.b2 | T011 | 同源应用补包复用与MiniNDN延迟导入闭包 | VERIFIED | [local-sif](evidence/local-sif.md)：r2包159文件，3二进制不变、compiled:false；6复用边界测试；本机系统Python导入成功 | 仅补包/导入范围；分层MiniNDN命令和真实场景仍待完成 | 不因缺辅助Python文件或本机工具环境而重编译/重建基础SIF |
 | T011.b3 | T011 | Python应用改动复用C++构建缓存，冻结后实际命令加载 | VERIFIED | [local-sif](evidence/local-sif.md)：d9be0bfa应用，configure6.728s/Waf0.837s，三二进制哈希不变；冻结driver→SIF内User入口exit0；25focused通过 | 仅增量构建与实际入口；四Provider/MiniNDN推理仍待执行 | 基础SIF与未变C++均未重建；下一次使用最新app的缓存 |
-| T011.c | T011 | exact-SIF 本地 CPU YOLO 与 empty HOME/scratch | VERIFIED_LOCAL_CPU_ISOLATED | [v58 exact-SIF local PASS](evidence/minindn-local-v58-exact-sif-pass.md) 提供两请求正常 YOLO 数值/依赖/清理回执；[v60 isolation](evidence/minindn-local-v60-empty-home-scratch.md) 提供空 HOME、scratch fsync/整 SIF 校验、User 入口、NFD socket 和清理 PASS | 本行 V13 isolation 已完成；父 T011 仍受 T007 正式顺序约束，GPU/Tiger资格未完成 | base/app 不变不重跑 v58；仅 isolation 命令或 base/ABI/app 行为变化时重跑对应探针 |
-| T012.a | T012 | GPU/Apptainer/容量 substrate 实值清点 | IMPLEMENTED | [input inventory](evidence/input-inventory.md) 有早期 probe；[Tiger preflight](evidence/tiger-preflight-210205.md) 实测 `itiger03` RTX 6000 Ada、驱动 560.28.03、Apptainer 1.5.3-1.el9、`/tmp` 64 MiB fsync 写入、`--nv` 下 ORT CUDA provider 通过 | 仅 substrate；精确 v22 SIF 尚未完成运输，正式 allocation 资格仍需 T012.b/T007 | 静态输入复用；不重复未变化的 GPU substrate 探针 |
-| T012.b | T012 | exact-SIF staging、目标节点/GPU/路由与服务就绪 | IN_PROGRESS | [v69 deployment diagnosis](evidence/tiger-deployment-diagnosis-v69.md)：transport/receiver prerequisites passed and job 210254 reached itiger02; rank-0 staging rejected stale `STORAGE_SIF_BUDGET`; v39 corrects `peakBytes` and preserves executable wrapper | v70 must verify the corrected allocation's exact SIF/app hashes, node/GPU, mounts, NFD, CUDA/ORT and cleanup | 每个新 allocation 检查环境，不重建同一镜像 |
+| T011.c | T011 | exact-SIF 本地 CPU YOLO 与 empty HOME/scratch | VERIFIED_LOCAL_CPU_ISOLATED | [v58 exact-SIF local PASS](evidence/minindn-local-v58-exact-sif-pass.md) 提供两请求正常 YOLO 数值/依赖/清理回执；[v60 isolation](evidence/minindn-local-v60-empty-home-scratch.md) 提供空 HOME、scratch fsync/整 SIF 校验、User 入口、NFD socket 和清理 PASS；v79 以 v43 profile 再次通过 local CPU。 | v32 本地 isolation 已完成；app v33 只改变 journal lock 行为，需重新跑 candidate-bound local/host gate；GPU/Tiger资格未完成 | base/app 不变不重跑 v58；仅 isolation 命令或 base/ABI/app 行为变化时重跑对应探针 |
+| T012.a | T012 | GPU/Apptainer/容量 substrate 实值清点 | VERIFIED_SUBSTRATE | [input inventory](evidence/input-inventory.md) 与 [Tiger preflight](evidence/tiger-preflight-210205.md) 实测 RTX 6000 Ada、驱动 560.28.03、Apptainer 1.5.3-1.el9、`/tmp` 64 MiB fsync 写入；v80 job `210273` 又实测 exact v22 SIF、容量、socket、CUDA device UUID/visible 0 和 `--nv` 下三模型 ORT CUDA provider | 仅 substrate/readiness；User journal 在 v80 失败，正式 allocation/Tiger资格仍由 T012.b/T013 负责 | 静态输入复用；不重复未变化的 GPU substrate 探针 |
+| T012.b | T012 | exact-SIF staging、目标节点/GPU/路由与服务就绪 | IN_PROGRESS | [Tiger deployment diagnosis](evidence/tiger-deployment-diagnosis-v69.md)：v69 stale budget、v72/v73 nested HOME/PIB、v76 shared-root、v77 `libcuda.so.1` 均已复现并修复；v80 job `210273` 真实通过 exact SIF/hash/capacity/socket、GPU probe 和四 Provider readiness。v81 后续因旧 local gate identity 被正确拒绝，v83/v84 因登录节点 Apptainer 路径/版本未能刷新 gate。 | 刷新 app v33 的 local/host gate 后，用同一 shared layout 新 allocation 验证 compute-node HOME、SIF/app hashes、node/GPU、mounts、NFD、CUDA/ORT、User/cleanup | 每个新 allocation 检查环境，不重建未变的 base SIF |
 | T012.c | T012 | 用户指定的独立 C++ NDN/SIF 两节点 CPU 诊断 | VERIFIED | [C++ NDN evidence](evidence/cpp-ndn-smoke.md)：209981，itiger01/02，同一历史 SIF 哈希，3条Data，0:0及清理；209980仅收尾标记超时，未记整次PASS | 仅基础传输诊断；T012正式GPU/权限/候选资格仍未完成 | 固定小例子不再跑；配置/ABI/网络相关变化才重测；复用实际日志与脚本 |
 | T012.d | T012 | 同一真实YOLO模型的独立CPU/GPU参考 | VERIFIED | [backend reference](evidence/yolo-backend-reference.md)：CPU两次matched；209983，RTX6000Ada、CUDA kernel、两次数值matched、Slurm0:0及清理 | 仅STANDALONE_YOLO_REFERENCE；非NDNSF-DI或T013资格 | 209982失败保留；仅一次TF32修复对照，不重复相同参考 |
 | T005.tf32 | T005 | 原生ORT与独立参考关闭TF32并绑定精度策略 | IMPLEMENTED | 真实GPU参考修复PASS；147组件+2拒错通过；实查1.20缺新C++ options owner，已改V2 C API并通过1项策略检查 | 新Provider仍需在SIF的1.20 SDK实际构建/装入app包及真实分布式请求；旧host1.26语法检查不证明该ABI | 不重跑未变CPU/独立GPU参考；验证变化native路径 |
-| T013.a | T013 | 一节点 GPU，四 Provider，1 warmup + 1 measured | IN_PROGRESS | v69 job 210254 reached allocated rank-0 storage staging but stopped before Provider launch; v70 is the corrected bounded retry | Require `SINGLE_NODE_GPU_PASS`: three model roles on CUDA, Merge on CPU, whole-graph numeric oracle and clean shutdown | 一次有界资格门，不扩展 GPU/模型矩阵 |
+| T013.a | T013 | 一节点 GPU，四 Provider，1 warmup + 1 measured | IN_PROGRESS | v80 job `210273`: three model Providers reported `onnxruntime-cuda`, Merge reported CPU and all four became ready; User then failed `RuntimeJournalLockError` before warmup/measured. No numerical response or `SINGLE_NODE_GPU_PASS`. | After v33 local/host gate refresh, rerun one fresh bounded job; require three CUDA model roles, CPU Merge, full graph oracle and clean shutdown | 一次有界资格门，不扩展 GPU/模型矩阵 |
 | T014.a | T014 | 两节点正常推理，1 warmup + 3 measured | NOT_STARTED | V16；NOT_RUN | T013 后证明 A backbone/merge、B heads 与跨节点依赖 | 同一候选第一次正常 allocation |
 | T015.a | T015 | 一次远端 negative-dependency，Selection 后切断必需中间 Data | NOT_STARTED | V17；NOT_RUN | T014 后验证有限失败、无假成功及清理 | 保留唯一注册远端负例，不复制整套本地负例 |
 | T016.a | T016 | 第二个新双节点 allocation，原配置/SIF，1+3 请求 | NOT_STARTED | V18；NOT_RUN | T015 后验证不改脚本的复用性 | 这是 SC-004 的独立验收，不是无目的重复 |
@@ -509,18 +538,19 @@ T001–T004形成 profile/launcher 实现骨架；可操作 MVP 还要求 T006 �
 
 ## Current Checkpoint
 
-2026-09-09 Tiger v69/v70 deployment checkpoint: the same v22 base SIF + v32
-external APP candidate passed the exact local CPU/SIF gate (v66) and the
-transport plan after project-storage permissions were normalized. v69 then
-reached Slurm job `210254` on `itiger02`, but rank-0 staging rejected the stale
-`storage.peakBytes=3525861376` against the `3901079552`-byte SIF before any
-Provider/CUDA launch. Profile v39 now uses the exact SIF size, renders before
-sealing, reuses the immutable SIF by project-storage hardlink, and keeps the
-Slurm wrapper executable read-only. T012.b/T013.a are in progress and remain
-open until v70 supplies exact allocation, backend, numeric, and cleanup receipts;
-no local MiniNDN PASS is promoted to Tiger qualification. See
-[tiger-deployment-diagnosis-v69](evidence/tiger-deployment-diagnosis-v69.md)
-and the failure log for the exact boundary and next gate.
+2026-09-10 Tiger v69–v84 deployment checkpoint: v79 is a historical exact-SIF
+local CPU `NORMAL_EXPERIMENT_PASS` for v32. Real Tiger job `210273` (v80)
+passed exact SIF/hash/capacity/socket checks, observed CUDA device 0 and started
+BackboneNeck/DetectShard0/DetectShard1 with `onnxruntime-cuda` plus CPU Merge;
+the User then failed `RuntimeJournalLockError` because NFS rejects exclusive
+flock on the old read-only descriptor. `runtime_journal.py` now uses `r+b`, and
+APP v33 was rebuilt against the unchanged base SIF. T012.b/T013.a remain open:
+v81 correctly rejected reuse of the old v79 local gate, while v83/v84 could not
+refresh it from the login node's missing/mismatched Apptainer installation.
+No numerical Tiger YOLO response or `SINGLE_NODE_GPU_PASS` exists. The next gate
+is a fresh v33 local/host gate followed by one shared-layout Tiger allocation.
+See [Tiger deployment diagnosis](evidence/tiger-deployment-diagnosis-v69.md)
+and the failure log for exact commands and first-failure boundaries.
 
 2026-09-07 Spec183 输入门关闭 checkpoint：T001 evidence（input-inventory.md）所列
 缺口 —— `model-manifest.json` 仅绑定 atomic-v1 且无 signature envelope —— 已关闭。

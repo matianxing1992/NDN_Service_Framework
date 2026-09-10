@@ -28,6 +28,7 @@ def test_gpu_device_is_explicit_and_package_is_read_only(tmp_path, device):
     assert str(tmp_path / "package") + ":/artifacts:ro" in argv
     assert argv[argv.index("--pwd") + 1] == "/bundle"
     assert argv[argv.index("--home") + 1] == "/identities/backbone"
+    assert "LD_LIBRARY_PATH=/opt/ndnsf-di/current/lib:/opt/onnxruntime/lib:/.singularity.d/libs" in argv
     assert not any(":/identities:rw" in arg for arg in argv)
 
 

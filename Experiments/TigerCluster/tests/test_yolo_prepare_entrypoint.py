@@ -157,5 +157,6 @@ def test_private_inputs_only_mounted_for_offline_preparation(scope):
         command = container_command(*args, **kwargs)
         assert '/sealed-inputs:/inputs:ro' in command
         assert '/homes:/identities:rw' in command
+        assert command[command.index('--home') + 1] == '/tmp/ndnsf-di-preparation-home'
         assert '/public:/config:rw' in command
         assert '--nv' not in command

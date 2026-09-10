@@ -125,13 +125,21 @@ def container_command(profile: dict, bundle: Path, home: Path, public: Path,
                 or any(c in str(path) for c in ":,\n\r\x00")):
             raise ValueError("BIND_PATH")
     role_home = "/identities/" + home.name
+    # Apptainer's single-path ``--home`` form mounts a tmpfs at the selected
+    # path.  During offline preparation that path is otherwise nested below
+    # the writable /identities bind, so ndnsf's import-time PIB can leave an
+    # open NFS-backed handle behind and make identities.issue() rmtree fail.
+    # Keep the launcher HOME isolated in a throwaway container path; issue()
+    # still assigns each role's real /identities HOME explicitly for ndnsec.
+    container_home = ("/tmp/ndnsf-di-preparation-home" if prepare is not None
+                      else role_home)
     # The absolute container-path form never creates the home or copies the
     # image skeleton; a host:container pair would inject skeleton files (e.g.
     # .ndn) into the already-bound directory after the caller's emptiness
     # checks, failing them inside the container.  Callers pre-create the
     # home under the issuer's /identities mount or the single-role bind below.
     command = [profile["apptainer"], "exec", "--cleanenv", "--containall",
-               "--home", role_home, "--pwd", "/bundle",
+               "--home", container_home, "--pwd", "/bundle",
                "--bind", f"{bundle}:/bundle:ro", "--bind", f"{public}:/config:{'rw' if prepare else 'ro'}",
                "--bind", f"{output}:/output:rw"]
     if gpu:
@@ -152,7 +160,10 @@ def container_command(profile: dict, bundle: Path, home: Path, public: Path,
         command += ["--bind", f"{preparation_inputs}:/inputs:ro"]
     command += [profile["sif"], "/usr/bin/env",
                 f"PATH={BIN}:/opt/venv/bin:/usr/bin:/bin",
-                "LD_LIBRARY_PATH=/opt/ndnsf-di/current/lib:/opt/onnxruntime/lib",
+                # Apptainer --nv injects host CUDA/driver libraries through
+                # this directory.  Keep it after the sealed runtime closure;
+                # replacing LD_LIBRARY_PATH would hide libcuda.so.1.
+                "LD_LIBRARY_PATH=/opt/ndnsf-di/current/lib:/opt/onnxruntime/lib:/.singularity.d/libs",
                 "PYTHONNOUSERSITE=1", "PYTHONPATH=/bundle" + (":/app/repo/NDNSF-DistributedInference" if app else ""),
                 "NDN_CLIENT_TRANSPORT=unix:///node/nfd.sock",
                 "NDNSF_CONFIG=" + role_home + "/session.conf",

@@ -2,14 +2,16 @@
 
 **Feature Branch**: `TigerClusterExperiments`
 **Created**: 2026-09-06
-**Status**: IN_PROGRESS / runtime NOT_RUN
+**Status**: IN_PROGRESS / Tiger runtime qualification OPEN
 **Input**: 固定可复用的配置文件与实验脚本，在 TigerCluster 验证 NDNSF-DI + YOLO 分布式推理；Tiger 专用脚本和配置集中于 `Experiments/TigerCluster`。
 
 ## Scope And Evidence Boundary
 
 交付一个人能直接使用、机器能验证的入口：选择一份配置，检查、准备、运行、收集；同一合格配置可在新 allocation 中重复使用。目标是正确性和复用，不是新推理算法、整个 DI 的 C++ 迁移或性能优势。Spec182 保持 NOT_STARTED。
 
-交付入口 `81e251a4` 只表示 SOURCE_READY；四库运行源码由 `Experiments/TigerCluster/development-handoff.lock.json` 固定，其中 NDNSF 为 `447f7584`。旧 r119/base SIF、Local R8 FAIL、B003 未完成均不代表新组合通过。当前没有本 Spec 运行结果。
+交付入口 `81e251a4` 只表示 SOURCE_READY；四库运行源码由 `Experiments/TigerCluster/development-handoff.lock.json` 固定，其中 NDNSF 为 `447f7584`。旧 r119/base SIF、Local R8 FAIL、B003 未完成均不代表新组合通过。2026-09-10 更新：v79 已取得 v22+v32 的 exact-SIF 本地 CPU `NORMAL_EXPERIMENT_PASS`；真实 Tiger v80 已通过 SIF/容量/socket/CUDA probe 和四 Provider startup，但 User 在 NFS journal lock 处失败，尚无 Tiger YOLO 数值 PASS。app v33 已包含 `r+b` journal 修复并重建，新的 local/host gate 尚待刷新。
+
+本 Spec 的资格判定仍按完整边界执行：transport、CUDA probe 或 Provider `READY` 只能作为组件证据；只有 User warmup/measured、独立 oracle、每角色 backend/GPU、退出码和清理全部闭合，才能记录 `SINGLE_NODE_GPU_PASS`。今天的逐 run 证据和固定执行顺序见 [Tiger deployment diagnosis](evidence/tiger-deployment-diagnosis-v69.md)。
 
 最终必须使用两个真实 Tiger 计算节点，不同节点 Provider 计算同一次 YOLO 请求的不同阶段，通过 NDN 交换中间数据。多个节点各跑完整模型、只交换 echo、只出现 READY 或本机模拟节点，均不满足最终目标。
 
