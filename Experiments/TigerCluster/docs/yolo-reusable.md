@@ -6,7 +6,7 @@
 迁移IMPLEMENTATION_PENDING。以下旧“完整应用SIF/九产物”描述是已有实现记录；
 以Spec183最新tasks/plan为执行入口。后续app-only改动只更新独立包，不重建
 基础库SIF；最终验收绑定base+app+harness/model。C++小例子209981已在itiger01/02
-实跑3条Data并清理成功，基础传输证据复用。APP v35 + v22 base 已完成 exact-SIF
+实跑3条Data并清理成功，基础传输证据复用。历史 APP v35 + v22 base 已完成 exact-SIF
 本机/host gate、Tiger 单节点 GPU `210340` 以及首个双节点正常 `210341`；完整
 可复用交付仍未资格化，因为负例 `210342` 暴露了 completion budget 和逻辑 edge
 cardinality 两个 harness 缺陷，T016 尚未运行。
@@ -22,12 +22,54 @@ cardinality 两个 harness 缺陷，T016 尚未运行。
 NOT_EVALUATED清单（exit 78）；不上传或提交。公开submit的SSH协调已接入：
 使用原始同名绝对路径、冻结bootstrap和rsync断点续传，接收端独立校验后才进入
 原有唯一提交入口。真实31文件运输与复用见 `evidence/t004-ssh-coordinator.md`；
-只证明登录节点运输，不替代正式前置门。新harness为27文件，当前实际profile
-尚未重新冻结。`storage.transferTimeoutSeconds`默认1800秒，是总运输观察预算；
+只证明登录节点运输，不替代正式前置门。新harness为27文件；当前 v48 profile
+快照已绑定 v39 APP、v22 base 和 v40 host receipt。`storage.transferTimeoutSeconds`默认1800秒，是总运输观察预算；
 超时保留REMOTE_STATE_UNRESOLVED与暂存目录，同一run重试不得重复sbatch。
 
 **Branch**: `TigerClusterExperiments`
-**Status**: IN_PROGRESS / NEGATIVE_HARNESS_BLOCKED
+**Status**: IN_PROGRESS / LOCAL_PUBLICATION_BLOCKED / NEGATIVE_HARNESS_BLOCKED
+
+## 2026-09-10 current execution update
+
+The current candidate is APP v39 over the unchanged v22 base SIF. Profile v48
+and host receipt v40 bind the exact layered composition; the host component gate
+is `PASS`. Direct real MiniNDN runs `minindn-local-20260910-v105-v37` (Y-B) and
+`v107-v37` (Y-N, eight subcases) are also `PASS`.
+
+The formal owner was then invoked on a fresh prepared run:
+
+```bash
+python3 Experiments/TigerCluster/jobs/yolo/submit.py prepare \
+  --profile Experiments/TigerCluster/profiles/yolo-two-node-controller-v48.json \
+  --run-id minindn-local-20260910-v110-v39 \
+  --output Experiments/TigerCluster/results --case local-cpu || test $? -eq 78
+python3 Experiments/TigerCluster/jobs/yolo/submit.py local \
+  --profile Experiments/TigerCluster/profiles/yolo-two-node-controller-v48.json \
+  --run-id minindn-local-20260910-v110-v39 \
+  --output Experiments/TigerCluster/results --case local-cpu
+```
+
+Candidate, host receipt, NFD network setup and APP integrity passed, but the
+Controller child exited 139. An isolated exact-SIF reproduction reaches
+`SPEC180_CONTROLLER_READY` and then aborts with:
+
+```text
+Fetched public parameters cannot be authenticated: Validator/policy did not invoke success or failure callback
+```
+
+This is the Controller publication User's unresolved NAC-ABE validator/policy
+callback contract. It leaves T011/local qualification open. Do not manually
+provision issuer/public/private directories before `submit.py local`; the
+formal local owner must perform one atomic provision/start/collect/cleanup
+sequence, and every partial attempt uses a new run ID.
+
+The Tiger order remains: formal local PASS → fresh allocation preflight →
+single-node GPU → first normal two-node (historical `210341`) → repaired
+negative T015 → independent normal reuse T016. The historical `210340` and
+`210341` PASS records remain valid evidence. The negative `210342` record is
+retained as a failure because its User observer timed out at 59.9946 s and its
+collector could not distinguish the two same-role-pair logical edges. Full
+hashes, run paths and next actions are in the [Spec183 checkpoint](../../../specs/183-tiger-yolo-reusable-experiments/evidence/tiger-runtime-checkpoint-20260910.md).
 
 负例触发点已有源码和原生组件证据：`DetectShard0` 在真实V3输出校验后、
 首包发布前阻止该请求到 `Merge` 的对象，并保留绑定的触发记录。见Spec183
@@ -35,7 +77,7 @@ NOT_EVALUATED清单（exit 78）；不上传或提交。公开submit的SSH协调
 Selection/withheld，但因 User completion budget 和逻辑 edge cardinality 缺陷未
 形成 collector 终态；不能手工移除保护或把部分日志标为 PASS。
 
-目标：一份profiles/yolo-two-node.json和一个jobs/yolo/submit.py入口，本地验证后，以同一完整SIF完成Tiger两节点四Provider推理并在新allocation复现。当前 v35 候选已有单节点和首个双节点正常 PASS；共享目录接收端submit已接，最终复用资格仍等待负例和第二次正常 allocation。
+目标：一份profiles/yolo-two-node.json和一个jobs/yolo/submit.py入口，本地验证后，以同一分层 base+APP 组合完成Tiger两节点四Provider推理并在新allocation复现。历史 v35 候选已有单节点和首个双节点正常 PASS；当前 v39 候选仍等待正式 local publication 修复、负例和第二次正常 allocation。
 
 ## Current Checkpoint
 
@@ -60,7 +102,7 @@ collect --reconcile 和共享目录接收端submit已接；跨机器文件运输
 依赖并保证batch解释器一致。Tiger已建立独立环境，当前profile的
 runtime.operatorPython指向它；系统Python仍不作为该环境的替代。
 
-2026-09-10 的 APP v35 已完成 host gate、exact-SIF MiniNDN Y-B/Y-N，以及
+历史 APP v35 已完成 host gate、exact-SIF MiniNDN Y-B/Y-N，以及
 共享 `tiger-local-cpu-v35` 的 `NORMAL_EXPERIMENT_PASS`。它复用内容锁定的
 v22 base SIF，只重建外置 APP 和受影响 planes。Tiger single-node GPU
 `210340`（startup=300）完成 1+1；首个 two-node normal `210341`
@@ -68,14 +110,14 @@ v22 base SIF，只重建外置 APP 和受影响 planes。Tiger single-node GPU
 边/请求、数值与清理闭环。负例 `210342` 通过 Selection、GPU/provider readiness
 并在 DetectShard0 记录两个 bound withheld，但 User 在 59.9946 秒外层预算被杀，
 没有 `negative-user.json`；collector 还把同源两条逻辑 edge 当成单 edge。因此
-当前状态是 `NEGATIVE_HARNESS_BLOCKED`，不能把单节点或一次双节点 PASS 升级为
+当前状态还包括 formal local publication 阻塞；不能把单节点或一次双节点 PASS 升级为
 最终可复用交付。
 
 ## Direct local YOLO example
 
 要向其他人演示构建物，使用固定 base SIF，并把独立 APP bundle 以只读方式挂载到
 `/app`。完整的已实跑命令、SHA256、数值回执和清理证据见
-[APP v35 exact-SIF evidence](../../../specs/183-tiger-yolo-reusable-experiments/evidence/minindn-local-v35.md)。
+[2026-09-10 checkpoint](../../../specs/183-tiger-yolo-reusable-experiments/evidence/tiger-runtime-checkpoint-20260910.md)。
 最小入口如下（`RUN` 必须是新建的、不可复用的 run ID；维护入口按
 `prepare` 后直接 `local`，不要再对同一 run 手动调用 `provision`）：
 
@@ -83,17 +125,17 @@ v22 base SIF，只重建外置 APP 和受影响 planes。Tiger single-node GPU
 ROOT=$(readlink -f Experiments/TigerCluster/.cache/layered-base-20260909)
 RUN=minindn-local-<date>-<id>
 OUT=Experiments/TigerCluster/results
-export SPEC180_RUNTIME_SIF="$ROOT/base-runtime-controller-version-j4-v22.sif"
+export SPEC180_RUNTIME_SIF="$ROOT/base-runtime-controller-version-j4-v22-stable-20260909.sif"
 export SPEC180_RUNTIME_APPTAINER=/opt/apptainer/1.5.3/bin/apptainer
-export SPEC180_RUNTIME_APP_ROOT="$ROOT/app-controller-version-j4-v35"
+export SPEC180_RUNTIME_APP_ROOT="$ROOT/app-controller-version-j4-v39"
 export PYTHONPATH="$PWD/NDNSF-DistributedInference:$PWD/NDNSF-DistributedRepo/pythonWrapper:$PWD/pythonWrapper"
 
 # Freeze one new run; prepare intentionally exits 78/NOT_EVALUATED.
 python3 Experiments/TigerCluster/jobs/yolo/submit.py prepare \
-  --profile Experiments/TigerCluster/profiles/yolo-two-node-controller-v42.json \
+  --profile Experiments/TigerCluster/profiles/yolo-two-node-controller-v48.json \
   --run-id "$RUN" --output "$OUT" --case local-cpu || test $? -eq 78
 python3 Experiments/TigerCluster/jobs/yolo/submit.py local \
-  --profile Experiments/TigerCluster/profiles/yolo-two-node-controller-v42.json \
+  --profile Experiments/TigerCluster/profiles/yolo-two-node-controller-v48.json \
   --run-id "$RUN" --output "$OUT" --case local-cpu
 ```
 

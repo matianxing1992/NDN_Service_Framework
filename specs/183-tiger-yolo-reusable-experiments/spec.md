@@ -2,16 +2,16 @@
 
 **Feature Branch**: `TigerClusterExperiments`
 **Created**: 2026-09-06
-**Status**: IN_PROGRESS / Tiger runtime qualification OPEN
+**Status**: IN_PROGRESS / LOCAL_PUBLICATION_BLOCKED / NEGATIVE_HARNESS_BLOCKED
 **Input**: 固定可复用的配置文件与实验脚本，在 TigerCluster 验证 NDNSF-DI + YOLO 分布式推理；Tiger 专用脚本和配置集中于 `Experiments/TigerCluster`。
 
 ## Scope And Evidence Boundary
 
 交付一个人能直接使用、机器能验证的入口：选择一份配置，检查、准备、运行、收集；同一合格配置可在新 allocation 中重复使用。目标是正确性和复用，不是新推理算法、整个 DI 的 C++ 迁移或性能优势。Spec182 保持 NOT_STARTED。
 
-交付入口 `81e251a4` 只表示 SOURCE_READY；四库运行源码由 `Experiments/TigerCluster/development-handoff.lock.json` 固定，其中 NDNSF 为 `447f7584`。旧 r119/base SIF、Local R8 FAIL、B003 未完成均不代表新组合通过。2026-09-10 更新：APP v35 + v22 base 已取得 exact-SIF Y-B/Y-N、candidate-bound host gate、共享 local-cpu `NORMAL_EXPERIMENT_PASS`、Tiger 单节点 GPU `210340` 以及首个双节点正常 `210341`。`210331` 的 backend propagation 缺陷仍保留为失败证据；APP v35 只修复外置应用，基础 SIF 不重建。`210342` 负例真实到达 Selection 和 DetectShard0→Merge withheld，但外层 60 秒预算先于 `negative-user.json` 写入而失败；真实图有两个同源逻辑 edge，而 collector 只接受一个。T014 已关闭，T015 被负例 harness 的预算/cardinality 问题阻塞，T016 复现和最终 closure 仍未完成。
+交付入口 `81e251a4` 只表示 SOURCE_READY；四库运行源码由 `Experiments/TigerCluster/development-handoff.lock.json` 固定，其中 NDNSF 为 `447f7584`。旧 r119/base SIF、Local R8 FAIL、B003 未完成均不代表新组合通过。2026-09-10 当前候选已推进到 APP v39 + 不变 v22 base：v40 host gate 为 PASS，v105/v107 的真实 MiniNDN Y-B/Y-N 为 PASS，历史 Tiger 单节点 GPU `210340` 与首个双节点正常 `210341` 仍为 PASS。v36–v38 的缓存、包载荷、oracle 路径、证据 schema 和 source-selection 失败均已保留并修正。新的正式 exact-SIF local `v110-v39` 在 Controller 发布 User 的 NAC-ABE public-parameter validator callback 处失败（`Fetched public parameters cannot be authenticated: Validator/policy did not invoke success or failure callback`），所以 T011 当前未关闭；这不是 base SIF、host gate、NFD route 或 CUDA probe 失败。`210342` 负例仍只到达 Selection/withheld，T015 仍受 completion budget 与同源多逻辑 edge cardinality 阻塞，T016 和最终 closure 未完成。逐 run 记录见 [2026-09-10 checkpoint](evidence/tiger-runtime-checkpoint-20260910.md)。
 
-本 Spec 的资格判定仍按完整边界执行：transport、CUDA probe 或 Provider `READY` 只能作为组件证据；GPU Provider 的 ACK 还必须包含与其 `cuda:*` topology 对应的、签名且可用的 `free_memory_mb` 资源行。只有 User warmup/measured、独立 oracle、每角色 backend/GPU、退出码和清理全部闭合，才能记录对应 PASS。负例还必须写出 `OBSERVATION_ONLY` User record、唯一逻辑 cutpoint、Merge native failure、无响应/无重选和 clean cleanup；部分 withheld 日志不能升级为 `EXPECTED_REJECTION_PASS`。今天的逐 run 证据和固定执行顺序见 [Tiger deployment diagnosis](evidence/tiger-deployment-diagnosis-v70.md) 与 [two-node evidence](evidence/tiger-two-node-v35.md)。
+本 Spec 的资格判定仍按完整边界执行：transport、CUDA probe 或 Provider `READY` 只能作为组件证据；GPU Provider 的 ACK 还必须包含与其 `cuda:*` topology 对应的、签名且可用的 `free_memory_mb` 资源行。只有 User warmup/measured、独立 oracle、每角色 backend/GPU、退出码和清理全部闭合，才能记录对应 PASS。负例还必须写出 `OBSERVATION_ONLY` User record、唯一逻辑 cutpoint、Merge native failure、无响应/无重选和 clean cleanup；部分 withheld 日志不能升级为 `EXPECTED_REJECTION_PASS`。正式 local 还必须由唯一 owner 完成 provision、Controller publication、User 观察和 collector，不能把 host receipt 或 direct MiniNDN 组件证据代替 local PASS。逐 run 证据和固定执行顺序见 [2026-09-10 checkpoint](evidence/tiger-runtime-checkpoint-20260910.md)、[Tiger deployment diagnosis](evidence/tiger-deployment-diagnosis-v70.md) 与 [two-node evidence](evidence/tiger-two-node-v35.md)。
 
 最终必须使用两个真实 Tiger 计算节点，不同节点 Provider 计算同一次 YOLO 请求的不同阶段，通过 NDN 交换中间数据。多个节点各跑完整模型、只交换 echo、只出现 READY 或本机模拟节点，均不满足最终目标。
 

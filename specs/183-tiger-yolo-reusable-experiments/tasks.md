@@ -2,16 +2,45 @@
 
 **Input**: [spec.md](spec.md), [plan.md](plan.md), [profile contract](contracts/experiment-profile.md), [validation matrix](validation-matrix.md)
 **Branch**: `TigerClusterExperiments`
-**Status**: IN_PROGRESS / NEGATIVE_HARNESS_BLOCKED. The current candidate is APP
-v35 layered over the unchanged, content-verified v22 base SIF. Its manifest,
-source seal, exact-SIF composition, MiniNDN Y-B/Y-N, host gate, shared local-cpu
-gate, single-node GPU run `210340`, and first normal two-node run `210341` are
-verified. The earlier `210331` APP v34 CPU fallback remains retained as a real
-candidate defect. The registered negative run `210342` reached Selection and
-native output withholding but was terminated before the User observation record
-was written; it is not a negative PASS. T014 is closed for the first normal
-allocation, T015 is blocked on two independent negative-harness defects, and
-T016 cannot start until T015 is repaired and rerun.
+**Status**: IN_PROGRESS / LOCAL_PUBLICATION_BLOCKED / NEGATIVE_HARNESS_BLOCKED.
+The current candidate is APP v39 layered over the unchanged, content-verified
+v22 base SIF. Its v40 host receipt and v105/v107 real MiniNDN evidence are
+verified; formal local run `minindn-local-20260910-v110-v39` fails in the
+Controller publication User's NAC-ABE public-parameter callback and is not a
+local PASS. Historical single-node `210340` and first normal two-node `210341`
+remain valid Tiger PASS evidence. The registered negative `210342` reached
+Selection and native output withholding but was terminated before User
+observation was written; it is not a negative PASS. T011 is open pending a
+fresh formal local run, T014 is closed for the first normal allocation, T015 is
+blocked on the negative harness, and T016 cannot start until T015 is repaired
+and rerun.
+
+## 2026-09-10 final task execution ledger
+
+This table is the current checkpoint. Each row closes only the boundary named in
+its task; a retained failure never becomes a PASS through later component
+evidence.
+
+| Task | Exact action / run | Result | Evidence | Next gate |
+| --- | --- | --- | --- | --- |
+| T008 | Source/ABI and evidence-consumer fixes; focused host-gate regression | VERIFIED (focused) | commits `3495cf3c`/`a9394555`/`bf741368`; 18 targeted host-gate/producer/dispatch tests pass; extended round/microbatch/operationKind/tensor fields are validated | Re-run the affected full gate after any callback fix; keep `-j4` ceiling |
+| T009 | Integration/dispatch contract and evidence-consumer wiring | VERIFIED (focused) | Native producer, MiniNDN consumer and host validator now share the extended bound cutpoint schema; targeted host-gate/producer/dispatch suite is green | Keep source/app identity bound when regenerating local receipt |
+| T010 | MiniNDN protocol qualification | REAL_MININDN_PASS | `Experiments/TigerCluster/results/minindn-local-20260910-v105-v37` and `v107-v37`; RC0, ACK/Selection, oracle, cleanup | Do not promote direct MiniNDN evidence to formal local or GPU qualification |
+| T011 | v40b candidate, v48 profile, v40 host gate, then formal `submit.py local` | BLOCKED / FAIL | Host component PASS; `v110-v39` RC2, Controller exit 139; isolated exact-SIF reproduction aborts with `Fetched public parameters cannot be authenticated: Validator/policy did not invoke success or failure callback` | Fix publication User NAC-ABE callback/policy contract; fresh `prepare` → `local` run |
+| T012 | Reuse Tiger substrate and staging evidence | VERIFIED_REUSED | Earlier allocation preflight and staging evidence bound to v22 base; per-allocation checks remain mandatory | Repeat environment/capacity/route checks for the next allocation |
+| T013 | Single-node GPU, 1 warmup + 1 measured | PASS (historical) | `210340` / `tiger-single-node-gpu-v35-r7`, CUDA model roles, CPU Merge, oracle, cleanup | Reuse only after current local gate and candidate identity are valid |
+| T014 | First two-node normal, 1 warmup + 3 measured | PASS (first allocation) | `210341` / `tiger-two-node-gpu-v35-r5`, `itiger02`/`itiger03`, nine dependency edges/request, oracle, cleanup | Preserve this run; do not count it as T016 reuse |
+| T015 | Registered two-node `negative-dependency` | BLOCKED after real attempt | `210342` reached Selection and two withheld records; User timed out at 59.9946 s; no `negative-user.json` or collection record; two same-role-pair logical edges | Fix completion budget and bind one complete logical edge; new allocation and collector receipt |
+| T016 | Second independent normal two-node allocation | NOT STARTED | Must wait for T015 `EXPECTED_REJECTION_PASS` | New allocation with unchanged profile/base/APP/model/oracle and new identities |
+| T017 | Operator handoff and reusable documentation | IN PROGRESS | This ledger plus [runtime checkpoint](evidence/tiger-runtime-checkpoint-20260910.md), failure log and Tiger guide | Refresh after callback fix, T015 and T016; retain all failed runs |
+
+## Latest checkpoint note
+
+The v39/v40 candidate supersedes the older v35 paragraph below for current
+execution. Host component validation and direct MiniNDN v105/v107 remain green,
+but formal local v110 fails during Controller publication User NAC-ABE public
+parameter validation. Keep the historical v35 table as provenance; use the
+final ledger above for the active next gate.
 
 ## Detailed Execution Progress
 
@@ -89,7 +118,7 @@ YOLO collector 配对，关闭 V13 的本机 isolation 缺口；仍不代表 GPU
 当前仓库 TigerCluster 构建并行度上限为 `-j4`，同一构建树仍只允许一个构建进程；
 历史回执保留其实际使用的命令，不因规则更新改写执行证据。
 
-## 2026-09-10 实验检查点与执行流程
+## 2026-09-10 历史 v35 实验检查点与执行流程
 
 下表是今天实际走过的边界。每一行只关闭它声明的门；失败保留原 run，
 修复后必须生成新的 candidate/gate 身份。

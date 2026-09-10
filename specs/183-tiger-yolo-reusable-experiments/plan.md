@@ -1,11 +1,33 @@
 # Implementation Plan: Reusable TigerCluster YOLO Distributed Inference
 
 **Branch**: `TigerClusterExperiments` | **Date**: 2026-09-06 | **Spec**: [spec.md](spec.md)
-**Status**: IN_PROGRESS / Tiger runtime qualification OPEN
+**Status**: IN_PROGRESS / LOCAL_PUBLICATION_BLOCKED / NEGATIVE_HARNESS_BLOCKED
 
 ## Summary
 
 复用已有身份/路由/进程管理，以及 ACK-driven YOLO、native Provider 和数值比较器；增加一份严格 profile 和薄 YOLO job 入口，补齐 allocation/GPU/跨节点证据。现有 CPU baseline 不是 GPU launcher，旧 `jobs/spec180/yolo-functional.sbatch` 是单节点；不直接改节点数后宣称可用。
+
+### 2026-09-10 current candidate checkpoint
+
+The current layered candidate is APP v39 over the unchanged v22 base SIF. The
+actual six-artifact base manifest was extracted from the SIF and bound into
+candidate v40b; profile v48 and `host-minindn-v40` both verify the base SHA
+`sha256:2c07a9f14d48fabd9fb58036c1634f3cc3282dd28c6470add9f8a7da0cb829b5`
+and APP manifest SHA
+`sha256:f8af1b45cac7bf7bffbfa18737ebcaa62037e3813daacd2cf58064de94622813`.
+The extended negative cutpoint contract is now consumed by the native producer,
+MiniNDN runner and host validator.
+
+Real MiniNDN runs `v105-v37` (Y-B) and `v107-v37` (eight Y-N subcases) remain
+PASS evidence. The formal exact-SIF local owner run `v110-v39` is a retained
+FAIL: candidate and host preflight pass, but the Controller publication
+ServiceUser aborts while authenticating NAC-ABE public parameters because the
+validator/policy does not invoke either callback. This leaves T011 open and
+blocks any new Tiger submission until the publication callback contract is
+fixed and a fresh formal local run completes. Historical Tiger single-node
+`210340` and first normal two-node `210341` remain valid PASS evidence; negative
+`210342` still needs the completion-budget and unique-edge fixes. Full evidence
+and the next order are in [the checkpoint](evidence/tiger-runtime-checkpoint-20260910.md).
 
 ### 2026-09-10 execution checkpoint
 
@@ -56,7 +78,7 @@ I/II：沿用动态 API 和现有鉴权/请求级密钥，不新建框架协议�
 | `runtime/yolo_worker.py`, `yolo_result.py` | implemented; runtime unqualified | 共享生命周期、四角色和normal/negative留存collector已接；每rank先有界检查版本，public重算要求issuer及所有rank原记录 |
 | `apps/yolo.py` | implemented; runtime unqualified | 复用ACK-driven User/签发/准备，per-request独立graph reference已接；不另建模型规划或密钥owner |
 | `jobs/yolo/submit.py`, `run.sbatch` | implemented; runtime unqualified | 五命令、normal local/single/two、negative双rank、SSH接收/submit/query和终态已接；真实前置资格仍缺，见tasks.md |
-| `profiles/yolo-two-node.json`, `schemas/tiger-yolo-v1.schema.json` | implemented; v42 runtime profile frozen for current candidate | 一份操作者配置及验证格式；当前 v42 绑定 APP v35/v22 base、host/local/single-GPU/first-two-node receipts；负例与复用资格仍开放 |
+| `profiles/yolo-two-node.json`, `schemas/tiger-yolo-v1.schema.json` | implemented; v48 runtime profile snapshot for current candidate | 一份操作者配置及验证格式；v48 绑定 APP v39/v22 base 与 v40 host receipt；formal local、负例与复用资格仍开放 |
 | `adapters/slurm-apptainer/scripts/build-local-sif.sh`, `prepare-development-handoff.py` | existing | 原构建/打包入口，不新增另一个构建器 |
 | `examples/python/NDNSF-DistributedInference/yolo_2x2/user.py`, `Experiments/NDNSF_DI_YoloAckDriven_Minindn.py` | existing | 当前实际应用/本地网络路径，适配层传参数而不复制 |
 | `NDNSF-DistributedInference`, `ndn-service-framework`, dependency repos | existing | DI 计划/执行、NDN 安全/传输、库 ABI；修复归原 owner |

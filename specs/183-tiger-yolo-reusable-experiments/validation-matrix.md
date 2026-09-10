@@ -1,6 +1,6 @@
 # Validation Matrix
 
-**Status**: Component implementation evidence is tracked by the detailed table in tasks.md. Current runtime gates are mixed: V15 single-node GPU and V16 first two-node normal are PASS; V17 negative is BLOCKED after a real failed attempt; V18 reuse and final closure remain NOT_RUN. Component checks and partial negative markers do not close the remaining gates.
+**Status**: Component implementation evidence is tracked by the detailed table in tasks.md. Current runtime gates are mixed: V12 host composition is PASS as a component gate; V13 formal local is BLOCKED after the v110 NAC-ABE publication failure; V15 single-node GPU and V16 first two-node normal are historical PASS; V17 negative is BLOCKED after a real failed attempt; V18 reuse and final closure remain NOT_RUN. Component checks, direct MiniNDN PASS and partial negative markers do not close the remaining gates.
 
 | ID | Gate / owner | Positive or negative case | Required oracle | 2026-09-10 status |
 | --- | --- | --- | --- | --- |
@@ -15,15 +15,15 @@
 | V09 | integration T009 | 新 Controller/角色 bootstrap 与 prepared fixture 分开；真实 CPU YOLO 多进程 | input→ACK→Selection→四阶段→response/numeric，bootstrap 就绪本身不替代 inference |
 | V10 | integration T009 | 初始未授权/撤销旧 epoch、错 Selection、activation missing/tamper/late | 独立当前生产错误码/事件；超时不冒充 auth rejection；无假响应 |
 | V11 | MiniNDN T010 | 正常 CPU 四角色、权限拒绝和缺依赖 cutpoint | 实际 NFD 消息/edge/role 及数值；核对源版本、命令、exit、清理 |
-| V12 | base+app T011 | 基础/app分层清单、required R、全部 DSO/SONAME/RPATH、通用与应用扩展、entrypoint、只读/app与模型 | 精确组合内验证；显式CUDA driver例外，旧app/错base/host prefix/基础库遮蔽拒绝；不能只测host import |
-| V13 | exact-SIF local T011 | 同候选 CPU 真实图及 oracle，empty home/scratch 重建 | LOCAL_CPU_PASS；记录 CPU 与 GPU case 不同，无 GPU 资格推断 |
-| V14 | compute T012 | 实分配 host/GPU、同 Apptainer、容量、SIF/staging、双向签名 Data/服务就绪 | 两节点实际版本/route/permission；失配在 Provider 前失败 |
+| V12 | base+app T011 | 基础/app分层清单、required R、全部 DSO/SONAME/RPATH、通用与应用扩展、entrypoint、只读/app与模型 | **PASS (component)** — v40b/v48 and `host-minindn-v40` bind the six-artifact v22 base and v39 APP; exact composition checks pass. This does not prove execution. |
+| V13 | exact-SIF local T011 | 同候选 CPU 真实图及 oracle，empty home/scratch 重建 | **BLOCKED** — v110-v39 passes candidate/host/network preflight but the formal Controller publication User aborts on NAC-ABE public-parameter callback validation; no `LOCAL_CPU_PASS`. |
+| V14 | compute T012 | 实分配 host/GPU、同 Apptainer、容量、SIF/staging、双向签名 Data/服务就绪 | **VERIFIED_REUSED** — per-allocation substrate/staging evidence is present in the 210340/210341 runs; repeat for each new allocation. |
 | V15 | single-node T013 | 四 Provider、1 warmup+1 measured、实际模型 CUDA、Merge CPU；每个 CUDA ACK 含签名 `free_memory_mb` 资源行 | SINGLE_NODE_GPU_PASS，全图/数值/退出/清理；空/过期资源行在 placement 前 FAIL；不是跨节点证明 | **PASS** — `210340` / `tiger-single-node-gpu-v35-r7`; verdict `sha256:86af42c1…eb98d248` |
 | V16 | two-node T014 | A backbone/merge、B heads，1 warmup+3 measured | 每请求跨节点输入依赖+模型计算+数值一致；四角色/两主机/GPU 证据 | **PASS** — `210341` / `tiger-two-node-gpu-v35-r5`; verdict `sha256:e25ee17d…fca4c82` |
 | V17 | remote negative T015 | Selection 后所需中间 Data 缺失 | 有受控 cutpoint 证据、有限失败、零成功响应/静默重选、正常清理 | **BLOCKED** — `210342` reached Selection and two withheld records, but User timed out at `59.9946s`; no User/collection record. Completion budget and two-edge cutpoint cardinality require a fix. |
 | V18 | independent reuse T016 | 新 allocation 和身份，原正常 E/config/case 1+3 请求 | 两正常 run hashes 一致，8/8 全部成功；失败不得从统计中消失 | **NOT_RUN** — waits for V17 `EXPECTED_REJECTION_PASS` |
 | V19 | operator T017 | 干净 checkout 获取配置/固定 artifact、离线重算、缓存复用 | 无个人路径/插件依赖；结果可再判定；没有重复 SIF/模型复制 |
-| V20 | layered T002/T004/T011 | 一次app-only改动；错base/ABI、基础库遮蔽、旧layout或回执混搭 | app源/产物/E更新，R/SIF hash不变；只编译受影响目标；拒错零workload/上传/提交；新组合实际import/入口通过；PLANNED |
+| V20 | layered T002/T004/T011 | 一次app-only改动；错base/ABI、基础库遮蔽、旧layout或回执混搭 | **PASS (composition/preflight)** — v39 app-only rebuild keeps the v22 base SHA, v40 host receipt rejects stale evidence, and v48 dispatch checks pass; formal local execution remains V13-blocked. |
 
 ## Evidence Rules
 
