@@ -3237,6 +3237,21 @@ are still unobserved.
   `.codex-tmp/spec182-r10-b80-provider-run-limit-controller/`; this remains a bounded lifetime
   result and not requester/Provider transport qualification.
 
+## 2026-09-10 — Spec182 R11-B8-G6 native process fixture socket-path boundary
+
+- **Area**: fresh C++ requester/Provider conversation process validation.
+- **First boundary**: NFD exited before creating its Unix socket with
+  `File name too long`; the retained run root made the generated socket path
+  exceed the Unix-domain pathname limit. The driver was stopped while waiting
+  for the socket (exit 130).
+- **Interpretation**: fixture startup failure only. No Controller, Authority,
+  grant, selection, stream, or conversation result is counted.
+- **Corrective gate**: rerun unchanged binaries under a short `/tmp` run root,
+  preserve the raw run and link this evidence before evaluating protocol
+  behavior.
+- **Evidence**:
+  [`r11-b8-g6-native-process-fixture-startup-20260910.md`](../specs/182-native-di-python-bindings/evidence/r11-b8-g6-native-process-fixture-startup-20260910.md)
+
 ## 2026-09-10 — Spec182 R11-B1 independent authority process fixture boundaries
 
 - **Area**: C++ requester to independent `DI_NativeArtifactAuthority` grant process over a
