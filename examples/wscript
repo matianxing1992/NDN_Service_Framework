@@ -524,7 +524,12 @@ def build(bld):
                           '../NDNSF-DistributedInference/cpp/adapters/onnx'],
                 use='BOOST ONNXRUNTIME ONNX NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD OPENSSL DL TOKENIZER_BRIDGE',
                 cxxflags=['-fPIC', '-pthread'],
-                linkflags=['-pthread'],
+                # Provide the standalone Provider with the same staged-library
+                # lookup fallback as the requester and native smoke targets.
+                # The packaging gate still has to verify every transitive
+                # dependency; this flag alone does not make host-bound
+                # NAC-ABE/SVS/NDNSD paths relocatable.
+                linkflags=['-pthread', '-Wl,-rpath,$ORIGIN/..'],
                 install_path=None)
 
     bld.program(name='di-native-fault-provider',

@@ -176,6 +176,15 @@ class Spec182NativeBindingsTest(unittest.TestCase):
         self.assertIn('request.contains("application_request_id")', source)
         self.assertIn("options.applicationRequestId", source)
 
+    def test_native_provider_target_has_relocatable_origin_runpath(self):
+        source = (ROOT / "examples/wscript").read_text(encoding="utf-8")
+        target_start = source.index("bld.program(name='di-native-provider'")
+        target_end = source.index(
+            "bld.program(name='di-native-fault-provider'", target_start)
+        target = source[target_start:target_end]
+        self.assertIn(
+            "linkflags=['-pthread', '-Wl,-rpath,$ORIGIN/..']", target)
+
     def test_native_config_qwen_helper_uses_operator_pinned_tokenizer_digest(self):
         # Execute the maintained helper with the real pybind DTOs.  The fake
         # transport only terminates the request; assertions inspect the exact
