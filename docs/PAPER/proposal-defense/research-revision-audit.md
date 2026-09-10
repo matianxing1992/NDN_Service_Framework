@@ -1,5 +1,22 @@
 # Research-first Proposal Revision and Evidence Audit
 
+## 2026-09-10 Abstract Narrative Revision
+
+按用户确认的逻辑，将中英文摘要改为“运行时服务需求 → NDNSF 研究方向 →
+现有授权设计与拟议协作机制 → 初步依据与计划评估 → 预期研究结论”。首句先定义
+NDN 并说明研究需求，不再直接罗列 Proposal 的功能。英文 235 词；删除摘要中的
+毕业时间及内部验收术语，但保留已有研究不能证明拟议协作有效性的必要边界。
+Abstract 对应当前提交的研究方案，不被限定为历史代码快照，也不代表全部计划
+已经实现。Academic Research Suite 的摘要准则用于结构和中英文语义对齐。
+
+仅修改四个正文入口的 abstract 内容并重建对应 PDF；其余章节、slides、讲稿和
+实验数字不变。四入口构建通过，最终日志无 Overfull、缺字或未定义引用；英文
+双入口各 29 页、中文双入口各 21 页，同语言逐页提取文本一致。与修改前比较，
+仅 PDF P2 改变。两种语言摘要页截图均检查，无越界、重叠或跨页，正文分页未变。
+原始构建和截图：`.codex-tmp/proposal-abstract-20260910/`；摘要检查单列于
+`research-revision-validation.json`，不把上一轮 PPTX 检查视为本轮重跑。
+未运行产品实验或重新核定当前实现状态，不改变 Spec182 的验收结论。
+
 ## 2026-09-10 Two-design Comparison Revision
 
 按用户要求删除自定义的逐服务角色凭证替代方案，正文、表格和讲稿仅保留

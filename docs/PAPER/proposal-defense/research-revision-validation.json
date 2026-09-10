@@ -11,8 +11,8 @@
   },
   "date": "2026-09-10",
   "verdict": "DOCUMENT_REVISION_PASS_RESEARCH_GATES_OPEN",
-  "observed_repository_head": "8c40325ee46d00e33c2cda4caa20400a7136a982",
-  "scope": "Remove custom per-service credential alternative; retain DNMP-inspired authorization plus encryption versus NDNSF ABE-backed; documents only",
+  "observed_repository_head": "f525e0139369d458424adfc53985c8a2d56d3a59",
+  "scope": "Two-design authorization comparison and research-first bilingual abstract; documents only",
   "checks": {
     "english_entry_text_equal": true,
     "chinese_entry_text_equal": true,
@@ -76,14 +76,14 @@
     "client_limit": "LibreOffice export only; not native Microsoft PowerPoint or Google Slides"
   },
   "files": {
-    "main.tex": "87817709424fecd17595a3e36714f481ad63baed4d0171b36a216ffd5f4e18dc",
-    "main_ch.tex": "4c56a375fe8349ff0eccc95112f524d5dc252735cb3246c94ce77d6f8415636a",
-    "main.pdf": "c09d835d60121ce164a239ac72a7f0f2bd2aa3ba5c069d90b7072dcc05d52134",
-    "main_ch.pdf": "e8074deae6d0a5c62352e08a13a75698a1626179f6ba1100807f6782d3e01297",
-    "en/main.tex": "1e1bebde582526e150adb34ed3c6e18b8974c1b8fb0e89b4060568d816d68cbf",
-    "en/main.pdf": "0e8f4b06d3e95b62f0da3edc0b8d3a3c44bb3d95f61858f8d0a4b68a1dcba9ef",
-    "ch/main.tex": "7c5adc4dfd6b70f2981caf6c71d1886a925d784f67863c6be97eb5e20d6ad439",
-    "ch/main.pdf": "2e5a638d760c12992ea1d0adbb6416d8d69c5f09cd3e92a4ffd54cc067aae59c",
+    "main.tex": "187bf3d058a13dd95f48c450883dac87caa74f0b42ace1cc1635f9b66260a197",
+    "main_ch.tex": "72f8a455aa78c59d3b022d47928f160097c6898f4f604c37bbf4cc078c04bf4b",
+    "main.pdf": "5cc328eb9c40db1793d66e372e6c3df71daefe29fbfdd4d66374208d2fc066af",
+    "main_ch.pdf": "11c732af3b130d6beb204bc3d368b813d9518b4c769cb5a2b79b9b6d0578a2de",
+    "en/main.tex": "0fcd8a3b530f020d575427aeedc9a6ef5c8f7693388c51bdaab83e3d3088baf6",
+    "en/main.pdf": "8a6ccfe2205fcd4092e23f1caf848b7e5bf94fd9ccb9c9e6e70c0c21eecbeb4c",
+    "ch/main.tex": "ab1b08e2a06897cd5833872cd57acd1bb4eb6f77135de38f21791a9b267330e4",
+    "ch/main.pdf": "1219c54715b94bbd188c08d7234c5aea235eb4e8a8ebcb574459b55ea811c4c0",
     "en/chapters/research-revision.tex": "64c0823f528f7baf497b73cea70bb48e2d8240787c600f5fab6884cddcd60ca3",
     "ch/chapters/research-revision.tex": "34eff2a72abd184315935bd695ea4b427f6fca4c347c489b70d2ac79f6df9b07",
     "en/chapters/authorization-rationale.tex": "b0c4417efcbd7898d2b51795f571b1089fb1e0b359d45f63a5cb77b2b8d3bb5c",
@@ -108,10 +108,26 @@
     "slides/add_speaker_notes_to_pptx.py": "e05f024861008aa94dccaa80bbcb7e3ea584678895d5287e6b27da9b96d9bb5e",
     "slides/test_notes_parsing.py": "1ac86242fc969e65d5b01fb65b3b589cecb27176b9d0fa376636b63177d019a4",
     "review_rendered.py": "e24daf06bf78f06cc72c7169a4c1cba3ecb7b04e12f9999921772f6bcb14d26f",
-    "research-revision-audit.md": "86e4ab70ec94f91b546df47667312b112014d13b2eed464795c76984dc745f85",
+    "research-revision-audit.md": "0bc67b33dd23f6963b3822a262175b26955fbbbacc2cf671a496440441e8d66c",
     "BUILD-RESEARCH.md": "311ba0b03b1ce87ade00645c3b6a556739143b43893c4c8d6acd78f41554f0fa",
     "authorization-revision.md": "f6a37f2755ce3d2182409fc61bbc258658e5d1828be7e9d81e5e7a8ec99296f1",
     "review.md": "233a1b44cbb9813be4f9829736c404712bf3a56ed90a1c084048610e829bb9c4"
   },
-  "text_preflight": "LaTeX PDF content slides below 100 words; reference pages 36/37 exempt; no text outside pages. PPTX export tokenization differs."
+  "text_preflight": "LaTeX PDF content slides below 100 words; reference pages 36/37 exempt; no text outside pages. PPTX export tokenization differs.",
+  "checks_scope": "Comparison/PPTX checks above were run for the two-design revision; current abstract-only checks are recorded separately below.",
+  "abstract_revision": {
+    "date": "2026-09-10",
+    "raw_evidence_root": ".codex-tmp/proposal-abstract-20260910",
+    "english_words": 235,
+    "english_pages": 29,
+    "chinese_pages": 21,
+    "four_latex_entries_pass": true,
+    "same_language_entries_text_equal": true,
+    "only_pdf_page_2_changed": true,
+    "final_logs_clean": true,
+    "rendered_abstracts_reviewed": true,
+    "text_outside_page": false,
+    "slides_and_body_unchanged": true,
+    "no_new_runtime_qualification": true
+  }
 }

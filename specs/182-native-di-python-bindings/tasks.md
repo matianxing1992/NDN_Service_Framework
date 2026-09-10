@@ -6,6 +6,11 @@
 
 ## Execution Progress
 
+文档旁路记录（2026-09-10，Abstract DOCUMENT PASS）：中英文 Proposal 摘要按
+研究需求、方法、初步依据及计划评估重写，四入口编译及摘要截图检查通过，仅
+PDF P2 变化。见[审计](../../docs/PAPER/proposal-defense/research-revision-audit.md)
+与[验证](../../docs/PAPER/proposal-defense/research-revision-validation.json)；不变更产品任务状态。
+
 ### Native-First Dispatch 2026-09-10
 
 剩余调度权威为 [N1--N5 / R11 cards](contracts/native-first-execution.md)。当前 R11-B1
