@@ -109,3 +109,19 @@ def test_incremental_cache_can_be_selected_by_the_new_application(tmp_path, buil
     work.mkdir()
     with pytest.raises(ValueError, match='APP_CACHE_DESTINATION_EXISTS'):
         builder.publish_cache(cache, work, identity, 'next')
+
+
+def test_app_owned_preflight_files_can_change_without_base_rebuild(builder):
+    rows = [
+        {'path': 'Experiments/TigerCluster/jobs/yolo/submit.py', 'sha256': 'sha256:' + 'a' * 64},
+        {'path': 'NDNSF-DistributedInference/cpp/ndnsf-di/NativeGrantVerifier.cpp',
+         'sha256': 'sha256:' + 'b' * 64},
+    ]
+    source = {
+        rows[0]['path']: {'path': rows[0]['path'], 'sha256': 'sha256:' + 'c' * 64},
+        rows[1]['path']: dict(rows[1]),
+    }
+    builder.validate_base_source_compatibility({'files': rows}, source)
+    source[rows[1]['path']]['sha256'] = 'sha256:' + 'd' * 64
+    with pytest.raises(AssertionError, match='APP_CHANGED_BASE_SOURCE'):
+        builder.validate_base_source_compatibility({'files': rows}, source)

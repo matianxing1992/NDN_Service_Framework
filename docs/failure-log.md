@@ -5227,3 +5227,17 @@ use the APP builder's limited application target set for the deployment build;
 keep the auxiliary smoke red as retained build evidence.
 Lesson: successful linking of the focused unit binary is useful source
 evidence, but it does not erase a red aggregate target or qualify the APP.
+
+## 2026-09-10 — canonical v22 SIF drifted from the locked stable copy
+
+Symptom: APP v35 preparation rejected the canonical local base with
+`APP_BASE_DIGEST`; the path contained `sha256:0ea42a…`, while the retained
+stable v22 copy and handoff lock require `sha256:2c07a9…`.
+Root cause: the canonical path had been overwritten or rebound outside the
+current APP build, even though its size still matched the stable image.
+Fix status: restore the canonical path from the immutable stable v22 copy and
+recheck the full digest before any APP build or transport. The incorrect image
+was not submitted.
+Lesson: size and filename are insufficient for a reused SIF; every APP build
+and candidate preparation must hash the exact bytes at the declared canonical
+path.

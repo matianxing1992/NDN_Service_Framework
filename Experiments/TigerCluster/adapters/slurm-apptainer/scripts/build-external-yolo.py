@@ -20,6 +20,15 @@ from runtime.application import verify_application
 FLAGS = '-O1 -g0 -B/usr/bin/ -DBOOST_PHOENIX_DONT_USE_PREPROCESSED_FILES'
 TARGETS = ('App_ServiceController', 'di-native-provider', 'di-native-fault-provider')
 MAX_JOBS = 4
+# The stable base image carries these harness files so its source-bound
+# preflight can validate the deployment contract.  They are application-owned
+# inputs and are intentionally allowed to change without rebuilding the base
+# libraries; native libraries remain protected by the comparison below.
+BASE_VALIDATION_ONLY_PATHS = frozenset({
+    'Experiments/TigerCluster/jobs/yolo/submit.py',
+    'Experiments/TigerCluster/runtime/yolo_bundle.py',
+    'Experiments/TigerCluster/runtime/yolo_result.py',
+})
 
 
 def digest(path):
@@ -104,6 +113,14 @@ def publish_cache(cache, work, identity, key):
         work.rename(destination)
 
 
+def validate_base_source_compatibility(base_seal, source_files):
+    """Reject changed base-library inputs but permit app-owned preflight files."""
+    for row in base_seal['files']:
+        if row['path'] in BASE_VALIDATION_ONLY_PATHS:
+            continue
+        assert source_files.get(row['path']) == row, 'APP_CHANGED_BASE_SOURCE:' + row['path']
+
+
 def run(args):
     source, base, cache, output = (getattr(args, name).resolve()
                                   for name in ('source', 'base', 'cache', 'output'))
@@ -120,8 +137,7 @@ def run(args):
         '/opt/ndnsf-di/current/manifest/base-source-seal.json'])
     base_seal = json.loads(base_seal_wire)
     source_files = {row['path']: row for row in seal['files']}
-    for row in base_seal['files']:
-        assert source_files.get(row['path']) == row, 'APP_CHANGED_BASE_SOURCE:' + row['path']
+    validate_base_source_compatibility(base_seal, source_files)
     jobs = int(args.jobs)
     if not 1 <= jobs <= MAX_JOBS:
         raise ValueError('APP_BUILD_JOBS_OUT_OF_RANGE')
