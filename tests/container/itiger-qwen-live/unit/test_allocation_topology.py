@@ -278,6 +278,39 @@ class AllocationTopologyTest(unittest.TestCase):
             self.assertEqual("unix://" + provider["nfdSocket"], transport)
             self.assertEqual("source-pib", (Path(home) / ".ndn/pib.db").read_text())
 
+    def test_process_launcher_rejects_identity_symlink(self) -> None:
+        value = load("multi-node-tcp.json")
+        provider = next(row for row in value["processes"] if row["kind"] == "provider")
+        with tempfile.TemporaryDirectory(prefix="spec110-identity-") as source_dir, \
+             tempfile.TemporaryDirectory(prefix="ndnsf-di-") as scratch_dir, \
+             tempfile.TemporaryDirectory(prefix="spec110-bin-") as bin_dir:
+            source = Path(source_dir)
+            external = Path(source_dir).parent / "shared-pib"
+            external.write_text("shared")
+            provider["nfdSocket"] = str(Path(scratch_dir) / "nfd/0/nfd.sock")
+            (source / ".ndn").mkdir()
+            (source / ".ndn/pib.db").symlink_to(external)
+            (source / ".ndn/ndnsec-key-file").mkdir()
+            fake = Path(bin_dir) / "di-native-provider"
+            fake.write_text("#!/bin/sh\nexit 0\n")
+            fake.chmod(0o700)
+            smi = Path(bin_dir) / "nvidia-smi"
+            smi.write_text("#!/bin/sh\nprintf '%s\\n' " + shlex.quote(provider["gpuUuid"]) + "\n")
+            smi.chmod(0o700)
+            rendered = topology.render_process_launcher(provider, scratch_dir, source_dir)
+            rendered = rendered.replace(
+                "identity_source=" + shlex.quote(provider["identityRef"]),
+                "identity_source=" + shlex.quote(str(source)),
+            )
+            result = subprocess.run(
+                ["bash"], input=rendered, text=True,
+                env={"PATH": f"{bin_dir}:/usr/bin:/bin", "HOME": "/ambient-home",
+                     "CUDA_VISIBLE_DEVICES": "0"},
+                capture_output=True, check=False,
+            )
+            self.assertEqual(8, result.returncode)
+            self.assertIn("SPEC110_IDENTITY_SYMLINK_FORBIDDEN", result.stderr)
+
     def test_provider_launcher_rejects_missing_gpu_binding(self) -> None:
         value = load("multi-node-tcp.json")
         provider = next(row for row in value["processes"] if row["kind"] == "provider")

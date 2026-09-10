@@ -62,6 +62,11 @@ host but absent or unreadable on a compute node is a pre-start failure; the
 supervisor must not leave NFDs running while waiting for a later business
 process to discover that binding error.
 
+The source `.ndn` tree MUST contain no symbolic links. The supervisor checks
+this on the target node before NFD startup, and the generated launcher repeats
+the check before copying the identity. This prevents a scratch `HOME` from
+retaining a symlink back to shared project storage.
+
 The map MUST not contain duplicate `(address, tcpPort)` or `(address,
 udpPort)` endpoints. Before starting NFD, the supervisor MUST perform a
 target-node IPv4 bind probe for each declared TCP and UDP port and fail at the

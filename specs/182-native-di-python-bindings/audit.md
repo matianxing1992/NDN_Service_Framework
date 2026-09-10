@@ -1,6 +1,16 @@
 # Spec182 Design Audit
 
-**Revision**: 38 | **Current source**: R11-B8-G30 port-preflight checkpoint on `Experimental`
+**Revision**: 39 | **Current source**: R11-B8-G31 identity-symlink checkpoint on `Experimental`
+
+## R11-B8-G31 Identity Symlink Boundary Review 2026-09-10
+
+静态审查发现 launcher 的 `cp -a` 会保留身份树中的符号链接；即使 `HOME` 已切到 scratch，
+`.ndn/pib.db` 或 TPM 仍可能通过链接回到共享 `/project`。现已在 supervisor 的 pre-start
+检查和直接 launcher 的 copy 前检查中拒绝 `.ndn` 树内任何 symlink。provider unit 23/23、
+network integration 与 shell syntax 通过；symlink 反例在 provider/NFD 启动前分别失败。
+
+该修复只收紧身份隔离，不证明共享存储内容 digest、Slurm/SIF/GPU、跨节点 NDN、no-Python
+或 T016/T017 资格。详见 [R11-B8-G31 evidence](evidence/r11-b8-g31-identity-symlink-boundary-20260910.md)。
 
 ## R11-B8-G30 Port Availability Preflight Review 2026-09-10
 

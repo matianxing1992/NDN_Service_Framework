@@ -62,6 +62,12 @@ fi
 if [[ ${SPEC110_FAIL_PORT_PROBE:-0} == 1 && ${1:-} == python3 && ${2:-} == -c ]]; then
   exit 1
 fi
+if [[ ${SPEC110_FAIL_IDENTITY_SYMLINK:-0} == 1 && ${1:-} == sh && ${2:-} == -c ]]; then
+  exit 1
+fi
+if [[ ${SPEC110_FAIL_IDENTITY_SYMLINK:-0} == 1 && ${1:-} == test && ${2:-} == -r ]]; then
+  exit 0
+fi
 exec "$@"
 SH
 cat >"$tmp/bin/nfdc" <<'SH'
@@ -275,4 +281,35 @@ assert value['status']=='FAIL' and value['exitCode']==4 and value['survivors']==
 PY
 [[ ! -e "$port_scratch/log/nfd-0.log" ]]
 rm -rf "$port_scratch"
+
+symlink_scratch=$(mktemp -d /tmp/ndnsf-di-symlink.XXXXXX)
+cp "$supervisor_scratch/process-map.json" "$symlink_scratch/process-map.json"
+python3 - "$repo" "$symlink_scratch/process-map.json" "$symlink_scratch" <<'PY'
+import json,sys
+sys.path.insert(0,sys.argv[1]+'/packaging/ndnsf-di-container/lib')
+from allocation_topology import command_digest
+path,root=sys.argv[2:]
+value=json.load(open(path)); socket=root+'/nfd/0/nfd.sock'
+value['nodes'][0]['nfdSocket']=socket
+for process in value['processes']:
+    process['nfdSocket']=socket
+    if process['kind']=='nfd':
+        process['command']=['nfd','--config',root+'/nfd/0/nfd.conf']
+        process['commandDigest']=command_digest(process['command'])
+json.dump(value,open(path,'w'))
+PY
+set +e
+PATH="$tmp/bin:$PATH" SLURM_JOB_ID=test SLURM_NNODES=1 NDNSF_SPEC110_TEST_MODE=0 SPEC110_FAIL_IDENTITY_SYMLINK=1 \
+  "$supervisor" --process-map "$symlink_scratch/process-map.json" --scratch "$symlink_scratch" \
+  --evidence "$tmp/supervisor-symlink-fail" --nfd-template "$template" --workdir "$tmp"
+symlink_rc=$?
+set -e
+[[ $symlink_rc -eq 4 ]]
+python3 - "$tmp/supervisor-symlink-fail/teardown.json" <<'PY'
+import json,sys
+value=json.load(open(sys.argv[1]))
+assert value['status']=='FAIL' and value['exitCode']==4 and value['survivors']==0
+PY
+[[ ! -e "$symlink_scratch/log/nfd-0.log" ]]
+rm -rf "$symlink_scratch"
 printf 'NETWORK_SCRIPT_PASS\n'

@@ -135,6 +135,10 @@ PY
       echo "SPEC110_IDENTITY_NOT_VISIBLE:$rank:$identity" >&2
       exit 4
     }
+    srun_node "$rank" sh -c 'test -z "$(find "$1" -type l -print -quit)"' sh "$identity/.ndn" || {
+      echo "SPEC110_IDENTITY_SYMLINK_FORBIDDEN:$rank:$identity" >&2
+      exit 4
+    }
   done
 fi
 
