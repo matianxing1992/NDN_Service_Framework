@@ -1,6 +1,6 @@
 # Tasks: Native NDNSF-DI with Optional Python Bindings
 
-**Revision**: 133 | **Status**: DRAFT / T001 DONE
+**Revision**: 134 | **Status**: DRAFT / T001 DONE
 **Input**: [spec](spec.md), [code design](contracts/code-design.md),
 [proof](contracts/proof-design.md), [work units](contracts/work-units.md)
 
@@ -26,6 +26,7 @@ R11-B7 cleanup。不得在 N1--N3 通过前以旧
 | [R11-B5 Native Recovery Process](contracts/native-first-execution.md#dispatch-cards) | CLOSED_FOR_VALIDATION | R11-B4 | 第一轮 C++ `FULL_CONTEXT` checkpoint 后对 Provider 进程执行 SIGKILL/restart；重启 Provider 以 `PROVIDER_CONVERSATION_STATE_MISSING` 明确拒绝 `APPEND_DELTA`，requester 以 `NATIVE_STREAM_FAILED` 退出且无重复 execution/stream marker。未宣称 Provider KV durable recovery；R11-B6 及完整 Spec qualification 仍未关闭 | 2026-09-10 |
 | [R11-B6 Native Replacement Process](contracts/native-first-execution.md#dispatch-cards) | CLOSED_FOR_VALIDATION | R11-B5 | 独立 Provider B 在 A ACK 后接管 `attempt-2` 并完成 C++ stream/CPU ORT；A 无 execution evidence；无 backup 时单一 `NATIVE_REQUEST_STAGE_FAILED`/`DI_NATIVE_NO_ADMITTED_PROVIDER` 终态。C++ fencing selector 通过；广泛 `Spec182*` 仍有 6 个既有 runner callback fixture failures。父 T010/T011、R11-B7--B9 与完整 qualification 仍未关闭 | 2026-09-10 |
 | [R11-B7 Native Cleanup Process](contracts/native-first-execution.md#dispatch-cards) | CLOSED_FOR_VALIDATION | R11-B6 | C++ client/registration/lease/host/stream cleanup selectors 全部通过；终态、cancel、deadline、replacement drain、secret owner 及 shared host isolation 有证据；R11-B6 process finally 后无 requester/provider/authority/controller 残留。T016 isolation/PO matrix、父 T010/T011/T013 与完整 qualification 仍未关闭 | 2026-09-10 |
+| [R11-B8 C++ Prepared-Role Fixture](evidence/r11-b8-cpp-fixture-20260910.md) | CLOSED_FOR_VALIDATION | R11-B6; existing T010/T011 fixture contract | **C++ primary:** 修复 `runSamplingEpochs` 缺少 `prepareRunner` 的夹具契约；fresh `unit-tests` 190/190 build，以及 `Spec182EpochText` 2、`Spec182StreamAcceptance` 7、`Spec182GenerationOptions` 2 cases 全部通过。仅修复测试夹具，不推进 maintained callers、R11-B8/R11-B9 或父任务；full `Spec182*` 未以本批结果宣称通过 | 2026-09-10 |
 | [R11-B1-PY Native Binding Authority](evidence/r11-b1-py-native-authority-20260910.md) | CLOSED_FOR_VALIDATION | R11-B1; T012 ABI | **C++ primary:** `_ndnsf` binding now constructs the transport-only native grant client through `issueThroughCore`/`publishThroughCore`; authority private/content keys and policy fields are rejected before requester key loading. Matching `build-nac182` DI library, extension import, C++ selectors, 7-case native integration selector, and 72 wrapper/contract tests pass. This closes only the Python binding ownership seam; maintained callers, no-Python, dependency closure and T016/T017 remain open | 2026-09-10 |
 | [R11-B8 Maintained Callers](contracts/native-first-execution.md#dispatch-cards) | NOT_STARTED | R11-B7; corresponding T012 ABI | 原 16 callers 按组分批；先 C++ 对照，再 wrapper/兼容/旧路径零使用 | 2026-09-10 |
 | [R11-B9 Native Closure](contracts/native-first-execution.md#dispatch-cards) | NOT_STARTED | R11-B8 | T014 no-Python/依赖闭包工具 → T015 → T016 → T017；最终资格未开始 | 2026-09-10 |

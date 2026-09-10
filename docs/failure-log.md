@@ -1,5 +1,19 @@
 # Failure Log and Evidence Index
 
+## 2026-09-10 — Spec182 R11-B8 prepared-role fixture checker boundary
+
+The bounded C++ fixture repair first ran cppcheck against
+`tests/unit-tests/distributed-inference-async-runtime.t.cpp`. cppcheck stopped
+with its internal `AST broken: endless recursion from 'config'`
+`internalAstError` at the existing aggregate configuration construction. This
+is a checker/parser boundary, not a compiler or production-runtime failure.
+The changed gate was therefore the system-first fresh `unit-tests` build plus
+the C++ `Spec182EpochText`, `Spec182StreamAcceptance`, and
+`Spec182GenerationOptions` selectors. The build completed 190/190 steps and all
+three selectors exited 0; durable details are in
+[R11-B8 fixture evidence](../specs/182-native-di-python-bindings/evidence/r11-b8-cpp-fixture-20260910.md).
+The broad `Spec182*` selector remains outside this bounded result.
+
 ## 2026-09-10 — Spec182 R11-B1-PY native binding dependency and ownership boundaries
 
 The first Python extension rebuild was invoked from the wrong working directory and
