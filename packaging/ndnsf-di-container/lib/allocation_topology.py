@@ -6,6 +6,7 @@ import hashlib
 import ipaddress
 import json
 import os
+from collections import Counter
 from pathlib import Path
 import re
 import shlex
@@ -337,17 +338,28 @@ def validate_process_map(value: Mapping[str, Any]) -> dict[str, Any]:
     routes = value["routes"]
     if not isinstance(routes, list):
         _fail("TOPOLOGY_ROUTES_INVALID")
+    route_keys: set[tuple[object, ...]] = set()
     for route in routes:
         fields = {"fromNodeRank", "toNodeRank", "prefix", "transport", "remoteAddress", "port"}
         if not isinstance(route, Mapping) or set(route) != fields:
             _fail("TOPOLOGY_ROUTE_FIELDS_INVALID")
-        if route["fromNodeRank"] not in node_ranks or route["toNodeRank"] not in node_ranks or route["fromNodeRank"] == route["toNodeRank"]:
+        from_rank = route["fromNodeRank"]
+        to_rank = route["toNodeRank"]
+        if (not isinstance(from_rank, int) or isinstance(from_rank, bool) or
+                not isinstance(to_rank, int) or isinstance(to_rank, bool) or
+                from_rank not in node_ranks or to_rank not in node_ranks or
+                from_rank == to_rank):
             _fail("TOPOLOGY_ROUTE_NODE_INVALID")
-        target = nodes[route["toNodeRank"]]
+        target = nodes[to_rank]
         if route["transport"] != selected or route["remoteAddress"] != target["address"] or route["port"] != target[selected + "Port"]:
             _fail("TOPOLOGY_ROUTE_BINDING_INVALID")
         if not isinstance(route["prefix"], str) or not route["prefix"].startswith("/"):
             _fail("TOPOLOGY_ROUTE_PREFIX_INVALID")
+        route_key = (route["fromNodeRank"], route["toNodeRank"], route["prefix"],
+                     route["transport"], route["remoteAddress"], route["port"])
+        if route_key in route_keys:
+            _fail("TOPOLOGY_ROUTE_DUPLICATE", route["prefix"])
+        route_keys.add(route_key)
     if placement == "single-node-multi-gpu" and routes:
         _fail("TOPOLOGY_SINGLE_NODE_ROUTE_FORBIDDEN")
     if placement == "multi-node" and not routes:
@@ -524,6 +536,7 @@ def render_process_launcher(process: Mapping[str, Any], scratch: Path | str,
 def evaluate_transport_probe(process_map: Mapping[str, Any], observations: Mapping[str, Any]) -> dict[str, Any]:
     validated = validate_process_map(process_map)
     selected = validated["selectedTransport"]
+    nodes = validated["nodes"]
     required = {"allocationAddresses", "tcp", "udp"}
     if not isinstance(observations, Mapping) or set(observations) != required:
         _fail("TOPOLOGY_PROBE_FIELDS_INVALID")
@@ -533,6 +546,25 @@ def evaluate_transport_probe(process_map: Mapping[str, Any], observations: Mappi
     for transport in ("tcp", "udp"):
         row = observations[transport]
         if not isinstance(row, Mapping) or set(row) != {"status", "closedPorts", "reachableRoutes"}:
+            _fail("TOPOLOGY_PROBE_RESULT_INVALID", transport)
+        if (not isinstance(row["status"], str) or
+                row["status"] not in {"PASS", "FAIL"}):
+            _fail("TOPOLOGY_PROBE_RESULT_INVALID", transport)
+        closed_ports = row["closedPorts"]
+        reachable_routes = row["reachableRoutes"]
+        if (not isinstance(closed_ports, list) or
+                any(not isinstance(port, int) or isinstance(port, bool) for port in closed_ports) or
+                not isinstance(reachable_routes, int) or isinstance(reachable_routes, bool)):
+            _fail("TOPOLOGY_PROBE_RESULT_INVALID", transport)
+        expected_ports = [
+            nodes[route["toNodeRank"]][transport + "Port"]
+            for route in validated["routes"]
+        ]
+        if (Counter(closed_ports) - Counter(expected_ports) or
+                reachable_routes < 0 or
+                reachable_routes > len(validated["routes"]) or
+                reachable_routes != len(validated["routes"]) - len(closed_ports) or
+                (row["status"] == "PASS") != (not closed_ports)):
             _fail("TOPOLOGY_PROBE_RESULT_INVALID", transport)
     selected_row = observations[selected]
     if selected_row["status"] != "PASS" or selected_row["closedPorts"]:

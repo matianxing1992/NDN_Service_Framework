@@ -144,6 +144,21 @@ class AllocationTopologyTest(unittest.TestCase):
         ):
             topology.validate_process_map(value)
 
+    def test_duplicate_route_fails_closed(self) -> None:
+        value = load("multi-node-tcp.json")
+        value["routes"].append(copy.deepcopy(value["routes"][0]))
+        with self.assertRaisesRegex(topology.TopologyError, "TOPOLOGY_ROUTE_DUPLICATE"):
+            topology.validate_process_map(value)
+
+    def test_route_node_ranks_are_strictly_typed(self) -> None:
+        for field, malformed in (("fromNodeRank", []), ("toNodeRank", {}), ("fromNodeRank", True)):
+            value = load("multi-node-tcp.json")
+            value["routes"][0][field] = malformed
+            with self.subTest(field=field, malformed=malformed), self.assertRaisesRegex(
+                topology.TopologyError, "TOPOLOGY_ROUTE_NODE_INVALID"
+            ):
+                topology.validate_process_map(value)
+
     def test_teardown_signal_and_audit_are_mandatory(self) -> None:
         for field, changed in (("signals", ["TERM"]), ("zeroSurvivorAudit", False)):
             value = load("single-node.json")

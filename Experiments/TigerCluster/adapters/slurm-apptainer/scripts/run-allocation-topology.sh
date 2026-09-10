@@ -143,7 +143,34 @@ for process in value['processes']:
  script.chmod(0o700)
 PY
 
-mapfile -t workdir_ranks < <(PYTHONPATH="$lib" python3 - "$process_map" <<'PY'
+# Freeze the validated topology before any later shell loop or route helper
+# reads it again.  A mutable submit-host map could otherwise make generated
+# launchers describe one graph while rank/port/route lookups consume another;
+# MiniNDN's in-memory setup hides this time-of-check/time-of-use split.
+frozen_process_map="$scratch/frozen-process-map.json"
+frozen_process_map_tmp="$frozen_process_map.tmp.$$"
+rm -f -- "$frozen_process_map_tmp"
+cp -- "$evidence/frozen-process-map.json" "$frozen_process_map_tmp"
+chmod 400 "$frozen_process_map_tmp"
+mv -f -- "$frozen_process_map_tmp" "$frozen_process_map"
+if [[ ${NDNSF_SPEC110_TEST_MODE:-0} != 1 ]]; then
+  if ! PYTHONPATH="$lib" python3 - "$frozen_process_map" "${allocation_nodes[@]}" <<'PY'
+import sys
+from allocation_topology import load_process_map, validate_allocation_node_order
+
+try:
+    validate_allocation_node_order(load_process_map(sys.argv[1]), sys.argv[2:])
+except Exception as exc:
+    print(exc, file=sys.stderr)
+    raise SystemExit(4)
+PY
+  then
+    echo SPEC110_ALLOCATION_NODE_ORDER_MISMATCH >&2
+    exit 4
+  fi
+fi
+
+mapfile -t workdir_ranks < <(PYTHONPATH="$lib" python3 - "$frozen_process_map" <<'PY'
 import sys
 from allocation_topology import load_process_map
 for node in load_process_map(sys.argv[1])['nodes']:
@@ -193,7 +220,7 @@ for rank in "${workdir_ranks[@]}"; do
   }
 done
 
-mapfile -t process_rows < <(PYTHONPATH="$lib" python3 - "$process_map" <<'PY'
+mapfile -t process_rows < <(PYTHONPATH="$lib" python3 - "$frozen_process_map" <<'PY'
 import sys
 from allocation_topology import load_process_map
 for process in load_process_map(sys.argv[1])['processes']:
@@ -216,7 +243,7 @@ done
 # the complete read-only PIB/TPM input set before starting any NFD, so an
 # unmounted identity directory cannot leave a partially started topology.
 if [[ ${NDNSF_SPEC110_TEST_MODE:-0} != 1 ]]; then
-  mapfile -t identity_rows < <(PYTHONPATH="$lib" python3 - "$process_map" <<'PY'
+  mapfile -t identity_rows < <(PYTHONPATH="$lib" python3 - "$frozen_process_map" <<'PY'
 import sys
 from allocation_topology import load_process_map
 for process in load_process_map(sys.argv[1])['processes']:
@@ -263,7 +290,7 @@ fi
 # host. Bind the declared address on its target node before starting any NFD;
 # MiniNDN's loopback topology would otherwise hide a bad multi-node map.
 if [[ ${NDNSF_SPEC110_TEST_MODE:-0} != 1 ]]; then
-  mapfile -t address_rows < <(PYTHONPATH="$lib" python3 - "$process_map" <<'PY'
+  mapfile -t address_rows < <(PYTHONPATH="$lib" python3 - "$frozen_process_map" <<'PY'
 import sys
 from allocation_topology import load_process_map
 for node in load_process_map(sys.argv[1])['nodes']:
@@ -289,7 +316,7 @@ fi
 # startup.  Slurm allocations may overlap on a node, so a map-level range check
 # alone cannot catch a concurrent listener.  This is a bounded preflight; NFD
 # still remains the final authority if a race occurs after the probe.
-mapfile -t port_rows < <(PYTHONPATH="$lib" python3 - "$process_map" <<'PY'
+mapfile -t port_rows < <(PYTHONPATH="$lib" python3 - "$frozen_process_map" <<'PY'
 import sys
 from allocation_topology import load_process_map
 for node in load_process_map(sys.argv[1])['nodes']:
@@ -338,7 +365,7 @@ trap cleanup EXIT
 trap 'signal_exit TERM' TERM
 trap 'signal_exit INT' INT
 
-mapfile -t node_rows < <(PYTHONPATH="$lib" python3 - "$process_map" <<'PY'
+mapfile -t node_rows < <(PYTHONPATH="$lib" python3 - "$frozen_process_map" <<'PY'
 import sys
 from allocation_topology import load_process_map
 value=load_process_map(sys.argv[1])
@@ -379,9 +406,9 @@ for row in "${node_rows[@]}"; do
   printf '%s\n' "$SECONDS" >"$scratch/readiness/nfd-$rank-ready"
 done
 
-placement=$(PYTHONPATH="$lib" python3 -c 'import sys;from allocation_topology import load_process_map;print(load_process_map(sys.argv[1])["placementClass"])' "$process_map")
+placement=$(PYTHONPATH="$lib" python3 -c 'import sys;from allocation_topology import load_process_map;print(load_process_map(sys.argv[1])["placementClass"])' "$frozen_process_map")
 if [[ $placement == multi-node ]]; then
-  "$route_config" --process-map "$process_map" --evidence "$evidence/routes"
+  "$route_config" --process-map "$frozen_process_map" --evidence "$evidence/routes"
 fi
 
 launch_kind() {
@@ -396,7 +423,7 @@ launch_kind() {
     else
       setsid "${command[@]}" >"$scratch/log/$process_id.log" 2>&1 & step_pids+=("$!")
     fi
-  done < <(PYTHONPATH="$lib" python3 - "$process_map" "$kind" <<'PY'
+  done < <(PYTHONPATH="$lib" python3 - "$frozen_process_map" "$kind" <<'PY'
 import sys
 from allocation_topology import load_process_map
 for p in load_process_map(sys.argv[1])['processes']:
