@@ -5169,3 +5169,15 @@ Fix status: create only that declared candidate root on `itiger`, retain the
 transport-attempt record, and retry the same frozen run.
 Lesson: shared storage declarations still need a receiver-side directory
 precondition; verify both host views before invoking the transport.
+
+## 2026-09-10 — stale Tiger submission journal blocked transport retry
+
+Symptom: after the receiver root was created, SSH transport stopped with
+`TRANSPORT_ACTIVE_SUBMISSION` before staging the v34 candidate.
+Root cause: the shared journal still marked historical Slurm job `210316`
+(`tiger-single-node-gpu-v33-20260910`) as active even though `sacct` showed
+`FAILED` and the run retained a collection-input-missing record.
+Fix status: run the maintained receiver-side `collect --reconcile`; it recorded
+the old job as `FAIL` and cleared `activeRunId` without editing the journal.
+Lesson: reconcile stale scheduler state through the submission journal before
+starting another candidate; never remove an active lock by hand.
