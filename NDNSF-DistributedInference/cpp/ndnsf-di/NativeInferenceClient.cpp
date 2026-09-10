@@ -31,31 +31,28 @@ std::atomic<std::uint64_t> NEXT_REQUEST_ID{1};
 std::string
 processRequestOwnerScope()
 {
-  static const std::string scope = [] {
-    std::array<unsigned char, 16> bytes{};
-    if (RAND_bytes(bytes.data(), static_cast<int>(bytes.size())) != 1) {
-      // RAND_bytes is expected to be available after OpenSSL initialization;
-      // retain a process-local uniqueness fallback if the provider is not
-      // initialized yet.  The PID and monotonic clock make this distinct from
-      // the deterministic unit-test scope without claiming cryptographic use.
-      const auto tick = static_cast<std::uint64_t>(
-        std::chrono::steady_clock::now().time_since_epoch().count());
-      const auto pid = static_cast<std::uint64_t>(::getpid());
-      for (std::size_t i = 0; i < sizeof(tick); ++i)
-        bytes[i] = static_cast<unsigned char>(tick >> (i * 8));
-      for (std::size_t i = 0; i < sizeof(pid); ++i)
-        bytes[sizeof(tick) + i] = static_cast<unsigned char>(pid >> (i * 8));
-    }
-    static constexpr char hex[] = "0123456789abcdef";
-    std::string value;
-    value.reserve(bytes.size() * 2);
-    for (const auto byte : bytes) {
-      value += hex[byte >> 4];
-      value += hex[byte & 0x0f];
-    }
-    return value;
-  }();
-  return scope;
+  std::array<unsigned char, 16> bytes{};
+  if (RAND_bytes(bytes.data(), static_cast<int>(bytes.size())) != 1) {
+    // RAND_bytes is expected to be available after OpenSSL initialization;
+    // retain a per-client uniqueness fallback if the provider is not
+    // initialized yet.  The PID and monotonic clock make this distinct from
+    // the deterministic unit-test scope without claiming cryptographic use.
+    const auto tick = static_cast<std::uint64_t>(
+      std::chrono::steady_clock::now().time_since_epoch().count());
+    const auto pid = static_cast<std::uint64_t>(::getpid());
+    for (std::size_t i = 0; i < sizeof(tick); ++i)
+      bytes[i] = static_cast<unsigned char>(tick >> (i * 8));
+    for (std::size_t i = 0; i < sizeof(pid); ++i)
+      bytes[sizeof(tick) + i] = static_cast<unsigned char>(pid >> (i * 8));
+  }
+  static constexpr char hex[] = "0123456789abcdef";
+  std::string value;
+  value.reserve(bytes.size() * 2);
+  for (const auto byte : bytes) {
+    value += hex[byte >> 4];
+    value += hex[byte & 0x0f];
+  }
+  return value;
 }
 
 // Bounded observer delivery capacity (CD-001 M09 / CD-007 notified event
