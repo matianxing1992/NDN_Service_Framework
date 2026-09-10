@@ -12,7 +12,8 @@
 #SBATCH --output=@@LOG_ROOT@@/slurm-%j.out
 #SBATCH --error=@@LOG_ROOT@@/slurm-%j.err
 set -euo pipefail
-scratch="/tmp/$USER/ndnsf-di/$SLURM_JOB_ID"
+RUN_ID=@@RUN_ID@@
+scratch="/tmp/ndnsf-di-${SLURM_JOB_ID}-${RUN_ID}"
 staging="$scratch/evidence"
 mkdir -p "$staging" "@@LOG_ROOT@@"
 finish() {
