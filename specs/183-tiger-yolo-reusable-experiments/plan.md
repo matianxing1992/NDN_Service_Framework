@@ -1,7 +1,7 @@
 # Implementation Plan: Reusable TigerCluster YOLO Distributed Inference
 
 **Branch**: `TigerClusterExperiments` | **Date**: 2026-09-06 | **Spec**: [spec.md](spec.md)
-**Status**: IN_PROGRESS / LOCAL_PUBLICATION_BLOCKED / NEGATIVE_HARNESS_BLOCKED
+**Status**: IN_PROGRESS / LOCAL_EXACT_SIF_PASS / TIGER_GPU_PENDING
 
 ## Summary
 
@@ -9,46 +9,41 @@
 
 ### 2026-09-10 current candidate checkpoint
 
-The current layered candidate is APP v39 over the unchanged v22 base SIF. The
-actual six-artifact base manifest was extracted from the SIF and bound into
-candidate v40b; profile v48 and `host-minindn-v40` both verify the base SHA
-`sha256:2c07a9f14d48fabd9fb58036c1634f3cc3282dd28c6470add9f8a7da0cb829b5`
-and APP manifest SHA
-`sha256:f8af1b45cac7bf7bffbfa18737ebcaa62037e3813daacd2cf58064de94622813`.
-The extended negative cutpoint contract is now consumed by the native producer,
-MiniNDN runner and host validator.
+The current layered candidate is APP v39 over the rebuilt v23 base SIF. Base
+source selection includes the Controller NAC-ABE callback fix; GCC9 pybind
+compilation is reproducible with bounded `-O0 -g0 -B/usr/bin/` and
+`BOOST_PHOENIX_DONT_USE_PREPROCESSED_FILES`, while all builds remain at `-j4`.
+The v23 SIF SHA is
+`sha256:44b44d564c64387716a17588ea387ee2a255948ee744855291c8e7a0676907b0` and
+the APP v49 manifest SHA is
+`sha256:4a6c3af0c2cc24620c28519404f1a472074ebf354608372934339ae241942db7`.
+The extended negative cutpoint contract is consumed by the native producer,
+MiniNDN runner and host validator; the native withholding gate suppresses one
+fully identified V3 edge.
 
-Real MiniNDN runs `v105-v37` (Y-B) and `v107-v37` (eight Y-N subcases) remain
-PASS evidence. The formal exact-SIF local owner run `v110-v39` is a retained
-FAIL: candidate and host preflight pass, but the Controller publication
-ServiceUser aborts while authenticating NAC-ABE public parameters because the
-validator/policy does not invoke either callback. This leaves T011 open and
-blocks any new Tiger submission until the publication callback contract is
-fixed and a fresh formal local run completes. Historical Tiger single-node
-`210340` and first normal two-node `210341` remain valid PASS evidence; negative
-`210342` still needs the completion-budget and unique-edge fixes. Full evidence
-and the next order are in [the checkpoint](evidence/tiger-runtime-checkpoint-20260910.md).
+Real MiniNDN Y-B/Y-N and the fresh shared exact-SIF local owner run
+`tiger-local-cpu-v49-r1` are PASS evidence. The local verdict is
+`sha256:d15b41c1e853584de893d996741b31d9ee95b4ec89804e0373ad623486c17ebe`
+(`NORMAL_EXPERIMENT_PASS`, two requests, nine edges/request, shape `[1,50,6]`,
+maximum absolute error `0.0005340576171875`). The earlier v110 publication
+callback failure, packaging/extraction failures, stale NFD selection and the
+first remote-root transport failure remain immutable diagnostic records.
+Historical Tiger single-node `210340` and first normal two-node `210341` remain
+provenance only; fresh v49 GPU submission is in progress and T015/T016 still
+require new remote receipts. Full evidence and the order are in [the
+checkpoint](evidence/tiger-runtime-checkpoint-20260910.md).
 
 ### 2026-09-10 execution checkpoint
 
-The bounded sequence now has real Tiger single-node and first two-node normal
-evidence. APP v35 plus the unchanged v22 base SIF has a candidate-bound host
-gate, exact-SIF Y-B/Y-N matrix, shared local-cpu `NORMAL_EXPERIMENT_PASS`, and
-single-node GPU `210340` (`startupSeconds=300`). The first normal two-node
-allocation `210341` completed 1 warmup + 3 measured requests on `itiger02` and
-`itiger03`, with CUDA model roles, CPU Merge, nine dependency edges per request,
-numeric oracle and clean cleanup; this closes T014 only. The earlier `210331`
-APP v34 backend propagation defect remains retained, and APP v35 is the
-application-only repair over reusable v22 base bytes.
-
-The registered negative allocation `210342` reached Selection and native
-DetectShard0→Merge withholding, but the User was killed after 59.9946 s before
-`negative-user.json` could be written. The completion budget reserves cleanup
-from the same 90 s permission+request budget, leaving only 60 s for an observer
-whose request deadline is also 60 s. The production graph also has two distinct
-DetectShard0→Merge logical edges while the collector requires one. T015 is
-therefore blocked on harness timing and cutpoint cardinality; T016 must wait for
-a new negative PASS. See [two-node evidence](evidence/tiger-two-node-v35.md).
+The bounded sequence now has a fresh local owner PASS for v49. The earlier v35
+single-node and first two-node records remain useful substrate provenance, but
+they do not qualify the new v23+v49 composition. The new Tiger run must retain
+the allocation, node, GPU UUID, Apptainer version, Slurm terminal state and the
+same candidate digest before it can close T013. The registered negative
+allocation `210342` remains a retained FAIL: it reached Selection and native
+withholding, then lost the User observation at 59.9946 s; the current harness
+adds cleanup to the completion barrier and the native producer binds one logical
+edge. T015 must still be run on a fresh two-node allocation before T016.
 
 ## Technical Context
 

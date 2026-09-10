@@ -1,8 +1,9 @@
 # Spec183 runtime checkpoint — 2026-09-10
 
-This checkpoint records the exact sequence used for the current layered
-candidate. It separates component evidence, real MiniNDN evidence, and the
-formal local-owner failure; none of the latter is promoted to a PASS.
+This checkpoint records the exact sequence used for the v22/v39 and v23/v49
+layered candidates. It separates component evidence, real MiniNDN evidence,
+formal local-owner failure, and the fresh local-owner PASS; no partial record is
+promoted across a gate.
 
 ## Candidate and preflight
 
@@ -61,3 +62,52 @@ completes publication, User observation, numeric comparison and cleanup.
 3. Run T015 and collect its complete User observation and cleanup receipt.
 4. Only after T015 is `EXPECTED_REJECTION_PASS`, run T016 in a new two-node
    allocation with the unchanged profile, base SIF, APP, model and oracle.
+
+## Fresh v23/v49 local checkpoint — 2026-09-10
+
+The failed v110 run was followed by a clean base rebuild from the complete
+controller source selection. The base SIF is
+`base-runtime-controller-version-j4-v23.sif`, 3,586,351,104 bytes as recorded by its
+content-addressed cache, SHA-256
+`sha256:44b44d564c64387716a17588ea387ee2a255948ee744855291c8e7a0676907b0`.
+The source seal is
+`sha256:3c8ffcd5146a34d7577fb3712ee9178bf46637adb0e4a6b453c6adbc76979642`.
+The Controller and Producer startup callback is posted onto the Face IO
+context; this removes the validator callback race seen in v110. The pybind
+extensions were built with the bounded O0 fallback (`-O0 -g0 -B/usr/bin/` and
+`BOOST_PHOENIX_DONT_USE_PREPROCESSED_FILES`) after the GCC9 O1 compiler ICE.
+
+The external APP remains v39, source seal
+`sha256:112c444243fe80eaa41e17410e6234590cce5f6c91714c5695e8f6ebcdda770d`,
+manifest SHA
+`sha256:4a6c3af0c2cc24620c28519404f1a472074ebf354608372934339ae241942db7`,
+and build jobs=4. It is mounted read-only over the unchanged base libraries;
+no host library is injected. The candidate digest in the local verdict is
+`sha256:ed7967c65e6c765f74f4ad64fd45154b5094dbdc380a03a49a75eee0bd985384`.
+
+The exact command was:
+
+```bash
+python3 Experiments/TigerCluster/jobs/yolo/submit.py local \
+  --profile /project/tma1/ndnsf-di/candidates/spec183-v49-20260910/profile-v49.json \
+  --run-id tiger-local-cpu-v49-r1 \
+  --output /project/tma1/ndnsf-di/runs --case local-cpu
+```
+
+The retained verdict is
+`/project/tma1/ndnsf-di/runs/tiger-local-cpu-v49-r1/verdict.json`, 226050 bytes,
+SHA-256
+`sha256:d15b41c1e853584de893d996741b31d9ee95b4ec89804e0373ad623486c17ebe`.
+It reports `status=PASS`, `qualification=NORMAL_EXPERIMENT_PASS`, two requests,
+four providers and nine dependency edges per request. Both numerical oracles
+have shape `[1,50,6]`, `matched=true`, `atol=0.001`, `rtol=0.0001`, and
+`maxAbsError=0.0005340576171875`; CPU roles report no fallback and all child
+cleanup records are controlled. This closes the formal local gate T011 only.
+
+The first v49 Tiger submission uses the same candidate and profile:
+`tiger-single-node-gpu-v49-r7`. Its transport initially stopped at
+`REMOTE_STATE_UNRESOLVED` because the declared project candidate root had not
+been created. After creating that root, the same run resumed with rsync
+append/verify; no second Slurm submission was issued. Until a Slurm job ID,
+compute node, CUDA probe, terminal verdict and cleanup receipt are present, the
+run is `RUNNING`, not GPU PASS.

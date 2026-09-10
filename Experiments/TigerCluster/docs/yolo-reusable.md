@@ -31,45 +31,43 @@ NOT_EVALUATED清单（exit 78）；不上传或提交。公开submit的SSH协调
 
 ## 2026-09-10 current execution update
 
-The current candidate is APP v39 over the unchanged v22 base SIF. Profile v48
-and host receipt v40 bind the exact layered composition; the host component gate
-is `PASS`. Direct real MiniNDN runs `minindn-local-20260910-v105-v37` (Y-B) and
-`v107-v37` (Y-N, eight subcases) are also `PASS`.
+The current candidate is APP v39 over the rebuilt v23 base SIF. The v23 base
+SHA is `sha256:44b44d564c64387716a17588ea387ee2a255948ee744855291c8e7a0676907b0`
+(3,586,351,104 bytes); APP v49 manifest SHA is
+`sha256:4a6c3af0c2cc24620c28519404f1a472074ebf354608372934339ae241942db7`.
+The APP is an external read-only bundle. Base and APP builds are bounded to
+`-j4`; the GCC9 pybind fallback is `-O0 -g0 -B/usr/bin/` with
+`BOOST_PHOENIX_DONT_USE_PREPROCESSED_FILES`.
 
-The formal owner was then invoked on a fresh prepared run:
+Direct real MiniNDN Y-B/Y-N remain `PASS`. A clean formal local owner run then
+passed with the exact same composition:
 
 ```bash
 python3 Experiments/TigerCluster/jobs/yolo/submit.py prepare \
-  --profile Experiments/TigerCluster/profiles/yolo-two-node-controller-v48.json \
-  --run-id minindn-local-20260910-v110-v39 \
-  --output Experiments/TigerCluster/results --case local-cpu || test $? -eq 78
+  --profile /project/tma1/ndnsf-di/candidates/spec183-v49-20260910/profile-v49.json \
+  --run-id tiger-local-cpu-v49-r1 \
+  --output /project/tma1/ndnsf-di/runs --case local-cpu || test $? -eq 78
 python3 Experiments/TigerCluster/jobs/yolo/submit.py local \
-  --profile Experiments/TigerCluster/profiles/yolo-two-node-controller-v48.json \
-  --run-id minindn-local-20260910-v110-v39 \
-  --output Experiments/TigerCluster/results --case local-cpu
+  --profile /project/tma1/ndnsf-di/candidates/spec183-v49-20260910/profile-v49.json \
+  --run-id tiger-local-cpu-v49-r1 \
+  --output /project/tma1/ndnsf-di/runs --case local-cpu
 ```
 
-Candidate, host receipt, NFD network setup and APP integrity passed, but the
-Controller child exited 139. An isolated exact-SIF reproduction reaches
-`SPEC180_CONTROLLER_READY` and then aborts with:
+The verdict is `NORMAL_EXPERIMENT_PASS`, candidate digest
+`sha256:ed7967c65e6c765f74f4ad64fd45154b5094dbdc380a03a49a75eee0bd985384`,
+two requests, nine dependency edges per request, shape `[1,50,6]`,
+`matched=true`, and `maxAbsError=0.0005340576171875`. The retained file is
+`/project/tma1/ndnsf-di/runs/tiger-local-cpu-v49-r1/verdict.json` with SHA
+`sha256:d15b41c1e853584de893d996741b31d9ee95b4ec89804e0373ad623486c17ebe`.
 
-```text
-Fetched public parameters cannot be authenticated: Validator/policy did not invoke success or failure callback
-```
-
-This is the Controller publication User's unresolved NAC-ABE validator/policy
-callback contract. It leaves T011/local qualification open. Do not manually
-provision issuer/public/private directories before `submit.py local`; the
-formal local owner must perform one atomic provision/start/collect/cleanup
-sequence, and every partial attempt uses a new run ID.
-
-The Tiger order remains: formal local PASS → fresh allocation preflight →
-single-node GPU → first normal two-node (historical `210341`) → repaired
-negative T015 → independent normal reuse T016. The historical `210340` and
-`210341` PASS records remain valid evidence. The negative `210342` record is
-retained as a failure because its User observer timed out at 59.9946 s and its
-collector could not distinguish the two same-role-pair logical edges. Full
-hashes, run paths and next actions are in the [Spec183 checkpoint](../../../specs/183-tiger-yolo-reusable-experiments/evidence/tiger-runtime-checkpoint-20260910.md).
+The prior v110 publication callback failure, cache/extraction mistakes, stale
+NFD selection, and the first remote candidate-root transport failure remain
+immutable diagnostic records. The v49 Tiger order is formal local PASS →
+single-node GPU → fresh two-node normal → negative T015 → independent normal
+reuse T016. Submission `tiger-single-node-gpu-v49-r7` is currently transferring
+the same candidate; no remote GPU PASS is claimed until Slurm/CUDA/cleanup
+receipts are collected. Full hashes and retained failures are in the
+[Spec183 checkpoint](../../../specs/183-tiger-yolo-reusable-experiments/evidence/tiger-runtime-checkpoint-20260910.md).
 
 负例触发点已有源码和原生组件证据：`DetectShard0` 在真实V3输出校验后、
 首包发布前阻止该请求到 `Merge` 的对象，并保留绑定的触发记录。见Spec183
@@ -122,20 +120,20 @@ v22 base SIF，只重建外置 APP 和受影响 planes。Tiger single-node GPU
 `prepare` 后直接 `local`，不要再对同一 run 手动调用 `provision`）：
 
 ```bash
-ROOT=$(readlink -f Experiments/TigerCluster/.cache/layered-base-20260909)
+ROOT=/project/tma1/ndnsf-di/candidates/spec183-v49-20260910
 RUN=minindn-local-<date>-<id>
-OUT=Experiments/TigerCluster/results
-export SPEC180_RUNTIME_SIF="$ROOT/base-runtime-controller-version-j4-v22-stable-20260909.sif"
+OUT=/project/tma1/ndnsf-di/runs
+export SPEC180_RUNTIME_SIF="$ROOT/planes/runtime/base-runtime-controller-version-j4-v23.sif"
 export SPEC180_RUNTIME_APPTAINER=/opt/apptainer/1.5.3/bin/apptainer
 export SPEC180_RUNTIME_APP_ROOT="$ROOT/app-controller-version-j4-v39"
 export PYTHONPATH="$PWD/NDNSF-DistributedInference:$PWD/NDNSF-DistributedRepo/pythonWrapper:$PWD/pythonWrapper"
 
 # Freeze one new run; prepare intentionally exits 78/NOT_EVALUATED.
 python3 Experiments/TigerCluster/jobs/yolo/submit.py prepare \
-  --profile Experiments/TigerCluster/profiles/yolo-two-node-controller-v48.json \
+  --profile "$ROOT/profile-v49.json" \
   --run-id "$RUN" --output "$OUT" --case local-cpu || test $? -eq 78
 python3 Experiments/TigerCluster/jobs/yolo/submit.py local \
-  --profile Experiments/TigerCluster/profiles/yolo-two-node-controller-v48.json \
+  --profile "$ROOT/profile-v49.json" \
   --run-id "$RUN" --output "$OUT" --case local-cpu
 ```
 

@@ -2,18 +2,15 @@
 
 **Input**: [spec.md](spec.md), [plan.md](plan.md), [profile contract](contracts/experiment-profile.md), [validation matrix](validation-matrix.md)
 **Branch**: `TigerClusterExperiments`
-**Status**: IN_PROGRESS / LOCAL_PUBLICATION_BLOCKED / NEGATIVE_HARNESS_BLOCKED.
-The current candidate is APP v39 layered over the unchanged, content-verified
-v22 base SIF. Its v40 host receipt and v105/v107 real MiniNDN evidence are
-verified; formal local run `minindn-local-20260910-v110-v39` fails in the
-Controller publication User's NAC-ABE public-parameter callback and is not a
-local PASS. Historical single-node `210340` and first normal two-node `210341`
-remain valid Tiger PASS evidence. The registered negative `210342` reached
-Selection and native output withholding but was terminated before User
-observation was written; it is not a negative PASS. T011 is open pending a
-fresh formal local run, T014 is closed for the first normal allocation, T015 is
-blocked on the negative harness, and T016 cannot start until T015 is repaired
-and rerun.
+**Status**: IN_PROGRESS / TIGER_GPU_SINGLE_NODE_RUNNING / NEGATIVE_PENDING.
+The current candidate is APP v39 layered over the rebuilt v23 base SIF. The
+fresh shared exact-SIF local owner run `tiger-local-cpu-v49-r1` is a
+`NORMAL_EXPERIMENT_PASS`; it binds the v23 base, v49 application bundle, two
+requests, nine dependency edges per request, `[1,50,6]` output and
+`maxAbsError=0.0005340576171875`. The earlier v22/v35 Tiger PASS records remain
+historical provenance. A new v49 single-node GPU submission is transferring
+the exact candidate to Tiger; T015/T016 remain open until fresh remote receipts
+are collected. Every failed attempt remains immutable evidence.
 
 ## 2026-09-10 final task execution ledger
 
@@ -26,21 +23,58 @@ evidence.
 | T008 | Source/ABI and evidence-consumer fixes; focused host-gate regression | VERIFIED (focused) | commits `3495cf3c`/`a9394555`/`bf741368`; 18 targeted host-gate/producer/dispatch tests pass; extended round/microbatch/operationKind/tensor fields are validated | Re-run the affected full gate after any callback fix; keep `-j4` ceiling |
 | T009 | Integration/dispatch contract and evidence-consumer wiring | VERIFIED (focused) | Native producer, MiniNDN consumer and host validator now share the extended bound cutpoint schema; targeted host-gate/producer/dispatch suite is green | Keep source/app identity bound when regenerating local receipt |
 | T010 | MiniNDN protocol qualification | REAL_MININDN_PASS | `Experiments/TigerCluster/results/minindn-local-20260910-v105-v37` and `v107-v37`; RC0, ACK/Selection, oracle, cleanup | Do not promote direct MiniNDN evidence to formal local or GPU qualification |
-| T011 | v40b candidate, v48 profile, v40 host gate, then formal `submit.py local` | BLOCKED / FAIL | Host component PASS; `v110-v39` RC2, Controller exit 139; isolated exact-SIF reproduction aborts with `Fetched public parameters cannot be authenticated: Validator/policy did not invoke success or failure callback` | Fix publication User NAC-ABE callback/policy contract; fresh `prepare` → `local` run |
+| T011 | v23 base + APP v49, shared profile v49, fresh formal `submit.py local` | PASS | `/project/tma1/ndnsf-di/runs/tiger-local-cpu-v49-r1/verdict.json`, `sha256:d15b41c1e853584de893d996741b31d9ee95b4ec89804e0373ad623486c17ebe`; `NORMAL_EXPERIMENT_PASS`, candidate `sha256:ed7967c65e6c765f74f4ad64fd45154b5094dbdc380a03a49a75eee0bd985384`, 2 requests, 9 edges/request, shape `[1,50,6]`, max abs error `0.0005340576171875` | Validate the same frozen composition on Tiger single-node GPU |
 | T012 | Reuse Tiger substrate and staging evidence | VERIFIED_REUSED | Earlier allocation preflight and staging evidence bound to v22 base; per-allocation checks remain mandatory | Repeat environment/capacity/route checks for the next allocation |
-| T013 | Single-node GPU, 1 warmup + 1 measured | PASS (historical) | `210340` / `tiger-single-node-gpu-v35-r7`, CUDA model roles, CPU Merge, oracle, cleanup | Reuse only after current local gate and candidate identity are valid |
+| T013 | Single-node GPU, 1 warmup + 1 measured | RUNNING (fresh v49) | Submit run `tiger-single-node-gpu-v49-r7`; exact v23 SIF SHA `sha256:44b44d564c64387716a17588ea387ee2a255948ee744855291c8e7a0676907b0`, APP manifest `sha256:4a6c3af0c2cc24620c28519404f1a472074ebf354608372934339ae241942db7`; remote transfer is in progress, no Slurm receipt yet | Collect remote job only after the transport journal reaches terminal state |
 | T014 | First two-node normal, 1 warmup + 3 measured | PASS (first allocation) | `210341` / `tiger-two-node-gpu-v35-r5`, `itiger02`/`itiger03`, nine dependency edges/request, oracle, cleanup | Preserve this run; do not count it as T016 reuse |
-| T015 | Registered two-node `negative-dependency` | BLOCKED after real attempt | `210342` reached Selection and two withheld records; User timed out at 59.9946 s; no `negative-user.json` or collection record; two same-role-pair logical edges | Fix completion budget and bind one complete logical edge; new allocation and collector receipt |
+| T015 | Registered two-node `negative-dependency` | NOT_STARTED (fresh v49 pending T014) | Historical `210342` remains a retained FAIL: Selection, two withheld records, User timeout at 59.9946 s, no collection terminal. Current v49 harness includes the completion-budget reservation fix and native first-edge withholding; no new allocation has been run | Run after fresh v49 normal two-node PASS; require one complete edge identity and User `OBSERVATION_ONLY` record |
 | T016 | Second independent normal two-node allocation | NOT STARTED | Must wait for T015 `EXPECTED_REJECTION_PASS` | New allocation with unchanged profile/base/APP/model/oracle and new identities |
 | T017 | Operator handoff and reusable documentation | IN PROGRESS | This ledger plus [runtime checkpoint](evidence/tiger-runtime-checkpoint-20260910.md), failure log and Tiger guide | Refresh after callback fix, T015 and T016; retain all failed runs |
 
 ## Latest checkpoint note
 
-The v39/v40 candidate supersedes the older v35 paragraph below for current
-execution. Host component validation and direct MiniNDN v105/v107 remain green,
-but formal local v110 fails during Controller publication User NAC-ABE public
-parameter validation. Keep the historical v35 table as provenance; use the
-final ledger above for the active next gate.
+The v49 candidate supersedes the v39/v40 paragraph below for current
+execution. The base is the rebuilt v23 SIF (not the historical v22 bytes), and
+the application remains an external read-only v39 bundle. A fresh shared
+project-storage local owner run passed before any Tiger submission. The earlier
+v110 publication callback failure is retained as a failure record and was
+resolved by rebuilding the base source selection with the controller callback
+patch. Keep all v22/v35 Tiger runs as provenance only; the v49 Tiger result is
+the controlling evidence for closure.
+
+## 2026-09-10 v49 execution process
+
+The reproducible sequence was: (1) verify the lock and CodeGraph ownership;
+(2) build the base libraries with `-j4`, then retry the GCC9 pybind build at
+`-O0 -g0 -B/usr/bin/` with
+`BOOST_PHOENIX_DONT_USE_PREPROCESSED_FILES`; (3) build only the changed APP at
+the same bounded optimization; (4) run source/ABI, manifest, RPATH/`ldd`,
+Python-extension and real MiniNDN checks; (5) create a project-storage
+candidate containing the exact base SIF, external APP, harness, model, oracle,
+contracts and host receipt; (6) run `submit.py prepare` and `submit.py local`
+against that candidate; and (7) use the same immutable candidate for Tiger
+transport, Slurm and Apptainer `exec --nv`. The profile, candidate and run
+files were made transport-safe before `plan-transport`; no host library was
+allowed to override the packaged base.
+
+The first local publication attempt (`v110-v39`) failed at the Controller
+NAC-ABE public-parameter validator callback. Earlier packaging attempts also
+failed because an APP cache was mistaken for a bundle, the model/oracle was
+incomplete, and a stale NFD was selected. The first Tiger retry failed before
+Slurm because the remote candidate root did not exist (`REMOTE_STATE_UNRESOLVED`);
+creating that declared project root and retrying the same run ID resumed the
+transport without a second `sbatch`. These failures are recorded in
+`docs/failure-log.md`; none is rewritten as a PASS.
+
+The fresh local owner evidence is
+`/project/tma1/ndnsf-di/runs/tiger-local-cpu-v49-r1/verdict.json` (226050 bytes,
+`sha256:d15b41c1e853584de893d996741b31d9ee95b4ec89804e0373ad623486c17ebe`). It
+is `NORMAL_EXPERIMENT_PASS`, candidate
+`sha256:ed7967c65e6c765f74f4ad64fd45154b5094dbdc380a03a49a75eee0bd985384`, with
+two requests, four providers, nine dependency edges per request, numeric shape
+`[1,50,6]`, `matched=true`, `maxAbsError=0.0005340576171875`, no CPU fallback in
+the CPU role observations, and controlled cleanup. This closes T011 only;
+Tiger GPU and reuse gates still require their own retained receipts.
 
 ## Detailed Execution Progress
 

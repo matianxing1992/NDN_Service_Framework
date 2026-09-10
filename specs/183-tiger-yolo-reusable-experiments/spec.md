@@ -2,14 +2,14 @@
 
 **Feature Branch**: `TigerClusterExperiments`
 **Created**: 2026-09-06
-**Status**: IN_PROGRESS / LOCAL_PUBLICATION_BLOCKED / NEGATIVE_HARNESS_BLOCKED
+**Status**: IN_PROGRESS / LOCAL_EXACT_SIF_PASS / TIGER_GPU_PENDING
 **Input**: 固定可复用的配置文件与实验脚本，在 TigerCluster 验证 NDNSF-DI + YOLO 分布式推理；Tiger 专用脚本和配置集中于 `Experiments/TigerCluster`。
 
 ## Scope And Evidence Boundary
 
 交付一个人能直接使用、机器能验证的入口：选择一份配置，检查、准备、运行、收集；同一合格配置可在新 allocation 中重复使用。目标是正确性和复用，不是新推理算法、整个 DI 的 C++ 迁移或性能优势。Spec182 保持 NOT_STARTED。
 
-交付入口 `81e251a4` 只表示 SOURCE_READY；四库运行源码由 `Experiments/TigerCluster/development-handoff.lock.json` 固定，其中 NDNSF 为 `447f7584`。旧 r119/base SIF、Local R8 FAIL、B003 未完成均不代表新组合通过。2026-09-10 当前候选已推进到 APP v39 + 不变 v22 base：v40 host gate 为 PASS，v105/v107 的真实 MiniNDN Y-B/Y-N 为 PASS，历史 Tiger 单节点 GPU `210340` 与首个双节点正常 `210341` 仍为 PASS。v36–v38 的缓存、包载荷、oracle 路径、证据 schema 和 source-selection 失败均已保留并修正。新的正式 exact-SIF local `v110-v39` 在 Controller 发布 User 的 NAC-ABE public-parameter validator callback 处失败（`Fetched public parameters cannot be authenticated: Validator/policy did not invoke success or failure callback`），所以 T011 当前未关闭；这不是 base SIF、host gate、NFD route 或 CUDA probe 失败。`210342` 负例仍只到达 Selection/withheld，T015 仍受 completion budget 与同源多逻辑 edge cardinality 阻塞，T016 和最终 closure 未完成。逐 run 记录见 [2026-09-10 checkpoint](evidence/tiger-runtime-checkpoint-20260910.md)。
+交付入口 `81e251a4` 只表示 SOURCE_READY；四库运行源码由 `Experiments/TigerCluster/development-handoff.lock.json` 固定，其中 NDNSF 为 `447f7584`。旧 r119/base SIF、Local R8 FAIL、B003 未完成均不代表新组合通过。2026-09-10 当前候选为 APP v39 + 修订后的 v23 base SIF：host component gate、真实 MiniNDN Y-B/Y-N 和 fresh exact-SIF local owner 均通过。local 回执 `tiger-local-cpu-v49-r1` 是 `NORMAL_EXPERIMENT_PASS`，绑定 candidate `sha256:ed7967c65e6c765f74f4ad64fd45154b5094dbdc380a03a49a75eee0bd985384`，两请求、每请求 9 条依赖边、shape `[1,50,6]`、`maxAbsError=0.0005340576171875`。此前 v110 的 NAC-ABE public-parameter callback 失败、v21/v23 extraction、GCC9 编译 ICE、APP/O1 编译 ICE、stale NFD 和远端 candidate root 缺失均保留为失败证据并已纳入流程修正。新的 Tiger single-node GPU run 正在传输，尚未取得 Slurm 终态；T015/T016 和最终 closure 仍未完成。逐 run 记录见 [2026-09-10 checkpoint](evidence/tiger-runtime-checkpoint-20260910.md)。
 
 本 Spec 的资格判定仍按完整边界执行：transport、CUDA probe 或 Provider `READY` 只能作为组件证据；GPU Provider 的 ACK 还必须包含与其 `cuda:*` topology 对应的、签名且可用的 `free_memory_mb` 资源行。只有 User warmup/measured、独立 oracle、每角色 backend/GPU、退出码和清理全部闭合，才能记录对应 PASS。负例还必须写出 `OBSERVATION_ONLY` User record、唯一逻辑 cutpoint、Merge native failure、无响应/无重选和 clean cleanup；部分 withheld 日志不能升级为 `EXPECTED_REJECTION_PASS`。正式 local 还必须由唯一 owner 完成 provision、Controller publication、User 观察和 collector，不能把 host receipt 或 direct MiniNDN 组件证据代替 local PASS。逐 run 证据和固定执行顺序见 [2026-09-10 checkpoint](evidence/tiger-runtime-checkpoint-20260910.md)、[Tiger deployment diagnosis](evidence/tiger-deployment-diagnosis-v70.md) 与 [two-node evidence](evidence/tiger-two-node-v35.md)。
 
