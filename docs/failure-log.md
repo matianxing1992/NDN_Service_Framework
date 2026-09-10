@@ -5241,3 +5241,147 @@ was not submitted.
 Lesson: size and filename are insufficient for a reused SIF; every APP build
 and candidate preparation must hash the exact bytes at the declared canonical
 path.
+
+## 2026-09-10 — v35 host-gate archive missed per-run preparation binding
+
+Symptom: the first v35 host-gate assembly failed validation with
+`YOLO_HOST_GATE_EXECUTION_BINDING` before semantic result checks.
+Root cause: copied run evidence under the aggregate output did not include each
+run's `public/preparation.json`, so the validator could not bind execution to
+the frozen preparation receipt.
+Fix status: create a fresh `host-gate-v35-r2`, restore the per-run public
+preparation files, and regenerate the shared `host-minindn-v35.json` receipt.
+The corrected receipt passed strict semantic validation.
+Lesson: an aggregate host receipt must retain the execution-binding metadata of
+every constituent run; copied logs alone are not sufficient evidence.
+
+## 2026-09-10 — stale native manifest rejected APP v35
+
+Symptom: `minindn-local-20260910-v99-v35` stopped before execution with
+`GATE_HOST_SOURCE_BINDING`.
+Root cause: the candidate still referenced the v34 native manifest whose app
+source-seal identity did not match APP v35.
+Fix status: generate `native-manifest-v35.json`, render v45 inputs/runtime/
+dispatch planes, and prepare a fresh run from the updated profile.
+Lesson: application-only rebuilds still require a new candidate-bound native
+manifest and plane identity; never edit or reuse a prior gate verdict to bypass
+the source-seal check.
+
+## 2026-09-10 — sender profile was outside the transport roots
+
+Symptom: `submit --plan-transport` for the first APP v35 GPU run stopped with
+`TRANSPORT_OUTSIDE_ROOTS` while adding the profile file.
+Root cause: the command used the repository working-tree profile, but the
+transport contract permits only files under the declared shared candidate/run
+roots. The candidate bytes themselves were not changed.
+Fix status: publish the same v42 profile bytes under the v35 candidate root and
+rerun `prepare`/transport with a fresh run id.
+Lesson: the sender and receiver must consume the same candidate-root profile;
+an equivalent working-tree copy is not transport-addressable evidence.
+
+## 2026-09-10 — two-node startup budget expired before network probe
+
+Symptom: Tiger job `210335` allocated `itiger02`/`itiger03`, passed both GPU
+probes and NFD route commands, then rank 0 ended with
+`YOLO_STARTUP_NETWORK_BUDGET`; no Controller, Provider or User process was
+started and `collect --reconcile` returned `COLLECTION_INPUT_MISSING`.
+Root cause: the two ranks reached the `nfd-ready` barrier at different times;
+one remote face setup consumed about 59 seconds of the 120-second startup
+budget. The fail-closed guard correctly reserved 30 seconds for the network
+probe and 30 seconds for cleanup, leaving no safe probe window.
+Fix status: retain the failed run and increase the candidate's two-node startup
+budget in a fresh profile/run (without changing the base SIF or APP), then
+recheck the local promotion gate before submitting again.
+Lesson: a successful NFD command list does not prove that the remaining startup
+budget can cover the signed peer probe; budget arithmetic must be observed per
+rank and a fresh allocation is required after a timeout.
+
+## 2026-09-10 — v35 two-node provider startup exceeded 180 seconds
+
+Symptom: Tiger job `210339` allocated `itiger02`/`itiger03`; both NFD and
+cross-node network probes passed, and rank 0's BackboneNeck became ready, but
+rank 1's DetectShard providers did not reach the provider barrier before
+`STARTUP_DEADLINE`. Slurm recorded exit `1:0`; no request was admitted.
+Root cause: the 180-second startup budget covered the slower two-node provider
+initialization only partially. This was a distinct failure from the earlier
+120-second network-probe budget failure.
+Fix status: retain `210339` as negative evidence and raise `startupSeconds` to
+300 in a newly rendered profile/planes before creating another two-node
+allocation; do not reuse the timed-out run.
+Lesson: two-node qualification must budget NFD, peer probe, and both ranks'
+provider installation/readiness separately; a rank-0 readiness receipt cannot
+stand in for rank-1 provider readiness.
+
+## 2026-09-10 — v48 plane render rejected an incomplete APP source artifact
+
+Symptom: the first v35 layered-plane render stopped before publishing inputs
+because the application source directory did not contain the required
+`application-manifest.json`.
+
+Root cause: the render command was pointed at an intermediate APP source tree,
+not the immutable external application artifact produced by the APP builder.
+No SIF or model bytes were changed.
+
+Fix status: remove the partial v48 plane, point the renderer at the verified
+APP v35 artifact directory, and render v49/v50 from the complete manifest.
+
+Lesson: a source directory that has binaries is not an application artifact;
+render only from a manifest-bound APP bundle and retain the failed plane.
+
+## 2026-09-10 — v49 transfer accidentally included the runtime SIF
+
+Symptom: the first project-storage transfer of `planes-v49` began copying the
+3.9 GB runtime SIF even though that layer was already present on the receiver;
+the transfer was stopped and the partial remote v49 tree was removed.
+
+Root cause: the exclusion covered `inputs/*.sif` but not the hard-linked SIF in
+`runtime/`; the transfer inventory was therefore larger than the intended
+small-file plane.
+
+Fix status: recreate `planes-v50`, exclude both `inputs/*.sif` and
+`runtime/*.sif`, and hard-link the verified receiver-side v22 SIF. No candidate
+bytes were submitted from the partial v49 tree.
+
+Lesson: inspect the rendered file inventory before SSH transfer; SIF reuse is
+valid only when the receiver already has the exact hash and mode.
+
+## 2026-09-10 — stale profile identity froze the first v35 local retry
+
+Symptom: the first v35 retry used a prepared profile digest that differed from
+the current shared `profile-v42.json`; transport reported the old manifest
+identity and `prepare` later rejected the run with `PROFILE_CHANGED_AFTER_PREPARE`.
+
+Root cause: the working-tree profile was updated after the candidate-root copy
+and the run was not re-prepared from the synchronized bytes.
+
+Fix status: synchronize source, shared and Tiger profile copies, preserve the
+stale run as diagnostic evidence, and create a fresh run ID from the current
+profile. Do not edit the old preparation receipt.
+
+Lesson: a profile path is part of the frozen identity; every profile change
+requires a fresh prepare and downstream gate.
+
+## 2026-09-10 — negative dependency run exhausted its User observation budget
+
+Symptom: Tiger job `210342` (`tiger-two-node-gpu-v35-neg1`) reached allocation,
+GPU/provider readiness, ACK and Selection, and DetectShard0 emitted two bound
+`NDNSF_DI_OUTPUT_WITHHELD` records. The User supervisor then raised
+`subprocess.TimeoutExpired` after `59.99460293306038` seconds; no
+`negative-user.json` or `collection-input.json` was produced and Slurm recorded
+`FAILED 1:0`.
+
+Root cause: the negative case computes one request as 30 s permission wait plus
+60 s request deadline, then subtracts the 30 s cleanup reserve before launching
+the User. The observer therefore receives only 60 s, which cannot include its
+bounded wait and shutdown. Independently, the real graph has two distinct
+DetectShard0→Merge logical edges (rounds 3 and 6), while the collector requires
+one edge and one withheld record.
+
+Fix status: retain `neg1` unchanged and keep T015 blocked. The next fix must
+give the negative User a completion budget that covers wait plus shutdown and
+bind the fault to one complete logical edge; only a fresh allocation with a
+successful collector may close T015.
+
+Lesson: a native withheld marker proves only that a fault trigger ran. Negative
+qualification requires User observation, exact cutpoint cardinality, consumer
+failure, no response/reselection and clean post-run collection.

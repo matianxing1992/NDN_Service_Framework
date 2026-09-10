@@ -9,16 +9,24 @@
 
 ### 2026-09-10 execution checkpoint
 
-The bounded sequence reached a real Tiger single-node allocation. APP v33 plus
-the unchanged v22 base SIF now has a fresh host gate, exact-SIF Y-B/Y-N matrix,
-and remote local-cpu `NORMAL_EXPERIMENT_PASS`. Job `210316` passed exact
-staging, capacity, socket, CUDA visibility and four-Provider startup, then the
-User failed before placement because native V3 ACKs hard-coded `resources:[]`.
-The planner correctly requires per-CUDA-device free-memory rows. The native
-offer now accepts a provider-owned snapshot and the executable queries
-runtime-visible CUDA `cudaMemGetInfo`; this is an APP-only change, so the base
-SIF remains reusable. APP v34, fresh gates, and a new Tiger allocation are
-still required; there is no GPU YOLO qualification PASS yet.
+The bounded sequence now has real Tiger single-node and first two-node normal
+evidence. APP v35 plus the unchanged v22 base SIF has a candidate-bound host
+gate, exact-SIF Y-B/Y-N matrix, shared local-cpu `NORMAL_EXPERIMENT_PASS`, and
+single-node GPU `210340` (`startupSeconds=300`). The first normal two-node
+allocation `210341` completed 1 warmup + 3 measured requests on `itiger02` and
+`itiger03`, with CUDA model roles, CPU Merge, nine dependency edges per request,
+numeric oracle and clean cleanup; this closes T014 only. The earlier `210331`
+APP v34 backend propagation defect remains retained, and APP v35 is the
+application-only repair over reusable v22 base bytes.
+
+The registered negative allocation `210342` reached Selection and native
+DetectShard0→Merge withholding, but the User was killed after 59.9946 s before
+`negative-user.json` could be written. The completion budget reserves cleanup
+from the same 90 s permission+request budget, leaving only 60 s for an observer
+whose request deadline is also 60 s. The production graph also has two distinct
+DetectShard0→Merge logical edges while the collector requires one. T015 is
+therefore blocked on harness timing and cutpoint cardinality; T016 must wait for
+a new negative PASS. See [two-node evidence](evidence/tiger-two-node-v35.md).
 
 ## Technical Context
 
@@ -48,7 +56,7 @@ I/II：沿用动态 API 和现有鉴权/请求级密钥，不新建框架协议�
 | `runtime/yolo_worker.py`, `yolo_result.py` | implemented; runtime unqualified | 共享生命周期、四角色和normal/negative留存collector已接；每rank先有界检查版本，public重算要求issuer及所有rank原记录 |
 | `apps/yolo.py` | implemented; runtime unqualified | 复用ACK-driven User/签发/准备，per-request独立graph reference已接；不另建模型规划或密钥owner |
 | `jobs/yolo/submit.py`, `run.sbatch` | implemented; runtime unqualified | 五命令、normal local/single/two、negative双rank、SSH接收/submit/query和终态已接；真实前置资格仍缺，见tasks.md |
-| `profiles/yolo-two-node.json`, `schemas/tiger-yolo-v1.schema.json` | implemented; candidate refresh pending | 一份操作者配置及验证格式；图/模型等外部输入仅以immutable引用出现；最终source/R/E尚未资格化 |
+| `profiles/yolo-two-node.json`, `schemas/tiger-yolo-v1.schema.json` | implemented; v42 runtime profile frozen for current candidate | 一份操作者配置及验证格式；当前 v42 绑定 APP v35/v22 base、host/local/single-GPU/first-two-node receipts；负例与复用资格仍开放 |
 | `adapters/slurm-apptainer/scripts/build-local-sif.sh`, `prepare-development-handoff.py` | existing | 原构建/打包入口，不新增另一个构建器 |
 | `examples/python/NDNSF-DistributedInference/yolo_2x2/user.py`, `Experiments/NDNSF_DI_YoloAckDriven_Minindn.py` | existing | 当前实际应用/本地网络路径，适配层传参数而不复制 |
 | `NDNSF-DistributedInference`, `ndn-service-framework`, dependency repos | existing | DI 计划/执行、NDN 安全/传输、库 ABI；修复归原 owner |
@@ -83,8 +91,8 @@ T001已完成接收清点（见evidence/input-inventory.md），发现两个必�
 3. G2 / T007：实现到生产调用路径收敛审计，必须 PASS。检查实际 argv/env、角色路由、secure grant/selection、harness/oracle、清理、数据路径。未接线不能算实现。
 4. G3 / T008–T010：在本机匹配的基础容器/SDK 中按锁构建或复用闭包（`NAC-ABE + NDN-SVS → NDNSD → NDNSF/Repo及通用绑定 → 外部Apps`），相关unit→真实集成→CPU MiniNDN。不先重复编译一套主机 ORT 版本的应用。构建键未变时只增量编译受影响 app；ABI变更清理消费者。基础构建验收可复用，MiniNDN receipt 绑定实际 source/base/app 组合，用于后续运行资格，不是基础构建前置。
 5. G4 / T011：通过原构建 owner 下的分层入口构建或复用基础 SIF，在匹配容器/SDK 生成独立 app 包；DSO/import/help 是启动前检查，合格 MiniNDN gate 后完成精确 base+app 的本地 YOLO 资格。两层产物清单替代“九产物都在SIF”检查。基础/SDK构建可先独立推进；不得将其成功等同 G2 或完整组合资格。单阶段基础镜像保留稳定开发工具可同时作为本地SDK，不要求为同一ABI再生成一份SDK镜像。
-6. G5 / T012–T014：目标 compute 环境匹配→精确 SIF 上传/staging 校验→一节点 GPU 四 Provider→两节点 GPU 第一次正常运行。
-7. G6 / T015–T017：小规模负例→第二个独立双节点正常 allocation→离线重算和可复用交付。
+6. G5 / T012–T014：目标 compute 环境匹配→精确 SIF 上传/staging 校验→一节点 GPU 四 Provider→两节点 GPU 第一次正常运行（`210340`/`210341` 已闭合）。
+7. G6 / T015–T017：先修复并通过一次远端负例（`210342` 暴露 completion-budget 与逻辑 edge cardinality 缺陷），再做第二个独立双节点正常 allocation，最后离线重算和可复用交付；负例未 PASS 前不得启动 T016。
 
 Apptainer 版本探测可能在 T011 前必要。只允许先通过 G2 且 probe 自身的输入/脚本检查，再做有界 substrate allocation；其独立证据不是模型资格，不能要求不存在的 SIF。这消除“先有镜像才能获取构建器版本”的循环依赖。无目标权限/配额则记录 WAITING_EXTERNAL_INPUT，保留可做的本地工作。
 

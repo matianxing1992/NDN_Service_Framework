@@ -1,0 +1,186 @@
+{
+ "cases": [
+  "local-cpu",
+  "single-node-gpu",
+  "two-node-gpu",
+  "negative-dependency"
+ ],
+ "cluster": {
+  "account": "devs",
+  "constraint": "",
+  "cpusPerNode": 4,
+  "gpuClass": "rtx_6000",
+  "gpusPerNode": 1,
+  "memoryGiB": 4,
+  "nodes": 2,
+  "partition": "bigTiger",
+  "tcpPort": 16363,
+  "wallTimeSeconds": 900
+ },
+ "evidence": {
+  "harnessManifest": {
+   "bytes": 3663,
+   "path": "/project/tma1/ndnsf-di/candidates/spec183-v35-20260910/planes-v50/dispatch/harness/harness-manifest.json",
+   "sha256": "sha256:1a71eff0042560009f5bc8b7d6bd1615813506d750ad5e0fb44c67f983f8b4ae"
+  },
+  "operatorLock": {
+   "bytes": 3694,
+   "path": "/project/tma1/ndnsf-di/candidates/spec183-v35-20260910/planes-v43/inputs/development-handoff.lock.json",
+   "sha256": "sha256:2e3f10743495b269e73987ae5bbeacad35748ef90b021b5024a30f1366c1ff18"
+  },
+  "validationContract": {
+   "bytes": 54801,
+   "path": "/project/tma1/ndnsf-di/candidates/spec183-v35-20260910/contracts/experiment-profile.md",
+   "sha256": "sha256:557928f3c47e45e0de6ab1ee8a44171074c0e94c2ea89fb1ba5a380f01b16944"
+  }
+ },
+ "oracle": {
+  "contract": {
+   "bytes": 54801,
+   "path": "/project/tma1/ndnsf-di/candidates/spec183-v35-20260910/contracts/experiment-profile.md",
+   "sha256": "sha256:557928f3c47e45e0de6ab1ee8a44171074c0e94c2ea89fb1ba5a380f01b16944"
+  },
+  "input": {
+   "bytes": 162,
+   "path": "/project/tma1/ndnsf-di/candidates/spec183-v35-20260910/repository/tests/fixtures/spec180/yolo26n/fixed-fixture.ppm",
+   "sha256": "sha256:7edf1f524ef450be6ee2304b3c0b47b70c3d72610c18f2f2fa28157d7b8a113c"
+  },
+  "reference": {
+   "bytes": 1328,
+   "path": "/project/tma1/ndnsf-di/candidates/spec183-v35-20260910/model/spec180-public/oracle/full-model-output.npy",
+   "sha256": "sha256:ed5a23d73e3cda04677bfc9d895732b44e1455f20d9dc433ae5462eb7b9b7175"
+  }
+ },
+ "profileId": "tiger-yolo-two-node-v1",
+ "release": {
+  "dispatch": {
+   "bytes": 1354,
+   "path": "/project/tma1/ndnsf-di/candidates/spec183-v35-20260910/planes-v50/dispatch/plane.json",
+   "sha256": "sha256:4f9d5b31af782e4a941ca83fa8ca23ef190dc48f625edbe1446ae6283be8133c"
+  },
+  "gates": {
+   "hostMinindn": {
+    "bytes": 4510,
+    "path": "/project/tma1/ndnsf-di/runs/host-minindn-v35/host-minindn-v35.json",
+    "sha256": "sha256:e4ad9acba7cab6ec1d548b8dfb14be94c550f4a8986575b6bacf1d7d8b45fa6d"
+   },
+   "localSif": {
+    "bytes": 226051,
+    "path": "/project/tma1/ndnsf-di/runs/tiger-local-cpu-v35-r4/verdict.json",
+    "sha256": "sha256:74fdd08b0d9288c18dd8adef70bc9d93d28cee6d5b653dfe4043d4303d4375c2"
+   },
+   "singleNodeGpu": {
+    "bytes": 230981,
+    "path": "/project/tma1/ndnsf-di/runs/tiger-single-node-gpu-v35-r7/verdict.json",
+    "sha256": "sha256:86af42c1f7f79319abc32714a659e70ba8b247b094ad67517dd29329eb98d248"
+   },
+   "twoNodeGpu": {
+    "bytes": 464725,
+    "path": "/project/tma1/ndnsf-di/runs/tiger-two-node-gpu-v35-r5/verdict.json",
+    "sha256": "sha256:e25ee17d3e6564ebaaed7e53017f23a0565a81ddafd0a30ffb4de4a54fca4c82"
+   }
+  },
+  "inputs": {
+   "bytes": 747,
+   "path": "/project/tma1/ndnsf-di/candidates/spec183-v35-20260910/planes-v50/inputs/plane.json",
+   "sha256": "sha256:78e60bc7ee5b9a607d1efa4024163b5afedd2b3235908944c6a9881254eb9d1b"
+  },
+  "runtime": {
+   "bytes": 644,
+   "path": "/project/tma1/ndnsf-di/candidates/spec183-v35-20260910/planes-v50/runtime/plane.json",
+   "sha256": "sha256:aceb0baa7639b7a7c4f61a61f5b13c856ca66e08751624f79e2018cbb2aa3f8d"
+  }
+ },
+ "roles": {
+  "BackboneNeck": {
+   "device": "cuda:0",
+   "node": "A"
+  },
+  "DetectShard0": {
+   "device": "cuda:0",
+   "node": "B"
+  },
+  "DetectShard1": {
+   "device": "cuda:0",
+   "node": "B"
+  },
+  "Merge": {
+   "device": "cpu",
+   "node": "A"
+  }
+ },
+ "runtime": {
+  "applicationManifest": {
+   "path": "/project/tma1/ndnsf-di/candidates/spec183-v35-20260910/app-controller-version-j4-v35/application-manifest.json",
+   "bytes": 36193,
+   "sha256": "sha256:7c8c994fda2bf20aaf322407e9c6b8a4d1f93a050f6d7782986cd4053fdeb91b"
+  },
+  "apptainer": "/usr/bin/apptainer",
+  "apptainerVersion": "1.5.3-1.el9",
+  "cwd": "/bundle",
+  "environment": {
+   "NDNSF_DI_ORT_PROFILE_PREFIX": "/output/ort/session",
+   "NDNSF_DI_STATE_ROOT": "/output/state"
+  },
+  "layout": "layered-v1",
+  "local": {
+   "apptainer": "/opt/apptainer/1.5.3/bin/apptainer",
+   "apptainerVersion": "1.5.3"
+  },
+  "nativeProvider": "/app/bin/di-native-provider",
+  "operatorPython": "/project/tma1/ndnsf-di/operator-envs/py39-3b4f62bc/bin/python",
+  "python": "/opt/venv/bin/python"
+ },
+ "schedule": {
+  "normalAllocations": 2,
+  "singleNode": {
+   "measured": 1,
+   "warmup": 1
+  },
+  "twoNode": {
+   "measured": 3,
+   "warmup": 1
+  }
+ },
+ "schema": "tiger-yolo-v1",
+ "security": {
+  "authorityPrivateKey": "/project/tma1/ndnsf-di/candidates/spec183-v35-20260910/private/authority.key",
+  "identityNamespace": "/spec183-tiger-yolo-v1",
+  "protectionEpoch": "spec183-yolo-protected-v1",
+  "trustPolicy": {
+   "bytes": 1465,
+   "path": "/project/tma1/ndnsf-di/candidates/spec183-v35-20260910/contracts/trust-root-registry-v1.json",
+   "sha256": "sha256:c5771bb281a79dd83afeb9c5b267969f503314993e2eaed71017a03d704331ca"
+  }
+ },
+ "storage": {
+  "localArtifactRoot": "/project/tma1/ndnsf-di/candidates/spec183-v35-20260910/local-cache",
+  "marginBytes": 0,
+  "peakBytes": 3901079552,
+  "remoteArtifactRoot": "/project/tma1/ndnsf-di/candidates/spec183-v35-20260910",
+  "scratchRoot": "/tmp",
+  "sharedLockRoot": "/project/tma1/ndnsf-di/locks",
+  "sharedRunRoot": "/project/tma1/ndnsf-di/runs",
+  "transferTimeoutSeconds": 7200
+ },
+ "timing": {
+  "ackTimeoutMs": 1500,
+  "cleanupSeconds": 30,
+  "progressTimeoutSeconds": 30,
+  "requestDeadlineMs": 60000,
+  "stagingSeconds": 120,
+  "startupSeconds": 300
+ },
+ "workload": {
+  "descriptor": {
+   "bytes": 8283,
+   "path": "/project/tma1/ndnsf-di/candidates/spec183-v35-20260910/contracts/y-b.json",
+   "sha256": "sha256:cda36d330cac85c9bb324dae7e9410256d6e0c15d2ff827a867fafa5c370c6df"
+  },
+  "packageManifest": {
+   "bytes": 390181,
+   "path": "/project/tma1/ndnsf-di/candidates/spec183-v35-20260910/model/spec183-signed/canonical-package/manifest.json",
+   "sha256": "sha256:84bfcbe25e09d4f43587f5fbfef2a3548cd11315af96519b07696ddd6a87c543"
+  }
+ }
+}

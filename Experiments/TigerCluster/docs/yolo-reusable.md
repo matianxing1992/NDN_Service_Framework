@@ -6,7 +6,10 @@
 迁移IMPLEMENTATION_PENDING。以下旧“完整应用SIF/九产物”描述是已有实现记录；
 以Spec183最新tasks/plan为执行入口。后续app-only改动只更新独立包，不重建
 基础库SIF；最终验收绑定base+app+harness/model。C++小例子209981已在itiger01/02
-实跑3条Data并清理成功，基础传输证据复用。正式YOLO/GPU仍未资格化。
+实跑3条Data并清理成功，基础传输证据复用。APP v35 + v22 base 已完成 exact-SIF
+本机/host gate、Tiger 单节点 GPU `210340` 以及首个双节点正常 `210341`；完整
+可复用交付仍未资格化，因为负例 `210342` 暴露了 completion budget 和逻辑 edge
+cardinality 两个 harness 缺陷，T016 尚未运行。
 
 内部运输组件 `tools/spec183_transport.py` 已有显式inventory/receive；输入清单
 只描述所选文件，不能证明完整candidate闭包。接收端先校验、测容量，再无覆盖
@@ -24,14 +27,15 @@ NOT_EVALUATED清单（exit 78）；不上传或提交。公开submit的SSH协调
 超时保留REMOTE_STATE_UNRESOLVED与暂存目录，同一run重试不得重复sbatch。
 
 **Branch**: `TigerClusterExperiments`
-**Status**: IN_PROGRESS / NOT_QUALIFIED
+**Status**: IN_PROGRESS / NEGATIVE_HARNESS_BLOCKED
 
 负例触发点已有源码和原生组件证据：`DetectShard0` 在真实V3输出校验后、
 首包发布前阻止该请求到 `Merge` 的对象，并保留绑定的触发记录。见Spec183
-`evidence/t004-dependency-cutpoint.md`。负例User终态、双rank接线与collector仍缺，
-公开提交仍拒绝NEGATIVE_RUNNER_NOT_WIRED；不能手工移除该保护来启动GPU。
+`evidence/t004-dependency-cutpoint.md`。当前远端负例 `210342` 已真实走到
+Selection/withheld，但因 User completion budget 和逻辑 edge cardinality 缺陷未
+形成 collector 终态；不能手工移除保护或把部分日志标为 PASS。
 
-目标：一份profiles/yolo-two-node.json和一个jobs/yolo/submit.py入口，本地验证后，以同一完整SIF完成Tiger两节点四Provider推理并在新allocation复现。当前有实际输入 profile 和历史 base SIF，尚无本候选合格 SIF/GPU allocation；共享目录接收端submit已接，尚不具备真实提交资格。
+目标：一份profiles/yolo-two-node.json和一个jobs/yolo/submit.py入口，本地验证后，以同一完整SIF完成Tiger两节点四Provider推理并在新allocation复现。当前 v35 候选已有单节点和首个双节点正常 PASS；共享目录接收端submit已接，最终复用资格仍等待负例和第二次正常 allocation。
 
 ## Current Checkpoint
 
@@ -49,24 +53,29 @@ hostMinindn receipt 后执行签发、两个 CPU 请求、清理及 collector �
 错误的 native manifest 在启动前拒绝。v52 已用 v32 APP + v22 base SIF 完成一次
 真实 exact-SIF MiniNDN Y-B；v51 的 Y-N-D 也已从同一 APP 的保留日志重算出
 post-Selection 缺依赖证据。正常单/双GPU run、节点scratch、外部
-collect --reconcile 和共享目录接收端submit已接；跨机器文件运输、可移植前置
-证据和负例仍缺。新机器必须安装冻结 requirements-operator.txt 对应的操作者
+collect --reconcile 和共享目录接收端submit已接；跨机器文件运输和可移植前置
+证据已在实际 allocation 使用。负例 `210342` 仍缺 User/collection 终态：外层
+60 秒预算覆盖不了 60 秒观察加 shutdown，且生产图有两个同源 DetectShard0→Merge
+逻辑 edge。新机器必须安装冻结 requirements-operator.txt 对应的操作者
 依赖并保证batch解释器一致。Tiger已建立独立环境，当前profile的
 runtime.operatorPython指向它；系统Python仍不作为该环境的替代。
 
-2026-09-10 的 APP v33 已完成 host gate、exact-SIF MiniNDN Y-B/Y-N，以及
-远端 local-cpu `NORMAL_EXPERIMENT_PASS`。同一组合的 Tiger single-node GPU
-job `210316` 到达三路 CUDA Provider、CPU Merge 和 CUDA probe，但在 User
-Selection 前失败：原生 V3 ACK 固定发送 `resources:[]`，而 planner 需要每个
-CUDA 设备的 `free_memory_mb`。现已将 provider-owned CUDA `cudaMemGetInfo`
-快照纳入签名 offer；APP-only 修复不重建未改变的 base SIF。GPU 资格仍保持
-`NOT_QUALIFIED`，必须用新 APP、新 gate 和新 allocation 重跑。
+2026-09-10 的 APP v35 已完成 host gate、exact-SIF MiniNDN Y-B/Y-N，以及
+共享 `tiger-local-cpu-v35` 的 `NORMAL_EXPERIMENT_PASS`。它复用内容锁定的
+v22 base SIF，只重建外置 APP 和受影响 planes。Tiger single-node GPU
+`210340`（startup=300）完成 1+1；首个 two-node normal `210341`
+（`itiger02`/`itiger03`，1 warmup + 3 measured）完成四角色 backend、9 条依赖
+边/请求、数值与清理闭环。负例 `210342` 通过 Selection、GPU/provider readiness
+并在 DetectShard0 记录两个 bound withheld，但 User 在 59.9946 秒外层预算被杀，
+没有 `negative-user.json`；collector 还把同源两条逻辑 edge 当成单 edge。因此
+当前状态是 `NEGATIVE_HARNESS_BLOCKED`，不能把单节点或一次双节点 PASS 升级为
+最终可复用交付。
 
 ## Direct local YOLO example
 
 要向其他人演示构建物，使用固定 base SIF，并把独立 APP bundle 以只读方式挂载到
 `/app`。完整的已实跑命令、SHA256、数值回执和清理证据见
-[v91 APP v33 exact-SIF evidence](../../../specs/183-tiger-yolo-reusable-experiments/evidence/minindn-local-v91-v33.md)。
+[APP v35 exact-SIF evidence](../../../specs/183-tiger-yolo-reusable-experiments/evidence/minindn-local-v35.md)。
 最小入口如下（`RUN` 必须是新建的、不可复用的 run ID；维护入口按
 `prepare` 后直接 `local`，不要再对同一 run 手动调用 `provision`）：
 
@@ -76,15 +85,15 @@ RUN=minindn-local-<date>-<id>
 OUT=Experiments/TigerCluster/results
 export SPEC180_RUNTIME_SIF="$ROOT/base-runtime-controller-version-j4-v22.sif"
 export SPEC180_RUNTIME_APPTAINER=/opt/apptainer/1.5.3/bin/apptainer
-export SPEC180_RUNTIME_APP_ROOT="$ROOT/app-controller-version-j4-v33"
+export SPEC180_RUNTIME_APP_ROOT="$ROOT/app-controller-version-j4-v35"
 export PYTHONPATH="$PWD/NDNSF-DistributedInference:$PWD/NDNSF-DistributedRepo/pythonWrapper:$PWD/pythonWrapper"
 
 # Freeze one new run; prepare intentionally exits 78/NOT_EVALUATED.
 python3 Experiments/TigerCluster/jobs/yolo/submit.py prepare \
-  --profile Experiments/TigerCluster/profiles/yolo-two-node-controller-v39.json \
+  --profile Experiments/TigerCluster/profiles/yolo-two-node-controller-v42.json \
   --run-id "$RUN" --output "$OUT" --case local-cpu || test $? -eq 78
 python3 Experiments/TigerCluster/jobs/yolo/submit.py local \
-  --profile Experiments/TigerCluster/profiles/yolo-two-node-controller-v39.json \
+  --profile Experiments/TigerCluster/profiles/yolo-two-node-controller-v42.json \
   --run-id "$RUN" --output "$OUT" --case local-cpu
 ```
 

@@ -2,22 +2,31 @@
 
 **Input**: [spec.md](spec.md), [plan.md](plan.md), [profile contract](contracts/experiment-profile.md), [validation matrix](validation-matrix.md)
 **Branch**: `TigerClusterExperiments`
-**Status**: IN_PROGRESS. APP v33 with the unchanged v22 base has green
-exact-SIF MiniNDN Y-B/Y-N, host-gate, and remote local-cpu evidence (latest v91
-and v33i). Tiger job `210316` passed staging, CUDA visibility, and all four
-Provider readiness gates, then failed before placement because native V3 ACKs
-contained `resources:[]`; no `SINGLE_NODE_GPU_PASS` or two-node qualification
-exists. The native offer fix is committed, but APP v34 and fresh candidate-bound
-gates are required before a new Tiger allocation. Standalone C++ NDN/SIF
-diagnostic passed in Tiger job 209981.
+**Status**: IN_PROGRESS / NEGATIVE_HARNESS_BLOCKED. The current candidate is APP
+v35 layered over the unchanged, content-verified v22 base SIF. Its manifest,
+source seal, exact-SIF composition, MiniNDN Y-B/Y-N, host gate, shared local-cpu
+gate, single-node GPU run `210340`, and first normal two-node run `210341` are
+verified. The earlier `210331` APP v34 CPU fallback remains retained as a real
+candidate defect. The registered negative run `210342` reached Selection and
+native output withholding but was terminated before the User observation record
+was written; it is not a negative PASS. T014 is closed for the first normal
+allocation, T015 is blocked on two independent negative-harness defects, and
+T016 cannot start until T015 is repaired and rerun.
 
 ## Detailed Execution Progress
 
-当前检查点：[APP v33 exact-SIF local](evidence/minindn-local-v91-v33.md)。不变的
-v22 base SIF 与外置 APP v33 已通过组合闭包、Y-B/Y-N、host gate 和远端
-local-cpu；真实 Tiger job `210316` 在四 Provider ready 后因空 CUDA resource
-rows 停在 placement 前。该证据仍不能关闭 GPU 或 TigerCluster 资格门；下一步
-是 APP-only v34、重新 gate 和新 allocation。
+当前检查点：[APP v35 shared local-cpu](evidence/minindn-local-v35.md)。不变的
+v22 base SIF 与外置 APP v35 已通过组合闭包、Y-B/Y-N、host gate 和共享
+local-cpu（两次请求、数值 oracle、依赖边和清理均有回执）。Tiger `210331`
+暴露的是 APP v34 的 backend 选择缺陷；修复已进入 APP v35。`210340` 已在
+同一分层组合完成单节点 GPU 1+1，`210341` 在 `itiger02`/`itiger03` 完成双节点
+1 warmup + 3 measured；四角色 backend、9 条依赖边、数值和清理均有回执。
+`210342` 负例虽在 Selection 后由 DetectShard0 写出两个 bound
+`NDNSF_DI_OUTPUT_WITHHELD`，但 User 外层 60 秒预算先于
+`NegativeUserObserver.finish_after_shutdown` 超时，且真实图的同源
+DetectShard0→Merge 逻辑边有两条而 collector 只接受一条；因此不能把部分故障
+日志改写成 `EXPECTED_REJECTION_PASS`。详见
+[two-node evidence](evidence/tiger-two-node-v35.md)。
 
 新增检查点：[v25 exact-SIF MiniNDN Y-B](evidence/minindn-v25-exact-sif-yb.md)。
 同一基础 SIF 与外置应用在真实 MiniNDN 进程边界完成正常 Y-B：T010_DONE、四 ACK、
@@ -95,13 +104,31 @@ YOLO collector 配对，关闭 V13 的本机 isolation 缺口；仍不代表 GPU
 | v77 / job 210269 | FAIL | `--nv` CUDA probe 找不到 `libcuda.so.1`；`LD_LIBRARY_PATH` 覆盖了 `/.singularity.d/libs`。 |
 | v80 / job 210273 | FAIL（Tiger component readiness） | SIF/hash/capacity/socket/CUDA probe 和四 Provider startup 通过；User 在 `_ExclusiveJournalLock` 以 `rb` descriptor 加独占 flock 时失败，未产生 warmup/measured YOLO 数值。 |
 | v81、v83、v84 | BLOCKED before inference | APP v33 改变了 app identity，v79 local gate 被正确拒绝复用；登录节点又缺少 profile 指定的 Apptainer 1.5.3 路径/版本。 |
+| `-j4` integration / `-j2` unit retry | FAIL（构建环境） | `spec181-native-plan-closure` 在 GCC assembler 触发 `.sleb028`；unit aggregate 随后触发 GCC9 `ggc_set_mark` ICE。修改后的 Spec183 focused case 已单独编译并通过；失败已写入 `docs/failure-log.md`，不把整套构建红灯伪装成 APP 资格。 |
+| v22 base canonical SIF | PASS after repair | 发现 canonical copy 漂移到错误 SHA；从 immutable stable copy 恢复为 `sha256:2c07a9f1…0cb829b5`、3901079552 bytes，并重新校验 candidate/runtime planes。基础库未变，后续只做 APP-only rebuild。 |
+| APP v35 source/build | PASS | sourceRevision `e57273d9`、source-seal `sha256:77309970…90ec2b`；external application manifest `sha256:7c8c994f…feb91b`；匹配 v22 SIF 内 build 使用 `-j1` 增量缓存，三目标成功，应用层可执行文件和 manifest 均重算。 |
+| `minindn-local-20260910-v97-v35-yb` / `v98-v35-yn` | PASS（local MiniNDN） | 同一 exact SIF + APP v35；Y-B 与全部注册 Y-N 子案均 `T010_DONE/returncode=0`，ACK/Selection、数值 oracle、权限/依赖负例及 clean cleanup 均有保留回执；仍是本机 evidence。 |
+| `host-gate-v35` → `host-gate-v35-r2` | FAIL→PASS（host gate） | 首次汇总缺少每个 copied run 的 `public/preparation.json`，触发 `YOLO_HOST_GATE_EXECUTION_BINDING`；补齐 per-run preparation 后重新生成共享 receipt `host-minindn-v35.json`（4510 bytes，`sha256:e4ad9acb…5fa6d`），并把 source seal 复制到 candidate root 以满足 transport。 |
+| `minindn-local-20260910-v99-v35` | FAIL（candidate binding） | v34 native manifest 的旧 app source seal 与 APP v35 不一致，`GATE_HOST_SOURCE_BINDING` 在执行前 fail-closed；生成 v35 native manifest 和 v45 planes 后才允许继续。 |
+| `minindn-local-20260910-v100-v35` / `tiger-local-cpu-v35` | PASS（exact-SIF/local CPU） | v35 local collector 两次请求均 `shape=[1,50,6]`、`matched=true`、`maxAbsError=0.0005340576171875`、9 条依赖边、clean cleanup；共享 gate receipt 为 225893 bytes，`sha256:ba2f14ba…ad09a0`。此行关闭本机 promotion gate，仍不等于 Tiger GPU。 |
+| `210331`（APP v34） | FAIL（真实 Tiger，GPU 前置后） | 节点 GPU UUID、CUDA probe、非空资源 ACK、三模型 CUDA provider 和 CPU Merge readiness 均通过；但 `RoleAssemblySpec.backend` 未传到 ORT runner，旧 metadata 缺失时 resolver 默认 CPU，profile 记录 `CPUExecutionProvider`，`DI_RUNTIME_CUDA_REQUIRED` fail-closed，未产生 warmup/measured 数值。 |
+| `210334` / `tiger-single-node-gpu-v35-r3` | PASS（历史 single-node） | v35 candidate 在 `itiger02` 完成 1 warmup + 1 measured；`collect --reconcile` 为 `NORMAL_EXPERIMENT_PASS`，三模型 CUDA + CPU Merge、GPU UUID、数值 oracle、依赖 Data 和 clean cleanup 均有保留 verdict。 |
+| `210340` / `tiger-single-node-gpu-v35-r7` | PASS（当前 single-node） | startup=300；`itiger02` 完成 1 warmup + 1 measured，三 CUDA model roles + CPU Merge；verdict 230981 bytes，`sha256:86af42c1…eb98d248`。 |
+| `210341` / `tiger-two-node-gpu-v35-r5` | PASS（T014） | startup=300；`itiger02`/`itiger03` 完成 1 warmup + 3 measured，四角色跨节点依赖、`shape=[1,50,6]`、`maxAbsError=0.00042724609375`、clean cleanup；verdict 464725 bytes，`sha256:e25ee17d…fca4c82`。 |
+| `210342` / `tiger-two-node-gpu-v35-neg1` | FAIL（T015 blocked） | Selection、GPU/provider readiness 和两个 native withheld records 到达；User 被 59.9946s 外层预算终止，无 `negative-user.json`/`collection-input.json`。真实图含两个同源 DetectShard0→Merge 逻辑边，而 collector 只接受一个。 |
+| v35 two-node sequence | NEXT AFTER FIX | 先修复负例 completion-budget/cardinality，再以新 allocation 跑 T015；T015 PASS 后才允许新 allocation 跑 T016 正常 1+3。 |
 
-标准流程固定为：`check → prepare → local → submit/allocation → compute-node
-prepare → Provider readiness → User warmup+measured → collect/reconcile`。在
-每一阶段保留精确命令、hash、节点/GPU、首失败、退出码和清理 receipt；任何
-失败都停止当前 run，不能用 transport、CUDA probe、Provider READY 或 local
-CPU PASS 代替最终数值和清理门。详细判据见
-[Tiger deployment diagnosis](evidence/tiger-deployment-diagnosis-v69.md)。
+标准流程固定为：`check → prepare → local/host gate → candidate root + exact
+planes → transport inventory/receiver precondition → submit/allocation →
+compute-node prepare → GPU probe + Provider readiness/ACK resources → User
+warmup+measured → collect --reconcile`。两节点阶段必须按
+`T014 normal → T015 negative → T016 fresh normal` 顺序推进；负例还要在提交前
+检查 completion budget 能覆盖 `permission + request wait + shutdown`，并把
+fault 绑定到唯一的逻辑 dependency edge。每一阶段保留精确命令、hash、节点/GPU、
+首失败、退出码和清理 receipt；任何失败都停止当前 run，不能用 transport、CUDA
+probe、Provider READY、部分 withheld 日志或 local CPU PASS 代替最终数值和清理门。
+详细判据见 [Tiger deployment diagnosis](evidence/tiger-deployment-diagnosis-v70.md)
+和 [two-node evidence](evidence/tiger-two-node-v35.md)。
 
 | 细分任务 | 状态 | 实证 / 下一步 |
 |---|---|---|
@@ -198,14 +225,14 @@ T010/T011 的本机证据不升级为 GPU/Tiger 资格；完整候选运输与 G
 | T011.b3 | T011 | Python应用改动复用C++构建缓存，冻结后实际命令加载 | VERIFIED | [local-sif](evidence/local-sif.md)：d9be0bfa应用，configure6.728s/Waf0.837s，三二进制哈希不变；冻结driver→SIF内User入口exit0；25focused通过 | 仅增量构建与实际入口；四Provider/MiniNDN推理仍待执行 | 基础SIF与未变C++均未重建；下一次使用最新app的缓存 |
 | T011.c | T011 | exact-SIF 本地 CPU YOLO 与 empty HOME/scratch | VERIFIED_LOCAL_CPU_ISOLATED | [APP v33 local](evidence/minindn-local-v91-v33.md) 提供两请求正常 YOLO 数值/依赖/清理回执；v86/v88 提供 Y-B/Y-N；远端 v33i 复现 local-cpu PASS。 | app v34 修复资源 offer 后需刷新 candidate-bound local/host gate；GPU/Tiger资格未完成 | base/app 不变不重跑；仅 isolation 命令或 base/ABI/app 行为变化时重跑对应探针 |
 | T012.a | T012 | GPU/Apptainer/容量 substrate 实值清点 | VERIFIED_SUBSTRATE | [input inventory](evidence/input-inventory.md) 与 [Tiger preflight](evidence/tiger-preflight-210205.md) 实测 RTX 6000 Ada、驱动 560.28.03、Apptainer 1.5.3-1.el9、`/tmp` 64 MiB fsync 写入；v80 job `210273` 又实测 exact v22 SIF、容量、socket、CUDA device UUID/visible 0 和 `--nv` 下三模型 ORT CUDA provider | 仅 substrate/readiness；User journal 在 v80 失败，正式 allocation/Tiger资格仍由 T012.b/T013 负责 | 静态输入复用；不重复未变化的 GPU substrate 探针 |
-| T012.b | T012 | exact-SIF staging、目标节点/GPU/路由与服务就绪 | IN_PROGRESS | [Tiger deployment diagnosis](evidence/tiger-deployment-diagnosis-v69.md)：v85/v86/v88/v91 完成 APP v33 host/local/exact gates；job `210316` 真实通过 exact SIF/hash/capacity/socket、GPU probe、三路 CUDA Provider、CPU Merge 和四 Provider readiness，但 ACK 的 `resources:[]` 使 planner 无法产生可行 placement。 | APP v34 resource-offer 修复后，用同一 shared layout 新 allocation 验证 compute-node HOME、SIF/app hashes、node/GPU、mounts、NFD、CUDA/ORT、User/cleanup；不能复用 210316 | 每个新 allocation 检查环境，不重建未变的 base SIF |
+| T012.b | T012 | exact-SIF staging、目标节点/GPU/路由与服务就绪 | VERIFIED_SINGLE_NODE | [Tiger deployment diagnosis](evidence/tiger-deployment-diagnosis-v70.md)：`210340` 在 `itiger02` 以 startup=300 通过 exact SIF/hash/capacity/socket、GPU probe、三路 CUDA Provider、CPU Merge 和四 Provider readiness，并完成 User/cleanup；`210331` 的 backend 缺陷仍作为失败证据保留。 | T014 已另有双节点正常回执；T015/T016 仍独立 | 每个新 allocation 检查环境，不重建未变的 base SIF；只因 APP/ABI 行为变化刷新 app/gates |
 | T012.c | T012 | 用户指定的独立 C++ NDN/SIF 两节点 CPU 诊断 | VERIFIED | [C++ NDN evidence](evidence/cpp-ndn-smoke.md)：209981，itiger01/02，同一历史 SIF 哈希，3条Data，0:0及清理；209980仅收尾标记超时，未记整次PASS | 仅基础传输诊断；T012正式GPU/权限/候选资格仍未完成 | 固定小例子不再跑；配置/ABI/网络相关变化才重测；复用实际日志与脚本 |
 | T012.d | T012 | 同一真实YOLO模型的独立CPU/GPU参考 | VERIFIED | [backend reference](evidence/yolo-backend-reference.md)：CPU两次matched；209983，RTX6000Ada、CUDA kernel、两次数值matched、Slurm0:0及清理 | 仅STANDALONE_YOLO_REFERENCE；非NDNSF-DI或T013资格 | 209982失败保留；仅一次TF32修复对照，不重复相同参考 |
 | T005.tf32 | T005 | 原生ORT与独立参考关闭TF32并绑定精度策略 | IMPLEMENTED | 真实GPU参考修复PASS；147组件+2拒错通过；实查1.20缺新C++ options owner，已改V2 C API并通过1项策略检查 | 新Provider仍需在SIF的1.20 SDK实际构建/装入app包及真实分布式请求；旧host1.26语法检查不证明该ABI | 不重跑未变CPU/独立GPU参考；验证变化native路径 |
-| T013.a | T013 | 一节点 GPU，四 Provider，1 warmup + 1 measured | IN_PROGRESS | job `210316`: three model Providers reported `onnxruntime-cuda`, Merge reported CPU and all four became ready; User failed at placement before warmup/measured because every native ACK had `resources:[]`. No numerical response or `SINGLE_NODE_GPU_PASS`. | Build APP v34 with signed provider-owned CUDA resource rows, refresh local/host gates, then rerun one fresh bounded job; require non-empty rows, three CUDA model roles, CPU Merge, full graph oracle and clean shutdown | 一次有界资格门，不扩展 GPU/模型矩阵 |
-| T014.a | T014 | 两节点正常推理，1 warmup + 3 measured | NOT_STARTED | V16；NOT_RUN | T013 后证明 A backbone/merge、B heads 与跨节点依赖 | 同一候选第一次正常 allocation |
-| T015.a | T015 | 一次远端 negative-dependency，Selection 后切断必需中间 Data | NOT_STARTED | V17；NOT_RUN | T014 后验证有限失败、无假成功及清理 | 保留唯一注册远端负例，不复制整套本地负例 |
-| T016.a | T016 | 第二个新双节点 allocation，原配置/SIF，1+3 请求 | NOT_STARTED | V18；NOT_RUN | T015 后验证不改脚本的复用性 | 这是 SC-004 的独立验收，不是无目的重复 |
+| T013.a | T013 | 一节点 GPU，四 Provider，1 warmup + 1 measured | VERIFIED_SINGLE_NODE_GPU | `210340` / `tiger-single-node-gpu-v35-r7`：`collect --reconcile` 为 `NORMAL_EXPERIMENT_PASS`，2 requests、Slurm 0:0、GPU UUID、三 CUDA model roles、CPU Merge、数值和 clean cleanup；`210331` 的 CPU fallback 失败已修复并保留。 | T014 已由独立双节点 allocation 关闭；T015/T016 不得复用单节点证据 | 一次有界资格门，不扩展 GPU/模型矩阵 |
+| T014.a | T014 | 两节点正常推理，1 warmup + 3 measured | VERIFIED_TWO_NODE_NORMAL | [Tiger v35 two-node evidence](evidence/tiger-two-node-v35.md)：`210341` / `tiger-two-node-gpu-v35-r5`，`itiger02`/`itiger03`，四角色 CUDA/CPU backend、9 条依赖边/请求、数值与清理 PASS | 只关闭首次正常双节点门；T015 负例与 T016 复现仍独立 | 同一候选第一次正常 allocation；不重跑已验证 gate |
+| T015.a | T015 | 一次远端 negative-dependency，Selection 后切断必需中间 Data | BLOCKED_AFTER_REAL_ATTEMPT | [Tiger v35 two-node evidence](evidence/tiger-two-node-v35.md)：`210342` 到达 Selection/withheld，但外层 59.9946s 超时，缺 User/collection 记录；真实图有两个同源逻辑边而 collector 要求一个 | 修正负例 completion budget，并按逻辑 edge 选择唯一 cutpoint；新 run、重新 collect | 保留 `neg1`；不修改旧 run或把日志拼成 PASS |
+| T016.a | T016 | 第二个新双节点 allocation，原配置/SIF，1+3 请求 | NOT_STARTED | V18；NOT_RUN | T015 修复并取得 EXPECTED_REJECTION_PASS 后，证明同一 profile/SIF/harness/model/oracle 可复用 | 新 allocation、全量 preflight；不得在 T015 未闭合时启动 |
 | T017.a | T017 | `docs/yolo-reusable.md` / README 最终操作指引 | IMPLEMENTED | 已有指引；尚无端到端合格交付证据 | T016 后以实际成功命令校对路径/配置 | 文档修正只做链接/契约检查 |
 | T017.b | T017 | 离线重算与 `evidence/closure.md` 最终交付 | NOT_STARTED | V19；NOT_RUN | 对已保留结果重算，汇总各门和复用身份 | 离线重算不启动新的 GPU campaign |
 

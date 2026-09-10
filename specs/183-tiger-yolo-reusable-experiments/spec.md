@@ -9,9 +9,9 @@
 
 交付一个人能直接使用、机器能验证的入口：选择一份配置，检查、准备、运行、收集；同一合格配置可在新 allocation 中重复使用。目标是正确性和复用，不是新推理算法、整个 DI 的 C++ 迁移或性能优势。Spec182 保持 NOT_STARTED。
 
-交付入口 `81e251a4` 只表示 SOURCE_READY；四库运行源码由 `Experiments/TigerCluster/development-handoff.lock.json` 固定，其中 NDNSF 为 `447f7584`。旧 r119/base SIF、Local R8 FAIL、B003 未完成均不代表新组合通过。2026-09-10 更新：APP v33 + v22 base 已取得 exact-SIF Y-B/Y-N、host gate 和远端 local-cpu `NORMAL_EXPERIMENT_PASS`；真实 Tiger job `210316` 已通过 SIF/容量/socket/CUDA probe 和四 Provider startup，但 User 在 placement 前因 native V3 ACK 的 `resources:[]` 失败，尚无 Tiger YOLO 数值 PASS。native offer 已改为签名的 provider-owned CUDA `cudaMemGetInfo` 快照，APP-only 修复不重建未变化的 base SIF；新的 APP/gate/allocation 尚待刷新。
+交付入口 `81e251a4` 只表示 SOURCE_READY；四库运行源码由 `Experiments/TigerCluster/development-handoff.lock.json` 固定，其中 NDNSF 为 `447f7584`。旧 r119/base SIF、Local R8 FAIL、B003 未完成均不代表新组合通过。2026-09-10 更新：APP v35 + v22 base 已取得 exact-SIF Y-B/Y-N、candidate-bound host gate、共享 local-cpu `NORMAL_EXPERIMENT_PASS`、Tiger 单节点 GPU `210340` 以及首个双节点正常 `210341`。`210331` 的 backend propagation 缺陷仍保留为失败证据；APP v35 只修复外置应用，基础 SIF 不重建。`210342` 负例真实到达 Selection 和 DetectShard0→Merge withheld，但外层 60 秒预算先于 `negative-user.json` 写入而失败；真实图有两个同源逻辑 edge，而 collector 只接受一个。T014 已关闭，T015 被负例 harness 的预算/cardinality 问题阻塞，T016 复现和最终 closure 仍未完成。
 
-本 Spec 的资格判定仍按完整边界执行：transport、CUDA probe 或 Provider `READY` 只能作为组件证据；GPU Provider 的 ACK 还必须包含与其 `cuda:*` topology 对应的、签名且可用的 `free_memory_mb` 资源行。只有 User warmup/measured、独立 oracle、每角色 backend/GPU、退出码和清理全部闭合，才能记录 `SINGLE_NODE_GPU_PASS`。今天的逐 run 证据和固定执行顺序见 [Tiger deployment diagnosis](evidence/tiger-deployment-diagnosis-v69.md)。
+本 Spec 的资格判定仍按完整边界执行：transport、CUDA probe 或 Provider `READY` 只能作为组件证据；GPU Provider 的 ACK 还必须包含与其 `cuda:*` topology 对应的、签名且可用的 `free_memory_mb` 资源行。只有 User warmup/measured、独立 oracle、每角色 backend/GPU、退出码和清理全部闭合，才能记录对应 PASS。负例还必须写出 `OBSERVATION_ONLY` User record、唯一逻辑 cutpoint、Merge native failure、无响应/无重选和 clean cleanup；部分 withheld 日志不能升级为 `EXPECTED_REJECTION_PASS`。今天的逐 run 证据和固定执行顺序见 [Tiger deployment diagnosis](evidence/tiger-deployment-diagnosis-v70.md) 与 [two-node evidence](evidence/tiger-two-node-v35.md)。
 
 最终必须使用两个真实 Tiger 计算节点，不同节点 Provider 计算同一次 YOLO 请求的不同阶段，通过 NDN 交换中间数据。多个节点各跑完整模型、只交换 echo、只出现 READY 或本机模拟节点，均不满足最终目标。
 
@@ -77,11 +77,11 @@
 - **FR-008**: **Distributed graph.** MUST 执行 BackboneNeck → DetectShard0/DetectShard1 → Merge；四个独立 Provider 放在两真实节点，模型阶段有 CUDA 执行证据。Merge 显式 CPU 后处理不等于模型 CPU fallback。
 - **FR-009**: **NDN data path.** MUST 用现有 NDNSF-DI/Repo 命名、安全及依赖规则传递输入/激活/结果；共享文件系统只用于部署 artifact 和证据，不能替代跨节点激活传输或向 Provider 注入 oracle。
 - **FR-010**: **Independent numerical oracle.** MUST 使用同模型/输入/预处理的独立完整模型参考，冻结 hash、shape/class 和容差；不能根据分布式输出放宽标准或只判非空。
-- **FR-011**: **Terminal agreement.** PASS MUST 同时满足协议、各请求角色/依赖、CUDA、数值、worker/子进程及清理；marker/READY/exit0 单独不足。缺证据为 FAIL/INCOMPLETE。
+- **FR-011**: **Terminal agreement.** PASS MUST 同时满足协议、各请求角色/依赖、CUDA、数值、worker/子进程及清理；marker/READY/exit0 或部分 withheld 日志单独不足。缺证据为 FAIL/INCOMPLETE。负例必须在独立的 completion budget 内完成 `permission + bounded observation + shutdown`，再写入 User `OBSERVATION_ONLY` record。
 - **FR-012**: **Bounded ownership.** 每 candidate/gate MUST 仅一个活动运行；提交状态不明先查询、禁止盲重试；所有等待和清理有期限，只回收本 run 进程/私有目录。
 - **FR-013**: **Reuse.** MUST 从同一正常 profile 完成两个独立双节点 allocation，每次 1 warmup + 3 measured 请求；保留失败，不据此宣称性能显著性。
 - **FR-014**: **Validation order.** 实现/聚焦回归后 MUST 通过生产接线审计，再 unit → integration → MiniNDN → exact-SIF local → Tiger single-node → Tiger two-node；不能用旧依赖证据替代新组合。
-- **FR-015**: **Negative coverage.** MUST 覆盖候选篡改、库/入口错误、cwd/身份错误、Provider 失联、激活丢失/篡改、假 PASS、部分启动/清理失败，注册检测阶段和独立 oracle。
+- **FR-015**: **Negative coverage.** MUST 覆盖候选篡改、库/入口错误、cwd/身份错误、Provider 失联、激活丢失/篡改、假 PASS、部分启动/清理失败，注册检测阶段和独立 oracle。跨节点 dependency-negative 必须把 fault 绑定到唯一的逻辑 edge（包含 producer/consumer、round/tensor 或等价完整身份），collector 不得把同一 producer/consumer 下的多个 edge 混成一个 cutpoint。
 - **FR-016**: **Evidence and recovery.** MUST 保留 candidate/config、精确命令、request/阶段事件、job/node/GPU、首失败、退出/清理、数值/耗时及 raw 索引/hash；大日志/秘密不入 Git。
 - **FR-017**: **Capacity and cache.** MUST 按实际峰值和余量检查容量，内容寻址缓存 SIF/模型；不固定通用 20GB 拒绝阈值，不每 30 秒全盘扫描。scratch 不是唯一证据存储。
 - **FR-018**: **Human operation.** MUST 提供一个 profile/一个入口的 check/prepare/local/submit/collect、字段说明、成功例和诊断指引；换机器不依赖聊天、私有插件或热修。
