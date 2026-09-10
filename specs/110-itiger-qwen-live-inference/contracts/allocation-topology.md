@@ -55,6 +55,17 @@ target-node `srun` step into that node's job scratch and executed from the
 scratch copy; an evidence or submit-host path that is not mounted on a compute
 node is a pre-start failure.
 
+Visibility alone does not establish that every node mounted the same sealed
+bundle. Before starting any NFD, the supervisor MUST compute a deterministic
+digest over the workdir's relative directories, relative regular-file paths,
+and file bytes on the submit side, then recompute and compare that digest on
+every target node. A missing, special, symbolic-link, or content-mismatched
+entry MUST fail with a pre-start `SPEC110_WORKDIR_CONTENT_*` boundary and leave
+no NFD running. The same digest check MUST be applied to each non-NFD
+`identityRef` after the required `.ndn` visibility and symlink checks; the
+expected digests MUST be retained in evidence. This is a content-consistency
+gate, not a replacement for the later SIF/ELF or cross-node NDN qualification.
+
 `nodeRank` is bound to the scheduler's allocation order. Before any NFD starts,
 the supervisor and the direct route-configuration entry point MUST compare the
 process-map node names, in rank order, with `scontrol show hostnames

@@ -223,10 +223,26 @@ integration 中直接拒绝 exclusive 参数；这只证明命令边界，不替
 
 这些修复仍不等于多机资格。v1 process map 的 TCP/UDP 端口仍由候选输入提供，没有跨作业
 端口租约或自动动态分配；启动前 bind probe 只覆盖已存在 listener，不能消除 probe 后的竞态。
-共享 `workdir`/identity 的内容尚未按节点验证 digest；v1 生成命令也尚未
+G42 已按节点验证 `workdir`/identity 内容 digest；v1 生成命令也尚未
 统一通过 post-Spec-111 的 exact-SIF canonical runner（Spec110 T221/T223/T225/T228）。真实
 Slurm、SIF、GPU、跨节点 NDN request 和 no-Python qualification 仍属于 T014--T017/R11-B9，
 不能由 fake `srun`、CPU ORT 或 MiniNDN 单机结果替代。
+
+### R11-B8-G42 Cross-Node Input Content Digest Review 2026-09-10
+
+静态复核发现 G20/G29 只证明每个目标节点能够访问 `workdir` 与 `identityRef`，没有证明
+共享路径的内容相同。真实集群可能在不同节点挂载不同 revision；MiniNDN 的单机文件系统会把
+这个分歧隐藏到请求或签名校验之后。现已加入统一的目录摘要：按相对目录、相对普通文件路径
+和文件 bytes 计算 canonical SHA-256；目标节点在任何 NFD 启动前重新计算并与 submit-side
+摘要比较，特殊文件及符号链接 fail closed。每个非 NFD identity root 也执行同一比较，期望值
+写入 evidence。
+
+受影响生产入口是 `run-allocation-topology.sh` 的 workdir/identity preflight，算法由
+`allocation_topology.directory_digest` 固定；测试覆盖内容变更、符号链接和 fake `srun` 注入
+的跨节点 mismatch。29/29 topology unit、network integration、shell/Python syntax 与
+`git diff --check` 通过。审查无 P0--P3 finding。该修复关闭内容一致性启动门，不等于 exact-SIF、
+真实 Slurm/GPU、跨节点 NDN request、no-Python 或 T016/T017 qualification；端口租约与 post-
+Spec-111 v2 canonical runner 仍是开放设计边界。
 
 ## R11-B1 Independent Authority Review 2026-09-10
 
