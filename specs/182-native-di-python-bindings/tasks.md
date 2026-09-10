@@ -1,6 +1,6 @@
 # Tasks: Native NDNSF-DI with Optional Python Bindings
 
-**Revision**: 135 | **Status**: DRAFT / T001 DONE
+**Revision**: 136 | **Status**: DRAFT / T001 DONE
 **Input**: [spec](spec.md), [code design](contracts/code-design.md),
 [proof](contracts/proof-design.md), [work units](contracts/work-units.md)
 
@@ -13,7 +13,8 @@
 真实 C++ 跨进程 unary 的本地 process 出口；R11-B3 stream 已形成独立出口，当前继续收敛
 R11-B4 continuation、R11-B5 recovery 与 R11-B6 replacement 已形成独立出口，下一批转入
 R11-B7 cleanup。不得在 N1--N3 通过前以旧
-调用方批量迁移、Python 数量或全仓库扫描代替原生出口。已有局部 PASS 及下面历史记录
+调用方批量迁移、Python 数量或全仓库扫描代替原生出口。R11-B7 已形成 cleanup 出口；
+R11-B8 现开始按 caller group 批次执行。已有局部 PASS 及下面历史记录
 保留，父任务不因本轮局部实现升级。
 
 | Unit / Details | Status | Depends | Evidence / Remaining | Updated |
@@ -28,7 +29,8 @@ R11-B7 cleanup。不得在 N1--N3 通过前以旧
 | [R11-B7 Native Cleanup Process](contracts/native-first-execution.md#dispatch-cards) | CLOSED_FOR_VALIDATION | R11-B6 | C++ client/registration/lease/host/stream cleanup selectors 全部通过；终态、cancel、deadline、replacement drain、secret owner 及 shared host isolation 有证据；R11-B6 process finally 后无 requester/provider/authority/controller 残留。T016 isolation/PO matrix、父 T010/T011/T013 与完整 qualification 仍未关闭 | 2026-09-10 |
 | [R11-B8 C++ Prepared-Role Fixture](evidence/r11-b8-cpp-fixture-20260910.md) | CLOSED_FOR_VALIDATION | R11-B6; existing T010/T011 fixture contract | **C++ primary:** 修复 `runSamplingEpochs` 缺少 `prepareRunner` 的夹具契约；fresh `unit-tests` 190/190 build，窄 selectors 11 cases 通过，随后完整 `Spec182*` 256 cases/7077 assertions exit 0。仅修复测试夹具，不推进 maintained callers、R11-B8/R11-B9 或父任务；该完整 selector仍只是C++ unit回归 | 2026-09-10 |
 | [R11-B1-PY Native Binding Authority](evidence/r11-b1-py-native-authority-20260910.md) | CLOSED_FOR_VALIDATION | R11-B1; T012 ABI | **C++ primary:** `_ndnsf` binding now constructs the transport-only native grant client through `issueThroughCore`/`publishThroughCore`; authority private/content keys and policy fields are rejected before requester key loading. Matching `build-nac182` DI library, extension import, C++ selectors, 7-case native integration selector, and 72 wrapper/contract tests pass. This closes only the Python binding ownership seam; maintained callers, no-Python, dependency closure and T016/T017 remain open | 2026-09-10 |
-| [R11-B8 Maintained Callers](contracts/native-first-execution.md#dispatch-cards) | NOT_STARTED | R11-B7; corresponding T012 ABI | 原 16 callers 按组分批；先 C++ 对照，再 wrapper/兼容/旧路径零使用 | 2026-09-10 |
+| [R11-B8-G1 Native Generic Request Facade](evidence/r11-b8-g1-native-generic-facade-20260910.md) | CLOSED_FOR_VALIDATION | R11-B7; T012-A/B | **C++ primary:** matching `Spec182*` unit 256 cases/7077 assertions and 7 native Core/Provider integration cases re-run green. **Python secondary:** generic `APPClient`/`InferenceClient` native inline route, result handle, identity rejection and planner non-fallback checks pass (38 tests). This is one bounded generic unary facade; stream/conversation, 15 remaining callers, legacy zero-use, no-Python and T016 remain open | 2026-09-10 |
+| [R11-B8 Maintained Callers](contracts/native-first-execution.md#dispatch-cards) | PARTIAL | R11-B7; corresponding T012 ABI | G1 generic unary facade 已形成稳定出口；仍需 15 个 caller group 的 native entry、实际行为、兼容 wrapper 及旧路径零使用证据，不能按 G1 计全量完成 | 2026-09-10 |
 | [R11-B9 Native Closure](contracts/native-first-execution.md#dispatch-cards) | NOT_STARTED | R11-B8 | T014 no-Python/依赖闭包工具 → T015 → T016 → T017；最终资格未开始 | 2026-09-10 |
 
 文档旁路记录（2026-09-10，DOCUMENT PASS）：Proposal／slides 收敛为 DNMP-inspired
