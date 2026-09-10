@@ -25,7 +25,7 @@ PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执
 
 | Unit / Details | Status | Depends | Evidence / Remaining | Updated |
 | --- | --- | --- | --- | --- |
-| [R10-B83 Native Conversation Config Loader](evidence/r10-b83-native-conversation-config-20260910.md) | CLOSED_FOR_VALIDATION | R10-B82; T010/T011 | **C++ primary:** shared loader, 252 `Spec182*` cases, requester help and exported-symbol check pass. **Python secondary:** 72 wrapper/contract tests pass. Standalone requester and Python binding both inject the same coordinator; artifact-authority separation, independent worker/process, 16 maintained old callers, no-Python and T016/T017 remain open; no parent advanced | 2026-09-10 |
+| [R10-B83 Native Conversation Config Loader](evidence/r10-b83-native-conversation-config-20260910.md) | CLOSED_FOR_VALIDATION | R10-B82; T010/T011 | **C++ primary:** shared loader, 252 `Spec182*` unit cases, 9 native Core/Provider integration cases, requester help and exported-symbol check pass. **Python secondary:** 72 wrapper/contract tests pass. Standalone requester and Python binding both inject the same coordinator; artifact-authority separation, independent worker/process, 16 maintained old callers, no-Python and T016/T017 remain open; no parent advanced | 2026-09-10 |
 | [R10-B82 Whole-Chain Static Audit](evidence/r10-b82-whole-chain-static-audit-20260910.md) | OPEN_FOR_NEXT_BATCH | R10-B81; T010/T011/T013/T014/T015/T016/T017 | Its standalone conversation-config mismatch is repaired by R10-B83; requester still composes the artifact-authority private key/issuer, 16 maintained inference calls remain on old routes, and independent worker/process, cross-process recovery, no-Python and host/container dependency closure remain open. No parent task advanced | 2026-09-10 |
 | [R10-B34 Spec182 Regression Sweep](evidence/r10-b34-regression-sweep-20260909.md) | DONE | R10-B33; R10-B32 | Spec182 C++ unit suite, full `Spec170NdnsfDiCoreFlow/*` integration suite, and 76 Python binding/compatibility tests all exit 0; expected negative boundaries remain asserted in raw logs. This is regression evidence only; cross-process transport, maintained caller/no-Python and T016 remain open | 2026-09-09 |
 | [R10-B35 Spec Kit Command Output Contract](evidence/r10-b35-command-output-contract-20260909.md) | DONE | R10-B34; R10-B32 | Shared reference now defines the mandatory entry output contract; code-design, README, personal install, and 11 local Spec Kit entry copies are synchronized and checked. Documentation boundary only; product parents and T016 remain PARTIAL/UNQUALIFIED | 2026-09-09 |
@@ -258,7 +258,8 @@ P1–P4 是不同的生产入口、进程边界或 selector，不能为了少一
 将 `ndnsf-di-native-conversation-v1` 解析、路径与 owner-only key 校验集中到
 `NativeConversationCoordinator.cpp`；standalone `DI_NativeRequester` 与 Python binding 共享该
 loader，并将 coordinator 注入 runtime client。新的 C++ config selector、完整 `Spec182*` 252
-cases、四个 Python focused suites 72/72、requester help、导出符号检查及三项文档门均通过。
+unit cases、9 个 native Core/Provider integration cases、四个 Python focused suites 72/72、
+requester help、导出符号检查及三项文档门均通过。
 首次 Python 扩展重编译的 `ndn::Name`/`std::string` 类型错误已记录并修复；主机 swap 压力下后续
 仍采用 `-j2`。本轮没有推进父任务；artifact authority 分离、独立 requester/Provider worker
 跨进程整链、16 个 maintained caller、no-Python、依赖闭包与 T016/T017 仍开放。详见

@@ -1,5 +1,17 @@
 # Failure Log and Evidence Index
 
+## 2026-09-10 — Spec182 R10-B83 integration target selection boundary
+
+The first post-loader integration rebuild used the current Waf cache's default output tree and
+stopped immediately with `Could not find a task generator for the name 'integration-tests'`
+(exit `1`). No compiler or test task ran; the selected cache was the old
+`.codex-tmp/spec182-r10-b78-provider/build` tree. Re-running with the explicit current output
+directory `.codex-tmp/spec182-r4-b2/build` rebuilt all 118 integration tasks successfully, and
+the native `Spec170NdnsfDiCoreFlow/Spec182*` selection passed 9 C++ cases with no errors. The raw
+failed command and successful retry are retained under
+`.codex-tmp/spec182-r10-b83-conversation-loader/`; this was a Waf output/cache boundary, not a
+native protocol failure.
+
 ## 2026-09-09 — Proposal rendering dependency boundary
 
 The two-reason authorization revision compiled successfully, but the first rendered

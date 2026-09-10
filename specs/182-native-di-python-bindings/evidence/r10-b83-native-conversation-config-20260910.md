@@ -51,6 +51,15 @@ env PATH=/usr/bin:/bin:/usr/sbin:/sbin ./waf -o build-nac182 build --targets=uni
 .codex-tmp/spec182-r4-b2/build/unit-tests --run_test='Spec182*' --log_level=test_suite
 -> PASS, 252 test cases, no errors
 
+env PATH=/usr/bin:/bin:/usr/sbin:/sbin WAFLOCK=.lock-waf \
+  ./waf -o .codex-tmp/spec182-r4-b2/build build --targets=integration-tests -j2
+-> PASS, 118/118 tasks, Waf elapsed 49.459s
+
+LD_LIBRARY_PATH=.codex-tmp/spec182-r4-b2/build:/home/tianxing/NDN/nac-abe-integration-182/install/lib:/home/tianxing/NDN/ndn-svs/build \
+  .codex-tmp/spec182-r4-b2/build/integration-tests \
+  --run_test='Spec170NdnsfDiCoreFlow/Spec182*' --log_level=test_suite
+-> PASS, 9 C++ integration cases, no errors, elapsed 49.62s
+
 PYTHONPATH=pythonWrapper python3 -m pytest -q \
   tests/python/test_spec182_native_bindings.py \
   tests/python/test_spec182_legacy_exclusion.py \
