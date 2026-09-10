@@ -1,5 +1,23 @@
 # Proposal Authorization Revision
 
+## 2026-09-09 Two-Reason Revision
+
+当前可编辑入口以 [BUILD-RESEARCH.md](BUILD-RESEARCH.md) 为准；下文 64/44 页描述为
+上一轮历史记录，不代表目前精简稿页数。本轮将两种语言的正文与共享 slides 改为：
+
+1. **Confidential Discovery Before Provider Selection**：安全需求。
+2. **Separating Dissemination from Fine-Grained Access Control**：架构收益。
+
+权限聚合和身份凭证复用放入第二点；challenge、运行时撤销与重加密放入机制、
+生命周期及成本，不能作为第三条普遍优越性理由。明确 Trust Schema 可表达细粒度
+规则，NAC 等加密方案也能保护分发中的内容；ABE 的特色是属性与策略控制解密。
+UAV 交叠服务权限为示例，不能推导成当前实现支持任意位置、时间或任务谓词。
+合并明文后按单一条件加密不保留内部访问边界；发现解密不单独证明调用授权。
+
+本轮验证、交付和源摘要见 [research-revision-validation.json](research-revision-validation.json)
+及 [research-revision-audit.md](research-revision-audit.md)。原始记录目录：
+`.codex-tmp/proposal-two-reasons-20260909/`。不修改 API 或运行资格结论。
+
 ## Scope
 
 按用户确认的邮件口径修改 Proposal 中英文安全论证及对应演示文稿。

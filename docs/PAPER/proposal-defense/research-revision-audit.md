@@ -1,5 +1,42 @@
 # Research-first Proposal Revision and Evidence Audit
 
+## 2026-09-09 Authorization Argument Follow-up
+
+按用户确认改成“安全需求 → 架构收益”两条理由，再说明机制、生命周期与成本。
+更新共享中英文授权正文、相关工作摘要及共享 slides，保持原有研究问题和实验数字。
+签名验证／执行授权与内容解密继续区分；Trust Schema 与 NAC 的一手来源补入共享书目。
+第 11、12 页连续介绍两条理由，第 13 页比较完整替代方案，第 15 页说明生命周期。
+属性策略聚合不等于信息压缩，不将服务权限示例泛化为已实现的多维动态属性检查。
+
+首个补丁因缺少原文中的 `In` 而未匹配，未修改文件；修正精确上下文后通过。
+首次渲染在导入 `fitz` 时失败，边界为文档工具依赖，尚未生成渲染结论。
+独立临时环境的 pip 安装遇到 DNS 解析失败，停止该安装；随后找到上一轮保留的
+`.codex-tmp/proposal-research-revision-20260909/pydeps`。其中扩展为 CPython 3.8，
+Python 3.10 探测不能加载 lxml；使用系统 Python 3.8 加命令局部 PYTHONPATH
+导入 PyMuPDF/Pillow/python-pptx 成功，再重试渲染，不修改产品 Python 环境。
+完整构建与渲染记录位于
+`.codex-tmp/proposal-two-reasons-20260909/`；最新验证 JSON 替代旧文件摘要。
+下文保留前次研究重组的历史审计，不把当时的页数／检查自动套用到本次修改。
+
+本轮最终文档检查 PASS：根／分章英文均 29 页，中文均 21 页，同语言入口逐页
+提取文本一致；两个 slides 入口均 38 页且文本一致；两份讲稿均 7 页，含 38 页
+讲述内容。所有最终 LaTeX 日志无未定义引用、缺字或 Overfull。与修改前 PDF
+逐页比较，仅 slides P11/P12/P13/P15 文本改变，实验页及其数字保持原样。
+LaTeX PDF 的普通内容页均低于 100 词；参考文献页 P36/P37 不适用此限。
+PPTX 导出后的分词会受页脚和断词影响，不能将其页数／词数机械等同于源 PDF。
+
+逐页 contact sheet 检查中英文正文、全部 slides 和讲稿，未见越界或重叠。
+PPTX 生成器验证 797/797 源文本 spans 恰好分配一次，551 个可编辑文本框、
+47 个原生三角项目符号，背景可提取文字为 0；38 页均有 notes。
+LibreOffice 重导出 38 页，逐页检查并复核 P11--15，未见缺失或重叠，文本均在页内。
+未宣称在 Microsoft PowerPoint／Google Slides 原生客户端实测。
+研究和实现资格门保持 OPEN；本轮没有重测运行时撤销或其他产品行为。
+
+本地 checkpoint 的首次独立暂存被既有 `docs/PAPER` ignore 规则拒绝。
+核对所有指定路径均已存在于 HEAD 后，仅对这些明确文档路径使用 `git add -f`；
+共享 tasks.md 只纳入本轮新增的文档旁路记录，不混入其他会话的任务行。
+原始记录：`.codex-tmp/proposal-two-reasons-20260909/checkpoint.log`。
+
 Date: 2026-09-09. Scope: Proposal EN/CH, research slides, editable PPTX, and presenter notes. No application implementation or experiment was run for this revision.
 
 ## Decision and Source Authority

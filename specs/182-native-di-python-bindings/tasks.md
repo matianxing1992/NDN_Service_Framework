@@ -6,6 +6,11 @@
 
 ## Execution Progress
 
+文档旁路记录（2026-09-09）：Proposal／slides 授权论证统一为两条理由，机制、撤销与
+成本单列；[持久审计](../../docs/PAPER/proposal-defense/research-revision-audit.md)
+和[文档验证](../../docs/PAPER/proposal-defense/research-revision-validation.json)
+记录编译、版面及交付检查。此为文档工作，不变更下表实现状态或原生资格验收结论。
+
 本表是所有执行者共同维护的**当前子任务进度唯一入口**；点击任务查看 Read、Write、Steps、Verify。
 父任务清单保留阶段验收；Current Checkpoint 保存摘要与历史，不作为第二张状态表。
 状态：NOT_STARTED（无独立执行记录）、READY（依赖及门禁满足）、IN_PROGRESS（正在执行）、

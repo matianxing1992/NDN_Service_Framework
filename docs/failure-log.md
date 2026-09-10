@@ -1,5 +1,19 @@
 # Failure Log and Evidence Index
 
+## 2026-09-09 — Proposal rendering dependency boundary
+
+The two-reason authorization revision compiled successfully, but the first rendered
+review stopped at `import fitz` (`ModuleNotFoundError`) before opening any PDF.
+A temporary pip environment could not resolve its package host; that install was
+stopped. The previous document run retained CPython 3.8 packages under
+`.codex-tmp/proposal-research-revision-20260909/pydeps`. A Python 3.10 import probe
+failed on the incompatible lxml extension; system Python 3.8 plus a command-local
+PYTHONPATH imported all document dependencies and completed rendering and PPTX generation.
+This was a document-tool prerequisite, not a native build or protocol failure.
+See [revision audit](PAPER/proposal-defense/research-revision-audit.md) and
+`.codex-tmp/proposal-two-reasons-20260909/render-dependencies.log`, `render.log`,
+and `pptx-build.log`. No product dependency or qualification status was changed.
+
 ## 2026-09-09 — Spec182 R10-B72 Provider plan service-selection boundary
 
 The first metadata-only Provider `--check-only` probe used the executable default service

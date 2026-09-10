@@ -113,13 +113,22 @@ Needed to execute the selected task: images, detailed processing parameters, or 
 \vspace{4mm}\bluebox{The boundary follows necessity. A location needed to assess coverage belongs in the protected descriptor; an image needed only for processing can wait.}
 \end{frame}
 
-\begin{frame}{RQ1: Why Protect Discovery Content?}
+\begin{frame}{Reason 1: Confidential Discovery Before Selection}
 \begin{itemize}
 \item The User knows the service, but not yet the currently willing Provider identities.
 \item An observation area and deadline can reveal intended activity even without the full application input.
 \item ABE can protect one descriptor for a service-authorized receiver set without listing those identities. [19]
 \end{itemize}
 \vspace{3mm}\bluebox{Confidential from parties lacking the required decryption capability. Authorized but unselected Providers can read it; names and traffic patterns remain visible.}
+\end{frame}
+
+\begin{frame}{Reason 2: Separate Dissemination from Access}
+\begin{itemize}
+\item Nodes may retrieve the same encrypted Request Data; only matching decryption capabilities expose its descriptor.
+\item The User encrypts by service attributes, without listing Provider identities. The Controller still authorizes entities and issues keys. [19]
+\item Different entities retain overlapping service permissions in individual policy keys, independently of identity-signing credentials.
+\end{itemize}
+\vspace{3mm}\bluebox{Architectural benefit: shared dissemination with distinct access scopes. Aggregation preserves distinctions only while objects retain separate encryption scopes.}
 \end{frame}
 
 \begin{frame}{A Fair Comparison Includes Encryption on Both Sides}
@@ -130,16 +139,7 @@ DNMP-inspired roles [12] & Role/command signing rules, credential and request-st
 Our per-service role certificates & Service/message rules plus caller or Provider credential & Add equivalent encryption and lifecycle handling\\\midrule
 NDNSF ABE-backed & Identity signature, encrypted challenges, and authorization/request state & Service-level ABE protection of descriptor Content\\\bottomrule
 \end{tabularx}
-\vspace{3mm}\bluebox{Trust Schema [16] alone does not encrypt Content. Trust Schema plus encryption is a valid alternative, not an impossible design.}
-\end{frame}
-
-\begin{frame}{Why Reuse ABE Capability for Authorization?}
-\begin{itemize}
-\item Enhanced NAC-ABE [19] supports key-policy ABE (KP-ABE): ciphertext attributes meet a policy in an individually issued decryption key (DKEY).
-\item Service permissions can be aggregated while identity-signing credentials remain unchanged.
-\item Challenges reuse those service permissions instead of introducing additional service-role signing credentials.
-\end{itemize}
-\vspace{3mm}\bluebox{This saves a second entitlement representation in this design---not all key work. User DKEYs, challenge processing, policy growth, status and rekeying still cost resources.}
+\vspace{3mm}\bluebox{Trust Schema [16] validates signing relationships; it alone does not encrypt Content. NAC [4] also protects distributed content. ABE contributes attribute-policy-based decryption.}
 \end{frame}
 
 \begin{frame}{When Another Authorization Design May Be Better}
@@ -152,13 +152,13 @@ NDNSF ABE-backed & Identity signature, encrypted challenges, and authorization/r
 \vspace{3mm}\bluebox{ABE is a justified option for NDNSF's requirements, not universally superior authorization.}
 \end{frame}
 
-\begin{frame}{Selected Exchanges and Permission Withdrawal}
+\begin{frame}{Authorization Lifecycle and Costs}
 \begin{itemize}
-\item Symmetric request-scoped keys protect input and result Content. Selection supplies necessary keys only to the selected Provider through recipient encryption.
-\item The requesting User and selected Provider share the result key; other Users are excluded under key-secrecy assumptions.
-\item Controller-signed status affects authorization after retrieval and validation. ABE rotation limits subsequent encrypted exchanges.
+\item Challenges check decryption capability; signatures, service permissions and request state still determine invocation acceptance.
+\item Request-scoped keys protect input/results. Selection delivers keys to selected Providers; the requesting User retains access.
+\item Withdrawal requires retrieved, validated Controller status. Current ABE rotation is Controller-wide. [28]
 \end{itemize}
-\vspace{3mm}\bluebox{Current rotation is Controller-wide. Disconnected revocation is not immediate; old plaintext and keys cannot be recalled. Runtime tests do not establish lower cost than certificate revocation. [28]}
+\vspace{3mm}\bluebox{Lifecycle requirement, not a third advantage: measure policy/key size, challenge cost, propagation and rekeying. No immediate disconnected revocation or recall of old plaintext/keys.}
 \end{frame}
 
 \begin{frame}{Threat Model: What Is Trusted?}
