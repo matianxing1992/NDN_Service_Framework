@@ -286,3 +286,14 @@ def build(bld):
                 includes=['..', '../ndn-service-framework'],
                 use='ndn-service-framework NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL',
                 rpath=[bld.bldnode.abspath()], install_path=None)
+
+    # C++ primary process probe for Spec182's independent artifact authority.
+    # The surrounding launcher may create a private NFD/Controller runtime,
+    # but this binary owns the signed request, Core targeted transport and
+    # grant verification; it contains no Python oracle or local issuer.
+    bld.program(target='../spec182-native-grant-requester-process',
+                name='spec182-native-grant-requester-process',
+                source=[bld.path.find_node('standalone/spec182-native-grant-requester-process.cpp')],
+                includes=['..', '../ndn-service-framework'],
+                use='ndnsf-distributed-inference ndn-service-framework NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL',
+                rpath=[bld.bldnode.abspath()], install_path=None)
