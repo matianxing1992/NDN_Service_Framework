@@ -46,6 +46,23 @@ for process in value['processes']:
  script.chmod(0o700)
 PY
 
+mapfile -t workdir_ranks < <(PYTHONPATH="$lib" python3 - "$process_map" <<'PY'
+import sys
+from allocation_topology import load_process_map
+for node in load_process_map(sys.argv[1])['nodes']:
+ print(node['nodeRank'])
+PY
+)
+for rank in "${workdir_ranks[@]}"; do
+  # The application bundle may be on submit-host storage. Check visibility on
+  # every target node before starting even one NFD, so a partial startup cannot
+  # masquerade as a later application or protocol failure.
+  srun --exclusive --nodes=1 --ntasks=1 "--relative=$rank" test -d "$workdir" || {
+    echo "SPEC110_WORKDIR_NOT_VISIBLE:$rank" >&2
+    exit 4
+  }
+done
+
 mapfile -t process_rows < <(PYTHONPATH="$lib" python3 - "$process_map" <<'PY'
 import sys
 from allocation_topology import load_process_map
