@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import hashlib
 import json
 import unittest
 import sys
@@ -253,6 +254,142 @@ class Spec182NativeBindingsTest(unittest.TestCase):
                 })(), args, b"qwen-context",
                 request_id="0123456789abcdef0123456789abcdef")
 
+    def test_native_qwen_conversation_exports_native_continuation(self):
+        sys.path.insert(0, str(ROOT / "NDNSF-DistributedRepo/pythonWrapper"))
+        sys.path.insert(0, str(ROOT / "NDNSF-DistributedInference"))
+        sys.path.insert(0, str(ROOT / "pythonWrapper"))
+        sys.path.insert(0, str(ROOT / "examples/python/NDNSF-DistributedInference/llm_pipeline"))
+        import user
+        from ndnsf_distributed_inference.conversation import ConversationContinuation
+
+        observed = {}
+        digest = "sha256:" + "e" * 64
+        opaque_checkpoint = b"native-checkpoint-wire"
+
+        class Handle:
+            request_id = "0123456789abcdef0123456789abcdef"
+            application_request_id = "0123456789abcdef0123456789abcdef"
+            conversation_checkpoint = opaque_checkpoint
+
+            def result(self, _timeout):
+                return SimpleNamespace(payload=b"native-result")
+
+        class Core:
+            _native_conversations = object()
+            _native_runtime = SimpleNamespace(
+                contract=SimpleNamespace(service_name="/AI/LLM/Pipeline/Fake"))
+
+        class Client:
+            _core = Core()
+            native_tokenizer_digest = digest
+
+            def publish_application_input_reference(self, *args, **kwargs):
+                return {"reference": "native-conversation"}
+
+            def request_native_reference(self, reference, **kwargs):
+                observed["reference"] = reference
+                observed["options"] = kwargs["options"]
+                return Handle()
+
+        args = SimpleNamespace(
+            timeout_ms=1000,
+            ack_timeout_ms=100,
+            max_new_tokens=2,
+            native_requester_config="operator-pinned.json",
+        )
+        result = user._native_qwen_request(
+            Client(), args, b"qwen-context",
+            request_id="0123456789abcdef0123456789abcdef",
+            conversation=ConversationContinuation("conversation-native-1"),
+            canonical_token_ids=(11, 12),
+        )
+        self.assertEqual(result.conversation_checkpoint, opaque_checkpoint)
+        native_conversation = observed["options"].conversation
+        self.assertEqual(native_conversation.mode, "FULL_CONTEXT")
+        self.assertEqual(native_conversation.service_name, "/AI/LLM/Pipeline/Fake")
+        self.assertEqual(native_conversation.canonical_token_ids, [11, 12])
+        self.assertEqual(
+            native_conversation.generation_id,
+            hashlib.sha256(
+                b"0123456789abcdef0123456789abcdef").hexdigest()[:32],
+        )
+
+    def test_native_qwen_append_delta_maps_authenticated_parent_wire(self):
+        sys.path.insert(0, str(ROOT / "NDNSF-DistributedRepo/pythonWrapper"))
+        sys.path.insert(0, str(ROOT / "NDNSF-DistributedInference"))
+        sys.path.insert(0, str(ROOT / "pythonWrapper"))
+        sys.path.insert(0, str(ROOT / "examples/python/NDNSF-DistributedInference/llm_pipeline"))
+        import user
+        from ndnsf_distributed_inference.conversation import (
+            ConversationCheckpointV1, ConversationContinuation,
+            ConversationInputMode,
+        )
+
+        digest = "sha256:" + "f" * 64
+        checkpoint = ConversationCheckpointV1(
+            conversation_id="conversation-native-append",
+            parent_context_epoch=0,
+            context_epoch=1,
+            service_name="/AI/LLM/Pipeline/Fake",
+            requester_identity="/requester/native",
+            security_domain_digest=digest,
+            model_contract_digest=digest,
+            plan_role_map_digest=digest,
+            logical_prefix_digest=digest,
+            prefix_token_count=2,
+            role_receipt_digests={"/role/0": digest},
+            issued_at_ms=1,
+            expires_at_ms=4_102_444_800_000,
+        ).sign(b"k" * 32).to_bytes()
+        observed = {}
+
+        class Handle:
+            request_id = "abcdef0123456789abcdef0123456789"
+            application_request_id = "abcdef0123456789abcdef0123456789"
+            conversation_checkpoint = b"successor-wire"
+
+            def result(self, _timeout):
+                return SimpleNamespace(payload=b"native-result")
+
+        class Core:
+            _native_conversations = object()
+            _native_runtime = SimpleNamespace(contract=SimpleNamespace(
+                service_name="/AI/LLM/Pipeline/Fake"))
+
+        class Client:
+            _core = Core()
+            native_tokenizer_digest = digest
+
+            def publish_application_input_reference(self, *_args, **_kwargs):
+                return {"reference": "native-append"}
+
+            def request_native_reference(self, _reference, **kwargs):
+                observed["options"] = kwargs["options"]
+                return Handle()
+
+        args = SimpleNamespace(
+            timeout_ms=1000,
+            ack_timeout_ms=100,
+            max_new_tokens=2,
+            native_requester_config="operator-pinned.json",
+        )
+        result = user._native_qwen_request(
+            Client(), args, b"qwen-delta",
+            request_id="abcdef0123456789abcdef0123456789",
+            conversation=ConversationContinuation(
+                "conversation-native-append", ConversationInputMode.APPEND_DELTA,
+                parent_checkpoint=checkpoint, expected_parent_context_epoch=1),
+            canonical_token_ids=(11, 12, 13),
+        )
+        self.assertEqual(result.conversation_checkpoint, b"successor-wire")
+        native_conversation = observed["options"].conversation
+        self.assertEqual(native_conversation.mode, "APPEND_DELTA")
+        self.assertEqual(native_conversation.parent_context_epoch, 1)
+        self.assertEqual(native_conversation.plan_role_map_digest, digest)
+        self.assertEqual(native_conversation.parent_checkpoint_digest,
+                         json.loads(checkpoint)["checkpointDigest"])
+        self.assertEqual(native_conversation.expected_roles, ["/role/0"])
+
     def test_native_config_qwen_full_generation_runs_production_branch(self):
         """Execute the maintained native-config full-generation caller path."""
         sys.path.insert(0, str(ROOT / "NDNSF-DistributedRepo/pythonWrapper"))
@@ -338,6 +475,148 @@ class Spec182NativeBindingsTest(unittest.TestCase):
         application_options = json.loads(
             observed["application_options"].decode("utf-8"))
         self.assertEqual(application_options["tokenizerDigest"], tokenizer_digest)
+
+    def test_native_config_qwen_full_conversation_returns_checkpoint(self):
+        sys.path.insert(0, str(ROOT / "NDNSF-DistributedRepo/pythonWrapper"))
+        sys.path.insert(0, str(ROOT / "NDNSF-DistributedInference"))
+        sys.path.insert(0, str(ROOT / "pythonWrapper"))
+        sys.path.insert(0, str(ROOT / "examples/python/NDNSF-DistributedInference/llm_pipeline"))
+        import user
+        from ndnsf_distributed_inference.conversation import ConversationContinuation
+
+        tokenizer_digest = "sha256:" + "1" * 64
+        checkpoint = b"opaque-native-checkpoint"
+
+        class Handle:
+            request_id = "qwen-native-conversation"
+            application_request_id = "qwen-native-conversation"
+            conversation_checkpoint = checkpoint
+
+            def result(self, _timeout):
+                return SimpleNamespace(
+                    request_id=self.request_id,
+                    payload=json.dumps({
+                        "schema": "NDNSF-DI-FINAL-V1",
+                        "tokenIds": [7, 2],
+                        "text": "ok",
+                        "finishHint": "EOS",
+                        "finishReason": "eos",
+                    }, sort_keys=True, separators=(",", ":")).encode("utf-8"))
+
+        class Core:
+            _native_conversations = object()
+            _native_runtime = SimpleNamespace(contract=SimpleNamespace(
+                service_name="/AI/LLM/Pipeline/Fake"))
+
+        class Client:
+            _core = Core()
+            native_tokenizer_digest = tokenizer_digest
+
+            def publish_application_input_reference(self, *_args, **_kwargs):
+                return {"reference": "native-conversation"}
+
+            def request_native_reference(self, _reference, **kwargs):
+                observer = kwargs["on_event"]
+                observer({
+                    "terminal": False,
+                    "payload": json.dumps({
+                        "schema": "GenerationTokenEventV1",
+                        "tokenId": 7,
+                        "tokenEpoch": 1,
+                    }, sort_keys=True, separators=(",", ":")).encode("utf-8"),
+                })
+                observer({"terminal": True})
+                return Handle()
+
+        args = SimpleNamespace(
+            timeout_ms=1000,
+            ack_timeout_ms=100,
+            max_new_tokens=2,
+            native_requester_config="operator-pinned.json",
+            diagnostic_token_loop=False,
+            automatic_planning_manifest="",
+            _qwen_model_type="qwen3_5",
+        )
+        outcome = user._run_qwen_transformer_generation_sample(
+            Client(), args,
+            prompt_case={
+                "formattedInputIds": [1],
+                "referenceGeneratedTokenIds": [7, 2],
+                "eosTokenIds": [2],
+            },
+            generation_id="generation-native-conversation",
+            decoder=lambda token_ids: "ok",
+            request_id="qwen-native-conversation",
+            conversation=ConversationContinuation("conversation-native-2"),
+            canonical_token_ids=(1, 7, 2),
+        )
+        self.assertEqual(outcome.status, "OK")
+        self.assertEqual(outcome.native_conversation_checkpoint, checkpoint)
+
+    def test_native_qwen_append_delta_excludes_generation_oracle_suffix(self):
+        sys.path.insert(0, str(ROOT / "NDNSF-DistributedRepo/pythonWrapper"))
+        sys.path.insert(0, str(ROOT / "NDNSF-DistributedInference"))
+        sys.path.insert(0, str(ROOT / "pythonWrapper"))
+        sys.path.insert(0, str(ROOT / "examples/python/NDNSF-DistributedInference/llm_pipeline"))
+        import user
+        from ndnsf_distributed_inference.conversation import (
+            ConversationContinuation, ConversationInputMode)
+        from unittest import mock
+
+        observed = {}
+        checkpoint = b"opaque-successor"
+
+        def fake_native_request(_client, _args, _payload, **kwargs):
+            observed["canonical_token_ids"] = kwargs["canonical_token_ids"]
+            kwargs["on_event"]({
+                "terminal": False,
+                "payload": json.dumps({
+                    "schema": "GenerationTokenEventV1",
+                    "tokenId": 7,
+                    "tokenEpoch": 1,
+                }, sort_keys=True, separators=(",", ":")).encode("utf-8"),
+            })
+            kwargs["on_event"]({"terminal": True})
+            return SimpleNamespace(
+                payload=json.dumps({
+                    "schema": "NDNSF-DI-FINAL-V1",
+                    "tokenIds": [7, 2],
+                    "text": "ok",
+                    "finishHint": "EOS",
+                    "finishReason": "eos",
+                }, sort_keys=True, separators=(",", ":")).encode("utf-8"),
+                conversation_checkpoint=checkpoint,
+            )
+
+        args = SimpleNamespace(
+            timeout_ms=1000,
+            max_new_tokens=2,
+            native_requester_config="operator-pinned.json",
+            diagnostic_token_loop=False,
+            automatic_planning_manifest="",
+            _qwen_model_type="qwen3_5",
+        )
+        conversation = ConversationContinuation(
+            "conversation-native-append", ConversationInputMode.APPEND_DELTA,
+            parent_checkpoint=b"authenticated-parent",
+            expected_parent_context_epoch=1)
+        with mock.patch.object(user, "_native_qwen_request", side_effect=fake_native_request):
+            outcome = user._run_qwen_transformer_generation_sample(
+                object(), args,
+                prompt_case={
+                    "formattedInputIds": [3, 4],
+                    "referenceGeneratedTokenIds": [7, 2],
+                    "eosTokenIds": [2],
+                },
+                generation_id="generation-native-append",
+                decoder=lambda token_ids: "ok",
+                request_id="qwen-native-append",
+                conversation=conversation,
+                canonical_token_ids=(1, 2, 3, 4, 7, 2),
+            )
+        self.assertEqual(outcome.status, "OK")
+        self.assertEqual(outcome.native_conversation_checkpoint, checkpoint)
+        self.assertEqual(observed["canonical_token_ids"], (1, 2, 3, 4))
 
     def test_native_config_qwen_observer_rejects_non_mapping_payload(self):
         """Malformed decoded observer values must remain a caller-visible error."""

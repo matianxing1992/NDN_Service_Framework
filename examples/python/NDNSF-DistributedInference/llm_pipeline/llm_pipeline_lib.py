@@ -229,6 +229,10 @@ class BoundedQwenGenerationResult:
     error: str = ""
     reference_acceptance: str = "EXACT"
     reference_evidence_digest: str = ""
+    # Opaque native-owner checkpoint for a caller that will issue the next
+    # APPEND_DELTA turn.  It is intentionally omitted from the public JSON
+    # projection; the native coordinator remains the durable owner.
+    native_conversation_checkpoint: bytes | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {

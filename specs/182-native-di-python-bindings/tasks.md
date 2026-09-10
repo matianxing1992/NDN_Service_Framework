@@ -1,6 +1,6 @@
 # Tasks: Native NDNSF-DI with Optional Python Bindings
 
-**Revision**: 139 | **Status**: DRAFT / T001 DONE
+**Revision**: 140 | **Status**: DRAFT / T001 DONE
 **Input**: [spec](spec.md), [code design](contracts/code-design.md),
 [proof](contracts/proof-design.md), [work units](contracts/work-units.md)
 
@@ -14,7 +14,7 @@
 R11-B4 continuation、R11-B5 recovery 与 R11-B6 replacement 已形成独立出口，下一批转入
 R11-B7 cleanup。不得在 N1--N3 通过前以旧
 调用方批量迁移、Python 数量或全仓库扫描代替原生出口。R11-B7 已形成 cleanup 出口；
-R11-B8 现开始按 caller group 批次执行；G4 已形成 native checkpoint handle export 出口，下一批仍应接通 APPEND_DELTA caller。已有局部 PASS 及下面历史记录
+R11-B8 现开始按 caller group 批次执行；G4 已形成 native checkpoint handle export 出口，G5 已接通 Qwen caller 的 FULL_CONTEXT/APPEND_DELTA DTO 映射；真实 Provider 第二轮仍需独立验证。已有局部 PASS 及下面历史记录
 保留，父任务不因本轮局部实现升级。
 
 | Unit / Details | Status | Depends | Evidence / Remaining | Updated |
@@ -33,6 +33,7 @@ R11-B8 现开始按 caller group 批次执行；G4 已形成 native checkpoint h
 | [R11-B8-G2 Native Generic Stream Facade](evidence/r11-b8-g2-native-stream-facade-20260910.md) | CLOSED_FOR_VALIDATION | R11-B8-G1; R11-B3 stream contract | **C++ primary:** native stream owner regression re-run green. **Python secondary:** canonical `APPClient.request_streaming` now routes through native stream options/handle; event, final-result, failure, cancel and planner non-fallback boundaries pass (23 compatibility tests). Python conversation and TOKEN_STREAMING adapter generation remain explicitly fail-closed; 15 maintained callers, legacy zero-use, no-Python and T016 remain open | 2026-09-10 |
 | [R11-B8-G3 Native Dynamic Conversation Binding](evidence/r11-b8-g3-native-dynamic-conversation-binding-20260910.md) | CLOSED_FOR_VALIDATION | R11-B8-G2; R11-B4 continuation contract | **C++ primary:** 首轮 `FULL_CONTEXT` 可由 native coordinator 暂存未绑定 role/provider map，placement 后原子绑定 canonical digest/roles；重复绑定拒绝；fresh unit 257 cases 与 Spec182 integration 10 cases 通过（含新增真实动态 placement selector）。APPEND_DELTA、replacement、15 maintained callers、legacy zero-use、no-Python 与 T016 仍未关闭 | 2026-09-10 |
 | [R11-B8-G4 Native Checkpoint Handle Export](evidence/r11-b8-g4-native-checkpoint-handle-20260910.md) | CLOSED_FOR_VALIDATION | R11-B8-G3; R11-B4 continuation contract | **C++ primary:** native handle stores only the coordinator's committed checkpoint wire and exposes it only after `Succeeded`; empty, cancelled and ordinary handles remain empty. Full `Spec182*` unit regression 257 cases and real Provider conversation selector pass. **Python secondary:** pybind export, SDK bytes forwarding, extension rebuild/import and 81 focused wrapper/compatibility tests pass; the first stale shared-library import failure was repaired by relinking the current DI library. APPEND_DELTA caller, 15 maintained callers, legacy zero-use, no-Python and T016 remain open | 2026-09-10 |
+| [R11-B8-G5 Native Qwen Conversation Caller](evidence/r11-b8-g5-native-qwen-append-caller-20260910.md) | CLOSED_FOR_VALIDATION | R11-B8-G4; R11-B4 continuation contract | **Native-first caller seam:** Qwen native-config FULL_CONTEXT/APPEND_DELTA now constructs the typed C++ continuation, validates authenticated parent checkpoint metadata, removes the generation oracle suffix from APPEND_DELTA canonical input, and forwards only the native opaque checkpoint bytes. Python focused tests 29/29 pass; this is caller mapping evidence only. Real Provider second turn, unavailable-role control, 15 maintained callers, legacy zero-use, no-Python and T016 remain open | 2026-09-10 |
 | [R11-B8 Maintained Callers](contracts/native-first-execution.md#dispatch-cards) | PARTIAL | R11-B7; corresponding T012 ABI | G1 generic unary 与 G2 generic stream 已形成稳定出口；仍需 15 个 caller group 的 native entry、实际行为、兼容 wrapper 及旧路径零使用证据，不能按子批次数量计全量完成 | 2026-09-10 |
 | [R11-B9 Native Closure](contracts/native-first-execution.md#dispatch-cards) | NOT_STARTED | R11-B8 | T014 no-Python/依赖闭包工具 → T015 → T016 → T017；最终资格未开始 | 2026-09-10 |
 
@@ -291,6 +292,15 @@ P1–P4 是不同的生产入口、进程边界或 selector，不能为了少一
 | R10-B76 | production entry/callers: compatibility manifest → maintained Python API inventory; implementation/wire: `checklists/build_api_migration_manifest.py` regenerated all 344 entries and rebounded source line/hash metadata to checkpoint `31fe172a`; test/harness/oracle: generator output, `sourceCommit` equality, design validator and diff check; build/source closure: manifest-only, no ABI or runtime change; migration/evidence: closes stale provenance from R10-B74 while semantic caller mapping, native default migration and legacy retirement remain open | DONE for this bounded manifest provenance boundary; parent T001/O-004/T013-B remain PARTIAL | static review confirms current HEAD identity and 344-entry coverage; manifest remains routing evidence and cannot promote runtime compatibility or qualification | generator PASS (`entries=344`, `dynamicAppSdk=67`); sourceCommit equality PASS; `validate_design.py --json` PASS; `git diff --check` PASS | no product build, requester/Provider transport, maintained caller/no-Python or T016/T017 run | documentation/generator artifact only | `STATIC_PASS`; `FOCUSED_BEHAVIOR_PASS`; `BUILD_NOT_APPLICABLE`; `OPEN_FOR_NEXT_BATCH`; not `QUALIFICATION_PASS` | [R10-B76 evidence](evidence/r10-b76-compatibility-manifest-refresh-20260909.md); next: map and migrate maintained native callers, then regenerate after each source checkpoint |
 
 ## Current Checkpoint
+
+2026-09-10 R11-B8-G5 native Qwen conversation caller / **CLOSED_FOR_VALIDATION**（仅限
+Qwen native-config caller 的 continuation DTO 映射）：FULL_CONTEXT 和 APPEND_DELTA 均通过
+typed C++ continuation 进入 native owner，APPEND_DELTA 过滤 generation oracle suffix，结果
+只转发 opaque checkpoint bytes；Python focused tests 29/29 通过。该批次没有真实 Provider
+第二轮协议资格，也没有实现 unavailable-role control。详见
+[R11-B8-G5 evidence](evidence/r11-b8-g5-native-qwen-append-caller-20260910.md)。
+R11-B8 仍有 APPEND_DELTA 的真实 Provider 第二轮、unavailable-role control、15 个
+maintained caller group、legacy zero-use、no-Python 与 T016/T017 资格缺口，R11-B9 未开始。
 
 2026-09-10 R11-B8-G4 native checkpoint handle export / **CLOSED_FOR_VALIDATION**（仅限
 native conversation commit 的 checkpoint 出口）：C++ handle 只保存 coordinator 成功
