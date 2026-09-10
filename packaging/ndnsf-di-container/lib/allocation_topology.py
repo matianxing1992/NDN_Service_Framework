@@ -17,6 +17,7 @@ class TopologyError(ValueError):
 
 DIGEST = re.compile(r"^sha256:[a-f0-9]{64}$")
 SAFE_TOKEN = re.compile(r"^[A-Za-z0-9_./:@+=,-]+$")
+PROCESS_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 READINESS_PHASES = (
     "scratch-binds-gpu",
     "nfd",
@@ -115,7 +116,7 @@ def validate_process_map(value: Mapping[str, Any]) -> dict[str, Any]:
         if not isinstance(process, Mapping) or set(process) != exact_fields:
             _fail("TOPOLOGY_PROCESS_FIELDS_INVALID")
         process_id = process["processId"]
-        if not isinstance(process_id, str) or not SAFE_TOKEN.fullmatch(process_id) or process_id in ids:
+        if not isinstance(process_id, str) or not PROCESS_ID.fullmatch(process_id) or process_id in ids:
             _fail("TOPOLOGY_PROCESS_ID_INVALID")
         ids.add(process_id)
         kind = process["kind"]
@@ -153,7 +154,10 @@ def validate_process_map(value: Mapping[str, Any]) -> dict[str, Any]:
                 _fail("TOPOLOGY_NFD_GPU_INVALID", process_id)
         else:
             identity = process["identityRef"]
-            if not isinstance(identity, str) or not identity.startswith("/project/") or process["identityReadOnly"] is not True:
+            if (not isinstance(identity, str) or not identity.startswith("/project/") or
+                    ".." in Path(identity).parts or
+                    any(char in identity for char in "\x00\n\r") or
+                    process["identityReadOnly"] is not True):
                 _fail("TOPOLOGY_IDENTITY_BINDING_INVALID", process_id)
             if identity in identities:
                 _fail("TOPOLOGY_DUPLICATE_IDENTITY", identity)
@@ -221,6 +225,90 @@ def render_multiprog(value: Mapping[str, Any]) -> str:
     ) + "\n"
 
 
+def render_process_launcher(process: Mapping[str, Any], scratch: Path | str,
+                            workdir: Path | str) -> str:
+    """Render a deterministic per-process launcher for an allocation node.
+
+    ``workdir`` is an explicit shared bundle/config directory.  ``identityRef``
+    is a read-only source bundle, not a writable NDN keychain.
+    Copying it into a process-specific scratch HOME avoids shared PIB/TPM
+    locks and prevents a Slurm/login environment from silently selecting a
+    different role.  NFD has no identity in the v1 map, so its inherited NDN
+    locators are cleared as well.
+    """
+    process_id = process.get("processId")
+    kind = process.get("kind")
+    socket_path = process.get("nfdSocket")
+    command = process.get("command")
+    if not isinstance(process_id, str) or not PROCESS_ID.fullmatch(process_id):
+        _fail("TOPOLOGY_PROCESS_ID_INVALID", process_id)
+    if kind not in {"nfd", "controller", "user", "provider"}:
+        _fail("TOPOLOGY_PROCESS_KIND_INVALID", process_id)
+    if not isinstance(socket_path, str) or not socket_path.startswith("/tmp/ndnsf-di-"):
+        _fail("TOPOLOGY_NFD_SOCKET_INVALID", process_id)
+    command = _safe_command(command, process_id)
+    if kind == "nfd":
+        if process.get("identityRef") is not None or process.get("identityReadOnly") is not True:
+            _fail("TOPOLOGY_NFD_IDENTITY_INVALID", process_id)
+    elif process.get("identityReadOnly") is not True:
+        _fail("TOPOLOGY_IDENTITY_BINDING_INVALID", process_id)
+    scratch_path = Path(scratch)
+    if (not scratch_path.is_absolute() or not str(scratch_path).startswith("/tmp/ndnsf-di-") or
+            ".." in scratch_path.parts):
+        _fail("TOPOLOGY_SCRATCH_INVALID", scratch)
+    workdir_path = Path(workdir)
+    if (not workdir_path.is_absolute() or ".." in workdir_path.parts or
+            any(char in str(workdir_path) for char in "\x00\n\r")):
+        _fail("TOPOLOGY_WORKDIR_INVALID", workdir)
+
+    home = scratch_path / "homes" / process_id
+    tmp = scratch_path / "tmp" / process_id
+    lines = ["#!/bin/bash", "set -euo pipefail", "umask 077"]
+    lines += [
+        f"runtime_home={shlex.quote(str(home))}",
+        f"runtime_tmp={shlex.quote(str(tmp))}",
+        'rm -rf "$runtime_home" "$runtime_tmp"',
+        'mkdir -p "$runtime_home" "$runtime_tmp"',
+        'chmod 700 "$runtime_home" "$runtime_tmp"',
+        'unset NDN_CLIENT_PIB NDN_CLIENT_TPM',
+        'export HOME="$runtime_home" TMPDIR="$runtime_tmp"',
+        f"runtime_workdir={shlex.quote(str(workdir_path))}",
+        'test -d "$runtime_workdir" || { echo SPEC110_WORKDIR_MISSING >&2; exit 8; }',
+        'cd "$runtime_workdir"',
+    ]
+    if kind == "nfd":
+        lines.append('printf \'SPEC110_PROCESS_HOME_READY process=%s kind=nfd home=%s\\n\' ' +
+                     f"{shlex.quote(process_id)} \"$HOME\" >&2")
+    else:
+        identity = process.get("identityRef")
+        if (not isinstance(identity, str) or not identity.startswith("/project/") or
+                ".." in Path(identity).parts or
+                any(char in identity for char in "\x00\n\r")):
+            _fail("TOPOLOGY_IDENTITY_BINDING_INVALID", process_id)
+        lines += [
+            f"identity_source={shlex.quote(identity)}",
+            'if [[ ${NDNSF_SPEC110_TEST_MODE:-0} == 1 && ! -d "$identity_source/.ndn" ]]; then',
+            '  printf \'SPEC110_TEST_IDENTITY_SOURCE_BYPASS process=%s source=%s\\n\' ' +
+            f"{shlex.quote(process_id)} \"$identity_source\" >&2",
+            'else',
+            '  test -d "$identity_source/.ndn" || { echo SPEC110_IDENTITY_SOURCE_MISSING >&2; exit 8; }',
+            '  cp -a "$identity_source/." "$runtime_home/"',
+            '  test -f "$runtime_home/.ndn/pib.db" || { echo SPEC110_IDENTITY_PIB_MISSING >&2; exit 8; }',
+            '  test -e "$runtime_home/.ndn/ndnsec-key-file" || { echo SPEC110_IDENTITY_TPM_MISSING >&2; exit 8; }',
+            '  export NDN_CLIENT_PIB="pib-sqlite3:$runtime_home/.ndn/pib.db"',
+            '  export NDN_CLIENT_TPM="tpm-file:$runtime_home/.ndn/ndnsec-key-file"',
+            'fi',
+            'printf \'SPEC110_PROCESS_HOME_READY process=%s kind=%s source=%s home=%s\\n\' ' +
+            f"{shlex.quote(process_id)} {shlex.quote(kind)} \"$identity_source\" \"$HOME\" >&2",
+        ]
+    lines += [
+        f"export NDN_CLIENT_TRANSPORT={shlex.quote('unix://' + socket_path)}",
+        "exec " + shlex.join(command),
+        "",
+    ]
+    return "\n".join(lines)
+
+
 def evaluate_transport_probe(process_map: Mapping[str, Any], observations: Mapping[str, Any]) -> dict[str, Any]:
     validated = validate_process_map(process_map)
     selected = validated["selectedTransport"]
@@ -259,5 +347,6 @@ def load_process_map(path: Path | str) -> dict[str, Any]:
 
 __all__ = [
     "TopologyError", "command_digest", "evaluate_transport_probe", "load_process_map",
-    "render_multiprog", "render_nfd_config", "validate_process_map",
+    "render_multiprog", "render_nfd_config", "render_process_launcher",
+    "validate_process_map",
 ]

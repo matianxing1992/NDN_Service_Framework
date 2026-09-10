@@ -35,6 +35,28 @@ children, uses bounded readiness barriers, captures PID/task/exit records, and
 terminates the process group on normal exit, TERM, INT, timeout, or partial
 startup failure.
 
+The topology launcher MUST receive an explicit shared `--workdir` containing
+the sealed application bundle/configuration and must verify that directory on
+each execution node before `exec`. Generated process scripts `cd` there before
+launching commands, so relative model/config paths cannot resolve against the
+submitter's login directory.
+
+### Identity and runtime environment
+
+`identityRef` is a read-only source directory. The launcher MUST NOT use it as a
+writable `HOME`, and MUST NOT inherit `NDN_CLIENT_PIB` or `NDN_CLIENT_TPM` from
+the login/Slurm environment. Before `exec`, every non-NFD process copies its
+own `identityRef` into a process-specific, mode-0700 directory under the
+job-owned scratch path, requires `.ndn/pib.db` and
+`.ndn/ndnsec-key-file`, then exports matching `HOME`,
+`NDN_CLIENT_PIB=pib-sqlite3:<home>/.ndn/pib.db`, and
+`NDN_CLIENT_TPM=tpm-file:<home>/.ndn/ndnsec-key-file`. Each NFD receives its
+own scratch `HOME` and cleared NDN keychain variables. Missing identity input
+is a pre-exec failure; a shallow readiness marker cannot waive it. The
+launcher records `SPEC110_PROCESS_HOME_READY` only after this setup. The
+offline `NDNSF_SPEC110_TEST_MODE=1` fixture path may bypass a non-existent
+identity source for fake binaries only and is not a deployment mode.
+
 ## Readiness order
 
 1. scratch, binds, SIF, GPU mapping;

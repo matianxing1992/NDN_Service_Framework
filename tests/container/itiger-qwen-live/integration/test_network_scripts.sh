@@ -123,7 +123,7 @@ supervisor="$repo/packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/
 template="$repo/packaging/ndnsf-di-container/adapters/slurm-apptainer/templates/nfd.conf.in"
 PATH="$tmp/bin:$PATH" SLURM_JOB_ID=test SLURM_NNODES=1 NDNSF_SPEC110_TEST_MODE=1 NDNSF_SPEC110_READINESS_SETTLE_SECONDS=0.1 \
   "$supervisor" --process-map "$supervisor_scratch/process-map.json" --scratch "$supervisor_scratch" \
-  --evidence "$tmp/supervisor-normal" --nfd-template "$template"
+  --evidence "$tmp/supervisor-normal" --nfd-template "$template" --workdir "$tmp"
 python3 - "$tmp/supervisor-normal/teardown.json" <<'PY'
 import json,sys
 value=json.load(open(sys.argv[1]));assert value['status']=='PASS' and value['survivors']==0 and value['exitCode']==0
@@ -144,7 +144,7 @@ PY
 set +e
 PATH="$tmp/bin:$PATH" SLURM_JOB_ID=test SLURM_NNODES=1 NDNSF_SPEC110_TEST_MODE=1 NDNSF_SPEC110_READINESS_SETTLE_SECONDS=5 \
   "$supervisor" --process-map "$signal_scratch/process-map.json" --scratch "$signal_scratch" \
-  --evidence "$tmp/supervisor-signal" --nfd-template "$template" &
+  --evidence "$tmp/supervisor-signal" --nfd-template "$template" --workdir "$tmp" &
 supervisor_pid=$!
 sleep 0.5
 kill -TERM "$supervisor_pid"

@@ -1,6 +1,6 @@
 # Tasks: Native NDNSF-DI with Optional Python Bindings
 
-**Revision**: 146 | **Status**: DRAFT / T001 DONE
+**Revision**: 147 | **Status**: DRAFT / T001 DONE
 **Input**: [spec](spec.md), [code design](contracts/code-design.md),
 [proof](contracts/proof-design.md), [work units](contracts/work-units.md)
 
@@ -45,6 +45,7 @@ R11-B8 现开始按 caller group 批次执行；G4 已形成 native checkpoint h
 | [R11-B8-G10 Test Strata and Model Identity](evidence/r11-b8-g10-test-strata-20260910.md) | CLOSED_FOR_VALIDATION | R11-B8-G9; T016 evidence boundary | 记录 `Spec182*`、G7/G9 独立 C++ process、R10-B73 native-config Qwen selector、其他 Spec 的 Qwen3-0.6B 材料和 T016 MiniNDN 的边界；确认当前 Spec182 process/selector 使用 tiny fixture、虽为真实 ORT CPU 但不是 0.6B，也不把本地 NFD process 记作 MiniNDN；不推进任何父任务 | 2026-09-10 |
 | [R11-B8-G11 Native Provider Co-location](evidence/r11-b8-g11-provider-colocation-20260910.md) | CLOSED_FOR_VALIDATION | R11-B8-G10; placement/sealing/group projection contracts | **C++ primary:** 修复 placement→sealing→role-specific grant→projection→group capability 链中的隐含 one-role-per-Provider 假设；按 Provider 去重 admitted offers，允许容量约束内 co-location，单 Provider dependency 使用受保护的一成员 group；GPU 保持不同 device/累计显存门，reservation 溢出 fail closed。新增 co-location group 与多设备 selector；`Spec182*` 258/7099 两次通过。仅关闭 C++ placement boundary，maintained callers、独立部署、no-Python、MiniNDN 与 T016/T017 仍开放 | 2026-09-10 |
 | [R11-B8-G12 Native Provider Identity Binding](evidence/r11-b8-g12-provider-identity-binding-20260910.md) | CLOSED_FOR_VALIDATION | R11-B8-G11; Provider host/lease contract | **C++ primary:** Provider host 在创建共享 lease/target 前要求 `localProviderName` 为合法且非空的 NDN name、与底层 `ServiceProvider` identity 精确相等，并要求非空 `providerBootId`；等价 URI 持久化为 canonical provider name。missing/foreign identity、missing boot 与 valid retry selector 通过；fresh unit 190/190 build，host 8/8 cases、67/67 assertions，完整 `Spec182*` 259/259 cases、7104/7104 assertions 通过。仅关闭 host identity boundary，maintained callers、独立部署、no-Python、MiniNDN 与 T016/T017 仍开放 | 2026-09-10 |
+| [R11-B8-G13 Multi-Machine Runtime Boundary](evidence/r11-b8-g13-multinode-deployment-boundary-20260910.md) | CLOSED_FOR_VALIDATION | R11-B8-G12; Spec110 topology contract | **Deployment harness:** 修复 Slurm topology launcher 未消费 `identityRef` 和隐式 CWD 的缺口；每个非 NFD 进程在节点 scratch 建立专属可写 HOME，复制只读 `.ndn`，显式设置 PIB/TPM/transport，NFD 清除 keychain 环境；`--workdir` 必填并在 exec 前验证、`cd`；同时拒绝 process/identity 路径穿越。12/12 topology unit、真实 launcher identity-copy/env probe、network script 和 shell syntax 通过。该卡不推进 T013 caller、T014 dependency closure 或 T016/T017；真实多机 SIF/route 资格仍未运行 | 2026-09-10 |
 | [R11-B8 Maintained Callers](contracts/native-first-execution.md#dispatch-cards) | PARTIAL | R11-B7; corresponding T012 ABI | G1 generic unary 与 G2 generic stream 已形成稳定出口；仍需 15 个 caller group 的 native entry、实际行为、兼容 wrapper 及旧路径零使用证据，不能按子批次数量计全量完成 | 2026-09-10 |
 | [R11-B9 Native Closure](contracts/native-first-execution.md#dispatch-cards) | NOT_STARTED | R11-B8 | T014 no-Python/依赖闭包工具 → T015 → T016 → T017；最终资格未开始 | 2026-09-10 |
 
@@ -328,6 +329,15 @@ P1–P4 是不同的生产入口、进程边界或 selector，不能为了少一
 | R10-B76 | production entry/callers: compatibility manifest → maintained Python API inventory; implementation/wire: `checklists/build_api_migration_manifest.py` regenerated all 344 entries and rebounded source line/hash metadata to checkpoint `31fe172a`; test/harness/oracle: generator output, `sourceCommit` equality, design validator and diff check; build/source closure: manifest-only, no ABI or runtime change; migration/evidence: closes stale provenance from R10-B74 while semantic caller mapping, native default migration and legacy retirement remain open | DONE for this bounded manifest provenance boundary; parent T001/O-004/T013-B remain PARTIAL | static review confirms current HEAD identity and 344-entry coverage; manifest remains routing evidence and cannot promote runtime compatibility or qualification | generator PASS (`entries=344`, `dynamicAppSdk=67`); sourceCommit equality PASS; `validate_design.py --json` PASS; `git diff --check` PASS | no product build, requester/Provider transport, maintained caller/no-Python or T016/T017 run | documentation/generator artifact only | `STATIC_PASS`; `FOCUSED_BEHAVIOR_PASS`; `BUILD_NOT_APPLICABLE`; `OPEN_FOR_NEXT_BATCH`; not `QUALIFICATION_PASS` | [R10-B76 evidence](evidence/r10-b76-compatibility-manifest-refresh-20260909.md); next: map and migrate maintained native callers, then regenerate after each source checkpoint |
 
 ## Current Checkpoint
+
+2026-09-10 R11-B8-G13 multi-machine runtime boundary / **CLOSED_FOR_VALIDATION**（仅限
+Slurm topology 启动边界）：静态审查发现生成的 process script 虽校验 `identityRef`，却未
+消费它，也未固定进程 HOME、PIB/TPM 或 CWD；MiniNDN 的预置环境会掩盖该问题。现已让每个
+非 NFD 进程在节点 scratch 复制只读身份到专属 HOME，显式设置 keychain/transport，NFD 清除
+继承 keychain；`--workdir` 成为必填并在 exec 前验证、`cd`，并拒绝 process/identity 路径穿越。12 个 topology unit、真实
+identity-copy/env probe、network launcher 和 shell syntax 通过。该卡不推进 T013、T014
+依赖闭包或 T016/T017；真实多机 SIF/route 资格仍未运行。详见
+[R11-B8-G13 evidence](evidence/r11-b8-g13-multinode-deployment-boundary-20260910.md)。
 
 2026-09-10 R11-B8-G12 native Provider identity binding / **CLOSED_FOR_VALIDATION**（仅限
 C++ host 启动契约）：静态审查发现 `NativeInferenceProvider::serve` 原先允许空值或与

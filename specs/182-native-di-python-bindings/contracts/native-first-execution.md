@@ -47,6 +47,22 @@ Selection projection、group capability 与 Provider-local handler 都必须继�
 索引，不能因 Provider 相同而合并角色。维护中的 Qwen profile 仍有固定的三阶段顺序和
 rank/tensor contract；这些 adapter 限制不等同于 deployment 的 Provider 数量限制。
 
+## Multi-Machine Runtime Boundary
+
+MiniNDN 常把每个节点的 `HOME`、PIB/TPM 和当前工作目录预置在同一进程环境中，因而不能
+代替多机启动器验证身份隔离。Spec110 的 Slurm topology launcher 读取的 `identityRef` 是
+只读身份源；启动器必须在实际节点上为每个 Controller、Provider 和 User 复制独立的
+`.ndn/pib.db` 与 `.ndn/ndnsec-key-file` 到作业 scratch 下的进程专属 `HOME`，显式设置
+对应 `NDN_CLIENT_PIB`、`NDN_CLIENT_TPM` 和 `NDN_CLIENT_TRANSPORT`，并清除继承的 NDN
+keychain 环境。NFD 使用独立 scratch `HOME` 且不继承角色 keychain。复制或必需文件检查
+失败发生在进程 `exec` 之前；READY 日志不能把它升级为成功。该边界由
+`allocation_topology.render_process_launcher` 和
+`run-allocation-topology.sh` 共同实现，避免同一只读身份或登录节点环境在多机上被复用。
+
+此启动器的离线 fake-binary 测试可以用 `NDNSF_SPEC110_TEST_MODE=1` 跳过不存在的 fixture
+身份源，但该开关不属于生产部署，也不能作为 T016/T017 资格证据。真实多机资格仍须在
+目标节点验证 identity、NFD TCP/UDP route、依赖库和工作目录的候选绑定。
+
 ## Independent Authority Boundary
 
 - **Owner**: 复用 `NativeArtifactGrantIssuer`/现有 policy、grant wire、签名和 recipient

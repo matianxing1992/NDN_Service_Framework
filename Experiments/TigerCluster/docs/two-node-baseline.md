@@ -31,6 +31,13 @@
 - `configure_routes(...)`：通过精确SIF的nfdc连接当前节点专属socket，安装到另一节点的TCP face和run namespace路由、SVS multicast策略；持久化实际face/route快照。
 - `collect(...) -> dict`：要求两个实际不同主机、同一SIF/bundle/profile身份、必需case全部精确符合oracle、worker exit0及全部清理完成。遗漏、异常、超时、未知case、篡改身份均FAIL。
 
+Spec110 allocation topology 的 `identityRef` 是只读输入，不能直接复用为运行时 HOME。
+启动器会在每个执行节点的作业 scratch 中创建进程专属 HOME，复制该角色的 `.ndn`，并
+显式设置 `NDN_CLIENT_PIB`/`NDN_CLIENT_TPM`；NFD 也清除继承的 keychain 变量。身份源或
+PIB/TPM 文件缺失会在 `exec` 前失败，避免 MiniNDN 预置 HOME 掩盖多机部署错误。
+同一启动器要求显式传入各节点可见的 `--workdir`，并在进程脚本中先 `cd` 到该目录，避免
+相对配置和模型路径解析到 Slurm 提交目录。
+
 `profile`为只读实验契约；`runId`为严格字母数字/连字符标识，决定`/example/tiger/<runId>`命名空间。`mode`仅为`local`或`slurm`，本机双实例只能给LOCAL_PASS。`workload`为`baseline`或`service-echo`；后者是复用同一设施的第二次真实服务实验，不代表YOLO/Qwen已迁移。
 
 `run.json`记录schema、状态、开始/结束UTC、mode/workload、源码基线及逐文件hash、SIF/profile哈希、Apptainer/NDN/框架版本、节点/路由、case结果、worker退出和清理结果。私钥、bootstrap token及PIB/TPM不进入结果包或Git。`private/`只在0700新run根内暂存，退出时删除；公开证书与其摘要留存。
