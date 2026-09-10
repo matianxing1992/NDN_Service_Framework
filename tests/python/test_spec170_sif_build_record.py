@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -211,4 +212,42 @@ def test_run_container_rejects_scratch_from_another_job(tmp_path: Path) -> None:
         shutil.rmtree(scratch, ignore_errors=True)
     assert result.returncode == 1
     assert "APPTAINER_SCRATCH_INVALID" in result.stderr
+    assert not invocation.exists()
+
+
+def test_run_container_rejects_job_named_scratch_symlink(tmp_path: Path) -> None:
+    sif = tmp_path / "runtime.sif"
+    sif.write_bytes(b"candidate")
+    project = tmp_path / "project" / "ndnsf-di"
+    for relative in ("releases", "models", "artifacts", "identities/provider", "evidence"):
+        (project / relative).mkdir(parents=True, exist_ok=True)
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    invocation = tmp_path / "apptainer-invocation.log"
+    fake = fake_bin / "apptainer"
+    fake.write_text(f"#!/bin/sh\nprintf '%s\\n' \"$*\" >> {invocation}\n", encoding="utf-8")
+    fake.chmod(0o755)
+    target = Path(tempfile.mkdtemp(prefix="ndnsf-di-scratch-target-", dir="/tmp"))
+    link = Path("/tmp/ndnsf-di-99174")
+    link.unlink(missing_ok=True)
+    link.symlink_to(target, target_is_directory=True)
+    try:
+        result = subprocess.run(
+            [
+                str(ROOT / "packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/run-container.sh"),
+                "--sif", str(sif), "--sif-sha256", _digest(sif),
+                "--project", str(project), "--scratch", str(link),
+                "--identity", str(project / "identities/provider"), "--", "/bin/true",
+            ],
+            cwd=ROOT,
+            env={**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}",
+                 "NDNSF_SPEC110_ALLOW_TEST_ROOT": "1", "SLURM_JOB_ID": "99174",
+                 "NDNSF_SIF_CACHE_DIR": str(tmp_path / "cache")},
+            check=False, capture_output=True, text=True,
+        )
+    finally:
+        link.unlink(missing_ok=True)
+        shutil.rmtree(target, ignore_errors=True)
+    assert result.returncode == 1
+    assert "APPTAINER_SCRATCH_SYMLINK_FORBIDDEN" in result.stderr
     assert not invocation.exists()

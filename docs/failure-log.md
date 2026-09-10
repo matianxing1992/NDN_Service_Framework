@@ -1,5 +1,17 @@
 # Failure Log and Evidence Index
 
+## 2026-09-10 — Spec182 R11-B8-G40 network integration retry boundary
+
+The first normal run of the G40 network integration exited 1 after the injected
+pre-start cases, with only a `BrokenPipeError` from the fake `srun` output
+fixture. No NFD or application process was started and no product assertion was
+reported. The complete xtrace is retained at
+`.codex-tmp/spec182-r11-b8-g40-network-failure-20260910/network-xtrace.log`.
+A bounded xtrace rerun and a fresh normal rerun both reached
+`NETWORK_SCRIPT_PASS`; the result is recorded in
+[R11-B8-G40 evidence](../specs/182-native-di-python-bindings/evidence/r11-b8-g40-scratch-symlink-boundary-20260910.md).
+The transient fixture retry is not counted as a product failure or qualification result.
+
 ## 2026-09-10 — Proposal DNMP reference download format boundary
 
 The direct download of the DNMP reference returned HTML rather than PDF;

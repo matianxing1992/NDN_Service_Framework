@@ -69,13 +69,18 @@ for label,value in [('release',release),('models',models),('artifacts',artifacts
  try:path.relative_to(root)
  except ValueError:raise SystemExit('APPTAINER_BIND_OUTSIDE_PROJECT:'+label)
  if not path.exists():raise SystemExit('APPTAINER_BIND_MISSING:'+label)
-scratch_path=Path(scratch).resolve()
+scratch_input=Path(scratch)
+scratch_path=scratch_input.resolve()
 expected_scratch_prefix=f'ndnsf-di-{job}'
 scratch_name=scratch_path.name
-if (not str(scratch_path).startswith('/tmp/') or
+if (not scratch_input.is_absolute() or '..' in scratch_input.parts or
+        scratch_path != scratch_input or scratch_input.is_symlink() or
+        not str(scratch_path).startswith('/tmp/') or
         not (scratch_name == expected_scratch_prefix or
              scratch_name.startswith(expected_scratch_prefix + '-'))):
- raise SystemExit('APPTAINER_SCRATCH_INVALID')
+ raise SystemExit('APPTAINER_SCRATCH_SYMLINK_FORBIDDEN' if
+                  scratch_path != scratch_input or scratch_input.is_symlink()
+                  else 'APPTAINER_SCRATCH_INVALID')
 if not scratch_path.is_dir():raise SystemExit('APPTAINER_SCRATCH_MISSING')
 PY
 

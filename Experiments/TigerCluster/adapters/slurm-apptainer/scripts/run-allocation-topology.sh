@@ -49,6 +49,15 @@ if [[ ${NDNSF_SPEC110_TEST_MODE:-0} != 1 && -n ${SLURM_JOB_ID:-} ]]; then
     *) echo "SPEC110_TOPOLOGY_SCRATCH_JOB_MISMATCH:$scratch" >&2; exit 3 ;;
   esac
 fi
+# A job-looking symlink can redirect generated sockets, homes and cleanup
+# paths to another node-local or shared directory. Resolve before creating
+# topology state and require the caller's spelling to be the actual directory.
+scratch_input=$scratch
+while [[ ${scratch_input%/} != "$scratch_input" ]]; do scratch_input=${scratch_input%/}; done
+scratch_real=$(readlink -f -- "$scratch" 2>/dev/null || true)
+[[ -n $scratch_real && $scratch_real == "$scratch_input" ]] || {
+  echo SPEC110_TOPOLOGY_SCRATCH_SYMLINK_FORBIDDEN >&2; exit 3;
+}
 
 container_root=$(CDPATH= cd -- "$(dirname -- "$0")/../../.." && pwd)
 lib="$container_root/lib"

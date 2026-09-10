@@ -14,6 +14,16 @@ case "$scratch_name" in
   "ndnsf-di-${SLURM_JOB_ID}"|"ndnsf-di-${SLURM_JOB_ID}-"*) ;;
   *) echo COMPUTE_SCRATCH_POLICY_INVALID >&2; exit 3 ;;
 esac
+# The basename check alone is insufficient when /tmp contains a symlink (or
+# a symlinked parent) with a job-looking name. Do not create evidence through
+# such a path: the canonical container runner resolves it later and would
+# otherwise observe a different scratch root in the same batch job.
+scratch_input=$scratch
+while [ "${scratch_input%/}" != "$scratch_input" ]; do scratch_input=${scratch_input%/}; done
+scratch_real=$(readlink -f -- "$scratch" 2>/dev/null || true)
+[ -n "$scratch_real" ] && [ "$scratch_real" = "$scratch_input" ] || {
+  echo COMPUTE_SCRATCH_SYMLINK_FORBIDDEN >&2; exit 3;
+}
 mkdir -p "$scratch/evidence"; apptainer version > "$scratch/evidence/apptainer-version.txt"
 [ "$gpu_count" -gt 0 ] && nvidia-smi --query-gpu=index,uuid,name,memory.total,driver_version --format=csv,noheader,nounits > "$scratch/evidence/host-gpu.csv"
 printf 'gpuType=%s\ngpuCount=%s\nslurmJobGpus=%s\ncudaVisibleDevices=%s\n' "$gpu_type" "$gpu_count" "${SLURM_JOB_GPUS:-}" "${CUDA_VISIBLE_DEVICES:-}" > "$scratch/evidence/allocation.env"

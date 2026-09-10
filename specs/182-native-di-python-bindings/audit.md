@@ -1,6 +1,21 @@
 # Spec182 Design Audit
 
-**Revision**: 47 | **Current source**: R11-B8-G39 compute-preflight checkpoint on `Experimental`
+**Revision**: 48 | **Current source**: R11-B8-G40 scratch-symlink checkpoint on `Experimental`
+
+## R11-B8-G40 Scratch Symlink Boundary Review 2026-09-10
+
+静态复核发现 G39 的 basename 校验仍允许一个带当前 job 名称的 symlink，或带 symlink
+parent 的别名路径。preflight 可能先把 evidence 写到错误目录，topology supervisor
+可能在错误目录创建 NFD socket、进程 HOME 和清理状态，随后 canonical runner 才因
+`Path.resolve()` 看到另一根目录而失败；这是 MiniNDN 普通目录测试不会暴露的跨机启动分歧。
+
+现已在 compute preflight、canonical SIF runner、topology supervisor 和直接
+`render_process_launcher` 四个入口要求 `readlink -f`/`Path.resolve()` 与输入路径一致，
+并拒绝 `..` scratch 别名。42 个定向测试、shell syntax 和 diff check 通过。
+
+该修复只关闭 scratch root 的 symlink 重定向；workdir/identity 内容 digest、动态端口租约、
+v1 project command 的 exact-SIF canonical runner、真实 Slurm/SIF/GPU、跨节点 NDN request、
+no-Python 和 T016/T017 仍然开放。详见 [R11-B8-G40 evidence](evidence/r11-b8-g40-scratch-symlink-boundary-20260910.md)。
 
 ## R11-B8-G39 Compute Preflight Scratch Parity Review 2026-09-10
 
