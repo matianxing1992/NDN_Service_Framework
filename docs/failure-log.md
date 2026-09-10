@@ -5080,3 +5080,17 @@ made. A fresh Y-N run is required to distinguish a transient race from a
 regression before producing the v34 host gate.
 Lesson: Y-B success cannot stand in for the Y-N matrix; require every control
 and negative boundary, and preserve partial matrix runs for diagnosis.
+
+## 2026-09-10 — isolated host-gate fixture lost source run identity
+
+Symptom: the first v34 host-gate producer rejected otherwise complete Y-B/Y-N
+evidence with `YOLO_HOST_GATE_EXECUTION_BINDING`.
+Root cause: the evidence was copied into an isolated directory whose nearest
+`public/preparation.json` belonged to the fixture root, so `_run_id_for_output`
+reported `host-gate-v34` instead of the actual MiniNDN run IDs embedded in
+provider names.
+Fix status: retain the failed producer output, recreate the fixture under
+run-ID-shaped directories with each run's preparation marker, and rerun the
+producer against those paths.
+Lesson: host-gate evidence must preserve the owning run-directory ancestry;
+hash-valid copied logs are insufficient when semantic identity is checked.
