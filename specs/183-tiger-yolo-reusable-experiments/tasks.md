@@ -167,11 +167,11 @@ T010/T011 的本机证据不升级为 GPU/Tiger 资格；完整候选运输与 G
 | T011.b3 | T011 | Python应用改动复用C++构建缓存，冻结后实际命令加载 | VERIFIED | [local-sif](evidence/local-sif.md)：d9be0bfa应用，configure6.728s/Waf0.837s，三二进制哈希不变；冻结driver→SIF内User入口exit0；25focused通过 | 仅增量构建与实际入口；四Provider/MiniNDN推理仍待执行 | 基础SIF与未变C++均未重建；下一次使用最新app的缓存 |
 | T011.c | T011 | exact-SIF 本地 CPU YOLO 与 empty HOME/scratch | VERIFIED_LOCAL_CPU_ISOLATED | [v58 exact-SIF local PASS](evidence/minindn-local-v58-exact-sif-pass.md) 提供两请求正常 YOLO 数值/依赖/清理回执；[v60 isolation](evidence/minindn-local-v60-empty-home-scratch.md) 提供空 HOME、scratch fsync/整 SIF 校验、User 入口、NFD socket 和清理 PASS | 本行 V13 isolation 已完成；父 T011 仍受 T007 正式顺序约束，GPU/Tiger资格未完成 | base/app 不变不重跑 v58；仅 isolation 命令或 base/ABI/app 行为变化时重跑对应探针 |
 | T012.a | T012 | GPU/Apptainer/容量 substrate 实值清点 | IMPLEMENTED | [input inventory](evidence/input-inventory.md) 有早期 probe；[Tiger preflight](evidence/tiger-preflight-210205.md) 实测 `itiger03` RTX 6000 Ada、驱动 560.28.03、Apptainer 1.5.3-1.el9、`/tmp` 64 MiB fsync 写入、`--nv` 下 ORT CUDA provider 通过 | 仅 substrate；精确 v22 SIF 尚未完成运输，正式 allocation 资格仍需 T012.b/T007 | 静态输入复用；不重复未变化的 GPU substrate 探针 |
-| T012.b | T012 | exact-SIF staging、目标节点/GPU/路由与服务就绪 | NOT_STARTED | V14；NOT_RUN | T011 后核验实际 allocation 与哈希 | 每个新 allocation 检查环境，不重建同一镜像 |
+| T012.b | T012 | exact-SIF staging、目标节点/GPU/路由与服务就绪 | IN_PROGRESS | [v69 deployment diagnosis](evidence/tiger-deployment-diagnosis-v69.md)：transport/receiver prerequisites passed and job 210254 reached itiger02; rank-0 staging rejected stale `STORAGE_SIF_BUDGET`; v39 corrects `peakBytes` and preserves executable wrapper | v70 must verify the corrected allocation's exact SIF/app hashes, node/GPU, mounts, NFD, CUDA/ORT and cleanup | 每个新 allocation 检查环境，不重建同一镜像 |
 | T012.c | T012 | 用户指定的独立 C++ NDN/SIF 两节点 CPU 诊断 | VERIFIED | [C++ NDN evidence](evidence/cpp-ndn-smoke.md)：209981，itiger01/02，同一历史 SIF 哈希，3条Data，0:0及清理；209980仅收尾标记超时，未记整次PASS | 仅基础传输诊断；T012正式GPU/权限/候选资格仍未完成 | 固定小例子不再跑；配置/ABI/网络相关变化才重测；复用实际日志与脚本 |
 | T012.d | T012 | 同一真实YOLO模型的独立CPU/GPU参考 | VERIFIED | [backend reference](evidence/yolo-backend-reference.md)：CPU两次matched；209983，RTX6000Ada、CUDA kernel、两次数值matched、Slurm0:0及清理 | 仅STANDALONE_YOLO_REFERENCE；非NDNSF-DI或T013资格 | 209982失败保留；仅一次TF32修复对照，不重复相同参考 |
 | T005.tf32 | T005 | 原生ORT与独立参考关闭TF32并绑定精度策略 | IMPLEMENTED | 真实GPU参考修复PASS；147组件+2拒错通过；实查1.20缺新C++ options owner，已改V2 C API并通过1项策略检查 | 新Provider仍需在SIF的1.20 SDK实际构建/装入app包及真实分布式请求；旧host1.26语法检查不证明该ABI | 不重跑未变CPU/独立GPU参考；验证变化native路径 |
-| T013.a | T013 | 一节点 GPU，四 Provider，1 warmup + 1 measured | NOT_STARTED | V15；NOT_RUN | T012 后证明三模型角色实际 CUDA、Merge CPU、全图数值/清理 | 一次有界资格门，不扩展 GPU/模型矩阵 |
+| T013.a | T013 | 一节点 GPU，四 Provider，1 warmup + 1 measured | IN_PROGRESS | v69 job 210254 reached allocated rank-0 storage staging but stopped before Provider launch; v70 is the corrected bounded retry | Require `SINGLE_NODE_GPU_PASS`: three model roles on CUDA, Merge on CPU, whole-graph numeric oracle and clean shutdown | 一次有界资格门，不扩展 GPU/模型矩阵 |
 | T014.a | T014 | 两节点正常推理，1 warmup + 3 measured | NOT_STARTED | V16；NOT_RUN | T013 后证明 A backbone/merge、B heads 与跨节点依赖 | 同一候选第一次正常 allocation |
 | T015.a | T015 | 一次远端 negative-dependency，Selection 后切断必需中间 Data | NOT_STARTED | V17；NOT_RUN | T014 后验证有限失败、无假成功及清理 | 保留唯一注册远端负例，不复制整套本地负例 |
 | T016.a | T016 | 第二个新双节点 allocation，原配置/SIF，1+3 请求 | NOT_STARTED | V18；NOT_RUN | T015 后验证不改脚本的复用性 | 这是 SC-004 的独立验收，不是无目的重复 |
@@ -509,17 +509,16 @@ T001–T004形成 profile/launcher 实现骨架；可操作 MVP 还要求 T006 �
 
 ## Current Checkpoint
 
-2026-09-09 Tiger v69 deployment diagnosis checkpoint: the same v22 base SIF +
-v32 external APP candidate passed the exact local CPU/SIF gate (v66) and the
-transport plan after project-storage permissions were normalized. The first
-submit stopped at sender-side `TRANSPORT_FILE_ROW` (two shared gate files were
-`0664`); the first receiver attempt stopped at missing shared lock root
-(`JOURNAL_ROOT`). Those project-storage prerequisites were corrected without
-changing candidate bytes, and the retry is in real rsync transfer. No Slurm,
-Apptainer, CUDA, or Tiger workload result was available at checkpoint time;
-the corrected candidate has since been accepted as Slurm job `210254`. T012/T013
-remain unchecked until its receipts pass, and no local MiniNDN PASS is promoted
-to Tiger qualification. See
+2026-09-09 Tiger v69/v70 deployment checkpoint: the same v22 base SIF + v32
+external APP candidate passed the exact local CPU/SIF gate (v66) and the
+transport plan after project-storage permissions were normalized. v69 then
+reached Slurm job `210254` on `itiger02`, but rank-0 staging rejected the stale
+`storage.peakBytes=3525861376` against the `3901079552`-byte SIF before any
+Provider/CUDA launch. Profile v39 now uses the exact SIF size, renders before
+sealing, reuses the immutable SIF by project-storage hardlink, and keeps the
+Slurm wrapper executable read-only. T012.b/T013.a are in progress and remain
+open until v70 supplies exact allocation, backend, numeric, and cleanup receipts;
+no local MiniNDN PASS is promoted to Tiger qualification. See
 [tiger-deployment-diagnosis-v69](evidence/tiger-deployment-diagnosis-v69.md)
 and the failure log for the exact boundary and next gate.
 

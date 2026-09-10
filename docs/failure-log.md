@@ -1,5 +1,29 @@
 # Failure Log and Evidence Index
 
+## 2026-09-09 — Tiger v69 allocation rejected stale SIF storage budget
+
+Symptom: Slurm job `210254` reached `itiger02` and entered the real YOLO
+runner, but the rank-0 receipt stopped at `ValueError: STORAGE_SIF_BUDGET`.
+The profile declared `storage.peakBytes=3525861376`, while the immutable v22
+SIF measured `3901079552` bytes. `srun` therefore exited with
+`APP_EXIT:yolo-srun:1` before any Provider, NFD, or inference launch.
+
+Root cause: the profile was copied from an older SIF size after the base image
+had grown; the capacity contract was stale even though the SIF digest and APP
+manifest were valid. A separate first v39 render also exposed that a sealed
+profile cannot be the renderer's output target; rendering must finish before
+the profile is resealed read-only.
+
+Fix status: v39 sets `storage.peakBytes` to the exact SIF byte count, renders
+the input/runtime/dispatch planes while writable, then verifies the sealed
+profile and preserves `jobs/yolo/run.sbatch` as executable read-only `0555`.
+The v22 SIF is reused by immutable hardlink on project storage; no base rebuild
+or large re-transfer is required.
+
+Lesson: a submitted Slurm job proves only that transport and scheduling were
+reached. Check the allocation-owned storage receipt before diagnosing SIF,
+APP, CUDA, or MiniNDN behavior, and keep render/seal phases distinct.
+
 ## 2026-09-09 — Tiger v69 deployment stopped at project transport prerequisites
 
 Symptom: the first v69 submit was rejected locally with `TRANSPORT_FILE_ROW`;

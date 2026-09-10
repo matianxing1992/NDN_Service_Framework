@@ -40,6 +40,18 @@ def test_freeze_is_independent_of_later_source_edits(tmp_path):
     assert (output.stat().st_mode & 0o222) == 0
 
 
+def test_frozen_slurm_wrapper_remains_executable_read_only(tmp_path):
+    from runtime.yolo_bundle import freeze_harness
+    source = tmp_path / "source"
+    manifest, expected = fixture_manifest(source)
+    output = tmp_path / "frozen"
+    freeze_harness(manifest, output, expected_manifest_sha256=expected)
+    wrapper = output / "jobs/yolo/run.sbatch"
+    assert wrapper.stat().st_mode & 0o777 == 0o555
+    assert os.access(wrapper, os.X_OK)
+    assert (output / "runtime/baseline.py").stat().st_mode & 0o777 == 0o444
+
+
 def test_real_frozen_reference_owner_has_no_native_import_dependency(tmp_path):
     import subprocess
     from tools.spec183_dispatch_plane import _sealed_harness

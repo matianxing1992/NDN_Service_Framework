@@ -40,6 +40,10 @@ MANIFEST = "harness-manifest.json"
 MAX_FILE_BYTES = 4 * 1024 * 1024
 MAX_TOTAL_BYTES = 16 * 1024 * 1024
 PRIVATE_PEM = re.compile(rb"^-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY-----\r?$", re.M)
+# The frozen harness is read-only, but Slurm must be able to execute its
+# allocation wrapper after transport.  Keep this explicit instead of
+# inheriting arbitrary source-tree modes into the immutable bundle.
+EXECUTABLE_HARNESS_FILES = frozenset({"jobs/yolo/run.sbatch"})
 
 
 def harness_source(root: Path, name: str) -> Path:
@@ -314,7 +318,7 @@ def freeze_harness(manifest: Path, destination: Path, *, expected_manifest_sha25
             stream.write(payload)
             stream.flush()
             os.fsync(stream.fileno())
-        path.chmod(0o444)
+        path.chmod(0o555 if name in EXECUTABLE_HARNESS_FILES else 0o444)
     directories = [p for p in destination.rglob("*") if p.is_dir()] + [destination]
     for directory in sorted(directories, key=lambda p: len(p.parts), reverse=True):
         directory.chmod(0o555)
