@@ -20,5 +20,6 @@
 | FR-016 | US4 | receipts and immutable results | T006,T014,T015,T016,T017 | V06,V16,V17,V18,V19 | SC-004,SC-005,SC-006 |
 | FR-017 | US1/US4 | capacity/CAS | T001,T002,T011,T012,T016 | V02,V12,V14,V18 | SC-004,SC-006 |
 | FR-018 | US4 | one operator interface | T004,T017 | V01,V19 | SC-006 |
+| FR-019 | US3 | signed provider-owned CUDA capacity snapshot | T012,T013 | V15 | SC-003 |
 
 每个任务至少映射一个实际需求；17 项为可审查行为，不代表17个文件。此表为 planned coverage，不宣称运行覆盖已达成。
