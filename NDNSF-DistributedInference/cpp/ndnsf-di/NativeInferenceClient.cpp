@@ -1245,12 +1245,12 @@ void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& o
             operation->requestId, sourceAttempt);
         }, "stream-error");
       };
-      operation->user->BeginCollaboration(ndn::Name(operation->runtime->contract.serviceName),
+      operation->user->BeginCollaborationWithProviders(ndn::Name(operation->runtime->contract.serviceName),
         ndn::Buffer(operation->encodedRequest->wire.begin(), operation->encodedRequest->wire.end()),
         static_cast<int>(operation->coreOptions.ackTimeoutMs),
         static_cast<int>(operation->coreOptions.timeoutMs), ackClosed, response, timeout,
         ndn::Name(coreRequestId), {}, capabilities, operation->options.stream,
-        streamEvent, streamComplete, streamError);
+        streamEvent, streamComplete, streamError, operation->options.providerNames);
     }
     catch (const NativeDiError& error) { failOperation(operation, error, sourceAttempt); }
     catch (...) { failOperation(operation, NativeDiError(

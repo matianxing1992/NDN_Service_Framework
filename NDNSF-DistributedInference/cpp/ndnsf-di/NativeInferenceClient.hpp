@@ -49,6 +49,10 @@ struct NativeRequestOptions
   std::uint64_t ackTimeoutMs = 5'000;
   std::string taskName;
   std::string outputMode = "FULL";
+  // Optional Provider identities for a maintained native caller. An empty
+  // list keeps Core's discovery selection; a non-empty list pins the request
+  // to these candidates without moving protocol logic into the caller.
+  std::vector<ndn::Name> providerNames;
   // Optional caller correlation only. The native owner still allocates the
   // authoritative Core requestId; this value is carried locally so a
   // maintained caller can prove its wire request maps to that owner.

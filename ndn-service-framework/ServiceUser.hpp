@@ -884,6 +884,27 @@ namespace ndn_service_framework{
                                          std::function<void(const StreamedInvocationError&)>
                                              onStreamError = {});
 
+            ndn::Name BeginCollaborationWithProviders(
+                                         const ServiceName& service,
+                                         const RequestPayload& initialRequest,
+                                         int ackCollectionTimeMs,
+                                         int timeoutMs,
+                                         CollaborationAckClosedHandler onAckClosed,
+                                         ResponseHandler onFinalResponse,
+                                         TimeoutHandler onTimeout,
+                                         const RequestId& requestId,
+                                         CollaborationAckCoverageHandler onAckCoverage,
+                                         const RequestCapabilities& requestCapabilities,
+                                         const std::optional<StreamRequestOptions>&
+                                             streamOptions,
+                                         std::function<void(const ndn::Buffer&)>
+                                             onStreamEvent,
+                                         std::function<void(const ndn::Buffer&)>
+                                             onStreamComplete,
+                                         std::function<void(const StreamedInvocationError&)>
+                                             onStreamError,
+                                         const std::vector<ndn::Name>& providerNames);
+
             bool CommitCollaborationPlan(const RequestId& requestId,
                                          const std::string& ackClosedDigest,
                                          CollaborationPlan plan);
