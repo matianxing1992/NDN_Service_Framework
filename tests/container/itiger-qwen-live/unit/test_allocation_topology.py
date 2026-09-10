@@ -326,6 +326,18 @@ class AllocationTopologyTest(unittest.TestCase):
         with self.assertRaisesRegex(topology.TopologyError, "TOPOLOGY_NFD_SOCKET_INVALID"):
             topology.validate_process_map(value)
 
+    def test_multi_node_rejects_non_routable_or_non_ipv4_address(self) -> None:
+        for address in ("127.0.0.1", "0.0.0.0", "224.0.0.1", "fe80::1"):
+            value = load("multi-node-tcp.json")
+            value["nodes"][1]["address"] = address
+            for route in value["routes"]:
+                if route["toNodeRank"] == 1:
+                    route["remoteAddress"] = address
+            with self.subTest(address=address), self.assertRaisesRegex(
+                topology.TopologyError, "TOPOLOGY_NODE_ADDRESS_INVALID"
+            ):
+                topology.validate_process_map(value)
+
 
 if __name__ == "__main__":
     unittest.main()

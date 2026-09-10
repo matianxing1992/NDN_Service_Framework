@@ -139,8 +139,15 @@ def validate_process_map(value: Mapping[str, Any]) -> dict[str, Any]:
         if not isinstance(node["name"], str) or not SAFE_TOKEN.fullmatch(node["name"]) or node["name"] in node_names:
             _fail("TOPOLOGY_NODE_NAME_INVALID")
         try:
-            ipaddress.ip_address(node["address"])
+            address = ipaddress.ip_address(node["address"])
         except ValueError:
+            _fail("TOPOLOGY_NODE_ADDRESS_INVALID", node["name"])
+        # The v1 NFD template and route launcher explicitly use *4 URIs.
+        # Accepting IPv6 or per-namespace/unspecified addresses would pass
+        # validation but make a multi-node route target the wrong endpoint.
+        if (not isinstance(address, ipaddress.IPv4Address) or
+                address.is_unspecified or address.is_multicast or
+                (placement == "multi-node" and (address.is_loopback or address.is_link_local))):
             _fail("TOPOLOGY_NODE_ADDRESS_INVALID", node["name"])
         if (not str(node["nfdSocket"]).startswith("/tmp/ndnsf-di-") or
                 ".." in Path(node["nfdSocket"]).parts):

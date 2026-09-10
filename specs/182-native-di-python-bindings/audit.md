@@ -1,6 +1,16 @@
 # Spec182 Design Audit
 
-**Revision**: 34 | **Current source**: R11-B8-G26 host-path command-boundary checkpoint on `Experimental`
+**Revision**: 35 | **Current source**: R11-B8-G27 routable-IPv4 checkpoint on `Experimental`
+
+## R11-B8-G27 Routable IPv4 Address Boundary Review 2026-09-10
+
+本轮静态审查发现 v1 topology 的地址语义比实现更宽：校验接受 IPv6、loopback、unspecified
+和 multicast，但 NFD/route 代码只生成 `tcp4`/`udp4`，多机 loopback 还会指向每个节点自己的
+namespace。现已要求 IPv4，拒绝 unspecified/multicast，并在 multi-node 拒绝 loopback/link-local。
+21/21 topology unit、network integration 和 Python 静态检查通过。
+
+该修复只关闭地址 preflight 分歧；端口分配、真实跨节点 route、SIF/ELF、GPU、no-Python 和
+T016/T017 资格仍未运行。详见 [R11-B8-G27 evidence](evidence/r11-b8-g27-routable-ipv4-boundary-20260910.md)。
 
 ## R11-B8-G26 Host Path Command Boundary Review 2026-09-10
 
