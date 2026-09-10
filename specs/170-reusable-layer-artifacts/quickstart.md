@@ -127,6 +127,9 @@ performs a metadata-only check on shared project storage, then stages the
 immutable SIF to node-local storage and hashes that staged copy immediately
 before `apptainer exec`.  This avoids an unbounded shared-filesystem read before
 every task while retaining the exact digest gate at execution time.
+The node-local cache is partitioned by the numeric execution uid below the
+configured cache root, and its digest directory/lock are mode `0700`. A shared
+`/tmp` parent must never allow another user to plant or follow the staging lock.
 
 The active sequence is always:
 

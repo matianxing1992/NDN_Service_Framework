@@ -2,6 +2,20 @@
 
 **Revision**: 48 | **Current source**: R11-B8-G40 scratch-symlink checkpoint on `Experimental`
 
+## R11-B8-G41 SIF Cache User Isolation Review 2026-09-10
+
+静态追踪发现 canonical `run-container.sh` 的 node-local SIF cache 直接使用共享
+`/tmp/ndnsf-di-sif-cache/<digest>`。在多用户节点上，其他用户可在 mode-755 digest
+目录中预置 `stage.lock` symlink；runner 的 `exec 9>` 会先跟随并截断该目标，随后才
+进入 SIF digest 校验。这是节点部署的隔离缺口，与 MiniNDN 单用户运行无关。
+
+现已按执行 uid 分区为 `<cache-root>/u<uid>/<digest>`，并在打开 lock 前将 uid 与 digest
+目录收紧为 `0700`，保持同一用户不同作业的 immutable digest 复用。SIF hash、build-record
+和 Apptainer gate 均未放宽；16 个 SIF/节点脚本测试及 Shell/diff 检查通过。
+
+该修复只关闭 cache lock 的跨用户重定向；真实共享文件系统、exact-SIF、跨节点 NDN、GPU、
+no-Python 和 T016/T017 资格仍保持开放。
+
 ## R11-B8-G40 Scratch Symlink Boundary Review 2026-09-10
 
 静态复核发现 G39 的 basename 校验仍允许一个带当前 job 名称的 symlink，或带 symlink
