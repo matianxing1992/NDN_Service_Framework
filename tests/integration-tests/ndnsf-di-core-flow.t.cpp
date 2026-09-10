@@ -6822,7 +6822,8 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
                                     bool repositoryInput = false,
                                     bool unaryRequest = false,
                                     bool conversationRequest = true,
-                                    bool nativeConfigQwen = false)
+                                    bool nativeConfigQwen = false,
+                                    bool dynamicConversationPlacement = false)
 {
   using namespace ndn_service_framework;
   test::BootstrapProfile profile;
@@ -7485,8 +7486,10 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
         std::chrono::duration_cast<std::chrono::milliseconds>(
           std::chrono::system_clock::now().time_since_epoch()).count()) + 60000;
       options.conversation = NativeConversationContinuation{
-        "r4-b6-conversation-001", 0, serviceName, roleMapDigest, {}, {},
-        retentionDeadlineMs, "FULL_CONTEXT", {}, std::string(32, '1'), {}, {role}};
+        "r4-b6-conversation-001", 0, serviceName,
+        dynamicConversationPlacement ? std::string{} : roleMapDigest, {}, {},
+        retentionDeadlineMs, "FULL_CONTEXT", {}, std::string(32, '1'), {},
+        dynamicConversationPlacement ? std::vector<std::string>{} : std::vector<std::string>{role}};
     }
   }
 
@@ -7705,6 +7708,11 @@ BOOST_AUTO_TEST_CASE(Spec182R10B73NativeConfigQwenRealProviderStream)
 BOOST_AUTO_TEST_CASE(Spec182R10B80NativeConfigQwenRealProviderConversation)
 {
   runR4B6RealProviderConversationCase(false, false, false, false, true, true);
+}
+
+BOOST_AUTO_TEST_CASE(Spec182R11B8G3RealProviderDynamicConversationPlacement)
+{
+  runR4B6RealProviderConversationCase(false, false, false, false, true, false, true);
 }
 
 BOOST_AUTO_TEST_CASE(Spec175NativeTinyOnnxI01OneProvider)
