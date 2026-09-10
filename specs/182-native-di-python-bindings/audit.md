@@ -1,6 +1,26 @@
 # Spec182 Design Audit
 
-**Revision**: 49 | **Current source**: R11-B8-G43 network-probe observation-integrity checkpoint on `Experimental`
+**Revision**: 50 | **Current source**: R11-B8-G44 frozen-topology and probe-count checkpoint on `Experimental`
+
+## R11-B8-G44 Frozen Topology and Probe Count Integrity Review 2026-09-10
+
+静态追踪发现 supervisor 初次渲染并保存 process map 后，后续 rank、process、port、placement
+和 route 阶段仍反复读取可变的 submit-host 文件；文件替换会把不同拓扑混合到同一作业。另一个
+observation evaluator 只检查 `status` 和 `closedPorts`，错误的 `reachableRoutes`、未知端口、
+布尔计数或重复 route 仍可能被当作 transport PASS。exact duplicate route 还会重复 face/route
+配置。
+
+现已将已验证 map 冻结到 job scratch 的 mode-0400 副本，并让所有后续 lookup 与 route helper
+只消费该副本；冻结后再次核对 scheduler order。map validation 拒绝 exact duplicate route tuple；
+observation 现在严格校验 status、声明端口、非布尔整数计数及
+`reachableRoutes = routeCount - len(closedPorts)`，`PASS` 必须没有 closed port。
+route node rank 也必须是非 boolean 整数；畸形 rank 在拓扑错误边界 fail closed，不再泄漏为裸
+Python `TypeError`。
+
+88 个相关 Python 测试、network integration、shell/Python syntax、Spec validator 和
+`git diff --check` 通过；没有 C++/ABI/SIF 变化。该修复只关闭 map TOCTOU、重复 route 和
+observation-count 完整性，不推进 exact-SIF、真实 Slurm/GPU、跨节点 NDN request、no-Python
+或 T016/T017 qualification。详见 [R11-B8-G44 evidence](evidence/r11-b8-g44-frozen-topology-probe-count-20260910.md)。
 
 ## R11-B8-G43 Network Probe Observation Integrity Review 2026-09-10
 

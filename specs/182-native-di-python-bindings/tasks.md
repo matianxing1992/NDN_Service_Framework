@@ -1,6 +1,6 @@
 # Tasks: Native NDNSF-DI with Optional Python Bindings
 
-**Revision**: 179 | **Status**: DRAFT / T001 DONE
+**Revision**: 180 | **Status**: DRAFT / T001 DONE
 **Input**: [spec](spec.md), [code design](contracts/code-design.md),
 [proof](contracts/proof-design.md), [work units](contracts/work-units.md)
 
@@ -77,6 +77,7 @@ R11-B8 现开始按 caller group 批次执行；G4 已形成 native checkpoint h
 | [R11-B8-G41 SIF Cache User Isolation](evidence/r11-b8-g41-sif-cache-user-isolation-20260910.md) | CLOSED_FOR_VALIDATION | R11-B8-G40; Spec170 runner contract | **Deployment harness:** canonical SIF staging now partitions the digest cache by numeric uid and makes the uid/digest directories `0700` before opening `stage.lock`, preventing a different cluster user from planting a lock symlink in shared `/tmp`. 16 focused tests, shell syntax and diff check pass. Real SIF/Slurm/NDN route qualification remains open | 2026-09-10 |
 | [R11-B8-G42 Cross-Node Input Content Digest](evidence/r11-b8-g42-cross-node-input-digest-20260910.md) | CLOSED_FOR_VALIDATION | R11-B8-G41; Spec110 topology contract | **Deployment harness:** supervisor now hashes the sealed workdir and every non-NFD identity root by relative paths, permission bits and file bytes on the submit side, compares the digest on each target node before NFD startup, rejects missing/special/symbolic-link/content-mismatched trees, and retains expected digests in evidence. 29 topology unit cases and network integration (including injected cross-node mismatch) pass; real Slurm/SIF/NDN route qualification remains open | 2026-09-10 |
 | [R11-B8-G43 Network Probe Observation Integrity](evidence/r11-b8-g43-network-probe-observation-integrity-20260910.md) | CLOSED_FOR_VALIDATION | R11-B8-G42; Spec110 topology contract | **Deployment harness:** live network probe now derives each target node's source IPv4 through a bounded target-node UDP route probe, compares `allocationAddresses` in rank order, requires node array order to match `nodeRank`, rejects duplicate node addresses, and forbids offline observation files outside `NDNSF_SPEC110_TEST_MODE=1`; workdir/identity digests also bind root and regular-file permission bits. 84 related Python tests, network integration, shell syntax and diff checks pass; real Slurm/SIF/NDN route qualification remains open | 2026-09-10 |
+| [R11-B8-G44 Frozen Topology and Probe Count Integrity](evidence/r11-b8-g44-frozen-topology-probe-count-20260910.md) | CLOSED_FOR_VALIDATION | R11-B8-G43; Spec110 topology contract | **Deployment harness:** supervisor snapshots the validated process map and uses the read-only copy for every later rank/process/port/placement/route lookup; exact duplicate route tuples and malformed route node ranks are rejected; transport observations now require strict status/port/count consistency (`reachableRoutes = routeCount - len(closedPorts)`). 88 focused Python tests, network integration, shell/Python syntax and diff checks pass; real Slurm/SIF/NDN route qualification remains open | 2026-09-10 |
 | [R11-B9-G2 Cross-Process Native Main Chain](evidence/r11-b9-g2-cross-process-native-chain-20260910.md) | CLOSED_FOR_VALIDATION | R11-B8-G25; R11-B2--B6 process contracts | **C++ primary:** fresh independent requester/Core/Authority/Provider runs passed unary numerical oracle, stream, FULL_CONTEXT/APPEND_DELTA conversation, alternate-provider replacement, and no-backup fail-closed boundaries; Provider logged grant verification and real ORT CPU evidence. Tiny fixture only; maintained callers, legacy zero-use, T014 I02--I08/no-Python, exact-SIF, MiniNDN/Slurm/GPU and final T016/T017 remain open | 2026-09-10 |
 | [R11-B8 Maintained Callers](contracts/native-first-execution.md#dispatch-cards) | PARTIAL | R11-B7; corresponding T012 ABI | G1 generic unary 与 G2 generic stream 已形成稳定出口；仍需 15 个 caller group 的 native entry、实际行为、兼容 wrapper 及旧路径零使用证据，不能按子批次数量计全量完成 | 2026-09-10 |
 | [R11-B9 Native Closure](contracts/native-first-execution.md#dispatch-cards) | NOT_STARTED | R11-B8 | T014 no-Python/依赖闭包工具 → T015 → T016 → T017；最终资格未开始 | 2026-09-10 |
@@ -361,6 +362,16 @@ P1–P4 是不同的生产入口、进程边界或 selector，不能为了少一
 | R10-B76 | production entry/callers: compatibility manifest → maintained Python API inventory; implementation/wire: `checklists/build_api_migration_manifest.py` regenerated all 344 entries and rebounded source line/hash metadata to checkpoint `31fe172a`; test/harness/oracle: generator output, `sourceCommit` equality, design validator and diff check; build/source closure: manifest-only, no ABI or runtime change; migration/evidence: closes stale provenance from R10-B74 while semantic caller mapping, native default migration and legacy retirement remain open | DONE for this bounded manifest provenance boundary; parent T001/O-004/T013-B remain PARTIAL | static review confirms current HEAD identity and 344-entry coverage; manifest remains routing evidence and cannot promote runtime compatibility or qualification | generator PASS (`entries=344`, `dynamicAppSdk=67`); sourceCommit equality PASS; `validate_design.py --json` PASS; `git diff --check` PASS | no product build, requester/Provider transport, maintained caller/no-Python or T016/T017 run | documentation/generator artifact only | `STATIC_PASS`; `FOCUSED_BEHAVIOR_PASS`; `BUILD_NOT_APPLICABLE`; `OPEN_FOR_NEXT_BATCH`; not `QUALIFICATION_PASS` | [R10-B76 evidence](evidence/r10-b76-compatibility-manifest-refresh-20260909.md); next: map and migrate maintained native callers, then regenerate after each source checkpoint |
 
 ## Current Checkpoint
+
+2026-09-10 R11-B8-G44 frozen topology and probe-count integrity / **CLOSED_FOR_VALIDATION**（仅限
+deployment harness）：静态追踪发现 supervisor 在初次渲染后反复读取可变的 submit-host
+`process_map`，可能把不同拓扑的 launcher、rank 和 route 混在同一次作业中；同时
+`evaluate_transport_probe` 接受错误类型、未知端口或 `reachableRoutes` 与实际 route 数不符的
+observation。现已在 job scratch 保存 mode-0400 的冻结 map，后续所有 lookup 和 route helper
+只读取该副本；exact duplicate route tuple、非法 status/port/count 及不一致 PASS/FAIL 均 fail
+closed。88 个相关 Python 测试、network integration、shell/Python syntax、Spec validator 和
+diff check 通过；真实 Slurm/SIF/跨节点 NDN、GPU、no-Python 与 T016/T017 仍未资格通过。
+详见 [R11-B8-G44 evidence](evidence/r11-b8-g44-frozen-topology-probe-count-20260910.md)。
 
 2026-09-10 R11-B8-G43 network probe observation integrity / **CLOSED_FOR_VALIDATION**（仅限
 deployment harness）：本轮静态追踪发现 live `probe-multinode-network.sh` 原先把 process map

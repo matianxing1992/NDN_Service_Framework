@@ -102,6 +102,23 @@ probe is a bounded race detector rather than a distributed port lease; the NFD
 bind remains the final authority and dynamic cross-job port allocation is a
 separate contract.
 
+Each route's `fromNodeRank` and `toNodeRank` MUST be non-boolean integers
+referencing the validated rank-indexed `nodes` array. The route list MUST not
+contain the same complete route tuple more than once.
+Duplicate entries would repeat face/route mutations and can make an otherwise
+healthy multi-node NFD fail during idempotent setup. The transport observation
+evaluator MUST require `status` to be `PASS` or `FAIL`, `closedPorts` to be a
+list of ports declared by the map, and `reachableRoutes` to be a non-boolean
+integer equal to `routeCount - len(closedPorts)`. A `PASS` row is valid only
+when `closedPorts` is empty; malformed counts or port lists are pre-start
+observation failures rather than evidence of transport reachability.
+
+After the initial map validation, the supervisor MUST use one read-only frozen
+copy for every later rank, process, port, placement, and route lookup. It MUST
+not re-read the mutable submit-host map after launchers/configuration have been
+rendered, because a time-of-check/time-of-use replacement can combine commands
+from different topologies.
+
 Each NFD configuration MUST also be materialized under the current job's
 scratch directory. If the frozen command contains `--config PATH` or
 `--config=PATH`, the launcher rewrites that argument to its scratch-local

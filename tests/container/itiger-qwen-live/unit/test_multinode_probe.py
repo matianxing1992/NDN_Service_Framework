@@ -61,6 +61,34 @@ class MultinodeProbeTest(unittest.TestCase):
         self.assertEqual("udp", result["selectedTransport"])
         self.assertEqual("PASS", result["selectedStatus"])
 
+    def test_reachable_route_count_is_bound_to_closed_ports(self) -> None:
+        observation = json.loads(json.dumps(
+            self.variants["probeObservations"]["tcp-pass-udp-diagnostic-fail"]
+        ))
+        observation["tcp"]["reachableRoutes"] = 0
+        with self.assertRaisesRegex(topology.TopologyError, "TOPOLOGY_PROBE_RESULT_INVALID:tcp"):
+            topology.evaluate_transport_probe(self.process_map, observation)
+
+    def test_probe_counts_and_ports_are_strictly_typed(self) -> None:
+        observation = json.loads(json.dumps(
+            self.variants["probeObservations"]["tcp-pass-udp-diagnostic-fail"]
+        ))
+        observation["tcp"]["reachableRoutes"] = True
+        with self.assertRaisesRegex(topology.TopologyError, "TOPOLOGY_PROBE_RESULT_INVALID:tcp"):
+            topology.evaluate_transport_probe(self.process_map, observation)
+        observation = json.loads(json.dumps(
+            self.variants["probeObservations"]["tcp-pass-udp-diagnostic-fail"]
+        ))
+        observation["udp"]["closedPorts"] = [9999]
+        with self.assertRaisesRegex(topology.TopologyError, "TOPOLOGY_PROBE_RESULT_INVALID:udp"):
+            topology.evaluate_transport_probe(self.process_map, observation)
+        observation = json.loads(json.dumps(
+            self.variants["probeObservations"]["tcp-pass-udp-diagnostic-fail"]
+        ))
+        observation["tcp"]["status"] = []
+        with self.assertRaisesRegex(topology.TopologyError, "TOPOLOGY_PROBE_RESULT_INVALID:tcp"):
+            topology.evaluate_transport_probe(self.process_map, observation)
+
 
 if __name__ == "__main__":
     unittest.main()

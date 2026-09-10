@@ -125,6 +125,8 @@ alive = source.index('kill -0 "${nfd_steps[$rank]}"', launch)
 assert stale < launch < alive
 assert 'srun_node "$rank" test ! -L "$identity"' in source
 assert 'SPEC110_NODE_ADDRESS_NOT_LOCAL' in source
+freeze = source.index('frozen_process_map="$scratch/frozen-process-map.json"')
+assert '"$process_map"' not in source[freeze:]
 PY
 python3 - "$repo/packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/run-allocation-topology.sh" \
   "$repo/packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/configure-allocation-routes.sh" \
@@ -271,6 +273,8 @@ PY
 for launcher in nfd-0 controller user provider-0 provider-1 provider-2; do
   test -x "$supervisor_scratch/generated/$launcher.sh"
 done
+test -f "$supervisor_scratch/frozen-process-map.json"
+[[ "$(stat -c '%a' "$supervisor_scratch/frozen-process-map.json")" == 400 ]]
 grep -q CANDIDATE_PROCESS_GRAPH_COMPLETED "$tmp/supervisor-normal/readiness-verdict.txt"
 
 rm -f "$supervisor_scratch/log/nfd-0.log"

@@ -132,6 +132,13 @@ selected/diagnostic TCP/UDP connect 也必须有界，`srun` 超时按 closed ro
 只用于 selected/diagnostic transport 的连通性屏障，不能把 connect 成功解释为 NDN 协议或业务
 请求成功。
 
+Transport observation 也属于 deployment input boundary。evaluator 必须拒绝未知 status、非 list
+或未在 map 中声明的 `closedPorts`、boolean 或越界的 `reachableRoutes`，以及不等于已验证 route
+数量减去 closed probe 数量的计数。非法 route node rank 和 exact duplicate route tuple 必须在 face
+configuration 前拒绝。
+topology supervisor 冻结已验证 map，之后所有 rank、route 和 process lookup 都读取该只读快照；
+submit-host map 在运行中被替换时，不能只改变后续阶段。
+
 ## Independent Authority Boundary
 
 - **Owner**: 复用 `NativeArtifactGrantIssuer`/现有 policy、grant wire、签名和 recipient
