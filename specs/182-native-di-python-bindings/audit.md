@@ -1,6 +1,17 @@
 # Spec182 Design Audit
 
-**Revision**: 41 | **Current source**: R11-B8-G33 job-scoped-scratch checkpoint on `Experimental`
+**Revision**: 42 | **Current source**: R11-B8-G34 node-address checkpoint on `Experimental`
+
+## R11-B8-G34 Node Address Ownership Boundary Review 2026-09-10
+
+静态审查发现 process map 只验证 IPv4 字面格式；多机配置若把另一台机器或错误网卡的地址填入
+某个 node rank，MiniNDN 的 loopback 场景不会暴露，失败会延后到 NDN route。现已在非 test mode
+启动 NFD 前，由每个对应目标节点将声明地址绑定到临时 IPv4 TCP 端口；未分配地址在 pre-start
+返回 `SPEC110_NODE_ADDRESS_NOT_LOCAL`，不会启动 NFD。24/24 topology unit、network integration
+和 shell syntax 通过。
+
+该修复只确认地址归属，不证明 NDN face/route 连通、真实 Slurm/SIF/shared-storage、GPU、
+no-Python 或 T016/T017 资格。详见 [R11-B8-G34 evidence](evidence/r11-b8-g34-node-address-ownership-20260910.md)。
 
 ## R11-B8-G33 Job-Scoped Scratch and Identity Root Boundary Review 2026-09-10
 

@@ -80,6 +80,9 @@ NFD socket 还必须位于当前作业的 `--scratch` 目录内；仅有 `/tmp/n
 也执行同样的路径组件检查。真实 Slurm allocation 中 scratch basename 还必须是
 `ndnsf-di-<SLURM_JOB_ID>` 或以 `ndnsf-di-<SLURM_JOB_ID>-` 开头；离线 test mode 才允许
 fixture basename，避免清理旧 socket 时误伤其他作业。
+在启动 NFD 前，supervisor 还必须在每个对应目标节点将声明的 IPv4 address 绑定到临时端口；
+地址格式正确但未分配给该节点时，以 `SPEC110_NODE_ADDRESS_NOT_LOCAL` 在 pre-start 失败。
+这只是节点地址归属门，不替代后续 NDN face/route 连通性验收。
 
 候选镜像的 ELF 闭包还必须在各自的 assembler/devel 阶段通过
 `verify-runtime-closure.py` 的宿主路径门禁。门禁同时读取 `DT_RPATH`/`DT_RUNPATH`

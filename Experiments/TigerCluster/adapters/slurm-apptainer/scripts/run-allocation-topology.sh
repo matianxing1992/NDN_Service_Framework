@@ -153,6 +153,32 @@ PY
   done
 fi
 
+# A syntactically valid address can still belong to a different interface or
+# host. Bind the declared address on its target node before starting any NFD;
+# MiniNDN's loopback topology would otherwise hide a bad multi-node map.
+if [[ ${NDNSF_SPEC110_TEST_MODE:-0} != 1 ]]; then
+  mapfile -t address_rows < <(PYTHONPATH="$lib" python3 - "$process_map" <<'PY'
+import sys
+from allocation_topology import load_process_map
+for node in load_process_map(sys.argv[1])['nodes']:
+ print(node['nodeRank'],node['address'],sep='\t')
+PY
+  )
+  address_probe='import socket,sys
+sock=socket.socket(socket.AF_INET,socket.SOCK_STREAM)
+try:
+    sock.bind((sys.argv[1],0))
+finally:
+    sock.close()'
+  for row in "${address_rows[@]}"; do
+    IFS=$'\t' read -r rank address <<<"$row"
+    srun_node "$rank" python3 -c "$address_probe" "$address" || {
+      echo "SPEC110_NODE_ADDRESS_NOT_LOCAL:$rank:$address" >&2
+      exit 4
+    }
+  done
+fi
+
 # Detect a port already occupied by another job on the target node before NFD
 # startup.  Slurm allocations may overlap on a node, so a map-level range check
 # alone cannot catch a concurrent listener.  This is a bounded preflight; NFD

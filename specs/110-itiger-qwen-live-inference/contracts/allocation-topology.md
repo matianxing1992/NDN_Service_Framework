@@ -62,10 +62,11 @@ host but absent or unreadable on a compute node is a pre-start failure; the
 supervisor must not leave NFDs running while waiting for a later business
 process to discover that binding error.
 
-The source `.ndn` tree MUST contain no symbolic links. The supervisor checks
-this on the target node before NFD startup, and the generated launcher repeats
-the check before copying the identity. This prevents a scratch `HOME` from
-retaining a symlink back to shared project storage.
+The source identity directory and its `.ndn` tree MUST contain no symbolic
+links. The supervisor checks this on the target node before NFD startup, and
+the generated launcher repeats the check before copying the identity. This
+prevents a scratch `HOME` from retaining a symlink back to shared project
+storage.
 
 The map MUST not contain duplicate `(address, tcpPort)` or `(address,
 udpPort)` endpoints. Before starting NFD, the supervisor MUST perform a
@@ -117,6 +118,11 @@ an otherwise valid `/tmp/ndnsf-di-*` path from another job is rejected before
 any directory or socket is created. In a real Slurm allocation, the scratch
 basename MUST be `ndnsf-di-<SLURM_JOB_ID>` or begin with
 `ndnsf-di-<SLURM_JOB_ID>-`; the offline test mode may use a fixture basename.
+
+Before starting any NFD, the supervisor MUST bind an ephemeral IPv4 socket to
+each declared node address on that address's target node. An address that is
+syntactically valid but is not assigned on that node is a pre-start failure;
+the check does not replace the later NDN face/route connectivity gate.
 
 Every Provider process also requires a single `CUDA_VISIBLE_DEVICES` selector
 and verifies, before `exec`, that `nvidia-smi -i` for that selector returns
