@@ -1,5 +1,29 @@
 # Spec182 Design Audit
 
+## Current Whole-Chain Review 2026-09-10
+
+**Revision**: 25 | **Mode**: source alignment / whole-chain static review
+**Verdict**: DRAFT / PARTIAL; T016 preflight UNQUALIFIED
+**Source**: `e596b645` implementation/docs checkpoint / Experimental
+**Evidence**: [R10-B82 whole-chain static audit](evidence/r10-b82-whole-chain-static-audit-20260910.md)
+
+R10-B82 reviewed the native requester and Provider entry points, Core handoff,
+conversation/grant ownership, maintained callers, build registration, and dependency
+closure. It found one direct contract mismatch: the standalone C++ requester does not read the
+documented `conversation` configuration or inject a coordinator. It also confirmed that the
+requester process currently loads the artifact-authority private key and signs grants through a
+local issuer, while the design places that authority independently; this remains a production
+boundary to resolve. The maintained inventory still has 16 compatibility/automatic-planner
+inference calls, and no independent requester/Provider worker-process run has yet observed the
+full unary/stream/continuation/recovery/cleanup chain. Current artifacts remain host-bound in
+`ldd`/RUNPATH inspection. These findings keep T010/T011/T013/T014/T015/T016/T017 open or
+partial. The broad static tools produced no additional confirmed algorithmic defect; local
+selector/build evidence remains bounded evidence rather than full qualification.
+
+The next stable exit is one fresh independent requester/Provider process case with artifact
+identity and dependency closure recorded, after the conversation and authority boundaries are
+made explicit.
+
 **Revision**: 24 | **Mode**: source alignment / cross-task convergence
 **Verdict**: DRAFT / PARTIAL; T016 preflight UNQUALIFIED
 **Source**: `616657c0` implementation/docs checkpoint / Experimental

@@ -84,6 +84,11 @@ host接线为T009-C；T006真实worker进程证明显式保留在T016，局部un
 
 FR-018/SC-010/PO-015由 [validation workflow](contracts/pre-test-static-review.md)定义：T002--T014局部读码+unit；T015补整体接线审查，不另建重复报告。
 
+2026-09-10 R10-B82 whole-chain static review：补充 standalone C++ requester 的 conversation
+配置未接线、requester-held artifact authority、16 个旧 route caller、独立 worker/process 与
+依赖闭包缺口；这些发现仍由 T010/T011/T013/T014/T015/T016/T017 持有，不提升任何资格状态。
+详见 [audit](audit.md#current-whole-chain-review-2026-09-10) 与 [R10-B82 evidence](evidence/r10-b82-whole-chain-static-audit-20260910.md)。
+
 ## Adversarial Closure Traceability
 
 FR-019/SC-011/PO-016：完整PO的集成/实验执行owner为T016，T017交付。前述FR→Task行包含实现owner，不表示每个owner都要提前运行完整PO。Static review PASS != Behavior PASS。
