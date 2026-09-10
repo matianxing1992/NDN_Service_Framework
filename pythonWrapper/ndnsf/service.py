@@ -2421,7 +2421,7 @@ class ServiceUser:
 
     def native_grant_client_from_config(
         self, configuration_json: str, base_directory: str = "."):
-        """Construct the native grant owner from operator key-file config."""
+        """Construct the requester-side native grant client from public-key config."""
         return self._native.native_grant_client_from_config(
             configuration_json, str(base_directory))
 

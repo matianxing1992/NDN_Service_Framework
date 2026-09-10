@@ -430,27 +430,30 @@ class APPClient:
                 raise ValueError(
                     "native Qwen requester configuration requires TOKEN_STREAMING")
             grant = dict(root["grant"])
+            forbidden_grant_fields = {
+                "authority_private_key_file", "content_key_file", "content_key_id",
+                "requester_public_key_file", "recipient_public_key_files",
+                "allowed_model_manifests", "publication_sources", "publication_source",
+            }
+            forbidden = sorted(forbidden_grant_fields.intersection(grant))
+            if forbidden:
+                raise ValueError(
+                    "native requester grant configuration contains authority-owned fields: "
+                    + ", ".join(forbidden))
+            for field in ("authority_service", "authority_public_key_file",
+                          "requester_private_key_file", "authority_identity",
+                          "protection_epoch"):
+                if not grant.get(field):
+                    raise ValueError(
+                        f"native requester grant configuration requires {field}")
             grant_config = {
                 "schema": "ndnsf-di-native-grant-client-v1",
                 "requester_identity": root["core"]["requester_identity"],
                 "authority_identity": grant["authority_identity"],
                 "protection_epoch": grant["protection_epoch"],
-                "content_key_id": grant["content_key_id"],
                 "requester_private_key_file": grant["requester_private_key_file"],
-                "authority_private_key_file": grant["authority_private_key_file"],
-                "content_key_file": grant["content_key_file"],
-                "model_manifest_digest": catalog.model_manifest_digest,
-                "recipient_public_key_files": dict(
-                    grant.get("recipient_public_key_files", {})),
-                "publication_source": {
-                    "model_name": model.model_name,
-                    "model_content_digest": model.content_digest,
-                    "canonical_source_digest": catalog.canonical_source_digest,
-                    "initializer_object_digest": (
-                        catalog.canonical_initializer_object_digest),
-                    "artifact_profile_digest": catalog_config["recipe"][
-                        "artifact_profile_digest"],
-                },
+                "authority_service": grant["authority_service"],
+                "authority_public_key_file": grant["authority_public_key_file"],
             }
             grants = service_user.native_grant_client_from_config(
                 json.dumps(grant_config, sort_keys=True, separators=(",", ":"),
