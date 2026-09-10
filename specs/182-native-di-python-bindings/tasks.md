@@ -1,6 +1,6 @@
 # Tasks: Native NDNSF-DI with Optional Python Bindings
 
-**Revision**: 158 | **Status**: DRAFT / T001 DONE
+**Revision**: 159 | **Status**: DRAFT / T001 DONE
 **Input**: [spec](spec.md), [code design](contracts/code-design.md),
 [proof](contracts/proof-design.md), [work units](contracts/work-units.md)
 
@@ -57,6 +57,7 @@ R11-B8 现开始按 caller group 批次执行；G4 已形成 native checkpoint h
 | [R11-B8-G21 Job-Scoped NFD Configuration](evidence/r11-b8-g21-nfd-config-scratch-20260910.md) | CLOSED_FOR_VALIDATION | R11-B8-G20; Spec110 topology contract | **Deployment harness:** NFD `--config` argv is deterministically rebound to a per-job scratch copy, and the supervisor writes that same path on the target node; fixed `/tmp` config paths cannot leak across jobs. 19/19 topology unit, network integration and shell/Python static checks pass. Real Slurm/SIF multi-machine qualification remains open | 2026-09-10 |
 | [R11-B8-G22 Pre-Start Failure Evidence](evidence/r11-b8-g22-prestart-failure-evidence-20260910.md) | CLOSED_FOR_VALIDATION | R11-B8-G21; Spec110 topology contract | **Deployment harness:** pre-start workdir/materialization/map-render failures now retain `teardown.json` with the original exit code and `survivors: 0`; injected workdir failure and normal/signal paths pass. 19/19 topology unit, network integration and shell/Python static checks pass. Real Slurm/SIF multi-machine qualification remains open | 2026-09-10 |
 | [R11-B8-G23 Early Input Failure Evidence](evidence/r11-b8-g23-early-input-failure-evidence-20260910.md) | CLOSED_FOR_VALIDATION | R11-B8-G22; Spec110 topology contract | **Deployment harness:** pre-start traps are installed before allocation-specific path/mode validation, so invalid absolute workdir and scratch/allocation preconditions also retain `teardown.json`; injected invalid-workdir and prior pre-start/normal/signal checks pass. 19/19 topology unit, network integration and shell/Python static checks pass. Real Slurm/SIF multi-machine qualification remains open | 2026-09-10 |
+| [R11-B8-G24 Whole-Chain Audit Synchronization](evidence/r11-b8-g24-multimachine-audit-synchronization-20260910.md) | CLOSED_FOR_VALIDATION | R11-B8-G23; current source alignment | **Audit/documentation:** `audit.md` now records the four repaired MiniNDN-vs-multi-machine boundary defects and keeps unresolved port allocation, content digest, exact-SIF runner and real Slurm/GPU/no-Python gates explicit. Link, structure, design validator and diff checks pass; no product qualification is advanced | 2026-09-10 |
 | [R11-B8 Maintained Callers](contracts/native-first-execution.md#dispatch-cards) | PARTIAL | R11-B7; corresponding T012 ABI | G1 generic unary 与 G2 generic stream 已形成稳定出口；仍需 15 个 caller group 的 native entry、实际行为、兼容 wrapper 及旧路径零使用证据，不能按子批次数量计全量完成 | 2026-09-10 |
 | [R11-B9 Native Closure](contracts/native-first-execution.md#dispatch-cards) | NOT_STARTED | R11-B8 | T014 no-Python/依赖闭包工具 → T015 → T016 → T017；最终资格未开始 | 2026-09-10 |
 
@@ -340,6 +341,12 @@ P1–P4 是不同的生产入口、进程边界或 selector，不能为了少一
 | R10-B76 | production entry/callers: compatibility manifest → maintained Python API inventory; implementation/wire: `checklists/build_api_migration_manifest.py` regenerated all 344 entries and rebounded source line/hash metadata to checkpoint `31fe172a`; test/harness/oracle: generator output, `sourceCommit` equality, design validator and diff check; build/source closure: manifest-only, no ABI or runtime change; migration/evidence: closes stale provenance from R10-B74 while semantic caller mapping, native default migration and legacy retirement remain open | DONE for this bounded manifest provenance boundary; parent T001/O-004/T013-B remain PARTIAL | static review confirms current HEAD identity and 344-entry coverage; manifest remains routing evidence and cannot promote runtime compatibility or qualification | generator PASS (`entries=344`, `dynamicAppSdk=67`); sourceCommit equality PASS; `validate_design.py --json` PASS; `git diff --check` PASS | no product build, requester/Provider transport, maintained caller/no-Python or T016/T017 run | documentation/generator artifact only | `STATIC_PASS`; `FOCUSED_BEHAVIOR_PASS`; `BUILD_NOT_APPLICABLE`; `OPEN_FOR_NEXT_BATCH`; not `QUALIFICATION_PASS` | [R10-B76 evidence](evidence/r10-b76-compatibility-manifest-refresh-20260909.md); next: map and migrate maintained native callers, then regenerate after each source checkpoint |
 
 ## Current Checkpoint
+
+2026-09-10 R11-B8-G24 whole-chain audit synchronization / **CLOSED_FOR_VALIDATION**（仅限
+审查记录）：`audit.md` 已同步本轮多机边界审查，区分四项已修复的启动约束与端口分配、内容
+digest、exact-SIF canonical runner 及真实 Slurm/GPU/no-Python 资格缺口。文档链接、结构审计、
+design validator 和 diff 检查通过；不推进产品父任务或资格状态。详见
+[R11-B8-G24 evidence](evidence/r11-b8-g24-multimachine-audit-synchronization-20260910.md)。
 
 2026-09-10 R11-B8-G23 early input failure evidence / **CLOSED_FOR_VALIDATION**（仅限
 Slurm topology 启动边界）：将 pre-start traps 从 scratch 创建之后提前到输入文件确认之后，覆盖

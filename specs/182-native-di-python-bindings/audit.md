@@ -1,6 +1,25 @@
 # Spec182 Design Audit
 
-**Revision**: 30 | **Current source**: R11-B1 process-driver checkpoint on `Experimental`
+**Revision**: 31 | **Current source**: R11-B8 multi-machine boundary checkpoint on `Experimental`
+
+## R11-B8 Multi-Machine Deployment Boundary Review 2026-09-10
+
+本轮重新检查 `allocation_topology.py`、`run-allocation-topology.sh`、NFD 配置模板、路由/网络
+probe、容器闭包门禁及 Spec110/Spec182 契约，重点寻找 MiniNDN 单机预置环境会掩盖的多机约束。
+确认并修复了四类实际边界：进程身份参数可能重新打开共享 `identityRef`；Provider 只看全机
+GPU UUID 而不证明 Slurm 可见设备；launcher 依赖 submit-host/evidence 路径；NFD command
+可以复用固定 `/tmp` 配置且预启动失败没有 teardown 证据。当前实现已分别绑定进程 HOME/PIB/TPM、
+单值 `CUDA_VISIBLE_DEVICES` + `nvidia-smi -i` UUID、目标节点 scratch launcher/config 副本，
+并在 workdir/scratch/allocation/map-render/materialization 失败时记录原始退出码与
+`survivors: 0`。对应证据为 [G13--G20](tasks.md)、[G21](evidence/r11-b8-g21-nfd-config-scratch-20260910.md)、
+[G22](evidence/r11-b8-g22-prestart-failure-evidence-20260910.md) 和
+[G23](evidence/r11-b8-g23-early-input-failure-evidence-20260910.md)。
+
+这些修复仍不等于多机资格。v1 process map 的 TCP/UDP 端口仍由候选输入提供，没有自动的
+跨并发作业端口分配；共享 `workdir`/identity 的内容尚未按节点验证 digest；v1 生成命令也尚未
+统一通过 post-Spec-111 的 exact-SIF canonical runner（Spec110 T221/T223/T225/T228）。真实
+Slurm、SIF、GPU、跨节点 NDN request 和 no-Python qualification 仍属于 T014--T017/R11-B9，
+不能由 fake `srun`、CPU ORT 或 MiniNDN 单机结果替代。
 
 ## R11-B1 Independent Authority Review 2026-09-10
 
