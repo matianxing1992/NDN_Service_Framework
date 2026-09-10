@@ -45,8 +45,10 @@ sealed placement 返回后，重复/错误状态通过 coordinator ticket 与状
 - `./.codex-tmp/spec182-r11-b2-fresh-20260910/build/unit-tests --run_test='Spec182*' --log_level=message`: 257 cases, `*** No errors detected`。
   Raw log: [spec182-r13-dynamic-conversation-unit.log](../../../.codex-tmp/spec182-r13-dynamic-conversation-unit.log)。
 - system-first Waf integration rebuild (`-j2`，119/119): PASS。
-- `./.codex-tmp/spec182-r11-b2-fresh-20260910/build/integration-tests --run_test='Spec170NdnsfDiCoreFlow/Spec182*' --log_level=message`: 7 cases, `*** No errors detected`。
-  Raw log: [spec182-r13-dynamic-conversation-integration.log](../../../.codex-tmp/spec182-r13-dynamic-conversation-integration.log)。
+- New selector `./.codex-tmp/spec182-r11-b2-fresh-20260910/build/integration-tests --run_test='Spec170NdnsfDiCoreFlow/Spec182R11B8G3RealProviderDynamicConversationPlacement' --log_level=test_suite`: 1 case, `*** No errors detected`。
+  Raw log: [spec182-r11-b8-g3-integration.log](../../../.codex-tmp/spec182-r11-b8-g3-integration.log)。
+- Full `./.codex-tmp/spec182-r11-b2-fresh-20260910/build/integration-tests --run_test='Spec170NdnsfDiCoreFlow/Spec182*' --log_level=message`: 10 selected cases, `*** No errors detected` (the expected no-admitted-provider negative remains an asserted failure boundary)。
+  Raw log: [spec182-r13-g3-integration.log](../../../.codex-tmp/spec182-r13-g3-integration.log)。
 
 ## Boundary
 
