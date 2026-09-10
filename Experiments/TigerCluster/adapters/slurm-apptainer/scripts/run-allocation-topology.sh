@@ -30,6 +30,23 @@ route_config="$container_root/adapters/slurm-apptainer/scripts/configure-allocat
 mkdir -p "$scratch/log" "$scratch/readiness" "$evidence/processes" "$evidence/generated"
 chmod 700 "$scratch"
 
+# Keep a durable failure boundary even while the submit-host preflight is
+# running. No child exists yet, so this records a zero-survivor failure rather
+# than silently exiting without the teardown artifact.
+prestart_cleanup() {
+  rc=$?
+  trap - EXIT INT TERM
+  printf '{"slurmJobId":"%s","exitCode":%d,"survivors":0,"status":"FAIL"}\n' \
+    "${SLURM_JOB_ID:-test}" "$rc" >"$evidence/teardown.json"
+  exit "$rc"
+}
+prestart_signal_exit() {
+  case "$1" in TERM) exit 143 ;; INT) exit 130 ;; esac
+}
+trap prestart_cleanup EXIT
+trap 'prestart_signal_exit TERM' TERM
+trap 'prestart_signal_exit INT' INT
+
 PYTHONPATH="$lib" python3 - "$process_map" "$nfd_template" "$scratch" "$evidence" "$workdir" <<'PY'
 import json,sys
 from pathlib import Path
@@ -82,6 +99,7 @@ for row in "${process_rows[@]}"; do
     "$scratch/generated/$process_id.sh"
 done
 
+trap - EXIT INT TERM
 step_pids=()
 cleanup() {
   rc=$?
@@ -111,15 +129,15 @@ trap 'signal_exit INT' INT
 mapfile -t node_rows < <(PYTHONPATH="$lib" python3 - "$process_map" <<'PY'
 import sys
 from allocation_topology import load_process_map
-value=load_process_map(sys.argv[1]);nodes={n['nodeRank']:n for n in value['nodes']}
+value=load_process_map(sys.argv[1])
 for process in value['processes']:
  if process['kind']=='nfd':
-  command=process['command'];index=command.index('--config')
-  print(process['nodeRank'],process['nfdSocket'],command[index+1],sep='\t')
+  print(process['nodeRank'],process['nfdSocket'],sep='\t')
 PY
 )
 for row in "${node_rows[@]}"; do
-  IFS=$'\t' read -r rank socket config <<<"$row"
+  IFS=$'\t' read -r rank socket <<<"$row"
+  config="$scratch/generated/nfd-$rank.conf"
   srun --exclusive --nodes=1 --ntasks=1 "--relative=$rank" mkdir -p "$(dirname "$socket")" "$(dirname "$config")"
   srun --exclusive --nodes=1 --ntasks=1 "--relative=$rank" tee "$config" \
     <"$evidence/generated/nfd-$rank.conf" >/dev/null
@@ -130,7 +148,7 @@ done
 
 deadline=$((SECONDS+30))
 for row in "${node_rows[@]}"; do
-  IFS=$'\t' read -r rank socket config <<<"$row"
+  IFS=$'\t' read -r rank socket <<<"$row"
   ready=0
   while ((SECONDS < deadline)); do
     if srun --overlap --nodes=1 --ntasks=1 "--relative=$rank" test -S "$socket"; then ready=1; break; fi

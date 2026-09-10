@@ -37,6 +37,12 @@ Spec110 allocation topology 的 `identityRef` 是只读输入，不能直接复�
 PIB/TPM 文件缺失会在 `exec` 前失败，避免 MiniNDN 预置 HOME 掩盖多机部署错误。
 同一启动器要求显式传入各节点可见的 `--workdir`，并在进程脚本中先 `cd` 到该目录，避免
 相对配置和模型路径解析到 Slurm 提交目录。
+多节点启动时，supervisor 会先在每个目标节点用 `srun` 检查 `--workdir`，再把生成的
+launcher 复制到该节点的作业 scratch 后执行；因此 evidence/提交节点路径未挂载到某个
+计算节点会在 NFD 启动前失败。Provider 还要求单值 `CUDA_VISIBLE_DEVICES` 与
+`nvidia-smi -i` 返回的 GPU UUID 精确匹配，不能只依赖全机 UUID 列表。
+NFD 配置同样写入该作业 scratch；process map 中固定的 `/tmp` 配置参数会在 launcher 内
+重绑定到 scratch 副本，避免并发作业复用旧配置。
 
 `profile`为只读实验契约；`runId`为严格字母数字/连字符标识，决定`/example/tiger/<runId>`命名空间。`mode`仅为`local`或`slurm`，本机双实例只能给LOCAL_PASS。`workload`为`baseline`或`service-echo`；后者是复用同一设施的第二次真实服务实验，不代表YOLO/Qwen已迁移。
 

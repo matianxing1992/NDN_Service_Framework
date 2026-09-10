@@ -41,6 +41,22 @@ each execution node before `exec`. Generated process scripts `cd` there before
 launching commands, so relative model/config paths cannot resolve against the
 submitter's login directory.
 
+The supervisor MUST perform the per-node `--workdir` visibility check before
+starting any NFD. Generated process launchers MUST be materialized through a
+target-node `srun` step into that node's job scratch and executed from the
+scratch copy; an evidence or submit-host path that is not mounted on a compute
+node is a pre-start failure.
+
+Each NFD configuration MUST also be materialized under the current job's
+scratch directory. If the frozen command contains `--config PATH` or
+`--config=PATH`, the launcher rewrites that argument to its scratch-local
+configuration copy; a fixed `/tmp` configuration path must never be shared
+between jobs.
+
+Pre-start visibility, materialization, or map-render failures MUST still emit
+`teardown.json` with the original exit code and `survivors: 0`; the absence of
+started children is an observed zero-survivor result, not an omitted artifact.
+
 ### Identity and runtime environment
 
 `identityRef` is a read-only source directory. The launcher MUST NOT use it as a
@@ -68,10 +84,12 @@ The NFD socket path must also be below the current job's `--scratch` directory;
 an otherwise valid `/tmp/ndnsf-di-*` path from another job is rejected before
 any directory or socket is created.
 
-Every Provider process also verifies, before `exec`, that `nvidia-smi` reports
-the map's `gpuUuid` in the task's visible device set. Missing `nvidia-smi`, a
-failed query, or a UUID mismatch is a pre-exec failure. The test-mode fixture
-may bypass this hardware check only for fake binaries.
+Every Provider process also requires a single `CUDA_VISIBLE_DEVICES` selector
+and verifies, before `exec`, that `nvidia-smi -i` for that selector returns
+exactly the map's `gpuUuid`. A missing selector, missing `nvidia-smi`, failed
+query, or UUID mismatch is a pre-exec failure; seeing the UUID elsewhere in the
+node's full GPU list is insufficient. The test-mode fixture may bypass this
+hardware check only for fake binaries.
 
 ## Readiness order
 

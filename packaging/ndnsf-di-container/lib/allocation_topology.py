@@ -46,7 +46,17 @@ def _safe_command(command: object, process_id: str) -> list[str]:
     return command
 
 
-def _render_launcher_command(command: list[str], identity: str | None) -> str:
+def _validate_nfd_config_argv(command: list[str], process_id: str) -> None:
+    config_positions = [index for index, token in enumerate(command) if token == "--config"]
+    inline_config = [token for token in command if token.startswith("--config=")]
+    if len(config_positions) + len(inline_config) != 1 or any(
+            index + 1 >= len(command) or command[index + 1].startswith("-")
+            for index in config_positions):
+        _fail("TOPOLOGY_NFD_CONFIG_INVALID", process_id)
+
+
+def _render_launcher_command(command: list[str], identity: str | None,
+                             runtime_config: str | None = None) -> str:
     """Render argv while rebinding an explicit identity path to runtime HOME.
 
     v1 process maps historically carried the read-only ``identityRef`` as an
@@ -57,11 +67,15 @@ def _render_launcher_command(command: list[str], identity: str | None) -> str:
     frozen process map.
     """
     rendered: list[str] = []
-    for token in command:
+    for index, token in enumerate(command):
         if identity is not None and token == identity:
             rendered.append('"$runtime_home"')
         elif identity is not None and token == "--identity=" + identity:
             rendered.append('--identity="$runtime_home"')
+        elif runtime_config is not None and index > 0 and command[index - 1] == "--config":
+            rendered.append('"$runtime_config"')
+        elif runtime_config is not None and token.startswith("--config="):
+            rendered.append('--config="$runtime_config"')
         else:
             rendered.append(shlex.quote(token))
     return "exec " + " ".join(rendered)
@@ -169,6 +183,7 @@ def validate_process_map(value: Mapping[str, Any]) -> dict[str, Any]:
         if kind == "nfd":
             if process["identityRef"] is not None or process["identityReadOnly"] is not True:
                 _fail("TOPOLOGY_NFD_IDENTITY_INVALID", process_id)
+            _validate_nfd_config_argv(command, process_id)
             if node_rank in nfd_nodes:
                 _fail("TOPOLOGY_DUPLICATE_NFD", node_rank)
             nfd_nodes.add(node_rank)
@@ -276,6 +291,7 @@ def render_process_launcher(process: Mapping[str, Any], scratch: Path | str,
     if kind == "nfd":
         if process.get("identityRef") is not None or process.get("identityReadOnly") is not True:
             _fail("TOPOLOGY_NFD_IDENTITY_INVALID", process_id)
+        _validate_nfd_config_argv(command, process_id)
     elif process.get("identityReadOnly") is not True:
         _fail("TOPOLOGY_IDENTITY_BINDING_INVALID", process_id)
     identity: str | None = None
@@ -302,6 +318,7 @@ def render_process_launcher(process: Mapping[str, Any], scratch: Path | str,
 
     home = scratch_path / "homes" / process_id
     tmp = scratch_path / "tmp" / process_id
+    runtime_config = (scratch_path / "generated" / (process_id + ".conf")) if kind == "nfd" else None
     lines = ["#!/bin/bash", "set -euo pipefail", "umask 077"]
     lines += [
         f"runtime_home={shlex.quote(str(home))}",
@@ -316,6 +333,7 @@ def render_process_launcher(process: Mapping[str, Any], scratch: Path | str,
         'cd "$runtime_workdir"',
     ]
     if kind == "nfd":
+        lines.append(f"runtime_config={shlex.quote(str(runtime_config))}")
         lines.append('printf \'SPEC110_PROCESS_HOME_READY process=%s kind=nfd home=%s\\n\' ' +
                      f"{shlex.quote(process_id)} \"$HOME\" >&2")
     else:
@@ -353,7 +371,7 @@ def render_process_launcher(process: Mapping[str, Any], scratch: Path | str,
         ]
     lines += [
         f"export NDN_CLIENT_TRANSPORT={shlex.quote('unix://' + socket_path)}",
-        _render_launcher_command(command, identity),
+        _render_launcher_command(command, identity, runtime_config),
         "",
     ]
     return "\n".join(lines)

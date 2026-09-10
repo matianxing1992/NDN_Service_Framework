@@ -28,4 +28,6 @@ python3 tests/container/itiger-qwen-live/unit/test_allocation_topology.py
 
 The fake `srun` integration covers the pre-start check but cannot model a real
 node-local/shared filesystem split. No Slurm/SIF multi-machine qualification
-was run; this card closes only the early workdir visibility boundary.
+was run; this card closes only the early workdir visibility boundary. The
+canonical Spec110 topology contract and Tiger baseline guide were synchronized
+with this requirement.

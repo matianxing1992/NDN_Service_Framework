@@ -52,6 +52,9 @@ if [[ ${1:-} == test && ${2:-} == -S ]]; then
   test -e "$3"
   exit $?
 fi
+if [[ ${SPEC110_FAIL_WORKDIR:-0} == 1 && ${1:-} == test && ${2:-} == -d ]]; then
+  exit 1
+fi
 exec "$@"
 SH
 cat >"$tmp/bin/nfdc" <<'SH'
@@ -132,6 +135,18 @@ for launcher in nfd-0 controller user provider-0 provider-1 provider-2; do
   test -x "$supervisor_scratch/generated/$launcher.sh"
 done
 grep -q CANDIDATE_PROCESS_GRAPH_COMPLETED "$tmp/supervisor-normal/readiness-verdict.txt"
+
+set +e
+PATH="$tmp/bin:$PATH" SLURM_JOB_ID=test SLURM_NNODES=1 NDNSF_SPEC110_TEST_MODE=1 SPEC110_FAIL_WORKDIR=1 \
+  "$supervisor" --process-map "$supervisor_scratch/process-map.json" --scratch "$supervisor_scratch" \
+  --evidence "$tmp/supervisor-workdir-fail" --nfd-template "$template" --workdir "$tmp"
+workdir_rc=$?
+set -e
+[[ $workdir_rc -eq 4 ]]
+python3 - "$tmp/supervisor-workdir-fail/teardown.json" <<'PY'
+import json,sys
+value=json.load(open(sys.argv[1]));assert value['status']=='FAIL' and value['survivors']==0 and value['exitCode']==4
+PY
 
 signal_scratch=$(mktemp -d /tmp/ndnsf-di-signal.XXXXXX)
 cp "$supervisor_scratch/process-map.json" "$signal_scratch/process-map.json"

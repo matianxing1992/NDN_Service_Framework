@@ -82,8 +82,12 @@ NFD socket 还必须位于当前作业的 `--scratch` 目录内；仅有 `/tmp/n
 生成的 process launcher 也不能假定 `evidence` 或提交节点文件系统在每个计算节点可见。
 `run-allocation-topology.sh` 必须先用目标节点的 `srun` 将每个 launcher materialize 到该作业
 的 scratch，再从该节点路径执行；远端不可见时应在任何 NFD/业务进程启动前失败。
+NFD 的 `--config` 参数也必须改写到该作业 scratch 的配置副本，禁止固定 `/tmp` 配置在作业
+之间复用；配置文件写入和 launcher 使用必须指向同一节点本地路径。
 同一启动器还必须在启动 NFD 前用目标节点的 `srun` 验证显式 `--workdir` 可见；提交节点存在
 而计算节点不存在的 bundle 不能进入 readiness 阶段。
+在任何子进程启动前发生的可见性、materialization 或 map-render 失败也必须写出包含原始退出码
+和 `survivors: 0` 的 `teardown.json`，不能以无证据的直接退出代替失败边界。
 
 多机 transport probe 不依赖节点预装的可选 `netcat`；诊断脚本使用节点上已有的
 `python3` socket API 做有界 TCP/UDP connect。该 probe 只用于 selected/diagnostic transport

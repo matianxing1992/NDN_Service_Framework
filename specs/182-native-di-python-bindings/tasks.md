@@ -1,6 +1,6 @@
 # Tasks: Native NDNSF-DI with Optional Python Bindings
 
-**Revision**: 155 | **Status**: DRAFT / T001 DONE
+**Revision**: 157 | **Status**: DRAFT / T001 DONE
 **Input**: [spec](spec.md), [code design](contracts/code-design.md),
 [proof](contracts/proof-design.md), [work units](contracts/work-units.md)
 
@@ -54,6 +54,8 @@ R11-B8 现开始按 caller group 批次执行；G4 已形成 native checkpoint h
 | [R11-B8-G18 Portable Network Probe Dependency](evidence/r11-b8-g18-portable-network-probe-20260910.md) | CLOSED_FOR_VALIDATION | R11-B8-G17; Spec110 transport probe contract | **Deployment harness:** selected/diagnostic TCP/UDP probes now use the node's `python3` socket API instead of assuming optional `nc`/netcat; shell syntax and network integration pass. This is a bounded connectivity preflight only; no protocol, SIF, Slurm, or multi-machine qualification is advanced | 2026-09-10 |
 | [R11-B8-G19 Visible GPU Binding Proof](evidence/r11-b8-g19-visible-gpu-binding-20260910.md) | CLOSED_FOR_VALIDATION | R11-B8-G18; Spec110 GPU binding contract | **Deployment harness:** Provider pre-exec now requires a single `CUDA_VISIBLE_DEVICES` selector and compares `nvidia-smi -i` output exactly with the mapped UUID; missing binding, wrong UUID and valid isolated execution are covered. 18/18 topology unit, network integration and static checks pass. Real Slurm/SIF GPU qualification remains open | 2026-09-10 |
 | [R11-B8-G20 Per-Node Workdir Visibility Gate](evidence/r11-b8-g20-per-node-workdir-visibility-20260910.md) | CLOSED_FOR_VALIDATION | R11-B8-G19; Spec110 topology contract | **Deployment harness:** explicit `--workdir` is checked by target-node `srun` for every node before NFD startup; submit-host-only bundles fail at the pre-start boundary. Shell syntax, 18 topology unit and network integration checks pass. Real shared-storage/Slurm qualification remains open | 2026-09-10 |
+| [R11-B8-G21 Job-Scoped NFD Configuration](evidence/r11-b8-g21-nfd-config-scratch-20260910.md) | CLOSED_FOR_VALIDATION | R11-B8-G20; Spec110 topology contract | **Deployment harness:** NFD `--config` argv is deterministically rebound to a per-job scratch copy, and the supervisor writes that same path on the target node; fixed `/tmp` config paths cannot leak across jobs. 19/19 topology unit, network integration and shell/Python static checks pass. Real Slurm/SIF multi-machine qualification remains open | 2026-09-10 |
+| [R11-B8-G22 Pre-Start Failure Evidence](evidence/r11-b8-g22-prestart-failure-evidence-20260910.md) | CLOSED_FOR_VALIDATION | R11-B8-G21; Spec110 topology contract | **Deployment harness:** pre-start workdir/materialization/map-render failures now retain `teardown.json` with the original exit code and `survivors: 0`; injected workdir failure and normal/signal paths pass. 19/19 topology unit, network integration and shell/Python static checks pass. Real Slurm/SIF multi-machine qualification remains open | 2026-09-10 |
 | [R11-B8 Maintained Callers](contracts/native-first-execution.md#dispatch-cards) | PARTIAL | R11-B7; corresponding T012 ABI | G1 generic unary 与 G2 generic stream 已形成稳定出口；仍需 15 个 caller group 的 native entry、实际行为、兼容 wrapper 及旧路径零使用证据，不能按子批次数量计全量完成 | 2026-09-10 |
 | [R11-B9 Native Closure](contracts/native-first-execution.md#dispatch-cards) | NOT_STARTED | R11-B8 | T014 no-Python/依赖闭包工具 → T015 → T016 → T017；最终资格未开始 | 2026-09-10 |
 
@@ -337,6 +339,21 @@ P1–P4 是不同的生产入口、进程边界或 selector，不能为了少一
 | R10-B76 | production entry/callers: compatibility manifest → maintained Python API inventory; implementation/wire: `checklists/build_api_migration_manifest.py` regenerated all 344 entries and rebounded source line/hash metadata to checkpoint `31fe172a`; test/harness/oracle: generator output, `sourceCommit` equality, design validator and diff check; build/source closure: manifest-only, no ABI or runtime change; migration/evidence: closes stale provenance from R10-B74 while semantic caller mapping, native default migration and legacy retirement remain open | DONE for this bounded manifest provenance boundary; parent T001/O-004/T013-B remain PARTIAL | static review confirms current HEAD identity and 344-entry coverage; manifest remains routing evidence and cannot promote runtime compatibility or qualification | generator PASS (`entries=344`, `dynamicAppSdk=67`); sourceCommit equality PASS; `validate_design.py --json` PASS; `git diff --check` PASS | no product build, requester/Provider transport, maintained caller/no-Python or T016/T017 run | documentation/generator artifact only | `STATIC_PASS`; `FOCUSED_BEHAVIOR_PASS`; `BUILD_NOT_APPLICABLE`; `OPEN_FOR_NEXT_BATCH`; not `QUALIFICATION_PASS` | [R10-B76 evidence](evidence/r10-b76-compatibility-manifest-refresh-20260909.md); next: map and migrate maintained native callers, then regenerate after each source checkpoint |
 
 ## Current Checkpoint
+
+2026-09-10 R11-B8-G22 pre-start failure evidence / **CLOSED_FOR_VALIDATION**（仅限
+Slurm topology 启动边界）：静态审查发现 workdir 可见性、launcher materialization 或 map render
+在子进程启动前失败时原脚本没有写 `teardown.json`。现已在预检阶段安装失败陷阱，保留原始退出码
+并记录 `survivors: 0`；注入 workdir 失败、正常路径和 TERM 清理路径均通过。19/19 topology
+unit、network integration、shell/Python 静态检查通过；真实 Slurm/SIF 多机资格仍未运行。详见
+[R11-B8-G22 evidence](evidence/r11-b8-g22-prestart-failure-evidence-20260910.md)。
+
+2026-09-10 R11-B8-G21 job-scoped NFD configuration / **CLOSED_FOR_VALIDATION**（仅限
+Slurm topology 启动边界）：静态审查发现 process map 的 NFD `--config` 可以指向固定
+`/tmp/spec110/...`，并在不同作业间复用。现已将 `--config PATH` 与 `--config=PATH` 都重写到
+当前作业 scratch 的 per-process 配置副本，supervisor 也把配置写入同一目标节点路径，并拒绝
+缺失或重复的 NFD config 参数。19/19 topology unit、network integration、shell/Python
+静态检查通过；真实 Slurm/SIF 多机资格仍未运行。详见
+[R11-B8-G21 evidence](evidence/r11-b8-g21-nfd-config-scratch-20260910.md)。
 
 2026-09-10 R11-B8-G13 multi-machine runtime boundary / **CLOSED_FOR_VALIDATION**（仅限
 Slurm topology 启动边界）：静态审查发现生成的 process script 虽校验 `identityRef`，却未
