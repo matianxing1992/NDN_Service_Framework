@@ -5144,3 +5144,16 @@ Fix status: keep the old run as historical evidence, create a fresh local CPU
 run from the refreshed profile, and bind its new verdict before GPU submission.
 Lesson: any profile or plane identity change invalidates downstream retained
 gates; rerun the gate from the new frozen profile instead of editing a verdict.
+
+## 2026-09-10 — local evidence mode was outside transport allowlist
+
+Symptom: the refreshed GPU submission reached inventory creation but rejected
+`TRANSPORT_FILE_ROW` for local-gate logs and profiles with mode `0664`.
+Root cause: the local operator creates ordinary evidence under the shared
+project umask, while the transport manifest allowlist accepts reproducible
+readable modes such as `0644`.
+Fix status: normalize only the fresh local gate's regular evidence files to
+`0644`, preserving content hashes and private credential modes, then retry
+inventory construction.
+Lesson: shared evidence must be mode-normalized before transport; content
+hashes alone do not satisfy the immutable delivery contract.
