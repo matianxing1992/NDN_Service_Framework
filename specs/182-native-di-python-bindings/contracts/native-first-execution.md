@@ -1,6 +1,6 @@
 # Native-First Execution Order
 
-**Revision**: 3 | **Date**: 2026-09-10 | **Status**: PLANNED
+**Revision**: 4 | **Date**: 2026-09-10 | **Status**: PLANNED
 
 用户确认的剩余执行顺序；覆盖旧文档中“所有真实跨进程用例推迟到 T016”及
 “生产 requester 进程内持有 artifact authority 私钥”的规定。保留原 17 个父任务、
@@ -81,6 +81,10 @@ NFD socket 还必须位于当前作业的 `--scratch` 目录内；仅有 `/tmp/n
 生成的 process launcher 也不能假定 `evidence` 或提交节点文件系统在每个计算节点可见。
 `run-allocation-topology.sh` 必须先用目标节点的 `srun` 将每个 launcher materialize 到该作业
 的 scratch，再从该节点路径执行；远端不可见时应在任何 NFD/业务进程启动前失败。
+
+多机 transport probe 不依赖节点预装的可选 `netcat`；诊断脚本使用节点上已有的
+`python3` socket API 做有界 TCP/UDP connect。该 probe 只用于 selected/diagnostic transport
+的连通性屏障，不能把 connect 成功解释为 NDN 协议或业务请求成功。
 
 ## Independent Authority Boundary
 
