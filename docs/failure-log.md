@@ -5094,3 +5094,28 @@ run-ID-shaped directories with each run's preparation marker, and rerun the
 producer against those paths.
 Lesson: host-gate evidence must preserve the owning run-directory ancestry;
 hash-valid copied logs are insufficient when semantic identity is checked.
+
+## 2026-09-10 — shared candidate local run rejected fixture layout
+
+Symptom: the first shared candidate `tiger-local-cpu-v34` execution stopped
+before writing `local-execution.json` with `LOCAL_RUN_FIXTURE_LAYOUT`.
+Root cause: the remote profile's oracle input and reference still pointed at
+the dispatch-plane fixture, while the local operator requires the repository
+fixture path and the matching spec180 public oracle tree.
+Fix status: copied the immutable fixture and oracle into the candidate root,
+updated the profile with their exact byte counts and hashes, and removed the
+stale prepared run before retrying.
+Lesson: a shared-path profile must preserve the operator's repository/model
+fixture layout; passing dispatch closure checks does not imply local oracle
+layout validity.
+
+## 2026-09-10 — root-owned stale run required controlled cleanup
+
+Symptom: deleting the failed shared run as the unprivileged user returned
+`PermissionError` for `run.sbatch`.
+Root cause: the preparation step creates root-owned scheduler files in the
+shared project run root.
+Fix status: removed only the named stale run with a controlled `sudo -n`
+Python cleanup and verified the candidate profile before recreating it.
+Lesson: failed shared runs must be cleaned by an explicit, path-scoped
+operation; never use broad recursive deletion in the project run root.
