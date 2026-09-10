@@ -18,6 +18,7 @@ class TopologyError(ValueError):
 DIGEST = re.compile(r"^sha256:[a-f0-9]{64}$")
 SAFE_TOKEN = re.compile(r"^[A-Za-z0-9_./:@+=,-]+$")
 PROCESS_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+HOST_BOUND_PREFIXES = ("/home/", "/project/", "/workspace/", "/build/", "/src/", "/tmp/")
 READINESS_PHASES = (
     "scratch-binds-gpu",
     "nfd",
@@ -53,6 +54,29 @@ def _validate_nfd_config_argv(command: list[str], process_id: str) -> None:
             index + 1 >= len(command) or command[index + 1].startswith("-")
             for index in config_positions):
         _fail("TOPOLOGY_NFD_CONFIG_INVALID", process_id)
+
+
+def _validate_runtime_command_paths(command: list[str], process_id: str,
+                                    identity: str | None, kind: str) -> None:
+    """Reject host/build paths that would diverge on a compute node.
+
+    Process-map commands are executed after the launcher changes HOME and CWD.
+    A path from the submit host must therefore never remain in an application
+    argument. The one intentional exception is the declared identity source,
+    which is copied and rewritten to runtime HOME; NFD config paths are also
+    rewritten to the per-job scratch copy.
+    """
+    for index, token in enumerate(command):
+        if kind == "nfd" and (token.startswith("--config=") or
+                               (index > 0 and command[index - 1] == "--config")):
+            continue
+        if identity is not None and (token == identity or
+                                     token == "--identity=" + identity):
+            continue
+        candidate = token.split("=", 1)[1] if "=" in token else token
+        if any(candidate == prefix[:-1] or candidate.startswith(prefix)
+               for prefix in HOST_BOUND_PREFIXES):
+            _fail("TOPOLOGY_HOST_PATH_COMMAND_INVALID", process_id)
 
 
 def _render_launcher_command(command: list[str], identity: str | None,
@@ -184,6 +208,7 @@ def validate_process_map(value: Mapping[str, Any]) -> dict[str, Any]:
             if process["identityRef"] is not None or process["identityReadOnly"] is not True:
                 _fail("TOPOLOGY_NFD_IDENTITY_INVALID", process_id)
             _validate_nfd_config_argv(command, process_id)
+            _validate_runtime_command_paths(command, process_id, None, kind)
             if node_rank in nfd_nodes:
                 _fail("TOPOLOGY_DUPLICATE_NFD", node_rank)
             nfd_nodes.add(node_rank)
@@ -196,6 +221,7 @@ def validate_process_map(value: Mapping[str, Any]) -> dict[str, Any]:
                     any(char in identity for char in "\x00\n\r") or
                     process["identityReadOnly"] is not True):
                 _fail("TOPOLOGY_IDENTITY_BINDING_INVALID", process_id)
+            _validate_runtime_command_paths(command, process_id, identity, kind)
             if identity in identities:
                 _fail("TOPOLOGY_DUPLICATE_IDENTITY", identity)
             identities.add(identity)
@@ -301,6 +327,7 @@ def render_process_launcher(process: Mapping[str, Any], scratch: Path | str,
                 ".." in Path(identity).parts or
                 any(char in identity for char in "\x00\n\r")):
             _fail("TOPOLOGY_IDENTITY_BINDING_INVALID", process_id)
+    _validate_runtime_command_paths(command, process_id, identity, kind)
     if kind == "provider":
         gpu_uuid = process.get("gpuUuid")
         if not isinstance(gpu_uuid, str) or not gpu_uuid:

@@ -1,6 +1,18 @@
 # Spec182 Design Audit
 
-**Revision**: 33 | **Current source**: R11-B9-G2 cross-process native-chain checkpoint on `Experimental`
+**Revision**: 34 | **Current source**: R11-B8-G26 host-path command-boundary checkpoint on `Experimental`
+
+## R11-B8-G26 Host Path Command Boundary Review 2026-09-10
+
+本轮静态审查补上了一个会让 MiniNDN 与多机部署行为分叉的命令边界：process map 原先只
+检查 token 可安全解析，却允许应用参数携带 `/home`、`/project`、`/workspace`、`/build`、
+`/src` 或 `/tmp` 的提交主机路径，也允许错误的 `--identity` 参数绕过进程身份复制。现已
+在 map validation 和直接 launcher rendering 双入口拒绝这些 host/build 前缀；精确声明的
+`identityRef` 与 NFD `--config` 仍由 launcher 绑定到 runtime HOME/job scratch。20/20
+topology unit、network integration、Python/Bash 静态检查通过。
+
+该修复只收紧 pre-exec 路径契约，不能证明 workdir 内容 digest、exact-SIF/ELF、真实 Slurm/
+GPU、跨节点 NDN、no-Python 或 T016/T017 资格。详见 [R11-B8-G26 evidence](evidence/r11-b8-g26-host-path-command-boundary-20260910.md)。
 
 ## R11-B9-G2 Cross-Process Native Chain Review 2026-09-10
 
