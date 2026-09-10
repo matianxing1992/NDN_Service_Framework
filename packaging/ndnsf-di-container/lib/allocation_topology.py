@@ -369,6 +369,9 @@ def render_process_launcher(process: Mapping[str, Any], scratch: Path | str,
     if (not scratch_path.is_absolute() or not str(scratch_path).startswith("/tmp/ndnsf-di-") or
             ".." in scratch_path.parts):
         _fail("TOPOLOGY_SCRATCH_INVALID", scratch)
+    resolved_scratch = scratch_path.resolve()
+    if resolved_scratch != scratch_path or scratch_path.is_symlink():
+        _fail("TOPOLOGY_SCRATCH_SYMLINK_INVALID", scratch)
     workdir_path = Path(workdir)
     if (not workdir_path.is_absolute() or ".." in workdir_path.parts or
             any(char in str(workdir_path) for char in "\x00\n\r")):

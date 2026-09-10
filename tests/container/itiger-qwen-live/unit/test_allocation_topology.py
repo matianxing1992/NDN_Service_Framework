@@ -135,6 +135,24 @@ class AllocationTopologyTest(unittest.TestCase):
             0,
         )
 
+    def test_process_launcher_rejects_scratch_symlink(self) -> None:
+        value = load("single-node.json")
+        provider = next(row for row in value["processes"] if row["kind"] == "provider")
+        with tempfile.TemporaryDirectory(prefix="spec110-scratch-target-") as target_dir:
+            target = Path(target_dir)
+            linked = Path("/tmp/ndnsf-di-job-link")
+            linked.unlink(missing_ok=True)
+            linked.symlink_to(target, target_is_directory=True)
+            try:
+                provider["nfdSocket"] = str(linked / "nfd/0/nfd.sock")
+                with self.assertRaisesRegex(topology.TopologyError,
+                                            "TOPOLOGY_SCRATCH_SYMLINK_INVALID"):
+                    topology.render_process_launcher(
+                        provider, linked, "/project/tma1/ndnsf-di/bundle"
+                    )
+            finally:
+                linked.unlink(missing_ok=True)
+
     def test_nfd_config_is_rebound_to_job_scratch(self) -> None:
         value = load("single-node.json")
         nfd = next(row for row in value["processes"] if row["kind"] == "nfd")

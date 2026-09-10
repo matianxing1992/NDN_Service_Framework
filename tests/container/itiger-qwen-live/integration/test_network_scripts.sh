@@ -328,6 +328,26 @@ PY
 [[ ! -e "$scratch_job_scratch/log/nfd-0.log" ]]
 rm -rf "$scratch_job_scratch"
 
+scratch_symlink_target=$(mktemp -d /tmp/spec110-scratch-target.XXXXXX)
+scratch_symlink=/tmp/ndnsf-di-test-symlink
+rm -f "$scratch_symlink"
+ln -s "$scratch_symlink_target" "$scratch_symlink"
+set +e
+PATH="$tmp/bin:$PATH" SLURM_JOB_ID=test SLURM_NNODES=1 NDNSF_SPEC110_TEST_MODE=1 \
+  "$supervisor" --process-map "$supervisor_scratch/process-map.json" --scratch "$scratch_symlink" \
+  --evidence "$tmp/supervisor-scratch-symlink-fail" --nfd-template "$template" --workdir "$tmp"
+scratch_symlink_rc=$?
+set -e
+[[ $scratch_symlink_rc -eq 3 ]]
+python3 - "$tmp/supervisor-scratch-symlink-fail/teardown.json" <<'PY'
+import json,sys
+value=json.load(open(sys.argv[1]))
+assert value['status']=='FAIL' and value['exitCode']==3 and value['survivors']==0
+PY
+[[ ! -e "$scratch_symlink_target/log" ]]
+rm -f "$scratch_symlink"
+rm -rf "$scratch_symlink_target"
+
 set +e
 address_scratch=$(mktemp -d /tmp/ndnsf-di-test-address.XXXXXX)
 cp "$supervisor_scratch/process-map.json" "$address_scratch/process-map.json"

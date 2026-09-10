@@ -45,6 +45,30 @@ class SlurmNodeScriptsTest(unittest.TestCase):
                     env=env, text=True, capture_output=True, check=False)
                 self.assertEqual(r.returncode, 3, scratch)
                 self.assertIn("COMPUTE_SCRATCH_POLICY_INVALID", r.stderr)
+
+    def test_compute_preflight_rejects_job_named_scratch_symlink(self):
+        with tempfile.TemporaryDirectory(dir="/tmp", prefix="ndnsf-preflight-") as d:
+            fake_bin=Path(d)/"bin"; fake_bin.mkdir()
+            apptainer=fake_bin/"apptainer"
+            apptainer.write_text("#!/bin/sh\nexit 99\n")
+            apptainer.chmod(0o700)
+            target=Path(tempfile.mkdtemp(prefix="ndnsf-di-preflight-target-", dir="/tmp"))
+            link=Path("/tmp/ndnsf-di-702-symlink")
+            link.unlink(missing_ok=True)
+            link.symlink_to(target, target_is_directory=True)
+            try:
+                r=subprocess.run(
+                    [str(ROOT/"preflight-compute.sh"), "--scratch", str(link),
+                     "--gpu-type", "cpu", "--gpu-count", "0"],
+                    env={**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}",
+                         "SLURM_JOB_ID": "702"}, text=True, capture_output=True,
+                    check=False)
+                self.assertEqual(r.returncode, 3)
+                self.assertIn("COMPUTE_SCRATCH_SYMLINK_FORBIDDEN", r.stderr)
+                self.assertFalse((target/"evidence").exists())
+            finally:
+                link.unlink(missing_ok=True)
+                shutil.rmtree(target, ignore_errors=True)
     def test_bounded_scratch_fsync(self):
         with tempfile.TemporaryDirectory(dir='/tmp',prefix='ndnsf-di-unit-') as d:
             r=subprocess.run([str(ROOT/"check-scratch.py"),"--path",d,"--bytes","1048576"],text=True,capture_output=True,check=False)
