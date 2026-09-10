@@ -65,8 +65,9 @@ keychain 环境。NFD 使用独立 scratch `HOME` 且不继承角色 keychain。
 变成整节点资源占用，后续同节点进程可能持续排队；Provider 的 GPU 仍由
 `--gpus-per-task=1 --gpu-bind=map_gpu:<gpuRank>` 与 UUID 检查单独约束。
 
-`nodeRank` 还必须绑定 Slurm 的真实 allocation order。supervisor 和独立的
-route-configuration entry point 在任何 NFD 启动或 route retry 前，都要把
+`nodeRank` 还必须绑定 Slurm 的真实 allocation order。supervisor、独立的
+route-configuration entry point 和 live network-probe entry point 在任何 NFD 启动、route retry
+或 diagnostic `srun --relative` 前，都要把
 process map 中按 rank 排列的 node names 与
 `scontrol show hostnames "$SLURM_JOB_NODELIST"` 的结果逐项比较；缺少、为空
 或顺序不一致时以 `SPEC110_ALLOCATION_NODE_ORDER_MISMATCH`（或更具体的

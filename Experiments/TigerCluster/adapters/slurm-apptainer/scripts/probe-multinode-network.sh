@@ -35,6 +35,44 @@ PY
   exit 0
 fi
 
+# The live diagnostic lane also invokes ``srun --relative=<fromNodeRank>``.
+# Bind that rank to Slurm's canonical hostname order before probing any route;
+# otherwise a diagnostic result could be collected from the wrong node while
+# the supervisor and route entry point use a different mapping.
+if [[ ${NDNSF_SPEC110_TEST_MODE:-0} != 1 ]]; then
+  [[ -n ${SLURM_JOB_NODELIST:-} ]] || {
+    echo SPEC110_ALLOCATION_NODELIST_MISSING >&2
+    exit 4
+  }
+  command -v scontrol >/dev/null 2>&1 || {
+    echo SPEC110_ALLOCATION_NODELIST_UNAVAILABLE >&2
+    exit 4
+  }
+  if ! allocation_nodes_output=$(scontrol show hostnames "$SLURM_JOB_NODELIST"); then
+    echo SPEC110_ALLOCATION_NODELIST_QUERY_FAILED >&2
+    exit 4
+  fi
+  [[ -n $allocation_nodes_output ]] || {
+    echo SPEC110_ALLOCATION_NODELIST_EMPTY >&2
+    exit 4
+  }
+  mapfile -t allocation_nodes <<<"$allocation_nodes_output"
+  if ! PYTHONPATH="$lib" python3 - "$process_map" "${allocation_nodes[@]}" <<'PY'
+import sys
+from allocation_topology import load_process_map, validate_allocation_node_order
+
+try:
+    validate_allocation_node_order(load_process_map(sys.argv[1]), sys.argv[2:])
+except Exception as exc:
+    print(exc, file=sys.stderr)
+    raise SystemExit(4)
+PY
+  then
+    echo SPEC110_ALLOCATION_NODE_ORDER_MISMATCH >&2
+    exit 4
+  fi
+fi
+
 PYTHONPATH="$lib" python3 - "$process_map" "$output" <<'PY'
 import json,os,subprocess,sys
 from pathlib import Path

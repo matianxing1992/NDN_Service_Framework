@@ -110,7 +110,8 @@ assert 'srun_node "$rank" test ! -L "$identity"' in source
 assert 'SPEC110_NODE_ADDRESS_NOT_LOCAL' in source
 PY
 python3 - "$repo/packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/run-allocation-topology.sh" \
-  "$repo/packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/configure-allocation-routes.sh" <<'PY'
+  "$repo/packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/configure-allocation-routes.sh" \
+  "$repo/packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/probe-multinode-network.sh" <<'PY'
 import pathlib, sys
 for path in map(pathlib.Path, sys.argv[1:]):
     source = path.read_text()
@@ -138,6 +139,19 @@ set -e
 grep -q 'SPEC110_ALLOCATION_NODE_ORDER_MISMATCH' "$tmp/order.stderr"
 [[ ! -e "$order_scratch/log/nfd-0.log" ]]
 rm -rf "$order_scratch"
+
+set +e
+PATH="$tmp/bin:$PATH" SLURM_JOB_ID=test SLURM_JOB_NODELIST='allocation-node-[0-1]' \
+  SPEC110_FAKE_NODELIST='allocation-node-1 allocation-node-0' \
+  NDNSF_SPEC110_TEST_MODE=0 \
+  "$repo/packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/probe-multinode-network.sh" \
+  --process-map "$fixture" --output "$tmp/probe-order-fail.json" \
+  >"$tmp/probe-order.stdout" 2>"$tmp/probe-order.stderr"
+probe_order_rc=$?
+set -e
+[[ $probe_order_rc -eq 4 ]]
+grep -q 'SPEC110_ALLOCATION_NODE_ORDER_MISMATCH' "$tmp/probe-order.stderr"
+[[ ! -e "$tmp/probe-order.json" ]]
 
 for repetition in 1 2; do
   PATH="$tmp/bin:$PATH" SLURM_JOB_ID=test NDNSF_SPEC110_TEST_MODE=1 \

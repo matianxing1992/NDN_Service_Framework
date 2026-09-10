@@ -1,6 +1,6 @@
 # Tasks: Native NDNSF-DI with Optional Python Bindings
 
-**Revision**: 173 | **Status**: DRAFT / T001 DONE
+**Revision**: 174 | **Status**: DRAFT / T001 DONE
 **Input**: [spec](spec.md), [code design](contracts/code-design.md),
 [proof](contracts/proof-design.md), [work units](contracts/work-units.md)
 
@@ -71,6 +71,7 @@ R11-B8 现开始按 caller group 批次执行；G4 已形成 native checkpoint h
 | [R11-B8-G35 Scheduler Allocation Order Binding](evidence/r11-b8-g35-allocation-order-binding-20260910.md) | CLOSED_FOR_VALIDATION | R11-B8-G34; Spec110 topology contract | **Deployment harness:** supervisor and direct route retry compare process-map node names with `scontrol show hostnames "$SLURM_JOB_NODELIST"` before using `srun --relative`; reversed allocation fails with `SPEC110_ALLOCATION_NODE_ORDER_MISMATCH` before NFD. 25/25 topology unit, network integration and shell syntax pass. Real Slurm/SIF/NDN route qualification remains open | 2026-09-10 |
 | [R11-B8-G36 Runner Scratch Name Parity](evidence/r11-b8-g36-run-container-scratch-parity-20260910.md) | CLOSED_FOR_VALIDATION | R11-B8-G35; Spec110 topology contract | **Deployment harness:** canonical `run-container.sh` now accepts both `ndnsf-di-$SLURM_JOB_ID` and the template's `ndnsf-di-$SLURM_JOB_ID-$RUN_ID` scratch names, while rejecting another job. Nine focused SIF-runner tests, shell syntax and diff check pass. Real SIF/Slurm/NDN route qualification remains open | 2026-09-10 |
 | [R11-B8-G37 Qwen Template Scratch Wiring](evidence/r11-b8-g37-qwen-template-scratch-wiring-20260910.md) | CLOSED_FOR_VALIDATION | R11-B8-G36; Spec110 topology contract | **Deployment harness:** the older Qwen Slurm template now generates the same `/tmp/ndnsf-di-${SLURM_JOB_ID}-${RUN_ID}` path consumed by `run-container.sh`; regression asserts the old `$USER/ndnsf-di/$SLURM_JOB_ID` path is absent. 31 sealed-workflow tests and diff check pass. Real Slurm/SIF/NDN route qualification remains open | 2026-09-10 |
+| [R11-B8-G38 Network Probe Allocation Order Binding](evidence/r11-b8-g38-network-probe-allocation-order-20260910.md) | CLOSED_FOR_VALIDATION | R11-B8-G37; Spec110 topology contract | **Deployment harness:** live `probe-multinode-network.sh` now validates the same Slurm hostname order before diagnostic `srun --relative` calls; reversed order fails before writing an observation. Network integration, 25/25 topology unit and shell syntax pass. Real Slurm/SIF/NDN route qualification remains open | 2026-09-10 |
 | [R11-B9-G2 Cross-Process Native Main Chain](evidence/r11-b9-g2-cross-process-native-chain-20260910.md) | CLOSED_FOR_VALIDATION | R11-B8-G25; R11-B2--B6 process contracts | **C++ primary:** fresh independent requester/Core/Authority/Provider runs passed unary numerical oracle, stream, FULL_CONTEXT/APPEND_DELTA conversation, alternate-provider replacement, and no-backup fail-closed boundaries; Provider logged grant verification and real ORT CPU evidence. Tiny fixture only; maintained callers, legacy zero-use, T014 I02--I08/no-Python, exact-SIF, MiniNDN/Slurm/GPU and final T016/T017 remain open | 2026-09-10 |
 | [R11-B8 Maintained Callers](contracts/native-first-execution.md#dispatch-cards) | PARTIAL | R11-B7; corresponding T012 ABI | G1 generic unary 与 G2 generic stream 已形成稳定出口；仍需 15 个 caller group 的 native entry、实际行为、兼容 wrapper 及旧路径零使用证据，不能按子批次数量计全量完成 | 2026-09-10 |
 | [R11-B9 Native Closure](contracts/native-first-execution.md#dispatch-cards) | NOT_STARTED | R11-B8 | T014 no-Python/依赖闭包工具 → T015 → T016 → T017；最终资格未开始 | 2026-09-10 |
@@ -355,6 +356,15 @@ P1–P4 是不同的生产入口、进程边界或 selector，不能为了少一
 | R10-B76 | production entry/callers: compatibility manifest → maintained Python API inventory; implementation/wire: `checklists/build_api_migration_manifest.py` regenerated all 344 entries and rebounded source line/hash metadata to checkpoint `31fe172a`; test/harness/oracle: generator output, `sourceCommit` equality, design validator and diff check; build/source closure: manifest-only, no ABI or runtime change; migration/evidence: closes stale provenance from R10-B74 while semantic caller mapping, native default migration and legacy retirement remain open | DONE for this bounded manifest provenance boundary; parent T001/O-004/T013-B remain PARTIAL | static review confirms current HEAD identity and 344-entry coverage; manifest remains routing evidence and cannot promote runtime compatibility or qualification | generator PASS (`entries=344`, `dynamicAppSdk=67`); sourceCommit equality PASS; `validate_design.py --json` PASS; `git diff --check` PASS | no product build, requester/Provider transport, maintained caller/no-Python or T016/T017 run | documentation/generator artifact only | `STATIC_PASS`; `FOCUSED_BEHAVIOR_PASS`; `BUILD_NOT_APPLICABLE`; `OPEN_FOR_NEXT_BATCH`; not `QUALIFICATION_PASS` | [R10-B76 evidence](evidence/r10-b76-compatibility-manifest-refresh-20260909.md); next: map and migrate maintained native callers, then regenerate after each source checkpoint |
 
 ## Current Checkpoint
+
+2026-09-10 R11-B8-G38 network probe allocation order binding / **CLOSED_FOR_VALIDATION**（仅限
+deployment harness）：补齐 G35 遗漏的第三个 `srun --relative` 入口。live
+`probe-multinode-network.sh` 现在在每个 TCP/UDP diagnostic probe 前读取并核对
+`scontrol show hostnames "$SLURM_JOB_NODELIST"`；反向顺序在 probe 与输出文件创建前返回
+`SPEC110_ALLOCATION_NODE_ORDER_MISMATCH`。network integration、25/25 topology unit、shell
+syntax 和 diff check 通过。该门不替代真实 Slurm/SIF、跨节点 NDN route、GPU、no-Python 或
+T016/T017 资格。详见
+[R11-B8-G38 evidence](evidence/r11-b8-g38-network-probe-allocation-order-20260910.md)。
 
 2026-09-10 R11-B8-G37 Qwen template scratch wiring / **CLOSED_FOR_VALIDATION**（仅限 deployment
 harness）：审查发现 `ndnsf-qwen.sbatch.in` 仍生成旧的 `/tmp/$USER/ndnsf-di/$SLURM_JOB_ID`，但将

@@ -58,7 +58,8 @@ node is a pre-start failure.
 `nodeRank` is bound to the scheduler's allocation order. Before any NFD starts,
 the supervisor and the direct route-configuration entry point MUST compare the
 process-map node names, in rank order, with `scontrol show hostnames
-"$SLURM_JOB_NODELIST"`. A missing, empty, or different sequence MUST fail with
+"$SLURM_JOB_NODELIST"`. The live network-probe entry point MUST perform the
+same check before its diagnostic `srun --relative` calls. A missing, empty, or different sequence MUST fail with
 `SPEC110_ALLOCATION_NODE_ORDER_MISMATCH` (or its more specific nodelist
 preflight error). This is required because `srun --relative=<nodeRank>` selects
 that scheduler order; MiniNDN's deterministic node creation must not stand in

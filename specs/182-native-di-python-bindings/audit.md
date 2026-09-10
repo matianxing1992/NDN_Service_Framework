@@ -1,6 +1,19 @@
 # Spec182 Design Audit
 
-**Revision**: 45 | **Current source**: R11-B8-G37 Qwen-template checkpoint on `Experimental`
+**Revision**: 46 | **Current source**: R11-B8-G38 network-probe checkpoint on `Experimental`
+
+## R11-B8-G38 Network Probe Allocation Order Binding Review 2026-09-10
+
+仓库级搜索发现 G35 保护了 supervisor 和 route retry，却遗漏了同样使用
+`srun --relative=<fromNodeRank>` 的 live `probe-multinode-network.sh`。如果不绑定 Slurm
+hostname 顺序，TCP/UDP diagnostic 可能从错误节点采样并产生误导性 reachability 结果。现已
+在 live probe 的任何 network subprocess 前执行相同的 `scontrol show hostnames
+"$SLURM_JOB_NODELIST"` 顺序检查，并显式处理查询失败；反向顺序在输出 observation 写入前
+返回 `SPEC110_ALLOCATION_NODE_ORDER_MISMATCH`。network integration、25/25 topology unit、
+shell syntax 和 diff check 通过。
+
+该修复只关闭 diagnostic probe 的 scheduler-order 绑定，不证明真实 Slurm/SIF/跨节点 NDN route、
+GPU、no-Python 或 T016/T017 资格。详见 [R11-B8-G38 evidence](evidence/r11-b8-g38-network-probe-allocation-order-20260910.md)。
 
 ## R11-B8-G37 Qwen Template Scratch Wiring Review 2026-09-10
 
