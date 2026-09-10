@@ -1,6 +1,19 @@
 # Spec182 Design Audit
 
-**Revision**: 46 | **Current source**: R11-B8-G38 network-probe checkpoint on `Experimental`
+**Revision**: 47 | **Current source**: R11-B8-G39 compute-preflight checkpoint on `Experimental`
+
+## R11-B8-G39 Compute Preflight Scratch Parity Review 2026-09-10
+
+静态追踪发现 Slurm 模板已经生成 `/tmp/ndnsf-di-${SLURM_JOB_ID}-${RUN_ID}`，
+`run-container.sh` 也接受该 job-bound 后缀，但同一模板调用的
+`preflight-compute.sh` 仍只接受旧的 `/tmp/${SLURM_JOB_ID}`。真实作业会在
+Apptainer 启动前返回 `COMPUTE_SCRATCH_POLICY_INVALID`，而不经过 MiniNDN 或
+容器 runner。现已将 preflight 收敛到与 runner/topology 相同的 basename-only
+规则，并拒绝另一个 job、嵌套目录和空 basename；5 个节点脚本测试及 shell
+语法检查通过。
+
+该修复只关闭 compute preflight 的 scratch 命名接线，不证明真实 Slurm/SIF/
+跨节点 NDN route、GPU、no-Python 或 T016/T017 资格。详见 [R11-B8-G39 evidence](evidence/r11-b8-g39-compute-preflight-scratch-parity-20260910.md)。
 
 ## R11-B8-G38 Network Probe Allocation Order Binding Review 2026-09-10
 

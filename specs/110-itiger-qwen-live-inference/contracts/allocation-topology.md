@@ -128,7 +128,8 @@ an otherwise valid `/tmp/ndnsf-di-*` path from another job is rejected before
 any directory or socket is created. In a real Slurm allocation, the scratch
 basename MUST be `ndnsf-di-<SLURM_JOB_ID>` or begin with
 `ndnsf-di-<SLURM_JOB_ID>-`; the offline test mode may use a fixture basename.
-The canonical `run-container.sh` entry point MUST enforce this same rule, so
+The rendered Slurm template's `preflight-compute.sh` and the canonical
+`run-container.sh` entry point MUST enforce this same basename-only rule, so
 the generated `ndnsf-di-<SLURM_JOB_ID>-<RUN_ID>` template path reaches the
 Apptainer preflight without being mistaken for another job.
 
