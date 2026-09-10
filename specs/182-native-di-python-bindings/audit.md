@@ -1,6 +1,17 @@
 # Spec182 Design Audit
 
-**Revision**: 44 | **Current source**: R11-B8-G36 runner-scratch checkpoint on `Experimental`
+**Revision**: 45 | **Current source**: R11-B8-G37 Qwen-template checkpoint on `Experimental`
+
+## R11-B8-G37 Qwen Template Scratch Wiring Review 2026-09-10
+
+静态审查发现共享的 `ndnsf-qwen.sbatch.in` 仍把 `/tmp/$USER/ndnsf-di/$SLURM_JOB_ID` 传给
+canonical `run-container.sh`，与 runner 要求的 `/tmp/ndnsf-di-<SLURM_JOB_ID>` 规则不一致。
+真实作业会在 Apptainer 启动前失败，而绕过该模板的 MiniNDN 不会暴露。模板现显式声明 `RUN_ID`
+并生成 `/tmp/ndnsf-di-${SLURM_JOB_ID}-${RUN_ID}`；31 个 sealed-workflow tests 和 diff check
+通过。
+
+该修复只关闭共享模板的 scratch wiring，不证明真实 Slurm/SIF/跨节点 NDN route、GPU、no-Python
+或 T016/T017 资格。详见 [R11-B8-G37 evidence](evidence/r11-b8-g37-qwen-template-scratch-wiring-20260910.md)。
 
 ## R11-B8-G36 Runner Scratch Name Parity Review 2026-09-10
 
