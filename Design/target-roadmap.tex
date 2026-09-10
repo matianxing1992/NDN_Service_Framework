@@ -36,6 +36,27 @@ NativeInferenceClient 的请求入口负责驱动准备、ACK 收集关闭、候
 封存、提交和终态；适配器提供模型检查和拆分能力，Core 继续处理通用通信与权限。
 Python APPClient 逐步调用同一原生状态机，不另行维护第二套候选和终态规则。
 
+\subsection{独立授权进程与原生优先验收（2026-09-10）}
+\lead{PLANNED · Spec182 R11-B1 至 R11-B9；本次不改变当前实现快照}
+artifact authority 独立运行，持有授权签名私钥并执行 grant 策略。
+requester 仅持有自身凭据、authority 公钥或信任锚及连接配置，不能读取、注入、
+继承 authority 私钥，也不能在失败时退回本地 issuer。进程分离须配合文件权限
+和继承句柄检查；仅有不同 PID 不构成私钥隔离。
+请求经签名申请与认证答复获得 grant，绑定 request、attempt、接收者、epoch、
+摘要、用途与有效期；拒绝或超时必须关闭本次授权路径，禁止继续可执行 Selection。
+具体传输适配器、名字、配置、超时、取消与资源生命周期由 R11-B1 编码前冻结，
+复用 Core 通信能力，不创建第二套协作协议。
+
+执行顺序为独立 authority，随后由 \code{DI\_NativeRequester} 与
+\code{di-native-provider} 完成真实跨进程 unary，观测 ACK、Selection、Provider
+执行及最终 Response；再在同一原生链验证 stream、continuation、recovery、
+replacement 和 cleanup。通过后才迁移原有 16 个调用方，最后执行 no-Python、
+依赖闭包及 T016 整体资格。逐任务只读静态门、批次组合审查后，依次进行
+C++ production code 对应的 C++ unit/integration/process tests 和 Python wrapper checks。
+Python 检查数量、CLI smoke 和同进程 fixture 不替代跨进程行为证据。
+阶段契约与验收反例见 Spec182 的 \code{contracts/native-first-execution.md}；
+既有 T001--T017 状态和历史结果不因本次重排而改变。
+
 \subsection{API 迁移契约}
 \code{NativeInferenceHandle::result} 保留局部等待超时与请求 deadline 的区别；cancel 幂等，
 observe 保留迟注册历史回放和串行通知规则。接通 dispatch 之前保留明确的

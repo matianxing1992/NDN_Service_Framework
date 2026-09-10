@@ -14,6 +14,13 @@
 
 ## 索引
 
+## Spec182：Native-First Execution（2026-09-10）
+
+- 状态 PLANNED；模块 DI；TG-02 增补独立 artifact authority 和 N1–N5 顺序。原先允许生产 requester 内置 issuer、将 process tests 统一留给 T016 的规则被取代。
+- R11-B1 至 B9 与 T005/T009–T017 映射见 [执行契约](../specs/182-native-di-python-bindings/contracts/native-first-execution.md)；任务状态见 [tasks.md](../specs/182-native-di-python-bindings/tasks.md)。
+- 本轮无源码/API 签名变更；当前快照和冻结目标 API 均保留。目标新增边界仍待实现，不宣称当前 requester 已移除 authority 私钥。
+- 核对起点源码提交 `89932fb5b91f488eec6d4dc8756abba3fdaa40bd`；文档提交由本文件 Git 历史定位；验证见 [本轮证据](../specs/182-native-di-python-bindings/evidence/native-first-replan-20260910.md)。
+
 ## D-005：四模块图解（2026-09-08）
 
 - 工作单元 D-DESIGN-DIAGRAMS；用户授权补充模块图、类图、时序/状态图。
