@@ -1,6 +1,6 @@
 # Tasks: Native NDNSF-DI with Optional Python Bindings
 
-**Revision**: 143 | **Status**: DRAFT / T001 DONE
+**Revision**: 144 | **Status**: DRAFT / T001 DONE
 **Input**: [spec](spec.md), [code design](contracts/code-design.md),
 [proof](contracts/proof-design.md), [work units](contracts/work-units.md)
 
@@ -42,6 +42,7 @@ R11-B8 现开始按 caller group 批次执行；G4 已形成 native checkpoint h
 | [R11-B8-G7 Native Cross-Process Revalidation](evidence/r11-b8-g7-native-cross-process-revalidation-20260910.md) | CLOSED_FOR_VALIDATION | R11-B8-G5; R11-B4/R11-B5 process contracts | **C++ primary:** fresh independent unary and conversation process runs passed; FULL_CONTEXT and APPEND_DELTA both succeeded in one Provider process, wrong parent rejected, Provider restart rejected missing durable state without duplicate execution. This validates the current process boundary only; 15 maintained callers, legacy zero-use, no-Python and T016 remain open | 2026-09-10 |
 | [R11-B8-G8 Native Process Socket Guard](evidence/r11-b8-g8-native-process-socket-guard-20260910.md) | CLOSED_FOR_VALIDATION | R11-B8-G6; T014-A | **Harness:** shared process helper bounds NFD Unix socket paths for retained deep run roots; short/long path boundary checks and all three driver `py_compile` checks pass. No protocol or qualification status is advanced | 2026-09-10 |
 | [R11-B8-G9 Native Stream Process Revalidation](evidence/r11-b8-g9-native-stream-process-20260910.md) | CLOSED_FOR_VALIDATION | R11-B8-G8; R11-B8-G2 | **C++ primary:** 独立 requester → Core → Provider stream process 通过，8 个 token events 与 numerical oracle、grant verification、real ORT CPU execution evidence 均出现；仍不关闭 T013-D maintained caller、legacy zero-use、no-Python 或 T016 | 2026-09-10 |
+| [R11-B8-G10 Test Strata and Model Identity](evidence/r11-b8-g10-test-strata-20260910.md) | CLOSED_FOR_VALIDATION | R11-B8-G9; T016 evidence boundary | 记录 `Spec182*`、G7/G9 独立 C++ process、R10-B73 native-config Qwen selector、其他 Spec 的 Qwen3-0.6B 材料和 T016 MiniNDN 的边界；确认当前 Spec182 process/selector 使用 tiny fixture、虽为真实 ORT CPU 但不是 0.6B，也不把本地 NFD process 记作 MiniNDN；不推进任何父任务 | 2026-09-10 |
 | [R11-B8 Maintained Callers](contracts/native-first-execution.md#dispatch-cards) | PARTIAL | R11-B7; corresponding T012 ABI | G1 generic unary 与 G2 generic stream 已形成稳定出口；仍需 15 个 caller group 的 native entry、实际行为、兼容 wrapper 及旧路径零使用证据，不能按子批次数量计全量完成 | 2026-09-10 |
 | [R11-B9 Native Closure](contracts/native-first-execution.md#dispatch-cards) | NOT_STARTED | R11-B8 | T014 no-Python/依赖闭包工具 → T015 → T016 → T017；最终资格未开始 | 2026-09-10 |
 
