@@ -54,12 +54,21 @@ collect --reconcile 和共享目录接收端submit已接；跨机器文件运输
 依赖并保证batch解释器一致。Tiger已建立独立环境，当前profile的
 runtime.operatorPython指向它；系统Python仍不作为该环境的替代。
 
+2026-09-10 的 APP v33 已完成 host gate、exact-SIF MiniNDN Y-B/Y-N，以及
+远端 local-cpu `NORMAL_EXPERIMENT_PASS`。同一组合的 Tiger single-node GPU
+job `210316` 到达三路 CUDA Provider、CPU Merge 和 CUDA probe，但在 User
+Selection 前失败：原生 V3 ACK 固定发送 `resources:[]`，而 planner 需要每个
+CUDA 设备的 `free_memory_mb`。现已将 provider-owned CUDA `cudaMemGetInfo`
+快照纳入签名 offer；APP-only 修复不重建未改变的 base SIF。GPU 资格仍保持
+`NOT_QUALIFIED`，必须用新 APP、新 gate 和新 allocation 重跑。
+
 ## Direct local YOLO example
 
 要向其他人演示构建物，使用固定 base SIF，并把独立 APP bundle 以只读方式挂载到
 `/app`。完整的已实跑命令、SHA256、数值回执和清理证据见
-[v52 exact-SIF evidence](../../../specs/183-tiger-yolo-reusable-experiments/evidence/minindn-v52-exact-sif-yb-v32.md)。
-最小入口如下（`RUN` 必须是新建的、不可复用的 run ID）：
+[v91 APP v33 exact-SIF evidence](../../../specs/183-tiger-yolo-reusable-experiments/evidence/minindn-local-v91-v33.md)。
+最小入口如下（`RUN` 必须是新建的、不可复用的 run ID；维护入口按
+`prepare` 后直接 `local`，不要再对同一 run 手动调用 `provision`）：
 
 ```bash
 ROOT=$(readlink -f Experiments/TigerCluster/.cache/layered-base-20260909)
@@ -67,32 +76,23 @@ RUN=minindn-local-<date>-<id>
 OUT=Experiments/TigerCluster/results
 export SPEC180_RUNTIME_SIF="$ROOT/base-runtime-controller-version-j4-v22.sif"
 export SPEC180_RUNTIME_APPTAINER=/opt/apptainer/1.5.3/bin/apptainer
-export SPEC180_RUNTIME_APP_ROOT="$ROOT/app-controller-version-j4-v32"
+export SPEC180_RUNTIME_APP_ROOT="$ROOT/app-controller-version-j4-v33"
 export PYTHONPATH="$PWD/NDNSF-DistributedInference:$PWD/NDNSF-DistributedRepo/pythonWrapper:$PWD/pythonWrapper"
 
 # Freeze one new run; prepare intentionally exits 78/NOT_EVALUATED.
 python3 Experiments/TigerCluster/jobs/yolo/submit.py prepare \
-  --profile Experiments/TigerCluster/profiles/yolo-two-node-controller-v32.json \
+  --profile Experiments/TigerCluster/profiles/yolo-two-node-controller-v39.json \
   --run-id "$RUN" --output "$OUT" --case local-cpu || test $? -eq 78
-python3 Experiments/TigerCluster/tools/spec183_dev_provision.py provision \
-  --profile Experiments/TigerCluster/profiles/yolo-two-node-controller-v32.json \
-  --run-id "$RUN" --output "$OUT" --apptainer "$SPEC180_RUNTIME_APPTAINER"
-
-# The provision step writes public/preparation.json and its SHA is an input.
-PREP=$(sha256sum "$OUT/$RUN/public/preparation.json" | awk '{print "sha256:"$1}')
-python3 -u Experiments/TigerCluster/tools/spec183_minindn.py \
-  --run-id "$RUN" --output "$OUT" \
-  --profile Experiments/TigerCluster/profiles/yolo-two-node-controller-v32.json \
-  --preparation-sha256 "$PREP" --case Y-B
+python3 Experiments/TigerCluster/jobs/yolo/submit.py local \
+  --profile Experiments/TigerCluster/profiles/yolo-two-node-controller-v39.json \
+  --run-id "$RUN" --output "$OUT" --case local-cpu
 ```
 
-`spec183_minindn.py` starts the registered four-provider MiniNDN graph; the
-provider/controller binaries come from the APP bundle and stable libraries
-come from the SIF.  Do not replace the APP with host binaries or inject host
-libraries.  With `SPEC180_RUNTIME_SIF` set, the child processes receive the
-SIF-owned library path; leave `SPEC180_HOST_LIBRARY_PATH` unset unless the host
-operator has a separately verified matching closure.  This command
-demonstrates local CPU inference; it does not claim Tiger GPU qualification.
+`submit.py local` starts the registered four-provider MiniNDN graph; provider
+and controller binaries come from the APP bundle and stable libraries come
+from the SIF. Do not replace the APP with host binaries or inject host
+libraries. This command demonstrates local CPU inference; it does not claim
+Tiger GPU qualification.
 
 提交回执丢失时使用同一run ID重试submit，只会按唯一comment查询原job，不重提。
 默认collect离线重算；作业结束后显式collect --reconcile核对scheduler终态并释放

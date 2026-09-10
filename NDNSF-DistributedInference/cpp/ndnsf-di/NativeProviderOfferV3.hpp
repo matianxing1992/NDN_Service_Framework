@@ -8,6 +8,18 @@
 
 namespace ndnsf::di {
 
+/** One provider-owned device capacity observation included in a signed V3 offer. */
+struct NativeProviderOfferV3Resource
+{
+  std::string device;
+  std::uint64_t totalMemoryMb = 0;
+  std::uint64_t freeMemoryMb = 0;
+  std::uint64_t activeRequests = 0;
+  std::uint64_t resourceSequence = 1;
+  std::uint64_t capturedAtMs = 1;
+  std::string topologyDigest;
+};
+
 struct NativeProviderOfferV3Config
 {
   std::string provider;
@@ -17,6 +29,11 @@ struct NativeProviderOfferV3Config
   std::vector<std::string> acceptedRoles;
   std::vector<std::string> backends;
   std::vector<std::string> devices;
+  std::vector<NativeProviderOfferV3Resource> resources;
+  // Evaluated for every ACK so free capacity is not frozen at process start.
+  // Returning no rows is fail-closed in the Python planner for accelerator
+  // roles; CPU offers legitimately use an empty resource list.
+  std::function<std::vector<NativeProviderOfferV3Resource>()> resourceSnapshot;
   bool canProvision = true;
   bool hasModel = false;
   std::function<std::string(const std::string&)> signDigest;

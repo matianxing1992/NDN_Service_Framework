@@ -9,16 +9,16 @@
 
 ### 2026-09-10 execution checkpoint
 
-The bounded sequence has now reached a real Tiger single-node allocation. v79
-is a valid exact-SIF local CPU PASS for the v32 application. v80 passed exact
-SIF staging, capacity, socket, CUDA visibility and four-Provider startup, then
-the User failed `RuntimeJournalLockError` because the NFS lock was opened `rb`.
-The production lock opener is fixed to `r+b`; APP v33 was rebuilt without
-rebuilding the unchanged base SIF. Its candidate-bound local/host gate is still
-open because v81 rejected the old v79 receipt, and login-node Apptainer paths in
-v83/v84 did not match the compute-node declaration. The next plan step is one
-fresh v33 local/host gate followed by a shared-layout Tiger single-node run;
-there is no GPU YOLO qualification PASS yet.
+The bounded sequence reached a real Tiger single-node allocation. APP v33 plus
+the unchanged v22 base SIF now has a fresh host gate, exact-SIF Y-B/Y-N matrix,
+and remote local-cpu `NORMAL_EXPERIMENT_PASS`. Job `210316` passed exact
+staging, capacity, socket, CUDA visibility and four-Provider startup, then the
+User failed before placement because native V3 ACKs hard-coded `resources:[]`.
+The planner correctly requires per-CUDA-device free-memory rows. The native
+offer now accepts a provider-owned snapshot and the executable queries
+runtime-visible CUDA `cudaMemGetInfo`; this is an APP-only change, so the base
+SIF remains reusable. APP v34, fresh gates, and a new Tiger allocation are
+still required; there is no GPU YOLO qualification PASS yet.
 
 ## Technical Context
 
@@ -154,3 +154,19 @@ profile while each environment supplies its own actual observation.
 Reuse tools/spec183_dev_provision.py for signed development preparation; its
 prepared-run validation must use the canonical decoder and it must reject a
 CLI executable that differs from the selected declaration.
+
+## 2026-09-10 operator sequence and failure rule
+
+For a local candidate, run `submit.py prepare` and then `submit.py local` on
+that prepared run. The local command owns issuer preparation, process startup,
+collection and cleanup; calling the development provision helper or a direct
+executor after it has created an execution record is a `LOCAL_RUN_ALREADY_STARTED`
+failure. Every partial attempt receives a new run ID.
+
+For a GPU candidate, `submit.py submit` must use the refreshed host/local gate
+and the exact shared base+APP composition. A CUDA Provider is not selectable
+until its signed V3 ACK contains a resource row for the advertised device with
+enough free memory. Empty rows, stale rows or a missing CUDA measurement stop
+at placement and remain a retained diagnostic failure. The first acceptable
+GPU evidence therefore includes ACK/Selection, warmup and measured numerical
+responses, cross-role data, backend/GPU records and complete cleanup.

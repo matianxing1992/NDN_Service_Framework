@@ -4940,3 +4940,80 @@ Fix status: retained the failed v61 run, prepared v62 only, and let
 `submit.py local` perform issuer preparation and execution itself; v62 passed.
 Lesson: use either the maintained local operator or the development provision
 helper, never both for one prepared run.
+
+## 2026-09-10 — APP v33 host/local gate refresh
+
+Symptom: the first host-gate rerun stopped with `HOST_GATE_EXECUTION_OUTPUT_EXISTS`
+because `spec183-host-gate-execution.log` was left by an earlier attempt.
+Root cause: the gate intentionally refuses to overwrite retained execution
+output, and the operator retried without first removing only the stale output.
+Fix status: removed the stale log, reran the gate, rebuilt the host native
+closure with `-j4`, and retained `host-minindn-v33.json` as
+`YOLO_HOST_GATE_COMPONENT_ONLY`; APP v33 exact-SIF MiniNDN Y-B/Y-N and remote
+local-cpu v33i then passed.
+Lesson: gate reruns must use a fresh output identity or explicitly clear one
+known stale gate log before execution; a host receipt never upgrades to GPU
+qualification.
+
+## 2026-09-10 — remote local operator sequencing and dependency paths
+
+Symptom: remote v33 local attempts failed with `LOCAL_RUN_FIXTURE_LAYOUT`,
+`CREDENTIAL_FILE`, missing `/opt/apptainer`, and then `LOCAL_RUN_ALREADY_STARTED`.
+Root cause: the staged model repository initially did not match the package
+layout, the authority key had mode `0400`, the login node exposes only
+`/usr/bin/apptainer` 1.3.4, and retries were made after an execution record had
+already been created.
+Fix status: staged the canonical package/fixture tree, set the private key to
+`0600`, bound the declared local Apptainer path/version, and used a fresh run
+with `submit.py prepare` followed directly by `submit.py local`; v33i passed.
+Lesson: preserve each failed run, fix one boundary at a time, and never call
+the development provision helper or a direct executor after the maintained
+local runner has started a run.
+
+## 2026-09-10 — Tiger job 210316 had no feasible CUDA offer
+
+Symptom: job `210316` reached `itiger02`, exact SIF/hash, CUDA probe and all four
+Provider readiness gates, then User exited `APP_EXIT:user-0:2` before
+`PLACEMENT_DECISION` or Selection. All three model Providers reported
+`onnxruntime-cuda`; Merge reported CPU; every V3 ACK contained
+`"resources":[]`.
+Root cause: native `NativeProviderOfferV3::canonicalOffer` hard-coded an empty
+resource list, while `PreSplitFirstStrategy` deliberately requires a signed
+per-CUDA-device `free_memory_mb` row before selecting a GPU role. The failure
+was therefore a native offer-capacity contract defect, not an SIF, Apptainer,
+CUDA visibility or MiniNDN transport failure.
+Fix status: native V3 offers now accept a per-ACK provider snapshot and the
+executable queries runtime-visible CUDA `cudaMemGetInfo`, returning no row on
+measurement failure so the planner remains fail-closed. APP v34 and fresh
+host/local/Tiger gates are still required; 210316 is retained as a failed
+diagnostic and must not be reused.
+Lesson: Provider readiness and CUDA visibility do not imply placement
+feasibility; retain the full ACK payload and require backend-owned capacity
+evidence before claiming a GPU run.
+
+## 2026-09-10 — repository test build used an incompatible NAC-ABE checkout
+
+Symptom: `./waf configure --with-tests && ./waf build -j4` stopped in
+`ServiceController.cpp` because the discovered `KpAttributeAuthority` lacked
+the repository's required generation/policy methods (`getPublicParametersWire`,
+`rotateKeyGeneration`, `removePolicy`, and related APIs).
+Root cause: the default host pkg-config path resolved a different/incomplete
+NAC-ABE installation than the pinned Experimental closure; this failure is
+independent of the native V3 offer patch.
+Fix status: no source workaround was applied and no incompatible dependency was
+committed. The production host build remains the authoritative closure gate;
+before the APP v34 rebuild, rerun the focused offer test against the pinned
+dependency root or record the exact dependency prefix used by that builder.
+Lesson: a generic repository build is not evidence when its dependency ABI is
+not bound; never patch around missing NAC-ABE symbols or silently use a newer
+Boost/dependency line.
+
+## 2026-09-10 — pinned native offer regression gate
+
+The first focused Boost.Test invocation used the wrong suite path and returned
+`no test cases matching filter`; the executable's registered suite is
+`Spec175NativeAssembly`. Rerunning
+`Spec175NativeAssembly/NativeProviderOfferV3CarriesDeviceCapacitySnapshot`
+against the pinned `/tmp/t008-build-root` configuration passed with no errors.
+The lesson is to query the test registry before selecting a focused filter and
+to bind the same dependency prefix used by the production APP builder.

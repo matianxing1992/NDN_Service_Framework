@@ -58,6 +58,7 @@
 #include <string_view>
 #include <chrono>
 #include <cstring>
+#include <dlfcn.h>
 #include <thread>
 #include <tuple>
 #include <utility>
@@ -158,6 +159,79 @@ epochMs()
 {
   return std::chrono::duration_cast<std::chrono::milliseconds>(
     std::chrono::system_clock::now().time_since_epoch()).count();
+}
+
+std::vector<NativeProviderOfferV3Resource>
+queryNativeOfferCudaResources(const std::vector<std::string>& devices)
+{
+  if (devices.empty() || std::none_of(devices.begin(), devices.end(), [] (const auto& device) {
+        return device.rfind("cuda:", 0) == 0;
+      })) {
+    return {};
+  }
+  using CudaGetDeviceCount = int (*)(int*);
+  using CudaSetDevice = int (*)(int);
+  using CudaMemGetInfo = int (*)(std::size_t*, std::size_t*);
+  struct DlCloser
+  {
+    void operator()(void* handle) const noexcept
+    {
+      if (handle != nullptr) {
+        dlclose(handle);
+      }
+    }
+  };
+  std::unique_ptr<void, DlCloser> runtime(
+    dlopen("libcudart.so.12", RTLD_NOW | RTLD_LOCAL));
+  if (!runtime) {
+    runtime.reset(dlopen("libcudart.so", RTLD_NOW | RTLD_LOCAL));
+  }
+  if (!runtime) {
+    return {};
+  }
+  const auto count = reinterpret_cast<CudaGetDeviceCount>(dlsym(runtime.get(), "cudaGetDeviceCount"));
+  const auto setDevice = reinterpret_cast<CudaSetDevice>(dlsym(runtime.get(), "cudaSetDevice"));
+  const auto memGetInfo = reinterpret_cast<CudaMemGetInfo>(dlsym(runtime.get(), "cudaMemGetInfo"));
+  if (!count || !memGetInfo) {
+    return {};
+  }
+  int visibleCount = 0;
+  if (count(&visibleCount) != 0 || visibleCount <= 0) {
+    return {};
+  }
+  std::vector<NativeProviderOfferV3Resource> result;
+  result.reserve(devices.size());
+  for (const auto& device : devices) {
+    if (device.rfind("cuda:", 0) != 0) {
+      continue;
+    }
+    int ordinal = -1;
+    try {
+      ordinal = std::stoi(device.substr(5));
+    }
+    catch (const std::exception&) {
+      return {};
+    }
+    if (ordinal < 0 || ordinal >= visibleCount || (setDevice && setDevice(ordinal) != 0)) {
+      return {};
+    }
+    std::size_t freeBytes = 0;
+    std::size_t totalBytes = 0;
+    if (memGetInfo(&freeBytes, &totalBytes) != 0 || totalBytes == 0 ||
+        freeBytes > totalBytes) {
+      return {};
+    }
+    NativeProviderOfferV3Resource resource;
+    resource.device = device;
+    resource.totalMemoryMb = static_cast<std::uint64_t>(totalBytes / (1024U * 1024U));
+    resource.freeMemoryMb = static_cast<std::uint64_t>(freeBytes / (1024U * 1024U));
+    resource.capturedAtMs = static_cast<std::uint64_t>(std::max<long long>(0, epochMs()));
+    if (resource.totalMemoryMb == 0 || resource.freeMemoryMb > resource.totalMemoryMb) {
+      return {};
+    }
+    result.push_back(std::move(resource));
+  }
+  return result;
 }
 
 std::string
@@ -1266,6 +1340,9 @@ main(int argc, char** argv)
       config.acceptedRoles = allowedRoles;
       config.backends = {options.offerBackend};
       config.devices = options.offerDevices;
+      config.resourceSnapshot = [devices = config.devices] {
+        return queryNativeOfferCudaResources(devices);
+      };
       config.canProvision = options.offerCanProvision;
       config.hasModel = options.offerHasModel;
       config.signDigest = std::move(signer.sign);

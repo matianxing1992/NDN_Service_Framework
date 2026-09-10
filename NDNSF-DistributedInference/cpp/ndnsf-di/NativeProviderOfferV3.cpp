@@ -78,6 +78,28 @@ stringArray(const std::vector<std::string>& values)
 }
 
 std::string
+resourceArray(const std::vector<NativeProviderOfferV3Resource>& resources)
+{
+  std::ostringstream output;
+  output << '[';
+  for (std::size_t i = 0; i < resources.size(); ++i) {
+    if (i != 0) {
+      output << ',';
+    }
+    const auto& resource = resources[i];
+    output << "{\"active_requests\":" << resource.activeRequests
+           << ",\"captured_at_ms\":" << resource.capturedAtMs
+           << ",\"device\":" << quote(resource.device)
+           << ",\"free_memory_mb\":" << resource.freeMemoryMb
+           << ",\"resource_sequence\":" << resource.resourceSequence
+           << ",\"topology_digest\":" << quote(resource.topologyDigest)
+           << ",\"total_memory_mb\":" << resource.totalMemoryMb << '}';
+  }
+  output << ']';
+  return output.str();
+}
+
+std::string
 sha256Digest(const std::string& value)
 {
   std::array<unsigned char, SHA256_DIGEST_LENGTH> bytes{};
@@ -106,6 +128,16 @@ validateConfig(const NativeProviderOfferV3Config& config)
       throw std::invalid_argument("native V3 Provider offer contains invalid list values");
     }
   }
+  std::set<std::string> seenResources;
+  for (const auto& resource : config.resources) {
+    if (resource.device.empty() || !seenResources.insert(resource.device).second ||
+        std::find(config.devices.begin(), config.devices.end(), resource.device) ==
+          config.devices.end() || resource.totalMemoryMb == 0 ||
+        resource.freeMemoryMb > resource.totalMemoryMb ||
+        resource.resourceSequence == 0 || resource.capturedAtMs == 0) {
+      throw std::invalid_argument("native V3 Provider offer contains invalid resources");
+    }
+  }
 }
 
 NativeProviderOfferV3Decision
@@ -118,6 +150,7 @@ reject(const std::string& reason)
 
 std::string
 canonicalOffer(const NativeProviderOfferV3Config& config,
+               const std::vector<NativeProviderOfferV3Resource>& resources,
                const std::string& requestId,
                std::uint64_t attempt,
                const std::string& modelDigest,
@@ -150,7 +183,7 @@ canonicalOffer(const NativeProviderOfferV3Config& config,
          << ",\"queue_depth\":0"
          << ",\"request_id\":" << quote(requestId)
          << ",\"residency\":[]"
-         << ",\"resources\":[]"
+         << ",\"resources\":" << resourceArray(resources)
          << ",\"rtt_ms\":0.0"
          << ",\"schema\":\"DI_PLACEMENT_V3\""
          << ",\"schema_version\":3"
@@ -217,8 +250,15 @@ issueNativeProviderOfferV3(const std::vector<std::uint8_t>& requestPayload,
     graphDigest = UNBOUND_GRAPH_DIGEST;
   }
 
+  const auto resources = config.resourceSnapshot ? config.resourceSnapshot() : config.resources;
+  // Validate the callback result against the same topology that is signed.
+  NativeProviderOfferV3Config snapshotConfig = config;
+  snapshotConfig.resources = resources;
+  validateConfig(snapshotConfig);
+
   const auto unsignedOffer = canonicalOffer(
-    config, requestId, attempt, modelDigest, graphDigest, nowMs, deadlineMs, std::nullopt);
+    snapshotConfig, resources, requestId, attempt, modelDigest, graphDigest,
+    nowMs, deadlineMs, std::nullopt);
   const auto signature = config.signDigest(sha256Digest(unsignedOffer));
   if (signature.empty()) {
     throw std::runtime_error("native V3 Provider offer signer returned no signature");
@@ -227,7 +267,8 @@ issueNativeProviderOfferV3(const std::vector<std::uint8_t>& requestPayload,
   result.status = true;
   result.message = "DI_PLACEMENT_V3_OFFER";
   result.payload = canonicalOffer(
-    config, requestId, attempt, modelDigest, graphDigest, nowMs, deadlineMs, signature);
+    snapshotConfig, resources, requestId, attempt, modelDigest, graphDigest,
+    nowMs, deadlineMs, signature);
   result.pendingStateTtlMs = deadlineMs - nowMs;
   return result;
 }

@@ -772,6 +772,39 @@ BOOST_AUTO_TEST_CASE(NativeProviderIssuesCanonicalPreparationOfferV3)
   BOOST_CHECK(!signerCalled);
 }
 
+BOOST_AUTO_TEST_CASE(NativeProviderOfferV3CarriesDeviceCapacitySnapshot)
+{
+  NativeProviderOfferV3Config config;
+  config.provider = "/provider/gpu";
+  config.service = "/AI/YOLO/YOLO26n";
+  config.bootEpoch = "boot-gpu";
+  config.signerKeyId = zeroDigest('3');
+  config.acceptedRoles = {"BackboneNeck"};
+  config.backends = {"onnxruntime-cuda"};
+  config.devices = {"cuda:0"};
+  config.resourceSnapshot = [] {
+    return std::vector<NativeProviderOfferV3Resource>{
+      {"cuda:0", 49140, 48000, 0, 7, 1700000000123ULL, ""}};
+  };
+  config.signDigest = [] (const std::string&) { return "gpu-signature"; };
+  const std::string request =
+    "{\"attempt\":1,\"model_identity_hash\":\"" + zeroDigest('1') +
+    "\",\"plan_deadline_ms\":1700000060000,\"request_id\":\"/request/gpu\","
+    "\"schema\":\"ndnsf-di-request-envelope-v2\","
+    "\"service\":\"/AI/YOLO/YOLO26n\","
+    "\"task\":{\"placement_profile\":\"DI_PLACEMENT_V3\"}}";
+  const auto decision = issueNativeProviderOfferV3(
+    std::vector<std::uint8_t>(request.begin(), request.end()), config,
+    1700000000000ULL);
+  BOOST_REQUIRE(decision);
+  BOOST_CHECK(decision->status);
+  BOOST_CHECK(decision->payload.find(
+    "\"resources\":[{\"active_requests\":0,\"captured_at_ms\":1700000000123,"
+    "\"device\":\"cuda:0\",\"free_memory_mb\":48000,\"resource_sequence\":7,")
+    != std::string::npos);
+  BOOST_CHECK(decision->payload.find("\"total_memory_mb\":49140}") != std::string::npos);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
 
 } // namespace ndnsf::di::tests
