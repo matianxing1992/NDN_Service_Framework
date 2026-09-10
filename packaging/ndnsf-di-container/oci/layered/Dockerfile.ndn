@@ -30,6 +30,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 COPY packaging/ndnsf-di-container/oci/layered/scripts/prepare-layer-seals.py /build-contract/prepare-layer-seals.py
 COPY packaging/ndnsf-di-container/oci/scripts/prepare-openabe-relic.py /build-contract/prepare-openabe-relic.py
 COPY packaging/ndnsf-di-container/oci/scripts/derive-runtime-packages.py /build-contract/derive-runtime-packages.py
+COPY packaging/ndnsf-di-container/oci/scripts/verify-runtime-closure.py /build-contract/verify-runtime-closure.py
 COPY --from=ndn_seal / /build-contract/seal/
 
 RUN python3 /build-contract/prepare-layer-seals.py verify \
@@ -77,6 +78,9 @@ RUN install -d /opt/ndn-base/manifest && \
     install -m 0644 /build-contract/ndn-foundation.lock.json /opt/ndn-base/manifest/ && \
     install -m 0644 /build-contract/seal/seal.json /opt/ndn-base/manifest/source-seal.json && \
     install -m 0644 $PREFIX/etc/ndn/nfd.conf.sample /opt/ndn-base/manifest/nfd.conf && \
+    python3 /build-contract/verify-runtime-closure.py \
+      --root $PREFIX --reject-prefix /home/ --reject-prefix /workspace/ \
+      --reject-prefix /build/ --reject-prefix /src/ --reject-prefix /tmp/ && \
     python3 /build-contract/derive-runtime-packages.py \
       --root $PREFIX --output /opt/ndn-base/manifest/runtime-system-packages && \
     printf '%s\n' "$NDN_LOCK_DIGEST" >/opt/ndn-base/manifest/lock-digest && \

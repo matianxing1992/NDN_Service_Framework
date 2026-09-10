@@ -454,7 +454,9 @@ def run(workspace: Path, seal_root: Path | None) -> dict[str, object]:
         "ONNXRUNTIME_CPP_SHA256", "sha256sum -c -", "--with-examples",
         "install -m 0755 build/examples/di-native-provider",
         "derive-runtime-packages.py", "runtime-system-packages", "/etc/ndn/nfd.conf",
-        "/run/nfd", "verify-runtime-closure.py", "verify-python-environment.py",
+        "/run/nfd", "verify-runtime-closure.py",
+        "--reject-prefix /home/", "--reject-prefix /src/",
+        "verify-python-environment.py",
         "ARG FOUNDATION_SOURCE_REVISION",
         "grep -Eq '^[a-f0-9]{40}$'",
         "find NDNSF-DistributedInference/packaging/python -type d -name build",
@@ -478,6 +480,8 @@ def run(workspace: Path, seal_root: Path | None) -> dict[str, object]:
         'HOST_DRIVER_LIBRARIES = {"libcuda.so.1"}',
         "path.parent.resolve()",
         "unresolved - HOST_DRIVER_LIBRARIES",
+        "RUNTIME_HOST_BOUND_PATH",
+        "readelf",
     ):
         require(
             marker in runtime_closure,

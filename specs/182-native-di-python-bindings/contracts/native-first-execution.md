@@ -1,6 +1,6 @@
 # Native-First Execution Order
 
-**Revision**: 1 | **Date**: 2026-09-10 | **Status**: PLANNED
+**Revision**: 2 | **Date**: 2026-09-10 | **Status**: PLANNED
 
 用户确认的剩余执行顺序；覆盖旧文档中“所有真实跨进程用例推迟到 T016”及
 “生产 requester 进程内持有 artifact authority 私钥”的规定。保留原 17 个父任务、
@@ -71,6 +71,12 @@ keychain 环境。NFD 使用独立 scratch `HOME` 且不继承角色 keychain。
 NFD socket 还必须位于当前作业的 `--scratch` 目录内；仅有 `/tmp/ndnsf-di-*` 前缀而
 跨作业复用或含有 `..` 路径组件的 process map 会在启动前被拒绝，NFD state directory
 也执行同样的路径组件检查。
+
+候选镜像的 ELF 闭包还必须在各自的 assembler/devel 阶段通过
+`verify-runtime-closure.py` 的宿主路径门禁。门禁同时读取 `DT_RPATH`/`DT_RUNPATH`
+和 `ldd` 的已解析路径，并拒绝 `/home/`、`/workspace/`、`/build/`、`/src/`、`/tmp/`
+等宿主或构建临时前缀；最终 runtime stage 继续执行常规 unresolved-library 闭包检查。
+这只证明构建产物没有带入这些宿主路径，不等同于 SIF、驱动注入或真实 Slurm 多机资格。
 
 ## Independent Authority Boundary
 

@@ -19,6 +19,7 @@ COPY packaging/ndnsf-di-container/oci/layered/locks/app-runtime.lock.json /build
 COPY packaging/ndnsf-di-container/oci/layered/patches/ndn-svs-boost-1.71.patch /build-contract/ndn-svs-boost-1.71.patch
 COPY packaging/ndnsf-di-container/oci/layered/scripts/prepare-layer-seals.py /build-contract/prepare-layer-seals.py
 COPY packaging/ndnsf-di-container/oci/scripts/derive-runtime-packages.py /build-contract/derive-runtime-packages.py
+COPY packaging/ndnsf-di-container/oci/scripts/verify-runtime-closure.py /build-contract/verify-runtime-closure.py
 COPY --from=app_seal / /build-contract/seal/
 RUN python3 /build-contract/prepare-layer-seals.py verify \
       --lock /build-contract/app-runtime.lock.json \
@@ -104,6 +105,9 @@ RUN install -d $APP_PREFIX/manifest && \
     printf '%s\n' "$APP_LOCK_DIGEST" >$APP_PREFIX/manifest/lock-digest && \
     printf '%s\n' "$APP_SEAL_DIGEST" >$APP_PREFIX/manifest/seal-digest && \
     printf '%s\n' "$APP_BUILD_ID" >$APP_PREFIX/manifest/app-build-id && \
+    python3 /build-contract/verify-runtime-closure.py \
+      --root $APP_PREFIX --reject-prefix /home/ --reject-prefix /workspace/ \
+      --reject-prefix /build/ --reject-prefix /src/ --reject-prefix /tmp/ && \
     python3 /build-contract/derive-runtime-packages.py \
       --root $APP_PREFIX --output $APP_PREFIX/manifest/runtime-system-packages && \
     test -x $APP_PREFIX/bin/App_ServiceController && \

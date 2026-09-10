@@ -37,7 +37,9 @@ class RuntimePackageClosureTests(unittest.TestCase):
         cls.module = load_script_module("derive_runtime_packages", SCRIPT)
         cls.verify_module = load_script_module("verify_runtime_closure", VERIFY_SCRIPT)
 
-    def build_sibling_bundle(self, root: Path) -> tuple[Path, Path]:
+    def build_sibling_bundle(
+        self, root: Path, *, rpath: str | None = None
+    ) -> tuple[Path, Path]:
         bundle = root / "pillow.libs"
         bundle.mkdir()
         dependency_source = root / "dependency.c"
@@ -68,18 +70,20 @@ class RuntimePackageClosureTests(unittest.TestCase):
         )
         (bundle / "libspec110_sibling.so").symlink_to(dependency.name)
         consumer = bundle / "libspec110_consumer.so"
+        command = [
+            "gcc",
+            "-fPIC",
+            "-shared",
+            str(consumer_source),
+            f"-L{bundle}",
+            "-Wl,--no-as-needed",
+            "-lspec110_sibling",
+        ]
+        if rpath is not None:
+            command.append("-Wl,-rpath," + rpath)
+        command.extend(("-o", str(consumer)))
         subprocess.run(
-            [
-                "gcc",
-                "-fPIC",
-                "-shared",
-                str(consumer_source),
-                f"-L{bundle}",
-                "-Wl,--no-as-needed",
-                "-lspec110_sibling",
-                "-o",
-                str(consumer),
-            ],
+            command,
             check=True,
             text=True,
             capture_output=True,
@@ -155,6 +159,17 @@ class RuntimePackageClosureTests(unittest.TestCase):
 
             self.assertIn(dependency.resolve(), linked)
             self.verify_module.verify_elf(consumer)
+
+    def test_reject_prefix_blocks_host_bound_runpath(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            consumer, _ = self.build_sibling_bundle(
+                Path(directory), rpath="/home/spec110-host/lib"
+            )
+            with self.assertRaisesRegex(
+                RuntimeError,
+                rf"^RUNTIME_HOST_BOUND_PATH:{consumer}:.*:/home/$",
+            ):
+                self.verify_module.verify_elf(consumer, ("/home/",))
 
     def test_missing_sibling_vendored_dso_still_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
