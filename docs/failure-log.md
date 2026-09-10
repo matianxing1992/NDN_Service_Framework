@@ -5063,3 +5063,20 @@ registered `spec183_dev_provision.py provision` step first, then invoke the
 MiniNDN driver with the retained preparation digest.
 Lesson: distinguish offline prepare from issuer provisioning and never derive a
 preparation digest from a nonexistent or hand-written file.
+
+## 2026-09-10 — v34 Y-N matrix stopped in the control subcase
+
+Symptom: fresh v34 Y-N run `minindn-local-20260910-v93-v34-yn` completed ACK,
+placement, selection and provider startup for `Y-N-O`, then timed out with
+`CONTROL_NOT_PROVEN`; DetectShard0 reported
+`TensorObjectManifestV1 ciphertext commitment mismatch` and Merge could not
+fetch the signed tensor. The remaining seven subcases were not started.
+Root cause: the normal control path hit a cross-provider tensor commitment
+failure after the new APP was assembled. The same v34 composition passed the
+full Y-B graph, so this is isolated to the Y-N control/FullModel assignment or
+an execution race, not evidence of a GPU or SIF failure.
+Fix status: retained the complete failed run and logs; no source change was
+made. A fresh Y-N run is required to distinguish a transient race from a
+regression before producing the v34 host gate.
+Lesson: Y-B success cannot stand in for the Y-N matrix; require every control
+and negative boundary, and preserve partial matrix runs for diagnosis.
