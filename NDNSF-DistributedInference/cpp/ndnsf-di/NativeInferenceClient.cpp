@@ -314,6 +314,10 @@ struct NativeInferenceHandle::Operation
   std::optional<NativePlannedRequest> planned;
   std::shared_ptr<NativeConversationCoordinator> conversations;
   std::optional<NativeConversationTurn> conversationTurn;
+  // Stored only after NativeConversationCoordinator::commitTurn returns.  It
+  // is an opaque authenticated wire owned by the native coordinator; no
+  // transcript or Provider state is copied into the handle.
+  std::optional<std::string> conversationCheckpointWire;
   bool conversationCommitted = false;
   bool conversationTransactionActive = false;
   bool conversationCleanupDeferred = false;
@@ -957,7 +961,11 @@ void commitConversationTurn(
     catch (...) {}
   };
   const auto checkpoint = operation->conversations->prepareCheckpoint(turn, completed);
-  operation->conversations->commitTurn(turn, checkpoint);
+  const auto record = operation->conversations->commitTurn(turn, checkpoint);
+  {
+    std::lock_guard<std::mutex> lock(operation->mutex);
+    operation->conversationCheckpointWire = record.checkpoint.wire;
+  }
 }
 
 void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& operation);
@@ -1488,6 +1496,15 @@ std::string NativeInferenceHandle::applicationRequestId() const
   if (!m_operation) return {};
   std::lock_guard<std::mutex> lock(m_operation->mutex);
   return m_operation->applicationRequestId;
+}
+
+std::optional<std::string> NativeInferenceHandle::conversationCheckpoint() const
+{
+  if (!m_operation) return std::nullopt;
+  std::lock_guard<std::mutex> lock(m_operation->mutex);
+  if (m_operation->status != NativeRequestStatus::Succeeded)
+    return std::nullopt;
+  return m_operation->conversationCheckpointWire;
 }
 
 NativeRequestStatus NativeInferenceHandle::status() const

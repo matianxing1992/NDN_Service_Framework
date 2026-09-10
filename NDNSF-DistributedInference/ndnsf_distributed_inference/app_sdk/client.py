@@ -80,6 +80,12 @@ class NativeRequestHandle:
         return str(getattr(self._native_handle, "application_request_id", ""))
 
     @property
+    def conversation_checkpoint(self) -> bytes | None:
+        """Return the native owner's committed opaque checkpoint, if any."""
+        value = getattr(self._native_handle, "conversation_checkpoint", None)
+        return None if value is None else bytes(value)
+
+    @property
     def status(self):
         return getattr(self._native_handle, "status_name", "UNKNOWN")
 
@@ -134,6 +140,12 @@ class NativeStreamingHandle:
     @property
     def generation_id(self) -> str:
         return self._generation_id
+
+    @property
+    def conversation_checkpoint(self) -> bytes | None:
+        """Return the native owner's committed opaque checkpoint, if any."""
+        value = getattr(self._native_handle, "conversation_checkpoint", None)
+        return None if value is None else bytes(value)
 
     @property
     def status(self):
