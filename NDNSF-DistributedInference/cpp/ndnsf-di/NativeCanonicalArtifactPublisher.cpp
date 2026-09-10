@@ -174,7 +174,12 @@ NativeArtifactBinding NativeCanonicalArtifactPublisher::operator()(const NativeI
     const std::vector<std::uint8_t> rootBytes(binding.canonicalManifestJson.begin(), binding.canonicalManifestJson.end());
     const auto rootName = publish(rootBytes, "di-canonical-root");
     for (const auto& role : roles) {
+      // The canonical root contains request-scoped source publication names.
+      // Include its digest in the stable assignment identity so a later
+      // request cannot reuse a Provider's cached artifact under the same
+      // candidate/role name while referring to a different root.
       auto stable = ndn::Name(options.artifactRoot).append(candidate.candidateDigest.substr(7));
+      stable.append("manifest").append(binding.manifestDigest.substr(7));
       stable.append(ndn::Name(role.role));
       const auto degree = candidate.tensorDegreesByRole.find(role.role);
       if (degree != candidate.tensorDegreesByRole.end() && degree->second > 1)

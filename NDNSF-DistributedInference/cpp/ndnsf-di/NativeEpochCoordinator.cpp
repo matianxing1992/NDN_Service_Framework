@@ -29,8 +29,13 @@ public:
   {
   }
 
+  void retain() noexcept { m_retain = true; }
+
   ~DecodeStateReleaseGuard()
   {
+    if (m_retain) {
+      return;
+    }
     try {
       m_runtime.releaseDecodeState(m_sessionId, m_role);
     }
@@ -43,6 +48,7 @@ private:
   NativeProviderRuntime& m_runtime;
   std::string m_sessionId;
   std::string m_role;
+  bool m_retain = false;
 };
 
 void
@@ -988,6 +994,27 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
       result.cacheObservations.push_back(cacheObservation);
       ++result.epochsExecuted;
 
+      // The terminal role also owns a Provider state receipt.  Its ordinary
+      // final-token epoch computes logits from the preceding state, so the
+      // state output still represents the prefix before that final token.
+      // Conversation turns publish a CHECKPOINT_FINALIZE feedback marker and
+      // consume it in one bounded state-only pass, exactly as upstream roles
+      // do, before exposing the finalized identity to the requester.
+      if (terminalRole && checkpointFinalization) {
+        throwIfStopped(config);
+        if (executable.deferStateCommit &&
+            !config.runtime.commitDecodeStateTransition(
+              config.sessionId, executable)) {
+          throw std::runtime_error("PROVIDER_DECODE_STATE_COMMIT_FAILED");
+        }
+        if (executable.candidateDecodeStateIdentity) {
+          committedStateIdentity = executable.candidateDecodeStateIdentity;
+          result.finalizedRole = executable;
+          stateRelease.retain();
+        }
+        return result;
+      }
+
       if (!terminalRole) {
         throwIfStopped(config);
         if (executable.deferStateCommit &&
@@ -1124,6 +1151,12 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
       if (eos || stopSequence || atMax) {
         result.finalPayload = makeFinalPayload(generated, finishHint,
                                                config.textDecoder ? candidateText : generatedText);
+        if (config.checkpointFinalize) {
+          // The final token feedback carries CHECKPOINT_FINALIZE and is
+          // consumed by the next bounded loop iteration above.  Do not return
+          // before that state-only pass has committed the receipt state.
+          continue;
+        }
         return result;
       }
     }

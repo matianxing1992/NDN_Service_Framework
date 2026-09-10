@@ -1,6 +1,6 @@
 # Tasks: Native NDNSF-DI with Optional Python Bindings
 
-**Revision**: 124 | **Status**: DRAFT / T001 DONE
+**Revision**: 129 | **Status**: DRAFT / T001 DONE
 **Input**: [spec](spec.md), [code design](contracts/code-design.md),
 [proof](contracts/proof-design.md), [work units](contracts/work-units.md)
 
@@ -10,7 +10,8 @@
 
 剩余调度权威为 [N1--N5 / R11 cards](contracts/native-first-execution.md)。当前 R11-B1
 已完成独立 authority↔requester process 的 C++ 正例、负例和不可达边界，R11-B2 已完成
-真实 C++ 跨进程 unary 的本地 process 出口；下一项是 R11-B3 stream。不得在 N1--N3 通过前以旧
+真实 C++ 跨进程 unary 的本地 process 出口；R11-B3 stream 已形成独立出口，当前继续收敛
+R11-B4 continuation 已形成独立双轮出口，下一批转入 R11-B5 recovery。不得在 N1--N3 通过前以旧
 调用方批量迁移、Python 数量或全仓库扫描代替原生出口。已有局部 PASS 及下面历史记录
 保留，父任务不因本轮局部实现升级。
 
@@ -20,7 +21,7 @@
 | [R11-B1 Independent Authority](contracts/native-first-execution.md#dispatch-cards) | CLOSED_FOR_VALIDATION | T001 valid closure; existing T005 implementation | C++ 独立 authority/requester process 经真实 NFD/Controller 通过 1 正例、5 个 Authority handler 拒绝例和 1 个 authority 不可达超时；bwrap requester 隔离、角色 PIB/TPM 快照与 C++ grant 验证通过。T005 父任务、R11-B2 及完整 Spec qualification 仍未关闭 | 2026-09-10 |
 | [R11-B2 Native Unary Process](contracts/native-first-execution.md#dispatch-cards) | CLOSED_FOR_VALIDATION | R11-B1; existing T008/T009/T010 implementation | 独立 C++ DI_NativeRequester / authority / di-native-provider；真实 ACK/Selection/handler/Response、受保护 grant、ONNX Runtime CPU evidence 和 C++ numerical oracle `[4,0,12]`；Provider 缺 role 的拒绝例也 fail-closed。T010 父任务、R11-B3 及完整 Spec qualification 仍未关闭 | 2026-09-10 |
 | [R11-B3 Native Stream Process](contracts/native-first-execution.md#dispatch-cards) | CLOSED_FOR_VALIDATION | R11-B2 | 独立 C++ requester/Core/Provider process 通过 8 个有序 token 事件、final response、grant verification、post-selection preparation、decode-state commit 和 CPU ORT execution；C++ oracle 与构建/单测/集成证据已记录。gap/timeout/重复/错 generation、父 T010/T011 及完整 qualification 仍未关闭 | 2026-09-10 |
-| [R11-B4 Native Continuation Process](contracts/native-first-execution.md#dispatch-cards) | NOT_STARTED | R11-B3 | 两轮 FULL_CONTEXT→APPEND_DELTA、真实 receipt/control/journal、错 parent | 2026-09-10 |
+| [R11-B4 Native Continuation Process](contracts/native-first-execution.md#dispatch-cards) | CLOSED_FOR_VALIDATION | R11-B3 | 独立 C++ 双轮 process 已通过第一轮 `FULL_CONTEXT`（stream oracle、COMMIT/FINALIZE、持久 journal checkpoint）及新 generation 的第二轮 `APPEND_DELTA`；错误 parent 进程按预期以 `NATIVE_CONVERSATION_BEGIN_FAILED` 拒绝；publisher stable artifact identity 已绑定 canonical manifest digest。父 T010/T011、R11-B5 及完整 Spec qualification 仍未关闭 | 2026-09-10 |
 | [R11-B5 Native Recovery Process](contracts/native-first-execution.md#dispatch-cards) | NOT_STARTED | R11-B4 | 真实中断/重启与状态恢复或明确拒绝，无重复提交 | 2026-09-10 |
 | [R11-B6 Native Replacement Process](contracts/native-first-execution.md#dispatch-cards) | NOT_STARTED | R11-B5 | 第二独立 Provider 成功替换、旧 attempt fencing、无候选失败 | 2026-09-10 |
 | [R11-B7 Native Cleanup Process](contracts/native-first-execution.md#dispatch-cards) | NOT_STARTED | R11-B6 | 终态/取消/超时/替换后 drain、secret 清理及共享服务隔离 | 2026-09-10 |
@@ -292,6 +293,15 @@ verification 与真实 execution evidence。准备 runner、decode-state commit�
 详见 [R11-B3 evidence](evidence/r11-b3-native-stream-process-20260910.md)。gap/timeout/
 duplicate/wrong-generation 负例、continuation/recovery/replacement/cleanup、maintained
 callers、no-Python、T010--T017 仍未关闭。
+
+2026-09-10 R11-B4 native continuation / **CLOSED_FOR_VALIDATION**（仅限独立
+C++ 双轮 process 出口）：第一轮 `FULL_CONTEXT` 完成 stream `1..8`/`9`、真实
+COMMIT/FINALIZE、持久 checkpoint、C++ stream oracle 和 success markers；第二轮使用新的
+generation identity 完成 `APPEND_DELTA`，错误 parent 进程以非零状态在 conversation begin
+边界拒绝。publisher stable artifact identity 已加入 canonical manifest digest，避免跨请求
+复用 request-scoped canonical root。构建、C++ unit/integration selector 和 raw run 见
+[R11-B4 evidence](evidence/r11-b4-native-continuation-20260910.md)。父 T010/T011、R11-B5
+recovery、maintained callers、no-Python 及完整 qualification 仍未关闭。
 
 2026-09-10 R11-B2 native unary process / **CLOSED_FOR_VALIDATION**（仅限本地
 process 出口）：独立 Controller、artifact authority、DI_NativeRequester 和 di-native-provider

@@ -1617,15 +1617,23 @@ NativeProviderRuntime::stageDecodeStatePromotion(
 {
   binding.validate();
   const auto runnerSpec = findRunnerSpec(role.role);
-  if (!runnerSpec || !role.candidateDecodeStateIdentity ||
+  if (!role.candidateDecodeStateIdentity ||
       role.candidateDecodeStateIdentity->roleName != role.role ||
       *role.candidateDecodeStateIdentity != binding.identity) {
     return false;
   }
-  const auto sourceBinding = decodeStateBindingFor(*runnerSpec, sessionId, role);
+  // Post-Selection preparation creates the exact runner for this request but
+  // intentionally does not publish a process-wide runner spec.  The complete
+  // candidate identity is sufficient to derive the request-local source key.
+  const NativeModelRunnerSpec emptyRunnerSpec;
+  const auto sourceBinding = decodeStateBindingFor(
+    runnerSpec ? *runnerSpec : emptyRunnerSpec, sessionId, role);
   const auto promotionBinding = binding;
-  const auto runner = findRunner(role.role);
-  if (runner->supportsConversationStateTransfer()) {
+  std::shared_ptr<NativeModelRunner> runner;
+  if (hasRunner(role.role)) {
+    runner = findRunner(role.role);
+  }
+  if (runner && runner->supportsConversationStateTransfer()) {
     const auto conversationKey = conversationPromotionKey(promotionBinding);
     const auto adapterState = runner->promoteSessionStateToConversation(
       sessionId, conversationKey);
@@ -1640,7 +1648,13 @@ NativeProviderRuntime::stageDecodeStatePromotion(
     }
   }
   else {
-    const auto state = m_decodeStateStore.lookup(sourceBinding);
+    auto state = m_decodeStateStore.lookup(sourceBinding);
+    if (!state) {
+      // A conversation turn deliberately defers decode-state commit until
+      // the requester commits the complete role set.  Promote that exact
+      // request-local candidate without making it visible to a later turn.
+      state = m_decodeStateStore.lookupCandidate(sourceBinding);
+    }
     if (!state.has_value() ||
         !m_conversationStateStore.stagePromotion(
           sourceBinding.requestId, role.role, std::move(binding), *state, nowMs)) {

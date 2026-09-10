@@ -1,5 +1,83 @@
 # Failure Log and Evidence Index
 
+## 2026-09-10 — Spec182 R11-B4 repeated-request artifact identity boundary
+
+The fresh-generation retry completed the first native continuation turn and accepted the
+second turn's new generation identity, then Provider assembly stopped at
+`DI_CANONICAL_ROOT_DIGEST_MISMATCH`. The requester publisher reused one stable
+`assignedArtifact` name across requests while each canonical root carried a request-scoped
+source publication name; Provider's process-wide artifact cache consequently returned the
+first root for the second request. Raw output is retained under
+`/tmp/spec182-r11-b4-fresh-generation/`. The C++ publisher now includes the canonical
+manifest digest in the stable identity. A fresh rebuild and rerun completed both
+`FULL_CONTEXT` and new-generation `APPEND_DELTA` under `/tmp/spec182-r11-b4-final-checked/`; the bounded resolution is recorded in
+[R11-B4 evidence](../specs/182-native-di-python-bindings/evidence/r11-b4-native-continuation-20260910.md).
+This was a native cross-request binding boundary, not a Python wrapper or qualification result.
+
+## 2026-09-10 — Spec182 R11-B4 continuation fresh-state identity boundary
+
+The Provider control replay repair allowed the first C++ `FULL_CONTEXT` turn to complete,
+persist its native checkpoint, and emit the stream oracle/success markers. The second
+process then failed at the native coordinator contract
+`native conversation continuation requires a fresh stateful request` because the fixture
+reused the first turn's `generationId`. The raw run is retained under
+`/tmp/spec182-r11-b4-ackfix/`. The retry must create a distinct second request/generation
+identity while retaining the committed parent checkpoint; this is a native harness
+contract boundary, not a Python binding or qualification result.
+
+## 2026-09-10 — Spec182 R11-B4 conversation COMMIT acknowledgement boundary
+
+The traced C++ continuation process received stream cursors `1..8` and terminal cursor
+`9`, entered the conversation commit phase, and showed the Provider decrypting the valid
+requester `COMMIT` control. The requester then failed with
+`NATIVE_CONVERSATION_COMMIT_ACK_INCOMPLETE`. Provider output contains a rapidly growing
+sequence of duplicate `/ndnsf-di/conversation/commit` publications because its polling
+loop reprocessed historical controls. Raw output is retained under
+`/tmp/spec182-r11-b4-trace/`. The next repair is a C++ per-sequence control replay guard,
+followed by a fresh native rebuild and the same two-round continuation/wrong-parent run.
+This remains an integration boundary and is not a Python binding or qualification result.
+
+## 2026-09-10 — Spec182 R11-B4 continuation completion boundary
+
+The terminal-role checkpoint finalization repair executed the additional state-only ONNX
+Runtime epoch and the Provider emitted stream cursors `1..8` plus cursor `9`. The requester
+accepted the encrypted Response but stayed pending until its 30-second request budget expired;
+no checkpoint or success marker was written. Raw output is retained under
+`/tmp/spec182-r11-b4-finalize/`. The next retry must distinguish a missing terminal stream
+cursor from a missing conversation COMMIT acknowledgement, using C++ trace only. This remains
+an integration boundary and is not a Python binding or qualification result.
+
+## 2026-09-10 — Spec182 R11-B4 continuation lineage boundary
+
+After the deferred decode-state promotion repair, a fresh independent C++ continuation
+probe reached real Provider ONNX execution and published an authenticated receipt. The
+requester then stopped at `conversation receipt lineage mismatch`: the Provider identity
+included input prefix token `[3]`, while the fixture's FULL_CONTEXT canonical prefix was
+empty. The raw run is retained under `/tmp/spec182-r11-b3-probe-vyoahjfs/`. The fixture is
+being corrected to declare the exact input prefix before the next retry. This remains a
+development boundary and is not a Python binding or qualification result.
+
+## 2026-09-10 — Spec182 R11-B4 continuation prefix-count boundary
+
+The corrected FULL_CONTEXT prefix `[3]` allowed the independent C++ process to reach the
+receipt scope checks, but the requester rejected `prefixTokenCount`: Provider receipt and
+checkpoint values differ despite the prefix digest being accepted. Raw output is retained
+under `/tmp/spec182-r11-b4-probe-current/`. A temporary diagnostic will expose the exact
+wire values before the native count contract is repaired. This is still a C++ continuation
+boundary, not a Python binding or qualification result.
+
+## 2026-09-10 — Spec182 R11-B4 deferred decode-state promotion boundary
+
+The first independent C++ continuation probe reached real Provider ONNX execution, then
+failed at `PROVIDER_CONVERSATION_PROMOTION_STAGE_FAILED`. The streamed requester observed
+the resulting gap timeout and no conversation journal checkpoint was committed. The first
+boundary was a C++ ownership mismatch: conversation turns defer decode-state commit, while
+the CPU promotion branch only searched committed state; candidate-only cleanup also did not
+match the existing erase key. Raw output is retained under
+`/tmp/spec182-r11-b3-probe-9fwp2_mg/`. The retry adds exact candidate lookup and candidate-aware
+cleanup, then must rebuild and rerun the C++ two-round continuation plus wrong-parent negative.
+This is not evidence against the Python binding, and no qualification pass is claimed.
+
 ## 2026-09-10 — Proposal local checkpoint hook boundary
 
 The document checkpoint was rejected by the pre-commit hook's full-index assistant

@@ -51,6 +51,10 @@ public:
   void setProviderBootId(std::string providerBootId);
   bool put(KvStateBinding binding, TensorBundle state);
   std::optional<TensorBundle> lookup(const KvStateBinding& binding);
+  // A deferred decode transition is intentionally invisible to ordinary
+  // lookup, but conversation promotion must be able to consume that exact
+  // request-local candidate after execution has succeeded.
+  std::optional<TensorBundle> lookupCandidate(const KvStateBinding& binding);
   std::optional<TensorBundle> beginTransition(const KvStateBinding& predecessor);
   bool stageCandidate(std::optional<KvStateBinding> predecessor,
                       KvStateBinding candidate,
