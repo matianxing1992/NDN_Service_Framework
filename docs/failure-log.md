@@ -5119,3 +5119,16 @@ Fix status: removed only the named stale run with a controlled `sudo -n`
 Python cleanup and verified the candidate profile before recreating it.
 Lesson: failed shared runs must be cleaned by an explicit, path-scoped
 operation; never use broad recursive deletion in the project run root.
+
+## 2026-09-10 — GPU transport found stale operator-lock identity
+
+Symptom: the first sender-side single-node GPU submission stopped during
+transport manifest construction with `TRANSPORT_EXPECTED_IDENTITY_CONFLICT`.
+Root cause: the candidate input plane contained the repaired
+`development-handoff.lock.json` (`sha256:2e3f1074...`), while the profile still
+declared the older lock digest (`sha256:aad276e64...`).
+Fix status: update the candidate profile to the plane's exact lock identity and
+reprepare the GPU run before retrying; no remote bytes were published.
+Lesson: every profile evidence locator must agree with the current plane
+manifest before SSH transport; a valid plane alone cannot repair stale profile
+metadata.
