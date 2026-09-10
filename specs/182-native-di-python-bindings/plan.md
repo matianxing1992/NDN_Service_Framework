@@ -1,6 +1,6 @@
 # Implementation Plan: Native NDNSF-DI with Optional Python Bindings
 
-**Branch**: Experimental | **Revision**: 88 | **Date**: 2026-09-10
+**Branch**: Experimental | **Revision**: 89 | **Date**: 2026-09-10
 **Status**: IN_PROGRESS / 当前实现与验收状态见 tasks.md 的 Task Progress Registry 和 Current Checkpoint
 **Spec**: [spec.md](spec.md)
 
@@ -1320,6 +1320,23 @@ C++ unit 258 cases / 7099 assertions 两次完整运行通过，fresh `unit-test
 system-first `-j2` 完成。该批只关闭 placement/co-location 的 C++ validation boundary，
 不宣称 MiniNDN、完整模型、独立部署资格、maintained callers、no-Python 或 T016/T017。
 详见 [R11-B8-G11 evidence](evidence/r11-b8-g11-provider-colocation-20260910.md)。
+
+### R11-B8-G12 Native Provider Identity Binding 2026-09-10
+
+本批对 `NativeInferenceProvider::serve`、`NativeProviderHandlerConfig` 及真实
+`ServiceProvider` 身份边界做静态审查。原实现把 `localProviderName` 和
+`providerBootId` 当作可选输入；首个 target 会将其写入 host-wide lease state，因此
+小型同进程 fixture 即使配置了错误或空身份也能继续，而多机部署会发布与实际证书/Provider
+不一致的 offer、evidence、data prefix 或 lease。修正后的 serve 在任何 host state、固定
+lease 或 target registration 创建前解析并校验 provider name，要求它与
+`ServiceProvider::getName()` 完全相等，要求非空 boot ID，并以底层 identity 的 canonical
+URI 保存 host name；后续 target 继续受相同 host epoch fence 约束。
+
+测试边界是 C++ host lifecycle：missing identity、foreign identity、missing boot ID 均在
+host creation 前拒绝，合法配置随后仍可注册；既有 duplicate、rollback、host-config
+consistency selectors 保持覆盖。该批只关闭 Provider identity binding boundary，不推进
+maintained callers、跨进程/跨机器运行、no-Python、MiniNDN 或 T016/T017 qualification。
+详见 [R11-B8-G12 evidence](evidence/r11-b8-g12-provider-identity-binding-20260910.md)。
 
 ## Current Planning Result
 

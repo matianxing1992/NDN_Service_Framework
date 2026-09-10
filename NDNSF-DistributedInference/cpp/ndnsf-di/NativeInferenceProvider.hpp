@@ -79,7 +79,12 @@ private:
 // lease entry; every later serve() assembles that target's runtime through
 // NativeProviderHandlerConfig, routes it to an ExecutionLeaseService over the
 // shared state, and installs the scoped collaboration registration. serve()
-// may only be called on the Face event thread or before the event loop
+// The config's localProviderName must be the exact identity returned by the
+// underlying ServiceProvider, and providerBootId must be non-empty; serve()
+// rejects an unbound identity before creating host-wide lease state. This
+// prevents a small in-process fixture from masking cross-host offer,
+// evidence, data-prefix, or lease binding errors.
+// serve() may only be called on the Face event thread or before the event loop
 // starts, the same constraint as the Core scoped registration APIs; close()
 // and stop() may be triggered from any thread. The host never closes the
 // shared ServiceProvider/Face and never joins an I/O thread.

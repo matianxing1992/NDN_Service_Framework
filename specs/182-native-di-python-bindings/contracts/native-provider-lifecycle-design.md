@@ -24,6 +24,13 @@ T009的NativeInferenceProvider宿主持有一个共享lease状态、一个固定
 
 shared state的providerEpoch为同一host boot epoch；不同target不能通过单独重置表绕过已预留资源。计算槽范围是host实际资源配置，不能为每个service重新增加workers；同一物理槽使用相同conflict key。后续serve配置若试图改变host槽范围必须拒绝并要求显式host资源配置，不能默默相加。Core prepare自身的冲突检查保留，shared mutex只确保resolver观察和prepare之间不被另一个target抢占。
 
+`NativeInferenceProvider::serve` 在创建上述 shared state、固定 lease entry 或 target
+registration 前，要求 `NativeProviderHandlerConfig.localProviderName` 是合法且非空的
+NDN name，并且与底层 `ServiceProvider::getName()` 完全相等；`providerBootId` 也必须非空。
+host state 与 effective handler config 使用底层 Provider identity 的 canonical URI。这样
+每台机器发布的 offer、execution evidence、cross-Provider data name 和 lease 都绑定到
+实际拥有签名证书的 Provider；MiniNDN 中常见的同进程默认值不能掩盖多机配置错误。
+
 非Prepare请求的targetServiceName不能任意改写路由：当前Core commit/abort/renew/release签名只有leaseId/providerEpoch/requester/idempotency，没有target参数。共享表后额外serviceName检查因此是必要边界。未知lease保持Core既有缺失/过期处理；已存在记录先核对target，再交Core处理身份、状态与重放。不得通过router返回另一服务的lease细节。
 
 ## Closing Targets

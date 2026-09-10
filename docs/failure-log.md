@@ -1,5 +1,15 @@
 # Failure Log and Evidence Index
 
+## 2026-09-10 — Spec182 R11-B8-G12 host identity selector compile boundary
+
+The first fresh `unit-tests` build for the Provider identity binding batch
+rejected the test-only alias `constexpr char[] = HOST_PROVIDER_NAME` because
+the compiler cannot infer an array size from another array. The production
+change was not reached as a runtime failure; the raw compiler output is
+retained at `.codex-tmp/spec182-r11-b8-g12-provider-identity-20260910/build.log`.
+The alias was changed to a `const char*` with the same literal contents before
+the bounded retry. No test result from this failed build is counted as PASS.
+
 ## 2026-09-10 — Spec182 R11-B8 prepared-role fixture checker boundary
 
 The bounded C++ fixture repair first ran cppcheck against
