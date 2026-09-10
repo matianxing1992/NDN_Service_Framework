@@ -68,6 +68,8 @@ keychain 环境。NFD 使用独立 scratch `HOME` 且不继承角色 keychain。
 专属 `HOME`；Provider 在 `exec` 前必须用 `nvidia-smi` 核对实际可见的 `gpuUuid`，不能只
 相信 `--gpu-bind` 的编号；TCP/UDP 诊断必须分别使用各自节点端口，不能用已选传输的端口
 冒充另一种传输。失败均停在 pre-exec/probe 边界，不得生成 READY 或资格 PASS。
+NFD socket 还必须位于当前作业的 `--scratch` 目录内；仅有 `/tmp/ndnsf-di-*` 前缀而
+跨作业复用 socket 的 process map 会在启动前被拒绝。
 
 ## Independent Authority Boundary
 

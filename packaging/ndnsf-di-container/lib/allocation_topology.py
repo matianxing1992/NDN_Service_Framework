@@ -292,6 +292,8 @@ def render_process_launcher(process: Mapping[str, Any], scratch: Path | str,
     if (not workdir_path.is_absolute() or ".." in workdir_path.parts or
             any(char in str(workdir_path) for char in "\x00\n\r")):
         _fail("TOPOLOGY_WORKDIR_INVALID", workdir)
+    if not str(socket_path).startswith(str(scratch_path).rstrip("/") + "/"):
+        _fail("TOPOLOGY_SOCKET_SCOPE_INVALID", process_id)
 
     home = scratch_path / "homes" / process_id
     tmp = scratch_path / "tmp" / process_id

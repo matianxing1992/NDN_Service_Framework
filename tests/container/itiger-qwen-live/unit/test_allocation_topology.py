@@ -92,7 +92,7 @@ class AllocationTopologyTest(unittest.TestCase):
         scratch = "/tmp/ndnsf-di-test-launcher"
         workdir = "/project/tma1/ndnsf-di/bundle"
         provider = next(row for row in value["processes"] if row["kind"] == "provider")
-        rendered = topology.render_process_launcher(provider, scratch, workdir)
+        rendered = topology.render_process_launcher(provider, "/tmp/ndnsf-di-job", workdir)
         self.assertIn("identity_source=/project/tma1/ndnsf-di/identities/c1/provider-0", rendered)
         self.assertIn('cp -a "$identity_source/." "$runtime_home/"', rendered)
         self.assertIn('export NDN_CLIENT_PIB="pib-sqlite3:$runtime_home/.ndn/pib.db"', rendered)
@@ -106,7 +106,7 @@ class AllocationTopologyTest(unittest.TestCase):
         )
 
         nfd = next(row for row in value["processes"] if row["kind"] == "nfd")
-        nfd_rendered = topology.render_process_launcher(nfd, scratch, workdir)
+        nfd_rendered = topology.render_process_launcher(nfd, "/tmp/ndnsf-di-job", workdir)
         self.assertIn("kind=nfd", nfd_rendered)
         self.assertNotIn("identity_source=", nfd_rendered)
         self.assertEqual(
@@ -119,13 +119,13 @@ class AllocationTopologyTest(unittest.TestCase):
         controller = copy.deepcopy(next(row for row in value["processes"] if row["kind"] == "controller"))
         controller["command"] = ["App_ServiceController", "--identity", controller["identityRef"]]
         rendered = topology.render_process_launcher(
-            controller, "/tmp/ndnsf-di-test-launcher", "/project/tma1/ndnsf-di/bundle"
+            controller, "/tmp/ndnsf-di-job", "/project/tma1/ndnsf-di/bundle"
         )
         self.assertIn('exec App_ServiceController --identity "$runtime_home"', rendered)
         self.assertNotIn("exec App_ServiceController --identity /project/", rendered)
         controller["command"] = ["App_ServiceController", "--identity=" + controller["identityRef"]]
         rendered = topology.render_process_launcher(
-            controller, "/tmp/ndnsf-di-test-launcher", "/project/tma1/ndnsf-di/bundle"
+            controller, "/tmp/ndnsf-di-job", "/project/tma1/ndnsf-di/bundle"
         )
         self.assertIn('exec App_ServiceController --identity="$runtime_home"', rendered)
 
@@ -136,6 +136,7 @@ class AllocationTopologyTest(unittest.TestCase):
              tempfile.TemporaryDirectory(prefix="ndnsf-di-") as scratch_dir, \
              tempfile.TemporaryDirectory(prefix="spec110-bin-") as bin_dir:
             source = Path(source_dir)
+            provider["nfdSocket"] = str(Path(scratch_dir) / "nfd/1/nfd.sock")
             (source / ".ndn").mkdir()
             (source / ".ndn/pib.db").write_text("source-pib")
             (source / ".ndn/ndnsec-key-file").mkdir()
@@ -160,6 +161,14 @@ class AllocationTopologyTest(unittest.TestCase):
             self.assertIn("SPEC110_GPU_UUID_MISMATCH", result.stderr)
             self.assertFalse(sentinel.exists())
 
+    def test_process_launcher_rejects_socket_from_another_job(self) -> None:
+        value = load("single-node.json")
+        process = next(row for row in value["processes"] if row["kind"] == "nfd")
+        with self.assertRaisesRegex(topology.TopologyError, "TOPOLOGY_SOCKET_SCOPE_INVALID"):
+            topology.render_process_launcher(
+                process, "/tmp/ndnsf-di-current-job", "/project/tma1/ndnsf-di/bundle"
+            )
+
     def test_process_launcher_copies_read_only_identity_before_exec(self) -> None:
         value = load("multi-node-tcp.json")
         provider = next(row for row in value["processes"] if row["kind"] == "provider")
@@ -168,6 +177,7 @@ class AllocationTopologyTest(unittest.TestCase):
              tempfile.TemporaryDirectory(prefix="ndnsf-di-") as scratch_dir, \
              tempfile.TemporaryDirectory(prefix="spec110-bin-") as bin_dir:
             source = Path(source_dir)
+            provider["nfdSocket"] = str(Path(scratch_dir) / "nfd/0/nfd.sock")
             (source / ".ndn").mkdir()
             (source / ".ndn/pib.db").write_text("source-pib")
             (source / ".ndn/ndnsec-key-file").mkdir()

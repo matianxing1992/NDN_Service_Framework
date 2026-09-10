@@ -64,6 +64,10 @@ real executable from reopening the shared read-only source and bypassing the
 isolated PIB/TPM. The original command remains digest-bound in the frozen map;
 the rewrite is a deterministic launcher binding.
 
+The NFD socket path must also be below the current job's `--scratch` directory;
+an otherwise valid `/tmp/ndnsf-di-*` path from another job is rejected before
+any directory or socket is created.
+
 Every Provider process also verifies, before `exec`, that `nvidia-smi` reports
 the map's `gpuUuid` in the task's visible device set. Missing `nvidia-smi`, a
 failed query, or a UUID mismatch is a pre-exec failure. The test-mode fixture
