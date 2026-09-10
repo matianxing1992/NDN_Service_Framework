@@ -5181,3 +5181,15 @@ Fix status: run the maintained receiver-side `collect --reconcile`; it recorded
 the old job as `FAIL` and cleared `activeRunId` without editing the journal.
 Lesson: reconcile stale scheduler state through the submission journal before
 starting another candidate; never remove an active lock by hand.
+
+## 2026-09-10 — reused Tiger SIF mode conflicted with transport row
+
+Symptom: after reusing the verified remote v22 SIF inode, the next SSH finish
+returned `SSH_DESTINATION_CONFLICT` for the two SIF paths.
+Root cause: the local candidate rows were mode `0644`, while the pre-existing
+remote hard-linked SIF was mode `0444`; transport deliberately compares mode as
+part of the destination identity.
+Fix status: normalize only the remote reused SIF links to `0644` (content and
+inode remain the verified v22 artifact) before retrying transport.
+Lesson: same-content reuse must preserve the complete transport identity,
+including file mode, before bypassing a large upload.
