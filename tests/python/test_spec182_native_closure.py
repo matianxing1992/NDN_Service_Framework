@@ -22,6 +22,8 @@ assert MININDN_SPEC and MININDN_SPEC.loader
 minindn = importlib.util.module_from_spec(MININDN_SPEC)
 MININDN_SPEC.loader.exec_module(minindn)
 
+PROVIDER_SOURCE = ROOT / "examples/DI_NativeProviderExecutable.cpp"
+
 
 def _manifest(tmp_path: Path, *, source: Path | None = None,
               business_marker: str | None = None,
@@ -98,6 +100,16 @@ def test_helper_exec_rejected(tmp_path: Path) -> None:
         assert "Python runtime" in str(exc)
     else:
         raise AssertionError("Python executable was accepted")
+
+
+def test_provider_finite_serve_has_joined_install_lifetime() -> None:
+    source = PROVIDER_SOURCE.read_text(encoding="utf-8")
+    assert "--run-for-ms" in source
+    assert "std::thread installThread(std::move(installTask));" in source
+    assert "if (installThread.joinable())" in source
+    assert "installThread.join();" in source
+    assert ".detach();" not in source
+    assert "NDNSF_DI_NATIVE_PROVIDER_RUN_LIMIT_REACHED" in source
 
 
 def test_transient_python_mapping_rejected(tmp_path: Path) -> None:

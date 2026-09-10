@@ -111,6 +111,7 @@ struct Options
   std::size_t workers = 1;
   std::size_t handlerThreads = 4;
   std::size_t ackThreads = 2;
+  std::optional<int> runForMs;
   bool checkOnly = false;
   bool serve = false;
   bool noServeCertificates = false;
@@ -793,6 +794,9 @@ parseArgs(int argc, char** argv)
     else if (arg == "--serve") {
       options.serve = true;
     }
+    else if (arg == "--run-for-ms") {
+      options.runForMs = parsePositiveInt(readValue(), "--run-for-ms");
+    }
     else if (arg == "--no-serve-certificates") {
       options.noServeCertificates = true;
     }
@@ -1191,6 +1195,7 @@ printUsage(const char* program)
     << "usage: " << program << " --plan <native-execution-plan.json> "
     << "--manifest <service-manifest.json> [--service <name>] "
     << "[--provider <identity>] [--workers <n>] (--check-only | --serve) "
+    << "[--run-for-ms <ms>] "
     << "[--roles all|role,...] [--group <prefix>] [--controller <prefix>] "
     << "[--trust-schema <path>] [--bootstrap-token <token>] "
     << "[--artifact-references <json>] "
@@ -1225,6 +1230,9 @@ main(int argc, char** argv)
     if (options.checkOnly == options.serve) {
       throw std::invalid_argument(
         "exactly one of --check-only or --serve is required");
+    }
+    if (options.runForMs && !options.serve) {
+      throw std::invalid_argument("--run-for-ms requires --serve");
     }
 
     auto plan = loadPlan(options);
@@ -1916,7 +1924,10 @@ main(int argc, char** argv)
       std::cout << "NDNSF_DI_NATIVE_PROVIDER_INIT_DONE" << std::endl;
       provider->setNdnsdMeta({{"runtimeStatus", "installing"}});
       provider->startNdnsdPeriodicPublish(10);
-      std::thread(std::move(installTask)).detach();
+      // Keep the installation task joinable.  It captures the Face and
+      // KeyChain by reference while waiting for permission, so detaching it
+      // would let the main stack unwind before the callback has drained.
+      std::thread installThread(std::move(installTask));
 
       // InstallTask runs serve() off the main thread; wait for the host
       // registration to land (or the assembly failure to be reported) before
@@ -1929,6 +1940,8 @@ main(int argc, char** argv)
       if (provisionFailed->load(std::memory_order_acquire)) {
         provider->stopNdnsdPeriodicPublish();
         face.shutdown();
+        if (installThread.joinable())
+          installThread.join();
         std::unique_lock<std::mutex> lock(*provisioningDoneMutex);
         provisioningDoneCv->wait(lock,
                                   [&provisioningDone] {
@@ -1946,7 +1959,15 @@ main(int argc, char** argv)
                 << " ackThreads=" << options.ackThreads
                 << " runtimeStatus=installing"
                 << std::endl;
+      const auto serveStartedAt = std::chrono::steady_clock::now();
       while (!provisionFailed->load(std::memory_order_acquire)) {
+        if (options.runForMs &&
+            std::chrono::steady_clock::now() >=
+              serveStartedAt + std::chrono::milliseconds(*options.runForMs)) {
+          std::cout << "NDNSF_DI_NATIVE_PROVIDER_RUN_LIMIT_REACHED"
+                    << " runForMs=" << *options.runForMs << std::endl;
+          break;
+        }
         try {
           // Keep the event loop responsive to an asynchronous provisioning
           // failure. An unbounded processEvents() would leave a failed Provider
@@ -1963,6 +1984,8 @@ main(int argc, char** argv)
       }
       provider->stopNdnsdPeriodicPublish();
       face.shutdown();
+      if (installThread.joinable())
+        installThread.join();
       {
         std::unique_lock<std::mutex> lock(*provisioningDoneMutex);
         provisioningDoneCv->wait(lock,
@@ -1971,7 +1994,7 @@ main(int argc, char** argv)
                                       std::memory_order_acquire);
                                   });
       }
-      return 2;
+      return provisionFailed->load(std::memory_order_acquire) ? 2 : 0;
     }
 
     specs = withExecutionEvidenceContext(
