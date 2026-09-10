@@ -1,6 +1,26 @@
 # Spec182 Design Audit
 
-**Revision**: 48 | **Current source**: R11-B8-G40 scratch-symlink checkpoint on `Experimental`
+**Revision**: 49 | **Current source**: R11-B8-G43 network-probe observation-integrity checkpoint on `Experimental`
+
+## R11-B8-G43 Network Probe Observation Integrity Review 2026-09-10
+
+静态追踪发现 live `probe-multinode-network.sh` 原先把 process map 中的地址直接写入
+`allocationAddresses`，因此 `evaluate_transport_probe` 的地址检查在真实路径上是自证；
+同一脚本还允许 real Slurm 环境通过 `NDNSF_SPEC110_PROBE_OBSERVATION` 绕过 allocation-order
+和 socket probe。另一个 map 边界允许不同节点复用同一 IP，只要端口不同，且 G42 的目录摘要
+没有绑定权限位。MiniNDN 的单机文件系统、稳定 hostname 顺序和 test fixture 都不会暴露这些
+分歧。
+
+现已让 live probe 在每个目标节点执行有界 UDP route probe，记录实际选择的 source IPv4，
+再按 node rank 与 map 精确比较；offline observation file 仅允许 `NDNSF_SPEC110_TEST_MODE=1`，
+真实 Slurm 设置该变量会在输出创建前 fail closed。多机 map 拒绝重复 node address，观察值改为
+顺序精确比较，后续每个 diagnostic `srun` 也有超时边界。`directory_digest` 现在同时绑定根和
+regular-file permission bits，并拒绝 digest root symlink。
+
+84 个相关 Python 测试、network integration、shell syntax 和 `git diff --check` 通过；没有
+P0--P3 finding。该修复只关闭 observation provenance、地址唯一性、诊断超时和输入权限模式
+一致性，不推进真实 Slurm/SIF/GPU、跨节点 NDN request、no-Python 或 T016/T017 qualification。
+详见 [R11-B8-G43 evidence](evidence/r11-b8-g43-network-probe-observation-integrity-20260910.md)。
 
 ## R11-B8-G41 SIF Cache User Isolation Review 2026-09-10
 
@@ -232,10 +252,10 @@ Slurm、SIF、GPU、跨节点 NDN request 和 no-Python qualification 仍属于 
 
 静态复核发现 G20/G29 只证明每个目标节点能够访问 `workdir` 与 `identityRef`，没有证明
 共享路径的内容相同。真实集群可能在不同节点挂载不同 revision；MiniNDN 的单机文件系统会把
-这个分歧隐藏到请求或签名校验之后。现已加入统一的目录摘要：按相对目录、相对普通文件路径
-和文件 bytes 计算 canonical SHA-256；目标节点在任何 NFD 启动前重新计算并与 submit-side
-摘要比较，特殊文件及符号链接 fail closed。每个非 NFD identity root 也执行同一比较，期望值
-写入 evidence。
+这个分歧隐藏到请求或签名校验之后。现已加入统一的目录摘要：按根/相对目录权限位、相对普通
+文件路径、普通文件权限位和文件 bytes 计算 canonical SHA-256；目标节点在任何 NFD 启动前
+重新计算并与 submit-side 摘要比较，特殊文件及符号链接 fail closed。每个非 NFD identity
+root 也执行同一比较，期望值写入 evidence。
 
 受影响生产入口是 `run-allocation-topology.sh` 的 workdir/identity preflight，算法由
 `allocation_topology.directory_digest` 固定；测试覆盖内容变更、符号链接和 fake `srun` 注入

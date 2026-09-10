@@ -42,6 +42,20 @@ class AllocationTopologyTest(unittest.TestCase):
             first = topology.directory_digest(root)
             (root / "nested" / "config.json").write_text("{\"revision\":2}\n")
             self.assertNotEqual(first, topology.directory_digest(root))
+            (root / "nested" / "config.json").chmod(0o700)
+            self.assertNotEqual(first, topology.directory_digest(root))
+
+    def test_directory_digest_rejects_root_symlink(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            parent = Path(raw)
+            target = parent / "target"
+            target.mkdir()
+            linked = parent / "linked"
+            linked.symlink_to(target, target_is_directory=True)
+            with self.assertRaisesRegex(
+                topology.TopologyError, "TOPOLOGY_DIRECTORY_SYMLINK_INVALID"
+            ):
+                topology.directory_digest(linked)
 
     def test_directory_digest_rejects_symlink_entries(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -76,6 +90,12 @@ class AllocationTopologyTest(unittest.TestCase):
         ):
             topology.validate_allocation_node_order(value, list(reversed(allocation)))
 
+    def test_node_list_order_is_bound_to_node_rank(self) -> None:
+        value = load("multi-node-tcp.json")
+        value["nodes"] = list(reversed(value["nodes"]))
+        with self.assertRaisesRegex(topology.TopologyError, "TOPOLOGY_NODE_RANK_ORDER_INVALID"):
+            topology.validate_process_map(value)
+
     def test_duplicate_identity_fails_closed(self) -> None:
         value = load("single-node.json")
         value["processes"][3]["identityRef"] = value["processes"][2]["identityRef"]
@@ -109,6 +129,19 @@ class AllocationTopologyTest(unittest.TestCase):
         value["nodes"][1]["tcpPort"] = value["nodes"][0]["tcpPort"]
         value["nodes"][1]["udpPort"] = value["nodes"][0]["udpPort"]
         with self.assertRaisesRegex(topology.TopologyError, "TOPOLOGY_PORT_ENDPOINT_DUPLICATE"):
+            topology.validate_process_map(value)
+
+    def test_duplicate_multi_node_address_fails_even_with_distinct_ports(self) -> None:
+        value = load("multi-node-tcp.json")
+        value["nodes"][1]["address"] = value["nodes"][0]["address"]
+        value["nodes"][1]["tcpPort"] = value["nodes"][0]["tcpPort"] + 1
+        value["nodes"][1]["udpPort"] = value["nodes"][0]["udpPort"] + 1
+        for route in value["routes"]:
+            if route["toNodeRank"] == 1:
+                route["remoteAddress"] = value["nodes"][1]["address"]
+        with self.assertRaisesRegex(
+            topology.TopologyError, "TOPOLOGY_NODE_ADDRESS_DUPLICATE"
+        ):
             topology.validate_process_map(value)
 
     def test_teardown_signal_and_audit_are_mandatory(self) -> None:

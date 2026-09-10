@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import re
 import shlex
+import stat
 from typing import Any, Mapping
 
 
@@ -40,16 +41,25 @@ def directory_digest(root: Path | str) -> str:
     """Return a deterministic digest of a directory's paths and file bytes.
 
     Deployment bundles and identity roots are shared inputs, not writable
-    runtime state.  Hashing relative paths and bytes lets a target-node
-    preflight detect a locally mounted revision that differs from the
-    submitter's sealed input without depending on filesystem metadata.
+    runtime state.  Hashing relative paths, permission bits, and bytes lets a
+    target-node preflight detect a locally mounted revision whose executable
+    or readable modes differ from the submitter's sealed input without
+    depending on ownership or timestamps.
     Symbolic links and special files are rejected so the digest cannot hide a
     node-specific redirect or device-backed input.
     """
     root_path = Path(root)
+    if root_path.is_symlink():
+        _fail("TOPOLOGY_DIRECTORY_SYMLINK_INVALID", root)
     if not root_path.is_dir():
         _fail("TOPOLOGY_DIRECTORY_MISSING", root)
-    rows: list[tuple[str, str]] = []
+    rows: list[tuple[object, ...]] = []
+    try:
+        root_mode = stat.S_IMODE(os.stat(root_path, follow_symlinks=False).st_mode)
+    except OSError as exc:
+        _fail("TOPOLOGY_DIRECTORY_READ_FAILED", root)
+        raise AssertionError("unreachable") from exc
+    rows.append(("r", root_mode))
 
     def visit(directory: Path, prefix: str) -> None:
         try:
@@ -63,8 +73,9 @@ def directory_digest(root: Path | str) -> str:
             try:
                 if entry.is_symlink():
                     _fail("TOPOLOGY_DIRECTORY_SYMLINK_INVALID", relative)
+                mode = stat.S_IMODE(entry.stat(follow_symlinks=False).st_mode)
                 if entry.is_dir(follow_symlinks=False):
-                    rows.append(("d", relative))
+                    rows.append(("d", relative, mode))
                     visit(path, relative)
                     continue
                 if not entry.is_file(follow_symlinks=False):
@@ -76,7 +87,7 @@ def directory_digest(root: Path | str) -> str:
             except OSError as exc:
                 _fail("TOPOLOGY_DIRECTORY_READ_FAILED", relative)
                 raise AssertionError("unreachable") from exc
-            rows.append(("f", relative + "\0" + digest.hexdigest()))
+            rows.append(("f", relative, mode, digest.hexdigest()))
 
     visit(root_path, "")
     encoded = json.dumps(rows, separators=(",", ":")).encode("utf-8")
@@ -186,14 +197,17 @@ def validate_process_map(value: Mapping[str, Any]) -> dict[str, Any]:
         _fail("TOPOLOGY_NODES_INVALID")
     node_ranks: set[int] = set()
     node_names: set[str] = set()
+    node_addresses: set[str] = set()
     tcp_endpoints: set[tuple[str, int]] = set()
     udp_endpoints: set[tuple[str, int]] = set()
-    for node in nodes:
+    for index, node in enumerate(nodes):
         if not isinstance(node, Mapping) or set(node) != {"nodeRank", "name", "address", "nfdSocket", "tcpPort", "udpPort"}:
             _fail("TOPOLOGY_NODE_FIELDS_INVALID")
         rank = node["nodeRank"]
         if not isinstance(rank, int) or rank < 0 or rank in node_ranks:
             _fail("TOPOLOGY_NODE_RANK_INVALID", rank)
+        if rank != index:
+            _fail("TOPOLOGY_NODE_RANK_ORDER_INVALID", rank)
         if not isinstance(node["name"], str) or not SAFE_TOKEN.fullmatch(node["name"]) or node["name"] in node_names:
             _fail("TOPOLOGY_NODE_NAME_INVALID")
         try:
@@ -216,10 +230,13 @@ def validate_process_map(value: Mapping[str, Any]) -> dict[str, Any]:
         udp_endpoint = (str(address), node["udpPort"])
         if tcp_endpoint in tcp_endpoints or udp_endpoint in udp_endpoints:
             _fail("TOPOLOGY_PORT_ENDPOINT_DUPLICATE", node["name"])
+        if str(address) in node_addresses:
+            _fail("TOPOLOGY_NODE_ADDRESS_DUPLICATE", node["name"])
         tcp_endpoints.add(tcp_endpoint)
         udp_endpoints.add(udp_endpoint)
         node_ranks.add(rank)
         node_names.add(node["name"])
+        node_addresses.add(str(address))
     if node_ranks != set(range(len(nodes))):
         _fail("TOPOLOGY_NODE_RANK_NOT_DENSE")
     if placement == "single-node-multi-gpu" and len(nodes) != 1:
@@ -510,8 +527,8 @@ def evaluate_transport_probe(process_map: Mapping[str, Any], observations: Mappi
     required = {"allocationAddresses", "tcp", "udp"}
     if not isinstance(observations, Mapping) or set(observations) != required:
         _fail("TOPOLOGY_PROBE_FIELDS_INVALID")
-    expected = {node["address"] for node in validated["nodes"]}
-    if set(observations["allocationAddresses"]) != expected:
+    expected = [node["address"] for node in validated["nodes"]]
+    if observations["allocationAddresses"] != expected:
         _fail("TOPOLOGY_PROBE_ADDRESS_MISMATCH")
     for transport in ("tcp", "udp"):
         row = observations[transport]

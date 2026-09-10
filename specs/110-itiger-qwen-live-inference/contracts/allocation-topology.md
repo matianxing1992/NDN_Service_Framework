@@ -55,16 +55,21 @@ target-node `srun` step into that node's job scratch and executed from the
 scratch copy; an evidence or submit-host path that is not mounted on a compute
 node is a pre-start failure.
 
+The frozen `nodes` array MUST be ordered by `nodeRank` with array index equal
+to the rank. Route, process, and scheduler bindings use rank-indexed lookup;
+an otherwise dense but reordered array MUST fail validation before any launch.
+
 Visibility alone does not establish that every node mounted the same sealed
 bundle. Before starting any NFD, the supervisor MUST compute a deterministic
-digest over the workdir's relative directories, relative regular-file paths,
-and file bytes on the submit side, then recompute and compare that digest on
-every target node. A missing, special, symbolic-link, or content-mismatched
-entry MUST fail with a pre-start `SPEC110_WORKDIR_CONTENT_*` boundary and leave
-no NFD running. The same digest check MUST be applied to each non-NFD
-`identityRef` after the required `.ndn` visibility and symlink checks; the
-expected digests MUST be retained in evidence. This is a content-consistency
-gate, not a replacement for the later SIF/ELF or cross-node NDN qualification.
+digest over the workdir's root/relative directory permission bits, relative
+regular-file paths, regular-file permission bits, and file bytes on the submit
+side, then recompute and compare that digest on every target node. A missing,
+special, symbolic-link, or content/mode-mismatched entry MUST fail with a
+pre-start `SPEC110_WORKDIR_CONTENT_*` boundary and leave no NFD running. The
+same digest check MUST be applied to each non-NFD `identityRef` after the
+required `.ndn` visibility and symlink checks; the expected digests MUST be
+retained in evidence. This is a content-consistency gate, not a replacement
+for the later SIF/ELF or cross-node NDN qualification.
 
 `nodeRank` is bound to the scheduler's allocation order. Before any NFD starts,
 the supervisor and the direct route-configuration entry point MUST compare the
@@ -89,12 +94,13 @@ the generated launcher repeats the check before copying the identity. This
 prevents a scratch `HOME` from retaining a symlink back to shared project
 storage.
 
-The map MUST not contain duplicate `(address, tcpPort)` or `(address,
-udpPort)` endpoints. Before starting NFD, the supervisor MUST perform a
-target-node IPv4 bind probe for each declared TCP and UDP port and fail at the
-pre-start boundary when a listener is already present. The probe is a bounded
-race detector rather than a distributed port lease; the NFD bind remains the
-final authority and dynamic cross-job port allocation is a separate contract.
+The map MUST not contain duplicate node addresses or duplicate `(address,
+tcpPort)` / `(address, udpPort)` endpoints. Before starting NFD, the supervisor
+MUST perform a target-node IPv4 bind probe for each declared TCP and UDP port
+and fail at the pre-start boundary when a listener is already present. The
+probe is a bounded race detector rather than a distributed port lease; the NFD
+bind remains the final authority and dynamic cross-job port allocation is a
+separate contract.
 
 Each NFD configuration MUST also be materialized under the current job's
 scratch directory. If the frozen command contains `--config PATH` or

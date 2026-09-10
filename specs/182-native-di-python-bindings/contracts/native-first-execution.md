@@ -73,6 +73,9 @@ process map 中按 rank 排列的 node names 与
 或顺序不一致时以 `SPEC110_ALLOCATION_NODE_ORDER_MISMATCH`（或更具体的
 nodelist preflight error）在 pre-start 失败。`srun --relative=<nodeRank>` 使用的
 就是该顺序，MiniNDN 中稳定的创建顺序不能证明真实 Slurm 多机映射正确。
+process map 的 `nodes` array 也必须按 `nodeRank` 排列，array index 与 rank 一一对应；
+否则 route/process 的 rank-indexed lookup 可能把正确参数送到错误节点，必须在启动前
+以 `TOPOLOGY_NODE_RANK_ORDER_INVALID` fail closed。
 
 此启动器的离线 fake-binary 测试可以用 `NDNSF_SPEC110_TEST_MODE=1` 跳过不存在的 fixture
 身份源，但该开关不属于生产部署，也不能作为 T016/T017 资格证据。真实多机资格仍须在
@@ -115,15 +118,19 @@ readiness 同时要求 PID 存活和新 socket 出现，不能用复用 scratch 
 pre-start 边界失败并保持零 NFD 启动，不能等业务进程 `exec` 后才暴露绑定错误。
 identity source 本身及其 `.ndn` 树不得含符号链接；supervisor 在 NFD 启动前检查，launcher 在
 copy 前再次检查，避免 scratch `HOME` 通过链接回到共享 `/project`。
-process map 的 `(address,tcpPort)` 与 `(address,udpPort)` 端点不得重复；启动前由目标节点
+process map 的 node address、`(address,tcpPort)` 与 `(address,udpPort)` 端点均不得重复；启动前由目标节点
 执行 IPv4 TCP/UDP bind probe，若已有监听则以 `SPEC110_PORT_NOT_AVAILABLE` 在 pre-start
 失败。该 probe 不能替代跨作业端口租约，probe 关闭后的竞争仍由 NFD 最终 bind 处理。
 在任何子进程启动前发生的可见性、materialization 或 map-render 失败也必须写出包含原始退出码
 和 `survivors: 0` 的 `teardown.json`，不能以无证据的直接退出代替失败边界。
 
-多机 transport probe 不依赖节点预装的可选 `netcat`；诊断脚本使用节点上已有的
-`python3` socket API 做有界 TCP/UDP connect。该 probe 只用于 selected/diagnostic transport
-的连通性屏障，不能把 connect 成功解释为 NDN 协议或业务请求成功。
+多机 transport probe 不依赖节点预装的可选 `netcat`；live 诊断脚本先在每个目标节点
+用 `python3` UDP route probe 取得实际 source IPv4，再按 node rank 与 process map 比对，不能
+直接把 map 中的地址复制成 observation。offline observation-file evaluator 仅允许在
+`NDNSF_SPEC110_TEST_MODE=1` 下运行；真实 Slurm 作业设置该路径必须 fail closed。后续
+selected/diagnostic TCP/UDP connect 也必须有界，`srun` 超时按 closed route 记录。该 probe
+只用于 selected/diagnostic transport 的连通性屏障，不能把 connect 成功解释为 NDN 协议或业务
+请求成功。
 
 ## Independent Authority Boundary
 
