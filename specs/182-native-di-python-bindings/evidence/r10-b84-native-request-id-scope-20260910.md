@@ -3,9 +3,9 @@
 ## Batch result
 
 `CLOSED_FOR_VALIDATION` applies only to the native request-identity composition
-boundary. The native C++ requester now adds a process-local owner scope to
-production Core request names. The private C++ test port keeps deterministic
-counter-only names so existing state-machine assertions remain stable. Python
+boundary. The native C++ requester now adds a fresh owner scope per native
+client to production Core request names. The private C++ test port keeps
+deterministic counter-only names so existing state-machine assertions remain stable. Python
 is secondary in this batch: no Python implementation or Python test was used
 to establish native request behavior.
 
@@ -21,10 +21,12 @@ to establish native request behavior.
 
 The former production shape `/NDNSF/DI/REQUEST/<counter>` used one process-wide
 counter and could collide when two requester processes shared an NDN identity.
-`NativeInferenceClient` now creates one 128-bit hexadecimal owner scope per
-process using `RAND_bytes`; a monotonic-clock/PID fallback is retained only for
-uniqueness if OpenSSL random initialization is unavailable. Production names
-are `/NDNSF/DI/REQUEST/<32-hex-owner-scope>/<counter>`, and recovery IDs inherit
+`NativeInferenceClient` now creates a fresh 128-bit hexadecimal owner scope for
+each production client using `RAND_bytes`; a monotonic-clock/PID fallback is
+retained only for uniqueness if OpenSSL random initialization is unavailable.
+Generating the scope at construction also prevents a child created by `fork()`
+from inheriting a cached parent scope. Production names are
+`/NDNSF/DI/REQUEST/<32-hex-owner-scope>/<counter>`, and recovery IDs inherit
 that base operation identity.
 
 ## Five-lane static review
@@ -39,7 +41,7 @@ project review references were also checked (`review-agent.md` SHA-256
 
 | Lane | C++ evidence | Result |
 | --- | --- | --- |
-| Production entry/callers | `NativeInferenceClient` production constructors and `request()`; standalone requester and binding remain callers of this native owner | The owner scope is allocated in the native client, before Core/ACK/attempt identity is published |
+| Production entry/callers | `NativeInferenceClient` production constructors and `request()`; standalone requester and binding remain callers of this native owner | A fresh owner scope is allocated in each native client, before Core/ACK/attempt identity is published |
 | Implementation/wire | `processRequestOwnerScope()`, `m_requestOwnerScope`, and request-id construction in `NativeInferenceClient.cpp` | Static review found no introduced control defect; test-port compatibility is explicit and bounded to the private port |
 | Test/harness/oracle | `Spec182NativeRequestIdentity/ProductionRequestIdsCarryProcessOwnerScope`; existing `Spec182ClientState/*`; full `Spec182*` C++ selector | The new C++ identity case and existing native state cases pass; Python is not the behavior authority |
 | Build/source closure | Waf `unit-tests` target with system-first PATH and `-j2`; changed translation unit registered in the target | The unit-test target built successfully from the current native source tree; no unregistered source was found |
@@ -74,7 +76,7 @@ env PATH=/usr/bin:/bin:/usr/sbin:/sbin \
 .codex-tmp/spec182-r4-b2/build/unit-tests \
   --run_test='Spec182*' --log_level=test_suite
 -> PASS; complete Spec182 C++ selector, Boost log ends with
-   `*** No errors detected` (testing time about 128.7 s)
+   `*** No errors detected` (testing time about 36.4 s)
 ```
 
 The test list contains the new `Spec182NativeRequestIdentity` suite. The
@@ -82,6 +84,18 @@ production constructor path was exercised by constructing two native clients
 and checking the URI prefix, exact 32-character lowercase hexadecimal owner
 scope, and distinct request names. A separate two-process executable run was
 not performed in this batch; the cross-process transport gate remains open.
+
+### Static follow-up
+
+The initial implementation cached one scope in a function-local `static`. The
+read-only follow-up review identified that a process which calls `fork()` after
+that initialization could inherit the parent's scope. The cache was removed;
+each production client now generates its own scope at construction, so a child
+created after `fork()` obtains a new value. The follow-up C++ build completed
+with Waf `-j2` in 1m32.091s, the identity selector passed, and the full
+`Spec182*` selector exited `0` with `*** No errors detected` in about 36.4s.
+Cppcheck returned `0`; its output contained only the known third-party
+`nlohmann/json.hpp` configuration noise.
 
 ## Retained findings and next exit
 

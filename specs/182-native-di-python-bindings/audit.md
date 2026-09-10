@@ -8,8 +8,9 @@
 **Evidence**: [R10-B84 native request identity scope](evidence/r10-b84-native-request-id-scope-20260910.md)
 
 R10-B84 closes one native C++ identity defect found during the whole-chain review: production
-`NativeInferenceClient` request names now include a process-local owner scope, while the private test
-port retains deterministic IDs for native state fixtures. The new identity selector and the complete
+`NativeInferenceClient` request names now include a fresh owner scope per native client, while the
+private test port retains deterministic IDs for native state fixtures. The per-client construction
+also avoids inheriting a cached scope across `fork()`. The new identity selector and the complete
 `Spec182*` C++ selector pass. This is a C++ production/test result; Python remains a wrapper or oracle
 and contributes no native behavior qualification here. The fix does not change the whole-Spec verdict
 or advance a parent task. Independent requester/Provider worker transport, authority separation,
