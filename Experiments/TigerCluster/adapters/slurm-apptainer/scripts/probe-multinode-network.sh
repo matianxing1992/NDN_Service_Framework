@@ -42,19 +42,25 @@ from allocation_topology import TopologyError,evaluate_transport_probe,load_proc
 
 process_map=load_process_map(sys.argv[1])
 addresses=[node["address"] for node in process_map["nodes"]]
+nodes={node["nodeRank"]: node for node in process_map["nodes"]}
 observations={"allocationAddresses":addresses}
 for transport in ("tcp","udp"):
     closed=[];reachable=0
     for route in process_map["routes"]:
-        if route["transport"] != process_map["selectedTransport"]:
-            continue
+        # The map stores routes for the selected transport, but the
+        # diagnostic lane must probe the corresponding port for *its own*
+        # transport. Reusing route["port"] would test UDP on a TCP port (or
+        # vice versa) and produce a misleading diagnostic result.
+        target = nodes[route["toNodeRank"]]
+        address = target["address"]
+        port = target[transport + "Port"]
         command=["srun","--exclusive","--nodes=1","--ntasks=1",f"--relative={route['fromNodeRank']}",
                  "nc","-z","-w","2"]
         if transport == "udp": command.append("-u")
-        command.extend([route["remoteAddress"],str(route["port"])])
+        command.extend([address,str(port)])
         result=subprocess.run(command,text=True,capture_output=True,check=False)
         if result.returncode == 0: reachable += 1
-        else: closed.append(route["port"])
+        else: closed.append(port)
     observations[transport]={"status":"PASS" if not closed else "FAIL","closedPorts":closed,"reachableRoutes":reachable}
 try:
     verdict=evaluate_transport_probe(process_map,observations)

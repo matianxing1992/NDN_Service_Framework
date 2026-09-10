@@ -46,6 +46,27 @@ def _safe_command(command: object, process_id: str) -> list[str]:
     return command
 
 
+def _render_launcher_command(command: list[str], identity: str | None) -> str:
+    """Render argv while rebinding an explicit identity path to runtime HOME.
+
+    v1 process maps historically carried the read-only ``identityRef`` as an
+    executable argument (for example ``--identity /project/...``). Keeping
+    that path would make a multi-node process reopen shared storage and would
+    bypass the per-process PIB/TPM copy prepared by the launcher. Only an
+    exact token is rewritten; all other argv tokens remain digest-bound to the
+    frozen process map.
+    """
+    rendered: list[str] = []
+    for token in command:
+        if identity is not None and token == identity:
+            rendered.append('"$runtime_home"')
+        elif identity is not None and token == "--identity=" + identity:
+            rendered.append('--identity="$runtime_home"')
+        else:
+            rendered.append(shlex.quote(token))
+    return "exec " + " ".join(rendered)
+
+
 def validate_process_map(value: Mapping[str, Any]) -> dict[str, Any]:
     required = {
         "schemaVersion", "placementClass", "selectedTransport", "nodes", "processes",
@@ -252,6 +273,17 @@ def render_process_launcher(process: Mapping[str, Any], scratch: Path | str,
             _fail("TOPOLOGY_NFD_IDENTITY_INVALID", process_id)
     elif process.get("identityReadOnly") is not True:
         _fail("TOPOLOGY_IDENTITY_BINDING_INVALID", process_id)
+    identity: str | None = None
+    if kind != "nfd":
+        identity = process.get("identityRef")
+        if (not isinstance(identity, str) or not identity.startswith("/project/") or
+                ".." in Path(identity).parts or
+                any(char in identity for char in "\x00\n\r")):
+            _fail("TOPOLOGY_IDENTITY_BINDING_INVALID", process_id)
+    if kind == "provider":
+        gpu_uuid = process.get("gpuUuid")
+        if not isinstance(gpu_uuid, str) or not gpu_uuid:
+            _fail("TOPOLOGY_PROVIDER_GPU_INVALID", process_id)
     scratch_path = Path(scratch)
     if (not scratch_path.is_absolute() or not str(scratch_path).startswith("/tmp/ndnsf-di-") or
             ".." in scratch_path.parts):
@@ -280,11 +312,6 @@ def render_process_launcher(process: Mapping[str, Any], scratch: Path | str,
         lines.append('printf \'SPEC110_PROCESS_HOME_READY process=%s kind=nfd home=%s\\n\' ' +
                      f"{shlex.quote(process_id)} \"$HOME\" >&2")
     else:
-        identity = process.get("identityRef")
-        if (not isinstance(identity, str) or not identity.startswith("/project/") or
-                ".." in Path(identity).parts or
-                any(char in identity for char in "\x00\n\r")):
-            _fail("TOPOLOGY_IDENTITY_BINDING_INVALID", process_id)
         lines += [
             f"identity_source={shlex.quote(identity)}",
             'if [[ ${NDNSF_SPEC110_TEST_MODE:-0} == 1 && ! -d "$identity_source/.ndn" ]]; then',
@@ -301,9 +328,23 @@ def render_process_launcher(process: Mapping[str, Any], scratch: Path | str,
             'printf \'SPEC110_PROCESS_HOME_READY process=%s kind=%s source=%s home=%s\\n\' ' +
             f"{shlex.quote(process_id)} {shlex.quote(kind)} \"$identity_source\" \"$HOME\" >&2",
         ]
+    if kind == "provider":
+        gpu_uuid = process["gpuUuid"]
+        lines += [
+            f"expected_gpu_uuid={shlex.quote(gpu_uuid)}",
+            'if [[ ${NDNSF_SPEC110_TEST_MODE:-0} != 1 ]]; then',
+            '  command -v nvidia-smi >/dev/null 2>&1 || { echo SPEC110_GPU_PROBE_MISSING >&2; exit 8; }',
+            '  if ! observed_gpu_uuids=$(nvidia-smi --query-gpu=uuid --format=csv,noheader,nounits | tr -d "\\r" | sed "/^[[:space:]]*$/d"); then',
+            '    echo SPEC110_GPU_QUERY_FAILED >&2; exit 8;',
+            '  fi',
+            '  grep -Fqx "$expected_gpu_uuid" <<<"$observed_gpu_uuids" || { echo SPEC110_GPU_UUID_MISMATCH >&2; exit 8; }',
+            '  printf \'SPEC110_GPU_UUID_READY process=%s uuid=%s\\n\' ' +
+            f"{shlex.quote(process_id)} \"$expected_gpu_uuid\" >&2",
+            'fi',
+        ]
     lines += [
         f"export NDN_CLIENT_TRANSPORT={shlex.quote('unix://' + socket_path)}",
-        "exec " + shlex.join(command),
+        _render_launcher_command(command, identity),
         "",
     ]
     return "\n".join(lines)
