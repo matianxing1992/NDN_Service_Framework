@@ -1,6 +1,6 @@
 # Spec182 Design Audit
 
-**Revision**: 31 | **Current source**: R11-B8 multi-machine boundary checkpoint on `Experimental`
+**Revision**: 32 | **Current source**: R11-B8 multi-machine boundary checkpoint on `Experimental`
 
 ## R11-B8 Multi-Machine Deployment Boundary Review 2026-09-10
 
@@ -11,9 +11,16 @@ GPU UUID 而不证明 Slurm 可见设备；launcher 依赖 submit-host/evidence 
 可以复用固定 `/tmp` 配置且预启动失败没有 teardown 证据。当前实现已分别绑定进程 HOME/PIB/TPM、
 单值 `CUDA_VISIBLE_DEVICES` + `nvidia-smi -i` UUID、目标节点 scratch launcher/config 副本，
 并在 workdir/scratch/allocation/map-render/materialization 失败时记录原始退出码与
-`survivors: 0`。对应证据为 [G13--G20](tasks.md)、[G21](evidence/r11-b8-g21-nfd-config-scratch-20260910.md)、
+`survivors: 0`。另发现同节点 Slurm `--exclusive` 会把 NFD/Provider step 变成整节点
+资源锁，现已改为 `--overlap --exact --cpus-per-task=1` 并加入禁止 exclusive 的
+ fake-srun 回归。对应证据为 [G13--G20](tasks.md)、[G21](evidence/r11-b8-g21-nfd-config-scratch-20260910.md)、
 [G22](evidence/r11-b8-g22-prestart-failure-evidence-20260910.md) 和
-[G23](evidence/r11-b8-g23-early-input-failure-evidence-20260910.md)。
+[G23](evidence/r11-b8-g23-early-input-failure-evidence-20260910.md)、[G25](evidence/r11-b8-g25-slurm-step-resource-sharing-20260910.md)。
+
+G25 进一步修正了同节点 Slurm step 的资源语义：拓扑 supervisor、route 配置和
+TCP/UDP probe 均使用 `--overlap --exact --ntasks=1 --cpus-per-task=1`，禁止
+`--exclusive` 把一个长生命周期 NFD 或 Provider 变成整节点锁。fake-srun 在
+integration 中直接拒绝 exclusive 参数；这只证明命令边界，不替代真实 Slurm 运行。
 
 这些修复仍不等于多机资格。v1 process map 的 TCP/UDP 端口仍由候选输入提供，没有自动的
 跨并发作业端口分配；共享 `workdir`/identity 的内容尚未按节点验证 digest；v1 生成命令也尚未

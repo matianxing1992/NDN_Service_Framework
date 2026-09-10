@@ -35,6 +35,10 @@ mkdir -p "$tmp/bin"
 cat >"$tmp/bin/srun" <<'SH'
 #!/bin/bash
 set -e
+if [[ ${1:-} == --exclusive ]]; then
+  echo "FAKE_SRUN_EXCLUSIVE_STEP_FORBIDDEN" >&2
+  exit 99
+fi
 while (($#)) && [[ $1 == --* ]]; do
   case "$1" in
     --export=ALL,*)
@@ -62,6 +66,16 @@ cat >"$tmp/bin/nfdc" <<'SH'
 printf 'fake-nfdc %s\n' "$*"
 SH
 chmod 0755 "$tmp/bin/srun" "$tmp/bin/nfdc"
+
+for script in \
+  "$repo/packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/run-allocation-topology.sh" \
+  "$repo/packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/configure-allocation-routes.sh" \
+  "$repo/packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/probe-multinode-network.sh"; do
+  if grep -q -- '--exclusive' "$script"; then
+    echo "EXCLUSIVE_SLURM_STEP_FORBIDDEN:$script" >&2
+    exit 99
+  fi
+done
 for repetition in 1 2; do
   PATH="$tmp/bin:$PATH" SLURM_JOB_ID=test NDNSF_SPEC110_TEST_MODE=1 \
     "$repo/packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/configure-allocation-routes.sh" \

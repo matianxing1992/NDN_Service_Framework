@@ -1,6 +1,6 @@
 # Native-First Execution Order
 
-**Revision**: 6 | **Date**: 2026-09-10 | **Status**: PLANNED
+**Revision**: 7 | **Date**: 2026-09-10 | **Status**: PLANNED
 
 用户确认的剩余执行顺序；覆盖旧文档中“所有真实跨进程用例推迟到 T016”及
 “生产 requester 进程内持有 artifact authority 私钥”的规定。保留原 17 个父任务、
@@ -58,6 +58,12 @@ keychain 环境。NFD 使用独立 scratch `HOME` 且不继承角色 keychain。
 失败发生在进程 `exec` 之前；READY 日志不能把它升级为成功。该边界由
 `allocation_topology.render_process_launcher` 和
 `run-allocation-topology.sh` 共同实现，避免同一只读身份或登录节点环境在多机上被复用。
+
+同一节点上的 NFD、Controller、User 和多个 Provider 由独立 Slurm steps
+并存运行；这些 steps 必须使用 `--overlap --exact --ntasks=1
+--cpus-per-task=1`，禁止 `--exclusive`。后者会把 NFD 或第一个 Provider
+变成整节点资源占用，后续同节点进程可能持续排队；Provider 的 GPU 仍由
+`--gpus-per-task=1 --gpu-bind=map_gpu:<gpuRank>` 与 UUID 检查单独约束。
 
 此启动器的离线 fake-binary 测试可以用 `NDNSF_SPEC110_TEST_MODE=1` 跳过不存在的 fixture
 身份源，但该开关不属于生产部署，也不能作为 T016/T017 资格证据。真实多机资格仍须在

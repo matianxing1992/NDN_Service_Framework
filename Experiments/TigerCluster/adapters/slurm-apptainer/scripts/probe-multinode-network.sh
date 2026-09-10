@@ -64,7 +64,10 @@ for transport in ("tcp","udp"):
             "sock=socket.socket(socket.AF_INET,kind); sock.settimeout(2); "
             "sock.connect((sys.argv[1],int(sys.argv[2]))); sock.close()"
         )
-        command=["srun","--exclusive","--nodes=1","--ntasks=1",f"--relative={route['fromNodeRank']}",
+        # The probe runs inside an allocation whose NFD may already consume a
+        # step on the same node.  Do not request an exclusive whole-node step;
+        # one exact CPU with overlap keeps this diagnostic lane bounded.
+        command=["srun","--overlap","--exact","--nodes=1","--ntasks=1","--cpus-per-task=1",f"--relative={route['fromNodeRank']}",
                  "python3","-c",probe,address,str(port),transport]
         result=subprocess.run(command,text=True,capture_output=True,check=False)
         if result.returncode == 0: reachable += 1

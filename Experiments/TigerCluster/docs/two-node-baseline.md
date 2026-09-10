@@ -41,6 +41,9 @@ PIB/TPM 文件缺失会在 `exec` 前失败，避免 MiniNDN 预置 HOME 掩盖�
 launcher 复制到该节点的作业 scratch 后执行；因此 evidence/提交节点路径未挂载到某个
 计算节点会在 NFD 启动前失败。Provider 还要求单值 `CUDA_VISIBLE_DEVICES` 与
 `nvidia-smi -i` 返回的 GPU UUID 精确匹配，不能只依赖全机 UUID 列表。
+同一节点的 NFD、Controller、User 和多个 Provider steps 使用
+`--overlap --exact --ntasks=1 --cpus-per-task=1`；不能使用 `--exclusive`，否则
+一个长生命周期 step 会独占整节点并阻塞其余角色。
 NFD 配置同样写入该作业 scratch；process map 中固定的 `/tmp` 配置参数会在 launcher 内
 重绑定到 scratch 副本，避免并发作业复用旧配置。
 

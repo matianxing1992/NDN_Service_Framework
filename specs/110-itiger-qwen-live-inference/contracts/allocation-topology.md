@@ -35,6 +35,14 @@ children, uses bounded readiness barriers, captures PID/task/exit records, and
 terminates the process group on normal exit, TERM, INT, timeout, or partial
 startup failure.
 
+Because one node may host NFD, Controller, User, and multiple Provider
+processes, each short or long-lived step MUST request an exact process-sized
+allocation (`--exact --ntasks=1 --cpus-per-task=1`) and allow co-resident steps
+(`--overlap`). `--exclusive` is forbidden for these steps: it reserves the
+whole node's CPUs/GRES for one NFD or Provider and can leave later siblings
+waiting forever. GPU ownership remains explicit through each Provider's
+`--gpus-per-task=1 --gpu-bind=map_gpu:<gpuRank>` and the UUID check below.
+
 The topology launcher MUST receive an explicit shared `--workdir` containing
 the sealed application bundle/configuration and must verify that directory on
 each execution node before `exec`. Generated process scripts `cd` there before
