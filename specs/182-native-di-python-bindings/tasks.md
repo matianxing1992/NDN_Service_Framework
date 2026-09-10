@@ -1,6 +1,6 @@
 # Tasks: Native NDNSF-DI with Optional Python Bindings
 
-**Revision**: 131 | **Status**: DRAFT / T001 DONE
+**Revision**: 132 | **Status**: DRAFT / T001 DONE
 **Input**: [spec](spec.md), [code design](contracts/code-design.md),
 [proof](contracts/proof-design.md), [work units](contracts/work-units.md)
 
@@ -25,7 +25,7 @@ R11-B7 cleanup。不得在 N1--N3 通过前以旧
 | [R11-B4 Native Continuation Process](contracts/native-first-execution.md#dispatch-cards) | CLOSED_FOR_VALIDATION | R11-B3 | 独立 C++ 双轮 process 已通过第一轮 `FULL_CONTEXT`（stream oracle、COMMIT/FINALIZE、持久 journal checkpoint）及新 generation 的第二轮 `APPEND_DELTA`；错误 parent 进程按预期以 `NATIVE_CONVERSATION_BEGIN_FAILED` 拒绝；publisher stable artifact identity 已绑定 canonical manifest digest。父 T010/T011、R11-B5 及完整 Spec qualification 仍未关闭 | 2026-09-10 |
 | [R11-B5 Native Recovery Process](contracts/native-first-execution.md#dispatch-cards) | CLOSED_FOR_VALIDATION | R11-B4 | 第一轮 C++ `FULL_CONTEXT` checkpoint 后对 Provider 进程执行 SIGKILL/restart；重启 Provider 以 `PROVIDER_CONVERSATION_STATE_MISSING` 明确拒绝 `APPEND_DELTA`，requester 以 `NATIVE_STREAM_FAILED` 退出且无重复 execution/stream marker。未宣称 Provider KV durable recovery；R11-B6 及完整 Spec qualification 仍未关闭 | 2026-09-10 |
 | [R11-B6 Native Replacement Process](contracts/native-first-execution.md#dispatch-cards) | CLOSED_FOR_VALIDATION | R11-B5 | 独立 Provider B 在 A ACK 后接管 `attempt-2` 并完成 C++ stream/CPU ORT；A 无 execution evidence；无 backup 时单一 `NATIVE_REQUEST_STAGE_FAILED`/`DI_NATIVE_NO_ADMITTED_PROVIDER` 终态。C++ fencing selector 通过；广泛 `Spec182*` 仍有 6 个既有 runner callback fixture failures。父 T010/T011、R11-B7--B9 与完整 qualification 仍未关闭 | 2026-09-10 |
-| [R11-B7 Native Cleanup Process](contracts/native-first-execution.md#dispatch-cards) | NOT_STARTED | R11-B6 | 终态/取消/超时/替换后 drain、secret 清理及共享服务隔离 | 2026-09-10 |
+| [R11-B7 Native Cleanup Process](contracts/native-first-execution.md#dispatch-cards) | CLOSED_FOR_VALIDATION | R11-B6 | C++ client/registration/lease/host/stream cleanup selectors 全部通过；终态、cancel、deadline、replacement drain、secret owner 及 shared host isolation 有证据；R11-B6 process finally 后无 requester/provider/authority/controller 残留。T016 isolation/PO matrix、父 T010/T011/T013 与完整 qualification 仍未关闭 | 2026-09-10 |
 | [R11-B8 Maintained Callers](contracts/native-first-execution.md#dispatch-cards) | NOT_STARTED | R11-B7; corresponding T012 ABI | 原 16 callers 按组分批；先 C++ 对照，再 wrapper/兼容/旧路径零使用 | 2026-09-10 |
 | [R11-B9 Native Closure](contracts/native-first-execution.md#dispatch-cards) | NOT_STARTED | R11-B8 | T014 no-Python/依赖闭包工具 → T015 → T016 → T017；最终资格未开始 | 2026-09-10 |
 
@@ -284,6 +284,14 @@ P1–P4 是不同的生产入口、进程边界或 selector，不能为了少一
 | R10-B76 | production entry/callers: compatibility manifest → maintained Python API inventory; implementation/wire: `checklists/build_api_migration_manifest.py` regenerated all 344 entries and rebounded source line/hash metadata to checkpoint `31fe172a`; test/harness/oracle: generator output, `sourceCommit` equality, design validator and diff check; build/source closure: manifest-only, no ABI or runtime change; migration/evidence: closes stale provenance from R10-B74 while semantic caller mapping, native default migration and legacy retirement remain open | DONE for this bounded manifest provenance boundary; parent T001/O-004/T013-B remain PARTIAL | static review confirms current HEAD identity and 344-entry coverage; manifest remains routing evidence and cannot promote runtime compatibility or qualification | generator PASS (`entries=344`, `dynamicAppSdk=67`); sourceCommit equality PASS; `validate_design.py --json` PASS; `git diff --check` PASS | no product build, requester/Provider transport, maintained caller/no-Python or T016/T017 run | documentation/generator artifact only | `STATIC_PASS`; `FOCUSED_BEHAVIOR_PASS`; `BUILD_NOT_APPLICABLE`; `OPEN_FOR_NEXT_BATCH`; not `QUALIFICATION_PASS` | [R10-B76 evidence](evidence/r10-b76-compatibility-manifest-refresh-20260909.md); next: map and migrate maintained native callers, then regenerate after each source checkpoint |
 
 ## Current Checkpoint
+
+2026-09-10 R11-B7 native cleanup / **CLOSED_FOR_VALIDATION**（仅限当前 C++ lifecycle 与
+bounded process drain）：`Spec182NativeInferenceClient` 2、request identity 1、registration
+6、shared lease 3、provider host 7、stream acceptance 7 个 selector 均为 `*** No errors
+detected`。覆盖终态、cancel、deadline、late callback、registration/lease drain、close/re-serve、
+shared service isolation、replacement fencing 和 safe secret-owner cleanup；R11-B6 四类
+process 结束后 native role scan 无残留进程。详见 [R11-B7 evidence](evidence/r11-b7-native-cleanup-20260910.md)。
+T016 isolation/PO matrix、maintained callers、no-Python 和完整 qualification 仍未关闭。
 
 2026-09-10 R11-B6 native replacement / **CLOSED_FOR_VALIDATION**（仅限独立 C++ 双 Provider
 replacement 出口）：Requester A 先完成认证 ACK 后被停止，Requester/Core 通过真实
