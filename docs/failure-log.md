@@ -3018,3 +3018,23 @@ are still unobserved.
   Provider heartbeat scheduler on the main thread, produced rc=2 in 1.08 seconds after
   `NDNSF_DI_NATIVE_PROVIDER_PROVISION_FAILED`. This closes failure observability for this bounded
   CLI boundary; it does not establish requester/Provider transport or qualification.
+
+## 2026-09-10 — Spec182 R10-B80 finite Provider probe startup boundary
+
+- **Area**: finite standalone Provider serve probe after the R10-B78 run-limit cancellation repair.
+- **First boundary**: the first probe used the fresh Provider binary without a running local
+  Controller. Face and serving markers were emitted, then the event loop raised
+  `Failed to fetch public parameters after multiple attempts.` and the process returned rc=2
+  before the run-limit marker. Raw output is retained in
+  `.codex-tmp/spec182-r10-b80-provider-run-limit.log` with its rc record.
+- **Interpretation**: this is a local Controller/public-parameter startup boundary, not evidence
+  against the run-limit repair or a protocol result.
+- **Changed gate before retry**: start the real local `App_ServiceController` with the recorded
+  temporary policy, keep the four-role plan and metadata-only manifest unchanged, and classify
+  only the Provider `SERVE_READY`, run-limit, permission-wait cancellation, and process exit
+  markers.
+- **Follow-up result**: the Controller-assisted probe reached `SERVE_READY`, emitted
+  `RUN_LIMIT_REACHED` and `PERMISSION_WAIT_CANCELLED`, and Provider/Controller both exited
+  rc=0. Raw output is retained under
+  `.codex-tmp/spec182-r10-b80-provider-run-limit-controller/`; this remains a bounded lifetime
+  result and not requester/Provider transport qualification.

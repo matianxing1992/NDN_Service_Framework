@@ -98,7 +98,7 @@ int main(int argc, char** argv)
 {
   if (argc == 2 && std::string(argv[1]) == "--help") {
     std::cout << "Usage: DI_NativeRequester --config FILE --input FILE --output FILE\n"
-                 "Config schema: ndnsf-di-native-requester-v1; paths are relative to the config file.\n"
+                 "Config schema: ndnsf-di-native-requester-v1; input/output paths are relative to the current working directory, other config paths to the config file.\n"
                  "Uses existing PIB identities and the native request pipeline.\n";
     return 0;
   }

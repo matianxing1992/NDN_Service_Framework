@@ -1619,6 +1619,7 @@ main(int argc, char** argv)
       // and marks readiness once the event loop is running.
       auto serveCompleted = std::make_shared<std::atomic<bool>>(false);
       auto provisionFailed = std::make_shared<std::atomic<bool>>(false);
+      auto runLimitReached = std::make_shared<std::atomic<bool>>(false);
       auto provisioningDone = std::make_shared<std::atomic<bool>>(false);
       auto serveCompletedMutex = std::make_shared<std::mutex>();
       auto serveCompletedCv = std::make_shared<std::condition_variable>();
@@ -1659,6 +1660,7 @@ main(int argc, char** argv)
          nativeService,
          registrationOut = &nativeRegistration,
          provisionFailed,
+         runLimitReached,
          signalServeCompleted,
          signalProvisioningDone,
          &face,
@@ -1866,6 +1868,12 @@ main(int argc, char** argv)
               std::chrono::milliseconds(options.permissionWaitMs);
             while (!provider->hasProviderPermissionForService(
                      ndn::Name(options.serviceName))) {
+              if (runLimitReached->load(std::memory_order_acquire)) {
+                std::cout << "NDNSF_DI_NATIVE_PROVIDER_PERMISSION_WAIT_CANCELLED"
+                          << " reason=run-limit" << std::endl;
+                signalProvisioningDone();
+                return;
+              }
               if (std::chrono::steady_clock::now() >= permissionDeadline) {
                 throw std::runtime_error(
                   "provider permission not installed for " + options.serviceName);
@@ -1966,6 +1974,7 @@ main(int argc, char** argv)
               serveStartedAt + std::chrono::milliseconds(*options.runForMs)) {
           std::cout << "NDNSF_DI_NATIVE_PROVIDER_RUN_LIMIT_REACHED"
                     << " runForMs=" << *options.runForMs << std::endl;
+          runLimitReached->store(true, std::memory_order_release);
           break;
         }
         try {
