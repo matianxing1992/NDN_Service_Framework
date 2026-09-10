@@ -1,5 +1,15 @@
 # Research-first Proposal Revision and Evidence Audit
 
+## 2026-09-10 Concrete DNMP Authorization Comparison
+
+最新增量审查见 [DNMP comparison review](dnmp-comparison-review-20260910.md)。
+中英文正文补充原文角色密钥选择、Schema 命令验证和防重放机制；slides 新增
+DNMP 机制页（P14），其后 P15 直接比较配套加密的 DNMP-inspired 授权与 NDNSF。
+撤销段落删除本次原文核验未能支持的 DNMP 加密密钥轮换归因，改为明确原有
+有效期／防重放与本比较提出的撤销状态检查的区别。
+本轮为 40 页 slides；六入口、讲稿与 PPTX 的检查单列于 validation，以下旧页数
+及检查范围保留为历史。产品实现与实验数字不变，管理成本优势仍需匹配实验。
+
 ## 2026-09-10 Mobility Claim Narrowing
 
 按用户确认的口径，中英文摘要删除 `mobility handling`／“移动性处理”，改为

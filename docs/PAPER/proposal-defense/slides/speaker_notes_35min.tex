@@ -47,82 +47,85 @@ Nodes may retrieve the same Request ciphertext; only holders of matching decrypt
 \slideentry{13}{How NDNSF Checks Service Permissions}{
 1. The User places a Requester Challenge in ABE-protected Request content. 2. The Provider returns it in ACK Data; the User checks the value against the active request. 3. The Provider encrypts its challenge in ACK content. The User answers in Selection; the Provider checks that response before execution. Both sides also validate signatures under trust rules and check service permissions and request state. Challenge responses show access to protected values; they do not grant permissions or prevent deliberate sharing.
 }
-\slideentry{14}{Compare Authorization and Encryption Separately}{
-Design Execution authorization Discovery confidentiality DNMP-inspired roles [12] Validator checks role/command signing rules; add invocation-state checks Add content encryption and key distribution NDNSF ABE-backed User/Provider check signatures, challenge responses, service permissions and request state User encrypts descriptor content with service-level ABE Trust Schema [16] defines permitted Data-name/signing-key relationships; validators apply its rules. It does not encrypt Content. Encryption and request-state checks are additions to the DNMP-inspired comparison, not capabilities attributed to the original DNMP implementation.
+\slideentry{14}{DNMP: Trust-Schema Command Authorization}{
+Distributed Network Measurement Protocol (DNMP) [12] authorizes measurement commands: 1. The Network Key anchors role keys, device keys, and the schema. 2. The client uses target, probe type, arguments, and user role to find an allowed signing key; among matching keys, it chooses the least privileged. 3. The receiving Network Observer Daemon validates the publication under the schema before dispatching the probe. DNMP also uses publication lifetimes and retained state against replay, assuming loosely synchronized clocks. These are concrete command-authorization mechanisms, not just identity checks.
 }
-\slideentry{15}{When Another Authorization Design May Be Better}{
+\slideentry{15}{DNMP-inspired Authorization versus NDNSF}{
+Design Execution authorization Discovery confidentiality DNMP-inspired [12] Check role-constrained signatures and NDNSF invocation state Pair with service-group encryption or ABE NDNSF ABE-backed User/Provider check signatures, challenge responses, service permissions and request state User encrypts descriptor content with service-level ABE Proposed comparison: retain NDNSF discovery and Selection, with input/result protection and revocation checks in both designs. Trust Schema [16] alone does not encrypt Content; adapting DNMP authorization is not an original DNMP feature. No measured cost advantage is claimed.
+}
+\slideentry{16}{When Another Authorization Design May Be Better}{
 Known Providers and simple rules: signed invocation plus recipient encryption may be sufficient. A small, stable receiver group: ordinary group-key management may be attractive. Rich command-argument restrictions: DNMP-style rules make those constraints explicit. [12] Many changing entitlements: measure both policy/key updates and credential/rule updates before claiming a management advantage. Compare complete combinations of authorization and encryption. ABE-backed authorization is one design choice, not a universally superior solution.
 }
-\slideentry{16}{Authorization Lifecycle and Costs}{
+\slideentry{17}{Authorization Lifecycle and Costs}{
 The Controller publishes signed permission updates; participants apply them only after retrieval and validation. Request-scoped keys protect input/results. Selection delivers keys to selected Providers; the requesting User retains access. Status checks reject withdrawn permissions; key rotation restricts future encrypted exchanges. Current ABE rotation is Controller-wide. [28] Lifecycle requirement, not a third advantage: measure policy/key size, challenge cost, propagation and rekeying. No immediate disconnected revocation or recall of old plaintext/keys.
 }
-\slideentry{17}{Threat Model: What Is Trusted?}{
+\slideentry{18}{Threat Model: What Is Trusted?}{
 Trusted: Controller authorization and the User’s planning decision. Untrusted delivery: an object may arrive through a producer, forwarder, cache, or repository and still requires validation. Adversarial cases to test: wrong identities, permissions, challenges, request state, roles, dependencies, or execution identities. Not established by signatures/ABE: honest resource reports, correct inference, truthful images, or resistance to authorized key sharing. No Byzantine-coordinator consensus claim; no traffic-analysis or instantaneous-revocation guarantee.
 }
-\slideentry{18}{RQ2: Generate the Plan from Eligible Positive ACKs}{
+\slideentry{19}{RQ2: Generate the Plan from Eligible Positive ACKs}{
 1. Application supplies roles, dependency template, constraints and deadline; the template may be handwritten. 2. Close the ACK collection window and validate eligible positive ACKs. 3. The User applies a replaceable planning policy and signs the resulting role assignments and dependencies. 4. Each Provider validates the plan, derives permitted inputs and rechecks its resources before starting. The snapshot freezes observed candidates for this decision, not every Provider in the network or their future availability.
 }
-\slideentry{19}{A Plan Is More Than a Request ID}{
+\slideentry{20}{A Plan Is More Than a Request ID}{
 Existing request ID Proposed task-specific plan rules Identifies the request; requires a validated message Assigns exact Providers to collection and processing roles Does not alone specify predecessors Declares which producer role may supply each named dependency Does not alone describe key scope Associates permitted objects, execution identity, and authorization/key scope Example: within the same request, a service-authorized UAV that was not assigned “view 1” must not satisfy the view-1 dependency.
 }
-\slideentry{20}{Plan-to-Data Enforcement: Check Before Advancing}{
+\slideentry{21}{Plan-to-Data Enforcement: Check Before Advancing}{
 1. Validate the Data signature using the appropriate trust rules. 2. Match the current request, plan and execution identity. 3. Verify that the signer is the assigned predecessor Provider. 4. Check that the object matches the declared edge, permitted name, data format and key scope. 5. Require complete validated input before the dependent computation starts. Apply the same rules to direct, cached and repository-fetched Data. This is a proposed acceptance contract; full end-to-end qualification remains required.
 }
-\slideentry{21}{Failure Handling Needs Explicit State}{
+\slideentry{22}{Failure Handling Needs Explicit State}{
 Event Required behavior Late ACK Do not silently change the committed plan Duplicate Selection Follow recorded one-time state; do not implicitly repeat a side effect Incomplete dependency Wait within policy/deadline, recover, or fail; do not execute on partial data Provider replacement Authorize a new assignment; reject old execution actions and specify permitted result reuse Cancellation Prevent late messages from reauthorizing cancelled work Network re-retrieval is not task re-execution. Compensation is not an atomic transaction or exactly-once physical action.
 }
-\slideentry{22}{Proposed UAV Flow: Capture, Analyze and Return}{
+\slideentry{23}{Proposed UAV Flow: Capture, Analyze and Return}{
 1. Each sensing UAV signs ViewImage Data containing encrypted image content and publishes it in its own authorized namespace. 2. The compute Provider retrieves images over assigned edges and publishes Annotation Data. 3. The compute Provider includes original image names and permitted image keys in its encrypted result for the requester. 4. The requester retrieves the original images and displays the annotations. No need to republish the same images as if the compute Provider produced them. GPS alone does not establish camera visibility or accurate triangulation.
 }
-\slideentry{23}{What the UAV Case Must Demonstrate}{
+\slideentry{24}{What the UAV Case Must Demonstrate}{
 A complete authorized collection--processing--return task before the deadline. Correct handling of unavailable views, delayed images and a failed processing Provider. Reject wrong-role/edge inputs; accept cached images only when they satisfy the same task checks. MiniNDN [22] and PX4 SITL [23] results clearly distinguished from physical-flight evidence. Higher recognition/localization accuracy is a separate claim requiring ground truth and a single-view control. It is not assumed here.
 }
-\slideentry{24}{Proposed DI Flow: Compute Follows Named Dependencies}{
+\slideentry{25}{Proposed DI Flow: Compute Follows Named Dependencies}{
 Provider A layer group 1 Provider B layer group 2 Provider C output stage activation activation Pipeline: sequential layers/groups; tensor partitioning additionally needs supported collectives. ONNX [25] describes the graph; export alone does not implement distributed execution. Repo [24] stores artifacts; forwarding caches do not guarantee persistence. The framework contribution is checked runtime assignment and data exchange, not model partitioning itself.
 }
-\slideentry{25}{DI State and Evidence Boundaries}{
+\slideentry{26}{DI State and Evidence Boundaries}{
 Model weights, reusable artifacts, request activations and KV state have different lifetimes. Autoregressive decoding requires retained K/V and next-step inputs; resident weights do not remove that state dependency. An in-process test does not establish correct execution across processes or devices. Freeze one supported model/partition first; tensor/hybrid and LLM streaming need their own evidence if claimed. Earlier small-model measurements do not qualify all current V3/native features. [28]
 }
-\slideentry{26}{RQ3: Define the Baselines Before Comparing}{
+\slideentry{27}{RQ3: Define the Baselines Before Comparing}{
 NSC [10]: named service calls; describe the tested executor, timeout, queue and recovery behavior. gRPC [17]: describe resolver, sequential/parallel policy, deadlines, retry and cancellation. Match Provider count, capacity, task, topology/traces, publication times and measurement windows. Report fixed-list and dynamically discovered configurations as different configurations. An incomplete baseline cannot establish a limitation of the full framework. Historical unmatched data remain diagnostics.
 }
-\slideentry{27}{Mobility: Overall Completion Depends on Coverage}{
+\slideentry{28}{Mobility: Overall Completion Depends on Coverage}{
 Ten seeds (62--71), four Providers/system, 2 m/s; mean seed completion rate. [28] AP radius NDNSF gRPC NSC 50 m 54.57\% 53.80\% 55.47\% 100 m 97.97\% 97.97\% 98.33\% 150 m 100.00\% 100.00\% 100.00\% These overall controls do not establish NDNSF superiority. The next slide examines the separately registered switching subset, not all requests.
 }
-\slideentry{28}{Mobility: Lower Tail Latency in a Defined Subset}{
+\slideentry{29}{Mobility: Lower Tail Latency in a Defined Subset}{
 Ten seeds; four Providers/system; 100 m, 2 m/s; 1,312 matched requests requiring a Provider switch. [28] Comparison Seed-p95 difference 95\% CI NDNSF minus gRPC-SEQ-4 -597 ms [-992, -200] ms NDNSF minus NSC-4 -2618 ms [-2916, -2315] ms This is a conditional latency result, not general completion-rate superiority. Preserve the registered subset definition, overall coverage controls, and failed requests.
 }
-\slideentry{29}{Fewer Execution Starts than the Parallel Baseline}{
+\slideentry{30}{Fewer Execution Starts than the Parallel Baseline}{
 Six-seed, capacity-matched comparison; 1,800 requests per system. [28] Configuration Completed requests Execution starts NDNSF 1,798 / 1,800 1,800 gRPC-PAR-4 1,800 / 1,800 7,180 NSC-4 also completed 1,800/1,800, with 1.002 starts/request (rounded). No work-efficiency advantage over NSC is claimed. Fewer starts than gRPC-PAR-4 is not proof of fewer bytes, less CPU time or lower energy. Similar observed completion is not proven equivalence.
 }
-\slideentry{30}{A Useful Negative Result: Splitting Can Be Slower}{
+\slideentry{31}{A Useful Negative Result: Splitting Can Be Slower}{
 Earlier small Qwen-style ONNX model; ten successful runs per layout. [28] Layout Mean latency p95 Shared-backbone distributed layout 259.4 ms 283.9 ms Single Provider 186.8 ms 206.3 ms Do not split merely because several Providers exist. Communication/setup overhead is a candidate explanation, not a causal result established by this measurement. This campaign does not validate the newer canonical-layer, tensor/hybrid or multi-accelerator design.
 }
-\slideentry{31}{Remaining Experiments Follow the Claims}{
+\slideentry{32}{Remaining Experiments Follow the Claims}{
 RQ Required evidence Outcome and cost RQ1 Full authorization alternatives; unauthorized call, challenge/replay and withdrawal cases No unauthorized handler start; discovery delay, key/policy size, status delay and rekey traffic RQ2 One UAV and one DI graph; wrong role/edge; direct/cache parity; cancellation/replacement Correct task completion; validation, transfer and recovery cost RQ3 Matched workload and failure schedules; feasible single-device control; cold/warm state Completion plus latency, redundant work, bytes, uncertainty, and cases with no advantage Planned tests are not completed findings. Record all scheduled runs and failure boundaries.
 }
-\slideentry{32}{A Bounded Path to Spring 2027}{
+\slideentry{33}{A Bounded Path to Spring 2027}{
 Internal target Completion gate September 2026 Agree scope/RQs; freeze one UAV graph and one DI partition; resolve correctness blockers October--November 2026 Complete registered experiments; freeze evidence and write bounded RQ answers December 2026 Complete integrated advisor-review draft January 2027 Committee review and readiness decision; reduce scope or revise timing if core evidence is missing February 2027 Target defense, conditional on evidence and committee approval CS guidance: advisor-approved complete draft to committee two weeks before defense. Spring 2027 final ProQuest deadline: March 26, 2027; recheck before filing. [29,30]
 }
-\slideentry{33}{What a Final Defense Must Be Able to Claim}{
+\slideentry{34}{What a Final Defense Must Be Able to Claim}{
 RQ1 answer: when ABE-encrypted discovery and ABE-backed service authorization justify their management and revocation costs. RQ2 answer: exactly which task-assignment mistakes are rejected and which recovery behavior is supported. RQ3 answer: measured benefits, negative results and deployment limits. Distinguish the candidate’s research from shared implementations and reused NDN/AI libraries. This proposal defines those obligations. It does not label the remaining collaboration evidence as finished.
 }
-\slideentry{34}{Discussion: Is This Scope Sufficient and Feasible?}{
+\slideentry{35}{Discussion: Is This Scope Sufficient and Feasible?}{
 1. Are the three research questions specific enough to support defensible answers? 2. Are the authorization alternatives complete and fairly configured? 3. Are one UAV graph and one supported DI partition sufficient to test the abstraction? 4. Which optional features should be excluded if they delay the core evidence? NDNSF: runtime service discovery and authorization, connected to explicit named-data execution rules.
 }
-\slideentry{35}{Backup: Discovery Configuration Is Not Framework Capability}{
+\slideentry{36}{Backup: Discovery Configuration Is Not Framework Capability}{
 Provider-transition configuration Completed NDNSF, no pre-registered Provider addresses 357 / 357 Static-list NSC/gRPC configurations 0 / 357 Pre-registered baseline variants 357 / 357 This isolates the configured discovery boundary. Resolver/discovery integration can update candidates; it is not proof that gRPC or NSC cannot do so. [27,28]
 }
-\slideentry{36}{Backup: Historical Loss Evidence Is Not a New Matched Test}{
+\slideentry{37}{Backup: Historical Loss Evidence Is Not a New Matched Test}{
 Historical per-link loss NDNSF completed requests 1\% 599 / 600 3\% 598 / 600 10\% (best recorded run) 539 / 600 A selected run is not an aggregate estimate. Do not combine these numbers with another batch and label the result “matched.” [28] 1 -(1 -ell)4 assumes four independent equal-loss packet traversals; it is not service failure probability after retries.
 }
-\slideentry{37}{References: NDN and Authorization}{
+\slideentry{38}{References: NDN and Authorization}{
 [1] L. Zhang et al., “Named Data Networking,” ACM SIGCOMM CCR, 2014. [2] T. Li et al., “A Brief Introduction to NDN Dataset Synchronization (NDN Sync),” MILCOM, 2018. [3] P. Moll et al., “A Brief Introduction to State Vector Sync,” NDN-0073, rev. 2, 2021. [4] Z. Zhang et al., “NAC: Automating Access Control via Named Data,” MILCOM, 2018. [12] K. Nichols, “Lessons Learned Building a Secure Network Measurement Framework using Basic NDN,” ACM ICN, 2019. [16] Y. Yu et al., “Schematizing Trust in Named Data Networking,” ACM ICN, 2015. [19] S. Dulal et al., “Enhancing NAC-ABE to Support Access Control for mHealth Applications and Beyond,” arXiv:2311.07299, 2023. [26] NDN Project, “Data Packet,” NDN Packet Format Specification. docs.named-data.net/NDN-packet-spec/current/data.html (accessed Sept. 2026).
 }
-\slideentry{38}{References: Invocation and Composition}{
+\slideentry{39}{References: Invocation and Composition}{
 [6] C. Tschudin and M. Sifalakis, “Named Functions and Cached Computations,” IEEE CCNC, 2014. [7] M. Krol and I. Psaras, “NFaaS: Named Function as a Service,” ACM ICN, 2017. [9] M. Krol et al., “RICE: Remote Method Invocation in ICN,” ACM ICN, 2018. [10] D. Meirovitch and L. Zhang, “NSC---Named Service Calls, or a Remote Procedure Call for NDN,” NDN-0074, rev. 1, 2021. [15] CaSCON, SMARTCOMP 2025. Primary publication record: RIT, “Barrios presents at IEEE SmartComp.” Full feature-level comparison remains a research obligation. [17] gRPC Authors, “Core Concepts, Architecture and Lifecycle,” gRPC documentation. [27] gRPC Authors, “Custom Name Resolution,” grpc.io/docs/guides/custom-name-resolution/ (accessed Sept. 2026).
 }
-\slideentry{39}{References: Tools, Evidence and Degree Planning}{
+\slideentry{40}{References: Tools, Evidence and Degree Planning}{
 [22] Mini-NDN, project documentation: minindn.ndn.today. [23] PX4, “Software-in-the-Loop Simulation,” PX4 User Guide. [24] NDN Project, “Repo Protocol Specification,” repo-ng documentation. [25] ONNX, “Open Neural Network Exchange Intermediate Representation Specification.” [28] NDNSF, research-revision-audit.md, companion claim/evidence ledger, September 9, 2026. Contains campaign paths and unresolved acceptance gates. [29] University of Memphis CS, “Information for Computer Science Ph.D. Students,” forms\_grad\_phd\_programinfo.pdf (accessed September 9, 2026). [30] University of Memphis Graduate School, “Graduation Information,” Spring 2027 calendar (accessed September 9, 2026).
 }
 \end{document}

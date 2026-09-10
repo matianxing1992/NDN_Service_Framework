@@ -48,6 +48,13 @@ R11-B8 现开始按 caller group 批次执行；G4 已形成 native checkpoint h
 | [R11-B8 Maintained Callers](contracts/native-first-execution.md#dispatch-cards) | PARTIAL | R11-B7; corresponding T012 ABI | G1 generic unary 与 G2 generic stream 已形成稳定出口；仍需 15 个 caller group 的 native entry、实际行为、兼容 wrapper 及旧路径零使用证据，不能按子批次数量计全量完成 | 2026-09-10 |
 | [R11-B9 Native Closure](contracts/native-first-execution.md#dispatch-cards) | NOT_STARTED | R11-B8 | T014 no-Python/依赖闭包工具 → T015 → T016 → T017；最终资格未开始 | 2026-09-10 |
 
+文档旁路记录（2026-09-10，DNMP COMPARISON DOCUMENT PASS）：Proposal 中英文补充
+DNMP 角色密钥／Schema 命令验证及防重放先例；slides 新增机制页并明确完整对照
+的适配边界。八入口构建、40 页 PPTX／notes、逐页渲染及实验页不变检查通过，
+讲稿单测 2/2。见[审计](../../docs/PAPER/proposal-defense/dnmp-comparison-review-20260910.md)
+与[验证](../../docs/PAPER/proposal-defense/research-revision-validation.json)的
+`dnmp_comparison_revision`。未运行产品实验，不推进 Spec182 功能或资格状态。
+
 文档旁路记录（2026-09-10，MOBILITY WORDING）：中英文摘要删除 mobility handling，
 改为选定网络与负载条件下的服务调用和执行效率评估；移动性只作为实验条件。
 四入口 PDF 及检查见 [validation](../../docs/PAPER/proposal-defense/research-revision-validation.json)

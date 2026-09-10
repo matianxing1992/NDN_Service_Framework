@@ -31,17 +31,37 @@ NFN 研究命名计算与表达式求值，NFaaS 研究命名函数执行放置~
 
 NDNSF 的较窄问题是：如何先收集当前意愿与可行性，再选择执行角色，并约束中间对象的使用。长期服务权限并不确定本次哪个 Provider 是指定前驱；request ID 和单独的合法签名也不表达该分工。但把字段写入 manifest 并不自动构成创新。最终需逐项比较 CaSCON~\cite{cascon} 等服务组合、工作流安全及 capability 系统，而非声称首个 NDN 服务框架。
 
+\section{在相同需求下比较授权设计}
+\subsection{DNMP：Trust Schema 授权的具体实例}
+Distributed Network Measurement Protocol（DNMP）通过角色约束的签名授权测量
+命令~\cite{dnmp}。Network Key 是角色密钥、设备密钥及所分发 Schema 签名层级的
+信任锚。客户端根据 \texttt{target}、\texttt{probeType}、\texttt{probeArgs} 和用户的
+\texttt{roleType}，从用户已有的密钥中查找 Schema 允许的签名密钥；无匹配时拒绝，
+多个匹配时选择权限最小的密钥。接收方 Network Observer Daemon（NOD）仅在
+publication 通过 Schema 规定的验证后才调度探测操作。因此，这是真正的命令
+授权，不是接受任意合法签名。DNMP 还限制 publication 的生命周期并保留近期
+publication 状态以防重放，其假设包括设备时钟大致同步。
+
+\subsection{将对照方案适配到 NDNSF}
+本比较提出保留 NDNSF 的 Request--ACK--Selection--Response 流程，将 ABE-backed
+调用检查替换为角色约束签名规则。该方案需分别检查 User 的调用权限与 Provider
+的参与权限，将消息关联到活动请求，并仅允许被 Selection 选中的 Provider 执行。
+这些是对照设计的适配要求，不归属于 DNMP 原有功能。两种方案都需满足选择前的
+发现描述保密、选择后的接收者专属输入／结果保护，以及撤销后的授权检查。
+
 \begin{table}[htbp]\centering\small
 \caption{在相同需求下比较两种授权设计。}
 \begin{tabularx}{\textwidth}{p{.19\textwidth}XXX}
 \toprule 方案 & 执行授权 & 非公开发现 & 管理成本\\\midrule
-DNMP 式角色方案 & 角色与命令规则验证签名 & 另加加密和组密钥分发 & 角色凭证、规则、状态／有效期及加密密钥\\\midrule
+DNMP-inspired 对照方案 & 角色约束签名验证，并检查请求状态及被选中的 Provider & 配合服务组加密或 ABE 保护发现信息 & 角色凭证、规则、状态／有效期及加密密钥\\\midrule
 NDNSF ABE-backed & 信任规则下的签名验证、challenge response、请求及授权状态检查 & 按服务权限保护 descriptor，无需列出现时所有候选身份 & 身份凭证、ABE policy／DKEY、状态传播与换钥\\\bottomrule
 \end{tabularx}\end{table}
 
-DNMP 是角色约束命令签名与验证的具体先例~\cite{dnmp}。角色粒度由策略决定：一个角色可以覆盖多种操作，规则允许时也可以复用凭证。
+角色粒度由策略决定：一个角色可以覆盖多种操作，规则允许时也可以复用凭证。
+DNMP 是具体的授权先例，不能据此推断每项服务都必须签发新的签名证书。
 
-本比较为 DNMP-inspired 授权补充请求状态检查与内容加密。这是作为 NDNSF 替代方案需要满足的要求，不是声称 DNMP 原论文实现了 NDNSF 的消息流程。
+这里比较完整设计，不是已测量的 DNMP 与 NDNSF 性能。调用状态与加密方案仍需
+在相同要求下实现和评估，才能判断是否存在成本优势。
 
 选定后的交换使用接收者专属加密。保密发现还需要在选出本次参与者之前分发解密能力，例如组密钥管理或 ABE；这些并非穷尽全部选择。Trust Schema 单独不提供保密性，但与适当加密结合后可以满足这一要求。
 

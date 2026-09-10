@@ -35,24 +35,46 @@ NFN studies named computation and expression evaluation; NFaaS studies execution
 For NDNSF, the narrower question is how a service request gathers current willingness and feasibility information before selecting execution roles, and how the resulting assignment constrains intermediate-object use. Long-term permission to offer a service does not by itself determine which authorized Provider is assigned to a particular predecessor role. Neither a request ID nor a valid signature alone expresses that assignment. Conversely, role and edge checks are not automatically novel merely because their fields are placed in a manifest. A final novelty claim requires a feature-level comparison with service composition, workflow security, and capability-based systems, including CaSCON~\cite{cascon}, rather than a claim of being the first NDN service framework.
 
 \section{Comparing Authorization Designs under the Same Requirements}
+\subsection{DNMP as a Concrete Trust-Schema Design}
+The Distributed Network Measurement Protocol (DNMP) uses role-constrained
+signing to authorize measurement commands~\cite{dnmp}. Its Network Key anchors
+the signing hierarchy for role keys, device keys, and the distributed schema.
+Given \texttt{target}, \texttt{probeType}, \texttt{probeArgs}, and the user's
+\texttt{roleType}, the client finds a schema-permitted signing key among the
+user's available keys. It rejects a missing match and selects the least
+privileged key if several match. The receiving Network Observer Daemon (NOD)
+dispatches a probe only after publication validation under the schema.
+Thus, this is command authorization, not merely verification of an arbitrary
+valid signature. DNMP also bounds publication lifetimes and retains recent
+publication state for replay protection, assuming loosely synchronized clocks.
+
+\subsection{Adapting the Alternative to NDNSF}
+For comparison, we propose retaining the NDNSF Request--ACK--Selection--Response
+workflow while replacing ABE-backed invocation checks with role-constrained
+signing rules. The alternative must authorize both User invocation and Provider
+participation, match messages to active requests, and permit execution only
+after Selection. These adaptations are not features attributed to DNMP itself.
+Both designs require descriptor confidentiality before selection, recipient-scoped
+input/result protection afterward, and checks for withdrawn authority.
+
 \begin{table}[htbp]
 \centering\small
 \caption{Alternatives under the same discovery and execution requirements.}
 \begin{tabularx}{\textwidth}{p{.19\textwidth}XXX}
 \toprule
 Design & Execution decision & Non-public discovery & Management cost\\\midrule
-DNMP-inspired roles & Validate signed commands against role and command rules & Add encryption and a group/key-distribution design; signatures alone do not conceal Content & Role credentials, trust rules, status or expiry checks, and encryption keys\\\midrule
+DNMP-inspired alternative & Validate role-constrained signatures; check invocation state and selected Provider & Combine authorization with service-group encryption or ABE for discovery & Role credentials, trust rules, status or expiry checks, and encryption keys\\\midrule
 NDNSF ABE-backed & Check signatures under trust rules, challenge responses, and request/authorization state & Encrypt a descriptor for a service-authorized receiver set without listing current candidates & Identity credentials, ABE policies/DKEYs, status distribution, and rekeying\\\bottomrule
 \end{tabularx}
 \end{table}
 
-DNMP is a concrete example of role-constrained command signing and verification~\cite{dnmp}. Role granularity is policy-defined: a role can cover multiple actions, and credentials can be reused where the rules permit.
+Role granularity is policy-defined: a role can cover multiple actions, and credentials can be reused where the rules permit. DNMP is therefore a concrete authorization precedent, not evidence that every service needs a new signing certificate.
 
-Our comparison supplements DNMP-inspired authorization with request-state checks and content encryption. These are requirements for an NDNSF alternative, not claims that the original DNMP implements the NDNSF message workflow.
+This comparison concerns complete designs, not measured DNMP-versus-NDNSF performance. The invocation-state and encryption choices must be implemented and evaluated under matched requirements before claiming a cost advantage.
 
-Recipient-specific encryption protects selected exchanges. Confidential discovery additionally needs a way to distribute decryption capability before current participants are selected, such as group-key management or ABE. These are alternatives, not an exhaustive list. Trust Schema alone does not provide confidentiality, but a system combining it with suitable encryption can.
+Recipient encryption protects selected exchanges; service-group encryption or ABE can protect discovery before participants are selected. Trust Schema alone does not provide confidentiality, but it can be combined with either mechanism.
 
-For revocation, a credential-based alternative must reject a revoked credential using sufficiently current status information or wait for expiry. Removing a certificate from a repository cannot invalidate copies already held by a validator. This is a proposed lifecycle requirement for a fair alternative, not a claim that the original DNMP paper implements NDNSF's runtime revocation protocol.
+The proposed alternative requires current revocation-status checks or certificate expiry. Deleting a certificate from a repository does not invalidate cached copies. We do not attribute NDNSF's runtime revocation protocol to DNMP.
 
 \section{From a Confidentiality Requirement to an Architectural Benefit}
 NDNSF's two connected design goals are confidential discovery before Provider selection and separation of dissemination from fine-grained content access. To meet them, the User encrypts descriptors and publishes the ciphertext for shared retrieval, while the Controller issues policy keys with different access scopes. NAC-ABE supplies attribute-based control of Data decryption; the enhanced library includes KP-ABE support~\cite{dulal2023nacabe}. NDNSF reuses this permission-management mechanism for invocation: participants verify protected challenge responses, message signatures under trust rules, and current authorization/request state. These checks are separate from content encryption. Withdrawal and rekeying are lifecycle requirements with costs, not independent evidence of superiority. Section~\ref{sec:abe-rationale} develops these design choices and their limits.

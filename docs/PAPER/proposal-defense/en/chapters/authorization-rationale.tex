@@ -114,9 +114,9 @@ exchanges encrypted under the new generation. The present rotation is
 Controller-wide, so other authorized members may also need refreshed DKEYs;
 it is not a zero-fan-out revocation scheme.
 
-DNMP describes encryption-key rotation to restrict subsequent access to
-measurement data, but does not detail a comparable online command-authorization
-revocation protocol~\cite{dnmp}. A DNMP-inspired comparison design can revoke
+DNMP specifies validity bounds and replay-state handling~\cite{dnmp}; these
+do not by themselves provide immediate withdrawal of an unexpired role key.
+For the comparison, a DNMP-inspired design can revoke
 the relevant credential and require execution nodes to check signed revocation
 status or reject expired certificates. This invalidates authority at the
 validator; it does not physically retrieve distributed certificates.

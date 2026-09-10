@@ -1,5 +1,15 @@
 # Failure Log and Evidence Index
 
+## 2026-09-10 — Proposal DNMP reference download format boundary
+
+The direct download of the DNMP reference returned HTML rather than PDF;
+`pdftotext` therefore rejected the document format. The received bytes are
+preserved at `.codex-tmp/proposal-dnmp-example-20260910/dnmp.pdf` (HTML despite
+the suffix). The browser's indexed primary-paper text was used instead,
+including Sections 2.4, 3.2 and 3.3. No product build or protocol test failed.
+The source and claim corrections are recorded in
+[the proposal audit](PAPER/proposal-defense/dnmp-comparison-review-20260910.md).
+
 ## 2026-09-10 — Spec182 R11-B8-G12 host identity selector compile boundary
 
 The first fresh `unit-tests` build for the Provider identity binding batch

@@ -140,14 +140,25 @@ Needed to execute the selected task: images, detailed processing parameters, or 
 \vspace{3mm}\bluebox{Both sides also validate signatures under trust rules and check service permissions and request state. Challenge responses show access to protected values; they do not grant permissions or prevent deliberate sharing.}
 \end{frame}
 
-\begin{frame}{Compare Authorization and Encryption Separately}
+\begin{frame}{DNMP: Trust-Schema Command Authorization}
+\small
+Distributed Network Measurement Protocol (DNMP) [12] authorizes measurement commands:
+\begin{enumerate}
+\item The Network Key anchors role keys, device keys, and the schema.
+\item The client uses target, probe type, arguments, and user role to find an allowed signing key; among matching keys, it chooses the least privileged.
+\item The receiving Network Observer Daemon validates the publication under the schema before dispatching the probe.
+\end{enumerate}
+\vspace{2mm}\bluebox{DNMP also uses publication lifetimes and retained state against replay, assuming loosely synchronized clocks. These are concrete command-authorization mechanisms, not just identity checks.}
+\end{frame}
+
+\begin{frame}{DNMP-inspired Authorization versus NDNSF}
 \small
 \begin{tabularx}{\linewidth}{p{.27\linewidth}XX}
 \toprule Design & Execution authorization & Discovery confidentiality\\\midrule
-DNMP-inspired roles [12] & Validator checks role/command signing rules; add invocation-state checks & Add content encryption and key distribution\\\midrule
+DNMP-inspired [12] & Check role-constrained signatures and NDNSF invocation state & Pair with service-group encryption or ABE\\\midrule
 NDNSF ABE-backed & User/Provider check signatures, challenge responses, service permissions and request state & User encrypts descriptor content with service-level ABE\\\bottomrule
 \end{tabularx}
-\vspace{3mm}\bluebox{Trust Schema [16] defines permitted Data-name/signing-key relationships; validators apply its rules. It does not encrypt Content. Encryption and request-state checks are additions to the DNMP-inspired comparison, not capabilities attributed to the original DNMP implementation.}
+\vspace{3mm}\bluebox{Proposed comparison: retain NDNSF discovery and Selection, with input/result protection and revocation checks in both designs. Trust Schema [16] alone does not encrypt Content; adapting DNMP authorization is not an original DNMP feature. No measured cost advantage is claimed.}
 \end{frame}
 
 \begin{frame}{When Another Authorization Design May Be Better}

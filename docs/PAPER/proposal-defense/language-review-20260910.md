@@ -1,5 +1,8 @@
 # Proposal Language and Logic Review
 
+本记录为 39 页版本的历史全稿审查；最新 DNMP 增量和 40 页映射见
+[DNMP comparison review](dnmp-comparison-review-20260910.md)。
+
 ## Scope and Evidence Boundary
 
 本轮按 NDN Slides Review 与 Academic Research Suite 的准则，审查当前 Proposal
