@@ -68,6 +68,12 @@ fi
 if [[ ${SPEC110_FAIL_IDENTITY_SYMLINK:-0} == 1 && ${1:-} == test && ${2:-} == ! && ${3:-} == -L ]]; then
   exit 1
 fi
+if [[ ${SPEC110_FAIL_ADDRESS_PROBE:-0} == 1 && ${1:-} == test && ${2:-} == -r ]]; then
+  exit 0
+fi
+if [[ ${SPEC110_FAIL_ADDRESS_PROBE:-0} == 1 && ${1:-} == python3 && ${2:-} == -c ]]; then
+  exit 1
+fi
 if [[ ${SPEC110_FAIL_IDENTITY_SYMLINK:-0} == 1 && ${1:-} == test && ${2:-} == -r ]]; then
   exit 0
 fi
@@ -101,6 +107,7 @@ launch = source.index('setsid "${srun_step[@]}" "--relative=$rank"', stale)
 alive = source.index('kill -0 "${nfd_steps[$rank]}"', launch)
 assert stale < launch < alive
 assert 'srun_node "$rank" test ! -L "$identity"' in source
+assert 'SPEC110_NODE_ADDRESS_NOT_LOCAL' in source
 PY
 for repetition in 1 2; do
   PATH="$tmp/bin:$PATH" SLURM_JOB_ID=test NDNSF_SPEC110_TEST_MODE=1 \
@@ -275,6 +282,37 @@ assert value['status']=='FAIL' and value['exitCode']==3 and value['survivors']==
 PY
 [[ ! -e "$scratch_job_scratch/log/nfd-0.log" ]]
 rm -rf "$scratch_job_scratch"
+
+set +e
+address_scratch=$(mktemp -d /tmp/ndnsf-di-test-address.XXXXXX)
+cp "$supervisor_scratch/process-map.json" "$address_scratch/process-map.json"
+python3 - "$repo" "$address_scratch/process-map.json" "$address_scratch" <<'PY'
+import json,sys
+sys.path.insert(0,sys.argv[1]+'/packaging/ndnsf-di-container/lib')
+from allocation_topology import command_digest
+path,root=sys.argv[2:]
+value=json.load(open(path)); socket=root+'/nfd/0/nfd.sock'
+value['nodes'][0]['nfdSocket']=socket
+for process in value['processes']:
+    process['nfdSocket']=socket
+    if process['kind']=='nfd':
+        process['command']=['nfd','--config',root+'/nfd/0/nfd.conf']
+        process['commandDigest']=command_digest(process['command'])
+json.dump(value,open(path,'w'))
+PY
+PATH="$tmp/bin:$PATH" SLURM_JOB_ID=test SLURM_NNODES=1 NDNSF_SPEC110_TEST_MODE=0 SPEC110_FAIL_ADDRESS_PROBE=1 \
+  "$supervisor" --process-map "$address_scratch/process-map.json" --scratch "$address_scratch" \
+  --evidence "$tmp/supervisor-address-fail" --nfd-template "$template" --workdir "$tmp"
+address_rc=$?
+set -e
+[[ $address_rc -eq 4 ]]
+python3 - "$tmp/supervisor-address-fail/teardown.json" <<'PY'
+import json,sys
+value=json.load(open(sys.argv[1]))
+assert value['status']=='FAIL' and value['exitCode']==4 and value['survivors']==0
+PY
+[[ ! -e "$address_scratch/log/nfd-0.log" ]]
+rm -rf "$address_scratch"
 
 port_scratch=$(mktemp -d /tmp/ndnsf-di-test-port.XXXXXX)
 cp "$supervisor_scratch/process-map.json" "$port_scratch/process-map.json"
