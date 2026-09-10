@@ -9,12 +9,14 @@ import os
 import time
 import uuid
 import asyncio
+import threading
 import warnings
 import re
 from concurrent.futures import Future
 from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
+from typing import Mapping
 
 from ..client import (
     InferenceResult, SelectionAcceptanceTracker,
@@ -95,6 +97,134 @@ class NativeRequestHandle:
             "",
             self.request_id,
         )
+
+    def response(self, timeout_ms: int | None = None) -> InferenceResult:
+        return self.result(timeout_ms)
+
+    def cancel(self) -> None:
+        self._native_handle.cancel()
+
+
+class NativeStreamingHandle:
+    """Thin Python callback facade over a C++ native streaming handle."""
+
+    def __init__(self, native_handle, *, timeout_ms: int,
+                 on_event=None, on_complete=None, on_error=None,
+                 generation_id: str = ""):
+        self._native_handle = native_handle
+        self._timeout_ms = int(timeout_ms)
+        self._on_event = on_event
+        self._on_complete = on_complete
+        self._on_error = on_error
+        self._generation_id = str(generation_id)
+        self._condition = threading.Condition(threading.RLock())
+        self._events: list[bytes] = []
+        self._complete_payload: bytes | None = None
+        self._error: Mapping[str, object] | None = None
+        self._terminal = False
+
+    @property
+    def native_handle(self):
+        return self._native_handle
+
+    @property
+    def request_id(self) -> str:
+        return str(getattr(self._native_handle, "request_id", ""))
+
+    @property
+    def generation_id(self) -> str:
+        return self._generation_id
+
+    @property
+    def status(self):
+        return getattr(self._native_handle, "status_name", "UNKNOWN")
+
+    @property
+    def stream_events(self) -> tuple[bytes, ...]:
+        with self._condition:
+            return tuple(self._events)
+
+    @property
+    def stream_complete(self) -> bytes | None:
+        with self._condition:
+            return self._complete_payload
+
+    @property
+    def stream_error(self):
+        with self._condition:
+            return None if self._error is None else dict(self._error)
+
+    def _native_event(self, event) -> None:
+        payload = bytes(event.get("payload", b""))
+        terminal = bool(event.get("terminal", False))
+        callback = None
+        callback_value = payload
+        terminal_error = None
+        if terminal:
+            status = str(getattr(self._native_handle, "status_name", "") or "")
+            if status == "SUCCEEDED":
+                # Native observers receive a non-authoritative terminal marker;
+                # the decoded final response remains on the C++ handle.  Read
+                # it after the owner has entered the terminal state so the
+                # historical on_complete(payload) callback keeps its meaning.
+                if not payload and self._native_handle is not None:
+                    try:
+                        native_result = self._native_handle.result(0)
+                        callback_value = bytes(native_result.payload)
+                    except BaseException:
+                        pass
+            else:
+                terminal_error = {
+                    "code": "CANCELLED" if status == "CANCELLED"
+                    else "NATIVE_STREAM_FAILED",
+                    "message": (
+                        "native stream was cancelled" if status == "CANCELLED"
+                        else "native stream failed"),
+                    "status": status or "UNKNOWN",
+                }
+                callback_value = terminal_error
+        with self._condition:
+            if self._terminal:
+                return
+            if terminal_error is not None:
+                self._error = terminal_error
+                self._terminal = True
+                callback = self._on_error
+            elif terminal:
+                self._complete_payload = callback_value
+                self._terminal = True
+                callback = self._on_complete
+            else:
+                self._events.append(payload)
+                callback = self._on_event
+            self._condition.notify_all()
+        if callback is None:
+            return
+        try:
+            callback(callback_value)
+        except BaseException as exc:  # callback failures are terminal facade errors
+            if terminal_error is not None:
+                return
+            with self._condition:
+                self._error = {"code": "NativeStreamCallbackFailed",
+                               "message": str(exc) or type(exc).__name__}
+                self._terminal = True
+                self._condition.notify_all()
+            if self._on_error is not None:
+                try:
+                    self._on_error(dict(self._error))
+                except BaseException:
+                    pass
+
+    def _wait_timeout(self, timeout_ms: int | None) -> int:
+        value = self._timeout_ms if timeout_ms is None else int(timeout_ms)
+        if value < 0:
+            raise ValueError("native stream timeout_ms must be nonnegative")
+        return value
+
+    def result(self, timeout_ms: int | None = None) -> InferenceResult:
+        native_result = self._native_handle.result(self._wait_timeout(timeout_ms))
+        return InferenceResult(True, bytes(native_result.payload), "", self.request_id)
 
     def response(self, timeout_ms: int | None = None) -> InferenceResult:
         return self.result(timeout_ms)
@@ -790,6 +920,167 @@ class APPClient:
             )
         return NativeRequestHandle(native_handle, timeout_ms=timeout_ms)
 
+    def _native_request_streaming(self, *, model, task, input, timeout_ms: int,
+                                  options=None, stream_options=None,
+                                  on_event=None, on_complete=None, on_error=None,
+                                  conversation=None, canonical_token_ids=None,
+                                  objective=None, constraints=None,
+                                  request_id: str = "", strategy=None):
+        """Route a stream-only request through the native handle owner.
+
+        The native runtime must already describe a non-generation stream.  A
+        model-specific token-generation contract needs adapter-owned fields
+        (token/state names and EOS policy) and therefore remains on the
+        explicit native Qwen entry until that contract is supplied as a native
+        value object.  Conversation turns are likewise rejected here rather
+        than silently handed back to the Python planner.
+        """
+        from ..adapters import InputTransportMode
+        from .placement import TaskOptions
+
+        if conversation is not None or canonical_token_ids is not None:
+            raise RuntimeError(
+                "native streaming conversation requires a configured native owner")
+        if objective is not None or constraints:
+            raise ValueError(
+                "native streaming does not accept Python planning constraints")
+        if strategy is not None:
+            raise ValueError(
+                "native streaming does not accept a Python placement strategy")
+        if on_event is not None and not callable(on_event):
+            raise TypeError("native stream on_event must be callable")
+        if on_complete is not None and not callable(on_complete):
+            raise TypeError("native stream on_complete must be callable")
+        if on_error is not None and not callable(on_error):
+            raise TypeError("native stream on_error must be callable")
+
+        native_model = getattr(self, "_native_model", None)
+        native_splitter = getattr(self, "_native_splitter", None)
+        native_runtime = getattr(self, "_native_runtime", None)
+        if native_model is None or native_splitter is None or native_runtime is None:
+            raise RuntimeError("native requester configuration is incomplete")
+        timeout_ms = int(timeout_ms)
+        if timeout_ms <= 1:
+            raise ValueError(
+                "native streaming timeout_ms must be greater than one")
+
+        native_adapter = getattr(native_model, "adapter", None)
+        for input_name, native_name in (
+                ("input_schema_digest", "input_schema_digest"),
+                ("options_schema_digest", "options_schema_digest")):
+            expected = str(getattr(input, input_name, "") or "")
+            actual = str(getattr(native_adapter, native_name, "") or "")
+            if expected and actual and expected != actual:
+                raise RuntimeError("NATIVE_INPUT_SCHEMA_IDENTITY_MISMATCH")
+        for python_name, native_name in (
+                ("model_name", "model_name"),
+                ("content_digest", "content_digest"),
+                ("semantics_digest", "semantics_digest"),
+                ("source_revision", "source_revision")):
+            expected = str(getattr(model, python_name, "") or "")
+            actual = str(getattr(native_model, native_name, "") or "")
+            if expected and actual and expected != actual:
+                raise RuntimeError("NATIVE_MODEL_IDENTITY_MISMATCH")
+        task_name = str(getattr(task, "task_name", "") or "")
+        if not task_name or task_name != input.task_name:
+            raise RuntimeError("NATIVE_TASK_IDENTITY_MISMATCH")
+        runtime_contract = getattr(native_runtime, "contract", None)
+        if (str(getattr(runtime_contract, "task_name", "") or "") and
+                str(getattr(runtime_contract, "task_name", "")) != input.task_name):
+            raise RuntimeError("NATIVE_TASK_IDENTITY_MISMATCH")
+        for task_field, contract_field in (
+                ("adapter_name", "adapter_name"),
+                ("adapter_descriptor_digest", "adapter_descriptor_digest"),
+                ("adapter_composition_digest", "adapter_composition_digest"),
+                ("task_descriptor_digest", "task_descriptor_digest")):
+            expected = str(getattr(task, task_field, "") or "")
+            actual = str(getattr(runtime_contract, contract_field, "") or "")
+            if expected and actual and expected != actual:
+                raise RuntimeError("NATIVE_TASK_IDENTITY_MISMATCH")
+        if str(getattr(runtime_contract, "generation_mode", "") or "") == "TOKEN_STREAMING":
+            raise RuntimeError(
+                "native streaming requires an adapter-owned generation contract")
+        if options is not None:
+            if not isinstance(options, TaskOptions):
+                raise TypeError("native streaming options must be TaskOptions")
+            if (options.schema_digest != input.options_schema_digest or
+                    bytes(options.payload) != bytes(input.options)):
+                raise RuntimeError("NATIVE_OPTIONS_IDENTITY_MISMATCH")
+
+        from ndnsf import _ndnsf
+        raw = (stream_options.as_dict()
+               if callable(getattr(stream_options, "as_dict", None))
+               else dict(stream_options or {}))
+        generation_id = str(raw.get("generation_id", "") or uuid.uuid4().hex)
+        if (len(generation_id) != 32 or generation_id != generation_id.lower()
+                or any(char not in "0123456789abcdef" for char in generation_id)):
+            raise ValueError("native stream generation_id must be lowercase 16-byte hex")
+        if int(raw.get("attempt_epoch", 1)) != 1:
+            raise ValueError("native streaming starts at attempt epoch 1")
+        native_stream = _ndnsf.NativeStreamRequestOptions()
+        mode = str(raw.get("mode", "Normal"))
+        if mode.lower() == "normal":
+            native_stream.mode = _ndnsf.NativeInvocationMode.NORMAL
+        elif mode.lower() == "targeted":
+            native_stream.mode = _ndnsf.NativeInvocationMode.TARGETED
+        else:
+            raise ValueError("native stream mode must be Normal or Targeted")
+        native_stream.generation_id = list(bytes.fromhex(generation_id))
+        native_stream.attempt_epoch = 1
+        # NativeInferenceClient allocates the request-scoped stream epoch and
+        # event-key commitment after the owner request identity exists.  Keep
+        # the initial epoch valid without attempting to reproduce that state
+        # machine in Python.
+        native_stream.stream_epoch = max(1, int(raw.get("stream_epoch", 1)))
+        native_stream.deadline_epoch_ms = int(time.time() * 1000) + timeout_ms
+        for name in (
+                "max_events", "interest_window", "interest_lifetime_ms",
+                "max_event_retries", "publisher_queue_capacity",
+                "callback_queue_capacity", "reorder_capacity", "retention_ms",
+                "completion_grace_ms", "max_event_wire_bytes", "max_replacements"):
+            if name in raw:
+                setattr(native_stream, name, int(raw[name]))
+        native_stream.allow_replacement = bool(raw.get("allow_replacement", False))
+        native_options = _ndnsf.NativeRequestOptions()
+        native_options.timeout_ms = timeout_ms
+        native_options.ack_timeout_ms = max(1, min(5_000, timeout_ms // 2))
+        native_options.task_name = input.task_name
+        native_options.output_mode = "STREAM"
+        native_options.stream = native_stream
+        effective_request_id = str(request_id or ("ndnsf-di-" + uuid.uuid4().hex))
+        callback = None
+        # Construct the facade before submission so the C++ observer can only
+        # target a live owner, even when a request completes immediately.
+        facade = NativeStreamingHandle(
+            None,
+            timeout_ms=timeout_ms,
+            on_event=on_event,
+            on_complete=on_complete,
+            on_error=on_error,
+            generation_id=generation_id,
+        )
+        callback = facade._native_event
+        if input.transport_mode is InputTransportMode.REPO_REF:
+            native_handle = self.request_native_reference(
+                input.repo_reference,
+                options=native_options,
+                task_name=input.task_name,
+                application_options=input.options,
+                on_event=callback,
+                request_id=effective_request_id,
+            )
+        else:
+            native_handle = self.request_native_payload(
+                input.payload,
+                options=native_options,
+                task_name=input.task_name,
+                application_options=input.options,
+                on_event=callback,
+                request_id=effective_request_id,
+            )
+        facade._native_handle = native_handle
+        return facade
+
     def request(
         self,
         *,
@@ -970,6 +1261,24 @@ class APPClient:
         can prove the exact parent prefix. The returned handle retains the
         pending turn and exposes a checkpoint only after receipt commit.
         """
+        if getattr(self, "_native_client", None) is not None:
+            return self._native_request_streaming(
+                model=model,
+                task=task,
+                input=input,
+                timeout_ms=int(timeout_ms),
+                options=options,
+                stream_options=stream_options,
+                on_event=on_event,
+                on_complete=on_complete,
+                on_error=on_error,
+                conversation=conversation,
+                canonical_token_ids=canonical_token_ids,
+                objective=objective,
+                constraints=constraints,
+                request_id=request_id,
+                strategy=strategy,
+            )
         if self._automatic_planner is None:
             raise RuntimeError(
                 "APPClient requires an AutomaticPlanningCoordinator")

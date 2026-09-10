@@ -502,6 +502,182 @@ class AppSdkCompatibilityTest(unittest.TestCase):
                     task=task, input=value, timeout_ms=1000,
                     options=TaskOptions(digest("b"), b"{}"))
 
+    def test_generic_stream_native_route_preserves_callbacks_and_planner_non_fallback(self):
+        from ndnsf_distributed_inference.adapters import ApplicationInput
+        from ndnsf_distributed_inference.app_sdk.client import APPClient as CoreAPPClient
+        from ndnsf_distributed_inference.app_sdk.placement import InferenceTaskRef
+        import ndnsf
+
+        digest = lambda char: "sha256:" + char * 64
+        input_value = ApplicationInput.from_inline(
+            task_name="object-detection",
+            input_schema_digest=digest("a"),
+            options_schema_digest=digest("b"),
+            payload=b"encoded-input", options=b"{}")
+        task = InferenceTaskRef(
+            task_name="object-detection", adapter_name="yolo",
+            adapter_descriptor_digest=digest("c"),
+            adapter_composition_digest=digest("d"),
+            task_descriptor_digest=digest("e"))
+        model = SimpleNamespace(
+            model_name="yolo26n", content_digest=digest("f"),
+            semantics_digest=digest("1"), source_revision="rev-1")
+        native_model = SimpleNamespace(
+            model_name="yolo26n", content_digest=digest("f"),
+            semantics_digest=digest("1"), source_revision="rev-1",
+            adapter=SimpleNamespace(
+                input_schema_digest=digest("a"),
+                options_schema_digest=digest("b")))
+
+        class FakeStream:
+            def __init__(self):
+                self.mode = None
+                self.generation_id = []
+                self.attempt_epoch = 0
+                self.stream_epoch = 0
+                self.deadline_epoch_ms = 0
+                self.allow_replacement = False
+                self.max_replacements = 0
+
+        class FakeOptions:
+            def __init__(self):
+                self.timeout_ms = 30000
+                self.ack_timeout_ms = 5000
+                self.task_name = ""
+                self.output_mode = "FULL"
+                self.application_request_id = ""
+                self.stream = None
+
+        class FakeInput:
+            def __init__(self):
+                self.task_name = ""
+                self.input_schema_digest = ""
+                self.options_schema_digest = ""
+                self.payload = b""
+                self.options = b""
+                self.transport_mode = "inline"
+                self.repository_reference = ""
+
+        class FakePlacement:
+            pass
+
+        class FakeNativeHandle:
+            request_id = "/NDNSF/DI/REQUEST/stream-1"
+            application_request_id = "stream-request"
+            status_name = "SUCCEEDED"
+
+            def __init__(self):
+                self.callback = None
+                self.result = mock.Mock(
+                    return_value=SimpleNamespace(payload=b"stream-result"))
+                self.cancel = mock.Mock()
+
+            def observe(self, callback):
+                self.callback = callback
+
+        native_handle = FakeNativeHandle()
+        native = SimpleNamespace(request=mock.Mock(return_value=native_handle))
+        planner = SimpleNamespace(request_streaming=mock.Mock())
+        events, completed = [], []
+        with tempfile.TemporaryDirectory() as state_root:
+            client = CoreAPPClient(
+                RuntimeJournal.for_test(state_root, "native-stream"),
+                automatic_planner=planner, native_client=native)
+            client._native_model = native_model
+            client._native_runtime = SimpleNamespace(
+                contract=SimpleNamespace(task_name="object-detection",
+                                          generation_mode="TOKEN_DIAGNOSTIC"))
+            client._native_splitter = "split"
+            fake_ndnsf = SimpleNamespace(
+                NativeRequestOptions=FakeOptions,
+                NativeStreamRequestOptions=FakeStream,
+                NativeApplicationInput=FakeInput,
+                NativePreSplitFirstPlacement=FakePlacement,
+                NativeInvocationMode=SimpleNamespace(NORMAL="normal", TARGETED="targeted"),
+            )
+            with mock.patch.object(ndnsf, "_ndnsf", fake_ndnsf):
+                returned = client.request_streaming(
+                    model=model, task=task, input=input_value, timeout_ms=4000,
+                    stream_options={"generation_id": "a" * 32},
+                    on_event=events.append, on_complete=completed.append,
+                    request_id="stream-request")
+                native_handle.callback({
+                    "request_id": native_handle.request_id,
+                    "payload": b"chunk", "terminal": False})
+                native_handle.callback({
+                    "request_id": native_handle.request_id,
+                    "payload": b"", "terminal": True})
+
+        self.assertEqual(returned.request_id, native_handle.request_id)
+        self.assertEqual(returned.generation_id, "a" * 32)
+        self.assertEqual(returned.stream_events, (b"chunk",))
+        self.assertEqual(returned.stream_complete, b"stream-result")
+        self.assertEqual(events, [b"chunk"])
+        self.assertEqual(completed, [b"stream-result"])
+        self.assertEqual(returned.response(1000).payload, b"stream-result")
+        planner.request_streaming.assert_not_called()
+        native.request.assert_called_once()
+        native_options = native.request.call_args.args[4]
+        self.assertEqual(native_options.output_mode, "STREAM")
+        self.assertEqual(native_options.application_request_id, "stream-request")
+        self.assertEqual(native_options.stream.generation_id, list(bytes.fromhex("a" * 32)))
+
+    def test_generic_stream_native_route_rejects_python_conversation(self):
+        from ndnsf_distributed_inference.adapters import ApplicationInput
+        from ndnsf_distributed_inference.app_sdk.client import APPClient as CoreAPPClient
+        from ndnsf_distributed_inference.app_sdk.placement import InferenceTaskRef
+        from ndnsf_distributed_inference.conversation import ConversationContinuation
+
+        digest = lambda char: "sha256:" + char * 64
+        value = ApplicationInput.from_inline(
+            task_name="task", input_schema_digest=digest("a"),
+            options_schema_digest=digest("b"), payload=b"x", options=b"{}")
+        task = InferenceTaskRef(
+            task_name="task", adapter_name="adapter",
+            adapter_descriptor_digest=digest("c"),
+            adapter_composition_digest=digest("d"),
+            task_descriptor_digest=digest("e"))
+        with tempfile.TemporaryDirectory() as state_root:
+            client = CoreAPPClient(
+                RuntimeJournal.for_test(state_root, "native-stream"),
+                automatic_planner=SimpleNamespace(request_streaming=mock.Mock()),
+                native_client=object())
+            client._native_model = SimpleNamespace(
+                model_name="model", content_digest=digest("f"),
+                semantics_digest=digest("1"), source_revision="rev",
+                adapter=SimpleNamespace(input_schema_digest=digest("a"),
+                                        options_schema_digest=digest("b")))
+            client._native_runtime = SimpleNamespace(
+                contract=SimpleNamespace(task_name="task",
+                                          generation_mode="TOKEN_DIAGNOSTIC"))
+            client._native_splitter = object()
+            conversation = ConversationContinuation(
+                conversation_id="conversation-0001")
+            with self.assertRaisesRegex(RuntimeError, "configured native owner"):
+                client.request_streaming(
+                    model=SimpleNamespace(
+                        model_name="model", content_digest=digest("f"),
+                        semantics_digest=digest("1"), source_revision="rev"),
+                    task=task, input=value, timeout_ms=4000,
+                    conversation=conversation,
+                    on_event=lambda payload: None,
+                    on_complete=lambda payload: None,
+                    on_error=lambda error: None)
+
+    def test_native_stream_terminal_failure_uses_on_error(self):
+        from ndnsf_distributed_inference.app_sdk.client import NativeStreamingHandle
+
+        native = SimpleNamespace(status_name="FAILED", request_id="native-1")
+        errors, completed = [], []
+        handle = NativeStreamingHandle(
+            native, timeout_ms=1000, on_complete=completed.append,
+            on_error=errors.append, generation_id="b" * 32)
+        handle._native_event({"payload": b"", "terminal": True})
+
+        self.assertEqual(completed, [])
+        self.assertEqual(errors[0]["code"], "NATIVE_STREAM_FAILED")
+        self.assertEqual(handle.stream_error["status"], "FAILED")
+
     def test_app_client_constructor_resolves_canonical_engine_and_defaults(self):
         client = RuntimeAPPClient(object(), object())
 
