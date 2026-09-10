@@ -1,6 +1,18 @@
 # Spec182 Design Audit
 
-**Revision**: 51 | **Current source**: R11-B9-G3 current-build cross-process revalidation checkpoint on `Experimental`
+**Revision**: 52 | **Current source**: R11-B9-G4 compatibility-manifest provenance checkpoint on `Experimental`
+
+## R11-B9-G4 Compatibility Manifest Provenance Review 2026-09-10
+
+维护 caller 批次开始前检查发现 `contracts/compatibility-manifest.json` 的
+`sourceCommit=f661e3fc` 已落后于当前 checkpoint，会使 source line/hash 路由证据过期。
+已重新运行 manifest generator，得到 `entries=344`、`dynamicAppSdk=67`，并将
+`sourceCommit` 绑定到 `400d8126`；design validator（`ok=true`、无 link error）、11/11
+Spec Kit sync 和 `git diff --check` 通过。
+
+该批只修复 manifest provenance，不把 entries 数量解释成字段/错误/状态 parity 或
+maintained caller migration，也不推进 legacy zero-use、no-Python、exact-SIF、MiniNDN 或
+T015--T017 qualification。详见 [R11-B9-G4 evidence](evidence/r11-b9-g4-compatibility-manifest-provenance-20260910.md)。
 
 ## R11-B9-G3 Current-Build Cross-Process Revalidation Review 2026-09-10
 

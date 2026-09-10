@@ -1,6 +1,6 @@
 # Implementation Plan: Native NDNSF-DI with Optional Python Bindings
 
-**Branch**: Experimental | **Revision**: 90 | **Date**: 2026-09-10
+**Branch**: Experimental | **Revision**: 91 | **Date**: 2026-09-10
 **Status**: IN_PROGRESS / 当前实现与验收状态见 tasks.md 的 Task Progress Registry 和 Current Checkpoint
 **Spec**: [spec.md](spec.md)
 
@@ -50,6 +50,8 @@ continuation/recovery/replacement/cleanup → 16 个 maintained callers → no-P
 conversation、recovery、replacement 和 fail-closed process 出口；首个错误动态库加载边界
 已记录，未被计为协议结果。下一步转入 maintained caller groups 和 T014 closure；父任务
 T004/T008/T009/T010/T011/T013 及最终资格仍保持未完成。
+caller 迁移使用已刷新且绑定当前 source commit 的 compatibility manifest；manifest 只提供
+路由证据，不替代语义 parity。
 原生验收次序为 C++ production code → C++ unit/integration/process tests → Python
 wrapper checks。各小任务仍先过 review-agent 静态门，整批组合审查后统一构建和相应测试。
 Python 用例数量不推进 native 状态。旧 R1--R10 局部结果按原证据范围保留。
