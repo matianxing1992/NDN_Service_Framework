@@ -106,7 +106,9 @@ void bindConversationProjections(
       turn.attempt != sealed.core.attempt || turn.parent.serviceName != serviceName ||
       turn.parent.requestContractDigest != requestContractDigest)
     throw std::invalid_argument("conversation turn/request binding mismatch");
-  if (turn.parent.expectedRoles.size() != providersByRole.size())
+  const bool unboundInitialPlan = turn.attempt == 1 && turn.parent.parentContextEpoch == 0 &&
+    turn.parent.planRoleMapDigest.empty() && turn.parent.expectedRoles.empty();
+  if (!unboundInitialPlan && turn.parent.expectedRoles.size() != providersByRole.size())
     throw std::invalid_argument("conversation turn role map is incomplete");
   std::set<std::string> expected(turn.parent.expectedRoles.begin(), turn.parent.expectedRoles.end());
   std::set<std::string> actual;
@@ -114,13 +116,13 @@ void bindConversationProjections(
     (void)provider;
     actual.insert(role);
   }
-  if (expected != actual)
+  if (!unboundInitialPlan && expected != actual)
     throw std::invalid_argument("conversation turn role set does not match placement");
   const auto roleMapDigest = conversationRoleMapDigest(providersByRole);
   // Attempt 1 must use the parent's immutable placement. A replacement may
   // switch to an alternate Provider; the coordinator binds that new map after
   // planning while retaining the old map for the parent CAS.
-  if (turn.attempt == 1 && roleMapDigest != turn.parent.planRoleMapDigest)
+  if (turn.attempt == 1 && !unboundInitialPlan && roleMapDigest != turn.parent.planRoleMapDigest)
     throw std::invalid_argument("conversation turn plan-role map mismatch");
 
   ConversationTurnBindingV1 binding;

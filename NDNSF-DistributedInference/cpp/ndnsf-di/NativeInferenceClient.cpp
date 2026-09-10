@@ -1089,10 +1089,15 @@ void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& o
             *operation->placementStrategy, *operation->preparation, *operation->admission,
             closure, control, operation->wireDeadlineMs, operation->cancelled,
             operation->conversationTurn ? &*operation->conversationTurn : nullptr);
-          if (operation->conversationTurn && operation->conversations &&
-              operation->conversationTurn->attempt == 2) {
-            operation->conversationTurn = operation->conversations->bindAttemptPlanRoleMap(
-              *operation->conversationTurn, planned.sealed.core.assignment.providerByRole);
+          if (operation->conversationTurn && operation->conversations) {
+            if (operation->conversationTurn->attempt == 2) {
+              operation->conversationTurn = operation->conversations->bindAttemptPlanRoleMap(
+                *operation->conversationTurn, planned.sealed.core.assignment.providerByRole);
+            }
+            else if (operation->conversationTurn->parent.planRoleMapDigest.empty()) {
+              operation->conversationTurn = operation->conversations->bindInitialPlanRoleMap(
+                *operation->conversationTurn, planned.sealed.core.assignment.providerByRole);
+            }
           }
           {
             std::lock_guard<std::mutex> lock(operation->mutex);
