@@ -62,6 +62,13 @@ host but absent or unreadable on a compute node is a pre-start failure; the
 supervisor must not leave NFDs running while waiting for a later business
 process to discover that binding error.
 
+The map MUST not contain duplicate `(address, tcpPort)` or `(address,
+udpPort)` endpoints. Before starting NFD, the supervisor MUST perform a
+target-node IPv4 bind probe for each declared TCP and UDP port and fail at the
+pre-start boundary when a listener is already present. The probe is a bounded
+race detector rather than a distributed port lease; the NFD bind remains the
+final authority and dynamic cross-job port allocation is a separate contract.
+
 Each NFD configuration MUST also be materialized under the current job's
 scratch directory. If the frozen command contains `--config PATH` or
 `--config=PATH`, the launcher rewrites that argument to its scratch-local

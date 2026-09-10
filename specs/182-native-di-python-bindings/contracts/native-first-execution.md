@@ -95,6 +95,9 @@ NFD 的 `--config` 参数也必须改写到该作业 scratch 的配置副本，�
 同样，在启动任何 NFD 前必须在每个目标节点检查所有非 NFD `identityRef` 的
 `.ndn/pib.db` 与 `.ndn/ndnsec-key-file` 可读；身份源只在提交节点可见或不可读时，必须在
 pre-start 边界失败并保持零 NFD 启动，不能等业务进程 `exec` 后才暴露绑定错误。
+process map 的 `(address,tcpPort)` 与 `(address,udpPort)` 端点不得重复；启动前由目标节点
+执行 IPv4 TCP/UDP bind probe，若已有监听则以 `SPEC110_PORT_NOT_AVAILABLE` 在 pre-start
+失败。该 probe 不能替代跨作业端口租约，probe 关闭后的竞争仍由 NFD 最终 bind 处理。
 在任何子进程启动前发生的可见性、materialization 或 map-render 失败也必须写出包含原始退出码
 和 `survivors: 0` 的 `teardown.json`，不能以无证据的直接退出代替失败边界。
 

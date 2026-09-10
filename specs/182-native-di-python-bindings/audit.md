@@ -1,6 +1,17 @@
 # Spec182 Design Audit
 
-**Revision**: 37 | **Current source**: R11-B8-G29 prestart-identity checkpoint on `Experimental`
+**Revision**: 38 | **Current source**: R11-B8-G30 port-preflight checkpoint on `Experimental`
+
+## R11-B8-G30 Port Availability Preflight Review 2026-09-10
+
+静态审查确认 process map 过去只限制端口数值范围；在 `--overlap` 的 Slurm 作业中，另一份
+作业可以先占用同一节点的 NFD TCP/UDP listener，旧 supervisor 会启动 NFD 后才在 readiness
+阶段失败。现已拒绝 map 内重复 `(address,transport-port)` endpoint，并在任何 NFD 启动前由
+目标节点执行 IPv4 TCP/UDP bind probe；注入占用反例得到 `SPEC110_PORT_NOT_AVAILABLE`、exit 4、
+`survivors: 0` 且没有 NFD 日志。22/22 topology unit、network integration 和 shell syntax 通过。
+
+这是有界 preflight，不是跨作业端口租约；probe 关闭后的竞态仍由 NFD 最终 bind 处理，动态
+端口分配和真实 Slurm/SIF/跨节点资格继续开放。详见 [R11-B8-G30 evidence](evidence/r11-b8-g30-port-availability-preflight-20260910.md)。
 
 ## R11-B8-G29 Pre-Start Identity Visibility Review 2026-09-10
 
@@ -79,8 +90,9 @@ TCP/UDP probe 均使用 `--overlap --exact --ntasks=1 --cpus-per-task=1`，禁�
 `--exclusive` 把一个长生命周期 NFD 或 Provider 变成整节点锁。fake-srun 在
 integration 中直接拒绝 exclusive 参数；这只证明命令边界，不替代真实 Slurm 运行。
 
-这些修复仍不等于多机资格。v1 process map 的 TCP/UDP 端口仍由候选输入提供，没有自动的
-跨并发作业端口分配；共享 `workdir`/identity 的内容尚未按节点验证 digest；v1 生成命令也尚未
+这些修复仍不等于多机资格。v1 process map 的 TCP/UDP 端口仍由候选输入提供，没有跨作业
+端口租约或自动动态分配；启动前 bind probe 只覆盖已存在 listener，不能消除 probe 后的竞态。
+共享 `workdir`/identity 的内容尚未按节点验证 digest；v1 生成命令也尚未
 统一通过 post-Spec-111 的 exact-SIF canonical runner（Spec110 T221/T223/T225/T228）。真实
 Slurm、SIF、GPU、跨节点 NDN request 和 no-Python qualification 仍属于 T014--T017/R11-B9，
 不能由 fake `srun`、CPU ORT 或 MiniNDN 单机结果替代。

@@ -138,6 +138,32 @@ PY
   done
 fi
 
+# Detect a port already occupied by another job on the target node before NFD
+# startup.  Slurm allocations may overlap on a node, so a map-level range check
+# alone cannot catch a concurrent listener.  This is a bounded preflight; NFD
+# still remains the final authority if a race occurs after the probe.
+mapfile -t port_rows < <(PYTHONPATH="$lib" python3 - "$process_map" <<'PY'
+import sys
+from allocation_topology import load_process_map
+for node in load_process_map(sys.argv[1])['nodes']:
+ print(node['nodeRank'],node['tcpPort'],node['udpPort'],sep='\t')
+PY
+)
+for row in "${port_rows[@]}"; do
+  IFS=$'\t' read -r rank tcp_port udp_port <<<"$row"
+  port_probe='import socket,sys
+for kind,port in ((socket.SOCK_STREAM,int(sys.argv[1])),(socket.SOCK_DGRAM,int(sys.argv[2]))):
+    sock=socket.socket(socket.AF_INET,kind)
+    try:
+        sock.bind(("0.0.0.0",port))
+    finally:
+        sock.close()'
+  srun_node "$rank" python3 -c "$port_probe" "$tcp_port" "$udp_port" || {
+    echo "SPEC110_PORT_NOT_AVAILABLE:$rank:$tcp_port:$udp_port" >&2
+    exit 4
+  }
+done
+
 trap - EXIT INT TERM
 step_pids=()
 cleanup() {
