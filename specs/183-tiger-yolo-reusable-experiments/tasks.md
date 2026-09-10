@@ -516,8 +516,10 @@ submit stopped at sender-side `TRANSPORT_FILE_ROW` (two shared gate files were
 `0664`); the first receiver attempt stopped at missing shared lock root
 (`JOURNAL_ROOT`). Those project-storage prerequisites were corrected without
 changing candidate bytes, and the retry is in real rsync transfer. No Slurm,
-Apptainer, CUDA, or Tiger workload evidence exists yet, so T012/T013 remain
-unchecked and no local MiniNDN PASS is promoted to Tiger qualification. See
+Apptainer, CUDA, or Tiger workload result was available at checkpoint time;
+the corrected candidate has since been accepted as Slurm job `210254`. T012/T013
+remain unchecked until its receipts pass, and no local MiniNDN PASS is promoted
+to Tiger qualification. See
 [tiger-deployment-diagnosis-v69](evidence/tiger-deployment-diagnosis-v69.md)
 and the failure log for the exact boundary and next gate.
 

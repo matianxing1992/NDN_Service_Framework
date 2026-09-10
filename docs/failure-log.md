@@ -25,6 +25,26 @@ transport modes, and a shared lock root before the same immutable candidate can
 reach Slurm. Diagnose sender/receiver boundary failures separately from runtime
 or MiniNDN behavior.
 
+## 2026-09-09 — Receiver rejected a non-executable Slurm wrapper
+
+Symptom: after the 331-file candidate was transferred and content-verified,
+the remote submit owner returned `SHARED_SUBMISSION:RUN_WRAPPER`. The received
+`bundle/jobs/yolo/run.sbatch` was mode `0444`, so `_submission_command` correctly
+refused to pass it to `sbatch`.
+
+Root cause: the earlier project-storage permission normalization treated every
+non-private file as read-only `0444` and accidentally removed the wrapper's
+execute bit. This was a staging metadata error; no SIF, APP, model, or harness
+bytes changed.
+
+Fix status: restored the wrapper to `0555` in both local and remote run roots;
+the transport plan retained the same candidate digest, and the next submit
+returned Slurm job `210254` (`SUBMITTED`).
+
+Lesson: transport immutability permits executable read-only files. Preserve the
+required execute mode for launchers while removing write bits from the frozen
+harness; validate the actual received mode before diagnosing runtime failures.
+
 ## 2026-09-08 — Planned request name differs from canonical V2 wire ID
 
 Fixture-fixed run e publishes its encrypted input and sends the V3 request,

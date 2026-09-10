@@ -12,6 +12,7 @@ Status at 2026-09-09: **transport retry in progress; no Tiger GPU verdict yet**.
 | Tiger transport | v69 first submit failed before SSH with `TRANSPORT_FILE_ROW`; two shared files had mode `0664`, outside the allowed set. After chmod to `0444`, the 331-file transport plan passed with candidate `sha256:b79c691e…4d30c4`. | Sender-side staging metadata was invalid; SIF bytes and APP bytes were unchanged. |
 | Tiger receiver bootstrap | The first real receiver attempt reached the frozen bootstrap and failed with `JOURNAL_ROOT`: declared `/project/tma1/ndnsf-di/locks` did not exist. | Remote project namespace configuration was incomplete; no Slurm or Apptainer workload ran. |
 | Tiger retry | The lock root was created with mode `0700`; the retry entered rsync and is transferring the immutable base SIF into `.incoming`. | The deployment has now passed the earlier config boundaries. GPU/Slurm outcome remains pending. |
+| Slurm submission | After correcting the received wrapper to executable read-only mode `0555`, the same candidate was accepted as Slurm job `210254` on the `bigTiger` RTX 6000 partition. | The transport/configuration boundary is now crossed; only the job's GPU execution verdict remains. |
 
 ## Diagnosis
 
@@ -20,8 +21,9 @@ configuration failures. They are not evidence of a broken SIF, APP, or MiniNDN
 graph. The first failure occurred before SSH; the second occurred in the
 receiver before site inspection and Slurm. MiniNDN/Tiger differences remain an
 unverified runtime risk (allocated CUDA/ORT, NFD socket, mounts, and scheduler),
-but they have not caused the observed failures because no workload reached
-those stages.
+but they have not caused the observed failures because the earlier failures
+were before workload execution. The submitted job is the first attempt that can
+produce such evidence.
 
 The focused transport/SSH/submit regression set passes 92 tests after the
 diagnosis, including rejection of invalid modes and journal roots. This checks
