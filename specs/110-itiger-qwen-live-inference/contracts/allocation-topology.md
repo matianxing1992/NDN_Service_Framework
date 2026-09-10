@@ -57,6 +57,18 @@ launcher records `SPEC110_PROCESS_HOME_READY` only after this setup. The
 offline `NDNSF_SPEC110_TEST_MODE=1` fixture path may bypass a non-existent
 identity source for fake binaries only and is not a deployment mode.
 
+If a process command carries the same `identityRef` as an explicit argv token
+(`--identity PATH` or `--identity=PATH`), the generated launcher rewrites that
+token to the process-specific runtime `HOME` after the copy. This prevents a
+real executable from reopening the shared read-only source and bypassing the
+isolated PIB/TPM. The original command remains digest-bound in the frozen map;
+the rewrite is a deterministic launcher binding.
+
+Every Provider process also verifies, before `exec`, that `nvidia-smi` reports
+the map's `gpuUuid` in the task's visible device set. Missing `nvidia-smi`, a
+failed query, or a UUID mismatch is a pre-exec failure. The test-mode fixture
+may bypass this hardware check only for fake binaries.
+
 ## Readiness order
 
 1. scratch, binds, SIF, GPU mapping;

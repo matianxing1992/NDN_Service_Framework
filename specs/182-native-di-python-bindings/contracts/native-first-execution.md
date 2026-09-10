@@ -63,6 +63,12 @@ keychain 环境。NFD 使用独立 scratch `HOME` 且不继承角色 keychain。
 身份源，但该开关不属于生产部署，也不能作为 T016/T017 资格证据。真实多机资格仍须在
 目标节点验证 identity、NFD TCP/UDP route、依赖库和工作目录的候选绑定。
 
+本轮静态复核还冻结了三个容易被 MiniNDN 掩盖的节点绑定：若命令参数再次携带
+`identityRef`，启动器必须把精确的 `--identity PATH`／`--identity=PATH` 参数改写为该进程
+专属 `HOME`；Provider 在 `exec` 前必须用 `nvidia-smi` 核对实际可见的 `gpuUuid`，不能只
+相信 `--gpu-bind` 的编号；TCP/UDP 诊断必须分别使用各自节点端口，不能用已选传输的端口
+冒充另一种传输。失败均停在 pre-exec/probe 边界，不得生成 READY 或资格 PASS。
+
 ## Independent Authority Boundary
 
 - **Owner**: 复用 `NativeArtifactGrantIssuer`/现有 policy、grant wire、签名和 recipient

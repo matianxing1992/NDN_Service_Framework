@@ -1,6 +1,6 @@
 # Tasks: Native NDNSF-DI with Optional Python Bindings
 
-**Revision**: 147 | **Status**: DRAFT / T001 DONE
+**Revision**: 148 | **Status**: DRAFT / T001 DONE
 **Input**: [spec](spec.md), [code design](contracts/code-design.md),
 [proof](contracts/proof-design.md), [work units](contracts/work-units.md)
 
@@ -46,6 +46,7 @@ R11-B8 现开始按 caller group 批次执行；G4 已形成 native checkpoint h
 | [R11-B8-G11 Native Provider Co-location](evidence/r11-b8-g11-provider-colocation-20260910.md) | CLOSED_FOR_VALIDATION | R11-B8-G10; placement/sealing/group projection contracts | **C++ primary:** 修复 placement→sealing→role-specific grant→projection→group capability 链中的隐含 one-role-per-Provider 假设；按 Provider 去重 admitted offers，允许容量约束内 co-location，单 Provider dependency 使用受保护的一成员 group；GPU 保持不同 device/累计显存门，reservation 溢出 fail closed。新增 co-location group 与多设备 selector；`Spec182*` 258/7099 两次通过。仅关闭 C++ placement boundary，maintained callers、独立部署、no-Python、MiniNDN 与 T016/T017 仍开放 | 2026-09-10 |
 | [R11-B8-G12 Native Provider Identity Binding](evidence/r11-b8-g12-provider-identity-binding-20260910.md) | CLOSED_FOR_VALIDATION | R11-B8-G11; Provider host/lease contract | **C++ primary:** Provider host 在创建共享 lease/target 前要求 `localProviderName` 为合法且非空的 NDN name、与底层 `ServiceProvider` identity 精确相等，并要求非空 `providerBootId`；等价 URI 持久化为 canonical provider name。missing/foreign identity、missing boot 与 valid retry selector 通过；fresh unit 190/190 build，host 8/8 cases、67/67 assertions，完整 `Spec182*` 259/259 cases、7104/7104 assertions 通过。仅关闭 host identity boundary，maintained callers、独立部署、no-Python、MiniNDN 与 T016/T017 仍开放 | 2026-09-10 |
 | [R11-B8-G13 Multi-Machine Runtime Boundary](evidence/r11-b8-g13-multinode-deployment-boundary-20260910.md) | CLOSED_FOR_VALIDATION | R11-B8-G12; Spec110 topology contract | **Deployment harness:** 修复 Slurm topology launcher 未消费 `identityRef` 和隐式 CWD 的缺口；每个非 NFD 进程在节点 scratch 建立专属可写 HOME，复制只读 `.ndn`，显式设置 PIB/TPM/transport，NFD 清除 keychain 环境；`--workdir` 必填并在 exec 前验证、`cd`；同时拒绝 process/identity 路径穿越。12/12 topology unit、真实 launcher identity-copy/env probe、network script 和 shell syntax 通过。该卡不推进 T013 caller、T014 dependency closure 或 T016/T017；真实多机 SIF/route 资格仍未运行 | 2026-09-10 |
+| [R11-B8-G14 Multi-Machine Binding Revalidation](evidence/r11-b8-g14-multinode-binding-revalidation-20260910.md) | CLOSED_FOR_VALIDATION | R11-B8-G13; Spec110 topology contract | **Deployment harness:** 修复三个会在真实节点与 MiniNDN 产生分歧的绑定缺口：命令中的 `identityRef` 参数改写到进程专属 `HOME`；Provider `exec` 前核对 `nvidia-smi` 可见 `gpuUuid`；TCP/UDP 诊断分别使用各自节点端口。14/14 topology unit（含错误 UUID 失败）、网络脚本、Python/Bash 静态检查通过。真实 SIF/Slurm 多机、15 caller、no-Python、T016/T017 仍未关闭 | 2026-09-10 |
 | [R11-B8 Maintained Callers](contracts/native-first-execution.md#dispatch-cards) | PARTIAL | R11-B7; corresponding T012 ABI | G1 generic unary 与 G2 generic stream 已形成稳定出口；仍需 15 个 caller group 的 native entry、实际行为、兼容 wrapper 及旧路径零使用证据，不能按子批次数量计全量完成 | 2026-09-10 |
 | [R11-B9 Native Closure](contracts/native-first-execution.md#dispatch-cards) | NOT_STARTED | R11-B8 | T014 no-Python/依赖闭包工具 → T015 → T016 → T017；最终资格未开始 | 2026-09-10 |
 

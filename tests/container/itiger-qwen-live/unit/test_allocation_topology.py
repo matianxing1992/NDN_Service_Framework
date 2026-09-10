@@ -114,6 +114,52 @@ class AllocationTopologyTest(unittest.TestCase):
             0,
         )
 
+    def test_process_launcher_rebinds_explicit_identity_argument(self) -> None:
+        value = load("single-node.json")
+        controller = copy.deepcopy(next(row for row in value["processes"] if row["kind"] == "controller"))
+        controller["command"] = ["App_ServiceController", "--identity", controller["identityRef"]]
+        rendered = topology.render_process_launcher(
+            controller, "/tmp/ndnsf-di-test-launcher", "/project/tma1/ndnsf-di/bundle"
+        )
+        self.assertIn('exec App_ServiceController --identity "$runtime_home"', rendered)
+        self.assertNotIn("exec App_ServiceController --identity /project/", rendered)
+        controller["command"] = ["App_ServiceController", "--identity=" + controller["identityRef"]]
+        rendered = topology.render_process_launcher(
+            controller, "/tmp/ndnsf-di-test-launcher", "/project/tma1/ndnsf-di/bundle"
+        )
+        self.assertIn('exec App_ServiceController --identity="$runtime_home"', rendered)
+
+    def test_provider_launcher_rejects_wrong_visible_gpu_uuid(self) -> None:
+        value = load("multi-node-tcp.json")
+        provider = next(row for row in value["processes"] if row["kind"] == "provider")
+        with tempfile.TemporaryDirectory(prefix="spec110-identity-") as source_dir, \
+             tempfile.TemporaryDirectory(prefix="ndnsf-di-") as scratch_dir, \
+             tempfile.TemporaryDirectory(prefix="spec110-bin-") as bin_dir:
+            source = Path(source_dir)
+            (source / ".ndn").mkdir()
+            (source / ".ndn/pib.db").write_text("source-pib")
+            (source / ".ndn/ndnsec-key-file").mkdir()
+            fake = Path(bin_dir) / "di-native-provider"
+            sentinel = Path(scratch_dir) / "provider-ran"
+            fake.write_text(f"#!/bin/sh\ntouch {shlex.quote(str(sentinel))}\n")
+            fake.chmod(0o700)
+            smi = Path(bin_dir) / "nvidia-smi"
+            smi.write_text("#!/bin/sh\nprintf '%s\\n' GPU-WRONG\n")
+            smi.chmod(0o700)
+            rendered = topology.render_process_launcher(provider, scratch_dir, source_dir)
+            rendered = rendered.replace(
+                "identity_source=" + shlex.quote(provider["identityRef"]),
+                "identity_source=" + shlex.quote(str(source)),
+            )
+            result = subprocess.run(
+                ["bash"], input=rendered, text=True,
+                env={"PATH": f"{bin_dir}:/usr/bin:/bin", "HOME": "/ambient-home"},
+                capture_output=True, check=False,
+            )
+            self.assertEqual(8, result.returncode)
+            self.assertIn("SPEC110_GPU_UUID_MISMATCH", result.stderr)
+            self.assertFalse(sentinel.exists())
+
     def test_process_launcher_copies_read_only_identity_before_exec(self) -> None:
         value = load("multi-node-tcp.json")
         provider = next(row for row in value["processes"] if row["kind"] == "provider")
@@ -145,6 +191,11 @@ class AllocationTopologyTest(unittest.TestCase):
                 "NDN_CLIENT_TPM": "tpm-file:/ambient/tpm",
                 "SPEC110_OBSERVATION": str(observation),
             }
+            smi = Path(bin_dir) / "nvidia-smi"
+            smi.write_text(
+                "#!/bin/sh\nprintf '%s\\n' " + shlex.quote(provider["gpuUuid"]) + "\n"
+            )
+            smi.chmod(0o700)
             result = subprocess.run(
                 ["bash"], input=rendered, text=True, env=environment,
                 capture_output=True, check=False,
