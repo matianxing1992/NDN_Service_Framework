@@ -1300,6 +1300,44 @@ NativeProviderRuntime::executeRoleAsync(std::string sessionId,
                                         RoleExecutionContext::StreamEventSink eventSink,
                                         std::function<void()> executionGuard)
 {
+  return executeRoleAsyncImpl(std::move(sessionId), std::move(role),
+                              std::move(io), nullptr, {},
+                              std::move(initialInputsByScope),
+                              std::move(eventSink), std::move(executionGuard));
+}
+
+std::future<ProviderRoleResult>
+NativeProviderRuntime::executePreparedRoleAsync(
+  std::string sessionId,
+  RoleSpec role,
+  std::shared_ptr<DependencyIo> io,
+  ProviderRoleWorker::NativeRunnerPreparation prepareRunner,
+  std::map<std::string, TensorBundle> initialInputsByScope,
+  RoleExecutionContext::StreamEventSink eventSink,
+  std::function<void()> executionGuard)
+{
+  if (!prepareRunner) {
+    throw std::invalid_argument(
+      "NativeProviderRuntime requires a runner preparation callback");
+  }
+  return executeRoleAsyncImpl(std::move(sessionId), std::move(role),
+                              std::move(io), nullptr,
+                              std::move(prepareRunner),
+                              std::move(initialInputsByScope),
+                              std::move(eventSink), std::move(executionGuard));
+}
+
+std::future<ProviderRoleResult>
+NativeProviderRuntime::executeRoleAsyncImpl(
+  std::string sessionId,
+  RoleSpec role,
+  std::shared_ptr<DependencyIo> io,
+  std::shared_ptr<NativeModelRunner> preparedRunner,
+  ProviderRoleWorker::NativeRunnerPreparation prepareRunner,
+  std::map<std::string, TensorBundle> initialInputsByScope,
+  RoleExecutionContext::StreamEventSink eventSink,
+  std::function<void()> executionGuard)
+{
   if (executionGuard) executionGuard();
   const auto timelineRequestId = role.requestId.empty()
     ? "/ndnsf-di/session/" + sessionId
@@ -1309,8 +1347,12 @@ NativeProviderRuntime::executeRoleAsync(std::string sessionId,
     {{"sessionId", sessionId},
      {"role", role.role},
      {"attemptEpoch", std::to_string(role.attemptEpoch)}});
-  auto runner = findRunner(role.role);
-  const bool expectsOpaqueStateHandle = runner->supportsOpaqueStateHandles();
+  auto runner = std::move(preparedRunner);
+  if (!runner && !prepareRunner) {
+    runner = findRunner(role.role);
+  }
+  const bool expectsOpaqueStateHandle =
+    runner && runner->supportsOpaqueStateHandles();
   const auto runnerSpec = findRunnerSpec(role.role);
   const bool stateful = !role.stateInputNames.empty() ||
                         !role.stateOutputNames.empty();
@@ -1323,11 +1365,17 @@ NativeProviderRuntime::executeRoleAsync(std::string sessionId,
       throw std::invalid_argument(
         "Provider decode-state input/output metadata length mismatch");
     }
-    if (!runnerSpec.has_value()) {
+    if (!runnerSpec.has_value() && !role.candidateDecodeStateIdentity) {
       throw std::invalid_argument(
         "Provider stateful role requires registered runner metadata");
     }
-    stateBinding = decodeStateBindingFor(*runnerSpec, sessionId, role);
+    const NativeModelRunnerSpec emptyRunnerSpec;
+    stateBinding = decodeStateBindingFor(
+      runnerSpec ? *runnerSpec : emptyRunnerSpec, sessionId, role);
+    if (!runnerSpec && role.candidateDecodeStateIdentity) {
+      m_decodeStateStore.setProviderBootId(
+        role.candidateDecodeStateIdentity->providerBootId);
+    }
     if (role.conversationStateBinding) {
       if (role.inferenceEpoch != 0 ||
           role.conversationStateLookupNowMs == 0 ||
@@ -1411,13 +1459,18 @@ NativeProviderRuntime::executeRoleAsync(std::string sessionId,
      {"attemptEpoch", std::to_string(role.attemptEpoch)}});
   std::future<ProviderRoleResult> workerFuture;
   try {
-    workerFuture = m_worker.executeAsync(sessionId,
-                                         role,
-                                         std::move(io),
-                                         std::move(runner),
-                                         std::move(initialInputsByScope),
-                                         std::move(eventSink),
-                                         executionGuard);
+    if (prepareRunner) {
+      workerFuture = m_worker.executePreparedAsync(
+        sessionId, role, std::move(io), std::move(prepareRunner),
+        std::move(initialInputsByScope), std::move(eventSink),
+        executionGuard);
+    }
+    else {
+      workerFuture = m_worker.executeAsync(
+        sessionId, role, std::move(io), std::move(runner),
+        std::move(initialInputsByScope), std::move(eventSink),
+        executionGuard);
+    }
   }
   catch (...) {
     if (predecessorBinding &&
@@ -1504,39 +1557,6 @@ NativeProviderRuntime::executeRoleAsync(std::string sessionId,
         throw;
       }
     });
-}
-
-std::future<ProviderRoleResult>
-NativeProviderRuntime::executePreparedRoleAsync(
-  std::string sessionId,
-  RoleSpec role,
-  std::shared_ptr<DependencyIo> io,
-  ProviderRoleWorker::NativeRunnerPreparation prepareRunner,
-  std::map<std::string, TensorBundle> initialInputsByScope,
-  RoleExecutionContext::StreamEventSink eventSink,
-  std::function<void()> executionGuard)
-{
-  const auto timelineRequestId = role.requestId.empty()
-    ? "/ndnsf-di/session/" + sessionId
-    : role.requestId;
-  logDiTimelineTrace(
-    "di-provider", "role_validation_start", timelineRequestId,
-    {{"sessionId", sessionId},
-     {"role", role.role},
-     {"attemptEpoch", std::to_string(role.attemptEpoch)}});
-  if (!prepareRunner) {
-    throw std::invalid_argument(
-      "NativeProviderRuntime requires a runner preparation callback");
-  }
-  logDiTimelineTrace(
-    "di-provider", "role_validation_done", timelineRequestId,
-    {{"sessionId", sessionId},
-     {"role", role.role},
-     {"attemptEpoch", std::to_string(role.attemptEpoch)}});
-  return m_worker.executePreparedAsync(
-    std::move(sessionId), std::move(role), std::move(io),
-    std::move(prepareRunner), std::move(initialInputsByScope),
-    std::move(eventSink), std::move(executionGuard));
 }
 
 ProviderRoleWorkerSnapshot
@@ -1825,10 +1845,12 @@ NativeProviderRuntime::commitDecodeStateTransition(
   const RoleSpec& role)
 {
   const auto runnerSpec = findRunnerSpec(role.role);
-  if (!runnerSpec) {
+  if (!runnerSpec && !role.candidateDecodeStateIdentity) {
     return false;
   }
-  const auto binding = decodeStateBindingFor(*runnerSpec, sessionId, role);
+  const NativeModelRunnerSpec emptyRunnerSpec;
+  const auto binding = decodeStateBindingFor(
+    runnerSpec ? *runnerSpec : emptyRunnerSpec, sessionId, role);
   if (!m_decodeStateStore.commitCandidate(binding)) {
     ++m_decodeStateCommitFailures;
     return false;
@@ -1843,10 +1865,12 @@ NativeProviderRuntime::rollbackDecodeStateTransition(
   const RoleSpec& role)
 {
   const auto runnerSpec = findRunnerSpec(role.role);
-  if (!runnerSpec) {
+  if (!runnerSpec && !role.candidateDecodeStateIdentity) {
     return false;
   }
-  const auto binding = decodeStateBindingFor(*runnerSpec, sessionId, role);
+  const NativeModelRunnerSpec emptyRunnerSpec;
+  const auto binding = decodeStateBindingFor(
+    runnerSpec ? *runnerSpec : emptyRunnerSpec, sessionId, role);
   if (!m_decodeStateStore.rollbackTransition(binding)) {
     return false;
   }

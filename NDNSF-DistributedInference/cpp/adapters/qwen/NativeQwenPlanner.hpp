@@ -28,7 +28,9 @@ public:
     std::vector<std::string> roles = {
       "/LLM/Pipeline/Stage/0", "/LLM/Pipeline/Stage/1",
       "/LLM/Pipeline/Stage/2"},
-    std::vector<std::uint64_t> tensorDegrees = {1, 1, 1});
+    std::vector<std::uint64_t> tensorDegrees = {1, 1, 1},
+    std::string inputIngressRole = {},
+    std::string resultEgressRole = {});
 
   NativeStrategyIdentity identity() const override;
   /** Build the maintained semantic graph from pinned model metadata. This is
@@ -48,6 +50,8 @@ private:
   std::map<std::string, std::uint64_t> m_weightBytesByRole;
   std::vector<std::string> m_roles;
   std::vector<std::uint64_t> m_tensorDegrees;
+  std::string m_inputIngressRole;
+  std::string m_resultEgressRole;
 };
 
 } // namespace ndnsf::di::qwen

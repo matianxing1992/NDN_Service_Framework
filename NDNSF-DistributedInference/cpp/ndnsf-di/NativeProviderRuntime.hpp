@@ -452,6 +452,17 @@ public:
                      const std::string& role);
 
 private:
+  std::future<ProviderRoleResult>
+  executeRoleAsyncImpl(
+    std::string sessionId,
+    RoleSpec role,
+    std::shared_ptr<DependencyIo> io,
+    std::shared_ptr<NativeModelRunner> runner,
+    ProviderRoleWorker::NativeRunnerPreparation prepareRunner,
+    std::map<std::string, TensorBundle> initialInputsByScope,
+    RoleExecutionContext::StreamEventSink eventSink,
+    std::function<void()> executionGuard);
+
   std::shared_ptr<NativeModelRunner>
   findRunner(const std::string& role) const;
 

@@ -1,6 +1,6 @@
 # Tasks: Native NDNSF-DI with Optional Python Bindings
 
-**Revision**: 123 | **Status**: DRAFT / T001 DONE
+**Revision**: 124 | **Status**: DRAFT / T001 DONE
 **Input**: [spec](spec.md), [code design](contracts/code-design.md),
 [proof](contracts/proof-design.md), [work units](contracts/work-units.md)
 
@@ -19,7 +19,7 @@
 | [D-NATIVE-FIRST Replan](evidence/native-first-replan-20260910.md) | DONE | User execution-order decision | 文档依赖/链接、旧勾选状态、11/11 workflow 同步及双 PDF 构建检查通过；产品 NOT_RUN | 2026-09-10 |
 | [R11-B1 Independent Authority](contracts/native-first-execution.md#dispatch-cards) | CLOSED_FOR_VALIDATION | T001 valid closure; existing T005 implementation | C++ 独立 authority/requester process 经真实 NFD/Controller 通过 1 正例、5 个 Authority handler 拒绝例和 1 个 authority 不可达超时；bwrap requester 隔离、角色 PIB/TPM 快照与 C++ grant 验证通过。T005 父任务、R11-B2 及完整 Spec qualification 仍未关闭 | 2026-09-10 |
 | [R11-B2 Native Unary Process](contracts/native-first-execution.md#dispatch-cards) | CLOSED_FOR_VALIDATION | R11-B1; existing T008/T009/T010 implementation | 独立 C++ DI_NativeRequester / authority / di-native-provider；真实 ACK/Selection/handler/Response、受保护 grant、ONNX Runtime CPU evidence 和 C++ numerical oracle `[4,0,12]`；Provider 缺 role 的拒绝例也 fail-closed。T010 父任务、R11-B3 及完整 Spec qualification 仍未关闭 | 2026-09-10 |
-| [R11-B3 Native Stream Process](contracts/native-first-execution.md#dispatch-cards) | NOT_STARTED | R11-B2 | 同一生产链的有序事件、final、gap/timeout/重复/错 generation | 2026-09-10 |
+| [R11-B3 Native Stream Process](contracts/native-first-execution.md#dispatch-cards) | CLOSED_FOR_VALIDATION | R11-B2 | 独立 C++ requester/Core/Provider process 通过 8 个有序 token 事件、final response、grant verification、post-selection preparation、decode-state commit 和 CPU ORT execution；C++ oracle 与构建/单测/集成证据已记录。gap/timeout/重复/错 generation、父 T010/T011 及完整 qualification 仍未关闭 | 2026-09-10 |
 | [R11-B4 Native Continuation Process](contracts/native-first-execution.md#dispatch-cards) | NOT_STARTED | R11-B3 | 两轮 FULL_CONTEXT→APPEND_DELTA、真实 receipt/control/journal、错 parent | 2026-09-10 |
 | [R11-B5 Native Recovery Process](contracts/native-first-execution.md#dispatch-cards) | NOT_STARTED | R11-B4 | 真实中断/重启与状态恢复或明确拒绝，无重复提交 | 2026-09-10 |
 | [R11-B6 Native Replacement Process](contracts/native-first-execution.md#dispatch-cards) | NOT_STARTED | R11-B5 | 第二独立 Provider 成功替换、旧 attempt fencing、无候选失败 | 2026-09-10 |
@@ -282,6 +282,16 @@ P1–P4 是不同的生产入口、进程边界或 selector，不能为了少一
 | R10-B76 | production entry/callers: compatibility manifest → maintained Python API inventory; implementation/wire: `checklists/build_api_migration_manifest.py` regenerated all 344 entries and rebounded source line/hash metadata to checkpoint `31fe172a`; test/harness/oracle: generator output, `sourceCommit` equality, design validator and diff check; build/source closure: manifest-only, no ABI or runtime change; migration/evidence: closes stale provenance from R10-B74 while semantic caller mapping, native default migration and legacy retirement remain open | DONE for this bounded manifest provenance boundary; parent T001/O-004/T013-B remain PARTIAL | static review confirms current HEAD identity and 344-entry coverage; manifest remains routing evidence and cannot promote runtime compatibility or qualification | generator PASS (`entries=344`, `dynamicAppSdk=67`); sourceCommit equality PASS; `validate_design.py --json` PASS; `git diff --check` PASS | no product build, requester/Provider transport, maintained caller/no-Python or T016/T017 run | documentation/generator artifact only | `STATIC_PASS`; `FOCUSED_BEHAVIOR_PASS`; `BUILD_NOT_APPLICABLE`; `OPEN_FOR_NEXT_BATCH`; not `QUALIFICATION_PASS` | [R10-B76 evidence](evidence/r10-b76-compatibility-manifest-refresh-20260909.md); next: map and migrate maintained native callers, then regenerate after each source checkpoint |
 
 ## Current Checkpoint
+
+2026-09-10 R11-B3 native stream process / **CLOSED_FOR_VALIDATION**（仅限独立
+process 的 C++ streaming 出口）：`DI_NativeRequester`、Core、`di-native-provider` 经私有
+NFD/Controller 完成真实授权、Selection、Provider 装配和 ORT CPU 执行；C++ requester 收到
+有序 token `[4,5,6,7,8,9,10,2]` 的 8 个事件并通过最终结果 oracle，Provider 同时输出 grant
+verification 与真实 execution evidence。准备 runner、decode-state commit、事件 digest 和
+状态序号接线均由 C++ 生产代码承担；Python 驱动只负责私有进程、身份、配置和生命周期。
+详见 [R11-B3 evidence](evidence/r11-b3-native-stream-process-20260910.md)。gap/timeout/
+duplicate/wrong-generation 负例、continuation/recovery/replacement/cleanup、maintained
+callers、no-Python、T010--T017 仍未关闭。
 
 2026-09-10 R11-B2 native unary process / **CLOSED_FOR_VALIDATION**（仅限本地
 process 出口）：独立 Controller、artifact authority、DI_NativeRequester 和 di-native-provider

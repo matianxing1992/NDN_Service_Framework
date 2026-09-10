@@ -57,7 +57,8 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
       split.at("layer_ranges").get<std::vector<qwen::NativeQwenLayerSplit::LayerRange>>(),
       split.at("artifact_digests_by_role").get<std::map<std::string, std::string>>(),
       split.at("weight_bytes_by_role").get<std::map<std::string, std::uint64_t>>(),
-      split.at("roles").get<std::vector<std::string>>(), split.at("tensor_degrees").get<std::vector<std::uint64_t>>());
+      split.at("roles").get<std::vector<std::string>>(), split.at("tensor_degrees").get<std::vector<std::uint64_t>>(),
+      split.value("input_ingress_role", std::string{}), split.value("result_egress_role", std::string{}));
     model.graph = strategy->inspectGraph(model.descriptor, model.descriptor.sourceRevision, entry.recipe.maxNodes);
     result.splitter = std::move(strategy);
   }

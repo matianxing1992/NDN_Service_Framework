@@ -544,8 +544,16 @@ assembleCertifiedOnnxChain(const NativeCanonicalSource& source,
     dfsReachNodes(contract.name, graphInputNames, inferredGraph.node(),
                   unreachable, reachable);
   std::vector<std::size_t> selectedNodes;
-  selectedNodes.reserve(reachable.size());
-  for (const std::size_t index : reachable) selectedNodes.push_back(index);
+  // The certified recipe owns the complete node cover for this role.  Output
+  // reachability still determines the required execution subgraph, but a
+  // valid source may contain certified side-effect-free nodes that are not on
+  // a path to one of the declared outputs.  Retain those explicitly selected
+  // nodes so the assembled graph remains byte-identical to the authenticated
+  // cover instead of silently changing the recipe identity.
+  std::set<std::size_t> selectedAndReachable(reachable.begin(), reachable.end());
+  selectedAndReachable.insert(selected.begin(), selected.end());
+  selectedNodes.reserve(selectedAndReachable.size());
+  for (const std::size_t index : selectedAndReachable) selectedNodes.push_back(index);
   std::sort(selectedNodes.begin(), selectedNodes.end());  // original order
   const auto inputs = collectBoundaryIo(inferredGraph.input(),
                                         inferredGraph.value_info(),

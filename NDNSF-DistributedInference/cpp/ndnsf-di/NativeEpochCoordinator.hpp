@@ -63,6 +63,10 @@ struct NativeEpochCoordinatorConfig
   std::string localProvider;
   std::string role;
   std::map<std::string, TensorBundle> initialInputs;
+  // DATA_DRIVEN_V2 prepares the runner only after authenticated Selection.
+  // Carry that callback through each epoch instead of looking for a
+  // metadata-only startup runner in NativeProviderRuntime.
+  ProviderRoleWorker::NativeRunnerPreparation prepareRunner;
   std::string finalResponseScope = "final-response";
   std::size_t maxEpochs = 0;
   std::string tokenInputName = "input_ids";

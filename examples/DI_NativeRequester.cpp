@@ -231,6 +231,33 @@ int main(int argc, char** argv)
         std::max<std::size_t>(16, maxTokens + 1));
       options.stream->reorderCapacity = options.stream->interestWindow;
     }
+    std::vector<std::int64_t> streamOracleExpected;
+    std::vector<std::int64_t> streamOracleObserved;
+    if (config.contains("stream_oracle")) {
+      if (runtime.contract.generationMode != "TOKEN_STREAMING")
+        throw std::invalid_argument("stream_oracle requires TOKEN_STREAMING");
+      const auto& oracle = config.at("stream_oracle");
+      if (!oracle.is_object() || !oracle.contains("token_ids") ||
+          !oracle.at("token_ids").is_array())
+        throw std::invalid_argument("stream_oracle.token_ids must be an array");
+      streamOracleExpected = oracle.at("token_ids").get<std::vector<std::int64_t>>();
+      if (streamOracleExpected.empty())
+        throw std::invalid_argument("stream_oracle.token_ids must not be empty");
+      options.onGenerationEvent = [&streamOracleExpected, &streamOracleObserved] (
+                                    const std::vector<std::uint8_t>& bytes) {
+        const auto event = nativeParseJson(std::string(bytes.begin(), bytes.end()));
+        if (!event.is_object() || event.value("schema", std::string{}) != "GenerationTokenEventV1" ||
+            !event.contains("tokenId") || !event.at("tokenId").is_number_integer() ||
+            !event.contains("tokenEpoch") || !event.at("tokenEpoch").is_number_unsigned())
+          throw std::runtime_error("NATIVE_STREAM_ORACLE_FAILED: malformed event");
+        const auto index = streamOracleObserved.size();
+        if (index >= streamOracleExpected.size() ||
+            event.at("tokenId").get<std::int64_t>() != streamOracleExpected[index] ||
+            event.at("tokenEpoch").get<std::uint64_t>() != index + 1)
+          throw std::runtime_error("NATIVE_STREAM_ORACLE_FAILED: event sequence mismatch");
+        streamOracleObserved.push_back(event.at("tokenId").get<std::int64_t>());
+      };
+    }
     std::signal(SIGINT, onSignal); std::signal(SIGTERM, onSignal);
     user->init();
     // User permissions are an explicit Controller-signed input to the Core
@@ -292,6 +319,18 @@ int main(int argc, char** argv)
       for (std::size_t i = 0; i < expected.size(); ++i)
         std::cout << (i == 0 ? "" : ",") << expected[i];
       std::cout << '\n';
+    }
+    if (config.contains("stream_oracle")) {
+      const auto value = nativeParseJson(std::string(result.payload.begin(), result.payload.end()));
+      const auto expected = config.at("stream_oracle").at("token_ids").get<std::vector<std::int64_t>>();
+      if (!value.is_object() || value.value("schema", std::string{}) != "NDNSF-DI-FINAL-V1" ||
+          !value.contains("tokenIds") || value.at("tokenIds").get<std::vector<std::int64_t>>() != expected ||
+          streamOracleObserved != expected)
+        throw std::runtime_error("NATIVE_STREAM_ORACLE_FAILED: final sequence mismatch");
+      std::cout << "NATIVE_STREAM_ORACLE_PASS tokens=";
+      for (std::size_t i = 0; i < expected.size(); ++i)
+        std::cout << (i == 0 ? "" : ",") << expected[i];
+      std::cout << " events=" << streamOracleObserved.size() << '\n';
     }
     std::cout << "NATIVE_REQUEST_SUCCEEDED request=" << handle.requestId() << " plan=" << result.planDigest << '\n';
     return 0;
