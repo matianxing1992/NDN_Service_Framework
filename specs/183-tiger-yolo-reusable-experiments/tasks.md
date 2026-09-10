@@ -2,20 +2,22 @@
 
 **Input**: [spec.md](spec.md), [plan.md](plan.md), [profile contract](contracts/experiment-profile.md), [validation matrix](validation-matrix.md)
 **Branch**: `TigerClusterExperiments`
-**Status**: IN_PROGRESS. Exact-SIF MiniNDN/local CPU evidence is green for the
-v22 base + v32 layered APP (latest v79); the real Tiger v80 run passed
-staging/CUDA/four-Provider startup but failed at the User's NFS journal lock
-before any YOLO response. No `SINGLE_NODE_GPU_PASS` or two-node qualification
-exists. APP v33 contains the journal fix and is staged, but its candidate-bound
-local/host gate must be refreshed before the next Tiger run. Standalone C++
-NDN/SIF diagnostic passed in Tiger job 209981.
+**Status**: IN_PROGRESS. APP v33 with the unchanged v22 base has green
+exact-SIF MiniNDN Y-B/Y-N, host-gate, and remote local-cpu evidence (latest v91
+and v33i). Tiger job `210316` passed staging, CUDA visibility, and all four
+Provider readiness gates, then failed before placement because native V3 ACKs
+contained `resources:[]`; no `SINGLE_NODE_GPU_PASS` or two-node qualification
+exists. The native offer fix is committed, but APP v34 and fresh candidate-bound
+gates are required before a new Tiger allocation. Standalone C++ NDN/SIF
+diagnostic passed in Tiger job 209981.
 
 ## Detailed Execution Progress
 
-当前检查点：[分层本地启动实证](evidence/layered-local-startup.md)。修复后的基础
-SIF与外置DI应用已通过精确组合闭包；v13 local-cpu 在持久Provider进程中完成
-warmup+measured 两次请求，均返回数值结果并通过 oracle 比较。该证据仍限于本机
-CPU 执行，不能关闭 MiniNDN、GPU 或 TigerCluster 资格门。
+当前检查点：[APP v33 exact-SIF local](evidence/minindn-local-v91-v33.md)。不变的
+v22 base SIF 与外置 APP v33 已通过组合闭包、Y-B/Y-N、host gate 和远端
+local-cpu；真实 Tiger job `210316` 在四 Provider ready 后因空 CUDA resource
+rows 停在 placement 前。该证据仍不能关闭 GPU 或 TigerCluster 资格门；下一步
+是 APP-only v34、重新 gate 和新 allocation。
 
 新增检查点：[v25 exact-SIF MiniNDN Y-B](evidence/minindn-v25-exact-sif-yb.md)。
 同一基础 SIF 与外置应用在真实 MiniNDN 进程边界完成正常 Y-B：T010_DONE、四 ACK、
@@ -538,17 +540,17 @@ T001–T004形成 profile/launcher 实现骨架；可操作 MVP 还要求 T006 �
 
 ## Current Checkpoint
 
-2026-09-10 Tiger v69–v84 deployment checkpoint: v79 is a historical exact-SIF
-local CPU `NORMAL_EXPERIMENT_PASS` for v32. Real Tiger job `210273` (v80)
-passed exact SIF/hash/capacity/socket checks, observed CUDA device 0 and started
+2026-09-10 Tiger v85–v91 deployment checkpoint: APP v33 with the unchanged v22
+base passed the refreshed host gate, exact-SIF Y-B/Y-N matrix, and remote
+local-cpu `NORMAL_EXPERIMENT_PASS`. Real Tiger job `210316` passed exact
+SIF/hash/capacity/socket checks, observed CUDA device 0, and started
 BackboneNeck/DetectShard0/DetectShard1 with `onnxruntime-cuda` plus CPU Merge;
-the User then failed `RuntimeJournalLockError` because NFS rejects exclusive
-flock on the old read-only descriptor. `runtime_journal.py` now uses `r+b`, and
-APP v33 was rebuilt against the unchanged base SIF. T012.b/T013.a remain open:
-v81 correctly rejected reuse of the old v79 local gate, while v83/v84 could not
-refresh it from the login node's missing/mismatched Apptainer installation.
-No numerical Tiger YOLO response or `SINGLE_NODE_GPU_PASS` exists. The next gate
-is a fresh v33 local/host gate followed by one shared-layout Tiger allocation.
+the User then stopped before placement because every native V3 ACK contained
+`resources:[]`. The native offer now signs provider-owned CUDA
+`cudaMemGetInfo` rows, and the APP-only fix is committed. T012.b/T013.a remain
+open: build APP v34, refresh its candidate-bound gates, and use one new
+shared-layout Tiger allocation. No numerical Tiger YOLO response or
+`SINGLE_NODE_GPU_PASS` exists; job 210316 must not be reused.
 See [Tiger deployment diagnosis](evidence/tiger-deployment-diagnosis-v69.md)
 and the failure log for exact commands and first-failure boundaries.
 
