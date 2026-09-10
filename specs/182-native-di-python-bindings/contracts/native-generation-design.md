@@ -8,6 +8,8 @@
 
 本契约收敛A7-10复用边界，冻结A7-09的采样修复语义；A7-08流式状态设计和O-004完整迁移清单继续OPEN。不以库API存在推断当前模型包兼容，也不以设计决策代替产品验证。
 
+A7-10在本轮定义了明确的默认生产边界：ORT C++原生推理能力为主路径，GenAI能力只做对照；完整decode、GenAI tokenizer/generator与采样入口都不得作为“默认替代”进入生产状态。
+
 | Concern | Direct reuse | Adaptation / decision |
 | --- | --- | --- |
 | Tensor execution | 现有ORT Session、CUDA EP | 保留OnnxRuntimeModelRunner的tensor/role接口，不另建算子或GPU引擎 |
@@ -28,9 +30,18 @@
 | HF Rust tokenizer (Rust binding + C ABI) | **Adaptation layer** | 专用桥接保持decode/encode参数语义、所有权和panic/error映射；不重建tokenization实现 |
 | GenAI OgaTokenizer/OgaTokenizerStream | **Need explicit per-capability decision**：当前不作为默认生产路径；作为能力对照保留，不承诺跨版本行为 | 仅在独立评估中比较接口可见性；除非给出add/skip特殊参数和稳定stream语义的完整证据，否则不纳入生产编排 |
 | GenAI OgaGenerator / Search | **Custom required (small scope only)**，只用作未来候选 | 不能直接成为当前生产状态owner；不复制完整GenAI状态机，不替代现有NDNSF epoch/commit/lineage 责任 |
-| stream prefix text | **Custom required at API boundary only** | 不采用“完整decode即稳定prefix”替代；`NativeGenerationTextDecoders`须明确full/decodeStable职责边界并由O-004/O-007闭环 |
+| stream prefix text | **Custom required at API boundary only** | 不采用“完整decode即稳定prefix”替代；`NativeGenerationTextDecoders`须明确full/decodeStable职责边界并由O-004/O-007闭环；任何把完整decode切片化当stream的路径默认为不合格（noncompliant） |
 
 这张表用于防止“按是否能调用某个库接口”直接判断兼容性：任何未列入本表决议、或跨进程状态owner变化的路径都默认不进入本轮生产路径。
+
+### No Hidden Rewrite boundary (A7-10)
+
+默认路径与能力边界如下：
+
+- **Direct production call**：`Ort::Session`/`Ort::SessionOptions`/CUDA EP/`onnx::Session`路径继续作为生成/推理执行主路。
+- **Capability comparison only**：`OgaTokenizer`、`OgaTokenizerStream`、`OgaGenerator`、`Search`仅用于能力对照，不进入默认生产控制面。
+- **No-hidden-rewrite rule**：`decode(ids)`与`decodeStable(ids, final)`必须有不同调用边界与调用契约；不得以一处调用替代另一路径。
+
 
 ### No Shortcuts closure gates (A7-08 / A7-09)
 
@@ -62,10 +73,12 @@
 
 **目标**：`sampleToken`与Python 参考（`tests/fixtures/spec182/dependency-probes/check-generation-reference.py`中等价逻辑）在输入域内行为一致。
 
+- 该语义是 T007/T011 的实现约束，不是“任意两入口同步产生相同错误分布”。
+
 1. `generated` 在惩罚阶段按**去重ID**应用惩罚一次（去重语义由现有contract固化）。
 2. 重复惩罚参数、top-k/top-p/temperature 仍在统一入口验证；`top_p=1`、`top_k=1`、`seed`、`step`、`draw`都必须沿用原始`generated`顺序和`seed`，不可用新RNG主干替换。
 3. Top-P 截断后只对 retained 前缀归一化后采样；`draw`域是 `retained_sum`。
-4. `Greedy` 与 `SeededTopKTopP`的范围校验不允许静默 clamp 或“把旧误差归类为新配置”。
+4. `Greedy` 与 `SeededTopKTopP`的范围校验不允许静默 clamp 或“把旧误差归类为新配置”；`top_k`/`top_p`/`temperature`/`seed`沿用原有入口语义并固定在同一RNG主干。
 
 **通过条件**
 

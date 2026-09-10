@@ -1,7 +1,7 @@
 {
   "schema": "spec182-compatibility-manifest-v1",
   "sourceInventory": "contracts/public-export-inventory.json",
-  "sourceCommit": "31fe172a884b937ea0f2e14c4a16bfe1a28f1746",
+  "sourceCommit": "f661e3fc1d387f9136d5f8fbadea4e724b9b8e04",
   "coverage": {
     "explicitApiSdkRoot": 277,
     "dynamicAppSdkExports": 67,
@@ -23003,14 +23003,14 @@
         "owner": "ndnsf_distributed_inference.app_sdk.client",
         "symbol": "InferenceClient",
         "path": "NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/client.py",
-        "line": 1868,
-        "sourceSha256": "e1093a8820b3abb4603d4312deeab1f5fe644d5212e0b8ba4211d2c813bacb54",
+        "line": 2353,
+        "sourceSha256": "8aad9d57c474273aa45c4b688582717c6df64a2954e4ec92b4d0b3c944dc102d",
         "kind": "ClassDef",
         "bases": [],
         "methods": [
           {
             "name": "__init__",
-            "line": 1876,
+            "line": 2361,
             "arguments": [
               "self",
               "core"
@@ -23052,7 +23052,7 @@
           },
           {
             "name": "from_application_config",
-            "line": 1889,
+            "line": 2374,
             "arguments": [
               "cls",
               "runtime"
@@ -23116,7 +23116,7 @@
           },
           {
             "name": "from_config",
-            "line": 1905,
+            "line": 2390,
             "arguments": [
               "cls",
               "config"
@@ -23174,7 +23174,7 @@
           },
           {
             "name": "deployments",
-            "line": 1933,
+            "line": 2418,
             "arguments": [
               "self"
             ],
@@ -23196,7 +23196,7 @@
           },
           {
             "name": "requests",
-            "line": 1937,
+            "line": 2422,
             "arguments": [
               "self"
             ],
@@ -23218,7 +23218,7 @@
           },
           {
             "name": "native_client",
-            "line": 1941,
+            "line": 2426,
             "arguments": [
               "self"
             ],
@@ -23240,7 +23240,7 @@
           },
           {
             "name": "configure_native_requester",
-            "line": 1945,
+            "line": 2430,
             "arguments": [
               "self",
               "runtime",
@@ -23281,7 +23281,7 @@
           },
           {
             "name": "request_native",
-            "line": 1952,
+            "line": 2437,
             "arguments": [
               "self"
             ],
@@ -23337,7 +23337,7 @@
           },
           {
             "name": "request_native_reference",
-            "line": 1959,
+            "line": 2444,
             "arguments": [
               "self",
               "reference"
@@ -23400,7 +23400,7 @@
           },
           {
             "name": "deploy",
-            "line": 1975,
+            "line": 2460,
             "arguments": [
               "self",
               "definition"
@@ -23427,7 +23427,7 @@
           },
           {
             "name": "request_model",
-            "line": 2027,
+            "line": 2512,
             "arguments": [
               "self"
             ],
@@ -23483,7 +23483,7 @@
           },
           {
             "name": "request_task",
-            "line": 2038,
+            "line": 2523,
             "arguments": [
               "self"
             ],
@@ -23553,7 +23553,7 @@
           },
           {
             "name": "request_preplanned",
-            "line": 2059,
+            "line": 2554,
             "arguments": [
               "self",
               "deployment"
@@ -23609,7 +23609,7 @@
           },
           {
             "name": "request",
-            "line": 2067,
+            "line": 2562,
             "arguments": [
               "self",
               "deployment"
@@ -23665,7 +23665,7 @@
           },
           {
             "name": "run",
-            "line": 2283,
+            "line": 2778,
             "arguments": [
               "self",
               "deployment"
@@ -23721,7 +23721,7 @@
           },
           {
             "name": "run_async",
-            "line": 2290,
+            "line": 2785,
             "arguments": [
               "self",
               "deployment"
@@ -24912,14 +24912,14 @@
         "owner": "ndnsf_distributed_inference.app_sdk.client",
         "symbol": "InferenceRequestHandle",
         "path": "NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/client.py",
-        "line": 1811,
-        "sourceSha256": "e1093a8820b3abb4603d4312deeab1f5fe644d5212e0b8ba4211d2c813bacb54",
+        "line": 2296,
+        "sourceSha256": "8aad9d57c474273aa45c4b688582717c6df64a2954e4ec92b4d0b3c944dc102d",
         "kind": "ClassDef",
         "bases": [],
         "methods": [
           {
             "name": "__init__",
-            "line": 1814,
+            "line": 2299,
             "arguments": [
               "self",
               "client",
@@ -24960,7 +24960,7 @@
           },
           {
             "name": "ref",
-            "line": 1821,
+            "line": 2306,
             "arguments": [
               "self"
             ],
@@ -24982,7 +24982,7 @@
           },
           {
             "name": "status",
-            "line": 1825,
+            "line": 2310,
             "arguments": [
               "self"
             ],
@@ -25002,7 +25002,7 @@
           },
           {
             "name": "deployment_status",
-            "line": 1828,
+            "line": 2313,
             "arguments": [
               "self"
             ],
@@ -25022,7 +25022,7 @@
           },
           {
             "name": "events",
-            "line": 1832,
+            "line": 2317,
             "arguments": [
               "self"
             ],
@@ -25050,7 +25050,7 @@
           },
           {
             "name": "wait",
-            "line": 1848,
+            "line": 2333,
             "arguments": [
               "self"
             ],
@@ -25078,7 +25078,7 @@
           },
           {
             "name": "result",
-            "line": 1852,
+            "line": 2337,
             "arguments": [
               "self"
             ],
@@ -25106,7 +25106,7 @@
           },
           {
             "name": "result_async",
-            "line": 1858,
+            "line": 2343,
             "arguments": [
               "self"
             ],
@@ -25134,7 +25134,7 @@
           },
           {
             "name": "cancel",
-            "line": 1863,
+            "line": 2348,
             "arguments": [
               "self",
               "reason"
@@ -27456,7 +27456,8 @@
         "NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/placement.py",
         "examples/python/NDNSF-DistributedInference/llm_pipeline/user.py",
         "tests/fixtures/spec182/build-conversation-oracle.py",
-        "tests/python/test_spec175_conversation.py"
+        "tests/python/test_spec175_conversation.py",
+        "tests/python/test_spec182_native_bindings.py"
       ],
       "callerInventory": {
         "maintainedCandidates": [
@@ -27465,7 +27466,8 @@
         ],
         "tests": [
           "tests/fixtures/spec182/build-conversation-oracle.py",
-          "tests/python/test_spec175_conversation.py"
+          "tests/python/test_spec175_conversation.py",
+          "tests/python/test_spec182_native_bindings.py"
         ],
         "generatedCopies": [],
         "other": []
@@ -27603,7 +27605,8 @@
       "verificationSelectors": [
         "examples/python/NDNSF-DistributedInference/llm_pipeline/user.py",
         "tests/fixtures/spec182/build-conversation-oracle.py",
-        "tests/python/test_spec175_conversation.py"
+        "tests/python/test_spec175_conversation.py",
+        "tests/python/test_spec182_native_bindings.py"
       ],
       "status": "RETAINED_OR_OFFLINE",
       "removalEligible": false,
@@ -27772,9 +27775,11 @@
         "examples/python/NDNSF-DistributedInference/llm_pipeline/provider.py",
         "examples/python/NDNSF-DistributedInference/llm_pipeline/user.py",
         "tests/fixtures/spec182/build-conversation-oracle.py",
+        "tests/python/test_ndnsf_di_app_sdk_compatibility.py",
         "tests/python/test_ndnsf_di_automatic_collaboration_plan.py",
         "tests/python/test_spec168_provider_generation.py",
-        "tests/python/test_spec175_conversation.py"
+        "tests/python/test_spec175_conversation.py",
+        "tests/python/test_spec182_native_bindings.py"
       ],
       "callerInventory": {
         "maintainedCandidates": [
@@ -27785,9 +27790,11 @@
         ],
         "tests": [
           "tests/fixtures/spec182/build-conversation-oracle.py",
+          "tests/python/test_ndnsf_di_app_sdk_compatibility.py",
           "tests/python/test_ndnsf_di_automatic_collaboration_plan.py",
           "tests/python/test_spec168_provider_generation.py",
-          "tests/python/test_spec175_conversation.py"
+          "tests/python/test_spec175_conversation.py",
+          "tests/python/test_spec182_native_bindings.py"
         ],
         "generatedCopies": [],
         "other": []
@@ -27887,9 +27894,11 @@
         "examples/python/NDNSF-DistributedInference/llm_pipeline/provider.py",
         "examples/python/NDNSF-DistributedInference/llm_pipeline/user.py",
         "tests/fixtures/spec182/build-conversation-oracle.py",
+        "tests/python/test_ndnsf_di_app_sdk_compatibility.py",
         "tests/python/test_ndnsf_di_automatic_collaboration_plan.py",
         "tests/python/test_spec168_provider_generation.py",
-        "tests/python/test_spec175_conversation.py"
+        "tests/python/test_spec175_conversation.py",
+        "tests/python/test_spec182_native_bindings.py"
       ],
       "status": "RETAINED_OR_OFFLINE",
       "removalEligible": false,
@@ -28818,6 +28827,7 @@
         "examples/python/NDNSF-DistributedInference/llm_pipeline/user.py",
         "tests/fixtures/spec182/build-conversation-oracle.py",
         "tests/python/test_spec175_conversation.py",
+        "tests/python/test_spec182_native_bindings.py",
         "tests/unit-tests/invocation-stream-message.t.cpp"
       ],
       "callerInventory": {
@@ -28828,6 +28838,7 @@
         "tests": [
           "tests/fixtures/spec182/build-conversation-oracle.py",
           "tests/python/test_spec175_conversation.py",
+          "tests/python/test_spec182_native_bindings.py",
           "tests/unit-tests/invocation-stream-message.t.cpp"
         ],
         "generatedCopies": [],
@@ -28850,6 +28861,7 @@
         "examples/python/NDNSF-DistributedInference/llm_pipeline/user.py",
         "tests/fixtures/spec182/build-conversation-oracle.py",
         "tests/python/test_spec175_conversation.py",
+        "tests/python/test_spec182_native_bindings.py",
         "tests/unit-tests/invocation-stream-message.t.cpp"
       ],
       "status": "RETAINED_OR_OFFLINE",
