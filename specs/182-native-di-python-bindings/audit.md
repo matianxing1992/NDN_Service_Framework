@@ -4,9 +4,9 @@
 
 ## R11-B8-G39 Compute Preflight Scratch Parity Review 2026-09-10
 
-静态追踪发现 Slurm 模板已经生成 `/tmp/ndnsf-di-${SLURM_JOB_ID}-${RUN_ID}`，
+静态追踪发现 canonical `ndnsf-di.sbatch.in` 已经生成 `/tmp/ndnsf-di-${SLURM_JOB_ID}-${RUN_ID}`，
 `run-container.sh` 也接受该 job-bound 后缀，但同一模板调用的
-`preflight-compute.sh` 仍只接受旧的 `/tmp/${SLURM_JOB_ID}`。真实作业会在
+`preflight-compute.sh` 仍只接受旧的 `/tmp/${SLURM_JOB_ID}`。该模板的真实作业会在
 Apptainer 启动前返回 `COMPUTE_SCRATCH_POLICY_INVALID`，而不经过 MiniNDN 或
 容器 runner。现已将 preflight 收敛到与 runner/topology 相同的 basename-only
 规则，并拒绝另一个 job、嵌套目录和空 basename；5 个节点脚本测试及 shell

@@ -5,7 +5,7 @@
 
 ## Finding and repair
 
-The active Slurm templates render a scratch basename of
+The canonical `ndnsf-di.sbatch.in` Slurm template renders a scratch basename of
 `ndnsf-di-${SLURM_JOB_ID}-${RUN_ID}`. The canonical `run-container.sh` already
 accepts that job-bound suffix, but `preflight-compute.sh` still required the
 older exact `/tmp/${SLURM_JOB_ID}` path. A real job therefore failed before
