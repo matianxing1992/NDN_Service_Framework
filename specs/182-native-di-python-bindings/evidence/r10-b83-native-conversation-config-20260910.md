@@ -2,7 +2,7 @@
 
 Date: 2026-09-10
 Branch: Experimental
-Source baseline: `007d9981` plus this batch worktree
+Source baseline: `4c248c85`
 Decision: CLOSED_FOR_VALIDATION
 Boundary: shared native conversation configuration loader and whole-chain static audit
 

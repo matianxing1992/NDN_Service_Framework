@@ -4,7 +4,7 @@
 
 **Revision**: 26 | **Mode**: source alignment / whole-chain static review
 **Verdict**: DRAFT / PARTIAL; T016 preflight UNQUALIFIED
-**Source**: `007d9981` plus R10-B83 worktree / Experimental
+**Source**: `4c248c85` implementation/docs checkpoint / Experimental
 **Evidence**: [R10-B83 native conversation config loader](evidence/r10-b83-native-conversation-config-20260910.md)
 
 R10-B83 closes the direct entry-point mismatch identified by R10-B82: the standalone C++ requester

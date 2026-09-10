@@ -1184,6 +1184,16 @@ T017 的 evidence/development-handoff.md 包含 exact commit、clean source clos
 
 ## Current Execution Checkpoint
 
+2026-09-10 R10-B83 native conversation config loader / **CLOSED_FOR_VALIDATION (C++ composition boundary)**：
+将 `ndnsf-di-native-conversation-v1` 的 schema、requester identity、路径、owner-only key 和
+journal 构造集中到 `NativeConversationCoordinator.cpp`；standalone `DI_NativeRequester` 与
+Python binding 共享该 C++ loader，并把 coordinator 注入 runtime client。C++ 是本批主验收：
+新 config selector、完整 `Spec182*` 252 cases、requester help、导出符号检查均通过；Python
+72 项只验证薄 wrapper/contract 仍指向同一 native 实体，不替代 native 行为验收。首次扩展
+编译的 `ndn::Name`→`std::string` 接线错误已记录并修复。该批不推进父任务；authority 分离、
+独立 requester/Provider worker 跨进程、maintained caller/no-Python、依赖闭包及 T016/T017
+仍开放。详见 [R10-B83 evidence](evidence/r10-b83-native-conversation-config-20260910.md)。
+
 2026-09-09 R10-B73 native-config Qwen real Provider stream / **CLOSED_FOR_VALIDATION (local in-process boundary)**：
 固定 `runtime.contract.tokenizer_digest` 为 native runtime contract 的 operator-pinned
 来源；`NativeInferenceClient` 从已认证 options 派生 generation DTO，并在 digest 不一致时
