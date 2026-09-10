@@ -14,6 +14,7 @@ import subprocess
 import sys
 import threading
 import time
+from dataclasses import replace
 from pathlib import Path
 
 from ndnsf_distributed_inference.app_sdk.client import APPClient
@@ -160,16 +161,74 @@ def _native_qwen_options(args, *, generation_id: str,
     return options
 
 
-def _native_qwen_request(client, args, payload: bytes, *, request_id: str,
-                         max_new_tokens: int | None = None,
-                         conversation=None, on_event=None):
-    """Submit one Qwen payload on the explicit native requester route."""
-    if conversation is not None:
-        # NativeServiceUser currently has no configured NativeConversationConfig
-        # port.  Falling back to the Python coordinator would hide that gap.
+def _native_qwen_conversation(
+        client, conversation: ConversationContinuation, *, generation_id: str,
+        canonical_token_ids: tuple[int, ...]):
+    """Translate caller metadata into the native owner continuation DTO.
+
+    The Python caller supplies only the authenticated opaque parent wire and
+    adapter-derived token prefix.  The C++ coordinator remains the owner of
+    journal authentication, role binding, fencing, and commit state.
+    """
+    if not isinstance(conversation, ConversationContinuation):
+        raise TypeError("conversation must be ConversationContinuation")
+    if conversation.allow_full_prefill_fallback:
+        raise RuntimeError(
+            "native Qwen conversation does not support Python full-prefill fallback")
+    core = getattr(client, "_core", client)
+    if getattr(core, "_native_conversations", None) is None:
         raise RuntimeError(
             "native requester requires a configured NativeConversationCoordinator "
             "for conversation continuation")
+    if not canonical_token_ids:
+        raise ValueError("native conversation requires canonical token IDs")
+    from ndnsf import _ndnsf
+
+    native = _ndnsf.NativeConversationContinuation()
+    native.conversation_id = conversation.conversation_id
+    native.generation_id = str(generation_id).lower()
+    native.canonical_token_ids = [int(token) for token in canonical_token_ids]
+    native.request_contract_digest = str(
+        conversation.request_contract_digest or "")
+    runtime = getattr(core, "_native_runtime", None)
+    contract = getattr(runtime, "contract", None)
+    service_name = str(getattr(contract, "service_name", "") or SERVICE)
+    now_ms = int(time.time() * 1000)
+    native.retention_deadline_ms = now_ms + 300_000
+    if conversation.mode is ConversationInputMode.FULL_CONTEXT:
+        native.mode = "FULL_CONTEXT"
+        native.parent_context_epoch = 0
+        native.service_name = service_name
+        return native
+
+    if conversation.mode is not ConversationInputMode.APPEND_DELTA:
+        raise ValueError("unsupported native conversation mode")
+    try:
+        checkpoint = ConversationCheckpointV1.from_bytes(
+            conversation.parent_checkpoint or b"")
+    except ConversationCheckpointInvalid as exc:
+        raise RuntimeError(
+            "native APPEND_DELTA parent checkpoint is malformed") from exc
+    expected_epoch = conversation.expected_parent_context_epoch
+    if expected_epoch != checkpoint.context_epoch:
+        raise RuntimeError("native APPEND_DELTA parent epoch mismatch")
+    native.mode = "APPEND_DELTA"
+    native.parent_context_epoch = checkpoint.context_epoch
+    native.service_name = checkpoint.service_name
+    native.plan_role_map_digest = checkpoint.plan_role_map_digest
+    native.parent_checkpoint_digest = checkpoint.checkpoint_digest
+    native.parent_checkpoint_wire = bytes(conversation.parent_checkpoint)
+    native.expected_roles = list(checkpoint.role_receipt_digests)
+    native.retention_deadline_ms = min(
+        int(checkpoint.expires_at_ms), int(native.retention_deadline_ms))
+    return native
+
+
+def _native_qwen_request(client, args, payload: bytes, *, request_id: str,
+                         max_new_tokens: int | None = None,
+                         conversation=None, canonical_token_ids=None,
+                         on_event=None):
+    """Submit one Qwen payload on the explicit native requester route."""
     # Native-config generation must use the digest pinned by the operator's
     # requester configuration.  The automatic planner's model metadata is a
     # separate compatibility path and must never silently fill this field.
@@ -192,6 +251,11 @@ def _native_qwen_request(client, args, payload: bytes, *, request_id: str,
         tokenizer_digest=digest,
         max_new_tokens=int(max_new_tokens or args.max_new_tokens),
     )
+    if conversation is not None:
+        options.conversation = _native_qwen_conversation(
+            client, conversation, generation_id=generation_id,
+            canonical_token_ids=tuple(int(token) for token in (
+                canonical_token_ids or ())))
     application_options = json.dumps({
         "generationId": generation_id,
         "maxNewTokens": int(max_new_tokens or args.max_new_tokens),
@@ -227,6 +291,12 @@ def _native_qwen_request(client, args, payload: bytes, *, request_id: str,
         raise RuntimeError(
             "native/application request ID mapping mismatch: "
             f"expected={request_id} actual={mapped_request_id}")
+    checkpoint = getattr(native, "conversation_checkpoint", None)
+    if conversation is not None:
+        if checkpoint is None:
+            raise RuntimeError(
+                "native conversation completed without a committed checkpoint")
+        checkpoint = bytes(checkpoint)
     return type("NativeInferenceResult", (), {
         "status": True,
         "payload": bytes(result.payload),
@@ -236,6 +306,7 @@ def _native_qwen_request(client, args, payload: bytes, *, request_id: str,
         "request_id": mapped_request_id,
         "application_request_id": mapped_request_id,
         "native_request_id": native_request_id,
+        "conversation_checkpoint": checkpoint,
     })()
 
 
@@ -2857,7 +2928,10 @@ def _run_qwen_transformer_generation_sample(
             "native Qwen requester route requires full TOKEN_STREAMING generation; "
             "--diagnostic-token-loop is unsupported")
     if not use_token_diagnostic:
+        native_checkpoint: bytes | None = None
+
         def full_generation_call(context, max_new_tokens, request_id):
+            nonlocal native_checkpoint
             context_payload = bytes(request_payload) if request_payload is not None else (
                 encode_qwen_pipeline_context(
                     [list(context)],
@@ -2882,9 +2956,6 @@ def _run_qwen_transformer_generation_sample(
             # IDs contain only the permitted component characters.
             wire_request_id = str(request_id).strip().lstrip("/")
             if getattr(args, "native_requester_config", ""):
-                if conversation is not None:
-                    raise RuntimeError(
-                        "native Qwen conversation route requires native continuation owner")
                 native_stream_events: list[dict] = []
                 native_stream_errors: list[str] = []
                 native_terminal = threading.Event()
@@ -2912,12 +2983,30 @@ def _run_qwen_transformer_generation_sample(
                         return
                     native_stream_events.append(token_event)
 
+                native_canonical_token_ids = tuple(context)
+                if (conversation is not None and
+                        conversation.mode is not ConversationInputMode.FULL_CONTEXT):
+                    native_canonical_token_ids = tuple(
+                        int(token) for token in (canonical_token_ids or context))
+                    # The caller's frozen campaign vector includes the
+                    # expected output as an oracle suffix.  APPEND_DELTA
+                    # must bind only the committed parent transcript plus
+                    # the new input; generated tokens are not request input.
+                    expected_suffix = tuple(expected_token_ids)
+                    if (expected_suffix and
+                            native_canonical_token_ids[-len(expected_suffix):]
+                            == expected_suffix):
+                        native_canonical_token_ids = (
+                            native_canonical_token_ids[:-len(expected_suffix)])
                 result = _native_qwen_request(
                     client, args, context_payload,
                     request_id=wire_request_id,
                     max_new_tokens=max_new_tokens,
+                    conversation=conversation,
+                    canonical_token_ids=native_canonical_token_ids,
                     on_event=on_native_event,
                 )
+                native_checkpoint = getattr(result, "conversation_checkpoint", None)
                 if not native_terminal.wait(
                         timeout=max(1.0, min(float(args.timeout_ms) / 1000.0, 5.0))):
                     raise RuntimeError(
@@ -3036,7 +3125,7 @@ def _run_qwen_transformer_generation_sample(
             return response
 
         durable_request_id = request_id or generation_id
-        return run_full_qwen_generation(
+        outcome = run_full_qwen_generation(
             input_token_ids=input_token_ids,
             max_new_tokens=args.max_new_tokens,
             eos_token_ids=eos_token_ids,
@@ -3049,6 +3138,12 @@ def _run_qwen_transformer_generation_sample(
             decode=decoder,
             numeric_equivalence=prompt_case.get("numericEquivalence"),
         )
+        if native_checkpoint is not None:
+            outcome = replace(
+                outcome,
+                native_conversation_checkpoint=bytes(native_checkpoint),
+            )
+        return outcome
 
     def token_step(context, token_epoch, generated_request_id):
         wire_request_id = (
@@ -3336,6 +3431,9 @@ def _run_spec175_g6c_campaign(client, args, campaign: dict) -> int:
     decoder = lambda values: tokenizer.decode(
         list(values), skip_special_tokens=True)
     coordinator = client.conversation_coordinator
+    native_conversation = bool(
+        getattr(client, "native_client", None) is not None
+        and getattr(args, "native_requester_config", ""))
     evidence: dict[str, object] = {
         "schemaVersion": "ndnsf-di-spec175-g6c-evidence-v1",
         "campaignId": str(campaign.get("campaignId", "")),
@@ -3378,7 +3476,10 @@ def _run_spec175_g6c_campaign(client, args, campaign: dict) -> int:
             canonical_token_ids=(*first_input, *first_expected),
             request_payload=first_payload,
         )
-        checkpoint = coordinator.checkpoint(conversation_id)
+        checkpoint = (
+            getattr(first_result, "native_conversation_checkpoint", None)
+            if native_conversation else coordinator.checkpoint(conversation_id)
+        )
         if checkpoint is None:
             raise RuntimeError(f"G6C {case_id} first turn has no checkpoint")
         first_checkpoint = ConversationCheckpointV1.from_bytes(checkpoint)
@@ -3411,7 +3512,10 @@ def _run_spec175_g6c_campaign(client, args, campaign: dict) -> int:
                 *committed_prefix, *appended, *second_expected),
             request_payload=second_payload,
         )
-        successor = coordinator.checkpoint(conversation_id)
+        successor = (
+            getattr(second_result, "native_conversation_checkpoint", None)
+            if native_conversation else coordinator.checkpoint(conversation_id)
+        )
         if successor is None:
             raise RuntimeError(f"G6C {case_id} second turn has no checkpoint")
         successor_checkpoint = ConversationCheckpointV1.from_bytes(successor)
@@ -3436,6 +3540,11 @@ def _run_spec175_g6c_campaign(client, args, campaign: dict) -> int:
 
     for pair in campaign["turnPairs"]:
         evidence["turnPairs"].append(run_turn_pair(pair))
+
+    if native_conversation:
+        raise RuntimeError(
+            "G6C native conversation route requires native Provider "
+            "unavailable-role control; refusing mixed Python coordinator")
 
     unavailable = dict(campaign["unavailableRole"])
     # Commit its first turn by reusing the same exact pair routine shape, but
