@@ -215,6 +215,10 @@ private:
   std::shared_ptr<const NativeOfferAdmission> m_admission;
   std::shared_ptr<const NativeRequestContract> m_requestContract;
   std::shared_ptr<const NativeRequestRuntime> m_runtime;
+  // Production request names include a process-unique owner scope so two
+  // requester processes sharing one NDN identity cannot collide.  The
+  // private test port keeps deterministic legacy IDs for unit assertions.
+  std::string m_requestOwnerScope;
   std::function<std::chrono::steady_clock::time_point()> m_now;
   std::shared_ptr<SerialRequestExecutor> m_executor;
   std::shared_ptr<SerialRequestExecutor> m_notifications;

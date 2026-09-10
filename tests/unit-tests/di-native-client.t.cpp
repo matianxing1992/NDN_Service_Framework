@@ -139,6 +139,25 @@ struct ClientStateFixture {
 };
 }
 
+BOOST_AUTO_TEST_SUITE(Spec182NativeRequestIdentity)
+
+BOOST_AUTO_TEST_CASE(ProductionRequestIdsCarryProcessOwnerScope)
+{
+  ClientStateFixture fixture;
+  auto first = std::make_unique<NativeInferenceClient>(fixture.user, fixture.adapters);
+  auto second = std::make_unique<NativeInferenceClient>(fixture.user, fixture.adapters);
+
+  auto firstHandle = fixture.request(*first);
+  auto secondHandle = fixture.request(*second);
+  BOOST_CHECK_NE(firstHandle.requestId(), secondHandle.requestId());
+  BOOST_CHECK(firstHandle.requestId().find("/NDNSF/DI/REQUEST/") == 0);
+  const auto firstSuffix = firstHandle.requestId().substr(std::string("/NDNSF/DI/REQUEST/").size());
+  BOOST_CHECK_EQUAL(firstSuffix.find('/'), 32U);
+  BOOST_CHECK(firstSuffix.find_first_not_of("0123456789abcdef") == 32U);
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
 BOOST_FIXTURE_TEST_SUITE(Spec182ClientState, ClientStateFixture)
 
 BOOST_AUTO_TEST_CASE(RequestEnvelopeMatchesSdkIdentityAndNativeProviderInput)

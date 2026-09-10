@@ -9,6 +9,7 @@
 
 #include <atomic>
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <condition_variable>
 #include <deque>
@@ -19,12 +20,43 @@
 #include <thread>
 #include <utility>
 #include <openssl/rand.h>
+#include <unistd.h>
 
 namespace ndnsf::di {
 
 namespace {
 
 std::atomic<std::uint64_t> NEXT_REQUEST_ID{1};
+
+std::string
+processRequestOwnerScope()
+{
+  static const std::string scope = [] {
+    std::array<unsigned char, 16> bytes{};
+    if (RAND_bytes(bytes.data(), static_cast<int>(bytes.size())) != 1) {
+      // RAND_bytes is expected to be available after OpenSSL initialization;
+      // retain a process-local uniqueness fallback if the provider is not
+      // initialized yet.  The PID and monotonic clock make this distinct from
+      // the deterministic unit-test scope without claiming cryptographic use.
+      const auto tick = static_cast<std::uint64_t>(
+        std::chrono::steady_clock::now().time_since_epoch().count());
+      const auto pid = static_cast<std::uint64_t>(::getpid());
+      for (std::size_t i = 0; i < sizeof(tick); ++i)
+        bytes[i] = static_cast<unsigned char>(tick >> (i * 8));
+      for (std::size_t i = 0; i < sizeof(pid); ++i)
+        bytes[sizeof(tick) + i] = static_cast<unsigned char>(pid >> (i * 8));
+    }
+    static constexpr char hex[] = "0123456789abcdef";
+    std::string value;
+    value.reserve(bytes.size() * 2);
+    for (const auto byte : bytes) {
+      value += hex[byte >> 4];
+      value += hex[byte & 0x0f];
+    }
+    return value;
+  }();
+  return scope;
+}
 
 // Bounded observer delivery capacity (CD-001 M09 / CD-007 notified event
 // queue): only bounded non-secret observation events are queued.  A terminal
@@ -1609,6 +1641,7 @@ NativeInferenceClient::NativeInferenceClient(
   , m_conversations(std::move(conversations))
   , m_preparation(std::move(preparation))
   , m_admission(std::move(admission))
+  , m_requestOwnerScope(testPort.submitHook ? std::string{} : processRequestOwnerScope())
   , m_now(testPort.now ? testPort.now : defaultClock())
   , m_executor(SerialRequestExecutor::create(testPort.submitHook))
   , m_notifications(SerialRequestExecutor::create())
@@ -1701,6 +1734,7 @@ NativeInferenceHandle NativeInferenceClient::request(
     // (runtime-boundaries: Core allocation or unique native owner); the
     // operation then binds ACK/plan/grant/result to this stable URI.
     operation->requestId = "/NDNSF/DI/REQUEST/" +
+      (m_requestOwnerScope.empty() ? std::string{} : m_requestOwnerScope + "/") +
       std::to_string(NEXT_REQUEST_ID.fetch_add(1));
     operation->coreRequestId = operation->requestId;
     operation->attempt = 1;
