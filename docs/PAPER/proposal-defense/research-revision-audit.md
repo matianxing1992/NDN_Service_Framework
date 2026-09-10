@@ -1,5 +1,16 @@
 # Research-first Proposal Revision and Evidence Audit
 
+## 2026-09-10 Mobility Claim Narrowing
+
+按用户确认的口径，中英文摘要删除 `mobility handling`／“移动性处理”，改为
+选定网络与工作负载条件下的服务调用和执行效率评估。移动性是实验条件，不作为
+单独提出的 NDNSF 机制。保留正文/slides 的移动场景结果及其配置限制，不删除数据，
+也不在缺少消融的情况下将观察到的效果全部归因于 NDN 本身。
+NDN Slides Review 的证据边界准则用于本次措辞修正。四份摘要入口与 PDF 同步；
+本轮检查单列在 validation 的 `mobility_wording_revision`，原始记录位于
+`.codex-tmp/proposal-mobility-wording-20260910/`。正文、slides/PPTX 和产品行为未改。
+下一步仍是补齐机制比较与协作证据，而非将实验条件提升为贡献。
+
 ## 2026-09-10 Challenge Terminology Clarification
 
 按用户指出的术语歧义，将摘要中的 `verification of responses to encrypted challenges`
