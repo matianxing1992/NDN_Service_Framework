@@ -76,6 +76,15 @@ for script in \
     exit 99
   fi
 done
+python3 - "$repo/packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/run-allocation-topology.sh" <<'PY'
+import pathlib, sys
+source = pathlib.Path(sys.argv[1]).read_text()
+loop = source.index('for row in "${node_rows[@]}"; do')
+deadline = source.index('deadline=$((SECONDS+30))', loop)
+probe = source.index('while ((SECONDS < deadline))', deadline)
+assert deadline < probe
+assert 'deadline=$((SECONDS+30))' not in source[:loop]
+PY
 for repetition in 1 2; do
   PATH="$tmp/bin:$PATH" SLURM_JOB_ID=test NDNSF_SPEC110_TEST_MODE=1 \
     "$repo/packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/configure-allocation-routes.sh" \
