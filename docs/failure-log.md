@@ -5421,3 +5421,78 @@ Root cause: the native withheld record now carries round, microbatch, operationK
 Fix status: retain v104 as a real negative-run failure and update the maintained runner to require and validate all four identity fields with uint64 bounds and nonempty semantic values.
 
 Lesson: when a producer-owned evidence schema gains binding fields, every independent consumer (MiniNDN runner and Tiger collector) must update together before qualification can proceed.
+## 2026-09-10 — v37 host-gate validator rejected the extended cutpoint
+
+Symptom: the v37 Y-N matrix passed all eight subcases, but assembling the
+source-bound host receipt failed with `YOLO_HOST_GATE_DEPENDENCY_CUTPOINT`.
+
+Root cause: the maintained host-gate validator still required the pre-v37
+withheld-record field set and therefore rejected the producer's bound
+`round`, `microbatch`, `operationKind` and `tensor` fields.
+
+Fix status: extend the validator and its fixture to require those fields,
+validate uint64 bounds and nonempty semantic values, then regenerate the APP
+from the new source seal before rebuilding the host receipt.
+
+Lesson: producer, runtime consumer and receipt validator are one evidence
+contract; a runtime PASS is not promotable while any receipt consumer uses an
+older schema.
+## 2026-09-10 — v38 source bundle used the base-only selection for an APP build
+
+Symptom: `build-external-yolo.py` rejected the freshly sealed source with
+`APP_SOURCE_SELECTION` before configure.
+
+Root cause: the external APP builder requires the `legacy-complete` source
+selection; the base-libraries-only selection is reserved for the stable base
+SIF boundary.
+
+Fix status: retain the failed v38 invocation and reseal the same worktree with
+the default complete selection as v39 before rebuilding the external APP.
+
+Lesson: source-selection names encode build ownership; reuse the stable base
+only through its recorded SIF, while an APP rebuild must carry the complete
+application source seal.
+## 2026-09-10 — formal local owner was invoked after manual provision
+
+Symptom: `submit.py local` for v39 run `minindn-local-20260910-v109-v39`
+returned `LOCAL_EXECUTION_FAILED:OperatorError` without entering the host
+runner.
+
+Root cause: the development provision helper had already created the run's
+issuer/public/private/prepare directories. The formal local owner correctly
+treats those paths as an already-started run and refuses to reuse them.
+
+Fix status: retain v109 as a failed orchestration attempt and start a fresh
+prepared run; invoke `submit.py local` directly so its owner performs the one
+provision and execution sequence atomically.
+
+Lesson: manual issuer provisioning is only for the direct MiniNDN driver;
+the formal local collector owns provisioning and must receive a clean prepared
+run directory.
+## 2026-09-10 — formal exact-SIF local owner failed during NAC-ABE public-parameter publication
+
+Symptom: formal local run `minindn-local-20260910-v110-v39` passed candidate,
+host-gate, network-setup and application-integrity checks, then returned
+`LOCAL_EXECUTION_FAILED:RuntimeError`. The run's `node0/node-failure.json`
+records the Controller child exiting 139; an isolated reproduction with the same
+v22 base SIF, v39 APP and run inputs aborts with exit 134:
+`Fetched public parameters cannot be authenticated: Validator/policy did not
+invoke success or failure callback`. No `LOCAL_CPU_PASS` or local collector
+record was produced.
+
+Root cause: the failure occurs after ServiceController readiness, while its
+controller-owned publication `ServiceUser` fetches and validates NAC-ABE public
+parameters after policy/permission exchange. This is an unresolved
+callback/policy compatibility defect in the formal local publication path; it is
+not a candidate digest, base-SIF digest, host-gate, NFD route, or CUDA probe
+failure. The exact v110 candidate was `sha256:ce8d574e3db3d9ac9a711510091fbfc949c6a2d04c198bf85280fea5a98454d7`.
+
+Fix status: retain v110 as a failed exact-SIF local run. Do not promote T011 or
+claim local qualification. Investigate the publication User's NAC-ABE validator
+callback/policy contract, then rerun a fresh formal local owner before any new
+Tiger submission; the independent v105/v107 direct MiniNDN evidence remains
+valid for the covered protocol cases.
+
+Lesson: a passing host receipt and reachable NFD prove only preflight/component
+readiness. The formal owner must complete Controller publication, real User
+observation, numeric oracle and cleanup before local qualification can advance.

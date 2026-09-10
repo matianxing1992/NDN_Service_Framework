@@ -101,6 +101,10 @@ def write_receipt(tmp_path):
                             "bytes": "64",
                             "provider": "/example/yolo/run-1/DetectShard0",
                             "providerBootId": "boot-1",
+                            "round": "0",
+                            "microbatch": "0",
+                            "operationKind": "PIPELINE",
+                            "tensor": "/model/head0",
                             "atMs": "100",
                         },
                     })

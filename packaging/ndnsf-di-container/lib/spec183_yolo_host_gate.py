@@ -271,7 +271,8 @@ def _validate_semantic_evidence(case: str, evidence: dict[str, Path], *, applica
                 "schema", "session", "requestId", "attempt", "planDigest",
                 "producerRole", "consumerRole", "manifestDataName",
                 "plannedDataName", "endpointDigest", "contentDigest", "bytes",
-                "provider", "providerBootId", "atMs",
+                "provider", "providerBootId", "round", "microbatch",
+                "operationKind", "tensor", "atMs",
             }
             plan = next((event for event in lifecycle
                          if event.get("milestone") == "PLAN_SEALED"), None)
@@ -292,6 +293,13 @@ def _validate_semantic_evidence(case: str, evidence: dict[str, Path], *, applica
                     or not dependency["session"]
                     or not isinstance(dependency.get("providerBootId"), str)
                     or not dependency["providerBootId"]
+                    or any(not isinstance(dependency.get(key), str)
+                           or re.fullmatch(r"(?:0|[1-9][0-9]{0,19})", dependency[key]) is None
+                           or int(dependency[key]) >= 2**64
+                           for key in ("round", "microbatch"))
+                    or any(not isinstance(dependency.get(key), str)
+                           or not dependency[key]
+                           for key in ("operationKind", "tensor"))
                     or any(not isinstance(dependency.get(key), str)
                            or SHA256.fullmatch(dependency[key]) is None
                            for key in ("endpointDigest", "contentDigest"))
