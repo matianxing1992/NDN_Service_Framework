@@ -150,6 +150,19 @@ class AllocationTopologyTest(unittest.TestCase):
         )
         self.assertIn('exec App_ServiceController --identity="$runtime_home"', rendered)
 
+    def test_process_map_rejects_host_bound_application_argument(self) -> None:
+        value = load("single-node.json")
+        controller = next(row for row in value["processes"] if row["kind"] == "controller")
+        controller["command"] = ["App_ServiceController", "--model=/project/tma1/shared/model.onnx"]
+        controller["commandDigest"] = topology.command_digest(controller["command"])
+        with self.assertRaisesRegex(topology.TopologyError, "TOPOLOGY_HOST_PATH_COMMAND_INVALID"):
+            topology.validate_process_map(value)
+
+        controller["command"] = ["App_ServiceController", "--identity", "/project/tma1/other-role"]
+        controller["commandDigest"] = topology.command_digest(controller["command"])
+        with self.assertRaisesRegex(topology.TopologyError, "TOPOLOGY_HOST_PATH_COMMAND_INVALID"):
+            topology.render_process_launcher(controller, "/tmp/ndnsf-di-job", "/project/tma1/ndnsf-di/bundle")
+
     def test_provider_launcher_rejects_wrong_visible_gpu_uuid(self) -> None:
         value = load("multi-node-tcp.json")
         provider = next(row for row in value["processes"] if row["kind"] == "provider")
