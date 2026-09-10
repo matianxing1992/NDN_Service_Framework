@@ -3,8 +3,11 @@
 #include <openssl/crypto.h>
 #include <openssl/rand.h>
 #include <chrono>
+#include <fstream>
 #include <limits>
 #include <set>
+#include <sys/stat.h>
+#include <unistd.h>
 
 namespace ndnsf::di {
 namespace {
@@ -107,6 +110,73 @@ NativeConversationCoordinator::NativeConversationCoordinator(NativeConversationC
 NativeConversationCoordinator::NativeConversationCoordinator(std::filesystem::path)
 { throw std::invalid_argument("conversation journal requires explicit owner/key configuration"); }
 NativeConversationCoordinator::~NativeConversationCoordinator() = default;
+
+std::shared_ptr<NativeConversationCoordinator> nativeConversationCoordinatorFromConfig(
+  const std::string& configurationJson, const std::filesystem::path& baseDirectory,
+  const std::string& expectedRequesterIdentity)
+{
+  const auto root = nativeParseJson(configurationJson);
+  if (root.value("schema", std::string{}) != "ndnsf-di-native-conversation-v1")
+    throw std::invalid_argument("unsupported native conversation schema");
+  const auto base = std::filesystem::absolute(baseDirectory).lexically_normal();
+  const auto resolve = [&base](const std::string& value, const char* field) {
+    if (value.empty() || value.find('\0') != std::string::npos)
+      throw std::invalid_argument(std::string("native conversation ") + field + " path is invalid");
+    const auto candidate = std::filesystem::path(value);
+    if (candidate.is_absolute()) return candidate.lexically_normal();
+    const auto resolved = (base / candidate).lexically_normal();
+    const auto relative = resolved.lexically_relative(base);
+    if (relative.empty() || relative == ".." || relative.string().compare(0, 3, "../") == 0)
+      throw std::invalid_argument(std::string("native conversation ") + field +
+                                  " path escapes configuration directory");
+    return resolved;
+  };
+  const auto& journal = root.at("journal");
+  const auto& owner = root.at("owner");
+  if (!journal.is_object() || !owner.is_object() || !journal.at("keys").is_array() ||
+      journal.at("keys").empty())
+    throw std::invalid_argument("native conversation owner configuration is incomplete");
+  const auto requester = owner.at("requester_identity").get<std::string>();
+  if (!expectedRequesterIdentity.empty() && requester != expectedRequesterIdentity)
+    throw std::invalid_argument("native conversation requester identity does not match the ServiceUser");
+
+  std::vector<NativeConversationJournalKey> keys;
+  std::set<std::string> keyIds;
+  for (const auto& entry : journal.at("keys")) {
+    if (!entry.is_object()) throw std::invalid_argument("native conversation key entry is invalid");
+    const auto id = entry.at("id").get<std::string>();
+    if (!keyIds.insert(id).second) throw std::invalid_argument("native conversation key id is duplicated");
+    const auto keyPath = resolve(entry.at("file").get<std::string>(), "key");
+    struct stat status{};
+    if (::lstat(keyPath.c_str(), &status) != 0 || !S_ISREG(status.st_mode) ||
+        status.st_uid != ::geteuid() || status.st_nlink != 1 || (status.st_mode & 077) != 0)
+      throw std::invalid_argument("native conversation key file must be owner-only");
+    std::ifstream input(keyPath, std::ios::binary | std::ios::ate);
+    if (!input) throw std::invalid_argument("native conversation key file is unavailable");
+    const auto size = input.tellg();
+    if (size != 32) throw std::invalid_argument("native conversation key must contain exactly 32 bytes");
+    std::vector<std::uint8_t> bytes(32);
+    input.seekg(0);
+    if (!input.read(reinterpret_cast<char*>(bytes.data()), bytes.size()))
+      throw std::invalid_argument("native conversation key file read failed");
+    keys.push_back({id, std::move(bytes)});
+  }
+
+  NativeConversationJournalConfig journalConfig;
+  journalConfig.stateRoot = resolve(journal.at("state_root").get<std::string>(), "state root");
+  journalConfig.identity = journal.at("identity").get<std::string>();
+  journalConfig.keys = std::move(keys);
+  journalConfig.quotaBytes = journal.value("quota_bytes", std::size_t{64 * 1024 * 1024});
+  journalConfig.testOnlyAllowEphemeralRoot =
+    journal.value("test_only_allow_ephemeral_state_root", false);
+
+  NativeConversationConfig ownerConfig;
+  ownerConfig.journal = std::make_shared<NativeConversationJournal>(std::move(journalConfig));
+  ownerConfig.requesterIdentity = requester;
+  ownerConfig.serviceName = owner.at("service_name").get<std::string>();
+  ownerConfig.securityDomainDigest = owner.at("security_domain_digest").get<std::string>();
+  return std::make_shared<NativeConversationCoordinator>(std::move(ownerConfig));
+}
 
 NativeConversationTurn NativeConversationCoordinator::beginTurn(
   const NativeConversationContinuation& c, std::string requestId, std::uint64_t attempt) const

@@ -4343,68 +4343,8 @@ public:
                                            const std::string& baseDirectory)
   {
     if (!m_user) throw std::runtime_error("user is not initialized");
-    const auto root = ndnsf::di::nativeParseJson(configurationJson);
-    if (root.value("schema", std::string{}) != "ndnsf-di-native-conversation-v1")
-      throw std::invalid_argument("unsupported native conversation schema");
-    const auto base = std::filesystem::absolute(baseDirectory).lexically_normal();
-    const auto path = [&base] (const std::string& value, const char* field) {
-      if (value.empty() || value.find('\0') != std::string::npos)
-        throw std::invalid_argument(std::string("native conversation ") + field + " path is invalid");
-      const auto candidate = std::filesystem::path(value);
-      if (candidate.is_absolute()) return candidate.lexically_normal();
-      const auto resolved = (base / candidate).lexically_normal();
-      const auto relative = resolved.lexically_relative(base);
-      if (relative.empty() || relative == ".." ||
-          relative.string().compare(0, 3, "../") == 0)
-        throw std::invalid_argument(std::string("native conversation ") + field +
-                                    " path escapes configuration directory");
-      return resolved;
-    };
-    const auto& journal = root.at("journal");
-    const auto& owner = root.at("owner");
-    if (!journal.is_object() || !owner.is_object() || !journal.at("keys").is_array() ||
-        journal.at("keys").empty())
-      throw std::invalid_argument("native conversation owner configuration is incomplete");
-    const auto requester = owner.at("requester_identity").get<std::string>();
-    if (requester != m_userIdentity)
-      throw std::invalid_argument(
-        "native conversation requester identity must match the ServiceUser identity");
-
-    std::vector<ndnsf::di::NativeConversationJournalKey> keys;
-    std::set<std::string> keyIds;
-    for (const auto& entry : journal.at("keys")) {
-      if (!entry.is_object())
-        throw std::invalid_argument("native conversation key entry is invalid");
-      const auto id = entry.at("id").get<std::string>();
-      if (!keyIds.insert(id).second)
-        throw std::invalid_argument("native conversation key id is duplicated");
-      const auto keyPath = path(entry.at("file").get<std::string>(), "key");
-      struct stat status{};
-      if (::lstat(keyPath.c_str(), &status) != 0 || !S_ISREG(status.st_mode) ||
-          status.st_uid != ::geteuid() || status.st_nlink != 1 || (status.st_mode & 077) != 0)
-        throw std::invalid_argument("native conversation key file must be owner-only");
-      auto bytes = readNativeFile(keyPath, 32);
-      if (bytes.size() != 32)
-        throw std::invalid_argument("native conversation key must contain exactly 32 bytes");
-      keys.push_back({id, std::move(bytes)});
-    }
-
-    ndnsf::di::NativeConversationJournalConfig journalConfig;
-    journalConfig.stateRoot = path(journal.at("state_root").get<std::string>(), "state root");
-    journalConfig.identity = journal.at("identity").get<std::string>();
-    journalConfig.keys = std::move(keys);
-    journalConfig.quotaBytes = journal.value("quota_bytes", std::size_t{64 * 1024 * 1024});
-    journalConfig.testOnlyAllowEphemeralRoot =
-      journal.value("test_only_allow_ephemeral_state_root", false);
-
-    ndnsf::di::NativeConversationConfig ownerConfig;
-    ownerConfig.journal = std::make_shared<ndnsf::di::NativeConversationJournal>(
-      std::move(journalConfig));
-    ownerConfig.requesterIdentity = requester;
-    ownerConfig.serviceName = owner.at("service_name").get<std::string>();
-    ownerConfig.securityDomainDigest = owner.at("security_domain_digest").get<std::string>();
-    return std::make_shared<ndnsf::di::NativeConversationCoordinator>(
-      std::move(ownerConfig));
+    return ndnsf::di::nativeConversationCoordinatorFromConfig(
+      configurationJson, std::filesystem::path(baseDirectory), m_userIdentity.toUri());
   }
 
   std::shared_ptr<const ndnsf::di::NativeAuthenticatedGrantClient>
