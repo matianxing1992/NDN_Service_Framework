@@ -110,6 +110,8 @@ def test_provider_finite_serve_has_joined_install_lifetime() -> None:
     assert "installThread.join();" in source
     assert ".detach();" not in source
     assert "NDNSF_DI_NATIVE_PROVIDER_RUN_LIMIT_REACHED" in source
+    assert "runLimitReached->load(std::memory_order_acquire)" in source
+    assert "NDNSF_DI_NATIVE_PROVIDER_PERMISSION_WAIT_CANCELLED" in source
 
 
 def test_transient_python_mapping_rejected(tmp_path: Path) -> None:
