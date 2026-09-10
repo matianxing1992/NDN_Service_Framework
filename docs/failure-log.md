@@ -5019,3 +5019,33 @@ The complete `Spec175NativeAssembly` suite (9 cases, 13.86 s) passed under the
 same pinned configuration. The lesson is to query the test registry before
 selecting a focused filter and to bind the same dependency prefix used by the
 production APP builder.
+
+## 2026-09-10 — APP v34 source seal rejected stale harness changes
+
+Symptom: the first APP v34 external build stopped with
+`APP_CHANGED_BASE_SOURCE:Experiments/TigerCluster/jobs/yolo/submit.py` before
+compilation.
+Root cause: the working tree's Tiger harness had advanced after the v22 base
+SIF source seal, so the builder correctly refused to combine a sealed base with
+unsealed harness edits.
+Fix status: rebased the application source from the validated v33 archive,
+overlaid only the native offer/executable and app changes, preserved the
+base-sealed harness files, and rebuilt APP v34 successfully.
+Lesson: application refreshes must preserve the base-owned harness revision;
+when the harness changes, create a new sealed source archive instead of
+disabling the source-integrity check.
+
+## 2026-09-10 — dispatch input SIF cache drift
+
+Symptom: the v34 dispatch render rejected the layered input because the base
+SIF hash differed from the pinned `sha256:2c07a9f1...` seed, even though the
+same logical filename was present.
+Root cause: an old hard-linked cache inode was reused by historical plane
+inputs and had drifted to a different content hash.
+Fix status: restored the canonical SIF and v34 input copy from the immutable
+`/tmp/ndnsf-di-v22-seed-20260910.sif` seed, verified the pinned hash and input
+manifest, removed only the partial v34 runtime/dispatch directories, and
+rerendered the plane successfully.
+Lesson: never trust a cache filename alone; verify the content hash before
+rendering or submitting and isolate repaired inputs from historical cache
+links.
