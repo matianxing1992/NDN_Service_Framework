@@ -54,10 +54,18 @@ for transport in ("tcp","udp"):
         target = nodes[route["toNodeRank"]]
         address = target["address"]
         port = target[transport + "Port"]
+        # Use the in-image Python socket module instead of assuming that an
+        # optional netcat package is installed on every compute node.  TCP
+        # connect and UDP connect preserve the old bounded diagnostic probe;
+        # neither lane is a protocol qualification result.
+        probe = (
+            "import socket,sys; "
+            "kind=socket.SOCK_DGRAM if sys.argv[3]=='udp' else socket.SOCK_STREAM; "
+            "sock=socket.socket(socket.AF_INET,kind); sock.settimeout(2); "
+            "sock.connect((sys.argv[1],int(sys.argv[2]))); sock.close()"
+        )
         command=["srun","--exclusive","--nodes=1","--ntasks=1",f"--relative={route['fromNodeRank']}",
-                 "nc","-z","-w","2"]
-        if transport == "udp": command.append("-u")
-        command.extend([address,str(port)])
+                 "python3","-c",probe,address,str(port),transport]
         result=subprocess.run(command,text=True,capture_output=True,check=False)
         if result.returncode == 0: reachable += 1
         else: closed.append(port)
