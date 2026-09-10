@@ -22,7 +22,11 @@ parser.add_argument('--run-root', type=Path, default=None,
                     help='retain the raw run under this directory')
 parser.add_argument('--conversation', action='store_true',
                     help='run two persisted native conversation turns and a wrong-parent negative')
+parser.add_argument('--recovery', action='store_true',
+                    help='restart the Provider between turns and require safe native rejection')
 args=parser.parse_args()
+if args.recovery and not args.conversation:
+ parser.error('--recovery requires --conversation')
 BUILD=args.build.resolve()
 CONTROLLER=BUILD/'examples/App_ServiceController'; AUTHORITY=BUILD/'examples/DI_NativeArtifactAuthority'; PROVIDER=BUILD/'examples/di-native-provider'; REQUESTER=BUILD/'examples/DI_NativeRequester'; WORKER=BUILD/'DI_NativeOnnxAssemblyWorker'
 # make descriptor/catalog
@@ -131,6 +135,10 @@ try:
  if args.conversation and rq.returncode == 0:
   state_path=run_root/'requester/conversation-state.json'
   if not state_path.is_file(): raise RuntimeError('conversation checkpoint handoff missing')
+  if args.recovery:
+   p.kill(); stopped=p.wait(); children.remove(p); print('provider first rc',stopped)
+   p=launch(pm,pe,'provider-restart'); children.append(p)
+   b.wait_marker(p,run_root/'provider-restart.log','NDNSF_DI_NATIVE_PROVIDER_READY',45)
   second=json.loads((run_root/'requester/config.json').read_text())
   # A resumed turn keeps the conversation parent but must use a fresh
   # request/generation identity.  The native coordinator rejects reusing the
@@ -151,8 +159,9 @@ try:
  print('ROOT',run_root)
  for name, markers in {
   'requester.log': ('NATIVE_STREAM_ORACLE_PASS', 'NATIVE_REQUEST_SUCCEEDED', 'NATIVE_CONVERSATION_CHECKPOINT_WRITTEN'),
-  **({'requester-second.log': ('NATIVE_REQUEST_SUCCEEDED',), 'requester-wrong-parent.log': ('DI_NATIVE_CONVERSATION_PARENT_MISMATCH',)} if args.conversation else {}),
+  **({'requester-second.log': (('NATIVE_REQUEST_SUCCEEDED',) if not args.recovery else ('NATIVE_STREAM_FAILED',)), 'requester-wrong-parent.log': ('DI_NATIVE_CONVERSATION_PARENT_MISMATCH',)} if args.conversation else {}),
   'provider.log': ('NDNSF_DI_GRANT_VERIFICATION', 'NDNSF_DI_EXECUTION_EVIDENCE_OBSERVED'),
+  **({'provider-restart.log': ('NDNSF_DI_NATIVE_PROVIDER_READY', 'PROVIDER_CONVERSATION_STATE_MISSING')} if args.recovery else {}),
  }.items():
   log_path=run_root/name
   if not log_path.is_file():
@@ -164,7 +173,15 @@ try:
   if missing: raise RuntimeError(f'missing expected markers in {name}: {missing}')
  if rq.returncode: raise RuntimeError('request failed')
  if args.conversation and rq.returncode == 0:
-  if rq2.returncode != 0: raise RuntimeError('conversation append request failed')
+  if args.recovery:
+   if rq2.returncode == 0: raise RuntimeError('recovery append unexpectedly succeeded')
+   second_log=(run_root/'requester-second.log').read_text(errors='replace')
+   if 'NATIVE_REQUEST_SUCCEEDED' in second_log or 'NATIVE_CONVERSATION_CHECKPOINT_WRITTEN' in second_log:
+    raise RuntimeError('recovery append emitted a success/checkpoint marker')
+   restart_log=(run_root/'provider-restart.log').read_text(errors='replace')
+   if 'NDNSF_DI_EXECUTION_EVIDENCE_OBSERVED' in restart_log or 'STREAM_EVENT_OBSERVED' in restart_log:
+    raise RuntimeError('recovery restart executed or published a duplicate prefix')
+  elif rq2.returncode != 0: raise RuntimeError('conversation append request failed')
   if rq3.returncode == 0: raise RuntimeError('wrong parent unexpectedly succeeded')
 finally:
  for p in reversed(children): b.stop(p)
