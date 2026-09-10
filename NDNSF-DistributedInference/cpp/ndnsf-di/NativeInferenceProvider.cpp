@@ -249,6 +249,31 @@ NativeInferenceProvider::serve(const NativeServiceDefinition& service,
       "native service definition requires allowedRoles");
   }
 
+  // The identity advertised in offers, execution evidence, leases, and
+  // cross-Provider data names must be the identity actually owned by this
+  // ServiceProvider.  Leaving this optional let a MiniNDN fixture work by
+  // accident while a multi-host deployment published a valid-looking
+  // capability for a different node and then failed at Selection/data fetch.
+  ndn::Name configuredProvider;
+  try {
+    configuredProvider = ndn::Name(config.localProviderName);
+  }
+  catch (const std::exception&) {
+    throw std::invalid_argument(
+      "native service config providerName is not a valid NDN name");
+  }
+  const auto actualProvider = m_provider->getName();
+  if (configuredProvider.empty() || actualProvider.empty() ||
+      configuredProvider != actualProvider) {
+    throw std::invalid_argument(
+      "native service config providerName must match ServiceProvider identity");
+  }
+  const auto canonicalProviderName = actualProvider.toUri();
+  if (config.providerBootId.empty()) {
+    throw std::invalid_argument(
+      "native service config providerBootId is required");
+  }
+
   std::lock_guard<std::mutex> lock(m_mutex);
   if (m_stopped) {
     throw std::runtime_error("NativeInferenceProvider host is stopped");
@@ -262,7 +287,10 @@ NativeInferenceProvider::serve(const NativeServiceDefinition& service,
   bool hostCreated = false;
   if (!host) {
     host = std::make_shared<HostState>();
-    host->providerName = config.localProviderName;
+    // Persist the canonical NDN URI, not caller spelling.  All lease keys,
+    // evidence and cross-Provider data names then use one stable identity even
+    // when equivalent escaped component spellings reach separate callers.
+    host->providerName = canonicalProviderName;
     host->providerBootId = config.providerBootId;
     host->workerSlots = std::max<std::size_t>(1, config.workerCount);
     host->sharedLease =
@@ -287,10 +315,9 @@ NativeInferenceProvider::serve(const NativeServiceDefinition& service,
     // A serve must not silently reshape the host's shared boot identity or its
     // compute-slot range: the slot range is host resources configured at boot,
     // not a sum over serves.
-    if (!config.localProviderName.empty() &&
-        config.localProviderName != host->providerName) {
+    if (canonicalProviderName != host->providerName) {
       throw std::invalid_argument("native service config providerName '"
-        + config.localProviderName + "' conflicts with the host's '"
+        + canonicalProviderName + "' conflicts with the host's '"
         + host->providerName + "'");
     }
     if (!config.providerBootId.empty() &&
@@ -323,6 +350,10 @@ NativeInferenceProvider::serve(const NativeServiceDefinition& service,
     // collaboration closure below captures the host (and therefore the shared
     // state) and is detached by Core only after the handler itself is gone.
     NativeProviderHandlerConfig effectiveConfig = config;
+    // Runtime evidence must use the same canonical identity as the shared
+    // host state; do not let alternate URI spellings split a Provider's
+    // cross-machine bindings.
+    effectiveConfig.localProviderName = canonicalProviderName;
     if (!config.executionLeaseTargetService.empty()) {
       if (config.executionLeaseTargetService != service.serviceName) {
         throw std::invalid_argument("executionLeaseTargetService '"

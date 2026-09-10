@@ -991,7 +991,7 @@ using ndnsf::di::NativeProviderHandlerConfig;
 using ndnsf::di::NativeServiceDefinition;
 using ndnsf::di::NativeServiceRegistration;
 
-constexpr char NATIVE_HOST_PROVIDER_NAME[] = "/spec182/provider/native-host";
+constexpr const char* NATIVE_HOST_PROVIDER_NAME = HOST_PROVIDER_NAME;
 constexpr char NATIVE_HOST_BOOT_ID[] = "host-boot-epoch";
 constexpr char HOST_SERVICE_A[] = "/Inference/Spec182HostA";
 constexpr char HOST_SERVICE_B[] = "/Inference/Spec182HostB";
@@ -1099,14 +1099,46 @@ BOOST_AUTO_TEST_CASE(Spec182ProviderHostFirstServeFailureRollsBackHost)
     throw std::runtime_error("intentional runtime observer failure");
   };
 
-  auto failedConfig = makeHostConfig(HOST_SERVICE_A);
-  failedConfig.localProviderName = "/spec182/provider/failed-first-serve";
-  BOOST_CHECK_THROW(host->serve(service, failedConfig), std::runtime_error);
+  BOOST_CHECK_THROW(host->serve(service, makeHostConfig(HOST_SERVICE_A)),
+                    std::runtime_error);
 
   // A failed first serve must not pin the failed identity or leave the fixed
   // lease entry registered. A clean retry with the normal host identity must
   // create a usable target.
   service.runtimeObserver = {};
+  auto registration = host->serve(service, makeHostConfig(HOST_SERVICE_A));
+  BOOST_REQUIRE(registration.valid());
+  BOOST_CHECK(!registration.closed());
+}
+
+BOOST_AUTO_TEST_CASE(Spec182ProviderHostRejectsUnboundIdentityBeforeHostCreation)
+{
+  ndn::security::KeyChain keyChain("pib-memory:spec182-host-identity",
+                                   "tpm-memory:spec182-host-identity");
+  ndn::DummyClientFace face(keyChain);
+  auto providerCert = makeRsaIdentity(keyChain, ndn::Name(HOST_PROVIDER_NAME));
+  auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/spec182/aa-host-identity"));
+  auto provider = std::make_shared<LocalServiceProvider>(
+    face, ndn::Name("/spec182/group"), providerCert, aaCert,
+    "examples/trust-any.conf");
+  auto host = std::make_shared<NativeInferenceProvider>(
+    provider, std::make_shared<NativeAdapterRegistry>());
+  auto service = makeHostService(HOST_SERVICE_A, makeAcceptingAckHandler());
+
+  auto missingIdentity = makeHostConfig(HOST_SERVICE_A);
+  missingIdentity.localProviderName.clear();
+  BOOST_CHECK_THROW(host->serve(service, missingIdentity), std::invalid_argument);
+
+  auto foreignIdentity = makeHostConfig(HOST_SERVICE_A);
+  foreignIdentity.localProviderName = "/provider/OtherHost";
+  BOOST_CHECK_THROW(host->serve(service, foreignIdentity), std::invalid_argument);
+
+  auto missingBoot = makeHostConfig(HOST_SERVICE_A);
+  missingBoot.providerBootId.clear();
+  BOOST_CHECK_THROW(host->serve(service, missingBoot), std::invalid_argument);
+
+  // Rejections happen before host publication; a valid retry still creates a
+  // usable registration and does not inherit a foreign identity or epoch.
   auto registration = host->serve(service, makeHostConfig(HOST_SERVICE_A));
   BOOST_REQUIRE(registration.valid());
   BOOST_CHECK(!registration.closed());

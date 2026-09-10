@@ -58,6 +58,9 @@ struct NativeProviderHandlerConfig
   // Explicit rollback-only compatibility for old preassembled V3 fixtures.
   bool allowPreassembledV3Compatibility = false;
   std::string finalResponseScope = "final-response";
+  // Required host identity. NativeInferenceProvider::serve rejects an empty
+  // or non-matching name before installing a target; every served target on a
+  // host therefore uses the same ServiceProvider identity and boot epoch.
   std::string localProviderName;
   std::string providerBootId;
   std::string planDigest;
