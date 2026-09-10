@@ -88,7 +88,9 @@ FR-018/SC-010/PO-015由 [validation workflow](contracts/pre-test-static-review.m
 
 2026-09-10 R10-B82 whole-chain static review：补充 standalone C++ requester 的 conversation
 配置未接线、requester-held artifact authority、16 个旧 route caller、独立 worker/process 与
-依赖闭包缺口；这些发现仍由 T010/T011/T013/T014/T015/T016/T017 持有，不提升任何资格状态。
+依赖闭包缺口。R11-B1 已以独立 C++ authority/requester process 正反例和隔离证据关闭
+artifact authority 这一局部边界；conversation、16 个旧 route caller、独立 worker/process
+与依赖闭包缺口仍由 T010/T011/T013/T014/T015/T016/T017 持有，不提升其他资格状态。
 详见 [audit](audit.md#current-whole-chain-review-2026-09-10) 与 [R10-B82 evidence](evidence/r10-b82-whole-chain-static-audit-20260910.md)。
 
 2026-09-10 R10-B83：共享 C++ conversation config loader 已接入 standalone requester 与

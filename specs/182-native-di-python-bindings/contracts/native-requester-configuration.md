@@ -2,13 +2,14 @@
 
 ## Status and Entry
 
-R11-B1 / INDEPENDENT_AUTHORITY_BOUNDARY_PARTIAL。源码入口为 `examples/DI_NativeRequester.cpp`，
+R11-B1 / INDEPENDENT_AUTHORITY_BOUNDARY_CLOSED_FOR_VALIDATION（仅限本地 process 出口）。源码入口为 `examples/DI_NativeRequester.cpp`，
 Waf target 为 `DI_NativeRequester`，链接 `ndnsf-distributed-inference`；CLI 先由 native loader
 完成 catalog、grant 和 admission 组合，再把 request fields 交给
 `nativeRequestRuntimeFromJson` 做统一 runtime schema/identity/budget/state 校验。grant 的签发
 私钥和 model content key 由独立的 C++ authority 进程持有，requester 只持有自己的签名私钥和
-authority 公钥。当前已构建并验证 help/usage/错误 schema 及本地 C++ 组合；真实 authority
-网络交互和 requester→Core→Provider 请求仍未验收，详见 [R11-B1 evidence](../evidence/r11-b1-independent-authority-20260910.md)。
+authority 公钥。当前已构建并验证 help/usage/错误 schema、本地 C++ 组合及真实独立
+authority↔requester grant process 正反例；requester→Core→Provider unary 请求仍未验收，详见
+[R11-B1 evidence](../evidence/r11-b1-independent-authority-20260910.md)。
 
 ```bash
 DI_NativeRequester --help

@@ -1,6 +1,6 @@
 # Spec182 Design Audit
 
-**Revision**: 29 | **Current source**: uncommitted R11-B1 working tree on `Experimental`
+**Revision**: 30 | **Current source**: R11-B1 process-driver checkpoint on `Experimental`
 
 ## R11-B1 Independent Authority Review 2026-09-10
 
@@ -13,8 +13,10 @@ private key 或 model content key，也不构造 `NativeArtifactGrantIssuer`；a
 编译期间发现 requester 使用了未定义的 `epoch`，完整 C++ selector 又发现 local issuer
 兼容构造路径使用了错误时钟；两项均已修复并通过回归。静态检查没有发现新的已确认控制
 缺陷，但 Cppcheck 1.90 在 vendor nlohmann/json 与 Boost 预处理边界失败，不能作为本轮
-通过证据。真实 authority↔requester process 签发、拒绝、不可达和隔离反例尚未运行，故
-本轮结论为 `OPEN_FOR_NEXT_BATCH`，不推进 T005、T010 或 N2。
+通过证据。随后新增的 C++ process probe 与外部 launcher 通过只读静态复核；真实
+Controller/Authority/requester process 正例、5 个 Authority handler 拒绝例、Authority
+不可达超时和 bwrap 隔离均已运行通过。故本批结论更新为 `CLOSED_FOR_VALIDATION`（只限
+R11-B1 process 出口），不推进 T005 父任务或 R11-B2 之外的生产资格。
 
 详细五 lane、命令、原始日志和 closure decision 见 [R11-B1 evidence](evidence/r11-b1-independent-authority-20260910.md)。
 

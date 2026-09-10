@@ -1,6 +1,6 @@
 # Tasks: Native NDNSF-DI with Optional Python Bindings
 
-**Revision**: 121 | **Status**: DRAFT / T001 DONE
+**Revision**: 122 | **Status**: DRAFT / T001 DONE
 **Input**: [spec](spec.md), [code design](contracts/code-design.md),
 [proof](contracts/proof-design.md), [work units](contracts/work-units.md)
 
@@ -9,15 +9,15 @@
 ### Native-First Dispatch 2026-09-10
 
 剩余调度权威为 [N1--N5 / R11 cards](contracts/native-first-execution.md)。当前 R11-B1
-已完成配置、wire 和 C++ composition 的局部出口，仍需独立 authority↔requester process
-签发正反例；完成后才进入 R11-B2 的真实 C++ 跨进程 unary。不得在 N1--N3 通过前以旧
+已完成独立 authority↔requester process 的 C++ 正例、负例和不可达边界；下一项是 R11-B2
+的真实 C++ 跨进程 unary。不得在 N1--N3 通过前以旧
 调用方批量迁移、Python 数量或全仓库扫描代替原生出口。已有局部 PASS 及下面历史记录
 保留，父任务不因本轮局部实现升级。
 
 | Unit / Details | Status | Depends | Evidence / Remaining | Updated |
 | --- | --- | --- | --- | --- |
 | [D-NATIVE-FIRST Replan](evidence/native-first-replan-20260910.md) | DONE | User execution-order decision | 文档依赖/链接、旧勾选状态、11/11 workflow 同步及双 PDF 构建检查通过；产品 NOT_RUN | 2026-09-10 |
-| [R11-B1 Independent Authority](contracts/native-first-execution.md#dispatch-cards) | PARTIAL | T001 valid closure; existing T005 implementation | C++ requester 已移除 authority/content key 与本地 issuer，新增 canonical authority wire、独立 `DI_NativeArtifactAuthority` target、权限 bootstrap 和 C++ unit/build/help/regression evidence；真实 authority↔requester process 签发正反例、拒绝/不可达边界仍未完成，R11-B2 不放行 | 2026-09-10 |
+| [R11-B1 Independent Authority](contracts/native-first-execution.md#dispatch-cards) | CLOSED_FOR_VALIDATION | T001 valid closure; existing T005 implementation | C++ 独立 authority/requester process 经真实 NFD/Controller 通过 1 正例、5 个 Authority handler 拒绝例和 1 个 authority 不可达超时；bwrap requester 隔离、角色 PIB/TPM 快照与 C++ grant 验证通过。T005 父任务、R11-B2 及完整 Spec qualification 仍未关闭 | 2026-09-10 |
 | [R11-B2 Native Unary Process](contracts/native-first-execution.md#dispatch-cards) | NOT_STARTED | R11-B1; existing T008/T009/T010 implementation | 独立 DI_NativeRequester / authority / di-native-provider；真实 ACK/Selection/handler/Response 和数值 oracle | 2026-09-10 |
 | [R11-B3 Native Stream Process](contracts/native-first-execution.md#dispatch-cards) | NOT_STARTED | R11-B2 | 同一生产链的有序事件、final、gap/timeout/重复/错 generation | 2026-09-10 |
 | [R11-B4 Native Continuation Process](contracts/native-first-execution.md#dispatch-cards) | NOT_STARTED | R11-B3 | 两轮 FULL_CONTEXT→APPEND_DELTA、真实 receipt/control/journal、错 parent | 2026-09-10 |
@@ -43,8 +43,8 @@
 状态：NOT_STARTED（无独立执行记录）、READY（依赖及门禁满足）、IN_PROGRESS（正在执行）、
 PARTIAL（已有工作但验收不全）、BLOCKED（已确认阻塞）、DONE（该卡完整验收通过）。
 PARTIAL 不表示依赖放行；T001 release 及 plan Gate Order 继续约束执行。
-本轮已对 R11-B1 运行同源 C++ 构建、unit/integration selector 和 CLI 检查；仍按 process 出口
-未完成保持 `PARTIAL`，不以文件存在或结构检查计算完成百分比。
+本轮已对 R11-B1 运行同源 C++ 构建、unit/integration selector、CLI 和独立 process 检查；
+该卡按本地 process 出口记为 `CLOSED_FOR_VALIDATION`，不以此推进 T005 父任务或计算全 Spec 百分比。
 每个工作单元成功/失败/阻塞后、commit 和回复前更新对应行及证据；新增工作先补卡和进度行。
 维护规则见 [task progress](../../skills/speckit-code-design/references/task-progress.md)。
 每个批次在编码前还要登记分配依据：共同生产入口/调用方、接口/状态/所有权或数据契约、
@@ -283,15 +283,15 @@ P1–P4 是不同的生产入口、进程边界或 selector，不能为了少一
 
 ## Current Checkpoint
 
-2026-09-10 R11-B1 independent artifact authority / **PARTIAL**：C++ requester 现在只读取自身
-签名私钥与 authority 公钥，通过既有 Core `RequestServiceTargeted` 请求
-`ndnsf-di-native-grant-authority-v1`；authority 端独立持有签发私钥、model content key、
-recipient registry 与 immutable publication policy，并在 Controller ProviderPermission
-就绪后提供 TargetedOnly service。新增 authority wire/unit、独立 executable、Waf target 和
-requester rejection boundary 均已同源构建；完整 `Spec182*` C++ unit 选择器为 256/256，
-`Spec170NdnsfDiCoreFlow/Spec182*` integration 选择器为 9/9。首次 selector 暴露 local
-issuer clock regression，已修复并保留原始日志。当前仍缺真实独立 authority↔requester
-process 正向/负向签发及不可达边界，因此不关闭 R11-B1/T005，也不放行 R11-B2；详见
+2026-09-10 R11-B1 independent artifact authority / **CLOSED_FOR_VALIDATION**（仅限本地
+process 出口）：C++ requester 只读取自身签名私钥与 authority 公钥，通过既有 Core
+`RequestServiceTargeted` 请求 `ndnsf-di-native-grant-authority-v1`；authority 独立持有签发
+私钥、model content key、recipient registry 与 immutable publication policy，并在 Controller
+ProviderPermission 就绪后提供 TargetedOnly service。真实独立 Controller/Authority/requester
+进程经私有 NFD 通过 1 个正例、5 个 handler 拒绝例和 1 个 authority 不可达超时；C++ probe
+验证 grant，bwrap 隔离与角色 PIB/TPM 快照通过。完整 `Spec182*` C++ unit 选择器为 256/256，
+`Spec170NdnsfDiCoreFlow/Spec182*` integration 选择器为 9/9。T005 父任务仍为 `PARTIAL`，
+R11-B2 的 ACK/Selection/handler/Response 和完整 Spec qualification 仍未开始；详见
 [R11-B1 evidence](evidence/r11-b1-independent-authority-20260910.md)。
 
 2026-09-10 R10-B84 native request identity scope / **CLOSED_FOR_VALIDATION**（仅限 C++ request identity 边界）：

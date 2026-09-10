@@ -3082,3 +3082,34 @@ are still unobserved.
   rc=0. Raw output is retained under
   `.codex-tmp/spec182-r10-b80-provider-run-limit-controller/`; this remains a bounded lifetime
   result and not requester/Provider transport qualification.
+
+## 2026-09-10 — Spec182 R11-B1 independent authority process fixture boundaries
+
+- **Area**: C++ requester to independent `DI_NativeArtifactAuthority` grant process over a
+  private NFD and Controller.
+- **First boundaries**: the initial fixture shared one writable PIB/TPM among Controller,
+  Authority and requester. Authority startup raced ndn-cxx identity/default-certificate state;
+  Controller then reported a missing signing certificate and Authority could not fetch PUBPARAMS.
+  After switching the requester namespace to read-only, its HOME was also read-only and the C++
+  probe stopped at `Failed to acquire file lock`. A copied identity store then retained the
+  bootstrap `tpm-file:` locator, so Authority reached permission fetch but could not decrypt the
+  Controller response. Raw runs are retained under `/tmp/spec182-r11-b1-process-rpziurt1`,
+  `/tmp/spec182-r11-b1-process-wqjaczju` and `/tmp/spec182-r11-b1-process-1c19cxaj`.
+- **Interpretation**: these were process-fixture identity-storage and namespace boundaries;
+  none was a grant protocol result. The Controller-only run passed before Authority was added.
+- **Changed gate before retry**: generate NDN identities once, copy the full PIB/TPM per native
+  role, rewrite each copied PIB's TPM locator, retain only that role's private NDN key files,
+  keep requester HOME on tmpfs, and leave Authority grant private material outside requester
+  mounts. Only the corrected fixture's C++ positive/negative markers count as R11-B1 evidence.
+- **Final result**: the corrected independent process fixture passed one positive grant, five
+  Authority-handler rejection cases (bad signature, wrong epoch, unknown recipient, malformed
+  wire, expired grant) and one Authority-unreachable transport timeout. R11-B2 onward and T016
+  remain open.
+
+- **Related batch-end check**: one concurrent `Spec182*` unit-suite run returned rc=201 with a
+  memory access violation in the pre-existing `Spec182V3Placement/PublicClientConversationCommitsSeededReceiptAndCheckpoint`
+  fixture at `tests/unit-tests/di-native-v3-placement.t.cpp:1006`. The selector passed ten isolated
+  reruns, and a fresh complete `Spec182*` rerun passed 256/256 cases and 7077/7077 assertions;
+  raw output is retained at `.codex-tmp/spec182-r11-b1-spec182-unit-rerun.log`. This is retained as
+  an intermittent full-suite fixture boundary, not counted as a process protocol failure or as a
+  reason to alter the R11-B1 production path.

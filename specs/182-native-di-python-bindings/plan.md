@@ -1,6 +1,6 @@
 # Implementation Plan: Native NDNSF-DI with Optional Python Bindings
 
-**Branch**: Experimental | **Revision**: 87 | **Date**: 2026-09-10
+**Branch**: Experimental | **Revision**: 88 | **Date**: 2026-09-10
 **Status**: IN_PROGRESS / 当前实现与验收状态见 tasks.md 的 Task Progress Registry 和 Current Checkpoint
 **Spec**: [spec.md](spec.md)
 
@@ -46,9 +46,10 @@ T001允许有界依赖探针；产品构建按设计门和各任务的验证范�
 剩余工作按 [Native-First Execution Order](contracts/native-first-execution.md) 的 N1--N5
 及 R11-B1--B9 执行：独立 artifact authority → C++ 跨进程 unary → 同链 stream/
 continuation/recovery/replacement/cleanup → 16 个 maintained callers → no-Python/
-依赖闭包/T015/T016。当前 R11-B1 已进入 `PARTIAL`：独立 authority 的 C++ 配置、wire、
-requester 接线和 executable 已实现并完成同源 C++ 回归；真实独立 process 签发仍是该卡
-的唯一未闭合出口。下一步先完成该 process 正反例，再进入 R11-B2。
+依赖闭包/T015/T016。当前 R11-B1 已完成本地独立 process 出口：真实 Controller、Authority
+和 C++ requester 经私有 NFD 通过正例、Authority 拒绝例与不可达超时，requester 在 C++ 内
+验证 grant，bwrap 与角色 PIB/TPM 隔离通过。下一步进入 R11-B2；父任务 T005 和完整资格
+仍保持未完成。
 原生验收次序为 C++ production code → C++ unit/integration/process tests → Python
 wrapper checks。各小任务仍先过 review-agent 静态门，整批组合审查后统一构建和相应测试。
 Python 用例数量不推进 native 状态。旧 R1--R10 局部结果按原证据范围保留。
@@ -1199,15 +1200,16 @@ T017 的 evidence/development-handoff.md 包含 exact commit、clean source clos
 
 ## Current Execution Checkpoint
 
-2026-09-10 R11-B1 independent artifact authority / **PARTIAL**：C++ requester 已拒绝
-authority 私钥、content key 和本地 issuer 配置；独立 `DI_NativeArtifactAuthority` 复用
-现有 Core signed service transport、NativeArtifactGrantIssuer policy/crypto 与
-TargetedOnly handler。authority permission bootstrap、canonical request/response wire、
-CLI 配置契约和 C++ tests 已接线。最终同源 unit/integration selectors 及两个 CLI help
-通过，但没有独立 authority↔requester process positive/negative grant run，不能宣称
-N1 或 T005 已完成。详见 [R11-B1 evidence](evidence/r11-b1-independent-authority-20260910.md)。
+2026-09-10 R11-B1 independent artifact authority / **CLOSED_FOR_VALIDATION**（仅限本地
+process 出口）：C++ requester 已拒绝 authority 私钥、content key 和本地 issuer 配置；独立
+`DI_NativeArtifactAuthority` 复用现有 Core signed service transport、NativeArtifactGrantIssuer
+policy/crypto 与 TargetedOnly handler。真实 Controller、Authority 和 C++ requester 经私有
+NFD 通过 1 个正例、5 个 Authority-handler 拒绝例和 1 个 authority 不可达超时；C++ probe
+验证 grant，bwrap 与角色 PIB/TPM 隔离通过。完整同源 unit/integration selectors、CLI help
+和 process target 通过；T005 父任务、R11-B2 ACK/Selection/handler/Response 及完整资格仍未
+完成。详见 [R11-B1 evidence](evidence/r11-b1-independent-authority-20260910.md)。
 
-2026-09-10：Native-First Dispatch 的历史重排记录保留；当前调度以 [Native-First Dispatch](tasks.md#native-first-dispatch-2026-09-10) 和 [N1–N5 契约](contracts/native-first-execution.md) 为准。R11-B1 已有局部实现但 process 出口未闭合；下列 R10 checkpoint 保留为已执行工作的证据，不代表新的 authority/process 门已通过。
+2026-09-10：Native-First Dispatch 的历史重排记录保留；当前调度以 [Native-First Dispatch](tasks.md#native-first-dispatch-2026-09-10) 和 [N1–N5 契约](contracts/native-first-execution.md) 为准。R11-B1 process 出口已在本轮 evidence 中关闭；下列 R10 checkpoint 保留为已执行工作的证据，不代表新的 unary/stateful/provider 门已通过。
 
 2026-09-10 R10-B84 native request identity scope / **CLOSED_FOR_VALIDATION (C++ identity boundary)**：
 `NativeInferenceClient` now allocates a fresh owner scope in each production C++ client constructor and
