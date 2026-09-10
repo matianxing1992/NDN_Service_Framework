@@ -1,5 +1,22 @@
 # Failure Log and Evidence Index
 
+## 2026-09-10 — Spec182 R11-B1-PY native binding dependency and ownership boundaries
+
+The first Python extension rebuild was invoked from the wrong working directory and
+stopped before configuration (`pythonWrapper/build-nac182` did not exist); the raw
+diagnostic is `.codex-tmp/spec182-r11-b8-authority/extension-build.log`. The next
+attempt used the host `/usr/local` NAC-ABE prefix, but `ldd -r` exposed the first
+native boundary as unresolved `ndn::nacabe::Consumer::clearCache` and related symbols
+because that library did not match the current `build-nac182` framework; the raw
+diagnostic is `.codex-tmp/spec182-r11-b8-authority/extension-build-2.log`. A subsequent
+rebuild against the stale DI library had the same class of unresolved native symbols
+(`extension-build-3.log`). The native DI library was rebuilt with the matching
+`/home/tianxing/NDN/nac-abe-integration-182/install` dependency, then the extension was
+rebuilt and imported successfully (`extension-build-4.log`). These attempts are
+dependency/build-boundary failures, not product behavior results; the corrected
+ownership boundary and validation are recorded in
+[R11-B1-PY evidence](../specs/182-native-di-python-bindings/evidence/r11-b1-py-native-authority-20260910.md).
+
 ## 2026-09-10 — Spec182 R11-B6 native replacement validation boundaries
 
 The first replacement harness attempt could not find Provider A's public key because the

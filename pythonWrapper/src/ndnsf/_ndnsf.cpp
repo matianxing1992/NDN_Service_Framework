@@ -188,17 +188,6 @@ loadNativePublicKey(const std::filesystem::path& path)
   return {key, EVP_PKEY_free};
 }
 
-std::shared_ptr<EVP_PKEY>
-nativePublicKeyHandle(EVP_PKEY& privateKey)
-{
-  const auto raw = nativeRawPublicKey(privateKey);
-  EVP_PKEY* key = EVP_PKEY_new_raw_public_key(
-    EVP_PKEY_ED25519, nullptr,
-    reinterpret_cast<const unsigned char*>(raw.data()), raw.size());
-  if (!key) throw std::runtime_error("native grant public key allocation failed");
-  return {key, EVP_PKEY_free};
-}
-
 const ndn::Name&
 nfdCommandIdentity()
 {
@@ -4367,56 +4356,24 @@ public:
       throw std::invalid_argument(
         "native grant requester identity must match the ServiceUser identity");
     const auto epoch = root.at("protection_epoch").get<std::string>();
-    const auto keyId = root.at("content_key_id").get<std::string>();
+    if (root.contains("authority_private_key_file") || root.contains("content_key_file") ||
+        root.contains("content_key_id") || root.contains("requester_public_key_file") ||
+        root.contains("recipient_public_key_files") || root.contains("allowed_model_manifests") ||
+        root.contains("publication_sources") || root.contains("publication_source")) {
+      throw std::invalid_argument(
+        "native grant client configuration must not contain authority policy or content keys");
+    }
     auto requesterKey = loadNativePrivateKey(
       path(root.at("requester_private_key_file").get<std::string>()));
-    auto authorityKey = loadNativePrivateKey(
-      path(root.at("authority_private_key_file").get<std::string>()));
-    auto content = std::shared_ptr<std::vector<std::uint8_t>>(
-      new std::vector<std::uint8_t>(
-        readNativeFile(path(root.at("content_key_file").get<std::string>()), 256)),
-      [] (std::vector<std::uint8_t>* bytes) {
-        if (bytes != nullptr && !bytes->empty())
-          OPENSSL_cleanse(bytes->data(), bytes->size());
-        delete bytes;
-      });
-    if (content->empty()) throw std::invalid_argument("native grant content key is empty");
-    ndnsf::di::NativeGrantIssuerConfig issuerConfig;
-    issuerConfig.authorityIdentity = authority;
-    issuerConfig.requesterIdentity = requester;
-    issuerConfig.protectionEpoch = epoch;
-    issuerConfig.keyId = keyId;
-    issuerConfig.authorityPrivateKey = authorityKey;
-    issuerConfig.requesterPublicKey = nativePublicKeyHandle(*requesterKey);
-    const auto manifest = root.at("model_manifest_digest").get<std::string>();
-    issuerConfig.allowedModelManifests.insert(manifest);
-    for (const auto& item : root.value(
-           "recipient_public_key_files", std::map<std::string, std::string>{}))
-      issuerConfig.recipientPublicKeys.emplace(item.first, loadNativePublicKey(path(item.second)));
-    if (root.contains("publication_source")) {
-      const auto& source = root.at("publication_source");
-      ndnsf::di::NativeGrantPublicationSource policy;
-      policy.modelName = source.at("model_name").get<std::string>();
-      policy.modelContentDigest = source.at("model_content_digest").get<std::string>();
-      policy.canonicalSourceDigest = source.at("canonical_source_digest").get<std::string>();
-      policy.initializerObjectDigest = source.value("initializer_object_digest", std::string{});
-      policy.artifactProfileDigest = source.at("artifact_profile_digest").get<std::string>();
-      issuerConfig.publicationSources.emplace(manifest, std::move(policy));
-    }
-    const auto expectedManifest = manifest;
-    const auto expectedEpoch = epoch;
-    issuerConfig.contentKey = [content, expectedManifest, expectedEpoch](
-      const std::string& requestedManifest, const std::string& requestedEpoch) {
-      if (requestedManifest != expectedManifest || requestedEpoch != expectedEpoch)
-        throw std::invalid_argument("unowned native grant content key request");
-      return *content;
-    };
-    auto issuer = std::make_shared<const ndnsf::di::NativeArtifactGrantIssuer>(
-      std::move(issuerConfig));
+    const auto authorityPublicKey = loadNativePublicKey(
+      path(root.at("authority_public_key_file").get<std::string>()));
+    const auto authorityService = root.at("authority_service").get<std::string>();
     auto user = std::shared_ptr<nsf::ServiceUser>(m_user.get(), [] (nsf::ServiceUser*) {});
     return std::make_shared<const ndnsf::di::NativeAuthenticatedGrantClient>(
-      requester, requesterKey, authority, nativeRawPublicKey(*authorityKey),
-      std::move(issuer), std::move(user));
+      requester, requesterKey, authority, nativeRawPublicKey(*authorityPublicKey), epoch,
+      ndnsf::di::NativeAuthenticatedGrantClient::issueThroughCore(
+        user, authority, authorityService),
+      ndnsf::di::NativeAuthenticatedGrantClient::publishThroughCore(user));
   }
 
   void

@@ -152,6 +152,8 @@ class Spec182NativeBindingsTest(unittest.TestCase):
         self.assertIn(
             "native grant requester identity must match the ServiceUser identity",
             source)
+        self.assertIn("NativeAuthenticatedGrantClient::issueThroughCore", source)
+        self.assertIn("native grant client configuration must not contain authority policy or content keys", source)
 
     def test_native_conversation_owner_stays_in_cpp_and_is_injected(self):
         source = MODULE.read_text(encoding="utf-8")
@@ -489,8 +491,7 @@ class Spec182NativeBindingsTest(unittest.TestCase):
 
             with tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
-                for name in ("model.bin", "trust", "requester.pem", "authority.pem",
-                             "content.key", "offer.pem"):
+                for name in ("model.bin", "trust", "requester.pem", "authority.pem", "offer.pem"):
                     (root / name).write_bytes(b"fixture")
                 config = {
                     "schema": "ndnsf-di-native-requester-v1",
@@ -499,9 +500,9 @@ class Spec182NativeBindingsTest(unittest.TestCase):
                     "limits": {"max_source_bytes": 1024, "max_assembled_bytes": 2048},
                     "catalog": {"source": {"file": "model.bin"},
                                 "recipe": {"artifact_profile_digest": digest}},
-                    "grant": {"authority_identity": "/aa", "protection_epoch": "epoch",
-                              "content_key_id": "content", "requester_private_key_file": "requester.pem",
-                              "authority_private_key_file": "authority.pem", "content_key_file": "content.key"},
+                    "grant": {"authority_identity": "/aa", "authority_service": "/grant",
+                              "authority_public_key_file": "authority.pem",
+                              "protection_epoch": "epoch", "requester_private_key_file": "requester.pem"},
                     "offer_admission": {"policy": {}, "public_key_files": {"offer": "offer.pem"},
                                         "candidate_digest": digest},
                     "request": {"service": "/Qwen", "task": "generate",
@@ -524,6 +525,12 @@ class Spec182NativeBindingsTest(unittest.TestCase):
                         "native")
                     self.assertEqual(client.native_tokenizer_digest, digest)
                     client.configure_native_requester.assert_called_once()
+
+                    config["grant"]["authority_private_key_file"] = "authority.pem"
+                    config_path.write_text(json.dumps(config), encoding="utf-8")
+                    with self.assertRaisesRegex(ValueError, "authority-owned fields"):
+                        client.configure_native_requester_from_config(config_path)
+                    del config["grant"]["authority_private_key_file"]
 
                     config["request"]["generation_mode"] = "TOKEN_DIAGNOSTIC"
                     config_path.write_text(json.dumps(config), encoding="utf-8")
