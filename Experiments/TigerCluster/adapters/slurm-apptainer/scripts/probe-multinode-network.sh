@@ -15,6 +15,10 @@ while (($#)); do
   esac
 done
 [[ -n $process_map && -n $output && -f $process_map ]] || usage
+if [[ -n ${NDNSF_SPEC110_PROBE_OBSERVATION:-} && ${NDNSF_SPEC110_TEST_MODE:-0} != 1 ]]; then
+  echo SPEC110_PROBE_OBSERVATION_REQUIRES_TEST_MODE >&2
+  exit 3
+fi
 [[ -n ${SLURM_JOB_ID:-} || ${NDNSF_SPEC110_TEST_MODE:-0} == 1 ]] || {
   echo SPEC110_NETWORK_PROBE_REQUIRES_ALLOCATION >&2; exit 3;
 }
@@ -81,7 +85,40 @@ from allocation_topology import TopologyError,evaluate_transport_probe,load_proc
 process_map=load_process_map(sys.argv[1])
 addresses=[node["address"] for node in process_map["nodes"]]
 nodes={node["nodeRank"]: node for node in process_map["nodes"]}
-observations={"allocationAddresses":addresses}
+try:
+    probe_timeout=max(1, int(os.environ.get("NDNSF_SPEC110_PROBE_TIMEOUT_SECONDS", "15")))
+except ValueError:
+    raise SystemExit("SPEC110_NETWORK_PROBE_TIMEOUT_INVALID")
+observed_addresses=[]
+if os.environ.get("NDNSF_SPEC110_TEST_MODE", "0") == "1":
+    observed_addresses=addresses
+else:
+    # Derive the source address selected by the target node's routing table.
+    # Reporting the process-map values here would make the address-consistency
+    # evaluator tautological and let a wrong interface survive a diagnostic
+    # run. UDP connect selects a route without sending a payload.
+    source_probe=(
+        "import socket,sys; "
+        "sock=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); sock.settimeout(2); "
+        "sock.connect((sys.argv[1],int(sys.argv[2]))); "
+        "print('NDNSF_SPEC110_SOURCE_ADDRESS='+sock.getsockname()[0]); sock.close()"
+    )
+    for rank in range(len(addresses)):
+        peer=process_map["nodes"][(rank + 1) % len(addresses)]
+        command=["srun","--overlap","--exact","--nodes=1","--ntasks=1",
+                 "--cpus-per-task=1",f"--relative={rank}","python3","-c",
+                 source_probe,peer["address"],str(peer["tcpPort"])]
+        try:
+            result=subprocess.run(command,text=True,capture_output=True,check=False,
+                                  timeout=probe_timeout)
+        except subprocess.TimeoutExpired:
+            raise SystemExit(f"SPEC110_NETWORK_PROBE_TIMEOUT:{rank}")
+        lines=[line.strip() for line in result.stdout.splitlines()
+               if line.strip().startswith("NDNSF_SPEC110_SOURCE_ADDRESS=")]
+        if result.returncode != 0 or len(lines) != 1:
+            raise SystemExit(f"SPEC110_NODE_ADDRESS_PROBE_FAILED:{rank}")
+        observed_addresses.append(lines[0].split("=",1)[1])
+observations={"allocationAddresses":observed_addresses}
 for transport in ("tcp","udp"):
     closed=[];reachable=0
     for route in process_map["routes"]:
@@ -107,8 +144,12 @@ for transport in ("tcp","udp"):
         # one exact CPU with overlap keeps this diagnostic lane bounded.
         command=["srun","--overlap","--exact","--nodes=1","--ntasks=1","--cpus-per-task=1",f"--relative={route['fromNodeRank']}",
                  "python3","-c",probe,address,str(port),transport]
-        result=subprocess.run(command,text=True,capture_output=True,check=False)
-        if result.returncode == 0: reachable += 1
+        try:
+            result=subprocess.run(command,text=True,capture_output=True,check=False,
+                                  timeout=probe_timeout)
+        except subprocess.TimeoutExpired:
+            result=None
+        if result is not None and result.returncode == 0: reachable += 1
         else: closed.append(port)
     observations[transport]={"status":"PASS" if not closed else "FAIL","closedPorts":closed,"reachableRoutes":reachable}
 try:

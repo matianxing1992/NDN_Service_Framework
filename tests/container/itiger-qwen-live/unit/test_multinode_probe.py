@@ -45,6 +45,14 @@ class MultinodeProbeTest(unittest.TestCase):
         with self.assertRaisesRegex(topology.TopologyError, "TOPOLOGY_PROBE_ADDRESS_MISMATCH"):
             topology.evaluate_transport_probe(self.process_map, observation)
 
+    def test_allocation_address_order_is_bound_to_node_rank(self) -> None:
+        observation = json.loads(json.dumps(
+            self.variants["probeObservations"]["tcp-pass-udp-diagnostic-fail"]
+        ))
+        observation["allocationAddresses"] = list(reversed(observation["allocationAddresses"]))
+        with self.assertRaisesRegex(topology.TopologyError, "TOPOLOGY_PROBE_ADDRESS_MISMATCH"):
+            topology.evaluate_transport_probe(self.process_map, observation)
+
     def test_udp_candidate_requires_udp_pass_even_if_tcp_passes(self) -> None:
         process_map = json.loads(json.dumps(self.process_map))
         process_map.update(self.variants["udp"])

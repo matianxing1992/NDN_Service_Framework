@@ -36,12 +36,14 @@ mkdir -p "$tmp/bin"
 cat >"$tmp/bin/srun" <<'SH'
 #!/bin/bash
 set -e
+relative_rank=0
 if [[ ${1:-} == --exclusive ]]; then
   echo "FAKE_SRUN_EXCLUSIVE_STEP_FORBIDDEN" >&2
   exit 99
 fi
 while (($#)) && [[ $1 == --* ]]; do
   case "$1" in
+    --relative=*) relative_rank=${1#--relative=} ;;
     --export=ALL,*)
       IFS=, read -ra exports <<<"${1#--export=ALL,}"
       for item in "${exports[@]}"; do export "$item"; done
@@ -52,6 +54,17 @@ done
 if [[ ${1:-} == env ]]; then
   shift
   while (($#)) && [[ $1 == *=* ]]; do export "$1"; shift; done
+fi
+if [[ ${SPEC110_FAKE_LIVE_NETWORK_PROBE:-0} == 1 && ${1:-} == python3 &&
+      ${2:-} == -c ]]; then
+  if [[ ${3:-} == *NDNSF_SPEC110_SOURCE_ADDRESS=* ]]; then
+    case "$relative_rank" in
+      0) echo NDNSF_SPEC110_SOURCE_ADDRESS=10.10.0.10 ;;
+      1) echo NDNSF_SPEC110_SOURCE_ADDRESS=10.10.0.11 ;;
+      *) exit 1 ;;
+    esac
+  fi
+  exit 0
 fi
 if [[ ${1:-} == test && ${2:-} == -S ]]; then
   test -e "$3"
@@ -121,13 +134,42 @@ for path in map(pathlib.Path, sys.argv[1:]):
     source = path.read_text()
     assert 'scontrol show hostnames "$SLURM_JOB_NODELIST"' in source
     assert 'SPEC110_ALLOCATION_NODE_ORDER_MISMATCH' in source
+probe = pathlib.Path(sys.argv[3]).read_text()
+assert 'observations={"allocationAddresses":addresses}' not in probe
+assert 'NDNSF_SPEC110_SOURCE_ADDRESS=' in probe
+assert 'NDNSF_SPEC110_PROBE_TIMEOUT_SECONDS' in probe
+assert 'SPEC110_PROBE_OBSERVATION_REQUIRES_TEST_MODE' in probe
 PY
+
+set +e
+SLURM_JOB_ID=test NDNSF_SPEC110_TEST_MODE=0 NDNSF_SPEC110_PROBE_OBSERVATION="$tmp/observation.json" \
+  "$repo/packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/probe-multinode-network.sh" \
+  --process-map "$fixture" --output "$tmp/probe-observation-bypass.json" \
+  >"$tmp/probe-observation-bypass.stdout" 2>"$tmp/probe-observation-bypass.stderr"
+observation_bypass_rc=$?
+set -e
+[[ $observation_bypass_rc -eq 3 ]]
+grep -q 'SPEC110_PROBE_OBSERVATION_REQUIRES_TEST_MODE' "$tmp/probe-observation-bypass.stderr"
+[[ ! -e "$tmp/probe-observation-bypass.json" ]]
 
 cat >"$tmp/bin/scontrol" <<'SH'
 #!/bin/sh
 printf '%s\n' ${SPEC110_FAKE_NODELIST:-allocation-node-0 allocation-node-1}
 SH
 chmod 0755 "$tmp/bin/scontrol"
+
+PATH="$tmp/bin:$PATH" SLURM_JOB_ID=test SLURM_JOB_NODELIST='allocation-node-[0-1]' \
+  SPEC110_FAKE_NODELIST='allocation-node-0 allocation-node-1' \
+  NDNSF_SPEC110_TEST_MODE=0 SPEC110_FAKE_LIVE_NETWORK_PROBE=1 \
+  "$repo/packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/probe-multinode-network.sh" \
+  --process-map "$fixture" --output "$tmp/probe-live.json"
+python3 - "$tmp/probe-live.json" <<'PY'
+import json,sys
+value=json.load(open(sys.argv[1]))
+assert value['observations']['allocationAddresses']==['10.10.0.10','10.10.0.11']
+assert value['verdict']['status']=='PASS'
+PY
+
 order_scratch=$(mktemp -d /tmp/ndnsf-di-test-order.XXXXXX)
 set +e
 PATH="$tmp/bin:$PATH" SLURM_JOB_ID=test SLURM_JOB_NODELIST='allocation-node-[0-1]' \
