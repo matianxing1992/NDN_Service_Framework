@@ -7,7 +7,7 @@ The driver owns only process lifecycle and private NFD/PIB/TPM setup.  The
 """
 
 import argparse
-import sys, json
+import sys, json, signal
 import hashlib, os, shutil, subprocess, tempfile, time, sqlite3, struct
 from cryptography.hazmat.primitives.serialization import load_pem_public_key, Encoding, PublicFormat
 from cryptography.hazmat.backends import default_backend
@@ -24,11 +24,24 @@ parser.add_argument('--conversation', action='store_true',
                     help='run two persisted native conversation turns and a wrong-parent negative')
 parser.add_argument('--recovery', action='store_true',
                     help='restart the Provider between turns and require safe native rejection')
+parser.add_argument('--replacement', action='store_true',
+                    help='fail the first Provider after ACK and require a second Provider replacement')
+parser.add_argument('--replacement-no-backup', action='store_true',
+                    help='fail the only Provider and require one terminal native failure')
 args=parser.parse_args()
 if args.recovery and not args.conversation:
  parser.error('--recovery requires --conversation')
+if args.replacement_no_backup and not args.replacement:
+ parser.error('--replacement-no-backup requires --replacement')
+if args.replacement and args.conversation:
+ parser.error('--replacement cannot be combined with --conversation')
 BUILD=args.build.resolve()
 CONTROLLER=BUILD/'examples/App_ServiceController'; AUTHORITY=BUILD/'examples/DI_NativeArtifactAuthority'; PROVIDER=BUILD/'examples/di-native-provider'; REQUESTER=BUILD/'examples/DI_NativeRequester'; WORKER=BUILD/'DI_NativeOnnxAssemblyWorker'
+provider_a='/example/hello/provider-a' if args.replacement else '/example/hello/provider'
+provider_b='/example/hello/provider-b'
+provider_names=[provider_a]
+if args.replacement and not args.replacement_no_backup:
+ provider_names.append(provider_b)
 # make descriptor/catalog
 sys.path[:0]=[str(ROOT/'NDNSF-DistributedInference'),str(ROOT/'NDNSF-DistributedRepo/pythonWrapper')]
 from ndnsf_distributed_inference.splitter import AdapterDescriptor, ModelDescriptor, _canonical_bytes
@@ -48,52 +61,83 @@ manifest={"services":[{"name":"/Inference/NativeStream","model":"/Model/QwenFixt
 # provider plan and manifest files generated later
 
 def policy_text():
- return '''name /example/hello/controller/NDNSF/ControllerPolicy/v1\n\nprovider-policies\n{\n provider-policy\n {\n  for /example/hello/authority\n  allow { /HELLO }\n }\n provider-policy\n {\n  for /example/hello/provider\n  allow { /Inference/NativeStream\n  /Inference/NativeStream/ROLE/LLM/Pipeline/Stage/0 }\n }\n}\n\nuser-policies\n{\n user-policy\n {\n  for /example/hello/user\n  allow { /Inference/NativeStream\n  /HELLO }\n }\n}\n'''
+ providers=''.join(' provider-policy\n {\n  for %s\n  allow { /Inference/NativeStream\n  /Inference/NativeStream/ROLE/LLM/Pipeline/Stage/0 }\n }\n' % name for name in provider_names)
+ return ('name /example/hello/controller/NDNSF/ControllerPolicy/v1\n\n'
+         'provider-policies\n{\n provider-policy\n {\n  for /example/hello/authority\n  allow { /HELLO }\n }\n' + providers + '}\n\nuser-policies\n{\n user-policy\n {\n  for /example/hello/user\n  allow { /Inference/NativeStream\n  /HELLO }\n }\n}\n')
 if args.run_root is None:
  run_root=Path(tempfile.mkdtemp(prefix='spec182-r11-b3-probe-',dir='/tmp'))
 else:
  run_root=args.run_root.resolve()
  run_root.mkdir(parents=True, exist_ok=True)
 run_root.chmod(0o700)
-for n in ['shared','bootstrap-store','authority','provider','requester']:(run_root/n).mkdir(mode=0o700)
+provider_dirs=[('provider', provider_a)]
+if args.replacement and not args.replacement_no_backup: provider_dirs.append(('provider-b', provider_b))
+for n in ['shared','bootstrap-store','authority','requester']+[d for d,_ in provider_dirs]:(run_root/n).mkdir(mode=0o700)
 (run_root/'shared/home').mkdir(); (run_root/'bootstrap-store/home').mkdir()
 nfd_socket=run_root/'nfd.sock'; nfdconf=run_root/'nfd.conf'; b.nfd_config(nfdconf,nfd_socket); policy=run_root/'hello.policies'; b.write(policy,policy_text(),0o600)
 # bootstrap identities
 bootenv=os.environ.copy(); bootenv.update({'HOME':str(run_root/'bootstrap-store/home'),'NDN_CLIENT_PIB':'pib-sqlite3:'+str(run_root/'bootstrap-store/pib'),'NDN_CLIENT_TPM':'tpm-file:'+str(run_root/'bootstrap-store/tpm'),'PATH':'/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin'})
-for ident in ['/example/hello/controller','/example/hello/authority','/example/hello/provider','/example/hello/user']:
+for ident in ['/example/hello/controller','/example/hello/authority']+provider_names+['/example/hello/user']:
  subprocess.run(['/usr/local/bin/ndnsec','key-gen','-t','r',ident],env=bootenv,check=True,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE)
-for n in ['controller-store','authority-store','provider-store','requester-store']:
+store_dirs=[('controller-store',['/example/hello/controller']),('authority-store',['/example/hello/authority']),('provider-store',[provider_a]),('requester-store',['/example/hello/user'])]
+if args.replacement and not args.replacement_no_backup: store_dirs.insert(3,('provider-b-store',[provider_b]))
+for n,_ in store_dirs:
  shutil.copytree(run_root/'bootstrap-store',run_root/n)
  with sqlite3.connect(run_root/n/'pib/pib.db') as db: db.execute('UPDATE tpmInfo SET tpm_locator=?',(f'tpm-file:{run_root/n}/tpm',)); db.commit()
-b.remove_private_keys_except(run_root/'controller-store',['/example/hello/controller'])
-b.remove_private_keys_except(run_root/'authority-store',['/example/hello/authority'])
-b.remove_private_keys_except(run_root/'provider-store',['/example/hello/provider'])
-b.remove_private_keys_except(run_root/'requester-store',['/example/hello/user'])
+for n,keep in store_dirs: b.remove_private_keys_except(run_root/n,keep)
 # external keys
 def edkey(d,prefix):
  prefix.mkdir(parents=True, exist_ok=True)
  priv=prefix/'private.pem'; pub=prefix/'public.pem'; subprocess.run(['/usr/bin/openssl','genpkey','-algorithm','ED25519','-out',str(priv)],check=True,stdout=subprocess.DEVNULL); subprocess.run(['/usr/bin/openssl','pkey','-in',str(priv),'-pubout','-out',str(pub)],check=True,stdout=subprocess.DEVNULL); priv.chmod(0o600); pub.chmod(0o644); return priv,pub
-reqpriv,reqpub=edkey(0,run_root/'requester'); authpriv,authpub=edkey(0,run_root/'authority'); recippriv,recippub=edkey(0,run_root/'provider'); offerpriv,offerpub=edkey(0,run_root/'provider/offer')
+reqpriv,reqpub=edkey(0,run_root/'requester'); authpriv,authpub=edkey(0,run_root/'authority')
+provider_keys={}
+for dirname,name in provider_dirs:
+ recippriv,recippub=edkey(0,run_root/dirname)
+ offerpriv,offerpub=edkey(0,run_root/dirname/'offer')
+ provider_keys[name]={'dir':dirname,'recipient_private':recippriv,'recipient_public':recippub,'offer_private':offerpriv,'offer_public':offerpub}
+recippriv=provider_keys[provider_a]['recipient_private']; recippub=provider_keys[provider_a]['recipient_public']
+offerpriv=provider_keys[provider_a]['offer_private']; offerpub=provider_keys[provider_a]['offer_public']
 (run_root/'authority/content-key.bin').write_bytes(b'spec182-b2-content-key-000000000'); (run_root/'authority/content-key.bin').chmod(0o600)
-(run_root/'authority/trust-schema.conf').write_text((ROOT/'examples/trust-schema.conf').read_text()); (run_root/'provider/trust-schema.conf').write_text((ROOT/'examples/trust-schema.conf').read_text())
+(run_root/'authority/trust-schema.conf').write_text((ROOT/'examples/trust-schema.conf').read_text())
+for dirname,_ in provider_dirs: (run_root/dirname/'trust-schema.conf').write_text((ROOT/'examples/trust-schema.conf').read_text())
 # registry for provider
 registry={"schemaVersion":1,"status":"CONFIGURED","artifactPolicyAuthority":{"publicKeyAlgorithm":"ed25519","signatureAlgorithm":"ed25519","grantSchema":"ndnsf-di-key-grant-v1","authorityId":"/example/hello/authority","keyId":"model-key","publicKeyPath":"provider/authority-public.pem","publicKeySha256":"sha256:"+hashlib.sha256(authpub.read_bytes()).hexdigest(),"acceptedModelFamilies":["QwenFixture"],"protectionEpochs":["epoch-1"]}}
-(run_root/'provider/trust-root-registry-v1.json').write_text(json.dumps(registry)); shutil.copy2(authpub,run_root/'provider/authority-public.pem'); (run_root/'provider/recipient-private.pem').write_bytes(recippriv.read_bytes()); (run_root/'provider/recipient-private.pem').chmod(0o600); (run_root/'provider/recipient-key-map.json').write_text(json.dumps({'/example/hello/provider':str(run_root/'provider/recipient-private.pem')}))
+for name,data in provider_keys.items():
+ provider_dir=run_root/data['dir']
+ (provider_dir/'trust-root-registry-v1.json').write_text(json.dumps(registry)); shutil.copy2(authpub,provider_dir/'authority-public.pem')
+ (provider_dir/'recipient-private.pem').write_bytes(data['recipient_private'].read_bytes()); (provider_dir/'recipient-private.pem').chmod(0o600)
+ (provider_dir/'recipient-key-map.json').write_text(json.dumps({name:str(provider_dir/'recipient-private.pem')}))
 # authority config
-ac={"schema":"ndnsf-di-native-authority-v1","run_for_ms":120000,"permission_bootstrap_ms":30000,"max_grant_ttl_ms":60000,"authority":{"identity":"/example/hello/authority","service":"/HELLO","group":"/example/hello/group","controller_identity":"/example/hello/controller","requester_identity":"/example/hello/user","protection_epoch":"epoch-1","content_key_id":"model-key","trust_schema_file":"trust-schema.conf","authority_private_key_file":"private.pem","requester_public_key_file":"../requester/public.pem","content_key_file":"content-key.bin","allowed_model_manifests":[package],"recipient_public_key_files":{"/example/hello/provider":"../provider/public.pem"},"publication_sources":{package:{"model_name":model.model_name,"model_content_digest":model.content_digest,"canonical_source_digest":src_digest,"artifact_profile_digest":profile}}}}
+recipient_public_key_files={name:'../'+data['dir']+'/public.pem' for name,data in provider_keys.items()}
+ac={"schema":"ndnsf-di-native-authority-v1","run_for_ms":120000,"permission_bootstrap_ms":30000,"max_grant_ttl_ms":60000,"authority":{"identity":"/example/hello/authority","service":"/HELLO","group":"/example/hello/group","controller_identity":"/example/hello/controller","requester_identity":"/example/hello/user","protection_epoch":"epoch-1","content_key_id":"model-key","trust_schema_file":"trust-schema.conf","authority_private_key_file":"private.pem","requester_public_key_file":"../requester/public.pem","content_key_file":"content-key.bin","allowed_model_manifests":[package],"recipient_public_key_files":recipient_public_key_files,"publication_sources":{package:{"model_name":model.model_name,"model_content_digest":model.content_digest,"canonical_source_digest":src_digest,"artifact_profile_digest":profile}}}}
 (run_root/'authority/authority.json').write_text(json.dumps(ac))
 # requester files
-(run_root/'requester/requester-private.pem').write_bytes(reqpriv.read_bytes());(run_root/'requester/requester-private.pem').chmod(0o600); shutil.copy2(authpub,run_root/'requester/authority-public.pem'); shutil.copy2(offerpub,run_root/'requester/offer-public.pem'); (run_root/'requester/trust-schema.conf').write_text((ROOT/'examples/trust-schema.conf').read_text()); (run_root/'requester/model.onnx').write_bytes(src); (run_root/'requester/catalog.json').write_text(json.dumps(catalog));
+(run_root/'requester/requester-private.pem').write_bytes(reqpriv.read_bytes());(run_root/'requester/requester-private.pem').chmod(0o600); shutil.copy2(authpub,run_root/'requester/authority-public.pem'); (run_root/'requester/trust-schema.conf').write_text((ROOT/'examples/trust-schema.conf').read_text()); (run_root/'requester/model.onnx').write_bytes(src); (run_root/'requester/catalog.json').write_text(json.dumps(catalog));
 # Cert name query from the provider PIB lets the requester validate the
 # signed offer without sharing the provider's private NDN key.
 from ndn.encoding import Name,Component
-with sqlite3.connect(run_root/'provider-store/pib/pib.db') as db: kb=db.execute("select key_name from keys").fetchall()
-keyblob=next(bytes(row[0]) for row in kb if b'provider' in bytes(row[0]))
-parts,_=Name.decode(keyblob); keyprefix='/'+'/'.join(Component.to_str(x.tobytes()) for x in parts); cert=keyprefix+'/ID-CERT'
+offer_entries=[]; public_key_files={}
+for index,name in enumerate(provider_names):
+ data=provider_keys[name]
+ with sqlite3.connect(run_root/(data['dir']+'-store')/'pib/pib.db') as db: kb=db.execute("select key_name from keys").fetchall()
+ keyprefix=None
+ for row in kb:
+  parts,_=Name.decode(bytes(row[0])); candidate='/'+'/'.join(Component.to_str(x.tobytes()) for x in parts)
+  if candidate.startswith(name+'/'):
+   keyprefix=candidate; break
+ if keyprefix is None: raise RuntimeError('provider identity key missing: '+name)
+ cert=keyprefix+'/ID-CERT'
+ offer_public=data['offer_public']; offer_key_id='sha256:'+hashlib.sha256(load_pem_public_key(offer_public.read_bytes(), backend=default_backend()).public_bytes(Encoding.Raw,PublicFormat.Raw)).hexdigest()
+ offer_file='offer-public.pem' if len(provider_names)==1 else 'offer-%s-public.pem' % ('a' if index==0 else 'b')
+ shutil.copy2(offer_public,run_root/'requester'/offer_file)
+ public_key_files[offer_key_id]=offer_file
+ offer_entries.append({"provider":name,"service":"/Inference/NativeStream","keyLocatorPrefix":keyprefix,"signerKeyId":offer_key_id,"certificateName":cert})
 # offer policy
-op={"schema":"spec180-provider-offer-trust-v1","candidateId":"b2","candidateDigest":offer_policy,"trustSchema":"/example/hello/trust","entries":[{"provider":"/example/hello/provider","service":"/Inference/NativeStream","keyLocatorPrefix":keyprefix,"signerKeyId":"sha256:"+hashlib.sha256(load_pem_public_key(offerpub.read_bytes(), backend=default_backend()).public_bytes(Encoding.Raw,PublicFormat.Raw)).hexdigest(),"certificateName":cert}]}
+op={"schema":"spec180-provider-offer-trust-v1","candidateId":"b2","candidateDigest":offer_policy,"trustSchema":"/example/hello/trust","entries":offer_entries}
 # requester config
-rc={"schema":"ndnsf-di-native-requester-v1","catalog":dict(catalog,source=dict(catalog['source'],file='model.onnx')),"core":{"requester_identity":"/example/hello/user","authority_identity":"/example/hello/controller","group":"/example/hello/group","trust_schema_file":"trust-schema.conf"},"grant":{"authority_identity":"/example/hello/authority","authority_service":"/HELLO","authority_public_key_file":"authority-public.pem","requester_private_key_file":"requester-private.pem","protection_epoch":"epoch-1"},"offer_admission":{"policy":op,"public_key_files":{op['entries'][0]['signerKeyId']:'offer-public.pem'},"candidate_digest":offer_policy},"limits":{"bootstrap_ms":30000,"max_source_bytes":1000000,"max_assembled_bytes":1000000},"request":{"service":"/Inference/NativeStream","task":"task","adapter_composition_digest":ad.descriptor_digest,"task_descriptor_digest":dg('task'),"generation_mode":"TOKEN_STREAMING","tokenizer_digest":"sha256:bf0f0fa65dc5aafe690ee497b4c8e2abe408fb4788c5ef035964dc94f15ca5a6","input_layout_digest":dg('input-layout'),"security_policy_digest":dg('security'),"max_candidates":1,"max_policy_ms":1000,"provider_names":["/example/hello/provider"],"max_reentries":1,"no_progress_ms":5000,"timeout_ms":30000,"ack_timeout_ms":5000}}
+rc={"schema":"ndnsf-di-native-requester-v1","catalog":dict(catalog,source=dict(catalog['source'],file='model.onnx')),"core":{"requester_identity":"/example/hello/user","authority_identity":"/example/hello/controller","group":"/example/hello/group","trust_schema_file":"trust-schema.conf"},"grant":{"authority_identity":"/example/hello/authority","authority_service":"/HELLO","authority_public_key_file":"authority-public.pem","requester_private_key_file":"requester-private.pem","protection_epoch":"epoch-1"},"offer_admission":{"policy":op,"public_key_files":public_key_files,"candidate_digest":offer_policy},"limits":{"bootstrap_ms":30000,"max_source_bytes":1000000,"max_assembled_bytes":1000000},"request":{"service":"/Inference/NativeStream","task":"task","adapter_composition_digest":ad.descriptor_digest,"task_descriptor_digest":dg('task'),"generation_mode":"TOKEN_STREAMING","tokenizer_digest":"sha256:bf0f0fa65dc5aafe690ee497b4c8e2abe408fb4788c5ef035964dc94f15ca5a6","input_layout_digest":dg('input-layout'),"security_policy_digest":dg('security'),"max_candidates":1,"max_policy_ms":1000,"provider_names":provider_names,"max_reentries":1,"no_progress_ms":5000,"timeout_ms":30000,"ack_timeout_ms":5000}}
+if args.replacement:
+ rc['request']['allow_replacement']=True; rc['request']['max_replacements']=1
 options={"useCache":True,"outputMode":"TOKEN_STREAMING","generationId":"0123456789abcdef0123456789abcdef","maxNewTokens":8,"tokenizerDigest":"sha256:bf0f0fa65dc5aafe690ee497b4c8e2abe408fb4788c5ef035964dc94f15ca5a6","eosTokenIds":[2],"sampling":{"mode":"Greedy","temperature":0.0,"topK":1,"topP":1.0,"repetitionPenalty":1.0,"seed":1750001},"stopStrings":[],"tokenInputName":"input_ids","stateInputNames":["attention_kv_in","recurrent_state_in","convolution_state_in"],"stateOutputNames":["attention_kv_out","recurrent_state_out","convolution_state_out"]}
 (run_root/'requester/options.json').write_text(json.dumps(options)); rc['request']['options_file']='options.json'; rc['stream_oracle']={'token_ids':[4,5,6,7,8,9,10,2]}
 if args.conversation:
@@ -105,7 +149,8 @@ if args.conversation:
  # security-policy snapshot carried by the request contract.
  rc['conversation']={"schema":"ndnsf-di-native-conversation-v1","journal":{"state_root":"conversation-state","identity":"requester-a","keys":[{"id":"active","file":"keys/conversation.key"}],"quota_bytes":67108864,"test_only_allow_ephemeral_state_root":True},"owner":{"requester_identity":"/example/hello/user","service_name":"/Inference/NativeStream","security_domain_digest":dg('security')},"turn":{"conversation_id":"spec182-r11-b4-conversation","parent_context_epoch":0,"service_name":"/Inference/NativeStream","plan_role_map_digest":role_map_digest,"retention_deadline_ms":retention,"mode":"FULL_CONTEXT","generation_id":options['generationId'],"canonical_token_ids":[3],"expected_roles":[stream_role]},"checkpoint_output_file":"conversation-state.json"}
 (run_root/'requester/config.json').write_text(json.dumps(rc))
-(run_root/'provider/plan.json').write_text(json.dumps(plan));(run_root/'provider/manifest.json').write_text(json.dumps(manifest));
+for dirname,_ in provider_dirs:
+ (run_root/dirname/'plan.json').write_text(json.dumps(plan)); (run_root/dirname/'manifest.json').write_text(json.dumps(manifest))
 # input bundle
 payload=struct.pack('<q',3); outb=b'NDITB001'+struct.pack('<I',1)+struct.pack('<I',9)+b'input_ids'+struct.pack('<I',3)+struct.pack('<I',2)+struct.pack('<q',1)+struct.pack('<q',1)+struct.pack('<Q',len(payload))+payload;(run_root/'requester/input.bin').write_bytes(outb)
 # launch env
@@ -121,17 +166,34 @@ try:
  subprocess.run(['/usr/local/bin/nfdc','strategy','set','/example/hello/group','/localhost/nfd/strategy/multicast'],env=base,check=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
  def penv(store):
   e=dict(base);e.update({'HOME':str(store/'home'),'NDN_CLIENT_PIB':'pib-sqlite3:'+str(store/'pib'),'NDN_CLIENT_TPM':'tpm-file:'+str(store/'tpm')});return e
- c=launch([str(CONTROLLER),'--controller-prefix','/example/hello/controller','--policy-file',str(policy),'--ensure-identities','/example/hello/authority,/example/hello/provider,/example/hello/user','--no-serve-certificates','--run-for-ms','120000'],penv(run_root/'controller-store'),'controller');children.append(c); b.wait_marker(c,run_root/'controller.log','ServiceController started...',30)
+ ensure_identities=','.join(['/example/hello/authority']+provider_names+['/example/hello/user'])
+ c=launch([str(CONTROLLER),'--controller-prefix','/example/hello/controller','--policy-file',str(policy),'--ensure-identities',ensure_identities,'--no-serve-certificates','--run-for-ms','120000'],penv(run_root/'controller-store'),'controller');children.append(c); b.wait_marker(c,run_root/'controller.log','ServiceController started...',30)
  a=launch([str(AUTHORITY),'--config',str(run_root/'authority/authority.json')],penv(run_root/'authority-store'),'authority');children.append(a); b.wait_marker(a,run_root/'authority.log','NATIVE_GRANT_AUTHORITY_READY',30)
- pe=penv(run_root/'provider-store')
- shutil.copy2(offerpriv,run_root/'provider/offer-private.pem')
- pm=[str(PROVIDER),'--plan',str(run_root/'provider/plan.json'),'--manifest',str(run_root/'provider/manifest.json'),'--service','/Inference/NativeStream','--provider','/example/hello/provider','--group','/example/hello/group','--controller','/example/hello/controller','--trust-schema',str(run_root/'provider/trust-schema.conf'),'--roles',stream_role,'--serve','--run-for-ms','60000','--artifact-cache-dir',str(run_root/'provider/cache'),'--tokenizer-json',str(ROOT/'tests/fixtures/spec175/tiny-causal-lm-v1/standalone/tokenizer.json'),'--selection-offer-key-file',str(run_root/'provider/offer-private.pem'),'--offer-backend','onnxruntime-cpu','--offer-can-provision','--offer-has-model']
- pe['SPEC181_GRANT_AUTHORITY_PUBLIC_KEY']=str(run_root/'provider/authority-public.pem');pe['SPEC181_PROVIDER_RECIPIENT_KEY_MAP']=str(run_root/'provider/recipient-key-map.json');pe['NDNSF_DI_WORKER_BINARY']=str(WORKER)
- p=launch(pm,pe,'provider');children.append(p); b.wait_marker(p,run_root/'provider.log','NDNSF_DI_NATIVE_PROVIDER_READY',45)
+ def provider_command(name):
+  data=provider_keys[name]; provider_dir=run_root/data['dir']
+  shutil.copy2(data['offer_private'],provider_dir/'offer-private.pem')
+  return [str(PROVIDER),'--plan',str(provider_dir/'plan.json'),'--manifest',str(provider_dir/'manifest.json'),'--service','/Inference/NativeStream','--provider',name,'--group','/example/hello/group','--controller','/example/hello/controller','--trust-schema',str(provider_dir/'trust-schema.conf'),'--roles',stream_role,'--serve','--run-for-ms','60000','--artifact-cache-dir',str(provider_dir/'cache'),'--tokenizer-json',str(ROOT/'tests/fixtures/spec175/tiny-causal-lm-v1/standalone/tokenizer.json'),'--selection-offer-key-file',str(provider_dir/'offer-private.pem'),'--offer-backend','onnxruntime-cpu','--offer-can-provision','--offer-has-model']
+ provider_processes={}
+ provider_envs={}
+ for index,name in enumerate(provider_names):
+  data=provider_keys[name]; provider_dir=run_root/data['dir']; store=run_root/(data['dir']+'-store')
+  pe=penv(store); pe['SPEC181_GRANT_AUTHORITY_PUBLIC_KEY']=str(provider_dir/'authority-public.pem'); pe['SPEC181_PROVIDER_RECIPIENT_KEY_MAP']=str(provider_dir/'recipient-key-map.json'); pe['NDNSF_DI_WORKER_BINARY']=str(WORKER)
+  provider_log='provider' if index == 0 else 'provider-b'
+  process=launch(provider_command(name),pe,provider_log); children.append(process); b.wait_marker(process,run_root/(provider_log+'.log'),'NDNSF_DI_NATIVE_PROVIDER_READY',45)
+  provider_processes[name]=process; provider_envs[name]=pe
+ p=provider_processes[provider_a]; pe=provider_envs[provider_a]; pm=provider_command(provider_a)
  # requester direct first (and, when requested, a second process using the
  # native journal checkpoint produced by the first process).
  re=penv(run_root/'requester-store'); re.update({'NDNSF_DI_WORKER_BINARY':str(WORKER)})
- rq=launch([str(REQUESTER),'--config',str(run_root/'requester/config.json'),'--input',str(run_root/'requester/input.bin'),'--output',str(run_root/'requester/output.bin')],re,'requester');children.append(rq); rq.wait();print('requester rc',rq.returncode)
+ rq=launch([str(REQUESTER),'--config',str(run_root/'requester/config.json'),'--input',str(run_root/'requester/input.bin'),'--output',str(run_root/'requester/output.bin')],re,'requester');children.append(rq)
+ stopped_provider_a=False
+ if args.replacement:
+  # Wait until the requester has received A's authenticated ACK.  Pausing A
+  # after ACK collection keeps it in the admitted candidate set while making
+  # the first Selection/stream attempt time out; B must satisfy recovery.
+  b.wait_marker(rq,run_root/'requester.log','providerName='+provider_a+' status=true',30)
+  os.kill(p.pid,signal.SIGSTOP); stopped_provider_a=True
+ rq.wait();print('requester rc',rq.returncode)
  if args.conversation and rq.returncode == 0:
   state_path=run_root/'requester/conversation-state.json'
   if not state_path.is_file(): raise RuntimeError('conversation checkpoint handoff missing')
@@ -157,12 +219,18 @@ try:
   (run_root/'requester/config-wrong-parent.json').write_text(json.dumps(wrong))
   rq3=launch([str(REQUESTER),'--config',str(run_root/'requester/config-wrong-parent.json'),'--input',str(run_root/'requester/input.bin'),'--output',str(run_root/'requester/output-wrong-parent.bin')],re,'requester-wrong-parent');children.append(rq3); rq3.wait(); print('requester-wrong-parent rc',rq3.returncode)
  print('ROOT',run_root)
- for name, markers in {
-  'requester.log': ('NATIVE_STREAM_ORACLE_PASS', 'NATIVE_REQUEST_SUCCEEDED', 'NATIVE_CONVERSATION_CHECKPOINT_WRITTEN'),
-  **({'requester-second.log': (('NATIVE_REQUEST_SUCCEEDED',) if not args.recovery else ('NATIVE_STREAM_FAILED',)), 'requester-wrong-parent.log': ('DI_NATIVE_CONVERSATION_PARENT_MISMATCH',)} if args.conversation else {}),
-  'provider.log': ('NDNSF_DI_GRANT_VERIFICATION', 'NDNSF_DI_EXECUTION_EVIDENCE_OBSERVED'),
-  **({'provider-restart.log': ('NDNSF_DI_NATIVE_PROVIDER_READY', 'PROVIDER_CONVERSATION_STATE_MISSING')} if args.recovery else {}),
- }.items():
+ if args.replacement:
+  expected_markers={'requester.log': (('NATIVE_REQUEST_STAGE_FAILED',) if args.replacement_no_backup else ('NATIVE_STREAM_ORACLE_PASS','NATIVE_REQUEST_SUCCEEDED'))}
+  if not args.replacement_no_backup:
+   expected_markers['provider-b.log']=('NDNSF_DI_GRANT_VERIFICATION','NDNSF_DI_EXECUTION_EVIDENCE_OBSERVED')
+ else:
+  expected_markers={
+   'requester.log': (('NATIVE_STREAM_ORACLE_PASS', 'NATIVE_REQUEST_SUCCEEDED', 'NATIVE_CONVERSATION_CHECKPOINT_WRITTEN') if args.conversation else ('NATIVE_STREAM_ORACLE_PASS', 'NATIVE_REQUEST_SUCCEEDED')),
+   **({'requester-second.log': (('NATIVE_REQUEST_SUCCEEDED',) if not args.recovery else ('NATIVE_STREAM_FAILED',)), 'requester-wrong-parent.log': ('DI_NATIVE_CONVERSATION_PARENT_MISMATCH',)} if args.conversation else {}),
+   'provider.log': ('NDNSF_DI_GRANT_VERIFICATION', 'NDNSF_DI_EXECUTION_EVIDENCE_OBSERVED'),
+   **({'provider-restart.log': ('NDNSF_DI_NATIVE_PROVIDER_READY', 'PROVIDER_CONVERSATION_STATE_MISSING')} if args.recovery else {}),
+  }
+ for name, markers in expected_markers.items():
   log_path=run_root/name
   if not log_path.is_file():
    raise RuntimeError(f'missing expected log: {log_path}')
@@ -171,7 +239,20 @@ try:
   print(name, matched)
   missing=[marker for marker in markers if not any(marker in line for line in lines)]
   if missing: raise RuntimeError(f'missing expected markers in {name}: {missing}')
- if rq.returncode: raise RuntimeError('request failed')
+ if args.replacement:
+  first_provider_log=(run_root/'provider.log').read_text(errors='replace')
+  if 'NDNSF_DI_EXECUTION_EVIDENCE_OBSERVED' in first_provider_log or 'NATIVE_STREAM_ORACLE_PASS' in first_provider_log:
+   raise RuntimeError('failed first Provider emitted execution evidence')
+  if args.replacement_no_backup:
+   if rq.returncode == 0: raise RuntimeError('no-backup replacement unexpectedly succeeded')
+   if 'DI_NATIVE_NO_ADMITTED_PROVIDER' not in (run_root/'requester.log').read_text(errors='replace'):
+    raise RuntimeError('no-backup replacement did not report no admitted Provider')
+  else:
+   if rq.returncode != 0: raise RuntimeError('replacement Provider request failed')
+   second_provider_log=(run_root/'provider-b.log').read_text(errors='replace')
+   if 'attempt-2' not in second_provider_log and '"attemptEpoch":"2"' not in second_provider_log:
+    raise RuntimeError('replacement Provider did not expose attempt 2')
+ elif rq.returncode: raise RuntimeError('request failed')
  if args.conversation and rq.returncode == 0:
   if args.recovery:
    if rq2.returncode == 0: raise RuntimeError('recovery append unexpectedly succeeded')
@@ -184,4 +265,6 @@ try:
   elif rq2.returncode != 0: raise RuntimeError('conversation append request failed')
   if rq3.returncode == 0: raise RuntimeError('wrong parent unexpectedly succeeded')
 finally:
+ if 'stopped_provider_a' in locals() and stopped_provider_a and p.poll() is None:
+  os.kill(p.pid,signal.SIGCONT)
  for p in reversed(children): b.stop(p)

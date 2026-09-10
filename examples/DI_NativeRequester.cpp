@@ -304,6 +304,15 @@ int main(int argc, char** argv)
       options.stream->callbackQueueCapacity = static_cast<std::uint16_t>(
         std::max<std::size_t>(16, maxTokens + 1));
       options.stream->reorderCapacity = options.stream->interestWindow;
+      const auto allowReplacement = request.value("allow_replacement", false);
+      const auto maxReplacements = request.value(
+        "max_replacements", static_cast<unsigned>(allowReplacement ? 1 : 0));
+      if (maxReplacements > 1 || (!allowReplacement && maxReplacements != 0) ||
+          (allowReplacement && maxReplacements != 1))
+        throw std::invalid_argument(
+          "request replacement options require allow_replacement=true and max_replacements=1");
+      options.stream->allowReplacement = allowReplacement;
+      options.stream->maxReplacements = static_cast<std::uint8_t>(maxReplacements);
     }
     std::vector<std::int64_t> streamOracleExpected;
     std::vector<std::int64_t> streamOracleObserved;
