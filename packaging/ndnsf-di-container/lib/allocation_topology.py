@@ -130,6 +130,8 @@ def validate_process_map(value: Mapping[str, Any]) -> dict[str, Any]:
         _fail("TOPOLOGY_NODES_INVALID")
     node_ranks: set[int] = set()
     node_names: set[str] = set()
+    tcp_endpoints: set[tuple[str, int]] = set()
+    udp_endpoints: set[tuple[str, int]] = set()
     for node in nodes:
         if not isinstance(node, Mapping) or set(node) != {"nodeRank", "name", "address", "nfdSocket", "tcpPort", "udpPort"}:
             _fail("TOPOLOGY_NODE_FIELDS_INVALID")
@@ -154,6 +156,12 @@ def validate_process_map(value: Mapping[str, Any]) -> dict[str, Any]:
             _fail("TOPOLOGY_NFD_SOCKET_INVALID", node["name"])
         if any(not isinstance(node[key], int) or not 1024 <= node[key] <= 65535 for key in ("tcpPort", "udpPort")):
             _fail("TOPOLOGY_PORT_INVALID", node["name"])
+        tcp_endpoint = (str(address), node["tcpPort"])
+        udp_endpoint = (str(address), node["udpPort"])
+        if tcp_endpoint in tcp_endpoints or udp_endpoint in udp_endpoints:
+            _fail("TOPOLOGY_PORT_ENDPOINT_DUPLICATE", node["name"])
+        tcp_endpoints.add(tcp_endpoint)
+        udp_endpoints.add(udp_endpoint)
         node_ranks.add(rank)
         node_names.add(node["name"])
     if node_ranks != set(range(len(nodes))):

@@ -68,6 +68,14 @@ class AllocationTopologyTest(unittest.TestCase):
         with self.assertRaisesRegex(topology.TopologyError, "TOPOLOGY_DUPLICATE_NFD"):
             topology.validate_process_map(value)
 
+    def test_duplicate_address_port_endpoint_fails_closed(self) -> None:
+        value = load("multi-node-tcp.json")
+        value["nodes"][1]["address"] = value["nodes"][0]["address"]
+        value["nodes"][1]["tcpPort"] = value["nodes"][0]["tcpPort"]
+        value["nodes"][1]["udpPort"] = value["nodes"][0]["udpPort"]
+        with self.assertRaisesRegex(topology.TopologyError, "TOPOLOGY_PORT_ENDPOINT_DUPLICATE"):
+            topology.validate_process_map(value)
+
     def test_teardown_signal_and_audit_are_mandatory(self) -> None:
         for field, changed in (("signals", ["TERM"]), ("zeroSurvivorAudit", False)):
             value = load("single-node.json")
