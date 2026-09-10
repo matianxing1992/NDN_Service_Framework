@@ -5157,3 +5157,15 @@ Fix status: normalize only the fresh local gate's regular evidence files to
 inventory construction.
 Lesson: shared evidence must be mode-normalized before transport; content
 hashes alone do not satisfy the immutable delivery contract.
+
+## 2026-09-10 — Tiger receiver lacked candidate root for first SSH staging
+
+Symptom: sender-side SSH transport reached the receiver but returned
+`BOOTSTRAP_ROOT`; no submission job or payload was published.
+Root cause: `/project/tma1/ndnsf-di/candidates/spec183-v34-20260910` existed on
+the local experiment host but had not yet been created in the receiver's
+project namespace, which the bootstrap intentionally requires before staging.
+Fix status: create only that declared candidate root on `itiger`, retain the
+transport-attempt record, and retry the same frozen run.
+Lesson: shared storage declarations still need a receiver-side directory
+precondition; verify both host views before invoking the transport.
