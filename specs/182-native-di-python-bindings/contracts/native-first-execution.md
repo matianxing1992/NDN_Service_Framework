@@ -74,6 +74,7 @@ proof-design、既有 state contracts、R10-B82/B83/B84 evidence 和调用方。
 | R11-B7 Native Cleanup Process | R11-B6 | NativeInferenceClient/ProviderHost close、secret lease、Face/io_context/worker 生命周期与 C++ process tests | 成功、取消、超时、失败/替换后清理与排空；共享第二服务仍可用，无残留进程/回调悬空；C++ fixture 显式拥有依赖或 join/drain，不改生产语义掩盖测试竞态 |
 | R11-B8 Maintained Callers | R11-B7；对应 T012 原生 ABI | 原 16 caller 清单、同库 facade、兼容入口和 T013 legacy 清退 | 按 caller group 分成有独立出口的子批次；先对照已通过 C++ 行为，再做 wrapper 与真实入口检查；逐项记录 native entry、结果/错误/取消及旧路径零使用；计数本身不关闭 T013 |
 | R11-B8-G1 Native Generic Request Facade | R11-B7；T012-A/B | `APPClient.request_task` 与 public `InferenceClient.request_task` 的 generic inline/`REPO_REF` native compatibility route | C++ native owner 回归、模型/task/schema/options identity、结果句柄与 planner non-fallback 通过；stream/conversation、其余 15 callers、legacy zero-use 和资格仍留父卡 |
+| R11-B8-G2 Native Generic Stream Facade | R11-B8-G1；R11-B3 stream contract | canonical `APPClient.request_streaming` 的 native stream compatibility route、回调/终态句柄 | C++ native owner 保持 stream 状态和结果权威；Python 只转换 bounded stream options、转发事件/完成/错误回调并保留取消/结果句柄；Python conversation、TOKEN_STREAMING adapter contract、其余 callers 和 legacy zero-use 仍留父卡 |
 | R11-B9 Native Closure | R11-B8 | T014 isolation/manifest、安装依赖闭包、T015/16/17 原有卡 | 本地 no-Python/cold path/动态加载与必要反例，真实输出 hash/source/dependency 对齐；T015 通过后完成 T016，全部必要 PO 才可交付；SIF/Tiger 仍由实验机器负责 |
 
 R11-B2 的 evidence 必须关联同一 request/attempt/plan 的 PID、签名身份、ACK、Selection、
