@@ -710,7 +710,7 @@ makeFinalPayload(const std::vector<std::int64_t>& generated,
   }
   text << "]}";
   const auto value = text.str();
-  return {value.begin(), value.end()};
+  return std::vector<std::uint8_t>(value.begin(), value.end());
 }
 
 } // namespace
