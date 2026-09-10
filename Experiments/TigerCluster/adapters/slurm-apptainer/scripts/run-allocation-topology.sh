@@ -2,21 +2,23 @@
 set -euo pipefail
 
 usage() {
-  echo "usage: $0 --process-map FILE --scratch DIR --evidence DIR --nfd-template FILE" >&2
+  echo "usage: $0 --process-map FILE --scratch DIR --evidence DIR --nfd-template FILE --workdir DIR" >&2
   exit 2
 }
-process_map= scratch= evidence= nfd_template=
+process_map= scratch= evidence= nfd_template= workdir=
 while (($#)); do
   case "$1" in
     --process-map) process_map=$2; shift 2 ;;
     --scratch) scratch=$2; shift 2 ;;
     --evidence) evidence=$2; shift 2 ;;
     --nfd-template) nfd_template=$2; shift 2 ;;
+    --workdir) workdir=$2; shift 2 ;;
     *) usage ;;
   esac
 done
-for value in "$process_map" "$scratch" "$evidence" "$nfd_template"; do [[ -n $value ]] || usage; done
+for value in "$process_map" "$scratch" "$evidence" "$nfd_template" "$workdir"; do [[ -n $value ]] || usage; done
 [[ -f $process_map && -f $nfd_template ]] || usage
+[[ -d $workdir && $workdir = /* ]] || { echo SPEC110_WORKDIR_INVALID >&2; exit 3; }
 [[ -n ${SLURM_JOB_ID:-} || ${NDNSF_SPEC110_TEST_MODE:-0} == 1 ]] || {
   echo SPEC110_TOPOLOGY_REQUIRES_ALLOCATION >&2; exit 3;
 }
@@ -28,11 +30,11 @@ route_config="$container_root/adapters/slurm-apptainer/scripts/configure-allocat
 mkdir -p "$scratch/log" "$scratch/readiness" "$evidence/processes" "$evidence/generated"
 chmod 700 "$scratch"
 
-PYTHONPATH="$lib" python3 - "$process_map" "$nfd_template" "$scratch" "$evidence" <<'PY'
-import json,shlex,sys
+PYTHONPATH="$lib" python3 - "$process_map" "$nfd_template" "$scratch" "$evidence" "$workdir" <<'PY'
+import json,sys
 from pathlib import Path
-from allocation_topology import load_process_map,render_nfd_config
-value=load_process_map(sys.argv[1]);template=Path(sys.argv[2]).read_text();scratch=Path(sys.argv[3]);evidence=Path(sys.argv[4]);generated=evidence/'generated'
+from allocation_topology import load_process_map,render_nfd_config,render_process_launcher
+value=load_process_map(sys.argv[1]);template=Path(sys.argv[2]).read_text();scratch=Path(sys.argv[3]);evidence=Path(sys.argv[4]);workdir=Path(sys.argv[5]);generated=evidence/'generated'
 (evidence/'frozen-process-map.json').write_text(json.dumps(value,indent=2,sort_keys=True)+'\n')
 for node in value['nodes']:
  state=scratch/'nfd'/str(node['nodeRank']);state.mkdir(parents=True,exist_ok=True)
@@ -40,8 +42,7 @@ for node in value['nodes']:
  config.write_text(render_nfd_config(template,node,str(state)))
 for process in value['processes']:
  script=generated/(process['processId']+'.sh')
- environment=f"export NDN_CLIENT_TRANSPORT={shlex.quote('unix://'+process['nfdSocket'])}\n"
- script.write_text('#!/bin/bash\nset -euo pipefail\n'+environment+'exec '+shlex.join(process['command'])+'\n')
+ script.write_text(render_process_launcher(process,scratch,workdir))
  script.chmod(0o700)
 PY
 

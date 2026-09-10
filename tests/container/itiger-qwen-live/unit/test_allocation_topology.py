@@ -3,7 +3,10 @@ from __future__ import annotations
 import copy
 import json
 from pathlib import Path
+import shlex
+import subprocess
 import sys
+import tempfile
 import unittest
 
 
@@ -83,6 +86,94 @@ class AllocationTopologyTest(unittest.TestCase):
         multiprog = topology.render_multiprog(value)
         self.assertEqual(len(value["processes"]), len(multiprog.splitlines()))
         self.assertIn("0 nfd --config /tmp/spec110/nfd-0.conf", multiprog)
+
+    def test_process_launchers_isolate_identity_and_runtime_environment(self) -> None:
+        value = load("multi-node-tcp.json")
+        scratch = "/tmp/ndnsf-di-test-launcher"
+        workdir = "/project/tma1/ndnsf-di/bundle"
+        provider = next(row for row in value["processes"] if row["kind"] == "provider")
+        rendered = topology.render_process_launcher(provider, scratch, workdir)
+        self.assertIn("identity_source=/project/tma1/ndnsf-di/identities/c1/provider-0", rendered)
+        self.assertIn('cp -a "$identity_source/." "$runtime_home/"', rendered)
+        self.assertIn('export NDN_CLIENT_PIB="pib-sqlite3:$runtime_home/.ndn/pib.db"', rendered)
+        self.assertIn('export NDN_CLIENT_TPM="tpm-file:$runtime_home/.ndn/ndnsec-key-file"', rendered)
+        self.assertIn("unset NDN_CLIENT_PIB NDN_CLIENT_TPM", rendered)
+        self.assertIn('cd "$runtime_workdir"', rendered)
+        self.assertIn("export HOME=", rendered)
+        self.assertEqual(
+            subprocess.run(["bash", "-n"], input=rendered, text=True, check=False).returncode,
+            0,
+        )
+
+        nfd = next(row for row in value["processes"] if row["kind"] == "nfd")
+        nfd_rendered = topology.render_process_launcher(nfd, scratch, workdir)
+        self.assertIn("kind=nfd", nfd_rendered)
+        self.assertNotIn("identity_source=", nfd_rendered)
+        self.assertEqual(
+            subprocess.run(["bash", "-n"], input=nfd_rendered, text=True, check=False).returncode,
+            0,
+        )
+
+    def test_process_launcher_copies_read_only_identity_before_exec(self) -> None:
+        value = load("multi-node-tcp.json")
+        provider = next(row for row in value["processes"] if row["kind"] == "provider")
+        original_source = provider["identityRef"]
+        with tempfile.TemporaryDirectory(prefix="spec110-identity-") as source_dir, \
+             tempfile.TemporaryDirectory(prefix="ndnsf-di-") as scratch_dir, \
+             tempfile.TemporaryDirectory(prefix="spec110-bin-") as bin_dir:
+            source = Path(source_dir)
+            (source / ".ndn").mkdir()
+            (source / ".ndn/pib.db").write_text("source-pib")
+            (source / ".ndn/ndnsec-key-file").mkdir()
+            fake = Path(bin_dir) / "di-native-provider"
+            observation = Path(scratch_dir) / "observation.txt"
+            fake.write_text(
+                "#!/bin/sh\n"
+                "printf '%s\\n%s\\n%s\\n%s\\n' \"$HOME\" \"$NDN_CLIENT_PIB\" "
+                "\"$NDN_CLIENT_TPM\" \"$NDN_CLIENT_TRANSPORT\" >\"$SPEC110_OBSERVATION\"\n"
+            )
+            fake.chmod(0o700)
+            rendered = topology.render_process_launcher(provider, scratch_dir, source_dir)
+            rendered = rendered.replace(
+                "identity_source=" + shlex.quote(original_source),
+                "identity_source=" + shlex.quote(str(source)),
+            )
+            environment = {
+                "PATH": bin_dir + ":/usr/bin:/bin",
+                "HOME": "/ambient-home",
+                "NDN_CLIENT_PIB": "pib-sqlite3:/ambient/pib",
+                "NDN_CLIENT_TPM": "tpm-file:/ambient/tpm",
+                "SPEC110_OBSERVATION": str(observation),
+            }
+            result = subprocess.run(
+                ["bash"], input=rendered, text=True, env=environment,
+                capture_output=True, check=False,
+            )
+            self.assertEqual(0, result.returncode, result.stderr)
+            home, pib, tpm, transport = observation.read_text().splitlines()
+            expected_home = str(Path(scratch_dir) / "homes" / provider["processId"])
+            self.assertEqual(expected_home, home)
+            self.assertEqual("pib-sqlite3:" + expected_home + "/.ndn/pib.db", pib)
+            self.assertEqual("tpm-file:" + expected_home + "/.ndn/ndnsec-key-file", tpm)
+            self.assertEqual("unix://" + provider["nfdSocket"], transport)
+            self.assertEqual("source-pib", (Path(home) / ".ndn/pib.db").read_text())
+
+    def test_process_launcher_rejects_implicit_relative_workdir(self) -> None:
+        value = load("single-node.json")
+        process = next(row for row in value["processes"] if row["kind"] == "nfd")
+        with self.assertRaisesRegex(topology.TopologyError, "TOPOLOGY_WORKDIR_INVALID"):
+            topology.render_process_launcher(process, "/tmp/ndnsf-di-test-launcher", "bundle")
+
+    def test_process_map_rejects_path_traversal_process_and_identity(self) -> None:
+        value = load("single-node.json")
+        value["processes"][1]["processId"] = "../controller"
+        with self.assertRaisesRegex(topology.TopologyError, "TOPOLOGY_PROCESS_ID_INVALID"):
+            topology.validate_process_map(value)
+
+        value = load("single-node.json")
+        value["processes"][1]["identityRef"] = "/project/tma1/../shared/controller"
+        with self.assertRaisesRegex(topology.TopologyError, "TOPOLOGY_IDENTITY_BINDING_INVALID"):
+            topology.validate_process_map(value)
 
 
 if __name__ == "__main__":
