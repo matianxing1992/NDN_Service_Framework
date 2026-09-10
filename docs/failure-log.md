@@ -5385,3 +5385,39 @@ successful collector may close T015.
 Lesson: a native withheld marker proves only that a fault trigger ran. Negative
 qualification requires User observation, exact cutpoint cardinality, consumer
 failure, no response/reselection and clean post-run collection.
+## 2026-09-10 — v36 APP rebuild received a cache directory instead of an APP artifact
+
+Symptom: `build-external-yolo.py` stopped before configure with `FileNotFoundError` for `app-build-cache-v33/application-manifest.json`.
+
+Root cause: `--build-cache-from` expects a verified prior application bundle containing `application-manifest.json`; the v33 build-cache directory was supplied instead. No source, base SIF, or output bytes were produced.
+
+Fix status: retain the failed invocation as process evidence and retry v36 with the verified v35 application bundle as the cache source.
+
+Lesson: distinguish compiler build-cache directories from manifest-bound APP bundles; only the latter may seed an external application rebuild.
+## 2026-09-10 — v36 local issuer lacked the signed package payload files
+
+Symptom: v36 `spec183_dev_provision.py provision` staged the profile and exact SIF, then the in-container issuer exited 2 with a `ValueError` while building the YOLO adapter.
+
+Root cause: the temporary local candidate copied only `manifest.json`; the package directory also needs the manifest-bound `canonical/yolo26n.onnx` and `canonical/yolo26n.weights` files.
+
+Fix status: retain the failed run as evidence and add both immutable payload files from the verified `spec183-signed` cache before retrying under a fresh run ID.
+
+Lesson: a package manifest is an identity index, not a runnable model package; local candidate assembly must include every manifest payload before issuer execution.
+## 2026-09-10 — v36 MiniNDN Y-B package oracle was staged outside the package root
+
+Symptom: v36 run `minindn-local-20260910-v102-v36` reached Controller/Repo/all four providers, then User exited before readiness because `load_reference` could not open `model/spec183-signed/canonical-package/oracle/full-model-output.npy`.
+
+Root cause: the temporary candidate assembly copied the oracle only to the dispatch source location `model/spec180-public/oracle`; the signed package manifest resolves its oracle relative to its own `canonical-package/oracle` directory.
+
+Fix status: retain v102 as a real startup failure and copy the verified oracle into the manifest-bound package before a fresh run.
+
+Lesson: dispatch-plane oracle and package oracle are distinct paths; issuer/user validation must resolve and verify the payload at the package-relative location.
+## 2026-09-10 — v36 Y-N-D runner rejected the extended native cutpoint schema
+
+Symptom: v36 MiniNDN run `minindn-local-20260910-v104-v36` passed Y-N-O/C/P/R/I/E/L, but the Y-N-D subcase ended `Y_N_MATRIX_INCOMPLETE:Y-N-D` without `negative-evidence.json`.
+
+Root cause: the native withheld record now carries round, microbatch, operationKind and tensor identity, while `_read_y_n_d_withheld_record` still required the older field set. The validator failed closed before writing the dependency proof.
+
+Fix status: retain v104 as a real negative-run failure and update the maintained runner to require and validate all four identity fields with uint64 bounds and nonempty semantic values.
+
+Lesson: when a producer-owned evidence schema gains binding fields, every independent consumer (MiniNDN runner and Tiger collector) must update together before qualification can proceed.

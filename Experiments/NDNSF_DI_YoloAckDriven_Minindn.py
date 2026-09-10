@@ -3222,7 +3222,7 @@ def _read_y_n_d_withheld_record(user_log, request_id, events):
         "schema", "session", "requestId", "attempt", "planDigest",
         "producerRole", "consumerRole", "manifestDataName", "plannedDataName",
         "endpointDigest", "contentDigest", "bytes", "provider",
-        "providerBootId", "atMs",
+        "providerBootId", "round", "microbatch", "operationKind", "tensor", "atMs",
     }
     plan = next((event for event in events
                  if event.get("milestone") == "PLAN_SEALED"), None)
@@ -3243,6 +3243,12 @@ def _read_y_n_d_withheld_record(user_log, request_id, events):
                 or not record["provider"].startswith("/")
                 or not isinstance(record.get("providerBootId"), str)
                 or not record["providerBootId"]
+                or any(not isinstance(record.get(key), str)
+                       or not re.fullmatch(r"(?:0|[1-9][0-9]{0,19})", record[key])
+                       or int(record[key]) >= 2**64
+                       for key in ("round", "microbatch"))
+                or any(not isinstance(record.get(key), str) or not record[key]
+                       for key in ("operationKind", "tensor"))
                 or any(not isinstance(record.get(key), str)
                        or not re.fullmatch(r"sha256:[0-9a-f]{64}", record[key])
                        for key in ("endpointDigest", "contentDigest"))
