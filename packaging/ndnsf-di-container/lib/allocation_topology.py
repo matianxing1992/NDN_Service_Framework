@@ -282,6 +282,24 @@ def validate_process_map(value: Mapping[str, Any]) -> dict[str, Any]:
     return dict(value)
 
 
+def validate_allocation_node_order(value: Mapping[str, Any],
+                                   allocation_nodes: list[str]) -> dict[str, Any]:
+    """Bind process-map ``nodeRank`` to Slurm's allocation order.
+
+    ``run-allocation-topology.sh`` uses ``srun --relative=<nodeRank>``.  A
+    map produced from a different hostname ordering can therefore pass all
+    address and port checks while launching each role on the wrong machine.
+    Keep this relationship explicit and fail before any NFD is started.
+    """
+    validated = validate_process_map(value)
+    expected = [str(node["name"]) for node in validated["nodes"]]
+    if (not isinstance(allocation_nodes, list) or
+            allocation_nodes != expected):
+        _fail("TOPOLOGY_ALLOCATION_NODE_ORDER_INVALID",
+              f"expected={expected},observed={allocation_nodes}")
+    return validated
+
+
 def render_nfd_config(template: str, node: Mapping[str, Any], state_dir: str) -> str:
     values = {
         "NODE_RANK": node["nodeRank"], "NFD_SOCKET": node["nfdSocket"],
@@ -461,5 +479,5 @@ def load_process_map(path: Path | str) -> dict[str, Any]:
 __all__ = [
     "TopologyError", "command_digest", "evaluate_transport_probe", "load_process_map",
     "render_multiprog", "render_nfd_config", "render_process_launcher",
-    "validate_process_map",
+    "validate_allocation_node_order", "validate_process_map",
 ]

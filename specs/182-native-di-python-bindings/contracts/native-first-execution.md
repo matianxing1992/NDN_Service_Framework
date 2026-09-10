@@ -65,6 +65,14 @@ keychain 环境。NFD 使用独立 scratch `HOME` 且不继承角色 keychain。
 变成整节点资源占用，后续同节点进程可能持续排队；Provider 的 GPU 仍由
 `--gpus-per-task=1 --gpu-bind=map_gpu:<gpuRank>` 与 UUID 检查单独约束。
 
+`nodeRank` 还必须绑定 Slurm 的真实 allocation order。supervisor 和独立的
+route-configuration entry point 在任何 NFD 启动或 route retry 前，都要把
+process map 中按 rank 排列的 node names 与
+`scontrol show hostnames "$SLURM_JOB_NODELIST"` 的结果逐项比较；缺少、为空
+或顺序不一致时以 `SPEC110_ALLOCATION_NODE_ORDER_MISMATCH`（或更具体的
+nodelist preflight error）在 pre-start 失败。`srun --relative=<nodeRank>` 使用的
+就是该顺序，MiniNDN 中稳定的创建顺序不能证明真实 Slurm 多机映射正确。
+
 此启动器的离线 fake-binary 测试可以用 `NDNSF_SPEC110_TEST_MODE=1` 跳过不存在的 fixture
 身份源，但该开关不属于生产部署，也不能作为 T016/T017 资格证据。真实多机资格仍须在
 目标节点验证 identity、NFD TCP/UDP route、依赖库和工作目录的候选绑定。

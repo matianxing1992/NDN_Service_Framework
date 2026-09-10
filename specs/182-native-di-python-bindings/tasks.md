@@ -1,6 +1,6 @@
 # Tasks: Native NDNSF-DI with Optional Python Bindings
 
-**Revision**: 170 | **Status**: DRAFT / T001 DONE
+**Revision**: 171 | **Status**: DRAFT / T001 DONE
 **Input**: [spec](spec.md), [code design](contracts/code-design.md),
 [proof](contracts/proof-design.md), [work units](contracts/work-units.md)
 
@@ -68,6 +68,7 @@ R11-B8 现开始按 caller group 批次执行；G4 已形成 native checkpoint h
 | [R11-B8-G32 Stale NFD Socket Boundary](evidence/r11-b8-g32-stale-nfd-socket-boundary-20260910.md) | CLOSED_FOR_VALIDATION | R11-B8-G31; Spec110 topology contract | **Deployment harness:** target-node stale sockets are removed before NFD launch and readiness requires the rank-bound `srun` PID plus a new socket. Source assertions, 23/23 topology unit, network integration and shell syntax pass. Real Slurm/NFD qualification remains open | 2026-09-10 |
 | [R11-B8-G33 Job-Scoped Scratch and Identity Root Boundary](evidence/r11-b8-g33-job-scoped-scratch-identity-root-20260910.md) | CLOSED_FOR_VALIDATION | R11-B8-G32; Spec110 topology contract | **Deployment harness:** real allocations require scratch basename binding to `SLURM_JOB_ID`, and supervisor/launcher reject a terminal identity-root symlink before any NFD/provider starts. 24/24 topology unit, network integration and shell syntax pass. Real Slurm/SIF/shared-storage qualification remains open | 2026-09-10 |
 | [R11-B8-G34 Node Address Ownership Boundary](evidence/r11-b8-g34-node-address-ownership-20260910.md) | CLOSED_FOR_VALIDATION | R11-B8-G33; Spec110 topology contract | **Deployment harness:** non-test allocations bind an ephemeral IPv4 socket to each declared address on its target node before NFD startup; an injected non-local address fails with `SPEC110_NODE_ADDRESS_NOT_LOCAL`, exit 4, and zero survivors. 24/24 topology unit, network integration and shell syntax pass. NDN route and real Slurm qualification remain open | 2026-09-10 |
+| [R11-B8-G35 Scheduler Allocation Order Binding](evidence/r11-b8-g35-allocation-order-binding-20260910.md) | CLOSED_FOR_VALIDATION | R11-B8-G34; Spec110 topology contract | **Deployment harness:** supervisor and direct route retry compare process-map node names with `scontrol show hostnames "$SLURM_JOB_NODELIST"` before using `srun --relative`; reversed allocation fails with `SPEC110_ALLOCATION_NODE_ORDER_MISMATCH` before NFD. 25/25 topology unit, network integration and shell syntax pass. Real Slurm/SIF/NDN route qualification remains open | 2026-09-10 |
 | [R11-B9-G2 Cross-Process Native Main Chain](evidence/r11-b9-g2-cross-process-native-chain-20260910.md) | CLOSED_FOR_VALIDATION | R11-B8-G25; R11-B2--B6 process contracts | **C++ primary:** fresh independent requester/Core/Authority/Provider runs passed unary numerical oracle, stream, FULL_CONTEXT/APPEND_DELTA conversation, alternate-provider replacement, and no-backup fail-closed boundaries; Provider logged grant verification and real ORT CPU evidence. Tiny fixture only; maintained callers, legacy zero-use, T014 I02--I08/no-Python, exact-SIF, MiniNDN/Slurm/GPU and final T016/T017 remain open | 2026-09-10 |
 | [R11-B8 Maintained Callers](contracts/native-first-execution.md#dispatch-cards) | PARTIAL | R11-B7; corresponding T012 ABI | G1 generic unary 与 G2 generic stream 已形成稳定出口；仍需 15 个 caller group 的 native entry、实际行为、兼容 wrapper 及旧路径零使用证据，不能按子批次数量计全量完成 | 2026-09-10 |
 | [R11-B9 Native Closure](contracts/native-first-execution.md#dispatch-cards) | NOT_STARTED | R11-B8 | T014 no-Python/依赖闭包工具 → T015 → T016 → T017；最终资格未开始 | 2026-09-10 |
@@ -352,6 +353,15 @@ P1–P4 是不同的生产入口、进程边界或 selector，不能为了少一
 | R10-B76 | production entry/callers: compatibility manifest → maintained Python API inventory; implementation/wire: `checklists/build_api_migration_manifest.py` regenerated all 344 entries and rebounded source line/hash metadata to checkpoint `31fe172a`; test/harness/oracle: generator output, `sourceCommit` equality, design validator and diff check; build/source closure: manifest-only, no ABI or runtime change; migration/evidence: closes stale provenance from R10-B74 while semantic caller mapping, native default migration and legacy retirement remain open | DONE for this bounded manifest provenance boundary; parent T001/O-004/T013-B remain PARTIAL | static review confirms current HEAD identity and 344-entry coverage; manifest remains routing evidence and cannot promote runtime compatibility or qualification | generator PASS (`entries=344`, `dynamicAppSdk=67`); sourceCommit equality PASS; `validate_design.py --json` PASS; `git diff --check` PASS | no product build, requester/Provider transport, maintained caller/no-Python or T016/T017 run | documentation/generator artifact only | `STATIC_PASS`; `FOCUSED_BEHAVIOR_PASS`; `BUILD_NOT_APPLICABLE`; `OPEN_FOR_NEXT_BATCH`; not `QUALIFICATION_PASS` | [R10-B76 evidence](evidence/r10-b76-compatibility-manifest-refresh-20260909.md); next: map and migrate maintained native callers, then regenerate after each source checkpoint |
 
 ## Current Checkpoint
+
+2026-09-10 R11-B8-G35 scheduler allocation order binding / **CLOSED_FOR_VALIDATION**（仅限
+deployment harness）：修复 supervisor 与独立 route retry 直接使用 `srun --relative=<nodeRank>`
+却不核对 Slurm allocation hostname 顺序的隐含约束。现在在任何 NFD 或 route command 前读取
+`scontrol show hostnames "$SLURM_JOB_NODELIST"`，并和 process map 的 rank 顺序逐项比较；查询失败、
+空结果或顺序不一致都会 pre-start 失败，反例返回 `SPEC110_ALLOCATION_NODE_ORDER_MISMATCH`，不创建
+NFD 状态。25/25 topology unit、network integration、shell syntax 和 diff check 通过。该门不替代
+真实 Slurm/SIF、跨节点 NDN route、GPU、no-Python 或 T016/T017 资格。详见
+[R11-B8-G35 evidence](evidence/r11-b8-g35-allocation-order-binding-20260910.md)。
 
 2026-09-10 R11-B8-G34 node address ownership boundary / **CLOSED_FOR_VALIDATION**（仅限
 deployment harness）：修复 process map 只验证 IPv4 字面格式、未确认 address 属于对应目标节点的

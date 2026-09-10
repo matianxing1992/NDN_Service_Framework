@@ -55,6 +55,15 @@ target-node `srun` step into that node's job scratch and executed from the
 scratch copy; an evidence or submit-host path that is not mounted on a compute
 node is a pre-start failure.
 
+`nodeRank` is bound to the scheduler's allocation order. Before any NFD starts,
+the supervisor and the direct route-configuration entry point MUST compare the
+process-map node names, in rank order, with `scontrol show hostnames
+"$SLURM_JOB_NODELIST"`. A missing, empty, or different sequence MUST fail with
+`SPEC110_ALLOCATION_NODE_ORDER_MISMATCH` (or its more specific nodelist
+preflight error). This is required because `srun --relative=<nodeRank>` selects
+that scheduler order; MiniNDN's deterministic node creation must not stand in
+for the real allocation ordering.
+
 Before starting any NFD, the supervisor MUST also verify on each target node
 that every non-NFD `identityRef` exposes readable `.ndn/pib.db` and
 `.ndn/ndnsec-key-file` files. An identity source that is visible on the submit

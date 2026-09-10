@@ -1,6 +1,18 @@
 # Spec182 Design Audit
 
-**Revision**: 42 | **Current source**: R11-B8-G34 node-address checkpoint on `Experimental`
+**Revision**: 43 | **Current source**: R11-B8-G35 scheduler-order checkpoint on `Experimental`
+
+## R11-B8-G35 Scheduler Allocation Order Binding Review 2026-09-10
+
+静态审查发现 supervisor 和独立 route retry 都使用 `srun --relative=<nodeRank>`，却没有把
+process map 的 node 顺序与 Slurm allocation 的 hostname 顺序绑定。MiniNDN 的稳定创建顺序会
+隐藏这一差异，真实多机可能把 NFD、identity 或 route command 派到错误节点。现已在任何 NFD
+或 route command 前读取 `scontrol show hostnames "$SLURM_JOB_NODELIST"`，显式检查查询状态，
+并逐项比较 rank 顺序；不一致在 pre-start 返回 `SPEC110_ALLOCATION_NODE_ORDER_MISMATCH`。
+25/25 topology unit、network integration、shell syntax 和 diff check 通过。
+
+该修复只关闭 scheduler-order preflight 边界，不证明真实 Slurm/SIF/跨节点 NDN route、GPU、
+no-Python 或 T016/T017 资格。详见 [R11-B8-G35 evidence](evidence/r11-b8-g35-allocation-order-binding-20260910.md)。
 
 ## R11-B8-G34 Node Address Ownership Boundary Review 2026-09-10
 
