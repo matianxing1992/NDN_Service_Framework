@@ -5496,3 +5496,75 @@ valid for the covered protocol cases.
 Lesson: a passing host receipt and reachable NFD prove only preflight/component
 readiness. The formal owner must complete Controller publication, real User
 observation, numeric oracle and cleanup before local qualification can advance.
+
+## 2026-09-10 — patched NAC-ABE base build rejected the old parent image
+
+Symptom: the first v23 base rebuild stopped while Apptainer extracted the v21
+parent, before `%post` or any source compilation, with `gzip uncompress failed
+with error code -3` for `/image/rootfs/usr/lib/llvm-18/lib/libFortranSemantics.a`.
+
+Root cause: the retained v21 parent copy is not a readable SquashFS image for
+this build invocation. No output SIF or compiled payload was produced.
+
+Fix status: discard this parent attempt and rebuild the patched NAC-ABE base
+from a verified extracted rootfs recovered from the retained stable runtime;
+retain the failed invocation as extraction evidence and do not treat it as a
+source or runtime failure.
+
+Lesson: validate the exact parent image by a real Apptainer extraction before
+attributing a base rebuild failure to source changes.
+
+## 2026-09-10 — GCC 9 ICE interrupted patched base consumer build
+
+Symptom: after NAC-ABE, NDN-SVS, NDNSD and the NDNSF core libraries compiled,
+the Python `_ndnsf` extension failed with a GCC 9 internal compiler error
+(`pybind11.h:339: internal compiler error: Segmentation fault`) under the
+standard `-O1 -g0 -j2` base build.
+
+Root cause: the Ubuntu 20.04 GCC 9 toolchain ran out of compiler stability on
+the large pybind11 translation unit; this was a compiler failure, before any
+runtime image was produced.
+
+Fix status: add the bounded `NDNSF_BUILD_OPT=O0|O1` switch to the maintained
+base builder and retry this same sealed source with `O0`; the default remains
+`O1`, while the retry is explicitly recorded in its build receipt.
+
+Lesson: a successful native library build does not establish extension
+qualification; retain the exact compiler failure and make the lower-risk
+optimization choice reproducible in the owner script.
+
+## 2026-09-10 — GCC 9 ICE interrupted APP v49 build
+
+Symptom: APP v49 configure succeeded against the new v23 base, but the
+`di-native-fault-provider` translation unit failed under `-O1 -j4` with GCC 9
+at `/usr/include/c++/9/bits/atomic_base.h:96: internal compiler error: in
+ggc_set_mark`.
+
+Root cause: the same Ubuntu 20.04 GCC 9 compiler instability seen in the base
+pybind11 build also affects this large DI application target; no application
+bundle was published.
+
+Fix status: add the bounded `NDNSF_APP_BUILD_OPT=O0|O1` switch to the maintained
+APP builder and retry with `O0`; the build identity includes the selected flags
+so an O0 result cannot be confused with an O1 candidate.
+
+Lesson: keep compiler workarounds explicit and content-addressed, and do not
+reuse a partially compiled APP as a qualified candidate.
+
+## 2026-09-10 — v111 local retry was blocked by stale debug NFD
+
+Symptom: formal local run `minindn-local-20260910-v111-v39` failed before the
+Controller started. Its NFD log reports `bind: Address already in use` on the
+declared local port, and no request or publication evidence was produced.
+
+Root cause: three earlier manual v110 callback reproductions had left NFD
+processes alive after their shell supervisors were interrupted. The failure is
+an operator cleanup collision, not evidence against the v23 SIF or APP v49.
+
+Fix status: terminate the identified stale debug process trees, verify the
+declared port is free, retain v111 as a failed attempt, and retry the formal
+owner with a fresh run ID.
+
+Lesson: every manual exact-SIF reproduction must reap all children before a
+formal MiniNDN run; a fresh run ID preserves the failed boundary and avoids
+reusing partially initialized state.

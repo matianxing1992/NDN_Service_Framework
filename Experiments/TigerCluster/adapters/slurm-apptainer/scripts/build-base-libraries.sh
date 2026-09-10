@@ -11,8 +11,13 @@ case "${BUILD_JOBS}" in
     1|2|3|4) ;;
     *) echo "BASE_BUILD_JOBS must be an integer in [1,4]" >&2; exit 2 ;;
 esac
-export CFLAGS='-O1 -g0 -B/usr/bin/'
-export CXXFLAGS='-O1 -g0 -B/usr/bin/ -DBOOST_PHOENIX_DONT_USE_PREPROCESSED_FILES'
+BUILD_OPT="${NDNSF_BUILD_OPT:-O1}"
+case "${BUILD_OPT}" in
+    O0|O1) ;;
+    *) echo "BASE_BUILD_OPT must be O0 or O1" >&2; exit 2 ;;
+esac
+export CFLAGS="-${BUILD_OPT} -g0 -B/usr/bin/"
+export CXXFLAGS="-${BUILD_OPT} -g0 -B/usr/bin/ -DBOOST_PHOENIX_DONT_USE_PREPROCESSED_FILES"
 export LDFLAGS='-B/usr/bin/ -Wl,-rpath,/opt/ndnsf-di/current/lib'
 export LD_LIBRARY_PATH=/opt/ndnsf-di/current/lib:/opt/onnxruntime/lib
 export PKG_CONFIG_PATH=/opt/ndnsf-di/current/lib/pkgconfig:/opt/onnxruntime/lib/pkgconfig

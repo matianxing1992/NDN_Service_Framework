@@ -8,6 +8,7 @@ import argparse
 import hashlib
 import importlib.util
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -17,7 +18,10 @@ import tarfile
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parents[2]))
 from runtime.application import verify_application
-FLAGS = '-O1 -g0 -B/usr/bin/ -DBOOST_PHOENIX_DONT_USE_PREPROCESSED_FILES'
+BUILD_OPT = os.environ.get('NDNSF_APP_BUILD_OPT', 'O1')
+if BUILD_OPT not in ('O0', 'O1'):
+    raise SystemExit('APP_BUILD_OPT must be O0 or O1')
+FLAGS = f'-{BUILD_OPT} -g0 -B/usr/bin/ -DBOOST_PHOENIX_DONT_USE_PREPROCESSED_FILES'
 TARGETS = ('App_ServiceController', 'di-native-provider', 'di-native-fault-provider')
 MAX_JOBS = 4
 # The stable base image carries these harness files so its source-bound
