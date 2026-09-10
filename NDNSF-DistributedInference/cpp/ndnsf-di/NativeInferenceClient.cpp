@@ -850,12 +850,24 @@ void commitConversationTurn(
     planned = *operation->planned;
     accepted = operation->acceptedTokenIds;
     generationId = operation->generationId;
-    tokenizerDigest = operation->options.generation->tokenizerDigest;
+    if (!operation->runtime ||
+        operation->runtime->contract.tokenizerDigest.empty() ||
+        !operation->options.generation ||
+        operation->options.generation->tokenizerDigest !=
+          operation->runtime->contract.tokenizerDigest) {
+      throw NativeDiError(
+        "TOKENIZER_DIGEST_MISMATCH", "conversation", "commit",
+        "conversation tokenizer digest is not bound to the operator runtime contract",
+        operation->requestId, operation->attempt);
+    }
+    // The operator-pinned runtime contract is the sole tokenizer authority.
+    // Model semantics identify graph/chat behavior and must never substitute
+    // for tokenizer identity in a persisted conversation transcript.
+    tokenizerDigest = operation->runtime->contract.tokenizerDigest;
     applicationMessages.assign(operation->input.payload.begin(), operation->input.payload.end());
     operation->conversationTransactionActive = true;
   }
   ConversationTransactionGuard transactionGuard{operation};
-  if (tokenizerDigest.empty()) tokenizerDigest = operation->model.semanticsDigest;
   chatTemplateDigest = operation->model.semanticsDigest;
   try {
     const auto options = nativeParseJson(std::string(operation->input.options.begin(), operation->input.options.end()));
