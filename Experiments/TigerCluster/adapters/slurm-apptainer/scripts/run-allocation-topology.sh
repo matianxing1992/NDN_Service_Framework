@@ -46,6 +46,25 @@ for process in value['processes']:
  script.chmod(0o700)
 PY
 
+mapfile -t process_rows < <(PYTHONPATH="$lib" python3 - "$process_map" <<'PY'
+import sys
+from allocation_topology import load_process_map
+for process in load_process_map(sys.argv[1])['processes']:
+ print(process['processId'],process['nodeRank'],sep='\t')
+PY
+)
+for row in "${process_rows[@]}"; do
+  IFS=$'\t' read -r process_id rank <<<"$row"
+  # Evidence may be on submit-host/shared storage that is not mounted on every
+  # compute node. Materialize each generated launcher on its target node's
+  # job-local scratch before any srun step tries to execute it.
+  srun --exclusive --nodes=1 --ntasks=1 "--relative=$rank" mkdir -p "$scratch/generated"
+  srun --exclusive --nodes=1 --ntasks=1 "--relative=$rank" tee \
+    "$scratch/generated/$process_id.sh" <"$evidence/generated/$process_id.sh" >/dev/null
+  srun --exclusive --nodes=1 --ntasks=1 "--relative=$rank" chmod 700 \
+    "$scratch/generated/$process_id.sh"
+done
+
 step_pids=()
 cleanup() {
   rc=$?
@@ -88,7 +107,7 @@ for row in "${node_rows[@]}"; do
   srun --exclusive --nodes=1 --ntasks=1 "--relative=$rank" tee "$config" \
     <"$evidence/generated/nfd-$rank.conf" >/dev/null
   setsid srun --exclusive --nodes=1 --ntasks=1 "--relative=$rank" \
-    "$evidence/generated/nfd-$rank.sh" >"$scratch/log/nfd-$rank.log" 2>&1 &
+    "$scratch/generated/nfd-$rank.sh" >"$scratch/log/nfd-$rank.log" 2>&1 &
   step_pids+=("$!")
 done
 
@@ -115,7 +134,7 @@ launch_kind() {
     [[ -n $process_id ]] || continue
     command=(srun --exclusive --nodes=1 --ntasks=1 "--relative=$rank")
     [[ $gpu_rank == null ]] || command+=(--gpus-per-task=1 "--gpu-bind=map_gpu:$gpu_rank")
-    command+=("$evidence/generated/$process_id.sh")
+    command+=("$scratch/generated/$process_id.sh")
     if [[ $foreground == 1 ]]; then
       "${command[@]}" >"$scratch/log/$process_id.log" 2>&1
     else

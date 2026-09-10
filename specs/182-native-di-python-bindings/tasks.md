@@ -1,6 +1,6 @@
 # Tasks: Native NDNSF-DI with Optional Python Bindings
 
-**Revision**: 151 | **Status**: DRAFT / T001 DONE
+**Revision**: 152 | **Status**: DRAFT / T001 DONE
 **Input**: [spec](spec.md), [code design](contracts/code-design.md),
 [proof](contracts/proof-design.md), [work units](contracts/work-units.md)
 
@@ -50,6 +50,7 @@ R11-B8 现开始按 caller group 批次执行；G4 已形成 native checkpoint h
 | [R11-B8-G15 Job-Scoped NFD Socket Binding](evidence/r11-b8-g15-job-scoped-nfd-socket-20260910.md) | CLOSED_FOR_VALIDATION | R11-B8-G14; Spec110 topology contract | **Deployment harness:** 要求每个生成的 NFD socket 位于当前 `--scratch` 下，拒绝仅有 `/tmp/ndnsf-di-*` 前缀但跨作业复用的路径；15/15 topology unit（含跨作业 socket 失败）、网络脚本、Python/Bash 静态检查通过。真实 SIF/Slurm 多机、15 caller、no-Python、T016/T017 仍未关闭 | 2026-09-10 |
 | [R11-B8-G16 Topology Path Traversal Boundary](evidence/r11-b8-g16-topology-path-traversal-20260910.md) | CLOSED_FOR_VALIDATION | R11-B8-G15; Spec110 topology contract | **Deployment harness:** 补齐 socket/state 路径的 `..` 组件拒绝，覆盖 process map、NFD config render 和 launcher 三层，避免字符串前缀绕过作业目录隔离；17/17 topology unit、网络脚本、Python/Bash 静态检查通过。真实 SIF/Slurm 多机、15 caller、no-Python、T016/T017 仍未关闭 | 2026-09-10 |
 | [R11-B9-G1 Portable ELF Closure Gate](evidence/r11-b9-g1-portable-elf-closure-20260910.md) | CLOSED_FOR_VALIDATION | R11-B8; T014 dependency closure | **Build preflight:** assembler/devel stages now reject host/build-bound `DT_RPATH`/`DT_RUNPATH` and resolved ELF paths under `/home/`, `/workspace/`, `/build/`, `/src/`, `/tmp/`; GPU and layered Dockerfiles enable the gate before runtime-package derivation. Runtime closure unit 5/5 and GPU preflight PASS. This only closes the static host-path gate; existing native artifacts, exact-SIF/no-Python, T015--T017 and real multi-machine qualification remain open | 2026-09-10 |
+| [R11-B8-G17 Remote Launcher Materialization](evidence/r11-b8-g17-remote-launcher-materialization-20260910.md) | CLOSED_FOR_VALIDATION | R11-B8-G16; Spec110 topology contract | **Deployment harness:** generated process launchers are copied with target-node `srun` into job scratch before NFD or business process startup, removing the hidden requirement that evidence storage be mounted identically on every node; topology integration asserts all six launchers are executable in scratch. Real Slurm/SIF multi-machine qualification, 15 callers, no-Python and T016/T017 remain open | 2026-09-10 |
 | [R11-B8 Maintained Callers](contracts/native-first-execution.md#dispatch-cards) | PARTIAL | R11-B7; corresponding T012 ABI | G1 generic unary 与 G2 generic stream 已形成稳定出口；仍需 15 个 caller group 的 native entry、实际行为、兼容 wrapper 及旧路径零使用证据，不能按子批次数量计全量完成 | 2026-09-10 |
 | [R11-B9 Native Closure](contracts/native-first-execution.md#dispatch-cards) | NOT_STARTED | R11-B8 | T014 no-Python/依赖闭包工具 → T015 → T016 → T017；最终资格未开始 | 2026-09-10 |
 

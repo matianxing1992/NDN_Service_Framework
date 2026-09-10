@@ -1,6 +1,6 @@
 # Native-First Execution Order
 
-**Revision**: 2 | **Date**: 2026-09-10 | **Status**: PLANNED
+**Revision**: 3 | **Date**: 2026-09-10 | **Status**: PLANNED
 
 用户确认的剩余执行顺序；覆盖旧文档中“所有真实跨进程用例推迟到 T016”及
 “生产 requester 进程内持有 artifact authority 私钥”的规定。保留原 17 个父任务、
@@ -77,6 +77,10 @@ NFD socket 还必须位于当前作业的 `--scratch` 目录内；仅有 `/tmp/n
 和 `ldd` 的已解析路径，并拒绝 `/home/`、`/workspace/`、`/build/`、`/src/`、`/tmp/`
 等宿主或构建临时前缀；最终 runtime stage 继续执行常规 unresolved-library 闭包检查。
 这只证明构建产物没有带入这些宿主路径，不等同于 SIF、驱动注入或真实 Slurm 多机资格。
+
+生成的 process launcher 也不能假定 `evidence` 或提交节点文件系统在每个计算节点可见。
+`run-allocation-topology.sh` 必须先用目标节点的 `srun` 将每个 launcher materialize 到该作业
+的 scratch，再从该节点路径执行；远端不可见时应在任何 NFD/业务进程启动前失败。
 
 ## Independent Authority Boundary
 

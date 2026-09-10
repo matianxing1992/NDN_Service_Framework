@@ -128,6 +128,9 @@ python3 - "$tmp/supervisor-normal/teardown.json" <<'PY'
 import json,sys
 value=json.load(open(sys.argv[1]));assert value['status']=='PASS' and value['survivors']==0 and value['exitCode']==0
 PY
+for launcher in nfd-0 controller user provider-0 provider-1 provider-2; do
+  test -x "$supervisor_scratch/generated/$launcher.sh"
+done
 grep -q CANDIDATE_PROCESS_GRAPH_COMPLETED "$tmp/supervisor-normal/readiness-verdict.txt"
 
 signal_scratch=$(mktemp -d /tmp/ndnsf-di-signal.XXXXXX)
