@@ -14,6 +14,11 @@ three selectors exited 0; durable details are in
 [R11-B8 fixture evidence](../specs/182-native-di-python-bindings/evidence/r11-b8-cpp-fixture-20260910.md).
 The broad `Spec182*` selector remains outside this bounded result.
 
+The follow-up fresh complete C++ `Spec182*` selector then passed 256 cases and
+7077 assertions with exit 0 after the fixture repair. This resolves the recorded
+runner-callback fixture boundary for the unit suite; it does not change the
+maintained-caller, no-Python, dependency-closure, or T016/T017 status.
+
 ## 2026-09-10 — Spec182 R11-B1-PY native binding dependency and ownership boundaries
 
 The first Python extension rebuild was invoked from the wrong working directory and

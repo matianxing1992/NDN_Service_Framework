@@ -56,8 +56,10 @@ freshly linked C++ binary:
   `.codex-tmp/spec182-r11-b8-stream-selector.log`.
 - `Spec182GenerationOptions/*`: 2 cases, exit 0; see
   `.codex-tmp/spec182-r11-b8-options-selector.log`.
+- Fresh complete `Spec182*`: 256 cases and 7077 assertions, exit 0; see
+  `.codex-tmp/spec182-r11-b8-full-unit.log`.
 
-The full `Spec182*` selector was not used as closure evidence in this batch.
+This complete selector is C++ unit regression evidence only; it does not close
+the maintained-caller or final qualification gates.
 Maintained caller migration, independent worker/process closure, no-Python
 qualification, dependency closure, and T016/T017 remain open.
-
