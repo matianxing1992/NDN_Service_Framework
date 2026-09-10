@@ -231,10 +231,10 @@ NativeAuthenticatedGrantClient::issueThroughCore(
 
 NativeGrantBinding NativeAuthenticatedGrantClient::acquire(const NativePlacementPlanCore& core,
   const NativeAdmittedOfferV3& offer, const NativeSecurityPolicySnapshot& security,
-  const NativeGrantControl& control) const
+  const NativeGrantControl& control, const std::string& role) const
 {
   control.check();
-  const auto view = NativePlanSealer::grantView(core, offer, security);
+  const auto view = NativePlanSealer::grantView(core, offer, security, role);
   if (view.requesterIdentity != m_requester || view.protectionEpoch == "plaintext-v1" ||
       !security.requireProtectedArtifacts || view.modelManifestDigest.empty())
     throw std::invalid_argument("authenticated grant view does not match requester or protection policy");

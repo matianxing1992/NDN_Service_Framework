@@ -16,6 +16,9 @@ namespace ndnsf::di {
 
 struct QwenRoleBinding
 {
+  // Role order is the maintained three-stage Qwen contract. Provider identity
+  // may repeat when a smaller deployment co-locates stages; providerBootId
+  // still binds each role to the observed Provider process epoch.
   std::string role;
   std::string provider;
   std::string providerBootId;

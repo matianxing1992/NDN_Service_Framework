@@ -314,7 +314,7 @@ NativeArtifactBinding NativeRequestPreparation::ensureArtifacts(
     throw std::runtime_error("DI_NATIVE_ARTIFACT_BINDING_MISMATCH");
   }
   const auto& roles = proposal.roles;
-  std::set<std::string> selected, providers;
+  std::set<std::string> selected;
   for (const auto& role : roles) selected.insert(role.selectedRole);
   if (roles.empty() || selected.size() != roles.size() ||
       proposal.providerByRole.size() != roles.size()) {
@@ -330,13 +330,15 @@ NativeArtifactBinding NativeRequestPreparation::ensureArtifacts(
     const auto key = degree == 1 ? role.role : role.role + "#" + std::to_string(role.rank);
     const auto assignment = proposal.providerByRole.find(key);
     if (role.selectedRole != key || assignment == proposal.providerByRole.end() ||
-        assignment->second.empty() || !providers.insert(assignment->second).second)
+        assignment->second.empty())
       throw std::runtime_error("DI_NATIVE_ARTIFACT_BINDING_MISMATCH");
     const auto offer = proposal.offerDigestByProvider.find(assignment->second);
     if (offer == proposal.offerDigestByProvider.end() || !digest(offer->second))
       throw std::runtime_error("DI_NATIVE_ARTIFACT_BINDING_MISMATCH");
   }
-  if (providers.size() != proposal.offerDigestByProvider.size())
+  std::set<std::string> assignedProviders;
+  for (const auto& item : proposal.providerByRole) assignedProviders.insert(item.second);
+  if (assignedProviders.size() != proposal.offerDigestByProvider.size())
     throw std::runtime_error("DI_NATIVE_ARTIFACT_BINDING_MISMATCH");
   // The requester validates placement against admitted observations before
   // this call. Publication receives only the checked candidate/role contract;

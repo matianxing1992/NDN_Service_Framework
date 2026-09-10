@@ -460,12 +460,15 @@ NativePlannedRequest planNativeRequest(
     auto core = NativePlanSealer::sealCore(model, candidate, proposal, execution, offers, closure.digest, sealing);
     std::vector<NativeGrantBinding> grants;
     NativeGrantControl grantControl{std::chrono::system_clock::time_point(std::chrono::milliseconds(wireDeadlineMs)), cancelled};
-    for (const auto& selected : core.offerDigestByProvider) {
+    for (const auto& role : execution.roles) {
       control.requireActive();
       const auto offer = std::find_if(offers.begin(), offers.end(), [&](const auto& value) {
-        return value.observation().provider == selected.first;
+        return value.observation().provider == core.assignment.providerByRole.at(role);
       });
-      grants.push_back(runtime.grants->acquire(core, *offer, runtime.security, grantControl));
+      if (offer == offers.end()) {
+        throw std::invalid_argument("selected role Provider is outside the admitted offers");
+      }
+      grants.push_back(runtime.grants->acquire(core, *offer, runtime.security, grantControl, role));
     }
     NativePlannedRequest result;
     result.sealed = NativePlanSealer::finalizeSecurity(core, grants, runtime.security);

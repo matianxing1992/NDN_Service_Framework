@@ -77,7 +77,6 @@ void NativePlacementPlanCore::validate() const
   }
   strategy.validate();
   std::set<std::string> roles(executionPlan.roles.begin(), executionPlan.roles.end());
-  std::set<std::string> providers;
   if (roles.size() != executionPlan.roles.size() ||
       assignment.providerByRole.size() != roles.size() ||
       artifactDigestByRole.size() != roles.size() ||
@@ -95,9 +94,6 @@ void NativePlacementPlanCore::validate() const
     const auto offer = offerDigestByProvider.find(provider->second);
     if (offer == offerDigestByProvider.end() || !isDigest(offer->second)) {
       throw std::invalid_argument("native placement plan core offer binding is invalid");
-    }
-    if (!providers.insert(provider->second).second) {
-      throw std::invalid_argument("native plan requires one role per Provider");
     }
     const auto assembly = assemblyByRole.find(role);
     if (assembly == assemblyByRole.end() || assembly->second.selectedRole != role ||
@@ -149,19 +145,22 @@ void NativeSealedPlan::validate() const
 namespace {
 NativeProviderGrantView grantViewForIdentity(const NativePlacementPlanCore& core,
   const std::string& providerName, const std::string& offerDigest,
-  const NativeSecurityPolicySnapshot& security)
+  const NativeSecurityPolicySnapshot& security, const std::string& roleName)
 {
   core.validate();
   if (!isDigest(security.policyDigest)) {
     throw std::invalid_argument("security policy digest is invalid");
   }
-  const auto role = std::find_if(core.assignment.providerByRole.begin(),
-                                core.assignment.providerByRole.end(),
-                                [&providerName] (const auto& item) {
-                                  return item.second == providerName;
-                                });
+  const auto role = roleName.empty()
+    ? std::find_if(core.assignment.providerByRole.begin(),
+                   core.assignment.providerByRole.end(),
+                   [&providerName] (const auto& item) { return item.second == providerName; })
+    : core.assignment.providerByRole.find(roleName);
   if (role == core.assignment.providerByRole.end()) {
     throw std::invalid_argument("provider is not assigned by the plan");
+  }
+  if (role->second != providerName) {
+    throw std::invalid_argument("requested role is assigned to another Provider");
   }
   if (core.offerDigestByProvider.at(providerName) != offerDigest) {
     throw std::invalid_argument("grant view offer differs from the sealed ACK offer");
@@ -306,14 +305,15 @@ NativePlacementPlanCore NativePlanSealer::sealCore(
 NativeProviderGrantView NativePlanSealer::grantView(
   const NativePlacementPlanCore& core,
   const NativeProviderPlanningView& provider,
-  const NativeSecurityPolicySnapshot& security)
+  const NativeSecurityPolicySnapshot& security, const std::string& roleName)
 {
   provider.validate();
-  return grantViewForIdentity(core, provider.provider, provider.offerDigest, security);
+  return grantViewForIdentity(core, provider.provider, provider.offerDigest, security, roleName);
 }
 
 NativeProviderGrantView NativePlanSealer::grantView(const NativePlacementPlanCore& core,
-  const NativeAdmittedOfferV3& provider, const NativeSecurityPolicySnapshot& security)
+  const NativeAdmittedOfferV3& provider, const NativeSecurityPolicySnapshot& security,
+  const std::string& roleName)
 {
   const auto& offer = provider.observation();
   if (offer.requestId != core.requestId || offer.attempt != core.attempt ||
@@ -321,7 +321,7 @@ NativeProviderGrantView NativePlanSealer::grantView(const NativePlacementPlanCor
       (offer.graphDigest != core.graphDigest && offer.graphDigest != "sha256:" + std::string(64, '0')) ||
       offer.expiresAtMs < core.expiresAtMs || !offer.status)
     throw std::invalid_argument("grant offer is not bound to this request");
-  return grantViewForIdentity(core, offer.provider, offer.offerDigest, security);
+  return grantViewForIdentity(core, offer.provider, offer.offerDigest, security, roleName);
 }
 
 NativeSealedPlan NativePlanSealer::finalizeSecurity(
@@ -344,13 +344,16 @@ NativeSelectionProjectionV3 NativePlanSealer::project(
   const NativeRoleProjectionInputs& inputs)
 {
   sealed.validate();
-  const auto assignment = std::find_if(sealed.core.assignment.providerByRole.begin(),
-                                       sealed.core.assignment.providerByRole.end(),
-                                       [&provider] (const auto& item) {
-                                         return item.second == provider;
-                                       });
+  const auto requestedRole = inputs.executionRole.roleId;
+  if (requestedRole.empty()) {
+    throw std::invalid_argument("projection execution role is missing");
+  }
+  const auto assignment = sealed.core.assignment.providerByRole.find(requestedRole);
   if (assignment == sealed.core.assignment.providerByRole.end()) {
-    throw std::invalid_argument("provider is not present in sealed plan");
+    throw std::invalid_argument("projection role is not present in sealed plan");
+  }
+  if (assignment->second != provider) {
+    throw std::invalid_argument("projection role is assigned to another Provider");
   }
   const auto grant = std::find_if(sealed.grants.begin(), sealed.grants.end(),
     [&provider, &assignment] (const auto& item) {

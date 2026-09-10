@@ -367,7 +367,7 @@ BOOST_AUTO_TEST_CASE(GrantViewRejectsChangedOfferAndProtectionPolicy)
                     NativeSecurityPolicySnapshot{digest("policy"), false}), std::invalid_argument);
 }
 
-BOOST_AUTO_TEST_CASE(SealCoreRejectsProviderReusedAcrossRoles)
+BOOST_AUTO_TEST_CASE(SealCoreAllowsProviderReuseAcrossRoles)
 {
   auto plan = oneRolePlan("t004-ownership", digest("ack"));
   plan.proposal.executionPlan.roles.push_back("/other-role");
@@ -375,10 +375,7 @@ BOOST_AUTO_TEST_CASE(SealCoreRejectsProviderReusedAcrossRoles)
   plan.inputs.artifacts.sourceByRole.emplace("/other-role", "/canonical/other");
   plan.inputs.artifacts.artifactDigestByRole.emplace("/other-role", digest("other-artifact"));
   ndnsf::di::fixture::assemblies(plan.inputs);
-  BOOST_CHECK_EXCEPTION(NativePlanSealer::sealCore(plan.snapshot, plan.proposal, plan.inputs),
-                        std::invalid_argument, [](const std::invalid_argument& e) {
-                          return std::string(e.what()) == "native plan requires one role per Provider";
-                        });
+  BOOST_CHECK_NO_THROW(NativePlanSealer::sealCore(plan.snapshot, plan.proposal, plan.inputs));
 }
 
 BOOST_AUTO_TEST_SUITE_END()

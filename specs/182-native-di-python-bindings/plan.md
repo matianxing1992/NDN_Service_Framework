@@ -1308,6 +1308,19 @@ integration targets 均以 `WAFLOCK=.lock-waf -j4` 构建成功；placement sele
 DONE（仅本地 fixture boundary），而 T010-B/T011-C/T016、cross-process 和 maintained
 caller/no-Python 仍保持开放；详见 [R10-B57 evidence](evidence/r10-b57-native-v3-placement-lifetime-20260909.md)。
 
+### R11-B8-G11 Native Provider Co-location 2026-09-10
+
+本批静态复核发现 placement、sealing、grant、projection 和 group capability 仍有一组
+隐含的“一 role 一 Provider”假设：小拓扑可以在 placement 阶段被接受，却在 group
+projection 的重复 offer 检查或单 Provider dependency 检查处失败。当前 C++ 路径已统一为
+按 Provider identity 去重 admitted offer，按 role 保留 assignment/grant/projection，并允许
+单 Provider dependency 建立受保护的一成员 group；GPU 仍要求不同的 offer-scoped device
+和累计显存不超限，累计 reservation 溢出会 fail closed。新增 co-location group selector 与 GPU 多设备 selector，`Spec182*`
+C++ unit 258 cases / 7099 assertions 两次完整运行通过，fresh `unit-tests` build 以
+system-first `-j2` 完成。该批只关闭 placement/co-location 的 C++ validation boundary，
+不宣称 MiniNDN、完整模型、独立部署资格、maintained callers、no-Python 或 T016/T017。
+详见 [R11-B8-G11 evidence](evidence/r11-b8-g11-provider-colocation-20260910.md)。
+
 ## Current Planning Result
 
 T001-A/B/C 设计关闭全部完成（2026-09-07，evidence

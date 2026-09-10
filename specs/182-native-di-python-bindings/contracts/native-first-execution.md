@@ -37,6 +37,16 @@ Python 测试数量、py_compile、CLI help、check-only、链接烟测、fake A
 完整同源 C++ unit → integration/process → MiniNDN/no-Python → Python wrapper suites。
 没有重跑的新源码不能继承不兼容旧二进制的 PASS；有效未受影响证据按原范围复用。
 
+Placement 的伸缩契约按 **role** 与 **Provider identity** 分开：admitted offer
+观察值对每个 Provider 只能有一份，但一个 Provider 可以承载多个 execution role。
+策略先尽量把角色分散到不同 Provider，资源不足时才允许容量约束内的 co-location。
+CPU 角色可以共享 Provider；GPU 角色必须使用不同的 offer-scoped device，并分别通过
+该设备的独占检查和同一 Provider 的累计显存检查；累计 reservation 溢出会 fail closed。
+sealing、role-specific grant、
+Selection projection、group capability 与 Provider-local handler 都必须继续按 role
+索引，不能因 Provider 相同而合并角色。维护中的 Qwen profile 仍有固定的三阶段顺序和
+rank/tensor contract；这些 adapter 限制不等同于 deployment 的 Provider 数量限制。
+
 ## Independent Authority Boundary
 
 - **Owner**: 复用 `NativeArtifactGrantIssuer`/现有 policy、grant wire、签名和 recipient

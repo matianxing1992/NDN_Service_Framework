@@ -564,7 +564,7 @@ void NativePlacementProposal::validate(const NativePlanningSnapshot& snapshot,
   if (assignment.providerByRole.size() != executionPlan.roles.size()) {
     throw std::invalid_argument("placement proposal does not cover every role");
   }
-  std::set<std::string> usedProviders;
+  std::map<std::string, std::uint64_t> reservedBytes;
   for (const auto& role : executionPlan.roles) {
     const auto it = assignment.providerByRole.find(role);
     if (it == assignment.providerByRole.end() || it->second.empty()) {
@@ -572,10 +572,17 @@ void NativePlacementProposal::validate(const NativePlanningSnapshot& snapshot,
     }
     const auto offer = std::find_if(snapshot.offers.begin(), snapshot.offers.end(),
       [&it] (const auto& view) { return view.provider == it->second; });
-    if (offer == snapshot.offers.end() || !usedProviders.insert(it->second).second ||
+    const auto peak = candidate.requirementsByRole.at(role).estimatedPeakGpuMemoryBytes();
+    const auto reserved = reservedBytes.find(it->second);
+    const auto alreadyReserved = reserved == reservedBytes.end() ? 0 : reserved->second;
+    if (offer == snapshot.offers.end() || !peak || alreadyReserved > offer->freeBytes ||
+        *peak > offer->freeBytes - alreadyReserved ||
         !canPlaceRole(*offer, role, candidate.requirementsByRole.at(role))) {
-      throw std::invalid_argument("placement proposal requires distinct feasible Providers");
+      throw std::invalid_argument("placement proposal requires feasible Providers");
     }
+    if (alreadyReserved > std::numeric_limits<std::uint64_t>::max() - *peak)
+      throw std::overflow_error("placement Provider memory reservation overflows uint64");
+    reservedBytes[it->second] = alreadyReserved + *peak;
   }
 }
 
@@ -625,18 +632,28 @@ NativePreSplitFirstPlacement::propose(const NativePlanningSnapshot& snapshot,
   result.strategy = m_identity;
   result.executionPlan = candidate.executionPlan;
   std::set<std::string> usedProviders;
+  std::map<std::string, std::uint64_t> reservedBytes;
   auto roles = candidate.executionPlan.roles;
   std::sort(roles.begin(), roles.end());
   for (const auto& role : roles) {
     std::vector<const NativeProviderPlanningView*> eligible;
+    std::vector<const NativeProviderPlanningView*> distinct;
+    const auto peak = candidate.requirementsByRole.at(role).estimatedPeakGpuMemoryBytes();
     for (const auto& offer : snapshot.offers) {
-      if (usedProviders.count(offer.provider) == 0 &&
-          canPlaceRole(offer, role, candidate.requirementsByRole.at(role))) {
+      const auto reserved = reservedBytes.find(offer.provider);
+      const auto alreadyReserved = reserved == reservedBytes.end() ? 0 : reserved->second;
+      const bool fits = peak && alreadyReserved <= offer.freeBytes &&
+        *peak <= offer.freeBytes - alreadyReserved;
+      if (fits && canPlaceRole(offer, role, candidate.requirementsByRole.at(role))) {
         eligible.push_back(&offer);
+        if (!usedProviders.count(offer.provider)) distinct.push_back(&offer);
       }
     }
+    // Spread roles when possible, but permit a smaller deployment to
+    // co-locate roles on one capable Provider.
+    if (!distinct.empty()) eligible.swap(distinct);
     if (eligible.empty()) {
-      throw std::runtime_error("no distinct feasible Provider for native role " + role);
+      throw std::runtime_error("no feasible Provider for native role " + role);
     }
     // Digest hints rank canonical availability only, never device-ready reuse.
     const auto hasArtifacts = [&candidate, &role] (const auto* offer) {
@@ -653,6 +670,15 @@ NativePreSplitFirstPlacement::propose(const NativePlanningSnapshot& snapshot,
     });
     result.assignment.providerByRole.emplace(role, eligible.front()->provider);
     usedProviders.insert(eligible.front()->provider);
+    const auto selectedPeak = candidate.requirementsByRole.at(role).estimatedPeakGpuMemoryBytes();
+    if (selectedPeak) {
+      const auto provider = eligible.front()->provider;
+      const auto reserved = reservedBytes.find(provider);
+      const auto alreadyReserved = reserved == reservedBytes.end() ? 0 : reserved->second;
+      if (alreadyReserved > std::numeric_limits<std::uint64_t>::max() - *selectedPeak)
+        throw std::overflow_error("placement Provider memory reservation overflows uint64");
+      reservedBytes[provider] = alreadyReserved + *selectedPeak;
+    }
   }
   result.validate(snapshot, candidate);
   return result;

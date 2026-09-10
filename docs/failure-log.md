@@ -3287,3 +3287,17 @@ are still unobserved.
   raw output is retained at `.codex-tmp/spec182-r11-b1-spec182-unit-rerun.log`. This is retained as
   an intermittent full-suite fixture boundary, not counted as a process protocol failure or as a
   reason to alter the R11-B1 production path.
+
+## 2026-09-10 — Spec182 R11-B8-G11 reservation-overflow guard compile boundary
+
+- **Area**: native Provider co-location capacity accounting.
+- **First boundary**: the first rebuild after adding checked cumulative reservation arithmetic
+  failed in `NativeV3Placement.cpp`; a multi-statement block was introduced under an existing
+  single-line `if` without braces, producing a misleading-indentation warning and a map key type
+  compile error. No binary from this attempt was used for behavior claims.
+- **Interpretation**: implementation compile failure only; no request, Provider, NDN, or
+  qualification result was produced.
+- **Correction before retry**: add explicit braces around the guarded reservation block, retain
+  the failed build directory, then rebuild the same Waf target with the system-first `-j2` command.
+- **Evidence**:
+  [`r11-b8-g11-provider-colocation-20260910.md`](../specs/182-native-di-python-bindings/evidence/r11-b8-g11-provider-colocation-20260910.md)

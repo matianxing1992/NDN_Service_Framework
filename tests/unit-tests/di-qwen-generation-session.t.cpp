@@ -130,6 +130,19 @@ BOOST_AUTO_TEST_CASE(SpecCodecRoundTripPreservesIdentityBindings)
   BOOST_CHECK_EQUAL(decoded.roles[2].providerBootId, "boot-2");
 }
 
+BOOST_AUTO_TEST_CASE(SpecAllowsThreeStagesToShareAProvider)
+{
+  auto spec = validSpec();
+  spec.roles[1].provider = spec.roles[0].provider;
+  spec.roles[1].providerBootId = spec.roles[0].providerBootId;
+  BOOST_CHECK_NO_THROW(spec.validate());
+  const auto decoded = qwenGenerationSessionSpecFromJson(
+    qwenGenerationSessionSpecToJson(spec));
+  BOOST_REQUIRE_EQUAL(decoded.roles.size(), 3);
+  BOOST_CHECK_EQUAL(decoded.roles[0].provider, decoded.roles[1].provider);
+  BOOST_CHECK_EQUAL(decoded.roles[0].providerBootId, decoded.roles[1].providerBootId);
+}
+
 BOOST_AUTO_TEST_CASE(SpecValidationRejectsUnboundOrUnboundedValues)
 {
   auto checkInvalid = [] (QwenGenerationSessionSpec spec) {
@@ -166,7 +179,7 @@ BOOST_AUTO_TEST_CASE(SpecValidationRejectsUnboundOrUnboundedValues)
   spec.roles[1].role = "/LLM/Stage/0";
   checkInvalid(spec);
   spec = validSpec();
-  spec.roles[1].provider = spec.roles[0].provider;
+  spec.roles[1].role = spec.roles[0].role;
   checkInvalid(spec);
 }
 
