@@ -45,6 +45,23 @@ Lesson: transport immutability permits executable read-only files. Preserve the
 required execute mode for launchers while removing write bits from the frozen
 harness; validate the actual received mode before diagnosing runtime failures.
 
+## 2026-09-09 — Cisco CLI help invocation interrupted the VPN session
+
+Symptom: invoking `vpn connect -h` while diagnosing the temporary SSH banner
+timeout was interpreted by Cisco Secure Client as a connection attempt to host
+`-h`; the existing VPN session disconnected. The reauthentication flow now
+requires the interactive Cisco login page.
+
+Root cause: Cisco's CLI uses `connect [host]` and does not provide a command
+specific `-h` help form. No Tiger files or Slurm state were changed, and the
+already submitted job remains independent of the local VPN session.
+
+Fix status: restarted the Cisco UI and left the authentication page open for
+the operator. After login, query job `210254` and retain its GPU verdict.
+
+Lesson: use `vpn state`/`vpn stats` for read-only diagnostics; do not pass
+help-style arguments to `vpn connect` on an active experiment session.
+
 ## 2026-09-08 — Planned request name differs from canonical V2 wire ID
 
 Fixture-fixed run e publishes its encrypted input and sends the V3 request,
