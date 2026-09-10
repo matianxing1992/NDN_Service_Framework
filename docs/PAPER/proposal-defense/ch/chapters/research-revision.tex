@@ -32,15 +32,18 @@ NFN 研究命名计算与表达式求值，NFaaS 研究命名函数执行放置~
 NDNSF 的较窄问题是：如何先收集当前意愿与可行性，再选择执行角色，并约束中间对象的使用。长期服务权限并不确定本次哪个 Provider 是指定前驱；request ID 和单独的合法签名也不表达该分工。但把字段写入 manifest 并不自动构成创新。最终需逐项比较 CaSCON~\cite{cascon} 等服务组合、工作流安全及 capability 系统，而非声称首个 NDN 服务框架。
 
 \begin{table}[htbp]\centering\small
-\caption{在相同需求下比较三种完整设计。}
+\caption{在相同需求下比较两种授权设计。}
 \begin{tabularx}{\textwidth}{p{.19\textwidth}XXX}
 \toprule 方案 & 执行授权 & 非公开发现 & 管理成本\\\midrule
 DNMP 式角色方案 & 角色与命令规则验证签名 & 另加加密和组密钥分发 & 角色凭证、规则、状态／有效期及加密密钥\\\midrule
-每服务角色证书 & 验证服务角色、消息类型、身份与请求状态 & 同样补齐发现保密机制 & 多项服务角色凭证、加密与撤销状态\\\midrule
 NDNSF ABE-backed & 身份签名、加密 challenge、请求及授权状态 & 按服务权限保护 descriptor，无需列出现时所有候选身份 & 身份凭证、ABE policy／DKEY、状态传播与换钥\\\bottomrule
 \end{tabularx}\end{table}
 
-DNMP 是角色约束命令签名的具体先例~\cite{dnmp}。一个角色可以覆盖多种操作，并非每服务必建一个角色或证书。“每服务角色证书”是本 Proposal 的替代设计，不是所有 Trust Schema 的固有限制。该方案中 User 使用 caller-role certificate 签名 Request／Selection，Provider 使用 provider-role certificate 签名 ACK／Response。接收方验证签发链、服务／消息规则、有效期／状态、请求身份和生命周期后才允许操作。选定后的交换使用接收者专属加密；发现阶段还需组加密或属性加密。Trust Schema 单独不提供保密性，但加上相应加密后可以满足完整需求。
+DNMP 是角色约束命令签名与验证的具体先例~\cite{dnmp}。角色粒度由策略决定：一个角色可以覆盖多种操作，规则允许时也可以复用凭证。
+
+本比较为 DNMP-inspired 授权补充请求状态检查与内容加密。这是作为 NDNSF 替代方案需要满足的要求，不是声称 DNMP 原论文实现了 NDNSF 的消息流程。
+
+选定后的交换使用接收者专属加密；发现阶段还需组密钥分发或属性加密。Trust Schema 单独不提供保密性，但与配套加密结合后可以满足这一要求。
 
 证书式撤销需要验证者获取足够新的撤销状态，或者等待证书过期。删除仓库中的证书不能使已缓存副本自动失效。这是公平替代方案的生命周期要求，不是声称 DNMP 原论文实现了 NDNSF 的运行时撤销流程。
 

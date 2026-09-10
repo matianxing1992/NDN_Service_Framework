@@ -44,7 +44,7 @@ PASS (documentation only)：完成中英文正文、长/短版 slides、讲稿�
 保密对象是缺少相应解密能力的观察者；获准但未被选中的 Provider 可读取发现描述。
 内容加密不隐藏外层名称或流量模式。Selection 限定输入的描述明确针对 request-scoped 路径。
 KP-ABE 聚合限定于同一授权机构和参数代，不声称任意策略固定大小或固定成本。
-DNMP 的角色可以涵盖多项权限；每服务角色证书为本文对照设计，并非所有 Trust Schema 的要求。
+DNMP 的角色可以涵盖多项权限；当前比较保留 DNMP-inspired 授权加配套加密与 NDNSF ABE-backed 两种设计，不从角色粒度推导固定的证书数量。
 DNMP 测量数据密钥轮换与命令权限撤销分开表述；证书撤销要求验证方检查状态，不是物理收回证书。
 NDNSF Controller-wide ABE 轮换可能要求其他仍获授权成员刷新 DKEY；不宣称全网瞬时撤销或更低总成本。
 

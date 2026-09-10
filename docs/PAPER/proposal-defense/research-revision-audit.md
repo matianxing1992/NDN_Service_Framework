@@ -1,5 +1,39 @@
 # Research-first Proposal Revision and Evidence Audit
 
+## 2026-09-10 Two-design Comparison Revision
+
+按用户要求删除自定义的逐服务角色凭证替代方案，正文、表格和讲稿仅保留
+DNMP-inspired 授权加配套加密与 NDNSF ABE-backed 的比较。同步中英文共享正文、
+slides 和 review 指引；保留 DNMP 的真实角色授权说明，以及配套加密和生命周期
+机制属于公平对照要求、并非 DNMP 原文已实现 NDNSF 工作流的边界。
+
+首轮六个 LaTeX 入口构建通过。PPTX 转换首轮在 `pdftohtml` 输入解析处失败：
+生成器相对于自身 slides 目录解释路径，仓库相对路径因此被重复拼接。
+失败日志保留在 `.codex-tmp/proposal-two-designs-20260910/pptx-build.log`。
+改用绝对 PDF／notes 路径及新的私有构建目录后，PPTX 转换通过，原始成功日志为
+同目录 `pptx-retry.log`。此为文档工具输入边界，没有运行或判定任何产品协议测试。
+
+最终检查 PASS：英文双入口各 29 页、中文双入口各 21 页、slides 双入口各 38 页、
+讲稿双入口各 7 页；每对入口提取文本一致。PDF、PPTX 页面与全部 38 页 notes 中
+均无已删除方案的名称或三方案标题残留。与本轮修改前 slides 逐页比较，仅 P13
+文字改变，实验页及数字未改动。最终 LaTeX 日志无 Overfull、缺字或未定义引用。
+
+按照 NDN Slides Review 检查所有正文、slides、讲稿 contact sheets，并放大检查
+比较页；PPTX 经 LibreOffice 重导出的 38 页也完成截图检查，未见内容缺失、越界
+或重叠。生成器检查 791/791 源 spans 恰好分配一次，546 个可编辑文本框、
+47 个原生三角项目符号，背景可提取文字为 0。不声称在 PowerPoint 或 Google Slides
+原生客户端完成实测。当前摘要见 `research-revision-validation.json`；原始构建与
+截图证据位于 `.codex-tmp/proposal-two-designs-20260910/`。
+
+Context Mode active-Spec health 因 plan/tasks 索引摘要过期未通过，使用仓库文件
+作为权威来源；Context Mode 仅用于辅助文本检查。没有修改实现、目标设计或实验
+结论，Spec182 的产品与研究验收门保持原状态。
+
+首次本地 commit 被既有全索引助手引用扫描拒绝；原始诊断保存于
+`.codex-tmp/proposal-two-designs-20260910/checkpoint-hook.log`。检查钩子及已有失败
+记录后，使用其显式支持的 `NDNSF_LOCAL_CHECKPOINT=1` 本地入口，保留禁止路径
+检查，不修改钩子、不自动 push。仅提交本轮明确文档路径，不纳入既有 DI 合约修改。
+
 ## 2026-09-09 Authorization Argument Follow-up
 
 按用户确认改成“安全需求 → 架构收益”两条理由，再说明机制、生命周期与成本。
@@ -95,7 +129,7 @@ Date: 2026-09-09. Scope: Proposal EN/CH, research slides, editable PPTX, and pre
 | C10 | TEXT-ADDRESSED: discovery confidentiality requirement precedes ABE/key mechanics. |
 | C11 | TEXT-ADDRESSED: distinguish candidate alternatives from assigned roles; positive ACK does not execute the task. |
 | C12 | PARTIAL: related work acknowledges existing invocation/authorization/composition; exhaustive nearest-work feature comparison remains OPEN. |
-| C13 | TEXT-ADDRESSED: decryption, authentication, execution authorization and request-state checks separated; three complete alternatives compared. |
+| C13 | TEXT-ADDRESSED: decryption, authentication, execution authorization and request-state checks separated; DNMP-inspired authorization plus encryption compared with NDNSF ABE-backed authorization. |
 | C14 | TEXT-ADDRESSED: completion by deadline, successful-response latency, execution starts, object retrieval and recognition accuracy are not conflated. Remaining campaigns must implement the stated metric definitions. |
 | C16, C17 | TEXT-ADDRESSED: one scenario derives the RQs; UAV/DI are validation workloads. RQ wording does not prescribe ABE or ACK as a foregone answer. Advisor confirmation of narrowed scope remains required. |
 | C18, C19 | TEXT-ADDRESSED: protocol roles may share hardware; organization enrollment differs from User runtime discovery; trust bootstrap is stated. |

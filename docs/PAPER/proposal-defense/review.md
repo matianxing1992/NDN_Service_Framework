@@ -146,12 +146,11 @@ NSC 也明确区分保护执行资源和保护敏感数据，使用初始 signed
 不能从“Trust Schema 可以授权”推出“NDN 禁止 challenge”，也不能从“Trust Schema 本身不加密”推出“ABE 是唯一合理设计”。需要比较完整方案：
 
 1. DNMP-inspired 角色签名授权，加独立内容保护和请求状态。
-2. 已讨论的每服务角色证书方案，加相应加密与状态检查。
-3. NDNSF 的 ABE 权限管理、challenge、身份签名和请求状态组合。
+2. NDNSF 的 ABE 权限管理、challenge、身份签名和请求状态组合。
 
 建议口头回答：
 
-> The Controller grants service permissions before invocation. The challenges do not create those permissions; they let the invocation protocol check access to the required ABE decryption capability. Signatures and request-state checks remain necessary. We retain this design to reuse service-permission management for protected discovery and invocation, and compare its credential, rekeying, and runtime costs with role-certificate alternatives.
+> The Controller grants service permissions before invocation. The challenges do not create those permissions; they let the invocation protocol check access to the required ABE decryption capability. Signatures and request-state checks remain necessary. We retain this design to reuse service-permission management for protected discovery and invocation, and compare its credential, rekeying, and runtime costs with DNMP-inspired authorization supplemented by content encryption.
 
 这解释了设计依据，但没有声称 challenge 在理论上不可替代。权限由策略机构授予；是否愿意服务由 Provider 报告；选择由 User 作出；challenge 是检查机制。需要将这几个动作拆开画清楚。
 

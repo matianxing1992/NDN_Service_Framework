@@ -6,6 +6,12 @@
 
 ## Execution Progress
 
+文档旁路记录（2026-09-10，DOCUMENT PASS）：Proposal／slides 收敛为 DNMP-inspired
+授权加配套加密与 NDNSF ABE-backed 两种设计。正文与 slides 六入口及两份讲稿构建
+通过；修正 PPTX 输入路径后，38 页可编辑文本与 notes、重导出截图、全文残留检查
+通过。见[持久审计](../../docs/PAPER/proposal-defense/research-revision-audit.md)和
+[文档验证](../../docs/PAPER/proposal-defense/research-revision-validation.json)；此记录不变更产品任务状态。
+
 文档旁路记录（2026-09-09）：Proposal／slides 授权论证统一为两条理由，机制、撤销与
 成本单列；[持久审计](../../docs/PAPER/proposal-defense/research-revision-audit.md)
 和[文档验证](../../docs/PAPER/proposal-defense/research-revision-validation.json)

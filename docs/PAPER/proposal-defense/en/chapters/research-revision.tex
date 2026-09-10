@@ -34,7 +34,7 @@ NFN studies named computation and expression evaluation; NFaaS studies execution
 
 For NDNSF, the narrower question is how a service request gathers current willingness and feasibility information before selecting execution roles, and how the resulting assignment constrains intermediate-object use. Long-term permission to offer a service does not by itself determine which authorized Provider is assigned to a particular predecessor role. Neither a request ID nor a valid signature alone expresses that assignment. Conversely, role and edge checks are not automatically novel merely because their fields are placed in a manifest. A final novelty claim requires a feature-level comparison with service composition, workflow security, and capability-based systems, including CaSCON~\cite{cascon}, rather than a claim of being the first NDN service framework.
 
-\section{Three Complete Authorization Designs}
+\section{Comparing Authorization Designs under the Same Requirements}
 \begin{table}[htbp]
 \centering\small
 \caption{Alternatives under the same discovery and execution requirements.}
@@ -42,12 +42,15 @@ For NDNSF, the narrower question is how a service request gathers current willin
 \toprule
 Design & Execution decision & Non-public discovery & Management cost\\\midrule
 DNMP-inspired roles & Validate signed commands against role and command rules & Add encryption and a group/key-distribution design; signatures alone do not conceal Content & Role credentials, trust rules, status or expiry checks, and encryption keys\\\midrule
-Per-service role certificates & Validate message type, service role, identity, and request state & Add the same confidentiality functionality before comparing costs & Potentially multiple service-role credentials per identity, plus encryption and revocation state\\\midrule
 NDNSF ABE-backed & Validate identity signatures, encrypted challenges, and request/authorization state & Encrypt a descriptor for a service-authorized receiver set without listing current candidates & Identity credentials, ABE policies/DKEYs, status distribution, and rekeying\\\bottomrule
 \end{tabularx}
 \end{table}
 
-DNMP is a concrete example of role-constrained command signing and verification~\cite{dnmp}. A role can cover multiple actions; different permission sets do not necessarily require one new role or certificate per service. The per-service certificate alternative in this proposal is our design choice, not a limitation inherent to every Trust Schema. In that alternative, a User uses a caller-role certificate for Request and Selection; a Provider uses a provider-role certificate for ACK and Response. Validators check the issuer chain, service and message-type rules, validity/status, request identity, and message lifecycle before accepting an action. Recipient-specific encryption protects selected exchanges. Protected discovery additionally needs a group-distribution or attribute-based encryption mechanism. Trust Schema alone is therefore insufficient for confidentiality, but a complete schema-based system can satisfy it with encryption.
+DNMP is a concrete example of role-constrained command signing and verification~\cite{dnmp}. Role granularity is policy-defined: a role can cover multiple actions, and credentials can be reused where the rules permit.
+
+Our comparison supplements DNMP-inspired authorization with request-state checks and content encryption. These are requirements for an NDNSF alternative, not claims that the original DNMP implements the NDNSF message workflow.
+
+Recipient-specific encryption protects selected exchanges. Discovery additionally requires group-key distribution or attribute-based encryption. Trust Schema alone does not provide confidentiality, but a system combining it with encryption can.
 
 For revocation, a credential-based alternative must reject a revoked credential using sufficiently current status information or wait for expiry. Removing a certificate from a repository cannot invalidate copies already held by a validator. This is a proposed lifecycle requirement for a fair alternative, not a claim that the original DNMP paper implements NDNSF's runtime revocation protocol.
 

@@ -1,5 +1,26 @@
 # Failure Log and Evidence Index
 
+## 2026-09-10 — Proposal local checkpoint hook boundary
+
+The document checkpoint was rejected by the pre-commit hook's full-index assistant
+reference scan. The hook and previous records explicitly support
+`NDNSF_LOCAL_CHECKPOINT=1` for local checkpoints; retry uses that entry and retains
+the prohibited-path check. No hook is changed and no remote operation is requested.
+Diagnostic: `.codex-tmp/proposal-two-designs-20260910/checkpoint-hook.log`.
+Scope and checks: [proposal audit](PAPER/proposal-defense/research-revision-audit.md).
+
+## 2026-09-10 — Proposal PPTX relative-path resolution boundary
+
+The two-design authorization revision compiled successfully, but PPTX conversion
+stopped at `pdftohtml`: the converter resolves input paths relative to its own
+slides directory, so a repository-relative `--pdf` duplicated that directory.
+No PPTX was generated. The retry uses absolute PDF and notes paths and a fresh
+private build directory; no product runtime was involved. Raw failure:
+`.codex-tmp/proposal-two-designs-20260910/pptx-build.log`.
+Durable follow-up: [proposal audit](PAPER/proposal-defense/research-revision-audit.md).
+Resolved with absolute input paths: `pptx-retry.log` records 791/791 source spans
+assigned once and 38 notes pages; LibreOffice re-export and rendered review passed.
+
 ## 2026-09-10 — Spec182 R10-B84 native request-scope wire compatibility boundary
 
 After adding a fresh per-client owner scope to the production C++ request identity, the
