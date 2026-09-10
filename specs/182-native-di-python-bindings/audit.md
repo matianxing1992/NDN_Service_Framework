@@ -1,6 +1,18 @@
 # Spec182 Design Audit
 
-**Revision**: 32 | **Current source**: R11-B8 multi-machine boundary checkpoint on `Experimental`
+**Revision**: 33 | **Current source**: R11-B9-G2 cross-process native-chain checkpoint on `Experimental`
+
+## R11-B9-G2 Cross-Process Native Chain Review 2026-09-10
+
+本轮对当前 `build-nac182` 做了 fresh 独立 C++ process revalidation：unary 数值 oracle、
+stream、`FULL_CONTEXT`/`APPEND_DELTA`、alternate-provider replacement 以及无备用 Provider
+的 fail-closed 终态均通过。Provider 日志同时出现 grant 在 assembly 前验证和真实 ORT CPU
+执行证据；Python 只负责进程生命周期。该结果把本地 requester → Core/Authority → Provider
+的主链从“已有组件”提升为可观察的跨进程出口，但不改变最终资格边界。
+
+本轮仍使用 tiny fixture，未运行 Qwen3-0.6B、MiniNDN、真实 Slurm/SIF/GPU 或 no-Python
+资格。15 个 maintained caller、legacy zero-use、T014 I02--I08 依赖反例、exact-SIF/ELF
+闭包、T015--T017 仍是开放义务；详见 [R11-B9-G2 evidence](evidence/r11-b9-g2-cross-process-native-chain-20260910.md)。
 
 ## R11-B8 Multi-Machine Deployment Boundary Review 2026-09-10
 
