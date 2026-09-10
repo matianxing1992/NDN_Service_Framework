@@ -84,11 +84,10 @@ def read_negative_cutpoint(logs, *, contract, request_id, plan_digest, providers
     from .yolo_profile import _object
     edges = [edge for edge in contract['edges']
              if edge['producer'] == 'DetectShard0' and edge['consumer'] == 'Merge']
-    if len(edges) != 1 or set(logs) != {'BackboneNeck', 'DetectShard0', 'DetectShard1', 'Merge'}:
+    if not edges or set(logs) != {'BackboneNeck', 'DetectShard0', 'DetectShard1', 'Merge'}:
         raise ValueError('NEGATIVE_CUTPOINT_EDGE')
-    edge = edges[0]
     session = contract['sessionId']
-    records, failures, digests = [], [], {}
+    records, failures, dependencies, digests = [], [], [], {}
     for role, filename in logs.items():
         path = Path(filename)
         if any(p.is_symlink() for p in (path, *path.parents)):
@@ -114,21 +113,27 @@ def read_negative_cutpoint(logs, *, contract, request_id, plan_digest, providers
                 if any(not sep for _, sep, _ in parts) or len({k for k, _, _ in parts}) != len(parts):
                     raise ValueError('NEGATIVE_DEPENDENCY_LOG_FIELDS')
                 dependency = {k: v for k, _, v in parts}
-                if (dependency.get('session') == session
-                        and dependency.get('producer') == 'DetectShard0'
-                        and dependency.get('consumer') == 'Merge'):
-                    raise ValueError('NEGATIVE_WITHHELD_EDGE_WAS_TRANSFERRED')
+                dependencies.append(dependency)
     if len(records) != 1:
         raise ValueError('NEGATIVE_CUTPOINT_COUNT')
     row = records[0]
+    matching_edges = [edge for edge in edges if edge['planned_name'] == row.get('plannedDataName')]
+    if len(matching_edges) != 1:
+        raise ValueError('NEGATIVE_CUTPOINT_EDGE_IDENTITY')
+    edge = matching_edges[0]
     fields = {'schema', 'session', 'requestId', 'attempt', 'planDigest',
         'producerRole', 'consumerRole', 'manifestDataName', 'plannedDataName',
-        'endpointDigest', 'contentDigest', 'bytes', 'provider', 'providerBootId', 'atMs'}
+        'endpointDigest', 'contentDigest', 'bytes', 'provider', 'providerBootId',
+        'round', 'microbatch', 'operationKind', 'tensor', 'atMs'}
     if not isinstance(row, dict) or set(row) != fields:
         raise ValueError('NEGATIVE_CUTPOINT_SCHEMA')
     # Boost property_tree emits numeric leaf values as decimal JSON strings.
     for field in ('attempt', 'bytes', 'atMs'):
         if (not isinstance(row[field], str) or re.fullmatch(r'[1-9][0-9]{0,19}', row[field]) is None
+                or int(row[field]) >= 2**64):
+            raise ValueError('NEGATIVE_CUTPOINT_NUMBER')
+    for field in ('round', 'microbatch'):
+        if (not isinstance(row[field], str) or re.fullmatch(r'(?:0|[1-9][0-9]{0,19})', row[field]) is None
                 or int(row[field]) >= 2**64):
             raise ValueError('NEGATIVE_CUTPOINT_NUMBER')
     if (row['schema'] != 'ndnsf-di-withheld-output-v1' or row['session'] != session
@@ -139,9 +144,17 @@ def read_negative_cutpoint(logs, *, contract, request_id, plan_digest, providers
             or row['manifestDataName'] != edge['planned_name'].rstrip('/') + '/MANIFEST'
             or row['provider'] != providers_by_role['DetectShard0']
             or not isinstance(row['providerBootId'], str) or not row['providerBootId']
+            or not isinstance(row['operationKind'], str) or not row['operationKind']
+            or not isinstance(row['tensor'], str) or not row['tensor']
             or any(not isinstance(row[k], str) or re.fullmatch(r'sha256:[a-f0-9]{64}', row[k]) is None
                    for k in ('endpointDigest', 'contentDigest'))):
         raise ValueError('NEGATIVE_CUTPOINT_BINDING')
+    for dependency in dependencies:
+        if (dependency.get('session') == session
+                and dependency.get('producer') == 'DetectShard0'
+                and dependency.get('consumer') == 'Merge'
+                and dependency.get('planned_name') in (None, 'none', row['plannedDataName'])):
+            raise ValueError('NEGATIVE_WITHHELD_EDGE_WAS_TRANSFERRED')
     failure = 'session=' + session + ' role=Merge reason=failed to fetch signed exact Data: ' + row['manifestDataName']
     if failures != [('Merge', failure)]:
         raise ValueError('NEGATIVE_CONSUMER_EXACT_FAILURE')

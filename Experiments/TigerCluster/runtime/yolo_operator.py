@@ -472,7 +472,12 @@ def execute_distributed_rank(*, prepared, profile, resolved, allocation_expected
     timing = profile['timing']
     permission_ms = min(120000, timing['progressTimeoutSeconds'] * 1000)
     process_seconds = (permission_ms + timing['requestDeadlineMs']) / 1000
-    completion_seconds = len(plan['requests']) * process_seconds
+    # run_requests reserves cleanup_seconds from the completion barrier before
+    # starting each finite User.  Include that reservation in the barrier so
+    # the negative observer can finish its request deadline and post-shutdown
+    # snapshot instead of being killed at the exact observation deadline.
+    completion_seconds = (len(plan['requests']) * process_seconds
+                          + timing['cleanupSeconds'])
     if timing['stagingSeconds'] + timing['startupSeconds'] + completion_seconds + timing['cleanupSeconds'] > profile['cluster']['wallTimeSeconds']:
         raise OperatorError('DISTRIBUTED_WALLTIME_BUDGET')
     observed = capture_task_allocation(**allocation_expected, rank=rank, node_count=2,
@@ -500,7 +505,8 @@ def _execute_distributed_workload(*, prepared, profile, resolved, allocation_exp
     timing = profile['timing']
     permission_ms = min(120000, timing['progressTimeoutSeconds']*1000)
     process_seconds = (permission_ms+timing['requestDeadlineMs'])/1000
-    completion_seconds = len(plan['requests'])*process_seconds
+    completion_seconds = (len(plan['requests'])*process_seconds
+                          + timing['cleanupSeconds'])
     provision_path = root / 'distributed-preparation.json'
     try:
         if rank == 0:
@@ -652,7 +658,8 @@ def _execute_single_node(*, prepared: dict, profile: dict, resolved: dict, mode:
     timing = profile['timing']
     permission_ms = min(120000, timing['progressTimeoutSeconds'] * 1000)
     process_seconds = (permission_ms + timing['requestDeadlineMs']) / 1000
-    completion_seconds = len(plan['requests']) * process_seconds
+    completion_seconds = (len(plan['requests']) * process_seconds
+                          + timing['cleanupSeconds'])
     if (timing['stagingSeconds'] + timing['startupSeconds'] + completion_seconds
             + timing['cleanupSeconds'] > profile['cluster']['wallTimeSeconds']):
         raise OperatorError('LOCAL_RUN_WALLTIME_BUDGET')

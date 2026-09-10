@@ -51,7 +51,8 @@ def cutpoint_fixture(tmp_path):
         requestId='/run/request/1', attempt='1', planDigest=D, producerRole='DetectShard0', consumerRole='Merge',
         plannedDataName=edge['planned_name'], manifestDataName=edge['planned_name'] + '/MANIFEST',
         endpointDigest=D, contentDigest=D, bytes='64', provider=providers['DetectShard0'],
-        providerBootId='boot-fixture', atMs='100')
+        providerBootId='boot-fixture', round='3', microbatch='0', operationKind='PIPELINE',
+        tensor='tensor/head0', atMs='100')
     logs['DetectShard0'].write_text('NDNSF_DI_OUTPUT_WITHHELD ' + json.dumps(row) + '\n')
     logs['Merge'].write_text('NDNSF_DI_NATIVE_FAILURE session=' + contract['sessionId'] +
         ' role=Merge reason=failed to fetch signed exact Data: ' + row['manifestDataName'] + '\n')
@@ -89,6 +90,21 @@ def test_cutpoint_requires_exact_consumer_failure_and_bound_producer(tmp_path, f
         assert read()['qualification'] == 'NEGATIVE_CUTPOINT_COMPONENT_ONLY'
     else:
         with pytest.raises(ValueError): read()
+
+
+def test_cutpoint_binds_one_edge_when_role_pair_has_multiple_outputs(tmp_path):
+    logs, contract, row, providers = cutpoint_fixture(tmp_path)
+    second = dict(contract['edges'][0], scope='head0-merge-scale2',
+                  planned_name='/tensor/head0-scale2')
+    contract['edges'].append(second)
+    logs['DetectShard0'].write_text(
+        'NDNSF_DI_OUTPUT_WITHHELD ' + json.dumps(row) + '\n'
+        + 'NDNSF_DI_DEPENDENCY_OBJECT session=' + contract['sessionId']
+        + ' producer=DetectShard0 consumer=Merge planned_name=/tensor/head0-scale2 status=ok\n')
+    result = negative.read_negative_cutpoint(logs, contract=contract,
+        request_id='/run/request/1', plan_digest=D, providers_by_role=providers)
+    assert result['edge']['planned_name'] == '/tensor/head0'
+    assert result['cutpoint']['round'] == '3'
 
 
 @pytest.mark.parametrize('record', ['user', 'cutpoint'])

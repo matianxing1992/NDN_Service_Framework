@@ -1763,16 +1763,30 @@ main(int argc, char** argv)
             config.localProviderName = options.providerName;
             config.providerBootId = providerBootId;
             if (!options.withholdOutputRequest.empty()) {
+              // A producer/consumer pair may publish several logical V3
+              // edges (for example, the three YOLO scales).  Suppress only
+              // the first matching edge for this request; the retained edge
+              // identity below binds the negative result to the actual
+              // planned name/round/tensor instead of accidentally withholding
+              // every edge in the pair.
+              auto withheld = std::make_shared<std::atomic<bool>>(false);
               config.outputPublicationGate = [request = options.withholdOutputRequest,
                   producer = options.withholdOutputProducer, consumer = options.withholdOutputConsumer,
-                  provider = options.providerName, providerBootId](const std::string& session,
+                  provider = options.providerName, providerBootId, withheld](const std::string& session,
                     const DependencyEdge& edge, const std::string& contentDigest, std::size_t bytes) {
                 if (edge.requestId != request || edge.producerRole != producer || edge.consumerRole != consumer) {
                   return true;
                 }
                 if (!edge.declaredByV3 || !edge.useNdnsfDataV1 || edge.attemptEpoch != 1 ||
                     (!edge.consumerRoles.empty() && edge.consumerRoles != std::vector<std::string>{consumer})) {
-                  throw std::runtime_error("OUTPUT_WITHHOLD_REQUIRES_ONE_V3_EDGE_FIRST_ATTEMPT");
+                    throw std::runtime_error("OUTPUT_WITHHOLD_REQUIRES_ONE_V3_EDGE_FIRST_ATTEMPT");
+                }
+                if (withheld->exchange(true, std::memory_order_acq_rel)) {
+                  return true;
+                }
+                if (edge.plannedDataName.empty() || edge.tensors.size() != 1 ||
+                    edge.tensors.front().empty() || edge.operationKind.empty()) {
+                  throw std::runtime_error("OUTPUT_WITHHOLD_EDGE_IDENTITY_INCOMPLETE");
                 }
                 boost::property_tree::ptree record;
                 record.put("schema", "ndnsf-di-withheld-output-v1");
@@ -1789,6 +1803,10 @@ main(int argc, char** argv)
                 record.put("bytes", bytes);
                 record.put("provider", provider);
                 record.put("providerBootId", providerBootId);
+                record.put("round", edge.round);
+                record.put("microbatch", edge.microbatch);
+                record.put("operationKind", edge.operationKind);
+                record.put("tensor", edge.tensors.front());
                 record.put("atMs", epochMs());
                 std::ostringstream wire;
                 boost::property_tree::write_json(wire, record, false);

@@ -99,7 +99,7 @@ def test_local_owner_stops_on_failed_request_and_publishes_only_after_cleanup(
             if mode=='single-node-gpu' else resolved['runtimeProfile']['sif'])
         if mode == 'single-node-gpu':
             assert kwargs['gpu_device'] == '0' and kwargs['allocation_expected'] == expected
-        assert kwargs['completion_seconds'] == 6
+        assert kwargs['completion_seconds'] == 7
         try:
             if fault != 'missing-request':
                 for request in plan['requests']:
