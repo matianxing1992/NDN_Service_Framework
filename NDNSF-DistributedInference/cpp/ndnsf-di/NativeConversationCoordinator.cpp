@@ -189,12 +189,16 @@ NativeConversationTurn NativeConversationCoordinator::beginTurn(
     c.generationId.size() == 32 && c.generationId.find_first_not_of("0123456789abcdef") == std::string::npos &&
     c.retentionDeadlineMs > now && c.canonicalTokenIds.size() <= 1024 * 1024,
     "DI_NATIVE_CONVERSATION_CONTINUATION_INVALID");
-  digestField(c.planRoleMapDigest); digestField(c.requestContractDigest);
+  const bool unboundInitialPlan = c.mode == "FULL_CONTEXT" && c.parentContextEpoch == 0 &&
+    c.planRoleMapDigest.empty() && c.expectedRoles.empty();
+  if (!unboundInitialPlan) digestField(c.planRoleMapDigest);
+  digestField(c.requestContractDigest);
   nativeConversationPrefixDigest(c.canonicalTokenIds);
   std::set<std::string> roles;
   for (const auto& role : c.expectedRoles)
     require(!role.empty() && role.front() == '/' && roles.insert(role).second, "conversation role set invalid");
-  require(!roles.empty() && s.pending.find(requestId) == s.pending.end(), "conversation turn already pending");
+  require((unboundInitialPlan || !roles.empty()) && s.pending.find(requestId) == s.pending.end(),
+    "conversation turn already pending");
   NativeConversationTurn turn{c, std::move(requestId), attempt, c.parentContextEpoch + 1, {}, {}, false, ticket(), {}};
   turn.executionRequestId = turn.requestId;
   if (c.mode == "FULL_CONTEXT")
@@ -252,6 +256,32 @@ NativeConversationTurn NativeConversationCoordinator::replaceAttempt(const Nativ
   pending.turn.executionRequestId = std::move(executionRequestId);
   if (!requestContractDigest.empty())
     pending.turn.parent.requestContractDigest = std::move(requestContractDigest);
+  return pending.turn;
+}
+
+NativeConversationTurn NativeConversationCoordinator::bindInitialPlanRoleMap(
+  const NativeConversationTurn& turn,
+  const std::map<std::string, std::string>& providersByRole) const
+{
+  auto& s = *m_impl;
+  std::lock_guard<std::mutex> guard(s.mutex);
+  auto& pending = s.find(turn);
+  require(pending.turn.attempt == 1 && !pending.prepared && !pending.committing &&
+    pending.turn.parent.parentContextEpoch == 0 && pending.parentPlanRoleMapDigest.empty() &&
+    pending.turn.parent.planRoleMapDigest.empty() && pending.turn.parent.expectedRoles.empty() &&
+    !providersByRole.empty(), "conversation initial plan map binding invalid");
+  NativeJson roleMap = NativeJson::array();
+  std::vector<std::string> roles;
+  for (const auto& [role, provider] : providersByRole) {
+    require(!role.empty() && role.front() == '/' && !provider.empty(),
+      "conversation initial plan map role binding invalid");
+    roleMap.push_back(NativeJson::array({role, provider}));
+    roles.push_back(role);
+  }
+  const auto digest = nativePlanningDigest(nativeCanonicalJson(roleMap));
+  pending.turn.parent.planRoleMapDigest = digest;
+  pending.turn.parent.expectedRoles = std::move(roles);
+  pending.parentPlanRoleMapDigest = digest;
   return pending.turn;
 }
 

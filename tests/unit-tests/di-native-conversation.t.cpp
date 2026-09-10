@@ -369,6 +369,26 @@ BOOST_AUTO_TEST_CASE(FullContextAppendAndAuthenticatedRestore)
   BOOST_CHECK_EQUAL(fixture.rollbacks, 0);
 }
 
+BOOST_AUTO_TEST_CASE(InitialFullContextBindsDynamicPlanAfterPlacement)
+{
+  ConversationOwnerFixture fixture;
+  NativeConversationCoordinator owner(fixture.config);
+  auto continuation = fixture.continuation(1);
+  continuation.planRoleMapDigest.clear();
+  continuation.expectedRoles.clear();
+  const auto turn = owner.beginTurn(continuation, "/request/dynamic");
+  const auto rebound = owner.bindInitialPlanRoleMap(
+    turn, {{"/role/A", "/provider/A"}, {"/role/B", "/provider/B"}});
+  BOOST_CHECK(!rebound.parent.planRoleMapDigest.empty());
+  BOOST_CHECK_EQUAL(rebound.parent.expectedRoles.size(), 2);
+  BOOST_CHECK_EQUAL(rebound.parent.expectedRoles.at(0), "/role/A");
+  BOOST_CHECK_EQUAL(rebound.parent.expectedRoles.at(1), "/role/B");
+  BOOST_CHECK_THROW(owner.bindInitialPlanRoleMap(
+    rebound, {{"/role/A", "/provider/A"}, {"/role/B", "/provider/B"}}), std::runtime_error);
+  NativeDiError cancelled("CANCELLED", "conversation", "test", "cancel");
+  owner.abortTurn(rebound, cancelled);
+}
+
 BOOST_AUTO_TEST_CASE(AbortFencesCopiesAndCancellationDuringPromotion)
 {
   ConversationOwnerFixture fixture;

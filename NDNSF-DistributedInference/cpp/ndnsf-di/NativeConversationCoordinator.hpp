@@ -123,6 +123,12 @@ public:
   NativeConversationTurn replaceAttempt(const NativeConversationTurn& turn,
                                          std::string executionRequestId,
                                          std::string requestContractDigest = {});
+  // Bind the first FULL_CONTEXT turn after native placement has selected its
+  // providers. Dynamic placement is only known after ACK closure; the
+  // coordinator owns the resulting role-map digest.
+  NativeConversationTurn bindInitialPlanRoleMap(
+    const NativeConversationTurn& turn,
+    const std::map<std::string, std::string>& providersByRole) const;
   // Bind the replacement attempt to the role/provider map selected by the
   // planner. The parent checkpoint CAS remains bound to the map saved at
   // beginTurn, while the successor checkpoint carries this current map.
