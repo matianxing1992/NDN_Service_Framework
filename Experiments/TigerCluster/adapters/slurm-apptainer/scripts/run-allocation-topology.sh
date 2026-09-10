@@ -42,6 +42,13 @@ trap 'prestart_signal_exit INT' INT
   echo SPEC110_TOPOLOGY_REQUIRES_ALLOCATION >&2; exit 3;
 }
 case "$scratch" in /tmp/ndnsf-di-*) ;; *) echo SPEC110_TOPOLOGY_SCRATCH_INVALID >&2; exit 3 ;; esac
+if [[ ${NDNSF_SPEC110_TEST_MODE:-0} != 1 && -n ${SLURM_JOB_ID:-} ]]; then
+  scratch_name=${scratch##*/}
+  case "$scratch_name" in
+    "ndnsf-di-${SLURM_JOB_ID}"|"ndnsf-di-${SLURM_JOB_ID}-"*) ;;
+    *) echo "SPEC110_TOPOLOGY_SCRATCH_JOB_MISMATCH:$scratch" >&2; exit 3 ;;
+  esac
+fi
 
 container_root=$(CDPATH= cd -- "$(dirname -- "$0")/../../.." && pwd)
 lib="$container_root/lib"
@@ -135,6 +142,10 @@ PY
       echo "SPEC110_IDENTITY_NOT_VISIBLE:$rank:$identity" >&2
       exit 4
     }
+    srun_node "$rank" test ! -L "$identity" || {
+      echo "SPEC110_IDENTITY_SYMLINK_FORBIDDEN:$rank:$identity" >&2
+      exit 4
+    }
     srun_node "$rank" sh -c 'test -z "$(find "$1" -type l -print -quit)"' sh "$identity/.ndn" || {
       echo "SPEC110_IDENTITY_SYMLINK_FORBIDDEN:$rank:$identity" >&2
       exit 4
@@ -204,15 +215,20 @@ for process in value['processes']:
   print(process['nodeRank'],process['nfdSocket'],sep='\t')
 PY
 )
+declare -A nfd_steps=()
 for row in "${node_rows[@]}"; do
   IFS=$'\t' read -r rank socket <<<"$row"
   config="$scratch/generated/nfd-$rank.conf"
   srun_node "$rank" mkdir -p "$(dirname "$socket")" "$(dirname "$config")"
+  # A reused job scratch can contain a stale socket left by an earlier NFD
+  # crash. Remove it on the target node before launching this instance.
+  srun_node "$rank" rm -f "$socket"
   srun_node "$rank" tee "$config" \
     <"$evidence/generated/nfd-$rank.conf" >/dev/null
   setsid "${srun_step[@]}" "--relative=$rank" \
     "$scratch/generated/nfd-$rank.sh" >"$scratch/log/nfd-$rank.log" 2>&1 &
-  step_pids+=("$!")
+  nfd_steps["$rank"]=$!
+  step_pids+=("${nfd_steps[$rank]}")
 done
 
 for row in "${node_rows[@]}"; do
@@ -222,7 +238,9 @@ for row in "${node_rows[@]}"; do
   deadline=$((SECONDS+30))
   ready=0
   while ((SECONDS < deadline)); do
-    if srun_node "$rank" test -S "$socket"; then ready=1; break; fi
+    if kill -0 "${nfd_steps[$rank]}" 2>/dev/null && srun_node "$rank" test -S "$socket"; then
+      ready=1; break
+    fi
     sleep 0.2
   done
   [[ $ready -eq 1 ]] || { echo "SPEC110_NFD_READINESS_TIMEOUT:$rank" >&2; exit 5; }

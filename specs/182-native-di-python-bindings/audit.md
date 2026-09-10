@@ -1,6 +1,27 @@
 # Spec182 Design Audit
 
-**Revision**: 39 | **Current source**: R11-B8-G31 identity-symlink checkpoint on `Experimental`
+**Revision**: 41 | **Current source**: R11-B8-G33 job-scoped-scratch checkpoint on `Experimental`
+
+## R11-B8-G33 Job-Scoped Scratch and Identity Root Boundary Review 2026-09-10
+
+静态审查发现 topology supervisor 只检查 `/tmp/ndnsf-di-*` 通用前缀；真实 Slurm 作业若复用
+另一作业的 scratch，G32 的 socket 清理可能误删别的作业状态。审查还发现 G31 只扫描
+`identityRef/.ndn`，没有明确拒绝终端 identity root 本身为符号链接。现已在非 test mode 要求
+scratch basename 绑定 `SLURM_JOB_ID`，并由 supervisor 与 launcher 双重拒绝 identity root
+symlink。24/24 topology unit、network integration 和 shell syntax 通过。
+
+该修复只收紧 scratch/identity pre-start 边界，不证明真实 Slurm/SIF/shared-storage、GPU、
+no-Python 或 T016/T017 资格。详见 [R11-B8-G33 evidence](evidence/r11-b8-g33-job-scoped-scratch-identity-root-20260910.md)。
+
+## R11-B8-G32 Stale NFD Socket Boundary Review 2026-09-10
+
+静态审查发现 topology supervisor 只用 `test -S` 判断 NFD readiness；复用 scratch 时旧 NFD
+崩溃留下的 socket 可能让已退出的新 step 被误判为 ready。现已在目标节点启动前删除 socket，
+并保存 node-rank 到 `srun` PID 的映射；readiness 同时要求 PID 存活和新 socket 出现。
+23/23 topology unit、network integration 和 shell syntax 通过。
+
+该修复只收紧 NFD preflight/readiness，不证明真实 Slurm/NFD route、SIF/GPU、no-Python 或
+T016/T017 资格。详见 [R11-B8-G32 evidence](evidence/r11-b8-g32-stale-nfd-socket-boundary-20260910.md)。
 
 ## R11-B8-G31 Identity Symlink Boundary Review 2026-09-10
 

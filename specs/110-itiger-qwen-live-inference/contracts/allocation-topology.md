@@ -80,6 +80,11 @@ scratch directory. If the frozen command contains `--config PATH` or
 configuration copy; a fixed `/tmp` configuration path must never be shared
 between jobs.
 
+Before launching each NFD, the supervisor MUST remove the corresponding
+scratch socket on that target node and retain the node-rank-to-step PID. NFD
+readiness requires both that PID to remain alive and a newly-created socket;
+an old socket from a reused scratch directory must never satisfy the barrier.
+
 Pre-start visibility, materialization, or map-render failures MUST still emit
 `teardown.json` with the original exit code and `survivors: 0`; the absence of
 started children is an observed zero-survivor result, not an omitted artifact.
@@ -109,7 +114,9 @@ the rewrite is a deterministic launcher binding.
 
 The NFD socket path must also be below the current job's `--scratch` directory;
 an otherwise valid `/tmp/ndnsf-di-*` path from another job is rejected before
-any directory or socket is created.
+any directory or socket is created. In a real Slurm allocation, the scratch
+basename MUST be `ndnsf-di-<SLURM_JOB_ID>` or begin with
+`ndnsf-di-<SLURM_JOB_ID>-`; the offline test mode may use a fixture basename.
 
 Every Provider process also requires a single `CUDA_VISIBLE_DEVICES` selector
 and verifies, before `exec`, that `nvidia-smi -i` for that selector returns

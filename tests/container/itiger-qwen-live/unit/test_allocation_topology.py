@@ -158,6 +158,43 @@ class AllocationTopologyTest(unittest.TestCase):
         )
         self.assertIn('exec App_ServiceController --identity="$runtime_home"', rendered)
 
+    def test_process_launcher_rejects_identity_root_symlink(self) -> None:
+        value = load("single-node.json")
+        provider = next(row for row in value["processes"] if row["kind"] == "provider")
+        with tempfile.TemporaryDirectory(prefix="spec110-identity-root-") as root_dir, \
+             tempfile.TemporaryDirectory(prefix="ndnsf-di-") as scratch_dir, \
+             tempfile.TemporaryDirectory(prefix="spec110-bin-") as bin_dir:
+            root = Path(root_dir)
+            real = root / "real"
+            (real / ".ndn").mkdir(parents=True)
+            (real / ".ndn/pib.db").write_text("source-pib")
+            (real / ".ndn/ndnsec-key-file").mkdir()
+            linked = root / "linked"
+            linked.symlink_to(real, target_is_directory=True)
+            provider["nfdSocket"] = str(Path(scratch_dir) / "nfd/0/nfd.sock")
+            fake = Path(bin_dir) / "di-native-provider"
+            sentinel = Path(scratch_dir) / "provider-ran"
+            fake.write_text(f"#!/bin/sh\ntouch {shlex.quote(str(sentinel))}\n")
+            fake.chmod(0o700)
+            smi = Path(bin_dir) / "nvidia-smi"
+            smi.write_text("#!/bin/sh\nprintf '%s\\n' GPU-EXPECTED\n")
+            smi.chmod(0o700)
+            workdir = root / "work"
+            workdir.mkdir()
+            rendered = topology.render_process_launcher(provider, scratch_dir, workdir)
+            rendered = rendered.replace(
+                "identity_source=" + shlex.quote(provider["identityRef"]),
+                "identity_source=" + shlex.quote(str(linked)),
+            )
+            result = subprocess.run(
+                ["bash"], input=rendered, text=True,
+                env={"PATH": f"{bin_dir}:/usr/bin:/bin", "CUDA_VISIBLE_DEVICES": "0"},
+                capture_output=True, check=False,
+            )
+            self.assertEqual(8, result.returncode)
+            self.assertIn("SPEC110_IDENTITY_SYMLINK_FORBIDDEN", result.stderr)
+            self.assertFalse(sentinel.exists())
+
     def test_process_map_rejects_host_bound_application_argument(self) -> None:
         value = load("single-node.json")
         controller = next(row for row in value["processes"] if row["kind"] == "controller")

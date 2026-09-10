@@ -65,6 +65,9 @@ fi
 if [[ ${SPEC110_FAIL_IDENTITY_SYMLINK:-0} == 1 && ${1:-} == sh && ${2:-} == -c ]]; then
   exit 1
 fi
+if [[ ${SPEC110_FAIL_IDENTITY_SYMLINK:-0} == 1 && ${1:-} == test && ${2:-} == ! && ${3:-} == -L ]]; then
+  exit 1
+fi
 if [[ ${SPEC110_FAIL_IDENTITY_SYMLINK:-0} == 1 && ${1:-} == test && ${2:-} == -r ]]; then
   exit 0
 fi
@@ -93,6 +96,11 @@ deadline = source.index('deadline=$((SECONDS+30))', loop)
 probe = source.index('while ((SECONDS < deadline))', deadline)
 assert deadline < probe
 assert 'deadline=$((SECONDS+30))' not in source[:loop]
+stale = source.index('srun_node "$rank" rm -f "$socket"')
+launch = source.index('setsid "${srun_step[@]}" "--relative=$rank"', stale)
+alive = source.index('kill -0 "${nfd_steps[$rank]}"', launch)
+assert stale < launch < alive
+assert 'srun_node "$rank" test ! -L "$identity"' in source
 PY
 for repetition in 1 2; do
   PATH="$tmp/bin:$PATH" SLURM_JOB_ID=test NDNSF_SPEC110_TEST_MODE=1 \
@@ -192,7 +200,7 @@ import json,sys
 value=json.load(open(sys.argv[1]));assert value['status']=='FAIL' and value['survivors']==0 and value['exitCode']==3
 PY
 
-signal_scratch=$(mktemp -d /tmp/ndnsf-di-signal.XXXXXX)
+signal_scratch=$(mktemp -d /tmp/ndnsf-di-test-signal.XXXXXX)
 cp "$supervisor_scratch/process-map.json" "$signal_scratch/process-map.json"
 python3 - "$repo" "$signal_scratch/process-map.json" "$signal_scratch" <<'PY'
 import json,sys
@@ -220,7 +228,7 @@ value=json.load(open(sys.argv[1]));assert value['status']=='FAIL' and value['sur
 PY
 rm -rf "$signal_scratch"
 
-identity_scratch=$(mktemp -d /tmp/ndnsf-di-identity.XXXXXX)
+identity_scratch=$(mktemp -d /tmp/ndnsf-di-test-identity.XXXXXX)
 cp "$supervisor_scratch/process-map.json" "$identity_scratch/process-map.json"
 python3 - "$repo" "$identity_scratch/process-map.json" "$identity_scratch" <<'PY'
 import json,sys
@@ -251,7 +259,24 @@ PY
 [[ ! -e "$identity_scratch/log/nfd-0.log" ]]
 rm -rf "$identity_scratch"
 
-port_scratch=$(mktemp -d /tmp/ndnsf-di-port.XXXXXX)
+set +e
+scratch_job_scratch=$(mktemp -d /tmp/ndnsf-di-test-mismatch.XXXXXX)
+cp "$supervisor_scratch/process-map.json" "$scratch_job_scratch/process-map.json"
+PATH="$tmp/bin:$PATH" SLURM_JOB_ID=999 SLURM_NNODES=1 NDNSF_SPEC110_TEST_MODE=0 \
+  "$supervisor" --process-map "$scratch_job_scratch/process-map.json" --scratch "$scratch_job_scratch" \
+  --evidence "$tmp/supervisor-scratch-job-fail" --nfd-template "$template" --workdir "$tmp"
+scratch_job_rc=$?
+set -e
+[[ $scratch_job_rc -eq 3 ]]
+python3 - "$tmp/supervisor-scratch-job-fail/teardown.json" <<'PY'
+import json,sys
+value=json.load(open(sys.argv[1]))
+assert value['status']=='FAIL' and value['exitCode']==3 and value['survivors']==0
+PY
+[[ ! -e "$scratch_job_scratch/log/nfd-0.log" ]]
+rm -rf "$scratch_job_scratch"
+
+port_scratch=$(mktemp -d /tmp/ndnsf-di-test-port.XXXXXX)
 cp "$supervisor_scratch/process-map.json" "$port_scratch/process-map.json"
 python3 - "$repo" "$port_scratch/process-map.json" "$port_scratch" <<'PY'
 import json,sys
@@ -282,7 +307,7 @@ PY
 [[ ! -e "$port_scratch/log/nfd-0.log" ]]
 rm -rf "$port_scratch"
 
-symlink_scratch=$(mktemp -d /tmp/ndnsf-di-symlink.XXXXXX)
+symlink_scratch=$(mktemp -d /tmp/ndnsf-di-test-symlink.XXXXXX)
 cp "$supervisor_scratch/process-map.json" "$symlink_scratch/process-map.json"
 python3 - "$repo" "$symlink_scratch/process-map.json" "$symlink_scratch" <<'PY'
 import json,sys

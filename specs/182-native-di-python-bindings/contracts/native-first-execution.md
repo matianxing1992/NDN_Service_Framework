@@ -77,7 +77,9 @@ keychain 环境。NFD 使用独立 scratch `HOME` 且不继承角色 keychain。
 端口冒充另一种传输。失败均停在 pre-exec/probe 边界，不得生成 READY 或资格 PASS。
 NFD socket 还必须位于当前作业的 `--scratch` 目录内；仅有 `/tmp/ndnsf-di-*` 前缀而
 跨作业复用或含有 `..` 路径组件的 process map 会在启动前被拒绝，NFD state directory
-也执行同样的路径组件检查。
+也执行同样的路径组件检查。真实 Slurm allocation 中 scratch basename 还必须是
+`ndnsf-di-<SLURM_JOB_ID>` 或以 `ndnsf-di-<SLURM_JOB_ID>-` 开头；离线 test mode 才允许
+fixture basename，避免清理旧 socket 时误伤其他作业。
 
 候选镜像的 ELF 闭包还必须在各自的 assembler/devel 阶段通过
 `verify-runtime-closure.py` 的宿主路径门禁。门禁同时读取 `DT_RPATH`/`DT_RUNPATH`
@@ -90,12 +92,14 @@ NFD socket 还必须位于当前作业的 `--scratch` 目录内；仅有 `/tmp/n
 的 scratch，再从该节点路径执行；远端不可见时应在任何 NFD/业务进程启动前失败。
 NFD 的 `--config` 参数也必须改写到该作业 scratch 的配置副本，禁止固定 `/tmp` 配置在作业
 之间复用；配置文件写入和 launcher 使用必须指向同一节点本地路径。
+每个 NFD 启动前还必须在目标节点删除对应 scratch socket，并按 node rank 保存其 `srun` PID；
+readiness 同时要求 PID 存活和新 socket 出现，不能用复用 scratch 中的旧 socket 放行。
 同一启动器还必须在启动 NFD 前用目标节点的 `srun` 验证显式 `--workdir` 可见；提交节点存在
 而计算节点不存在的 bundle 不能进入 readiness 阶段。
 同样，在启动任何 NFD 前必须在每个目标节点检查所有非 NFD `identityRef` 的
 `.ndn/pib.db` 与 `.ndn/ndnsec-key-file` 可读；身份源只在提交节点可见或不可读时，必须在
 pre-start 边界失败并保持零 NFD 启动，不能等业务进程 `exec` 后才暴露绑定错误。
-identity source 的 `.ndn` 树不得含符号链接；supervisor 在 NFD 启动前检查，launcher 在
+identity source 本身及其 `.ndn` 树不得含符号链接；supervisor 在 NFD 启动前检查，launcher 在
 copy 前再次检查，避免 scratch `HOME` 通过链接回到共享 `/project`。
 process map 的 `(address,tcpPort)` 与 `(address,udpPort)` 端点不得重复；启动前由目标节点
 执行 IPv4 TCP/UDP bind probe，若已有监听则以 `SPEC110_PORT_NOT_AVAILABLE` 在 pre-start
