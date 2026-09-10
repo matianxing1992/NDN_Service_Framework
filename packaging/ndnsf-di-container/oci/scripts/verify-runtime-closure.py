@@ -32,7 +32,49 @@ def library_search_dirs(path: Path) -> list[Path]:
     return list(dict.fromkeys(directories))
 
 
-def verify_elf(path: Path) -> None:
+def _reject_prefixes(prefixes: tuple[str, ...]) -> tuple[str, ...]:
+    normalized = []
+    for prefix in prefixes:
+        if not prefix.startswith("/") or any(char in prefix for char in "\x00\n\r"):
+            raise RuntimeError(f"RUNTIME_REJECT_PREFIX_INVALID:{prefix}")
+        normalized.append(prefix.rstrip("/") + "/")
+    return tuple(dict.fromkeys(normalized))
+
+
+def _dynamic_paths(path: Path) -> list[str]:
+    result = subprocess.run(
+        ["readelf", "-d", str(path)],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode:
+        raise RuntimeError(f"RUNTIME_ELF_DYNAMIC_INFO_FAILED:{path}")
+    paths: list[str] = []
+    for line in result.stdout.splitlines():
+        if "(RPATH)" not in line and "(RUNPATH)" not in line:
+            continue
+        match = re.search(r"\[(.*?)\]", line)
+        if match:
+            paths.extend(item for item in match.group(1).split(":") if item)
+    return paths
+
+
+def _resolved_paths(ldd_output: str) -> list[str]:
+    paths: list[str] = []
+    for line in ldd_output.splitlines():
+        match = re.search(r"=>\s+(/[^\s(]+)", line)
+        if match:
+            paths.append(match.group(1))
+            continue
+        match = re.match(r"\s*(/[^\s(]+)", line)
+        if match:
+            paths.append(match.group(1))
+    return paths
+
+
+def verify_elf(path: Path, reject_prefixes: tuple[str, ...] = ()) -> None:
+    reject_prefixes = _reject_prefixes(reject_prefixes)
     environment = dict(os.environ)
     search_path = os.pathsep.join(str(directory) for directory in library_search_dirs(path))
     inherited_library_path = environment.get("LD_LIBRARY_PATH")
@@ -57,12 +99,25 @@ def verify_elf(path: Path) -> None:
     )
     if unresolved - HOST_DRIVER_LIBRARIES:
         raise RuntimeError(f"RUNTIME_LIBRARY_MISSING:{path}")
+    if reject_prefixes:
+        observed = _dynamic_paths(path) + _resolved_paths(result.stdout)
+        for observed_path in observed:
+            for prefix in reject_prefixes:
+                if observed_path.startswith(prefix):
+                    raise RuntimeError(
+                        f"RUNTIME_HOST_BOUND_PATH:{path}:{observed_path}:{prefix}"
+                    )
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", action="append", required=True)
+    parser.add_argument(
+        "--reject-prefix", action="append", default=[],
+        help="Fail when an ELF RUNPATH or resolved dependency starts with this absolute prefix.",
+    )
     args = parser.parse_args()
+    reject_prefixes = tuple(args.reject_prefix)
     checked = 0
     missing: list[str] = []
     for root in map(Path, args.root):
@@ -74,7 +129,7 @@ def main() -> int:
             if not is_elf:
                 continue
             try:
-                verify_elf(path)
+                verify_elf(path, reject_prefixes)
             except RuntimeError as error:
                 missing.append(str(error))
             checked += 1

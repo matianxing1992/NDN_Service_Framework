@@ -22,6 +22,7 @@ COPY --from=python-runtime /usr/local /usr/local
 COPY packaging/ndnsf-di-container/oci/layered/locks/platform.lock.json /build-contract/platform.lock.json
 COPY packaging/ndnsf-di-container/oci/layered/locks/ml-runtime.lock.json /build-contract/ml-runtime.lock.json
 COPY packaging/ndnsf-di-container/oci/scripts/verify-python-environment.py /build-contract/verify-python-environment.py
+COPY packaging/ndnsf-di-container/oci/scripts/verify-runtime-closure.py /build-contract/verify-runtime-closure.py
 
 RUN python3 - "$PLATFORM_LOCK_DIGEST" "$ML_LOCK_DIGEST" <<'PY'
 import hashlib,pathlib,sys
@@ -171,6 +172,11 @@ RUN /opt/venv/bin/python /usr/local/bin/verify-python-environment.py \
     /opt/venv/bin/python -c 'import onnxruntime,tokenizers' && \
     ! /opt/venv/bin/python -c 'import torch' && \
     ! /opt/venv/bin/python -c 'import transformers' && \
+    python3 /build-contract/verify-runtime-closure.py \
+      --root /opt/venv --root /opt/onnxruntime \
+      --root /usr/local/bin --root /usr/local/lib/python3.10 \
+      --reject-prefix /home/ --reject-prefix /workspace/ \
+      --reject-prefix /build/ --reject-prefix /src/ --reject-prefix /tmp/ && \
     python3 /usr/local/bin/verify-runtime-closure.py \
       --root /opt/venv --root /opt/onnxruntime \
       --root /usr/local/bin --root /usr/local/lib/python3.10 && \
