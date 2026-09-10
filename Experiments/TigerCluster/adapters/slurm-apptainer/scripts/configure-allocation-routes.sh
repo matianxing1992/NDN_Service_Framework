@@ -30,7 +30,10 @@ PY
 while IFS=$'\t' read -r from_rank socket prefix transport address port; do
   [[ -n $from_rank ]] || continue
   uri="${transport}4://${address}:${port}"
-  command=(srun --exclusive --nodes=1 --ntasks=1 "--relative=$from_rank" env "NDN_CLIENT_TRANSPORT=unix://$socket" nfdc)
+  # Route configuration runs while each node's NFD is already alive.  An
+  # exclusive step would reserve the entire node and wait behind that NFD;
+  # use one exact CPU with overlap so this short control step can coexist.
+  command=(srun --overlap --exact --nodes=1 --ntasks=1 --cpus-per-task=1 "--relative=$from_rank" env "NDN_CLIENT_TRANSPORT=unix://$socket" nfdc)
   printf '%q ' "${command[@]}" face create remote "$uri" persistency permanent >>"$evidence/route-commands.log"; printf '\n' >>"$evidence/route-commands.log"
   "${command[@]}" face create remote "$uri" persistency permanent >>"$evidence/nfdc-route.log" 2>&1
   "${command[@]}" route add prefix "$prefix" nexthop "$uri" cost 10 >>"$evidence/nfdc-route.log" 2>&1

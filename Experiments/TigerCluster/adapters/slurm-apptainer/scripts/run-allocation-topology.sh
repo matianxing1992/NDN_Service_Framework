@@ -49,6 +49,18 @@ route_config="$container_root/adapters/slurm-apptainer/scripts/configure-allocat
 mkdir -p "$scratch/log" "$scratch/readiness" "$evidence/processes" "$evidence/generated"
 chmod 700 "$scratch"
 
+# Long-lived topology processes share an allocation node (NFD, Controller and
+# one or more Providers).  A whole-node exclusive step reserves every CPU/GRES
+# on the target node for one step and can therefore serialize or deadlock later
+# siblings.  Request one exact CPU per step and explicitly allow overlap;
+# Provider GPU ownership is still enforced by --gpus-per-task/--gpu-bind below.
+srun_step=(srun --overlap --exact --nodes=1 --ntasks=1 --cpus-per-task=1)
+srun_node() {
+  local rank=$1
+  shift
+  "${srun_step[@]}" "--relative=$rank" "$@"
+}
+
 PYTHONPATH="$lib" python3 - "$process_map" "$nfd_template" "$scratch" "$evidence" "$workdir" <<'PY'
 import json,sys
 from pathlib import Path
@@ -76,7 +88,7 @@ for rank in "${workdir_ranks[@]}"; do
   # The application bundle may be on submit-host storage. Check visibility on
   # every target node before starting even one NFD, so a partial startup cannot
   # masquerade as a later application or protocol failure.
-  srun --exclusive --nodes=1 --ntasks=1 "--relative=$rank" test -d "$workdir" || {
+  srun_node "$rank" test -d "$workdir" || {
     echo "SPEC110_WORKDIR_NOT_VISIBLE:$rank" >&2
     exit 4
   }
@@ -94,10 +106,10 @@ for row in "${process_rows[@]}"; do
   # Evidence may be on submit-host/shared storage that is not mounted on every
   # compute node. Materialize each generated launcher on its target node's
   # job-local scratch before any srun step tries to execute it.
-  srun --exclusive --nodes=1 --ntasks=1 "--relative=$rank" mkdir -p "$scratch/generated"
-  srun --exclusive --nodes=1 --ntasks=1 "--relative=$rank" tee \
+  srun_node "$rank" mkdir -p "$scratch/generated"
+  srun_node "$rank" tee \
     "$scratch/generated/$process_id.sh" <"$evidence/generated/$process_id.sh" >/dev/null
-  srun --exclusive --nodes=1 --ntasks=1 "--relative=$rank" chmod 700 \
+  srun_node "$rank" chmod 700 \
     "$scratch/generated/$process_id.sh"
 done
 
@@ -140,10 +152,10 @@ PY
 for row in "${node_rows[@]}"; do
   IFS=$'\t' read -r rank socket <<<"$row"
   config="$scratch/generated/nfd-$rank.conf"
-  srun --exclusive --nodes=1 --ntasks=1 "--relative=$rank" mkdir -p "$(dirname "$socket")" "$(dirname "$config")"
-  srun --exclusive --nodes=1 --ntasks=1 "--relative=$rank" tee "$config" \
+  srun_node "$rank" mkdir -p "$(dirname "$socket")" "$(dirname "$config")"
+  srun_node "$rank" tee "$config" \
     <"$evidence/generated/nfd-$rank.conf" >/dev/null
-  setsid srun --exclusive --nodes=1 --ntasks=1 "--relative=$rank" \
+  setsid "${srun_step[@]}" "--relative=$rank" \
     "$scratch/generated/nfd-$rank.sh" >"$scratch/log/nfd-$rank.log" 2>&1 &
   step_pids+=("$!")
 done
@@ -153,7 +165,7 @@ for row in "${node_rows[@]}"; do
   IFS=$'\t' read -r rank socket <<<"$row"
   ready=0
   while ((SECONDS < deadline)); do
-    if srun --overlap --nodes=1 --ntasks=1 "--relative=$rank" test -S "$socket"; then ready=1; break; fi
+    if srun_node "$rank" test -S "$socket"; then ready=1; break; fi
     sleep 0.2
   done
   [[ $ready -eq 1 ]] || { echo "SPEC110_NFD_READINESS_TIMEOUT:$rank" >&2; exit 5; }
@@ -169,7 +181,7 @@ launch_kind() {
   local kind=$1 foreground=${2:-0}
   while IFS=$'\t' read -r process_id rank gpu_rank; do
     [[ -n $process_id ]] || continue
-    command=(srun --exclusive --nodes=1 --ntasks=1 "--relative=$rank")
+    command=("${srun_step[@]}" "--relative=$rank")
     [[ $gpu_rank == null ]] || command+=(--gpus-per-task=1 "--gpu-bind=map_gpu:$gpu_rank")
     command+=("$scratch/generated/$process_id.sh")
     if [[ $foreground == 1 ]]; then
