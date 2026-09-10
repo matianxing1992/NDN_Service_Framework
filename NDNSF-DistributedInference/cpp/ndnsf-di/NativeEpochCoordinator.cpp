@@ -3,8 +3,6 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
 
-#include <ndn-cxx/util/sha256.hpp>
-
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -13,7 +11,6 @@
 #include <sstream>
 #include <stdexcept>
 #include <cstdlib>
-
 namespace ndnsf::di {
 namespace {
 
@@ -676,8 +673,6 @@ makeTokenEvent(std::int64_t token,
     if (i != 0) prefix << ',';
     prefix << generated[i];
   }
-  ndn::util::Sha256 digest;
-  digest << prefix.str();
   std::ostringstream event;
   event << "{\"schema\":\"GenerationTokenEventV1\","
         << "\"tokenId\":" << token
@@ -686,8 +681,8 @@ makeTokenEvent(std::int64_t token,
         << ",\"textDelta\":" << jsonEscape(textDelta) << ","
         << "\"finishHint\":" << jsonEscape(finishHint) << ","
         << "\"samplingDigest\":" << jsonEscape(samplingDigest) << ","
-        << "\"acceptedPrefixDigest\":\"sha256:" << digest.toString()
-        << "\"}";
+        << "\"acceptedPrefixDigest\":" << jsonEscape(digestText(prefix.str()))
+        << "}";
   return event.str();
 }
 
@@ -970,8 +965,9 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
       executable.outputs.clear();
     }
     throwIfStopped(config);
-    auto roleFuture = config.runtime.executeRoleAsync(
-      config.sessionId, executable, config.io, std::move(inputs), {},
+    auto roleFuture = config.runtime.executePreparedRoleAsync(
+      config.sessionId, executable, config.io, config.prepareRunner,
+      std::move(inputs), {},
       [stopCheck = config.stopCheck, executionGuard = config.executionGuard] {
         throwIfStopped(stopCheck, executionGuard);
       });

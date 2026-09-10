@@ -1,6 +1,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRunnerPreparation.hpp"
 
 #include <atomic>
+#include <sstream>
 #include <unistd.h>
 
 namespace ndnsf::di {
@@ -26,6 +27,24 @@ bindNativeRunnerPreparationContext(NativeModelRunnerSpec& spec,
     "/ort-profile-" + std::to_string(getpid()) + "-" +
     std::to_string(profileSequence.fetch_add(1));
   spec.metadata["profileAfterRequest"] = "true";
+
+  // Generation state is part of the authenticated Selection projection, not
+  // an adapter-local default.  Preserve it on the prepared runner spec so the
+  // ORT runner can distinguish epoch-zero zero-state inputs from ordinary
+  // application tensors and enforce predecessor state on later epochs.
+  if (projection.generationContract.enabled) {
+    const auto join = [] (const std::vector<std::string>& values) {
+      std::ostringstream result;
+      for (std::size_t index = 0; index < values.size(); ++index) {
+        if (index != 0) result << ',';
+        result << values[index];
+      }
+      return result.str();
+    };
+    spec.metadata["statefulModel"] = "true";
+    spec.metadata["stateInputNames"] = join(projection.generationContract.stateInputNames);
+    spec.metadata["stateOutputNames"] = join(projection.generationContract.stateOutputNames);
+  }
 }
 
 } // namespace ndnsf::di

@@ -24,12 +24,16 @@ NativeQwenLayerSplit::NativeQwenLayerSplit(
   std::map<std::string, std::string> artifactDigestsByRole,
   std::map<std::string, std::uint64_t> weightBytesByRole,
   std::vector<std::string> roles,
-  std::vector<std::uint64_t> tensorDegrees)
+  std::vector<std::uint64_t> tensorDegrees,
+  std::string inputIngressRole,
+  std::string resultEgressRole)
   : m_layerRanges(std::move(layerRanges))
   , m_artifactDigestsByRole(std::move(artifactDigestsByRole))
   , m_weightBytesByRole(std::move(weightBytesByRole))
   , m_roles(std::move(roles))
   , m_tensorDegrees(std::move(tensorDegrees))
+  , m_inputIngressRole(std::move(inputIngressRole))
+  , m_resultEgressRole(std::move(resultEgressRole))
 {
   if (m_roles.empty() || m_layerRanges.size() != m_roles.size() ||
       m_tensorDegrees.size() != m_roles.size() ||
@@ -49,6 +53,12 @@ NativeQwenLayerSplit::NativeQwenLayerSplit(
   if (m_layerRanges.front().first != 0) {
     throw std::invalid_argument("Qwen native splitter must start at layer zero");
   }
+  if (m_inputIngressRole.empty() != m_resultEgressRole.empty() ||
+      (!m_inputIngressRole.empty() &&
+       (std::find(m_roles.begin(), m_roles.end(), m_inputIngressRole) == m_roles.end() ||
+        std::find(m_roles.begin(), m_roles.end(), m_resultEgressRole) == m_roles.end()))) {
+    throw std::invalid_argument("Qwen native splitter ingress/egress role is undeclared");
+  }
 }
 
 NativeStrategyIdentity NativeQwenLayerSplit::identity() const
@@ -56,9 +66,11 @@ NativeStrategyIdentity NativeQwenLayerSplit::identity() const
   std::ostringstream canonical;
   canonical << "qwen-layer-split|1|";
   for (std::size_t i = 0; i < m_roles.size(); ++i) {
-    canonical << m_roles[i] << ':' << m_layerRanges[i].first << '-' <<
+      canonical << m_roles[i] << ':' << m_layerRanges[i].first << '-' <<
       m_layerRanges[i].second << ':' << m_artifactDigestsByRole.at(m_roles[i]) << ';';
   }
+  if (!m_inputIngressRole.empty())
+    canonical << "ingress=" << m_inputIngressRole << ";egress=" << m_resultEgressRole << ';';
   return {"native-qwen-layer-split", "1", nativePlanningDigest(canonical.str())};
 }
 
@@ -145,6 +157,8 @@ NativeQwenLayerSplit::enumerate(const NativeModelDescriptor& model,
   candidate.executionPlan.plannerKind = "native-qwen-layer";
   candidate.executionPlan.executionPolicy = "DATA_DRIVEN_V2";
   candidate.executionPlan.roles = m_roles;
+  candidate.inputIngressRole = m_inputIngressRole;
+  candidate.resultEgressRole = m_resultEgressRole;
   candidate.nodeRoles["embedding"] = m_roles.front();
   candidate.nodeRoles["final-norm-head"] = m_roles.back();
   const std::vector<NativeTensorContract> stateInputs = {
@@ -187,8 +201,6 @@ NativeQwenLayerSplit::enumerate(const NativeModelDescriptor& model,
       m_weightBytesByRole.at(role), 1024ULL * 1024ULL * 1024ULL, 0,
       512ULL * 1024ULL * 1024ULL, 512ULL * 1024ULL * 1024ULL, 1.10};
   }
-  // The maintained Qwen splitter leaves candidate ingress/egress unspecified;
-  // request-scoped ownership is validated when the execution plan is sealed.
   candidate.estimatedCosts = {{"role_count", std::uint64_t(m_roles.size())},
     {"rank_count", std::uint64_t(m_roles.size())}, {"decoder_layers", std::uint64_t(m_layerRanges.back().second)},
     {"known_transfer_bytes", std::uint64_t(0)}, {"unknown_transfer_tensors", std::uint64_t(2)}};

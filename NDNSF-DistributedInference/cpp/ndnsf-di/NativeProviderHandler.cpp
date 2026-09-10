@@ -21,7 +21,6 @@
 #include <future>
 #include <filesystem>
 #include <iomanip>
-#include <iostream>
 #include <limits>
 #include <map>
 #include <mutex>
@@ -2152,7 +2151,12 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
                << selectionProjection->conversationStateReference->roleName;
         logRuntimeInfo(record.str());
       }
-      const auto* readinessRunnerSpec = runnerSpecForRole(state->runnerSpecs, role);
+      // DATA_DRIVEN_V2 serving deliberately keeps metadata-only runner slots
+      // until authenticated Selection.  Do not validate those empty slots as
+      // if they were the prepared ONNX runner; the preparation factory will
+      // return and validate the certified spec immediately before execution.
+      const auto* readinessRunnerSpec = config.runnerPreparationFactory
+        ? nullptr : runnerSpecForRole(state->runnerSpecs, role);
       const auto deploymentRevision = nativeProviderFieldValue(
         assignmentFields, {"deploymentRevision", "revision", "planRevision"});
       const auto adapterIdentity = readinessRunnerSpec == nullptr
@@ -2193,6 +2197,8 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
         ctx.assignment().selectionDigest + ":" + role + ":readiness";
       const auto executionOperationId =
         ctx.assignment().selectionDigest + ":" + role + ":execution";
+      const auto preparationStatusSequence =
+        std::make_shared<std::atomic<std::uint64_t>>(0);
       std::function<void()> executionGuard;
       if (protectedRuntime) {
         executionGuard = [protectedRuntime] {
@@ -2215,7 +2221,8 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
           prepareRunner = [&ctx, projection, preparationFactory, runnerFactory,
                            protectedRuntime, executionGuard,
                            expectedBackend, expectedDevice, expectedArtifact,
-                           role, reportStatus, readinessOperationId] {
+                           role, reportStatus, readinessOperationId,
+                           preparationStatusSequence] {
             if (executionGuard) executionGuard();
             auto spec = preparationFactory(ctx, projection, protectedRuntime);
             if (const auto error = validateNativePreparedRunnerSpec(
@@ -2235,7 +2242,9 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
               throw std::runtime_error(*error);
             }
             reportStatus(readinessOperationId, "ensure-deployment", "DONE",
-                         1, 1.0, "READY");
+                         preparationStatusSequence->fetch_add(
+                           1, std::memory_order_relaxed) + 1,
+                         1.0, "READY");
             return runner;
           };
         }
@@ -2597,6 +2606,11 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
             applicationInput.expectedBytes = applicationInput.payload.size();
             initialInputs[edge.scope] = std::move(applicationInput);
           }
+          // The request envelope is only the authenticated source object. Once
+          // it has been bound to the certified APPLICATION_INPUT edge, keep
+          // the source alias out of the execution input set so generation
+          // validation sees exactly one canonical token tensor.
+          initialInputs.erase("request-input");
         }
       }
       if (cachedKvState) {
@@ -2684,6 +2698,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
         coordinatorConfig.localProvider = ctx.localProvider().toUri();
         coordinatorConfig.role = role;
         coordinatorConfig.initialInputs = std::move(initialInputs);
+        coordinatorConfig.prepareRunner = prepareRunner;
         coordinatorConfig.executionGuard = executionGuard;
         coordinatorConfig.finalResponseScope = config.finalResponseScope;
         coordinatorConfig.maxEpochs = authenticatedGeneration.maxEpochs;
