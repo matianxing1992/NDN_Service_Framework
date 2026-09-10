@@ -1,6 +1,6 @@
 # Tasks: Native NDNSF-DI with Optional Python Bindings
 
-**Revision**: 154 | **Status**: DRAFT / T001 DONE
+**Revision**: 155 | **Status**: DRAFT / T001 DONE
 **Input**: [spec](spec.md), [code design](contracts/code-design.md),
 [proof](contracts/proof-design.md), [work units](contracts/work-units.md)
 
@@ -53,6 +53,7 @@ R11-B8 现开始按 caller group 批次执行；G4 已形成 native checkpoint h
 | [R11-B8-G17 Remote Launcher Materialization](evidence/r11-b8-g17-remote-launcher-materialization-20260910.md) | CLOSED_FOR_VALIDATION | R11-B8-G16; Spec110 topology contract | **Deployment harness:** generated process launchers are copied with target-node `srun` into job scratch before NFD or business process startup, removing the hidden requirement that evidence storage be mounted identically on every node; topology integration asserts all six launchers are executable in scratch. Real Slurm/SIF multi-machine qualification, 15 callers, no-Python and T016/T017 remain open | 2026-09-10 |
 | [R11-B8-G18 Portable Network Probe Dependency](evidence/r11-b8-g18-portable-network-probe-20260910.md) | CLOSED_FOR_VALIDATION | R11-B8-G17; Spec110 transport probe contract | **Deployment harness:** selected/diagnostic TCP/UDP probes now use the node's `python3` socket API instead of assuming optional `nc`/netcat; shell syntax and network integration pass. This is a bounded connectivity preflight only; no protocol, SIF, Slurm, or multi-machine qualification is advanced | 2026-09-10 |
 | [R11-B8-G19 Visible GPU Binding Proof](evidence/r11-b8-g19-visible-gpu-binding-20260910.md) | CLOSED_FOR_VALIDATION | R11-B8-G18; Spec110 GPU binding contract | **Deployment harness:** Provider pre-exec now requires a single `CUDA_VISIBLE_DEVICES` selector and compares `nvidia-smi -i` output exactly with the mapped UUID; missing binding, wrong UUID and valid isolated execution are covered. 18/18 topology unit, network integration and static checks pass. Real Slurm/SIF GPU qualification remains open | 2026-09-10 |
+| [R11-B8-G20 Per-Node Workdir Visibility Gate](evidence/r11-b8-g20-per-node-workdir-visibility-20260910.md) | CLOSED_FOR_VALIDATION | R11-B8-G19; Spec110 topology contract | **Deployment harness:** explicit `--workdir` is checked by target-node `srun` for every node before NFD startup; submit-host-only bundles fail at the pre-start boundary. Shell syntax, 18 topology unit and network integration checks pass. Real shared-storage/Slurm qualification remains open | 2026-09-10 |
 | [R11-B8 Maintained Callers](contracts/native-first-execution.md#dispatch-cards) | PARTIAL | R11-B7; corresponding T012 ABI | G1 generic unary 与 G2 generic stream 已形成稳定出口；仍需 15 个 caller group 的 native entry、实际行为、兼容 wrapper 及旧路径零使用证据，不能按子批次数量计全量完成 | 2026-09-10 |
 | [R11-B9 Native Closure](contracts/native-first-execution.md#dispatch-cards) | NOT_STARTED | R11-B8 | T014 no-Python/依赖闭包工具 → T015 → T016 → T017；最终资格未开始 | 2026-09-10 |
 
