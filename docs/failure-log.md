@@ -5193,3 +5193,37 @@ Fix status: normalize only the remote reused SIF links to `0644` (content and
 inode remain the verified v22 artifact) before retrying transport.
 Lesson: same-content reuse must preserve the complete transport identity,
 including file mode, before bypassing a large upload.
+
+## 2026-09-10 — broad C++ rebuild hit two transient GCC/toolchain failures
+
+Symptom: `./waf build -j4 integration-tests` first stopped in
+`spec181-native-plan-closure` with assembler error `unknown pseudo-op:
+'.sleb028'`. A bounded retry of the same target then stopped in `unit-tests`
+with a GCC 9 internal compiler error in `ggc_set_mark` from
+`/usr/include/c++/9/ostream`.
+Root cause: the broad multi-target parallel build exercised transient
+assembler/compiler instability; the retry reached and compiled the modified
+ONNX provider-selection source, and neither failure identified a source
+diagnostic in that change.
+Fix status: retain both reds as gate evidence, ring the failure checkpoint,
+and switch to a smaller serial target build plus the APP builder's bounded
+target set (`-j1` or `-j4`) before promotion.
+Lesson: a red full-tree build is still recorded and cannot be ignored, but it
+must be separated from a reproducible source failure before deciding whether
+the Tiger runtime fix is valid.
+
+## 2026-09-10 — unit target linked but auxiliary smoke compile hit GCC9 ICE
+
+Symptom: the `unit-tests` executable linked successfully after the `-j2`
+rebuild, but the target's final `DistributedRepoSmoke` compilation stopped at
+Boost.Asio `epoll_reactor.ipp:92` with the same GCC 9 internal compiler error
+(`ggc_set_mark`).
+Root cause: this is the same host compiler instability seen in the bounded
+full-target retry, isolated to an unrelated smoke translation unit after the
+modified provider-selection and unit-test sources had compiled and the unit
+binary had linked.
+Fix status: use the linked `build/unit-tests` for the focused regression and
+use the APP builder's limited application target set for the deployment build;
+keep the auxiliary smoke red as retained build evidence.
+Lesson: successful linking of the focused unit binary is useful source
+evidence, but it does not erase a red aggregate target or qualify the APP.

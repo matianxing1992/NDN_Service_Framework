@@ -66,7 +66,26 @@ resolveOnnxRuntimeProviderSelection(const NativeModelRunnerSpec& spec,
   auto requested = runnerMetadataValue(
     spec, {"executionProvider", "execution_provider", "device.kind", "deviceKind"});
   if (requested.empty()) {
-    requested = "cpu";
+    // V3 Selection resolves the portable `onnxruntime` family to a concrete
+    // backend (`onnxruntime-cpu` or `onnxruntime-cuda`) in RoleAssemblySpec.
+    // The native assembler carries that backend on the spec itself; do not
+    // silently discard it when the older metadata field is absent.  Falling
+    // back to CPU here lets a CUDA assignment construct a valid CPU session,
+    // which is rejected only after work has already started.
+    requested = spec.backend;
+    if (requested == "onnxruntime-cuda" ||
+        (requested.size() > 5 &&
+         requested.compare(requested.size() - 5, 5, "-cuda") == 0)) {
+      requested = "cuda";
+    }
+    else if (requested == "onnxruntime-cpu" ||
+             (requested.size() > 4 &&
+              requested.compare(requested.size() - 4, 4, "-cpu") == 0)) {
+      requested = "cpu";
+    }
+    else {
+      requested = "cpu";
+    }
   }
   std::transform(requested.begin(), requested.end(), requested.begin(), [] (unsigned char ch) {
     return static_cast<char>(std::tolower(ch));

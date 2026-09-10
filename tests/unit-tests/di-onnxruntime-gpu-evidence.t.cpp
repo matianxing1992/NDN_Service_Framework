@@ -139,6 +139,31 @@ BOOST_AUTO_TEST_CASE(CudaSelectionRejectsFallbackAndCpuOnlyAllocation)
   BOOST_CHECK(!selected.usedCpuFallback);
 }
 
+BOOST_AUTO_TEST_CASE(ConcreteBackendSelectsCudaWithoutLegacyMetadata)
+{
+  // V3 Selection carries the concrete backend on RoleAssemblySpec.  The
+  // native assembler does not need to duplicate that value in the legacy
+  // executionProvider metadata field for the runner to select CUDA.
+  NativeModelRunnerSpec spec;
+  spec.backend = "onnxruntime-cuda";
+  spec.metadata["deviceId"] = "0";
+  spec.metadata["allowCpuFallback"] = "false";
+
+  const auto selected = resolveOnnxRuntimeProviderSelection(
+    spec, {"CUDAExecutionProvider", "CPUExecutionProvider"});
+  BOOST_CHECK_EQUAL(selected.requestedProvider, "cuda");
+  BOOST_CHECK_EQUAL(selected.selectedProvider, "cuda");
+  BOOST_CHECK_EQUAL(selected.deviceId, "0");
+  BOOST_CHECK(!selected.usedCpuFallback);
+
+  spec.backend = "onnxruntime-cpu";
+  const auto cpu = resolveOnnxRuntimeProviderSelection(
+    spec, {"CUDAExecutionProvider", "CPUExecutionProvider"});
+  BOOST_CHECK_EQUAL(cpu.requestedProvider, "cpu");
+  BOOST_CHECK_EQUAL(cpu.selectedProvider, "cpu");
+  BOOST_CHECK_EQUAL(cpu.deviceId, "cpu0");
+}
+
 BOOST_AUTO_TEST_CASE(StatefulDeviceOutputMapsToSuccessorInput)
 {
   StatefulOnnxIoContractV1 contract;
