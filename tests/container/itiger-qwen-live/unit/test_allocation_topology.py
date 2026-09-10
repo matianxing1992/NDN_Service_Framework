@@ -154,7 +154,8 @@ class AllocationTopologyTest(unittest.TestCase):
             )
             result = subprocess.run(
                 ["bash"], input=rendered, text=True,
-                env={"PATH": f"{bin_dir}:/usr/bin:/bin", "HOME": "/ambient-home"},
+                env={"PATH": f"{bin_dir}:/usr/bin:/bin", "HOME": "/ambient-home",
+                     "CUDA_VISIBLE_DEVICES": "0"},
                 capture_output=True, check=False,
             )
             self.assertEqual(8, result.returncode)
@@ -212,6 +213,7 @@ class AllocationTopologyTest(unittest.TestCase):
             environment = {
                 "PATH": bin_dir + ":/usr/bin:/bin",
                 "HOME": "/ambient-home",
+                "CUDA_VISIBLE_DEVICES": "0",
                 "NDN_CLIENT_PIB": "pib-sqlite3:/ambient/pib",
                 "NDN_CLIENT_TPM": "tpm-file:/ambient/tpm",
                 "SPEC110_OBSERVATION": str(observation),
@@ -233,6 +235,38 @@ class AllocationTopologyTest(unittest.TestCase):
             self.assertEqual("tpm-file:" + expected_home + "/.ndn/ndnsec-key-file", tpm)
             self.assertEqual("unix://" + provider["nfdSocket"], transport)
             self.assertEqual("source-pib", (Path(home) / ".ndn/pib.db").read_text())
+
+    def test_provider_launcher_rejects_missing_gpu_binding(self) -> None:
+        value = load("multi-node-tcp.json")
+        provider = next(row for row in value["processes"] if row["kind"] == "provider")
+        with tempfile.TemporaryDirectory(prefix="spec110-identity-") as source_dir, \
+             tempfile.TemporaryDirectory(prefix="ndnsf-di-") as scratch_dir, \
+             tempfile.TemporaryDirectory(prefix="spec110-bin-") as bin_dir:
+            source = Path(source_dir)
+            provider["nfdSocket"] = str(Path(scratch_dir) / "nfd/1/nfd.sock")
+            (source / ".ndn").mkdir()
+            (source / ".ndn/pib.db").write_text("source-pib")
+            (source / ".ndn/ndnsec-key-file").mkdir()
+            fake = Path(bin_dir) / "di-native-provider"
+            sentinel = Path(scratch_dir) / "provider-ran"
+            fake.write_text(f"#!/bin/sh\ntouch {shlex.quote(str(sentinel))}\n")
+            fake.chmod(0o700)
+            smi = Path(bin_dir) / "nvidia-smi"
+            smi.write_text("#!/bin/sh\nprintf '%s\\n' GPU-EXPECTED\n")
+            smi.chmod(0o700)
+            rendered = topology.render_process_launcher(provider, scratch_dir, source_dir)
+            rendered = rendered.replace(
+                "identity_source=" + shlex.quote(provider["identityRef"]),
+                "identity_source=" + shlex.quote(str(source)),
+            )
+            result = subprocess.run(
+                ["bash"], input=rendered, text=True,
+                env={"PATH": f"{bin_dir}:/usr/bin:/bin", "HOME": "/ambient-home"},
+                capture_output=True, check=False,
+            )
+            self.assertEqual(8, result.returncode)
+            self.assertIn("SPEC110_GPU_BINDING_MISSING", result.stderr)
+            self.assertFalse(sentinel.exists())
 
     def test_process_launcher_rejects_implicit_relative_workdir(self) -> None:
         value = load("single-node.json")

@@ -1,6 +1,6 @@
 # Native-First Execution Order
 
-**Revision**: 4 | **Date**: 2026-09-10 | **Status**: PLANNED
+**Revision**: 5 | **Date**: 2026-09-10 | **Status**: PLANNED
 
 用户确认的剩余执行顺序；覆盖旧文档中“所有真实跨进程用例推迟到 T016”及
 “生产 requester 进程内持有 artifact authority 私钥”的规定。保留原 17 个父任务、
@@ -65,9 +65,10 @@ keychain 环境。NFD 使用独立 scratch `HOME` 且不继承角色 keychain。
 
 本轮静态复核还冻结了三个容易被 MiniNDN 掩盖的节点绑定：若命令参数再次携带
 `identityRef`，启动器必须把精确的 `--identity PATH`／`--identity=PATH` 参数改写为该进程
-专属 `HOME`；Provider 在 `exec` 前必须用 `nvidia-smi` 核对实际可见的 `gpuUuid`，不能只
-相信 `--gpu-bind` 的编号；TCP/UDP 诊断必须分别使用各自节点端口，不能用已选传输的端口
-冒充另一种传输。失败均停在 pre-exec/probe 边界，不得生成 READY 或资格 PASS。
+专属 `HOME`；Provider 在 `exec` 前必须读取单值 `CUDA_VISIBLE_DEVICES`，再让
+`nvidia-smi -i` 返回的 UUID 精确等于 map 中的 `gpuUuid`，不能只相信 `--gpu-bind` 的编号
+或“该 UUID 在全机列表中存在”；TCP/UDP 诊断必须分别使用各自节点端口，不能用已选传输的
+端口冒充另一种传输。失败均停在 pre-exec/probe 边界，不得生成 READY 或资格 PASS。
 NFD socket 还必须位于当前作业的 `--scratch` 目录内；仅有 `/tmp/ndnsf-di-*` 前缀而
 跨作业复用或含有 `..` 路径组件的 process map 会在启动前被拒绝，NFD state directory
 也执行同样的路径组件检查。
