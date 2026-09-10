@@ -49,6 +49,7 @@ BOOST_AUTO_TEST_CASE(EmptyHandleFailsClosedAndErrorKeepsStructuredIdentity)
   NativeInferenceHandle handle;
   BOOST_CHECK_THROW(handle.status(), NativeDiError);
   BOOST_CHECK_THROW(handle.result(std::chrono::milliseconds(0)), NativeDiError);
+  BOOST_CHECK(!handle.conversationCheckpoint().has_value());
 
   NativeDiError error("INVALID_REQUEST", "local", "request", "bad input",
                       "/NDNSF/DI/REQUEST/1", 1);
@@ -539,6 +540,7 @@ BOOST_AUTO_TEST_CASE(SlowObserverDoesNotBlockCancelAndLateReplaySurvivesClientCl
   BOOST_CHECK_EQUAL(replayed.get(), handle.requestId());
   while (!work.empty()) { auto f = std::move(work.front()); work.pop_front(); f(); }
   BOOST_CHECK(handle.status() == NativeRequestStatus::Cancelled);
+  BOOST_CHECK(!handle.conversationCheckpoint().has_value());
 }
 
 BOOST_AUTO_TEST_CASE(LocalWaitDoesNotTerminateRequestAndExpiredDispatchFails)

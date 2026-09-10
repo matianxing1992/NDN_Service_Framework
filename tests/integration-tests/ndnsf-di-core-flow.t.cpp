@@ -7588,6 +7588,9 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
   BOOST_CHECK_EQUAL(firstJson.at("text").get<std::string>(), "ab");
   const auto record = conversations->find("r4-b6-conversation-001");
   BOOST_REQUIRE(record.has_value());
+  const auto nativeCheckpoint = first.conversationCheckpoint();
+  BOOST_REQUIRE(nativeCheckpoint.has_value());
+  BOOST_CHECK_EQUAL(*nativeCheckpoint, record->checkpoint.wire);
   if (nativeConfigQwen) {
     BOOST_REQUIRE(record->checkpoint.transcript.is_object());
     BOOST_REQUIRE(record->checkpoint.transcript.contains("tokenizerDigest"));

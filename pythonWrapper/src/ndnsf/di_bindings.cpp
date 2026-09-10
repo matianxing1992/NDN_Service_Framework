@@ -474,6 +474,7 @@ bindDistributedInference(py::module_& module)
              std::shared_ptr<di::NativeInferenceHandle>>(module, "NativeInferenceHandle")
     .def_property_readonly("request_id", &di::NativeInferenceHandle::requestId)
     .def_property_readonly("application_request_id", &di::NativeInferenceHandle::applicationRequestId)
+    .def_property_readonly("conversation_checkpoint", &di::NativeInferenceHandle::conversationCheckpoint)
     .def_property_readonly("status", &di::NativeInferenceHandle::status)
     .def("result", [](const di::NativeInferenceHandle& handle,
                        std::uint64_t wait_timeout_ms) {

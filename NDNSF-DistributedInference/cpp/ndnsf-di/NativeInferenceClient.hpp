@@ -131,6 +131,10 @@ public:
   NativeInferenceHandle() = default;
   std::string requestId() const;
   std::string applicationRequestId() const;
+  // Returns the authenticated checkpoint committed by the native conversation
+  // owner, if this request completed a conversation turn.  An ordinary
+  // request, an in-flight turn, or a failed/cancelled turn has no checkpoint.
+  std::optional<std::string> conversationCheckpoint() const;
   NativeRequestStatus status() const;
   NativeInferenceResult result(std::chrono::milliseconds waitTimeout) const;
   void cancel();
