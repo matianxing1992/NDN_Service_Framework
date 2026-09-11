@@ -6823,7 +6823,8 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
                                     bool unaryRequest = false,
                                     bool conversationRequest = true,
                                     bool nativeConfigQwen = false,
-                                    bool dynamicConversationPlacement = false)
+                                    bool dynamicConversationPlacement = false,
+                                    bool exerciseFinalizeRace = false)
 {
   using namespace ndn_service_framework;
   test::BootstrapProfile profile;
@@ -6838,6 +6839,10 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
   profile.providerCount = alternateProvider ? 2 : 1;
   test::NdnsfIntegrationEnvironment environment(profile);
   environment.bootstrap();
+
+  const auto finalizeEntered = std::make_shared<std::atomic<bool>>(false);
+  const auto finalizeRelease = std::make_shared<std::atomic<bool>>(!exerciseFinalizeRace);
+  const auto cancelAttempted = std::make_shared<std::atomic<bool>>(false);
 
   const auto serviceName = environment.profile().serviceName.toUri();
   const auto requesterName = environment.user().getName().toUri();
@@ -7498,6 +7503,13 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
   conversationConfig.requesterIdentity = requesterName;
   conversationConfig.serviceName = serviceName;
   conversationConfig.securityDomainDigest = policyDigest;
+  if (exerciseFinalizeRace) {
+    conversationConfig.afterDurableCommit = [finalizeEntered, finalizeRelease] {
+      finalizeEntered->store(true, std::memory_order_release);
+      while (!finalizeRelease->load(std::memory_order_acquire))
+        std::this_thread::yield();
+    };
+  }
   auto conversations = std::make_shared<NativeConversationCoordinator>(
     std::move(conversationConfig));
   const std::shared_ptr<const NativeAdapterRegistry> requestRegistry =
@@ -7516,10 +7528,28 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
   std::shared_ptr<const NativeModelSplitStrategy> splitter = configuredSplitter ?
     configuredSplitter : std::make_shared<R4B6Splitter>(candidate);
   auto placement = std::make_shared<NativePreSplitFirstPlacement>();
-  const auto first = client.request(modelRef, application,
-                                    splitter, placement, options);
+  auto first = client.request(modelRef, application,
+                              splitter, placement, options);
+  std::thread finalizeCanceller;
+  if (exerciseFinalizeRace) {
+    finalizeCanceller = std::thread([&first, finalizeEntered, finalizeRelease, cancelAttempted] {
+      for (int i = 0; i < 10000 &&
+           !finalizeEntered->load(std::memory_order_acquire); ++i)
+        std::this_thread::sleep_for(1ms);
+      if (finalizeEntered->load(std::memory_order_acquire)) {
+        cancelAttempted->store(true, std::memory_order_release);
+        first.cancel();
+      }
+      finalizeRelease->store(true, std::memory_order_release);
+    });
+  }
   for (int i = 0; i < 20 && first.status() == NativeRequestStatus::Pending; ++i) {
     environment.pumpUntil([&] { return first.status() != NativeRequestStatus::Pending; });
+  }
+  if (finalizeCanceller.joinable()) {
+    finalizeCanceller.join();
+    BOOST_CHECK(finalizeEntered->load(std::memory_order_acquire));
+    BOOST_CHECK(cancelAttempted->load(std::memory_order_acquire));
   }
   if (first.status() != NativeRequestStatus::Succeeded) {
     try { (void)first.result(std::chrono::milliseconds(0)); }
@@ -7716,6 +7746,15 @@ BOOST_AUTO_TEST_CASE(Spec182R10B80NativeConfigQwenRealProviderConversation)
 BOOST_AUTO_TEST_CASE(Spec182R11B8G3RealProviderDynamicConversationPlacement)
 {
   runR4B6RealProviderConversationCase(false, false, false, false, true, false, true);
+}
+
+BOOST_AUTO_TEST_CASE(Spec184DurableOutcome)
+{
+  // The Provider blocks in FINALIZE after the coordinator has published the
+  // checkpoint.  A concurrent handle cancel must not downgrade that durable
+  // commit; the native handle must still report one successful outcome and
+  // expose the same authenticated checkpoint.
+  runR4B6RealProviderConversationCase(false, false, false, false, true, false, false, true);
 }
 
 BOOST_AUTO_TEST_CASE(Spec175NativeTinyOnnxI01OneProvider)
