@@ -2,7 +2,7 @@
 
 **Date**: 2026-09-11  
 **Status**: `PASS_FOR_T007_PRECONDITION` / convergence is current; qualification remains `PARTIAL`  
-**Candidate**: `sha256:311d23ecf6b7c8fa8f1f69a309a5855b3f969844279a2250d4dcf9c1557b8a98` (fresh local record after I02 ownership repair)
+**Candidate**: current identity is recorded in [promotion candidate](../contracts/promotion-candidate.md); the earlier `sha256:311d23ecf6b7c8fa8f1f69a309a5855b3f969844279a2250d4dcf9c1557b8a98` record is historical and superseded by the T007 process refresh below
 
 本审查确认当前候选的 Spec、plan、tasks、contracts 与产品 C++ 接线一致，并把未完成的
 运行时和外部资格边界保留下来。`PASS_FOR_T007_PRECONDITION` 只表示可以开始候选绑定的
@@ -104,3 +104,17 @@ fresh owner manifest `sha256:4212ca6f81913f30c10c23b1a5d3fcfa6d6a172de295b6e5a67
 `.codex-tmp/spec184-b5-owner-probe-20260911-r7/`。旧 root owner PASS 没有被重绑定；r7 是
 当前 candidate 的新 owner evidence。该刷新为 T007 提供了可复核的本地 C++ 与 bounded
 `PO-001` owner 前置条件，但不是 I02–I08、真实模型或 external-owner qualification。
+
+## Current-candidate process refresh
+
+2026-09-11 的当前候选刷新重新核对了 Spec184 `spec.md`、`plan.md`、`tasks.md`、qualification
+matrix、caller matrix、共享 dynamic-gate references 与 T007 process evidence。新增验证均以
+候选 `build-spec184-b5-candidate` 为边界：target build、完整 C++ unit/integration、YOLO unary、
+Qwen stream/conversation/recovery/replacement、七类 native grant process case、六个业务二进制
+的 no-Python ELF closure，以及授权 root `PO-001-stream` owner。Python 只启动/回收私有设施，
+不承担 request、grant、Provider、ONNX、token 或 oracle。
+
+五 lane 结果仍为 `PASS_FOR_T007_PRECONDITION`：实现和接线与当前代码一致，测试注册与 C++
+结果有日志和摘要，构建/运行时身份已在新的 promotion candidate 记录，迁移与外部 owner
+边界仍明确。该刷新不把 root owner 的单个 bounded row 扩展为全部 I02–I08，也不改变
+真实模型、Python retirement、SIF/Tiger 尚未运行的结论；这些仍保持 `PARTIAL`/`OPEN`。

@@ -1,6 +1,6 @@
 # Tasks: Native DI Closure
 
-**Status**: IN_PROGRESS / fresh candidate C++ unit and integration plus repaired I02 sanitizer exit recorded; qualification remains partial | **Date**: 2026-09-11
+**Status**: IN_PROGRESS / current-candidate C++ process qualification refresh recorded; qualification remains partial | **Date**: 2026-09-11
 **Input**: [spec](spec.md)、[plan](plan.md)、[transfer matrix](contracts/transfer-matrix.md)、
 [promotion candidate](contracts/promotion-candidate.md)、[caller matrix](contracts/caller-matrix.md)、
 [qualification matrix](contracts/qualification-matrix.md)
@@ -17,7 +17,7 @@
 | [T004 Atomic Private Checkpoint Export](evidence/b3-checkpoint-export-20260911.md) | DONE | B2 exit | B3 normal and unsuppressed ASan/UBSan exits complete; directory-fsync failure remains an explicit implementation limit | 2026-09-11 |
 | [T005 Maintained Caller Mode Closure](evidence/b4-caller-convergence-20260911.md) | DONE | B1–B3 exits | Caller/mode matrix and focused route selectors complete; D2b runtime miss, real-model/no-Python and retirement remain in B5 | 2026-09-11 |
 | [T006 Inherited Obligation and Harness Closure](contracts/qualification-matrix.md) | PARTIAL | B4 exit | 80-row matrix, fresh ordered local candidate identity and convergence audit are recorded; PO-015 review row is PASS, while process/no-Python, inherited parser and negative-row closure remain | 2026-09-11 |
-| [T007 Current Native Qualification](contracts/promotion-candidate.md) | IN_PROGRESS | T006 complete and fresh convergence `PASS` | Fresh candidate full unit/integration exits are `0`; observed-offer parser sample, repaired I02 and 16-case tiny-ONNX unsuppressed ASan/UBSan selectors, and bounded root `PO-001-stream` owner are `DYNAMIC_PASS`/`PASS`. Non-root owner preflight remains `UNQUALIFIED` at `MININDN_REQUIRES_ROOT`; broader inherited/no-Python, negative, model and external rows remain | 2026-09-11 |
+| [T007 Current Native Qualification](contracts/promotion-candidate.md) | IN_PROGRESS | T006 complete and fresh convergence `PASS` | Current candidate full unit/integration exits are `0`; C++ unary/stream/conversation/recovery/replacement/grant process cases, no-Python ELF closure, repaired I02/tiny-ONNX sanitizer selectors and bounded root `PO-001-stream` owner are recorded in [process qualification refresh](evidence/t007-process-qualification-20260911.md). Non-root owner preflight remains `UNQUALIFIED` at `MININDN_REQUIRES_ROOT`; inherited I02–I08 observation-completeness, broader negative/model, Python-retirement and external rows remain | 2026-09-11 |
 | [T008 Native Development Handoff](plan.md) | NOT_STARTED | T007 `QUALIFICATION_PASS` | Design/API handoff and external experiment transfer remain pending | 2026-09-11 |
 
 ## Logical Batch Progress
@@ -28,7 +28,7 @@
 | B2 | DYNAMIC_PASS / CLOSED_FOR_VALIDATION | `asan-ubsan` PASS；durable handle/journal 一致、publish 后终态不降级、residue=0 | T003 已完成；进入 B3/T004 |
 | B3 | DYNAMIC_PASS / CLOSED_FOR_VALIDATION | `asan-ubsan` PASS；原子 export、symlink refusal、pre-rename failure preservation、loader smoke | T004 已完成；进入 B4/T005 |
 | B4 | CLOSED_FOR_VALIDATION / PARTIAL | caller rows use `none` with reason; inherited B1/B2 profiles cover shared async owners | T005 matrix/route closure complete；D2b runtime miss、real model/no-Python and retirement remain T006/T007 |
-| B5 | IN_PROGRESS / T006/T007 PARTIAL | one bounded dynamic sample per distinct inherited risk/behavior class；Provider-host unsuppressed ASan/UBSan PASS；observed-offer parser sample PASS；I02 ownership-cycle and 16-case tiny-ONNX sanitizer samples PASS | fresh candidate unit/integration exits `0`; repaired I02 selectors and authorized root `PO-001-stream` owner PASS, while non-root privilege preflight remains `UNQUALIFIED`; broader process/no-Python, negative-row and external closure remain → T007 qualification → T008 handoff |
+| B5 | IN_PROGRESS / T006/T007 PARTIAL | one bounded dynamic sample per distinct inherited risk/behavior class；Provider-host unsuppressed ASan/UBSan PASS；observed-offer parser sample PASS；I02 ownership-cycle and 16-case tiny-ONNX sanitizer samples PASS | current candidate unit/integration exits `0`; C++ process/no-Python refresh and authorized root `PO-001-stream` owner are PASS for bounded rows, while non-root privilege preflight remains `UNQUALIFIED`; I02–I08 observation-completeness, inherited negative/model, Python-retirement and external closure remain → T007 qualification → T008 handoff |
 
 ## Current Checkpoint
 
@@ -56,6 +56,15 @@ tiny-ONNX 无抑制 ASan/UBSan 样本均 PASS；更广 parser/negative collector
 Python retirement 与外部 SIF/Tiger 仍未运行；
 详见 [T007 qualification evidence](evidence/t007-current-native-qualification-20260911.md)
 与 [failure-log entry](../../docs/failure-log.md)。T007 保持 `IN_PROGRESS`/`PARTIAL`，T008 未开始。
+
+2026-09-11 **T007-PROCESS-REFRESH / PARTIAL**：当前候选的 C++ 主导过程链已形成独立
+证据：[process qualification refresh](evidence/t007-process-qualification-20260911.md)。候选
+target build、完整 C++ unit/integration、YOLO unary、Qwen stream、conversation continuation、
+Provider recovery/replacement、无备份拒绝、七类 native grant process case、六个业务二进制
+no-Python ELF closure 以及授权 root `PO-001-stream` MiniNDN owner 均已记录；Python 只做私有
+设施编排。该出口只关闭已运行的 bounded process classes，不关闭 I02–I08 的所有
+counterexample/collector completeness、真实模型 breadth、Python retirement 或外部 SIF/Tiger。
+T007 保持 `IN_PROGRESS`/`PARTIAL`，T008 仍未开始。
 
 2026-09-11 **T007-FRESH-CANDIDATE / PARTIAL**：清理可重建的未跟踪 build 目录后，按系统
 `/usr/bin/g++ -B/usr/bin`、`-j4` 和 `.lock-spec184-b5` 重新配置并只构建 Spec184 candidate

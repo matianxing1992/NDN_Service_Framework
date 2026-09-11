@@ -1,6 +1,6 @@
 # Implementation Plan: Native DI Closure
 
-**Branch**: Experimental | **Date**: 2026-09-11 | **Status**: IN_PROGRESS / fresh C++ unit-integration, repaired I02 and tiny-ONNX sanitizer, and bounded PO-001 owner exits recorded; qualification remains partial
+**Branch**: Experimental | **Date**: 2026-09-11 | **Status**: IN_PROGRESS / current-candidate C++ process qualification refresh recorded; qualification remains partial
 **Migration baseline**: `6f603491`；产品审计源码 `72b9e388cc3920b0bdcd4c36d302d63c71e7f15a`。
 **Authority**: [spec](spec.md)、[tasks](tasks.md)、[transfer](contracts/transfer-matrix.md)、
 [promotion candidate](contracts/promotion-candidate.md)、[qualification matrix](contracts/qualification-matrix.md)。
@@ -9,8 +9,10 @@
 
 本 Spec184 承接182未完成工作，不复制其庞大时间线。B1–B4 已形成可复核的局部出口；
 T006 的 qualification matrix、fresh candidate 和 convergence audit 已记录，fresh C++ unit/
-integration、observed-offer parser sample 与 repaired tiny-ONNX sanitizer batch 已通过，bounded root `PO-001-stream` owner 也已
-通过。下一 dispatch 继续 T007 的继承行、sanitizer、no-Python 和负例收敛，不重跑已关闭的
+integration、observed-offer parser sample、repaired tiny-ONNX sanitizer batch 与 bounded root
+`PO-001-stream` owner 已通过；YOLO/Qwen 会话/恢复/替换、grant process 和 no-Python ELF closure
+也已在 [T007 process refresh](evidence/t007-process-qualification-20260911.md) 绑定。下一
+dispatch 继续 T007 的继承行、sanitizer、no-Python 和负例收敛，不重跑已关闭的
 B1–B4 focused work。
 具体缺陷的源码位置、触发条件与反例沿用冻结的
 [request-chain audit](../182-native-di-python-bindings/evidence/request-chain-static-audit-20260911.md)。

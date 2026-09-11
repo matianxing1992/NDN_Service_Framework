@@ -56,6 +56,7 @@ results update evidence availability for the affected rows but do not upgrade th
 | Observed-offer C++ parser sample and unsuppressed ASan/UBSan run | 182:T007, PO-006, FR-007, CD-006, INV-004 | tokenizer-full, plan/parser and no-Python negative rows remain unqualified | PARTIAL |
 | Repaired C++ I02 two-provider selector and 16-case tiny-ONNX batch under unsuppressed ASan/UBSan | 182:T011, PO-008, FR-008/016, CD-007 | callback-cycle leak no longer reproduces; process/no-Python I02–I08, inherited negative and real-model rows remain open | PARTIAL |
 | Fresh C++ production path review | PO-001, PO-013, FR-001/016, CD-013 | no independent process/no-Python owner result for current candidate; broader model rows open | PARTIAL |
+| Current-candidate C++ process refresh: unary/stream/conversation/recovery/replacement/grant, no-Python ELF closure, and root `PO-001-stream` owner | 182:T010, 182:T011, 182:T014, 182:T016, PO-001, PO-004, PO-007/008, PO-011/013/014/016, I01/I06/I07/I08, FR-001/005/008/012/013/014/016/019, CD-001/004/007/009/011/012/013/014, INV-002/005/006/007/009 | bounded C++ process classes and owner evidence pass; non-root owner preflight is `MININDN_REQUIRES_ROOT`; I02–I08 observation-completeness and broader negative/model/Python-retirement/external rows remain open | PARTIAL/OPEN |
 
 ## PO Closure Rows
 

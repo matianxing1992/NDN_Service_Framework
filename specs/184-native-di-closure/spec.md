@@ -3,7 +3,7 @@
 **Feature Branch**: `Experimental`
 **Feature Directory**: `184-native-di-closure`
 **Created**: 2026-09-11
-**Status**: IN_PROGRESS / fresh C++ unit-integration and tiny-ONNX sanitizer exits recorded; native qualification pending
+**Status**: IN_PROGRESS / current-candidate C++ process qualification refresh recorded; native qualification remains partial
 **Input**: 用户要求将过度膨胀的 Spec182 未完成工作迁入 Spec184；以最新请求链审计安排剩余执行。
 
 ## Scope
@@ -13,6 +13,11 @@
 不重新设计 NDNSF 四消息流程，不重做已有组件，不把历史 PASS 变为本 Spec 的新 PASS。
 来源和全部14个未完成父任务见 [transfer matrix](contracts/transfer-matrix.md)。
 Spec182 作为历史基线保留，状态为 TRANSFERRED / qualification INCOMPLETE，不能标成已完成。
+
+当前 T007 过程刷新已绑定候选 C++ target、unit/integration、YOLO/Qwen 会话/恢复/替换、授权
+process、no-Python ELF closure 和 root `PO-001-stream` owner 结果；Python 仅编排私有设施。
+这些是已运行 bounded rows 的证据，不等同于 I02–I08 全部观测完整性、真实模型、Python
+retirement 或外部 SIF/Tiger 的最终资格。
 
 ## User Scenarios & Testing
 

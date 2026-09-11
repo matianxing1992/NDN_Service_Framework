@@ -2,7 +2,7 @@
 
 **Date**: 2026-09-11  
 **Status**: `PARTIAL` / candidate-bound local qualification started; no promotion  
-**Candidate**: `sha256:311d23ecf6b7c8fa8f1f69a309a5855b3f969844279a2250d4dcf9c1557b8a98` (fresh local record after I02 ownership fix)
+**Candidate**: current identity is recorded in [promotion candidate](../contracts/promotion-candidate.md); the earlier `sha256:311d23ecf6b7c8fa8f1f69a309a5855b3f969844279a2250d4dcf9c1557b8a98` record is historical and superseded by the T007 process refresh
 
 本记录绑定 [promotion candidate](../contracts/promotion-candidate.md) 的当前源码、运行时、
 fixture、harness 和配置身份。它汇总本地 C++ 资格边界，不能把局部 selector 或 Python

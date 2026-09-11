@@ -147,6 +147,75 @@ test.runner=1578ec962de2d9742c537213579b80dc9a3553b6091143a11de8376bccd7d9af
 `sha256:311d23ecf6b7c8fa8f1f69a309a5855b3f969844279a2250d4dcf9c1557b8a98`
 is the SHA-256 of these sorted lines followed by a final newline.
 
+## Current Local Candidate Record (T007 Process Qualification Refresh)
+
+This record supersedes the earlier local records for current qualification decisions. It binds the
+fresh C++ process runs and no-Python binary inspection to the repaired native source and current
+Spec184 documents. It remains `FRESH_LOCAL_PARTIAL`: the bounded rows below pass, while inherited
+I02–I08 observation-completeness, broader negative/model breadth, Python retirement and external
+SIF/Tiger ownership remain open.
+
+| Member | Bound value |
+| --- | --- |
+| `candidateId` | `sha256:dd7da3814a085d669ec429fa1b820f4714276fb03b5010ee359c4174ee1f9839` (digest over the ordered member map below; recompute if any listed member changes) |
+| `source` | `Experimental` baseline `29411b5544cf7b0175dbaae2f65678a26ee80636`; production source hashes: `ServiceProvider.cpp` `sha256:a587b5bee0fe845ba4051ce0cdea6267e2cbc767b28055c156388ecea584e419`, `NativeProviderHandler.cpp` `sha256:37984face728f908337ece2c59b7c96cd288969bad84a6f8ae6468d691100149`, `NativeEpochCoordinator.cpp` `sha256:fb0a2513c33f1f26d4805ee1721cd172bb9c06b4f3c40982b818bf2946d04866`; pre-existing `docs/failure-log.md` and integration marker remain outside the source candidate |
+| `built runtime` | `build-spec184-b5-candidate`; current unit/integration, Controller, Authority, requester, Provider, worker and grant-requester hashes are bound below |
+| `test/replay harness` | current runner manifest, four C++ process drivers, C++ registration and process qualification evidence are bound below; Python harness log is orchestration-only |
+| `owner result` | root MiniNDN `PO-001-stream` result, runner-result and node-context digests are bound below; non-root `MININDN_REQUIRES_ROOT` remains an explicit boundary |
+| `submission bundle` | `LOCAL_ONLY / not packaged`; SIF/Tiger remains `TRANSFERRED` and is not locally qualified |
+| `effective configuration` | `/usr/bin/g++ -B/usr/bin`, system Boost 1.71, `.lock-spec184-b5` digest below, candidate-first library path, `NDNSF_SPEC182_BIN_DIR=build-spec184-b5-candidate`, root owner PATH includes `/usr/local/bin` |
+| `validation contract` | current Spec184 documents, shared dynamic-gate skill references, full C++ sweeps, no-Python inspection, process results and owner evidence below |
+
+The ordered member map used for `candidateId` is:
+
+```text
+binary.authority=b0840be47108ff78c1241fe480689e167dc175e8bf9ce146b2622be01b3d792e
+binary.controller=50667da49f9f190304fc2de09114b23bc46e0afba4fba143035bd2e5db0940d1
+binary.di=b0f0204c3b93b246c2d16e8afcfbaf0c65ab814b283f66ee8ed85252aa5d9351
+binary.framework=a781399f6e86054a13888f62860732bf469a639a298246664a1c2ae36f50d8ed
+binary.grant=02c0e24da191fbb4fa70120862966c895aaa30339bddecd94e752b690b0af853
+binary.integration=e1947cfb5d75524edc346da5b9c32c984c2daf8e3504e095653e13201486a385
+binary.provider=0a13e7ce70d30be51242b04d252eb0aae11cdbb8abee259bcb2997df71746b18
+binary.requester=7ca9f17803649539df78eaa8d03fa66a84ca1fa6e5098b8d21a1b426b5ef4c50
+binary.unit=39906e3c4a4ab1729f0c09c7146a3cb7284b0bd5a5a1e1dd668b97af305f9eeb
+binary.worker=e44bd0a31205d3106461d6d48884da70adb4e8acc8ef5fea8753573964aff283
+config.waflock=d1eb664437f0f6f21449d2ea22d50aa42053923a22e8b0fc453b287d9b9c5482
+evidence.convergence=adace38b9d2cbaf4bd226dde0472f08a201e9ee15eb6740a4a4a43a2261b8025
+evidence.t007_current=02f00316735d2db587e2ab60bbed06a63a3a7ff404f9c0feb7e8f56d3716ee7a
+evidence.t007_process=dabc1ba33840407b085c5e899d8ce32d5f63de61b8050fe805a134d299fd10d8
+log.build=c68038b4fd6973eb55a670907c4bc896bb8f8386cab1064602be714b7cd12fe3
+log.integration=dee9e3b7f5235f5d2c337bf0b98326f9971935116db2616e74c94662d7d6d076
+log.python_harness=def2d0070a2d4686e615a761552231c5697c6cf349607e2a801775759333d979
+log.unit=b4691658f3053a51f6b11ca9299e581760ff50b5ede761f5773ad16b5002a6cd
+owner.node_context=97d548d3a12e91718400faf604629f11fb2bbf44e0d1338d73ddc1d1be4e625f
+owner.result=e65fc1b507fe40cc275601b031c724b99f64a254ecaaa51272a7845f8e5509fd
+owner.runner_result=d3f757c37e196de6e616554e65eaea324b3e8706efe142c2d9cd8f673ccedcd0
+runner.manifest=a1e7df48caf5837d690ad1847e3490704c309af739e0df318ef3062ac8fdfd13
+skill.batch_gates=78c0192109eb1bde372aafab28655a2e22c0abfef69f3e4df0e4789cda5720df
+skill.code_design=ce9d126f646530e496ffdfd558fff70f81f8da0ae9ab91af6c22c51aae812b03
+skill.pre_test=6b5aff9458d1da93a6b0021ca5713aba58c14006654edef28744ed445259b486
+skill.review_agent=1974ac9454ca727b264e22c391d5c98e1663622e31ca01825b12a67ad34cc16b
+source.NativeEpochCoordinator=fb0a2513c33f1f26d4805ee1721cd172bb9c06b4f3c40982b818bf2946d04866
+source.NativeProviderHandler=37984face728f908337ece2c59b7c96cd288969bad84a6f8ae6468d691100149
+source.ServiceProvider=a587b5bee0fe845ba4051ce0cdea6267e2cbc767b28055c156388ecea584e419
+source.integration=fd96dcc5331aaebbbf3eb944ae594ee59f43d8148baef883be80e0c71244169d
+spec.caller=b2b079fd5f8e658aa6b2fec6bfec389830aa1c509fac4783f1f73e6c29c9a449
+spec.matrix=32d82c37b10087279d243aea445574b47090d9b5fd3faba9ce768b11f50c6213
+spec.plan=7aa3766efea608f751d2541ce9163ca57dfbc78ae59e3f60c71625d1dbe36023
+spec.spec=724f6aa1be1c6f151e5a71888f00bd0d4fecab1e002d07ba2c2f40473415eca1
+spec.tasks=ff5314cd16dd9ead4d150fa20c81ff2be8e381144fc2bfd8b2f3433df99d920a
+test.grant_process=63879098c789f72f80bcedf3261a8e0a44beef797740848490763289807b2813
+test.registration=377a5d0ff62ed64b715f9d644646040cdf16790613ae9bc43b4910957da5149c
+test.runner=1578ec962de2d9742c537213579b80dc9a3553b6091143a11de8376bccd7d9af
+test.stream_process=a2258b4a2747ab8eab3a560ee28f6e4caf4f526b82a4d7c94b2a9e10b4368b9d
+test.unary_process=0ee4ee185fbbbcb450d7c8a6b6ac5b128c2c27e34d949926d23c3e2956798cc4
+```
+
+The SHA-256 of these sorted lines followed by a final newline is
+`sha256:dd7da3814a085d669ec429fa1b820f4714276fb03b5010ee359c4174ee1f9839`.
+The process evidence records the individual requester/provider markers and grant-case hashes;
+the candidate binds that evidence file rather than silently combining unrelated run roots.
+
 ## Change-plane Invalidation Matrix
 
 | Changed plane | Evidence that becomes stale | Earliest gate to rerun |
