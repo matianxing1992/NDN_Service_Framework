@@ -1,6 +1,6 @@
 # Tasks: Native DI Closure
 
-**Status**: IN_PROGRESS / B4 closed for validation; formal qualification pending | **Date**: 2026-09-11
+**Status**: IN_PROGRESS / B5 component and full-unit exits recorded; integration qualification pending | **Date**: 2026-09-11
 **Input**: [spec](spec.md)、[plan](plan.md)、[transfer matrix](contracts/transfer-matrix.md)、
 [promotion candidate](contracts/promotion-candidate.md)、[caller matrix](contracts/caller-matrix.md)、
 [qualification matrix](contracts/qualification-matrix.md)
@@ -101,6 +101,15 @@ ASan/UBSan 运行先发现 `HostState` resolver self-cycle（11,042 bytes/122 al
 用例无 sanitizer 或 LeakSanitizer 报告。一次 all-weak 诊断修复被 ASan UAF 否决，未计入结果。
 这次只关闭组件生命周期门，T006 仍为 `PARTIAL`；完整 process/no-Python、候选冻结和
 convergence 尚未通过。详见 [B5 component evidence](evidence/b5-component-validation-20260911.md)。
+
+2026-09-11 **B5-FULL-SWEEP / PARTIAL**：同一候选目录优先的完整 C++ unit executable
+以 `--log_level=test_suite` 运行，exit `0`，耗时 146.304 秒，输出 `*** No errors detected`。
+完整 integration executable 在 900 秒边界内结束但 exit `1`，共 48 个 Boost failures；首个
+边界仍是 legacy D2b/D2h121/D2h212 的零 response/role 观测以及 Spec175 tiny-ONNX 的
+`stream event gap exceeded retry budget`，不是把启动或 collector 失败当作协议结果。Spec184
+Authority selectors 在同一 sweep 中通过。原始日志和 SHA-256 见
+[B5 component evidence](evidence/b5-component-validation-20260911.md)；因此 T006/T007
+保持 `PARTIAL`/`NOT_STARTED`，仍需候选冻结、fresh convergence、process/no-Python 和负例资格。
 
 2026-09-11 **D-UAV-TRIM / CLOSED_FOR_VALIDATION (documentation only)**：按用户要求删除
 UAV update PDF 原第4/5页，现4页；双遍构建及全页渲染通过，两份导出同步。

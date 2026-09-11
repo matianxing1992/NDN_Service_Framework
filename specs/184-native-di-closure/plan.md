@@ -1,6 +1,6 @@
 # Implementation Plan: Native DI Closure
 
-**Branch**: Experimental | **Date**: 2026-09-11 | **Status**: IN_PROGRESS / B4 closed for validation; qualification pending
+**Branch**: Experimental | **Date**: 2026-09-11 | **Status**: IN_PROGRESS / B5 component and full-unit exits recorded; integration qualification pending
 **Migration baseline**: `6f603491`；产品审计源码 `72b9e388cc3920b0bdcd4c36d302d63c71e7f15a`。
 **Authority**: [spec](spec.md)、[tasks](tasks.md)、[transfer](contracts/transfer-matrix.md)、
 [promotion candidate](contracts/promotion-candidate.md)、[qualification matrix](contracts/qualification-matrix.md)。

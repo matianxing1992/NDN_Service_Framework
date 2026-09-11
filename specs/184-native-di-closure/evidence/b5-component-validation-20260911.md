@@ -65,8 +65,10 @@ Spec182StreamAcceptance/*       7
 Spec182Sampling/*               4
 ```
 
-The Provider-host suite was also run under the rebuilt unsuppressed ASan/UBSan executable;
-all 8 cases passed with no sanitizer report and no LeakSanitizer residue. The prior
+The Provider-host suite was also run under the rebuilt unsuppressed ASan/UBSan executable
+and under the independent clang TSan executable; all 8 cases passed with no sanitizer
+report and no LeakSanitizer residue. The raw TSan output is
+`.codex-tmp/spec184-b5-provider-tsan-20260911.log`. The prior
 unsuppressed run is retained at
 `.codex-tmp/spec184-b5-candidate-asan-20260911/Spec182ProviderHost.log` and first
 identified 11,042 bytes in 122 allocations retained by the resolver cycle. A diagnostic
@@ -90,6 +92,22 @@ Spec170NdnsfDiCoreFlow/Spec182R11B8G3RealProviderDynamicConversationPlacement
 The durable outcome rerun emitted `SPEC182_NATIVE_DI_REQUEST_RESULT_OK`; its raw output is
 `.codex-tmp/spec184-b5-provider-fix2-integration-20260911.log`.
 
+## Bounded dynamic parameter matrix
+
+| Class | Parameters / budget | Expected native assertion | Selector and result |
+| --- | --- | --- | --- |
+| Host normal | one/two targets, one compute slot, lease on/off, close and re-serve | sibling routing survives close; duplicate active serve is rejected | `Spec182ProviderHost/*`; normal and ASan/UBSan PASS |
+| Host lifetime | provider destruction after close, delayed Core detach | no resolver self-cycle, no UAF, no leaked host table | `Spec182ProviderHost/*`; ASan/UBSan PASS and TSan PASS |
+| Planning | rank 1, invalid rank, graph cut, budget truncation, deterministic tie | legal candidate or bounded rejection with stable order | `Spec182NativePlanning/*`; normal and ASan/UBSan PASS |
+| Sealing | complete and foreign/incomplete artifact covers | canonical bytes and fail-closed rejection | `Spec182PlanSealer/*`; normal and ASan/UBSan PASS |
+| Preparation/assembly | valid cold role set, duplicate cover, missing artifact | certified ownership, no interpreter, bounded failure | `Spec182Preparation/*`, `Spec182NativeAssembly/*`; normal and ASan/UBSan PASS |
+| Tokenizer | ASCII, Unicode, byte fallback, unknown/out-of-range IDs | exact text parity and bounded malformed-input rejection | `Spec182NativeTokenizer/*`, `Spec182TokenizerFull/*`; normal and ASan/UBSan PASS |
+| Caller routes | authority IO, durable outcome, native stream/Qwen/conversation | production marker or terminal status, no hidden fallback | six parent-qualified integration selectors above; PASS |
+
+The matrix is bounded to the current component exits. Full process-tree, no-Python, real-model,
+negative collector, and candidate identity rows remain handed to T006/T007; they are not silently
+counted as covered by these unit selectors.
+
 ## Harness regression and setup boundaries
 
 The C++-owned Python harness regression remains green: 71 tests passed in
@@ -102,6 +120,25 @@ before test setup (`.codex-tmp/spec184-b5-candidate-integration-focused-20260911
 The corrected parent-qualified selectors above are the only integration results counted.
 The earlier comma-separated unit filter had the same setup boundary and is retained at
 `.codex-tmp/spec184-b5-components-20260911/unit-tests.log`.
+
+## Full candidate sweeps
+
+After the component gate, the same candidate unit executable was run without a selector:
+`build-spec184-b5-candidate/unit-tests --log_level=test_suite` with the candidate-first native
+library path. It exited `0` after 146.304 seconds and ended with `*** No errors detected`.
+The raw log is `.codex-tmp/spec184-b5-full-unit-20260911.log` (SHA-256
+`143ecc81f846b9ef888e37563560aecd2d67bfae88f5378c9e34ae6902d167e3`).
+
+The same full integration executable was then run with the same library path and a 900-second
+bound. It exited `1` with **48 Boost test failures**. The first observed failures are the known
+legacy D2b/D2h121/D2h212 zero-response boundaries and the Spec175 tiny-ONNX stream collector
+reporting `stream event gap exceeded retry budget`; the Spec184 authority selectors still pass in
+the same executable. This is a current-candidate integration sweep, not a qualification result.
+The raw log is `.codex-tmp/spec184-b5-full-integration-20260911.log` (SHA-256
+`5244434ca84d77f2b6ae6909d237d96cf1f3a34b9282b14a090e85e173701793`).
+
+The sweep therefore provides a clean full-unit exit but leaves the integration and process
+qualification lanes `PARTIAL`; it does not justify marking T006 or T007 complete.
 
 ## T006/T007 boundary
 
