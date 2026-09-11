@@ -91,6 +91,11 @@ Static review PASS != Behavior PASS。
 业务不变量、重复/预算、toolchain/source identity 与输出路径；不把动态步骤拆成每个小
 任务的重复构建。外部依赖的 sanitizer ABI 报告必须保留未抑制日志并保持 `DYNAMIC_FAIL`/
 `PARTIAL`，不能用 `ASAN_OPTIONS` 等抑制直接升级为 `DYNAMIC_PASS`。
+卡片还必须提供有界 `Dynamic Parameter Matrix`，按行为等价类覆盖正常值、关键边界、
+故意非法值和生命周期/并发顺序变化，并将每行绑定到生产 C++ fixture/oracle 的预期结果。
+动态工具负责发现内存、线程、未定义行为或解析崩溃；参数是否满足协议/模型语义由 C++
+断言负责。等价类和 case 数在批次级冻结，未覆盖边界转交 qualification row，不把每个
+参数拆成新的执行任务。
 编码前必须记录每批的分配依据（共同入口/调用方、契约、oracle/selector、source
 closure、验收出口）；任一项不一致就拆成新的批次，不以少一次构建为合批理由。
 每个静态门和批末门还必须留下五 lane Coverage matrix；没有实际文件/符号和查询

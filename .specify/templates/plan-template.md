@@ -133,8 +133,9 @@ be stricter but must not weaken its PASS/BLOCK boundary.
   `parser-fuzz`, or `none`) and the invariant/exit it checks. Dynamic validation is a
   risk-based batch gate, not a full sanitizer rebuild for every task. The batch result must
   carry one `Dynamic gate card` freezing parameter boundaries, C++ selectors, repeat/budget,
-  toolchain/source identity, output path, and failure classification; suppressions alone do
-  not produce `DYNAMIC_PASS`.
+  toolchain/source identity, output path, and failure classification, plus a bounded
+  `Dynamic Parameter Matrix` of equivalence classes and expected C++ business results;
+  suppressions alone do not produce `DYNAMIC_PASS`.
   For asynchronous or detached native paths, the batch must also name the fixture owner or
   join/drain barrier for Face/io_context/scheduler/timer/callback dependencies and the
   destructor-order selector/recheck; production close/callback semantics stay unchanged.
