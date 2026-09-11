@@ -32,7 +32,9 @@ Each code-backed task MUST also record a `Risk class`, a `Dynamic profile` (`asa
 risk-based and runs at batch validation time; it is not a per-task full rebuild. Before that
 run, the batch evidence MUST provide one `Dynamic gate card` with parameter boundaries,
 production C++ selectors, repeat/budget, toolchain/source identity, output path, and failure
-classification. A pure documentation task records `N/A` and a reason. Sanitizer suppression
+classification. The card MUST also include a bounded `Dynamic Parameter Matrix` that maps
+equivalence-class inputs (normal, boundary, invalid, and relevant cancel/replacement cases) to
+expected C++ business results. A pure documentation task records `N/A` and a reason. Sanitizer suppression
 does not qualify as `DYNAMIC_PASS` unless a clean, ABI-consistent run follows.
 
 **Organization**: Tasks are grouped by user story and expressed as cohesive,

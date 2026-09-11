@@ -3,7 +3,7 @@
 **Feature Branch**: `Experimental`
 **Feature Directory**: `184-native-di-closure`
 **Created**: 2026-09-11
-**Status**: PLANNED / implementation NOT_STARTED
+**Status**: IN_PROGRESS / B4 closed for validation; formal qualification pending
 **Input**: 用户要求将过度膨胀的 Spec182 未完成工作迁入 Spec184；以最新请求链审计安排剩余执行。
 
 ## Scope
@@ -45,8 +45,9 @@ Spec182 作为历史基线保留，状态为 TRANSFERRED / qualification INCOMPL
 ## Acceptance Evidence Contract
 
 `DI/` 指 `NDNSF-DistributedInference/cpp/ndnsf-di/`。selector、source TU、target 和
-注册点见下方 [Native C++ Test Registration](#native-c-test-registration)；所有新 selector
-当前仍为 `PLANNED`，未声称已经运行。
+注册点见下方 [Native C++ Test Registration](#native-c-test-registration)。表中的
+`FOCUSED_VALIDATED` 只表示当前候选的定向 C++ 出口已运行；它不表示跨进程、no-Python 或
+formal qualification 完成。
 
 动态验证按共享 [batch-quality-gates](../../skills/speckit-code-design/references/batch-quality-gates.md)
 的风险 profile 执行，不按每个小任务重复构建。并发/IO owner/取消与替换使用 `tsan`；
@@ -61,6 +62,19 @@ selector、业务不变量、重复或 fuzz 预算、toolchain/source identity�
 fixture/oracle 完成。若 sanitizer 报告来自外部库或 ABI 边界，先保留未抑制日志并保持
 `DYNAMIC_FAIL`/`PARTIAL`；只有一致 ABI 构建下无抑制重跑干净，才可写 `DYNAMIC_PASS`。
 这张卡属于批次证据，不为每个小任务复制构建和报告。
+
+每张卡还必须维护有界 `Dynamic Parameter Matrix`，按行为等价类覆盖正常值、关键最小/最大
+值、故意非法值，以及会改变取消、deadline 或 replacement 顺序的用例。每一行写出参数来源、
+确定性 seed（若适用）、预期业务结果和对应的 C++ 断言；未覆盖的边界转交 qualification
+matrix，并说明理由。矩阵只属于批次，不把每个参数拆成任务。
+
+| Batch | Parameter classes / budget | Expected C++ business result | Dynamic selector / invariant | Uncovered boundary / handoff |
+| --- | --- | --- | --- | --- |
+| B1 | request/attempt nominal + cancel/deadline/replacement; bounded repeats | one terminal result, no stale callback, pending count returns to zero | `Spec184AuthorityIoOwnership`, `Spec184TurnPublicationRace` / IO owner and ticket balance | external process interleavings → B5 qualification |
+| B2 | publish before/after cancel, delayed FINALIZE, close; bounded repeats | handle/journal linearization remains monotonic and residue is zero | `Spec184DurableOutcome` / durable outcome and cleanup | cross-process durability → B5 |
+| B3 | umask, existing file, symlink, write/fsync/rename failure; bounded cases | exact `0600`, canonical bytes, old file preserved on pre-rename failure | `Spec184CheckpointExport` / export atomicity and residue | directory fsync failure after rename is explicit implementation limit |
+| B4 | native/compatibility mode, missing/invalid config, caller shutdown; per-row bounded cases | native route is explicit, compatibility is explicit, no hidden fallback | caller-specific C++ selectors / route and lifecycle markers | real model/no-Python outputs → B5 |
+| B5 | inherited PO/I/FR/CD positive and negative rows; matrix-owned budget | candidate identity, terminal cleanup, and negative boundary each have evidence | matrix-bound selectors / source-artifact identity | external Tiger/SIF runs remain `TRANSFERRED` |
 
 | Story / FR | Production entry / callers | Observable outcome | Independent oracle / C++ selector | Negative / recovery boundary | Dynamic profile / invariant | Evidence owner / path | Batch |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -84,10 +98,10 @@ Checkpoint destination 若为 symlink，导出不得跟随或改写其 target；
 
 | Selector | Test source | Target | Registration contract | Dynamic profile | Status |
 | --- | --- | --- | --- | --- | --- |
-| `Spec184AuthorityIoOwnership` | `tests/integration-tests/di-native-requester-grant.t.cpp` | `integration-tests` | already in `tests/wscript` integration source list; add selector and verify exact command | `tsan`; repeat bounded selector | PLANNED |
-| `Spec184TurnPublicationRace` | `tests/unit-tests/di-native-client.t.cpp` | `unit-tests` | covered by `tests/wscript` unit `ant_glob`; add selector and verify exact command | `tsan`; repeat interleaving | PLANNED |
-| `Spec184DurableOutcome` | `tests/integration-tests/ndnsf-di-core-flow.t.cpp` | `integration-tests` | already in `tests/wscript` integration source list; add selector and verify exact command | `asan-ubsan`; cancel/finalize negative cases | PLANNED |
-| `Spec184CheckpointExport` | `tests/unit-tests/di-native-checkpoint.t.cpp` | `unit-tests` | new TU must be added under the unit glob and verified in the target closure | `asan-ubsan`; malformed/symlink cases | PLANNED |
+| `Spec184AuthorityIoOwnership` | `tests/integration-tests/di-native-requester-grant.t.cpp` | `integration-tests` | registered in `tests/wscript`; exact selector and TSan evidence in `evidence/b1-request-correctness-20260911.md` | `tsan`; repeat bounded selector | FOCUSED_VALIDATED |
+| `Spec184TurnPublicationRace` | `tests/unit-tests/di-native-client.t.cpp` | `unit-tests` | covered by `tests/wscript` unit `ant_glob`; exact selector and TSan evidence in `evidence/b1-request-correctness-20260911.md` | `tsan`; repeat interleaving | FOCUSED_VALIDATED |
+| `Spec184DurableOutcome` | `tests/integration-tests/ndnsf-di-core-flow.t.cpp` | `integration-tests` | registered in `tests/wscript`; normal and rebuilt unsuppressed sanitizer evidence in `evidence/b2-durable-outcome-20260911.md` | `asan-ubsan`; cancel/finalize negative cases | FOCUSED_VALIDATED |
+| `Spec184CheckpointExport` | `tests/unit-tests/di-native-checkpoint.t.cpp` | `unit-tests` | registered under the unit glob; normal and rebuilt unsuppressed sanitizer evidence in `evidence/b3-checkpoint-export-20260911.md` | `asan-ubsan`; malformed/symlink cases | FOCUSED_VALIDATED |
 
 These registrations are design-time obligations, not evidence. A missing source, target, selector,
 or registration is a `gap`; it cannot be reported as `STATIC_PASS` or product `PASS`. Native

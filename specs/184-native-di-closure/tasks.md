@@ -1,6 +1,6 @@
 # Tasks: Native DI Closure
 
-**Status**: IN_PROGRESS / B3 closed for validation; formal qualification pending | **Date**: 2026-09-11
+**Status**: IN_PROGRESS / B4 closed for validation; formal qualification pending | **Date**: 2026-09-11
 **Input**: [spec](spec.md)、[plan](plan.md)、[transfer matrix](contracts/transfer-matrix.md)、
 [promotion candidate](contracts/promotion-candidate.md)、[caller matrix](contracts/caller-matrix.md)、
 [qualification matrix](contracts/qualification-matrix.md)
@@ -12,7 +12,7 @@
 | B1 | DYNAMIC_PASS / CLOSED_FOR_VALIDATION | `tsan` PASS；IO owner、turn/ticket 线性化、无 pending residue | T001/T002 已完成普通 C++ selector、独立 TSan 各两次重复；进入 B2/T003 |
 | B2 | DYNAMIC_PASS / CLOSED_FOR_VALIDATION | `asan-ubsan` PASS；durable handle/journal 一致、publish 后终态不降级、residue=0 | T003 已完成；进入 B3/T004 |
 | B3 | DYNAMIC_PASS / CLOSED_FOR_VALIDATION | `asan-ubsan` PASS；原子 export、symlink refusal、pre-rename failure preservation、loader smoke | T004 已完成；进入 B4/T005 |
-| B4 | NOT_STARTED | async caller 才运行 `tsan`；其余 `none` with reason | T005 当前 caller/mode 收敛 |
+| B4 | CLOSED_FOR_VALIDATION / PARTIAL | caller rows use `none` with reason; inherited B1/B2 profiles cover shared async owners | T005 matrix/route closure complete；D2b runtime miss、real model/no-Python and retirement remain T006/T007 |
 | B5 | NOT_STARTED | inherited row profiles；文档对账 `none` with reason | T006 矩阵/缺口修复 → fresh convergence audit `PASS` → T007 正式本地资格 → T008 交付 |
 
 ## Current Checkpoint
@@ -57,6 +57,15 @@ ASan/UBSan 报告；B2 evidence 记录原始失败、依赖重建和 binary dige
 目录优先的 `LD_LIBRARY_PATH` 运行 `DI_NativeRequester --help` 通过；此前 `/usr/local/lib` 优先的
 loader 失败保留为库来源边界。详见 [B3 evidence](evidence/b3-checkpoint-export-20260911.md)。
 
+2026-09-11 **B4-CALLER / CLOSED_FOR_VALIDATION**：T005 将五组维护入口收敛为 caller/mode
+矩阵 12 行，明确 native owner、显式 compatibility、C++ selector、source/build closure、
+zero-use 和 rollback。候选 provider 路径修正后，五个当前 C++ route/provider/Qwen selectors
+均 exit 0，Python route/compatibility 回归 38 tests passed。B4 没有新增异步 owner，动态
+profile 对 caller/launcher 记为 `none` with reason，B1/B2 的 TSan/ASan/UBSan 仍是共享状态机
+的动态证据。旧 D2b selectors 在 bootstrap 后观测到零 response/role/output，作为 runtime/test
+miss 保留；真实模型、no-Python、Python retirement 和外部实验仍未验收。详见
+[B4 evidence](evidence/b4-caller-convergence-20260911.md) 与 [caller matrix](contracts/caller-matrix.md)。
+
 2026-09-11 **D-UAV-TRIM / CLOSED_FOR_VALIDATION (documentation only)**：按用户要求删除
 UAV update PDF 原第4/5页，现4页；双遍构建及全页渲染通过，两份导出同步。
 [证据](../../docs/NDNSF-UAV/slides/UPDATES_UAV-review.md)。不推进 B1–B5，原生下一步保持不变。
@@ -81,7 +90,7 @@ Spec182 的14个 OPEN 父任务和 R12-A–E 全部承接；未搬运历史长�
 ## Phase 2: Export and Callers
 
 - [x] T004 [US2] **Atomic Private Checkpoint Export**. FR-004；修复 F-04，`DI_NativeRequester` 以同目录临时文件、`0600`、write/`fsync`/close/rename/目录 `fsync` 安全导出，明确 symlink 不跟随、失败保留和 round-trip；补 `tests/unit-tests/di-native-checkpoint.t.cpp` 的 `Spec184CheckpointExport`。Risk class: `lifetime/serialization`; Dynamic profile: `asan-ubsan`; invariants: temp-file ownership、loader lifetime、old checkpoint preserved on pre-rename failure。普通 C++ selector、独立无抑制 ASan/UBSan selector（三次）及候选目录优先的 example loader smoke 通过；目录 `fsync` 真实错误仍为显式限制。Target: `unit-tests`。Dependencies: B2 exit。Evidence: [B3 evidence](evidence/b3-checkpoint-export-20260911.md)。
-- [ ] T005 [US2] **Maintained Caller Mode Closure**. FR-005；按 [caller matrix](contracts/caller-matrix.md) 盘点五组维护入口及其模式、默认路由、native/compatibility/removed 状态、C++ oracle、zero-use 和 rollback；按共享逻辑分组迁移并检查薄绑定。Risk class: `routing/lifetime`; Dynamic profile: async caller rows use `tsan`, static-only rows use `none` with reason; invariants: default native route、compatibility boundary、caller lifecycle。Dependencies: B3 exit。
+- [x] T005 [US2] **Maintained Caller Mode Closure**. FR-005；按 [caller matrix](contracts/caller-matrix.md) 盘点五组维护入口及其模式、默认路由、native/compatibility/removed 状态、C++ oracle、zero-use 和 rollback；按共享逻辑分组迁移并检查薄绑定。Risk class: `routing/lifetime`; Dynamic profile: caller/launcher rows use `none` with reason because no new async owner is introduced; shared owner profiles remain authoritative; bounded parameter matrix covers native, compatibility, invalid-config and shutdown boundaries。当前 C++ route/provider/Qwen selectors and 38 Python route tests passed；旧 D2b runtime miss、real model/no-Python and retirement remain T006/T007。Dependencies: B3 exit。Evidence: [B4 evidence](evidence/b4-caller-convergence-20260911.md)。
 
 ## Phase 3: Qualification and Delivery
 

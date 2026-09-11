@@ -137,6 +137,27 @@ fixture/driver 和 oracle 仍必须是 C++，Python 只能编排外部设施或�
 协议通过，也避免把动态步骤拆成大量独立任务。批末应按 selector 汇总卡片结果，而不是
 按任务数量统计动态通过数。
 
+### Bounded Dynamic Parameter Matrix
+
+每张 `Dynamic gate card` 还要附一张有界参数矩阵。矩阵按行为等价类取样，不要求为每个
+字段或每个小任务单独建立动态任务；同一状态机的成员共享矩阵和动态构建。最少覆盖
+`nominal`、关键最小/最大边界、故意非法输入，以及会改变生命周期或并发顺序的
+`cancel/deadline/replacement` 情况；不适用的类别写明理由。
+
+| caseId | Parameter tuple / boundary | Expected business result | C++ assertion / selector | Tool observation | Status |
+| --- | --- | --- | --- | --- | --- |
+| D-01 | `[case-specific values]` / `nominal` | `[success or explicit rejection]` | `[production C++ selector + invariant]` | `[sanitizer/thread/fuzz observation]` | `NOT_RUN` |
+
+矩阵必须冻结参数来源、确定性 seed（若适用）、最大 case 数或时间预算，并把每个 case 映射
+到生产 C++ fixture/oracle 的断言。动态工具只报告内存、线程、未定义行为或解析崩溃；
+`Expected business result` 由 C++ 断言判定。为控制复杂度，批次应优先使用少量有代表性的
+等价类；若省略某边界，必须在卡片中记录理由和转交的 qualification row。
+
+`DYNAMIC_PASS` 只有在矩阵中所有已登记 case 的 C++ 断言、工具检查、超时和清理结果均满足
+预期时才成立。某 case 未运行、只有 Python 观察、或只证明启动/`--help` 时，动态结果保持
+`NOT_RUN`/`PARTIAL`，不能提升行为或 qualification 状态。动态结果发现问题后，先按首个
+case 和失败边界修订参数矩阵或静态门，再重跑受影响 selector；不重复原命令冒充改变的门禁。
+
 当 Python extension 链接到仓库内的 native shared target 时，native 源码变化必须
 先重建该 shared target，再重建 extension；仅重编译或重链接 extension 不能证明
 source/link closure。批次记录应检查依赖库中包含变更符号（或等价的 source/hash

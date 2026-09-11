@@ -1,13 +1,14 @@
 # Implementation Plan: Native DI Closure
 
-**Branch**: Experimental | **Date**: 2026-09-11 | **Status**: PLANNED
+**Branch**: Experimental | **Date**: 2026-09-11 | **Status**: IN_PROGRESS / B4 closed for validation; qualification pending
 **Migration baseline**: `6f603491`；产品审计源码 `72b9e388cc3920b0bdcd4c36d302d63c71e7f15a`。
 **Authority**: [spec](spec.md)、[tasks](tasks.md)、[transfer](contracts/transfer-matrix.md)、
 [promotion candidate](contracts/promotion-candidate.md)、[qualification matrix](contracts/qualification-matrix.md)。
 
 ## Summary
 
-本 Spec184 承接182未完成工作，不复制其庞大时间线。唯一 next dispatch 为 B1/T001。
+本 Spec184 承接182未完成工作，不复制其庞大时间线。B1–B4 已形成可复核的局部出口；
+下一 dispatch 为 B5/T006 的 qualification matrix 对账与缺口收敛。
 具体缺陷的源码位置、触发条件与反例沿用冻结的
 [request-chain audit](../182-native-di-python-bindings/evidence/request-chain-static-audit-20260911.md)。
 旧 R12 批次映射为184 B1–B5；未完成的组件验收同样进入 B5，并非只搬四个 finding。
@@ -34,7 +35,7 @@ Promotion candidate、change-plane invalidation 和 design-code convergence 规�
 | B1 Thread ownership | T001/T002 | 冻结审计/迁移对账 | `tsan`; IO owner、turn/ticket 发布与 abort 线性化、无迟到回调副作用 | IO dispatch 与 turn 发布的并发反例通过，无 pending ticket 泄漏 |
 | B2 Durable outcome | T003 | B1 | `asan-ubsan`; handle/journal 生命周期、publish 后终态一致、residue=0 | publish 前后取消、deadline、close 与持久记录/handle 一致 |
 | B3 Secure export | T004 | B2；技术上独立，默认顺序执行 | `asan-ubsan`; 临时文件/loader 生命周期、失败保留旧 checkpoint | 0600 原子导出、失败保留、loader round-trip |
-| B4 Caller convergence | T005 | B1–B3 | `tsan` only for async caller rows; otherwise `none` with reason | 当前 caller/mode 清单闭合，支持模式默认 native |
+| B4 Caller convergence | T005 | B1–B3 | caller/launcher rows `none` with reason; inherited B1/B2 profiles cover shared async owners | caller/mode matrix 闭合，当前 route/provider/Qwen selectors 有 focused exit；D2b/real-model/no-Python 留 B5 |
 | B5 Qualification and handoff | T006/T007/T008 | B4；矩阵盘点可提前只读进行 | per inherited row; `none` for documentation-only reconciliation | qualification matrix 完整、fresh convergence audit `PASS` 后才可开始 T007；本地资格通过，外部边界明确 |
 
 ### Dynamic Validation Card
@@ -54,6 +55,21 @@ Promotion candidate、change-plane invalidation 和 design-code convergence 规�
 及首个失败边界。外部库或 ABI 不一致导致的 sanitizer 报告先记 `DYNAMIC_FAIL`/`PARTIAL`；
 不能用 `ASAN_OPTIONS` 等抑制直接升级为 `DYNAMIC_PASS`，必须在可验证的一致 ABI 构建中
 无抑制重跑。
+
+### Dynamic Parameter Matrix Budget
+
+每个批次只维护一张有界参数矩阵；成员任务共享同一状态机、C++ selector 和动态构建。矩阵
+采用行为等价类而非字段笛卡尔积，至少覆盖正常值、关键边界、故意非法值以及会改变清理或
+并发顺序的取消/替换值。每行必须绑定预期业务结果和 C++ 断言；未覆盖边界写入 B5 的
+qualification row，不为补齐表格而新增执行任务。
+
+| Batch | Minimum cases | Budget / repeat | C++ assertion owner |
+| --- | --- | --- | --- |
+| B1 | nominal request, cancel-before-dispatch, cancel-after-publication, deadline/replacement | each selector ≥2 TSan repeats; deterministic barriers | `Spec184AuthorityIoOwnership`, `Spec184TurnPublicationRace` |
+| B2 | publish-before-cancel, publish-after-cancel, delayed FINALIZE, close | normal + 3 unsuppressed ASan/UBSan repeats | `Spec184DurableOutcome` |
+| B3 | umask, existing destination, symlink, pre-rename failure, round-trip | normal + 3 unsuppressed ASan/UBSan repeats | `Spec184CheckpointExport` |
+| B4 | native config, compatibility selection, missing/invalid config, shutdown | per async selector ≥2 repeats; static rows `none` with reason | caller-specific C++ selector or explicit `gap` |
+| B5 | one positive and one negative case for each inherited row class | matrix-owned budget recorded with candidate identity | qualification matrix selector; no Python-only oracle |
 
 ## Code Design and Review
 

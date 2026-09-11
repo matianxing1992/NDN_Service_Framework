@@ -44,6 +44,11 @@ closure 后，官方 review-agent 的 `No findings` 才能成为静态门结果�
 预算、toolchain/source identity、输出目录和失败分类；这些字段属于整批出口，不为每个
 小任务复制。外部依赖的 sanitizer ABI 报告必须先保留未抑制首个日志并保持
 `DYNAMIC_FAIL`/`PARTIAL`，不能以 `ASAN_OPTIONS` 等抑制直接写成 `DYNAMIC_PASS`。
+卡片同时附有界 `Dynamic Parameter Matrix`：以 `nominal`、关键边界、故意非法值和会改变
+生命周期/并发顺序的取消或替换用例组成少量等价类，逐行绑定 C++ fixture/oracle 的预期
+成功、拒绝或取消结果。动态工具只检查内存/线程/未定义行为/解析崩溃，业务结果必须由
+该 C++ 断言给出；矩阵外的边界写明转交的 qualification row，不能为了凑覆盖把每个参数
+拆成独立任务。
 若尚未达到稳定出口，必须记录 `OPEN_FOR_NEXT_BATCH` 及触发条件，不得以 READY 或共享构建掩盖缺口。
 不得把后续批次全部写完才测试当前已闭合批次。
 
