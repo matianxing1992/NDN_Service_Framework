@@ -1,5 +1,8 @@
 # Native-First Execution Order
 
+> **TRANSFERRED TO SPEC183**：当前调度见 [183 plan](../../183-native-di-closure/plan.md)。
+> 下述 N1–N5 架构/验证原则继续作为继承契约，182/R12 调度全部为历史。
+
 > **Dispatch superseded 2026-09-11**：当前剩余调度以
 > [audit-driven execution](audit-driven-execution.md) 的 R12 为准。本文件 N1–N5、独立 authority、
 > C++ 优先及外部机器边界继续有效；旧 dispatch cards 保留历史，不作为下一任务指令。

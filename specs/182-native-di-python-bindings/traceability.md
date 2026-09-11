@@ -1,5 +1,8 @@
 # Spec182 Traceability Matrix
 
+> **TRANSFERRED**：当前任务映射见 [Spec183 transfer matrix](../183-native-di-closure/contracts/transfer-matrix.md)。
+> 下面 R12/N1–N5 属历史调度；原验收要求仍被继承，没有因迁移删除。
+
 2026-09-11 **Current dispatch override**：[请求链审计](evidence/request-chain-static-audit-20260911.md)
 → [R12](contracts/audit-driven-execution.md)。F-01/F-02 → R12-A → T005/T010/T011；
 F-03 → R12-B → T010/T011；F-04 → R12-C → T010/T011；G-01 → R12-D → T013/T015；

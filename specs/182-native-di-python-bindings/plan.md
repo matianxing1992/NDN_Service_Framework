@@ -1,5 +1,8 @@
 # Implementation Plan: Native NDNSF-DI with Optional Python Bindings
 
+> **TRANSFERRED 2026-09-11**：剩余工作移至 [Spec183 plan](../183-native-di-closure/plan.md)。
+> 本文及旧 R12 不再派发；实现/契约/证据仍保留历史，未完成资格未关闭。
+
 **Branch**: Experimental | **Revision**: 92 | **Date**: 2026-09-11
 **Status**: IN_PROGRESS / 当前实现与验收状态见 tasks.md 的 Task Progress Registry 和 Current Checkpoint
 **Spec**: [spec.md](spec.md)

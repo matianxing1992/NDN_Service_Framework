@@ -1,5 +1,8 @@
 # Audit-Driven Execution Plan
 
+> **TRANSFERRED 2026-09-11**：[Spec183](../../183-native-di-closure/plan.md) 接管 R12-A–E，
+> 对应 B1–B5。本文件冻结为历史审计后计划；下面 ACTIVE/唯一入口文字是迁移前状态。
+
 **Revision**: 1 | **Date**: 2026-09-11 | **Status**: ACTIVE; implementation status maintained in tasks.md
 **Authority**: 用户要求新的安排以本次审计为准；[审计报告](../evidence/request-chain-static-audit-20260911.md)。
 

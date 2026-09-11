@@ -1,10 +1,16 @@
 # Tasks: Native NDNSF-DI with Optional Python Bindings
 
-**Revision**: 183 | **Status**: PARTIAL / T001 DONE / R12-A NOT_STARTED
+**Revision**: 184 | **Status**: TRANSFERRED / qualification INCOMPLETE
 **Input**: [spec](spec.md), [code design](contracts/code-design.md),
 [proof](contracts/proof-design.md), [work units](contracts/work-units.md)
 
 ## Execution Progress
+
+**2026-09-11 TRANSFERRED TO SPEC183**：本文件停止派发，剩余执行唯一入口为
+[183 tasks](../183-native-di-closure/tasks.md)。14个 OPEN 父任务和 R12-A–E 全部映射到
+[transfer matrix](../183-native-di-closure/contracts/transfer-matrix.md)；原3个完成 checkbox 和
+全部历史证据保留。TRANSFERRED 不表示完成资格。以下包括 R12 registry 在内均为迁移前快照，
+其中“当前/唯一/下一步”措辞不再生效；后续只在183推进状态。
 
 2026-09-11 **D-R12-AUDIT / DOCUMENTED**：完成当前生产请求链静态审计，确认 F-01–F-04
 四项源码缺陷及 G-01/G-02 两类闭合缺口；没有修改产品代码，没有运行产品测试，父任务勾选不变。
@@ -457,6 +463,9 @@ P1–P4 是不同的生产入口、进程边界或 selector，不能为了少一
 | R10-B76 | production entry/callers: compatibility manifest → maintained Python API inventory; implementation/wire: `checklists/build_api_migration_manifest.py` regenerated all 344 entries and rebounded source line/hash metadata to checkpoint `31fe172a`; test/harness/oracle: generator output, `sourceCommit` equality, design validator and diff check; build/source closure: manifest-only, no ABI or runtime change; migration/evidence: closes stale provenance from R10-B74 while semantic caller mapping, native default migration and legacy retirement remain open | DONE for this bounded manifest provenance boundary; parent T001/O-004/T013-B remain PARTIAL | static review confirms current HEAD identity and 344-entry coverage; manifest remains routing evidence and cannot promote runtime compatibility or qualification | generator PASS (`entries=344`, `dynamicAppSdk=67`); sourceCommit equality PASS; `validate_design.py --json` PASS; `git diff --check` PASS | no product build, requester/Provider transport, maintained caller/no-Python or T016/T017 run | documentation/generator artifact only | `STATIC_PASS`; `FOCUSED_BEHAVIOR_PASS`; `BUILD_NOT_APPLICABLE`; `OPEN_FOR_NEXT_BATCH`; not `QUALIFICATION_PASS` | [R10-B76 evidence](evidence/r10-b76-compatibility-manifest-refresh-20260909.md); next: map and migrate maintained native callers, then regenerate after each source checkpoint |
 
 ## Current Checkpoint
+
+**Current authority: Spec183**。本 Spec 仅保存移交时实现 PARTIAL / qualification INCOMPLETE；
+未完成义务见183迁移矩阵。下面 checkpoint 是移交前历史，不再调度。
 
 2026-09-11 **D-R12-AUDIT / CLOSED_FOR_VALIDATION (documentation only)**：
 [完整报告](evidence/request-chain-static-audit-20260911.md) 已登记四项源码缺陷及两类闭合缺口，

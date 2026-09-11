@@ -4,8 +4,8 @@
 **Feature Directory**: `182-native-di-python-bindings`
 **Created**: 2026-09-06
 **Revision**: 10
-**Status**: DRAFT
-**Execution Status**: implementation PARTIAL; next dispatch R12-A NOT_STARTED; final qualification NOT_RUN; authority: [audit-driven execution](contracts/audit-driven-execution.md)
+**Status**: TRANSFERRED / qualification INCOMPLETE
+**Execution Status**: remaining work transferred to [Spec183](../183-native-di-closure/spec.md); no active dispatch here; historical implementation PARTIAL
 **Activation**: T001 design gate closed; current request-chain audit has open defects and qualification gaps
 
 **Input**: 所有者要求 C++ 自身完成完整 NDNSF-DI 调用；Python 只作为可选兼容外壳。
