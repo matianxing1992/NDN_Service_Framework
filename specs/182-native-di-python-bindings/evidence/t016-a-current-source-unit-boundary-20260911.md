@@ -20,6 +20,14 @@ The changed gate is a fresh configure/build in a new output directory followed
 by the complete C++ unit selector. T016-A remains `PARTIAL` until that gate and
 the remaining native qualification matrix pass.
 
+The fresh current-source configure then hit a separate target-selection
+boundary: the first build command requested `DI_NativeRequester` and
+`di-native-provider` without enabling examples. Waf stopped before any compile
+with `Could not find a task generator for the name 'DI_NativeRequester'`. The
+raw output is in `.codex-tmp/spec182-t016-unit-20260911/build.log`; this is not
+a C++ product failure. The retry is split into the configured test targets and
+an examples-enabled closure.
+
 ## Validation matrix
 
 | Lane | Required result |

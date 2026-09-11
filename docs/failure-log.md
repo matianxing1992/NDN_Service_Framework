@@ -1,5 +1,16 @@
 # Failure Log and Evidence Index
 
+## 2026-09-11 — Spec182 T016-A target configuration boundary
+
+The fresh current-source configure completed successfully, but the first Waf
+build requested example targets while the configuration had not enabled
+examples. Waf stopped before compiling with `Could not find a task generator for
+the name 'DI_NativeRequester'`; the complete command/output is retained in
+`.codex-tmp/spec182-t016-unit-20260911/build.log`. This is a target-selection
+configuration boundary, not a C++ compile or runtime result. The retry uses the
+configured `unit-tests` and `integration-tests` targets, then a separate
+`--with-examples` configuration for the requester/Provider closure.
+
 ## 2026-09-11 — Spec182 T016-A stale unit binary boundary
 
 The first full C++ unit qualification attempt used the existing
