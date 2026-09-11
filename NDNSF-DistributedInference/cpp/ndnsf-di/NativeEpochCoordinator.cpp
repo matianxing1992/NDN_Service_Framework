@@ -971,12 +971,25 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
       executable.outputs.clear();
     }
     throwIfStopped(config);
-    auto roleFuture = config.runtime.executePreparedRoleAsync(
-      config.sessionId, executable, config.io, config.prepareRunner,
-      std::move(inputs), {},
+    // DATA_DRIVEN_V2 normally supplies a post-Selection preparation callback.
+    // The explicitly supported preassembled compatibility path has already
+    // loaded and validated its runner at Provider startup, so it must use the
+    // ordinary runtime entry instead of passing an empty callback to the
+    // prepared-only entry point.
+    const auto stopGuard =
       [stopCheck = config.stopCheck, executionGuard = config.executionGuard] {
         throwIfStopped(stopCheck, executionGuard);
-      });
+      };
+    std::future<ProviderRoleResult> roleFuture;
+    if (config.prepareRunner) {
+      roleFuture = config.runtime.executePreparedRoleAsync(
+        config.sessionId, executable, config.io, config.prepareRunner,
+        std::move(inputs), {}, stopGuard);
+    }
+    else {
+      roleFuture = config.runtime.executeRoleAsync(
+        config.sessionId, executable, config.io, std::move(inputs), {}, stopGuard);
+    }
     traceEpoch("role_submitted", config.role, epoch);
     auto roleResult = roleFuture.get();
     traceEpoch("role_done", config.role, epoch);

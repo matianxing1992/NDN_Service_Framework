@@ -2555,6 +2555,17 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
                     [] (const auto& edge) {
                       return edge.operationKind == "APPLICATION_INPUT";
                     });
+      if (nativeTraceEnabled() && selectionProjection) {
+        std::ostringstream record;
+        record << "NDNSF_DI_INPUT_CONTRACT"
+               << " role=" << role
+               << " input_count=" << roleSpec.inputs.size()
+               << " application_input=" << (hasApplicationInput ? "true" : "false");
+        for (const auto& edge : roleSpec.inputs) {
+          record << " edge=" << edge.operationKind << "@" << edge.scope;
+        }
+        logRuntimeInfo(record.str());
+      }
       if (selectionProjection && !hasApplicationInput) {
         if (config.spec180YnMutation == "Y-N-I") {
           try {
@@ -2595,22 +2606,48 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
             ctx.fail("DI_INPUT_FETCH_ROLE_MISMATCH");
             return;
           }
+          // Remove the authenticated source alias before installing the
+          // certified edge scopes.  An APPLICATION_INPUT endpoint is allowed
+          // to use group_id=request-input, so erasing the alias after mapping
+          // would also erase the real execution input.
+          const auto requestInputBundle = requestInput->second;
+          initialInputs.erase(requestInput);
           for (const auto& edge : roleSpec.inputs) {
             if (edge.operationKind != "APPLICATION_INPUT") {
               continue;
             }
-            auto applicationInput = requestInput->second;
+            auto applicationInput = requestInputBundle;
             applicationInput.name = edge.tensors.size() == 1
               ? edge.tensors.front() : edge.scope;
             applicationInput.expectedSegments = 1;
             applicationInput.expectedBytes = applicationInput.payload.size();
             initialInputs[edge.scope] = std::move(applicationInput);
           }
-          // The request envelope is only the authenticated source object. Once
-          // it has been bound to the certified APPLICATION_INPUT edge, keep
-          // the source alias out of the execution input set so generation
-          // validation sees exactly one canonical token tensor.
-          initialInputs.erase("request-input");
+        }
+      }
+      if (nativeTraceEnabled() && selectionProjection) {
+        for (const auto& item : initialInputs) {
+          std::ostringstream record;
+          record << "NDNSF_DI_INPUT_BUNDLE"
+                 << " scope=" << item.first
+                 << " name=" << item.second.name
+                 << " bytes=" << item.second.payload.size()
+                 << " encoded="
+                 << (isEncodedTensorBundle(item.second.payload) ? "true" : "false");
+          if (isEncodedTensorBundle(item.second.payload)) {
+            try {
+              record << " tensors=";
+              const auto tensors = decodeTensorBundle(item.second.payload);
+              for (std::size_t index = 0; index < tensors.size(); ++index) {
+                if (index != 0) record << ',';
+                record << tensors[index].name;
+              }
+            }
+            catch (const std::exception&) {
+              record << " tensors=<decode-error>";
+            }
+          }
+          logRuntimeInfo(record.str());
         }
       }
       if (cachedKvState) {

@@ -1,7 +1,9 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeObservedOfferV3.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include <boost/test/unit_test.hpp>
+#include <cstdint>
 #include <fstream>
+#include <random>
 
 namespace {
 using namespace ndnsf::di;
@@ -72,5 +74,59 @@ BOOST_AUTO_TEST_CASE(RejectMalformedContractBeforeObservation)
   BOOST_CHECK_THROW(decodeNativeProviderOfferV3(" " + wire), std::invalid_argument);
   BOOST_CHECK_THROW(decodeNativeProviderOfferV3("{\"attempt\":1," + wire.substr(1)), std::invalid_argument);
   BOOST_CHECK_THROW(decodeNativeProviderOfferV3(std::string(1024 * 1024 + 1, ' ')), std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(Spec184NativeParserFuzz)
+{
+  const auto samples = vectors();
+  std::mt19937 generator(0x184F00D);
+  std::uniform_int_distribution<std::size_t> sampleDistribution(0, samples.size() - 1);
+  std::uniform_int_distribution<std::size_t> mutationDistribution(0, 5);
+  std::uniform_int_distribution<unsigned int> byteDistribution(0, 255);
+  std::size_t rejected = 0;
+  std::size_t accepted = 0;
+
+  // This is a bounded deterministic parser campaign.  It exercises the
+  // production decoder with truncation, bit flips, suffix/prefix noise and
+  // structural byte replacement while keeping each input below the decoder
+  // wire limit.  Business meaning remains owned by the decoder's contract
+  // checks; the test only requires a bounded reject or a valid decode.
+  for (std::size_t iteration = 0; iteration < 512; ++iteration) {
+    const auto& sample = samples.at(sampleDistribution(generator));
+    auto mutated = sample.at("wire").get<std::string>();
+    switch (mutationDistribution(generator)) {
+    case 0:
+      mutated.resize(iteration % (mutated.size() + 1));
+      break;
+    case 1:
+      mutated.at(iteration % mutated.size()) =
+        static_cast<char>(byteDistribution(generator));
+      break;
+    case 2:
+      mutated.insert(mutated.begin() + static_cast<std::ptrdiff_t>(
+        iteration % (mutated.size() + 1)),
+        static_cast<char>(byteDistribution(generator)));
+      break;
+    case 3:
+      mutated.append(iteration % 17, static_cast<char>(byteDistribution(generator)));
+      break;
+    case 4:
+      mutated = "{" + mutated;
+      break;
+    case 5:
+      mutated.push_back('}');
+      break;
+    }
+    try {
+      const auto decoded = decodeNativeProviderOfferV3(mutated);
+      BOOST_CHECK(!decoded.provider.empty());
+      ++accepted;
+    }
+    catch (const std::exception&) {
+      ++rejected;
+    }
+  }
+  BOOST_CHECK_GT(rejected, 0U);
+  BOOST_CHECK_GT(accepted, 0U);
 }
 BOOST_AUTO_TEST_SUITE_END()
