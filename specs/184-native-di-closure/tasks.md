@@ -16,7 +16,7 @@
 | [T003 Durable Outcome Linearization](evidence/b2-durable-outcome-20260911.md) | DONE | B1 behavior exit | B2 normal and unsuppressed ASan/UBSan exits complete; no remaining T003-specific gate | 2026-09-11 |
 | [T004 Atomic Private Checkpoint Export](evidence/b3-checkpoint-export-20260911.md) | DONE | B2 exit | B3 normal and unsuppressed ASan/UBSan exits complete; directory-fsync failure remains an explicit implementation limit | 2026-09-11 |
 | [T005 Maintained Caller Mode Closure](evidence/b4-caller-convergence-20260911.md) | DONE | B1–B3 exits | Caller/mode matrix and focused route selectors complete; D2b runtime miss, real-model/no-Python and retirement remain in B5 | 2026-09-11 |
-| [T006 Inherited Obligation and Harness Closure](contracts/qualification-matrix.md) | PARTIAL | B4 exit | 80-row matrix, ordered local candidate identity and fresh convergence audit are recorded; residual process/no-Python, parser-fuzz and negative-row closure remain | 2026-09-11 |
+| [T006 Inherited Obligation and Harness Closure](contracts/qualification-matrix.md) | PARTIAL | B4 exit | 80-row matrix, ordered local candidate identity and fresh convergence audit are recorded; PO-015 review row is PASS, while process/no-Python, parser-fuzz and negative-row closure remain | 2026-09-11 |
 | [T007 Current Native Qualification](contracts/promotion-candidate.md) | IN_PROGRESS | T006 complete and fresh convergence `PASS` | Candidate-bound full unit/component gates recorded; integration has 48 failures and process/no-Python preflight is `UNQUALIFIED`; parser-fuzz and negative rows remain | 2026-09-11 |
 | [T008 Native Development Handoff](plan.md) | NOT_STARTED | T007 `QUALIFICATION_PASS` | Design/API handoff and external experiment transfer remain pending | 2026-09-11 |
 
@@ -46,7 +46,7 @@ fuzz、negative collector、真实模型/MiniNDN、Python retirement 与外部 S
 [promotion candidate](contracts/promotion-candidate.md)），并完成
 [B5 design-to-code convergence audit](evidence/convergence-b5.md)。五条覆盖 lane（production
 caller、implementation/wiring、test/harness、build/source closure、migration/evidence）均已
-对账；当前完整 unit exit `0`，完整 integration exit `1`/48 failures，parser-fuzz 和
+对账，PO-015 review row 已为 `PASS`；当前完整 unit exit `0`，完整 integration exit `1`/48 failures，parser-fuzz 和
 process/no-Python 尚未运行。该出口只授权开始候选本地 qualification，不提升 T006/T007 状态；
 T006 仍为 `PARTIAL`，T007/T008 仍未完成。
 

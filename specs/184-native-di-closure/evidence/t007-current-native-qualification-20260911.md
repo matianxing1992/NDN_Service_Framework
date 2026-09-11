@@ -2,7 +2,7 @@
 
 **Date**: 2026-09-11  
 **Status**: `PARTIAL` / candidate-bound local qualification started; no promotion  
-**Candidate**: `sha256:d4f5409c2cf313539fabf75b3ad8300562c8b56822f9106fc98ea0a511d3f06a`
+**Candidate**: `sha256:f7ee8f65a67a375f993e4db3a7558f22e996b8b170415b7d1325be89e3f32441`
 
 本记录绑定 [promotion candidate](../contracts/promotion-candidate.md) 的当前源码、运行时、
 fixture、harness 和配置身份。它汇总本地 C++ 资格边界，不能把局部 selector 或 Python
