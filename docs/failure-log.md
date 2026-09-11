@@ -1,5 +1,14 @@
 # Failure Log and Evidence Index
 
+## 2026-09-11 — Proposal scope checkpoint hook boundary
+
+The default commit hook rejected repository-wide historical assistant references
+before creating a commit. The hook and maintained Spec182 evidence document
+`NDNSF_LOCAL_CHECKPOINT=1` for local documentation checkpoints; that mode retains
+prohibited-path checks. No hook is changed and no `--no-verify` is used.
+See [scope review](PAPER/proposal-defense/invocation-scope-review-20260911.md)
+and `.codex-tmp/proposal-invocation-scope-20260911/checkpoint-hook-default.log`.
+
 ## 2026-09-11 — Proposal document build invocation boundary
 
 The sentence-review build first stopped before LaTeX execution because its

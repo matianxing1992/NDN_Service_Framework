@@ -1,5 +1,9 @@
 # Sentence-level Proposal and Slides Review
 
+后续整体叙事修订见 [invocation scope review](invocation-scope-review-20260911.md)。
+它纠正本轮 S02 场景开场造成的范围偏向：初版是多候选选一，协作是扩展。
+下面发现表和验证结论保留为历史；句子清单已按最新源码重新生成。
+
 ## Scope and Verdict
 
 本轮逐句阅读英文／中文共享正文、四入口摘要、40 页 slides 和协议图文字，

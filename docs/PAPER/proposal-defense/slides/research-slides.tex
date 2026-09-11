@@ -1,34 +1,34 @@
 % Research-question-first body. Shared by the normal and 35-minute entry points.
 \begin{frame}[plain]\titlepage\end{frame}
 
-\begin{frame}{Start with a Task: Several Views, One Result}
+\begin{frame}{Service Discovery: Several Candidates, One Executor}
 \begin{columns}[T,onlytextwidth]
 \column{.46\linewidth}
 \begin{itemize}
-\item An operator selects a ground area.
-\item Nearby unmanned aerial vehicles (UAVs) offer suitable views.
-\item A compute Provider analyzes the images.
-\item The operator receives original images with annotations.
+\item The User knows the required service.
+\item Reachability, capability and willingness may change.
+\item Eligible Providers return ACK Data.
+\item The User selects one Provider to execute.
 \end{itemize}
 \column{.51\linewidth}
 \begin{tikzpicture}[node distance=8mm,box/.style={draw=MemphisBlue,rounded corners,fill=LightBand,align=center,font=\small,text width=26mm,minimum height=10mm},>=Stealth]
-\node[box] (a) {UAV A\\view 1};
-\node[box,below=of a] (b) {UAV B\\view 2};
-\node[box,right=9mm of a,yshift=-9mm] (c) {Compute\\Provider};
-\node[box,below=12mm of c] (u) {Operator};
-\draw[->,thick] (a)--(c);\draw[->,thick] (b)--(c);\draw[->,thick] (c)--(u);
+\node[box,text width=40mm] (a) {Candidate Providers\\A, B, C};
+\node[box,text width=40mm,below=of a] (b) {User selects B};
+\node[box,text width=40mm,below=of b] (c) {B executes the service};
+\draw[->,thick] (a)--(b);\draw[->,thick] (b)--(c);
 \end{tikzpicture}
 \end{columns}
-\vspace{3mm}\bluebox{Who can participate now, and which Data may each selected Provider use?}
+\vspace{3mm}\bluebox{Initial NDNSF: discover alternatives and select one Provider per invocation, not multiple collaborating roles. Arrows show the selection process.}
 \end{frame}
 
-\begin{frame}{The Task Creates Three Requirements}
-\begin{enumerate}
-\item \textbf{Discover current willingness:} reachability, sensors, load, and deadlines affect participation.
-\item \textbf{Authorize before execution:} exposing a service does not grant everyone permission to use it.
-\item \textbf{Check task inputs:} a valid image signature does not show that its producer was assigned to this task's dependency.
-\end{enumerate}
-\vspace{4mm}\bluebox{The research connects participation decisions to authorized execution and task-specific input checks, then measures the cost.}
+\begin{frame}{From Invocation to Collaboration: Two Research Scopes}
+\begin{block}{Foundation: evaluate discovery and authorization}
+The initial prototype selects one Provider. Discovery confidentiality, service permissions and management costs matter even without collaboration.
+\end{block}
+\begin{block}{Extension: coordinate complementary roles}
+Some tasks need several Providers with different responsibilities. Separate calls do not define a shared role assignment or enforce dependencies between them.
+\end{block}
+\vspace{3mm}\bluebox{Evaluate the invocation foundation; develop and validate the collaboration extension. Existing invocation results do not establish collaboration correctness.}
 \end{frame}
 
 \begin{frame}{What NDN Provides---and What It Does Not}
@@ -47,10 +47,10 @@ NAC [4] / enhanced NAC-ABE [19] & Use content encryption for read access; separa
 \begin{frame}{Three Research Questions}
 \begin{itemize}
 \item \textbf{RQ1:} How can NDNSF discover willing Providers, keep descriptors confidential from unauthorized readers, and check service permissions before execution, and at what cost?
-\item \textbf{RQ2:} How can Providers selected at runtime follow task roles and named dependencies, whether Data comes from producers or caches?
+\item \textbf{RQ2:} How can single-Provider invocation be extended to roles and named dependencies across Providers, whether Data comes from producers or caches?
 \item \textbf{RQ3:} When do these mechanisms improve completion, latency, or execution efficiency, and when do their costs outweigh the benefits?
 \end{itemize}
-\vspace{3mm}\bluebox{UAV sensing tests dependencies between observations; distributed inference tests ordered computation and state. Both evaluate the same framework.}
+\vspace{3mm}\bluebox{RQ1 evaluates the invocation foundation; RQ2 studies its collaboration extension; RQ3 measures both scopes separately.}
 \end{frame}
 
 \begin{frame}{Related Work Already Provides Important Pieces}
@@ -63,7 +63,7 @@ DNMP [12] & Role- and command-constrained signing and verification\\\midrule
 CaSCON [15] & Service-composition research; requires a feature-level comparison before claiming a new composition mechanism\\\midrule
 gRPC [17,27] & Complete configurations can include discovery/resolver integration, not only fixed addresses\\\bottomrule
 \end{tabularx}
-\vspace{2mm}\bluebox{Proposed contribution: each selected Provider checks whether input Data matches the task's runtime role assignments and declared dependencies.}
+\vspace{2mm}\bluebox{Collaboration research: make runtime assignments constrain intermediate Data use. Discovery and authorization are evaluated separately.}
 \end{frame}
 
 \begin{frame}{Contributions and Evidence Are Different Things}
@@ -79,7 +79,7 @@ Cross-case empirical findings & Existing mobility/work-efficiency and small-mode
 
 \begin{frame}{Participants and Trust Bootstrap}
 \begin{itemize}
-\item User: requests and coordinates the invocation.
+\item User: requests a service and selects a Provider; the extension also assigns collaboration roles.
 \item Provider: offers and executes a service. A node may play both roles.
 \item Controller: administers identities and service permissions approved by the organization.
 \item Participants use provisioned trust anchors and validation rules for certificates and Controller material.
@@ -87,7 +87,7 @@ Cross-case empirical findings & Existing mobility/work-efficiency and small-mode
 \vspace{3mm}\bluebox{Unknown runtime candidates are not unregistered authorization identities. The User discovers current participation; the Controller does not choose this task's Providers.}
 \end{frame}
 
-\begin{frame}{One Invocation, Four Named Data Types}
+\begin{frame}{Single-Provider Invocation: Four Named Data Types}
 \small
 \begin{tabularx}{\linewidth}{p{.15\linewidth}X}
 \toprule Data & Logical purpose\\\midrule
@@ -190,7 +190,7 @@ NDNSF ABE-backed & User/Provider check signatures, challenge responses, service 
 \bluebox{No Byzantine-coordinator consensus claim; no traffic-analysis or instantaneous-revocation guarantee.}
 \end{frame}
 
-\begin{frame}{RQ2: Generate the Plan from Eligible Positive ACKs}
+\begin{frame}{RQ2 Extension: From Positive ACKs to a Role Plan}
 \begin{enumerate}
 \item Application supplies roles, dependency template, constraints and deadline; the template may be handwritten.
 \item The User closes the ACK window and freezes the eligible, validated positive ACKs.
@@ -222,7 +222,7 @@ Does not alone describe key scope & Associates permitted objects, execution iden
 \vspace{3mm}\bluebox{Apply the same rules to direct, cached and repository-fetched Data. This is a proposed acceptance contract; full end-to-end qualification remains required.}
 \end{frame}
 
-\begin{frame}{Failure Handling Needs Explicit State}
+\begin{frame}{Collaboration Recovery Needs Explicit State}
 \small
 \begin{tabularx}{\linewidth}{p{.3\linewidth}X}
 \toprule Event & Required behavior\\\midrule
@@ -235,14 +235,15 @@ Cancellation & Prevent late messages from reauthorizing cancelled work\\\bottomr
 \vspace{3mm}\bluebox{Network re-retrieval is not task re-execution. Compensation is not an atomic transaction or exactly-once physical action.}
 \end{frame}
 
-\begin{frame}{Proposed UAV Flow: Capture, Analyze and Return}
+\begin{frame}{Proposed UAV Collaboration: Capture, Analyze and Return}
+\small An operator requests ground-area views from unmanned aerial vehicles (UAVs), followed by analysis.
 \begin{enumerate}
-\item Each sensing UAV signs ViewImage Data containing encrypted image content and publishes it in its own authorized namespace.
+\item Sensing UAVs sign encrypted ViewImage Data under their authorized namespaces.
 \item The compute Provider retrieves images over assigned edges and publishes Annotation Data.
-\item The compute Provider includes original image names and permitted image keys in its encrypted result for the requester.
+\item Its encrypted result gives the requester original image names and permitted image keys.
 \item The requester retrieves the original images and displays the annotations.
 \end{enumerate}
-\vspace{3mm}\bluebox{No need to republish the same images as if the compute Provider produced them. GPS alone does not establish camera visibility or accurate triangulation.}
+\vspace{2mm}\bluebox{Original image Data remains under its producer's name. GPS alone does not establish camera visibility.}
 \end{frame}
 
 \begin{frame}{What the UAV Case Must Demonstrate}
@@ -384,7 +385,7 @@ February 2027 & Target defense, conditional on evidence and committee approval\\
 \item Are one UAV graph and one supported DI partition sufficient to test the abstraction?
 \item Which optional features should be excluded if they delay the core evidence?
 \end{enumerate}
-\vspace{4mm}\bluebox{NDNSF: runtime service discovery and authorization, connected to explicit named-data execution rules.}
+\vspace{4mm}\bluebox{NDNSF: evaluate runtime discovery and authorized invocation; extend the foundation to role-aware collaboration.}
 \end{frame}
 
 \appendix

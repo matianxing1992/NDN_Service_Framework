@@ -1,5 +1,13 @@
 # Research-first Proposal Revision and Evidence Audit
 
+## 2026-09-11 Invocation Scope Revision
+
+最新修订见 [invocation scope review](invocation-scope-review-20260911.md)：
+全篇统一为“发现／授权与单 Provider 调用基础 → 多角色协作扩展”，先说明
+初版多个候选中选一，再引入 UAV／DI 依赖案例；摘要、RQ、协议表、结论、
+slides 和讲稿保持一致。最新验证见 `invocation_scope_revision`，下面的
+`sentence_review_revision` 是上一轮历史记录。实验数值与产品资格状态不变。
+
 ## 2026-09-11 Sentence-level Review
 
 本轮全篇审查与未解决证据边界见 [sentence review](sentence-review-20260911.md)，

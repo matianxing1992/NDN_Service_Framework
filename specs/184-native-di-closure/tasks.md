@@ -32,6 +32,13 @@
 
 ## Current Checkpoint
 
+2026-09-11 **PROPOSAL-INVOCATION-SCOPE / DOCUMENT_PASS**：按作者确认的初版多候选选一
+范围，整体区分调用基础与多角色协作扩展；更新摘要、正文、RQ、协议表、结论和 slides。
+双语 PDF 30/23 页、slides 40 页、讲稿 8 页；八入口构建与同语言文本一致性通过，
+826/826 PPTX span 分配及 PDF／LibreOffice 回渲边界检查通过，实验页数字保持不变。
+证据见 [invocation scope review](../../docs/PAPER/proposal-defense/invocation-scope-review-20260911.md)
+与 `invocation_scope_revision`。不改产品/API，不运行产品实验，不推进 T007/T008 资格状态。
+
 2026-09-11 **DISK-CLEANUP / CLEANUP_PASS**：清理 `.codex-tmp` 与 `pythonWrapper/build` 中
 可重建的 3304 个 `.o/.d` 中间文件（约 5.19 GiB），并清除无活动进程使用的 Go/pip 缓存；
 当前候选可执行文件、库、原始证据、模型、SIF、密钥和未提交源码均保留。清理前后磁盘可用空间

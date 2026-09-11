@@ -14,3 +14,8 @@ Build English with `latexmk -norc -pdf -bibtex -interaction=nonstopmode -halt-on
 `review_rendered.py` creates per-page images, contact sheets, bounds/word-count reports, and optional presenter-reference notes from PDF. It requires PyMuPDF and Pillow. These checks do not certify semantic truth. The maintained PPTX converter is `slides/generate_hybrid_editable_pptx.py`; use a new, nonexistent `/tmp/ndnsf-*/ndnsf-build` directory or its approved repository build root. Existing temporary directories require the converter's own marker. It preserves editable text and takes notes through `--notes-tex`.
 
 Final PDF/PPTX/source hashes, build results and evidence boundaries are recorded in `research-revision-validation.json` and `research-revision-audit.md`. No experiment should be rerun merely to rebuild the documents. The 35-minute label is a retained filename; speaking time still requires rehearsal with the advisor's requested slot.
+
+The latest invocation/collaboration-scope revision uses `validate_invocation_scope.py`
+and the `invocation_scope_revision` validation record. The earlier
+`validate_sentence_review.py` and its raw directory document the previous revision;
+do not run it against newer PDFs and present its historical evidence as a new check.
