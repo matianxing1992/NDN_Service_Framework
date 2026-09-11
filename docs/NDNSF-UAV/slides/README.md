@@ -16,6 +16,10 @@ revision adds simulation-to-field gaps and proposed hardware/perception validati
 stages. It does not report flight qualification. See
 [revision and validation record](UPDATES_UAV-review.md).
 
+The 2026-09-11 revision defines a bounded useful-view task, permits ground or
+airborne analysis, and separates the value of extra cameras from the value of
+runtime service selection. The six-page layout and final product-photo page remain.
+
 To regenerate the update deck without mixing temporary files into the source:
 
 ```bash

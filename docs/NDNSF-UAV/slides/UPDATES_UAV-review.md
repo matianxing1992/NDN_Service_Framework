@@ -1,5 +1,37 @@
 # UAV Simulation-to-Field Revision
 
+## Current Revision: Bounded Task and Measurable Value — 2026-09-11
+
+判断：停放汽车适合作为可控的系统集成/协作验证对象，目标静止、所需视图和可见性容易独立标注；
+但普通停车场检查本身并不必然需要多架无人机或空中 GPU。原稿缺少明确输出、简单方案基线以及
+“感知收益”和“框架收益”的区分，容易让读者认为为了展示协作而堆叠设备。
+本轮将应用收敛为远程视觉核查：在 deadline 内获取同一辆车的 rear/roof/front 视图，返回
+覆盖情况、缺失视图、标注与原图名称；是否值得多机投入留给实验，不声称完成工业级损伤诊断。
+
+| Page | Severity | Category | Problem / revision | Evidence boundary |
+| --- | --- | --- | --- | --- |
+| 1 | Major | Purpose / placement | 未说明检查输出；固定 GPU UAV 无任务必要性。明确远程视图任务，Analyzer 可放地面或 UAV | Proposed controlled field test；非实机成绩 |
+| 2 | Major | Argument / layer | 仅列职责，未解释测试价值。说明动态可用性、依赖数据和访问权限；使用 Request/ACK/Selection/Response Data，执行单列 application | 不把相机 command acknowledgement 当 NDNSF ACK；单机+地面处理是有效基线 |
+| 3 | Major | Scope | detector 被暗示能提供完整融合结果。先验证 same-car association 与所需视图覆盖 | 损伤诊断/3-D 重建需独立算法与验证 |
+| 4 | Minor | Physical outcome | 几何定位/融合前置条件超过当前最小目标。聚焦同一车辆、所需视图、有效图像和失败返回 | 飞行稳定与安全拒绝仍由本机承担 |
+| 5 | Major | Evaluation | 无法区分多镜头收益与框架收益。增加单机逐视图/多机比较及同机群固定分配/动态选择消融 | 消融不证明优于其他框架；匹配场景/模型/任务，记录失败与总代价 |
+| 6 | Minor | Hardware status | 保留真实产品图及控制接口，标题明确为第一阶段台架候选 | 官方图片与产品页，不是实装照片 |
+
+按 ndn-slides-review 的“任务→机制→可观察结果→有界结论”审查修改；保持6页、可编辑 TikZ 图和
+产品图片，未运行硬件/产品/飞行实验，未改变 API/Design 冻结快照。NDNSF 机制沿用现有设计，
+本轮只修正应用论证，不宣称这些组合已经通过实机验证。下一步应完成一台相机/云台的有效视图闭环，
+然后用同场景数据验证多机相对单机是否带来值得付出代价的收益。
+
+Validation：pdfLaTeX 最终连续两遍成功，6页，最终日志无 Overfull/Underfull/Warning/缺字。
+Poppler 全页渲染人工检查；发生文字变化的第1/2/4/5页再次检查。文本预检无超100词页面；
+唯一候选提示为第6页 First，指“首个台架阶段”而非首创，人工核对不属不实声明。
+首轮第2页4.28pt溢出已通过缩短正文及流程框调整解决，初始与最终日志保留在
+`.codex-tmp/uav-case-value-20260911/`（最终 pass6.log）。两份 PDF 同源同步。
+官方 [SIYI](https://shop.siyi.biz/products/siyi-a8-mini-gimbal-camera) 与
+[Gremsy](https://gremsy.com/products/pixy-u) 产品页已核对，末页来源链接保留。
+本机 Spec 改号已由 `80e64053` 完成，active feature 为184，本轮未再次迁移。
+以下 revision 均为历史，不代表当前页内容。
+
 ## Current Revision: Official Product Images
 
 用户要求最后一页增加产品图：加入 SIYI 官方商店 A8 mini 图片与 Gremsy 官方 Pixy U 图片，标题从泛称 Pixy family 收敛为实物型号 Pixy U。保留“一体机 / 云台需另配相机”的区别，缩短文字，6 页总数不变。来源与格式转换见 `assets/product-image-sources.md`；未使用生成图代替产品照片。

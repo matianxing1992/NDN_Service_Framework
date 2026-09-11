@@ -1,5 +1,7 @@
 % Shared six-slide body; included by UPDATES.tex.
-\begin{frame}{Real-World Scenario: Inspect a Parked Car}
+\begin{frame}{A Controlled Task: Collect Useful Views of One Car}
+\small Remote visual check: an operator requests rear, roof and front views of one parked car before a deadline.
+\vspace{.4em}
 \centering
 \begin{tikzpicture}[font=\scriptsize,
  data/.style={-{Stealth},thick,Green}, sight/.style={dashed,thick,Orange}]
@@ -13,7 +15,7 @@
 \draw[Navy](5.56,1.45)--(5.56,1.08);
 \draw[Navy,thick](5.35,1.38)--(5.46,1.38);
 \fill[Orange!70](6.42,1.23) rectangle (6.62,1.34);
-\node[below,align=center] at (5.6,.67) {Parked car: known GPS region};
+\node[below,align=center] at (5.6,.67) {Same parked car; approximate location};
 \foreach \x/\y/\name in {1.5/3.5/A: rear-side view,5.65/3.9/B: roof view,9/3.3/C: front-side view}{
  \begin{scope}[shift={(\x,\y)}]
  \draw[Navy,thick](-.38,-.16)--(.38,.16) (-.38,.16)--(.38,-.16);
@@ -28,38 +30,38 @@
 \fill[Orange,opacity=.12](5.65,3.45)--(5.05,2.05)--(6.65,2.05)--cycle;
 \fill[Orange,opacity=.12](9,2.85)--(6.1,.95)--(6.65,2.05)--cycle;
 \draw[sight](1.5,3.05)--(4.8,1.7);\draw[sight](5.65,3.45)--(5.65,2);\draw[sight](9,2.85)--(6.4,1.55);
-\node[draw=Navy,fill=white,rounded corners,align=center,minimum height=.65cm](gs) at (1.2,.3){Ground station\\Map + annotated views};
-\node[draw=Green,fill=white,rounded corners,align=center,minimum height=.65cm](gpu) at (10.7,1.25){Selected GPU UAV\\Analyze + combine};
+\node[draw=Navy,fill=white,rounded corners,align=center,minimum height=.65cm](gs) at (1.2,.3){Operator station\\View coverage + images};
+\node[draw=Green,fill=white,rounded corners,align=center,minimum height=.65cm](gpu) at (10.7,1.25){Selected Analyzer\\Ground node or UAV};
 \draw[data](1.95,3.6) to[bend left=15](gpu.north);
 \draw[data](6.15,3.9) to[bend left=10](gpu.north);
 \draw[data](9.45,3.3)--(gpu.north);
 \draw[data](gpu.south)--(10.7,-.05)--(1.2,-.05)--(gs.south);
 \node[fill=white,text=Green] at (8.6,4.28){Named image Data};
-\node[fill=white,text=Green] at (9.5,.12){Results + image access};
+\node[fill=white,text=Green] at (9.5,.12){Annotations + image names};
 \node[align=left,text=Navy] at (1.4,1.8){Each camera UAV needs:\\GPS/IMU pose\\Gimbal + camera API};
 \end{tikzpicture}
-\evidence{Illustrative field scenario, not a completed flight experiment. Orange: camera view. Green: application data flow, not flight paths.}
+\evidence{Proposed field test, not a completed flight experiment. Orange: views; green: named-data retrieval, not flight paths or unsolicited push.}
 \end{frame}
 
-\begin{frame}{NDNSF Connects Roles; Sensors Must Deliver the Views}
+\begin{frame}{Why This Is a Useful NDNSF Test Case}
 \centering
-\begin{tikzpicture}[node distance=.25cm,font=\small,
+\begin{tikzpicture}[node distance=.25cm,font=\footnotesize,
  b/.style={draw=Navy,rounded corners,fill=Blue!6,text width=2.1cm,minimum height=1.1cm,align=center}]
-\node[b](r){Request\\Car location + constraints};
-\node[b,right=of r](o){ACK\\Camera / GPU offers};
-\node[b,right=of o](s){Selection\\Views + Analyzer};
-\node[b,right=of s](v){Execute\\Capture + analyze};
-\node[b,right=of v](e){Response\\Annotations + image access};
+\node[b](r){Request Data\\Views + deadline};
+\node[b,right=of r](o){ACK Data\\Provider offers};
+\node[b,right=of o](s){Selection Data\\Views + Analyzer};
+\node[b,right=of s](v){Application\\Capture + analyze};
+\node[b,right=of v](e){Response Data\\Coverage + names};
 \foreach \a/\b in {r/o,o/s,s/v,v/e}{\draw[-{Stealth},thick,Navy](\a)--(\b);}
 \end{tikzpicture}
 \vspace{.8em}
 \begin{itemize}
-\item \textbf{NDNSF}: discover authorized Providers, assign roles, retrieve protected data and track completion.
-\item \textbf{UAV application}: navigate, point the camera, capture and validate the observation.
-\item \textbf{Perception}: detect the car, associate the same car across views and combine evidence.
+\item \textbf{Availability}: select camera and compute Providers at request time.
+\item \textbf{Dependencies}: retrieve selected views by name; report coverage and missing views.
+\item \textbf{Access rights}: authorize services and protect images across participating devices.
 \end{itemize}
-\claim{Successful message exchange does not prove that a UAV captured the right target.}
-\evidence{Proposed inspection workflow; component/simulation evidence does not establish field qualification.}
+\claim{Compare against one UAV and ground compute; measure whether collaboration is worth its cost.}
+\evidence{Proposed mapping: NDNSF handles invocation; the application validates capture and same-car association.}
 \end{frame}
 
 \begin{frame}{Three Gaps Between Simulation and the Field}
@@ -68,9 +70,9 @@
 \textbf{Gap}&\textbf{Simplified example}&\textbf{Real deployment needs}\\\hline
 Position / pointing & Known coordinates; assigned views & GPS + IMU, camera/gimbal calibration, coordinate frames, synchronized pose and exposure\\
 Useful images & Car assumed visible & Real control/capture APIs, feedback, blur/occlusion checks and bounded retries\\
-Multi-view analysis & Images supplied to a detector & Same-target association, uncertainty-aware fusion and independent ground truth\\
+Multi-view result & Images supplied to a detector & Same-car association, requested-view coverage and independent image labels\\
 \end{tabular}
-\claim{Known GPS narrows the search; it does not guarantee visibility or make three detections a reliable multi-view result.}
+\claim{Start with verified, complementary images. Damage diagnosis and 3-D reconstruction require separate algorithms and validation.}
 \evidence{Candidate tools: \href{https://mavsdk.mavlink.io/main/en/cpp/index.html}{MAVSDK control/telemetry}; \href{https://docs.opencv.org/4.13.0/d9/d0c/group__calib3d.html}{OpenCV calibration/geometry}. Hardware support and integration remain to be verified.}
 \end{frame}
 
@@ -87,26 +89,28 @@ Multi-view analysis & Images supplied to a detector & Same-target association, u
 \end{tikzpicture}
 \vspace{1.5em}
 \begin{itemize}
-\item A control ACK is not capture success: check the image and measured camera pose.
-\item A pixel needs geometry/depth for world localization; views need correspondence before fusion.
+\item A camera command acknowledgement is not capture success: check the image and measured pose.
+\item Match each image to the same car and requested view; reject stale or unusable frames.
 \item Keep stabilization and safety rejection onboard, independent of network delays.
 \end{itemize}
 \evidence{Proposed feedback loop: reject stale pose, missing frames and exhausted deadlines.}
 \end{frame}
 
-\begin{frame}{A Short Route to a Credible Field Demonstration}
+\begin{frame}{Test Camera Benefit and Framework Benefit Separately}
 \small
-\begin{enumerate}
-\item \textbf{Bench}: one real camera/gimbal; verify commands, capture, calibration and pose/time alignment.
-\item \textbf{Flight simulation}: use the same adapter; inject navigation error, occlusion and link loss. Use \href{https://docs.px4.io/main/en/simulation/}{PX4 software/hardware-in-the-loop} where supported.
-\item \textbf{One UAV}: inspect a parked car at a surveyed location; measure pointing error, useful-view rate and latency.
-\item \textbf{Multiple UAVs}: compare one versus complementary views; measure recognition quality, time/energy cost and participant failures.
-\end{enumerate}
-\claim{Next milestone: one real, correctly aimed image with synchronized pose and independently checked target visibility.}
-\evidence{Planned stages, not completed experiments. Start with a parked car; moving-car tracking is outside this first demonstration.}
+\renewcommand{\arraystretch}{1.35}
+\begin{tabular}{>{\RaggedRight\arraybackslash}p{.25\textwidth}>{\RaggedRight\arraybackslash}p{.33\textwidth}>{\RaggedRight\arraybackslash}p{.32\textwidth}}
+\textbf{Question}&\textbf{Comparison}&\textbf{Measure}\\\hline
+Are extra UAVs useful? & One UAV visits all views vs. multiple UAVs & Useful-view coverage, completion time, total energy\\
+Does selection help? & Fixed assignments vs. runtime selection; same fleet & Completion under Provider loss, deadline misses, network bytes\\
+\end{tabular}
+\vspace{.5em}
+\textbf{Route:} camera bench $\rightarrow$ flight simulation $\rightarrow$ one real UAV $\rightarrow$ multiple UAVs.
+\claim{Fix the scene, views and deadline. Label visibility independently; include failed runs.}
+\evidence{Planned ablation, no measured advantage. Match cameras, models and workload; include ground compute. This is not a comparison with other frameworks.}
 \end{frame}
 
-\begin{frame}{Available Hardware: Programmable Gimbal Cameras}
+\begin{frame}{Candidate Hardware for the First Camera Bench Test}
 \fontsize{9}{10.5}\selectfont
 \begin{columns}[T,onlytextwidth]
 \column{.48\textwidth}

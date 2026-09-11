@@ -17,6 +17,11 @@
 
 ## Current Checkpoint
 
+2026-09-11 **D-UAV-CASE / CLOSED_FOR_VALIDATION (documentation only)**：
+[UAV update PDF](../../docs/NDNSF-UAV/slides/UPDATES_UAV.pdf) 已按案例价值审查修订，6页双遍构建、
+文本密度与渲染检查通过；[证据](../../docs/NDNSF-UAV/slides/UPDATES_UAV-review.md)。
+无产品/API/实验变化，不推进本 Spec 的 B1–B5；下一原生工作仍按下述文档门禁复核后进入 B1/T001。
+
 文档移交和执行门禁已建立；产品实现0个任务完成，下一步为文档门禁复核后进入 B1/T001。
 Spec182 的14个 OPEN 父任务和 R12-A–E 全部承接；未搬运历史长记录，既有 PASS 只保留原证据范围。
 本轮只修改 Spec184/历史指针文档，未改产品代码、未编译/运行产品测试；迁移文档的结构 PASS
