@@ -13,7 +13,7 @@
 | B2 | DYNAMIC_PASS / CLOSED_FOR_VALIDATION | `asan-ubsan` PASS；durable handle/journal 一致、publish 后终态不降级、residue=0 | T003 已完成；进入 B3/T004 |
 | B3 | DYNAMIC_PASS / CLOSED_FOR_VALIDATION | `asan-ubsan` PASS；原子 export、symlink refusal、pre-rename failure preservation、loader smoke | T004 已完成；进入 B4/T005 |
 | B4 | CLOSED_FOR_VALIDATION / PARTIAL | caller rows use `none` with reason; inherited B1/B2 profiles cover shared async owners | T005 matrix/route closure complete；D2b runtime miss、real model/no-Python and retirement remain T006/T007 |
-| B5 | NOT_STARTED | inherited row profiles；文档对账 `none` with reason | T006 矩阵/缺口修复 → fresh convergence audit `PASS` → T007 正式本地资格 → T008 交付 |
+| B5 | IN_PROGRESS / T006 PARTIAL | inherited row profiles；文档对账 `none` with reason | qualification matrix 已逐项绑定；仍需 exact current selectors/artifact/config identity、缺口修复 → fresh convergence audit `PASS` → T007 正式本地资格 → T008 交付 |
 
 ## Current Checkpoint
 
@@ -66,6 +66,13 @@ profile 对 caller/launcher 记为 `none` with reason，B1/B2 的 TSan/ASan/UBSa
 miss 保留；真实模型、no-Python、Python retirement 和外部实验仍未验收。详见
 [B4 evidence](evidence/b4-caller-convergence-20260911.md) 与 [caller matrix](contracts/caller-matrix.md)。
 
+2026-09-11 **B5-MATRIX / PARTIAL**：T006 已将 14 个继承父任务、16 个 `PO`、8 个 `I`、
+19 个 `FR`、14 个 `CD` 和 9 个 `INV` 逐项加入 qualification matrix，共 80 行；矩阵字段
+检查在修正继承旧行列数范围后通过，动态参数矩阵要求已同步到共享 skill、Spec Kit templates
+和 Spec184。当前 `DEV-865e1ee2` 只是真实开发 checkpoint 关联标签，不是 promotion candidate；
+native tokenizer/parser、完整 process/no-Python、真实模型、ordered candidate digest、
+fresh convergence audit 和 T007 仍开放。详见 [B5 matrix evidence](evidence/b5-matrix-binding-20260911.md)。
+
 2026-09-11 **D-UAV-TRIM / CLOSED_FOR_VALIDATION (documentation only)**：按用户要求删除
 UAV update PDF 原第4/5页，现4页；双遍构建及全页渲染通过，两份导出同步。
 [证据](../../docs/NDNSF-UAV/slides/UPDATES_UAV-review.md)。不推进 B1–B5，原生下一步保持不变。
@@ -94,7 +101,7 @@ Spec182 的14个 OPEN 父任务和 R12-A–E 全部承接；未搬运历史长�
 
 ## Phase 3: Qualification and Delivery
 
-- [ ] T006 [US3] **Inherited Obligation and Harness Closure**. FR-006；维护 [qualification matrix](contracts/qualification-matrix.md)，逐项对账原14个 OPEN 任务、PO-001–016及适用 I/FR/CD/INV，并分别给出 obligation、component、harness、identity 和 external-owner 行；补残余组件/装配/tokenizer/host/绑定实现或 fixture、trace/marker/build identity 缺口。每个新增实现子组先静态门再定向 C++ 验证，候选冻结且控制性 finding 清零后运行 fresh convergence audit。Risk class: `qualification-evidence`; Dynamic profile: per inherited row, documentation reconciliation `none` with reason; invariants: source/artifact identity、selector-to-obligation mapping。Dependencies: B4 exit；只读对账可提前。
+- [ ] T006 [US3] **Inherited Obligation and Harness Closure**. FR-006；维护 [qualification matrix](contracts/qualification-matrix.md)，已逐项对账原14个 OPEN 父任务、PO-001–016及适用 I/FR/CD/INV（80 行），并分别给出 obligation、component、harness、identity 和 external-owner 行；仍需补残余组件/装配/tokenizer/host/绑定实现或 fixture、trace/marker/build identity 缺口。每个新增实现子组先静态门再定向 C++ 验证，候选冻结且控制性 finding 清零后运行 fresh convergence audit。Risk class: `qualification-evidence`; Dynamic profile: per inherited row, documentation reconciliation `none` with reason; invariants: source/artifact identity、selector-to-obligation mapping and bounded parameter matrix。Dependencies: B4 exit；矩阵对账已完成但验收仍 PARTIAL。Evidence: [B5 matrix evidence](evidence/b5-matrix-binding-20260911.md)。
 - [ ] T007 [US3] **Current Native Qualification**. FR-006；仅在 T006 的 qualification matrix 完整且 `evidence/convergence-b5.md` 为当前 candidate 的 fresh `PASS` 后，按矩阵运行同源完整 unit/integration、YOLO/Qwen MiniNDN/no-Python 与检错负例；绑定源码/二进制/日志，区分局部 PASS 和正式 qualification；不重跑未受影响的历史实验。Risk class: `qualification-runtime`; Dynamic profile: per inherited row (at minimum `tsan` for concurrency rows and `asan-ubsan` for lifetime/parser rows); invariants: candidate identity、terminal cleanup、negative boundary。Dependencies: T006 static/focused exits and fresh convergence `PASS`。
 - [ ] T008 [US3] **Native Development Handoff**. FR-006；同步 Design/API/使用说明、两个入口示例、最终源码基线、剩余外部实验 TRANSFERRED 状态；不得以文档移交替代本地资格。Risk class: `documentation`; Dynamic profile: `none` (no runtime state); invariants: evidence links and status agreement。Dependencies: T007 PASS。
 

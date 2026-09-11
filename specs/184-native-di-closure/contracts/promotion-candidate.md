@@ -1,6 +1,6 @@
 # Spec184 Promotion Candidate Contract
 
-**Status**: PLANNED / no candidate promoted
+**Status**: PARTIAL / development identity recorded; no candidate promoted
 **Owner**: T006 before any expensive validation
 
 Spec184 使用一个不可变 promotion candidate 绑定所有会影响行为的输入。候选不是一个
@@ -24,6 +24,11 @@ commit 名字，也不是一个测试二进制；它必须把源码、运行时�
 
 候选记录必须同时保存 `candidateId = digest(ordered members above)`。单个成员摘要、
 marker、response 或历史 PASS 都不能单独构成 candidate；不同 candidate 的证据不得合并。
+
+当前 `DEV-865e1ee2` 仅用于把 B1–B4 focused evidence 和 T006 行绑定到同一开发 checkpoint。
+它没有完整的 source manifest、effective dependency/configuration、model/tokenizer、harness
+和 submission bundle 摘要，因此不能用于 T007 promotion；T006 必须在 fresh convergence
+audit 前生成真正的 ordered candidate digest。
 
 ## Change-plane Invalidation Matrix
 
