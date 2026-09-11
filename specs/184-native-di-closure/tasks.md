@@ -56,6 +56,13 @@ MiniNDN、YOLO 或 Qwen 全量运行。YOLO26n 当前输入 preflight（Y-A）�
 Qwen qualification。A0→A1→A2→A4 顺序和外部 A3 已写入 [remainder audit](evidence/remainder-audit-20260911.md)。
 T007 继续 `IN_PROGRESS`/`PARTIAL`，T008 仍 `NOT_STARTED`。
 
+2026-09-11 **PROPOSAL-INTRO-FOCUS / DOCUMENT_PASS**：删除双语引言中突兀的 gRPC
+名称解析细节，保留后文基线能力说明与引用，衔接 NDN 计算／调用和 DNMP 授权先例。
+四个正文入口构建、同语言文本一致性、引言范围和后文引用、全页文字边界与引言
+截图检查通过，英文 30 页／中文 23 页。证据见
+[Introduction focus audit](../../docs/PAPER/proposal-defense/research-revision-audit.md)
+及 `intro_focus_revision`。slides／实验／产品 API 不变，不推进 T007/T008。
+
 2026-09-11 **PROPOSAL-INTRO-WORDING / DOCUMENT_PASS**：按作者原句更新英文引言
 trust schema 表述并同步中文；四个正文入口构建、对应入口文本一致性、原句与
 PDF 文字边界检查通过，英文 30 页／中文 23 页。证据见

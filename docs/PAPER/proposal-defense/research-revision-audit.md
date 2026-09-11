@@ -1,5 +1,19 @@
 # Research-first Proposal Revision and Evidence Audit
 
+## 2026-09-11 Introduction Focus
+
+删除引言中 gRPC 名称解析的配置细节，保留评价章节的能力边界及引用。
+引言按 NDN 计算／调用先例、DNMP 授权先例、本研究设计比较的顺序衔接。
+该解析机制用于获取或更新服务地址，依据为
+[gRPC Custom Name Resolution](https://grpc.io/docs/guides/custom-name-resolution/)，
+不应在此突然切换到基线配置问题。edit-article 用于此次局部段落衔接修订。
+四个正文入口构建通过；英文 30 页、中文 23 页，同语言入口文本一致；
+引言内容、后文引用保留、全页文字边界及中英文引言与续页截图检查通过。
+当前验证见 `intro_focus_revision` 和
+`.codex-tmp/proposal-intro-focus-20260911/`；下方检查均为历史记录。
+slides、实验及产品源码未修改。下一步仍是 RQ1 完整授权对照的实验设计，
+本轮不扩大修订范围，也不推进产品资格状态。
+
 ## 2026-09-11 Author-supplied Introduction Wording
 
 按作者指定原句，将引言改为 `Applications can use a trust schema to specify

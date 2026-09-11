@@ -1,9 +1,9 @@
 {
   "date": "2026-09-10",
-  "scope": "Author-supplied Introduction opening; English exact wording and Chinese counterpart",
+  "scope": "Remove unrelated gRPC resolver detail from the NDN Introduction; retain evaluation caveats",
   "verdict": "DOCUMENT_CHECKS_PASS",
   "observed_repository_head": "dd678c90d97a6d2b38f2182d2a97adc7aa5fb9e8",
-  "raw_evidence_root": ".codex-tmp/proposal-intro-wording-20260911",
+  "raw_evidence_root": ".codex-tmp/proposal-intro-focus-20260911",
   "research_limits": [
     "Nearest-work feature-level novelty comparison remains open",
     "Qualified multi-UAV/DI role-edge and recovery evidence remains open",
@@ -15,10 +15,10 @@
   "checks": {
     "four_entry_builds": true,
     "paired_text_equality": true,
-    "exact_english_wording": true,
+    "intro_scope_and_retained_later_grpc_citation": true,
     "pdf_text_bounds": true,
     "abstracts_one_page": true,
-    "underfull_warnings": 320
+    "underfull_warnings": 318
   },
   "pdfs": {
     "main.pdf": {
@@ -66,7 +66,7 @@
     "native_triangle_bullets": 47,
     "notes_pages": 40
   },
-  "visual_review": "Rebuilt English/Chinese Introduction page; remaining PDF bounds scanned.",
+  "visual_review": "Rebuilt English/Chinese Introduction pages; all PDF text bounds scanned.",
   "text_preflight": "All ordinary LaTeX slide pages <=100 words; reference pages exempt. LibreOffice tokenization differs.",
   "historical_checks": {
     "two_design_revision": {
@@ -412,33 +412,33 @@
     "authorization-revision.md": "f6a37f2755ce3d2182409fc61bbc258658e5d1828be7e9d81e5e7a8ec99296f1",
     "bibstyle.bst": "694645ce80313afbe1aa9d14f2990bc080cf5c2b1669449df840ef08080ee3ad",
     "ch/chapters/authorization-rationale.tex": "7e9488c648cffcedd075bd41082c4f84c221e3d0f0b9f85c0f6ee3317ed5dbe5",
-    "ch/chapters/research-revision.tex": "7477cc7a8dc57192185cf7d2d5797278d129a73a23d05227f6f9150c8c5fd9b8",
-    "ch/main.pdf": "afd9c665c294b6b49605a001a5c0ffc3af3e3f29358c0d5ffb513c6e13f3321e",
+    "ch/chapters/research-revision.tex": "567b24ab76482fc09c93ce64f4e2a867de97a8ad78bf92b7bf5364d115434791",
+    "ch/main.pdf": "ea5fc6371bc0a369c38aa011f9130d707646e503e44c8f7c996317086b6f76dc",
     "ch/main.tex": "32c83e6edc9cb62f47d889c5fe63f0a607f5f38aa887d292a4d73c2743f96c1c",
     "ch/ref.bib": "d427803c1ed0c8fa5233b81a69b404c95e5f63fa629f1428f187f845a8c05c6e",
     "ch/uofm.cls": "85d127e17c01d48088c9d2828498577e0a5bf4e537490371e357945840d2f563",
     "dnmp-comparison-review-20260910.md": "05749502c25890bc0f4c88dd867c2410ec6e994ec9d4e1d4319b1996eb2185ab",
     "dnmp-throughline-review-20260911.md": "c2ee47667cb6c58c40b9783e46049f2276e2073d146cc6eed97f44990503dd7c",
     "en/chapters/authorization-rationale.tex": "3b5c4de8a3d360f274d56d1167d5b516597d2e59366a522ecec55bc13766c8e2",
-    "en/chapters/research-revision.tex": "9abed8bac22c3ff2f6ff7b198cd7f792d9ce7d0666cea363feee2f299f6a7556",
-    "en/main.pdf": "9b554b1cc308854a0ab48cf1b5da270ab366ab09410b73f1e67aab12b92b644e",
+    "en/chapters/research-revision.tex": "0ede82440d1cc41b630cb8bbcd73dd07d4203d4cbb7f81a86970bad810ffa801",
+    "en/main.pdf": "9dde04649c910587e4bf41fe6ec194a9346f0e8424721a047842e152ae737103",
     "en/main.tex": "fc5f5abfb44b8bdb5d71940257419832bf0086c43b5f06234298a150b1a89cc1",
     "en/ref.bib": "d427803c1ed0c8fa5233b81a69b404c95e5f63fa629f1428f187f845a8c05c6e",
     "en/uofm.cls": "85d127e17c01d48088c9d2828498577e0a5bf4e537490371e357945840d2f563",
     "invocation-scope-review-20260911.md": "d68c3469fe4e58b3348869beecf76cf6e0471a4aa55cca41831ac224d34c5159",
     "language-review-20260910.md": "d86ff03fc119c2123514f43bffef3ff87e3e8755bb25e5f357ac40d28db68107",
-    "main.pdf": "dddd7e8d594d6f7db3efa0f76e0b4c42d7144f3c256a9f3ffab4083f6f08ec9c",
+    "main.pdf": "52b358a4f8971ecc56078e2885b07fbb1e75c65b13d42d82ddc0165fa1f965b8",
     "main.tex": "b9895092d1beaebb3aa4254d6c0aa479f53b316d4b2c5aa48074d3aa468e0ba9",
-    "main_ch.pdf": "63505cd5175269080813e03c60ec4e412c2aa7b27453b156447d9f6e5d6a2cda",
+    "main_ch.pdf": "0846b2aaee8262c181e3c8a04352c3c2549877ac4a2b816eaf07a1f97f8d636a",
     "main_ch.tex": "bb3d3c277d6a61fa719719c7eb7fd02d53a9ae6a00b077be17959e85098ae37a",
     "protocol-overview.tex": "4c3afde9b456c7b5c4d4c9efaa0f21da4d4430aeb403f311cb1919df3cf26480",
     "ref.bib": "d427803c1ed0c8fa5233b81a69b404c95e5f63fa629f1428f187f845a8c05c6e",
     "research-references.bib": "80003353425fbd3c0ab73dff585061b00ffe6f977a0211434748f24930b10315",
-    "research-revision-audit.md": "8e399b0bad07d35adcfed65bb34803f9b7808661bef4ba6a1a63ecf416cdfbb7",
+    "research-revision-audit.md": "58237cd90240b95b138e881f1ebde6b51ef8135babe101bbd20e73b5d16b5b9a",
     "review.md": "fea8b49c9f60a6bf8bb064702f7c8617d1d10bc9a88369efd3d32222ec966613",
     "review_rendered.py": "e24daf06bf78f06cc72c7169a4c1cba3ecb7b04e12f9999921772f6bcb14d26f",
     "review_sentence_claims.py": "a62144264ed0ac46d3ec902e820d5a99271a0a89772fa3554c0124ce93b3ed17",
-    "sentence-claim-ledger-20260911.json": "8f3bbedf3e6815d6ac6c82f22607df9de5040cbc7e54ceea252f69b7f501e6ca",
+    "sentence-claim-ledger-20260911.json": "f84433b1b390641757ba03c48e31bd9bc3391cbf9fdd7502ad1844e809b059c7",
     "sentence-review-20260911.md": "c93633313fbad75879a69bd46d76f17b7baccba6c475c0ae7e259f08f41adc58",
     "slides/NDNSF_proposal_hybrid_editable.pptx": "69ba887c6490669e8609f24cf88964c79fe1d5f923533f076418f973350b650a",
     "slides/add_speaker_notes_to_pptx.py": "e05f024861008aa94dccaa80bbcb7e3ea584678895d5287e6b27da9b96d9bb5e",
@@ -787,6 +787,29 @@
     },
     "raw_evidence_root": ".codex-tmp/proposal-intro-wording-20260911",
     "visual_review": "Rebuilt English/Chinese Introduction page; remaining PDF bounds scanned.",
+    "slides": "UNCHANGED; previous slide checks remain historical.",
+    "product_validation": "NOT_RUN; no product or experiment edits."
+  },
+  "intro_focus_revision": {
+    "scope": "Remove unrelated gRPC resolver detail from the NDN Introduction; retain evaluation caveats",
+    "date": "2026-09-11",
+    "verdict": "DOCUMENT_CHECKS_PASS",
+    "pages": {
+      "main.pdf": 30,
+      "en/main.pdf": 30,
+      "main_ch.pdf": 23,
+      "ch/main.pdf": 23
+    },
+    "checks": {
+      "four_entry_builds": true,
+      "paired_text_equality": true,
+      "intro_scope_and_retained_later_grpc_citation": true,
+      "pdf_text_bounds": true,
+      "abstracts_one_page": true,
+      "underfull_warnings": 318
+    },
+    "raw_evidence_root": ".codex-tmp/proposal-intro-focus-20260911",
+    "visual_review": "Rebuilt English/Chinese Introduction pages; all PDF text bounds scanned.",
     "slides": "UNCHANGED; previous slide checks remain historical.",
     "product_validation": "NOT_RUN; no product or experiment edits."
   }

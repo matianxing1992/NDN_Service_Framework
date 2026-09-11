@@ -4,7 +4,7 @@
 \section{服务发现与获准调用}
 命名数据网络（NDN）支持按名获取 Data 和以数据为中心的安全机制~\cite{ndn,ndnpacket}。应用可用 trust schema 规定哪些签名密钥有权签署哪些 Data，并指导 Data 验证~\cite{trustschema}。Sync 通告数据集变化以辅助获取~\cite{li2018brief,moll2022sok}。这些机制不自动选择执行者或保证按时完成；调用授权需应用定义规则与检查。
 
-请求者知道服务，却未必知道哪些获准 Provider 可达、有能力且愿意执行。NFN、NFaaS、RICE 和 NSC 支持命名计算或调用~\cite{nfn,nfaas,rice,nsc}。Distributed Network Measurement Protocol（DNMP）提供 Trust Schema 命令授权实例~\cite{dnmp}；gRPC 支持可扩展名字解析~\cite{grpcresolver}。研究参照这些先例评价 NDNSF 的发现、授权与调用成本，不假定已有工作缺少相应机制。
+请求者知道服务，却未必知道哪些获准 Provider 可达、有能力且愿意执行。NFN、NFaaS、RICE 和 NSC 支持命名计算或调用~\cite{nfn,nfaas,rice,nsc}。Distributed Network Measurement Protocol（DNMP）提供 Trust Schema 命令授权实例~\cite{dnmp}。这些 NDN 系统提供计算、调用与授权先例，作为本 Proposal 分析 NDNSF 设计选择的参照。
 
 \section{初版 NDNSF 的调用基础}
 初版 NDNSF 从多个候选中选定一个 Provider。User 发布 Request Data、收集应答（ACK）Data，再发布 Selection Data；选定 Provider 执行并发布 Response Data。候选是同一次调用的替代执行者，不承担不同的相互依赖角色。
