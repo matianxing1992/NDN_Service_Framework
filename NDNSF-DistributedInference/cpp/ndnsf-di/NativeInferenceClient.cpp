@@ -1109,36 +1109,90 @@ void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& o
       }
       const auto ackClosed = [operation, sourceAttempt, coreRequestId](const ndn_service_framework::CollaborationAckClosure& closure) {
         enqueueOperation(operation, [operation, sourceAttempt, coreRequestId, closure] {
+          std::shared_ptr<const NativeRequestRuntime> runtime;
+          NativeRequestOptions coreOptions;
+          std::shared_ptr<const NativeInspectedModel> inspected;
+          std::shared_ptr<const NativeModelSplitStrategy> splitStrategy;
+          std::shared_ptr<const NativePlacementStrategy> placementStrategy;
+          std::shared_ptr<NativeRequestPreparation> preparation;
+          std::shared_ptr<const NativeOfferAdmission> admission;
+          std::shared_ptr<NativeConversationCoordinator> conversations;
+          std::optional<NativeConversationTurn> conversationTurn;
           {
             std::lock_guard<std::mutex> lock(operation->mutex);
             if (operation->status != NativeRequestStatus::Pending || operation->attempt != sourceAttempt ||
                 operation->phase != DiRequestPhase::Requesting) return;
             operation->phase = DiRequestPhase::Planning;
+            runtime = operation->runtime;
+            coreOptions = operation->coreOptions;
+            if (operation->inspected) inspected = std::make_shared<NativeInspectedModel>(*operation->inspected);
+            splitStrategy = operation->splitStrategy;
+            placementStrategy = operation->placementStrategy;
+            preparation = operation->preparation;
+            admission = operation->admission;
+            conversations = operation->conversations;
+            conversationTurn = operation->conversationTurn;
           }
           NativeRequestControl control{coreRequestId, sourceAttempt, operation->deadline,
             [flag = operation->cancelled] { return flag->load(); }};
-          auto planned = planNativeRequest(*operation->runtime, operation->coreOptions,
-            *operation->inspected, *operation->encodedRequest, *operation->splitStrategy,
-            *operation->placementStrategy, *operation->preparation, *operation->admission,
+          if (!runtime || !inspected || !splitStrategy || !placementStrategy || !preparation || !admission)
+            throw NativeDiError("NATIVE_REQUEST_PLANNING_INPUT_MISSING", "planning", "ACK_CLOSED",
+              "native planning inputs were not published before ACK closure", operation->requestId,
+              sourceAttempt);
+          const auto encoded = [&] {
+            std::lock_guard<std::mutex> lock(operation->mutex);
+            if (operation->status != NativeRequestStatus::Pending || operation->attempt != sourceAttempt ||
+                operation->phase != DiRequestPhase::Planning || !operation->encodedRequest)
+              throw NativeDiError("NATIVE_REQUEST_STALE", "planning", "ACK_CLOSED",
+                "native planning callback became stale before request snapshot", operation->requestId,
+                sourceAttempt);
+            return *operation->encodedRequest;
+          }();
+          auto planned = planNativeRequest(*runtime, coreOptions,
+            *inspected, encoded, *splitStrategy,
+            *placementStrategy, *preparation, *admission,
             closure, control, operation->wireDeadlineMs, operation->cancelled,
-            operation->conversationTurn ? &*operation->conversationTurn : nullptr);
-          if (operation->conversationTurn && operation->conversations) {
-            if (operation->conversationTurn->attempt == 2) {
-              operation->conversationTurn = operation->conversations->bindAttemptPlanRoleMap(
-                *operation->conversationTurn, planned.sealed.core.assignment.providerByRole);
+            conversationTurn ? &*conversationTurn : nullptr);
+          std::optional<NativeConversationTurn> plannedConversationTurn = conversationTurn;
+          if (plannedConversationTurn && conversations) {
+            if (plannedConversationTurn->attempt == 2) {
+              plannedConversationTurn = conversations->bindAttemptPlanRoleMap(
+                *plannedConversationTurn, planned.sealed.core.assignment.providerByRole);
             }
-            else if (operation->conversationTurn->parent.planRoleMapDigest.empty()) {
-              operation->conversationTurn = operation->conversations->bindInitialPlanRoleMap(
-                *operation->conversationTurn, planned.sealed.core.assignment.providerByRole);
+            else if (plannedConversationTurn->parent.planRoleMapDigest.empty()) {
+              plannedConversationTurn = conversations->bindInitialPlanRoleMap(
+                *plannedConversationTurn, planned.sealed.core.assignment.providerByRole);
             }
           }
+          const auto corePlan = planned.corePlan;
+          bool published = false;
           {
             std::lock_guard<std::mutex> lock(operation->mutex);
-            if (operation->status != NativeRequestStatus::Pending) return;
-            operation->planned = std::move(planned);
+            const bool sameTurn = (!conversationTurn && !operation->conversationTurn) ||
+              (conversationTurn && operation->conversationTurn &&
+               conversationTurn->ticket == operation->conversationTurn->ticket &&
+               conversationTurn->attempt == operation->conversationTurn->attempt &&
+               conversationTurn->requestId == operation->conversationTurn->requestId);
+            if (operation->status == NativeRequestStatus::Pending && operation->attempt == sourceAttempt &&
+                operation->phase == DiRequestPhase::Planning && sameTurn) {
+              operation->planned = std::move(planned);
+              if (plannedConversationTurn)
+                operation->conversationTurn = std::move(plannedConversationTurn);
+              published = true;
+            }
+          }
+          if (!published) {
+            if (plannedConversationTurn && conversations) {
+              const NativeDiError stale(
+                "NATIVE_CONVERSATION_PLAN_CANCELLED", "conversation", "planning",
+                "conversation turn became terminal before plan publication", operation->requestId,
+                sourceAttempt);
+              conversations->abortTurn(*plannedConversationTurn, stale);
+            }
+            return;
           }
           operation->user->postToIo([operation, sourceAttempt, coreRequestId, digest = closure.digest,
-                                    plan = operation->planned->corePlan] {
+                                    plan = corePlan] {
             try {
               {
                 std::lock_guard<std::mutex> lock(operation->mutex);

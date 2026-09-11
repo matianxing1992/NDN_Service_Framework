@@ -113,27 +113,55 @@ NativeAuthenticatedGrantClient::Issue coreIssue(
     const auto remainingMs = std::chrono::duration_cast<std::chrono::milliseconds>(
       boundedDeadline - now).count();
     const auto timeoutMs = static_cast<int>(std::max<std::int64_t>(1, remainingMs));
-    const auto requestId = user->RequestServiceTargeted(
-      ndn::Name(authorityIdentity), ndn::Name(authorityService), std::move(message),
-      timeoutMs,
-      [pending](const ndn::Name&) {
+    const auto completeWithError = [](const std::shared_ptr<Pending>& state,
+                                      std::exception_ptr error) {
+      std::lock_guard<std::mutex> lock(state->mutex);
+      if (state->abandoned.load() || state->done) return;
+      state->error = std::move(error);
+      state->done = true;
+      state->changed.notify_all();
+    };
+    const auto timeoutHandler = [pending, completeWithError](const ndn::Name&) {
+      completeWithError(pending, std::make_exception_ptr(std::runtime_error(
+        "DI_PROTECTED_GRANT_REJECTED: authority request timed out")));
+    };
+    const auto responseHandler = [pending](const ndn_service_framework::ResponseMessage& response) {
+      std::lock_guard<std::mutex> lock(pending->mutex);
+      if (pending->abandoned.load() || pending->done) return;
+      pending->response = response;
+      pending->done = true;
+      pending->changed.notify_all();
+    };
+
+    // RequestServiceTargeted mutates ServiceUser's pending-call maps and must
+    // run on the Face's existing IO context.  The native planner remains the
+    // blocking worker: it waits on Pending while the Core owns admission,
+    // publication, timeout and callback state.  Abandoning the wait before
+    // dispatch makes the queued closure a no-op; abandoning after dispatch
+    // leaves Core's own bounded timeout to erase its pending call, while late
+    // callbacks are ignored by the shared state.
+    user->postToIo([user, pending, authorityIdentity = std::move(authorityIdentity),
+                    authorityService = std::move(authorityService), message = std::move(message),
+                    timeoutMs, control, timeoutHandler, responseHandler,
+                    completeWithError] () mutable {
+      if (pending->abandoned.load()) return;
+      try {
+        control.check();
+        const auto requestId = user->RequestServiceTargeted(
+          ndn::Name(authorityIdentity), ndn::Name(authorityService), std::move(message),
+          timeoutMs, timeoutHandler, responseHandler);
+        if (requestId.empty()) {
+          completeWithError(pending, std::make_exception_ptr(std::runtime_error(
+            "DI_PROTECTED_GRANT_REJECTED: authority request was not admitted")));
+          return;
+        }
         std::lock_guard<std::mutex> lock(pending->mutex);
         if (pending->abandoned.load() || pending->done) return;
-        pending->error = std::make_exception_ptr(std::runtime_error(
-          "DI_PROTECTED_GRANT_REJECTED: authority request timed out"));
-        pending->done = true;
-        pending->changed.notify_all();
-      },
-      [pending](const ndn_service_framework::ResponseMessage& response) {
-        std::lock_guard<std::mutex> lock(pending->mutex);
-        if (pending->abandoned.load() || pending->done) return;
-        pending->response = response;
-        pending->done = true;
-        pending->changed.notify_all();
-      });
-    if (requestId.empty()) {
-      throw std::runtime_error("DI_PROTECTED_GRANT_REJECTED: authority request was not admitted");
-    }
+      }
+      catch (...) {
+        completeWithError(pending, std::current_exception());
+      }
+    });
 
     std::unique_lock<std::mutex> lock(pending->mutex);
     while (!pending->done) {
