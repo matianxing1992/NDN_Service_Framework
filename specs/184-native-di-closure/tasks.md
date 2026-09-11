@@ -16,7 +16,7 @@
 | [T003 Durable Outcome Linearization](evidence/b2-durable-outcome-20260911.md) | DONE | B1 behavior exit | B2 normal and unsuppressed ASan/UBSan exits complete; no remaining T003-specific gate | 2026-09-11 |
 | [T004 Atomic Private Checkpoint Export](evidence/b3-checkpoint-export-20260911.md) | DONE | B2 exit | B3 normal and unsuppressed ASan/UBSan exits complete; directory-fsync failure remains an explicit implementation limit | 2026-09-11 |
 | [T005 Maintained Caller Mode Closure](evidence/b4-caller-convergence-20260911.md) | DONE | B1–B3 exits | Caller/mode matrix and focused route selectors complete; D2b runtime miss, real-model/no-Python and retirement remain in B5 | 2026-09-11 |
-| [T006 Inherited Obligation and Harness Closure](contracts/qualification-matrix.md) | PARTIAL | B4 exit | 80-row matrix is bound; residual selector/fixture, source-artifact identity and fresh convergence gaps remain | 2026-09-11 |
+| [T006 Inherited Obligation and Harness Closure](contracts/qualification-matrix.md) | PARTIAL | B4 exit | 80-row matrix is bound; component selectors and Provider-host lifetime gate recorded; residual process/no-Python, source-artifact identity and fresh convergence gaps remain | 2026-09-11 |
 | [T007 Current Native Qualification](contracts/promotion-candidate.md) | NOT_STARTED | T006 complete and fresh convergence `PASS` | Candidate-bound C++/process/no-Python qualification and negative rows not run | 2026-09-11 |
 | [T008 Native Development Handoff](plan.md) | NOT_STARTED | T007 `QUALIFICATION_PASS` | Design/API handoff and external experiment transfer remain pending | 2026-09-11 |
 
@@ -28,7 +28,7 @@
 | B2 | DYNAMIC_PASS / CLOSED_FOR_VALIDATION | `asan-ubsan` PASS；durable handle/journal 一致、publish 后终态不降级、residue=0 | T003 已完成；进入 B3/T004 |
 | B3 | DYNAMIC_PASS / CLOSED_FOR_VALIDATION | `asan-ubsan` PASS；原子 export、symlink refusal、pre-rename failure preservation、loader smoke | T004 已完成；进入 B4/T005 |
 | B4 | CLOSED_FOR_VALIDATION / PARTIAL | caller rows use `none` with reason; inherited B1/B2 profiles cover shared async owners | T005 matrix/route closure complete；D2b runtime miss、real model/no-Python and retirement remain T006/T007 |
-| B5 | IN_PROGRESS / T006 PARTIAL | inherited row profiles；文档对账 `none` with reason | qualification matrix 已逐项绑定；仍需 exact current selectors/artifact/config identity、缺口修复 → fresh convergence audit `PASS` → T007 正式本地资格 → T008 交付 |
+| B5 | IN_PROGRESS / T006 PARTIAL | inherited row profiles；Provider-host unsuppressed ASan/UBSan PASS；文档对账 `none` with reason | component selectors and resolver lifetime gate recorded；仍需 exact process/no-Python selectors, ordered candidate identity、fresh convergence audit `PASS` → T007 正式本地资格 → T008 交付 |
 
 ## Current Checkpoint
 
@@ -93,6 +93,14 @@ miss 保留；真实模型、no-Python、Python retirement 和外部实验仍未
 和 Spec184。当前 `DEV-865e1ee2` 只是真实开发 checkpoint 关联标签，不是 promotion candidate；
 native tokenizer/parser、完整 process/no-Python、真实模型、ordered candidate digest、
 fresh convergence audit 和 T007 仍开放。详见 [B5 matrix evidence](evidence/b5-matrix-binding-20260911.md)。
+
+2026-09-11 **B5-COMPONENT / PARTIAL**：候选树按当前源码重建，18 组原生 C++ unit
+selector、6 组集成 selector 和 71 个 Python harness 回归通过。Provider-host 的无抑制
+ASan/UBSan 运行先发现 `HostState` resolver self-cycle（11,042 bytes/122 allocations），
+随后验证了“仅 resolver 弱引用、runtime handler 保持 host”修复；全套 8 个 Provider-host
+用例无 sanitizer 或 LeakSanitizer 报告。一次 all-weak 诊断修复被 ASan UAF 否决，未计入结果。
+这次只关闭组件生命周期门，T006 仍为 `PARTIAL`；完整 process/no-Python、候选冻结和
+convergence 尚未通过。详见 [B5 component evidence](evidence/b5-component-validation-20260911.md)。
 
 2026-09-11 **D-UAV-TRIM / CLOSED_FOR_VALIDATION (documentation only)**：按用户要求删除
 UAV update PDF 原第4/5页，现4页；双遍构建及全页渲染通过，两份导出同步。
