@@ -1,6 +1,6 @@
 # Tasks: Native DI Closure
 
-**Status**: IN_PROGRESS / B5 component and full-unit exits recorded; integration qualification pending | **Date**: 2026-09-11
+**Status**: IN_PROGRESS / fresh candidate C++ unit and integration exits recorded; qualification remains partial | **Date**: 2026-09-11
 **Input**: [spec](spec.md)、[plan](plan.md)、[transfer matrix](contracts/transfer-matrix.md)、
 [promotion candidate](contracts/promotion-candidate.md)、[caller matrix](contracts/caller-matrix.md)、
 [qualification matrix](contracts/qualification-matrix.md)
@@ -16,8 +16,8 @@
 | [T003 Durable Outcome Linearization](evidence/b2-durable-outcome-20260911.md) | DONE | B1 behavior exit | B2 normal and unsuppressed ASan/UBSan exits complete; no remaining T003-specific gate | 2026-09-11 |
 | [T004 Atomic Private Checkpoint Export](evidence/b3-checkpoint-export-20260911.md) | DONE | B2 exit | B3 normal and unsuppressed ASan/UBSan exits complete; directory-fsync failure remains an explicit implementation limit | 2026-09-11 |
 | [T005 Maintained Caller Mode Closure](evidence/b4-caller-convergence-20260911.md) | DONE | B1–B3 exits | Caller/mode matrix and focused route selectors complete; D2b runtime miss, real-model/no-Python and retirement remain in B5 | 2026-09-11 |
-| [T006 Inherited Obligation and Harness Closure](contracts/qualification-matrix.md) | PARTIAL | B4 exit | 80-row matrix, ordered local candidate identity and fresh convergence audit are recorded; PO-015 review row is PASS, while process/no-Python, parser-fuzz and negative-row closure remain | 2026-09-11 |
-| [T007 Current Native Qualification](contracts/promotion-candidate.md) | IN_PROGRESS | T006 complete and fresh convergence `PASS` | Previous candidate-bound full unit/component gates remain historical after the DYNAMIC-LOOP contract revision; fresh candidate/convergence is required before resuming. Integration had 48 failures and process/no-Python preflight was `UNQUALIFIED`; parser-fuzz and negative rows remain | 2026-09-11 |
+| [T006 Inherited Obligation and Harness Closure](contracts/qualification-matrix.md) | PARTIAL | B4 exit | 80-row matrix, fresh ordered local candidate identity and convergence audit are recorded; PO-015 review row is PASS, while process/no-Python, inherited parser and negative-row closure remain | 2026-09-11 |
+| [T007 Current Native Qualification](contracts/promotion-candidate.md) | IN_PROGRESS | T006 complete and fresh convergence `PASS` | Fresh candidate full unit and integration exits are `0`; observed-offer parser sample is `DYNAMIC_PASS`. Current-owner process run is `UNQUALIFIED` at `MININDN_REQUIRES_ROOT`, I02 ASan remains `DYNAMIC_FAIL`, and broader inherited/no-Python, negative, model and external rows remain | 2026-09-11 |
 | [T008 Native Development Handoff](plan.md) | NOT_STARTED | T007 `QUALIFICATION_PASS` | Design/API handoff and external experiment transfer remain pending | 2026-09-11 |
 
 ## Logical Batch Progress
@@ -28,19 +28,29 @@
 | B2 | DYNAMIC_PASS / CLOSED_FOR_VALIDATION | `asan-ubsan` PASS；durable handle/journal 一致、publish 后终态不降级、residue=0 | T003 已完成；进入 B3/T004 |
 | B3 | DYNAMIC_PASS / CLOSED_FOR_VALIDATION | `asan-ubsan` PASS；原子 export、symlink refusal、pre-rename failure preservation、loader smoke | T004 已完成；进入 B4/T005 |
 | B4 | CLOSED_FOR_VALIDATION / PARTIAL | caller rows use `none` with reason; inherited B1/B2 profiles cover shared async owners | T005 matrix/route closure complete；D2b runtime miss、real model/no-Python and retirement remain T006/T007 |
-| B5 | IN_PROGRESS / T006 PARTIAL | one bounded dynamic sample per distinct inherited risk/behavior class；Provider-host unsuppressed ASan/UBSan PASS；文档对账 `none` with reason | component selectors、resolver lifetime gate、ordered candidate identity and fresh convergence `PASS` recorded；仍需 process/no-Python, parser-fuzz and negative-row closure → T007 正式本地资格 → T008 交付 |
+| B5 | IN_PROGRESS / T006/T007 PARTIAL | one bounded dynamic sample per distinct inherited risk/behavior class；Provider-host unsuppressed ASan/UBSan PASS；observed-offer parser sample PASS | fresh candidate unit/integration exits `0`; current owner remains `UNQUALIFIED` at privilege preflight and I02 ASan leak remains `DYNAMIC_FAIL`; broader process/no-Python, negative-row and external closure remain → T007 qualification → T008 handoff |
 
 ## Current Checkpoint
 
-2026-09-11 **T007-CANDIDATE / PARTIAL**：按当前 candidate 绑定运行完整 native unit、完整
-integration、Provider-host sanitizer gate、authority/native route selectors 和 process/no-Python
-`I01` preflight。unit exit `0`，component/authority selectors PASS；integration exit `1`/48
-failures；process driver 首次在 manifest schema 边界 exit `2`/`UNQUALIFIED`，随后当前候选
-的 MiniNDN owner/runner `PO-001-stream` exit `0` 并记录 business marker、namespace、trace
-和 cleanup。解析
-fuzz、negative collector、真实模型/MiniNDN、Python retirement 与外部 SIF/Tiger 仍未运行；
+2026-09-11 **T007-CANDIDATE / PARTIAL**：按 fresh candidate 绑定运行完整 native unit、完整
+integration、Provider-host sanitizer gate、authority/native route selectors 和 bounded
+process/no-Python owner probe。unit 与 integration 均 exit `0`；process driver 的 frozen manifest
+schema 边界仍为 `UNQUALIFIED`，当前 candidate 的 owner probe 则在 uid 1000 的
+`MININDN_REQUIRES_ROOT` preflight exit `2`，没有产生 MiniNDN 拓扑或业务结果。observed-offer
+parser-fuzz 样本已 PASS，I02 无抑制 ASan/UBSan 仍因 fixture leak `DYNAMIC_FAIL`；更广
+parser/negative collector、真实模型/MiniNDN、Python retirement 与外部 SIF/Tiger 仍未运行；
 详见 [T007 qualification evidence](evidence/t007-current-native-qualification-20260911.md)
 与 [failure-log entry](../../docs/failure-log.md)。T007 保持 `IN_PROGRESS`/`PARTIAL`，T008 未开始。
+
+2026-09-11 **T007-FRESH-CANDIDATE / PARTIAL**：清理可重建的未跟踪 build 目录后，按系统
+`/usr/bin/g++ -B/usr/bin`、`-j4` 和 `.lock-spec184-b5` 重新配置并只构建 Spec184 candidate
+targets；主 targets `502/502`、worker/helper closure `15/15`。以显式
+`NDNSF_SPEC182_BIN_DIR=build-spec184-b5-candidate` 运行 fresh unit 与 integration，均 exit
+`0`；对应日志、二进制摘要和 runner manifest 已写入 [T007 qualification evidence](evidence/t007-current-native-qualification-20260911.md)
+与 [promotion candidate](contracts/promotion-candidate.md)。广泛 Waf build 仍保留历史
+`spec181-assembly-parity` 链接边界，未把该辅助目标失败混入 Spec184 candidate。fresh candidate
+owner 运行因当前用户权限 `MININDN_REQUIRES_ROOT` 为 `UNQUALIFIED`，因此不能重用旧 root
+owner PASS；T007 仍为 `PARTIAL`。
 
 2026-09-11 **B5-CONVERGENCE / PASS_FOR_T007_PRECONDITION**：冻结本地 candidate（详见
 [promotion candidate](contracts/promotion-candidate.md)），并完成
@@ -93,6 +103,43 @@ Mode active health 已通过；下一步继续 B1 普通 C++ selector 后再运�
 该流程变更发生在上一候选冻结之后，因此按 promotion candidate 的 change-plane 规则将旧
 candidate 标为 `STALE_LOCAL_PARTIAL`。旧运行结果继续作为历史证据保存；T007 恢复前必须
 重新生成 candidate digest 并通过 fresh convergence，不能把旧结果静默绑定到新契约。
+
+2026-09-11 **T007-I01 / C++_DYNAMIC_PASS**：修复预装载兼容路径删除
+`request-input` scope 的键冲突，并让无 preparation callback 的 epoch coordinator
+调用已装载 runner 的普通 runtime 入口。I01 selector 重新构建后 exit 0，8 个 token
+epoch、8 个事件和最终 EOS payload 均通过；原始 trace 见
+`evidence/t007-current-native-qualification-20260911.md`。T007 仍为 `PARTIAL`，仅关闭
+该 C++ first-boundary 缺陷，不能提升整批资格状态。
+
+2026-09-11 **T007-SPEC175 / C++_DYNAMIC_PASS**：同一候选树运行
+`Spec170NdnsfDiCoreFlow/Spec175NativeTinyOnnx*` 批次，正例 I01/I02/I03/I04/I05/I06/I11/I12/I15/I16
+和预期负例 I07/I09/I10/I13 全部由 C++ selector 断言通过，batch exit 0；见
+`evidence/t007-current-native-qualification-20260911.md`。这只是采样行为类动态 PASS，T007
+仍保持 PARTIAL，process/no-Python、parser-fuzz、fresh candidate/convergence 和其余继承行未关闭。
+
+2026-09-11 **T007-FULL-NATIVE / C++_SWEEP_PASS**：修复后的候选路径运行完整
+`integration-tests` 与 `unit-tests`，均 exit 0 且 `*** No errors detected`；日志和哈希见
+`evidence/t007-current-native-qualification-20260911.md`。本地 C++ 全量 sweep 已通过，
+但 T007 仍为 PARTIAL，尚需 process/no-Python、parser-fuzz、fresh candidate/convergence、
+负例绑定和外部 owner 行。
+
+2026-09-11 **T007-SANITIZER / DYNAMIC_FAIL**：同一 Spec175 tiny 行为类在无抑制
+ASan/UBSan 树运行时，业务 selector 断言输出正常，但重复环境 teardown 以 exit 134 结束，
+LeakSanitizer 报告 3,096,985 bytes / 25,092 allocations；未见 UAF、越界或 UBSan 报告。原始
+日志见 `evidence/t007-current-native-qualification-20260911.md`。该失败不能计为动态 PASS，
+需先用单个 C++ case 重跑并判定泄漏归属。
+
+2026-09-11 **T007-I01-ASAN / DYNAMIC_PASS；I02-ASAN / DYNAMIC_FAIL**：单个 I01 在无抑制
+ASan/UBSan 下 exit 0 且无 sanitizer 报告；I02 业务断言通过，但 teardown 因测试 fixture 的
+`makeD2bCoordinatorOptions` callback captures 报 87,522 bytes LeakSanitizer 泄漏、exit 134。
+I01 可计入共享 C++ 状态机的 sanitizer 样本，I02 保持失败边界，不能提升 T007。
+
+2026-09-11 **T007-PARSER-FUZZ / DYNAMIC_PASS**：新增生产 C++ selector
+`Spec182ObservedOffer/Spec184NativeParserFuzz`，固定 seed 运行512个有界 JSON/wire 变异，
+覆盖截断、字节替换、插入、后缀噪声和结构破坏；候选 unit 与无抑制 ASan/UBSan 各 exit `0`，
+无 sanitizer 报告。该结果只关闭 observed-offer parser 风险类别，不能提升未覆盖的继承行或
+T007 总体状态。原始日志和哈希见
+[T007 qualification evidence](evidence/t007-current-native-qualification-20260911.md)。
 
 2026-09-11 **B2-ASAN / DYNAMIC_PASS**：先保留外部 NDN-SVS 旧头文件/库失配导致的未抑制
 `new-delete-type-mismatch`，随后用当前源码重建 NDN-SVS 并重链独立 ASan/UBSan tree。普通

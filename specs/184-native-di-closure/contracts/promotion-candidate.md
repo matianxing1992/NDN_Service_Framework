@@ -1,6 +1,6 @@
 # Spec184 Promotion Candidate Contract
 
-**Status**: STALE_LOCAL_PARTIAL / validation contract changed; no candidate promoted
+**Status**: FRESH_LOCAL_PARTIAL / candidate frozen for local qualification only; no candidate promoted
 **Owner**: T006 before any expensive validation
 
 Spec184 使用一个不可变 promotion candidate 绑定所有会影响行为的输入。候选不是一个
@@ -65,6 +65,31 @@ this candidate was frozen. The recorded `candidateId` and its runtime evidence r
 record of the prior contract, but are stale for new qualification decisions. A fresh convergence
 audit must recompute the ordered digest from the new `spec.md`, `plan.md`, `tasks.md` and matrix
 hashes before T007 resumes; no runtime result is silently re-bound to the old candidate.
+
+## Fresh Local Candidate Record
+
+This record binds the current C++ fixes, parser sample, candidate target closure and fresh native
+unit/integration sweep. It is a local qualification candidate; the current-user owner preflight,
+sanitizer leak and external SIF/Tiger rows remain open, so it is not a promotion decision.
+
+| Member | Bound value |
+| --- | --- |
+| `candidateId` | `sha256:be54482807739b02f613a59f5454b941ef471045869844c14bba32fb32f17828` (digest over the ordered member map below; recompute if any listed member changes) |
+| `source` | `Experimental` baseline commit `f7079c52b8deebc3fd0811d821324700f47b809a`; explicit candidate diff includes `NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.cpp` (`sha256:37984face728f908337ece2c59b7c96cd288969bad84a6f8ae6468d691100149`), `NativeEpochCoordinator.cpp` (`sha256:fb0a2513c33f1f26d4805ee1721cd172bb9c06b4f3c40982b818bf2946d04866`) and parser test (`sha256:3e9bc6df090479e18bab1269f1976a549fcf5a4f77cdf9bb90e13a5cd0cb733f`); pre-existing `docs/failure-log.md` and integration marker remain outside the candidate diff |
+| `built runtime` | `build-spec184-b5-candidate`; `unit-tests` `sha256:985057943a5fd28d5aaaa3d7198cdbb035247c5b2f9a146650884cdb8681aae7`; `integration-tests` `sha256:8388ab586e2c3d544364065d67b757cc091ae185e6e73b1385a975d3651088b4`; `DI_NativeOnnxAssemblyWorker` `sha256:e44bd0a31205d3106461d6d48884da70adb4e8acc8ef5fea8753573964aff283`; `DI_NativeRequester` `sha256:7ca9f17803649539df78eaa8d03fa66a84ca1fa6e5098b8d21a1b426b5ef4c50`; `di-native-provider` `sha256:adcb740d4116a66204ab9b9721dbfd4b6364d08cfebdad01b2dfee78bb0691a2`; `libndnsf-distributed-inference.so` `sha256:b0f0204c3b93b246c2d16e8afcfbaf0c65ab814b283f66ee8ed85252aa5d9351`; `libndn-service-framework.so` `sha256:27c988b523058d1e14de10ed5c0e8f64d74d57678491bee81b0c71777718734b` |
+| `test/replay harness` | `run-spec182-native-closure.py` `sha256:1578ec962de2d9742c537213579b80dc9a3553b6091143a11de8376bccd7d9af`; frozen registration `sha256:855c29a0076807e4af6ee1f6445e2b6419bf3fa441399e49ea1879c5f459e4b3`; fresh runner manifest `sha256:4212ca6f81913f30c10c23b1a5d3fcfa6d6a172de295b6e5a67fd3b2c23a7826`; parser test registration/runner source hashes `1578ec962de2d9742c537213579b80dc9a3553b6091143a11de8376bccd7d9af` and `855c29a0076807e4af6ee1f6445e2b6419bf3fa441399e49ea1879c5f459e4b3` |
+| `submission bundle` | `LOCAL_ONLY / not packaged`; SIF/Tiger remains `TRANSFERRED` and is not locally qualified |
+| `effective configuration` | `/usr/bin/g++ -B/usr/bin`, system Boost 1.71, `.lock-spec184-b5` `sha256:d1eb664437f0f6f21449d2ea22d50aa42053923a22e8b0fc453b287d9b9c5482`; NAC-ABE, NDN-SVS and ONNX prefixes pinned in the build command; candidate-first `LD_LIBRARY_PATH`; worker lookup requires `NDNSF_SPEC182_BIN_DIR=build-spec184-b5-candidate` |
+| `external artifacts` | frozen observed-offer vectors and local assembly/tokenizer fixtures retained; real model, SIF and Tiger artifacts remain `NOT_RUN` or `TRANSFERRED` |
+| `validation contract` | current Spec184 `spec.md`, `plan.md`, `tasks.md`, qualification matrix and caller matrix; ordered member-map digest is recorded above; fresh unit log `sha256:127d751be7522d0f7b3c8b3968bae393ae7d08082debf0b6d6bb65dfe6fcbb4d`, integration log `sha256:f0fccf442f6de69ab6a5e585e1eb84eb470aa1fad49e2316d6ca0210c2962027`, parser log `sha256:2106e52606f7e82e04974d92c2872015a196f6fdfe02f095c4c01502e7a53d55` |
+
+The fresh full C++ unit and integration executables both exited `0`. The fresh owner probe used
+the same runner manifest but stopped before MiniNDN setup at `MININDN_REQUIRES_ROOT` (uid 1000),
+exit `2`; its result is `.codex-tmp/spec184-b5-owner-probe-20260911-r4/result.json` with
+SHA-256 `004cfa0a88d00667c2c520c163a5c1461ec40a81fe3d39cacb703075aaf93fc0`. The prior root owner
+PASS is retained only under the previous candidate record. I02 unsuppressed ASan/UBSan remains a
+fixture LeakSanitizer `DYNAMIC_FAIL` (`87,522` bytes / `720` allocations), and no external owner
+qualification is implied.
 
 ## Change-plane Invalidation Matrix
 

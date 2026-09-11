@@ -2,7 +2,7 @@
 
 **Date**: 2026-09-11  
 **Status**: `PASS_FOR_T007_PRECONDITION` / convergence is current; qualification remains `PARTIAL`  
-**Candidate**: `sha256:f7ee8f65a67a375f993e4db3a7558f22e996b8b170415b7d1325be89e3f32441`
+**Candidate**: `sha256:be54482807739b02f613a59f5454b941ef471045869844c14bba32fb32f17828` (fresh local record)
 
 本审查确认当前候选的 Spec、plan、tasks、contracts 与产品 C++ 接线一致，并把未完成的
 运行时和外部资格边界保留下来。`PASS_FOR_T007_PRECONDITION` 只表示可以开始候选绑定的
@@ -50,13 +50,40 @@ ownership、锁顺序、延迟 Face cleanup、过期 host、runtime handler 对 
 ## Dynamic and full-sweep disposition
 
 Provider-host 的无抑制 ASan/UBSan 和独立 TSan 8-case selector 均通过；B1 TSan、B2/B3
-ASan/UBSan 继续作为共享状态机的批次证据。当前代码树没有注册给 Spec184 的 C++ parser-fuzz
-target 或 corpus，因此该 profile 是 `NOT_RUN`，不能写成 `DYNAMIC_PASS`。完整 unit 在
-`.codex-tmp/spec184-b5-full-unit-20260911.log` 中 exit `0`，而完整 integration 在
-`.codex-tmp/spec184-b5-full-integration-20260911.log` 中 exit `1`，共 48 个 Boost failures。
-首个运行时边界是 legacy D2b/D2h121/D2h212 的零 response/role，以及 Spec175 tiny-ONNX
-的 `stream event gap exceeded retry budget`；这些结果没有被重分类为协议 PASS。
+ASan/UBSan 继续作为共享状态机的批次证据。fresh candidate 已注册并运行
+`Spec182ObservedOffer/Spec184NativeParserFuzz` 的有界 C++ parser sample，normal 与无抑制
+ASan/UBSan 均 exit `0`。旧 candidate 的完整 integration 48 failures 和 process/schema
+preflight 仍只作为历史边界；fresh candidate 的 unit/integration 已重新运行并均 exit `0`。
+I02 单例 ASan 仍以 fixture LeakSanitizer 诊断 exit `134`，不能写成 `DYNAMIC_PASS`。广泛
+Waf build 的首个边界仍是未纳入 Spec184 closure 的 legacy `spec181-assembly-parity` 链接目标，
+因此只把显式 candidate target closure 作为当前 build lane 结果。
 
-因此本审查的结论是：**当前实现与接受的设计和接线收敛，T007 可以开始候选本地资格运行；
-完整 integration、process/no-Python、负例、parser-fuzz 和外部 SIF/Tiger 仍保持开放，Spec184
-不能在此记录上标记完成。**
+因此本审查的结论是：**fresh candidate 的设计、接线、C++ unit/integration 和 observed-offer
+parser sample 已达到 T007 本地资格的前置条件，但仍不能标记 Spec184 完成。**当前进程/no-Python
+owner 受 uid 1000 的 `MININDN_REQUIRES_ROOT` 限制，I02 sanitizer leak、继承负例/collector、
+真实模型、Python retirement 及外部 SIF/Tiger 仍保持开放。
+
+## Fresh candidate refresh
+
+2026-09-11 的刷新绑定当前源码三处生产/测试差异：
+`NativeProviderHandler.cpp` 在认证 source alias 与 `APPLICATION_INPUT@request-input`
+重名时先移除 alias 再安装 canonical scope；`NativeEpochCoordinator.cpp` 在无
+`prepareRunner` 的 preassembled compatibility path 使用已加载 runner 的普通 runtime 入口；
+`di-native-observed-offer.t.cpp` 增加固定 seed 的 512-case parser-fuzz selector。官方
+`review-agent` 对完整差异及注册调用点给出 `No findings`。
+
+candidate target closure 使用 `.lock-spec184-b5`、系统 `/usr/bin/g++ -B/usr/bin`、`-j4`：
+主 targets `502/502`，worker/helper closure `15/15`。candidate-first library path 下，
+fresh `unit-tests` exit `0`（日志 SHA-256
+`127d751be7522d0f7b3c8b3968bae393ae7d08082debf0b6d6bb65dfe6fcbb4d`），fresh
+`integration-tests` exit `0`（日志 SHA-256
+`f0fccf442f6de69ab6a5e585e1eb84eb470aa1fad49e2316d6ca0210c2962027`）。运行时显式设置
+`NDNSF_SPEC182_BIN_DIR=build-spec184-b5-candidate`，所以 worker/helper 查找边界已记录。
+完整 Waf build 没有纳入历史 `spec181-assembly-parity` 辅助目标；该失败保留在
+`docs/failure-log.md`，不作为当前 Spec184 target 的失败。
+
+fresh owner manifest `sha256:4212ca6f81913f30c10c23b1a5d3fcfa6d6a172de295b6e5a67fd3b2c23a7826`
+的 `PO-001` 运行在当前 uid 1000 首先命中 `MININDN_REQUIRES_ROOT`，结果
+`.codex-tmp/spec184-b5-owner-probe-20260911-r4/result.json`，exit `2`，因此旧 root owner
+PASS 不得重绑定到本 candidate。该刷新为 T007 提供了可复核的本地 C++ 前置条件，但不是
+process/no-Python 或 external-owner qualification。

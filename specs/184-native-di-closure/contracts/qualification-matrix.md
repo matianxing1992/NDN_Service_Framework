@@ -1,11 +1,12 @@
 # Spec184 Qualification Matrix
 
-**Status**: PARTIAL / T006 row binding complete; pre-revision candidate is stale and qualification remains open
-**Source**: [transfer matrix](transfer-matrix.md), inherited Spec182 proof contracts, and current checkpoint `76072468`
+**Status**: PARTIAL / T006 row binding complete; fresh local candidate is bound for qualification and open rows remain
+**Source**: [transfer matrix](transfer-matrix.md), inherited Spec182 proof contracts, and the fresh local candidate recorded in the promotion contract
 
-The `candidateId` values recorded in rows below refer to the pre-`DYNAMIC-LOOP` candidate. They are
-retained for historical traceability; no row may be upgraded or rebound until a fresh candidate
-digest and convergence audit are recorded.
+The `candidateId` values in the historical row tables retain their original development
+checkpoints for traceability. The fresh candidate overlay below is the only current binding for
+the 2026-09-11 qualification attempt; row status remains `PARTIAL` until that row's complete
+selector or external-owner evidence is available.
 
 本表是最终资格的唯一行级入口。迁移记录的结构检查不能关闭任何一行；每行必须绑定
 当前 candidate、源码/二进制身份、真实 C++ target/selector 或外部 owner、负例、所有子
@@ -39,6 +40,21 @@ T006 必须在本表追加一行对应每个 `PO-001`–`PO-016`，以及适用�
 `rowId`, `sourceContract`, `ownerTask`, `productionEntry`, `C++ target/selector or external owner`,
 `negative/recovery boundary`, `riskClass`, `dynamicProfile`, `dynamicInvariant`, `candidateId`,
 `source/runtime/config hashes`, `evidencePath`, `status`。
+
+## Fresh Candidate Overlay
+
+The current local candidate is recorded in the [promotion candidate contract](promotion-candidate.md)
+and [fresh convergence audit](../evidence/convergence-b5.md). Its identity is intentionally kept in
+that single candidate record so the matrix hash does not form a circular digest dependency.
+The fresh candidate provides complete native unit and integration exits (`0`) and the observed-offer
+parser sample (`Spec182ObservedOffer/Spec184NativeParserFuzz`, `512` fixed-seed mutations). These
+results update evidence availability for the affected rows but do not upgrade them:
+
+| Current evidence | Rows informed | Current boundary | Status |
+| --- | --- | --- | --- |
+| Fresh unit/integration target closure, candidate-first libraries and explicit worker lookup | 182:T006, 182:T016, PO-005, PO-011, PO-015/016, FR-006/012/013/014, CD-005/009/011/012, INV-007/009 | current-user owner probe stops at `MININDN_REQUIRES_ROOT`; external SIF/Tiger not run | PARTIAL/OPEN |
+| Observed-offer C++ parser sample and unsuppressed ASan/UBSan run | 182:T007, PO-006, FR-007, CD-006, INV-004 | tokenizer-full, plan/parser and no-Python negative rows remain unqualified | PARTIAL |
+| Fresh C++ production path review | PO-001, PO-013, FR-001/016, CD-013 | no independent process/no-Python owner result for current candidate; broader model rows open | PARTIAL |
 
 ## PO Closure Rows
 
