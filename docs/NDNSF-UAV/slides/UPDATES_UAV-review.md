@@ -1,5 +1,31 @@
 # UAV Simulation-to-Field Revision
 
+## Current Revision: Joint Identification of an Unknown Target — 2026-09-11
+
+用户指出更合适的任务是“只知道大概位置，不知道目标是什么，综合多个视角共同判断”。本轮采用
+该方向，替换静止汽车已知类别的重复拍摄；中途考虑的路口分区观察方案未作为最终交付。
+请求携带区域/问题与采集约束，不预先提供目标类别；相机负责区域搜索与互补采集，Analyzer
+先判断图像是否对应同一对象，再联合推断并返回支撑图像，证据不足或冲突时允许 uncertain。
+轮状特征、平面和车状轮廓均标为示意线索，不能解释为实测检测或“线索相加必然识别为汽车”。
+
+| Page | Revision | Boundary |
+| --- | --- | --- |
+| 1 | 重画未知目标、遮挡区域、三个观测方向、证据传递及联合判断图 | 类别未知；所画线索为 illustrative；绿色为 Data retrieval |
+| 2 | Request region/question → ACK → Selection → application association/inference → Response evidence | 多视角减少歧义是待测收益；多机并行另与单机换视点比较，三架不是固定要求 |
+| 3 | 增加 region search、same-object association、时序、联合推断和不确定性缺口 | GPS 接近不等于同一对象；NDNSF 本身不提供感知算法或准确率保证 |
+| 4 | 保留两种官方产品图；台架目标改为区域采集、位姿和时间检查 | 候选设备，不是已接入硬件 |
+
+保持4页，不恢复已删除的物理闭环/评估独立页。下一步先用有真值的互补遮挡图像验证
+单视角与联合判断的差异，再接实机采集；未知类别不等于相机不清楚自身任务，也不等于已具备
+任意开放类别识别。未改产品/API/实验状态。
+
+Validation：最终 pdfLaTeX 连续两遍成功，4页，无 Overfull/Underfull/Warning/缺字；Poppler
+全页检查并复查改动页面，修正示意图 Data 连线穿过标签的问题。文字预检各页不超过100词；
+唯一 First 提示指首个台架阶段，并非首创声明。两份 PDF 同源同步，构建和渲染保留于
+`.codex-tmp/uav-joint-identification-20260911/`，驱动日志 `/tmp/uav-joint-pass*.log`。
+旧路口草案的排版记录保留于 `.codex-tmp/uav-multizone-20260911/`，不作为最终案例或运行证据。
+以下均为历史修订。
+
 ## Current Revision: Remove Former Pages 4 and 5 — 2026-09-11
 
 按用户要求删除 physical loop 与 evaluation 两页；保留原第1/2/3/6页，重新编号为1–4。

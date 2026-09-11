@@ -17,6 +17,10 @@
 
 ## Current Checkpoint
 
+2026-09-11 **D-UAV-JOINT / CLOSED_FOR_VALIDATION (documentation only)**：UAV示例改为
+区域内未知目标的多视角联合辨认，4页构建/渲染通过；
+[证据](../../docs/NDNSF-UAV/slides/UPDATES_UAV-review.md)。不推进 B1–B5；原生任务状态保持。
+
 2026-09-11 **D-UAV-TRIM / CLOSED_FOR_VALIDATION (documentation only)**：按用户要求删除
 UAV update PDF 原第4/5页，现4页；双遍构建及全页渲染通过，两份导出同步。
 [证据](../../docs/NDNSF-UAV/slides/UPDATES_UAV-review.md)。不推进 B1–B5，原生下一步保持不变。

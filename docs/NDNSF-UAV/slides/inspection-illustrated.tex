@@ -1,22 +1,18 @@
 % Shared four-slide body; included by UPDATES.tex.
-\begin{frame}{A Controlled Task: Collect Useful Views of One Car}
-\small Remote visual check: an operator requests rear, roof and front views of one parked car before a deadline.
-\vspace{.4em}
+\begin{frame}{What Is Near This Map Pin? Combine Partial Views}
+\small Request: inspect this approximate region. The target's identity is unknown.
+\vspace{.2em}
 \centering
 \begin{tikzpicture}[font=\scriptsize,
  data/.style={-{Stealth},thick,Green}, sight/.style={dashed,thick,Orange}]
-\fill[Blue!4,rounded corners](-.8,-.3) rectangle (12.5,4.5);
-\fill[Green!9](-.8,-.3)--(12.5,-.3)--(12.5,.7)--(9.2,1.1)--(5.5,.5)--(2.1,1)--(-.8,.6)--cycle;
-% Car silhouette: wheels, body, cabin, windows and headlights.
-\foreach \x in {4.85,6.05}{\filldraw[draw=Navy,fill=gray!70](\x,.96) circle (.22);\fill[gray!20](\x,.96) circle (.10);}
-\filldraw[draw=Navy,fill=Blue!25,rounded corners=3pt](4.35,1.02)--(4.35,1.35)--(4.83,1.48)--(5.13,1.99)--(5.95,1.99)--(6.3,1.5)--(6.65,1.38)--(6.65,1.02)--cycle;
-\filldraw[draw=Navy,fill=white](4.99,1.53)--(5.23,1.87)--(5.52,1.87)--(5.52,1.53)--cycle;
-\filldraw[draw=Navy,fill=white](5.61,1.53)--(5.61,1.87)--(5.88,1.87)--(6.12,1.53)--cycle;
-\draw[Navy](5.56,1.45)--(5.56,1.08);
-\draw[Navy,thick](5.35,1.38)--(5.46,1.38);
-\fill[Orange!70](6.42,1.23) rectangle (6.62,1.34);
-\node[below,align=center] at (5.6,.67) {Same parked car; approximate location};
-\foreach \x/\y/\name in {1.5/3.5/A: rear-side view,5.65/3.9/B: roof view,9/3.3/C: front-side view}{
+\fill[Blue!4,rounded corners](-.8,-.65) rectangle (12.5,4.3);
+% Unknown target and partial occlusion: no class is supplied in the request.
+\draw[Orange,dashed,thick,fill=Orange!8](4.5,1.7) ellipse (1.35 and .85);
+\filldraw[draw=Gray,fill=gray!40](3.8,1.6)--(4,2)--(4.85,1.95)--(5.1,1.55)--cycle;
+\foreach \x/\y in {3.7/1.45,4.1/1.3,4.6/1.35}{\fill[Green!45](\x,\y) circle (.3);}
+\node[font=\Large\bfseries,text=Navy] at (4.45,1.9){?};
+\node[below,align=center] at (4.5,.9){Approximate region\\Partly hidden object};
+\foreach \x/\y/\name in {1/3.15/A: low-angle view,4.8/3.55/B: elevated view,8/3.15/C: opposite view}{
  \begin{scope}[shift={(\x,\y)}]
  \draw[Navy,thick](-.38,-.16)--(.38,.16) (-.38,.16)--(.38,-.16);
  \foreach \a in {-.38,.38}\foreach \b in {-.16,.16}{\draw[Navy,fill=Blue!10](\a,\b) ellipse (.19 and .07);}
@@ -26,42 +22,42 @@
  \fill[Navy](0,-.38) circle (.035);
  \node[above,font=\scriptsize\bfseries,text=Navy] at (0,.3){UAV \name};
  \end{scope}}
-\fill[Orange,opacity=.12](1.5,3.05)--(4.5,1.2)--(5.4,2)--cycle;
-\fill[Orange,opacity=.12](5.65,3.45)--(5.05,2.05)--(6.65,2.05)--cycle;
-\fill[Orange,opacity=.12](9,2.85)--(6.1,.95)--(6.65,2.05)--cycle;
-\draw[sight](1.5,3.05)--(4.8,1.7);\draw[sight](5.65,3.45)--(5.65,2);\draw[sight](9,2.85)--(6.4,1.55);
-\node[draw=Navy,fill=white,rounded corners,align=center,minimum height=.65cm](gs) at (1.2,.3){Operator station\\View coverage + images};
-\node[draw=Green,fill=white,rounded corners,align=center,minimum height=.65cm](gpu) at (10.7,1.25){Selected Analyzer\\Ground node or UAV};
-\draw[data](1.95,3.6) to[bend left=15](gpu.north);
-\draw[data](6.15,3.9) to[bend left=10](gpu.north);
-\draw[data](9.45,3.3)--(gpu.north);
-\draw[data](gpu.south)--(10.7,-.05)--(1.2,-.05)--(gs.south);
-\node[fill=white,text=Green] at (8.6,4.28){Named image Data};
-\node[fill=white,text=Green] at (9.5,.12){Annotations + image names};
-\node[align=left,text=Navy] at (1.4,1.8){Each camera UAV needs:\\GPS/IMU pose\\Gimbal + camera API};
+\draw[sight](1,2.7)--(3.9,1.8);
+\draw[sight](4.8,3.1)--(4.5,2.1);
+\draw[sight](8,2.7)--(5.1,1.8);
+\node[draw=Green,fill=white,rounded corners,align=center,minimum height=.65cm](gpu) at (10.5,2){Joint Analyzer\\Ground node or UAV};
+\node[draw=Navy,fill=white,rounded corners,align=center,minimum height=.65cm](gs) at (10.5,0){Operator\\Hypothesis + evidence\\or uncertain};
+\draw[data](1.55,3.15)--(2.6,3.15)--(2.6,4.3)--(9.4,4.3)--(gpu.north);
+\draw[data](5.4,3.6)--(gpu.north west);
+\draw[data](8.55,3.2)--(gpu.north);
+\draw[data](gpu.south)--(gs.north);
+\node[fill=white,text=Green,align=center] at (10.7,3.4){Images + pose\\+ timestamps};
+\node[draw=Orange,fill=white,rounded corners,align=center,font=\tiny] at (1.4,.1){A: wheel-like feature?};
+\node[draw=Orange,fill=white,rounded corners,align=center,font=\tiny] at (4.5,-.2){B: flat upper surface?};
+\node[draw=Orange,fill=white,rounded corners,align=center,font=\tiny] at (7.4,.1){C: vehicle-like outline?};
 \end{tikzpicture}
-\evidence{Proposed field test, not a completed flight experiment. Orange: views; green: named-data retrieval, not flight paths or unsolicited push.}
+\evidence{Illustrative clues, not measured detections. Orange: sight lines; green: named-data retrieval. No individual view is assumed sufficient.}
 \end{frame}
 
-\begin{frame}{Why This Is a Useful NDNSF Test Case}
+\begin{frame}{Complementary Evidence Supports a Joint Judgment}
 \centering
 \begin{tikzpicture}[node distance=.25cm,font=\footnotesize,
  b/.style={draw=Navy,rounded corners,fill=Blue!6,text width=2.1cm,minimum height=1.1cm,align=center}]
-\node[b](r){Request Data\\Views + deadline};
+\node[b](r){Request Data\\Region + question};
 \node[b,right=of r](o){ACK Data\\Provider offers};
 \node[b,right=of o](s){Selection Data\\Views + Analyzer};
-\node[b,right=of s](v){Application\\Capture + analyze};
-\node[b,right=of v](e){Response Data\\Coverage + names};
+\node[b,right=of s](v){Application\\Associate + infer};
+\node[b,right=of v](e){Response Data\\Judgment + evidence};
 \foreach \a/\b in {r/o,o/s,s/v,v/e}{\draw[-{Stealth},thick,Navy](\a)--(\b);}
 \end{tikzpicture}
 \vspace{.8em}
 \begin{itemize}
-\item \textbf{Availability}: select camera and compute Providers at request time.
-\item \textbf{Dependencies}: retrieve selected views by name; report coverage and missing views.
-\item \textbf{Access rights}: authorize services and protect images across participating devices.
+\item \textbf{Cameras}: receive a region and viewpoint, without a target class.
+\item \textbf{Analyzer}: match the same object across views and combine complementary cues.
+\item \textbf{NDNSF}: select Providers, assign roles and retrieve protected evidence.
 \end{itemize}
-\claim{Compare against one UAV and ground compute; measure whether collaboration is worth its cost.}
-\evidence{Proposed mapping: NDNSF handles invocation; the application validates capture and same-car association.}
+\claim{Multiple views can reduce ambiguity. Multiple UAVs add parallel capture; compare against one UAV changing viewpoint.}
+\evidence{Proposed workflow. Conflicting or insufficient evidence yields uncertainty. Three cameras are illustrative.}
 \end{frame}
 
 \begin{frame}{Three Gaps Between Simulation and the Field}
@@ -69,10 +65,10 @@
 \begin{tabular}{>{\RaggedRight\arraybackslash}p{.20\textwidth}>{\RaggedRight\arraybackslash}p{.28\textwidth}>{\RaggedRight\arraybackslash}p{.42\textwidth}}
 \textbf{Gap}&\textbf{Simplified example}&\textbf{Real deployment needs}\\\hline
 Position / pointing & Known coordinates; assigned views & GPS + IMU, camera/gimbal calibration, coordinate frames, synchronized pose and exposure\\
-Useful images & Car assumed visible & Real control/capture APIs, feedback, blur/occlusion checks and bounded retries\\
-Multi-view result & Images supplied to a detector & Same-car association, requested-view coverage and independent image labels\\
+Useful views & Target assumed visible & Region search, camera control, visibility checks and complementary viewpoints\\
+Joint judgment & Views assumed to match & Same-object association, time alignment, multi-view inference and uncertainty checks\\
 \end{tabular}
-\claim{Start with verified, complementary images. Damage diagnosis and 3-D reconstruction require separate algorithms and validation.}
+\claim{Nearby images may show different objects. Validate cross-view association and joint judgment against ground truth.}
 \evidence{Candidate tools: \href{https://mavsdk.mavlink.io/main/en/cpp/index.html}{MAVSDK control/telemetry}; \href{https://docs.opencv.org/4.13.0/d9/d0c/group__calib3d.html}{OpenCV calibration/geometry}. Hardware support and integration remain to be verified.}
 \end{frame}
 
@@ -97,6 +93,6 @@ Multi-view result & Images supplied to a detector & Same-car association, reques
 \end{itemize}
 \end{columns}
 \vspace{.6em}
-\textbf{First bench test:} command an angle $\rightarrow$ read actual attitude $\rightarrow$ capture the parked car.
+\textbf{First bench test:} aim at a region $\rightarrow$ capture distinct views $\rightarrow$ verify pose and timing.
 \evidence{Product images: \href{https://shop.siyi.biz/products/siyi-a8-mini-gimbal-camera}{SIYI official store} and \href{https://gremsy.com/products/pixy-u}{Gremsy official site}. Images not to scale. Candidate hardware; verify power, payload and mounting before selection.}
 \end{frame}
