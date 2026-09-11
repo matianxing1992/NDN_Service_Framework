@@ -147,9 +147,16 @@ def renderer_inputs(tmp_path):
                                            "roles": [role]} for role in ROLES]}]}
     config = tmp_path / "policy.json"
     config.write_text(json.dumps(policy))
+    topology = tmp_path / "topology.conf"
+    topology.write_text("[nodes]\nnode-a:\n", encoding="utf-8")
+    native_config = tmp_path / "native-requester.json"
+    native_config.write_text("{}\n", encoding="utf-8")
     env = {"SPEC180_YOLO_" + key: "/models/" + key for key in (
         "CANONICAL_PACKAGE", "CATALOGUE_REGISTRY", "OFFER_TRUST_ROOT",
-        "OFFER_PUBLIC_KEY_MAP", "CATALOG_DATA_NAME")}
+        "OFFER_PUBLIC_KEY_MAP", "CATALOG_DATA_NAME",
+        "NATIVE_REQUESTER_CONFIG")}
+    env["SPEC180_YOLO_NATIVE_REQUESTER_CONFIG"] = str(native_config)
+    env["SPEC180_YOLO_TOPOLOGY"] = str(topology)
     env.update(SPEC180_YOLO_CATALOG_SIGNER="/example/controller", SPEC180_YOLO_CONFIG=str(config))
     workload = tmp_path / "workload.json"
     workload.write_text(json.dumps({"schema": "spec180-dispatch-workload-v1",
@@ -176,8 +183,12 @@ def test_tiger_uses_four_native_providers_and_no_merge_gpu(tmp_path, monkeypatch
         assert "--serve" in argv and "--local-model-path" not in argv
         assert not any("provider.py" in arg for arg in argv)
     user = (output / "user.args").read_text().splitlines()
-    assert user[user.index("--sequential-requests") + 1] == "1"
+    assert user[user.index("--native-requester-config") + 1] == str(
+        workload.parent / "native-requester.json")
     assert "--native-tensor-input" in user
+    assert "--request-id" not in user
+    assert "--lifecycle-output-dir" not in user
+    assert "--lifecycle-case" not in user
     repo = (output / "repo.args").read_text().splitlines()
     assert repo[1].endswith("/yolo_2x2/repo_node.py")
     assert repo[repo.index("--repo-node") + 1] == "/example/provider/Repo"
@@ -192,3 +203,27 @@ def test_tiger_rejects_duplicate_identity_before_writes(tmp_path):
     with pytest.raises(SystemExit, match="PROCESS_PROFILE_MISMATCH"):
         renderer.render(workload, output, "/models")
     assert not output.exists()
+
+
+def test_tiger_rejects_unexecuted_multi_node_runtime_map(tmp_path):
+    renderer = load("packaging/ndnsf-di-container/jobs/spec180/render-tiger-yb-args.py")
+    workload, config, policy = renderer_inputs(tmp_path)
+    policy["runtime"] = {"nodes": {
+        "controller": "node-a", "user": "node-a", "repo": "node-b",
+        "providers": {"/example/provider/BackboneNeck": "node-c"},
+    }}
+    config.write_text(json.dumps(policy))
+    output = tmp_path / "args"
+    with pytest.raises(SystemExit, match="MULTI_NODE_RUNTIME_UNSUPPORTED"):
+        renderer.render(workload, output, "/models")
+    assert not output.exists()
+
+
+def test_tiger_requires_explicit_native_requester_config(tmp_path):
+    renderer = load("packaging/ndnsf-di-container/jobs/spec180/render-tiger-yb-args.py")
+    workload, _, _ = renderer_inputs(tmp_path)
+    value = json.loads(workload.read_text())
+    del value["environment"]["SPEC180_YOLO_NATIVE_REQUESTER_CONFIG"]
+    workload.write_text(json.dumps(value))
+    with pytest.raises(SystemExit, match="WORKLOAD_ENVIRONMENT_INCOMPLETE:SPEC180_YOLO_NATIVE_REQUESTER_CONFIG"):
+        renderer.render(workload, tmp_path / "args", "/models")
