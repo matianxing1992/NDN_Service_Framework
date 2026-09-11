@@ -12,6 +12,8 @@ Spec184 合同、测试判据或外部实验状态。清理前根分区可用空
 - `.codex-tmp/` 与 `pythonWrapper/build/` 中 3304 个普通编译对象/依赖文件
   (`*.o`, `*.o.d`, `*.d`)，合计 5,568,628,362 bytes（约 5.19 GiB）。
 - `/home/tianxing/.cache/go-build` 与 `/home/tianxing/.cache/pip`，均无活动构建/下载进程。
+- 两个空的旧 Spec184 build 占位目录、`pythonWrapper/.codex-tmp` 小日志目录，以及两份
+  LaTeX 辅助文件（`.fdb_latexmk`、`.fls`）。
 
 删除前的路径与大小清单保存在
 `.codex-tmp/cleanup-20260911-object-files.json`，删除结果保存在
