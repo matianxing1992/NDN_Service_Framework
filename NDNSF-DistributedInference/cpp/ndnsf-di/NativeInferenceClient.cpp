@@ -18,6 +18,7 @@
 #include <mutex>
 #include <set>
 #include <thread>
+#include <unordered_map>
 #include <utility>
 #include <openssl/rand.h>
 #include <unistd.h>
@@ -308,6 +309,7 @@ struct NativeInferenceHandle::Operation
   std::shared_ptr<const NativeOfferAdmission> admission;
   std::shared_ptr<const NativeAdapterRegistry> adapters;
   std::shared_ptr<SerialRequestExecutor> worker;
+  std::weak_ptr<NativeOperationRegistry> registry;
   std::shared_ptr<std::atomic<bool>> cancelled = std::make_shared<std::atomic<bool>>(false);
   NativeRequestOptions coreOptions;
   std::optional<NativeInspectedModel> inspected;
@@ -462,7 +464,29 @@ struct NativeInferenceHandle::Operation
   }
 };
 
+// The client must retain every pending operation until it reaches a terminal
+// state, even when the caller drops its public handle.  A weak-only client
+// index lets close() miss such an operation while an executor task still owns
+// it, so the request can begin after the client has been closed.  The registry
+// owns pending operations strongly and is referenced weakly by each operation;
+// terminal completion removes the entry without retaining completed results.
+struct NativeOperationRegistry
+{
+  std::mutex mutex;
+  std::unordered_map<NativeInferenceHandle::Operation*,
+                     std::shared_ptr<NativeInferenceHandle::Operation>> pending;
+};
+
 namespace {
+
+void
+unregisterOperation(const std::shared_ptr<NativeInferenceHandle::Operation>& operation) noexcept
+{
+  if (auto registry = operation->registry.lock()) {
+    std::lock_guard<std::mutex> lock(registry->mutex);
+    registry->pending.erase(operation.get());
+  }
+}
 
 NativeInferenceEvent
 makeTerminalEvent(const NativeInferenceHandle::Operation& operation)
@@ -532,6 +556,7 @@ markTerminal(const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
     operation->phase = DiRequestPhase::Terminal;
     cancelDeadline = std::move(operation->cancelDeadline);
   }
+  unregisterOperation(operation);
   if (cancelDeadline) cancelDeadline();
   operation->condition.notify_all();
   if (conversations && conversationTurn && !conversationCommitted) {
@@ -1667,6 +1692,7 @@ NativeInferenceClient::NativeInferenceClient(
   , m_executor(SerialRequestExecutor::create(testPort.submitHook))
   , m_notifications(SerialRequestExecutor::create())
   , m_deadlines(SerialRequestExecutor::create())
+  , m_operationRegistry(std::make_shared<NativeOperationRegistry>())
   , m_schedule(testPort.scheduleHook ? testPort.scheduleHook :
       [executor = m_deadlines](std::chrono::steady_clock::time_point deadline,
                                std::function<void()> task) {
@@ -1749,6 +1775,7 @@ NativeInferenceHandle NativeInferenceClient::request(
     operation->adapters = m_adapters;
     operation->conversations = m_conversations;
     operation->worker = m_executor;
+    operation->registry = m_operationRegistry;
     operation->notifications = m_notifications;
     operation->applicationRequestId = options.applicationRequestId;
     // The requestId comes from a unique native owner allocated at submission
@@ -1836,15 +1863,19 @@ NativeInferenceHandle NativeInferenceClient::request(
         operation->maxGenerationTokens = generation.maxGeneratedTokens;
       }
     }
-    // Keep only live handles in the close-tracking index.  The index is weak
-    // by design so a client does not own completed operations, but without
-    // compaction every fire-and-forget request would leave an expired entry
-    // until client shutdown.
+    // Keep a weak diagnostic index for the existing tests and a separate
+    // strong registry entry for every pending operation.  The registry is
+    // removed by markTerminal, so completed fire-and-forget requests do not
+    // remain owned by the client while close() still reaches dropped handles.
     m_operations.erase(
       std::remove_if(m_operations.begin(), m_operations.end(),
                      [] (const auto& weak) { return weak.expired(); }),
       m_operations.end());
     m_operations.push_back(operation);
+    {
+      std::lock_guard<std::mutex> registryLock(m_operationRegistry->mutex);
+      m_operationRegistry->pending.emplace(operation.get(), operation);
+    }
   }
   // Submission returns a Pending handle; the dispatch runs on the
   // client-owned serial executor, never on the caller or the Core I/O thread.
@@ -1892,8 +1923,11 @@ void NativeInferenceClient::close() noexcept
     std::lock_guard<std::mutex> lock(m_mutex);
     if (m_closed) return;
     m_closed = true;
-    for (auto& weak : m_operations) {
-      if (auto operation = weak.lock()) operations.push_back(std::move(operation));
+    {
+      std::lock_guard<std::mutex> registryLock(m_operationRegistry->mutex);
+      for (auto& entry : m_operationRegistry->pending)
+        operations.push_back(std::move(entry.second));
+      m_operationRegistry->pending.clear();
     }
     m_operations.clear();
   }

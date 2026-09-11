@@ -21,6 +21,8 @@ namespace ndn_service_framework { class ServiceUser; }
 
 namespace ndnsf::di {
 
+struct NativeOperationRegistry;
+
 class NativeGrantClient;
 class NativeRequestPreparation;
 class NativeOfferAdmission;
@@ -232,6 +234,7 @@ private:
   std::shared_ptr<SerialRequestExecutor> m_executor;
   std::shared_ptr<SerialRequestExecutor> m_notifications;
   std::shared_ptr<SerialRequestExecutor> m_deadlines;
+  std::shared_ptr<NativeOperationRegistry> m_operationRegistry;
   std::function<std::function<void()>(std::chrono::steady_clock::time_point,
                                      std::function<void()>)> m_schedule;
   mutable std::mutex m_mutex;

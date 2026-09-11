@@ -1,5 +1,21 @@
 # Failure Log and Evidence Index
 
+## 2026-09-11 — Spec182 R11-B9-G8 client-close pending-operation registry compile boundary
+
+The first `-j3` rebuild for the C++ client-close regression reached the final
+unit-test translation unit but stopped at the test fixture: `adapters->find()`
+returns `shared_ptr<const NativeModelAdapter>`, so the new test attempted a
+`dynamic_pointer_cast` that would cast away constness. No production binary or
+runtime path was reached. The raw compiler output is retained at
+`.codex-tmp/spec182-g49-close-registry-20260911/build-j3.log`.
+
+The fixture now retains the concrete adapter it registers, removing the
+constness violation. The retry used the same system-first toolchain and `-j3`,
+completed all 190 unit-test build tasks in 57.934 seconds, and showed zero
+sustained swap-in/out in the recorded `vmstat` samples. The affected C++ client
+suite then passed; this was a test-only first-boundary failure and does not
+promote T010/T016 or the remaining native qualification gates.
+
 ## 2026-09-11 — Spec182 R11-B8-G48 Qwen native observer type boundary
 
 静态复核发现 Qwen native caller 在 `decode_payload()` 成功返回 JSON array 或 scalar

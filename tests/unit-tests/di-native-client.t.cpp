@@ -95,6 +95,7 @@ struct ClientStateFixture {
   ndn::DummyClientFace face{keyChain};
   std::shared_ptr<ndn_service_framework::test::LocalServiceUser> user;
   std::shared_ptr<NativeAdapterRegistry> adapters = std::make_shared<NativeAdapterRegistry>();
+  std::shared_ptr<ClientTestAdapter> clientAdapter;
   std::deque<std::function<void()>> work;
   struct Timer {
     std::chrono::steady_clock::time_point deadline;
@@ -110,7 +111,8 @@ struct ClientStateFixture {
     auto aa = makeRsaIdentity(keyChain, ndn::Name("/client-test/aa"));
     user = std::make_shared<LocalServiceUser>(face, ndn::Name("/client-test"), cert, aa,
                                              "examples/trust-any.conf");
-    adapters->registerAdapter(std::make_shared<ClientTestAdapter>());
+    clientAdapter = std::make_shared<ClientTestAdapter>();
+    adapters->registerAdapter(clientAdapter);
     adapters->freeze();
     model.modelName = "client-model";
     model.contentDigest = nativePlanningDigest("model");
@@ -387,6 +389,28 @@ BOOST_AUTO_TEST_CASE(ExpiredOperationEntriesAreCompactedForLongLivedClient)
   }
   BOOST_CHECK_LE(NativeClientTestAccess::operationEntryCount(*client), 1U);
   client->close();
+}
+
+BOOST_AUTO_TEST_CASE(ClientCloseCancelsPendingOperationAfterHandleDrop)
+{
+  now = std::chrono::steady_clock::now();
+  std::atomic<std::size_t> encodeCalls{0};
+  clientAdapter->onEncode = [&](const auto&) { ++encodeCalls; };
+  auto client = NativeClientTestAccess::create(
+    port(), user, adapters, std::make_shared<NativeRequestPreparation>(adapters));
+  auto handle = request(*client);
+  const auto requestId = handle.requestId();
+  handle = NativeInferenceHandle{};
+
+  // The public handle no longer owns the operation, but client close must
+  // still cancel it before the queued preparation callback can run.
+  client->close();
+  BOOST_REQUIRE_EQUAL(work.size(), 1U);
+  auto dispatch = std::move(work.front());
+  work.pop_front();
+  dispatch();
+  BOOST_CHECK_EQUAL(encodeCalls.load(), 0U);
+  BOOST_CHECK(!user->hasPendingCall(ndn::Name(requestId)));
 }
 
 BOOST_AUTO_TEST_CASE(SubmissionOwnsInputsAndStrategiesBeforeWorkerPreparation)
