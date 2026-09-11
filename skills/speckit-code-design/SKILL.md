@@ -64,7 +64,8 @@ active health checks；这些检查只证明指针/工作流一致性，不能�
 ## Implementation And Validation
 
 所有执行者必须使用 [task progress registry](references/task-progress.md)：
-tasks.md 顶部完整登记执行单元、依赖、状态、证据和剩余项，每个工作单元结束后同步。
+tasks.md 顶部必须用逐执行单元的 `Execution Progress` 表完整登记每个 T ID（及必要的稳定子任务 ID）、
+依赖、状态、证据和剩余项；批次进度表只能补充批次出口，不能替代逐单元 registry。每个工作单元结束后同步。
 此规则不取决于模型或 bounded-executor 模式；详细卡片与当前进度分工明确。
 
 创建或更新 Spec Kit feature 前，先从仓库根运行
