@@ -17,7 +17,7 @@
 | [T004 Atomic Private Checkpoint Export](evidence/b3-checkpoint-export-20260911.md) | DONE | B2 exit | B3 normal and unsuppressed ASan/UBSan exits complete; directory-fsync failure remains an explicit implementation limit | 2026-09-11 |
 | [T005 Maintained Caller Mode Closure](evidence/b4-caller-convergence-20260911.md) | DONE | B1–B3 exits | Caller/mode matrix and focused route selectors complete; D2b runtime miss, real-model/no-Python and retirement remain in B5 | 2026-09-11 |
 | [T006 Inherited Obligation and Harness Closure](contracts/qualification-matrix.md) | PARTIAL | B4 exit | 80-row matrix, ordered local candidate identity and fresh convergence audit are recorded; residual process/no-Python, parser-fuzz and negative-row closure remain | 2026-09-11 |
-| [T007 Current Native Qualification](contracts/promotion-candidate.md) | NOT_STARTED | T006 complete and fresh convergence `PASS` | Candidate-bound C++/process/no-Python qualification and negative rows not run | 2026-09-11 |
+| [T007 Current Native Qualification](contracts/promotion-candidate.md) | IN_PROGRESS | T006 complete and fresh convergence `PASS` | Candidate-bound full unit/component gates recorded; integration has 48 failures and process/no-Python preflight is `UNQUALIFIED`; parser-fuzz and negative rows remain | 2026-09-11 |
 | [T008 Native Development Handoff](plan.md) | NOT_STARTED | T007 `QUALIFICATION_PASS` | Design/API handoff and external experiment transfer remain pending | 2026-09-11 |
 
 ## Logical Batch Progress
@@ -31,6 +31,14 @@
 | B5 | IN_PROGRESS / T006 PARTIAL | inherited row profiles；Provider-host unsuppressed ASan/UBSan PASS；文档对账 `none` with reason | component selectors、resolver lifetime gate、ordered candidate identity and fresh convergence `PASS` recorded；仍需 process/no-Python, parser-fuzz and negative-row closure → T007 正式本地资格 → T008 交付 |
 
 ## Current Checkpoint
+
+2026-09-11 **T007-CANDIDATE / PARTIAL**：按当前 candidate 绑定运行完整 native unit、完整
+integration、Provider-host sanitizer gate、authority/native route selectors 和 process/no-Python
+`I01` preflight。unit exit `0`，component/authority selectors PASS；integration exit `1`/48
+failures；process driver 在 manifest schema 边界 exit `2`/`UNQUALIFIED`，没有启动业务进程。解析
+fuzz、negative collector、真实模型/MiniNDN、Python retirement 与外部 SIF/Tiger 仍未运行；
+详见 [T007 qualification evidence](evidence/t007-current-native-qualification-20260911.md)
+与 [failure-log entry](../../docs/failure-log.md)。T007 保持 `IN_PROGRESS`/`PARTIAL`，T008 未开始。
 
 2026-09-11 **B5-CONVERGENCE / PASS_FOR_T007_PRECONDITION**：冻结本地 candidate（详见
 [promotion candidate](contracts/promotion-candidate.md)），并完成
