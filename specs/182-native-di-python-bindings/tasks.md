@@ -6,6 +6,14 @@
 
 ## Execution Progress
 
+2026-09-11 T016-A current-source unit boundary：首次完整 C++ selector 使用旧的
+`build-nac182/unit-tests`，约 330 秒后 `rc=201`，1,022 cases 中 11 failed、8 aborted、
+20 assertions failed；首个边界为 fixture 缺少 `runner preparation callback`。raw run 保存在
+`.codex-tmp/spec182-t016-unit-20260911/`，详见
+[T016-A current-source boundary](evidence/t016-a-current-source-unit-boundary-20260911.md)。
+该二进制早于当前 fixture repair，结果不计为当前协议失败或 PASS；已改变门槛为新目录
+按当前源码重新 configure/build 后再执行完整 unit/integration selector。T016-A 保持 `PARTIAL`。
+
 文档旁路记录（2026-09-10，Abstract DOCUMENT PASS）：中英文 Proposal 摘要按
 研究需求、方法、初步依据及计划评估重写，四入口编译及摘要截图检查通过，仅
 PDF P2 变化。见[审计](../../docs/PAPER/proposal-defense/research-revision-audit.md)
@@ -366,6 +374,12 @@ P1–P4 是不同的生产入口、进程边界或 selector，不能为了少一
 | R10-B76 | production entry/callers: compatibility manifest → maintained Python API inventory; implementation/wire: `checklists/build_api_migration_manifest.py` regenerated all 344 entries and rebounded source line/hash metadata to checkpoint `31fe172a`; test/harness/oracle: generator output, `sourceCommit` equality, design validator and diff check; build/source closure: manifest-only, no ABI or runtime change; migration/evidence: closes stale provenance from R10-B74 while semantic caller mapping, native default migration and legacy retirement remain open | DONE for this bounded manifest provenance boundary; parent T001/O-004/T013-B remain PARTIAL | static review confirms current HEAD identity and 344-entry coverage; manifest remains routing evidence and cannot promote runtime compatibility or qualification | generator PASS (`entries=344`, `dynamicAppSdk=67`); sourceCommit equality PASS; `validate_design.py --json` PASS; `git diff --check` PASS | no product build, requester/Provider transport, maintained caller/no-Python or T016/T017 run | documentation/generator artifact only | `STATIC_PASS`; `FOCUSED_BEHAVIOR_PASS`; `BUILD_NOT_APPLICABLE`; `OPEN_FOR_NEXT_BATCH`; not `QUALIFICATION_PASS` | [R10-B76 evidence](evidence/r10-b76-compatibility-manifest-refresh-20260909.md); next: map and migrate maintained native callers, then regenerate after each source checkpoint |
 
 ## Current Checkpoint
+
+2026-09-11 T016-A current-source unit boundary / **OPEN_FOR_NEXT_BATCH**：旧的
+`build-nac182/unit-tests` 全量运行在 fixture callback 边界失败，记录为 stale artifact，
+不推进任何父任务。下一步用当前源码新 build 目录完成 `unit-tests` 和 `integration-tests`，
+再更新 T016-A 证据与状态。详见
+[current-source unit boundary](evidence/t016-a-current-source-unit-boundary-20260911.md)。
 
 2026-09-11 R11-B8-G46 legacy Slurm multi-node adapter guard / **CLOSED_FOR_VALIDATION**（仅限
 旧兼容入口的假阳性保护）：静态追踪发现 `slurm.nodes>1` 的 profile 虽通过多节点网络证据交叉

@@ -1,5 +1,19 @@
 # Failure Log and Evidence Index
 
+## 2026-09-11 — Spec182 T016-A stale unit binary boundary
+
+The first full C++ unit qualification attempt used the existing
+`build-nac182/unit-tests` binary. It exited `rc=201` after about 330 seconds
+with 11 failed cases and 8 aborted cases; the first failures were
+`NativeProviderRuntime requires a runner preparation callback` in conversation
+and opaque-state tests. The raw run is retained at
+`.codex-tmp/spec182-t016-unit-20260911/`. The binary predated the current
+fixture repair even though the source tree had no C++ diff after the native
+checkpoint, so this result is a stale-artifact boundary rather than a current
+protocol result. The changed gate is a fresh current-source build in a new
+output directory before any T016 status decision; no task is promoted by the
+failed run.
+
 ## 2026-09-10 — Spec182 R11-B8-G40 network integration retry boundary
 
 The first normal run of the G40 network integration exited 1 after the injected
