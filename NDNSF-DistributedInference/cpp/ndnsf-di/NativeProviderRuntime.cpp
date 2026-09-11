@@ -1351,8 +1351,6 @@ NativeProviderRuntime::executeRoleAsyncImpl(
   if (!runner && !prepareRunner) {
     runner = findRunner(role.role);
   }
-  const bool expectsOpaqueStateHandle =
-    runner && runner->supportsOpaqueStateHandles();
   const auto runnerSpec = findRunnerSpec(role.role);
   const bool stateful = !role.stateInputNames.empty() ||
                         !role.stateOutputNames.empty();
@@ -1488,7 +1486,6 @@ NativeProviderRuntime::executeRoleAsyncImpl(
      binding = std::move(*stateBinding),
      predecessor = std::move(predecessorBinding),
      conversationBinding = std::move(conversationBinding),
-     expectsOpaqueStateHandle,
      executionGuard = std::move(executionGuard),
      future = std::move(workerFuture)] () mutable {
       bool candidateStaged = false;
@@ -1502,7 +1499,8 @@ NativeProviderRuntime::executeRoleAsyncImpl(
         auto result = future.get();
         if (executionGuard) executionGuard();
         TensorBundle state;
-        if (role.streamingStateExecution && expectsOpaqueStateHandle) {
+        if (role.streamingStateExecution &&
+            result.runnerSupportsOpaqueStateHandles) {
           if (!result.stateHandle) {
             throw std::runtime_error(
               "PROVIDER_OPAQUE_STATE_HANDLE_MISSING");

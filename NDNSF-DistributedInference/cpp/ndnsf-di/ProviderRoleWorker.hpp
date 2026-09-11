@@ -54,6 +54,11 @@ struct OutputPublishTiming
 struct ProviderRoleResult
 {
   std::map<std::string, TensorBundle> outputsByScope;
+  // The worker resolves a delayed preparation callback only after admission.
+  // Preserve the resulting runner capability for state finalization in the
+  // outer NativeProviderRuntime; probing before the callback would force an
+  // opaque Provider-local state runner through a host tensor round-trip.
+  bool runnerSupportsOpaqueStateHandles = false;
   std::optional<ExecutionEvidence> executionEvidence;
   std::optional<NativeRuntimeMetrics> runtimeMetrics;
   std::optional<NativeOpaqueStateHandleV1> stateHandle;
