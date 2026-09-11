@@ -139,6 +139,13 @@ configuration 前拒绝。
 topology supervisor 冻结已验证 map，之后所有 rank、route 和 process lookup 都读取该只读快照；
 submit-host map 在运行中被替换时，不能只改变后续阶段。
 
+旧版 `SlurmApptainerAdapter` 只渲染一个 `ndnsf-di.sbatch.in` workload；它不读取
+`process-map`、不配置跨节点 NFD route，也不启动 `run-allocation-topology.sh`。因此该兼容入口
+遇到 `slurm.nodes > 1` 时必须在 preflight/materialization 和 state-directory 创建之前以
+`SLURM_MULTINODE_TOPOLOGY_RUNNER_REQUIRED` fail closed，不能让调度器的多节点 allocation
+看起来像已执行。真正的多机请求仍只能走 Spec110 topology launcher 及其后续
+no-Python/T016 资格门；这个 guard 是防止假阳性的边界，不是多机资格本身。
+
 ### Spec180 Tiger Y-B Boundary
 
 `packaging/ndnsf-di-container/jobs/spec180/run-functional.sh` 的 Y-B entrypoint 是一节点

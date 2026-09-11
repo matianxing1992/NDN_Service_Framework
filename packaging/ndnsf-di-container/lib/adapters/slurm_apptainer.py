@@ -46,8 +46,17 @@ def _safe(value,label):
     if not SAFE.fullmatch(text):raise SlurmAdapterError('SLURM_UNSAFE_'+label)
     return text
 
+def _require_single_node_legacy_path(profile:Mapping[str,Any]) -> None:
+    """Keep the compatibility adapter from silently dropping extra nodes."""
+    if profile['slurm']['nodes'] > 1:
+        raise SlurmAdapterError(
+            'SLURM_MULTINODE_TOPOLOGY_RUNNER_REQUIRED:'
+            ' legacy single-container sbatch cannot execute process-map/routes;'
+            ' use run-allocation-topology.sh'
+        )
+
 def render_sbatch(profile:Mapping[str,Any],template_path:Path|str,materialization:Mapping[str,Any]|None=None)->str:
-    _profile.validate_profile(dict(profile)); s=profile['slurm']; root=Path(__file__).resolve().parents[2]
+    _profile.validate_profile(dict(profile)); _require_single_node_legacy_path(profile); s=profile['slurm']; root=Path(__file__).resolve().parents[2]
     gpu_count=s['gpu']['count']
     gpu_directive='' if gpu_count == 0 else f'#SBATCH --gres=gpu:{s["gpu"]["type"]}:{gpu_count}'
     values={'JOB_NAME':s.get('jobName','ndnsf-di'),'PARTITION':s['partition'],'ACCOUNT':s.get('account') or 'devs','QOS':s.get('qos') or 'normal','WALL_TIME':s['wallTime'],'NODES':s['nodes'],'TASKS_PER_NODE':s['tasksPerNode'],'CPUS_PER_TASK':s['cpusPerTask'],'MEMORY':s['memory'],'GPU_TYPE':s['gpu']['type'],'GPU_COUNT':gpu_count,'RUN_ID':profile['runId'],'PROJECT_ROOT':profile['storage']['projectRoot'],'EVIDENCE_ROOT':profile['storage']['evidenceRoot'],'IDENTITY_ROOT':profile['identity']['reference'],'LOG_ROOT':profile['storage']['projectRoot']+'/logs/'+profile['runId'],'FINALIZER':str(root/'adapters/slurm-apptainer/scripts/finalize-evidence.sh'),'COMPUTE_PREFLIGHT':str(root/'adapters/slurm-apptainer/scripts/preflight-compute.sh'),'RUN_CONTAINER':str(root/'adapters/slurm-apptainer/scripts/run-container.sh'),'SIF_PATH':(materialization or {}).get('sifPath',profile['storage']['imageRoot']+'/current.sif'),'SIF_SHA256':(materialization or {}).get('sifSha256','sha256:'+'0'*64),'WORKLOAD':'/bin/true'}
@@ -80,6 +89,7 @@ class SlurmApptainerAdapter(Adapter):
     def validate_release(self,release_record,materialization,cluster_snapshot):return validate_runtime_release(release_record,materialization,cluster_snapshot)
     def submit(self,profile,*,preflight=True,materialize=True):
         _profile.validate_profile(profile)
+        _require_single_node_legacy_path(profile)
         if preflight:self.preflight(profile)
         materialization=self.materialize(profile) if materialize else None
         root=self.state_root or Path(profile['storage']['projectRoot'])/'.state';run=root/profile['runId']

@@ -1,6 +1,26 @@
 # Spec182 Design Audit
 
-**Revision**: 53 | **Current source**: R11-B8-G45 Tiger Y-B native/topology binding checkpoint on `Experimental`
+**Revision**: 54 | **Current source**: R11-B8-G46 legacy Slurm multi-node adapter guard checkpoint on `Experimental`
+
+## R11-B8-G46 Legacy Slurm Multi-node Adapter Guard Review 2026-09-11
+
+针对“MiniNDN 单机通过但多机部署只执行一部分进程”的隐含约束进行静态追踪时，发现
+`packaging/ndnsf-di-container/lib/adapters/slurm_apptainer.py` 的旧兼容入口会接受通过
+`profile.py` 多节点交叉校验的 profile，却始终渲染一次 `ndnsf-di.sbatch.in`，只调用一个
+`run-container.sh`。模板没有消费 `process-map`，也没有调用 `run-allocation-topology.sh`、跨节点
+NFD face 或 route 配置；因此调度器可以分配多个节点，而业务仍只在一个 container 中启动。
+
+已增加 `SLURM_MULTINODE_TOPOLOGY_RUNNER_REQUIRED` fail-closed guard，并将 guard 放在
+`submit()` 的 preflight、SIF materialization 与 state-directory 创建之前，避免失败后留下会让
+重试误报 `SLURM_RUN_ALREADY_SUBMITTED` 的空目录。单节点旧入口行为保持不变；真正多机部署仍须
+使用 Spec110 topology launcher，并继续通过 no-Python、exact-SIF、MiniNDN/Slurm 和 T016 资格门。
+
+三条验证 lane 已覆盖：render 单元测试确认合法多节点 profile 被拒绝；submit 单元测试确认没有
+runner 调用和 state-directory 副作用；现有 topology/network 合同测试继续验证 canonical launcher。
+本批是 deployment 接线保护，不能提升 R11-B8 Maintained Callers、R11-B9 Native Closure 或
+T016/T017 状态。
+
+详见 [R11-B8-G46 evidence](evidence/r11-b8-g46-legacy-adapter-multinode-guard-20260911.md)。
 
 ## R11-B8-G45 Tiger Y-B Native and Topology Binding Review 2026-09-10
 
