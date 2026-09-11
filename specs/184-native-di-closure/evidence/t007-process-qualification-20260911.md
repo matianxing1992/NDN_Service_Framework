@@ -240,6 +240,13 @@ environment, also exited `0` on every run. The raw logs are retained under
 stability evidence without reclassifying the original isolated failure as impossible;
 the historical boundary remains visible for future sanitizer investigation.
 
+The Python harness regression for the collector/closure rules was rerun separately with
+`python3 -m pytest -q tests/python/test_spec182_native_closure.py`: 46 tests passed in
+`0.20s` (exit `0`). The raw log is
+`.codex-tmp/spec184-b5-python-closure-rerun-20260911.log`, SHA-256
+`c6d8232bea89456a18742e6c0bc663175121ea04cd4815356c198966f223a324`.
+This verifies the harness contract only; it does not promote Python as a business owner.
+
 The full current-candidate C++ integration sweep was also rerun with
 `NDNSF_SPEC182_BIN_DIR=build-spec184-b5-candidate`. It completed with exit `0` after
 `4:09.61` (maximum RSS `114048 KB`); the raw log is
