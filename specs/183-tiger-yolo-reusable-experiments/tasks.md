@@ -2,15 +2,29 @@
 
 **Input**: [spec.md](spec.md), [plan.md](plan.md), [profile contract](contracts/experiment-profile.md), [validation matrix](validation-matrix.md)
 **Branch**: `TigerClusterExperiments`
-**Status**: IN_PROGRESS / TIGER_SINGLE_NODE_GPU_PASS / TIGER_TWO_NODE_PASS / NEGATIVE_PENDING / REUSE_PENDING.
-The current candidate is APP v39 layered over the rebuilt v23 base SIF. The
-fresh shared exact-SIF local owner run `tiger-local-cpu-v49-r1` is a
-`NORMAL_EXPERIMENT_PASS`; it binds the v23 base, v49 application bundle, two
-requests, nine dependency edges per request, `[1,50,6]` output and
-`maxAbsError=0.0005340576171875`. The earlier v22/v35 Tiger PASS records remain
-historical provenance. Fresh v49 single-node and first two-node normal receipts
-are now collected; T015 has one real failed attempt and T016 remains gated on a
-bounded negative PASS. Every failed attempt remains immutable evidence.
+**Status**: IN_PROGRESS / V54_LOCAL_SINGLE_TWO_NODE_PASS / V55_LOCAL_SINGLE_PASS / NEGATIVE_BLOCKED / REUSE_BLOCKED.
+The current layered candidate keeps the v23 base SIF and APP v39 bundle while
+using the v55 harness. v54 has fresh local, single-node GPU and two-node normal
+`NORMAL_EXPERIMENT_PASS` receipts; v55 local and single-node GPU also pass.
+The v54/v55 run details and exact hashes are in the 2026-09-11 checkpoint below.
+Earlier v22/v35/v49 records remain historical provenance. T015 and T016 stay
+blocked until v55 obtains one healthy two-node PASS; every failed attempt remains
+immutable evidence.
+
+## 2026-09-11 execution ledger
+
+| Task / gate | Run and exact result | Qualification effect | Next action |
+| --- | --- | --- | --- |
+| T011 / V13 | `tiger-local-cpu-v54-r1`, candidate `sha256:f7269...7a52`, verdict `sha256:c6dc...9e43`, 2 requests, `NORMAL_EXPERIMENT_PASS` | v54 exact-SIF local PASS | Preserve as v54 evidence |
+| T013 / V15 | `210402` `tiger-single-node-gpu-v54-r1` on `itiger02`, verdict `sha256:7a07...5d5`, CUDA model roles + CPU Merge, clean cleanup | v54 single-node GPU PASS | Preserve; v55 rerun also passed as `210440` (`sha256:72f3...9787`) |
+| T014 / V16 | `210403` `tiger-two-node-gpu-v54-r1` on `itiger02,itiger03`, verdict `sha256:7b38...35d9`, 4 requests and 9 edges/request | v54 first two-node normal PASS | Cannot serve as v55 gate after harness change |
+| T015 / V17 | v54 negative `210411` ended `FAILED 78:0`; native withheld/failure evidence was reached but collection rejected native session binding. v55 negative was gate-rejected because no v55 two-node PASS | Real negative boundary retained; no `EXPECTED_REJECTION_PASS` | Obtain a fresh v55 two-node PASS, then run negative |
+| T016 / V18 | v55 two-node `210441` and `210455` timed out on `itiger05,itiger06`; `210458` was cancelled on the same pair | Reuse remains blocked; no second PASS allocation | Retry on a healthy two-node allocation without changing profile |
+| T017 / V19 | This ledger, evidence checkpoint and failure log updated; operator quickstart records the immutable layered flow | Documentation checkpoint updated; final closure not claimed | Refresh after T015/T016 |
+
+The v55 collector fixes are source-level and harness-only; focused regression is
+`120 passed`. The full run table, failure boundaries, exact job IDs and hashes are in
+[the 2026-09-11 evidence checkpoint](evidence/tiger-runtime-checkpoint-20260911.md).
 
 ## 2026-09-10 final task execution ledger
 

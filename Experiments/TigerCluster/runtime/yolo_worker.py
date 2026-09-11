@@ -473,8 +473,10 @@ class NodeRuntime:
                 gpu_device=self.gpu_device if gpu else None)
             record['argv'] = command
             self.launches.append(record)
+            allowed_exits = ((0, 134) if self.mode == 'negative-dependency' and role == 'user'
+                             else (0,))
             rc = run_finite_application(tag, command, self.output / 'logs' / (tag + '.log'),
-                rows, seconds=seconds, env=container_env(), cwd=self.bundle,
+                rows, seconds=seconds, allowed_exits=allowed_exits, env=container_env(), cwd=self.bundle,
                 cleanup_seconds=self.cleanup_seconds, check=check, owner=self.finite_children)
             if any(row['forced'] or not row['reaped'] or row.get('cleanupError') for row in rows):
                 raise RuntimeError('WORKER_USER_CLEANUP')

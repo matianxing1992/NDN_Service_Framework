@@ -5693,3 +5693,95 @@ peer startup. The new regression and the full TigerCluster suite pass.
 
 Lesson: multi-rank finite budgets need an explicit shared arm point; local
 readiness records alone do not establish a common workload start.
+
+## 2026-09-11 — v53 negative cutpoint used native NNI component spelling
+
+Symptom: the real `210394` negative run reached one
+`NDNSF_DI_OUTPUT_WITHHELD` record, but retained collection rejected it with
+`NEGATIVE_CUTPOINT_EDGE_IDENTITY`. The native name contained escaped NNI
+components such as `ATTEMPT/%01`, `ROUND/%03`, `RANK/%00` and
+`MICROBATCH/%00`, while the public contract stored decimal components.
+
+Root cause: the collector compared full URI text for names that have two valid
+ndn-cxx renderings. Opaque components still require exact matching.
+
+Fix status: `runtime/yolo_negative.py` now canonicalizes only labelled numeric
+components before comparing the planned and observed edge/manifest names; a
+regression covers the native spelling. The v53 run remains an immutable failed
+receipt.
+
+Lesson: NDN Name identity checks must normalize the wire-defined NNI encoding at
+labelled numeric components without weakening opaque component equality.
+
+## 2026-09-11 — v54 negative native session form differed from public attempt session
+
+Symptom: `210411` reached the native withheld edge and exact Merge failure but
+collector reanalysis returned `NEGATIVE_CUTPOINT_BINDING`; the C++ records used
+the requestId as `session`, while the public contract derives
+`requestId/attempt/1`.
+
+Root cause: the collector required the contract-derived suffix form for both
+the withheld record and the native failure line, even though both values were
+already bound by requestId, plan digest, provider and edge identity.
+
+Fix status: accept only the two bound forms (`requestId` or
+`requestId/attempt/1`) and add regression coverage. No v54 negative verdict was
+retroactively written; the failure remains a boundary record.
+
+Lesson: preserve exact request/attempt binding while accepting the native
+session spelling actually emitted by the runtime.
+
+## 2026-09-11 — v55 two-node allocation timeout on itiger05/06
+
+Symptom: v55 normal two-node jobs `210441` and `210455` were both assigned to
+`itiger05,itiger06` and ended `TIMEOUT` after 900 seconds before retaining
+`collection-input.json`; Slurm stdout was empty. A short retry, `210458`, was
+cancelled on the same pair to release the allocation.
+
+Root cause: not yet proven from retained application evidence. The repeated
+same-pair timeout contrasts with the successful v54 two-node allocation on
+`itiger02,itiger03`, but no Provider/CUDA/numerical logs survived the timeout
+boundary, so this is recorded as a Tiger allocation/startup boundary rather
+than an application or SIF defect.
+
+Fix status: reconcile each journal as FAIL and keep the v55 candidate immutable;
+retry the unchanged profile only on a healthy two-node allocation. Do not
+promote v54 evidence as a v55 gate after the harness digest changed.
+
+Lesson: a Slurm timeout without retained worker evidence cannot be classified
+as model failure or success; preserve the boundary and require a new complete
+allocation before T015/T016.
+
+## 2026-09-11 — transport inventory rejected group-writable retained files
+
+Symptom: v55 single-node submit initially returned `TRANSPORT_FILE_ROW` because
+retained local verdict logs and ORT profiles had mode `0664`, outside the fixed
+transport mode set.
+
+Root cause: the local executor creates ordinary evidence files group-writable;
+transport validation intentionally requires immutable file modes.
+
+Fix status: remove group-write bits from the retained run before transport;
+candidate and staging directory modes remain separate contracts. The run then
+submitted as `210440` and passed.
+
+Lesson: normalize evidence file modes before transport, while preserving the
+receiver `.incoming` directory's writable `0700` requirement.
+
+## 2026-09-11 — broad pytest collection blocked by legacy gRPC guard
+
+Symptom: repository-wide `pytest -q` stopped during collection with 276 errors;
+`Experiments/gRPC/grpc/test/distrib/bazel/python/grpc_library_replacement_test.py`
+exited with `Unexpectedly able to import grpc`.
+
+Root cause: the legacy gRPC replacement test intentionally expects its optional
+dependency to be absent, while the current environment has `grpc` importable.
+This failure is outside the TigerCluster Spec183 test owner and does not provide
+evidence against the YOLO runtime.
+
+Fix status: retain the failure as a validation boundary and run the dedicated
+`Experiments/TigerCluster/tests` suite for Spec183 changes; do not weaken the
+legacy dependency guard or count repository-wide collection as a Spec183 pass.
+
+Lesson: report the repository-wide collection failure separately from the
+focused TigerCluster regression result.

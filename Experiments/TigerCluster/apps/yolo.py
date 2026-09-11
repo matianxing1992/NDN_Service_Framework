@@ -853,9 +853,20 @@ def run_requests(worker, plan: dict, *, package: Path, catalog_data_name: str,
         if negative:
             argv.insert(argv.index('--'),'--expected-dependency-failure')
             argv.remove('--retain-numerical-response')
-        rc=worker.run_user(i, argv, package=package, seconds=seconds,
-                        peer_failure=peer_failure, reference_gpu=worker.mode != 'local-cpu' and not negative)
-        if negative and rc!=0:
+        try:
+            rc=worker.run_user(i, argv, package=package, seconds=seconds,
+                            peer_failure=peer_failure, reference_gpu=worker.mode != 'local-cpu' and not negative)
+        except RuntimeError as exc:
+            # The expected dependency failure tears down the native User after
+            # writing its observation and may surface as SIGABRT (134) from a
+            # C++ destructor.  Accept only that exact process boundary when
+            # the observation artifact exists; all other exits remain fatal.
+            observation = Path(request['output']) / 'negative-user.json'
+            if (not negative or str(exc) != 'APP_EXIT:user-' + i + ':134'
+                    or not observation.is_file() or observation.is_symlink()):
+                raise
+            rc = 134
+        if negative and rc!=0 and rc!=134:
             raise RuntimeError('NEGATIVE_USER_PROCESS_EXIT')
         accept_request(request, Path(request['output']))
 

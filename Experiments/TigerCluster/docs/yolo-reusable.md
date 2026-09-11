@@ -28,7 +28,7 @@ NOT_EVALUATED清单（exit 78）；不上传或提交。公开submit的SSH协调
 超时保留REMOTE_STATE_UNRESOLVED与暂存目录，同一run重试不得重复sbatch。
 
 **Branch**: `TigerClusterExperiments`
-**Status**: IN_PROGRESS / LOCAL_EXACT_SIF_PASS / TIGER_SINGLE_NODE_GPU_PASS / TIGER_TWO_NODE_PASS / NEGATIVE_PENDING / REUSE_PENDING
+**Status**: IN_PROGRESS / V54_LOCAL_SINGLE_TWO_NODE_PASS / V55_LOCAL_SINGLE_PASS / NEGATIVE_BLOCKED / REUSE_BLOCKED
 
 ## 2026-09-10 current execution update
 
@@ -188,5 +188,30 @@ profile选择同一解释器。submit协调、本地CPU和普通离线collect使
   `collection-input.json`；它使用 `applicationName + '/sync'`，不使用 legacy
   `/group`，也不从缺失文件或退出码推断 PASS。
 - 最大-j4；SIF本地构建、Tiger只验证/运行；CAS缓存不按run复制模型，容量按实际峰值检查。
+
+## 2026-09-11 qualification checkpoint
+
+今天的 v54 分层组合（v23 base SIF + APP manifest
+`sha256:4a6c3af0c2cc24620c28519404f1a472074ebf354608372934339ae241942db7`）
+完成三条真实 PASS：local `tiger-local-cpu-v54-r1`、single-node GPU
+`210402`/`itiger02` 和 two-node GPU `210403`/`itiger02,itiger03`。单节点为
+1 warmup + 1 measured，三个模型角色 CUDA、Merge CPU；双节点为 1 warmup +
+3 measured，四角色跨节点、9 条依赖边/请求、两 GPU、数值和清理闭合。对应
+verdict SHA 分别为 `c6dc38bfd5b47dab418ce87ef5a231a985400d67b94ed5f7ba4a3f95aeec9e43`、
+`7a07cbe3c62445f40e163dc7f8577a432ed2cecf56938e2be57a93ad7852655d` 和
+`7b38c8328be2dc2e809428ca1db653744669745cf71d749f85d023a8204f35d9`。
+
+collector 的 harness-only 修正处理真实 ndn-cxx `%NNI` 名称和 requestId
+session 形式；focused regression 为 120 passed。由于 sealed harness 改变，v55
+重新跑 local 和 single-node（`210440`/`itiger03`）并通过。v55 双节点
+`210441`、`210455` 在 `itiger05,itiger06` 各自超过 900 秒，未形成
+`collection-input.json`；`210458` 在同一节点对取消并记为 FAIL。不能把这些
+超时当作 SIF/YOLO 正确性 PASS，也不能用 v54 two-node receipt 伪装 v55 gate。
+
+因此当前状态为：v54 local/single/two PASS，v55 local/single PASS，T015 负向
+和 T016 第二次正常复用 BLOCKED。下一次必须在健康的双节点 allocation 上使用
+不变 v55 profile，先形成 two-node PASS，再执行负向 `collect --reconcile` 和
+第二次 1 warmup + 3 measured 复用。完整 run 表与失败边界见
+[Spec183 2026-09-11 evidence](../../../specs/183-tiger-yolo-reusable-experiments/evidence/tiger-runtime-checkpoint-20260911.md)。
 
 真实参数、命令和成功示例见 [Spec183 evidence](../../../specs/183-tiger-yolo-reusable-experiments/evidence/minindn-v52-exact-sif-yb-v32.md)；未运行继续NOT_RUN，不复制历史PASS。计划见[Spec183](../../../specs/183-tiger-yolo-reusable-experiments/plan.md)。

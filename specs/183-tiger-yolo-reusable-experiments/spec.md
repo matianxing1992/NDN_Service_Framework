@@ -2,18 +2,38 @@
 
 **Feature Branch**: `TigerClusterExperiments`
 **Created**: 2026-09-06
-**Status**: IN_PROGRESS / LOCAL_EXACT_SIF_PASS / TIGER_SINGLE_NODE_GPU_PASS / TIGER_TWO_NODE_PASS / NEGATIVE_PENDING / REUSE_PENDING
+**Status**: IN_PROGRESS / V54_LOCAL_SINGLE_TWO_NODE_PASS / V55_LOCAL_SINGLE_PASS / NEGATIVE_BLOCKED / REUSE_BLOCKED
 **Input**: 固定可复用的配置文件与实验脚本，在 TigerCluster 验证 NDNSF-DI + YOLO 分布式推理；Tiger 专用脚本和配置集中于 `Experiments/TigerCluster`。
 
 ## Scope And Evidence Boundary
 
 交付一个人能直接使用、机器能验证的入口：选择一份配置，检查、准备、运行、收集；同一合格配置可在新 allocation 中重复使用。目标是正确性和复用，不是新推理算法、整个 DI 的 C++ 迁移或性能优势。Spec182 保持 NOT_STARTED。
 
-交付入口 `81e251a4` 只表示 SOURCE_READY；四库运行源码由 `Experiments/TigerCluster/development-handoff.lock.json` 固定，其中 NDNSF 为 `447f7584`。旧 r119/base SIF、Local R8 FAIL、B003 未完成均不代表新组合通过。2026-09-10 当前候选为 APP v39 + 修订后的 v23 base SIF：host component gate、真实 MiniNDN Y-B/Y-N、fresh exact-SIF local owner、fresh Tiger single-node GPU 和 fresh Tiger two-node normal 均通过。local 回执 `tiger-local-cpu-v49-r1` 是 `NORMAL_EXPERIMENT_PASS`，绑定 candidate `sha256:ed7967c65e6c765f74f4ad64fd45154b5094dbdc380a03a49a75eee0bd985384`，两请求、每请求 9 条依赖边、shape `[1,50,6]`、`maxAbsError=0.0005340576171875`。Tiger single-node `210365` (`tiger-single-node-gpu-v49-r8`) 完成 1 warmup + 1 measured，`itiger02` 上三个模型角色使用 CUDA、Merge 使用 CPU，数值 shape `[1,50,6]`、`maxAbsError=0.00042724609375`、clean cleanup。Tiger two-node `210366` (`tiger-two-node-gpu-v49-r13`) 在 `itiger02`/`itiger03` 完成 1 warmup + 3 measured，四角色跨节点依赖和数值闭合，两个 GPU UUID 均有记录。负例 `210373` (`tiger-negative-dependency-v49-r14`) 已真实到达 Selection、DetectShard0 唯一 withheld edge 和 Merge 的精确 native failure，但 rank1 的 completion deadline 在 rank0 冷启动准备阶段已耗尽，作业以 `TimeoutError` 终止，未形成 User `OBSERVATION_ONLY`/collector verdict；这证明故障边界，不是负例 PASS。此前 v110 的 NAC-ABE public-parameter callback 失败、v21/v23 extraction、GCC9 编译 ICE、APP/O1 编译 ICE、stale NFD、远端 candidate root 缺失、入口 mode 丢失和多次 transport journal 错误均保留为失败证据并已纳入流程修正。T016 和最终 closure 仍未完成。逐 run 记录见 [2026-09-10 checkpoint](evidence/tiger-runtime-checkpoint-20260910.md)。
+交付入口 `81e251a4` 只表示 SOURCE_READY；四库运行源码由 `Experiments/TigerCluster/development-handoff.lock.json` 固定。2026-09-11 的 v54 分层候选已完成真实 exact-SIF local、Tiger 单节点 GPU 和一次双节点 normal PASS；v55 仅修改 collector harness，local 与单节点重跑 PASS。v55 双节点在 `itiger05,itiger06` 连续两次超过 900 秒，故负向和复用门仍保持 BLOCKED。完整 run、哈希、失败边界与下一步见 [2026-09-11 checkpoint](evidence/tiger-runtime-checkpoint-20260911.md)。
 
 本 Spec 的资格判定仍按完整边界执行：transport、CUDA probe 或 Provider `READY` 只能作为组件证据；GPU Provider 的 ACK 还必须包含与其 `cuda:*` topology 对应的、签名且可用的 `free_memory_mb` 资源行。只有 User warmup/measured、独立 oracle、每角色 backend/GPU、退出码和清理全部闭合，才能记录对应 PASS。负例还必须写出 `OBSERVATION_ONLY` User record、唯一逻辑 cutpoint、Merge native failure、无响应/无重选和 clean cleanup；部分 withheld 日志不能升级为 `EXPECTED_REJECTION_PASS`。正式 local 还必须由唯一 owner 完成 provision、Controller publication、User 观察和 collector，不能把 host receipt 或 direct MiniNDN 组件证据代替 local PASS。逐 run 证据和固定执行顺序见 [2026-09-10 checkpoint](evidence/tiger-runtime-checkpoint-20260910.md)、[Tiger deployment diagnosis](evidence/tiger-deployment-diagnosis-v70.md) 与 [two-node evidence](evidence/tiger-two-node-v35.md)。
 
 最终必须使用两个真实 Tiger 计算节点，不同节点 Provider 计算同一次 YOLO 请求的不同阶段，通过 NDN 交换中间数据。多个节点各跑完整模型、只交换 echo、只出现 READY 或本机模拟节点，均不满足最终目标。
+
+## 2026-09-11 execution checkpoint
+
+The v54 candidate kept the v23 base SIF and external APP unchanged and produced
+three fresh retained passes: local `tiger-local-cpu-v54-r1` (2 requests),
+single-node GPU job `210402` on `itiger02` (1 warmup + 1 measured), and two-node
+GPU job `210403` on `itiger02,itiger03` (1 warmup + 3 measured). All are
+`NORMAL_EXPERIMENT_PASS`; the model roles report CUDA, Merge reports CPU, and
+the two-node verdict contains four roles and nine dependency edges per request.
+
+The negative collector fixes are harness-only. Native ndn-cxx writes the
+withheld record and exact Merge failure with the requestId session form, while
+the public contract carries an attempt suffix; the collector now accepts either
+already-bound form and canonicalizes labelled NNI components (`%01`, `%03`,
+`%00`) against decimal contract names. Focused regression coverage is 120
+passed. Because the harness identity changed, v54 GPU receipts cannot be reused
+as v55 gates. v55 local and single-node (`210440`, `itiger03`) passed, but v55
+two-node jobs `210441` and `210455` both timed out on `itiger05,itiger06` before
+retaining collection input; `210458` was cancelled after reproducing the same
+node-pair condition. These are retained failures, not qualification passes.
 
 ## User Scenarios & Testing *(mandatory)*
 

@@ -12,6 +12,25 @@ from .yolo_collection import _write_once
 from .yolo_result import validate_lifecycle
 
 
+def _native_name(value):
+    """Canonicalize numeric NNI components emitted by ndn-cxx.
+
+    The retained public contract renders integer components as decimal URI
+    text, while ndn-cxx may emit the same components as escaped NNI bytes.
+    Only labelled numeric components are normalized; opaque Name components
+    remain exact.
+    """
+    labels = {'ATTEMPT', 'ROUND', 'RANK', 'MICROBATCH'}
+    parts = value.split('/')
+    for index in range(len(parts) - 1):
+        if parts[index] in labels and re.fullmatch(r'[0-9]+', parts[index + 1]):
+            number = int(parts[index + 1])
+            width = max(1, (number.bit_length() + 7) // 8)
+            parts[index + 1] = ''.join(
+                f'%{byte:02X}' for byte in number.to_bytes(width, 'big'))
+    return '/'.join(parts)
+
+
 def _read_json(path, *, limit=65536):
     from .yolo_bundle import _bytes
     from .yolo_profile import _object
@@ -117,7 +136,8 @@ def read_negative_cutpoint(logs, *, contract, request_id, plan_digest, providers
     if len(records) != 1:
         raise ValueError('NEGATIVE_CUTPOINT_COUNT')
     row = records[0]
-    matching_edges = [edge for edge in edges if edge['planned_name'] == row.get('plannedDataName')]
+    matching_edges = [edge for edge in edges
+                      if _native_name(edge['planned_name']) == _native_name(row.get('plannedDataName', ''))]
     if len(matching_edges) != 1:
         raise ValueError('NEGATIVE_CUTPOINT_EDGE_IDENTITY')
     edge = matching_edges[0]
@@ -136,12 +156,13 @@ def read_negative_cutpoint(logs, *, contract, request_id, plan_digest, providers
         if (not isinstance(row[field], str) or re.fullmatch(r'(?:0|[1-9][0-9]{0,19})', row[field]) is None
                 or int(row[field]) >= 2**64):
             raise ValueError('NEGATIVE_CUTPOINT_NUMBER')
-    if (row['schema'] != 'ndnsf-di-withheld-output-v1' or row['session'] != session
+    if (row['schema'] != 'ndnsf-di-withheld-output-v1'
+            or row['session'] not in (request_id, session)
             or row['requestId'] != request_id or row['attempt'] != '1'
             or row['planDigest'] != plan_digest or row['producerRole'] != edge['producer']
             or row['consumerRole'] != edge['consumer']
-            or row['plannedDataName'] != edge['planned_name']
-            or row['manifestDataName'] != edge['planned_name'].rstrip('/') + '/MANIFEST'
+            or _native_name(row['plannedDataName']) != _native_name(edge['planned_name'])
+            or _native_name(row['manifestDataName']) != _native_name(edge['planned_name'].rstrip('/') + '/MANIFEST')
             or row['provider'] != providers_by_role['DetectShard0']
             or not isinstance(row['providerBootId'], str) or not row['providerBootId']
             or not isinstance(row['operationKind'], str) or not row['operationKind']
@@ -150,13 +171,17 @@ def read_negative_cutpoint(logs, *, contract, request_id, plan_digest, providers
                    for k in ('endpointDigest', 'contentDigest'))):
         raise ValueError('NEGATIVE_CUTPOINT_BINDING')
     for dependency in dependencies:
-        if (dependency.get('session') == session
+        if (dependency.get('session') in (request_id, session)
                 and dependency.get('producer') == 'DetectShard0'
                 and dependency.get('consumer') == 'Merge'
                 and dependency.get('planned_name') in (None, 'none', row['plannedDataName'])):
             raise ValueError('NEGATIVE_WITHHELD_EDGE_WAS_TRANSFERRED')
-    failure = 'session=' + session + ' role=Merge reason=failed to fetch signed exact Data: ' + row['manifestDataName']
-    if failures != [('Merge', failure)]:
+    failure_suffix = ' role=Merge reason=failed to fetch signed exact Data: ' + row['manifestDataName']
+    allowed_failures = {
+        'session=' + candidate + failure_suffix
+        for candidate in (request_id, session)
+    }
+    if len(failures) != 1 or failures[0][0] != 'Merge' or failures[0][1] not in allowed_failures:
         raise ValueError('NEGATIVE_CONSUMER_EXACT_FAILURE')
     return dict(edge=edge, cutpoint=row, logDigests=digests,
         qualification='NEGATIVE_CUTPOINT_COMPONENT_ONLY')

@@ -732,7 +732,16 @@ def read_node_log_receipt(root, *, receipt_digest, plan, preparation_digest, can
             services.add(launch['role'])
     if services != roles - {'user'}:
         raise EvidenceError('NODE_LOG_SERVICE_COVERAGE')
-    cleanup = validate_cleanup_records(receipt['launches'], receipt['cleanup'])
+    allowed = set()
+    if receipt['case'] == 'negative-dependency':
+        for launch in receipt['launches']:
+            if launch.get('role') == 'user' and isinstance(launch.get('invocation'), str):
+                observation = (root / 'user' / 'requests' /
+                               launch['invocation'] / 'negative-user.json')
+                if observation.is_file() and not observation.is_symlink():
+                    allowed.add('user-' + launch['invocation'])
+    cleanup = validate_cleanup_records(receipt['launches'], receipt['cleanup'],
+                                       allowed_finite_exits=allowed)
     if receipt['cleanupSummary'] != cleanup:
         raise EvidenceError('NODE_LOG_CLEANUP_SUMMARY')
     count = 1 if plan['case'] == 'negative-dependency' else 4 if plan['case'] == 'two-node-gpu' else 2
@@ -1009,10 +1018,18 @@ def validate_worker_cleanup(worker, rows):
     if (worker.closed is not True or worker.leases or worker.children.children
             or worker.finite_children.children):
         raise EvidenceError('CLEANUP_OWNERS_REMAIN')
-    return validate_cleanup_records(worker.launches, rows)
+    allowed = set()
+    if worker.mode == 'negative-dependency':
+        for launch in worker.launches:
+            if launch.get('role') == 'user' and isinstance(launch.get('invocation'), str):
+                observation = (worker.output / 'user' / 'requests' /
+                               launch['invocation'] / 'negative-user.json')
+                if observation.is_file() and not observation.is_symlink():
+                    allowed.add('user-' + launch['invocation'])
+    return validate_cleanup_records(worker.launches, rows, allowed_finite_exits=allowed)
 
 
-def validate_cleanup_records(launches, rows):
+def validate_cleanup_records(launches, rows, *, allowed_finite_exits=()):
     """Shared live/offline record semantics; does not prove OS ownership alone."""
     if not isinstance(launches, list):
         raise EvidenceError('CLEANUP_LAUNCH_INVENTORY')
@@ -1046,7 +1063,9 @@ def validate_cleanup_records(launches, rows):
                 or type(row.get('exitCode')) is not int):
             raise EvidenceError('CLEANUP_NOT_CLEAN')
         if finite:
-            if row.get('kind') != 'finite' or row['exitCode'] != 0:
+            if (row.get('kind') != 'finite' or
+                    (row['exitCode'] != 0 and
+                     not (name in allowed_finite_exits and row['exitCode'] == 134))):
                 raise EvidenceError('CLEANUP_FINITE_EXIT')
         elif (row.get('kind') == 'finite' or row.get('exitedBeforeCleanup') is not False
                 or row['exitCode'] not in (0, -15, 143)):

@@ -6,9 +6,11 @@ Tiger分布式推理、SIF构建及Slurm配置的统一入口。当前生产/合
 在 `TigerClusterExperiments` 上固定可复用 YOLO profile/launcher，完成本地验证、
 单节点 GPU、两节点分布式推理及独立 allocation 复跑。
 详见 [tasks](../../specs/183-tiger-yolo-reusable-experiments/tasks.md)。
-状态为 PLANNED / NOT_RUN；`jobs/yolo/submit.py` 和 `profiles/yolo-two-node.json`
-是计划交付文件，尚不能运行。当前 rank→collector handoff 已有 fail-closed
-组件接线，但没有替代真实 worker/SIF/Tiger 资格。新 Tiger 专用脚本、配置、schema、测试工具和操作说明
+状态已更新为 v54 local/single/two-node PASS、v55 local/single PASS；v55
+双节点在 itiger05/06 的两次 900 秒超时使 T015/T016 仍 BLOCKED。`jobs/yolo/submit.py`
+和 `profiles/yolo-two-node.json` 是维护入口；当前 rank→collector handoff 已有
+fail-closed 组件接线，真实 v54 worker/SIF/Tiger 资格证据见 Spec183 checkpoint，
+不能用 v55 超时替代 PASS。新 Tiger 专用脚本、配置、schema、测试工具和操作说明
 都放本目录，复用现有 runtime；通用 Core/DI/Repo 源码仍归原 owner。
 
 ## Layout And Ownership

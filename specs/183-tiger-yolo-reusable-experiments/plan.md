@@ -1,7 +1,7 @@
 # Implementation Plan: Reusable TigerCluster YOLO Distributed Inference
 
 **Branch**: `TigerClusterExperiments` | **Date**: 2026-09-06 | **Spec**: [spec.md](spec.md)
-**Status**: IN_PROGRESS / LOCAL_EXACT_SIF_PASS / TIGER_SINGLE_NODE_GPU_PASS / TIGER_TWO_NODE_PASS / NEGATIVE_PENDING / REUSE_PENDING
+**Status**: IN_PROGRESS / V54_LOCAL_SINGLE_TWO_NODE_PASS / V55_LOCAL_SINGLE_PASS / NEGATIVE_BLOCKED / REUSE_BLOCKED
 
 ## Summary
 
@@ -53,6 +53,22 @@ started before rank0 finished cold preparation. The next negative attempt must
 reserve preparation time in the completion budget (or arm that budget after
 both ranks are ready), then collect the User observation and cleanup before
 T016. No SIF rebuild is required for this harness-only timing correction.
+
+### 2026-09-11 execution checkpoint
+
+The v54 layered candidate completed fresh exact-SIF local, single-node GPU
+(`210402`, `itiger02`) and two-node GPU (`210403`, `itiger02,itiger03`) runs;
+each collector result is `NORMAL_EXPERIMENT_PASS`. The v55 harness-only
+collector correction passed focused tests (120 passed), and fresh local plus
+single-node GPU (`210440`, `itiger03`) also passed. Strict gate reuse correctly
+invalidated v54 receipts after the harness digest changed.
+
+Two v55 normal two-node allocations (`210441` and `210455`) were assigned to
+`itiger05,itiger06` and timed out at 900 seconds before `collection-input.json`
+was retained; `210458` was cancelled on the same pair. No SIF or numerical error
+was observed in these runs, but there is no v55 two-node PASS to authorize the
+negative or reuse gate. The next run must use a healthy two-node allocation with
+the unchanged v55 profile, then execute T015 and T016 in order.
 
 ## Technical Context
 

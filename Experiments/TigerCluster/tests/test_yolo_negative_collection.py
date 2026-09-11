@@ -92,6 +92,32 @@ def test_cutpoint_requires_exact_consumer_failure_and_bound_producer(tmp_path, f
         with pytest.raises(ValueError): read()
 
 
+def test_cutpoint_accepts_native_nni_name_encoding(tmp_path):
+    logs, contract, row, providers = cutpoint_fixture(tmp_path)
+    native = '/tensor/ATTEMPT/%01/ROUND/%03/RANK/%00/MICROBATCH/%00'
+    edge = contract['edges'][0]
+    edge['planned_name'] = '/tensor/ATTEMPT/1/ROUND/3/RANK/0/MICROBATCH/0'
+    row['plannedDataName'] = native
+    row['manifestDataName'] = native + '/MANIFEST'
+    logs['DetectShard0'].write_text('NDNSF_DI_OUTPUT_WITHHELD ' + json.dumps(row) + '\n')
+    logs['Merge'].write_text('NDNSF_DI_NATIVE_FAILURE session=' + contract['sessionId'] +
+        ' role=Merge reason=failed to fetch signed exact Data: ' + row['manifestDataName'] + '\n')
+    result = negative.read_negative_cutpoint(logs, contract=contract,
+        request_id='/run/request/1', plan_digest=D, providers_by_role=providers)
+    assert result['qualification'] == 'NEGATIVE_CUTPOINT_COMPONENT_ONLY'
+
+
+def test_cutpoint_accepts_native_request_session_without_attempt_suffix(tmp_path):
+    logs, contract, row, providers = cutpoint_fixture(tmp_path)
+    row['session'] = '/run/request/1'
+    logs['DetectShard0'].write_text('NDNSF_DI_OUTPUT_WITHHELD ' + json.dumps(row) + '\n')
+    logs['Merge'].write_text('NDNSF_DI_NATIVE_FAILURE session=' + row['session'] +
+        ' role=Merge reason=failed to fetch signed exact Data: ' + row['manifestDataName'] + '\n')
+    result = negative.read_negative_cutpoint(logs, contract=contract,
+        request_id='/run/request/1', plan_digest=D, providers_by_role=providers)
+    assert result['qualification'] == 'NEGATIVE_CUTPOINT_COMPONENT_ONLY'
+
+
 def test_cutpoint_binds_one_edge_when_role_pair_has_multiple_outputs(tmp_path):
     logs, contract, row, providers = cutpoint_fixture(tmp_path)
     second = dict(contract['edges'][0], scope='head0-merge-scale2',

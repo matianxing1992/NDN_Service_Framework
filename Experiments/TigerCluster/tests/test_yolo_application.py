@@ -2,6 +2,7 @@
 import subprocess
 import json
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -125,6 +126,29 @@ def test_negative_provider_requires_single_nonwarmup_prepared_request(tmp_path,m
                 worker.start_provider('DetectShard0',identity='/run/actual/DetectShard0',service='/Detection/YOLO',
                     group='/run/sync',controller='/run/controller',permission_wait_ms=12000)
     finally: worker.close()
+
+
+def test_negative_expected_abort_is_accepted_after_observation(tmp_path):
+    """A native SIGABRT is accepted only after the bound observation exists."""
+    from apps.yolo import run_requests
+    worker, plan, options = scheduled_inputs(tmp_path, 'negative-dependency')
+    worker.mode = plan['case'] = 'negative-dependency'
+    plan['requests'] = [{'index': 0, 'warmup': False, 'requestId': '/run/negative',
+                         'output': str(worker.output / 'user' / 'requests' / '0')}]
+    output = Path(plan['requests'][0]['output'])
+    output.mkdir(parents=True)
+    (output / 'negative-user.json').write_text('{}')
+
+    def aborting_user(*args, **kwargs):
+        raise RuntimeError('APP_EXIT:user-0:134')
+
+    worker.run_user = aborting_user
+    accepted = []
+    try:
+        run_requests(worker, plan, accept_request=lambda *args: accepted.append(args), **options)
+        assert len(accepted) == 1
+    finally:
+        worker.close()
 
 
 @pytest.mark.parametrize('fault', ['missing-plan', 'missing-key', 'foreign-key',
