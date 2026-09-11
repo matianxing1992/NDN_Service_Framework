@@ -90,6 +90,58 @@ violations. The I02 retry history remains durable: `r1` stopped at the missing `
 path, `r2` at missing staged fixtures, and `r3` at an invalid manifest artifact kind. Those are
 harness boundaries, not protocol results.
 
+## Candidate-bound C++ isolation counterexamples
+
+After strengthening the canonical collector, a dedicated C++ fixture exercised the inherited
+I02-I08 counterexamples under the real MiniNDN owner. The fixture source is
+`tests/standalone/spec182-native-counterexample.cpp` (SHA-256
+`d8467fb94ec08a1a51f27d595b2acdb74f1dbe0d1f73154a8b733f1ae6345600`); its candidate executable
+has SHA-256 `ff37711aa90e3f1e5916881e03ea405b1252c0ab1c1acf79d6779e29af3540c2` and contains no
+`libpython`/`python3` identity. The collector source hash is
+`3022d14fa413ed128203b46ad592cf5cc0a18903eae5c34afffd052990142658`.
+
+| Case | Expected registration status | Observed status / boundary | Owner result / runner / trace SHA-256 | Raw run root |
+| --- | --- | --- | --- | --- |
+| I02 | `FAIL` | `FAIL`; renamed in-root helper exec → `UNDECLARED_EXEC` | `3eaf1e205c3270fc0fde5208830eea9d595b806271813edfaa7dc6b03d960c1e` / `d2d455bec466f904484feb35fce221c158a254bd8a1c075e86bc8ff67e4ba9c2` / `da28711541f6004e88e860a29fb37f0a280d3aa027d6228904afddc86dfa3a21` | `.codex-tmp/spec184-counterexamples-live-20260911/owner-i02-r3/` |
+| I03 | `FAIL` | `FAIL`; C++ `dlopen` opened staged `libpython3.8.so.1.0` and detector reported `PYTHON_MAPPING` | `227cd85b6b7facd56e64cd4603c7f4a70c7aebcefe7849ba9060f05a56233e47` / `f5ff86ca4cf1c405308f940f87782f6c8eff4f01d61d32a064fc20799493ccd5` / `a6447f00ab6f82d03b664361dcb5e7e7497ed3ddbcd1aa27c0190e94390b2a0a` | `.codex-tmp/spec184-counterexamples-live-20260911/owner-i03-r4/` |
+| I04 | `FAIL` | `FAIL`; failed loopback connect attempt → `UNDECLARED_ENDPOINT` | `2aeb6cbe25bb3315ff0838a944d25e0f8d8a652811659885dd90d3d5a6660297` / `5b093d10f45126144c2deba535733d7737ccc2a4bdbc7c7fff61a6b60064706e` / `0a2c9b799b84dc5fa99e181a55f95580d72c6856fd8da317514e9115e030b72b` | `.codex-tmp/spec184-counterexamples-live-20260911/owner-i04-r3/` |
+| I05 | `UNQUALIFIED` | `UNQUALIFIED`; trace exceeded the declared 4096-byte observation budget → `TRACE_BUDGET_EXCEEDED` | `6d401fe8c3a786e9ef68fa0037a72225b381ec77b041a7cbe3147887e0397de2` / `d770310117daa39b3cad73f111d5495630e61fb59c98e5e2f1dcbb379b00e086` / `c37c029024c732b73bcd71e87de9d9a942186bfe14127aa841a8bb42307ae1bb` | `.codex-tmp/spec184-counterexamples-live-20260911/owner-i05-r3/` |
+| I06 | `FAIL` | `FAIL`; C++ cold case omitted the required Provider role → `ROLE_COVERAGE_MISMATCH` | `7ccbf90b6e3b2037a8c88cbb9315c3899314fcbeda52c8937220d2354383b283` / `c12244097810a8e46afed8d56721a1870d08ed0d23a2c65a246e86f189951fd9` / `a19bf6e273ddc7d98ce981df51608c4f20ebe0fe4bc95e7199d9f9235c9d00f3` | `.codex-tmp/spec184-counterexamples-live-20260911/owner-i06-r3/` |
+| I07 | `PASS` | `PASS`; Python owner remained outside the closure and native C++ business marker passed | `1048eafb7921ea25b87bca15f44a7c174c012aa60b7df6d801a5be99df00661c` / `122fd44f291b6f4f8c74d7475c5bfb3a6d1f06ca04b7869ac5b1e55901557d8f` / `5396ea92037f213bbfc3f1b3fa00d9a64d22c1c1187eeaa45191f7eccb257b5a` | `.codex-tmp/spec184-counterexamples-live-20260911/owner-i07-r3/` |
+| I08 | `FAIL` | `FAIL`; detached descendant was killed during cleanup and remained an owned descendant observation → `OWNED_PROCESS_ALIVE` | `ac870f8b25d349726c6d4eb599344e78e3ffcab0743126497f1899478efad9ed` / `e14eebb6537fc5083cee87938fc22c541557b1b5943fdf84d5e252484279492f` / `81ef6eab24a2b7b0eb9d71779517e2d59a9e07d57623036c06d1543dd10b839e` | `.codex-tmp/spec184-counterexamples-live-20260911/owner-i08-r4/` |
+
+All seven owner results used the canonical topology, explicit `/usr/bin/bwrap`, `/usr/bin/strace`
+and `/usr/bin/nsenter`, and fresh output directories. The C++ fixture emitted the business marker
+before each observed policy boundary; the negative status comes from the collector/evaluator and
+not from a Python oracle. I05 intentionally remains `UNQUALIFIED`, because an observation failure
+cannot be promoted to a protocol `FAIL`.
+
+## Static review and detector batch record
+
+The bounded detector batch was reviewed with the official `review-agent` profile at
+`/home/tianxing/.codex/skills/review-agent/SKILL.md` (SHA-256
+`07079efd0dc76f05fade424e5dfb048dce1de2df7626e1a4f56292a4f3f92228`) and the project
+pre-test gate. The review covered five lanes: the MiniNDN entry/runner call path, collector and
+evaluator implementation, the C++ counterexample fixture and Python regression selectors, process
+registration/build closure, and candidate evidence/matrix/task wiring. It found and checked the
+following boundaries before the owner reruns: unfinished/resumed `execve` path pairing, failed
+undeclared `connect` attempts, trace-budget overflow, terminal descendant observation, and the
+distinction between an observed policy `FAIL` and an incomplete-observation `UNQUALIFIED` result.
+No unresolved static finding remained after the review. The review did not run tests; the focused
+Python and C++ checks below are the separate post-review validation gate.
+
+| Reviewed artifact | Bound source/selector | Result |
+| --- | --- | --- |
+| canonical collector/evaluator | `tests/standalone/run-spec182-native-closure.py` SHA-256 `3022d14fa413ed128203b46ad592cf5cc0a18903eae5c34afffd052990142658` | `STATIC_PASS` |
+| C++ counterexample fixture | `tests/standalone/spec182-native-counterexample.cpp` SHA-256 `d8467fb94ec08a1a51f27d595b2acdb74f1dbe0d1f73154a8b733f1ae6345600` | `STATIC_PASS` |
+| regression selectors | `tests/python/test_spec182_native_closure.py` SHA-256 `0604f301277097af1bf777f858316d016e85f8f9ffcb59dd2700ec9f9f92232c` | `STATIC_PASS` |
+| task/matrix/evidence wiring | current Spec184 `tasks.md`, `contracts/qualification-matrix.md`, and this record | `STATIC_PASS` |
+
+The owner runs in the preceding table are the runtime gate for these findings. The fixture is a
+test-only C++ executable and is not a production binary; its source and binary identities are
+bound in the candidate record. Python remains only the staging/collector harness and regression
+test host.
+
 ## Current-candidate Spec175 C++ integration gate
 
 As a second C++ process-level sample, the current candidate `integration-tests` ran the registered
@@ -145,9 +197,8 @@ historical `UNQUALIFIED` records; they are not reclassified as protocol failures
 ## Qualification disposition
 
 These results close the current candidate's bounded C++ process classes for unary, stream,
-continuation, recovery, replacement, grant authorization and the `PO-001-stream` owner row.
-They do not by themselves close every inherited I02–I08 detector/collector row: the remaining
-rows require their declared counterexample or observation-completeness evidence, candidate-bound
-matrix entries, and (where applicable) real-model or external SIF/Tiger ownership. T007 therefore
-remains `PARTIAL`; T008 remains blocked by the qualification dependency, not by the process runs
-recorded here.
+continuation, recovery, replacement, grant authorization, the candidate-bound I02-I08
+counterexample statuses and the `PO-001-stream` owner row. They do not make I05 an accepted
+protocol result, nor close broader real-model, Python-retirement or external SIF/Tiger ownership;
+the matrix keeps those rows `PARTIAL`/`OPEN`. T007 therefore remains `PARTIAL`; T008 remains
+blocked by the qualification dependency, not by the process runs recorded here.

@@ -150,17 +150,17 @@ is the SHA-256 of these sorted lines followed by a final newline.
 ## Current Local Candidate Record (T007 Process Qualification Refresh)
 
 This record supersedes the earlier local records for current qualification decisions. It binds the
-fresh C++ process runs and no-Python binary inspection to the repaired native source and current
-Spec184 documents. It remains `FRESH_LOCAL_PARTIAL`: the bounded rows below pass, while inherited
-I02–I08 observation-completeness, broader negative/model breadth, Python retirement and external
+fresh C++ process runs, no-Python binary inspection, and candidate-bound isolation counterexamples
+to the repaired native source and current Spec184 documents. It remains `FRESH_LOCAL_PARTIAL`: the
+bounded rows below pass, while broader negative/model breadth, Python retirement and external
 SIF/Tiger ownership remain open.
 
 | Member | Bound value |
 | --- | --- |
-| `candidateId` | `sha256:b9248dc78c4352c3227bac8ea0038d17c2608f557ee5f768a8e26d1b02e42df9` (digest over the ordered member map below; recompute if any listed member changes) |
+| `candidateId` | `sha256:0e5f96fa0a36b3698d9bf8a74761b26b732f446aa087cd643b1fae91b88b609c` (digest over the ordered member map below; recompute if any listed member changes) |
 | `source` | `Experimental` baseline `29411b5544cf7b0175dbaae2f65678a26ee80636`; production source hashes: `ServiceProvider.cpp` `sha256:a587b5bee0fe845ba4051ce0cdea6267e2cbc767b28055c156388ecea584e419`, `NativeProviderHandler.cpp` `sha256:37984face728f908337ece2c59b7c96cd288969bad84a6f8ae6468d691100149`, `NativeEpochCoordinator.cpp` `sha256:fb0a2513c33f1f26d4805ee1721cd172bb9c06b4f3c40982b818bf2946d04866`; pre-existing `docs/failure-log.md` and integration marker remain outside the source candidate |
 | `built runtime` | `build-spec184-b5-candidate`; current unit/integration, Controller, Authority, requester, Provider, worker and grant-requester hashes are bound below |
-| `test/replay harness` | current runner manifest, four C++ process drivers, C++ registration and process qualification evidence are bound below; Python harness log is orchestration-only |
+| `test/replay harness` | current runner manifest, C++ counterexample fixture, process drivers, C++ registration and process qualification evidence are bound below; Python harness is orchestration-only and its source regression is bound separately |
 | `owner result` | root MiniNDN `PO-001-stream` result, runner-result and node-context digests are bound below; non-root `MININDN_REQUIRES_ROOT` remains an explicit boundary |
 | `submission bundle` | `LOCAL_ONLY / not packaged`; SIF/Tiger remains `TRANSFERRED` and is not locally qualified |
 | `effective configuration` | `/usr/bin/g++ -B/usr/bin`, system Boost 1.71, `.lock-spec184-b5` digest below, candidate-first library path, `NDNSF_SPEC182_BIN_DIR=build-spec184-b5-candidate`, root owner PATH includes `/usr/local/bin` |
@@ -182,7 +182,7 @@ binary.worker=e44bd0a31205d3106461d6d48884da70adb4e8acc8ef5fea8753573964aff283
 config.waflock=d1eb664437f0f6f21449d2ea22d50aa42053923a22e8b0fc453b287d9b9c5482
 evidence.convergence=ddaea2ef5f1369b1972e85fdda1a12131aca9ec109c8fa04fefe910e8b5f915d
 evidence.t007_current=0bfa7cac542d5c1964908c7530e11946d8e426da2d68ce64a6ea6d357d04fecc
-evidence.t007_process=08d534cdde125fa9462ed83a73557b43873775997bf85fd00e8945f0aa6a0b01
+evidence.t007_process=8c93de5c9dbc5d56226389c1cd67d304cae0a43b7ea5c23664dc766f7b36b900
 log.build=c68038b4fd6973eb55a670907c4bc896bb8f8386cab1064602be714b7cd12fe3
 log.integration=dee9e3b7f5235f5d2c337bf0b98326f9971935116db2616e74c94662d7d6d076
 log.python_harness=def2d0070a2d4686e615a761552231c5697c6cf349607e2a801775759333d979
@@ -200,19 +200,21 @@ source.NativeProviderHandler=37984face728f908337ece2c59b7c96cd288969bad84a6f8ae6
 source.ServiceProvider=a587b5bee0fe845ba4051ce0cdea6267e2cbc767b28055c156388ecea584e419
 source.integration=fd96dcc5331aaebbbf3eb944ae594ee59f43d8148baef883be80e0c71244169d
 spec.caller=b2b079fd5f8e658aa6b2fec6bfec389830aa1c509fac4783f1f73e6c29c9a449
-spec.matrix=260a03cc0cbd1cb58cb646119928f557845d6ac0d9622749bce1b28b493d1eb0
+spec.matrix=e11f069f1c2344f6225c206061f6c9a44091cb4c9c6bd4154f8332ea41dab0ec
 spec.plan=7aa3766efea608f751d2541ce9163ca57dfbc78ae59e3f60c71625d1dbe36023
 spec.spec=724f6aa1be1c6f151e5a71888f00bd0d4fecab1e002d07ba2c2f40473415eca1
-spec.tasks=2bfe34fd12f7d6424c7d8020f0100a30248e94357dc0bc32ed400cbe998ab045
+spec.tasks=d14f9e862620c7715325aa4d4636584dc5d6b4a4da92f885d0ddacf984b64336
+test.counterexample_fixture=d8467fb94ec08a1a51f27d595b2acdb74f1dbe0d1f73154a8b733f1ae6345600
 test.grant_process=63879098c789f72f80bcedf3261a8e0a44beef797740848490763289807b2813
+test.python_closure=0604f301277097af1bf777f858316d016e85f8f9ffcb59dd2700ec9f9f92232c
 test.registration=377a5d0ff62ed64b715f9d644646040cdf16790613ae9bc43b4910957da5149c
-test.runner=1578ec962de2d9742c537213579b80dc9a3553b6091143a11de8376bccd7d9af
+test.runner=3022d14fa413ed128203b46ad592cf5cc0a18903eae5c34afffd052990142658
 test.stream_process=a2258b4a2747ab8eab3a560ee28f6e4caf4f526b82a4d7c94b2a9e10b4368b9d
 test.unary_process=0ee4ee185fbbbcb450d7c8a6b6ac5b128c2c27e34d949926d23c3e2956798cc4
 ```
 
 The SHA-256 of these sorted lines followed by a final newline is
-`sha256:b9248dc78c4352c3227bac8ea0038d17c2608f557ee5f768a8e26d1b02e42df9`.
+`sha256:0e5f96fa0a36b3698d9bf8a74761b26b732f446aa087cd643b1fae91b88b609c`.
 The process evidence records the individual requester/provider markers and grant-case hashes;
 the candidate binds that evidence file rather than silently combining unrelated run roots.
 

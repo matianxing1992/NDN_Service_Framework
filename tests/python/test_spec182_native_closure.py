@@ -516,6 +516,75 @@ def test_trace_integrity_rejects_unpaired_unfinished_syscall(tmp_path: Path) -> 
     assert observation["integrityViolations"] == ["TRACE_UNPAIRED"]
 
 
+def test_trace_rejects_undeclared_exec_even_when_business_marker_is_present(tmp_path: Path) -> None:
+    case = runner.load_case(_manifest(tmp_path, business_marker="NATIVE_OK"), "positive")
+    trace = tmp_path / "trace.txt"
+    trace.write_text(
+        '123 execve("/probe-root/bin/true", ["true"], 0x0) = 0\n'
+        '123 execve("/probe-root/bin/helper", ["helper"], 0x0) = 0\n'
+        '123 exit_group(0) = ?\n', encoding="utf-8")
+    stdout = tmp_path / "stdout.log"
+    stdout.write_text("NATIVE_OK\n", encoding="utf-8")
+    observation = runner.collect_trace(case, {
+        "trace": str(trace), "stdout": str(stdout), "returncode": 0,
+        "timedOut": False, "supervisorPid": 123,
+        "command": ["strace", "bwrap", "--unshare-all"],
+    })
+    result = runner.evaluate_case(case, {
+        "trace": str(trace), "stdout": str(stdout), "returncode": 0,
+        "timedOut": False, "supervisorPid": 123,
+        "command": ["strace", "bwrap", "--unshare-all"],
+        "evidence": sorted(runner.REQUIRED_EVIDENCE),
+    }, observation)
+    assert "UNDECLARED_EXEC" in result["failures"]
+    assert result["status"] == "FAIL"
+
+
+def test_trace_rejects_failed_undeclared_endpoint_attempt(tmp_path: Path) -> None:
+    case = runner.load_case(_manifest(tmp_path), "positive")
+    trace = tmp_path / "trace.txt"
+    trace.write_text(
+        '123 execve("/probe-root/bin/true", ["true"], 0x0) = 0\n'
+        '123 connect(3, {sa_family=AF_INET, sin_port=9}, 16) = -1 ENETUNREACH\n'
+        '123 exit_group(0) = ?\n', encoding="utf-8")
+    observation = runner.collect_trace(case, {"trace": str(trace)})
+    assert observation["policyViolations"] == ["UNDECLARED_ENDPOINT"]
+
+
+def test_trace_budget_is_observation_boundary(tmp_path: Path) -> None:
+    case = runner.load_case(_manifest(tmp_path), "positive")
+    case["isolation"]["limits"]["traceBytes"] = 32
+    trace = tmp_path / "trace.txt"
+    trace.write_text('123 execve("/probe-root/bin/true", ["true"], 0x0) = 0\n',
+                     encoding="utf-8")
+    observation = runner.collect_trace(case, {"trace": str(trace)})
+    assert observation["complete"] is False
+    assert "TRACE_BUDGET_EXCEEDED" in observation["integrityViolations"]
+
+
+def test_detached_descendant_is_a_complete_failure_when_observed(tmp_path: Path) -> None:
+    case = runner.load_case(_manifest(tmp_path), "positive")
+    case["isolation"]["observeDescendants"] = True
+    trace = tmp_path / "trace.txt"
+    trace.write_text(
+        '123 execve("/probe-root/bin/true", ["true"], 0x0) = 0\n'
+        '123 clone(child_stack=NULL, flags=CLONE_VM) = 124\n'
+        '123 exit_group(0) = ?\n', encoding="utf-8")
+    observation = runner.collect_trace(case, {"trace": str(trace)})
+    assert observation["complete"] is True
+    assert "OWNED_PROCESS_ALIVE" in observation["policyViolations"]
+
+
+def test_unfinished_exec_result_keeps_path_for_policy_and_role_checks(tmp_path: Path) -> None:
+    case = runner.load_case(_manifest(tmp_path), "positive")
+    trace = tmp_path / "trace.txt"
+    trace.write_text(
+        '123 execve("/probe-root/bin/helper", ["helper"], 0x0) <unfinished ...>\n'
+        '123 <... execve resumed>) = 0\n', encoding="utf-8")
+    observation = runner.collect_trace(case, {"trace": str(trace)})
+    assert "UNDECLARED_EXEC" in observation["policyViolations"]
+
+
 def test_trace_derives_runtime_evidence_and_accepts_declared_marker(tmp_path: Path) -> None:
     case = runner.load_case(_manifest(tmp_path, business_marker="NATIVE_OK"), "positive")
     trace = tmp_path / "trace.txt"
