@@ -7029,7 +7029,8 @@ namespace ndn_service_framework
         };
         auto express = std::make_shared<std::function<void()>>();
         auto retry = std::make_shared<std::function<void(const char*)>>();
-        *retry = [this, state, finish, express, dataName, requestId, keyScope,
+        std::weak_ptr<std::function<void()>> weakExpress = express;
+        *retry = [this, state, finish, weakExpress, dataName, requestId, keyScope,
                   shouldCancel](const char* reason) {
             if (state->completed.load()) {
                 return;
@@ -7052,8 +7053,10 @@ namespace ndn_service_framework
                           << " dataName=" << dataName.toUri()
                           << " reason=" << reason
                           << " nextAttempt=" << (state->attempts + 1));
-            m_scheduler.schedule(ndn::time::milliseconds(5),
-                                 [express] { (*express)(); });
+            if (const auto next = weakExpress.lock()) {
+                m_scheduler.schedule(ndn::time::milliseconds(5),
+                                     [next] { (*next)(); });
+            }
         };
         *express = [this, state, finish, retry, dataName, expectedProducer,
                     requestId, keyScope, interestLifetimeMs, shouldCancel] {
