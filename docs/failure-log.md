@@ -1,5 +1,20 @@
 # Failure Log and Evidence Index
 
+## 2026-09-11 — Spec182 G8 broad selector verbose-log timeout boundary
+
+After the `729555fa` client-close registry checkpoint, the full `*Spec182*/*`
+C++ selector was run with `--log_level=test_suite` to retain per-case timing.
+The 180-second command timeout expired while executing the longer
+`Spec182OnnxWorkerProtocol` frame cases; no failed assertion or protocol error
+was emitted before the boundary. Raw output is retained at
+`.codex-tmp/spec182-g49-close-registry-20260911/spec182-full.log` with
+`spec182-full.rc=124`.
+
+This is a verbose-observer timeout, not a qualification result. The next retry
+uses the same fresh binary with `--report_level=no --log_level=message` so the
+test process is not slowed by per-case logging; the client suite and targeted
+close regression already pass independently.
+
 ## 2026-09-11 — Spec182 R11-B9-G8 client-close pending-operation registry compile boundary
 
 The first `-j3` rebuild for the C++ client-close regression reached the final
