@@ -15,6 +15,12 @@ invocation. Signature validation under trust rules and invocation-state checks
 remain necessary. Permission to offer a service is distinct from selection for
 one particular task.
 
+The design addresses three requirements: keep discovery descriptors non-public
+before participating Providers are identified; authenticate participants, verify
+their service permissions, and reject replayed invocation messages; and support
+permission grants and withdrawals during operation. Permission aggregation is
+an additional management benefit, not a fourth security guarantee.
+
 \paragraph{Reason 1: confidential discovery before Provider selection.}
 Before Provider selection, the User publishes a discovery descriptor containing
 the location, deadline, and resource requirements needed for a Provider's
@@ -42,8 +48,9 @@ the existing attribute-authority infrastructure, separately from identity-signin
 credentials.
 
 Provider permissions determine access to RequestNonce; User permissions
-determine access to ProviderChallenge. NDNSF checks the returned challenge
-values together with signatures, current permissions, and request state
+determine access to ProviderChallenge. NDNSF checks RequestNonce in ACK Data
+and validates Selection Data using the stored ProviderChallenge. Signature,
+current-permission, and request-state checks remain separate requirements
 (Section~\ref{sec:authorization-withdrawal}). Decryption is therefore one part of
 the invocation check, not permission to execute any request.
 
@@ -73,18 +80,26 @@ while another allows detection only. Their identity-signing credentials need
 not change to represent these different service sets; each service retains its
 own ciphertext attribute.
 
-This aggregation complements Reason 2: it organizes multiple service permissions
-separately from signing credentials within the reused authorization infrastructure.
-It is not an exclusive capability of ABE. DNMP roles and signing credentials can
-also cover several permissions~\cite{dnmp}. A single DKEY does not imply fixed
-size or cost: policy complexity, key distribution, updates, and revocation still
-matter. The benefit is a convenient organization of service permissions, not
-proof of lower total cost than Trust-Schema-based authorization.
+Compared with DNMP's role-key-based authorization~\cite{dnmp}, NDNSF represents
+service entitlements in the DKEY rather than in additional role-specific signing
+credentials. Where equivalent entitlements require several distinct role
+credentials, this avoids issuing and maintaining those additional signing
+credentials. It does not imply one credential per DNMP service: one role can
+permit several commands. Nor does it establish a universal advantage over
+Trust Schemas, which can express other credential arrangements. A single DKEY
+does not have fixed size or update cost; policy complexity, distribution, and
+rekeying still matter. The benefit concerns independently managed credentials,
+not a demonstrated reduction in total key bytes or runtime cost.
 
 \subsection{Authorization Mechanisms, Lifecycle, and Costs}
 \label{sec:authorization-withdrawal}
 
-\paragraph{Connecting decryption capability to invocation authorization.}
+\paragraph{Identity authentication.}
+The User and Provider validate Data signatures and certificate chains under
+the applicable trust rules. This identifies an accepted signer; it does not
+alone establish that signer's permission to offer or invoke the requested service.
+
+\paragraph{Service-permission verification.}
 In the ABE-backed invocation path, the User generates a fresh random value,
 \emph{RequestNonce}, and includes it in ABE-protected Request content.
 This is an NDNSF application-level value, not the NDN Interest Nonce.
@@ -92,15 +107,14 @@ A Provider that recovers it returns it in ACK Data; the User compares the
 returned value with the one stored for the active request. Thus RequestNonce
 supports both request binding and a check of access to the service-protected value.
 The Provider generates \emph{ProviderChallenge} and includes it in ABE-protected
-ACK content. The User supplies the corresponding challenge response in Selection;
-the Provider checks that response before starting the selected task.
+ACK content. The User uses the recovered ProviderChallenge to construct
+Selection Data. Before execution, the Provider validates Selection Data using
+ProviderChallenge stored for that request. Together with current service-permission
+checks, these checks determine whether the Provider may offer the service and
+whether the User may invoke it.
 
 These checks demonstrate access to protected challenge values, not the creation
-of new permissions or a formal proof of exclusive key possession. The User and
-Provider also validate message signatures and certificate chains under trust
-rules, check current service permissions, and match the request and its state.
-One-time state prevents a repeated message from authorizing another execution
-only while that state is preserved or safely invalidated on restart. Authorized
+of new permissions or a formal proof of exclusive key possession. Authorized
 key or challenge sharing is outside the claimed threat protection. This reuses
 attribute-based permission management rather
 than a separate set of role-based invocation rules. It is not cost-free: confidential
@@ -108,15 +122,41 @@ discovery already needs Provider DKEYs, whereas User permission DKEYs and
 challenge processing are additional authorization costs. ABE confidentiality
 combined with DNMP-inspired role authorization remains a valid alternative.
 
-\paragraph{Runtime permission withdrawal and evaluation.}
+\paragraph{Replay protection.}
+Participants match messages to an active request and its protocol state. The
+Provider records whether ProviderChallenge has already been used to accept
+Selection Data for execution; receiving the same Selection again must not start
+another execution. This requires appropriate retention and invalidation of
+request state, including across restart. Neither encryption nor possession of
+a challenge value alone prevents replay. These admission checks do not establish
+exactly-once application side effects across crashes.
 
-The current runtime implements permission withdrawal through Controller-signed
-authorization status and checks at invocation processing points. A participant
-must retrieve and validate updated status before enforcing the newly withdrawn
-authority. ABE parameter rotation and refreshed DKEYs protect subsequent
-exchanges encrypted under the new generation. The present rotation is
-Controller-wide, so other authorized members may also need refreshed DKEYs;
-it is not a zero-fan-out revocation scheme.
+\paragraph{Runtime permission grants and withdrawals.}
+
+The Controller updates permission status for both operations. An ordinary grant
+updates the target entity's complete permission policy; that entity retrieves
+a replacement DKEY without changing the ABE public parameters. Withdrawal
+additionally rotates the Controller's ABE master key and public parameters.
+Entities retaining permissions obtain replacement DKEYs encoding their remaining
+permissions. The master key stays with the Controller. Rotation is Controller-wide,
+not confined to the withdrawn service.
+
+In the revised dissemination design, the Controller publishes updated public
+parameters as signed named Data and uses Sync to announce their availability.
+Participants retrieve and validate the parameters and Controller-signed
+\texttt{PolicyStatusData}, then refresh their DKEYs as required. Ordinary grants
+also require participants to discover and retrieve updated permission status,
+even though the public parameters have not changed. Sync is an update-discovery
+mechanism, not the authority for granting permission. The local implementation
+supports status retrieval and parameter rotation; the dedicated Sync announcement
+path remains to be verified end to end.
+
+Current-permission checks enforce withdrawal after the updated status has been
+retrieved and validated. Parameter rotation restricts exchanges encrypted under
+the new generation. Disconnected nodes cannot apply updates immediately, and
+previously disclosed keys or plaintext cannot be taken back.
+
+\paragraph{Lifecycle comparison and evaluation.}
 
 DNMP specifies validity bounds and replay-state handling~\cite{dnmp}; these
 do not by themselves provide immediate withdrawal of an unexpired role key.
@@ -133,5 +173,8 @@ behavior at the exercised runtime boundaries, not network-wide instantaneous
 revocation or lower cost than certificate-based alternatives. The remaining
 evaluation should measure status-propagation delay, rejection delay, rekeying
 traffic, and effects on unaffected members. Runtime status validation and key
-rotation therefore extend NDNSF to permission withdrawal, with explicit
-propagation and rekeying costs.
+rotation support runtime permission changes, with explicit propagation and
+rekeying costs. They are not ABE-exclusive capabilities. NDNSF introduces ABE
+for confidential discovery and reuses its service-permission management for
+invocation checks and permission updates; signatures and request-state checks
+remain necessary, separate parts of the design.

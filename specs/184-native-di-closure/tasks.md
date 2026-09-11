@@ -47,6 +47,17 @@ Python harness 不因本表再次无条件重跑。`Qwen3-0.6B` 只能作为 C++
 
 ## Current Checkpoint
 
+2026-09-11 **PROPOSAL-EMAIL-ALIGNMENT / DOCUMENT_PASS**：中英文 Proposal、slides
+及讲稿按邮件统一三个安全要求和额外权限聚合便利；分别解释身份、服务权限与
+防重放，补齐 grant／withdrawal，并将专用 Sync 更新宣告保留为待端到端验证
+的修订设计。八入口构建、31/24 页正文、44 页 slides、9 页讲稿、同语言文本
+一致、897/897 PPTX spans、44 页 notes、全页边界、截图及 LibreOffice 回渲
+检查通过，notes parser 2/2，历史实验页内容不变。Context Mode active hash
+过期采用文件依据；措辞扫描误匹配跨表格边界已修正并保留失败记录。
+证据见 [email-alignment audit](../../docs/PAPER/proposal-defense/research-revision-audit.md)
+与 `email_alignment_revision`。仅文档修订，无产品实验、API／Design 契约变化，
+不推进 T007/T008。下一步核对另一机器的 Sync 路径证据及 RQ1 生命周期成本。
+
 2026-09-11 **PROPOSAL-NONCE-CHALLENGE / DOCUMENT_PASS**：当前中英文 proposal、
 slides 和讲稿统一 `RequestNonce`／`ProviderChallenge`，保留请求绑定、
 受保护值访问检查及签名／权限／状态边界；不修改运行时字段或 API。

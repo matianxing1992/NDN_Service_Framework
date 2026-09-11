@@ -93,7 +93,7 @@ Cross-case empirical findings & Existing mobility/work-efficiency and small-mode
 \toprule Data & Logical purpose\\\midrule
 Request & Describe required service and participation constraints; include protected discovery information and RequestNonce\\\midrule
 ACK & Report positive or negative participation; positive ACK supplies selection information and ProviderChallenge\\\midrule
-Selection & Assign selected execution; provide input/references, challenge response and protected request-scoped keys\\\midrule
+Selection & Assign selected execution; provide input/references and protected request-scoped keys; constructed using ProviderChallenge\\\midrule
 Response & Return status, results or result references; the User still validates them before use\\\bottomrule
 \end{tabularx}
 \vspace{3mm}\bluebox{Sync helps discover names; Interests retrieve Data. The Provider checks Selection before execution; a positive ACK alone does not start the task.}
@@ -108,9 +108,19 @@ Needed to decide whether to participate: area, deadline, sensor/model and resour
 \column{.48\linewidth}
 \begin{block}{Application input}
 Needed to execute the selected task: images, detailed processing parameters, or protected input references.
+Input and results use request-scoped symmetric keys. Selection delivers key material encrypted for the selected Provider; the requesting User retains the keys.
 \end{block}
 \end{columns}
 \vspace{4mm}\bluebox{The boundary follows necessity. A location needed to assess coverage belongs in the protected descriptor; an image needed only for processing can wait.}
+\end{frame}
+
+\begin{frame}{Three Security Requirements; One Additional Benefit}
+\begin{enumerate}
+\item Keep discovery descriptors non-public before participating Providers are identified.
+\item Authenticate participants, verify service permissions, and reject replayed invocation messages.
+\item Grant and withdraw service permissions during operation.
+\end{enumerate}
+\vspace{3mm}\bluebox{Additional benefit: aggregate service permissions in a decryption key (DKEY) while retaining identity-signing credentials. This is a management property, not another security guarantee.}
 \end{frame}
 
 \begin{frame}{Reason 1: Confidential Discovery Before Selection}
@@ -124,20 +134,38 @@ Needed to execute the selected task: images, detailed processing parameters, or 
 
 \begin{frame}{Reason 2: Reuse Service-Permission Management}
 \begin{itemize}
-\item KP-ABE encodes an access policy in each entity's decryption key. [19]
-\item NDNSF combines service entitlements in that policy while retaining identity-signing credentials. [28]
-\item Challenge checks reuse these permissions for invocation; User permission keys and challenge processing still add cost.
+\item ABE was introduced to keep discovery descriptors non-public. [19]
+\item NDNSF reuses the attribute authority to manage Provider and User service permissions. [28]
+\item RequestNonce and ProviderChallenge checks use these permissions during invocation.
 \end{itemize}
-\vspace{3mm}\bluebox{DNMP [12] expresses command permissions through role keys and a Trust Schema. Roles can cover several permissions. Compare credential, policy and key updates; reuse alone does not prove lower total cost.}
+\vspace{3mm}\bluebox{ABE discovery plus role-based invocation is also possible. NDNSF avoids adding role signing credentials solely for service membership; signature validation and request-state checks remain necessary. User DKEYs and challenge processing still add cost.}
 \end{frame}
 
 \begin{frame}{How NDNSF Checks Service Permissions}
 \begin{enumerate}
-\item The User puts a fresh random RequestNonce in ABE-protected Request content. This is not an Interest Nonce.
-\item The Provider returns RequestNonce in ACK Data; the User checks it against the active request.
-\item The Provider includes ProviderChallenge in ABE-protected ACK content and checks its challenge response in Selection before execution.
+\item Provider permission: recover RequestNonce from ABE-protected Request content and return it in ACK Data. The User compares it with RequestNonce stored for this request.
+\item User permission: recover ProviderChallenge from ABE-protected ACK content and construct Selection Data. The Provider validates Selection using its stored ProviderChallenge.
 \end{enumerate}
-\vspace{3mm}\bluebox{Both sides also check signatures under trust rules, service permissions and request state. Matching challenge responses show access to protected values, not exclusive key possession.}
+\vspace{3mm}\bluebox{Also check current service permissions. These checks show access to protected values, not exclusive key possession. RequestNonce is not the Interest Nonce.}
+\end{frame}
+
+\begin{frame}{Identity and Replay Checks Have Different Jobs}
+\begin{block}{Identity authentication}
+Validate Data signatures and certificate chains under trust rules. An accepted signing identity alone does not establish service permission.
+\end{block}
+\begin{block}{Replay protection}
+Match messages to an active request and its state. Record whether ProviderChallenge has already been used to accept Selection for execution; duplicate Selection must not start another execution.
+\end{block}
+\bluebox{Retain or safely invalidate request state, including across restart. Encryption or a challenge value alone does not prevent replay.}
+\end{frame}
+
+\begin{frame}{Additional Benefit: Aggregate Service Permissions}
+\begin{itemize}
+\item Within one Controller domain, combine several service permissions in one entity's DKEY; retain identity-signing credentials. [19,28]
+\item DNMP represents command authority through role keys and schema rules. One role can permit several commands. [12]
+\item Where equivalent permissions require distinct role credentials, NDNSF avoids maintaining those extra signing credentials.
+\end{itemize}
+\vspace{3mm}\bluebox{Fewer independently managed credentials does not imply fixed DKEY size or lower total cost. Policy size, key distribution and updates still matter.}
 \end{frame}
 
 \begin{frame}{DNMP: Trust-Schema Command Authorization}
@@ -156,7 +184,7 @@ Distributed Network Measurement Protocol (DNMP) [12] authorizes measurement comm
 \begin{tabularx}{\linewidth}{p{.27\linewidth}XX}
 \toprule Design & Execution authorization & Discovery confidentiality\\\midrule
 DNMP-inspired [12] & Check role-constrained signatures and NDNSF invocation state & Pair with service-group encryption or ABE\\\midrule
-NDNSF ABE-backed & User/Provider check signatures, challenge responses, service permissions and request state & User encrypts descriptor content with service-level ABE\\\bottomrule
+NDNSF ABE-backed & Check signatures, RequestNonce, ProviderChallenge, current permissions and request state & User encrypts descriptor content with service-level ABE\\\bottomrule
 \end{tabularx}
 \vspace{3mm}\bluebox{Proposed comparison: retain NDNSF discovery and Selection, with input/result protection and revocation checks in both designs. Trust Schema [16] alone does not encrypt Content; adapting DNMP authorization is not an original DNMP feature. No measured cost advantage is claimed.}
 \end{frame}
@@ -171,13 +199,22 @@ NDNSF ABE-backed & User/Provider check signatures, challenge responses, service 
 \vspace{3mm}\bluebox{Compare complete combinations of authorization and encryption. ABE-backed authorization is one design choice, not a universally superior solution.}
 \end{frame}
 
-\begin{frame}{Authorization Lifecycle and Costs}
+\begin{frame}{Runtime Permission Grants and Withdrawals}
 \begin{itemize}
-\item The Controller publishes signed permission updates; participants apply them only after retrieval and validation.
-\item Request-scoped keys protect input/results. Selection delivers keys to selected Providers; the requesting User retains access.
-\item Status checks reject withdrawn permissions; key rotation restricts future encrypted exchanges. Current ABE rotation is Controller-wide. [28]
+\item Both operations update Controller-signed permission status. [28]
+\item Ordinary grant: update the target's complete policy; it retrieves a replacement DKEY. Public parameters stay unchanged.
+\item Withdrawal: rotate the Controller's ABE master key and public parameters; remaining members obtain DKEYs for their remaining permissions.
 \end{itemize}
-\vspace{3mm}\bluebox{Revocation has costs: measure update propagation, rejection delay and rekey traffic. Disconnected nodes cannot learn updates immediately; previously disclosed keys and plaintext cannot be recalled.}
+\vspace{3mm}\bluebox{The master key stays with the Controller. Rotation is Controller-wide. Participants must retrieve and validate updates before applying them; disconnected nodes cannot do so immediately.}
+\end{frame}
+
+\begin{frame}{Discovering Updates Does Not Make Revocation Instantaneous}
+\begin{enumerate}
+\item Revised design: publish new public parameters as signed Named Data; Sync announces availability.
+\item Participants retrieve and validate parameters and permission status, then refresh DKEYs as required.
+\item Grants also require status discovery, even when public parameters do not change.
+\end{enumerate}
+\vspace{2mm}\bluebox{Local status retrieval and rotation exist; dedicated Sync announcements still need end-to-end verification. Measure propagation, rejection delay and rekey traffic. Neither NDNSF nor a certificate-revocation alternative can recall disclosed keys or plaintext.}
 \end{frame}
 
 \begin{frame}{Threat Model: What Is Trusted?}
@@ -348,7 +385,7 @@ Single Provider & 186.8 ms & 206.3 ms\\\bottomrule
 \small
 \begin{tabularx}{\linewidth}{p{.09\linewidth}XX}
 \toprule RQ & Required evidence & Outcome and cost\\\midrule
-RQ1 & ABE-backed versus DNMP-inspired rules plus encryption; unauthorized call, replay and withdrawal cases & No unauthorized handler start; discovery delay, key/policy size, status delay and rekey traffic\\\midrule
+RQ1 & ABE-backed versus DNMP-inspired rules plus encryption; unauthorized call, replay, grant and withdrawal & No unauthorized handler start; discovery delay, key/policy size, status delay and rekey traffic\\\midrule
 RQ2 & One UAV and one DI graph; wrong role/edge; direct/cache parity; cancellation/replacement & Correct task completion; validation, transfer and recovery cost\\\midrule
 RQ3 & Matched workload and failure schedules; feasible single-device control; cold/warm state & Completion plus latency, redundant work, bytes, uncertainty, and cases with no advantage\\\bottomrule
 \end{tabularx}

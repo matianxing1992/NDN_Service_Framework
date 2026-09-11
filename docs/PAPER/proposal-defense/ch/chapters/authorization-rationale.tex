@@ -9,6 +9,10 @@ Provider 授权决定实体是否可以提供该服务；内容机密性限制�
 Controller 管理服务权限，User 和 Provider 在调用过程中检查这些权限，并执行
 信任规则下的签名验证与调用状态检查。获准提供服务不等于被选中执行某一次任务。
 
+该设计面向三个要求：参与 Provider 尚未确定时不公开发现描述；认证参与者身份、
+验证服务权限并拒绝重放调用消息；运行时授予和撤销服务权限。权限聚合是额外的
+管理便利，而不是第四项安全保证。
+
 \paragraph{理由一：选择 Provider 之前的保密发现。}
 在选择 Provider 之前，User 发布 discovery descriptor（发现描述），其中
 包含 Provider 决定是否返回 positive ACK 所需的位置、截止时间和资源要求。
@@ -30,8 +34,9 @@ Provider 身份。这里的保密对象是缺少相应解密能力的外部
 权限，并将这些权限与身份签名凭证分离。
 
 Provider 权限决定其能否获取 RequestNonce，User 权限决定其能否获取
-ProviderChallenge。NDNSF 将返回的 challenge 值与签名、当前权限及请求状态
-一起检查（第~\ref{sec:authorization-withdrawal-ch} 节）。因此，解密能力只是
+ProviderChallenge。NDNSF 检查 ACK Data 中的 RequestNonce，并使用保存的
+ProviderChallenge 验证 Selection Data。签名、当前权限和请求状态检查仍是
+独立要求（第~\ref{sec:authorization-withdrawal-ch} 节）。因此，解密能力只是
 调用检查的一部分，不代表可以执行任意请求。
 
 DNMP 则通过角色签名密钥与 Trust Schema 约束命令目标和动作~\cite{dnmp}。
@@ -54,40 +59,62 @@ Provider 访问权限，使用 \texttt{/PERMISSION/<service>} 表示 User 访问
 服务；这些不同的服务集合不需要通过改变身份签名凭证来表示，各服务的密文仍
 使用各自的服务属性。
 
-这种聚合补充了理由二：在复用的授权管理设施中，将多项服务权限与签名凭证
-分离组织。它并非 ABE 独有的能力，DNMP 的角色和签名凭证也可以覆盖多项
-权限~\cite{dnmp}。一份 DKEY 不代表固定大小或固定成本，策略复杂度、密钥
-分发、更新与撤销仍需考虑。其好处是便于组织服务权限，而不是证明总成本低于
-基于 Trust Schema 的授权方案。
+相比 DNMP 基于角色密钥的授权~\cite{dnmp}，NDNSF 在 DKEY 中表示服务权限，
+而非增加角色专用签名凭证。如果等价权限需要多个不同角色凭证，这避免了签发和
+维护这些额外签名凭证。但不能据此断言 DNMP 每项服务都需要一份凭证：一个角色
+可以允许多种命令。Trust Schema 也可以表达其他凭证安排，因此这不是普遍优势。
+一份 DKEY 不代表固定大小或更新成本；策略复杂度、分发和换钥仍需考虑。
+这里比较的是需独立管理的凭证，而不是已证明总密钥字节数或运行成本更低。
 
 \subsection{授权机制、生命周期与成本}
 \label{sec:authorization-withdrawal-ch}
 
-\paragraph{将解密能力关联到调用授权。}
+\paragraph{身份认证。}
+User 和 Provider 按适用的信任规则验证 Data 签名与证书链。这确定了被接受的
+签名身份，但单独不能确定该身份是否有权提供或调用所请求的服务。
+
+\paragraph{服务权限验证。}
 在 ABE-backed 调用路径中，User 为请求生成新的随机值 \emph{RequestNonce}，
 并将其放入 ABE 保护的 Request 内容。这是 NDNSF 应用层的值，
 不是 NDN Interest 的 Nonce。Provider 恢复该值后在 ACK Data 中返回，
 User 将返回值与活动请求中保存的值比较。因此，RequestNonce 既用于请求绑定，
 也用于检查对方能否获取该服务保护的值。Provider 生成 \emph{ProviderChallenge}，
-并将其放入 ABE 保护的 ACK 内容。User 在 Selection 中提供对应的 challenge response，
-Provider 在开始执行所选任务前检查该响应。
+并将其放入 ABE 保护的 ACK 内容。User 使用恢复出的 ProviderChallenge 构造
+Selection Data。执行前，Provider 使用为该请求保存的 ProviderChallenge 验证
+Selection Data。这些检查结合当前服务权限检查，确定 Provider 能否提供该服务，
+以及 User 能否调用该服务。
 
 这些检查表明参与者能够获得受保护的 challenge 值，不会创建新权限，也不是
-密钥独占持有的形式化证明。双方还需按信任规则验证消息签名和证书链，检查当前
-服务权限，并匹配请求及其状态。一次性状态只有被保留或在重启时安全失效，才能
-防止重复消息授权另一次执行；获准实体主动共享密钥或 challenge 不在所声称的
+密钥独占持有的形式化证明。获准实体主动共享密钥或 challenge 不在所声称的
 防护范围内。这沿用了属性化权限管理，而不是另设一套基于角色的调用规则，但
 并非没有额外成本：保密发现已需要 Provider DKEY，而 User 的调用权限 DKEY
 和 challenge 处理仍是额外授权成本。ABE 保密配合 DNMP-inspired 角色授权同样是有效的
 替代方案。
 
-\paragraph{运行时权限撤销与评估。}
+\paragraph{防重放。}
+参与者将消息匹配到活动请求及其协议状态。Provider 记录 ProviderChallenge
+是否已用于接受 Selection Data 并启动执行；再次收到相同 Selection 不得启动
+另一次执行。这要求适当保留和失效请求状态，包括重启时的处理。加密或持有
+challenge 值本身都不能防止重放。这些准入检查也不保证跨崩溃的应用副作用恰好
+发生一次。
 
-当前运行时通过 Controller 签名的授权状态以及调用处理点上的检查实现权限
-撤销。参与者需要获取并验证更新后的状态，才能执行新公布的权限撤销。
-ABE 参数轮换和 DKEY 更新保护随后使用新代际加密的交换。目前轮换作用于整个
-Controller 的 ABE 参数代际，其他仍获授权的成员也可能需要刷新 DKEY；
-这不是无需更新其他成员的撤销方案。
+\paragraph{运行时授予与撤销权限。}
+
+Controller 为两种操作更新权限状态。普通授予更新目标实体的完整权限策略，
+该实体获取替换 DKEY，ABE 公共参数保持不变。撤销还会轮换 Controller 的
+ABE 主密钥与公共参数；仍有权限的实体获取编码其剩余权限的替换 DKEY。
+主密钥保留在 Controller，轮换范围是整个 Controller，而非仅被撤销的服务。
+
+在修订后的传播设计中，Controller 将更新后的公共参数发布为签名的 Named Data，
+并通过 Sync 宣告其可获取。参与者获取并验证公共参数与 Controller 签名的
+\texttt{PolicyStatusData}，按需刷新 DKEY。普通授予虽不更换公共参数，仍要求
+参与者发现并获取更新后的权限状态。Sync 用于发现更新，不是授予权限的依据。
+本机实现支持状态获取与参数轮换；专用 Sync 宣告路径仍需端到端验证。
+
+当前权限检查在获取并验证新状态后执行撤销；参数轮换限制使用新代际加密的交换。
+断连节点不能立即应用更新，也不能收回已披露的密钥或明文。
+
+\paragraph{生命周期对比与评估。}
 
 DNMP 规定了有效期约束与防重放状态处理~\cite{dnmp}；这些机制本身不等于立即
 撤销尚未过期的角色密钥。作为对照设计，DNMP-inspired 方案可以撤销相关凭证，
@@ -99,4 +126,6 @@ DNMP 规定了有效期约束与防重放状态处理~\cite{dnmp}；这些机制
 撤销。这些测试支持已覆盖运行时边界上的行为，不代表整个网络中的瞬时撤销，
 也不能证明其成本低于证书方案。后续评估应测量状态传播延迟、拒绝生效延迟、
 重新分发密钥的流量，以及对未撤销成员的影响。因此，运行时状态验证和密钥
-轮换使 NDNSF 支持权限撤销，同时带来明确的状态传播和重新分发密钥的成本。
+轮换支持运行时权限变更，同时带来明确的状态传播和重新分发密钥的成本。
+这些并非 ABE 独有能力。NDNSF 为保密发现引入 ABE，并复用其服务权限管理
+进行调用检查和权限更新；签名验证与请求状态检查仍是独立且必要的设计组成。

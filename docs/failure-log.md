@@ -1,5 +1,15 @@
 # Failure Log and Evidence Index
 
+## 2026-09-11 — Proposal email-alignment retrieval boundary
+
+Active Context Mode health rejected stale Spec184 plan/tasks hashes; no stale
+search result was used as authority. Project health passed and actual files
+supplied the fallback. No product test ran. See
+[email-alignment audit](PAPER/proposal-defense/research-revision-audit.md)
+and `.codex-tmp/proposal-email-alignment-20260911/context-health.json`.
+The first wording scan matched a suffix across table cells; the audit records
+the word-boundary correction and preserved `verify-first.log`.
+
 ## 2026-09-11 — Proposal terminology retrieval guard boundary
 
 Context Mode rejected a historical timeline query before execution because its

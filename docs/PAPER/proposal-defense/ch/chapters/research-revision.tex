@@ -9,7 +9,7 @@
 \section{初版 NDNSF 的调用基础}
 初版 NDNSF 从多个候选中选定一个 Provider。User 发布 Request Data、收集应答（ACK）Data，再发布 Selection Data；选定 Provider 执行并发布 Response Data。候选是同一次调用的替代执行者，不承担不同的相互依赖角色。
 
-发现与授权不以协作为前提。发现描述提供期限和资源需求，应用输入提供执行材料。被评估设计以属性基加密（ABE）保护描述，以受保护 challenge 核验、信任规则下的签名验证和请求状态检查实施授权。获准但未选中的候选仍可读描述。输入／结果保护、撤销和管理成本同样属于评价范围。
+发现与授权不以协作为前提。发现描述提供期限和资源需求，应用输入提供执行材料。被评估设计以属性基加密（ABE）保护描述，以受保护 challenge 核验、信任规则下的签名验证和请求状态检查实施授权。获准但未选中的候选仍可读描述。输入／结果保护、权限授予与撤销和管理成本同样属于评价范围。
 
 \section{从单 Provider 调用扩展到多 Provider 协作}
 部分任务需要不同 Provider 提供互补服务。分别调用各服务，并不会自动规定哪个 Provider 担任哪个角色，以及依赖服务可以接受哪些中间对象。本 Proposal 研究在保留调用基础的同时，通过扩展明确这些分工与依赖。
@@ -60,7 +60,7 @@ publication 状态以防重放，其假设包括设备时钟大致同步。
 \begin{tabularx}{\textwidth}{p{.19\textwidth}XXX}
 \toprule 方案 & 执行授权 & 非公开发现 & 管理成本\\\midrule
 DNMP-inspired 对照方案 & 角色约束签名验证，并检查请求状态及被选中的 Provider & 配合服务组加密或 ABE 保护发现信息 & 角色凭证、规则、状态／有效期及加密密钥\\\midrule
-NDNSF ABE-backed & 信任规则下的签名验证、challenge response、请求及授权状态检查 & 按服务权限保护 descriptor，无需列出现时所有候选身份 & 身份凭证、ABE policy／DKEY、状态传播与换钥\\\bottomrule
+NDNSF ABE-backed & 验证签名、RequestNonce、ProviderChallenge、当前权限及请求状态 & 按服务权限保护 descriptor，无需列出现时所有候选身份 & 身份凭证、ABE policy／DKEY、状态传播与换钥\\\bottomrule
 \end{tabularx}\end{table}
 
 角色粒度由策略决定：一个角色可以覆盖多种操作，规则允许时也可以复用凭证。
@@ -97,7 +97,7 @@ User 请求服务并选择 Provider；在协作扩展中还协调角色分配。
 \toprule Data & 用途 & 主要检查\\\midrule
 Request & 服务需求、最小必要 descriptor、请求标识和 RequestNonce & 验证身份和授权上下文，解密后判断参与意愿\\\midrule
 ACK & positive／negative 参与决定；positive ACK 提供选择信息和 ProviderChallenge & User 按信任规则验证签名者，并检查服务权限、请求 ID 和返回的 RequestNonce；合格 positive ACK 才参与 Provider 选择\\\midrule
-Selection & 选定 Provider，交付受保护输入／引用及请求级密钥 & Provider 按信任规则验证 User 签名，并检查接收者、challenge response、请求状态及服务权限\\\midrule
+Selection & 选定 Provider，交付受保护输入／引用及请求级密钥 & Provider 验证 User 签名，使用保存的 ProviderChallenge 验证 Selection，并检查接收者、请求状态及服务权限\\\midrule
 Response & 完成状态、结果或结果引用 & 验证生产者、请求、对象身份和解密范围\\\bottomrule
 \end{tabularx}\end{table}
 
@@ -175,7 +175,7 @@ transition 实验中，无预登记 Provider 地址的 NDNSF 完成 357/357，�
 \caption{按主张确定剩余评价，不把计划列为完成。}
 \begin{tabularx}{\textwidth}{p{.07\textwidth}XXX}
 \toprule RQ & 完整对照 & 正确性／失败 & 成本与结果\\\midrule
-RQ1 & ABE-backed 授权；DNMP-inspired 角色规则加内容加密（第~\ref{sec:dnmp-alternative-ch} 节）；合适的组密钥组合 & 无权限不启动 handler；challenge／replay／撤销／状态延迟 & 完成率、发现时延、凭证／policy 大小、密码学与换钥流量\\\midrule
+RQ1 & ABE-backed 授权；DNMP-inspired 角色规则加内容加密（第~\ref{sec:dnmp-alternative-ch} 节）；合适的组密钥组合 & 无权限不启动 handler；challenge／replay／授予／撤销／状态延迟 & 完成率、发现时延、凭证／policy 大小、密码学与换钥流量\\\midrule
 RQ2 & 相同图的静态／动态分配；逐项准入检查消融 & 错角色／边／名字／密钥／执行；缓存与直接一致；取消与重分配 & 验证开销、字节、完成率、冗余工作、恢复轨迹\\\midrule
 RQ3 & 同候选数、负载、能力、期限、失败安排和可行单机基线 & 包含失败超时；区分网络、准入、执行和结果获取 & 完成率及时延、冷热成本、run 级不确定性、无收益条件\\\bottomrule
 \end{tabularx}\end{table}

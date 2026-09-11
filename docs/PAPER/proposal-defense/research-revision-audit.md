@@ -1,5 +1,58 @@
 # Research-first Proposal Revision and Evidence Audit
 
+## 2026-09-11 Email-aligned Authorization Rationale
+
+按最新邮件修改当前中英文 Proposal、slides 与讲稿：三个要求分别是发现描述
+不公开、参与者身份与服务权限检查及防重放、运行时权限授予与撤销。权限聚合
+单列为额外管理便利。身份认证、RequestNonce／ProviderChallenge 检查及请求
+状态检查分别解释，不再使用易与 Response Data 混淆的 `challenge response`，
+也不引入不明确的 `execution authorization remains valid`。
+
+沿用 NDN Slides Review 的机制—性质区分：ABE 保护发现描述的可读范围，
+获准但未选中的 Provider 仍可读取；签名验证接受的签名身份不单独确定服务权限。
+User 比较 ACK 中的 RequestNonce；Provider 使用保存的 ProviderChallenge
+验证 Selection。一次性接受状态阻止重复 Selection 再次启动执行，但需要正确
+保留／失效状态，不声称跨崩溃的应用副作用恰好一次。输入／结果的请求级密钥
+及接收者专属交付与发现阶段 ABE 分开说明。
+
+DNMP 原文的角色密钥／Schema 机制继续作为具体对照。权限聚合的优势限定为：
+等价权限若需要多个不同角色签名凭证，NDNSF 无需为了这些服务权限额外维护
+它们；不是每项 DNMP 服务都需新证书，不是所有 Trust Schema 都不能复用凭证。
+一份 DKEY 的大小及更新成本仍随策略和换钥机制变化，未新增实测成本优势。
+
+本轮只读核对生产源码 `ServiceController::grant()`、
+`rotateAbeGenerationAndReissuePolicies()` 及 User／Provider 消息检查。
+普通 grant 更新目标完整策略而保持参数；withdrawal 轮换 Controller-wide
+主密钥／公共参数，剩余权限实体需更新 DKEY。主密钥不传播给参与者。
+CodeGraph 用于定位后核对实际文件，不采用其临时副本作为生产证据。
+
+作者要求的 Sync 口径保留为修订传播设计：公共参数是签名 Named Data，Sync
+宣告其可获取；参数和权限状态仍需获取、验证后应用。普通 grant 不换参数，
+所以还需发现权限状态更新。本机未确认专用授权更新 Sync 宣告路径的端到端
+实现，不将其计为完成；状态获取／轮换已有实现与该待验证路径明确区分。
+断连节点不能即时应用撤销，已披露密钥／明文不能收回。证书撤销替代方案同样
+需要传播和验证新状态，删除存储副本不等于使缓存证书失效。
+
+文档验证记录：`research-revision-validation.json` 的 `email_alignment_revision`；
+八个 LaTeX 入口通过：英文 31 页、中文 24 页、slides 44 页、讲稿 9 页；
+同语言及兼容入口 PDF 文本一致，无 overfull、缺字或未定义引用，保留
+328 条 underfull 提示。普通 slide 均不超过 100 words。PPTX 897/897 spans
+恰好分配一次，44 页 notes，PDF/PPTX 边界与 LibreOffice 回渲检查通过；
+讲稿解析 2/2。历史实验页去掉页码后文本不变，没有更新实验数值。
+原始构建、渲染、PPTX manifest、notes parser 和检查日志在
+`.codex-tmp/proposal-email-alignment-20260911/`。逐页 contact sheets 与新增／
+修改页的全尺寸截图用于检查布局；PDF／LibreOffice 回渲不等于实际测试
+Google Slides 或 Microsoft PowerPoint。句子清单是定位工具，不是自动真实性证明。
+
+Context Mode 项目层 health 通过；active 层因 plan/tasks 索引 hash 过期失败，
+直接读取实际文件，不使用过期检索结果或把检索当作当前任务权威。
+首次无实质改动的 patch 因上下文不匹配而未应用，按实际文件重做；无运行时失败。
+首次措辞扫描把表格线性化后的 `ProviderChallenge Response` 误判成独立短语
+`challenge response`；加入完整单词边界后重新检查，原始失败记录保留在
+`verify-first.log`。这是检查器边界，不是协议或渲染错误。
+本轮不修改 API、Design 契约或产品代码，不重跑实验，不推进 Spec184 T007/T008。
+下一步是单独核对另一机器上的 Sync 更新路径证据，以及同粒度 RQ1 生命周期成本。
+
 ## 2026-09-11 RequestNonce and ProviderChallenge
 
 按作者要求，将当前中英文 proposal、slides 和讲稿中的协议用语统一为
