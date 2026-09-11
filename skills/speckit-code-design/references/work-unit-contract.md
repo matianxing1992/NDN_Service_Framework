@@ -11,7 +11,7 @@
 | Scope / design | 具体文件或符号、增改删移及目的；引用 CD/接口/字段契约 |
 | Batch | 逻辑批次 ID、成员与行为边界；写明共同入口/调用方、契约、oracle/selector、source closure 和验收出口；区分 implementation / acceptance dependency；共享构建/测试选择器及负责人只定义一次 |
 | Constraints | 该任务特有的架构边界、兼容/删除路径和恢复要求 |
-| Verification | 需求/PO、真实入口、独立判据、必要负例及具体命令或 planned 工具；适用时包含调用方、测试/harness 与构建注册 |
+| Verification | 需求/PO、真实入口、独立判据、必要负例及具体命令或 planned 工具；适用时包含调用方、测试/harness、构建注册，以及 `Risk class`/`Dynamic profile`/`Dynamic invariants` |
 | Result | tasks.md 中简短结果或一份 evidence 链接；批次记录按 [batch-quality-gates.md](batch-quality-gates.md) 分类静态/编译/运行漏检并记录构建边界与耗时 |
 
 不要求每个任务重复类/字段说明、文档义务、审查规则和报告模板。
@@ -31,6 +31,11 @@ identity 的对照；过期 hardcode 或错误排序应有明确负例。
 必要的真实 integration/system/MiniNDN 不得由 mock、导入成功或结构扫描替代。
 保留明确要求的 counterfactual；其失败必须来自目标行为断言，而非启动/编译错误。
 无需为了填表对每个风险再新增一套 mutation。
+
+运行时风险还要选择共享 batch-quality-gates 中的动态 profile，或明确写 `none`/`N/A`。
+动态工具只验证已登记的不变量和资源边界；它不能替代 C++ 行为 oracle，也不能凭工具
+无报告推断协议语义正确。异步任务至少说明线程/IO owner、终态、取消/迟到回调和清理
+平衡等不变量；动态失败需保留首个报告和重试前的 `Changed gate`。
 
 ## Execution And Completion
 
