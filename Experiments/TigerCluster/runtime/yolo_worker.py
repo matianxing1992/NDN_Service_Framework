@@ -142,7 +142,8 @@ class StartupBarrier:
     references/results already validated by their stage owner, not authority
     to bypass SIF, model or credential verification.
     """
-    STAGES = frozenset(('nfd-ready', 'routes-ready', 'network-ready', 'control-ready', 'providers-ready', 'workload-complete', 'failed'))
+    STAGES = frozenset(('nfd-ready', 'routes-ready', 'network-ready', 'control-ready',
+                        'providers-ready', 'completion-ready', 'workload-complete', 'failed'))
 
     def __init__(self, directory, *, run_id, probe_id, candidate_digest, ranks, rank, seconds, check):
         self.directory = _directory(Path(directory))

@@ -184,3 +184,53 @@ def test_two_rank_real_barriers_keep_peer_alive_and_propagate_failure(tmp_path, 
         else:
             assert [f.result(timeout=5) for f in futures] == [{'rank':0}, {'rank':1}]
     assert all(event.is_set() for event in closed)
+
+
+def test_completion_budget_arms_after_both_ranks_finish_startup(tmp_path, monkeypatch):
+    """A fast rank must not consume the workload budget while its peer starts."""
+    for name in ('startup', 'completion'):
+        (tmp_path / name).mkdir()
+    plans = dict(case='negative-dependency', runId='test-run', requests=[
+        {'index': 0, 'warmup': False, 'requestId': '/run/request/0'}])
+    closed = [threading.Event(), threading.Event()]
+
+    def state(rank):
+        output = tmp_path / ('node' + str(rank))
+        output.mkdir()
+        return NS(mode='negative-dependency', rank=rank, output=output,
+                  _preparation_binding=(plans, None, 'sha256:' + '1' * 64),
+                  close=lambda rank=rank: closed[rank].set() or [],
+                  verify_runtime=lambda **kwargs: None,
+                  verify_allocation=lambda *args, **kwargs: None,
+                  probe_gpu_device=lambda **kwargs: None)
+
+    monkeypatch.setattr(yolo, 'configure_network', lambda *a, **k: None)
+
+    def start(worker, *args, **kwargs):
+        # Reproduce the observed cold-preparation skew on rank zero.
+        if worker.rank == 0:
+            import time
+            time.sleep(0.25)
+
+    monkeypatch.setattr(yolo, 'start_workload', start)
+    monkeypatch.setattr(yolo_result, 'write_worker_receipt',
+                        lambda worker, rows: {'rank': worker.rank})
+    monkeypatch.setattr(yolo, 'run_requests', lambda *args, **kwargs: None)
+
+    def barrier(rank):
+        return StartupBarrier(tmp_path / 'completion', run_id='test-run',
+            probe_id='a' * 32, candidate_digest='sha256:' + '1' * 64,
+            ranks=(0, 1), rank=rank, seconds=0.15, check=lambda: None)
+
+    def run(rank):
+        startup = StartupBarrier(tmp_path / 'startup', run_id='test-run',
+            probe_id='a' * 32, candidate_digest='sha256:' + '1' * 64,
+            ranks=(0, 1), rank=rank, seconds=2, check=lambda: None)
+        return yolo.run_normal_node(state(rank), startup,
+            completion_factory=lambda rank=rank: barrier(rank), endpoints=[],
+            startup_options={}, request_options={}, accept_request=lambda *a: None)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(run, rank) for rank in (0, 1)]
+        assert [future.result(timeout=5) for future in futures] == [{'rank': 0}, {'rank': 1}]
+    assert all(event.is_set() for event in closed)

@@ -5673,3 +5673,23 @@ rebuild is needed.
 Lesson: a completion budget must include rank skew and pre-request preparation,
 not only the User wait and cleanup windows. Partial native failure evidence
 never upgrades to `EXPECTED_REJECTION_PASS`.
+
+## 2026-09-11 — negative completion barrier armed before peer startup (fixed)
+
+Symptom: the focused two-rank regression reproduced the r14 shape: the fast
+rank created a short completion barrier, the peer spent 250 ms in startup, and
+the fast rank failed with `STARTUP_DEADLINE` before the peer could publish its
+workload completion.
+
+Root cause: `run_normal_node` constructed the completion barrier independently
+on each rank immediately after local startup returned. The barrier deadline was
+therefore relative to the first rank's local monotonic clock, so rank skew was
+charged to the workload budget.
+
+Fix status: add a shared `completion-ready` startup stage. Both ranks publish
+and validate that stage before constructing the completion barrier; the
+negative completion budget remains separate and is no longer consumed by
+peer startup. The new regression and the full TigerCluster suite pass.
+
+Lesson: multi-rank finite budgets need an explicit shared arm point; local
+readiness records alone do not establish a common workload start.

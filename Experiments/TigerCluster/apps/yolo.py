@@ -897,6 +897,15 @@ def run_normal_node(worker, startup, *, completion_factory, endpoints,
                 worker.probe_gpu_device(seconds=startup.remaining(), peer_failure=peer)
             configure_network(worker, startup, endpoints=endpoints)
             start_workload(worker, startup, **startup_options)
+            if len(startup.ranks) > 1:
+                # Do not let the first rank construct the finite workload
+                # barrier while its peer is still completing cold startup.
+                # Both ranks cross this arm point before either deadline starts.
+                startup.publish('completion-ready', {'rank': worker.rank})
+                ready = startup.wait('completion-ready')
+                expected_ready = {rank: {'rank': rank} for rank in startup.ranks}
+                if ready != expected_ready:
+                    raise ValueError('YOLO_COMPLETION_READY')
             completion = completion_factory()
             if (completion.binding != startup.binding or completion.rank != worker.rank
                     or completion.ranks != startup.ranks or completion.directory == startup.directory):
