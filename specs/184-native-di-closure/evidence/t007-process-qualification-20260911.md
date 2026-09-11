@@ -60,6 +60,30 @@ the named markers are emitted and asserted by the C++ requester, Authority, Prov
 The replacement run's first Provider log is `d8cea73452cdca5ce860e424881445d62eda39c14e2123738a0f360d9ccc9a98`;
 it contains no execution evidence, while Provider-B contains the authenticated attempt-2 evidence.
 
+## Candidate-bound C++ dynamic behavior samples for I02-I08
+
+The following owner runs use the same `build-spec184-b5-candidate` integration binary and
+candidate-staged native fixtures. They are dynamic behavior samples for the C++ selectors; they
+are not substitutes for the inherited isolation counterexamples or collector-completeness cases
+defined by `native-isolation-design.md`.
+
+| Case | C++ business oracle | Owner result SHA-256 | Runner result SHA-256 | Node context SHA-256 | Outcome |
+| --- | --- | --- | --- | --- | --- |
+| I02 | `ackCandidates=2 ackClosed=1 planCommitted=1 streamedContext=1 completed=1 events=4` | `452f74eb6919b97db24f5db321f4f5681869625753f19364989f88ba48eec524` | `8939d535f32950b75de1bda6973e3fc6948cc143b52f37fc9fbb92a1990ab934` | `feec5f95b63576f7dee12ac3e20218bdd96f5acb7452342bd1511900afd35f16` | `PASS_FOR_DYNAMIC_SAMPLE` |
+| I03 | `ackCandidates=4 ackClosed=1 planCommitted=1 streamedContext=1 completed=1 providerCompletions=4 events=8` | `6a824cee3f4a4946a14c9b46bc62f7959e9a8d9c091f2e93839b0c19612c1f07` | `77c03920f469a145f29a8a9bca57d25df6d2fc3484fa556d54bcce4b1e31f33c` | `0626a7fb8c45ae2621a2ea3f1eec6dac512055f9528da6fd9dbd806fa6bcd553` | `PASS_FOR_DYNAMIC_SAMPLE` |
+| I04 | `completed=1 publicationReorders=1 events=8` | `66fb4f924ac3debe6c7487c1dc033fdf3a31157c62563cc7d1c73d8ec6f0adf7` | `008624d79bec2e41e45adca54ec05c699e91993b8309df302773c86b590004ca` | `485a91a87f1de5ba6d26a26451e99fe8e0a158258748a8451084a295e8a25029` | `PASS_FOR_DYNAMIC_SAMPLE` |
+| I05 | `completed=1 publicationDuplicates=1 events=8` | `aa4ddd3f97f4d83e1b6ce54e474f5b056baee239ac0ae069e933782604a5f5fb` | `66304a51876f7e8fbb27956bb52fa855b503acb32faf58867b0eee5cec144025` | `5dced25a360ffdd61a891eda4201837a2eb41d9312e37cafc61071d56536ed6c` | `PASS_FOR_DYNAMIC_SAMPLE` |
+| I06 | `completed=1 droppedData=1 events=8` | `a02df6e9e3cf7ec4fc262517843126d2b2714b04d45c582e11f0f0d8c31a3039` | `c6d242ee4bafb5531259daa0273f7029efa7d96d31a4d0210ba5ebcc74885fa0` | `c9c6b4f84bd3e397f38b038e1ebfe70637c425515be4d6b07937c06bf30e7da4` | `PASS_FOR_DYNAMIC_SAMPLE` |
+| I07 | three C++ negative subcases: never-retained, retention-expired, end-before-gap | `bfa6621e9504aef2b4f6a78e1d1bfd46169854f6b00d46e9b6483b73f58cb693` | `aff02336cf661f6a941f8d300d9f76f2951791e7d15e85b89d7b81d4d05a985b` | `f91bf95c87961415bcb6400cf3416d40b59b00830d387e42aab5e8bae76a10a9` | `PASS_FOR_DYNAMIC_SAMPLE` |
+| I08 | `cancelled=1 completed=0 failed=0 events=3` | `fe5c0817113729597ce59bca71ba3fd5436546b389a66ade8a6ef32068321cb9` | `9b0462c49e78fcca3af3e7cbdaf6c512d304577fc26a5928b48fe960dee24bc7` | `ccf0c6b4014f4f037a5c9b076a23a19429ebb0356d6a76d7b20f87581b709007` | `PASS_FOR_DYNAMIC_SAMPLE` |
+
+The complete raw run roots are `.codex-tmp/spec184-owner-i02-20260911-r4/` through
+`.codex-tmp/spec184-owner-i08-20260911-r1/`; each valid result has `evaluation.status=PASS`,
+`observation.complete=true`, all seven required evidence categories, and no policy or integrity
+violations. The I02 retry history remains durable: `r1` stopped at the missing `ifconfig` runtime
+path, `r2` at missing staged fixtures, and `r3` at an invalid manifest artifact kind. Those are
+harness boundaries, not protocol results.
+
 ## Authority grant process matrix
 
 The same candidate's independent C++ Authority/requester process launcher completed one positive,
