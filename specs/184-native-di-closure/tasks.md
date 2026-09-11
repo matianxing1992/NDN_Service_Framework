@@ -9,13 +9,18 @@
 
 | Batch | Status | Dynamic profile / stable exit | Next / remaining |
 | --- | --- | --- | --- |
-| B1 | STATIC_PASS / VALIDATION_PENDING | `tsan` NOT_RUN；IO owner、turn/ticket 线性化、无 pending residue | T001/T002 静态门已过；下一步 fresh C++ build、两个命名 selector，再运行独立 TSan profile |
+| B1 | DYNAMIC_PASS / CLOSED_FOR_VALIDATION | `tsan` PASS；IO owner、turn/ticket 线性化、无 pending residue | T001/T002 已完成普通 C++ selector、独立 TSan 各两次重复；进入 B2/T003 |
 | B2 | NOT_STARTED | `asan-ubsan` planned；durable handle/journal 与 residue=0 | T003 durable commit 与终态 |
 | B3 | NOT_STARTED | `asan-ubsan` planned；原子 export/loader 生命周期 | T004 安全 checkpoint 导出 |
 | B4 | NOT_STARTED | async caller 才运行 `tsan`；其余 `none` with reason | T005 当前 caller/mode 收敛 |
 | B5 | NOT_STARTED | inherited row profiles；文档对账 `none` with reason | T006 矩阵/缺口修复 → fresh convergence audit `PASS` → T007 正式本地资格 → T008 交付 |
 
 ## Current Checkpoint
+
+2026-09-11 **B1-TSAN / DYNAMIC_PASS**：B1 普通 `/usr/bin/g++` 构建完成，三个命名 C++ selector
+通过；独立 `/usr/bin/clang++` TSan 构建完成，三个 selector 各重复两次，均 exit code 0 且无
+ThreadSanitizer 报告。原始输出见 [B1 evidence](evidence/b1-request-correctness-20260911.md)；
+TSan 仅覆盖 B1 登记的不变量，不提升后续 durable outcome、checkpoint、caller 或最终 qualification。
 
 2026-09-11 **DYNAMIC-GATE / DOCUMENTATION_UPDATED**：共享 `speckit-code-design`、Spec Kit
 模板及 Spec184 已统一登记 `Risk class`、`Dynamic profile` 和 `Dynamic invariants`。
@@ -27,9 +32,8 @@ Mode active health 已通过；下一步继续 B1 普通 C++ selector 后再运�
 区域内未知目标的多视角联合辨认，4页构建/渲染通过；
 [证据](../../docs/NDNSF-UAV/slides/UPDATES_UAV-review.md)。不推进 B1–B5；原生任务状态保持。
 
-2026-09-11 **B1-STATIC / VALIDATION_PENDING**：T001/T002 已完成逐任务只读静态审查和 C++ 测试接线；
-动态 profile 为 `tsan`，不在逐任务静态门运行，当前为 `NOT_RUN`，故仍为0个任务完成。生产差异、
-审查边界和动态不变量记录在 [B1 evidence](evidence/b1-request-correctness-20260911.md)；下一步按构建预检执行 B1 统一定向 C++ build/test，再进入独立 TSan 输出树。
+2026-09-11 **B1-STATIC / CLOSED**：T001/T002 已完成逐任务只读静态审查、普通 C++ 定向测试和
+独立 TSan 动态验证；生产差异、审查边界和动态不变量记录在 [B1 evidence](evidence/b1-request-correctness-20260911.md)。
 
 2026-09-11 **D-UAV-TRIM / CLOSED_FOR_VALIDATION (documentation only)**：按用户要求删除
 UAV update PDF 原第4/5页，现4页；双遍构建及全页渲染通过，两份导出同步。
@@ -48,8 +52,8 @@ Spec182 的14个 OPEN 父任务和 R12-A–E 全部承接；未搬运历史长�
 
 ## Phase 1: Request Correctness
 
-- [ ] T001 [US1] **Authority IO Dispatch**. FR-001；修复 F-01，在 `NativeAuthenticatedGrantClient::coreIssue` 将 `ServiceUser::RequestServiceTargeted` 封送到 Core `postToIo`，处理 dispatch 前取消、空 request ID、异常、timeout 与晚回调；在 `tests/integration-tests/di-native-requester-grant.t.cpp` 的 `Spec184AuthorityIoOwnership` 中验证线程 owner、真实 `ServiceUser` 状态和 bounded cleanup。Risk class: `concurrency/lifetime`; Dynamic profile: `tsan`; invariants: IO owner、pending-call balance、late callback no-op。Target: `integration-tests`（已由 `tests/wscript` 注册 TU）。Dependencies: documentation gate and migration baseline。
-- [ ] T002 [US1] **Turn Publication Synchronization**. FR-002；修复 F-02，核对 `NativeInferenceClient` turn/attempt mutable-state、publication linearization 和 ticket 清理；在 `tests/unit-tests/di-native-client.t.cpp` 的 `Spec184TurnPublicationRace` 中覆盖 cancel/deadline/close/replacement。Risk class: `concurrency`; Dynamic profile: `tsan`; invariants: ticket publication/abort linearization、stale-token rejection、terminal callback fencing。Target: `unit-tests`（unit glob 注册）。与 T001 组成 B1，逐任务静态门后统一运行交错用例。Dependencies: T001 static gate。
+- [x] T001 [US1] **Authority IO Dispatch**. FR-001；修复 F-01，在 `NativeAuthenticatedGrantClient::coreIssue` 将 `ServiceUser::RequestServiceTargeted` 封送到 Core `postToIo`，处理 dispatch 前取消、空 request ID、异常、timeout 与晚回调；在 `tests/integration-tests/di-native-requester-grant.t.cpp` 的 `Spec184AuthorityIoOwnership` 中验证线程 owner、真实 `ServiceUser` 状态和 bounded cleanup。Risk class: `concurrency/lifetime`; Dynamic profile: `tsan`; invariants: IO owner、pending-call balance、late callback no-op。Target: `integration-tests`（已由 `tests/wscript` 注册 TU）。Dependencies: documentation gate and migration baseline。Evidence: [B1 evidence](evidence/b1-request-correctness-20260911.md)。
+- [x] T002 [US1] **Turn Publication Synchronization**. FR-002；修复 F-02，核对 `NativeInferenceClient` turn/attempt mutable-state、publication linearization 和 ticket 清理；在 `tests/unit-tests/di-native-client.t.cpp` 的 `Spec184TurnPublicationRace` 中覆盖 cancel/deadline/close/replacement。Risk class: `concurrency`; Dynamic profile: `tsan`; invariants: ticket publication/abort linearization、stale-token rejection、terminal callback fencing。Target: `unit-tests`（unit glob 注册）。与 T001 组成 B1，逐任务静态门后统一运行交错用例。Dependencies: T001 static gate。Evidence: [B1 evidence](evidence/b1-request-correctness-20260911.md)。
 - [ ] T003 [US1] **Durable Outcome Linearization**. FR-003；修复 F-03，client/coordinator publish 与 handle outcome 一致；在 `tests/integration-tests/ndnsf-di-core-flow.t.cpp` 的 `Spec184DurableOutcome` 中覆盖 publish 后阻塞 FINALIZE、取消和超时。Risk class: `lifetime/linearization`; Dynamic profile: `asan-ubsan`; invariants: journal/handle lifetime、publish-after-cancel fencing、residue=0。Target: `integration-tests`。Dependencies: B1 behavior exit。
 
 ## Phase 2: Export and Callers

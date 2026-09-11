@@ -1,8 +1,8 @@
 # B1 Request Correctness Evidence
 
-**Status**: PARTIAL / static gates complete, C++ batch validation pending
+**Status**: PARTIAL / B1 focused validation and dynamic profile pass; formal qualification pending
 **Spec**: 184-native-di-closure
-**Checkpoint**: `0947fc1b` plus the uncommitted B1 working diff
+**Checkpoint**: `0947fc1b` plus the current B1 working diff (source/test changes remain uncommitted)
 
 ## Scope and batch decision
 
@@ -16,8 +16,9 @@ B1 保持两个相互依赖但可分别审查的任务：T001 负责 authority r
 - Invariants: `ServiceUser` pending-call mutation remains on the Face IO owner；turn/ticket
   publication and abort have one linearization；terminal/abandoned operations ignore late callbacks；
   pending-call and conversation-ticket residue returns to zero。
-- Current result: `NOT_RUN`。静态审查和普通 C++ selector 结果不能升级为 `DYNAMIC_PASS`；TSan
-  必须在 B1 普通定向行为测试完成后运行并保存报告、重复次数、exit code 和实际 binary digest。
+- Current result: `DYNAMIC_PASS` for the registered B1 invariants。静态审查和普通 C++ selector
+  已先完成；独立 TSan build 下三个命名 selector 各重复两次，均为 exit code 0 且无
+  `ThreadSanitizer` 报告。该结果是定向动态验证，不是最终 qualification。
 
 ## T001 static gate
 
@@ -59,9 +60,44 @@ compile reached the same test TU and found a constness mismatch at
 `ResponseMessage::setPayload`; that third test-only boundary is in
 `build-retry4.log`.
 
+The repaired normal build completed all 309 actions with `/usr/bin/g++` in
+19.39 seconds (`MAXRSS=1064316KB`); the final incremental rebuild after the
+test fixture correction completed in 18.25 seconds (`MAXRSS=1064448KB`). The
+focused C++ selectors passed from the resulting binaries:
+
+| Selector | Result | Raw output |
+| --- | --- | --- |
+| `Spec182GrantClientFlow/Spec184AuthorityIoOwnership` | PASS | `.codex-tmp/spec184-b1/normal/authority-io.log` |
+| `Spec182GrantClientFlow/Spec184AuthorityDispatchCancellationAndException` | PASS | `.codex-tmp/spec184-b1/normal/authority-cancel.log` |
+| `Spec182ClientState/Spec184TurnPublicationRace` | PASS | `.codex-tmp/spec184-b1/normal/turn-race.log` |
+
+The first GCC TSan configure was intentionally rejected because the installed
+GCC9 toolchain has no `libtsan_preinit.o` (`tsan/configure.log`). A separate
+sanitizer tree therefore used the system `/usr/bin/clang++` closure resolved by
+the repository toolchain check with `--toolchain-root=/usr`; this is an
+alternate dynamic-analysis toolchain, not the normal product build. The
+independent TSan build completed all 309 actions in 7:03.50 with
+`MAXRSS=1317060KB` (`tsan/build.log`). Its binary digests are:
+
+| Binary | SHA-256 |
+| --- | --- |
+| `build-spec184-b1-tsan-clang/integration-tests` | `bac4584ebe3b30798958d961f3fdeeb49532a3fabbdd30d29f51c13145b325c3` |
+| `build-spec184-b1-tsan-clang/unit-tests` | `faac81e3083c0db1dddbfee93825f9790c9d3604a61825c367e117e52e035817` |
+
+TSan raw outputs are under `.codex-tmp/spec184-b1/tsan/runs/`. The initial
+selector logs plus `authority-io-repeat{1,2}.log`,
+`authority-cancel-repeat{1,2}.log`, and `turn-race-repeat{1,2}.log` each end
+with `*** No errors detected`; all six repeats returned exit code 0. The
+profile covered IO-owner mutation, turn/ticket publication and abort
+linearization, late-callback fencing, and pending/turn residue checks exposed
+by the tests. It does not cover the later durable-outcome, checkpoint-export,
+caller-migration, MiniNDN, Qwen, or no-Python obligations.
+
 ## Miss and closure record
 
 - Static lane: direct `RequestServiceTargeted` is now only inside the Core IO closure; all changed turn/attempt fields have lock-protected snapshots or publication checks.
-- Compile/link lane: Waf configuration was repaired; the first compile reached the new test TU and stopped on test-only type/overload errors; retry pending.
-- Runtime lane: pending the named unit/integration selectors, including bounded pending-call cleanup.
+- Compile/link lane: normal system-toolchain build and independent Clang/TSan build both passed; the
+  failed test-only compile boundaries remain preserved above.
+- Runtime lane: all three named C++ selectors passed normally and under TSan, with six bounded repeats
+  and no sanitizer report.
 - Unobserved lane: no MiniNDN/Qwen/no-Python qualification is authorized before B4/B5.

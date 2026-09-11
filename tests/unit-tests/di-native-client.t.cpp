@@ -1,4 +1,5 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestEnvelope.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPlanner.hpp"
@@ -758,6 +759,95 @@ BOOST_AUTO_TEST_CASE(CoreIoRejectsBlockingResultButAllowsPollAndCancel)
   face.getIoContext().poll();
   BOOST_CHECK(checked);
   BOOST_CHECK(handle.status() == NativeRequestStatus::Cancelled);
+}
+
+BOOST_AUTO_TEST_CASE(Spec184TurnPublicationRace)
+{
+  NativeConversationConfig config;
+  config.authenticationKeys = {std::vector<std::uint8_t>(32, 0x5a)};
+  config.requesterIdentity = "/client-test/user";
+  config.serviceName = "/client-test/conversation";
+  config.securityDomainDigest = nativePlanningDigest("spec184-security");
+  config.nowMs = [] { return std::uint64_t{2'000'000'000'001ULL}; };
+  NativeConversationCoordinator owner(config);
+
+  const auto makeContinuation = [&] (const std::string& id, bool mapped) {
+    NativeConversationContinuation continuation;
+    continuation.conversationId = id;
+    continuation.serviceName = config.serviceName;
+    continuation.requestContractDigest = nativePlanningDigest("spec184-request");
+    continuation.retentionDeadlineMs = 2'000'000'060'000ULL;
+    continuation.generationId = std::string(32, '1');
+    continuation.canonicalTokenIds = {1, 2};
+    if (mapped) {
+      continuation.planRoleMapDigest = nativePlanningDigest(
+        nativeCanonicalJson(NativeJson::array({NativeJson::array({"/role/A", "/provider/A"})})));
+      continuation.expectedRoles = {"/role/A"};
+    }
+    return continuation;
+  };
+  const NativeDiError cancelled("CANCELLED", "conversation", "test", "cancel");
+
+  // The planner-side publication and terminal cleanup contend on one ticket.
+  // Whichever operation wins, the other must observe the same ticket as stale;
+  // no half-bound turn may remain available for token acceptance.
+  const auto initial = owner.beginTurn(makeContinuation(
+    "spec184-initial-race", false), "/request/spec184-initial");
+  std::promise<void> releaseInitial;
+  auto initialGate = releaseInitial.get_future().share();
+  std::atomic<bool> initialBound{false};
+  std::atomic<bool> initialBindFailed{false};
+  auto initialBinder = std::async(std::launch::async, [&] {
+    initialGate.wait();
+    try {
+      (void) owner.bindInitialPlanRoleMap(initial,
+        {{"/role/A", "/provider/A"}});
+      initialBound.store(true);
+    }
+    catch (const std::exception&) {
+      initialBindFailed.store(true);
+    }
+  });
+  auto initialAborter = std::async(std::launch::async, [&] {
+    initialGate.wait();
+    owner.abortTurn(initial, cancelled);
+  });
+  releaseInitial.set_value();
+  initialBinder.get();
+  initialAborter.get();
+  BOOST_CHECK_NO_THROW(owner.abortTurn(initial, cancelled));
+  BOOST_CHECK_THROW(owner.acceptTokenPrefix(initial, {3}), std::runtime_error);
+
+  const auto replacementParent = owner.beginTurn(makeContinuation(
+    "spec184-replacement-race", true), "/request/spec184-replacement");
+  const auto replacement = owner.replaceAttempt(
+    replacementParent, "/request/spec184-replacement/attempt-2");
+  std::promise<void> releaseReplacement;
+  auto replacementGate = releaseReplacement.get_future().share();
+  std::atomic<bool> replacementBound{false};
+  std::atomic<bool> replacementBindFailed{false};
+  auto replacementBinder = std::async(std::launch::async, [&] {
+    replacementGate.wait();
+    try {
+      (void) owner.bindAttemptPlanRoleMap(replacement,
+        {{"/role/A", "/provider/replacement"}});
+      replacementBound.store(true);
+    }
+    catch (const std::exception&) {
+      replacementBindFailed.store(true);
+    }
+  });
+  auto replacementAborter = std::async(std::launch::async, [&] {
+    replacementGate.wait();
+    owner.abortTurn(replacement, cancelled);
+  });
+  releaseReplacement.set_value();
+  replacementBinder.get();
+  replacementAborter.get();
+  BOOST_CHECK_NO_THROW(owner.abortTurn(replacement, cancelled));
+  BOOST_CHECK_THROW(owner.acceptTokenPrefix(replacement, {4}), std::runtime_error);
+  BOOST_CHECK(initialBound.load() || initialBindFailed.load());
+  BOOST_CHECK(replacementBound.load() || replacementBindFailed.load());
 }
 
 BOOST_AUTO_TEST_CASE(HandleRetainsCoreOwnerAfterClientClose)

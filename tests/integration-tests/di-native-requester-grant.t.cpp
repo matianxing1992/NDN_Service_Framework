@@ -27,10 +27,13 @@
 #include <openssl/sha.h>
 
 #include <chrono>
+#include <atomic>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
+#include <thread>
 
 namespace ndnsf::di::tests {
 namespace {
@@ -231,6 +234,162 @@ BOOST_AUTO_TEST_CASE(ConcreteIssuerUsesCoreWorkerPublicationAndProviderUnwrap)
     request.protectionEpoch, nowMs(), config.authorityIdentity, grant.grantDigest);
   BOOST_REQUIRE_MESSAGE(opened.verified, opened.reason);
   BOOST_CHECK(opened.contentKey == std::vector<std::uint8_t>(32, 42));
+}
+
+BOOST_AUTO_TEST_CASE(Spec184AuthorityIoOwnership)
+{
+  NdnsfIntegrationEnvironment environment;
+  environment.bootstrap();
+  environment.user().setUseTokens(false);
+  environment.provider().setUseTokens(false);
+
+  const auto authorityIdentity = environment.provider().getName();
+  const auto authorityService = environment.profile().serviceName;
+  const NativeKeyGrant expectedGrant{
+    "/grant/spec184/1", "sha256:spec184-grant", "/provider/spec184",
+    "{\"grant\":1}", nowMs() + 60'000};
+  std::mutex captureMutex;
+  std::optional<NativeGrantAuthorityRequest> receivedRequest;
+  environment.provider().addTargetedService(
+    authorityService,
+    [&] (const ndn::Name&, const ndn::Name&, const ndn::Name&,
+         const ndn::Name&, const ndn_service_framework::RequestMessage& request) {
+      const auto payload = request.getPayload();
+      const std::string wire(reinterpret_cast<const char*>(payload.data()), payload.size());
+      NativeGrantAuthorityRequest decoded;
+      try {
+        decoded = nativeGrantAuthorityRequestFromJson(wire);
+      }
+      catch (...) {
+        throw std::runtime_error("Spec184 authority request was not canonical");
+      }
+      {
+        std::lock_guard<std::mutex> lock(captureMutex);
+        receivedRequest = decoded;
+      }
+      ndn_service_framework::ResponseMessage response;
+      response.setStatus(true);
+      const auto responseWire = nativeKeyGrantJson(expectedGrant);
+      ndn::Buffer responsePayload(
+        reinterpret_cast<const uint8_t*>(responseWire.data()), responseWire.size());
+      response.setPayload(responsePayload, responsePayload.size());
+      return response;
+    });
+  // Register the targeted handler before init() installs the provider's
+  // Interest filters; production ingress snapshots the service table at init.
+  environment.enableProductionIngressForTest();
+
+  std::mutex sendMutex;
+  std::thread::id sendThread;
+  std::atomic<bool> authorityInterestSeen{false};
+  auto interestObserver = environment.userFace().onSendInterest.connect(
+    [&] (const ndn::Interest&) {
+      if (authorityInterestSeen.exchange(true)) return;
+      std::lock_guard<std::mutex> lock(sendMutex);
+      sendThread = std::this_thread::get_id();
+      BOOST_CHECK(environment.user().isOnIoThread());
+    });
+
+  auto user = std::shared_ptr<ndn_service_framework::ServiceUser>(
+    &environment.user(), [] (ndn_service_framework::ServiceUser*) {});
+  auto issue = NativeAuthenticatedGrantClient::issueThroughCore(
+    user, authorityIdentity.toUri(), authorityService.toUri());
+  NativeSignedGrantRequest request;
+  request.requesterIdentity = environment.profile().userIdentity.toUri();
+  request.providerIdentity = "/provider/spec184";
+  request.requestId = "/request/spec184/1";
+  request.attempt = 1;
+  request.planCoreDigest = digest("spec184-plan");
+  request.grantViewDigest = digest("spec184-view");
+  request.modelManifestDigest = digest("spec184-model");
+  request.protectionEpoch = "spec184-epoch";
+  request.issuedAtMs = nowMs();
+  NativeGrantControl control{std::chrono::system_clock::now() + std::chrono::seconds(5), {}};
+  std::thread::id workerThread;
+  auto result = std::async(std::launch::async, [&] {
+    workerThread = std::this_thread::get_id();
+    return issue(request, "{\"manifest\":1}", nowMs() + 60'000, control);
+  });
+
+  environment.pumpUntil([&] {
+    std::lock_guard<std::mutex> lock(captureMutex);
+    return receivedRequest.has_value() &&
+           result.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready;
+  });
+  const auto granted = result.get();
+  BOOST_CHECK_EQUAL(granted.grantName, expectedGrant.grantName);
+  BOOST_CHECK_EQUAL(granted.grantDigest, expectedGrant.grantDigest);
+  BOOST_CHECK(authorityInterestSeen.load());
+  {
+    std::lock_guard<std::mutex> lock(captureMutex);
+    BOOST_REQUIRE(receivedRequest.has_value());
+    BOOST_CHECK_EQUAL(receivedRequest->publishedManifestJson, "{\"manifest\":1}");
+    BOOST_CHECK_EQUAL(receivedRequest->request.requestId, request.requestId);
+  }
+  {
+    std::lock_guard<std::mutex> lock(sendMutex);
+    BOOST_CHECK_NE(sendThread, workerThread);
+  }
+  BOOST_CHECK_EQUAL(environment.user().getPendingCallCount(), 0);
+}
+
+BOOST_AUTO_TEST_CASE(Spec184AuthorityDispatchCancellationAndException)
+{
+  NdnsfIntegrationEnvironment environment;
+  environment.bootstrap();
+  environment.enableProductionIngressForTest();
+  environment.user().setUseTokens(false);
+
+  auto user = std::shared_ptr<ndn_service_framework::ServiceUser>(
+    &environment.user(), [] (ndn_service_framework::ServiceUser*) {});
+  NativeSignedGrantRequest request;
+  request.requesterIdentity = environment.profile().userIdentity.toUri();
+  request.providerIdentity = "/provider/spec184";
+  request.requestId = "/request/spec184/dispatch";
+  request.attempt = 1;
+  request.planCoreDigest = digest("spec184-plan");
+  request.grantViewDigest = digest("spec184-view");
+  request.modelManifestDigest = digest("spec184-model");
+  request.protectionEpoch = "spec184-epoch";
+  request.issuedAtMs = nowMs();
+
+  auto cancelled = std::make_shared<std::atomic<bool>>(true);
+  auto issue = NativeAuthenticatedGrantClient::issueThroughCore(
+    user, environment.provider().getName().toUri(),
+    environment.profile().serviceName.toUri());
+  auto cancelledResult = std::async(std::launch::async, [&] {
+    return issue(request, "{\"manifest\":1}", nowMs() + 60'000,
+                 NativeGrantControl{std::chrono::system_clock::now() + std::chrono::seconds(5), cancelled});
+  });
+  BOOST_CHECK_EXCEPTION(cancelledResult.get(), std::runtime_error,
+    [] (const std::runtime_error& error) {
+      return std::string(error.what()).find("cancelled") != std::string::npos;
+    });
+  BOOST_CHECK_EQUAL(environment.user().getPendingCallCount(), 0);
+
+  // An invalid authority identity is rejected by RequestServiceTargeted on
+  // the Core IO owner (the local mock returns an empty request ID). The worker
+  // must observe that rejection through Pending rather than waiting until its
+  // outer deadline.
+  auto malformedIssue = NativeAuthenticatedGrantClient::issueThroughCore(
+    user, "/bad/%ZZ", environment.profile().serviceName.toUri());
+  NativeGrantControl control{std::chrono::system_clock::now() + std::chrono::seconds(5), {}};
+  auto malformedResult = std::async(std::launch::async, [&] {
+    return malformedIssue(request, "{\"manifest\":1}", nowMs() + 60'000, control);
+  });
+  environment.pumpUntil([&] {
+    return malformedResult.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready;
+  });
+  bool malformedExceptionObserved = false;
+  try {
+    static_cast<void>(malformedResult.get());
+  }
+  catch (const std::exception& error) {
+    malformedExceptionObserved = true;
+    BOOST_TEST_MESSAGE("malformed authority identity propagated: " << error.what());
+  }
+  BOOST_CHECK(malformedExceptionObserved);
+  BOOST_CHECK_EQUAL(environment.user().getPendingCallCount(), 0);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
