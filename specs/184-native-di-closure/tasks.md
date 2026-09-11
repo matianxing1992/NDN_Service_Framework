@@ -257,6 +257,13 @@ integration marker 与无关 extension-build log 仍不属于 candidate producti
 I02–I08 isolation counterexample/collector completeness、真实模型、Python retirement 和
 external SIF/Tiger 仍未关闭，T007 继续 `IN_PROGRESS`/`PARTIAL`。
 
+2026-09-11 **T007-NO-PYTHON-ELF / PASS_FOR_ROW**：对当前
+`build-spec184-b5-candidate` 的六个业务二进制独立执行 `readelf -d`、`strings` 和
+`/usr/bin/ldd -r`。每个文件均无 `libpython`/`python3` 的 `DT_NEEDED` 或字符串身份，
+`ldd -r` exit `0` 且无 unresolved/missing symbol；摘要及哈希见 [T007 process qualification
+refresh](evidence/t007-process-qualification-20260911.md)。这只关闭候选 ELF 静态闭包行，
+不替代运行时 I02–I08 counterexample/collector、真实模型或外部 owner 资格。
+
 ## Phase 1: Request Correctness
 
 - [x] T001 [US1] **Authority IO Dispatch**. FR-001；修复 F-01，在 `NativeAuthenticatedGrantClient::coreIssue` 将 `ServiceUser::RequestServiceTargeted` 封送到 Core `postToIo`，处理 dispatch 前取消、空 request ID、异常、timeout 与晚回调；在 `tests/integration-tests/di-native-requester-grant.t.cpp` 的 `Spec184AuthorityIoOwnership` 中验证线程 owner、真实 `ServiceUser` 状态和 bounded cleanup。Risk class: `concurrency/lifetime`; Dynamic profile: `tsan`; invariants: IO owner、pending-call balance、late callback no-op。Target: `integration-tests`（已由 `tests/wscript` 注册 TU）。Dependencies: documentation gate and migration baseline。Evidence: [B1 evidence](evidence/b1-request-correctness-20260911.md)。

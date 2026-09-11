@@ -43,6 +43,12 @@ runtime string, and `ldd -r` reports no unresolved symbol:
 | `DI_NativeOnnxAssemblyWorker` | `e44bd0a31205d3106461d6d48884da70adb4e8acc8ef5fea8753573964aff283` |
 | `spec182-native-grant-requester-process` | `02c0e24da191fbb4fa70120862966c895aaa30339bddecd94e752b690b0af853` |
 
+An independent candidate-directory ELF closure check covered the six business binaries above.
+`readelf -d` showed no `libpython`/`python3` dependency, `strings` found no forbidden runtime
+identity, and `/usr/bin/ldd -r` returned `0` with no unresolved or missing symbol for every binary.
+The summary is `.codex-tmp/spec184-no-python-closure-20260911/summary.json`, SHA-256
+`36d42fc245f3fd982fad4531cf05eb21e776f6760dd1f46ac59b46ca8f4ed68c`, with overall status `PASS`.
+
 ## C++ business process results
 
 Each result below is a fresh run against the current candidate. The process scripts are harnesses;
