@@ -1,15 +1,16 @@
 # Implementation Plan: Native DI Closure
 
 **Branch**: Experimental | **Date**: 2026-09-11 | **Status**: PLANNED
-**Baseline**: `94c1e644`；产品审计源码 `72b9e388cc3920b0bdcd4c36d302d63c71e7f15a`。
-**Authority**: [spec](spec.md)、[tasks](tasks.md)、[transfer](contracts/transfer-matrix.md)。
+**Migration baseline**: `6f603491`；产品审计源码 `72b9e388cc3920b0bdcd4c36d302d63c71e7f15a`。
+**Authority**: [spec](spec.md)、[tasks](tasks.md)、[transfer](contracts/transfer-matrix.md)、
+[promotion candidate](contracts/promotion-candidate.md)、[qualification matrix](contracts/qualification-matrix.md)。
 
 ## Summary
 
-本 Spec 承接182未完成工作，不复制其庞大时间线。唯一 next dispatch 为 B1/T001。
+本 Spec184 承接182未完成工作，不复制其庞大时间线。唯一 next dispatch 为 B1/T001。
 具体缺陷的源码位置、触发条件与反例沿用冻结的
 [request-chain audit](../182-native-di-python-bindings/evidence/request-chain-static-audit-20260911.md)。
-旧 R12 批次映射为183 B1–B5；未完成的组件验收同样进入 B5，并非只搬四个 finding。
+旧 R12 批次映射为184 B1–B5；未完成的组件验收同样进入 B5，并非只搬四个 finding。
 
 ## Technical Context
 
@@ -22,6 +23,9 @@
 
 中文叙述、英文标题/ID/状态；独立 authority、不信任 caller plan、C++ owner 和证据分级继承。
 已完成实现不重复编写，未完成资格不因拆分关闭；当前/目标 Design 独立维护。
+Promotion candidate、change-plane invalidation 和 design-code convergence 规则见
+[promotion candidate contract](contracts/promotion-candidate.md)，任何 expensive validation
+都必须先满足这些规则。
 
 ## Execution Order
 
@@ -31,14 +35,15 @@
 | B2 Durable outcome | T003 | B1 | publish 前后取消、deadline、close 与持久记录/handle 一致 |
 | B3 Secure export | T004 | B2；技术上独立，默认顺序执行 | 0600 原子导出、失败保留、loader round-trip |
 | B4 Caller convergence | T005 | B1–B3 | 当前 caller/mode 清单闭合，支持模式默认 native |
-| B5 Qualification and handoff | T006/T007/T008 | B4；矩阵盘点可提前只读进行 | 继承全部验收义务逐项有结果；本地资格通过，外部边界明确 |
+| B5 Qualification and handoff | T006/T007/T008 | B4；矩阵盘点可提前只读进行 | qualification matrix 完整、fresh convergence audit `PASS` 后才可开始 T007；本地资格通过，外部边界明确 |
 
 ## Code Design and Review
 
 B1：authority transport 仅在 worker 等待，将 Core 提交封送到 postToIo；Operation 字段明确
 线程 owner/mutex，锁内快照、锁外 bind、锁内检查 Pending/attempt 后发布，失败清理未发布 ticket。
 B2：确定 durable publish 与成功结果的同一线性化决定；FINALIZE best-effort 不撤回 committed parent。
-B3：受限临时文件、检查写入/关闭、既有持久性要求与原子替换；明确 symlink 策略。
+B3：受限临时文件、检查写入/关闭、既有持久性要求与原子替换；symlink 不跟随，
+同目录临时文件完成 `0600`、write、`fsync`、close、rename 和目录 `fsync` 后才可报告成功。
 B4：先生成真实 caller/mode 清单再按共享后端分组，不能机械按历史16调用点逐点构建。
 B5：先盘点原 FR/CD/INV/PO/I、组件与 harness 未关闭项，再补缺失实现/fixture，静态合成门后才正式验收。
 
@@ -48,6 +53,17 @@ B5：先盘点原 FR/CD/INV/PO/I、组件与 harness 未关闭项，再补缺失
 不得在 T001 后因一个小修改立即重跑全套；也不得把 T007 当成所有前置定向 C++ 验证的唯一时点。
 原生断言、fixture/driver、oracle 为 C++；Face/IO/scheduler/callback owner 活到任务 drain/join。
 
+### B1 Allocation Contract
+
+| Task | Production symbols / source | C++ source and selector | Target / closure |
+| --- | --- | --- | --- |
+| T001 | `NativeAuthenticatedGrantClient::issueThroughCore` / `coreIssue` → `ServiceUser::RequestServiceTargeted` and `postToIo` | `tests/integration-tests/di-native-requester-grant.t.cpp` / `Spec184AuthorityIoOwnership` (PLANNED) | `integration-tests`; source already listed in `tests/wscript`, selector and runtime evidence still required |
+| T002 | `NativeInferenceClient` turn/attempt binding, publication and ticket cleanup | `tests/unit-tests/di-native-client.t.cpp` / `Spec184TurnPublicationRace` (PLANNED) | `unit-tests`; unit glob registration, exact selector and interleaving evidence still required |
+
+T001 and T002 share the B1 request-correctness outcome but have different targets and fixtures;
+each task gets its own static gate before the B1 combination review. If a change adds a different
+state machine, owner, target or hard prerequisite, it leaves B1 and receives a new Batch ID.
+
 ## Coverage and Evidence Contract
 
 每批一个简短 `evidence/bN-result.md`，状态唯一在 tasks.md。五 lane 必须填实际符号/命令或 gap：
@@ -56,6 +72,20 @@ B5：先盘点原 FR/CD/INV/PO/I、组件与 harness 未关闭项，再补缺失
 新链接边界需符号定义 TU/target 与 nm/readelf 对照。记录 review trace、Batch growth decision、
 Closure decision 和 static/compile-link/runtime-test/unobserved miss；初始均未执行。
 审查技巧沿用182审计后 R12 的线程读写表、线性化点、失败清理、wire 权威溯源和 production fixture 检查。
+
+## Convergence Gate Before Qualification
+
+T006 must produce a complete [qualification matrix](contracts/qualification-matrix.md), freeze
+the candidate described in [promotion-candidate.md](contracts/promotion-candidate.md), and record
+all unresolved rows as `OPEN`/`PARTIAL`. It then runs a fresh code-aware design-to-code convergence
+audit recorded at `evidence/convergence-b5.md`. The audit must inspect the accepted spec/plan,
+contracts, real C++ entry points and callers, target/source closure, effective configuration,
+security boundaries, cleanup and evidence paths, and must report `PASS` for this candidate.
+
+`evidence/convergence-b5.md` is a hard dependency of T007. Any behavior-affecting source, header,
+dependency, configuration, harness or contract change after that record invalidates it and requires
+the earliest gate in the promotion-candidate invalidation matrix. A focused regression may run while
+the verdict is `BLOCK`; it remains development evidence and cannot authorize T007.
 
 ## Document Size Control
 

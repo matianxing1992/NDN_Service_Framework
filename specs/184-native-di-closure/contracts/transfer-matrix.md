@@ -11,7 +11,7 @@ TRANSFERRED 是执行归属，不是行为 PASS。182 原 checkbox 保持原值�
 
 ## Open Parent Obligations
 
-| Source | Remaining obligation | Spec183 owner |
+| Source | Remaining obligation | Spec184 owner |
 | --- | --- | --- |
 | 182:T004 | canonical seal/非法投影与 Core/Provider 真实接收资格 | T006/T007 |
 | 182:T005 | grant IO 缺陷 F-01、签发/验证/消费完整资格 | T001/T006/T007 |
@@ -52,5 +52,5 @@ T006 负责将每个未关闭 selector/模型/负例列入新矩阵；已有实�
 当前可复用正例和首失败边界见
 [cross-process evidence](../../182-native-di-python-bindings/evidence/r11-b10-g13-current-cross-process-chain-20260910.md)
 与 [failure index](../../../docs/failure-log.md)。原始日志仍在旧目录，历史引用不改名搬走。
-Spec183 新执行证据写自己的 evidence/ 与新 run-id；不得覆盖182原始记录。
+Spec184 新执行证据写自己的 evidence/ 与新 run-id；不得覆盖182原始记录。
 SIF/Tiger 属实验机工作，保持外部资格边界；本地 T007 不能被一次 tiny process PASS 替代。

@@ -1,6 +1,6 @@
 # Native-First Execution Order
 
-> **TRANSFERRED TO SPEC183**：当前调度见 [183 plan](../../183-native-di-closure/plan.md)。
+> **TRANSFERRED TO SPEC184**：当前调度见 [184 plan](../../184-native-di-closure/plan.md)。
 > 下述 N1–N5 架构/验证原则继续作为继承契约，182/R12 调度全部为历史。
 
 > **Dispatch superseded 2026-09-11**：当前剩余调度以

@@ -1,6 +1,6 @@
 # Spec182 Design Audit
 
-> **TRANSFERRED**：审计 finding 修复与剩余资格归 [Spec183 tasks](../183-native-di-closure/tasks.md)；
+> **TRANSFERRED**：审计 finding 修复与剩余资格归 [Spec184 tasks](../184-native-di-closure/tasks.md)；
 > 下面保留审计时状态和源码位置，不再从182派发。
 
 ## Current Request Chain Audit 2026-09-11

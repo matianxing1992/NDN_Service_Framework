@@ -6,22 +6,21 @@
 
 ## Execution Progress
 
-**2026-09-11 TRANSFERRED TO SPEC183**：本文件停止派发，剩余执行唯一入口为
-[183 tasks](../183-native-di-closure/tasks.md)。14个 OPEN 父任务和 R12-A–E 全部映射到
-[transfer matrix](../183-native-di-closure/contracts/transfer-matrix.md)；原3个完成 checkbox 和
+**2026-09-11 TRANSFERRED TO SPEC184**：本文件停止派发，剩余执行唯一入口为
+[184 tasks](../184-native-di-closure/tasks.md)。14个 OPEN 父任务和 R12-A–E 全部映射到
+[transfer matrix](../184-native-di-closure/contracts/transfer-matrix.md)；原3个完成 checkbox 和
 全部历史证据保留。TRANSFERRED 不表示完成资格。以下包括 R12 registry 在内均为迁移前快照，
-其中“当前/唯一/下一步”措辞不再生效；后续只在183推进状态。
+其中“当前/唯一/下一步”措辞不再生效；后续只在184推进状态。
 
 2026-09-11 **D-R12-AUDIT / DOCUMENTED**：完成当前生产请求链静态审计，确认 F-01–F-04
 四项源码缺陷及 G-01/G-02 两类闭合缺口；没有修改产品代码，没有运行产品测试，父任务勾选不变。
 完整源码定位、触发交错、已有证据边界与修复验收见
 [request-chain audit](evidence/request-chain-static-audit-20260911.md)。
 
-**当前唯一执行计划**为 [R12 registry](contracts/audit-driven-execution.md#current-dispatch-registry)：
-R12-A 线程/取消 → R12-B durable outcome → R12-C 安全导出 → R12-D caller/mode → R12-E 资格。
-全部实现批次均为 NOT_STARTED；下一步 R12-A。用户明确旧计划很多已过时，要求新安排以本次
-审计为准；因此下面旧 next-dispatch、R11 open cards 和时间线均为历史，未完成内容通过新计划的
-Historical Work Mapping 承接，不再直接派发。已有 PASS 保留原范围，不清空、不升级。
+以下 R12 registry 仅是迁移前历史快照，不再作为执行入口。当前执行计划、状态和下一步
+统一维护于 [Spec184 tasks](../184-native-di-closure/tasks.md) 与其 contracts；R12-A–E、
+旧 next-dispatch、R11 open cards 和时间线均只用于历史追溯。已有 PASS 保留原范围，
+不清空、不升级；TRANSFERRED 不表示资格完成。
 每个小任务先 review-agent 只读静态门，同一逻辑批次全部审查通过后共享 C++ 构建/测试，
 再做 Python wrapper 检查；报告完成不是产品 static PASS。
 
@@ -464,8 +463,8 @@ P1–P4 是不同的生产入口、进程边界或 selector，不能为了少一
 
 ## Current Checkpoint
 
-**Current authority: Spec183**。本 Spec 仅保存移交时实现 PARTIAL / qualification INCOMPLETE；
-未完成义务见183迁移矩阵。下面 checkpoint 是移交前历史，不再调度。
+**Current authority: Spec184**。本 Spec 仅保存移交时实现 PARTIAL / qualification INCOMPLETE；
+未完成义务见184迁移矩阵。下面 checkpoint 是移交前历史，不再调度。
 
 2026-09-11 **D-R12-AUDIT / CLOSED_FOR_VALIDATION (documentation only)**：
 [完整报告](evidence/request-chain-static-audit-20260911.md) 已登记四项源码缺陷及两类闭合缺口，

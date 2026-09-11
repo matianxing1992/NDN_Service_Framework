@@ -1,6 +1,6 @@
 # Implementation Plan: Native NDNSF-DI with Optional Python Bindings
 
-> **TRANSFERRED 2026-09-11**：剩余工作移至 [Spec183 plan](../183-native-di-closure/plan.md)。
+> **TRANSFERRED 2026-09-11**：剩余工作移至 [Spec184 plan](../184-native-di-closure/plan.md)。
 > 本文及旧 R12 不再派发；实现/契约/证据仍保留历史，未完成资格未关闭。
 
 **Branch**: Experimental | **Revision**: 92 | **Date**: 2026-09-11

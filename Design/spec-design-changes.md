@@ -14,14 +14,14 @@
 
 ## 索引
 
-### 2026-09-11 — Spec183 Native DI Closure / Spec182 Transfer
+### 2026-09-11 — Spec184 Native DI Closure / Spec182 Transfer
 
-- **Status**: NO_DESIGN_CHANGE；183 implementation NOT_STARTED；182 TRANSFERRED / qualification INCOMPLETE。
-- **Before/after**: 将182剩余14个父任务、四项源码 finding 与两类闭合缺口迁入183，保留已完成实现和原始证据；
+- **Status**: NO_DESIGN_CHANGE；184 implementation NOT_STARTED；182 TRANSFERRED / qualification INCOMPLETE。
+- **Before/after**: 将182剩余14个父任务、四项源码 finding 与两类闭合缺口迁入184，保留已完成实现和原始证据；
   不改变 API/wire、架构目标或当前行为，不复制历史时间线。
-- **Baseline**: `94c1e644`；[183 spec](../specs/183-native-di-closure/spec.md)、
-  [transfer matrix](../specs/183-native-di-closure/contracts/transfer-matrix.md)、
-  [migration evidence](../specs/183-native-di-closure/evidence/migration-20260911.md)。
+- **Baseline**: `94c1e644`；[184 spec](../specs/184-native-di-closure/spec.md)、
+  [transfer matrix](../specs/184-native-di-closure/contracts/transfer-matrix.md)、
+  [migration evidence](../specs/184-native-di-closure/evidence/migration-20260911.md)。
 - **PDF boundary**: 仅文档治理/执行归属变化，双 PDF 与独立源码快照不重新生成；后续修复仍按 MANAGEMENT.md 同步。
 
 ### 2026-09-11 — Spec182 Request Chain Audit / R12 Replan
