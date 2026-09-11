@@ -32,7 +32,10 @@ REQUIRED_EVIDENCE = {
 FORBIDDEN_ENV_PREFIXES = ("PYTHON", "VIRTUAL_ENV", "CONDA_", "LD_PRELOAD", "LD_AUDIT")
 PROCESS_ROLES = frozenset({"requester", "provider", "authority", "nfd", "repo", "controller"})
 TRACE_EXEC = re.compile(r"(?:execve|execveat)\([^)]*\)\s*=\s*(-?\d+)")
+TRACE_EXEC_PATH = re.compile(r"(?:execve|execveat)\((?:[^,]+,\s*)?\"([^\"]+)\"")
+TRACE_EXEC_RESUMED = re.compile(r"<\.\.\. (?:execve|execveat) resumed>\)\s*=\s*(-?\d+)")
 TRACE_EXIT = re.compile(r"(?:exit_group|exit)\((-?\d+)\)")
+TRACE_TERMINAL = re.compile(r"\+\+\+ (?:(?:exited with )(-?\d+)|killed by ([A-Za-z0-9_]+))")
 TRACE_PID = re.compile(r"^\s*(?:\[pid\s+)?(\d+)(?:\]|\s)")
 TRACE_RESUMED = re.compile(r"<\.\.\. [^>]+ resumed>")
 TRACE_SYSCALL = re.compile(r"^\s*(?:\[pid\s+)?\d+(?:\])?\s+([A-Za-z_][A-Za-z0-9_]*)\(")
@@ -166,6 +169,9 @@ def load_case(manifest_path: Path, case_id: str) -> dict[str, Any]:
                  "requiredRoles contains a duplicate role")
     if "cold" in case:
         _require(isinstance(case["cold"], bool), "cold marker must be boolean")
+    if "observeDescendants" in isolation:
+        _require(isinstance(isolation["observeDescendants"], bool),
+                 "observeDescendants must be boolean")
     if "businessOracle" in case:
         oracle = case["businessOracle"]
         _require(isinstance(oracle, dict), "businessOracle must be an object")
@@ -599,6 +605,17 @@ def collect_trace(case: dict[str, Any], run: dict[str, Any]) -> dict[str, Any]:
     child_links: list[dict[str, str]] = []
     exit_events = 0
     events = []
+    unfinished_exec_paths: dict[str, str] = {}
+    declared_exec_paths = {
+        "/probe-root" + str(process.get("executable", ""))
+        for process in case.get("isolation", {}).get("processes", [])
+        if isinstance(process, dict)
+    }
+    declared_exec_paths.update(
+        "/probe-root" + str(child.get("executable", ""))
+        for child in case.get("isolation", {}).get("childProcesses", [])
+        if isinstance(child, dict)
+    )
     for line in text.splitlines():
         pid_match = TRACE_PID.match(line)
         pid = pid_match.group(1) if pid_match else None
@@ -615,16 +632,25 @@ def collect_trace(case: dict[str, Any], run: dict[str, Any]) -> dict[str, Any]:
             else:
                 unfinished_by_pid[pid] -= 1
         if "execve" in line or "execveat" in line:
-            match = TRACE_EXEC.search(line)
+            match = TRACE_EXEC.search(line) or TRACE_EXEC_RESUMED.search(line)
             successful = bool(match and match.group(1) == "0")
             events.append({"kind": "exec", "pid": pid, "success": successful, "line": line})
+            path_match = TRACE_EXEC_PATH.search(line)
+            if pid is not None and "<unfinished ...>" in line and path_match:
+                unfinished_exec_paths[pid] = path_match.group(1)
+            path = path_match.group(1) if path_match else None
+            if pid is not None and TRACE_RESUMED.search(line):
+                path = unfinished_exec_paths.pop(pid, path)
             if successful:
-                successful_execs.append({"pid": pid, "line": line})
+                successful_execs.append({"pid": pid, "line": line, "path": path})
+                if (declared_exec_paths and path and path.startswith("/probe-root")
+                        and path not in declared_exec_paths):
+                    policy_violations.append("UNDECLARED_EXEC")
             if successful and ("python" in line.lower() or "libpython" in line.lower()):
                 policy_violations.append("PYTHON_EXEC")
         if "libpython" in line.lower() or "python3" in line.lower():
             policy_violations.append("PYTHON_MAPPING")
-        if "connect(" in line and "= 0" in line:
+        if "connect(" in line:
             declared_endpoints = case.get("isolation", {}).get("endpoints", [])
             if not any(isinstance(endpoint, dict) and
                        str(endpoint.get("address", "")) in line
@@ -646,8 +672,40 @@ def collect_trace(case: dict[str, Any], run: dict[str, Any]) -> dict[str, Any]:
         if match:
             exit_events += 1
             events.append({"kind": "exit", "code": int(match.group(1)), "line": line})
-    if any(count > 0 for count in unfinished_by_pid.values()):
+        terminal_match = TRACE_TERMINAL.search(line)
+        if terminal_match:
+            exit_events += 1
+            events.append({"kind": "exit", "code": (
+                int(terminal_match.group(1)) if terminal_match.group(1) is not None else None),
+                "signal": terminal_match.group(2), "line": line})
+    business_pids = {
+        item.get("pid") for item in successful_execs
+        if item.get("path") in declared_exec_paths and item.get("pid") is not None
+    }
+    # strace can leave the owner-side wait4 unfinished while it is being
+    # closed.  That is not a missing business observation; an unfinished
+    # syscall belonging to a declared business process remains an observation
+    # boundary.  A descendant case with an explicit terminal signal is
+    # classified by the descendant policy below instead.
+    unpaired_business = {
+        pid for pid, count in unfinished_by_pid.items()
+        if count > 0 and pid in business_pids
+    }
+    if ((not declared_exec_paths and any(count > 0 for count in unfinished_by_pid.values()))
+            or unpaired_business) and not (
+            case.get("isolation", {}).get("observeDescendants")
+            and any("killed by" in line for line in text.splitlines())):
         integrity_violations.append("TRACE_UNPAIRED")
+    try:
+        trace_budget = int(case.get("isolation", {}).get("limits", {}).get("traceBytes", 0))
+    except (TypeError, ValueError):
+        trace_budget = 0
+    if trace_budget > 0:
+        try:
+            if trace_path.stat().st_size > trace_budget:
+                integrity_violations.append("TRACE_BUDGET_EXCEEDED")
+        except OSError:
+            integrity_violations.append("TRACE_MISSING")
     command = [str(value) for value in run.get("command", [])]
     evidence: list[str] = []
     if pids and run.get("supervisorPid") is not None:
@@ -656,11 +714,9 @@ def collect_trace(case: dict[str, Any], run: dict[str, Any]) -> dict[str, Any]:
         evidence.append("process-tree")
     if "nsenter" in command or "--unshare-all" in command:
         evidence.append("namespace")
-    if successful_execs and not any(item in policy_violations
-                                    for item in ("PYTHON_EXEC", "PYTHON_MAPPING")):
+    if successful_execs:
         evidence.append("exec-map")
-    if "UNDECLARED_ENDPOINT" not in policy_violations:
-        evidence.append("endpoints")
+    evidence.append("endpoints")
     if not run.get("timedOut") and run.get("returncode") is not None:
         evidence.append("cleanup")
     oracle = case.get("businessOracle")
@@ -686,9 +742,8 @@ def collect_trace(case: dict[str, Any], run: dict[str, Any]) -> dict[str, Any]:
     for expected, candidates in role_candidates.items():
         if not expected:
             continue
-        expected_marker = f'"{expected}"'
         matches = [item for item in successful_execs
-                   if expected_marker in item["line"]]
+                   if item.get("path") == expected]
         # A shared executable cannot identify which role ran from a single
         # trace line.  Require one successful exec per declared process before
         # reporting the complete role set; this keeps missing peer startup
@@ -705,7 +760,7 @@ def collect_trace(case: dict[str, Any], run: dict[str, Any]) -> dict[str, Any]:
             continue
         expected = "/probe-root" + str(child.get("executable", ""))
         matching_execs = [item for item in successful_execs
-                          if f'"{expected}"' in item["line"]]
+                          if item.get("path") == expected]
         linked_pids = {link["childPid"] for link in child_links}
         observed = any(item.get("pid") in linked_pids for item in matching_execs)
         child_coverage.append({
@@ -715,6 +770,23 @@ def collect_trace(case: dict[str, Any], run: dict[str, Any]) -> dict[str, Any]:
             "execPids": [item.get("pid") for item in matching_execs],
             "childLinks": child_links,
         })
+    if case.get("isolation", {}).get("observeDescendants"):
+        exit_pids = {
+            event.get("pid") for event in events
+            if event.get("kind") == "exit" and event.get("pid") is not None
+        }
+        terminal_signals = {
+            event.get("signal") for event in events
+            if event.get("kind") == "exit" and event.get("signal") is not None
+        }
+        observed_pids = {pid for pid in pids if pid is not None}
+        unreaped = sorted(observed_pids - exit_pids)
+        if terminal_signals:
+            policy_violations.append("OWNED_PROCESS_ALIVE")
+        if unreaped:
+            policy_violations.append("OWNED_PROCESS_ALIVE")
+        if unreaped:
+            events.append({"kind": "unreaped-descendants", "pids": unreaped})
     return {
         # Completeness describes whether the observer delivered a trustworthy
         # trace.  Policy violations are still a complete observation and must
@@ -731,6 +803,12 @@ def collect_trace(case: dict[str, Any], run: dict[str, Any]) -> dict[str, Any]:
         "roles": observed_roles,
         "childLinks": child_links,
         "childProcessCoverage": child_coverage,
+        "unreapedDescendantPids": sorted({
+            pid for pid in pids if pid not in {
+                event.get("pid") for event in events
+                if event.get("kind") == "exit" and event.get("pid") is not None
+            }
+        }) if case.get("isolation", {}).get("observeDescendants") else [],
     }
 
 
