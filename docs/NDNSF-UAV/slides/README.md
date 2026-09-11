@@ -8,6 +8,23 @@ Canonical files:
 - `main.tex`: editable Beamer source.
 - `main.pdf`: compiled 16:9 PDF.
 
+The separate inspection update deck uses `UPDATES.tex` as its editable content.
+`UPDATES_UAV.tex` includes that source under the requested export name;
+`UPDATES.pdf` and `UPDATES_UAV.pdf` must contain the same slides. The 2026-09-10
+revision adds simulation-to-field gaps and proposed hardware/perception validation
+stages. It does not report flight qualification. See
+[revision and validation record](UPDATES_UAV-review.md).
+
+To regenerate the update deck without mixing temporary files into the source:
+
+```bash
+# From this directory; create a unique output directory first.
+pdflatex -interaction=nonstopmode -halt-on-error -output-directory=<run-dir> UPDATES_UAV.tex
+pdflatex -interaction=nonstopmode -halt-on-error -output-directory=<run-dir> UPDATES_UAV.tex
+# After checking the final log and rendering all pages, copy the resulting PDF
+# to both UPDATES_UAV.pdf and UPDATES.pdf.
+```
+
 Build with:
 
 ```bash

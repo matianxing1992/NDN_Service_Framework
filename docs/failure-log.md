@@ -1,5 +1,12 @@
 # Failure Log and Evidence Index
 
+## 2026-09-10 — UAV update slides layout boundary (resolved)
+
+补充模拟到真实 UAV 的差距时，首轮 PDF 构建有纵向溢出；通过缩短文字和调整表格/字号修复。
+初始输出 `.codex-tmp/uav-reality-gap/build-1.log` 保留，最终 `build-6.log` 无排版警告，
+10 页渲染核对通过。仅文档排版，不是 native/飞行测试结果。
+见 [修订与验证记录](NDNSF-UAV/slides/UPDATES_UAV-review.md)。
+
 ## 2026-09-11 — Spec182 T016-A broad integration qualification boundary
 
 The fresh current-source `integration-tests --report_level=short` run completed
