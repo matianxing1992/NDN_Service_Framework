@@ -23,7 +23,7 @@
 | --- | --- |
 | Production entry/callers | 引用当前审计与 spec evidence 表；无入口变化 |
 | Implementation/wire | N/A 文档迁移不改产品；四项 finding 保持 OPEN |
-| Test/harness/oracle | 原 C++ 证据/负例义务继承，新 selector 明确 PLANNED |
+| Test/harness/oracle | 原 C++ 证据/负例义务继承；B1–B4 当前 selector 已有 focused 记录，未运行项继续保持 OPEN/PARTIAL |
 | Build/source closure | N/A 本轮不构建；旧 build 首失败保留 |
 | Migration/evidence | 14个 OPEN 父任务和5批映射；旧历史冻结，新状态单点维护 |
 

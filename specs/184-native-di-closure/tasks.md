@@ -7,6 +7,21 @@
 
 ## Execution Progress
 
+本表是逐执行单元的唯一当前状态入口；下方 `Logical Batch Progress` 只记录批次出口和批次级动态验证。
+
+| Unit / Details | Status | Depends | Evidence / Remaining | Updated |
+| --- | --- | --- | --- | --- |
+| [T001 Authority IO Dispatch](evidence/b1-request-correctness-20260911.md) | DONE | documentation gate and migration baseline | B1 focused C++ and TSan exits complete; no remaining T001-specific gate | 2026-09-11 |
+| [T002 Turn Publication Synchronization](evidence/b1-request-correctness-20260911.md) | DONE | T001 static gate | B1 focused C++ and TSan exits complete; no remaining T002-specific gate | 2026-09-11 |
+| [T003 Durable Outcome Linearization](evidence/b2-durable-outcome-20260911.md) | DONE | B1 behavior exit | B2 normal and unsuppressed ASan/UBSan exits complete; no remaining T003-specific gate | 2026-09-11 |
+| [T004 Atomic Private Checkpoint Export](evidence/b3-checkpoint-export-20260911.md) | DONE | B2 exit | B3 normal and unsuppressed ASan/UBSan exits complete; directory-fsync failure remains an explicit implementation limit | 2026-09-11 |
+| [T005 Maintained Caller Mode Closure](evidence/b4-caller-convergence-20260911.md) | DONE | B1–B3 exits | Caller/mode matrix and focused route selectors complete; D2b runtime miss, real-model/no-Python and retirement remain in B5 | 2026-09-11 |
+| [T006 Inherited Obligation and Harness Closure](contracts/qualification-matrix.md) | PARTIAL | B4 exit | 80-row matrix is bound; residual selector/fixture, source-artifact identity and fresh convergence gaps remain | 2026-09-11 |
+| [T007 Current Native Qualification](contracts/promotion-candidate.md) | NOT_STARTED | T006 complete and fresh convergence `PASS` | Candidate-bound C++/process/no-Python qualification and negative rows not run | 2026-09-11 |
+| [T008 Native Development Handoff](plan.md) | NOT_STARTED | T007 `QUALIFICATION_PASS` | Design/API handoff and external experiment transfer remain pending | 2026-09-11 |
+
+## Logical Batch Progress
+
 | Batch | Status | Dynamic profile / stable exit | Next / remaining |
 | --- | --- | --- | --- |
 | B1 | DYNAMIC_PASS / CLOSED_FOR_VALIDATION | `tsan` PASS；IO owner、turn/ticket 线性化、无 pending residue | T001/T002 已完成普通 C++ selector、独立 TSan 各两次重复；进入 B2/T003 |
@@ -16,6 +31,12 @@
 | B5 | IN_PROGRESS / T006 PARTIAL | inherited row profiles；文档对账 `none` with reason | qualification matrix 已逐项绑定；仍需 exact current selectors/artifact/config identity、缺口修复 → fresh convergence audit `PASS` → T007 正式本地资格 → T008 交付 |
 
 ## Current Checkpoint
+
+2026-09-11 **D-TASK-REGISTRY / DOCUMENTATION_PASS_ONLY**：补齐逐执行单元 `Execution Progress`
+registry，T001–T005 标为 `DONE`、T006 为 `PARTIAL`、T007–T008 为 `NOT_STARTED`；批次表改名为
+`Logical Batch Progress`，避免批次出口遮蔽单元状态。共享 skill 与个人安装副本同步了“批次表不能替代
+逐单元 registry”的规则。验证见 [task progress registry evidence](evidence/task-progress-registry-20260911.md)。
+本轮只改工作流和 Spec184 文档，不改变产品代码或资格结论。
 
 2026-09-11 **B1-TSAN / DYNAMIC_PASS**：B1 普通 `/usr/bin/g++` 构建完成，三个命名 C++ selector
 通过；独立 `/usr/bin/clang++` TSan 构建完成，三个 selector 各重复两次，均 exit code 0 且无

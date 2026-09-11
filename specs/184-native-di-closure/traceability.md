@@ -10,4 +10,5 @@
 | FR-006 | US3 | T006/T007/T008 / B5 | SC-004/SC-005 | G-02 / all inherited open obligations |
 
 原19 FR/11 SC/CD/INV/PO/I 通过 [transfer matrix](contracts/transfer-matrix.md) 继承，不因本表合并
-表示义务减少；具体运行矩阵由 T006 对账并维护，尚未生成/未验证不算完成。
+表示义务减少；具体运行矩阵已由 T006 逐项绑定于 [qualification matrix](contracts/qualification-matrix.md)，
+但其中 `OPEN`/`PARTIAL` 行仍未验证，不算完成。
