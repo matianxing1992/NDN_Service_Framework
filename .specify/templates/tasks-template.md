@@ -39,6 +39,10 @@ reviewable behavioral outcomes. Do not optimize for a high task count.
 `IMPLEMENTED` 仅表示代码存在；`VERIFIED` 仅限该行明确声明的验收范围。
 源码、组件测试、真实集成和运行测量必须区分；缺证据写 `NOT_RUN` 或
 `UNVERIFIED`，不得把 fixture 或旧 candidate 的 PASS 提升为当前运行资格。
+实验任务可使用 `NORMAL_EXPERIMENT_PASS`、`EXPECTED_REJECTION_PASS`、
+`LOCAL_CPU_PASS`、`SINGLE_NODE_GPU_PASS` 和 `BLOCKED_AFTER_BOUNDARY` 等明确
+状态；运行 PASS 必须同时记录 candidate、job/allocation、host/GPU、请求数、
+oracle、首失败（若有）和 cleanup 证据。
 
 每次有效 checkpoint、失败、阻塞变化及 handoff 同步更新本表、父任务 checkbox
 和顶部汇总；只有父任务的全部必需验收条件通过才勾选。证据引用具体文件与

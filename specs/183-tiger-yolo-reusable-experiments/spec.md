@@ -2,20 +2,28 @@
 
 **Feature Branch**: `TigerClusterExperiments`
 **Created**: 2026-09-06
-**Status**: IN_PROGRESS / V54_LOCAL_SINGLE_TWO_NODE_PASS / V55_LOCAL_SINGLE_PASS / NEGATIVE_BLOCKED / REUSE_BLOCKED
+**Status**: COMPLETE / V56_LOCAL_SINGLE_TWO_NODE_PASS / V56_NEGATIVE_EXPECTED_REJECTION_PASS / V56_REUSE_PASS
 **Input**: 固定可复用的配置文件与实验脚本，在 TigerCluster 验证 NDNSF-DI + YOLO 分布式推理；Tiger 专用脚本和配置集中于 `Experiments/TigerCluster`。
 
 ## Scope And Evidence Boundary
 
-交付一个人能直接使用、机器能验证的入口：选择一份配置，检查、准备、运行、收集；同一合格配置可在新 allocation 中重复使用。目标是正确性和复用，不是新推理算法、整个 DI 的 C++ 迁移或性能优势。Spec182 保持 NOT_STARTED。
+交付一个人能直接使用、机器能验证的入口：选择一份配置，检查、准备、运行、收集；同一合格配置可在新 allocation 中重复使用。目标是正确性和复用，不是新推理算法、整个 DI 的 C++ 迁移或性能优势。Spec182 保持 NOT_STARTED。v56 已完成 local CPU、单节点 GPU、双节点正常、注册负例和独立双节点复跑，完整闭环见 [closure](evidence/closure.md)。
 
-交付入口 `81e251a4` 只表示 SOURCE_READY；四库运行源码由 `Experiments/TigerCluster/development-handoff.lock.json` 固定。2026-09-11 的 v54 分层候选已完成真实 exact-SIF local、Tiger 单节点 GPU 和一次双节点 normal PASS；v55 仅修改 collector harness，local 与单节点重跑 PASS。v55 双节点在 `itiger05,itiger06` 连续两次超过 900 秒，故负向和复用门仍保持 BLOCKED。完整 run、哈希、失败边界与下一步见 [2026-09-11 checkpoint](evidence/tiger-runtime-checkpoint-20260911.md)。
+交付入口 `81e251a4` 只表示 SOURCE_READY；四库运行源码由 `Experiments/TigerCluster/development-handoff.lock.json` 固定。v56 分层候选复用了稳定 v23 base SIF 和外置 APP，仅更新 harness/collector 平面，完成真实 exact-SIF local、Tiger 单节点 GPU、两次独立双节点 normal 和一次 `EXPECTED_REJECTION_PASS`。完整 run、哈希、失败边界见 [2026-09-11 checkpoint](evidence/tiger-runtime-checkpoint-20260911.md)。
 
 本 Spec 的资格判定仍按完整边界执行：transport、CUDA probe 或 Provider `READY` 只能作为组件证据；GPU Provider 的 ACK 还必须包含与其 `cuda:*` topology 对应的、签名且可用的 `free_memory_mb` 资源行。只有 User warmup/measured、独立 oracle、每角色 backend/GPU、退出码和清理全部闭合，才能记录对应 PASS。负例还必须写出 `OBSERVATION_ONLY` User record、唯一逻辑 cutpoint、Merge native failure、无响应/无重选和 clean cleanup；部分 withheld 日志不能升级为 `EXPECTED_REJECTION_PASS`。正式 local 还必须由唯一 owner 完成 provision、Controller publication、User 观察和 collector，不能把 host receipt 或 direct MiniNDN 组件证据代替 local PASS。逐 run 证据和固定执行顺序见 [2026-09-10 checkpoint](evidence/tiger-runtime-checkpoint-20260910.md)、[Tiger deployment diagnosis](evidence/tiger-deployment-diagnosis-v70.md) 与 [two-node evidence](evidence/tiger-two-node-v35.md)。
 
 最终必须使用两个真实 Tiger 计算节点，不同节点 Provider 计算同一次 YOLO 请求的不同阶段，通过 NDN 交换中间数据。多个节点各跑完整模型、只交换 echo、只出现 READY 或本机模拟节点，均不满足最终目标。
 
 ## 2026-09-11 execution checkpoint
+
+The final v56 identities and all gate receipts are recorded in
+[closure.md](evidence/closure.md). Normal jobs `210472` and `210474` provide
+the eight successful requests required by SC-003; negative job `210473`
+provides the bounded `DEPENDENCY_DATA_MISSING` boundary. No performance claim
+is made and the unchanged base SIF was intentionally reused.
+
+### Historical v54/v55 qualification context
 
 The v54 candidate kept the v23 base SIF and external APP unchanged and produced
 three fresh retained passes: local `tiger-local-cpu-v54-r1` (2 requests),

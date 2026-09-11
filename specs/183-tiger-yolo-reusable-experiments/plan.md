@@ -1,9 +1,15 @@
 # Implementation Plan: Reusable TigerCluster YOLO Distributed Inference
 
 **Branch**: `TigerClusterExperiments` | **Date**: 2026-09-06 | **Spec**: [spec.md](spec.md)
-**Status**: IN_PROGRESS / V54_LOCAL_SINGLE_TWO_NODE_PASS / V55_LOCAL_SINGLE_PASS / NEGATIVE_BLOCKED / REUSE_BLOCKED
+**Status**: COMPLETE / V56_LOCAL_SINGLE_TWO_NODE_PASS / V56_NEGATIVE_EXPECTED_REJECTION_PASS / V56_REUSE_PASS
 
 ## Summary
+
+The v56 implementation and qualification are closed. The stable v23 base SIF
+was reused with the immutable external APP and v56 harness; local CPU, single
+GPU, first two-node normal, registered negative, and second two-node normal
+reuse all have retained verdicts. See [closure evidence](evidence/closure.md)
+and the [runtime checkpoint](evidence/tiger-runtime-checkpoint-20260911.md).
 
 复用已有身份/路由/进程管理，以及 ACK-driven YOLO、native Provider 和数值比较器；增加一份严格 profile 和薄 YOLO job 入口，补齐 allocation/GPU/跨节点证据。现有 CPU baseline 不是 GPU launcher，旧 `jobs/spec180/yolo-functional.sbatch` 是单节点；不直接改节点数后宣称可用。
 
@@ -56,19 +62,15 @@ T016. No SIF rebuild is required for this harness-only timing correction.
 
 ### 2026-09-11 execution checkpoint
 
-The v54 layered candidate completed fresh exact-SIF local, single-node GPU
-(`210402`, `itiger02`) and two-node GPU (`210403`, `itiger02,itiger03`) runs;
-each collector result is `NORMAL_EXPERIMENT_PASS`. The v55 harness-only
-collector correction passed focused tests (120 passed), and fresh local plus
-single-node GPU (`210440`, `itiger03`) also passed. Strict gate reuse correctly
-invalidated v54 receipts after the harness digest changed.
-
-Two v55 normal two-node allocations (`210441` and `210455`) were assigned to
-`itiger05,itiger06` and timed out at 900 seconds before `collection-input.json`
-was retained; `210458` was cancelled on the same pair. No SIF or numerical error
-was observed in these runs, but there is no v55 two-node PASS to authorize the
-negative or reuse gate. The next run must use a healthy two-node allocation with
-the unchanged v55 profile, then execute T015 and T016 in order.
+The v56 layered candidate completed fresh exact-SIF local, single-node GPU
+(`210471`, `itiger02`), two-node normal (`210472`, `itiger02,itiger03`),
+registered negative (`210473`) and independent two-node reuse (`210474`). The
+collector correction and native reason-wrapper regression are covered by the
+focused suite. Both normal allocations contain four roles, nine dependency
+edges/request, CUDA model backends, CPU Merge, numerical oracle and cleanup;
+the negative has an exact withheld edge and bounded `EXPECTED_REJECTION_PASS`.
+The earlier v55 itiger05/06 timeouts remain immutable failure evidence and do
+not affect the v56 qualification.
 
 ## Technical Context
 
@@ -220,3 +222,13 @@ enough free memory. Empty rows, stale rows or a missing CUDA measurement stop
 at placement and remain a retained diagnostic failure. The first acceptable
 GPU evidence therefore includes ACK/Selection, warmup and measured numerical
 responses, cross-role data, backend/GPU records and complete cleanup.
+
+
+## 2026-09-11 final implementation checkpoint
+
+The v56 sequence closed every planned gate: local CPU `tiger-local-cpu-v56-r1`,
+single-node GPU job `210471`, first two-node normal `210472`, negative
+`210473`, and independent reuse `210474`. The unchanged v23 base SIF and
+external APP were reused under the layered contract; no host-library injection
+or Tiger-side build occurred. Exact verdicts, hashes, limitations and the
+FR/SC mapping are in [closure.md](evidence/closure.md).

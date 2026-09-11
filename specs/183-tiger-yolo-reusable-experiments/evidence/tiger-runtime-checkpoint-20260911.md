@@ -86,3 +86,52 @@ collector and a second unchanged normal allocation.
 The exact next action is to submit the unchanged v55 two-node profile when a
 healthy node pair is available, then collect T015 and perform T016. No base SIF
 rebuild is indicated by today's failures.
+
+## 2026-09-11 v56 final qualification
+
+The v56 candidate is the final immutable composition for this checkpoint. It
+keeps the v23 base SIF (`sha256:44b44d564c64387716a17588ea387ee2a255948ee744855291c8e7a0676907b0`,
+3,586,351,104 bytes) and external read-only APP manifest
+`sha256:4a6c3af0c2cc24620c28519404f1a472074ebf354608372934339ae241942db7`.
+The sealed harness is `sha256:09d8bb4d237453acf1a7a33048363712c5bfdde87e8623a2be359f7eff969ed`
+(3,663 bytes), with dispatch `sha256:d18cf044576875ac2aebc6d6b67a98439ac42ee37dd68510abcf8ff1bdd65545`,
+inputs `sha256:acd62dd7c78323f89b2a47ac27348a4d672cb1907e3802816a4d650a31e00933`,
+and runtime `sha256:16cbf7db11888d43e5d7e1431bd30b03928776660f62869f0050e6eb78c8fed3`.
+The two-node, single-node and negative profile digests are respectively
+`sha256:7ff6b810bd7981332828a2768266bac64e44748c5201e29927b6b76b7a274e5b`,
+`sha256:71a1eb8bb98de3320ebb772ed514eb75bc72d0d1ee285541e8df58a7767f11d3`,
+and `sha256:4f2447761437891531ffad04fccf1ba9e572f12ddb5906a92e87d81a53746bdb`.
+
+| Run | Slurm / hosts | Candidate digest | Verdict digest | Result |
+| --- | --- | --- | --- | --- |
+| `tiger-local-cpu-v56-r1` | local owner | `sha256:f885f1b4c9020a71f06655bb702ea9a382e665b45aed3d7e93077386283dde63` | `sha256:2159969ea07e52265e3147f8c28b2afe3485a078648e21cfbd83a314b3c88e89` | `NORMAL_EXPERIMENT_PASS`; 2 requests, CPU graph, 9 edges/request, shape `[1,50,6]`, max abs error `0.0005340576171875`, cleanup closed |
+| `tiger-single-node-gpu-v56-r1` | `210471` / `itiger02` | `sha256:f8d72b4e0d80ddc63ec7df5f02aa3066fa8b161716bc7d37a1afa9399ad29da1` | `sha256:43ad2d5729798ac4f03901dbab22e80c4db261e0d72e6d37457e2fb79036d032` | `NORMAL_EXPERIMENT_PASS`; 1 warmup + 1 measured, model roles CUDA, Merge CPU, GPU `GPU-0fab1e2a-dc0e-f3b0-62c0-f2dfab914341`, cleanup closed |
+| `tiger-two-node-gpu-v56-r1` | `210472` / `itiger02,itiger03` | `sha256:f53f2dda60b5f3011de72715148c42460a67774ff0bbbde32562e680a03cd526` | `sha256:0972a0d69c4c866c45bf9c6228629746d3f0311b6fb74e8b5df61cfb95b4d03a` | `NORMAL_EXPERIMENT_PASS`; 1 warmup + 3 measured, four roles, 9 edges/request, CUDA model roles, CPU Merge, cleanup closed |
+| `tiger-negative-dependency-v56-r1` | `210473` / `itiger02,itiger03` | `sha256:9bed0f0175b81ff53621ba781fca9be41c7788883d3b28e6db955051d208c6eb` | `sha256:15cbf0df6f48e685aab3c15fdf2f0f3be90402fccc5a1f3ed0e98e575fdbd76b` | `EXPECTED_REJECTION_PASS`; exact DetectShard0→Merge withholding, native `DEPENDENCY_DATA_MISSING`, no response/reselection, bounded cleanup |
+| `tiger-two-node-gpu-v56-r2` | `210474` / `itiger02,itiger03` | `sha256:291652f18ec41f346a974086c7bd4740b234e15b4f9003d8edcc3e95aa43c185` | `sha256:b8513ddf693b74a22d6214d19d91fe3d55ba81ff1a9454a4a3e5386f686039d6` | `NORMAL_EXPERIMENT_PASS`; independent 1 warmup + 3 measured allocation, same profile/content/graph, new GPU UUIDs, cleanup closed |
+
+The normal runs all use graph digest
+`sha256:d8b40347e4cb60e7a0f74b3503d04816ba897a4e8f8733e9d59a38a8c9a65ed1`.
+The first two-node allocation observed GPUs
+`GPU-0fab1e2a-dc0e-f3b0-62c0-f2dfab914341` and
+`GPU-acfab0d6-a493-a983-5d6a-6008c44adfd4`; the independent reuse allocation
+observed `GPU-519e5825-d84a-8e55-670c-c53433c4a71c` and
+`GPU-bcd15abe-d49a-9c07-d63e-acec4f7a8cbf`. Thus SC-003 has eight successful
+normal requests across two allocations, and SC-004 has new run, allocation and
+GPU identities with unchanged behavior inputs.
+
+The v55 r20 collection boundary was caused by a native Merge reason wrapper
+(`dependency wait failed: failed to fetch signed exact Data:`) that the collector
+did not yet accept. The v56 harness and `runtime/yolo_negative.py` now accept
+that exact wrapper only when request/session, role, edge and manifest identity
+still match; the regression suite contains the wrapper case. This is a
+harness/collector correction, so the unchanged base SIF was reused. A first v56
+single-node submit attempted a full 3.6 GB upload because the remote candidate
+root was absent; it was canceled before Slurm, then the root was hardlink-cloned
+from v55 and only changed planes were synchronized. Evidence files initially
+created with mode `0664` were normalized to `0644` before transport; content
+hashes did not change.
+
+This checkpoint closes T001–T017 and the required FR/SC gates. It makes no
+performance-superiority claim. Raw run directories remain in project storage;
+private keys, model files, SIF bytes and large logs are not tracked by Git.

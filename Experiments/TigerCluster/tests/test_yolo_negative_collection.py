@@ -118,6 +118,16 @@ def test_cutpoint_accepts_native_request_session_without_attempt_suffix(tmp_path
     assert result['qualification'] == 'NEGATIVE_CUTPOINT_COMPONENT_ONLY'
 
 
+def test_cutpoint_accepts_native_dependency_wait_reason_wrapper(tmp_path):
+    logs, contract, row, providers = cutpoint_fixture(tmp_path)
+    logs['Merge'].write_text('NDNSF_DI_NATIVE_FAILURE session=' + contract['sessionId'] +
+        ' role=Merge reason=dependency wait failed: failed to fetch signed exact Data: ' +
+        row['manifestDataName'] + '\n')
+    result = negative.read_negative_cutpoint(logs, contract=contract,
+        request_id='/run/request/1', plan_digest=D, providers_by_role=providers)
+    assert result['qualification'] == 'NEGATIVE_CUTPOINT_COMPONENT_ONLY'
+
+
 def test_cutpoint_binds_one_edge_when_role_pair_has_multiple_outputs(tmp_path):
     logs, contract, row, providers = cutpoint_fixture(tmp_path)
     second = dict(contract['edges'][0], scope='head0-merge-scale2',

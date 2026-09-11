@@ -5785,3 +5785,53 @@ legacy dependency guard or count repository-wide collection as a Spec183 pass.
 
 Lesson: report the repository-wide collection failure separately from the
 focused TigerCluster regression result.
+
+## 2026-09-11 — v55 negative collector rejected native dependency-wait wrapper
+
+Symptom: the immutable v55 negative boundary contained the expected native
+Merge failure, but collection rejected the reason because native ndn-cxx wrote
+`dependency wait failed: failed to fetch signed exact Data:` while the public
+contract listed only the inner fetch reason.
+
+Root cause: the collector matched the reason prefix literally and did not allow
+the backend-owned wrapper, even though request/session, role, edge and manifest
+identity were already exact.
+
+Fix status: v56 accepts the wrapper only with all of those exact bindings and
+adds a focused regression. The v55 receipt remains immutable; v56 negative
+`210473` collects as `EXPECTED_REJECTION_PASS`.
+
+Lesson: normalize known backend presentation wrappers only after retaining the
+full producer/consumer/request/edge identity checks.
+
+## 2026-09-11 — v56 remote candidate root caused an avoidable full SIF upload
+
+Symptom: the first v56 single-node submit found no remote candidate root and
+started transferring the 3.6 GB base SIF. It was canceled before Slurm and
+produced no execution result.
+
+Root cause: the remote v56 directory had not yet been materialized from the
+existing immutable v55 root, so transport could not reuse unchanged SIF bytes.
+
+Fix status: hardlink-clone the declared remote root from v55 and rsync only the
+changed v56 dispatch/runtime/profile planes. The retry submitted as `210471` and
+passed; no second SIF build or content rewrite occurred.
+
+Lesson: materialize the content-addressed candidate root before transport and
+verify reuse before allowing a large artifact transfer.
+
+## 2026-09-11 — v56 evidence modes normalized before transport
+
+Symptom: the local executor and candidate planes initially contained ordinary
+files with mode `0664` under the current umask, while the transport contract
+allows only immutable evidence modes.
+
+Root cause: group-write permission came from file creation policy, not from
+candidate content.
+
+Fix status: remove group-write bits to `0644` in the local run and candidate
+planes before transport; hashes and verdict bytes stayed unchanged. All v56
+Tiger jobs then passed transport and execution validation.
+
+Lesson: normalize retained-file metadata at the transport boundary while
+keeping candidate/staging directory permissions under their separate contracts.

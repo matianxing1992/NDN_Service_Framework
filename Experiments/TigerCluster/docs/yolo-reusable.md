@@ -28,7 +28,7 @@ NOT_EVALUATED清单（exit 78）；不上传或提交。公开submit的SSH协调
 超时保留REMOTE_STATE_UNRESOLVED与暂存目录，同一run重试不得重复sbatch。
 
 **Branch**: `TigerClusterExperiments`
-**Status**: IN_PROGRESS / V54_LOCAL_SINGLE_TWO_NODE_PASS / V55_LOCAL_SINGLE_PASS / NEGATIVE_BLOCKED / REUSE_BLOCKED
+**Status**: COMPLETE / V56_LOCAL_SINGLE_TWO_NODE_PASS / V56_NEGATIVE_EXPECTED_REJECTION_PASS / V56_REUSE_PASS
 
 ## 2026-09-10 current execution update
 
@@ -189,7 +189,7 @@ profile选择同一解释器。submit协调、本地CPU和普通离线collect使
   `/group`，也不从缺失文件或退出码推断 PASS。
 - 最大-j4；SIF本地构建、Tiger只验证/运行；CAS缓存不按run复制模型，容量按实际峰值检查。
 
-## 2026-09-11 qualification checkpoint
+## 2026-09-11 qualification checkpoint (superseded historical v54/v55 section)
 
 今天的 v54 分层组合（v23 base SIF + APP manifest
 `sha256:4a6c3af0c2cc24620c28519404f1a472074ebf354608372934339ae241942db7`）
@@ -208,10 +208,27 @@ session 形式；focused regression 为 120 passed。由于 sealed harness 改�
 `collection-input.json`；`210458` 在同一节点对取消并记为 FAIL。不能把这些
 超时当作 SIF/YOLO 正确性 PASS，也不能用 v54 two-node receipt 伪装 v55 gate。
 
-因此当前状态为：v54 local/single/two PASS，v55 local/single PASS，T015 负向
-和 T016 第二次正常复用 BLOCKED。下一次必须在健康的双节点 allocation 上使用
-不变 v55 profile，先形成 two-node PASS，再执行负向 `collect --reconcile` 和
-第二次 1 warmup + 3 measured 复用。完整 run 表与失败边界见
-[Spec183 2026-09-11 evidence](../../../specs/183-tiger-yolo-reusable-experiments/evidence/tiger-runtime-checkpoint-20260911.md)。
+历史 v54/v55 段落保留作失败边界；最终状态见下方 v56 闭环段落。
+
+## v56 final operator checkpoint
+
+The v56 run order is complete: local `tiger-local-cpu-v56-r1`, single-node
+GPU Slurm `210471` on `itiger02`, first two-node normal `210472` on
+`itiger02,itiger03`, negative dependency `210473`, and independent normal
+reuse `210474`. Their authoritative verdicts and exact hashes are in the
+[Spec183 closure](../../../specs/183-tiger-yolo-reusable-experiments/evidence/closure.md)
+and [runtime checkpoint](../../../specs/183-tiger-yolo-reusable-experiments/evidence/tiger-runtime-checkpoint-20260911.md).
+
+The unchanged base SIF is
+`sha256:44b44d564c64387716a17588ea387ee2a255948ee744855291c8e7a0676907b0`
+and the external read-only APP is
+`sha256:4a6c3af0c2cc24620c28519404f1a472074ebf354608372934339ae241942db7`.
+The v56 harness is `sha256:09d8bb4d237453acf1a7a33048363712c5bfdde87e8623a2be359f7eff969ed`.
+Normal runs contain 1 warmup + 3 measured requests, four roles and nine
+dependency edges per request; model roles use CUDA, Merge uses CPU, the
+independent oracle matches shape `[1,50,6]`, and cleanup is closed. The
+negative run is `EXPECTED_REJECTION_PASS` with one exact withheld edge and no
+response or reselection. This is a correctness/reuse qualification, not a
+performance claim.
 
 真实参数、命令和成功示例见 [Spec183 evidence](../../../specs/183-tiger-yolo-reusable-experiments/evidence/minindn-v52-exact-sif-yb-v32.md)；未运行继续NOT_RUN，不复制历史PASS。计划见[Spec183](../../../specs/183-tiger-yolo-reusable-experiments/plan.md)。

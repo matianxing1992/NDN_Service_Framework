@@ -176,10 +176,17 @@ def read_negative_cutpoint(logs, *, contract, request_id, plan_digest, providers
                 and dependency.get('consumer') == 'Merge'
                 and dependency.get('planned_name') in (None, 'none', row['plannedDataName'])):
             raise ValueError('NEGATIVE_WITHHELD_EDGE_WAS_TRANSFERRED')
-    failure_suffix = ' role=Merge reason=failed to fetch signed exact Data: ' + row['manifestDataName']
+    # The native Merge reports the same exact missing Data with either the
+    # direct reason or the provider wait wrapper that prefixes it. Keep the
+    # session, role and manifest binding exact while accepting both spellings.
+    allowed_reasons = (
+        'failed to fetch signed exact Data: ',
+        'dependency wait failed: failed to fetch signed exact Data: ',
+    )
     allowed_failures = {
-        'session=' + candidate + failure_suffix
+        'session=' + candidate + ' role=Merge reason=' + reason + row['manifestDataName']
         for candidate in (request_id, session)
+        for reason in allowed_reasons
     }
     if len(failures) != 1 or failures[0][0] != 'Merge' or failures[0][1] not in allowed_failures:
         raise ValueError('NEGATIVE_CONSUMER_EXACT_FAILURE')
