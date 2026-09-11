@@ -1,5 +1,12 @@
 # UAV Simulation-to-Field Revision
 
+## Current Revision: Car Scenario and Hardware (Six Slides)
+
+按用户要求把设施统一改为停放汽车：重画车身、车窗与车轮，视角改为 rear-side / roof / front-side，Request、定位、识别对应关系和单机验收均使用同一汽车案例。采用 parked car 保留原静态目标边界，不增加移动跟踪能力声明。
+末页新增 SIYI A8 mini 与 Gremsy Pixy 系列的控制接口和适用方向，并链接官方手册；设备仅为候选，不声明已购置或集成。以下 5/10 页记录均为历史。
+
+Validation：6 页双遍 pdfLaTeX 构建通过；设备页初始溢出经字号调整解决，最终日志无 Overfull/Underfull/Warning。全部页面经 Poppler 渲染核对，汽车绘图、正文与末页介绍一致；两个 update PDF 同源同步。证据目录 `.codex-tmp/uav-car-hardware/`，未运行产品/硬件测试。下一步仍是候选云台相机的台架验证。
+
 ## Current Revision: Five Illustrated Slides
 
 按用户后续要求将 10 页压缩为 5 页，移除独立标题页、重复说明和参考文献专页，

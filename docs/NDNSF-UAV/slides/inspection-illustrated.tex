@@ -1,16 +1,20 @@
-% Shared five-slide body; included by UPDATES.tex.
-\begin{frame}{Real-World Scenario: Inspect a Ground Facility}
+% Shared six-slide body; included by UPDATES.tex.
+\begin{frame}{Real-World Scenario: Inspect a Parked Car}
 \centering
 \begin{tikzpicture}[font=\scriptsize,
  data/.style={-{Stealth},thick,Green}, sight/.style={dashed,thick,Orange}]
 \fill[Blue!4,rounded corners](-.8,-.3) rectangle (12.5,4.5);
 \fill[Green!9](-.8,-.3)--(12.5,-.3)--(12.5,.7)--(9.2,1.1)--(5.5,.5)--(2.1,1)--(-.8,.6)--cycle;
-\filldraw[draw=Navy,fill=gray!15](4.5,.75) rectangle (6.1,1.75);
-\filldraw[draw=Navy,fill=gray!25](6.1,.75)--(6.65,1.05)--(6.65,2.05)--(6.1,1.75)--cycle;
-\filldraw[draw=Navy,fill=Blue!15](4.5,1.75)--(5.05,2.05)--(6.65,2.05)--(6.1,1.75)--cycle;
-\draw[Orange,very thick](5.4,1.94)--(5.6,1.86)--(5.8,1.97);
-\node[below,align=center] at (5.6,.67) {Target: known GPS region};
-\foreach \x/\y/\name in {1.5/3.5/A: west view,5.65/3.9/B: roof view,9/3.3/C: east view}{
+% Car silhouette: wheels, body, cabin, windows and headlights.
+\foreach \x in {4.85,6.05}{\filldraw[draw=Navy,fill=gray!70](\x,.96) circle (.22);\fill[gray!20](\x,.96) circle (.10);}
+\filldraw[draw=Navy,fill=Blue!25,rounded corners=3pt](4.35,1.02)--(4.35,1.35)--(4.83,1.48)--(5.13,1.99)--(5.95,1.99)--(6.3,1.5)--(6.65,1.38)--(6.65,1.02)--cycle;
+\filldraw[draw=Navy,fill=white](4.99,1.53)--(5.23,1.87)--(5.52,1.87)--(5.52,1.53)--cycle;
+\filldraw[draw=Navy,fill=white](5.61,1.53)--(5.61,1.87)--(5.88,1.87)--(6.12,1.53)--cycle;
+\draw[Navy](5.56,1.45)--(5.56,1.08);
+\draw[Navy,thick](5.35,1.38)--(5.46,1.38);
+\fill[Orange!70](6.42,1.23) rectangle (6.62,1.34);
+\node[below,align=center] at (5.6,.67) {Parked car: known GPS region};
+\foreach \x/\y/\name in {1.5/3.5/A: rear-side view,5.65/3.9/B: roof view,9/3.3/C: front-side view}{
  \begin{scope}[shift={(\x,\y)}]
  \draw[Navy,thick](-.38,-.16)--(.38,.16) (-.38,.16)--(.38,-.16);
  \foreach \a in {-.38,.38}\foreach \b in {-.16,.16}{\draw[Navy,fill=Blue!10](\a,\b) ellipse (.19 and .07);}
@@ -41,7 +45,7 @@
 \centering
 \begin{tikzpicture}[node distance=.25cm,font=\small,
  b/.style={draw=Navy,rounded corners,fill=Blue!6,text width=2.1cm,minimum height=1.1cm,align=center}]
-\node[b](r){Request\\Target + constraints};
+\node[b](r){Request\\Car location + constraints};
 \node[b,right=of r](o){ACK\\Camera / GPU offers};
 \node[b,right=of o](s){Selection\\Views + Analyzer};
 \node[b,right=of s](v){Execute\\Capture + analyze};
@@ -52,7 +56,7 @@
 \begin{itemize}
 \item \textbf{NDNSF}: discover authorized Providers, assign roles, retrieve protected data and track completion.
 \item \textbf{UAV application}: navigate, point the camera, capture and validate the observation.
-\item \textbf{Perception}: detect the target, associate views and combine evidence.
+\item \textbf{Perception}: detect the car, associate the same car across views and combine evidence.
 \end{itemize}
 \claim{Successful message exchange does not prove that a UAV captured the right target.}
 \evidence{Proposed inspection workflow; component/simulation evidence does not establish field qualification.}
@@ -63,7 +67,7 @@
 \begin{tabular}{>{\RaggedRight\arraybackslash}p{.20\textwidth}>{\RaggedRight\arraybackslash}p{.28\textwidth}>{\RaggedRight\arraybackslash}p{.42\textwidth}}
 \textbf{Gap}&\textbf{Simplified example}&\textbf{Real deployment needs}\\\hline
 Position / pointing & Known coordinates; assigned views & GPS + IMU, camera/gimbal calibration, coordinate frames, synchronized pose and exposure\\
-Useful images & Target assumed visible & Real control/capture APIs, feedback, blur/occlusion checks and bounded retries\\
+Useful images & Car assumed visible & Real control/capture APIs, feedback, blur/occlusion checks and bounded retries\\
 Multi-view analysis & Images supplied to a detector & Same-target association, uncertainty-aware fusion and independent ground truth\\
 \end{tabular}
 \claim{Known GPS narrows the search; it does not guarantee visibility or make three detections a reliable multi-view result.}
@@ -74,7 +78,7 @@ Multi-view analysis & Images supplied to a detector & Same-target association, u
 \centering
 \begin{tikzpicture}[font=\small,
  b/.style={draw=Navy,rounded corners,fill=Blue!6,text width=2.45cm,minimum height=1.1cm,align=center}]
-\node[b](p) at (0,0){Locate + plan\\Target and aircraft pose};
+\node[b](p) at (0,0){Locate + plan\\Car location and aircraft pose};
 \node[b](m) at (3.3,0){Move + point\\Observe arrival and gimbal angle};
 \node[b](c) at (6.6,0){Capture + check\\Frame, timestamp, visibility};
 \node[b,draw=Green,fill=Green!7](o) at (9.9,0){Publish + analyze\\Verified view + metadata};
@@ -95,9 +99,35 @@ Multi-view analysis & Images supplied to a detector & Same-target association, u
 \begin{enumerate}
 \item \textbf{Bench}: one real camera/gimbal; verify commands, capture, calibration and pose/time alignment.
 \item \textbf{Flight simulation}: use the same adapter; inject navigation error, occlusion and link loss. Use \href{https://docs.px4.io/main/en/simulation/}{PX4 software/hardware-in-the-loop} where supported.
-\item \textbf{One UAV}: inspect a surveyed target; measure pointing error, useful-view rate and latency.
+\item \textbf{One UAV}: inspect a parked car at a surveyed location; measure pointing error, useful-view rate and latency.
 \item \textbf{Multiple UAVs}: compare one versus complementary views; measure recognition quality, time/energy cost and participant failures.
 \end{enumerate}
 \claim{Next milestone: one real, correctly aimed image with synchronized pose and independently checked target visibility.}
-\evidence{Planned stages, not completed experiments. Define thresholds before trials; simulation success does not establish field performance.}
+\evidence{Planned stages, not completed experiments. Start with a parked car; moving-car tracking is outside this first demonstration.}
+\end{frame}
+
+\begin{frame}{Available Hardware: Programmable Gimbal Cameras}
+\fontsize{9}{10.5}\selectfont
+\begin{columns}[T,onlytextwidth]
+\column{.48\textwidth}
+\begin{block}{SIYI A8 mini}
+\begin{itemize}
+\item Integrated camera + three-axis gimbal.
+\item SDK control over Ethernet UDP or UART; Ethernet video output.
+\item Candidate for the first camera-control bench experiment.
+\end{itemize}
+\end{block}
+\column{.48\textwidth}
+\begin{block}{Gremsy Pixy family}
+\begin{itemize}
+\item Gimbals for compatible camera payloads.
+\item SDK/MAVLink control; camera support depends on the model.
+\item Candidate when a specific imaging payload is required.
+\end{itemize}
+\end{block}
+\end{columns}
+\vspace{.6em}
+\textbf{Verify before selection:} angle commands, attitude feedback, image access, payload weight, power and mounting.
+\claim{Pointing at a car's GPS location still needs aircraft pose and camera calibration; a controllable gimbal supplies only part of the loop.}
+\evidence{\href{https://siyi.biz/siyi_file/A8\%20mini/A8\%20mini\%20User\%20Manual\%20v1.6.pdf}{SIYI A8 mini manual}; \href{https://docs.gremsy.com/gremsysdk}{Gremsy SDK}. Candidate devices, not purchased or validated hardware.}
 \end{frame}
