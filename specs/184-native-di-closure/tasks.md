@@ -47,6 +47,16 @@ Python harness 不因本表再次无条件重跑。`Qwen3-0.6B` 只能作为 C++
 
 ## Current Checkpoint
 
+2026-09-11 **PROPOSAL-NONCE-CHALLENGE / DOCUMENT_PASS**：当前中英文 proposal、
+slides 和讲稿统一 `RequestNonce`／`ProviderChallenge`，保留请求绑定、
+受保护值访问检查及签名／权限／状态边界；不修改运行时字段或 API。
+八入口构建、旧称清理、镜像文本一致、全页文字边界、PPTX 829/829 spans、
+40 页 notes、LibreOffice 回读和截图审查通过；notes parser 2/2。
+详见 [terminology audit](../../docs/PAPER/proposal-defense/research-revision-audit.md)
+与 `nonce_challenge_revision`，原始记录 `.codex-tmp/proposal-nonce-challenge-20260911/`。
+Context Mode 历史检索被 guard 拒绝后采用实际文件；无产品实验、API 或
+Design 契约变化，不推进 T007/T008。
+
 2026-09-11 **T007-REMAINDER-AUDIT / PARTIAL**：本轮只读复核并重排 T007 剩余出口，未启动
 MiniNDN、YOLO 或 Qwen 全量运行。YOLO26n 当前输入 preflight（Y-A）已通过，日志见
 `spec184-yolo-preflight-20260911-r7.log`，但 current candidate 缺少

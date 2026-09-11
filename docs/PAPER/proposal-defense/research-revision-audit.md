@@ -1,5 +1,43 @@
 # Research-first Proposal Revision and Evidence Audit
 
+## 2026-09-11 RequestNonce and ProviderChallenge
+
+按作者要求，将当前中英文 proposal、slides 和讲稿中的协议用语统一为
+`RequestNonce` 与 `ProviderChallenge`。这不是声称 token 一词在密码协议中
+错误，而是避免读者把这两个交换值误解为独立的通用 API bearer credential。
+源码字段 `UserToken` → 正文 `RequestNonce`，源码字段 `ProviderToken` →
+本文发现／选择握手中的 `ProviderChallenge`；本轮不修改 API、wire format，
+也不重命名其他路径中的 Targeted token 或 LLM token。
+
+依据当前源码：`ServiceUser.cpp` 的 `makeOneTimeToken()`、Request 构造及
+ACK 的 `expectedUserToken` 比较；`ServiceProvider.cpp` 的 pending challenge
+及 Selection 校验。CodeGraph 的首次查询返回历史临时副本，故拒绝作为
+生产依据，改为定点读取实际源码。Selection 可接受原值或对应 proof hash，
+因此用 challenge response，不笼统断言所有路径都原样返回。
+这些是启用受保护 challenge 的 ABE-backed 路径说明，并非所有配置的保证。
+
+NDN Slides Review 要求区分协议层次：RequestNonce 是 User 生成的应用层
+随机值，不是 Interest Nonce。正文明确其既参与请求绑定，也通过 ACK
+检查对受保护值的访问；ProviderChallenge 经受保护 ACK 提供，通过
+Selection 检查。仍需签名、当前服务权限和请求状态检查，不把匹配值
+等同于独占密钥持有证明，不新增授权共享防护或安全证明。
+
+验证：八个 LaTeX 入口通过；英文 30 页、中文 23 页、slides 40 页、
+讲稿 8 页。同语言／兼容入口 PDF 文本一致，旧称无残留；slides 仅
+P9/P13 文本改变，P28–31/P36–37 实验页逐字不变。普通 slides 不超过
+100 words；无 overfull、缺字或未定义引用，保留 320 条 underfull 提示。
+所有正文与 slide contact sheets、修订协议页截图已检查。
+PPTX 829/829 text spans 分配一次，40 页 notes，文字与 shape 边界检查通过；
+LibreOffice 回读及全页截图检查通过，notes parser 2/2。未实际打开
+Google Slides／Microsoft PowerPoint，不据此承诺这些客户端完全一致。
+证据为 `research-revision-validation.json` 的 `nonce_challenge_revision`，
+原始构建／检查／截图位于 `.codex-tmp/proposal-nonce-challenge-20260911/`。
+
+Context Mode 的一次历史检索被 source/category guard 拒绝，未将检索结果
+当作恢复事实；项目 health 通过，实际文件和代码为本轮依据。
+无产品测试、实验或资格推进。下一步可在单独获授权的 API 迁移中处理
+源码旧字段名及兼容性，本轮不自动扩大范围。
+
 ## 2026-09-11 Auxiliary Reason 3
 
 按作者确认的结构，将权限聚合独立为辅助性的 Reason 3：保密发现、调用授权

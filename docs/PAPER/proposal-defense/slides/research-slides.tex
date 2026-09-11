@@ -91,8 +91,8 @@ Cross-case empirical findings & Existing mobility/work-efficiency and small-mode
 \small
 \begin{tabularx}{\linewidth}{p{.15\linewidth}X}
 \toprule Data & Logical purpose\\\midrule
-Request & Describe required service and participation constraints; include protected discovery information and Requester Challenge\\\midrule
-ACK & Report positive or negative participation; positive ACK supplies selection information and Provider Challenge\\\midrule
+Request & Describe required service and participation constraints; include protected discovery information and RequestNonce\\\midrule
+ACK & Report positive or negative participation; positive ACK supplies selection information and ProviderChallenge\\\midrule
 Selection & Assign selected execution; provide input/references, challenge response and protected request-scoped keys\\\midrule
 Response & Return status, results or result references; the User still validates them before use\\\bottomrule
 \end{tabularx}
@@ -133,11 +133,11 @@ Needed to execute the selected task: images, detailed processing parameters, or 
 
 \begin{frame}{How NDNSF Checks Service Permissions}
 \begin{enumerate}
-\item The User places a Requester Challenge in ABE-protected Request content.
-\item The Provider returns it in ACK Data; the User checks the value against the active request.
-\item The Provider encrypts its challenge in ACK content. The User returns the value in Selection; the Provider checks it before execution.
+\item The User puts a fresh random RequestNonce in ABE-protected Request content. This is not an Interest Nonce.
+\item The Provider returns RequestNonce in ACK Data; the User checks it against the active request.
+\item The Provider includes ProviderChallenge in ABE-protected ACK content and checks its challenge response in Selection before execution.
 \end{enumerate}
-\vspace{3mm}\bluebox{Both sides also validate signatures under trust rules and check service permissions and request state. Challenge responses show access to protected values; they do not grant permissions or prevent deliberate sharing.}
+\vspace{3mm}\bluebox{Both sides also check signatures under trust rules, service permissions and request state. Matching challenge responses show access to protected values, not exclusive key possession.}
 \end{frame}
 
 \begin{frame}{DNMP: Trust-Schema Command Authorization}

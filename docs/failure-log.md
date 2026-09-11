@@ -1,5 +1,13 @@
 # Failure Log and Evidence Index
 
+## 2026-09-11 — Proposal terminology retrieval guard boundary
+
+Context Mode rejected a historical timeline query before execution because its
+source/category did not meet the guard. No returned history was treated as
+authority; project health passed and current repository files supplied evidence.
+No product test failed. See [terminology audit](PAPER/proposal-defense/research-revision-audit.md)
+and `.codex-tmp/proposal-nonce-challenge-20260911/retrieval-boundary.md`.
+
 ## 2026-09-11 — Proposal Reason 3 heading-check boundary
 
 Four paper builds passed, but the PDF checker counted an explanatory reference

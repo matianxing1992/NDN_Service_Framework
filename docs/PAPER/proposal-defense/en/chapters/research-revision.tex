@@ -110,14 +110,14 @@ Authorization is permission to perform an operation, authentication establishes 
 \begin{tabularx}{\textwidth}{p{.14\textwidth}XX}
 \toprule
 Data & Purpose & Principal checks\\\midrule
-Request & Publish service requirements, minimized discovery descriptor, request identity, and Requester Challenge & Validate signature and current authorization context; recover the protected descriptor before evaluating willingness\\\midrule
-ACK & Report positive or negative participation decision; a positive ACK carries selection information and Provider Challenge & User checks signer under trust rules, service permissions, request ID and Requester Challenge; only eligible positive ACKs enter Provider selection\\\midrule
+Request & Publish service requirements, minimized discovery descriptor, request identity, and RequestNonce & Validate signature and current authorization context; recover the protected descriptor before evaluating willingness\\\midrule
+ACK & Report positive or negative participation decision; a positive ACK carries selection information and ProviderChallenge & User checks signer under trust rules, service permissions, request ID and returned RequestNonce; only eligible positive ACKs enter Provider selection\\\midrule
 Selection & Notify the chosen Provider and supply protected input or input references and request-scoped keys & Provider checks the User's signature under trust rules, intended Provider, challenge response, request state, and service permissions\\\midrule
 Response & Publish completion/result metadata or references to protected results & Check authorized producer, request context, result identity, and decryption scope\\\bottomrule
 \end{tabularx}
 \end{table}
 
-The table describes the single-Provider invocation. Plan identity, role assignments, and dependency checks are added by the collaboration extension below, not by the initial four-message flow.
+RequestNonce is the User-generated application-level random value; ProviderChallenge is the Provider-generated challenge checked through Selection. Their protected exchange is explained below. The table describes the single-Provider invocation. Plan identity, role assignments, and dependency checks are added by the collaboration extension below, not by the initial four-message flow.
 
 These are NDNSF Data objects. Sync supports discovery of their names, after which Interests retrieve Data, possibly from a cache. A negative ACK is an application participation decision, not a network Nack. Not every observed Request must receive a reply: invalid, unauthorized, duplicate, or expired messages are subject to validation and state checks. A positive ACK expresses willingness; it does not itself start the selected task or guarantee later resource availability.
 

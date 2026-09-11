@@ -95,13 +95,13 @@ User 请求服务并选择 Provider；在协作扩展中还协调角色分配。
 \caption{NDNSF 逻辑消息职责，不是完整 wire-format 规范。}
 \begin{tabularx}{\textwidth}{p{.14\textwidth}XX}
 \toprule Data & 用途 & 主要检查\\\midrule
-Request & 服务需求、最小必要 descriptor、请求标识和 Requester Challenge & 验证身份和授权上下文，解密后判断参与意愿\\\midrule
-ACK & positive／negative 参与决定；positive ACK 提供选择信息和 Provider Challenge & User 按信任规则验证签名者，并检查服务权限、请求 ID 和 Requester Challenge；合格 positive ACK 才参与 Provider 选择\\\midrule
+Request & 服务需求、最小必要 descriptor、请求标识和 RequestNonce & 验证身份和授权上下文，解密后判断参与意愿\\\midrule
+ACK & positive／negative 参与决定；positive ACK 提供选择信息和 ProviderChallenge & User 按信任规则验证签名者，并检查服务权限、请求 ID 和返回的 RequestNonce；合格 positive ACK 才参与 Provider 选择\\\midrule
 Selection & 选定 Provider，交付受保护输入／引用及请求级密钥 & Provider 按信任规则验证 User 签名，并检查接收者、challenge response、请求状态及服务权限\\\midrule
 Response & 完成状态、结果或结果引用 & 验证生产者、请求、对象身份和解密范围\\\bottomrule
 \end{tabularx}\end{table}
 
-表格描述单 Provider 调用。计划标识、角色分配和依赖检查由后文协作扩展加入，不属于初版四消息流程。
+RequestNonce 是 User 生成的应用层随机值；ProviderChallenge 是 Provider 生成、通过 Selection 检查的挑战值。后文说明其受保护的交换过程。表格描述单 Provider 调用。计划标识、角色分配和依赖检查由后文协作扩展加入，不属于初版四消息流程。
 
 Sync 帮助获知名字，然后用 Interest 获取这些 Data。negative ACK 是应用参与决定，不是网络 Nack。非法、无权限、重复和过期 Request 仍受验证与状态规则约束，不能声称所有观察到的 Request 必须回复。positive ACK 不直接启动任务，也不保证稍后的资源可用性。
 

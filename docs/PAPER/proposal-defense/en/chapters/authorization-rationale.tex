@@ -41,8 +41,8 @@ NDNSF chooses to administer both Provider and User service permissions through
 the existing attribute-authority infrastructure, separately from identity-signing
 credentials.
 
-Provider permissions determine access to the Requester Challenge; User permissions
-determine access to the Provider Challenge. NDNSF checks the returned challenge
+Provider permissions determine access to RequestNonce; User permissions
+determine access to ProviderChallenge. NDNSF checks the returned challenge
 values together with signatures, current permissions, and request state
 (Section~\ref{sec:authorization-withdrawal}). Decryption is therefore one part of
 the invocation check, not permission to execute any request.
@@ -85,12 +85,15 @@ proof of lower total cost than Trust-Schema-based authorization.
 \label{sec:authorization-withdrawal}
 
 \paragraph{Connecting decryption capability to invocation authorization.}
-In the ABE-backed invocation path, the User includes a Requester Challenge
-(\texttt{UserToken}) in protected Request content. A Provider that recovers it
-returns it in ACK Data; the User checks it against the active request.
-The Provider places its own Challenge (\texttt{ProviderToken}) in protected
-ACK content. The Provider checks the corresponding challenge response in
-Selection before starting the selected task.
+In the ABE-backed invocation path, the User generates a fresh random value,
+\emph{RequestNonce}, and includes it in ABE-protected Request content.
+This is an NDNSF application-level value, not the NDN Interest Nonce.
+A Provider that recovers it returns it in ACK Data; the User compares the
+returned value with the one stored for the active request. Thus RequestNonce
+supports both request binding and a check of access to the service-protected value.
+The Provider generates \emph{ProviderChallenge} and includes it in ABE-protected
+ACK content. The User supplies the corresponding challenge response in Selection;
+the Provider checks that response before starting the selected task.
 
 These checks demonstrate access to protected challenge values, not the creation
 of new permissions or a formal proof of exclusive key possession. The User and

@@ -29,8 +29,8 @@ Provider 身份。这里的保密对象是缺少相应解密能力的外部
 调用检查。NDNSF 选择通过已有的属性授权机构管理 Provider 和 User 两类服务
 权限，并将这些权限与身份签名凭证分离。
 
-Provider 权限决定其能否获取 Requester Challenge，User 权限决定其能否获取
-Provider Challenge。NDNSF 将返回的 challenge 值与签名、当前权限及请求状态
+Provider 权限决定其能否获取 RequestNonce，User 权限决定其能否获取
+ProviderChallenge。NDNSF 将返回的 challenge 值与签名、当前权限及请求状态
 一起检查（第~\ref{sec:authorization-withdrawal-ch} 节）。因此，解密能力只是
 调用检查的一部分，不代表可以执行任意请求。
 
@@ -64,10 +64,13 @@ Provider 访问权限，使用 \texttt{/PERMISSION/<service>} 表示 User 访问
 \label{sec:authorization-withdrawal-ch}
 
 \paragraph{将解密能力关联到调用授权。}
-在 ABE-backed 调用路径中，User 将 Requester Challenge（\texttt{UserToken}）
-放入受保护的 Request 内容。Provider 恢复该值后在 ACK 中返回，User 将其与
-活动请求中的值比较。Provider 将自己的 Challenge（\texttt{ProviderToken}）
-放入受保护的 ACK 内容，并在执行前检查 Selection 中对应的 challenge response。
+在 ABE-backed 调用路径中，User 为请求生成新的随机值 \emph{RequestNonce}，
+并将其放入 ABE 保护的 Request 内容。这是 NDNSF 应用层的值，
+不是 NDN Interest 的 Nonce。Provider 恢复该值后在 ACK Data 中返回，
+User 将返回值与活动请求中保存的值比较。因此，RequestNonce 既用于请求绑定，
+也用于检查对方能否获取该服务保护的值。Provider 生成 \emph{ProviderChallenge}，
+并将其放入 ABE 保护的 ACK 内容。User 在 Selection 中提供对应的 challenge response，
+Provider 在开始执行所选任务前检查该响应。
 
 这些检查表明参与者能够获得受保护的 challenge 值，不会创建新权限，也不是
 密钥独占持有的形式化证明。双方还需按信任规则验证消息签名和证书链，检查当前
