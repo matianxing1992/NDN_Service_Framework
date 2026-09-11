@@ -153,6 +153,9 @@ C++ 行为、C++/Python parity 或跨进程资格测试。
 对 detached 或延迟 native worker，fixture 还必须显式拥有外部 Face、io_context、scheduler
 及回调依赖，或证明 join/drain 后再析构；静态门检查 ownership/destructor 顺序，重复
 selector 检查 runtime 稳定性，不能为测试竞态改动生产 close/callback 语义。
+静态门同时检查生产异步回调的 `shared_ptr`/`std::function` 闭包是否形成强引用环；自调度
+回调使用 `weak_ptr` 或在终态显式断环，并以无抑制 LeakSanitizer 结果确认释放。泄漏必须
+先按生产、fixture、库/运行时残留分类，不能用 `detect_leaks=0` 代替动态结论。
 CLI `--help`、usage/schema rejection、target/link smoke 或 harness 启动只证明接线边界，
 不能写成 native request/result 或 qualification PASS；没有真实生产请求与独立结果时保持
 对应 production/qualification lane 的 `PARTIAL` 或 `gap`。

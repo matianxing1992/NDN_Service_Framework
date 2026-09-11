@@ -84,6 +84,10 @@ join/drain barrier；不能让栈对象在 worker 释放最后一个 production 
 重复运行；析构竞态、SIGSEGV 或 UAF 首次出现在 runtime/test 时，必须保留首个 backtrace，
 并把 fixture lifetime 作为下一次重试的 `Changed gate`。这项检查只约束测试边界，不授权
 为迁就 fixture 改变生产 `close()`、callback 或线程语义。
+静态门还必须检查生产异步回调闭包是否形成 `shared_ptr`/`std::function` 的强引用环；
+自调度或互相调度的回调应使用 `weak_ptr` 或在终态显式断环，并以无抑制
+ASan/LeakSanitizer 结果验证终态释放。发现泄漏时先修生产 ownership，再区分 fixture 泄漏
+与库/运行时残留，不能用 `detect_leaks=0` 将其记为动态通过。
 若某个 native requirement 只有 Python 测试或没有 C++ target/selector，Coverage
 matrix 的 `test/harness/oracle` lane 必须写 `gap`，对应任务保持 `PARTIAL`。
 

@@ -2,7 +2,7 @@
 
 **Date**: 2026-09-11  
 **Status**: `PASS_FOR_T007_PRECONDITION` / convergence is current; qualification remains `PARTIAL`  
-**Candidate**: `sha256:f5c6fd40b26b38737b3e35ae742b2f9efd106cfebafa2b78eeffa00f7e2b036f` (fresh local record)
+**Candidate**: `sha256:311d23ecf6b7c8fa8f1f69a309a5855b3f969844279a2250d4dcf9c1557b8a98` (fresh local record after I02 ownership repair)
 
 本审查确认当前候选的 Spec、plan、tasks、contracts 与产品 C++ 接线一致，并把未完成的
 运行时和外部资格边界保留下来。`PASS_FOR_T007_PRECONDITION` 只表示可以开始候选绑定的
@@ -54,15 +54,29 @@ ASan/UBSan 继续作为共享状态机的批次证据。fresh candidate 已注�
 `Spec182ObservedOffer/Spec184NativeParserFuzz` 的有界 C++ parser sample，normal 与无抑制
 ASan/UBSan 均 exit `0`。旧 candidate 的完整 integration 48 failures 和 process/schema
 preflight 仍只作为历史边界；fresh candidate 的 unit/integration 已重新运行并均 exit `0`。
-I02 单例 ASan 仍以 fixture LeakSanitizer 诊断 exit `134`，不能写成 `DYNAMIC_PASS`。广泛
+I02 单例及 16-case tiny-ONNX ASan 在修复 `ServiceProvider::fetchCollaborationSignedExactData` 的
+`express`/`retry` 强引用环后均 exit `0`，无 LeakSanitizer 报告；旧 exit `134` 首边界保留为
+历史证据。该共享 tiny-ONNX sanitizer 行为类现为 `DYNAMIC_PASS`。广泛
 Waf build 的首个边界仍是未纳入 Spec184 closure 的 legacy `spec181-assembly-parity` 链接目标，
 因此只把显式 candidate target closure 作为当前 build lane 结果。
 
 因此本审查的结论是：**fresh candidate 的设计、接线、C++ unit/integration 和 observed-offer
 parser sample 已达到 T007 本地资格的前置条件，但仍不能标记 Spec184 完成。**当前进程/no-Python
 owner 的非 root 运行保留 `MININDN_REQUIRES_ROOT` 边界；授权 root owner 已关闭 bounded
-`PO-001-stream`，但 I02 sanitizer leak、I02–I08 其余行、继承负例/collector、真实模型、
+`PO-001-stream`，但 I02–I08 其余行、继承负例/collector、真实模型、
 Python retirement 及外部 SIF/Tiger 仍保持开放。
+
+## Ownership repair refresh
+
+2026-09-11 对当前 candidate 的 `ServiceProvider::fetchCollaborationSignedExactData`
+执行了新增的 callback-cycle 静态门。`retry` 不再强捕获 `express`，而是只持有
+`weak_ptr`，在重试调度时临时提升；终态不会留下 `std::function` 强引用环。受影响的
+integration target 在 `build-spec184-b5-candidate` 重新链接，fresh unit/integration
+均 exit `0`；独立 `.lock-spec184-i02-asan-r2` 的
+`Spec175NativeTinyOnnxI02TwoProviderEpochCoordinator` exit `0`，无 ASan/UBSan/LeakSanitizer
+报告。对应源码、skill、二进制、日志和 pre-existing integration marker 已在新的 promotion
+candidate ordered map 中绑定。该 refresh 保持 `PASS_FOR_T007_PRECONDITION`，不改变尚未
+运行的 process/no-Python、继承负例、真实模型和 external-owner 行。
 
 ## Fresh candidate refresh
 

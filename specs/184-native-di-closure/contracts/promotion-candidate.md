@@ -87,9 +87,65 @@ The fresh full C++ unit and integration executables both exited `0`. The fresh o
 the same runner manifest but stopped before MiniNDN setup at `MININDN_REQUIRES_ROOT` (uid 1000),
 exit `2`; its result is `.codex-tmp/spec184-b5-owner-probe-20260911-r4/result.json` with
 SHA-256 `004cfa0a88d00667c2c520c163a5c1461ec40a81fe3d39cacb703075aaf93fc0`. The prior root owner
-PASS is retained only under the previous candidate record. I02 unsuppressed ASan/UBSan remains a
-fixture LeakSanitizer `DYNAMIC_FAIL` (`87,522` bytes / `720` allocations), and no external owner
-qualification is implied.
+PASS is retained only under the previous candidate record. Its I02 unsuppressed ASan/UBSan
+`87,522`-byte / `720`-allocation LeakSanitizer result was initially classified as fixture-owned;
+the later source review corrected the boundary to the production callback cycle and is recorded in
+the following candidate. No external owner qualification is implied.
+
+## Fresh Local Candidate Record (I02 Ownership Repair)
+
+This record supersedes the previous fresh local record for new qualification
+decisions after the production callback-cycle repair. It binds the repaired
+`ServiceProvider.cpp`, rebuilt candidate binaries, fresh native sweeps and the
+independent I02 sanitizer result. It remains `FRESH_LOCAL_PARTIAL`: process/no-
+Python breadth, inherited negative rows, real-model/MiniNDN coverage, Python
+retirement and external SIF/Tiger execution are still open.
+
+| Member | Bound value |
+| --- | --- |
+| `candidateId` | `sha256:311d23ecf6b7c8fa8f1f69a309a5855b3f969844279a2250d4dcf9c1557b8a98` (ordered member map below; recompute if any listed member changes) |
+| `source` | `Experimental` baseline `f7079c52b8deebc3fd0811d821324700f47b809a`; candidate production files: `ndn-service-framework/ServiceProvider.cpp` `sha256:a587b5bee0fe845ba4051ce0cdea6267e2cbc767b28055c156388ecea584e419`, `NativeProviderHandler.cpp` `sha256:37984face728f908337ece2c59b7c96cd288969bad84a6f8ae6468d691100149`, `NativeEpochCoordinator.cpp` `sha256:fb0a2513c33f1f26d4805ee1721cd172bb9c06b4f3c40982b818bf2946d04866`; pre-existing integration marker is bound separately and remains unstaged |
+| `built runtime` | `build-spec184-b5-candidate`; `unit-tests` `sha256:39906e3c4a4ab1729f0c09c7146a3cb7284b0bd5a5a1e1dd668b97af305f9eeb`; `integration-tests` `sha256:e1947cfb5d75524edc346da5b9c32c984c2daf8e3504e095653e13201486a385`; worker `sha256:e44bd0a31205d3106461d6d48884da70adb4e8acc8ef5fea8753573964aff283`; requester `sha256:7ca9f17803649539df78eaa8d03fa66a84ca1fa6e5098b8d21a1b426b5ef4c50`; provider `sha256:0a13e7ce70d30be51242b04d252eb0aae11cdbb8abee259bcb2997df71746b18`; DI library `sha256:b0f0204c3b93b246c2d16e8afcfbaf0c65ab814b283f66ee8ed85252aa5d9351`; framework library `sha256:a781399f6e86054a13888f62860732bf469a639a298246664a1c2ae36f50d8ed` |
+| `test/replay harness` | runner `sha256:1578ec962de2d9742c537213579b80dc9a3553b6091143a11de8376bccd7d9af`; registration `sha256:855c29a0076807e4af6ee1f6445e2b6419bf3fa441399e49ea1879c5f459e4b3`; integration source with pre-existing replacement marker `sha256:fd96dcc5331aaebbbf3eb944ae594ee59f43d8148baef883be80e0c71244169d`; runner manifest `sha256:4212ca6f81913f30c10c23b1a5d3fcfa6d6a172de295b6e5a67fd3b2c23a7826`; parser log `sha256:2106e52606f7e82e04974d92c2872015a196f6fdfe02f095c4c01502e7a53d55`; I02 sanitizer log `sha256:eb8b2cb46afedaf701b53a52a3e7fd7264fcf1b0cfc7f355b461403b0d4`; tiny-ONNX batch log `sha256:cc69c5f10ff39552d60a2eb0d107f56f9ce67dbe23937d8521f2cac86881630b` |
+| `effective configuration` | `/usr/bin/g++ -B/usr/bin`, Boost 1.71, `.lock-spec184-b5` `sha256:d1eb664437f0f6f21449d2ea22d50aa42053923a22e8b0fc453b287d9b9c5482`; independent sanitizer tree configured with `.lock-spec184-i02-asan-r2` and `--with-sanitizer=address,undefined`; pinned NAC-ABE/NDN-SVS/ONNX prefixes from the build command |
+| `validation contract` | Spec184 `spec.md` `sha256:60f2bf1abaeebc1895209c109d37ccfe3339a6fa39158b6dd6a0c86019ceb2cb`, `plan.md` `sha256:f2c12a569d714eb777e6cd0b0d97753f77ee1227a83209a6a043667ef4aa0a1c`, `tasks.md` `sha256:88b00139addc02596b171bddc0b91ffabf5183e0112f7a4c2bf83e6917572eee`, matrix `sha256:f9700aab012d4f89e254d82057cf49c5dbf81dcffdd9bd91f4e761f5c43f4766`, caller matrix `sha256:b2b079fd5f8e658aa6b2fec6bfec389830aa1c509fac4783f1f73e6c29c9a449`; shared `speckit-code-design` `sha256:ce9d126f646530e496ffdfd558fff70f81f8da0ae9ab91af6c22c51aae812b03`, batch gates `sha256:78c0192109eb1bde372aafab28655a2e22c0abfef69f3e4df0e4789cda5720df` |
+| `results` | fresh unit `.codex-tmp/spec184-candidate-unit-20260911-r4/run.log` `sha256:5a48a71a9a3d09c3f762d915bd6a98dce6947b0fc07f35025bde362577764ca5`; fresh integration `.codex-tmp/spec184-candidate-integration-20260911-r2/run.log` `sha256:ab0911629ccd515acfc9b28664f5c3a20b63d7512c5039836801b7732c2d9367`; repaired I02 selector and 16-case tiny-ONNX ASan/UBSan batch exit `0`; logs `.codex-tmp/spec184-i02-asan-20260911-r2/run.log` and `.codex-tmp/spec184-tiny-asan-20260911-r3/run.log` end with `*** No errors detected` |
+
+The ordered candidate member map used for `candidateId` is:
+
+```text
+binary.di=b0f0204c3b93b246c2d16e8afcfbaf0c65ab814b283f66ee8ed85252aa5d9351
+binary.framework=a781399f6e86054a13888f62860732bf469a639a298246664a1c2ae36f50d8ed
+binary.integration=e1947cfb5d75524edc346da5b9c32c984c2daf8e3504e095653e13201486a385
+binary.provider=0a13e7ce70d30be51242b04d252eb0aae11cdbb8abee259bcb2997df71746b18
+binary.requester=7ca9f17803649539df78eaa8d03fa66a84ca1fa6e5098b8d21a1b426b5ef4c50
+binary.unit=39906e3c4a4ab1729f0c09c7146a3cb7284b0bd5a5a1e1dd668b97af305f9eeb
+binary.worker=e44bd0a31205d3106461d6d48884da70adb4e8acc8ef5fea8753573964aff283
+config.waflock=d1eb664437f0f6f21449d2ea22d50aa42053923a22e8b0fc453b287d9b9c5482
+log.i02_asan=eb8b2cb46afedaf701b53a52a3e7fd7264fc1ceccf1b0cfc7f355b461403b0d4
+log.integration=ab0911629ccd515acfc9b28664f5c3a20b63d7512c5039836801b7732c2d9367
+log.parser=2106e52606f7e82e04974d92c2872015a196f6fdfe02f095c4c01502e7a53d55
+log.tiny_asan=cc69c5f10ff39552d60a2eb0d107f56f9ce67dbe23937d8521f2cac86881630b
+log.unit=5a48a71a9a3d09c3f762d915bd6a98dce6947b0fc07f35025bde362577764ca5
+runner.manifest=4212ca6f81913f30c10c23b1a5d3fcfa6d6a172de295b6e5a67fd3b2c23a7826
+skill.batch_gates=78c0192109eb1bde372aafab28655a2e22c0abfef69f3e4df0e4789cda5720df
+skill.code_design=ce9d126f646530e496ffdfd558fff70f81f8da0ae9ab91af6c22c51aae812b03
+source.NativeEpochCoordinator=fb0a2513c33f1f26d4805ee1721cd172bb9c06b4f3c40982b818bf2946d04866
+source.NativeProviderHandler=37984face728f908337ece2c59b7c96cd288969bad84a6f8ae6468d691100149
+source.ServiceProvider=a587b5bee0fe845ba4051ce0cdea6267e2cbc767b28055c156388ecea584e419
+spec.caller=b2b079fd5f8e658aa6b2fec6bfec389830aa1c509fac4783f1f73e6c29c9a449
+spec.matrix=f9700aab012d4f89e254d82057cf49c5dbf81dcffdd9bd91f4e761f5c43f4766
+spec.plan=f2c12a569d714eb777e6cd0b0d97753f77ee1227a83209a6a043667ef4aa0a1c
+spec.spec=60f2bf1abaeebc1895209c109d37ccfe3339a6fa39158b6dd6a0c86019ceb2cb
+spec.tasks=14f2363da4878f6d13dd3af49a648f87a9ec0af3606aa6840cba6077d984acc8
+test.integration=fd96dcc5331aaebbbf3eb944ae594ee59f43d8148baef883be80e0c71244169d
+test.parser=3e9bc6df090479e18bab1269f1976a549fcf5a4f77cdf9bb90e13a5cd0cb733f
+test.registration=855c29a0076807e4af6ee1f6445e2b6419bf3fa441399e49ea1879c5f459e4b3
+test.runner=1578ec962de2d9742c537213579b80dc9a3553b6091143a11de8376bccd7d9af
+```
+
+`sha256:311d23ecf6b7c8fa8f1f69a309a5855b3f969844279a2250d4dcf9c1557b8a98`
+is the SHA-256 of these sorted lines followed by a final newline.
 
 ## Change-plane Invalidation Matrix
 

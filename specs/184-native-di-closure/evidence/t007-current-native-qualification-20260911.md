@@ -2,7 +2,7 @@
 
 **Date**: 2026-09-11  
 **Status**: `PARTIAL` / candidate-bound local qualification started; no promotion  
-**Candidate**: `sha256:f5c6fd40b26b38737b3e35ae742b2f9efd106cfebafa2b78eeffa00f7e2b036f` (fresh local record)
+**Candidate**: `sha256:311d23ecf6b7c8fa8f1f69a309a5855b3f969844279a2250d4dcf9c1557b8a98` (fresh local record after I02 ownership fix)
 
 本记录绑定 [promotion candidate](../contracts/promotion-candidate.md) 的当前源码、运行时、
 fixture、harness 和配置身份。它汇总本地 C++ 资格边界，不能把局部 selector 或 Python
@@ -143,29 +143,59 @@ the r7 result is the fresh candidate-bound owner evidence.
 
 ## Sanitizer boundary for the shared tiny-ONNX batch
 
-The same `Spec175NativeTinyOnnx*` behavior-class batch was run in the rebuilt
-ASan/UBSan tree with unsuppressed leak detection. All positive and expected
-negative selector assertions printed their normal result lines, but process
-exit was `134` because LeakSanitizer reported
-`SUMMARY: AddressSanitizer: 3096985 byte(s) leaked in 25092 allocation(s)`.
-No use-after-free, buffer, or undefined-behavior report preceded that leak
-summary. The raw log is `.codex-tmp/spec184-tiny-asan-20260911-r1/run.log`,
-SHA-256 `827b56f8c870f675fc7b8c9ee14113e743bc50199e966593c63ab069298da89f`.
-This is `DYNAMIC_FAIL` for the repeated multi-environment sanitizer batch;
-the normal C++ batch remains `PASS`, while sanitizer qualification requires a
-bounded single-case rerun and leak ownership classification.
+### I02 ownership-cycle repair
+
+Static review of `ServiceProvider::fetchCollaborationSignedExactData` found a
+production callback ownership cycle: `express` strongly captured `retry`, while
+`retry` strongly captured `express`. The retry closure now keeps a `weak_ptr` to
+the express closure and promotes it only while scheduling another attempt. This
+preserves cancellation/deadline behavior and allows the callback graph to be
+released after the terminal result.
+
+The affected candidate was rebuilt with the system-first `/usr/bin/g++ -B/usr/bin`
+toolchain and `.lock-spec184-i02-asan-r2`; the same named I02 selector was run in
+an independent unsuppressed `asan-ubsan` tree. C++ assertions passed, process exit
+was `0`, and the log contains no ASan, UBSan or LeakSanitizer report:
+
+| Check | Result | Evidence |
+| --- | --- | --- |
+| `ServiceProvider.cpp` static ownership review | `STATIC_PASS` | `codegraph node ServiceProvider::fetchCollaborationSignedExactData`; complete diff reviewed; strong cycle removed at lines 7031–7059 |
+| I02 sanitizer selector | `DYNAMIC_PASS`, exit `0` | `.codex-tmp/spec184-i02-asan-20260911-r2/run.log`, SHA-256 `eb8b2cb46afedaf701b53a52a3e7fd7264fc1ceccf1b0cfc7f355b461403b0d4` |
+| I02 candidate rebuild | `PASS`, `120/120`, 5m50.113s | `build-spec184-i02-asan-r2`; command recorded in this evidence and Waf lock hash bound in the candidate record |
+
+The earlier I02 leak boundary remains preserved as historical evidence at
+`.codex-tmp/spec184-tiny-asan-20260911-i02/run.log` (SHA-256
+`9171b9e06666a56fb5eae7d9309feabe804492b895dbebef1896860c2018b9d7`). This
+repair closes the sampled I02 sanitizer ownership class only; I02–I08 process
+and no-Python qualification, inherited negative rows, real-model/MiniNDN breadth,
+Python retirement and external SIF/Tiger execution remain open.
+
+The original `Spec175NativeTinyOnnx*` behavior-class batch was run in the
+rebuilt ASan/UBSan tree with unsuppressed leak detection. It exited `134` because
+LeakSanitizer reported `SUMMARY: AddressSanitizer: 3096985 byte(s) leaked in
+25092 allocation(s)`; no use-after-free, buffer, or undefined-behavior report
+preceded that leak summary. The raw first boundary is
+`.codex-tmp/spec184-tiny-asan-20260911-r1/run.log`, SHA-256
+`827b56f8c870f675fc7b8c9ee14113e743bc50199e966593c63ab069298da89f`.
+It remains a historical `DYNAMIC_FAIL`; the repair and rerun below are the
+current sanitizer result.
+
+After the callback-cycle repair, the same independent ASan/UBSan tree reran the
+16-case `Spec175NativeTinyOnnx*` behavior batch with unsuppressed leak detection.
+All C++ positive and expected-negative assertions completed, process exit was
+`0`, and the log ends with `*** No errors detected` with no ASan/UBSan/
+LeakSanitizer diagnostics. Raw log: `.codex-tmp/spec184-tiny-asan-20260911-r3/run.log`,
+SHA-256 `cc69c5f10ff39552d60a2eb0d107f56f9ce67dbe23937d8521f2cac86881630b`.
+This is `DYNAMIC_PASS` for the sampled shared tiny-ONNX sanitizer class; rows
+outside this selector remain governed by the qualification matrix.
 
 The bounded ASan/UBSan I01 rerun (`Spec175NativeTinyOnnxI01OneProvider`)
 exited `0` with eight events, final EOS, and no ASan/UBSan/LeakSanitizer
 diagnostics; raw log `.codex-tmp/spec184-tiny-asan-20260911-r2/run.log`,
 SHA-256 `34d9169715b04216a001050a54a85435062407de9726f4507198915d7cdde40c`.
-The two-provider I02 case also passed its C++ assertions but exited `134`
-under leak detection with 87,522 bytes in 720 allocations; raw boundary
-`.codex-tmp/spec184-tiny-asan-20260911-i02/run.log`, SHA-256
-`9171b9e06666a56fb5eae7d9309feabe804492b895dbebef1896860c2018b9d7`.
-The leak stack is rooted in existing test-fixture `makeD2bCoordinatorOptions`
-callback captures, so I02 remains a sanitizer `DYNAMIC_FAIL` pending explicit
-fixture cleanup or ownership classification.
+The two-provider I02 case's earlier leak is the historical boundary addressed
+above; the repaired selector and the repaired 16-case batch are both recorded
+under the current candidate. No leak suppression was used.
 
 ## Process/no-Python boundary
 
@@ -224,8 +254,8 @@ qualification risks; it does not promote them to PASS.
 ## Qualification decision
 
 T007 remains `PARTIAL`: the fresh native unit/integration sweep, component dynamic
-gates, observed-offer parser sample and bounded fresh root `PO-001-stream` owner
-case pass, while I02 sanitizer teardown, I02–I08 process/no-Python breadth, inherited negative
+gates, observed-offer parser sample, repaired I02 sanitizer selector and repaired tiny-ONNX
+sanitizer batch, and bounded fresh root `PO-001-stream` owner case pass, while I02–I08 process/no-Python breadth, inherited negative
 collector rows, real-model/MiniNDN breadth, Python retirement and external
 SIF/Tiger execution are not qualified.
 T008 cannot start, and no promotion or final handoff is authorized by this record.

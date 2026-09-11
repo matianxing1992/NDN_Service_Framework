@@ -3,7 +3,7 @@
 **Feature Branch**: `Experimental`
 **Feature Directory**: `184-native-di-closure`
 **Created**: 2026-09-11
-**Status**: IN_PROGRESS / B5 component and full-unit exits recorded; integration qualification pending
+**Status**: IN_PROGRESS / fresh C++ unit-integration and tiny-ONNX sanitizer exits recorded; native qualification pending
 **Input**: 用户要求将过度膨胀的 Spec182 未完成工作迁入 Spec184；以最新请求链审计安排剩余执行。
 
 ## Scope
