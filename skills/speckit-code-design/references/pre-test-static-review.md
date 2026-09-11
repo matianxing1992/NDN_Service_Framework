@@ -2,7 +2,7 @@
 
 ## Logical Batch
 
-默认：设计就绪 → 确定逻辑批次 → 逐任务编码及只读静态审查 → 整批逻辑与流程审查 → 统一构建和相关测试 → 批次验收。不得因为一个小改动或下一任务开始而自动重复构建、测试。
+默认：设计就绪 → 确定逻辑批次 → 逐任务编码及只读静态审查 → 整批逻辑与流程审查 → 统一构建和相关 C++ 测试 → 按风险运行动态 profile → 批次验收。不得因为一个小改动或下一任务开始而自动重复构建、测试；动态 profile 只在批次登记的风险适用时运行。
 批次覆盖、稳定出口和结果记录字段见 [batch-quality-gates.md](batch-quality-gates.md)，本节与该参考共同构成共享执行规则。
 
 在 plan/tasks 一处登记 Batch ID、成员任务、行为边界、依赖、共享构建/测试选择器及负责人。围绕同一调用链、状态机或接口迁移分批；不按文件数机械分批，也不默认把整个 Spec 作为一批。每批须能独立构建并验证连贯成果，设计缺口先解决。
@@ -19,6 +19,10 @@
    记录中写入 `Review trace`（skill 路径/SHA、基线、diff 范围、查询和复审结论）；继续同批
    下一任务，不启动常规构建/测试。状态仍为 PARTIAL，保持未勾选并登记待执行选择器。
 
+每个 code-backed task 还必须在任务详情或批次记录中登记 `Risk class`、`Dynamic profile`
+和 `Dynamic invariants`。这一步只登记验证范围，不在逐任务静态门运行 sanitizer；纯文档或
+无运行时状态的任务写 `none`/`N/A` 及理由。
+
 静态无法确认的运行假设留给批次测试；缺少明确接口、必要源码或关键路径覆盖时不能写 STATIC_PASS。No findings 不自动表示审查充分或验收完成。
 
 ## Batch Static Gate And Tests
@@ -31,7 +35,10 @@ closure 后，官方 review-agent 的 `No findings` 才能成为静态门结果�
 
 无已知控制性缺陷且验证命令、独立判据和必要负例明确，记录 `READY_FOR_BATCH_TESTS`，并填写
 批末 `Review trace` 与 `Closure decision: CLOSED_FOR_VALIDATION`，再统一执行必要构建、相关
-单测及计划内静态工具。共享构建和重叠选择器合并执行，结果逐项映射成员；不按任务数重复命令。
+单测及登记的动态 profile。共享构建和重叠选择器合并执行，结果逐项映射成员；不按任务数重复命令。
+动态 profile 使用独立 sanitizer build/output；`asan-ubsan`、`tsan` 和 `parser-fuzz` 不混用
+同一编译产物。动态结果为 `NOT_RUN`、`DYNAMIC_PASS` 或 `DYNAMIC_FAIL`，不能单独提升行为或
+资格状态。
 若尚未达到稳定出口，必须记录 `OPEN_FOR_NEXT_BATCH` 及触发条件，不得以 READY 或共享构建掩盖缺口。
 不得把后续批次全部写完才测试当前已闭合批次。
 
@@ -52,7 +59,7 @@ checklist，或记录明确的替代门禁。只重跑原命令不构成漏检�
 ## One Completion Record
 
 每批复用 tasks.md 或一份 evidence：记录源码基线、任务/整批差异边界、Coverage matrix、成员静态覆盖与 findings/修复、
-`Review trace`、`Closure decision`、编译/链接漏检、运行/测试漏检、批次流程结论、实际命令/target/source closure/`-j`/elapsed/退出码/日志、
+`Review trace`、`Closure decision`、编译/链接漏检、运行/测试漏检、动态 profile/不变量/结果、批次流程结论、实际命令/target/source closure/`-j`/elapsed/退出码/日志、
 未执行项及下一步。每任务只需一行引用；不增加每小段一个报告或行政审查任务。字段定义见 [batch-quality-gates.md](batch-quality-gates.md)。
 
 批次关闭前还要完成该 reference 的 `Batch Retrospective`，把静态提前发现、编译/链接才

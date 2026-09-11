@@ -48,14 +48,21 @@ Spec182 作为历史基线保留，状态为 TRANSFERRED / qualification INCOMPL
 注册点见下方 [Native C++ Test Registration](#native-c-test-registration)；所有新 selector
 当前仍为 `PLANNED`，未声称已经运行。
 
-| Story / FR | Production entry / callers | Observable outcome | Independent oracle / C++ selector | Negative / recovery boundary | Evidence owner / path | Batch |
-| --- | --- | --- | --- | --- | --- | --- |
-| US1 / FR-001 | DI/NativeAuthenticatedGrantClient.cpp → ServiceUser::RequestServiceTargeted | Core IO owner 提交，有界晚回调 | integration-tests / `di-native-requester-grant.t.cpp` / `Spec184AuthorityIoOwnership` (PLANNED)；独立线程 ID 与事件记录 | dispatch 前取消、空 ID、异常、timeout | B1 实现者；evidence/ | B1 |
-| US1 / FR-002 | DI/NativeInferenceClient.cpp ACK planning / markTerminal | turn/attempt 同步，唯一终态 | unit-tests / `di-native-client.t.cpp` / `Spec184TurnPublicationRace` (PLANNED)；barrier 与 pending ticket 计数 | cancel/deadline/close/replacement | B1 实现者；evidence/ | B1 |
-| US1 / FR-003 | NativeInferenceClient → NativeConversationCoordinator | journal、checkpoint、handle 一致 | integration-tests / `ndnsf-di-core-flow.t.cpp` / `Spec184DurableOutcome` (PLANNED)；持久记录独立读取 | publish 前后取消、FINALIZE 丢失 | B2 实现者；evidence/ | B2 |
-| US2 / FR-004 | examples/DI_NativeRequester.cpp checkpoint export | 首次0600、原子替换与可再加载 | unit-tests / `di-native-checkpoint.t.cpp` / `Spec184CheckpointExport` (PLANNED)；stat/原文件摘要/loader | 写入失败、symlink、已有文件 | B3 实现者；evidence/ | B3 |
-| US2 / FR-005 | APPClient 与维护中的五组 caller/mode | 默认 runtime 原生、薄封装 | DI_NativeRequester / di-native-provider；integration-tests 中按当前 caller 清单登记 exact selector | 旧模式退出、unsupported 模式明确拒绝 | B4 实现者；contracts/caller-matrix.md（T005 生成） | B4 |
-| US3 / FR-006 | 同源 unit-tests / integration-tests / C++ process / MiniNDN | 继承 PO/I 及 no-Python 出口可追溯 | 原 Spec182 proof-design 中 PO-001–016；T006 逐项绑定当前 exact selector | 所有继承负例、build identity、trace/marker 首边界 | B5 实现者；contracts/qualification-matrix.md（T006 生成） | B5 |
+动态验证按共享 [batch-quality-gates](../../skills/speckit-code-design/references/batch-quality-gates.md)
+的风险 profile 执行，不按每个小任务重复构建。并发/IO owner/取消与替换使用 `tsan`；
+生命周期、损坏 checkpoint 和未定义行为使用 `asan-ubsan`；不可信 wire/JSON 解析才使用
+`parser-fuzz`。每个 profile 必须绑定 C++ selector、独立输出目录、重复次数或预算以及
+可观察不变量；`NOT_RUN`、`DYNAMIC_PASS` 和 `DYNAMIC_FAIL` 单独记录，动态通过不能替代
+行为或 qualification 通过。
+
+| Story / FR | Production entry / callers | Observable outcome | Independent oracle / C++ selector | Negative / recovery boundary | Dynamic profile / invariant | Evidence owner / path | Batch |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| US1 / FR-001 | DI/NativeAuthenticatedGrantClient.cpp → ServiceUser::RequestServiceTargeted | Core IO owner 提交，有界晚回调 | integration-tests / `di-native-requester-grant.t.cpp` / `Spec184AuthorityIoOwnership` (PLANNED)；独立线程 ID 与事件记录 | dispatch 前取消、空 ID、异常、timeout | `tsan`; IO owner、pending-call 平衡、迟到回调无副作用 | B1 实现者；evidence/ | B1 |
+| US1 / FR-002 | DI/NativeInferenceClient.cpp ACK planning / markTerminal | turn/attempt 同步，唯一终态 | unit-tests / `di-native-client.t.cpp` / `Spec184TurnPublicationRace` (PLANNED)；barrier 与 pending ticket 计数 | cancel/deadline/close/replacement | `tsan`; ticket 发布与 abort 线性化、终态后拒绝旧 token | B1 实现者；evidence/ | B1 |
+| US1 / FR-003 | NativeInferenceClient → NativeConversationCoordinator | journal、checkpoint、handle 一致 | integration-tests / `ndnsf-di-core-flow.t.cpp` / `Spec184DurableOutcome` (PLANNED)；持久记录独立读取 | publish 前后取消、FINALIZE 丢失 | `asan-ubsan`; handle/journal 生命周期和 residue=0 | B2 实现者；evidence/ | B2 |
+| US2 / FR-004 | examples/DI_NativeRequester.cpp checkpoint export | 首次0600、原子替换与可再加载 | unit-tests / `di-native-checkpoint.t.cpp` / `Spec184CheckpointExport` (PLANNED)；stat/原文件摘要/loader | 写入失败、symlink、已有文件 | `asan-ubsan`; 临时文件/loader 生命周期、失败保留旧文件 | B3 实现者；evidence/ | B3 |
+| US2 / FR-005 | APPClient 与维护中的五组 caller/mode | 默认 runtime 原生、薄封装 | DI_NativeRequester / di-native-provider；integration-tests 中按当前 caller 清单登记 exact selector | 旧模式退出、unsupported 模式明确拒绝 | `tsan` only for async callers; otherwise `none` for static matrix | B4 实现者；contracts/caller-matrix.md（T005 生成） | B4 |
+| US3 / FR-006 | 同源 unit-tests / integration-tests / C++ process / MiniNDN | 继承 PO/I 及 no-Python 出口可追溯 | 原 Spec182 proof-design 中 PO-001–016；T006 逐项绑定当前 exact selector | 所有继承负例、build identity、trace/marker 首边界 | per inherited row; `none` for documentation-only reconciliation | B5 实现者；contracts/qualification-matrix.md（T006 生成） | B5 |
 
 ### Edge Cases
 
@@ -68,12 +75,12 @@ Checkpoint destination 若为 symlink，导出不得跟随或改写其 target；
 
 ### Native C++ Test Registration
 
-| Selector | Test source | Target | Registration contract | Status |
-| --- | --- | --- | --- | --- |
-| `Spec184AuthorityIoOwnership` | `tests/integration-tests/di-native-requester-grant.t.cpp` | `integration-tests` | already in `tests/wscript` integration source list; add selector and verify exact command | PLANNED |
-| `Spec184TurnPublicationRace` | `tests/unit-tests/di-native-client.t.cpp` | `unit-tests` | covered by `tests/wscript` unit `ant_glob`; add selector and verify exact command | PLANNED |
-| `Spec184DurableOutcome` | `tests/integration-tests/ndnsf-di-core-flow.t.cpp` | `integration-tests` | already in `tests/wscript` integration source list; add selector and verify exact command | PLANNED |
-| `Spec184CheckpointExport` | `tests/unit-tests/di-native-checkpoint.t.cpp` | `unit-tests` | new TU must be added under the unit glob and verified in the target closure | PLANNED |
+| Selector | Test source | Target | Registration contract | Dynamic profile | Status |
+| --- | --- | --- | --- | --- | --- |
+| `Spec184AuthorityIoOwnership` | `tests/integration-tests/di-native-requester-grant.t.cpp` | `integration-tests` | already in `tests/wscript` integration source list; add selector and verify exact command | `tsan`; repeat bounded selector | PLANNED |
+| `Spec184TurnPublicationRace` | `tests/unit-tests/di-native-client.t.cpp` | `unit-tests` | covered by `tests/wscript` unit `ant_glob`; add selector and verify exact command | `tsan`; repeat interleaving | PLANNED |
+| `Spec184DurableOutcome` | `tests/integration-tests/ndnsf-di-core-flow.t.cpp` | `integration-tests` | already in `tests/wscript` integration source list; add selector and verify exact command | `asan-ubsan`; cancel/finalize negative cases | PLANNED |
+| `Spec184CheckpointExport` | `tests/unit-tests/di-native-checkpoint.t.cpp` | `unit-tests` | new TU must be added under the unit glob and verified in the target closure | `asan-ubsan`; malformed/symlink cases | PLANNED |
 
 These registrations are design-time obligations, not evidence. A missing source, target, selector,
 or registration is a `gap`; it cannot be reported as `STATIC_PASS` or product `PASS`. Native

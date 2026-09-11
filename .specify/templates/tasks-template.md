@@ -27,6 +27,10 @@ io_context, scheduler/timer, and callback dependencies until worker release, or 
 an explicit join/drain barrier; the task's static gate MUST inspect destruction order and
 the runtime gate MUST repeat the named selector. Do not change production close/callback
 semantics to accommodate a fixture lifetime race.
+Each code-backed task MUST also record a `Risk class`, a `Dynamic profile` (`asan-ubsan`,
+`tsan`, `parser-fuzz`, or `none`), and the `Dynamic invariants` it will check. The profile is
+risk-based and runs at batch validation time; it is not a per-task full rebuild. A pure
+documentation task records `N/A` and a reason.
 
 **Organization**: Tasks are grouped by user story and expressed as cohesive,
 reviewable behavioral outcomes. Do not optimize for a high task count.
@@ -72,9 +76,9 @@ READY 必须满足依赖和阶段门禁；DONE 必须有完整单元验收证据
 批末填写以下字段；没有发现时写 `none` 或 `not observed`，不留空。耗时只能用于相同
 target/source closure、toolchain、配置和工作树条件下的对照，不能由单次运行推导总体提速。
 
-| Batch ID | Coverage matrix | Static findings | Compile/build misses | Runtime/test misses | Build scope / target / `-j` / elapsed / exit | Review trace / closure decision | Behavior result | Evidence / remaining |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| B-01 | [five lanes: status, file/symbol, query/check] | [found/fixed/gaps] | [compiler/linker/wiring misses] | [runtime/test misses and first boundary] | [command, closure, toolchain, timing, log] | [review-agent path/SHA, baseline/diff; CLOSED_FOR_VALIDATION or OPEN_FOR_NEXT_BATCH and trigger] | [STATIC_PASS / BUILD_PASS / FOCUSED_BEHAVIOR_PASS / QUALIFICATION_PASS] | [links and next step] |
+| Batch ID | Coverage matrix | Static findings | Compile/build misses | Runtime/test misses | Dynamic validation | Build scope / target / `-j` / elapsed / exit | Review trace / closure decision | Behavior result | Evidence / remaining |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| B-01 | [five lanes: status, file/symbol, query/check] | [found/fixed/gaps] | [compiler/linker/wiring misses] | [runtime/test misses and first boundary] | [risk/profile/invariants/build-output/selector/repeat/exit: NOT_RUN or DYNAMIC_PASS/FAIL] | [command, closure, toolchain, timing, log] | [review-agent path/SHA, baseline/diff; CLOSED_FOR_VALIDATION or OPEN_FOR_NEXT_BATCH and trigger] | [STATIC_PASS / BUILD_PASS / FOCUSED_BEHAVIOR_PASS / QUALIFICATION_PASS] | [links and next step] |
 
 每条批次结果还必须附一段 `Batch Retrospective`：分别记录 static、compile/link、runtime/test
 和 unobserved 漏检（无观察写 `none`/`not observed`），说明是否在稳定出口后继续吸收职责，

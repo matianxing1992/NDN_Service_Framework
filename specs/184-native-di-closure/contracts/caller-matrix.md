@@ -26,7 +26,8 @@
 
 `groupId`, `sourcePath`, `symbol/line`, `mode`, `effectiveConfig`, `defaultRoute`,
 `nativeOwner`, `compatibilityOrRemoved`, `C++ target/selector`, `build/import closure`,
-`zeroUseCheck`, `rollbackEvidence`, `candidateId`, `status`。
+`riskClass`, `dynamicProfile`, `dynamicInvariant`, `zeroUseCheck`, `rollbackEvidence`,
+`candidateId`, `status`。
 
 T005 使用下面的源检查作为起点，并对发现的新增入口追加独立 row；命令结果本身不能替代
 语义判断或 C++ 运行结果：

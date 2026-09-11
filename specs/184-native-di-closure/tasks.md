@@ -7,19 +7,29 @@
 
 ## Execution Progress
 
-| Batch | Status | Next / remaining |
-| --- | --- | --- |
-| B1 | NOT_STARTED | T001 authority IO dispatch，随后 T002 turn/attempt 同步；统一定向构建/测试 |
-| B2 | NOT_STARTED | T003 durable commit 与终态 |
-| B3 | NOT_STARTED | T004 安全 checkpoint 导出 |
-| B4 | NOT_STARTED | T005 当前 caller/mode 收敛 |
-| B5 | NOT_STARTED | T006 矩阵/缺口修复 → fresh convergence audit `PASS` → T007 正式本地资格 → T008 交付 |
+| Batch | Status | Dynamic profile / stable exit | Next / remaining |
+| --- | --- | --- | --- |
+| B1 | STATIC_PASS / VALIDATION_PENDING | `tsan` NOT_RUN；IO owner、turn/ticket 线性化、无 pending residue | T001/T002 静态门已过；下一步 fresh C++ build、两个命名 selector，再运行独立 TSan profile |
+| B2 | NOT_STARTED | `asan-ubsan` planned；durable handle/journal 与 residue=0 | T003 durable commit 与终态 |
+| B3 | NOT_STARTED | `asan-ubsan` planned；原子 export/loader 生命周期 | T004 安全 checkpoint 导出 |
+| B4 | NOT_STARTED | async caller 才运行 `tsan`；其余 `none` with reason | T005 当前 caller/mode 收敛 |
+| B5 | NOT_STARTED | inherited row profiles；文档对账 `none` with reason | T006 矩阵/缺口修复 → fresh convergence audit `PASS` → T007 正式本地资格 → T008 交付 |
 
 ## Current Checkpoint
+
+2026-09-11 **DYNAMIC-GATE / DOCUMENTATION_UPDATED**：共享 `speckit-code-design`、Spec Kit
+模板及 Spec184 已统一登记 `Risk class`、`Dynamic profile` 和 `Dynamic invariants`。
+动态分析按批次风险触发，使用独立 ASan/UBSan、TSan 或 parser-fuzz 输出树；本次仅更新流程和
+矩阵，未将动态验证记为 `DYNAMIC_PASS`，产品任务仍为0个完成。同步检查、结构审计与 Context
+Mode active health 已通过；下一步继续 B1 普通 C++ selector 后再运行 TSan。
 
 2026-09-11 **D-UAV-JOINT / CLOSED_FOR_VALIDATION (documentation only)**：UAV示例改为
 区域内未知目标的多视角联合辨认，4页构建/渲染通过；
 [证据](../../docs/NDNSF-UAV/slides/UPDATES_UAV-review.md)。不推进 B1–B5；原生任务状态保持。
+
+2026-09-11 **B1-STATIC / VALIDATION_PENDING**：T001/T002 已完成逐任务只读静态审查和 C++ 测试接线；
+动态 profile 为 `tsan`，不在逐任务静态门运行，当前为 `NOT_RUN`，故仍为0个任务完成。生产差异、
+审查边界和动态不变量记录在 [B1 evidence](evidence/b1-request-correctness-20260911.md)；下一步按构建预检执行 B1 统一定向 C++ build/test，再进入独立 TSan 输出树。
 
 2026-09-11 **D-UAV-TRIM / CLOSED_FOR_VALIDATION (documentation only)**：按用户要求删除
 UAV update PDF 原第4/5页，现4页；双遍构建及全页渲染通过，两份导出同步。
@@ -38,27 +48,27 @@ Spec182 的14个 OPEN 父任务和 R12-A–E 全部承接；未搬运历史长�
 
 ## Phase 1: Request Correctness
 
-- [ ] T001 [US1] **Authority IO Dispatch**. FR-001；修复 F-01，在 `NativeAuthenticatedGrantClient::coreIssue` 将 `ServiceUser::RequestServiceTargeted` 封送到 Core `postToIo`，处理 dispatch 前取消、空 request ID、异常、timeout 与晚回调；在 `tests/integration-tests/di-native-requester-grant.t.cpp` 的 `Spec184AuthorityIoOwnership` 中验证线程 owner、真实 `ServiceUser` 状态和 bounded cleanup。Target: `integration-tests`（已由 `tests/wscript` 注册 TU）。Dependencies: documentation gate and migration baseline。
-- [ ] T002 [US1] **Turn Publication Synchronization**. FR-002；修复 F-02，核对 `NativeInferenceClient` turn/attempt mutable-state、publication linearization 和 ticket 清理；在 `tests/unit-tests/di-native-client.t.cpp` 的 `Spec184TurnPublicationRace` 中覆盖 cancel/deadline/close/replacement。Target: `unit-tests`（unit glob 注册）。与 T001 组成 B1，逐任务静态门后统一运行交错用例。Dependencies: T001 static gate。
-- [ ] T003 [US1] **Durable Outcome Linearization**. FR-003；修复 F-03，client/coordinator publish 与 handle outcome 一致；在 `tests/integration-tests/ndnsf-di-core-flow.t.cpp` 的 `Spec184DurableOutcome` 中覆盖 publish 后阻塞 FINALIZE、取消和超时。Target: `integration-tests`。Dependencies: B1 behavior exit。
+- [ ] T001 [US1] **Authority IO Dispatch**. FR-001；修复 F-01，在 `NativeAuthenticatedGrantClient::coreIssue` 将 `ServiceUser::RequestServiceTargeted` 封送到 Core `postToIo`，处理 dispatch 前取消、空 request ID、异常、timeout 与晚回调；在 `tests/integration-tests/di-native-requester-grant.t.cpp` 的 `Spec184AuthorityIoOwnership` 中验证线程 owner、真实 `ServiceUser` 状态和 bounded cleanup。Risk class: `concurrency/lifetime`; Dynamic profile: `tsan`; invariants: IO owner、pending-call balance、late callback no-op。Target: `integration-tests`（已由 `tests/wscript` 注册 TU）。Dependencies: documentation gate and migration baseline。
+- [ ] T002 [US1] **Turn Publication Synchronization**. FR-002；修复 F-02，核对 `NativeInferenceClient` turn/attempt mutable-state、publication linearization 和 ticket 清理；在 `tests/unit-tests/di-native-client.t.cpp` 的 `Spec184TurnPublicationRace` 中覆盖 cancel/deadline/close/replacement。Risk class: `concurrency`; Dynamic profile: `tsan`; invariants: ticket publication/abort linearization、stale-token rejection、terminal callback fencing。Target: `unit-tests`（unit glob 注册）。与 T001 组成 B1，逐任务静态门后统一运行交错用例。Dependencies: T001 static gate。
+- [ ] T003 [US1] **Durable Outcome Linearization**. FR-003；修复 F-03，client/coordinator publish 与 handle outcome 一致；在 `tests/integration-tests/ndnsf-di-core-flow.t.cpp` 的 `Spec184DurableOutcome` 中覆盖 publish 后阻塞 FINALIZE、取消和超时。Risk class: `lifetime/linearization`; Dynamic profile: `asan-ubsan`; invariants: journal/handle lifetime、publish-after-cancel fencing、residue=0。Target: `integration-tests`。Dependencies: B1 behavior exit。
 
 ## Phase 2: Export and Callers
 
-- [ ] T004 [US2] **Atomic Private Checkpoint Export**. FR-004；修复 F-04，`DI_NativeRequester` 以同目录临时文件、`0600`、write/`fsync`/close/rename/目录 `fsync` 安全导出，明确 symlink 不跟随、失败保留和 round-trip；补 `tests/unit-tests/di-native-checkpoint.t.cpp` 的 `Spec184CheckpointExport`。Target: `unit-tests`。Dependencies: B2 exit。
-- [ ] T005 [US2] **Maintained Caller Mode Closure**. FR-005；按 [caller matrix](contracts/caller-matrix.md) 盘点五组维护入口及其模式、默认路由、native/compatibility/removed 状态、C++ oracle、zero-use 和 rollback；按共享逻辑分组迁移并检查薄绑定。Dependencies: B3 exit。
+- [ ] T004 [US2] **Atomic Private Checkpoint Export**. FR-004；修复 F-04，`DI_NativeRequester` 以同目录临时文件、`0600`、write/`fsync`/close/rename/目录 `fsync` 安全导出，明确 symlink 不跟随、失败保留和 round-trip；补 `tests/unit-tests/di-native-checkpoint.t.cpp` 的 `Spec184CheckpointExport`。Risk class: `lifetime/serialization`; Dynamic profile: `asan-ubsan`; invariants: temp-file ownership、loader lifetime、old checkpoint preserved on failure。Target: `unit-tests`。Dependencies: B2 exit。
+- [ ] T005 [US2] **Maintained Caller Mode Closure**. FR-005；按 [caller matrix](contracts/caller-matrix.md) 盘点五组维护入口及其模式、默认路由、native/compatibility/removed 状态、C++ oracle、zero-use 和 rollback；按共享逻辑分组迁移并检查薄绑定。Risk class: `routing/lifetime`; Dynamic profile: async caller rows use `tsan`, static-only rows use `none` with reason; invariants: default native route、compatibility boundary、caller lifecycle。Dependencies: B3 exit。
 
 ## Phase 3: Qualification and Delivery
 
-- [ ] T006 [US3] **Inherited Obligation and Harness Closure**. FR-006；维护 [qualification matrix](contracts/qualification-matrix.md)，逐项对账原14个 OPEN 任务、PO-001–016及适用 I/FR/CD/INV，并分别给出 obligation、component、harness、identity 和 external-owner 行；补残余组件/装配/tokenizer/host/绑定实现或 fixture、trace/marker/build identity 缺口。每个新增实现子组先静态门再定向 C++ 验证，候选冻结且控制性 finding 清零后运行 fresh convergence audit。Dependencies: B4 exit；只读对账可提前。
-- [ ] T007 [US3] **Current Native Qualification**. FR-006；仅在 T006 的 qualification matrix 完整且 `evidence/convergence-b5.md` 为当前 candidate 的 fresh `PASS` 后，按矩阵运行同源完整 unit/integration、YOLO/Qwen MiniNDN/no-Python 与检错负例；绑定源码/二进制/日志，区分局部 PASS 和正式 qualification；不重跑未受影响的历史实验。Dependencies: T006 static/focused exits and fresh convergence `PASS`。
-- [ ] T008 [US3] **Native Development Handoff**. FR-006；同步 Design/API/使用说明、两个入口示例、最终源码基线、剩余外部实验 TRANSFERRED 状态；不得以文档移交替代本地资格。Dependencies: T007 PASS。
+- [ ] T006 [US3] **Inherited Obligation and Harness Closure**. FR-006；维护 [qualification matrix](contracts/qualification-matrix.md)，逐项对账原14个 OPEN 任务、PO-001–016及适用 I/FR/CD/INV，并分别给出 obligation、component、harness、identity 和 external-owner 行；补残余组件/装配/tokenizer/host/绑定实现或 fixture、trace/marker/build identity 缺口。每个新增实现子组先静态门再定向 C++ 验证，候选冻结且控制性 finding 清零后运行 fresh convergence audit。Risk class: `qualification-evidence`; Dynamic profile: per inherited row, documentation reconciliation `none` with reason; invariants: source/artifact identity、selector-to-obligation mapping。Dependencies: B4 exit；只读对账可提前。
+- [ ] T007 [US3] **Current Native Qualification**. FR-006；仅在 T006 的 qualification matrix 完整且 `evidence/convergence-b5.md` 为当前 candidate 的 fresh `PASS` 后，按矩阵运行同源完整 unit/integration、YOLO/Qwen MiniNDN/no-Python 与检错负例；绑定源码/二进制/日志，区分局部 PASS 和正式 qualification；不重跑未受影响的历史实验。Risk class: `qualification-runtime`; Dynamic profile: per inherited row (at minimum `tsan` for concurrency rows and `asan-ubsan` for lifetime/parser rows); invariants: candidate identity、terminal cleanup、negative boundary。Dependencies: T006 static/focused exits and fresh convergence `PASS`。
+- [ ] T008 [US3] **Native Development Handoff**. FR-006；同步 Design/API/使用说明、两个入口示例、最终源码基线、剩余外部实验 TRANSFERRED 状态；不得以文档移交替代本地资格。Risk class: `documentation`; Dynamic profile: `none` (no runtime state); invariants: evidence links and status agreement。Dependencies: T007 PASS。
 
 ## Dependencies & Execution Order
 
 B1(T001/T002) → B2(T003) → B3(T004) → B4(T005) → B5(T006–T008)。
 所有 T ID 属于184；引用182时必须加 Spec 前缀（例如 `182:T005`）避免歧义。
 T005/T006 的子组在所属矩阵维护，不继续在 tasks.md 堆积上百个 G 编号。
-静态审查通过但批次 C++ 验证未通过时保持 `[ ]` / PARTIAL；每批只维护一个结果记录。
+静态审查通过但批次 C++ 验证或适用动态 profile 未通过时保持 `[ ]` / PARTIAL；每批只维护一个结果记录。
 任务状态不能由 migration record、文档结构 PASS、CLI smoke 或 Python wrapper 结果提升；
 T007 也不能替代 T001–T006 的定向 C++ 出口。
 

@@ -96,12 +96,14 @@
   异步或 detached native 路径还必须说明 Face/io_context/scheduler/timer/callback 的
   fixture owner 或 join/drain barrier 以及析构顺序；生命周期竞态要有重复 selector 负例
   或回归判据，不能改生产 close/callback 语义迁就 fixture。
+  代码需求还要在对应批次登记 Risk class、Dynamic profile（asan-ubsan、tsan、parser-fuzz
+  或 none）和可观察的不变量；动态工具不能替代 C++ 行为 oracle 或 qualification。
   五 lane Coverage matrix 在 plan/tasks 的批次结果记录中维护，此处引用对应 Batch。
 -->
 
-| Story / FR | Production entry / callers | Observable outcome | Independent oracle / C++ selector | Negative / recovery boundary | Evidence owner / path | Batch / Coverage reference |
-| --- | --- | --- | --- | --- | --- | --- |
-| US1 / FR-001 | [actual entry/caller or N/A + reason] | [observable result] | [oracle and C++ target/selector, or N/A + reason] | [failure, cancellation, rollback, or N/A + reason] | [owner and evidence path] | [Batch ID / tasks.md result row] |
+| Story / FR | Production entry / callers | Observable outcome | Independent oracle / C++ selector | Negative / recovery boundary | Dynamic profile / invariant | Evidence owner / path | Batch / Coverage reference |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| US1 / FR-001 | [actual entry/caller or N/A + reason] | [observable result] | [oracle and C++ target/selector, or N/A + reason] | [failure, cancellation, rollback, or N/A + reason] | [profile and invariant, or none + reason] | [owner and evidence path] | [Batch ID / tasks.md result row] |
 
 ### Edge Cases
 

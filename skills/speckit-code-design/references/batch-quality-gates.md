@@ -87,6 +87,29 @@ join/drain barrier；不能让栈对象在 worker 释放最后一个 production 
 若某个 native requirement 只有 Python 测试或没有 C++ target/selector，Coverage
 matrix 的 `test/harness/oracle` lane 必须写 `gap`，对应任务保持 `PARTIAL`。
 
+## Risk-Based Dynamic Validation
+
+动态分析是批次行为验证的补充，不是静态审查或 C++ 行为测试的替代。工具不会自行判断
+参数在业务语义上是否“理想”；任务必须先写出可观察的不变量（例如 IO 线程归属、请求
+身份/attempt 绑定、终态后不再回调、pending/turn 创建与清理平衡），再选择适用 profile。
+每个 code-backed task 和批次在开始编码前登记 `Risk class`、`Dynamic profile` 与
+`Dynamic invariants`；纯文档任务写 `N/A` 及理由。
+
+| Dynamic profile | 适用风险 | 最小验证要求 |
+| --- | --- | --- |
+| `asan-ubsan` | 生命周期、越界、释放后使用、未定义算术、序列化/损坏输入 | 独立 sanitizer build；具名 C++ selector；零 sanitizer 报告并有界退出 |
+| `tsan` | 共享可变状态、跨线程回调、锁/IO owner、取消/替换竞态 | 独立 TSan build；具名 C++ selector 至少重复运行；零 data-race 报告、无死锁/超时 |
+| `parser-fuzz` | 不可信 wire、JSON、checkpoint 或边界长度解析 | C++ parser target/seed corpus；记录迭代/时间预算、崩溃和 sanitizer 结果 |
+| `none` | 纯文档、静态矩阵或没有运行时状态的工作 | 写明不适用原因；不得把未运行动态分析写成 `DYNAMIC_PASS` |
+
+ASan/UBSan 与 TSan 使用不同的独立构建目录和结果目录，不混用同一套编译产物；profile
+应复用已经配置好的 sanitizer tree，避免每个小任务重复全量配置。NDNSF-DI 的断言主体、
+fixture/driver 和 oracle 仍必须是 C++，Python 只能编排外部设施或启动 C++ executable。
+动态验证通过只产生 `DYNAMIC_PASS` 证据标签，不能单独产生 `FOCUSED_BEHAVIOR_PASS`、
+`QUALIFICATION_PASS` 或任务 `DONE`。出现报告、无界等待、SIGSEGV、UAF、竞态或清理残留时，
+保留首个 backtrace/日志，记录为 `DYNAMIC_FAIL`，并在下一次重试前登记改变的静态检查或
+反事实用例；不得只重复原命令。
+
 当 Python extension 链接到仓库内的 native shared target 时，native 源码变化必须
 先重建该 shared target，再重建 extension；仅重编译或重链接 extension 不能证明
 source/link closure。批次记录应检查依赖库中包含变更符号（或等价的 source/hash
@@ -127,6 +150,7 @@ project symbol 的定义文件，以及提供这些定义的 library/target。�
 | `Static findings` | 静态门实际发现、修复、复审范围；包括 coverage/design gap |
 | `Compile/build misses` | 编译器、链接器或构建接线发现而静态门未发现的问题 |
 | `Runtime/test misses` | 运行或测试才发现而静态/构建未发现的问题；注明首个边界 |
+| `Dynamic validation` | `Risk class`、profile、独立 build/output、具名 C++ selector、不变量、重复次数/预算、exit code；写 `NOT_RUN`、`DYNAMIC_PASS` 或 `DYNAMIC_FAIL` 及首个边界 |
 | `Build measurement` | 精确命令/target、源码或构建边界、toolchain、`-j`、elapsed、exit code、日志 |
 | `Behavior result` | 成员逐项映射到 `STATIC_PASS`、`BUILD_PASS`、`FOCUSED_BEHAVIOR_PASS` 或 `QUALIFICATION_PASS` |
 | `Evidence / remaining` | 持久证据链接、未执行项、硬验收依赖和下一步 |
@@ -204,7 +228,8 @@ Spec 文档或唯一 evidence record。每次创建或修改 code-backed artifac
 
 1. **Before editing**：确认活动 feature、当前 checkpoint、任务/批次基线和既有失败边界；
    为新增或修改的批次登记 `Batch ID`、行为出口、共同入口/调用方、实现/验收依赖、
-   selector/source closure、负责人，并写出 `Batch growth decision`。没有稳定出口的组件
+   selector/source closure、负责人，并写出 `Batch growth decision`；对运行时风险登记
+   `Risk class`、`Dynamic profile` 和 `Dynamic invariants`。没有稳定出口的组件
    只能保持 `PARTIAL`，不能通过扩大批次来掩盖缺少调用方或结果。
 2. **During review**：每个小任务和批末组合审查都写 `Minimum Review Record` 的五个 lane，
    列出实际文件/符号及查询或检查命令；`test/harness/oracle` 必须包含测试注册，
@@ -213,7 +238,7 @@ Spec 文档或唯一 evidence record。每次创建或修改 code-backed artifac
    executable 或 shared library，都必须由该实际输出重生成 manifest 并核对 digest，不能用
    逻辑 target 名或旧 build alias 代替。
 3. **At batch close**：在同一结果记录中写 `Static findings`、`Compile/build misses`、
-   `Runtime/test misses`、`Build measurement`、`Behavior result`、`Evidence / remaining`、
+   `Runtime/test misses`、`Dynamic validation`、`Build measurement`、`Behavior result`、`Evidence / remaining`、
    `Review trace`、`Closure decision`，并附 `Batch Retrospective` 的 `static`、
    `compile/link`、`runtime/test`、`unobserved` 四类；说明是否在稳定出口后继续吸收职责。
 4. **On retry or convergence**：链接首个失败边界，登记真实改变的 `Changed gate` 及其

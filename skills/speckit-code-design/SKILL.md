@@ -85,6 +85,9 @@ Static review PASS != Behavior PASS。
 批次覆盖、稳定出口、漏检分类和构建测量统一遵循
 [batch-quality-gates.md](references/batch-quality-gates.md)。该参考由所有 Spec Kit
 写作、分析、审计和执行技能引用；不要在单个 Spec 或模型专用表中另建一套规则。
+运行时风险还必须按该 reference 选择 `asan-ubsan`、`tsan`、`parser-fuzz` 或有理由的
+`none`，并登记可观察的不变量；动态分析只补充 C++ 行为测试，不把工具无报告当成协议
+或资格通过。
 编码前必须记录每批的分配依据（共同入口/调用方、契约、oracle/selector、source
 closure、验收出口）；任一项不一致就拆成新的批次，不以少一次构建为合批理由。
 每个静态门和批末门还必须留下五 lane Coverage matrix；没有实际文件/符号和查询

@@ -3,7 +3,7 @@
 <!-- 工作流采用 skills/speckit-code-design/references/pre-test-static-review.md 与
      batch-quality-gates.md：设计先行；声明逻辑批次及实现/验收依赖；每小任务只读静态审查后继续同批；
      整批逻辑/流程审查后统一构建和相关测试。批次表在 plan 或 tasks 只定义一次，另一处引用；未测试不标 DONE。
-     每批还要冻结稳定行为出口、生产入口/调用方/测试与构建接线范围，并记录静态、编译/链接、运行漏检分类和耗时。 -->
+     每批还要冻结稳定行为出口、生产入口/调用方/测试与构建接线范围，并记录静态、编译/链接、运行漏检分类、动态 profile 和耗时。 -->
 
 <!--
   DOCUMENT LANGUAGE POLICY (constitution 1.4.0, 2026-09-05):
@@ -129,6 +129,9 @@ be stricter but must not weaken its PASS/BLOCK boundary.
   For native NDNSF-DI runtime/protocol/state/concurrency/crypto/model behavior,
   name the production C++ target/selector in the batch row; Python selectors cover
   only binding/facade, offline oracle, or external-facility boundaries.
+  For each batch, also name the risk class, dynamic profile (`asan-ubsan`, `tsan`,
+  `parser-fuzz`, or `none`) and the invariant/exit it checks. Dynamic validation is a
+  risk-based batch gate, not a full sanitizer rebuild for every task.
   For asynchronous or detached native paths, the batch must also name the fixture owner or
   join/drain barrier for Face/io_context/scheduler/timer/callback dependencies and the
   destructor-order selector/recheck; production close/callback semantics stay unchanged.
@@ -138,9 +141,9 @@ be stricter but must not weaken its PASS/BLOCK boundary.
   验收出口；任一项不一致就登记新的 Batch ID，不为少一次构建强行合批。
 -->
 
-| Batch ID | Behavior boundary / stable exit | Members | Implementation dependencies | Acceptance dependencies | Coverage matrix scope | Shared build/test selector and owner | Review trace / closure decision | Result record / evidence owner |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| B-01 | [observable behavior and exit] | [task IDs] | [IDs or —] | [hard gates or —] | [five lanes: status, files/symbols, query/check] | [selector / owner] | [skill path/SHA, baseline/diff; CLOSED_FOR_VALIDATION or OPEN_FOR_NEXT_BATCH and trigger] | [evidence path / owner] |
+| Batch ID | Behavior boundary / stable exit | Members | Implementation dependencies | Acceptance dependencies | Coverage matrix scope | Shared build/test selector and owner | Risk class / Dynamic profile / invariants | Review trace / closure decision | Result record / evidence owner |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| B-01 | [observable behavior and exit] | [task IDs] | [IDs or —] | [hard gates or —] | [five lanes: status, files/symbols, query/check] | [selector / owner] | [risk / profile / invariant and repeat budget] | [skill path/SHA, baseline/diff; CLOSED_FOR_VALIDATION or OPEN_FOR_NEXT_BATCH and trigger] | [evidence path / owner] |
 
 ## Project Structure
 

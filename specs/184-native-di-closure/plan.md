@@ -29,13 +29,13 @@ Promotion candidate、change-plane invalidation 和 design-code convergence 规�
 
 ## Execution Order
 
-| Batch | Tasks | Depends | Stable exit |
-| --- | --- | --- | --- |
-| B1 Thread ownership | T001/T002 | 冻结审计/迁移对账 | IO dispatch 与 turn 发布的并发反例通过，无 pending ticket 泄漏 |
-| B2 Durable outcome | T003 | B1 | publish 前后取消、deadline、close 与持久记录/handle 一致 |
-| B3 Secure export | T004 | B2；技术上独立，默认顺序执行 | 0600 原子导出、失败保留、loader round-trip |
-| B4 Caller convergence | T005 | B1–B3 | 当前 caller/mode 清单闭合，支持模式默认 native |
-| B5 Qualification and handoff | T006/T007/T008 | B4；矩阵盘点可提前只读进行 | qualification matrix 完整、fresh convergence audit `PASS` 后才可开始 T007；本地资格通过，外部边界明确 |
+| Batch | Tasks | Depends | Dynamic profile / invariants | Stable exit |
+| --- | --- | --- | --- | --- |
+| B1 Thread ownership | T001/T002 | 冻结审计/迁移对账 | `tsan`; IO owner、turn/ticket 发布与 abort 线性化、无迟到回调副作用 | IO dispatch 与 turn 发布的并发反例通过，无 pending ticket 泄漏 |
+| B2 Durable outcome | T003 | B1 | `asan-ubsan`; handle/journal 生命周期、publish 后终态一致、residue=0 | publish 前后取消、deadline、close 与持久记录/handle 一致 |
+| B3 Secure export | T004 | B2；技术上独立，默认顺序执行 | `asan-ubsan`; 临时文件/loader 生命周期、失败保留旧 checkpoint | 0600 原子导出、失败保留、loader round-trip |
+| B4 Caller convergence | T005 | B1–B3 | `tsan` only for async caller rows; otherwise `none` with reason | 当前 caller/mode 清单闭合，支持模式默认 native |
+| B5 Qualification and handoff | T006/T007/T008 | B4；矩阵盘点可提前只读进行 | per inherited row; `none` for documentation-only reconciliation | qualification matrix 完整、fresh convergence audit `PASS` 后才可开始 T007；本地资格通过，外部边界明确 |
 
 ## Code Design and Review
 
@@ -50,15 +50,16 @@ B5：先盘点原 FR/CD/INV/PO/I、组件与 harness 未关闭项，再补缺失
 逐任务明确加载 `/home/tianxing/.codex/skills/review-agent/SKILL.md` 进行只读审查，记录路径/hash、
 基线、完整 diff、调用方/测试、finding 和复审。批末按
 `skills/speckit-code-design/references/batch-quality-gates.md` 组合审查再共享编译测试。
-不得在 T001 后因一个小修改立即重跑全套；也不得把 T007 当成所有前置定向 C++ 验证的唯一时点。
+不得在 T001 后因一个小修改立即重跑全套；动态 profile 在批末独立 sanitizer/fuzz 输出树中运行，
+也不得把 T007 当成所有前置定向 C++ 验证的唯一时点。
 原生断言、fixture/driver、oracle 为 C++；Face/IO/scheduler/callback owner 活到任务 drain/join。
 
 ### B1 Allocation Contract
 
-| Task | Production symbols / source | C++ source and selector | Target / closure |
-| --- | --- | --- | --- |
-| T001 | `NativeAuthenticatedGrantClient::issueThroughCore` / `coreIssue` → `ServiceUser::RequestServiceTargeted` and `postToIo` | `tests/integration-tests/di-native-requester-grant.t.cpp` / `Spec184AuthorityIoOwnership` (PLANNED) | `integration-tests`; source already listed in `tests/wscript`, selector and runtime evidence still required |
-| T002 | `NativeInferenceClient` turn/attempt binding, publication and ticket cleanup | `tests/unit-tests/di-native-client.t.cpp` / `Spec184TurnPublicationRace` (PLANNED) | `unit-tests`; unit glob registration, exact selector and interleaving evidence still required |
+| Task | Production symbols / source | C++ source and selector | Target / closure | Dynamic profile / invariants |
+| --- | --- | --- | --- | --- |
+| T001 | `NativeAuthenticatedGrantClient::issueThroughCore` / `coreIssue` → `ServiceUser::RequestServiceTargeted` and `postToIo` | `tests/integration-tests/di-native-requester-grant.t.cpp` / `Spec184AuthorityIoOwnership` (PLANNED) | `integration-tests`; source already listed in `tests/wscript`, selector and runtime evidence still required | `tsan`; Core IO owner, pending-call balance, late callback fencing |
+| T002 | `NativeInferenceClient` turn/attempt binding, publication and ticket cleanup | `tests/unit-tests/di-native-client.t.cpp` / `Spec184TurnPublicationRace` (PLANNED) | `unit-tests`; unit glob registration, exact selector and interleaving evidence still required | `tsan`; ticket publication/abort linearization and stale-token rejection |
 
 T001 and T002 share the B1 request-correctness outcome but have different targets and fixtures;
 each task gets its own static gate before the B1 combination review. If a change adds a different
@@ -70,7 +71,7 @@ state machine, owner, target or hard prerequisite, it leaves B1 and receives a n
 生产入口/调用方；实现/wire；测试/harness/oracle；build/source closure；迁移/证据。
 每条 scope 见 spec 的 entry 和 transfer matrix；开始实施时补具体 diff、target 和 selector，不能预填 PASS。
 新链接边界需符号定义 TU/target 与 nm/readelf 对照。记录 review trace、Batch growth decision、
-Closure decision 和 static/compile-link/runtime-test/unobserved miss；初始均未执行。
+Closure decision、Dynamic validation 和 static/compile-link/runtime-test/unobserved miss；初始动态验证均未执行。
 审查技巧沿用182审计后 R12 的线程读写表、线性化点、失败清理、wire 权威溯源和 production fixture 检查。
 
 ## Convergence Gate Before Qualification
