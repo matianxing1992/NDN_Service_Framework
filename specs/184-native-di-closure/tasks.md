@@ -56,6 +56,12 @@ MiniNDN、YOLO 或 Qwen 全量运行。YOLO26n 当前输入 preflight（Y-A）�
 Qwen qualification。A0→A1→A2→A4 顺序和外部 A3 已写入 [remainder audit](evidence/remainder-audit-20260911.md)。
 T007 继续 `IN_PROGRESS`/`PARTIAL`，T008 仍 `NOT_STARTED`。
 
+2026-09-11 **PROPOSAL-INTRO-WORDING / DOCUMENT_PASS**：按作者原句更新英文引言
+trust schema 表述并同步中文；四个正文入口构建、对应入口文本一致性、原句与
+PDF 文字边界检查通过，英文 30 页／中文 23 页。证据见
+[Introduction wording audit](../../docs/PAPER/proposal-defense/research-revision-audit.md)
+及 `intro_wording_revision`。slides／实验／产品 API 不变，不推进 T007/T008。
+
 2026-09-11 **PROPOSAL-DNMP-THROUGHLINE / DOCUMENT_PASS**：将 DNMP 的 Trust Schema
 命令授权实例贯穿双语 Proposal 的引言、RQ1、机制比较、评价与结论，保留原版／
 适配方案边界。八入口构建、30/23 页正文、40 页 slides、8 页讲稿、同语言文本

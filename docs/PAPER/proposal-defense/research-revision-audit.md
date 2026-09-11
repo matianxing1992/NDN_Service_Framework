@@ -1,5 +1,16 @@
 # Research-first Proposal Revision and Evidence Audit
 
+## 2026-09-11 Author-supplied Introduction Wording
+
+按作者指定原句，将引言改为 `Applications can use a trust schema to specify
+which signing keys are authorized to sign which Data and guide Data validation`，
+保留前一句与原有引用，同步中文语义。四个正文入口构建通过；英文 30 页、中文
+23 页，对应入口提取文本一致，开头原句、全页文字边界及引言截图检查通过。
+当前增量验证见 `intro_wording_revision` 和
+`.codex-tmp/proposal-intro-wording-20260911/`。slides、实验和产品源码未修改；
+下方八入口／PPTX 检查属于上一轮记录，不是本轮重新运行的结果。
+下一步仍是 RQ1 完整授权对照的实验设计，本轮不扩大文稿修订范围。
+
 ## 2026-09-11 DNMP Throughline Revision
 
 当前修订见 [DNMP throughline review](dnmp-throughline-review-20260911.md)：
