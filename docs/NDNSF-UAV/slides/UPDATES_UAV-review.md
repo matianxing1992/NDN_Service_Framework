@@ -1,5 +1,11 @@
 # UAV Simulation-to-Field Revision
 
+## Current Revision: Official Product Images
+
+用户要求最后一页增加产品图：加入 SIYI 官方商店 A8 mini 图片与 Gremsy 官方 Pixy U 图片，标题从泛称 Pixy family 收敛为实物型号 Pixy U。保留“一体机 / 云台需另配相机”的区别，缩短文字，6 页总数不变。来源与格式转换见 `assets/product-image-sources.md`；未使用生成图代替产品照片。
+
+Validation：pdfLaTeX 两遍成功，最终日志无 Overfull/Underfull/Warning；第 6 页 Poppler 渲染人工核对通过，前 5 页提取文本逐页与上一版完全一致。两份 PDF 同源同步，原始下载和构建记录保留在 `.codex-tmp/uav-product-photos/`。无产品/API 或实验状态变化。
+
 ## Current Revision: Car Scenario and Hardware (Six Slides)
 
 按用户要求把设施统一改为停放汽车：重画车身、车窗与车轮，视角改为 rear-side / roof / front-side，Request、定位、识别对应关系和单机验收均使用同一汽车案例。采用 parked car 保留原静态目标边界，不增加移动跟踪能力声明。

@@ -110,24 +110,23 @@ Multi-view analysis & Images supplied to a detector & Same-target association, u
 \fontsize{9}{10.5}\selectfont
 \begin{columns}[T,onlytextwidth]
 \column{.48\textwidth}
-\begin{block}{SIYI A8 mini}
+\centering\textbf{\large\color{Navy}SIYI A8 mini}\par
+\includegraphics[height=2.8cm,width=.8\linewidth,keepaspectratio]{assets/siyi-a8-mini-official.jpg}\par
+\raggedright
 \begin{itemize}
-\item Integrated camera + three-axis gimbal.
-\item SDK control over Ethernet UDP or UART; Ethernet video output.
-\item Candidate for the first camera-control bench experiment.
+\item Camera + three-axis gimbal in one unit.
+\item Ethernet UDP / UART control; Ethernet video.
 \end{itemize}
-\end{block}
 \column{.48\textwidth}
-\begin{block}{Gremsy Pixy family}
+\centering\textbf{\large\color{Navy}Gremsy Pixy U}\par
+\includegraphics[height=2.8cm,width=.8\linewidth,keepaspectratio]{assets/gremsy-pixy-u-official.png}\par
+\raggedright
 \begin{itemize}
-\item Gimbals for compatible camera payloads.
-\item SDK/MAVLink control; camera support depends on the model.
-\item Candidate when a specific imaging payload is required.
+\item Gimbal only; add a compatible camera.
+\item SDK / MAVLink control; verify camera support.
 \end{itemize}
-\end{block}
 \end{columns}
 \vspace{.6em}
-\textbf{Verify before selection:} angle commands, attitude feedback, image access, payload weight, power and mounting.
-\claim{Pointing at a car's GPS location still needs aircraft pose and camera calibration; a controllable gimbal supplies only part of the loop.}
-\evidence{\href{https://siyi.biz/siyi_file/A8\%20mini/A8\%20mini\%20User\%20Manual\%20v1.6.pdf}{SIYI A8 mini manual}; \href{https://docs.gremsy.com/gremsysdk}{Gremsy SDK}. Candidate devices, not purchased or validated hardware.}
+\textbf{First bench test:} command an angle $\rightarrow$ read actual attitude $\rightarrow$ capture the parked car.
+\evidence{Product images: \href{https://shop.siyi.biz/products/siyi-a8-mini-gimbal-camera}{SIYI official store} and \href{https://gremsy.com/products/pixy-u}{Gremsy official site}. Images not to scale. Candidate hardware; verify power, payload and mounting before selection.}
 \end{frame}
