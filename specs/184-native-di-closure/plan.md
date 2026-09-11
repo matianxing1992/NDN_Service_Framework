@@ -37,6 +37,24 @@ Promotion candidate、change-plane invalidation 和 design-code convergence 规�
 | B4 Caller convergence | T005 | B1–B3 | `tsan` only for async caller rows; otherwise `none` with reason | 当前 caller/mode 清单闭合，支持模式默认 native |
 | B5 Qualification and handoff | T006/T007/T008 | B4；矩阵盘点可提前只读进行 | per inherited row; `none` for documentation-only reconciliation | qualification matrix 完整、fresh convergence audit `PASS` 后才可开始 T007；本地资格通过，外部边界明确 |
 
+### Dynamic Validation Card
+
+动态分析在每个逻辑批次的组合审查之后执行一次；不把 sanitizer/fuzz 构建拆到每个任务。
+批次 evidence 必须冻结以下字段，并将每个 selector 的结果映射回成员任务：
+
+| Field | B1 | B2 | B3 | B4 | B5 |
+| --- | --- | --- | --- | --- | --- |
+| Risk / profile | `concurrency`; `tsan` | `lifetime/linearization`; `asan-ubsan` | `lifetime/serialization`; `asan-ubsan` | async caller `tsan`, static rows `none` | inherited row profile；文档对账 `none` |
+| Parameter boundary | request/attempt、取消、迟到回调 | publish 前后取消、deadline、FINALIZE 延迟 | umask、已有文件、symlink、写入失败 | caller/mode、默认路由、compatibility rejection | 每个 PO/I/FR/CD 的正负例和 candidate identity |
+| C++ selector / invariant | `Spec184AuthorityIoOwnership`, `Spec184TurnPublicationRace`; IO owner、ticket residue | `Spec184DurableOutcome`; durable journal/handle 一致、residue=0 | `Spec184CheckpointExport`; 0600、旧文件保留、loader round-trip | caller-specific C++ selectors; native default and cleanup | matrix-bound selectors; source/artifact identity、terminal cleanup |
+| Repeat / output | 每 selector 至少 2 次；独立 TSan tree | 至少 2 次；独立 ASan/UBSan tree | 至少 2 次；独立 ASan/UBSan tree | async rows 至少 2 次；按 row 输出 | 按继承 row 的预算和独立输出 |
+
+动态工具只检查内存、线程和未定义行为；参数是否满足业务契约由上述 C++ fixture/oracle
+断言。每张卡还要记录 compiler/linker、依赖和 binary digest、原始 stdout/stderr、退出码
+及首个失败边界。外部库或 ABI 不一致导致的 sanitizer 报告先记 `DYNAMIC_FAIL`/`PARTIAL`；
+不能用 `ASAN_OPTIONS` 等抑制直接升级为 `DYNAMIC_PASS`，必须在可验证的一致 ABI 构建中
+无抑制重跑。
+
 ## Code Design and Review
 
 B1：authority transport 仅在 worker 等待，将 Core 提交封送到 postToIo；Operation 字段明确

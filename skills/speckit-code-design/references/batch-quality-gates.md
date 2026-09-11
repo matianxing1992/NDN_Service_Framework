@@ -110,6 +110,33 @@ fixture/driver 和 oracle 仍必须是 C++，Python 只能编排外部设施或�
 保留首个 backtrace/日志，记录为 `DYNAMIC_FAIL`，并在下一次重试前登记改变的静态检查或
 反事实用例；不得只重复原命令。
 
+### Dynamic Gate Card
+
+动态分析是**批次级**门，不是每个小任务各自追加的行政步骤。批次在
+`READY_FOR_BATCH_TESTS` 后、启动 sanitizer/fuzz 前，必须在同一份 evidence 中冻结一张
+`Dynamic gate card`：
+
+1. 写明风险到 profile 的理由、共享 build/output 目录、编译器/链接器及依赖身份；成员
+   共享同一状态机和 selector 时只建立一棵动态树，不按任务重复构建。
+2. 把输入参数分成可变参数、边界值和故意非法值，并为每组参数登记**业务不变量**：
+   例如 request/attempt 身份绑定、终态单调性、publish 前后取消规则、IO owner、创建与
+   清理计数平衡。Sanitizer 只能发现内存/线程/未定义行为，不能判断参数在业务语义上
+   是否“理想”；这部分必须由 C++ fixture/oracle 断言。
+3. 绑定实际生产 C++ selector、最大运行时间、重复次数或 fuzz 预算，以及每个 selector
+   的预期成功/拒绝/取消结果。Python 若存在，只能启动该 executable 或编排外部设施，
+   不得代替上述断言。
+4. 记录原始 stdout/stderr、退出码、首个报告位置和 residue/timeout 结果。报告出现时
+   先保留 `DYNAMIC_FAIL`，按首个失败边界修正代码、fixture、source closure 或参数表，
+   再运行受影响 selector；重复原命令本身不是改变的门禁。
+5. 不得用 sanitizer 抑制选项隐藏报告来写 `DYNAMIC_PASS`。若外部库或 ABI 边界产生
+   工具报告，先记录未抑制日志并保持 `DYNAMIC_FAIL`/`PARTIAL`；只有改变到可验证的
+   ABI 一致 build 边界并在无抑制配置下重跑干净，才可升级为 `DYNAMIC_PASS`。仅为诊断
+   而设置的抑制必须同时写明精确选项、受影响库和为何不覆盖生产代码。
+
+这张卡把“动态工具看到了什么”和“业务参数是否满足契约”分开，避免把无报告误写成
+协议通过，也避免把动态步骤拆成大量独立任务。批末应按 selector 汇总卡片结果，而不是
+按任务数量统计动态通过数。
+
 当 Python extension 链接到仓库内的 native shared target 时，native 源码变化必须
 先重建该 shared target，再重建 extension；仅重编译或重链接 extension 不能证明
 source/link closure。批次记录应检查依赖库中包含变更符号（或等价的 source/hash

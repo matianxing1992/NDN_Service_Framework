@@ -55,6 +55,13 @@ Spec182 作为历史基线保留，状态为 TRANSFERRED / qualification INCOMPL
 可观察不变量；`NOT_RUN`、`DYNAMIC_PASS` 和 `DYNAMIC_FAIL` 单独记录，动态通过不能替代
 行为或 qualification 通过。
 
+每个逻辑批次在组合审查后维护一张 `Dynamic gate card`，统一登记参数/边界、生产 C++
+selector、业务不变量、重复或 fuzz 预算、toolchain/source identity、输出路径和失败分类。
+动态工具不能判断参数是否满足模型或协议语义；该判断必须由直接调用生产 C++ target 的
+fixture/oracle 完成。若 sanitizer 报告来自外部库或 ABI 边界，先保留未抑制日志并保持
+`DYNAMIC_FAIL`/`PARTIAL`；只有一致 ABI 构建下无抑制重跑干净，才可写 `DYNAMIC_PASS`。
+这张卡属于批次证据，不为每个小任务复制构建和报告。
+
 | Story / FR | Production entry / callers | Observable outcome | Independent oracle / C++ selector | Negative / recovery boundary | Dynamic profile / invariant | Evidence owner / path | Batch |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | US1 / FR-001 | DI/NativeAuthenticatedGrantClient.cpp → ServiceUser::RequestServiceTargeted | Core IO owner 提交，有界晚回调 | integration-tests / `di-native-requester-grant.t.cpp` / `Spec184AuthorityIoOwnership` (PLANNED)；独立线程 ID 与事件记录 | dispatch 前取消、空 ID、异常、timeout | `tsan`; IO owner、pending-call 平衡、迟到回调无副作用 | B1 实现者；evidence/ | B1 |
