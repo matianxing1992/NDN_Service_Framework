@@ -14,6 +14,17 @@
 
 ## 索引
 
+### 2026-09-11 — Spec182 Request Chain Audit / R12 Replan
+
+- **Status**: NO_DESIGN_CHANGE（产品实现 PARTIAL）；模块 NDNSF-DI，关联 T005/T010/T011/T013–T017。
+- **Source baseline**: `72b9e388cc3920b0bdcd4c36d302d63c71e7f15a`。本轮不修改产品源码、API 或冻结设计快照。
+- **Before/after**: 原执行计划累积多个旧 dispatch；现按当前请求链审计的四项缺陷和两类缺口，统一为
+  R12-A–E。修复线程、既有会话提交契约和导出行为是后续 PLANNED 工作，不写为当前已修复行为。
+- **Evidence**: [静态审计](../specs/182-native-di-python-bindings/evidence/request-chain-static-audit-20260911.md)、
+  [R12 调度](../specs/182-native-di-python-bindings/contracts/audit-driven-execution.md)、[tasks](../specs/182-native-di-python-bindings/tasks.md)。
+- **PDF boundary**: 没有 API/目标设计变更，不重新生成双 PDF，不覆盖独立冻结的当前/目标快照；
+  修复实施时仍须按 MANAGEMENT.md 同步实际行为与源码摘要。本次文档 checkpoint 由 Git 历史定位。
+
 ## Spec182：Native-First Execution（2026-09-10）
 
 - 状态 PLANNED；模块 DI；TG-02 增补独立 artifact authority 和 N1–N5 顺序。原先允许生产 requester 内置 issuer、将 process tests 统一留给 T016 的规则被取代。
