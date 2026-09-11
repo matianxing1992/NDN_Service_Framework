@@ -24,35 +24,35 @@ Provider 身份。这里的保密对象是缺少相应解密能力的外部
 节点可以获取或缓存加密的 Request Data，而不获得解密权限。
 交付与披露的分离也适用于其他内容加密方案，并非 ABE 独有。
 
-\paragraph{理由二：复用服务权限管理。}
-不同实体可以拥有相互交叠的服务权限。例如，一个 User 可使用观察和检测服务，
-另一个可使用检测和地图服务。NDNSF 可以将这些服务集合编码到各自签发的策略
-密钥中，而无需改变 User 的身份签名凭证。不同服务的内容仍保持各自的加密范围；
-在密钥中聚合权限，不等于把所有服务的内容合并到同一加密范围。
+\paragraph{理由二：在服务调用中复用基于属性的权限。}
+保密发现本身不足以论证 ABE-backed 执行授权：ABE 加密也可以配合基于角色的
+调用检查。NDNSF 选择通过已有的属性授权机构管理 Provider 和 User 两类服务
+权限，并将这些权限与身份签名凭证分离。
 
-KP-ABE 将属性关联到密文，将访问策略编码到解密密钥
-（DKEY）中~\cite{dulal2023nacabe}。NDNSF 使用
-\texttt{/SERVICE/<service>} 表示 Provider 的服务解密权限，使用
-\texttt{/PERMISSION/<service>} 表示 User 的调用相关解密权限。在同一授权
-机构和 ABE 参数代际内，一个实体的多项服务权限被合并为 OR 策略，编码到
-单独为该实体签发的 DKEY 中，同时复用其身份签名凭证。
-Trust Schema 规定 Data 名称与允许签名的密钥名称之间的关系；验证器应用这些
-规则并检查至信任锚的证书链。Schema 本身不限制谁能读取复制后的 Content~\cite{trustschema}。
-它可以表达细粒度签名规则，也可以配合加密。NAC 同样通过内容加密和密钥分发
-保护分布式数据~\cite{nac}。此处选择 ABE 的理由是权限聚合与相关管理机制的复用，
-而不是缓存密文或凭证复用只有 ABE 才能支持。
+Provider 权限决定其能否获取 Requester Challenge，User 权限决定其能否获取
+Provider Challenge。NDNSF 将返回的 challenge 值与签名、当前权限及请求状态
+一起检查（第~\ref{sec:authorization-withdrawal-ch} 节）。因此，解密能力只是
+调用检查的一部分，不代表可以执行任意请求。
 
-DNMP 通过角色签名
-密钥和 Trust Schema 约束命令的目标与动作~\cite{dnmp}。已有角色可以覆盖多项
-权限；不同权限需求可能要求调整角色分配、凭证或规则，但不意味着每项服务
-都必须建立新角色。
+KP-ABE 将属性关联到密文，将访问策略编码到解密密钥（DKEY）
+中~\cite{dulal2023nacabe}。NDNSF 使用 \texttt{/SERVICE/<service>} 表示
+Provider 访问权限，使用 \texttt{/PERMISSION/<service>} 表示 User 访问权限。
+在同一授权机构和参数代际内，一个实体的多项服务权限可以合并到为其单独签发
+的 DKEY 中。例如，一个 User 的策略允许检测 OR 地图服务，另一个仅允许检测
+服务；这些不同的服务集合不需要通过改变身份签名凭证来表示，各服务的密文仍
+使用各自的服务属性。
 
-因此，本比较采用第~\ref{sec:dnmp-alternative-ch} 节的 DNMP-inspired 对照方案，
-配合独立内容加密。ABE 将服务权限
-策略与身份签名凭证分离；DNMP-inspired 设计则通过角色分配和信任规则表达权限。
+DNMP 则通过角色签名密钥与 Trust Schema 约束命令目标和动作~\cite{dnmp}。
+在第~\ref{sec:dnmp-alternative-ch} 节的 DNMP-inspired 对照方案中，若保留
+ABE 保护发现描述，就需要同时管理解密权限和基于角色的调用权限。NDNSF 在
+两类服务级检查中复用属性授权机构，无需仅为表示服务成员资格而增加角色签名
+凭证；验证 Data 签名所需的信任规则仍须保留。
 
-两类设计的凭证成本都不是固定的。ABE 仍需签发和更新 DKEY，成本可能随策略
-复杂度增长。角色方案也能复用凭证，因此凭证数量本身不足以证明总成本更低。
+这是复用管理机制的理由，并非已证明的成本优势。Provider 与 User 权限仍然
+不同；发现加密并不已经提供 User 权限 DKEY 或 challenge 处理。DKEY 签发、
+策略更新与撤销仍有成本。DNMP 的角色和签名凭证也可以覆盖多项权限；若策略
+需要限制命令参数，其 Schema 检查可能比 NDNSF 的服务级检查更合适。评价应
+在相同策略粒度下比较凭证更新和调用开销。
 
 \subsection{授权机制、生命周期与成本}
 \label{sec:authorization-withdrawal-ch}

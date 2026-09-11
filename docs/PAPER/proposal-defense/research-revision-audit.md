@@ -1,5 +1,38 @@
 # Research-first Proposal Revision and Evidence Audit
 
+## 2026-09-11 Reason 2 Management Reuse
+
+本轮只修订中英文 Reason 2；Reason 1 及后续生命周期章节逐字保持不变。
+原段落将权限聚合、Trust Schema 基础知识、缓存保密性和 DNMP 对比混在一起，
+没有解释发现加密为何支持选择 ABE-backed 调用授权。新段落明确区分两个设计
+决定：先保护发现描述，再选择复用属性授权机构来管理 Provider 与 User 的
+服务权限。challenge、签名、当前权限及请求状态共同构成检查，不能把解密
+等同于任意执行权限；具体握手继续由下一小节说明。
+
+源码核对：`ServiceController::addAttributesForUsersAccordingToServicePolicy`
+分别从 Provider/User 服务集合生成 `/SERVICE`、`/PERMISSION` 属性，并按身份
+合并 OR 策略交给属性授权机构。`ServiceUser.cpp` 的 ACK 处理匹配当前请求的
+UserToken；`ServiceProvider.cpp` 的 ACK 构造携带两个 challenge，Selection
+处理保留 challenge／状态检查。本轮仅静态核对，未运行产品测试。
+
+文献核对：[NAC-ABE 2023](https://arxiv.org/pdf/2311.07299) 支持 KP-ABE
+密文属性／DKEY 策略的区分；[DNMP 2019](https://conferences.sigcomm.org/acm-icn/2019/proceedings/icn19-20.pdf)
+第 3.3 节及图 8 说明角色密钥、命令目标与参数、Schema 匹配和最小权限密钥选择。
+论文引用保留 `dulal2023nacabe` 和 `dnmp`，未增加不相关文献。
+“ABE 发现 + DNMP-inspired 调用授权”明确是本研究的对照适配，非原版 DNMP
+已有功能；角色和签名凭证可以复用，不能推导每服务必须新增角色或证书。
+ABE 方案复用的是管理设施，不是已经承担全部授权成本；User DKEY、challenge、
+更新与撤销成本仍需计入，参数级策略也不能与服务级策略直接比较。
+
+ARS 与 edit-article 用于局部论证修订和去除重复，不作整篇资格认证。
+Context Mode project health 通过；当前论证以维护中的正文、源码和一手论文为准。
+四个正文入口编译通过，英文 30 页／中文 23 页，同语言入口文本一致；无
+overfull、缺字或未定义引用，316 条 underfull 排版提示保留。Reason 2 及续页
+中英文截图无裁切或重叠，全页文字边界检查通过。当前证据为
+`reason2_revision` 与 `.codex-tmp/proposal-reason2-20260911/`。
+slides、实验及产品资格状态不变，现有并行源码修改未纳入本轮。
+下一步是按相同服务权限粒度设计 RQ1 成本对照，不能将此处逻辑分析写成实测优势。
+
 ## 2026-09-11 Introduction Focus
 
 删除引言中 gRPC 名称解析的配置细节，保留评价章节的能力边界及引用。

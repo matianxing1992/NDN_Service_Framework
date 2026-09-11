@@ -56,6 +56,13 @@ MiniNDN、YOLO 或 Qwen 全量运行。YOLO26n 当前输入 preflight（Y-A）�
 Qwen qualification。A0→A1→A2→A4 顺序和外部 A3 已写入 [remainder audit](evidence/remainder-audit-20260911.md)。
 T007 继续 `IN_PROGRESS`/`PARTIAL`，T008 仍 `NOT_STARTED`。
 
+2026-09-11 **PROPOSAL-REASON2 / DOCUMENT_PASS**：局部重写双语 ABE 理由二，明确
+属性权限管理复用、challenge 调用检查、身份签名凭证独立性及 DNMP 对照的成本
+边界；理由一和后续章节源码保持不变。四入口编译、同语言 PDF 文本一致性、
+全页文字边界及修订页截图检查通过，英文 30 页／中文 23 页。证据见
+[Reason 2 audit](../../docs/PAPER/proposal-defense/research-revision-audit.md)
+及 `reason2_revision`。不修改 slides／产品 API，不运行实验或推进 T007/T008。
+
 2026-09-11 **PROPOSAL-INTRO-FOCUS / DOCUMENT_PASS**：删除双语引言中突兀的 gRPC
 名称解析细节，保留后文基线能力说明与引用，衔接 NDN 计算／调用和 DNMP 授权先例。
 四个正文入口构建、同语言文本一致性、引言范围和后文引用、全页文字边界与引言

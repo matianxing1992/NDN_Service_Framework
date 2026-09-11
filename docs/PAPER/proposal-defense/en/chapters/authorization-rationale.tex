@@ -34,43 +34,45 @@ Encrypted Request Data can be retrieved or cached without granting decryption
 access. This separation of delivery from disclosure also holds for other
 content-encryption schemes; it is not unique to ABE.
 
-\paragraph{Reason 2: reusing service-permission management.}
-Different entities may hold overlapping service entitlements. For example,
-one User may invoke observation and detection services, while another may
-invoke detection and mapping services. NDNSF can encode these service sets
-in separately issued policy keys without changing the Users' identity-signing
-credentials. Service-scoped content remains separately encrypted; aggregating
-permissions in a key does not merge all services into one encryption scope.
+\paragraph{Reason 2: reusing attribute-based permissions for service invocation.}
+Confidential discovery alone does not justify ABE-backed execution authorization:
+ABE encryption could instead be combined with role-based invocation checks.
+NDNSF chooses to administer both Provider and User service permissions through
+the existing attribute-authority infrastructure, separately from identity-signing
+credentials.
 
-In KP-ABE, ciphertext is associated with attributes and a decryption key (DKEY)
-encodes an access policy~\cite{dulal2023nacabe}. NDNSF associates Provider access
-with \texttt{/SERVICE/<service>} and User access with
-\texttt{/PERMISSION/<service>}. Within one authority and ABE parameter
-generation, it combines an entity's service entitlements into an OR policy for
-its individually issued DKEY, while reusing its identity-signing credentials.
-Trust Schema specifies permitted relationships between Data names and signing
-key names; a validator applies those rules and checks the chain to a trust anchor.
-The schema by itself does not restrict who can read copied Content~\cite{trustschema}.
-It can express fine-grained signing rules and be combined with encryption.
-NAC also protects distributed content through encryption and key
-distribution~\cite{nac}. The rationale for ABE here is permission aggregation
-and reuse of the associated management mechanism, not exclusive support for
-cached ciphertext or credential reuse.
+Provider permissions determine access to the Requester Challenge; User permissions
+determine access to the Provider Challenge. NDNSF checks the returned challenge
+values together with signatures, current permissions, and request state
+(Section~\ref{sec:authorization-withdrawal}). Decryption is therefore one part of
+the invocation check, not permission to execute any request.
 
-DNMP constrains command targets and actions through role signing keys
-and a Trust Schema~\cite{dnmp}. Existing roles may cover several permissions;
-different entitlements may require changes to role assignments, credentials,
-or rules, not necessarily one new role per service.
+KP-ABE associates attributes with ciphertext and an access policy with each
+decryption key (DKEY)~\cite{dulal2023nacabe}. NDNSF uses
+\texttt{/SERVICE/<service>} for Provider access and
+\texttt{/PERMISSION/<service>} for User access. Within one authority and parameter
+generation, an entity's service permissions can be combined in one individually
+issued DKEY. For example, one User's policy can allow detection OR mapping,
+while another allows detection only. Their identity-signing credentials need
+not change to represent these different service sets; each service retains its
+own ciphertext attribute.
 
-The comparison therefore uses the DNMP-inspired alternative in
-Section~\ref{sec:dnmp-alternative}, with separate content encryption.
-ABE separates service-permission policies from
-identity-signing credentials; DNMP-inspired designs express permissions through
-role assignments and trust rules.
+DNMP instead uses role signing keys and a Trust Schema to constrain command
+targets and actions~\cite{dnmp}. In the DNMP-inspired alternative
+(Section~\ref{sec:dnmp-alternative}), retaining ABE for discovery would require
+managing both decryption permissions and role-based invocation permissions.
+NDNSF uses the attribute-authority infrastructure for both service-level checks,
+without adding role signing credentials solely to represent service membership.
+Trust rules for validating Data signatures remain necessary.
 
-Neither design has a fixed credential cost. ABE requires DKEY issuance and
-updates, with costs that can grow with policy complexity. Role-based designs
-can reuse credentials; credential counts alone do not establish lower total cost.
+This is a management-reuse rationale, not a demonstrated cost advantage.
+Provider and User permissions remain distinct; discovery encryption does not
+already supply User permission DKEYs or challenge processing. DKEY issuance,
+policy updates, and revocation still incur costs. DNMP roles and signing
+credentials can also cover several permissions. For policies requiring
+command-argument restrictions, its schema-based checks may be a better fit than
+NDNSF's service-level checks. The evaluation must compare both designs at the
+same policy granularity, including credential updates and invocation overhead.
 
 \subsection{Authorization Mechanisms, Lifecycle, and Costs}
 \label{sec:authorization-withdrawal}
