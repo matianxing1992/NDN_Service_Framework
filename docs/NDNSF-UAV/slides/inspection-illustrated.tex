@@ -1,4 +1,4 @@
-% Shared six-slide body; included by UPDATES.tex.
+% Shared four-slide body; included by UPDATES.tex.
 \begin{frame}{A Controlled Task: Collect Useful Views of One Car}
 \small Remote visual check: an operator requests rear, roof and front views of one parked car before a deadline.
 \vspace{.4em}
@@ -74,40 +74,6 @@ Multi-view result & Images supplied to a detector & Same-car association, reques
 \end{tabular}
 \claim{Start with verified, complementary images. Damage diagnosis and 3-D reconstruction require separate algorithms and validation.}
 \evidence{Candidate tools: \href{https://mavsdk.mavlink.io/main/en/cpp/index.html}{MAVSDK control/telemetry}; \href{https://docs.opencv.org/4.13.0/d9/d0c/group__calib3d.html}{OpenCV calibration/geometry}. Hardware support and integration remain to be verified.}
-\end{frame}
-
-\begin{frame}{Close One Physical Loop Before Adding More UAVs}
-\centering
-\begin{tikzpicture}[font=\small,
- b/.style={draw=Navy,rounded corners,fill=Blue!6,text width=2.45cm,minimum height=1.1cm,align=center}]
-\node[b](p) at (0,0){Locate + plan\\Car location and aircraft pose};
-\node[b](m) at (3.3,0){Move + point\\Observe arrival and gimbal angle};
-\node[b](c) at (6.6,0){Capture + check\\Frame, timestamp, visibility};
-\node[b,draw=Green,fill=Green!7](o) at (9.9,0){Publish + analyze\\Verified view + metadata};
-\foreach \a/\b in {p/m,m/c,c/o}{\draw[-{Stealth},thick,Navy](\a)--(\b);}
-\draw[-{Stealth},thick,Orange](c.south)--++(0,-.8)-| node[pos=.25,below,font=\scriptsize]{Bad view: bounded retry or explicit failure}(m.south);
-\end{tikzpicture}
-\vspace{1.5em}
-\begin{itemize}
-\item A camera command acknowledgement is not capture success: check the image and measured pose.
-\item Match each image to the same car and requested view; reject stale or unusable frames.
-\item Keep stabilization and safety rejection onboard, independent of network delays.
-\end{itemize}
-\evidence{Proposed feedback loop: reject stale pose, missing frames and exhausted deadlines.}
-\end{frame}
-
-\begin{frame}{Test Camera Benefit and Framework Benefit Separately}
-\small
-\renewcommand{\arraystretch}{1.35}
-\begin{tabular}{>{\RaggedRight\arraybackslash}p{.25\textwidth}>{\RaggedRight\arraybackslash}p{.33\textwidth}>{\RaggedRight\arraybackslash}p{.32\textwidth}}
-\textbf{Question}&\textbf{Comparison}&\textbf{Measure}\\\hline
-Are extra UAVs useful? & One UAV visits all views vs. multiple UAVs & Useful-view coverage, completion time, total energy\\
-Does selection help? & Fixed assignments vs. runtime selection; same fleet & Completion under Provider loss, deadline misses, network bytes\\
-\end{tabular}
-\vspace{.5em}
-\textbf{Route:} camera bench $\rightarrow$ flight simulation $\rightarrow$ one real UAV $\rightarrow$ multiple UAVs.
-\claim{Fix the scene, views and deadline. Label visibility independently; include failed runs.}
-\evidence{Planned ablation, no measured advantage. Match cameras, models and workload; include ground compute. This is not a comparison with other frameworks.}
 \end{frame}
 
 \begin{frame}{Candidate Hardware for the First Camera Bench Test}

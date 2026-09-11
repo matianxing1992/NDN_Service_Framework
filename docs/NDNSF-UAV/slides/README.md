@@ -9,16 +9,16 @@ Canonical files:
 - `main.pdf`: compiled 16:9 PDF.
 
 The separate inspection update deck uses `UPDATES.tex` as its editable content.
-Its concise six-slide body and editable TikZ car-inspection scene are in `inspection-illustrated.tex`; the last slide introduces candidate gimbal hardware.
+Its concise four-slide body and editable TikZ car-inspection scene are in `inspection-illustrated.tex`; the last slide introduces candidate gimbal hardware.
 `UPDATES_UAV.tex` includes that source under the requested export name;
 `UPDATES.pdf` and `UPDATES_UAV.pdf` must contain the same slides. The 2026-09-10
 revision adds simulation-to-field gaps and proposed hardware/perception validation
 stages. It does not report flight qualification. See
 [revision and validation record](UPDATES_UAV-review.md).
 
-The 2026-09-11 revision defines a bounded useful-view task, permits ground or
-airborne analysis, and separates the value of extra cameras from the value of
-runtime service selection. The six-page layout and final product-photo page remain.
+The latest 2026-09-11 revision removes former pages 4 and 5 (physical loop and
+evaluation), as requested. It retains the task, NDNSF rationale, simulation gaps,
+and product-photo page, now numbered 1 through 4.
 
 To regenerate the update deck without mixing temporary files into the source:
 

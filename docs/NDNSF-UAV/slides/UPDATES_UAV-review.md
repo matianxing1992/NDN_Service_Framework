@@ -1,5 +1,13 @@
 # UAV Simulation-to-Field Revision
 
+## Current Revision: Remove Former Pages 4 and 5 — 2026-09-11
+
+按用户要求删除 physical loop 与 evaluation 两页；保留原第1/2/3/6页，重新编号为1–4。
+同步可编辑源及两份 PDF。双遍 pdfLaTeX 构建成功、最终日志无排版警告，Poppler 全4页渲染核对通过。
+首轮因输出目录相对路径不正确而无法创建日志，修正为仓库绝对输出目录后通过；未改变内容重试。
+构建产物保留在 `.codex-tmp/uav-remove-p4-p5-20260911/`，构建驱动日志在 `/tmp/uav-remove-p4-p5-pass*.log`。
+被删内容可从 Git 历史恢复；无产品/API 或实验状态变化。以下为历史版本记录。
+
 ## Current Revision: Bounded Task and Measurable Value — 2026-09-11
 
 判断：停放汽车适合作为可控的系统集成/协作验证对象，目标静止、所需视图和可见性容易独立标注；
