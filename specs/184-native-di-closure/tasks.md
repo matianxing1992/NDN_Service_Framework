@@ -17,7 +17,7 @@
 | [T004 Atomic Private Checkpoint Export](evidence/b3-checkpoint-export-20260911.md) | DONE | B2 exit | B3 normal and unsuppressed ASan/UBSan exits complete; directory-fsync failure remains an explicit implementation limit | 2026-09-11 |
 | [T005 Maintained Caller Mode Closure](evidence/b4-caller-convergence-20260911.md) | DONE | B1–B3 exits | Caller/mode matrix and focused route selectors complete; D2b runtime miss, real-model/no-Python and retirement remain in B5 | 2026-09-11 |
 | [T006 Inherited Obligation and Harness Closure](contracts/qualification-matrix.md) | DONE | B4 exit | 80-row matrix has one explicit owner, status, evidence path and remaining boundary per inherited row; current candidate identity and fresh convergence are recorded. Open runtime/model/external rows are explicitly transferred to T007/T008, not hidden in the registry | 2026-09-11 |
-| [T007 Current Native Qualification](contracts/promotion-candidate.md) | IN_PROGRESS | T006 complete and fresh convergence `PASS_FOR_T007_PRECONDITION` | Current candidate full unit/integration exits are `0`; C++ unary/stream/conversation/recovery/replacement/grant process cases, candidate-bound I02–I08 counterexample statuses, I02–I08 dynamic behavior samples, no-Python ELF closure, repaired tiny-ONNX sanitizer selectors and bounded root `PO-001-stream` owner are recorded in [process qualification refresh](evidence/t007-process-qualification-20260911.md). Non-root owner preflight remains `UNQUALIFIED` at `MININDN_REQUIRES_ROOT`; I05 remains an intentional `UNQUALIFIED` observation boundary, while broader negative/model, Python-retirement and external rows remain | 2026-09-11 |
+| [T007 Current Native Qualification](contracts/promotion-candidate.md) | IN_PROGRESS | T006 complete and fresh convergence `PASS_FOR_T007_PRECONDITION` | Current candidate full unit/integration exits are `0`; C++ unary/stream/conversation/recovery/replacement/grant process cases, candidate-bound I02–I08 counterexample statuses, I02–I08 dynamic behavior samples, no-Python ELF closure, repaired tiny-ONNX sanitizer selectors and bounded root `PO-001-stream` owner are recorded in [process qualification refresh](evidence/t007-process-qualification-20260911.md). The remaining exits are ordered in [remainder audit](evidence/remainder-audit-20260911.md): current-candidate receipt `OPEN`, YOLO Y-A/Y-B/Y-N `NOT_RUN`, Qwen3.6-27B `WAITING_EXTERNAL_INPUT` because this host can run only Qwen3-0.6B smoke, and inherited negative/retirement rows `PARTIAL`. Non-root owner preflight remains `UNQUALIFIED` at `MININDN_REQUIRES_ROOT`; I05 remains an intentional `UNQUALIFIED` observation boundary | 2026-09-11 |
 | [T008 Native Development Handoff](plan.md) | NOT_STARTED | T007 `QUALIFICATION_PASS` | Design/API handoff and external experiment transfer remain pending | 2026-09-11 |
 
 ## Logical Batch Progress
@@ -28,9 +28,33 @@
 | B2 | DYNAMIC_PASS / CLOSED_FOR_VALIDATION | `asan-ubsan` PASS；durable handle/journal 一致、publish 后终态不降级、residue=0 | T003 已完成；进入 B3/T004 |
 | B3 | DYNAMIC_PASS / CLOSED_FOR_VALIDATION | `asan-ubsan` PASS；原子 export、symlink refusal、pre-rename failure preservation、loader smoke | T004 已完成；进入 B4/T005 |
 | B4 | CLOSED_FOR_VALIDATION / PARTIAL | caller rows use `none` with reason; inherited B1/B2 profiles cover shared async owners | T005 matrix/route closure complete；D2b runtime miss、real model/no-Python and retirement remain T006/T007 |
-| B5 | IN_PROGRESS / T006/T007 PARTIAL | one bounded dynamic sample per distinct inherited risk/behavior class；Provider-host unsuppressed ASan/UBSan PASS；observed-offer parser sample PASS；I02 ownership-cycle and 16-case tiny-ONNX sanitizer samples PASS | current candidate unit/integration exits `0`; C++ process/no-Python refresh, I02–I08 dynamic samples, candidate-bound I02–I08 counterexample statuses and authorized root `PO-001-stream` owner are PASS for bounded rows, while I05 collector boundary is `UNQUALIFIED` and non-root privilege preflight remains `UNQUALIFIED`; broader negative/model, Python-retirement and external closure remain → T007 qualification → T008 handoff |
+| B5 | IN_PROGRESS / T006/T007 PARTIAL | one bounded dynamic sample per distinct inherited risk/behavior class；Provider-host unsuppressed ASan/UBSan PASS；observed-offer parser sample PASS；I02 ownership-cycle and 16-case tiny-ONNX sanitizer samples PASS | current candidate unit/integration exits `0`; C++ process/no-Python refresh, I02–I08 dynamic samples, candidate-bound I02–I08 counterexample statuses and authorized root `PO-001-stream` owner are PASS for bounded rows. The remaining gates are tracked in the [T007 remainder ledger](evidence/remainder-audit-20260911.md): A0 receipt → A1 YOLO Y-A → A2 YOLO Y-B/Y-N → A4 inherited negative/retirement; A3 Qwen3.6-27B is external because this host only supports 0.6B smoke. I05 collector boundary is `UNQUALIFIED`; T008 remains blocked by T007 |
+
+### T007 Remainder Exit Ledger
+
+本表是 T007 当前可执行出口，按依赖排序；已关闭的 B1–B4、C++ sweep、bounded samples 和
+Python harness 不因本表再次无条件重跑。`Qwen3-0.6B` 只能作为 C++ smoke/ABI fixture，不能
+替代契约要求的 `Qwen/Qwen3.6-27B` qualification row。
+
+| Gate | Status | Dependency / owner | Exit evidence required | Next action |
+| --- | --- | --- | --- | --- |
+| T007-A0 current-candidate runtime receipt | `OPEN` | local build owner | Fresh `spec180-native-build.json` or explicitly equivalent receipt binding `build-spec184-b5-candidate`, compiler/dependency identity and candidate-first requester/provider paths | Produce and bind the current receipt; historical `build-system-j2` default is insufficient |
+| T007-A1 YOLO26n Y-A | `NOT_RUN` | local root MiniNDN owner; depends A0 | Native numerical oracle, terminal result, child exits, cleanup and current candidate identity | Run one fresh Y-A case after A0 |
+| T007-A2 YOLO26n Y-B/Y-N | `NOT_RUN` | local root MiniNDN owner; depends A1 | Protected and declared negative permutations with first-failure classification and cleanup | Run Y-B, then the declared Y-N cases |
+| T007-A3 Qwen3.6-27B | `WAITING_EXTERNAL_INPUT` | experiment owner; external model/runtime | Signed three-stage `Qwen/Qwen3.6-27B` manifest, tokenizer, CUDA runtime, model identity and result evidence | Execute on the experiment machine when the exact model is available; do not relabel 0.6B |
+| T007-A4 inherited negative/retirement rows | `PARTIAL` | local C++ owner plus matrix owner | Complete row evidence with selector/owner, candidate identity, child exit, cleanup and first-failure boundary; repair I05 collector evidence if possible | Close only rows whose declared evidence is complete |
+| T008 native development handoff | `BLOCKED_BY_T007` | documentation owner; depends T007 qualification pass | Final candidate map, local qualification result and external rows explicitly marked `TRANSFERRED` | Do not start handoff or mark Spec184 complete before T007 passes |
 
 ## Current Checkpoint
+
+2026-09-11 **T007-REMAINDER-AUDIT / PARTIAL**：本轮只读复核并重排 T007 剩余出口，未启动
+MiniNDN、YOLO 或 Qwen 全量运行。YOLO26n 当前输入 preflight（Y-A）已通过，日志见
+`spec184-yolo-preflight-20260911-r7.log`，但 current candidate 缺少
+`build-spec184-b5-candidate/spec180-native-build.json`，native build guard 首边界为
+`SPEC180_NATIVE_IDENTITY_REJECTED`，所以 Y-A 仍为 `NOT_RUN`。本机无法执行契约要求的
+`Qwen/Qwen3.6-27B`，仅有 `Qwen3-0.6B`；后者只能记录为 C++ smoke/ABI fixture，不能关闭
+Qwen qualification。A0→A1→A2→A4 顺序和外部 A3 已写入 [remainder audit](evidence/remainder-audit-20260911.md)。
+T007 继续 `IN_PROGRESS`/`PARTIAL`，T008 仍 `NOT_STARTED`。
 
 2026-09-11 **PROPOSAL-INVOCATION-SCOPE / DOCUMENT_PASS**：按作者确认的初版多候选选一
 范围，整体区分调用基础与多角色协作扩展；更新摘要、正文、RQ、协议表、结论和 slides。

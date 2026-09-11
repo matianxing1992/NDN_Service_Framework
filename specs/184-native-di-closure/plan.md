@@ -11,9 +11,11 @@
 T006 的 qualification matrix、fresh candidate 和 convergence audit 已记录，fresh C++ unit/
 integration、observed-offer parser sample、repaired tiny-ONNX sanitizer batch 与 bounded root
 `PO-001-stream` owner 已通过；YOLO/Qwen 会话/恢复/替换、grant process 和 no-Python ELF closure
-也已在 [T007 process refresh](evidence/t007-process-qualification-20260911.md) 绑定。下一
-dispatch 继续 T007 的继承行、sanitizer、no-Python 和负例收敛，不重跑已关闭的
-B1–B4 focused work。
+也已在 [T007 process refresh](evidence/t007-process-qualification-20260911.md) 绑定。当前剩余
+出口按 [T007 remainder audit](evidence/remainder-audit-20260911.md) 排为
+`A0 current-candidate receipt → A1 YOLO Y-A → A2 YOLO Y-B/Y-N → A4 inherited rows`；A3
+`Qwen/Qwen3.6-27B` 等待实验机，因本机只能运行 `Qwen3-0.6B`，0.6B 只允许作 C++ smoke/ABI
+fixture。下一 dispatch 只推进该顺序，不重跑已关闭的 B1–B4 focused work。
 具体缺陷的源码位置、触发条件与反例沿用冻结的
 [request-chain audit](../182-native-di-python-bindings/evidence/request-chain-static-audit-20260911.md)。
 旧 R12 批次映射为184 B1–B5；未完成的组件验收同样进入 B5，并非只搬四个 finding。
@@ -41,7 +43,7 @@ Promotion candidate、change-plane invalidation 和 design-code convergence 规�
 | B2 Durable outcome | T003 | B1 | `asan-ubsan`; handle/journal 生命周期、publish 后终态一致、residue=0 | publish 前后取消、deadline、close 与持久记录/handle 一致 |
 | B3 Secure export | T004 | B2；技术上独立，默认顺序执行 | `asan-ubsan`; 临时文件/loader 生命周期、失败保留旧 checkpoint | 0600 原子导出、失败保留、loader round-trip |
 | B4 Caller convergence | T005 | B1–B3 | caller/launcher rows `none` with reason; inherited B1/B2 profiles cover shared async owners | caller/mode matrix 闭合，当前 route/provider/Qwen selectors 有 focused exit；D2b/real-model/no-Python 留 B5 |
-| B5 Qualification and handoff | T006/T007/T008 | B4；矩阵盘点可提前只读进行 | one bounded dynamic sample per distinct inherited risk/behavior class; `none` for documentation-only reconciliation | qualification matrix 完整、fresh convergence audit `PASS` 后才可开始 T007；本地资格通过，外部边界明确 |
+| B5 Qualification and handoff | T006/T007/T008 | B4；矩阵盘点可提前只读进行 | one bounded dynamic sample per distinct inherited risk/behavior class; `none` for documentation-only reconciliation | qualification matrix 完整、fresh convergence audit `PASS` 后才可开始 T007；已通过的本地 bounded rows 与仍开放的真实模型/外部边界分开记录 |
 
 ### Dynamic Validation Card
 
