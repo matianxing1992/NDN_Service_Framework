@@ -7,7 +7,7 @@
 ## Execution Progress
 
 2026-09-10 D-UAV-SLIDES / **CLOSED_FOR_VALIDATION**（独立文档单元）：用户要求的
-UAV update PDF 已补充模拟到真实硬件/感知闭环的差距与阶段验收；10 页双遍构建、
+UAV update PDF 已补充模拟到真实硬件/感知闭环的差距与阶段验收；后续按用户要求压缩为 5 页并新增可编辑场景图，双遍构建、
 最终日志及全页渲染通过。[证据](../../docs/NDNSF-UAV/slides/UPDATES_UAV-review.md)。
 无 DI/UAV 产品代码或 API 变化，不推进 Spec182 native、T016/T017 或 UAV 飞行资格。
 

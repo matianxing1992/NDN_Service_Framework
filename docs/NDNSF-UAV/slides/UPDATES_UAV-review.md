@@ -1,5 +1,17 @@
 # UAV Simulation-to-Field Revision
 
+## Current Revision: Five Illustrated Slides
+
+按用户后续要求将 10 页压缩为 5 页，移除独立标题页、重复说明和参考文献专页，
+保留场景、NDNSF 职责、三个真实部署缺口、物理反馈闭环、四阶段落地路线。
+正文迁至 `inspection-illustrated.tex`，由原入口共享；所有图形与文字均为可编辑 TikZ/TeX。
+新增三架带云台相机的 UAV 观察地面设施的场景图，分别标出 GPS/IMU、相机视锥、
+GPU Analyzer 和地面站；橙色为视线，绿色为应用数据流，不作为飞行航线或实飞证据。
+原科学边界保持：已知 GPS 不保证目标可见，控制 ACK 不代表成功采集，多张检测结果不等于融合识别。
+以下十页审阅为历史记录，不代表当前页数。当前最终构建与渲染结果见本节末尾。
+
+Validation：5 页 pdfLaTeX 连续两遍构建，最终无 Overfull/Underfull/Warning；Poppler 全页渲染人工核对，场景底部标签重叠已修正并复查。源码和两份同内容 PDF 同步；记录与预览保存在 `.codex-tmp/uav-short-illustrated/`。未运行产品实验，未推进任何 native 或飞行资格。下一步仍为单相机/云台台架闭环。
+
 ## Scope
 
 用户授权修订 `UPDATES_UAV.pdf`，解释模拟案例距离真实 UAV 多视角检查的差距与实现路径。

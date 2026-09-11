@@ -9,6 +9,7 @@ Canonical files:
 - `main.pdf`: compiled 16:9 PDF.
 
 The separate inspection update deck uses `UPDATES.tex` as its editable content.
+Its concise five-slide body and editable TikZ scene are in `inspection-illustrated.tex`.
 `UPDATES_UAV.tex` includes that source under the requested export name;
 `UPDATES.pdf` and `UPDATES_UAV.pdf` must contain the same slides. The 2026-09-10
 revision adds simulation-to-field gaps and proposed hardware/perception validation
