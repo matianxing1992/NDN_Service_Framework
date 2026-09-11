@@ -1,6 +1,6 @@
 # Implementation Plan: Native DI Closure
 
-**Branch**: Experimental | **Date**: 2026-09-11 | **Status**: IN_PROGRESS / B5 component and full-unit exits recorded; integration qualification pending
+**Branch**: Experimental | **Date**: 2026-09-11 | **Status**: IN_PROGRESS / fresh C++ unit-integration and bounded PO-001 owner exits recorded; qualification remains partial
 **Migration baseline**: `6f603491`；产品审计源码 `72b9e388cc3920b0bdcd4c36d302d63c71e7f15a`。
 **Authority**: [spec](spec.md)、[tasks](tasks.md)、[transfer](contracts/transfer-matrix.md)、
 [promotion candidate](contracts/promotion-candidate.md)、[qualification matrix](contracts/qualification-matrix.md)。
@@ -8,7 +8,10 @@
 ## Summary
 
 本 Spec184 承接182未完成工作，不复制其庞大时间线。B1–B4 已形成可复核的局部出口；
-下一 dispatch 为 B5/T006 的 qualification matrix 对账与缺口收敛。
+T006 的 qualification matrix、fresh candidate 和 convergence audit 已记录，fresh C++ unit/
+integration 与 observed-offer parser sample 已通过，bounded root `PO-001-stream` owner 也已
+通过。下一 dispatch 继续 T007 的继承行、sanitizer、no-Python 和负例收敛，不重跑已关闭的
+B1–B4 focused work。
 具体缺陷的源码位置、触发条件与反例沿用冻结的
 [request-chain audit](../182-native-di-python-bindings/evidence/request-chain-static-audit-20260911.md)。
 旧 R12 批次映射为184 B1–B5；未完成的组件验收同样进入 B5，并非只搬四个 finding。
@@ -45,9 +48,9 @@ Promotion candidate、change-plane invalidation 和 design-code convergence 规�
 
 | Field | B1 | B2 | B3 | B4 | B5 |
 | --- | --- | --- | --- | --- | --- |
-| Risk / profile | `concurrency`; `tsan` | `lifetime/linearization`; `asan-ubsan` | `lifetime/serialization`; `asan-ubsan` | async caller `tsan`, static rows `none` | inherited row profile；文档对账 `none` |
+| Risk / profile | `concurrency`; `tsan` | `lifetime/linearization`; `asan-ubsan` | `lifetime/serialization`; `asan-ubsan` | async caller `tsan`, static rows `none` | inherited row profile；observed-offer parser `parser-fuzz`; documentation reconciliation `none` |
 | Parameter boundary | request/attempt、取消、迟到回调 | publish 前后取消、deadline、FINALIZE 延迟 | umask、已有文件、symlink、写入失败 | caller/mode、默认路由、compatibility rejection | 不同继承 risk/behavior class 的正负样本；未采样行和 candidate identity |
-| C++ selector / invariant | `Spec184AuthorityIoOwnership`, `Spec184TurnPublicationRace`; IO owner、ticket residue | `Spec184DurableOutcome`; durable journal/handle 一致、residue=0 | `Spec184CheckpointExport`; 0600、旧文件保留、loader round-trip | caller-specific C++ selectors; native default and cleanup | matrix-bound selectors; source/artifact identity、terminal cleanup |
+| C++ selector / invariant | `Spec184AuthorityIoOwnership`, `Spec184TurnPublicationRace`; IO owner、ticket residue | `Spec184DurableOutcome`; durable journal/handle 一致、residue=0 | `Spec184CheckpointExport`; 0600、旧文件保留、loader round-trip | caller-specific C++ selectors; native default and cleanup | matrix-bound selectors; source/artifact identity、terminal cleanup；observed-offer parser sample；bounded root owner |
 | Repeat / output | 每 selector 至少 2 次；独立 TSan tree | 至少 2 次；独立 ASan/UBSan tree | 至少 2 次；独立 ASan/UBSan tree | async rows 至少 2 次；按 row 输出 | 按 risk/behavior class 的预算和独立输出；未采样行保持 qualification `PARTIAL` |
 
 动态工具只检查内存、线程和未定义行为；参数是否满足业务契约由上述 C++ fixture/oracle
@@ -106,7 +109,8 @@ state machine, owner, target or hard prerequisite, it leaves B1 and receives a n
 每条 scope 见 spec 的 entry 和 transfer matrix；开始实施时补具体 diff、target 和 selector，不能预填 PASS。
 新链接边界需符号定义 TU/target 与 nm/readelf 对照。记录 review trace、Batch growth decision、
 Closure decision、Dynamic validation 和 static/compile-link/runtime-test/unobserved miss；B1–B3
-动态 profile 已有无抑制通过，B4 记录 `none` with reason，B5 尚未运行最终资格 profile。
+动态 profile 已有无抑制通过，B4 记录 `none` with reason，B5 已有 parser sample、C++ sweep 和
+bounded root owner 结果，但最终 sanitizer/no-Python/负例 profile 仍未闭合。
 审查技巧沿用182审计后 R12 的线程读写表、线性化点、失败清理、wire 权威溯源和 production fixture 检查。
 
 ## Convergence Gate Before Qualification
