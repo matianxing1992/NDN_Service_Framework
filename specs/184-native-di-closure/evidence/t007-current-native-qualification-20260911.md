@@ -62,7 +62,7 @@ preparation factory; its raw log SHA-256 is
 | Component dynamic gate | Provider-host 8 cases under unsuppressed ASan/UBSan and independent clang TSan | `PASS`; no sanitizer or LeakSanitizer report | B5 component evidence and `.codex-tmp/spec184-b5-provider-fix2-asan-20260911.log` |
 | C++ authority/native routes | `Spec184AuthorityIoOwnership`, `Spec184DurableOutcome`, native post-selection/assembly and Qwen stream/conversation selectors | `PASS` for the named focused selectors | B5 component evidence and its candidate binary hashes |
 | Python orchestration regression | 71 harness tests | `PASS`, observation/runner only | `.codex-tmp/spec184-b5-python-harness-20260911/pytest.log` |
-| MiniNDN owner/runner `PO-001-stream` | root owner + canonical two-node topology + current runner manifest | `PASS`, exit `0`; business marker and identity/namespace/process-tree/endpoints/cleanup evidence complete | `.codex-tmp/spec184-b5-owner-probe-20260911-r2/result/{result.json,runner-result.json,node-context.json,closure-run/trace.txt}` |
+| MiniNDN owner/runner `PO-001-stream` | root owner + canonical two-node topology + current runner manifest | `PASS`, exit `0`; business marker and identity/namespace/process-tree/endpoints/cleanup evidence complete | `.codex-tmp/spec184-owner-po001-20260911-r9/{result.json,runner-result.json,node-context.json}` |
 
 The full integration failures first reach the legacy D2b/D2h121/D2h212 response/role oracle with
 zero observations and the Spec175 tiny-ONNX collector's `stream event gap exceeded retry budget`.
@@ -121,15 +121,16 @@ completed without Boost failures:
 | `integration-tests --log_level=test_suite` | `PASS`, exit `0`, `*** No errors detected` | `.codex-tmp/spec184-candidate-integration-20260911-r1/run.log` / `f0fccf442f6de69ab6a5e585e1eb84eb470aa1fad49e2316d6ca0210c2962027` |
 
 The fresh runner manifest is
-`.codex-tmp/spec184-b5-current-runner-manifest-r2-20260911.json` (SHA-256
-`4212ca6f81913f30c10c23b1a5d3fcfa6d6a172de295b6e5a67fd3b2c23a7826`). Its
+`.codex-tmp/spec184-b5-current-runner-manifest-r3-20260911.json` (SHA-256
+`a1e7df48caf5837d690ad1847e3490704c309af739e0df318ef3062ac8fdfd13`). Its
 first current-user owner probe stopped before topology creation with exit `2` and
 `MININDN_REQUIRES_ROOT` (`uid 1000`), which is retained as a privilege boundary.
 With the authorized root owner and `/usr/local/bin` restored in `PATH`, the same
 manifest completed the canonical two-node `PO-001-stream` case:
-`.codex-tmp/spec184-b5-owner-probe-20260911-r7/result.json` (SHA-256
+`.codex-tmp/spec184-owner-po001-20260911-r9/result.json` (SHA-256
 `e65fc1b507fe40cc275601b031c724b99f64a254ecaaa51272a7845f8e5509fd`), runner
-result SHA-256 `7cc45f6f9d4487ffe45de90dff37c6bc2e28e030295d69e6b31aa2c48186a0b9`,
+result SHA-256 `d3f757c37e196de6e616554e65eaea324b3e8706efe142c2d9cd8f673ccedcd0`,
+node context SHA-256 `97d548d3a12e91718400faf604629f11fb2bbf44e0d1338d73ddc1d1be4e625f`,
 exit `0`, complete node/namespace/process/endpoint/cleanup evidence and business
 marker. The failed root retry that omitted `infoconv` from `PATH` is retained as
 `.codex-tmp/spec184-b5-owner-probe-20260911-r5-owner.log`; the corrected command
@@ -139,7 +140,7 @@ The current-user result remains preserved at
 `.codex-tmp/spec184-b5-owner-probe-20260911-r4/result.json` (SHA-256
 `004cfa0a88d00667c2c520c163a5c1461ec40a81fe3d39cacb703075aaf93fc0`). The
 historical root owner PASS is tied to the previous candidate and is not reused;
-the r7 result is the fresh candidate-bound owner evidence.
+the r9 result is the fresh candidate-bound owner evidence.
 
 ## Sanitizer boundary for the shared tiny-ONNX batch
 
