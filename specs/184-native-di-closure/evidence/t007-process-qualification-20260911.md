@@ -231,6 +231,14 @@ each SHA-256 `66efc8f7b0015b31c337a11daabe3a34a3f4f1dcfba497f2c822949ab0586847`.
 This repetition did not reproduce the earlier order-sensitive failure, which remains
 recorded as a separate boundary.
 
+A ten-run stress repetition of the same 151-case selector, with the same candidate
+environment, also exited `0` on every run. The raw logs are retained under
+`.codex-tmp/spec184-b5-targeted-placement-stress-20260911/` (`unit-1.log` through
+`unit-10.log`; each has SHA-256
+`66efc8f7b0015b31c337a11daabe3a34a3f4f1dcfba497f2c822949ab0586847`). This provides
+stability evidence without reclassifying the original isolated failure as impossible;
+the historical boundary remains visible for future sanitizer investigation.
+
 The full current-candidate C++ integration sweep was also rerun with
 `NDNSF_SPEC182_BIN_DIR=build-spec184-b5-candidate`. It completed with exit `0` after
 `4:09.61` (maximum RSS `114048 KB`); the raw log is

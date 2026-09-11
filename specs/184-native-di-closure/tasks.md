@@ -300,6 +300,11 @@ runner result、trace 和清理记录；I03 实际打开 staged `libpython3.8.so
 [T007 process qualification refresh](evidence/t007-process-qualification-20260911.md)。先前漏传该
 环境变量导致的 exit `201` 仅为测试入口配置失败，已保留在独立 raw run，不计入资格结果。
 
+同一 151-case selector 在相同 candidate 环境下额外重复十次，全部 exit `0`；原始日志目录
+`.codex-tmp/spec184-b5-targeted-placement-stress-20260911/` 已写入 [T007 process qualification
+refresh](evidence/t007-process-qualification-20260911.md)。这只是稳定性补充，原先一次
+顺序相关失败仍保留为待 sanitizer/压力复现的边界。
+
 2026-09-11 **T007-FULL-INTEGRATION-ENV / PASS_FOR_ROW**：在同一 candidate 环境中使用
 `NDNSF_SPEC182_BIN_DIR=build-spec184-b5-candidate` 完整运行 C++ integration 套件，exit `0`，
 耗时 `4:09.61`，最大 RSS `114048 KB`；原始日志和 SHA-256 见 [T007 process qualification
