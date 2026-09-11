@@ -1,15 +1,21 @@
 # Implementation Plan: Native NDNSF-DI with Optional Python Bindings
 
-**Branch**: Experimental | **Revision**: 91 | **Date**: 2026-09-10
+**Branch**: Experimental | **Revision**: 92 | **Date**: 2026-09-11
 **Status**: IN_PROGRESS / 当前实现与验收状态见 tasks.md 的 Task Progress Registry 和 Current Checkpoint
 **Spec**: [spec.md](spec.md)
 
 ## Summary
 
+**Current execution authority**: [R12 audit-driven execution](contracts/audit-driven-execution.md)。
+用户确认新的计划以 [2026-09-11 请求链审计](evidence/request-chain-static-audit-20260911.md) 为准。
+唯一 next dispatch 为 R12-A；顺序是线程/取消 → durable outcome → 安全导出 → caller/mode
+收敛 → 资格矩阵。下面旧 R4–R11 阶段安排保留历史和契约来源，不再自动派发；已通过证据按
+源码影响复用。FR/SC/PO 和 C++ 优先原则不变。
+
 完整C++ DI复用Core协作/安全原语、Provider runtime和原生model adapters；
 Python只作同库兼容绑定，旧默认控制路径退出。O-001源码基线已核对关闭，
 O-002--O-005 已于 2026-09-07 全部关闭（code-design Open Questions 无 OPEN 项）；
-实现按 T001-C 冻结的 build identity 与 case-manifest selector 从 T002-A 起执行。
+历史实现使用 T001-C build identity 与 case-manifest；后续须核对当前已验证构建树和源码身份，按 R12 执行，不从 T002-A 重启。
 详细接口与字段仅在contracts定义；本文件安排实施和验证阶段。
 
 ## Technical Context

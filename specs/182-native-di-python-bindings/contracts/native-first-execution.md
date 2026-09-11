@@ -1,5 +1,9 @@
 # Native-First Execution Order
 
+> **Dispatch superseded 2026-09-11**：当前剩余调度以
+> [audit-driven execution](audit-driven-execution.md) 的 R12 为准。本文件 N1–N5、独立 authority、
+> C++ 优先及外部机器边界继续有效；旧 dispatch cards 保留历史，不作为下一任务指令。
+
 **Revision**: 7 | **Date**: 2026-09-10 | **Status**: PLANNED
 
 用户确认的剩余执行顺序；覆盖旧文档中“所有真实跨进程用例推迟到 T016”及

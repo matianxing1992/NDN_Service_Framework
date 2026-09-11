@@ -1,5 +1,13 @@
 # Spec182 Design Audit
 
+## Current Request Chain Audit 2026-09-11
+
+当前审计入口为 [完整请求链静态报告](evidence/request-chain-static-audit-20260911.md)，
+baseline `72b9e388cc3920b0bdcd4c36d302d63c71e7f15a`：F-01/F-02/F-03 为 P1，F-04 为 P2，
+另有 caller/mode 与 qualification 两类缺口。已接线的主路径不重做；下一步执行
+[R12-A](contracts/audit-driven-execution.md)。以下历史审计保留原证据范围，不代表当前无缺陷。
+本轮只读产品源码，未运行产品测试；新缺陷的动态反例均 NOT_RUN。
+
 **Revision**: 54 | **Current source**: R11-B8-G46 legacy Slurm multi-node adapter guard checkpoint on `Experimental`
 
 ## R11-B8-G46 Legacy Slurm Multi-node Adapter Guard Review 2026-09-11

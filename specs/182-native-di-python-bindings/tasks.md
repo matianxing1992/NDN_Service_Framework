@@ -1,10 +1,38 @@
 # Tasks: Native NDNSF-DI with Optional Python Bindings
 
-**Revision**: 182 | **Status**: DRAFT / T001 DONE
+**Revision**: 183 | **Status**: PARTIAL / T001 DONE / R12-A NOT_STARTED
 **Input**: [spec](spec.md), [code design](contracts/code-design.md),
 [proof](contracts/proof-design.md), [work units](contracts/work-units.md)
 
 ## Execution Progress
+
+2026-09-11 **D-R12-AUDIT / DOCUMENTED**：完成当前生产请求链静态审计，确认 F-01–F-04
+四项源码缺陷及 G-01/G-02 两类闭合缺口；没有修改产品代码，没有运行产品测试，父任务勾选不变。
+完整源码定位、触发交错、已有证据边界与修复验收见
+[request-chain audit](evidence/request-chain-static-audit-20260911.md)。
+
+**当前唯一执行计划**为 [R12 registry](contracts/audit-driven-execution.md#current-dispatch-registry)：
+R12-A 线程/取消 → R12-B durable outcome → R12-C 安全导出 → R12-D caller/mode → R12-E 资格。
+全部实现批次均为 NOT_STARTED；下一步 R12-A。用户明确旧计划很多已过时，要求新安排以本次
+审计为准；因此下面旧 next-dispatch、R11 open cards 和时间线均为历史，未完成内容通过新计划的
+Historical Work Mapping 承接，不再直接派发。已有 PASS 保留原范围，不清空、不升级。
+每个小任务先 review-agent 只读静态门，同一逻辑批次全部审查通过后共享 C++ 构建/测试，
+再做 Python wrapper 检查；报告完成不是产品 static PASS。
+
+### R12 Active Task Progress Registry
+
+| Batch | Status | Depends | Evidence / remaining exit |
+| --- | --- | --- | --- |
+| R12-A Thread ownership and cancellation | NOT_STARTED | 本次审计 | F-01/F-02；IO submit 与 turn/attempt 同步；定向 C++ 交错反例 |
+| R12-B Durable commit outcome | NOT_STARTED | R12-A | F-03；journal、handle outcome 与取消的线性化一致性 |
+| R12-C Checkpoint export | NOT_STARTED | R12-B | F-04；0600 原子导出、失败保留与重新加载 |
+| R12-D Caller and mode convergence | NOT_STARTED | R12-A/B/C | G-01；当前 caller/mode 清单与 C++ 默认路由闭合 |
+| R12-E Native qualification matrix | NOT_STARTED | R12-D | G-02；I/PO、依赖闭包、no-Python 与未完成运行证据 |
+
+各批小任务、五条覆盖 lane、退出标准和历史映射见
+[R12 contract](contracts/audit-driven-execution.md)。状态只在本表更新；下面历史 registry 不用于新派发。
+
+### Historical Execution Records
 
 2026-09-10 D-UAV-SLIDES / **CLOSED_FOR_VALIDATION**（独立文档单元）：用户要求的
 UAV update PDF 已补充模拟到真实硬件/感知闭环的差距与阶段验收；后续按用户要求精简、统一为汽车场景，新增含官方产品图的设备介绍后共 6 页，双遍构建、
@@ -429,6 +457,13 @@ P1–P4 是不同的生产入口、进程边界或 selector，不能为了少一
 | R10-B76 | production entry/callers: compatibility manifest → maintained Python API inventory; implementation/wire: `checklists/build_api_migration_manifest.py` regenerated all 344 entries and rebounded source line/hash metadata to checkpoint `31fe172a`; test/harness/oracle: generator output, `sourceCommit` equality, design validator and diff check; build/source closure: manifest-only, no ABI or runtime change; migration/evidence: closes stale provenance from R10-B74 while semantic caller mapping, native default migration and legacy retirement remain open | DONE for this bounded manifest provenance boundary; parent T001/O-004/T013-B remain PARTIAL | static review confirms current HEAD identity and 344-entry coverage; manifest remains routing evidence and cannot promote runtime compatibility or qualification | generator PASS (`entries=344`, `dynamicAppSdk=67`); sourceCommit equality PASS; `validate_design.py --json` PASS; `git diff --check` PASS | no product build, requester/Provider transport, maintained caller/no-Python or T016/T017 run | documentation/generator artifact only | `STATIC_PASS`; `FOCUSED_BEHAVIOR_PASS`; `BUILD_NOT_APPLICABLE`; `OPEN_FOR_NEXT_BATCH`; not `QUALIFICATION_PASS` | [R10-B76 evidence](evidence/r10-b76-compatibility-manifest-refresh-20260909.md); next: map and migrate maintained native callers, then regenerate after each source checkpoint |
 
 ## Current Checkpoint
+
+2026-09-11 **D-R12-AUDIT / CLOSED_FOR_VALIDATION (documentation only)**：
+[完整报告](evidence/request-chain-static-audit-20260911.md) 已登记四项源码缺陷及两类闭合缺口，
+用户接受以本次审计替代旧 dispatch。当前实现状态见本文件 R12 registry，下一步 R12-A。
+严格结构 PASS（19 FR/11 SC/17 父任务、3 完成保持不变）、workflow 11/11、链接/差异检查通过；
+Context Mode stale authority 已重建并通过双层 health。没有产品修复或运行测试，原有并行修改未接管。
+下面历史 checkpoint 保留原证据范围，不作为当前派发指令。
 
 2026-09-11 T016-A current-source C++ unit lane / **CLOSED_FOR_VALIDATION**：
 `45dd9f2f` 的 delayed-runner capability 修复已通过受影响 11/11 selector（155/155

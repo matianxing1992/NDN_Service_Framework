@@ -1,5 +1,11 @@
 # Spec182 Traceability Matrix
 
+2026-09-11 **Current dispatch override**：[请求链审计](evidence/request-chain-static-audit-20260911.md)
+→ [R12](contracts/audit-driven-execution.md)。F-01/F-02 → R12-A → T005/T010/T011；
+F-03 → R12-B → T010/T011；F-04 → R12-C → T010/T011；G-01 → R12-D → T013/T015；
+G-02 → R12-E → T014/T016/T017。FR/SC/PO 要求及旧 PASS 保留，下面历史 N1–N5/R11 执行依赖
+不再作为调度权威；修复前保持 PARTIAL。未修改产品接口或增加新的透明状态迁移要求。
+
 **Revision**: 10 | **Status**: DRAFT / PARTIAL
 
 2026-09-10 执行依赖以 [N1–N5](contracts/native-first-execution.md) 为准：FR-005 → R11-B1；FR-019/SC-010 → R11-B2 至 B9；FR-018/SC-011 → 每批静态门及 C++ 优先验证。原 T001–T017、PO 和历史 PASS 范围保留；R11 的完整映射、负例及调度状态直接维护在该契约与 tasks.md，不以 Python 数量关闭 native 行为。

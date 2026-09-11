@@ -3,14 +3,14 @@
 **Feature Branch**: `Experimental`
 **Feature Directory**: `182-native-di-python-bindings`
 **Created**: 2026-09-06
-**Revision**: 9
+**Revision**: 10
 **Status**: DRAFT
-**Execution Status**: implementation IN_PROGRESS; next dispatch R11-B1 NOT_STARTED; final qualification NOT_RUN; authority: [Execution Progress](tasks.md#execution-progress)
-**Activation**: active design; source baseline audited; dependency and interface design closure pending
+**Execution Status**: implementation PARTIAL; next dispatch R12-A NOT_STARTED; final qualification NOT_RUN; authority: [audit-driven execution](contracts/audit-driven-execution.md)
+**Activation**: T001 design gate closed; current request-chain audit has open defects and qualification gaps
 
 **Input**: 所有者要求 C++ 自身完成完整 NDNSF-DI 调用；Python 只作为可选兼容外壳。
 Python 可以传入原生策略对象或配置，但默认策略执行、切分决策、运行时装配和协作调用
-必须在原生实现中完成。合并与源码交付已结束，用户确认实验机器已接收；用户随后授权在Experimental完成182。当前先关闭T001设计门，再执行原生迁移和规定的本地验证；SIF/Tiger仍由实验机器负责。
+必须在原生实现中完成。合并与源码交付已结束，用户确认实验机器已接收；用户随后授权在Experimental完成182。2026-09-11 按当前源码请求链审计重排剩余工作：先修复线程/终态与导出缺陷，再收敛调用方，最后补齐资格；旧计划保留历史。SIF/Tiger仍由实验机器负责。
 
 ## Goal
 
