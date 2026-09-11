@@ -669,6 +669,60 @@ class Spec182NativeBindingsTest(unittest.TestCase):
         self.assertEqual(outcome.status, "FAILED")
         self.assertIn("observer event validation failed", outcome.error)
 
+    def test_native_config_qwen_observer_rejects_json_scalar_payload(self):
+        """A JSON scalar must not bypass the caller observer validation gate."""
+        sys.path.insert(0, str(ROOT / "NDNSF-DistributedRepo/pythonWrapper"))
+        sys.path.insert(0, str(ROOT / "NDNSF-DistributedInference"))
+        sys.path.insert(0, str(ROOT / "pythonWrapper"))
+        sys.path.insert(0, str(ROOT / "examples/python/NDNSF-DistributedInference/llm_pipeline"))
+        import user
+
+        class Handle:
+            request_id = "qwen-native-scalar-event"
+
+            def result(self, _timeout):
+                return SimpleNamespace(
+                    request_id=self.request_id,
+                    payload=b"{}")
+
+        class Client:
+            native_tokenizer_digest = "sha256:" + "e" * 64
+
+            def publish_application_input_reference(self, *_args, **_kwargs):
+                return {"reference": "scalar-event"}
+
+            def request_native_reference(self, _reference, **kwargs):
+                observer = kwargs["on_event"]
+                observer({
+                    "terminal": False,
+                    "payload": b"[]",
+                })
+                observer({"terminal": True})
+                return Handle()
+
+        args = SimpleNamespace(
+            timeout_ms=1000,
+            ack_timeout_ms=100,
+            max_new_tokens=1,
+            native_requester_config="operator-pinned.json",
+            diagnostic_token_loop=False,
+            automatic_planning_manifest="",
+            _qwen_model_type="qwen3_5",
+        )
+        outcome = user._run_qwen_transformer_generation_sample(
+            Client(), args,
+            prompt_case={
+                "formattedInputIds": [1],
+                "referenceGeneratedTokenIds": [2],
+                "eosTokenIds": [2],
+            },
+            generation_id="generation-scalar-event",
+            decoder=lambda token_ids: "ok",
+            request_id="qwen-native-scalar-event",
+        )
+        self.assertEqual(outcome.status, "FAILED")
+        self.assertIn("observer payload is not a mapping", outcome.error)
+
     def test_native_config_qwen_rejects_legacy_diagnostic_loop(self):
         sys.path.insert(0, str(ROOT / "NDNSF-DistributedRepo/pythonWrapper"))
         sys.path.insert(0, str(ROOT / "NDNSF-DistributedInference"))

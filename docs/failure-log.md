@@ -1,5 +1,18 @@
 # Failure Log and Evidence Index
 
+## 2026-09-11 — Spec182 R11-B8-G48 Qwen native observer type boundary
+
+静态复核发现 Qwen native caller 在 `decode_payload()` 成功返回 JSON array 或 scalar
+时仍直接调用 `.get()`。C++ observer 隔离该异常后，terminal 通知可能使 caller 将畸形
+事件当作成功。该缺口未触及 Core/Provider；已在
+`examples/python/NDNSF-DistributedInference/llm_pipeline/user.py` 增加 mapping 类型门，
+并用真实 helper 夹具覆盖 JSON array payload。36 个相关 Python 入口/兼容测试、
+`py_compile` 与 `git diff --check` 通过。证据见
+[R11-B8-G48](../specs/182-native-di-python-bindings/evidence/r11-b8-g48-qwen-observer-type-guard-20260911.md)。
+
+这是 caller-edge 修复，不是 native request、Provider、跨进程、no-Python 或 T016
+资格结果；R11-B8 与 T013/T016/T017 保持原状态。
+
 ## 2026-09-11 — Spec182 R11-B8-G47 examples source-closure and `-j3` boundary
 
 The examples-enabled C++ build exposed three target-registration omissions before any

@@ -2978,6 +2978,10 @@ def _run_qwen_transformer_generation_sample(
                         native_stream_errors.append(
                             f"observer payload is not JSON: {type(exc).__name__}")
                         return
+                    if not isinstance(token_event, dict):
+                        native_stream_errors.append(
+                            "observer payload is not a mapping")
+                        return
                     if token_event.get("schema") != "GenerationTokenEventV1":
                         native_stream_errors.append("observer payload schema mismatch")
                         return
