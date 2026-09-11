@@ -14,6 +14,13 @@
 该二进制早于当前 fixture repair，结果不计为当前协议失败或 PASS；已改变门槛为新目录
 按当前源码重新 configure/build 后再执行完整 unit/integration selector。T016-A 保持 `PARTIAL`。
 
+2026-09-11 T016-A fresh current-source retry：新目录 309/309 `-j4` 构建成功，但
+重建后的 `unit-tests` 仍以 `rc=201` 结束（1,026 cases，11 failed，8 aborted，20 failed
+assertions）；首个边界仍为 `NativeProviderRuntime requires a runner preparation callback`。
+这次是当前源码的 C++ fixture/contract 失败，raw output 在
+`.codex-tmp/spec182-t016-unit-20260911/unit-tests.log`；不推进 T016，下一步逐一核对
+`runSamplingEpochs` 调用与 callback 接线后再修复和重跑。
+
 文档旁路记录（2026-09-10，Abstract DOCUMENT PASS）：中英文 Proposal 摘要按
 研究需求、方法、初步依据及计划评估重写，四入口编译及摘要截图检查通过，仅
 PDF P2 变化。见[审计](../../docs/PAPER/proposal-defense/research-revision-audit.md)

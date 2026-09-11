@@ -28,6 +28,17 @@ raw output is in `.codex-tmp/spec182-t016-unit-20260911/build.log`; this is not
 a C++ product failure. The retry is split into the configured test targets and
 an examples-enabled closure.
 
+## Current-source retry
+
+The fresh build completed all 309 Waf tasks with `-j4`, but the rebuilt
+`unit-tests` selector exited `rc=201`: 1,026 total cases, 11 failed cases, 8
+aborted cases, and 20 failed assertions. The first failures again require a
+`runner preparation callback` in `distributed-inference-async-runtime.t.cpp`.
+The raw output is retained at `.codex-tmp/spec182-t016-unit-20260911/unit-tests.log`.
+This result is current-source evidence and supersedes the stale-artifact
+classification for the selector; T016-A remains `PARTIAL` pending source-level
+fixture repair and fresh reruns.
+
 ## Validation matrix
 
 | Lane | Required result |

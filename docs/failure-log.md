@@ -1,5 +1,18 @@
 # Failure Log and Evidence Index
 
+## 2026-09-11 — Spec182 T016-A current-source unit fixture contract
+
+The fresh current-source build completed 309/309 with `-j4`, but its
+`unit-tests --report_level=short` run exited `rc=201`: 1,026 cases, 11 failed,
+8 aborted, and 20 failed assertions. The first boundary remained
+`NativeProviderRuntime requires a runner preparation callback` in
+`distributed-inference-async-runtime.t.cpp`; the full output is retained at
+`.codex-tmp/spec182-t016-unit-20260911/unit-tests.log`. Because the binary was
+rebuilt from the current `HEAD`, this is a current C++ fixture/contract failure,
+not a stale-artifact result. No T016 status is promoted. The next gate is source
+analysis of every `runSamplingEpochs` call and its runner-preparation callback,
+followed by a bounded fixture repair and fresh C++ selectors.
+
 ## 2026-09-11 — Spec182 T016-A target configuration boundary
 
 The fresh current-source configure completed successfully, but the first Waf
