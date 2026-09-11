@@ -1,14 +1,12 @@
 \subsection{Rationale for ABE-Backed Service Authorization}
 \label{sec:abe-rationale}
 
-NDNSF's rationale has two connected parts: a security requirement for
-confidential discovery before Provider selection, and an architectural benefit
-of separating dissemination from fine-grained access to protected content.
-The first explains what must remain confidential; the second explains how
-different access scopes can coexist with shared dissemination. These are not
-two independent proofs of ABE's superiority. Permission aggregation and
-identity-credential reuse support the second part; permission withdrawal is
-a lifecycle requirement with costs, not a third reason to prefer ABE.
+NDNSF uses ABE to protect discovery descriptors and reuses attribute-based
+service permissions in its invocation checks. The first choice addresses
+confidentiality before the participating Providers are known; the second
+keeps service entitlements independent of identity-signing credentials.
+Neither implies that ABE is always preferable to role-based authorization
+with suitable encryption. Withdrawal and rekeying are lifecycle costs to evaluate.
 Execution authorization determines whether a User may invoke a service;
 Provider authorization determines whether an entity may offer that service.
 Content confidentiality limits who can read protected content. The Controller
@@ -32,23 +30,17 @@ that key for the selected Provider. The requesting User retains access. A Trust 
 not encrypt content; a role-authorized design can also use ABE or service-group
 encryption to provide discovery confidentiality.
 
-\paragraph{Reason 2: separating dissemination from fine-grained access control.}
-The set of nodes that can retrieve encrypted Request Data need not be the set
-that can read its discovery descriptor. Forwarders, caches, and repositories
-can carry or retain ciphertext without receiving its decryption keys. The
-User can publish according to service attributes rather than construct a
-recipient identity list for each Request; the Controller still authorizes
-entities and issues their keys. This separates delivery from disclosure,
-rather than delegating plaintext filtering to each distribution node.
+Encrypted Request Data can be retrieved or cached without granting decryption
+access. This separation of delivery from disclosure also holds for other
+content-encryption schemes; it is not unique to ABE.
 
-Different entities can hold overlapping service entitlements while using the
-same dissemination mechanism. A UAV application may, for example, authorize
-one User for observation and detection services and another for detection and
-mapping services. This is an illustrative service-permission distribution,
-not evidence that arbitrary task, location, or time predicates are implemented.
-Fine-grained access survives aggregation only when the relevant objects retain
-their separate cryptographic scopes: encrypting a combined plaintext under
-one condition exposes the entire plaintext to anyone satisfying that condition.
+\paragraph{Reason 2: reusing service-permission management.}
+Different entities may hold overlapping service entitlements. For example,
+one User may invoke observation and detection services, while another may
+invoke detection and mapping services. NDNSF can encode these service sets
+in separately issued policy keys without changing the Users' identity-signing
+credentials. Service-scoped content remains separately encrypted; aggregating
+permissions in a key does not merge all services into one encryption scope.
 
 In KP-ABE, ciphertext is associated with attributes and a decryption key (DKEY)
 encodes an access policy~\cite{dulal2023nacabe}. NDNSF associates Provider access
@@ -58,13 +50,12 @@ generation, it combines an entity's service entitlements into an OR policy for
 its individually issued DKEY, while reusing its identity-signing credentials.
 Trust Schema specifies permitted relationships between Data names and signing
 key names; a validator applies those rules and checks the chain to a trust anchor.
-The schema by itself does not
-restrict who can read copied Content~\cite{trustschema}. This distinction
-applies beyond role-based designs. Trust Schema can express fine-grained
-rules and can be combined with encryption. NAC also protects distributed
-content through encryption and key distribution~\cite{nac}; ABE's distinctive
-contribution here is attribute-policy-based decryption, not an exclusive
-ability to protect cached data or reuse credentials.
+The schema by itself does not restrict who can read copied Content~\cite{trustschema}.
+It can express fine-grained signing rules and be combined with encryption.
+NAC also protects distributed content through encryption and key
+distribution~\cite{nac}. The rationale for ABE here is permission aggregation
+and reuse of the associated management mechanism, not exclusive support for
+cached ciphertext or credential reuse.
 
 DNMP constrains command targets and actions through role signing keys
 and a Trust Schema~\cite{dnmp}. Existing roles may cover several permissions;

@@ -1,5 +1,19 @@
 # Failure Log and Evidence Index
 
+## 2026-09-11 — Proposal document build invocation boundary
+
+The sentence-review build first stopped before LaTeX execution because its
+output directory was created relative to the document cwd while redirection
+used the repository's absolute temporary path. Recreating explicit absolute
+output directories resolved this invocation error. No product or protocol test
+ran at that boundary. The source patch also initially rejected a mismatched
+Chinese context line without applying edits; exact-context retry succeeded.
+The final PPTX attempt rejected a `final-build` leaf name under the converter's
+existing safe-directory rule before clearing/generating anything; the retry
+uses the permitted `ndnsf-final-build` name without weakening the guard.
+See [document review](PAPER/proposal-defense/sentence-review-20260911.md) and
+`.codex-tmp/proposal-sentence-review-20260911/` for the subsequent document checks.
+
 ## 2026-09-11 — Spec182 G8 broad selector verbose-log timeout boundary
 
 After the `729555fa` client-close registry checkpoint, the full `*Spec182*/*`

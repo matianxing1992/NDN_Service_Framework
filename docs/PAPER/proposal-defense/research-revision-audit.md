@@ -1,5 +1,15 @@
 # Research-first Proposal Revision and Evidence Audit
 
+## 2026-09-11 Sentence-level Review
+
+本轮全篇审查与未解决证据边界见 [sentence review](sentence-review-20260911.md)，
+逐句／表格行／图标签导航见 [claim inventory](sentence-claim-ledger-20260911.json)。
+本轮修正需求范围、ABE 两条理由、Selection 输入时序、KV cache 条件、单进程
+验证范围和实验样本批次说明。P29 增加既有 holdout 记录中的各系统成功数；
+原有实验数据不改，没有新增产品实验。下面各轮的页数和当前状态属于历史记录。
+最新文档验证在 validation 的 `sentence_review_revision`；Spec184 T007 仍按自身
+证据保持 PARTIAL，不由文档验收改变。
+
 ## 2026-09-10 Concrete DNMP Authorization Comparison
 
 最新增量审查见 [DNMP comparison review](dnmp-comparison-review-20260910.md)。

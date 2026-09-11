@@ -32,6 +32,13 @@
 
 ## Current Checkpoint
 
+2026-09-11 **PROPOSAL-SENTENCE-REVIEW / DOCUMENT_PASS**：完成双语 Proposal 与 40 页
+slides 的逐句措辞、依据范围和逻辑审查，同步 29/22 页正文、8 页讲稿及可编辑 PPTX。
+八入口构建、同语言文本一致性、832/832 PPTX 可编辑 span、PDF/LibreOffice 边界及
+逐页渲染检查通过；证据见 [sentence review](../../docs/PAPER/proposal-defense/sentence-review-20260911.md)
+及其 validation。没有修改产品 API／行为或重跑实验，不改变 T007 PARTIAL／T008 状态。
+后续研究仍需完整授权成本比较、协作端到端反例及历史 DI provenance。
+
 2026-09-11 **T007-I02-OWNERSHIP / DYNAMIC_PASS**：静态复核发现
 `ServiceProvider::fetchCollaborationSignedExactData` 中 `express`/`retry` 的 shared-pointer
 强引用环，修复为 `retry` 持有 `weak_ptr` 并在重试调度时临时提升。独立无抑制
