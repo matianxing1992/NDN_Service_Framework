@@ -230,3 +230,11 @@ all three exited `0` and reported no errors. Their logs are
 each SHA-256 `66efc8f7b0015b31c337a11daabe3a34a3f4f1dcfba497f2c822949ab0586847`.
 This repetition did not reproduce the earlier order-sensitive failure, which remains
 recorded as a separate boundary.
+
+The full current-candidate C++ integration sweep was also rerun with
+`NDNSF_SPEC182_BIN_DIR=build-spec184-b5-candidate`. It completed with exit `0` after
+`4:09.61` (maximum RSS `114048 KB`); the raw log is
+`.codex-tmp/spec184-b5-full-integration-rerun-env-20260911/integration.log`, SHA-256
+`e679f2d0ace15827dfd7a5a423660965b0e583df65ba31d8b72370c65b846966`. The earlier
+environment-missing run remains a setup boundary; this result is the candidate-bound
+integration PASS and still does not close external/model/retirement rows.

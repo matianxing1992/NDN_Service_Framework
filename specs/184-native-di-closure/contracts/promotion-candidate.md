@@ -157,7 +157,7 @@ SIF/Tiger ownership remain open.
 
 | Member | Bound value |
 | --- | --- |
-| `candidateId` | `sha256:e17a2993a6569aca11601d6ec5db6da6c98db5c50c96f0c2ddacbe3d1a2d12a9` (digest over the ordered member map below; recompute if any listed member changes) |
+| `candidateId` | `sha256:d6bd6bca1d0b7c49f257fb07426cb8be8337533547d5c718fe6f1d6484b0f1f2` (digest over the ordered member map below; recompute if any listed member changes) |
 | `source` | `Experimental` baseline `29411b5544cf7b0175dbaae2f65678a26ee80636`; production source hashes: `ServiceProvider.cpp` `sha256:a587b5bee0fe845ba4051ce0cdea6267e2cbc767b28055c156388ecea584e419`, `NativeProviderHandler.cpp` `sha256:37984face728f908337ece2c59b7c96cd288969bad84a6f8ae6468d691100149`, `NativeEpochCoordinator.cpp` `sha256:fb0a2513c33f1f26d4805ee1721cd172bb9c06b4f3c40982b818bf2946d04866`; pre-existing `docs/failure-log.md` and integration marker remain outside the source candidate |
 | `built runtime` | `build-spec184-b5-candidate`; current unit/integration, Controller, Authority, requester, Provider, worker and grant-requester hashes are bound below |
 | `test/replay harness` | current runner manifest, C++ counterexample fixture, process drivers, C++ registration and process qualification evidence are bound below; Python harness is orchestration-only and its source regression is bound separately |
@@ -182,10 +182,10 @@ binary.worker=e44bd0a31205d3106461d6d48884da70adb4e8acc8ef5fea8753573964aff283
 config.waflock=d1eb664437f0f6f21449d2ea22d50aa42053923a22e8b0fc453b287d9b9c5482
 evidence.convergence=ddaea2ef5f1369b1972e85fdda1a12131aca9ec109c8fa04fefe910e8b5f915d
 evidence.t007_current=0bfa7cac542d5c1964908c7530e11946d8e426da2d68ce64a6ea6d357d04fecc
-evidence.t007_process=4f4cb6381977bf844438696750437c9ee6931f7c6421c3468a1925307065286b
+evidence.t007_process=9c84e180b57fa1de1d6651e845bd8a93eb13207fd825be4f2a4d6433f2ce86f7
 evidence.task_registry=7927a0c8538761b38a5199c732403729d2fa2e878b21902d75ce6d05e04aa240
 log.build=c68038b4fd6973eb55a670907c4bc896bb8f8386cab1064602be714b7cd12fe3
-log.integration=dee9e3b7f5235f5d2c337bf0b98326f9971935116db2616e74c94662d7d6d076
+log.integration=e679f2d0ace15827dfd7a5a423660965b0e583df65ba31d8b72370c65b846966
 log.python_harness=def2d0070a2d4686e615a761552231c5697c6cf349607e2a801775759333d979
 log.targeted_unit=66efc8f7b0015b31c337a11daabe3a34a3f4f1dcfba497f2c822949ab0586847
 log.unit=b3e2f457d26fe019760f124cb225a65414cca2bc568c0603c4fc246fbd5686cd
@@ -205,7 +205,7 @@ spec.caller=b2b079fd5f8e658aa6b2fec6bfec389830aa1c509fac4783f1f73e6c29c9a449
 spec.matrix=d5939e9873487a92b1dc82bf615f59b8aa766f6c7585861ee2381f9eb9f7d824
 spec.plan=7aa3766efea608f751d2541ce9163ca57dfbc78ae59e3f60c71625d1dbe36023
 spec.spec=724f6aa1be1c6f151e5a71888f00bd0d4fecab1e002d07ba2c2f40473415eca1
-spec.tasks=390c2bc413895ee2d7bdf4dd27e3bdabde6e07e6633cef04bce48b79d94e311e
+spec.tasks=1294d522bbe175342e365d6742297fcfa447766eb0826c42fac68edafe80c546
 test.counterexample_fixture=d8467fb94ec08a1a51f27d595b2acdb74f1dbe0d1f73154a8b733f1ae6345600
 test.grant_process=63879098c789f72f80bcedf3261a8e0a44beef797740848490763289807b2813
 test.python_closure=0604f301277097af1bf777f858316d016e85f8f9ffcb59dd2700ec9f9f92232c
@@ -216,7 +216,7 @@ test.unary_process=0ee4ee185fbbbcb450d7c8a6b6ac5b128c2c27e34d949926d23c3e2956798
 ```
 
 The SHA-256 of these sorted lines followed by a final newline is
-`sha256:e17a2993a6569aca11601d6ec5db6da6c98db5c50c96f0c2ddacbe3d1a2d12a9`.
+`sha256:d6bd6bca1d0b7c49f257fb07426cb8be8337533547d5c718fe6f1d6484b0f1f2`.
 The process evidence records the individual requester/provider markers and grant-case hashes;
 the candidate binds that evidence file rather than silently combining unrelated run roots.
 

@@ -300,6 +300,12 @@ runner result、trace 和清理记录；I03 实际打开 staged `libpython3.8.so
 [T007 process qualification refresh](evidence/t007-process-qualification-20260911.md)。先前漏传该
 环境变量导致的 exit `201` 仅为测试入口配置失败，已保留在独立 raw run，不计入资格结果。
 
+2026-09-11 **T007-FULL-INTEGRATION-ENV / PASS_FOR_ROW**：在同一 candidate 环境中使用
+`NDNSF_SPEC182_BIN_DIR=build-spec184-b5-candidate` 完整运行 C++ integration 套件，exit `0`，
+耗时 `4:09.61`，最大 RSS `114048 KB`；原始日志和 SHA-256 见 [T007 process qualification
+refresh](evidence/t007-process-qualification-20260911.md)。该结果关闭当前 candidate 的
+integration 行，但不关闭真实模型、Python retirement、I05 正式资格或外部 SIF/Tiger owner。
+
 ## Phase 1: Request Correctness
 
 - [x] T001 [US1] **Authority IO Dispatch**. FR-001；修复 F-01，在 `NativeAuthenticatedGrantClient::coreIssue` 将 `ServiceUser::RequestServiceTargeted` 封送到 Core `postToIo`，处理 dispatch 前取消、空 request ID、异常、timeout 与晚回调；在 `tests/integration-tests/di-native-requester-grant.t.cpp` 的 `Spec184AuthorityIoOwnership` 中验证线程 owner、真实 `ServiceUser` 状态和 bounded cleanup。Risk class: `concurrency/lifetime`; Dynamic profile: `tsan`; invariants: IO owner、pending-call balance、late callback no-op。Target: `integration-tests`（已由 `tests/wscript` 注册 TU）。Dependencies: documentation gate and migration baseline。Evidence: [B1 evidence](evidence/b1-request-correctness-20260911.md)。
