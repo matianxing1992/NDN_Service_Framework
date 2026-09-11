@@ -39,6 +39,30 @@ This result is current-source evidence and supersedes the stale-artifact
 classification for the selector; T016-A remains `PARTIAL` pending source-level
 fixture repair and fresh reruns.
 
+## Delayed-runner capability finding
+
+The repaired fixture compiled, and the fresh full selector reduced the result
+to one failure in `NativeProviderRuntimeCarriesOpaqueStateHandleWithoutHostRoundTrip`:
+`coordinatorShared->sawCompactState` was false. The raw output is retained at
+`.codex-tmp/spec182-t016-unit-20260911/unit-tests-final.log`. The production
+cause was a capability probe performed before a delayed `prepareRunner` callback
+created the runner. The bounded repair transports the resolved capability in
+`ProviderRoleResult` and performs opaque-state finalization after the worker
+returns, preserving admission-time preparation and Provider-local state.
+
+## Final unit recheck
+
+After the production fix and fixture callback repair, the fresh incremental
+build completed 309/309 Waf tasks with system-first `-j4` in 127.78 seconds.
+The affected coordinator selector passed 11/11 cases and 155/155 assertions.
+The complete current-source unit selector then passed 1,026/1,026 cases and
+71,011/71,011 assertions in 319.73 seconds. The unit binary SHA-256 is
+`f75d7adbaa8250b6127969434512f305c9878af1bfb45476d6bdc8d9476b00d9`; its
+RUNPATH is `/home/tianxing/NDN/nac-abe-integration-182/install/lib:/home/tianxing/NDN/ndn-svs/build`.
+The source fix is checkpoint `45dd9f2f`. This closes the current-source C++
+unit lane only; integration, no-Python, MiniNDN and final T016 gates remain
+separate.
+
 The first incremental compile of that repair failed because two similar patch
 contexts added `config.prepareRunner` without adding the corresponding local
 runner in the target function. The compiler stopped on the undeclared

@@ -6,6 +6,15 @@
 
 ## Execution Progress
 
+2026-09-11 T016-A current-source C++ unit lane / **CLOSED_FOR_VALIDATION**：在
+`45dd9f2f` 修复 delayed `prepareRunner` 的 opaque capability 传递，并为所有
+coordinator fixtures 接通 admission 后的 runner callback。fresh `-j4` 增量构建
+309/309；受影响 selector 11/11、155/155 assertions；完整 `unit-tests` 1,026/1,026
+cases、71,011/71,011 assertions，unit SHA 为
+`f75d7adbaa8250b6127969434512f305c9878af1bfb45476d6bdc8d9476b00d9`。这只关闭当前
+C++ unit lane；integration、maintained callers、no-Python、MiniNDN 和 T016/T017
+仍未完成。详见 [T016-A current-source boundary](evidence/t016-a-current-source-unit-boundary-20260911.md)。
+
 2026-09-11 T016-A current-source unit boundary：首次完整 C++ selector 使用旧的
 `build-nac182/unit-tests`，约 330 秒后 `rc=201`，1,022 cases 中 11 failed、8 aborted、
 20 assertions failed；首个边界为 fixture 缺少 `runner preparation callback`。raw run 保存在
@@ -20,6 +29,14 @@ assertions）；首个边界仍为 `NativeProviderRuntime requires a runner prep
 这次是当前源码的 C++ fixture/contract 失败，raw output 在
 `.codex-tmp/spec182-t016-unit-20260911/unit-tests.log`；不推进 T016，下一步逐一核对
 `runSamplingEpochs` 调用与 callback 接线后再修复和重跑。
+
+fixture callback 接线后，fresh full unit selector 仅剩 1 个 assertion 失败：
+`NativeProviderRuntimeCarriesOpaqueStateHandleWithoutHostRoundTrip` 的
+`sawCompactState=false`。源码审查确认 delayed `prepareRunner` 创建 runner 后，runtime
+仍使用 callback 前计算的 opaque 能力值，导致 host tensor round-trip；现已改为由
+`ProviderRoleResult` 传递实际 runner capability，保留 admission 后准备时序并在结果阶段
+选择 opaque state。raw run 为 `.codex-tmp/spec182-t016-unit-20260911/unit-tests-final.log`，
+需经增量构建和受影响 selector/full unit 复验后再推进 T016。
 
 增量编译第一次暴露测试 patch 上下文错误：两个 coordinator 测试的
 `config.prepareRunner` 先于本地 `runner` 定义，编译以 undeclared `runner` 失败；raw log
@@ -386,6 +403,13 @@ P1–P4 是不同的生产入口、进程边界或 selector，不能为了少一
 | R10-B76 | production entry/callers: compatibility manifest → maintained Python API inventory; implementation/wire: `checklists/build_api_migration_manifest.py` regenerated all 344 entries and rebounded source line/hash metadata to checkpoint `31fe172a`; test/harness/oracle: generator output, `sourceCommit` equality, design validator and diff check; build/source closure: manifest-only, no ABI or runtime change; migration/evidence: closes stale provenance from R10-B74 while semantic caller mapping, native default migration and legacy retirement remain open | DONE for this bounded manifest provenance boundary; parent T001/O-004/T013-B remain PARTIAL | static review confirms current HEAD identity and 344-entry coverage; manifest remains routing evidence and cannot promote runtime compatibility or qualification | generator PASS (`entries=344`, `dynamicAppSdk=67`); sourceCommit equality PASS; `validate_design.py --json` PASS; `git diff --check` PASS | no product build, requester/Provider transport, maintained caller/no-Python or T016/T017 run | documentation/generator artifact only | `STATIC_PASS`; `FOCUSED_BEHAVIOR_PASS`; `BUILD_NOT_APPLICABLE`; `OPEN_FOR_NEXT_BATCH`; not `QUALIFICATION_PASS` | [R10-B76 evidence](evidence/r10-b76-compatibility-manifest-refresh-20260909.md); next: map and migrate maintained native callers, then regenerate after each source checkpoint |
 
 ## Current Checkpoint
+
+2026-09-11 T016-A current-source C++ unit lane / **CLOSED_FOR_VALIDATION**：
+`45dd9f2f` 的 delayed-runner capability 修复已通过受影响 11/11 selector（155/155
+assertions）及完整 `unit-tests`（1,026/1,026 cases，71,011/71,011 assertions）。
+当前仅证明 C++ unit lane；integration、独立 requester/Provider、maintained callers、
+no-Python、MiniNDN 和 T016/T017 仍保持原状态。证据见
+[T016-A current-source boundary](evidence/t016-a-current-source-unit-boundary-20260911.md)。
 
 2026-09-11 T016-A current-source unit boundary / **OPEN_FOR_NEXT_BATCH**：旧的
 `build-nac182/unit-tests` 全量运行在 fixture callback 边界失败，记录为 stale artifact，

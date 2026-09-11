@@ -1,5 +1,18 @@
 # Failure Log and Evidence Index
 
+## 2026-09-11 — Spec182 T016-A delayed-runner capability boundary
+
+After the fixture callback repair, the fresh current-source full unit selector
+reduced the failure to one assertion: `NativeProviderRuntimeCarriesOpaqueStateHandleWithoutHostRoundTrip`
+reported `sawCompactState=false`; the run had 1,026 cases with 1 failed case
+and 1 failed assertion. The raw output is retained at
+`.codex-tmp/spec182-t016-unit-20260911/unit-tests-final.log`. Source inspection
+found that `NativeProviderRuntime` checked `supportsOpaqueStateHandles()` before
+the delayed preparation callback ran, so a callback-created opaque runner was
+misclassified and its state was serialized through host tensors. The fix carries
+the resolved runner capability in `ProviderRoleResult` and selects the opaque
+state path only after worker execution; no callback is invoked early.
+
 ## 2026-09-11 — Spec182 T016-A fixture repair compile boundary
 
 The first incremental build after the bounded fixture repair failed while
