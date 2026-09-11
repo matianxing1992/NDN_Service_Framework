@@ -385,9 +385,8 @@ runNativeEpochPublicationFailure(NativeEpochPublicationFault fault)
   };
 
   std::atomic<std::size_t> runnerCalls{0};
-  runtime.registerRunner(
-    runnerSpec,
-    makeNativeModelRunner([&runnerCalls] (const RoleExecutionContext&) {
+  auto runner = makeNativeModelRunner(
+    [&runnerCalls] (const RoleExecutionContext&) {
       ++runnerCalls;
       NamedTensor logits;
       logits.name = "logits";
@@ -404,7 +403,8 @@ runNativeEpochPublicationFailure(NativeEpochPublicationFault fault)
          makeEncodedTensorBundle(
            "onnx-output-bundle", {std::move(logits), std::move(state)})},
       };
-    }));
+    });
+  runtime.registerRunner(runnerSpec, runner);
 
   NativeExecutionPlan plan;
   plan.roles = {runnerSpec.role};
@@ -459,6 +459,7 @@ runNativeEpochPublicationFailure(NativeEpochPublicationFault fault)
   config.stateIdentityTemplate = identityTemplate;
   config.positionPolicyDigest = identityTemplate.positionDigest;
   config.samplingDigest = "sha256:sampling";
+  config.prepareRunner = [runner] { return runner; };
   if (fault != NativeEpochPublicationFault::ActivationPublication) {
     config.eventSink = [&eventCalls, fault] (const std::vector<std::uint8_t>&) {
       ++eventCalls;
@@ -3913,9 +3914,8 @@ BOOST_AUTO_TEST_CASE(NativeEpochCoordinatorRestoresConversationStateAndExtendsPr
 
   std::atomic<std::size_t> calls{0};
   std::atomic<bool> restored{false};
-  runtime.registerRunner(
-    runnerSpec,
-    makeNativeModelRunner([&calls, &restored] (const RoleExecutionContext& ctx) {
+  auto runner = makeNativeModelRunner(
+    [&calls, &restored] (const RoleExecutionContext& ctx) {
       const auto call = calls.fetch_add(1);
       if (call == 1) {
         const auto found = ctx.inputsByScope.find(
@@ -3941,7 +3941,8 @@ BOOST_AUTO_TEST_CASE(NativeEpochCoordinatorRestoresConversationStateAndExtendsPr
          makeEncodedTensorBundle("onnx-output-bundle",
                                  {std::move(logits), std::move(state)})},
       };
-    }));
+    });
+  runtime.registerRunner(runnerSpec, runner);
 
   RoleSpec first;
   first.role = runnerSpec.role;
@@ -3995,6 +3996,7 @@ BOOST_AUTO_TEST_CASE(NativeEpochCoordinatorRestoresConversationStateAndExtendsPr
   config.samplingDigest = "sha256:sampling";
   config.conversationStateBinding = binding;
   config.conversationStateLookupNowMs = 200;
+  config.prepareRunner = [runner] { return runner; };
   std::size_t events = 0;
   config.eventSink = [&events] (const std::vector<std::uint8_t>&) {
     ++events;
@@ -4630,9 +4632,8 @@ BOOST_AUTO_TEST_CASE(NativeProviderRuntimeCarriesOpaqueStateHandleWithoutHostRou
   // only through the lower-level runtime entry point above.
   NativeProviderRuntime coordinatorRuntime(1);
   auto coordinatorShared = std::make_shared<SharedState>();
-  coordinatorRuntime.registerRunner(
-    runnerSpec,
-    std::make_shared<OpaqueRunner>(coordinatorShared, identity0));
+  auto coordinatorRunner = std::make_shared<OpaqueRunner>(coordinatorShared, identity0);
+  coordinatorRuntime.registerRunner(runnerSpec, coordinatorRunner);
   NativeExecutionPlan coordinatorPlan;
   coordinatorPlan.roles = {runnerSpec.role};
   NativeDependencySpec feedback;
@@ -4670,6 +4671,7 @@ BOOST_AUTO_TEST_CASE(NativeProviderRuntimeCarriesOpaqueStateHandleWithoutHostRou
   coordinatorConfig.stateIdentityTemplate = identity0;
   coordinatorConfig.positionPolicyDigest = identity0.positionDigest;
   coordinatorConfig.samplingDigest = "sha256:opaque-sampling";
+  coordinatorConfig.prepareRunner = [coordinatorRunner] { return coordinatorRunner; };
   coordinatorConfig.eventSink = [] (const std::vector<std::uint8_t>&) {
     return true;
   };
@@ -4721,9 +4723,8 @@ BOOST_AUTO_TEST_CASE(NativeEpochCoordinatorKeepsDecodeStateProviderLocal)
   };
 
   std::atomic<std::size_t> calls{0};
-  runtime.registerRunner(
-    runnerSpec,
-    makeNativeModelRunner([&calls] (const RoleExecutionContext& ctx) {
+  auto runner = makeNativeModelRunner(
+    [&calls] (const RoleExecutionContext& ctx) {
       const auto call = calls.fetch_add(1);
       const auto state = ctx.inputsByScope.find("__ndnsf_provider_decode_state");
       BOOST_CHECK_EQUAL(state != ctx.inputsByScope.end(), call == 1);
@@ -4749,7 +4750,8 @@ BOOST_AUTO_TEST_CASE(NativeEpochCoordinatorKeepsDecodeStateProviderLocal)
          makeEncodedTensorBundle(
            "onnx-output-bundle", {std::move(logits), std::move(nextState)})},
       };
-    }));
+    });
+  runtime.registerRunner(runnerSpec, runner);
 
   NativeExecutionPlan plan;
   plan.roles = {runnerSpec.role, "/Consumer"};
@@ -4799,6 +4801,7 @@ BOOST_AUTO_TEST_CASE(NativeEpochCoordinatorKeepsDecodeStateProviderLocal)
   config.stateIdentityTemplate = identityTemplate;
   config.positionPolicyDigest = identityTemplate.positionDigest;
   config.samplingDigest = "sha256:sampling";
+  config.prepareRunner = [runner] { return runner; };
   config.eventSink = [] (const std::vector<std::uint8_t>&) { return true; };
   config.resultObserver = [&observedIdentities] (
     const RoleSpec& role, const ProviderRoleResult&) {
@@ -4890,12 +4893,12 @@ checkNativeEpochStopBeforeRunner(bool queued, NativeEpochStopReason reason,
   };
 
   std::atomic<std::size_t> calls{0};
-  runtime.registerRunner(
-    runnerSpec,
-    makeNativeModelRunner([&calls] (const RoleExecutionContext&) {
+  auto runner = makeNativeModelRunner(
+    [&calls] (const RoleExecutionContext&) {
       calls.fetch_add(1);
       return std::map<std::string, TensorBundle>{};
-    }));
+    });
+  runtime.registerRunner(runnerSpec, runner);
 
   NativeExecutionPlan plan;
   plan.roles = {runnerSpec.role};
@@ -4932,6 +4935,7 @@ checkNativeEpochStopBeforeRunner(bool queued, NativeEpochStopReason reason,
   config.stateIdentityTemplate = identityTemplate;
   config.positionPolicyDigest = identityTemplate.positionDigest;
   config.samplingDigest = "sha256:sampling";
+  config.prepareRunner = [runner] { return runner; };
   std::atomic<bool> stopped{!queued};
   config.stopCheck = [&stopped, reason] {
     return stopped.load() ? std::optional<NativeEpochStopReason>{reason}
@@ -5041,9 +5045,8 @@ BOOST_AUTO_TEST_CASE(NativeEpochCoordinatorRollsBackWhenDeadlineExpiresAfterRunn
   };
 
   std::atomic<std::size_t> calls{0};
-  runtime.registerRunner(
-    runnerSpec,
-    makeNativeModelRunner([&calls] (const RoleExecutionContext&) {
+  auto runner = makeNativeModelRunner(
+    [&calls] (const RoleExecutionContext&) {
       calls.fetch_add(1);
       NamedTensor logits;
       logits.name = "logits";
@@ -5060,7 +5063,8 @@ BOOST_AUTO_TEST_CASE(NativeEpochCoordinatorRollsBackWhenDeadlineExpiresAfterRunn
          makeEncodedTensorBundle(
            "onnx-output-bundle", {std::move(logits), std::move(nextState)})},
       };
-    }));
+    });
+  runtime.registerRunner(runnerSpec, runner);
 
   NativeExecutionPlan plan;
   plan.roles = {runnerSpec.role};
@@ -5099,6 +5103,7 @@ BOOST_AUTO_TEST_CASE(NativeEpochCoordinatorRollsBackWhenDeadlineExpiresAfterRunn
   config.stateIdentityTemplate = identityTemplate;
   config.positionPolicyDigest = identityTemplate.positionDigest;
   config.samplingDigest = "sha256:sampling";
+  config.prepareRunner = [runner] { return runner; };
   config.stopCheck = [&expired] {
     return expired.load()
       ? std::optional<NativeEpochStopReason>{NativeEpochStopReason::Deadline}
@@ -7061,9 +7066,7 @@ BOOST_AUTO_TEST_CASE(NativeEpochCoordinatorProducesTextAndTerminalFeedback)
       {"state.schemaDigest", identity.stateSchemaDigest},
     };
 
-    runtime.registerRunner(
-      runnerSpec,
-      makeNativeModelRunner(
+    auto runner = makeNativeModelRunner(
         [logitsByEpoch = std::move(logitsByEpoch), stateful]
         (const RoleExecutionContext& ctx) {
           BOOST_REQUIRE(ctx.inferenceEpoch < logitsByEpoch.size());
@@ -7090,7 +7093,8 @@ BOOST_AUTO_TEST_CASE(NativeEpochCoordinatorProducesTextAndTerminalFeedback)
             {"onnx-output-bundle",
              makeEncodedTensorBundle("onnx-output-bundle", std::move(outputs))},
           };
-        }));
+        });
+    runtime.registerRunner(runnerSpec, runner);
 
     NativeExecutionPlan plan;
     plan.roles = {runnerSpec.role};
@@ -7131,6 +7135,7 @@ BOOST_AUTO_TEST_CASE(NativeEpochCoordinatorProducesTextAndTerminalFeedback)
     config.stateIdentityTemplate = identity;
     config.positionPolicyDigest = identity.positionDigest;
     config.samplingDigest = "sha256:native-terminal-sampling";
+    config.prepareRunner = [runner] { return runner; };
     config.samplingMode = std::move(samplingMode);
     config.samplingSeed = samplingSeed;
     config.stopStrings = std::move(stopStrings);

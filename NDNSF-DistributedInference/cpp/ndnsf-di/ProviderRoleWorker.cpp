@@ -808,6 +808,7 @@ ProviderRoleWorker::runReadyRole(const WorkItem& item)
 
   if (item.executionGuard) item.executionGuard();
   ProviderRoleResult result;
+  result.runnerSupportsOpaqueStateHandles = runner->supportsOpaqueStateHandles();
   result.timing.role = item.role.role;
   result.timing.queuedAt = item.queuedAt;
   result.timing.workerStartedAt = workerStartedAt;
