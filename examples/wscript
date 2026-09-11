@@ -418,6 +418,7 @@ def build(bld):
                 source=(["DI_NativeProviderSessionSmoke.cpp"] +
                         di_native_session_sources +
                         di_native_collaboration_sources +
+                        di_native_onnx_assembly_sources +
                         bld.path.parent.ant_glob([
                             'ndn-service-framework/NDNSFMessages.cpp',
                             'ndn-service-framework/ConfigManager.cpp',
@@ -440,10 +441,12 @@ def build(bld):
                             'ndn-service-framework/PolicyStatus.cpp',
                             'ndn-service-framework/RequestConfidentiality.cpp',
                             'ndn-service-framework/RevocationState.cpp',
+                            'NDNSF-DistributedInference/cpp/ndnsf-di/ExecutionLeaseService.cpp',
                         ])),
                 includes=['..', '../ndn-service-framework'],
-                use='BOOST NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD OPENSSL DL TOKENIZER_BRIDGE',
-                cxxflags=['-fPIC'],
+                use='BOOST ONNXRUNTIME ONNX NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD OPENSSL DL TOKENIZER_BRIDGE',
+                cxxflags=['-fPIC', '-pthread'],
+                linkflags=['-pthread', '-Wl,-rpath,$ORIGIN/..'],
                 install_path=None)
 
     bld.program(name='di-native-plan-manifest-smoke',
@@ -465,11 +468,12 @@ def build(bld):
                 target='di-native-plan-schema-smoke',
                 source=(["DI_NativePlanSchemaSmoke.cpp"] +
                         di_native_session_sources +
-                        di_native_message_crypto_sources),
+                        di_native_message_crypto_sources +
+                        di_native_onnx_assembly_sources),
                 includes=['..', '../ndn-service-framework'],
-                use='BOOST NDN_CXX NDN_SVS OPENSSL DL TOKENIZER_BRIDGE',
+                use='BOOST ONNXRUNTIME ONNX NDN_CXX NDN_SVS PROTOBUF OPENSSL DL ndn-service-framework TOKENIZER_BRIDGE',
                 cxxflags=['-fPIC', '-pthread'],
-                linkflags=['-pthread'],
+                linkflags=['-pthread', '-Wl,-rpath,$ORIGIN/..'],
                 install_path=None)
 
     bld.program(name='di-native-plan-onnx-smoke',
@@ -591,13 +595,14 @@ def build(bld):
                 source=(["DI_NativeOnnxRuntimeSmoke.cpp"] +
                         di_native_session_sources +
                         di_native_message_crypto_sources +
+                        di_native_onnx_assembly_sources +
                         bld.path.parent.ant_glob([
                             'NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.cpp',
                         ])),
                 includes=['..', '../ndn-service-framework'],
-                use='BOOST ONNXRUNTIME NDN_CXX NDN_SVS OPENSSL DL TOKENIZER_BRIDGE',
+                use='BOOST ONNXRUNTIME ONNX NDN_CXX NDN_SVS PROTOBUF OPENSSL DL ndn-service-framework TOKENIZER_BRIDGE',
                 cxxflags=['-fPIC', '-pthread'],
-                linkflags=['-pthread'],
+                linkflags=['-pthread', '-Wl,-rpath,$ORIGIN/..'],
                 install_path=None)
 
     bld.install_files('${BINDIR}', ['trust-schema.conf', 'trust-any.conf', 'example_muas.policies'])
