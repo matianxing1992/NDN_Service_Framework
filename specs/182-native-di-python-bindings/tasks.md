@@ -21,6 +21,11 @@ assertions）；首个边界仍为 `NativeProviderRuntime requires a runner prep
 `.codex-tmp/spec182-t016-unit-20260911/unit-tests.log`；不推进 T016，下一步逐一核对
 `runSamplingEpochs` 调用与 callback 接线后再修复和重跑。
 
+增量编译第一次暴露测试 patch 上下文错误：两个 coordinator 测试的
+`config.prepareRunner` 先于本地 `runner` 定义，编译以 undeclared `runner` 失败；raw log
+为 `.codex-tmp/spec182-t016-unit-20260911/fixture-repair-build.log`。该边界已修正，生产
+代码未改动，必须先通过增量编译再重新运行 selector。
+
 文档旁路记录（2026-09-10，Abstract DOCUMENT PASS）：中英文 Proposal 摘要按
 研究需求、方法、初步依据及计划评估重写，四入口编译及摘要截图检查通过，仅
 PDF P2 变化。见[审计](../../docs/PAPER/proposal-defense/research-revision-audit.md)

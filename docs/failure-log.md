@@ -1,5 +1,16 @@
 # Failure Log and Evidence Index
 
+## 2026-09-11 — Spec182 T016-A fixture repair compile boundary
+
+The first incremental build after the bounded fixture repair failed while
+compiling `distributed-inference-async-runtime.t.cpp`: two coordinator tests
+assigned `config.prepareRunner = [runner] ...` before their local runner had
+been declared. The raw compiler output is retained at
+`.codex-tmp/spec182-t016-unit-20260911/fixture-repair-build.log`. This was a
+test-only patch-context mistake; no production source or runtime was reached.
+The repair was narrowed to the exact test functions and must pass a fresh
+incremental build before any selector result is counted.
+
 ## 2026-09-11 — Spec182 T016-A current-source unit fixture contract
 
 The fresh current-source build completed 309/309 with `-j4`, but its

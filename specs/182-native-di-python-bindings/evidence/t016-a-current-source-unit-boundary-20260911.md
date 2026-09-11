@@ -39,6 +39,13 @@ This result is current-source evidence and supersedes the stale-artifact
 classification for the selector; T016-A remains `PARTIAL` pending source-level
 fixture repair and fresh reruns.
 
+The first incremental compile of that repair failed because two similar patch
+contexts added `config.prepareRunner` without adding the corresponding local
+runner in the target function. The compiler stopped on the undeclared
+`runner`; raw output is retained at
+`.codex-tmp/spec182-t016-unit-20260911/fixture-repair-build.log`. This is a
+test-only patch-context boundary and is repaired before rerunning selectors.
+
 ## Validation matrix
 
 | Lane | Required result |
