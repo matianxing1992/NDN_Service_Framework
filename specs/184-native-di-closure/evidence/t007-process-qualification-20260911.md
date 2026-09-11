@@ -220,8 +220,9 @@ The full current-candidate unit sweep was then rerun with the required
 `NDNSF_SPEC182_BIN_DIR=build-spec184-b5-candidate` environment. It ran to completion with
 exit `0` (`.codex-tmp/spec184-b5-full-unit-rerun-env-20260911/unit.log`, SHA-256
 `b3e2f457d26fe019760f124cb225a65414cca2bc568c0603c4fc246fbd5686cd`, elapsed `1:49.15`,
-maximum RSS `8396500 KB`). The earlier exit `201` full sweep without this variable is retained
-as a setup/configuration boundary and is not combined with the passing result.
+maximum RSS `8396500 KB`). The earlier exit `201` full sweep without this variable is retained at
+`.codex-tmp/spec184-b5-full-unit-rerun-20260911/unit.log` as a setup/configuration boundary and
+is not combined with the passing result.
 
 The same environment was used for three repeated 151-case native planning,
 preparation, offer, provider, tokenizer, conversation, placement and grant selectors;
