@@ -2,7 +2,7 @@
 
 **Date**: 2026-09-11  
 **Status**: `PASS_FOR_T007_PRECONDITION` / convergence is current; qualification remains `PARTIAL`  
-**Candidate**: `sha256:be54482807739b02f613a59f5454b941ef471045869844c14bba32fb32f17828` (fresh local record)
+**Candidate**: `sha256:bf301beb053db1a9823b23f767afe051ac95808d5eace8df4c417a263115d931` (fresh local record)
 
 本审查确认当前候选的 Spec、plan、tasks、contracts 与产品 C++ 接线一致，并把未完成的
 运行时和外部资格边界保留下来。`PASS_FOR_T007_PRECONDITION` 只表示可以开始候选绑定的
@@ -60,8 +60,9 @@ Waf build 的首个边界仍是未纳入 Spec184 closure 的 legacy `spec181-ass
 
 因此本审查的结论是：**fresh candidate 的设计、接线、C++ unit/integration 和 observed-offer
 parser sample 已达到 T007 本地资格的前置条件，但仍不能标记 Spec184 完成。**当前进程/no-Python
-owner 受 uid 1000 的 `MININDN_REQUIRES_ROOT` 限制，I02 sanitizer leak、继承负例/collector、
-真实模型、Python retirement 及外部 SIF/Tiger 仍保持开放。
+owner 的非 root 运行保留 `MININDN_REQUIRES_ROOT` 边界；授权 root owner 已关闭 bounded
+`PO-001-stream`，但 I02 sanitizer leak、I02–I08 其余行、继承负例/collector、真实模型、
+Python retirement 及外部 SIF/Tiger 仍保持开放。
 
 ## Fresh candidate refresh
 
@@ -83,7 +84,9 @@ fresh `unit-tests` exit `0`（日志 SHA-256
 `docs/failure-log.md`，不作为当前 Spec184 target 的失败。
 
 fresh owner manifest `sha256:4212ca6f81913f30c10c23b1a5d3fcfa6d6a172de295b6e5a67fd3b2c23a7826`
-的 `PO-001` 运行在当前 uid 1000 首先命中 `MININDN_REQUIRES_ROOT`，结果
-`.codex-tmp/spec184-b5-owner-probe-20260911-r4/result.json`，exit `2`，因此旧 root owner
-PASS 不得重绑定到本 candidate。该刷新为 T007 提供了可复核的本地 C++ 前置条件，但不是
-process/no-Python 或 external-owner qualification。
+的 `PO-001` 运行首先保留了当前 uid 1000 的 `MININDN_REQUIRES_ROOT` 边界；随后在
+`PATH` 补回 `/usr/local/bin` 的授权 root owner 条件下，canonical two-node case exit `0`，
+完整 trace/namespace/process/endpoint/cleanup 和 business marker 已记录在
+`.codex-tmp/spec184-b5-owner-probe-20260911-r7/`。旧 root owner PASS 没有被重绑定；r7 是
+当前 candidate 的新 owner evidence。该刷新为 T007 提供了可复核的本地 C++ 与 bounded
+`PO-001` owner 前置条件，但不是 I02–I08、真实模型或 external-owner qualification。

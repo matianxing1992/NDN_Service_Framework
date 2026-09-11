@@ -2,7 +2,7 @@
 
 **Date**: 2026-09-11  
 **Status**: `PARTIAL` / candidate-bound local qualification started; no promotion  
-**Candidate**: `sha256:be54482807739b02f613a59f5454b941ef471045869844c14bba32fb32f17828` (fresh local record)
+**Candidate**: `sha256:bf301beb053db1a9823b23f767afe051ac95808d5eace8df4c417a263115d931` (fresh local record)
 
 本记录绑定 [promotion candidate](../contracts/promotion-candidate.md) 的当前源码、运行时、
 fixture、harness 和配置身份。它汇总本地 C++ 资格边界，不能把局部 selector 或 Python
@@ -123,11 +123,23 @@ completed without Boost failures:
 The fresh runner manifest is
 `.codex-tmp/spec184-b5-current-runner-manifest-r2-20260911.json` (SHA-256
 `4212ca6f81913f30c10c23b1a5d3fcfa6d6a172de295b6e5a67fd3b2c23a7826`). Its
-current-user owner probe stopped before topology creation with exit `2` and
-`MININDN_REQUIRES_ROOT` (`uid 1000`):
+first current-user owner probe stopped before topology creation with exit `2` and
+`MININDN_REQUIRES_ROOT` (`uid 1000`), which is retained as a privilege boundary.
+With the authorized root owner and `/usr/local/bin` restored in `PATH`, the same
+manifest completed the canonical two-node `PO-001-stream` case:
+`.codex-tmp/spec184-b5-owner-probe-20260911-r7/result.json` (SHA-256
+`e65fc1b507fe40cc275601b031c724b99f64a254ecaaa51272a7845f8e5509fd`), runner
+result SHA-256 `7cc45f6f9d4487ffe45de90dff37c6bc2e28e030295d69e6b31aa2c48186a0b9`,
+exit `0`, complete node/namespace/process/endpoint/cleanup evidence and business
+marker. The failed root retry that omitted `infoconv` from `PATH` is retained as
+`.codex-tmp/spec184-b5-owner-probe-20260911-r5-owner.log`; the corrected command
+explicitly includes `/usr/local/bin`.
+
+The current-user result remains preserved at
 `.codex-tmp/spec184-b5-owner-probe-20260911-r4/result.json` (SHA-256
 `004cfa0a88d00667c2c520c163a5c1461ec40a81fe3d39cacb703075aaf93fc0`). The
-historical root owner PASS is tied to the previous candidate and is not reused.
+historical root owner PASS is tied to the previous candidate and is not reused;
+the r7 result is the fresh candidate-bound owner evidence.
 
 ## Sanitizer boundary for the shared tiny-ONNX batch
 
@@ -212,8 +224,8 @@ qualification risks; it does not promote them to PASS.
 ## Qualification decision
 
 T007 remains `PARTIAL`: the fresh native unit/integration sweep, component dynamic
-gates and observed-offer parser sample pass, while I02 sanitizer teardown,
-current-user process/no-Python ownership, I02–I08 breadth, inherited negative
+gates, observed-offer parser sample and bounded fresh root `PO-001-stream` owner
+case pass, while I02 sanitizer teardown, I02–I08 process/no-Python breadth, inherited negative
 collector rows, real-model/MiniNDN breadth, Python retirement and external
 SIF/Tiger execution are not qualified.
 T008 cannot start, and no promotion or final handoff is authorized by this record.

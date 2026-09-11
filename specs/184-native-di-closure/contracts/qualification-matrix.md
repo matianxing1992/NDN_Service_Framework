@@ -52,7 +52,7 @@ results update evidence availability for the affected rows but do not upgrade th
 
 | Current evidence | Rows informed | Current boundary | Status |
 | --- | --- | --- | --- |
-| Fresh unit/integration target closure, candidate-first libraries and explicit worker lookup | 182:T006, 182:T016, PO-005, PO-011, PO-015/016, FR-006/012/013/014, CD-005/009/011/012, INV-007/009 | current-user owner probe stops at `MININDN_REQUIRES_ROOT`; external SIF/Tiger not run | PARTIAL/OPEN |
+| Fresh unit/integration target closure, candidate-first libraries, explicit worker lookup and root owner `PO-001-stream` | 182:T006, 182:T016, PO-001, PO-005, PO-011, PO-015/016, FR-006/012/013/014, CD-005/009/011/012, INV-007/009 | non-root owner probe stops at `MININDN_REQUIRES_ROOT`; I02–I08 and external SIF/Tiger not run | PARTIAL/OPEN |
 | Observed-offer C++ parser sample and unsuppressed ASan/UBSan run | 182:T007, PO-006, FR-007, CD-006, INV-004 | tokenizer-full, plan/parser and no-Python negative rows remain unqualified | PARTIAL |
 | Fresh C++ production path review | PO-001, PO-013, FR-001/016, CD-013 | no independent process/no-Python owner result for current candidate; broader model rows open | PARTIAL |
 
