@@ -2,9 +2,9 @@
 \chapter{Introduction}
 \label{chap:introduction}
 \section{Service Discovery and Authorized Invocation}
-Named Data Networking (NDN) supports retrieval of named Data and signature validation under trust rules~\cite{ndn,ndnpacket}. Sync announces dataset changes so applications can retrieve available Data~\cite{li2018brief,moll2022sok}. These mechanisms do not, by themselves, select a service executor, establish invocation permission, or guarantee completion before a deadline.
+Named Data Networking (NDN) supports name-based Data retrieval and data-centric security~\cite{ndn,ndnpacket}. Applications can use a Trust Schema to specify which signing keys may sign which Data and guide validation~\cite{trustschema}. Sync announces dataset changes so applications can retrieve available Data~\cite{li2018brief,moll2022sok}. These building blocks do not, by themselves, select a service executor or guarantee completion before a deadline; invocation authorization requires application-specific rules and checks.
 
-A requester may know the required service without knowing which authorized Providers are currently reachable, capable, and willing to execute it. Even when one Provider suffices, candidate discovery, authorization, selection, and result retrieval remain application responsibilities. NFN, NFaaS, RICE, and NSC support named computation or invocation~\cite{nfn,nfaas,rice,nsc}; gRPC supports extensible name resolution~\cite{grpcresolver}. This research examines how NDNSF organizes these service-level decisions and what they cost, rather than assuming that other frameworks cannot discover services.
+A requester may know the required service without knowing which authorized Providers are currently reachable, capable, and willing to execute it. Even when one Provider suffices, candidate discovery, authorization, selection, and result retrieval remain application responsibilities. NFN, NFaaS, RICE, and NSC support named computation or invocation~\cite{nfn,nfaas,rice,nsc}. The Distributed Network Measurement Protocol (DNMP) provides a concrete example of Trust-Schema-based command authorization~\cite{dnmp}; gRPC supports extensible name resolution~\cite{grpcresolver}. This research evaluates NDNSF's service-level decisions and costs against these precedents, not an assumed absence of discovery or authorization in prior work.
 
 \section{The Initial NDNSF Foundation}
 The initial NDNSF prototype selects one Provider from multiple candidates for each invocation. The User publishes Request Data, collects acknowledgment (ACK) Data, and publishes Selection Data for the chosen Provider, which executes and publishes Response Data. Candidates offer alternatives for the same invocation; the initial prototype does not assign them to different, interdependent roles.
@@ -25,7 +25,7 @@ The thesis to be evaluated is that named, verifiable objects can support runtime
 \item Under what workload and network conditions do these mechanisms improve completion, latency, or execution efficiency, and when do their costs outweigh their benefits?
 \end{enumerate}
 
-RQ1 evaluates the invocation foundation; RQ2 investigates its collaboration extension through UAV and distributed-inference dependencies; RQ3 measures both scopes separately, including their applicable failure behavior.
+RQ1 evaluates the invocation foundation, including a DNMP-inspired role-authorization alternative paired with content encryption and adapted to the NDNSF workflow. RQ2 investigates the collaboration extension through UAV and distributed-inference dependencies; RQ3 measures both scopes and their applicable failure behavior separately.
 
 \section{Contribution and Evidence Boundary}
 The intended contributions are an evaluated discovery/authorization design, a collaboration protocol enforcing runtime role assignments through named-dependency checks, and evidence of their benefits and costs. These build on established NDN, encryption, and computation mechanisms.
@@ -41,7 +41,7 @@ For the collaboration extension, the question is how a request gathers current w
 
 \section{Comparing Authorization Designs under the Same Requirements}
 \subsection{DNMP as a Concrete Trust-Schema Design}
-The Distributed Network Measurement Protocol (DNMP) uses role-constrained
+DNMP uses role-constrained
 signing to authorize measurement commands~\cite{dnmp}. Its Network Key anchors
 the signing hierarchy for role keys, device keys, and the distributed schema.
 Given \texttt{target}, \texttt{probeType}, \texttt{probeArgs}, and the user's
@@ -54,6 +54,7 @@ valid signature. DNMP also bounds publication lifetimes and retains recent
 publication state for replay protection, assuming loosely synchronized clocks.
 
 \subsection{Adapting the Alternative to NDNSF}
+\label{sec:dnmp-alternative}
 For comparison, we propose retaining the NDNSF Request--ACK--Selection--Response
 workflow while replacing ABE-backed invocation checks with role-constrained
 signing rules. The alternative must authorize both User invocation and Provider
@@ -212,7 +213,7 @@ Historical v0.1 loss results include 599/600 completions at 1\% per-link loss, 5
 \begin{tabularx}{\textwidth}{p{.07\textwidth}XXX}
 \toprule
 RQ & Comparison & Correctness / failure observation & Costs and outcomes\\\midrule
-RQ1 & ABE-backed authorization; role rules plus content encryption; suitable group-key and authorization combination & Unauthorized call never starts handler; replay, wrong challenge, revoked/expired state, status delay & Completion, discovery delay, crypto work, credential/policy size, renewal and withdrawal traffic\\\midrule
+RQ1 & ABE-backed authorization; DNMP-inspired role rules plus content encryption (Section~\ref{sec:dnmp-alternative}); suitable group-key combinations & Unauthorized call never starts handler; replay, wrong challenge, revoked/expired state, status delay & Completion, discovery delay, crypto work, credential/policy size, renewal and withdrawal traffic\\\midrule
 RQ2 & Same task graph with static/dynamic assignment; controlled removal of each admission check & Wrong role, edge, name, key or execution; direct/cache parity; incomplete objects; cancellation or reassignment & End-to-end completion, validation cost, intermediate bytes, redundant work, bounded recovery\\\midrule
 RQ3 & Matched Provider counts, tasks, capacities, deadlines and failure schedules; feasible single-device control & Include failed and timed-out requests; distinguish network, admission, execution and result-retrieval failures & Completion and latency together; cold/warm costs; per-run uncertainty; conditions with no benefit\\\bottomrule
 \end{tabularx}
@@ -248,4 +249,4 @@ ABE adds authority, computation, and rekeying costs; disconnected revocation has
 
 \chapter{Conclusion}
 \label{chap:conclusion}
-The research builds on NDNSF's initial ability to discover multiple candidates and select one Provider for an invocation. It evaluates that discovery/authorization foundation and investigates an extension for complementary Provider roles and named dependencies. The intended contribution is an evaluated service protocol and design rationale, not a new encryption primitive or the first use of named computation. RQ1 asks when protected discovery and reuse of ABE capability are preferable to complete alternatives. RQ2 asks how runtime assignments become local rules for accepting named dependencies. RQ3 examines benefits and costs for invocation and collaboration separately. Existing campaigns establish limited invocation findings; the collaboration and cross-application claims still require their declared end-to-end evidence. This separation provides a concrete route from the present proposal to a defensible dissertation.
+The research builds on NDNSF's initial ability to discover multiple candidates and select one Provider for an invocation. It evaluates that discovery/authorization foundation and investigates an extension for complementary Provider roles and named dependencies. The intended contribution is an evaluated service protocol and design rationale, not a new encryption primitive or the first use of named computation. RQ1 compares ABE-backed authorization with DNMP-inspired role rules paired with content encryption, including their management and withdrawal costs. RQ2 asks how runtime assignments become local rules for accepting named dependencies. RQ3 examines benefits and costs for invocation and collaboration separately. Existing campaigns establish limited invocation findings; the collaboration and cross-application claims still require their declared end-to-end evidence. This separation provides a concrete route from the present proposal to a defensible dissertation.

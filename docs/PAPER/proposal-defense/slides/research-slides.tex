@@ -35,7 +35,7 @@ Some tasks need several Providers with different responsibilities. Separate call
 \small
 \begin{tabularx}{\linewidth}{p{.39\linewidth}X}
 \toprule NDN building block & Remaining application responsibility\\\midrule
-Named Data and signatures [1] & Validate signatures and signing-key relationships under trust rules; check task permissions separately\\\midrule
+Named Data and signatures [1] & Validate signatures under application trust policies, expressible through a Trust Schema [16]\\\midrule
 Interest retrieval and caching [1,26] & Enforce task identity, dependencies, and deadlines; caching is not persistent storage\\\midrule
 Dataset synchronization / SVS [2,3] & Discover new names, then retrieve Data; define service-message state transitions\\\midrule
 NAC [4] / enhanced NAC-ABE [19] & Use content encryption for read access; separately check service-invocation permissions and state\\\bottomrule
@@ -58,8 +58,8 @@ NAC [4] / enhanced NAC-ABE [19] & Use content encryption for read access; separa
 \begin{tabularx}{\linewidth}{p{.27\linewidth}X}
 \toprule Prior work & What the comparison must acknowledge\\\midrule
 NFN [6], NFaaS [7] & Named computation and function execution/placement\\\midrule
-RICE [9], NSC [10] & Invocation and security mechanisms; NSC validates signed calls using application trust rules\\\midrule
-DNMP [12] & Role- and command-constrained signing and verification\\\midrule
+RICE [9], NSC [10] & Invocation mechanisms; NSC checks signed calls using a Trust Schema\\\midrule
+DNMP [12] & Trust Schema constrains roles and measurement commands\\\midrule
 CaSCON [15] & Service-composition research; requires a feature-level comparison before claiming a new composition mechanism\\\midrule
 gRPC [17,27] & Complete configurations can include discovery/resolver integration, not only fixed addresses\\\bottomrule
 \end{tabularx}
@@ -128,7 +128,7 @@ Needed to execute the selected task: images, detailed processing parameters, or 
 \item NDNSF combines service entitlements in that policy while retaining identity-signing credentials. [28]
 \item Challenge checks reuse these permissions for invocation; User permission keys and challenge processing still add cost.
 \end{itemize}
-\vspace{3mm}\bluebox{This avoids a separate role-based invocation policy in NDNSF. It does not eliminate key updates or prove lower total cost; role-based designs can also reuse credentials.}
+\vspace{3mm}\bluebox{DNMP [12] expresses command permissions through role keys and a Trust Schema. Roles can cover several permissions. Compare credential, policy and key updates; reuse alone does not prove lower total cost.}
 \end{frame}
 
 \begin{frame}{How NDNSF Checks Service Permissions}
@@ -348,7 +348,7 @@ Single Provider & 186.8 ms & 206.3 ms\\\bottomrule
 \small
 \begin{tabularx}{\linewidth}{p{.09\linewidth}XX}
 \toprule RQ & Required evidence & Outcome and cost\\\midrule
-RQ1 & Full authorization alternatives; unauthorized call, challenge/replay and withdrawal cases & No unauthorized handler start; discovery delay, key/policy size, status delay and rekey traffic\\\midrule
+RQ1 & ABE-backed versus DNMP-inspired rules plus encryption; unauthorized call, replay and withdrawal cases & No unauthorized handler start; discovery delay, key/policy size, status delay and rekey traffic\\\midrule
 RQ2 & One UAV and one DI graph; wrong role/edge; direct/cache parity; cancellation/replacement & Correct task completion; validation, transfer and recovery cost\\\midrule
 RQ3 & Matched workload and failure schedules; feasible single-device control; cold/warm state & Completion plus latency, redundant work, bytes, uncertainty, and cases with no advantage\\\bottomrule
 \end{tabularx}
@@ -370,7 +370,7 @@ February 2027 & Target defense, conditional on evidence and committee approval\\
 
 \begin{frame}{Expected Research Outcomes}
 \begin{itemize}
-\item \textbf{RQ1 answer:} when ABE-encrypted discovery and ABE-backed service authorization justify their management and revocation costs.
+\item \textbf{RQ1 answer:} when ABE-backed authorization is preferable to DNMP-inspired role rules plus encryption, accounting for confidentiality, management and withdrawal costs.
 \item \textbf{RQ2 answer:} exactly which task-assignment mistakes are rejected and which recovery behavior is supported.
 \item \textbf{RQ3 answer:} measured benefits, negative results and deployment limits.
 \item Reproducible configurations and evidence linking each conclusion to its tested scope.

@@ -1,9 +1,9 @@
 {
   "date": "2026-09-10",
-  "scope": "Invocation foundation before collaboration extension; bilingual proposal, slides and notes",
+  "scope": "DNMP command-authorization precedent throughout bilingual proposal and slides",
   "verdict": "DOCUMENT_CHECKS_PASS_RESEARCH_GAPS_EXPLICIT",
-  "observed_repository_head": "1a67d865111910b4af8d82a3deed0b47e11ea924",
-  "raw_evidence_root": ".codex-tmp/proposal-invocation-scope-20260911",
+  "observed_repository_head": "dd678c90d97a6d2b38f2182d2a97adc7aa5fb9e8",
+  "raw_evidence_root": ".codex-tmp/proposal-dnmp-throughline-20260911",
   "research_limits": [
     "Nearest-work feature-level novelty comparison remains open",
     "Qualified multi-UAV/DI role-edge and recovery evidence remains open",
@@ -11,21 +11,21 @@
     "Historical small-model raw-run provenance not re-established",
     "Advisor approval and final-defense readiness not certified"
   ],
-  "implementation_source_check_scope": "Narrative-only revision; initial single-Provider scope supplied by author and maintained records; current CodeGraph lookup is not historical snapshot proof.",
+  "implementation_source_check_scope": "Literature/document-only revision; no new current or historical implementation claim verified.",
   "checks": {
-    "paired_entry_text_equality": true,
-    "abstract_and_keywords_fit_one_page": true,
-    "scoped_narrative_guards": true,
-    "eight_final_latex_logs_no_overfull_missing_glyph_undefined": true,
-    "underfull_warnings": 314,
-    "all_pdf_and_lo_text_bounds": true,
+    "paired_entry_text_equality_and_one_page_abstracts": true,
+    "dnmp_narrative_and_version_boundary_guards": true,
+    "dnmp_doi_in_all_bibliography_copies": true,
+    "eight_final_latex_logs_clean_of_overfull_missing_glyph_undefined": true,
+    "underfull_warnings": 320,
+    "pdf_and_lo_text_bounds": true,
     "ordinary_slide_max_words": 100,
     "reference_density_exemptions": [
       38,
       39,
       40
     ],
-    "unchanged_experiment_numbers_on_slides": [
+    "unchanged_experiment_pages": [
       28,
       29,
       30,
@@ -33,19 +33,18 @@
       36,
       37
     ],
-    "pptx_and_notes_count": 40,
     "editable_text": {
-      "source_span_count": 826,
-      "assigned_once_count": 826,
+      "source_span_count": 828,
+      "assigned_once_count": 828,
       "adjacent_pairs_grouped": 207,
-      "multi_span_textboxes": 170,
+      "multi_span_textboxes": 168,
       "svs_citation_textboxes": 0,
       "background_extractable_text_characters": 0,
       "independent_visual_region_count": 0
     },
     "claim_inventory_current": {
-      "units": 996,
-      "prose-sentence": 587,
+      "units": 1000,
+      "prose-sentence": 591,
       "claim-row-or-label": 409
     }
   },
@@ -84,18 +83,18 @@
     }
   },
   "pptx": {
-    "source_span_count": 826,
-    "assigned_once_count": 826,
+    "source_span_count": 828,
+    "assigned_once_count": 828,
     "adjacent_pairs_grouped": 207,
-    "multi_span_textboxes": 170,
+    "multi_span_textboxes": 168,
     "svs_citation_textboxes": 0,
     "background_extractable_text_characters": 0,
     "independent_visual_region_count": 0,
-    "editable_textboxes": 572,
+    "editable_textboxes": 574,
     "native_triangle_bullets": 47,
     "notes_pages": 40
   },
-  "visual_review": "PDF and LibreOffice contact sheets; enlarged opening and changed protocol pages.",
+  "visual_review": "All PDF contact sheets and enlarged changed pages; LibreOffice round-trip contact sheets.",
   "text_preflight": "All ordinary LaTeX slide pages <=100 words; reference pages exempt. LibreOffice tokenization differs.",
   "historical_checks": {
     "two_design_revision": {
@@ -437,49 +436,53 @@
     }
   },
   "files": {
-    "BUILD-RESEARCH.md": "4fdd58d689630dd060b970222449083d2733fa5183ddcc93950f1e160bfd60de",
+    "BUILD-RESEARCH.md": "70e1835bdef071a8b650ae592dcbf90ae884568d55efbfc92ac5cdde1333e026",
     "authorization-revision.md": "f6a37f2755ce3d2182409fc61bbc258658e5d1828be7e9d81e5e7a8ec99296f1",
     "bibstyle.bst": "694645ce80313afbe1aa9d14f2990bc080cf5c2b1669449df840ef08080ee3ad",
-    "ch/chapters/authorization-rationale.tex": "fedf9f368f403fb161f8e206d5f88f50655c4c70854c0d1f8dd1084485142398",
-    "ch/chapters/research-revision.tex": "2c1a4269ced50c385aea25d5738af21135b2c9b03535a8f1b7bc9f041e050e53",
-    "ch/main.pdf": "f36c4fd560e6af2dfa358e1f068466179d6fd86bf7f5ae165534d394b3261a88",
+    "ch/chapters/authorization-rationale.tex": "7e9488c648cffcedd075bd41082c4f84c221e3d0f0b9f85c0f6ee3317ed5dbe5",
+    "ch/chapters/research-revision.tex": "75f7c6d383328462477ab464bd405cfd49273d4195862f2b42955794443aa408",
+    "ch/main.pdf": "236048b7d0d1f6c1514424c39e5881f6499aaf21f653ab568720b0a253cfc337",
     "ch/main.tex": "32c83e6edc9cb62f47d889c5fe63f0a607f5f38aa887d292a4d73c2743f96c1c",
+    "ch/ref.bib": "d427803c1ed0c8fa5233b81a69b404c95e5f63fa629f1428f187f845a8c05c6e",
     "ch/uofm.cls": "85d127e17c01d48088c9d2828498577e0a5bf4e537490371e357945840d2f563",
     "dnmp-comparison-review-20260910.md": "05749502c25890bc0f4c88dd867c2410ec6e994ec9d4e1d4319b1996eb2185ab",
-    "en/chapters/authorization-rationale.tex": "a94b93ff2b336255e119ef29b5151f71654dc01277bc31ba467428e2833cf91f",
-    "en/chapters/research-revision.tex": "572875e70d6c4e345dfeffbb618162b2594a8c555271f10a4c7f6d434c76b287",
-    "en/main.pdf": "d26a092ffe49976242e2345aedc69004c2e9ceb41bef95df9e43484751fd556b",
+    "dnmp-throughline-review-20260911.md": "c2ee47667cb6c58c40b9783e46049f2276e2073d146cc6eed97f44990503dd7c",
+    "en/chapters/authorization-rationale.tex": "3b5c4de8a3d360f274d56d1167d5b516597d2e59366a522ecec55bc13766c8e2",
+    "en/chapters/research-revision.tex": "e70b17cc71c9038b10b3b672848115a05bc6b57682c38778c3ebbf41549562c4",
+    "en/main.pdf": "ed255db950d22483e372c686d8a97839dae26f77afb7a120afc70e478abb4c7b",
     "en/main.tex": "fc5f5abfb44b8bdb5d71940257419832bf0086c43b5f06234298a150b1a89cc1",
+    "en/ref.bib": "d427803c1ed0c8fa5233b81a69b404c95e5f63fa629f1428f187f845a8c05c6e",
     "en/uofm.cls": "85d127e17c01d48088c9d2828498577e0a5bf4e537490371e357945840d2f563",
     "invocation-scope-review-20260911.md": "d68c3469fe4e58b3348869beecf76cf6e0471a4aa55cca41831ac224d34c5159",
     "language-review-20260910.md": "d86ff03fc119c2123514f43bffef3ff87e3e8755bb25e5f357ac40d28db68107",
-    "main.pdf": "e5d270057c2317f763b7ed0faa5b61457f53ea9c197c415ecce222a7444d82af",
+    "main.pdf": "2680e2babda930ed86da58df1df545b3ce54c807b468588a092df44e423f7a0e",
     "main.tex": "b9895092d1beaebb3aa4254d6c0aa479f53b316d4b2c5aa48074d3aa468e0ba9",
-    "main_ch.pdf": "853401da5f51b192916d9884d0d1efa49ec3b906da0354738636620590147aa5",
+    "main_ch.pdf": "4831ebb69a8cda12d11a173cabba41b872c793f4b1d8b7f1b112fb400d78d30e",
     "main_ch.tex": "bb3d3c277d6a61fa719719c7eb7fd02d53a9ae6a00b077be17959e85098ae37a",
     "protocol-overview.tex": "4c3afde9b456c7b5c4d4c9efaa0f21da4d4430aeb403f311cb1919df3cf26480",
-    "ref.bib": "947043b33770fa99f5567ab3fa732303bcccc4ed9c0d20e3ec22459628375e96",
+    "ref.bib": "d427803c1ed0c8fa5233b81a69b404c95e5f63fa629f1428f187f845a8c05c6e",
     "research-references.bib": "80003353425fbd3c0ab73dff585061b00ffe6f977a0211434748f24930b10315",
-    "research-revision-audit.md": "182326d9e013a835cc08b67ca8d8ad7ff63a4887ba9aef9082672f7f5e9dba8c",
+    "research-revision-audit.md": "4bc823e29c2c62064701c421d8a318453bd6ed641e6d68c557558fc63c66746d",
     "review.md": "fea8b49c9f60a6bf8bb064702f7c8617d1d10bc9a88369efd3d32222ec966613",
     "review_rendered.py": "e24daf06bf78f06cc72c7169a4c1cba3ecb7b04e12f9999921772f6bcb14d26f",
     "review_sentence_claims.py": "a62144264ed0ac46d3ec902e820d5a99271a0a89772fa3554c0124ce93b3ed17",
-    "sentence-claim-ledger-20260911.json": "50505b35777445d977dce9d21a12178b869850f4788bd847824def4f369c8879",
+    "sentence-claim-ledger-20260911.json": "dfececf728365c6edb77eb9fa940484a64c26619c10583936e690022126dbdc0",
     "sentence-review-20260911.md": "c93633313fbad75879a69bd46d76f17b7baccba6c475c0ae7e259f08f41adc58",
-    "slides/NDNSF_proposal_hybrid_editable.pptx": "a7134f4c7af0229680798b07203975ee7325d4c170e00173c0c70a269c80832b",
+    "slides/NDNSF_proposal_hybrid_editable.pptx": "69ba887c6490669e8609f24cf88964c79fe1d5f923533f076418f973350b650a",
     "slides/add_speaker_notes_to_pptx.py": "e05f024861008aa94dccaa80bbcb7e3ea584678895d5287e6b27da9b96d9bb5e",
     "slides/generate_hybrid_editable_pptx.py": "7943cbd16bcdce110f141d74f56f466e59a82ad8a3d5e29ba8975c2f2a2447d7",
-    "slides/main.pdf": "bbcec2813afd412737050bdfae9679c345059d10de598943272cdd72dafdfe17",
+    "slides/main.pdf": "cbdda978eb5b21adca7e4553c9cd3491146bc000c70af691b76d9ae4c3adb845",
     "slides/main.tex": "4356eb5b22f67bff9d615f722a07cf324ee765e345bac07f0d2a62f3c284e296",
-    "slides/main_35min.pdf": "2ab0d07043630ef3048c84cff8c5e5dd5a727d9312270e42d17e909605fcb4b5",
+    "slides/main_35min.pdf": "1083c50fcaccf813da7fa637d366d7629feea484a7cd718f137da15abdde9ae2",
     "slides/main_35min.tex": "fdc2fbeee6a689114c392f6a404e5f2b44f69710351d7edb5efa7cd3983cedba",
-    "slides/research-slides.tex": "25cdeeea1be99d58e3c23d0cd17fa89e946e73740dd075068a5553a2a53e773b",
-    "slides/speaker_notes.pdf": "94472a6ff1b8d09fc923a1520162cc6a83236d048ad374873ddfd143d0cef645",
-    "slides/speaker_notes.tex": "1842d3cc3bf15ade3ddf5167561a3fbe6c7862a1eac25863123755161c792664",
-    "slides/speaker_notes_35min.pdf": "1e7fb9fc16d42b3c27a43467a7f84c86a80a04adddf791a226ea40370d567b19",
-    "slides/speaker_notes_35min.tex": "1842d3cc3bf15ade3ddf5167561a3fbe6c7862a1eac25863123755161c792664",
+    "slides/research-slides.tex": "dd82873ff96e34271294694cc0a0c23378389e19b1b364ea7beda0c12a159b81",
+    "slides/speaker_notes.pdf": "717da6c7f052c165426475e79b774c95607588b64a99192c3d55ec5e5fc80cf5",
+    "slides/speaker_notes.tex": "4a877e1d83b4aca816f5269e49050db31007713973bfa78ae01b859f758744d8",
+    "slides/speaker_notes_35min.pdf": "f186b2822beb811384e6acfc540092e8321e210358fcb71e7db2a252410f8834",
+    "slides/speaker_notes_35min.tex": "4a877e1d83b4aca816f5269e49050db31007713973bfa78ae01b859f758744d8",
     "slides/test_notes_parsing.py": "1ac86242fc969e65d5b01fb65b3b589cecb27176b9d0fa376636b63177d019a4",
     "uofm.cls": "85d127e17c01d48088c9d2828498577e0a5bf4e537490371e357945840d2f563",
+    "validate_dnmp_throughline.py": "419f9c8df180d81da4f915a9fa8dedd451ef632f47baaac5150d56e41c99ef72",
     "validate_invocation_scope.py": "270321c0b93bbce3c60e681df7393864e1dc3ff5ec3453a7a0ca599fb78a03c5",
     "validate_sentence_review.py": "86d5db2ff541678fa0ec80cceba50422084dd24be64bb2e3ca00da12acc9051f"
   },
@@ -735,5 +738,61 @@
     "product_validation": "NOT_RUN; no product changes or new experiments.",
     "raw_evidence_root": ".codex-tmp/proposal-invocation-scope-20260911",
     "review": "invocation-scope-review-20260911.md"
+  },
+  "dnmp_throughline_revision": {
+    "date": "2026-09-11",
+    "scope": "DNMP command-authorization precedent throughout bilingual proposal and slides",
+    "verdict": "DOCUMENT_CHECKS_PASS_RESEARCH_GAPS_EXPLICIT",
+    "checks": {
+      "paired_entry_text_equality_and_one_page_abstracts": true,
+      "dnmp_narrative_and_version_boundary_guards": true,
+      "dnmp_doi_in_all_bibliography_copies": true,
+      "eight_final_latex_logs_clean_of_overfull_missing_glyph_undefined": true,
+      "underfull_warnings": 320,
+      "pdf_and_lo_text_bounds": true,
+      "ordinary_slide_max_words": 100,
+      "reference_density_exemptions": [
+        38,
+        39,
+        40
+      ],
+      "unchanged_experiment_pages": [
+        28,
+        29,
+        30,
+        31,
+        36,
+        37
+      ],
+      "editable_text": {
+        "source_span_count": 828,
+        "assigned_once_count": 828,
+        "adjacent_pairs_grouped": 207,
+        "multi_span_textboxes": 168,
+        "svs_citation_textboxes": 0,
+        "background_extractable_text_characters": 0,
+        "independent_visual_region_count": 0
+      },
+      "claim_inventory_current": {
+        "units": 1000,
+        "prose-sentence": 591,
+        "claim-row-or-label": 409
+      }
+    },
+    "pages": {
+      "main.pdf": 30,
+      "en/main.pdf": 30,
+      "main_ch.pdf": 23,
+      "ch/main.pdf": 23,
+      "slides/main.pdf": 40,
+      "slides/main_35min.pdf": 40,
+      "slides/speaker_notes.pdf": 8,
+      "slides/speaker_notes_35min.pdf": 8
+    },
+    "visual_review": "All PDF contact sheets and enlarged changed pages; LibreOffice round-trip contact sheets.",
+    "client_limit": "Microsoft PowerPoint and Google Slides not run.",
+    "product_validation": "NOT_RUN; no product edits or new experiments.",
+    "raw_evidence_root": ".codex-tmp/proposal-dnmp-throughline-20260911",
+    "review": "dnmp-throughline-review-20260911.md"
   }
 }

@@ -1,5 +1,15 @@
 # Failure Log and Evidence Index
 
+## 2026-09-11 — Proposal DNMP bibliography mirror boundary
+
+The first document validation rejected root/English-entry text inequality:
+the DNMP DOI was added to the root `ref.bib` but not its independent `en/ch`
+copies. Synchronizing the three entries and rebuilding fixes the metadata
+boundary. Earlier slide overflow and Chinese sparse pagination were also
+corrected; no product test or experiment ran. See
+[DNMP throughline review](PAPER/proposal-defense/dnmp-throughline-review-20260911.md)
+and `.codex-tmp/proposal-dnmp-throughline-20260911/validation-first-pass.log`.
+
 ## 2026-09-11 — Proposal scope checkpoint hook boundary
 
 The default commit hook rejected repository-wide historical assistant references

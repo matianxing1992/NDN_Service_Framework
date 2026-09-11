@@ -2,14 +2,14 @@
 \chapter{引言}
 \label{chap:introduction}
 \section{服务发现与获准调用}
-命名数据网络（NDN）支持按名获取 Data 和信任规则下的签名验证~\cite{ndn,ndnpacket}。Sync 通告数据集变化，供应用获取可用 Data~\cite{li2018brief,moll2022sok}。这些机制本身不选择服务执行者、不授予调用权限，也不保证截止时间内完成。
+命名数据网络（NDN）支持按名获取 Data 和以数据为中心的安全机制~\cite{ndn,ndnpacket}。应用可用 Trust Schema 规定允许的 Data 与签名密钥关系，指导验证~\cite{trustschema}。Sync 通告数据集变化以辅助获取~\cite{li2018brief,moll2022sok}。这些机制不自动选择执行者或保证按时完成；调用授权需应用定义规则与检查。
 
-请求者可能知道所需服务，却不知道哪些获准 Provider 当前可达、有能力且愿意执行。即使一个 Provider 就足够，应用仍需发现候选、授权、选择执行者并获取结果。NFN、NFaaS、RICE 和 NSC 支持命名计算或调用~\cite{nfn,nfaas,rice,nsc}；gRPC 支持可扩展名字解析~\cite{grpcresolver}。研究关注 NDNSF 如何组织这些服务级决策及其成本，而非假定其他框架无法发现服务。
+请求者知道服务，却未必知道哪些获准 Provider 可达、有能力且愿意执行。NFN、NFaaS、RICE 和 NSC 支持命名计算或调用~\cite{nfn,nfaas,rice,nsc}。Distributed Network Measurement Protocol（DNMP）提供 Trust Schema 命令授权实例~\cite{dnmp}；gRPC 支持可扩展名字解析~\cite{grpcresolver}。研究参照这些先例评价 NDNSF 的发现、授权与调用成本，不假定已有工作缺少相应机制。
 
 \section{初版 NDNSF 的调用基础}
-初版 NDNSF 从多个候选中，为一次调用选定一个 Provider。User 发布 Request Data、收集应答（ACK）Data，再为选定 Provider 发布 Selection Data；后者执行并发布 Response Data。候选为同一次调用提供替代选择；初版不将它们分配到不同的相互依赖角色。
+初版 NDNSF 从多个候选中选定一个 Provider。User 发布 Request Data、收集应答（ACK）Data，再发布 Selection Data；选定 Provider 执行并发布 Response Data。候选是同一次调用的替代执行者，不承担不同的相互依赖角色。
 
-发现与授权是不依赖协作的研究问题。discovery descriptor 提供截止时间、资源要求等可行性信息；application input 提供执行材料。被评估设计以属性基加密（ABE）保护 descriptor，并通过受保护 challenge 核验、信任规则下的签名验证及请求状态检查实施授权。获准但未选中的候选仍可读取 descriptor。研究也评价输入／结果保护、权限撤销及管理成本。
+发现与授权不以协作为前提。发现描述提供期限和资源需求，应用输入提供执行材料。被评估设计以属性基加密（ABE）保护描述，以受保护 challenge 核验、信任规则下的签名验证和请求状态检查实施授权。获准但未选中的候选仍可读描述。输入／结果保护、撤销和管理成本同样属于评价范围。
 
 \section{从单 Provider 调用扩展到多 Provider 协作}
 部分任务需要不同 Provider 提供互补服务。分别调用各服务，并不会自动规定哪个 Provider 担任哪个角色，以及依赖服务可以接受哪些中间对象。本 Proposal 研究在保留调用基础的同时，通过扩展明确这些分工与依赖。
@@ -23,7 +23,7 @@
 \item 如何扩展单 Provider 调用基础，让运行时选定的多个 Provider 按任务角色和命名依赖执行，而不依赖中间 Data 来自生产者还是缓存？
 \item 在何种任务和网络条件下，这些机制改善完成率、时延或执行效率？何时成本超过收益？
 \end{enumerate}
-RQ1 评价调用基础；RQ2 通过 UAV 和分布式推理的依赖检验协作扩展；RQ3 分别测量两个范围及其适用的失败行为。
+RQ1 评价调用基础，包括适配到 NDNSF 流程的 DNMP-inspired 角色授权加内容加密对照；RQ2 通过 UAV／DI 依赖检验协作扩展；RQ3 分别测量两者及其失败行为。
 
 \section{贡献与证据边界}
 预期贡献是经评价的发现／授权设计、通过命名依赖检查落实运行时分工的协作协议，以及收益和成本证据；研究基于已有 NDN、加密与计算机制。
@@ -38,7 +38,7 @@ NFN 研究命名计算与表达式求值，NFaaS 研究命名函数执行放置~
 
 \section{在相同需求下比较授权设计}
 \subsection{DNMP：Trust Schema 授权的具体实例}
-Distributed Network Measurement Protocol（DNMP）通过角色约束的签名授权测量
+DNMP 通过角色约束的签名授权测量
 命令~\cite{dnmp}。Network Key 是角色密钥、设备密钥及所分发 Schema 签名层级的
 信任锚。客户端根据 \texttt{target}、\texttt{probeType}、\texttt{probeArgs} 和用户的
 \texttt{roleType}，从用户已有的密钥中查找 Schema 允许的签名密钥；无匹配时拒绝，
@@ -48,6 +48,7 @@ publication 通过 Schema 规定的验证后才调度探测操作。因此，这
 publication 状态以防重放，其假设包括设备时钟大致同步。
 
 \subsection{将对照方案适配到 NDNSF}
+\label{sec:dnmp-alternative-ch}
 本比较提出保留 NDNSF 的 Request--ACK--Selection--Response 流程，将 ABE-backed
 调用检查替换为角色约束签名规则。该方案需分别检查 User 的调用权限与 Provider
 的参与权限，将消息关联到活动请求，并仅允许被 Selection 选中的 Provider 执行。
@@ -174,7 +175,7 @@ transition 实验中，无预登记 Provider 地址的 NDNSF 完成 357/357，�
 \caption{按主张确定剩余评价，不把计划列为完成。}
 \begin{tabularx}{\textwidth}{p{.07\textwidth}XXX}
 \toprule RQ & 完整对照 & 正确性／失败 & 成本与结果\\\midrule
-RQ1 & ABE-backed 授权；角色规则加配套加密；合适的组密钥加授权组合 & 无权限不启动 handler；challenge／replay／撤销／状态延迟 & 完成率、发现时延、凭证／policy 大小、密码学与换钥流量\\\midrule
+RQ1 & ABE-backed 授权；DNMP-inspired 角色规则加内容加密（第~\ref{sec:dnmp-alternative-ch} 节）；合适的组密钥组合 & 无权限不启动 handler；challenge／replay／撤销／状态延迟 & 完成率、发现时延、凭证／policy 大小、密码学与换钥流量\\\midrule
 RQ2 & 相同图的静态／动态分配；逐项准入检查消融 & 错角色／边／名字／密钥／执行；缓存与直接一致；取消与重分配 & 验证开销、字节、完成率、冗余工作、恢复轨迹\\\midrule
 RQ3 & 同候选数、负载、能力、期限、失败安排和可行单机基线 & 包含失败超时；区分网络、准入、执行和结果获取 & 完成率及时延、冷热成本、run 级不确定性、无收益条件\\\bottomrule
 \end{tabularx}\end{table}
@@ -203,4 +204,4 @@ February 2027 答辩目标取决于证据与委员会批准。CS 指南要求答
 ABE 增加 authority、计算和换钥成本；断连情况下撤销传播存在限制。ACK 不证明未来资源可用或报告真实，缓存可用也不保证任务完成。仅限单进程的测试不能证明分布式故障行为。UAV 安全和识别精度需要服务消息交付以外的证据；硬件与模型结论须限定在所测配置内。
 
 \chapter{结论}
-本研究以初版 NDNSF 从多个候选中选定一个 Provider 完成调用的能力为基础，评价发现／授权设计，并研究面向互补角色和命名依赖的协作扩展。候选贡献是经评价的服务协议及有证据支持的机制选择，不是新密码学原语或首次命名计算。RQ1 比较受保护发现与 ABE 权限复用的适用条件；RQ2 把运行时分工变成本地命名依赖准入规则；RQ3 分别评价调用与协作的收益和成本。已有实验支持有限调用结论；协作与跨应用主张仍需其声明的端到端证据。本 Proposal 据此给出可核查的 dissertation 完成路径。
+本研究以初版 NDNSF 从多个候选中选定一个 Provider 完成调用的能力为基础，评价发现／授权设计，并研究面向互补角色和命名依赖的协作扩展。候选贡献是经评价的服务协议及有证据支持的机制选择，不是新密码学原语或首次命名计算。RQ1 比较 ABE-backed 授权与 DNMP-inspired 角色规则配合内容加密，纳入管理和撤销成本；RQ2 把运行时分工变成本地命名依赖准入规则；RQ3 分别评价调用与协作的收益和成本。已有实验支持有限调用结论；协作与跨应用主张仍需其声明的端到端证据。本 Proposal 据此给出可核查的 dissertation 完成路径。

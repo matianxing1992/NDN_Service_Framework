@@ -15,7 +15,9 @@ Build English with `latexmk -norc -pdf -bibtex -interaction=nonstopmode -halt-on
 
 Final PDF/PPTX/source hashes, build results and evidence boundaries are recorded in `research-revision-validation.json` and `research-revision-audit.md`. No experiment should be rerun merely to rebuild the documents. The 35-minute label is a retained filename; speaking time still requires rehearsal with the advisor's requested slot.
 
-The latest invocation/collaboration-scope revision uses `validate_invocation_scope.py`
-and the `invocation_scope_revision` validation record. The earlier
-`validate_sentence_review.py` and its raw directory document the previous revision;
-do not run it against newer PDFs and present its historical evidence as a new check.
+The latest DNMP-throughline revision uses `validate_dnmp_throughline.py` and the
+`dnmp_throughline_revision` validation record. `validate_invocation_scope.py` and
+`validate_sentence_review.py` retain earlier checks and raw-directory identities;
+do not run them against newer PDFs and present historical evidence as a new check.
+The root, `en/`, and `ch/` copies of `ref.bib` are independent files; synchronize
+any edited bibliographic entry across all three before rebuilding.

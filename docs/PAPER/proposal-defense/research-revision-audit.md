@@ -1,5 +1,14 @@
 # Research-first Proposal Revision and Evidence Audit
 
+## 2026-09-11 DNMP Throughline Revision
+
+当前修订见 [DNMP throughline review](dnmp-throughline-review-20260911.md)：
+引言、RQ1 对照、相关工作、ABE 理由、评价表和结论统一采用具体 DNMP 授权先例，
+区分原版机制与配套加密／NDNSF 流程适配。英文 30 页、中文 23 页、slides 40 页、
+讲稿 8 页；八入口构建、文本一致性、828/828 可编辑 span 和回渲检查通过。
+当前验证字段为 `dnmp_throughline_revision`；下方记录及其“最新”措辞均属历史。
+原实验数字和产品资格状态不变，完整对照成本尚待实测。
+
 ## 2026-09-11 Invocation Scope Revision
 
 最新修订见 [invocation scope review](invocation-scope-review-20260911.md)：
