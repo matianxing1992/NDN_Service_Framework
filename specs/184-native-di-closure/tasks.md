@@ -32,6 +32,12 @@
 
 ## Current Checkpoint
 
+2026-09-11 **DISK-CLEANUP / CLEANUP_PASS**：清理 `.codex-tmp` 与 `pythonWrapper/build` 中
+可重建的 3304 个 `.o/.d` 中间文件（约 5.19 GiB），并清除无活动进程使用的 Go/pip 缓存；
+当前候选可执行文件、库、原始证据、模型、SIF、密钥和未提交源码均保留。清理前后磁盘可用空间
+约由 35 GiB 增至 41 GiB。详见 [disk cleanup evidence](evidence/disk-cleanup-20260911.md)。
+本轮不修改产品行为或资格判据，T007 仍为 `IN_PROGRESS`/`PARTIAL`，T008 仍未开始。
+
 2026-09-11 **PROPOSAL-SENTENCE-REVIEW / DOCUMENT_PASS**：完成双语 Proposal 与 40 页
 slides 的逐句措辞、依据范围和逻辑审查，同步 29/22 页正文、8 页讲稿及可编辑 PPTX。
 八入口构建、同语言文本一致性、832/832 PPTX 可编辑 span、PDF/LibreOffice 边界及

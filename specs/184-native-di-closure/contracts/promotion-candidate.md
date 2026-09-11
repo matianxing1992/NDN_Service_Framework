@@ -157,7 +157,7 @@ SIF/Tiger ownership remain open.
 
 | Member | Bound value |
 | --- | --- |
-| `candidateId` | `sha256:d295217bedfa36c5596993692efa6f7e4c80d503d62c6588dde2070a193bcc7f` (digest over the ordered member map below; recompute if any listed member changes) |
+| `candidateId` | `sha256:b00e403ce70db6eeb7915fbf307342b4acfe2c54864cc63acd754e0d667c1a4e` (digest over the ordered member map below; recompute if any listed member changes) |
 | `source` | `Experimental` baseline `29411b5544cf7b0175dbaae2f65678a26ee80636`; production source hashes: `ServiceProvider.cpp` `sha256:a587b5bee0fe845ba4051ce0cdea6267e2cbc767b28055c156388ecea584e419`, `NativeProviderHandler.cpp` `sha256:37984face728f908337ece2c59b7c96cd288969bad84a6f8ae6468d691100149`, `NativeEpochCoordinator.cpp` `sha256:fb0a2513c33f1f26d4805ee1721cd172bb9c06b4f3c40982b818bf2946d04866`; pre-existing `docs/failure-log.md` and integration marker remain outside the source candidate |
 | `built runtime` | `build-spec184-b5-candidate`; current unit/integration, Controller, Authority, requester, Provider, worker and grant-requester hashes are bound below |
 | `test/replay harness` | current runner manifest, C++ counterexample fixture, process drivers, C++ registration and process qualification evidence are bound below; Python harness is orchestration-only and its source regression is bound separately |
@@ -205,7 +205,7 @@ spec.caller=b2b079fd5f8e658aa6b2fec6bfec389830aa1c509fac4783f1f73e6c29c9a449
 spec.matrix=d5939e9873487a92b1dc82bf615f59b8aa766f6c7585861ee2381f9eb9f7d824
 spec.plan=7aa3766efea608f751d2541ce9163ca57dfbc78ae59e3f60c71625d1dbe36023
 spec.spec=724f6aa1be1c6f151e5a71888f00bd0d4fecab1e002d07ba2c2f40473415eca1
-spec.tasks=7755ec595c012ee65e5568ca576f3993a25c279b37fa093f046234f701844a15
+spec.tasks=d93d11bffb3e7f7fed5013450fb8027559aa9da0ecaf13ecb4f8b8c9d3d80174
 test.counterexample_fixture=d8467fb94ec08a1a51f27d595b2acdb74f1dbe0d1f73154a8b733f1ae6345600
 test.grant_process=63879098c789f72f80bcedf3261a8e0a44beef797740848490763289807b2813
 test.python_closure=0604f301277097af1bf777f858316d016e85f8f9ffcb59dd2700ec9f9f92232c
@@ -216,7 +216,7 @@ test.unary_process=0ee4ee185fbbbcb450d7c8a6b6ac5b128c2c27e34d949926d23c3e2956798
 ```
 
 The SHA-256 of these sorted lines followed by a final newline is
-`sha256:d295217bedfa36c5596993692efa6f7e4c80d503d62c6588dde2070a193bcc7f`.
+`sha256:b00e403ce70db6eeb7915fbf307342b4acfe2c54864cc63acd754e0d667c1a4e`.
 The process evidence records the individual requester/provider markers and grant-case hashes;
 the candidate binds that evidence file rather than silently combining unrelated run roots.
 
