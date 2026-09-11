@@ -2,7 +2,7 @@
 
 **Date**: 2026-09-11  
 **Status**: `PASS_FOR_T007_PRECONDITION` / convergence is current; qualification remains `PARTIAL`  
-**Candidate**: `sha256:02ec5ea062946cedef44c01fe0e7cb23c2e90ef2edbed78f9ce0bd3bb5d4f0f2`
+**Candidate**: `sha256:d4f5409c2cf313539fabf75b3ad8300562c8b56822f9106fc98ea0a511d3f06a`
 
 本审查确认当前候选的 Spec、plan、tasks、contracts 与产品 C++ 接线一致，并把未完成的
 运行时和外部资格边界保留下来。`PASS_FOR_T007_PRECONDITION` 只表示可以开始候选绑定的

@@ -32,24 +32,27 @@ audit 前生成真正的 ordered candidate digest。
 
 ## Current Local Candidate Record
 
-The following record freezes the current local native build for convergence review. It is a
-development candidate, not a promotion decision: full unit coverage is clean, while the full
-integration sweep and process/no-Python qualification still have open rows.
+The following record freezes the current local native build for convergence and bounded owner
+qualification review. It is a development candidate, not a promotion decision: full unit coverage
+and one `PO-001-stream` owner case are clean, while the full integration sweep and the remaining
+process/no-Python qualification still have open rows.
 
 | Member | Bound value |
 | --- | --- |
-| `candidateId` | `sha256:02ec5ea062946cedef44c01fe0e7cb23c2e90ef2edbed78f9ce0bd3bb5d4f0f2` |
+| `candidateId` | `sha256:d4f5409c2cf313539fabf75b3ad8300562c8b56822f9106fc98ea0a511d3f06a` |
 | `source` | `Experimental` product source commit `760724683a1d73ccc4498a25fc314074e230714a`; tree `20464239295733fd96e5c4ff0181ec827fb00d8c`; product source clean at commit; pre-existing `docs/failure-log.md` and integration marker are outside this candidate |
 | `built runtime` | `unit-tests` `sha256:7a8375e44999a4447f8352cb3c5092a21f7426d5bd472ff7adf0db122016b422`; `integration-tests` `sha256:aad4846909b088f6285a3dcf6352482fec416ee89ce1822fbdf839783d4c8212`; `DI_NativeOnnxAssemblyWorker` `sha256:336ce668a0924ba03aafe6f077bc1b54cb77e4f6d5c6bd4200fb6fbd58ce31b7`; requester/provider/shared runtime rebuilt in `build-spec184-b3-examples` with hashes recorded below |
 | `requester/provider/shared` | `DI_NativeRequester` `sha256:19e5affcd01ec2082fab3275be74d16aef95e7fa00e73e567879cea02c878ea4`; `di-native-provider` `sha256:9de63ae36bde70e13a90df88d5b495195c8854199dca904805a5cc6670b9e097`; `libndnsf-distributed-inference.so` `sha256:0956548999e0e9279802bc05e981621fdb04c80d9fe31e9f6060370065bb2881` |
-| `test/replay harness` | `run-spec182-native-closure.py` `sha256:1578ec962de2d9742c537213579b80dc9a3553b6091143a11de8376bccd7d9af`; frozen manifest `sha256:855c29a0076807e4af6ee1f6445e2b6419bf3fa441399e49ea1879c5f459e4b3`; Python harness regression `71 passed` |
+| `test/replay harness` | `run-spec182-native-closure.py` `sha256:1578ec962de2d9742c537213579b80dc9a3553b6091143a11de8376bccd7d9af`; frozen registration manifest `sha256:855c29a0076807e4af6ee1f6445e2b6419bf3fa441399e49ea1879c5f459e4b3`; current runner manifest `sha256:2e18ac968911a722050e9ae04cf6fb69a493fbad15873a6c7c8aaaaadc6b8860`; owner result `sha256:a71da8553d398ea56a82f02b0059cfd711d73f85f869bbf23f07357018c351b4`; node context `sha256:395df68cc41d60899db76e469bd0a13ca9d7ba295b37a69c7d0b06d00c78324c`; trace `sha256:b952007353dcc7e04a0a06f508020c4d07e3b882ddf640b18b0ae6225026f45e`; stdout marker log `sha256:ffa3497adf522401c85fd65af75c0c80ec9b3ac599267e92acb8bbf539987025`; Python harness regression `71 passed` |
 | `submission bundle` | `LOCAL_ONLY / not packaged`; SIF/Tiger bundle remains `TRANSFERRED` to the external owner and is not part of local qualification |
 | `effective configuration` | `/usr/bin/g++ -B/usr/bin`, `/usr/bin/ld.bfd`, system Boost 1.71; Waf locks `.lock-spec184-b5` `sha256:36812dce931d032390502ef1838a48abc308cf67e21f59b0905a05cdfe02de83` and `.lock-spec184-b3-examples` `sha256:87806c87778639f8bb877cab268ab9035026743c26f441d3bc8e4fb44c1be284`; NAC-ABE, NDN-SVS and ONNX prefixes are the pinned paths in the build evidence |
 | `local external artifacts` | assembly fixture `sha256:5e035fccaa7fecc0fc5fe272a19ec52c5c7e3163f83a21405dfef9e2a6e30165`; tokenizer vectors `sha256:6f44a2e62bebccd4dee2ff214d4d65f99528899e6863705eb1ec431b098ed34b`; tiny tokenizer `sha256:87e7e9653a645297f0b9ae6d51b1c497781219f56c094d8224d5500c7d44fd65`; SIF/Tiger/model campaigns are `TRANSFERRED` or `NOT_RUN` |
-| `validation contract` | qualification matrix `sha256:bd26c91f167a6451b28585130a22e92fe6828417767306e20683795cc1f7bfc0`; Spec/plan/tasks hashes `2dd2316d24d5b387a04802ff6d90cecdbcb2e6cac7748f120f9ae4754b7c4045`, `ddf233a83f8fe8efcc1194b02a9b0e7990775433d062d2d218f39ac52c841bab`, `ca2559620a0a965b59971f7630296c1124b9b41ca118b9576a07496ac10943a0` |
+| `validation contract` | qualification matrix `sha256:bd26c91f167a6451b28585130a22e92fe6828417767306e20683795cc1f7bfc0`; Spec/plan/tasks hashes `2dd2316d24d5b387a04802ff6d90cecdbcb2e6cac7748f120f9ae4754b7c4045`, `ddf233a83f8fe8efcc1194b02a9b0e7990775433d062d2d218f39ac52c841bab`, `23c7b56ef7d45e8b3fae851f7f98740e499ceb9f56bf2dcc45380fba9e98aae7` |
 
 The ordered candidate digest is computed over the rows above plus the exact harness/build/log
-members recorded in this table. Full-unit output is
+members recorded in this table. The corrected owner run is
+`.codex-tmp/spec184-b5-owner-probe-20260911-r2/result/runner-result.json` and evaluated `PASS`
+for the bounded `PO-001-stream` case. Full-unit output is
 `.codex-tmp/spec184-b5-full-unit-20260911.log` (SHA-256
 `143ecc81f846b9ef888e37563560aecd2d67bfae88f5378c9e34ae6902d167e3`); the full integration
 sweep is `.codex-tmp/spec184-b5-full-integration-20260911.log` (SHA-256

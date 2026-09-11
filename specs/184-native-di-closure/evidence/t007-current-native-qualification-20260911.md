@@ -2,7 +2,7 @@
 
 **Date**: 2026-09-11  
 **Status**: `PARTIAL` / candidate-bound local qualification started; no promotion  
-**Candidate**: `sha256:02ec5ea062946cedef44c01fe0e7cb23c2e90ef2edbed78f9ce0bd3bb5d4f0f2`
+**Candidate**: `sha256:d4f5409c2cf313539fabf75b3ad8300562c8b56822f9106fc98ea0a511d3f06a`
 
 本记录绑定 [promotion candidate](../contracts/promotion-candidate.md) 的当前源码、运行时、
 fixture、harness 和配置身份。它汇总本地 C++ 资格边界，不能把局部 selector 或 Python
@@ -17,6 +17,7 @@ wrapper 回归提升为完整 Spec184 qualification。
 | Component dynamic gate | Provider-host 8 cases under unsuppressed ASan/UBSan and independent clang TSan | `PASS`; no sanitizer or LeakSanitizer report | B5 component evidence and `.codex-tmp/spec184-b5-provider-fix2-asan-20260911.log` |
 | C++ authority/native routes | `Spec184AuthorityIoOwnership`, `Spec184DurableOutcome`, native post-selection/assembly and Qwen stream/conversation selectors | `PASS` for the named focused selectors | B5 component evidence and its candidate binary hashes |
 | Python orchestration regression | 71 harness tests | `PASS`, observation/runner only | `.codex-tmp/spec184-b5-python-harness-20260911/pytest.log` |
+| MiniNDN owner/runner `PO-001-stream` | root owner + canonical two-node topology + current runner manifest | `PASS`, exit `0`; business marker and identity/namespace/process-tree/endpoints/cleanup evidence complete | `.codex-tmp/spec184-b5-owner-probe-20260911-r2/result/{result.json,runner-result.json,node-context.json,closure-run/trace.txt}` |
 
 The full integration failures first reach the legacy D2b/D2h121/D2h212 response/role oracle with
 zero observations and the Spec175 tiny-ONNX collector's `stream event gap exceeded retry budget`.
@@ -47,12 +48,15 @@ network request, business oracle, or cleanup result was observed. Raw boundary f
 - `.codex-tmp/spec184-b5-process-preflight-20260911/preflight.log` — empty because the driver
   records the first boundary in `result.json`.
 
-This is a harness/schema `UNQUALIFIED` boundary. Repairing the manifest or driver is a new
-candidate-affecting change and requires a fresh identity and convergence audit.
+This is a harness/schema `UNQUALIFIED` boundary. The corrected owner run used a current candidate
+runner manifest and closed the bounded `PO-001-stream` process case; its first owner attempt used
+the wrong runner case ID and stopped with `case id is not unique` before staging. Both raw attempts
+remain under `.codex-tmp/spec184-b5-owner-probe-20260911*`. Repairing the manifest or driver is a
+new candidate-affecting change and requires a fresh identity and convergence audit.
 
 ## Qualification decision
 
-T007 remains `PARTIAL`: full native unit and component dynamic gates pass, but full integration,
-process/no-Python, parser-fuzz, negative collector rows, real-model/MiniNDN, Python retirement and
-external SIF/Tiger execution are not qualified. T008 cannot start, and no promotion or final
-handoff is authorized by this record.
+T007 remains `PARTIAL`: full native unit, component dynamic gates and one bounded MiniNDN owner case
+pass, but full integration, I02–I08 process/no-Python rows, parser-fuzz, negative collector rows,
+real-model/MiniNDN breadth, Python retirement and external SIF/Tiger execution are not qualified.
+T008 cannot start, and no promotion or final handoff is authorized by this record.

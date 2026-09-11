@@ -35,7 +35,9 @@
 2026-09-11 **T007-CANDIDATE / PARTIAL**：按当前 candidate 绑定运行完整 native unit、完整
 integration、Provider-host sanitizer gate、authority/native route selectors 和 process/no-Python
 `I01` preflight。unit exit `0`，component/authority selectors PASS；integration exit `1`/48
-failures；process driver 在 manifest schema 边界 exit `2`/`UNQUALIFIED`，没有启动业务进程。解析
+failures；process driver 首次在 manifest schema 边界 exit `2`/`UNQUALIFIED`，随后当前候选
+的 MiniNDN owner/runner `PO-001-stream` exit `0` 并记录 business marker、namespace、trace
+和 cleanup。解析
 fuzz、negative collector、真实模型/MiniNDN、Python retirement 与外部 SIF/Tiger 仍未运行；
 详见 [T007 qualification evidence](evidence/t007-current-native-qualification-20260911.md)
 与 [failure-log entry](../../docs/failure-log.md)。T007 保持 `IN_PROGRESS`/`PARTIAL`，T008 未开始。
