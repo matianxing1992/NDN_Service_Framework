@@ -247,9 +247,11 @@ The read-only `review-agent` protocol was applied to the complete production
 and parser-test diff against the current `Experimental` worktree.  The
 reviewed paths were `NativeProviderHandler.cpp`, `NativeEpochCoordinator.cpp`
 and `di-native-observed-offer.t.cpp`, including their call sites and test
-registration.  Result: `No findings`.  The review still leaves the documented
-I02 fixture leak, process/no-Python breadth and external-owner boundaries as
-qualification risks; it does not promote them to PASS.
+registration.  Result: `No findings`.  The earlier I02 leak is retained as a
+historical failure boundary; after the subsequent `ServiceProvider.cpp`
+ownership repair, the current I02 sanitizer selector is clean.  Process/no-
+Python breadth and external-owner boundaries remain qualification risks; they
+are not promoted to PASS.
 
 ## Qualification decision
 
