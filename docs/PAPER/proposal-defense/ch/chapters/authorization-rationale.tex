@@ -34,6 +34,18 @@ Provider Challenge。NDNSF 将返回的 challenge 值与签名、当前权限及
 一起检查（第~\ref{sec:authorization-withdrawal-ch} 节）。因此，解密能力只是
 调用检查的一部分，不代表可以执行任意请求。
 
+DNMP 则通过角色签名密钥与 Trust Schema 约束命令目标和动作~\cite{dnmp}。
+在第~\ref{sec:dnmp-alternative-ch} 节的 DNMP-inspired 对照方案中，若保留
+ABE 保护发现描述，就需要同时管理解密权限和基于角色的调用权限。NDNSF 在
+两类服务级检查中复用属性授权机构，无需仅为表示服务成员资格而增加角色签名
+凭证；验证 Data 签名所需的信任规则仍须保留。
+
+这是复用管理机制的理由，并非已证明的成本优势。Provider 与 User 权限仍然
+不同；发现加密并不已经提供 User 权限解密密钥或 challenge 处理。若策略
+需要限制命令参数，DNMP 的 Schema 检查可能比 NDNSF 的服务级检查更合适。评价应
+在相同策略粒度下比较凭证更新和调用开销。
+
+\paragraph{理由三：权限聚合作为额外的管理便利。}
 KP-ABE 将属性关联到密文，将访问策略编码到解密密钥（DKEY）
 中~\cite{dulal2023nacabe}。NDNSF 使用 \texttt{/SERVICE/<service>} 表示
 Provider 访问权限，使用 \texttt{/PERMISSION/<service>} 表示 User 访问权限。
@@ -42,17 +54,11 @@ Provider 访问权限，使用 \texttt{/PERMISSION/<service>} 表示 User 访问
 服务；这些不同的服务集合不需要通过改变身份签名凭证来表示，各服务的密文仍
 使用各自的服务属性。
 
-DNMP 则通过角色签名密钥与 Trust Schema 约束命令目标和动作~\cite{dnmp}。
-在第~\ref{sec:dnmp-alternative-ch} 节的 DNMP-inspired 对照方案中，若保留
-ABE 保护发现描述，就需要同时管理解密权限和基于角色的调用权限。NDNSF 在
-两类服务级检查中复用属性授权机构，无需仅为表示服务成员资格而增加角色签名
-凭证；验证 Data 签名所需的信任规则仍须保留。
-
-这是复用管理机制的理由，并非已证明的成本优势。Provider 与 User 权限仍然
-不同；发现加密并不已经提供 User 权限 DKEY 或 challenge 处理。DKEY 签发、
-策略更新与撤销仍有成本。DNMP 的角色和签名凭证也可以覆盖多项权限；若策略
-需要限制命令参数，其 Schema 检查可能比 NDNSF 的服务级检查更合适。评价应
-在相同策略粒度下比较凭证更新和调用开销。
+这种聚合补充了理由二：在复用的授权管理设施中，将多项服务权限与签名凭证
+分离组织。它并非 ABE 独有的能力，DNMP 的角色和签名凭证也可以覆盖多项
+权限~\cite{dnmp}。一份 DKEY 不代表固定大小或固定成本，策略复杂度、密钥
+分发、更新与撤销仍需考虑。其好处是便于组织服务权限，而不是证明总成本低于
+基于 Trust Schema 的授权方案。
 
 \subsection{授权机制、生命周期与成本}
 \label{sec:authorization-withdrawal-ch}

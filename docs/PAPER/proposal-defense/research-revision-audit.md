@@ -1,5 +1,22 @@
 # Research-first Proposal Revision and Evidence Audit
 
+## 2026-09-11 Auxiliary Reason 3
+
+按作者确认的结构，将权限聚合独立为辅助性的 Reason 3：保密发现、调用授权
+管理设施复用、多服务权限与签名凭证分离组织。OR 策略例子从 Reason 2 移至
+Reason 3，仅出现一次；明确第三点补充第二点，而非互不相关的优势。
+保留 DNMP 凭证可复用、一份 DKEY 不等于固定大小／成本、不能由凭证数量推导
+总成本优势的限制。Reason 1 与后续生命周期正文逐字未变，既有引用保持。
+沿用局部学术修订的去重与论证边界检查，未增加新的实现或实测断言。
+
+四个正文入口编译通过，英文 30 页／中文 23 页；同语言 PDF 文本一致，
+无 overfull、缺字或未定义引用；314 条 underfull 排版提示保留。
+Reason 3 及续页中英文截图检查无裁切或重叠，全页文字边界检查通过。
+最初两次截图定位检查将英文／中文正文回指误认成标题；精确匹配标题前缀
+后通过，原记录保留于 `first-check.md` 与 `second-check.md`。
+当前证据：`reason3_revision`、`.codex-tmp/proposal-reason3-20260911/`。
+slides、实验和产品资格不变，下一步仍是同策略粒度下的 RQ1 成本对照设计。
+
 ## 2026-09-11 Reason 2 Management Reuse
 
 本轮只修订中英文 Reason 2；Reason 1 及后续生命周期章节逐字保持不变。

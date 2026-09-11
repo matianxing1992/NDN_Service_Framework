@@ -47,16 +47,6 @@ values together with signatures, current permissions, and request state
 (Section~\ref{sec:authorization-withdrawal}). Decryption is therefore one part of
 the invocation check, not permission to execute any request.
 
-KP-ABE associates attributes with ciphertext and an access policy with each
-decryption key (DKEY)~\cite{dulal2023nacabe}. NDNSF uses
-\texttt{/SERVICE/<service>} for Provider access and
-\texttt{/PERMISSION/<service>} for User access. Within one authority and parameter
-generation, an entity's service permissions can be combined in one individually
-issued DKEY. For example, one User's policy can allow detection OR mapping,
-while another allows detection only. Their identity-signing credentials need
-not change to represent these different service sets; each service retains its
-own ciphertext attribute.
-
 DNMP instead uses role signing keys and a Trust Schema to constrain command
 targets and actions~\cite{dnmp}. In the DNMP-inspired alternative
 (Section~\ref{sec:dnmp-alternative}), retaining ABE for discovery would require
@@ -67,12 +57,29 @@ Trust rules for validating Data signatures remain necessary.
 
 This is a management-reuse rationale, not a demonstrated cost advantage.
 Provider and User permissions remain distinct; discovery encryption does not
-already supply User permission DKEYs or challenge processing. DKEY issuance,
-policy updates, and revocation still incur costs. DNMP roles and signing
-credentials can also cover several permissions. For policies requiring
-command-argument restrictions, its schema-based checks may be a better fit than
+already supply User permission decryption keys or challenge processing.
+For policies requiring command-argument restrictions, DNMP's schema-based checks may be a better fit than
 NDNSF's service-level checks. The evaluation must compare both designs at the
 same policy granularity, including credential updates and invocation overhead.
+
+\paragraph{Reason 3: service-permission aggregation as an additional management benefit.}
+KP-ABE associates attributes with ciphertext and an access policy with each
+decryption key (DKEY)~\cite{dulal2023nacabe}. NDNSF uses
+\texttt{/SERVICE/<service>} for Provider access and
+\texttt{/PERMISSION/<service>} for User access. Within one authority and parameter
+generation, an entity's service permissions can be combined in one individually
+issued DKEY. For example, one User's policy can allow detection OR mapping,
+while another allows detection only. Their identity-signing credentials need
+not change to represent these different service sets; each service retains its
+own ciphertext attribute.
+
+This aggregation complements Reason 2: it organizes multiple service permissions
+separately from signing credentials within the reused authorization infrastructure.
+It is not an exclusive capability of ABE. DNMP roles and signing credentials can
+also cover several permissions~\cite{dnmp}. A single DKEY does not imply fixed
+size or cost: policy complexity, key distribution, updates, and revocation still
+matter. The benefit is a convenient organization of service permissions, not
+proof of lower total cost than Trust-Schema-based authorization.
 
 \subsection{Authorization Mechanisms, Lifecycle, and Costs}
 \label{sec:authorization-withdrawal}

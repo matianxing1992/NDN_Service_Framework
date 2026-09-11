@@ -1,5 +1,13 @@
 # Failure Log and Evidence Index
 
+## 2026-09-11 — Proposal Reason 3 heading-check boundary
+
+Four paper builds passed, but the PDF checker counted an explanatory reference
+to `Reason 2:` as a second heading. Matching the actual heading text fixes this
+validator boundary. No product test ran. See
+[Reason 3 audit](PAPER/proposal-defense/research-revision-audit.md) and
+`.codex-tmp/proposal-reason3-20260911/first-check.md`.
+
 ## 2026-09-11 — Proposal DNMP bibliography mirror boundary
 
 The first document validation rejected root/English-entry text inequality:
