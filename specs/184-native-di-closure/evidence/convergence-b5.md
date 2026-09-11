@@ -13,9 +13,10 @@ qualification；它不是 `QUALIFICATION_PASS`、`PROMOTION_PASS` 或外部实�
 审查范围覆盖 `specs/184-native-di-closure/{spec.md,plan.md,tasks.md,contracts/}`、
 `NativeInferenceClient::request`/`dispatchOperation`/`beginCoreRequest`、
 `planNativeRequest`、`NativeRequestPreparation`、`NativeProvider::serve`、维护入口、
-测试注册、构建闭包、所有权/锁顺序/清理和失败分类。产品源基线是
-`Experimental` commit `760724683a1d73ccc4498a25fc314074e230714a`；候选契约明确排除
-工作树中预先存在的 `docs/failure-log.md` 与 integration marker 修改。
+测试注册、构建闭包、所有权/锁顺序/清理和失败分类。旧审计基线是
+`Experimental` commit `760724683a1d73ccc4498a25fc314074e230714a`；当前候选产品基线为
+`29411b5544cf7b0175dbaae2f65678a26ee80636`。候选契约明确排除工作树中预先存在的
+`docs/failure-log.md` 与 integration marker 修改。
 
 ## Five-lane coverage
 
