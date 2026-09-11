@@ -97,7 +97,9 @@
   fixture owner 或 join/drain barrier 以及析构顺序；生命周期竞态要有重复 selector 负例
   或回归判据，不能改生产 close/callback 语义迁就 fixture。
   代码需求还要在对应批次登记 Risk class、Dynamic profile（asan-ubsan、tsan、parser-fuzz
-  或 none）和可观察的不变量；动态工具不能替代 C++ 行为 oracle 或 qualification。
+  或 none）和可观察的不变量；批次 evidence 另附一张 Dynamic gate card，冻结参数边界、
+  C++ selector、重复/预算、toolchain/source identity 和输出目录；动态工具不能替代
+  C++ 行为 oracle 或 qualification，抑制报告也不能直接产生 DYNAMIC_PASS。
   五 lane Coverage matrix 在 plan/tasks 的批次结果记录中维护，此处引用对应 Batch。
 -->
 

@@ -29,8 +29,11 @@ the runtime gate MUST repeat the named selector. Do not change production close/
 semantics to accommodate a fixture lifetime race.
 Each code-backed task MUST also record a `Risk class`, a `Dynamic profile` (`asan-ubsan`,
 `tsan`, `parser-fuzz`, or `none`), and the `Dynamic invariants` it will check. The profile is
-risk-based and runs at batch validation time; it is not a per-task full rebuild. A pure
-documentation task records `N/A` and a reason.
+risk-based and runs at batch validation time; it is not a per-task full rebuild. Before that
+run, the batch evidence MUST provide one `Dynamic gate card` with parameter boundaries,
+production C++ selectors, repeat/budget, toolchain/source identity, output path, and failure
+classification. A pure documentation task records `N/A` and a reason. Sanitizer suppression
+does not qualify as `DYNAMIC_PASS` unless a clean, ABI-consistent run follows.
 
 **Organization**: Tasks are grouped by user story and expressed as cohesive,
 reviewable behavioral outcomes. Do not optimize for a high task count.

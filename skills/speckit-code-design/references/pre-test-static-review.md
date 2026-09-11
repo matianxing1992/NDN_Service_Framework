@@ -39,6 +39,11 @@ closure 后，官方 review-agent 的 `No findings` 才能成为静态门结果�
 动态 profile 使用独立 sanitizer build/output；`asan-ubsan`、`tsan` 和 `parser-fuzz` 不混用
 同一编译产物。动态结果为 `NOT_RUN`、`DYNAMIC_PASS` 或 `DYNAMIC_FAIL`，不能单独提升行为或
 资格状态。
+启动动态 profile 前，批次 evidence 必须附 [batch-quality-gates.md](batch-quality-gates.md)
+的 `Dynamic gate card`。卡片至少冻结输入参数/边界、C++ selector、业务不变量、重复或
+预算、toolchain/source identity、输出目录和失败分类；这些字段属于整批出口，不为每个
+小任务复制。外部依赖的 sanitizer ABI 报告必须先保留未抑制首个日志并保持
+`DYNAMIC_FAIL`/`PARTIAL`，不能以 `ASAN_OPTIONS` 等抑制直接写成 `DYNAMIC_PASS`。
 若尚未达到稳定出口，必须记录 `OPEN_FOR_NEXT_BATCH` 及触发条件，不得以 READY 或共享构建掩盖缺口。
 不得把后续批次全部写完才测试当前已闭合批次。
 

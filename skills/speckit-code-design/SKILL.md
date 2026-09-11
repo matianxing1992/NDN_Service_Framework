@@ -87,7 +87,10 @@ Static review PASS != Behavior PASS。
 写作、分析、审计和执行技能引用；不要在单个 Spec 或模型专用表中另建一套规则。
 运行时风险还必须按该 reference 选择 `asan-ubsan`、`tsan`、`parser-fuzz` 或有理由的
 `none`，并登记可观察的不变量；动态分析只补充 C++ 行为测试，不把工具无报告当成协议
-或资格通过。
+或资格通过。动态验证按批次建立一张 `Dynamic gate card`，冻结参数边界、C++ selector、
+业务不变量、重复/预算、toolchain/source identity 与输出路径；不把动态步骤拆成每个小
+任务的重复构建。外部依赖的 sanitizer ABI 报告必须保留未抑制日志并保持 `DYNAMIC_FAIL`/
+`PARTIAL`，不能用 `ASAN_OPTIONS` 等抑制直接升级为 `DYNAMIC_PASS`。
 编码前必须记录每批的分配依据（共同入口/调用方、契约、oracle/selector、source
 closure、验收出口）；任一项不一致就拆成新的批次，不以少一次构建为合批理由。
 每个静态门和批末门还必须留下五 lane Coverage matrix；没有实际文件/符号和查询
