@@ -92,5 +92,5 @@ route、跨进程 C++ requester/Core/Provider 或 T016/T017 资格。
 ## Next
 
 继续按 [native-first execution order](../contracts/native-first-execution.md) 处理
-R11-B8 maintained caller migration 或 R11-B9 closure；多机真实执行必须从 canonical
-topology launcher 进入，并保留 no-Python 与 T016 资格边界。
+R11-B1/T005 independent artifact authority；多机真实执行必须从 canonical topology
+launcher 进入，并保留 no-Python 与 T016 资格边界。
