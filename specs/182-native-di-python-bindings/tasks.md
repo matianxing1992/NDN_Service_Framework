@@ -34,7 +34,7 @@ integration lane 保持 `PARTIAL`。独立 `--run_test='*Spec182*'` selector 为
 `build-nac182/unit-tests`，约 330 秒后 `rc=201`，1,022 cases 中 11 failed、8 aborted、
 20 assertions failed；首个边界为 fixture 缺少 `runner preparation callback`。raw run 保存在
 `.codex-tmp/spec182-t016-unit-20260911/`，详见
-[T016-A current-source boundary](evidence/t016-a-current-source-unit-boundary-20260911.md)。
+T016-A current-source boundary（[evidence](evidence/t016-a-current-source-unit-boundary-20260911.md)）。
 该二进制早于当前 fixture repair，结果不计为当前协议失败或 PASS；已改变门槛为新目录
 按当前源码重新 configure/build 后再执行完整 unit/integration selector。T016-A 保持 `PARTIAL`。
 
@@ -71,7 +71,7 @@ PDF P2 变化。见[审计](../../docs/PAPER/proposal-defense/research-revision-
 R11-B4 continuation、R11-B5 recovery 与 R11-B6 replacement 已形成独立出口，下一批转入
 R11-B7 cleanup。不得在 N1--N3 通过前以旧
 调用方批量迁移、Python 数量或全仓库扫描代替原生出口。R11-B7 已形成 cleanup 出口；
-R11-B8 现开始按 caller group 批次执行；G4 已形成 native checkpoint handle export 出口，G5 已接通 Qwen caller 的 FULL_CONTEXT/APPEND_DELTA DTO 映射；R11-B9-G3 已用当前构建独立验证真实 Provider 的第二轮、恢复和 replacement 边界。已有局部 PASS 及下面历史记录
+R11-B8 现开始按 caller group 批次执行；G4 已形成 native checkpoint handle export 出口，G5 已接通 Qwen caller 的 FULL_CONTEXT/APPEND_DELTA DTO 映射；R11-B8-G47 已完成 examples C++ target source/link closure；R11-B9-G3 已用当前构建独立验证真实 Provider 的第二轮、恢复和 replacement 边界。已有局部 PASS 及下面历史记录
 保留，父任务不因本轮局部实现升级。
 
 | Unit / Details | Status | Depends | Evidence / Remaining | Updated |
@@ -132,6 +132,7 @@ R11-B8 现开始按 caller group 批次执行；G4 已形成 native checkpoint h
 | [R11-B8-G44 Frozen Topology and Probe Count Integrity](evidence/r11-b8-g44-frozen-topology-probe-count-20260910.md) | CLOSED_FOR_VALIDATION | R11-B8-G43; Spec110 topology contract | **Deployment harness:** supervisor snapshots the validated process map and uses the read-only copy for every later rank/process/port/placement/route lookup; exact duplicate route tuples and malformed route node ranks are rejected; transport observations now require strict status/port/count consistency (`reachableRoutes = routeCount - len(closedPorts)`). 88 focused Python tests, network integration, shell/Python syntax and diff checks pass; real Slurm/SIF/NDN route qualification remains open | 2026-09-10 |
 | [R11-B8-G45 Tiger Y-B Native and Topology Binding](evidence/r11-b8-g45-tiger-yb-native-topology-binding-20260910.md) | CLOSED_FOR_VALIDATION | R11-B8-G44; maintained YOLO caller boundary | **Deployment harness/caller:** 修复 Tiger Y-B renderer 未传 `--native-requester-config` 而静默退回 Python ACK planner 的问题；workload 显式携带并在渲染前检查 native requester config；renderer 消费 topology 文件摘要，并拒绝 case config 声明多节点而实际一节点启动的拓扑分叉；native route 不再注入其当前拒绝的 legacy lifecycle/request-id flags。39 个相关 Python 定向测试、`py_compile`、shell syntax、设计校验和 diff check 通过；真实 Tiger/SIF、多节点 NDN、C++ no-Python 和 T016/T017 仍未执行 | 2026-09-10 |
 | [R11-B8-G46 Legacy Slurm Multi-node Adapter Guard](evidence/r11-b8-g46-legacy-adapter-multinode-guard-20260911.md) | CLOSED_FOR_VALIDATION | R11-B8-G45; Spec110 topology contract | **Deployment harness:** 旧 `SlurmApptainerAdapter` 对 `nodes>1` 只会渲染一个 `run-container.sh`，没有 process-map/routes 接线；现在在 preflight、materialization 和 state-directory 创建前以 `SLURM_MULTINODE_TOPOLOGY_RUNNER_REQUIRED` fail closed，并覆盖空目录副作用。render/submit 定向测试、py_compile、topology/network 合同检查和 diff check 通过；真正多机、exact-SIF、no-Python、MiniNDN/Slurm 与 T016/T017 仍未执行 | 2026-09-11 |
+| [R11-B8-G47 Native Examples Source Closure](evidence/r11-b8-g47-examples-source-closure-20260911.md) | CLOSED_FOR_VALIDATION | R11-B8-G46; T016-A | **C++ build/runtime closure:** 10 native examples targets now carry their actual ONNX/framework/lease source and link closure; fresh examples configure, combined `-j2`/`-j3` builds, `ldd -r` 10/10, schema/manifest/ONNX/provider-session/ONNX Runtime C++ smoke markers, Provider `--check-only`, CLI help and closure-preflight tests pass. The first `-j4` resource boundary, three linker source-closure misses and stale `/usr/local` loader identity failure remain recorded; host-bound `RUNTIME_HOST_BOUND_PATH` intentionally keeps exact-SIF/multi-machine deployment open | 2026-09-11 |
 | [R11-B9-G2 Cross-Process Native Main Chain](evidence/r11-b9-g2-cross-process-native-chain-20260910.md) | CLOSED_FOR_VALIDATION | R11-B8-G25; R11-B2--B6 process contracts | **C++ primary:** fresh independent requester/Core/Authority/Provider runs passed unary numerical oracle, stream, FULL_CONTEXT/APPEND_DELTA conversation, alternate-provider replacement, and no-backup fail-closed boundaries; Provider logged grant verification and real ORT CPU evidence. Tiny fixture only; maintained callers, legacy zero-use, T014 I02--I08/no-Python, exact-SIF, MiniNDN/Slurm/GPU and final T016/T017 remain open | 2026-09-10 |
 | [R11-B9-G3 Current-Build Cross-Process Revalidation](evidence/r11-b9-g3-cross-process-current-build-20260910.md) | CLOSED_FOR_VALIDATION | R11-B9-G2; explicit NAC-ABE/SVS build closure | **C++ primary:** corrected loader-prefix gate and four retained independent runs passed current-build conversation/append, wrong-parent rejection, Provider restart fail-closed, alternate-provider `attempt-2`, and no-backup terminal failure. Real ORT CPU evidence and C++ stream oracle present; first mismatched `/usr/local` NAC-ABE import failure is retained separately. Tiny fixture only; maintained callers, legacy zero-use, T014/no-Python, exact-SIF, MiniNDN/Slurm/GPU and T015--T017 remain open | 2026-09-10 |
 | [R11-B9-G4 Compatibility Manifest Provenance](evidence/r11-b9-g4-compatibility-manifest-provenance-20260910.md) | CLOSED_FOR_VALIDATION | R11-B9-G3; O-004 inventory | **Documentation/generator:** regenerated the 344-entry manifest after the current checkpoint so `sourceCommit` matches `400d8126`; generator (`dynamicAppSdk=67`), design validator, Spec Kit sync and diff check pass. This is routing evidence only; field/error/state parity, maintained caller migration, legacy zero-use, no-Python and T015--T017 remain open | 2026-09-10 |
@@ -447,6 +448,16 @@ directory 创建前返回 `SLURM_MULTINODE_TOPOLOGY_RUNNER_REQUIRED`；单元测
 runner、不留下空 run directory。真正 Spec110 多节点 requester/Core/Provider、exact-SIF、
 no-Python、MiniNDN/Slurm 和 T016/T017 仍未执行。详见
 [R11-B8-G46 evidence](evidence/r11-b8-g46-legacy-adapter-multinode-guard-20260911.md)。
+
+2026-09-11 R11-B8-G47 native examples source closure / **CLOSED_FOR_VALIDATION**（仅限本地
+C++ target/link/runtime smoke）：对 10 个 examples target 做 source-definition map 后，补齐
+ONNX canonical assembler、framework publication、`ExecutionLeaseService` 和 Protobuf/ONNX
+link closure；`-j4` 因 swap 压力终止后，`-j2` 的 277/277 build 与 `-j3` 的批量构建/最终
+87/87 relink 均保留。`ldd -r` 10/10、schema/manifest/ONNX/provider-session/ONNX Runtime
+smoke、Provider `--check-only` 和 requester/authority help 均通过。把 `/usr/local/lib` 放在
+candidate 之前仍会触发旧 framework undefined symbol，host build 也按预期被
+`RUNTIME_HOST_BOUND_PATH` 拒绝；因此这批不关闭 exact-SIF、多机、no-Python 或 T016/T017。
+详见 [R11-B8-G47 evidence](evidence/r11-b8-g47-examples-source-closure-20260911.md)。
 
 2026-09-10 R11-B8-G45 Tiger Y-B native/topology binding / **CLOSED_FOR_VALIDATION**（仅限
 renderer/dispatcher 接线门）：静态追踪确认 Tiger Y-B 原先把 `--native-tensor-input` 与旧

@@ -1,5 +1,31 @@
 # Failure Log and Evidence Index
 
+## 2026-09-11 — Spec182 R11-B8-G47 examples source-closure and `-j3` boundary
+
+The examples-enabled C++ build exposed three target-registration omissions before any
+deployment claim was made. The first four-target `-j4` attempt was terminated after available
+memory fell to about 0.25 GiB with sustained swap-in/out; this is retained in
+`.codex-tmp/spec182-t016-examples-20260911/build.log` and `vmstat-build.log` and is a host
+resource boundary. The policy-conforming `-j2` retry completed 277/277 tasks in 31m50.347s,
+then the first `di-native-provider-session-smoke` link reported missing canonical ONNX,
+`ExecutionLeaseService` and framework publication definitions (`build-j2.log`).
+
+After that closure was repaired, the first `-j3` all-target run reached the
+`di-native-plan-schema-smoke` link and reported the same ONNX/framework omission
+(`build-all-targets-j3.log`). The next run reached 608/609 and isolated the remaining omission
+to `di-native-onnxruntime-smoke` (`build-all-targets-j3-r2.log`). Adding the shared canonical
+ONNX source set and candidate framework/ONNX/Protobuf link closure to the three targets made the
+bounded retry complete 87/87 in 7m30.258s (`build-onnxruntime-j3-r3.log`). The durable batch
+record is [R11-B8-G47](../specs/182-native-di-python-bindings/evidence/r11-b8-g47-examples-source-closure-20260911.md).
+
+The same run also retained a loader identity boundary: with `/usr/local/lib` before the
+candidate build root, requester and authority `--help` stopped with old framework undefined
+symbols (`DI_NativeRequester-help.log`, `DI_NativeArtifactAuthority-help.log`). Candidate-first
+lookup passes `--help`, C++ smoke and Provider `--check-only`; the host build is still rejected
+by `verify-runtime-closure.py --reject-prefix /home/tianxing/NDN` as
+`RUNTIME_HOST_BOUND_PATH`. Neither condition is counted as a protocol failure, but both are
+required gates for the eventual container/multi-machine artifact.
+
 ## 2026-09-10 — UAV update slides layout boundary (resolved)
 
 补充模拟到真实 UAV 的差距时，首轮 PDF 构建有纵向溢出；通过缩短文字和调整表格/字号修复。
