@@ -237,6 +237,18 @@ def test_input_identity_binds_declared_checkpoint(tmp_path, mutation):
     assert "fixed checkpoint fixture" not in json.dumps(before)
 
 
+def test_input_identity_binds_native_requester_config(tmp_path):
+    module = load_inventory()
+    config = tmp_path / "native-requester.json"
+    config.write_text('{"schema":"native-requester-v1"}\n', encoding="utf-8")
+    environment = {"SPEC180_YOLO_NATIVE_REQUESTER_CONFIG": str(config)}
+    before = module.local_input_identity(tmp_path, environment)
+    assert before["inputs"]["SPEC180_YOLO_NATIVE_REQUESTER_CONFIG"]["sha256"] == (
+        module.digest_bytes(config.read_bytes()))
+    config.write_text('{"schema":"native-requester-v1","changed":true}\n', encoding="utf-8")
+    assert module.local_input_identity(tmp_path, environment) != before
+
+
 @pytest.mark.parametrize("layout", ["beside", "contracts", "spec-beside"])
 def test_input_identity_binds_registry_public_files_using_consumer_paths(tmp_path, layout):
     module = load_inventory()

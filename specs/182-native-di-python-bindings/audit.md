@@ -1,6 +1,27 @@
 # Spec182 Design Audit
 
-**Revision**: 52 | **Current source**: R11-B9-G4 compatibility-manifest provenance checkpoint on `Experimental`
+**Revision**: 53 | **Current source**: R11-B8-G45 Tiger Y-B native/topology binding checkpoint on `Experimental`
+
+## R11-B8-G45 Tiger Y-B Native and Topology Binding Review 2026-09-10
+
+静态追踪发现 Tiger Y-B 的多机部署边界与 MiniNDN 路径存在两个会产生假阳性的接线缺口。
+`render-tiger-yb-args.py` 原先只设置 `--native-tensor-input`，没有设置同一路由所必需的
+`--native-requester-config`；`user.py` 因而选择旧的 ACK-driven Python planner。与此同时，
+Spec180 case config 中的 `runtime.nodes` 与 `SPEC180_YOLO_TOPOLOGY` 只作为 workload 输入，
+实际 Tiger entrypoint 却在一个 Slurm task 内启动一个 NFD 和全部 Provider，未执行声明的跨节点
+placement。现在 workload dispatcher 增加显式 native config 字段，renderer 在写 argv 前检查
+config/topology 文件，强制 native requester，并移除 native 分支会拒绝的 lifecycle/request-id
+参数；声明多个 runtime node 时在任何子进程启动前返回
+`SPEC180_TIGER_RENDER_MULTI_NODE_RUNTIME_UNSUPPORTED`。render manifest 同时记录
+`single-node-native-requester` scope 和 topology digest。
+提交侧的 Spec180 inventory input identity 也已纳入 native requester config 的文件摘要，
+避免提交、渲染和执行阶段使用不同配置。
+
+本批只关闭“避免静默旧路由或未执行拓扑”的部署接线门，不把一节点 Tiger smoke 解释为真实
+多机资格；当前 Spec180 collector 仍要求 legacy lifecycle/numerical evidence，native Tiger
+结果桥接因此继续属于未完成 caller/qualification 工作。跨节点 requester/Core/Provider、
+NFD TCP/UDP route、SIF/GPU、no-Python 和最终 T016/T017 仍是开放义务。详见
+[R11-B8-G45 evidence](evidence/r11-b8-g45-tiger-yb-native-topology-binding-20260910.md)。
 
 ## R11-B9-G4 Compatibility Manifest Provenance Review 2026-09-10
 

@@ -23,6 +23,12 @@ analyze/audit/converge skills：native requirement 必须登记生产 C++ target
 focused 结果只能作为 binding/facade、离线 oracle 或外部设施证据。
 
 建立可安装ndnsf-distributed-inference库与独立C++ consumer，Python绑定可选。
+
+部署调用方还必须保持与原生 owner 一致：Spec180 Tiger Y-B 的固定一节点 runner
+不能把 MiniNDN case config 的多节点 `runtime.nodes` 当作已执行的跨节点 placement，且
+Y-B User 必须显式选择 `--native-requester-config`；缺失或多节点声明在 renderer 阶段
+fail-closed。跨节点 C++ requester/Core/Provider 仍使用 Spec110 allocation topology
+launcher 和 T016 qualification，不把该 single-node render/dispatch boundary 当作多机证据。
 沿用Waf、C++/Boost/ndn-cxx/ORT；ONNX/tokenizer依赖及ABI锁由T001冻结。
 内部 typed JSON 使用固定 nlohmann/json 源与许可证；版本/哈希见 native-dependencies.json。
 T004 已接入完整 projection codec 与 canonical core/final identity；实际 planner metadata 和

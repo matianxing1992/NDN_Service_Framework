@@ -171,6 +171,7 @@ def local_input_identity(root: Path | str, environment: Mapping[str, str]) -> di
     file_names = (
         "NDNSF_DI_ENVELOPE_KEY_FILE", "SPEC180_YOLO_CATALOGUE_REGISTRY",
         "SPEC180_YOLO_OFFER_TRUST_ROOT", "SPEC180_YOLO_TOPOLOGY", "SPEC180_YOLO_CONFIG",
+        "SPEC180_YOLO_NATIVE_REQUESTER_CONFIG",
         "SPEC180_YOLO_CHECKPOINT",
     ) + tuple(CASE_CONFIG_ENV.values())
     map_names = ("SPEC180_YOLO_OFFER_PUBLIC_KEY_MAP", "SPEC180_YOLO_OFFER_PRIVATE_KEY_MAP",

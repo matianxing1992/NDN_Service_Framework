@@ -139,6 +139,26 @@ configuration 前拒绝。
 topology supervisor 冻结已验证 map，之后所有 rank、route 和 process lookup 都读取该只读快照；
 submit-host map 在运行中被替换时，不能只改变后续阶段。
 
+### Spec180 Tiger Y-B Boundary
+
+`packaging/ndnsf-di-container/jobs/spec180/run-functional.sh` 的 Y-B entrypoint 是一节点
+Slurm workload：它在一个容器任务内启动一个本地 NFD、Controller、Repository、四个
+Provider 和一个 User。该 entrypoint 不消费 Spec180 case config 中的 `runtime.nodes` 来
+跨节点放置进程，也不把 `SPEC180_YOLO_TOPOLOGY` 转换成 NFD TCP/UDP faces；这些字段曾经
+让 MiniNDN 的多节点 case 描述与 Tiger 实际执行拓扑产生静默分叉。renderer 现在必须先确认
+topology 文件存在并把其摘要写入 render manifest；若 `runtime.nodes` 声明多个节点，直接以
+`SPEC180_TIGER_RENDER_MULTI_NODE_RUNTIME_UNSUPPORTED` 在任何子进程启动前失败。因而该
+renderer/dispatch 的 PASS 只能解释为 single-node native-requester 接线边界，不能解释为
+跨机器部署或完整 Tiger 结果资格。
+
+Y-B 的 User argv 还必须携带 workload 明确提供的
+`SPEC180_YOLO_NATIVE_REQUESTER_CONFIG`。缺少该配置时，`user.py` 会选择历史 ACK-driven
+Python planner；renderer 现在在写 argv 前失败，避免 `--native-tensor-input` 看似启用却仍
+执行旧控制路径。native 分支当前拒绝 Spec180 lifecycle/request-id 选项，所以 renderer
+不再为它注入这些 legacy flags。真正的跨节点 C++ requester/Core/Provider 与 no-Python
+资格仍由 Spec110 allocation topology 和 T014--T016 负责，不能由这一节点 entrypoint
+替代。
+
 ## Independent Authority Boundary
 
 - **Owner**: 复用 `NativeArtifactGrantIssuer`/现有 policy、grant wire、签名和 recipient

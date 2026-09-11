@@ -34,6 +34,7 @@ def _yolo_environment() -> dict[str, str]:
         "SPEC180_YOLO_CATALOG_SIGNER": "/example/controller",
         "SPEC180_YOLO_OFFER_TRUST_ROOT": "/bundle/candidate/trust-root.json",
         "SPEC180_YOLO_OFFER_PUBLIC_KEY_MAP": "/bundle/candidate/key-map.json",
+        "SPEC180_YOLO_NATIVE_REQUESTER_CONFIG": "/models/native-requester.json",
         "SPEC180_YOLO_TOPOLOGY": "/bundle/candidate/topology.conf",
         "SPEC180_YOLO_CONFIG": "/bundle/candidate/config.json",
     }

@@ -57,6 +57,8 @@ def load_workload(path: Path) -> dict:
                  "SPEC180_YOLO_OFFER_PUBLIC_KEY_MAP",
                  "SPEC180_YOLO_CATALOG_DATA_NAME",
                  "SPEC180_YOLO_CATALOG_SIGNER",
+                 "SPEC180_YOLO_NATIVE_REQUESTER_CONFIG",
+                 "SPEC180_YOLO_TOPOLOGY",
                  "SPEC180_YOLO_CONFIG"):
         if not environment.get(name):
             fail("WORKLOAD_ENVIRONMENT_INCOMPLETE:" + name)
@@ -121,6 +123,13 @@ def render(workload: Path, output_dir: Path, model_root: str) -> dict:
     # Placement is still request/ACK-owned; this is only the startup profile.
     try:
         policy = json.loads(Path(environment["SPEC180_YOLO_CONFIG"]).read_text())
+        topology_path = Path(environment["SPEC180_YOLO_TOPOLOGY"])
+        if not topology_path.is_file():
+            fail("TOPOLOGY_INPUT_MISSING")
+        native_requester_config = Path(
+            environment["SPEC180_YOLO_NATIVE_REQUESTER_CONFIG"])
+        if not native_requester_config.is_file():
+            fail("NATIVE_REQUESTER_CONFIG_MISSING")
         services = [service for service in policy["services"]
                     if not service["name"].startswith("/NDNSF/DistributedRepo")]
         if len(services) != 1:
@@ -136,6 +145,27 @@ def render(workload: Path, output_dir: Path, model_root: str) -> dict:
                 not policy["group"].startswith("/") or
                 not service["name"].startswith("/")):
             fail("PROCESS_PROFILE_MISMATCH")
+        runtime = policy.get("runtime", {})
+        if runtime and not isinstance(runtime, dict):
+            fail("RUNTIME_NODE_MAP_INVALID")
+        runtime_nodes = runtime.get("nodes", {}) if runtime else {}
+        if runtime_nodes and not isinstance(runtime_nodes, dict):
+            fail("RUNTIME_NODE_MAP_INVALID")
+        declared_nodes = set()
+        for key, value in runtime_nodes.items():
+            values = value.values() if key == "providers" else (value,)
+            if key == "providers" and not isinstance(value, dict):
+                fail("RUNTIME_NODE_MAP_INVALID")
+            for node in values:
+                if not isinstance(node, str) or not node:
+                    fail("RUNTIME_NODE_MAP_INVALID")
+                declared_nodes.add(node)
+        # This entrypoint starts one NFD and all four Providers in one Slurm
+        # task.  A MiniNDN case may carry a richer node map, but silently
+        # collapsing it here would make the Tiger result describe a topology
+        # that was never executed.
+        if len(declared_nodes) > 1:
+            fail("MULTI_NODE_RUNTIME_UNSUPPORTED")
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
         fail("CASE_CONFIG_INVALID:" + type(exc).__name__)
     output = output_dir
@@ -213,14 +243,12 @@ def render(workload: Path, output_dir: Path, model_root: str) -> dict:
         "--offer-public-key-map", environment["SPEC180_YOLO_OFFER_PUBLIC_KEY_MAP"],
         "--catalog-data-name", environment["SPEC180_YOLO_CATALOG_DATA_NAME"],
         "--catalog-signer", environment["SPEC180_YOLO_CATALOG_SIGNER"],
+        "--native-requester-config",
+        str(native_requester_config),
         "--ack-timeout-ms", "1500",
         "--timeout-ms", "60000",
         "--input-size", "640",
         "--native-tensor-input",
-        "--sequential-requests", "1",
-        "--request-id", "/spec180-y-b-tiger",
-        "--lifecycle-output-dir", "/evidence",
-        "--lifecycle-case", "Y-B",
         "--envelope-key-file", envelope_key_file,
     ]
     renders["user"] = write_args(output / "user.args", user_args)
@@ -277,6 +305,9 @@ def render(workload: Path, output_dir: Path, model_root: str) -> dict:
         "status": "PASS",
         "renders": renders,
         "modelRoot": str(model_root),
+        "deploymentScope": "single-node-native-requester",
+        "topologyDigest": digest_bytes(
+            Path(environment["SPEC180_YOLO_TOPOLOGY"]).read_bytes()),
     }
     (output / "render-manifest.json").write_text(
         json.dumps(result, indent=2, sort_keys=True) + "\n",

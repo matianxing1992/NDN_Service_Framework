@@ -89,6 +89,7 @@ SPEC180_YOLO_OFFER_PUBLIC_KEY_MAP
 SPEC180_YOLO_OFFER_PRIVATE_KEY_MAP
 SPEC180_YOLO_TOPOLOGY
 SPEC180_YOLO_CONFIG
+SPEC180_YOLO_NATIVE_REQUESTER_CONFIG
 ```
 
 All non-secret paths must be absolute, readable, and bound to the candidate
@@ -103,6 +104,13 @@ identities, certificates, repository
 state, and temporary deployment metadata may be generated under the fresh
 case directory; generated values are evidence inputs, not selection
 authority.
+
+`SPEC180_YOLO_NATIVE_REQUESTER_CONFIG` is the candidate-bound native requester
+configuration consumed by the maintained User entrypoint. A Y-B workload that
+omits it must fail before the User starts; the caller must not silently select
+the legacy ACK-driven Python planner. The native configuration is a path input,
+not a placement map, and it must be sealed and digest-checked with the other
+workload inputs.
 
 Before process startup, the runner writes a non-secret `case-input.json`
 descriptor containing the package manifest, catalogue registry, topology,
@@ -334,6 +342,20 @@ make them one Provider. The runner must record four distinct authenticated
 Provider identities and the sealed role map. The three model roles use
 distinct GPUs only in the Tiger profile; the CPU Merge process remains
 explicit postprocessing.
+
+### Tiger Y-B submission boundary
+
+The maintained Tiger Y-B profile launches one Slurm task on one allocated node.
+Its renderer must pass `--native-requester-config` and must verify the supplied
+topology/configuration before any child starts. If the case configuration
+declares more than one distinct `runtime.nodes` host, the renderer must fail
+closed with `SPEC180_TIGER_RENDER_MULTI_NODE_RUNTIME_UNSUPPORTED`; the
+single-node render/dispatch result is not cross-machine evidence. A true
+multi-node Tiger run requires the Spec110 allocation-topology launcher, explicit
+NFD TCP/UDP faces, and the later T016/T017 no-Python gates. The native User
+branch currently does not emit the legacy lifecycle/numerical files consumed by
+the existing Tiger collector, so native requester wiring alone cannot close
+Tiger qualification.
 
 ## Case topology
 
