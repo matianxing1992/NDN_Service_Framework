@@ -1,6 +1,6 @@
 # Tasks: Native DI Closure
 
-**Status**: PLANNED / implementation NOT_STARTED | **Date**: 2026-09-11
+**Status**: IN_PROGRESS / B2 closed for validation; formal qualification pending | **Date**: 2026-09-11
 **Input**: [spec](spec.md)、[plan](plan.md)、[transfer matrix](contracts/transfer-matrix.md)、
 [promotion candidate](contracts/promotion-candidate.md)、[caller matrix](contracts/caller-matrix.md)、
 [qualification matrix](contracts/qualification-matrix.md)
@@ -10,7 +10,7 @@
 | Batch | Status | Dynamic profile / stable exit | Next / remaining |
 | --- | --- | --- | --- |
 | B1 | DYNAMIC_PASS / CLOSED_FOR_VALIDATION | `tsan` PASS；IO owner、turn/ticket 线性化、无 pending residue | T001/T002 已完成普通 C++ selector、独立 TSan 各两次重复；进入 B2/T003 |
-| B2 | DYNAMIC_FAIL / OPEN_FOR_NEXT_BATCH | `asan-ubsan` strict run blocked by external `ndn-svs` ABI `new-delete-type-mismatch`; normal C++ behavior pass；suppressed reruns diagnostic only | T003 remains PARTIAL；repair ABI-consistent sanitizer boundary before B3 |
+| B2 | DYNAMIC_PASS / CLOSED_FOR_VALIDATION | `asan-ubsan` PASS；durable handle/journal 一致、publish 后终态不降级、residue=0 | T003 已完成；进入 B3/T004 |
 | B3 | NOT_STARTED | `asan-ubsan` planned；原子 export/loader 生命周期 | T004 安全 checkpoint 导出 |
 | B4 | NOT_STARTED | async caller 才运行 `tsan`；其余 `none` with reason | T005 当前 caller/mode 收敛 |
 | B5 | NOT_STARTED | inherited row profiles；文档对账 `none` with reason | T006 矩阵/缺口修复 → fresh convergence audit `PASS` → T007 正式本地资格 → T008 交付 |
@@ -46,6 +46,11 @@ Mode active health 已通过；下一步继续 B1 普通 C++ selector 后再运�
 `plan.md`/`spec.md` 已加入批次级 `Dynamic gate card`，冻结参数边界、C++ selector、业务不变量、
 预算、toolchain/source identity、输出路径和失败分类；sanitizer 抑制不得直接升级为 `DYNAMIC_PASS`。
 
+2026-09-11 **B2-ASAN / DYNAMIC_PASS**：先保留外部 NDN-SVS 旧头文件/库失配导致的未抑制
+`new-delete-type-mismatch`，随后用当前源码重建 NDN-SVS 并重链独立 ASan/UBSan tree。普通
+selector 与无抑制 sanitizer selector 各通过，sanitizer selector 共三次、均 exit code 0、无
+ASan/UBSan 报告；B2 evidence 记录原始失败、依赖重建和 binary digest。T003 完成，下一步 B3/T004。
+
 2026-09-11 **D-UAV-TRIM / CLOSED_FOR_VALIDATION (documentation only)**：按用户要求删除
 UAV update PDF 原第4/5页，现4页；双遍构建及全页渲染通过，两份导出同步。
 [证据](../../docs/NDNSF-UAV/slides/UPDATES_UAV-review.md)。不推进 B1–B5，原生下一步保持不变。
@@ -65,7 +70,7 @@ Spec182 的14个 OPEN 父任务和 R12-A–E 全部承接；未搬运历史长�
 
 - [x] T001 [US1] **Authority IO Dispatch**. FR-001；修复 F-01，在 `NativeAuthenticatedGrantClient::coreIssue` 将 `ServiceUser::RequestServiceTargeted` 封送到 Core `postToIo`，处理 dispatch 前取消、空 request ID、异常、timeout 与晚回调；在 `tests/integration-tests/di-native-requester-grant.t.cpp` 的 `Spec184AuthorityIoOwnership` 中验证线程 owner、真实 `ServiceUser` 状态和 bounded cleanup。Risk class: `concurrency/lifetime`; Dynamic profile: `tsan`; invariants: IO owner、pending-call balance、late callback no-op。Target: `integration-tests`（已由 `tests/wscript` 注册 TU）。Dependencies: documentation gate and migration baseline。Evidence: [B1 evidence](evidence/b1-request-correctness-20260911.md)。
 - [x] T002 [US1] **Turn Publication Synchronization**. FR-002；修复 F-02，核对 `NativeInferenceClient` turn/attempt mutable-state、publication linearization 和 ticket 清理；在 `tests/unit-tests/di-native-client.t.cpp` 的 `Spec184TurnPublicationRace` 中覆盖 cancel/deadline/close/replacement。Risk class: `concurrency`; Dynamic profile: `tsan`; invariants: ticket publication/abort linearization、stale-token rejection、terminal callback fencing。Target: `unit-tests`（unit glob 注册）。与 T001 组成 B1，逐任务静态门后统一运行交错用例。Dependencies: T001 static gate。Evidence: [B1 evidence](evidence/b1-request-correctness-20260911.md)。
-- [ ] T003 [US1] **Durable Outcome Linearization**. FR-003；修复 F-03，client/coordinator publish 与 handle outcome 一致；在 `tests/integration-tests/ndnsf-di-core-flow.t.cpp` 的 `Spec184DurableOutcome` 中覆盖 publish 后阻塞 FINALIZE、取消和超时。Risk class: `lifetime/linearization`; Dynamic profile: `asan-ubsan`; invariants: journal/handle lifetime、publish-after-cancel fencing、residue=0；严格无抑制 sanitizer 运行是完成条件。Target: `integration-tests`。Dependencies: B1 behavior exit。Evidence: [B2 evidence](evidence/b2-durable-outcome-20260911.md)。
+- [x] T003 [US1] **Durable Outcome Linearization**. FR-003；修复 F-03，client/coordinator publish 与 handle outcome 一致；在 `tests/integration-tests/ndnsf-di-core-flow.t.cpp` 的 `Spec184DurableOutcome` 中覆盖 publish 后阻塞 FINALIZE、取消和超时。Risk class: `lifetime/linearization`; Dynamic profile: `asan-ubsan`; invariants: journal/handle lifetime、publish-after-cancel fencing、residue=0；普通 C++ selector 通过，独立无抑制 sanitizer selector 三次通过。Target: `integration-tests`。Dependencies: B1 behavior exit。Evidence: [B2 evidence](evidence/b2-durable-outcome-20260911.md)。
 
 ## Phase 2: Export and Callers
 
