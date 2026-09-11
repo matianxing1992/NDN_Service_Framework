@@ -248,6 +248,15 @@ fork/Python ELF、libpython mapping、endpoint、collector fault、cold/role 和
 counterexample，因此 T007 继续 `IN_PROGRESS`/`PARTIAL`，T008 未开始。原始哈希和路径见
 [T007 process qualification refresh](evidence/t007-process-qualification-20260911.md)。
 
+2026-09-11 **T007-SPEC175-G2 / PASS_FOR_DYNAMIC_SAMPLE**：同一 candidate
+`integration-tests` 以 seed `1840012` 单次运行注册的 Spec175 I01–I15，15/15 case exit `0`，
+无 missing case。gate manifest 和 current source-seal 已记录在 [T007 process qualification
+refresh](evidence/t007-process-qualification-20260911.md)，并纳入 promotion candidate 的
+`evidence.t007_process` digest。该 gate 补充 I09–I15 行为类样本；source-seal 中的预存
+integration marker 与无关 extension-build log 仍不属于 candidate production source。继承
+I02–I08 isolation counterexample/collector completeness、真实模型、Python retirement 和
+external SIF/Tiger 仍未关闭，T007 继续 `IN_PROGRESS`/`PARTIAL`。
+
 ## Phase 1: Request Correctness
 
 - [x] T001 [US1] **Authority IO Dispatch**. FR-001；修复 F-01，在 `NativeAuthenticatedGrantClient::coreIssue` 将 `ServiceUser::RequestServiceTargeted` 封送到 Core `postToIo`，处理 dispatch 前取消、空 request ID、异常、timeout 与晚回调；在 `tests/integration-tests/di-native-requester-grant.t.cpp` 的 `Spec184AuthorityIoOwnership` 中验证线程 owner、真实 `ServiceUser` 状态和 bounded cleanup。Risk class: `concurrency/lifetime`; Dynamic profile: `tsan`; invariants: IO owner、pending-call balance、late callback no-op。Target: `integration-tests`（已由 `tests/wscript` 注册 TU）。Dependencies: documentation gate and migration baseline。Evidence: [B1 evidence](evidence/b1-request-correctness-20260911.md)。

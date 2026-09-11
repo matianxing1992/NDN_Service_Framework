@@ -84,6 +84,22 @@ violations. The I02 retry history remains durable: `r1` stopped at the missing `
 path, `r2` at missing staged fixtures, and `r3` at an invalid manifest artifact kind. Those are
 harness boundaries, not protocol results.
 
+## Current-candidate Spec175 C++ integration gate
+
+As a second C++ process-level sample, the current candidate `integration-tests` ran the registered
+Spec175 I01–I15 selectors once each with seed `1840012`. The gate reported `PASS`, all 15 results
+had exit `0`, and no case was missing. The executable digest is
+`sha256:e1947cfb5d75524edc346da5b9c32c984c2daf8e3504e095653e13201486a385`; the gate manifest is
+`.codex-tmp/spec184-spec175-g2-20260911/qualification-manifest-current.json` with SHA-256
+`635c2c3db30ee44f08be28b6d4c62ee4272a7e012514124bcd1ab21158cde910` and the current source-seal
+SHA-256 `sha256:2f4b9680180e999988ad0f4d149e8d39a1905585a771a50f096a75837aa977d9`.
+
+This gate supplements the owner runs with I09–I15 C++ behavior classes. Its source seal records the
+pre-existing integration test marker and an unrelated untracked extension-build log; those files
+remain outside the promotion candidate's production source identity. The gate therefore provides
+candidate executable and test evidence but does not erase the inherited I02–I08 counterexample or
+collector-completeness boundaries.
+
 ## Authority grant process matrix
 
 The same candidate's independent C++ Authority/requester process launcher completed one positive,
