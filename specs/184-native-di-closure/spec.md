@@ -68,13 +68,31 @@ fixture/oracle 完成。若 sanitizer 报告来自外部库或 ABI 边界，先�
 确定性 seed（若适用）、预期业务结果和对应的 C++ 断言；未覆盖的边界转交 qualification
 matrix，并说明理由。矩阵只属于批次，不把每个参数拆成任务。
 
+### Dynamic Validation Procedure
+
+Spec184 的动态门固定为四步，且只在批次级执行：
+
+1. **Freeze**：批次达到稳定行为出口后，完成静态五 lane 覆盖和组合审查，冻结
+   `Dynamic gate card` 的 risk/profile、C++ selector、源码/工具链身份、输出路径和预算。
+2. **Sample**：按风险和行为等价类选取少量 `nominal`、关键边界、故意非法及
+   cancel/deadline/replacement 顺序用例；不按 80 行 qualification matrix 建 80 套动态任务。
+3. **Run**：运行独立 ASan/UBSan、TSan 或 parser-fuzz 构建中的具名 C++ selector；业务结果
+   由 C++ fixture/oracle 断言，Python 只能编排外部设施或启动该 executable。
+4. **Classify**：记录每个 case 的 `DYNAMIC_PASS`、`DYNAMIC_FAIL` 或 `NOT_RUN`、首个失败
+   边界、退出码和清理结果。未覆盖项或失败项保留在 qualification row，不提升任务状态。
+
+B5 以继承 obligation 的**不同风险/行为类别**作为动态样本单位，每类默认一条正例和一条
+负例，具体预算由卡片冻结；相同状态机、selector 和 source closure 的行共享一次构建。80 行
+矩阵仍用于逐项资格对账，不能被动态样本数量替代。动态结果只能补充 C++ 行为测试，不能把
+无报告或单次启动成功写成 `QUALIFICATION_PASS`。
+
 | Batch | Parameter classes / budget | Expected C++ business result | Dynamic selector / invariant | Uncovered boundary / handoff |
 | --- | --- | --- | --- | --- |
 | B1 | request/attempt nominal + cancel/deadline/replacement; bounded repeats | one terminal result, no stale callback, pending count returns to zero | `Spec184AuthorityIoOwnership`, `Spec184TurnPublicationRace` / IO owner and ticket balance | external process interleavings → B5 qualification |
 | B2 | publish before/after cancel, delayed FINALIZE, close; bounded repeats | handle/journal linearization remains monotonic and residue is zero | `Spec184DurableOutcome` / durable outcome and cleanup | cross-process durability → B5 |
 | B3 | umask, existing file, symlink, write/fsync/rename failure; bounded cases | exact `0600`, canonical bytes, old file preserved on pre-rename failure | `Spec184CheckpointExport` / export atomicity and residue | directory fsync failure after rename is explicit implementation limit |
 | B4 | native/compatibility mode, missing/invalid config, caller shutdown; per-row bounded cases | native route is explicit, compatibility is explicit, no hidden fallback | caller-specific C++ selectors / route and lifecycle markers | real model/no-Python outputs → B5 |
-| B5 | inherited PO/I/FR/CD positive and negative rows; matrix-owned budget | candidate identity, terminal cleanup, and negative boundary each have evidence | matrix-bound selectors / source-artifact identity | external Tiger/SIF runs remain `TRANSFERRED` |
+| B5 | one positive and one negative sample per distinct inherited risk/behavior class; matrix-owned budget | candidate identity, terminal cleanup, and negative boundary each have evidence | matrix-bound C++ selectors / source-artifact identity | unrepresented rows remain qualification `PARTIAL`; external Tiger/SIF runs remain `TRANSFERRED` |
 
 | Story / FR | Production entry / callers | Observable outcome | Independent oracle / C++ selector | Negative / recovery boundary | Dynamic profile / invariant | Evidence owner / path | Batch |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -83,7 +101,7 @@ matrix，并说明理由。矩阵只属于批次，不把每个参数拆成任�
 | US1 / FR-003 | NativeInferenceClient → NativeConversationCoordinator | journal、checkpoint、handle 一致 | integration-tests / `ndnsf-di-core-flow.t.cpp` / `Spec184DurableOutcome` (`FOCUSED_VALIDATED`)；持久记录独立读取 | publish 前后取消、FINALIZE 丢失 | `asan-ubsan`; handle/journal 生命周期和 residue=0 | B2 实现者；evidence/b2-durable-outcome-20260911.md | B2 |
 | US2 / FR-004 | examples/DI_NativeRequester.cpp checkpoint export | 首次0600、原子替换与可再加载 | unit-tests / `di-native-checkpoint.t.cpp` / `Spec184CheckpointExport` (`FOCUSED_VALIDATED`)；stat/原文件摘要/loader | 写入失败、symlink、已有文件 | `asan-ubsan`; 临时文件/loader 生命周期、失败保留旧文件 | B3 实现者；evidence/b3-checkpoint-export-20260911.md | B3 |
 | US2 / FR-005 | APPClient 与维护中的五组 caller/mode | 默认 runtime 原生、薄封装 | DI_NativeRequester / di-native-provider；integration-tests 中按当前 caller 清单登记 exact selector | 旧模式退出、unsupported 模式明确拒绝 | `tsan` only for async callers; otherwise `none` for static matrix | B4 实现者；contracts/caller-matrix.md（T005 生成） | B4 |
-| US3 / FR-006 | 同源 unit-tests / integration-tests / C++ process / MiniNDN | 继承 PO/I 及 no-Python 出口可追溯 | 原 Spec182 proof-design 中 PO-001–016；T006 逐项绑定当前 exact selector | 所有继承负例、build identity、trace/marker 首边界 | per inherited row; `none` for documentation-only reconciliation | B5 实现者；contracts/qualification-matrix.md（T006 生成） | B5 |
+| US3 / FR-006 | 同源 unit-tests / integration-tests / C++ process / MiniNDN | 继承 PO/I 及 no-Python 出口可追溯 | 原 Spec182 proof-design 中 PO-001–016；T006 逐项绑定当前 exact selector | 所有继承负例、build identity、trace/marker 首边界 | per inherited row as matrix metadata; dynamic execution samples distinct risk/behavior classes; `none` for documentation-only reconciliation | B5 实现者；contracts/qualification-matrix.md（T006 生成） | B5 |
 
 ### Edge Cases
 

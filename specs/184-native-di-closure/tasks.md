@@ -17,7 +17,7 @@
 | [T004 Atomic Private Checkpoint Export](evidence/b3-checkpoint-export-20260911.md) | DONE | B2 exit | B3 normal and unsuppressed ASan/UBSan exits complete; directory-fsync failure remains an explicit implementation limit | 2026-09-11 |
 | [T005 Maintained Caller Mode Closure](evidence/b4-caller-convergence-20260911.md) | DONE | B1–B3 exits | Caller/mode matrix and focused route selectors complete; D2b runtime miss, real-model/no-Python and retirement remain in B5 | 2026-09-11 |
 | [T006 Inherited Obligation and Harness Closure](contracts/qualification-matrix.md) | PARTIAL | B4 exit | 80-row matrix, ordered local candidate identity and fresh convergence audit are recorded; PO-015 review row is PASS, while process/no-Python, parser-fuzz and negative-row closure remain | 2026-09-11 |
-| [T007 Current Native Qualification](contracts/promotion-candidate.md) | IN_PROGRESS | T006 complete and fresh convergence `PASS` | Candidate-bound full unit/component gates recorded; integration has 48 failures and process/no-Python preflight is `UNQUALIFIED`; parser-fuzz and negative rows remain | 2026-09-11 |
+| [T007 Current Native Qualification](contracts/promotion-candidate.md) | IN_PROGRESS | T006 complete and fresh convergence `PASS` | Previous candidate-bound full unit/component gates remain historical after the DYNAMIC-LOOP contract revision; fresh candidate/convergence is required before resuming. Integration had 48 failures and process/no-Python preflight was `UNQUALIFIED`; parser-fuzz and negative rows remain | 2026-09-11 |
 | [T008 Native Development Handoff](plan.md) | NOT_STARTED | T007 `QUALIFICATION_PASS` | Design/API handoff and external experiment transfer remain pending | 2026-09-11 |
 
 ## Logical Batch Progress
@@ -28,7 +28,7 @@
 | B2 | DYNAMIC_PASS / CLOSED_FOR_VALIDATION | `asan-ubsan` PASS；durable handle/journal 一致、publish 后终态不降级、residue=0 | T003 已完成；进入 B3/T004 |
 | B3 | DYNAMIC_PASS / CLOSED_FOR_VALIDATION | `asan-ubsan` PASS；原子 export、symlink refusal、pre-rename failure preservation、loader smoke | T004 已完成；进入 B4/T005 |
 | B4 | CLOSED_FOR_VALIDATION / PARTIAL | caller rows use `none` with reason; inherited B1/B2 profiles cover shared async owners | T005 matrix/route closure complete；D2b runtime miss、real model/no-Python and retirement remain T006/T007 |
-| B5 | IN_PROGRESS / T006 PARTIAL | inherited row profiles；Provider-host unsuppressed ASan/UBSan PASS；文档对账 `none` with reason | component selectors、resolver lifetime gate、ordered candidate identity and fresh convergence `PASS` recorded；仍需 process/no-Python, parser-fuzz and negative-row closure → T007 正式本地资格 → T008 交付 |
+| B5 | IN_PROGRESS / T006 PARTIAL | one bounded dynamic sample per distinct inherited risk/behavior class；Provider-host unsuppressed ASan/UBSan PASS；文档对账 `none` with reason | component selectors、resolver lifetime gate、ordered candidate identity and fresh convergence `PASS` recorded；仍需 process/no-Python, parser-fuzz and negative-row closure → T007 正式本地资格 → T008 交付 |
 
 ## Current Checkpoint
 
@@ -84,6 +84,15 @@ Mode active health 已通过；下一步继续 B1 普通 C++ selector 后再运�
 2026-09-11 **DYNAMIC-CARD / DOCUMENTATION_UPDATED**：共享 skill、Spec Kit 模板、Spec184
 `plan.md`/`spec.md` 已加入批次级 `Dynamic gate card`，冻结参数边界、C++ selector、业务不变量、
 预算、toolchain/source identity、输出路径和失败分类；sanitizer 抑制不得直接升级为 `DYNAMIC_PASS`。
+
+2026-09-11 **DYNAMIC-LOOP / DOCUMENTATION_UPDATED**：共享 skill 与 Spec184 将动态分析收敛为
+四步批次循环（Freeze → Sample → Run → Classify）。B5 动态样本按不同风险/行为类别取代表性
+正负例，同一状态机共享动态构建；80 行 qualification matrix 继续逐项对账，未覆盖行保持
+`PARTIAL`，不新增逐参数或逐行构建任务。该记录只改变执行流程，不改变当前产品或资格状态。
+
+该流程变更发生在上一候选冻结之后，因此按 promotion candidate 的 change-plane 规则将旧
+candidate 标为 `STALE_LOCAL_PARTIAL`。旧运行结果继续作为历史证据保存；T007 恢复前必须
+重新生成 candidate digest 并通过 fresh convergence，不能把旧结果静默绑定到新契约。
 
 2026-09-11 **B2-ASAN / DYNAMIC_PASS**：先保留外部 NDN-SVS 旧头文件/库失配导致的未抑制
 `new-delete-type-mismatch`，随后用当前源码重建 NDN-SVS 并重链独立 ASan/UBSan tree。普通
@@ -157,8 +166,8 @@ Spec182 的14个 OPEN 父任务和 R12-A–E 全部承接；未搬运历史长�
 
 ## Phase 3: Qualification and Delivery
 
-- [ ] T006 [US3] **Inherited Obligation and Harness Closure**. FR-006；维护 [qualification matrix](contracts/qualification-matrix.md)，已逐项对账原14个 OPEN 父任务、PO-001–016及适用 I/FR/CD/INV（80 行），并分别给出 obligation、component、harness、identity 和 external-owner 行；仍需补残余组件/装配/tokenizer/host/绑定实现或 fixture、trace/marker/build identity 缺口。每个新增实现子组先静态门再定向 C++ 验证，候选冻结且控制性 finding 清零后运行 fresh convergence audit。Risk class: `qualification-evidence`; Dynamic profile: per inherited row, documentation reconciliation `none` with reason; invariants: source/artifact identity、selector-to-obligation mapping and bounded parameter matrix。Dependencies: B4 exit；矩阵对账已完成但验收仍 PARTIAL。Evidence: [B5 matrix evidence](evidence/b5-matrix-binding-20260911.md)。
-- [ ] T007 [US3] **Current Native Qualification**. FR-006；仅在 T006 的 qualification matrix 完整且 `evidence/convergence-b5.md` 为当前 candidate 的 fresh `PASS` 后，按矩阵运行同源完整 unit/integration、YOLO/Qwen MiniNDN/no-Python 与检错负例；绑定源码/二进制/日志，区分局部 PASS 和正式 qualification；不重跑未受影响的历史实验。Risk class: `qualification-runtime`; Dynamic profile: per inherited row (at minimum `tsan` for concurrency rows and `asan-ubsan` for lifetime/parser rows); invariants: candidate identity、terminal cleanup、negative boundary。Dependencies: T006 static/focused exits and fresh convergence `PASS`。
+- [ ] T006 [US3] **Inherited Obligation and Harness Closure**. FR-006；维护 [qualification matrix](contracts/qualification-matrix.md)，已逐项对账原14个 OPEN 父任务、PO-001–016及适用 I/FR/CD/INV（80 行），并分别给出 obligation、component、harness、identity 和 external-owner 行；仍需补残余组件/装配/tokenizer/host/绑定实现或 fixture、trace/marker/build identity 缺口。每个新增实现子组先静态门再定向 C++ 验证，候选冻结且控制性 finding 清零后运行 fresh convergence audit。Risk class: `qualification-evidence`; Dynamic profile: `none` for documentation reconciliation, while inherited rows retain their matrix-assigned profile; invariants: source/artifact identity、selector-to-obligation mapping and bounded parameter matrix。Dependencies: B4 exit；矩阵对账已完成但验收仍 PARTIAL。Evidence: [B5 matrix evidence](evidence/b5-matrix-binding-20260911.md)。
+- [ ] T007 [US3] **Current Native Qualification**. FR-006；仅在 T006 的 qualification matrix 完整且 `evidence/convergence-b5.md` 为当前 candidate 的 fresh `PASS` 后，按矩阵运行同源完整 unit/integration、YOLO/Qwen MiniNDN/no-Python 与检错负例；绑定源码/二进制/日志，区分局部 PASS 和正式 qualification；不重跑未受影响的历史实验。Risk class: `qualification-runtime`; Dynamic profile: profiles derived from the matrix, with one bounded dynamic sample per distinct risk/behavior class (at minimum `tsan` for concurrency rows and `asan-ubsan` for lifetime/parser rows); invariants: candidate identity、terminal cleanup、negative boundary。Dependencies: T006 static/focused exits and fresh convergence `PASS`。
 - [ ] T008 [US3] **Native Development Handoff**. FR-006；同步 Design/API/使用说明、两个入口示例、最终源码基线、剩余外部实验 TRANSFERRED 状态；不得以文档移交替代本地资格。Risk class: `documentation`; Dynamic profile: `none` (no runtime state); invariants: evidence links and status agreement。Dependencies: T007 PASS。
 
 ## Dependencies & Execution Order

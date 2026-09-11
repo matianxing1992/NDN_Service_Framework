@@ -1,7 +1,11 @@
 # Spec184 Qualification Matrix
 
-**Status**: PARTIAL / T006 row binding complete; candidate and qualification remain open
+**Status**: PARTIAL / T006 row binding complete; pre-revision candidate is stale and qualification remains open
 **Source**: [transfer matrix](transfer-matrix.md), inherited Spec182 proof contracts, and current checkpoint `76072468`
+
+The `candidateId` values recorded in rows below refer to the pre-`DYNAMIC-LOOP` candidate. They are
+retained for historical traceability; no row may be upgraded or rebound until a fresh candidate
+digest and convergence audit are recorded.
 
 本表是最终资格的唯一行级入口。迁移记录的结构检查不能关闭任何一行；每行必须绑定
 当前 candidate、源码/二进制身份、真实 C++ target/selector 或外部 owner、负例、所有子

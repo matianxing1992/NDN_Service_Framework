@@ -101,6 +101,8 @@
   C++ selector、重复/预算、toolchain/source identity 和输出目录，并附有界 Dynamic
   Parameter Matrix（正常值、关键边界、故意非法值和生命周期/并发顺序变化）；动态工具
   不能替代 C++ 行为 oracle 或 qualification，抑制报告也不能直接产生 DYNAMIC_PASS。
+  执行动态门时固定采用 Freeze → Sample → Run → Classify 四步批次循环；不按参数或继承行
+  增加任务，未覆盖边界保留在 qualification matrix。
   五 lane Coverage matrix 在 plan/tasks 的批次结果记录中维护，此处引用对应 Batch。
 -->
 

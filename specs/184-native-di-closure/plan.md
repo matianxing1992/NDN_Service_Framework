@@ -36,7 +36,7 @@ Promotion candidate、change-plane invalidation 和 design-code convergence 规�
 | B2 Durable outcome | T003 | B1 | `asan-ubsan`; handle/journal 生命周期、publish 后终态一致、residue=0 | publish 前后取消、deadline、close 与持久记录/handle 一致 |
 | B3 Secure export | T004 | B2；技术上独立，默认顺序执行 | `asan-ubsan`; 临时文件/loader 生命周期、失败保留旧 checkpoint | 0600 原子导出、失败保留、loader round-trip |
 | B4 Caller convergence | T005 | B1–B3 | caller/launcher rows `none` with reason; inherited B1/B2 profiles cover shared async owners | caller/mode matrix 闭合，当前 route/provider/Qwen selectors 有 focused exit；D2b/real-model/no-Python 留 B5 |
-| B5 Qualification and handoff | T006/T007/T008 | B4；矩阵盘点可提前只读进行 | per inherited row; `none` for documentation-only reconciliation | qualification matrix 完整、fresh convergence audit `PASS` 后才可开始 T007；本地资格通过，外部边界明确 |
+| B5 Qualification and handoff | T006/T007/T008 | B4；矩阵盘点可提前只读进行 | one bounded dynamic sample per distinct inherited risk/behavior class; `none` for documentation-only reconciliation | qualification matrix 完整、fresh convergence audit `PASS` 后才可开始 T007；本地资格通过，外部边界明确 |
 
 ### Dynamic Validation Card
 
@@ -46,9 +46,9 @@ Promotion candidate、change-plane invalidation 和 design-code convergence 规�
 | Field | B1 | B2 | B3 | B4 | B5 |
 | --- | --- | --- | --- | --- | --- |
 | Risk / profile | `concurrency`; `tsan` | `lifetime/linearization`; `asan-ubsan` | `lifetime/serialization`; `asan-ubsan` | async caller `tsan`, static rows `none` | inherited row profile；文档对账 `none` |
-| Parameter boundary | request/attempt、取消、迟到回调 | publish 前后取消、deadline、FINALIZE 延迟 | umask、已有文件、symlink、写入失败 | caller/mode、默认路由、compatibility rejection | 每个 PO/I/FR/CD 的正负例和 candidate identity |
+| Parameter boundary | request/attempt、取消、迟到回调 | publish 前后取消、deadline、FINALIZE 延迟 | umask、已有文件、symlink、写入失败 | caller/mode、默认路由、compatibility rejection | 不同继承 risk/behavior class 的正负样本；未采样行和 candidate identity |
 | C++ selector / invariant | `Spec184AuthorityIoOwnership`, `Spec184TurnPublicationRace`; IO owner、ticket residue | `Spec184DurableOutcome`; durable journal/handle 一致、residue=0 | `Spec184CheckpointExport`; 0600、旧文件保留、loader round-trip | caller-specific C++ selectors; native default and cleanup | matrix-bound selectors; source/artifact identity、terminal cleanup |
-| Repeat / output | 每 selector 至少 2 次；独立 TSan tree | 至少 2 次；独立 ASan/UBSan tree | 至少 2 次；独立 ASan/UBSan tree | async rows 至少 2 次；按 row 输出 | 按继承 row 的预算和独立输出 |
+| Repeat / output | 每 selector 至少 2 次；独立 TSan tree | 至少 2 次；独立 ASan/UBSan tree | 至少 2 次；独立 ASan/UBSan tree | async rows 至少 2 次；按 row 输出 | 按 risk/behavior class 的预算和独立输出；未采样行保持 qualification `PARTIAL` |
 
 动态工具只检查内存、线程和未定义行为；参数是否满足业务契约由上述 C++ fixture/oracle
 断言。每张卡还要记录 compiler/linker、依赖和 binary digest、原始 stdout/stderr、退出码
@@ -69,7 +69,7 @@ qualification row，不为补齐表格而新增执行任务。
 | B2 | publish-before-cancel, publish-after-cancel, delayed FINALIZE, close | normal + 3 unsuppressed ASan/UBSan repeats | `Spec184DurableOutcome` |
 | B3 | umask, existing destination, symlink, pre-rename failure, round-trip | normal + 3 unsuppressed ASan/UBSan repeats | `Spec184CheckpointExport` |
 | B4 | native config, compatibility selection, missing/invalid config, shutdown | per async selector ≥2 repeats; static rows `none` with reason | caller-specific C++ selector or explicit `gap` |
-| B5 | one positive and one negative case for each inherited row class | matrix-owned budget recorded with candidate identity | qualification matrix selector; no Python-only oracle |
+| B5 | one positive and one negative sample for each distinct inherited risk/behavior class; unrepresented rows remain explicit | matrix-owned budget recorded with candidate identity | qualification-matrix-bound C++ selector; no Python-only oracle |
 
 ## Code Design and Review
 

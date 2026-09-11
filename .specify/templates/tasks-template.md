@@ -34,7 +34,8 @@ run, the batch evidence MUST provide one `Dynamic gate card` with parameter boun
 production C++ selectors, repeat/budget, toolchain/source identity, output path, and failure
 classification. The card MUST also include a bounded `Dynamic Parameter Matrix` that maps
 equivalence-class inputs (normal, boundary, invalid, and relevant cancel/replacement cases) to
-expected C++ business results. A pure documentation task records `N/A` and a reason. Sanitizer suppression
+expected C++ business results. Execute the card as one batch-level Freeze → Sample → Run → Classify
+loop; do not create per-parameter or per-inherited-row tasks. A pure documentation task records `N/A` and a reason. Sanitizer suppression
 does not qualify as `DYNAMIC_PASS` unless a clean, ABI-consistent run follows.
 
 **Organization**: Tasks are grouped by user story and expressed as cohesive,

@@ -95,6 +95,19 @@ matrix 的 `test/harness/oracle` lane 必须写 `gap`，对应任务保持 `PART
 每个 code-backed task 和批次在开始编码前登记 `Risk class`、`Dynamic profile` 与
 `Dynamic invariants`；纯文档任务写 `N/A` 及理由。
 
+为控制执行复杂度，动态门固定为四步批次循环：
+
+1. **Freeze**：批次达到稳定出口后，完成五 lane 静态覆盖和组合审查，冻结 profile、具名
+   C++ selector、工具链/源码身份、输出目录和预算。
+2. **Sample**：按风险/行为等价类选取少量正常、关键边界、非法及生命周期/并发顺序用例；
+   同一批共享一张矩阵，不按字段、参数或继承行重复建任务。
+3. **Run**：在独立 sanitizer/fuzz 构建中运行 selector，由 C++ fixture/oracle 判定业务
+   结果；Python 只能编排外部设施或启动 executable。
+4. **Classify**：记录每个 case 的 `DYNAMIC_PASS`、`DYNAMIC_FAIL` 或 `NOT_RUN`、首个失败
+   边界、退出码和清理结果；失败或未覆盖项进入下一批/qualification row。
+
+四步属于批次门，不增加任务层级；没有稳定出口或可执行 C++ selector 时记录 `gap`/`NOT_RUN`。
+
 | Dynamic profile | 适用风险 | 最小验证要求 |
 | --- | --- | --- |
 | `asan-ubsan` | 生命周期、越界、释放后使用、未定义算术、序列化/损坏输入 | 独立 sanitizer build；具名 C++ selector；零 sanitizer 报告并有界退出 |

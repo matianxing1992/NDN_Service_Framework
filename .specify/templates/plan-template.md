@@ -135,7 +135,8 @@ be stricter but must not weaken its PASS/BLOCK boundary.
   carry one `Dynamic gate card` freezing parameter boundaries, C++ selectors, repeat/budget,
   toolchain/source identity, output path, and failure classification, plus a bounded
   `Dynamic Parameter Matrix` of equivalence classes and expected C++ business results;
-  suppressions alone do not produce `DYNAMIC_PASS`.
+  suppressions alone do not produce `DYNAMIC_PASS`. Execute the card as one batch-level
+  Freeze → Sample → Run → Classify loop; do not create per-parameter or per-inherited-row tasks.
   For asynchronous or detached native paths, the batch must also name the fixture owner or
   join/drain barrier for Face/io_context/scheduler/timer/callback dependencies and the
   destructor-order selector/recheck; production close/callback semantics stay unchanged.

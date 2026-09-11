@@ -97,6 +97,22 @@ Static review PASS != Behavior PASS。
 动态工具负责发现内存、线程、未定义行为或解析崩溃；参数是否满足协议/模型语义由 C++
 断言负责。等价类和 case 数在批次级冻结，未覆盖边界转交 qualification row，不把每个
 参数拆成新的执行任务。
+
+动态分析采用四步最小循环，避免把参数检查变成行政任务：
+
+1. **Freeze**：批次达到稳定出口后，先完成静态五 lane 覆盖和组合审查；在同一份 evidence
+   中冻结一张 `Dynamic gate card`，写清风险、profile、C++ selector、工具链/源码身份、
+   输出目录和预算。
+2. **Sample**：把参数按行为/风险等价类压缩成少量 `nominal`、关键边界、故意非法和
+   生命周期/并发顺序用例；同一批只共享一张矩阵，不为每个字段或继承行重新建任务。
+3. **Run**：在独立 sanitizer 或 fuzz 构建中运行具名 C++ selector，重复次数和超时按卡片
+   执行；C++ oracle 判定业务结果，动态工具只报告内存、线程、未定义行为或解析崩溃。
+4. **Classify**：将每个 case 标为 `DYNAMIC_PASS`、`DYNAMIC_FAIL` 或 `NOT_RUN`，保留首个
+   失败边界。未覆盖或失败的 case 进入下一批/qualification row；动态通过不能单独把任务
+   标成 `DONE`，重复原命令也不能关闭漏检。
+
+这四步是批次门，不是新增的任务层级。若某个 batch 没有稳定出口或没有可执行的 C++
+selector，停止动态运行并记录 `gap`/`NOT_RUN`，先修复接线或拆分批次。
 编码前必须记录每批的分配依据（共同入口/调用方、契约、oracle/selector、source
 closure、验收出口）；任一项不一致就拆成新的批次，不以少一次构建为合批理由。
 每个静态门和批末门还必须留下五 lane Coverage matrix；没有实际文件/符号和查询

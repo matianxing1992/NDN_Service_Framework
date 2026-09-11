@@ -1,6 +1,6 @@
 # Spec184 Promotion Candidate Contract
 
-**Status**: FROZEN_LOCAL_PARTIAL / candidate identity recorded; no candidate promoted
+**Status**: STALE_LOCAL_PARTIAL / validation contract changed; no candidate promoted
 **Owner**: T006 before any expensive validation
 
 Spec184 使用一个不可变 promotion candidate 绑定所有会影响行为的输入。候选不是一个
@@ -30,12 +30,12 @@ marker、response 或历史 PASS 都不能单独构成 candidate；不同 candid
 和 submission bundle 摘要，因此不能用于 T007 promotion；T006 必须在 fresh convergence
 audit 前生成真正的 ordered candidate digest。
 
-## Current Local Candidate Record
+## Previous Local Candidate Record
 
-The following record freezes the current local native build for convergence and bounded owner
-qualification review. It is a development candidate, not a promotion decision: full unit coverage
-and one `PO-001-stream` owner case are clean, while the full integration sweep and the remaining
-process/no-Python qualification still have open rows.
+The following record froze a local native build for the pre-`DYNAMIC-LOOP` convergence and bounded
+owner qualification review. It is a historical development candidate, not a promotion decision:
+full unit coverage and one `PO-001-stream` owner case were clean, while the full integration sweep
+and the remaining process/no-Python qualification had open rows.
 
 | Member | Bound value |
 | --- | --- |
@@ -57,8 +57,14 @@ for the bounded `PO-001-stream` case. Full-unit output is
 `143ecc81f846b9ef888e37563560aecd2d67bfae88f5378c9e34ae6902d167e3`); the full integration
 sweep is `.codex-tmp/spec184-b5-full-integration-20260911.log` (SHA-256
 `5244434ca84d77f2b6ae6909d237d96cf1f3a34b9282b14a090e85e173701793`) and ended with 48 failures.
-The candidate therefore remains `FROZEN_LOCAL_PARTIAL`; any source, configuration, harness,
+The candidate was `FROZEN_LOCAL_PARTIAL` at capture time; any source, configuration, harness,
 contract or external artifact change invalidates this identity before the next qualification run.
+
+The 2026-09-11 `DYNAMIC-LOOP` workflow revision changed the Spec184 validation contract after
+this candidate was frozen. The recorded `candidateId` and its runtime evidence remain a historical
+record of the prior contract, but are stale for new qualification decisions. A fresh convergence
+audit must recompute the ordered digest from the new `spec.md`, `plan.md`, `tasks.md` and matrix
+hashes before T007 resumes; no runtime result is silently re-bound to the old candidate.
 
 ## Change-plane Invalidation Matrix
 
