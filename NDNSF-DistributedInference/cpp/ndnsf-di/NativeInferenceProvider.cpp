@@ -23,11 +23,10 @@ struct Target
   std::shared_ptr<std::atomic<bool>> draining;
 };
 
-// Host singleton state (see NativeInferenceProvider.hpp). The fixed lease
-// entry, every collaboration handler, and every registration closure capture
-// the shared_ptr chain rooted at NativeInferenceProvider::m_host, so the
-// shared lease table and the router stay alive until Core detaches the last
-// entry even if the provider object is destroyed first.
+// Host singleton state (see NativeInferenceProvider.hpp). Lease resolvers use
+// weak references so the host's target graph cannot form a self-cycle through
+// ExecutionLeaseService. Core handlers retain the host while their runtime
+// state may still refer to the host-owned lease table.
 struct HostState
 {
   std::string providerName;
@@ -65,8 +64,13 @@ hostEpochMs()
 ExecutionLeaseService::ConflictKeyResolver
 makeHostSlotResolver(const std::shared_ptr<HostState>& host)
 {
-  return [host](const LeaseOperationRequest&,
-                const ExecutionLeaseRequestContext&) {
+  const std::weak_ptr<HostState> weakHost = host;
+  return [weakHost](const LeaseOperationRequest&,
+                    const ExecutionLeaseRequestContext&) {
+    const auto host = weakHost.lock();
+    if (!host) {
+      return std::vector<std::string>{};
+    }
     const auto now = hostEpochMs();
     for (std::size_t slot = 0; slot < host->workerSlots; ++slot) {
       const auto key =
@@ -346,9 +350,9 @@ NativeInferenceProvider::serve(const NativeServiceDefinition& service,
 
     // The host owns the shared lease table: when the configuration opts into
     // execution leases, inject the host table and bind the lease target to
-    // this service. The table outlives every handler state because each
-    // collaboration closure below captures the host (and therefore the shared
-    // state) and is detached by Core only after the handler itself is gone.
+    // this service. The resolver observes the host weakly to avoid a target
+    // self-cycle, while the Core handler retains the host until its runtime
+    // state has been detached and no longer needs the table.
     NativeProviderHandlerConfig effectiveConfig = config;
     // Runtime evidence must use the same canonical identity as the shared
     // host state; do not let alternate URI spellings split a Provider's
