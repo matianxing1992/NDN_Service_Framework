@@ -1,5 +1,6 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPlanner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCheckpointExport.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
 #include <ndn-cxx/face.hpp>
 #include <ndn-cxx/security/key-chain.hpp>
@@ -11,7 +12,6 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
-#include <sys/stat.h>
 
 namespace {
 using namespace ndnsf::di;
@@ -387,11 +387,7 @@ int main(int argc, char** argv)
         {"checkpoint_wire", record->checkpoint.wire},
         {"transcript", record->checkpoint.transcript}};
       const auto statePath = base / config.at("conversation").at("checkpoint_output_file").get<std::string>();
-      std::ofstream stateFile(statePath, std::ios::binary | std::ios::trunc);
-      if (!stateFile || !(stateFile << nativeCanonicalJson(state)))
-        throw std::runtime_error("native conversation checkpoint state could not be written");
-      stateFile.close();
-      (void)::chmod(statePath.c_str(), 0600);
+      nativeExportPrivateCheckpoint(statePath, state);
       std::cout << "NATIVE_CONVERSATION_CHECKPOINT_WRITTEN id=" << conversationId
                 << " epoch=" << record->checkpoint.successorContextEpoch << '\n';
     }

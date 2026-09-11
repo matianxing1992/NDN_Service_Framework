@@ -1,6 +1,6 @@
 # Tasks: Native DI Closure
 
-**Status**: IN_PROGRESS / B2 closed for validation; formal qualification pending | **Date**: 2026-09-11
+**Status**: IN_PROGRESS / B3 closed for validation; formal qualification pending | **Date**: 2026-09-11
 **Input**: [spec](spec.md)、[plan](plan.md)、[transfer matrix](contracts/transfer-matrix.md)、
 [promotion candidate](contracts/promotion-candidate.md)、[caller matrix](contracts/caller-matrix.md)、
 [qualification matrix](contracts/qualification-matrix.md)
@@ -11,7 +11,7 @@
 | --- | --- | --- | --- |
 | B1 | DYNAMIC_PASS / CLOSED_FOR_VALIDATION | `tsan` PASS；IO owner、turn/ticket 线性化、无 pending residue | T001/T002 已完成普通 C++ selector、独立 TSan 各两次重复；进入 B2/T003 |
 | B2 | DYNAMIC_PASS / CLOSED_FOR_VALIDATION | `asan-ubsan` PASS；durable handle/journal 一致、publish 后终态不降级、residue=0 | T003 已完成；进入 B3/T004 |
-| B3 | NOT_STARTED | `asan-ubsan` planned；原子 export/loader 生命周期 | T004 安全 checkpoint 导出 |
+| B3 | DYNAMIC_PASS / CLOSED_FOR_VALIDATION | `asan-ubsan` PASS；原子 export、symlink refusal、pre-rename failure preservation、loader smoke | T004 已完成；进入 B4/T005 |
 | B4 | NOT_STARTED | async caller 才运行 `tsan`；其余 `none` with reason | T005 当前 caller/mode 收敛 |
 | B5 | NOT_STARTED | inherited row profiles；文档对账 `none` with reason | T006 矩阵/缺口修复 → fresh convergence audit `PASS` → T007 正式本地资格 → T008 交付 |
 
@@ -51,6 +51,12 @@ Mode active health 已通过；下一步继续 B1 普通 C++ selector 后再运�
 selector 与无抑制 sanitizer selector 各通过，sanitizer selector 共三次、均 exit code 0、无
 ASan/UBSan 报告；B2 evidence 记录原始失败、依赖重建和 binary digest。T003 完成，下一步 B3/T004。
 
+2026-09-11 **B3-ASAN / DYNAMIC_PASS**：T004 使用原生 `NativeCheckpointExport` 完成同目录临时文件、
+`0600`、canonical JSON、file/directory `fsync`、原子 rename 和 symlink 拒绝。普通 C++ selector
+三例通过；独立无抑制 ASan/UBSan selector 重复三次，均 exit code 0 且无 sanitizer 报告。带候选输出
+目录优先的 `LD_LIBRARY_PATH` 运行 `DI_NativeRequester --help` 通过；此前 `/usr/local/lib` 优先的
+loader 失败保留为库来源边界。详见 [B3 evidence](evidence/b3-checkpoint-export-20260911.md)。
+
 2026-09-11 **D-UAV-TRIM / CLOSED_FOR_VALIDATION (documentation only)**：按用户要求删除
 UAV update PDF 原第4/5页，现4页；双遍构建及全页渲染通过，两份导出同步。
 [证据](../../docs/NDNSF-UAV/slides/UPDATES_UAV-review.md)。不推进 B1–B5，原生下一步保持不变。
@@ -74,7 +80,7 @@ Spec182 的14个 OPEN 父任务和 R12-A–E 全部承接；未搬运历史长�
 
 ## Phase 2: Export and Callers
 
-- [ ] T004 [US2] **Atomic Private Checkpoint Export**. FR-004；修复 F-04，`DI_NativeRequester` 以同目录临时文件、`0600`、write/`fsync`/close/rename/目录 `fsync` 安全导出，明确 symlink 不跟随、失败保留和 round-trip；补 `tests/unit-tests/di-native-checkpoint.t.cpp` 的 `Spec184CheckpointExport`。Risk class: `lifetime/serialization`; Dynamic profile: `asan-ubsan`; invariants: temp-file ownership、loader lifetime、old checkpoint preserved on failure。Target: `unit-tests`。Dependencies: B2 exit。
+- [x] T004 [US2] **Atomic Private Checkpoint Export**. FR-004；修复 F-04，`DI_NativeRequester` 以同目录临时文件、`0600`、write/`fsync`/close/rename/目录 `fsync` 安全导出，明确 symlink 不跟随、失败保留和 round-trip；补 `tests/unit-tests/di-native-checkpoint.t.cpp` 的 `Spec184CheckpointExport`。Risk class: `lifetime/serialization`; Dynamic profile: `asan-ubsan`; invariants: temp-file ownership、loader lifetime、old checkpoint preserved on pre-rename failure。普通 C++ selector、独立无抑制 ASan/UBSan selector（三次）及候选目录优先的 example loader smoke 通过；目录 `fsync` 真实错误仍为显式限制。Target: `unit-tests`。Dependencies: B2 exit。Evidence: [B3 evidence](evidence/b3-checkpoint-export-20260911.md)。
 - [ ] T005 [US2] **Maintained Caller Mode Closure**. FR-005；按 [caller matrix](contracts/caller-matrix.md) 盘点五组维护入口及其模式、默认路由、native/compatibility/removed 状态、C++ oracle、zero-use 和 rollback；按共享逻辑分组迁移并检查薄绑定。Risk class: `routing/lifetime`; Dynamic profile: async caller rows use `tsan`, static-only rows use `none` with reason; invariants: default native route、compatibility boundary、caller lifecycle。Dependencies: B3 exit。
 
 ## Phase 3: Qualification and Delivery
