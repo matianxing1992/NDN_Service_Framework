@@ -63,6 +63,28 @@ The source fix is checkpoint `45dd9f2f`. This closes the current-source C++
 unit lane only; integration, no-Python, MiniNDN and final T016 gates remain
 separate.
 
+## Integration recheck
+
+The same fresh current-source build was used for a repository-wide
+`integration-tests --report_level=short` run. It completed 170 cases with 149
+passed, 21 failed, 19 aborted, and 48 failed assertions (`rc=201`) in 341.73
+seconds. The first boundary was
+`Spec170NdnsfDiCoreFlow/ProductionNativeHandlersRunD2bRequestToFinalResponse`:
+the response publication count was zero and the observed role outputs were
+empty. Additional failures covered Spec175 tiny-ONNX request, stream,
+cancellation, recovery, and conversation cases. Raw output is retained at
+`.codex-tmp/spec182-t016-unit-20260911/integration-tests-final.log`, with the
+first-boundary summary at
+`.codex-tmp/spec182-t016-unit-20260911/integration-failure-summary.log`.
+
+The active Spec182 integration selector was then run independently and passed
+2/2 cases with 21/21 assertions (`rc=0`); raw output is retained at
+`.codex-tmp/spec182-t016-unit-20260911/spec182-integration-selector.log`.
+This closes the active Spec182 integration lane for the checkpoint, but it does
+not qualify the broader integration suite or the T016 parent. The broad
+failures remain an open cross-Spec integration boundary and are not attributed
+to the delayed-runner fix without a reproducer at the first failing call path.
+
 The first incremental compile of that repair failed because two similar patch
 contexts added `config.prepareRunner` without adding the corresponding local
 runner in the target function. The compiler stopped on the undeclared
@@ -89,5 +111,8 @@ before executing the selector.
 
 ## Next step
 
-Rebuild the current source closure in a fresh directory with the host's
-authorized `-j4` setting, then run unit and integration selectors separately.
+Configure a fresh examples-enabled source closure with the host's authorized
+`-j4` setting, build the native requester/Provider targets, and inspect their
+dynamic dependency and help/check-only paths. Keep the active Spec182 selector
+result separate from the remaining no-Python, maintained-caller, MiniNDN, and
+deployment qualification gates.

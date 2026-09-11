@@ -1,5 +1,26 @@
 # Failure Log and Evidence Index
 
+## 2026-09-11 — Spec182 T016-A broad integration qualification boundary
+
+The fresh current-source `integration-tests --report_level=short` run completed
+170 cases with 149 passed, 21 failed, 19 aborted, and 48 failed assertions
+(`rc=201`) after 341.73 seconds. The first boundary is
+`Spec170NdnsfDiCoreFlow/ProductionNativeHandlersRunD2bRequestToFinalResponse`,
+where no response publication or observed role output was produced; the same
+run then reports failures across the Spec175 tiny-ONNX and Spec170/175 recovery,
+streaming, cancellation, and conversation cases. The complete output is
+retained at `.codex-tmp/spec182-t016-unit-20260911/integration-tests-final.log`
+and the condensed classification at
+`.codex-tmp/spec182-t016-unit-20260911/integration-failure-summary.log`.
+
+The active Spec182 selector was run separately from the same fresh binary and
+passed 2/2 cases with 21/21 assertions (`rc=0`); raw output is retained at
+`.codex-tmp/spec182-t016-unit-20260911/spec182-integration-selector.log`.
+Therefore the active Spec182 integration lane is closed for this validation
+checkpoint, while the repository-wide integration lane remains unqualified.
+The broad failures are not attributed to the delayed-runner capability fix
+without a reproducer at that first boundary, and T016 is not promoted.
+
 ## 2026-09-11 — Spec182 T016-A delayed-runner capability boundary
 
 After the fixture callback repair, the fresh current-source full unit selector

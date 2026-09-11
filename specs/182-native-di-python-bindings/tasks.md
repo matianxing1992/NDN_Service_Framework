@@ -15,6 +15,16 @@ cases、71,011/71,011 assertions，unit SHA 为
 C++ unit lane；integration、maintained callers、no-Python、MiniNDN 和 T016/T017
 仍未完成。详见 [T016-A current-source boundary](evidence/t016-a-current-source-unit-boundary-20260911.md)。
 
+2026-09-11 T016-A current-source integration lanes：同一 fresh binary 的 repository-wide
+`integration-tests` 为 170 cases（149 passed、21 failed、19 aborted、48 failed assertions，
+`rc=201`）；首个边界在 Spec170 D2b response publication/observed role output，随后包含
+Spec175 tiny-ONNX、stream、cancel、recovery 和 conversation 失败。raw output 为
+`.codex-tmp/spec182-t016-unit-20260911/integration-tests-final.log`，分类摘要为
+`.codex-tmp/spec182-t016-unit-20260911/integration-failure-summary.log`，因此 broad
+integration lane 保持 `PARTIAL`。独立 `--run_test='*Spec182*'` selector 为 2/2 cases、
+21/21 assertions、`rc=0`，raw 为 `.codex-tmp/spec182-t016-unit-20260911/spec182-integration-selector.log`；
+这只关闭 active Spec182 integration lane，不能升级 T016 parent 或全仓库 integration 资格。
+
 2026-09-11 T016-A current-source unit boundary：首次完整 C++ selector 使用旧的
 `build-nac182/unit-tests`，约 330 秒后 `rc=201`，1,022 cases 中 11 failed、8 aborted、
 20 assertions failed；首个边界为 fixture 缺少 `runner preparation callback`。raw run 保存在
@@ -411,10 +421,17 @@ assertions）及完整 `unit-tests`（1,026/1,026 cases，71,011/71,011 assertio
 no-Python、MiniNDN 和 T016/T017 仍保持原状态。证据见
 [T016-A current-source boundary](evidence/t016-a-current-source-unit-boundary-20260911.md)。
 
+2026-09-11 T016-A current-source integration boundary / **OPEN_FOR_NEXT_BATCH**：active
+Spec182 integration selector 已通过，但 broad `integration-tests` 仍有跨 Spec 失败，不能
+据此宣称全仓库 native integration PASS。保持 T016-A `PARTIAL`，下一步先完成 examples-enabled
+requester/Provider C++ closure，再继续 no-Python、maintained callers 和 MiniNDN qualification。
+详见 [T016-A current-source boundary](evidence/t016-a-current-source-unit-boundary-20260911.md)。
+
 2026-09-11 T016-A current-source unit boundary / **OPEN_FOR_NEXT_BATCH**：旧的
 `build-nac182/unit-tests` 全量运行在 fixture callback 边界失败，记录为 stale artifact，
-不推进任何父任务。下一步用当前源码新 build 目录完成 `unit-tests` 和 `integration-tests`，
-再更新 T016-A 证据与状态。详见
+不推进任何父任务。下一步改为 fresh examples-enabled build，核对 requester/Provider
+可执行文件的构建、动态依赖和 `--help`/`--check-only` 出口，再继续剩余 qualification。
+详见
 [current-source unit boundary](evidence/t016-a-current-source-unit-boundary-20260911.md)。
 
 2026-09-11 R11-B8-G46 legacy Slurm multi-node adapter guard / **CLOSED_FOR_VALIDATION**（仅限
