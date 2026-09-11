@@ -25,6 +25,10 @@ struct NativeConversationConfig
   std::string serviceName;
   std::string securityDomainDigest;
   std::function<std::uint64_t()> nowMs;
+  // Optional owner-side observation after the durable publish linearization
+  // point and before best-effort Provider FINALIZE.  It is invoked without
+  // the coordinator lock and never participates in the commit decision.
+  std::function<void()> afterDurableCommit;
 };
 
 struct NativeConversationContinuation

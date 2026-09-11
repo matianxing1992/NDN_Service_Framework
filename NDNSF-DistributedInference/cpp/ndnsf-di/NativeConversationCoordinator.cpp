@@ -425,6 +425,8 @@ NativeConversationRecord NativeConversationCoordinator::commitTurn(
       published = true;
     };
     if (commitGate) commitGate(publish); else publish();
+    if (s.config.afterDurableCommit)
+      s.config.afterDurableCommit();
     guard.lock();
     require(published, "conversation commit gate did not publish");
     guard.unlock();

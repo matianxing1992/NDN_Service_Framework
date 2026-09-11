@@ -533,6 +533,16 @@ markTerminal(const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
       ++operation->staleCallbacks;
       return false;
     }
+    // Once the coordinator's durable commit gate has published the
+    // checkpoint, that decision wins over a concurrent cancel/deadline or
+    // late failure callback.  The stream-final worker still owns the
+    // succeeding terminal transition; refusing the competing terminal here
+    // prevents a committed parent from being reported as an ordinary failed
+    // or cancelled handle.
+    if (operation->conversationCommitted && terminal != NativeRequestStatus::Succeeded) {
+      ++operation->staleCallbacks;
+      return false;
+    }
     if (result) {
       operation->result = *result;
     }
