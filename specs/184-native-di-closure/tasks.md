@@ -287,6 +287,19 @@ runner result、trace 和清理记录；I03 实际打开 staged `libpython3.8.so
 [T007 process qualification refresh](evidence/t007-process-qualification-20260911.md) 的
 `Static review and detector batch record`。此静态门不改变 T007 的运行时资格边界。
 
+2026-09-11 **T007-TARGETED-UNIT-ORDER / UNQUALIFIED**：当前 candidate 的 151 个 C++ 定向
+套件首次合并运行在 `Spec182V3Placement/PublicClientConversationCommitsSeededReceiptAndCheckpoint`
+先观察到 `DI_NATIVE_OFFER_REJECTED`，随后出现内存访问错误（exit `134`）。独立运行该用例三次、
+同一 151-case selector 重新运行三次均 exit `0`；因此暂记为顺序相关的失败边界，保留原始日志
+`.codex-tmp/spec184-b5-targeted-unit-20260911/unit.log`，待 sanitizer 或压力复现后再决定是否
+关闭。该结果不提升 T007，也不把失败尝试计为资格 PASS。
+
+2026-09-11 **T007-FULL-UNIT-ENV / PASS_FOR_ROW**：使用
+`NDNSF_SPEC182_BIN_DIR=build-spec184-b5-candidate` 重新运行当前 candidate 的完整 C++ unit
+套件，exit `0`，耗时 `1:49.15`，最大 RSS `8396500 KB`；日志及 SHA-256 见
+[T007 process qualification refresh](evidence/t007-process-qualification-20260911.md)。先前漏传该
+环境变量导致的 exit `201` 仅为测试入口配置失败，已保留在独立 raw run，不计入资格结果。
+
 ## Phase 1: Request Correctness
 
 - [x] T001 [US1] **Authority IO Dispatch**. FR-001；修复 F-01，在 `NativeAuthenticatedGrantClient::coreIssue` 将 `ServiceUser::RequestServiceTargeted` 封送到 Core `postToIo`，处理 dispatch 前取消、空 request ID、异常、timeout 与晚回调；在 `tests/integration-tests/di-native-requester-grant.t.cpp` 的 `Spec184AuthorityIoOwnership` 中验证线程 owner、真实 `ServiceUser` 状态和 bounded cleanup。Risk class: `concurrency/lifetime`; Dynamic profile: `tsan`; invariants: IO owner、pending-call balance、late callback no-op。Target: `integration-tests`（已由 `tests/wscript` 注册 TU）。Dependencies: documentation gate and migration baseline。Evidence: [B1 evidence](evidence/b1-request-correctness-20260911.md)。

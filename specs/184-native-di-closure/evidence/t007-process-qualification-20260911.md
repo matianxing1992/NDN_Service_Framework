@@ -202,3 +202,31 @@ counterexample statuses and the `PO-001-stream` owner row. They do not make I05 
 protocol result, nor close broader real-model, Python-retirement or external SIF/Tiger ownership;
 the matrix keeps those rows `PARTIAL`/`OPEN`. T007 therefore remains `PARTIAL`; T008 remains
 blocked by the qualification dependency, not by the process runs recorded here.
+
+## Targeted C++ suite boundary
+
+The first combined current-candidate selector for the native planning, preparation,
+offer, provider, tokenizer, conversation, placement and grant suites ran 151 cases
+but stopped at `Spec182V3Placement/PublicClientConversationCommitsSeededReceiptAndCheckpoint`
+after `DI_NATIVE_OFFER_REJECTED`, followed by a memory-access violation. The raw output
+is `.codex-tmp/spec184-b5-targeted-unit-20260911/unit.log` (exit `134`). This is retained
+as a failure boundary, not a qualification result.
+
+The named placement case passed in three isolated fresh runs, and the same 151-case
+selector passed in three fresh reruns. The order-sensitive boundary remains subject
+to sanitizer or repeated stress validation before promotion; T007 stays `PARTIAL`.
+
+The full current-candidate unit sweep was then rerun with the required
+`NDNSF_SPEC182_BIN_DIR=build-spec184-b5-candidate` environment. It ran to completion with
+exit `0` (`.codex-tmp/spec184-b5-full-unit-rerun-env-20260911/unit.log`, SHA-256
+`b3e2f457d26fe019760f124cb225a65414cca2bc568c0603c4fc246fbd5686cd`, elapsed `1:49.15`,
+maximum RSS `8396500 KB`). The earlier exit `201` full sweep without this variable is retained
+as a setup/configuration boundary and is not combined with the passing result.
+
+The same environment was used for three repeated 151-case native planning,
+preparation, offer, provider, tokenizer, conversation, placement and grant selectors;
+all three exited `0` and reported no errors. Their logs are
+`.codex-tmp/spec184-b5-targeted-unit-env-20260911/unit-1.log` through `unit-3.log`,
+each SHA-256 `66efc8f7b0015b31c337a11daabe3a34a3f4f1dcfba497f2c822949ab0586847`.
+This repetition did not reproduce the earlier order-sensitive failure, which remains
+recorded as a separate boundary.
