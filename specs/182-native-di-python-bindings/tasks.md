@@ -430,8 +430,9 @@ no-Python、MiniNDN 和 T016/T017 仍保持原状态。证据见
 
 2026-09-11 T016-A current-source integration boundary / **OPEN_FOR_NEXT_BATCH**：active
 Spec182 integration selector 已通过，但 broad `integration-tests` 仍有跨 Spec 失败，不能
-据此宣称全仓库 native integration PASS。保持 T016-A `PARTIAL`，下一步先完成 examples-enabled
-requester/Provider C++ closure，再继续 no-Python、maintained callers 和 MiniNDN qualification。
+据此宣称全仓库 native integration PASS。R11-B8-G47 已完成 examples-enabled requester/
+Provider C++ source/link closure；保持 T016-A `PARTIAL`，下一步转入 no-Python、maintained
+callers 和 MiniNDN qualification。
 详见 [T016-A current-source boundary](evidence/t016-a-current-source-unit-boundary-20260911.md)。
 
 2026-09-11 T016-A current-source unit boundary / **OPEN_FOR_NEXT_BATCH**：旧的
