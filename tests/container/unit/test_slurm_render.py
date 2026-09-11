@@ -17,3 +17,10 @@ class SlurmRenderTest(unittest.TestCase):
         value=copy.deepcopy(self.profile); value["slurm"]["jobName"]="bad\n#SBATCH --nodes=99"
         with self.assertRaisesRegex(slurm_impl.SlurmAdapterError,"UNSAFE"):
             slurm_impl.render_sbatch(value,self.template)
+    def test_legacy_adapter_rejects_multinode_profile(self):
+        value=copy.deepcopy(self.profile)
+        value["slurm"]["nodes"]=2
+        value["network"].update({"topology":"multi-node-allocation","preflightEvidence":"fixture"})
+        value["slurm"]["networkProbeRequired"] = True
+        with self.assertRaisesRegex(slurm_impl.SlurmAdapterError,"SLURM_MULTINODE_TOPOLOGY_RUNNER_REQUIRED"):
+            slurm_impl.render_sbatch(value,self.template)
