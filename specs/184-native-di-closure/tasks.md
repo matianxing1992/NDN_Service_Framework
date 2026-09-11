@@ -16,7 +16,7 @@
 | [T003 Durable Outcome Linearization](evidence/b2-durable-outcome-20260911.md) | DONE | B1 behavior exit | B2 normal and unsuppressed ASan/UBSan exits complete; no remaining T003-specific gate | 2026-09-11 |
 | [T004 Atomic Private Checkpoint Export](evidence/b3-checkpoint-export-20260911.md) | DONE | B2 exit | B3 normal and unsuppressed ASan/UBSan exits complete; directory-fsync failure remains an explicit implementation limit | 2026-09-11 |
 | [T005 Maintained Caller Mode Closure](evidence/b4-caller-convergence-20260911.md) | DONE | B1–B3 exits | Caller/mode matrix and focused route selectors complete; D2b runtime miss, real-model/no-Python and retirement remain in B5 | 2026-09-11 |
-| [T006 Inherited Obligation and Harness Closure](contracts/qualification-matrix.md) | PARTIAL | B4 exit | 80-row matrix, fresh ordered local candidate identity and convergence audit are recorded; PO-015 review row is PASS, while process/no-Python, inherited parser and negative-row closure remain | 2026-09-11 |
+| [T006 Inherited Obligation and Harness Closure](contracts/qualification-matrix.md) | DONE | B4 exit | 80-row matrix has one explicit owner, status, evidence path and remaining boundary per inherited row; current candidate identity and fresh convergence are recorded. Open runtime/model/external rows are explicitly transferred to T007/T008, not hidden in the registry | 2026-09-11 |
 | [T007 Current Native Qualification](contracts/promotion-candidate.md) | IN_PROGRESS | T006 complete and fresh convergence `PASS` | Current candidate full unit/integration exits are `0`; C++ unary/stream/conversation/recovery/replacement/grant process cases, no-Python ELF closure, repaired I02/tiny-ONNX sanitizer selectors and bounded root `PO-001-stream` owner are recorded in [process qualification refresh](evidence/t007-process-qualification-20260911.md). Non-root owner preflight remains `UNQUALIFIED` at `MININDN_REQUIRES_ROOT`; inherited I02–I08 observation-completeness, broader negative/model, Python-retirement and external rows remain | 2026-09-11 |
 | [T008 Native Development Handoff](plan.md) | NOT_STARTED | T007 `QUALIFICATION_PASS` | Design/API handoff and external experiment transfer remain pending | 2026-09-11 |
 
@@ -56,6 +56,12 @@ tiny-ONNX 无抑制 ASan/UBSan 样本均 PASS；更广 parser/negative collector
 Python retirement 与外部 SIF/Tiger 仍未运行；
 详见 [T007 qualification evidence](evidence/t007-current-native-qualification-20260911.md)
 与 [failure-log entry](../../docs/failure-log.md)。T007 保持 `IN_PROGRESS`/`PARTIAL`，T008 未开始。
+
+2026-09-11 **T006-MATRIX-CLOSURE / DONE**：80 行 qualification matrix 已逐项绑定继承来源、
+owner task、production entry/selector、negative boundary、dynamic profile、candidate/source
+identity、evidence path 与状态；当前 ordered candidate 和 fresh convergence 也已记录。仍为
+`PARTIAL`/`OPEN` 的运行、真实模型、Python retirement 与 external-owner 行已明确移交 T007/T008，
+不再作为 T006 的隐藏文档缺口。
 
 2026-09-11 **T007-PROCESS-REFRESH / PARTIAL**：当前候选的 C++ 主导过程链已形成独立
 证据：[process qualification refresh](evidence/t007-process-qualification-20260911.md)。候选
@@ -244,7 +250,7 @@ Spec182 的14个 OPEN 父任务和 R12-A–E 全部承接；未搬运历史长�
 
 ## Phase 3: Qualification and Delivery
 
-- [ ] T006 [US3] **Inherited Obligation and Harness Closure**. FR-006；维护 [qualification matrix](contracts/qualification-matrix.md)，已逐项对账原14个 OPEN 父任务、PO-001–016及适用 I/FR/CD/INV（80 行），并分别给出 obligation、component、harness、identity 和 external-owner 行；仍需补残余组件/装配/tokenizer/host/绑定实现或 fixture、trace/marker/build identity 缺口。每个新增实现子组先静态门再定向 C++ 验证，候选冻结且控制性 finding 清零后运行 fresh convergence audit。Risk class: `qualification-evidence`; Dynamic profile: `none` for documentation reconciliation, while inherited rows retain their matrix-assigned profile; invariants: source/artifact identity、selector-to-obligation mapping and bounded parameter matrix。Dependencies: B4 exit；矩阵对账已完成但验收仍 PARTIAL。Evidence: [B5 matrix evidence](evidence/b5-matrix-binding-20260911.md)。
+- [x] T006 [US3] **Inherited Obligation and Harness Closure**. FR-006；维护 [qualification matrix](contracts/qualification-matrix.md)，逐项对账原14个 OPEN 父任务、PO-001–016及适用 I/FR/CD/INV（80 行），并为每行给出 obligation、component、harness、identity、owner 和 external-owner 边界。仍未运行的组件、负例、真实模型或 external rows 已保留为 `PARTIAL`/`OPEN` 并转交 T007/T008；没有隐藏缺口。Risk class: `qualification-evidence`; Dynamic profile: `none` for documentation reconciliation, while inherited rows retain their matrix-assigned profile; invariants: source/artifact identity、selector-to-obligation mapping and bounded parameter matrix。Dependencies: B4 exit；矩阵、candidate identity 与 fresh convergence 已通过。Evidence: [B5 matrix evidence](evidence/b5-matrix-binding-20260911.md)、[current candidate](contracts/promotion-candidate.md)、[convergence audit](evidence/convergence-b5.md)。
 - [ ] T007 [US3] **Current Native Qualification**. FR-006；仅在 T006 的 qualification matrix 完整且 `evidence/convergence-b5.md` 为当前 candidate 的 fresh `PASS` 后，按矩阵运行同源完整 unit/integration、YOLO/Qwen MiniNDN/no-Python 与检错负例；绑定源码/二进制/日志，区分局部 PASS 和正式 qualification；不重跑未受影响的历史实验。Risk class: `qualification-runtime`; Dynamic profile: profiles derived from the matrix, with one bounded dynamic sample per distinct risk/behavior class (at minimum `tsan` for concurrency rows and `asan-ubsan` for lifetime/parser rows); invariants: candidate identity、terminal cleanup、negative boundary。Dependencies: T006 static/focused exits and fresh convergence `PASS`。
 - [ ] T008 [US3] **Native Development Handoff**. FR-006；同步 Design/API/使用说明、两个入口示例、最终源码基线、剩余外部实验 TRANSFERRED 状态；不得以文档移交替代本地资格。Risk class: `documentation`; Dynamic profile: `none` (no runtime state); invariants: evidence links and status agreement。Dependencies: T007 PASS。
 

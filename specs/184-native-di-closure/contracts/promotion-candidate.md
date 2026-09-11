@@ -157,7 +157,7 @@ SIF/Tiger ownership remain open.
 
 | Member | Bound value |
 | --- | --- |
-| `candidateId` | `sha256:dd7da3814a085d669ec429fa1b820f4714276fb03b5010ee359c4174ee1f9839` (digest over the ordered member map below; recompute if any listed member changes) |
+| `candidateId` | `sha256:4d111fe9302653fcaee718a653a91f725827fb7daab6667aa961e7ce6dbaf0d0` (digest over the ordered member map below; recompute if any listed member changes) |
 | `source` | `Experimental` baseline `29411b5544cf7b0175dbaae2f65678a26ee80636`; production source hashes: `ServiceProvider.cpp` `sha256:a587b5bee0fe845ba4051ce0cdea6267e2cbc767b28055c156388ecea584e419`, `NativeProviderHandler.cpp` `sha256:37984face728f908337ece2c59b7c96cd288969bad84a6f8ae6468d691100149`, `NativeEpochCoordinator.cpp` `sha256:fb0a2513c33f1f26d4805ee1721cd172bb9c06b4f3c40982b818bf2946d04866`; pre-existing `docs/failure-log.md` and integration marker remain outside the source candidate |
 | `built runtime` | `build-spec184-b5-candidate`; current unit/integration, Controller, Authority, requester, Provider, worker and grant-requester hashes are bound below |
 | `test/replay harness` | current runner manifest, four C++ process drivers, C++ registration and process qualification evidence are bound below; Python harness log is orchestration-only |
@@ -203,7 +203,7 @@ spec.caller=b2b079fd5f8e658aa6b2fec6bfec389830aa1c509fac4783f1f73e6c29c9a449
 spec.matrix=32d82c37b10087279d243aea445574b47090d9b5fd3faba9ce768b11f50c6213
 spec.plan=7aa3766efea608f751d2541ce9163ca57dfbc78ae59e3f60c71625d1dbe36023
 spec.spec=724f6aa1be1c6f151e5a71888f00bd0d4fecab1e002d07ba2c2f40473415eca1
-spec.tasks=ff5314cd16dd9ead4d150fa20c81ff2be8e381144fc2bfd8b2f3433df99d920a
+spec.tasks=c6ca91752ad20429739e0ab1a30bc98b0e220f48919f3f52a2db4fe2970ad6dc
 test.grant_process=63879098c789f72f80bcedf3261a8e0a44beef797740848490763289807b2813
 test.registration=377a5d0ff62ed64b715f9d644646040cdf16790613ae9bc43b4910957da5149c
 test.runner=1578ec962de2d9742c537213579b80dc9a3553b6091143a11de8376bccd7d9af
@@ -212,7 +212,7 @@ test.unary_process=0ee4ee185fbbbcb450d7c8a6b6ac5b128c2c27e34d949926d23c3e2956798
 ```
 
 The SHA-256 of these sorted lines followed by a final newline is
-`sha256:dd7da3814a085d669ec429fa1b820f4714276fb03b5010ee359c4174ee1f9839`.
+`sha256:4d111fe9302653fcaee718a653a91f725827fb7daab6667aa961e7ce6dbaf0d0`.
 The process evidence records the individual requester/provider markers and grant-case hashes;
 the candidate binds that evidence file rather than silently combining unrelated run roots.
 
