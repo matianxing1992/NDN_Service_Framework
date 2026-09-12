@@ -201,9 +201,24 @@ def test_native_config_delegate_contract_selects_native_provider(tmp_path: Path)
         "--native-requester-config", str(config),
     ])
     assert parsed.native_requester_config == str(config)
+    native_args = pipeline.build_native_user_args(
+        runtime=parsed.runtime,
+        native_requester_config=parsed.native_requester_config,
+        out_dir=output,
+    )
+    assert "--native-requester-config" in native_args
+    assert "--native-cpu-provider" not in native_args
+    assert "--qwen-service-manifest" not in native_args
+    compatibility_args = pipeline.build_native_user_args(
+        runtime=parsed.runtime,
+        native_requester_config="",
+        out_dir=output,
+    )
+    assert "--native-cpu-provider" in compatibility_args
+    assert "--qwen-service-manifest" in compatibility_args
     source = (ROOT / "Experiments/NDNSF_DI_LlmPipeline_Minindn.py").read_text(
         encoding="utf-8")
-    assert "native_user_args +=" in source
+    assert "build_native_user_args(" in source
     assert "--native-requester-config" in source
     assert "selection_bundle is not None and not args.native_requester_config" in source
     assert "selection_bundle is None or args.native_requester_config" in source

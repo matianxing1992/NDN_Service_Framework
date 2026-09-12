@@ -2551,6 +2551,25 @@ def write_native_qwen_bundle(out_dir: Path, *, execution_provider: str = "cpu",
     return plan_path, manifest_path
 
 
+def build_native_user_args(*, runtime: str, native_requester_config: str,
+                           out_dir: Path) -> str:
+    """Select the maintained native requester route for the User process.
+
+    ``--native-cpu-provider`` is the legacy per-token tensor-bundle diagnostic
+    path. It must not be combined with the operator-pinned native requester
+    configuration: ``user.py`` checks that flag first and would otherwise skip
+    ``APPClient.request_native_reference`` entirely. Keep the diagnostic path
+    available only when no native requester configuration was supplied.
+    """
+    if runtime != "qwen-onnx-cpu-native":
+        return ""
+    if native_requester_config:
+        return "--native-requester-config " + perf.shell_quote(
+            native_requester_config)
+    return "--native-cpu-provider --qwen-service-manifest " + perf.shell_quote(
+        out_dir / "qwen-onnx-service-manifest.json")
+
+
 def validate_spec107_artifact_binding(
     candidate: dict[str, object], artifact_store: str | Path,
     qwen_service_manifest: str | Path,
@@ -3935,15 +3954,25 @@ def main() -> int:
         metrics_csv = OUT / "llm-pipeline-user-measured.csv"
         user_out = user_log.open("wb")
         user_runtime = "qwen-onnx" if args.runtime == "qwen-onnx-cpu-native" else args.runtime
-        native_user_args = (
-            "--native-cpu-provider --qwen-service-manifest {}".format(
-                perf.shell_quote(OUT / "qwen-onnx-service-manifest.json"))
-            if args.runtime == "qwen-onnx-cpu-native" else ""
+        native_user_args = build_native_user_args(
+            runtime=args.runtime,
+            native_requester_config=args.native_requester_config,
+            out_dir=OUT,
         )
-        if args.native_requester_config:
-            native_user_args += (
-                " --native-requester-config "
-                + perf.shell_quote(args.native_requester_config)
+        if args.runtime == "qwen-onnx-cpu-native":
+            route = (
+                "native-requester"
+                if args.native_requester_config
+                else "compatibility-tensor-diagnostic"
+            )
+            ack_planning = (
+                "NativeInferenceClient"
+                if args.native_requester_config else "compatibility-client"
+            )
+            log(
+                "LLM_PIPELINE_NATIVE_USER_ROUTE "
+                f"route={route} ackPlanning={ack_planning} "
+                "providerAssembly=post-selection"
             )
         spec107_user_args = (
             "--spec107-candidate-id {} --spec107-diagnostic-timing-jsonl {}".format(

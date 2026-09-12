@@ -4090,6 +4090,10 @@ def main() -> int:
     if args.native_requester_config and args.diagnostic_token_loop:
         raise SystemExit(
             "native requester route does not support --diagnostic-token-loop")
+    if args.native_requester_config and args.native_cpu_provider:
+        raise SystemExit(
+            "native requester route cannot use --native-cpu-provider; "
+            "that flag selects the legacy tensor diagnostic path")
     if args.startup_barrier_timeout_s <= 0:
         raise SystemExit("--startup-barrier-timeout-s must be positive")
     if args.initial_sync_settle_s < 0.0:
@@ -4495,7 +4499,7 @@ def main() -> int:
                 )
                 expected_doc = local_doc
             started = time.perf_counter()
-            if args.native_cpu_provider:
+            if args.native_cpu_provider and not args.native_requester_config:
                 import numpy as np
 
                 if local_qwen_onnx is None:
@@ -4701,6 +4705,22 @@ def main() -> int:
                 return 2
             if not args.native_cpu_provider:
                 response = decode_payload(result.payload)
+            if args.native_requester_config:
+                if not isinstance(response, dict):
+                    raise RuntimeError(
+                        "native Qwen response is not a JSON object")
+                if response.get("schema") != "NDNSF-DI-FINAL-V1":
+                    raise RuntimeError(
+                        "native Qwen response has an unexpected schema")
+                raw_tokens = response.get("tokenIds")
+                if not isinstance(raw_tokens, list) or not raw_tokens:
+                    raise RuntimeError(
+                        "native Qwen response lacks tokenIds")
+                # The runtime summary supplies the one-step local oracle. The
+                # native full-generation response carries the protocol field
+                # ``tokenIds``; compare its first generated token at this
+                # caller boundary and retain the complete sequence in logs.
+                response["topToken"] = int(raw_tokens[0])
             if args.runtime in (TINY_TRANSFORMERS_RUNTIME, QWEN_TRANSFORMERS_RUNTIME, QWEN_ONNX_RUNTIME):
                 matches = (
                     response.get("generatedTokens") == expected_doc.get("generatedTokens")
