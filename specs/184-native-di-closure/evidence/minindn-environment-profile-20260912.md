@@ -10,7 +10,8 @@ MiniNDN home root、模型缓存、应用状态根和 native Provider 可执行�
 节点和 native binary，并在输出目录保存 profile digest 与解析结果。Spec175 SIF
 wrapper 也使用 profile 的 MiniNDN root，不再固定 `/tmp/minindn`。
 
-源码 checkpoint：`689cca00d40b1e2bf241aff4e7d14b0204a7c892`。
+源码 checkpoints：`689cca00d40b1e2bf241aff4e7d14b0204a7c892`、
+`90dc8785`（profile record now distinguishes candidate nodes from effective stage nodes）。
 示例 profile：[ndnsf-di-minindn-local.example.json](../../../Experiments/profiles/ndnsf-di-minindn-local.example.json)。
 操作说明：[MiniNDN environment profile](../../../docs/ndnsf-di-minindn-environment.md)。
 
