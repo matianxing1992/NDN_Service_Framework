@@ -14,6 +14,13 @@
 
 ## 索引
 
+### 2026-09-12 — Spec184 portable MiniNDN environment inputs
+
+- **Status**: PARTIAL（environment-input unit `CLOSED_FOR_VALIDATION`）；T007 qualification remains IN_PROGRESS / PARTIAL。
+- **Before/after**: MiniNDN runner 的 topology、Provider node、MiniNDN root、content store、app state 和 native executable 依赖分散在默认值与硬编码中；现在由 `ndnsf-di-minindn-environment-v1` profile 提供机器差异，显式 CLI 覆盖，启动前完成节点/binary preflight，并记录解析 profile identity。协议、ACK/Selection、Provider assembly 和 C++ API/wire 未改变。
+- **Source / evidence**: source checkpoint `689cca00d40b1e2bf241aff4e7d14b0204a7c892`；[Spec184 profile evidence](../specs/184-native-di-closure/evidence/minindn-environment-profile-20260912.md)、[environment profile guide](../docs/ndnsf-di-minindn-environment.md)。
+- **PDF boundary**: no current/target API or architecture change; PDFs were not regenerated. Actual remote/Tiger and Qwen3.6-27B evidence remains external。
+
 ### 2026-09-12 — Spec184 Native MiniNDN requester route
 
 - **Status**: PARTIAL（caller route `CLOSED_FOR_VALIDATION`）；T007 qualification remains IN_PROGRESS / PARTIAL。
