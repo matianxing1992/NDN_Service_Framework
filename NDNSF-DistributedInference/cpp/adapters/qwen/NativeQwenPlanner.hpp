@@ -16,7 +16,8 @@ namespace ndnsf::di::qwen {
  * The adapter consumes an already inspected, digest-bound graph.  It does not
  * read model files, contact a Provider, or choose a placement.
  */
-class NativeQwenLayerSplit final : public NativeModelSplitStrategy
+class NativeQwenLayerSplit final : public NativeModelSplitStrategy,
+                                   public CooperativeModelSplitStrategy
 {
 public:
   using LayerRange = std::pair<std::uint64_t, std::uint64_t>;
@@ -44,7 +45,19 @@ public:
     const NativeGraphSnapshot& graph,
     const NativeCandidateBudget& budget) const override;
 
+  std::vector<NativeSplitCandidate> enumerate(
+    const NativeModelDescriptor& model,
+    const NativeGraphSnapshot& graph,
+    const NativeCandidateBudget& budget,
+    const ExtensionControl& control) const override;
+
 private:
+  std::vector<NativeSplitCandidate> enumerateImpl(
+    const NativeModelDescriptor& model,
+    const NativeGraphSnapshot& graph,
+    const NativeCandidateBudget& budget,
+    const ExtensionControl* control) const;
+
   std::vector<LayerRange> m_layerRanges;
   std::map<std::string, std::string> m_artifactDigestsByRole;
   std::map<std::string, std::uint64_t> m_weightBytesByRole;

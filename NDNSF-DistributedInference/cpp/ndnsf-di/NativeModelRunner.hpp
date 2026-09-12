@@ -192,6 +192,15 @@ public:
   void
   registerBackend(std::string backend, Creator creator);
 
+  void
+  replaceBackend(std::string backend, Creator creator);
+
+  void
+  freeze();
+
+  bool
+  frozen() const noexcept { return m_frozen; }
+
   bool
   hasBackend(const std::string& backend) const;
 
@@ -200,6 +209,7 @@ public:
 
 private:
   std::map<std::string, Creator> m_creators;
+  bool m_frozen = false;
 };
 
 } // namespace ndnsf::di

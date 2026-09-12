@@ -30,11 +30,13 @@ bool digest(const std::string& value)
 }
 using Reuse = std::tuple<int, std::uint64_t, double, double>;
 Reuse reuseCost(const NativeSelectionRoleV3& role, const NativeObservedProviderOfferV3& offer,
-                const std::string& device, const std::string& backend, std::uint64_t nowMs)
+                const std::string& device, const std::string& backend, std::uint64_t nowMs,
+                const ExtensionControl* control)
 {
   const auto inf = std::numeric_limits<double>::infinity();
   Reuse best{3, std::numeric_limits<std::int64_t>::max(), inf, inf};
   for (const auto& p : offer.residency) {
+    if (control) control->requireActive();
     if (p.role != role.role || p.rank != role.rank || p.capturedAtMs > nowMs || p.expiresAtMs <= nowMs ||
         (!role.modelManifestDigest.empty() && p.modelManifestDigest != role.modelManifestDigest) ||
         (!role.artifactProfileDigest.empty() && p.artifactProfileDigest != role.artifactProfileDigest) ||
@@ -67,9 +69,11 @@ Reuse reuseCost(const NativeSelectionRoleV3& role, const NativeObservedProviderO
                           double, double, double, std::string, std::string, std::string>;
 
 std::vector<Cost> feasibleChoices(const NativeSelectionRoleV3& role,
-  const NativeObservedProviderOfferV3& offer, std::uint64_t nowMs)
+  const NativeObservedProviderOfferV3& offer, std::uint64_t nowMs,
+  const ExtensionControl* control)
 {
   std::vector<Cost> choices;
+  if (control) control->requireActive();
       if (!contains(offer.acceptedRoles, role.role) ||
           (!contains(offer.backends, role.backend) && !contains(offer.backends, role.backend + "-cpu") &&
            !contains(offer.backends, role.backend + "-cuda"))) return choices;
@@ -77,19 +81,23 @@ std::vector<Cost> feasibleChoices(const NativeSelectionRoleV3& role,
       const bool cpu = cpuBackend(role.backend) || contains(offer.backends, role.backend + "-cpu");
       if (devices.empty() && cpu) devices.push_back("cpu");
       for (const auto& device : devices) {
+        if (control) control->requireActive();
         if (!role.deviceSet.empty() && !contains(role.deviceSet, device)) continue;
         if (device == "cpu") { if (!cpu) continue; }
         else {
           if (cpuBackend(role.backend)) continue;
-          const auto r = std::find_if(offer.resources.begin(), offer.resources.end(),
-            [&](const auto& item) { return item.device == device; });
+          auto r = offer.resources.end();
+          for (auto it = offer.resources.begin(); it != offer.resources.end(); ++it) {
+            if (control) control->requireActive();
+            if (it->device == device) { r = it; break; }
+          }
           if ((!contains(offer.backends, role.backend) && !contains(offer.backends, role.backend + "-cuda")) ||
               r == offer.resources.end() || r->freeMemoryMb < role.requiredDeviceMemoryMb) continue;
         }
         auto backend = role.backend;
         if (device == "cpu" && contains(offer.backends, backend + "-cpu")) backend += "-cpu";
         else if (device != "cpu" && contains(offer.backends, backend + "-cuda")) backend += "-cuda";
-        const auto reuse = reuseCost(role, offer, device, backend, nowMs);
+        const auto reuse = reuseCost(role, offer, device, backend, nowMs, control);
         const bool exact = std::get<0>(reuse) <= 1;
         if ((!exact && offer.executionDisposition != "ACCEPT_WITH_PREPARATION") ||
             (offer.executionDisposition == "ACCEPT_IF_EXACT_REUSE" && !exact)) continue;
@@ -101,14 +109,17 @@ std::vector<Cost> feasibleChoices(const NativeSelectionRoleV3& role,
 std::map<std::string, std::set<std::uint64_t>> validateSnapshot(
   const NativeOfferBindingContext& context, const std::string& ackClosedDigest,
   const std::vector<NativeSelectionRoleV3>& roles,
-  const std::vector<NativeAdmittedOfferV3>& offers, std::uint64_t nowMs)
+  const std::vector<NativeAdmittedOfferV3>& offers, std::uint64_t nowMs,
+  const ExtensionControl* control)
 {
+  if (control) control->requireActive();
   if (roles.empty() || offers.empty() || context.requestId.empty() || !context.attempt ||
       context.serviceName.empty() || !digest(context.modelDigest) || !digest(context.graphDigest) ||
       !digest(ackClosedDigest) || context.deadlineMs <= nowMs)
     throw std::invalid_argument("incomplete V3 planning snapshot");
   std::map<std::string, std::set<std::uint64_t>> ranks;
   for (const auto& role : roles) {
+    if (control) control->requireActive();
     if (role.role.empty() || role.backend.empty() || !digest(role.artifactDigest) ||
         !digest(role.recipeDigest) || !digest(role.graphDigest) ||
         role.graphDigest != roles.front().graphDigest ||
@@ -116,11 +127,13 @@ std::map<std::string, std::set<std::uint64_t>> validateSnapshot(
       throw std::invalid_argument("invalid or duplicate V3 role/rank");
   }
   for (const auto& item : ranks) {
+    if (control) control->requireActive();
     if (*item.second.begin() != 0 || *item.second.rbegin() != item.second.size() - 1)
       throw std::invalid_argument("incomplete V3 rank cover");
   }
   std::set<std::string> providers;
   for (const auto& admitted : offers) {
+    if (control) control->requireActive();
     const auto& offer = admitted.observation();
     if (!offer.status || !providers.insert(offer.provider).second || offer.requestId != context.requestId ||
         offer.attempt != context.attempt || offer.service != context.serviceName ||
@@ -133,12 +146,14 @@ std::map<std::string, std::set<std::uint64_t>> validateSnapshot(
 }
 }
 
-NativeRolePlacementProposalV3 NativePreSplitFirstPlacement::proposeRoles(
+NativeRolePlacementProposalV3 NativePreSplitFirstPlacement::proposeRolesImpl(
   const NativeOfferBindingContext& context, const std::string& ackClosedDigest,
   const std::vector<NativeSelectionRoleV3>& roles,
-  const std::vector<NativeAdmittedOfferV3>& offers, std::uint64_t nowMs) const
+  const std::vector<NativeAdmittedOfferV3>& offers, std::uint64_t nowMs,
+  const ExtensionControl* control) const
 {
-  const auto ranks = validateSnapshot(context, ackClosedDigest, roles, offers, nowMs);
+  if (control) control->requireActive();
+  const auto ranks = validateSnapshot(context, ackClosedDigest, roles, offers, nowMs, control);
   NativeRolePlacementProposalV3 result{context, ackClosedDigest, identity(), {}, {}, {}};
   auto ordered = roles;
   std::sort(ordered.begin(), ordered.end(), [](const auto& a, const auto& b) {
@@ -148,18 +163,26 @@ NativeRolePlacementProposalV3 NativePreSplitFirstPlacement::proposeRoles(
   std::set<std::pair<std::string, std::string>> usedDevices;
   std::map<std::pair<std::string, std::string>, std::uint64_t> reservedMemory;
   for (auto role : ordered) {
+    if (control) control->requireActive();
     std::vector<Cost> choices;
     std::vector<Cost> distinctChoices;
     const auto fitsReservation = [&](const Cost& choice) {
       const auto& provider = std::get<8>(choice);
-      const auto& device = std::get<9>(choice);
+    const auto& device = std::get<9>(choice);
+      if (control) control->requireActive();
       if (device == "cpu" || role.requiredDeviceMemoryMb == 0) return true;
-      const auto offer = std::find_if(offers.begin(), offers.end(), [&](const auto& item) {
-        return item.observation().provider == provider;
-      });
+      auto offer = offers.end();
+      for (auto it = offers.begin(); it != offers.end(); ++it) {
+        if (control) control->requireActive();
+        if (it->observation().provider == provider) { offer = it; break; }
+      }
       if (offer == offers.end()) return false;
-      const auto resource = std::find_if(offer->observation().resources.begin(),
-        offer->observation().resources.end(), [&](const auto& item) { return item.device == device; });
+      auto resource = offer->observation().resources.end();
+      for (auto it = offer->observation().resources.begin();
+           it != offer->observation().resources.end(); ++it) {
+        if (control) control->requireActive();
+        if (it->device == device) { resource = it; break; }
+      }
       if (resource == offer->observation().resources.end()) return false;
       const auto key = std::make_pair(provider, device);
       const auto reserved = reservedMemory.find(key);
@@ -168,9 +191,11 @@ NativeRolePlacementProposalV3 NativePreSplitFirstPlacement::proposeRoles(
         role.requiredDeviceMemoryMb <= resource->freeMemoryMb - alreadyReserved;
     };
     for (const auto& admitted : offers) {
+      if (control) control->requireActive();
       const auto& offer = admitted.observation();
-      const auto eligible = feasibleChoices(role, offer, nowMs);
+      const auto eligible = feasibleChoices(role, offer, nowMs, control);
       for (const auto& choice : eligible) {
+        if (control) control->requireActive();
         if (!fitsReservation(choice)) continue;
         const auto device = std::get<9>(choice);
         if (device != "cpu" && usedDevices.count(std::make_pair(offer.provider, device))) continue;
@@ -203,11 +228,35 @@ NativeRolePlacementProposalV3 NativePreSplitFirstPlacement::proposeRoles(
     }
     if (device != "cpu") usedDevices.insert(std::make_pair(provider, device));
     result.roles.push_back(std::move(role));
-    const auto selected = std::find_if(offers.begin(), offers.end(), [&](const auto& offer) {
-      return offer.observation().provider == provider;
-    });
+    auto selected = offers.end();
+    for (auto it = offers.begin(); it != offers.end(); ++it) {
+      if (control) control->requireActive();
+      if (it->observation().provider == provider) { selected = it; break; }
+    }
+    if (selected == offers.end())
+      throw std::invalid_argument("selected Provider disappeared during placement");
     result.offerDigestByProvider.emplace(provider, selected->observation().offerDigest);
   }
+  return result;
+}
+
+NativeRolePlacementProposalV3 NativePreSplitFirstPlacement::proposeRoles(
+  const NativeOfferBindingContext& context, const std::string& ackClosedDigest,
+  const std::vector<NativeSelectionRoleV3>& roles,
+  const std::vector<NativeAdmittedOfferV3>& offers, std::uint64_t nowMs) const
+{
+  return proposeRolesImpl(context, ackClosedDigest, roles, offers, nowMs, nullptr);
+}
+
+NativeRolePlacementProposalV3 NativePreSplitFirstPlacement::proposeRoles(
+  const NativeOfferBindingContext& context, const std::string& ackClosedDigest,
+  const std::vector<NativeSelectionRoleV3>& roles,
+  const std::vector<NativeAdmittedOfferV3>& offers, std::uint64_t nowMs,
+  const ExtensionControl& control) const
+{
+  control.requireActive();
+  auto result = proposeRolesImpl(context, ackClosedDigest, roles, offers, nowMs, &control);
+  control.requireActive();
   return result;
 }
 
@@ -216,7 +265,7 @@ void validateNativeRolePlacement(
   const std::vector<NativeSelectionRoleV3>& preparedRoles,
   const std::vector<NativeAdmittedOfferV3>& offers, std::uint64_t nowMs)
 {
-  const auto ranks = validateSnapshot(proposal.context, proposal.ackClosedDigest, preparedRoles, offers, nowMs);
+  const auto ranks = validateSnapshot(proposal.context, proposal.ackClosedDigest, preparedRoles, offers, nowMs, nullptr);
   proposal.strategy.validate();
   if (proposal.roles.size() != preparedRoles.size() || proposal.providerByRole.size() != preparedRoles.size())
     throw std::invalid_argument("V3 proposal role cover differs from prepared roles");
@@ -238,7 +287,7 @@ void validateNativeRolePlacement(
       return o.observation().provider == assignment->second;
     });
     if (admitted == offers.end()) throw std::invalid_argument("V3 proposal Provider was not admitted");
-    const auto choices = feasibleChoices(*original, admitted->observation(), nowMs);
+    const auto choices = feasibleChoices(*original, admitted->observation(), nowMs, nullptr);
     const auto device = role.deviceSet.empty() ? "cpu" : role.deviceSet.front();
     if (device != "cpu" && !usedDevices.insert(std::make_pair(assignment->second, device)).second)
       throw std::invalid_argument("V3 proposal reuses an exclusive Provider device");

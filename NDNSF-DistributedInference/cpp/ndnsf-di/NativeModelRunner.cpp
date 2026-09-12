@@ -158,13 +158,43 @@ makeNativeModelRunner(RoleRunner runner)
 void
 RegistryNativeModelRunnerFactory::registerBackend(std::string backend, Creator creator)
 {
+  if (m_frozen) {
+    throw std::logic_error("NativeModelRunner backend registry is frozen");
+  }
   if (backend.empty()) {
     throw std::invalid_argument("NativeModelRunner backend must not be empty");
   }
   if (!creator) {
     throw std::invalid_argument("NativeModelRunner creator must not be empty");
   }
-  m_creators[std::move(backend)] = std::move(creator);
+  if (!m_creators.emplace(std::move(backend), std::move(creator)).second) {
+    throw std::invalid_argument("NativeModelRunner backend is already registered");
+  }
+}
+
+void
+RegistryNativeModelRunnerFactory::replaceBackend(std::string backend, Creator creator)
+{
+  if (m_frozen) {
+    throw std::logic_error("NativeModelRunner backend registry is frozen");
+  }
+  if (backend.empty()) {
+    throw std::invalid_argument("NativeModelRunner backend must not be empty");
+  }
+  if (!creator) {
+    throw std::invalid_argument("NativeModelRunner creator must not be empty");
+  }
+  const auto it = m_creators.find(backend);
+  if (it == m_creators.end()) {
+    throw std::out_of_range("NativeModelRunner backend is not registered: " + backend);
+  }
+  it->second = std::move(creator);
+}
+
+void
+RegistryNativeModelRunnerFactory::freeze()
+{
+  m_frozen = true;
 }
 
 bool

@@ -18,6 +18,14 @@ bool isDigestValue(const std::string& value)
     });
 }
 
+bool sameStrategyIdentity(const NativeStrategyIdentity& left,
+                          const NativeStrategyIdentity& right)
+{
+  return left.name == right.name && left.version == right.version &&
+    left.configurationDigest == right.configurationDigest &&
+    left.deterministic == right.deterministic;
+}
+
 void requireObject(const NativeJson& value, const char* field)
 {
   if (!value.is_object())
@@ -301,10 +309,12 @@ NativeRequestRuntime nativeRequestRuntimeFromJson(
   return runtime;
 }
 
-NativePlannedRequest planNativeRequest(
+namespace {
+
+NativePlannedRequest planNativeRequestImpl(
   const NativeRequestRuntime& runtime, const NativeRequestOptions& options,
   const NativeInspectedModel& model, const NativeEncodedRequest& encoded,
-  const NativeModelSplitStrategy& splitter, const NativePlacementStrategy& placement,
+  const NativeStrategyPorts& ports,
   const NativeRequestPreparation& preparation, const NativeOfferAdmission& admission,
   const ndn_service_framework::CollaborationAckClosure& closure,
   const NativeRequestControl& control, std::uint64_t wireDeadlineMs,
@@ -313,6 +323,10 @@ NativePlannedRequest planNativeRequest(
 {
   control.requireActive();
   runtime.budget.validate();
+  ports.splitterIdentity.validate();
+  ports.placementIdentity.validate();
+  if (!ports.enumerate || !ports.proposeRoles)
+    throw std::invalid_argument("native strategy ports are incomplete");
   if (closure.requestId != ndn::Name(control.requestId) || closure.digest.empty() ||
       wireDeadlineMs <= epochMs() || !runtime.grants || !runtime.security.requireProtectedArtifacts ||
       runtime.requesterIdentity.empty() || runtime.protectionEpoch.empty())
@@ -326,7 +340,14 @@ NativePlannedRequest planNativeRequest(
   }
   if (offers.empty()) throw std::runtime_error("DI_NATIVE_NO_ADMITTED_PROVIDER");
   const auto policyStart = std::chrono::steady_clock::now();
-  auto candidates = splitter.enumerate(model.descriptor, model.graph, runtime.budget);
+  const auto budgetDeadline = policyStart +
+    std::chrono::milliseconds(runtime.budget.maxPolicyMs);
+  const auto strategyDeadline = control.deadline == std::chrono::steady_clock::time_point{} ?
+    budgetDeadline : std::min(control.deadline, budgetDeadline);
+  const ExtensionControl extensionControl{strategyDeadline, control.cancelled};
+  extensionControl.requireActive();
+  auto candidates = ports.enumerate(model.descriptor, model.graph, runtime.budget,
+                                    extensionControl);
   control.requireActive();
   auto policyUsed = std::chrono::steady_clock::now() - policyStart;
   const auto policyLimit = std::chrono::milliseconds(runtime.budget.maxPolicyMs);
@@ -339,19 +360,28 @@ NativePlannedRequest planNativeRequest(
   // artifact publication happens until one complete placement is validated.
   for (auto candidate : candidates) {
     control.requireActive();
+    if (!sameStrategyIdentity(candidate.splitter, ports.splitterIdentity))
+      throw std::invalid_argument("native splitter returned a foreign strategy identity");
     if (runtime.catalog)
       candidate = runtime.catalog->bindStateContracts(model, candidate, runtime.stateMapping, control);
     auto roles = preparation.prepareRoles(model, candidate, control);
     NativeRolePlacementProposalV3 proposal;
     const auto placementStart = std::chrono::steady_clock::now();
-    try { proposal = placement.proposeRoles(context, closure.digest, roles, offers, epochMs()); }
+    try {
+      proposal = ports.proposeRoles(context, closure.digest, roles, offers, epochMs(),
+                                    extensionControl);
+    }
     catch (const NativeNoFeasiblePlacement&) {
       policyUsed += std::chrono::steady_clock::now() - placementStart;
+      extensionControl.requireActive();
       if (policyUsed > policyLimit) throw std::runtime_error("DI_NATIVE_POLICY_BUDGET_EXCEEDED");
       continue;
     }
     policyUsed += std::chrono::steady_clock::now() - placementStart;
     if (policyUsed > policyLimit) throw std::runtime_error("DI_NATIVE_POLICY_BUDGET_EXCEEDED");
+    if (!sameStrategyIdentity(proposal.strategy, ports.placementIdentity))
+      throw std::invalid_argument("native placement returned a foreign strategy identity");
+    extensionControl.requireActive();
     validateNativeRolePlacement(proposal, roles, offers, epochMs());
     NativeExecutionPlan execution = candidate.executionPlan;
     execution.serviceName = runtime.contract.serviceName;
@@ -446,6 +476,7 @@ NativePlannedRequest planNativeRequest(
       execution.dependencies.push_back(std::move(feedback));
       execution.streamingOperationStride = transferCount + 1;
     }
+    extensionControl.requireActive();
     NativePlanSealingInputs sealing;
     sealing.artifacts = preparation.ensureArtifacts(model, candidate, proposal, control);
     sealing.requesterIdentity = runtime.requesterIdentity;
@@ -457,6 +488,7 @@ NativePlannedRequest planNativeRequest(
       sealing.generationContract.streamingOperationStride = execution.streamingOperationStride;
     }
     for (const auto& role : roles) sealing.assemblyByRole.emplace(role.selectedRole, role);
+    extensionControl.requireActive();
     auto core = NativePlanSealer::sealCore(model, candidate, proposal, execution, offers, closure.digest, sealing);
     std::vector<NativeGrantBinding> grants;
     NativeGrantControl grantControl{std::chrono::system_clock::time_point(std::chrono::milliseconds(wireDeadlineMs)), cancelled};
@@ -530,5 +562,79 @@ NativePlannedRequest planNativeRequest(
     return result;
   }
   throw std::runtime_error("DI_NATIVE_NO_FEASIBLE_CANDIDATE");
+}
+
+} // namespace
+
+NativePlannedRequest planNativeRequest(
+  const NativeRequestRuntime& runtime, const NativeRequestOptions& options,
+  const NativeInspectedModel& model, const NativeEncodedRequest& encoded,
+  const NativeModelSplitStrategy& splitter, const NativePlacementStrategy& placement,
+  const NativeRequestPreparation& preparation, const NativeOfferAdmission& admission,
+  const ndn_service_framework::CollaborationAckClosure& closure,
+  const NativeRequestControl& control, std::uint64_t wireDeadlineMs,
+  std::shared_ptr<const std::atomic<bool>> cancelled,
+  const NativeConversationTurn* conversationTurn)
+{
+  NativeStrategyPorts ports;
+  ports.splitterIdentity = splitter.identity();
+  ports.placementIdentity = placement.identity();
+  ports.enumerate = [&splitter](const NativeModelDescriptor& descriptor,
+                                const NativeGraphSnapshot& graph,
+                                const NativeCandidateBudget& budget,
+                                const ExtensionControl& extension) {
+    extension.requireActive();
+    auto result = splitter.enumerate(descriptor, graph, budget);
+    extension.requireActive();
+    return result;
+  };
+  ports.proposeRoles = [&placement](const NativeOfferBindingContext& context,
+                                    const std::string& ackClosedDigest,
+                                    const std::vector<NativeSelectionRoleV3>& roles,
+                                    const std::vector<NativeAdmittedOfferV3>& offers,
+                                    std::uint64_t nowMs,
+                                    const ExtensionControl& extension) {
+    extension.requireActive();
+    auto result = placement.proposeRoles(context, ackClosedDigest, roles, offers, nowMs);
+    extension.requireActive();
+    return result;
+  };
+  return planNativeRequestImpl(runtime, options, model, encoded, ports, preparation,
+                               admission, closure, control, wireDeadlineMs,
+                               std::move(cancelled), conversationTurn);
+}
+
+NativePlannedRequest planNativeRequestCooperative(
+  const NativeRequestRuntime& runtime, const NativeRequestOptions& options,
+  const NativeInspectedModel& model, const NativeEncodedRequest& encoded,
+  const CooperativeModelSplitStrategy& splitter,
+  const CooperativePlacementStrategy& placement,
+  const NativeRequestPreparation& preparation, const NativeOfferAdmission& admission,
+  const ndn_service_framework::CollaborationAckClosure& closure,
+  const NativeRequestControl& control, std::uint64_t wireDeadlineMs,
+  std::shared_ptr<const std::atomic<bool>> cancelled,
+  const NativeConversationTurn* conversationTurn)
+{
+  NativeStrategyPorts ports;
+  ports.splitterIdentity = splitter.identity();
+  ports.placementIdentity = placement.identity();
+  ports.enumerate = [&splitter](const NativeModelDescriptor& descriptor,
+                                const NativeGraphSnapshot& graph,
+                                const NativeCandidateBudget& budget,
+                                const ExtensionControl& extensionControl) {
+    return splitter.enumerate(descriptor, graph, budget, extensionControl);
+  };
+  ports.proposeRoles = [&placement](const NativeOfferBindingContext& context,
+                                    const std::string& ackClosedDigest,
+                                    const std::vector<NativeSelectionRoleV3>& roles,
+                                    const std::vector<NativeAdmittedOfferV3>& offers,
+                                    std::uint64_t nowMs,
+                                    const ExtensionControl& extensionControl) {
+    return placement.proposeRoles(context, ackClosedDigest, roles, offers, nowMs,
+                                   extensionControl);
+  };
+  return planNativeRequestImpl(runtime, options, model, encoded, ports, preparation,
+                               admission, closure, control, wireDeadlineMs,
+                               std::move(cancelled), conversationTurn);
 }
 } // namespace ndnsf::di

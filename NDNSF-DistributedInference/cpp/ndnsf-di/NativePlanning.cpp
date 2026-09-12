@@ -69,6 +69,15 @@ NativeJson tensorJson(const NativeTensorContract& tensor)
 
 } // namespace
 
+void ExtensionControl::requireActive() const
+{
+  if (cancelled && cancelled())
+    throw std::runtime_error("cooperative extension cancelled");
+  if (deadline != std::chrono::steady_clock::time_point{} &&
+      std::chrono::steady_clock::now() >= deadline)
+    throw std::runtime_error("cooperative extension deadline exceeded");
+}
+
 void NativeStrategyIdentity::validate() const
 {
   if (name.empty() || version.empty()) throw std::invalid_argument("strategy identity is incomplete");
@@ -682,6 +691,61 @@ NativePreSplitFirstPlacement::propose(const NativePlanningSnapshot& snapshot,
   }
   result.validate(snapshot, candidate);
   return result;
+}
+
+void NativeAdapterRegistry::replaceAdapter(
+  std::shared_ptr<const NativeModelAdapter> adapter)
+{
+  if (m_frozen) throw std::logic_error("native adapter registry is frozen");
+  if (!adapter || adapter->adapterId().empty())
+    throw std::invalid_argument("invalid native adapter");
+  const auto id = adapter->adapterId();
+  const auto it = m_adapters.find(id);
+  if (it == m_adapters.end())
+    throw std::out_of_range("native adapter is not registered: " + id);
+  it->second = std::move(adapter);
+}
+
+void NativePlacementStrategyRegistry::registerStrategy(
+  std::string id, std::shared_ptr<const CooperativePlacementStrategy> strategy)
+{
+  if (m_frozen) throw std::logic_error("placement strategy registry is frozen");
+  if (id.empty() || !strategy)
+    throw std::invalid_argument("invalid cooperative placement strategy");
+  const auto identity = strategy->identity();
+  identity.validate();
+  if (id != identity.name)
+    throw std::invalid_argument("placement strategy registry id does not match identity");
+  if (!m_strategies.emplace(std::move(id), std::move(strategy)).second)
+    throw std::invalid_argument("placement strategy is already registered");
+}
+
+void NativePlacementStrategyRegistry::replaceStrategy(
+  std::string id, std::shared_ptr<const CooperativePlacementStrategy> strategy)
+{
+  if (m_frozen) throw std::logic_error("placement strategy registry is frozen");
+  if (id.empty() || !strategy)
+    throw std::invalid_argument("invalid cooperative placement strategy");
+  const auto identity = strategy->identity();
+  identity.validate();
+  if (id != identity.name)
+    throw std::invalid_argument("placement strategy registry id does not match identity");
+  const auto it = m_strategies.find(id);
+  if (it == m_strategies.end())
+    throw std::out_of_range("placement strategy is not registered: " + id);
+  it->second = std::move(strategy);
+}
+
+void NativePlacementStrategyRegistry::freeze()
+{
+  m_frozen = true;
+}
+
+std::shared_ptr<const CooperativePlacementStrategy>
+NativePlacementStrategyRegistry::find(const std::string& id) const
+{
+  const auto it = m_strategies.find(id);
+  return it == m_strategies.end() ? nullptr : it->second;
 }
 
 void NativeAdapterRegistry::registerAdapter(std::shared_ptr<const NativeModelAdapter> adapter)

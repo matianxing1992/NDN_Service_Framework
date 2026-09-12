@@ -22,6 +22,18 @@
 
 - **Implementation design**: [C-08](../specs/185-prepared-model-runtime/contracts/code-design.md)及逐任务Design binding补齐内部类/函数/字段/流程。T016前移到B1后、T003前；具体路径/完整类型/策略来源/continuation/重载问题已修订。[证据](../specs/185-prepared-model-runtime/evidence/implementation-design-20260912.md)。产品仍PLANNED。
 
+- **T016/B2E implementation and validation**: C-08 `CD08/CD09`, `F16`,
+  `FN08`, `FLOW03`, and `PO08` are now implemented in the DI planning,
+  adapter, catalog, placement, and runner boundaries. Cooperative strategy
+  ports carry `ExtensionControl`; registries use explicit replace-before-freeze
+  and read-only lookup; the legacy vtable remains advanced compatibility. The
+  normal and clang/TSan C++ selectors plus the installed extension consumer
+  pass; full packaging and later request/preparation exits remain unobserved.
+  Source/evidence: T016 working-tree range from B1 base `76e656c4`,
+  [B2E evidence](../specs/185-prepared-model-runtime/evidence/b2e-extensions.md),
+  and [tasks](../specs/185-prepared-model-runtime/tasks.md). Status:
+  `VERIFIED` for the bounded B2E exit; Spec185 remains `PLANNED` pending B2–B9.
+
 - **Complete API revision**: [C-07](../specs/185-prepared-model-runtime/contracts/api-catalog.md)统一64组稳定入口、Python直接绑定/便利映射与值/生命周期；Subscription及局部异步等待、read取消、析构和关闭边界归原任务owner。[验证记录](../specs/185-prepared-model-runtime/evidence/api-lifecycle-20260912.md)。PLANNED，不是产品完成。
 
 - **API revision**: [全表面审计](../specs/185-prepared-model-runtime/api-review.md)、[C-05](../specs/185-prepared-model-runtime/contracts/api-usability.md)、[C-06](../specs/185-prepared-model-runtime/contracts/cpp-first.md)。独立C++ SDK及原生异步/Provider入口，Python仅包装；任务扩为16项11批，T013完整C++资格先于T012。

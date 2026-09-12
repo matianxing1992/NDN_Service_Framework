@@ -12,7 +12,7 @@
 | [T018 DI Delegation to Core Operations](#t018) | PASS | T017 static | B0C closed; [b0c-core-operation](evidence/b0c-core-operation.md), PO-C3,C4 C++ real-provider/regression PASS | 2026-09-12 |
 | [T001 Runtime Configuration and Export](#t001) | PASS | B0C exit | B1 closed; [b1-runtime](evidence/b1-runtime.md) static/compile-link/runtime PASS; later request path remains open | 2026-09-12 |
 | [T002 Runtime Shutdown and Child Ownership](#t002) | PASS | T001 static | B1 closed; [b1-runtime](evidence/b1-runtime.md) normal/TSan/installed C++ lifecycle PASS; owner-thread public path remains unobserved | 2026-09-12 |
-| [T016 Extension Registration and Cooperative Control](#t016) | NOT_STARTED | B1 exit | B2E planned; implementation/build/runtime NOT_RUN | 2026-09-12 |
+| [T016 Extension Registration and Cooperative Control](#t016) | PASS | B1 exit | B2E closed; [b2e-extensions](evidence/b2e-extensions.md) static/compile-link/runtime/TSan/installed C++ PASS; full packaging remains unobserved | 2026-09-12 |
 | [T003 Verified Package Preparation](#t003) | NOT_STARTED | B2E exit | B2 planned; implementation/build/runtime NOT_RUN | 2026-09-12 |
 | [T004 Single Flight Refresh and Leases](#t004) | NOT_STARTED | T003 static | B2 planned; implementation/build/runtime NOT_RUN | 2026-09-12 |
 | [T005 Prepared Request Projection](#t005) | NOT_STARTED | B2 exit + Spec184 scoped dependency gate | B3 planned; implementation/build/runtime NOT_RUN | 2026-09-12 |
@@ -28,6 +28,7 @@
 
 ## Current Checkpoint
 
+2026-09-12 B2E closed：T016 已完成 v9/v10b/v11/v12 官方 review-agent 静态门及 B2E 组合审查；normal `Spec185ExtensionRegistry` 10/10、clang/TSan 重复两次各10/10、installed-prefix C++ extension consumer 通过。失败的 fixture 身份与系统工具链边界均已保留并修复，详见[b2e-extensions](evidence/b2e-extensions.md)；完整 Waf packaging、准备/请求/会话/Provider/完整资格/Python/文档仍未完成。下一依赖满足任务为T003/B2。
 2026-09-12 B1 closed：T001/T002 已完成官方 review-agent 静态门（T001 v7、T002 v4）及 B1 组合审查；正常 DI 7/7、Core 34/34，DI/Core TSan 各按要求重复通过，安装前缀 C++ Runtime consumer 通过。证据见[b1-runtime](evidence/b1-runtime.md)。全树安装曾在无关 spec181 链接和 Python editable hook 边界停止，未计入B1产品失败；准备/请求/会话/Provider/完整资格/Python/文档仍未完成。下一依赖满足任务为T016/B2E。
 2026-09-12 B0C closed：T017/T018 已完成 v29 官方 review-agent 静态门及组合审查；正常 Core selector 33、DI selector 5、Spec170 回归59、TSan Core重复2次、Core-only staged installed consumer均通过。证据见[b0c-core-operation](evidence/b0c-core-operation.md)；未观测项为全树安装、Python绑定、Runtime及后续准备/请求/会话/Provider/资格批次。下一依赖满足任务为T001/B1。
 2026-09-12 B0/T015 closed：安装 API/ABI 证据[b0-installed-api](evidence/b0-installed-api.md)记录 v17 STATIC_PASS、四配置 C++ consumer、67 独立头和 DI/SVS ldd/hash；下一依赖满足任务为T017/B0C。其余17任务保持NOT_STARTED；已补[批次执行表](batch-execution.md)。
@@ -138,7 +139,7 @@ C-07每行是T015 exposure、T011 C++消费、T012绑定和T014文档的共同�
 
 <a id="t016"></a>
 
-- [ ] T016 [US4] Extension Registration and Cooperative Control — NativePlanning.hpp/NativePlanning.cpp; NativeModelRunner.hpp/NativeModelRunner.cpp; NativeRequestPlanner.cpp; tests/unit-tests/di-extension-contract.t.cpp
+- [x] T016 [US4] Extension Registration and Cooperative Control — NativePlanning.hpp/NativePlanning.cpp; NativeModelRunner.hpp/NativeModelRunner.cpp; NativeRequestPlanner.cpp; tests/unit-tests/di-extension-contract.t.cpp
 
   **Batch / Depends**: B2E / B1 exit。
 
@@ -149,6 +150,8 @@ C-07每行是T015 exposure、T011 C++消费、T012绑定和T014文档的共同�
   **Implementation and review**: startup builder后freeze，duplicate拒绝、显式replace仅限freeze前；runner实例并发所有权；新strategy/control端口带deadline/cancel。旧非协作端口留高级兼容，普通Runtime拒绝不满足控制契约的插件，不声称强制抢占任意回调。
 
   **Exit / oracle**: Spec185ExtensionRegistry覆盖重复/冻结/替换、并发lookup、协作超时/cancel、旧插件拒绝及runner隔离；TSan同矩阵两次；过期不能发布Selection。
+
+  **Completion**: B2E `PASS`; v12 static re-review and prior composition pass, normal/TSan C++ selectors, and installed-prefix extension consumer are recorded in [evidence/b2e-extensions.md](evidence/b2e-extensions.md). Full Waf packaging and later preparation/request/Provider/Python exits remain unobserved.
 
 <a id="t003"></a>
 

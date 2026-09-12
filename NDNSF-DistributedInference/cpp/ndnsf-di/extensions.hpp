@@ -2,15 +2,11 @@
 #define NDNSF_DI_EXTENSIONS_HPP
 
 // Cooperative extension declarations are exposed separately from the
-// application/provider umbrellas.  The concrete ports are implemented by
-// T016; no Python callback or internal authority type is part of this header.
-#include <cstdint>
+// application/provider umbrellas.  No Python callback or internal authority
+// type is part of this header.
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeV3Placement.hpp"
 
 namespace ndnsf::di {
-
-class CooperativeModelSplitStrategy;
-class CooperativePlacementStrategy;
-struct ExtensionControl;
 
 inline constexpr std::uint32_t kPreparedModelRuntimeExtensionsApiVersion = 1;
 
