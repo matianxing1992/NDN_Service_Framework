@@ -60,6 +60,7 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
       split.at("roles").get<std::vector<std::string>>(), split.at("tensor_degrees").get<std::vector<std::uint64_t>>(),
       split.value("input_ingress_role", std::string{}), split.value("result_egress_role", std::string{}));
     model.graph = strategy->inspectGraph(model.descriptor, model.descriptor.sourceRevision, entry.recipe.maxNodes);
+    result.cooperativeSplitter = strategy;
     result.splitter = std::move(strategy);
   }
   else if (split.at("kind") == "YOLO") {
@@ -77,9 +78,11 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
       component.candidateDigest = item.at("candidate_digest").get<std::string>();
       components.push_back({std::move(component), nativeCanonicalJson(item.at("semantic_partition"))});
     }
-    result.splitter = std::make_shared<yolo::NativeYoloComponentSplit>(
+    auto strategy = std::make_shared<yolo::NativeYoloComponentSplit>(
       yolo::NativeYoloComponentSplit::fromOnnxCatalog(model.descriptor, source, control,
         std::move(components), nativeCanonicalJson(split.value("postprocessing", NativeJson::object()))));
+    result.cooperativeSplitter = strategy;
+    result.splitter = std::move(strategy);
   }
   else throw std::invalid_argument("unsupported native request splitter");
   result.stateMapping.inputs = root.value("state_inputs", NativeStateTensorMapping::Roles{});

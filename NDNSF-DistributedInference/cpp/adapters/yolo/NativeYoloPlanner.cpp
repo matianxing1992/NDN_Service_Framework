@@ -234,10 +234,12 @@ NativeYoloComponentSplit NativeYoloComponentSplit::fromOnnxCatalog(
 }
 
 std::vector<NativeSplitCandidate>
-NativeYoloComponentSplit::enumerate(const NativeModelDescriptor& model,
-                                    const NativeGraphSnapshot& suppliedGraph,
-                                    const NativeCandidateBudget& budget) const
+NativeYoloComponentSplit::enumerateImpl(const NativeModelDescriptor& model,
+                                         const NativeGraphSnapshot& suppliedGraph,
+                                         const NativeCandidateBudget& budget,
+                                         const ExtensionControl* control) const
 {
+  if (control) control->requireActive();
   budget.validate();
   model.validate();
   if (m_catalogGraph && (model.modelDigest() != m_catalogModelDigest ||
@@ -252,7 +254,10 @@ NativeYoloComponentSplit::enumerate(const NativeModelDescriptor& model,
   }
   std::vector<const NativeYoloComponentSpec*> ordered;
   ordered.reserve(m_candidates.size());
-  for (const auto& candidate : m_candidates) ordered.push_back(&candidate);
+  for (const auto& candidate : m_candidates) {
+    if (control) control->requireActive();
+    ordered.push_back(&candidate);
+  }
   std::stable_sort(ordered.begin(), ordered.end(), [] (auto left, auto right) {
     if (left->priority != right->priority) return left->priority < right->priority;
     return left->candidateId < right->candidateId;
@@ -262,6 +267,7 @@ NativeYoloComponentSplit::enumerate(const NativeModelDescriptor& model,
   std::vector<NativeSplitCandidate> result;
   result.reserve(ordered.size());
   for (const auto* spec : ordered) {
+    if (control) control->requireActive();
     if (!contains(spec->roles, spec->inputIngressRole) ||
         !contains(spec->roles, spec->resultEgressRole)) {
       throw std::invalid_argument("YOLO candidate ingress/egress is undeclared");
@@ -269,18 +275,23 @@ NativeYoloComponentSplit::enumerate(const NativeModelDescriptor& model,
     std::map<std::string, std::string> ownerByNode;
     if (spec->roles.size() == 1 && spec->roles.front() == "FullModel" &&
         spec->nodeNamesByRole.empty()) {
-      for (const auto& node : graph.nodes) ownerByNode.emplace(node.id, spec->roles.front());
+      for (const auto& node : graph.nodes) {
+        if (control) control->requireActive();
+        ownerByNode.emplace(node.id, spec->roles.front());
+      }
     }
     else {
       if (spec->nodeNamesByRole.size() != spec->roles.size()) {
         throw std::invalid_argument("YOLO semantic role partition is incomplete");
       }
       for (const auto& role : spec->roles) {
+        if (control) control->requireActive();
         const auto names = spec->nodeNamesByRole.find(role);
         if (names == spec->nodeNamesByRole.end() || names->second.empty()) {
           throw std::invalid_argument("YOLO semantic role node set is empty");
         }
         for (const auto& node : names->second) {
+          if (control) control->requireActive();
           if (node.empty() || !ownerByNode.emplace(node, role).second) {
             throw std::invalid_argument("YOLO semantic role assigns a node twice");
           }
@@ -290,6 +301,7 @@ NativeYoloComponentSplit::enumerate(const NativeModelDescriptor& model,
         throw std::invalid_argument("YOLO semantic role partition does not cover graph");
       }
       for (const auto& node : graph.nodes) {
+        if (control) control->requireActive();
         if (!ownerByNode.count(node.id)) {
           throw std::invalid_argument("YOLO semantic role names do not match graph");
         }
@@ -317,6 +329,7 @@ NativeYoloComponentSplit::enumerate(const NativeModelDescriptor& model,
     std::uint64_t knownBytes = 0;
     std::uint64_t crossedBytes = 0;
     for (const auto& edge : graph.edges) {
+      if (control) control->requireActive();
       const auto size = edge.tensor.estimatedBytes.value_or(0);
       if (size > std::numeric_limits<std::uint64_t>::max() - knownBytes)
         throw std::invalid_argument("YOLO graph tensor byte estimate overflows");
@@ -324,6 +337,7 @@ NativeYoloComponentSplit::enumerate(const NativeModelDescriptor& model,
       const auto& producerRole = ownerByNode.at(edge.producer);
       std::set<std::string> consumerRoles;
       for (const auto& consumer : edge.consumers) {
+        if (control) control->requireActive();
         if (ownerByNode.at(consumer) != producerRole) consumerRoles.insert(ownerByNode.at(consumer));
       }
       if (consumerRoles.empty()) continue;
@@ -332,6 +346,7 @@ NativeYoloComponentSplit::enumerate(const NativeModelDescriptor& model,
         throw std::invalid_argument("YOLO candidate crosses an illegal tensor edge");
       candidate.crossPartitionTensors.push_back(edge.id);
       for (const auto& consumerRole : consumerRoles) {
+        if (control) control->requireActive();
         NativeDependencySpec dependency;
         dependency.producers = {producerRole};
         dependency.consumers = {consumerRole};
@@ -346,9 +361,12 @@ NativeYoloComponentSplit::enumerate(const NativeModelDescriptor& model,
     }
     const auto roleBytes = std::max<std::uint64_t>(1, knownBytes / spec->roles.size());
     for (const auto& role : spec->roles) {
+      if (control) control->requireActive();
       std::vector<std::string> roleNodes;
-      for (const auto& node : graph.topologicalOrder)
+      for (const auto& node : graph.topologicalOrder) {
+        if (control) control->requireActive();
         if (ownerByNode.at(node) == role) roleNodes.push_back(node);
+      }
       candidate.fragmentsByRole[role] = nativePlanningDigest(nativeCanonicalJson(NativeJson{
         {"candidate", spec->candidateDigest}, {"graph", graph.graphDigest},
         {"role", role}, {"nodes", roleNodes}}));
@@ -364,6 +382,23 @@ NativeYoloComponentSplit::enumerate(const NativeModelDescriptor& model,
     candidate.validate(graph);
     result.push_back(std::move(candidate));
   }
+  return result;
+}
+
+std::vector<NativeSplitCandidate> NativeYoloComponentSplit::enumerate(
+  const NativeModelDescriptor& model, const NativeGraphSnapshot& graph,
+  const NativeCandidateBudget& budget) const
+{
+  return enumerateImpl(model, graph, budget, nullptr);
+}
+
+std::vector<NativeSplitCandidate> NativeYoloComponentSplit::enumerate(
+  const NativeModelDescriptor& model, const NativeGraphSnapshot& graph,
+  const NativeCandidateBudget& budget, const ExtensionControl& control) const
+{
+  control.requireActive();
+  auto result = enumerateImpl(model, graph, budget, &control);
+  control.requireActive();
   return result;
 }
 

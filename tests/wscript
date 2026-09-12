@@ -171,6 +171,18 @@ def build(bld):
                 linkflags=['-Wl,--no-relax'],
                 rpath=[bld.bldnode.abspath()], install_path=None)
 
+    # Spec185 B2E cooperative extension registry and control contract.
+    bld.program(target='../spec185-extension-registry',
+                name='spec185-extension-registry',
+                source=[bld.path.parent.find_node('tests/main.cpp'),
+                        bld.path.find_node('unit-tests/di-extension-contract.t.cpp'),
+                        bld.path.find_node('installed-api/extension-header-consumer.cpp')],
+                includes=['..', '../ndn-service-framework'],
+                use='ndn-service-framework ndnsf-distributed-inference NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL',
+                cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
+                linkflags=['-Wl,--no-relax'],
+                rpath=[bld.bldnode.abspath()], install_path=None)
+
     # Spec182 worker-protocol test tools (T006-C).  Deliberately-misbehaving
     # worker children spawned through the same OA02 transport for the crash /
     # cancel / incomplete subprocess cases; never installed and never

@@ -31,6 +31,15 @@ struct NativeStrategyIdentity
   void validate() const;
 };
 
+/** Cooperative cancellation/deadline fence supplied to extension code. */
+struct ExtensionControl
+{
+  std::chrono::steady_clock::time_point deadline;
+  std::function<bool()> cancelled;
+
+  void requireActive() const;
+};
+
 struct NativeAdapterDescriptor
 {
   /** Nonempty registry identity supplied by the inspected adapter. */
@@ -284,7 +293,49 @@ public:
     const std::vector<NativeAdmittedOfferV3>& offers, std::uint64_t nowMs) const = 0;
 };
 
-class NativePreSplitFirstPlacement final : public NativePlacementStrategy
+/** Extension vtable that may be used by the ordinary Runtime.  The legacy
+ * strategy vtables remain unchanged for ABI-compatible advanced callers. */
+class CooperativeModelSplitStrategy
+{
+public:
+  virtual ~CooperativeModelSplitStrategy() = default;
+  virtual NativeStrategyIdentity identity() const = 0;
+  virtual std::vector<NativeSplitCandidate> enumerate(
+    const NativeModelDescriptor&, const NativeGraphSnapshot&,
+    const NativeCandidateBudget&, const ExtensionControl&) const = 0;
+};
+
+class CooperativePlacementStrategy
+{
+public:
+  virtual ~CooperativePlacementStrategy() = default;
+  virtual NativeStrategyIdentity identity() const = 0;
+  virtual NativeRolePlacementProposalV3 proposeRoles(
+    const NativeOfferBindingContext&, const std::string&,
+    const std::vector<NativeSelectionRoleV3>&,
+    const std::vector<NativeAdmittedOfferV3>&, std::uint64_t,
+    const ExtensionControl&) const = 0;
+};
+
+/** Startup-only registry for cooperative placement handles. */
+class NativePlacementStrategyRegistry
+{
+public:
+  void registerStrategy(std::string id,
+                        std::shared_ptr<const CooperativePlacementStrategy> strategy);
+  void replaceStrategy(std::string id,
+                       std::shared_ptr<const CooperativePlacementStrategy> strategy);
+  void freeze();
+  bool frozen() const noexcept { return m_frozen; }
+  std::shared_ptr<const CooperativePlacementStrategy> find(const std::string& id) const;
+
+private:
+  std::map<std::string, std::shared_ptr<const CooperativePlacementStrategy>> m_strategies;
+  bool m_frozen = false;
+};
+
+class NativePreSplitFirstPlacement final : public NativePlacementStrategy,
+                                            public CooperativePlacementStrategy
 {
 public:
   explicit NativePreSplitFirstPlacement(NativeStrategyIdentity identity = {
@@ -301,7 +352,19 @@ public:
     const std::vector<NativeSelectionRoleV3>& roles,
     const std::vector<NativeAdmittedOfferV3>& offers, std::uint64_t nowMs) const override;
 
+  NativeRolePlacementProposalV3 proposeRoles(
+    const NativeOfferBindingContext& context, const std::string& ackClosedDigest,
+    const std::vector<NativeSelectionRoleV3>& roles,
+    const std::vector<NativeAdmittedOfferV3>& offers, std::uint64_t nowMs,
+    const ExtensionControl& control) const override;
+
 private:
+  NativeRolePlacementProposalV3 proposeRolesImpl(
+    const NativeOfferBindingContext& context, const std::string& ackClosedDigest,
+    const std::vector<NativeSelectionRoleV3>& roles,
+    const std::vector<NativeAdmittedOfferV3>& offers, std::uint64_t nowMs,
+    const ExtensionControl* control) const;
+
   NativeStrategyIdentity m_identity;
 };
 
@@ -323,6 +386,7 @@ class NativeAdapterRegistry
 {
 public:
   void registerAdapter(std::shared_ptr<const NativeModelAdapter> adapter);
+  void replaceAdapter(std::shared_ptr<const NativeModelAdapter> adapter);
   void freeze();
   bool frozen() const noexcept { return m_frozen; }
   std::shared_ptr<const NativeModelAdapter> find(const std::string& adapterId) const;

@@ -120,10 +120,12 @@ std::vector<NativeSplitCandidate> NativeQwenLayerSplit::enumerateFromMetadata(
 }
 
 std::vector<NativeSplitCandidate>
-NativeQwenLayerSplit::enumerate(const NativeModelDescriptor& model,
-                                 const NativeGraphSnapshot& graph,
-                                 const NativeCandidateBudget& budget) const
+NativeQwenLayerSplit::enumerateImpl(const NativeModelDescriptor& model,
+                                    const NativeGraphSnapshot& graph,
+                                    const NativeCandidateBudget& budget,
+                                    const ExtensionControl* control) const
 {
+  if (control) control->requireActive();
   budget.validate();
   model.validate();
   graph.validate(model);
@@ -138,6 +140,7 @@ NativeQwenLayerSplit::enumerate(const NativeModelDescriptor& model,
     throw std::invalid_argument("Qwen graph does not match the supported layer cover");
   }
   for (std::size_t i = 0; i < layerCount; ++i) {
+    if (control) control->requireActive();
     const auto expected = std::string("layer-") +
       (i < 10 ? "0" : "") + std::to_string(i);
     if (graph.nodes[i + 1].id != expected) {
@@ -170,6 +173,7 @@ NativeQwenLayerSplit::enumerate(const NativeModelDescriptor& model,
     {"recurrent_state_out", model.precision, {"layers", "hidden"}, std::nullopt},
     {"convolution_state_out", model.precision, {"layers", "channels", "kernel"}, std::nullopt}};
   for (std::size_t i = 0; i + 1 < m_roles.size(); ++i) {
+    if (control) control->requireActive();
     NativeDependencySpec dependency;
     dependency.producers = {m_roles[i]};
     dependency.consumers = {m_roles[i + 1]};
@@ -186,10 +190,13 @@ NativeQwenLayerSplit::enumerate(const NativeModelDescriptor& model,
       "-to-" + std::to_string(m_layerRanges[i].second));
   }
   for (std::size_t i = 0; i < m_roles.size(); ++i) {
+    if (control) control->requireActive();
     const auto& role = m_roles[i];
     const auto& artifact = m_artifactDigestsByRole.at(role);
-    for (std::size_t layer = m_layerRanges[i].first; layer < m_layerRanges[i].second; ++layer)
+    for (std::size_t layer = m_layerRanges[i].first; layer < m_layerRanges[i].second; ++layer) {
+      if (control) control->requireActive();
       candidate.nodeRoles[graph.nodes[layer + 1].id] = role;
+    }
     candidate.roleStateInputsByRole[role] = stateInputs;
     candidate.roleStateOutputsByRole[role] = stateOutputs;
     candidate.fragmentsByRole[role] = artifact;
@@ -207,6 +214,23 @@ NativeQwenLayerSplit::enumerate(const NativeModelDescriptor& model,
   candidate.candidateDigest = candidate.computedDigest();
   candidate.validate(graph);
   return {std::move(candidate)};
+}
+
+std::vector<NativeSplitCandidate> NativeQwenLayerSplit::enumerate(
+  const NativeModelDescriptor& model, const NativeGraphSnapshot& graph,
+  const NativeCandidateBudget& budget) const
+{
+  return enumerateImpl(model, graph, budget, nullptr);
+}
+
+std::vector<NativeSplitCandidate> NativeQwenLayerSplit::enumerate(
+  const NativeModelDescriptor& model, const NativeGraphSnapshot& graph,
+  const NativeCandidateBudget& budget, const ExtensionControl& control) const
+{
+  control.requireActive();
+  auto result = enumerateImpl(model, graph, budget, &control);
+  control.requireActive();
+  return result;
 }
 
 } // namespace ndnsf::di::qwen

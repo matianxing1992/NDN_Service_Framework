@@ -9,6 +9,7 @@ struct NativeRequestCatalog
   NativeInspectedModel model;
   std::shared_ptr<const NativeCanonicalPreparationCatalog> preparation;
   std::shared_ptr<const NativeModelSplitStrategy> splitter;
+  std::shared_ptr<const CooperativeModelSplitStrategy> cooperativeSplitter;
   NativeStateTensorMapping stateMapping;
 
   static NativeRequestCatalog load(const std::string& configurationJson,

@@ -2,11 +2,27 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestEnvelope.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeAuthenticatedGrantClient.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestCatalog.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeV3Placement.hpp"
 #include "ndn-service-framework/ServiceUser.hpp"
 
 namespace ndnsf::di {
 
 struct NativeConversationTurn;
+
+/** Type-erased cooperative ports captured by one request operation. */
+struct NativeStrategyPorts
+{
+  NativeStrategyIdentity splitterIdentity;
+  NativeStrategyIdentity placementIdentity;
+  std::function<std::vector<NativeSplitCandidate>(
+    const NativeModelDescriptor&, const NativeGraphSnapshot&,
+    const NativeCandidateBudget&, const ExtensionControl&)> enumerate;
+  std::function<NativeRolePlacementProposalV3(
+    const NativeOfferBindingContext&, const std::string&,
+    const std::vector<NativeSelectionRoleV3>&,
+    const std::vector<NativeAdmittedOfferV3>&, std::uint64_t,
+    const ExtensionControl&)> proposeRoles;
+};
 
 /** Operator-owned request runtime policy. Cryptographic/key owners are concrete
  * native clients; caller strategies cannot replace admission or grant checks. */
@@ -46,6 +62,18 @@ NativePlannedRequest planNativeRequest(
   const NativeRequestRuntime& runtime, const NativeRequestOptions& options,
   const NativeInspectedModel& model, const NativeEncodedRequest& encoded,
   const NativeModelSplitStrategy& splitter, const NativePlacementStrategy& placement,
+  const NativeRequestPreparation& preparation, const NativeOfferAdmission& admission,
+  const ndn_service_framework::CollaborationAckClosure& closure,
+  const NativeRequestControl& control, std::uint64_t wireDeadlineMs,
+  std::shared_ptr<const std::atomic<bool>> cancelled,
+  const NativeConversationTurn* conversationTurn = nullptr);
+
+/** Cooperative strategy entry used by the prepared Runtime. */
+NativePlannedRequest planNativeRequestCooperative(
+  const NativeRequestRuntime& runtime, const NativeRequestOptions& options,
+  const NativeInspectedModel& model, const NativeEncodedRequest& encoded,
+  const CooperativeModelSplitStrategy& splitter,
+  const CooperativePlacementStrategy& placement,
   const NativeRequestPreparation& preparation, const NativeOfferAdmission& admission,
   const ndn_service_framework::CollaborationAckClosure& closure,
   const NativeRequestControl& control, std::uint64_t wireDeadlineMs,

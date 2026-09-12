@@ -31,7 +31,8 @@ struct NativeYoloCatalogComponent
 };
 
 /** Native counterpart of the registered YOLO candidate splitter. */
-class NativeYoloComponentSplit final : public NativeModelSplitStrategy
+class NativeYoloComponentSplit final : public NativeModelSplitStrategy,
+                                       public CooperativeModelSplitStrategy
 {
 public:
   explicit NativeYoloComponentSplit(
@@ -50,7 +51,19 @@ public:
     const NativeGraphSnapshot& graph,
     const NativeCandidateBudget& budget) const override;
 
+  std::vector<NativeSplitCandidate> enumerate(
+    const NativeModelDescriptor& model,
+    const NativeGraphSnapshot& graph,
+    const NativeCandidateBudget& budget,
+    const ExtensionControl& control) const override;
+
 private:
+  std::vector<NativeSplitCandidate> enumerateImpl(
+    const NativeModelDescriptor& model,
+    const NativeGraphSnapshot& graph,
+    const NativeCandidateBudget& budget,
+    const ExtensionControl* control) const;
+
   std::vector<NativeYoloComponentSpec> m_candidates;
   /** Adapter-owned terminal configuration, applied only to explicit Merge roles. */
   std::string m_postprocessingJson;
