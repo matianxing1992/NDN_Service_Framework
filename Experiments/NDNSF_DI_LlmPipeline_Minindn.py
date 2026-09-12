@@ -3139,7 +3139,8 @@ def main() -> int:
             "profileSha256": environment_profile["sha256"],
             "resolved": {
                 "topologyFile": str(Path(args.topology_file).resolve()),
-                "stageNodes": list(STAGE_NODE_CANDIDATES),
+                "stageNodeCandidates": list(STAGE_NODE_CANDIDATES),
+                "stageNodes": list(STAGE_NODES),
                 "minindnRoot": str(MININDN_ROOT),
                 "outputDir": str(OUT),
                 "qwenContentStore": str(Path(args.qwen_content_store).resolve()),
@@ -3156,7 +3157,7 @@ def main() -> int:
         print("LLM_PIPELINE_ENVIRONMENT_PROFILE " + json.dumps({
             "profileId": environment_profile["profileId"],
             "sha256": environment_profile["sha256"],
-            "stageNodes": list(STAGE_NODE_CANDIDATES),
+            "stageNodes": list(STAGE_NODES),
         }, sort_keys=True), flush=True)
     configure_sif_runtime(args)
     spec107_candidate_id = ""
