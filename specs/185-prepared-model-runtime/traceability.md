@@ -13,3 +13,13 @@
 | FR-009 | all | A11 / C-04 | T013,T014 | SC-001–SC-005 / Spec185Process + Design checks |
 
 每个selector均PLANNED/NOT_RUN；真实结果由tasks顶部Execution Progress链接到同批evidence。
+
+## API Revision Trace
+
+| Requirement | Story | Audit / contract | Tasks | Success / selector |
+| --- | --- | --- | --- | --- |
+| FR-010 | US4 | U10,U11,U12 / C-05,C-06 | T015 | SC-006 / Spec185InstalledApi |
+| FR-011 | US4 | U13,U14,U15 / C-05 | T016 | SC-007 / Spec185ExtensionRegistry |
+| FR-012 | US1–US4 | U04–U09 / C-05,C-06 | T003,T006,T009,T011,T013,T012 | SC-006,SC-007 / Spec185Process then wrappers |
+
+U编号见[API审计](api-review.md)；T013先验SC-005原生行，T012再关闭包装行。

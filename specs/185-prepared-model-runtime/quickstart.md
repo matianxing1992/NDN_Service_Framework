@@ -1,42 +1,55 @@
 # Quickstart
 
-**Status**: DESIGN_EXAMPLE / NOT_COMPILED。此页解释目标用法，不是当前可运行API。
+**Status**: DESIGN_EXAMPLE / NOT_COMPILED。目标C++17 API，完整consumer由T011交付。
+
+## Standalone C++ Application
 
 ```cpp
+#include <ndnsf-di/api.hpp>
 namespace di = ndnsf::di;
 di::RuntimeConfig config;
 config.nativeConfigPath = "/operator/native-requester.json";
 auto runtime = di::Runtime::open(config);
 auto user = runtime->user();
-
-// Application supplies operator-pinned model/catalog once.
-di::PrepareRequest preparation;
-preparation.model = pinnedModelDescriptor;
-preparation.taskName = "text-generation";
-preparation.taskContract = pinnedTaskContract;
-preparation.inputLayoutDigest = pinnedInputLayoutDigest;
-preparation.catalogConfigurationJson = pinnedCatalogJson;
-preparation.localSourcePath = "/models/canonical.onnx";
-auto model = user.prepare(preparation); // default UseOrFetch; bounded wait
-
-auto first = model.request(di::Input::inlineBytes(firstEncodedPrompt));
-auto result = first.wait();
-auto second = model.request(di::Input::inlineBytes(secondEncodedPrompt));
-second.cancel();
+auto model = user.prepare("default");
+auto capabilities = model.capabilities();
+auto result = model.run(di::Input::inlineBytes(encodedInput));
+auto preparing = user.prepareAsync("default");
+auto sameModel = preparing.result(std::chrono::seconds(10));
+auto request = sameModel.request(di::Input::inlineBytes(nextEncodedInput));
+auto completion = request.onCompletion([](std::exception_ptr error, std::optional<di::Result> value) {
+  // Consume the native completion; do not block the IO owner.
+});
 runtime->close();
 bool released = runtime->drain(std::chrono::seconds(5));
 ```
 
-示例的pinnedModelDescriptor/pinnedCatalogJson及prompt bytes由现有operator配置和任务schema提供，
-不是框架自动猜测的变量；T011交付使用真实配置loader的可编译example。
-`RequireReady`在cold miss抛MODEL_NOT_READY；`wait(10ms)`只限制本次等待，之后可再次wait。
-任务不支持会话时openConversation抛UNSUPPORTED_CAPABILITY，不静默退化成无状态调用。
+输入bytes由应用按capabilities中的任务schema提供；default配置精确绑定模型/任务/source，无须每次传catalog或model descriptor。
+文本输入仅在native adapter支持时用Input::text。示例是签名组合，T011补完整main、输入读取、异常处理和安装prefix构建方式。
+局部result(timeout)不取消请求；prepareAsync/completion均C++实现。
+
+## Standalone C++ Provider
+
+```cpp
+#include <ndnsf-di/provider.hpp>
+auto config = ndnsf::di::ProviderConfig::fromFile("/operator/native-provider.json");
+auto runtime = ndnsf::di::Runtime::open(config);
+auto provider = runtime->provider();
+// Register supported services using C-03 Provider::serve.
+```
+
+不需要User模型注册或Python入口。配置schema见[C-06](contracts/cpp-first.md)。
+可靠EventReader、会话恢复与Provider serve完整例子归T011，不能用observe充当可靠token流。
+
+## Thin Python Boundary
+
+Python仅转换固定导出、timeout_s、异常、上下文管理和asyncio。
+异步准备/结果/迭代必须桥接C++ completion/nextAsync，不增加独立规划、缓存、会话或恢复。
 
 ## Planned Validation Procedure
 
-1. T001核对Waf实际target、已验证build tree与native配置，记录output和source identity。
-2. 每批先完成逐任务及组合静态门，然后构建受影响DI target，用该批注册的Spec185 C++ selector运行。
-3. T011使用C++独立authority/requester/provider跑unary和stream；通过后才执行T012的Python薄封装检查。
-4. T013运行C-04全部组合模式和反例，保留每阶段第一失败边界与cleanup，不以startup ready替代结果。
-
-此时尚无Spec185 binary/selector，故不提供一个会误跑旧build的伪可执行命令。
+1. T015用安装prefix外部C++ consumer核对头、依赖及ABI。
+2. T001–T011按依赖推进：逐任务静态门→批末组合审查→共享C++构建/测试。
+3. T013完成独立authority/requester/provider、C-06全部模式/反例/no-Python闭包。
+4. T012再验证包装，T014同步设计与交付。
+所有新selector目前PLANNED/NOT_RUN，不提供会误跑旧build的命令。

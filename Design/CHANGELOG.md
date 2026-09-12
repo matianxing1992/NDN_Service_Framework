@@ -1,5 +1,10 @@
 # 修订记录
 
+## Spec185 API and Standalone C++ Revision · 2026-09-12
+
+全API审计新增C-05易用性与C-06独立C++契约；16任务11批，完整原生资格先于Python包装。
+目标PDF同步安装/ABI、模型key、异步owner和可靠流；当前PDF仍保留54文件历史漂移边界，未计产品完成。
+
 ## Spec185 Prepared Model Runtime · 2026-09-12
 
 目标PDF新增准备模型对象、缓存/授权分离、会话和Provider边界；完整API契约与14任务归Spec185。

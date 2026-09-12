@@ -25,3 +25,8 @@ requester preparation cache 与 Provider artifact/template cache 分批实现和
 
 不添加全局 ASSEMBLING/READY 握手；保留 Provider 局部准备与 authenticated data 驱动执行。
 会话的 durable commit 是独立机制，不能被 RequestHandle facade 简化掉。
+
+## API and Native Independence Revision
+
+[API review](api-review.md)补齐全表面盘点及ONNX Runtime、Ray Serve、Triton、vLLM官方API比较；采纳模型对象、元数据、可靠结果/流和独立管理面，不宣称实测可用性优势。
+[C-05](contracts/api-usability.md)与[C-06](contracts/cpp-first.md)明确独立C++入口：安装SDK/ABI→原生能力→完整C++验收→Python包装。

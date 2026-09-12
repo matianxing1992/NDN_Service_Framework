@@ -44,3 +44,8 @@ A14 Provider独立预算/single-flight/原子发布；A15批次验收依赖环�
 `audit_prepared_model` 审查 canonical catalog、planner、Provider assembly 与 cache/security 边界，
 返回8项发现，均已纳入 A01–A10。该研究复核不是实现后的官方 review-agent STATIC_PASS。
 本轮 source diff 为零；文档检查结果集中在 [planning evidence](evidence/planning-20260912.md)。
+
+## API-wide Revision
+
+[API审计](api-review.md)覆盖76个项目C++头、139个Python模块及binding/install候选；20项发现见C-05，独立C++与先原生后包装见C-06。原草案审计保留历史边界。
+新增T015安装/ABI、T016扩展freeze/control，T013移到T012之前，16任务11批全部NOT_STARTED。

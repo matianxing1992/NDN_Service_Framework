@@ -25,25 +25,27 @@ B1/B2可完成纯本地owner与模型准备；B3前须核对184的请求/授权/
 
 | Batch | Units | Shared boundary | Planned C++ selector | Dynamic profile | Stable observable exit |
 | --- | --- | --- | --- | --- | --- |
+| B0 | T015 | Installed SDK/ABI | Spec185InstalledApi | asan | 安装prefix独立包含/链接/构造析构通过 |
 | B1 | T001,T002 | Runtime/config/owner lifecycle | Spec185Runtime | tsan | open → user → close/drain，无活动owner |
 | B2 | T003,T004 | Preparation catalog/cache/lease | Spec185Preparation | tsan | 8并发prepare单次生产者，失败不发布READY |
+| B2E | T016 | Extension lifecycle/control | Spec185ExtensionRegistry | tsan | freeze、协作控制及runner隔离通过 |
 | B3 | T005,T006 | Prepared request/handle projection | Spec185PreparedRequest | asan-ubsan | 两次请求复用包，独立授权/终态 |
 | B4 | T007,T008 | Conversation/recovery wrapper | Spec185Conversation | asan-ubsan | 两轮durable checkpoint与handle一致 |
 | B5 | T009,T010 | Provider artifact/template lifecycle | Spec185ProviderAssembly | asan-ubsan | 认证后准备及安全复用，stop后lease=0 |
 | B6 | T011 | Native callers/export | Spec185Compatibility | none | native进程入口与旧签名对照通过 |
-| B7 | T012 | Python wrapper | wrapper-only checks | none | 基于B6原生出口的绑定语义通过 |
-| B8 | T013 | Integrated qualification | Spec185Process | asan-ubsan | 当前候选跨进程行为闭合 |
+| B7 | T013 | Complete C++ qualification | Spec185Process | asan-ubsan | 安装SDK和独立生产进程全部原生模式闭合 |
+| B8 | T012 | Thin Python wrapper | wrapper-only checks | none | 基于B7完整原生资格的映射通过 |
 | B9 | T014 | Design handoff | document checks | none | 源码/API/资格交付一致 |
 
-B6/B7的none仅适用于不改变native行为的导出/薄封装；若引入owner或状态变化，先归入相应native批次并增加动态卡。
-B8只重跑受185改变的链路及最终process范围，不重复全部184历史实验。
+B6/B8的none仅适用于不改变native行为的导出/薄封装；若引入owner或状态变化，先归入相应native批次并增加动态卡。
+B7只重跑受185改变的链路及最终process范围，不重复全部184历史实验。
 B6–B9各自单任务有独立出口：不能要求先完成Python再运行其依赖的C++进程验证，也不能先交付再验收。
 
 ## Batch Growth Decision
 
 每批分配依据为同一生产入口、共同契约、独立oracle、共享source closure和稳定出口。
 B1 owner、B2 cache、B3 request、B4 conversation、B5 provider不能仅为少一次构建合并。
-T001–T014均含对应测试编写、静态审查、证据更新；不拆出“写测试/跑测试/写报告”的行政任务。
+T001–T016均含对应测试编写、静态审查、证据更新；不拆出“写测试/跑测试/写报告”的行政任务。
 批内新增任务必须先登记ID及出口；已有稳定出口不得继续扩张。
 
 ## Build and Validation Order
@@ -60,6 +62,11 @@ T001–T014均含对应测试编写、静态审查、证据更新；不拆出“
 sanitizer使用独立同ABI构建。记录target→实际binary→SHA，不猜historical build-system路径。
 最终C++跨进程需独立authority、requester、provider，真实 ACK/Selection/execution/Response；
 启动成功或CLI help不是行为PASS。MiniNDN/SIF/Tiger不因文档变更自动启动。
+
+## Native Public API Authority
+
+[C-05](contracts/api-usability.md)定义六层API、model key、能力、结果/错误、可靠流和扩展freeze；[C-06](contracts/cpp-first.md)定义独立C++入口及native异步owner。
+执行顺序：T015 → T001–T004 → T016 → T005–T011 → T013 → T012 → T014。入口api.hpp/provider.hpp；Provider-only不要求User目录或requester私钥。配置、规划、状态机、恢复由C++提供，Python不得补缺。
 
 ## Migration and Rollback
 

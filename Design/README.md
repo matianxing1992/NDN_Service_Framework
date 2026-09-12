@@ -3,6 +3,7 @@
 **2026-09-12 基线限制**：当前书与 API 清单仍绑定其登记快照，相对本轮工作树已有54个文件变化，
 不能当作最新实现的完整说明。本次 Spec185 仅新增目标规划，不自动刷新或声称审计这些并行源码。
 [Spec185 目标API](../specs/185-prepared-model-runtime/contracts/public-api.md) 与
+[独立C++契约](../specs/185-prepared-model-runtime/contracts/cpp-first.md)、[全API审计](../specs/185-prepared-model-runtime/api-review.md)及
 [审计](../specs/185-prepared-model-runtime/audit.md) 是本次增量入口；其实现状态 PLANNED。
 
 **内容状态：R3 REVISED。** 已按 [R2 逐章审阅](reviews/chapter-audit-20260908.md)

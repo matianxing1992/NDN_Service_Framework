@@ -5,8 +5,10 @@
 PreparedModel::request 复制 owning Input/options，校验 Runtime、模型/任务/schema、时间和 capability，
 从 Package 取 NativeModelRef、splitter、默认 placement、catalog.makePreparation；
 绑定一个与该用户/包关联的 NativeInferenceClient。复用该 client 的 operation/notification owner，
-不逐请求创建一套线程池。Input repository 通过受保护 Repo fetch 验证 exact name/digest/size，
-使用同一 request deadline；不把 DataRef.digest 丢弃成纯字符串名字。
+不逐请求创建一套线程池。Input repository保留现有LargeDataReference的完整canonical metadata，
+构造DataRef检查schema和字段完整性，request提交前绑定本请求。受保护内容的取得/解密/验证继续由
+现有native Provider数据owner执行（并共享request deadline），不擅自搬到requester或删成name/digest/size。
+fromPublishedMetadata只做语法和结构检查，不等于签名/解密授权已通过；网络信任由既有owner核验。
 
 NativeRequestPreparation::prepareInput/inspectModel 的输入、adapter、expectedModel、deadline
 检查继续执行；canonical catalog 的 inspection 回调查冻结记录，不再次解析全模型。
@@ -20,7 +22,8 @@ admission → 按本次 budget enumerate candidate → prepareRoles → placemen
 这里描述职责顺序，细粒度 grant/seal 顺序以 NativeRequestPlanner 的真实安全契约为准，
 实现不能为了图的顺序移动授权校验。没有新增 Core 第五种握手或全局 ASSEMBLING barrier。
 
-placement 保留 `NativePlacementStrategy::proposeRoles`：它接收已验证且冻结的 admitted offers，
+普通placement使用C-05 opaque注册句柄及合作式adapter，追加ExtensionControl；旧NativePlacementStrategy留advanced兼容。
+合作端口保留原策略只读输入与validator，接收已验证且冻结的 admitted offers，
 包含 request/attempt/ACK closure 身份，返回未授权 proposal；不能退回可伪造的裸 ProviderOfferView。
 只保留 RequestOptions.placement 一种覆盖入口，null 使用 Package 默认；无合法策略报配置错误。
 manifest 不含一个通用 roles 列表：roles 归各 candidate，随预算与状态契约验证。
@@ -28,20 +31,27 @@ manifest 不含一个通用 roles 列表：roles 归各 candidate，随预算与
 ## Conversation API
 
 ```cpp
+class ConversationCheckpoint {
+public:
+  static ConversationCheckpoint fromBytes(Bytes); // parse only; open verifies binding
+  Bytes bytes() const;
+};
 struct ConversationOptions {
   std::string conversationId; // empty = native owner allocates
-  std::optional<NativeConversationCheckpoint> checkpoint;
+  std::optional<ConversationCheckpoint> checkpoint;
 };
 class Conversation {
 public:
   RequestHandle request(Input, const RequestOptions& = {});
-  NativeConversationCheckpoint checkpoint() const;
+  ConversationCheckpoint checkpoint() const;
   void exportCheckpoint(const std::filesystem::path&) const;
   void close() noexcept;
 };
 ```
 
 Conversation 持有 Package lease、Runtime State 和唯一 NativeConversationCoordinator 会话引用。
+checkpoint在稳定application头中作为opaque ConversationCheckpoint持有序列化身份，不transitive暴露
+NativeConversationCheckpoint/commit回调；advanced转换仍复用原native schema，不另造journal格式。
 可移动不可复制；同一会话最多一个在途 turn，并发请求报 `CONVERSATION_BUSY`，不隐式排无限队列。
 不同会话独立。generation/stream 从已验证任务契约推导默认值；不支持会话的 adapter 在 open
 抛 UNSUPPORTED_CAPABILITY，不能伪装成无状态多次请求。
@@ -59,11 +69,10 @@ recovery/replacement 由既有 runtime policy 和 coordinator 执行，不开放
 ## Provider API
 
 ```cpp
-struct ProviderConfig {
-  std::vector<std::string> nativeArguments;
-  std::size_t maxArtifactBytes = 1073741824;
-  std::size_t maxArtifactEntries = 8;
-  std::chrono::milliseconds assemblyJobTimeout{300000};
+class ProviderConfig {
+public:
+  static ProviderConfig fromFile(const std::filesystem::path&);
+  static ProviderConfig fromCommandLine(int argc, const char* const* argv);
 };
 struct ServiceDefinition {
   std::string serviceName;
@@ -78,16 +87,18 @@ public:
   ProviderRegistration serve(const ServiceDefinition&);
   void stop() noexcept;
   bool drain(std::chrono::milliseconds timeout) const;
+  CompletionSubscription drainAsync(std::chrono::milliseconds timeout,
+    std::function<void(std::exception_ptr, bool)> callback) const;
 };
 ```
 
-当前Provider配置来自CLI，不能假定存在service profiles。ProviderConfig.nativeArguments是操作员
-提供的既有DI_NativeProviderExecutable参数tokens（不含argv[0]），提取同一parser为库函数，
-不经shell、不启动子进程；保留其必需参数/校验/相对路径（provider创建时固定cwd）规则。
+当前Provider配置来自CLI，不能假定存在service profiles。ProviderConfig为C++独立解析器产生的
+不可变配置；fromFile/fromCommandLine和文件schema详见[C-06](cpp-first.md)。原argv组合仅在operator
+文件或CLI适配层，普通Provider应用不传raw argument vector；不经shell、不启动子进程。
 生产facade拒绝spec180 mutation及legacy/preassembled兼容开关；unknown option与CLI一致拒绝。
 Runtime验证配置中的IO/trust身份与State一致；ServiceDefinition.serviceName/allowedRoles必须
 匹配该Provider配置允许的service/role集合（非空且无重复），不接受任意扩大能力或AuthenticatedSelection。
-nativeArguments是本期兼容配置入口，不另建虚构schema；T011把executable与facade切到同一parser。
+新的launch schema明确PLANNED，T009实现纯C++parser，T011把executable与facade切到同一parser。
 内部复用 NativeInferenceProvider / NativeProviderHandler 和 NativeRunnerPreparation 接口，
 从 executable 提取组合代码为库 owner，executable 与 façade 共用。原草案抽象 AssemblyFactory
 按值字段不合法；本期不另建 public assembly plugin ABI，已有内部 factory 保留可扩展性。

@@ -81,3 +81,8 @@ sequenceDiagram
 ```
 
 图为PLANNED层次视图，不替代grant/seal和会话事务的详细C-03契约。
+
+## Public SDK Revision
+
+C-05/C-06增加ModelRegistration（启动冻结key→配置）、ModelCapabilities（只读schema）、PreparationHandle（独立waiter）、Result/DiError（公开值类型）、EventReader（可靠单游标）和RequestDiagnostics（观察丢弃计数）。
+ProviderConfig/ConversationCheckpoint为opaque对象；authority/coordinator/commit回调不透入application头；Python没有独立领域状态。
