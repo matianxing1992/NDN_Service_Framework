@@ -104,6 +104,8 @@ def test_model_layer_accepts_small_canonical_onnx_fixture():
 
 def test_runtime_failure_is_classified_after_startup_markers(tmp_path: Path):
     module = load_module()
+    (tmp_path / "controller.log").write_text(
+        "ServiceController started...\n", encoding="utf-8")
     (tmp_path / "authority.log").write_text(
         "NATIVE_GRANT_AUTHORITY_READY\n", encoding="utf-8")
     for index in range(3):
@@ -113,3 +115,36 @@ def test_runtime_failure_is_classified_after_startup_markers(tmp_path: Path):
         "NATIVE_REQUESTER_FAILED: DI_NATIVE_ONNX_PARSE\n", encoding="utf-8")
     assert module.startup_markers_observed(tmp_path)
     assert module.first_failure_marker(tmp_path) == "DI_NATIVE_ONNX_PARSE"
+
+
+def test_runtime_failure_without_controller_marker_is_not_startup_complete(tmp_path: Path):
+    module = load_module()
+    (tmp_path / "authority.log").write_text(
+        "NATIVE_GRANT_AUTHORITY_READY\n", encoding="utf-8")
+    for index in range(3):
+        (tmp_path / f"provider-{index}.log").write_text(
+            "NDNSF_DI_NATIVE_PROVIDER_READY\n", encoding="utf-8")
+    assert not module.startup_markers_observed(tmp_path)
+
+
+def test_prepared_bundle_rejects_app_manifest_mutation(tmp_path: Path):
+    module = load_module()
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    app_manifest = run_dir / "app-manifest.json"
+    app_manifest.write_text('{"candidate": "one"}\n', encoding="utf-8")
+    command = ["runner", "--fixed"]
+    bundle = {
+        "candidateDigest": "sha256:candidate",
+        "commandDigest": module.canonical_digest(command),
+        "appManifest": {"path": str(app_manifest),
+                         "sha256": module.sha256_file(app_manifest)},
+        "status": "PASS",
+    }
+    (run_dir / "bundle-manifest.json").write_text(
+        json.dumps(bundle, sort_keys=True) + "\n", encoding="utf-8")
+    launch = {"candidateDigest": bundle["candidateDigest"],
+              "bundleDigest": module.canonical_digest(bundle)}
+    app_manifest.write_text('{"candidate": "two"}\n', encoding="utf-8")
+    with pytest.raises(SystemExit, match="BUNDLE_APP_MANIFEST_CHANGED"):
+        module.validate_prepared_bundle(run_dir, launch, command)
