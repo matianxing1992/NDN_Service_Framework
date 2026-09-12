@@ -75,6 +75,15 @@ candidate stopped before compilation because that candidate was configured with
 a Waf configuration boundary, not a model or protocol result; the candidate was
 not reconfigured solely to manufacture a selector binary.
 
+A second bounded attempt used the older candidate's `integration-tests`
+executable with r4 libraries first in `LD_LIBRARY_PATH`. It emitted the native
+business marker and then SIGSEGVed at `0x00000080` (exit `201`). This mixed
+binary/library combination is an ABI boundary and is rejected as evidence; its
+raw log is `.codex-tmp/spec184-qwen-smoke-20260912/integration-qwen.log` with
+SHA-256 `33c155fb5124cd7249551586e6b5ee1b5658334503d05ac09d4ec8f4d0a85cde`.
+The test executable and native libraries must be rebuilt from one configured
+tree before any local 0.6B smoke result can be accepted.
+
 The disposition is unchanged: A3 stays `WAITING_EXTERNAL_INPUT`, A4 remains
 the only local remainder, and T008 remains `BLOCKED_BY_T007`. No 0.6B smoke
 result is used as 27B qualification evidence.

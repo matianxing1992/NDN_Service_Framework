@@ -28,7 +28,7 @@
 | B2 | DYNAMIC_PASS / CLOSED_FOR_VALIDATION | `asan-ubsan` PASS；durable handle/journal 一致、publish 后终态不降级、residue=0 | T003 已完成；进入 B3/T004 |
 | B3 | DYNAMIC_PASS / CLOSED_FOR_VALIDATION | `asan-ubsan` PASS；原子 export、symlink refusal、pre-rename failure preservation、loader smoke | T004 已完成；进入 B4/T005 |
 | B4 | CLOSED_FOR_VALIDATION / PARTIAL | caller rows use `none` with reason; inherited B1/B2 profiles cover shared async owners | T005 matrix/route closure complete；D2b runtime miss、real model/no-Python and retirement remain T006/T007 |
-| B5 | IN_PROGRESS / T006/T007 PARTIAL | one bounded dynamic sample per distinct inherited risk/behavior class；Provider-host unsuppressed ASan/UBSan PASS；observed-offer parser sample PASS；I02 ownership-cycle and 16-case tiny-ONNX sanitizer samples PASS | current candidate unit/integration exits `0`; C++ process/no-Python refresh, I02–I08 dynamic samples, candidate-bound I02–I08 counterexample statuses and authorized root `PO-001-stream` owner are PASS for bounded rows. The remaining gates are tracked in the [T007 remainder ledger](evidence/remainder-audit-20260911.md): A0 receipt → A1 YOLO Y-A → A2 YOLO Y-B/Y-N → A4 inherited negative/retirement; A3 Qwen3.6-27B is external because this host only supports 0.6B smoke. The attempted r4 selector build stopped before compilation because `integration-tests` is not configured; this is preserved as an environment boundary in [model capability evidence](evidence/t007-model-capability-20260912.md). I05 collector boundary is `UNQUALIFIED`; T008 remains blocked by T007 |
+| B5 | IN_PROGRESS / T006/T007 PARTIAL | one bounded dynamic sample per distinct inherited risk/behavior class；Provider-host unsuppressed ASan/UBSan PASS；observed-offer parser sample PASS；I02 ownership-cycle and 16-case tiny-ONNX sanitizer samples PASS | current candidate unit/integration exits `0`; C++ process/no-Python refresh, I02–I08 dynamic samples, candidate-bound I02–I08 counterexample statuses and authorized root `PO-001-stream` owner are PASS for bounded rows. The remaining gates are tracked in the [T007 remainder ledger](evidence/remainder-audit-20260911.md): A0 receipt → A1 YOLO Y-A → A2 YOLO Y-B/Y-N → A4 inherited negative/retirement; A3 Qwen3.6-27B is external because this host only supports 0.6B smoke. The attempted r4 selector build stopped before compilation because `integration-tests` is not configured, and the rejected mixed old-test/r4-library retry SIGSEGVed after the business marker; both are preserved as build/ABI boundaries in [model capability evidence](evidence/t007-model-capability-20260912.md). I05 collector boundary is `UNQUALIFIED`; T008 remains blocked by T007 |
 
 ### T007 Remainder Exit Ledger
 
@@ -50,7 +50,8 @@ Python harness 不因本表再次无条件重跑。`Qwen3-0.6B` 只能作为 C++
 2026-09-12 **T007-MODEL-CAPABILITY-BOUNDARY / PARTIAL**：本机确认只能运行
 `Qwen3-0.6B`，不能运行契约要求的 `Qwen/Qwen3.6-27B`。尝试在当前 r4 candidate
 上补跑 C++ `integration-tests` selector 时，Waf 在编译前报告没有该 task generator；原始
-日志和 SHA-256 见 [model capability evidence](evidence/t007-model-capability-20260912.md)。
+日志和 SHA-256 见 [model capability evidence](evidence/t007-model-capability-20260912.md)。随后
+拒绝了旧测试二进制与 r4 库混用的尝试：selector 在业务 marker 后 SIGSEGV，作为 ABI 边界保留。
 这不是模型或协议失败，也不改变 A0–A2 的已验证结果；A3 保持
 `WAITING_EXTERNAL_INPUT`，A4 继续独立收口，T008 仍阻塞。
 

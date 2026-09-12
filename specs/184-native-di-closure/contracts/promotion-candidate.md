@@ -277,10 +277,12 @@ validation members:
 | Member | SHA-256 |
 | --- | --- |
 | `spec.plan` | `bc000e9c5059cc99fabcfeb1122894fa9163184098a55e0e1e787b3fe5b37615` |
-| `spec.tasks` | `cf76c4abff016e31b3991688182508a7772cba9a91e5bc4367f7209ba964fbe2` |
+| `spec.tasks` | `47f059ed013f698406157b3690585c49d17d8ceecd3453cba192909d486c9727` |
 | `spec.matrix` | `6f1e933717582a1fa8cf4e734de7ffa325c14392dee301aa24ef9735c788d80c` |
-| `evidence.remainder_audit` | `c5266a1940cdc71ec63ca6b3d456525c6aa2c070c7c3ba14ba632af34ea6d46c` |
-| `evidence.model_capability` | `4b258674d060c5a4c53af5bb508f5f673429535e8248f32fb8342e309fc574bb` |
+| `evidence.remainder_audit` | `fb0271f5102386a58cebef08c8b0cda409484dc04789a9c5cc0528e106bca644` |
+| `evidence.model_capability` | `53e0a7c15a32a61c7b801cb0ff05c1b8e48af6a4117becffe321bb5e8f19c3ab` |
+| `log.waf_target_lookup` | `1f49b7cd938da12e8169c4248501b832b85b8fcdb66b2fc1352092dd413ece62` |
+| `log.mixed_binary_retry` | `33c155fb5124cd7249551586e6b5ee1b5658334503d05ac09d4ec8f4d0a85cde` |
 
 The exact Qwen3.6-27B model remains `WAITING_EXTERNAL_INPUT`; the local
 Qwen3-0.6B boundary does not create a replacement candidate or a qualification

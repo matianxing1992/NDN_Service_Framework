@@ -40,6 +40,24 @@ This is a Waf configuration boundary, not a model, protocol, or C++ runtime
 failure. The candidate was not reconfigured merely to force a test binary, and
 no 27B run was attempted.
 
+## Mixed-binary retry boundary
+
+For a bounded smoke probe, the pre-existing `build-spec184-b5-candidate/integration-tests`
+binary was launched with r4 libraries placed first in `LD_LIBRARY_PATH`. It
+reported `SPEC182_NATIVE_DI_REQUEST_RESULT_OK` and then aborted with a SIGSEGV
+at address `0x00000080` (exit `201`, 5 of 6 assertions observed). This is an
+ABI/build-boundary failure caused by mixing a test executable from the older
+candidate with r4 libraries; it is not evidence against the Qwen selector or
+the native model path. The mixed combination is rejected and will not be
+reused.
+
+Raw output: `.codex-tmp/spec184-qwen-smoke-20260912/integration-qwen.log`
+SHA-256: `33c155fb5124cd7249551586e6b5ee1b5658334503d05ac09d4ec8f4d0a85cde`
+
+To obtain a valid local 0.6B smoke result, a future run must build the test
+executable and native libraries from the same configured tree, then issue a
+fresh receipt. That work is separate from the exact 27B A3 qualification.
+
 ## Disposition
 
 | Gate | Current status | Reason |
@@ -55,4 +73,3 @@ Continue only with A4 rows that have a current C++ selector and complete
 candidate-bound evidence. When the exact 27B bundle is available on the
 experiment host, transfer the current candidate receipt and run A3 there;
 do not rename the 0.6B smoke result.
-
