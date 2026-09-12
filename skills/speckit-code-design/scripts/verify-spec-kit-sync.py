@@ -70,6 +70,8 @@ TEMPLATE_MARKER_GROUPS = {
         ("review-agent",),
     ),
     ".specify/templates/tasks-template.md": (
+        ("Progress Timestamp",),
+        ("YYYY-MM-DD HH:mm ±HH:MM",),
         ("Design binding",),
         ("batch-quality-gates.md",),
         ("review-agent",),
@@ -181,6 +183,10 @@ def main() -> int:
             for group in ENTRYPOINT_MARKER_GROUPS + (
                 (("Design binding",),) if name in (
                     "speckit-plan", "speckit-tasks", "speckit-implement", "speckit-audit"
+                ) else ()
+            ) + (
+                (("Progress Timestamp",),) if name in (
+                    "speckit-plan", "speckit-tasks", "speckit-implement", "speckit-converge", "speckit-audit"
                 ) else ()
             )
             if not any(marker in text for marker in group)

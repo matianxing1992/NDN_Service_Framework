@@ -72,6 +72,7 @@ API总表或“提取/接入/实现某类”不能代替内部实现设计。生
 tasks.md 顶部必须用逐执行单元的 `Execution Progress` 表完整登记每个 T ID（及必要的稳定子任务 ID）、
 依赖、状态、证据和剩余项；批次进度表只能补充批次出口，不能替代逐单元 registry。每个工作单元结束后同步。
 此规则不取决于模型或 bounded-executor 模式；详细卡片与当前进度分工明确。
+`Updated`按[Progress Timestamp](references/task-progress.md#progress-timestamp)使用`YYYY-MM-DD HH:mm ±HH:MM`；只刷新实际变化行，新checkpoint同样精确到分钟。历史未知时刻不补造。
 
 创建或更新 Spec Kit feature 前，先从仓库根运行
 `python3 skills/speckit-code-design/scripts/verify-spec-kit-sync.py --require-entrypoints`

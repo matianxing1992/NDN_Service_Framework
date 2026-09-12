@@ -61,7 +61,10 @@ implementation / acceptance dependencies、共享构建/测试选择器及负责
 
 | Unit / Details | Status | Depends | Evidence / Remaining | Updated |
 | --- | --- | --- | --- | --- |
-| [UNIT-ID and title](DETAIL-LINK) | NOT_STARTED | — | 待执行及验收 | YYYY-MM-DD |
+| [UNIT-ID and title](DETAIL-LINK) | NOT_STARTED | — | 待执行及验收 | YYYY-MM-DD HH:mm ±HH:MM |
+
+**Progress Timestamp**：生成时从系统时钟取得实际时间并带UTC offset；只更新实际变化的行。
+Updated表示最后一次行修订，不代表完成时间；历史只有日期则保留来源并标精确事件时间UNKNOWN，不补造时分。
 
 状态：NOT_STARTED、READY、IN_PROGRESS、PARTIAL、BLOCKED、DONE。
 READY 必须满足依赖和阶段门禁；DONE 必须有完整单元验收证据。
@@ -74,6 +77,7 @@ READY 必须满足依赖和阶段门禁；DONE 必须有完整单元验收证据
 ## Current Checkpoint
 
 记录最近工作单元的实际结果、持久证据与下一步；当前状态以 Execution Progress 为准。
+新增记录使用`YYYY-MM-DD HH:mm ±HH:MM`时间前缀；创建日期Date字段不受影响。
 生成时用实际已知情况替换说明，不将生成任务本身计为产品完成，也不重置已有 checkpoint。
 
 ## Batch Quality Record
