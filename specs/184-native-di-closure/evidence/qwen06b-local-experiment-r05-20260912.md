@@ -40,7 +40,7 @@ Response、ONNX 数值或会话结果，不能计为协议或模型 PASS。MiniN
 | --- | --- |
 | `static` | `PASS`：source 身份、bundle command digest、startup/workload 分层和 cleanup marker 已审查 |
 | `compile-link` | `PASS`：Python syntax；native binary closure 由既有 candidate preflight 记录 |
-| `runtime-test` | `PASS`：8 个入口 focused tests；r05 的真实启动边界已保存 |
+| `runtime-test` | `PASS`：9 个入口 focused tests；r05 的真实启动边界已保存 |
 | `unobserved` | canonical 0.6B source、真实 ACK/Selection/Response、模型数值、两轮会话仍未观测 |
 
 T007、A3、A4 和 T008 状态不因本记录提升；canonical source 交付后才可重新执行
