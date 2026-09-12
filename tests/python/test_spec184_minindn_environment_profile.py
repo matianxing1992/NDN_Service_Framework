@@ -81,5 +81,7 @@ def test_stage_nodes_reject_duplicate_or_unsafe_names():
     module = load_pipeline()
     with pytest.raises(ValueError, match="unique"):
         module.parse_stage_nodes("ucla,ucla")
+    with pytest.raises(ValueError, match="empty entries"):
+        module.parse_stage_nodes("ucla,,arizona")
     with pytest.raises(ValueError, match="only letters"):
         module.parse_stage_nodes("ucla,stage/1")
