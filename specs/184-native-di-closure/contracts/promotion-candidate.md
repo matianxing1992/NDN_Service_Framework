@@ -544,8 +544,8 @@ historical Spec175 artifact has a complete external model and its multi-provider
 
 ## Current A4 test-coverage overlay (2026-09-12)
 
-The focused C++ `Spec182OfferAdmission` selector now passes 18 cases and 81 assertions; the
-source and result are recorded in [A4 admission coverage](../evidence/a4-offer-admission-coverage-20260912.md).
+The focused C++ `Spec182OfferAdmission` selector now passes 18 cases and 81 assertions in both
+the normal and unsuppressed ASan/UBSan trees; the source and results are recorded in [A4 admission coverage](../evidence/a4-offer-admission-coverage-20260912.md).
 This unit changed the C++ test harness and validation documents but did not change production
 runtime code, model inputs or the YOLO runner. Under this contract, the prior candidate overlay is
 therefore retained only as bounded historical runtime evidence; it is not silently re-bound to the

@@ -81,14 +81,31 @@ It exited `0`: **18 test cases passed and 81 assertions passed**. The raw run lo
 `.codex-tmp/spec184-a4-offer-admission-run-20260912.log` with SHA-256
 `f3ccb2cd5abcb1ec02d0773c5bfaba882b685f031dfe5cf5f10c9d54600a0dd4`.
 
+## Unsuppressed sanitizer result
+
+The same source was rebuilt in the independent `build-spec184-i02-asan-r2` tree with
+`-fsanitize=address,undefined`, `/usr/bin/g++ -B/usr/bin`, and Waf `-j4`. All 192 build tasks
+completed successfully in 9m19.243s. The build log SHA-256 is
+`47251a47c4f20aba1f408203949b29711988eb0bf5f07348acc85e2c9f18c6fa`, and the resulting
+`unit-tests` binary SHA-256 is
+`268697a1e96f5e861339cced7708f976c2d1a86257b90813460abd098e5490f3`.
+
+With `ASAN_OPTIONS=detect_leaks=1:halt_on_error=1:strict_string_checks=1` and
+`UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1`, the same
+`--run_test=Spec182OfferAdmission` selector exited `0`: 18/18 cases and 81/81 assertions
+passed, with no ASan, UBSan or LeakSanitizer report. The raw run log is
+`.codex-tmp/spec184-a4-offer-admission-asan-run-20260912.log` with SHA-256
+`f3ccb2cd5abcb1ec02d0773c5bfaba882b685f031dfe5cf5f10c9d54600a0dd4`.
+
 ## Batch retrospective and closure decision
 
 | Gate | Result | Unobserved or remaining boundary |
 | --- | --- | --- |
 | `static` | `PASS` | historical manifest mapping gaps are explicitly recorded above |
-| `compile-link` | `PASS` | no sanitizer build in this batch |
+| `compile-link` | `PASS` | normal and independent sanitizer trees linked the complete unit target |
 | `runtime-test` | `PASS` | focused C++ admission selector only; no process/no-Python or model run |
-| `unobserved` | `RECORDED` | ASan/UBSan admission run, parser fuzz breadth, full process qualification, Python retirement, Qwen3.6-27B and SIF/Tiger remain open |
+| `asan-ubsan` | `PASS` | focused admission selector has no sanitizer or leak report; broader lifetime/process rows remain open |
+| `unobserved` | `RECORDED` | parser fuzz breadth, full process qualification, Python retirement, Qwen3.6-27B and SIF/Tiger remain open |
 
 The batch is closed for this test-coverage unit. It provides current C++ admission evidence for
 the affected rows but does not promote T007, change A3, or make the local 0.6B capability a

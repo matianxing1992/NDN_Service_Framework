@@ -85,3 +85,8 @@ including policy, signature, binding, time-window and immutable-view boundaries.
 record is [A4 admission coverage](a4-offer-admission-coverage-20260912.md). This is a partial
 T007 A4 result: it does not close inherited negative/retirement rows, no-Python process rows,
 or the external Qwen3.6-27B row.
+
+The focused admission selector was then rerun in the independent unsuppressed ASan/UBSan tree:
+18/18 cases and 81/81 assertions passed with no sanitizer or LeakSanitizer report. This is a
+`DYNAMIC_PASS` for the admission test unit only; A4 inherited negative/retirement rows, process
+qualification and the external 27B row remain partial or waiting.

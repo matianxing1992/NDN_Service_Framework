@@ -29,7 +29,7 @@
 | B3 | DYNAMIC_PASS / CLOSED_FOR_VALIDATION | `asan-ubsan` PASS；原子 export、symlink refusal、pre-rename failure preservation、loader smoke | T004 已完成；进入 B4/T005 |
 | B4 | CLOSED_FOR_VALIDATION / PARTIAL | caller rows use `none` with reason; inherited B1/B2 profiles cover shared async owners | T005 matrix/route closure complete；D2b runtime miss、real model/no-Python and retirement remain T006/T007 |
 | B5 | IN_PROGRESS / T006/T007 PARTIAL | one bounded dynamic sample per distinct inherited risk/behavior class；Provider-host unsuppressed ASan/UBSan PASS；observed-offer parser sample PASS；I02 ownership-cycle and 16-case tiny-ONNX sanitizer samples PASS | current candidate unit/integration exits `0`; C++ process/no-Python refresh, I02–I08 dynamic samples, candidate-bound I02–I08 counterexample statuses and authorized root `PO-001-stream` owner are bounded results. The latest framework/DI source refresh passed static review and same-tree build/receipt; A0–A2 current-candidate rows now pass, while A4 inherited negative/retirement remains open. The remaining gates are tracked in the [T007 remainder ledger](evidence/remainder-audit-20260911.md): A0 receipt → A1 YOLO Y-A → A2 YOLO Y-B/Y-N → A4 inherited negative/retirement; A3 Qwen3.6-27B is external because this host only supports 0.6B smoke. The attempted r4 selector build, wrong Waf target lookup, missing Waf environment, and mixed old-test/r4-library retry are preserved as build/ABI boundaries in [model capability evidence](evidence/t007-model-capability-20260912.md). I05 collector boundary is `UNQUALIFIED`; T008 remains blocked by T007 |
-| B5-A4-OFFER-ADMISSION | CLOSED_FOR_VALIDATION / PARTIAL | `static` PASS；same-tree C++ `Spec182OfferAdmission` selector 18/18 cases and 81/81 assertions；production source unchanged | [A4 admission coverage](evidence/a4-offer-admission-coverage-20260912.md)；ASan/UBSan、full process/no-Python、Python retirement、real Qwen3.6-27B and external rows remain open |
+| B5-A4-OFFER-ADMISSION | CLOSED_FOR_VALIDATION / PARTIAL | `static` PASS；normal and unsuppressed ASan/UBSan same-tree C++ `Spec182OfferAdmission` selector 18/18 cases and 81/81 assertions；production source unchanged | [A4 admission coverage](evidence/a4-offer-admission-coverage-20260912.md)；full process/no-Python、Python retirement、real Qwen3.6-27B and external rows remain open |
 
 ### T007 Remainder Exit Ledger
 
@@ -143,6 +143,11 @@ NAC-ABE/NDN-SVS 优先的 loader 环境中重新生成、验证 receipt。新 re
 没有修改生产实现或冻结 manifest。详见 [A4 admission coverage](evidence/a4-offer-admission-coverage-20260912.md)。
 该批次只关闭测试覆盖单元；由于测试 harness/validation 文档变化，下一次最终 qualification
 前需重新计算 candidate identity，T007 仍 `IN_PROGRESS`/`PARTIAL`，A3 仍等待外部 27B，T008 仍阻塞。
+
+2026-09-12 **T007-A4-OFFER-ADMISSION-ASAN / DYNAMIC_PASS**：同一 `Spec182OfferAdmission`
+选择器在独立无抑制 ASan/UBSan tree 中运行 18/18 cases、81/81 assertions，通过且没有
+sanitizer 或 LeakSanitizer 报告。该动态出口只加强 admission 覆盖，不关闭完整 A4 继承行、
+Python retirement、no-Python process 或 Qwen3.6-27B；详见 [A4 admission coverage](evidence/a4-offer-admission-coverage-20260912.md)。
 
 2026-09-11 **PROPOSAL-EMAIL-ALIGNMENT / DOCUMENT_PASS**：中英文 Proposal、slides
 及讲稿按邮件统一三个安全要求和额外权限聚合便利；分别解释身份、服务权限与
