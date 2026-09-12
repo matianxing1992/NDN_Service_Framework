@@ -59,6 +59,11 @@ Python 兼容/路由聚焦检查为 30 passed，但 compatibility manifest 的 3
 T007 保持 `IN_PROGRESS`/`PARTIAL`，A3 保持 `WAITING_EXTERNAL_INPUT`，A4 保持 `PARTIAL`，
 T008 保持 `BLOCKED_BY_T007`。
 
+2026-09-12 **PLAN-MODEL-BOUNDARY-CORRECTION / DOCUMENT_PASS**：修正 `plan.md` Summary
+中把早期 r4 `integration-tests` task-generator 缺失误读为当前阻塞的表述。当前候选同树
+C++ build/test 已通过；本机仍只能使用 `Qwen3-0.6B` smoke/ABI，未执行实际 0.6B 权重推理，
+也不能替代外部 `Qwen/Qwen3.6-27B` qualification。A3、A4、T007 和 T008 状态不变。
+
 ### Proposal Origin coverage restoration (2026-09-11, documentation only)
 
 根据完整 Origin 补齐双语 Proposal 的动机、背景、框架架构/API、三种调用情境、对象/流、UAV 与 DI 工作流及评价方法。参见 [本轮文档证据](evidence/proposal-origin-expansion-20260911.md) 与 [逐节覆盖矩阵](../../docs/PAPER/proposal-defense/origin-coverage-review.md)。初次文档驱动路径错误已定位；修复后四入口编译、镜像文本、引文、页面边界及版式复核通过，英文 49 页、中文 38 页。产品代码、实验数字与 T007/T008 资格状态不因论文补写改变。

@@ -530,13 +530,13 @@ source.utils.cpp=b93abea7df3434930bb081a0bfcff1b740db6aa782c1f36a0366f5de91364ac
 source.utils.hpp=c383cb761e53a1fb09fa3930966f668b40507f4486c50aa2c0e1de6afe279458
 spec.caller=b2b079fd5f8e658aa6b2fec6bfec389830aa1c509fac4783f1f73e6c29c9a449
 spec.matrix=5b1608230be201f4a0e0b88c87a9da2319175ee747d957c8a533697c2f228508
-spec.plan=bc000e9c5059cc99fabcfeb1122894fa9163184098a55e0e1e787b3fe5b37615
+spec.plan=8518df1bdec878a7e9185db849f23d36e0d60908c6e1324d52a9400c945cea13
 spec.spec=724f6aa1be1c6f151e5a71888f00bd0d4fecab1e002d07ba2c2f40473415eca1
-spec.tasks=81ce5c4dbecdd3ccc97ce8ad1e72deb65462d94b316c40d9f46e0ac79c00d633
+spec.tasks=7c16a608efe940788ebabd8eb0750029e9ea23e383d144d4a1b7cf67bea3a5ea
 ```
 
 The SHA-256 of these sorted lines followed by a final newline is
-`sha256:b95862ef261c72f45365c88b9818c6a65a1b85f8bff20b45e39b81b77154c2de`.
+`sha256:ec043b5c4d65dd80dc42ae74a352a04b4f29dd222fcc50f908a7e6b4f47dfcca`.
 This overlay remains `FRESH_LOCAL_PARTIAL`: A3 is `WAITING_EXTERNAL_INPUT` because only the
 historical Spec175 artifact has a complete external model and its multi-provider terminal exited
 `1`; the current Spec184 candidate and result are absent. A4 is `PARTIAL`, and T008 remains
