@@ -6,6 +6,8 @@ C-01至C-06定义领域行为，本表统一签名、Python映射、所有权和
 
 ## Four Conclusions
 
+**Implementation ownership**：公开名称和下述行为保持不变；[C-09](core-app-boundary.md)规定Runtime/handle/reader/subscription的通用实现由Core提供，DI仅保留领域配置和类型包装。新增Core primitive属于框架API，不是本表的DI应用API；其签名与字段见C-09 CB01/CB02。
+
 1. **Standalone C++**：目标要求独立安装、链接和运行，含User及Provider完整入口、同步/异步、流、会话恢复、取消和清理；T013前必须由外部C++ consumer证明。当前NOT_RUN。
 2. **Python Binding**：核心对象直接由现有pybind11模块绑定C++对象；Python只提供snake_case、秒单位、异常、context manager和asyncio适配，不拥有模型准备、规划、授权、缓存或会话状态机。
 3. **Lifecycle**：本次补齐析构、退订、读者取消、流失败、局部异步等待和Runtime关闭后的读取行为；完整性是设计验收要求，尚无运行证明。

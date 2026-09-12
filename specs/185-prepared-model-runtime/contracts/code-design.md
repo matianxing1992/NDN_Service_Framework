@@ -9,12 +9,14 @@ existing来源以canonical磁盘文件为准；CodeGraph宽同名搜索可能命
 
 ## Class and File Change Manifest
 
+**Ownership revision**：CD01/CD03/CD04及F01/F02/F09–F12、FN01/FN04的通用机制owner以[C-09 CB01–CB04](core-app-boundary.md#concrete-design-binding)为准：Core实现调度、ticket、完成等待、订阅和reader；下表DI文件仅保留领域包装/适配。旧READY范围不包括本轮新增Core迁移；T017/T018先于T001。公开C-07契约不变，不能照旧在DI再造通用State。
+
 | CD | Operation / exact path | Class / before → after | Task / public contract |
 | --- | --- | --- | --- |
-| CD01 | ADD `DI/Runtime.hpp/.cpp`、`DI/NativeRuntimeBootstrap.hpp/.cpp`、`DI/RuntimeState.hpp/.cpp` | 无稳定Runtime；CLI手动组合 → Runtime外壳、单State和内部bootstrap；不持authority私钥 | T001,T002 / C-07 A01–A10 |
+| CD01 | ADD `DI/Runtime.hpp/.cpp`、`DI/NativeRuntimeBootstrap.hpp/.cpp`、`DI/RuntimeState.hpp/.cpp` | Runtime领域外壳/model registry组合C-09 Core OperationRuntime；bootstrap不持authority私钥，不在DI复制phase/ticket/executor | T001,T002 / C-07 A01–A10; C-09 CB04 |
 | CD02 | ADD `DI/PreparedModel.hpp/.cpp`、`DI/ModelPreparationCache.hpp/.cpp`、`DI/PreparedModelPackage.hpp` | 每次传catalog/model → immutable Package、独立waiter和有界缓存 | T003,T004 / A11–A24 |
 | CD03 | MODIFY `DI/NativeInferenceClient.hpp/.cpp`；ADD `DI/NativeRequestAccess.hpp` | 旧5参数request和result/observe保留 → additive cooperative request与内部操作访问端口；Access实现留client同TU以看见完整Operation | T005,T006 / A22–A43 |
-| CD04 | ADD `DI/RequestHandle.hpp/.cpp`、`DI/EventReader.hpp/.cpp`、`DI/Subscription.hpp/.cpp` | absent → 用户包装、native订阅slot和可靠单游标；native Operation仍权威 | T002,T004,T006 / A13–A18,A25–A43 |
+| CD04 | ADD `DI/RequestHandle.hpp/.cpp`、`DI/EventReader.hpp/.cpp`、`DI/Subscription.hpp/.cpp` | 用户类型包装委托C-09 Core State/Reader/Subscription；DI裁决领域完成，Core持通用等待/消费状态 | T002,T004,T006 / A13–A18,A25–A43; C-09 CB02–CB04 |
 | CD05 | ADD `DI/Conversation.hpp/.cpp`；REUSE `DI/NativeConversationCoordinator.hpp/.cpp`、`DI/NativeCheckpointExport.hpp` | 调用者手填continuation → 模型绑定会话包装；原begin/replace/commit/export不另造 | T007,T008 / A24,A44–A50 |
 | CD06 | ADD `DI/Provider.hpp/.cpp`、`DI/NativeProviderBootstrap.hpp/.cpp`；MODIFY `examples/DI_NativeProviderExecutable.cpp` | CLI内组合NativeProviderHandlerConfig → 共用C++ loader及Provider owner；旧host serve签名保留 | T009 / A02,A05,A06,A56–A63 |
 | CD07 | ADD `DI/ProviderArtifactCache.hpp/.cpp`；MODIFY `DI/NativeRunnerPreparation.cpp`及CD06生产factory接线 | 现有protected store/lease → 有界不可变artifact/template复用；不共享mutable runner/KV | T010 / C-03 Provider cache |

@@ -8,7 +8,9 @@
 | Unit / Details | Status | Depends | Evidence / Remaining | Updated |
 | --- | --- | --- | --- | --- |
 | [T015 Installed C++ API and ABI Closure](#t015) | NOT_STARTED | none | B0 planned; implementation/build/runtime NOT_RUN | 2026-09-12 |
-| [T001 Runtime Configuration and Export](#t001) | NOT_STARTED | B0 exit | B1 planned; implementation/build/runtime NOT_RUN | 2026-09-12 |
+| [T017 Core Operation Runtime and Channels](#t017) | NOT_STARTED | B0 exit | B0C planned; C-09 PO-C1,C2 NOT_RUN | 2026-09-12 |
+| [T018 DI Delegation to Core Operations](#t018) | NOT_STARTED | T017 static | B0C planned; C-09 PO-C3,C4 NOT_RUN | 2026-09-12 |
+| [T001 Runtime Configuration and Export](#t001) | NOT_STARTED | B0C exit | B1 planned; implementation/build/runtime NOT_RUN | 2026-09-12 |
 | [T002 Runtime Shutdown and Child Ownership](#t002) | NOT_STARTED | T001 static | B1 planned; implementation/build/runtime NOT_RUN | 2026-09-12 |
 | [T016 Extension Registration and Cooperative Control](#t016) | NOT_STARTED | B1 exit | B2E planned; implementation/build/runtime NOT_RUN | 2026-09-12 |
 | [T003 Verified Package Preparation](#t003) | NOT_STARTED | B2E exit | B2 planned; implementation/build/runtime NOT_RUN | 2026-09-12 |
@@ -25,6 +27,11 @@
 | [T014 Design API and Scoped Handoff](#t014) | NOT_STARTED | T012 acceptance | B9 planned; implementation/build/runtime NOT_RUN | 2026-09-12 |
 
 ## Current Checkpoint
+
+2026-09-12 Core/App修订：源码确认四消息/协作/流/scoped registration已有Core实现，但DI仍自持通用executor和等待状态。
+新增[C-09](contracts/core-app-boundary.md)与T017/T018，18任务12批，全部NOT_STARTED；当前顺序B0→B0C→B1→B2E→B2及其余原序。
+本轮设计覆盖此前“新公开类都在DI”的表述；DI保留领域包装，通用实现下移Core。证据见[boundary audit](evidence/core-boundary-20260912.md)。
+以下16任务/11批记录为上一文档checkpoint历史，不能作为当前执行队列。
 
 2026-09-12：核对现有skill确有Class/Function/Field契约，但185原任务缺内部实现绑定；已补[C-08](contracts/code-design.md)，逐任务Design binding覆盖类/文件delta、字段、关键函数、流程和PO。
 新增shared skill开工前设计检查，更新plan/tasks模板及本机入口/个人安装副本。仍16任务11批、全部NOT_STARTED。
@@ -47,11 +54,37 @@ C-07每行是T015 exposure、T011 C++消费、T012绑定和T014文档的共同�
 
 ## Implementation Units
 
+<a id="t017"></a>
+
+- [ ] T017 [US1] Core Operation Runtime and Channels — ndn-service-framework/OperationRuntime.hpp/.cpp; ndn-service-framework/OperationState.hpp; tests/unit-tests/core-operation-runtime.t.cpp; tests/installed-api/core-operation-consumer.cpp; wscript; tests/wscript
+
+  **Batch / Depends**: B0C / B0 exit。
+
+  **Design binding**: [C-09](contracts/core-app-boundary.md#concrete-design-binding) CB01,CB02 / PO-C1,C2；文件、字段owner及关键签名按契约，状态PLANNED。
+
+  **Implementation and review**: 提取通用调度/ticket/close/drain、完成等待/退订/可靠reader；复用Core已有stream传输，不导入DI领域类型。逐任务review-agent只读静态门。
+
+  **Exit / oracle**: Core-only安装消费者无DI/Python/ONNX依赖；PO-C1全部C++竞态/生命周期反例通过，TSan重复两次；批末与T018共同验证。
+
+<a id="t018"></a>
+
+- [ ] T018 [US2] DI Delegation to Core Operations — NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp/.cpp; tests/integration-tests/di-core-operation.t.cpp; tests/wscript
+
+  **Batch / Depends**: B0C / T017 static；启动前核对Spec184同树生产链及并行源码变化。
+
+  **Design binding**: [C-09](contracts/core-app-boundary.md#concrete-design-binding) CB03,CB04 / PO-C3,C4；旧签名兼容、领域完成时机不变。
+
+  **Implementation and review**: 删除DI私有executor与重复通用等待状态，桥接Core State；保留模型/attempt/会话语义，复用BeginCollaboration/CommitCollaborationPlan/CancelCollaboration及scoped registration。静态审查不得把stream final当durable完成。
+
+  **Coverage lanes**: 主链PO-C3；错误/取消/迟到PO-C1,C3；线程/生命周期PO-C1；安全/域边界PO-C3,C4；兼容/安装PO-C2,C4。
+
+  **Exit / oracle**: 两任务静态门与组合流程审查后运行Spec185CoreOperation、Spec185DiCoreOperation及受影响Core流/协作/注册回归；记录review-agent路径/SHA、候选与selector、static/compile-link/runtime-test/unobserved漏检复盘。C++断言闭合且依赖零反向边才CLOSED_FOR_VALIDATION，否则保留OPEN_FOR_NEXT_BATCH及具体触发条件；结果写evidence/b0c-core-operation.md。
+
 <a id="t001"></a>
 
 - [ ] T001 [US1] Runtime Configuration and Export — Runtime.hpp/Runtime.cpp; root wscript; tests/unit-tests/di-runtime.t.cpp
 
-  **Batch / Depends**: B1 / B0 exit。
+  **Batch / Depends**: B1 / B0C exit。
 
   **Design binding**: [C-08](contracts/code-design.md#design-binding-and-readiness) CD01 / F01–F04 / FN01 / FLOW01 / PO01；Design status以C-08范围审查为准，开工前核对当前源码。
 

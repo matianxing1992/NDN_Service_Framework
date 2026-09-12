@@ -6,7 +6,7 @@
 ## Constitution Check
 
 沿用 C++17、ndn-cxx/Core、现有 native DI catalog/adapter/planner/Provider 和 Waf；
-绑定为 pythonWrapper 下现有 pybind11 模块。新公开类在 DI 层，Core 不引入模型语义。
+绑定为 pythonWrapper 下现有 pybind11 模块。DI公开领域包装；通用运行时、订阅和等待机制在Core实现，Core不引入模型语义，详见[C-09](contracts/core-app-boundary.md)。
 目录名固定185，不建长期功能分支，不执行实现/编译/实验作为本轮规划的一部分。
 所有新示例避免 C++20 designated initializer；使用构造后赋值。
 源码基线见 audit，开始执行时读取最新 HEAD、dirty diff 和184资格证据，不能用本轮 hash 永久冻结实现。
@@ -26,6 +26,7 @@ B1/B2可完成纯本地owner与模型准备；B3前须核对184的请求/授权/
 | Batch | Units | Shared boundary | Planned C++ selector | Dynamic profile | Stable observable exit |
 | --- | --- | --- | --- | --- | --- |
 | B0 | T015 | Installed SDK/ABI | Spec185InstalledApi | asan | 安装prefix独立包含/链接/构造析构通过 |
+| B0C | T017,T018 | Core runtime primitives and DI delegation | Spec185CoreOperation / Spec185DiCoreOperation | tsan | Core-only consumer可用，DI委托同一owner，既有协议回归通过 |
 | B1 | T001,T002 | Runtime/config/owner lifecycle | Spec185Runtime | tsan | open → user → close/drain，无活动owner |
 | B2E | T016 | Extension lifecycle/control | Spec185ExtensionRegistry | tsan | freeze、协作控制及runner隔离通过 |
 | B2 | T003,T004 | Preparation catalog/cache/lease | Spec185Preparation | tsan | 8并发prepare单次生产者，失败不发布READY |
@@ -38,6 +39,8 @@ B1/B2可完成纯本地owner与模型准备；B3前须核对184的请求/授权/
 | B9 | T014 | Design handoff | document checks | none | 源码/API/资格交付一致 |
 
 B6/B8的none仅适用于不改变native行为的导出/薄封装；若引入owner或状态变化，先归入相应native批次并增加动态卡。
+实际依赖为B0→B0C→B1；B0C具有C-09 PO-C1–C4五lane覆盖，逐任务只读静态门后做组合审查，再共享编译/测试。
+Core头/ABI改变须重建受影响消费者并记录真实链接闭包；本轮仅修订规划，不执行native构建。
 B7只重跑受185改变的链路及最终process范围，不重复全部184历史实验。
 B6–B9各自单任务有独立出口：不能要求先完成Python再运行其依赖的C++进程验证，也不能先交付再验收。
 

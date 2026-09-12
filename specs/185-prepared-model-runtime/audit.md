@@ -6,6 +6,10 @@
 
 ## Findings and Resolutions
 
+**2026-09-12 Core/App revision**：原设计将通用executor、等待/订阅状态继续放在DI，不能充分满足跨应用复用目标。
+已有Core四消息/协作/流/注册无需重造；新增[C-09](contracts/core-app-boundary.md)和B0C/T017/T018提取通用运行时。
+模型/会话/KV事务仍归DI；[本轮源码依据与验证边界](evidence/core-boundary-20260912.md)。全部18任务仍NOT_STARTED。
+
 | ID / Severity | Original issue / source evidence | Revised decision / owner |
 | --- | --- | --- |
 | A01 HIGH | 将 inspectModel 调用理解为每次重解析不准确：NativeCanonicalPreparationCatalog.cpp:54–77 构造已验证；115–118 回调查冻结记录；NativeRequestPreparation.cpp:194–214 保留请求绑定 | prepare 补 façade/get-or-create/lease；保留轻量输入/model 检查。C-02/T003,T005 |

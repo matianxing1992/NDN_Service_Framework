@@ -1,5 +1,10 @@
 # 修订记录
 
+## Spec185 Core and Application Ownership · 2026-09-12
+
+C-09划分既有Core调用机制、拟下移通用运行时及DI领域逻辑；T017/T018组成B0C前置批次。
+现18任务12批，全部NOT_STARTED；当前源码未改，目标PDF同步，本轮不刷新历史源码快照。
+
 ## Spec185 Implementation Design Binding · 2026-09-12
 
 C-08补内部类/字段/函数/流程与逐任务Design binding；合作策略前移至Package构造前，保持16任务11批。

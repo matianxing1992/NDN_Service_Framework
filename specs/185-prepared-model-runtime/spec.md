@@ -61,7 +61,11 @@ C++ example 与 Python 薄封装使用同一个 PreparedModel 后端。维护调
 - **FR-011** **Extension Lifecycle**: 注册freeze、duplicate/replace、runner隔离及协作deadline/cancel遵循C-05，不承诺任意插件抢占。
 - **FR-012** **Independent C++ Capability**: C-06/C-07全部C++入口与生命周期原生实现；Python核心对象直接绑定、便利层不持领域状态；逐行exposure/消费/绑定验收，先T013再T012。
 
+- **FR-013** **Reusable Core Ownership**: [C-09](contracts/core-app-boundary.md)通用调度、ticket、完成等待、订阅/reader由Core实现；DI仅保留领域状态与包装，复用已有四消息/协作/流/注册入口；Core不得依赖DI/Python/ONNX。T017/T018先于T001。
+
 ## Success Criteria
+
+- **SC-008** **Core Reuse Proof**: C-09 PO-C1–C4全部通过；Core-only非模型消费者独立链接，真实DI请求委托同一通用实现且保留领域提交顺序，受影响Core回归通过。
 
 - **SC-001** **Reuse**: 同一 key 的 8 个并发 prepare 只有一次 source 获取/验证/检查；随后 2 次请求不重复完整 source 解析，且有各自 request identity。
 - **SC-002** **Isolation**: C-02 缓存策略矩阵全部符合预期；任一等待者取消不会终止其他有效等待者；失败不产生可见半成品。
@@ -93,6 +97,7 @@ Spec184 T007/T008、Qwen3.6-27B 外部资格和旧路径 retirement 未完成项
 
 | Requirement / Story | Contract | Task owner | Production entry / C++ oracle | Evidence |
 | --- | --- | --- | --- | --- |
+| FR-013 / US1,US2 | C-09 | T017,T018 | Core OperationRuntime/State and NativeInferenceClient; Spec185CoreOperation / Spec185DiCoreOperation | evidence/b0c-core-operation.md |
 | FR-001 / US1 | C-01 | T001,T002 | Runtime::open/close/drain; Spec185Runtime ownership counters | evidence/b1-runtime.md |
 | FR-002,FR-003 / US1 | C-02 | T003,T004 | User::prepare; Spec185Preparation source/parser counters and byte oracle | evidence/b2-preparation.md |
 | FR-004,FR-005 / US2 | C-01,C-03 | T005,T006 | PreparedModel::request; Spec185PreparedRequest signed native trace and independent result | evidence/b3-request.md |
