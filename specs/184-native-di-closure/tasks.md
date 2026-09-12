@@ -47,6 +47,16 @@ Python harness 不因本表再次无条件重跑。`Qwen3-0.6B` 只能作为 C++
 
 ## Current Checkpoint
 
+2026-09-12 **T007-A3-EXTERNAL-PREFLIGHT / WAITING_EXTERNAL_INPUT**：本机只能运行
+`Qwen3-0.6B`，同树 C++ fixture/test 结果不加载实际 0.6B 权重，不能替代
+`Qwen/Qwen3.6-27B`。对 `itiger` 的 SSH、Slurm/Apptainer 和模型库存检查为只读；当前只找到
+`Qwen/Qwen3-0.6B`，没有 27B bundle、Spec184 当前 candidate 或外部资格运行。A4 的
+Python 兼容/路由聚焦检查为 30 passed，但 compatibility manifest 的 344 个 entry
+仍全部 `removalEligible=false`，所以旧路径退出仍为 `PARTIAL`。详见
+[A4 retirement and external boundary](evidence/a4-retirement-external-boundary-20260912.md)。
+T007 保持 `IN_PROGRESS`/`PARTIAL`，A3 保持 `WAITING_EXTERNAL_INPUT`，A4 保持 `PARTIAL`，
+T008 保持 `BLOCKED_BY_T007`。
+
 ### Proposal Origin coverage restoration (2026-09-11, documentation only)
 
 根据完整 Origin 补齐双语 Proposal 的动机、背景、框架架构/API、三种调用情境、对象/流、UAV 与 DI 工作流及评价方法。参见 [本轮文档证据](evidence/proposal-origin-expansion-20260911.md) 与 [逐节覆盖矩阵](../../docs/PAPER/proposal-defense/origin-coverage-review.md)。初次文档驱动路径错误已定位；修复后四入口编译、镜像文本、引文、页面边界及版式复核通过，英文 49 页、中文 38 页。产品代码、实验数字与 T007/T008 资格状态不因论文补写改变。
