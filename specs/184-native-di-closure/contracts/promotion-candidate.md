@@ -412,3 +412,20 @@ spec.tasks=eb2107a935cf551b78f314fcc112c72fefb4afaf1a47649962536c4efc172546
 
 The SHA-256 of these sorted lines followed by a final newline is
 `sha256:596d4b5d3cdcb79870f4d9c13756db9a2f61d744bc5c800376bc2377063bf30d`.
+
+## Current Y-B progress overlay (2026-09-12)
+
+The binding-refresh candidate is unchanged. Y-B now passes on the same runtime identity; Y-N,
+A4, and the external Qwen3.6-27B row remain open. The updated ordered member map is the prior
+binding-refresh map with these member replacements/additions:
+
+```text
+evidence.remainder_audit=0131416856fb7364ed535693273e8d5dd0a447653bfd128f193e8acda327f350
+evidence.t007_process=f83a3e541e8d97665c96cd7844469a428c68927249a9e0bbebbfdaf618962d6a
+evidence.task_registry=c0250e9eb76ee35b066f8abac3e08edf86cb328e7b1e4a21e8679d67195b4066
+log.yolo_y_b=746f2df2469901050676abe077154a0cfe6c7354db0a354d43c431ddc8639da5
+spec.tasks=a1b3fbaff4c11e73cc697b3627d6d94d8d2e0ab3079a6b72d4b4fc47432931d6
+```
+
+The full map remains the previous overlay plus those replacements/additions; its resulting
+candidate identity is `sha256:45c288c68fd1de64cdb341a108332c26ef8e63dbf3b37c5d733ed2a89ecf2628`.

@@ -359,3 +359,15 @@ launcher log is `.codex-tmp/spec184-yolo-Y-A-run-20260912-r58.log` (SHA-256
 `bc2320fea3a85682eea468cb2d59599b76bda6c57474a647fb1a7a9ba4b867cb`). This closes only the
 current-candidate A1 row; Y-B/Y-N and inherited negative/retirement rows remain open, while
 Qwen3.6-27B remains external and Qwen3-0.6B remains smoke-only.
+
+## Current candidate Y-B (2026-09-12)
+
+The same rebuilt binding and r4 native receipt were used for the protected multi-provider Y-B
+case. The case completed with `SPEC180_CASE_RESULT status=PASS case=Y-B` and terminal
+`YOLO_ACK_DRIVEN_RESULT status=true`. The C++ numerical oracle matched with shape `[1,50,6]`
+and `maxAbsError=0.0005340576171875`; BackboneNeck, both Detect shards and Merge completed
+their native execution roles. Seven child exits and cleanup completed. Output is
+`.codex-tmp/spec184-yolo-Y-B-output-20260912-r59/`; launcher log is
+`.codex-tmp/spec184-yolo-Y-B-run-20260912-r59.log` (SHA-256
+`746f2df2469901050676abe077154a0cfe6c7354db0a354d43c431ddc8639da5`). This closes the Y-B
+portion of T007-A2; Y-N remains pending.

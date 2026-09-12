@@ -145,3 +145,10 @@ and `maxAbsError=0.0005340576171875`. Child exits and cleanup are complete.
 | T007-A2 | `NOT_RUN_CURRENT_CANDIDATE` | run Y-B then Y-N against the same r4 candidate |
 | T007-A3 | `WAITING_EXTERNAL_INPUT` | exact Qwen3.6-27B remains external; 0.6B is smoke-only |
 | T007-A4 | `PARTIAL` | continue inherited negative/retirement closure |
+
+The subsequent protected multi-provider Y-B run also passed on the same binding-refresh
+candidate. Output is `.codex-tmp/spec184-yolo-Y-B-output-20260912-r59/`; launcher log is
+`.codex-tmp/spec184-yolo-Y-B-run-20260912-r59.log` (SHA-256
+`746f2df2469901050676abe077154a0cfe6c7354db0a354d43c431ddc8639da5`). Its C++ numerical
+oracle matched, all seven child processes exited and cleanup completed. A2 remains `PARTIAL`
+until the Y-N negative matrix is rerun.

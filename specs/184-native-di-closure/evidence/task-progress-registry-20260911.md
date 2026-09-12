@@ -61,3 +61,7 @@ was regenerated and verified. Root MiniNDN Y-A then passed on that same candidat
 oracle matched and terminal cleanup completed. T007-A1 is therefore `PASS_FOR_ROW`. T007-A2
 Y-B/Y-N remains `NOT_RUN_CURRENT_CANDIDATE`; A3 remains `WAITING_EXTERNAL_INPUT` because this
 host can run only Qwen3-0.6B smoke, and A4 remains `PARTIAL`. T007 and Spec184 are not complete.
+
+The protected multi-provider Y-B run `r59` also passed against the same refreshed candidate;
+T007-A2 is now `PARTIAL` with Y-N still outstanding. This update does not promote T007 or
+Spec184 to complete.
