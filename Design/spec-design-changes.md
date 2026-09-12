@@ -14,6 +14,22 @@
 
 ## 索引
 
+### 2026-09-12 — Spec184 Native MiniNDN requester route
+
+- **Status**: PARTIAL（caller route `CLOSED_FOR_VALIDATION`）；T007 qualification remains IN_PROGRESS / PARTIAL。
+- **Before/after**: MiniNDN runner previously appended `--native-cpu-provider` even when
+  `--native-requester-config` was present, making the legacy per-token diagnostic branch win over
+  `APPClient.request_native_reference`. The runner now selects mutually exclusive native requester
+  and compatibility diagnostic arguments; User rejects the conflicting pair and normalizes the native
+  final `tokenIds` response for the existing first-token oracle.
+- **Current C++ boundary**: `NativeInferenceClient` still plans after `ACK_CLOSED`; the Provider keeps
+  metadata-only startup slots and assembles canonical ONNX after authenticated Selection. No C++ API,
+  wire contract, or Provider state-machine change was made.
+- **Source / evidence**: checkpoint `7488ac08`; [Spec184 caller evidence](../specs/184-native-di-closure/evidence/native-minindn-post-ack-routing-20260912.md),
+  [caller matrix](../specs/184-native-di-closure/contracts/caller-matrix.md), and [tasks](../specs/184-native-di-closure/tasks.md)。
+- **PDF boundary**: no Design/API signature or target/current architecture change; current/target PDFs
+  were not regenerated. The caller route and qualification limits are recorded in the active Spec evidence.
+
 ### 2026-09-11 — Spec184 Native DI Closure / Spec182 Transfer
 
 - **Status**: NO_DESIGN_CHANGE；184 implementation NOT_STARTED；182 TRANSFERRED / qualification INCOMPLETE。
