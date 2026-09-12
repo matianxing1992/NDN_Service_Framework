@@ -48,6 +48,13 @@ Python harness 不因本表再次无条件重跑。`Qwen3-0.6B` 只能作为 C++
 
 ## Current Checkpoint
 
+2026-09-12 **T007-LOCAL-EXPERIMENT-STATIC-HARDENING / CLOSED_FOR_VALIDATION**：对分层本地
+入口补充只读静态门：`minindn` 层现在要求 Controller、Authority 和全部 Provider 的 ready
+标记；`run` 在启动前重新验证 bundle digest 及 `app-manifest.json` 的路径和 SHA-256。官方
+`review-agent` 复核无 P1/P2 findings；focused tests `11 passed`，`py_compile` 和目标文件
+`git diff --check` 通过。该单元没有启动 MiniNDN 或真实模型请求，T007/A3/A4/T008 状态不变。
+详见 [Qwen06B local r05 and layered runner revision](evidence/qwen06b-local-experiment-r05-20260912.md)。
+
 2026-09-12 **T007-LOCAL-EXPERIMENT-R05-AND-LAYER-REVISION / PARTIAL**：按一次真实 root
 MiniNDN r05 结果继续收敛本地入口。Controller、Authority、三个 Provider 均 ready，首个
 失败边界为 Requester C++ catalog source 的 `DI_NATIVE_ONNX_PARSE`；该失败不是 ACK、

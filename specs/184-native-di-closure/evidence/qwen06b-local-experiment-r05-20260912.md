@@ -45,3 +45,18 @@ Response、ONNX 数值或会话结果，不能计为协议或模型 PASS。MiniN
 
 T007、A3、A4 和 T008 状态不因本记录提升；canonical source 交付后才可重新执行
 `prepare -> run`，并继续沿当前候选身份记录结果。
+
+## Static gate hardening
+
+对本地入口的后续静态复核覆盖了 `startup_markers_observed`、`main` 的 bundle 复核、focused
+test 调用及 run-record 状态传播。发现并修复两个边界：Controller 的
+`ServiceController started` 必须和 Authority/全部 Provider ready 一起出现，才可把启动层
+记为 `PASS`；`run` 必须重新计算 `bundle-manifest.json` digest，并核对其引用的
+`app-manifest.json` 路径与 SHA-256，任何变化都在 MiniNDN 启动前拒绝。官方
+`review-agent`（SHA-256 `07079efd0dc76f05fade424e5dfb048dce1de2df7626e1a4f56292a4f3f92228`）
+按只读 defect-first 规则复核这两个脚本及调用/测试范围，未发现新的 P1/P2 缺陷。
+
+本轮验证为 `py_compile`、`python3 -m pytest -q tests/python/test_spec184_qwen06b_local_experiment.py`
+（`11 passed`）和目标文件 `git diff --check`；没有启动 MiniNDN，也没有改变真实模型、协议或
+qualification 结果。该修改只收紧分层入口的 fail-closed 判据，T007 继续 `IN_PROGRESS` /
+`PARTIAL`。

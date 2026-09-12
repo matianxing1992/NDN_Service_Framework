@@ -202,7 +202,15 @@ def _log_texts(log_root: Path) -> list[str]:
 def startup_markers_observed(log_root: Path) -> bool:
     """Return true only when the native runtime reached all startup roles."""
     texts = _log_texts(log_root)
-    if not texts or not any("NATIVE_GRANT_AUTHORITY_READY" in text for text in texts):
+    if not texts:
+        return False
+    try:
+        controller_text = (log_root / "controller.log").read_text(errors="replace")
+    except OSError:
+        return False
+    if "ServiceController started" not in controller_text:
+        return False
+    if not any("NATIVE_GRANT_AUTHORITY_READY" in text for text in texts):
         return False
     provider_logs = sorted(log_root.glob("provider-*.log"))
     if not provider_logs:
@@ -406,6 +414,36 @@ def command_for(args: argparse.Namespace, profile: dict[str, Any], run_dir: Path
     return command
 
 
+def validate_prepared_bundle(run_dir: Path, launch: dict[str, Any],
+                             command: list[str]) -> dict[str, Any]:
+    """Revalidate every immutable input recorded by ``prepare`` before launch."""
+    bundle_path = run_dir / "bundle-manifest.json"
+    if not bundle_path.is_file():
+        raise SystemExit("BUNDLE_REQUIRED")
+    try:
+        bundle = json.loads(bundle_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        raise SystemExit("BUNDLE_INVALID")
+    if (not isinstance(bundle, dict) or
+            bundle.get("candidateDigest") != launch.get("candidateDigest") or
+            bundle.get("commandDigest") != canonical_digest(command) or
+            launch.get("bundleDigest") != canonical_digest(bundle) or
+            bundle.get("status") != "PASS"):
+        raise SystemExit("BUNDLE_INPUTS_CHANGED")
+    app_manifest = run_dir / "app-manifest.json"
+    app_manifest_ref = bundle.get("appManifest")
+    try:
+        app_manifest_digest = sha256_file(app_manifest)
+    except OSError:
+        app_manifest_digest = None
+    if (not isinstance(app_manifest_ref, dict) or
+            app_manifest_ref.get("path") != str(app_manifest) or
+            app_manifest_digest is None or
+            app_manifest_ref.get("sha256") != app_manifest_digest):
+        raise SystemExit("BUNDLE_APP_MANIFEST_CHANGED")
+    return bundle
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=("check", "prepare", "run", "local"))
@@ -506,13 +544,8 @@ def main() -> int:
     if not isinstance(command, list) or not all(isinstance(item, str) for item in command):
         raise SystemExit("LAUNCH_RECORD_INVALID")
     record_path = run_dir / "run-record.json"
+    bundle = validate_prepared_bundle(run_dir, launch, command)
     bundle_path = run_dir / "bundle-manifest.json"
-    if not bundle_path.is_file():
-        raise SystemExit("BUNDLE_REQUIRED")
-    bundle = json.loads(bundle_path.read_text(encoding="utf-8"))
-    if (bundle.get("candidateDigest") != launch.get("candidateDigest") or
-            bundle.get("commandDigest") != canonical_digest(command)):
-        raise SystemExit("BUNDLE_INPUTS_CHANGED")
     record = json.loads(record_path.read_text(encoding="utf-8"))
     record["phases"]["machine"] = {"status": "PASS"}
     record["phases"]["candidate"] = {"status": "PASS", "manifest": str(run_dir / "app-manifest.json")}
