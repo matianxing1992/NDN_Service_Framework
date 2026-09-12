@@ -48,6 +48,13 @@ Python harness 不因本表再次无条件重跑。`Qwen3-0.6B` 只能作为 C++
 
 ## Current Checkpoint
 
+2026-09-12 **T007-LOCAL-EXPERIMENT-CHECK-PREPARE / CLOSED_FOR_VALIDATION**：在当前提交
+`0df480f4` 上实际运行 `check -> prepare`，machine/model/candidate/bundle 均为 `PASS`，
+prepare 生成不可覆盖的 run layout，`minindn/workload/cleanup` 保持 `NOT_EVALUATED`；未启动
+MiniNDN。使用的是 7-node 示例 topology 和 tiny ONNX fixture，仅验证分层编排与身份绑定，不能
+计为真实 Qwen3-0.6B 请求结果。证据见 [Qwen06B local r05 and layered runner revision]
+(evidence/qwen06b-local-experiment-r05-20260912.md)。
+
 2026-09-12 **T007-LOCAL-EXPERIMENT-STATIC-HARDENING / CLOSED_FOR_VALIDATION**：对分层本地
 入口补充只读静态门：`minindn` 层现在要求 Controller、Authority 和全部 Provider 的 ready
 标记；`run` 在启动前重新验证 bundle digest 及 `app-manifest.json` 的路径和 SHA-256。官方

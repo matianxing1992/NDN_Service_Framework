@@ -60,3 +60,14 @@ test 调用及 run-record 状态传播。发现并修复两个边界：Controlle
 （`11 passed`）和目标文件 `git diff --check`；没有启动 MiniNDN，也没有改变真实模型、协议或
 qualification 结果。该修改只收紧分层入口的 fail-closed 判据，T007 继续 `IN_PROGRESS` /
 `PARTIAL`。
+
+## Post-checkpoint check/prepare smoke
+
+使用当前提交 `0df480f4`、示例 profile、现有三阶段 manifest 和
+`tests/fixtures/spec182/qwen-native-config.onnx` 运行了新的入口 smoke。`check` 返回
+`PASS`（`machine=PASS`、`model.canonicalSource=PASS`）；`prepare` 返回
+`NOT_EVALUATED`，候选为 `qwen06b-969135acd8a6`，并在
+`/tmp/spec184-layered-validation-20260912-r2/layered-r01/` 写入 bundle。run-record 的层状态为
+`machine=PASS,candidate=PASS,model=PASS,bundle=PASS,minindn=NOT_EVALUATED,workload=NOT_EVALUATED,cleanup=NOT_EVALUATED`。
+该 smoke 只验证输入身份和分层出口，未启动 MiniNDN；tiny fixture 也不构成真实 0.6B 模型
+资格结果。
