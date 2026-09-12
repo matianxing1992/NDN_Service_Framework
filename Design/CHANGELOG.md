@@ -1,5 +1,11 @@
 # 修订记录
 
+## Spec185 Prepared Model Runtime · 2026-09-12
+
+目标PDF新增准备模型对象、缓存/授权分离、会话和Provider边界；完整API契约与14任务归Spec185。
+当前PDF明确标注既有快照相对工作树54文件漂移，未冒充当前源码语义刷新。
+双PDF仅文档构建身份更新，当前/目标API清单与源码快照独立保留；产品实现NOT_STARTED。
+
 ## TG-02 Native-First Execution · 2026-09-10
 
 目标设计补充独立 artifact authority、真实 C++ 跨进程链路先于调用方迁移、

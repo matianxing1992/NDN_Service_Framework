@@ -14,6 +14,14 @@
 
 ## 索引
 
+### 2026-09-12 — Spec185 Prepared Model Runtime
+
+- **Status**: PLANNED；[Spec185](../specs/185-prepared-model-runtime/spec.md)、[任务](../specs/185-prepared-model-runtime/tasks.md)。
+- **Before/after**: 已有 NativeRequestCatalog 在构造期验证冻结模型，请求期仍需model/splitter等接线；目标提供Runtime/User/PreparedModel和有界准备缓存，NativeInferenceClient继续唯一执行。
+- **Contracts**: C-01公开API、C-02缓存身份、C-03请求/会话/Provider、C-04验收；详见[审计](../specs/185-prepared-model-runtime/audit.md)。
+- **Design/API**: 目标roadmap新增Spec185章节；新增签名在独立中文契约，不写入已实现API inventory。当前PDF提示历史基线漂移54文件；未刷新并行源码事实。
+- **Source/evidence**: 源码审计基线575b43cc93bbed29932303caf3d09974f1585af7；[规划证据](../specs/185-prepared-model-runtime/evidence/planning-20260912.md)。本轮没有native行为或资格测试，184未完成项不变。
+
 ### 2026-09-12 — Spec184 portable MiniNDN environment inputs
 
 - **Status**: PARTIAL（environment-input unit `CLOSED_FOR_VALIDATION`）；T007 qualification remains IN_PROGRESS / PARTIAL。
