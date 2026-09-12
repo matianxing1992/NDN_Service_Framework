@@ -5,6 +5,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp"
 #include "ndn-service-framework/InvocationStream.hpp"
+#include "ndn-service-framework/OperationState.hpp"
 
 #include <chrono>
 #include <condition_variable>
@@ -150,8 +151,6 @@ private:
   friend class NativeInferenceClient;
 };
 
-class SerialRequestExecutor; // internal serial executor, defined in the .cpp
-
 class NativeInferenceClient
 {
 public:
@@ -225,15 +224,13 @@ private:
   std::shared_ptr<const NativeOfferAdmission> m_admission;
   std::shared_ptr<const NativeRequestContract> m_requestContract;
   std::shared_ptr<const NativeRequestRuntime> m_runtime;
+  std::shared_ptr<ndn_service_framework::OperationRuntime> m_operationRuntime;
   // Production request names include a fresh owner scope per native client,
   // so separately launched or forked requester owners cannot reuse a cached
   // process scope. The private test port keeps deterministic legacy IDs for
   // unit assertions.
   std::string m_requestOwnerScope;
   std::function<std::chrono::steady_clock::time_point()> m_now;
-  std::shared_ptr<SerialRequestExecutor> m_executor;
-  std::shared_ptr<SerialRequestExecutor> m_notifications;
-  std::shared_ptr<SerialRequestExecutor> m_deadlines;
   std::shared_ptr<NativeOperationRegistry> m_operationRegistry;
   std::function<std::function<void()>(std::chrono::steady_clock::time_point,
                                      std::function<void()>)> m_schedule;

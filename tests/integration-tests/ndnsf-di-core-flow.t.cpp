@@ -6824,7 +6824,8 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
                                     bool conversationRequest = true,
                                     bool nativeConfigQwen = false,
                                     bool dynamicConversationPlacement = false,
-                                    bool exerciseFinalizeRace = false)
+                                    bool exerciseFinalizeRace = false,
+                                    bool failConversationCommit = false)
 {
   using namespace ndn_service_framework;
   test::BootstrapProfile profile;
@@ -7210,6 +7211,7 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
     },
     [model, policyDigest, protectionEpoch, role, serviceName, localProviderBootId, collaborationCalls,
      conversationAttempts, failFirst, repositoryInput, unaryRequest, conversationRequest,
+     failConversationCommit,
      expectedReferenceDataName, repositoryPlaintext] (
       ServiceProvider::CollaborationContext& ctx, const RequestMessage& request) {
       try {
@@ -7364,7 +7366,7 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
               continue;
             }
             const auto action = control.value("action", std::string{});
-            if (action == "FINALIZE") return;
+            if (action == "FINALIZE" || action == "ROLLBACK") return;
             if (action != "COMMIT") continue;
             const auto ack = nativeCanonicalJson(NativeJson{
               {"schema", "ndnsf-di-provider-conversation-commit-ack-v1"},
@@ -7378,7 +7380,7 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
               {"checkpointDigest", control.value("checkpointDigest", std::string{})},
               {"providerIdentity", ctx.localProvider().toUri()},
               {"providerBootId", localProviderBootId}, {"cacheEpoch", receipt.cacheEpoch},
-              {"committed", true}});
+              {"committed", !failConversationCommit}});
             ctx.publish("ndnsf-di-conversation-state-v1", commitTopic,
                         ndn::Buffer(ack.begin(), ack.end()));
             // A COMMIT control is terminal for this role.  Returning here
@@ -7587,6 +7589,20 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
     client.close();
     return;
   }
+  if (failConversationCommit) {
+    BOOST_REQUIRE(first.status() == NativeRequestStatus::Failed);
+    try {
+      (void)first.result(std::chrono::milliseconds(0));
+      BOOST_FAIL("conversation commit acknowledgement failure unexpectedly succeeded");
+    }
+    catch (const NativeDiError& error) {
+      BOOST_CHECK_EQUAL(error.code(), "NATIVE_CONVERSATION_COMMIT_ACK_BINDING");
+      BOOST_CHECK_EQUAL(error.boundary(), "commit");
+    }
+    BOOST_CHECK(!conversations->find("r4-b6-conversation-001").has_value());
+    client.close();
+    return;
+  }
   if (exerciseReplacement && !alternateProvider) {
     // This fixture deliberately has one Provider.  A failed Provider is
     // excluded from the recovery ACK, so the native client must reject the
@@ -7676,6 +7692,33 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
   std::cout << "SPEC182_NATIVE_DI_REQUEST_RESULT_OK\n" << std::flush;
   client.close();
 }
+
+// Keep the Spec185 entry points outside the legacy Boost suite namespace so
+// the separate integration translation unit can link them by stable names.
+BOOST_AUTO_TEST_SUITE_END()
+
+void
+spec185RunRealProviderUnary()
+{
+  Spec170NdnsfDiCoreFlow::runR4B6RealProviderConversationCase(
+    false, false, false, true, false);
+}
+
+void
+spec185RunRealProviderCancellationRace()
+{
+  Spec170NdnsfDiCoreFlow::runR4B6RealProviderConversationCase(
+    false, false, false, false, true, false, false, true);
+}
+
+void
+spec185RunRealProviderCommitFailure()
+{
+  Spec170NdnsfDiCoreFlow::runR4B6RealProviderConversationCase(
+    false, false, false, false, true, false, false, false, true);
+}
+
+BOOST_AUTO_TEST_SUITE(Spec170NdnsfDiCoreFlow)
 
 Spec175NativeTinyStreamResult
 runSpec175NativeTinyFourProviderCase(bool permuteRoleProviders)
