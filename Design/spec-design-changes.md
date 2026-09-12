@@ -16,6 +16,8 @@
 
 ### 2026-09-12 — Spec185 Prepared Model Runtime
 
+- **2026-09-12 16:24 -05:00 / NO_DESIGN_CHANGE**: tasks Updated及新checkpoint要求分钟与UTC offset；仅进度元数据格式修订，不改API/行为/状态或双PDF。[验证](../specs/185-prepared-model-runtime/evidence/progress-timestamps-20260912.md)。
+
 - **NO_DESIGN_CHANGE / batch execution**: [批次执行表](../specs/185-prepared-model-runtime/batch-execution.md)补齐18任务12批的静态门/共享验证范围，任务卡改为实际顺序；API、owner及产品行为沿C-01–C-09，本轮不改TeX或双PDF。[证据](../specs/185-prepared-model-runtime/evidence/batch-execution-20260912.md)。
 
 - **Core/App revision**: [C-09](../specs/185-prepared-model-runtime/contracts/core-app-boundary.md)确认协议/流/注册已有Core机制，通用运行时/等待/订阅仍需提取。新增T017/T018前置B0C，现18任务12批；模型/会话/KV语义保留DI。PLANNED，源码未迁移。[证据](../specs/185-prepared-model-runtime/evidence/core-boundary-20260912.md)。

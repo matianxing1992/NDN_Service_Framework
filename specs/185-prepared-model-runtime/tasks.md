@@ -5,28 +5,33 @@
 
 ## Execution Progress
 
+**Progress Timestamp**: `YYYY-MM-DD HH:mm ±HH:MM`，项目时区`America/Chicago`；Updated为该行最后修订时间，不是完成时间。
+本表于`2026-09-12 16:24 -05:00`升级时间格式，原18行仅记录`2026-09-12`，精确历史事件时间UNKNOWN；本次统一时间仅表示格式迁移。后续只更新状态、依赖、证据或剩余项实际变化的行，规则见[task progress](../../skills/speckit-code-design/references/task-progress.md#progress-timestamp)。
+
 | Unit / Details | Status | Depends | Evidence / Remaining | Updated |
 | --- | --- | --- | --- | --- |
-| [T015 Installed C++ API and ABI Closure](#t015) | PASS | none | B0 closed; [b0-installed-api](evidence/b0-installed-api.md) covers v17 STATIC_PASS, four C++ consumers, 67 headers, negative gate, ABI/ldd/hash | 2026-09-12 |
-| [T017 Core Operation Runtime and Channels](#t017) | PASS | B0 exit | B0C closed; [b0c-core-operation](evidence/b0c-core-operation.md), PO-C1,C2 C++/TSan/installed-consumer PASS | 2026-09-12 |
-| [T018 DI Delegation to Core Operations](#t018) | PASS | T017 static | B0C closed; [b0c-core-operation](evidence/b0c-core-operation.md), PO-C3,C4 C++ real-provider/regression PASS | 2026-09-12 |
-| [T001 Runtime Configuration and Export](#t001) | PASS | B0C exit | B1 closed; [b1-runtime](evidence/b1-runtime.md) static/compile-link/runtime PASS; later request path remains open | 2026-09-12 |
-| [T002 Runtime Shutdown and Child Ownership](#t002) | PASS | T001 static | B1 closed; [b1-runtime](evidence/b1-runtime.md) normal/TSan/installed C++ lifecycle PASS; owner-thread public path remains unobserved | 2026-09-12 |
-| [T016 Extension Registration and Cooperative Control](#t016) | PASS | B1 exit | B2E closed; [b2e-extensions](evidence/b2e-extensions.md) static/compile-link/runtime/TSan/installed C++ PASS; full packaging remains unobserved | 2026-09-12 |
-| [T003 Verified Package Preparation](#t003) | NOT_STARTED | B2E exit | B2 planned; implementation/build/runtime NOT_RUN | 2026-09-12 |
-| [T004 Single Flight Refresh and Leases](#t004) | NOT_STARTED | T003 static | B2 planned; implementation/build/runtime NOT_RUN | 2026-09-12 |
-| [T005 Prepared Request Projection](#t005) | NOT_STARTED | B2 exit + Spec184 scoped dependency gate | B3 planned; implementation/build/runtime NOT_RUN | 2026-09-12 |
-| [T006 Handle Deadlines Events and Cancellation](#t006) | NOT_STARTED | T005 static | B3 planned; implementation/build/runtime NOT_RUN | 2026-09-12 |
-| [T007 Prepared Conversations and Committed Checkpoints](#t007) | NOT_STARTED | B3 exit | B4 planned; implementation/build/runtime NOT_RUN | 2026-09-12 |
-| [T008 Conversation Recovery Replacement and Export](#t008) | NOT_STARTED | T007 static | B4 planned; implementation/build/runtime NOT_RUN | 2026-09-12 |
-| [T009 Provider Facade and Authenticated Assembly](#t009) | NOT_STARTED | B4 exit | B5 planned; implementation/build/runtime NOT_RUN | 2026-09-12 |
-| [T010 Protected Artifact and Runner Template Reuse](#t010) | NOT_STARTED | T009 static | B5 planned; implementation/build/runtime NOT_RUN | 2026-09-12 |
-| [T011 Native Caller Migration and Compatibility Registry](#t011) | NOT_STARTED | B5 exit | B6 planned; implementation/build/runtime NOT_RUN | 2026-09-12 |
-| [T013 Current Candidate Process Qualification](#t013) | NOT_STARTED | B6 exit | B7 planned; implementation/build/runtime NOT_RUN | 2026-09-12 |
-| [T012 Thin Python Prepared Model Facade](#t012) | NOT_STARTED | B7 C++ qualification exit | B8 planned; implementation/build/runtime NOT_RUN | 2026-09-12 |
-| [T014 Design API and Scoped Handoff](#t014) | NOT_STARTED | T012 acceptance | B9 planned; implementation/build/runtime NOT_RUN | 2026-09-12 |
+| [T015 Installed C++ API and ABI Closure](#t015) | PASS | none | B0 closed; [b0-installed-api](evidence/b0-installed-api.md) covers v17 STATIC_PASS, four C++ consumers, 67 headers, negative gate, ABI/ldd/hash | 2026-09-12 16:24 -05:00 |
+| [T017 Core Operation Runtime and Channels](#t017) | PASS | B0 exit | B0C closed; [b0c-core-operation](evidence/b0c-core-operation.md), PO-C1,C2 C++/TSan/installed-consumer PASS | 2026-09-12 16:24 -05:00 |
+| [T018 DI Delegation to Core Operations](#t018) | PASS | T017 static | B0C closed; [b0c-core-operation](evidence/b0c-core-operation.md), PO-C3,C4 C++ real-provider/regression PASS | 2026-09-12 16:24 -05:00 |
+| [T001 Runtime Configuration and Export](#t001) | PASS | B0C exit | B1 closed; [b1-runtime](evidence/b1-runtime.md) static/compile-link/runtime PASS; later request path remains open | 2026-09-12 16:24 -05:00 |
+| [T002 Runtime Shutdown and Child Ownership](#t002) | PASS | T001 static | B1 closed; [b1-runtime](evidence/b1-runtime.md) normal/TSan/installed C++ lifecycle PASS; owner-thread public path remains unobserved | 2026-09-12 16:24 -05:00 |
+| [T016 Extension Registration and Cooperative Control](#t016) | PASS | B1 exit | B2E closed; [b2e-extensions](evidence/b2e-extensions.md) static/compile-link/runtime/TSan/installed C++ PASS; full packaging remains unobserved | 2026-09-12 16:24 -05:00 |
+| [T003 Verified Package Preparation](#t003) | NOT_STARTED | B2E exit | B2 planned; implementation/build/runtime NOT_RUN | 2026-09-12 16:24 -05:00 |
+| [T004 Single Flight Refresh and Leases](#t004) | NOT_STARTED | T003 static | B2 planned; implementation/build/runtime NOT_RUN | 2026-09-12 16:24 -05:00 |
+| [T005 Prepared Request Projection](#t005) | NOT_STARTED | B2 exit + Spec184 scoped dependency gate | B3 planned; implementation/build/runtime NOT_RUN | 2026-09-12 16:24 -05:00 |
+| [T006 Handle Deadlines Events and Cancellation](#t006) | NOT_STARTED | T005 static | B3 planned; implementation/build/runtime NOT_RUN | 2026-09-12 16:24 -05:00 |
+| [T007 Prepared Conversations and Committed Checkpoints](#t007) | NOT_STARTED | B3 exit | B4 planned; implementation/build/runtime NOT_RUN | 2026-09-12 16:24 -05:00 |
+| [T008 Conversation Recovery Replacement and Export](#t008) | NOT_STARTED | T007 static | B4 planned; implementation/build/runtime NOT_RUN | 2026-09-12 16:24 -05:00 |
+| [T009 Provider Facade and Authenticated Assembly](#t009) | NOT_STARTED | B4 exit | B5 planned; implementation/build/runtime NOT_RUN | 2026-09-12 16:24 -05:00 |
+| [T010 Protected Artifact and Runner Template Reuse](#t010) | NOT_STARTED | T009 static | B5 planned; implementation/build/runtime NOT_RUN | 2026-09-12 16:24 -05:00 |
+| [T011 Native Caller Migration and Compatibility Registry](#t011) | NOT_STARTED | B5 exit | B6 planned; implementation/build/runtime NOT_RUN | 2026-09-12 16:24 -05:00 |
+| [T013 Current Candidate Process Qualification](#t013) | NOT_STARTED | B6 exit | B7 planned; implementation/build/runtime NOT_RUN | 2026-09-12 16:24 -05:00 |
+| [T012 Thin Python Prepared Model Facade](#t012) | NOT_STARTED | B7 C++ qualification exit | B8 planned; implementation/build/runtime NOT_RUN | 2026-09-12 16:24 -05:00 |
+| [T014 Design API and Scoped Handoff](#t014) | NOT_STARTED | T012 acceptance | B9 planned; implementation/build/runtime NOT_RUN | 2026-09-12 16:24 -05:00 |
 
 ## Current Checkpoint
+
+2026-09-12 16:24 -05:00 Progress timestamp revision：18行Updated升级为分钟及UTC offset；同步Spec Kit规则、模板和本机安装入口。状态/勾选/验收证据不变，历史只有日期的checkpoint原样保留；本次时间不是历史完成时间。见[时间规则验证](evidence/progress-timestamps-20260912.md)。下一产品任务仍按当前registry及依赖选择。
 
 2026-09-12 B2E closed：T016 已完成 v9/v10b/v11/v12 官方 review-agent 静态门及 B2E 组合审查；normal `Spec185ExtensionRegistry` 10/10、clang/TSan 重复两次各10/10、installed-prefix C++ extension consumer 通过。失败的 fixture 身份与系统工具链边界均已保留并修复，详见[b2e-extensions](evidence/b2e-extensions.md)；完整 Waf packaging、准备/请求/会话/Provider/完整资格/Python/文档仍未完成。下一依赖满足任务为T003/B2。
 2026-09-12 B1 closed：T001/T002 已完成官方 review-agent 静态门（T001 v7、T002 v4）及 B1 组合审查；正常 DI 7/7、Core 34/34，DI/Core TSan 各按要求重复通过，安装前缀 C++ Runtime consumer 通过。证据见[b1-runtime](evidence/b1-runtime.md)。全树安装曾在无关 spec181 链接和 Python editable hook 边界停止，未计入B1产品失败；准备/请求/会话/Provider/完整资格/Python/文档仍未完成。下一依赖满足任务为T016/B2E。
