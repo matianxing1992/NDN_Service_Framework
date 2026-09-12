@@ -528,13 +528,13 @@ source.tests.integration.cpp=fd96dcc5331aaebbbf3eb944ae594ee59f43d8148baef883be8
 source.utils.cpp=b93abea7df3434930bb081a0bfcff1b740db6aa782c1f36a0366f5de91364ac4
 source.utils.hpp=c383cb761e53a1fb09fa3930966f668b40507f4486c50aa2c0e1de6afe279458
 spec.caller=b2b079fd5f8e658aa6b2fec6bfec389830aa1c509fac4783f1f73e6c29c9a449
-spec.matrix=adb79a09f1ed3daf66b0aba31b40426a6e6def0cf6e983d5ebf5d7bd1911782f
+spec.matrix=124596bc4e582d645a8c749112845651db716a3d87e2c413bea072a7121ec038
 spec.plan=bc000e9c5059cc99fabcfeb1122894fa9163184098a55e0e1e787b3fe5b37615
 spec.spec=724f6aa1be1c6f151e5a71888f00bd0d4fecab1e002d07ba2c2f40473415eca1
 spec.tasks=d6313f4aed3ce42610a2fbf901456dadd7fc7d4f7cab507c2035aa9708c6ec9d
 ```
 
 The SHA-256 of these sorted lines followed by a final newline is
-`sha256:91c5f09a06375104c369168774899986c6cad07d61abc4739480c4d3b84fbba8`.
+`sha256:2bdc32e46858a19585cc67f8225bbd462277fb12601c62f387f522158c8fa082`.
 This overlay remains `FRESH_LOCAL_PARTIAL`: A3 is `WAITING_EXTERNAL_INPUT`, A4 is `PARTIAL`,
 and T008 remains `BLOCKED_BY_T007`.
