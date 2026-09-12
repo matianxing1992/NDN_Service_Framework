@@ -1,6 +1,15 @@
 \clearpage
 \section{Spec185：准备模型对象与应用入口}
-\lead{PLANNED · DI；接口与完整任务见 specs/185-prepared-model-runtime}
+\lead{PLANNED · Core 与 DI；接口与完整任务见 specs/185-prepared-model-runtime}
+
+\subsection{Core 与应用边界修订}
+现有 Core 已提供请求、ACK、Selection、Response、协作提交、流传输及作用域服务注册。
+DI 仍持有通用执行器和等待通知状态；仅有现有协议复用还不足以满足运行时复用目标。
+Spec185 的 C-09 新增前置 B0C（T017、T018）：在 Core 提供工作票据、调度、关闭与排空、
+完成等待、退订和可靠事件读取；DI 的公开句柄委托这些机制。
+模型准备、分片与放置评分、推理结果、token/KV、会话日志和终态事务仍由 DI 定义。
+传输完成不能提前成为会话持久提交成功。验收同时要求仅链接 Core 的非模型消费者与真实 DI 调用链通过；
+Core 不得反向依赖 DI、Python 或 ONNX。当前计划为18任务12批，均未实现；详细签名、字段、迁移及反例见 C-09。
 应用通过 Runtime 创建 User，调用 prepare 得到 PreparedModel，再以输入和可选 placement
 提交 request。NativeInferenceClient 保留唯一原生执行责任，过渡期保留旧签名。
 准备成功只表示本地不可变模型包可用，不表示权限有效、Provider 已选择或远端 runner 已就绪。
