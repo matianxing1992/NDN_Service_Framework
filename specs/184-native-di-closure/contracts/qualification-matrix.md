@@ -5,7 +5,7 @@
 
 The `candidateId` values in the historical row tables retain their original development
 checkpoints for traceability. The fresh candidate overlay below is the only current binding for
-the 2026-09-11 qualification attempt; row status remains `PARTIAL` until that row's complete
+the 2026-09-12 qualification attempt; row status remains `PARTIAL` until that row's complete
 selector or external-owner evidence is available.
 
 本表是最终资格的唯一行级入口。迁移记录的结构检查不能关闭任何一行；每行必须绑定
@@ -68,11 +68,11 @@ results update evidence availability for the affected rows but do not upgrade th
 
 | Gate | Status | Required closure |
 | --- | --- | --- |
-| `T007-A0` current-candidate runtime receipt | `PASS_FOR_ROW` | `build-spec184-b5-candidate-r4/spec180-native-build.json`, `verify` exit `0`, `/usr/bin/g++ -B/usr/bin`, `-j4`, and candidate-first paths; receipt records `binding_reused=true` |
-| `T007-A1` YOLO26n Y-A | `PASS_FOR_ROW` | Fresh current-candidate root run `r51`, C++ numerical oracle, terminal result, child exits and cleanup |
-| `T007-A2` YOLO26n Y-B/Y-N | `PASS_FOR_ROW` | Y-B `r37` and Y-N `r50`; protected multi-provider terminal path, seven declared Y-N boundaries, three Provider grant mutations, first-failure classification and cleanup |
+| `T007-A0` current-candidate runtime receipt | `PASS_FOR_ROW` | `build-spec184-b5-candidate-r4/spec180-native-build.json`, `verify` exit `0`, `/usr/bin/g++ -B/usr/bin`, `-j4`, and candidate-first paths; refreshed receipt records `binding_reused=false` |
+| `T007-A1` YOLO26n Y-A | `PASS_FOR_ROW` | Fresh current-candidate root run `r58`, C++ numerical oracle, terminal result, child exits and cleanup |
+| `T007-A2` YOLO26n Y-B/Y-N | `PASS_FOR_ROW` | Y-B `r59` and Y-N `r60`; protected multi-provider terminal path, seven declared Y-N boundaries, three Provider grant mutations, first-failure classification and cleanup |
 | `T007-A3` Qwen3.6-27B | `WAITING_EXTERNAL_INPUT` | Exact `Qwen/Qwen3.6-27B` three-stage manifest, tokenizer, CUDA runtime and experiment-owner result; local 0.6B is smoke-only; host capability and failed r4 selector lookup are recorded in [T007 model capability evidence](../evidence/t007-model-capability-20260912.md) |
-| `T007-A4` inherited negative/retirement rows | `PARTIAL` | Complete row evidence, including I05 collector boundary or an explicit retained `UNQUALIFIED` result |
+| `T007-A4` inherited negative/retirement rows | `PARTIAL` | Complete current-candidate row evidence, including I05 collector boundary or an explicit retained `UNQUALIFIED` result |
 | `T008` native development handoff | `BLOCKED_BY_T007` | T007 qualification pass, final candidate map and external rows explicitly marked `TRANSFERRED` |
 
 ## PO Closure Rows
@@ -180,6 +180,18 @@ owner cases, not substitutes for native C++ behavior selectors; Python only oper
 `matched=true`、shape `[1,50,6]`、`maxAbsError=0.0005340576171875`。本机没有
 `Qwen/Qwen3.6-27B` 的可执行资源，`Qwen3-0.6B` 只允许作为 smoke/ABI fixture，不能关闭
 Qwen qualification row。
+
+## Current Candidate Gate Overlay (2026-09-12)
+
+The refreshed r4 candidate is the current binding for local qualification. A0, A1 and A2 are
+closed for the row after receipt verification and current-candidate Y-A/Y-B/Y-N runs. The
+current Y-N matrix is `.codex-tmp/spec184-yolo-Y-N-output-20260912-r60/y-n-matrix-result.json`
+with SHA-256 `009e07d68a766f1545312b87261884e789cbb207db4404432f1ac3729161215a`; all
+`Y-N-O/C/P/R/I/E/L` subcases passed at their declared boundaries. The exact
+`Qwen/Qwen3.6-27B` gate remains `WAITING_EXTERNAL_INPUT`, and T007-A4 remains `PARTIAL` for
+current-candidate inherited negative/retirement evidence, I05 observation completeness and
+Python retirement. This overlay changes neither the historical row identities nor the rule that
+local `Qwen3-0.6B` is smoke-only.
 
 ## Gate Rules
 
