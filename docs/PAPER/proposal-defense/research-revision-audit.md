@@ -1,5 +1,9 @@
 # Research-first Proposal Revision and Evidence Audit
 
+## 2026-09-11 Origin Coverage Restoration
+
+完整 Origin 对照与新增内容依据见 [coverage review](origin-coverage-review.md)，本轮机器检查见 [validation](origin-expansion-validation.json)。恢复框架、API、对象交付和完整应用流程；以下原检查保留为历史，不将它们的旧页数作为本轮结果。
+
 ## 2026-09-11 Chapter 4 Opening Wording
 
 按作者确认的措辞，将开头改为直接说明使用 NDNSF-UAV／NDNSF-DI 评估的

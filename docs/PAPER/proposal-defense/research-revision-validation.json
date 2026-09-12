@@ -1014,5 +1014,16 @@
     ],
     "raw_evidence_root": ".codex-tmp/proposal-ch4-wording-20260911",
     "slides_and_experiments": "UNCHANGED"
+  },
+  "latest_revision": {
+    "scope": "Origin coverage restoration; paper only",
+    "report": "origin-expansion-validation.json",
+    "pages": {
+      "main.pdf": 49,
+      "en/main.pdf": 49,
+      "main_ch.pdf": 38,
+      "ch/main.pdf": 38
+    },
+    "prior_fields": "historical checks, not recertified by this paper-only revision"
   }
 }

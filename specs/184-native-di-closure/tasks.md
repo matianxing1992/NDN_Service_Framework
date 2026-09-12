@@ -47,6 +47,10 @@ Python harness 不因本表再次无条件重跑。`Qwen3-0.6B` 只能作为 C++
 
 ## Current Checkpoint
 
+### Proposal Origin coverage restoration (2026-09-11, documentation only)
+
+根据完整 Origin 补齐双语 Proposal 的动机、背景、框架架构/API、三种调用情境、对象/流、UAV 与 DI 工作流及评价方法。参见 [本轮文档证据](evidence/proposal-origin-expansion-20260911.md) 与 [逐节覆盖矩阵](../../docs/PAPER/proposal-defense/origin-coverage-review.md)。初次文档驱动路径错误已定位；修复后四入口编译、镜像文本、引文、页面边界及版式复核通过，英文 49 页、中文 38 页。产品代码、实验数字与 T007/T008 资格状态不因论文补写改变。
+
 2026-09-12 **T007-LOCAL-CXX-SMOKE / PARTIAL**：本机不能运行 Qwen3.6-27B，未尝试 27B。
 修复 Spec184 独立测试树的 NAC-ABE include/test-access 边界并补齐同树 worker 依赖后，
 `integration-tests` 以 `-j4` 构建成功（46.811 秒、exit `0`），assembly worker 与五个

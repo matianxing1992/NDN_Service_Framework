@@ -1,0 +1,34 @@
+\section{组件与应用职责}
+框架将应用处理函数与 Provider 发现、消息关联和调用状态检查分离。ServiceUser 管理发出的请求及其回调，ServiceProvider 注册服务处理函数并处理选定调用，ServiceController 管理权限和授权材料。这些是软件角色：地面站可以调用相机服务，同时提供图像分析；计算节点也可以在执行本角色工作时请求上游服务。
+
+\begin{figure}[htbp]\singlespacing\centering
+\begin{tikzpicture}[every node/.style={draw,align=center,font=\small,text width=10.2cm,inner sep=7pt}]
+\node (app) at (0,0) {应用：服务类型、可行性策略与处理函数\newline 无人机操作或模型／张量语义};
+\node (runtime) at (0,-1.5) {NDNSF runtime：ServiceUser 与 ServiceProvider\newline 调用状态、授权检查和服务回调};
+\node (authority) at (0,-3) {ServiceController 材料与命名数据支撑\newline 权限状态、受保护消息、对象与流访问};
+\node (ndn) at (0,-4.5) {NDN 库与转发器\newline Interest/Data 交换、同步、签名验证};
+\draw (app)--(runtime);\draw (runtime)--(authority);\draw (authority)--(ndn);
+\end{tikzpicture}
+\caption{框架职责分组。连线表示软件依赖，而非数据包方向或强制部署拓扑。Controller 是逻辑授权方，不是每次交换的中间转发节点。}
+\end{figure}
+
+应用定义服务含义并提供可行性与执行逻辑。框架不能仅凭有效 ACK 判断相机视野是否被遮挡，或所报告 GPU 是否真的能在截止时间前完成推理。框架可以关联 ACK 和请求，验证参与身份及必要的受保护值，并应用选择策略。Positive ACK 表达在请求条件下的参与意愿，不证明执行已经结束；除非协议另有定义，也不自动形成资源预留。
+
+ServiceContainer 在一个进程内组合运行角色与本地服务。其 local registry 允许受信组件调用已注册功能，不必把每次内部调用变成网络交换。应用必须让 runtime 和回调依赖存活到活动操作关闭。本地组合有助于复用相机或推理设施，但远程调用者不能将其作为另一条绕过授权的路径。
+
+当前类型化 C++ 接口体现这种分工。以下简化例子使用应用定义的可序列化状态消息，省略身份配置、事件循环初始化和错误处理，仅展示 API 使用方式，并非可独立执行程序。
+\begin{lstlisting}[language=C++,caption={紧凑状态服务的类型化注册与调用。}]
+provider.addHandler<StatusQuery, StatusReply>(
+  ndn::Name("/status"),
+  [](const ndn::Name& requester,
+     const StatusQuery& query, StatusReply& reply) {
+    readApplicationStatus(query, reply);
+  });
+
+user.RequestService<StatusQuery, StatusReply>(
+  candidates, ndn::Name("/status"), query,
+  [](const StatusReply& reply) { displayStatus(reply); },
+  []() { reportTimeout(); }, 2000);
+\end{lstlisting}
+
+处理函数解释查询并填写结果。User 接口指定超时和结果回调，NDNSF 管理外围交换。需要保密执行输入的服务使用后述受保护输入交付路径；此紧凑示例不要求任意应用输入都进入发现消息。类型化序列化可以减少重复代码，但不同服务版本的语义兼容性仍须由服务契约定义。

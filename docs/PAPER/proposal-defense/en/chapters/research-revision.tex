@@ -11,6 +11,8 @@ The initial NDNSF prototype selects one Provider from multiple candidates for ea
 
 Discovery and authorization remain research subjects independently of collaboration. A discovery descriptor supplies feasibility information, such as deadlines and resource requirements; application input supplies execution material. In the evaluated design, attribute-based encryption (ABE) protects descriptors, while protected-challenge verification, signatures under trust rules, and request-state checks govern authorization. Authorized but unselected candidates can read descriptors. The study also evaluates input/result protection, permission grants and withdrawals, and management costs.
 
+\input{\proposalroot/en/chapters/application-motivation}
+
 \section{Extending Invocation to Multi-Provider Collaboration}
 Some tasks require complementary services from different Providers. Independently invoking each service does not by itself specify which Provider fills each role or which intermediate objects a dependent service may accept. This proposal investigates an extension that makes those assignments and dependencies explicit while retaining the invocation foundation.
 
@@ -34,6 +36,8 @@ Existing invocation experiments do not validate a multi-role plan. The extension
 
 \chapter{Related Work and Design Alternatives}
 \label{chap:related-work}
+\input{\proposalroot/en/chapters/ndn-background}
+
 \section{Named Computation, Invocation, and Composition}
 NFN studies named computation and expression evaluation; NFaaS studies execution placement in a named-function environment~\cite{nfn,nfaas}. RICE provides an invocation handshake with support for authentication and security information~\cite{rice}. NSC specifies signed invocation Interests validated using an application-provided Trust Schema, and discusses protected input and result exchange~\cite{nsc}. These designs establish relevant invocation and authorization mechanisms. Experimental comparisons below refer to the tested NSC configuration, not every feature of its full design.
 
@@ -91,6 +95,8 @@ The comparison must include group-key or broadcast-encryption alternatives where
 \label{chap:ndnsf}
 This chapter first describes the invocation and authorization design under evaluation, then introduces the proposed collaboration extension. Later confidentiality and lifecycle refinements are not attributed to every initial-prototype path. The basic invocation selects one Provider; role assignments and named dependency edges belong to the extension.
 
+\input{\proposalroot/en/chapters/framework-architecture}
+
 \section{Participants, Trust, and Exclusions}
 These are protocol roles, not necessarily separate devices: one node may be both a User and a Provider. The managed organization registers identities and approves service permissions; the Controller administers that policy. Participants require a provisioned trust anchor and validation rules for identity certificates and Controller material. Not knowing which candidates will respond to this invocation does not mean that the authorization authority has never enrolled those entities. Billing, arbitrary business transactions, globally optimal scheduling, and protection against all denial-of-service traffic are outside the claimed scope.
 The User requests a service and selects its Provider; in the collaboration extension, it also coordinates role assignments. Providers offer and execute services. A Controller administers authorization material and signed status. Forwarders and caches can deliver Data without being trusted to authorize execution. The model trusts the Controller and the User's planning decision; it does not claim consensus against a malicious coordinator. An attacker may observe visible names and traffic, inject invalid objects, replay previously valid messages, or operate without the needed service permission. Credential compromise and intentional sharing by an authorized principal require additional controls and are not prevented by ABE alone.
@@ -125,6 +131,8 @@ These are NDNSF Data objects. Sync supports discovery of their names, after whic
 \input{\proposalroot/en/chapters/authorization-rationale}
 
 Discovery confidentiality applies to descriptor Content against parties lacking the required ABE decryption capability. It does not conceal the descriptor from other authorized candidates or provide traffic-analysis resistance. In the request-scoped protection design, the User encrypts application input with a symmetric key and delivers the necessary key material through Selection, encrypted for the chosen Provider's authenticated public key. The response key is shared by the requesting User and selected Provider. Other Users cannot decrypt the protected result under the key-secrecy assumptions; the Provider necessarily knows the plaintext it produces. These are the protection requirements for the evaluated design, rather than claims about every historical implementation path.
+
+\input{\proposalroot/en/chapters/invocation-data-services}
 
 \section{Proposed Extension: From ACKs to a Collaboration Plan}
 The extension changes the selection problem from choosing one executor to assigning complementary task roles. The application supplies a role/dependency template, required services, feasibility constraints, and deadline. The template may be written manually; automatic generation is not necessary to establish the framework contribution. A replaceable planning policy selects among eligible positive ACKs after the collection window closes. Closing the window freezes the candidates observed for that decision, not all possible Providers in the network. ACK claims can become stale, so a selected Provider still performs execution-time admission and may reject work it can no longer execute.
@@ -172,6 +180,8 @@ These operations cover different framework requirements. Selecting a currently a
 
 Live video and recordings exercise different data paths. Camera Start/Stop is a service-control operation; the resulting live stream uses the named-data streaming interface. Recording references and complete stored objects require exact object retrieval rather than assumptions about cache persistence. These functions therefore contribute to validating stream lifecycle, ordering and gap handling, protected content delivery, and data-product retrieval. Video codecs, image processing, operator interfaces, and flight safety remain application responsibilities; their use of NDNSF is nevertheless part of framework validation.
 
+\input{\proposalroot/en/chapters/uav-workflows}
+
 \subsection{Representative Collaboration: Multi-View Collection and Analysis}
 An operator chooses a target location or area on a map. Request Data carries only the service-protected descriptor needed to assess coverage, viewing feasibility, sensors, and timing. Eligible UAVs return positive ACKs. The proposed workflow assigns complementary viewing roles and a processing role, then delivers execution details and appropriate keys through Selection.
 
@@ -191,6 +201,8 @@ Streamed inference and conversation workflows extend coverage to incremental out
 A planner combines a supported model description with runtime ACK capabilities, assigns Providers, and prepares their model fragments. Pipeline partitioning assigns sequential layers or layer groups. Tensor partitioning divides operations or tensors and requires the corresponding collective exchanges. Providers exchange activations or collective inputs over declared dependencies. ONNX~\cite{onnx} describes the computation graph; export alone does not implement cross-Provider collectives or establish numerical correctness. Model partitioning has substantial prior work~\cite{neurosurgeon,ddnn}; the NDNSF question concerns runtime assignment and authorized named-data execution.
 
 Autoregressive generation also uses each generated token in a later decoding step. This temporal dependency differs from forward computation through the layers. The evaluation separates model preparation, prefill, time to first token, subsequent decoding, state storage, and data transfer. Claims remain specific to tested models, precisions, partitions, and devices. A feasible single-Provider baseline is retained; if a model cannot fit one device, distributed feasibility is meaningful but a speedup against a non-running baseline is not.
+
+\input{\proposalroot/en/chapters/di-workflows}
 
 \section{Coverage, Evidence, and Completion Boundaries}
 Table~\ref{tab:application-coverage} groups the applications by the framework mechanisms they exercise. It is a coverage plan, not a claim that every listed path is qualified.
@@ -253,6 +265,8 @@ RQ3 & Matched Provider counts, tasks, capacities, deadlines and failure schedule
 \end{table}
 
 Each campaign must preserve its source/dependency/model identity, configurations, seeds, measurement start/end points, raw-run references, and analysis scripts. Scaling dimensions should follow the actual claim: candidates and services for discovery/authorization, edges and object sizes for collaboration. Ablation diagnoses a mechanism; an intentionally insecure variant is not a recommended deployment. A startup or collector failure must be diagnosed before attributing it to the harness or protocol. Preserve failed attempts; do not count an experiment that never reached its measurement boundary as a measured protocol failure rate.
+
+\input{\proposalroot/en/chapters/evaluation-methods}
 
 \chapter{Research Plan, Risks, and Decision Gates}
 \label{chap:timeline}

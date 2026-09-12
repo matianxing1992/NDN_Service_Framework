@@ -1,0 +1,22 @@
+\section{Application Needs and Framework Scope}
+A networked application often needs more than the location of a service. A drone operator may require a camera near an area before a deadline, while an inference requester may require a particular model, sufficient accelerator memory, and an acceptable preparation delay. A service advertisement identifies a possible source of execution, but it does not establish that the source is willing and able to undertake this task now. NDNSF separates permission to provide a service, current willingness to participate, selection for an invocation, and completion of the requested work.
+
+These distinctions also matter within an application that usually uses one device. After choosing a drone, an operator expects subsequent camera commands to affect that drone. Substituting another available Provider would change the meaning of the command. Conversely, an image-analysis request may permit any authorized compute Provider that meets its requirements. A reusable framework must support both situations without requiring the application to implement an unrelated communication protocol for each.
+
+The discovery descriptor contains the information needed for a participation decision. For a sensing task, this may include a coarse area, a time window, and a sensor requirement. For inference, it may include model identity, expected input size, and a deadline. Full images, detailed flight instructions, and inference prompts can be delivered after selection. The boundary follows the decision: information indispensable to assessing feasibility cannot simply be withheld until after that assessment. An application should nevertheless disclose only the necessary precision. For example, an authorized camera Provider may need an approximate search area, while an unselected candidate need not obtain the full mission route. Descriptor protection limits disclosure to authorized service Providers; it does not prevent them from learning or sharing what they legitimately decrypt.
+
+NDNSF-UAV and NDNSF-DI expose complementary demands. The former combines device-specific operations, changing observations, live data, and physical actions. The latter combines compute selection, model preparation, large artifacts, intermediate tensors, and incremental outputs. Both require authorization and bounded request lifetimes. Their differences test whether a common invocation and named-object interface remains useful beyond one workload. Reusability is an engineering objective to be evaluated through shared mechanisms and application-specific code, rather than assumed from implementing two demonstrations.
+
+\begin{table}[htbp]\centering\small
+\caption{Framework requirements and their relationship to the research questions.}
+\label{tab:framework-needs}
+\begin{tabularx}{\textwidth}{p{.23\textwidth}X p{.16\textwidth}}
+\toprule Requirement category & Required behavior & Research link\\\midrule
+Discovery and invocation & Find willing candidates, select an executor, correlate completion or timeout & RQ1, RQ3\\\midrule
+Authorization and confidentiality & Check both service permissions, restrict Content access, apply permission changes & RQ1, RQ3\\\midrule
+Execution and collaboration & Associate work with active requests; enforce assigned roles and dependencies in the extension & RQ2, RQ3\\\midrule
+Named-object delivery & Distinguish control messages, ongoing streams, and complete artifacts; validate retrieved Data & RQ2, RQ3\\\bottomrule
+\end{tabularx}
+\end{table}
+
+These are related requirements, not four strictly separated protocol layers. Authorization affects every remote operation, and execution state determines whether an otherwise valid object may be used. The following chapters explain the NDN foundation, the framework mechanisms, and their application-level validation. The research questions retain a narrower evidential purpose: determine which choices are justified, which additional guarantees the collaboration extension provides, and what their costs are.

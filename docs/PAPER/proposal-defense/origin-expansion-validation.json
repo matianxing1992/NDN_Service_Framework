@@ -1,0 +1,103 @@
+{
+  "verdict": "DOCUMENT_CHECKS_PASS",
+  "builds": [
+    {
+      "tag": "root-en",
+      "rc": 0,
+      "issues": [],
+      "pages": 49
+    },
+    {
+      "tag": "root-ch",
+      "rc": 0,
+      "issues": [],
+      "pages": 38
+    },
+    {
+      "tag": "en",
+      "rc": 0,
+      "issues": [],
+      "pages": 49
+    },
+    {
+      "tag": "ch",
+      "rc": 0,
+      "issues": [],
+      "pages": 38
+    }
+  ],
+  "existing_narrative_and_experimental_claims": "byte-preserved after removing new input statements and normalizing one Chinese coverage-table placement option",
+  "mirror_text_equality": true,
+  "source_hashes": {
+    "en/chapters/uav-workflows.tex": "1e40b003af590802a9ace02b0cc3d7d8c060bddc3606d6166e671a0cc6714ce2",
+    "en/chapters/research-revision.tex": "f13996ae115ada08e0faeab5b31d392c47e4a802d948e89709f27bb1e8308df5",
+    "en/chapters/evaluation-methods.tex": "6306371184420000624dda47e0714a85816d691ffb7b5a1c93a5b0bdc1a380cf",
+    "en/chapters/framework-architecture.tex": "c67a089d8289f5ec56df48b0445b72eacb10a9a0c3245a464b68b6c31568faff",
+    "en/chapters/application-motivation.tex": "ca9f2ddd9d71a2c98f07e3f758db2bd4aae17d58348a9b2146fbf3777cf460e5",
+    "en/chapters/ndn-background.tex": "55d5013f04b41fc78bd159bb82a29c6774cdaae3640dce3cbd2366ce3ef7e1ea",
+    "en/chapters/invocation-data-services.tex": "2a734ab63bf3545652dea1f0849b3a567bf687879cf7192f82feb15fa04d1ca4",
+    "en/chapters/di-workflows.tex": "7eb7ffbb0f08e5a04da9d2c3e8c152ce69d7027366f3133cd791fc87a89bf182",
+    "ch/chapters/uav-workflows.tex": "cd5267fa70ca23e86647714ef99310e07c3a0b39aea083d2fc2e55aef2e4e9a9",
+    "ch/chapters/research-revision.tex": "812e40a9217848430b1c8b220080dc9cd3b5129ccdd36cee53e6f7df46221486",
+    "ch/chapters/evaluation-methods.tex": "64aa410da231b3619a607b5c23b825d411f774c6d8245b4e6dc48ef13719e0d1",
+    "ch/chapters/framework-architecture.tex": "06ce34f4a8be07b81c2e9721d7adee26f7c5f8a32ffadc3e7826dbdbea81031b",
+    "ch/chapters/application-motivation.tex": "f905996c97168e7fa782fd425a884b8a3b37b931217d6e81ca67fde16e89dcfb",
+    "ch/chapters/ndn-background.tex": "932a6d89fbc3f957750f94830ecf84a3868729f291c2ab5df2133f122b826002",
+    "ch/chapters/invocation-data-services.tex": "bd21b7796200012e27993b1b786ed48c0a821d55d3576cc395becee3607ee9c7",
+    "ch/chapters/di-workflows.tex": "cfc601a04417ae5ad2df301795a219d9209e7cd8b85c93a7bdb16bbf8c7b9583"
+  },
+  "slides_experiments_and_product_code": "UNCHANGED by this documentation task",
+  "scope": "Origin coverage restoration; paper only",
+  "pdfs": {
+    "main.pdf": {
+      "pages": 49,
+      "text_outside_page": [],
+      "sha256": "f282f024bda759b76c59cf8109e57ae8c2f79bbf668035947f6cb4c7f2b4eae6"
+    },
+    "en/main.pdf": {
+      "pages": 49,
+      "text_outside_page": [],
+      "sha256": "dd401493ec9ee81286663e1d5213f238028fa9a88911be58df530c0df98362c4"
+    },
+    "main_ch.pdf": {
+      "pages": 38,
+      "text_outside_page": [],
+      "sha256": "b5cf20a756bc2c5c852e7ce82d70aa71feefc7f705b258192531ab3b0c628b5c"
+    },
+    "ch/main.pdf": {
+      "pages": 38,
+      "text_outside_page": [],
+      "sha256": "6714574ea0af2c12f3ed4afcfb05bb17af06c4394710b69d4183691ecb4a756b"
+    }
+  },
+  "new_bilingual_modules": [
+    "application-motivation",
+    "ndn-background",
+    "framework-architecture",
+    "invocation-data-services",
+    "uav-workflows",
+    "di-workflows",
+    "evaluation-methods"
+  ],
+  "cited_keys_resolved": [
+    "cfec",
+    "grpc",
+    "li2018brief",
+    "mavlink-survey",
+    "messagequeue",
+    "miandn",
+    "moll2022sok",
+    "ndn",
+    "ndnpacket",
+    "onnx",
+    "ortkvcache",
+    "px4",
+    "ros",
+    "ros2",
+    "secaas",
+    "trustschema"
+  ],
+  "manual_review": "all English/Chinese page contact sheets and detail renders of added figures/tables; source wording/coverage review in origin-coverage-review.md",
+  "evidence_limits": "No new experiment, complete novelty proof, model qualification, or slide audit",
+  "raw_evidence_root": ".codex-tmp/proposal-origin-expansion-20260911"
+}

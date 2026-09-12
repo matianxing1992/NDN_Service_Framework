@@ -1,5 +1,9 @@
 # Failure Log and Evidence Index
 
+## 2026-09-11 — Proposal Origin expansion build path
+
+首次文档构建驱动将相对输出目录传入改变 cwd 的 latexmk，导致预期 `main.log` 缺失；不是产品协议失败。修复为绝对路径并保留 r2 输出。证据：[proposal expansion](../specs/184-native-di-closure/evidence/proposal-origin-expansion-20260911.md)。
+
 ## 2026-09-11 — Proposal application-validation notes layout
 
 The first document check found an overfull generated notes line after the new

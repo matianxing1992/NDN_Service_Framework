@@ -16,6 +16,13 @@ FILES = ["main.tex", "en/main.tex", "main_ch.tex", "ch/main.tex",
          "en/chapters/research-revision.tex", "en/chapters/authorization-rationale.tex",
          "ch/chapters/research-revision.tex", "ch/chapters/authorization-rationale.tex",
          "slides/research-slides.tex", "protocol-overview.tex"]
+# Include every modular chapter, rather than silently omitting restored prose.
+FILES += [str(p.relative_to(BASE)) for lang in ("en", "ch")
+          for p in sorted((BASE / lang / "chapters").glob("*.tex"))
+          if str(p.relative_to(BASE)) not in FILES
+          and p.stem in {"application-motivation", "ndn-background",
+                         "framework-architecture", "invocation-data-services",
+                         "uav-workflows", "di-workflows", "evaluation-methods"}]
 
 def family(text, context):
     t = (context + " " + text).lower()
@@ -101,7 +108,12 @@ for name in FILES:
                           "kind": "claim-row-or-label" if structural else "prose-sentence",
                           "evidence_family": family(part, context),
                           "review": "WORDING_PLACEMENT_SCOPE_REVIEWED",
-                          "evidence_detail": "sentence-review-20260911.md#evidence-boundaries"})
+                          "evidence_detail": ("origin-coverage-review.md#evidence-and-wording-review"
+                                              if Path(name).stem in {
+                                                  "application-motivation", "ndn-background",
+                                                  "framework-architecture", "invocation-data-services",
+                                                  "uav-workflows", "di-workflows", "evaluation-methods"}
+                                              else "sentence-review-20260911.md#evidence-boundaries")})
 
 report = {"date": "2026-09-11", "scope": FILES,
           "method": "Manual reading of all listed sources; deterministic navigation inventory afterwards. Sentence splitting is approximate. No per-sentence formal proof or fresh experiment certification.",

@@ -1,0 +1,30 @@
+\subsection{From a Model Graph to Runtime Assignments}
+Model preparation and Provider assignment occur at different times. Preparation identifies a supported model, its tensor interfaces, and candidate partitions. It can produce a reusable template describing fragments and their dependencies before any particular invocation. Runtime planning then uses the request and collected positive ACKs to bind those roles to actual Providers. A manually authored template is compatible with this design: automatic partition search is not required to test the protocol. The Controller's authorization role does not make it the model partitioner.
+
+\begin{figure}[htbp]\singlespacing\centering
+\begin{tikzpicture}[every node/.style={draw,align=center,font=\small,text width=9.6cm,inner sep=6pt}]
+\node (model) at (0,0) {Model graph and supported tensor interfaces};
+\node (template) at (0,-1.25) {Prepared fragments and dependency template};
+\node (assign) at (0,-2.85) {Request requirements + validated positive ACKs\newline Runtime Provider assignment};
+\node (plan) at (0,-4.55) {Committed roles and named dependencies\newline Provider-local input checks};
+\node (execute) at (0,-6.25) {Prepare assigned fragments, exchange permitted tensors,\newline execute and publish results};
+\draw[->] (model)--(template);\draw[->] (template)--(assign);
+\draw[->] (assign)--(plan);\draw[->] (plan)--(execute);
+\end{tikzpicture}
+\caption{Proposed separation of model preparation and request-specific collaboration. Arrows show processing order, not a claim that every model graph or assignment strategy is implemented.}
+\end{figure}
+
+Each fragment contract needs defined input and output tensor names, shapes or supported dynamic-shape constraints, element types, serialization, and model-version compatibility. A split across a skip connection or a branching graph may have multiple live outputs, not a single vector. The receiving fragment must obtain all required inputs before execution. A useful negative test supplies a correctly signed tensor with the wrong shape or model identity: protocol provenance may be valid while the application contract is not.
+
+Pipeline partitioning assigns consecutive computation stages and transfers their boundary tensors. Tensor parallelism splits an operation across participants and adds exchanges such as reductions or gathers. Model replication assigns independent work to complete copies. These are different execution strategies, not interchangeable names for placing a model on several devices. Early exit changes how much model computation is performed and must be evaluated separately from placement. ONNX export supplies a graph representation~\cite{onnx}; usable cuts and collective operations still depend on the supported runtime and model operators.
+
+Preparation cost matters when a Provider lacks the required artifact or compatible loaded session. Evaluation should distinguish artifact transfer, session creation, accelerator memory allocation, and execution. A warm run that reuses resident weights cannot be compared to a cold baseline without reporting that difference. Placement can favor a Provider that already holds compatible state, but that policy must respect request authorization and cannot assume that cached state is transferable to any new request.
+
+\subsection{Tensor Exchange and Autoregressive State}
+For a pipeline, an upstream fragment produces an activation tensor, makes it available as protected named Data, and supplies its reference through the declared dependency. The downstream fragment retrieves and validates that object, checks the tensor contract, and performs its assigned computation. A fan-out reuses an upstream output for several authorized consumers. A fan-in waits for the set of inputs required by the computation. The collaboration protocol decides which producers and edges are permitted; DI decides whether the tensor values and layouts are suitable for the model.
+
+Autoregressive inference adds a dependency across decoding steps. When K/V caching is enabled, computation after prefill uses the preceding token and retained K/V state instead of recomputing the full prefix. With layer-based partitioning, each participating runtime can retain the K/V tensors for its assigned layers. A generated token or the information needed to select it returns to the component driving the next decoding step. Consequently, the forward path within one evaluation can follow a directed acyclic graph while the whole generation process repeatedly traverses that graph over time.
+
+Keeping weights in accelerator memory does not eliminate the logical K/V inputs. A runtime may reuse device buffers and bind them directly rather than serialize and transmit the entire cache on each step~\cite{ortkvcache}. Reassignment or conversation continuation needs an explicit compatibility and state-transfer policy; silently starting a replacement with unrelated K/V state is not valid recovery. The evaluation separates savings from local K/V reuse, remote transfer costs, and framework orchestration costs.
+
+The initial numerical oracle should compare a supported partitioned execution with an unsplit execution of the same model, precision, inputs, and decoding policy. Appropriate tensor tolerances or deterministic output comparisons must be specified before measurement. A small synthetic model can validate a tensor route, but cannot establish memory feasibility, throughput, or recovery for a large pretrained model. These controls make it possible to distinguish a working communication path from a correct and useful distributed-inference application.

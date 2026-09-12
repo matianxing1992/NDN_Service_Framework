@@ -1,0 +1,22 @@
+\subsection{Operator Workflow and State Interpretation}
+A typical session starts with an operator discovering sensing services and choosing a vehicle. Subsequent camera or mission operations retain that vehicle identity unless the operator or a stated mission policy authorizes replacement. The interface associates status with the vehicle and operation that produced it. A delayed observation must not be presented as evidence that a newly issued command succeeded. Observation time, operation identity, and the application's stale-data threshold are therefore part of the validation contract.
+
+The proposed evaluation follows a complete session rather than testing isolated buttons: obtain status, start a camera stream, inspect incremental frames, stop the stream, find a recording, and retrieve the selected recorded object. Camera control uses service invocation; frame delivery and recording retrieval use their respective data paths. An implementation may record while no live viewer is attached, so recording availability should not be inferred from stream subscription. The test records whether the configured application supports that mode and whether recording references identify the correct producer and version.
+
+\begin{table}[htbp]\centering\small
+\caption{UAV workflow contracts to exercise in application validation.}
+\begin{tabularx}{\textwidth}{p{.22\textwidth}XX}
+\toprule Operation & Application meaning & Observable framework outcome\\\midrule
+Telemetry and status & Observation of the selected vehicle & Correct producer and operation association; stale data identified\\\midrule
+Camera Start/Stop & Change the selected camera's activity & Authorized invocation and terminal status distinct from frame arrival\\\midrule
+Live video & Recent frames from the requested stream & Start delay, useful frame delivery, gaps, bounded buffering\\\midrule
+Recording retrieval & Obtain a particular stored capture & Exact object and producer validated; Content access enforced\\\midrule
+Mission operation & Issue bounded work and follow progress & Admission, progress, timeout, and completion distinguished\\\bottomrule
+\end{tabularx}
+\end{table}
+
+Flight-related services connect the application to the vehicle's flight-control interface, such as MAVLink and PX4~\cite{mavlink-survey,px4}. Authorization to submit a command is separate from its operational safety. Geofencing, vehicle readiness, collision avoidance, and local failsafe behavior belong to the vehicle/application safety design. The networking study should use bounded supervisory commands and an explicit loss-of-contact policy, rather than assume that a service invocation is suitable for every low-level flight-control loop.
+
+Multi-vehicle patrol provides a secondary workload: an application divides a region into tasks, tracks their completion, and decides whether unfinished tasks can be reassigned. Its relevance is the association of task state and returned observations with the active assignment. This is broader than multi-view analysis, but it should not become an additional unbounded algorithm-development requirement. The primary collaboration experiment below fixes its task and analysis method so that network and protocol effects can be isolated.
+
+For both workflows, failure experiments should include a missing observation, a disconnected selected UAV, and delayed status after a replacement decision. Report the time during which a feasible Provider is actually reachable as well as the request deadline. Retransmission and synchronization cannot manufacture radio coverage or extend an expired application time budget. A partial completion rate can therefore reflect availability limits even when retrieval recovery behaves correctly.
