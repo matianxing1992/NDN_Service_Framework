@@ -113,3 +113,35 @@ not current-candidate qualification. The ordered remainder is now:
 No current-candidate YOLO run has been claimed yet. The next local action is
 Y-A, followed by Y-B/Y-N if its terminal cleanup is complete; these runs do not
 require or imply execution of the unavailable 27B model.
+
+## Current binding and Y-A refresh (2026-09-12)
+
+The first current-candidate Y-A attempts stopped at `CASE_RUNTIME_PROCESS_START_FAILED:control`;
+the Controller log contained only construction output because the Python extension had not been
+rebuilt after the framework/DI refresh. The raw launcher logs are
+`.codex-tmp/spec184-yolo-Y-A-run-20260912-r52a.log`, `r53.log`, `r54.log`, and `r55.log`.
+These are startup/identity boundaries, not protocol or model failures.
+
+The binding was then rebuilt against the candidate NAC-ABE, NDN-SVS and DI libraries. The build
+log is `.codex-tmp/spec184-python-binding-rebuild-20260912.log` (SHA-256
+`bd74baa072ab553711bd2a5e03626ee18e704ee459594868ddc4e0f2675b5d02`); the refreshed receipt
+build and verify logs are `.codex-tmp/spec184-native-receipt-after-binding-20260912.log` and
+`.codex-tmp/spec184-native-receipt-verify-after-binding-20260912.log`, with verify exit `0`.
+The current extension hash is
+`9e41958e73cb5b805e4d8261a901da9c43aea0ada85bfcf472808d7709ff2d2b` and the receipt hash is
+`2fbb8f40b2c51e1d3c0334387759112f90112264a2983157abe9421202b02b15`.
+
+With that identity, root MiniNDN Y-A passed. The output directory is
+`.codex-tmp/spec184-yolo-Y-A-output-20260912-r58/`; the launcher log is
+`.codex-tmp/spec184-yolo-Y-A-run-20260912-r58.log` (SHA-256
+`bc2320fea3a85682eea468cb2d59599b76bda6c57474a647fb1a7a9ba4b867cb`). The terminal result is
+`YOLO_ACK_DRIVEN_RESULT status=true`; the C++ numerical oracle matched with shape `[1,50,6]`
+and `maxAbsError=0.0005340576171875`. Child exits and cleanup are complete.
+
+| Gate | Current status | Next action |
+| --- | --- | --- |
+| T007-A0 | `PASS_FOR_ROW` | receipt now includes the rebuilt binding identity |
+| T007-A1 | `PASS_FOR_ROW` | retain r58 evidence and proceed to Y-B |
+| T007-A2 | `NOT_RUN_CURRENT_CANDIDATE` | run Y-B then Y-N against the same r4 candidate |
+| T007-A3 | `WAITING_EXTERNAL_INPUT` | exact Qwen3.6-27B remains external; 0.6B is smoke-only |
+| T007-A4 | `PARTIAL` | continue inherited negative/retirement closure |

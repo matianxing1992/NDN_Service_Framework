@@ -87,3 +87,22 @@ spec184-a4-native-receipt-build-20260912-r2.log
 spec184-a4-native-receipt-build-20260912-r3.log
 spec184-a4-native-receipt-verify-20260912.log
 ```
+
+## Binding refresh and A1 result (2026-09-12)
+
+The first current-candidate Y-A launch exposed that the Python extension identity was stale after
+the native source refresh. The binding was rebuilt from the same configured candidate with the
+candidate NAC-ABE, NDN-SVS and DI libraries first in the loader path. Build log:
+`.codex-tmp/spec184-python-binding-rebuild-20260912.log`, SHA-256
+`bd74baa072ab553711bd2a5e03626ee18e704ee459594868ddc4e0f2675b5d02`. The refreshed receipt build
+and verify logs are `.codex-tmp/spec184-native-receipt-after-binding-20260912.log` and
+`.codex-tmp/spec184-native-receipt-verify-after-binding-20260912.log`; verify exited `0`.
+The extension hash is `9e41958e73cb5b805e4d8261a901da9c43aea0ada85bfcf472808d7709ff2d2b`, and the
+receipt hash is `2fbb8f40b2c51e1d3c0334387759112f90112264a2983157abe9421202b02b15`.
+
+Root MiniNDN Y-A then passed against this refreshed identity. Output is
+`.codex-tmp/spec184-yolo-Y-A-output-20260912-r58/`; launcher log is
+`.codex-tmp/spec184-yolo-Y-A-run-20260912-r58.log`, SHA-256
+`bc2320fea3a85682eea468cb2d59599b76bda6c57474a647fb1a7a9ba4b867cb`. The C++ numerical oracle
+matched with shape `[1,50,6]`, terminal response and child cleanup completed. This refresh closes
+T007-A1 only; Y-B/Y-N remain pending and A4 remains partial.

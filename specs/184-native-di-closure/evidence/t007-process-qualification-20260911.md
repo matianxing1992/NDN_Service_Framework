@@ -337,3 +337,25 @@ and must be rerun before being treated as current. See [A4 current candidate
 refresh](a4-current-candidate-refresh-20260912.md) for the full identity and
 raw output paths. The 27B row remains external; no 0.6B result substitutes for
 it.
+
+## Current candidate binding refresh and Y-A (2026-09-12)
+
+After the framework/DI source refresh, the first four Y-A launches stopped at
+`CASE_RUNTIME_PROCESS_START_FAILED:control` before the Controller readiness marker. The
+candidate receipt still described the previous Python extension identity. Rebuilding
+`pythonWrapper/ndnsf/_ndnsf.cpython-38-x86_64-linux-gnu.so` against the candidate NAC-ABE,
+NDN-SVS and DI libraries, then regenerating and verifying the receipt, restored one coherent
+runtime identity. The binding rebuild log is `.codex-tmp/spec184-python-binding-rebuild-20260912.log`;
+the refreshed receipt and verify logs are `.codex-tmp/spec184-native-receipt-after-binding-20260912.log`
+and `.codex-tmp/spec184-native-receipt-verify-after-binding-20260912.log`. The extension SHA-256 is
+`9e41958e73cb5b805e4d8261a901da9c43aea0ada85bfcf472808d7709ff2d2b`; the receipt SHA-256 is
+`2fbb8f40b2c51e1d3c0334387759112f90112264a2983157abe9421202b02b15`.
+
+Using that candidate, root MiniNDN Y-A completed with
+`SPEC180_CASE_RESULT status=PASS case=Y-A`. The C++ numerical oracle reported `matched=true`,
+shape `[1,50,6]`, and `maxAbsError=0.0005340576171875`; terminal response verification, four
+child exits and cleanup completed. Output is `.codex-tmp/spec184-yolo-Y-A-output-20260912-r58/`,
+launcher log is `.codex-tmp/spec184-yolo-Y-A-run-20260912-r58.log` (SHA-256
+`bc2320fea3a85682eea468cb2d59599b76bda6c57474a647fb1a7a9ba4b867cb`). This closes only the
+current-candidate A1 row; Y-B/Y-N and inherited negative/retirement rows remain open, while
+Qwen3.6-27B remains external and Qwen3-0.6B remains smoke-only.

@@ -53,3 +53,11 @@ the former YOLO A1/A2 rows are historical and return to
 `NOT_RUN_CURRENT_CANDIDATE` until root Y-A, Y-B, and Y-N are repeated. T007
 remains `IN_PROGRESS`; the exact 27B row remains external and T008 remains
 blocked.
+
+## Current binding and Y-A overlay (2026-09-12)
+
+The Python binding was rebuilt against the refreshed r4 candidate and the native identity receipt
+was regenerated and verified. Root MiniNDN Y-A then passed on that same candidate; its C++ numerical
+oracle matched and terminal cleanup completed. T007-A1 is therefore `PASS_FOR_ROW`. T007-A2
+Y-B/Y-N remains `NOT_RUN_CURRENT_CANDIDATE`; A3 remains `WAITING_EXTERNAL_INPUT` because this
+host can run only Qwen3-0.6B smoke, and A4 remains `PARTIAL`. T007 and Spec184 are not complete.

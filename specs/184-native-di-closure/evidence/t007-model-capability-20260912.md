@@ -96,3 +96,17 @@ Continue only with A4 rows that have a current C++ selector and complete
 candidate-bound evidence. When the exact 27B bundle is available on the
 experiment host, transfer the current candidate receipt and run A3 there;
 do not rename the 0.6B smoke result.
+
+## Binding identity boundary and current local result (2026-09-12)
+
+The first Y-A retry after the framework/DI refresh stopped before MiniNDN with
+`LOCAL_NATIVE_BUILD_REJECTED:RUNTIME_IDENTITY_CHANGED`: the receipt still described the old
+`_ndnsf.so`. This is recorded in `.codex-tmp/spec184-yolo-Y-A-run-20260912-r57.log` and is a
+binding identity boundary, not a model result. The extension was rebuilt from the same candidate
+NAC-ABE/NDN-SVS/DI libraries and the receipt was regenerated and verified; the rebuild log is
+`.codex-tmp/spec184-python-binding-rebuild-20260912.log` (SHA-256
+`bd74baa072ab553711bd2a5e03626ee18e704ee459594868ddc4e0f2675b5d02`).
+
+The corrected current-candidate Y-A run `r58` passed with a C++ YOLO numerical oracle and is
+recorded as T007-A1 evidence. It does not execute or qualify Qwen3.6-27B. The host boundary and
+A3 disposition are unchanged: Qwen3-0.6B is smoke-only and A3 remains `WAITING_EXTERNAL_INPUT`.
