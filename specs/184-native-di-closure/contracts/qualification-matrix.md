@@ -56,7 +56,7 @@ results update evidence availability for the affected rows but do not upgrade th
 | Observed-offer C++ parser sample and unsuppressed ASan/UBSan run | 182:T007, PO-006, FR-007, CD-006, INV-004 | tokenizer-full, plan/parser and no-Python negative rows remain unqualified | PARTIAL |
 | Repaired C++ I02 two-provider selector and 16-case tiny-ONNX batch under unsuppressed ASan/UBSan | 182:T011, PO-008, FR-008/016, CD-007 | callback-cycle leak no longer reproduces; process/no-Python I02–I08, inherited negative and real-model rows remain open | PARTIAL |
 | Fresh C++ production path review | PO-001, PO-013, FR-001/016, CD-013 | no independent process/no-Python owner result for current candidate; broader model rows open | PARTIAL |
-| Current-candidate C++ process refresh: unary/stream/conversation/recovery/replacement/grant, no-Python ELF closure, and root `PO-001-stream` owner | 182:T010, 182:T011, 182:T014, 182:T016, PO-001, PO-004, PO-007/008, PO-011/013/014/016, I01/I06/I07/I08, FR-001/005/008/012/013/014/016/019, CD-001/004/007/009/011/012/013/014, INV-002/005/006/007/009 | bounded C++ process classes and owner evidence pass; non-root owner preflight is `MININDN_REQUIRES_ROOT`; YOLO Y-A input preflight passes but full run is gated by the missing current `spec180-native-build.json`; Qwen3.6-27B cannot execute on this host (Qwen3-0.6B is smoke-only); broader negative/model/Python-retirement/external rows remain open | PARTIAL/OPEN |
+| Current-candidate C++ process refresh: unary/stream/conversation/recovery/replacement/grant, no-Python ELF closure, root `PO-001-stream` owner, and fresh YOLO Y-A/Y-B/Y-N | 182:T010, 182:T011, 182:T014, 182:T016, PO-001, PO-004, PO-007/008, PO-011/013/014/016, I01/I06/I07/I08, FR-001/005/008/012/013/014/016/019, CD-001/004/007/009/011/012/013/014, INV-002/005/006/007/009 | bounded C++ process classes, owner evidence and YOLO native request rows pass; Y-N covers all seven boundaries and three Provider grant mutations; non-root owner preflight is `MININDN_REQUIRES_ROOT`; Qwen3.6-27B cannot execute on this host (Qwen3-0.6B is smoke-only); broader negative/model/Python-retirement/external rows remain open | PASS_FOR_ROWS / PARTIAL |
 | Candidate-bound C++ I02–I08 dynamic process samples: two/four-provider planning, reorder, duplicate, loss/retry, negative retention, and cancellation | 182:T010, 182:T011, 182:T014, 182:T016, I02/I03/I04/I05/I06/I07/I08, FR-008/014/016/019, CD-007/009/011/014, INV-002/005/006/007/009 | all seven root owner runs have complete observation and seven evidence categories with C++ markers; broader real-model breadth, Python retirement, and external SIF/Tiger remain open | PASS_FOR_DYNAMIC_SAMPLE / PARTIAL |
 | Candidate-bound C++ isolation counterexamples I02–I08 | 182:T014, 182:T016, I02/I03/I04/I05/I06/I07/I08, INV-007/009 | dedicated C++ fixture and canonical collector match the frozen statuses: I02/I03/I04/I06/I08 `FAIL`, I05 `UNQUALIFIED`, I07 `PASS`; I05 is intentionally not promoted, and real-model breadth, retirement and external owner rows remain open | PASS_FOR_COUNTEREXAMPLE / PARTIAL |
 | Candidate six business binaries ELF/no-Python closure (`readelf -d`, `strings`, `ldd -r`) | 182:T006, 182:T014, 182:T016, PO-001/005/011/014, FR-006/012/014, CD-005/009/011/014, INV-007 | no forbidden Python dependency or runtime identity and no unresolved symbol; runtime isolation and external owner rows still require their declared process evidence | PASS_FOR_ROW / PARTIAL |
@@ -68,9 +68,9 @@ results update evidence availability for the affected rows but do not upgrade th
 
 | Gate | Status | Required closure |
 | --- | --- | --- |
-| `T007-A0` current-candidate runtime receipt | `OPEN` | Fresh `spec180-native-build.json` or explicitly equivalent receipt binding `build-spec184-b5-candidate`, compiler/dependency identity and candidate-first paths |
-| `T007-A1` YOLO26n Y-A | `NOT_RUN` | A0 plus C++ numerical oracle, terminal result, child exits, cleanup and candidate identity |
-| `T007-A2` YOLO26n Y-B/Y-N | `NOT_RUN` | A1 plus protected/negative permutations and first-failure classification |
+| `T007-A0` current-candidate runtime receipt | `PASS_FOR_ROW` | `build-spec184-b5-candidate-r4/spec180-native-build.json`, `verify` exit `0`, `/usr/bin/g++ -B/usr/bin`, `-j4`, and candidate-first paths; receipt records `binding_reused=true` |
+| `T007-A1` YOLO26n Y-A | `PASS_FOR_ROW` | Fresh current-candidate root run `r51`, C++ numerical oracle, terminal result, child exits and cleanup |
+| `T007-A2` YOLO26n Y-B/Y-N | `PASS_FOR_ROW` | Y-B `r37` and Y-N `r50`; protected multi-provider terminal path, seven declared Y-N boundaries, three Provider grant mutations, first-failure classification and cleanup |
 | `T007-A3` Qwen3.6-27B | `WAITING_EXTERNAL_INPUT` | Exact `Qwen/Qwen3.6-27B` three-stage manifest, tokenizer, CUDA runtime and experiment-owner result; local 0.6B is smoke-only |
 | `T007-A4` inherited negative/retirement rows | `PARTIAL` | Complete row evidence, including I05 collector boundary or an explicit retained `UNQUALIFIED` result |
 | `T008` native development handoff | `BLOCKED_BY_T007` | T007 qualification pass, final candidate map and external rows explicitly marked `TRANSFERRED` |
@@ -164,6 +164,22 @@ owner cases, not substitutes for native C++ behavior selectors; Python only oper
 | INV-007 | 182 spec INV-007 | T006/T007 | runtime process tree; canonical runner and C++ process owner | Python/libpython/helper appears | `asan-ubsan`; no interpreter and bounded exit | `DEV-76072468` | I02–I08 harness selectors; current process qualification pending | PARTIAL |
 | INV-008 | 182 spec INV-008 | T006/T007/T008 | design/implementation/qualification separation | history or local PASS overclaimed | `none`; status/evidence agreement | `DEV-865e1ee2` | B1–B4 records | PARTIAL |
 | INV-009 | 182 spec INV-009 | T007/T008 | Experimental vs external owner boundary | Tiger/SIF result mixed into local PASS | `none`; host ownership and transfer status | `DEV-865e1ee2` | transfer/promotion contracts | PARTIAL |
+
+## Current YOLO Native Overlay (2026-09-11)
+
+当前候选的 YOLO 运行证据覆盖本机可执行的 native C++ 路径：
+
+| Case | Result | Evidence | Boundary |
+| --- | --- | --- | --- |
+| Y-A | `PASS_FOR_ROW` | `.codex-tmp/spec184-yolo-Y-A-output-20260911-r51/`；terminal response、C++ 数值 oracle、child exits 和 cleanup | 单 Provider `FullModel`，`onnxruntime-cpu`，`realCompute=true` |
+| Y-B | `PASS_FOR_ROW` | `.codex-tmp/spec184-yolo-Y-B-output-20260911-r37/`；四 Provider terminal response、数值 oracle、runtime evidence 和 cleanup | `BackboneNeck`/两 Detect shard/`Merge` 多 Provider 路径 |
+| Y-N | `PASS_FOR_ROW` | `.codex-tmp/spec184-yolo-Y-N-output-20260911-r50/`；`y-n-matrix-result.json` 与三份授权变异 evidence | `O/C/P/R/I/E/L` 七个边界；E 含 `EXPIRED`、`FORGED_AUTHORITY`、`WRONG_RECIPIENT` |
+
+这些结果均绑定 `build-spec184-b5-candidate-r4/spec180-native-build.json`，并通过
+`python3 scripts/spec180_native_build.py verify`；Y-A/Y-B 的数值 oracle 均为
+`matched=true`、shape `[1,50,6]`、`maxAbsError=0.0005340576171875`。本机没有
+`Qwen/Qwen3.6-27B` 的可执行资源，`Qwen3-0.6B` 只允许作为 smoke/ABI fixture，不能关闭
+Qwen qualification row。
 
 ## Gate Rules
 

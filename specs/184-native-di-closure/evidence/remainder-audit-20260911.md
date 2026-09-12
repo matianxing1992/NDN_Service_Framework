@@ -36,3 +36,25 @@ T001–T006 不重做；本记录只把剩余出口按可执行条件重新排�
 实验机可用后独立运行。每个 gate 仍遵循“逐小任务编码/静态审查 → 同批组合审查 → 统一
 C++ 构建和测试”，但已经通过的 B1–B4、C++ 全套 sweep、I02–I08 bounded samples 和
 Python harness 不再无条件重跑。Python 只能编排 MiniNDN 或收集证据，C++ 负责业务 oracle。
+
+## Superseding execution record (2026-09-11)
+
+上述旧表保留了 A0/A1/A2 尚未执行时的首边界。以下记录是同一工作单元完成后的当前
+状态覆盖，替代旧表中的 `OPEN`/`NOT_RUN`，不改变外部模型和继承行的边界。
+
+| Gate | Current status | Evidence and result |
+| --- | --- | --- |
+| T007-A0 | `PASS_FOR_ROW` | `build-spec184-b5-candidate-r4/spec180-native-build.json`，SHA-256 `f83d4499fc7271bdc205fb56d212e9688741b754e1b964ce8ecb3ccb2c0e99b1`；`spec180_native_build.py verify` exit `0`，system `/usr/bin/g++ -B/usr/bin`，`-j4`，candidate-first paths，`binding_reused=true`。 |
+| T007-A1 | `PASS_FOR_ROW` | Root MiniNDN Y-A run `r51`：`.codex-tmp/spec184-yolo-Y-A-output-20260911-r51/`，terminal response、10 lifecycle events、child exits and no cleanup error；C++ numerical oracle `matched=true`，shape `[1,50,6]`，`maxAbsError=0.0005340576171875`。 |
+| T007-A2 / Y-B | `PASS_FOR_ROW` | Root MiniNDN Y-B run `r37`：`.codex-tmp/spec184-yolo-Y-B-output-20260911-r37/`，terminal `YOLO_ACK_DRIVEN_RESULT status=true`，10 lifecycle events，四 Provider child cleanup；C++ ORT CPU runtime evidence records `realCompute=true` for Backbone/Detect shards and native postprocess for Merge。 |
+| T007-A2 / Y-N | `PASS_FOR_ROW` | Root MiniNDN Y-N run `r50`：`.codex-tmp/spec184-yolo-Y-N-output-20260911-r50/y-n-matrix-result.json`，SHA-256 `009e07d68a766f1545312b87261884e789cbb207db4404432f1ac3729161215a`；`Y-N-O/C/P/R/I/E/L` all `PASS`，E independently covers `EXPIRED`、`FORGED_AUTHORITY`、`WRONG_RECIPIENT`，cleanup errors `0`。 |
+
+Y-A 与 Y-B 的 `yolo-numerical.json` 都记录相同的 bounded YOLO26n fixture（shape
+`[1,50,6]`、`maxAbsError=0.0005340576171875`、`atol=0.001`、`rtol=0.0001`），并通过
+当前候选的 native Provider；Python 只启动外部设施和解析证据。Y-N 重跑前修复了收集器对
+ndn-cxx 时间戳日志前缀的归一化，修复后的 harness 经 `py_compile` 与 `git diff --check`。
+
+本机的模型边界保持不变：只能运行 `Qwen3-0.6B` smoke/ABI fixture，无法运行契约要求的
+`Qwen/Qwen3.6-27B`；A3 仍为 `WAITING_EXTERNAL_INPUT`。A4 的继承 negative/retirement、
+I05 `UNQUALIFIED`、Python retirement 以及 SIF/Tiger external owner 仍未闭合，所以这次
+只提升 A0–A2 行状态，T007 总体继续 `IN_PROGRESS`/`PARTIAL`，T008 继续阻塞。

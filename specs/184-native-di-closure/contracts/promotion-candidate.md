@@ -239,3 +239,28 @@ the candidate binds that evidence file rather than silently combining unrelated 
 T006 必须把所有成员填入一个 candidate record，并通过 repository-owned closure gate。
 候选未冻结、矩阵有 `gap`、子进程退出状态不全或 cleanup 未闭合时，禁止 promotion；
 诊断运行可以保留原始边界，但不能成为 qualification evidence。
+
+## Current Local Candidate Overlay (2026-09-11)
+
+这是对当前本地候选的运行覆盖，状态仍为 `FRESH_LOCAL_PARTIAL`，不是 promotion 决定。
+候选 receipt 为 `build-spec184-b5-candidate-r4/spec180-native-build.json`，SHA-256
+`f83d4499fc7271bdc205fb56d212e9688741b754e1b964ce8ecb3ccb2c0e99b1`；`verify` exit `0`，
+系统编译器为 `/usr/bin/g++ -B/usr/bin`，Waf 使用 `-j4`，并记录 `binding_reused=true`。
+候选运行时哈希包括：framework `fc47f9a10f7a5bc431fa7e59bb4cea7cabd365b4e1f930a1b99df0c439ad451b`、
+DI `ee40993f5a7e0cd4a1d111225ede7aee397b88fb405114e32283e87641a6cab0`、
+requester `c9e8dfa7d0eddd2c570dde4e4db23f4709a64e194135634b863bedaa36b1ae99`、
+artifact authority `e8540479e6a23c97aacbfb40f10f57c8d4375a68ad140e7f8f328eb90405de33`、
+worker `5675aba103f7df152742d56e3287f0e48e61ffe912f6c37e756f719d7bb86a27`、
+provider `408bf0e83f260cb8ab51dee8b60c3fa8a27b46633569577c95694c74ec7af9ef`。
+
+| Local row | Evidence | Result |
+| --- | --- | --- |
+| YOLO Y-A | `.codex-tmp/spec184-yolo-Y-A-output-20260911-r51/` | `PASS_FOR_ROW`; C++ numerical oracle matched, terminal response and cleanup complete |
+| YOLO Y-B | `.codex-tmp/spec184-yolo-Y-B-output-20260911-r37/` | `PASS_FOR_ROW`; four Provider native path, ORT CPU execution and terminal cleanup complete |
+| YOLO Y-N | `.codex-tmp/spec184-yolo-Y-N-output-20260911-r50/` | `PASS_FOR_ROW`; seven boundaries and three real Provider grant mutations rejected before assembly |
+
+The current candidate is not promoted: this host can execute only `Qwen3-0.6B` smoke/ABI
+fixtures, not the contract-required `Qwen/Qwen3.6-27B`; inherited negative/retirement rows,
+I05 `UNQUALIFIED`, Python retirement and SIF/Tiger external ownership remain open. Any later
+source, harness, contract, artifact or external configuration change invalidates this overlay
+and requires a fresh candidate identity before qualification resumes.

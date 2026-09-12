@@ -160,6 +160,32 @@ R2 新增 D-002（文档校验与行为补充）及 TG-01 至 TG-05（PLANNED）
   PDF 修订须在真实两轮/恢复验收后同步。
 - 状态：PARTIAL；下一步补 C++ integration harness，再执行 T012/T013 与 T015/T016。
 
+## D-184：Spec184 原生 YOLO 请求与候选绑定收敛
+
+- 日期 / Spec / 任务：2026-09-11；[Spec184](../specs/184-native-di-closure/spec.md)；T007-A0/A1/A2。
+- 模块 / 当前章节：NDNSF-DI User/Provider request-scope、native ONNX assembler、qualification harness。
+- 原设计与变化：请求作用域输入原先可由多个 Provider 共用同一逻辑路径；当前实现为每个 Provider
+  建立独立的 key/binding/input name 状态，并在清理时逐项失效。`COMPONENT_SET` assembler
+  原先按完整图节点数拒绝子集；当前按声明的 role boundary 与 extracted graph 验证 certified
+  subset，同时保留 deterministic node bytes 与 node-index cover 检查。
+- 当前实现 / 目标边界：Y-A 单 Provider、Y-B 多 Provider、Y-N 七个拒绝边界已由当前候选的
+  C++ 生产路径运行验证；Python 只编排 MiniNDN 和收集证据。Qwen3.6-27B、继承 negative/
+  retirement、I05、Python retirement 与 SIF/Tiger 仍未实现或未资格化，不能写入当前行为。
+- 兼容性 / 安全：保留现有 collaboration wire；request-scoped input name 增加 Provider
+  绑定，防止跨 Provider key/state 复用；ONNX subset 只允许 recipe 声明和图输入/role boundary
+  可达的节点，非法 cover 继续拒绝。
+- 源码范围：`ServiceUser.hpp/.cpp`、`ServiceProvider.hpp/.cpp`、
+  `NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.cpp`；验证 harness
+  为 `Experiments/NDNSF_DI_YoloAckDriven_Minindn.py`。
+- 验证与证据：[T007 process qualification](../specs/184-native-di-closure/evidence/t007-process-qualification-20260911.md)、
+  [remainder audit](../specs/184-native-di-closure/evidence/remainder-audit-20260911.md)、
+  `.codex-tmp/spec184-yolo-Y-A-output-20260911-r51/`、
+  `.codex-tmp/spec184-yolo-Y-B-output-20260911-r37/`、
+  `.codex-tmp/spec184-yolo-Y-N-output-20260911-r50/`；candidate receipt verify exit `0`，
+  Y-A/Y-B/Y-N `PASS`，`git diff --check` 和 Python syntax check 通过。
+- 状态：`PARTIAL`；本地 C++/YOLO 行关闭为 `PASS_FOR_ROW`，Qwen3.6-27B 明确
+  `WAITING_EXTERNAL_INPUT`。下一步仅处理 A4 继承行与外部模型/实验机，不把 0.6B smoke 代替 27B。
+
 ## 新记录模板
 
 ### D-编号：设计变化名称

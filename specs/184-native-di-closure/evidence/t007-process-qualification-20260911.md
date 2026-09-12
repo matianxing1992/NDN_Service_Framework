@@ -254,3 +254,67 @@ The full current-candidate C++ integration sweep was also rerun with
 `e679f2d0ace15827dfd7a5a423660965b0e583df65ba31d8b72370c65b846966`. The earlier
 environment-missing run remains a setup boundary; this result is the candidate-bound
 integration PASS and still does not close external/model/retirement rows.
+
+## Current candidate YOLO process qualification (2026-09-11)
+
+This section supersedes the earlier YOLO `NOT_RUN` remainder status. The same current
+candidate receipt and candidate-first runtime paths were used for the following root MiniNDN
+runs; the local machine is restricted to CPU ONNX Runtime and a bounded YOLO26n fixture.
+
+### Receipt and static review trace
+
+`build-spec184-b5-candidate-r4/spec180-native-build.json` has SHA-256
+`f83d4499fc7271bdc205fb56d212e9688741b754e1b964ce8ecb3ccb2c0e99b1`. The helper verification
+returned `SPEC180_NATIVE_IDENTITY_OK` with `/usr/bin/g++ -B/usr/bin`, Waf `-j4`, and
+`binding_reused=true`; the receipt binds candidate-first requester/provider paths and the
+current framework/DI runtime identities. The read-only static review covered the five batch
+lanes: production C++ caller, implementation/wiring, C++ fixture/harness, build/source
+closure, and migration/evidence. The YOLO harness changes only normalize timestamp-prefixed
+markers, isolate per-subcase generation leases, and accept controlled Provider-owned teardown
+exits; they do not alter production `close()` or callback semantics. `python3 -m py_compile`
+and `git diff --check` passed.
+
+### Y-A
+
+Run output: `.codex-tmp/spec184-yolo-Y-A-output-20260911-r51/`; launcher log:
+`.codex-tmp/spec184-yolo-Y-A-run-20260911-r51.log`; case result was
+`SPEC180_CASE_RESULT status=PASS case=Y-A`, with 10 lifecycle events and no cleanup error.
+The terminal response was `YOLO_ACK_DRIVEN_RESULT status=true` with plan digest
+`sha256:fb72e75f3d287b334e7d1d17d984a9a7e71e1c018c2d073a98144d8de1e90b0b`. Its C++ numerical
+oracle reports `matched=true`, shape `[1,50,6]`, `maxAbsError=0.0005340576171875`,
+`atol=0.001`, `rtol=0.0001`. The FullModel Provider reports `runnerKind=onnxruntime-cpu`,
+`realCompute=true`, runtime `1.26.0`, and completed load/warmup/execution evidence.
+
+### Y-B
+
+Run output: `.codex-tmp/spec184-yolo-Y-B-output-20260911-r37/`; launcher log:
+`.codex-tmp/spec184-yolo-Y-B-run-20260911-r37.log`; case result was
+`SPEC180_CASE_RESULT status=PASS case=Y-B`, with 10 lifecycle events and no cleanup error.
+The terminal response was `YOLO_ACK_DRIVEN_RESULT status=true` with plan digest
+`sha256:144aa5723eba1582e412838d2937b29d425900ec517c2b1ac09af0c00b82a1b4`. Its C++ numerical
+oracle reports `matched=true`, shape `[1,50,6]`, `maxAbsError=0.0005340576171875`,
+`atol=0.001`, `rtol=0.0001`. BackboneNeck and both Detect shards report
+`onnxruntime-cpu`/`realCompute=true`/runtime `1.26.0`; Merge reports the declared native
+postprocess runner with execution evidence. Four Provider exits were clean after the terminal
+response.
+
+### Y-N
+
+Run output: `.codex-tmp/spec184-yolo-Y-N-output-20260911-r50/`; launcher log:
+`.codex-tmp/spec184-yolo-Y-N-run-20260911-r50.log`; case result was
+`SPEC180_CASE_RESULT status=PASS case=Y-N`. The matrix file
+`y-n-matrix-result.json` has SHA-256 `009e07d68a766f1545312b87261884e789cbb207db4404432f1ac3729161215a`
+and records all seven declared subcases as `PASS`: `Y-N-O` at `TERMINAL_RESPONSE`, `Y-N-C`
+at `PLACEMENT_DECISION`, `Y-N-P` at `ACK_CLOSED`, `Y-N-R` at `PLAN_SEALED`, `Y-N-I` at
+`PROVIDER_EXECUTION_STARTED`, `Y-N-E` at `PROVIDER_GRANT_VERIFICATION`, and `Y-N-L` at
+`EVIDENCE_ACCEPTANCE`. The E row has independent Provider verifier evidence for
+`EXPIRED`, `FORGED_AUTHORITY`, and `WRONG_RECIPIENT`, each rejected before assembly with
+`DI_PROTECTED_GRANT_REJECTED`; there are no `cleanup-error.txt` files.
+
+### Qualification boundary
+
+These are current-candidate `PASS_FOR_ROW` results for the local YOLO/native lanes. They do
+not close inherited negative/retirement rows, I05 (which remains `UNQUALIFIED`), Python
+retirement, or SIF/Tiger ownership. The host can run only `Qwen3-0.6B` smoke/ABI fixtures;
+the contract-required `Qwen/Qwen3.6-27B` row remains `WAITING_EXTERNAL_INPUT` and no local
+result is relabeled as that model.
