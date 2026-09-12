@@ -1,5 +1,10 @@
 # NDNSF 四模块设计
 
+**2026-09-12 基线限制**：当前书与 API 清单仍绑定其登记快照，相对本轮工作树已有54个文件变化，
+不能当作最新实现的完整说明。本次 Spec185 仅新增目标规划，不自动刷新或声称审计这些并行源码。
+[Spec185 目标API](../specs/185-prepared-model-runtime/contracts/public-api.md) 与
+[审计](../specs/185-prepared-model-runtime/audit.md) 是本次增量入口；其实现状态 PLANNED。
+
 **内容状态：R3 REVISED。** 已按 [R2 逐章审阅](reviews/chapter-audit-20260908.md)
 修正确认的事实错误，重写 23 组关键 API 契约，补充字段、状态、失败和调用例子。
 见 [67 个原主题的修订记录及剩余边界](reviews/chapter-revision-r3-20260908.md)。

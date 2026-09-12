@@ -12,7 +12,7 @@
     "build.py": "1276ead3b32ac726ab9b732cb4b5b1225fbfa72502b473bd5fccdb6d798efd74",
     "current-api.tex": "89ba8deeef15c01e57bb5adcb31608d138d133f08adb3fb349a71fbc1fac50d1",
     "current-content.tex": "a5ab1cc5150323ee0d68588514989f148649c6ce2aa96f3d6910b99ea4bd7044",
-    "current-design.tex": "b60edc36c31d9b0dbc826aa365840eb2dcaa7c6e1c102f87a1aa0829dbc4c37c",
+    "current-design.tex": "659a18d550e9bdb0caf02a3c2eb6f04c63e932be5cd1a220d1cb7d78fd2fd21e",
     "current-diagrams.tex": "dbc0471bba57b079e8cf603b43f636e56e8c871ac12a099ca61b37bcd26b0439",
     "design_state.py": "70200e2f6b8fdf5557b83d38b13c2f03e3a9fab09d31d23e668515e56d116cd9",
     "diagram-style.tex": "67cf4700b48270728a84daa590923ef9b63a9d40574fa7f60645e6320c59d19a",
@@ -46,7 +46,7 @@
     "target-content.tex": "09ea5e0b5a2fba62121997c9a6ee5dbdef4782da549b1b962cc5c86533b61798",
     "target-design.tex": "46ace3e38f6ff74a09732a7b0867c228da728531060402532b1fed76d606a79a",
     "target-diagrams.tex": "3b1548d8d9837fa0883c099cad74840ae2be0cfa146a5226e75c2687196e746e",
-    "target-roadmap.tex": "89481254d4d1a024f8da69fdecf5d430d4aa387515892c8285c0b6e6650e4ea1",
+    "target-roadmap.tex": "aec4513c4e85cc0e0cc9a740dfafbeddea07e66c18309591a14dfb1d9b3cb758",
     "target-snapshot.tex": "929101730a26eeaa5ad93d6d2ce595b866038f5c08db680b40ab9daa5ea1fc09",
     "target-source-baseline.json": "03b7338c553a31d300d8b4574f362b22eef0bb52cfe55fed0db7e612934486c7",
     "test_design_state.py": "e8a38903675f89a6abe7dd9d32e3cfd33d5d003e67f165fdc81039716d751553",
@@ -55,8 +55,8 @@
     "verify.py": "5468712c08d32dce91aaa72b0e6c3eddf5ef0603daa0832826f752c6422232da"
   },
   "pdfs": {
-    "current-design.pdf": "20d169323862c9248bd77fe690d6e62c6467ef8a3a74731f996619394d6b1068",
-    "target-design.pdf": "00774fff486b5483c44fe11207f88badbe8a1f2058bf24fadb898a538222227d"
+    "current-design.pdf": "fa9eeb84bfe664281a6c70b710be93ececff151eb9bf5840561a5449ddda8277",
+    "target-design.pdf": "b94bb8f5dc981ebafe3059223eba41966c758455b8ddace6c828137ccd8e8596"
   },
-  "run": ".codex-tmp/design-pdf-20260910T053202596070Z"
+  "run": ".codex-tmp/design-pdf-20260912T083540876933Z"
 }

@@ -1,4 +1,38 @@
 \clearpage
+\section{Spec185：准备模型对象与应用入口}
+\lead{PLANNED · DI；接口与完整任务见 specs/185-prepared-model-runtime}
+应用通过 Runtime 创建 User，调用 prepare 得到 PreparedModel，再以输入和可选 placement
+提交 request。NativeInferenceClient 保留唯一原生执行责任，过渡期保留旧签名。
+准备成功只表示本地不可变模型包可用，不表示权限有效、Provider 已选择或远端 runner 已就绪。
+
+\subsection{API 与身份}
+Runtime::open 接收操作员固定的配置；User::prepare 接收模型、任务、目录 JSON 与一次性 source
+定位。PreparedModel 持有已验证目录、splitter 与 source lease；manifest 和 receipt 只读。
+request 接收 owning Input 和 RequestOptions；placement 只有 options 中一个覆盖入口。
+RequestHandle 提供 wait()、wait(timeout)、cancel 和 observe；局部等待超时不取消请求。
+完整签名、字段、默认值及异常见本 Spec 的 contracts/public-api.md。
+
+\subsection{缓存和授权}
+默认 UseOrFetch：命中返回、有同键准备则加入、否则启动准备。RequireReady 只接受 READY；
+UseOrWait 仅加入已有准备，无任务时立即失败；Refresh 原子换代，失败保留旧 lease。
+缓存键覆盖模型、任务、目录、adapter、splitter、source 与安全域；并发等待者独立超时和取消。
+预算满且无可驱逐对象时明确失败，不留下半成品。目录复用不省略每请求输入与模型绑定检查。
+动态候选、ACK admission、placement、grant、Selection 和 plan 不进入共享缓存。
+
+\subsection{对象与调用关系}
+Runtime 拥有 IO、缓存和注册 owner；子对象持有共享 State，registry 反向使用弱引用。
+PreparedModel、RequestHandle 与 Conversation 分别持有必要的模型 lease。
+阻塞 prepare、wait、drain 禁止在 IO 或通知回调线程调用；close 只启动关闭，drain 是本地清理屏障。
+会话复用既有 coordinator、receipt/control 和 durable journal，不创建第二个成功状态。
+Provider 认证 Selection 后才取得受保护 source 并组装；不可变 artifact 可复用，KV 和请求状态隔离。
+不增加全局 ASSEMBLING barrier，不开放绕过认证的 prewarm 开关。
+
+\subsection{实施与证据}
+按 Runtime、准备缓存、请求、会话、Provider、迁移、最终验收七阶段推进，细分九批、十四任务。
+逐任务只读静态门通过后继续同批，批末组合审查后统一构建和相关测试。
+C++ 生产及跨进程证据先于 Python 薄封装检查；Spec184 未完成资格继续留在原任务中。
+本节不更新冻结目标 API 清单为假实现，详细新增目标契约由 Spec185 独立维护。
+
 \section{TG-01：授权版本与影响范围}
 \lead{PLANNED · Core；当前基线仍采用全局 ControllerVersion}
 目标是让无关主体不因一次局部授权调整而清除业务状态。ServiceController::grant、revoke、
