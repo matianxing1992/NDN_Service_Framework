@@ -33,3 +33,11 @@ PASS
 The later T007 C++ isolation-counterexample checkpoint is recorded in
 `evidence/t007-process-qualification-20260911.md`; it does not change this registry's role as a
 status index. No SIF/Tiger run or final qualification claim is made by this registry record.
+
+## Current status overlay (2026-09-11)
+
+The T007 unit remains `IN_PROGRESS`; its ordered remainder now records A0 current-candidate
+receipt, A1 YOLO Y-A, and A2 YOLO Y-B/Y-N as `PASS_FOR_ROW`. A3 remains
+`WAITING_EXTERNAL_INPUT` because this host can run only Qwen3-0.6B smoke, and A4 remains
+`PARTIAL`. This overlay does not mark T007 or Spec184 complete and does not promote the local
+candidate.

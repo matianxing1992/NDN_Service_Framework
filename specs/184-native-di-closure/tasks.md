@@ -17,7 +17,7 @@
 | [T004 Atomic Private Checkpoint Export](evidence/b3-checkpoint-export-20260911.md) | DONE | B2 exit | B3 normal and unsuppressed ASan/UBSan exits complete; directory-fsync failure remains an explicit implementation limit | 2026-09-11 |
 | [T005 Maintained Caller Mode Closure](evidence/b4-caller-convergence-20260911.md) | DONE | B1–B3 exits | Caller/mode matrix and focused route selectors complete; D2b runtime miss, real-model/no-Python and retirement remain in B5 | 2026-09-11 |
 | [T006 Inherited Obligation and Harness Closure](contracts/qualification-matrix.md) | DONE | B4 exit | 80-row matrix has one explicit owner, status, evidence path and remaining boundary per inherited row; current candidate identity and fresh convergence are recorded. Open runtime/model/external rows are explicitly transferred to T007/T008, not hidden in the registry | 2026-09-11 |
-| [T007 Current Native Qualification](contracts/promotion-candidate.md) | IN_PROGRESS | T006 complete and fresh convergence `PASS_FOR_T007_PRECONDITION` | Current candidate full unit/integration exits are `0`; C++ unary/stream/conversation/recovery/replacement/grant process cases, candidate-bound I02–I08 counterexample statuses, I02–I08 dynamic behavior samples, no-Python ELF closure, repaired tiny-ONNX sanitizer selectors and bounded root `PO-001-stream` owner are recorded in [process qualification refresh](evidence/t007-process-qualification-20260911.md). The remaining exits are ordered in [remainder audit](evidence/remainder-audit-20260911.md): current-candidate receipt `OPEN`, YOLO Y-A/Y-B/Y-N `NOT_RUN`, Qwen3.6-27B `WAITING_EXTERNAL_INPUT` because this host can run only Qwen3-0.6B smoke, and inherited negative/retirement rows `PARTIAL`. Non-root owner preflight remains `UNQUALIFIED` at `MININDN_REQUIRES_ROOT`; I05 remains an intentional `UNQUALIFIED` observation boundary | 2026-09-11 |
+| [T007 Current Native Qualification](contracts/promotion-candidate.md) | IN_PROGRESS | T006 complete and fresh convergence `PASS_FOR_T007_PRECONDITION` | Current candidate receipt verification, full C++ unit/integration exits, fresh native YOLO Y-A/Y-B/Y-N process runs, C++ unary/stream/conversation/recovery/replacement/grant process cases, candidate-bound I02–I08 counterexample statuses, I02–I08 dynamic behavior samples, no-Python ELF closure, repaired tiny-ONNX sanitizer selectors and bounded root `PO-001-stream` owner are recorded in [process qualification refresh](evidence/t007-process-qualification-20260911.md). YOLO Y-A/Y-B/Y-N are `PASS_FOR_ROW` on the current local candidate; Qwen3.6-27B remains `WAITING_EXTERNAL_INPUT` because this host can run only Qwen3-0.6B smoke, and inherited negative/retirement rows remain `PARTIAL`. Non-root owner preflight remains `UNQUALIFIED` at `MININDN_REQUIRES_ROOT`; I05 remains an intentional `UNQUALIFIED` observation boundary | 2026-09-11 |
 | [T008 Native Development Handoff](plan.md) | NOT_STARTED | T007 `QUALIFICATION_PASS` | Design/API handoff and external experiment transfer remain pending | 2026-09-11 |
 
 ## Logical Batch Progress
@@ -38,9 +38,9 @@ Python harness 不因本表再次无条件重跑。`Qwen3-0.6B` 只能作为 C++
 
 | Gate | Status | Dependency / owner | Exit evidence required | Next action |
 | --- | --- | --- | --- | --- |
-| T007-A0 current-candidate runtime receipt | `OPEN` | local build owner | Fresh `spec180-native-build.json` or explicitly equivalent receipt binding `build-spec184-b5-candidate`, compiler/dependency identity and candidate-first requester/provider paths | Produce and bind the current receipt; historical `build-system-j2` default is insufficient |
-| T007-A1 YOLO26n Y-A | `NOT_RUN` | local root MiniNDN owner; depends A0 | Native numerical oracle, terminal result, child exits, cleanup and current candidate identity | Run one fresh Y-A case after A0 |
-| T007-A2 YOLO26n Y-B/Y-N | `NOT_RUN` | local root MiniNDN owner; depends A1 | Protected and declared negative permutations with first-failure classification and cleanup | Run Y-B, then the declared Y-N cases |
+| T007-A0 current-candidate runtime receipt | `PASS_FOR_ROW` | local build owner | Fresh `build-spec184-b5-candidate-r4/spec180-native-build.json`, `verify` exit `0`, system `/usr/bin/g++ -B/usr/bin`, Waf `-j4`, candidate-first requester/provider paths and `binding_reused=true` | Receipt and identity are bound in [T007 process qualification](evidence/t007-process-qualification-20260911.md); no whole-tree rebuild was required |
+| T007-A1 YOLO26n Y-A | `PASS_FOR_ROW` | local root MiniNDN owner; depends A0 | Current-candidate C++ native numerical oracle, terminal result, child exits and cleanup | Fresh root run `r51` passed; evidence is in [T007 process qualification](evidence/t007-process-qualification-20260911.md) |
+| T007-A2 YOLO26n Y-B/Y-N | `PASS_FOR_ROW` | local root MiniNDN owner; depends A1 | Protected multi-provider terminal path and all declared negative permutations with first-failure classification and cleanup | Y-B `r37` and Y-N `r50` passed; Y-N includes three Provider grant mutations; evidence is in [T007 process qualification](evidence/t007-process-qualification-20260911.md) |
 | T007-A3 Qwen3.6-27B | `WAITING_EXTERNAL_INPUT` | experiment owner; external model/runtime | Signed three-stage `Qwen/Qwen3.6-27B` manifest, tokenizer, CUDA runtime, model identity and result evidence | Execute on the experiment machine when the exact model is available; do not relabel 0.6B |
 | T007-A4 inherited negative/retirement rows | `PARTIAL` | local C++ owner plus matrix owner | Complete row evidence with selector/owner, candidate identity, child exit, cleanup and first-failure boundary; repair I05 collector evidence if possible | Close only rows whose declared evidence is complete |
 | T008 native development handoff | `BLOCKED_BY_T007` | documentation owner; depends T007 qualification pass | Final candidate map, local qualification result and external rows explicitly marked `TRANSFERRED` | Do not start handoff or mark Spec184 complete before T007 passes |
@@ -408,6 +408,20 @@ Python retirement 资格行。
 耗时 `4:09.61`，最大 RSS `114048 KB`；原始日志和 SHA-256 见 [T007 process qualification
 refresh](evidence/t007-process-qualification-20260911.md)。该结果关闭当前 candidate 的
 integration 行，但不关闭真实模型、Python retirement、I05 正式资格或外部 SIF/Tiger owner。
+
+2026-09-11 **T007-YOLO-CURRENT-CANDIDATE / PASS_FOR_ROW**：当前候选
+`build-spec184-b5-candidate-r4` 的 `spec180-native-build.json` 已通过 `verify`，构建使用
+系统 `/usr/bin/g++ -B/usr/bin` 与 `-j4`；普通 DI 源码变更复用已验证边界，receipt 记录
+`binding_reused=true`。同一候选完成 root MiniNDN 的 YOLO26n Y-A（`r51`）与 Y-B（`r37`）真实
+C++ 请求，Y-A/Y-B 数值 oracle 均 `matched=true`，shape 为 `[1,50,6]`，最大绝对误差
+`0.0005340576171875`，Provider 日志确认 `onnxruntime-cpu`、`realCompute=true`、load/warmup/
+execution 完成；Y-N（`r50`）七个子项及 EXPIRED/FORGED_AUTHORITY/WRONG_RECIPIENT 三个
+Provider 授权变异均 `PASS`，无 cleanup error。Python 仅负责 MiniNDN 编排和证据收集，业务
+oracle 与执行仍为 C++。本机只能运行 Qwen3-0.6B smoke，Qwen3.6-27B 保持
+`WAITING_EXTERNAL_INPUT`；继承 negative/retirement、I05、SIF/Tiger 仍未闭合，因此 T007
+总体保持 `IN_PROGRESS`/`PARTIAL`，T008 继续 `BLOCKED_BY_T007`。详见
+[T007 process qualification](evidence/t007-process-qualification-20260911.md) 与
+[remainder audit](evidence/remainder-audit-20260911.md)。
 
 ## Phase 1: Request Correctness
 
