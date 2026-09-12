@@ -177,3 +177,13 @@ candidate. Output is `.codex-tmp/spec184-yolo-Y-B-output-20260912-r59/`; launche
 `746f2df2469901050676abe077154a0cfe6c7354db0a354d43c431ddc8639da5`). Its C++ numerical
 oracle matched, all seven child processes exited and cleanup completed. A2 remains `PARTIAL`
 until the Y-N negative matrix is rerun.
+
+## External cache correction (2026-09-12)
+
+The earlier inventory language saying that only the 0.6B payload was present is historical and
+is superseded for current external-state description. A later read-only scan found an incomplete
+`Qwen/Qwen3.6-27B` Hugging Face cache: one of 15 expected shards is present, 14 are missing,
+`refs/main` is absent, and no Spec184 candidate directory exists. The exact counts and path are
+recorded in [A4 external boundary](a4-retirement-external-boundary-20260912.md). This changes
+the description of the external cache, not the qualification status: A3 remains
+`WAITING_EXTERNAL_INPUT`, A4 remains `PARTIAL`, and T008 remains `BLOCKED_BY_T007`.

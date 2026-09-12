@@ -175,3 +175,16 @@ boundary. These results close the local C++ build and test gate, but they remain
 evidence: this host cannot execute the required 27B bundle, and no exact Qwen3-0.6B-weight run was
 performed. A3 therefore remains `WAITING_EXTERNAL_INPUT`, while T007 and the inherited A4 rows
 remain `PARTIAL`.
+
+## External cache recheck (2026-09-12)
+
+A later read-only inventory of `itiger` found a Hugging Face cache directory for
+`Qwen/Qwen3.6-27B` at revision `6a9e13bd6fc8f0983b9b99948120bc37f49c13e9`. This does not
+change the capability result: the snapshot contains only `1/15` expected weight shards
+(`model-00001-of-00015.safetensors`, `3,968,861,352` bytes), while the cache tree declares
+15 shards totaling `55,563,006,400` bytes; the remaining 14 shards and `refs/main` are absent.
+The snapshot also has no Spec184 candidate directory. This is an incomplete external cache
+observation, not a model execution or qualification result. The bounded inventory is recorded
+in `.codex-tmp/spec184-external-model-cache-inventory-20260912.log` with SHA-256
+`66fb5bdb505302bed5322f316d6c52cafd2cbbe09953a3210d12a9c28fca52be`. A3 remains
+`WAITING_EXTERNAL_INPUT`; local Qwen3-0.6B remains smoke/ABI-only.
