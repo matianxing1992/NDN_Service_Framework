@@ -1,0 +1,15 @@
+{
+  "schema": "ndnsf-di-qwen06b-local-experiment-v1",
+  "profileId": "local-qwen06b",
+  "topologyFile": "Experiments/Topology/AI_Lab.conf",
+  "stageNodes": ["ucla", "arizona", "wustl"],
+  "controllerNode": "memphis",
+  "userNode": "neu",
+  "buildDir": "build-spec184-b5-candidate-r4",
+  "controllerBinary": "build-spec184-b5-candidate-r4/examples/App_ServiceController",
+  "authorityBinary": "build-spec184-b5-candidate-r4/examples/DI_NativeArtifactAuthority",
+  "requesterBinary": "build-spec184-b5-candidate-r4/examples/DI_NativeRequester",
+  "providerBinary": "build-spec184-b5-candidate-r4/examples/di-native-provider",
+  "assemblyWorkerBinary": "build-spec184-b5-candidate-r4/DI_NativeOnnxAssemblyWorker",
+  "outputRoot": "results/spec184-qwen06b-local"
+}

@@ -48,6 +48,19 @@ Python harness 不因本表再次无条件重跑。`Qwen3-0.6B` 只能作为 C++
 
 ## Current Checkpoint
 
+2026-09-12 **T007-LOCAL-EXPERIMENT-LAYERS / CLOSED_FOR_VALIDATION**：按 TigerCluster 的
+`check -> prepare -> run` 边界整理本机 Qwen3-0.6B 入口，固定
+`machine -> candidate -> model -> bundle -> minindn -> workload -> cleanup` 七层状态。新增
+`Experiments/NDNSF_DI_Qwen06B_LocalExperiment.py`、profile 示例和 focused tests；candidate
+manifest 绑定 profile、runner、topology、build receipt、五个 native binary、三阶段 ONNX
+artifact 与 tokenizer 的 hash。`check` 对当前 `build-spec184-b5-candidate-r4` 的五个 native
+binary 完成 `readelf -d`/`ldd -r` closure；`prepare` smoke 写入不可覆盖 run layout，所有未执行
+层保持 `NOT_EVALUATED`；`cleanup` 现在要求按 run identity 的进程盘点通过，残留进程不得
+`PASS`。定向编排测试 `5 passed`，`py_compile` 与 `git diff --check` 通过。证据见
+[Qwen06B local experiment layers](evidence/qwen06b-local-experiment-layers-20260912.md)。本轮
+未运行 MiniNDN 或真实 workload，不能提升 T007/A3/A4/T008；真实 Qwen3.6-27B 仍由外部 owner
+负责。
+
 2026-09-12 **T007-MININDN-ENVIRONMENT-PROFILE / CLOSED_FOR_VALIDATION**：将本地与实际机器的
 MiniNDN 环境差异收敛为同一份 `ndnsf-di-minindn-environment-v1` profile。维护 runner
 现在支持 profile 与 CLI 覆盖，启动前检查 topology 节点和 native Provider binary，
