@@ -89,6 +89,12 @@ bool isDrainedLocked(const detail::RuntimeState& state)
          state.active == 0 && state.timers.empty();
 }
 
+bool isQuiescentLocked(const detail::RuntimeState& state)
+{
+  return state.tickets == 0 && state.queued == 0 && state.active == 0 &&
+         state.timers.empty();
+}
+
 void notifyDrained(const std::shared_ptr<detail::RuntimeState>& state)
 {
   state->condition.notify_all();
@@ -358,17 +364,27 @@ OperationSubscription
 OperationRuntime::drainAsync(std::chrono::milliseconds timeout,
                              std::function<void(bool)> callback)
 {
+  return drainAsync(timeout, std::move(callback), true);
+}
+
+OperationSubscription
+OperationRuntime::drainAsync(std::chrono::milliseconds timeout,
+                             std::function<void(bool)> callback,
+                             bool closeRuntime)
+{
   if (timeout.count() < 0)
     throw std::invalid_argument("operation runtime drain timeout is negative");
   if (!callback)
     throw std::invalid_argument("operation runtime drain callback is empty");
-  close();
+  if (closeRuntime)
+    close();
   auto control = std::make_shared<detail::SubscriptionControl>();
   auto state = m_state;
   auto waiter = std::make_shared<detail::RuntimeState::DrainWaiter>();
   waiter->control = control;
   waiter->callback = std::move(callback);
   waiter->deadline = std::chrono::steady_clock::now() + timeout;
+  waiter->closeRuntime = closeRuntime;
   std::weak_ptr<detail::RuntimeState::DrainWaiter> weakWaiter = waiter;
   control->cancelFn = [state, weakWaiter] {
     auto waiter = weakWaiter.lock();
@@ -386,8 +402,10 @@ OperationRuntime::drainAsync(std::chrono::milliseconds timeout,
     // Recheck and register under one lock.  The worker cannot mark drained or
     // exit between the decision and insertion, so no waiter can be stranded.
     std::lock_guard<std::mutex> lock(state->mutex);
-    if (state->drained || isDrainedLocked(*state)) {
-      state->drained = true;
+    if (state->drained || (closeRuntime ? isDrainedLocked(*state)
+                                        : isQuiescentLocked(*state))) {
+      if (state->closed)
+        state->drained = true;
       immediate = true;
       immediateResult = true;
     }
@@ -516,6 +534,33 @@ OperationRuntime::runWorker(const std::shared_ptr<detail::RuntimeState>& state) 
           ++state->active;
           timerTaskActive = true;
           break;
+        }
+        if (isQuiescentLocked(*state) && !state->drainWaiters.empty()) {
+          for (auto it = state->drainWaiters.begin();
+               it != state->drainWaiters.end();) {
+            if (!(*it)->closeRuntime || state->closed) {
+              if ((*it)->callback)
+                notifications.emplace_back((*it)->control,
+                                            std::move((*it)->callback));
+              it = state->drainWaiters.erase(it);
+            }
+            else {
+              ++it;
+            }
+          }
+          if (!notifications.empty()) {
+            lock.unlock();
+            for (auto& notification : notifications) {
+              if (notification.second && notification.first->begin()) {
+                try { notification.second(true); } catch (...) {}
+                notification.first->end(true);
+              }
+            }
+            notifications.clear();
+            state->condition.notify_all();
+            lock.lock();
+            continue;
+          }
         }
         if (state->closed && state->tickets == 0 && state->queued == 0 &&
             state->active == 0 && state->timers.empty()) {

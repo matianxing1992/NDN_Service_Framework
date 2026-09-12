@@ -133,6 +133,34 @@ BOOST_AUTO_TEST_CASE(AsyncTimeoutIsLocalAndDrainNotificationIsCancellable)
   resultSubscription.unsubscribe();
 }
 
+BOOST_AUTO_TEST_CASE(NonClosingDrainNotificationLeavesCoreOpen)
+{
+  auto runtime = OperationRuntime::create();
+  auto ticket = runtime->acquire();
+  std::promise<bool> timedOut;
+  auto timedOutFuture = timedOut.get_future();
+  auto subscription = runtime->drainAsync(
+    std::chrono::milliseconds(20), [&timedOut] (bool value) { timedOut.set_value(value); }, false);
+  BOOST_REQUIRE(timedOutFuture.wait_for(std::chrono::seconds(1)) == std::future_status::ready);
+  BOOST_CHECK(!timedOutFuture.get());
+  BOOST_CHECK(!runtime->isClosed());
+  ticket = OperationRuntime::WorkTicket{};
+  subscription.cancel();
+
+  std::promise<bool> completed;
+  auto future = completed.get_future();
+  auto retry = runtime->drainAsync(
+    std::chrono::seconds(1), [&completed] (bool value) { completed.set_value(value); }, false);
+  BOOST_REQUIRE(future.wait_for(std::chrono::seconds(1)) == std::future_status::ready);
+  BOOST_CHECK(future.get());
+  BOOST_CHECK(!runtime->isClosed());
+  auto retryTicket = runtime->acquire();
+  retryTicket = OperationRuntime::WorkTicket{};
+  retry.cancel();
+  runtime->close();
+  BOOST_CHECK(runtime->drain(std::chrono::seconds(1)));
+}
+
 BOOST_AUTO_TEST_CASE(TerminalReplayUsesAShortLivedCoreTicket)
 {
   auto runtime = OperationRuntime::create();

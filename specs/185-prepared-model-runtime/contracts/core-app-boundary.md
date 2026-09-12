@@ -36,6 +36,10 @@ move-only `OperationSubscription`；抽出DI SerialRequestExecutor的调度能�
 `post(WorkTicket&, std::function<void()>)`排队或抛关闭错误；
 `close() noexcept`拒绝新ticket，已登记清理仍可运行；`drain(milliseconds)->bool`；
 `drainAsync(milliseconds, std::function<void(bool)>)->OperationSubscription`。
+Core保留该签名作为显式shutdown barrier；另提供同签名加`closeRuntime=false`的
+内部组合入口，用于DI `Runtime::drainAsync`在不改变Open状态时等待当前工作静止。
+该组合入口不把quiescent通知写成Core `drained`终态；只有Core已关闭且所有ticket、
+queued、active及timer清空时才发布`drained`。
 ticket保活运行时，析构恰好减一次计数；排队任务额外持ticket的内部共享状态，不能依赖引用参数寿命。
 State持phase、mutex、ticket计数、worker/notification队列和安全join owner；不能依赖DI、Python、ONNX。
 post不能在调用者锁内执行callback；drain禁止在自己worker/Face owner线程阻塞；回调内close不自join。

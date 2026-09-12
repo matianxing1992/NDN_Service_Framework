@@ -21,7 +21,7 @@ for path in sorted(path for path in paths if path.endswith(".hpp")):
     print(path)
 PY
 )
-test "${#installed_headers[@]}" -eq 67
+test "${#installed_headers[@]}" -eq 68
 
 mkdir -p "$output_dir"
 

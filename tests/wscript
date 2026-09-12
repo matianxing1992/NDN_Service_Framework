@@ -124,6 +124,17 @@ def build(bld):
                 linkflags=['-Wl,--no-relax'],
                 rpath=[bld.bldnode.abspath()], install_path=None)
 
+    # Spec185 T001 standalone Runtime.hpp consumer.  The external script
+    # repeats this source against an install prefix with pkg-config and no
+    # source-tree include path, proving the stable Runtime symbol boundary.
+    bld.program(target='../spec185-runtime-consumer',
+                name='spec185-runtime-consumer',
+                source=[bld.path.find_node('installed-api/runtime-api-consumer.cpp')],
+                includes=['..', '../ndn-service-framework'],
+                use='ndnsf-distributed-inference ndn-service-framework ' + framework_use,
+                cxxflags=['-fPIC'], linkflags=['-Wl,--no-relax'],
+                rpath=[bld.bldnode.abspath()], install_path=None)
+
     # Spec185 B0C Core-only operation selector.  It links only the framework
     # library so the ownership boundary cannot be satisfied by DI/Python.
     bld.program(target='../spec185-core-operation',
@@ -145,6 +156,19 @@ def build(bld):
                 includes=['..', '../ndn-service-framework'],
                 use='ndn-service-framework NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL',
                 cxxflags=['-fPIC'], linkflags=['-Wl,--no-relax'],
+                rpath=[bld.bldnode.abspath()], install_path=None)
+
+    # Spec185 B1 Runtime configuration boundary.  The selector validates the
+    # native requester-v1 schema, trust-domain/model-key freeze, resource
+    # limits, and deferred source loading before T002 adds shutdown owners.
+    bld.program(target='../spec185-runtime',
+                name='spec185-runtime',
+                source=[bld.path.parent.find_node('tests/main.cpp'),
+                        bld.path.find_node('unit-tests/di-runtime.t.cpp')],
+                includes=['..', '../ndn-service-framework'],
+                use='ndn-service-framework ndnsf-distributed-inference NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL',
+                cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
+                linkflags=['-Wl,--no-relax'],
                 rpath=[bld.bldnode.abspath()], install_path=None)
 
     # Spec182 worker-protocol test tools (T006-C).  Deliberately-misbehaving

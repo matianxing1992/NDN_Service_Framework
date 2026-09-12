@@ -1,10 +1,12 @@
 #ifndef NDNSF_DI_API_HPP
 #define NDNSF_DI_API_HPP
 
-// Stable application entry point.  The concrete Runtime/User/PreparedModel
-// definitions are added by their owning implementation batches; this header
-// is intentionally dependency-light so an installed consumer can include it
-// without importing DI internals or the Python binding.
+// Stable application entry point.  Runtime/User are defined by the owning
+// implementation batch; later batches add PreparedModel and request values.
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp"
+
+// Keep this umbrella dependency-light: Runtime.hpp itself imports only the
+// standard library and does not expose the native planner or Python binding.
 #include <cstdint>
 #include <memory>
 

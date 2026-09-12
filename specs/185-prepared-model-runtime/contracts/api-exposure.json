@@ -11,10 +11,21 @@
       "stability": "stable",
       "target": "ndnsf-distributed-inference",
       "owner": "DI Runtime facade (T001+)",
-      "symbols": ["ndnsf::di::kPreparedModelRuntimeApiVersion", "Runtime", "User", "PreparedModel", "Input", "RequestHandle", "Result", "Conversation", "DiError", "RuntimeConfig", "UserConfig", "PrepareOptions", "RequestOptions"],
+      "symbols": ["ndnsf::di::kPreparedModelRuntimeApiVersion", "Runtime", "User", "PreparedModel", "Input", "RequestHandle", "Subscription", "Result", "Conversation", "DiError", "RuntimeConfig", "UserConfig", "PrepareOptions", "RequestOptions"],
       "replacement": null,
       "transitive_dependencies": [],
       "removal_condition": "none; additive public entry"
+    },
+    {
+      "path": "NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp",
+      "level": "application-transitive",
+      "stability": "stable",
+      "target": "ndnsf-distributed-inference",
+      "owner": "DI Runtime facade (T001+)",
+      "symbols": ["ndnsf::di::Runtime", "ndnsf::di::User", "ndnsf::di::RuntimeConfig", "ndnsf::di::ModelRegistration", "ndnsf::di::UserConfig", "ndnsf::di::DiError", "ndnsf::di::Subscription"],
+      "replacement": "ndnsf-di/api.hpp",
+      "transitive_dependencies": ["ndn-service-framework/OperationRuntime.hpp"],
+      "removal_condition": "retain while api.hpp includes the T001 Runtime declarations"
     },
     {
       "path": "NDNSF-DistributedInference/cpp/ndnsf-di/provider.hpp",
@@ -186,6 +197,7 @@
       "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderResourceProbe.hpp",
       "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp",
       "NDNSF-DistributedInference/cpp/ndnsf-di/QwenGenerationSession.hpp",
+      "NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp",
       "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp",
       "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp",
       "NDNSF-DistributedInference/cpp/adapters/onnx/CudaDeviceIdentity.hpp",

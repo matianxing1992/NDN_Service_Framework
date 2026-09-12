@@ -10,8 +10,8 @@
 | [T015 Installed C++ API and ABI Closure](#t015) | PASS | none | B0 closed; [b0-installed-api](evidence/b0-installed-api.md) covers v17 STATIC_PASS, four C++ consumers, 67 headers, negative gate, ABI/ldd/hash | 2026-09-12 |
 | [T017 Core Operation Runtime and Channels](#t017) | PASS | B0 exit | B0C closed; [b0c-core-operation](evidence/b0c-core-operation.md), PO-C1,C2 C++/TSan/installed-consumer PASS | 2026-09-12 |
 | [T018 DI Delegation to Core Operations](#t018) | PASS | T017 static | B0C closed; [b0c-core-operation](evidence/b0c-core-operation.md), PO-C3,C4 C++ real-provider/regression PASS | 2026-09-12 |
-| [T001 Runtime Configuration and Export](#t001) | NOT_STARTED | B0C exit | B1 planned; implementation/build/runtime NOT_RUN | 2026-09-12 |
-| [T002 Runtime Shutdown and Child Ownership](#t002) | NOT_STARTED | T001 static | B1 planned; implementation/build/runtime NOT_RUN | 2026-09-12 |
+| [T001 Runtime Configuration and Export](#t001) | PASS | B0C exit | B1 closed; [b1-runtime](evidence/b1-runtime.md) static/compile-link/runtime PASS; later request path remains open | 2026-09-12 |
+| [T002 Runtime Shutdown and Child Ownership](#t002) | PASS | T001 static | B1 closed; [b1-runtime](evidence/b1-runtime.md) normal/TSan/installed C++ lifecycle PASS; owner-thread public path remains unobserved | 2026-09-12 |
 | [T016 Extension Registration and Cooperative Control](#t016) | NOT_STARTED | B1 exit | B2E planned; implementation/build/runtime NOT_RUN | 2026-09-12 |
 | [T003 Verified Package Preparation](#t003) | NOT_STARTED | B2E exit | B2 planned; implementation/build/runtime NOT_RUN | 2026-09-12 |
 | [T004 Single Flight Refresh and Leases](#t004) | NOT_STARTED | T003 static | B2 planned; implementation/build/runtime NOT_RUN | 2026-09-12 |
@@ -28,6 +28,7 @@
 
 ## Current Checkpoint
 
+2026-09-12 B1 closed：T001/T002 已完成官方 review-agent 静态门（T001 v7、T002 v4）及 B1 组合审查；正常 DI 7/7、Core 34/34，DI/Core TSan 各按要求重复通过，安装前缀 C++ Runtime consumer 通过。证据见[b1-runtime](evidence/b1-runtime.md)。全树安装曾在无关 spec181 链接和 Python editable hook 边界停止，未计入B1产品失败；准备/请求/会话/Provider/完整资格/Python/文档仍未完成。下一依赖满足任务为T016/B2E。
 2026-09-12 B0C closed：T017/T018 已完成 v29 官方 review-agent 静态门及组合审查；正常 Core selector 33、DI selector 5、Spec170 回归59、TSan Core重复2次、Core-only staged installed consumer均通过。证据见[b0c-core-operation](evidence/b0c-core-operation.md)；未观测项为全树安装、Python绑定、Runtime及后续准备/请求/会话/Provider/资格批次。下一依赖满足任务为T001/B1。
 2026-09-12 B0/T015 closed：安装 API/ABI 证据[b0-installed-api](evidence/b0-installed-api.md)记录 v17 STATIC_PASS、四配置 C++ consumer、67 独立头和 DI/SVS ldd/hash；下一依赖满足任务为T017/B0C。其余17任务保持NOT_STARTED；已补[批次执行表](batch-execution.md)。
 每任务编码后review-agent静态门→同批继续→整批组合审查→共享构建/定向测试；不逐小修改编译，也不拖到全Spec末尾首次测试。
@@ -101,7 +102,7 @@ C-07每行是T015 exposure、T011 C++消费、T012绑定和T014文档的共同�
 
 <a id="t001"></a>
 
-- [ ] T001 [US1] Runtime Configuration and Export — Runtime.hpp/Runtime.cpp; root wscript; tests/unit-tests/di-runtime.t.cpp
+- [x] T001 [US1] Runtime Configuration and Export — Runtime.hpp/Runtime.cpp; root wscript; tests/unit-tests/di-runtime.t.cpp
 
   **Batch / Depends**: B1 / B0C exit。
 
@@ -115,9 +116,11 @@ C-07每行是T015 exposure、T011 C++消费、T012绑定和T014文档的共同�
 
   **Exit / oracle**: 有效配置可创建User；非default profile拒绝、错误trust/零预算/初始化中途失败无残留；公开头消费链接成功。
 
+  **Completion**: B1 `PASS`; static v7, normal/TSan C++ selectors, and installed-prefix consumer are recorded in [evidence/b1-runtime.md](evidence/b1-runtime.md).
+
 <a id="t002"></a>
 
-- [ ] T002 [US1] Runtime Shutdown and Child Ownership — Runtime.cpp; tests/unit-tests/di-runtime.t.cpp
+- [x] T002 [US1] Runtime Shutdown and Child Ownership — Runtime.cpp; tests/unit-tests/di-runtime.t.cpp
 
   **Batch / Depends**: B1 / T001 static。
 
@@ -130,6 +133,8 @@ C-07每行是T015 exposure、T011 C++消费、T012绑定和T014文档的共同�
   **Lifecycle completeness**: C-07 Runtime外壳析构即close；drainAsync屏障排除自身通知，保留安全State及join；测试子对象仍在/已释放和owner线程最后释放。
 
   **Exit / oracle**: close幂等、回调中close无自join、drain超时可重试；外部Face/IO fixture显式寿命；TSan同矩阵两次通过。
+
+  **Completion**: B1 `PASS`; static v4 after repair, normal/TSan lifecycle runs, and C++ installed consumer are recorded in [evidence/b1-runtime.md](evidence/b1-runtime.md). Public owner-thread prepare/request paths remain deferred to later tasks.
 
 <a id="t016"></a>
 

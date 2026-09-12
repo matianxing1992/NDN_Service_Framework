@@ -624,6 +624,7 @@ def build(bld):
     # contracts/api-exposure.json during this migration window.
     di_installed_headers = [
         'NDNSF-DistributedInference/cpp/ndnsf-di/api.hpp',
+        'NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/provider.hpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/extensions.hpp',
     ]
