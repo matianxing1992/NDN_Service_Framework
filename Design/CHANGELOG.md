@@ -1,5 +1,10 @@
 # 修订记录
 
+## Spec185 Complete API and Lifecycle · 2026-09-12
+
+新增C-07统一API与Python绑定总表、值类型及生命周期矩阵；补Subscription、有限异步等待、流错误/取消与关闭后行为。
+仍16任务11批、全部未实现；目标PDF同步，当前历史源码快照及既有漂移保持原边界。
+
 ## Spec185 API and Standalone C++ Revision · 2026-09-12
 
 全API审计新增C-05易用性与C-06独立C++契约；16任务11批，完整原生资格先于Python包装。
