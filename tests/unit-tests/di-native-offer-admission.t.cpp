@@ -3,7 +3,9 @@
 #include "ndn-service-framework/ServiceUser.hpp"
 #include <boost/test/unit_test.hpp>
 #include <fstream>
+#include <functional>
 #include <type_traits>
+#include <vector>
 
 namespace {
 using namespace ndnsf::di;
@@ -141,5 +143,155 @@ BOOST_AUTO_TEST_CASE(RejectPolicyAndKeySubstitution)
   BOOST_CHECK_THROW(admission(f), std::runtime_error);
   f = original; f["policy"]["freeBytes"] = 1000000;
   BOOST_CHECK_THROW(admission(f), std::runtime_error);
+}
+
+BOOST_AUTO_TEST_CASE(RejectsAuthenticatedClaimWithoutSignerIdentity)
+{
+  const auto f = fixture(), sample = f.at("vectors")[0];
+  const auto verifier = admission(f);
+  auto ack = candidate(sample.at("wire"));
+  ack.authenticationEvidence.signerIdentity.clear();
+  BOOST_CHECK_THROW(verifier.verify(ack, context(sample), 200), std::runtime_error);
+}
+
+BOOST_AUTO_TEST_CASE(RejectsAuthenticatedClaimWithoutKeyLocator)
+{
+  const auto f = fixture(), sample = f.at("vectors")[0];
+  const auto verifier = admission(f);
+  auto ack = candidate(sample.at("wire"));
+  ack.authenticationEvidence.signerKeyLocator.clear();
+  BOOST_CHECK_THROW(verifier.verify(ack, context(sample), 200), std::runtime_error);
+}
+
+BOOST_AUTO_TEST_CASE(RejectsMalformedOrMissingWireDigest)
+{
+  const auto f = fixture(), sample = f.at("vectors")[0];
+  const auto verifier = admission(f);
+  for (const auto& value : std::vector<std::string>{"", "invalid",
+                                                    "sha256:" + std::string(64, 'Z')}) {
+    auto ack = candidate(sample.at("wire"));
+    ack.authenticationEvidence.wireDigest = value;
+    BOOST_CHECK_THROW(verifier.verify(ack, context(sample), 200), std::runtime_error);
+  }
+}
+
+BOOST_AUTO_TEST_CASE(RejectsKeyLocatorOutsideSignerKeyNamespace)
+{
+  const auto f = fixture(), sample = f.at("vectors")[0];
+  const auto verifier = admission(f);
+  auto ack = candidate(sample.at("wire"));
+  ack.authenticationEvidence.signerKeyLocator = "/provider/a/KEY/foreign/v=1";
+  BOOST_CHECK_THROW(verifier.verify(ack, context(sample), 200), std::runtime_error);
+}
+
+BOOST_AUTO_TEST_CASE(RejectsAckSignedByOtherThanClaimedProvider)
+{
+  const auto f = fixture(), sample = f.at("vectors")[0];
+  const auto verifier = admission(f);
+  auto ack = candidate(sample.at("wire"));
+  ack.authenticationEvidence.signerIdentity = "/provider/b";
+  BOOST_CHECK_THROW(verifier.verify(ack, context(sample), 200), std::runtime_error);
+}
+
+BOOST_AUTO_TEST_CASE(RejectsSignerNotAcceptedByPolicy)
+{
+  const auto f = fixture(), sample = f.at("vectors")[0];
+  const auto verifier = admission(f);
+  auto wire = nativeParseJson(sample.at("wire").get<std::string>());
+  wire["signer_key_id"] = "sha256:" + std::string(64, '1');
+  const auto ack = candidate(nativeCanonicalJson(wire));
+  BOOST_CHECK_THROW(verifier.verify(ack, context(sample), 200), std::runtime_error);
+}
+
+BOOST_AUTO_TEST_CASE(RejectsProviderNotAcceptedByPolicy)
+{
+  const auto f = fixture(), sample = f.at("vectors")[0];
+  const auto verifier = admission(f);
+  auto wire = nativeParseJson(sample.at("wire").get<std::string>());
+  wire["provider"] = "/provider/b";
+  wire["topology"]["provider"] = "/provider/b";
+  const auto ack = candidate(nativeCanonicalJson(wire));
+  BOOST_CHECK_THROW(verifier.verify(ack, context(sample), 200), std::runtime_error);
+}
+
+BOOST_AUTO_TEST_CASE(RejectsServiceNotAcceptedByPolicy)
+{
+  const auto f = fixture(), sample = f.at("vectors")[0];
+  const auto verifier = admission(f);
+  auto wire = nativeParseJson(sample.at("wire").get<std::string>());
+  wire["service"] = "/foreign-service";
+  const auto ack = candidate(nativeCanonicalJson(wire));
+  BOOST_CHECK_THROW(verifier.verify(ack, context(sample), 200), std::runtime_error);
+}
+
+BOOST_AUTO_TEST_CASE(RejectsRequestOrModelBindingMismatch)
+{
+  const auto f = fixture(), sample = f.at("vectors")[0];
+  const auto verifier = admission(f);
+  const auto ack = candidate(sample.at("wire"));
+  auto ctx = context(sample);
+  ctx.requestId = "foreign-request";
+  BOOST_CHECK_THROW(verifier.verify(ack, ctx, 200), std::runtime_error);
+  ctx = context(sample);
+  ctx.modelDigest = "sha256:" + std::string(64, '1');
+  BOOST_CHECK_THROW(verifier.verify(ack, ctx, 200), std::runtime_error);
+  ctx = context(sample);
+  ctx.graphDigest = "sha256:" + std::string(64, '1');
+  BOOST_CHECK_THROW(verifier.verify(ack, ctx, 200), std::runtime_error);
+}
+
+BOOST_AUTO_TEST_CASE(RejectsUnusablePolicySnapshot)
+{
+  const auto original = fixture();
+  for (const auto& mutation : std::vector<std::function<void(NativeJson&)>>{
+         [] (auto& f) { f["schema"] = "wrong-schema"; },
+         [] (auto& f) { f["trustSchema"] = ""; },
+         [] (auto& f) { f["entries"] = NativeJson::object(); },
+         [] (auto& f) { f["candidateDigest"] = ""; },
+       }) {
+    auto f = original;
+    mutation(f["policy"]);
+    BOOST_CHECK_THROW(admission(f), std::exception);
+  }
+}
+
+BOOST_AUTO_TEST_CASE(RejectsFutureDatedOrExpiredAck)
+{
+  const auto f = fixture(), sample = f.at("vectors")[0];
+  const auto verifier = admission(f);
+  auto wire = nativeParseJson(sample.at("wire").get<std::string>());
+  wire["captured_at_ms"] = 201;
+  BOOST_CHECK_THROW(verifier.verify(candidate(nativeCanonicalJson(wire)), context(sample), 200),
+                    std::runtime_error);
+  wire = nativeParseJson(sample.at("wire").get<std::string>());
+  wire["expires_at_ms"] = 200;
+  BOOST_CHECK_THROW(verifier.verify(candidate(nativeCanonicalJson(wire)), context(sample), 200),
+                    std::runtime_error);
+}
+
+BOOST_AUTO_TEST_CASE(RejectsPolicyAlreadyExpired)
+{
+  const auto f = fixture(), sample = f.at("vectors")[0];
+  const auto verifier = admission(f);
+  auto ctx = context(sample);
+  ctx.deadlineMs = 200;
+  BOOST_CHECK_THROW(verifier.verify(candidate(sample.at("wire")), ctx, 200), std::runtime_error);
+}
+
+BOOST_AUTO_TEST_CASE(AcceptsCoreValidatedAckIntoImmutablePlanningView)
+{
+  static_assert(!std::is_default_constructible_v<NativeAdmittedOfferV3>);
+  const auto f = fixture(), sample = f.at("vectors")[0];
+  const auto verifier = admission(f);
+  auto ack = candidate(sample.at("wire"));
+  const auto admitted = verifier.verify(ack, context(sample), 200);
+  const auto& observed = admitted.observation();
+  BOOST_CHECK_EQUAL(observed.provider, "/provider/a");
+  BOOST_CHECK_EQUAL(observed.requestId, "request");
+  BOOST_CHECK_EQUAL(observed.offerDigest, sample.at("digest").get<std::string>());
+  ack.authenticationEvidence = {};
+  ack.ack.setStatus(false);
+  BOOST_CHECK(observed.status);
+  BOOST_CHECK_EQUAL(observed.offerDigest, sample.at("digest").get<std::string>());
 }
 BOOST_AUTO_TEST_SUITE_END()

@@ -77,3 +77,11 @@ controlled child cleanup. Together with Y-A `r58` and Y-B `r59`, this closes T00
 the refreshed candidate. T007 remains `IN_PROGRESS`; A3 is `WAITING_EXTERNAL_INPUT` for the
 exact 27B bundle, A4 remains `PARTIAL`, and T008 remains blocked. Local 0.6B evidence is not
 used as a 27B qualification result.
+
+## Current A4 admission coverage overlay (2026-09-12)
+
+The C++ `Spec182OfferAdmission` selector now has 18 passing cases and 81 passing assertions,
+including policy, signature, binding, time-window and immutable-view boundaries. The focused
+record is [A4 admission coverage](a4-offer-admission-coverage-20260912.md). This is a partial
+T007 A4 result: it does not close inherited negative/retirement rows, no-Python process rows,
+or the external Qwen3.6-27B row.

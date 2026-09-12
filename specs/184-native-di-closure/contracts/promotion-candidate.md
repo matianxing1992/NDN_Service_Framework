@@ -541,3 +541,15 @@ This overlay remains `FRESH_LOCAL_PARTIAL`: A3 is `WAITING_EXTERNAL_INPUT` becau
 historical Spec175 artifact has a complete external model and its multi-provider terminal exited
 `1`; the current Spec184 candidate and result are absent. A4 is `PARTIAL`, and T008 remains
 `BLOCKED_BY_T007`.
+
+## Current A4 test-coverage overlay (2026-09-12)
+
+The focused C++ `Spec182OfferAdmission` selector now passes 18 cases and 81 assertions; the
+source and result are recorded in [A4 admission coverage](../evidence/a4-offer-admission-coverage-20260912.md).
+This unit changed the C++ test harness and validation documents but did not change production
+runtime code, model inputs or the YOLO runner. Under this contract, the prior candidate overlay is
+therefore retained only as bounded historical runtime evidence; it is not silently re-bound to the
+new test coverage. Before the next final qualification run, recompute a candidate identity that
+includes the admission test source, current unit binary and updated Spec184 task/matrix hashes.
+A3 remains `WAITING_EXTERNAL_INPUT`, A4 remains `PARTIAL`, T007 remains `IN_PROGRESS`, and T008
+remains `BLOCKED_BY_T007`.
