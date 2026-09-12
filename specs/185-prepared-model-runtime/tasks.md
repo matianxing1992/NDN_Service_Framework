@@ -8,8 +8,8 @@
 | Unit / Details | Status | Depends | Evidence / Remaining | Updated |
 | --- | --- | --- | --- | --- |
 | [T015 Installed C++ API and ABI Closure](#t015) | PASS | none | B0 closed; [b0-installed-api](evidence/b0-installed-api.md) covers v17 STATIC_PASS, four C++ consumers, 67 headers, negative gate, ABI/ldd/hash | 2026-09-12 |
-| [T017 Core Operation Runtime and Channels](#t017) | NOT_STARTED | B0 exit | B0C planned; C-09 PO-C1,C2 NOT_RUN | 2026-09-12 |
-| [T018 DI Delegation to Core Operations](#t018) | NOT_STARTED | T017 static | B0C planned; C-09 PO-C3,C4 NOT_RUN | 2026-09-12 |
+| [T017 Core Operation Runtime and Channels](#t017) | PASS | B0 exit | B0C closed; [b0c-core-operation](evidence/b0c-core-operation.md), PO-C1,C2 C++/TSan/installed-consumer PASS | 2026-09-12 |
+| [T018 DI Delegation to Core Operations](#t018) | PASS | T017 static | B0C closed; [b0c-core-operation](evidence/b0c-core-operation.md), PO-C3,C4 C++ real-provider/regression PASS | 2026-09-12 |
 | [T001 Runtime Configuration and Export](#t001) | NOT_STARTED | B0C exit | B1 planned; implementation/build/runtime NOT_RUN | 2026-09-12 |
 | [T002 Runtime Shutdown and Child Ownership](#t002) | NOT_STARTED | T001 static | B1 planned; implementation/build/runtime NOT_RUN | 2026-09-12 |
 | [T016 Extension Registration and Cooperative Control](#t016) | NOT_STARTED | B1 exit | B2E planned; implementation/build/runtime NOT_RUN | 2026-09-12 |
@@ -28,6 +28,7 @@
 
 ## Current Checkpoint
 
+2026-09-12 B0C closed：T017/T018 已完成 v29 官方 review-agent 静态门及组合审查；正常 Core selector 33、DI selector 5、Spec170 回归59、TSan Core重复2次、Core-only staged installed consumer均通过。证据见[b0c-core-operation](evidence/b0c-core-operation.md)；未观测项为全树安装、Python绑定、Runtime及后续准备/请求/会话/Provider/资格批次。下一依赖满足任务为T001/B1。
 2026-09-12 B0/T015 closed：安装 API/ABI 证据[b0-installed-api](evidence/b0-installed-api.md)记录 v17 STATIC_PASS、四配置 C++ consumer、67 独立头和 DI/SVS ldd/hash；下一依赖满足任务为T017/B0C。其余17任务保持NOT_STARTED；已补[批次执行表](batch-execution.md)。
 每任务编码后review-agent静态门→同批继续→整批组合审查→共享构建/定向测试；不逐小修改编译，也不拖到全Spec末尾首次测试。
 本轮为执行计划整理，未修改API/产品设计；验证见[evidence](evidence/batch-execution-20260912.md)。下一步T015/B0。
@@ -74,7 +75,7 @@ C-07每行是T015 exposure、T011 C++消费、T012绑定和T014文档的共同�
 
 <a id="t017"></a>
 
-- [ ] T017 [US1] Core Operation Runtime and Channels — ndn-service-framework/OperationRuntime.hpp/.cpp; ndn-service-framework/OperationState.hpp; tests/unit-tests/core-operation-runtime.t.cpp; tests/installed-api/core-operation-consumer.cpp; wscript; tests/wscript
+- [x] T017 [US1] Core Operation Runtime and Channels — ndn-service-framework/OperationRuntime.hpp/.cpp; ndn-service-framework/OperationState.hpp; tests/unit-tests/core-operation-runtime.t.cpp; tests/installed-api/core-operation-consumer.cpp; wscript; tests/wscript
 
   **Batch / Depends**: B0C / B0 exit。
 
@@ -82,11 +83,11 @@ C-07每行是T015 exposure、T011 C++消费、T012绑定和T014文档的共同�
 
   **Implementation and review**: 提取通用调度/ticket/close/drain、完成等待/退订/可靠reader；复用Core已有stream传输，不导入DI领域类型。逐任务review-agent只读静态门。
 
-  **Exit / oracle**: Core-only安装消费者无DI/Python/ONNX依赖；PO-C1全部C++竞态/生命周期反例通过，TSan重复两次；批末与T018共同验证。
+  **Exit / oracle**: Core-only安装消费者无DI/Python/ONNX依赖；PO-C1全部C++竞态/生命周期反例通过，TSan重复两次；批末与T018共同验证。已通过，见[evidence/b0c-core-operation.md](evidence/b0c-core-operation.md)。
 
 <a id="t018"></a>
 
-- [ ] T018 [US2] DI Delegation to Core Operations — NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp/.cpp; tests/integration-tests/di-core-operation.t.cpp; tests/wscript
+- [x] T018 [US2] DI Delegation to Core Operations — NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp/.cpp; tests/integration-tests/di-core-operation.t.cpp; tests/wscript
 
   **Batch / Depends**: B0C / T017 static；启动前核对Spec184同树生产链及并行源码变化。
 
@@ -96,7 +97,7 @@ C-07每行是T015 exposure、T011 C++消费、T012绑定和T014文档的共同�
 
   **Coverage lanes**: production entry/callers→NativeInferenceClient/Core-only consumer；implementation and wire→C-09 CB01–CB04及旧Core协议；test/harness/oracle→PO-C1–C3及C++fixture；build/source closure→wscript/安装消费者/PO-C2,C4；migration/evidence→旧API、重复owner退出、PO-C4及批次证据。安全/错误/并发穿过五lane核对。
 
-  **Exit / oracle**: 两任务静态门与组合流程审查后运行Spec185CoreOperation、Spec185DiCoreOperation及受影响Core流/协作/注册回归；记录review-agent路径/SHA、候选与selector、static/compile-link/runtime-test/unobserved漏检复盘。C++断言闭合且依赖零反向边才CLOSED_FOR_VALIDATION，否则保留OPEN_FOR_NEXT_BATCH及具体触发条件；结果写evidence/b0c-core-operation.md。
+  **Exit / oracle**: 两任务静态门与组合流程审查后运行Spec185CoreOperation、Spec185DiCoreOperation及受影响Core流/协作/注册回归；记录review-agent路径/SHA、候选与selector、static/compile-link/runtime-test/unobserved漏检复盘。C++断言闭合且依赖零反向边才CLOSED_FOR_VALIDATION，否则保留OPEN_FOR_NEXT_BATCH及具体触发条件；已通过，结果见[evidence/b0c-core-operation.md](evidence/b0c-core-operation.md)。
 
 <a id="t001"></a>
 

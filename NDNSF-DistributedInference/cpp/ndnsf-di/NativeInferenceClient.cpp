@@ -56,24 +56,11 @@ processRequestOwnerScope()
   return value;
 }
 
-// Bounded observer delivery capacity (CD-001 M09 / CD-007 notified event
-// queue): only bounded non-secret observation events are queued.  A terminal
-// is a single event per operation, so saturation is unreachable until
-// token/progress events are accepted by the stream path; when the observer
-// queue saturates it records DELIVERY_OVERFLOW and drops the event instead of
-// fabricating a business result.
-constexpr std::size_t kObservedEventCapacity = 64;
 constexpr char kConversationStateScope[] = "ndnsf-di-conversation-state-v1";
 constexpr char kConversationReceiptTopic[] = "/ndnsf-di/conversation/receipt";
 constexpr char kConversationCommitTopic[] = "/ndnsf-di/conversation/commit";
 constexpr char kConversationRollbackTopic[] = "/ndnsf-di/conversation/rollback";
 constexpr char kConversationControlTopic[] = "/ndnsf-di/conversation/control";
-
-struct ObserverEntry
-{
-  std::function<void(const NativeInferenceEvent&)> function;
-  std::size_t nextEvent = 0;
-};
 
 std::function<std::chrono::steady_clock::time_point()>
 defaultClock()
@@ -163,131 +150,6 @@ conversationControlJson(const char* action,
 // results can never resurrect a terminal.
 enum class DiRequestPhase { New, PreparingInput, Requesting, Planning, Committed, Terminal };
 
-// Client-owned serial work executor (C01): DI state transitions are submitted
-// here and run one at a time on a detached worker thread — never on the
-// caller thread and never on the Core I/O thread.  Tasks capture only
-// operation/dependency shared_ptrs, never the client, so an in-flight task
-// can safely outlive the client.  close() never joins the worker: a
-// callback-driven close must not wait on a thread that may itself be waiting
-// on a Core callback. The worker owns only its queue state and exits after
-// the executor facade is stopped or released and queued deliveries drain.
-class SerialRequestExecutor
-{
-  struct State {
-    std::mutex mutex;
-    std::condition_variable condition;
-    std::deque<std::function<void()>> queue;
-    std::multimap<std::chrono::steady_clock::time_point,
-                  std::pair<std::uint64_t, std::function<void()>>> timers;
-    std::uint64_t nextTimer = 0;
-    bool stopped = false;
-  };
-public:
-  static std::shared_ptr<SerialRequestExecutor>
-  create(std::function<void(std::function<void()>)> submitHook = {})
-  {
-    auto executor = std::shared_ptr<SerialRequestExecutor>(
-      new SerialRequestExecutor(std::move(submitHook)));
-    if (!executor->m_submitHook) {
-      // The thread owns queue state, not the executor facade. Releasing the
-      // last client/operation facade stops the queue, including self-release
-      // from an observer; there is no self-owning idle thread cycle.
-      std::thread([state = executor->m_state] {
-        for (;;) {
-          std::function<void()> task;
-          {
-            std::unique_lock<std::mutex> lock(state->mutex);
-            for (;;) {
-              if (!state->queue.empty()) {
-                task = std::move(state->queue.front());
-                state->queue.pop_front();
-                break;
-              }
-              if (state->stopped) return;
-              if (state->timers.empty()) {
-                state->condition.wait(lock);
-              } else if (state->timers.begin()->first <= std::chrono::steady_clock::now()) {
-                task = std::move(state->timers.begin()->second.second);
-                state->timers.erase(state->timers.begin());
-                break;
-              } else {
-                // Copy the deadline: cancelling a timer may erase its node
-                // while wait_until releases the mutex.
-                const auto deadline = state->timers.begin()->first;
-                state->condition.wait_until(lock, deadline);
-              }
-            }
-          }
-          task();
-        }
-      }).detach();
-    }
-    return executor;
-  }
-
-  ~SerialRequestExecutor() { stop(); }
-
-  void submit(std::function<void()> task)
-  {
-    if (m_submitHook) {
-      m_submitHook(std::move(task));
-      return;
-    }
-    {
-      std::lock_guard<std::mutex> lock(m_state->mutex);
-      if (m_state->stopped) return;
-      m_state->queue.push_back(std::move(task));
-    }
-    m_state->condition.notify_one();
-  }
-
-  void stop() noexcept
-  {
-    {
-      std::lock_guard<std::mutex> lock(m_state->mutex);
-      m_state->stopped = true;
-    }
-    m_state->condition.notify_all();
-  }
-
-  // Only the independent deadline executor receives timed work. A blocked
-  // preparation job or observer cannot postpone this wakeup.
-  std::function<void()> scheduleAt(std::chrono::steady_clock::time_point deadline,
-                                   std::function<void()> task)
-  {
-    std::uint64_t id;
-    {
-      std::lock_guard<std::mutex> lock(m_state->mutex);
-      if (m_state->stopped) throw std::runtime_error("native deadline executor stopped");
-      id = ++m_state->nextTimer;
-      m_state->timers.emplace(deadline, std::make_pair(id, std::move(task)));
-    }
-    m_state->condition.notify_one();
-    return [state = m_state, id] {
-      std::function<void()> retired;
-      {
-        std::lock_guard<std::mutex> lock(state->mutex);
-        for (auto it = state->timers.begin(); it != state->timers.end(); ++it) {
-          if (it->second.first == id) {
-            retired = std::move(it->second.second);
-            state->timers.erase(it);
-            break;
-          }
-        }
-      }
-      state->condition.notify_one();
-      // Captures are destroyed outside the queue lock.
-    };
-  }
-
-private:
-  explicit SerialRequestExecutor(std::function<void(std::function<void()>)> submitHook)
-    : m_submitHook(std::move(submitHook)), m_state(std::make_shared<State>()) {}
-
-  std::function<void(std::function<void()>)> m_submitHook;
-  std::shared_ptr<State> m_state;
-};
-
 struct NativeInferenceHandle::Operation
 {
   // The caller's Core owner survives asynchronous work and handle waits.
@@ -305,10 +167,14 @@ struct NativeInferenceHandle::Operation
   std::shared_ptr<const NativeRequestContract> requestContract;
   std::uint64_t wireDeadlineMs = 0;
   std::optional<NativeEncodedRequest> encodedRequest;
+  std::shared_ptr<ndn_service_framework::OperationRuntime> operationRuntime;
+  std::shared_ptr<ndn_service_framework::OperationState<NativeInferenceResult,
+                                                        NativeInferenceEvent>> coreState;
+  ndn_service_framework::OperationSubscription deadlineSubscription;
+  std::vector<ndn_service_framework::OperationSubscription> observerSubscriptions;
   std::shared_ptr<const NativeRequestRuntime> runtime;
   std::shared_ptr<const NativeOfferAdmission> admission;
   std::shared_ptr<const NativeAdapterRegistry> adapters;
-  std::shared_ptr<SerialRequestExecutor> worker;
   std::weak_ptr<NativeOperationRegistry> registry;
   std::shared_ptr<std::atomic<bool>> cancelled = std::make_shared<std::atomic<bool>>(false);
   NativeRequestOptions coreOptions;
@@ -326,23 +192,16 @@ struct NativeInferenceHandle::Operation
   bool conversationCancelDeferred = false;
   bool coreActive = false;
   mutable std::mutex mutex;
-  std::condition_variable condition;
   std::string requestId;
   std::string applicationRequestId;
   std::string coreRequestId; // Per-attempt transport identity; public requestId remains stable.
   std::optional<NativeGenerationRecovery> recovery;
-  NativeRequestStatus status = NativeRequestStatus::Pending;
   DiRequestPhase phase = DiRequestPhase::New;
   std::uint64_t attempt = 1;
   std::chrono::steady_clock::time_point deadline{};
   std::function<void()> cancelDeadline;
-  NativeInferenceResult result;
-  std::shared_ptr<NativeDiError> error;
   std::uint64_t staleCallbacks = 0;    // late/duplicate terminal attempts: counted, never resurrecting
   std::uint64_t deliveryOverflows = 0; // DELIVERY_OVERFLOW records on the bounded observation queue
-  std::vector<NativeInferenceEvent> events; // bounded observer-only events, non-authoritative
-  std::vector<ObserverEntry> observers;
-  std::shared_ptr<SerialRequestExecutor> notifications;
 
   // Requester acceptance is process-local state, not a Provider commit or a
   // durable conversation checkpoint. Only the serial request worker accepts
@@ -359,8 +218,10 @@ struct NativeInferenceHandle::Operation
   bool acceptGenerationEvent(std::uint64_t sourceAttempt,
                              const std::vector<std::uint8_t>& payload)
   {
+    const bool corePending = coreState && coreState->isPending();
     std::lock_guard<std::mutex> lock(mutex);
-    if (status != NativeRequestStatus::Pending || sourceAttempt != attempt) {
+    if (!corePending || cancelled->load() ||
+        phase == DiRequestPhase::Terminal || sourceAttempt != attempt) {
       ++staleCallbacks;
       return false;
     }
@@ -427,8 +288,10 @@ struct NativeInferenceHandle::Operation
   bool validateGenerationFinal(std::uint64_t sourceAttempt,
                                const std::vector<std::uint8_t>& payload)
   {
+    const bool corePending = coreState && coreState->isPending();
     std::lock_guard<std::mutex> lock(mutex);
-    if (status != NativeRequestStatus::Pending || sourceAttempt != attempt) {
+    if (!corePending || cancelled->load() ||
+        phase == DiRequestPhase::Terminal || sourceAttempt != attempt) {
       ++staleCallbacks;
       return false;
     }
@@ -497,16 +360,6 @@ makeTerminalEvent(const NativeInferenceHandle::Operation& operation)
   return event;
 }
 
-NativeDiError
-makeError(const NativeInferenceHandle::Operation& operation)
-{
-  return NativeDiError(operation.error ? operation.error->code() : "NATIVE_REQUEST_FAILED",
-                       operation.error ? operation.error->domain() : "runtime",
-                       operation.error ? operation.error->boundary() : "request",
-                       operation.error ? operation.error->what() : "native request failed",
-                       operation.requestId, operation.attempt);
-}
-
 // Single-terminal gate (M02/CD-007): an operation leaves Pending at most
 // once.  Every later terminal attempt — a duplicate cancel, a late dispatch,
 // a Core callback landing after the terminal — is counted as stale and
@@ -526,9 +379,10 @@ markTerminal(const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
   std::optional<NativeConversationTurn> conversationTurn;
   bool conversationCommitted = false;
   bool deferConversationCleanup = false;
+  bool won = false;
   {
     std::lock_guard<std::mutex> lock(operation->mutex);
-    if (operation->status != NativeRequestStatus::Pending ||
+    if (operation->cancelled->load() ||
         (expectedAttempt && operation->attempt != expectedAttempt)) {
       ++operation->staleCallbacks;
       return false;
@@ -543,13 +397,21 @@ markTerminal(const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
       ++operation->staleCallbacks;
       return false;
     }
-    if (result) {
-      operation->result = *result;
+    if (!operation->coreState ||
+        (terminal == NativeRequestStatus::Succeeded && !result)) {
+      ++operation->staleCallbacks;
+      return false;
     }
-    if (error) {
-      operation->error = std::move(error);
-    }
-    operation->status = terminal;
+    if (!error && terminal != NativeRequestStatus::Succeeded)
+      error = std::make_shared<NativeDiError>(
+        terminal == NativeRequestStatus::Cancelled ? "CANCELLED" : "NATIVE_REQUEST_FAILED",
+        "runtime", "request",
+        terminal == NativeRequestStatus::Cancelled ? "native request was cancelled" :
+          "native request failed",
+        operation->requestId, operation->attempt);
+    // Claim the DI terminal transition before releasing this mutex, so a
+    // concurrent cancel/deadline cannot enter Core and a synchronous test
+    // submit hook cannot re-enter markTerminal while the lock is held.
     operation->cancelled->store(true);
     cancelCore = operation->coreActive;
     conversations = operation->conversations;
@@ -566,9 +428,28 @@ markTerminal(const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
     operation->phase = DiRequestPhase::Terminal;
     cancelDeadline = std::move(operation->cancelDeadline);
   }
+  // Core callbacks are dispatched after the DI lock is released.  Production
+  // runtimes are asynchronous, but test ports may invoke a submit hook inline;
+  // the lock-free boundary is required for both modes.
+  try {
+    if (terminal == NativeRequestStatus::Succeeded)
+      won = operation->coreState->complete(*result);
+    else
+      won = operation->coreState->fail(std::make_exception_ptr(*error));
+  }
+  catch (...) {
+    // A throwing result copy still has one terminal Core outcome.  Preserve
+    // the exception as the failure delivered to waiters.
+    try { won = operation->coreState->fail(std::current_exception()); }
+    catch (...) { won = false; }
+  }
+  if (!won) {
+    std::lock_guard<std::mutex> lock(operation->mutex);
+    ++operation->staleCallbacks;
+    return false;
+  }
   unregisterOperation(operation);
   if (cancelDeadline) cancelDeadline();
-  operation->condition.notify_all();
   if (conversations && conversationTurn && !conversationCommitted) {
     try {
       const NativeDiError cancelledError(
@@ -604,27 +485,28 @@ void
 publishEvent(const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
              NativeInferenceEvent event, bool requirePending = false)
 {
-  {
+  if (!operation->coreState)
+    return;
+  const auto bytes = event.payload.size() + event.requestId.size() + 1;
+  bool admitted = !requirePending;
+  const bool published = requirePending
+    ? operation->coreState->publishIf(
+        std::move(event), bytes, [operation, &admitted] {
+          std::lock_guard<std::mutex> lock(operation->mutex);
+          if (operation->cancelled->load() || operation->phase == DiRequestPhase::Terminal)
+            return false;
+          admitted = true;
+          return true;
+        })
+    : operation->coreState->publishTerminal(std::move(event), bytes);
+  if (requirePending && !admitted) {
     std::lock_guard<std::mutex> lock(operation->mutex);
-    if (requirePending && operation->status != NativeRequestStatus::Pending) {
-      ++operation->staleCallbacks;
-      return;
-    }
-    if (operation->events.size() >= kObservedEventCapacity) {
-      ++operation->deliveryOverflows;
-      return;
-    }
-    operation->events.push_back(std::move(event));
-    for (auto& observer : operation->observers) {
-      for (; observer.nextEvent < operation->events.size(); ++observer.nextEvent) {
-        // Queue under the operation lock: late replay and new delivery share
-        // one enqueue order. User code runs only on the notification worker.
-        operation->notifications->submit(
-          [function = observer.function, event = operation->events[observer.nextEvent]] {
-            try { function(event); } catch (...) {}
-          });
-      }
-    }
+    ++operation->staleCallbacks;
+    return;
+  }
+  if (!published) {
+    std::lock_guard<std::mutex> lock(operation->mutex);
+    ++operation->deliveryOverflows;
   }
 }
 
@@ -652,7 +534,8 @@ void enqueueOperation(const std::shared_ptr<NativeInferenceHandle::Operation>& o
                       std::function<void()> work, const std::string& boundary)
 {
   try {
-    operation->worker->submit([operation, work = std::move(work), boundary] {
+    auto ticket = operation->operationRuntime->acquire();
+    operation->operationRuntime->post(ticket, [operation, work = std::move(work), boundary] {
       if (operation->cancelled->load()) return;
       try { work(); }
       catch (const NativeDiError& error) { failOperation(operation, error); }
@@ -909,7 +792,7 @@ void commitConversationTurn(
   {
     std::lock_guard<std::mutex> lock(operation->mutex);
     if (!operation->conversationTurn || !operation->conversations ||
-        !operation->planned || operation->status != NativeRequestStatus::Pending)
+        !operation->planned || operation->cancelled->load())
       throw NativeDiError("NATIVE_CONVERSATION_TURN_UNAVAILABLE", "conversation", "commit",
         "conversation turn is unavailable for completion", operation->requestId, operation->attempt);
     turn = *operation->conversationTurn;
@@ -980,7 +863,7 @@ void commitConversationTurn(
   };
   completed.durableCommitGate = [operation](const std::function<void()>& publish) {
     std::lock_guard<std::mutex> lock(operation->mutex);
-    if (operation->status != NativeRequestStatus::Pending ||
+    if (operation->cancelled->load() ||
         std::chrono::steady_clock::now() >= operation->deadline)
       throw std::runtime_error("conversation durable commit fenced by terminal request");
     publish();
@@ -1021,7 +904,7 @@ bool beginReplacement(const std::shared_ptr<NativeInferenceHandle::Operation>& o
   std::shared_ptr<NativeConversationCoordinator> conversations;
   {
     std::lock_guard<std::mutex> lock(operation->mutex);
-    if (operation->status != NativeRequestStatus::Pending || sourceAttempt != 1 ||
+    if (operation->cancelled->load() || sourceAttempt != 1 ||
         operation->attempt != sourceAttempt || operation->replacementStarted ||
         operation->acceptedTerminalHint != "NONE" || !operation->options.generation ||
         !operation->options.stream || !operation->options.stream->allowReplacement ||
@@ -1058,7 +941,7 @@ bool beginReplacement(const std::shared_ptr<NativeInferenceHandle::Operation>& o
   bool installedReplacement = false;
   {
     std::lock_guard<std::mutex> lock(operation->mutex);
-    if (operation->status == NativeRequestStatus::Pending && operation->attempt == sourceAttempt &&
+    if (!operation->cancelled->load() && operation->attempt == sourceAttempt &&
         !operation->replacementStarted) {
       operation->options.generation->committedPrefixTokenIds = recovery.committedTokenIds;
       operation->coreRequestId = recovery.recoveryRequestId;
@@ -1106,7 +989,7 @@ void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& o
     try {
       {
         std::lock_guard<std::mutex> lock(operation->mutex);
-        if (operation->status != NativeRequestStatus::Pending || operation->attempt != sourceAttempt) return;
+        if (operation->cancelled->load() || operation->attempt != sourceAttempt) return;
         const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
           operation->deadline - std::chrono::steady_clock::now()).count();
         if (remaining <= static_cast<std::int64_t>(operation->options.ackTimeoutMs))
@@ -1130,7 +1013,7 @@ void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& o
           std::optional<NativeConversationTurn> conversationTurn;
           {
             std::lock_guard<std::mutex> lock(operation->mutex);
-            if (operation->status != NativeRequestStatus::Pending || operation->attempt != sourceAttempt ||
+            if (operation->cancelled->load() || operation->attempt != sourceAttempt ||
                 operation->phase != DiRequestPhase::Requesting) return;
             operation->phase = DiRequestPhase::Planning;
             runtime = operation->runtime;
@@ -1151,7 +1034,7 @@ void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& o
               sourceAttempt);
           const auto encoded = [&] {
             std::lock_guard<std::mutex> lock(operation->mutex);
-            if (operation->status != NativeRequestStatus::Pending || operation->attempt != sourceAttempt ||
+            if (operation->cancelled->load() || operation->attempt != sourceAttempt ||
                 operation->phase != DiRequestPhase::Planning || !operation->encodedRequest)
               throw NativeDiError("NATIVE_REQUEST_STALE", "planning", "ACK_CLOSED",
                 "native planning callback became stale before request snapshot", operation->requestId,
@@ -1183,7 +1066,7 @@ void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& o
                conversationTurn->ticket == operation->conversationTurn->ticket &&
                conversationTurn->attempt == operation->conversationTurn->attempt &&
                conversationTurn->requestId == operation->conversationTurn->requestId);
-            if (operation->status == NativeRequestStatus::Pending && operation->attempt == sourceAttempt &&
+            if (!operation->cancelled->load() && operation->attempt == sourceAttempt &&
                 operation->phase == DiRequestPhase::Planning && sameTurn) {
               operation->planned = std::move(planned);
               if (plannedConversationTurn)
@@ -1206,7 +1089,7 @@ void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& o
             try {
               {
                 std::lock_guard<std::mutex> lock(operation->mutex);
-                if (operation->status != NativeRequestStatus::Pending || operation->attempt != sourceAttempt) return;
+                if (operation->cancelled->load() || operation->attempt != sourceAttempt) return;
               }
               if (std::chrono::steady_clock::now() >= operation->deadline)
                 throw NativeDiError("NATIVE_REQUEST_TIMEOUT", "local", "commit",
@@ -1214,7 +1097,7 @@ void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& o
               if (!operation->user->CommitCollaborationPlan(ndn::Name(coreRequestId), digest, plan))
                 throw std::runtime_error("Core rejected the sealed plan");
               std::lock_guard<std::mutex> lock(operation->mutex);
-              if (operation->status == NativeRequestStatus::Pending && operation->attempt == sourceAttempt)
+            if (!operation->cancelled->load() && operation->attempt == sourceAttempt)
                 operation->phase = DiRequestPhase::Committed;
             }
             catch (const NativeDiError& error) { failOperation(operation, error, sourceAttempt); }
@@ -1231,7 +1114,7 @@ void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& o
         enqueueOperation(operation, [operation, message] {
           {
             std::lock_guard<std::mutex> lock(operation->mutex);
-            if (operation->status != NativeRequestStatus::Pending) return;
+            if (operation->cancelled->load()) return;
             if (operation->phase != DiRequestPhase::Committed || !operation->planned)
               throw std::runtime_error("response preceded plan commit");
           }
@@ -1259,7 +1142,7 @@ void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& o
         enqueueOperation(operation, [operation, sourceAttempt] {
           {
             std::lock_guard<std::mutex> lock(operation->mutex);
-            if (operation->status != NativeRequestStatus::Pending || operation->attempt != sourceAttempt) return;
+            if (operation->cancelled->load() || operation->attempt != sourceAttempt) return;
           }
           throw NativeDiError("NATIVE_REQUEST_TIMEOUT", "local", "Core",
             "Core request deadline expired", operation->requestId, sourceAttempt);
@@ -1271,7 +1154,7 @@ void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& o
         bool overflow = false;
         {
           std::lock_guard<std::mutex> lock(operation->mutex);
-          if (operation->status != NativeRequestStatus::Pending || operation->attempt != sourceAttempt) {
+          if (operation->cancelled->load() || operation->attempt != sourceAttempt) {
             ++operation->staleCallbacks;
             return;
           }
@@ -1310,7 +1193,7 @@ void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& o
           if (operation->options.generation && !operation->validateGenerationFinal(sourceAttempt, payload)) return;
           {
             std::lock_guard<std::mutex> lock(operation->mutex);
-            if (operation->status != NativeRequestStatus::Pending || operation->attempt != sourceAttempt) return;
+            if (operation->cancelled->load() || operation->attempt != sourceAttempt) return;
             if (!operation->planned) throw std::runtime_error("stream final preceded sealed plan");
           }
           NativeInferenceResult result;
@@ -1336,7 +1219,7 @@ void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& o
         enqueueOperation(operation, [operation, sourceAttempt, error] {
           {
             std::lock_guard<std::mutex> lock(operation->mutex);
-            if (operation->status != NativeRequestStatus::Pending || operation->attempt != sourceAttempt) {
+            if (operation->cancelled->load() || operation->attempt != sourceAttempt) {
               ++operation->staleCallbacks;
               return;
             }
@@ -1376,7 +1259,7 @@ dispatchOperation(const std::shared_ptr<NativeInferenceHandle::Operation>& opera
   bool expired = false;
   {
     std::lock_guard<std::mutex> lock(operation->mutex);
-    if (operation->status != NativeRequestStatus::Pending ||
+    if (operation->cancelled->load() ||
         operation->phase != DiRequestPhase::New) {
       // cancel/close won the race: consume the late dispatch, do not resurrect.
       ++operation->staleCallbacks;
@@ -1431,7 +1314,7 @@ dispatchOperation(const std::shared_ptr<NativeInferenceHandle::Operation>& opera
     // runs concurrently. Only the pending operation may retain its output.
     {
       std::lock_guard<std::mutex> lock(operation->mutex);
-      if (operation->status != NativeRequestStatus::Pending) {
+      if (operation->cancelled->load()) {
         ++operation->staleCallbacks;
         return;
       }
@@ -1464,7 +1347,7 @@ dispatchOperation(const std::shared_ptr<NativeInferenceHandle::Operation>& opera
     }
     {
       std::lock_guard<std::mutex> lock(operation->mutex);
-      if (operation->status != NativeRequestStatus::Pending) {
+      if (operation->cancelled->load()) {
         ++operation->staleCallbacks;
         return;
       }
@@ -1510,7 +1393,7 @@ dispatchOperation(const std::shared_ptr<NativeInferenceHandle::Operation>& opera
       bool installed = false;
       {
         std::lock_guard<std::mutex> lock(operation->mutex);
-        if (operation->status == NativeRequestStatus::Pending) {
+      if (!operation->cancelled->load()) {
           operation->conversationTurn = turn;
           installed = true;
         }
@@ -1539,7 +1422,7 @@ dispatchOperation(const std::shared_ptr<NativeInferenceHandle::Operation>& opera
     auto inspected = operation->preparation->inspectModel(*operation->preparedInput);
     {
       std::lock_guard<std::mutex> lock(operation->mutex);
-      if (operation->status != NativeRequestStatus::Pending) return;
+      if (operation->cancelled->load()) return;
       operation->inspected = std::move(inspected);
     }
     beginCoreRequest(operation);
@@ -1590,9 +1473,9 @@ std::string NativeInferenceHandle::applicationRequestId() const
 std::optional<std::string> NativeInferenceHandle::conversationCheckpoint() const
 {
   if (!m_operation) return std::nullopt;
-  std::lock_guard<std::mutex> lock(m_operation->mutex);
-  if (m_operation->status != NativeRequestStatus::Succeeded)
+  if (!m_operation->coreState || !m_operation->coreState->succeeded())
     return std::nullopt;
+  std::lock_guard<std::mutex> lock(m_operation->mutex);
   return m_operation->conversationCheckpointWire;
 }
 
@@ -1600,8 +1483,21 @@ NativeRequestStatus NativeInferenceHandle::status() const
 {
   if (!m_operation) throw NativeDiError("INVALID_HANDLE", "local", "handle",
                                          "native inference handle is empty");
-  std::lock_guard<std::mutex> lock(m_operation->mutex);
-  return m_operation->status;
+  if (!m_operation->coreState || m_operation->coreState->isPending())
+    return NativeRequestStatus::Pending;
+  if (m_operation->coreState->succeeded())
+    return NativeRequestStatus::Succeeded;
+  if (const auto failure = m_operation->coreState->failure()) {
+    try {
+      std::rethrow_exception(failure);
+    }
+    catch (const NativeDiError& error) {
+      if (error.code() == "CANCELLED")
+        return NativeRequestStatus::Cancelled;
+    }
+    catch (...) {}
+  }
+  return NativeRequestStatus::Failed;
 }
 
 NativeInferenceResult
@@ -1617,30 +1513,34 @@ NativeInferenceHandle::result(std::chrono::milliseconds waitTimeout) const
   // alive even if the last user reference to this handle is released from
   // another thread while the wait is parked.
   const auto operation = m_operation;
+  std::string requestId;
+  std::uint64_t attempt = 0;
+  {
+    std::lock_guard<std::mutex> lock(operation->mutex);
+    requestId = operation->requestId;
+    attempt = operation->attempt;
+  }
   if (waitTimeout.count() > 0 && operation->user->isOnIoThread()) {
     throw NativeDiError("CORE_IO_WAIT_FORBIDDEN", "local", "wait",
                         "native result cannot block the Core I/O thread",
-                        operation->requestId, operation->attempt);
+                        requestId, attempt);
   }
-  std::unique_lock<std::mutex> lock(operation->mutex);
-  if (!operation->condition.wait_for(lock, waitTimeout, [&operation] {
-        return operation->status != NativeRequestStatus::Pending;
-      })) {
-    // The wait timed out; the request itself is untouched and may still
-    // complete, be cancelled, or be waited on again (M07).
-    throw NativeDiError("LOCAL_WAIT_TIMEOUT", "local", "wait",
-                        "native result wait timed out", operation->requestId,
-                        operation->attempt);
+  try {
+    return operation->coreState->result(waitTimeout);
   }
-  if (operation->status == NativeRequestStatus::Succeeded) {
-    return operation->result;
+  catch (const ndn_service_framework::OperationError& error) {
+    if (error.code() == ndn_service_framework::OperationErrorCode::Timeout)
+      throw NativeDiError("LOCAL_WAIT_TIMEOUT", "local", "wait",
+                          "native result wait timed out", requestId, attempt);
+    if (error.code() == ndn_service_framework::OperationErrorCode::WouldDeadlock)
+      throw NativeDiError("CORE_WORKER_WAIT_FORBIDDEN", "local", "wait",
+                          "native result cannot block its Core worker", requestId, attempt);
+    if (error.code() == ndn_service_framework::OperationErrorCode::Cancelled)
+      throw NativeDiError("CANCELLED", "local", "request",
+                          "native request was cancelled", requestId, attempt);
+    throw NativeDiError("NATIVE_REQUEST_FAILED", "runtime", "result",
+                        error.what(), requestId, attempt);
   }
-  if (operation->status == NativeRequestStatus::Cancelled) {
-    throw NativeDiError("CANCELLED", "local", "request",
-                        "native request was cancelled", operation->requestId,
-                        operation->attempt);
-  }
-  throw makeError(*operation);
 }
 
 void NativeInferenceHandle::cancel()
@@ -1656,20 +1556,14 @@ void NativeInferenceHandle::observe(
     throw NativeDiError("INVALID_OBSERVER", "local", "observer",
                         "native observer is empty");
   }
-  // The new observer replays every event recorded so far (a terminal arrives
-  // once, and a late observer still sees it), while its drain cursor starts
-  // at events.size(): already-delivered history is never re-drained.  The
-  // function and events are copied into the independent notification queue
-  // under the lock; replay and new events therefore have one serial order.
-  {
+  try {
+    auto subscription = m_operation->coreState->observe(std::move(observer));
     std::lock_guard<std::mutex> lock(m_operation->mutex);
-    for (const auto& event : m_operation->events) {
-      m_operation->notifications->submit([function = observer, event] {
-        try { function(event); } catch (...) {}
-      });
-    }
-    m_operation->observers.push_back(
-      ObserverEntry{std::move(observer), m_operation->events.size()});
+    m_operation->observerSubscriptions.push_back(std::move(subscription));
+  }
+  catch (const ndn_service_framework::OperationError& error) {
+    throw NativeDiError("NATIVE_OBSERVER_FAILED", "local", "observer",
+                        error.what(), m_operation->requestId, m_operation->attempt);
   }
 }
 
@@ -1751,17 +1645,11 @@ NativeInferenceClient::NativeInferenceClient(
   , m_conversations(std::move(conversations))
   , m_preparation(std::move(preparation))
   , m_admission(std::move(admission))
+  , m_operationRuntime(ndn_service_framework::OperationRuntime::create(testPort.submitHook))
   , m_requestOwnerScope(testPort.submitHook ? std::string{} : processRequestOwnerScope())
   , m_now(testPort.now ? testPort.now : defaultClock())
-  , m_executor(SerialRequestExecutor::create(testPort.submitHook))
-  , m_notifications(SerialRequestExecutor::create())
-  , m_deadlines(SerialRequestExecutor::create())
   , m_operationRegistry(std::make_shared<NativeOperationRegistry>())
-  , m_schedule(testPort.scheduleHook ? testPort.scheduleHook :
-      [executor = m_deadlines](std::chrono::steady_clock::time_point deadline,
-                               std::function<void()> task) {
-        return executor->scheduleAt(deadline, std::move(task));
-      })
+  , m_schedule(testPort.scheduleHook)
 {
   if (!m_user || !m_adapters) {
     throw NativeDiError("INVALID_CLIENT_CONFIGURATION", "local", "constructor",
@@ -1838,9 +1726,15 @@ NativeInferenceHandle NativeInferenceClient::request(
     operation->admission = m_admission;
     operation->adapters = m_adapters;
     operation->conversations = m_conversations;
-    operation->worker = m_executor;
+    operation->operationRuntime = m_operationRuntime;
+    operation->coreState = std::make_shared<ndn_service_framework::OperationState<
+      NativeInferenceResult, NativeInferenceEvent>>(
+        m_operationRuntime, ndn_service_framework::OperationState<
+          NativeInferenceResult, NativeInferenceEvent>::CancelFunction{},
+        [] (const NativeInferenceEvent& event) {
+          return event.payload.size() + event.requestId.size() + 1;
+        });
     operation->registry = m_operationRegistry;
-    operation->notifications = m_notifications;
     operation->applicationRequestId = options.applicationRequestId;
     // The requestId comes from a unique native owner allocated at submission
     // (runtime-boundaries: Core allocation or unique native owner); the
@@ -1947,21 +1841,35 @@ NativeInferenceHandle NativeInferenceClient::request(
   // safely outlive this client.
   auto now = m_now;
   try {
-    {
+    if (m_schedule) {
       std::lock_guard<std::mutex> lock(operation->mutex);
-      if (operation->status != NativeRequestStatus::Pending) {
-        return NativeInferenceHandle(std::move(operation));
+      if (!operation->cancelled->load()) {
+        operation->cancelDeadline = m_schedule(operation->deadline,
+          [weak = std::weak_ptr<NativeInferenceHandle::Operation>(operation)] {
+            if (auto pending = weak.lock()) {
+              failOperation(pending, NativeDiError(
+                "NATIVE_REQUEST_TIMEOUT", "local", "request",
+                "native request budget expired", pending->requestId, pending->attempt));
+            }
+          });
       }
-      operation->cancelDeadline = m_schedule(operation->deadline,
-        [weak = std::weak_ptr<NativeInferenceHandle::Operation>(operation)] {
+    }
+    else {
+      auto deadlineSubscription = operation->coreState->resultAsync(
+        std::chrono::milliseconds(options.timeoutMs),
+        [weak = std::weak_ptr<NativeInferenceHandle::Operation>(operation)]
+        (std::optional<NativeInferenceResult>, std::exception_ptr error) {
+          if (!error) return;
           if (auto pending = weak.lock()) {
             failOperation(pending, NativeDiError(
               "NATIVE_REQUEST_TIMEOUT", "local", "request",
               "native request budget expired", pending->requestId, pending->attempt));
           }
         });
+      operation->deadlineSubscription = std::move(deadlineSubscription);
     }
-    m_executor->submit([operation, now] {
+    auto ticket = m_operationRuntime->acquire();
+    m_operationRuntime->post(ticket, [operation, now] {
       try {
         dispatchOperation(operation, now);
       } catch (const NativeDiError& error) {
@@ -1998,11 +1906,10 @@ void NativeInferenceClient::close() noexcept
   for (const auto& operation : operations) {
     cancelOperation(operation);
   }
-  // Stop serialization without joining: queued dispatches drain as no-ops on
-  // already-terminal operations, and a callback-driven close never waits on
-  // the executor.  The shared Core/user is not closed or joined here.
-  m_executor->stop();
-  m_deadlines->stop();
+  // The Core runtime owns the request worker, timers, and notification
+  // deliveries.  Closing it rejects new work and lets existing callbacks
+  // converge through its join/drain barrier.
+  m_operationRuntime->close();
 }
 
 } // namespace ndnsf::di

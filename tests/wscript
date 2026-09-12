@@ -124,6 +124,29 @@ def build(bld):
                 linkflags=['-Wl,--no-relax'],
                 rpath=[bld.bldnode.abspath()], install_path=None)
 
+    # Spec185 B0C Core-only operation selector.  It links only the framework
+    # library so the ownership boundary cannot be satisfied by DI/Python.
+    bld.program(target='../spec185-core-operation',
+                name='spec185-core-operation',
+                source=[bld.path.parent.find_node('tests/main.cpp'),
+                        bld.path.find_node('unit-tests/core-operation-runtime.t.cpp')],
+                includes=['..', '../ndn-service-framework'],
+                use='ndn-service-framework NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL',
+                cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
+                linkflags=['-Wl,--no-relax'],
+                rpath=[bld.bldnode.abspath()], install_path=None)
+
+    # In-tree smoke consumer; PO-C1's installed-boundary consumer is compiled
+    # by tests/installed-api/run-spec185-core-operation-consumer.sh with only
+    # libndn-service-framework.pc from an install prefix.
+    bld.program(target='../spec185-core-operation-consumer',
+                name='spec185-core-operation-consumer',
+                source=[bld.path.find_node('installed-api/core-operation-consumer.cpp')],
+                includes=['..', '../ndn-service-framework'],
+                use='ndn-service-framework NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL',
+                cxxflags=['-fPIC'], linkflags=['-Wl,--no-relax'],
+                rpath=[bld.bldnode.abspath()], install_path=None)
+
     # Spec182 worker-protocol test tools (T006-C).  Deliberately-misbehaving
     # worker children spawned through the same OA02 transport for the crash /
     # cancel / incomplete subprocess cases; never installed and never
@@ -151,6 +174,24 @@ def build(bld):
             'NDNSF-DistributedInference/cpp/adapters/yolo/*.cpp') + \
         bld.path.parent.ant_glob(
             'NDNSF-DistributedInference/cpp/adapters/qwen/*.cpp')
+
+    # Spec185 B0C DI delegation selector.  Link the production
+    # NativeInferenceClient and the complete DI source closure.  The target
+    # includes the Core-only fail-closed checks plus real Provider-backed ACK,
+    # durable-cancel, and conversation-commit-failure fixtures.
+    bld.program(target='../spec185-di-core-operation',
+                name='spec185-di-core-operation',
+                source=[bld.path.parent.find_node('tests/main.cpp'),
+                        bld.path.find_node('integration-tests/di-core-operation.t.cpp'),
+                        bld.path.find_node('integration-tests/ndnsf-di-core-flow.t.cpp'),
+                        bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp')] +
+                       di_integration_sources,
+                includes=framework_includes,
+                use='ndn-service-framework ' + framework_use + ' ONNXRUNTIME',
+                defines=['HAVE_TESTS'],
+                cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
+                linkflags=['-Wl,--no-relax'],
+                rpath=[bld.bldnode.abspath()], install_path=None)
 
     # Exercise the shared native projection and model-specific merge contract
     bld.program(target='../spec181-exact-tensor-transport',
