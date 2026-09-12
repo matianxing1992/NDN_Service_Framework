@@ -51,3 +51,12 @@ build boundary、缺失 binary、canonical candidate digest 和自身进程排�
 | `unobserved` | `run` 后的真实 ACK/Selection/Response、两轮会话、模型数值、root cleanup 仍未观测 |
 
 该单元是 `T007` 的本地实验编排准备出口，不能把 `T007-A3`、`T007-A4` 或 `T008` 改为完成。
+
+## Revision after first root attempt
+
+随后一次 root MiniNDN r05 到达 Controller、Authority 和三个 Provider 的 ready 边界，但
+Requester 在 catalog source 解析处返回 `DI_NATIVE_ONNX_PARSE`。因此本入口已收紧为显式
+canonical ONNX source 输入，并把 source 缺失/非 ONNX 检查前移到 `model` 层；stage artifact
+不再被当作 source。`prepare` 另外写入 `bundle-manifest.json`，其 command digest 与
+candidate digest 在 `run` 前复核。详细失败边界和当前 `PARTIAL` 状态见
+[Qwen06B local r05 and layered runner revision](qwen06b-local-experiment-r05-20260912.md)。

@@ -4,6 +4,10 @@
 The Python process owns only topology, identities, files, and child-process
 lifecycle.  Request planning, grants, Provider admission, ONNX execution,
 streaming, and conversation checkpoints stay in the C++ executables.
+
+The staged ONNX files are role artifacts.  A canonical ONNX source object must
+be supplied explicitly with ``--canonical-source``; the runner never creates a
+JSON metadata payload in its place.
 """
 
 from __future__ import annotations
@@ -247,11 +251,15 @@ def policy_text(provider_names: list[str]) -> str:
 
 
 def env_for(home: Path, node: str) -> dict[str, str]:
-    return {"HOME": str(home), "NDN_CLIENT_CONF": str(home / ".ndn/client.conf"),
-            "NDN_CLIENT_PIB": "pib-sqlite3:" + str(home / "pib"),
-            "NDN_CLIENT_TPM": "tpm-file:" + str(home / "tpm"),
-            "NDN_CLIENT_TRANSPORT": f"unix:///run/nfd/{node}.sock",
-            "PATH": "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"}
+    env = {"HOME": str(home), "NDN_CLIENT_CONF": str(home / ".ndn/client.conf"),
+           "NDN_CLIENT_PIB": "pib-sqlite3:" + str(home / "pib"),
+           "NDN_CLIENT_TPM": "tpm-file:" + str(home / "tpm"),
+           "NDN_CLIENT_TRANSPORT": f"unix:///run/nfd/{node}.sock",
+           "PATH": "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"}
+    diagnostic_log = os.environ.get("NDNSF_NDN_LOG", "")
+    if diagnostic_log:
+        env["NDN_LOG"] = diagnostic_log
+    return env
 
 
 def env_command(env: dict[str, str], command: str) -> str:
@@ -290,6 +298,10 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--stage-manifest", type=Path, required=True)
     parser.add_argument("--stage-root", type=Path, default=None)
+    parser.add_argument("--canonical-source", type=Path, default=None,
+                        help="canonical ONNX graph object for native assembly")
+    parser.add_argument("--canonical-initializer", type=Path, default=None,
+                        help="optional external canonical ONNX initializer object")
     parser.add_argument("--topology", type=Path, default=ROOT / "Experiments/Topology/AI_Lab.conf")
     parser.add_argument("--stage-nodes", default="ucla,arizona,wustl")
     parser.add_argument("--controller-node", default="memphis")
@@ -371,9 +383,20 @@ def main() -> int:
     }
     adapter_digest = digest_bytes(canonical_bytes(adapter))
     manifest_digest = digest_bytes(stage_manifest_path.read_bytes())
-    source_payload = {"model": model_name, "revision": revision, "layerRanges": ranges,
-                      "stageDigests": [stage["sha256"] for stage in stages],
-                      "tokenizerDigest": tokenizer_digest}
+    if args.canonical_source is None:
+        raise SystemExit("MODEL_CANONICAL_SOURCE_REQUIRED")
+    canonical_source_input = args.canonical_source.expanduser().resolve()
+    if not canonical_source_input.is_file():
+        raise SystemExit(f"MODEL_CANONICAL_SOURCE_MISSING:{canonical_source_input}")
+    if canonical_source_input.stat().st_size == 0 or canonical_source_input.stat().st_size > (1 << 20):
+        raise SystemExit("MODEL_CANONICAL_SOURCE_SIZE_INVALID")
+    canonical_initializer_input = None
+    if args.canonical_initializer is not None:
+        canonical_initializer_input = args.canonical_initializer.expanduser().resolve()
+        if not canonical_initializer_input.is_file():
+            raise SystemExit(f"MODEL_CANONICAL_INITIALIZER_MISSING:{canonical_initializer_input}")
+        if canonical_initializer_input.stat().st_size == 0 or canonical_initializer_input.stat().st_size > (1 << 20):
+            raise SystemExit("MODEL_CANONICAL_INITIALIZER_SIZE_INVALID")
     if args.run_root is None:
         run_root = Path(tempfile.mkdtemp(prefix="ndnsf-qwen06b-minindn-", dir="/tmp"))
     else:
@@ -381,9 +404,17 @@ def main() -> int:
         run_root.mkdir(parents=True, exist_ok=True)
     run_root.chmod(0o700)
     (run_root / "requester").mkdir()
-    source_path = run_root / "requester/model-source.json"
-    source_path.write_bytes(canonical_bytes(source_payload))
+    source_path = run_root / "requester/canonical-source.onnx"
+    shutil.copyfile(canonical_source_input, source_path)
+    source_path.chmod(0o600)
     source_digest = digest_bytes(source_path.read_bytes())
+    initializer_path = None
+    initializer_digest = None
+    if canonical_initializer_input is not None:
+        initializer_path = run_root / "requester/canonical-initializer.bin"
+        shutil.copyfile(canonical_initializer_input, initializer_path)
+        initializer_path.chmod(0o600)
+        initializer_digest = digest_bytes(initializer_path.read_bytes())
     stage_plan, service_manifest = stage_plan_and_manifest(
         run_root, model_manifest, stages, args.max_new_tokens, tokenizer_digest)
     provider_names = [f"{APP_ROOT}/provider-{index}" for index in range(len(stages))]
@@ -393,7 +424,9 @@ def main() -> int:
         "schema": "ndnsf-di-native-request-catalog-v1", "model": model_descriptor,
         "source": {"data_name": "/catalog/qwen06b/source", "digest": source_digest,
                     "model_manifest_digest": manifest_digest,
-                    "canonical_graph_digest": graph_digest},
+                    "canonical_graph_digest": graph_digest,
+                    **({"initializer_digest": initializer_digest}
+                       if initializer_digest else {})},
         "recipe": {"artifact_profile_digest": digest_text("qwen06b-profile"),
                    "assembler_descriptor_digest": digest_text("qwen06b-assembler"),
                    "backend_abi": "onnxruntime-cpu-v1", "precision": "float32",
@@ -526,7 +559,7 @@ def main() -> int:
                     "entries": offer_entries}
     authority_cfg = {
         "schema": "ndnsf-di-native-authority-v1", "run_for_ms": 300000,
-        "permission_bootstrap_ms": 30000, "max_grant_ttl_ms": 120000,
+        "permission_bootstrap_ms": 60000, "max_grant_ttl_ms": 120000,
         "authority": {"identity": AUTHORITY, "service": "/HELLO", "group": GROUP,
                        "controller_identity": CONTROLLER, "requester_identity": USER,
                        "protection_epoch": "epoch-1", "content_key_id": "model-key",
@@ -540,6 +573,8 @@ def main() -> int:
                            "model_name": model_descriptor["model_name"],
                            "model_content_digest": model_descriptor["content_digest"],
                            "canonical_source_digest": source_digest,
+                           **({"initializer_object_digest": initializer_digest}
+                              if initializer_digest else {}),
                            "artifact_profile_digest": catalog["recipe"]["artifact_profile_digest"]}}}}
     (authority_dir / "authority-private.pem").write_bytes(auth_private.read_bytes())
     (authority_dir / "requester-public.pem").write_bytes(req_public.read_bytes())
@@ -567,7 +602,9 @@ def main() -> int:
         (directory / "recipient-key-map.json").write_text(json.dumps({provider: str(directory / "recipient-private.pem")}))
     requester_cfg = {
         "schema": "ndnsf-di-native-requester-v1",
-        "catalog": {**catalog, "source": {**catalog["source"], "file": "model-source.json"}},
+        "catalog": {**catalog, "source": {**catalog["source"], "file": source_path.name,
+                                             **({"initializer_file": initializer_path.name}
+                                                if initializer_path else {})}},
         "core": {"requester_identity": USER, "authority_identity": CONTROLLER,
                  "group": GROUP, "trust_schema_file": "../trust-schema.conf"},
         "grant": {"authority_identity": AUTHORITY, "authority_service": "/HELLO",
@@ -655,6 +692,11 @@ def main() -> int:
             return proc, log
         build = args.build.expanduser().resolve()
         authority_env = env_for(homes[args.controller_node], args.controller_node)
+        # Bind Controller's fenced generation store to this immutable run.
+        # The default global /tmp path can retain a stale writer lock after a
+        # manually interrupted MiniNDN run and would poison later candidates.
+        authority_env["NDNSF_CONTROLLER_GENERATION_STATE"] = str(
+            run_root / "controller-generation.state")
         # App_ServiceController keeps the maintained trust-schema default as a
         # repository-relative path.  MiniNDN launches commands from a host
         # namespace working directory, so make that dependency explicit while
@@ -665,7 +707,13 @@ def main() -> int:
                           f"--ensure-identities {shlex.quote(AUTHORITY + ',' + ','.join(provider_names) + ',' + USER)} "
                           "--no-serve-certificates --run-for-ms 300000")
         controller_proc, controller_log = start(args.controller_node, "controller", controller_cmd, authority_env)
+        # The banner is emitted before Controller::start() enters its real
+        # PUBPARAMS readiness probe.  Wait for that process to reach the
+        # banner, then give its registration path a bounded settle window
+        # before launching the Authority.  Authority must still start before
+        # Controller::start() can finish its reciprocal probe.
         wait_for_marker(controller_proc, controller_log, ("ServiceController started",), args.startup_timeout_s)
+        time.sleep(0.5)
         authority_cmd = (f"{shlex.quote(str(build / 'examples/DI_NativeArtifactAuthority'))} "
                          f"--config {shlex.quote(str(authority_dir / 'authority.json'))}")
         authority_proc, authority_log = start(args.controller_node, "authority", authority_cmd, authority_env)

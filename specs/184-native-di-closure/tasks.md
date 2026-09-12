@@ -48,6 +48,17 @@ Python harness 不因本表再次无条件重跑。`Qwen3-0.6B` 只能作为 C++
 
 ## Current Checkpoint
 
+2026-09-12 **T007-LOCAL-EXPERIMENT-R05-AND-LAYER-REVISION / PARTIAL**：按一次真实 root
+MiniNDN r05 结果继续收敛本地入口。Controller、Authority、三个 Provider 均 ready，首个
+失败边界为 Requester C++ catalog source 的 `DI_NATIVE_ONNX_PARSE`；该失败不是 ACK、
+Selection、Response 或模型数值结果，且 teardown 后进程盘点通过。入口现要求显式
+`--canonical-source`（可选 `--canonical-initializer`），禁止用 stage manifest 元数据生成
+伪 source；缺失/非 ONNX source 在 `model` 层停止。`prepare` 新增带 candidate/command
+digest 的 `bundle-manifest.json`，启动完整后将 Requester 失败记录为 `minindn=PASS`、
+`workload=FAIL`。focused tests `9 passed`，语法检查通过。详见 [Qwen06B local r05 and
+layered runner revision](evidence/qwen06b-local-experiment-r05-20260912.md)。真实 canonical
+0.6B source、请求结果和两轮会话仍未观测，T007/A3/A4/T008 保持原状态。
+
 2026-09-12 **T007-LOCAL-EXPERIMENT-LAYERS / CLOSED_FOR_VALIDATION**：按 TigerCluster 的
 `check -> prepare -> run` 边界整理本机 Qwen3-0.6B 入口，固定
 `machine -> candidate -> model -> bundle -> minindn -> workload -> cleanup` 七层状态。新增

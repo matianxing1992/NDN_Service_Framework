@@ -74,3 +74,42 @@ def test_candidate_digest_is_canonical_and_changes_with_inputs():
     assert first == same
     assert first != changed
     assert first.startswith("sha256:")
+
+
+def test_model_layer_requires_explicit_canonical_source():
+    module = load_module()
+    result = module.canonical_source_info(None, None)
+    assert result == {
+        "status": "WAITING_EXTERNAL_INPUT",
+        "reason": "MODEL_CANONICAL_SOURCE_REQUIRED",
+    }
+
+
+def test_model_layer_rejects_non_onnx_source(tmp_path: Path):
+    module = load_module()
+    source = tmp_path / "source.onnx"
+    source.write_text("stage metadata is not an ONNX protobuf", encoding="utf-8")
+    result = module.canonical_source_info(source, None)
+    assert result["status"] == "FAIL"
+    assert result["reason"] == "MODEL_CANONICAL_SOURCE_NOT_ONNX"
+
+
+def test_model_layer_accepts_small_canonical_onnx_fixture():
+    module = load_module()
+    result = module.canonical_source_info(
+        ROOT / "tests/fixtures/spec182/qwen-native-config.onnx", None)
+    assert result["status"] == "PASS"
+    assert result["nodeCount"] > 0
+
+
+def test_runtime_failure_is_classified_after_startup_markers(tmp_path: Path):
+    module = load_module()
+    (tmp_path / "authority.log").write_text(
+        "NATIVE_GRANT_AUTHORITY_READY\n", encoding="utf-8")
+    for index in range(3):
+        (tmp_path / f"provider-{index}.log").write_text(
+            "NDNSF_DI_NATIVE_PROVIDER_READY\n", encoding="utf-8")
+    (tmp_path / "requester-0.log").write_text(
+        "NATIVE_REQUESTER_FAILED: DI_NATIVE_ONNX_PARSE\n", encoding="utf-8")
+    assert module.startup_markers_observed(tmp_path)
+    assert module.first_failure_marker(tmp_path) == "DI_NATIVE_ONNX_PARSE"
