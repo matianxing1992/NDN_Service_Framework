@@ -1,0 +1,12 @@
+{
+  "schema": "ndnsf-di-minindn-environment-v1",
+  "profileId": "local-ai-lab",
+  "topologyFile": "Experiments/Topology/AI_Lab.conf",
+  "stageNodes": ["ucla", "arizona", "wustl", "neu"],
+  "minindnRoot": "/tmp/minindn",
+  "outputDir": "results/ndnsf-di-minindn-local",
+  "qwenContentStore": "results/.ndnsf-di-content-addressed",
+  "appStateRoot": "/tmp/ndnsf-di-app-state",
+  "nativeProviderBinary": "build/examples/di-native-provider",
+  "nativeFaultProviderBinary": "build/examples/di-native-fault-provider"
+}
