@@ -1,5 +1,44 @@
 # Research-first Proposal Revision and Evidence Audit
 
+## 2026-09-11 Broader Application-Level Validation
+
+按作者意见，将 Chapter 4 从两个协作示例扩展为两套应用级验证平台：验证策略、
+UAV 控制／感知／协作、DI 推理生命周期／状态／协作、覆盖与证据边界。多视角和
+分片推理保留为代表性工作流，不再代表应用的全部验证范围。正文增加六类流程到
+框架机制及观察结果的映射表；同步摘要及 slides 的应用总览与证据说明。
+
+NDN Slides Review 约束实际路径和结论：本地调用不证明远程授权；视频服务控制
+与流交付分开；完整录制／模型对象使用对象引用与精确获取；任务／会话状态和
+多 Provider 依赖分别说明。飞控、编解码、检测算法、模型切分与 KV 兼容语义
+仍属于应用，只有经过 NDNSF 的对应操作可作为框架验证。KV 收益不直接归因
+为 NDNSF 收益。覆盖计划不是已经完成的资格证据。
+
+源码依据：`DroneServiceContainer::installServiceInstances()` 的能力 ACK、
+本地注册与远程服务；`GroundStationServiceContainer::installServiceInstances()`
+及检测服务注册；`NativeInferenceClient.hpp` 的请求、事件、取消和 continuation；
+`NativeInferenceProvider.hpp` 的服务定义与注册。CodeGraph 的 DI 查询包含历史
+临时 Python 副本，未作当前实现依据；按实际原生头文件及 Spec184 状态核对。
+`docs/architecture.md` 与 `docs/ndnsf-core-app-boundary.md` 提供职责划分，
+旧 DI README 的 Python-first 状态不用于描述当前原生实现。
+
+Context Mode 项目层通过，active 层 tasks 索引 hash 过期，采用实际文件。
+初次检查发现生成讲稿一行 overfull，源自新增表格的 `input/result` 连写；
+改为 `input and result` 后重新构建。初次日志保留为原始目录的
+`verify-first.log` 和 `notes-first.log`，不是产品测试失败。
+本轮检查记录位于 `research-revision-validation.json` 的
+`application_validation_revision`，原始目录为
+`.codex-tmp/proposal-app-validation-20260911/`。
+
+最终文档检查为 DOCUMENT_CHECKS_PASS：八个 LaTeX 入口通过；英文正文 34 页、
+中文 26 页、两版 slides 各 47 页、两版讲稿各 9 页。PDF 与 LibreOffice 回渲
+完成视觉复查，正文镜像一致，文本边界检查通过；PPTX 的 955 个源文本片段
+各分配一次且保留可编辑文字。内容页不超过 100 词，原实验页正文未改。
+仍有 underfull 排版警告，不等同于内容越界；未声称在 Google Slides 或
+Microsoft PowerPoint 内实测。检查结论仅覆盖文档，不是产品资格验收。
+
+不改产品/API、Design 契约或实验数值，不推进 T007/T008。下一步按新增覆盖表
+逐行补充现有运行证据与未完成测试，而不是默认扩大为所有可选功能的验收。
+
 ## 2026-09-11 Email-aligned Authorization Rationale
 
 按最新邮件修改当前中英文 Proposal、slides 与讲稿：三个要求分别是发现描述

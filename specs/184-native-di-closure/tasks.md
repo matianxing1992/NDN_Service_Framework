@@ -47,6 +47,14 @@ Python harness 不因本表再次无条件重跑。`Qwen3-0.6B` 只能作为 C++
 
 ## Current Checkpoint
 
+2026-09-11 **PROPOSAL-APPLICATION-VALIDATION / DOCUMENT_PASS**：已扩展中英文
+Chapter 4 与对应 slides 为完整 UAV／DI 应用级验证范围，并增加功能—机制映射。
+初次讲稿 overfull 已修正；八个 LaTeX 入口、PDF/PPTX 边界、文字可编辑性、
+镜像一致性与 LibreOffice 回渲检查通过；slides 47 页，原实验内容未改。
+证据见 [application-validation audit](../../docs/PAPER/proposal-defense/research-revision-audit.md)
+及 `.codex-tmp/proposal-app-validation-20260911/verify.log`。无产品/API 变化，
+不运行产品实验，不推进 T007/T008；下一步为覆盖表关联已有证据与剩余测试。
+
 2026-09-12 **T007-A1-YA-CURRENT-CANDIDATE / PASS_FOR_ROW**：在重新构建 Python binding 并更新
 native identity receipt 后，root MiniNDN Y-A 使用同一 r4 candidate 完成真实 Controller、Repo、
 Provider、User 链路。C++ YOLO numerical oracle `matched=true`，shape `[1,50,6]`，

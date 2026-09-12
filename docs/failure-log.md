@@ -1,5 +1,14 @@
 # Failure Log and Evidence Index
 
+## 2026-09-11 — Proposal application-validation notes layout
+
+The first document check found an overfull generated notes line after the new
+DI table used `input/result`. The source now uses `input and result`; rebuilt
+notes pass the layout check. Active Context Mode tasks hashes were stale; actual files supplied
+the authority fallback. No product test ran. See
+[application-validation audit](PAPER/proposal-defense/research-revision-audit.md)
+and `.codex-tmp/proposal-app-validation-20260911/notes-first.log`.
+
 ## 2026-09-11 — Proposal email-alignment retrieval boundary
 
 Active Context Mode health rejected stale Spec184 plan/tasks hashes; no stale

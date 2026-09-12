@@ -272,8 +272,19 @@ Cancellation & Prevent late messages from reauthorizing cancelled work\\\bottomr
 \vspace{3mm}\bluebox{Network re-retrieval is not task re-execution. Compensation is not an atomic transaction or exactly-once physical action.}
 \end{frame}
 
-\begin{frame}{Proposed UAV Collaboration: Capture, Analyze and Return}
-\small An operator requests ground-area views from unmanned aerial vehicles (UAVs), followed by analysis.
+\begin{frame}{NDNSF-UAV: Application-Level Validation}
+\small Unmanned aerial vehicle (UAV) application workflows exercise several framework mechanisms. [28]
+\begin{tabularx}{\linewidth}{p{.37\linewidth}X}
+\toprule Application function & NDNSF validation scope\\\midrule
+Control, telemetry, mission status & Provider/request association, permissions, operation lifecycle\\\midrule
+Live video and recordings & Stream lifecycle, protected delivery, named-object retrieval\\\midrule
+Detection and multi-view tasks & Service provision/consumption, role assignments, dependencies\\\bottomrule
+\end{tabularx}
+\vspace{3mm}\bluebox{Coverage is broader than one collaboration case. Each claim still needs evidence from the actual NDNSF path; flight safety and image-analysis accuracy need separate validation.}
+\end{frame}
+
+\begin{frame}{UAV Collaboration Example: Capture, Analyze and Return}
+\small An operator requests ground-area views from nearby UAVs, followed by analysis.
 \begin{enumerate}
 \item Sensing UAVs sign encrypted ViewImage Data under their authorized namespaces.
 \item The compute Provider retrieves images over assigned edges and publishes Annotation Data.
@@ -283,7 +294,7 @@ Cancellation & Prevent late messages from reauthorizing cancelled work\\\bottomr
 \vspace{2mm}\bluebox{Original image Data remains under its producer's name. GPS alone does not establish camera visibility.}
 \end{frame}
 
-\begin{frame}{What the UAV Case Must Demonstrate}
+\begin{frame}{What the Multi-View Workflow Must Demonstrate}
 \begin{itemize}
 \item A complete authorized collection--processing--return task before the deadline.
 \item Correct handling of unavailable views, delayed images and a failed processing Provider.
@@ -293,7 +304,18 @@ Cancellation & Prevent late messages from reauthorizing cancelled work\\\bottomr
 \vspace{3mm}\bluebox{Higher recognition/localization accuracy is a separate claim requiring ground truth and a single-view control. It is not assumed here.}
 \end{frame}
 
-\begin{frame}{Distributed Inference: Named Computation Dependencies}
+\begin{frame}{NDNSF-DI: Application-Level Validation}
+\begin{tabularx}{\linewidth}{p{.38\linewidth}X}
+\toprule Application function & NDNSF validation scope\\\midrule
+Single-Provider inference & Discovery, permissions, input and result delivery\\\midrule
+Model preparation and reuse & Readiness, artifact references, named-object retrieval\\\midrule
+Incremental output and conversation & Request state, cancellation, output lifecycle\\\midrule
+Multi-Provider inference & Assignments, dependencies, recovery\\\bottomrule
+\end{tabularx}
+\vspace{3mm}\bluebox{The application also tests the invocation foundation, without requiring a model split. Interfaces and focused tests exist; complete model/device/recovery qualification remains open. [28]}
+\end{frame}
+
+\begin{frame}{DI Collaboration Example: Named Computation Dependencies}
 \begin{center}
 \begin{tikzpicture}[box/.style={draw=MemphisBlue,fill=LightBand,rounded corners,text width=30mm,minimum height=12mm,align=center,font=\small},>=Stealth]
 \node[box] (a) {Provider A\\layer group 1};
@@ -319,6 +341,15 @@ Cancellation & Prevent late messages from reauthorizing cancelled work\\\bottomr
 \item Freeze one supported model/partition first; tensor/hybrid and LLM streaming need their own evidence if claimed.
 \end{itemize}
 \vspace{3mm}\bluebox{Earlier small-model measurements do not validate the newer distributed inference and recovery paths. [28]}
+\end{frame}
+
+\begin{frame}{Map Application Functions to Framework Evidence}
+\begin{enumerate}
+\item Name the application function and the production NDNSF API path it uses.
+\item Specify the input, expected result, failure condition, and tested configuration.
+\item Record evidence separately: implementation, focused test, multi-process test, measured outcome.
+\end{enumerate}
+\vspace{3mm}\bluebox{UAV and DI cover discovery, authorization, data delivery, lifecycle, and collaboration. Local calls do not prove remote behavior. Representative workflows cover claimed mechanisms; optional application features need not become separate dissertation gates.}
 \end{frame}
 
 \begin{frame}{RQ3: Define the Baselines Before Comparing}
