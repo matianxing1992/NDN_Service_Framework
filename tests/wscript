@@ -2,6 +2,8 @@
 
 top = '..'
 
+import os
+
 def build(bld):
     bld.program(target='../spec181-exact-data-wire',
                 name='spec181-exact-data-wire',
@@ -88,6 +90,14 @@ def build(bld):
     framework_includes = ['..', '../ndn-service-framework',
                           '../NDNSF-DistributedRepo/include',
                           '../NDNSF-DistributedInference/cpp/adapters/onnx']
+    # NAC-ABE's installed algorithm headers use the historical quoted
+    # include "common.hpp".  The package export names only its parent include
+    # directory, so add the nested directory explicitly; otherwise the quote
+    # can resolve to an unrelated common.hpp (or leave test-only members
+    # private) when compiling the integration target.
+    framework_includes += [os.path.join(path, 'nac-abe')
+                           for path in getattr(bld.env, 'INCLUDES_NAC_ABE', [])
+                           if os.path.isdir(os.path.join(path, 'nac-abe'))]
     framework_use = 'NDN_CXX NDN_SVS PROTOBUF ONNX NAC-ABE NDNSD BOOST OPENSSL DL TOKENIZER_BRIDGE'
 
     # Link a clean external-style consumer against the installable DI library
