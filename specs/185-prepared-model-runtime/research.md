@@ -33,3 +33,6 @@ requester preparation cache 与 Provider artifact/template cache 分批实现和
 
 本轮完整性审计选择统一Subscription和native有限resultAsync，补可退订read/observer和明确析构；目的是避免Python为了实现async语法另造取消/状态owner。
 易用性目标以[C-07](contracts/api-catalog.md)常规调用层及逐行消费检查证明，不以“类似其他框架”推导全部接口已合理。
+
+内部实现研究收敛到[C-08](contracts/code-design.md)：具体builtin增加合作接口，catalog在typed构造点保存新旧策略引用；命名不同的native cooperative入口避免重载二义性，底层仍是唯一planner/requestImpl。
+Access实现留原client TU以取得Operation完整定义；Package保存精确冻结registration；Conversation用private requestInternal注入continuation。普通局部实现不逐行冻结。

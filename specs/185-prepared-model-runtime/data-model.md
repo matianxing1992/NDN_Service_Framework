@@ -1,5 +1,7 @@
 # Data Model
 
+[C-08 F01–F16](contracts/code-design.md#private-types-and-important-fields)是内部State/Package/job/waiter/subscription/reader/Provider字段与owner权威；本页与C-07保留领域/公开类型说明。
+
 详细字段唯一契约见 [C-01](contracts/public-api.md)、[C-02](contracts/preparation.md)、[C-03](contracts/execution.md)。
 
 | Entity | Authority | Identity / mutable state | Persistence |

@@ -52,3 +52,10 @@ A14 Provider独立预算/single-flight/原子发布；A15批次验收依赖环�
 
 第三轮[C-07全API/生命周期审计](contracts/api-catalog.md)补齐未明确的观察退订、read取消与游标、异步局部等待、析构及流失败语义；Python binding与便利层分开列明。
 本次是设计修订，不据此宣称最终C++已可用或生命周期已通过运行证明；见[证据](evidence/api-lifecycle-20260912.md)。
+
+## Implementation Design Binding Revision
+
+现有skill已要求Class/Function/Field契约，但185原卡片缺少足以固定内部实现的Design binding。
+[C-08](contracts/code-design.md)补12组类/文件delta、16组重要字段、10组关键函数、7条流程及逐任务PO。
+源码复核修正错误adapter/.pc路径、Operation跨TU不完整、Package缺cooperative splitter/config来源、Conversation注入缺口及双基类导致重载二义性；新入口使用requestCooperative/planNativeRequestCooperative并共用原实现owner。
+T016前移到T003之前；不增加行政任务，16任务全部NOT_STARTED。验证及安装技能边界见[本轮记录](evidence/implementation-design-20260912.md)。

@@ -1,5 +1,7 @@
 # Traceability
 
+[C-08](contracts/code-design.md#design-binding-and-readiness)补齐16任务→CD/FIELD/FN/FLOW/PO；公开A01–A64沿C-07复用，不再单独复制签名。
+
 | Requirement | Story | Audit / contract | Tasks | Success / selector |
 | --- | --- | --- | --- | --- |
 | FR-001 | US1 | A08 / C-01 | T001,T002 | SC-004 / Spec185Runtime |

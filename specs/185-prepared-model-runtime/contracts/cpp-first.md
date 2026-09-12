@@ -123,6 +123,7 @@ Python模型helper、Pythonplanner或Python恢复脚本；外部MiniNDN编排不
 
 T015独立C++安装/ABI前置门 → T001–T011生产C++及定向行为 → T013完整C++进程资格
 → T012 Python绑定检查 → T014文档交付。T016在T005之前完成扩展注册/取消契约。
+具体依赖按C-08修订：T015→T001/T002→T016→T003–T011→T013→T012→T014；T016先提供cooperative catalog splitter，不能等Package构造后再补。
 T012不能先于T013的C++能力闭合；T013不再依赖Python迁移，否则形成逻辑循环。
 T013逐能力列 C++ public entry / installed example / C++ oracle / result / dependency closure，
 任一必需C++行缺失即PARTIAL；Python类存在或测试数量不能关闭该行。

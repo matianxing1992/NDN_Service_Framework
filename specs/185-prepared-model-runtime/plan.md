@@ -27,8 +27,8 @@ B1/B2可完成纯本地owner与模型准备；B3前须核对184的请求/授权/
 | --- | --- | --- | --- | --- | --- |
 | B0 | T015 | Installed SDK/ABI | Spec185InstalledApi | asan | 安装prefix独立包含/链接/构造析构通过 |
 | B1 | T001,T002 | Runtime/config/owner lifecycle | Spec185Runtime | tsan | open → user → close/drain，无活动owner |
-| B2 | T003,T004 | Preparation catalog/cache/lease | Spec185Preparation | tsan | 8并发prepare单次生产者，失败不发布READY |
 | B2E | T016 | Extension lifecycle/control | Spec185ExtensionRegistry | tsan | freeze、协作控制及runner隔离通过 |
+| B2 | T003,T004 | Preparation catalog/cache/lease | Spec185Preparation | tsan | 8并发prepare单次生产者，失败不发布READY |
 | B3 | T005,T006 | Prepared request/handle projection | Spec185PreparedRequest | asan-ubsan | 两次请求复用包，独立授权/终态 |
 | B4 | T007,T008 | Conversation/recovery wrapper | Spec185Conversation | asan-ubsan | 两轮durable checkpoint与handle一致 |
 | B5 | T009,T010 | Provider artifact/template lifecycle | Spec185ProviderAssembly | asan-ubsan | 认证后准备及安全复用，stop后lease=0 |
@@ -63,13 +63,19 @@ sanitizer使用独立同ABI构建。记录target→实际binary→SHA，不猜hi
 最终C++跨进程需独立authority、requester、provider，真实 ACK/Selection/execution/Response；
 启动成功或CLI help不是行为PASS。MiniNDN/SIF/Tiger不因文档变更自动启动。
 
+## Implementation Design Authority
+
+[C-08](contracts/code-design.md)冻结CD/FIELD/FN/FLOW/PO；每任务Design binding引用该权威，不只给出公开API。
+T016的cooperative接口/catalog字段先于Package构造，因此B2E排在B1之后、B2之前；不是新增批次，不能按数字自行排序。
+实现前核对源码基线和关键签名，影响契约的缺口先修设计；普通局部实现为LOCAL_DETAIL。以readiness语义审查为准，不把结构检查当就绪。
+
 ## Native Public API Authority
 
 [C-07全API清单](contracts/api-catalog.md)是签名/Python对应/生命周期完整性检查入口。保留16任务11批；本轮将新发现归入既有owner，不另拆行政批次。
 T015建立每行exposure及缺失项；T002/T004/T006/T009完成生命周期；T011完整C++例子，T013原生矩阵；T012验证直接binding及有限便利层；T014核对实际全部导出。
 
 [C-05](contracts/api-usability.md)定义六层API、model key、能力、结果/错误、可靠流和扩展freeze；[C-06](contracts/cpp-first.md)定义独立C++入口及native异步owner。
-执行顺序：T015 → T001–T004 → T016 → T005–T011 → T013 → T012 → T014。入口api.hpp/provider.hpp；Provider-only不要求User目录或requester私钥。配置、规划、状态机、恢复由C++提供，Python不得补缺。
+执行顺序：T015 → T001,T002 → T016 → T003–T011 → T013 → T012 → T014。入口api.hpp/provider.hpp；Provider-only不要求User目录或requester私钥。配置、规划、状态机、恢复由C++提供，Python不得补缺。
 
 ## Migration and Rollback
 

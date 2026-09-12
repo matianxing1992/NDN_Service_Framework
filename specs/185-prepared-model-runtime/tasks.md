@@ -1,7 +1,7 @@
 # Tasks: Prepared Model Runtime
 
 **Status**: PLANNED | **Date**: 2026-09-12
-**Input**: [spec](spec.md) · [plan](plan.md) · [C-01](contracts/public-api.md) · [C-02](contracts/preparation.md) · [C-03](contracts/execution.md) · [C-04](contracts/validation.md) · [C-05](contracts/api-usability.md) · [C-06](contracts/cpp-first.md) · [C-07](contracts/api-catalog.md)
+**Input**: [spec](spec.md) · [plan](plan.md) · [C-01](contracts/public-api.md) · [C-02](contracts/preparation.md) · [C-03](contracts/execution.md) · [C-04](contracts/validation.md) · [C-05](contracts/api-usability.md) · [C-06](contracts/cpp-first.md) · [C-07](contracts/api-catalog.md) · [C-08](contracts/code-design.md)
 
 ## Execution Progress
 
@@ -10,10 +10,10 @@
 | [T015 Installed C++ API and ABI Closure](#t015) | NOT_STARTED | none | B0 planned; implementation/build/runtime NOT_RUN | 2026-09-12 |
 | [T001 Runtime Configuration and Export](#t001) | NOT_STARTED | B0 exit | B1 planned; implementation/build/runtime NOT_RUN | 2026-09-12 |
 | [T002 Runtime Shutdown and Child Ownership](#t002) | NOT_STARTED | T001 static | B1 planned; implementation/build/runtime NOT_RUN | 2026-09-12 |
-| [T003 Verified Package Preparation](#t003) | NOT_STARTED | B1 exit | B2 planned; implementation/build/runtime NOT_RUN | 2026-09-12 |
+| [T016 Extension Registration and Cooperative Control](#t016) | NOT_STARTED | B1 exit | B2E planned; implementation/build/runtime NOT_RUN | 2026-09-12 |
+| [T003 Verified Package Preparation](#t003) | NOT_STARTED | B2E exit | B2 planned; implementation/build/runtime NOT_RUN | 2026-09-12 |
 | [T004 Single Flight Refresh and Leases](#t004) | NOT_STARTED | T003 static | B2 planned; implementation/build/runtime NOT_RUN | 2026-09-12 |
-| [T016 Extension Registration and Cooperative Control](#t016) | NOT_STARTED | B2 exit | B2E planned; implementation/build/runtime NOT_RUN | 2026-09-12 |
-| [T005 Prepared Request Projection](#t005) | NOT_STARTED | B2E exit + Spec184 scoped dependency gate | B3 planned; implementation/build/runtime NOT_RUN | 2026-09-12 |
+| [T005 Prepared Request Projection](#t005) | NOT_STARTED | B2 exit + Spec184 scoped dependency gate | B3 planned; implementation/build/runtime NOT_RUN | 2026-09-12 |
 | [T006 Handle Deadlines Events and Cancellation](#t006) | NOT_STARTED | T005 static | B3 planned; implementation/build/runtime NOT_RUN | 2026-09-12 |
 | [T007 Prepared Conversations and Committed Checkpoints](#t007) | NOT_STARTED | B3 exit | B4 planned; implementation/build/runtime NOT_RUN | 2026-09-12 |
 | [T008 Conversation Recovery Replacement and Export](#t008) | NOT_STARTED | T007 static | B4 planned; implementation/build/runtime NOT_RUN | 2026-09-12 |
@@ -26,10 +26,11 @@
 
 ## Current Checkpoint
 
-2026-09-12：完成第三轮API完整性审计，新增[C-07全API与生命周期表](contracts/api-catalog.md)，覆盖稳定C++ API、Python直接绑定/便利映射、值类型和对象退出规则。
-补齐Subscription、异步局部等待、可取消读取/观察者、流失败与析构语义；仍16任务11批，全部NOT_STARTED。
-本轮[证据](evidence/api-lifecycle-20260912.md)记录检查及限制；既有[全表面审计](api-review.md)与[8500声明索引](api-surface-index.md)保留源码事实。
-生产源码/原生编译与运行未执行；下一单元T015。Spec184未完成资格、Design既有54文件漂移不改变。
+2026-09-12：核对现有skill确有Class/Function/Field契约，但185原任务缺内部实现绑定；已补[C-08](contracts/code-design.md)，逐任务Design binding覆盖类/文件delta、字段、关键函数、流程和PO。
+新增shared skill开工前设计检查，更新plan/tasks模板及本机入口/个人安装副本。仍16任务11批、全部NOT_STARTED。
+T016提供合作splitter，前移到B1后/T003前；实际顺序T015→T001/T002→T016→T003–T011→T013→T012→T014。
+本轮[证据](evidence/implementation-design-20260912.md)；设计/技能验证不计产品完成，生产源码及native构建测试未运行。
+下一实现单元T015；保持Spec184资格和既有Design 54文件漂移边界。
 
 ## Shared Task Rules
 
@@ -52,6 +53,8 @@ C-07每行是T015 exposure、T011 C++消费、T012绑定和T014文档的共同�
 
   **Batch / Depends**: B1 / B0 exit。
 
+  **Design binding**: [C-08](contracts/code-design.md#design-binding-and-readiness) CD01 / F01–F04 / FN01 / FLOW01 / PO01；Design status以C-08范围审查为准，开工前核对当前源码。
+
   **Read / contract**: NativeInferenceClient constructors, NativeRequestRuntime, examples/DI_NativeRequester.cpp; C-01。
 
   **Implementation and review**: 提取现有operator配置组合为Runtime::open；校验profile、trust、所有资源上限；新增公开头安装/target map。RuntimeConfig.nativeConfigPath沿用当前native requester-v1配置；单用户default规则见C-01；taskContract独立绑定，不能从catalog猜测。
@@ -66,6 +69,8 @@ C-07每行是T015 exposure、T011 C++消费、T012绑定和T014文档的共同�
 
   **Batch / Depends**: B1 / T001 static。
 
+  **Design binding**: [C-08](contracts/code-design.md#design-binding-and-readiness) CD01,CD04 / F01,F02,F10 / FN01,FN04 / FLOW07 / PO01,PO04；Design status以C-08范围审查为准，开工前核对当前源码。
+
   **Read / contract**: SerialRequestExecutor, NativeInferenceClient::close, C-01 lifetime。
 
   **Implementation and review**: 按C-06实现原生drainAsync及可退订token；接入owner registry、close/drain和失败逆序清理；weak callback断环；补prepare/wait/drain的owner线程拒绝路径和最后owner释放流程。
@@ -78,7 +83,9 @@ C-07每行是T015 exposure、T011 C++消费、T012绑定和T014文档的共同�
 
 - [ ] T003 [US1] Verified Package Preparation — PreparedModel.hpp/PreparedModel.cpp; ModelPreparationCache.hpp/ModelPreparationCache.cpp; tests/unit-tests/di-preparation.t.cpp
 
-  **Batch / Depends**: B2 / B1 exit。
+  **Batch / Depends**: B2 / B2E exit。
+
+  **Design binding**: [C-08](contracts/code-design.md#design-binding-and-readiness) CD02 / F04–F09 / FN02 / FLOW02 / PO02；Design status以C-08范围审查为准，开工前核对当前源码。
 
   **Read / contract**: NativeRequestCatalog/NativeCanonicalPreparationCatalog/NativeRequestPreparation; C-02。
 
@@ -94,6 +101,8 @@ C-07每行是T015 exposure、T011 C++消费、T012绑定和T014文档的共同�
 
   **Batch / Depends**: B2 / T003 static。
 
+  **Design binding**: [C-08](contracts/code-design.md#design-binding-and-readiness) CD02,CD04 / F06–F10 / FN02,FN04 / FLOW02 / PO02,PO04；Design status以C-08范围审查为准，开工前核对当前源码。
+
   **Read / contract**: C-02 matrix/key/generation/lease。
 
   **Implementation and review**: 实现四种policy、独立waiter/job deadline、取消、generation CAS、预算/LRU和活动lease；补8线程及refresh交错fixture，真实调用缓存owner。
@@ -108,7 +117,9 @@ C-07每行是T015 exposure、T011 C++消费、T012绑定和T014文档的共同�
 
 - [ ] T005 [US2] Prepared Request Projection — PreparedModel.cpp; NativeInferenceClient.hpp/NativeInferenceClient.cpp; tests/integration-tests/di-prepared-request.t.cpp
 
-  **Batch / Depends**: B3 / B2E exit + Spec184 scoped dependency gate。
+  **Batch / Depends**: B3 / B2 exit + Spec184 scoped dependency gate。
+
+  **Design binding**: [C-08](contracts/code-design.md#design-binding-and-readiness) CD03 / F03,F05,F16 / FN03,FN08 / FLOW03 / PO03,PO08；Design status以C-08范围审查为准，开工前核对当前源码。
 
   **Read / contract**: NativeRequestPlanner.cpp, NativeRequestPreparation.cpp, C-01/C-03。
 
@@ -123,6 +134,8 @@ C-07每行是T015 exposure、T011 C++消费、T012绑定和T014文档的共同�
 - [ ] T006 [US2] Handle Deadlines Events and Cancellation — PreparedModel.hpp/PreparedModel.cpp; tests/integration-tests/di-prepared-request.t.cpp
 
   **Batch / Depends**: B3 / T005 static。
+
+  **Design binding**: [C-08](contracts/code-design.md#design-binding-and-readiness) CD03,CD04 / F10–F12 / FN04 / FLOW04,FLOW07 / PO04；Design status以C-08范围审查为准，开工前核对当前源码。
 
   **Read / contract**: NativeInferenceHandle::result/observe/cancel; C-01 handle compatibility。
 
@@ -140,6 +153,8 @@ C-07每行是T015 exposure、T011 C++消费、T012绑定和T014文档的共同�
 
   **Batch / Depends**: B4 / B3 exit。
 
+  **Design binding**: [C-08](contracts/code-design.md#design-binding-and-readiness) CD05 / F13 / FN05 / FLOW05 / PO05；Design status以C-08范围审查为准，开工前核对当前源码。
+
   **Read / contract**: NativeConversationCoordinator/NativeConversationJournal; C-03。
 
   **Implementation and review**: 接入openConversation、request、checkpoint、close；Package/模型/任务/tokenizer绑定；单会话turn串行；由coordinator生成parent/role map，保留durableCommitGate。
@@ -154,6 +169,8 @@ C-07每行是T015 exposure、T011 C++消费、T012绑定和T014文档的共同�
 
   **Batch / Depends**: B4 / T007 static。
 
+  **Design binding**: [C-08](contracts/code-design.md#design-binding-and-readiness) CD05 / F13 / FN05 / FLOW05 / PO05；Design status以C-08范围审查为准，开工前核对当前源码。
+
   **Read / contract**: Spec184 durable/export evidence; existing checkpoint export helper; C-03。
 
   **Implementation and review**: 复用原子private export与restore；配置恢复/替换接同一coordinator；覆盖成功提交后取消、Provider替换和Runtime重开；禁止第二套journal。
@@ -165,6 +182,8 @@ C-07每行是T015 exposure、T011 C++消费、T012绑定和T014文档的共同�
 - [ ] T009 [US3] Provider Facade and Authenticated Assembly — Provider.hpp/Provider.cpp; NativeInferenceProvider.cpp; examples/DI_NativeProviderExecutable.cpp; tests/integration-tests/di-prepared-provider.t.cpp
 
   **Batch / Depends**: B5 / B4 exit。
+
+  **Design binding**: [C-08](contracts/code-design.md#design-binding-and-readiness) CD06 / F02,F14 / FN06 / FLOW06,FLOW07 / PO06；Design status以C-08范围审查为准，开工前核对当前源码。
 
   **Read / contract**: NativeProviderHandler/NativeRunnerPreparation/NativeCanonicalOnnxAssembler; C-03。
 
@@ -182,6 +201,8 @@ C-07每行是T015 exposure、T011 C++消费、T012绑定和T014文档的共同�
 
   **Batch / Depends**: B5 / T009 static。
 
+  **Design binding**: [C-08](contracts/code-design.md#design-binding-and-readiness) CD07 / F15 / FN07 / FLOW06 / PO07；Design status以C-08范围审查为准，开工前核对当前源码。
+
   **Read / contract**: C-03 Provider cache layers。
 
   **Implementation and review**: 增加受限artifact/template cache及backend支持矩阵；key绑定role/recipe/ABI/device/security；per-request mutable runner与plaintext lease；命中仍重验Selection/grant。
@@ -193,6 +214,8 @@ C-07每行是T015 exposure、T011 C++消费、T012绑定和T014文档的共同�
 - [ ] T011 [US4] Native Caller Migration and Compatibility Registry — examples/DI_NativeRequester.cpp; examples/wscript; tests/integration-tests/di-prepared-compatibility.t.cpp; contracts/caller-matrix.md
 
   **Batch / Depends**: B6 / B5 exit。
+
+  **Design binding**: [C-08](contracts/code-design.md#design-binding-and-readiness) CD10,CD11 / FN09,FN10 / FLOW01–FLOW07 / PO09,PO10；Design status以C-08范围审查为准，开工前核对当前源码。
 
   **Read / contract**: actual NativeInferenceClient callers, Spec184 caller-matrix, C-04。
 
@@ -210,6 +233,8 @@ C-07每行是T015 exposure、T011 C++消费、T012绑定和T014文档的共同�
 
   **Batch / Depends**: B8 / B7 C++ qualification exit。
 
+  **Design binding**: [C-08](contracts/code-design.md#design-binding-and-readiness) CD12 / F10 / FN10 / C-07 mappings / PO10；Design status以C-08范围审查为准，开工前核对当前源码。
+
   **Read / contract**: existing binding declarations and maintained APPClient paths; C-01/C-04。
 
   **Implementation and review**: 在现有绑定模块导出同一native对象；prepare/wait/drain释放GIL，observe正确获取GIL并保持owner；迁移维护Python用户路径，兼容shim保留/删除逐项记录，不在Python重做planning。
@@ -225,6 +250,8 @@ C-07每行是T015 exposure、T011 C++消费、T012绑定和T014文档的共同�
 - [ ] T013 [US4] Current Candidate Process Qualification — tests/integration-tests/di-prepared-process.t.cpp; tests/wscript; evidence/b7-cpp-qualification.md
 
   **Batch / Depends**: B7 / B6 exit。
+
+  **Design binding**: [C-08](contracts/code-design.md#design-binding-and-readiness) CD11 / FN10 / FLOW01–FLOW07 / PO01–PO10（资格fixture）；Design status以C-08范围审查为准，开工前核对当前源码。
 
   **Read / contract**: C-04 full five-lane convergence and dynamic matrix。
 
@@ -242,6 +269,8 @@ C-07每行是T015 exposure、T011 C++消费、T012绑定和T014文档的共同�
 
   **Batch / Depends**: B9 / T012 acceptance。
 
+  **Design binding**: [C-08](contracts/code-design.md#design-binding-and-readiness) N/A生产类改动；实际Design/API/PDF与导出/证据交付，见FN10；Design status以C-08范围审查为准，开工前核对当前源码。
+
   **Read / contract**: Design/MANAGEMENT.md, C-04, Spec184 outstanding registry。
 
   **Implementation and review**: 更新实际当前API/中文契约/源码摘要/三类图/双PDF；核对caller退出和每FR/SC证据；记录184仍未完成外部资格，提交明确candidate/source交付入口。
@@ -254,13 +283,15 @@ C-07每行是T015 exposure、T011 C++消费、T012绑定和T014文档的共同�
 
 <a id="t015"></a>
 
-- [ ] T015 [US4] Installed C++ API and ABI Closure — root wscript; ndnsf-distributed-inference.pc.in; NDNSF-DistributedInference/cpp/ndnsf-di/adapters/onnx/OnnxRuntimeModelRunner.hpp; tests/installed-api/
+- [ ] T015 [US4] Installed C++ API and ABI Closure — root wscript; NDNSF-DistributedInference/ndnsf-distributed-inference.pc.in; NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp; tests/installed-api/
 
   **Batch / Depends**: B0 / none。
 
+  **Design binding**: [C-08](contracts/code-design.md#design-binding-and-readiness) CD10 / FN09 / PO09；Design status以C-08范围审查为准，开工前核对当前源码。
+
   **Read / contract**: C-05/C-06；api-review U10/U11/U12；实际头安装规则和宏条件布局。
 
-  **Implementation and review**: 建立contracts/api-exposure.json逐符号/头分层清单；application/provider umbrella与advanced/internal边界；修复安装include闭包，保留合法旧consumer兼容；ONNX公开类固定PImpl或退到非公开头。开始时核对实际源码路径。
+  **Implementation and review**: 建立contracts/api-exposure.json逐符号/头分层清单；application/provider umbrella与advanced/internal边界；修复安装include闭包，保留合法旧consumer兼容；ONNX按C-08 FN09固定无条件PImpl及disabled分支完整Impl。开始时核对实际源码路径。
 
   **Exit / oracle**: 每个安装公共头单独包含；外部consumer仅用安装prefix/pkg-config编译链接及构造析构；ONNX enabled/disabled各自同配置安装消费，normal及ASan构造/析构通过。Spec185InstalledApi记录include/link/运行边界，不以--help代替。
 
@@ -268,7 +299,9 @@ C-07每行是T015 exposure、T011 C++消费、T012绑定和T014文档的共同�
 
 - [ ] T016 [US4] Extension Registration and Cooperative Control — NativePlanning.hpp/NativePlanning.cpp; NativeModelRunner.hpp/NativeModelRunner.cpp; NativeRequestPlanner.cpp; tests/unit-tests/di-extension-contract.t.cpp
 
-  **Batch / Depends**: B2E / B2 exit。
+  **Batch / Depends**: B2E / B1 exit。
+
+  **Design binding**: [C-08](contracts/code-design.md#design-binding-and-readiness) CD08,CD09 / F16 / FN08 / FLOW03 / PO08；Design status以C-08范围审查为准，开工前核对当前源码。
 
   **Read / contract**: C-05 Extension Lifecycle；api-review U13/U14/U15；实际registry、strategy及runner调用方。
 

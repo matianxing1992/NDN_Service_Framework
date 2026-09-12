@@ -74,6 +74,9 @@ C++ example 与 Python 薄封装使用同一个 PreparedModel 后端。维护调
 
 ## Scope and Dependencies
 
+[C-08 Implementation Design](contracts/code-design.md)明确全部实现任务的类/文件delta、关键前后签名、字段owner、调用与失败流程、PO及Design binding。
+现有C-07公开清单不替代内部设计；受影响任务开工前核对当前源码及就绪范围。T016合作策略/catalog先于T003 Package构造，见plan实际顺序。
+
 Spec184 T007/T008、Qwen3.6-27B 外部资格和旧路径 retirement 未完成项继续归184，本 Spec 不自动转移或关闭。
 185 不以184整个外部实验完成作为纯本地缓存工作的前提；B3 接入前需要对所依赖的184请求/安全/终态基线
 完成定向回归并登记 source identity。相同文件不得由两条实现线并发修改；阶段开始先确认当前 HEAD/diff。

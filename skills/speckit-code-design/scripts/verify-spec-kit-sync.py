@@ -65,10 +65,12 @@ TEMPLATE_MARKER_GROUPS = {
         ("pre-test-static-review.md",),
     ),
     ".specify/templates/plan-template.md": (
+        ("Design binding",),
         ("batch-quality-gates.md",),
         ("review-agent",),
     ),
     ".specify/templates/tasks-template.md": (
+        ("Design binding",),
         ("batch-quality-gates.md",),
         ("review-agent",),
     ),
@@ -176,7 +178,11 @@ def main() -> int:
         text = path.read_text(encoding="utf-8")
         missing = [
             " or ".join(group)
-            for group in ENTRYPOINT_MARKER_GROUPS
+            for group in ENTRYPOINT_MARKER_GROUPS + (
+                (("Design binding",),) if name in (
+                    "speckit-plan", "speckit-tasks", "speckit-implement", "speckit-audit"
+                ) else ()
+            )
             if not any(marker in text for marker in group)
         ]
         if missing:

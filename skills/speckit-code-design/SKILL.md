@@ -63,6 +63,11 @@ active health checks；这些检查只证明指针/工作流一致性，不能�
 
 ## Implementation And Validation
 
+每项实现任务必须有 **Design binding**：精确链接到类/文件增改删清单、前后函数签名、重要字段owner、
+关键流程/失败收尾和独立判据，并写设计状态；详见[work-unit-contract](references/work-unit-contract.md#design-binding-before-coding)。
+API总表或“提取/接入/实现某类”不能代替内部实现设计。生成tasks时双向核对；开始编码前核对最新源码，
+缺契约的受影响范围保持DRAFT/BLOCK并先补设计。无需为不影响职责/接口/状态/安全的LOCAL_DETAIL另行审批。
+
 所有执行者必须使用 [task progress registry](references/task-progress.md)：
 tasks.md 顶部必须用逐执行单元的 `Execution Progress` 表完整登记每个 T ID（及必要的稳定子任务 ID）、
 依赖、状态、证据和剩余项；批次进度表只能补充批次出口，不能替代逐单元 registry。每个工作单元结束后同步。

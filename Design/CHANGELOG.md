@@ -1,5 +1,10 @@
 # 修订记录
 
+## Spec185 Implementation Design Binding · 2026-09-12
+
+C-08补内部类/字段/函数/流程与逐任务Design binding；合作策略前移至Package构造前，保持16任务11批。
+Spec技能强化开工前设计就绪检查，模板及安装副本同步；目标PDF更新，不刷新历史当前源码或计产品完成。
+
 ## Spec185 Complete API and Lifecycle · 2026-09-12
 
 新增C-07统一API与Python绑定总表、值类型及生命周期矩阵；补Subscription、有限异步等待、流错误/取消与关闭后行为。

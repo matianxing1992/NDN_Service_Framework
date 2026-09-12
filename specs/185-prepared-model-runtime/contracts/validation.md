@@ -2,6 +2,9 @@
 
 ## Workflow Authority
 
+实现开始前按[C-08](code-design.md)逐任务Design binding核对CD/FIELD/FN/FLOW/PO；缺失关键类型、提交点或调用边界先补设计。
+源码静态门双向核对真实diff与CD，API清单存在或结构检查通过不等于实现设计就绪。
+
 使用仓库版本化 [batch-quality-gates](../../../skills/speckit-code-design/references/batch-quality-gates.md)
 和 [review-agent profile](../../../skills/speckit-code-design/references/review-agent.md)。
 实际官方技能为 `/home/tianxing/.codex/skills/review-agent/SKILL.md`；每任务与批末记录读取路径、

@@ -208,7 +208,7 @@ Python解释器正常退出测试必须覆盖活动订阅，不承诺进程被SI
 
 本表完整枚举185新稳定application/provider面，不把所有8500条实现声明都承诺成稳定用户API。
 高级`User::prepare(const PrepareRequest&,const PrepareOptions&)`保留C-01签名；PrepareRequest的ModelId/taskContract/inputLayoutDigest/catalogConfigurationJson/source/initializer仍由operator提供，普通头仅前置声明。
-extension的registry/adapter/split/placement/runner及authority/admin旧接口全声明见现有索引；它们的支持级别由T015逐符号`api-exposure.json`登记，合作式扩展改动由T016生成精确接口diff后通过静态门。
+extension的registry/adapter/split/placement/runner及authority/admin旧接口全声明见现有索引；支持级别由T015逐符号api-exposure.json登记；合作式扩展精确改法已在[C-08](code-design.md#fn08-cooperative-extensions-and-existing-registry-delta)冻结，T016按契约实现并审查真实diff。
 不得在该清单之外悄悄新增Python专属必需能力；旧兼容导出不承诺全部1:1绑定，但每一保留/不绑定/淘汰项都必须有原因与维护owner。
 API完整交付条件：本表每行→实际头/符号→安装目标→C++例子/断言→Python绑定或显式CLI/advanced理由→Doxygen/docstring。
 T015/T011/T012/T014共同核对，任何必需行没有实现/行为证据都保持PARTIAL，不能以目录存在代替完整性。

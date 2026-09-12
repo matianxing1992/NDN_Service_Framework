@@ -21,6 +21,10 @@
 
 ## Summary
 
+<!-- Design binding: 生成计划时落实 skills/speckit-code-design/references/work-unit-contract.md#design-binding-before-coding。
+     具体类/文件delta、前后关键签名、字段owner、调用与失败流程及PO必须可追踪；公开API总表不是内部实现设计。
+     任务生成前关闭影响契约的OPEN；不冻结无行为影响的LOCAL_DETAIL。 -->
+
 [Extract from feature spec: primary requirement + technical approach from research]
 
 ## Technical Context
