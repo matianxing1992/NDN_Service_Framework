@@ -58,3 +58,23 @@ ndn-cxx 时间戳日志前缀的归一化，修复后的 harness 经 `py_compile
 `Qwen/Qwen3.6-27B`；A3 仍为 `WAITING_EXTERNAL_INPUT`。A4 的继承 negative/retirement、
 I05 `UNQUALIFIED`、Python retirement 以及 SIF/Tiger external owner 仍未闭合，所以这次
 只提升 A0–A2 行状态，T007 总体继续 `IN_PROGRESS`/`PARTIAL`，T008 继续阻塞。
+
+## Environment capability checkpoint (2026-09-12)
+
+The current host has six logical CPUs and 11 GiB RAM. It can run the local
+`Qwen3-0.6B` smoke/ABI fixture but cannot execute the contract-required
+`Qwen/Qwen3.6-27B`; the exact model family, manifest, tokenizer, CUDA runtime
+and staged model objects remain external-owner inputs. The detailed boundary is
+recorded in [T007 model capability evidence](t007-model-capability-20260912.md).
+
+An attempt to add the C++ `integration-tests` selector to the current r4
+candidate stopped before compilation because that candidate was configured with
+`--with-examples` and has no `integration-tests` task generator. Raw output is
+`.codex-tmp/spec184-qwen-smoke-20260912/waf-build.log` (SHA-256
+`1f49b7cd938da12e8169c4248501b832b85b8fcdb66b2fc1352092dd413ece62`). This is
+a Waf configuration boundary, not a model or protocol result; the candidate was
+not reconfigured solely to manufacture a selector binary.
+
+The disposition is unchanged: A3 stays `WAITING_EXTERNAL_INPUT`, A4 remains
+the only local remainder, and T008 remains `BLOCKED_BY_T007`. No 0.6B smoke
+result is used as 27B qualification evidence.

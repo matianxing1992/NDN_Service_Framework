@@ -1,6 +1,6 @@
 # Spec184 Qualification Matrix
 
-**Status**: PARTIAL / T006 row binding complete; fresh local candidate is bound for qualification and open rows remain
+**Status**: PARTIAL / T006 row binding complete; fresh local candidate is bound for qualification and open rows remain (2026-09-12 capability boundary recorded)
 **Source**: [transfer matrix](transfer-matrix.md), inherited Spec182 proof contracts, and the fresh local candidate recorded in the promotion contract
 
 The `candidateId` values in the historical row tables retain their original development
@@ -71,7 +71,7 @@ results update evidence availability for the affected rows but do not upgrade th
 | `T007-A0` current-candidate runtime receipt | `PASS_FOR_ROW` | `build-spec184-b5-candidate-r4/spec180-native-build.json`, `verify` exit `0`, `/usr/bin/g++ -B/usr/bin`, `-j4`, and candidate-first paths; receipt records `binding_reused=true` |
 | `T007-A1` YOLO26n Y-A | `PASS_FOR_ROW` | Fresh current-candidate root run `r51`, C++ numerical oracle, terminal result, child exits and cleanup |
 | `T007-A2` YOLO26n Y-B/Y-N | `PASS_FOR_ROW` | Y-B `r37` and Y-N `r50`; protected multi-provider terminal path, seven declared Y-N boundaries, three Provider grant mutations, first-failure classification and cleanup |
-| `T007-A3` Qwen3.6-27B | `WAITING_EXTERNAL_INPUT` | Exact `Qwen/Qwen3.6-27B` three-stage manifest, tokenizer, CUDA runtime and experiment-owner result; local 0.6B is smoke-only |
+| `T007-A3` Qwen3.6-27B | `WAITING_EXTERNAL_INPUT` | Exact `Qwen/Qwen3.6-27B` three-stage manifest, tokenizer, CUDA runtime and experiment-owner result; local 0.6B is smoke-only; host capability and failed r4 selector lookup are recorded in [T007 model capability evidence](../evidence/t007-model-capability-20260912.md) |
 | `T007-A4` inherited negative/retirement rows | `PARTIAL` | Complete row evidence, including I05 collector boundary or an explicit retained `UNQUALIFIED` result |
 | `T008` native development handoff | `BLOCKED_BY_T007` | T007 qualification pass, final candidate map and external rows explicitly marked `TRANSFERRED` |
 

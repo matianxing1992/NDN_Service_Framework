@@ -1,6 +1,6 @@
 # Implementation Plan: Native DI Closure
 
-**Branch**: Experimental | **Date**: 2026-09-11 | **Status**: IN_PROGRESS / current-candidate C++ process qualification refresh recorded; qualification remains partial
+**Branch**: Experimental | **Date**: 2026-09-12 | **Status**: IN_PROGRESS / current-candidate C++ process qualification refresh recorded; qualification remains partial
 **Migration baseline**: `6f603491`；产品审计源码 `72b9e388cc3920b0bdcd4c36d302d63c71e7f15a`。
 **Authority**: [spec](spec.md)、[tasks](tasks.md)、[transfer](contracts/transfer-matrix.md)、
 [promotion candidate](contracts/promotion-candidate.md)、[qualification matrix](contracts/qualification-matrix.md)。
@@ -15,7 +15,9 @@ integration、observed-offer parser sample、repaired tiny-ONNX sanitizer batch 
 已完成 A0 receipt、YOLO A1 Y-A 与 A2 Y-B/Y-N 的 root MiniNDN C++ 运行；剩余出口按
 [T007 remainder audit](evidence/remainder-audit-20260911.md) 为 A3 `Qwen/Qwen3.6-27B`
 外部输入、A4 inherited negative/retirement rows。因本机只能运行 `Qwen3-0.6B`，0.6B 只允许
-作 C++ smoke/ABI fixture。下一 dispatch 只推进 A4 或等待外部 A3，不重跑已关闭的 A0–A2 与
+作 C++ smoke/ABI fixture；本机 r4 candidate 未配置 `integration-tests` task generator，编译前
+边界已记录在 [T007 model capability evidence](evidence/t007-model-capability-20260912.md)。下一
+dispatch 只推进 A4 或等待外部 A3，不重跑已关闭的 A0–A2 与
 B1–B4 focused work。
 具体缺陷的源码位置、触发条件与反例沿用冻结的
 [request-chain audit](../182-native-di-python-bindings/evidence/request-chain-static-audit-20260911.md)。
