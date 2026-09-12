@@ -22,7 +22,7 @@ B1/B2可完成纯本地owner与模型准备；B3前须核对184的请求/授权/
 
 执行细则见[Batch Execution Schedule](batch-execution.md)：01–12调度顺序、逐任务静态门、五lane、共享构建与受影响复测。保留原Batch ID以维持证据链接。
 
-下表是执行顺序。批内第二任务只可在第一任务**逐任务静态门**通过后编码；
+下表是默认拓扑顺序。依赖前项的任务只可在相应**逐任务静态门**通过后编码；无依赖、文件边界清晰且自身前置已满足的任务可在固定快照异步审查期间继续，调度记录遵循执行表和共享 Dependency-Scoped Dispatch；
 跨批依赖要求前批声明出口的实际验证通过。每批稳定出口达到后立即验证，不继续吸收下一批职责。
 
 | Batch | Units | Shared boundary | Planned C++ selector | Dynamic profile | Stable observable exit |

@@ -31,6 +31,8 @@
 
 ## Current Checkpoint
 
+2026-09-12 17:00 -05:00 Dependency-scoped gate revision：门禁仅阻塞依赖工作；无依赖、文件边界清晰且前置满足的任务可由主代理在子代理只读审查固定快照期间继续。执行细则见[批次执行表](batch-execution.md)，验证见[调度修订](evidence/dependency-scoped-dispatch-20260912.md)。现有任务状态、Depends、Updated和验收不变；本轮没有启动并行产品实现。下一步执行者先登记独立任务/子任务边界，无合格工作则等待，不绕过T003→T004等硬依赖。
+
 2026-09-12 16:24 -05:00 Progress timestamp revision：18行Updated升级为分钟及UTC offset；同步Spec Kit规则、模板和本机安装入口。状态/勾选/验收证据不变，历史只有日期的checkpoint原样保留；本次时间不是历史完成时间。见[时间规则验证](evidence/progress-timestamps-20260912.md)。下一产品任务仍按当前registry及依赖选择。
 
 2026-09-12 B2E closed：T016 已完成 v9/v10b/v11/v12 官方 review-agent 静态门及 B2E 组合审查；normal `Spec185ExtensionRegistry` 10/10、clang/TSan 重复两次各10/10、installed-prefix C++ extension consumer 通过。失败的 fixture 身份与系统工具链边界均已保留并修复，详见[b2e-extensions](evidence/b2e-extensions.md)；完整 Waf packaging、准备/请求/会话/Provider/完整资格/Python/文档仍未完成。下一依赖满足任务为T003/B2。
@@ -52,6 +54,8 @@ T016提供合作splitter，前移到B1后/T003前；实际顺序T015→T001/T002
 下一实现单元T015；保持Spec184资格和既有Design 54文件漂移边界。
 
 ## Shared Task Rules
+
+调度使用[Dependency-Scoped Dispatch](../../skills/speckit-code-design/references/pre-test-static-review.md#dependency-scoped-dispatch)：依赖工作等待静态通过，无依赖且文件边界清晰的就绪工作可继续；固定快照审查、失败依赖闭包和批末组合门均保留。
 
 路径缩写 `Runtime.cpp` 等未带前缀的DI文件均位于
 `NDNSF-DistributedInference/cpp/ndnsf-di/`；tests/examples/pythonWrapper/Design路径从repo root解析。

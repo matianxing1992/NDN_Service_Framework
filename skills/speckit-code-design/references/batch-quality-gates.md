@@ -6,6 +6,8 @@
 
 ## Coverage Contract
 
+任务调度遵循 [Dependency-Scoped Dispatch](pre-test-static-review.md#dependency-scoped-dispatch)：依赖工作等待，无依赖且写入边界清晰的就绪工作可与固定快照审查重叠。全部成员逐任务静态通过和汇合候选组合审查仍是批末构建/测试的前置；既有验收依赖不降级。
+
 每个小任务的只读静态门，以及每批的组合审查，都必须按实际影响范围覆盖。纯文档
 或不涉及某项的任务记录 `N/A` 及理由，不把不适用的代码门禁强加给它：
 

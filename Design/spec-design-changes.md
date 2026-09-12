@@ -16,6 +16,8 @@
 
 ### 2026-09-12 — Spec185 Prepared Model Runtime
 
+- **2026-09-12 17:00 -05:00 / NO_DESIGN_CHANGE**: 逐任务静态门改为按依赖阻塞，允许单主会话编码与独立快照审查重叠；不改产品API、任务依赖或验收，双PDF无需重建。[验证](../specs/185-prepared-model-runtime/evidence/dependency-scoped-dispatch-20260912.md)。
+
 - **2026-09-12 16:24 -05:00 / NO_DESIGN_CHANGE**: tasks Updated及新checkpoint要求分钟与UTC offset；仅进度元数据格式修订，不改API/行为/状态或双PDF。[验证](../specs/185-prepared-model-runtime/evidence/progress-timestamps-20260912.md)。
 
 - **NO_DESIGN_CHANGE / batch execution**: [批次执行表](../specs/185-prepared-model-runtime/batch-execution.md)补齐18任务12批的静态门/共享验证范围，任务卡改为实际顺序；API、owner及产品行为沿C-01–C-09，本轮不改TeX或双PDF。[证据](../specs/185-prepared-model-runtime/evidence/batch-execution-20260912.md)。

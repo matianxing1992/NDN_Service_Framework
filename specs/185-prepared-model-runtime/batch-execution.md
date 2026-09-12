@@ -24,7 +24,8 @@
 | 11 / B8 | T012 | 既有pybind TU与Python薄封装；只构建受影响extension及ABI依赖 | wrapper-only checks；C-07映射、GIL/async/异常边界通过，不推进native资格 | evidence/b8-python.md |
 | 12 / B9 | T014 | Design/API/交付文件；文档生成器与双PDF，无native构建 | 文档/源码/证据一致，184未完成项保留 | evidence/b9-handoff.md |
 
-串行调度按上表；依赖硬门仍按任务卡。B0C前就须核对184同树Core/DI接线，不能等B3才第一次检查。
+上表为默认拓扑顺序；依赖硬门仍按任务卡。按共享 [Dependency-Scoped Dispatch](../../skills/speckit-code-design/references/pre-test-static-review.md#dependency-scoped-dispatch)，依赖该任务的工作必须等待通过；无依赖、文件边界清晰且自身前置已满足的任务可继续。单主会话内主代理编码、只读 review-agent 子代理异步审查固定快照，派发后优先推进合格独立工作。
+当前 registry 的 T003→T004、T005→T006 等仍有显式依赖，B5仍依赖B4出口，本修订不解除这些硬门。没有已登记独立任务时允许等待；若细分独立子任务，先记录 Design binding、依赖、写入范围和单一共享文件owner，再开始重叠工作。批次 evidence 记录审查快照/摘要、派发与返回时间、重叠任务或等待原因；不另建进度权威。B0C前就须核对184同树Core/DI接线，不能等B3才第一次检查。
 B0只关闭当时存在的接口与ABI；不能要求尚未编码的Runtime/PreparedModel先可链接。未来公开符号在所属批次检查安装导出，B6汇总消费；B7不再重新设计SDK。
 
 ## Per-Task Static Gate
@@ -32,7 +33,7 @@ B0只关闭当时存在的接口与ABI；不能要求尚未编码的Runtime/Prep
 1. 批次开始冻结base、成员、设计契约、预期出口、受影响source closure和测试selector；先解决契约级OPEN项。
 2. 编码一个任务及其C++fixture、反例、注册和必要调用方；一段关键逻辑写完即检查参数/状态/owner/错误传播。
 3. 任务完成后明确调用`/home/tianxing/.codex/skills/review-agent/SKILL.md`做只读静态门，读取完整任务diff和足够周边代码、全部受影响caller/test/build接线。
-4. 修复发现，再复审受影响范围及关联不变量；没有控制性缺陷且五lane无gap才继续同批下一任务。代码静态通过但未运行验收时保持PARTIAL、任务不勾选。
+4. 审查期间可推进已登记独立任务；依赖工作等待没有控制性缺陷且五lane无gap。修复发现后以新快照复审受影响范围及关联不变量，失败阻塞依赖闭包；共享契约变化重新判断独立性。代码静态通过但未运行验收时保持PARTIAL、任务不勾选。
 5. 同批全部成员完成，再审查从批次base至工作树的组合diff：类型/字段/错误码对应、状态转换、权限校验顺序、同步异常清理、回调寿命及测试是否真正进入生产路径。
 6. 组合门通过才进入批末共享构建与测试；测试失败先定位首边界，修复→受影响静态复审→必要增量构建/复测，不能直接跳批或把失败收进下一批。
 
