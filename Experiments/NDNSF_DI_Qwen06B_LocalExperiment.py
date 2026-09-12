@@ -29,7 +29,8 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 RUNNER = ROOT / "Experiments/NDNSF_DI_Qwen06B_Native_Minindn.py"
 PROFILE_SCHEMA = "ndnsf-di-qwen06b-local-experiment-v1"
-RUN_SCHEMA = "ndnsf-di-qwen06b-local-run-v1"
+RUN_SCHEMA = "ndnsf-di-qwen06b-local-run-v2"
+MODEL_SOURCE_MAX_BYTES = 1 << 20
 RUN_ID_RE = re.compile(r"^[a-z][a-z0-9-]{1,47}$")
 NODE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 PHASES = ("machine", "candidate", "model", "bundle", "minindn", "workload", "cleanup")
@@ -186,7 +187,108 @@ def process_census(run_dir: Path) -> dict[str, Any]:
             "reason": None if not alive else "OWNED_PROCESS_ALIVE", "alive": alive}
 
 
-def load_model_inputs(stage_manifest: Path, stage_root: Path | None) -> dict[str, Any]:
+def _log_texts(log_root: Path) -> list[str]:
+    if not log_root.is_dir():
+        return []
+    texts: list[str] = []
+    for path in sorted(log_root.glob("*.log")):
+        try:
+            texts.append(path.read_text(errors="replace"))
+        except OSError:
+            continue
+    return texts
+
+
+def startup_markers_observed(log_root: Path) -> bool:
+    """Return true only when the native runtime reached all startup roles."""
+    texts = _log_texts(log_root)
+    if not texts or not any("NATIVE_GRANT_AUTHORITY_READY" in text for text in texts):
+        return False
+    provider_logs = sorted(log_root.glob("provider-*.log"))
+    if not provider_logs:
+        return False
+    for path in provider_logs:
+        try:
+            text = path.read_text(errors="replace")
+        except OSError:
+            return False
+        if not any(marker in text for marker in
+                   ("NDNSF_DI_NATIVE_PROVIDER_READY",
+                    "NDNSF_DI_NATIVE_PROVIDER_SERVE_READY")):
+            return False
+    return True
+
+
+def first_failure_marker(log_root: Path) -> str | None:
+    markers = (
+        "DI_NATIVE_ONNX_PARSE", "DI_NATIVE_ONNX_GRAPH", "DI_NATIVE_ONNX_RECIPE",
+        "DI_NATIVE_NO_ADMITTED_PROVIDER", "DI_NATIVE_SELECTION_TIMEOUT",
+        "DI_NATIVE_ACK_TIMEOUT", "DI_NATIVE_RESPONSE_TIMEOUT",
+        "DI_NATIVE_CONVERSATION_PARENT_MISMATCH", "NATIVE_REQUESTER_FAILED",
+    )
+    for text in _log_texts(log_root):
+        for marker in markers:
+            if marker in text:
+                return marker
+    return None
+
+
+def canonical_source_info(source_path: Path | None,
+                          initializer_path: Path | None) -> dict[str, Any]:
+    """Validate the canonical model objects before any MiniNDN process starts.
+
+    The staged ONNX files are role artifacts.  They are not the canonical source
+    object consumed by the native post-ACK assembler, so the source is an
+    explicit input to the local experiment rather than synthesized from stage
+    metadata.
+    """
+    if source_path is None:
+        return {"status": "WAITING_EXTERNAL_INPUT",
+                "reason": "MODEL_CANONICAL_SOURCE_REQUIRED"}
+    source_path = source_path.expanduser().resolve()
+    if not source_path.is_file():
+        return {"status": "FAIL", "reason": "MODEL_CANONICAL_SOURCE_MISSING",
+                "path": str(source_path)}
+    source_bytes = source_path.stat().st_size
+    result: dict[str, Any] = {"path": str(source_path), "bytes": source_bytes,
+                              "sha256": sha256_file(source_path)}
+    if source_bytes == 0 or source_bytes > MODEL_SOURCE_MAX_BYTES:
+        result.update(status="FAIL", reason="MODEL_CANONICAL_SOURCE_SIZE_INVALID",
+                      maxBytes=MODEL_SOURCE_MAX_BYTES)
+        return result
+    try:
+        import onnx
+        model = onnx.load(str(source_path), load_external_data=False)
+    except ImportError:
+        result.update(status="FAIL", reason="MODEL_ONNX_VALIDATOR_UNAVAILABLE")
+        return result
+    except Exception as exc:
+        result.update(status="FAIL", reason="MODEL_CANONICAL_SOURCE_NOT_ONNX",
+                      error=type(exc).__name__)
+        return result
+    result.update(status="PASS", graphName=str(model.graph.name),
+                  nodeCount=len(model.graph.node), inputCount=len(model.graph.input),
+                  outputCount=len(model.graph.output))
+    if initializer_path is not None:
+        initializer_path = initializer_path.expanduser().resolve()
+        if not initializer_path.is_file():
+            return {**result, "status": "FAIL",
+                    "reason": "MODEL_CANONICAL_INITIALIZER_MISSING",
+                    "initializerPath": str(initializer_path)}
+        initializer_bytes = initializer_path.stat().st_size
+        initializer = {"path": str(initializer_path), "bytes": initializer_bytes,
+                       "sha256": sha256_file(initializer_path)}
+        if initializer_bytes == 0 or initializer_bytes > MODEL_SOURCE_MAX_BYTES:
+            return {**result, "status": "FAIL",
+                    "reason": "MODEL_CANONICAL_INITIALIZER_SIZE_INVALID",
+                    "initializer": initializer, "maxBytes": MODEL_SOURCE_MAX_BYTES}
+        result["initializer"] = initializer
+    return result
+
+
+def load_model_inputs(stage_manifest: Path, stage_root: Path | None,
+                      canonical_source: Path | None = None,
+                      canonical_initializer: Path | None = None) -> dict[str, Any]:
     spec = importlib.util.spec_from_file_location("qwen_runner", RUNNER)
     if spec is None or spec.loader is None:
         raise ValueError("RUNNER_IMPORT_FAILED")
@@ -210,7 +312,9 @@ def load_model_inputs(stage_manifest: Path, stage_root: Path | None) -> dict[str
         raise ValueError("MODEL_TOKENIZER_MISSING")
     return {"manifest": manifest, "stages": stages, "tokenizer": tokenizer,
             "manifestSha256": sha256_file(stage_manifest),
-            "tokenizerSha256": sha256_file(tokenizer)}
+            "tokenizerSha256": sha256_file(tokenizer),
+            "canonicalSource": canonical_source_info(canonical_source,
+                                                       canonical_initializer)}
 
 
 def preflight(args: argparse.Namespace, profile: dict[str, Any], profile_sha: str) -> dict[str, Any]:
@@ -234,8 +338,15 @@ def preflight(args: argparse.Namespace, profile: dict[str, Any], profile_sha: st
         machine["binaries"][name] = binary_check(Path(raw))
     if any(item["status"] != "PASS" for item in machine["binaries"].values()):
         machine.update(status="FAIL", reason="NATIVE_BINARY_PREFLIGHT")
+    canonical_source_arg = getattr(args, "canonical_source", None)
+    canonical_initializer_arg = getattr(args, "canonical_initializer", None)
+    canonical_source = (canonical_source_arg.resolve()
+                        if canonical_source_arg else None)
+    canonical_initializer = (canonical_initializer_arg.resolve()
+                             if canonical_initializer_arg else None)
     model = load_model_inputs(args.stage_manifest.resolve(),
-                              args.stage_root.resolve() if args.stage_root else None)
+                              args.stage_root.resolve() if args.stage_root else None,
+                              canonical_source, canonical_initializer)
     candidate_payload = {
         "schema": "ndnsf-di-qwen06b-app-manifest-v1",
         "application": "Qwen3-0.6B-native-MiniNDN",
@@ -255,17 +366,21 @@ def preflight(args: argparse.Namespace, profile: dict[str, Any], profile_sha: st
         "stages": [{"role": stage["role"], "path": stage["path"],
                     "sha256": stage["sha256"], "bytes": stage["bytes"]}
                    for stage in model["stages"]],
+        "canonicalSource": model["canonicalSource"],
     }
     candidate_digest = canonical_digest(candidate_payload)
     candidate = {**candidate_payload, "candidateId": "qwen06b-" + candidate_digest[7:19],
                  "candidateDigest": candidate_digest}
+    model_status = model["canonicalSource"].get("status")
+    status = "PASS" if machine["status"] == "PASS" and model_status == "PASS" else "FAIL"
     return {"schema": RUN_SCHEMA, "profileId": profile["profileId"],
             "profileSha256": profile_sha, "machine": machine,
             "model": {"manifestSha256": model["manifestSha256"],
                       "tokenizerSha256": model["tokenizerSha256"],
+                      "canonicalSource": model["canonicalSource"],
                       "stages": [{"role": s["role"], "sha256": s["sha256"], "bytes": s["bytes"]}
                                  for s in model["stages"]]},
-            "candidate": candidate, "status": "PASS" if machine["status"] == "PASS" else "FAIL"}
+            "candidate": candidate, "status": status}
 
 
 def command_for(args: argparse.Namespace, profile: dict[str, Any], run_dir: Path) -> list[str]:
@@ -278,6 +393,10 @@ def command_for(args: argparse.Namespace, profile: dict[str, Any], run_dir: Path
                "--rounds", str(args.rounds), "--max-new-tokens", str(args.max_new_tokens),
                "--run-root", str(run_dir / "workload"), "--nlsr-wait-s", str(args.nlsr_wait_s),
                "--startup-timeout-s", str(args.startup_timeout_s)]
+    if getattr(args, "canonical_source", None):
+        command.extend(["--canonical-source", str(args.canonical_source.resolve())])
+    if getattr(args, "canonical_initializer", None):
+        command.extend(["--canonical-initializer", str(args.canonical_initializer.resolve())])
     if args.input_token_ids:
         command.extend(["--input-token-ids", args.input_token_ids])
     if args.delta_token_ids:
@@ -293,6 +412,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--profile", type=Path, required=True)
     parser.add_argument("--stage-manifest", type=Path, required=True)
     parser.add_argument("--stage-root", type=Path, required=True)
+    parser.add_argument("--canonical-source", type=Path, default=None,
+                        help="canonical ONNX graph object used by native post-ACK assembly")
+    parser.add_argument("--canonical-initializer", type=Path, default=None,
+                        help="optional external canonical ONNX initializer object")
     parser.add_argument("--output-root", type=Path, default=None)
     parser.add_argument("--run-id", default=None)
     parser.add_argument("--rounds", type=int, default=2)
@@ -340,11 +463,29 @@ def main() -> int:
                   "candidateDigest": check["candidate"]["candidateDigest"],
                   "profileId": profile["profileId"], "profileSha256": profile_sha,
                   "command": command_for(args, profile, run_dir), "status": "NOT_EVALUATED"}
+        bundle = {"schema": "ndnsf-di-qwen06b-bundle-v1", "runId": args.run_id,
+                  "candidateDigest": launch["candidateDigest"],
+                  "profileSha256": profile_sha, "command": launch["command"],
+                  "commandDigest": canonical_digest(launch["command"]),
+                  "appManifest": {"path": str(run_dir / "app-manifest.json"),
+                                  "sha256": sha256_file(run_dir / "app-manifest.json")},
+                  "status": "PASS"}
+        write_json(run_dir / "bundle-manifest.json", bundle)
+        launch["bundleDigest"] = canonical_digest(bundle)
         write_json(run_dir / "launch.json", launch)
+        phases = {phase: {"status": "NOT_EVALUATED"} for phase in PHASES}
+        phases["machine"] = {"status": check["machine"]["status"],
+                              "topology": check["machine"].get("topology")}
+        phases["candidate"] = {"status": "PASS",
+                                "manifest": str(run_dir / "app-manifest.json")}
+        phases["model"] = {"status": "PASS",
+                            "canonicalSource": check["model"].get("canonicalSource")}
+        phases["bundle"] = {"status": "PASS", "manifest": str(run_dir / "bundle-manifest.json"),
+                             "commandDigest": bundle["commandDigest"]}
         write_json(run_dir / "run-record.json", {"schema": RUN_SCHEMA, "runId": args.run_id,
                   "candidateId": launch["candidateId"], "candidateDigest": launch["candidateDigest"],
                   "profileId": profile["profileId"], "profileSha256": profile_sha,
-                  "phases": {phase: {"status": "NOT_EVALUATED"} for phase in PHASES},
+                  "phases": phases,
                   "status": "NOT_EVALUATED", "preparedAt": now()})
         print(json.dumps({"run": str(run_dir), "candidateId": launch["candidateId"],
                           "candidateDigest": launch["candidateDigest"], "status": "NOT_EVALUATED"},
@@ -365,11 +506,19 @@ def main() -> int:
     if not isinstance(command, list) or not all(isinstance(item, str) for item in command):
         raise SystemExit("LAUNCH_RECORD_INVALID")
     record_path = run_dir / "run-record.json"
+    bundle_path = run_dir / "bundle-manifest.json"
+    if not bundle_path.is_file():
+        raise SystemExit("BUNDLE_REQUIRED")
+    bundle = json.loads(bundle_path.read_text(encoding="utf-8"))
+    if (bundle.get("candidateDigest") != launch.get("candidateDigest") or
+            bundle.get("commandDigest") != canonical_digest(command)):
+        raise SystemExit("BUNDLE_INPUTS_CHANGED")
     record = json.loads(record_path.read_text(encoding="utf-8"))
     record["phases"]["machine"] = {"status": "PASS"}
     record["phases"]["candidate"] = {"status": "PASS", "manifest": str(run_dir / "app-manifest.json")}
     record["phases"]["model"] = {"status": "PASS"}
-    record["phases"]["bundle"] = {"status": "PASS"}
+    record["phases"]["bundle"] = {"status": "PASS", "manifest": str(bundle_path),
+                                     "commandDigest": bundle["commandDigest"]}
     record["phases"]["minindn"] = {"status": "RUNNING", "startedAt": now()}
     record["phases"]["workload"] = {"status": "RUNNING"}
     record["status"] = "RUNNING"
@@ -387,16 +536,20 @@ def main() -> int:
             child_status = json.loads(child_record.read_text(encoding="utf-8")).get("status")
         except (OSError, ValueError, TypeError):
             child_status = None
+    failure_marker = first_failure_marker(run_dir / "workload")
+    startup_ready = startup_markers_observed(run_dir / "workload")
     if completed.returncode == 0 and child_status == "PASS":
         record["phases"]["minindn"] = {"status": "PASS", "finishedAt": now()}
         record["phases"]["workload"] = {"status": "PASS", "childRecord": str(child_record),
                                           "elapsedSeconds": round(time.monotonic() - started, 3)}
         record["status"] = "PASS"
     else:
-        record["phases"]["minindn"] = {"status": "FAIL", "finishedAt": now(),
+        record["phases"]["minindn"] = {"status": "PASS" if startup_ready else "FAIL", "finishedAt": now(),
                                         "returncode": completed.returncode, "log": str(log)}
-        record["phases"]["workload"] = {"status": "NOT_EVALUATED",
-                                          "reason": "MININDN_START_OR_REQUEST_FAILED"}
+        record["phases"]["workload"] = {"status": "FAIL" if startup_ready else "NOT_EVALUATED",
+                                          "reason": ("NATIVE_REQUEST_FAILED:" + failure_marker
+                                                     if startup_ready and failure_marker
+                                                     else "MININDN_START_OR_REQUEST_FAILED")}
         record["status"] = "FAIL"
     cleanup = process_census(run_dir)
     record["phases"]["cleanup"] = cleanup
