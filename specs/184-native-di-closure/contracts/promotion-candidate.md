@@ -264,3 +264,25 @@ fixtures, not the contract-required `Qwen/Qwen3.6-27B`; inherited negative/retir
 I05 `UNQUALIFIED`, Python retirement and SIF/Tiger external ownership remain open. Any later
 source, harness, contract, artifact or external configuration change invalidates this overlay
 and requires a fresh candidate identity before qualification resumes.
+
+## Validation-contract update (2026-09-12)
+
+The model-capability evidence and the recorded r4 Waf target boundary changed
+the active Spec184 validation record after the overlay above was written. The
+previous `candidateId` and runtime hashes remain useful for the bounded A0–A2
+observations, but the overlay is no longer a fresh promotion identity. Before
+any new qualification run, recompute the ordered member map with these current
+validation members:
+
+| Member | SHA-256 |
+| --- | --- |
+| `spec.plan` | `bc000e9c5059cc99fabcfeb1122894fa9163184098a55e0e1e787b3fe5b37615` |
+| `spec.tasks` | `cf76c4abff016e31b3991688182508a7772cba9a91e5bc4367f7209ba964fbe2` |
+| `spec.matrix` | `6f1e933717582a1fa8cf4e734de7ffa325c14392dee301aa24ef9735c788d80c` |
+| `evidence.remainder_audit` | `c5266a1940cdc71ec63ca6b3d456525c6aa2c070c7c3ba14ba632af34ea6d46c` |
+| `evidence.model_capability` | `4b258674d060c5a4c53af5bb508f5f673429535e8248f32fb8342e309fc574bb` |
+
+The exact Qwen3.6-27B model remains `WAITING_EXTERNAL_INPUT`; the local
+Qwen3-0.6B boundary does not create a replacement candidate or a qualification
+PASS. The next candidate must be frozen only after A4 is closed locally or the
+external A3 result is transferred with its own model/runtime identity.
