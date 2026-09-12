@@ -617,18 +617,39 @@ def build(bld):
     bld.install_files('${INCLUDEDIR}/ndn-service-framework',
                       bld.path.find_resource('config.hpp'))
 
+    # Preserve the pre-existing Native* compatibility installation until the
+    # T011 caller matrix proves which entries can be retired.  The three new
+    # umbrellas below are the stable application/provider/extension boundary;
+    # the legacy glob remains explicitly classified as compatibility in
+    # contracts/api-exposure.json during this migration window.
+    di_installed_headers = [
+        'NDNSF-DistributedInference/cpp/ndnsf-di/api.hpp',
+        'NDNSF-DistributedInference/cpp/ndnsf-di/provider.hpp',
+        'NDNSF-DistributedInference/cpp/ndnsf-di/extensions.hpp',
+    ]
     bld.install_files(
         '${INCLUDEDIR}/NDNSF-DistributedInference/cpp/ndnsf-di',
-        bld.path.ant_glob('NDNSF-DistributedInference/cpp/ndnsf-di/*.hpp',
-                          excl=['NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp']))
-    # NativeOnnxAssemblyWorker.hpp is a DI-private protocol header (T006-C):
-    # it is deliberately not installed as an application header.
+        [bld.path.find_resource(header) for header in di_installed_headers])
+    bld.install_files(
+        '${INCLUDEDIR}/NDNSF-DistributedInference/cpp/ndnsf-di',
+        bld.path.ant_glob(
+            'NDNSF-DistributedInference/cpp/ndnsf-di/*.hpp',
+            excl=[
+                'NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp',
+                'NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp',
+                'NDNSF-DistributedInference/cpp/ndnsf-di/NativeCheckpointExport.hpp',
+                'NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp',
+                'NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationWire.hpp',
+                'NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationJournal.hpp',
+                'NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp',
+                'NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestEnvelope.hpp',
+                'NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPlanner.hpp',
+            ]))
     bld.install_files(
         '${INCLUDEDIR}/NDNSF-DistributedInference/cpp/adapters/onnx',
-        bld.path.ant_glob('NDNSF-DistributedInference/cpp/adapters/onnx/*.hpp',
-                          excl=[
-                              'NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp',
-                          ]))
+        bld.path.ant_glob(
+            'NDNSF-DistributedInference/cpp/adapters/onnx/*.hpp',
+            excl=['NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp']))
     bld.install_files(
         '${INCLUDEDIR}/NDNSF-DistributedInference/cpp/adapters/yolo',
         bld.path.ant_glob('NDNSF-DistributedInference/cpp/adapters/yolo/*.hpp'))
@@ -636,14 +657,32 @@ def build(bld):
         '${INCLUDEDIR}/NDNSF-DistributedInference/cpp/adapters/qwen',
         bld.path.ant_glob('NDNSF-DistributedInference/cpp/adapters/qwen/*.hpp'))
 
+    # Export the same external header closure used by the native targets so a
+    # standalone installed consumer can compile every public header without
+    # inheriting this repository's build include paths.  Dependency paths are
+    # generated from the explicitly selected configure-time prefixes; third-
+    # party headers are marked system headers to keep consumer -Werror useful.
+    package_include_flags = []
+    package_include_paths = []
+    # NDN-SVS may be supplied as an explicit source/build pair for the
+    # development link closure.  Those paths are not an installed SDK and
+    # must never leak into a relocatable consumer's pkg-config metadata;
+    # installed consumers resolve NDN-SVS through their system package.
+    for include_key in ('INCLUDES_NAC_ABE', 'INCLUDES_NAC-ABE'):
+        for include_path in list(getattr(bld.env, include_key, []) or []):
+            if include_path and include_path not in package_include_paths:
+                package_include_paths.append(include_path)
+                package_include_flags.extend(['-isystem', include_path])
+    package_extra_includes = ' '.join(package_include_flags)
+
     bld(features='subst',
         source='NDNSF-DistributedInference/ndnsf-distributed-inference.pc.in',
         target='ndnsf-distributed-inference.pc',
         install_path='${LIBDIR}/pkgconfig',
-        VERSION=VERSION)
+        VERSION=VERSION, EXTRA_INCLUDES=package_extra_includes)
 
     bld(features='subst',
         source='libndn-service-framework.pc.in',
         target='libndn-service-framework.pc',
         install_path='${LIBDIR}/pkgconfig',
-        VERSION=VERSION)
+        VERSION=VERSION, EXTRA_INCLUDES=package_extra_includes)

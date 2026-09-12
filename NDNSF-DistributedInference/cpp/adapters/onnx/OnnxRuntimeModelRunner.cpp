@@ -2131,6 +2131,14 @@ OnnxRuntimeModelRunner::releaseConversationState(
 
 namespace ndnsf::di {
 
+// Keep the ABI-stable PImpl complete in a build without the optional ONNX
+// Runtime development package.  The public header therefore has the same
+// layout in enabled and disabled builds; only construction/execution reports
+// that the backend is unavailable.
+class OnnxRuntimeModelRunner::Impl
+{
+};
+
 OnnxRuntimeModelRunner::OnnxRuntimeModelRunner(NativeModelRunnerSpec spec)
   : m_spec(std::move(spec))
 {
@@ -2231,6 +2239,12 @@ std::map<std::string, TensorBundle>
 OnnxRuntimeModelRunner::run(const RoleExecutionContext&)
 {
   throw std::runtime_error("C++ ONNX Runtime backend is not enabled");
+}
+
+std::optional<std::map<std::string, TensorBundle>>
+OnnxRuntimeModelRunner::runStreamed(const RoleExecutionContext&)
+{
+  return std::nullopt;
 }
 
 std::optional<std::map<std::string, TensorBundle>>

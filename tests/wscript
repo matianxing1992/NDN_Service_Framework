@@ -111,6 +111,19 @@ def build(bld):
                 linkflags=['-Wl,--no-relax'],
                 rpath=[bld.bldnode.abspath()], install_path=None)
 
+    # Spec185 B0 consumer: only the installed-style public umbrellas and the
+    # ONNX runner compatibility header are included.  The source-tree include
+    # path is used solely to compile this in-tree executable; the external
+    # install-prefix check in the batch evidence repeats the same source with
+    # pkg-config and no repository -I path.
+    bld.program(target='../spec185-installed-consumer',
+                name='spec185-installed-consumer',
+                source=[bld.path.find_node('installed-api/spec185-installed-consumer.cpp')],
+                includes=['..', '../ndn-service-framework'],
+                use='ndnsf-distributed-inference ndn-service-framework ' + framework_use,
+                linkflags=['-Wl,--no-relax'],
+                rpath=[bld.bldnode.abspath()], install_path=None)
+
     # Spec182 worker-protocol test tools (T006-C).  Deliberately-misbehaving
     # worker children spawned through the same OA02 transport for the crash /
     # cancel / incomplete subprocess cases; never installed and never

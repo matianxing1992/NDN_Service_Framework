@@ -8,7 +8,9 @@
 #include <onnx/onnx_pb.h>
 #include <onnx/shape_inference/implementation.h>
 
+#ifdef NDNSF_DI_ENABLE_ONNXRUNTIME_CPP
 #include <onnxruntime_cxx_api.h>
+#endif
 
 #include <google/protobuf/io/coded_stream.h>
 #include <google/protobuf/io/zero_copy_stream_impl_lite.h>
@@ -600,6 +602,7 @@ assembleCertifiedOnnxChain(const NativeCanonicalSource& source,
   // result leaves this function.
   auto bytes = deterministicWire(assembled, maxAssembledBytes);
   onRound();
+#ifdef NDNSF_DI_ENABLE_ONNXRUNTIME_CPP
   try {
     Ort::Env env(ORT_LOGGING_LEVEL_WARNING, "ndnsf-certified-assembly");
     Ort::SessionOptions options;
@@ -609,6 +612,11 @@ assembleCertifiedOnnxChain(const NativeCanonicalSource& source,
   catch (const std::exception&) {
     fail("GRAPH");
   }
+#else
+  // The ONNX graph/protobuf helpers remain linkable in a disabled build, but
+  // the certified assembly gate requires the optional ORT C++ runtime.
+  fail("RUNTIME_UNAVAILABLE");
+#endif
   onRound();
   NativeCertifiedAssembly result;
   result.modelDigest = digest(bytes);
