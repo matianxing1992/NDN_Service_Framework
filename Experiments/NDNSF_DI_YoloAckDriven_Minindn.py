@@ -3081,8 +3081,13 @@ def _wait_for_grant_rejection(started, timeout_s):
         if not path.exists():
             return []
         try:
-            return [json.loads(line[len(prefix):]) for line in
-                    path.read_text().splitlines() if line.startswith(prefix)]
+            records = []
+            for line in path.read_text().splitlines():
+                position = line.find(prefix)
+                if position < 0:
+                    continue
+                records.append(json.loads(line[position + len(prefix):]))
+            return records
         except (ValueError, UnicodeError):
             raise RunnerError("Y_N_E_VERIFIER_RECORD_INVALID") from None
 
@@ -3158,8 +3163,16 @@ def _wait_for_negative_result(
             text = log_path.read_text(errors="replace") if log_path.exists() else ""
             if "YOLO_ACK_DRIVEN_RESULT status=true" in text:
                 raise RunnerError("Y_N_NEGATIVE_TERMINAL_SUCCESS:" + subcase)
-            negative_lines = [line for line in text.splitlines()
-                              if line.startswith("SPEC180_YN_NEGATIVE_RESULT ")]
+            negative_lines = []
+            for line in text.splitlines():
+                # Native RuntimeEvidence is emitted through ndn-cxx logging,
+                # so its marker follows a timestamp/logger prefix.  Normalize
+                # only the registered marker suffix before field validation;
+                # the lifecycle/provider/request checks below remain unchanged.
+                marker = "SPEC180_YN_NEGATIVE_RESULT "
+                position = line.find(marker)
+                if position >= 0:
+                    negative_lines.append(line[position:])
             for line in negative_lines:
                 _validate_negative_marker(line, spec, subcase, user_spec, user_log)
                 accepted.append(line)
@@ -3167,8 +3180,14 @@ def _wait_for_negative_result(
             return_code = poll() if callable(poll) else None
             if return_code is None:
                 all_exited = False
-            elif not (spec.name == "user" and
-                      return_code == YN_NEGATIVE_PASS_EXIT):
+            elif spec.name == "user":
+                if return_code != YN_NEGATIVE_PASS_EXIT:
+                    raise RunnerError("Y_N_NEGATIVE_CHILD_FAILURE:" + spec.name)
+            elif return_code not in {0, -signal.SIGINT, 128 + signal.SIGINT}:
+                # The Provider-owned Y-N-I marker is emitted immediately
+                # before its normal fail-closed exit.  Accept that bounded
+                # exit here; _close_case_children still checks every sibling
+                # after the marker and rejects any unexpected cleanup code.
                 raise RunnerError("Y_N_NEGATIVE_CHILD_FAILURE:" + spec.name)
         # Inspect all children even if the first log already had a marker.
         if accepted:
@@ -3181,18 +3200,38 @@ def _wait_for_negative_result(
         time.sleep(min(0.2, remaining))
 
 
-def _close_case_children(runtime, started, *, expected_user_exit, timeout_s=5.0):
+def _close_case_children(runtime, started, *, expected_user_exit,
+                         timeout_s=5.0, interrupt_before_wait=False):
     """Require the User's own exit, then bounded, successful sibling cleanup."""
     users = [proc for spec, proc, _path in started if spec.name == "user"]
     if len(users) != 1:
         raise RunnerError("CASE_TERMINAL_USER_SET_INVALID")
+    # Provider-owned Y-N-I has no User-side marker or terminal response. Once
+    # the Provider has proved the ingress rejection, interrupt the User and
+    # verify that this controlled shutdown is the only accepted user exit.
+    accepted_user_exits = {expected_user_exit}
+    if interrupt_before_wait:
+        accepted_user_exits.update({-signal.SIGINT, 128 + signal.SIGINT})
+        runtime.stop()
+    accepted_child_exits = {0, -signal.SIGINT, 128 + signal.SIGINT}
     deadline = time.monotonic() + timeout_s
     while True:
         for spec, proc, _path in started:
             code = proc.poll()
-            if code is not None and (spec.name != "user" or code != expected_user_exit):
-                raise RunnerError("CASE_TERMINAL_CHILD_FAILURE:" + spec.name + ":" + str(code))
-        if users[0].poll() == expected_user_exit:
+            if code is not None:
+                if spec.name == "user":
+                    invalid = code not in accepted_user_exits
+                else:
+                    # Before an interrupt, a sibling exiting early is a
+                    # failure.  Provider-owned Y-N-I has already requested
+                    # the full controlled shutdown, so normal sibling exits
+                    # are validated against the same bounded set below.
+                    invalid = (not interrupt_before_wait
+                               or code not in accepted_child_exits)
+                if invalid:
+                    raise RunnerError(
+                        "CASE_TERMINAL_CHILD_FAILURE:" + spec.name + ":" + str(code))
+        if users[0].poll() in accepted_user_exits:
             break
         if time.monotonic() >= deadline:
             raise RunnerError("CASE_TERMINAL_USER_DID_NOT_EXIT")
@@ -3202,8 +3241,8 @@ def _close_case_children(runtime, started, *, expected_user_exit, timeout_s=5.0)
     records = []
     for spec, proc, _path in started:
         code = proc.poll()
-        allowed = ({expected_user_exit} if spec.name == "user"
-                   else {0, -signal.SIGINT, 128 + signal.SIGINT})
+        allowed = (accepted_user_exits if spec.name == "user"
+                   else accepted_child_exits)
         if code not in allowed:
             raise RunnerError("CASE_TERMINAL_CLEANUP_FAILURE:" + spec.name + ":" + str(code))
         records.append({"name": spec.name, "pid": getattr(proc, "pid", None),
@@ -3245,6 +3284,20 @@ def _run_live_case_once(case: str, output: Path, inputs: Mapping[str, Any], *,
     # do not inherit a caller's PYTHONPATH ordering for an ACK-driven case.
     py_dir = ROOT / "examples/python/NDNSF-DistributedInference/yolo_2x2"
     env = _child_process_environment(os.environ)
+    # Each Y-N subcase owns an independent Controller generation lease.  A
+    # fail-closed subcase may intentionally terminate its control plane after
+    # observing the rejection boundary; reusing one lock path would let a
+    # stale lease mask the next subcase's declared boundary.
+    generation_state = env.get("NDNSF_CONTROLLER_GENERATION_STATE")
+    if subcase and generation_state:
+        state_label = subcase
+        mutation = os.environ.get("SPEC181_GRANT_MUTATION", "")
+        if mutation:
+            state_label += "-" + mutation
+        safe_subcase = re.sub(r"[^A-Za-z0-9_.-]", "_", state_label)
+        state_path = Path(generation_state)
+        env["NDNSF_CONTROLLER_GENERATION_STATE"] = str(
+            state_path.with_name(state_path.name + "-" + safe_subcase))
     # The matrix-level epoch selects protected Y-N-E only. Use the same
     # per-case epoch as publication and Provider process specs for every child.
     env[PROTECTION_EPOCH_ENV] = str(
@@ -3355,7 +3408,8 @@ def _run_live_case_once(case: str, output: Path, inputs: Mapping[str, Any], *,
                 token.split("=", 1) for token in negative_marker.split()[1:])
             children = _close_case_children(
                 runtime, phase_started,
-                expected_user_exit=YN_NEGATIVE_PASS_EXIT)
+                expected_user_exit=YN_NEGATIVE_PASS_EXIT,
+                interrupt_before_wait=(subcase == "Y-N-I"))
             cleanup_done = True
             negative_evidence = {
                 "schema": "spec180-negative-evidence-v1",

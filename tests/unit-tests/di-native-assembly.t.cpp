@@ -66,6 +66,78 @@ std::vector<std::uint8_t> modelBytes()
   return bytes;
 }
 
+// A component-set role may own an exact subset of a larger canonical graph.
+// The unselected tail is deliberately disconnected from the certified output
+// so the extractor must retain only the selected component node.
+std::vector<std::uint8_t> modelBytesWithUnselectedTail()
+{
+  onnx::ModelProto model;
+  model.set_ir_version(8);
+  auto* opset = model.add_opset_import();
+  opset->set_domain("");
+  opset->set_version(13);
+  auto* graph = model.mutable_graph();
+  graph->set_name("spec182-native-component-subset");
+  auto* input = graph->add_input();
+  input->set_name("x");
+  input->mutable_type()->mutable_tensor_type()->set_elem_type(onnx::TensorProto::FLOAT);
+  input->mutable_type()->mutable_tensor_type()->mutable_shape()->add_dim()->set_dim_value(1);
+  input->mutable_type()->mutable_tensor_type()->mutable_shape()->add_dim()->set_dim_value(1);
+  auto* output = graph->add_output();
+  output->set_name("y");
+  output->mutable_type()->mutable_tensor_type()->set_elem_type(onnx::TensorProto::FLOAT);
+  output->mutable_type()->mutable_tensor_type()->mutable_shape()->add_dim()->set_dim_value(1);
+  output->mutable_type()->mutable_tensor_type()->mutable_shape()->add_dim()->set_dim_value(1);
+  auto* selected = graph->add_node();
+  selected->set_op_type("Identity");
+  selected->add_input("x");
+  selected->add_output("y");
+  auto* tail = graph->add_node();
+  tail->set_op_type("Identity");
+  tail->add_input("x");
+  tail->add_output("unused");
+  const auto size = model.ByteSizeLong();
+  std::vector<std::uint8_t> bytes(static_cast<std::size_t>(size));
+  BOOST_REQUIRE(model.SerializeToArray(bytes.data(), static_cast<int>(bytes.size())));
+  return bytes;
+}
+
+// A downstream role must stop reverse extraction at its declared role input;
+// the upstream producer belongs to another certified role and must not be
+// pulled into this role's assembled graph.
+std::vector<std::uint8_t> modelBytesWithRoleBoundary()
+{
+  onnx::ModelProto model;
+  model.set_ir_version(8);
+  auto* opset = model.add_opset_import();
+  opset->set_domain("");
+  opset->set_version(13);
+  auto* graph = model.mutable_graph();
+  graph->set_name("spec182-native-role-boundary");
+  auto* input = graph->add_input();
+  input->set_name("x");
+  input->mutable_type()->mutable_tensor_type()->set_elem_type(onnx::TensorProto::FLOAT);
+  input->mutable_type()->mutable_tensor_type()->mutable_shape()->add_dim()->set_dim_value(1);
+  input->mutable_type()->mutable_tensor_type()->mutable_shape()->add_dim()->set_dim_value(1);
+  auto* output = graph->add_output();
+  output->set_name("y");
+  output->mutable_type()->mutable_tensor_type()->set_elem_type(onnx::TensorProto::FLOAT);
+  output->mutable_type()->mutable_tensor_type()->mutable_shape()->add_dim()->set_dim_value(1);
+  output->mutable_type()->mutable_tensor_type()->mutable_shape()->add_dim()->set_dim_value(1);
+  auto* upstream = graph->add_node();
+  upstream->set_op_type("Identity");
+  upstream->add_input("x");
+  upstream->add_output("hidden");
+  auto* selected = graph->add_node();
+  selected->set_op_type("Identity");
+  selected->add_input("hidden");
+  selected->add_output("y");
+  const auto size = model.ByteSizeLong();
+  std::vector<std::uint8_t> bytes(static_cast<std::size_t>(size));
+  BOOST_REQUIRE(model.SerializeToArray(bytes.data(), static_cast<int>(bytes.size())));
+  return bytes;
+}
+
 // One branch graph carries an EXTERNAL initializer consumed by an Identity
 // node; the other carries the same structure inline.  The model is full-
 // checker valid (bool scalar condition, both If branches, typed io and
@@ -196,6 +268,36 @@ BOOST_AUTO_TEST_CASE(AssemblesComponentSetWithoutInterpreter)
   BOOST_CHECK_EQUAL(result.outputNames.at(0), "y");
   BOOST_CHECK(!result.modelBytes.empty());
   BOOST_CHECK_EQUAL(result.modelDigest.rfind("sha256:", 0), 0);
+}
+
+BOOST_AUTO_TEST_CASE(AssemblesComponentSetSubsetWithoutUncertifiedTail)
+{
+  NativeCanonicalSource source{modelBytesWithUnselectedTail(), std::nullopt};
+  auto certified = recipe();
+  fillCertifiedIdentity(certified, source);
+  certified.nodeIndices = {0};
+  const NativeAssemblyControl control{
+    std::chrono::steady_clock::now() + std::chrono::seconds(2), [] {}, 64 * 1024, 64 * 1024};
+  const auto result = assembleNativeCertifiedOnnxModel(source, certified, control);
+  BOOST_CHECK_EQUAL(result.nodeCount, 1);
+  BOOST_CHECK_EQUAL(result.inputNames.at(0), "x");
+  BOOST_CHECK_EQUAL(result.outputNames.at(0), "y");
+  BOOST_CHECK(!result.modelBytes.empty());
+}
+
+BOOST_AUTO_TEST_CASE(StopsExtractionAtDeclaredRoleInput)
+{
+  NativeCanonicalSource source{modelBytesWithRoleBoundary(), std::nullopt};
+  auto certified = recipe();
+  certified.expectedInputs = {{"hidden", "float32", {"1", "1"}}};
+  certified.nodeIndices = {1};
+  fillCertifiedIdentity(certified, source);
+  const NativeAssemblyControl control{
+    std::chrono::steady_clock::now() + std::chrono::seconds(2), [] {}, 64 * 1024, 64 * 1024};
+  const auto result = assembleNativeCertifiedOnnxModel(source, certified, control);
+  BOOST_CHECK_EQUAL(result.nodeCount, 1);
+  BOOST_CHECK_EQUAL(result.inputNames.at(0), "hidden");
+  BOOST_CHECK_EQUAL(result.outputNames.at(0), "y");
 }
 
 BOOST_AUTO_TEST_CASE(RejectsDuplicateNodeCover)

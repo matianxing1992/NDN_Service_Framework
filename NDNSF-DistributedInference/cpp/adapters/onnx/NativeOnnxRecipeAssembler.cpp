@@ -208,11 +208,12 @@ std::string deterministicMessageBytes(const google::protobuf::MessageLite& messa
   return std::string(bytes.begin(), bytes.end());
 }
 
-// Reverse DFS from one requested output tensor, stopping at graph input
-// names; node producers are exact matches on the node output list, exactly
-// like utils.py _dfs_search_reachable_nodes.  Every recursion either stops
-// or moves at least one index from `unreachable` into `reachable`, so the
-// depth is bounded by the (recipe-capped) node count even on cyclic graphs.
+// Reverse DFS from one requested output tensor, stopping at graph input and
+// declared role-boundary names; node producers are exact matches on the node
+// output list, exactly like utils.py _dfs_search_reachable_nodes.  Every
+// recursion either stops or moves at least one index from `unreachable` into
+// `reachable`, so the depth is bounded by the (recipe-capped) node count even
+// on cyclic graphs.
 void
 dfsReachNodes(const std::string& outputName,
               const std::unordered_set<std::string>& graphInputNames,
@@ -484,8 +485,11 @@ assembleCertifiedOnnxChain(const NativeCanonicalSource& source,
     if (index >= static_cast<std::uint64_t>(original.graph().node_size()) ||
         !selected.insert(index).second) fail("NODE_COVER");
   }
-  if (recipe.roleKind == "COMPONENT_SET" && selected.size() !=
-      static_cast<std::size_t>(original.graph().node_size())) fail("NODE_COVER");
+  // COMPONENT_SET identifies an adapter-defined, exact node set.  It does
+  // not mean that the role must own the whole canonical source graph: a
+  // semantic component may be a certified subset of a larger model.  The
+  // selected set is checked against the extracted graph below, where every
+  // reachable node and every certified index must agree byte-for-byte.
   if (recipe.roleKind != "COMPONENT_SET" &&
       (recipe.layerEnd <= recipe.layerBegin ||
        recipe.layerEnd > static_cast<std::uint64_t>(original.graph().node_size())))
@@ -534,14 +538,16 @@ assembleCertifiedOnnxChain(const NativeCanonicalSource& source,
   }
   onRound();
   const auto& inferredGraph = inferred.graph();
-  std::unordered_set<std::string> graphInputNames;
-  for (const auto& input : inferredGraph.input()) graphInputNames.insert(input.name());
+  std::unordered_set<std::string> extractionBoundaryNames;
+  for (const auto& input : inferredGraph.input()) extractionBoundaryNames.insert(input.name());
+  for (const auto& contract : recipe.expectedInputs)
+    extractionBoundaryNames.insert(contract.name);
   std::unordered_set<std::size_t> unreachable;
   for (int i = 0; i < inferredGraph.node_size(); ++i)
     unreachable.insert(static_cast<std::size_t>(i));
   std::unordered_set<std::size_t> reachable;
   for (const auto& contract : recipe.expectedOutputs)
-    dfsReachNodes(contract.name, graphInputNames, inferredGraph.node(),
+    dfsReachNodes(contract.name, extractionBoundaryNames, inferredGraph.node(),
                   unreachable, reachable);
   std::vector<std::size_t> selectedNodes;
   // The certified recipe owns the complete node cover for this role.  Output

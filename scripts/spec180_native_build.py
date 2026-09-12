@@ -46,7 +46,14 @@ import tempfile
 
 
 SCHEMA = "spec180-host-local-native-v1"
-TARGETS = "ndn-service-framework,di-native-provider"
+# The binding links the native DI shared library as well as the framework.
+# The process qualification and cold ONNX path also consume the native
+# requester, authority and assembly worker.  Listing only the framework and
+# Provider lets a fresh Waf output pass while silently omitting those runtime
+# artifacts; an older output tree can hide that omission.
+TARGETS = ("ndn-service-framework,ndnsf-distributed-inference,"
+           "DI_NativeRequester,DI_NativeArtifactAuthority,"
+           "di-native-assembly-worker,di-native-provider")
 LIBRARY = "libndn-service-framework.so"
 SVS_LIBRARY = "libndn-svs.so"
 SVS_SOURCE_ENV = "NDNSF_NDN_SVS_SOURCE_TREE"
@@ -66,6 +73,24 @@ SOURCE_FILES = (
     "pythonWrapper/setup.py", "pythonWrapper/pyproject.toml",
     "scripts/spec180_native_build.py",
 )
+# This source is linked into the standalone Provider executable only.  A
+# change here must rebuild that executable, but it cannot alter the Python
+# extension's ABI or its linked Core/DI shared libraries.  Keep the binding
+# reuse decision aligned with the affected-target build policy.
+BINDING_INDEPENDENT_SOURCES = frozenset({
+    "examples/DI_NativeProviderExecutable.cpp",
+    "scripts/spec180_native_build.py",
+})
+# A change confined to a native implementation translation unit changes the
+# shared library that the extension loads, but not the extension's compile
+# time ABI.  Headers, build scripts and binding sources remain in the normal
+# fingerprint set so an ABI or build-contract change still forces setup.py.
+BINDING_IMPLEMENTATION_ROOTS = (
+    "ndn-service-framework/",
+    "NDNSF-DistributedInference/cpp/",
+)
+BINDING_IMPLEMENTATION_SUFFIXES = frozenset({".cpp", ".cc", ".cxx", ".c"})
+BINDING_RUNTIME_LIBRARY_PREFIXES = (LIBRARY, "libndnsf-distributed-inference.so")
 CONFIG_FILES = ("config.hpp", "c4che/_cache.py", "c4che/build.config.py")
 SETUP_TOOLCHAIN_ROOT = Path("/usr/bin")
 SETUP_FLAG_NAMES = ("CFLAGS", "CXXFLAGS", "CPPFLAGS", "LDFLAGS")
@@ -410,21 +435,52 @@ def atomic_manifest(path, data):
             os.unlink(temporary)
 
 
+def binding_abi_sources(items):
+    """Return source identities that can change the extension's ABI."""
+    result = {}
+    for key, value in items.items():
+        if key.startswith("pythonWrapper/ndnsf/") or key in BINDING_INDEPENDENT_SOURCES:
+            continue
+        if (key.startswith(BINDING_IMPLEMENTATION_ROOTS)
+                and Path(key).suffix in BINDING_IMPLEMENTATION_SUFFIXES):
+            continue
+        result[key] = value
+    return result
+
+
+def binding_runtime_identity(runtime):
+    """Keep loader topology, but ignore hashes of current in-tree DSOs.
+
+    Waf may replace the Core/DI implementation after the extension was built.
+    The extension must still load those exact in-tree paths; their current
+    hashes are checked by the final manifest/verify path, while requiring a
+    Python extension rebuild for an implementation-only change is unnecessary.
+    """
+    mapped = {}
+    for path, identity in runtime["mapped_libraries"].items():
+        name = Path(path).name
+        if any(name.startswith(prefix) for prefix in BINDING_RUNTIME_LIBRARY_PREFIXES):
+            mapped[path] = {key: identity[key] for key in ("path", "realpath")}
+        else:
+            mapped[path] = identity
+    return {"python": runtime["python"], "extension": runtime["extension"],
+            "mapped_libraries": mapped}
+
+
 def binding_reusable(previous, sources, config, runtime, framework, svs, toolchain, flags, waf_tool):
-    # setup.py does not track included Core headers. Only reuse an extension
-    # previously built here with identical native inputs AND artifact identity.
+    # setup.py does not track included Core headers. Reuse only when ABI-facing
+    # source/configuration and loader topology are unchanged; implementation
+    # DSO hashes are intentionally checked after the fresh Waf build instead.
     if not previous:
         return False
-    native = lambda items: {k: v for k, v in items.items()
-                           if not k.startswith("pythonWrapper/ndnsf/")}
-    return (native(previous["sources"]) == native(sources)
+    return (binding_abi_sources(previous["sources"]) == binding_abi_sources(sources)
             and previous["configuration"] == config
-            and previous["framework"] == framework
+            and previous["framework"]["realpath"] == framework["realpath"]
             and previous["ndn_svs"] == svs
             and previous["setup_toolchain"] == toolchain
             and previous["setup_build_flags"] == flags
             and previous["waf_tool"] == waf_tool
-            and previous["runtime"] == runtime)
+            and binding_runtime_identity(previous["runtime"]) == binding_runtime_identity(runtime))
 
 
 def build(root, build_dir, manifest, python, env, jobs=1, binding="auto"):
