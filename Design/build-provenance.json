@@ -46,7 +46,7 @@
     "target-content.tex": "09ea5e0b5a2fba62121997c9a6ee5dbdef4782da549b1b962cc5c86533b61798",
     "target-design.tex": "46ace3e38f6ff74a09732a7b0867c228da728531060402532b1fed76d606a79a",
     "target-diagrams.tex": "3b1548d8d9837fa0883c099cad74840ae2be0cfa146a5226e75c2687196e746e",
-    "target-roadmap.tex": "f84a14ee698ff7a867c676ea69b980563111edb45f68211b61f117f157ce48d8",
+    "target-roadmap.tex": "fdbff8af4ae989ac6af8607c709f95ae03bb8a3d7ef00665827417d7cf7e21ae",
     "target-snapshot.tex": "929101730a26eeaa5ad93d6d2ce595b866038f5c08db680b40ab9daa5ea1fc09",
     "target-source-baseline.json": "03b7338c553a31d300d8b4574f362b22eef0bb52cfe55fed0db7e612934486c7",
     "test_design_state.py": "e8a38903675f89a6abe7dd9d32e3cfd33d5d003e67f165fdc81039716d751553",
@@ -55,8 +55,8 @@
     "verify.py": "5468712c08d32dce91aaa72b0e6c3eddf5ef0603daa0832826f752c6422232da"
   },
   "pdfs": {
-    "current-design.pdf": "114193283e08488e6cce890260263db28d40da553c1a9e8464dcd7b6bcdb5888",
-    "target-design.pdf": "212fe8a36f5044f81eba6d3608df741380b31cee4b6416362d65cc3d44385f55"
+    "current-design.pdf": "4f6508b726f13580cddbc1cc12c1c82c47853fa7bbc9f6f1cc19f381838d499a",
+    "target-design.pdf": "eb6c667843013ccf83dfcfa1f7b06d218c9a1c87bd4db640c2706eea6f2c42b8"
   },
-  "run": ".codex-tmp/design-pdf-20260912T091908916160Z"
+  "run": ".codex-tmp/design-pdf-20260912T093808890678Z"
 }

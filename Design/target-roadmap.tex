@@ -29,7 +29,7 @@ Provider 认证 Selection 后才取得受保护 source 并组装；不可变 art
 不增加全局 ASSEMBLING barrier，不开放绕过认证的 prewarm 开关。
 
 \subsection{实施与证据}
-共十一批、十六任务。先安装 C++ SDK/ABI 门，再 Runtime、准备、扩展注册、请求、会话、Provider、迁移；
+共十一批、十六任务。先安装 C++ SDK/ABI 门，再 Runtime、扩展注册、准备、请求、会话、Provider、迁移；
 完整 C++ 资格通过后才包装 Python，最后同步设计。六层 API 暴露清单隔离应用、Provider、扩展、authority、内部与兼容。
 逐任务只读静态门通过后继续同批，批末组合审查后统一构建和相关测试。
 C++ 生产及跨进程证据先于 Python 薄封装检查；Spec184 未完成资格继续留在原任务中。
@@ -48,6 +48,13 @@ Subscription 统一完成、观察及单次异步读的退订；流失败不能�
 Runtime 外壳析构启动 close，子对象持安全 State；确定性退出仍用 close/drain。
 关闭后保留同步结果读取，拒绝新增业务异步订阅；已清理 owner 的 drainAsync 有明确调用线程完成快路径。
 所有接口的安装消费、析构/并发反例与绑定映射均需验收；这些是 PLANNED 目标，尚未证明独立可用。
+
+\subsection{固定实现边界}
+C-08 按类/文件增改、重要字段 owner、关键前后签名、调用/失败流程及独立判据细化实现；
+每项任务的 Design binding 指向该契约，不以公开 API 表代替内部代码设计。
+合作策略先于模型包构造；Package 保存精确配置与合作 splitter；会话经私有统一入口注入 continuation。
+旧 request/planner 保留，新 cooperative 入口采用不同名字并共用同一实现，避免重载二义性。
+接口、状态提交点和安全边界先确定；普通局部变量或等价实现保留自由，设计就绪不等于实现完成。
 
 \section{TG-01：授权版本与影响范围}
 \lead{PLANNED · Core；当前基线仍采用全局 ControllerVersion}

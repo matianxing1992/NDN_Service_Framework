@@ -130,4 +130,8 @@ Parameter Review 必须回答：
 
 ## 11. Design Readiness
 
+逐实现任务提供Design binding导航，引用本设计中的Class/FN/FIELD/FLOW/PO；不另复制一套签名。
+至少给每个跨owner或安全/状态关键方法明确的前后签名及算法/分支/提交点；普通等价局部实现保持LOCAL_DETAIL。
+核对未定义类型和“编码时决定”是否实际影响契约，影响者登记OPEN并阻止对应任务READY。
+
 记录状态 DRAFT / BLOCK / READY_FOR_IMPLEMENTATION、评审 baseline、覆盖范围、发现及处置、剩余限制。按照 review-gate 检查后才可声明就绪。若只批准了某个可独立范围，明确列出 CD/FR，不将部分就绪推广为整个 Spec 就绪。

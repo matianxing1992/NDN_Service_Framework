@@ -16,6 +16,8 @@
 
 ### 2026-09-12 — Spec185 Prepared Model Runtime
 
+- **Implementation design**: [C-08](../specs/185-prepared-model-runtime/contracts/code-design.md)及逐任务Design binding补齐内部类/函数/字段/流程。T016前移到B1后、T003前；具体路径/完整类型/策略来源/continuation/重载问题已修订。[证据](../specs/185-prepared-model-runtime/evidence/implementation-design-20260912.md)。产品仍PLANNED。
+
 - **Complete API revision**: [C-07](../specs/185-prepared-model-runtime/contracts/api-catalog.md)统一64组稳定入口、Python直接绑定/便利映射与值/生命周期；Subscription及局部异步等待、read取消、析构和关闭边界归原任务owner。[验证记录](../specs/185-prepared-model-runtime/evidence/api-lifecycle-20260912.md)。PLANNED，不是产品完成。
 
 - **API revision**: [全表面审计](../specs/185-prepared-model-runtime/api-review.md)、[C-05](../specs/185-prepared-model-runtime/contracts/api-usability.md)、[C-06](../specs/185-prepared-model-runtime/contracts/cpp-first.md)。独立C++ SDK及原生异步/Provider入口，Python仅包装；任务扩为16项11批，T013完整C++资格先于T012。

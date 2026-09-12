@@ -152,6 +152,13 @@ Example:
 - [ ] T010 [US1] Enforce token expiry by adding the failing contract case, implementing the service behavior, and recording the passing focused gate in tests/contract/test_tokens.py, src/services/token_service.py, and evidence/token-expiry.md
 ```
 
+## Design binding
+
+每项实现任务引用具体Class/FN/FIELD/FLOW/PO及Design status；见
+`skills/speckit-code-design/references/work-unit-contract.md#design-binding-before-coding`。
+只有“修改某文件/接入某类”或公开方法清单不足以编码。先补关键签名、owner和失败收尾；
+缺口只阻止受影响范围，LOCAL_DETAIL不需单独批准。非代码任务说明N/A及实际产物/验收。
+
 ## Design-Code Convergence Gate
 
 Every durable feature MUST include one post-implementation, pre-qualification
