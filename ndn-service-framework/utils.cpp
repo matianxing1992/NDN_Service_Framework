@@ -1213,10 +1213,13 @@ registerInterestFilterWithRetry(
     std::function<void(const ndn::Name&)> onSuccess,
     std::function<void(const ndn::Name&, const std::string&)> onFailure,
     size_t attempts,
-    std::chrono::milliseconds delayBetweenAttempts)
+    std::chrono::milliseconds delayBetweenAttempts,
+    std::shared_ptr<ndn::ScopedRegisteredPrefixHandle> registrationHolder)
 {
     if (attempts == 0) {
-        onFailure(prefix, "registration retry budget exhausted");
+        if (onFailure) {
+            onFailure(prefix, "registration retry budget exhausted");
+        }
         return;
     }
     // The interest handler must stay identical across attempts.  Passing a
@@ -1224,7 +1227,20 @@ registerInterestFilterWithRetry(
     auto interestHandler = std::make_shared<
         std::function<void(const ndn::InterestFilter&, const ndn::Interest&)>>(
         std::move(onInterest));
-    face.setInterestFilter(
+    // A reference parameter is a local alias whose lifetime ends when this
+    // function returns.  Capturing it with [&face] would leave every async
+    // failure/timer callback with a dangling reference.  Keep the referred
+    // Face stable through an explicit pointer instead.
+    ndn::Face* facePtr = &face;
+    // A RegisteredPrefixHandle unregisters on destruction.  Keep it in the
+    // caller-owned holder; discarding the temporary would race registration
+    // with immediate unregistration during the async command exchange.
+    if (!registrationHolder) {
+        throw std::invalid_argument("registration retry requires a handle holder");
+    }
+    const std::weak_ptr<ndn::ScopedRegisteredPrefixHandle> registrationOwner =
+        registrationHolder;
+    *registrationHolder = face.setInterestFilter(
         prefix,
         [interestHandler](const ndn::InterestFilter& filter,
                           const ndn::Interest& interest) {
@@ -1235,24 +1251,33 @@ registerInterestFilterWithRetry(
                 onSuccess(registered);
             }
         },
-        [&face, prefix, interestHandler, onSuccess, onFailure,
+        [facePtr, prefix, interestHandler, onSuccess, onFailure,
+         registrationOwner,
          attempts, delayBetweenAttempts](
             const ndn::Name& failed, const std::string& reason) {
             (void)failed;
             (void)reason;
+            if (registrationOwner.expired()) {
+                return;
+            }
             auto timer = std::make_shared<boost::asio::steady_timer>(
-                face.getIoContext());
+                facePtr->getIoContext());
             timer->expires_after(delayBetweenAttempts);
             timer->async_wait(
-                [&face, prefix, interestHandler,
+                [facePtr, prefix, interestHandler,
                  onSuccess, onFailure, attempts, delayBetweenAttempts,
-                 timer](const boost::system::error_code& ec) {
+                 registrationOwner, timer](const boost::system::error_code& ec) {
                     if (ec) {
                         return;
                     }
+                    auto registrationHolder = registrationOwner.lock();
+                    if (!registrationHolder) {
+                        return;
+                    }
                     registerInterestFilterWithRetry(
-                        face, prefix, *interestHandler, onSuccess, onFailure,
-                        attempts - 1, delayBetweenAttempts);
+                        *facePtr, prefix, *interestHandler, onSuccess, onFailure,
+                        attempts - 1, delayBetweenAttempts,
+                        std::move(registrationHolder));
                 });
         });
 }

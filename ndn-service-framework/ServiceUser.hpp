@@ -1349,10 +1349,23 @@ namespace ndn_service_framework{
                 // only until the selected Provider's exact-name Data packet
                 // has been published, then the key bundle is retained only
                 // for response decryption.
+                struct RequestScopedProviderState
+                {
+                    RequestKeyBundle keys;
+                    RequestSecurityBinding binding;
+                    ndn::Name inputDataName;
+                };
                 ndn::Buffer requestScopedPlaintext;
                 std::optional<RequestKeyBundle> requestScopedKeys;
                 std::optional<RequestSecurityBinding> requestScopedBinding;
                 ndn::Name requestScopedInputDataName;
+                // Collaboration selection may authorize several Providers
+                // in one request.  Each Provider has its own wrapped key
+                // bundle and authenticated input Data name; keeping this
+                // state per Provider prevents same-name ciphertext collisions
+                // and response decryption with the last Provider's key.
+                std::map<std::string, RequestScopedProviderState>
+                    requestScopedProviderStates;
                 bool requestScopedConfidentiality = false;
                 std::map<std::string, std::string> negativeAckReasons;
                 bool isCollaboration = false;
@@ -1489,7 +1502,8 @@ namespace ndn_service_framework{
             ndn::Name makeRequestScopedInputDataName(
                 const ndn::Name& serviceName,
                 const ndn::Name& requestId,
-                uint64_t attempt) const;
+                uint64_t attempt,
+                const ndn::Name& providerName) const;
 
             bool evaluateAckSelection(const ndn::Name& requestId);
 
@@ -1665,6 +1679,7 @@ namespace ndn_service_framework{
             ndn::Scheduler m_scheduler;
             // Retry callbacks retain only a weak reference to this route owner.
             std::shared_ptr<ndn::ScopedRegisteredPrefixHandle> m_identityRegistration;
+            std::vector<std::shared_ptr<ndn::ScopedRegisteredPrefixHandle>> m_serviceRegistrations;
             ndn::Name identity;
             ndn::KeyChain m_keyChain;
             ndn::KeyChain* m_testSigningKeyChain = nullptr;

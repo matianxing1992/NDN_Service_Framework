@@ -1428,20 +1428,20 @@ namespace ndn_service_framework
         // those immutable objects from the local IMS; the more-specific
         // NDNSF/CK/NDNSF-DI filters above still handle framework objects.
         const ndn::Name applicationDataFilter = ndn::Name(identity);
+        auto registerContentFilter = [this](const ndn::Name& prefix) {
+            auto holder = std::make_shared<ndn::ScopedRegisteredPrefixHandle>();
+            m_contentRegistrations.push_back(holder);
+            *holder = m_face.setInterestFilter(
+                prefix,
+                std::bind(&ServiceProvider::onInterest, this, _1, _2),
+                std::bind(&ServiceProvider::onPrefixRegisterFailure, this, _1, _2));
+        };
         NDN_LOG_INFO("[ServiceProvider] registered service content prefix="
                   << ndnsfFilter.toUri());
-        m_face.setInterestFilter(ndnsfFilter,
-            std::bind(&ServiceProvider::onInterest, this, _1, _2),
-            std::bind(&ServiceProvider::onPrefixRegisterFailure, this, _1, _2));
-        m_face.setInterestFilter(ckFilter,
-            std::bind(&ServiceProvider::onInterest, this, _1, _2),
-            std::bind(&ServiceProvider::onPrefixRegisterFailure, this, _1, _2));
-        m_face.setInterestFilter(diDataFilter,
-            std::bind(&ServiceProvider::onInterest, this, _1, _2),
-            std::bind(&ServiceProvider::onPrefixRegisterFailure, this, _1, _2));
-        m_face.setInterestFilter(applicationDataFilter,
-            std::bind(&ServiceProvider::onInterest, this, _1, _2),
-            std::bind(&ServiceProvider::onPrefixRegisterFailure, this, _1, _2));
+        registerContentFilter(ndnsfFilter);
+        registerContentFilter(ckFilter);
+        registerContentFilter(diDataFilter);
+        registerContentFilter(applicationDataFilter);
         NDN_LOG_WARN("NDNSF_PROVIDER_INIT_STAGE stage=content_filters_registered provider="
                      << identity.toUri());
 
@@ -1727,22 +1727,18 @@ namespace ndn_service_framework
         const ndn::Name diDataFilter =
             ndn::Name(identity.toUri()).append("NDNSF-DI");
         const ndn::Name applicationDataFilter = ndn::Name(identity);
-        m_face.setInterestFilter(
-            ndnsfFilter,
-            std::bind(&ServiceProvider::onInterest, this, _1, _2),
-            std::bind(&ServiceProvider::onPrefixRegisterFailure, this, _1, _2));
-        m_face.setInterestFilter(
-            ckFilter,
-            std::bind(&ServiceProvider::onInterest, this, _1, _2),
-            std::bind(&ServiceProvider::onPrefixRegisterFailure, this, _1, _2));
-        m_face.setInterestFilter(
-            diDataFilter,
-            std::bind(&ServiceProvider::onInterest, this, _1, _2),
-            std::bind(&ServiceProvider::onPrefixRegisterFailure, this, _1, _2));
-        m_face.setInterestFilter(
-            applicationDataFilter,
-            std::bind(&ServiceProvider::onInterest, this, _1, _2),
-            std::bind(&ServiceProvider::onPrefixRegisterFailure, this, _1, _2));
+        auto registerContentFilter = [this](const ndn::Name& prefix) {
+            auto holder = std::make_shared<ndn::ScopedRegisteredPrefixHandle>();
+            m_contentRegistrations.push_back(holder);
+            *holder = m_face.setInterestFilter(
+                prefix,
+                std::bind(&ServiceProvider::onInterest, this, _1, _2),
+                std::bind(&ServiceProvider::onPrefixRegisterFailure, this, _1, _2));
+        };
+        registerContentFilter(ndnsfFilter);
+        registerContentFilter(ckFilter);
+        registerContentFilter(diDataFilter);
+        registerContentFilter(applicationDataFilter);
     }
 
     void
@@ -5976,11 +5972,13 @@ namespace ndn_service_framework
         const ndn::Name& requestId,
         RequestMessage requestMessage,
         const ServiceSelectionMessage& selectionMessage,
+        const ndn::Buffer& assignmentPayload,
         const std::string& selectionDigest)
     {
         const ndn::Name pendingKey = ndn::Name(requesterName)
             .append(serviceName).append(requestId);
         auto completed = std::make_shared<std::atomic_bool>(false);
+        const ndn::Buffer assignmentPayloadCopy = assignmentPayload;
 
         const auto finishFailure =
             [this, requesterName, providerName, serviceName, requestId,
@@ -6040,7 +6038,11 @@ namespace ndn_service_framework
         expected.inputDataName = ndn::Name(requesterName)
             .append("NDNSF").append("DI").append("REQUEST-INPUT")
             .append(serviceName).append(requestId)
-            .appendNumber(expected.attempt);
+            .appendNumber(expected.attempt)
+            // Request-scoped keys and AAD are Provider-specific.  Mirror the
+            // User's Provider component in the exact input name so a
+            // collaboration cannot collide several encrypted inputs.
+            .append("PROVIDER").append(providerName);
         expected.segmentOrEventId = "request-input";
 
         SelectionKeyEnvelope envelope;
@@ -6081,9 +6083,10 @@ namespace ndn_service_framework
                      << " dataName=" << expected.inputDataName.toUri());
         m_face.expressInterest(
             interest,
-                    [this, requesterName, providerName, serviceName, requestId,
-                     requestMessage, selectionMessage, expected, keys, selectionDigest, completed,
-                     finishFailure](const ndn::Interest&, const ndn::Data& data) mutable {
+            [this, requesterName, providerName, serviceName, requestId,
+             requestMessage, selectionMessage, expected, keys, selectionDigest, completed,
+             assignmentPayloadCopy,
+             finishFailure](const ndn::Interest&, const ndn::Data& data) mutable {
                 if (completed->load()) {
                     return;
                 }
@@ -6093,9 +6096,10 @@ namespace ndn_service_framework
                 }
                 validator->validate(
                     data,
-                            [this, requesterName, providerName, serviceName, requestId,
-                             requestMessage, selectionMessage, expected, keys, selectionDigest, completed,
-                             finishFailure](const ndn::Data& validated) mutable {
+                    [this, requesterName, providerName, serviceName, requestId,
+                     requestMessage, selectionMessage, expected, keys, selectionDigest, completed,
+                     assignmentPayloadCopy,
+                     finishFailure](const ndn::Data& validated) mutable {
                         if (validated.getName() != expected.inputDataName ||
                             !isSignedByIdentity(validated, requesterName)) {
                             finishFailure("input Data signer identity mismatch");
@@ -6147,17 +6151,18 @@ namespace ndn_service_framework
                         boost::asio::post(m_face.getIoContext(),
                             [this, requesterName, providerName, serviceName,
                              requestId, requestMessage, selectionMessage,
+                             assignmentPayloadCopy,
                              plaintext = std::move(plaintext), selectionDigest]() mutable {
                                 RequestMessage readyRequest(requestMessage);
                                 readyRequest.setPayload(plaintext, plaintext.size());
-                                if (!hasService(serviceName) ||
-                                    readyRequest.hasDeploymentIntent() ||
-                                    m_collaborationServices.find(serviceName) !=
-                                        m_collaborationServices.end()) {
+                                if ((!hasService(serviceName) &&
+                                     m_collaborationServices.find(serviceName) ==
+                                         m_collaborationServices.end()) ||
+                                    readyRequest.hasDeploymentIntent()) {
                                     publishExecutionFailureOnEventLoop(
                                         requesterName, providerName, serviceName,
                                         requestId, readyRequest,
-                                        "request-scoped confidentiality currently supports normal unary services only",
+                                        "request-scoped confidentiality requires a unary service handler",
                                         selectionDigest);
                                     return;
                                 }
@@ -6180,6 +6185,36 @@ namespace ndn_service_framework
                                             selectionDigest);
                                         return;
                                     }
+                                }
+                                const auto collaboration =
+                                    m_collaborationServices.find(serviceName);
+                                if (collaboration != m_collaborationServices.end()) {
+                                    try {
+                                        auto assignment = parseCollaborationAssignment(
+                                            serviceName, assignmentPayloadCopy);
+                                        assignment.selectionDigest = selectionDigest;
+                                        if (dispatchCollaborationExecutionAsync(
+                                                requesterName, providerName, serviceName,
+                                                requestId, readyRequest,
+                                                std::move(assignment), selectionDigest)) {
+                                            return;
+                                        }
+                                    }
+                                    catch (const std::exception& error) {
+                                        publishExecutionFailureOnEventLoop(
+                                            requesterName, providerName, serviceName,
+                                            requestId, readyRequest,
+                                            std::string("request-scoped collaboration assignment rejected: ") +
+                                                error.what(),
+                                            selectionDigest);
+                                        return;
+                                    }
+                                    publishExecutionFailureOnEventLoop(
+                                        requesterName, providerName, serviceName,
+                                        requestId, readyRequest,
+                                        "request-scoped collaboration handler unavailable",
+                                        selectionDigest);
+                                    return;
                                 }
                                 std::shared_ptr<RegistrationState>
                                     inlineRegistrationState;
@@ -14652,7 +14687,8 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
             // payload from reaching an ordinary handler.
             fetchRequestScopedInputAndDispatch(
                 requesterName, providerName, serviceName, msgId,
-                std::move(selectedRequest), message, selectionDigest);
+                std::move(selectedRequest), message, effectiveAssignmentPayload,
+                selectionDigest);
             return;
         }
 opaque_selection_committed:

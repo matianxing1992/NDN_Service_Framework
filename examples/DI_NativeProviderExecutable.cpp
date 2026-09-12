@@ -58,6 +58,7 @@
 #include <string>
 #include <string_view>
 #include <chrono>
+#include <csignal>
 #include <cstring>
 #include <thread>
 #include <tuple>
@@ -68,6 +69,14 @@
 namespace {
 
 using namespace ndnsf::di;
+
+volatile std::sig_atomic_t g_shutdownRequested = 0;
+
+void
+requestShutdown(int)
+{
+  g_shutdownRequested = 1;
+}
 
 class PlaceholderDependencyIo final : public DependencyIo
 {
@@ -1220,6 +1229,8 @@ int
 main(int argc, char** argv)
 {
   try {
+    std::signal(SIGINT, requestShutdown);
+    std::signal(SIGTERM, requestShutdown);
     auto options = parseArgs(argc, argv);
     std::cout << "NDNSF_DI_NATIVE_PROVIDER_START mode="
               << (options.serve ? "serve" : "check")
@@ -1968,7 +1979,8 @@ main(int argc, char** argv)
                 << " runtimeStatus=installing"
                 << std::endl;
       const auto serveStartedAt = std::chrono::steady_clock::now();
-      while (!provisionFailed->load(std::memory_order_acquire)) {
+      while (!provisionFailed->load(std::memory_order_acquire) &&
+             g_shutdownRequested == 0) {
         if (options.runForMs &&
             std::chrono::steady_clock::now() >=
               serveStartedAt + std::chrono::milliseconds(*options.runForMs)) {
@@ -1990,6 +2002,9 @@ main(int argc, char** argv)
                     << " error=\"" << exc.what() << "\""
                     << std::endl;
         }
+      }
+      if (g_shutdownRequested != 0) {
+        std::cout << "NDNSF_DI_NATIVE_PROVIDER_SHUTDOWN_REQUESTED" << std::endl;
       }
       provider->stopNdnsdPeriodicPublish();
       face.shutdown();

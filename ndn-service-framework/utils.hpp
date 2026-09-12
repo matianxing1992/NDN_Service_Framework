@@ -7,6 +7,7 @@
 #include <optional>
 #include <set>
 #include <cstddef>
+#include <memory>
 #include <vector>
 
 #include <boost/format.hpp>
@@ -266,7 +267,8 @@ namespace ndn_service_framework
         std::function<void(const ndn::Name&)> onSuccess,
         std::function<void(const ndn::Name&, const std::string&)> onFailure,
         size_t attempts,
-        std::chrono::milliseconds delayBetweenAttempts);
+        std::chrono::milliseconds delayBetweenAttempts,
+        std::shared_ptr<ndn::ScopedRegisteredPrefixHandle> registrationHolder);
 
     // /muas/drone1/NDNSF/TOKEN/ObjectDetection/YOLOv8/0
     // <provider> <service> <function> <seqNum>

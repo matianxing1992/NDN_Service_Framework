@@ -35,6 +35,9 @@ CertificatePublisher::CertificatePublisher(ndn::Face& face,
 
   for (const auto& prefix : prefixes) {
     m_registeredPrefixes.push_back(prefix);
+    auto registrationHolder =
+      std::make_shared<ndn::ScopedRegisteredPrefixHandle>();
+    m_registeredHandles.push_back(registrationHolder);
     registerInterestFilterWithRetry(
       m_face,
       prefix,
@@ -49,7 +52,8 @@ CertificatePublisher::CertificatePublisher(ndn::Face& face,
                   << " reason=" << reason);
       },
       6,
-      std::chrono::milliseconds(250));
+      std::chrono::milliseconds(250),
+      std::move(registrationHolder));
   }
 
   NDN_LOG_INFO("Serving certificate name=" << m_certificate.getName()

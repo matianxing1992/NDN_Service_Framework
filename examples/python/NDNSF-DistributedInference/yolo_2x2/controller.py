@@ -8,6 +8,8 @@ import base64
 import hashlib
 import json
 import re
+import signal
+import threading
 import time
 from pathlib import Path
 
@@ -170,8 +172,22 @@ def main() -> int:
             # serves the signed catalogue APP Data that the User fetches by
             # exact name after ACK_CLOSED. Stopping it would close its face
             # and drop the published records from its InMemoryStorage.
-            while runtime_publication_user is not None:
-                time.sleep(3600)
+            shutdown = threading.Event()
+
+            def request_shutdown(_signum, _frame):
+                # Wake the Python owner so it can stop the native Controller
+                # explicitly.  Relying on interpreter teardown leaves the
+                # background C++ event loop alive until the MiniNDN harness
+                # escalates to SIGKILL, which is a cleanup failure.
+                shutdown.set()
+
+            signal.signal(signal.SIGINT, request_shutdown)
+            signal.signal(signal.SIGTERM, request_shutdown)
+            while runtime_publication_user is not None and not shutdown.wait(3600):
+                pass
+            if shutdown.is_set():
+                controller.stop()
+                return 0
         if not args.deploy_to_repo_manifest:
             raise RuntimeError(
                 "repository deployment manifest is required when runtime publication is absent")
