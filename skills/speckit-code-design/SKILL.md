@@ -86,7 +86,7 @@ tasks.md 顶部必须用逐执行单元的 `Execution Progress` 表完整登记�
 已有上层任务与正式验收保持；执行卡不自动表示设计已就绪。
 
 唯一执行规则见 [pre-test-static-review.md](references/pre-test-static-review.md)。
-每个小任务编码后应用只读 review-agent profile 静态门，通过后继续同一逻辑批次；整批逻辑/流程审查通过后统一构建和相关测试。批次测试未完成保持 PARTIAL；集成与真实实验沿用最终验证阶段。
+每个小任务编码后应用只读 review-agent profile 静态门。按该参考的 Dependency-Scoped Dispatch：依赖该任务的工作等待通过；无依赖、文件边界清晰且自身前置已满足的任务可在异步审查期间继续。单主会话使用编码主代理和只读审查子代理，审查固定快照；整批成员静态通过及组合审查通过后统一构建和相关测试。批次测试未完成保持 PARTIAL；集成与真实实验沿用最终验证阶段。
 Static review PASS != Behavior PASS。
 
 批次覆盖、稳定出口、漏检分类和构建测量统一遵循

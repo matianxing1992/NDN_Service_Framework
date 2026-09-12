@@ -46,7 +46,7 @@ reviewable behavioral outcomes. Do not optimize for a high task count.
 生成时应用 `skills/speckit-code-design/references/pre-test-static-review.md` 与
 `skills/speckit-code-design/references/batch-quality-gates.md` 及其中的只读
 review-agent profile。在本节登记每批 ID、成员、连贯行为边界、稳定出口、
-implementation / acceptance dependencies、共享构建/测试选择器及负责人。逐任务静态通过后继续同批，
+implementation / acceptance dependencies、共享构建/测试选择器及负责人。按 Dependency-Scoped Dispatch 登记独立任务对、写入边界和固定审查快照；依赖任务等静态通过，无依赖且前置满足的任务可在异步审查期间继续，
 整批流程审查后统一构建/测试；测试待运行保持 PARTIAL，并在 Evidence / Remaining 写
 `STATIC_PASS / TESTS_DEFERRED / Batch ID`。硬验收依赖不自动降级；不能把整个 Spec 默认作为一批。
 具体批次表取代本段提示。
@@ -336,7 +336,7 @@ Examples of foundational tasks (adjust based on your project):
 
 ### Within Each User Story
 
-- 每个小任务编码及测试编写后使用只读 review-agent profile 静态门；同批成员静态通过后继续编码，整批逻辑/流程审查通过后统一构建和相关测试。仅用户或 Spec 明确要求 TDD 时执行具名 RED。
+- 每个小任务编码及测试编写后使用只读 review-agent profile 静态门；依赖任务等待通过，无依赖、文件边界清晰且前置满足的任务可继续。全部成员静态通过及整批逻辑/流程审查通过后统一构建和相关测试。仅用户或 Spec 明确要求 TDD 时执行具名 RED。
 - Respect model, service, endpoint, and integration dependencies inside the task
 - Split those steps into separate tasks only when they meet the Task Cohesion Rule
 - Story complete before moving to next priority
