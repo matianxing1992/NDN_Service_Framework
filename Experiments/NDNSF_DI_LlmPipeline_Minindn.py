@@ -125,6 +125,18 @@ STAGE_IDENTITIES: list[str] = []
 REPO_IDENTITIES: list[str] = []
 DEPLOYMENT_ARTIFACT_DIGEST = "sha256:" + "a" * 64
 
+ENVIRONMENT_PROFILE_SCHEMA = "ndnsf-di-minindn-environment-v1"
+_ENVIRONMENT_PROFILE_KEYS = frozenset({
+    "schema", "profileId", "topologyFile", "stageNodes", "minindnRoot",
+    "outputDir", "qwenContentStore", "appStateRoot", "nativeProviderBinary",
+    "nativeFaultProviderBinary",
+})
+_PROFILE_PATH_KEYS = frozenset({
+    "topologyFile", "minindnRoot", "outputDir", "qwenContentStore",
+    "appStateRoot", "nativeProviderBinary", "nativeFaultProviderBinary",
+})
+_NODE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+
 # Spec175 G4 is host-orchestrated, but every application process belongs to
 # the exact candidate SIF.  These globals are configured only when the
 # wrapper is invoked with --runtime-sif; ordinary G3/diagnostic runs retain
@@ -212,6 +224,161 @@ def uses_full_generation_stage_markers(stage_log: str) -> bool:
     the host/CPU Spec175 gate intentionally uses a small ONNX fixture.
     """
     return "LLM_PIPELINE_QWEN_FULL_STAGE_START" in stage_log
+
+
+def parse_stage_nodes(value: object) -> list[str]:
+    """Validate the physical MiniNDN node names used for Provider stages."""
+    if isinstance(value, str):
+        nodes = [item.strip() for item in value.split(",") if item.strip()]
+    elif isinstance(value, (list, tuple)):
+        nodes = [item.strip() for item in value
+                 if isinstance(item, str) and item.strip()]
+        if len(nodes) != len(value):
+            raise ValueError("stage nodes must be non-empty strings")
+    else:
+        raise ValueError("stage nodes must be a comma-separated string or list")
+    if len(nodes) < 2 or len(nodes) > 4:
+        raise ValueError("stage nodes must contain between 2 and 4 entries")
+    if any(not _NODE_NAME_RE.fullmatch(node) for node in nodes):
+        raise ValueError("stage node names must contain only letters, digits, '_' or '-'")
+    if len(set(nodes)) != len(nodes):
+        raise ValueError("stage nodes must be unique")
+    return nodes
+
+
+def _profile_path(value: object, field: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"environment profile {field} must be a non-empty path")
+    if "\x00" in value or "\\" in value:
+        raise ValueError(f"environment profile {field} contains an invalid path")
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        path = REPO / path
+    return str(path.resolve())
+
+
+def load_environment_profile(raw_path: str | Path | None) -> dict[str, object] | None:
+    """Load the machine-specific inputs shared by local and real MiniNDN runs.
+
+    Relative paths are anchored at the repository root.  The profile contains
+    no workload or protocol settings; those remain explicit runner arguments.
+    """
+    if raw_path is None or not str(raw_path).strip():
+        return None
+    path = Path(raw_path).expanduser().resolve()
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"environment profile is unreadable: {path}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("environment profile must be a JSON object")
+    unknown = sorted(set(payload) - _ENVIRONMENT_PROFILE_KEYS)
+    if unknown:
+        raise ValueError("environment profile has unknown fields: " + ", ".join(unknown))
+    if payload.get("schema") != ENVIRONMENT_PROFILE_SCHEMA:
+        raise ValueError("environment profile schema is invalid")
+    profile_id = payload.get("profileId")
+    if not isinstance(profile_id, str) or not profile_id.strip():
+        raise ValueError("environment profile profileId is required")
+    settings: dict[str, object] = {
+        "profileId": profile_id,
+    }
+    for field in _PROFILE_PATH_KEYS:
+        if field in payload:
+            settings[field] = _profile_path(payload[field], field)
+    if "stageNodes" in payload:
+        settings["stageNodes"] = parse_stage_nodes(payload["stageNodes"])
+    return {
+        "path": str(path),
+        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        "schema": ENVIRONMENT_PROFILE_SCHEMA,
+        "profileId": profile_id,
+        "settings": settings,
+    }
+
+
+def apply_environment_profile(args: argparse.Namespace) -> dict[str, object] | None:
+    """Apply profile defaults while preserving every explicit CLI override."""
+    global MININDN_ROOT, STAGE_NODE_CANDIDATES
+    profile = load_environment_profile(args.environment_profile)
+    settings = profile["settings"] if profile else {}
+    if not isinstance(settings, dict):
+        raise ValueError("environment profile settings are invalid")
+    defaults = {
+        "topology_file": str(TOPO),
+        "output_dir": str(OUT),
+        "qwen_content_store": str(DEFAULT_QWEN_CONTENT_STORE),
+        "app_state_root": "/tmp/ndnsf-di-app-state",
+        "native_provider_binary": os.environ.get("SPEC181_NATIVE_PROVIDER_BINARY", ""),
+        "native_fault_provider_binary": os.environ.get(
+            "SPEC181_NATIVE_FAULT_PROVIDER_BINARY", ""),
+        "minindn_root": "/tmp/minindn",
+    }
+    profile_fields = {
+        "topology_file": "topologyFile",
+        "output_dir": "outputDir",
+        "qwen_content_store": "qwenContentStore",
+        "app_state_root": "appStateRoot",
+        "native_provider_binary": "nativeProviderBinary",
+        "native_fault_provider_binary": "nativeFaultProviderBinary",
+    }
+    for argument, field in profile_fields.items():
+        if getattr(args, argument) is None:
+            setattr(args, argument, settings.get(field, defaults[argument]))
+    if args.minindn_root is None:
+        args.minindn_root = settings.get("minindnRoot", defaults["minindn_root"])
+    MININDN_ROOT = Path(args.minindn_root).expanduser().resolve()
+    if args.stage_nodes is None:
+        profile_nodes = settings.get("stageNodes")
+        if profile_nodes is not None:
+            STAGE_NODE_CANDIDATES[:] = parse_stage_nodes(profile_nodes)
+    else:
+        STAGE_NODE_CANDIDATES[:] = parse_stage_nodes(args.stage_nodes)
+    return profile
+
+
+def native_provider_executable(args: argparse.Namespace, *, fault: bool = False) -> Path:
+    """Resolve and fail closed on the native Provider binary before startup."""
+    argument = (args.native_fault_provider_binary if fault
+                else args.native_provider_binary)
+    if not argument:
+        argument = str(REPO / "build/examples/di-native-fault-provider" if fault
+                       else REPO / "build/examples/di-native-provider")
+    path = Path(argument).expanduser().resolve()
+    if not path.is_file() or not os.access(path, os.X_OK):
+        label = "fault Provider" if fault else "Provider"
+        raise ValueError(f"native {label} binary is missing or not executable: {path}")
+    return path
+
+
+def validate_environment_inputs(args: argparse.Namespace) -> None:
+    """Check machine-specific inputs before creating a MiniNDN namespace."""
+    topology = Path(args.topology_file).expanduser().resolve()
+    if not topology.is_file():
+        raise ValueError(f"topology file is missing: {topology}")
+    section = ""
+    topology_nodes: set[str] = set()
+    for raw_line in topology.read_text(encoding="utf-8").splitlines():
+        line = raw_line.split("#", 1)[0].strip()
+        if line.startswith("[") and line.endswith("]"):
+            section = line[1:-1].strip().lower()
+            continue
+        if section == "nodes" and line and ":" in line:
+            topology_nodes.add(line.split(":", 1)[0].strip())
+    required_nodes = {CONTROLLER_NODE, USER_NODE, ROUTER_NODE, *STAGE_NODES}
+    if REPOSITORY_NODE:
+        required_nodes.add(REPOSITORY_NODE)
+    missing_nodes = sorted(node for node in required_nodes
+                           if node and node not in topology_nodes)
+    if missing_nodes:
+        raise ValueError(
+            "topology is missing configured nodes: " + ", ".join(missing_nodes))
+    if args.runtime == "qwen-onnx-cpu-native":
+        native_provider_executable(args)
+        if args.spec107_live_fault_cell in {
+                "straggler", "missing-segment", "dependency-digest-mismatch",
+                "stale-telemetry", "kv-eviction", "late-old-output"}:
+            native_provider_executable(args, fault=True)
 
 
 def configure_stage_layout(stage_count: int) -> None:
@@ -432,8 +599,23 @@ def write_bootstrap_token(
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="MiniNDN smoke for distributed LLM pipeline inference")
-    parser.add_argument("--topology-file", default=str(TOPO))
-    parser.add_argument("--output-dir", default=str(OUT))
+    parser.add_argument(
+        "--environment-profile",
+        default=os.environ.get("NDNSF_DI_MININDN_PROFILE", ""),
+        help=(
+            "JSON machine profile shared by local and real MiniNDN runs; "
+            "explicit command-line values override profile fields."),
+    )
+    parser.add_argument("--topology-file", default=None)
+    parser.add_argument("--output-dir", default=None)
+    parser.add_argument(
+        "--stage-nodes", default=None,
+        help="Comma-separated MiniNDN Provider node names (2-4), overriding the profile.",
+    )
+    parser.add_argument(
+        "--minindn-root", default=None,
+        help="Per-run MiniNDN home root; defaults to /tmp/minindn or the profile value.",
+    )
     parser.add_argument(
         "--runtime-sif",
         default=os.environ.get("SPEC175_RUNTIME_SIF", ""),
@@ -462,7 +644,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--qwen-dtype", choices=("float32", "float16", "auto"), default="float32")
     parser.add_argument(
         "--qwen-content-store",
-        default=str(DEFAULT_QWEN_CONTENT_STORE),
+        default=None,
         help=(
             "Persistent content-addressed store for Qwen stage artifacts; "
             "run directories contain symlinks instead of model copies."),
@@ -593,7 +775,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run the Spec 111 signed Provider lifecycle over ordinary NDNSF services")
     parser.add_argument("--deployment-revision", default="")
     parser.add_argument(
-        "--app-state-root", default="/tmp/ndnsf-di-app-state")
+        "--app-state-root", default=None)
+    parser.add_argument(
+        "--native-provider-binary", default=None,
+        help=(
+            "Executable for qwen-onnx-cpu-native Providers; defaults to "
+            "SPEC181_NATIVE_PROVIDER_BINARY or build/examples/di-native-provider."),
+    )
+    parser.add_argument(
+        "--native-fault-provider-binary", default=None,
+        help=(
+            "Executable for native live-fault Providers; defaults to "
+            "SPEC181_NATIVE_FAULT_PROVIDER_BINARY or the normal build sibling."),
+    )
     parser.add_argument(
         "--test-only-allow-ephemeral-app-state", action="store_true")
     parser.add_argument("--expected-token-ids", default="")
@@ -887,7 +1081,8 @@ def sif_exec_prefix(base_env: dict[str, str] | None = None,
         # process that constructed the prefix.
         pieces.extend([
             "--home",
-            '"${HOME:-/tmp/minindn}:${HOME:-/tmp/minindn}"',
+            '"${HOME:-${NDNSF_MININDN_ROOT:-/tmp/minindn}}:'
+            '${HOME:-${NDNSF_MININDN_ROOT:-/tmp/minindn}}"',
         ])
     pieces.extend([
         "--pwd", "/opt/ndnsf-di/replay/repo",
@@ -936,16 +1131,19 @@ def _install_sif_command_wrappers() -> None:
     prefix = str(SIF_RUNTIME_APPTAINER)
     sif = str(SIF_RUNTIME_SIF)
     out = str(OUT)
+    default_root = perf.shell_quote(str(MININDN_ROOT))
     for command in commands:
         wrapper = wrapper_dir / command
         wrapper.write_text(
             "#!/bin/sh\n"
             "set -eu\n"
+            f"DEFAULT_MININDN_ROOT={default_root}\n"
+            'MININDN_ROOT="${NDNSF_MININDN_ROOT:-$DEFAULT_MININDN_ROOT}"\n'
             f"exec {perf.shell_quote(prefix)} exec --cleanenv "
             f"--bind {perf.shell_quote(out + ':' + out)} "
-            "--bind /tmp/minindn:/tmp/minindn "
+            '"--bind ${MININDN_ROOT}:${MININDN_ROOT}" '
             "--bind /run/nfd:/run/nfd "
-            '--home "${HOME:-/tmp/minindn}:${HOME:-/tmp/minindn}" '
+            '--home "${HOME:-$MININDN_ROOT}:${HOME:-$MININDN_ROOT}" '
             "--env 'PATH=/opt/venv/bin:/opt/ndnsf-di/current/bin:/usr/local/bin:/usr/bin:/bin' "
             "--env 'LD_LIBRARY_PATH=/opt/ndnsf-di/current/lib:/opt/onnxruntime/lib' "
             "--env 'NDN_CLIENT_CONF=${NDN_CLIENT_CONF:-}' "
@@ -2821,6 +3019,10 @@ def validate_spec107_command_binding(
 def main() -> int:
     global OUT, CONFIG
     args = build_parser().parse_args()
+    try:
+        environment_profile = apply_environment_profile(args)
+    except ValueError as error:
+        raise SystemExit(str(error)) from error
     # MiniNDN launches NFD and Mininet shells from the runner's process
     # environment.  A host-wide framework ``NDN_LOG`` filter is not valid
     # NFD syntax and can abort every node before the application starts;
@@ -2849,6 +3051,10 @@ def main() -> int:
         else:
             configure_stage_layout(args.stages)
     except ValueError as error:
+        raise SystemExit(str(error)) from error
+    try:
+        validate_environment_inputs(args)
+    except (OSError, UnicodeError, ValueError) as error:
         raise SystemExit(str(error)) from error
     provider_role_indices = spec175_provider_role_indices(
         args.spec175_case, args.stages)
@@ -2924,6 +3130,34 @@ def main() -> int:
         # journal under that run's evidence directory unless the caller
         # explicitly supplies another root.
         args.app_state_root = str(OUT / "app-state")
+    if environment_profile is not None:
+        OUT.mkdir(parents=True, exist_ok=True)
+        profile_record = {
+            "schema": ENVIRONMENT_PROFILE_SCHEMA,
+            "profileId": environment_profile["profileId"],
+            "profilePath": environment_profile["path"],
+            "profileSha256": environment_profile["sha256"],
+            "resolved": {
+                "topologyFile": str(Path(args.topology_file).resolve()),
+                "stageNodes": list(STAGE_NODE_CANDIDATES),
+                "minindnRoot": str(MININDN_ROOT),
+                "outputDir": str(OUT),
+                "qwenContentStore": str(Path(args.qwen_content_store).resolve()),
+                "appStateRoot": str(Path(args.app_state_root).expanduser().resolve()),
+                "nativeProviderBinary": str(Path(args.native_provider_binary).expanduser().resolve())
+                if args.native_provider_binary else "",
+                "nativeFaultProviderBinary": str(Path(args.native_fault_provider_binary).expanduser().resolve())
+                if args.native_fault_provider_binary else "",
+            },
+        }
+        (OUT / "environment-profile-resolved.json").write_text(
+            json.dumps(profile_record, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8")
+        print("LLM_PIPELINE_ENVIRONMENT_PROFILE " + json.dumps({
+            "profileId": environment_profile["profileId"],
+            "sha256": environment_profile["sha256"],
+            "stageNodes": list(STAGE_NODE_CANDIDATES),
+        }, sort_keys=True), flush=True)
     configure_sif_runtime(args)
     spec107_candidate_id = ""
     spec107_artifact_store = ""
@@ -3178,6 +3412,7 @@ def main() -> int:
         "PYTHONUNBUFFERED": "1",
         "PYTHONPATH": ":".join(python_path_entries()),
         "NDN_LOG": args.ndn_log,
+        "NDNSF_MININDN_ROOT": str(MININDN_ROOT),
         "NDNSF_RESPONSE_LARGE_DATA_THRESHOLD": "1024",
     }
     selection_targeted_prefetch = apply_selection_targeted_prefetch_policy(
@@ -3891,10 +4126,8 @@ def main() -> int:
                 use_fault_provider = (
                     args.spec107_live_fault_cell in fault_provider_cells and
                     stage_index == 1)
-                provider_executable = (
-                    REPO / "build/examples/di-native-fault-provider"
-                    if use_fault_provider else
-                    REPO / "build/examples/di-native-provider")
+                provider_executable = native_provider_executable(
+                    args, fault=use_fault_provider)
                 fault_args = (
                     f"--fault-type {perf.shell_quote(args.spec107_live_fault_cell)} "
                     f"--fault-role {perf.shell_quote('/LLM/Pipeline/Stage/1')} "
