@@ -229,7 +229,10 @@ def uses_full_generation_stage_markers(stage_log: str) -> bool:
 def parse_stage_nodes(value: object) -> list[str]:
     """Validate the physical MiniNDN node names used for Provider stages."""
     if isinstance(value, str):
-        nodes = [item.strip() for item in value.split(",") if item.strip()]
+        raw_nodes = value.split(",")
+        if not raw_nodes or any(not item.strip() for item in raw_nodes):
+            raise ValueError("stage nodes must not contain empty entries")
+        nodes = [item.strip() for item in raw_nodes]
     elif isinstance(value, (list, tuple)):
         nodes = [item.strip() for item in value
                  if isinstance(item, str) and item.strip()]
