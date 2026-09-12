@@ -52,7 +52,7 @@ Python harness 不因本表再次无条件重跑。`Qwen3-0.6B` 只能作为 C++
 MiniNDN 环境差异收敛为同一份 `ndnsf-di-minindn-environment-v1` profile。维护 runner
 现在支持 profile 与 CLI 覆盖，启动前检查 topology 节点和 native Provider binary，
 并修正 Spec175 SIF wrapper 对 `/tmp/minindn` 的隐式依赖；解析后的 profile digest 和
-非敏感路径写入 run output。源码 checkpoints 为 `689cca00`、`90dc8785`，定向 profile/Qwen/layout
+非敏感路径写入 run output。源码 checkpoints 为 `689cca00`、`90dc8785`、`15c8abb1`，定向 profile/Qwen/layout
 测试 `17/17`、`py_compile`、`--help` 与 `git diff --check` 通过。该单元没有运行 MiniNDN、
 SIF、远程机器或 Qwen3.6-27B，不能提升 T007/A3/A4/T008 状态；完整覆盖和未观测边界见
 [MiniNDN environment profile evidence](evidence/minindn-environment-profile-20260912.md)。
