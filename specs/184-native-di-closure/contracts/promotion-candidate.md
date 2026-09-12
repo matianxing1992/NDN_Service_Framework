@@ -485,9 +485,9 @@ the exact 27B model remains external and inherited A4 rows remain open.
 ## Current A3/A4 boundary overlay (2026-09-12)
 
 This overlay supersedes the Y-N overlay for document and evidence identity after the local
-0.6B-only capability confirmation, the read-only external model inventory (which found only an
-incomplete 1/15-shard Qwen3.6-27B cache), and the A4 retirement check. It does not add a model
-result or promote the candidate. The previous Y-N overlay remains
+0.6B-only capability confirmation, the read-only external model inventory (which found an
+incomplete 1/15-shard HF cache plus a complete but historical Spec175 Qwen3.6-27B artifact),
+and the A4 retirement check. It does not add a model result or promote the candidate. The previous Y-N overlay remains
 the source of the YOLO A1/A2 runtime result.
 
 The ordered member map for the current local boundary is:
@@ -502,9 +502,9 @@ binary.requester=c9e8dfa7d0eddd2c570dde4e4db23f4709a64e194135634b863bedaa36b1ae9
 binary.worker=5675aba103f7df152742d56e3287f0e48e61ffe912f6c37e756f719d7bb86a27
 build.receipt=2fbb8f40b2c51e1d3c0334387759112f90112264a2983157abe9421202b02b15
 evidence.a4_refresh=2a627a42aeeb00d6adc772125584b4772f93a79ddc216ccae93791a2271b1c7c
-evidence.a4_retirement_external=14cc1428466950a7818fe37146a716083cccc1c556bf54f491ff2e5f6a0fb8ad
-evidence.model_capability=799482b3d018c6941fb336405e255dc9128e7654bbad5a971767108bf6b605d3
-evidence.remainder_audit=2b3fb6cefa9d815a79c18666825f9cf62229cc8833db3f73abd87936032b8735
+evidence.a4_retirement_external=33826606023e3acfd0dcc014cb69eb05b02b73d667ff4fd9ad46686d1e385372
+evidence.model_capability=74dd1a92ffcf3103f7714db94f8ad3eaff523e6b99095b5c666ad3481f5fac3f
+evidence.remainder_audit=b16da15a2d40385cc1e64e7d79e87d3a1ab0b8324cda4df48dcc94c6da329ab0
 evidence.t007_process=6fb6c5a0a8a944f2d8e383e87ea72e753530f4096b2a0dc944ddffe809d2ec29
 log.binding_build=bd74baa072ab553711bd2a5e03626ee18e704ee459594868ddc4e0f2675b5d02
 log.binding_receipt_build=75da9b21768ecce99a10934553d1a062621d16604d92c30814ea51c1eb007e75
@@ -529,14 +529,15 @@ source.tests.integration.cpp=fd96dcc5331aaebbbf3eb944ae594ee59f43d8148baef883be8
 source.utils.cpp=b93abea7df3434930bb081a0bfcff1b740db6aa782c1f36a0366f5de91364ac4
 source.utils.hpp=c383cb761e53a1fb09fa3930966f668b40507f4486c50aa2c0e1de6afe279458
 spec.caller=b2b079fd5f8e658aa6b2fec6bfec389830aa1c509fac4783f1f73e6c29c9a449
-spec.matrix=8f186e5fc7a4e37d7d7108defc950642f0728a33e120671326ef4338cfc59003
+spec.matrix=5b1608230be201f4a0e0b88c87a9da2319175ee747d957c8a533697c2f228508
 spec.plan=bc000e9c5059cc99fabcfeb1122894fa9163184098a55e0e1e787b3fe5b37615
 spec.spec=724f6aa1be1c6f151e5a71888f00bd0d4fecab1e002d07ba2c2f40473415eca1
-spec.tasks=56d97edd4a55657bcfaaad5bd72e6a978a8a4bfd4a4e0eca0961f5fdbdc3ec38
+spec.tasks=81ce5c4dbecdd3ccc97ce8ad1e72deb65462d94b316c40d9f46e0ac79c00d633
 ```
 
 The SHA-256 of these sorted lines followed by a final newline is
-`sha256:e471ff23060cc92590c4c2574f36dfa3c1a2a1cd1743e0810326c9a73c867c09`.
-This overlay remains `FRESH_LOCAL_PARTIAL`: A3 is `WAITING_EXTERNAL_INPUT` because the remote
-cache has only one of 15 expected weight shards and no `refs/main`; A4 is `PARTIAL`, and T008
-remains `BLOCKED_BY_T007`.
+`sha256:409d173374ae7440fbd7cd0719c676e8f958d01eaa72db8ccf6dd9d38119f5dd`.
+This overlay remains `FRESH_LOCAL_PARTIAL`: A3 is `WAITING_EXTERNAL_INPUT` because only the
+historical Spec175 artifact has a complete external model and its multi-provider terminal exited
+`1`; the current Spec184 candidate and result are absent. A4 is `PARTIAL`, and T008 remains
+`BLOCKED_BY_T007`.

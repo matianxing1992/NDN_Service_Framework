@@ -188,3 +188,18 @@ observation, not a model execution or qualification result. The bounded inventor
 in `.codex-tmp/spec184-external-model-cache-inventory-20260912.log` with SHA-256
 `66fb5bdb505302bed5322f316d6c52cafd2cbbe09953a3210d12a9c28fca52be`. A3 remains
 `WAITING_EXTERNAL_INPUT`; local Qwen3-0.6B remains smoke/ABI-only.
+
+## External Qwen3.6 artifact inventory (2026-09-12)
+
+The separate Spec175 artifact store contains a complete external Qwen3.6-27B ONNX materialization:
+328 files totaling `25,118,061,025` bytes, three stage ONNX files, and a three-file tokenizer.
+Its stage manifest identifies repository `Qwen/Qwen3.6-27B`, revision
+`6a9e13bd6fc8f0983b9b99948120bc37f49c13e9`, model digest
+`sha256:cf246180e7334baf35b76ef49e3b9ec7626b44f657d05cb4ab5f370d90d473d2`, tokenizer digest
+`sha256:06b9509352d2af50381ab2247e083b80d32d5c0aba91c272ca9ff729b6a0e523`, and
+`CUDAExecutionProvider` with `cpuComputeFallbackAllowed=false`. It is bound to historical
+`spec175-final-candidate-r5`; its G5 oracle was `PASS`, but its multi-provider terminal run
+`spec175-final-candidate-r5-multiprovider-20260902` exited `1`. No current Spec184 candidate
+or current-candidate result exists, so A3 remains `WAITING_EXTERNAL_INPUT`. The bounded inventory
+is recorded in `.codex-tmp/spec184-external-qwen36-artifact-inventory-20260912.log` with SHA-256
+`224bcffb7b472524560ddd3c7aebb46c22617137e5792f729a23dd91f12e8952`.

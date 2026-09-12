@@ -45,6 +45,13 @@ MiniNDN 实验。
 * 该 cache 的 `config.json` 标记 `model_type=qwen3_5`、
   `architectures=[Qwen3_5ForConditionalGeneration]`，只能作为不完整的外部缓存线索，
   不能作为 Spec184 的模型身份、运行时或资格证据；
+* 独立的 Spec175 artifact 目录则存在完整的三阶段 ONNX 外部材料：328 个文件、
+  `25,118,061,025` bytes，包含三个 stage ONNX 和 tokenizer；其 manifest 精确标记
+  `Qwen/Qwen3.6-27B` revision `6a9e13bd6fc8f0983b9b99948120bc37f49c13e9`、
+  `qwen3.6-27b-onnx-cuda`、CUDAExecutionProvider 和 runtime SIF 摘要；
+* 该材料绑定的是历史 `spec175-final-candidate-r5`。它的 G5 oracle 在 job `208198`
+  为 `PASS`，但多 Provider 终端运行 `spec175-final-candidate-r5-multiprovider-20260902`
+  为 `FAIL`、exit `1`；没有当前 Spec184 candidate 或可直接继承的端到端资格结果；
 * 没有开始外部模型 staging、SIF 构建、Slurm 提交或资格运行。
 
 只读预检的原始日志及摘要哈希为：
@@ -55,10 +62,12 @@ MiniNDN 实验。
 | `.codex-tmp/spec184-external-model-inventory-20260912.log` | `8344e0de98dc3884e783e3a11f7b75e054c295460a53c4e7da2d9991e7957834` |
 | `.codex-tmp/spec184-external-model-weights-20260912.log` | `897b0bf6310d31f6b20f69733cd5af5199596508406131633721da9c58dddcb4` |
 | `.codex-tmp/spec184-external-model-cache-inventory-20260912.log` | `66fb5bdb505302bed5322f316d6c52cafd2cbbe09953a3210d12a9c28fca52be` |
+| `.codex-tmp/spec184-external-qwen36-artifact-inventory-20260912.log` | `224bcffb7b472524560ddd3c7aebb46c22617137e5792f729a23dd91f12e8952` |
 
 这证明的是外部可达性和当前模型库存边界，不是协议失败，也不证明 27B 已可执行。A3
-仍需实验 owner 提供完整的 15 分片模型、tokenizer、CUDA runtime、三阶段 manifest、
-候选身份和结果证据。上述快照路径为
+仍需实验 owner 将这套精确模型材料绑定到当前 Spec184 candidate，并提供当前源码/二进制
+身份、tokenizer、CUDA runtime、三阶段 manifest、候选身份和端到端结果证据。上述不完整
+快照路径为
 `/project/tma1/ndnsf-di/cache/qwen36-27b-huggingface/models--Qwen--Qwen3.6-27B/`
 下的 revision `6a9e13bd6fc8f0983b9b99948120bc37f49c13e9`；本次检查只执行目录、文件大小
 和小型 JSON 元数据读取，没有读取权重内容、修改缓存或提交作业。
@@ -91,7 +100,7 @@ python3 -m pytest -q tests/python/test_spec182_legacy_exclusion.py \
 
 | Gate | Status | Boundary |
 | --- | --- | --- |
-| `T007-A3 Qwen3.6-27B` | `WAITING_EXTERNAL_INPUT` | 本机只能运行 0.6B；实验机只有不完整的 1/15 分片 cache，没有可运行的 27B bundle |
+| `T007-A3 Qwen3.6-27B` | `WAITING_EXTERNAL_INPUT` | 本机只能运行 0.6B；实验机有完整的 Spec175 27B artifact，但没有当前 Spec184 candidate，且历史多 Provider 终端为 exit 1 |
 | Local Qwen3-0.6B | `AVAILABLE_AS_SMOKE_ONLY` | 可作 C++ smoke/ABI fixture，不是 A3 qualification |
 | `T007-A4 inherited negative/retirement` | `PARTIAL` | focused checks 通过；兼容入口、I05 和外部 owner rows 仍开放 |
 | `T008 native development handoff` | `BLOCKED_BY_T007` | 等 T007 完整资格和显式 external transfer |
@@ -99,6 +108,6 @@ python3 -m pytest -q tests/python/test_spec182_legacy_exclusion.py \
 ## Next action
 
 本机继续只关闭有当前 C++ selector 和完整 candidate-bound evidence 的 A4 行；不再尝试
-本机 27B。实验 owner 补齐 15 分片 bundle、运行时和候选 manifest 后，沿现有 candidate
-receipt 和 transfer matrix 执行 A3；在此之前不得把 0.6B smoke、ONNX fixture、单分片
-cache 或 full C++ test 记为 27B qualification。
+本机 27B。实验 owner 将完整外部 artifact 绑定到当前 Spec184 candidate 并补齐当前运行时
+与结果后，沿现有 candidate receipt 和 transfer matrix 执行 A3；在此之前不得把 0.6B
+smoke、ONNX fixture、历史 Spec175 oracle、单分片 cache 或 full C++ test 记为 27B qualification。

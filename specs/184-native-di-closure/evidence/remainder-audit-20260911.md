@@ -187,3 +187,9 @@ is superseded for current external-state description. A later read-only scan fou
 recorded in [A4 external boundary](a4-retirement-external-boundary-20260912.md). This changes
 the description of the external cache, not the qualification status: A3 remains
 `WAITING_EXTERNAL_INPUT`, A4 remains `PARTIAL`, and T008 remains `BLOCKED_BY_T007`.
+
+The same read-only scan also confirmed that the separate historical Spec175 artifact store has a
+complete three-stage Qwen3.6-27B ONNX materialization and tokenizer. Its manifest and runtime
+identity are recorded in [T007 model capability evidence](t007-model-capability-20260912.md),
+but the artifact is not bound to the current Spec184 source candidate and its historical
+multi-provider terminal exited `1`; it therefore cannot be reused as a current qualification PASS.

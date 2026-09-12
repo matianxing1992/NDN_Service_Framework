@@ -50,8 +50,9 @@ Python harness 不因本表再次无条件重跑。`Qwen3-0.6B` 只能作为 C++
 2026-09-12 **T007-A3-EXTERNAL-PREFLIGHT / WAITING_EXTERNAL_INPUT**：本机只能运行
 `Qwen3-0.6B`，同树 C++ fixture/test 结果不加载实际 0.6B 权重，不能替代
 `Qwen/Qwen3.6-27B`。对 `itiger` 的 SSH、Slurm/Apptainer 和模型库存检查为只读；后续扫描
-发现 Qwen3.6-27B Hugging Face cache，但快照只有 15 个分片中的第 1 个（其余 14 个缺失），
-没有完整 27B bundle、Spec184 当前 candidate 或外部资格运行。A4 的
+发现 Qwen3.6-27B Hugging Face cache，但快照只有 15 个分片中的第 1 个（其余 14 个缺失）。
+另有完整的 Spec175 三阶段 ONNX artifact 和 tokenizer，但它绑定历史 candidate，且历史
+多 Provider 终端为 exit `1`；仍没有当前 Spec184 candidate 或外部资格运行。A4 的
 Python 兼容/路由聚焦检查为 30 passed，但 compatibility manifest 的 344 个 entry
 仍全部 `removalEligible=false`，所以旧路径退出仍为 `PARTIAL`。详见
 [A4 retirement and external boundary](evidence/a4-retirement-external-boundary-20260912.md)。
