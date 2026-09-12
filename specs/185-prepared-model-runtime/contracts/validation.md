@@ -2,6 +2,8 @@
 
 ## Workflow Authority
 
+[Batch Execution Schedule](../batch-execution.md)提供18任务/12批的执行与集中验证范围；包括B0C及其五lane，不能只沿用旧B1–B5规则。
+
 实现开始前按[C-08](code-design.md)逐任务Design binding核对CD/FIELD/FN/FLOW/PO；缺失关键类型、提交点或调用边界先补设计。
 源码静态门双向核对真实diff与CD，API清单存在或结构检查通过不等于实现设计就绪。
 
@@ -38,6 +40,7 @@ profile参数、oracle结果。未填不能 DYNAMIC_PASS。独立sanitizer构建
 | Batch/profile | Dynamic Parameter Matrix | Business invariant |
 | --- | --- | --- |
 | B0/asan | normal+ASan各自同配置consumer；每公共安装头；ONNX enabled/disabled各自外部consumer构造析构；缺失include反例 | 安装闭包不依赖源码树与Python |
+| B0C/tsan | ticket/close/drain竞态；末owner在callback释放；订阅取消与dispatch；单reader/容量/gap；DI cancel/迟到attempt/会话commit失败；Core-only consumer及旧协作/流/scoped registration定向回归 | 通用owner唯一，Core不依赖DI，传输完成不提前完成领域事务；PO-C1稳定性矩阵两次 |
 | B1/tsan | nominal open/close；zero cap非法；close twice；callback close；最后child先/后于Runtime释放 | 无self-join/data race/UAF；drain后owner=0 |
 | B2/tsan | 1/8waiter；单/全部cancel；job deadline先/后于waiter；READY/PREPARING/ABSENT×4policy；预算刚好/少1字节；refresh成功/失败/逆序 | 单flight、隔离、旧lease可用、READY无半成品 |
 | B2E/tsan | duplicate/replace/freeze；并发lookup；协作超时/cancel；旧插件；runner隔离 | 过期不发布Selection，不共享可变runner |

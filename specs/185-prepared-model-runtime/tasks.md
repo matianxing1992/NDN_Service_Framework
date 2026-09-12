@@ -28,6 +28,10 @@
 
 ## Current Checkpoint
 
+2026-09-12 Batch execution revision：18任务/12批均NOT_STARTED；已补[批次执行表](batch-execution.md)，任务卡按实际执行顺序排列。
+每任务编码后review-agent静态门→同批继续→整批组合审查→共享构建/定向测试；不逐小修改编译，也不拖到全Spec末尾首次测试。
+本轮为执行计划整理，未修改API/产品设计；验证见[evidence](evidence/batch-execution-20260912.md)。下一步T015/B0。
+
 2026-09-12 Core/App修订：源码确认四消息/协作/流/scoped registration已有Core实现，但DI仍自持通用executor和等待状态。
 新增[C-09](contracts/core-app-boundary.md)与T017/T018，18任务12批，全部NOT_STARTED；当前顺序B0→B0C→B1→B2E→B2及其余原序。
 本轮设计覆盖此前“新公开类都在DI”的表述；DI保留领域包装，通用实现下移Core。证据见[boundary audit](evidence/core-boundary-20260912.md)。
@@ -44,8 +48,8 @@ T016提供合作splitter，前移到B1后/T003前；实际顺序T015→T001/T002
 路径缩写 `Runtime.cpp` 等未带前缀的DI文件均位于
 `NDNSF-DistributedInference/cpp/ndnsf-di/`；tests/examples/pythonWrapper/Design路径从repo root解析。
 原生行为任务先编写相应C++反例与fixture，再实现完整行为并用官方review-agent只读审查全diff及五lane。
-同批任务静态通过、测试尚未运行时状态PARTIAL，不能勾选。B1–B5在该批第二任务后共享构建/测试；
-B0、B2E、B6–B9是单任务批次，各自达到出口即验证。T012只写binding断言，T014只做文档交付。
+同批任务静态通过、测试尚未运行时状态PARTIAL，不能勾选。B0C、B1、B2、B3、B4、B5在全部成员静态门和组合门通过后共享构建/测试；
+B0、B2E、B6–B9是单任务批次，各自达到出口即验证。完整批次/五lane/构建复测范围见[执行表](batch-execution.md)。T012只写binding断言，T014只做文档交付。
 跨批验收依赖必须实际通过；T012还要求T013完整C++ qualification出口，不接受仅静态接线。
 成员证据采用C-04同一批记录模板，不创建第二份进度权威。
 C-07每行是T015 exposure、T011 C++消费、T012绑定和T014文档的共同检查项；没有实现/证据不能关闭对应任务。
@@ -53,6 +57,20 @@ C-07每行是T015 exposure、T011 C++消费、T012绑定和T014文档的共同�
 目标路径须在task开始用CodeGraph/rg定位，若历史路径变动先更新本卡与symbol map，不能在未知文件下另建重复实现。
 
 ## Implementation Units
+
+<a id="t015"></a>
+
+- [ ] T015 [US4] Installed C++ API and ABI Closure — root wscript; NDNSF-DistributedInference/ndnsf-distributed-inference.pc.in; NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp; tests/installed-api/
+
+  **Batch / Depends**: B0 / none。
+
+  **Design binding**: [C-08](contracts/code-design.md#design-binding-and-readiness) CD10 / FN09 / PO09；Design status以C-08范围审查为准，开工前核对当前源码。
+
+  **Read / contract**: C-05/C-06；api-review U10/U11/U12；实际头安装规则和宏条件布局。
+
+  **Implementation and review**: 建立contracts/api-exposure.json逐符号/头分层清单；application/provider umbrella与advanced/internal边界；修复安装include闭包，保留合法旧consumer兼容；ONNX按C-08 FN09固定无条件PImpl及disabled分支完整Impl。开始时核对实际源码路径。
+
+  **Exit / oracle**: 每个安装公共头单独包含；外部consumer仅用安装prefix/pkg-config编译链接及构造析构；ONNX enabled/disabled各自同配置安装消费，normal及ASan构造/析构通过。Spec185InstalledApi记录include/link/运行边界，不以--help代替。
 
 <a id="t017"></a>
 
@@ -76,7 +94,7 @@ C-07每行是T015 exposure、T011 C++消费、T012绑定和T014文档的共同�
 
   **Implementation and review**: 删除DI私有executor与重复通用等待状态，桥接Core State；保留模型/attempt/会话语义，复用BeginCollaboration/CommitCollaborationPlan/CancelCollaboration及scoped registration。静态审查不得把stream final当durable完成。
 
-  **Coverage lanes**: 主链PO-C3；错误/取消/迟到PO-C1,C3；线程/生命周期PO-C1；安全/域边界PO-C3,C4；兼容/安装PO-C2,C4。
+  **Coverage lanes**: production entry/callers→NativeInferenceClient/Core-only consumer；implementation and wire→C-09 CB01–CB04及旧Core协议；test/harness/oracle→PO-C1–C3及C++fixture；build/source closure→wscript/安装消费者/PO-C2,C4；migration/evidence→旧API、重复owner退出、PO-C4及批次证据。安全/错误/并发穿过五lane核对。
 
   **Exit / oracle**: 两任务静态门与组合流程审查后运行Spec185CoreOperation、Spec185DiCoreOperation及受影响Core流/协作/注册回归；记录review-agent路径/SHA、候选与selector、static/compile-link/runtime-test/unobserved漏检复盘。C++断言闭合且依赖零反向边才CLOSED_FOR_VALIDATION，否则保留OPEN_FOR_NEXT_BATCH及具体触发条件；结果写evidence/b0c-core-operation.md。
 
@@ -111,6 +129,20 @@ C-07每行是T015 exposure、T011 C++消费、T012绑定和T014文档的共同�
   **Lifecycle completeness**: C-07 Runtime外壳析构即close；drainAsync屏障排除自身通知，保留安全State及join；测试子对象仍在/已释放和owner线程最后释放。
 
   **Exit / oracle**: close幂等、回调中close无自join、drain超时可重试；外部Face/IO fixture显式寿命；TSan同矩阵两次通过。
+
+<a id="t016"></a>
+
+- [ ] T016 [US4] Extension Registration and Cooperative Control — NativePlanning.hpp/NativePlanning.cpp; NativeModelRunner.hpp/NativeModelRunner.cpp; NativeRequestPlanner.cpp; tests/unit-tests/di-extension-contract.t.cpp
+
+  **Batch / Depends**: B2E / B1 exit。
+
+  **Design binding**: [C-08](contracts/code-design.md#design-binding-and-readiness) CD08,CD09 / F16 / FN08 / FLOW03 / PO08；Design status以C-08范围审查为准，开工前核对当前源码。
+
+  **Read / contract**: C-05 Extension Lifecycle；api-review U13/U14/U15；实际registry、strategy及runner调用方。
+
+  **Implementation and review**: startup builder后freeze，duplicate拒绝、显式replace仅限freeze前；runner实例并发所有权；新strategy/control端口带deadline/cancel。旧非协作端口留高级兼容，普通Runtime拒绝不满足控制契约的插件，不声称强制抢占任意回调。
+
+  **Exit / oracle**: Spec185ExtensionRegistry覆盖重复/冻结/替换、并发lookup、协作超时/cancel、旧插件拒绝及runner隔离；TSan同矩阵两次；过期不能发布Selection。
 
 <a id="t003"></a>
 
@@ -260,6 +292,24 @@ C-07每行是T015 exposure、T011 C++消费、T012绑定和T014文档的共同�
 
   **Exit / oracle**: 新旧结果/失败语义对照；C++真实进程unary/stream先通过；matrix无漏项；nm/readelf与安装消费链接确认。
 
+<a id="t013"></a>
+
+- [ ] T013 [US4] Current Candidate Process Qualification — tests/integration-tests/di-prepared-process.t.cpp; tests/wscript; evidence/b7-cpp-qualification.md
+
+  **Batch / Depends**: B7 / B6 exit。
+
+  **Design binding**: [C-08](contracts/code-design.md#design-binding-and-readiness) CD11 / FN10 / FLOW01–FLOW07 / PO01–PO10（资格fixture）；Design status以C-08范围审查为准，开工前核对当前源码。
+
+  **Read / contract**: C-04 full five-lane convergence and dynamic matrix。
+
+  **Implementation and review**: 先审查完整调用链/source closure，再构建同树candidate并刷新binary receipt；独立authority/requester/provider完成unary/stream/continuation/recovery/replacement/cancel/revoke/cleanup，C++ oracle判定。
+
+  **API revision**: C-06：T012之前完成全部native矩阵、安装消费和ELF/子进程no-Python闭包；不可用Python PASS补缺，SC-005包装行留后批。
+
+  **Lifecycle completeness**: C-07生命周期矩阵全部原生反例先通过；Python随后仅验边界语义。
+
+  **Exit / oracle**: SC-001至SC-008的原生部分逐条证据；SC-005 Python部分留T012；no-Python ELF/进程依赖；不同安全域和cache命中反例；无startup/collector错误冒充协议结果。
+
 <a id="t012"></a>
 
 - [ ] T012 [US4] Thin Python Prepared Model Facade — pythonWrapper/src/ndnsf/di_bindings.cpp; NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/client.py; NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/facades.py; tests/python/test_spec185_prepared_model.py; contracts/caller-matrix.md
@@ -277,24 +327,6 @@ C-07每行是T015 exposure、T011 C++消费、T012绑定和T014文档的共同�
   **Lifecycle completeness**: C-07直接pybind对象/便利方法逐项映射；start_prepare保留显式handle；async取消/GC/loop关闭/解释器退出反例；不引入Python领域owner。
 
   **Exit / oracle**: Python输入/异常/事件映射和寿命通过；native断言仍C++；无静默legacy fallback；若实际模块文件不同先更新精确caller映射。
-
-<a id="t013"></a>
-
-- [ ] T013 [US4] Current Candidate Process Qualification — tests/integration-tests/di-prepared-process.t.cpp; tests/wscript; evidence/b7-cpp-qualification.md
-
-  **Batch / Depends**: B7 / B6 exit。
-
-  **Design binding**: [C-08](contracts/code-design.md#design-binding-and-readiness) CD11 / FN10 / FLOW01–FLOW07 / PO01–PO10（资格fixture）；Design status以C-08范围审查为准，开工前核对当前源码。
-
-  **Read / contract**: C-04 full five-lane convergence and dynamic matrix。
-
-  **Implementation and review**: 先审查完整调用链/source closure，再构建同树candidate并刷新binary receipt；独立authority/requester/provider完成unary/stream/continuation/recovery/replacement/cancel/revoke/cleanup，C++ oracle判定。
-
-  **API revision**: C-06：T012之前完成全部native矩阵、安装消费和ELF/子进程no-Python闭包；不可用Python PASS补缺，SC-005包装行留后批。
-
-  **Lifecycle completeness**: C-07生命周期矩阵全部原生反例先通过；Python随后仅验边界语义。
-
-  **Exit / oracle**: SC-001至SC-007的原生部分逐条证据；SC-005 Python部分留T012；no-Python ELF/进程依赖；不同安全域和cache命中反例；无startup/collector错误冒充协议结果。
 
 <a id="t014"></a>
 
@@ -314,36 +346,8 @@ C-07每行是T015 exposure、T011 C++消费、T012绑定和T014文档的共同�
 
   **Exit / oracle**: 所有本Spec任务完整验收且链接可追溯；当前设计不混入planned；双PDF身份/排版通过；184不被自动勾选。
 
-<a id="t015"></a>
-
-- [ ] T015 [US4] Installed C++ API and ABI Closure — root wscript; NDNSF-DistributedInference/ndnsf-distributed-inference.pc.in; NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp; tests/installed-api/
-
-  **Batch / Depends**: B0 / none。
-
-  **Design binding**: [C-08](contracts/code-design.md#design-binding-and-readiness) CD10 / FN09 / PO09；Design status以C-08范围审查为准，开工前核对当前源码。
-
-  **Read / contract**: C-05/C-06；api-review U10/U11/U12；实际头安装规则和宏条件布局。
-
-  **Implementation and review**: 建立contracts/api-exposure.json逐符号/头分层清单；application/provider umbrella与advanced/internal边界；修复安装include闭包，保留合法旧consumer兼容；ONNX按C-08 FN09固定无条件PImpl及disabled分支完整Impl。开始时核对实际源码路径。
-
-  **Exit / oracle**: 每个安装公共头单独包含；外部consumer仅用安装prefix/pkg-config编译链接及构造析构；ONNX enabled/disabled各自同配置安装消费，normal及ASan构造/析构通过。Spec185InstalledApi记录include/link/运行边界，不以--help代替。
-
-<a id="t016"></a>
-
-- [ ] T016 [US4] Extension Registration and Cooperative Control — NativePlanning.hpp/NativePlanning.cpp; NativeModelRunner.hpp/NativeModelRunner.cpp; NativeRequestPlanner.cpp; tests/unit-tests/di-extension-contract.t.cpp
-
-  **Batch / Depends**: B2E / B1 exit。
-
-  **Design binding**: [C-08](contracts/code-design.md#design-binding-and-readiness) CD08,CD09 / F16 / FN08 / FLOW03 / PO08；Design status以C-08范围审查为准，开工前核对当前源码。
-
-  **Read / contract**: C-05 Extension Lifecycle；api-review U13/U14/U15；实际registry、strategy及runner调用方。
-
-  **Implementation and review**: startup builder后freeze，duplicate拒绝、显式replace仅限freeze前；runner实例并发所有权；新strategy/control端口带deadline/cancel。旧非协作端口留高级兼容，普通Runtime拒绝不满足控制契约的插件，不声称强制抢占任意回调。
-
-  **Exit / oracle**: Spec185ExtensionRegistry覆盖重复/冻结/替换、并发lookup、协作超时/cancel、旧插件拒绝及runner隔离；TSan同矩阵两次；过期不能发布Selection。
-
 ## Fragmentation Review
 
-16任务按11个可观察批次组织；B0安装/ABI、B2E扩展边界有独立出口；B1–B5成对组合，B6–B9分别迁移、完整C++资格、Python包装与文档。任务卡保留ID顺序，执行以顶部registry及依赖为准。
+18任务按12个可观察批次组织；B0安装/ABI、B2E扩展边界有独立出口；B0C及B1–B5成对组合，B6–B9分别迁移、完整C++资格、Python包装与文档。任务卡按registry实际执行顺序排列，保留原ID；详细分组依据见[执行表](batch-execution.md#allocation-and-closure-decision)。
 Runtime与cache不同owner、request与conversation不同持久语义、Provider与Python不同安全/验收边界，因此不合并。
 T013是真实集成验收，T014是源码/API/资格交付，不替代前面的行为测试。

@@ -16,6 +16,8 @@
 
 ### 2026-09-12 — Spec185 Prepared Model Runtime
 
+- **NO_DESIGN_CHANGE / batch execution**: [批次执行表](../specs/185-prepared-model-runtime/batch-execution.md)补齐18任务12批的静态门/共享验证范围，任务卡改为实际顺序；API、owner及产品行为沿C-01–C-09，本轮不改TeX或双PDF。[证据](../specs/185-prepared-model-runtime/evidence/batch-execution-20260912.md)。
+
 - **Core/App revision**: [C-09](../specs/185-prepared-model-runtime/contracts/core-app-boundary.md)确认协议/流/注册已有Core机制，通用运行时/等待/订阅仍需提取。新增T017/T018前置B0C，现18任务12批；模型/会话/KV语义保留DI。PLANNED，源码未迁移。[证据](../specs/185-prepared-model-runtime/evidence/core-boundary-20260912.md)。
 
 - **Implementation design**: [C-08](../specs/185-prepared-model-runtime/contracts/code-design.md)及逐任务Design binding补齐内部类/函数/字段/流程。T016前移到B1后、T003前；具体路径/完整类型/策略来源/continuation/重载问题已修订。[证据](../specs/185-prepared-model-runtime/evidence/implementation-design-20260912.md)。产品仍PLANNED。
