@@ -37,8 +37,14 @@ MiniNDN 实验。
   `e6de91484c29aa9480d55605af694f39b081c455`，权重 1,503,300,328 bytes，
   `model.safetensors` SHA-256 为
   `f47f71177f32bcd101b7573ec9171e6a57f4f4d31148d38e382306f42996874b`；
-* 同一存储扫描没有找到 `Qwen/Qwen3.6-27B` 权重、三阶段 manifest 或 Spec184
-  当前 candidate；
+* 后续只读扫描发现一个 `Qwen/Qwen3.6-27B` Hugging Face cache 快照，但它不是可运行
+  bundle：快照只有 9 个文件，其中仅有 `model-00001-of-00015.safetensors`，大小
+  `3,968,861,352` bytes；
+* cache tree 元数据列出 15 个权重分片、总大小 `55,563,006,400` bytes，但当前快照只
+  有 `1/15`，其余 14 个分片缺失；没有 `refs/main`，也没有 Spec184 当前 candidate；
+* 该 cache 的 `config.json` 标记 `model_type=qwen3_5`、
+  `architectures=[Qwen3_5ForConditionalGeneration]`，只能作为不完整的外部缓存线索，
+  不能作为 Spec184 的模型身份、运行时或资格证据；
 * 没有开始外部模型 staging、SIF 构建、Slurm 提交或资格运行。
 
 只读预检的原始日志及摘要哈希为：
@@ -48,9 +54,14 @@ MiniNDN 实验。
 | `.codex-tmp/spec184-external-readonly-preflight-20260912.log` | `289f5df52a634533cd63c47ade23a7100be75679c0095d13a856470bea3806f3` |
 | `.codex-tmp/spec184-external-model-inventory-20260912.log` | `8344e0de98dc3884e783e3a11f7b75e054c295460a53c4e7da2d9991e7957834` |
 | `.codex-tmp/spec184-external-model-weights-20260912.log` | `897b0bf6310d31f6b20f69733cd5af5199596508406131633721da9c58dddcb4` |
+| `.codex-tmp/spec184-external-model-cache-inventory-20260912.log` | `66fb5bdb505302bed5322f316d6c52cafd2cbbe09953a3210d12a9c28fca52be` |
 
-这证明的是外部可达性和当前模型库存，不是 27B 缺失后的协议失败。A3 仍需实验 owner
-提供精确模型、tokenizer、CUDA runtime、三阶段 manifest、候选身份和结果证据。
+这证明的是外部可达性和当前模型库存边界，不是协议失败，也不证明 27B 已可执行。A3
+仍需实验 owner 提供完整的 15 分片模型、tokenizer、CUDA runtime、三阶段 manifest、
+候选身份和结果证据。上述快照路径为
+`/project/tma1/ndnsf-di/cache/qwen36-27b-huggingface/models--Qwen--Qwen3.6-27B/`
+下的 revision `6a9e13bd6fc8f0983b9b99948120bc37f49c13e9`；本次检查只执行目录、文件大小
+和小型 JSON 元数据读取，没有读取权重内容、修改缓存或提交作业。
 
 ## Legacy retirement boundary
 
@@ -80,7 +91,7 @@ python3 -m pytest -q tests/python/test_spec182_legacy_exclusion.py \
 
 | Gate | Status | Boundary |
 | --- | --- | --- |
-| `T007-A3 Qwen3.6-27B` | `WAITING_EXTERNAL_INPUT` | 本机及当前实验机库存都没有可运行的 27B bundle |
+| `T007-A3 Qwen3.6-27B` | `WAITING_EXTERNAL_INPUT` | 本机只能运行 0.6B；实验机只有不完整的 1/15 分片 cache，没有可运行的 27B bundle |
 | Local Qwen3-0.6B | `AVAILABLE_AS_SMOKE_ONLY` | 可作 C++ smoke/ABI fixture，不是 A3 qualification |
 | `T007-A4 inherited negative/retirement` | `PARTIAL` | focused checks 通过；兼容入口、I05 和外部 owner rows 仍开放 |
 | `T008 native development handoff` | `BLOCKED_BY_T007` | 等 T007 完整资格和显式 external transfer |
@@ -88,5 +99,6 @@ python3 -m pytest -q tests/python/test_spec182_legacy_exclusion.py \
 ## Next action
 
 本机继续只关闭有当前 C++ selector 和完整 candidate-bound evidence 的 A4 行；不再尝试
-本机 27B。实验 owner 提供 27B bundle 后，沿现有 candidate receipt 和 transfer matrix
-执行 A3；在此之前不得把 0.6B smoke、ONNX fixture 或 full C++ test 记为 27B qualification。
+本机 27B。实验 owner 补齐 15 分片 bundle、运行时和候选 manifest 后，沿现有 candidate
+receipt 和 transfer matrix 执行 A3；在此之前不得把 0.6B smoke、ONNX fixture、单分片
+cache 或 full C++ test 记为 27B qualification。
