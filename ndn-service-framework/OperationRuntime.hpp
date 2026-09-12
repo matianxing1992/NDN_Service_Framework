@@ -135,6 +135,7 @@ struct RuntimeState
     std::shared_ptr<SubscriptionControl> control;
     std::function<void(bool)> callback;
     std::chrono::steady_clock::time_point deadline;
+    bool closeRuntime = true;
   };
 
   struct Timer
@@ -263,6 +264,15 @@ public:
   /** Register a non-business drain notification. */
   OperationSubscription
   drainAsync(std::chrono::milliseconds timeout, std::function<void(bool)> callback);
+
+  /**
+   * Register a drain notification without changing the runtime lifecycle.
+   * The default overload above retains the historical close-and-drain
+   * behavior for Core callers that explicitly use it as a shutdown barrier.
+   */
+  OperationSubscription
+  drainAsync(std::chrono::milliseconds timeout, std::function<void(bool)> callback,
+             bool closeRuntime);
 
   /** Return whether this runtime has entered its one-way closing phase. */
   bool isClosed() const noexcept;
