@@ -199,7 +199,8 @@ Its stage manifest identifies repository `Qwen/Qwen3.6-27B`, revision
 `sha256:06b9509352d2af50381ab2247e083b80d32d5c0aba91c272ca9ff729b6a0e523`, and
 `CUDAExecutionProvider` with `cpuComputeFallbackAllowed=false`. It is bound to historical
 `spec175-final-candidate-r5`; its G5 oracle was `PASS`, but its multi-provider terminal run
-`spec175-final-candidate-r5-multiprovider-20260902` exited `1`. No current Spec184 candidate
+`spec175-final-candidate-r5-multiprovider-20260902` exited `1`; its source seal is also the
+historical revision `286a0098b9bf0dfc2e0b77a320e9e75c38851dc7`. No current Spec184 candidate
 or current-candidate result exists, so A3 remains `WAITING_EXTERNAL_INPUT`. The bounded inventory
 is recorded in `.codex-tmp/spec184-external-qwen36-artifact-inventory-20260912.log` with SHA-256
 `224bcffb7b472524560ddd3c7aebb46c22617137e5792f729a23dd91f12e8952`.

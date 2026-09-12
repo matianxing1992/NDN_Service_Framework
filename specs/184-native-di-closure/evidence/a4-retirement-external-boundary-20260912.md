@@ -51,7 +51,8 @@ MiniNDN 实验。
   `qwen3.6-27b-onnx-cuda`、CUDAExecutionProvider 和 runtime SIF 摘要；
 * 该材料绑定的是历史 `spec175-final-candidate-r5`。它的 G5 oracle 在 job `208198`
   为 `PASS`，但多 Provider 终端运行 `spec175-final-candidate-r5-multiprovider-20260902`
-  为 `FAIL`、exit `1`；没有当前 Spec184 candidate 或可直接继承的端到端资格结果；
+  为 `FAIL`、exit `1`；其 source seal 还是历史 revision `286a0098b9bf0dfc2e0b77a320e9e75c38851dc7`，
+  没有当前 Spec184 candidate 或可直接继承的端到端资格结果；
 * 没有开始外部模型 staging、SIF 构建、Slurm 提交或资格运行。
 
 只读预检的原始日志及摘要哈希为：
