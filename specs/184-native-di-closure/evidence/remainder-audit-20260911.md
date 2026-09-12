@@ -114,6 +114,31 @@ No current-candidate YOLO run has been claimed yet. The next local action is
 Y-A, followed by Y-B/Y-N if its terminal cleanup is complete; these runs do not
 require or imply execution of the unavailable 27B model.
 
+## Current candidate Y-B/Y-N closure (2026-09-12)
+
+The refreshed r4 candidate now has current-candidate `PASS_FOR_ROW` results for Y-A, Y-B and
+Y-N. Y-B is recorded at `.codex-tmp/spec184-yolo-Y-B-output-20260912-r59/` with launcher
+SHA-256 `746f2df2469901050676abe077154a0cfe6c7354db0a354d43c431ddc8639da5`. Y-N completed
+at `.codex-tmp/spec184-yolo-Y-N-output-20260912-r60/`; the launcher SHA-256 is
+`86cbd5a303b6cd5cf5db51ec5aa4568ec092aa18d09a4e762d32a306b7d694f1`, and the seven-subcase
+matrix SHA-256 is `009e07d68a766f1545312b87261884e789cbb207db4404432f1ac3729161215a`.
+The Y-N aggregate is `PASS`; `Y-N-O/C/P/R/I/E/L` all passed at their declared boundaries,
+including native rejection evidence for the E permutations and controlled cleanup.
+
+The ordered remainder is therefore:
+
+| Gate | Current status | Boundary |
+| --- | --- | --- |
+| T007-A0 | `PASS_FOR_ROW` | refreshed receipt and loader identity |
+| T007-A1 | `PASS_FOR_ROW` | current-candidate Y-A C++ numerical oracle and cleanup |
+| T007-A2 | `PASS_FOR_ROW` | current-candidate Y-B protected path and Y-N negative matrix |
+| T007-A3 | `WAITING_EXTERNAL_INPUT` | exact `Qwen/Qwen3.6-27B` on experiment owner; local 0.6B is smoke-only |
+| T007-A4 | `PARTIAL` | inherited negative/retirement rows, I05 observation boundary, and Python retirement |
+| T008 | `BLOCKED_BY_T007` | final handoff requires T007 overall qualification |
+
+This is a local YOLO closure update only. It does not relabel the unavailable 27B model, promote
+I05 `UNQUALIFIED`, or claim Spec184 completion.
+
 ## Current binding and Y-A refresh (2026-09-12)
 
 The first current-candidate Y-A attempts stopped at `CASE_RUNTIME_PROCESS_START_FAILED:control`;

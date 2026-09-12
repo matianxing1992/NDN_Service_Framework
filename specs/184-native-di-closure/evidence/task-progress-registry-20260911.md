@@ -65,3 +65,15 @@ host can run only Qwen3-0.6B smoke, and A4 remains `PARTIAL`. T007 and Spec184 a
 The protected multi-provider Y-B run `r59` also passed against the same refreshed candidate;
 T007-A2 is now `PARTIAL` with Y-N still outstanding. This update does not promote T007 or
 Spec184 to complete.
+
+## Current Y-N closure overlay (2026-09-12)
+
+The current-candidate Y-N run `r60` completed with aggregate `PASS`. Its matrix is
+`.codex-tmp/spec184-yolo-Y-N-output-20260912-r60/y-n-matrix-result.json` (SHA-256
+`009e07d68a766f1545312b87261884e789cbb207db4404432f1ac3729161215a`), and its launcher log
+SHA-256 is `86cbd5a303b6cd5cf5db51ec5aa4568ec092aa18d09a4e762d32a306b7d694f1`.
+`Y-N-O/C/P/R/I/E/L` all passed, including the declared native E rejection permutations and
+controlled child cleanup. Together with Y-A `r58` and Y-B `r59`, this closes T007-A1/A2 for
+the refreshed candidate. T007 remains `IN_PROGRESS`; A3 is `WAITING_EXTERNAL_INPUT` for the
+exact 27B bundle, A4 remains `PARTIAL`, and T008 remains blocked. Local 0.6B evidence is not
+used as a 27B qualification result.

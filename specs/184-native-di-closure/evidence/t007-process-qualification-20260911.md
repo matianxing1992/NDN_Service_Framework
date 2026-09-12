@@ -371,3 +371,23 @@ their native execution roles. Seven child exits and cleanup completed. Output is
 `.codex-tmp/spec184-yolo-Y-B-run-20260912-r59.log` (SHA-256
 `746f2df2469901050676abe077154a0cfe6c7354db0a354d43c431ddc8639da5`). This closes the Y-B
 portion of T007-A2; Y-N remains pending.
+
+## Current candidate Y-N (2026-09-12)
+
+The same rebuilt binding and r4 native receipt were used for the complete protected/negative
+matrix. The launcher completed with `SPEC180_CASE_RESULT status=PASS case=Y-N`; its log is
+`.codex-tmp/spec184-yolo-Y-N-run-20260912-r60.log` (SHA-256
+`86cbd5a303b6cd5cf5db51ec5aa4568ec092aa18d09a4e762d32a306b7d694f1`). The matrix
+`.codex-tmp/spec184-yolo-Y-N-output-20260912-r60/y-n-matrix-result.json` has SHA-256
+`009e07d68a766f1545312b87261884e789cbb207db4404432f1ac3729161215a` and aggregate `PASS`.
+All seven declared subcases passed: `Y-N-O` (`TERMINAL_RESPONSE`, `CONTROL`), `Y-N-C`
+(`PLACEMENT_DECISION`, `FAIL_CLOSED`), `Y-N-P` (`ACK_CLOSED`, `FAIL_CLOSED`), `Y-N-R`
+(`PLAN_SEALED`, `FAIL_CLOSED`), `Y-N-I` (`PROVIDER_EXECUTION_STARTED`, `FAIL_CLOSED`),
+`Y-N-E` (`PROVIDER_GRANT_VERIFICATION`, `FAIL_CLOSED`), and `Y-N-L`
+(`EVIDENCE_ACCEPTANCE`, `FAIL_CLOSED`). The E subcase independently covers `EXPIRED`,
+`FORGED_AUTHORITY`, and `WRONG_RECIPIENT` with native rejection evidence. Controlled child
+teardown and cleanup completed.
+
+This closes T007-A2 for the refreshed candidate. T007 remains `IN_PROGRESS`/`PARTIAL` because
+the exact `Qwen/Qwen3.6-27B` row is external (`WAITING_EXTERNAL_INPUT`) and inherited
+negative/retirement rows remain in T007-A4; local `Qwen3-0.6B` is smoke/ABI-only evidence.
