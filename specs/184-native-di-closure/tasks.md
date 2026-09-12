@@ -17,7 +17,7 @@
 | [T004 Atomic Private Checkpoint Export](evidence/b3-checkpoint-export-20260911.md) | DONE | B2 exit | B3 normal and unsuppressed ASan/UBSan exits complete; directory-fsync failure remains an explicit implementation limit | 2026-09-11 |
 | [T005 Maintained Caller Mode Closure](evidence/b4-caller-convergence-20260911.md) | DONE | B1–B3 exits | Caller/mode matrix and focused route selectors complete; D2b runtime miss, real-model/no-Python and retirement remain in B5 | 2026-09-11 |
 | [T006 Inherited Obligation and Harness Closure](contracts/qualification-matrix.md) | DONE | B4 exit | 80-row matrix has one explicit owner, status, evidence path and remaining boundary per inherited row; current candidate identity and fresh convergence are recorded. Open runtime/model/external rows are explicitly transferred to T007/T008, not hidden in the registry | 2026-09-11 |
-| [T007 Current Native Qualification](contracts/promotion-candidate.md) | IN_PROGRESS | T006 complete and fresh convergence `PASS_FOR_T007_PRECONDITION` | Current candidate receipt verification, full C++ unit/integration exits, native process runs, candidate-bound I02–I08 counterexample statuses, I02–I08 dynamic behavior samples, no-Python ELF closure, repaired tiny-ONNX sanitizer selectors and bounded root `PO-001-stream` owner are recorded in [process qualification refresh](evidence/t007-process-qualification-20260911.md). The latest source/lifetime review, binding rebuild and same-tree receipt are recorded in [current candidate refresh](evidence/a4-current-candidate-refresh-20260912.md); current-candidate YOLO Y-A, Y-B and Y-N now pass. The host capability boundary remains in [model capability evidence](evidence/t007-model-capability-20260912.md). Qwen3.6-27B remains `WAITING_EXTERNAL_INPUT` because this host can run only Qwen3-0.6B smoke, and inherited negative/retirement rows remain `PARTIAL`. Non-root owner preflight remains `UNQUALIFIED` at `MININDN_REQUIRES_ROOT`; I05 remains an intentional `UNQUALIFIED` observation boundary | 2026-09-12 |
+| [T007 Current Native Qualification](contracts/promotion-candidate.md) | IN_PROGRESS | T006 complete and fresh convergence `PASS_FOR_T007_PRECONDITION` | Current candidate receipt verification, full C++ unit/integration exits, native process runs, candidate-bound I02–I08 counterexample statuses, I02–I08 dynamic behavior samples, no-Python ELF closure, repaired tiny-ONNX sanitizer selectors and bounded root `PO-001-stream` owner are recorded in [process qualification refresh](evidence/t007-process-qualification-20260911.md). The latest source/lifetime review, binding rebuild and same-tree receipt are recorded in [current candidate refresh](evidence/a4-current-candidate-refresh-20260912.md); current-candidate YOLO Y-A, Y-B and Y-N now pass. Same-tree C++ Qwen-config fixture selectors and focused native unit groups pass; their exact boundary is in [model capability evidence](evidence/t007-model-capability-20260912.md). Qwen3.6-27B remains `WAITING_EXTERNAL_INPUT` because this host can run only Qwen3-0.6B smoke, and inherited negative/retirement rows remain `PARTIAL`. Non-root owner preflight remains `UNQUALIFIED` at `MININDN_REQUIRES_ROOT`; I05 remains an intentional `UNQUALIFIED` observation boundary | 2026-09-12 |
 | [T008 Native Development Handoff](plan.md) | NOT_STARTED | T007 `QUALIFICATION_PASS` | Design/API handoff and external experiment transfer remain pending | 2026-09-12 |
 
 ## Logical Batch Progress
@@ -46,6 +46,18 @@ Python harness 不因本表再次无条件重跑。`Qwen3-0.6B` 只能作为 C++
 | T008 native development handoff | `BLOCKED_BY_T007` | documentation owner; depends T007 qualification pass | Final candidate map, local qualification result and external rows explicitly marked `TRANSFERRED` | Do not start handoff or mark Spec184 complete before T007 passes |
 
 ## Current Checkpoint
+
+2026-09-12 **T007-LOCAL-CXX-SMOKE / PARTIAL**：本机不能运行 Qwen3.6-27B，未尝试 27B。
+修复 Spec184 独立测试树的 NAC-ABE include/test-access 边界并补齐同树 worker 依赖后，
+`integration-tests` 以 `-j4` 构建成功（46.811 秒、exit `0`），assembly worker 与五个
+故障注入工具也在同一树构建成功。设置 `NDNSF_SPEC182_BIN_DIR` 后，full
+`integration-tests` exit `0`、`*** No errors detected`；full `unit-tests` 为
+1034/1034 cases、71072/71072 assertions。Qwen 原生配置流式、会话续接、
+`Spec184DurableOutcome` 以及 `Spec184NativeCheckpoint`、`Spec182NativeAssembly`、
+`Spec182NativeInferenceClient`、`Spec182NativeRequestIdentity` 等 C++ selectors 均通过；
+这些使用源绑定小 Qwen ONNX fixture 和 CPU runtime contract，不是实际 0.6B 权重推理，
+也不关闭 A3。证据见 [model capability evidence](evidence/t007-model-capability-20260912.md)。
+T007 保持 `IN_PROGRESS`/`PARTIAL`，A3 为 `WAITING_EXTERNAL_INPUT`，A4 和 T008 状态不变。
 
 2026-09-11 **PROPOSAL-CH4-WORDING / DOCUMENT_PASS**：中英文 Chapter 4 开头
 改为直接说明应用评估目的，删除回应修改意见式措辞及重复说明。四个正文

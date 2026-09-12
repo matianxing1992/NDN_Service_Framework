@@ -110,3 +110,68 @@ NAC-ABE/NDN-SVS/DI libraries and the receipt was regenerated and verified; the r
 The corrected current-candidate Y-A run `r58` passed with a C++ YOLO numerical oracle and is
 recorded as T007-A1 evidence. It does not execute or qualify Qwen3.6-27B. The host boundary and
 A3 disposition are unchanged: Qwen3-0.6B is smoke-only and A3 remains `WAITING_EXTERNAL_INPUT`.
+
+## Same-tree C++ smoke and test-build repair (2026-09-12)
+
+The local C++ test tree was rebuilt from the same configured Spec184 candidate after the
+mixed-binary boundary above. The first same-tree attempt reached
+`controller-revocation-flow.t.cpp` but exposed an incompatibility in the installed NAC-ABE
+headers: the package's historical quoted `common.hpp` include was not covered by the exported
+parent include path, and the current header intentionally keeps `KpAttributeAuthority::m_tokens`
+private. The test had been reading that private dependency field directly.
+
+The repair is bounded to the test/build boundary: `tests/wscript` adds an existing nested
+`nac-abe` include directory when present, and the test's friend shim reconstructs the expected
+policy through `ServiceController::effectiveAttributesFor` instead of reaching into NAC-ABE
+private state. No production API or external dependency source was changed. The corrected
+`integration-tests` build completed with Waf `-j4` in 46.811 seconds, exit `0`:
+
+```text
+/usr/bin/python3 ./waf -o build-spec184-b6-candidate-tests \
+  build --targets=integration-tests -j4
+```
+
+Build log SHA-256: `019646eca1c73f5a25d428f9c92ea60fb8053ead5da4955a5b530fbfddb7d48d`.
+The resulting binary SHA-256 is
+`b35c698f4b88ebe12a752b96f4c7dd9b39af2d88553fd2ba6d3b91f3cde9a33b`.
+
+The same-tree C++ selectors then passed with `*** No errors detected`:
+
+* `Spec182R10B73NativeConfigQwenRealProviderStream` (3.884 s)
+* `Spec182R10B80NativeConfigQwenRealProviderConversation` (7.262 s)
+* `Spec184DurableOutcome` (7.191 s)
+* `Spec184NativeCheckpoint/*` (3 cases), `Spec182NativeAssembly/*` (5 cases),
+  `Spec182NativeInferenceClient/*` (2 cases), and `Spec182NativeRequestIdentity/*` (1 case)
+
+These are native C++ transport/state/assembly/fixture checks. The two native-config Qwen
+selectors use the repository's source-bound small Qwen ONNX fixture and CPU runtime contract;
+they do not load the actual Qwen3-0.6B weights and do not qualify the required
+`Qwen/Qwen3.6-27B` CUDA bundle. Raw selector logs are retained under
+`.codex-tmp/spec184-b6-qwen-0.6b-smoke-20260912-r1.log`,
+`.codex-tmp/spec184-b6-qwen-0.6b-smoke-20260912-r2.log`,
+`.codex-tmp/spec184-b6-cpp-native-smoke-20260912.log`, and the four
+`.codex-tmp/spec184-b6-cpp-unit-smoke-*.log` files. This strengthens local C++ smoke evidence
+only; A3 remains `WAITING_EXTERNAL_INPUT`, and T007/A4 remains `PARTIAL`.
+
+The same-tree test closure then built the subprocess dependencies that the integration and unit
+harnesses discover at runtime. The registered Waf target `di-native-assembly-worker` built in
+31.764 seconds (exit `0`), and the five `spec182-worker-tool-*` fault-injection tools built in
+0.491 seconds (exit `0`). Their raw build logs are
+`.codex-tmp/spec184-b6-assembly-worker-build-20260912.log` (SHA-256
+`31a741173761c696df7727732c8794953b88f5bbf3cd434a4e791a909d43696c`) and
+`.codex-tmp/spec184-b6-worker-tools-build-20260912.log` (SHA-256
+`1f6ff47d7627f0e70167237d1a2357cc24cb8ada2e398daea0e3336fc10afa95`).
+
+With `NDNSF_SPEC182_BIN_DIR=build-spec184-b6-candidate-tests`, the full same-tree
+`integration-tests` run completed with exit `0` and `*** No errors detected`; its raw log is
+`.codex-tmp/spec184-b6-integration-full-20260912-r2.log` (SHA-256
+`130175e11c669f905936844610e163c62eaba0361621982ee3bb73a7b4e15d7c`). The full same-tree
+`unit-tests` run completed with exit `0`, with 1034/1034 test cases and 71072/71072 assertions
+passing; its raw log is `.codex-tmp/spec184-b6-unit-full-20260912-r3.log` (SHA-256
+`95b99c2965b3a4c64e96b028238400f363de45153f731b868ca044152ab3c2d8`). The first full-run
+failure without this environment and worker closure is retained as a harness-discovery boundary;
+the corrected run exercises the same candidate tree and does not change the model qualification
+boundary. These results close the local C++ build and test gate, but they remain fixture/CPU
+evidence: this host cannot execute the required 27B bundle, and no exact Qwen3-0.6B-weight run was
+performed. A3 therefore remains `WAITING_EXTERNAL_INPUT`, while T007 and the inherited A4 rows
+remain `PARTIAL`.

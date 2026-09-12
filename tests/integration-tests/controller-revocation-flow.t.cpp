@@ -254,8 +254,8 @@ struct ServiceControllerTestAccess
   static std::string
   abePolicy(const ServiceController& controller, const ndn::Name& identity)
   {
-    const auto it = controller.m_aa.m_tokens.find(identity);
-    return it == controller.m_aa.m_tokens.end() ? std::string() : it->second;
+    const auto attributes = controller.effectiveAttributesFor(identity.toUri());
+    return boost::algorithm::join(attributes, " OR ");
   }
 };
 
