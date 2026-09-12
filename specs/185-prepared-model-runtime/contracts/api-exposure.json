@@ -1,0 +1,258 @@
+{
+  "schema": "ndnsf-di-api-exposure-v1",
+  "status": "T015_BASELINE",
+  "source_commit": "228aa94450a1353fdd65e1c1900b21a875462ec0",
+  "symbol_inventory": "../evidence/api-inventory.json",
+  "policy": "Each entry is the installed-header boundary. The referenced inventory is the per-declaration source index; entries below add the exposure level, owner, target and compatibility decision.",
+  "entries": [
+    {
+      "path": "NDNSF-DistributedInference/cpp/ndnsf-di/api.hpp",
+      "level": "application",
+      "stability": "stable",
+      "target": "ndnsf-distributed-inference",
+      "owner": "DI Runtime facade (T001+)",
+      "symbols": ["ndnsf::di::kPreparedModelRuntimeApiVersion", "Runtime", "User", "PreparedModel", "Input", "RequestHandle", "Result", "Conversation", "DiError", "RuntimeConfig", "UserConfig", "PrepareOptions", "RequestOptions"],
+      "replacement": null,
+      "transitive_dependencies": [],
+      "removal_condition": "none; additive public entry"
+    },
+    {
+      "path": "NDNSF-DistributedInference/cpp/ndnsf-di/provider.hpp",
+      "level": "provider",
+      "stability": "stable",
+      "target": "ndnsf-distributed-inference",
+      "owner": "DI Provider facade (T009+)",
+      "symbols": ["ndnsf::di::kPreparedModelRuntimeProviderApiVersion", "Runtime", "Provider", "ProviderRegistration", "ProviderConfig", "ServiceDefinition"],
+      "replacement": null,
+      "transitive_dependencies": [],
+      "removal_condition": "none; additive public entry"
+    },
+    {
+      "path": "NDNSF-DistributedInference/cpp/ndnsf-di/extensions.hpp",
+      "level": "extension",
+      "stability": "stable",
+      "target": "ndnsf-distributed-inference",
+      "owner": "DI cooperative extension ports (T016)",
+      "symbols": ["ndnsf::di::kPreparedModelRuntimeExtensionsApiVersion", "CooperativeModelSplitStrategy", "CooperativePlacementStrategy", "ExtensionControl"],
+      "replacement": null,
+      "transitive_dependencies": [],
+      "removal_condition": "none; additive public entry"
+    },
+    {
+      "path": "NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp",
+      "level": "compatibility",
+      "stability": "stable",
+      "target": "ndnsf-distributed-inference",
+      "owner": "ONNX adapter",
+      "symbols": ["ndnsf::di::OnnxRuntimeProviderSelection", "ndnsf::di::StatefulOnnxIoContractV1", "ndnsf::di::CausalPositionInputContractV1", "ndnsf::di::materializeCausalPositionInputsV1", "ndnsf::di::resolveOnnxRuntimeProviderSelection", "ndnsf::di::OnnxRuntimeModelRunner", "ndnsf::di::registerOnnxRuntimeBackend"],
+      "replacement": "ndnsf-di/extensions.hpp adapter factory when T016/T011 expose it",
+      "transitive_dependencies": ["ndnsf-di/NativeModelRunner.hpp", "ndnsf-di/AsyncDataflowRuntime.hpp", "ndnsf-di/ExecutionEvidence.hpp", "ndnsf-di/GenerationEpochLineage.hpp", "ndnsf-di/ConversationStateBinding.hpp", "ndnsf-di/DecodeStateIdentity.hpp"],
+      "removal_condition": "only after a reviewed adapter factory and caller migration exist"
+    },
+    {
+      "path": "NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp",
+      "level": "compatibility",
+      "stability": "legacy-explicit",
+      "target": "ndnsf-distributed-inference",
+      "owner": "DI adapter compatibility",
+      "symbols": ["NativeModelRunnerSpec", "NativeRuntimeMetrics", "NativeOpaqueStateHandleV1", "NativeConversationStateHandleV1", "NativeModelRunner", "LambdaModelRunner", "NativeModelRunnerFactory", "RegistryNativeModelRunnerFactory"],
+      "replacement": "ndnsf-di/extensions.hpp",
+      "transitive_dependencies": ["ndnsf-di/AsyncDataflowRuntime.hpp", "ndnsf-di/ExecutionEvidence.hpp"],
+      "removal_condition": "T011 caller matrix proves no maintained legacy consumer"
+    },
+    {
+      "path": "NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp",
+      "level": "compatibility-transitive",
+      "stability": "legacy-explicit",
+      "target": "ndnsf-distributed-inference",
+      "owner": "DI runtime implementation closure",
+      "symbols": ["TensorBundle", "RedistributionSpec", "DependencyEdge", "RoleSpec", "RoleExecutionContext", "RoleRunner", "RoleTiming", "DataflowResult", "AsyncDataflowRuntime", "durationMs"],
+      "replacement": "Runtime/RequestHandle public types",
+      "transitive_dependencies": ["ndnsf-di/DecodeStateIdentity.hpp", "ndnsf-di/ConversationStateBinding.hpp", "ndnsf-di/GenerationEpochLineage.hpp"],
+      "removal_condition": "T011/T014 complete public migration and no ABI consumer"
+    },
+    {
+      "path": "NDNSF-DistributedInference/cpp/ndnsf-di/ExecutionEvidence.hpp",
+      "level": "compatibility-transitive",
+      "stability": "legacy-explicit",
+      "target": "ndnsf-distributed-inference",
+      "owner": "DI evidence metadata",
+      "symbols": ["NativeModelRunnerSpec", "RunnerKind", "ExecutionEvidence", "ExecutionAttemptMetadata", "executionEvidenceToJson", "executionEvidenceFromJson"],
+      "replacement": "Result/RequestDiagnostics public values",
+      "transitive_dependencies": [],
+      "removal_condition": "T014 documents replacement and no maintained consumer"
+    },
+    {
+      "path": "NDNSF-DistributedInference/cpp/ndnsf-di/GenerationEpochLineage.hpp",
+      "level": "compatibility-transitive",
+      "stability": "legacy-explicit",
+      "target": "ndnsf-distributed-inference",
+      "owner": "DI generation state",
+      "symbols": ["GenerationEpochLineageV1"],
+      "replacement": "PreparedModel/Conversation public state",
+      "transitive_dependencies": [],
+      "removal_condition": "T014 documents replacement and no maintained consumer"
+    },
+    {
+      "path": "NDNSF-DistributedInference/cpp/ndnsf-di/ConversationStateBinding.hpp",
+      "level": "compatibility-transitive",
+      "stability": "legacy-explicit",
+      "target": "ndnsf-distributed-inference",
+      "owner": "DI conversation state",
+      "symbols": ["ConversationStateBinding", "ConversationStateReferenceV1", "ConversationTurnBindingV1", "ProviderConversationStateReceiptV1"],
+      "replacement": "ConversationCheckpoint public value",
+      "transitive_dependencies": ["ndnsf-di/DecodeStateIdentity.hpp"],
+      "removal_condition": "T014 documents replacement and no maintained consumer"
+    },
+    {
+      "path": "NDNSF-DistributedInference/cpp/ndnsf-di/DecodeStateIdentity.hpp",
+      "level": "compatibility-transitive",
+      "stability": "legacy-explicit",
+      "target": "ndnsf-distributed-inference",
+      "owner": "DI decode identity",
+      "symbols": ["DecodeStateIdentityV1"],
+      "replacement": "opaque ConversationCheckpoint/ModelManifest values",
+      "transitive_dependencies": [],
+      "removal_condition": "T014 documents replacement and no maintained consumer"
+    }
+  ],
+  "legacy_install_glob": {
+    "path_pattern": "NDNSF-DistributedInference/cpp/ndnsf-di/*.hpp and adapter subdirectories",
+    "level": "compatibility-unclassified",
+    "stability": "legacy-explicit",
+    "owner": "pre-Spec185 installation surface",
+    "caller_matrix": "T011",
+    "removal_condition": "retain until T011 proves no maintained consumer; no new code may depend on this glob",
+    "per_header_defaults": {
+      "level": "compatibility-unclassified",
+      "stability": "legacy-explicit",
+      "owner": "pre-Spec185 installation surface",
+      "replacement": "the stable umbrella or the owning T00x facade",
+      "transitive_dependencies": "resolved by the standalone-header gate in T015",
+      "removal_condition": "T011 caller matrix plus T014 migration evidence"
+    },
+    "enumerated_headers": [
+      "NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp",
+      "NDNSF-DistributedInference/cpp/ndnsf-di/CollectiveRuntime.hpp",
+      "NDNSF-DistributedInference/cpp/ndnsf-di/ConversationStateBinding.hpp",
+      "NDNSF-DistributedInference/cpp/ndnsf-di/DecodeStateIdentity.hpp",
+      "NDNSF-DistributedInference/cpp/ndnsf-di/DependencyWaitScheduler.hpp",
+      "NDNSF-DistributedInference/cpp/ndnsf-di/DiTimelineTrace.hpp",
+      "NDNSF-DistributedInference/cpp/ndnsf-di/DistributedExecutionConsistency.hpp",
+      "NDNSF-DistributedInference/cpp/ndnsf-di/ExecutionEvidence.hpp",
+      "NDNSF-DistributedInference/cpp/ndnsf-di/ExecutionLeaseService.hpp",
+      "NDNSF-DistributedInference/cpp/ndnsf-di/GenerationEpochLineage.hpp",
+      "NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactMaterializer.hpp",
+      "NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp",
+      "NDNSF-DistributedInference/cpp/ndnsf-di/NativeAuthenticatedGrantClient.hpp",
+      "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp",
+      "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalPreparationCatalog.hpp",
+      "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalRolePreparer.hpp",
+      "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCatalogModelAdapter.hpp",
+      "NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp",
+      "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp",
+      "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp",
+      "NDNSF-DistributedInference/cpp/ndnsf-di/NativeFaultInjection.hpp",
+      "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGrantClient.hpp",
+      "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGrantVerifier.hpp",
+      "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGroupKeyAdmission.hpp",
+      "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGroupProjectionBuilder.hpp",
+      "NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceProvider.hpp",
+      "NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp",
+      "NDNSF-DistributedInference/cpp/ndnsf-di/NativeObservedOfferV3.hpp",
+      "NDNSF-DistributedInference/cpp/ndnsf-di/NativeOfferAdmission.hpp",
+      "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanProjectionBuilder.hpp",
+      "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanSealer.hpp",
+      "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp",
+      "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedArtifactStore.hpp",
+      "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedProvider.hpp",
+      "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp",
+      "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderOfferV3.hpp",
+      "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderReadiness.hpp",
+      "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderRuntime.hpp",
+      "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderSession.hpp",
+      "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestCatalog.hpp",
+      "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp",
+      "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRunnerPreparation.hpp",
+      "NDNSF-DistributedInference/cpp/ndnsf-di/NativeServiceManifest.hpp",
+      "NDNSF-DistributedInference/cpp/ndnsf-di/NativeStandaloneTokenizer.hpp",
+      "NDNSF-DistributedInference/cpp/ndnsf-di/NativeV3Placement.hpp",
+      "NDNSF-DistributedInference/cpp/ndnsf-di/NativeYoloMergeRunner.hpp",
+      "NDNSF-DistributedInference/cpp/ndnsf-di/NdnsfCollaborationDependencyIo.hpp",
+      "NDNSF-DistributedInference/cpp/ndnsf-di/NdnsfCollectiveControl.hpp",
+      "NDNSF-DistributedInference/cpp/ndnsf-di/OnnxRuntimeModelRunner.hpp",
+      "NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp",
+      "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderGroupCoordinator.hpp",
+      "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderResourceProbe.hpp",
+      "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp",
+      "NDNSF-DistributedInference/cpp/ndnsf-di/QwenGenerationSession.hpp",
+      "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp",
+      "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp",
+      "NDNSF-DistributedInference/cpp/adapters/onnx/CudaDeviceIdentity.hpp",
+      "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp",
+      "NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp",
+      "NDNSF-DistributedInference/cpp/adapters/qwen/NativeQwenPlanner.hpp",
+      "NDNSF-DistributedInference/cpp/adapters/qwen/NativeTokenizer.hpp",
+      "NDNSF-DistributedInference/cpp/adapters/qwen/QwenGenerationSession.hpp",
+      "NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloMergeRunner.hpp",
+      "NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloPlanner.hpp"
+    ]
+  },
+  "excluded_internal_headers": [
+    {
+      "path": "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp",
+      "reason": "internal canonical JSON implementation; no installed public consumer",
+      "compatibility_plan": "T011 caller matrix decides whether a stable opaque wrapper is required"
+    },
+    {
+      "path": "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp",
+      "reason": "post-Selection provider assembly helper depends on the private worker protocol",
+      "compatibility_plan": "T009/T011 expose Provider assembly through provider.hpp"
+    },
+    {
+      "path": "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCheckpointExport.hpp",
+      "reason": "journal/checkpoint implementation depends on NativeJson",
+      "compatibility_plan": "T008/T014 expose opaque ConversationCheckpoint bytes"
+    },
+    {
+      "path": "NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp",
+      "reason": "legacy coordinator includes the internal journal/wire implementation",
+      "compatibility_plan": "T007/T008 expose Conversation through the stable application umbrella"
+    },
+    {
+      "path": "NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationWire.hpp",
+      "reason": "conversation wire helper depends on NativeJson",
+      "compatibility_plan": "T008/T014 expose opaque ConversationCheckpoint bytes"
+    },
+    {
+      "path": "NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationJournal.hpp",
+      "reason": "conversation journal depends on the internal wire and canonical JSON helpers",
+      "compatibility_plan": "T008/T014 expose opaque ConversationCheckpoint bytes"
+    },
+    {
+      "path": "NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp",
+      "reason": "legacy requester header includes the internal conversation coordinator",
+      "compatibility_plan": "T011 migrates maintained callers to api.hpp"
+    },
+    {
+      "path": "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestEnvelope.hpp",
+      "reason": "legacy request envelope includes the non-installed NativeInferenceClient surface",
+      "compatibility_plan": "T005/T011 expose request construction through the stable application facade"
+    },
+    {
+      "path": "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPlanner.hpp",
+      "reason": "legacy request planner includes the non-installed request envelope",
+      "compatibility_plan": "T003/T005 expose preparation and planning through api.hpp"
+    },
+    {
+      "path": "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp",
+      "reason": "private OA02 worker transport",
+      "compatibility_plan": "T009 provider facade owns assembly; no application include"
+    },
+    {
+      "path": "NDNSF-DistributedInference/cpp/vendor/nlohmann/json.hpp",
+      "reason": "vendored parser used only by internal canonical JSON",
+      "compatibility_plan": "not installed; no vendor dependency in stable umbrellas"
+    }
+  ]
+}

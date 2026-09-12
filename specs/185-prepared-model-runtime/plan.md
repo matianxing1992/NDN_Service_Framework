@@ -76,7 +76,7 @@ T016的cooperative接口/catalog字段先于Package构造，因此B2E排在B1之
 
 ## Native Public API Authority
 
-[C-07全API清单](contracts/api-catalog.md)是签名/Python对应/生命周期完整性检查入口。保留16任务11批；本轮将新发现归入既有owner，不另拆行政批次。
+[C-07全API清单](contracts/api-catalog.md)是签名/Python对应/生命周期完整性检查入口。当前执行队列为18任务12批；本轮将新发现归入既有owner，不另拆行政批次。
 T015建立每行exposure及缺失项；T002/T004/T006/T009完成生命周期；T011完整C++例子，T013原生矩阵；T012验证直接binding及有限便利层；T014核对实际全部导出。
 
 [C-05](contracts/api-usability.md)定义六层API、model key、能力、结果/错误、可靠流和扩展freeze；[C-06](contracts/cpp-first.md)定义独立C++入口及native异步owner。

@@ -1,13 +1,13 @@
 # Tasks: Prepared Model Runtime
 
 **Status**: PLANNED | **Date**: 2026-09-12
-**Input**: [spec](spec.md) · [plan](plan.md) · [C-01](contracts/public-api.md) · [C-02](contracts/preparation.md) · [C-03](contracts/execution.md) · [C-04](contracts/validation.md) · [C-05](contracts/api-usability.md) · [C-06](contracts/cpp-first.md) · [C-07](contracts/api-catalog.md) · [C-08](contracts/code-design.md)
+**Input**: [spec](spec.md) · [plan](plan.md) · [C-01](contracts/public-api.md) · [C-02](contracts/preparation.md) · [C-03](contracts/execution.md) · [C-04](contracts/validation.md) · [C-05](contracts/api-usability.md) · [C-06](contracts/cpp-first.md) · [C-07](contracts/api-catalog.md) · [C-08](contracts/code-design.md) · [C-09](contracts/core-app-boundary.md)
 
 ## Execution Progress
 
 | Unit / Details | Status | Depends | Evidence / Remaining | Updated |
 | --- | --- | --- | --- | --- |
-| [T015 Installed C++ API and ABI Closure](#t015) | NOT_STARTED | none | B0 planned; implementation/build/runtime NOT_RUN | 2026-09-12 |
+| [T015 Installed C++ API and ABI Closure](#t015) | PASS | none | B0 closed; [b0-installed-api](evidence/b0-installed-api.md) covers v17 STATIC_PASS, four C++ consumers, 67 headers, negative gate, ABI/ldd/hash | 2026-09-12 |
 | [T017 Core Operation Runtime and Channels](#t017) | NOT_STARTED | B0 exit | B0C planned; C-09 PO-C1,C2 NOT_RUN | 2026-09-12 |
 | [T018 DI Delegation to Core Operations](#t018) | NOT_STARTED | T017 static | B0C planned; C-09 PO-C3,C4 NOT_RUN | 2026-09-12 |
 | [T001 Runtime Configuration and Export](#t001) | NOT_STARTED | B0C exit | B1 planned; implementation/build/runtime NOT_RUN | 2026-09-12 |
@@ -28,17 +28,17 @@
 
 ## Current Checkpoint
 
-2026-09-12 Batch execution revision：18任务/12批均NOT_STARTED；已补[批次执行表](batch-execution.md)，任务卡按实际执行顺序排列。
+2026-09-12 B0/T015 closed：安装 API/ABI 证据[b0-installed-api](evidence/b0-installed-api.md)记录 v17 STATIC_PASS、四配置 C++ consumer、67 独立头和 DI/SVS ldd/hash；下一依赖满足任务为T017/B0C。其余17任务保持NOT_STARTED；已补[批次执行表](batch-execution.md)。
 每任务编码后review-agent静态门→同批继续→整批组合审查→共享构建/定向测试；不逐小修改编译，也不拖到全Spec末尾首次测试。
 本轮为执行计划整理，未修改API/产品设计；验证见[evidence](evidence/batch-execution-20260912.md)。下一步T015/B0。
 
 2026-09-12 Core/App修订：源码确认四消息/协作/流/scoped registration已有Core实现，但DI仍自持通用executor和等待状态。
 新增[C-09](contracts/core-app-boundary.md)与T017/T018，18任务12批，全部NOT_STARTED；当前顺序B0→B0C→B1→B2E→B2及其余原序。
 本轮设计覆盖此前“新公开类都在DI”的表述；DI保留领域包装，通用实现下移Core。证据见[boundary audit](evidence/core-boundary-20260912.md)。
-以下16任务/11批记录为上一文档checkpoint历史，不能作为当前执行队列。
+以下16任务/11批记录为上一文档checkpoint历史，不能作为当前执行队列；当前执行队列为18任务/12批。
 
 2026-09-12：核对现有skill确有Class/Function/Field契约，但185原任务缺内部实现绑定；已补[C-08](contracts/code-design.md)，逐任务Design binding覆盖类/文件delta、字段、关键函数、流程和PO。
-新增shared skill开工前设计检查，更新plan/tasks模板及本机入口/个人安装副本。仍16任务11批、全部NOT_STARTED。
+新增shared skill开工前设计检查，更新plan/tasks模板及本机入口/个人安装副本。历史记录为16任务11批；当前为18任务12批，全部NOT_STARTED。
 T016提供合作splitter，前移到B1后/T003前；实际顺序T015→T001/T002→T016→T003–T011→T013→T012→T014。
 本轮[证据](evidence/implementation-design-20260912.md)；设计/技能验证不计产品完成，生产源码及native构建测试未运行。
 下一实现单元T015；保持Spec184资格和既有Design 54文件漂移边界。
@@ -60,7 +60,7 @@ C-07每行是T015 exposure、T011 C++消费、T012绑定和T014文档的共同�
 
 <a id="t015"></a>
 
-- [ ] T015 [US4] Installed C++ API and ABI Closure — root wscript; NDNSF-DistributedInference/ndnsf-distributed-inference.pc.in; NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp; tests/installed-api/
+- [x] T015 [US4] Installed C++ API and ABI Closure — root wscript; libndn-service-framework.pc.in; NDNSF-DistributedInference/ndnsf-distributed-inference.pc.in; NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp; tests/installed-api/
 
   **Batch / Depends**: B0 / none。
 
@@ -70,7 +70,7 @@ C-07每行是T015 exposure、T011 C++消费、T012绑定和T014文档的共同�
 
   **Implementation and review**: 建立contracts/api-exposure.json逐符号/头分层清单；application/provider umbrella与advanced/internal边界；修复安装include闭包，保留合法旧consumer兼容；ONNX按C-08 FN09固定无条件PImpl及disabled分支完整Impl。开始时核对实际源码路径。
 
-  **Exit / oracle**: 每个安装公共头单独包含；外部consumer仅用安装prefix/pkg-config编译链接及构造析构；ONNX enabled/disabled各自同配置安装消费，normal及ASan构造/析构通过。Spec185InstalledApi记录include/link/运行边界，不以--help代替。
+  **Exit / oracle**: 每个安装公共头单独包含；外部consumer仅用安装prefix/pkg-config编译链接及构造析构；ONNX enabled/disabled各自同配置安装消费，normal及ASan构造/析构通过。Spec185InstalledApi记录include/link/运行边界，不以--help代替。已通过，见[evidence/b0-installed-api.md](evidence/b0-installed-api.md)。
 
 <a id="t017"></a>
 

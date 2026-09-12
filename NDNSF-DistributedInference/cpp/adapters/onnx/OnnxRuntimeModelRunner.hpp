@@ -7,6 +7,11 @@
 #include <string>
 #include <stdexcept>
 #include <algorithm>
+#include <cstdint>
+#include <future>
+#include <map>
+#include <memory>
+#include <optional>
 
 namespace ndnsf::di {
 
@@ -182,16 +187,12 @@ public:
   releaseConversationState(const NativeConversationStateHandleV1& state) final;
 
 private:
-#ifdef NDNSF_DI_ENABLE_ONNXRUNTIME_CPP
   class Impl;
-#endif
   std::optional<std::map<std::string, TensorBundle>>
   runStreamedImpl(const RoleExecutionContext& ctx);
   NativeModelRunnerSpec m_spec;
   std::optional<ExecutionEvidence> m_evidence;
-#ifdef NDNSF_DI_ENABLE_ONNXRUNTIME_CPP
   std::unique_ptr<Impl> m_impl;
-#endif
 };
 
 void
