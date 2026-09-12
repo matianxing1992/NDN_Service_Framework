@@ -47,6 +47,13 @@ Python harness 不因本表再次无条件重跑。`Qwen3-0.6B` 只能作为 C++
 
 ## Current Checkpoint
 
+2026-09-11 **PROPOSAL-CH4-WORDING / DOCUMENT_PASS**：中英文 Chapter 4 开头
+改为直接说明应用评估目的，删除回应修改意见式措辞及重复说明。四个正文
+入口构建、镜像一致性及排版日志检查通过；证据见
+[wording audit](../../docs/PAPER/proposal-defense/research-revision-audit.md)
+和 `.codex-tmp/proposal-ch4-wording-20260911/checks.json`。不改 slides、实验
+或产品/API，不推进 T007/T008；后续仍按覆盖表关联证据。
+
 2026-09-11 **PROPOSAL-APPLICATION-VALIDATION / DOCUMENT_PASS**：已扩展中英文
 Chapter 4 与对应 slides 为完整 UAV／DI 应用级验证范围，并增加功能—机制映射。
 初次讲稿 overfull 已修正；八个 LaTeX 入口、PDF/PPTX 边界、文字可编辑性、

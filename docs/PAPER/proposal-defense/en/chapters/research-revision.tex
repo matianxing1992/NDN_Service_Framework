@@ -160,7 +160,7 @@ These are conditional invariants and implementation proof obligations, not a cry
 \chapter{Application-Level Validation}
 \label{chap:applications}
 \section{Validation Strategy: Applications Exercise the Framework}
-NDNSF-UAV and NDNSF-DI are application-level validation platforms, not merely two collaboration demonstrations. Their service workflows exercise discovery, authorization, Provider selection, named-data delivery, and execution lifecycle management as well as multi-Provider collaboration. Single-Provider operations remain relevant to RQ1 and RQ3; workflows with complementary roles additionally examine RQ2. The multi-view and distributed-model cases below are representative workloads within these broader applications.
+We use NDNSF-UAV and NDNSF-DI to evaluate how NDNSF supports service discovery, authorization, data delivery, and execution management across both single-Provider and multi-Provider workflows. Single-Provider operations remain relevant to RQ1 and RQ3; workflows with complementary roles additionally examine RQ2. The multi-view and distributed-model cases below are representative workloads within these broader applications.
 
 The evaluation maps each application function to the NDNSF path it actually uses and to an observable outcome. An application feature supplies evidence only when that path is exercised and the result is recorded. A local helper call, for example, does not establish remote invocation authorization. Likewise, a working interface or model does not by itself demonstrate framework correctness or performance. The chapter defines validation coverage; Chapter~\ref{chap:evaluation} distinguishes available measurements from remaining tests.
 

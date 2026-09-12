@@ -1,5 +1,14 @@
 # Research-first Proposal Revision and Evidence Audit
 
+## 2026-09-11 Chapter 4 Opening Wording
+
+按作者确认的措辞，将开头改为直接说明使用 NDNSF-UAV／NDNSF-DI 评估的
+框架功能，删除 `not merely two collaboration demonstrations` 及重复的流程
+罗列。中英文同步；四个正文入口构建通过，无 overfull 或未定义引用，镜像
+文本一致。原始检查见 `.codex-tmp/proposal-ch4-wording-20260911/checks.json`，
+维护记录见 `research-revision-validation.json` 的 `chapter4_wording_revision`。
+这是一处文字修订，不改变验证范围，slides、实验与产品代码不变。
+
 ## 2026-09-11 Broader Application-Level Validation
 
 按作者意见，将 Chapter 4 从两个协作示例扩展为两套应用级验证平台：验证策略、
