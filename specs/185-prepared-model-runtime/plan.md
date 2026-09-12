@@ -65,6 +65,9 @@ sanitizer使用独立同ABI构建。记录target→实际binary→SHA，不猜hi
 
 ## Native Public API Authority
 
+[C-07全API清单](contracts/api-catalog.md)是签名/Python对应/生命周期完整性检查入口。保留16任务11批；本轮将新发现归入既有owner，不另拆行政批次。
+T015建立每行exposure及缺失项；T002/T004/T006/T009完成生命周期；T011完整C++例子，T013原生矩阵；T012验证直接binding及有限便利层；T014核对实际全部导出。
+
 [C-05](contracts/api-usability.md)定义六层API、model key、能力、结果/错误、可靠流和扩展freeze；[C-06](contracts/cpp-first.md)定义独立C++入口及native异步owner。
 执行顺序：T015 → T001–T004 → T016 → T005–T011 → T013 → T012 → T014。入口api.hpp/provider.hpp；Provider-only不要求User目录或requester私钥。配置、规划、状态机、恢复由C++提供，Python不得补缺。
 

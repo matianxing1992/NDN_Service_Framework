@@ -30,29 +30,31 @@ public:
   PreparationStatus status() const;
   PreparedModel result() const;
   PreparedModel result(std::chrono::milliseconds timeout) const;
+  Subscription resultAsync(std::chrono::milliseconds timeout,
+    std::function<void(std::exception_ptr, std::optional<PreparedModel>)>);
   void cancel();
-  CompletionSubscription onCompletion(std::function<void(std::exception_ptr,
+  Subscription onCompletion(std::function<void(std::exception_ptr,
                                       std::optional<PreparedModel>)>);
 };
 // User; advanced overload remains under advanced header.
 PreparationHandle prepareAsync(const std::string& modelKey = "default",
                                const PrepareOptions& = {}) const;
 // RequestHandle
-CompletionSubscription onCompletion(std::function<void(std::exception_ptr, std::optional<Result>)>);
+Subscription onCompletion(std::function<void(std::exception_ptr, std::optional<Result>)>);
 // EventReader; at most one outstanding next/nextAsync on the same reader.
-void nextAsync(std::chrono::milliseconds timeout,
+Subscription nextAsync(std::chrono::milliseconds timeout,
                std::function<void(std::exception_ptr, std::optional<StreamEvent>)>);
 ```
 
 PreparationHandle代表一个waiter，不是整个single-flight job；cancel只移除自己，最后waiter才按C-02取消job。
 同步prepare精确调用prepareAsync(...).result()；不会维护第二条准备链。
-completion在native通知executor锁外执行，成功时exception_ptr为空且value非空，失败时相反；
+completion在native通知executor锁外执行，成功时exception_ptr为空且value非空，失败时相反；仅已drained owner的drainAsync使用C-07明确的调用线程完成快路径。
 未退订的每次注册调用一次，迟注册也有终态回放；异常隔离，注册后关闭也必须返回明确取消/关闭结果。
-完成通知不是best-effort observe，不能被观测队列满丢弃。每handle最多64个完成订阅，超限同步拒绝。
+完成通知不是best-effort observe，不能被观测队列满丢弃。同一request operation或preparation waiter的所有handle副本共享64个completion/resultAsync槽位，超限同步拒绝。
 EventReader.nextAsync的nullopt表示正常EOF，异常代表timeout/gap/关闭；与同步next共享同一cursor。
 async提交不阻塞Core IO。结果与清理屏障仍不同，onCompletion不是drain完成证明。
 
-Python prepare_async/result_async只注册这些native完成回调，再用loop.call_soon_threadsafe更新Future。
+Python prepare_async/result_async使用这些native完成/有限resultAsync等待回调，再用loop.call_soon_threadsafe更新Future。
 协程取消/loop关闭要解除Python回调引用，不阻塞native executor；准备取消只cancel对应waiter，
 请求等待取消不cancel业务。GIL/loop引用与native owner在退出时明确释放，不开无限线程池。
 Python events_async映射nextAsync，不从observe或Python list重建业务流。
@@ -60,22 +62,22 @@ Python events_async映射nextAsync，不从observe或Python list重建业务流�
 ## Native Subscription and Cleanup
 
 ```cpp
-class CompletionSubscription {
+class Subscription {
 public:
-  CompletionSubscription(CompletionSubscription&&) noexcept;
-  CompletionSubscription& operator=(CompletionSubscription&&) noexcept;
-  ~CompletionSubscription(); // unsubscribe; never block
+  Subscription(Subscription&&) noexcept;
+  Subscription& operator=(Subscription&&) noexcept;
+  ~Subscription(); // unsubscribe; never block
   void unsubscribe() noexcept;
 };
 // Both Runtime and Provider:
-CompletionSubscription drainAsync(std::chrono::milliseconds timeout,
+Subscription drainAsync(std::chrono::milliseconds timeout,
   std::function<void(std::exception_ptr, bool)> callback) const;
 ```
 
 onCompletion与drainAsync返回move-only token，应用须保留到完成；复制禁用。
 unsubscribe幂等且不取消业务/准备waiter；与dispatch以同一native锁决定是否已开始。
 尚未开始的callback撤下并释放引用；已开始者可完成一次，token析构不等待它。
-完成后释放callback及64订阅额度；Python trampoline持有可失效状态，失效后不访问已关闭loop，
+callback完成后，或退订且无执行中引用后释放callback及订阅额度；Python trampoline持有可失效状态，失效后不访问已关闭loop，
 Python对象释放仍须遵守GIL。C++ fixture验证退订/排队/执行/关闭竞争。
 Python await取消先退订；prepare取消还cancel该waiter；request等待取消不cancel业务。
 
@@ -83,6 +85,9 @@ drainAsync等待同一清理屏障，不隐式close/stop；清理完成callback�
 期限到为(null exception,false)，参数/内部错误通过exception_ptr返回；采用native timer/barrier，
 不阻塞IO线程。退订只停止该次等待。async exit先close/stop再等待，false映射SHUTDOWN_TIMEOUT。
 T002/T009实现，T013验原生，T012仅映射；request completion不是cleanup证明。
+
+完整API及析构/关闭矩阵以[C-07](api-catalog.md)补齐；observe和nextAsync也返回统一Subscription。
+原设计名CompletionSubscription改为Subscription，尚未实现，不涉及旧ABI。
 
 ## Provider-Only C++ Entry
 

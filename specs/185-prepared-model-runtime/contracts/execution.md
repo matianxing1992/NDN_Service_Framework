@@ -46,6 +46,7 @@ public:
   ConversationCheckpoint checkpoint() const;
   void exportCheckpoint(const std::filesystem::path&) const;
   void close() noexcept;
+  ~Conversation() noexcept;
 };
 ```
 
@@ -81,13 +82,14 @@ struct ServiceDefinition {
 class ProviderRegistration {
 public:
   void close() noexcept;
+  ~ProviderRegistration() noexcept;
 };
 class Provider {
 public:
   ProviderRegistration serve(const ServiceDefinition&);
   void stop() noexcept;
   bool drain(std::chrono::milliseconds timeout) const;
-  CompletionSubscription drainAsync(std::chrono::milliseconds timeout,
+  Subscription drainAsync(std::chrono::milliseconds timeout,
     std::function<void(std::exception_ptr, bool)> callback) const;
 };
 ```

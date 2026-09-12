@@ -73,6 +73,13 @@ T012精确定位实际binding TU后更新映射并迁移，不另建与原模块
 
 ## Additional Native Oracles
 
+[C-07](api-catalog.md)每行签名/Python映射和Lifecycle Matrix都是验收输入：不允许只测一个happy-path后声称全部API完整。
+T002覆盖Runtime外壳先销毁、子对象保留、owner线程最后释放、drainAsync不自等待；T004覆盖最后handle退出与READY竞争、局部resultAsync超时。
+T006覆盖观察退订、read退订前/后dispatch不吞事件、失败stream不伪装EOF、读者提前close、重复read、订阅限额回收和moved-from。
+T009覆盖重复serve、registration析构停接收及已接收工作收尾。ASan/TSan分配沿用所属批次，不重复造全仓库构建。
+T002/T006/T013覆盖close+drain后的同步读取、新异步注册拒绝和drainAsync同步快路径；复制handle共享槽位，退订中仍执行的callback不提前归还额度。
+T012只验binding映射/秒单位/参数错误、async等待取消、loop关闭、GC及解释器正常退出；领域行为仍由前面的C++断言负责。
+
 T003/T004覆盖prepareAsync迟completion、waiter取消和共享job；T006覆盖可靠completion及EventReader next/nextAsync单游标、超时、STREAM_GAP、EOF和回调析构。observe丢弃计数仅作诊断，不能证明token完整。
 T009覆盖Provider-only配置及独立生命周期；T011/T013以安装prefix构建consumer，记录ELF及子进程no-Python闭包。Python future桥接native回调，不用Python线程补业务能力。
 

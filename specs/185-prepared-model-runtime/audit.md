@@ -49,3 +49,6 @@ A14 Provider独立预算/single-flight/原子发布；A15批次验收依赖环�
 
 [API审计](api-review.md)覆盖76个项目C++头、139个Python模块及binding/install候选；20项发现见C-05，独立C++与先原生后包装见C-06。原草案审计保留历史边界。
 新增T015安装/ABI、T016扩展freeze/control，T013移到T012之前，16任务11批全部NOT_STARTED。
+
+第三轮[C-07全API/生命周期审计](contracts/api-catalog.md)补齐未明确的观察退订、read取消与游标、异步局部等待、析构及流失败语义；Python binding与便利层分开列明。
+本次是设计修订，不据此宣称最终C++已可用或生命周期已通过运行证明；见[证据](evidence/api-lifecycle-20260912.md)。

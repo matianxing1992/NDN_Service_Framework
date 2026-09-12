@@ -23,3 +23,5 @@
 | FR-012 | US1–US4 | U04–U09 / C-05,C-06 | T003,T006,T009,T011,T013,T012 | SC-006,SC-007 / Spec185Process then wrappers |
 
 U编号见[API审计](api-review.md)；T013先验SC-005原生行，T012再关闭包装行。
+
+FR-001/FR-005/FR-007/FR-008/FR-012同时追踪[C-07 A01–A64及生命周期矩阵](contracts/api-catalog.md)，任务归属逐行列明；SC-004/SC-006/SC-007只有对应C++行为和安装消费完整通过才关闭。

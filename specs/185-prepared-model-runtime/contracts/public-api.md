@@ -13,7 +13,7 @@ using Milliseconds = std::chrono::milliseconds;
 using RequestId = std::string;
 using ModelId = NativeModelDescriptor;
 class PlacementStrategy; // opaque registered cooperative strategy; C-05
-class CompletionSubscription; // move-only cancellation token; C-06
+class Subscription; // move-only cancellation token; C-06
 struct Result { Bytes payload; RequestId requestId; std::string modelDigest; std::string planDigest; };
 enum class RequestStatus { Pending, Succeeded, Failed, Cancelled };
 struct Event { RequestId requestId; Bytes payload; bool terminal = false; };
@@ -49,7 +49,6 @@ enum class CachePolicy { RequireReady, UseOrWait, UseOrFetch, Refresh };
 struct PrepareOptions {
   CachePolicy cache = CachePolicy::UseOrFetch;
   Milliseconds timeout{300000};
-  std::function<bool()> cancelled;        // empty = never cancelled
 };
 struct PreparationReceipt {
   enum class Origin { CacheHit, JoinedInFlight, Fetched, Refreshed };
@@ -101,7 +100,7 @@ public:
   Provider provider(); // configured Provider-only Runtime; C-06
   void close() noexcept;
   bool drain(Milliseconds timeout) const;
-  CompletionSubscription drainAsync(Milliseconds timeout,
+  Subscription drainAsync(Milliseconds timeout,
     std::function<void(std::exception_ptr, bool)> callback) const;
   ~Runtime() noexcept;
 };
@@ -130,10 +129,12 @@ public:
   Result wait() const;
   Result wait(Milliseconds timeout) const;
   EventReader events();
-  CompletionSubscription onCompletion(std::function<void(std::exception_ptr, std::optional<Result>)>);
+  Subscription onCompletion(std::function<void(std::exception_ptr, std::optional<Result>)>);
+  Subscription resultAsync(Milliseconds timeout,
+    std::function<void(std::exception_ptr, std::optional<Result>)>);
   RequestDiagnostics diagnostics() const;
   void cancel();
-  void observe(EventObserver);
+  Subscription observe(EventObserver);
 };
 ```
 
@@ -176,8 +177,9 @@ source 路径只在 prepare 使用；请求阶段从 Package 获取已验证 met
 source 只放 PrepareRequest；去掉原草案 PrepareOptions.source 的重复定义。
 
 Runtime 的 Core 调用统一 post 到拥有 Face 的 IO；解析/下载等待不阻塞该线程。
-prepare、wait、drain 从 Runtime IO/通知回调线程调用返回 `WOULD_DEADLOCK`，不偷偷阻塞。
-close 可在回调中调用且不等待自己；由非 owner 线程 drain；最后一个外部 Runtime/子对象释放时
+prepare/run/result/next/drain/exportCheckpoint需要阻塞时，从Runtime IO/通知线程调用返回WOULD_DEADLOCK；0ms poll可用，不偷偷阻塞。
+close 可在回调中调用且不等待自己；最后Runtime外壳析构即close，子对象持State不保活外壳；由非owner线程drain。
+最后一个外部State/子对象引用释放时
 State 通过已有安全 shutdown/join 机制完成清理，禁止 detach 后访问已析构 Face。
 Runtime 析构行为和 self-thread 释放须由 T002 C++ fixture 证明；不能用“shared_ptr 会处理”替代。
 

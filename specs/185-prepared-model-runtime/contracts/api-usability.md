@@ -96,7 +96,10 @@ struct StreamEvent { std::uint64_t sequence; Bytes payload; bool terminal = fals
 class EventReader {
 public:
   std::optional<StreamEvent> next(std::chrono::milliseconds timeout);
+  Subscription nextAsync(std::chrono::milliseconds timeout,
+    std::function<void(std::exception_ptr, std::optional<StreamEvent>)>);
   void close() noexcept;
+  ~EventReader() noexcept;
 };
 ```
 
@@ -105,13 +108,14 @@ reader创建从请求开始保留的有界native stream记录按序读取（序�
 容量1024事件、总16MiB，达到任一上限使落后reader显式gap；已提交request结果不因读者慢而降级。
 新reader若最早事件已不可用立即gap，不静默从中间开始。close只停止读取，不取消请求。
 普通非stream请求调用events报UNSUPPORTED_CAPABILITY；terminal frame不是会话durable commit。
-原生结果/会话commit仍为权威；用户需要完成状态调用result。新Reader为move-only，持有必要owner lease。
+原生结果/会话commit仍为权威；用户需要完成状态调用result。新Reader为move-only，持有必要owner lease；失败/取消终止不可伪装正常EOF，退订和cursor规则见[C-07](api-catalog.md)。
 
 ## Python Mapping and Async
 
 固定显式导出Runtime/User/PreparedModel/Input/RequestOptions/PrepareOptions/RequestHandle/Result/
-Conversation/DiError及其值类型；不随optional模型依赖出现/消失。缺native运行依赖在open时明确报错，
-不返回None或空占位实现。import不连接网络、启动线程或加载模型。
+Conversation/DiError及其值类型；不随optional模型依赖出现/消失。必需binding扩展或其加载依赖缺失时import明确ImportError；
+可延迟加载的后端/运行配置缺失在open/prepare对应边界明确报错，不返回None或空占位实现。
+import不连接网络、启动业务线程或加载模型；核心对象直接绑定，不能为推迟错误伪造Python实现。
 
 ```python
 with Runtime.open(config) as runtime:

@@ -35,8 +35,9 @@ generation。完成顺序通过 generation CAS 控制；refresh 先完成时旧�
 
 状态为 ABSENT → PREPARING → READY；失败 job 移除并唤醒等待者，不长期缓存失败。
 job 有 RuntimeConfig.preparationJobTimeout 的独立 steady_clock deadline；单个等待者期限
-不能延长或缩短共享 job。调用 cancelled 必须 thread-safe、非阻塞；异常视为该等待者取消，
-记录 preparation 边界。取消检查间隔目标上限 50ms（调度延迟另计），禁止忙等。
+不能延长或缩短共享 job。普通API仅通过PreparationHandle.cancel设置native取消状态，最后用户handle释放同样取消该waiter；
+内部保留控制端口，旧兼容cancelled回调须thread-safe、非阻塞，异常视为该waiter取消。
+取消检查间隔目标上限50ms（调度延迟另计），禁止忙等；resultAsync局部等待超时不等于waiter超时，见C-07。
 最后一个等待者退出时取消尚未发布的 job；READY 发布与取消在一个 owner 提交点裁决。
 超时/取消已经返回的等待者不能稍后收到成功对象；其他有效等待者正常完成。
 

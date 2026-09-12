@@ -86,3 +86,6 @@ sequenceDiagram
 
 C-05/C-06增加ModelRegistration（启动冻结key→配置）、ModelCapabilities（只读schema）、PreparationHandle（独立waiter）、Result/DiError（公开值类型）、EventReader（可靠单游标）和RequestDiagnostics（观察丢弃计数）。
 ProviderConfig/ConversationCheckpoint为opaque对象；authority/coordinator/commit回调不透入application头；Python没有独立领域状态。
+
+C-07将初版CompletionSubscription统一为Subscription，适用于完成/诊断/单次read；新增有限resultAsync等待，不产生第二operation。
+Runtime外壳析构close，子对象只保留安全State；PreparationHandle最后用户副本释放取消该waiter，RequestHandle析构不cancel。完整所有权表见[C-07](contracts/api-catalog.md)。

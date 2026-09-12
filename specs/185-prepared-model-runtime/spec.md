@@ -11,7 +11,8 @@
 预留资源或创建远端 runner。NativeInferenceClient 继续作为唯一请求执行器，逐步退到公开 façade 后面。
 独立 artifact authority、Core Request/ACK/Selection/Response 和既有会话事务保持其所有权。
 
-完整能力首先由独立C++ SDK和生产进程提供，Python仅包装参数、异常、GIL与asyncio；详见[C-06](contracts/cpp-first.md)。
+完整能力首先由独立C++ SDK和生产进程提供，Python核心对象由pybind11直接绑定，便利层只转换参数、异常、GIL与asyncio；详见[C-06](contracts/cpp-first.md)。
+[C-07全API及生命周期](contracts/api-catalog.md)列出全部新稳定application/provider入口、Python映射、值类型、析构与关闭规则。设计要求独立和完整，当前仍NOT_IMPLEMENTED/NOT_RUN。
 全表面盘点见[API review](api-review.md)，不等于8500项声明的完整正确性证明。
 
 ## User Scenarios & Testing
@@ -50,7 +51,7 @@ C++ example 与 Python 薄封装使用同一个 PreparedModel 后端。维护调
 - **FR-002** **Verified Package Identity**: prepare 从显式可信配置解析精确模型/任务/source；配置摘要、内容摘要与来源信任分别验证。
 - **FR-003** **Bounded Preparation Cache**: 四种缓存策略具有互斥且可测试的语义；single-flight、独立等待期限、lease、预算和 Refresh 失败原子性遵循 C-02。
 - **FR-004** **Prepared Request Submission**: PreparedModel 绑定不可变模型和 splitter；输入编码、动态候选预算、ACK admission、placement、grant 和 plan 仍属于本次请求。
-- **FR-005** **Handle and Event Contract**: 明确同步参数异常、异步失败、wait、cancel、观察者、背压、deadline 与资源释放；不伪造远端状态。
+- **FR-005** **Handle and Event Contract**: 按C-07完整定义同步/异步局部等待、Subscription、退订不吞事件、流错误/EOF、析构和关闭后访问；不伪造远端状态。
 - **FR-006** **Conversation Ownership**: 会话绑定模型/任务身份并串行提交 turn；复用现有 journal、receipt/control、recovery/replacement 机制。
 - **FR-007** **Post-Selection Assembly**: Provider façade 委托现有认证后准备链，runner cache 不充当权限凭据或共享可变会话状态。
 - **FR-008** **Compatibility and Export**: 公共 C++ 头、安装目标和 Python façade 可消费；迁移清单覆盖实际维护调用方，旧签名过渡期保留，禁止静默 fallback。
@@ -58,7 +59,7 @@ C++ example 与 Python 薄封装使用同一个 PreparedModel 后端。维护调
 
 - **FR-010** **Installed API Boundary**: C-05六层暴露清单、安装头闭包和ONNX稳定ABI由安装prefix外部consumer验证。
 - **FR-011** **Extension Lifecycle**: 注册freeze、duplicate/replace、runner隔离及协作deadline/cancel遵循C-05，不承诺任意插件抢占。
-- **FR-012** **Independent C++ Capability**: C-06同步/异步prepare、请求、流、会话、恢复和Provider入口原生实现；先T013，再T012 Python包装。
+- **FR-012** **Independent C++ Capability**: C-06/C-07全部C++入口与生命周期原生实现；Python核心对象直接绑定、便利层不持领域状态；逐行exposure/消费/绑定验收，先T013再T012。
 
 ## Success Criteria
 

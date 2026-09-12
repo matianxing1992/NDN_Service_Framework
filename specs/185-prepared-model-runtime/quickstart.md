@@ -43,6 +43,20 @@ auto provider = runtime->provider();
 
 ## Thin Python Boundary
 
+完整方法、值类型和C++/Python对应见[C-07 API清单](contracts/api-catalog.md)。下面是目标普通用法（NOT_RUN）：
+
+```python
+from ndnsf_distributed_inference.api import Runtime, RuntimeConfig, Input
+
+config = RuntimeConfig(native_config_path="/operator/native-requester.json")
+with Runtime.open(config) as runtime:
+    model = runtime.user().prepare()
+    result = model.run(Input.inline_bytes(encoded_input))
+```
+
+encoded_input由应用按该模型schema提供。Provider使用provider_api中的ProviderConfig/ServiceDefinition；Runtime仍用同一C++绑定。
+观察回调或C++异步读取返回Subscription，需要保留到完成；可靠流不能用observe代替。确定性C++退出用close+drain，Python with组合相同原生方法。
+
 Python仅转换固定导出、timeout_s、异常、上下文管理和asyncio。
 异步准备/结果/迭代必须桥接C++ completion/nextAsync，不增加独立规划、缓存、会话或恢复。
 

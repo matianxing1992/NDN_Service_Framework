@@ -30,3 +30,6 @@ requester preparation cache 与 Provider artifact/template cache 分批实现和
 
 [API review](api-review.md)补齐全表面盘点及ONNX Runtime、Ray Serve、Triton、vLLM官方API比较；采纳模型对象、元数据、可靠结果/流和独立管理面，不宣称实测可用性优势。
 [C-05](contracts/api-usability.md)与[C-06](contracts/cpp-first.md)明确独立C++入口：安装SDK/ABI→原生能力→完整C++验收→Python包装。
+
+本轮完整性审计选择统一Subscription和native有限resultAsync，补可退订read/observer和明确析构；目的是避免Python为了实现async语法另造取消/状态owner。
+易用性目标以[C-07](contracts/api-catalog.md)常规调用层及逐行消费检查证明，不以“类似其他框架”推导全部接口已合理。

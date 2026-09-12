@@ -1,7 +1,7 @@
 # Tasks: Prepared Model Runtime
 
 **Status**: PLANNED | **Date**: 2026-09-12
-**Input**: [spec](spec.md) · [plan](plan.md) · [C-01](contracts/public-api.md) · [C-02](contracts/preparation.md) · [C-03](contracts/execution.md) · [C-04](contracts/validation.md) · [C-05](contracts/api-usability.md) · [C-06](contracts/cpp-first.md)
+**Input**: [spec](spec.md) · [plan](plan.md) · [C-01](contracts/public-api.md) · [C-02](contracts/preparation.md) · [C-03](contracts/execution.md) · [C-04](contracts/validation.md) · [C-05](contracts/api-usability.md) · [C-06](contracts/cpp-first.md) · [C-07](contracts/api-catalog.md)
 
 ## Execution Progress
 
@@ -26,12 +26,10 @@
 
 ## Current Checkpoint
 
-2026-09-12：扩展为完整API表面审计，明确独立C++ SDK和进程入口；Python仅包装同一native对象。
-新增C-05/C-06及T015安装/ABI、T016扩展生命周期；16任务、11批全部NOT_STARTED。
-[API审计](api-review.md)、[声明清单](api-surface-index.md)、[修订证据](evidence/api-review-20260912.md)。
-原始[14任务规划证据](evidence/planning-20260912.md)保留为历史；本次不运行产品编译或资格测试。
-下一执行单元T015；先核对当前HEAD/dirty diff，不把本次规划审查计为实现静态PASS。
-Spec184未完成资格和既有Design 54文件漂移不因本次规划关闭。
+2026-09-12：完成第三轮API完整性审计，新增[C-07全API与生命周期表](contracts/api-catalog.md)，覆盖稳定C++ API、Python直接绑定/便利映射、值类型和对象退出规则。
+补齐Subscription、异步局部等待、可取消读取/观察者、流失败与析构语义；仍16任务11批，全部NOT_STARTED。
+本轮[证据](evidence/api-lifecycle-20260912.md)记录检查及限制；既有[全表面审计](api-review.md)与[8500声明索引](api-surface-index.md)保留源码事实。
+生产源码/原生编译与运行未执行；下一单元T015。Spec184未完成资格、Design既有54文件漂移不改变。
 
 ## Shared Task Rules
 
@@ -42,6 +40,7 @@ Spec184未完成资格和既有Design 54文件漂移不因本次规划关闭。
 B0、B2E、B6–B9是单任务批次，各自达到出口即验证。T012只写binding断言，T014只做文档交付。
 跨批验收依赖必须实际通过；T012还要求T013完整C++ qualification出口，不接受仅静态接线。
 成员证据采用C-04同一批记录模板，不创建第二份进度权威。
+C-07每行是T015 exposure、T011 C++消费、T012绑定和T014文档的共同检查项；没有实现/证据不能关闭对应任务。
 所有新生产公共方法补C-01英文Doxygen义务；涉及private owner/提交点补说明原因的英文注释。
 目标路径须在task开始用CodeGraph/rg定位，若历史路径变动先更新本卡与symbol map，不能在未知文件下另建重复实现。
 
@@ -71,6 +70,8 @@ B0、B2E、B6–B9是单任务批次，各自达到出口即验证。T012只写b
 
   **Implementation and review**: 按C-06实现原生drainAsync及可退订token；接入owner registry、close/drain和失败逆序清理；weak callback断环；补prepare/wait/drain的owner线程拒绝路径和最后owner释放流程。
 
+  **Lifecycle completeness**: C-07 Runtime外壳析构即close；drainAsync屏障排除自身通知，保留安全State及join；测试子对象仍在/已释放和owner线程最后释放。
+
   **Exit / oracle**: close幂等、回调中close无自join、drain超时可重试；外部Face/IO fixture显式寿命；TSan同矩阵两次通过。
 
 <a id="t003"></a>
@@ -99,6 +100,8 @@ B0、B2E、B6–B9是单任务批次，各自达到出口即验证。T012只写b
 
   **API revision**: C-06：PreparationHandle代表独立waiter；可靠completion迟注册仍一次交付，取消单waiter不能终止共享job。
 
+  **Lifecycle completeness**: C-07 PreparationHandle最后副本释放取消该waiter；resultAsync仅取消等待；移除普通PrepareOptions取消回调，native handle统一取消。
+
   **Exit / oracle**: C-02全部反例；单waiter取消不影响其他人；Refresh失败旧对象可用；8并发仅一次fetch/inspect；TSan重复两次。
 
 <a id="t005"></a>
@@ -125,7 +128,9 @@ B0、B2E、B6–B9是单任务批次，各自达到出口即验证。T012只写b
 
   **Implementation and review**: 实现RequestHandle wrapper及lease，wait双重载；逐项对照历史回放/观察者异常/慢消费者行为；记录有界队列现状和支持能力，不发明全局ASSEMBLING。
 
-  **API revision**: C-05/C-06：统一Result/DiError/status；可退订CompletionSubscription、原生onCompletion与EventReader next/nextAsync、单游标、有界队列和STREAM_GAP独立于best-effort observe；覆盖慢读者、溢出、迟订阅和取消竞争。
+  **API revision**: C-05/C-06：统一Result/DiError/status；可退订Subscription、原生onCompletion与EventReader next/nextAsync、单游标、有界队列和STREAM_GAP独立于best-effort observe；覆盖慢读者、溢出、迟订阅和取消竞争。
+
+  **Lifecycle completeness**: C-07 observe/nextAsync返回Subscription；验证退订不吞事件、错误流不伪装EOF、READ_IN_PROGRESS、64订阅额度回收及moved-from。
 
   **Exit / oracle**: 局部wait超时后可取成功；deadline终态不可重复；cancel/complete/close交错；观察者不成为提交oracle；ASan/UBSan无抑制。
 
@@ -167,6 +172,8 @@ B0、B2E、B6–B9是单任务批次，各自达到出口即验证。T012只写b
 
   **API revision**: C-06：Provider::drainAsync及关闭竞争；独立ProviderConfig::fromFile/fromCommandLine及Runtime::open(ProviderConfig)，无User目录可单独serve；CLI复用C++ parser，非法字段拒绝。
 
+  **Lifecycle completeness**: C-07重复serve拒绝；registration析构停新接收、Provider handle析构不stop；测试Runtime.close与已接收工作收敛。
+
   **Exit / oracle**: 无Selection时fetch/assembly=0；有效Selection执行；wrong provider/epoch/grant拒绝；registration关闭及stop清理不悬空。
 
 <a id="t010"></a>
@@ -193,6 +200,8 @@ B0、B2E、B6–B9是单任务批次，各自达到出口即验证。T012只写b
 
   **API revision**: C-06：安装prefix外部consumer仅包含api.hpp/provider.hpp；交付同步/异步prepare、unary/stream、conversation/recovery/replacement及Provider示例，不导入Python。
 
+  **Lifecycle completeness**: C-07 A01–A64逐组完整外部C++例子与行为oracle；新增入口必须更新表，普通应用不得引用Native内部头。
+
   **Exit / oracle**: 新旧结果/失败语义对照；C++真实进程unary/stream先通过；matrix无漏项；nm/readelf与安装消费链接确认。
 
 <a id="t012"></a>
@@ -206,6 +215,8 @@ B0、B2E、B6–B9是单任务批次，各自达到出口即验证。T012只写b
   **Implementation and review**: 在现有绑定模块导出同一native对象；prepare/wait/drain释放GIL，observe正确获取GIL并保持owner；迁移维护Python用户路径，兼容shim保留/删除逐项记录，不在Python重做planning。
 
   **API revision**: C-05/C-06：固定导出、timeout_s、结构化错误、上下文退出与asyncio adapter；桥接C++ completion/nextAsync，禁止Python状态机或线程补齐缺失native能力。
+
+  **Lifecycle completeness**: C-07直接pybind对象/便利方法逐项映射；start_prepare保留显式handle；async取消/GC/loop关闭/解释器退出反例；不引入Python领域owner。
 
   **Exit / oracle**: Python输入/异常/事件映射和寿命通过；native断言仍C++；无静默legacy fallback；若实际模块文件不同先更新精确caller映射。
 
@@ -221,6 +232,8 @@ B0、B2E、B6–B9是单任务批次，各自达到出口即验证。T012只写b
 
   **API revision**: C-06：T012之前完成全部native矩阵、安装消费和ELF/子进程no-Python闭包；不可用Python PASS补缺，SC-005包装行留后批。
 
+  **Lifecycle completeness**: C-07生命周期矩阵全部原生反例先通过；Python随后仅验边界语义。
+
   **Exit / oracle**: SC-001至SC-007的原生部分逐条证据；SC-005 Python部分留T012；no-Python ELF/进程依赖；不同安全域和cache命中反例；无startup/collector错误冒充协议结果。
 
 <a id="t014"></a>
@@ -234,6 +247,8 @@ B0、B2E、B6–B9是单任务批次，各自达到出口即验证。T012只写b
   **Implementation and review**: 更新实际当前API/中文契约/源码摘要/三类图/双PDF；核对caller退出和每FR/SC证据；记录184仍未完成外部资格，提交明确candidate/source交付入口。
 
   **API revision**: C-05/C-06：同步六层API exposure manifest、全声明索引及独立C++指南；原生与包装验收分别记录。
+
+  **Lifecycle completeness**: 核对C-07全表、exposure、安装头和Python实际导出，advanced/CLI不绑定必须显式登记。
 
   **Exit / oracle**: 所有本Spec任务完整验收且链接可追溯；当前设计不混入planned；双PDF身份/排版通过；184不被自动勾选。
 
