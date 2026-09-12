@@ -217,6 +217,10 @@ private:
   std::atomic_bool m_startCancelled{false};
   // Callbacks share this state rather than borrowing the start() stack.
   std::shared_ptr<RegistrationState> m_registrationState;
+  // Keep the asynchronous prefix registrations alive.  RegisteredPrefixHandle
+  // unregisters on destruction; discarding the returned handles can cancel
+  // the command before NFD has completed registration.
+  std::vector<std::shared_ptr<ndn::ScopedRegisteredPrefixHandle>> m_registrationHandles;
 
   // registered prefixes
   ndn::Name m_prefixServiceAccess;

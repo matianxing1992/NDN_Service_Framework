@@ -40,6 +40,29 @@ This is a Waf configuration boundary, not a model, protocol, or C++ runtime
 failure. The candidate was not reconfigured merely to force a test binary, and
 no 27B run was attempted.
 
+An additional affected-target build lookup used the output filename
+(`DI_NativeOnnxAssemblyWorker`) instead of the registered Waf task name
+(`di-native-assembly-worker`). Waf rejected that lookup before compiling; the
+preserved raw output is `.codex-tmp/spec184-a4-target-build-20260912.log`.
+This is a command-target naming error, not a product or model result. The next
+retry uses the registered task name and the same candidate tree.
+
+The first attempt to regenerate the receipt through
+`scripts/spec180_native_build.py build` omitted the candidate Waf directory and
+lock environment, so the helper stopped at `The project was not configured`.
+Raw output is `.codex-tmp/spec184-a4-native-receipt-build-20260912.log`.
+This is a build-environment invocation error; the next attempt supplies the
+same `WAFDIR`/`WAFLOCK` pair used by the successful direct build.
+
+With the Waf environment supplied, the native targets rebuilt, but the receipt
+probe then failed while importing the binding because the host loader selected
+an incompatible `/usr/local/lib/libnac-abe.so`; the expected
+`Consumer::clearCache` symbol exists in the candidate NAC-ABE prefix. Raw
+output is `.codex-tmp/spec184-a4-native-receipt-build-20260912-r2.log`.
+This is a dynamic-library search-order boundary, not a C++ selector or model
+result. The retry must put the candidate NAC-ABE and NDN-SVS directories first
+in `LD_LIBRARY_PATH` and re-run the probe.
+
 ## Mixed-binary retry boundary
 
 For a bounded smoke probe, the pre-existing `build-spec184-b5-candidate/integration-tests`

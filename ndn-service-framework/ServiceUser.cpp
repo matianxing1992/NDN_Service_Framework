@@ -1251,7 +1251,12 @@ namespace ndn_service_framework
                 std::function<void(const ndn::Name&)>(),
                 std::bind(&ServiceUser::onPrefixRegisterFailure, this, _1, _2),
                 6,
-                std::chrono::milliseconds(250));
+                std::chrono::milliseconds(250),
+                [&] {
+                    auto holder = std::make_shared<ndn::ScopedRegisteredPrefixHandle>();
+                    m_serviceRegistrations.push_back(holder);
+                    return holder;
+                }());
         }
 
         m_signingInfo = ndn::security::signingByCertificate(signingCert);
@@ -1512,14 +1517,16 @@ namespace ndn_service_framework
         // assignment artifacts from this test user.
         const ndn::Name ndnsfFilter = ndn::Name(identity.toUri()).append("NDNSF");
         const ndn::Name ckFilter = ndn::Name(identity.toUri()).append("CK");
-        m_face.setInterestFilter(
-            ndnsfFilter,
-            std::bind(&ServiceUser::onInterest, this, _1, _2),
-            std::bind(&ServiceUser::onPrefixRegisterFailure, this, _1, _2));
-        m_face.setInterestFilter(
-            ckFilter,
-            std::bind(&ServiceUser::onInterest, this, _1, _2),
-            std::bind(&ServiceUser::onPrefixRegisterFailure, this, _1, _2));
+        auto registerContentFilter = [this](const ndn::Name& prefix) {
+            auto holder = std::make_shared<ndn::ScopedRegisteredPrefixHandle>();
+            m_serviceRegistrations.push_back(holder);
+            *holder = m_face.setInterestFilter(
+                prefix,
+                std::bind(&ServiceUser::onInterest, this, _1, _2),
+                std::bind(&ServiceUser::onPrefixRegisterFailure, this, _1, _2));
+        };
+        registerContentFilter(ndnsfFilter);
+        registerContentFilter(ckFilter);
     }
 
     void
@@ -2647,6 +2654,14 @@ namespace ndn_service_framework
             const auto keyId = pendingCall->second.requestScopedKeys->keyId;
             pendingCall->second.requestScopedKeys->zeroize();
             m_requestScopedNonceRegistry.invalidate(keyId);
+        }
+        for (auto& [provider, state] :
+             pendingCall->second.requestScopedProviderStates) {
+            if (!state.keys.keyId.empty()) {
+                const auto keyId = state.keys.keyId;
+                state.keys.zeroize();
+                m_requestScopedNonceRegistry.invalidate(keyId);
+            }
         }
         m_pendingCalls.erase(pendingCall);
         cleanupPendingCallState(requestId);
@@ -4261,11 +4276,20 @@ namespace ndn_service_framework
                     pending->second.requestScopedKeys->zeroize();
                     m_requestScopedNonceRegistry.invalidate(keyId);
                 }
+                for (auto& [provider, state] :
+                     pending->second.requestScopedProviderStates) {
+                    if (!state.keys.keyId.empty()) {
+                        const auto keyId = state.keys.keyId;
+                        state.keys.zeroize();
+                        m_requestScopedNonceRegistry.invalidate(keyId);
+                    }
+                }
                 pending->second.requestScopedKeys.reset();
                 pending->second.requestScopedBinding.reset();
                 pending->second.requestScopedPlaintext.clear();
                 pending->second.selectionGatedInputKey.clear();
                 pending->second.requestScopedInputDataName.clear();
+                pending->second.requestScopedProviderStates.clear();
                 pending->second.providerTokens.clear();
                 pending->second.selectionAssignmentPayloads.clear();
                 pending->second.collaborationScopeKeys.clear();
@@ -4836,11 +4860,9 @@ namespace ndn_service_framework
         }
         else {
             // Request-scoped input is published under an exact User-owned
-            // Data name after Selection.  Never put the plaintext back into
-            // the discovery Request, even though this method still receives
-            // the API payload for legacy callers.
-            ndn::Buffer empty;
-            requestMessage.setPayload(empty, 0);
+            // Data name after Selection.  Keep the sanitized discovery
+            // envelope already stored in the PendingCall; never put the
+            // plaintext API payload back on the wire.
         }
         requestMessage.setStrategy(strategy);
         requestMessage.setPolicyEpoch(getCurrentPolicyEpoch(serviceName));
@@ -5363,6 +5385,41 @@ namespace ndn_service_framework
                        "RequestScopedConfidentialityV1") == "required";
     }
 
+    namespace
+    {
+        // Keep the canonical DI envelope visible during discovery so a
+        // Provider can issue a V3 offer, but remove inline application bytes.
+        // The original payload remains in requestScopedPlaintext and is
+        // published only after Selection.
+        std::optional<ndn::Buffer>
+        makeRequestScopedDiscoveryPayload(const ndn::Buffer& original)
+        {
+            if (original.empty()) {
+                return std::nullopt;
+            }
+            const std::string wire(reinterpret_cast<const char*>(original.data()),
+                                   original.size());
+            if (wire.find("\"schema\":\"ndnsf-di-request-envelope-v2\"") ==
+                std::string::npos) {
+                return std::nullopt;
+            }
+            const std::string marker = "\"input_payload_b64\":\"";
+            const auto valueStart = wire.find(marker);
+            if (valueStart == std::string::npos) {
+                return std::nullopt;
+            }
+            const auto contentStart = valueStart + marker.size();
+            const auto contentEnd = wire.find('"', contentStart);
+            if (contentEnd == std::string::npos) {
+                return std::nullopt;
+            }
+            std::string discovery = wire;
+            discovery.erase(contentStart, contentEnd - contentStart);
+            return ndn::Buffer(reinterpret_cast<const uint8_t*>(discovery.data()),
+                               discovery.size());
+        }
+    }
+
     bool ServiceUser::prepareRequestScopedRequest(
         ndn_service_framework::RequestMessage& requestMessage,
         const ndn::Name& serviceName,
@@ -5392,9 +5449,25 @@ namespace ndn_service_framework
         // MiniNDN and streaming gates passed (T012/R179-M4).  The
         // request-scoped path is the only V2 protected invocation mode when
         // a Controller runtime is configured.
-        if (!requestScoped && !requestMessage.hasRequestCapabilities() &&
+        bool onlyFrameworkDataCapability = false;
+        if (requestMessage.hasRequestCapabilities()) {
+            onlyFrameworkDataCapability = true;
+            for (const auto& [name, value] :
+                 requestMessage.getRequestCapabilities().getFields()) {
+                if (name != "NDNSF_DATA_V1" || value != "required") {
+                    onlyFrameworkDataCapability = false;
+                    break;
+                }
+            }
+        }
+        if (!requestScoped &&
+            (!requestMessage.hasRequestCapabilities() ||
+             onlyFrameworkDataCapability) &&
             controllerConfigured && currentVersionInstalled) {
             RequestCapabilities capabilities;
+            if (onlyFrameworkDataCapability) {
+                capabilities = requestMessage.getRequestCapabilities();
+            }
             capabilities.setField("RequestScopedConfidentialityV1", "required");
             requestMessage.setRequestCapabilities(capabilities);
             requestScoped = true;
@@ -5414,22 +5487,35 @@ namespace ndn_service_framework
         // Empty application input is still represented by an authenticated
         // request-scoped Data packet.  Rejecting it here would make the
         // default path dependent on an undocumented payload convention.
-        ndn::Buffer empty;
-        requestMessage.setPayload(empty, 0);
+        if (auto discovery = makeRequestScopedDiscoveryPayload(plaintext)) {
+            requestMessage.setPayload(*discovery, discovery->size());
+        }
+        else {
+            ndn::Buffer empty;
+            requestMessage.setPayload(empty, 0);
+        }
         return true;
     }
 
     ndn::Name ServiceUser::makeRequestScopedInputDataName(
         const ndn::Name& serviceName,
         const ndn::Name& requestId,
-        uint64_t attempt) const
+        uint64_t attempt,
+        const ndn::Name& providerName) const
     {
-        if (serviceName.empty() || requestId.empty() || attempt == 0) {
+        if (serviceName.empty() || requestId.empty() || attempt == 0 ||
+            providerName.empty()) {
             throw std::invalid_argument("invalid request-scoped input name components");
         }
         ndn::Name dataName(identity);
         dataName.append("NDNSF").append("DI").append("REQUEST-INPUT");
-        dataName.append(serviceName).append(requestId).appendNumber(attempt);
+        dataName.append(serviceName).append(requestId).appendNumber(attempt)
+            // The key bundle and AAD bind the selected Provider.  Include
+            // that identity in the exact Data name as well, otherwise a
+            // multi-Provider collaboration would race several ciphertexts
+            // under one name and each consumer could fetch another
+            // Provider's envelope.
+            .append("PROVIDER").append(providerName);
         return dataName;
     }
 
@@ -6770,11 +6856,16 @@ namespace ndn_service_framework
             throw std::runtime_error(
                 "deferred collaboration ControllerVersion is not ready");
         }
+        ndn::Buffer requestScopedPlaintext;
+        const bool requestScopedConfidentiality = prepareRequestScopedRequest(
+            requestMessage, service, requestId, requestScopedPlaintext);
 
         PendingCall pendingCall;
         pendingCall.providers = providerNames;
         pendingCall.serviceName = service;
         pendingCall.requestMessage = std::move(requestMessage);
+        pendingCall.requestScopedPlaintext = std::move(requestScopedPlaintext);
+        pendingCall.requestScopedConfidentiality = requestScopedConfidentiality;
         pendingCall.strategy = ndn_service_framework::tlv::AllSelected;
         pendingCall.timeoutMs = timeoutMs;
         pendingCall.ackTimeoutMs = ackCollectionTimeMs;
@@ -7160,6 +7251,24 @@ namespace ndn_service_framework
             removeName(pendingCall->second.responseDecryptProvidersInFlight,
                        providerName);
         };
+        const auto scopedStateIt =
+            pendingCall->second.requestScopedProviderStates.find(
+                providerName.toUri());
+        const RequestKeyBundle* scopedKeys = nullptr;
+        const RequestSecurityBinding* scopedBinding = nullptr;
+        if (scopedStateIt !=
+            pendingCall->second.requestScopedProviderStates.end()) {
+            scopedKeys = &scopedStateIt->second.keys;
+            scopedBinding = &scopedStateIt->second.binding;
+        }
+        else if (pendingCall->second.requestScopedKeys &&
+                 pendingCall->second.requestScopedBinding) {
+            // Compatibility for invocations created before the per-Provider
+            // state was introduced (and for LocalMock tests that inject the
+            // legacy single-provider state directly).
+            scopedKeys = &*pendingCall->second.requestScopedKeys;
+            scopedBinding = &*pendingCall->second.requestScopedBinding;
+        }
         // A protected message carries the ControllerVersion as a hint.  Queue
         // an exact status fetch before enforcing the current transition so a
         // newly started/revoked runtime can converge instead of rejecting the
@@ -7212,9 +7321,9 @@ namespace ndn_service_framework
             return false;
         }
         if (pendingCall->second.requestScopedConfidentiality &&
-            pendingCall->second.requestScopedBinding &&
+            scopedBinding &&
             (!responseVersion ||
-             *responseVersion != pendingCall->second.requestScopedBinding->controllerVersion)) {
+             *responseVersion != scopedBinding->controllerVersion)) {
             // The response version is also authenticated through the request
             // binding/AAD.  A packet carrying a currently acceptable status
             // must not be allowed to relabel an invocation created under a
@@ -7289,8 +7398,7 @@ namespace ndn_service_framework
                 // reconstructed plaintext.  Nothing further to decrypt.
             }
             else {
-            if (!pendingCall->second.requestScopedKeys ||
-                !pendingCall->second.requestScopedBinding ||
+            if (!scopedKeys || !scopedBinding ||
                 providerName.empty() ||
                 !responseMessage.hasAeadEnvelope()) {
                 NDN_LOG_ERROR("Reject request-scoped response without key state or AEAD envelope requestId="
@@ -7298,7 +7406,7 @@ namespace ndn_service_framework
                 releaseResponseDecryptInFlight();
                 return false;
             }
-            const auto& binding = *pendingCall->second.requestScopedBinding;
+            const auto& binding = *scopedBinding;
             if (!providerName.empty() && !binding.providerEncryptionCertName.empty()) {
                 try {
                     if (ndn::security::extractIdentityFromCertName(
@@ -7317,7 +7425,7 @@ namespace ndn_service_framework
             auto responseBinding = binding;
             responseBinding.segmentOrEventId = "response";
             const auto nowMs = nowMilliseconds();
-            if (!pendingCall->second.requestScopedKeys->isValid(nowMs)) {
+            if (!scopedKeys->isValid(nowMs)) {
                 NDN_LOG_ERROR("Reject expired request-scoped response key requestId="
                               << requestId.toUri());
                 releaseResponseDecryptInFlight();
@@ -7331,12 +7439,12 @@ namespace ndn_service_framework
                 return false;
             }
             const auto lifetimeMs = std::chrono::milliseconds(
-                std::max<uint64_t>(1, pendingCall->second.requestScopedKeys->expiresAtMs - nowMs));
+                std::max<uint64_t>(1, scopedKeys->expiresAtMs - nowMs));
             ndn::Buffer plaintext;
             RequestCryptoFailure failure = RequestCryptoFailure::NONE;
             if (!decryptRequestContent(
-                    pendingCall->second.requestScopedKeys->responseKey,
-                    pendingCall->second.requestScopedKeys->keyId,
+                    scopedKeys->responseKey,
+                    scopedKeys->keyId,
                     responseBinding, envelope, plaintext, &failure)) {
                 NDN_LOG_ERROR("Reject request-scoped response AEAD requestId="
                               << requestId.toUri()
@@ -7348,7 +7456,7 @@ namespace ndn_service_framework
             // ciphertext/tag could poison the replay registry and make the
             // subsequent valid response look like a replay.
             if (!m_requestScopedNonceRegistry.reserve(
-                    pendingCall->second.requestScopedKeys->keyId,
+                    scopedKeys->keyId,
                     ndn::span<const uint8_t>(envelope.nonce.data(), envelope.nonce.size()),
                     lifetimeMs)) {
                 NDN_LOG_ERROR("Reject replayed request-scoped response nonce requestId="
@@ -7660,23 +7768,41 @@ namespace ndn_service_framework
         if (reference->keyScope == "request") {
             const auto pendingIt = m_pendingCalls.find(requestId);
             if (pendingIt == m_pendingCalls.end() ||
-                !pendingIt->second.requestScopedConfidentiality ||
-                !pendingIt->second.requestScopedKeys ||
-                !pendingIt->second.requestScopedBinding) {
+                !pendingIt->second.requestScopedConfidentiality) {
                 errorMessage =
                     "request-scoped large response has no pending invocation key state";
                 return std::nullopt;
             }
+            const auto scopedStateIt =
+                pendingIt->second.requestScopedProviderStates.find(
+                    providerName.toUri());
+            const RequestKeyBundle* scopedKeys = nullptr;
+            const RequestSecurityBinding* scopedBinding = nullptr;
+            if (scopedStateIt !=
+                pendingIt->second.requestScopedProviderStates.end()) {
+                scopedKeys = &scopedStateIt->second.keys;
+                scopedBinding = &scopedStateIt->second.binding;
+            }
+            else if (pendingIt->second.requestScopedKeys &&
+                     pendingIt->second.requestScopedBinding) {
+                scopedKeys = &*pendingIt->second.requestScopedKeys;
+                scopedBinding = &*pendingIt->second.requestScopedBinding;
+            }
+            if (!scopedKeys || !scopedBinding) {
+                errorMessage =
+                    "request-scoped large response has no Provider key state";
+                return std::nullopt;
+            }
             if (!responseMessage.hasControllerVersion() ||
                 responseMessage.getControllerVersion() !=
-                    pendingIt->second.requestScopedBinding->controllerVersion) {
+                    scopedBinding->controllerVersion) {
                 errorMessage =
                     "request-scoped large response ControllerVersion mismatch";
                 return std::nullopt;
             }
             try {
                 if (ndn::security::extractIdentityFromCertName(
-                        pendingIt->second.requestScopedBinding->providerEncryptionCertName) !=
+                        scopedBinding->providerEncryptionCertName) !=
                     providerName) {
                     errorMessage =
                         "request-scoped large response provider certificate mismatch";
@@ -7688,20 +7814,20 @@ namespace ndn_service_framework
                     "request-scoped large response provider certificate is invalid";
                 return std::nullopt;
             }
-            if (pendingIt->second.requestScopedBinding->serviceName != serviceName ||
-                pendingIt->second.requestScopedBinding->requestId != requestId ||
+            if (scopedBinding->serviceName != serviceName ||
+                scopedBinding->requestId != requestId ||
                 reference->plaintextSize == 0) {
                 errorMessage = "request-scoped large response binding or size is invalid";
                 return std::nullopt;
             }
 
             const auto nowMs = nowMilliseconds();
-            if (!pendingIt->second.requestScopedKeys->isValid(nowMs)) {
+            if (!scopedKeys->isValid(nowMs)) {
                 errorMessage = "request-scoped large response key is expired";
                 return std::nullopt;
             }
             const auto lifetimeMs = std::chrono::milliseconds(std::max<uint64_t>(
-                1, pendingIt->second.requestScopedKeys->expiresAtMs - nowMs));
+                1, scopedKeys->expiresAtMs - nowMs));
             ndn::Buffer plaintext;
             std::set<std::string> segmentIds;
             std::vector<ndn::Buffer> authenticatedNonces;
@@ -7731,13 +7857,13 @@ namespace ndn_service_framework
                         "request-scoped large response segment identity is invalid";
                     return std::nullopt;
                 }
-                auto binding = *pendingIt->second.requestScopedBinding;
+                auto binding = *scopedBinding;
                 binding.segmentOrEventId = envelope.segmentOrEventId;
                 ndn::Buffer segmentPlaintext;
                 RequestCryptoFailure failure = RequestCryptoFailure::NONE;
                 if (!decryptRequestContent(
-                        pendingIt->second.requestScopedKeys->responseKey,
-                        pendingIt->second.requestScopedKeys->keyId,
+                        scopedKeys->responseKey,
+                        scopedKeys->keyId,
                         binding,
                         envelope,
                         segmentPlaintext,
@@ -7763,7 +7889,7 @@ namespace ndn_service_framework
                 return std::nullopt;
             }
             if (!m_requestScopedNonceRegistry.reserveBatch(
-                    pendingIt->second.requestScopedKeys->keyId,
+                    scopedKeys->keyId,
                     authenticatedNonces, lifetimeMs)) {
                 errorMessage = "request-scoped large response segment nonce was replayed";
                 return std::nullopt;
@@ -11039,51 +11165,81 @@ void ServiceUser::finishRequestAckOnEventLoop(
             const auto lifetimeMs = static_cast<uint64_t>(std::max(
                 1000, pendingIt->second.timeoutMs > 0 ?
                     pendingIt->second.timeoutMs : 30000));
-            auto keys = generateRequestKeyBundle(nowMs, nowMs + lifetimeMs);
+            auto& scopedState =
+                pendingIt->second.requestScopedProviderStates[providerName.toUri()];
+            std::optional<AeadEnvelope> encrypted;
+            if (!scopedState.keys.isValid(nowMs) ||
+                scopedState.binding.serviceName != serviceName ||
+                scopedState.binding.requestId != requestId) {
+                auto keys = generateRequestKeyBundle(nowMs, nowMs + lifetimeMs);
 
-            const auto userAdvertisement = makeEncryptionCertificateAdvertisement(identityCert);
-            const auto inputName = makeRequestScopedInputDataName(
-                serviceName, requestId, selectionMessage.getAttempt());
-            RequestSecurityBinding binding;
-            binding.serviceName = serviceName;
-            binding.requestId = requestId;
-            binding.attempt = selectionMessage.getAttempt();
-            binding.controllerVersion = selectionMessage.getControllerVersion();
-            binding.userEncryptionCertName = userAdvertisement.certificateName;
-            binding.userEncryptionCertDigest = userAdvertisement.certificateDigest;
-            binding.providerEncryptionCertName =
-                ndn::Name(offer.getField("recipientCertName"));
-            binding.providerEncryptionCertDigest =
-                offer.getField("recipientCertDigest");
-            binding.selectionDigest =
-                computeSelectionDigestWithoutKeyEnvelope(selectionMessage);
-            binding.inputDataName = inputName;
-            binding.segmentOrEventId = "request-input";
+                const auto userAdvertisement =
+                    makeEncryptionCertificateAdvertisement(identityCert);
+                const auto inputName = makeRequestScopedInputDataName(
+                    serviceName, requestId, selectionMessage.getAttempt(),
+                    providerName);
+                RequestSecurityBinding binding;
+                binding.serviceName = serviceName;
+                binding.requestId = requestId;
+                binding.attempt = selectionMessage.getAttempt();
+                binding.controllerVersion = selectionMessage.getControllerVersion();
+                binding.userEncryptionCertName = userAdvertisement.certificateName;
+                binding.userEncryptionCertDigest = userAdvertisement.certificateDigest;
+                binding.providerEncryptionCertName =
+                    ndn::Name(offer.getField("recipientCertName"));
+                binding.providerEncryptionCertDigest =
+                    offer.getField("recipientCertDigest");
+                binding.selectionDigest =
+                    computeSelectionDigestWithoutKeyEnvelope(selectionMessage);
+                binding.inputDataName = inputName;
+                binding.segmentOrEventId = "request-input";
 
-            const auto encrypted = encryptRequestContent(
-                keys.inputKey, keys.keyId, binding,
-                ndn::span<const uint8_t>(
-                    pendingIt->second.requestScopedPlaintext.data(),
-                    pendingIt->second.requestScopedPlaintext.size()));
-            const auto encryptedWire = encrypted.wireEncode();
-            ndn::Buffer encryptedPayload(encryptedWire.data(), encryptedWire.size());
-            publishSignedAppData(inputName, encryptedPayload,
-                                 ndn::time::milliseconds(lifetimeMs));
+                encrypted = encryptRequestContent(
+                    keys.inputKey, keys.keyId, binding,
+                    ndn::span<const uint8_t>(
+                        pendingIt->second.requestScopedPlaintext.data(),
+                        pendingIt->second.requestScopedPlaintext.size()));
+                const auto encryptedWire = encrypted->wireEncode();
+                ndn::Buffer encryptedPayload(encryptedWire.data(), encryptedWire.size());
+                publishSignedAppData(inputName, encryptedPayload,
+                                     ndn::time::milliseconds(lifetimeMs));
+                scopedState.keys = keys;
+                scopedState.binding = binding;
+                scopedState.inputDataName = inputName;
+                // Retain the legacy single-state view for non-collaboration
+                // callers and older response paths.  New multi-Provider
+                // paths use requestScopedProviderStates below.
+                pendingIt->second.requestScopedKeys = keys;
+                pendingIt->second.requestScopedBinding = binding;
+                pendingIt->second.requestScopedInputDataName = inputName;
+            }
 
             const auto wrapped = wrapSelectionKeyEnvelope(
-                keys, binding,
+                scopedState.keys, scopedState.binding,
                 selectionGatedUnhex(offer.getField("recipientPublicKey")), nowMs);
             selectionMessage.setSelectionKeyEnvelope(wrapped.wireEncode());
-            pendingIt->second.requestScopedKeys = keys;
-            pendingIt->second.requestScopedBinding = binding;
-            pendingIt->second.requestScopedInputDataName = inputName;
-            pendingIt->second.requestScopedPlaintext.clear();
+            bool allSelectedProvidersPrepared = true;
+            if (pendingIt->second.isCollaboration) {
+                for (const auto& participant :
+                     pendingIt->second.collaborationCommittedParticipants) {
+                    if (pendingIt->second.requestScopedProviderStates.find(
+                            participant.provider.toUri()) ==
+                        pendingIt->second.requestScopedProviderStates.end()) {
+                        allSelectedProvidersPrepared = false;
+                        break;
+                    }
+                }
+            }
+            if (!pendingIt->second.isCollaboration || allSelectedProvidersPrepared) {
+                pendingIt->second.requestScopedPlaintext.clear();
+            }
             NDN_LOG_INFO("NDNSF_REQUEST_SCOPED_INPUT_PUBLISHED requestId="
                          << requestId.toUri()
                          << " serviceName=" << serviceName.toUri()
                          << " providerName=" << providerName.toUri()
-                         << " dataName=" << inputName.toUri()
-                         << " bytes=" << encrypted.ciphertext.size());
+                         << " dataName=" << scopedState.inputDataName.toUri()
+                         << " bytes=" << (encrypted ? encrypted->ciphertext.size() : 0)
+                         << " stateReused=" << (!encrypted.has_value()));
         }
         NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=SELECTION_TOKEN_STATE timestamp_us="
                   << nowMicroseconds()

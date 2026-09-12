@@ -43,3 +43,13 @@ receipt, A1 YOLO Y-A, and A2 YOLO Y-B/Y-N as `PASS_FOR_ROW`. A3 remains
 recorded in `evidence/t007-model-capability-20260912.md`; neither is a product or qualification
 result. This overlay does not mark T007 or Spec184 complete and does not promote the local
 candidate.
+
+## Superseding source refresh (2026-09-12)
+
+The framework/DI source review and same-tree rebuild changed the candidate
+identity after the overlay above. A0 now refers to the refreshed receipt in
+[A4 current candidate refresh](a4-current-candidate-refresh-20260912.md);
+the former YOLO A1/A2 rows are historical and return to
+`NOT_RUN_CURRENT_CANDIDATE` until root Y-A, Y-B, and Y-N are repeated. T007
+remains `IN_PROGRESS`; the exact 27B row remains external and T008 remains
+blocked.

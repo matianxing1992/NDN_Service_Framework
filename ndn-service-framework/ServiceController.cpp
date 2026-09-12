@@ -1162,54 +1162,56 @@ void ServiceController::registerInterestHandlers()
     NDN_LOG_ERROR("Failed to register prefix " << prefix << " reason=" << reason);
   };
 
-  m_face.setInterestFilter(
+  auto registerFilter = [this, onRegistered, onFailure](
+      const ndn::Name& prefix,
+      std::function<void(const ndn::InterestFilter&, const ndn::Interest&)> onInterest) {
+    auto holder = std::make_shared<ndn::ScopedRegisteredPrefixHandle>();
+    m_registrationHandles.push_back(holder);
+    *holder = m_face.setInterestFilter(
+      prefix, std::move(onInterest), onRegistered, onFailure);
+  };
+
+  registerFilter(
     m_prefixServiceAccess,
     [this](const ndn::InterestFilter& f, const ndn::Interest& i) {
       this->onServiceAccessInterest(f, i);
-    },
-    onRegistered, onFailure);
+    });
 
-  m_face.setInterestFilter(
+  registerFilter(
     m_prefixServiceProvision,
     [this](const ndn::InterestFilter& f, const ndn::Interest& i) {
       this->onServiceProvisionInterest(f, i);
-    },
-    onRegistered, onFailure);
+    });
 
-  m_face.setInterestFilter(
+  registerFilter(
     m_prefixUserPermissions,
     [this](const ndn::InterestFilter& f, const ndn::Interest& i) {
       this->onUserPermissionsInterest(f, i);
-    },
-    onRegistered, onFailure);
+    });
 
-  m_face.setInterestFilter(
+  registerFilter(
     m_prefixProviderPermissions,
     [this](const ndn::InterestFilter& f, const ndn::Interest& i) {
       this->onProviderPermissionsInterest(f, i);
-    },
-    onRegistered, onFailure);
+    });
 
-  m_face.setInterestFilter(
+  registerFilter(
     m_prefixPolicyManifest,
     [this](const ndn::InterestFilter& f, const ndn::Interest& i) {
       this->onPolicyManifestInterest(f, i);
-    },
-    onRegistered, onFailure);
+    });
 
-  m_face.setInterestFilter(
+  registerFilter(
     m_prefixPolicyStatus,
     [this](const ndn::InterestFilter& f, const ndn::Interest& i) {
       this->onPolicyStatusInterest(f, i);
-    },
-    onRegistered, onFailure);
+    });
 
-  m_face.setInterestFilter(
+  registerFilter(
     m_prefixCertificateBootstrap,
     [this](const ndn::InterestFilter& f, const ndn::Interest& i) {
       this->onCertificateBootstrapInterest(f, i);
-    },
-    onRegistered, onFailure);
+    });
 
   NDN_LOG_INFO("ServiceController listening on:\n"
             << "  " << m_prefixServiceAccess 

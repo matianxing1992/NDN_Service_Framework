@@ -87,3 +87,29 @@ tree before any local 0.6B smoke result can be accepted.
 The disposition is unchanged: A3 stays `WAITING_EXTERNAL_INPUT`, A4 remains
 the only local remainder, and T008 remains `BLOCKED_BY_T007`. No 0.6B smoke
 result is used as 27B qualification evidence.
+
+## Superseding candidate refresh (2026-09-12)
+
+The registration-lifetime and Provider-scoped request changes were reviewed and
+rebuilt from the same configured r4 tree. The weak retry-owner guard and empty
+buffer guard were added during that review. The refreshed receipt verifies with
+exit `0` and SHA-256
+`219780a01753551d801ac6190ac334799ee948c5fbb7662e73041d40936f5e68`;
+the detailed review/build record is [current candidate refresh](a4-current-candidate-refresh-20260912.md).
+
+Because the framework and DI library hashes changed, the former Y-A `r51`,
+Y-B `r37`, and Y-N `r50` results are retained as historical evidence but are
+not current-candidate qualification. The ordered remainder is now:
+
+| Gate | Current status | Required next evidence |
+| --- | --- | --- |
+| T007-A0 | `PASS_FOR_ROW` | refreshed receipt and loader identity, already verified in the current refresh record |
+| T007-A1 | `NOT_RUN_CURRENT_CANDIDATE` | root Y-A C++ numerical oracle, terminal child exits and cleanup using the refreshed candidate |
+| T007-A2 | `NOT_RUN_CURRENT_CANDIDATE` | root Y-B and Y-N protected/negative matrix using the same refreshed candidate |
+| T007-A3 | `WAITING_EXTERNAL_INPUT` | exact `Qwen/Qwen3.6-27B` bundle and external result; local 0.6B remains smoke-only |
+| T007-A4 | `PARTIAL` | inherited negative/retirement rows with complete current identity; I05 may remain explicit `UNQUALIFIED` |
+| T008 | `BLOCKED_BY_T007` | final handoff only after T007 overall qualification passes |
+
+No current-candidate YOLO run has been claimed yet. The next local action is
+Y-A, followed by Y-B/Y-N if its terminal cleanup is complete; these runs do not
+require or imply execution of the unavailable 27B model.

@@ -289,3 +289,67 @@ The exact Qwen3.6-27B model remains `WAITING_EXTERNAL_INPUT`; the local
 Qwen3-0.6B boundary does not create a replacement candidate or a qualification
 PASS. The next candidate must be frozen only after A4 is closed locally or the
 external A3 result is transferred with its own model/runtime identity.
+
+## Current Source-Refresh Candidate (2026-09-12)
+
+This candidate supersedes the 2026-09-11 YOLO overlay for future runs. It
+contains the reviewed registration-lifetime, Provider-scoped request, and
+shutdown changes and the same-tree r4 receipt. The former Y-A/Y-B/Y-N results
+remain historical until rerun against this identity.
+
+| Member | Bound value |
+| --- | --- |
+| `candidateId` | `sha256:a0d092eb2870f5cbfb0fa2a7f64b1d1639b7d5a4f805b68f4b298358a79e1a4c` |
+| `state` | `FRESH_LOCAL_PARTIAL / A0_PASS / A1_A2_PENDING_RERUN` |
+| `receipt` | `build-spec184-b5-candidate-r4/spec180-native-build.json`, `sha256:219780a01753551d801ac6190ac334799ee948c5fbb7662e73041d40936f5e68` |
+| `toolchain` | `/usr/bin/g++ -B/usr/bin`, Waf `-j4`, candidate NAC-ABE/NDN-SVS paths first in loader environment |
+| `framework` | `sha256:f107c897166f3d0375deb4e9779e1a5c88b63538ab3bbd75cad9630d55ff5bf5` |
+| `DI` | `sha256:8c53e0fa457e2df5f8a4e4fb66151ff220ad136da78c6ddde09b39aa32291a3b` |
+| `requester` | `sha256:c9e8dfa7d0eddd2c570dde4e4db23f4709a64e194135634b863bedaa36b1ae99` |
+| `artifact authority` | `sha256:e8540479e6a23c97aacbfb40f10f57c8d4375a68ad140e7f8f328eb90405de33` |
+| `provider` | `sha256:ba7545a623285ee89816e9213cfcb06c54acd0229bea009f1dbc3df4fe1e91f4` |
+| `assembly worker` | `sha256:5675aba103f7df152742d56e3287f0e48e61ffe912f6c37e756f719d7bb86a27` |
+
+The ordered member map used for this `candidateId` is:
+
+```text
+binary.artifact_authority=e8540479e6a23c97aacbfb40f10f57c8d4375a68ad140e7f8f328eb90405de33
+binary.di=8c53e0fa457e2df5f8a4e4fb66151ff220ad136da78c6ddde09b39aa32291a3b
+binary.framework=f107c897166f3d0375deb4e9779e1a5c88b63538ab3bbd75cad9630d55ff5bf5
+binary.provider=ba7545a623285ee89816e9213cfcb06c54acd0229bea009f1dbc3df4fe1e91f4
+binary.requester=c9e8dfa7d0eddd2c570dde4e4db23f4709a64e194135634b863bedaa36b1ae99
+binary.worker=5675aba103f7df152742d56e3287f0e48e61ffe912f6c37e756f719d7bb86a27
+build.receipt=219780a01753551d801ac6190ac334799ee948c5fbb7662e73041d40936f5e68
+evidence.a4_refresh=ee486f6c759eeca25f2b538b16901cda764ee1c82e976c32d64e59181837287b
+evidence.model_capability=5c88613f5b292058db6c50b57c413c38acbfe0094fafcd0eb6886dcdca90878f
+evidence.receipt_build=cbd46cdf022e3935980853e4f31188dca8fea72ce8b2d65c71e6320bdca15461
+evidence.remainder_audit=7b825639d806ef990ee9e0d3cbf273e890c5984e88fecf10bddf88c40c8b9df1
+evidence.t007_process=dec787108831e1edee112d009b7e8b420a8220a2d73f0d81d83c2f83efaae3c6
+evidence.task_registry=d018b10ba8405e7fbae8c00e03279c0f87211048413124026d2401f32a4d9808
+log.mixed_binary_retry=33c155fb5124cd7249551586e6b5ee1b5658334503d05ac09d4ec8f4d0a85cde
+log.target_build=a9508b439b328a88ead542a18be4589d157850066db0422ffc352c356f413273
+log.waf_target_lookup=1f49b7cd938da12e8169c4248501b832b85b8fcdb66b2fc1352092dd413ece62
+source.CertificatePublisher.cpp=366223a3dd6f68ebe19c01ae637dda5b3f496fa3086cbe329270aad6e9fd1f44
+source.CertificatePublisher.hpp=bb0719e93cb4e84732e94395ff56135b222d0114e2719bae991b02439a9f0f29
+source.Experiments.yolo_runner.py=7c19e26aadb1316bf44a4fc99ed8494ffacce9756cc1e39a9cce0a108d90dd42
+source.ServiceController.cpp=f4fea99614905aca4beaeb66b2817db635c00f3855a7802310eae8f5cfa94329
+source.ServiceController.hpp=d2168f789e622cee4e0390c06f393641207307ca970913a733a33d2627eff861
+source.ServiceProvider.cpp=b6b1db11dd5243a15de3b8f7a084c3483acbf77ea857ddb425f6c4a7bbcc0a11
+source.ServiceProvider.hpp=381b163cbeb3fc94699c609f530b5d01b5c2cac4232a5c397e2d09ebf35a725a
+source.ServiceUser.cpp=d7e3b04ef08d803cebe525aac67c8418ff8f370312859155205ec9201f566940
+source.ServiceUser.hpp=a67152ed51f0ba9a42fb57ce6c3a142743e0e1a6e4fb7441d67f460f9cfb2e91
+source.examples.DI_NativeProviderExecutable.cpp=8181f12100faa9eefaa41ef5a26c653ada2871ab5234bd950484019668e7720a
+source.examples.yolo_controller.py=f4254a92423f0552a05c6563e63d12fb307c865385b9cd75b56c18cbae5414d9
+source.tests.integration.cpp=fd96dcc5331aaebbbf3eb944ae594ee59f43d8148baef883be80e0c71244169d
+source.utils.cpp=b93abea7df3434930bb081a0bfcff1b740db6aa782c1f36a0366f5de91364ac4
+source.utils.hpp=c383cb761e53a1fb09fa3930966f668b40507f4486c50aa2c0e1de6afe279458
+spec.caller=b2b079fd5f8e658aa6b2fec6bfec389830aa1c509fac4783f1f73e6c29c9a449
+spec.matrix=6f1e933717582a1fa8cf4e734de7ffa325c14392dee301aa24ef9735c788d80c
+spec.plan=bc000e9c5059cc99fabcfeb1122894fa9163184098a55e0e1e787b3fe5b37615
+spec.tasks=113f5bbb5ccc2935f32ef8c056469d4d17dd6a7fe01bb9a7b8c2703a64938954
+```
+
+The SHA-256 of these sorted lines followed by a final newline is
+`sha256:a0d092eb2870f5cbfb0fa2a7f64b1d1639b7d5a4f805b68f4b298358a79e1a4c`.
+The exact Qwen3.6-27B row remains `WAITING_EXTERNAL_INPUT`; local Qwen3-0.6B
+is not a replacement qualification subject.

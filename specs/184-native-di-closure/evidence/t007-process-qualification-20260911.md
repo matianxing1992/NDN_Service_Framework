@@ -318,3 +318,22 @@ not close inherited negative/retirement rows, I05 (which remains `UNQUALIFIED`),
 retirement, or SIF/Tiger ownership. The host can run only `Qwen3-0.6B` smoke/ABI fixtures;
 the contract-required `Qwen/Qwen3.6-27B` row remains `WAITING_EXTERNAL_INPUT` and no local
 result is relabeled as that model.
+
+## Current source refresh (2026-09-12)
+
+The registration retry owner, Provider-specific request-scoped input binding,
+collaboration dispatch, key cleanup, and native shutdown changes were reviewed;
+the retry callback now uses a weak owner guard and empty request input has an
+explicit no-payload boundary. The affected target set was rebuilt from
+`build-spec184-b5-candidate-r4` with `/usr/bin/g++ -B/usr/bin` and `-j4`.
+Receipt generation required the candidate NAC-ABE/NDN-SVS directories to be
+first in `LD_LIBRARY_PATH`; `verify` then exited `0`.
+
+The refreshed framework/DI hashes are
+`f107c897166f3d0375deb4e9779e1a5c88b63538ab3bbd75cad9630d55ff5bf5` and
+`8c53e0fa457e2df5f8a4e4fb66151ff220ad136da78c6ddde09b39aa32291a3b`.
+The prior YOLO process rows in this file remain tied to the former candidate
+and must be rerun before being treated as current. See [A4 current candidate
+refresh](a4-current-candidate-refresh-20260912.md) for the full identity and
+raw output paths. The 27B row remains external; no 0.6B result substitutes for
+it.

@@ -6,6 +6,7 @@
 #include <ndn-cxx/security/certificate.hpp>
 #include <ndn-cxx/security/key-chain.hpp>
 
+#include <memory>
 #include <vector>
 
 namespace ndn_service_framework {
@@ -36,6 +37,7 @@ private:
   std::vector<ndn::security::Certificate> m_certificates;
   ndn::Name m_registeredPrefix;
   std::vector<ndn::Name> m_registeredPrefixes;
+  std::vector<std::shared_ptr<ndn::ScopedRegisteredPrefixHandle>> m_registeredHandles;
 };
 
 } // namespace ndn_service_framework

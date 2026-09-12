@@ -1604,6 +1604,7 @@ namespace ndn_service_framework{
                 const ndn::Name& requestId,
                 RequestMessage requestMessage,
                 const ServiceSelectionMessage& selectionMessage,
+                const ndn::Buffer& assignmentPayload,
                 const std::string& selectionDigest);
             void publishExecutionFailureOnEventLoop(
                 const ndn::Name& requesterName,
@@ -1735,6 +1736,7 @@ namespace ndn_service_framework{
             ndn::Name identity;
             ndn::KeyChain m_keyChain;
             ndn::KeyChain* m_testSigningKeyChain = nullptr;
+            std::vector<std::shared_ptr<ndn::ScopedRegisteredPrefixHandle>> m_contentRegistrations;
             std::shared_ptr<ndn::svs::SVSPubSub> m_svsps;
             LocalPublicationHandler m_localPublicationHandler;
             mutable std::mutex m_streamPublicationInterceptorMutex;

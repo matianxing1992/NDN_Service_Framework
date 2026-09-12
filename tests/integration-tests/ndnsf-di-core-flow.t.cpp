@@ -7637,6 +7637,9 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
     BOOST_CHECK_EQUAL(record->planRoleMapDigest, replacementRoleMapDigest);
     BOOST_CHECK(record->checkpoint.requestId.find(first.requestId() + "/recovery/") == 0);
     BOOST_CHECK_NE(record->checkpoint.requestId, first.requestId());
+    // The closure runner consumes this marker as an independent business
+    // oracle for the alternate-provider replacement path.
+    std::cout << "SPEC182_NATIVE_DI_REPLACEMENT_RESULT_OK\n" << std::flush;
     client.close();
     return;
   }
