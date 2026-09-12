@@ -6,10 +6,11 @@
 准备成功只表示本地不可变模型包可用，不表示权限有效、Provider 已选择或远端 runner 已就绪。
 
 \subsection{API 与身份}
-Runtime::open 接收操作员固定的配置；User::prepare 接收模型、任务、目录 JSON 与一次性 source
-定位。PreparedModel 持有已验证目录、splitter 与 source lease；manifest 和 receipt 只读。
+Runtime::open 由 C++ 解析操作员配置并冻结模型注册；普通 User::prepare 只接模型 key，默认 default。
+高级目录/source 接口单独分层。PreparedModel 持有已验证目录、splitter 与 source lease；manifest 和 receipt 只读。
 request 接收 owning Input 和 RequestOptions；placement 只有 options 中一个覆盖入口。
-RequestHandle 提供 wait()、wait(timeout)、cancel 和 observe；局部等待超时不取消请求。
+RequestHandle 提供 result、cancel、可退订 completion 和可靠 EventReader；observe 仅作可丢弃诊断。
+局部等待超时不取消请求。能力/schema 可查询，结果和错误采用独立公开类型。
 完整签名、字段、默认值及异常见本 Spec 的 contracts/public-api.md。
 
 \subsection{缓存和授权}
@@ -28,10 +29,17 @@ Provider 认证 Selection 后才取得受保护 source 并组装；不可变 art
 不增加全局 ASSEMBLING barrier，不开放绕过认证的 prewarm 开关。
 
 \subsection{实施与证据}
-按 Runtime、准备缓存、请求、会话、Provider、迁移、最终验收七阶段推进，细分九批、十四任务。
+共十一批、十六任务。先安装 C++ SDK/ABI 门，再 Runtime、准备、扩展注册、请求、会话、Provider、迁移；
+完整 C++ 资格通过后才包装 Python，最后同步设计。六层 API 暴露清单隔离应用、Provider、扩展、authority、内部与兼容。
 逐任务只读静态门通过后继续同批，批末组合审查后统一构建和相关测试。
 C++ 生产及跨进程证据先于 Python 薄封装检查；Spec184 未完成资格继续留在原任务中。
 本节不更新冻结目标 API 清单为假实现，详细新增目标契约由 Spec185 独立维护。
+
+\subsection{独立 C++ 入口}
+安装 api.hpp/provider.hpp 足以编写外部应用；C++ 提供 prepareAsync、可靠 completion、
+流读取与 drainAsync，退订和清理竞争由原生 owner 处理。Provider-only Runtime 不要求 User 目录。
+Python 仅做参数、异常、GIL 与 asyncio 映射，不补齐 C++ 缺失能力或维护第二套状态机。
+外部安装消费与独立进程覆盖全部模式，核对 ELF/子进程无 Python 依赖；完整契约见 C-05/C-06。
 
 \section{TG-01：授权版本与影响范围}
 \lead{PLANNED · Core；当前基线仍采用全局 ControllerVersion}

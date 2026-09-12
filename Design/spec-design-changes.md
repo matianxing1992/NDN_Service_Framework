@@ -16,6 +16,9 @@
 
 ### 2026-09-12 — Spec185 Prepared Model Runtime
 
+- **API revision**: [全表面审计](../specs/185-prepared-model-runtime/api-review.md)、[C-05](../specs/185-prepared-model-runtime/contracts/api-usability.md)、[C-06](../specs/185-prepared-model-runtime/contracts/cpp-first.md)。独立C++ SDK及原生异步/Provider入口，Python仅包装；任务扩为16项11批，T013完整C++资格先于T012。
+- **Revision evidence**: [API修订记录](../specs/185-prepared-model-runtime/evidence/api-review-20260912.md)；源码未改，当前/冻结目标API快照不覆盖。
+
 - **Status**: PLANNED；[Spec185](../specs/185-prepared-model-runtime/spec.md)、[任务](../specs/185-prepared-model-runtime/tasks.md)。
 - **Before/after**: 已有 NativeRequestCatalog 在构造期验证冻结模型，请求期仍需model/splitter等接线；目标提供Runtime/User/PreparedModel和有界准备缓存，NativeInferenceClient继续唯一执行。
 - **Contracts**: C-01公开API、C-02缓存身份、C-03请求/会话/Provider、C-04验收；详见[审计](../specs/185-prepared-model-runtime/audit.md)。
