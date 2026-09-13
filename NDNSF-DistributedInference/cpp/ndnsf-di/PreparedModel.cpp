@@ -550,6 +550,27 @@ NativeApplicationInput PreparedModel::encodeInput(const Input& input) const
   return native;
 }
 
+std::vector<std::int64_t> PreparedModel::conversationInputTokens(const Input& input) const
+{
+  const auto native = encodeInput(input);
+  if (native.transportMode != NativeInputTransportMode::Inline)
+    throw DiError("UNSUPPORTED_CAPABILITY", "conversation", "input",
+                  "conversation input tokenization requires inline native input");
+  try {
+    const auto adapter = m_package->catalog.preparation->adapters()->find(
+      m_package->catalog.model.descriptor.adapterId);
+    if (!adapter)
+      throw std::invalid_argument("verified conversation adapter is unavailable");
+    return adapter->conversationInputTokens(native.payload);
+  }
+  catch (const DiError&) {
+    throw;
+  }
+  catch (const std::exception& error) {
+    throw DiError("UNSUPPORTED_CAPABILITY", "conversation", "input", error.what());
+  }
+}
+
 NativeRequestOptions PreparedModel::projectOptions(const RequestOptions& options) const
 {
   if (!m_package)
@@ -660,11 +681,32 @@ Result PreparedModel::run(const Input& input, const RequestOptions& options) con
 
 RequestHandle PreparedModel::requestInternal(Input input, const RequestOptions& options) const
 {
+  return requestInternal(std::move(input), options, std::nullopt);
+}
+
+RequestHandle PreparedModel::requestInternal(
+  Input input, const RequestOptions& options,
+  std::optional<NativeConversationContinuation> continuation) const
+{
   if (!m_package || !m_clientFactory)
     throw DiError("RUNTIME_CLOSED", "local", "request",
                   "prepared model is not bound to a native Runtime client");
   auto nativeInput = encodeInput(input);
   auto nativeOptions = projectOptions(options);
+  if (continuation) {
+    nativeOptions.conversation = *continuation;
+    if (!nativeOptions.stream)
+      throw DiError("INVALID_CONVERSATION_OPTIONS", "conversation", "request",
+                    "conversation requests require an enabled stream");
+    if (continuation->generationId.size() != 32 ||
+        continuation->generationId.find_first_not_of("0123456789abcdef") != std::string::npos)
+      throw DiError("INVALID_CONVERSATION_OPTIONS", "conversation", "request",
+                    "conversation generation identity is invalid");
+    for (std::size_t i = 0; i < nativeOptions.stream->generationId.size(); ++i) {
+      nativeOptions.stream->generationId[i] = static_cast<std::uint8_t>(
+        std::stoul(continuation->generationId.substr(i * 2, 2), nullptr, 16));
+    }
+  }
   if (nativeOptions.stream && nativeInput.options.empty()) {
     const auto defaults = verifiedGenerationDefaults(*m_package);
     if (!defaults.empty())

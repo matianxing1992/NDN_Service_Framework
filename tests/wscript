@@ -274,6 +274,25 @@ def build(bld):
                 linkflags=['-Wl,--no-relax'],
                 rpath=[bld.bldnode.abspath()], install_path=None)
 
+    # Spec185 B4 prepared-conversation selector.  Keep the provider-backed
+    # two-turn wrapper path beside the B3 request fixture and add the focused
+    # opaque-checkpoint API boundary cases from their dedicated translation
+    # unit.  The complete DI source closure is shared with the installable
+    # native library through di_integration_sources.
+    bld.program(target='../spec185-prepared-conversation',
+                name='spec185-prepared-conversation',
+                source=[bld.path.parent.find_node('tests/main.cpp'),
+                        bld.path.find_node('integration-tests/di-prepared-request.t.cpp'),
+                        bld.path.find_node('integration-tests/di-prepared-conversation.t.cpp'),
+                        bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp')] +
+                       di_integration_sources,
+                includes=framework_includes,
+                use='ndn-service-framework ' + framework_use + ' ONNXRUNTIME',
+                defines=['HAVE_TESTS'],
+                cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
+                linkflags=['-Wl,--no-relax'],
+                rpath=[bld.bldnode.abspath()], install_path=None)
+
     # Exercise the shared native projection and model-specific merge contract
     bld.program(target='../spec181-exact-tensor-transport',
                 name='spec181-exact-tensor-transport',

@@ -17,6 +17,7 @@ struct NativeCanonicalCatalogEntry
   NativeCanonicalPublicationOptions publication;
   NativeCatalogModelAdapter::Format format = NativeCatalogModelAdapter::Format::OpaqueBytes;
   std::size_t maxPayloadBytes = 0;
+  NativeCatalogModelAdapter::ConversationTokenEncoder conversationTokenEncoder;
 };
 
 class NativeCanonicalPreparationCatalog

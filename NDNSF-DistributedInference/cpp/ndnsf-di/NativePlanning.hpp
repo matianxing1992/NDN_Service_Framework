@@ -380,6 +380,9 @@ public:
     const std::vector<std::uint8_t>& applicationInput) const = 0;
   virtual std::vector<std::uint8_t> decodeResult(
     const std::vector<std::uint8_t>& nativeResult) const = 0;
+  /** Derive canonical conversation input tokens inside the trusted adapter. */
+  virtual std::vector<std::int64_t> conversationInputTokens(
+    const std::vector<std::uint8_t>& applicationInput) const;
 };
 
 class NativeAdapterRegistry

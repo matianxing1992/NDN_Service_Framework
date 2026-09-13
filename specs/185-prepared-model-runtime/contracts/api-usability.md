@@ -65,6 +65,9 @@ capabilities由已验证adapter/task配置生成，不猜后端可用性，不�
 run精确等于request(...).result()，同一个deadline/错误/owner，不新建同步协议。
 Input.text只接受有效UTF-8，在adapter声明UTF8_TEXT时由native encoder处理；不具备时显式
 UNSUPPORTED_CAPABILITY，不能把字符串伪装成模型tensor或Python偷偷tokenize。
+会话追加轮次的 canonical token suffix 由 verified native adapter 从 `Input` 生成，
+native coordinator 负责接续 durable parent 并验证严格增长；`RequestOptions` 没有
+调用者可伪造 lineage 的 token 字段，Python wrapper 不自行分词或替代 adapter。
 BYTES仍需符合已声明schema；不引入任意对象pickle。大输入引用保持完整protected metadata，见C-03。
 新GenerationOptions只开放应用采样需求（本期maxNewTokens），tokenizer/布局/epoch/role等由operator契约固定。
 现有高级generation设置不删除，留明确的advanced兼容路径；本期不保证所有模型都支持text/generation。
@@ -92,7 +95,7 @@ observe保持**best-effort诊断通知**，队列容量/丢弃计数可查询，
 新可靠读取入口在C++定义 `EventReader RequestHandle::events()`，单handle最多一个active reader：
 
 ```cpp
-struct StreamEvent { std::uint64_t sequence; Bytes payload; bool terminal = false; };
+struct StreamEvent { RequestId requestId; std::uint64_t sequence; Bytes payload; bool terminal = false; };
 class EventReader {
 public:
   std::optional<StreamEvent> next(std::chrono::milliseconds timeout);

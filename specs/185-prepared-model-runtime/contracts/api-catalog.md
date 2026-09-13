@@ -71,8 +71,8 @@ Python字段统一snake_case；不可变原生view返回只读值或副本，不
 | A34 | `Subscription RequestHandle::observe(EventObserver)` | `handle.observe(callback) -> Subscription` | 可退订、best-effort多次诊断；T006 |
 | A35 | `RequestDiagnostics RequestHandle::diagnostics() const` | `handle.diagnostics` | 副本，不是提交oracle；T006 |
 | A36 | `EventReader RequestHandle::events()` | `handle.events() -> EventReader`；`handle.events_async()`为async迭代适配 | 单active reader；T006 |
-| A37 | `optional<StreamEvent> EventReader::next(ms timeout)` | `reader.next(*, timeout_s=None)` | 事件/正常EOF/异常；T006 |
-| A38 | `Subscription EventReader::nextAsync(ms timeout, ReadDone)` | `await reader.next_async(*, timeout_s=None)` | 同游标、单在途read、可退订；T006 |
+| A37 | `optional<Event> EventReader::next(ms timeout)` | `reader.next(*, timeout_s=None)` | 事件/正常EOF/异常；事件含单调sequence；T006 |
+| A38 | `Subscription EventReader::nextAsync(ms timeout, ReadDone)` | `await reader.next_async(*, timeout_s=None)` | error-first回调、同游标、单在途read、可退订；T006 |
 | A39 | `void EventReader::close() noexcept` | `reader.close()` | 结束读者，不取消请求；T006 |
 | A40 | `EventReader::~EventReader() noexcept` | with退出/GC调用close | 释放reader lease；T006 |
 | A41 | `void Subscription::unsubscribe() noexcept` | `subscription.unsubscribe()` | 幂等、不等待已开始callback、不取消业务；T002/T004/T006 |
@@ -126,7 +126,7 @@ serve同一service重复注册报SERVICE_ALREADY_REGISTERED，避免两个token�
 | PreparationReceipt | origin；preparationKeyDigest；manifestDigest；elapsed | origin=CacheHit/JoinedInFlight/Fetched/Refreshed；Python elapsed_s |
 | ModelManifest | modelName/modelRevision/modelDigest/taskName/canonicalGraphDigest/planningGraphDigest/catalogConfigurationDigest/taskContractDigest/preparationKeyDigest | native构造，只读；Python snake_case |
 | ModelCapabilities | inputSchemaJson/outputSchemaJson；inputKinds/outputModes；streaming=false/conversations=false | native构造，只读；能力不是远端资源保证 |
-| RequestOptions | timeout=30000ms；ackTimeout=5000ms；placement=null；applicationRequestId=""；outputMode="FULL"；generation/stream=nullopt | Python timeout_s=30.0、ack_timeout_s=5.0，其余snake_case |
+| RequestOptions | timeout=30000ms；ackTimeout=5000ms；placement=null；applicationRequestId=""；outputMode="FULL"；generation/stream=nullopt | Python timeout_s=30.0、ack_timeout_s=5.0，其余snake_case；会话 token lineage 由 verified native adapter 从 Input 生成 |
 | GenerationOptions | maxNewTokens=32，必须>0且符合任务限制 | Python max_new_tokens |
 | StreamOptions | enabled=true | 未传整体options时使用已验证任务默认 |
 | RequestStatus | Pending/Succeeded/Failed/Cancelled | deadline映射Failed及结构化code |

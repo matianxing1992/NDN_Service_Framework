@@ -58,6 +58,7 @@ Reader提供`next(milliseconds)->optional<Event>`、
 Core提供`OperationErrorCode{Closed,Timeout,Cancelled,Capacity,EventGap,WouldDeadlock}`，DI显式映射到DiError。
 State的mutex下唯一裁决Pending→Success/Failure，结果只读；只有领域owner能调用complete/fail，reader只读。
 State不解释Result/Event。64 completion/wait slots、64 observer slots、1024 events/16MiB和单reader规则沿C-07；
+`OperationState<Result,Event>`要求`Event`为`noexcept`可移动类型，以保证reader交付参数转移不会在已claim回调后抛异常；
 `observe(std::function<void(const Event&)>)->OperationSubscription`为独立best-effort通道。
 容量超限不能伪装EOF；失败前已收事件按C-07排空后抛错，读取消不提前推进cursor。
 本地等待超时不改变业务终态；close拒绝新订阅但最终同步result可读。不得直接复用传输终态claim作为业务成功。

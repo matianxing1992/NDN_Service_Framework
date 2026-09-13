@@ -50,6 +50,22 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
   if (format == "JSON") entry.format = NativeCatalogModelAdapter::Format::JsonBytes;
   else if (format == "OPAQUE") entry.format = NativeCatalogModelAdapter::Format::OpaqueBytes;
   else throw std::invalid_argument("unsupported request input format");
+  if (root.contains("conversation_input")) {
+    const auto& conversationInput = root.at("conversation_input");
+    if (!conversationInput.is_object() ||
+        conversationInput.value("kind", std::string{}) != "OPAQUE_BYTE_TOKEN_IDS")
+      throw std::invalid_argument("unsupported native conversation input encoder");
+    // This operator-pinned fixture contract derives one canonical token from
+    // each encoded byte.  Callers cannot supply or replace this encoder; it is
+    // captured by the immutable adapter registry during preparation.
+    entry.conversationTokenEncoder = [] (const std::vector<std::uint8_t>& bytes) {
+      std::vector<std::int64_t> tokens;
+      tokens.reserve(bytes.size());
+      for (const auto byte : bytes)
+        tokens.push_back(static_cast<std::int64_t>(byte));
+      return tokens;
+    };
+  }
   NativeRequestCatalog result;
   const auto& split = root.at("splitter");
   if (split.at("kind") == "QWEN") {

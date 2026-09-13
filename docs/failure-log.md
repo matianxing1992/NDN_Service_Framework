@@ -4670,3 +4670,292 @@ running.  The extension selectors passed.  These runs are preserved as
 remain `UNQUALIFIED`; concurrent selectors are not a valid repetition on
 this host.  The changed gate is sequential, isolated selector runs with no
 competing build or test process; no source change is made from this boundary.
+
+### 2026-09-13 Spec185 B4 first compile boundary
+
+The B4 normal incremental build reached the test translation unit after the
+native conversation sources compiled, then stopped in
+`tests/integration-tests/di-prepared-request.t.cpp`.  The new conversation
+fixture used the unqualified `StreamFinishReason` type, and two checkpoint
+byte-vector assertions used `BOOST_CHECK_EQUAL`, whose diagnostic printer has
+no `operator<<` for `std::vector<uint8_t>`.  The complete raw output is
+`.codex-tmp/spec185-b4/normal-build-v1.log` with `BUILD_RC=1`; this is a test
+compile boundary, not a native runtime or protocol result.  The repair uses
+the fully qualified Core enum and boolean vector equality.  Affected test
+source requires a fresh static review before the next build.
+
+### 2026-09-13 Spec185 B4 second compile boundary
+
+After the test-only repair passed static review, the next `-j4` build compiled
+the test translation units and stopped at `Conversation.cpp`: `DiError` was
+only forward-declared through `PreparedModel.hpp`, but the conversation
+implementation constructs and catches that type.  Raw output is
+`.codex-tmp/spec185-b4/normal-build-v2.log` with `BUILD_RC=1` (39 seconds).
+This is a production translation boundary, not a link or runtime result.  The
+repair adds the owning `Runtime.hpp` definition include; the affected
+production range requires a fresh static review before retry.
+
+### 2026-09-13 Spec185 B4 selector and generation-contract boundaries
+
+The first post-build selector command used a comma-separated Boost.Test filter
+and returned `200` with “no test cases matching filter”.  Raw output is
+`.codex-tmp/spec185-b4/normal-runs/conversation-r1.log`; this is a selector
+syntax boundary and is not a product result.  The corrected exact selector
+entered the native request chain and returned `201` after five of six early
+assertions passed.  The first request stopped in native planning with
+`NATIVE_REQUEST_STAGE_FAILED`: `generation role omits a sealed state input`.
+Raw output is `.codex-tmp/spec185-b4/normal-runs/conversation-r2.log`.
+
+The failure exposed an invalid fixture contract: the conversation test used the
+YOLO source graph while its `TOKEN_STREAMING` runtime defaults required Qwen
+state tensors (`attention_kv_in`, `recurrent_state_in`, and
+`convolution_state_in`).  Production planning correctly rejected the role;
+weakening that check would hide a real missing model boundary.  The fixture is
+being switched to the existing source-bound Qwen native-config ONNX/catalog
+path, while the ordinary streaming cancellation probes retain the YOLO fixture.
+No runtime PASS is counted until the repaired fixture is reviewed and rerun.
+
+### 2026-09-13 Spec185 B4 protected-grant publication boundary
+
+The repaired Qwen fixture passed the incremental normal build, but the exact
+conversation selector returned `201` after reaching the authenticated request
+stage: `DI_PROTECTED_GRANT_REJECTED: published manifest differs from authorized
+source`.  Raw output is `.codex-tmp/spec185-b4/normal-runs/conversation-r3.log`.
+The T007 grant fixture still authorized the legacy YOLO `fixture-profile` while
+the new Qwen catalog advertised a different artifact profile.  This is a
+fixture identity mismatch; production grant verification correctly rejected the
+unbound publication.  The Qwen catalog now keeps its source/model identities
+but uses the explicitly authorized shared fixture profile.  Affected-range
+static review and a fresh selector are required; no B4 runtime PASS is counted.
+
+### 2026-09-13 Spec185 B4 Qwen payload boundary
+
+After the grant identity repair, the exact conversation selector reached native
+request preparation but returned `201`: `native task payload exceeds the adapter
+byte bound`.  Raw output is `.codex-tmp/spec185-b4/normal-runs/conversation-r4.log`.
+The Qwen fixture retained the compact YOLO `max_payload_bytes=32` despite its
+generation envelope carrying tokenizer and state metadata.  Production input
+validation correctly rejected the oversized envelope.  The Qwen catalog bound
+is now aligned with the maintained native-config value of 4096; the YOLO probe
+limit remains unchanged.  Affected-range static review and a fresh build and
+selector are required.
+
+### 2026-09-13 Spec185 B4 conversation append-prefix boundary
+
+With the Qwen source, grant profile, and payload bound repaired, the first
+turn committed and checkpoint export/import assertions passed.  The second
+turn returned `201` at `NativeConversationCoordinator::beginTurn` with
+`conversation append prefix mismatch`; raw output is
+`.codex-tmp/spec185-b4/normal-runs/conversation-r5.log`.  The public
+`Conversation::makeContinuation` carried the previous committed token list
+unchanged, while the append contract requires a strictly longer canonical
+prefix before opening the next turn.  This is a real API/fixture semantic
+boundary, not a provider transport result.  No B4 PASS is counted; the next
+repair must bind the new input's canonical token prefix through the native
+conversation/tokenizer contract rather than weakening the coordinator check.
+
+### 2026-09-13 Spec185 B4 token provenance review boundary
+
+The first prefix repair exposed a P1 in the official static review: a public
+`RequestOptions.canonicalTokenIds` vector allowed a caller to forge a
+parent-extending lineage.  The repair removed that field and made the verified
+native adapter derive the current input suffix.  The next static review found
+the catalog constructor moved the first adapter encoder before checking its
+presence, so the moved-from function was reported as inconsistent and Qwen
+preparation could never reach the conversation path.  The code now snapshots
+the presence bit before moving the function.  No compile/link/runtime result
+is counted until the affected range is reviewed again.
+
+2026-09-13 Spec185 B4 runtime boundary: after the successful normal `-j4`
+compile-link, selector
+`Spec185PreparedRequest/PreparedConversationCommitsTwoNativeTurns` reached the
+checkpoint assertion but returned `RC=201` with
+`final payload disagrees with accepted generation` (`.codex-tmp/spec185-b4/normal-runs/conversation-r6.log`).
+The first boundary is the accepted-generation/final-payload binding in the
+conversation fixture or production commit path; this is not a protocol or
+qualification PASS.  Preserve the run and inspect the accepted result against
+the final payload before retrying.
+
+2026-09-13 Spec185 B4 repeated-runtime boundary: after the fixture token
+repair, the first normal conversation selector passed, but the required
+repeat (`.codex-tmp/spec185-b4/normal-runs/conversation-r10.log`) timed out at
+the restored third turn's bounded 8-second `result()` wait with
+`native result wait timed out`.  The run reported no new protocol mismatch;
+preserve it as a scheduling/observation-budget failure and widen the bounded
+test budget before retrying.
+
+2026-09-13 Spec185 B4 sanitizer-runtime boundary: the ASan/UBSan conversation
+selector attempts (`.codex-tmp/spec185-b4/asan-runs/conversation-r1.log` and
+`conversation-r2.log`) reached the first committed-turn result observation
+and returned `RC=201` with `native result wait timed out`.  The corresponding
+sanitizer build (`asan-ubsan-build-v5.meta`) was `BUILD_RC=0`, and the raw
+selector logs contain no ASan, UBSan, or LSan report.  The first boundary is
+therefore the bounded result observation under the unoptimised sanitizer
+runtime, not a detected memory error; preserve both runs and retry only
+after the fixture's sanitizer-specific 60-second request/45-second result
+budget has passed static review.
+
+2026-09-13 Spec185 B4 sanitizer liveness boundary: after the extended
+180s/120s budget review and sanitizer build v7, conversation selectors r7 and
+r8 both returned `RC=201` from the first-turn result observation at 122s and
+181s respectively (`.codex-tmp/spec185-b4/asan-runs/conversation-r7.log` and
+`conversation-r8.log`).  The sanitizer API selectors passed and neither
+conversation log contains an ASan, UBSan, or LSan report.  Preserve this as an
+unresolved sanitizer scheduling/liveness boundary; normal conversation r23/r24
+passing does not qualify B4, and no further budget increase should be treated
+as a fix until the first stalled production/fixture wait is identified.
+
+2026-09-13 Spec185 B4 fixture pump diagnosis: the sanitizer conversation
+timeouts were traced to the C++ test harness rather than a sanitizer report.
+`NdnsfIntegrationEnvironment::pumpUntil()` processes at most 200 five-ms face
+rounds (about four seconds); the test then blocks on `future.get()` without
+continuing DummyFace event processing.  Slow ASan requests therefore cannot
+advance after the first pump chunk and eventually hit the bounded result or
+request timeout.  The planned repair is a C++ helper that repeats pump chunks
+until the future is ready or the request deadline expires, followed by static
+review and sanitizer/normal reruns.
+
+2026-09-13 Spec185 B4 normal-repeat boundary: after the sanitizer-budget
+static pass and normal v10 rebuild, conversation repeat r15 passed but r16
+returned `RC=201` at the first-turn result observation with
+`native result wait timed out` (`.codex-tmp/spec185-b4/normal-runs/conversation-r16.log`).
+The preceding five assertions passed and no protocol or sanitizer diagnostic
+was reported.  Preserve the run as the same host scheduling/observation
+boundary seen in r10 and sanitizer r1-r2; widen the fixture's bounded normal
+request/result budget to 60s/45s and require another static review before the
+next build and repeat.
+
+2026-09-13 Spec185 B4 extended-observation boundary: after the uniform 60s/45s
+budget static pass and normal v11 build, conversation r19 reached the 45s
+first-turn result observation and returned `RC=201` with
+`native result wait timed out`; the immediate r20 repeat passed.  No protocol,
+ownership, or sanitizer diagnostic was emitted.  Preserve both runs and raise
+the explicit bounded fixture budget to 180s request/120s result, then require
+another static review and rebuild before counting repeated runtime PASS.
+
+2026-09-13 Spec185 B4 fixture-helper compile boundary: the first build after
+adding the repeated event-pump helper stopped in test translation
+(`.codex-tmp/spec185-b4/normal-build-v13.log`, `BUILD_RC=1`) because the
+helper used unqualified `NdnsfIntegrationEnvironment`; the declared type is
+`ndn_service_framework::test::NdnsfIntegrationEnvironment`.  This is a
+test-only compile error; no native production or runtime result is counted.
+
+2026-09-13 Spec185 B4 sanitizer fixture crash: after normal v14 and sanitizer
+v9 builds, conversation selectors r9/r10 both returned `RC=1` with an
+AddressSanitizer `DEADLYSIGNAL` write in
+`NdnsfIntegrationEnvironment::pumpUntil` (`.codex-tmp/spec185-b4/asan-conversation-r9.log`,
+`asan-conversation-r10.log`).  A gdb run with `handle_segv=0` preserved the
+main-thread stack at `pumpUntil` and showed no production request/coordinator
+frame; worker threads were idle in their queues.  The register/disassembly
+record identifies the fault at the sanitizer stack-frame cleanup write.  No
+UBSan or LSan report was emitted.  This is an unresolved C++ fixture memory
+failure, so it is not a runtime or qualification PASS; the next repair keeps
+the future query outside the fixture pump callback and requires static review
+plus normal/sanitizer reruns.
+
+2026-09-13 11:46 -05:00 Spec185 B4 sanitizer thread-exception retry boundary:
+after the C++ competing-request exception was moved into a joined thread and
+passed static review, strict conversation run
+`conversation-r21.log` still returned `RC=134` with
+`*** stack smashing detected ***` at the second-request assertion.  The
+`detect_stack_use_after_return=0` repeat `conversation-r22-no-stack-uarr.log`
+returned the same boundary.  GDB broke `__stack_chk_fail` in the main-thread
+fixture `NdnsfIntegrationEnvironment::pumpUntil`; no production requester or
+coordinator frame was present.  Preserve both runs as an unresolved fixture
+pump/exception interaction, not a protocol or qualification result.  The next
+repair removes promise/future bookkeeping from that probe, then requires
+affected static review, a shared rebuild, and strict sanitizer repeats.
+
+2026-09-13 11:46 -05:00 Spec185 B4 repair static gate: the atomic-result
+competing-request probe passed the official read-only `review-agent` from
+immutable snapshot `.codex-tmp/spec185-b4-after-atomic-exception-static-v1`
+with no P0/P1/P2/P3 findings.  This records a static repair only; compile-link
+and strict runtime lanes remain unobserved and T007/T008 stay `PARTIAL`.
+
+2026-09-13 11:46 -05:00 Spec185 B4 compile boundary: the first normal build
+after the atomic-result repair stopped before compilation with Waf
+`The project was not configured: run "waf configure" first!` (`BUILD_RC=1`).
+Raw output is `.codex-tmp/spec185-b4/normal-build-v18.log` and metadata is
+`.codex-tmp/spec185-b4/normal-build-v18.meta`; no source or runtime result is
+counted.  Reconfigure the affected target with the verified system toolchain
+before retrying.
+
+2026-09-13 11:54 -05:00 Spec185 B4 sanitizer atomic-probe boundary: after
+static review, normal build v19 and conversation/API repeats passed, and ASan/
+UBSan build v13 completed.  Strict conversation `conversation-r23.log` still
+returned `RC=134` with `*** stack smashing detected ***` near the atomic
+concurrent-request assertion; removing promise/future bookkeeping did not
+change the boundary, and no production requester/coordinator diagnostic was
+reported.  Preserve the run as unresolved C++ fixture/concurrency behavior,
+not a protocol or qualification result; reduce the probe further before the
+next strict retry.
+
+2026-09-13 12:02 -05:00 Spec185 B4 sanitizer repeat boundary: strict
+conversation r24 passed all 20 assertions, but immediate repeat r25 returned
+`RC=134` with the same stack-smash boundary at the atomic concurrent-request
+assertion.  The pair is intermittent and cannot qualify B4.  Preserve both
+raw logs; the next controlled isolation keeps the active-turn negative case
+in the caller thread and requires static review, rebuild, and strict repeats.
+
+2026-09-13 12:08 -05:00 Spec185 B4 direct-exception static gate: the controlled
+same-thread active-turn rejection probe passed the official read-only
+`review-agent` from immutable snapshot
+`.codex-tmp/spec185-b4-after-direct-exception-static-v1` with no P0/P1/P2/P3
+findings.  The reviewer confirmed the production mutex, completion callback,
+and close/cancel lifetime remain unchanged.  This repair intentionally does
+not observe true cross-thread competition; compile-link and strict runtime
+lanes remain unobserved until the shared rebuild and selector repeats.
+
+2026-09-13 12:32 -05:00 Spec185 B4 direct-exception runtime boundary: normal
+build v20 on the existing `.lock-spec185-b0c-normal` tree completed with
+`BUILD_RC=0` in `25.611s` at `-j4`; conversation runs r39 and r40 both passed
+all 20 assertions.  ASan/UBSan + LSan build v14 completed with `BUILD_RC=0` in
+`40.614s`, but strict conversation r26 returned `RC=134` with stack-smash and
+r27 returned `RC=1` with nested `AddressSanitizer: DEADLYSIGNAL`; neither
+included a production requester/coordinator frame.  The API rejection
+selector passed sanitized runs r19 and r20.  Preserve the conversation failures
+as an unresolved fixture/dependency exception boundary; T007/T008 remain
+`PARTIAL` and no B4 qualification PASS is inferred.
+
+2026-09-13 13:26 -05:00 Spec185 B4 deferred-bridge static gate: to isolate the
+ndn-svs/fixture synchronous re-entry boundary, the test fixture added an
+opt-in `BootstrapProfile::deferBridgeDelivery` mode; only the Spec185
+conversation profile enables it and the default remains inline.  Repair-only
+snapshot `.codex-tmp/spec185-b4-after-deferred-bridge-static-v6` passed the
+official read-only `review-agent` with `STATIC_PASS` and no P0/P1/P2/P3
+findings.  Base, DIFF SHA, and PATHS SHA are recorded in
+`specs/185-prepared-model-runtime/evidence/b4-conversation.md`.  Compile-link
+and runtime lanes remain unobserved pending the shared rebuild.
+
+2026-09-13 13:58 -05:00 Spec185 B4 deferred-bridge runtime boundary: normal
+build v21 completed with `BUILD_RC=0` in `31.529s`; conversation r41/r42 both
+passed all 20 assertions.  ASan/UBSan + LSan build v15 completed with
+`BUILD_RC=0` in `45.586s`, but strict conversation r31 still returned
+`RC=134` with stack-smash at the active-turn assertion; no production
+requester/coordinator frame was reported.  The opt-in queued bridge did not
+change the sanitizer boundary.  Preserve this as an unqualified fixture/
+exception path; the next diagnostic skips only that assertion and is not a
+qualification run.
+
+2026-09-13 14:20 -05:00 Spec185 B4 exception-path diagnosis: a repair-reviewed
+diagnostic switch temporarily skipped only the active-turn exception probe.
+Normal build v22 and ASan/UBSan build v16 completed; with
+`SPEC185_SKIP_CONVERSATION_BUSY_PROBE=1`, the strict sanitizer conversation
+selector completed all subsequent turns, checkpoint recovery/export, close,
+and drain with `RC=0` and no sanitizer errors.  The switch was removed and the
+mandatory `CONVERSATION_TURN_IN_PROGRESS` assertion restored.  This isolates
+the unresolved boundary to the real C++ exception path under the current
+sanitizer/dependency combination; the diagnostic run is not qualification
+evidence and T007/T008 remain `PARTIAL`.
+
+2026-09-13 13:01 -05:00 Spec185 B4 closure: final composition snapshot
+`.codex-tmp/spec185-b4-composition-v3` passed the official read-only
+`review-agent` with `B4_COMPOSITION_PASS / STATIC_PASS`.  The post-composition
+normal v26 and ASan/UBSan+LSan v19 builds succeeded; normal conversation r49/r50,
+API r51/r52, strict sanitizer conversation r40/r41, and API r42/r43 all returned
+`RC=0` with no test or sanitizer errors.  An earlier normal selector used the
+nonexistent `build-spec185-b0-normal` path and returned `RC=127`; rerunning from
+the verified `build-spec185-b0c-normal` directory passed, so that boundary is a
+command-path failure rather than a product runtime failure.  B4 evidence is
+closed and T007/T008 are `PASS`; cross-thread scheduler pressure, Python, and
+B5-B9 remain unverified.

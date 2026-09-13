@@ -241,6 +241,10 @@ public:
 
   /** Return whether this client's private operation runtime is quiescent. */
   bool isQuiescent() const noexcept;
+  /** Return whether the caller is already on the Core/operation worker. */
+  bool isWorkerThread() const noexcept;
+  /** Return the Runtime-owned conversation coordinator, if configured. */
+  std::shared_ptr<NativeConversationCoordinator> conversationCoordinator() const noexcept;
   /** Retain the enclosing transport owner until this client and its
    * operations are fully destroyed. */
   void retainOwner(std::shared_ptr<void> owner);

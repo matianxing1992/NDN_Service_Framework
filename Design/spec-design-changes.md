@@ -248,6 +248,24 @@ R2 新增 D-002（文档校验与行为补充）及 TG-01 至 TG-05（PLANNED）
 
 ## 新记录模板
 
+### D-185-B4：会话追加输入的 native adapter token 契约
+
+- 日期 / Spec / 任务：2026-09-13；[Spec185](../specs/185-prepared-model-runtime/spec.md)；T007/T008 B4。
+- 设计变化：取消调用者可写的 `RequestOptions.canonicalTokenIds`，改由已验证 native adapter
+  的 `conversationInputTokens(Input)` 生成当前输入 suffix；native `Conversation` 在首轮建立
+  token prefix，在 `APPEND_DELTA` 接到 durable parent 后再由 coordinator 校验严格增长。
+- 原因与边界：此前公开包装没有把本轮输入的 canonical token 谱系传到 coordinator，第二轮只能在
+  `beginTurn` 被正确拒绝；直接增加公开 vector 会允许调用者伪造 lineage，因此改为 adapter-owned
+  encoder。该机制不是新的 parent receipt、role map、plan 或 Provider 参数；没有 pinned encoder
+  的 adapter 必须显式报 `UNSUPPORTED_CAPABILITY`。
+- 源码与契约：`NativePlanning.hpp`、`NativeCatalogModelAdapter.*`、
+  `NativeCanonicalPreparationCatalog.*`、`NativeRequestCatalog.cpp`、`PreparedModel.*`、
+  `Conversation.hpp/.cpp`、B4 C++ fixture；对应
+  `contracts/public-api.md`、`execution.md`、`api-catalog.md`、`code-design.md`、`api-usability.md`。
+- 验证边界：旧 B4 r5 失败证据保留于 [b4-conversation](../specs/185-prepared-model-runtime/evidence/b4-conversation.md)；
+  新字段仅完成静态复审准备，normal/sanitizer selector 尚未重跑，B4 仍 `PARTIAL`。当前/目标 PDF
+  在 B4 通过并进入文档交付时按 MANAGEMENT.md 统一刷新，未把本次未验收行为写成资格 PASS。
+
 ### D-编号：设计变化名称
 
 - 日期 / Spec 链接 / 任务与契约 ID：

@@ -1,11 +1,22 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCatalogModelAdapter.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 
+#include <algorithm>
+#include <stdexcept>
+#include <utility>
+
 namespace ndnsf::di {
 
+std::vector<std::int64_t> NativeModelAdapter::conversationInputTokens(
+  const std::vector<std::uint8_t>&) const
+{
+  throw std::invalid_argument("native adapter has no pinned conversation input tokenizer");
+}
+
 NativeCatalogModelAdapter::NativeCatalogModelAdapter(std::vector<NativeModelDescriptor> models,
-  Format format, std::size_t maxPayloadBytes)
-  : m_format(format), m_maxPayloadBytes(maxPayloadBytes)
+  Format format, std::size_t maxPayloadBytes, ConversationTokenEncoder conversationTokenEncoder)
+  : m_format(format), m_maxPayloadBytes(maxPayloadBytes),
+    m_conversationTokenEncoder(std::move(conversationTokenEncoder))
 {
   if (models.empty() || !maxPayloadBytes ||
       (format != Format::OpaqueBytes && format != Format::JsonBytes))
@@ -54,6 +65,19 @@ std::vector<std::uint8_t> NativeCatalogModelAdapter::decodeResult(
 {
   validateBytes(bytes);
   return bytes;
+}
+
+std::vector<std::int64_t> NativeCatalogModelAdapter::conversationInputTokens(
+  const std::vector<std::uint8_t>& applicationInput) const
+{
+  if (!m_conversationTokenEncoder)
+    return NativeModelAdapter::conversationInputTokens(applicationInput);
+  validateBytes(applicationInput);
+  auto tokens = m_conversationTokenEncoder(applicationInput);
+  if (tokens.empty() || tokens.size() > 1024 * 1024 ||
+      std::any_of(tokens.begin(), tokens.end(), [] (const auto token) { return token < 0; }))
+    throw std::invalid_argument("native adapter returned an invalid conversation token suffix");
+  return tokens;
 }
 
 } // namespace ndnsf::di

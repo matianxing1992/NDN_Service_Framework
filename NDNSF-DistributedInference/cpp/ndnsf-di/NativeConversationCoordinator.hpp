@@ -2,6 +2,7 @@
 #define NDNSF_DI_NATIVE_CONVERSATION_COORDINATOR_HPP
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationJournal.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationContinuation.hpp"
 #include <functional>
 
 #include <cstdint>
@@ -29,25 +30,6 @@ struct NativeConversationConfig
   // point and before best-effort Provider FINALIZE.  It is invoked without
   // the coordinator lock and never participates in the commit decision.
   std::function<void()> afterDurableCommit;
-};
-
-struct NativeConversationContinuation
-{
-  std::string conversationId;
-  std::uint64_t parentContextEpoch = 0;
-  std::string serviceName;
-  std::string planRoleMapDigest;
-  std::string parentCheckpointDigest;
-  // Digest of the current encoded request envelope. The requester fills an
-  // empty value after its native owner allocates requestId; a supplied value
-  // is checked exactly against that envelope.
-  std::string requestContractDigest;
-  std::uint64_t retentionDeadlineMs = 0;
-  std::string mode = "FULL_CONTEXT";
-  std::string parentCheckpointWire;
-  std::string generationId;
-  std::vector<std::int64_t> canonicalTokenIds;
-  std::vector<std::string> expectedRoles;
 };
 
 struct NativeConversationTurn
@@ -93,10 +75,12 @@ struct NativeConversationCheckpoint
   std::string requestId;
   std::string parentCheckpointDigest;
   std::string prefixDigest;
+  std::string modelContractDigest;
   std::string providerStateDigest;
   std::string checkpointDigest;
   std::string wire;
   NativeJson transcript;
+  std::vector<std::string> expectedRoles;
   // Local recovery metadata, validated against the authenticated receipt's
   // runtime hash chain; not a new checkpoint or transcript wire field.
   std::optional<std::size_t> nativeInitialPromptTokenCount;

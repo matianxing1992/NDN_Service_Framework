@@ -197,7 +197,10 @@ void Conversation::requireIdle() const;
 ```
 
 openConversation验证模型能力/tokenizer/security及checkpoint后取得State同一个coordinator；checkpoint无身份认证不得直接写journal。
-request锁内requireIdle/closed检查并保留active ticket→从verified parent/transcript构造continuation→走FN03同requestImpl；requestId/attempt在native分配后才进入beginTurn，包装不能提前假造。
+request锁内requireIdle/closed检查并保留active ticket→从verified parent/transcript和 adapter 的
+`conversationInputTokens(Input)` 构造 continuation→走FN03同requestImpl；requestId/attempt在native
+分配后才进入beginTurn，包装不能提前假造。APPEND_DELTA 只接收 native adapter 生成的当前输入
+suffix，再严格扩展 durable parent 前缀；adapter 没有 pinned encoder 时本地拒绝。
 实际接线为Conversation→PreparedModel::requestInternal(input,options,continuation)；projectOptions不得丢continuation。同调用同步抛错时作用域ticket立即解busy，异步提交成功才移交operation完成/失败收尾；不能只靠可能尚未注册的完成订阅释放入口。
 完成订阅只解除包装active入口/更新只读视图，不能执行commit；checkpoint从native已提交结果/coordinator.find取得；stream final仍不够。
 恢复使用现有opaque wire/transcript和restore，replacement继续native policy/replaceAttempt。exportCheckpoint委托NativeCheckpointExport.hpp原子private helper，失败保留旧文件。

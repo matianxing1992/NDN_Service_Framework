@@ -16,7 +16,8 @@ class PlacementStrategy; // opaque registered cooperative strategy; C-05
 class Subscription; // move-only cancellation token; C-06
 struct Result { Bytes payload; RequestId requestId; std::string modelDigest; std::string planDigest; };
 enum class RequestStatus { Pending, Succeeded, Failed, Cancelled };
-struct Event { RequestId requestId; Bytes payload; bool terminal = false; };
+struct Event { RequestId requestId; Bytes payload; bool terminal = false; std::uint64_t sequence = 0; };
+struct RequestDiagnostics { std::uint64_t observationDropped = 0; };
 using EventObserver = std::function<void(const Event&)>;
 // Defined in public errors.hpp, without the native requester implementation.
 class DiError : public std::runtime_error {
