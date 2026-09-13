@@ -1,5 +1,14 @@
 # Local SIF Build
 
+## Apptainer Version Policy
+
+2026-09-12 起，本开发机默认 Apptainer **1.5.3**，新实验构建以实际计算节点运行版本为匹配对象。
+用户确认Tiger计算节点为1.5.3、登录节点为1.3；登录节点只负责传输/提交时，其版本不作为构建目标。
+新构建传入 `--apptainer /usr/bin/apptainer --expected-apptainer 1.5.3`；另一台实验机需先核对自身安装与计算作业内版本。
+已有脚本的版本一致性检查保留，不改成忽略版本。历史1.3.4记录和已冻结候选保持原事实。
+若工作流确实在登录节点执行容器，该步骤仍需迁到计算节点或单独解决兼容，不因本机升级自动获得兼容性。
+本机升级与有限验证见[记录](apptainer-153-upgrade-20260912.md)；不代表现有NDNSF候选或Tiger实验重新通过资格。
+
 ## Current Delivery Direction
 
 2026-09-08 已接受后续使用**稳定基础 SIF + 外置版本化 DI/UAV 应用包**。

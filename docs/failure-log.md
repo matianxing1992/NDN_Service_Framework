@@ -1,5 +1,9 @@
 # Failure Log and Evidence Index
 
+## 2026-09-12 — Apptainer host upgrade boundaries
+
+Official1.5.3deb的AppArmor ABI3占位profile无法由Ubuntu20.04的2.13.3 parser加载；已备份并做无profile兼容处理，postinst复验通过，未关闭系统AppArmor。历史r119镜像链接目标不存在，首次exec止于路径检查；改用独立最小SIF构建及普通/root执行均通过。无NDNSF协议/GPU/Tiger结论。见[持久记录与原始日志路径](../Experiments/TigerCluster/docs/apptainer-153-upgrade-20260912.md)。
+
 ## 2026-09-12 — Spec185 B0C TSan harness boundary
 
 The first B0C TSan selector stopped with exit 66 in

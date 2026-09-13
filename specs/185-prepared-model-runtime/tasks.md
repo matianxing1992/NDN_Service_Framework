@@ -31,6 +31,8 @@
 
 ## Current Checkpoint
 
+2026-09-12 22:59 -05:00 Host tooling：用户要求本机Apptainer升级1.5.3，安装、默认/兼容/root入口和最小SIF构建执行通过；见[运维记录](../../Experiments/TigerCluster/docs/apptainer-153-upgrade-20260912.md)。不改变185任务状态、依赖或验收；计算节点版本由实验机在实际作业核验，此记录不是185产品完成证据。
+
 2026-09-12 21:07 -05:00 B2 closed：T003→T004 完成逐任务官方 review-agent 静态门、B2组合门及批末共享验收。普通 `Spec185Preparation` 14/14、`Spec185Runtime` 10/10、`Spec185CoreOperation` 35/35 通过；独立 clang/TSan 三套件各重复两次共6次均 `rc=0` 且 `*** No errors detected`。证据见[b2-preparation](evidence/b2-preparation.md)，失败边界及修复见 `docs/failure-log.md`。准备链未运行 Python、Provider、会话、跨进程资格、SIF/Tiger；下一依赖满足任务为T005/B3。
 
 2026-09-12 17:00 -05:00 Dependency-scoped gate revision：门禁仅阻塞依赖工作；无依赖、文件边界清晰且前置满足的任务可由主代理在子代理只读审查固定快照期间继续。执行细则见[批次执行表](batch-execution.md)，验证见[调度修订](evidence/dependency-scoped-dispatch-20260912.md)。现有任务状态、Depends、Updated和验收不变；本轮没有启动并行产品实现。下一步执行者先登记独立任务/子任务边界，无合格工作则等待，不绕过T003→T004等硬依赖。
