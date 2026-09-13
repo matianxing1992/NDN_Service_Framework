@@ -161,6 +161,21 @@ BOOST_AUTO_TEST_CASE(NonClosingDrainNotificationLeavesCoreOpen)
   BOOST_CHECK(runtime->drain(std::chrono::seconds(1)));
 }
 
+BOOST_AUTO_TEST_CASE(ThrowingExtraReadyFailsDrainWithoutStallingTheWorker)
+{
+  auto runtime = OperationRuntime::create();
+  std::promise<bool> completed;
+  auto future = completed.get_future();
+  auto subscription = runtime->drainAsync(
+    std::chrono::seconds(1), [&completed] (bool value) { completed.set_value(value); },
+    false, [] () -> bool { throw std::runtime_error("external owner probe failed"); });
+  BOOST_REQUIRE(future.wait_for(std::chrono::seconds(1)) == std::future_status::ready);
+  BOOST_CHECK(!future.get());
+  subscription.cancel();
+  runtime->close();
+  BOOST_CHECK(runtime->drain(std::chrono::seconds(1)));
+}
+
 BOOST_AUTO_TEST_CASE(TerminalReplayUsesAShortLivedCoreTicket)
 {
   auto runtime = OperationRuntime::create();

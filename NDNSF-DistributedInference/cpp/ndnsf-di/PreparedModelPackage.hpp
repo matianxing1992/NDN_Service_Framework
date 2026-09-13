@@ -1,0 +1,45 @@
+#ifndef NDNSF_DI_PREPARED_MODEL_PACKAGE_HPP
+#define NDNSF_DI_PREPARED_MODEL_PACKAGE_HPP
+
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestCatalog.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModelTypes.hpp"
+
+#include <cstddef>
+#include <filesystem>
+#include <memory>
+#include <string>
+#include <vector>
+
+namespace ndnsf::di {
+
+/** Immutable operator registration retained by a prepared package. */
+struct FrozenPreparationRegistration
+{
+  std::string key;
+  std::filesystem::path baseDirectory;
+  std::string configurationJson;
+  std::string configurationDigest;
+  std::string taskName;
+  std::string taskContractDigest;
+  std::string inputLayoutDigest;
+};
+
+/**
+ * Fully verified preparation result.  The object is private to the
+ * preparation owner and is never published until every identity check has
+ * completed.  It contains no request, grant, ACK, Selection, or Provider
+ * state.
+ */
+struct PreparedModelPackage
+{
+  NativeRequestCatalog catalog;
+  std::shared_ptr<const FrozenPreparationRegistration> registration;
+  ModelManifest manifest;
+  ModelCapabilities capabilities;
+  std::string preparationKeyDigest;
+  std::size_t retainedBytes = 0;
+};
+
+} // namespace ndnsf::di
+
+#endif // NDNSF_DI_PREPARED_MODEL_PACKAGE_HPP

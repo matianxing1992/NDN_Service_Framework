@@ -1,5 +1,49 @@
 # Failure Log and Evidence Index
 
+## 2026-09-12 — Spec185 B0C TSan harness boundary
+
+The first B0C TSan selector stopped with exit 66 in
+`PendingReaderCompletionRetiresItsTimerBeforeDrain`. The first boundary was
+the test harness: an asynchronous worker executed Boost.Test assertions while
+the main test thread was also using the framework. The stack did not establish
+a product data race. The raw run and isolated reproduction are retained under
+`.codex-tmp/spec185-b0c-runtime-20260912/tsan-build-v28.log` and
+`.codex-tmp/spec185-b0c-runtime-20260912/tsan-isolate-pending-completion-v28.log`.
+The callbacks were changed to promise/atomic handoff, statically re-reviewed,
+and the Core selector then passed twice under TSan; see
+[B0C evidence](../specs/185-prepared-model-runtime/evidence/b0c-core-operation.md).
+
+The whole-tree Waf install attempt was intentionally interrupted in its
+post-install pip phase after the bounded Core library install. It is an
+installation-scope boundary, not a product failure; the Core-only staged
+consumer is recorded separately in the same B0C evidence.
+
+## 2026-09-12 — Spec185 B0 installed-consumer packaging boundaries
+
+The first B0 external consumer attempt correctly stopped on a source-tree
+include leak because its temporary prefix was under `.codex-tmp/`. After moving
+the candidate outside the repository, the installed header matrix exposed two
+packaging metadata gaps: the Core package did not export the NAC-ABE generated
+header directory, and third-party NDN-SVS headers triggered `-Werror` warnings
+when advertised as ordinary includes. The next attempt reached the disabled
+consumer link and found an unused ONNX fixture under the disabled build. These
+are preserved installation/test-harness boundaries, not protocol results. Raw
+runs remain under `.codex-tmp/spec185-b0-external-consumer-20260912.log`,
+`...-r2-20260912.log`, `...-r3-20260912.log`, and
+`...-r4-20260912.log`; the corresponding fixture fix is under review before
+the next matrix retry.
+
+## 2026-09-12 — Spec184 native MiniNDN caller route preflight
+
+The first focused backend-registration rerun used the historical default
+`build-system-j2/examples/di-native-provider` path and stopped before starting
+any Provider because that executable is absent. No protocol, model, or native
+request result was observed. The raw output is retained under
+`.codex-tmp/spec184-native-route-20260912/default-path.log` (SHA-256
+`62f15a4d8f280a337dfd54b7b11627fa38997349b02221c9ae6a24624257b941`). The
+same suites were then rerun against the explicit current candidate Provider
+path and passed; see [post-ACK caller routing](../specs/184-native-di-closure/evidence/native-minindn-post-ack-routing-20260912.md).
+
 ## 2026-09-11 — Proposal Origin expansion build path
 
 首次文档构建驱动将相对输出目录传入改变 cwd 的 latexmk，导致预期 `main.log` 缺失；不是产品协议失败。修复为绝对路径并保留 r2 输出。证据：[proposal expansion](../specs/184-native-di-closure/evidence/proposal-origin-expansion-20260911.md)。
@@ -58,6 +102,7 @@ prohibited-path checks. No hook is changed and no `--no-verify` is used.
 See [scope review](PAPER/proposal-defense/invocation-scope-review-20260911.md)
 and `.codex-tmp/proposal-invocation-scope-20260911/checkpoint-hook-default.log`.
 
+
 ## 2026-09-11 — Proposal document build invocation boundary
 
 The sentence-review build first stopped before LaTeX execution because its
@@ -71,6 +116,274 @@ existing safe-directory rule before clearing/generating anything; the retry
 uses the permitted `ndnsf-final-build` name without weakening the guard.
 See [document review](PAPER/proposal-defense/sentence-review-20260911.md) and
 `.codex-tmp/proposal-sentence-review-20260911/` for the subsequent document checks.
+
+## 2026-09-11 — Spec184 C++ epoch-input mapping boundary
+
+The current candidate was rerun with the parent-qualified selector
+`Spec170NdnsfDiCoreFlow/Spec175NativeTinyOnnxI01OneProvider`, native timing, and
+trace logging. Both attempts stopped at the same first production boundary
+(exit `201`) before ONNX execution: `NDNSF_DI_EPOCH_COORDINATOR phase=epoch_start`
+was followed by `native epoch coordinator is missing its canonical token input`.
+The collector's later `stream event gap exceeded retry budget` is therefore a
+downstream observation, not the first protocol boundary. Raw runs remain under
+`.codex-tmp/spec184-tiny-i01-diagnose-20260911/` and
+`.codex-tmp/spec184-tiny-i01-diagnose-20260911-r2/`; the second trace log SHA-256
+is `d07c4009a28e6c7df4ce0e0b4b2c105f62dbf0b29a9390aefadcc911267be9c1`.
+The first trace did not prove whether the projection mapping was lost. A
+default-off handler trace in rerun `r3` records
+`input_count=2 application_input=true edge=APPLICATION_INPUT@request-input
+edge=TOKEN_FEEDBACK@group-spec175-i01`, proving that the signed projection
+reaches the handler correctly. The remaining boundary is the request-input
+payload or its handoff into `NativeEpochCoordinator`; the next repair must
+identify why the encoded `input_ids` bundle is absent at `tokenIdsFromInputs`
+before another qualification retry. The `r3` raw log SHA-256 is
+`637884258ff60887e4a64b26c98f03a887fab4f81ac7b09bddc9906614cb33e2`. See
+The follow-up `r4` run added payload diagnostics but still emitted no
+`NDNSF_DI_INPUT_BUNDLE` record before the coordinator failure; its raw log
+SHA-256 is `49a8323c50da10f4c6655b4d45c7f3233f6cb294f2e3d926c2f140811253d9f7`.
+See
+[`T007 qualification evidence`](../specs/184-native-di-closure/evidence/t007-current-native-qualification-20260911.md).
+The production fixes were then rerun as `r6`: the same I01 selector exited
+`0`, reached epochs 0 through 7, emitted eight token events, and produced a
+terminal `NDNSF-DI-FINAL-V1` EOS payload. The raw log SHA-256 is
+`4c4015b900e2ccf1f5f7706fe3622a1d7e1aa68a11be82ae84c23c778eae850e`.
+This closes the I01 first-boundary defect only; remaining I02+ matrix
+selectors still need the bounded C++ dynamic loop. See
+[`T007 qualification evidence`](../specs/184-native-di-closure/evidence/t007-current-native-qualification-20260911.md).
+
+The parent-qualified C++ batch `Spec170NdnsfDiCoreFlow/Spec175NativeTinyOnnx*`
+was then rerun against the repaired candidate and exited `0` with no Boost
+errors. Positive I01/I02/I03/I04/I05/I06/I11/I12/I15/I16 cases completed their
+native stream/replacement oracles; negative I07/I09/I10/I13 cases reached and
+asserted their declared failure boundaries. Raw output is retained at
+`.codex-tmp/spec184-tiny-batch-20260911/run.log`, SHA-256
+`29773f5d89ce9192bf18be80080bf3a08acf6dd7165bcf7ab78f51326cea43ef`.
+This closes the sampled Spec175 C++ behavior classes only; it does not close
+process/no-Python, parser-fuzz, candidate refresh or inherited qualification.
+
+The rebuilt candidate then ran the complete C++ integration and unit
+executables with candidate-first libraries. Both exited `0` with
+`*** No errors detected`: integration log
+`.codex-tmp/spec184-full-integration-20260911-r2/run.log` has SHA-256
+`8b74652a9a9e13aec564e1bb106dca1bf2a724c7a4d84ca00a1209709ad910c8`, and unit
+log `.codex-tmp/spec184-full-unit-20260911-r2/run.log` has SHA-256
+`16037133632b55d5894b88672fd2d32598955822aab9f82b2e90d1751e3910ed`.
+This closes the complete local C++ unit/integration sweep for this source
+tree; process/no-Python, parser-fuzz, fresh candidate convergence and external
+SIF/Tiger rows remain open.
+
+The same `Spec175NativeTinyOnnx*` behavior-class batch was run in the rebuilt
+ASan/UBSan tree with unsuppressed leak detection. The selector assertions
+printed their normal result lines, but process exit was `134` because
+LeakSanitizer reported `SUMMARY: AddressSanitizer: 3096985 byte(s) leaked in
+25092 allocation(s)`. No use-after-free, buffer, or undefined-behavior report
+preceded the leak summary. Raw output is retained at
+`.codex-tmp/spec184-tiny-asan-20260911-r1/run.log`, SHA-256
+`827b56f8c870f675fc7b8c9ee14113e743bc50199e966593c63ab069298da89f`.
+This is a sanitizer `DYNAMIC_FAIL` for the repeated multi-environment batch;
+normal C++ remains `PASS`, and sanitizer qualification now requires a bounded
+single-case rerun and leak ownership classification.
+
+The bounded ASan/UBSan I01 rerun exited `0` with eight events, final EOS, and
+no sanitizer diagnostics; raw log `.codex-tmp/spec184-tiny-asan-20260911-r2/run.log`
+has SHA-256 `34d9169715b04216a001050a54a85435062407de9726f4507198915d7cdde40c`.
+The two-provider I02 case passed its C++ assertions but exited `134` under leak
+detection with 87,522 bytes in 720 allocations; raw output is retained at
+`.codex-tmp/spec184-tiny-asan-20260911-i02/run.log`, SHA-256
+`9171b9e06666a56fb5eae7d9309feabe804492b895dbebef1896860c2018b9d7`.
+The leak stack is rooted in existing `makeD2bCoordinatorOptions` test callback
+captures, so I02 remains a sanitizer `DYNAMIC_FAIL` pending explicit fixture
+cleanup or ownership classification.
+After repairing the alias collision, rerun `r5` confirmed the bundle is
+present and decodes as `tensors=input_ids`, then reached the next C++ boundary:
+`NativeProviderRuntime requires a runner preparation callback`. This is the
+preassembled compatibility path entering the epoch coordinator without a
+preparation factory; its raw log SHA-256 is
+`61a75cf871432eb57158a9dc07de05cd3e787aa96873bdb5b7ee46b44dd97744`.
+See
+[`T007 qualification evidence`](../specs/184-native-di-closure/evidence/t007-current-native-qualification-20260911.md).
+
+## 2026-09-11 — Spec184 T007 no-Python harness preflight boundary
+
+The candidate-bound `run-spec182-native-closure.py` invocation for `I01` stopped
+before process setup with exit `2` and `manifest schema mismatch`. The frozen
+`tests/fixtures/spec182/case-manifest.json` declares `spec182-case-manifest-v1`
+and has no `cases` list, while the driver requires
+`spec182-native-case-manifest-v1`. No requester/provider process, namespace,
+network request, business oracle, or cleanup result was observed. The raw
+`result.json`, exit file, and empty stdout log are retained under
+`.codex-tmp/spec184-b5-process-preflight-20260911/`; this is a harness
+`UNQUALIFIED` boundary, not a protocol result. See
+[`T007 qualification evidence`](../specs/184-native-di-closure/evidence/t007-current-native-qualification-20260911.md).
+
+The first current-candidate MiniNDN owner attempt reached the canonical owner
+but passed `--runner-case PO-001` while the runner manifest declared
+`PO-001-stream`; it stopped before staging with `case id is not unique`. The
+raw attempt is `.codex-tmp/spec184-b5-owner-probe-20260911/`. The corrected
+attempt used `PO-001-stream`, ran the current candidate `integration-tests`
+binary in the requester namespace, returned exit `0`, and recorded the
+business marker plus complete identity/namespace/process-tree/endpoints/
+cleanup evidence under `.codex-tmp/spec184-b5-owner-probe-20260911-r2/`.
+This closes one bounded owner case only; remaining process/no-Python rows stay
+open.
+
+## 2026-09-11 — Spec184 B5 Provider-host lifetime boundary (resolved)
+
+The first unsuppressed B5 ASan/UBSan run stopped with 11,042 bytes in 122 leaked
+allocations from `HostState -> ExecutionLeaseService -> makeHostSlotResolver`;
+the resolver closure retained the host's target graph through a self-cycle. A
+diagnostic all-weak change then stopped at a heap-use-after-free in
+`NativeProviderHandlerState::~NativeProviderHandlerState`: the runtime handler
+still owns a raw pointer to the host lease table. The final boundary keeps the
+host in the Core router and runtime handler, and weakens only the slot resolver.
+The rebuilt Provider-host suite passes all eight cases with no sanitizer or
+LeakSanitizer report. Raw first-boundary logs remain at
+`.codex-tmp/spec184-b5-candidate-asan-20260911/Spec182ProviderHost.log` and
+`.codex-tmp/spec184-b5-provider-fix-asan-20260911.log`; the clean rerun is
+`.codex-tmp/spec184-b5-provider-fix2-asan-20260911.log`. See
+[`B5 component evidence`](../specs/184-native-di-closure/evidence/b5-component-validation-20260911.md).
+
+## 2026-09-11 — Spec184 B5 selector setup boundaries
+
+An initial comma-separated Boost unit filter and two integration selectors
+without their parent suite exited 200 during test setup (`no test cases
+matching filter`). No product behavior was observed in those attempts. The
+correct parent-qualified selectors were then run and passed; the failed logs
+remain under `.codex-tmp/spec184-b5-components-20260911/` and
+`.codex-tmp/spec184-b5-candidate-integration-focused-20260911/`.
+
+## 2026-09-11 — Spec184 B5 qualification-matrix validator boundary
+
+The first local matrix checker counted the inherited six-column `182:T004` row
+as one of the newly added rows and stopped at
+`AssertionError: ('182:T004', 6)`. No product code or qualification command ran.
+The changed gate limits full-field validation to the new PO/I/FR/CD/INV rows,
+retains the failed output at `.codex-tmp/spec184-b5-matrix-validation.log`, and
+the rerun reports all expected IDs (14 parent, 16 PO, 8 I, 19 FR, 14 CD, 9 INV)
+with `matrix_schema: PASS`. See
+[`B5 matrix evidence`](../specs/184-native-di-closure/evidence/b5-matrix-binding-20260911.md).
+
+## 2026-09-11 — Spec184 B4 caller selector runtime boundary
+
+The maintained caller matrix was refreshed against candidate `865e1ee2`. The
+current native YOLO ingress, post-selection preparation, provider assembly, and
+Qwen stream/conversation selectors passed, and the corrected candidate provider
+path made the four Python route/compatibility suites pass 38 tests. The first
+Python run used the absent default `build-system-j2/examples/di-native-provider`
+path and failed before product execution; the rerun pins
+`SPEC181_NATIVE_PROVIDER_BINARY` to the candidate binary.
+
+The older D2b selectors
+`ProductionNativeHandlersRunD2bRequestToFinalResponse`,
+`ProductionNativeHandlersRunStreamedD2bRequestToFinalResponse`, and
+`ProductionNativeHandlersPrepareRolesAfterSelection` reached
+`NDNSF_INTEGRATION_BOOTSTRAP_READY` but observed zero response publications and
+no role/output records. Their first boundary is the C++ test oracle at
+`ndnsf-di-core-flow.t.cpp:4751`, not a protocol result. The raw logs remain under
+`.codex-tmp/spec184-b4-cpp-*`; the maintained caller matrix points at the
+passing post-selection/assembly selectors and leaves D2b, real-model, no-Python,
+and retirement work for Spec184 T006/T007. See
+[`B4 evidence`](../specs/184-native-di-closure/evidence/b4-caller-convergence-20260911.md).
+
+## 2026-09-11 — Spec184 B3 checkpoint export and loader provenance boundary
+
+The B3 normal and independent unsuppressed ASan/UBSan C++ selectors passed for
+`Spec184NativeCheckpoint/*`: canonical bytes, exact `0600`, symlink refusal, and
+pre-rename failure preservation. `DI_NativeRequester` also built and its
+`--help` contract passed when the candidate build directory was first in
+`LD_LIBRARY_PATH`. A first loader smoke with `/usr/local/lib` ahead of the
+candidate selected a stale framework shared library and stopped at an undefined
+`DeploymentControlMessage` vtable. This is a library provenance boundary, not a
+Spec184 source failure; the successful evidence pins the candidate output first.
+Raw outputs and binary identities are recorded in
+[`B3 evidence`](../specs/184-native-di-closure/evidence/b3-checkpoint-export-20260911.md).
+
+## 2026-09-11 — Spec184 B2 sanitizer ABI boundary and fixture correction
+
+The first `Spec184DurableOutcome` fixture attempted to observe Provider `FINALIZE` through
+retained `waitFor()` records. That harness never entered the intended boundary because
+`waitFor()` returns retained records and the handler returns on `COMMIT`; raw attempts remain in
+`.codex-tmp/spec184-b2/normal-test-rerun.log`, `normal-test-rerun2.log`, and
+`normal-test-rerun3.log`. The changed gate uses the production coordinator's optional
+`afterDurableCommit` observation point and C++ atomic release flags. The corrected normal
+selector passes (`normal-test-rerun5.log`).
+
+The first strict ASan/UBSan run stopped during fixture teardown with
+`AddressSanitizer: new-delete-type-mismatch` while deleting an `ndn::svs::SVSPubSub`; its stack
+is at the external NDN-SVS header/library ABI boundary, not a Spec184 production symbol. The
+raw report is `.codex-tmp/spec184-b2/asan-test.log`. The dependency was then rebuilt from the
+current source/header pair, the sanitizer tree was relinked, and three unsuppressed selector
+runs passed with no ASan/UBSan report. The two `new_delete_type_mismatch=0` runs remain diagnostic
+only; the clean rebuilt runs are the B2 `DYNAMIC_PASS`. See [`B2 evidence`](../specs/184-native-di-closure/evidence/b2-durable-outcome-20260911.md).
+
+## 2026-09-11 — Spec184 B1 GCC TSan toolchain boundary (resolved with alternate system clang)
+
+The first B1 TSan configure used the normal `/usr/bin/g++ -B/usr/bin` closure and
+stopped before compilation because the installed GCC9 package does not provide
+`libtsan_preinit.o`; the linker reported `cannot find libtsan_preinit.o`. The
+raw configure output is retained at
+`.codex-tmp/spec184-b1/tsan/configure.log`. This is a sanitizer-toolchain
+availability boundary, not a product or protocol result. The dynamic profile
+was then configured in a separate output tree with `/usr/bin/clang++`,
+`--toolchain-root=/usr`, and the repository's closed-toolchain checks; the
+successful build and six selector repetitions are recorded in
+[`B1 evidence`](../specs/184-native-di-closure/evidence/b1-request-correctness-20260911.md).
+
+## 2026-09-11 — Spec184 B1 test fixture namespace compile boundary
+
+The fresh system-first `-j4` B1 build reached the new
+`di-native-requester-grant.t.cpp` translation unit after compiling 289/309
+tasks, then stopped because the added tests used the nonexistent
+`test::NdnsfIntegrationEnvironment` qualifier and an unqualified
+`RequestMessage`. No production C++ source failed to compile. The raw build,
+configuration, and resource logs remain under `.codex-tmp/spec184-b1/`; the
+fixture namespace and type qualification must be corrected before reusing the
+partial object set. The follow-up incremental compile accepted the namespace
+fix but found the remaining unqualified `ResponseMessage` and the resulting
+lambda overload mismatch; that output is `build-retry3.log` in the same raw run
+directory and remains a test-only boundary. The next incremental compile
+reached the same TU and found that `ResponseMessage::setPayload` requires a
+non-const `ndn::Buffer&`; this third test-only boundary is retained in
+`build-retry4.log`.
+
+## 2026-09-11 — Spec184 B1 Waf lock/output configuration boundary
+
+The first B1 build attempt configured `build-nac182` successfully with the
+system compiler, Boost 1.71, explicit NAC-ABE/SVS/ONNX prefixes, and a fresh
+`/tmp/spec184-b1-waf.lock`. The following build used the same environment but
+Waf immediately reported `The project was not configured: run "waf configure"
+first!`; no C++ task ran. Raw configure/build output and the `vmstat` sample are
+retained under `.codex-tmp/spec184-b1/`. This is a Waf lock/output bookkeeping
+failure, not a source compile or runtime result. Retry with a fresh lock inside
+the configured output tree and preserve this boundary.
+
+## 2026-09-11 — Spec182 R11-B11 replacement-marker stale Waf output boundary
+
+The first `-j3` rebuild after adding the C++ alternate-provider replacement
+oracle was invoked with `WAFLOCK=.lock-waf`, but that lock still pointed at the
+older `.codex-tmp/spec182-t016-unit-20260911/build` output. The command reached
+119/119 and linked a fresh binary there; it did not update `build-nac182`, whose
+SHA-256 remained unchanged. No runtime result was taken from this stale-output
+attempt. Raw command output and the `vmstat` sample are retained under
+`.codex-tmp/spec182-r11-b11-replacement-marker-build-20260911/`. The retry must
+use a fresh lock and explicit `build-nac182` configuration before any marker or
+qualification claim.
+
+## 2026-09-11 — Spec182 R11-B11 MiniNDN runner selector boundaries
+
+The first current-binary owner probes retained four distinct boundaries. The
+conversation selector returned `0` and emitted its native result marker, but
+the strace collector ended with one wrapper `exit_group` still unfinished and
+`+++ killed by SIGKILL +++`; the runner therefore returned `UNQUALIFIED` with
+`TRACE_UNPAIRED`. The alternate-provider selector returned `0` after its
+assertions but had no replacement-specific business marker. Both Qwen native
+selectors stopped at the test fixture's relative
+`tests/fixtures/spec182/qwen-native-config.onnx` lookup because that file was
+not staged, and returned `201` before a marker. Raw outputs are retained under
+`.codex-tmp/spec182-r11-b11-po001-{conversation,alternate,qwen-stream,qwen-conversation}-202609110007/`.
+The retry must preserve the trace-integrity boundary, add only an explicit
+replacement oracle, and stage the Qwen fixture with its digest; no failed
+selector is counted as a protocol result.
 
 ## 2026-09-11 — Spec182 G8 broad selector verbose-log timeout boundary
 
@@ -3581,4 +3894,549 @@ are still unobserved.
   `/home/tianxing/NDN/ndn-svs/build` prefixes first in `LD_LIBRARY_PATH`; retain
   `/usr/local/lib` only after them for remaining ndn-cxx/ndnsd dependencies.
 - **Evidence**:
-  [`r11-b9-g3-cross-process-dependency-boundary-20260910.md`](../specs/182-native-di-python-bindings/evidence/r11-b9-g3-cross-process-dependency-boundary-20260910.md)
+[`r11-b9-g3-cross-process-dependency-boundary-20260910.md`](../specs/182-native-di-python-bindings/evidence/r11-b9-g3-cross-process-dependency-boundary-20260910.md)
+
+## 2026-09-11 — Spec184 T007 candidate rebuild disk-space boundary
+
+- **Area**: fresh candidate source/build closure after the NativeProvider input
+  binding, preassembled runtime dispatch and parser-fuzz selector changes.
+- **First boundary**: `WAFLOCK=.lock-spec184-b5 ./waf -o
+  build-spec184-b5-candidate build -j4` stopped at 117/842 tasks because the
+  compiler could not write temporary assembly files and the linker reported
+  `No space left on device`; no candidate binary from this attempt was used for
+  behavior or qualification claims.
+- **Interpretation**: host storage exhaustion only; no C++ test, protocol,
+  process or qualification result was produced by the failed build.
+- **Correction before retry**: preserve the raw failed command boundary, remove
+  only reproducible untracked `build-*` directories (not `.codex-tmp` evidence,
+  source or user files), verify 18 GiB free space, then rerun the same
+  system-first `-j4` candidate build. The candidate digest must be regenerated
+  after the successful rebuild.
+
+## 2026-09-11 — Spec184 T007 candidate auxiliary-target link boundary
+
+- **Area**: fresh candidate build after the parser-fuzz and native runtime fixes.
+- **First boundary**: after a fresh configure, the broad `build -j4` reached
+  the historical `spec181-assembly-parity` link target and failed with missing
+  `NativeModelDescriptor::validate`, `NativeAdapterDescriptor::descriptorDigest`
+  and related planning symbols. No Spec184 unit/integration/provider/requester
+  executable from this attempt was used for qualification.
+- **Interpretation**: an unrelated historical auxiliary-target link closure;
+  no protocol or C++ behavior result was produced.
+- **Correction before retry**: retain the configured tree and build only the
+  Spec184 candidate targets (`unit-tests`, `integration-tests`,
+  `DI_NativeRequester`, and `di-native-provider`) with the same system-first
+  `-j4` toolchain. The skipped auxiliary target remains an explicit build
+  limitation rather than a qualification PASS.
+
+## 2026-09-11 — Spec184 T007 unit runner auxiliary-path boundary
+
+- **Area**: full C++ unit qualification against the fresh candidate tree.
+- **First boundary**: the candidate built `DI_NativeOnnxAssemblyWorker` and all
+  `spec182-worker-tool-*` helpers, but the unit test's default lookup only
+  searched `build-nac182/`, `build/` and the invocation directory. Two runs
+  therefore stopped with 15 `spec182 worker binary not found` fatal test
+  messages and exit `201` before those subprocess cases executed.
+- **Interpretation**: test-to-candidate path binding only; no worker protocol
+  assertion or native production result was produced by those cases.
+- **Correction before retry**: set `NDNSF_SPEC182_BIN_DIR=build-spec184-b5-candidate`
+  explicitly, retain both raw runs, and rerun the same unit executable. The
+  path override is part of candidate identity for the qualification record.
+
+## 2026-09-11 — Spec184 T007 owner output preflight boundary
+
+- **Area**: fresh candidate-bound MiniNDN owner/runner case.
+- **First boundary**: the owner was invoked with an output directory that had
+  already been created by the caller. Its explicit new-output guard returned
+  exit `2` before topology creation, process staging, namespace observation or
+  business execution.
+- **Interpretation**: harness invocation mistake only; no owner or native
+  protocol result was produced.
+- **Correction before retry**: retain the empty failed directory and invoke the
+  owner with a fresh path that does not exist. The runner manifest is the
+  recomputed current-candidate manifest with all 34 artifact digests refreshed.
+
+## 2026-09-11 — Spec184 T007 owner privilege boundary
+
+- **Area**: candidate-bound MiniNDN namespace owner rerun.
+- **First boundary**: the fresh-path invocation reached the owner's explicit
+  privilege check and returned `MININDN_REQUIRES_ROOT` / exit `2`; this session
+  runs as uid 1000 and cannot create the required root network namespaces.
+- **Interpretation**: external owner privilege boundary; no MiniNDN topology,
+  native process, or protocol result was observed for the new candidate.
+- **Disposition**: retain the raw result at
+  `.codex-tmp/spec184-b5-owner-probe-20260911-r4/result.json` and keep the
+  process/no-Python row `PARTIAL`. The earlier root owner result remains bound
+  to its historical candidate and is not silently reused.
+
+## 2026-09-11 — Spec184 T007 owner runtime-PATH boundary and corrected root owner result
+
+- **Area**: current-candidate MiniNDN owner/runner `PO-001-stream`.
+- **First boundary**: a root retry with a new output directory still returned
+  `MININDN_OWNER_FAILED:JSONDecodeError`; tracing the owner call showed that
+  `infoconv` was missing from the command-local `PATH`. No runner process or
+  business result was produced by that retry. The raw output is retained at
+  `.codex-tmp/spec184-b5-owner-probe-20260911-r5-owner.log` and the command at
+  `.codex-tmp/spec184-b5-owner-probe-20260911-r5-command.txt`.
+- **Correction and result**: rerun as root with `/usr/local/bin` restored in
+  `PATH`, using the same current runner manifest and a new output directory.
+  The canonical two-node owner created complete node context, trace, process,
+  endpoint and cleanup evidence; the runner and business marker passed with
+  exit `0`. Evidence is under
+  `.codex-tmp/spec184-b5-owner-probe-20260911-r7/`; the result digest is
+  `e65fc1b507fe40cc275601b031c724b99f64a254ecaaa51272a7845f8e5509fd` and
+  the runner-result digest is
+  `7cc45f6f9d4487ffe45de90dff37c6bc2e28e030295d69e6b31aa2c48186a0b9`.
+- **Interpretation**: the corrected root owner result is valid for the fresh
+  local candidate's bounded `PO-001-stream` row only. It does not close I02–I08,
+  real-model breadth, Python retirement or external SIF/Tiger qualification.
+
+## 2026-09-11 — Spec184 T007 process refresh invocation boundaries
+
+- **Python environment boundary**: the first root unary process attempt stopped
+  before Controller/Authority/Provider startup because the command-local
+  `PYTHONPATH` did not expose the installed `ndn` module (`ModuleNotFoundError`).
+  The raw run remains at `.codex-tmp/spec184-process-unary-20260911-r1/` and is
+  not a protocol result. The corrected retry added the pinned MiniNDN Python
+  paths and produced the C++ unary oracle result recorded in the T007 process
+  evidence.
+- **Waf target-name boundary**: the first final candidate build requested the
+  non-generator target `DI_NativeOnnxAssemblyWorker`; Waf rejected the target
+  name before compilation. Raw output is
+  `.codex-tmp/spec184-final-target-build-20260911-r1.log` (SHA-256
+  `06eaa5a90fc70fe5cda2e5c3c8d7cb809c3d859432ce62dedcad2ee8e91f9a02`). No
+  candidate behavior result came from this attempt. The corrected target set
+  completed with `-j4` in `r2`.
+- **Owner manifest boundary**: the first fresh-candidate root owner retry used
+  a stale integration executable digest and stopped at `artifact digest
+  mismatch` before MiniNDN process execution. The raw result is retained at
+  `.codex-tmp/spec184-owner-po001-20260911-r8/`. The runner manifest was
+  regenerated from the current candidate outputs before the valid `r9` owner
+  run; the stale attempt is not combined with the valid result.
+
+## 2026-09-11 — Spec184 T007 I02-I08 dynamic sample invocation boundaries
+
+- **I02 runtime-PATH boundary**: the first I02 owner invocation stopped before
+  MiniNDN topology creation because the command-local `PATH` omitted `/sbin`,
+  so `ifconfig` could not be found. The raw run is retained at
+  `.codex-tmp/spec184-owner-i02-20260911-r1/` and is not a protocol result.
+- **I02 fixture-staging boundary**: after correcting `PATH`, the C++ selector
+  exited `201` because the tiny role ONNX fixtures were not staged. The raw
+  owner result is `.codex-tmp/spec184-owner-i02-20260911-r2/`; no business
+  result is inferred from it.
+- **I02 manifest-schema boundary**: after staging the fixtures, the runner
+  rejected the registration manifest's unsupported `fixture` artifact kind
+  before execution. The raw result is
+  `.codex-tmp/spec184-owner-i02-20260911-r3/`. The manifest was corrected to
+  use the declared `data` kind before the valid `r4` run.
+- **Disposition**: these three boundaries are harness/setup failures. The
+  corrected I02 `r4` and I03–I08 `r1` owner runs are recorded as
+  `PASS_FOR_DYNAMIC_SAMPLE`; they do not close the inherited isolation
+  counterexample or collector-completeness rows.
+
+- **Follow-up counterexample probe**: an exploratory renamed-Python-ELF case
+  first stopped because the runner manifest used the default `bwrap` name while
+  the staged runtime required `/usr/bin/bwrap`; raw output is
+  `.codex-tmp/spec184-owner-i02-python-elf-20260911-r1/`. After the tool paths
+  were made explicit, the ELF reached the isolated runtime but exited before
+  its stdout oracle because the staged root had no Python standard-library
+  files; the collector observed `PYTHON_MAPPING` and classified the result
+  `UNQUALIFIED`. Raw reruns are retained at
+  `.codex-tmp/spec184-owner-i02-python-elf-20260911-r2/` and `r3/`. These
+  probes confirm a runner/fixture closure gap and are not I02 protocol results.
+
+## 2026-09-11 — Spec184 candidate-bound C++ isolation counterexample boundaries
+
+- **I02 fork/helper**: the C++ fixture forked and successfully executed a second in-root helper;
+  the strengthened collector classified the complete observation as `FAIL / UNDECLARED_EXEC`,
+  even though the fixture emitted its business marker.
+- **I03 Python mapping**: the C++ fixture opened the staged `libpython3.8.so.1.0` by a runtime-built
+  path; the collector classified the complete observation as `FAIL / PYTHON_MAPPING`.
+- **I04 endpoint**: the fixture made a failed loopback TCP `connect` to an undeclared endpoint;
+  failed attempts are now retained and classified as `FAIL / UNDECLARED_ENDPOINT`.
+- **I05 observer budget**: the trace exceeded the declared 4096-byte budget; the result is
+  `UNQUALIFIED / TRACE_BUDGET_EXCEEDED`, not a protocol `FAIL`.
+- **I06 cold/role**: the C++ cold case omitted the required Provider process; role coverage produced
+  `FAIL / ROLE_COVERAGE_MISMATCH`.
+- **I07 external harness**: Python remained only the owner-side harness and the C++ business marker
+  passed; the result is `PASS` for this bounded counterexample.
+- **I08 detached child**: the fixture detached a sleeping descendant; terminal/descendant evidence
+  produced `FAIL / OWNED_PROCESS_ALIVE`. The owner cleanup left no counterexample process behind.
+
+The corrected owner outputs are retained under
+`.codex-tmp/spec184-counterexamples-live-20260911/owner-i02-r3/`,
+`owner-i03-r4/`, `owner-i04-r3/`, `owner-i05-r3/`, `owner-i06-r3/`,
+`owner-i07-r3/`, and `owner-i08-r4/`. Earlier manifest/tool-path attempts remain separate raw
+setup failures. These runs close only the bounded counterexample classes; real-model breadth,
+Python retirement and external SIF/Tiger ownership remain open in Spec184 T007.
+
+## 2026-09-11 — Spec184 targeted C++ qualification transient failure
+
+- **Targeted-suite boundary**: a first combined run of 151 current-candidate
+  C++ unit cases stopped in
+  `Spec182V3Placement/PublicClientConversationCommitsSeededReceiptAndCheckpoint`
+  after `DI_NATIVE_OFFER_REJECTED`, followed by a memory-access violation.
+  The raw run is retained at
+  `.codex-tmp/spec184-b5-targeted-unit-20260911/unit.log`.
+- **Isolation result**: the named V3 case passed in three fresh single-case
+  runs, and the same 151-case selector passed in three fresh reruns. This
+  leaves a transient/order-sensitive boundary requiring a sanitizer or
+  repeated stress run before it can be treated as closed; the failed run is
+not a qualification PASS and does not change T007 status.
+
+## 2026-09-11 — Spec184 full-unit runner environment boundary
+
+- **Missing worker-directory binding**: a full current-candidate unit sweep was
+  first invoked without `NDNSF_SPEC182_BIN_DIR`. Fifteen ONNX worker/activation
+  cases stopped before their subject logic because the required worker tools
+  were not found, producing exit `201`. Raw output is retained at
+  `.codex-tmp/spec184-b5-full-unit-rerun-20260911/unit.log`.
+- **Disposition**: this is a test-entry configuration failure, not a native
+  protocol result. The corrected invocation with
+  `NDNSF_SPEC182_BIN_DIR=build-spec184-b5-candidate` completed the full unit
+  sweep with exit `0`; the corrected result is bound in Spec184 T007 evidence.
+
+## 2026-09-11 — Spec184 T007 YOLO registration-handle lifetime boundary
+
+- **Initial Y-A boundary**: the Controller and second ServiceUser process
+  aborted with `corrupted size vs. prev_size` before the case reached its
+  business oracle.  The raw runs are retained at
+  `.codex-tmp/spec184-yolo-Y-A-run-20260911-r2.log` and
+  `.codex-tmp/spec184-yolo-Y-A-run-20260911-r8.log`; the gdb traces are
+  `.codex-tmp/spec184-yolo-Y-A-gdb-attach-20260911-r4.log` and
+  `...-r9.log`.
+- **Cause and correction**: `Face::setInterestFilter` returns a
+  `RegisteredPrefixHandle` whose scoped wrapper unregisters on destruction.
+  Several production registrations discarded that handle while the async NFD
+  command was still pending.  The retry helper, Controller, User, Provider and
+  certificate publisher now retain scoped handles for their registration
+  lifetime.  The focused registration selector passed after this correction.
+- **Follow-up boundary**: with the handle correction, Y-A r11 passed the
+  previous Controller/User startup boundary but the Repo child exited with
+  return code `-6` after `register prefix failed` and `corrupted size vs.
+  prev_size`, before readiness.  Raw output is retained at
+  `.codex-tmp/spec184-yolo-Y-A-run-20260911-r11.log` and its output tree
+  `.codex-tmp/spec184-yolo-Y-A-output-20260911-r11/`.  This remains a
+  process-start/preflight `UNQUALIFIED` result, not a protocol result; the
+  next retry must first preserve and inspect this new boundary.
+- **Model boundary**: this host can execute only the cached `Qwen3-0.6B`
+  smoke/ABI fixture.  It cannot execute the contract-required
+  `Qwen/Qwen3.6-27B`; no local 0.6B result may be relabeled as that
+  qualification row.
+
+## 2026-09-11 — Spec184 registration-handle focused build invocation boundary
+
+- The first affected-target retry used `./waf -o build-spec184-b5-candidate
+  build` without the configured-output option expected by this Waf tree; it
+  stopped before compilation with `The project was not configured`.  Raw
+  output: `.codex-tmp/spec184-registration-handle-build-20260911-r1.log`.
+  This is a build-command/setup boundary, not a source or protocol result;
+  the candidate uses the non-default Waf lock `.lock-spec184-b5`, so the next
+  invocation must set `WAFLOCK=.lock-spec184-b5` (or explicitly configure that
+  output) before building.  The second probe without that lock is retained at
+  `.codex-tmp/spec184-registration-handle-build-20260911-r2.log`.
+
+- The correctly locked `-j2` retry entered the changed User/Provider sources
+  but its launcher disappeared while compiling `ServiceController.cpp`, with
+  no Waf completion or compiler diagnostic in
+  `.codex-tmp/spec184-native-receipt-build-20260911-r7.log`.  The partial
+  object is not treated as a build result or candidate identity.  Because the
+  host was under several GiB of swap pressure, the next retry is serialized at
+  `-j1` and its process outcome will be recorded separately.
+
+- The serialized `-j1` retry again stopped after the Waf progress line for
+  `ServiceProvider.cpp`, before Waf completion, with no compiler diagnostic or
+  exit record in `.codex-tmp/spec184-native-receipt-build-20260911-r8.log`.
+  No candidate receipt was generated.  This is retained as an incomplete
+  launcher/session boundary; a detached build with an explicit PID and log is
+  required to distinguish host-session loss from a compiler failure.
+
+## 2026-09-11 — Spec184 T007 Y-A state-root ownership boundary
+
+- The first post-receipt Y-A invocation stopped before MiniNDN startup with
+  `STATE_ROOT_OWNER_MISMATCH`: the fresh state directory had been created by
+  uid 1000 while the authorized MiniNDN owner is root.  Raw output is
+  `.codex-tmp/spec184-yolo-Y-A-run-20260911-r12.log`.  This is a runner
+  preflight boundary, not a protocol or model result; the retry must create
+  both state and output roots under the actual root owner and retain mode
+  `0700`.
+
+## 2026-09-11 — Spec184 T007 Y-A Controller startup heap-corruption boundary
+
+- After correcting the state/output roots to root-owned `0700`, the next
+  candidate-bound Y-A run stopped during the `control` phase with
+  `CASE_RUNTIME_PROCESS_START_FAILED:control`.  The runner diagnostic is
+  retained at `.codex-tmp/spec184-yolo-Y-A-run-20260911-r13.log` and
+  `.codex-tmp/spec184-yolo-Y-A-output-20260911-r12/process-start-failure.json`.
+- The Controller log shows the first two `CertificatePublisher` prefixes
+  reported registered, then `corrupted size vs. prev_size`, before Controller
+  readiness; no Repository/Provider/User process or business oracle was
+  observed.  The raw child log is
+  `.codex-tmp/spec184-yolo-Y-A-output-20260911-r12/controller.log`.
+- This is a native process-start/preflight `UNQUALIFIED` boundary, not a
+  protocol result.  The registration-handle change therefore remains under
+  diagnosis and must pass a focused reproducer or sanitizer review before
+  another YOLO retry.  This host still supports only Qwen3-0.6B smoke/ABI
+  checks; Qwen/Qwen3.6-27B remains an external-owner row.
+
+## 2026-09-11 — Spec184 T007 dependency/build retry boundaries
+
+- A temporary gdb wrapper initially failed during module loading because the
+  copied module was not inserted into `sys.modules`; raw output is
+  `.codex-tmp/spec184-yolo-Y-A-run-20260911-r14.log`.  No MiniNDN or product
+  process ran in that diagnostic attempt.
+- The corrected gdb run reproduced the Controller abort and captured the
+  `malloc_printerr` stack through `ndn::Face::Impl::registerPrefix`; raw output
+  is `.codex-tmp/spec184-yolo-Y-A-run-20260911-r15b.log`, with child log under
+  `.codex-tmp/spec184-yolo-Y-A-output-20260911-r15/controller.log`.  This
+  confirmed an unretained NAC-ABE DKEY filter, which was repaired and rebuilt.
+- The first fresh NDNSF build against `install-spec184-r4` completed Waf but
+  stopped because the build helper omitted `ndnsf-distributed-inference` from
+  its target list, so setup.py could not find the DI shared library.  Raw log:
+  `.codex-tmp/spec184-native-r4-build-r2.log`.  The helper now requests that
+  target explicitly; the corrected candidate build and verify completed.
+- The first Y-A run against the corrected candidate reached Controller and
+  Repository startup without heap corruption, then remained on the existing
+  default generation-state lock (`Controller generation writer unavailable`)
+  and was terminated after its bounded permission retries.  Raw output is
+  `.codex-tmp/spec184-yolo-Y-A-run-20260911-r16.log`; this is a startup/state
+  precondition boundary, not a protocol or model result.  The next retry uses
+  a fresh case-scoped `NDNSF_CONTROLLER_GENERATION_STATE` path.
+
+## 2026-09-11 — Spec184 T007 Y-A native assembly-worker boundary
+
+- With a fresh generation-state file, Y-A completed Controller, Repository,
+  Provider startup, catalogue publication, permission, ACK and Selection.  The
+  Provider then reported `DI_PROVIDER_ASSEMBLY_WORKER_LOCATION_MISSING`; the
+  User exited `1` after the selection-status timeout.  Raw output is
+  `.codex-tmp/spec184-yolo-Y-A-run-20260911-r17.log`, with child evidence under
+  `.codex-tmp/spec184-yolo-Y-A-output-20260911-r17/`.
+- The Provider log identifies the immediate cause: the fresh candidate did not
+  contain `DI_NativeOnnxAssemblyWorker`.  Its Waf target was present but was
+  omitted from the native build helper's target list, so the executable could
+  be absent while the shared libraries and Provider were present.  This is a
+  candidate artifact/assembly precondition, not a model or protocol result.
+- The native build helper now requests the DI shared library, native requester,
+  artifact authority, assembly worker and Provider together.  The Y-A row stays
+  `UNQUALIFIED` until a fresh candidate containing that worker reaches the
+  terminal numerical oracle.
+
+## 2026-09-11 — Spec184 T007 Y-A retry state-root ownership boundary (r18)
+
+- The worker-pinned retry stopped before MiniNDN startup with
+  `STATE_ROOT_OWNER_MISMATCH`: the newly created state/output roots were made
+  by the invoking user while the `sudo` MiniNDN runtime requires root-owned
+  `0700` directories.  Raw runner output is
+  `.codex-tmp/spec184-yolo-Y-A-run-20260911-r18.log`.
+- No Controller, Repository, Provider, User, protocol, or model activity was
+  observed.  This remains a runner preflight boundary; the next retry must
+  create the case roots under the actual runtime owner before evaluating the
+  worker binding.
+
+## 2026-09-11 — Spec184 T007 YOLO matrix collector boundary and closure
+
+- Current-candidate Y-B completed its native four-Provider terminal path and
+  numerical oracle in `.codex-tmp/spec184-yolo-Y-B-output-20260911-r37/`.
+  Current-candidate Y-A subsequently completed the single-Provider path in
+  `.codex-tmp/spec184-yolo-Y-A-output-20260911-r51/`; both are recorded as
+  `PASS_FOR_ROW` in the active Spec evidence.
+- The first complete Y-N attempt (`r48`) reached all three E mutation Provider
+  decisions, but the collector stopped at `Y_N_MATRIX_INCOMPLETE:Y-N-E` because
+  Provider RuntimeEvidence lines carry an ndn-cxx timestamp/logger prefix and
+  the collector required `NDNSF_DI_GRANT_VERIFICATION` at byte zero.  Raw
+  output remains `.codex-tmp/spec184-yolo-Y-N-run-20260911-r48.log` and its
+  variant directories; this is a harness observation boundary, not a product
+  rejection failure.
+- The collector now normalizes the registered marker suffix while preserving
+  the JSON binding checks.  A fresh Y-N run (`r50`) produced
+  `SPEC180_CASE_RESULT status=PASS case=Y-N`; all seven subcases and
+  `EXPIRED`/`FORGED_AUTHORITY`/`WRONG_RECIPIENT` Provider mutations pass, with
+  no cleanup errors.  See
+  `.codex-tmp/spec184-yolo-Y-N-output-20260911-r50/y-n-matrix-result.json` and
+  `specs/184-native-di-closure/evidence/t007-process-qualification-20260911.md`.
+
+## 2026-09-12 — Spec184 T007 local model-capability and Waf target boundary
+
+- The current host can run only the user-provided `Qwen3-0.6B` smoke/ABI
+  fixture; it cannot execute the contract-required `Qwen/Qwen3.6-27B`. The
+  exact model manifest, tokenizer, CUDA runtime and staged objects therefore
+  remain an external-owner input. The 0.6B result must not be relabeled as 27B
+  qualification. See
+  `specs/184-native-di-closure/evidence/t007-model-capability-20260912.md`.
+- A bounded attempt to add `integration-tests` to the r4 candidate stopped
+  before compilation with `Could not find a task generator for the name
+  'integration-tests'` because that candidate was configured with
+  `--with-examples`. Raw output is
+  `.codex-tmp/spec184-qwen-smoke-20260912/waf-build.log` (SHA-256
+  `1f49b7cd938da12e8169c4248501b832b85b8fcdb66b2fc1352092dd413ece62`). This
+  is a Waf configuration boundary, not a model, protocol or C++ runtime result;
+  no reconfiguration was performed merely to manufacture a selector binary.
+- A follow-up launch mixed the older candidate's `integration-tests` executable
+  with r4 libraries. It emitted `SPEC182_NATIVE_DI_REQUEST_RESULT_OK` and then
+  SIGSEGVed at `0x00000080` (exit `201`). The mixed ABI is rejected as evidence;
+  raw output is `.codex-tmp/spec184-qwen-smoke-20260912/integration-qwen.log`
+  (SHA-256 `33c155fb5124cd7249551586e6b5ee1b5658334503d05ac09d4ec8f4d0a85cde`).
+
+## 2026-09-12 — Spec185 B1 install/build boundaries
+
+- The first B1 `waf install` entered the full historical build graph and
+  stopped at the unrelated `spec181-assembly-parity` link with missing
+  `NativeModelDescriptor`/planning symbols. The target-limited retry installed
+  the native libraries, then stopped at the repository's Python editable-install
+  hook. Raw logs are `.codex-tmp/spec185-b1-runtime-consumer/install.log` and
+  `install-target.log`; neither boundary is counted as a B1 Runtime product
+  failure.
+- B1 was subsequently validated with the already successful DI/Core build and
+  an isolated installed-prefix C++ consumer. The consumer result and the
+  explicit linker/toolchain harness boundary are recorded in
+  `specs/185-prepared-model-runtime/evidence/b1-runtime.md`.
+
+## 2026-09-12 — Spec185 B2E normal selector fixture boundary
+
+- The first B2E normal build linked `spec185-extension-registry` successfully,
+  but its selector stopped in two Qwen fixture cases with
+  `Qwen native splitter role cover is incomplete`. The fixture supplied two
+  roles while relying on the constructor's three-role default tensor-degree
+  vector; no production request or publication path ran. Raw output is
+  `.codex-tmp/spec185-b2e/normal-runtime.log`.
+- The boundary is classified as a C++ test-fixture contract error. The fix
+  supplies the explicit two-element tensor-degree vector and must pass the
+  read-only static re-review before the selector is retried. The failed run is
+  not a product PASS and B2E remains open.
+
+- After rebuilding with that fixture fix, the selector reached the Qwen
+  `inspectGraph` identity check and stopped with `graph snapshot identity or
+  topological order is invalid`: the test model used an arbitrary graph digest
+  instead of the canonical digest for the requested revision and layer ranges.
+  Raw output is `.codex-tmp/spec185-b2e/normal-runtime-fixture-fix.log`.
+- This remains a C++ fixture contract boundary. The test now derives the
+  canonical Qwen graph digest before calling `inspectGraph`; the production
+  graph identity check is retained. B2E remains open pending static re-review
+  and a fresh build/runtime result.
+
+- The first B2E installed-prefix consumer attempt reached C++ link but used
+  Linuxbrew `ld` through the ambient `g++` PATH. It consequently reported
+  missing system protobuf, Boost filesystem, OpenSSL and ONNX Runtime symbols;
+  the source-tree leak checks had not failed. Raw output is
+  `.codex-tmp/spec185-b2e/installed-consumer-r2.log`.
+- This is a toolchain-harness boundary, not a DI API failure. The retry uses
+  the repository-required system-first PATH and keeps the installed prefix
+  and library/header identity unchanged.
+
+## 2026-09-13 — Spec185 B2 first compile boundary
+
+- The first B2 shared `-j4` compile stopped before linking at the existing
+  Core `OperationRuntime.cpp` changes: `notifyWaiters()` was still defined
+  inside the anonymous namespace, the three-argument `drainAsync` definition
+  had no matching declaration, and the local `Notification` aggregate was
+  constructed with arguments despite having no constructor. No B2 selector
+  ran and no product result is inferred. Raw output is
+  `.codex-tmp/spec185-b2/normal-build.log`; the baseline memory sample is
+  `.codex-tmp/spec185-b2/vmstat-before.log`.
+- This is a compile/link source-boundary failure. The fix must move the member
+  definition out of the anonymous namespace, align the overload set, and use
+  aggregate initialization (or an explicit constructor), then pass the
+  affected Core static review before retrying the B2 build.
+
+- The first retry compiled the repaired Core source but stopped before link at
+  two additional interface boundaries: restoring the three-argument overload
+  alongside a four-argument overload with a default parameter made explicit
+  three-argument calls ambiguous, and the DI `User` caller lacked access to
+  the private Core timer scheduler. The T004 target did not link and no
+  selector ran. Raw output is `.codex-tmp/spec185-b2/normal-build-v2.log`.
+- This remains a compile-only API/ownership boundary. The retry removes the
+  four-argument default (keeping both ABI overloads distinct) and grants the
+  DI `User` class the private scheduling friend access without widening the
+  Core public API; the affected Core/DI range requires static re-review before
+  another build.
+
+## 2026-09-13 — Spec185 B2 first native selector fixture boundary
+
+- The first normal `Spec185Preparation` selector reached the native catalog
+  path but stopped with `graph snapshot identity or topological order is
+  invalid`. The T003/T004 fixture put its canonical source graph digest into
+  `NativeModelDescriptor::graphDigest`; the production YOLO catalog uses that
+  field for the planning graph digest and separately pins the canonical source
+  graph digest in `source.canonical_graph_digest`. Cold, refresh, and
+  concurrency cases therefore failed before a verified Package was published;
+  no cache or Runtime product result is inferred. Raw output is
+  `.codex-tmp/spec185-b2/normal-preparation.log`.
+- This is a C++ fixture identity boundary. The fix derives the planning graph
+  digest from `inspectNativeOnnxSourceGraph` while retaining the canonical
+  source identity in the catalog field, then requires static re-review and a
+  fresh selector run.
+
+## 2026-09-13 — Spec185 B2 v4 compile fixture syntax boundary
+
+- The fresh `-j4` rebuild after the v19 static pass stopped before linking at
+  `tests/unit-tests/di-preparation.t.cpp:74`: the `NativeAssemblyControl`
+  aggregate initializer had one extra closing parenthesis. No selector ran
+  from this binary. Raw output is `.codex-tmp/spec185-b2/normal-build-v4.log`.
+- This is a test-fixture syntax boundary, not a production or protocol result.
+  The correction removes the extra delimiter; the changed fixture must pass a
+  new read-only static review and a fresh build before selectors are retried.
+
+## 2026-09-13 — Spec185 B2 v5 preparation selector fixture boundary
+
+- The v5 normal build linked successfully, but the preparation selector stopped
+  in `PreparationRejectsWrongIdentityAndNonOnnxSource` when the unsupported-task
+  case changed the adapter task list without recomputing the descriptor's
+  planning graph identity. Native catalog validation therefore reported
+  `graph snapshot identity or topological order is invalid` before reaching the
+  intended capability check. Raw output is
+  `.codex-tmp/spec185-b2/normal-preparation-v2.log`.
+- This is a C++ fixture contract boundary. The corrected case keeps the valid
+  descriptor/catalog identity and changes only the pinned request task (and its
+  canonical requester digest), so production reaches the unsupported-capability
+  branch. The fixture requires static re-review and a fresh selector run.
+
+## 2026-09-13 — Spec185 B2 Runtime regression hang boundary
+
+- The v5-linked binary passed the complete `Spec185Preparation` selector (14/14),
+  the T004 Runtime selector (1/1), and the Core regression selector (35/35).
+  A broader `Spec185Runtime` compatibility run entered
+  `PrepareReportsSourceFailureAtPreparationBoundary` and remained blocked in a
+  futex for more than two minutes after the first case passed. The process was
+  terminated; no PASS or return code is inferred. Raw output is
+  `.codex-tmp/spec185-b2/normal-runtime-regression-v1.log` and the termination
+  marker is `.codex-tmp/spec185-b2/normal-runtime-regression-v1.rc`.
+- This is a Runtime/fixture lifecycle boundary outside the already passing
+  preparation selector. Before retrying the broad regression, reproduce the
+  single test with a bounded timeout and inspect worker, close, drain, and
+  preparation-failure ownership; preserve this run as evidence.
+
+- A gdb thread snapshot of the isolated test showed the cache worker blocked
+  in `User::prepare`'s `spec.cancelled` callback while `prepareSingle` still
+  held the Runtime mutex through `spec.acquireCommit`; the caller waited on the
+  job condition. This was a same-thread lock inversion, not a source-file or
+  Core worker stall. The fix releases the commit guard before the cancellation
+  probe, then requires a new static review and selector regression.
+
+## 2026-09-13 — Spec185 B2 Runtime regression fixture identity boundary
+
+- After the deadlock fix, the broad `Spec185Runtime` run completed all lifecycle
+  cases until `PrepareSuccessUsesTheProductionRuntimeEntry`, whose unsupported
+  capability subcase changed the adapter task list without recomputing the
+  planning graph identity. The native catalog consequently rejected the
+  descriptor before the intended capability branch. Raw output is
+  `.codex-tmp/spec185-b2/normal-runtime-regression-v2.log`.
+- This is a C++ Runtime fixture contract boundary. The fix keeps the valid
+  descriptor/catalog graph and changes only the request task, allowing the
+  production unsupported-capability check to run. A fresh static review and
+  Runtime regression are required.
+
+## 2026-09-13 — Spec185 B2 TSan synchronous error lifetime boundary
+
+- The first fresh TSan preparation repetition exited 66 in
+  `PreparationRejectsDetachedCatalogAndHonoursCancellation`: the worker
+  destroyed the job-owned `std::runtime_error` while the main thread's
+  `BOOST_CHECK_EXCEPTION` predicate still read `what()`. The second repetition
+  happened to pass, but the diagnostic is a real exception-object lifetime
+  race. Raw output is `.codex-tmp/spec185-b2/tsan-preparation-repeat1.log`.
+- The failure is in synchronous `waitFor`, which directly rethrew
+  `job->error` and allowed the last `exception_ptr` to disappear as the
+  handle/state unwound. The fix copies the diagnostic text while the job lock
+  protects the stored exception and throws an independent `std::runtime_error`;
+  asynchronous completion payloads retain their own exception pointer. A new
+  static review, normal rebuild and repeated TSan preparation selector are
+  required.

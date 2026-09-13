@@ -82,6 +82,13 @@ std::shared_ptr<const NativeAdapterRegistry> NativeCanonicalPreparationCatalog::
   return m_state->adapters;
 }
 
+NativeCanonicalSource NativeCanonicalPreparationCatalog::sourceFor(
+  const NativeModelDescriptor& model) const
+{
+  const auto& source = *m_state->find(model).source;
+  return source;
+}
+
 NativeSplitCandidate NativeCanonicalPreparationCatalog::bindStateContracts(const NativeInspectedModel& model,
   const NativeSplitCandidate& candidate, const NativeStateTensorMapping& mapping,
   const NativeRequestControl& control) const

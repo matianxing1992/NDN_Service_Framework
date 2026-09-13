@@ -2,12 +2,15 @@
 #define NDNSF_DI_RUNTIME_HPP
 
 #include "ndn-service-framework/OperationRuntime.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp"
 
 #include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <exception>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <functional>
@@ -41,6 +44,16 @@ struct UserConfig
   std::string profileName;
 };
 
+/** Cache selection for a verified model preparation. */
+enum class CachePolicy { RequireReady, UseOrWait, UseOrFetch, Refresh };
+
+/** Per-preparation timeout and cache policy. */
+struct PrepareOptions
+{
+  CachePolicy cache = CachePolicy::UseOrFetch;
+  Milliseconds timeout{300000};
+};
+
 /** Structured error exposed by the application API. */
 class DiError : public std::runtime_error
 {
@@ -66,6 +79,63 @@ private:
 namespace detail { struct RuntimeState; }
 
 class Runtime;
+enum class PreparationStatus { Pending, Ready, Failed, Cancelled };
+using PreparationCompletion = std::function<void(
+  std::exception_ptr, std::optional<PreparedModel>)>;
+
+class PreparationHandle
+{
+public:
+  PreparationHandle() noexcept = default;
+  PreparationHandle(PreparationHandle&&) noexcept = default;
+  PreparationHandle& operator=(PreparationHandle&&) noexcept = default;
+  PreparationHandle(const PreparationHandle&) = default;
+  PreparationHandle& operator=(const PreparationHandle&) = default;
+  ~PreparationHandle() = default;
+
+  PreparationStatus status() const;
+  PreparedModel result() const;
+  PreparedModel result(Milliseconds timeout) const;
+  Subscription resultAsync(Milliseconds timeout, PreparationCompletion callback) const;
+  Subscription onCompletion(PreparationCompletion callback) const;
+  void cancel() const noexcept;
+
+private:
+  struct State
+  {
+    std::function<PreparationStatus()> status;
+    std::function<PreparedModel(Milliseconds)> result;
+    std::function<Subscription(Milliseconds, PreparationCompletion)> resultAsync;
+    std::function<Subscription(PreparationCompletion)> onCompletion;
+    std::function<void()> cancel;
+    std::shared_ptr<void> lifetime;
+    Milliseconds defaultTimeout{0};
+    std::function<PreparedModel()> resultDefault;
+    std::chrono::steady_clock::time_point waiterDeadline{};
+    bool joinedInFlight = false;
+    // Bound by Runtime to reject a blocking result wait on its Core worker.
+    std::function<bool()> wouldBlock;
+    std::function<bool()> workerThread;
+    std::function<void()> onDestroy;
+
+    ~State() noexcept
+    {
+      if (onDestroy) {
+        try { onDestroy(); }
+        catch (...) {}
+      }
+    }
+  };
+  explicit PreparationHandle(std::shared_ptr<State> state)
+    : m_state(std::move(state))
+  {
+  }
+
+  std::shared_ptr<State> m_state;
+  friend class User;
+  friend class ModelPreparationCache;
+  friend struct Spec185PreparationTestAccess;
+};
 
 /**
  * A copyable user view bound to one Runtime state and principal.
@@ -78,6 +148,14 @@ class User
 {
 public:
   User() = default;
+
+  /** Prepare the registered model and return an immutable verified package. */
+  PreparedModel prepare(const std::string& modelKey = "default",
+                        const PrepareOptions& options = {}) const;
+
+  /** Start native preparation; each handle is an independently cancellable waiter. */
+  PreparationHandle prepareAsync(const std::string& modelKey = "default",
+                                  const PrepareOptions& options = {}) const;
 
 private:
   explicit User(std::shared_ptr<detail::RuntimeState> state,

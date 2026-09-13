@@ -11,7 +11,7 @@
       "stability": "stable",
       "target": "ndnsf-distributed-inference",
       "owner": "DI Runtime facade (T001+)",
-      "symbols": ["ndnsf::di::kPreparedModelRuntimeApiVersion", "Runtime", "User", "PreparedModel", "Input", "RequestHandle", "Subscription", "Result", "Conversation", "DiError", "RuntimeConfig", "UserConfig", "PrepareOptions", "RequestOptions"],
+      "symbols": ["ndnsf::di::kPreparedModelRuntimeApiVersion", "Runtime", "User", "PreparedModel", "PreparationHandle", "PreparationStatus", "PreparationReceipt", "Input", "RequestHandle", "Subscription", "Result", "Conversation", "DiError", "RuntimeConfig", "UserConfig", "PrepareOptions", "RequestOptions"],
       "replacement": null,
       "transitive_dependencies": [],
       "removal_condition": "none; additive public entry"
@@ -22,10 +22,32 @@
       "stability": "stable",
       "target": "ndnsf-distributed-inference",
       "owner": "DI Runtime facade (T001+)",
-      "symbols": ["ndnsf::di::Runtime", "ndnsf::di::User", "ndnsf::di::RuntimeConfig", "ndnsf::di::ModelRegistration", "ndnsf::di::UserConfig", "ndnsf::di::DiError", "ndnsf::di::Subscription"],
+      "symbols": ["ndnsf::di::Runtime", "ndnsf::di::User", "ndnsf::di::PreparationHandle", "ndnsf::di::PreparationStatus", "ndnsf::di::RuntimeConfig", "ndnsf::di::ModelRegistration", "ndnsf::di::UserConfig", "ndnsf::di::DiError", "ndnsf::di::Subscription"],
       "replacement": "ndnsf-di/api.hpp",
       "transitive_dependencies": ["ndn-service-framework/OperationRuntime.hpp"],
       "removal_condition": "retain while api.hpp includes the T001 Runtime declarations"
+    },
+    {
+      "path": "NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp",
+      "level": "application-transitive",
+      "stability": "stable",
+      "target": "ndnsf-distributed-inference",
+      "owner": "DI prepared-model facade (T003+)",
+      "symbols": ["ndnsf::di::PreparedModel", "ndnsf::di::PreparationReceipt", "ndnsf::di::ModelManifest", "ndnsf::di::ModelCapabilities"],
+      "replacement": "ndnsf-di/api.hpp",
+      "transitive_dependencies": [],
+      "removal_condition": "retain while api.hpp exposes the prepared-model application view"
+    },
+    {
+      "path": "NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModelTypes.hpp",
+      "level": "application-transitive",
+      "stability": "stable",
+      "target": "ndnsf-distributed-inference",
+      "owner": "DI prepared-model value types (T003+)",
+      "symbols": ["ndnsf::di::ModelManifest", "ndnsf::di::ModelCapabilities"],
+      "replacement": "ndnsf-di/PreparedModel.hpp",
+      "transitive_dependencies": [],
+      "removal_condition": "retain while PreparedModel.hpp exposes these value types"
     },
     {
       "path": "NDNSF-DistributedInference/cpp/ndnsf-di/provider.hpp",
@@ -255,6 +277,16 @@
       "path": "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPlanner.hpp",
       "reason": "legacy request planner includes the non-installed request envelope",
       "compatibility_plan": "T003/T005 expose preparation and planning through api.hpp"
+    },
+    {
+      "path": "NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp",
+      "reason": "internal preparation cache owner; exposes NativeRequestCatalog and cache policy machinery",
+      "compatibility_plan": "T004/T011 expose preparation through PreparedModel and api.hpp"
+    },
+    {
+      "path": "NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModelPackage.hpp",
+      "reason": "internal verified Package containing NativeRequestCatalog and adapter implementation state",
+      "compatibility_plan": "T005 exposes request projection through PreparedModel; no application include"
     },
     {
       "path": "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp",

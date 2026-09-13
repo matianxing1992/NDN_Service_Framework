@@ -16,8 +16,8 @@
 | [T001 Runtime Configuration and Export](#t001) | PASS | B0C exit | B1 closed; [b1-runtime](evidence/b1-runtime.md) static/compile-link/runtime PASS; later request path remains open | 2026-09-12 16:24 -05:00 |
 | [T002 Runtime Shutdown and Child Ownership](#t002) | PASS | T001 static | B1 closed; [b1-runtime](evidence/b1-runtime.md) normal/TSan/installed C++ lifecycle PASS; owner-thread public path remains unobserved | 2026-09-12 16:24 -05:00 |
 | [T016 Extension Registration and Cooperative Control](#t016) | PASS | B1 exit | B2E closed; [b2e-extensions](evidence/b2e-extensions.md) static/compile-link/runtime/TSan/installed C++ PASS; full packaging remains unobserved | 2026-09-12 16:24 -05:00 |
-| [T003 Verified Package Preparation](#t003) | NOT_STARTED | B2E exit | B2 planned; implementation/build/runtime NOT_RUN | 2026-09-12 16:24 -05:00 |
-| [T004 Single Flight Refresh and Leases](#t004) | NOT_STARTED | T003 static | B2 planned; implementation/build/runtime NOT_RUN | 2026-09-12 16:24 -05:00 |
+| [T003 Verified Package Preparation](#t003) | PASS | B2E exit | B2 closed; [b2-preparation](evidence/b2-preparation.md) covers static/combination review, normal/TSan C++ preparation and affected Runtime/Core suites | 2026-09-12 21:07 -05:00 |
+| [T004 Single Flight Refresh and Leases](#t004) | PASS | T003 static | B2 closed; [b2-preparation](evidence/b2-preparation.md) covers static/combination review, normal/TSan C++ preparation and lease/refresh/concurrency cases | 2026-09-12 21:07 -05:00 |
 | [T005 Prepared Request Projection](#t005) | NOT_STARTED | B2 exit + Spec184 scoped dependency gate | B3 planned; implementation/build/runtime NOT_RUN | 2026-09-12 16:24 -05:00 |
 | [T006 Handle Deadlines Events and Cancellation](#t006) | NOT_STARTED | T005 static | B3 planned; implementation/build/runtime NOT_RUN | 2026-09-12 16:24 -05:00 |
 | [T007 Prepared Conversations and Committed Checkpoints](#t007) | NOT_STARTED | B3 exit | B4 planned; implementation/build/runtime NOT_RUN | 2026-09-12 16:24 -05:00 |
@@ -30,6 +30,8 @@
 | [T014 Design API and Scoped Handoff](#t014) | NOT_STARTED | T012 acceptance | B9 planned; implementation/build/runtime NOT_RUN | 2026-09-12 16:24 -05:00 |
 
 ## Current Checkpoint
+
+2026-09-12 21:07 -05:00 B2 closed：T003→T004 完成逐任务官方 review-agent 静态门、B2组合门及批末共享验收。普通 `Spec185Preparation` 14/14、`Spec185Runtime` 10/10、`Spec185CoreOperation` 35/35 通过；独立 clang/TSan 三套件各重复两次共6次均 `rc=0` 且 `*** No errors detected`。证据见[b2-preparation](evidence/b2-preparation.md)，失败边界及修复见 `docs/failure-log.md`。准备链未运行 Python、Provider、会话、跨进程资格、SIF/Tiger；下一依赖满足任务为T005/B3。
 
 2026-09-12 17:00 -05:00 Dependency-scoped gate revision：门禁仅阻塞依赖工作；无依赖、文件边界清晰且前置满足的任务可由主代理在子代理只读审查固定快照期间继续。执行细则见[批次执行表](batch-execution.md)，验证见[调度修订](evidence/dependency-scoped-dispatch-20260912.md)。现有任务状态、Depends、Updated和验收不变；本轮没有启动并行产品实现。下一步执行者先登记独立任务/子任务边界，无合格工作则等待，不绕过T003→T004等硬依赖。
 
@@ -164,7 +166,7 @@ C-07每行是T015 exposure、T011 C++消费、T012绑定和T014文档的共同�
 
 <a id="t003"></a>
 
-- [ ] T003 [US1] Verified Package Preparation — PreparedModel.hpp/PreparedModel.cpp; ModelPreparationCache.hpp/ModelPreparationCache.cpp; tests/unit-tests/di-preparation.t.cpp
+- [x] T003 [US1] Verified Package Preparation — PreparedModel.hpp/PreparedModel.cpp; ModelPreparationCache.hpp/ModelPreparationCache.cpp; tests/unit-tests/di-preparation.t.cpp
 
   **Batch / Depends**: B2 / B2E exit。
 
@@ -178,9 +180,11 @@ C-07每行是T015 exposure、T011 C++消费、T012绑定和T014文档的共同�
 
   **Exit / oracle**: 冷准备成功；错digest/任务/JSON冒充ONNX/缺initializer拒绝；无grant或Provider副作用，预算限制生效。
 
+  **Completion**: B2 `PASS`; static/combination review, normal and repeated clang/TSan C++ selectors, independent graph oracle, and Runtime/Core affected suites are recorded in [evidence/b2-preparation.md](evidence/b2-preparation.md). Request, conversation, Provider, Python and full qualification remain deferred to later batches.
+
 <a id="t004"></a>
 
-- [ ] T004 [US1] Single Flight Refresh and Leases — ModelPreparationCache.cpp; tests/unit-tests/di-preparation.t.cpp
+- [x] T004 [US1] Single Flight Refresh and Leases — ModelPreparationCache.cpp; tests/unit-tests/di-preparation.t.cpp
 
   **Batch / Depends**: B2 / T003 static。
 
@@ -195,6 +199,8 @@ C-07每行是T015 exposure、T011 C++消费、T012绑定和T014文档的共同�
   **Lifecycle completeness**: C-07 PreparationHandle最后副本释放取消该waiter；resultAsync仅取消等待；移除普通PrepareOptions取消回调，native handle统一取消。
 
   **Exit / oracle**: C-02全部反例；单waiter取消不影响其他人；Refresh失败旧对象可用；8并发仅一次fetch/inspect；TSan重复两次。
+
+  **Completion**: B2 `PASS`; single-flight, refresh generation, lease/LRU/budget, waiter cancellation/deadline and exactly-once completion cases passed in normal and repeated clang/TSan C++ selectors. Full cross-process and Python qualification remain unobserved; see [evidence/b2-preparation.md](evidence/b2-preparation.md).
 
 <a id="t005"></a>
 
