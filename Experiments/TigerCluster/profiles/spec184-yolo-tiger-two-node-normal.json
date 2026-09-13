@@ -1,20 +1,20 @@
 {
   "schemaVersion": "ndnsf-spec186-experiment-profile-v1",
-  "candidate": {"id": "spec186-yolo-tiger-two-node-v1", "sourceCommit": "575b43cc93bbed29932303caf3d09974f1585af7", "sourceSealSha256": "4d1a35463d9917ee0bad5e7d2e37b486d9a5778c65300959cc63715ada8ca947"},
+  "candidate": {"id": "spec186-yolo-tiger-two-node-v1", "sourceCommit": "4751148375dad9149c7c185c9381d5734c733e13", "sourceSealSha256": "597c44a97b34655dfb67b9fc3bff3693b844f5cc1f10624870554bdee8e658e2"},
   "case": "yolo-tiger-two-node-normal",
   "topology": {"mode": "tiger", "nodes": 2, "hosts": ["tiger-node-a", "tiger-node-b"], "nfdEndpoints": [{"host": "tiger-node-a", "port": 16363}, {"host": "tiger-node-b", "port": 16364}]},
   "roles": [
-    {"name": "BackboneNeck", "identity": "/spec186/BackboneNeck", "node": "tiger-node-a", "gpu": 0, "backend": "onnxruntime-cuda", "service": "/ObjectDetection/YOLOv8/BackboneNeck", "binary": "${REPO_ROOT}/build-spec186/examples/di-native-provider"},
-    {"name": "DetectShard0", "identity": "/spec186/DetectShard0", "node": "tiger-node-a", "gpu": 0, "backend": "onnxruntime-cuda", "service": "/ObjectDetection/YOLOv8/DetectShard0", "binary": "${REPO_ROOT}/build-spec186/examples/di-native-provider"},
-    {"name": "DetectShard1", "identity": "/spec186/DetectShard1", "node": "tiger-node-b", "gpu": 0, "backend": "onnxruntime-cuda", "service": "/ObjectDetection/YOLOv8/DetectShard1", "binary": "${REPO_ROOT}/build-spec186/examples/di-native-provider"},
-    {"name": "Merge", "identity": "/spec186/Merge", "node": "tiger-node-b", "gpu": -1, "backend": "onnxruntime-cpu", "service": "/ObjectDetection/YOLOv8/Merge", "binary": "${REPO_ROOT}/build-spec186/examples/di-native-provider"}
+    {"name": "BackboneNeck", "identity": "/spec186/BackboneNeck", "node": "tiger-node-a", "gpu": 0, "backend": "onnxruntime-cuda", "service": "/ObjectDetection/YOLOv8/BackboneNeck", "binary": "/project/tma1/ndnsf-di/apps/spec186/spec186-app-bundle-r4"},
+    {"name": "DetectShard0", "identity": "/spec186/DetectShard0", "node": "tiger-node-a", "gpu": 0, "backend": "onnxruntime-cuda", "service": "/ObjectDetection/YOLOv8/DetectShard0", "binary": "/project/tma1/ndnsf-di/apps/spec186/spec186-app-bundle-r4"},
+    {"name": "DetectShard1", "identity": "/spec186/DetectShard1", "node": "tiger-node-b", "gpu": 0, "backend": "onnxruntime-cuda", "service": "/ObjectDetection/YOLOv8/DetectShard1", "binary": "/project/tma1/ndnsf-di/apps/spec186/spec186-app-bundle-r4"},
+    {"name": "Merge", "identity": "/spec186/Merge", "node": "tiger-node-b", "gpu": -1, "backend": "onnxruntime-cpu", "service": "/ObjectDetection/YOLOv8/Merge", "binary": "/project/tma1/ndnsf-di/apps/spec186/spec186-app-bundle-r4"}
   ],
   "runtime": {
     "baseSif": {"path": "/project/tma1/ndnsf-di/candidates/spec186/base-runtime.sif", "sha256": "b6710fd696a7f962f67f67a54278d92a15babb856c4af428a3f04ba54dc83285"},
     "builder": {"path": "${REPO_ROOT}/waf", "sha256": "fa2771fed870fe9bf7a67dd13e09770725f4142fcd5481d9796e624759950483"},
     "abiManifest": {"path": "${REPO_ROOT}/specs/186-spec184-tiger-qwen-experiments/fixtures/abi-manifest.json", "sha256": "dee862112bcc894907a59805ecbdc774c34982ca50ae3fabe893bad83caa0ead"},
     "allowCpuFallback": false,
-    "application": {"bundle": {"path": "${REPO_ROOT}/build-spec186/examples/di-native-provider", "sha256": "eef4fe041e0785f79bcd741091ba91ae6d5b2019c57d6339ccb44273c901a2f9"}, "bundleSha256": "eef4fe041e0785f79bcd741091ba91ae6d5b2019c57d6339ccb44273c901a2f9", "entrypoint": "${REPO_ROOT}/build-spec186/examples/di-native-provider", "extension": "${REPO_ROOT}/pythonWrapper/build/lib.linux-x86_64-3.8/ndnsf/_ndnsf.cpython-38-x86_64-linux-gnu.so"},
+    "application": {"bundle": {"path": "/project/tma1/ndnsf-di/apps/spec186/spec186-app-bundle-r4", "sha256": "badf6a0afb36e43d02f7103cba36383bf8f0336e2310a0fd546c33223734734d"}, "bundleSha256": "badf6a0afb36e43d02f7103cba36383bf8f0336e2310a0fd546c33223734734d", "entrypoint": "/project/tma1/ndnsf-di/apps/spec186/spec186-app-bundle-r4/bin/di-native-provider", "extension": "/project/tma1/ndnsf-di/apps/spec186/spec186-app-bundle-r4/python/ndnsf/_ndnsf.cpython-38-x86_64-linux-gnu.so"},
     "harness": {"launcher": "${REPO_ROOT}/Experiments/NDNSF_DI_YoloAckDriven_Minindn.py", "collector": {"path": "${REPO_ROOT}/Experiments/TigerCluster/runtime/spec186_candidate.py", "sha256": "b9bb5f886fc2ee39ab50f7d85814974c595d866ef1962164968165dad9697291"}}
   },
   "model": {"family": "YOLOv8n", "format": "onnx", "backend": "onnxruntime-cuda", "model": {"path": "/project/tma1/ndnsf-di/models/yolov8n.onnx", "sha256": "4d2f387218a088c40a19dd8b41067ba729504f37d258f133377221b148e2f373"}, "tokenizer": null},

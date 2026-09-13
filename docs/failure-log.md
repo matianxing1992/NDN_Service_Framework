@@ -3906,3 +3906,35 @@ which differs from the Spec186 handoff seal
 - **Lesson**: a collector change invalidates every candidate profile; update
   all producer/consumer identity fields in one checkpoint before diagnosing
   downstream runtime blockers.
+
+## 2026-09-13 — Spec186 profiles carried stale source and app paths
+
+- **Area**: T005/T006/T007/T009 candidate tuple binding.
+- **First boundary**: after the collector repair, profiles still named the old
+  build-tree provider path, old application digest and the ancestor-only source
+  identity. Local app entrypoint checks therefore failed even though the
+  content-addressed bundle had been built and staged to Tiger storage.
+- **Correction**: bind all eight profiles to source commit
+  `4751148375dad9149c7c185c9381d5734c733e13`, source seal
+  `597c44a97b34655dfb67b9fc3bff3693b844f5cc1f10624870554bdee8e658e2`, bundle
+  digest `badf6a0afb36e43d02f7103cba36383bf8f0336e2310a0fd546c33223734734d`,
+  and the correct `bin/di-native-provider` entrypoint. Regenerated receipts
+  now reach only the expected base/model/visibility boundaries with zero side
+  effects.
+- **Lesson**: source, bundle directory, entrypoint and digest form one
+  candidate plane; updating one field without the others creates a false
+  runtime blocker.
+
+## 2026-09-13 — Spec186 profile entrypoint lost its binary suffix
+
+- **Area**: T005/T006 native entrypoint pre-dispatch.
+- **First boundary**: the first source/app path replacement changed each
+  profile's `entrypoint` to the bundle directory itself, so native checks
+  reported `NATIVE_ENTRYPOINT_MISSING` despite the staged
+  `bin/di-native-provider` file being present.
+- **Correction**: restore the explicit `bin/di-native-provider` suffix for all
+  local and Tiger profiles and regenerate candidate digests. Local YOLO
+  pre-dispatch now reaches only the missing base SIF and native-library
+  boundary; Tiger paths remain intentionally invisible from this host.
+- **Lesson**: directory-aware bundles still require an explicit executable
+  entrypoint; a valid directory digest cannot stand in for executable identity.

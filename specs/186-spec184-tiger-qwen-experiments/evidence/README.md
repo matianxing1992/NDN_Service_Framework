@@ -12,6 +12,7 @@ of the stopping point; it is not a qualification result.
 | `native-abi-closure.md` | Waf, ONNX/NAC-ABE, import/help, RPATH/`ldd`, app bundle | native host closure PASS; exact source-sealed base SIF still pending |
 | `pre-dispatch-boundary-20260912.md` | all eight candidate prepare/check receipts | zero remote side effects; no runtime started |
 | `pre-dispatch-repair-20260913.md` | all eight candidate receipts after collector identity repair | stale collector mismatch removed; missing external runtime/model inputs still fail closed with zero remote side effects |
+| `pre-dispatch-runtime-inputs-20260913.md` | all eight candidate receipts after source/app path binding | provider-repair source seal and content-addressed app bundle are bound; missing base/model or local visibility still fail closed |
 | `minindn-yolo-boundary-20260912.md` | fresh Y-A/Y-B/Y-N attempts | environment preflight stopped before startup |
 | `minindn-qwen06b-inventory.md` | Qwen3-0.6B model/backend inventory | compatible model tuple absent |
 | `tiger-preflight-20260912.md` | Tiger Slurm/GPU/project/Apptainer preflight | compute GPU available; SIF/runtime composition still pending |

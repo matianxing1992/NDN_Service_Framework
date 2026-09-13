@@ -133,3 +133,15 @@ JSON/profile validation and the full TigerCluster suite pass (`74 passed`).
 This repairs candidate identity convergence only. The profiles still fail
 closed on their intentionally absent exact base SIF, app paths and external
 model inputs; the runtime qualification verdict remains `BLOCK`.
+
+## Checkpoint 9 — 2026-09-13 source and app path binding
+
+The profiles now bind the provider-repair source commit and source seal used by
+the fresh native build, plus the immutable nine-file application bundle. Local
+MiniNDN profiles use the host bundle directory; Tiger profiles use its verified
+project-storage staging path. Their entrypoints resolve to
+`bin/di-native-provider`, and all eight candidate manifests were regenerated.
+The new pre-dispatch receipts show the collector mismatch is gone and retain
+zero remote side effects. Runtime qualification remains `BLOCK` until the
+matching source-sealed base SIF is built and visible in the selected execution
+environment.
