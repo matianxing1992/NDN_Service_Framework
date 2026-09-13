@@ -23,7 +23,8 @@ of the stopping point; it is not a qualification result.
 | `t006-nac-abe-abi-20260913.md` | Waf/setuptools NAC-ABE class-layout mismatch and repair | explicit prefix forwarded; native identity and `NativeServiceUser` lifecycle pass; exact SIF/ONNX/Tiger inputs remain pending |
 | `application-bundle-r5-20260913.md` | refreshed stripped application bundle and Tiger staging | r5 tree digest `687610de…07129` matches local/remote; all files read-only; runtime qualification still waits for the exact base SIF |
 | `host-m01-r12-route-boundary-20260913.md` | current-source root MiniNDN retry | native ABI issue absent; repository `/STATUS` route barrier timed out before application request |
-| `closure-handoff-20260912.md` | implemented/wired/executed/measured reconciliation | branch remains `IN_PROGRESS` with ordered recovery gates |
+| `closure-handoff-20260912.md` | immutable prior implemented/wired/executed/measured snapshot | historical boundary retained for audit |
+| `closure-handoff-20260913.md` | current implemented/wired/executed/measured reconciliation | r5 staged and 1.5.3 aligned; branch remains `IN_PROGRESS` at the repository route/base-SIF/model gates |
 
 Runtime receipts belong in `Experiments/TigerCluster/results/<run-id>` or the
 declared project-storage counterpart. Secrets, models, SIFs and large logs do
