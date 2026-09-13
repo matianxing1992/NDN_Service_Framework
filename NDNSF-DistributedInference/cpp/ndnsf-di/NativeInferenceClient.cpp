@@ -150,18 +150,59 @@ conversationControlJson(const char* action,
 // results can never resurrect a terminal.
 enum class DiRequestPhase { New, PreparingInput, Requesting, Planning, Committed, Terminal };
 
+struct NativeIoCleanupState
+{
+  std::atomic<std::size_t> pending{0};
+  mutable std::mutex mutex;
+  std::condition_variable condition;
+  std::function<void()> notifyOwner;
+};
+
+void notifyIoCleanupSettled(const std::shared_ptr<NativeIoCleanupState>& state) noexcept
+{
+  if (!state)
+    return;
+  state->pending.fetch_sub(1, std::memory_order_acq_rel);
+  state->condition.notify_all();
+  std::function<void()> notifier;
+  try {
+    std::lock_guard<std::mutex> lock(state->mutex);
+    notifier = state->notifyOwner;
+  }
+  catch (...) {
+    return;
+  }
+  if (notifier) {
+    try { notifier(); }
+    catch (...) {}
+  }
+}
+
 struct NativeInferenceHandle::Operation
 {
   // The caller's Core owner survives asynchronous work and handle waits.
   // It does not transfer ownership of the application's Face to DI.
   std::shared_ptr<ndn_service_framework::ServiceUser> user;
+  std::shared_ptr<void> ownerLease;
+  // PreparedModel attaches its cache lease before exposing the handle.  Keep
+  // that lease with the operation until terminal cleanup so refresh/eviction
+  // cannot replace identities still used by asynchronous work.
+  std::shared_ptr<void> packageLease;
   // Submission values are owned snapshots. Worker/callback work must never
   // read the caller's model/input/options or borrow the client's lifetime.
   NativeModelRef model;
   NativeApplicationInput input;
   NativeRequestOptions options;
-  std::shared_ptr<const NativeModelSplitStrategy> splitStrategy;
-  std::shared_ptr<const NativePlacementStrategy> placementStrategy;
+  // Exactly one strategy-port bundle is captured by an operation.  The
+  // concrete owner pointers below only keep the selected vtable alive for the
+  // legacy/cooperative adapters; planning consumes the single type-erased
+  // bundle and never maintains a second strategy state machine.
+  NativeStrategyPorts strategies;
+  std::shared_ptr<const NativeModelSplitStrategy> legacySplitter;
+  std::shared_ptr<const NativePlacementStrategy> legacyPlacement;
+  std::shared_ptr<const CooperativeModelSplitStrategy> cooperativeSplitter;
+  std::shared_ptr<const CooperativePlacementStrategy> cooperativePlacement;
+  bool cooperativeStrategies = false;
   std::shared_ptr<NativeRequestPreparation> preparation;
   std::optional<NativePreparedInput> preparedInput;
   std::shared_ptr<const NativeRequestContract> requestContract;
@@ -177,6 +218,7 @@ struct NativeInferenceHandle::Operation
   std::shared_ptr<const NativeAdapterRegistry> adapters;
   std::weak_ptr<NativeOperationRegistry> registry;
   std::shared_ptr<std::atomic<bool>> cancelled = std::make_shared<std::atomic<bool>>(false);
+  std::shared_ptr<NativeIoCleanupState> ioCleanupState;
   NativeRequestOptions coreOptions;
   std::optional<NativeInspectedModel> inspected;
   std::optional<NativePlannedRequest> planned;
@@ -201,7 +243,8 @@ struct NativeInferenceHandle::Operation
   std::chrono::steady_clock::time_point deadline{};
   std::function<void()> cancelDeadline;
   std::uint64_t staleCallbacks = 0;    // late/duplicate terminal attempts: counted, never resurrecting
-  std::uint64_t deliveryOverflows = 0; // DELIVERY_OVERFLOW records on the bounded observation queue
+  std::uint64_t deliveryOverflows = 0; // reliable stream publication failures (internal)
+  std::uint64_t nextEventSequence = 0;
 
   // Requester acceptance is process-local state, not a Provider commit or a
   // durable conversation checkpoint. Only the serial request worker accepts
@@ -360,6 +403,10 @@ makeTerminalEvent(const NativeInferenceHandle::Operation& operation)
   return event;
 }
 
+void
+publishEvent(const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
+             NativeInferenceEvent event, bool requirePending = false);
+
 // Single-terminal gate (M02/CD-007): an operation leaves Pending at most
 // once.  Every later terminal attempt — a duplicate cancel, a late dispatch,
 // a Core callback landing after the terminal — is counted as stale and
@@ -370,7 +417,8 @@ markTerminal(const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
              NativeRequestStatus terminal,
              std::shared_ptr<NativeDiError> error = nullptr,
              const NativeInferenceResult* result = nullptr,
-             std::uint64_t expectedAttempt = 0)
+             std::uint64_t expectedAttempt = 0,
+             bool inlineCoreCleanup = false)
 {
   std::function<void()> cancelDeadline;
   bool cancelCore = false;
@@ -419,14 +467,45 @@ markTerminal(const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
     conversationCommitted = operation->conversationCommitted;
     deferConversationCleanup = operation->conversationTransactionActive;
     if (deferConversationCleanup) {
-      operation->conversationCleanupDeferred = true;
-      if (cancelCore) operation->conversationCancelDeferred = true;
+      if (inlineCoreCleanup) {
+        // The Runtime Face is already in its failure boundary.  Do not leave
+        // a deferred conversation cleanup queued behind the callback that
+        // just failed; the inline path below owns it and the guard will see
+        // both deferred flags cleared when it later unwinds.
+        operation->conversationCleanupDeferred = false;
+        operation->conversationCancelDeferred = false;
+        deferConversationCleanup = false;
+      }
+      else {
+        operation->conversationCleanupDeferred = true;
+        if (cancelCore) operation->conversationCancelDeferred = true;
+      }
     }
     if (operation->planned) {
       for (const auto& scope : operation->planned->corePlan.keyScopes) releaseScopes.push_back(scope.name);
     }
     operation->phase = DiRequestPhase::Terminal;
     cancelDeadline = std::move(operation->cancelDeadline);
+  }
+  // Publish the terminal frame before completing the Core state. Core wakes a
+  // pending reader during complete/fail; publishing first prevents an EOF
+  // callback from racing ahead of the terminal observation. Event history or
+  // observer bookkeeping is best-effort at this boundary: an allocation or
+  // copy exception must never strand the operation before Core owns a result.
+  try {
+    publishEvent(operation, makeTerminalEvent(*operation));
+  }
+  catch (...) {
+    {
+      std::lock_guard<std::mutex> lock(operation->mutex);
+      ++operation->deliveryOverflows;
+    }
+    // The reliable stream is an observation channel.  A terminal frame
+    // allocation/insertion failure must make that channel explicitly gapped,
+    // while Core still owns the authoritative business result/status below.
+    operation->coreState->failReader(
+      ndn_service_framework::OperationErrorCode::EventGap,
+      "terminal event delivery failed");
   }
   // Core callbacks are dispatched after the DI lock is released.  Production
   // runtimes are asynchronous, but test ports may invoke a submit hook inline;
@@ -465,13 +544,41 @@ markTerminal(const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
   if (cancelCore && !deferConversationCleanup) {
     const auto user = operation->user;
     const auto id = ndn::Name(operation->coreRequestId);
-    user->postToIo([user, id, scopes = std::move(releaseScopes)] {
-      user->CancelCollaboration(id);
-      // A conversation commit may still need the request-scope key for
-      // ROLLBACK/FINALIZE. The transaction owner clears it after its callback
-      // leaves the coordinator; ordinary terminal paths clear immediately.
-      for (const auto& scope : scopes) user->clearVerifiedCollaborationData(id, scope);
-    });
+    const auto cleanupState = operation->ioCleanupState;
+    const auto operationRuntime = operation->operationRuntime;
+    if (cleanupState)
+      cleanupState->pending.fetch_add(1, std::memory_order_acq_rel);
+    auto cleanup = [user, id, scopes = std::move(releaseScopes), cleanupState,
+                    operationRuntime] {
+      try {
+        user->CancelCollaboration(id);
+        // A conversation commit may still need the request-scope key for
+        // ROLLBACK/FINALIZE. The transaction owner clears it after its callback
+        // leaves the coordinator; ordinary terminal paths clear immediately.
+        for (const auto& scope : scopes)
+          user->clearVerifiedCollaborationData(id, scope);
+      }
+      catch (...) {
+        // Terminal delivery already won.  Keep the cleanup ticket until this
+        // task has finished so Runtime cannot mistake a throwing cleanup for
+        // an empty Face queue.
+      }
+      notifyIoCleanupSettled(cleanupState);
+      if (operationRuntime)
+        operationRuntime->notifyWaiters();
+    };
+    if (inlineCoreCleanup && user->isOnIoThread()) {
+      cleanup();
+    }
+    else {
+      try {
+        user->postToIo(std::move(cleanup));
+      }
+      catch (...) {
+        notifyIoCleanupSettled(cleanupState);
+        throw;
+      }
+    }
   }
   return true;
 }
@@ -483,10 +590,15 @@ markTerminal(const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
 // outcome; observer exceptions are isolated.
 void
 publishEvent(const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
-             NativeInferenceEvent event, bool requirePending = false)
+             NativeInferenceEvent event, bool requirePending)
 {
   if (!operation->coreState)
     return;
+  {
+    std::lock_guard<std::mutex> lock(operation->mutex);
+    if (event.sequence == 0)
+      event.sequence = ++operation->nextEventSequence;
+  }
   const auto bytes = event.payload.size() + event.requestId.size() + 1;
   bool admitted = !requirePending;
   const bool published = requirePending
@@ -518,7 +630,6 @@ failOperation(const std::shared_ptr<NativeInferenceHandle::Operation>& operation
                     std::make_shared<NativeDiError>(std::move(error)), nullptr, expectedAttempt)) {
     return;
   }
-  publishEvent(operation, makeTerminalEvent(*operation));
 }
 
 void
@@ -527,7 +638,6 @@ cancelOperation(const std::shared_ptr<NativeInferenceHandle::Operation>& operati
   if (!markTerminal(operation, NativeRequestStatus::Cancelled)) {
     return;
   }
-  publishEvent(operation, makeTerminalEvent(*operation));
 }
 
 void enqueueOperation(const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
@@ -596,15 +706,35 @@ void finishConversationTransaction(
     }
   }
   if (!clearScopes && !cancelCore) return;
+  std::shared_ptr<NativeIoCleanupState> cleanupState;
+  const auto operationRuntime = operation->operationRuntime;
   try {
     const auto user = operation->user;
     const auto id = ndn::Name(operation->coreRequestId);
-    user->postToIo([user, id, scopes = std::move(scopes), cancelCore] {
-      if (cancelCore) user->CancelCollaboration(id);
-      for (const auto& scope : scopes) user->clearVerifiedCollaborationData(id, scope);
-    });
+    cleanupState = operation->ioCleanupState;
+    if (cleanupState)
+      cleanupState->pending.fetch_add(1, std::memory_order_acq_rel);
+    auto cleanup = [user, id, scopes = std::move(scopes), cancelCore, cleanupState,
+                    operationRuntime] {
+      try {
+        if (cancelCore) user->CancelCollaboration(id);
+        for (const auto& scope : scopes)
+          user->clearVerifiedCollaborationData(id, scope);
+      }
+      catch (...) {
+        // The operation is already terminal; preserve lifecycle accounting
+        // even if a late conversation cleanup cannot reach the Core map.
+      }
+      notifyIoCleanupSettled(cleanupState);
+      if (operationRuntime)
+        operationRuntime->notifyWaiters();
+    };
+    user->postToIo(std::move(cleanup));
   }
   catch (...) {
+    notifyIoCleanupSettled(cleanupState);
+    if (operationRuntime)
+      operationRuntime->notifyWaiters();
     // The terminal outcome is already fenced. A failed asynchronous cleanup
     // remains observable through the request-scope retention bound.
   }
@@ -1005,8 +1135,12 @@ void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& o
           std::shared_ptr<const NativeRequestRuntime> runtime;
           NativeRequestOptions coreOptions;
           std::shared_ptr<const NativeInspectedModel> inspected;
-          std::shared_ptr<const NativeModelSplitStrategy> splitStrategy;
-          std::shared_ptr<const NativePlacementStrategy> placementStrategy;
+          NativeStrategyPorts strategies;
+          std::shared_ptr<const NativeModelSplitStrategy> legacySplitter;
+          std::shared_ptr<const NativePlacementStrategy> legacyPlacement;
+          std::shared_ptr<const CooperativeModelSplitStrategy> cooperativeSplitter;
+          std::shared_ptr<const CooperativePlacementStrategy> cooperativePlacement;
+          bool cooperativeStrategies = false;
           std::shared_ptr<NativeRequestPreparation> preparation;
           std::shared_ptr<const NativeOfferAdmission> admission;
           std::shared_ptr<NativeConversationCoordinator> conversations;
@@ -1019,8 +1153,12 @@ void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& o
             runtime = operation->runtime;
             coreOptions = operation->coreOptions;
             if (operation->inspected) inspected = std::make_shared<NativeInspectedModel>(*operation->inspected);
-            splitStrategy = operation->splitStrategy;
-            placementStrategy = operation->placementStrategy;
+            strategies = operation->strategies;
+            legacySplitter = operation->legacySplitter;
+            legacyPlacement = operation->legacyPlacement;
+            cooperativeSplitter = operation->cooperativeSplitter;
+            cooperativePlacement = operation->cooperativePlacement;
+            cooperativeStrategies = operation->cooperativeStrategies;
             preparation = operation->preparation;
             admission = operation->admission;
             conversations = operation->conversations;
@@ -1028,7 +1166,10 @@ void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& o
           }
           NativeRequestControl control{coreRequestId, sourceAttempt, operation->deadline,
             [flag = operation->cancelled] { return flag->load(); }};
-          if (!runtime || !inspected || !splitStrategy || !placementStrategy || !preparation || !admission)
+          if (!runtime || !inspected || !strategies.enumerate || !strategies.proposeRoles ||
+              (cooperativeStrategies ? (!cooperativeSplitter || !cooperativePlacement) :
+                                       (!legacySplitter || !legacyPlacement)) ||
+              !preparation || !admission)
             throw NativeDiError("NATIVE_REQUEST_PLANNING_INPUT_MISSING", "planning", "ACK_CLOSED",
               "native planning inputs were not published before ACK closure", operation->requestId,
               sourceAttempt);
@@ -1041,11 +1182,15 @@ void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& o
                 sourceAttempt);
             return *operation->encodedRequest;
           }();
-          auto planned = planNativeRequest(*runtime, coreOptions,
-            *inspected, encoded, *splitStrategy,
-            *placementStrategy, *preparation, *admission,
-            closure, control, operation->wireDeadlineMs, operation->cancelled,
-            conversationTurn ? &*conversationTurn : nullptr);
+          auto planned = cooperativeStrategies
+            ? planNativeRequestCooperative(*runtime, coreOptions, *inspected, encoded,
+                *cooperativeSplitter, *cooperativePlacement, *preparation, *admission,
+                closure, control, operation->wireDeadlineMs, operation->cancelled,
+                conversationTurn ? &*conversationTurn : nullptr)
+            : planNativeRequest(*runtime, coreOptions, *inspected, encoded,
+                *legacySplitter, *legacyPlacement, *preparation, *admission,
+                closure, control, operation->wireDeadlineMs, operation->cancelled,
+                conversationTurn ? &*conversationTurn : nullptr);
           std::optional<NativeConversationTurn> plannedConversationTurn = conversationTurn;
           if (plannedConversationTurn && conversations) {
             if (plannedConversationTurn->attempt == 2) {
@@ -1134,8 +1279,7 @@ void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& o
           if (std::chrono::steady_clock::now() >= operation->deadline)
             throw NativeDiError("NATIVE_REQUEST_TIMEOUT", "local", "response",
               "request expired during result decoding", operation->requestId, operation->attempt);
-          if (markTerminal(operation, NativeRequestStatus::Succeeded, nullptr, &result))
-            publishEvent(operation, makeTerminalEvent(*operation));
+          markTerminal(operation, NativeRequestStatus::Succeeded, nullptr, &result);
         }, "response");
       };
       const auto timeout = [operation, sourceAttempt](const ndn::Name&) {
@@ -1211,8 +1355,7 @@ void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& o
           if (hasConversationTurn) {
             commitConversationTurn(operation);
           }
-          if (markTerminal(operation, NativeRequestStatus::Succeeded, nullptr, &result))
-            publishEvent(operation, makeTerminalEvent(*operation));
+          markTerminal(operation, NativeRequestStatus::Succeeded, nullptr, &result);
         }, "stream-final");
       };
       const auto streamError = [operation, sourceAttempt](const ndn_service_framework::StreamedInvocationError& error) {
@@ -1500,6 +1643,20 @@ NativeRequestStatus NativeInferenceHandle::status() const
   return NativeRequestStatus::Failed;
 }
 
+NativeInferenceDiagnostics NativeInferenceHandle::diagnostics() const
+{
+  if (!m_operation)
+    throw NativeDiError("INVALID_HANDLE", "local", "diagnostics",
+                        "native inference handle is empty");
+  std::shared_ptr<ndn_service_framework::OperationState<NativeInferenceResult,
+                                                        NativeInferenceEvent>> coreState;
+  {
+    std::lock_guard<std::mutex> lock(m_operation->mutex);
+    coreState = m_operation->coreState;
+  }
+  return NativeInferenceDiagnostics{coreState ? coreState->observationDropped() : 0};
+}
+
 NativeInferenceResult
 NativeInferenceHandle::result(std::chrono::milliseconds waitTimeout) const
 {
@@ -1549,7 +1706,30 @@ void NativeInferenceHandle::cancel()
   cancelOperation(m_operation);
 }
 
+void NativeInferenceHandle::retain(std::shared_ptr<void> owner)
+{
+  if (!m_operation)
+    return;
+  std::lock_guard<std::mutex> lock(m_operation->mutex);
+  if (m_operation->phase != DiRequestPhase::Terminal)
+    m_operation->packageLease = std::move(owner);
+}
+
+void NativeInferenceClient::retainOwner(std::shared_ptr<void> owner)
+{
+  std::lock_guard<std::mutex> lock(m_mutex);
+  m_ownerLease = std::move(owner);
+}
+
 void NativeInferenceHandle::observe(
+  std::function<void(const NativeInferenceEvent&)> observer)
+{
+  auto subscription = observeSubscription(std::move(observer));
+  std::lock_guard<std::mutex> lock(m_operation->mutex);
+  m_operation->observerSubscriptions.push_back(std::move(subscription));
+}
+
+NativeOperationSubscription NativeInferenceHandle::observeSubscription(
   std::function<void(const NativeInferenceEvent&)> observer)
 {
   if (!m_operation || !observer) {
@@ -1557,13 +1737,96 @@ void NativeInferenceHandle::observe(
                         "native observer is empty");
   }
   try {
-    auto subscription = m_operation->coreState->observe(std::move(observer));
-    std::lock_guard<std::mutex> lock(m_operation->mutex);
-    m_operation->observerSubscriptions.push_back(std::move(subscription));
+    return m_operation->coreState->observe(std::move(observer));
   }
   catch (const ndn_service_framework::OperationError& error) {
-    throw NativeDiError("NATIVE_OBSERVER_FAILED", "local", "observer",
-                        error.what(), m_operation->requestId, m_operation->attempt);
+    const auto code = error.code() == ndn_service_framework::OperationErrorCode::Capacity
+      ? "SUBSCRIPTION_LIMIT" :
+      error.code() == ndn_service_framework::OperationErrorCode::Closed
+        ? "RUNTIME_CLOSED" : "NATIVE_OBSERVER_FAILED";
+    throw NativeDiError(code, "local", "observer", error.what(),
+                        m_operation->requestId, m_operation->attempt);
+  }
+}
+
+NativeOperationSubscription NativeInferenceHandle::onCompletion(
+  std::function<void(std::exception_ptr, std::optional<NativeInferenceResult>)> callback)
+{
+  if (!m_operation || !callback)
+    throw NativeDiError("INVALID_COMPLETION", "local", "completion",
+                        "native completion callback is empty");
+  try {
+    return m_operation->coreState->onCompletion([operation = m_operation,
+                                                  callback = std::move(callback)] {
+      std::optional<NativeInferenceResult> result;
+      std::exception_ptr error;
+      try {
+        result = operation->coreState->result(std::chrono::milliseconds(0));
+      }
+      catch (...) {
+        error = std::current_exception();
+      }
+      try { callback(std::move(error), std::move(result)); }
+      catch (...) {}
+    });
+  }
+  catch (const ndn_service_framework::OperationError& error) {
+    const auto code = error.code() == ndn_service_framework::OperationErrorCode::Capacity
+      ? "SUBSCRIPTION_LIMIT" :
+      error.code() == ndn_service_framework::OperationErrorCode::Closed
+        ? "RUNTIME_CLOSED" : "NATIVE_COMPLETION_FAILED";
+    throw NativeDiError(code, "local", "completion", error.what(),
+                        m_operation->requestId, m_operation->attempt);
+  }
+}
+
+NativeOperationSubscription NativeInferenceHandle::resultAsync(
+  std::chrono::milliseconds timeout,
+  std::function<void(std::optional<NativeInferenceResult>, std::exception_ptr)> callback)
+{
+  if (!m_operation || !callback)
+    throw NativeDiError("INVALID_COMPLETION", "local", "completion",
+                        "native result callback is empty");
+  if (timeout.count() < 0)
+    throw NativeDiError("INVALID_WAIT_TIMEOUT", "local", "wait",
+                        "native result timeout is negative", m_operation->requestId,
+                        m_operation->attempt);
+  try {
+    return m_operation->coreState->resultAsync(timeout, std::move(callback));
+  }
+  catch (const ndn_service_framework::OperationError& error) {
+    const auto code = error.code() == ndn_service_framework::OperationErrorCode::Capacity
+      ? "SUBSCRIPTION_LIMIT" :
+      error.code() == ndn_service_framework::OperationErrorCode::Closed
+        ? "RUNTIME_CLOSED" : "NATIVE_COMPLETION_FAILED";
+    throw NativeDiError(code, "local", "completion", error.what(),
+                        m_operation->requestId, m_operation->attempt);
+  }
+}
+
+NativeEventReader NativeInferenceHandle::events() const
+{
+  if (!m_operation || !m_operation->coreState)
+    throw NativeDiError("INVALID_HANDLE", "local", "events", "native inference handle is empty");
+  {
+    std::lock_guard<std::mutex> lock(m_operation->mutex);
+    if (!m_operation->options.stream)
+      throw NativeDiError("UNSUPPORTED_CAPABILITY", "local", "events",
+                          "reliable event reading requires an enabled stream",
+                          m_operation->requestId, m_operation->attempt);
+  }
+  try {
+    return m_operation->coreState->openReader();
+  }
+  catch (const ndn_service_framework::OperationError& error) {
+    const auto code = error.code() == ndn_service_framework::OperationErrorCode::Capacity
+      ? "READ_IN_PROGRESS" :
+      error.code() == ndn_service_framework::OperationErrorCode::Closed
+        ? "READER_CLOSED" :
+      error.code() == ndn_service_framework::OperationErrorCode::EventGap
+        ? "STREAM_GAP" : "NATIVE_EVENT_READER_FAILED";
+    throw NativeDiError(code, "local", "events", error.what(),
+                        m_operation->requestId, m_operation->attempt);
   }
 }
 
@@ -1651,6 +1914,7 @@ NativeInferenceClient::NativeInferenceClient(
   , m_operationRegistry(std::make_shared<NativeOperationRegistry>())
   , m_schedule(testPort.scheduleHook)
 {
+  m_ioCleanupState = std::make_shared<NativeIoCleanupState>();
   if (!m_user || !m_adapters) {
     throw NativeDiError("INVALID_CLIENT_CONFIGURATION", "local", "constructor",
                         "native client requires a ServiceUser and adapter registry");
@@ -1662,11 +1926,14 @@ NativeInferenceClient::~NativeInferenceClient() noexcept
   close();
 }
 
-NativeInferenceHandle NativeInferenceClient::request(
+NativeInferenceHandle NativeInferenceClient::requestImpl(
   const NativeModelRef& model,
   const NativeApplicationInput& input,
-  std::shared_ptr<const NativeModelSplitStrategy> splitStrategy,
-  std::shared_ptr<const NativePlacementStrategy> placementStrategy,
+  NativeStrategyPorts strategies,
+  std::shared_ptr<const NativeModelSplitStrategy> legacySplitter,
+  std::shared_ptr<const NativePlacementStrategy> legacyPlacement,
+  std::shared_ptr<const CooperativeModelSplitStrategy> cooperativeSplitter,
+  std::shared_ptr<const CooperativePlacementStrategy> cooperativePlacement,
   const NativeRequestOptions& options)
 {
   std::shared_ptr<NativeInferenceHandle::Operation> operation;
@@ -1676,7 +1943,7 @@ NativeInferenceHandle NativeInferenceClient::request(
       throw NativeDiError("CLIENT_CLOSED", "local", "request",
                           "native inference client is closed");
     }
-    if (!splitStrategy || !placementStrategy || options.timeoutMs == 0 ||
+    if (!strategies.enumerate || !strategies.proposeRoles || options.timeoutMs == 0 ||
         options.ackTimeoutMs == 0 || options.ackTimeoutMs >= options.timeoutMs ||
         options.timeoutMs > static_cast<std::uint64_t>(std::numeric_limits<int>::max()) ||
         options.applicationRequestId.size() > 256 ||
@@ -1715,16 +1982,22 @@ NativeInferenceHandle NativeInferenceClient::request(
     }
     operation = std::make_shared<NativeInferenceHandle::Operation>();
     operation->user = m_user;
+    operation->ownerLease = m_ownerLease;
     operation->model = model;
     operation->input = input;
     operation->options = options;
-    operation->splitStrategy = std::move(splitStrategy);
-    operation->placementStrategy = std::move(placementStrategy);
+    operation->strategies = std::move(strategies);
+    operation->legacySplitter = std::move(legacySplitter);
+    operation->legacyPlacement = std::move(legacyPlacement);
+    operation->cooperativeSplitter = std::move(cooperativeSplitter);
+    operation->cooperativePlacement = std::move(cooperativePlacement);
+    operation->cooperativeStrategies = static_cast<bool>(operation->cooperativeSplitter);
     operation->preparation = m_preparation;
     operation->requestContract = m_requestContract;
     operation->runtime = m_runtime;
     operation->admission = m_admission;
     operation->adapters = m_adapters;
+    operation->ioCleanupState = m_ioCleanupState;
     operation->conversations = m_conversations;
     operation->operationRuntime = m_operationRuntime;
     operation->coreState = std::make_shared<ndn_service_framework::OperationState<
@@ -1888,6 +2161,75 @@ NativeInferenceHandle NativeInferenceClient::request(
   return NativeInferenceHandle(std::move(operation));
 }
 
+NativeInferenceHandle NativeInferenceClient::request(
+  const NativeModelRef& model,
+  const NativeApplicationInput& input,
+  std::shared_ptr<const NativeModelSplitStrategy> splitStrategy,
+  std::shared_ptr<const NativePlacementStrategy> placementStrategy,
+  const NativeRequestOptions& options)
+{
+  if (!splitStrategy || !placementStrategy)
+    throw NativeDiError("INVALID_REQUEST", "local", "request",
+                        "native request strategies are required");
+  NativeStrategyPorts ports;
+  ports.splitterIdentity = splitStrategy->identity();
+  ports.placementIdentity = placementStrategy->identity();
+  ports.enumerate = [splitStrategy](const NativeModelDescriptor& descriptor,
+                                    const NativeGraphSnapshot& graph,
+                                    const NativeCandidateBudget& budget,
+                                    const ExtensionControl& extension) {
+    extension.requireActive();
+    auto result = splitStrategy->enumerate(descriptor, graph, budget);
+    extension.requireActive();
+    return result;
+  };
+  ports.proposeRoles = [placementStrategy](const NativeOfferBindingContext& context,
+                                            const std::string& ackClosedDigest,
+                                            const std::vector<NativeSelectionRoleV3>& roles,
+                                            const std::vector<NativeAdmittedOfferV3>& offers,
+                                            std::uint64_t nowMs,
+                                            const ExtensionControl& extension) {
+    extension.requireActive();
+    auto result = placementStrategy->proposeRoles(context, ackClosedDigest, roles, offers, nowMs);
+    extension.requireActive();
+    return result;
+  };
+  return requestImpl(model, input, std::move(ports), std::move(splitStrategy),
+                     std::move(placementStrategy), nullptr, nullptr, options);
+}
+
+NativeInferenceHandle NativeInferenceClient::requestCooperative(
+  const NativeModelRef& model,
+  const NativeApplicationInput& input,
+  std::shared_ptr<const CooperativeModelSplitStrategy> splitStrategy,
+  std::shared_ptr<const CooperativePlacementStrategy> placementStrategy,
+  const NativeRequestOptions& options)
+{
+  if (!splitStrategy || !placementStrategy)
+    throw NativeDiError("INVALID_REQUEST", "local", "request",
+                        "cooperative request strategies are required");
+  NativeStrategyPorts ports;
+  ports.splitterIdentity = splitStrategy->identity();
+  ports.placementIdentity = placementStrategy->identity();
+  ports.enumerate = [splitStrategy](const NativeModelDescriptor& descriptor,
+                                    const NativeGraphSnapshot& graph,
+                                    const NativeCandidateBudget& budget,
+                                    const ExtensionControl& extension) {
+    return splitStrategy->enumerate(descriptor, graph, budget, extension);
+  };
+  ports.proposeRoles = [placementStrategy](const NativeOfferBindingContext& context,
+                                            const std::string& ackClosedDigest,
+                                            const std::vector<NativeSelectionRoleV3>& roles,
+                                            const std::vector<NativeAdmittedOfferV3>& offers,
+                                            std::uint64_t nowMs,
+                                            const ExtensionControl& extension) {
+    return placementStrategy->proposeRoles(context, ackClosedDigest, roles, offers, nowMs,
+                                            extension);
+  };
+  return requestImpl(model, input, std::move(ports), nullptr, nullptr,
+                     std::move(splitStrategy), std::move(placementStrategy), options);
+}
+
 void NativeInferenceClient::close() noexcept
 {
   std::vector<std::shared_ptr<NativeInferenceHandle::Operation>> operations;
@@ -1910,6 +2252,81 @@ void NativeInferenceClient::close() noexcept
   // deliveries.  Closing it rejects new work and lets existing callbacks
   // converge through its join/drain barrier.
   m_operationRuntime->close();
+}
+
+void NativeInferenceClient::failIo(const std::string& reason) noexcept
+{
+  std::vector<std::shared_ptr<NativeInferenceHandle::Operation>> operations;
+  {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    if (m_closed)
+      return;
+    m_closed = true;
+    {
+      std::lock_guard<std::mutex> registryLock(m_operationRegistry->mutex);
+      for (auto& entry : m_operationRegistry->pending)
+        operations.push_back(std::move(entry.second));
+      m_operationRegistry->pending.clear();
+    }
+    m_operations.clear();
+  }
+  for (const auto& operation : operations) {
+    try {
+      auto error = std::make_shared<NativeDiError>(
+        "NATIVE_REQUEST_FAILED", "runtime", "transport",
+        reason.empty() ? "Core Face I/O failed" : "Core Face I/O failed: " + reason,
+        operation->requestId, operation->attempt);
+      markTerminal(operation, NativeRequestStatus::Failed, std::move(error), nullptr, 0, true);
+    }
+    catch (...) {
+      // Preserve the original Face failure even if one request's terminal
+      // delivery or synchronous cleanup is itself unavailable.
+    }
+  }
+  m_operationRuntime->close();
+}
+
+bool NativeInferenceClient::drain(std::chrono::milliseconds timeout)
+{
+  if (timeout.count() < 0)
+    throw NativeDiError("INVALID_ARGUMENT", "local", "lifecycle",
+                        "native client drain timeout must not be negative");
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
+  try {
+    const auto now = std::chrono::steady_clock::now();
+    const auto remaining = now >= deadline ? std::chrono::milliseconds(0) :
+      std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now);
+    if (!m_operationRuntime || !m_operationRuntime->drain(remaining))
+      return false;
+    if (!m_ioCleanupState)
+      return true;
+    std::unique_lock<std::mutex> lock(m_ioCleanupState->mutex);
+    return m_ioCleanupState->condition.wait_until(lock, deadline, [this] {
+      return !m_ioCleanupState ||
+             m_ioCleanupState->pending.load(std::memory_order_acquire) == 0;
+    });
+  }
+  catch (const ndn_service_framework::OperationError& error) {
+    if (error.code() == ndn_service_framework::OperationErrorCode::WouldDeadlock)
+      throw NativeDiError("WOULD_DEADLOCK", "local", "lifecycle", error.what());
+    throw NativeDiError("CLIENT_CLOSED", "local", "lifecycle", error.what());
+  }
+}
+
+void NativeInferenceClient::setDrainNotifier(std::function<void()> notifier)
+{
+  if (m_ioCleanupState) {
+    std::lock_guard<std::mutex> lock(m_ioCleanupState->mutex);
+    m_ioCleanupState->notifyOwner = notifier;
+  }
+  m_operationRuntime->setNotifyCallback(std::move(notifier));
+}
+
+bool NativeInferenceClient::isQuiescent() const noexcept
+{
+  return (!m_operationRuntime || m_operationRuntime->isQuiescent()) &&
+         (!m_ioCleanupState ||
+          m_ioCleanupState->pending.load(std::memory_order_acquire) == 0);
 }
 
 } // namespace ndnsf::di

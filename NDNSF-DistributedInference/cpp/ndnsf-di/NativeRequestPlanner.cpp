@@ -487,7 +487,12 @@ NativePlannedRequest planNativeRequestImpl(
       sealing.generationContract = *options.generation;
       sealing.generationContract.streamingOperationStride = execution.streamingOperationStride;
     }
-    for (const auto& role : roles) sealing.assemblyByRole.emplace(role.selectedRole, role);
+    // Keep the proposal's prepared role metadata for the sealer's preflight
+    // placement check.  NativePlanSealer performs the authenticated
+    // publication rebinding immediately after that check and stores only the
+    // certified role identities in the final Core.
+    for (const auto& role : roles)
+      sealing.assemblyByRole.emplace(role.selectedRole, role);
     extensionControl.requireActive();
     auto core = NativePlanSealer::sealCore(model, candidate, proposal, execution, offers, closure.digest, sealing);
     std::vector<NativeGrantBinding> grants;

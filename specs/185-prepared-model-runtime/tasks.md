@@ -18,8 +18,8 @@
 | [T016 Extension Registration and Cooperative Control](#t016) | PASS | B1 exit | B2E closed; [b2e-extensions](evidence/b2e-extensions.md) static/compile-link/runtime/TSan/installed C++ PASS; full packaging remains unobserved | 2026-09-12 16:24 -05:00 |
 | [T003 Verified Package Preparation](#t003) | PASS | B2E exit | B2 closed; [b2-preparation](evidence/b2-preparation.md) covers static/combination review, normal/TSan C++ preparation and affected Runtime/Core suites | 2026-09-12 21:07 -05:00 |
 | [T004 Single Flight Refresh and Leases](#t004) | PASS | T003 static | B2 closed; [b2-preparation](evidence/b2-preparation.md) covers static/combination review, normal/TSan C++ preparation and lease/refresh/concurrency cases | 2026-09-12 21:07 -05:00 |
-| [T005 Prepared Request Projection](#t005) | NOT_STARTED | B2 exit + Spec184 scoped dependency gate | B3 planned; implementation/build/runtime NOT_RUN | 2026-09-12 16:24 -05:00 |
-| [T006 Handle Deadlines Events and Cancellation](#t006) | NOT_STARTED | T005 static | B3 planned; implementation/build/runtime NOT_RUN | 2026-09-12 16:24 -05:00 |
+| [T005 Prepared Request Projection](#t005) | PASS | B2 exit + Spec184 scoped dependency gate | B3 closed; [b3-request](evidence/b3-request.md) covers static/combination review, normal and ASan/UBSan C++ prepared-request selectors (12/12 x 2 each) | 2026-09-13 07:50 -05:00 |
+| [T006 Handle Deadlines Events and Cancellation](#t006) | PASS | T005 static | B3 closed; [b3-request](evidence/b3-request.md) covers handle/deadline/event/cancel/drain cases, normal and ASan/UBSan C++ extension/request selectors (10/10 and 12/12 x 2 each) | 2026-09-13 07:50 -05:00 |
 | [T007 Prepared Conversations and Committed Checkpoints](#t007) | NOT_STARTED | B3 exit | B4 planned; implementation/build/runtime NOT_RUN | 2026-09-12 16:24 -05:00 |
 | [T008 Conversation Recovery Replacement and Export](#t008) | NOT_STARTED | T007 static | B4 planned; implementation/build/runtime NOT_RUN | 2026-09-12 16:24 -05:00 |
 | [T009 Provider Facade and Authenticated Assembly](#t009) | NOT_STARTED | B4 exit | B5 planned; implementation/build/runtime NOT_RUN | 2026-09-12 16:24 -05:00 |
@@ -30,6 +30,8 @@
 | [T014 Design API and Scoped Handoff](#t014) | NOT_STARTED | T012 acceptance | B9 planned; implementation/build/runtime NOT_RUN | 2026-09-12 16:24 -05:00 |
 
 ## Current Checkpoint
+
+2026-09-13 07:50 -05:00 B3 closed：T005→T006 完成逐任务官方 `review-agent` 静态门、受影响复审及最终组合门；最终组合快照 v6 的 base/diff/path 身份见 [b3-request](evidence/b3-request.md)。normal `Spec185PreparedRequest` 12/12 与 `Spec185ExtensionRegistry` 10/10 各顺序重复两次；独立 ASan/UBSan + LSan 两个 selector 同样各重复两次，均 `rc=0`、`*** No errors detected` 且无 LSan/UBSan 报告。批次唯一证据为 [b3-request](evidence/b3-request.md)；保留并发资源干扰及早期 LSan/deadline 失败边界。B3 未运行 TSan、B4–B9、Python、跨进程资格、SIF/Tiger/MiniNDN；下一依赖满足批次为 T007/B4，Spec185 整体仍为 `PLANNED`。
 
 2026-09-12 23:03 -05:00 Build policy documentation：按用户要求将所有机器后续SIF构建版本固定为Apptainer1.5.3；同步Tiger/packaging说明、交付入口、版本化/个人操作skill及本机AGENTS。文档diff/版本规则一致性检查通过；无API/产品变化、无新构建或Tiger运行，任务状态/依赖不变。下一步实验机按[SIF规则](../../Experiments/TigerCluster/docs/sif-build.md#apptainer-version-policy)核对环境。
 2026-09-12 22:59 -05:00 Host tooling：用户要求本机Apptainer升级1.5.3，安装、默认/兼容/root入口和最小SIF构建执行通过；见[运维记录](../../Experiments/TigerCluster/docs/apptainer-153-upgrade-20260912.md)。不改变185任务状态、依赖或验收；计算节点版本由实验机在实际作业核验，此记录不是185产品完成证据。
@@ -207,7 +209,7 @@ C-07每行是T015 exposure、T011 C++消费、T012绑定和T014文档的共同�
 
 <a id="t005"></a>
 
-- [ ] T005 [US2] Prepared Request Projection — PreparedModel.cpp; NativeInferenceClient.hpp/NativeInferenceClient.cpp; tests/integration-tests/di-prepared-request.t.cpp
+- [x] T005 [US2] Prepared Request Projection — PreparedModel.cpp; NativeInferenceClient.hpp/NativeInferenceClient.cpp; tests/integration-tests/di-prepared-request.t.cpp
 
   **Batch / Depends**: B3 / B2 exit + Spec184 scoped dependency gate。
 
@@ -219,11 +221,11 @@ C-07每行是T015 exposure、T011 C++消费、T012绑定和T014文档的共同�
 
   **API revision**: C-05：原生Input.text按adapter能力开放，不引入Python tokenizer；DataRef保留完整受保护引用，Provider继续取得/解密。
 
-  **Exit / oracle**: 2次request共用Package且ID/授权独立；hot-cache revoke拒绝；repository错digest/size拒绝；invalid placement不能产生可执行Selection。
+  **Exit / oracle**: `PASS` in B3；2次request共用Package且ID/授权独立；hot-cache revoke拒绝；repository错digest/size拒绝；invalid placement不能产生可执行Selection；详见[evidence/b3-request.md](evidence/b3-request.md)。
 
 <a id="t006"></a>
 
-- [ ] T006 [US2] Handle Deadlines Events and Cancellation — PreparedModel.hpp/PreparedModel.cpp; tests/integration-tests/di-prepared-request.t.cpp
+- [x] T006 [US2] Handle Deadlines Events and Cancellation — PreparedModel.hpp/PreparedModel.cpp; tests/integration-tests/di-prepared-request.t.cpp
 
   **Batch / Depends**: B3 / T005 static。
 
@@ -237,7 +239,7 @@ C-07每行是T015 exposure、T011 C++消费、T012绑定和T014文档的共同�
 
   **Lifecycle completeness**: C-07 observe/nextAsync返回Subscription；验证退订不吞事件、错误流不伪装EOF、READ_IN_PROGRESS、64订阅额度回收及moved-from。
 
-  **Exit / oracle**: 局部wait超时后可取成功；deadline终态不可重复；cancel/complete/close交错；观察者不成为提交oracle；ASan/UBSan无抑制。
+  **Exit / oracle**: `PASS` in B3；局部wait超时后可取成功；deadline终态不可重复；cancel/complete/close交错；观察者不成为提交oracle；normal 与 ASan/UBSan + LSan 无抑制通过；详见[evidence/b3-request.md](evidence/b3-request.md)。
 
 <a id="t007"></a>
 

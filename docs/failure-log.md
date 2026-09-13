@@ -1,5 +1,26 @@
 # Failure Log and Evidence Index
 
+## 2026-09-13 — Spec185 B3 T005 native selector bootstrap boundary
+
+The B3 full C++ selector rebuilt successfully, but the first runtime test
+started a real Runtime Face without an Attribute Authority route.  NAC-ABE's
+constructor-time public-parameter fetch reached its retry limit and threw
+`Failed to fetch public parameters after multiple attempts.` on the owned IO
+thread; the selector returned `rc=201` and the later SIGABRT/SIGSEGV reports
+were cascade failures from aborted fixtures, not independent protocol results.
+Raw output is retained at
+`.codex-tmp/spec185-t005-full-v3-normal-20260913T0550/run.log` with build
+status in the same directory.  The fixture was first tightened to cancel its
+handles, but the next rerun showed that `Runtime::close()` still left the
+Face/io_context dispatching that unowned retry during `drain()`.  A proposed
+eager `io.stop()` at the close fence was rejected by static review because it
+could discard queued `CancelCollaboration()`/scope cleanup callbacks.  The
+current production fix keeps close/drain ordering intact and catches an
+exception escaping the owned Face thread, records an `ioFailed` lifecycle
+signal, and rejects later client materialization instead of calling
+`std::terminate`.  This does not weaken the public-parameter readiness gate.
+A new static review and selector run are required.
+
 ## 2026-09-12 — Apptainer host upgrade boundaries
 
 Official1.5.3deb的AppArmor ABI3占位profile无法由Ubuntu20.04的2.13.3 parser加载；已备份并做无profile兼容处理，postinst复验通过，未关闭系统AppArmor。历史r119镜像链接目标不存在，首次exec止于路径检查；改用独立最小SIF构建及普通/root执行均通过。无NDNSF协议/GPU/Tiger结论。见[持久记录与原始日志路径](../Experiments/TigerCluster/docs/apptainer-153-upgrade-20260912.md)。
@@ -4444,3 +4465,208 @@ not a qualification PASS and does not change T007 status.
   asynchronous completion payloads retain their own exception pointer. A new
   static review, normal rebuild and repeated TSan preparation selector are
   required.
+
+## 2026-09-13 — Spec185 B3 normal selector fixture identity boundary
+
+- The first fresh normal B3 build completed successfully for
+  `spec185-prepared-request` and `spec185-core-operation` (103.99 seconds,
+  `-j4`), but the prepared-request selector returned 201. Its first product
+  boundary was `PreparedRequestCompletesThroughProvider`: the test-created
+  authenticated grant client used the catalog recipe epoch `fixture-epoch`,
+  while the Runtime's operator grant contract correctly used `epoch-1`; the
+  native runtime rejected that identity mismatch before ACK planning. The
+  same request failure caused later drain assertions to report false and is
+  not yet an independent drain defect. Raw output is
+  `.codex-tmp/spec185-b3/normal-runs/prepared-request-v1.log`; the successful
+  build is `.codex-tmp/spec185-b3/normal-build-v2.log`.
+- This is a C++ integration-fixture contract boundary. The fix derives the
+  grant client's protection epoch from the operator `grant` section, then
+  requires a fresh static review and selector run before assessing drain
+  behavior.
+
+## 2026-09-13 — Spec185 B3 stale-candidate rerun boundary
+
+- A second prepared-request selector invocation returned 201 with only the
+  same identity mismatch, but it ran against the v2 binary linked before the
+  v18 fixture repair. It is preserved as `.codex-tmp/spec185-b3/normal-runs/
+  prepared-request-v2.log` and is not a product result or a regression
+  qualification. A fresh build is required before judging the repair.
+
+## 2026-09-13 — Spec185 B3 Core Face fixture transport boundary
+
+- The fresh v18/v19-linked normal selector closed the grant identity mismatch,
+  then stopped at `PreparedRequestCompletesThroughProvider` when the Runtime's
+  private Core `ServiceUser` raised `Failed to fetch public parameters after
+  multiple attempts.` Its Face was not connected to the in-process Attribute
+  Authority; `RuntimeTestAccess::bindProviderFixture` replaced the state user
+  only after `Runtime::open` had already constructed that un-routable NAC-ABE
+  owner. The same Core I/O failure left
+  `RuntimeDrainAsyncIncludesNativeClientWork` without its callback before its
+  bound wait. Raw output is
+  `.codex-tmp/spec185-b3/normal-runs/prepared-request-v3.log`.
+- This is a C++ test-transport ownership boundary. The repair requires the
+  fixture binding to precede Core I/O and releases the unused production
+  ServiceUser/Face before the first client starts the Core lifecycle; the
+  real fixture ServiceUser remains the borrowed transport owner. A fresh
+  static review, build, and selector run are required.
+
+## 2026-09-13 — Spec185 B3 fixture Face teardown ordering boundary
+
+- The v20 static review rejected its first transport-reset repair: resetting
+  `CoreRuntimeOwner::face` after only `owner->serviceUser.reset()` left
+  `RuntimeState::coreUser`, the old grant callbacks, and each frozen trust
+  validator holding Face-bound state. That violated the ServiceUser/Face
+  destruction order and could leave dangling callback targets. No new build
+  or selector was run from v20. The review snapshot is
+  `.codex-tmp/spec185-t006-review-v20`.
+- The corrected repair releases old grants, core user, and model validators,
+  and rejects injection while preparation or clients are active, before
+  releasing the owner ServiceUser and Face. It requires static re-review and
+  ASan-backed lifecycle validation.
+
+## 2026-09-13 — Spec185 B3 eager NAC bootstrap classification boundary
+
+- The v21-linked fresh selector cleared the dangling-Face risk but showed
+  that allocation-only Runtime cases still became globally `ioFailed` when
+  their unconnected Core ServiceUser exhausted NAC public-parameter retries.
+  The first such failure was in `PreparedRequestsSharePackageButAllocateIndependentIds`;
+  the run then cascaded into drain and fixture SIGSEGV failures. Raw output is
+  `.codex-tmp/spec185-b3/normal-runs/prepared-request-v4.log`.
+- This is a Core lifecycle classification boundary. The requester remains
+  fail-closed while NAC is unready, but the stable bounded
+  `Failed to fetch public parameters after multiple attempts` diagnostic is
+  treated as recoverable bootstrap state and no longer poisons the Runtime
+  `ioFailed` terminal signal. Unexpected Face exceptions still set `ioFailed`
+  and notify active clients. A fresh static review, build, and selector run
+  are required.
+
+## 2026-09-13 — Spec185 B3 completion-subscription crash boundary
+
+- The v22-linked normal selector passed the allocation-only, streaming, and
+  default-drain cases, then aborted in
+  `PreparedRequestCompletesThroughProvider` at the expected subscription-limit
+  assertion (`di-prepared-request.t.cpp:738`). Instead of returning the
+  documented `SUBSCRIPTION_LIMIT` error on the 65th completion subscription,
+  the process hit a memory access violation. Raw output is
+  `.codex-tmp/spec185-b3/normal-runs/prepared-request-v5.log`.
+- This is a native completion-slot ownership/concurrency boundary. No
+  provider result or qualification is counted; isolate the single test under
+  a bounded debugger/sanitizer run before changing the slot implementation.
+
+## 2026-09-13 — Spec185 B3 published assembly identity ordering boundary
+
+- The first selector built after the completion-slot/lifecycle fixes still
+  returned 201 in `PreparedRequestCompletesThroughProvider`: the Planner
+  passed post-publication role metadata into `NativePlanSealer`, whose
+  preflight correctly compared it with the original V3 proposal and rejected
+  the changed manifest/recipe identity. Raw output is
+  `.codex-tmp/spec185-b3/normal-runs/prepared-request-v6.log`; the stale
+  candidate rerun is retained separately and is not qualification evidence.
+- The repair keeps original prepared roles for the Sealer's placement
+  preflight, then lets `bindPublishedRoles()` produce certified roles for the
+  final Core assembly. v26 static review covered the change; a fresh build and
+  runtime selector were required.
+
+## 2026-09-13 — Spec185 B3 protection-epoch fixture boundary
+
+- The selector in `.codex-tmp/spec185-b3/normal-runs/prepared-request-v7.log`
+  was built before the v27 fixture edit and therefore remains a pre-v27
+  stale run. It stopped at the generic `native sealed assembly differs from
+  authenticated artifact context` boundary; the raw log does not prove that
+  the later epoch repair was exercised and is not qualification evidence.
+- The inspected fixture contract showed the cause: its catalog recipe used
+  `fixture-epoch` while the Runtime grant contract used `epoch-1`. This was a
+  test-fixture mismatch, not a reason to weaken the production security check.
+  The fixture now uses the Runtime/grant epoch, while the wrong-epoch
+  protected DataRef remains an explicit rejection case. v27 static review was
+  required before the fresh v27 build and selector.
+
+## 2026-09-13 — Spec185 B3 borrowed-Face drain boundary
+
+- With the epoch aligned, the full native selector passed the Provider
+  request, ACK/selection/grant/response checks, wrong-digest rejection,
+  revocation failure, and both native drainAsync cases. The Provider fixture's
+  final direct `Runtime::drain()` nevertheless returned false because its
+  test-only `RuntimeTestAccess` binding borrows the environment Face and the
+  terminal cleanup task is correctly queued on that external I/O owner; the
+  test stopped pumping before drain. Raw output is
+  `.codex-tmp/spec185-b3/normal-runs/prepared-request-v8.log`.
+- The fixture now runs the bounded Runtime drain in a future while
+  `environment.pumpUntil()` drives the borrowed Face. Production Runtime
+  drain semantics and own-Face lifecycle tests are unchanged. v28 static
+  review and a fresh selector are required.
+
+## 2026-09-13 — Spec185 B3 sanitizer timing and leak boundary
+
+- The same-ABI ASan/UBSan fast tree configured with `-O0 -g0` built all 109
+  objects successfully in `.codex-tmp/spec185-b3/asan-ubsan-fast-build-v1.log`.
+  Its first prepared-request selector stopped in
+  `PreparedRequestCompletesThroughProvider` at the cooperative extension
+  deadline check because sanitizer overhead exceeded the fixture's 100 ms
+  policy budget.  The selector returned 134 and LeakSanitizer then reported
+  12,503 bytes in 27 allocations, primarily ndn-cxx SegmentFetcher/Face and
+  scheduler objects.  Raw output is
+  `.codex-tmp/spec185-b3/asan-ubsan-fast-runs/prepared-request-r1.log`.
+- This is an unqualified dynamic failure, not a license to suppress
+  LeakSanitizer or weaken the production deadline.  The fixture timing branch
+  is being made portable across GCC and Clang, and an independent strict
+  1 ms C++ policy-budget counterexample is required before the prepared
+  selector is retried.  The leak report remains an open lifecycle boundary
+  until a clean sanitizer run proves otherwise.
+
+## 2026-09-13 — Spec185 B3 drain lock-order and notifier publication boundary
+
+- The B3 composition review rejected v34's first lock-order repair with a
+  P1: the Core drain predicate held the Core mutex while taking the DI state
+  mutex, while `makeRuntimeClient()` held the DI mutex while installing the
+  Core notifier.  The replacement now publishes an immutable atomic client
+  snapshot, so the Core predicate no longer takes the DI mutex.
+- The same review found a second P1 window in v35: publishing a client before
+  installing its notifier allowed a concurrent terminal request to miss the
+  outer drain wakeup.  The notifier is now installed before the client enters
+  the map or snapshot; the C++ regression registers a multi-client drain
+  before cancelling either request.  v35 was static-fail and no build or
+  selector result from it is qualification evidence.  A fresh static review,
+  composition review, build, and runtime selector are required.
+
+## 2026-09-13 — Spec185 B3 normal drain regression after snapshot repair
+
+- The normal B3 rebuild after the v37 composition pass succeeded, and
+  `Spec185ExtensionRegistry` passed 10/10.  The prepared-request selector
+  reached the Provider path and the new active two-client drain case, but the
+  existing `RuntimeDrainAsyncIncludesNativeClientWork` waiter did not complete
+  within its two-second bound; the selector returned 201.  Raw output is
+  `.codex-tmp/spec185-b3/normal-runs/prepared-request-v10.log`.
+- This is a native drain/lifecycle regression boundary introduced after the
+  transactional snapshot/notifier repair.  The previous v9 pass is stale for
+  this source.  The failing selector is being isolated before any sanitizer
+  retry; no result from v10 counts toward B3 qualification.
+
+## 2026-09-13 — Spec185 B3 sanitizer fixture NAC cleanup boundary
+
+- After the normal selector was rerun successfully, the ASan/UBSan prepared
+  selector r2 exercised all 12 C++ cases and reported `*** No errors detected`
+  from Boost.Test, but LeakSanitizer aborted with 12,503 bytes in 27
+  allocations.  The dominant live chain begins at
+  `ServiceUser::refreshNacDkeyForControllerStatus` during the revoked-status
+  case and ends in ndn-cxx `SegmentFetcher`/Face scheduler objects.  Raw output
+  is `.codex-tmp/spec185-b3/asan-ubsan-fast-runs/prepared-request-r2.log`.
+- This remains a dynamic UNQUALIFIED result.  The fixture now pumps the real
+  Attribute Authority and User Faces until the post-revocation NAC DKEY is
+  ready before releasing the borrowed transport; sanitizer r3 is required.
+  LeakSanitizer remains enabled and no external allocation is suppressed.
+### 2026-09-13 Spec185 B3 repeated selector resource-interference boundary
+
+After the first clean B3 normal and ASan/UBSan runs, a second repetition was
+started as four selector processes at once.  The normal prepared selector
+stopped at the `RuntimeDrainAsyncIncludesNativeClientWork` 5-second wait;
+the ASan prepared selector timed out in the provider completion case, then
+reported an ASan `DEADLYSIGNAL`/LSan failure while another selector was still
+running.  The extension selectors passed.  These runs are preserved as
+`.codex-tmp/spec185-b3/normal-runs/prepared-request-v15.log`,
+`.codex-tmp/spec185-b3/normal-runs/extension-registry-v4.log`,
+`.codex-tmp/spec185-b3/asan-ubsan-fast-runs/prepared-request-r5.log`, and
+`.codex-tmp/spec185-b3/asan-ubsan-fast-runs/extension-registry-r4.log` and
+remain `UNQUALIFIED`; concurrent selectors are not a valid repetition on
+this host.  The changed gate is sequential, isolated selector runs with no
+competing build or test process; no source change is made from this boundary.

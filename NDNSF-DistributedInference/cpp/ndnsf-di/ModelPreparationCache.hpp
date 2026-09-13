@@ -34,6 +34,15 @@ struct PreparationSpec
   std::uint64_t maxSourceBytes = 0;
   std::uint64_t maxAssembledBytes = 0;
 
+  /** Runtime-owned factory used to bind a verified package to its existing
+   * request owner. It never stores request, grant, or plan state in cache. */
+  using ClientFactory = std::function<std::shared_ptr<NativeInferenceClient>(
+    const std::shared_ptr<const PreparedModelPackage>&)>;
+  ClientFactory clientFactory;
+
+  /** Opaque identity shared by Runtime-created placement handles and packages. */
+  std::shared_ptr<void> runtimeBinding;
+
   /** Native source owner. The returned bytes are copied into the package. */
   using SourceLoader = std::function<NativeCanonicalSource(
     const PreparationSpec&, std::chrono::steady_clock::time_point)>;

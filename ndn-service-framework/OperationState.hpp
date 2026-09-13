@@ -17,6 +17,7 @@
 #include <stdexcept>
 #include <string>
 #include <tuple>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -84,6 +85,7 @@ struct OperationChannelData
   bool readerDispatchPending = false;
   bool readerGapPending = false;
   bool readerGapReported = false;
+  std::uint64_t observerDropped = 0;
   std::uint64_t readerId = 0;
   std::uint64_t readerCursor = 0;
   std::optional<PendingRead> pendingRead;
@@ -181,25 +183,84 @@ void dispatchReader(const std::shared_ptr<OperationChannelData<Event>>& data,
   // timer left in the runtime would otherwise extend drain past callback
   // completion (or fire a second delivery), so retire it before dispatch.
   auto cancelTimer = std::move(pending.cancelTimer);
-  if (cancelTimer)
-    cancelTimer();
   auto commit = std::move(pending.commit);
   auto control = pending.control;
   auto callback = std::move(pending.callback);
   auto rollback = std::move(pending.rollback);
-  if (rollback && !control->setCancelFn(rollback))
-    rollback();
-  auto invoke = [control, callback = std::move(callback), event = std::move(event), error,
-            commit = std::move(commit), rollback = std::move(rollback)]() mutable {
-    if (!control->begin()) {
-      if (rollback) rollback();
-      return;
-    }
-    if (commit) commit();
-    try { callback(std::move(event), error); } catch (...) {}
-    control->end(true);
+  const auto generation = pending.generation;
+  const auto clearDispatch = [data, generation] {
+    std::lock_guard<std::mutex> lock(data->mutex);
+    if (data->readerId == generation)
+      data->readerDispatchPending = false;
   };
-  dispatchTask(data, std::move(invoke));
+  const auto markGap = [data, generation] {
+    std::lock_guard<std::mutex> lock(data->mutex);
+    if (data->readerId == generation) {
+      data->eventGap = true;
+      data->readerGapPending = true;
+      data->readerGapReported = false;
+      data->readerDispatchPending = false;
+    }
+  };
+  // Keep the original callback local until dispatch setup has succeeded.  A
+  // failed std::function/lambda allocation must still be able to complete
+  // this one-shot subscription with an explicit stream error.
+  const auto failSetup = [&] {
+    try { markGap(); } catch (...) {}
+    try {
+      if (control && control->begin()) {
+        try {
+          callback({}, detail::operationException(
+            OperationErrorCode::EventGap, "event reader dispatch setup failed"));
+        }
+        catch (...) {}
+        control->end(true);
+      }
+    }
+    catch (...) {
+      try { control->end(true); } catch (...) {}
+    }
+  };
+  try {
+    if (cancelTimer)
+      cancelTimer();
+    if (rollback && !control->setCancelFn(rollback)) {
+      try { rollback(); } catch (...) { clearDispatch(); }
+    }
+    auto callbackForInvoke = callback;
+    auto invoke = [control, callback = std::move(callbackForInvoke), event = std::move(event), error,
+              commit = std::move(commit), rollback = std::move(rollback),
+              clearDispatch, markGap]() mutable {
+      if (!control->begin()) {
+        try {
+          if (rollback) rollback();
+          else clearDispatch();
+        }
+        catch (...) { clearDispatch(); }
+        return;
+      }
+      try {
+        if (commit) commit();
+        else clearDispatch();
+      }
+      catch (...) {
+        try { markGap(); } catch (...) {}
+        try {
+          callback({}, detail::operationException(
+            OperationErrorCode::EventGap, "event reader delivery commit failed"));
+        }
+        catch (...) {}
+        control->end(true);
+        return;
+      }
+      try { callback(std::move(event), error); } catch (...) {}
+      control->end(true);
+    };
+    dispatchTask(data, std::move(invoke));
+  }
+  catch (...) {
+    failSetup();
+  }
 }
 
 template<typename Event>
@@ -219,7 +280,14 @@ void dispatchTask(const std::shared_ptr<OperationChannelData<Event>>& data,
     task();
     return;
   }
-  auto fallback = task;
+  std::function<void()> fallback;
+  try {
+    fallback = task;
+  }
+  catch (...) {
+    try { task(); } catch (...) {}
+    return;
+  }
   try { data->runtime->post(*ticket, std::move(task)); }
   catch (...) { fallback(); }
 }
@@ -234,6 +302,8 @@ template<typename Result, typename Event>
 class OperationState
 {
 public:
+  static_assert(std::is_nothrow_move_constructible_v<Event>,
+                "OperationState Event must be noexcept movable");
   using CancelFunction = std::function<void()>;
   using EventSizeFunction = std::function<std::size_t(const Event&)>;
   using ErrorMapper = std::function<std::exception_ptr(OperationErrorCode,
@@ -521,7 +591,9 @@ private:
   {
     std::optional<typename Base::PendingRead> reader;
     std::optional<Event> readerEvent;
+    std::exception_ptr readerError;
     bool overflowed = false;
+    bool observerDeliveryDropped = false;
     std::vector<std::tuple<std::shared_ptr<detail::SubscriptionControl>,
                            std::function<void(const Event&)>, Event>> observers;
     {
@@ -559,37 +631,84 @@ private:
         m_data->eventBytes += encodedBytes;
         if (allowTerminal)
           m_data->terminalEventPublished = true;
-        // Prepare every potentially-throwing observer copy before mutating
-        // pending-reader ownership or dispatch flags.  A failed copy leaves
-        // the event and pending read intact for a later publish.
-        for (const auto& entry : m_data->observers) {
-          if (entry.second.nextEvent < m_data->events.size())
-            observers.emplace_back(entry.second.control, entry.second.callback,
-                                   m_data->events.back().event);
-        }
+        // Move the reliable reader out before touching the best-effort
+        // observer delivery list.  Copying an observer callback or Event can
+        // allocate; that failure must not strand a pending reader behind a
+        // terminal event.  The reader owns the terminal delivery decision,
+        // while observer delivery is explicitly lossy/diagnostic.
         if (m_data->pendingRead && m_data->readerCursor < m_data->events.size()) {
           const auto index = static_cast<std::size_t>(m_data->readerCursor);
-          Event pendingEvent = m_data->events[index].event;
+          // Claim the pending reader before copying the event.  Event is
+          // caller-defined and its copy may allocate/throw; leaving the
+          // reader in the state while that copy runs would let the following
+          // Core completion turn the pending read into a permanent timeout.
           reader = std::move(m_data->pendingRead);
           m_data->pendingRead.reset();
           m_data->readerDispatchPending = true;
           const auto generation = m_data->readerId;
           reader->generation = generation;
-          readerEvent = std::move(pendingEvent);
-          reader->commit = [data = std::static_pointer_cast<Base>(m_data), index, generation] {
-            std::lock_guard<std::mutex> lock(data->mutex);
-            if (data->readerDispatchPending && data->readerId == generation &&
-                data->readerActive && data->readerCursor == index) {
-              ++data->readerCursor;
-              data->readerDispatchPending = false;
-              data->reclaimConsumedLocked();
-            }
-          };
-          reader->rollback = [data = std::static_pointer_cast<Base>(m_data), generation] {
-            std::lock_guard<std::mutex> lock(data->mutex);
-            if (data->readerId == generation)
-              data->readerDispatchPending = false;
-          };
+          try {
+            readerEvent = m_data->events[index].event;
+          }
+          catch (...) {
+            // Resolve the claimed read with an explicit stream failure.  A
+            // later read may retry the retained event, but it must never
+            // remain parked until its timer reports a misleading timeout.
+            readerError = detail::operationException(
+              OperationErrorCode::EventGap, "event reader terminal delivery failed");
+            m_data->readerGapPending = true;
+            m_data->readerGapReported = false;
+          }
+          const bool readerEventCopied = readerEvent.has_value();
+          try {
+            reader->commit = [data = std::static_pointer_cast<Base>(m_data), index, generation,
+                              readerEventCopied] {
+              std::lock_guard<std::mutex> lock(data->mutex);
+              if (!data->readerDispatchPending || data->readerId != generation)
+                return;
+              if (!readerEventCopied) {
+                // Keep the cursor on the retained event and make the copy
+                // failure sticky for this reader.  A later read gets
+                // STREAM_GAP instead of replaying a misleading EOF or timeout.
+                data->readerGapPending = true;
+                data->readerGapReported = false;
+                data->readerDispatchPending = false;
+                return;
+              }
+              if (data->readerActive && data->readerCursor == index) {
+                ++data->readerCursor;
+                data->readerDispatchPending = false;
+                data->reclaimConsumedLocked();
+              }
+            };
+            reader->rollback = [data = std::static_pointer_cast<Base>(m_data), generation] {
+              std::lock_guard<std::mutex> lock(data->mutex);
+              if (data->readerId == generation)
+                data->readerDispatchPending = false;
+            };
+          }
+          catch (...) {
+            reader->commit = {};
+            reader->rollback = {};
+            readerEvent.reset();
+            readerError = detail::operationException(
+              OperationErrorCode::EventGap, "event reader delivery setup failed");
+            m_data->readerGapPending = true;
+            m_data->readerGapReported = false;
+            m_data->readerDispatchPending = true;
+          }
+        }
+        try {
+          for (const auto& entry : m_data->observers) {
+            if (entry.second.nextEvent < m_data->events.size())
+              observers.emplace_back(entry.second.control, entry.second.callback,
+                                     m_data->events.back().event);
+          }
+        }
+        catch (...) {
+          observers.clear();
+          ++m_data->observerDropped;
+          observerDeliveryDropped = true;
         }
         for (auto& entry : m_data->observers) {
           if (entry.second.nextEvent < m_data->events.size())
@@ -597,20 +716,46 @@ private:
         }
       }
     }
-    if (reader)
-      detail::dispatchReader(std::static_pointer_cast<Base>(m_data), std::move(*reader),
-                             std::move(readerEvent), overflowed
-                               ? detail::mapChannelErrorNoThrow(
-                                   std::static_pointer_cast<Base>(m_data),
-                                   OperationErrorCode::EventGap,
-                                   "operation event buffer exceeded its capacity")
-                               : std::exception_ptr{});
+    if (reader) {
+      const auto generation = reader->generation;
+      try {
+        detail::dispatchReader(std::static_pointer_cast<Base>(m_data), std::move(*reader),
+                               std::move(readerEvent), readerError ? readerError : (overflowed
+                                 ? detail::mapChannelErrorNoThrow(
+                                     std::static_pointer_cast<Base>(m_data),
+                                     OperationErrorCode::EventGap,
+                                     "operation event buffer exceeded its capacity")
+                                 : std::exception_ptr{}));
+      }
+      catch (...) {
+        try {
+          std::lock_guard<std::mutex> lock(m_data->mutex);
+          if (m_data->readerId == generation) {
+            m_data->eventGap = true;
+            m_data->readerGapPending = true;
+            m_data->readerGapReported = false;
+            m_data->readerDispatchPending = false;
+          }
+        }
+        catch (...) {}
+      }
+    }
     if (overflowed) {
       m_data->condition.notify_all();
       return false;
     }
-    for (auto& observer : observers)
-      dispatchObserver(std::get<0>(observer), std::get<1>(observer), std::get<2>(observer));
+    for (auto& observer : observers) {
+      try {
+        dispatchObserver(std::get<0>(observer), std::get<1>(observer),
+                        std::get<2>(observer));
+      }
+      catch (...) {
+        std::lock_guard<std::mutex> lock(m_data->mutex);
+        ++m_data->observerDropped;
+        observerDeliveryDropped = true;
+      }
+    }
+    (void)observerDeliveryDropped;
     m_data->condition.notify_all();
     return true;
   }
@@ -646,6 +791,53 @@ public:
 
   /** Open the single reliable event reader. */
   OperationReader<Event> openReader();
+
+  /** Return the number of best-effort observer deliveries that were dropped. */
+  std::uint64_t observationDropped() const
+  {
+    std::lock_guard<std::mutex> lock(m_data->mutex);
+    return m_data->observerDropped;
+  }
+
+  /** Mark the reliable stream truncated without changing the business result. */
+  void failReader(OperationErrorCode code, const std::string& message) noexcept
+  {
+    std::optional<typename Base::PendingRead> reader;
+    {
+      std::lock_guard<std::mutex> lock(m_data->mutex);
+      m_data->eventGap = true;
+      m_data->readerGapPending = true;
+      m_data->readerGapReported = false;
+      if (m_data->pendingRead) {
+        reader = std::move(m_data->pendingRead);
+        m_data->pendingRead.reset();
+        // Keep the gate until dispatchReader's callback takes execution
+        // ownership.  The no-closure path clears it at callback start or via
+        // the generation fallback if dispatch setup fails.
+        m_data->readerDispatchPending = true;
+      }
+    }
+    m_data->condition.notify_all();
+    if (!reader)
+      return;
+    const auto error = detail::mapChannelErrorNoThrow(
+      std::static_pointer_cast<Base>(m_data), code, message);
+    const auto generation = reader->generation;
+    try {
+      detail::dispatchReader(std::static_pointer_cast<Base>(m_data), std::move(*reader), {}, error);
+    }
+    catch (...) {
+      // Gap flags and pending-reader ownership are already retired.  Always
+      // clear the dispatch marker if callback/task allocation fails so a
+      // later read observes the sticky gap instead of READ_IN_PROGRESS.
+      try {
+        std::lock_guard<std::mutex> lock(m_data->mutex);
+        if (m_data->readerId == generation)
+          m_data->readerDispatchPending = false;
+      }
+      catch (...) {}
+    }
+  }
 
 private:
   std::optional<Result> currentResult() const
@@ -826,6 +1018,7 @@ public:
     if (timeout.count() < 0) throw std::invalid_argument("event reader timeout is negative");
     if (!m_data)
       throw OperationError(OperationErrorCode::Closed, "event reader is closed");
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
     const bool onWorker = m_data->runtime->isWorkerThread();
     std::unique_lock<std::mutex> lock(m_data->mutex);
     if (!m_open)
@@ -863,7 +1056,13 @@ public:
       if (onWorker)
         throw OperationError(OperationErrorCode::WouldDeadlock,
                              "event reader wait from its worker would deadlock");
-      if (!m_data->condition.wait_for(lock, timeout, [&] {
+      const auto now = std::chrono::steady_clock::now();
+      if (now >= deadline)
+        throw OperationError(OperationErrorCode::Timeout, "event reader timed out");
+      const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now);
+      if (remaining.count() <= 0)
+        throw OperationError(OperationErrorCode::Timeout, "event reader timed out");
+      if (!m_data->condition.wait_for(lock, remaining, [&] {
             return m_data->readerCursor < m_data->events.size() || m_data->terminal ||
                    m_data->eventGap || !m_open;
           }))

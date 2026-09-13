@@ -113,9 +113,23 @@ bool evaluateExtraReady(const std::shared_ptr<detail::RuntimeState::DrainWaiter>
   }
 }
 
-void notifyDrained(const std::shared_ptr<detail::RuntimeState>& state)
+void notifyDrained(const std::shared_ptr<detail::RuntimeState>& state) noexcept
 {
   state->condition.notify_all();
+  std::function<void()> callback;
+  try {
+    std::lock_guard<std::mutex> lock(state->mutex);
+    callback = state->notifyCallback;
+  }
+  catch (...) {
+    // A final ticket must never terminate a worker because copying an
+    // externally registered std::function could allocate.
+    return;
+  }
+  if (callback) {
+    try { callback(); }
+    catch (...) {}
+  }
 }
 
 } // namespace
@@ -126,6 +140,26 @@ OperationRuntime::notifyWaiters() noexcept
   auto state = m_state;
   if (state)
     state->condition.notify_all();
+}
+
+void
+OperationRuntime::setNotifyCallback(std::function<void()> callback)
+{
+  auto state = m_state;
+  if (!state)
+    return;
+  std::lock_guard<std::mutex> lock(state->mutex);
+  state->notifyCallback = std::move(callback);
+}
+
+bool
+OperationRuntime::isQuiescent() const noexcept
+{
+  auto state = m_state;
+  if (!state)
+    return true;
+  std::lock_guard<std::mutex> lock(state->mutex);
+  return isQuiescentLocked(*state);
 }
 
 detail::RuntimeState::~RuntimeState()
@@ -147,7 +181,11 @@ detail::RuntimeTaskHold::~RuntimeTaskHold()
     if (state->tickets > 0)
       --state->tickets;
   }
-  state->condition.notify_all();
+  // A task/timer hold is the final accounting edge for queued work.  Wake
+  // both local drain waiters and any enclosing owner that registered a
+  // notifier (for example DI Runtime::drainAsync).  The callback is copied
+  // and invoked by notifyDrained outside state->mutex.
+  notifyDrained(state);
 }
 
 void

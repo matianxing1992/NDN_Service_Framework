@@ -397,6 +397,26 @@ namespace ndn_service_framework{
                         ndn::security::Certificate signingCert,
                         ndn::security::Certificate attrAuthorityCertificate,
                         std::string trustSchemaPath);
+            /** Production owner injection: all SVS/NAC signing uses this
+             * KeyChain, which must outlive the ServiceUser. */
+            ServiceUser(ndn::Face& face,
+                        ndn::Name group_prefix,
+                        ndn::security::Certificate encryptionCert,
+                        ndn::security::Certificate signingCert,
+                        ndn::security::Certificate attrAuthorityCertificate,
+                        std::string trustSchemaPath,
+                        ndn::KeyChain& signingKeyChain);
+            struct ExternalKeyChainTag
+            {
+            };
+            ServiceUser(ExternalKeyChainTag,
+                        ndn::Face& face,
+                        ndn::Name group_prefix,
+                        ndn::security::Certificate encryptionCert,
+                        ndn::security::Certificate signingCert,
+                        ndn::security::Certificate attrAuthorityCertificate,
+                        std::string trustSchemaPath,
+                        ndn::KeyChain* signingKeyChain);
             ServiceUser(LocalMockTag,
                         ndn::Face& face,
                         ndn::Name group_prefix,
@@ -426,6 +446,8 @@ namespace ndn_service_framework{
 
             /** Bind all LocalMock signing, including NAC-ABE wrapping, to the
              * fixture-owned KeyChain that contains the supplied certificate. */
+            void useSigningKeyChain(ndn::KeyChain& keyChain);
+            /** Backward-compatible test spelling for LocalMock fixtures. */
             void useSigningKeyChainForTest(ndn::KeyChain& keyChain);
 
             /** Return whether the active LocalMock NAC-ABE Consumer has

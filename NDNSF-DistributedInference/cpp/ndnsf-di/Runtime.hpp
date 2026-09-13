@@ -76,7 +76,7 @@ private:
   std::uint64_t m_attempt = 0;
 };
 
-namespace detail { struct RuntimeState; }
+namespace detail { struct RuntimeState; struct RuntimeTestAccess; }
 
 class Runtime;
 enum class PreparationStatus { Pending, Ready, Failed, Cancelled };
@@ -193,6 +193,9 @@ public:
   /** Return a User bound to this Runtime's configured principal. */
   User user(UserConfig config = {});
 
+  /** Return an opaque strategy registered by this Runtime's frozen registry. */
+  std::shared_ptr<const PlacementStrategy> placementStrategy(const std::string& id) const;
+
   /**
    * Close this runtime exactly once.  New operations are rejected; work
    * already registered with the Core owner is allowed to settle.  This method
@@ -224,6 +227,7 @@ private:
   explicit Runtime(std::shared_ptr<detail::RuntimeState> state);
 
   std::shared_ptr<detail::RuntimeState> m_state;
+  friend struct detail::RuntimeTestAccess;
 };
 
 } // namespace ndnsf::di

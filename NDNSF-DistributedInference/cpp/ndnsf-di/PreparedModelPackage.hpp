@@ -38,6 +38,13 @@ struct PreparedModelPackage
   ModelCapabilities capabilities;
   std::string preparationKeyDigest;
   std::size_t retainedBytes = 0;
+  /** Built-in cooperative placement used when the caller supplies no opaque
+   * Runtime strategy handle. It is immutable package state, never request
+   * authorization or a cached plan. */
+  std::shared_ptr<const CooperativePlacementStrategy> defaultPlacement;
+  // Opaque Runtime identity used to reject a placement handle borrowed from a
+  // different Runtime state. It carries no request or authorization data.
+  std::shared_ptr<void> runtimeBinding;
 };
 
 } // namespace ndnsf::di

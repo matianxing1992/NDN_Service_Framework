@@ -1170,12 +1170,12 @@ namespace ndn_service_framework
                              ndn::security::Certificate identityCert,
                              ndn::security::Certificate attrAuthorityCertificate,
                              std::string trustSchemaPath)
-        : ServiceUser(face,
+        : ServiceUser(ExternalKeyChainTag{}, face,
                       std::move(group_prefix),
                       getExistingEncryptionCertificateOrThrow(identityCert),
                       getExistingSigningCertificateOrFallback(identityCert),
                       std::move(attrAuthorityCertificate),
-                      std::move(trustSchemaPath))
+                      std::move(trustSchemaPath), nullptr)
     {
     }
 
@@ -1184,18 +1184,50 @@ namespace ndn_service_framework
                              ndn::security::Certificate encryptionCert,
                              ndn::security::Certificate signingCert,
                              ndn::security::Certificate attrAuthorityCertificate,
-                             std::string trustSchemaPath) :
+                             std::string trustSchemaPath)
+        : ServiceUser(ExternalKeyChainTag{}, face,
+                      std::move(group_prefix), std::move(encryptionCert),
+                      std::move(signingCert), std::move(attrAuthorityCertificate),
+                      std::move(trustSchemaPath), nullptr)
+    {
+    }
+
+    ServiceUser::ServiceUser(ndn::Face &face,
+                             ndn::Name group_prefix,
+                             ndn::security::Certificate encryptionCert,
+                             ndn::security::Certificate signingCert,
+                             ndn::security::Certificate attrAuthorityCertificate,
+                             std::string trustSchemaPath,
+                             ndn::KeyChain& signingKeyChain)
+        : ServiceUser(ExternalKeyChainTag{}, face,
+                      std::move(group_prefix), std::move(encryptionCert),
+                      std::move(signingCert), std::move(attrAuthorityCertificate),
+                      std::move(trustSchemaPath), &signingKeyChain)
+    {
+    }
+
+    ServiceUser::ServiceUser(ExternalKeyChainTag,
+                             ndn::Face &face,
+                             ndn::Name group_prefix,
+                             ndn::security::Certificate encryptionCert,
+                             ndn::security::Certificate signingCert,
+                             ndn::security::Certificate attrAuthorityCertificate,
+                             std::string trustSchemaPath,
+                             ndn::KeyChain* externalKeyChain) :
         m_face(face),
         m_scheduler(m_face.getIoContext()),
         identity(encryptionCert.getIdentity()),
+        m_testSigningKeyChain(externalKeyChain),
         validator(std::make_shared<MessageValidator>(
           trustSchemaPath, group_prefix, &face)),
         identityCert(encryptionCert),
         signingCert(signingCert),
         attrAuthorityCertificate(attrAuthorityCertificate),
         // nac_validator(std::move(ndn::security::ValidatorNull())),
-        nacConsumer(m_face, m_keyChain, nac_validator, encryptionCert, attrAuthorityCertificate),
-        nacProducer(m_face, m_keyChain, nac_validator, encryptionCert, attrAuthorityCertificate),
+        nacConsumer(m_face, externalKeyChain ? *externalKeyChain : m_keyChain,
+                    nac_validator, encryptionCert, attrAuthorityCertificate),
+        nacProducer(m_face, externalKeyChain ? *externalKeyChain : m_keyChain,
+                    nac_validator, encryptionCert, attrAuthorityCertificate),
         m_IMS(50000)
     {
         ensureSameIdentity(encryptionCert, signingCert, "ServiceUser");
@@ -1219,7 +1251,7 @@ namespace ndn_service_framework
             m_ServiceDiscovery.enable(group_prefix,
                                       identity,
                                       face,
-                                      m_keyChain,
+                                      externalKeyChain ? *externalKeyChain : m_keyChain,
                                       std::bind(&ServiceUser::processNDNSDServiceInfoCallback, this, _1));
         }
 
@@ -1261,8 +1293,12 @@ namespace ndn_service_framework
 
         m_signingInfo = ndn::security::signingByCertificate(signingCert);
 
-        ndn::svs::SecurityOptions secOpts(m_keyChain);
-        secOpts.interestSigner = std::make_shared<CommandInterestSigner>(m_keyChain);
+        // Runtime may bind a caller-owned KeyChain before init().  Use that
+        // same owner for every SVS signer; otherwise the certificate supplied
+        // to ServiceUser can be present only in an unrelated PIB.
+        auto& signingKeyChain = m_testSigningKeyChain ? *m_testSigningKeyChain : m_keyChain;
+        ndn::svs::SecurityOptions secOpts(signingKeyChain);
+        secOpts.interestSigner = std::make_shared<CommandInterestSigner>(signingKeyChain);
         secOpts.interestSigner->signingInfo.setSignedInterestFormat(ndn::security::SignedInterestFormat::V03);
         secOpts.interestSigner->signingInfo.setSigningKeyName(signingCert.getKeyName());
         secOpts.dataSigner->signingInfo.setSigningCertName(signingCert.getName());
@@ -1530,7 +1566,7 @@ namespace ndn_service_framework
     }
 
     void
-    ServiceUser::useSigningKeyChainForTest(ndn::KeyChain& keyChain)
+    ServiceUser::useSigningKeyChain(ndn::KeyChain& keyChain)
     {
         const auto identity = keyChain.getPib().getIdentity(signingCert.getIdentity());
         const auto key = identity.getKey(signingCert.getKeyName());
@@ -1543,6 +1579,12 @@ namespace ndn_service_framework
         m_testNacProducer = std::make_unique<ndn::nacabe::CacheProducer>(
             m_face, keyChain, nac_validator, identityCert,
             attrAuthorityCertificate);
+    }
+
+    void
+    ServiceUser::useSigningKeyChainForTest(ndn::KeyChain& keyChain)
+    {
+        useSigningKeyChain(keyChain);
     }
 
     bool
@@ -9815,8 +9857,10 @@ namespace ndn_service_framework
                 EncryptedPermissionResponse encryptedResponse;
                 if (decodeEncryptedPermissionResponseFromDataContent(validatedData, encryptedResponse)) {
                     try {
+                        auto& responseKeyChain = m_testSigningKeyChain ?
+                            *m_testSigningKeyChain : m_keyChain;
                         auto response =
-                            decryptPermissionResponseWithKeyChain(encryptedResponse, m_keyChain);
+                            decryptPermissionResponseWithKeyChain(encryptedResponse, responseKeyChain);
                         if (response.getTargetIdentity() != identity.toUri()) {
                             NDN_LOG_ERROR("Ignoring PermissionResponse for unexpected targetIdentity="
                                           << response.getTargetIdentity()

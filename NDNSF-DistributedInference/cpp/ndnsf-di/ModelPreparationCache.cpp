@@ -2,6 +2,7 @@
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestCatalog.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeV3Placement.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp"
 
 #include <algorithm>
@@ -453,6 +454,8 @@ std::shared_ptr<const PreparedModelPackage> ModelPreparationCache::buildPackage(
   capabilities.inputKinds = {"BYTES"};
   capabilities.outputModes = {"FULL"};
   capabilities.streaming = request.value("generation_mode", std::string{}) == "TOKEN_STREAMING";
+  if (capabilities.streaming)
+    capabilities.outputModes.push_back("TOKEN_STREAMING");
   // Conversation preparation is introduced by T007; T003 must not advertise
   // a capability merely because an unvalidated configuration field exists.
   capabilities.conversations = false;
@@ -501,7 +504,9 @@ std::shared_ptr<const PreparedModelPackage> ModelPreparationCache::buildPackage(
       spec.configurationDigest, spec.taskName, spec.taskContractDigest, spec.inputLayoutDigest});
   auto package = std::make_shared<PreparedModelPackage>(
     PreparedModelPackage{std::move(catalog), std::move(registration), manifest,
-                         std::move(capabilities), keyDigest, retained});
+                         std::move(capabilities), keyDigest, retained,
+                         std::make_shared<NativePreSplitFirstPlacement>(),
+                         spec.runtimeBinding});
   return package;
 }
 
@@ -534,7 +539,8 @@ PreparedModel ModelPreparationCache::prepareSingle(const PreparationSpec& spec,
         found->second.package->preparationKeyDigest,
         found->second.package->catalog.model.modelManifestDigest,
         std::chrono::milliseconds(0)};
-      return PreparedModel(found->second.package, std::move(receipt), acquireLease(lease));
+      return PreparedModel(found->second.package, std::move(receipt), acquireLease(lease),
+                           spec.clientFactory);
     }
     if (found == m_entries.end() && (policy == CachePolicy::RequireReady ||
                                      policy == CachePolicy::UseOrWait))
@@ -627,7 +633,7 @@ PreparedModel ModelPreparationCache::prepareSingle(const PreparationSpec& spec,
         PreparationReceipt{PreparationReceipt::Origin::CacheHit,
           found->second.package->preparationKeyDigest,
           found->second.package->catalog.model.modelManifestDigest,
-          std::chrono::milliseconds(0)}, acquireLease(lease));
+          std::chrono::milliseconds(0)}, acquireLease(lease), spec.clientFactory);
     }
     if (spec.jobGeneration != 0 && policy != CachePolicy::Refresh) {
       const auto jobs = m_jobs.find(key);
@@ -637,7 +643,8 @@ PreparedModel ModelPreparationCache::prepareSingle(const PreparationSpec& spec,
         reservationHeld = false;
         const auto digest = package->catalog.model.modelManifestDigest;
         return PreparedModel(std::move(package),
-          PreparationReceipt{PreparationReceipt::Origin::Fetched, key, digest, elapsed});
+          PreparationReceipt{PreparationReceipt::Origin::Fetched, key, digest, elapsed}, {},
+          spec.clientFactory);
       }
     }
     const auto prior = found == m_entries.end() ? std::size_t{0} : found->second.package->retainedBytes;
@@ -716,7 +723,7 @@ PreparedModel ModelPreparationCache::prepareSingle(const PreparationSpec& spec,
       ? PreparationReceipt::Origin::Refreshed : PreparationReceipt::Origin::Fetched;
     const auto manifestDigest = package->catalog.model.modelManifestDigest;
     return PreparedModel(std::move(package), PreparationReceipt{origin, key,
-      manifestDigest, elapsed}, acquireLease(lease));
+      manifestDigest, elapsed}, acquireLease(lease), spec.clientFactory);
   }
   catch (...) {
     if (reservationHeld) {
@@ -992,7 +999,7 @@ ModelPreparationCache::prepareAsync(const PreparationSpec& spec,
         PreparationReceipt{PreparationReceipt::Origin::CacheHit,
           found->second.package->preparationKeyDigest,
           found->second.package->catalog.model.modelManifestDigest,
-          std::chrono::milliseconds(0)}, acquireLease(found->second.lease));
+          std::chrono::milliseconds(0)}, acquireLease(found->second.lease), spec.clientFactory);
       terminalNow = std::move(waiterTerminal);
     }
     else if (found == m_entries.end() && policy == CachePolicy::RequireReady) {

@@ -84,8 +84,9 @@ class TestCooperativeSplitter final : public CooperativeModelSplitStrategy
 {
 public:
   TestCooperativeSplitter() = default;
-  explicit TestCooperativeSplitter(NativeSplitCandidate candidate)
-    : m_candidate(std::move(candidate)) {}
+  explicit TestCooperativeSplitter(NativeSplitCandidate candidate,
+                                   std::chrono::milliseconds delay = {})
+    : m_candidate(std::move(candidate)), m_delay(delay) {}
 
   NativeStrategyIdentity identity() const override
   {
@@ -96,6 +97,8 @@ public:
     const NativeModelDescriptor&, const NativeGraphSnapshot&, const NativeCandidateBudget&,
     const ExtensionControl& control) const override
   {
+    if (m_delay.count() > 0)
+      std::this_thread::sleep_for(m_delay);
     control.requireActive();
     return m_candidate ? std::vector<NativeSplitCandidate>{*m_candidate}
                         : std::vector<NativeSplitCandidate>{};
@@ -103,6 +106,7 @@ public:
 
 private:
   std::optional<NativeSplitCandidate> m_candidate;
+  std::chrono::milliseconds m_delay{};
 };
 
 class LateCancelPlacement final : public CooperativePlacementStrategy
@@ -276,6 +280,7 @@ BOOST_AUTO_TEST_CASE(CooperativePlannerInvokesStrategyAndStopsBeforeSelection)
   auto candidate = nativeSplitter.enumerate(descriptor, graph, {1, 1000, 1}).front();
   candidate.splitter = {"test-cooperative-splitter", "1", digest("test-cooperative-splitter"), true};
   candidate.candidateDigest = candidate.computedDigest();
+  const auto strictBudgetCandidate = candidate;
   NativePlanSealingInputs roleInputs;
   roleInputs.artifacts.manifestDigest = digest("manifest");
   roleInputs.artifacts.recipeDigest = digest("recipe");
@@ -334,6 +339,26 @@ BOOST_AUTO_TEST_CASE(CooperativePlannerInvokesStrategyAndStopsBeforeSelection)
   BOOST_CHECK_THROW(planNativeRequestCooperative(runtime, {}, inspected, encoded, splitter, placement,
     preparation, admission, closure, control, 2000000000000ULL, nullptr), std::runtime_error);
   BOOST_CHECK(cancelled->load());
+  BOOST_CHECK_EQUAL(artifactPublications.load(), 0);
+
+  // Keep an independent strict policy-budget counterexample in this selector.
+  // The production planner derives the cooperative extension deadline from
+  // maxPolicyMs and must stop a slow strategy before it can publish artifacts.
+  cancelled->store(false);
+  auto strictRuntime = runtime;
+  strictRuntime.budget.maxPolicyMs = 1;
+  TestCooperativeSplitter slowSplitter(strictBudgetCandidate,
+                                       std::chrono::milliseconds(5));
+  NativeRequestControl strictControl{offer.requestId, offer.attempt,
+    std::chrono::steady_clock::now() + std::chrono::seconds(5),
+    [cancelled] { return cancelled->load(); }};
+  BOOST_CHECK_EXCEPTION(planNativeRequestCooperative(
+    strictRuntime, {}, inspected, encoded, slowSplitter, NativePreSplitFirstPlacement(),
+    preparation, admission, closure, strictControl, 2000000000000ULL, nullptr),
+    std::runtime_error,
+    [] (const std::runtime_error& error) {
+      return std::string(error.what()) == "cooperative extension deadline exceeded";
+    });
   BOOST_CHECK_EQUAL(artifactPublications.load(), 0);
 }
 
