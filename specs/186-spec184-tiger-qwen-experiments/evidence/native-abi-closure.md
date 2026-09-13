@@ -59,3 +59,37 @@ showed that the temporary library exports no definitions for those header
 declarations. The prefix therefore combines newer headers with an older
 library and is rejected. A same-revision NAC-ABE rebuild is required before
 the Waf build can produce a candidate.
+
+## Checkpoint 4 — 2026-09-12 pinned Rust toolchain and Cargo cache
+
+The exact Rust 1.90.0 `rustc`, `cargo` and `rust-std` archives from the
+Spec182 dependency contract were downloaded into the ignored `.codex-tmp`
+workspace and matched their locked SHA-256 values. The official installers
+produced an independent `rust-prefix-r3`; `rustc -vV` reports
+`x86_64-unknown-linux-gnu` and release `1.90.0`.
+
+Reconfiguration with the matching `.deps/nac-abe-spec179-official` headers and
+library plus the temporary ONNX probe reached the tokenizer bridge, then
+stopped before compilation because the isolated Cargo home contains no
+`tokenizers` package and offline resolution cannot satisfy `Cargo.lock`.
+This remains a dependency boundary: no candidate binary or runtime evidence
+is promoted, and T006 stays `BLOCKED_AFTER_BOUNDARY` pending cache recovery.
+
+## Checkpoint 5 — 2026-09-12 NDN-SVS source/build pairing
+
+The first targeted C++ build reached `ServiceProvider.cpp` and exposed an
+installed-version mismatch: `/usr/local/include` and `/usr/local/lib` provide
+the older `SVSPubSub::subscribeToProducer` API, while the Spec186 source calls
+`subscribeToProducerWithCatchUp`. The maintained NDN-SVS source/build pair at
+`/home/tianxing/NDN/ndn-svs` declares and exports the required method.
+
+Waf was reconfigured with both explicit options:
+
+```text
+--ndn-svs-source-tree=/home/tianxing/NDN/ndn-svs
+--ndn-svs-build-tree=/home/tianxing/NDN/ndn-svs/build
+```
+
+Its explicit header/library closure check passed, and the resumed targeted
+build reached 24/97 before this checkpoint. No runtime candidate is promoted
+until the shared libraries link and pass import, `--help`, RPATH and `ldd -r`.

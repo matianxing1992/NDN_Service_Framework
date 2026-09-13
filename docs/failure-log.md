@@ -3677,3 +3677,39 @@ are still unobserved.
   revision as the headers, then the full Waf and loader gates rerun.
 - **Lesson**: verify exported symbols and runtime resolution, not only header
   presence, library path or successful configure output.
+
+## 2026-09-12 — Spec186 pinned Cargo cache boundary
+
+- **Area**: T006 clean Waf dependency closure after restoring the locked Rust
+  toolchain.
+- **First boundary**: `./waf configure --out=build-spec186
+  --nac-abe-prefix=.deps/nac-abe-spec179-official
+  --onnx-prefix=/tmp/spec186-onnx-prefix2 --disable-local-dependency-prefix`
+  reached the required tokenizer bridge and failed in Cargo offline mode:
+  `no matching package named tokenizers found`.
+- **Interpretation**: Rust 1.90.0 itself is restored and verified, but the
+  isolated Cargo home has no registry/cache for the locked `Cargo.lock`; no
+  tokenizer library or product binary exists from this attempt.
+- **Correction**: populate the isolated Cargo cache using the repository lock
+  and then rerun the exact `--locked --offline` build. Do not substitute a
+  host toolchain, unpinned crate, or stub implementation.
+- **Lesson**: a verified compiler is only one part of a reproducible Rust
+  input; the lockfile, crate cache and offline resolution must also be sealed.
+
+## 2026-09-12 — Spec186 NDN-SVS installed-version mismatch
+
+- **Area**: T006 native source compilation after the Rust and ONNX gates.
+- **First boundary**: the initial targeted build stopped at
+  `ServiceProvider.cpp:6811` because the `/usr/local` NDN-SVS headers exposed
+  no `SVSPubSub::subscribeToProducerWithCatchUp` member.
+- **Evidence**: the source/build pair at `/home/tianxing/NDN/ndn-svs` declares
+  and exports that method, while `/usr/local/lib/libndn-svs.so` exports only
+  the older `subscribeToProducer` API. Waf's explicit source/build closure
+  check passes when that pair is selected.
+- **Correction**: reconfigure with
+  `--ndn-svs-source-tree=/home/tianxing/NDN/ndn-svs` and
+  `--ndn-svs-build-tree=/home/tianxing/NDN/ndn-svs/build`; the subsequent
+  targeted build reached 24/97 without that error.
+- **Lesson**: pkg-config success and SONAME equality do not prove NDN-SVS API
+  compatibility; source headers, link input and runtime path must be fixed as
+  one tuple.
