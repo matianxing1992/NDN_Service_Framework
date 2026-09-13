@@ -25,6 +25,9 @@ public:
   std::vector<std::uint8_t> encodeInput(const std::vector<std::uint8_t>& bytes) const override;
   std::vector<std::uint8_t> decodeResult(const std::vector<std::uint8_t>& bytes) const override;
 
+  /** Maximum decoded application input accepted by this catalog adapter. */
+  std::size_t maxPayloadBytes() const noexcept { return m_maxPayloadBytes; }
+
 private:
   void validateBytes(const std::vector<std::uint8_t>& bytes) const;
   std::map<std::pair<std::string, std::string>, NativeModelDescriptor> m_models;

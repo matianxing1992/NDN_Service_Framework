@@ -159,6 +159,7 @@ struct RuntimeState
   std::thread worker;
   std::thread::id workerId;
   std::function<void(std::function<void()>)> submitHook;
+  std::function<void()> notifyCallback;
   std::vector<std::shared_ptr<DrainWaiter>> drainWaiters;
 
   ~RuntimeState();
@@ -273,6 +274,12 @@ public:
 
   /** Wake drain waiters whose owner supplies an external readiness predicate. */
   void notifyWaiters() noexcept;
+
+  /** Install a non-owning readiness notification hook for an enclosing owner. */
+  void setNotifyCallback(std::function<void()> callback);
+
+  /** Return whether this runtime currently has no queued work or timers. */
+  bool isQuiescent() const noexcept;
 
   /** Close and wait for all tickets, queued work, and timers to settle. */
   bool drain(std::chrono::milliseconds timeout);

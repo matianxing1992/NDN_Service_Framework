@@ -257,6 +257,23 @@ def build(bld):
                 linkflags=['-Wl,--no-relax'],
                 rpath=[bld.bldnode.abspath()], install_path=None)
 
+    # Spec185 B3 prepared-request projection selector.  Keep the public
+    # PreparedModel request path in its own C++ binary so package reuse,
+    # request identity allocation, input/reference validation, and native
+    # cancellation are observed independently of the larger Core flow.
+    bld.program(target='../spec185-prepared-request',
+                name='spec185-prepared-request',
+                source=[bld.path.parent.find_node('tests/main.cpp'),
+                        bld.path.find_node('integration-tests/di-prepared-request.t.cpp'),
+                        bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp')] +
+                       di_integration_sources,
+                includes=framework_includes,
+                use='ndn-service-framework ' + framework_use + ' ONNXRUNTIME',
+                defines=['HAVE_TESTS'],
+                cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
+                linkflags=['-Wl,--no-relax'],
+                rpath=[bld.bldnode.abspath()], install_path=None)
+
     # Exercise the shared native projection and model-specific merge contract
     bld.program(target='../spec181-exact-tensor-transport',
                 name='spec181-exact-tensor-transport',

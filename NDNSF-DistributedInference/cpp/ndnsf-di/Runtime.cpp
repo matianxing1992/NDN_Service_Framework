@@ -2,13 +2,20 @@
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeOfferAdmission.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeAuthenticatedGrantClient.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPlanner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModelPackage.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/RuntimeTestAccess.hpp"
 #include "ndn-service-framework/OperationRuntime.hpp"
+#include "ndn-service-framework/ServiceUser.hpp"
 #include "ndn-service-framework/common.hpp"
 
 #include <ndn-cxx/face.hpp>
+#include <ndn-cxx/security/key-chain.hpp>
+#include <ndn-cxx/security/key-params.hpp>
 #include <openssl/crypto.h>
 #include <openssl/evp.h>
 #include <openssl/pem.h>
@@ -21,6 +28,7 @@
 #include <limits>
 #include <map>
 #include <mutex>
+#include <string>
 #include <set>
 #include <sstream>
 #include <atomic>
@@ -107,6 +115,17 @@ bool absoluteName(const std::string& value)
   catch (...) {
     return false;
   }
+}
+
+bool isRecoverableNacBootstrapFailure(const std::string& message) noexcept
+{
+  // NAC-ABE reports an unavailable Attribute Authority through a stable
+  // library diagnostic after its bounded public-parameter retries.  The
+  // requester remains fail-closed until a later bootstrap succeeds; this
+  // expected unprovisioned state must not poison Runtime's Core lifecycle.
+  constexpr const char marker[] =
+    "Failed to fetch public parameters after multiple attempts";
+  return message.find(marker) != std::string::npos;
 }
 
 int rejectPemPassword(char*, int, int, void*)
@@ -510,11 +529,79 @@ struct CoreRuntimeOwner
 {
   boost::asio::io_context io;
   std::shared_ptr<ndn::Face> face;
+  // Runtime owns the KeyChain that created the certificates supplied to
+  // ServiceUser.  Keeping it here prevents a signing certificate from
+  // outliving its private key material.
+  std::unique_ptr<ndn::KeyChain> keyChain;
+  ndn::security::Certificate requesterCertificate;
+  ndn::security::Certificate authorityCertificate;
+  // The ServiceUser is the sole Core transport owner for Runtime-bound
+  // requests. It is declared after Face so destruction releases callbacks
+  // before the Face and its IO context disappear.
+  std::shared_ptr<ndn_service_framework::ServiceUser> serviceUser;
   std::shared_ptr<EVP_PKEY> requesterPrivateKey;
   std::shared_ptr<EVP_PKEY> authorityPublicKey;
   std::shared_ptr<ndn_service_framework::OperationRuntime> operationRuntime;
+  std::unique_ptr<boost::asio::io_context::work> ioWork;
+  std::thread ioThread;
+  std::atomic<bool> ioRunning{false};
+  std::atomic<bool> ioRecoveryStopped{false};
+  std::atomic<bool> ioStopRequested{false};
+  mutable std::mutex ioLifecycleMutex;
+  std::condition_variable ioLifecycleCondition;
+  std::mutex ioStopMutex;
+  bool ioStopped = false;
   std::atomic<std::size_t> inFlight{0};
   std::atomic<bool> closed{false};
+  std::atomic<bool> ioFailed{false};
+  mutable std::mutex ioFailureMutex;
+  std::string ioFailureMessage;
+  std::function<void(const std::string&)> ioFailureNotifier;
+
+  void recordIoFailure() noexcept
+  {
+    std::function<void(const std::string&)> notifier;
+    std::string reason;
+    try {
+      throw;
+    }
+    catch (const std::exception& error) {
+      std::lock_guard<std::mutex> lock(ioFailureMutex);
+      ioFailureMessage = error.what();
+      reason = ioFailureMessage;
+      notifier = ioFailureNotifier;
+    }
+    catch (...) {
+      std::lock_guard<std::mutex> lock(ioFailureMutex);
+      ioFailureMessage = "unknown exception escaped the Core Face callback";
+      reason = ioFailureMessage;
+      notifier = ioFailureNotifier;
+    }
+    const bool recoverableBootstrap = isRecoverableNacBootstrapFailure(reason);
+    if (!recoverableBootstrap)
+      ioFailed.store(true, std::memory_order_release);
+    if (!recoverableBootstrap && notifier) {
+      try { notifier(reason); }
+      catch (...) {
+        // A lifecycle notifier must never replace the original Face failure.
+      }
+    }
+    if (operationRuntime)
+      operationRuntime->notifyWaiters();
+    // Keep this Face loop alive in a failed-but-drainable state.  The
+    // exception may race Runtime::close(), whose cancellation path can have
+    // already queued Core cleanup; stopIo() is the owner-controlled fence
+    // that stops this recovery loop after that queue has drained.  A known
+    // NAC bootstrap-unavailable diagnostic is recoverable and deliberately
+    // leaves ioFailed clear; request authorization still rejects until the
+    // consumer is ready.
+  }
+
+  std::string ioFailure() const
+  {
+    std::lock_guard<std::mutex> lock(ioFailureMutex);
+    return ioFailureMessage;
+  }
 
   void close() noexcept
   {
@@ -524,18 +611,145 @@ struct CoreRuntimeOwner
       operationRuntime->close();
   }
 
-  void stopIo() noexcept
+  void startIo(const std::shared_ptr<CoreRuntimeOwner>& self)
   {
+    ioWork = std::make_unique<boost::asio::io_context::work>(io);
+    const std::weak_ptr<CoreRuntimeOwner> weakSelf = self;
+    ioThread = std::thread([weakSelf] {
+      if (const auto self = weakSelf.lock()) {
+        self->ioRunning.store(true, std::memory_order_release);
+        self->ioRecoveryStopped.store(false, std::memory_order_release);
+        self->ioStopRequested.store(false, std::memory_order_release);
+        try {
+          self->io.run();
+        }
+        catch (...) {
+          // ndn-cxx/NAC callbacks may throw from a Face event handler (for
+          // example after an unprovisioned public-parameter retry budget is
+          // exhausted).  Never let an exception escape the owner thread and
+          // call std::terminate; retain the failure as a lifecycle signal so
+          // drain cannot report a clean shutdown for a broken Face.
+          self->recordIoFailure();
+          // A Face callback can throw after close() has queued cancellation
+          // work.  Restart the same owned context so those callbacks and
+          // deferred conversation cleanup remain executable until the
+          // enclosing Runtime performs its drain/stop fence.
+          // Isolate every subsequent handler.  run_one() limits each
+          // exception boundary to one callback, so a malformed cleanup task
+          // cannot discard handlers queued behind it.
+          self->io.restart();
+          while (!self->io.stopped() &&
+                 !self->ioStopRequested.load(std::memory_order_acquire)) {
+            try {
+              self->io.run_one();
+            }
+            catch (...) {
+              // The original Face exception remains the lifecycle cause;
+              // continue draining the next handler in the same owner loop.
+              self->io.restart();
+            }
+          }
+          self->ioRecoveryStopped.store(true, std::memory_order_release);
+          self->ioLifecycleCondition.notify_all();
+        }
+        self->ioRunning.store(false, std::memory_order_release);
+        self->ioLifecycleCondition.notify_all();
+      }
+    });
+  }
+
+  bool stopIo(std::optional<std::chrono::steady_clock::time_point> deadline = std::nullopt) noexcept
+  {
+    std::unique_lock<std::mutex> stopLock(ioStopMutex);
+    if (ioStopped)
+      return true;
+    if (ioFailed.load(std::memory_order_acquire) && ioRunning.load(std::memory_order_acquire) &&
+        ioThread.joinable() && std::this_thread::get_id() != ioThread.get_id()) {
+      // A failed Face remains in the recovery loop until this explicit
+      // barrier runs.  It covers cancellation/scope callbacks queued by a
+      // racing close and by deferred conversation finalization.
+      auto completed = std::make_shared<std::atomic<bool>>(false);
+      bool posted = false;
+      try {
+        boost::asio::post(io, [this, completed] {
+          completed->store(true, std::memory_order_release);
+          ioLifecycleCondition.notify_all();
+        });
+        posted = true;
+        std::unique_lock<std::mutex> lock(ioLifecycleMutex);
+        const auto ready = [this, completed, posted] {
+          return (posted && completed->load(std::memory_order_acquire)) ||
+                 ioRecoveryStopped.load(std::memory_order_acquire) ||
+                 !ioRunning.load(std::memory_order_acquire);
+        };
+        if (deadline) {
+          if (!ioLifecycleCondition.wait_until(lock, *deadline, ready))
+            return false;
+        }
+        else {
+          ioLifecycleCondition.wait(lock, ready);
+        }
+      }
+      catch (...) {
+        // If posting the barrier fails, a bounded drain keeps the owner
+        // retryable unless the recovery loop has already terminated.  The
+        // unbounded destructor path may proceed to join as its final fence.
+        if (deadline) {
+          std::unique_lock<std::mutex> lock(ioLifecycleMutex);
+          const auto stopped = [this] {
+            return ioRecoveryStopped.load(std::memory_order_acquire) ||
+                   !ioRunning.load(std::memory_order_acquire);
+          };
+          if (!ioLifecycleCondition.wait_until(lock, *deadline, stopped))
+            return false;
+        }
+      }
+    }
+    ioStopRequested.store(true, std::memory_order_release);
+    ioWork.reset();
     io.stop();
+    if (!ioThread.joinable()) {
+      ioStopped = true;
+      return true;
+    }
+    if (std::this_thread::get_id() != ioThread.get_id()) {
+      std::unique_lock<std::mutex> lock(ioLifecycleMutex);
+      const auto exited = [this] {
+        return !ioRunning.load(std::memory_order_acquire);
+      };
+      if (deadline && !ioLifecycleCondition.wait_until(lock, *deadline, exited))
+        return false;
+      if (!deadline)
+        ioLifecycleCondition.wait(lock, exited);
+    }
+    if (std::this_thread::get_id() == ioThread.get_id()) {
+      // The owner is held by the IO lambda until run() returns.  Move the
+      // self-join to a detached reaper so destruction never joins itself.
+      // Keep ioStopped false: the caller is on the worker and therefore
+      // cannot claim that the join/drain fence has completed yet.  The
+      // detached reaper owns only the moved std::thread and never touches
+      // this owner; the worker's self reference keeps the owner alive until
+      // its callback has finished.
+      auto thread = std::move(ioThread);
+      std::thread([thread = std::move(thread)] () mutable {
+        thread.join();
+      }).detach();
+      return false;
+    }
+    ioThread.join();
+    ioStopped = true;
+    return true;
   }
 
   ~CoreRuntimeOwner() noexcept
   {
     close();
-    stopIo();
-    // Face is destroyed after the IO owner is stopped.  No callback may
-    // observe a partially destroyed Core dependency graph.
+    (void) stopIo();
+    // Release callbacks before Face and its IO context, then release the
+    // signing keys that back the ServiceUser certificates.
+    serviceUser.reset();
     face.reset();
+    keyChain.reset();
     authorityPublicKey.reset();
     requesterPrivateKey.reset();
     operationRuntime.reset();
@@ -560,6 +774,20 @@ struct RuntimeState
   RuntimeConfig config;
   std::filesystem::path baseDirectory;
   std::map<std::string, FrozenConfig> models;
+  std::shared_ptr<ndn_service_framework::ServiceUser> coreUser;
+  std::shared_ptr<NativeAuthenticatedGrantClient> grants;
+  std::shared_ptr<const NativeOfferAdmission> offerAdmission;
+  std::shared_ptr<NativePlacementStrategyRegistry> placementRegistry;
+  // Shared only as an opaque identity token; it never contains request or
+  // authorization state and is used to bind placement handles to this State.
+  std::shared_ptr<void> runtimeBinding;
+  std::map<std::string, std::shared_ptr<NativeInferenceClient>> clients;
+  // Immutable client snapshots let the Core drain predicate inspect client
+  // quiescence without acquiring the DI state mutex while the Core worker
+  // holds its own runtime mutex.  Writers publish under mutex; readers use
+  // the atomic shared_ptr operations below.
+  using ClientList = std::vector<std::shared_ptr<NativeInferenceClient>>;
+  std::shared_ptr<const ClientList> clientsSnapshot = std::make_shared<const ClientList>();
 };
 
 struct PreparationTicket
@@ -589,6 +817,203 @@ struct PreparationTicket
 };
 
 } // namespace detail
+
+namespace {
+
+std::string rawPublicKey(const std::shared_ptr<EVP_PKEY>& key)
+{
+  if (!key) throw std::runtime_error("Runtime authority public key is unavailable");
+  std::string raw(32, '\0');
+  std::size_t size = raw.size();
+  if (EVP_PKEY_get_raw_public_key(key.get(),
+        reinterpret_cast<unsigned char*>(raw.data()), &size) != 1 || size != raw.size())
+    throw std::runtime_error("Runtime authority public key is not Ed25519");
+  return raw;
+}
+
+NativeJson requestRuntimeConfiguration(const FrozenConfig& frozen,
+                                       const PreparedModelPackage& package)
+{
+  const auto root = nativeParseJson(package.registration->configurationJson);
+  const auto& request = root.at("request");
+  return NativeJson{
+    {"schema", "ndnsf-di-native-request-runtime-v1"},
+    {"contract", {
+      {"service_name", request.at("service")},
+      {"task_name", request.at("task")},
+      {"adapter_name", package.catalog.model.descriptor.adapterId},
+      {"adapter_descriptor_digest", package.catalog.model.descriptor.adapter.descriptorDigest()},
+      {"adapter_composition_digest", request.at("adapter_composition_digest")},
+      {"task_descriptor_digest", request.at("task_descriptor_digest")},
+      {"generation_mode", request.value("generation_mode", "TOKEN_DIAGNOSTIC")},
+      {"tokenizer_digest", request.value("tokenizer_digest", std::string{})},
+    }},
+    {"requester_identity", frozen.requesterIdentity},
+    {"protection_epoch", frozen.protectionEpoch},
+    {"input_layout_digest", request.at("input_layout_digest")},
+    {"security", {
+      {"policy_digest", request.at("security_policy_digest")},
+      {"require_protected_artifacts", true},
+    }},
+    {"budget", {
+      {"max_candidates", request.at("max_candidates")},
+      {"max_policy_ms", request.at("max_policy_ms")},
+      {"max_reentries", request.value("max_reentries", 1)},
+    }},
+    {"state_mapping", {
+      {"inputs", package.catalog.stateMapping.inputs},
+      {"outputs", package.catalog.stateMapping.outputs},
+    }},
+    {"no_progress_ms", request.value("no_progress_ms", 5000)},
+    {"max_segments", request.value("max_segments", 4096)},
+  };
+}
+
+std::shared_ptr<NativeInferenceClient> makeRuntimeClient(
+  const std::shared_ptr<detail::RuntimeState>& state,
+  const std::shared_ptr<const PreparedModelPackage>& package)
+{
+  if (!state || !package || !package->registration)
+    throw DiError("RUNTIME_CLOSED", "local", "request", "Runtime client binding is unavailable");
+  std::unique_lock<std::mutex> lock(state->mutex);
+  if (state->phase != detail::RuntimeState::Phase::Open || !state->coreOwner ||
+      !state->coreOwner->operationRuntime ||
+      state->coreOwner->ioFailed.load(std::memory_order_acquire))
+    throw DiError("RUNTIME_CLOSED", "local", "request",
+                  state->coreOwner && state->coreOwner->ioFailed.load(std::memory_order_acquire)
+                    ? "Runtime Core I/O failed: " + state->coreOwner->ioFailure()
+                    : "Runtime is closed");
+  // Runtime::open deliberately does not construct a production ServiceUser:
+  // its NAC consumer starts an asynchronous public-parameter fetch as part of
+  // construction.  Materialize the transport only when a real native client
+  // is requested, after test-only fixture binding has had its chance to supply
+  // a LocalMock user and grant client.
+  if (!state->coreUser || !state->grants) {
+    if (state->coreUser || state->grants)
+      throw DiError("RUNTIME_CLOSED", "local", "request",
+                    "Runtime Core transport binding is incomplete");
+    const auto primary = state->models.find("default");
+    if (primary == state->models.end() || !primary->second.requesterPrivateKey ||
+        !primary->second.authorityPublicKey ||
+        !state->coreOwner->keyChain ||
+        state->coreOwner->requesterCertificate.getName().empty() ||
+        state->coreOwner->authorityCertificate.getName().empty())
+      throw DiError("INVALID_RUNTIME_CONFIGURATION", "local", "identity",
+                    "Runtime Core identity material is unavailable");
+    try {
+      auto serviceUser = std::make_shared<ndn_service_framework::ServiceUser>(
+        *state->coreOwner->face, ndn::Name(primary->second.group),
+        state->coreOwner->requesterCertificate,
+        state->coreOwner->requesterCertificate,
+        state->coreOwner->authorityCertificate,
+        primary->second.trustSchema.string(), *state->coreOwner->keyChain);
+      serviceUser->init();
+      auto grants = std::make_shared<NativeAuthenticatedGrantClient>(
+        primary->second.requesterIdentity, primary->second.requesterPrivateKey,
+        primary->second.authorityIdentity, rawPublicKey(primary->second.authorityPublicKey),
+        primary->second.protectionEpoch,
+        NativeAuthenticatedGrantClient::issueThroughCore(
+          serviceUser, primary->second.authorityIdentity,
+          primary->second.authorityService),
+        NativeAuthenticatedGrantClient::publishThroughCore(serviceUser));
+      // Publish the pair only after both objects and their callback closures
+      // are complete; a constructor failure leaves Runtime retryable.
+      state->coreOwner->serviceUser = std::move(serviceUser);
+      state->coreUser = state->coreOwner->serviceUser;
+      state->grants = std::move(grants);
+    }
+    catch (const DiError&) {
+      throw;
+    }
+    catch (const std::exception& error) {
+      throw DiError("INVALID_RUNTIME_CONFIGURATION", "local", "identity",
+                    std::string("Runtime Core user cannot be created: ") + error.what());
+    }
+  }
+  // Runtime::open validates and freezes configuration without touching the
+  // operator transport.  Start the owned Face only when a native client is
+  // first materialized; this keeps preparation/configuration usable offline
+  // while preserving one Core IO owner for every submitted request.
+  if (!state->coreOwner->ioThread.joinable())
+    state->coreOwner->startIo(state->coreOwner);
+  if (state->coreOwner->ioFailed.load(std::memory_order_acquire))
+    throw DiError("RUNTIME_CLOSED", "local", "request",
+                  "Runtime Core I/O failed: " + state->coreOwner->ioFailure());
+  const auto key = package->preparationKeyDigest;
+  const auto found = state->clients.find(key);
+  if (found != state->clients.end()) return found->second;
+  const auto registration = state->models.find(package->registration->key);
+  if (registration == state->models.end())
+    throw DiError("MODEL_NOT_FOUND", "local", "request", "prepared model registration is not retained");
+  const auto runtimeJson = requestRuntimeConfiguration(registration->second, *package);
+  const auto runtime = nativeRequestRuntimeFromJson(
+    nativeCanonicalJson(runtimeJson), package->catalog, state->grants);
+  auto preparation = package->catalog.preparation->makePreparation(
+    state->coreUser, runtime.contract.serviceName);
+  auto client = std::make_shared<NativeInferenceClient>(
+    state->coreUser, package->catalog.preparation->adapters(), runtime,
+    std::move(preparation), registration->second.offerAdmission);
+  client->retainOwner(state->coreOwner);
+  std::weak_ptr<detail::RuntimeState> weakState = state;
+  const auto notifier = [weakState] {
+    if (const auto state = weakState.lock()) {
+      std::shared_ptr<detail::CoreRuntimeOwner> owner;
+      {
+        std::lock_guard<std::mutex> lock(state->mutex);
+        owner = state->coreOwner;
+      }
+      if (owner && owner->operationRuntime)
+        owner->operationRuntime->notifyWaiters();
+    }
+  };
+  // Build the complete immutable snapshot before publishing the client.  All
+  // allocating operations therefore happen while the map is unchanged; after
+  // the insertion, the shared_ptr atomic store is non-throwing and cannot
+  // leave the map and snapshot with different client sets.
+  auto nextSnapshot = std::make_shared<detail::RuntimeState::ClientList>();
+  nextSnapshot->reserve(state->clients.size() + 1);
+  for (const auto& entry : state->clients)
+    nextSnapshot->push_back(entry.second);
+  nextSnapshot->push_back(client);
+  std::shared_ptr<const detail::RuntimeState::ClientList> publishedSnapshot = nextSnapshot;
+
+  // Install the notifier before publishing the client in either the map or
+  // the immutable snapshot.  A concurrent caller can then never observe a
+  // client whose terminal transition cannot wake the enclosing drain waiter.
+  // The Core drain predicate reads the atomic snapshot and does not acquire
+  // the DI state mutex, so this callback installation cannot form the former
+  // Core-to-DI lock cycle.
+  client->setDrainNotifier(notifier);
+  state->clients.emplace(key, client);
+  std::atomic_store_explicit(&state->clientsSnapshot, std::move(publishedSnapshot),
+                             std::memory_order_release);
+  return client;
+}
+
+std::vector<std::shared_ptr<NativeInferenceClient>> snapshotRuntimeClients(
+  const std::shared_ptr<detail::RuntimeState>& state)
+{
+  std::vector<std::shared_ptr<NativeInferenceClient>> clients;
+  if (!state)
+    return clients;
+  const auto snapshot = std::atomic_load_explicit(&state->clientsSnapshot,
+                                                   std::memory_order_acquire);
+  if (!snapshot)
+    return clients;
+  clients.assign(snapshot->begin(), snapshot->end());
+  return clients;
+}
+
+void closeRuntimeClients(
+  const std::vector<std::shared_ptr<NativeInferenceClient>>& clients) noexcept
+{
+  for (const auto& client : clients) {
+    if (client)
+      client->close();
+  }
+}
+
+} // namespace
 
 DiError::DiError(std::string code, std::string domain, std::string boundary,
                  std::string message, std::string requestId, std::uint64_t attempt)
@@ -749,6 +1174,11 @@ PreparedModel User::prepare(const std::string& modelKey, const PrepareOptions& o
   if (!cache)
     throw DiError("RUNTIME_CLOSED", "local", "preparation", "preparation owner is unavailable");
   auto spec = preparationSpec(frozen, modelKey);
+  spec.runtimeBinding = m_state->runtimeBinding;
+  spec.clientFactory = [state = m_state](
+    const std::shared_ptr<const PreparedModelPackage>& package) {
+    return makeRuntimeClient(state, package);
+  };
   auto owner = m_state->coreOwner;
   spec.dispatch = [owner](std::function<void()> task) {
     auto ticket = owner->operationRuntime->acquire();
@@ -817,6 +1247,11 @@ PreparationHandle User::prepareAsync(const std::string& modelKey,
   if (!cache)
     throw DiError("RUNTIME_CLOSED", "local", "preparation", "preparation owner is unavailable");
   auto spec = preparationSpec(frozen, modelKey);
+  spec.runtimeBinding = m_state->runtimeBinding;
+  spec.clientFactory = [state = m_state](
+    const std::shared_ptr<const PreparedModelPackage>& package) {
+    return makeRuntimeClient(state, package);
+  };
   auto owner = m_state->coreOwner;
   spec.dispatch = [owner](std::function<void()> task) {
     auto operationTicket = owner->operationRuntime->acquire();
@@ -932,19 +1367,68 @@ Runtime::~Runtime() noexcept
 {
   if (!m_state) return;
   auto state = m_state;
-  std::shared_ptr<detail::CoreRuntimeOwner> owner;
   {
-    std::lock_guard<std::mutex> lock(state->mutex);
-    if (state->phase == detail::RuntimeState::Phase::Open)
-      state->phase = detail::RuntimeState::Phase::Closing;
-    state->cv.notify_all();
-    owner = state->coreOwner;
+    auto owner = state->coreOwner;
+    std::unique_lock<std::mutex> ioGate;
+    if (owner)
+      ioGate = std::unique_lock<std::mutex>(owner->ioStopMutex);
+    std::vector<std::shared_ptr<NativeInferenceClient>> clients;
+    {
+      std::lock_guard<std::mutex> lock(state->mutex);
+      if (state->phase == detail::RuntimeState::Phase::Open)
+        state->phase = detail::RuntimeState::Phase::Closing;
+      state->cv.notify_all();
+      clients.reserve(state->clients.size());
+      for (const auto& entry : state->clients)
+        clients.push_back(entry.second);
+    }
+    // The owner stop gate serializes this producer with a final stop while
+    // the State mutex remains free for client completion notifiers.
+    closeRuntimeClients(clients);
+    if (owner && owner->operationRuntime)
+      owner->operationRuntime->notifyWaiters();
+    if (owner)
+      owner->close();
   }
   // The owner performs an idempotent Core close.  Its destructor later
   // releases Face/keys after the IO context has stopped; User handles retain
   // this closed state until their own references are gone.
-  if (owner)
-    owner->close();
+}
+
+void detail::RuntimeTestAccess::bindProviderFixture(
+  const std::shared_ptr<Runtime>& runtime,
+  std::shared_ptr<ndn_service_framework::ServiceUser> user,
+  std::shared_ptr<NativeAuthenticatedGrantClient> grants,
+  std::shared_ptr<const NativeOfferAdmission> admission)
+{
+  if (!runtime || !runtime->m_state || !user || !grants || !admission)
+    throw std::invalid_argument("Runtime test fixture binding is incomplete");
+  std::lock_guard<std::mutex> lock(runtime->m_state->mutex);
+  if (runtime->m_state->phase != detail::RuntimeState::Phase::Open)
+    throw std::runtime_error("Runtime test fixture binding requires an open Runtime");
+  auto owner = runtime->m_state->coreOwner;
+  if (!owner || owner->ioThread.joinable() ||
+      owner->ioRunning.load(std::memory_order_acquire))
+    throw std::runtime_error(
+      "Runtime test fixture binding must precede Core I/O start");
+  if (runtime->m_state->preparationInFlight.load(std::memory_order_acquire) != 0 ||
+      !runtime->m_state->clients.empty())
+    throw std::runtime_error(
+      "Runtime test fixture binding requires no preparation or clients");
+  // Runtime::open leaves production Core transport unmaterialized.  If a
+  // caller reaches this hook after a future eager binding, drop all
+  // state-held callbacks before releasing that ServiceUser; the owner Face
+  // remains alive until the normal Core stop fence handles any queued work.
+  runtime->m_state->grants.reset();
+  runtime->m_state->coreUser.reset();
+  for (auto& entry : runtime->m_state->models)
+    entry.second.trustValidator.reset();
+  owner->serviceUser.reset();
+  runtime->m_state->coreUser = std::move(user);
+  runtime->m_state->grants = std::move(grants);
+  runtime->m_state->offerAdmission = admission;
+  for (auto& entry : runtime->m_state->models)
+    entry.second.offerAdmission = admission;
 }
 
 void Runtime::close() noexcept
@@ -953,15 +1437,26 @@ void Runtime::close() noexcept
     return;
 
   auto state = m_state;
-  std::shared_ptr<detail::CoreRuntimeOwner> owner;
+  auto owner = state->coreOwner;
   {
-    std::lock_guard<std::mutex> lock(state->mutex);
-    if (state->phase == detail::RuntimeState::Phase::Open)
-      state->phase = detail::RuntimeState::Phase::Closing;
-    owner = state->coreOwner;
+    std::unique_lock<std::mutex> ioGate;
+    if (owner)
+      ioGate = std::unique_lock<std::mutex>(owner->ioStopMutex);
+    std::vector<std::shared_ptr<NativeInferenceClient>> clients;
+    {
+      std::lock_guard<std::mutex> lock(state->mutex);
+      if (state->phase == detail::RuntimeState::Phase::Open)
+        state->phase = detail::RuntimeState::Phase::Closing;
+      clients.reserve(state->clients.size());
+      for (const auto& entry : state->clients)
+        clients.push_back(entry.second);
+    }
+    closeRuntimeClients(clients);
+    if (owner && owner->operationRuntime)
+      owner->operationRuntime->notifyWaiters();
+    if (owner)
+      owner->close();
   }
-  if (owner)
-    owner->close();
 }
 
 bool Runtime::drain(Milliseconds timeout) const
@@ -974,22 +1469,48 @@ bool Runtime::drain(Milliseconds timeout) const
 
   auto state = m_state;
   const auto deadline = std::chrono::steady_clock::now() + timeout;
-  std::shared_ptr<detail::CoreRuntimeOwner> owner;
+  auto owner = state->coreOwner;
+  std::vector<std::shared_ptr<NativeInferenceClient>> clients;
   {
-    std::lock_guard<std::mutex> lock(state->mutex);
-    if (state->phase == detail::RuntimeState::Phase::Open)
-      state->phase = detail::RuntimeState::Phase::Closing;
-    owner = state->coreOwner;
+    std::unique_lock<std::mutex> ioGate;
+    if (owner)
+      ioGate = std::unique_lock<std::mutex>(owner->ioStopMutex);
+    {
+      std::lock_guard<std::mutex> lock(state->mutex);
+      if (state->phase == detail::RuntimeState::Phase::Open)
+        state->phase = detail::RuntimeState::Phase::Closing;
+      clients.reserve(state->clients.size());
+      for (const auto& entry : state->clients)
+        clients.push_back(entry.second);
+    }
+    closeRuntimeClients(clients);
+    if (owner && owner->operationRuntime)
+      owner->operationRuntime->notifyWaiters();
+    if (owner)
+      owner->close();
   }
-  if (owner)
-    owner->close();
   bool drained = true;
+  for (const auto& client : clients) {
+    if (!client)
+      continue;
+    try {
+      const auto now = std::chrono::steady_clock::now();
+      const auto remaining = now >= deadline ? Milliseconds(0) :
+        std::chrono::duration_cast<Milliseconds>(deadline - now);
+      drained = client->drain(remaining) && drained;
+    }
+    catch (const NativeDiError& error) {
+      if (error.code() == "WOULD_DEADLOCK")
+        throw DiError("WOULD_DEADLOCK", "local", "lifecycle", error.what());
+      throw DiError("RUNTIME_CLOSED", "local", "lifecycle", error.what());
+    }
+  }
   if (owner && owner->operationRuntime) {
     try {
       const auto now = std::chrono::steady_clock::now();
       const auto remaining = now >= deadline ? Milliseconds(0) :
         std::chrono::duration_cast<Milliseconds>(deadline - now);
-      drained = owner->operationRuntime->drain(remaining);
+      drained = owner->operationRuntime->drain(remaining) && drained;
     }
     catch (const ndn_service_framework::OperationError& error) {
       if (error.code() == ndn_service_framework::OperationErrorCode::WouldDeadlock)
@@ -1005,10 +1526,15 @@ bool Runtime::drain(Milliseconds timeout) const
       if (state->cv.wait_until(lock, deadline) == std::cv_status::timeout)
         return false;
     }
+  }
+  if (owner && !owner->stopIo(deadline))
+    return false;
+  if (owner && owner->ioFailed.load(std::memory_order_acquire))
+    return false;
+  {
+    std::lock_guard<std::mutex> lock(state->mutex);
     state->phase = detail::RuntimeState::Phase::Drained;
   }
-  if (owner)
-    owner->stopIo();
   return true;
 }
 
@@ -1025,6 +1551,7 @@ Subscription Runtime::drainAsync(
     throw DiError("RUNTIME_CLOSED", "local", "lifecycle", "Runtime has no state");
 
   auto state = m_state;
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
   std::shared_ptr<detail::CoreRuntimeOwner> owner;
   bool closeCore = false;
   {
@@ -1035,35 +1562,70 @@ Subscription Runtime::drainAsync(
   if (!owner || !owner->operationRuntime)
     throw DiError("RUNTIME_CLOSED", "local", "lifecycle", "Runtime has no Core owner");
 
-  auto wrapped = [state, owner, callback = std::move(callback)](bool drained) mutable {
-    auto notify = [callback = std::move(callback)](bool result) mutable {
+  auto wrapped = [state, owner, deadline, callback = std::move(callback)](bool drained) mutable {
+    auto notify = [callback = std::move(callback)](std::exception_ptr error,
+                                                    bool result) mutable {
       try {
-        callback(nullptr, result);
+        callback(std::move(error), result);
       }
       catch (...) {
         // Public callbacks are failure-isolated from the Core worker.
       }
     };
     if (!drained) {
-      notify(false);
+      notify(nullptr, false);
+      return;
+    }
+    if (owner && owner->ioFailed.load(std::memory_order_acquire)) {
+      const auto reason = owner->ioFailure();
+      notify(std::make_exception_ptr(DiError(
+               "RUNTIME_CLOSED", "local", "lifecycle",
+               reason.empty() ? "Runtime Core I/O failed"
+                              : "Runtime Core I/O failed: " + reason)),
+             false);
       return;
     }
     bool finalizeShutdown = false;
     {
       std::lock_guard<std::mutex> lock(state->mutex);
       if (state->phase == detail::RuntimeState::Phase::Closing) {
-        state->phase = detail::RuntimeState::Phase::Drained;
         finalizeShutdown = true;
       }
     }
-    if (finalizeShutdown && owner)
-      owner->stopIo();
-    notify(true);
+    if (finalizeShutdown && owner && !owner->stopIo(deadline)) {
+      notify(nullptr, false);
+      return;
+    }
+    if (owner && owner->ioFailed.load(std::memory_order_acquire)) {
+      const auto reason = owner->ioFailure();
+      notify(std::make_exception_ptr(DiError(
+               "RUNTIME_CLOSED", "local", "lifecycle",
+               reason.empty() ? "Runtime Core I/O failed"
+                              : "Runtime Core I/O failed: " + reason)),
+             false);
+      return;
+    }
+    if (finalizeShutdown) {
+      std::lock_guard<std::mutex> lock(state->mutex);
+      if (state->phase == detail::RuntimeState::Phase::Closing)
+        state->phase = detail::RuntimeState::Phase::Drained;
+    }
+    notify(nullptr, true);
   };
   try {
     return owner->operationRuntime->drainAsync(
       timeout, std::move(wrapped), closeCore,
-      [state] { return state->preparationInFlight.load(std::memory_order_acquire) == 0; });
+      [state, owner] {
+        if (owner->ioFailed.load(std::memory_order_acquire))
+          return true;
+        if (state->preparationInFlight.load(std::memory_order_acquire) != 0)
+          return false;
+        const auto clients = snapshotRuntimeClients(state);
+        return std::all_of(clients.begin(), clients.end(),
+                           [] (const auto& client) {
+                             return !client || client->isQuiescent();
+                           });
+      });
   }
   catch (const ndn_service_framework::OperationError& error) {
     if (error.code() == ndn_service_framework::OperationErrorCode::Capacity)
@@ -1090,7 +1652,43 @@ std::shared_ptr<Runtime> Runtime::open(RuntimeConfig config)
   auto coreOwner = std::make_shared<detail::CoreRuntimeOwner>();
   coreOwner->face = std::make_shared<ndn::Face>(coreOwner->io);
   const auto primary = freezeConfig(primaryPath, coreOwner->face.get());
+  try {
+    // ServiceUser owns its own KeyChain and is created once per Runtime. The
+    // operator's Ed25519 requester key remains the grant signer; these RSA
+    // certificates are the existing Core transport identity boundary.
+    coreOwner->keyChain = std::make_unique<ndn::KeyChain>("pib-memory:", "tpm-memory:");
+    const auto requesterIdentity = coreOwner->keyChain->createIdentity(
+      ndn::Name(primary.requesterIdentity), ndn::RsaKeyParams(2048));
+    const auto authorityIdentity = coreOwner->keyChain->createIdentity(
+      ndn::Name(primary.coreAuthorityIdentity), ndn::RsaKeyParams(2048));
+    coreOwner->requesterCertificate = requesterIdentity.getDefaultKey().getDefaultCertificate();
+    coreOwner->authorityCertificate = authorityIdentity.getDefaultKey().getDefaultCertificate();
+    coreOwner->requesterPrivateKey = primary.requesterPrivateKey;
+    coreOwner->authorityPublicKey = primary.authorityPublicKey;
+  }
+  catch (const DiError&) {
+    throw;
+  }
+  catch (const std::exception& error) {
+    throw DiError("INVALID_RUNTIME_CONFIGURATION", "local", "identity",
+                  std::string("Runtime Core user cannot be created: ") + error.what());
+  }
   auto state = std::make_shared<detail::RuntimeState>();
+  std::weak_ptr<detail::RuntimeState> weakState = state;
+  coreOwner->ioFailureNotifier = [weakState] (const std::string& reason) {
+    const auto state = weakState.lock();
+    if (!state)
+      return;
+    for (const auto& client : snapshotRuntimeClients(state)) {
+      if (client)
+        client->failIo(reason);
+    }
+  };
+  state->runtimeBinding = std::make_shared<std::uint8_t>(0);
+  state->placementRegistry = std::make_shared<NativePlacementStrategyRegistry>();
+  state->placementRegistry->registerStrategy(
+    "native-pre-split-first", std::make_shared<NativePreSplitFirstPlacement>());
+  state->placementRegistry->freeze();
   state->config = config;
   state->config.models.clear();
   state->config.nativeConfigPath = primary.path.string();
@@ -1098,10 +1696,9 @@ std::shared_ptr<Runtime> Runtime::open(RuntimeConfig config)
   state->models.emplace("default", primary);
   // The key objects are transferred from freezeConfig.  Runtime never reads
   // operator key paths a second time after validation.
-  coreOwner->requesterPrivateKey = primary.requesterPrivateKey;
-  coreOwner->authorityPublicKey = primary.authorityPublicKey;
   coreOwner->operationRuntime = ndn_service_framework::OperationRuntime::create();
   state->coreOwner = coreOwner;
+  state->offerAdmission = primary.offerAdmission;
   state->preparationCache = std::make_shared<ModelPreparationCache>(
     config.maxPreparedBytes, config.maxPreparedEntries, config.preparationJobTimeout);
 
@@ -1134,6 +1731,23 @@ User Runtime::user(UserConfig config)
   if (m_state->phase != detail::RuntimeState::Phase::Open)
     throw DiError("RUNTIME_CLOSED", "local", "lifecycle", "Runtime is closed");
   return User(m_state, std::move(config.profileName));
+}
+
+std::shared_ptr<const PlacementStrategy>
+Runtime::placementStrategy(const std::string& id) const
+{
+  if (!m_state)
+    throw DiError("RUNTIME_CLOSED", "local", "placement", "Runtime has no state");
+  std::lock_guard<std::mutex> lock(m_state->mutex);
+  if (m_state->phase != detail::RuntimeState::Phase::Open ||
+      !m_state->placementRegistry || !m_state->runtimeBinding)
+    throw DiError("RUNTIME_CLOSED", "local", "placement", "Runtime is closed");
+  const auto strategy = m_state->placementRegistry->find(id);
+  if (!strategy)
+    throw DiError("STRATEGY_NOT_FOUND", "local", "placement",
+                  "placement strategy is not registered: " + id);
+  return std::shared_ptr<const PlacementStrategy>(
+    new PlacementStrategy(strategy, m_state->runtimeBinding));
 }
 
 } // namespace ndnsf::di

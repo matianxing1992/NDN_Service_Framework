@@ -7,6 +7,7 @@
 #include "ndn-service-framework/InvocationStream.hpp"
 #include "ndn-service-framework/OperationState.hpp"
 
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -23,11 +24,14 @@ namespace ndn_service_framework { class ServiceUser; }
 namespace ndnsf::di {
 
 struct NativeOperationRegistry;
+struct NativeIoCleanupState;
 
+class Runtime;
 class NativeGrantClient;
 class NativeRequestPreparation;
 class NativeOfferAdmission;
 struct NativeRequestRuntime;
+struct NativeStrategyPorts;
 
 struct NativeModelRef : NativeModelDescriptor
 {
@@ -105,7 +109,16 @@ struct NativeInferenceEvent
   std::string requestId;
   std::vector<std::uint8_t> payload;
   bool terminal = false;
+  std::uint64_t sequence = 0;
 };
+
+struct NativeInferenceDiagnostics
+{
+  std::uint64_t observationDropped = 0;
+};
+
+using NativeEventReader = ndn_service_framework::OperationReader<NativeInferenceEvent>;
+using NativeOperationSubscription = ndn_service_framework::OperationSubscription;
 
 class NativeDiError : public std::runtime_error
 {
@@ -140,8 +153,20 @@ public:
   std::optional<std::string> conversationCheckpoint() const;
   NativeRequestStatus status() const;
   NativeInferenceResult result(std::chrono::milliseconds waitTimeout) const;
+  NativeInferenceDiagnostics diagnostics() const;
   void cancel();
+  /** Retain an owner (used by PreparedModel for its package lease) through
+   * terminal cleanup even when the public handle is released. */
+  void retain(std::shared_ptr<void> owner);
   void observe(std::function<void(const NativeInferenceEvent&)> observer);
+  NativeOperationSubscription observeSubscription(
+    std::function<void(const NativeInferenceEvent&)> observer);
+  NativeOperationSubscription onCompletion(
+    std::function<void(std::exception_ptr, std::optional<NativeInferenceResult>)> callback);
+  NativeOperationSubscription resultAsync(
+    std::chrono::milliseconds timeout,
+    std::function<void(std::optional<NativeInferenceResult>, std::exception_ptr)> callback);
+  NativeEventReader events() const;
 
 public:
   struct Operation;
@@ -195,12 +220,41 @@ public:
     std::shared_ptr<const NativeModelSplitStrategy> splitStrategy,
     std::shared_ptr<const NativePlacementStrategy> placementStrategy,
     const NativeRequestOptions& options);
+
+  /** Submit through the cooperative strategy ports used by PreparedModel.
+   * The operation owner and Core request path are identical to request();
+   * only the strategy extension contract differs. */
+  NativeInferenceHandle requestCooperative(
+    const NativeModelRef& model,
+    const NativeApplicationInput& input,
+    std::shared_ptr<const CooperativeModelSplitStrategy> splitStrategy,
+    std::shared_ptr<const CooperativePlacementStrategy> placementStrategy,
+    const NativeRequestOptions& options);
   void close() noexcept;
 
+  /** Close must be followed by this bounded join when the enclosing Runtime
+   * promises that no requester callback can outlive its Core owner. */
+  bool drain(std::chrono::milliseconds timeout);
+
+  /** Notify an enclosing lifecycle owner whenever this client's work settles. */
+  void setDrainNotifier(std::function<void()> notifier);
+
+  /** Return whether this client's private operation runtime is quiescent. */
+  bool isQuiescent() const noexcept;
+  /** Retain the enclosing transport owner until this client and its
+   * operations are fully destroyed. */
+  void retainOwner(std::shared_ptr<void> owner);
+
 private:
+  // Runtime uses this only from its owned Face exception boundary.  It
+  // delivers a stable native failure to active requests and performs their
+  // Core cancellation while postToIo can still execute on that Face.
+  void failIo(const std::string& reason) noexcept;
+
   // Only the unit-test friend can replace clocks/dispatch. Production
   // construction always uses a monotonic clock and an independent timer.
   friend class NativeClientTestAccess;
+  friend class Runtime;
   struct TestPort {
     std::function<std::chrono::steady_clock::time_point()> now;
     std::function<void(std::function<void()>)> submitHook;
@@ -216,7 +270,18 @@ private:
     std::shared_ptr<NativeRequestPreparation> preparation = nullptr,
     std::shared_ptr<const NativeOfferAdmission> admission = nullptr);
 
+  NativeInferenceHandle requestImpl(
+    const NativeModelRef& model,
+    const NativeApplicationInput& input,
+    NativeStrategyPorts strategies,
+    std::shared_ptr<const NativeModelSplitStrategy> legacySplitter,
+    std::shared_ptr<const NativePlacementStrategy> legacyPlacement,
+    std::shared_ptr<const CooperativeModelSplitStrategy> cooperativeSplitter,
+    std::shared_ptr<const CooperativePlacementStrategy> cooperativePlacement,
+    const NativeRequestOptions& options);
+
   std::shared_ptr<ndn_service_framework::ServiceUser> m_user;
+  std::shared_ptr<void> m_ownerLease;
   std::shared_ptr<const NativeAdapterRegistry> m_adapters;
   std::shared_ptr<NativeGrantClient> m_grants;
   std::shared_ptr<NativeConversationCoordinator> m_conversations;
@@ -232,6 +297,10 @@ private:
   std::string m_requestOwnerScope;
   std::function<std::chrono::steady_clock::time_point()> m_now;
   std::shared_ptr<NativeOperationRegistry> m_operationRegistry;
+  // Core cleanup callbacks posted to the Face remain part of this client's
+  // lifecycle until their task has actually run; Runtime stop fences use the
+  // count to avoid truncating a close-produced cancellation.
+  std::shared_ptr<NativeIoCleanupState> m_ioCleanupState;
   std::function<std::function<void()>(std::chrono::steady_clock::time_point,
                                      std::function<void()>)> m_schedule;
   mutable std::mutex m_mutex;
