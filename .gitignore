@@ -88,6 +88,7 @@ NDNSF-UAV-APP/ROADMAP_ch.md
 # Local analysis state
 .planning/
 .codegraph/
+.codex-tmp/
 
 # Spec 108 local container artifacts and credentials
 dist/ndnsf-di-container/
