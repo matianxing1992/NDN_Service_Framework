@@ -31,6 +31,7 @@
 
 ## Current Checkpoint
 
+2026-09-12 23:03 -05:00 Build policy documentation：按用户要求将所有机器后续SIF构建版本固定为Apptainer1.5.3；同步Tiger/packaging说明、交付入口、版本化/个人操作skill及本机AGENTS。文档diff/版本规则一致性检查通过；无API/产品变化、无新构建或Tiger运行，任务状态/依赖不变。下一步实验机按[SIF规则](../../Experiments/TigerCluster/docs/sif-build.md#apptainer-version-policy)核对环境。
 2026-09-12 22:59 -05:00 Host tooling：用户要求本机Apptainer升级1.5.3，安装、默认/兼容/root入口和最小SIF构建执行通过；见[运维记录](../../Experiments/TigerCluster/docs/apptainer-153-upgrade-20260912.md)。不改变185任务状态、依赖或验收；计算节点版本由实验机在实际作业核验，此记录不是185产品完成证据。
 
 2026-09-12 21:07 -05:00 B2 closed：T003→T004 完成逐任务官方 review-agent 静态门、B2组合门及批末共享验收。普通 `Spec185Preparation` 14/14、`Spec185Runtime` 10/10、`Spec185CoreOperation` 35/35 通过；独立 clang/TSan 三套件各重复两次共6次均 `rc=0` 且 `*** No errors detected`。证据见[b2-preparation](evidence/b2-preparation.md)，失败边界及修复见 `docs/failure-log.md`。准备链未运行 Python、Provider、会话、跨进程资格、SIF/Tiger；下一依赖满足任务为T005/B3。

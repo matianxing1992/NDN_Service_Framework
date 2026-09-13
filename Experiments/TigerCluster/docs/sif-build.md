@@ -2,7 +2,7 @@
 
 ## Apptainer Version Policy
 
-2026-09-12 起，本开发机默认 Apptainer **1.5.3**，新实验构建以实际计算节点运行版本为匹配对象。
+2026-09-12 起，所有机器上的后续 NDNSF SIF 构建统一使用 Apptainer **1.5.3**，包括基础SIF、完整SIF及调用Apptainer的分层应用builder。开工前核对实际可执行文件、版本和SHA-256；不是1.5.3时先升级，禁止为通过门禁把预期版本改为旧版本。未来变更版本须明确修订本规则。
 用户确认Tiger计算节点为1.5.3、登录节点为1.3；登录节点只负责传输/提交时，其版本不作为构建目标。
 新构建传入 `--apptainer /usr/bin/apptainer --expected-apptainer 1.5.3`；另一台实验机需先核对自身安装与计算作业内版本。
 已有脚本的版本一致性检查保留，不改成忽略版本。历史1.3.4记录和已冻结候选保持原事实。
@@ -38,7 +38,7 @@ bash Experiments/TigerCluster/adapters/slurm-apptainer/scripts/build-local-sif.s
   --source-seal /absolute/path/to/source-seal.json \
   --host-gate-manifest /absolute/path/to/qualified-host-gate.json \
   --apptainer /absolute/path/to/qualified/apptainer \
-  --expected-apptainer <qualified-compute-version>
+  --expected-apptainer 1.5.3
 ```
 
 这是需替换占位值的路径示例，本轮未构建；原脚本的`--help`打印用法并返回2，沿用既有行为。

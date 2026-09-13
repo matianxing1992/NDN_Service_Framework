@@ -22,6 +22,8 @@ Tiger分布式推理、SIF构建及Slurm配置的统一入口。当前生产/合
 
 ## Entry Points
 
+所有后续SIF构建统一使用 **Apptainer 1.5.3**，实验机也须先核对/升级；命令固定传入 `--expected-apptainer 1.5.3`。登录节点的1.3不作为构建目标，完整规则见[SIF build](docs/sif-build.md#apptainer-version-policy)。历史镜像不因版本升级自动获得新资格。
+
 后续分层交付方向已接受：稳定基础 SIF 与外置 DI/UAV 应用包分别构建，以固定组合
 验收和运行。当前启动器迁移仍 PLANNED，边界与接续责任见
 [SIF build](docs/sif-build.md#current-delivery-direction)。

@@ -48,6 +48,8 @@ Git携带工具、definition模板、锁和skills。四个源码tar与五个whee
 
 ## Receiving Machine
 
+**Current build policy (2026-09-12)**：接收机器所有新SIF构建统一使用Apptainer **1.5.3**，先核对实际binary及版本，构建命令传 `--expected-apptainer 1.5.3`。下文历史交付锁、base SIF及记录保持原身份，不从旧登录节点版本推导新构建版本。完整版本及验证规则见[SIF build](sif-build.md#apptainer-version-policy)。
+
 保留另一台机器已有工作目录；在新目录获取NDNSF的`Experimental`。先阅读本文件和 [shared skills](../../../skills/README.md)，可直接要求代理读取 `skills/itiger-ndnsf-ops/SKILL.md`。根目录skills不会自动覆盖个人版本。
 
 ```bash
