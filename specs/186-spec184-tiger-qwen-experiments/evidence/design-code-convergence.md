@@ -119,3 +119,17 @@ provider entrypoint and stale native objects. The qualification verdict stays
 the local host has no MiniNDN runtime, and Tiger still needs staged NFD
 identities/routes and external normal/negative receipts. Qwen3-0.6B remains an
 external input. No component receipt is promoted to a protocol or GPU PASS.
+
+## Checkpoint 8 — 2026-09-13 collector identity repair
+
+The eight Spec186 profiles were still carrying the pre-directory-digest
+collector hash `a7cf3577…`, which made every pre-dispatch attempt fail before
+asset checks even though the runtime implementation had already changed. All
+profile `runtime.harness.collector` and `evidence.collector` entries now bind
+the current `spec186_candidate.py` digest
+`b9bb5f886fc2ee39ab50f7d85814974c595d866ef1962164968165dad9697291`.
+JSON/profile validation and the full TigerCluster suite pass (`74 passed`).
+
+This repairs candidate identity convergence only. The profiles still fail
+closed on their intentionally absent exact base SIF, app paths and external
+model inputs; the runtime qualification verdict remains `BLOCK`.

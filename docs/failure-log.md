@@ -3891,3 +3891,18 @@ which differs from the Spec186 handoff seal
 - **Lesson**: ignored generated files can change a source archive even when
   `git status` looks clean; source sealing must run from clean commit-pinned
   worktrees and record the exact source identity.
+
+## 2026-09-13 — Spec186 profiles carried a stale collector identity
+
+- **Area**: T005/T006 pre-dispatch candidate identity.
+- **First boundary**: all eight profiles referenced collector digest
+  `a7cf3577e0ac7256e3554c6facca63b740db9cba935cd9f2ef74c49a020fdf7b`, while
+  the directory-aware bundle and pre-dispatch implementation had digest
+  `b9bb5f886fc2ee39ab50f7d85814974c595d866ef1962164968165dad9697291`.
+  Pre-dispatch therefore rejected the profiles before reaching their missing
+  SIF/model checks.
+- **Correction**: update both collector fields in every Spec186 profile and
+  rerun JSON validation plus the full 74-test TigerCluster suite.
+- **Lesson**: a collector change invalidates every candidate profile; update
+  all producer/consumer identity fields in one checkpoint before diagnosing
+  downstream runtime blockers.
