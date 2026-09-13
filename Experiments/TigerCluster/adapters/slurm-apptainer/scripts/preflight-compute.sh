@@ -24,6 +24,14 @@ scratch_real=$(readlink -f -- "$scratch" 2>/dev/null || true)
 [ -n "$scratch_real" ] && [ "$scratch_real" = "$scratch_input" ] || {
   echo COMPUTE_SCRATCH_SYMLINK_FORBIDDEN >&2; exit 3;
 }
-mkdir -p "$scratch/evidence"; apptainer version > "$scratch/evidence/apptainer-version.txt"
-[ "$gpu_count" -gt 0 ] && nvidia-smi --query-gpu=index,uuid,name,memory.total,driver_version --format=csv,noheader,nounits > "$scratch/evidence/host-gpu.csv"
+mkdir -p "$scratch/evidence"
+# On current iTiger compute nodes ``apptainer version`` can hang while the
+# equivalent ``--version`` probe returns the installed package identity.  The
+# latter is the bounded capability gate; never let a diagnostic version
+# subcommand consume the allocation wall time.
+if ! timeout 10s apptainer --version > "$scratch/evidence/apptainer-version.txt" 2>&1; then
+  echo COMPUTE_APPTAINER_VERSION_PROBE_FAILED >&2
+  exit 4
+fi
+[ "$gpu_count" -gt 0 ] && timeout 15s nvidia-smi --query-gpu=index,uuid,name,memory.total,driver_version --format=csv,noheader,nounits > "$scratch/evidence/host-gpu.csv"
 printf 'gpuType=%s\ngpuCount=%s\nslurmJobGpus=%s\ncudaVisibleDevices=%s\n' "$gpu_type" "$gpu_count" "${SLURM_JOB_GPUS:-}" "${CUDA_VISIBLE_DEVICES:-}" > "$scratch/evidence/allocation.env"

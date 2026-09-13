@@ -38,3 +38,11 @@ ssh itiger "srun --partition=bigTiger --nodes=1 --ntasks=1 --cpus-per-task=1 --m
 This closes only the allocation/tool-capability portion of T009. It does not
 qualify CUDA model execution, the native Merge CPU role, a numerical oracle,
 NDN protocol completion, or cleanup.
+
+## Preflight repair
+
+`Experiments/TigerCluster/adapters/slurm-apptainer/scripts/preflight-compute.sh`
+now uses `timeout 10s apptainer --version` as its authoritative compute-node
+probe and bounds `nvidia-smi` to 15 seconds. A fake-command regression run
+verified that the script writes both evidence files and exits successfully
+without invoking the hanging `apptainer version` form.
