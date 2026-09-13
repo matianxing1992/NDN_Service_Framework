@@ -3750,3 +3750,17 @@ are still unobserved.
 - **Lesson**: lowering optimization and parallelism do not guarantee a
   compiler workaround; keep the failing compiler input and verify any
   alternate toolchain with the same ABI/RPATH gates.
+
+## 2026-09-12 — Spec186 Tiger compute Apptainer subcommand hang
+
+- **Area**: T009.a compute-node capability preflight.
+- **First boundary**: a bounded `srun` allocation on `itiger05` returned the
+  GPU identity and `apptainer --version` (`1.5.3-1.el9`), but
+  `/usr/bin/apptainer version` did not return within five seconds. The login
+  node reports `1.3.4-1.el9`, so the two nodes cannot be treated as one runtime.
+- **Correction**: use the compute-node `--version` probe in the next job and
+  keep the `version` hang in the receipt; do not enter an unbounded readiness
+  loop or validate a SIF only on the login node.
+- **Lesson**: every container capability used for qualification must be
+  probed on the allocated compute node with a bounded command; login-node
+  version output is not execution evidence.

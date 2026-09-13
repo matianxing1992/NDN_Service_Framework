@@ -13,6 +13,7 @@ of the stopping point; it is not a qualification result.
 | `pre-dispatch-boundary-20260912.md` | all eight candidate prepare/check receipts | zero remote side effects; no runtime started |
 | `minindn-yolo-boundary-20260912.md` | fresh Y-A/Y-B/Y-N attempts | environment preflight stopped before startup |
 | `minindn-qwen06b-inventory.md` | Qwen3-0.6B model/backend inventory | compatible model tuple absent |
+| `tiger-preflight-20260912.md` | Tiger Slurm/GPU/project/Apptainer preflight | compute GPU available; SIF/runtime composition still pending |
 | `closure-handoff-20260912.md` | implemented/wired/executed/measured reconciliation | branch remains `IN_PROGRESS` with ordered recovery gates |
 
 Runtime receipts belong in `Experiments/TigerCluster/results/<run-id>` or the

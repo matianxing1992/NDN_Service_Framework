@@ -8,7 +8,7 @@
 
 | Field | Value |
 | --- | --- |
-| Spec186 checkout HEAD | `d1e50ef0454b88f0fe855011c9a08f19f1e46b99` |
+| Spec186 checkout HEAD | `309f237915b661a1264487fbc58c6249e6e84dd7` (`docs(spec186): record native artifact cleanup`) |
 | Required source baseline | `575b43cc93bbed29932303caf3d09974f1585af7` |
 | Required baseline parent | `0df480f4a0979b697eee820038266eb813ba7c62` |
 | Required baseline tree | `f267e047b8ee2d39ba521692e9ec03756af326a9` |
@@ -66,3 +66,14 @@ sbatch --version
 
 The final two commands return command-not-found on this host; their failures
 are capability evidence, not experiment results.
+
+## Tiger compute preflight
+
+The external capability probe is recorded in
+[`tiger-preflight-20260912.md`](tiger-preflight-20260912.md). It allocated
+`itiger05` with an RTX 6000 Ada (48 GiB, driver `560.28.03`) and verified
+Slurm/project storage plus compute-node Apptainer `1.5.3-1.el9` through
+`apptainer --version`. The login node reports Apptainer `1.3.4-1.el9`; the
+compute-node `apptainer version` subcommand hangs under a five-second bound and
+is retained as a boundary. This is resource readiness only; no candidate was
+staged or executed.
