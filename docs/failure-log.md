@@ -3731,3 +3731,22 @@ are still unobserved.
 - **Lesson**: a partial object graph and successful dependency checks do not
   establish a native candidate; toolchain crashes require an independent
   reproducible compile before any ABI evidence is accepted.
+
+## 2026-09-12 — Spec186 GCC 9 internal compiler error in provider target
+
+- **Area**: T006 provider executable compilation with the matched dependency
+  tuple.
+- **First boundary**: after the `-j4` assembler crash was avoided, the
+  provider target retried at `-j2` and then `CXXFLAGS='-O0 -g0'`; both reached
+  `NativeCanonicalArtifactPublisher.cpp` and GCC 9 terminated with
+  `internal compiler error: in ggc_set_mark, at ggc-page.c:1547`.
+- **Interpretation**: the source has no ordinary diagnostic, but the locked
+  host GCC cannot produce this provider object reliably. No provider binary
+  or runtime candidate is promoted.
+- **Correction**: retain the successful framework/DI libraries and test the
+  system `/usr/bin/clang++` 10 compiler under an explicit `/usr` toolchain
+  root. This is a build-toolchain experiment; the resulting compiler identity
+  must be recorded in the candidate seal.
+- **Lesson**: lowering optimization and parallelism do not guarantee a
+  compiler workaround; keep the failing compiler input and verify any
+  alternate toolchain with the same ABI/RPATH gates.

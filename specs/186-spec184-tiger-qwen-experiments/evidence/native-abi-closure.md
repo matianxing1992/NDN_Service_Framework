@@ -109,3 +109,21 @@ is recorded as a GCC 9 assembler/resource boundary rather than a source
 compile diagnostic. The partial objects remain unpromoted. A lower-parallel
 incremental retry is required before attributing the failure to the source or
 changing the locked compiler input.
+
+## Checkpoint 7 — 2026-09-12 GCC provider ICE
+
+The provider executable target was retried with `CXXFLAGS='-O0 -g0'` and
+`-j2`. It advanced through 64/91, then GCC 9 failed deterministically while
+compiling `NativeCanonicalArtifactPublisher.cpp`:
+
+```text
+/usr/include/c++/9/bits/basic_string.h:6508:22: internal compiler error:
+in ggc_set_mark, at ggc-page.c:1547
+```
+
+This is a compiler failure with no source diagnostic and leaves no provider
+candidate. The framework and DI shared libraries remain valid build outputs,
+but they are not promoted until the provider entrypoint is built and passes
+the same loader closure. The next bounded experiment uses `/usr/bin/clang++`
+10 with an explicit `/usr` toolchain root; its compiler identity must be part
+of any candidate seal.
