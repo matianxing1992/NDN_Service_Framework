@@ -3938,3 +3938,35 @@ which differs from the Spec186 handoff seal
   boundary; Tiger paths remain intentionally invisible from this host.
 - **Lesson**: directory-aware bundles still require an explicit executable
   entrypoint; a valid directory digest cannot stand in for executable identity.
+
+## 2026-09-13 — Spec186 host M01 could not use the staged application extension
+
+- **Area**: T006.b/T006.c current-source host/CPU qualification prerequisite.
+- **First boundary**: a real M01 launch with the staged Python/native bundle
+  failed before MiniNDN startup because the host loader selected the older
+  `/usr/local/lib/libndn-service-framework.so.0.1.0`; the staged
+  `libndnsf-distributed-inference.so` requires newer framework symbols such as
+  `ServiceRegistration::closed`.
+- **Correction**: keep the M01 output as a failed attempt, reject it as a
+  host-gate result, and retain the successful in-container provider `--help`
+  and `ldd -r` evidence from the temporary Apptainer 1.5.3 ORT-1.26 base.
+  Rebuilding a current host/CPU gate requires a matching framework/dependency
+  prefix and the missing ONNX full-protobuf development prefix; neither may be
+  fabricated from the old host install.
+- **Lesson**: an application bundle that loads inside a container is not a
+  host qualification artifact; the host M01 manifest must be produced by a
+  real run with an ABI-matched framework and dependency closure.
+
+## 2026-09-13 — Spec186 host framework rebuild stopped at missing ONNX headers
+
+- **Area**: T006.c exact source-sealed SIF build prerequisite.
+- **First boundary**: configuring a fresh current-source host build with the
+  pinned NAC-ABE and NDN-SVS prefixes stopped because the previously used
+  `/tmp/spec186-onnx-prefix2` no longer exists and `onnx/checker.h` is absent
+  from the available ORT-1.26 SDK.
+- **Correction**: do not substitute the runtime-only ORT SDK or the old
+  installed framework. Record the missing full-protobuf ONNX prefix as an
+  external build input and leave the canonical SIF build gate closed until it
+  is supplied and the current host M01 is rerun.
+- **Lesson**: source sealing fixes repository identity, but it cannot replace
+  a missing development dependency required to compile the ABI consumers.

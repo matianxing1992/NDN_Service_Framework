@@ -18,6 +18,7 @@ of the stopping point; it is not a qualification result.
 | `tiger-preflight-20260912.md` | Tiger Slurm/GPU/project/Apptainer preflight | compute GPU available; SIF/runtime composition still pending |
 | `local-apptainer-20260912.md` | local Apptainer release switch | local runtime is now 1.5.3 and aligned with Tiger compute; exact Spec186 SIF still pending |
 | `standalone-yolo-reference-20260912.md` | Same-model YOLOv8n ORT CUDA reference | CUDA substrate PASS only; old SIF, not Spec186 qualification |
+| `t006-ort126-and-host-gate-20260913.md` | temporary ORT-1.26 base and current host M01 recovery probe | in-container loader closure PASS; host framework/ONNX development prefix missing, so T006 remains blocked |
 | `closure-handoff-20260912.md` | implemented/wired/executed/measured reconciliation | branch remains `IN_PROGRESS` with ordered recovery gates |
 
 Runtime receipts belong in `Experiments/TigerCluster/results/<run-id>` or the
