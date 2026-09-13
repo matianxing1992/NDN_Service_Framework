@@ -3853,3 +3853,19 @@ are still unobserved.
   import then passed.
 - **Lesson**: `LD_LIBRARY_PATH` is part of the native candidate identity;
   success under an ambient loader path is not portable runtime evidence.
+
+## 2026-09-13 — Spec186 staged app bundle rejected by old runtime SIF
+
+- **Area**: T006.c/T009 exact base-plus-app composition boundary.
+- **First boundary**: the content-addressed Spec186 app bundle staged to
+  `/project/tma1/ndnsf-di/apps/spec186/spec186-app-bundle-r4` recomputed to the
+  expected digest, but probing it with the existing
+  `spec180-runtime-b6710fd6/spec180-runtime.sif` on `itiger04` failed before
+  entrypoint startup: `libboost_system.so.1.71.0` was not found and the job
+  exited `127`.
+- **Correction**: retain the staging receipt and reject the old SIF as a
+  Spec186 candidate. Build or provide an exact source-sealed Apptainer 1.5.3
+  base SIF, then repeat the composition and loader checks inside that image.
+- **Lesson**: matching an app directory digest and a container runtime version
+  does not establish ABI compatibility; the base SIF identity and loader
+  closure must be verified together before any Tiger submission.
