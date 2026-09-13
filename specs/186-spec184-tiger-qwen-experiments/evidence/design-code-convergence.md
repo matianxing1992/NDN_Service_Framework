@@ -62,3 +62,13 @@ NAC-ABE prefix passed dependency discovery before stopping at the absent pinned
 Rust tokenizer toolchain and offline cargo home. Existing native artifacts
 still fail the import/`--help` closure, so the verdict remains `BLOCK` and no
 runtime or Tiger result is promoted.
+
+## Checkpoint 4 after all-profile pre-dispatch
+
+Offline `prepare/check` produced a deterministic candidate manifest for each of
+the eight cases; the receipts are in
+`evidence/pre-dispatch-boundary-20260912.md`. Every invalid or externally
+incomplete tuple was rejected with zero SSH, rsync, staging or scheduler side
+effects. The first local runtime boundaries remain the missing base SIF/native
+loader closure for YOLO and the missing Qwen3 model/stage/tokenizer tuple for
+Qwen. This strengthens the dispatch gate but leaves the audit verdict `BLOCK`.
