@@ -93,3 +93,19 @@ Waf was reconfigured with both explicit options:
 Its explicit header/library closure check passed, and the resumed targeted
 build reached 24/97 before this checkpoint. No runtime candidate is promoted
 until the shared libraries link and pass import, `--help`, RPATH and `ldd -r`.
+
+## Checkpoint 6 — 2026-09-12 compiler/assembler retry boundary
+
+The targeted build advanced to 38/97 with the explicit NDN-SVS pair, then
+failed while compiling `NativeOnnxRecipeAssembler.cpp`:
+
+```text
+/tmp/ccSZgVDV.s: Assembler messages:
+/tmp/ccSZgVDV.s: Internal error (Segmentation fault).
+```
+
+The host still had approximately 7.6 GiB available after the failure, so this
+is recorded as a GCC 9 assembler/resource boundary rather than a source
+compile diagnostic. The partial objects remain unpromoted. A lower-parallel
+incremental retry is required before attributing the failure to the source or
+changing the locked compiler input.

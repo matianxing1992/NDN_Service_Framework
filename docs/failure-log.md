@@ -3713,3 +3713,21 @@ are still unobserved.
 - **Lesson**: pkg-config success and SONAME equality do not prove NDN-SVS API
   compatibility; source headers, link input and runtime path must be fixed as
   one tuple.
+
+## 2026-09-12 — Spec186 GCC assembler crash during ONNX adapter compile
+
+- **Area**: T006 targeted native build after matching NDN-SVS selection.
+- **First boundary**: `./waf build --out=build-spec186
+  --targets=ndn-service-framework,ndnsf-distributed-inference -j4` reached
+  38/97, then GCC 9's assembler reported
+  `/tmp/ccSZgVDV.s: Internal error (Segmentation fault)` while compiling
+  `NativeOnnxRecipeAssembler.cpp`.
+- **Interpretation**: this is a compiler/assembler or resource boundary, not
+  a source diagnostic or runtime qualification result. The build produced no
+  complete candidate library.
+- **Correction**: retain all successful objects and rerun the same target set
+  at `-j2` to test whether the crash is concurrency-sensitive; if it repeats,
+  isolate the source with a single-job compile and record the compiler input.
+- **Lesson**: a partial object graph and successful dependency checks do not
+  establish a native candidate; toolchain crashes require an independent
+  reproducible compile before any ABI evidence is accepted.
