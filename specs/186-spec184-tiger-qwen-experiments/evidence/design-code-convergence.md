@@ -145,3 +145,18 @@ The new pre-dispatch receipts show the collector mismatch is gone and retain
 zero remote side effects. Runtime qualification remains `BLOCK` until the
 matching source-sealed base SIF is built and visible in the selected execution
 environment.
+
+## Checkpoint 10 — 2026-09-13 Apptainer runtime pin and r5 digest repair
+
+All eight profiles now bind `runtime.apptainer.version=1.5.3` and an explicit
+executable: `/usr/local/bin/apptainer` for local MiniNDN/SIF work and
+`/usr/bin/apptainer` for Tiger compute jobs. The launcher uses that declared
+path rather than PATH lookup, local pre-dispatch probes `--version`, and the
+compute preflight rejects versions outside the 1.5.3 package line. The login
+node's 1.3.4 package remains metadata-only. The profiles also now match the
+actual r5 tree digest `687610de…07129` and the current collector digest.
+
+The focused profile tests pass (`14 passed`) and the full TigerCluster suite
+passes (`76 passed`). This closes the runtime-version identity gap but does not
+close the absent source-sealed base SIF, repository route, model, MiniNDN or
+Tiger campaign gates.

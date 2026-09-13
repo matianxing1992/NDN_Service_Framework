@@ -4021,3 +4021,19 @@ which differs from the Spec186 handoff seal
 - **Lesson**: application delivery must account for project quota; stripping
   non-runtime debug sections is safe only when the post-strip import/help and
   loader closure are rerun and the new content digest is bound everywhere.
+
+## 2026-09-13 — Spec186 profile runtime and r5 identity drift
+
+- **Area**: T003/T006 candidate closure after the Apptainer policy change.
+- **First boundary**: the profiles named the r5 directory but still carried its
+  earlier `c4503887...` tree digest; after adding the explicit runtime pin, the
+  collector source hash was also stale. These mismatches would reject a fresh
+  candidate before any remote action and could hide which Apptainer binary was
+  selected.
+- **Correction**: bind the measured r5 digest
+  `687610de859155449c51ec2ba4bb7b57c77614cbf0a53f106bb65152f8c07129` and the
+  current collector digest in all eight profiles. Add explicit Apptainer path
+  and version fields, use the declared path in the launcher, verify local
+  1.5.3 with bounded `--version`, and reject non-1.5.3 compute preflight.
+- **Lesson**: a runtime policy must be part of candidate identity; version
+  prose and PATH lookup are insufficient for reproducible SIF execution.

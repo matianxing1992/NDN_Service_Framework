@@ -54,6 +54,11 @@ allowed.
 
 ## Runtime And Resource Rules
 
+- `runtime.apptainer.path` and `runtime.apptainer.version` MUST be explicit for
+  every profile; the version MUST be exactly `1.5.3`. Local MiniNDN/SIF paths
+  MUST probe that executable with `--version`. Tiger profiles use
+  `/usr/bin/apptainer` on allocated compute nodes; the login node is a
+  submit/metadata boundary and its 1.3.4 package MUST NOT be used for SIF.
 - `allowCpuFallback` MUST be explicit for every role; GPU qualification requires `false`.
 - CUDA roles MUST include expected device identity and a signed `free_memory_mb` threshold.
 - `cleanupSeconds`, startup, request and completion budgets MUST be finite.

@@ -26,6 +26,28 @@ def test_all_declared_spec186_profiles_have_strict_schema():
     assert "yolo-tiger-two-node-normal" in cases
 
 
+def test_all_profiles_pin_apptainer_153_and_local_path_is_executable():
+    paths = sorted((ROOT / "profiles").glob("spec184-*.json"))
+    for path in paths:
+        profile = candidate.load_profile(path, repo_root=ROOT)
+        runtime = profile["runtime"]["apptainer"]
+        assert runtime["version"] == "1.5.3"
+        if profile["topology"]["mode"] == "minindn":
+            assert runtime["path"] == "/usr/local/bin/apptainer"
+            assert Path(runtime["path"]).is_file()
+        else:
+            assert runtime["path"] == "/usr/bin/apptainer"
+
+
+def test_apptainer_134_profile_is_rejected(tmp_path):
+    value = json.loads(profile_path().read_text())
+    value["runtime"]["apptainer"]["version"] = "1.3.4"
+    path = tmp_path / "wrong-apptainer.json"
+    path.write_text(json.dumps(value))
+    with pytest.raises(candidate.CandidateError, match="APPTAINER_VERSION_POLICY"):
+        candidate.load_profile(path, repo_root=ROOT)
+
+
 @pytest.mark.parametrize("mutation", ["unknown", "duplicate", "wrong_case", "wrong_digest"])
 def test_profile_mutations_fail_closed(tmp_path, mutation):
     value = json.loads(profile_path().read_text())
@@ -118,6 +140,8 @@ def test_effective_config_has_explicit_case_transport_and_candidate():
     effective = submit.render_effective(profile, manifest, "render", Path("/tmp/render"))
     assert effective["case"] == "yolo-minindn-normal"
     assert effective["candidateDigest"] == manifest["candidateDigest"]
+    assert effective["argv"][0] == "/usr/local/bin/apptainer"
+    assert effective["environment"]["SPEC186_APPTAINER_VERSION"] == "1.5.3"
     assert effective["environment"]["NDN_CLIENT_TRANSPORT"] == "unix:///run/nfd.sock"
     assert effective["argv"][-2:] == ["--case", "Y-A"]
 

@@ -66,6 +66,7 @@ def render_effective(profile: Mapping[str, Any], manifest: Mapping[str, Any],
         "SPEC186_CASE": profile["case"],
         "SPEC186_RUN_ID": run_id,
         "SPEC186_CANDIDATE_DIGEST": manifest["candidateDigest"],
+        "SPEC186_APPTAINER_VERSION": runtime["apptainer"]["version"],
         "NDN_CLIENT_TRANSPORT": "unix:///run/nfd.sock",
         "PYTHONNOUSERSITE": "1",
     }
@@ -86,7 +87,7 @@ def render_effective(profile: Mapping[str, Any], manifest: Mapping[str, Any],
     else:
         workload_argv = [launcher, "--run-id", run_id,
                          "--candidate-digest", manifest["candidateDigest"]]
-    argv = ["apptainer", "exec", "--cleanenv", "--containall",
+    argv = [runtime["apptainer"]["path"], "exec", "--cleanenv", "--containall",
             "--bind", str(run_root) + ":/run/spec186:rw",
             "--bind", runtime["application"]["bundle"]["path"] + ":/app/bundle:ro",
             runtime["baseSif"]["path"]] + workload_argv

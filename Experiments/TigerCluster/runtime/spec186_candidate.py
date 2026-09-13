@@ -37,9 +37,12 @@ _CANDIDATE_KEYS = {"id", "sourceCommit", "sourceSealSha256"}
 _MANIFEST_KEYS = {"schemaVersion", "candidateId", "candidateDigest", "source", "runtime",
                   "application", "harness", "configuration", "external", "security", "validation"}
 _ASSET_KEYS = {"path", "sha256"}
+_APPTAINER_KEYS = {"path", "version"}
 _RUNTIME_KEYS = {
-    "baseSif", "builder", "abiManifest", "allowCpuFallback", "application", "harness",
+    "baseSif", "builder", "abiManifest", "allowCpuFallback", "apptainer",
+    "application", "harness",
 }
+APPTAINER_POLICY_VERSION = "1.5.3"
 
 
 class CandidateError(ValueError):
@@ -258,11 +261,19 @@ def load_profile(path: Path, *, repo_root: Optional[Path] = None,
     if not isinstance(runtime, Mapping):
         raise CandidateError("RUNTIME_NOT_OBJECT")
     _keys(runtime, _RUNTIME_KEYS, "RUNTIME")
-    _required(runtime, ("baseSif", "builder", "abiManifest", "allowCpuFallback"), "RUNTIME")
+    _required(runtime, ("baseSif", "builder", "abiManifest", "allowCpuFallback", "apptainer"), "RUNTIME")
     for key in ("baseSif", "builder", "abiManifest"):
         _asset(runtime[key], "runtime." + key)
     if type(runtime["allowCpuFallback"]) is not bool:
         raise CandidateError("RUNTIME_CPU_FALLBACK")
+    apptainer = runtime["apptainer"]
+    if not isinstance(apptainer, Mapping):
+        raise CandidateError("APPTAINER_NOT_OBJECT")
+    _keys(apptainer, _APPTAINER_KEYS, "APPTAINER")
+    _required(apptainer, _APPTAINER_KEYS, "APPTAINER")
+    _path(apptainer["path"], "runtime.apptainer.path")
+    if apptainer["version"] != APPTAINER_POLICY_VERSION:
+        raise CandidateError("APPTAINER_VERSION_POLICY")
     application = runtime.get("application")
     if not isinstance(application, Mapping):
         raise CandidateError("APPLICATION_NOT_OBJECT")
@@ -375,7 +386,8 @@ def build_candidate_manifest(profile: Mapping[str, Any], *, repo_root: Path) -> 
                     "sourceSealSha256": profile["candidate"]["sourceSealSha256"]},
         "runtime": {"baseSif": _asset_manifest(runtime["baseSif"], "baseSif"),
                     "builder": _asset_manifest(runtime["builder"], "builder"),
-                    "abiManifest": _asset_manifest(runtime["abiManifest"], "abiManifest")},
+                    "abiManifest": _asset_manifest(runtime["abiManifest"], "abiManifest"),
+                    "apptainer": dict(runtime["apptainer"])},
         "application": {"bundle": _asset_manifest(runtime["application"]["bundle"], "application.bundle"),
                         "bundleSha256": runtime["application"]["bundleSha256"],
                         "entrypoint": runtime["application"]["entrypoint"],
@@ -454,6 +466,37 @@ def _check_declared_file(path: Any, expected: Any, label: str,
             failures.append("FILE_DIGEST_MISMATCH:" + label)
     except OSError:
         failures.append("FILE_READ_FAILED:" + label)
+
+
+def _apptainer_checks(profile: Mapping[str, Any], failures: list[str],
+                      commands: list[list[str]]) -> None:
+    """Require the declared runtime on local SIF execution paths.
+
+    Tiger profiles are submitted from the login node, where Apptainer 1.3.4 is
+    metadata-only. Their target binary is therefore checked by the compute
+    preflight, while local MiniNDN/SIF paths verify the local executable here.
+    """
+    runtime = profile["runtime"]
+    apptainer = runtime["apptainer"]
+    if profile["topology"]["mode"] != "minindn":
+        return
+    target = Path(apptainer["path"])
+    if not target.is_file() or not os.access(target, os.X_OK):
+        failures.append("APPTAINER_EXECUTABLE_MISSING")
+        return
+    command = [str(target), "--version"]
+    commands.append(command)
+    try:
+        result = subprocess.run(command, stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, timeout=10,
+                                check=False, text=True)
+    except (OSError, subprocess.SubprocessError) as exc:
+        failures.append("APPTAINER_VERSION_PROBE:" + type(exc).__name__)
+        return
+    line = result.stdout.splitlines()[0].strip() if result.stdout.splitlines() else ""
+    expected = "apptainer version " + APPTAINER_POLICY_VERSION
+    if result.returncode != 0 or line != expected:
+        failures.append("APPTAINER_VERSION_RUNTIME_MISMATCH")
 
 
 def _native_checks(profile: Mapping[str, Any], failures: list[str], commands: list[list[str]]) -> None:
@@ -544,10 +587,14 @@ def pre_dispatch(profile_path: Path, candidate_path: Path, *, repo_root: Path,
             failures.append("CANDIDATE_DIGEST_MISMATCH")
         if candidate.get("candidateId") != profile["candidate"]["id"]:
             failures.append("CANDIDATE_ID_MISMATCH")
+        if candidate.get("runtime", {}).get("apptainer") != profile["runtime"]["apptainer"]:
+            failures.append("APPTAINER_CONTRACT_MISMATCH")
         for section in ("runtime", "application", "harness", "external", "security"):
             value = candidate.get(section, {})
             for key, asset in value.items():
                 if isinstance(asset, Mapping) and "path" in asset:
+                    if section == "runtime" and key == "apptainer":
+                        continue
                     _check_asset(
                         asset, section + "." + key, failures,
                         allow_directory=(section == "application" and key == "bundle"),
@@ -580,6 +627,7 @@ def pre_dispatch(profile_path: Path, candidate_path: Path, *, repo_root: Path,
                 failures.append("SYMLINK_ESCAPE:" + str(path))
         if not _inside(Path(profile["evidence"]["root"]), repo_root) and profile["topology"]["mode"] == "minindn":
             failures.append("EVIDENCE_ROOT_OUTSIDE_REPO")
+        _apptainer_checks(profile, failures, commands)
         _native_checks({**profile, "application": profile["runtime"]["application"]}, failures, commands)
     except CandidateError as exc:
         failures.append(str(exc))

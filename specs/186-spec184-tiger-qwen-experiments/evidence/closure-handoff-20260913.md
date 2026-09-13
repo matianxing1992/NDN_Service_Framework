@@ -13,7 +13,7 @@ not promoted to protocol or GPU qualification.
 
 | State | Current scope | Evidence |
 | --- | --- | --- |
-| Implemented | eight strict profiles, deterministic manifests, zero-side-effect pre-dispatch, lifecycle/cleanup adapters, and explicit dependency-prefix forwarding for native Python binding builds | `tests/test_spec180_native_build.py` (81 passed), `Experiments/TigerCluster/tests` (74 passed), `scripts/spec180_native_build.py` |
+| Implemented | eight strict profiles, explicit 1.5.3 Apptainer path/version pins, deterministic manifests, zero-side-effect pre-dispatch, lifecycle/cleanup adapters, and explicit dependency-prefix forwarding for native Python binding builds | `tests/test_spec180_native_build.py` (81 passed), `Experiments/TigerCluster/tests` (76 passed), `scripts/spec180_native_build.py`, `evidence/runtime-version-policy-20260913.md` |
 | Wired | all eight profiles bind the corrected r5 application bundle; local and remote tree digest is `687610de859155449c51ec2ba4bb7b57c77614cbf0a53f106bb65152f8c07129` | `evidence/application-bundle-r5-20260913.md`, `evidence/pre-dispatch-r5-20260913.md` |
 | Executed | local Apptainer 1.5.3 SIF probe passed; a root MiniNDN M01 retry reached topology/NFD/controller/repository startup but stopped at the repository route barrier | `evidence/host-m01-r12-route-boundary-20260913.md` |
 | Measured | no accepted Spec186 YOLO protocol result, `[1,50,6]` oracle, Qwen3 tuple, Tiger GPU result or two-node reuse result | T006.a/c and T007–T012 remain open or waiting |

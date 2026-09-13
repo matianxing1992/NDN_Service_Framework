@@ -33,5 +33,9 @@ if ! timeout 10s apptainer --version > "$scratch/evidence/apptainer-version.txt"
   echo COMPUTE_APPTAINER_VERSION_PROBE_FAILED >&2
   exit 4
 fi
+case "$(head -n 1 "$scratch/evidence/apptainer-version.txt")" in
+  'apptainer version 1.5.3'|'apptainer version 1.5.3-'*) ;;
+  *) echo COMPUTE_APPTAINER_VERSION_POLICY >&2; exit 4 ;;
+esac
 [ "$gpu_count" -gt 0 ] && timeout 15s nvidia-smi --query-gpu=index,uuid,name,memory.total,driver_version --format=csv,noheader,nounits > "$scratch/evidence/host-gpu.csv"
 printf 'gpuType=%s\ngpuCount=%s\nslurmJobGpus=%s\ncudaVisibleDevices=%s\n' "$gpu_type" "$gpu_count" "${SLURM_JOB_GPUS:-}" "${CUDA_VISIBLE_DEVICES:-}" > "$scratch/evidence/allocation.env"
