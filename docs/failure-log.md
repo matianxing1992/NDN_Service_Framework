@@ -3598,3 +3598,23 @@ are still unobserved.
 - **Lesson**: model discovery must be path-scoped and digest-bound before a
   candidate is prepared; an available Qwen artifact with a different family,
   size or backend cannot substitute for Qwen3-0.6B.
+
+## 2026-09-12 — Spec186 native build dependency and optional-fixture boundaries
+
+- **Area**: T006 native runtime build on the exact Spec186 baseline.
+- **First boundaries**: the first `./waf build -j2` stopped during Waf graph
+  construction because an optional Spec182 worker fixture was absent and
+  `find_node()` returned `None`. After guarding that optional target, the build
+  reached `ServiceUser.cpp` and stopped because the selected NAC-ABE headers
+  lacked `getPublicParamsDataName`, `getPublicParamsDigest`, `clearCache`,
+  `refreshPublicParameters` and `refreshDecryptionKey`.
+- **Interpretation**: no binary from this attempt is a Spec186 runtime
+  candidate. The second failure is a dependency/header ABI mismatch, not a
+  YOLO or Qwen protocol result.
+- **Correction**: keep the optional fixture guard, reconfigure against the
+  matching `/home/tianxing/NDN/NAC-ABE` source/build prefix, and rebuild with
+  at most `-j2`. Capture the complete dependency and loader closure before
+  using any resulting binary.
+- **Lesson**: a successful Waf configure or pre-existing build output cannot
+  establish candidate readiness; all consumers must compile against the same
+  NAC-ABE API and packaged runtime identity.
