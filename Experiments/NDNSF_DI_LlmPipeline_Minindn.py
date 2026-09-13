@@ -1264,6 +1264,19 @@ def start_process(ndn, host_name: str, label: str, cmd: str,
         raise RuntimeError(
             "SPEC175_SIF_HOST_PROCESS_FALLBACK: "
             f"{label} command does not use the exact SIF command provider")
+    # MiniNDN's envDict is not consistent across versions: Python child
+    # processes can retain the launcher HOME/client configuration even when
+    # the node command helpers used the correct PIB.  Export node-scoped NDN
+    # variables in the shell command as well, so native ndn-cxx and ndnsec
+    # resolve the same identity database and management transport.
+    exported = []
+    for key in ("HOME", "NDN_CLIENT_CONF", "NDN_CLIENT_TRANSPORT",
+                "NDNSF_CONTROLLER_CERT_FILE"):
+        value = env.get(key)
+        if value:
+            exported.append(f"export {key}={perf.shell_quote(value)};")
+    if exported:
+        cmd = " ".join(exported) + " " + cmd
     log_path = OUT / f"{label}.log"
     log(f"start {label} on {host_name}: {cmd}")
     out = log_path.open("wb")
@@ -3417,8 +3430,21 @@ def main() -> int:
         "PYTHONPATH": ":".join(python_path_entries()),
         "NDN_LOG": args.ndn_log,
         "NDNSF_MININDN_ROOT": str(MININDN_ROOT),
-        "NDNSF_RESPONSE_LARGE_DATA_THRESHOLD": "1024",
+        # The route gate exercises a normal control response.  Keep the
+        # historical 1 KiB default, but allow a run profile to raise it when
+        # isolating route/crypto readiness from the separate segmented large
+        # response gate.  The effective value remains part of the run
+        # environment and must be recorded by the caller.
+        "NDNSF_RESPONSE_LARGE_DATA_THRESHOLD": os.environ.get(
+            "NDNSF_RESPONSE_LARGE_DATA_THRESHOLD", "1024"),
     }
+    # Bind the fenced Controller generation lease to this immutable run.
+    # The default hash-derived /tmp path is shared by interrupted campaigns;
+    # a stale lock there can make a healthy Controller refuse every protected
+    # permission response.  Keeping the state beside the run also makes the
+    # lease identity auditable and prevents cross-case contamination.
+    base_env["NDNSF_CONTROLLER_GENERATION_STATE"] = str(
+        OUT / "controller-generation.state")
     selection_targeted_prefetch = apply_selection_targeted_prefetch_policy(
         args, base_env)
     if args.selection_dataflow_v2 and selection_targeted_prefetch:
@@ -3458,6 +3484,12 @@ def main() -> int:
             "ndn_service_framework.TimelineTrace=WARN:"
             "ndnsf.di.RuntimeEvidence=WARN"
         )
+        # Keep the qualification default bounded, but allow one diagnostic
+        # run to add a precise ndn-cxx validator filter without changing the
+        # fixed Spec175 profile itself.
+        extra_ndn_log = os.environ.get("NDNSF_EXTRA_NDN_LOG", "").strip()
+        if extra_ndn_log:
+            base_env["NDN_LOG"] += ":" + extra_ndn_log
     if args.spec107_diagnostic:
         base_env["NDNSF_TIMELINE_TRACE"] = "1"
         base_env["NDNSF_TIMELINE_TRACE_SAMPLE_RATE"] = str(
@@ -3509,9 +3541,14 @@ def main() -> int:
             topoFile=args.topology_file,
             controller=None,
             switch=OVSBridge,
+            workDir=str(MININDN_ROOT),
         )
     else:
-        ndn = Minindn(topoFile=args.topology_file)
+        # Keep MiniNDN's node homes (used by perf.node_cmd and NFD) aligned
+        # with the explicit runner root used for Python/native processes.
+        # Without this, identity provisioning writes /tmp/minindn while the
+        # application receives /tmp/spec... and silently creates a second PIB.
+        ndn = Minindn(topoFile=args.topology_file, workDir=str(MININDN_ROOT))
     processes: list[tuple[object, object, Path]] = []
     spec175_route_snapshot_path: Path | None = None
     spec175_route_snapshot: dict | None = None
@@ -3638,6 +3675,27 @@ def main() -> int:
                       "ndnsec cert-install -f {} >/dev/null 2>&1 || true".format(
                           perf.shell_quote(root_cert)))
 
+        # ``ndnsec key-gen`` creates a self-signed root certificate but does
+        # not reliably make its key the default signer in a fresh MiniNDN
+        # PIB.  Without this explicit binding, ``cert-gen -s APP_ROOT`` can
+        # silently issue every participant certificate as self-signed.  The
+        # resulting controller certificate then forms a validation loop when
+        # NAC-ABE fetches public parameters.  Fix the signer identity before
+        # issuing any participant certificate and fail closed if the command
+        # cannot select the root key.
+        root_cert_name = perf.certificate_name_from_file(root_cert)
+        root_key_name = key_name_from_certificate_name(root_cert_name)
+        perf.node_cmd(controller_node, "ndnsec set-default -k -n {}".format(
+            perf.shell_quote(root_key_name)))
+        selected_root_key = perf.node_cmd(
+            controller_node,
+            "ndnsec get-default -k -i {} 2>&1".format(
+                perf.shell_quote(APP_ROOT))).strip()
+        if selected_root_key != root_key_name:
+            raise RuntimeError(
+                "MiniNDN root signer was not selected: "
+                f"expected={root_key_name} actual={selected_root_key}")
+
         exported_keys = []
         cert_names = {}
         for index, (host_name, identity) in enumerate(node_identities):
@@ -3659,10 +3717,30 @@ def main() -> int:
             perf.node_cmd(controller_node,
                           "ndnsec set-default -k -n {} >/dev/null 2>&1 || true".format(
                               perf.shell_quote(key_name)))
+            # getOrCreateIdentity() in the native binding returns the
+            # identity's default certificate.  Keep the root-issued
+            # certificate selected instead of the self-signed certificate
+            # created by key-gen.
+            perf.node_cmd(controller_node,
+                          "ndnsec set-default -c -n {} >/dev/null 2>&1".format(
+                              perf.shell_quote(cert_name)))
             perf.node_cmd(controller_node, "ndnsec-export -P {} -o {} -k {}".format(
                 perf.shell_quote(passphrase), perf.shell_quote(key),
                 perf.shell_quote(key_name)))
             exported_keys.append((host_name, identity, cert, key, key_name))
+
+        controller_cert_name = cert_names[CONTROLLER_IDENTITY]
+        controller_cert_source = next(
+            cert for _, identity, cert, _, _ in exported_keys
+            if identity == CONTROLLER_IDENTITY)
+        selected_controller_cert = perf.node_cmd(
+            controller_node,
+            "ndnsec get-default -c -i {} 2>&1".format(
+                perf.shell_quote(CONTROLLER_IDENTITY))).strip()
+        if selected_controller_cert != controller_cert_name:
+            raise RuntimeError(
+                "MiniNDN Controller certificate was not selected: "
+                f"expected={controller_cert_name} actual={selected_controller_cert}")
 
         for host_name in sorted(set(identities_by_node)):
             perf.node_cmd(ndn.net[host_name],
@@ -3685,9 +3763,31 @@ def main() -> int:
                         "ndnsec import -P {} {} >/dev/null 2>&1".format(
                             perf.shell_quote(passphrase), perf.shell_quote(key)))
             for identity in local_identities_by_node[host_name]:
+                # SafeBag import adds the private key and its self-signed
+                # certificate and may make that key the identity default.
+                # Re-select the root-issued key and certificate only after
+                # import; setting the certificate before import is silently
+                # undone and the native Controller binding then sees a
+                # self-signed certificate.
+                identity_cert_name = cert_names[identity]
+                identity_key_name = key_name_from_certificate_name(
+                    identity_cert_name)
+                perf.node_cmd(
+                    ndn.net[host_name],
+                    "ndnsec set-default -k -n {}".format(
+                        perf.shell_quote(identity_key_name)))
                 perf.node_cmd(ndn.net[host_name],
                               "ndnsec set-default -c -n {} >/dev/null 2>&1".format(
-                                  perf.shell_quote(cert_names[identity])))
+                                  perf.shell_quote(identity_cert_name)))
+                selected_cert = perf.node_cmd(
+                    ndn.net[host_name],
+                    "ndnsec get-default -c -i {} 2>&1".format(
+                        perf.shell_quote(identity))).strip()
+                if selected_cert != identity_cert_name:
+                    raise RuntimeError(
+                        "MiniNDN identity certificate was not selected: "
+                        f"identity={identity} expected={identity_cert_name} "
+                        f"actual={selected_cert}")
             perf.node_cmd(ndn.net[host_name],
                           "ndnsec set-default -n {} >/dev/null 2>&1 || true".format(
                               perf.shell_quote(identities_by_node[host_name])))
@@ -3705,18 +3805,21 @@ def main() -> int:
         base = python_process_prefix(base_env)
         common = " --config {} --generated-policy-dir {}".format(
             perf.shell_quote(CONFIG), perf.shell_quote(GEN_POLICY))
+        # NativeServiceController must receive the same root-issued
+        # certificate that was selected in the MiniNDN PIB.  Pass it before
+        # construction so the binding can also select the matching private
+        # key for controller signatures.
+        node_env[CONTROLLER_NODE]["NDNSF_CONTROLLER_CERT_FILE"] = str(
+            controller_cert_source)
         controller_proc, controller_log = start_process(
             ndn, CONTROLLER_NODE, "controller",
             base + "-c " + perf.shell_quote(
                 "from ndnsf_distributed_inference.app_sdk.controller import APPController; "
-                "import subprocess,sys; "
+                "import shutil,sys; "
                 "c=APPController.from_config(sys.argv[1], "
                 "generated_policy_dir=sys.argv[2], "
                 "bootstrap_token_file=sys.argv[3]); "
-                "f=open(sys.argv[4],'wb'); "
-                "subprocess.run(['ndnsec','cert-dump','-i',"
-                "'/example/llm-pipeline/controller'],stdout=f,check=True); "
-                "f.close(); "
+                "shutil.copyfile(sys.argv[4],sys.argv[5]); "
                 # Register DKEY, policy, permission, and certificate handlers
                 # before the repository/provider bootstrap processes are
                 # released.  Printing readiness before c.run() used to leave
@@ -3726,6 +3829,7 @@ def main() -> int:
             ) + " " + perf.shell_quote(CONFIG)
             + " " + perf.shell_quote(GEN_POLICY)
             + " " + perf.shell_quote(OUT / "bootstrap-tokens.txt")
+            + " " + perf.shell_quote(controller_cert_source)
             + " " + perf.shell_quote(OUT / "controller.cert"),
             node_env[CONTROLLER_NODE], processes,
         )

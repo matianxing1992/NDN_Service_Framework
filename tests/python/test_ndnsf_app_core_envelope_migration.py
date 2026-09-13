@@ -85,6 +85,14 @@ class AppCoreEnvelopeMigrationTest(unittest.TestCase):
         self.assertEqual(hint.service_payload["freeBytes"], 1024)
         self.assertEqual(hint.service_payload_schema, "ndnsf-repo-capability-v2")
 
+        # R179 request-scoped discovery strips ordinary application JSON from
+        # the ACK-phase copy.  The registered versioned service still binds
+        # the operation, so Repo must advertise capability before Selection.
+        discovery_decision = repo._ack(
+            b"", "/NDNSF/DistributedRepo/Object/v1/STATUS")
+        self.assertTrue(discovery_decision.status)
+        self.assertEqual(discovery_decision.message, "repo-ready")
+
     def test_network_repo_client_parses_core_capability_hint_from_ack(self) -> None:
         repo = RepoNodeApp.__new__(RepoNodeApp)
         repo.repo_node = "/repo/A"

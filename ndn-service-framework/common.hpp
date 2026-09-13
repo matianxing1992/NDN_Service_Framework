@@ -507,6 +507,44 @@ namespace ndn_service_framework{
         }
 
         /**
+         * @brief Make a locally installed certificate available to
+         *        SegmentFetcher validation.
+         *
+         * The normal MessageValidator path first checks the process PIB,
+         * while SegmentFetcher receives the underlying ValidatorConfig and
+         * therefore only sees its verified-certificate cache or a network
+         * certificate fetch.  A segmented object published by a peer uses
+         * the same signer as the already validated control Data; priming the
+         * cache here keeps both paths on the same certificate without
+         * falling back to ValidatorNull.
+         */
+        bool
+        primeSegmentFetcherCertificate(const ndn::Name& certName)
+        {
+            if (!ndn::security::Certificate::isValidName(certName)) {
+                return false;
+            }
+            try {
+                const auto signerIdentity =
+                    ndn::security::extractIdentityFromCertName(certName);
+                const auto keyName =
+                    ndn::security::extractKeyNameFromCertName(certName);
+                const auto identity = m_keyChain.getPib().getIdentity(signerIdentity);
+                const auto key = identity.getKey(keyName);
+                auto certificate = key.getCertificate(certName);
+                m_validator.cacheVerifiedCertificate(std::move(certificate));
+                NDN_LOG_DEBUG("MessageValidator primed SegmentFetcher certificate "
+                              << certName);
+                return true;
+            }
+            catch (const std::exception& e) {
+                NDN_LOG_DEBUG("MessageValidator could not prime SegmentFetcher certificate "
+                              << certName << " reason=" << e.what());
+                return false;
+            }
+        }
+
+        /**
          * @brief Validate Data through the configured trust schema only.
          *
          * The normal SVS validator path has a local-certificate fast path for

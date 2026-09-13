@@ -1361,13 +1361,12 @@ namespace ndn_service_framework
                                      std::string trustSchemaPath)
         : m_face(face),
         m_scheduler(m_face.getIoContext()),
+        m_groupPrefix(group_prefix),
         identity(encryptionCert.getIdentity()),
         validator(std::make_shared<MessageValidator>(
           trustSchemaPath, group_prefix, &face)),
         identityCert(encryptionCert),
         signingCert(signingCert),
-        nacConsumer(m_face, m_keyChain, nac_validator, encryptionCert, attrAuthorityCertificate),
-        nacProducer(m_face, m_keyChain, nac_validator, encryptionCert, attrAuthorityCertificate),
         random(ndn::random::getRandomNumberEngine()),
         // The io_context-aware IMS constructor enforces MustBeFresh. This is
         // required for streamed-event retention: an exact retry must not
@@ -1408,6 +1407,12 @@ namespace ndn_service_framework
         }
 
         nac_validator.load(trustSchemaPath);
+        nacConsumer = std::make_unique<ndn::nacabe::Consumer>(
+            m_face, m_keyChain, nac_validator, encryptionCert,
+            attrAuthorityCertificate);
+        nacProducer = std::make_unique<ndn::nacabe::CacheProducer>(
+            m_face, m_keyChain, nac_validator, encryptionCert,
+            attrAuthorityCertificate);
         NDN_LOG_WARN("NDNSF_PROVIDER_INIT_STAGE stage=validator_loaded provider="
                      << identity.toUri());
 
@@ -1417,31 +1422,10 @@ namespace ndn_service_framework
                   << " dkPrefix="
                   << ndn::Name(attrAuthorityCertificate.getIdentity()).append("DKEY").toUri());
 
-        // Serve NDNSF and ck messages using IMS
-        const ndn::Name ndnsfFilter = ndn::Name(identity.toUri()).append("NDNSF");
-        const ndn::Name ckFilter = ndn::Name(identity.toUri()).append("CK");
-        const ndn::Name diDataFilter =
-            ndn::Name(identity.toUri()).append("NDNSF-DI");
-        // Collaboration evidence is application-owned Data under the
-        // producer namespace (for example, /<provider>/UAV/MISSION/...).
-        // Register the identity prefix so an exact Interest can retrieve
-        // those immutable objects from the local IMS; the more-specific
-        // NDNSF/CK/NDNSF-DI filters above still handle framework objects.
-        const ndn::Name applicationDataFilter = ndn::Name(identity);
-        auto registerContentFilter = [this](const ndn::Name& prefix) {
-            auto holder = std::make_shared<ndn::ScopedRegisteredPrefixHandle>();
-            m_contentRegistrations.push_back(holder);
-            *holder = m_face.setInterestFilter(
-                prefix,
-                std::bind(&ServiceProvider::onInterest, this, _1, _2),
-                std::bind(&ServiceProvider::onPrefixRegisterFailure, this, _1, _2));
-        };
-        NDN_LOG_INFO("[ServiceProvider] registered service content prefix="
-                  << ndnsfFilter.toUri());
-        registerContentFilter(ndnsfFilter);
-        registerContentFilter(ckFilter);
-        registerContentFilter(diDataFilter);
-        registerContentFilter(applicationDataFilter);
+        // Serve NDNSF, CK, NDNSF-DI, and application-owned IMS data.  The
+        // same filters are re-registered after Controller authorization in
+        // registerContentFilters() if NFD rejected the cold-start attempt.
+        registerContentFilters();
         NDN_LOG_WARN("NDNSF_PROVIDER_INIT_STAGE stage=content_filters_registered provider="
                      << identity.toUri());
 
@@ -1607,11 +1591,17 @@ namespace ndn_service_framework
         // Permission renewal must remain reachable even without an initial
         // grant/DKEY. Crypto readiness is asynchronous; admission remains
         // fail-closed until permission, signed status and key installation.
-        nacConsumer.obtainDecryptionKey();
-        if (nacConsumer.readyForDecryption())
+        activeNacConsumer().obtainDecryptionKey();
+        if (activeNacConsumer().readyForDecryption())
             NDN_LOG_INFO("DK_DECRYPT_SUCCESS provider=" << identity.toUri());
-        else
+        else {
             NDN_LOG_INFO("NDNSF_NAC_BOOTSTRAP_PENDING role=provider");
+            // Controller status installation can invalidate the constructor-
+            // time DKEY fetch before its callback runs.  Re-arm a bounded
+            // readiness probe so the first protected request never races the
+            // asynchronous NAC-ABE bootstrap.
+            scheduleDeferredDkeyRefreshRetry(identity);
+        }
         NDN_LOG_WARN("NDNSF_PROVIDER_INIT_STAGE stage=constructor_done provider="
                      << identity.toUri());
 
@@ -1651,6 +1641,7 @@ namespace ndn_service_framework
                                      std::string trustSchemaPath)
         : m_face(face),
         m_scheduler(m_face.getIoContext()),
+        m_groupPrefix(group_prefix),
         identity(encryptionCert.getIdentity()),
         m_keyChain(),
         m_svsps(nullptr),
@@ -1659,8 +1650,6 @@ namespace ndn_service_framework
         identityCert(encryptionCert),
         signingCert(signingCert),
         attrAuthorityCertificate(attrAuthorityCertificate),
-        nacConsumer(m_face, m_keyChain, nac_validator, encryptionCert, attrAuthorityCertificate),
-        nacProducer(m_face, m_keyChain, nac_validator, encryptionCert, attrAuthorityCertificate),
         random(ndn::random::getRandomNumberEngine()),
         m_IMS(m_face.getIoContext(), 50000),
         m_configManager("/tmp/ndnsf-service-provider-local-mock.conf")
@@ -1676,6 +1665,12 @@ namespace ndn_service_framework
         // Load the same trust schema as the production constructor before the
         // fixture pumps their constructor-time public-parameter Interests.
         nac_validator.load(trustSchemaPath);
+        nacConsumer = std::make_unique<ndn::nacabe::Consumer>(
+            m_face, m_keyChain, nac_validator, encryptionCert,
+            attrAuthorityCertificate);
+        nacProducer = std::make_unique<ndn::nacabe::CacheProducer>(
+            m_face, m_keyChain, nac_validator, encryptionCert,
+            attrAuthorityCertificate);
         // LocalMockTag is the deterministic unit-test boundary. Keep handlers
         // inline by default so selection callbacks have stable synchronous
         // postconditions. Integration fixtures that exercise production-like
@@ -1855,6 +1850,118 @@ namespace ndn_service_framework
     {
         registerServiceInfo();
         registerNDNSFMessages();
+    }
+
+    void ServiceProvider::registerContentFilters()
+    {
+        const ndn::Name ndnsfFilter = ndn::Name(identity.toUri()).append("NDNSF");
+        const ndn::Name ckFilter = ndn::Name(identity.toUri()).append("CK");
+        const ndn::Name diDataFilter =
+            ndn::Name(identity.toUri()).append("NDNSF-DI");
+        // Collaboration evidence is application-owned Data under the
+        // producer namespace.  The identity filter is intentionally kept
+        // alongside the framework filters so exact IMS retrieval uses the
+        // same onInterest path.
+        const ndn::Name applicationDataFilter = ndn::Name(identity);
+        auto registerContentFilter = [this](const ndn::Name& prefix) {
+            auto holder = std::make_shared<ndn::ScopedRegisteredPrefixHandle>();
+            m_contentRegistrations.push_back(holder);
+            *holder = m_face.setInterestFilter(
+                prefix,
+                std::bind(&ServiceProvider::onInterest, this, _1, _2),
+                std::bind(&ServiceProvider::onPrefixRegisterFailure, this, _1, _2));
+        };
+        registerContentFilter(ndnsfFilter);
+        registerContentFilter(ckFilter);
+        registerContentFilter(diDataFilter);
+        registerContentFilter(applicationDataFilter);
+    }
+
+    void ServiceProvider::scheduleSvsReinitializationAfterPermission()
+    {
+        if (m_isLocalMock || m_svsps == nullptr || m_svsReinitializationScheduled) {
+            return;
+        }
+        m_svsReinitializationScheduled = true;
+        // NFD authorizes registerPrefix at command time. The constructor
+        // starts SVS before the asynchronous Controller permission response,
+        // so a cold run can permanently lose its sync route. Recreate the
+        // endpoint after the permission table is installed, on the Face
+        // scheduler, and reattach all maintained subscriptions.
+        m_scheduler.schedule(ndn::time::milliseconds(100), [this] {
+            m_svsReinitializationScheduled = false;
+            reinitializeSvsPubSubAfterPermission();
+        });
+    }
+
+    void ServiceProvider::reinitializeSvsPubSubAfterPermission()
+    {
+        if (m_isLocalMock || m_svsps == nullptr) {
+            return;
+        }
+
+        // The constructor's registrations may have been rejected by NFD
+        // before the provider permission response.  Drop those handles before
+        // retrying so a warm process cannot accumulate duplicate filters.
+        m_contentRegistrations.clear();
+        m_svsps.reset();
+
+        ndn::svs::SecurityOptions secOpts(m_keyChain);
+        secOpts.interestSigner = std::make_shared<CommandInterestSigner>(m_keyChain);
+        secOpts.interestSigner->signingInfo.setSignedInterestFormat(ndn::security::SignedInterestFormat::V03);
+        secOpts.interestSigner->signingInfo.setSigningKeyName(signingCert.getKeyName());
+        secOpts.dataSigner->signingInfo.setSigningCertName(signingCert.getName());
+        secOpts.dataSigner->signingInfo.setSignedInterestFormat(ndn::security::SignedInterestFormat::V03);
+        secOpts.pubSigner->signingInfo.setSigningCertName(signingCert.getName());
+        secOpts.pubSigner->signingInfo.setSignedInterestFormat(ndn::security::SignedInterestFormat::V03);
+        secOpts.validator = validator;
+        secOpts.encapsulatedDataValidator = validator;
+
+        ndn::svs::SVSPubSubOptions opts;
+        configureSvsProtocol(opts);
+        opts.publicationFetchRetries =
+            std::max(0, intEnvOrDefault("NDNSF_SVS_PUBLICATION_FETCH_RETRIES",
+                                        opts.publicationFetchRetries));
+        opts.publicationFetchInnerRetries =
+            std::max(0, intEnvOrDefault("NDNSF_SVS_PUBLICATION_FETCH_INNER_RETRIES",
+                                        opts.publicationFetchInnerRetries));
+        opts.publicationFetchInterestLifetime = ndn::time::milliseconds(std::max(
+            100, intEnvOrDefault("NDNSF_SVS_PUBLICATION_FETCH_LIFETIME_MS",
+                                 static_cast<int>(opts.publicationFetchInterestLifetime.count()))));
+        opts.publicationFetchFailureBackoff = ndn::time::milliseconds(std::max(
+            0, intEnvOrDefault("NDNSF_SVS_PUBLICATION_FETCH_BACKOFF_MS",
+                               static_cast<int>(opts.publicationFetchFailureBackoff.count()))));
+        opts.publicationFetchMaxBackoff = ndn::time::milliseconds(std::max(
+            0, intEnvOrDefault("NDNSF_SVS_PUBLICATION_FETCH_MAX_BACKOFF_MS",
+                               static_cast<int>(opts.publicationFetchMaxBackoff.count()))));
+        opts.publicationFetchWindow = static_cast<uint16_t>(std::max(
+            1, intEnvOrDefault("NDNSF_SVS_PUBLICATION_FETCH_WINDOW",
+                               adaptiveSvsPublicationFetchWindow(
+                                   static_cast<int>(opts.publicationFetchWindow)))));
+
+        ndn::Name nodeId(identity);
+        nodeId.append("provider");
+        const int sessionId = m_configManager.loadAndIncrement(
+            m_groupPrefix.toUri(), nodeId.toUri());
+        nodeId.append(std::to_string(sessionId));
+        m_svsps = std::make_shared<ndn::svs::SVSPubSub>(
+            m_groupPrefix,
+            nodeId,
+            m_face,
+            std::bind(&ServiceProvider::onMissingData, this, _1),
+            opts,
+            secOpts);
+        if (std::getenv("NDNSF_SVS_PERIODIC_SYNC_MS") != nullptr) {
+            const int periodicSyncMs = std::max(
+                1, intEnvOrDefault("NDNSF_SVS_PERIODIC_SYNC_MS", 30000));
+            m_svsps->getSVSync().getCore().setPeriodicSyncTime(
+                ndn::time::milliseconds(periodicSyncMs));
+        }
+        NDN_LOG_WARN("NDNSF_SVS_REINITIALIZED_AFTER_PERMISSION role=provider"
+                     << " group=" << m_groupPrefix
+                     << " provider=" << identity);
+        registerNDNSFMessages();
+        registerContentFilters();
     }
 
     ServiceProvider::~ServiceProvider()
@@ -9554,7 +9661,7 @@ namespace ndn_service_framework
             const auto wrapStartUs = timelineSteadyMicroseconds();
             ndn::nacabe::SPtrVector<ndn::Data> contentData, ckData;
             std::tie(contentData, ckData) =
-                (m_testNacProducer ? *m_testNacProducer : nacProducer).produce(key.keyName,
+                activeNacProducer().produce(key.keyName,
                                     std::vector<std::string>{accessAttribute},
                                     ndn::span<const uint8_t>(key.key.data(), key.key.size()),
                                     m_signingInfo);
@@ -10123,7 +10230,7 @@ namespace ndn_service_framework
                       << " plaintextBytes=" << plaintext.size());
             try {
                 std::tie(contentData, ckData) =
-                    (m_testNacProducer ? *m_testNacProducer : nacProducer).produce(
+                    activeNacProducer().produce(
                         messageNameWithoutPrefix,
                         *results,
                         ndn::span<const uint8_t>(plaintext.data(), plaintext.size()),
@@ -10216,7 +10323,7 @@ namespace ndn_service_framework
                               << " plaintextBytes=" << plaintext.size());
                     try {
                         std::tie(contentData, ckData) =
-                            (m_testNacProducer ? *m_testNacProducer : nacProducer).produce(
+                            activeNacProducer().produce(
                                 messageNameWithoutPrefix,
                                 attributes,
                                 ndn::span<const uint8_t>(plaintext.data(), plaintext.size()),
@@ -10364,10 +10471,22 @@ namespace ndn_service_framework
 
     void ServiceProvider::onMissingData(const std::vector<ndn::svs::MissingDataInfo>& infoVector)
     {
-        // for (const auto& info : infoVector) {
-        //     NDN_LOG_INFO("onMissingData from node " << info.nodeId
-        //                 << " seq range [" << info.low << ", " << info.high << "]");
-        // }
+        // Keep this opt-in and bounded: a missing Sync range can contain many
+        // publications, and routine qualification must not turn it into a
+        // log-amplification path.  The diagnostic is useful for distinguishing
+        // a publication-fetch gap from a subscription/freshness rejection.
+        if (std::getenv("NDNSF_SVS_DIAGNOSTIC") == nullptr) {
+            return;
+        }
+        NDN_LOG_WARN("NDNSF_SVS_MISSING_DATA provider=" << identity.toUri()
+                     << " count=" << infoVector.size());
+        const size_t limit = std::min<size_t>(infoVector.size(), 16);
+        for (size_t i = 0; i < limit; ++i) {
+            const auto& info = infoVector[i];
+            NDN_LOG_WARN("NDNSF_SVS_MISSING_RANGE provider=" << identity.toUri()
+                         << " node=" << info.nodeId.toUri()
+                         << " low=" << info.low << " high=" << info.high);
+        }
     }
 
     void ServiceProvider::updateNdnsdMeta(const std::string& key, const std::string& value)
@@ -10434,7 +10553,25 @@ namespace ndn_service_framework
 
     void ServiceProvider::OnRequest(const ndn::svs::SVSPubSub::SubscriptionData &subscription)
     {
-        if(!isFresh(subscription)) return;
+        const bool svsDiagnostic =
+            std::getenv("NDNSF_SVS_DIAGNOSTIC") != nullptr;
+        if (svsDiagnostic) {
+            NDN_LOG_WARN("NDNSF_SVS_REQUEST_SEEN provider=" << identity.toUri()
+                         << " name=" << subscription.name.toUri()
+                         << " producer=" << subscription.producerPrefix.toUri()
+                         << " seq=" << subscription.seqNo
+                         << " bytes=" << subscription.data.size());
+        }
+        if(!isFresh(subscription)) {
+            if (svsDiagnostic) {
+                NDN_LOG_WARN("NDNSF_SVS_REQUEST_REJECTED provider="
+                             << identity.toUri() << " reason=stale_or_duplicate"
+                             << " name=" << subscription.name.toUri()
+                             << " producer=" << subscription.producerPrefix.toUri()
+                             << " seq=" << subscription.seqNo);
+            }
+            return;
+        }
         NDN_LOG_DEBUG("[ServiceProvider] OnRequest name="
                   << subscription.name.toUri()
                   << " producer=" << subscription.producerPrefix.toUri()
@@ -12916,6 +13053,7 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                                                 ndn::Name(serviceUri));
             }
         }
+        scheduleSvsReinitializationAfterPermission();
     }
 
     bool ServiceProvider::hasProviderPermissionForService(const ndn::Name& serviceName) const

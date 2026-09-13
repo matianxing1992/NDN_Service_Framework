@@ -4559,11 +4559,25 @@ class RepoNodeApp:
         has_manifest = False
         has_object = False
         try:
-            request = (
-                self._validate_versioned_request(service_name, payload)
-                if service_name is not None
-                else decode_repo_request(payload)
-            )
+            raw_payload = bytes(payload)
+            if not raw_payload and service_name is not None:
+                # A configured Controller enables Core's request-scoped
+                # confidentiality default.  In that mode the discovery copy
+                # deliberately carries no application payload; the original
+                # Repo JSON is released only after Selection.  The versioned
+                # service name is the authenticated operation binding for the
+                # ACK phase, so derive the operation from it and defer all
+                # object-level checks to _handle() after input decryption.
+                operation_hint = str(service_name).rstrip("/").rsplit("/", 1)[-1]
+                request = {"operation": operation_hint}
+                self._validate_versioned_request(service_name, encode_repo_request(
+                    operation_hint))
+            else:
+                request = (
+                    self._validate_versioned_request(service_name, payload)
+                    if service_name is not None
+                    else decode_repo_request(payload)
+                )
             operation = canonical_repo_operation(request["operation"])
             object_name = str(request.get("objectName", ""))
             data_name = str(request.get("dataName", ""))
@@ -4578,16 +4592,23 @@ class RepoNodeApp:
                 manifest_obj = request.get("manifest", {})
                 replica_nodes = set(manifest_obj.get("replicaNodes", []))
                 if replica_nodes and self.repo_node not in replica_nodes:
-                    return AckDecision(False, "repo-not-selected")
+                    return AckDecision(status=False, message="repo-not-selected")
             if operation == "MANIFEST" and not has_manifest:
-                return AckDecision(False, "repo-manifest-miss")
+                return AckDecision(status=False, message="repo-manifest-miss")
             if operation in {"FETCH", "FETCH_PREPARE"} and not has_object:
-                return AckDecision(False, "repo-object-miss")
+                return AckDecision(status=False, message="repo-object-miss")
             if operation == "FETCH_PACKET_PREPARE" and not (
                     data_name and self._sqlite_has_packet(data_name)):
-                return AckDecision(False, "repo-packet-miss")
-        except Exception:
-            return AckDecision(False, "repo-bad-request")
+                return AckDecision(status=False, message="repo-packet-miss")
+        except Exception as exc:
+            detail = " ".join(str(exc).split())[:240]
+            print(
+                "REPO_ACK_REJECT "
+                f"service={service_name or '-'} "
+                f"errorType={type(exc).__name__} detail={detail or '-'}",
+                flush=True,
+            )
+            return AckDecision(status=False, message="repo-bad-request")
         capability = self._capability()
         cache_status = self._cache_status()
         runtime = self._runtime_snapshot()

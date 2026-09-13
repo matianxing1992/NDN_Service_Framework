@@ -4037,3 +4037,38 @@ which differs from the Spec186 handoff seal
   1.5.3 with bounded `--version`, and reject non-1.5.3 compute preflight.
 - **Lesson**: a runtime policy must be part of candidate identity; version
   prose and PATH lookup are insufficient for reproducible SIF execution.
+
+## 2026-09-13 — Spec186 r39 M01 request did not reach a YOLO provider
+
+- **Area**: T007 MiniNDN host-gate SVS delivery diagnosis.
+- **First boundary**: with `NDNSF_SVS_MAX_PIGGYDATA_BYTES=4096`, the User
+  published the 2,585-byte tiny-ONNX request and recorded `SVS_PUBLISH_DONE`,
+  but all four Providers returned zero ACKs. Route snapshots and the small
+  repository path were available; no Provider entered the YOLO request
+  callback.
+- **Correction**: add an opt-in, bounded `NDNSF_SVS_DIAGNOSTIC` trace at the
+  Provider SVS boundary. It records missing sync ranges and distinguishes a
+  delivered publication rejected by freshness from a publication that never
+  reached `OnRequest`; the default protocol behavior and log volume remain
+  unchanged.
+- **Lesson**: increasing the piggy-data limit and observing a User publish
+  event do not prove Provider delivery. The request publication/fetch path and
+  the Provider freshness decision need independent evidence before changing
+  the SIF or model candidate.
+
+## 2026-09-13 — Spec186 r40 repository route probe failed on segmented signature validation
+
+- **Area**: T007 host-gate diagnostic rerun.
+- **First boundary**: the corrected diagnostic launch reached topology,
+  Controller, and repository startup, but all three bounded `/STATUS` probes
+  failed while resolving the repository's large-response reference with
+  `Segment validation failed: Signature verification failed`; the harness
+  stopped at `REPO_SERVICE_ROUTE_NOT_READY` before the YOLO request.
+- **Correction**: preserve r40 as a failed evidence directory and keep the
+  new SVS diagnostic disabled by default. Do not promote the route probe or
+  infer a Tiger/SIF version fault from this run; repair the segmented response
+  certificate/validator path and rerun the repository barrier first.
+- **Lesson**: a route Interest can reach the Provider and still fail before
+  the application gate. The terminal response reference must pass independent
+  segment validation before repository readiness or YOLO qualification can be
+  claimed.

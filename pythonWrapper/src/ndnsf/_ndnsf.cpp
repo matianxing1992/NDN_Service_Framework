@@ -4028,7 +4028,22 @@ public:
     , m_validator(m_face)
     , m_serveCertificates(serveCertificates)
   {
-    m_controllerCert = getOrCreateIdentity(m_keyChain, m_controllerPrefix);
+    if (auto controllerCert = loadControllerCertificateOverride(m_controllerPrefix)) {
+      // The experiment harness provisions a root-issued Controller
+      // certificate before this binding is constructed.  Select its key and
+      // certificate explicitly: importing the SafeBag can leave a fresh
+      // self-signed certificate as the identity default, and the generic
+      // getOrCreateIdentity() path would then publish a validation loop.
+      m_controllerCert = *controllerCert;
+      std::lock_guard<std::mutex> lock(g_keyChainMutex);
+      auto identity = m_keyChain.getPib().getIdentity(m_controllerPrefix);
+      auto key = identity.getKey(m_controllerCert.getKeyName());
+      m_keyChain.setDefaultKey(identity, key);
+      m_keyChain.setDefaultCertificate(key, m_controllerCert);
+    }
+    else {
+      m_controllerCert = getOrCreateIdentity(m_keyChain, m_controllerPrefix);
+    }
     {
       std::lock_guard<std::mutex> lock(g_keyChainMutex);
       m_keyChain.setDefaultIdentity(m_keyChain.getPib().getIdentity(m_controllerPrefix));

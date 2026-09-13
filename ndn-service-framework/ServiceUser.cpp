@@ -1193,9 +1193,6 @@ namespace ndn_service_framework
         identityCert(encryptionCert),
         signingCert(signingCert),
         attrAuthorityCertificate(attrAuthorityCertificate),
-        // nac_validator(std::move(ndn::security::ValidatorNull())),
-        nacConsumer(m_face, m_keyChain, nac_validator, encryptionCert, attrAuthorityCertificate),
-        nacProducer(m_face, m_keyChain, nac_validator, encryptionCert, attrAuthorityCertificate),
         m_IMS(50000)
     {
         ensureSameIdentity(encryptionCert, signingCert, "ServiceUser");
@@ -1224,6 +1221,12 @@ namespace ndn_service_framework
         }
 
         nac_validator.load(trustSchemaPath);
+        nacConsumer = std::make_unique<ndn::nacabe::Consumer>(
+            m_face, m_keyChain, nac_validator, encryptionCert,
+            attrAuthorityCertificate);
+        nacProducer = std::make_unique<ndn::nacabe::CacheProducer>(
+            m_face, m_keyChain, nac_validator, encryptionCert,
+            attrAuthorityCertificate);
 
         // Register the identity prefix as a route so other processes can
         // fetch this User's signed APP Data (the spec181 grant Data is
@@ -1418,9 +1421,16 @@ namespace ndn_service_framework
         // identity needs a live application to request/renew permissions.
         // The Consumer fetch and permission/status-driven refresh complete
         // asynchronously; protected paths still require installed authority.
-        nacConsumer.obtainDecryptionKey();
-        if (!nacConsumer.readyForDecryption())
+        activeNacConsumer().obtainDecryptionKey();
+        if (!activeNacConsumer().readyForDecryption())
+        {
             NDN_LOG_INFO("NDNSF_NAC_BOOTSTRAP_PENDING role=user");
+            // Controller status installation can invalidate the constructor-
+            // time DKEY fetch before its callback runs.  Re-arm a bounded
+            // readiness probe so the first protected request never races the
+            // asynchronous NAC-ABE bootstrap.
+            scheduleDeferredDkeyRefreshRetry(identity);
+        }
 
         // Opt-in durable runtime status (NDNSF_PERSIST_RUNTIME_STATE, FR-039):
         // re-verify and seed statuses accepted by an earlier process of this
@@ -1466,8 +1476,6 @@ namespace ndn_service_framework
         identityCert(encryptionCert),
         signingCert(signingCert),
         attrAuthorityCertificate(attrAuthorityCertificate),
-        nacConsumer(m_face, m_keyChain, nac_validator, encryptionCert, attrAuthorityCertificate),
-        nacProducer(m_face, m_keyChain, nac_validator, encryptionCert, attrAuthorityCertificate),
         m_IMS(50000),
         m_configManager("/tmp/ndnsf-service-user-local-mock.conf")
     {
@@ -1480,6 +1488,12 @@ namespace ndn_service_framework
         // Load the same trust schema as the production constructor before the
         // fixture pumps their constructor-time public-parameter Interests.
         nac_validator.load(trustSchemaPath);
+        nacConsumer = std::make_unique<ndn::nacabe::Consumer>(
+            m_face, m_keyChain, nac_validator, encryptionCert,
+            attrAuthorityCertificate);
+        nacProducer = std::make_unique<ndn::nacabe::CacheProducer>(
+            m_face, m_keyChain, nac_validator, encryptionCert,
+            attrAuthorityCertificate);
         m_signingInfo = ndn::security::signingByCertificate(signingCert);
         // Opt-in durable runtime status (NDNSF_PERSIST_RUNTIME_STATE, FR-039):
         // re-verify and seed statuses accepted by an earlier process of this
@@ -4546,9 +4560,9 @@ namespace ndn_service_framework
                 return;
             }
             ++*attempts;
-            if (nacConsumer.readyForDecryption())
+            if (activeNacConsumer().readyForDecryption())
                 return;
-            nacConsumer.obtainDecryptionKey();
+            activeNacConsumer().obtainDecryptionKey();
             if (const auto self = weakRetry.lock()) {
                 m_scheduler.schedule(ndn::time::milliseconds(250), *self);
             }
@@ -5053,7 +5067,7 @@ namespace ndn_service_framework
                 ndn::nacabe::SPtrVector<ndn::Data> contentData;
                 ndn::nacabe::SPtrVector<ndn::Data> ckData;
                 std::tie(contentData, ckData) =
-                    (m_testNacProducer ? *m_testNacProducer : nacProducer).produce(key.keyName,
+                    activeNacProducer().produce(key.keyName,
                                         attributes,
                                         ndn::span<const uint8_t>(key.key.data(), key.key.size()),
                                         m_signingInfo);
@@ -7610,6 +7624,17 @@ namespace ndn_service_framework
         if (reference->dataName.empty()) {
             errorMessage = "large response reference has empty Data name";
             return std::nullopt;
+        }
+
+        // The enclosing Response Data has already passed MessageValidator's
+        // configured trust path before this resolver is entered.  Reuse its
+        // signer certificate in the underlying ValidatorConfig used by
+        // SegmentFetcher; otherwise that lower-level validator may attempt a
+        // second network certificate fetch even though the peer certificate
+        // is present in this process's PIB.
+        if (!responseMessage.getSignerCertificate().empty()) {
+            validator->primeSegmentFetcherCertificate(
+                ndn::Name(responseMessage.getSignerCertificate()));
         }
 
         auto completed = std::make_shared<std::atomic<bool>>(false);
@@ -11942,7 +11967,7 @@ void ServiceUser::finishRequestAckOnEventLoop(
             const auto wrapStartUs = timelineSteadyMicroseconds();
             ndn::nacabe::SPtrVector<ndn::Data> contentData, ckData;
             std::tie(contentData, ckData) =
-                (m_testNacProducer ? *m_testNacProducer : nacProducer).produce(key.keyName,
+                activeNacProducer().produce(key.keyName,
                                     std::vector<std::string>{accessAttribute},
                                     ndn::span<const uint8_t>(key.key.data(), key.key.size()),
                                     m_signingInfo);
@@ -12458,7 +12483,7 @@ void ServiceUser::finishRequestAckOnEventLoop(
                   << " plaintextBytes=" << plaintext.size());
         try {
             std::tie(contentData, ckData) =
-                (m_testNacProducer ? *m_testNacProducer : nacProducer).produce(
+                activeNacProducer().produce(
                     messageNameWithoutPrefix,
                     *results,
                     ndn::span<const uint8_t>(plaintext.data(), plaintext.size()),

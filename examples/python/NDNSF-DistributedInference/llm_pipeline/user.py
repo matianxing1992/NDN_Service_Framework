@@ -1239,7 +1239,13 @@ def _configure_tiny_onnx_automatic_planning(client, args) -> None:
         catalog_snapshot_provider=lambda: (snapshot,),
         verify_offer_signature=verify_offer,
         ack_timeout_ms=args.ack_timeout_ms,
-        ack_coverage_roles=roles,
+        # V3 closes the registered ACK window before placement and rejects
+        # caller-supplied role coverage.  Keep the compatibility hint only
+        # for the older V2 path, matching the QWEN configuration above.
+        ack_coverage_roles=(
+            () if bool(getattr(args, "selection_dataflow_v3", False))
+            else roles
+        ),
         canonical_artifact_ensurer=canonical_ensurer,
     )
     args._automatic_adapter = adapter

@@ -1294,16 +1294,29 @@ def install_artifact_collaboration_service(
                 f"REPO_ARTIFACT_ACK_EVALUATE provider={repo_app.provider_name}",
                 flush=True,
             )
-            request = json.loads(bytes(payload).decode("utf-8"))
-            artifact = dict(request["artifact"])
-            size = int(artifact["sizeBytes"])
-            if (
-                request.get("schema") != "ndnsf-repo-store-request-v1"
-                or size < 0
-                or size > repo_app.capacity_bytes
-            ):
-                return AckDecision(
-                    status=False, message="repo-store-invalid-request"
+            raw_payload = bytes(payload)
+            if raw_payload:
+                request = json.loads(raw_payload.decode("utf-8"))
+                artifact = dict(request["artifact"])
+                size = int(artifact["sizeBytes"])
+                if (
+                    request.get("schema") != "ndnsf-repo-store-request-v1"
+                    or size < 0
+                    or size > repo_app.capacity_bytes
+                ):
+                    return AckDecision(
+                        status=False, message="repo-store-invalid-request"
+                    )
+            else:
+                # Request-scoped confidentiality carries an empty discovery
+                # payload during ACK admission.  The encrypted assignment is
+                # validated after Selection by execute(); advertise only the
+                # Repo's current capacity here and use a bounded TTL.
+                size = 0
+                print(
+                    "REPO_ARTIFACT_ACK_DISCOVERY "
+                    f"provider={repo_app.provider_name}",
+                    flush=True,
                 )
             runtime = repo_app._runtime_snapshot()
             depth = int(runtime["queueDepth"]) + int(runtime["inflightWrites"])

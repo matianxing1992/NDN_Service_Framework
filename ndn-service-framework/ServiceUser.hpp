@@ -1131,10 +1131,9 @@ namespace ndn_service_framework{
             void scheduleControllerStatusRefresh(
                 const ndn::Name& serviceName,
                 const PolicyStatusData& status);
-            // Bounded DKEY re-arm retries for a LocalMock whose immediate
-            // refresh was deferred (no fixture-owned Consumer).  The retry
-            // fires only while the Face is pumped and stops as soon as the
-            // Consumer is ready or the attempt bound is exhausted.
+            // Bounded DKEY readiness re-arm retries.  The retry fires only
+            // while the Face is pumped and stops as soon as the Consumer is
+            // ready or the attempt bound is exhausted.
             void scheduleDeferredDkeyRefreshRetry(const ndn::Name& serviceName);
             bool isAcceptablePolicyEpoch(size_t messageEpoch) const;
             bool isAcceptablePolicyEpoch(const ndn::Name& serviceName,
@@ -1667,12 +1666,20 @@ namespace ndn_service_framework{
 
             ndn::nacabe::Consumer& activeNacConsumer()
             {
-                return m_testNacConsumer ? *m_testNacConsumer : nacConsumer;
+                if (m_testNacConsumer)
+                    return *m_testNacConsumer;
+                if (!nacConsumer)
+                    throw std::logic_error("ServiceUser NAC-ABE Consumer is not initialized");
+                return *nacConsumer;
             }
 
             ndn::nacabe::CacheProducer& activeNacProducer()
             {
-                return m_testNacProducer ? *m_testNacProducer : nacProducer;
+                if (m_testNacProducer)
+                    return *m_testNacProducer;
+                if (!nacProducer)
+                    throw std::logic_error("ServiceUser NAC-ABE Producer is not initialized");
+                return *nacProducer;
             }
 
             ndn::Face& m_face;
@@ -1693,14 +1700,17 @@ namespace ndn_service_framework{
             ndn::security::Certificate signingCert;
             ndn::security::Certificate attrAuthorityCertificate;
             
-            ndn::nacabe::Consumer nacConsumer;
+            // NAC-ABE starts constructor-time public-parameter Interests.  It
+            // must be created only after nac_validator has loaded the trust
+            // schema in the owning constructor body.
+            std::unique_ptr<ndn::nacabe::Consumer> nacConsumer;
             std::unique_ptr<ndn::nacabe::Consumer> m_testNacConsumer;
             // LocalMock fixtures do not model the production Controller/AA
             // bootstrap lifecycle.  Keep their refresh path fail-closed until
             // the fixture explicitly completes its bootstrap.
             bool m_isLocalMock = false;
             //ndn::nacabe::Producer nacProducer;
-            ndn::nacabe::CacheProducer nacProducer;
+            std::unique_ptr<ndn::nacabe::CacheProducer> nacProducer;
             std::unique_ptr<ndn::nacabe::CacheProducer> m_testNacProducer;
             ndn::security::SigningInfo m_signingInfo;
             bool m_useTokens = true;
