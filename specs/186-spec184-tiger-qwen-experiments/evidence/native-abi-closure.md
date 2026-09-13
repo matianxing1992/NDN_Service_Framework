@@ -48,3 +48,14 @@ NAC-ABE checks, then stopped at the required pinned Rust tokenizer bridge:
 cargo home are absent. The repository Waf build therefore still has no
 candidate binary to inspect. This closes the ONNX *file-shape* probe only; it
 does not change the `BLOCKED_AFTER_BOUNDARY` verdict.
+
+## Checkpoint 3 — 2026-09-12 NAC-ABE export probe
+
+Forcing the temporary NAC-ABE library ahead of `/usr/local/lib` did not close
+the extension. `_ndnsf.so` still failed at
+`ndn::nacabe::Consumer::clearCache(...)`; `ldd -r` reported the corresponding
+refresh/public-parameter and policy-rotation symbols as unresolved. `nm -D`
+showed that the temporary library exports no definitions for those header
+declarations. The prefix therefore combines newer headers with an older
+library and is rejected. A same-revision NAC-ABE rebuild is required before
+the Waf build can produce a candidate.

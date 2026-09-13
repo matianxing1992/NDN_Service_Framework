@@ -3660,3 +3660,20 @@ are still unobserved.
 - **Lesson**: do not replace a locked compiler/toolchain input with an ad-hoc
   stub or host package; preserve the first missing dependency and resume from
   the same source/dependency tuple when it is supplied.
+
+## 2026-09-12 — Spec186 NAC-ABE header/library ABI mismatch
+
+- **Area**: T006 native loader closure after dependency discovery.
+- **First boundary**: forcing the temporary `/tmp/spec186-nacabe-install`
+  library ahead of `/usr/local/lib` still failed `_ndnsf.so` import at
+  `ndn::nacabe::Consumer::clearCache(...)`; `ldd -r` also listed the related
+  refresh/public-parameter and policy-rotation symbols as unresolved.
+- **Evidence**: `nm -D --defined-only` on the temporary library found no
+  definitions for the methods declared by its installed headers. Waf's
+  existence-only NAC-ABE check therefore cannot establish ABI compatibility.
+- **Interpretation**: the temporary prefix copied a library built from an older
+  NAC-ABE revision. No binary, import or runtime result from this probe is a
+  candidate. The dependency library must be rebuilt from the same source/API
+  revision as the headers, then the full Waf and loader gates rerun.
+- **Lesson**: verify exported symbols and runtime resolution, not only header
+  presence, library path or successful configure output.

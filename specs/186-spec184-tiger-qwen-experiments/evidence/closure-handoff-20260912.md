@@ -20,7 +20,7 @@ or an offline receipt to a runtime qualification result.
 
 | Row | Current state | Smallest recovery input |
 | --- | --- | --- |
-| T005/T006 | `BLOCKED_AFTER_BOUNDARY` | locked Rust `cargo` + offline cargo home, source-sealed ONNX/NAC-ABE/NDN-SVS tuple, clean rebuild, native import/`--help`/`readelf`/`ldd -r` closure |
+| T005/T006 | `BLOCKED_AFTER_BOUNDARY` | locked Rust `cargo` + offline cargo home, same-revision exported NAC-ABE library/headers, source-sealed ONNX/NAC-ABE/NDN-SVS tuple, clean rebuild, native import/`--help`/`readelf`/`ldd -r` closure |
 | T007 | `WAITING_EXTERNAL_INPUT` | complete local MiniNDN environment variables, package/registry/key maps, topology/config and a closed native candidate |
 | T008 | `WAITING_EXTERNAL_INPUT` | actual Qwen3-0.6B model, tokenizer, stage manifest, compatible ONNX or GGUF-Q3 backend and digests |
 | T009–T010 | `WAITING_EXTERNAL_INPUT` | Tiger login/allocation with `sbatch`, GPU UUID/capacity, Apptainer, project storage and NFD route receipt |
