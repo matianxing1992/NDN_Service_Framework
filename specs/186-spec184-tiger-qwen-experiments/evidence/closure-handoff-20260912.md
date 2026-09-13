@@ -14,7 +14,7 @@ or an offline receipt to a runtime qualification result.
 | Implemented | eight strict profiles, deterministic candidate manifests, change-plane invalidation, zero-side-effect pre-dispatch, lifecycle and bounded cleanup | `Experiments/TigerCluster/runtime/spec186_candidate.py`, `jobs/spec184/submit.py`, `tests/test_spec186_candidate.py`; 73 focused/regression tests pass |
 | Wired | effective argv/env/bind rendering maps YOLO Y-A/Y-N and Qwen stage-manifest entrypoints; scheduler call follows the gate | `evidence/design-code-convergence.md`, `evidence/pre-dispatch-boundary-20260912.md` |
 | Executed | offline prepare/check for all eight candidates; fresh Y-A/Y-B/Y-N attempts stopped at declared environment preflight with no protocol startup | `evidence/pre-dispatch-boundary-20260912.md`, `evidence/minindn-yolo-boundary-20260912.md` |
-| Measured | no accepted numerical, token, CUDA/GPU, cross-node, or Tiger timing result yet | T005–T012 remain open or waiting |
+| Measured | standalone YOLOv8n ORT CUDA reference only; no accepted Spec186 protocol, `[1,50,6]` oracle, token, cross-node or candidate timing result | T005–T012 remain open or waiting |
 
 ## Blocking rows and recovery inputs
 

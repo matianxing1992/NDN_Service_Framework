@@ -3778,3 +3778,18 @@ are still unobserved.
   or execute a Spec186 SIF with the cached 1.3.4/1.5.3 pair.
 - **Lesson**: a successful GPU allocation does not make an image portable;
   Apptainer version parity is a prerequisite for exact SIF composition.
+
+## 2026-09-12 — Spec186 standalone reference receipt lost by cleanenv
+
+- **Area**: standalone YOLO GPU substrate reference.
+- **First boundary**: the first `itiger02` ORT CUDA run completed model
+  execution, then the in-container receipt writer raised `KeyError: 'SIF'`
+  because `apptainer exec --cleanenv` removed the host environment variables
+  used only for metadata.
+- **Correction**: preserve the failed run identity and rerun in a new
+  `spec186-standalone-yolov8n-r2` directory using fixed container paths and
+  explicit ORT thread limits. The new receipt records 350 CUDA profile events,
+  a 4.262384 ms measured request and the raw `[1,84,8400]` output hash.
+- **Lesson**: metadata needed after a clean-container boundary must be passed
+  as sealed inputs or container paths; a successful kernel execution is not a
+  durable experiment receipt until the writer completes.
