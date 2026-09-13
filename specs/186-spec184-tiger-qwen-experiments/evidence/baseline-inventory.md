@@ -29,7 +29,7 @@ source seal.
 | CPU/RAM | 6 logical CPUs; `MemTotal=10,179,596 kB`; `MemAvailable=6,800,852 kB` | keep build and local runs bounded; max build parallelism `-j4` |
 | C++ toolchain | `g++ 9.4.0` (`/usr/bin/g++`) | record in candidate; rebuild if toolchain changes |
 | Python | `Python 3.8.10` | existing Python orchestration entrypoints can be inspected/run |
-| Apptainer | `/usr/local/bin/apptainer`, version `1.3.4` | local SIF inspection/build capability; no claim of Tiger execution |
+| Apptainer | `/usr/local/bin/apptainer`, version `1.5.3` (local install switched on 2026-09-12) | local SIF inspection/build capability aligned with Tiger compute; no claim of Tiger execution |
 | MiniNDN | `minindn` command not installed | real local MiniNDN run is currently blocked until the project runner/dependency is supplied |
 | NDN tools | `/usr/local/bin/ndnsec`, `/usr/local/bin/nfdc`; `nfd` path not found in command lookup | identity tooling exists; complete local topology still needs runtime closure |
 | Waf | `waf` command not installed in PATH | use repository wrapper/build tree only after T005 convergence |
@@ -69,11 +69,13 @@ are capability evidence, not experiment results.
 
 ## Tiger compute preflight
 
-The external capability probe is recorded in
+The local runtime switch is recorded in
+[`local-apptainer-20260912.md`](local-apptainer-20260912.md). The external capability probe is recorded in
 [`tiger-preflight-20260912.md`](tiger-preflight-20260912.md). It allocated
 `itiger05` with an RTX 6000 Ada (48 GiB, driver `560.28.03`) and verified
 Slurm/project storage plus compute-node Apptainer `1.5.3-1.el9` through
 `apptainer --version`. The login node reports Apptainer `1.3.4-1.el9`; the
 compute-node `apptainer version` subcommand hangs under a five-second bound and
-is retained as a boundary. This is resource readiness only; no candidate was
-staged or executed.
+is retained as a boundary. Login-node SIF execution is outside the workflow;
+only the allocated compute-node runtime is used for Tiger jobs. This is
+resource readiness only; no candidate was staged or executed.

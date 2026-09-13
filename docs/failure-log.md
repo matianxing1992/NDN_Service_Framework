@@ -3793,3 +3793,19 @@ are still unobserved.
 - **Lesson**: metadata needed after a clean-container boundary must be passed
   as sealed inputs or container paths; a successful kernel execution is not a
   durable experiment receipt until the writer completes.
+
+## 2026-09-12 — Spec186 local Apptainer 1.5.3 full-target timeout
+
+- **Area**: local runtime release switch before T009/T010.
+- **First boundary**: after configuring Apptainer v1.5.3 for `/usr/local`, the
+  bounded `make -C builddir -j4` generated the main binary and then exceeded
+  its 300-second bound in the bash-completion Go generator. A direct list of
+  CNI output paths also failed because the Makefile exposes the aggregate
+  `cniplugins` target rather than individual build rules.
+- **Correction**: run the support targets separately (`cniplugins`, starter
+  and offsetpreload), generate the prefix-specific config, and install the
+  complete non-SUID runtime files explicitly. Version/help probes then passed
+  with `/usr/local/bin/apptainer` 1.5.3.
+- **Lesson**: a successful main binary does not imply a complete Apptainer
+  installation; install and probe starter, CNI, config and runtime paths
+  separately, with bounded generators and no version fallback.

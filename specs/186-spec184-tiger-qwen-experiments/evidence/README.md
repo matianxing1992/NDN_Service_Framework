@@ -14,6 +14,7 @@ of the stopping point; it is not a qualification result.
 | `minindn-yolo-boundary-20260912.md` | fresh Y-A/Y-B/Y-N attempts | environment preflight stopped before startup |
 | `minindn-qwen06b-inventory.md` | Qwen3-0.6B model/backend inventory | compatible model tuple absent |
 | `tiger-preflight-20260912.md` | Tiger Slurm/GPU/project/Apptainer preflight | compute GPU available; SIF/runtime composition still pending |
+| `local-apptainer-20260912.md` | local Apptainer release switch | local runtime is now 1.5.3 and aligned with Tiger compute; exact Spec186 SIF still pending |
 | `standalone-yolo-reference-20260912.md` | Same-model YOLOv8n ORT CUDA reference | CUDA substrate PASS only; old SIF, not Spec186 qualification |
 | `closure-handoff-20260912.md` | implemented/wired/executed/measured reconciliation | branch remains `IN_PROGRESS` with ordered recovery gates |
 

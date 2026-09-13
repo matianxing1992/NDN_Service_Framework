@@ -24,7 +24,7 @@ or an offline receipt to a runtime qualification result.
 | T007 | `WAITING_EXTERNAL_INPUT` | complete local MiniNDN environment variables, package/registry/key maps, topology/config and a closed native candidate |
 | T008 | `WAITING_EXTERNAL_INPUT` | actual Qwen3-0.6B model, tokenizer, stage manifest, compatible ONNX or GGUF-Q3 backend and digests |
 | T009.a | `VERIFIED` | `evidence/tiger-preflight-20260912.md` records Slurm allocation, GPU UUID/capacity, project storage and compute-node Apptainer `--version`; the preflight script is now bounded |
-| T009–T010 | `WAITING_EXTERNAL_INPUT` | local Apptainer 1.3.4 must match compute Apptainer 1.5.3 (or a compatible target partition must be selected), then exact source-sealed SIF/app, NFD route and staged candidate receipt |
+| T009–T010 | `WAITING_EXTERNAL_INPUT` | local Apptainer 1.5.3 now matches compute Apptainer 1.5.3; next inputs are an exact source-sealed Spec186 SIF/app, NFD route and staged candidate receipt |
 | T011 | `WAITING_EXTERNAL_INPUT` | T008 model closure plus T009 resource closure; then run the dedicated Qwen profile |
 | T012 | `NOT_STARTED` | a passing T010 normal run and an independent new allocation |
 
