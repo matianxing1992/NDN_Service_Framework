@@ -3764,3 +3764,17 @@ are still unobserved.
 - **Lesson**: every container capability used for qualification must be
   probed on the allocated compute node with a bounded command; login-node
   version output is not execution evidence.
+
+## 2026-09-12 — Spec186 local/compute Apptainer release mismatch
+
+- **Area**: T006/T009 release compatibility gate.
+- **First boundary**: all sampled `bigTiger` GPU nodes (`itiger01`, `itiger02`
+  and `itiger07`) report Apptainer `1.5.3-1.el9`, while the experiment host
+  provides Apptainer `1.3.4`. The release workflow requires the local builder
+  and allocated compute runtime to match semantically before a SIF is
+  promoted.
+- **Correction**: record the mismatch as a hard pre-dispatch boundary and
+  repair the compute probe to use bounded `apptainer --version`; do not build
+  or execute a Spec186 SIF with the cached 1.3.4/1.5.3 pair.
+- **Lesson**: a successful GPU allocation does not make an image portable;
+  Apptainer version parity is a prerequisite for exact SIF composition.
