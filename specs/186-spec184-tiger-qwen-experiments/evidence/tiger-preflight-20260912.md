@@ -36,6 +36,14 @@ exited `127` because the old image lacks `libboost_system.so.1.71.0`. This is
 evidence that the old SIF cannot host the Spec186 app layer; it is not a
 Spec186 runtime result and must not be promoted.
 
+The same SIF's compute-node `apptainer inspect --json` reports release
+`spec174-local-candidate-r24-b0bbca30` and source seal
+`sha256:9766e37fcedd176a4316e795142db3106287b85cb0102f367b267d136f4d0127`,
+while the current Spec186 source handoff is sealed as
+`sha256:597c44a97b34655dfb67b9fc3bff3693b844f5cc1f10624870554bdee8e658e2`.
+The source identity mismatch independently rejects this SIF before any
+protocol or GPU test.
+
 Reproduction commands:
 
 ```bash

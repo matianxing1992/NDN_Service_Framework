@@ -3870,6 +3870,12 @@ are still unobserved.
   does not establish ABI compatibility; the base SIF identity and loader
   closure must be verified together before any Tiger submission.
 
+The compute-node `apptainer inspect --json` independently labels that SIF as
+`spec174-local-candidate-r24-b0bbca30` with source seal
+`sha256:9766e37fcedd176a4316e795142db3106287b85cb0102f367b267d136f4d0127`,
+which differs from the Spec186 handoff seal
+`sha256:597c44a97b34655dfb67b9fc3bff3693b844f5cc1f10624870554bdee8e658e2`.
+
 ## 2026-09-13 — Spec186 source handoff required clean dependency worktrees
 
 - **Area**: T006.c source-sealed 1.5.3 build inputs.
