@@ -4195,3 +4195,35 @@ which differs from the Spec186 handoff seal
   strict profile, JSON and Spec186 checks.
 - **Lesson**: validate hash length and resolve it with `git rev-parse` before
   binding a source identity into candidate profiles or receipts.
+
+## 2026-09-13 — Spec186 r55 first G3 invocation omitted campaign identity
+
+- **Area**: T006.c host-gate evidence generation.
+- **First boundary**: the first current-source M01 run completed the real
+  four-Provider tiny-ONNX path, but its `spec175-case-result.json` carried an
+  empty `campaignId` because the bounded invocation did not pass
+  `--campaign-id`; the result could not be accepted by the canonical G3
+  manifest generator.
+- **Correction**: preserve r54 as a diagnostic receipt and rerun once with
+  the explicit campaign `spec175-M01-1750001`. r55 then generated and passed
+  the canonical host manifest and validator.
+- **Lesson**: a successful application trace is not a reproducible campaign
+  receipt until seed, campaign, source seal, topology and result identity are
+  all present.
+
+## 2026-09-13 — Spec186 r6 application does not compose with the historical base SIF
+
+- **Area**: T006.c exact base-plus-application composition.
+- **First boundary**: mounting the current r6 application bundle into the
+  cached Apptainer 1.5.3 base SIF failed `ldd -r`: the historical base lacks
+  the required `ServiceRegistration`/`ServiceUser` symbols and exports an
+  older ONNX Runtime ABI, so `libndnsf-distributed-inference.so` requires
+  `VERS_1.26.0` and `OrtGetApiBase` that the cached runtime does not provide.
+  The provider `--help` therefore exited nonzero before application startup.
+- **Correction**: reject the cached SIF as a Spec186 candidate; keep r55 as
+  host-only evidence and do not claim a layered runtime. Build or obtain a
+  source-sealed 1.5.3 base carrying the matching Core/ONNX ABI, then rerun the
+  full loader matrix and exact composition receipt with the r6 read-only app.
+- **Lesson**: Apptainer version alignment alone does not establish runtime
+  compatibility; exact library SONAME, symbol and ONNX Runtime version
+  closure must be checked inside the selected SIF before Tiger submission.
