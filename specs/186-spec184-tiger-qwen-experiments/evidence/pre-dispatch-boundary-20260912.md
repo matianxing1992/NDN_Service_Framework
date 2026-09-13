@@ -1,8 +1,8 @@
 # Spec186 pre-dispatch receipts
 
-**Date:** 2026-09-12  
-**Source:** `1e93f0d5` plus the current Spec186 collector  
-**Command:** `python3 Experiments/TigerCluster/jobs/spec184/submit.py prepare/check`  
+**Date:** 2026-09-12
+**Source:** `1e93f0d5` plus the current Spec186 collector
+**Command:** `python3 Experiments/TigerCluster/jobs/spec184/submit.py prepare/check`
 **Remote side effects:** `ssh=0`, `rsync=0`, `staging=0`, `sbatch=0` for every row
 
 All eight profile manifests were prepared offline. The check command returned a
