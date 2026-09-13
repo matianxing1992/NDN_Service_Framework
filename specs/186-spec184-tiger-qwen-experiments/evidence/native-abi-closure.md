@@ -200,6 +200,10 @@ they mix an older Core/DI ABI (including the singular tokenizer decoder API)
 and cannot link the current provider without unresolved symbols. That attempt
 is recorded in `docs/failure-log.md` and is not runtime evidence.
 
+The repair is committed as `47511483` (`fix(spec186): make native provider
+help explicit`), layered on the frozen Spec186 baseline rather than silently
+changing that baseline.
+
 The source repair therefore remains unpromoted until the locked Rust tokenizer
 bridge, ONNX full-protobuf prefix, current Core/DI objects and same-revision
 NDN-SVS/NAC-ABE libraries are rebuilt together. The next valid receipt must
