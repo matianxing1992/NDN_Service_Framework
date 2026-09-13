@@ -3826,3 +3826,30 @@ are still unobserved.
 - **Lesson**: a small CLI fix still changes the candidate source identity;
   compile success or an old executable cannot replace a clean full-closure
   rebuild and runtime loader probe.
+
+## 2026-09-13 — Spec186 closed-toolchain resolver selected Linuxbrew `ld`
+
+- **Area**: T006 clean Waf configuration.
+- **First boundary**: the first reconfiguration saw Linuxbrew's `ld` through
+  the ambient `PATH`; the closed-toolchain resolver rejected it before creating
+  a usable build graph.
+- **Correction**: pin the build environment to the selected `/usr` toolchain
+  (`PATH=$RUST_PREFIX/bin:/usr/bin:/bin`, `--toolchain-root=/usr`) and record
+  the compiler/linker identity in the native build manifest. No source or
+  dependency change was made.
+- **Lesson**: a clean build tree is insufficient when the ambient linker can
+  change; candidate closure must pin the complete compiler and linker path.
+
+## 2026-09-13 — Spec186 native probe selected an ambient incompatible NAC-ABE
+
+- **Area**: T006 Python extension/runtime identity probe.
+- **First boundary**: the official native-build script was run without the
+  exact dependency `LD_LIBRARY_PATH`; the loader selected `/usr/local/lib` and
+  failed on `ndn::nacabe::Consumer::clearCache(...)` even though the matching
+  `.deps/nac-abe-spec179-official/lib/libnac-abe.so` exports it.
+- **Correction**: rerun the canonical import, runtime probe and identity
+  verifier with the matching NAC-ABE, NDN-SVS, ONNX Runtime, ONNX and system
+  directories in a fixed order. `SPEC180_NATIVE_IDENTITY_OK` and canonical
+  import then passed.
+- **Lesson**: `LD_LIBRARY_PATH` is part of the native candidate identity;
+  success under an ambient loader path is not portable runtime evidence.

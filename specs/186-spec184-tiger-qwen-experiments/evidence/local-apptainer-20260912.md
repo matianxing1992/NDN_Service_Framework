@@ -10,9 +10,9 @@ The local experiment host now uses Apptainer 1.5.3 as its only installed
 Apptainer runtime. The previous root-owned `/usr/local/bin/apptainer` 1.3.4
 installation was replaced; no 1.3.4 fallback is kept in the local executable,
 starter, offset-preload, CNI, or configuration paths. Tiger login-node
-Apptainer is not used to build or execute SIF images. Tiger jobs execute on
-allocated compute nodes, which were independently observed at
-`1.5.3-1.el9`.
+Apptainer is not used to build or execute SIF images, so its 1.3.4 package is
+outside the NDNSF-DI runtime path. Tiger jobs execute on allocated compute
+nodes, which were independently observed at `1.5.3-1.el9`.
 
 ## Build and installation
 
@@ -47,7 +47,8 @@ $ /usr/local/bin/apptainer help
 ```
 
 The active PATH therefore resolves every unqualified `apptainer` invocation
-used by the local NDNSF-DI and Tiger preparation scripts to 1.5.3. This host
+used by the local NDNSF-DI and Tiger preparation scripts to 1.5.3. No local
+1.3.4 executable is retained as a fallback. This host
 still has no GPU, Slurm, or MiniNDN runtime, so this switch is a local runtime
 precondition and is not a Spec186 protocol qualification result.
 

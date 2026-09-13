@@ -63,6 +63,33 @@ def file_digest(path: Path) -> str:
     return digest.hexdigest()
 
 
+def tree_digest(path: Path) -> str:
+    """Hash an immutable application directory by relative file and content."""
+    root = Path(path)
+    if not root.is_dir():
+        raise OSError("not a directory: " + str(root))
+    digest = hashlib.sha256()
+    # The manifest stores this digest, so exclude it from the content set and
+    # avoid an impossible self-referential hash.
+    files = sorted(item for item in root.rglob("*")
+                   if item.is_file() and item.name != "bundle-manifest.json")
+    for item in files:
+        relative = item.relative_to(root).as_posix().encode("utf-8")
+        digest.update(relative)
+        digest.update(b"\0")
+        digest.update(bytes.fromhex(file_digest(item)))
+        digest.update(b"\n")
+    return digest.hexdigest()
+
+
+def asset_digest(path: Path, *, allow_directory: bool = False) -> str:
+    if path.is_file():
+        return file_digest(path)
+    if allow_directory and path.is_dir():
+        return tree_digest(path)
+    raise OSError("asset is neither a file nor an allowed directory: " + str(path))
+
+
 def _duplicate_pairs(pairs: Sequence[Tuple[str, Any]]) -> Dict[str, Any]:
     result: Dict[str, Any] = {}
     for key, value in pairs:
@@ -389,7 +416,8 @@ def _inside(path: Path, root: Path) -> bool:
         return False
 
 
-def _check_asset(asset: Mapping[str, Any], label: str, failures: list[str]) -> None:
+def _check_asset(asset: Mapping[str, Any], label: str, failures: list[str],
+                 *, allow_directory: bool = False) -> None:
     path = asset.get("path")
     expected = asset.get("sha256")
     if path is None:
@@ -399,11 +427,11 @@ def _check_asset(asset: Mapping[str, Any], label: str, failures: list[str]) -> N
     target = Path(path)
     if expected == "0" * 64:
         failures.append("PLACEHOLDER_DIGEST:" + label)
-    if not target.is_file():
+    if not target.is_file() and not (allow_directory and target.is_dir()):
         failures.append("FILE_MISSING:" + label)
         return
     try:
-        actual = file_digest(target)
+        actual = asset_digest(target, allow_directory=allow_directory)
         if actual != expected:
             failures.append("FILE_DIGEST_MISMATCH:" + label)
     except OSError:
@@ -520,9 +548,13 @@ def pre_dispatch(profile_path: Path, candidate_path: Path, *, repo_root: Path,
             value = candidate.get(section, {})
             for key, asset in value.items():
                 if isinstance(asset, Mapping) and "path" in asset:
-                    _check_asset(asset, section + "." + key, failures)
+                    _check_asset(
+                        asset, section + "." + key, failures,
+                        allow_directory=(section == "application" and key == "bundle"),
+                    )
         _check_asset(profile["evidence"]["collector"], "evidence.collector", failures)
-        _check_asset(profile["runtime"]["application"]["bundle"], "application.bundle", failures)
+        _check_asset(profile["runtime"]["application"]["bundle"],
+                     "application.bundle", failures, allow_directory=True)
         _check_asset(profile["runtime"]["harness"]["collector"], "harness.collector", failures)
         launcher = Path(profile["runtime"]["harness"]["launcher"])
         if not launcher.is_file():

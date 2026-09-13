@@ -16,15 +16,16 @@ opened, and no application or scheduler campaign was submitted.
 | GPU allocation | `srun --partition=bigTiger --gres=gpu:1` allocated `itiger05` | PASS |
 | GPU device | NVIDIA RTX 6000 Ada, `GPU-eaf346e3-e220-8633-e374-f6595d1e2ff8`, 49140 MiB total / 48482 MiB free, driver `560.28.03` | PASS |
 | Compute Apptainer binary | `/usr/bin/apptainer`; `apptainer --version` reports `1.5.3-1.el9` on `itiger05` | PASS |
-| Apptainer subcommand | `apptainer version` on `itiger05` did not return within 5 seconds; login host reports `1.3.4-1.el9` | BOUNDARY |
+| Apptainer subcommand | `apptainer version` on `itiger05` did not return within 5 seconds; login host reports `1.3.4-1.el9` but is not a SIF execution host | BOUNDARY |
 
 The compute-node `--version` form is the usable version probe for the next
 bounded job. The hanging `version` subcommand is retained as an operational
 failure and must not be used in a job readiness loop. Login and compute
-Apptainer versions differ, so any SIF must be built or validated with the
-compute-node binary that will execute it; the cached Spec183 SIF remains
-ineligible because its source seal and compression format do not match this
-candidate/runtime.
+The login-node package is outside the NDNSF-DI runtime path. Local SIF build
+and inspection use only the installed Apptainer 1.5.3; any SIF must be built
+or validated with the compute-node 1.5.3 binary that will execute it. The
+cached Spec183 SIF remains ineligible because its source seal and compression
+format do not match this candidate/runtime.
 
 Reproduction commands:
 

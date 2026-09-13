@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-12
 **Candidate scope:** profile and lifecycle implementation on `SPEC184Experiments`; source seal `575b43cc93bbed29932303caf3d09974f1585af7`.
-**Verdict:** `BLOCK`
+**Verdict:** `PASS (implementation convergence); BLOCK (runtime qualification)`
 
 ## Verified wiring
 
@@ -103,3 +103,19 @@ rebuilt and the new provider passes the full import, entrypoint, RPATH and
 `ldd -r` closure together with an exact source-sealed base SIF/application
 composition. The Qwen3, MiniNDN and Tiger execution prerequisites are
 unchanged.
+
+## Checkpoint 7 — 2026-09-13 native closure and layered app receipt
+
+The source repair and all native consumers were rebuilt in a fresh
+`build-spec186-r4` tree. The provider `--help`, requester `--help`, authority
+`--help`, canonical `_ndnsf` import, official Spec180 identity verifier,
+`readelf -d`, RUNPATH and native `ldd -r` checks now pass together. The
+application layer has a content-addressed local bundle with digest
+`badf6a0afb36e43d02f7103cba36383bf8f0336e2310a0fd546c33223734734d`.
+
+This closes the implementation convergence items that were controlled by the
+provider entrypoint and stale native objects. The qualification verdict stays
+`BLOCK`: the bundle is not paired with an exact Spec186 source-sealed base SIF,
+the local host has no MiniNDN runtime, and Tiger still needs staged NFD
+identities/routes and external normal/negative receipts. Qwen3-0.6B remains an
+external input. No component receipt is promoted to a protocol or GPU PASS.

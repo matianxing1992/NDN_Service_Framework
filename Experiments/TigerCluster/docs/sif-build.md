@@ -32,7 +32,9 @@ bash Experiments/TigerCluster/adapters/slurm-apptainer/scripts/build-local-sif.s
   --expected-apptainer <qualified-compute-version>
 ```
 
-这是需替换占位值的路径示例，本轮未构建；原脚本的`--help`打印用法并返回2，沿用既有行为。
+这是需替换占位值的路径示例。本机实验 host 的唯一 Apptainer 是
+`/usr/local/bin/apptainer` 1.5.3；Tiger login node 的 1.3.4 不参与 SIF
+构建或执行。原脚本的`--help`打印用法并返回2，沿用既有行为。
 SIF、缓存、私有身份、模型和大日志不入Git。镜像在容器builder内编译原生组件；宿主驱动构建，不提供宿主.so或venv作为运行依赖。
 
 ## Existing Images

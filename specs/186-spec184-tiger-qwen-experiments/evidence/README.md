@@ -8,8 +8,8 @@ of the stopping point; it is not a qualification result.
 | --- | --- | --- |
 | `baseline-inventory.md` | exact source, host tools, model inventory | Tiger/GPU/Qwen3 inputs absent locally |
 | `portability-audit.md` | caller paths, ownership and cross-host assumptions | external staging and route receipt pending |
-| `design-code-convergence.md` | implementation-to-contract audit | `BLOCK` until native/runtime closure |
-| `native-abi-closure.md` | Waf, ONNX/NAC-ABE, import/help, RPATH/`ldd` | pinned Rust tokenizer input absent |
+| `design-code-convergence.md` | implementation-to-contract audit | implementation `PASS`; runtime qualification blocked by exact SIF/external receipts |
+| `native-abi-closure.md` | Waf, ONNX/NAC-ABE, import/help, RPATH/`ldd`, app bundle | native host closure PASS; exact source-sealed base SIF still pending |
 | `pre-dispatch-boundary-20260912.md` | all eight candidate prepare/check receipts | zero remote side effects; no runtime started |
 | `minindn-yolo-boundary-20260912.md` | fresh Y-A/Y-B/Y-N attempts | environment preflight stopped before startup |
 | `minindn-qwen06b-inventory.md` | Qwen3-0.6B model/backend inventory | compatible model tuple absent |

@@ -57,6 +57,16 @@ def test_candidate_digest_is_deterministic_and_change_plane_is_explicit():
     assert candidate.earliest_restart_gate(first, changed) == "T007/T008"
 
 
+def test_application_bundle_directory_digest_is_content_addressed(tmp_path):
+    bundle = tmp_path / "bundle"
+    (bundle / "bin").mkdir(parents=True)
+    (bundle / "bin" / "provider").write_bytes(b"provider-v1")
+    first = candidate.tree_digest(bundle)
+    assert first == candidate.tree_digest(bundle)
+    (bundle / "bin" / "worker").write_bytes(b"worker-v1")
+    assert candidate.tree_digest(bundle) != first
+
+
 def test_pre_dispatch_rejects_without_remote_side_effects(tmp_path):
     profile = candidate.load_profile(profile_path(), repo_root=ROOT)
     manifest = candidate.build_candidate_manifest(profile, repo_root=ROOT)

@@ -48,6 +48,10 @@ python3 Experiments/TigerCluster/jobs/spec184/submit.py local \
 The Qwen case is accepted only when the model descriptor identifies actual Qwen3-0.6B
 weights and a compatible backend. A tiny fixture produces `SMOKE_ONLY`, not model PASS.
 
+For local SIF work, use the only installed runtime, `/usr/local/bin/apptainer`
+1.5.3. The Tiger login node's 1.3.4 package is metadata only; SIF execution is
+performed on allocated compute nodes reporting Apptainer 1.5.3.
+
 ## 4. TigerCluster
 
 ```bash

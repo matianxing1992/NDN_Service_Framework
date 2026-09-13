@@ -210,3 +210,49 @@ NDN-SVS/NAC-ABE libraries are rebuilt together. The next valid receipt must
 bind the new provider digest and rerun canonical import, `--help`,
 `readelf -d`, `ldd -r` and RPATH checks; no unresolved-symbol or wrapper binary
 is accepted.
+
+## Checkpoint 12 — 2026-09-13 source-sealed dependency rebuild and host closure
+
+The provider repair was rebuilt from a fresh `build-spec186-r4` tree with the
+locked dependency inputs and no more than four concurrent Waf jobs. The Rust
+1.90.0/cargo archives matched the Spec182 hashes, the tokenizer bridge built
+with `cargo build --release --locked`, and ONNX 1.17 full-protobuf archives
+were regenerated under `/tmp/spec186-onnx-prefix-r3`. Waf configuration passed
+the explicit `/usr` clang 10 toolchain, NDN-SVS source/build pair, official
+NAC-ABE prefix, ONNX Runtime, protobuf, Boost 1.71 and Rust bridge checks.
+
+The required native targets completed `188/188` in `15m32.801s`:
+
+| Artifact | SHA-256 | Check |
+| --- | --- | --- |
+| `examples/di-native-provider` | `8811f9642ded342a5de711ecf6382dca477a5e6a6eb832aa60a4b336ed26daf4` | `--help` returns 0 and prints usage |
+| `libndn-service-framework.so` | `3758c40515595bd7ed9073282420cc6d722dd7046633a6bcb5cdff208b2a9db5` | native `ldd -r` closure 0 |
+| `libndnsf-distributed-inference.so` | `8ee9b29e44f4449645a92308ed828749e1e67b2725b909fa6b0d2d5e9e9a122a` | native `ldd -r` closure 0 |
+| `DI_NativeOnnxAssemblyWorker` | `0d7f9b0ad65a8be3070ed0097befccfbea72cc5e296fbe8e1c890ae6f4b73e95` | native `ldd -r` closure 0 |
+| `_ndnsf.cpython-38-x86_64-linux-gnu.so` | `de9bf9319345a1e64b55b502b0f83f290e62876ccc177fef3751503426820f1b` | canonical import and official identity verify pass |
+
+The provider, requester and authority entrypoints all return zero for their
+usage probes. `readelf -d` records the explicit NDN-SVS/NAC-ABE RUNPATH and
+the application `$ORIGIN` path; `/usr/bin/ldd -r` reports no native
+`not found`, loader error or undefined symbol for the framework, DI, provider,
+worker, requester or authority. The extension's raw report still lists Python
+C API symbols supplied by the embedding interpreter; canonical import is the
+authoritative extension check. `python3 scripts/spec180_native_build.py verify
+--build-dir build-spec186-r4` returned
+`SPEC180_NATIVE_IDENTITY_OK`.
+
+An immutable local app bundle was assembled at
+`.codex-tmp/spec186-app-bundle-r4` with nine files and 215,347,565 bytes. Its
+content digest is
+`badf6a0afb36e43d02f7103cba36383bf8f0336e2310a0fd546c33223734734d`; the
+bundle contains the four native roles, `libndnsf-distributed-inference`, the
+Python extension, both experiment launchers and the native build manifest.
+This is an app-layer build receipt, not a promoted Tiger candidate: the exact
+source-sealed base SIF and a matching container execution receipt are still
+missing.
+
+The first official-script runtime probe omitted the exact dependency
+`LD_LIBRARY_PATH` and selected an incompatible `/usr/local` NAC-ABE library,
+causing `Consumer::clearCache` to be unresolved. Re-running with the sealed
+build, NAC-ABE, NDN-SVS, ONNX Runtime, ONNX and system library directories in
+the declared order passed; the failure is retained in `docs/failure-log.md`.

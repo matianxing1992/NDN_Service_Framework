@@ -22,8 +22,10 @@ commit、单一 SIF 或单次测试都不是候选。
 ```
 
 The actual manifest MUST record file sizes, modes, producer, creation command and
-relative evidence references. Private keys, model bytes and SIF bytes stay outside Git;
-only their hashes and declared storage locations are recorded.
+relative evidence references. An application bundle may be an immutable directory;
+its digest is the ordered hash of every relative file path and file content, excluding
+the self-referential `bundle-manifest.json`. Private keys, model bytes and SIF bytes stay
+outside Git; only their hashes and declared storage locations are recorded.
 
 ## Invalidation
 
