@@ -183,3 +183,8 @@ all SSH/rsync/staging/Slurm side-effect counters at zero. The cached
 not reused: its Apptainer labels identify Spec174 source seal
 `sha256:9766e37fcedd176a4316e795142db3106287b85cb0102f367b267d136f4d0127`,
 not the Spec186 baseline.
+
+The generated `build-spec186`, Cargo, ONNX and Python build trees were removed
+after these probes to keep the experiment host within its storage budget. They
+are intentionally outside Git; a future run must rebuild the application
+bundle and extension before the profile's application hashes can be checked.
