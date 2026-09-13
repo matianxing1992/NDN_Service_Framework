@@ -25,7 +25,7 @@ Qwen 先在本机 CPU 验证 Qwen3-0.6B。实际权重若与现有 ONNX CPU runn
 
 **Testing**: focused unit/mutation tests → design-code convergence audit → complete unit/integration → MiniNDN → exact-SIF local → Tiger single-node → Tiger two-node → reuse。
 
-**Target Platform**: 本地 Linux CPU/MiniNDN；TigerCluster Linux compute nodes、Slurm 和 Apptainer；本机与 Tiger 的物理工具版本分别记录在 effective profile。
+**Target Platform**: 本地 Linux CPU/MiniNDN；TigerCluster Linux compute nodes、Slurm 和 Apptainer 1.5.3。实验主机只保留 `/usr/local/bin/apptainer` 1.5.3；Tiger 登录节点的 1.3.4 仅是元数据入口，不参与 SIF 构建/执行，也不是本机回退版本。物理 GPU、节点和 account 仍记录在 allocation receipt。
 
 **Project Type**: experiment/deployment qualification layer over a native distributed-inference application。
 

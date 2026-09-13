@@ -163,6 +163,7 @@ GPU，再做双节点 YOLO；节点间角色通过 NDN 传递真实依赖，不�
 - 本机 MiniNDN 需要 root 或等价 namespace 能力；这是实验 harness 的隔离要求，不应被删除来迁就 Tiger。
 - Qwen3.6-27B 的正式资格仍属于外部输入；0.6B 结果不能关闭该行。
 - Tiger 物理 GPU、Slurm account/partition、Apptainer 版本、节点名和项目存储位置在 T001 记录，不写死为当前一次 allocation。
+- 本机 NDNSF-DI 的 SIF 构建与检查只使用 Apptainer 1.5.3；Tiger 登录节点的 1.3.4 仅用于 SSH/Slurm 元数据，不作为 SIF 运行时或兼容回退。
 - 稳定基础库 SIF 和频繁变化的 DI/UAV 应用 bundle 分层；应用以只读方式挂载，禁止宿主库覆盖容器内基础库。
 - 不做性能显著性结论；warmup/measured 只用于正确性和复现证据。
 
