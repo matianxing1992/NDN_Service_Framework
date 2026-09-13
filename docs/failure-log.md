@@ -3581,4 +3581,20 @@ are still unobserved.
   `/home/tianxing/NDN/ndn-svs/build` prefixes first in `LD_LIBRARY_PATH`; retain
   `/usr/local/lib` only after them for remaining ndn-cxx/ndnsd dependencies.
 - **Evidence**:
-  [`r11-b9-g3-cross-process-dependency-boundary-20260910.md`](../specs/182-native-di-python-bindings/evidence/r11-b9-g3-cross-process-dependency-boundary-20260910.md)
+[`r11-b9-g3-cross-process-dependency-boundary-20260910.md`](../specs/182-native-di-python-bindings/evidence/r11-b9-g3-cross-process-dependency-boundary-20260910.md)
+
+## 2026-09-12 — Spec186 baseline model inventory search timeout
+
+- **Area**: Spec186 Qwen3-0.6B and external model inventory.
+- **First boundary**: an initial broad `find` over `/home/tianxing`, `/mnt`,
+  `/data` and `/project` exceeded the command timeout before producing a
+  complete result. No experiment, model qualification or source mutation was
+  inferred from that command.
+- **Root cause**: unbounded traversal of large historical checkouts and result
+  trees on a memory-constrained host.
+- **Correction**: repeat only against targeted NDNSF roots with a bounded
+  depth; record explicit hashes for the two YOLO ONNX inputs and the unrelated
+  Qwen2.5 GGUF, then mark Qwen3-0.6B as `WAITING_EXTERNAL_INPUT`.
+- **Lesson**: model discovery must be path-scoped and digest-bound before a
+  candidate is prepared; an available Qwen artifact with a different family,
+  size or backend cannot substitute for Qwen3-0.6B.

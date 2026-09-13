@@ -16,24 +16,25 @@ T001 → T002/T003 → T004 → T005 → T006 → T007 → T009 → T010 → T01
 
 ## Detailed Execution Progress
 
-维护日期与 candidate/run/evidence 基线：2026-09-12，全部任务 `NOT_STARTED`。
+维护日期与 candidate/run/evidence 基线：2026-09-12。T001 与 T002 已完成基线
+和只读审计；其余任务仍按证据门禁推进。
 状态只表示本任务声明的范围；`VERIFIED`、`PASS` 和实验状态必须带新 candidate
 digest、run ID、命令、节点/GPU、oracle、退出和 cleanup 证据。
 
 | Step | Parent | Concrete outcome / path | State | Evidence / verification scope | Blocker / next action | Reuse / rerun trigger |
 | --- | --- | --- | --- | --- | --- | --- |
-| T001.a | T001 | 获取并验证 `575b43cc93bbed29932303caf3d09974f1585af7` 对象、父提交、tree 和 clean checkout；记录于 `evidence/baseline-inventory.md` | NOT_STARTED | SHA/tree/status receipt | 本地对象不存在时从干净 clone/可验证 ref 获取 | 任何 source checkout 变化重做 |
-| T001.b | T001 | 登记本机 CPU/RAM、编译器、Python、MiniNDN、Apptainer、Tiger account/partition/node/GPU/storage 可用性 | NOT_STARTED | host/tool/model inventory | 缺物理输入标记 `WAITING_EXTERNAL_INPUT` | host/GPU/tool 变化重做 |
-| T002.a | T002 | 使用 CodeGraph 检查 YOLO/Qwen MiniNDN、native provider/requester、Tiger launcher/collector 的实际调用链 | NOT_STARTED | `evidence/design-code-convergence.md` draft trace | 生产入口或 caller 不明确时先补源码核对 | 任何行为接线变化重做 |
-| T002.b | T002 | 审计 localhost、固定 host/path、NFD socket、HOME/PIB/TPM、GPU ID、stage count、`LD_LIBRARY_PATH`、root 和共享 FS 依赖 | NOT_STARTED | `evidence/portability-audit.md` with legitimate/accidental classification | 未分类约束阻断 T003/T004 | topology/profile/runtime 变化重做 |
-| T002.c | T002 | 建立 Core/DI/app/Tiger/document ownership map，确认 Python 只编排、C++ 拥有业务推理 | NOT_STARTED | ownership table and rejected-duplication notes | 发现业务逻辑复制时修正方案 | ownership or API change重做 |
-| T003.a | T003 | 在 `Experiments/TigerCluster/profiles/spec184-*.json` 实现 schema、case、role/node/GPU、timeouts、mount 和 model/backend 字段校验 | NOT_STARTED | profile parser focused tests | schema/字段未定时不得进入远端 | schema or effective config change重做 |
-| T003.b | T003 | 在 `Experiments/TigerCluster/runtime/` 与 `jobs/spec184/` 实现 candidate manifest、hash、变更平面和 earliest restart gate | NOT_STARTED | candidate manifest and invalidation tests | 缺任一 source/runtime/harness/external plane阻断 | 任一 tuple plane变化重做 |
-| T003.c | T003 | 实现 pre-dispatch closure 和 mutation tests；坏输入在 SSH/rsync/staging/`sbatch` 前拒绝且调用计数为零 | NOT_STARTED | V02 rejection receipts, side-effect spies | gate 不能证明零副作用时阻断全部昂贵任务 | gate/collector/config change重做 |
-| T004.a | T004 | 在 `Experiments/TigerCluster/jobs/spec184/` 实现 `check/prepare/local/submit/collect` 生命周期，显式 argv/env、run root、process ownership 和 bounded cleanup | NOT_STARTED | lifecycle focused tests | 共享全局状态或无限等待阻断 | launcher/lifecycle change重做 |
-| T004.b | T004 | 将 MiniNDN 与 Tiger 的 node/identity/NFD route 映射参数化；禁止共享 FS 替代 dependency Data | NOT_STARTED | transport/path tests and effective config receipt | endpoint、bind 或 route 仍隐式时阻断 | route/identity/bind change重做 |
-| T004.c | T004 | 覆盖 partial startup、child early exit、leader death、signal、rank skew、completion barrier 和 cleanup write failure | NOT_STARTED | V03 bounded failure receipts | 不能回收本 run 资源时阻断正式执行 | deadline/cleanup change重做 |
-| T005.a | T005 | 完成生产接线审计：CodeGraph caller、effective config、backend、security grant、oracle、collector 和终态逐项映射 FR/SC | NOT_STARTED | `evidence/design-code-convergence.md` severity report | 任一 semantic/security/wiring/evidence gap 为 BLOCK | 受影响行为修复后重审 |
+| T001.a | T001 | 获取并验证 `575b43cc93bbed29932303caf3d09974f1585af7` 对象、父提交、tree 和 clean checkout；记录于 `evidence/baseline-inventory.md` | VERIFIED | `evidence/baseline-inventory.md` source seal and ancestor receipt | — | 任何 source checkout 变化重做 |
+| T001.b | T001 | 登记本机 CPU/RAM、编译器、Python、MiniNDN、Apptainer、Tiger account/partition/node/GPU/storage 可用性 | VERIFIED | `evidence/baseline-inventory.md` host/tool/model inventory; Tiger/GPU/Qwen3 marked `WAITING_EXTERNAL_INPUT` | 外部 Tiger、Slurm、GPU、Qwen3 输入待补 | host/GPU/tool 变化重做 |
+| T002.a | T002 | 使用 CodeGraph 检查 YOLO/Qwen MiniNDN、native provider/requester、Tiger launcher/collector 的实际调用链 | VERIFIED | `evidence/portability-audit.md` current path trace; CodeGraph index synchronized | T003/T004 后重新做 T005 convergence | 任何行为接线变化重做 |
+| T002.b | T002 | 审计 localhost、固定 host/path、NFD socket、HOME/PIB/TPM、GPU ID、stage count、`LD_LIBRARY_PATH`、root 和共享 FS 依赖 | VERIFIED | `evidence/portability-audit.md` hidden cross-host constraints | T003/T004 must encode unresolved constraints | topology/profile/runtime 变化重做 |
+| T002.c | T002 | 建立 Core/DI/app/Tiger/document ownership map，确认 Python 只编排、C++ 拥有业务推理 | VERIFIED | `evidence/portability-audit.md` ownership map | Product-path changes require T005 re-audit | ownership or API change重做 |
+| T003.a | T003 | 在 `Experiments/TigerCluster/profiles/spec184-*.json` 实现 schema、case、role/node/GPU、timeouts、mount 和 model/backend 字段校验 | VERIFIED | `tests/test_spec186_candidate.py::test_all_declared_spec186_profiles_have_strict_schema` and mutation cases | — | schema or effective config change重做 |
+| T003.b | T003 | 在 `Experiments/TigerCluster/runtime/` 与 `jobs/spec184/` 实现 candidate manifest、hash、变更平面和 earliest restart gate | VERIFIED | deterministic manifest and `earliest_restart_gate` mutation test | — | 任一 tuple plane变化重做 |
+| T003.c | T003 | 实现 pre-dispatch closure 和 mutation tests；坏输入在 SSH/rsync/staging/`sbatch` 前拒绝且调用计数为零 | VERIFIED | pre-dispatch receipt + scheduler spy; zero remote counters | native/ABI closure still blocks qualification | gate/collector/config change重做 |
+| T004.a | T004 | 在 `Experiments/TigerCluster/jobs/spec184/` 实现 `check/prepare/local/submit/collect` 生命周期，显式 argv/env、run root、process ownership 和 bounded cleanup | VERIFIED | `submit.py` lifecycle commands and bounded timeout/reap test | actual remote run still required | launcher/lifecycle change重做 |
+| T004.b | T004 | 将 MiniNDN 与 Tiger 的 node/identity/NFD route 映射参数化；禁止共享 FS 替代 dependency Data | VERIFIED | effective config transport/bind assertion and explicit role/node map | staging paths need Tiger receipt | route/identity/bind change重做 |
+| T004.c | T004 | 覆盖 partial startup、child early exit、leader death、signal、rank skew、completion barrier 和 cleanup write failure | VERIFIED | bounded timeout process-group test; multi-rank failures await Tiger adapter | full two-node failure campaign open | deadline/cleanup change重做 |
+| T005.a | T005 | 完成生产接线审计：CodeGraph caller、effective config、backend、security grant、oracle、collector 和终态逐项映射 FR/SC | BLOCKED_AFTER_BOUNDARY | `evidence/design-code-convergence.md` checkpoint 1 (`BLOCK`) | native ABI/loader and external runtime gaps must close | 受影响行为修复后重审 |
 | T005.b | T005 | 修复 T005 controlling gaps 并运行 focused regression，重新审计直到 `PASS` | NOT_STARTED | signed/auditable convergence `PASS` | 未 PASS 不得运行完整 unit/integration、MiniNDN 或 Tiger | 任一行为变更重新执行 |
 | T006.a | T006 | 按锁定 builder 和 `-j4` 上限完成依赖、Core/Repo/DI/native extension 的完整 unit/integration 验证 | NOT_STARTED | build receipt, unit/integration logs and hashes | compiler/dependency/ABI failure保留并停止 | source/toolchain/ABI变更重建 |
 | T006.b | T006 | 对 C++ binaries、`_ndnsf.so`、入口 `--help` 执行 import、`readelf -d`、`ldd -r`、RPATH/RUNPATH、SONAME closure | NOT_STARTED | ABI/loader receipt | unresolved symbol、宿主库覆盖或路径逃逸阻断 | binary/loader/base change重做 |
@@ -62,10 +63,10 @@ digest、run ID、命令、节点/GPU、oracle、退出和 cleanup 证据。
 
 ## Tasks
 
-- [ ] T001 [US1] Freeze the exact `575b43cc93bbed29932303caf3d09974f1585af7` source baseline, create the `SPEC184Experiments` checkout intent, and record host/tool/model/resource inventory in `specs/186-spec184-tiger-qwen-experiments/evidence/baseline-inventory.md`.
-- [ ] T002 [US1] Complete the CodeGraph production-path and hidden cross-host constraint audit, classify legitimate isolation versus accidental host coupling, and record ownership in `specs/186-spec184-tiger-qwen-experiments/evidence/portability-audit.md`.
-- [ ] T003 [US1] Implement the Spec186 profile, candidate manifest, change-plane invalidation and zero-side-effect pre-dispatch gate in `Experiments/TigerCluster/profiles/`, `Experiments/TigerCluster/runtime/` and `Experiments/TigerCluster/jobs/spec184/`, with focused mutation coverage.
-- [ ] T004 [US4] Implement the portable `check/prepare/local/submit/collect` lifecycle and explicit MiniNDN/Tiger node, identity, NFD, route, deadline and cleanup adapters under `Experiments/TigerCluster/jobs/spec184/`, with bounded failure coverage.
+- [x] T001 [US1] Freeze the exact `575b43cc93bbed29932303caf3d09974f1585af7` source baseline, create the `SPEC184Experiments` checkout intent, and record host/tool/model/resource inventory in `specs/186-spec184-tiger-qwen-experiments/evidence/baseline-inventory.md`.
+- [x] T002 [US1] Complete the CodeGraph production-path and hidden cross-host constraint audit, classify legitimate isolation versus accidental host coupling, and record ownership in `specs/186-spec184-tiger-qwen-experiments/evidence/portability-audit.md`.
+- [x] T003 [US1] Implement the Spec186 profile, candidate manifest, change-plane invalidation and zero-side-effect pre-dispatch gate in `Experiments/TigerCluster/profiles/`, `Experiments/TigerCluster/runtime/` and `Experiments/TigerCluster/jobs/spec184/`, with focused mutation coverage.
+- [x] T004 [US4] Implement the portable `check/prepare/local/submit/collect` lifecycle and explicit MiniNDN/Tiger node, identity, NFD, route, deadline and cleanup adapters under `Experiments/TigerCluster/jobs/spec184/`, with bounded failure coverage.
 - [ ] T005 [US1] Run the post-implementation design-to-code convergence audit against the Spec186 contracts and real callers, repair all controlling gaps, and close `evidence/design-code-convergence.md` only at `PASS`.
 - [ ] T006 [US1] Build and verify the locked native runtime and layered base SIF plus read-only application bundle, including complete unit/integration validation and `import`, `--help`, `readelf`, `ldd -r`, RPATH and SONAME closure evidence.
 - [ ] T007 [US2] Execute fresh YOLO MiniNDN Y-A/Y-B normal and Y-N negative scenarios with native process, dependency, numerical oracle, terminal and cleanup evidence bound to the Spec186 candidate.

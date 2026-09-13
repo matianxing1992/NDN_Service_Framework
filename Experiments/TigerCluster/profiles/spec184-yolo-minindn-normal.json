@@ -1,0 +1,26 @@
+{
+  "schemaVersion": "ndnsf-spec186-experiment-profile-v1",
+  "candidate": {"id": "spec186-yolo-local-v1", "sourceCommit": "575b43cc93bbed29932303caf3d09974f1585af7", "sourceSealSha256": "4d1a35463d9917ee0bad5e7d2e37b486d9a5778c65300959cc63715ada8ca947"},
+  "case": "yolo-minindn-normal",
+  "topology": {"mode": "minindn", "nodes": 1, "hosts": ["local"], "nfdEndpoints": [{"host": "local", "port": 6363}]},
+  "roles": [
+    {"name": "BackboneNeck", "identity": "/spec186/BackboneNeck", "node": "local", "gpu": -1, "backend": "onnxruntime-cpu", "service": "/ObjectDetection/YOLOv8/BackboneNeck", "binary": "${REPO_ROOT}/build/examples/di-native-provider"},
+    {"name": "DetectShard0", "identity": "/spec186/DetectShard0", "node": "local", "gpu": -1, "backend": "onnxruntime-cpu", "service": "/ObjectDetection/YOLOv8/DetectShard0", "binary": "${REPO_ROOT}/build/examples/di-native-provider"},
+    {"name": "DetectShard1", "identity": "/spec186/DetectShard1", "node": "local", "gpu": -1, "backend": "onnxruntime-cpu", "service": "/ObjectDetection/YOLOv8/DetectShard1", "binary": "${REPO_ROOT}/build/examples/di-native-provider"},
+    {"name": "Merge", "identity": "/spec186/Merge", "node": "local", "gpu": -1, "backend": "onnxruntime-cpu", "service": "/ObjectDetection/YOLOv8/Merge", "binary": "${REPO_ROOT}/build/examples/di-native-provider"}
+  ],
+  "runtime": {
+    "baseSif": {"path": "/project/tma1/ndnsf-di/candidates/spec186/base-runtime.sif", "sha256": "b6710fd696a7f962f67f67a54278d92a15babb856c4af428a3f04ba54dc83285"},
+    "builder": {"path": "${REPO_ROOT}/waf", "sha256": "fa2771fed870fe9bf7a67dd13e09770725f4142fcd5481d9796e624759950483"},
+    "abiManifest": {"path": "${REPO_ROOT}/specs/186-spec184-tiger-qwen-experiments/fixtures/abi-manifest.json", "sha256": "dee862112bcc894907a59805ecbdc774c34982ca50ae3fabe893bad83caa0ead"},
+    "allowCpuFallback": true,
+    "application": {"bundle": {"path": "${REPO_ROOT}/build/examples/di-native-provider", "sha256": "68956263e2a30e72abd8bf4955225f0f0db9abecef4aa98cf5f44f2089d1ea57"}, "bundleSha256": "68956263e2a30e72abd8bf4955225f0f0db9abecef4aa98cf5f44f2089d1ea57", "entrypoint": "${REPO_ROOT}/build/examples/di-native-provider", "extension": "${REPO_ROOT}/pythonWrapper/build/lib.linux-x86_64-3.8/ndnsf/_ndnsf.cpython-38-x86_64-linux-gnu.so"},
+    "harness": {"launcher": "${REPO_ROOT}/Experiments/NDNSF_DI_YoloAckDriven_Minindn.py", "collector": {"path": "${REPO_ROOT}/Experiments/TigerCluster/runtime/spec186_candidate.py", "sha256": "5152e614af2cd6c27d9857cd22a22e3c7c36a11704366dd68643dfb9066ce65b"}}
+  },
+  "model": {"family": "YOLOv8n", "format": "onnx", "backend": "onnxruntime-cpu", "model": {"path": "/home/tianxing/NDN/QMUAS_Drone/DetectionModule/yolov8n.onnx", "sha256": "4d2f387218a088c40a19dd8b41067ba729504f37d258f133377221b148e2f373"}, "tokenizer": null},
+  "workload": {"input": {"path": "${REPO_ROOT}/specs/186-spec184-tiger-qwen-experiments/fixtures/yolo-input.json", "sha256": "631c9f7ab33d4c264c61a4611287fde816b65efa8d622e096c3795ad5543f3e6"}, "oracle": {"path": "${REPO_ROOT}/specs/186-spec184-tiger-qwen-experiments/fixtures/yolo-oracle.json", "sha256": "c319a20313ace7abcc5c13d7d10d1cfad89d2780e562a116ce33c9edfb341f97"}, "warmup": 1, "measured": 3, "requestMode": "normal"},
+  "security": {"identityRoot": "${REPO_ROOT}/Experiments/TigerCluster/.keys/spec186-local", "permissions": {"path": "${REPO_ROOT}/specs/186-spec184-tiger-qwen-experiments/fixtures/permissions.json", "sha256": "65049e14a45d37108688a1f0cb6a1f53608766f549a554b082e31ae8dc0ca8a2"}},
+  "timeouts": {"startupSeconds": 90, "requestSeconds": 60, "completionSeconds": 90, "cleanupSeconds": 10},
+  "resources": {"account": "local", "partition": "local", "cpusPerNode": 4, "memory": "8G", "gpus": 0},
+  "evidence": {"root": "${REPO_ROOT}/specs/186-spec184-tiger-qwen-experiments/evidence", "collector": {"path": "${REPO_ROOT}/Experiments/TigerCluster/runtime/spec186_candidate.py", "sha256": "5152e614af2cd6c27d9857cd22a22e3c7c36a11704366dd68643dfb9066ce65b"}}
+}

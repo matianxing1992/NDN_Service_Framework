@@ -1,5 +1,6 @@
 /images/*
 !/images/README.md
+/\.keys/
 /results/
 /.cache/
 __pycache__/
