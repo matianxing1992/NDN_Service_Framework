@@ -5,6 +5,10 @@ description: Prepare or review NDNSF source and SIF delivery, diagnose container
 
 # iTiger NDNSF Operations
 
+## Apptainer Build Version
+
+所有后续NDNSF SIF构建统一使用Apptainer **1.5.3**（基础、完整SIF及使用Apptainer的分层builder）。先核对实际binary/version/hash；不符先升级，不把 `--expected-apptainer 1.5.3` 改成旧版以绕过门禁。登录节点只传输/提交时不决定构建版本；实际计算作业内另记版本，漂移先解决。历史记录不重写，旧候选不自动重新合格。规范来源：`Experiments/TigerCluster/docs/sif-build.md#apptainer-version-policy`；本规则优先于历史Spec示例的版本选择。
+
 ## Authority And Ownership
 
 从目标 checkout 执行 `git rev-parse --show-toplevel` 确定 repo root；以下仓库路径均从该 root 解析，不能从个人安装的 skill 目录推导仓库位置。

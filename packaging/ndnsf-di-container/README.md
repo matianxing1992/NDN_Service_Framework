@@ -55,7 +55,7 @@ packaging/ndnsf-di-container/adapters/slurm-apptainer/scripts/build-local-sif.sh
   --record /path/to/release/local-sif-build-record.json \
   --source-seal /path/to/release/source-seal.json \
   --apptainer /absolute/path/to/compute-matched/apptainer \
-  --expected-apptainer COMPUTE_PACKAGE_VERSION
+  --expected-apptainer 1.5.3
 ```
 
 `COMPUTE_PACKAGE_VERSION` must come from a bounded Slurm allocation on the
