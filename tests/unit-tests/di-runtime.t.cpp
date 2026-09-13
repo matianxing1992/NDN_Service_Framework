@@ -1,6 +1,9 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/api.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp"
+#include "tests/fixtures/spec182/native-model-fixture.hpp"
 
 #include <boost/test/unit_test.hpp>
 
@@ -11,13 +14,14 @@
 #include <condition_variable>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <iterator>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
 #include <string>
 #include <utility>
-#include <unistd.h>
+#include <vector>
 
 namespace {
 
@@ -54,6 +58,8 @@ void writeEd25519KeyPair(const std::filesystem::path& privatePath,
 class TempRuntimeConfig
 {
 public:
+  std::string canonicalGraphDigest;
+
   TempRuntimeConfig()
     : m_root(std::filesystem::temp_directory_path() /
              ("spec185-runtime-" + std::to_string(::getpid()) + "-" +
@@ -130,6 +136,85 @@ public:
     return write(name, json);
   }
 
+  std::filesystem::path makeValidPreparationConfig(const std::string& name)
+  {
+    const auto configPath = makeConfig(name);
+    std::ifstream oracleFile("tests/fixtures/spec182/yolo-semantic-oracle.json");
+    if (!oracleFile.good())
+      throw std::runtime_error("YOLO semantic oracle is unavailable");
+    ndnsf::di::NativeJson oracle;
+    oracleFile >> oracle;
+    ndnsf::di::NativeCanonicalSource source;
+    const auto hex = oracle.at("model_hex").get<std::string>();
+    for (std::size_t i = 0; i < hex.size(); i += 2)
+      source.modelBytes.push_back(static_cast<std::uint8_t>(
+        std::stoul(hex.substr(i, 2), nullptr, 16)));
+    {
+      std::ofstream model(m_root / "model.onnx", std::ios::binary);
+      model.write(reinterpret_cast<const char*>(source.modelBytes.data()),
+                  static_cast<std::streamsize>(source.modelBytes.size()));
+    }
+    std::ifstream graphOracleFile("tests/fixtures/spec182/onnx-planning-graph-oracle.json");
+    if (!graphOracleFile.good())
+      throw std::runtime_error("ONNX planning graph oracle is unavailable");
+    ndnsf::di::NativeJson graphOracles;
+    graphOracleFile >> graphOracles;
+    ndnsf::di::NativeJson graphOracle;
+    for (const auto& item : graphOracles) {
+      if (item.at("model_hex") == hex) {
+        graphOracle = item;
+        break;
+      }
+    }
+    if (graphOracle.is_null())
+      throw std::runtime_error("matching ONNX planning graph oracle is unavailable");
+    canonicalGraphDigest = graphOracle.at("canonical_graph_digest").get<std::string>();
+    const auto control = ndnsf::di::NativeAssemblyControl{
+      std::chrono::steady_clock::now() + std::chrono::seconds(30), [] {},
+      1 << 20, 1 << 20};
+    auto descriptor = ndnsf::di::fixture::completeModel({
+      "yolo26n", ndnsf::di::nativePlanningDigest("YOLOFixture-content"),
+      ndnsf::di::nativePlanningDigest("YOLOFixture-semantics"),
+      oracle.at("graph_digest"), "onnx", "float32", "YOLOFixture", "1"});
+    const auto identity = ndnsf::di::canonicalOnnxSourceIdentity(source, control);
+    const auto planning = ndnsf::di::inspectNativeOnnxSourceGraph(source, descriptor, control);
+    descriptor.graphDigest = planning.graph.graphDigest;
+    if (identity.graphDigest != canonicalGraphDigest)
+      throw std::runtime_error("ONNX canonical graph oracle differs from native identity");
+    ndnsf::di::NativeJson catalog = ndnsf::di::NativeJson::object();
+    catalog["schema"] = "ndnsf-di-native-request-catalog-v1";
+    catalog["model"] = ndnsf::di::nativeParseJson(descriptor.canonicalJson());
+    catalog["source"] = { {"file", "model.onnx"}, {"data_name", "/fixture/source"},
+      {"digest", ndnsf::di::nativePlanningDigest(source.modelBytes.data(), source.modelBytes.size())},
+      {"model_manifest_digest", ndnsf::di::nativePlanningDigest("fixture-manifest")},
+      {"canonical_graph_digest", canonicalGraphDigest} };
+    catalog["recipe"] = {
+      {"artifact_profile_digest", ndnsf::di::nativePlanningDigest("fixture-profile")},
+      {"assembler_descriptor_digest", ndnsf::di::nativePlanningDigest("fixture-assembler-v1")},
+      {"backend_abi", "fixture-abi"}, {"precision", descriptor.precision},
+      {"quantization", "none"}, {"layout", "NCHW"}, {"padding", "none"},
+      {"protection_epoch", "fixture-epoch"}, {"max_source_bytes", 1 << 20},
+      {"max_assembled_bytes", 1 << 20}, {"max_nodes", 100} };
+    catalog["publication"] = {{"artifact_root", "/fixture/artifacts"}};
+    catalog["input_format"] = "JSON";
+    catalog["max_payload_bytes"] = 32;
+    const ndnsf::di::NativeJson component = {
+      {"candidate_id", "semantic-v1"}, {"priority", 1},
+      {"roles", {"Front", "Branch", "Merge"}},
+      {"node_names_by_role", ndnsf::di::NativeJson::object()},
+      {"input_ingress_role", "Front"}, {"result_egress_role", "Merge"},
+      {"merge_kind", "NATIVE_POSTPROCESS"},
+      {"candidate_digest", oracle.at("registered_digest")},
+      {"semantic_partition", oracle.at("partition")} };
+    catalog["splitter"] = {{"kind", "YOLO"}, {"components", {component}}};
+
+    std::ifstream input(configPath);
+    ndnsf::di::NativeJson runtime;
+    input >> runtime;
+    runtime["catalog"] = catalog;
+    return write(name, ndnsf::di::nativeCanonicalJson(runtime));
+  }
+
   std::filesystem::path rewrite(const std::string& sourceName,
                                 const std::string& outputName,
                                 const std::string& needle,
@@ -197,6 +282,85 @@ BOOST_AUTO_TEST_CASE(ValidPinnedConfigurationOpensAndDefersModelSource)
   // operator metadata only; source acquisition belongs to T003/T004 prepare.
   std::filesystem::remove(configPath);
   BOOST_CHECK_NO_THROW(runtime->user());
+}
+
+BOOST_AUTO_TEST_CASE(PrepareReportsSourceFailureAtPreparationBoundary)
+{
+  TempRuntimeConfig files;
+  const auto configPath = files.makeConfig("requester.json");
+  RuntimeConfig config;
+  config.nativeConfigPath = configPath.string();
+  config.maxPreparedBytes = 4 * 1024 * 1024;
+  config.preparationJobTimeout = std::chrono::seconds(3);
+
+  auto runtime = Runtime::open(config);
+  auto user = runtime->user();
+  BOOST_CHECK_EXCEPTION(user.prepare(), DiError,
+                        [] (const DiError& error) {
+                          return error.code() == "PREPARATION_SOURCE_UNAVAILABLE" &&
+                                 error.boundary() == "preparation";
+                        });
+  runtime->close();
+  BOOST_CHECK_EXCEPTION(user.prepare(), DiError,
+                        [] (const DiError& error) {
+                          return error.code() == "RUNTIME_CLOSED";
+                        });
+  BOOST_CHECK(runtime->drain(std::chrono::seconds(1)));
+}
+
+BOOST_AUTO_TEST_CASE(PrepareSuccessUsesTheProductionRuntimeEntry)
+{
+  TempRuntimeConfig files;
+  const auto configPath = files.makeValidPreparationConfig("prepared-requester.json");
+  RuntimeConfig config;
+  config.nativeConfigPath = configPath.string();
+  config.maxPreparedBytes = 4 * 1024 * 1024;
+  config.preparationJobTimeout = std::chrono::seconds(5);
+
+  auto runtime = Runtime::open(config);
+  auto prepared = runtime->user().prepare();
+  std::ifstream oracleFile("tests/fixtures/spec182/yolo-semantic-oracle.json");
+  ndnsf::di::NativeJson oracle;
+  oracleFile >> oracle;
+  BOOST_CHECK_EQUAL(prepared.manifest().modelName, "yolo26n");
+  BOOST_CHECK_EQUAL(prepared.manifest().taskName, "task");
+  BOOST_CHECK_EQUAL(prepared.manifest().canonicalGraphDigest, files.canonicalGraphDigest);
+  BOOST_CHECK(prepared.receipt().origin == ndnsf::di::PreparationReceipt::Origin::Fetched);
+  ndnsf::di::PrepareOptions invalid;
+  invalid.timeout = std::chrono::milliseconds(-1);
+  BOOST_CHECK_EXCEPTION(runtime->user().prepare("default", invalid), DiError,
+                        [] (const DiError& error) {
+                          return error.code() == "INVALID_ARGUMENT" &&
+                                 error.boundary() == "preparation";
+                        });
+
+  const auto unsupportedPath = files.makeValidPreparationConfig("unsupported-task.json");
+  std::ifstream unsupportedInput(unsupportedPath);
+  ndnsf::di::NativeJson unsupportedRuntimeConfig;
+  unsupportedInput >> unsupportedRuntimeConfig;
+  // Keep the descriptor and its planning graph identity valid; exercise the
+  // production capability gate by requesting a task outside the adapter's
+  // declared task set.
+  unsupportedRuntimeConfig["request"]["task"] = "other-task";
+  files.write("unsupported-task.json", ndnsf::di::nativeCanonicalJson(unsupportedRuntimeConfig));
+  RuntimeConfig unsupportedConfig;
+  unsupportedConfig.nativeConfigPath = unsupportedPath.string();
+  unsupportedConfig.maxPreparedBytes = 4 * 1024 * 1024;
+  auto unsupportedRuntime = Runtime::open(unsupportedConfig);
+  BOOST_CHECK_EXCEPTION(unsupportedRuntime->user().prepare(), DiError,
+                        [] (const DiError& error) {
+                          return error.code() == "UNSUPPORTED_CAPABILITY" &&
+                                 error.boundary() == "preparation";
+                        });
+  unsupportedRuntime->close();
+  BOOST_CHECK(unsupportedRuntime->drain(std::chrono::seconds(2)));
+
+  auto asyncHandle = runtime->user().prepareAsync();
+  auto asyncPrepared = asyncHandle.result(std::chrono::seconds(5));
+  BOOST_CHECK(asyncHandle.status() == ndnsf::di::PreparationStatus::Ready);
+  BOOST_CHECK_EQUAL(asyncPrepared.manifest().modelName, "yolo26n");
+  runtime->close();
+  BOOST_CHECK(runtime->drain(std::chrono::seconds(2)));
 }
 
 BOOST_AUTO_TEST_CASE(InvalidRuntimeLimitsAndProfileFailClosed)
@@ -522,5 +686,31 @@ BOOST_AUTO_TEST_CASE(RuntimeDrainAsyncDoesNotImplicitlyClose)
   runtime->close();
   BOOST_CHECK(runtime->drain(std::chrono::seconds(2)));
 }
+
+BOOST_AUTO_TEST_SUITE(Spec185RuntimeT004)
+
+BOOST_AUTO_TEST_CASE(BlockingPrepareFromCoreWorkerReturnsWouldDeadlock)
+{
+  TempRuntimeConfig files;
+  RuntimeConfig config;
+  config.nativeConfigPath = files.makeConfig("requester.json").string();
+  auto runtime = Runtime::open(config);
+  auto user = runtime->user();
+  std::promise<std::string> code;
+  auto future = code.get_future();
+  auto subscription = runtime->drainAsync(std::chrono::seconds(2),
+    [&] (std::exception_ptr, bool) {
+      try { user.prepare(); }
+      catch (const DiError& error) { code.set_value(error.code()); }
+      catch (...) { code.set_value("UNKNOWN"); }
+    });
+  BOOST_REQUIRE(future.wait_for(std::chrono::seconds(2)) == std::future_status::ready);
+  BOOST_CHECK_EQUAL(future.get(), "WOULD_DEADLOCK");
+  subscription.cancel();
+  runtime->close();
+  BOOST_CHECK(runtime->drain(std::chrono::seconds(2)));
+}
+
+BOOST_AUTO_TEST_SUITE_END()
 
 BOOST_AUTO_TEST_SUITE_END()

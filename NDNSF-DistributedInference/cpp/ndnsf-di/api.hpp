@@ -1,12 +1,14 @@
 #ifndef NDNSF_DI_API_HPP
 #define NDNSF_DI_API_HPP
 
-// Stable application entry point.  Runtime/User are defined by the owning
-// implementation batch; later batches add PreparedModel and request values.
+// Stable application entry point. Runtime/User and the immutable PreparedModel
+// view are defined by the owning implementation batches; later batches add
+// request values.
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp"
 
-// Keep this umbrella dependency-light: Runtime.hpp itself imports only the
-// standard library and does not expose the native planner or Python binding.
+// Keep this umbrella dependency-light: the public PreparedModel view imports
+// only value types and does not expose the native planner or Python binding.
 #include <cstdint>
 #include <memory>
 

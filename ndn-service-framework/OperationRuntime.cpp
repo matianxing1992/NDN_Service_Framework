@@ -95,12 +95,38 @@ bool isQuiescentLocked(const detail::RuntimeState& state)
          state.timers.empty();
 }
 
+bool evaluateExtraReady(const std::shared_ptr<detail::RuntimeState::DrainWaiter>& waiter,
+                        bool& failed) noexcept
+{
+  failed = false;
+  if (!waiter->extraReady)
+    return true;
+  try {
+    return waiter->extraReady();
+  }
+  catch (...) {
+    // External owner probes are advisory callbacks.  A throwing probe must
+    // complete its waiter with failure instead of escaping the worker or
+    // leaving a waiter that can never be notified again.
+    failed = true;
+    return true;
+  }
+}
+
 void notifyDrained(const std::shared_ptr<detail::RuntimeState>& state)
 {
   state->condition.notify_all();
 }
 
 } // namespace
+
+void
+OperationRuntime::notifyWaiters() noexcept
+{
+  auto state = m_state;
+  if (state)
+    state->condition.notify_all();
+}
 
 detail::RuntimeState::~RuntimeState()
 {
@@ -364,13 +390,22 @@ OperationSubscription
 OperationRuntime::drainAsync(std::chrono::milliseconds timeout,
                              std::function<void(bool)> callback)
 {
-  return drainAsync(timeout, std::move(callback), true);
+  return drainAsync(timeout, std::move(callback), true, {});
 }
 
 OperationSubscription
 OperationRuntime::drainAsync(std::chrono::milliseconds timeout,
                              std::function<void(bool)> callback,
                              bool closeRuntime)
+{
+  return drainAsync(timeout, std::move(callback), closeRuntime, {});
+}
+
+OperationSubscription
+OperationRuntime::drainAsync(std::chrono::milliseconds timeout,
+                             std::function<void(bool)> callback,
+                             bool closeRuntime,
+                             std::function<bool()> extraReady)
 {
   if (timeout.count() < 0)
     throw std::invalid_argument("operation runtime drain timeout is negative");
@@ -385,6 +420,7 @@ OperationRuntime::drainAsync(std::chrono::milliseconds timeout,
   waiter->callback = std::move(callback);
   waiter->deadline = std::chrono::steady_clock::now() + timeout;
   waiter->closeRuntime = closeRuntime;
+  waiter->extraReady = std::move(extraReady);
   std::weak_ptr<detail::RuntimeState::DrainWaiter> weakWaiter = waiter;
   control->cancelFn = [state, weakWaiter] {
     auto waiter = weakWaiter.lock();
@@ -402,8 +438,14 @@ OperationRuntime::drainAsync(std::chrono::milliseconds timeout,
     // Recheck and register under one lock.  The worker cannot mark drained or
     // exit between the decision and insertion, so no waiter can be stranded.
     std::lock_guard<std::mutex> lock(state->mutex);
-    if (state->drained || (closeRuntime ? isDrainedLocked(*state)
-                                        : isQuiescentLocked(*state))) {
+    bool extraReadyFailed = false;
+    const bool extraReadyNow = evaluateExtraReady(waiter, extraReadyFailed);
+    if (extraReadyFailed) {
+      immediate = true;
+      immediateResult = false;
+    }
+    else if (extraReadyNow && (state->drained || (closeRuntime ? isDrainedLocked(*state)
+                                                                  : isQuiescentLocked(*state)))) {
       if (state->closed)
         state->drained = true;
       immediate = true;
@@ -422,9 +464,32 @@ OperationRuntime::drainAsync(std::chrono::milliseconds timeout,
   }
   if (immediate) {
     auto immediateCallback = std::move(waiter->callback);
-    if (control->begin()) {
-      try { immediateCallback(immediateResult); } catch (...) {}
+    auto deliver = std::make_shared<std::function<void()>>(
+      [control, callback = std::move(immediateCallback),
+       immediateResult] () mutable {
+      if (!control->begin())
+        return;
+      try { callback(immediateResult); } catch (...) {}
       control->end(true);
+      });
+    bool queued = false;
+    {
+      std::lock_guard<std::mutex> lock(state->mutex);
+      queued = !state->closed;
+    }
+    if (queued) {
+      try {
+        auto ticket = acquire();
+        post(ticket, [deliver] { (*deliver)(); });
+      }
+      catch (...) {
+        // The close race is allowed to collapse to a synchronous terminal
+        // notification; no callback is run while state->mutex is held.
+        (*deliver)();
+      }
+    }
+    else {
+      (*deliver)();
     }
     return OperationSubscription(std::move(control));
   }
@@ -513,8 +578,13 @@ OperationRuntime::runWorker(const std::shared_ptr<detail::RuntimeState>& state) 
     // it must cover the callback's full execution for drain accounting.
     std::shared_ptr<detail::RuntimeTaskHold> taskTicket;
     bool timerTaskActive = false;
-    std::vector<std::pair<std::shared_ptr<detail::SubscriptionControl>,
-                          std::function<void(bool)>>> notifications;
+    struct Notification
+    {
+      std::shared_ptr<detail::SubscriptionControl> control;
+      std::function<void(bool)> callback;
+      bool result = false;
+    };
+    std::vector<Notification> notifications;
     {
       std::unique_lock<std::mutex> lock(state->mutex);
       for (;;) {
@@ -538,10 +608,14 @@ OperationRuntime::runWorker(const std::shared_ptr<detail::RuntimeState>& state) 
         if (isQuiescentLocked(*state) && !state->drainWaiters.empty()) {
           for (auto it = state->drainWaiters.begin();
                it != state->drainWaiters.end();) {
-            if (!(*it)->closeRuntime || state->closed) {
+            bool extraReadyFailed = false;
+            const bool extraReady = evaluateExtraReady(*it, extraReadyFailed);
+            if (extraReadyFailed ||
+                ((!(*it)->closeRuntime || state->closed) && extraReady)) {
               if ((*it)->callback)
-                notifications.emplace_back((*it)->control,
-                                            std::move((*it)->callback));
+                notifications.push_back(Notification{(*it)->control,
+                                                      std::move((*it)->callback),
+                                                      !extraReadyFailed});
               it = state->drainWaiters.erase(it);
             }
             else {
@@ -551,9 +625,9 @@ OperationRuntime::runWorker(const std::shared_ptr<detail::RuntimeState>& state) 
           if (!notifications.empty()) {
             lock.unlock();
             for (auto& notification : notifications) {
-              if (notification.second && notification.first->begin()) {
-                try { notification.second(true); } catch (...) {}
-                notification.first->end(true);
+              if (notification.callback && notification.control->begin()) {
+                try { notification.callback(notification.result); } catch (...) {}
+                notification.control->end(true);
               }
             }
             notifications.clear();
@@ -564,27 +638,57 @@ OperationRuntime::runWorker(const std::shared_ptr<detail::RuntimeState>& state) 
         }
         if (state->closed && state->tickets == 0 && state->queued == 0 &&
             state->active == 0 && state->timers.empty()) {
-          state->drained = true;
-          for (auto& waiter : state->drainWaiters) {
-            if (waiter->callback)
-              notifications.emplace_back(waiter->control, std::move(waiter->callback));
-          }
-          state->drainWaiters.clear();
-          lock.unlock();
-          for (auto& notification : notifications) {
-            if (notification.second && notification.first->begin()) {
-              try { notification.second(true); } catch (...) {}
-              notification.first->end(true);
+          for (auto it = state->drainWaiters.begin();
+               it != state->drainWaiters.end();) {
+            bool extraReadyFailed = false;
+            const bool extraReady = evaluateExtraReady(*it, extraReadyFailed);
+            if (extraReadyFailed || extraReady) {
+              if ((*it)->callback)
+                notifications.push_back(Notification{(*it)->control,
+                                                      std::move((*it)->callback),
+                                                      !extraReadyFailed});
+              it = state->drainWaiters.erase(it);
+            }
+            else {
+              ++it;
             }
           }
-          state->condition.notify_all();
-          return;
+          if (!state->drainWaiters.empty()) {
+            // An external owner still has work.  Keep the Core worker alive
+            // until notifyWaiters() observes that owner barrier.
+            if (!notifications.empty()) {
+              lock.unlock();
+              for (auto& notification : notifications) {
+                if (notification.callback && notification.control->begin()) {
+                  try { notification.callback(notification.result); } catch (...) {}
+                  notification.control->end(true);
+                }
+              }
+              notifications.clear();
+              state->condition.notify_all();
+              lock.lock();
+              continue;
+            }
+          }
+          else {
+            state->drained = true;
+            lock.unlock();
+            for (auto& notification : notifications) {
+              if (notification.callback && notification.control->begin()) {
+                try { notification.callback(notification.result); } catch (...) {}
+                notification.control->end(true);
+              }
+            }
+            state->condition.notify_all();
+            return;
+          }
         }
         const auto now = std::chrono::steady_clock::now();
         for (auto it = state->drainWaiters.begin(); it != state->drainWaiters.end();) {
           if (it->get()->deadline <= now) {
             if ((*it)->callback)
-              notifications.emplace_back((*it)->control, std::move((*it)->callback));
+              notifications.push_back(Notification{(*it)->control,
+                                                    std::move((*it)->callback), false});
             it = state->drainWaiters.erase(it);
           }
           else {
@@ -594,9 +698,9 @@ OperationRuntime::runWorker(const std::shared_ptr<detail::RuntimeState>& state) 
         if (!notifications.empty()) {
           lock.unlock();
           for (auto& notification : notifications) {
-            if (notification.second && notification.first->begin()) {
-              try { notification.second(false); } catch (...) {}
-              notification.first->end(true);
+            if (notification.callback && notification.control->begin()) {
+              try { notification.callback(notification.result); } catch (...) {}
+              notification.control->end(true);
             }
           }
           notifications.clear();

@@ -183,6 +183,34 @@ def build(bld):
                 linkflags=['-Wl,--no-relax'],
                 rpath=[bld.bldnode.abspath()], install_path=None)
 
+    # Spec185 B2 verified package preparation.  The selector exercises the
+    # native source/content oracle and immutable Package boundary; shared
+    # single-flight waiters and refresh generations are owned by T004.
+    bld.program(target='../spec185-preparation',
+                name='spec185-preparation',
+                source=[bld.path.parent.find_node('tests/main.cpp'),
+                        bld.path.find_node('unit-tests/di-preparation.t.cpp'),
+                        bld.path.find_node('unit-tests/di-runtime.t.cpp')],
+                includes=['..', '../ndn-service-framework'],
+                use='ndn-service-framework ndnsf-distributed-inference NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL',
+                cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
+                linkflags=['-Wl,--no-relax'],
+                rpath=[bld.bldnode.abspath()], install_path=None)
+
+    # T004 has an explicit selector/binary so cache, waiter, lease, and
+    # Core-worker boundary evidence cannot be mistaken for the T003 cold path.
+    bld.program(target='../spec185-preparation-t004',
+                name='spec185-preparation-t004',
+                source=[bld.path.parent.find_node('tests/main.cpp'),
+                        bld.path.find_node('unit-tests/di-preparation.t.cpp'),
+                        bld.path.find_node('unit-tests/di-runtime.t.cpp'),
+                        bld.path.find_node('unit-tests/core-operation-runtime.t.cpp')],
+                includes=['..', '../ndn-service-framework'],
+                use='ndn-service-framework ndnsf-distributed-inference NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL',
+                cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
+                linkflags=['-Wl,--no-relax'],
+                rpath=[bld.bldnode.abspath()], install_path=None)
+
     # Spec182 worker-protocol test tools (T006-C).  Deliberately-misbehaving
     # worker children spawned through the same OA02 transport for the crash /
     # cancel / incomplete subprocess cases; never installed and never

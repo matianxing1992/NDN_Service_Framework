@@ -3,6 +3,8 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeOfferAdmission.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp"
 #include "ndn-service-framework/OperationRuntime.hpp"
 #include "ndn-service-framework/common.hpp"
 
@@ -22,6 +24,7 @@
 #include <set>
 #include <sstream>
 #include <atomic>
+#include <thread>
 #include <utility>
 
 namespace ndnsf::di {
@@ -211,6 +214,64 @@ struct FrozenConfig
   std::shared_ptr<ndn_service_framework::MessageValidator> trustValidator;
   std::shared_ptr<const NativeOfferAdmission> offerAdmission;
 };
+
+PreparationSpec preparationSpec(const FrozenConfig& frozen, const std::string& key)
+{
+  const auto root = nativeParseJson(frozen.canonicalJson);
+  const auto& request = root.at("request");
+  const auto& limits = root.at("limits");
+  const auto& catalog = root.at("catalog");
+  const auto taskName = requiredString(request, "task");
+  const auto taskContractDigest = requiredString(request, "task_descriptor_digest");
+  const auto inputLayoutDigest = requiredString(request, "input_layout_digest");
+  PreparationSpec spec;
+  spec.key = key;
+  spec.baseDirectory = frozen.path.parent_path();
+  spec.configurationJson = frozen.canonicalJson;
+  spec.catalogConfigurationJson = nativeCanonicalJson(catalog);
+  spec.taskName = taskName;
+  spec.taskContractDigest = taskContractDigest;
+  spec.inputLayoutDigest = inputLayoutDigest;
+  spec.configurationDigest = frozen.configurationDigest;
+  const auto positiveLimit = [&] (const char* field) {
+    if (!limits.contains(field) || !limits.at(field).is_number_unsigned() ||
+        limits.at(field).get<std::uint64_t>() == 0)
+      throw DiError("INVALID_RUNTIME_CONFIGURATION", "local", "limits",
+                    std::string("runtime limit must be positive: ") + field);
+    return limits.at(field).get<std::uint64_t>();
+  };
+  spec.maxSourceBytes = positiveLimit("max_source_bytes");
+  spec.maxAssembledBytes = positiveLimit("max_assembled_bytes");
+  spec.loadSource = [] (const PreparationSpec& current,
+                        std::chrono::steady_clock::time_point deadline) {
+    try {
+      if (std::chrono::steady_clock::now() >= deadline)
+        throw DiError("PREPARATION_TIMEOUT", "local", "preparation", "preparation deadline expired");
+      const auto catalog = nativeParseJson(current.catalogConfigurationJson);
+      const auto& source = catalog.at("source");
+      const auto sourceFile = requiredString(source, "file");
+      NativeCanonicalSource result;
+      const auto modelPath = (current.baseDirectory / sourceFile).lexically_normal();
+      const auto model = readOperatorFile(modelPath, current.maxSourceBytes);
+      result.modelBytes.assign(model.begin(), model.end());
+      if (source.contains("initializer_file")) {
+        const auto initializerFile = requiredString(source, "initializer_file");
+        const auto initializerPath = (current.baseDirectory / initializerFile).lexically_normal();
+        const auto initializer = readOperatorFile(initializerPath, current.maxSourceBytes);
+        result.initializerBytes.emplace(initializer.begin(), initializer.end());
+      }
+      if (std::chrono::steady_clock::now() >= deadline)
+        throw DiError("PREPARATION_TIMEOUT", "local", "preparation", "preparation deadline expired");
+      return result;
+    }
+    catch (const DiError& error) {
+      if (error.code() == "PREPARATION_TIMEOUT")
+        throw;
+      throw DiError("PREPARATION_SOURCE_UNAVAILABLE", "local", "preparation", error.what());
+    }
+  };
+  return spec;
+}
 
 FrozenConfig freezeConfig(const std::filesystem::path& path, ndn::Face* callbackFace)
 {
@@ -486,6 +547,8 @@ struct RuntimeState
   enum class Phase { Open, Closing, Drained };
 
   mutable std::mutex mutex;
+  std::condition_variable cv;
+  std::atomic<std::size_t> preparationInFlight{0};
   Phase phase = Phase::Open;
   // Domain work tickets are accounted by the Core runtime.  This counter is
   // reserved for DI-owned preparation/request tickets added by later batches;
@@ -493,9 +556,36 @@ struct RuntimeState
   std::size_t inFlight = 0;
   // Declared first so models/trust validators are destroyed before Face/IO.
   std::shared_ptr<CoreRuntimeOwner> coreOwner;
+  std::shared_ptr<ModelPreparationCache> preparationCache;
   RuntimeConfig config;
   std::filesystem::path baseDirectory;
   std::map<std::string, FrozenConfig> models;
+};
+
+struct PreparationTicket
+{
+  std::shared_ptr<RuntimeState> state;
+  bool armed = false;
+
+  explicit PreparationTicket(std::shared_ptr<RuntimeState> state)
+    : state(std::move(state))
+  {
+  }
+
+  ~PreparationTicket() noexcept
+  {
+    if (!state)
+      return;
+    std::lock_guard<std::mutex> lock(state->mutex);
+    if (armed && state->inFlight != 0)
+      --state->inFlight;
+    if (armed)
+      state->preparationInFlight.fetch_sub(1, std::memory_order_release);
+    if (armed)
+      state->cv.notify_all();
+    if (armed && state->coreOwner && state->coreOwner->operationRuntime)
+      state->coreOwner->operationRuntime->notifyWaiters();
+  }
 };
 
 } // namespace detail
@@ -508,9 +598,329 @@ DiError::DiError(std::string code, std::string domain, std::string boundary,
 {
 }
 
+namespace {
+
+DiError mapPreparationError(const std::exception& error)
+{
+  if (const auto* operation = dynamic_cast<const ndn_service_framework::OperationError*>(&error)) {
+    switch (operation->code()) {
+    case ndn_service_framework::OperationErrorCode::Closed:
+      return DiError("RUNTIME_CLOSED", "local", "preparation", error.what());
+    case ndn_service_framework::OperationErrorCode::Timeout:
+      return DiError("PREPARATION_TIMEOUT", "local", "preparation", error.what());
+    case ndn_service_framework::OperationErrorCode::Cancelled:
+      return DiError("PREPARATION_CANCELLED", "local", "preparation", error.what());
+    default:
+      break;
+    }
+  }
+  const std::string message = error.what();
+  if (message.find("RESULT_TIMEOUT") != std::string::npos)
+    return DiError("WAIT_TIMEOUT", "local", "preparation", message);
+  if (message.find("CANCELLED") != std::string::npos)
+    return DiError("PREPARATION_CANCELLED", "local", "preparation", message);
+  if (message.find("TIMEOUT") != std::string::npos)
+    return DiError("PREPARATION_TIMEOUT", "local", "preparation", message);
+  if (message.find("MODEL_NOT_READY") != std::string::npos)
+    return DiError("MODEL_NOT_READY", "local", "preparation", message);
+  if (message.find("PREPARATION_NOT_IN_FLIGHT") != std::string::npos)
+    return DiError("PREPARATION_NOT_IN_FLIGHT", "local", "preparation", message);
+  if (message.find("SUBSCRIPTION_LIMIT") != std::string::npos)
+    return DiError("SUBSCRIPTION_LIMIT", "local", "preparation", message);
+  if (message.find("must not be negative") != std::string::npos)
+    return DiError("INVALID_ARGUMENT", "local", "preparation", message);
+  if (message.find("timeout must be positive") != std::string::npos)
+    return DiError("INVALID_ARGUMENT", "local", "preparation", message);
+  if (message.find("BUDGET_EXCEEDED") != std::string::npos)
+    return DiError("CACHE_BUDGET_EXCEEDED", "local", "preparation", message);
+  if (message.find("UNSUPPORTED_CAPABILITY") != std::string::npos ||
+      message.find("ADAPTER_UNAVAILABLE") != std::string::npos)
+    return DiError("UNSUPPORTED_CAPABILITY", "local", "preparation", message);
+  if (message.find("identity") != std::string::npos ||
+      message.find("configuration") != std::string::npos ||
+      message.find("JSON") != std::string::npos ||
+      message.find("ONNX") != std::string::npos ||
+      message.find("initializer") != std::string::npos ||
+      message.find("digest") != std::string::npos)
+    return DiError("SOURCE_IDENTITY_MISMATCH", "local", "preparation", message);
+  return DiError("PREPARATION_FAILED", "local", "preparation", message);
+}
+
+} // namespace
+
+PreparationStatus PreparationHandle::status() const
+{
+  return m_state && m_state->status ? m_state->status() : PreparationStatus::Cancelled;
+}
+
+PreparedModel PreparationHandle::result() const
+{
+  if (!m_state || !m_state->result)
+    throw DiError("RUNTIME_CLOSED", "local", "preparation", "Preparation handle is empty");
+  try {
+    const bool onWorker = m_state->workerThread && m_state->workerThread();
+    if (onWorker && m_state->wouldBlock && m_state->wouldBlock())
+      throw DiError("WOULD_DEADLOCK", "local", "preparation",
+                    "blocking preparation result from Core worker would deadlock");
+    if (m_state->resultDefault)
+      return m_state->resultDefault();
+    return m_state->result(m_state->defaultTimeout);
+  }
+  catch (const DiError&) {
+    throw;
+  }
+  catch (const std::exception& error) {
+    throw mapPreparationError(error);
+  }
+}
+
+PreparedModel PreparationHandle::result(Milliseconds timeout) const
+{
+  if (!m_state || !m_state->result)
+    throw DiError("RUNTIME_CLOSED", "local", "preparation", "Preparation handle is empty");
+  try {
+    const bool onWorker = timeout.count() != 0 && m_state->workerThread &&
+      m_state->workerThread();
+    if (onWorker && m_state->wouldBlock && m_state->wouldBlock())
+      throw DiError("WOULD_DEADLOCK", "local", "preparation",
+                    "blocking preparation result from Core worker would deadlock");
+    return m_state->result(timeout);
+  }
+  catch (const DiError&) {
+    throw;
+  }
+  catch (const std::exception& error) {
+    throw mapPreparationError(error);
+  }
+}
+
+Subscription PreparationHandle::resultAsync(Milliseconds timeout,
+                                            PreparationCompletion callback) const
+{
+  if (!m_state || !m_state->resultAsync)
+    throw DiError("RUNTIME_CLOSED", "local", "preparation", "Preparation handle is empty");
+  return m_state->resultAsync(timeout, std::move(callback));
+}
+
+Subscription PreparationHandle::onCompletion(PreparationCompletion callback) const
+{
+  if (!m_state || !m_state->onCompletion)
+    throw DiError("RUNTIME_CLOSED", "local", "preparation", "Preparation handle is empty");
+  return m_state->onCompletion(std::move(callback));
+}
+
+void PreparationHandle::cancel() const noexcept
+{
+  if (m_state && m_state->cancel)
+    m_state->cancel();
+}
+
 User::User(std::shared_ptr<detail::RuntimeState> state, std::string profileName)
   : m_state(std::move(state)), m_profileName(std::move(profileName))
 {
+}
+
+PreparedModel User::prepare(const std::string& modelKey, const PrepareOptions& options) const
+{
+  if (!m_state)
+    throw DiError("RUNTIME_CLOSED", "local", "preparation", "User has no Runtime state");
+  std::shared_ptr<ModelPreparationCache> cache;
+  FrozenConfig frozen;
+  detail::PreparationTicket ticket(m_state);
+  // Check the Core executor before taking the Runtime mutex.  A worker-thread
+  // caller must fail immediately even if another thread is closing the state.
+  if (m_state->coreOwner && m_state->coreOwner->operationRuntime &&
+      m_state->coreOwner->operationRuntime->isWorkerThread())
+    throw DiError("WOULD_DEADLOCK", "local", "preparation",
+                  "blocking preparation from Core worker would deadlock");
+  {
+    std::lock_guard<std::mutex> lock(m_state->mutex);
+    if (m_state->phase != detail::RuntimeState::Phase::Open)
+      throw DiError("RUNTIME_CLOSED", "local", "preparation", "Runtime is closed");
+    const auto found = m_state->models.find(modelKey);
+    if (found == m_state->models.end())
+      throw DiError("MODEL_NOT_FOUND", "local", "preparation", "registered model key is unknown");
+    cache = m_state->preparationCache;
+    frozen = found->second;
+    ++m_state->inFlight;
+    m_state->preparationInFlight.fetch_add(1, std::memory_order_acq_rel);
+    ticket.armed = true;
+  }
+  if (!cache)
+    throw DiError("RUNTIME_CLOSED", "local", "preparation", "preparation owner is unavailable");
+  auto spec = preparationSpec(frozen, modelKey);
+  auto owner = m_state->coreOwner;
+  spec.dispatch = [owner](std::function<void()> task) {
+    auto ticket = owner->operationRuntime->acquire();
+    owner->operationRuntime->post(ticket, std::move(task));
+  };
+  spec.schedule = [owner](std::chrono::steady_clock::time_point deadline,
+                          std::function<void()> task) {
+    auto ticket = owner->operationRuntime->acquire();
+    return owner->operationRuntime->scheduleAt(ticket, deadline, std::move(task));
+  };
+  spec.cancelled = [state = m_state] {
+    std::lock_guard<std::mutex> lock(state->mutex);
+    return state->phase != detail::RuntimeState::Phase::Open;
+  };
+  spec.acquireCommit = [state = m_state](std::chrono::steady_clock::time_point deadline) {
+    using Guard = std::unique_lock<std::mutex>;
+    auto guard = std::make_shared<Guard>(state->mutex, std::defer_lock);
+    while (!guard->try_lock()) {
+      if (std::chrono::steady_clock::now() >= deadline)
+        return std::shared_ptr<void>{};
+      std::this_thread::yield();
+    }
+    if (state->phase != detail::RuntimeState::Phase::Open)
+      return std::shared_ptr<void>{};
+    return std::shared_ptr<void>(guard, static_cast<void*>(guard.get()));
+  };
+  try {
+    auto prepared = cache->prepare(spec, options.cache, options.timeout);
+    {
+      std::lock_guard<std::mutex> lock(m_state->mutex);
+      if (m_state->phase != detail::RuntimeState::Phase::Open)
+        throw DiError("RUNTIME_CLOSED", "local", "preparation",
+                      "Runtime closed before preparation could be returned");
+    }
+    return prepared;
+  }
+  catch (const DiError&) {
+    throw;
+  }
+  catch (const std::exception& error) {
+    throw mapPreparationError(error);
+  }
+}
+
+PreparationHandle User::prepareAsync(const std::string& modelKey,
+                                     const PrepareOptions& options) const
+{
+  if (!m_state)
+    throw DiError("RUNTIME_CLOSED", "local", "preparation", "User has no Runtime state");
+  std::shared_ptr<ModelPreparationCache> cache;
+  FrozenConfig frozen;
+  auto ticket = std::make_shared<detail::PreparationTicket>(m_state);
+  {
+    std::lock_guard<std::mutex> lock(m_state->mutex);
+    if (m_state->phase != detail::RuntimeState::Phase::Open)
+      throw DiError("RUNTIME_CLOSED", "local", "preparation", "Runtime is closed");
+    const auto found = m_state->models.find(modelKey);
+    if (found == m_state->models.end())
+      throw DiError("MODEL_NOT_FOUND", "local", "preparation", "registered model key is unknown");
+    cache = m_state->preparationCache;
+    frozen = found->second;
+    ++m_state->inFlight;
+    m_state->preparationInFlight.fetch_add(1, std::memory_order_acq_rel);
+    ticket->armed = true;
+  }
+  if (!cache)
+    throw DiError("RUNTIME_CLOSED", "local", "preparation", "preparation owner is unavailable");
+  auto spec = preparationSpec(frozen, modelKey);
+  auto owner = m_state->coreOwner;
+  spec.dispatch = [owner](std::function<void()> task) {
+    auto operationTicket = owner->operationRuntime->acquire();
+    owner->operationRuntime->post(operationTicket, std::move(task));
+  };
+  spec.schedule = [owner](std::chrono::steady_clock::time_point deadline,
+                          std::function<void()> task) {
+    auto operationTicket = owner->operationRuntime->acquire();
+    return owner->operationRuntime->scheduleAt(operationTicket, deadline, std::move(task));
+  };
+  spec.cancelled = [state = m_state] {
+    std::lock_guard<std::mutex> lock(state->mutex);
+    return state->phase != detail::RuntimeState::Phase::Open;
+  };
+  spec.acquireCommit = [state = m_state](std::chrono::steady_clock::time_point deadline) {
+    using Guard = std::unique_lock<std::mutex>;
+    auto guard = std::make_shared<Guard>(state->mutex, std::defer_lock);
+    while (!guard->try_lock()) {
+      if (std::chrono::steady_clock::now() >= deadline)
+        return std::shared_ptr<void>{};
+      std::this_thread::yield();
+    }
+    if (state->phase != detail::RuntimeState::Phase::Open)
+      return std::shared_ptr<void>{};
+    return std::shared_ptr<void>(guard, static_cast<void*>(guard.get()));
+  };
+  auto ticketBox = std::make_shared<std::shared_ptr<void>>(ticket);
+  spec.onTerminal = [ticketBox] { ticketBox->reset(); };
+  std::shared_ptr<PreparationHandle::State> operation;
+  try {
+    operation = cache->prepareAsync(spec, options.cache, options.timeout);
+  }
+  catch (const DiError&) {
+    throw;
+  }
+  catch (const std::exception& error) {
+    throw mapPreparationError(error);
+  }
+  operation->lifetime = std::shared_ptr<void>(ticketBox, static_cast<void*>(ticketBox.get()));
+  operation->onDestroy = operation->cancel;
+  operation->workerThread = [owner] {
+    return owner && owner->operationRuntime && owner->operationRuntime->isWorkerThread();
+  };
+  auto rawResult = operation->result;
+  operation->result = [rawResult](Milliseconds timeout) {
+    try { return rawResult(timeout); }
+    catch (const DiError&) { throw; }
+    catch (const std::exception& error) { throw mapPreparationError(error); }
+  };
+  auto rawCompletion = operation->onCompletion;
+  auto runtimeState = m_state;
+  operation->onCompletion = [rawCompletion, runtimeState](PreparationCompletion callback) {
+    std::lock_guard<std::mutex> lock(runtimeState->mutex);
+    if (runtimeState->phase != detail::RuntimeState::Phase::Open)
+      throw DiError("RUNTIME_CLOSED", "local", "preparation", "Runtime is closed");
+    try {
+      return rawCompletion([callback = std::move(callback)](
+      std::exception_ptr error, std::optional<PreparedModel> value) mutable {
+      if (error) {
+        try { std::rethrow_exception(error); }
+        catch (const DiError&) { }
+        catch (const std::exception& source) {
+          try { throw mapPreparationError(source); }
+          catch (...) { error = std::current_exception(); }
+        }
+      }
+      callback(error, std::move(value));
+      });
+    }
+    catch (const DiError&) {
+      throw;
+    }
+    catch (const std::exception& error) {
+      throw mapPreparationError(error);
+    }
+  };
+  auto rawResultAsync = operation->resultAsync;
+  operation->resultAsync = [rawResultAsync, runtimeState](Milliseconds timeout,
+                                             PreparationCompletion callback) {
+    std::lock_guard<std::mutex> lock(runtimeState->mutex);
+    if (runtimeState->phase != detail::RuntimeState::Phase::Open)
+      throw DiError("RUNTIME_CLOSED", "local", "preparation", "Runtime is closed");
+    try {
+      return rawResultAsync(timeout, [callback = std::move(callback)](
+      std::exception_ptr error, std::optional<PreparedModel> value) mutable {
+      if (error) {
+        try { std::rethrow_exception(error); }
+        catch (const DiError&) { }
+        catch (const std::exception& source) {
+          try { throw mapPreparationError(source); }
+          catch (...) { error = std::current_exception(); }
+        }
+      }
+      callback(error, std::move(value));
+      });
+    }
+    catch (const DiError&) {
+      throw;
+    }
+    catch (const std::exception& error) {
+      throw mapPreparationError(error);
+    }
+  };
+  return PreparationHandle(std::move(operation));
 }
 
 Runtime::Runtime(std::shared_ptr<detail::RuntimeState> state)
@@ -525,6 +935,9 @@ Runtime::~Runtime() noexcept
   std::shared_ptr<detail::CoreRuntimeOwner> owner;
   {
     std::lock_guard<std::mutex> lock(state->mutex);
+    if (state->phase == detail::RuntimeState::Phase::Open)
+      state->phase = detail::RuntimeState::Phase::Closing;
+    state->cv.notify_all();
     owner = state->coreOwner;
   }
   // The owner performs an idempotent Core close.  Its destructor later
@@ -560,6 +973,7 @@ bool Runtime::drain(Milliseconds timeout) const
     throw DiError("RUNTIME_CLOSED", "local", "lifecycle", "Runtime has no state");
 
   auto state = m_state;
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
   std::shared_ptr<detail::CoreRuntimeOwner> owner;
   {
     std::lock_guard<std::mutex> lock(state->mutex);
@@ -567,28 +981,35 @@ bool Runtime::drain(Milliseconds timeout) const
       state->phase = detail::RuntimeState::Phase::Closing;
     owner = state->coreOwner;
   }
-  if (!owner || !owner->operationRuntime) {
-    std::lock_guard<std::mutex> lock(state->mutex);
+  if (owner)
+    owner->close();
+  bool drained = true;
+  if (owner && owner->operationRuntime) {
+    try {
+      const auto now = std::chrono::steady_clock::now();
+      const auto remaining = now >= deadline ? Milliseconds(0) :
+        std::chrono::duration_cast<Milliseconds>(deadline - now);
+      drained = owner->operationRuntime->drain(remaining);
+    }
+    catch (const ndn_service_framework::OperationError& error) {
+      if (error.code() == ndn_service_framework::OperationErrorCode::WouldDeadlock)
+        throw DiError("WOULD_DEADLOCK", "local", "lifecycle", error.what());
+      throw DiError("RUNTIME_CLOSED", "local", "lifecycle", error.what());
+    }
+  }
+  if (!drained)
+    return false;
+  {
+    std::unique_lock<std::mutex> lock(state->mutex);
+    while (state->inFlight != 0) {
+      if (state->cv.wait_until(lock, deadline) == std::cv_status::timeout)
+        return false;
+    }
     state->phase = detail::RuntimeState::Phase::Drained;
-    return true;
   }
-
-  owner->close();
-  bool drained = false;
-  try {
-    drained = owner->operationRuntime->drain(timeout);
-  }
-  catch (const ndn_service_framework::OperationError& error) {
-    if (error.code() == ndn_service_framework::OperationErrorCode::WouldDeadlock)
-      throw DiError("WOULD_DEADLOCK", "local", "lifecycle", error.what());
-    throw DiError("RUNTIME_CLOSED", "local", "lifecycle", error.what());
-  }
-  if (drained) {
+  if (owner)
     owner->stopIo();
-    std::lock_guard<std::mutex> lock(state->mutex);
-    state->phase = detail::RuntimeState::Phase::Drained;
-  }
-  return drained;
+  return true;
 }
 
 Subscription Runtime::drainAsync(
@@ -605,39 +1026,44 @@ Subscription Runtime::drainAsync(
 
   auto state = m_state;
   std::shared_ptr<detail::CoreRuntimeOwner> owner;
+  bool closeCore = false;
   {
     std::lock_guard<std::mutex> lock(state->mutex);
     owner = state->coreOwner;
+    closeCore = state->phase != detail::RuntimeState::Phase::Open;
   }
   if (!owner || !owner->operationRuntime)
     throw DiError("RUNTIME_CLOSED", "local", "lifecycle", "Runtime has no Core owner");
 
   auto wrapped = [state, owner, callback = std::move(callback)](bool drained) mutable {
-    if (drained) {
-      bool finalizeShutdown = false;
-      {
-        std::lock_guard<std::mutex> lock(state->mutex);
-        // Non-closing quiescence leaves an Open Runtime usable.  If an
-        // explicit close won concurrently, this callback is the final drain
-        // barrier and may publish Drained.
-        if (state->phase == detail::RuntimeState::Phase::Closing) {
-          state->phase = detail::RuntimeState::Phase::Drained;
-          finalizeShutdown = true;
-        }
+    auto notify = [callback = std::move(callback)](bool result) mutable {
+      try {
+        callback(nullptr, result);
       }
-      if (finalizeShutdown)
-        owner->stopIo();
+      catch (...) {
+        // Public callbacks are failure-isolated from the Core worker.
+      }
+    };
+    if (!drained) {
+      notify(false);
+      return;
     }
-    try {
-      callback(nullptr, drained);
+    bool finalizeShutdown = false;
+    {
+      std::lock_guard<std::mutex> lock(state->mutex);
+      if (state->phase == detail::RuntimeState::Phase::Closing) {
+        state->phase = detail::RuntimeState::Phase::Drained;
+        finalizeShutdown = true;
+      }
     }
-    catch (...) {
-      // Core drain notifications are failure-isolated.  The public callback
-      // cannot throw through the worker or its subscription token.
-    }
+    if (finalizeShutdown && owner)
+      owner->stopIo();
+    notify(true);
   };
   try {
-    return owner->operationRuntime->drainAsync(timeout, std::move(wrapped), false);
+    return owner->operationRuntime->drainAsync(
+      timeout, std::move(wrapped), closeCore,
+      [state] { return state->preparationInFlight.load(std::memory_order_acquire) == 0; });
   }
   catch (const ndn_service_framework::OperationError& error) {
     if (error.code() == ndn_service_framework::OperationErrorCode::Capacity)
@@ -676,6 +1102,8 @@ std::shared_ptr<Runtime> Runtime::open(RuntimeConfig config)
   coreOwner->authorityPublicKey = primary.authorityPublicKey;
   coreOwner->operationRuntime = ndn_service_framework::OperationRuntime::create();
   state->coreOwner = coreOwner;
+  state->preparationCache = std::make_shared<ModelPreparationCache>(
+    config.maxPreparedBytes, config.maxPreparedEntries, config.preparationJobTimeout);
 
   std::set<std::string> keys;
   for (const auto& registration : config.models) {

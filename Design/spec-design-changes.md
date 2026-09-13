@@ -16,6 +16,8 @@
 
 ### 2026-09-12 — Spec185 Prepared Model Runtime
 
+- **2026-09-12 21:07 -05:00 / T003+T004 B2 `VERIFIED`**: C-02 preparation design is now implemented for the bounded local Runtime path. Before, `User::prepare` had no verified Package/cache implementation; after, `ModelPreparationCache` owns canonical source inspection, independent graph identity, immutable `PreparedModelPackage`, single-flight/refresh generations, waiter cancellation/deadlines, leases, LRU/byte budget and exactly-once completion. Core `OperationRuntime` remains the generic owner and has no DI dependency. Source range is the frozen B2 snapshot from base `9bdde3cf` with tracked patch SHA `2d1f7772efef5a0cdc689e340599a2b752262abb673de698427eda3b52ff7d9a`; bounded C++ normal/TSan evidence is recorded in [B2 evidence](../specs/185-prepared-model-runtime/evidence/b2-preparation.md). Request, conversation, Provider, Python and cross-process qualification remain `PLANNED`.
+
 - **2026-09-12 17:00 -05:00 / NO_DESIGN_CHANGE**: 逐任务静态门改为按依赖阻塞，允许单主会话编码与独立快照审查重叠；不改产品API、任务依赖或验收，双PDF无需重建。[验证](../specs/185-prepared-model-runtime/evidence/dependency-scoped-dispatch-20260912.md)。
 
 - **2026-09-12 16:24 -05:00 / NO_DESIGN_CHANGE**: tasks Updated及新checkpoint要求分钟与UTC offset；仅进度元数据格式修订，不改API/行为/状态或双PDF。[验证](../specs/185-prepared-model-runtime/evidence/progress-timestamps-20260912.md)。

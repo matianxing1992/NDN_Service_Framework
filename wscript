@@ -645,6 +645,8 @@ def build(bld):
                 'NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp',
                 'NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestEnvelope.hpp',
                 'NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPlanner.hpp',
+                'NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp',
+                'NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModelPackage.hpp',
             ]))
     bld.install_files(
         '${INCLUDEDIR}/NDNSF-DistributedInference/cpp/adapters/onnx',

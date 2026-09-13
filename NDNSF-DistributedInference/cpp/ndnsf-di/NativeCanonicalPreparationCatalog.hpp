@@ -25,6 +25,8 @@ public:
   NativeCanonicalPreparationCatalog(std::vector<NativeCanonicalCatalogEntry> entries,
     const NativeAssemblyControl& control);
   std::shared_ptr<const NativeAdapterRegistry> adapters() const;
+  /** Return a copy of the verified owned source for preparation identity checks. */
+  NativeCanonicalSource sourceFor(const NativeModelDescriptor& model) const;
   NativeSplitCandidate bindStateContracts(const NativeInspectedModel& model,
     const NativeSplitCandidate& candidate, const NativeStateTensorMapping& mapping,
     const NativeRequestControl& control) const;

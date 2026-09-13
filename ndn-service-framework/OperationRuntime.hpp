@@ -136,6 +136,7 @@ struct RuntimeState
     std::function<void(bool)> callback;
     std::chrono::steady_clock::time_point deadline;
     bool closeRuntime = true;
+    std::function<bool()> extraReady;
   };
 
   struct Timer
@@ -194,6 +195,13 @@ public:
 
   /** Compatibility spelling for the public C-07 subscription API. */
   void unsubscribe() noexcept { cancel(); }
+
+  /** Create a subscription from a Core-owned control object. */
+  static OperationSubscription fromControl(
+    std::shared_ptr<detail::SubscriptionControl> control) noexcept
+  {
+    return OperationSubscription(std::move(control));
+  }
 
 private:
   explicit OperationSubscription(std::shared_ptr<detail::SubscriptionControl> control)
@@ -255,8 +263,16 @@ public:
   /** Queue work associated with a ticket; the callback never runs under a caller lock. */
   void post(WorkTicket& ticket, std::function<void()> task);
 
+  /** Schedule work associated with a ticket and return its cancellation action. */
+  std::function<void()> scheduleAt(WorkTicket& ticket,
+                                   std::chrono::steady_clock::time_point deadline,
+                                   std::function<void()> task);
+
   /** Stop accepting tickets and allow already queued work to settle. */
   void close() noexcept;
+
+  /** Wake drain waiters whose owner supplies an external readiness predicate. */
+  void notifyWaiters() noexcept;
 
   /** Close and wait for all tickets, queued work, and timers to settle. */
   bool drain(std::chrono::milliseconds timeout);
@@ -265,14 +281,19 @@ public:
   OperationSubscription
   drainAsync(std::chrono::milliseconds timeout, std::function<void(bool)> callback);
 
-  /**
-   * Register a drain notification without changing the runtime lifecycle.
-   * The default overload above retains the historical close-and-drain
-   * behavior for Core callers that explicitly use it as a shutdown barrier.
-   */
+  /** Register a drain notification with an explicit lifecycle mode. */
   OperationSubscription
   drainAsync(std::chrono::milliseconds timeout, std::function<void(bool)> callback,
              bool closeRuntime);
+
+  /**
+   * Register a drain notification without changing the runtime lifecycle.
+   * The two- and three-argument overloads retain the historical close-and-drain
+   * behavior; this overload additionally accepts an external readiness probe.
+   */
+  OperationSubscription
+  drainAsync(std::chrono::milliseconds timeout, std::function<void(bool)> callback,
+             bool closeRuntime, std::function<bool()> extraReady);
 
   /** Return whether this runtime has entered its one-way closing phase. */
   bool isClosed() const noexcept;
@@ -296,9 +317,6 @@ private:
     std::forward<Function>(function)();
   }
 
-  std::function<void()> scheduleAt(WorkTicket& ticket,
-                                   std::chrono::steady_clock::time_point deadline,
-                                   std::function<void()> task);
   void releaseTicket(const std::shared_ptr<detail::RuntimeState>& state) noexcept;
   static void runWorker(const std::shared_ptr<detail::RuntimeState>& state) noexcept;
 
