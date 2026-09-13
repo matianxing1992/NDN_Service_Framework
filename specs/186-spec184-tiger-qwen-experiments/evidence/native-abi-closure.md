@@ -211,10 +211,11 @@ bind the new provider digest and rerun canonical import, `--help`,
 `readelf -d`, `ldd -r` and RPATH checks; no unresolved-symbol or wrapper binary
 is accepted.
 
-## Checkpoint 12 — 2026-09-13 source-sealed dependency rebuild and host closure
+## Checkpoint 12 — 2026-09-13 locked dependency rebuild and host closure
 
 The provider repair was rebuilt from a fresh `build-spec186-r4` tree with the
-locked dependency inputs and no more than four concurrent Waf jobs. The Rust
+locked dependency inputs and no more than four concurrent Waf jobs. This is a
+host build receipt; the final SIF still needs a separate source-seal check. The Rust
 1.90.0/cargo archives matched the Spec182 hashes, the tokenizer bridge built
 with `cargo build --release --locked`, and ONNX 1.17 full-protobuf archives
 were regenerated under `/tmp/spec186-onnx-prefix-r3`. Waf configuration passed
