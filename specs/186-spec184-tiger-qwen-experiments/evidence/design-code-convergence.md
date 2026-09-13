@@ -42,3 +42,23 @@ materialize the matching base+application layers, then rerun this audit. A
 `PASS` requires the native import and `--help` checks to succeed and the
 effective launcher to resolve in the same candidate tuple; until then no
 MiniNDN or Tiger status may be promoted.
+
+## Checkpoint 2 after profile expansion
+
+The case registry now contains all eight contract cases, including explicit
+Qwen stage order/dependency metadata and signed GPU-capacity placeholders.
+`test_spec186_candidate.py` passes 11 focused tests and the effective launcher
+maps YOLO to `--case Y-A/Y-N` and Qwen to the native stage-manifest entrypoint.
+The verdict remains `BLOCK`: these structural changes do not replace the
+missing ONNX toolchain, unresolved native ABI, Qwen3 artifact, local MiniNDN
+inputs or Tiger scheduler/GPU evidence listed above.
+
+## Checkpoint 3 after dependency probes
+
+The Python ONNX 1.17.0 package was sufficient for a bounded temporary
+full-protobuf archive probe, but the result is outside the repository and is
+not source-sealed. Waf reconfiguration with that probe and the matching
+NAC-ABE prefix passed dependency discovery before stopping at the absent pinned
+Rust tokenizer toolchain and offline cargo home. Existing native artifacts
+still fail the import/`--help` closure, so the verdict remains `BLOCK` and no
+runtime or Tiger result is promoted.

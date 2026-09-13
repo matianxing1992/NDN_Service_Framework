@@ -30,3 +30,21 @@ requires an ONNX 1.17 full-protobuf prefix and matching ONNX Runtime.
 No pre-existing binary, SIF or old Spec183 evidence is used to close Spec186.
 T006 remains open until the clean dependency build, `import`, `--help`,
 `readelf -d`, `ldd -r`, RPATH and SONAME checks pass for one candidate tuple.
+
+## Checkpoint 2 — 2026-09-12 temporary ONNX probe
+
+The installed Python `onnx` 1.17.0 package supplied the full-protobuf headers
+and sources. With the system `protoc 3.6.1`, a corrected generation of
+`onnx-ml.proto`, `onnx-data.proto` and `onnx-operators-ml.proto` produced three
+translation units. A bounded `make -j4` probe then built temporary
+`libonnx_proto.a` (1.9 MB) and `libonnx.a` (47 MB) under
+`/tmp/spec186-onnx-build4`; the probe used host-protoc enum compatibility
+helpers and is not a packaged or source-sealed dependency input.
+
+Reconfiguration with `/tmp/spec186-onnx-prefix2` and
+`/tmp/spec186-nacabe-install` passed ONNX, NDN-SVS, protobuf, ONNX Runtime and
+NAC-ABE checks, then stopped at the required pinned Rust tokenizer bridge:
+`.codex-tmp/spec182-t001-dependencies/rust-prefix/bin/cargo` and its offline
+cargo home are absent. The repository Waf build therefore still has no
+candidate binary to inspect. This closes the ONNX *file-shape* probe only; it
+does not change the `BLOCKED_AFTER_BOUNDARY` verdict.

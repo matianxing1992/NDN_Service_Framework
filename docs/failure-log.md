@@ -3638,3 +3638,25 @@ are still unobserved.
   source and dependency tuple before rebuilding.
 - **Lesson**: dependency headers, libraries, RPATH and SIF bytes must be
   verified together; an old lock digest or a partial install cannot close ABI.
+
+## 2026-09-12 — Spec186 ONNX source-build and pinned Rust boundary
+
+- **Area**: T006 clean Waf dependency closure.
+- **First boundaries**: two `pip download --no-binary=:all: onnx==1.17.0`
+  attempts entered PEP 517 build-dependency resolution and were terminated
+  after consuming the bounded local build window. A direct `protoc 3.6.1`
+  generation initially used both `onnx.proto` and `onnx-ml.proto`, producing
+  duplicate definitions. The corrected temporary probe generated all three
+  protobuf translation units and built `libonnx_proto.a`/`libonnx.a` under
+  `/tmp`, using compatibility helpers for the host's older protoc API.
+- **Next boundary**: Waf configuration with those temporary ONNX archives and
+  the matching NAC-ABE prefix reached the pinned tokenizer step, then stopped
+  because `.codex-tmp/spec182-t001-dependencies/rust-prefix/bin/cargo` and its
+  offline cargo home are absent.
+- **Interpretation**: the temporary ONNX probe is not a packaged dependency
+  seal; no product binary or runtime candidate is promoted. The remaining
+  blocker is the missing locked Rust toolchain, followed by a clean Waf build
+  and loader closure.
+- **Lesson**: do not replace a locked compiler/toolchain input with an ad-hoc
+  stub or host package; preserve the first missing dependency and resume from
+  the same source/dependency tuple when it is supplied.
