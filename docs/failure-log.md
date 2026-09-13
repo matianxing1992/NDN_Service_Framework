@@ -4166,3 +4166,32 @@ which differs from the Spec186 handoff seal
   run rather than rewriting the failed receipt.
 - **Lesson**: log grant construction and grant acceptance separately; terminal
   ownership must be observable at both producer and consumer boundaries.
+
+## 2026-09-13 — Spec186 r6 application staging exceeded the project quota
+
+- **Area**: T006.c current-source application bundle delivery.
+- **First boundary**: the first rsync of the new r6 bundle stopped with
+  `Disk quota exceeded` while writing `libndnsf-distributed-inference.so`;
+  only a partial remote directory was present and its manifest was unusable.
+- **Correction**: remove the newly created partial r6 directory, remove the
+  invalidated remote r5 staging after retaining the complete local r5 receipt,
+  then stage the current r6 bundle. Local and remote tree recomputation now
+  both equal `04c2dd64b4f070cbd909a87f75a0372a0e3d4dae45c7e712641369cf76531d73`.
+- **Lesson**: source changes invalidate the old staged application; quota
+  cleanup must happen before immutable replacement staging, never by
+  overwriting a bundle whose digest is still referenced by a receipt.
+
+## 2026-09-13 — Spec186 r6 profile source identity was malformed
+
+- **Area**: T006.c/T009.a profile refresh and TigerCluster regression tests.
+- **Symptom**: all eight refreshed profiles carried a 39-character
+  `candidate.sourceCommit`, so strict loading stopped at
+  `INVALID_COMMIT:candidate.sourceCommit`; eight tests failed before checking
+  their intended Apptainer or scheduler behavior.
+- **Root cause**: the current commit string was copied without its final `d`
+  while updating the r6 source/app identity.
+- **Correction**: replace the profile and evidence references with the exact
+  40-character commit `6d143d3f0f7a7c627af2c1ef6810d79c0738b52d`, then rerun
+  strict profile, JSON and Spec186 checks.
+- **Lesson**: validate hash length and resolve it with `git rev-parse` before
+  binding a source identity into candidate profiles or receipts.

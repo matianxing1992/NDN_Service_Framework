@@ -177,3 +177,16 @@ This closes the controlling implementation gap exposed by r48/r49/r51, but is
 only a local framework regression receipt. The implementation verdict remains
 `PASS`; exact source-sealed SIF, YOLO Y-A/Y-B/Y-N, Qwen3 and Tiger execution
 remain separate blocked or waiting gates.
+
+## Checkpoint 12 — 2026-09-13 current-source r6 identity refresh
+
+The collaboration repair was rebuilt from source commit
+`6d143d3f0f7a7c627af2c1ef6810d79c0738b52d` with source seal
+`sha256:f4676a0f937c903caebc8374893171890d0d6d0639be42a3ced1b101d7512a00`.
+The nine-file read-only r6 application bundle has tree digest
+`04c2dd64b4f070cbd909a87f75a0372a0e3d4dae45c7e712641369cf76531d73` locally
+and on Tiger project storage. All active profiles now bind that r6 digest and
+Apptainer 1.5.3; no local 1.3.4 executable remains, while the login node is
+outside the SIF execution path. Native identity and focused regressions remain
+green. The exact source-sealed 1.5.3 base SIF and composition receipt are still
+the controlling T006.c gate.

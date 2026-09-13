@@ -22,11 +22,12 @@ of the stopping point; it is not a qualification result.
 | `t006-ort126-and-host-gate-20260913.md` | temporary ORT-1.26 base and current host M01 recovery probe | in-container loader closure PASS; host framework/ONNX development prefix missing, so T006 remains blocked |
 | `t006-nac-abe-abi-20260913.md` | Waf/setuptools NAC-ABE class-layout mismatch and repair | explicit prefix forwarded; native identity and `NativeServiceUser` lifecycle pass; exact SIF/ONNX/Tiger inputs remain pending |
 | `application-bundle-r5-20260913.md` | refreshed stripped application bundle and Tiger staging | r5 tree digest `687610de…07129` matches local/remote; all files read-only; runtime qualification still waits for the exact base SIF |
-| `runtime-version-policy-20260913.md` | explicit local/compute Apptainer policy and refreshed profile identities | all eight profiles bind 1.5.3; login-node 1.3.4 is metadata-only; r5/collector digests refreshed |
+| `application-bundle-r6-20260913.md` | current-source native collaboration repair bundle and Tiger staging | r6 tree digest `04c2dd64…531d73` matches local/remote; all files read-only; exact 1.5.3 base SIF remains pending |
+| `runtime-version-policy-20260913.md` | explicit local/compute Apptainer policy and refreshed profile identities | all eight profiles bind 1.5.3; login node is metadata-only; current r6/source/collector digests are bound |
 | `host-m01-r12-route-boundary-20260913.md` | current-source root MiniNDN retry | native ABI issue absent; repository `/STATUS` route barrier timed out before application request |
 | `minindn-stream-collaboration-r53-20260913.md` | real four-Provider streamed tiny-ONNX collaboration regression | terminal-only stream grant and non-terminal dependency execution pass; YOLO qualification remains open |
 | `closure-handoff-20260912.md` | immutable prior implemented/wired/executed/measured snapshot | historical boundary retained for audit |
-| `closure-handoff-20260913.md` | current implemented/wired/executed/measured reconciliation | r5 staged and 1.5.3 aligned; branch remains `IN_PROGRESS` at the repository route/base-SIF/model gates |
+| `closure-handoff-20260913.md` | current implemented/wired/executed/measured reconciliation | r6 staged and 1.5.3 aligned; branch remains `IN_PROGRESS` at the repository route/base-SIF/model gates |
 
 Runtime receipts belong in `Experiments/TigerCluster/results/<run-id>` or the
 declared project-storage counterpart. Secrets, models, SIFs and large logs do

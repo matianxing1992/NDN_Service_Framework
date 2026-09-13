@@ -3,14 +3,14 @@
 This receipt records the runtime policy requested for Spec186: local
 NDNSF-DI SIF work uses the only local Apptainer installation, 1.5.3; Tiger
 SIF execution uses the allocated compute-node 1.5.3 binary. The Tiger login
-node's 1.3.4 package is retained only as an SSH/Slurm metadata boundary and is
-never an execution fallback.
+node's observed 1.3.4 package is outside the execution path: it is used only
+for SSH/Slurm metadata and is never an execution fallback.
 
 | Scope | Explicit executable | Required version | Verification |
 | --- | --- | --- | --- |
 | Local MiniNDN/SIF | `/usr/local/bin/apptainer` | `1.5.3` | `apptainer --version` → `apptainer version 1.5.3` |
 | Tiger compute SIF | `/usr/bin/apptainer` | `1.5.3` (package suffix permitted) | bounded `srun ... /usr/bin/apptainer --version` → `apptainer version 1.5.3-1.el9` |
-| Tiger login | metadata only | not an execution target | observed `1.3.4-1.el9`; no SIF command is run there |
+| Tiger login | metadata only | not an execution target | observed `1.3.4-1.el9` outside the runtime path; no SIF command is run there |
 
 All eight `spec184-*.json` profiles now carry
 `runtime.apptainer.path` and `runtime.apptainer.version`. The candidate
@@ -19,11 +19,18 @@ instead of PATH lookup, and local pre-dispatch verifies the executable with
 the bounded `--version` form. The compute preflight rejects any version other
 than the 1.5.3 package line.
 
-The same profile refresh corrected the r5 application tree digest to
-`687610de859155449c51ec2ba4bb7b57c77614cbf0a53f106bb65152f8c07129` and bound
-the current collector digest
+The current-source refresh supersedes the r5 application identity. All eight
+profiles now bind source commit `6d143d3f0f7a7c627af2c1ef6810d79c0738b52d`,
+source seal `sha256:f4676a0f937c903caebc8374893171890d0d6d0639be42a3ced1b101d7512a00`,
+and r6 application tree digest
+`04c2dd64b4f070cbd909a87f75a0372a0e3d4dae45c7e712641369cf76531d73`. The
+current collector digest is
 `d42d7859bff1838f3293e4925db56e0d8ab46bb72a2b711a7bc7d61073ae9a1d`.
-Fresh offline candidate generation produced these identities:
+
+The candidate digests below are the historical r5 offline identities and are
+not valid for the current r6 source/app candidate. Current candidate manifests
+remain blocked at the missing base SIF boundary, so no new candidate digest is
+claimed here.
 
 | Profile | Candidate digest | First blocking boundary |
 | --- | --- | --- |

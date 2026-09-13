@@ -2,8 +2,10 @@
 
 **Date:** 2026-09-13
 **Branch:** `SPEC184Experiments`
-**Checkpoint:** pending checkpoint commit for streamed collaboration repair
+**Checkpoint:** pending checkpoint commit for current-source r6 identity refresh
 **Source baseline:** `575b43cc93bbed29932303caf3d09974f1585af7`
+**Current source commit:** `6d143d3f0f7a7c627af2c1ef6810d79c0738b52d`
+**Current source seal:** `sha256:f4676a0f937c903caebc8374893171890d0d6d0639be42a3ced1b101d7512a00`
 **Qualification state:** `IN_PROGRESS`
 **Convergence verdict:** `PASS (implementation); BLOCK (runtime qualification)`
 
@@ -14,7 +16,7 @@ not promoted to protocol or GPU qualification.
 | State | Current scope | Evidence |
 | --- | --- | --- |
 | Implemented | eight strict profiles, explicit 1.5.3 Apptainer path/version pins, deterministic manifests, zero-side-effect pre-dispatch, lifecycle/cleanup adapters, and explicit dependency-prefix forwarding for native Python binding builds | `tests/test_spec180_native_build.py` (81 passed), `Experiments/TigerCluster/tests` (76 passed), `scripts/spec180_native_build.py`, `evidence/runtime-version-policy-20260913.md` |
-| Wired | all eight profiles bind the corrected r5 application bundle; local and remote tree digest is `687610de859155449c51ec2ba4bb7b57c77614cbf0a53f106bb65152f8c07129` | `evidence/application-bundle-r5-20260913.md`, `evidence/pre-dispatch-r5-20260913.md` |
+| Wired | all eight profiles bind the current-source r6 application bundle; local and remote tree digest is `04c2dd64b4f070cbd909a87f75a0372a0e3d4dae45c7e712641369cf76531d73` | `evidence/application-bundle-r6-20260913.md`; r5 remains immutable local history |
 | Executed | local Apptainer 1.5.3 SIF probe passed; a real four-Provider tiny-ONNX MiniNDN stream completed after the collaboration-grant repair; the separate YOLO host gate still needs its own Y-A/Y-B/Y-N runs | `evidence/minindn-stream-collaboration-r53-20260913.md`, `evidence/host-m01-r12-route-boundary-20260913.md` |
 | Measured | r53 measured two tokens (`[4,5]`) for the tiny-ONNX regression only; no accepted Spec186 YOLO `[1,50,6]` oracle, Qwen3 tuple, Tiger GPU result or two-node reuse result | T006.a/c and T007–T012 remain open or waiting |
 
@@ -22,8 +24,9 @@ not promoted to protocol or GPU qualification.
 
 - Local `apptainer` resolves only to `/usr/local/bin/apptainer` 1.5.3. Tiger
   compute `srun` reports `/usr/bin/apptainer` 1.5.3-1.el9. The Tiger login
-  node's 1.3.4 is metadata-only and is not used for SIF execution.
-- The r5 application package is staged read-only in project storage. The exact
+  node is a control-plane metadata boundary; its observed 1.3.4 package is not
+  used for SIF execution and is never a runtime fallback.
+- The r6 application package is staged read-only in project storage. The exact
   source-sealed base SIF is still absent, so all eight pre-dispatch gates fail
   closed before scheduler side effects.
 - The current host M01 failure is `REPO_SERVICE_ROUTE_NOT_READY` after three
@@ -39,7 +42,7 @@ not promoted to protocol or GPU qualification.
 ## Recovery order
 
 1. Supply or build the exact source-sealed base SIF with Apptainer 1.5.3 and
-   verify the r5 base-plus-app composition in the same runtime.
+   verify the r6 base-plus-app composition in the same runtime.
 2. Repair or supply the repository route/readiness prerequisite, then rerun
    fresh local YOLO Y-A/Y-B/Y-N with terminal, oracle and cleanup receipts.
 3. Supply the Qwen3-0.6B model tuple and run the CPU cold/follow-up case.
