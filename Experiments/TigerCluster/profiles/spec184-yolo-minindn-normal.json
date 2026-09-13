@@ -15,12 +15,12 @@
     "abiManifest": {"path": "${REPO_ROOT}/specs/186-spec184-tiger-qwen-experiments/fixtures/abi-manifest.json", "sha256": "dee862112bcc894907a59805ecbdc774c34982ca50ae3fabe893bad83caa0ead"},
     "allowCpuFallback": true,
     "application": {"bundle": {"path": "${REPO_ROOT}/build/examples/di-native-provider", "sha256": "68956263e2a30e72abd8bf4955225f0f0db9abecef4aa98cf5f44f2089d1ea57"}, "bundleSha256": "68956263e2a30e72abd8bf4955225f0f0db9abecef4aa98cf5f44f2089d1ea57", "entrypoint": "${REPO_ROOT}/build/examples/di-native-provider", "extension": "${REPO_ROOT}/pythonWrapper/build/lib.linux-x86_64-3.8/ndnsf/_ndnsf.cpython-38-x86_64-linux-gnu.so"},
-    "harness": {"launcher": "${REPO_ROOT}/Experiments/NDNSF_DI_YoloAckDriven_Minindn.py", "collector": {"path": "${REPO_ROOT}/Experiments/TigerCluster/runtime/spec186_candidate.py", "sha256": "5152e614af2cd6c27d9857cd22a22e3c7c36a11704366dd68643dfb9066ce65b"}}
+    "harness": {"launcher": "${REPO_ROOT}/Experiments/NDNSF_DI_YoloAckDriven_Minindn.py", "collector": {"path": "${REPO_ROOT}/Experiments/TigerCluster/runtime/spec186_candidate.py", "sha256": "e9bcfa7290ac9e80d01abe7453d844b206c28600b64a1eb163d95ffda1cc1367"}}
   },
   "model": {"family": "YOLOv8n", "format": "onnx", "backend": "onnxruntime-cpu", "model": {"path": "/home/tianxing/NDN/QMUAS_Drone/DetectionModule/yolov8n.onnx", "sha256": "4d2f387218a088c40a19dd8b41067ba729504f37d258f133377221b148e2f373"}, "tokenizer": null},
   "workload": {"input": {"path": "${REPO_ROOT}/specs/186-spec184-tiger-qwen-experiments/fixtures/yolo-input.json", "sha256": "631c9f7ab33d4c264c61a4611287fde816b65efa8d622e096c3795ad5543f3e6"}, "oracle": {"path": "${REPO_ROOT}/specs/186-spec184-tiger-qwen-experiments/fixtures/yolo-oracle.json", "sha256": "c319a20313ace7abcc5c13d7d10d1cfad89d2780e562a116ce33c9edfb341f97"}, "warmup": 1, "measured": 3, "requestMode": "normal"},
   "security": {"identityRoot": "${REPO_ROOT}/Experiments/TigerCluster/.keys/spec186-local", "permissions": {"path": "${REPO_ROOT}/specs/186-spec184-tiger-qwen-experiments/fixtures/permissions.json", "sha256": "65049e14a45d37108688a1f0cb6a1f53608766f549a554b082e31ae8dc0ca8a2"}},
   "timeouts": {"startupSeconds": 90, "requestSeconds": 60, "completionSeconds": 90, "cleanupSeconds": 10},
   "resources": {"account": "local", "partition": "local", "cpusPerNode": 4, "memory": "8G", "gpus": 0},
-  "evidence": {"root": "${REPO_ROOT}/specs/186-spec184-tiger-qwen-experiments/evidence", "collector": {"path": "${REPO_ROOT}/Experiments/TigerCluster/runtime/spec186_candidate.py", "sha256": "5152e614af2cd6c27d9857cd22a22e3c7c36a11704366dd68643dfb9066ce65b"}}
+  "evidence": {"root": "${REPO_ROOT}/specs/186-spec184-tiger-qwen-experiments/evidence", "collector": {"path": "${REPO_ROOT}/Experiments/TigerCluster/runtime/spec186_candidate.py", "sha256": "e9bcfa7290ac9e80d01abe7453d844b206c28600b64a1eb163d95ffda1cc1367"}}
 }

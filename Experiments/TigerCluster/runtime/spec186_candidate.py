@@ -34,6 +34,8 @@ _PROFILE_KEYS = {
     "model", "workload", "security", "timeouts", "resources", "evidence",
 }
 _CANDIDATE_KEYS = {"id", "sourceCommit", "sourceSealSha256"}
+_MANIFEST_KEYS = {"schemaVersion", "candidateId", "candidateDigest", "source", "runtime",
+                  "application", "harness", "configuration", "external", "security", "validation"}
 _ASSET_KEYS = {"path", "sha256"}
 _RUNTIME_KEYS = {
     "baseSif", "builder", "abiManifest", "allowCpuFallback", "application", "harness",
@@ -210,6 +212,20 @@ def load_profile(path: Path, *, repo_root: Optional[Path] = None,
             _path(role["binary"], "role.binary"); _string(role["service"], "role.service")
     elif not isinstance(profile["roles"], list) or not profile["roles"]:
         raise CandidateError("QWEN_ROLES_EMPTY")
+    else:
+        stages = [role.get("stage") for role in profile["roles"] if isinstance(role, Mapping)]
+        if stages != list(range(len(profile["roles"]))):
+            raise CandidateError("QWEN_STAGE_ORDER")
+        for role in profile["roles"]:
+            if not isinstance(role, Mapping):
+                raise CandidateError("ROLE_NOT_OBJECT")
+            _required(role, ("name", "identity", "node", "gpu", "backend", "service", "binary",
+                             "stage", "dependencies", "artifactSha256", "tokenizerSha256", "modelUri"), "ROLE")
+            if not isinstance(role["dependencies"], list):
+                raise CandidateError("QWEN_DEPENDENCIES")
+            _digest(role["artifactSha256"], "role.artifactSha256")
+            _digest(role["tokenizerSha256"], "role.tokenizerSha256")
+            _string(role["modelUri"], "role.modelUri")
 
     runtime = profile["runtime"]
     if not isinstance(runtime, Mapping):
@@ -245,6 +261,8 @@ def load_profile(path: Path, *, repo_root: Optional[Path] = None,
     _asset(model["tokenizer"], "model.tokenizer", optional=True)
     if profile["case"].startswith("qwen") and model["family"] != "Qwen3-0.6B":
         raise CandidateError("QWEN_MODEL_FAMILY_MISMATCH")
+    if profile["case"].startswith("qwen"):
+        _asset(model.get("stageManifest"), "model.stageManifest")
     if profile["case"].startswith("yolo") and model["family"] != "YOLOv8n":
         raise CandidateError("YOLO_MODEL_FAMILY_MISMATCH")
     if profile["case"] == "qwen06b-tiger-experimental" and model["format"] not in {"onnx", "gguf-q3"}:
@@ -343,6 +361,7 @@ def build_candidate_manifest(profile: Mapping[str, Any], *, repo_root: Path) -> 
                           "transportLayoutSha256": canonical_digest(profile["topology"])},
         "external": {"model": _asset_manifest(model["model"], "model"),
                      "tokenizer": _asset_manifest(model["tokenizer"], "tokenizer"),
+                     "stageManifest": _asset_manifest(model.get("stageManifest"), "stageManifest"),
                      "input": _asset_manifest(workload["input"], "input"),
                      "oracle": _asset_manifest(workload["oracle"], "oracle")},
         "security": {"identityRoot": security["identityRoot"],
@@ -351,6 +370,15 @@ def build_candidate_manifest(profile: Mapping[str, Any], *, repo_root: Path) -> 
     }
     manifest["candidateDigest"] = canonical_digest(manifest)
     return manifest
+
+
+def _validate_manifest_shape(manifest: Mapping[str, Any], failures: list[str]) -> None:
+    _keys(manifest, _MANIFEST_KEYS, "CANDIDATE_MANIFEST")
+    _required(manifest, _MANIFEST_KEYS, "CANDIDATE_MANIFEST")
+    for section in ("source", "runtime", "application", "harness", "configuration",
+                    "external", "security", "validation"):
+        if not isinstance(manifest[section], Mapping):
+            failures.append("CANDIDATE_SECTION_NOT_OBJECT:" + section)
 
 
 def _inside(path: Path, root: Path) -> bool:
@@ -469,6 +497,7 @@ def pre_dispatch(profile_path: Path, candidate_path: Path, *, repo_root: Path,
     try:
         profile = load_profile(profile_path, repo_root=repo_root, run_root=run_root)
         candidate = load_json(candidate_path)
+        _validate_manifest_shape(candidate, failures)
         if candidate.get("schemaVersion") != CANDIDATE_SCHEMA:
             failures.append("CANDIDATE_SCHEMA")
         expected = build_candidate_manifest(profile, repo_root=repo_root)
@@ -496,6 +525,16 @@ def pre_dispatch(profile_path: Path, candidate_path: Path, *, repo_root: Path,
         _check_declared_file(candidate.get("harness", {}).get("launcher"),
                              candidate.get("harness", {}).get("launcherSha256"),
                              "harness.launcher", failures)
+        for value in (profile["runtime"]["builder"]["path"],
+                      profile["runtime"]["abiManifest"]["path"],
+                      profile["runtime"]["application"]["bundle"]["path"],
+                      profile["runtime"]["application"]["extension"],
+                      profile["runtime"]["harness"]["launcher"],
+                      profile["runtime"]["harness"]["collector"]["path"],
+                      profile["evidence"]["root"]):
+            path = Path(value)
+            if str(path).startswith(str(repo_root.resolve()) + os.sep) and not _inside(path, repo_root):
+                failures.append("SYMLINK_ESCAPE:" + str(path))
         if not _inside(Path(profile["evidence"]["root"]), repo_root) and profile["topology"]["mode"] == "minindn":
             failures.append("EVIDENCE_ROOT_OUTSIDE_REPO")
         _native_checks({**profile, "application": profile["runtime"]["application"]}, failures, commands)
