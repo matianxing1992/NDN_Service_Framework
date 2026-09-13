@@ -178,6 +178,22 @@ only a local framework regression receipt. The implementation verdict remains
 `PASS`; exact source-sealed SIF, YOLO Y-A/Y-B/Y-N, Qwen3 and Tiger execution
 remain separate blocked or waiting gates.
 
+## Checkpoint 13 — 2026-09-13 host M01 G3 receipt
+
+The current-source r6 host run `spec186-host-gate-20260913-r55` completed one
+real M01 four-Provider tiny-ONNX stream with campaign ID
+`spec175-M01-1750001`. The canonical `spec175-host-minindn-manifest-v2` was
+generated and passed `spec175_host_gate.py`, binding source seal
+`sha256:f4676a0f…d7512a00`, the checked-in topology, fixture digest, seed
+`1750001`, and result receipt digest. Route readiness, all four V3 ACKs,
+terminal grant acceptance, non-terminal dependency execution, two token IDs
+`[4,5]`, and bounded cleanup are present in the run evidence.
+
+This advances the host route and current-source regression boundary. It is a
+CPU fixture workload and therefore does not close the exact 1.5.3 base SIF,
+YOLO numerical oracle, Qwen3, CUDA, Tiger single-node, two-node, or reuse
+requirements.
+
 ## Checkpoint 12 — 2026-09-13 current-source r6 identity refresh
 
 The collaboration repair was rebuilt from source commit

@@ -26,6 +26,7 @@ of the stopping point; it is not a qualification result.
 | `runtime-version-policy-20260913.md` | explicit local/compute Apptainer policy and refreshed profile identities | all eight profiles bind 1.5.3; login node is metadata-only; current r6/source/collector digests are bound |
 | `host-m01-r12-route-boundary-20260913.md` | current-source root MiniNDN retry | native ABI issue absent; repository `/STATUS` route barrier timed out before application request |
 | `minindn-stream-collaboration-r53-20260913.md` | real four-Provider streamed tiny-ONNX collaboration regression | terminal-only stream grant and non-terminal dependency execution pass; YOLO qualification remains open |
+| `host-m01-r55-g3-20260913.md` | current-source G3 host M01 manifest and validation | r55 M01 manifest `sha256:51039878…27c893a` passes with source/app identity bound; tiny-ONNX host gate only, no YOLO/SIF qualification |
 | `closure-handoff-20260912.md` | immutable prior implemented/wired/executed/measured snapshot | historical boundary retained for audit |
 | `closure-handoff-20260913.md` | current implemented/wired/executed/measured reconciliation | r6 staged and 1.5.3 aligned; branch remains `IN_PROGRESS` at the repository route/base-SIF/model gates |
 
