@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-13
 **Branch:** `SPEC184Experiments`
-**Checkpoint:** pending checkpoint commit for current-source r6 identity refresh
+**Checkpoint:** `c7f8f8e5` — current-source r6 identity refresh
 **Source baseline:** `575b43cc93bbed29932303caf3d09974f1585af7`
 **Current source commit:** `6d143d3f0f7a7c627af2c1ef6810d79c0738b52d`
 **Current source seal:** `sha256:f4676a0f937c903caebc8374893171890d0d6d0639be42a3ced1b101d7512a00`
