@@ -59,7 +59,7 @@ digest、run ID、命令、节点/GPU、oracle、退出和 cleanup 证据。
 | T012.c | T012 | 将失败按 code/ABI/packaging/profile/transport/loader/resource/app/harness/model 分类，提出最小下一步 | NOT_STARTED | diagnosis receipt and failure-log entry | 首失败不可定位时保留 BLOCKED_AFTER_BOUNDARY | 新失败只重跑受影响最早门 |
 | T013.a | T013 | 更新 `spec.md`、`plan.md`、`tasks.md`、`validation-matrix.md`、contracts、quickstart 和 `AGENTS.md` managed pointer（如扩展可用） | VERIFIED | current docs, corrected executable quickstart and `AGENTS.md` active-plan pointer; strict Spec Kit structure audit passes | pointer或路径不一致阻断 handoff | spec/plan/task change重跑 analyze |
 | T013.b | T013 | 把每次非平凡失败写入 `docs/failure-log.md`，完成离线 hash/oracle/reconciliation 和 evidence index | VERIFIED | `docs/failure-log.md`, `evidence/README.md` and all-profile pre-dispatch digest receipts | 失败被覆盖或仅存在聊天记录阻断 | 新失败/证据 parser变化重做 |
-| T013.c | T013 | 生成 Spec186 closure/handoff，明确 implemented/wired/executed/measured、未完成 external rows 和下一步 | NOT_STARTED | final evidence index and closure report | 任一必需 gate未完成则保持 IN_PROGRESS | final candidate变化重新闭合 |
+| T013.c | T013 | 生成 Spec186 closure/handoff，明确 implemented/wired/executed/measured、未完成 external rows 和下一步 | VERIFIED | `evidence/closure-handoff-20260912.md` records the current `IN_PROGRESS` boundary, recovery inputs and ordered next gates | 任一必需 gate未完成则保持 IN_PROGRESS | final candidate变化重新闭合 |
 
 ## Tasks
 
