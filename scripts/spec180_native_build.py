@@ -58,6 +58,7 @@ LIBRARY = "libndn-service-framework.so"
 SVS_LIBRARY = "libndn-svs.so"
 SVS_SOURCE_ENV = "NDNSF_NDN_SVS_SOURCE_TREE"
 SVS_BUILD_ENV = "NDNSF_NDN_SVS_BUILD_TREE"
+NAC_ABE_ENV = "NDNSF_NAC_ABE_PREFIX"
 DEFAULT_MANIFEST = "build-system-j2/spec180-native-build.json"
 MANIFEST_ENV = "SPEC180_NATIVE_BUILD_MANIFEST"
 SOURCE_TREES = (
@@ -253,6 +254,36 @@ def svs_identity(build_dir):
     return {"source_tree": str(source), "build_tree": str(build_tree),
             "headers": headers, "configuration": file_identity(build_tree / "config.hpp"),
             "library": file_identity(build_tree / SVS_LIBRARY)}
+
+
+def nac_abe_prefix(build_dir):
+    """Return Waf's explicit NAC-ABE prefix for the setuptools child.
+
+    Waf and setup.py are separate processes. Without forwarding this value,
+    setup.py falls back to installed headers while its link inputs still point
+    at Waf's selected library, creating an ABI mismatch.
+    """
+    values = []
+    for line in (build_dir / "c4che/_cache.py").read_text().splitlines():
+        match = re.fullmatch(r"NDNSF_NAC_ABE_PREFIX\s*=\s*(.+)", line)
+        if match:
+            values.append(match[1])
+    if len(values) > 1:
+        raise IdentityError("DUPLICATE_WAF_NAC_ABE_PREFIX")
+    if not values:
+        return ""
+    try:
+        value = ast.literal_eval(values[0])
+    except (ValueError, SyntaxError) as error:
+        raise IdentityError("WAF_NAC_ABE_PREFIX_INVALID_LITERAL") from error
+    if not isinstance(value, str) or not value or not Path(value).is_absolute():
+        raise IdentityError("WAF_NAC_ABE_PREFIX_NOT_ABSOLUTE")
+    prefix = Path(value).resolve(strict=True)
+    required = (prefix / "include/nac-abe/consumer.hpp",
+                prefix / "lib/libnac-abe.so")
+    if any(not path.is_file() for path in required):
+        raise IdentityError("WAF_NAC_ABE_PREFIX_INCOMPLETE")
+    return str(prefix)
 
 
 def validate_svs_mapping(svs, libraries, code):
@@ -506,6 +537,7 @@ def build(root, build_dir, manifest, python, env, jobs=1, binding="auto"):
     check_equal(source_fingerprints(root), sources, "SOURCES_CHANGED_DURING_BUILD")
     check_equal(config_fingerprints(build_dir), config, "CONFIG_CHANGED_DURING_BUILD")
     check_equal(svs_identity(build_dir), svs, "SVS_CHANGED_DURING_BUILD")
+    nac_prefix = nac_abe_prefix(build_dir)
     toolchain = setup_toolchain_identity(root, env)
     framework = file_identity(build_dir / LIBRARY)
     reusable = False
@@ -524,6 +556,8 @@ def build(root, build_dir, manifest, python, env, jobs=1, binding="auto"):
         build_env = dict(env, NDNSF_LIBRARY_DIR=str(build_dir),
                          NDNSF_NDN_SVS_SOURCE_TREE=svs["source_tree"],
                          NDNSF_NDN_SVS_BUILD_TREE=svs["build_tree"])
+        if nac_prefix:
+            build_env[NAC_ABE_ENV] = nac_prefix
         build_env.update(toolchain["environment"])
         run(command, cwd=root / "pythonWrapper", env=build_env)
         commands.append({"argv": command, "cwd": str(root / "pythonWrapper"),
@@ -531,6 +565,8 @@ def build(root, build_dir, manifest, python, env, jobs=1, binding="auto"):
                          **toolchain["environment"],
                          **flags,
                          SVS_SOURCE_ENV: svs["source_tree"], SVS_BUILD_ENV: svs["build_tree"]})
+        if nac_prefix:
+            commands[-1][NAC_ABE_ENV] = nac_prefix
     runtime = probe_runtime(python, root, env)
     validate_runtime(runtime, root, build_dir)
     validate_svs_mapping(svs, runtime["mapped_libraries"], "WRONG_RUNTIME_NDN_SVS")

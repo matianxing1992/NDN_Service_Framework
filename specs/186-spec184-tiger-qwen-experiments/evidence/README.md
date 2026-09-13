@@ -13,12 +13,16 @@ of the stopping point; it is not a qualification result.
 | `pre-dispatch-boundary-20260912.md` | all eight candidate prepare/check receipts | zero remote side effects; no runtime started |
 | `pre-dispatch-repair-20260913.md` | all eight candidate receipts after collector identity repair | stale collector mismatch removed; missing external runtime/model inputs still fail closed with zero remote side effects |
 | `pre-dispatch-runtime-inputs-20260913.md` | all eight candidate receipts after source/app path binding | provider-repair source seal and content-addressed app bundle are bound; missing base/model or local visibility still fail closed |
+| `pre-dispatch-r5-20260913.md` | all eight candidate receipts after corrected r5 bundle staging | r5 candidate digests and zero-side-effect gates are recorded; exact source-sealed base SIF remains absent |
 | `minindn-yolo-boundary-20260912.md` | fresh Y-A/Y-B/Y-N attempts | environment preflight stopped before startup |
 | `minindn-qwen06b-inventory.md` | Qwen3-0.6B model/backend inventory | compatible model tuple absent |
 | `tiger-preflight-20260912.md` | Tiger Slurm/GPU/project/Apptainer preflight | compute GPU available; SIF/runtime composition still pending |
 | `local-apptainer-20260912.md` | local Apptainer release switch | local runtime is now 1.5.3 and aligned with Tiger compute; exact Spec186 SIF still pending |
 | `standalone-yolo-reference-20260912.md` | Same-model YOLOv8n ORT CUDA reference | CUDA substrate PASS only; old SIF, not Spec186 qualification |
 | `t006-ort126-and-host-gate-20260913.md` | temporary ORT-1.26 base and current host M01 recovery probe | in-container loader closure PASS; host framework/ONNX development prefix missing, so T006 remains blocked |
+| `t006-nac-abe-abi-20260913.md` | Waf/setuptools NAC-ABE class-layout mismatch and repair | explicit prefix forwarded; native identity and `NativeServiceUser` lifecycle pass; exact SIF/ONNX/Tiger inputs remain pending |
+| `application-bundle-r5-20260913.md` | refreshed stripped application bundle and Tiger staging | r5 tree digest `687610de…07129` matches local/remote; all files read-only; runtime qualification still waits for the exact base SIF |
+| `host-m01-r12-route-boundary-20260913.md` | current-source root MiniNDN retry | native ABI issue absent; repository `/STATUS` route barrier timed out before application request |
 | `closure-handoff-20260912.md` | implemented/wired/executed/measured reconciliation | branch remains `IN_PROGRESS` with ordered recovery gates |
 
 Runtime receipts belong in `Experiments/TigerCluster/results/<run-id>` or the

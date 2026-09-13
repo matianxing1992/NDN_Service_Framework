@@ -3970,3 +3970,54 @@ which differs from the Spec186 handoff seal
   is supplied and the current host M01 is rerun.
 - **Lesson**: source sealing fixes repository identity, but it cannot replace
   a missing development dependency required to compile the ABI consumers.
+
+## 2026-09-13 — Spec186 Python binding mixed NAC-ABE ABIs
+
+- **Area**: T006.b native extension/runtime closure and host M01 startup.
+- **First boundary**: the Waf Core/DI build selected the explicit
+  `.deps/nac-abe-spec179-official` NAC-ABE prefix, but the separate setuptools
+  binding process did not receive that prefix and compiled against the older
+  `/usr/local/include` headers. AddressSanitizer then reported a
+  `ServiceUser` allocation of 12864 bytes followed by deletion using the
+  13400-byte type, producing `new-delete-type-mismatch`/`double free` during
+  `NativeServiceUser` teardown.
+- **Correction**: make `spec180_native_build.py` read and validate
+  `NDNSF_NAC_ABE_PREFIX` from Waf's `c4che/_cache.py`, pass it to setup.py, and
+  force-rebuild the binding. The resulting compile command uses the explicit
+  NAC-ABE include directory; the native identity verify and
+  `NativeServiceUser` construct/stop/delete regression both return zero.
+- **Lesson**: a clean `ldd` closure cannot detect C++ class-layout drift across
+  a Waf/setuptools boundary; every explicit dependency prefix must be forwarded
+  to each compiler child and the lifecycle must be exercised after rebuilding.
+
+## 2026-09-13 — Spec186 host M01 remained below the repository route gate
+
+- **Area**: T007 MiniNDN host-gate retry after the NAC-ABE ABI repair.
+- **First boundary**: the first retry without the root owner context stopped at
+  MiniNet's `*** Mininet must run as root` check. A second retry with the
+  passwordless root owner completed topology/NFD/controller startup, but the
+  repository publisher's three bounded `/STATUS` probes all timed out and the
+  run stopped at `REPO_SERVICE_ROUTE_NOT_READY` before the application request.
+- **Correction**: preserve both run directories (`r10` and `r12`) as failed
+  attempts; do not promote them to MiniNDN or YOLO qualification. Keep the
+  corrected native extension and r5 bundle as the next candidate, and rerun
+  only after the repository route/readiness barrier is repaired or its intended
+  host prerequisite is supplied.
+- **Lesson**: a valid native import and a successful NFD/controller start do
+  not prove the repository service route; the first failed readiness probe is
+  the controlling boundary for this host campaign.
+
+## 2026-09-13 — Spec186 r5 staging hit the Tiger project quota
+
+- **Area**: T006.c application-layer staging.
+- **First boundary**: streaming the unstripped r5 application bundle stopped
+  with `tar: .../di-native-provider: Cannot write: Disk quota exceeded` after
+  approximately 100 MiB had arrived at the new remote directory.
+- **Correction**: remove only the incomplete newly created r5 directory,
+  rebuild the delivery copy by stripping ELF debug sections while preserving
+  dynamic symbols, recompute the bundle manifest, and restage the 69,116,035
+  byte read-only bundle. Local and remote tree digests now both equal
+  `687610de859155449c51ec2ba4bb7b57c77614cbf0a53f106bb65152f8c07129`.
+- **Lesson**: application delivery must account for project quota; stripping
+  non-runtime debug sections is safe only when the post-strip import/help and
+  loader closure are rerun and the new content digest is bound everywhere.

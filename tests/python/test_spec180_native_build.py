@@ -82,6 +82,7 @@ def local(tmp_path, monkeypatch):
         put(name)
     core = put("build-system-j2/" + native.LIBRARY + ".0.1.0", b"core-v1")
     (build_dir / native.LIBRARY).symlink_to(core.name)
+    put("build-system-j2/libndnsf-distributed-inference.so", b"di-v1")
     extension = put("pythonWrapper/ndnsf/_ndnsf.fixture.so", b"extension-v1")
     provider = put("build-system-j2/examples/di-native-provider", b"provider-v1")
     provider.chmod(0o755)
@@ -165,7 +166,7 @@ def test_unified_build_targets_and_binding_cwd(local):
                             if "-print-prog-name=ld" not in c["command"]]
     assert waf["command"] == [str(local["root"] / "waf"), "-o",
                               str(local["build_dir"]), "build", "-j1",
-                              "--targets=ndn-service-framework,di-native-provider"]
+                              "--targets=" + native.TARGETS]
     assert setup["command"] == [local["python"], "setup.py", "build_ext", "--inplace", "--force"]
     assert setup["cwd"] == local["root"] / "pythonWrapper"
     assert setup["env"]["NDNSF_LIBRARY_DIR"] == str(local["build_dir"])
@@ -501,6 +502,22 @@ def test_helper_uses_waf_pair_instead_of_ambient_pair(local):
     assert setup["env"][native.SVS_SOURCE_ENV] == str(local["svs_source"])
     assert setup["env"][native.SVS_BUILD_ENV] == str(local["svs_build"])
     assert local["env"][native.SVS_SOURCE_ENV] == "/wrong/source"
+
+
+def test_helper_forwards_waf_nac_abe_prefix_to_setup(local):
+    prefix = local["root"] / "selected-nac-abe"
+    local["put"](prefix / "include/nac-abe/consumer.hpp", b"selected NAC header")
+    local["put"](prefix / "lib/libnac-abe.so", b"selected NAC library")
+    cache = local["build_dir"] / "c4che/_cache.py"
+    cache.write_text(cache.read_text() +
+                     "NDNSF_NAC_ABE_PREFIX = " + repr(str(prefix)) + "\n")
+
+    build(local)
+    setup = next(c for c in local["calls"] if "setup.py" in c["command"])
+    receipt = next(c for c in json.loads(local["manifest"].read_text())["commands"]
+                   if "setup.py" in c["argv"])
+    assert setup["env"][native.NAC_ABE_ENV] == str(prefix.resolve())
+    assert receipt[native.NAC_ABE_ENV] == str(prefix.resolve())
 
 
 def test_helper_rejects_missing_waf_pair_before_build(local):
