@@ -3809,3 +3809,20 @@ are still unobserved.
 - **Lesson**: a successful main binary does not imply a complete Apptainer
   installation; install and probe starter, CNI, config and runtime paths
   separately, with bounded generators and no version fallback.
+
+## 2026-09-12 — Spec186 provider help repair cannot reuse stale build tree
+
+- **Area**: T005/T006 native provider entrypoint closure.
+- **First boundary**: after adding the required zero-status `--help` parser
+  branch, a direct clang translation-unit compile passed, but relinking from
+  the retained `build/` objects failed. The objects mix an older Core/DI ABI:
+  the provider expects newer `NativeInferenceProvider`, tokenizer-decoder and
+  admission symbols, while the retained framework and DI objects expose older
+  names; their NDN-SVS/NAC-ABE closure is also incomplete.
+- **Correction**: reject the stale tree as a candidate and keep the source
+  repair explicit. Recreate the locked Rust tokenizer bridge, ONNX prefix and
+  same-revision Core/DI/NDN-SVS/NAC-ABE build before producing a new provider
+  digest. No ad-hoc relink or unresolved-symbol binary is promoted.
+- **Lesson**: a small CLI fix still changes the candidate source identity;
+  compile success or an old executable cannot replace a clean full-closure
+  rebuild and runtime loader probe.

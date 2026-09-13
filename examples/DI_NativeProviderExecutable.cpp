@@ -121,6 +121,7 @@ struct Options
   std::size_t handlerThreads = 4;
   std::size_t ackThreads = 2;
   std::optional<int> runForMs;
+  bool help = false;
   bool checkOnly = false;
   bool serve = false;
   bool noServeCertificates = false;
@@ -737,7 +738,10 @@ parseArgs(int argc, char** argv)
       return std::string(argv[++i]);
     };
 
-    if (arg == "--plan") {
+    if (arg == "--help" || arg == "-h") {
+      options.help = true;
+    }
+    else if (arg == "--plan") {
       options.planPath = readValue();
     }
     else if (arg == "--manifest") {
@@ -853,6 +857,9 @@ parseArgs(int argc, char** argv)
     }
   }
 
+  if (options.help) {
+    return options;
+  }
   if (options.planPath.empty()) {
     throw std::invalid_argument("--plan is required");
   }
@@ -1201,7 +1208,7 @@ void
 printUsage(const char* program)
 {
   std::cerr
-    << "usage: " << program << " --plan <native-execution-plan.json> "
+    << "usage: " << program << " [--help] --plan <native-execution-plan.json> "
     << "--manifest <service-manifest.json> [--service <name>] "
     << "[--provider <identity>] [--workers <n>] (--check-only | --serve) "
     << "[--run-for-ms <ms>] "
@@ -1232,6 +1239,10 @@ main(int argc, char** argv)
     std::signal(SIGINT, requestShutdown);
     std::signal(SIGTERM, requestShutdown);
     auto options = parseArgs(argc, argv);
+    if (options.help) {
+      printUsage(argv[0]);
+      return 0;
+    }
     std::cout << "NDNSF_DI_NATIVE_PROVIDER_START mode="
               << (options.serve ? "serve" : "check")
               << " service=" << options.serviceName

@@ -188,3 +188,21 @@ The generated `build-spec186`, Cargo, ONNX and Python build trees were removed
 after these probes to keep the experiment host within its storage budget. They
 are intentionally outside Git; a future run must rebuild the application
 bundle and extension before the profile's application hashes can be checked.
+
+## Checkpoint 11 — 2026-09-12 provider help source repair
+
+The provider CLI now recognizes both `--help` and `-h`, returns before the
+plan/manifest requirement checks, prints the existing usage contract and exits
+zero. A direct clang 10 compile of the changed translation unit passed with the
+current source headers and the matching NDN-SVS include root. The old
+`build/` objects were then tested as a reconstruction shortcut and rejected:
+they mix an older Core/DI ABI (including the singular tokenizer decoder API)
+and cannot link the current provider without unresolved symbols. That attempt
+is recorded in `docs/failure-log.md` and is not runtime evidence.
+
+The source repair therefore remains unpromoted until the locked Rust tokenizer
+bridge, ONNX full-protobuf prefix, current Core/DI objects and same-revision
+NDN-SVS/NAC-ABE libraries are rebuilt together. The next valid receipt must
+bind the new provider digest and rerun canonical import, `--help`,
+`readelf -d`, `ldd -r` and RPATH checks; no unresolved-symbol or wrapper binary
+is accepted.

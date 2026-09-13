@@ -90,3 +90,16 @@ after printing usage. The contract requires a zero-status help probe, so the
 source or entrypoint must receive an explicit sealed repair before T006.b can
 pass. Qwen3-0.6B assets, MiniNDN runtime inputs and Tiger Slurm/GPU evidence
 remain external prerequisites.
+
+## Checkpoint 6 after provider help repair
+
+The provider parser now accepts `--help`/`-h`, exits before requiring a plan or
+manifest, prints usage and returns zero. The changed translation unit compiles
+with clang 10 and the current source headers. A retained `build/` object-tree
+relink was deliberately rejected because it mixes older Core/DI and
+NDN-SVS/NAC-ABE ABIs; it does not provide a candidate or runtime help receipt.
+The convergence verdict remains `BLOCK` until the locked dependency tuple is
+rebuilt and the new provider passes the full import, entrypoint, RPATH and
+`ldd -r` closure together with an exact source-sealed base SIF/application
+composition. The Qwen3, MiniNDN and Tiger execution prerequisites are
+unchanged.

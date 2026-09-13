@@ -20,7 +20,7 @@ or an offline receipt to a runtime qualification result.
 
 | Row | Current state | Smallest recovery input |
 | --- | --- | --- |
-| T005/T006 | `BLOCKED_AFTER_BOUNDARY` | locked Rust `cargo` + offline cargo home, same-revision exported NAC-ABE library/headers, source-sealed ONNX/NAC-ABE/NDN-SVS tuple, clean rebuild, native import/`--help`/`readelf`/`ldd -r` closure |
+| T005/T006 | `BLOCKED_AFTER_BOUNDARY` | recreate locked Rust `cargo` + offline cargo home, same-revision exported NAC-ABE library/headers, source-sealed ONNX/NAC-ABE/NDN-SVS tuple, rebuild after the provider `--help` source repair, then pass native import/`--help`/`readelf`/`ldd -r` closure |
 | T007 | `WAITING_EXTERNAL_INPUT` | complete local MiniNDN environment variables, package/registry/key maps, topology/config and a closed native candidate |
 | T008 | `WAITING_EXTERNAL_INPUT` | actual Qwen3-0.6B model, tokenizer, stage manifest, compatible ONNX or GGUF-Q3 backend and digests |
 | T009.a | `VERIFIED` | `evidence/tiger-preflight-20260912.md` records Slurm allocation, GPU UUID/capacity, project storage and compute-node Apptainer `--version`; the preflight script is now bounded |
@@ -31,7 +31,8 @@ or an offline receipt to a runtime qualification result.
 ## Recovery order
 
 1. Recreate the exact dependency prefix and locked tokenizer bridge, then run
-   the clean Waf build at no more than `-j4`.
+   the clean Waf build at no more than `-j4`; the provider help repair must be
+   included in the new source seal.
 2. Build or reseal the layered base SIF and matching read-only application
    bundle; rerun native import, `--help`, RPATH and `ldd -r` checks.
 3. Re-run fresh local YOLO Y-A/Y-B/Y-N with the complete environment and retain
