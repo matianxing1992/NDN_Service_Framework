@@ -24,3 +24,25 @@ run cannot silently reuse one of these waiting receipts.
 The check receipt also verifies the candidate digest and rejects placeholder
 GPU/account inputs before scheduler submission. These are boundary receipts,
 not MiniNDN, Slurm, GPU or model execution results.
+
+## Refresh after native rebuild — 2026-09-12
+
+After rebuilding the provider and extension, updating all profile application
+hashes and fixing the canonical extension import probe, every profile was
+prepared and checked again. The new digests are the only identities valid for
+subsequent evidence:
+
+| Profile | Refreshed candidate digest | Check boundary |
+| --- | --- | --- |
+| `spec184-yolo-minindn-normal` | `8f9eef2710ef98341f1bd0e91aab6579ff61b6ed5742b3bd57fa45da743f2539` | base SIF missing; provider `--help` status 2 |
+| `spec184-yolo-minindn-negative` | `0569c17b744252787a5b9cee58a25c9da9366898c5b6ec38e0a555903b522775` | base SIF missing; provider `--help` status 2 |
+| `spec184-qwen06b-minindn-cpu` | `64f26d7a84ae98ab5a3b8f898309105099d0a803a15a176eb6b4321c4d570822` | base SIF/model/tokenizer/stage manifest missing; provider `--help` status 2 |
+| `spec184-yolo-tiger-single-gpu` | `79044c5b355b50f020a2655e9398974cdb71b306c8c1738790e616d007dab57c` | base SIF and staged model missing; provider `--help` status 2 |
+| `spec184-yolo-tiger-two-node-normal` | `512270d0392af31bfbe435566a12d0039e77e6024d649c2f2c82f88a9ea2f780` | base SIF and staged model missing; provider `--help` status 2 |
+| `spec184-yolo-tiger-two-node-negative` | `cdeea8db61728c862b8bd4eee40e7b475b10bdac1cbc2f461ae09198ce0a7dcc` | base SIF and staged model missing; provider `--help` status 2 |
+| `spec184-yolo-tiger-two-node-reuse` | `9218f38791139daf58cca308f17f59de035a133f2e68bf9f6575967058d4b77c` | base SIF and staged model missing; provider `--help` status 2 |
+| `spec184-qwen06b-tiger-experimental` | `ef0af10899e6aa803dc9b8275a953a9e0f7c010f9a2be8725a0cfec045e577cc` | base SIF/model/tokenizer/stage manifest missing; provider `--help` status 2 |
+
+All eight refreshed checks report `ssh=0`, `rsync=0`, `staging=0` and
+`sbatch=0`. The old table above remains as historical evidence; its digests
+must not be mixed with this refreshed candidate set.

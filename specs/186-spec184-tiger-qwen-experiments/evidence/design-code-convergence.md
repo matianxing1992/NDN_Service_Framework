@@ -72,3 +72,21 @@ incomplete tuple was rejected with zero SSH, rsync, staging or scheduler side
 effects. The first local runtime boundaries remain the missing base SIF/native
 loader closure for YOLO and the missing Qwen3 model/stage/tokenizer tuple for
 Qwen. This strengthens the dispatch gate but leaves the audit verdict `BLOCK`.
+
+## Checkpoint 5 after native rebuild and checker repair
+
+The exact NDN-SVS source/build pair, official NAC-ABE prefix, temporary ONNX
+protobuf prefix and pinned Rust 1.90 bridge cache now produce the framework/DI
+shared libraries, ONNX assembly worker and a clang-built native provider. The
+Python extension was rebuilt against the same library directory; canonical
+`import ndnsf._ndnsf` passes in a clean process and its static `ldd -r`
+command returns zero. The pre-dispatch checker now performs that canonical
+import in a subprocess; its previous arbitrary module alias caused a false
+pybind initializer failure.
+
+The verdict remains `BLOCK`. The declared Spec186 base SIF is not present on
+this host, and the baseline provider parser returns status 2 for `--help`
+after printing usage. The contract requires a zero-status help probe, so the
+source or entrypoint must receive an explicit sealed repair before T006.b can
+pass. Qwen3-0.6B assets, MiniNDN runtime inputs and Tiger Slurm/GPU evidence
+remain external prerequisites.

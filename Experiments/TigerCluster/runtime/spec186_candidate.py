@@ -9,12 +9,12 @@ mutations after this gate returns ``ok``.
 from __future__ import annotations
 
 import hashlib
-import importlib.util
 import json
 import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 from typing import Any, Dict, Iterable, Mapping, Optional, Sequence, Tuple
 
 
@@ -437,15 +437,26 @@ def _native_checks(profile: Mapping[str, Any], failures: list[str], commands: li
         if not ext.is_file():
             failures.append("NATIVE_EXTENSION_MISSING")
         else:
-            spec = importlib.util.spec_from_file_location("spec186_ndnsf_extension", ext)
-            if spec is None or spec.loader is None:
-                failures.append("NATIVE_EXTENSION_IMPORT_UNSUPPORTED")
-            else:
-                try:
-                    module = importlib.util.module_from_spec(spec)
-                    spec.loader.exec_module(module)
-                except Exception as exc:
-                    failures.append("NATIVE_EXTENSION_IMPORT_FAILED:" + type(exc).__name__)
+            # Pybind11 exports ``PyInit__ndnsf``. Loading under an arbitrary
+            # probe name asks CPython for a different initializer and creates
+            # a false ImportError even when the ELF closure is valid. Probe
+            # the canonical package name in a subprocess so collector imports
+            # cannot mask the result.
+            package_root = ext.parent.parent
+            probe = (
+                "import sys; sys.path.insert(0, %r); "
+                "import ndnsf._ndnsf; print(ndnsf._ndnsf.__file__)"
+            ) % str(package_root)
+            commands.append([sys.executable, "-c", probe])
+            try:
+                result = subprocess.run(
+                    [sys.executable, "-c", probe], stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT, timeout=20, check=False, text=True,
+                )
+                if result.returncode != 0:
+                    failures.append("NATIVE_EXTENSION_IMPORT_FAILED:" + str(result.returncode))
+            except (OSError, subprocess.SubprocessError) as exc:
+                failures.append("NATIVE_EXTENSION_IMPORT_FAILED:" + type(exc).__name__)
             for tool, args in (("readelf", ["readelf", "-d", str(ext)]),
                                ("ldd", ["ldd", "-r", str(ext)])):
                 commands.append(args)

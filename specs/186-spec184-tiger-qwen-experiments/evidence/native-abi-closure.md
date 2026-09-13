@@ -127,3 +127,59 @@ but they are not promoted until the provider entrypoint is built and passes
 the same loader closure. The next bounded experiment uses `/usr/bin/clang++`
 10 with an explicit `/usr` toolchain root; its compiler identity must be part
 of any candidate seal.
+
+## Checkpoint 8 — 2026-09-12 clang provider build
+
+The alternate compiler boundary completed with `/usr/bin/clang++` 10,
+`CXXFLAGS='-O0 -g0'`, explicit `--toolchain-root=/usr`, and `-j4`. Waf
+compiled and linked all 91 provider objects successfully:
+
+```text
+'build' finished successfully (7m51.860s)
+output: build-spec186/examples/di-native-provider
+sha256: eef4fe041e0785f79bcd741091ba91ae6d5b2019c57d6339ccb44273c901a2f9
+```
+
+The framework and distributed-inference shared libraries (97/97) and
+`DI_NativeOnnxAssemblyWorker` were already rebuilt against the explicit
+NDN-SVS source/build pair and the official NAC-ABE prefix. GCC remains the
+default locked compiler; clang is an alternate build input required by the
+host GCC 9 ICE and must be recorded in any derived candidate identity.
+
+## Checkpoint 9 — 2026-09-12 native loader probes
+
+`readelf -d` and `ldd -r` probes for the two shared libraries, the provider,
+and the ONNX assembly worker resolved every non-interpreter dependency with
+no `not found` or native undefined-symbol diagnostic. The provider's usage
+surface is present, but the baseline parser does not recognize `--help`:
+
+```text
+HELP_RC=2
+error: unknown argument: --help
+```
+
+It prints the complete usage line before returning 2. The Spec186 contract
+requires a zero-status `--help` probe, so this remains a real entrypoint
+boundary and is not promoted as T006.b PASS. Adding the flag would change the
+source identity; it must be handled as an explicit upstream patch or a new
+sealed candidate rather than hidden in the experiment harness.
+
+## Checkpoint 10 — 2026-09-12 canonical Python extension rebuild
+
+The pybind extension was rebuilt with clang against `build-spec186`, the
+explicit NDN-SVS pair and the official NAC-ABE prefix. Its digest is
+`78de42ad7255b169bbb48facf56ecaefaa2d299cde4a7d5977c637a7f29198d8`.
+Running `import ndnsf._ndnsf` in a clean Python process passed, and the
+extension's `ldd -r` command returned zero. The static report lists Python C
+API symbols, which are intentionally supplied by the embedding interpreter;
+the canonical import is the authoritative runtime check. The candidate
+checker was corrected to probe this canonical module name in a subprocess;
+loading it under an arbitrary alias had produced a false `ImportError`.
+
+The refreshed pre-dispatch receipt now rejects only the absent source-sealed
+Spec186 base SIF and the provider's non-zero `--help` status, while keeping
+all SSH/rsync/staging/Slurm side-effect counters at zero. The cached
+`base-runtime-controller-version-j4-v22-stable-20260909.sif` is deliberately
+not reused: its Apptainer labels identify Spec174 source seal
+`sha256:9766e37fcedd176a4316e795142db3106287b85cb0102f367b267d136f4d0127`,
+not the Spec186 baseline.
