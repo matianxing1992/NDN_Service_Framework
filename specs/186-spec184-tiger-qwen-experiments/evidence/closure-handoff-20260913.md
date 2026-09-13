@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-13
 **Branch:** `SPEC184Experiments`
-**Checkpoint:** `e5c7de82`
+**Checkpoint:** pending checkpoint commit for streamed collaboration repair
 **Source baseline:** `575b43cc93bbed29932303caf3d09974f1585af7`
 **Qualification state:** `IN_PROGRESS`
 **Convergence verdict:** `PASS (implementation); BLOCK (runtime qualification)`
@@ -15,8 +15,8 @@ not promoted to protocol or GPU qualification.
 | --- | --- | --- |
 | Implemented | eight strict profiles, explicit 1.5.3 Apptainer path/version pins, deterministic manifests, zero-side-effect pre-dispatch, lifecycle/cleanup adapters, and explicit dependency-prefix forwarding for native Python binding builds | `tests/test_spec180_native_build.py` (81 passed), `Experiments/TigerCluster/tests` (76 passed), `scripts/spec180_native_build.py`, `evidence/runtime-version-policy-20260913.md` |
 | Wired | all eight profiles bind the corrected r5 application bundle; local and remote tree digest is `687610de859155449c51ec2ba4bb7b57c77614cbf0a53f106bb65152f8c07129` | `evidence/application-bundle-r5-20260913.md`, `evidence/pre-dispatch-r5-20260913.md` |
-| Executed | local Apptainer 1.5.3 SIF probe passed; a root MiniNDN M01 retry reached topology/NFD/controller/repository startup but stopped at the repository route barrier | `evidence/host-m01-r12-route-boundary-20260913.md` |
-| Measured | no accepted Spec186 YOLO protocol result, `[1,50,6]` oracle, Qwen3 tuple, Tiger GPU result or two-node reuse result | T006.a/c and T007–T012 remain open or waiting |
+| Executed | local Apptainer 1.5.3 SIF probe passed; a real four-Provider tiny-ONNX MiniNDN stream completed after the collaboration-grant repair; the separate YOLO host gate still needs its own Y-A/Y-B/Y-N runs | `evidence/minindn-stream-collaboration-r53-20260913.md`, `evidence/host-m01-r12-route-boundary-20260913.md` |
+| Measured | r53 measured two tokens (`[4,5]`) for the tiny-ONNX regression only; no accepted Spec186 YOLO `[1,50,6]` oracle, Qwen3 tuple, Tiger GPU result or two-node reuse result | T006.a/c and T007–T012 remain open or waiting |
 
 ## Current boundaries
 
@@ -29,6 +29,10 @@ not promoted to protocol or GPU qualification.
 - The current host M01 failure is `REPO_SERVICE_ROUTE_NOT_READY` after three
   bounded `/NDNSF/DistributedRepo/Object/v1/STATUS` timeouts. It is separate
   from the repaired NAC-ABE class-layout mismatch and does not qualify YOLO.
+- The r48/r49/r51 application failure was a Core lifecycle bug: non-terminal
+  collaboration roles were forced through stream publisher initialization
+  without a Provider-specific grant. r53 is the first clean regression after
+  the repair and is not a YOLO qualification result.
 - Qwen3-0.6B model, tokenizer and stage manifest are still unavailable; no
   Qwen2.5 or fixture artifact is substituted.
 

@@ -4482,6 +4482,25 @@ def main() -> int:
             stderr=subprocess.STDOUT,
         )
         processes.append((user_proc, user_out, user_log))
+        if args.spec175_case:
+            # The pre-start snapshot proves the static topology route only.
+            # SVS also registers the group prefix from each application after
+            # process launch; capture that live FIB while the User is running
+            # so a local registration that hides the multicast route cannot be
+            # mistaken for a healthy group fan-out.
+            wait_log(
+                user_log,
+                f"setting InterestFilter: {GROUP_IDENTITY}/v=3",
+                min(10.0, max(1.0, args.provider_start_timeout_s)),
+                user_proc,
+            )
+            write_spec175_nfd_route_snapshot(
+                ndn, OUT / "spec175-nfd-route-after-app.json",
+                (APP_ROOT, GROUP_IDENTITY),
+                tuple(diagnostic_route_prefixes),
+                spec175_group_fanout["expectedNextHops"] if
+                spec175_group_fanout is not None else {},
+            )
         if args.spec107_live_fault_cell in {
             "provider-kill-restart", "provider-boot-change"
         }:

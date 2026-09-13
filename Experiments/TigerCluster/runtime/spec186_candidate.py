@@ -472,9 +472,10 @@ def _apptainer_checks(profile: Mapping[str, Any], failures: list[str],
                       commands: list[list[str]]) -> None:
     """Require the declared runtime on local SIF execution paths.
 
-    Tiger profiles are submitted from the login node, where Apptainer 1.3.4 is
-    metadata-only. Their target binary is therefore checked by the compute
-    preflight, while local MiniNDN/SIF paths verify the local executable here.
+    Tiger profiles are submitted from a login/control node; that node is never
+    an NDNSF-DI SIF execution target. Their declared compute binary is therefore
+    checked by the compute preflight, while local MiniNDN/SIF paths verify the
+    local 1.5.3 executable here.
     """
     runtime = profile["runtime"]
     apptainer = runtime["apptainer"]

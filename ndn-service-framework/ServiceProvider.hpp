@@ -1261,6 +1261,7 @@ namespace ndn_service_framework{
              * its sync prefix permanently unregistered after a cold start. */
             void scheduleSvsReinitializationAfterPermission();
             void reinitializeSvsPubSubAfterPermission();
+            void finishSvsReinitializationAfterPermission();
             // Scoped services may be added after init(). Keep their V2
             // request subscription aligned with the service table so a
             // dynamically served collaboration can receive Requests.

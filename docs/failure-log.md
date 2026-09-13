@@ -4072,3 +4072,97 @@ which differs from the Spec186 handoff seal
   the application gate. The terminal response reference must pass independent
   segment validation before repository readiness or YOLO qualification can be
   claimed.
+
+## 2026-09-13 — Spec186 r41–r44 SVS delivery had no current Provider evidence
+
+- **Area**: T007 MiniNDN host-gate delivery diagnosis.
+- **First boundary**: repeated bounded host runs showed the User's SVS
+  publication and route snapshots, but no current Provider request or native
+  publication/hash evidence. The runs therefore could not distinguish an NFD
+  route loss from an SVS freshness or repository fetch rejection.
+- **Correction**: preserve each immutable run directory and add the opt-in
+  `NDNSF_SVS_DIAGNOSTIC` boundary trace; do not increase SIF/model scope or
+  promote User-side `SVS_PUBLISH_DONE` to protocol delivery.
+- **Lesson**: a publication event on the producer is not evidence that a
+  Provider accepted the publication. Both sides of the SVS boundary need
+  timestamped evidence.
+
+## 2026-09-13 — Spec186 r45–r47 host retries exposed transient barriers
+
+- **Area**: T007 MiniNDN host-gate retries.
+- **First boundary**: r45 stopped at a transient repository-route probe; r46
+  reached the Provider after route recovery and exposed an asynchronous SVS
+  unregister race; r47 stopped during bounded repository prefetch before the
+  application request.
+- **Correction**: retain all three run directories; repair the SVS lifecycle
+  only after the r46 trace, and treat r45/r47 as startup/transient boundaries
+  rather than model or SIF verdicts.
+- **Lesson**: retries must preserve the first boundary and separate startup
+  transients from deterministic application failures.
+
+## 2026-09-13 — Spec186 r46 SVS re-registration removed the replacement group route
+
+- **Area**: T005/T007 Provider SVS lifecycle.
+- **First boundary**: after permission-triggered reinitialization, the old
+  `RegisteredPrefixHandle` unregister command completed asynchronously after
+  the replacement `/group` registration, deleting the new route and leaving
+  Providers without current request delivery.
+- **Correction**: clear the old registrations, wait the bounded
+  `NDNSF_SVS_REINIT_UNREGISTER_SETTLE_MS` interval, then construct and register
+  the replacement SVS publisher. The default settle is 100 ms and r53 used
+  150 ms.
+- **Lesson**: destroying an NFD registration handle is asynchronous; a
+  replacement registration needs an explicit event-loop settle boundary.
+
+## 2026-09-13 — Spec186 r48 compact streamed Selection omitted Provider grants
+
+- **Area**: T005 streamed collaboration selection.
+- **First boundary**: r48 reached all four Provider ACK callbacks and Selection,
+  but every request-scoped Provider rejected with
+  `request-scoped stream grant rejected`. The compact multi-Provider Selection
+  had one grant field and could not represent a distinct wrapped event key per
+  Provider.
+- **Correction**: preserve r48 and change streamed multi-Provider Selection to
+  publish one Provider-specific Selection per selected ACK, so each grant is
+  wrapped for its actual Provider key offer.
+- **Lesson**: a compact wire form is invalid when a security field is
+  recipient-specific; selection fan-out must preserve recipient binding.
+
+## 2026-09-13 — Spec186 r49 non-terminal collaboration roles still required grants
+
+- **Area**: T005 streamed collaboration Provider execution.
+- **First boundary**: after the per-Provider Selection split, r49 still failed
+  because the request-scoped path initialized a stream publisher for every
+  collaboration role. Only the terminal response owner receives the event-key
+  grant; non-terminal roles have authenticated assignment payloads instead.
+- **Correction**: preserve r49 and make publisher initialization conditional on
+  a grant. Permit a missing grant only when the service is registered as a
+  collaboration service and the assignment payload is nonempty; ordinary
+  streamed requests remain fail-closed.
+- **Lesson**: collaboration dependency stages and terminal stream ownership
+  are different authorization roles and must not share one unconditional
+  publisher precondition.
+
+## 2026-09-13 — Spec186 r50 repository prefetch timed out before application start
+
+- **Area**: T007 MiniNDN host-gate retry.
+- **First boundary**: r50 exceeded the bounded 120-second repository fetch
+  deadline during stage-3 startup and produced no application request logs.
+- **Correction**: retain r50 as a startup failure; rerun with a fresh run ID and
+  the already bounded retry/backoff settings. Do not attribute this boundary to
+  the collaboration grant repair.
+- **Lesson**: a pre-application repository timeout cannot validate or falsify
+  the application protocol path.
+
+## 2026-09-13 — Spec186 r51 confirmed terminal-only grant construction
+
+- **Area**: T005 streamed collaboration diagnosis.
+- **First boundary**: diagnostic r51 showed event-key grants were built only for
+  Provider/3, while Provider/0–2 had authenticated requests but no grant; the
+  unconditional request-scoped publisher initialization then rejected those
+  non-terminal roles.
+- **Correction**: use r51 as the controlling diagnosis, apply the registered
+  collaboration-assignment exception, and verify the repair with a fresh r53
+  run rather than rewriting the failed receipt.
+- **Lesson**: log grant construction and grant acceptance separately; terminal
+  ownership must be observable at both producer and consumer boundaries.

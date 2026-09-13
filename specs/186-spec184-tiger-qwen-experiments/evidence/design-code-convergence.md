@@ -160,3 +160,20 @@ The focused profile tests pass (`14 passed`) and the full TigerCluster suite
 passes (`76 passed`). This closes the runtime-version identity gap but does not
 close the absent source-sealed base SIF, repository route, model, MiniNDN or
 Tiger campaign gates.
+
+## Checkpoint 11 — 2026-09-13 streamed collaboration runtime repair
+
+The first real four-Provider MiniNDN run reached ACK/Selection but failed
+because the request-scoped Provider path required an event-key grant for every
+collaboration role. The sealed V3 plan marks only Stage/3 as the terminal
+response owner. The repair splits streamed multi-Provider Selection into
+Provider-specific messages, initializes a publisher only for a present grant,
+and allows an absent grant only for a registered collaboration assignment.
+The rebuilt runtime and TigerCluster suite pass; r53 then records non-terminal
+dependency execution, terminal grant acceptance, two token events and clean
+MiniNDN teardown.
+
+This closes the controlling implementation gap exposed by r48/r49/r51, but is
+only a local framework regression receipt. The implementation verdict remains
+`PASS`; exact source-sealed SIF, YOLO Y-A/Y-B/Y-N, Qwen3 and Tiger execution
+remain separate blocked or waiting gates.

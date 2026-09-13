@@ -11043,6 +11043,33 @@ void ServiceUser::finishRequestAckOnEventLoop(
                     role->terminalResponseOwner;
             }
         }
+        if (std::getenv("NDNSF_SVS_DIAGNOSTIC") != nullptr) {
+            bool ackFound = false;
+            bool ackOffer = false;
+            if (pendingIt != m_pendingCalls.end()) {
+                const auto ackIt = std::find_if(
+                    pendingIt->second.requestAcks.begin(),
+                    pendingIt->second.requestAcks.end(),
+                    [&providerName] (const StoredAck& ack) {
+                        return ack.providerName.equals(providerName);
+                    });
+                ackFound = ackIt != pendingIt->second.requestAcks.end();
+                ackOffer = ackFound && ackIt->message.hasSelectionInputKeyOffer();
+            }
+            NDN_LOG_WARN("NDNSF_STREAM_GRANT_BUILD requestId="
+                         << requestId.toUri()
+                         << " providerName=" << providerName.toUri()
+                         << " pending=" << (pendingIt != m_pendingCalls.end())
+                         << " streamOptions="
+                         << (pendingIt != m_pendingCalls.end() &&
+                             pendingIt->second.streamOptions.has_value())
+                         << " eventKeyBytes="
+                         << (pendingIt == m_pendingCalls.end() ? 0 :
+                             pendingIt->second.streamEventKey.size())
+                         << " streamRecipient=" << isStreamGrantRecipient
+                         << " ackFound=" << ackFound
+                         << " ackOffer=" << ackOffer);
+        }
         if (pendingIt != m_pendingCalls.end() &&
             pendingIt->second.streamOptions &&
             !pendingIt->second.streamEventKey.empty() &&
@@ -11112,6 +11139,13 @@ void ServiceUser::finishRequestAckOnEventLoop(
             grant.setMessageType("STREAM-GRANT");
             grant.setWrappedMessageKey(wrapped);
             selectionMessage.setStreamEventKeyGrant(grant.WireEncode());
+            if (std::getenv("NDNSF_SVS_DIAGNOSTIC") != nullptr) {
+                NDN_LOG_WARN("NDNSF_STREAM_GRANT_BUILT requestId="
+                             << requestId.toUri()
+                             << " providerName=" << providerName.toUri()
+                             << " grantBytes="
+                             << selectionMessage.getStreamEventKeyGrant().size());
+            }
         }
         if (pendingIt != m_pendingCalls.end() &&
             pendingIt->second.isCollaboration) {
@@ -11427,6 +11461,25 @@ void ServiceUser::finishRequestAckOnEventLoop(
                 PublishServiceSelectionMessageV2(fallbackAck.providerName,
                                                  fallbackAck.serviceName,
                                                  fallbackAck.requestId);
+            }
+            return;
+        }
+
+        // A streamed Selection carries one Provider-specific key grant.  A
+        // compact Selection can target several Providers, but it has no
+        // per-Provider grant container, so reusing it would either omit the
+        // grant or encrypt it for the wrong Provider.  Publish the normal
+        // per-Provider form and let it build the grant and request-scoped
+        // input bundle against each selected Provider's key offer.
+        if (pendingIt->second.streamOptions &&
+            !pendingIt->second.streamEventKey.empty()) {
+            NDN_LOG_INFO("NDNSF_STREAM_SELECTION_SPLIT requestId="
+                         << requestId.toUri()
+                         << " selectedCount=" << selectedAcks.size());
+            for (const auto& selectedAck : selectedAcks) {
+                PublishServiceSelectionMessageV2(selectedAck.providerName,
+                                                 selectedAck.serviceName,
+                                                 selectedAck.requestId);
             }
             return;
         }

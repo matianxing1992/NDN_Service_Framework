@@ -68,7 +68,9 @@ NFD 配置同样写入该作业 scratch；process map 中固定的 `/tmp` 配置
 
 2026-09-06：SSH只读检查PASS（itiger/tma1），远端r119文件存在；尚未核对远端hash或提交作业。镜像内ServiceController/Provider/User接口已读源码；安装头文件/工具链不用于编译本探针。前次unsquashfs的`-cat`不受本机版本支持，改用容器内只读cat；导入路径查询以镜像实际模块布局为准。这些是能力检查，不是实验验收。
 
-2026-09-06 B001/B002：新增runtime/apps/profile/launcher/collector完成；源码审查修正Controller异步就绪、原生拒绝负例必须有permission日志及合法control请求、清理进程组、提交前后hash一致和宿主环境注入隔离。`python3 -m pytest -q Experiments/TigerCluster/tests/test_baseline.py` **24 passed in 0.32s**；含错误profile、伪造PASS、超时冒充验签拒绝、非零退出、残留私有状态与进程所有权。尚未运行B003，不能据此声明实际密钥/API/双节点通过。本地/远端SIF均为`b6710fd696a7f962f67f67a54278d92a15babb856c4af428a3f04ba54dc83285`；远端Apptainer实际版本为`1.3.4-1.el9`，本机为`1.3.4`，本地模式显式记录运行环境差异。
+2026-09-06 B001/B002：新增runtime/apps/profile/launcher/collector完成；源码审查修正Controller异步就绪、原生拒绝负例必须有permission日志及合法control请求、清理进程组、提交前后hash一致和宿主环境注入隔离。`python3 -m pytest -q Experiments/TigerCluster/tests/test_baseline.py` **24 passed in 0.32s**；含错误profile、伪造PASS、超时冒充验签拒绝、非零退出、残留私有状态与进程所有权。尚未运行B003，不能据此声明实际密钥/API/双节点通过。本地/远端SIF均为`b6710fd696a7f962f67f67a54278d92a15babb856c4af428a3f04ba54dc83285`；当时记录的 1.3.4 版本差异仅是历史证据。
+
+当前 Spec186 规则覆盖本基线入口：本机和 Tiger compute 的 NDNSF-DI/SIF 执行统一使用 Apptainer 1.5.3；登录节点只负责 SSH、Slurm 和文件元数据，不执行 SIF，也不作为 1.3.4 回退运行时。旧的 1.3.4 数值仅保留在上述历史记录中，不能用于新候选。
 
 ## Usage
 

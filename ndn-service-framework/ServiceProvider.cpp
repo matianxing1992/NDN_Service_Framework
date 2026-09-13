@@ -1906,6 +1906,26 @@ namespace ndn_service_framework
         m_contentRegistrations.clear();
         m_svsps.reset();
 
+        // RegisteredPrefixHandle destruction sends the NFD unregister command
+        // asynchronously. Constructing the replacement immediately can race
+        // that command: the old handle then removes the replacement's freshly
+        // registered /group route. Leave the endpoint absent until the old
+        // unregister callbacks have had one bounded Face turn to complete.
+        const int settleMs = std::max(
+            1, intEnvOrDefault("NDNSF_SVS_REINIT_UNREGISTER_SETTLE_MS", 100));
+        NDN_LOG_INFO("NDNSF_SVS_REINIT_UNREGISTER_SETTLE role=provider ms="
+                     << settleMs);
+        m_scheduler.schedule(ndn::time::milliseconds(settleMs), [this] {
+            finishSvsReinitializationAfterPermission();
+        });
+    }
+
+    void ServiceProvider::finishSvsReinitializationAfterPermission()
+    {
+        if (m_isLocalMock || m_svsps != nullptr) {
+            return;
+        }
+
         ndn::svs::SecurityOptions secOpts(m_keyChain);
         secOpts.interestSigner = std::make_shared<CommandInterestSigner>(m_keyChain);
         secOpts.interestSigner->signingInfo.setSignedInterestFormat(ndn::security::SignedInterestFormat::V03);
@@ -4609,7 +4629,13 @@ namespace ndn_service_framework
         }
         else {
             NDN_LOG_WARN("Reject streamed selection without Provider-specific key grant requestId="
-                         << requestId.toUri());
+                         << requestId.toUri()
+                         << " providerName=" << providerName.toUri()
+                         << " requestHasStreamOptions="
+                         << requestMessage.hasStreamRequestOptions()
+                         << " selectionHasGrant="
+                         << selectionMessage.hasStreamEventKeyGrant()
+                         << " optionsHasGrant=" << options.eventKeyGrant.has_value());
             return false;
         }
         HybridMessageEnvelope grant;
@@ -4682,6 +4708,12 @@ namespace ndn_service_framework
             std::lock_guard<std::mutex> lock(m_pendingRequestMutex);
             m_streamBindings[pendingKey] = binding;
             m_streamPublishers[pendingKey] = std::move(publisher);
+        }
+        if (std::getenv("NDNSF_SVS_DIAGNOSTIC") != nullptr) {
+            NDN_LOG_WARN("NDNSF_STREAM_GRANT_ACCEPTED requestId="
+                         << requestId.toUri()
+                         << " providerName=" << providerName.toUri()
+                         << " selectionDigest=" << selectionDigest);
         }
         return true;
     }
@@ -6274,23 +6306,53 @@ namespace ndn_service_framework
                                     return;
                                 }
                                 if (readyRequest.hasStreamRequestOptions()) {
-                                    // The request-scoped input has now been
-                                    // authenticated.  Initialize the normal
-                                    // stream publisher from the already
-                                    // authenticated Selection grant before
-                                    // entering the worker handler; this keeps
-                                    // event-key delivery bound to the same
-                                    // request/selection as the encrypted input.
-                                    if (!initializeStreamPublisher(
-                                            requesterName, providerName, serviceName,
-                                            requestId, readyRequest, selectionMessage,
-                                            selectionDigest)) {
+                                    const bool hasStreamGrant =
+                                        selectionMessage.hasStreamEventKeyGrant() ||
+                                        readyRequest.getStreamRequestOptions().eventKeyGrant.has_value();
+                                    const bool hasCollaborationAssignment =
+                                        !assignmentPayloadCopy.empty() &&
+                                        m_collaborationServices.find(serviceName) !=
+                                            m_collaborationServices.end();
+                                    if (hasStreamGrant) {
+                                        // The request-scoped input has now been
+                                        // authenticated. Initialize the normal
+                                        // stream publisher from the already
+                                        // authenticated Selection grant before
+                                        // entering the worker handler; this keeps
+                                        // event-key delivery bound to the same
+                                        // request/selection as the encrypted input.
+                                        if (!initializeStreamPublisher(
+                                                requesterName, providerName, serviceName,
+                                                requestId, readyRequest, selectionMessage,
+                                                selectionDigest)) {
+                                            publishExecutionFailureOnEventLoop(
+                                                requesterName, providerName, serviceName,
+                                                requestId, readyRequest,
+                                                "request-scoped stream grant rejected",
+                                                selectionDigest);
+                                            return;
+                                        }
+                                    }
+                                    else if (!hasCollaborationAssignment) {
+                                        // Ordinary streamed invocations have no
+                                        // assignment that can identify them as
+                                        // a non-terminal collaboration role.
+                                        // Keep those requests fail-closed when
+                                        // the Provider-specific grant is absent.
                                         publishExecutionFailureOnEventLoop(
                                             requesterName, providerName, serviceName,
                                             requestId, readyRequest,
                                             "request-scoped stream grant rejected",
                                             selectionDigest);
                                         return;
+                                    }
+                                    else if (std::getenv("NDNSF_SVS_DIAGNOSTIC") != nullptr) {
+                                        NDN_LOG_WARN(
+                                            "NDNSF_STREAM_GRANT_SKIP_NONTERMINAL requestId="
+                                            << requestId.toUri()
+                                            << " providerName=" << providerName.toUri()
+                                            << " assignmentBytes="
+                                            << assignmentPayloadCopy.size());
                                     }
                                 }
                                 const auto collaboration =

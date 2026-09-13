@@ -8,7 +8,7 @@
   "partition": "bigTiger",
   "account": "devs",
   "apptainer": "/usr/bin/apptainer",
-  "apptainerVersion": "1.3.4-1.el9",
+  "apptainerVersion": "1.5.3",
   "sif": "/project/tma1/ndnsf-di/candidates/spec180-runtime-b6710fd6/spec180-runtime.sif",
   "sifSha256": "b6710fd696a7f962f67f67a54278d92a15babb856c4af428a3f04ba54dc83285",
   "tcpPort": 16363,
