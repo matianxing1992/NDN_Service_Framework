@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-13
 **Branch:** `SPEC184Experiments`
-**Checkpoint:** `84cddcbb`
+**Checkpoint:** `e5c7de82`
 **Source baseline:** `575b43cc93bbed29932303caf3d09974f1585af7`
 **Qualification state:** `IN_PROGRESS`
 **Convergence verdict:** `PASS (implementation); BLOCK (runtime qualification)`
