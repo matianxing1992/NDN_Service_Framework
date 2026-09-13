@@ -3869,3 +3869,19 @@ are still unobserved.
 - **Lesson**: matching an app directory digest and a container runtime version
   does not establish ABI compatibility; the base SIF identity and loader
   closure must be verified together before any Tiger submission.
+
+## 2026-09-13 — Spec186 source handoff required clean dependency worktrees
+
+- **Area**: T006.c source-sealed 1.5.3 build inputs.
+- **First boundary**: preparing a handoff from the current experiment checkout
+  first failed because the requested provider revision was written with an
+  incorrect full hash; the corrected detached worktree then exposed an
+  ignored generated NAC-ABE example certificate that was not tracked by its
+  pinned commit.
+- **Correction**: use the exact commit
+  `4751148375dad9149c7c185c9381d5734c733e13` and clean detached dependency
+  worktrees. The source sealer and relocatable handoff now verify with seal
+  `sha256:597c44a97b34655dfb67b9fc3bff3693b844f5cc1f10624870554bdee8e658e2`.
+- **Lesson**: ignored generated files can change a source archive even when
+  `git status` looks clean; source sealing must run from clean commit-pinned
+  worktrees and record the exact source identity.

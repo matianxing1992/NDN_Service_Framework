@@ -252,6 +252,22 @@ This is an app-layer build receipt, not a promoted Tiger candidate: the exact
 source-sealed base SIF and a matching container execution receipt are still
 missing.
 
+## Spec186 source handoff identity
+
+To prepare the next 1.5.3 SIF attempt without changing the repository checkout,
+the native provider repair was sealed from a clean detached worktree at
+`4751148375dad9149c7c185c9381d5734c733e13` (the Spec186 source baseline is its
+ancestor `575b43cc93bbed29932303caf3d09974f1585af7`). The pinned NAC-ABE,
+NDN-SVS and NDNSD worktrees were also clean. The maintained source sealer
+produced a relocatable handoff with source seal
+`sha256:597c44a97b34655dfb67b9fc3bff3693b844f5cc1f10624870554bdee8e658e2`;
+`prepare ...` and `verify ...` both returned `SOURCE_READY`.
+
+This handoff is temporary host input, not a Git artifact. The existing SIF
+build entry still cannot be invoked for it because a current host-gate
+manifest for this source identity is absent. An older host-gate receipt or the
+Spec180/183 base would violate the source and ABI identity contract.
+
 The first official-script runtime probe omitted the exact dependency
 `LD_LIBRARY_PATH` and selected an incompatible `/usr/local` NAC-ABE library,
 causing `Consumer::clearCache` to be unresolved. Re-running with the sealed

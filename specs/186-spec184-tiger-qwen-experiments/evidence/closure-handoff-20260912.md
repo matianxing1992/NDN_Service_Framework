@@ -22,7 +22,7 @@ or an offline receipt to a runtime qualification result.
 | --- | --- | --- |
 | T005 | `VERIFIED` | implementation convergence passed after the provider `--help` repair and fresh native closure; qualification remains governed by T006–T012 |
 | T006.a | `BLOCKED_AFTER_BOUNDARY` | the locked 188/188 native target build and identity verifier pass; complete Core/Repo/DI unit/integration campaign is still required |
-| T006.c | `BLOCKED_AFTER_BOUNDARY` | local app bundle `badf6a0afb36e43d02f7103cba36383bf8f0336e2310a0fd546c33223734734d` exists; build the exact source-sealed 1.5.3 base SIF and verify the immutable composition |
+| T006.c | `BLOCKED_AFTER_BOUNDARY` | local/staged app bundle `badf6a0afb36e43d02f7103cba36383bf8f0336e2310a0fd546c33223734734d` and source handoff seal `sha256:597c44a97b34655dfb67b9fc3bff3693b844f5cc1f10624870554bdee8e658e2` exist; current host-gate manifest and exact source-sealed 1.5.3 base SIF/composition receipt are still absent |
 | T007 | `WAITING_EXTERNAL_INPUT` | complete local MiniNDN environment variables, package/registry/key maps, topology/config and a closed native candidate |
 | T008 | `WAITING_EXTERNAL_INPUT` | actual Qwen3-0.6B model, tokenizer, stage manifest, compatible ONNX or GGUF-Q3 backend and digests |
 | T009.a | `VERIFIED` | `evidence/tiger-preflight-20260912.md` records Slurm allocation, GPU UUID/capacity, project storage, compute-node Apptainer `--version`, and the staged 9-file app bundle digest; the preflight script is now bounded |
