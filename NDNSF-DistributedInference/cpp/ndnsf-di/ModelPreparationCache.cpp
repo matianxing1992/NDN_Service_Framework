@@ -456,9 +456,18 @@ std::shared_ptr<const PreparedModelPackage> ModelPreparationCache::buildPackage(
   capabilities.streaming = request.value("generation_mode", std::string{}) == "TOKEN_STREAMING";
   if (capabilities.streaming)
     capabilities.outputModes.push_back("TOKEN_STREAMING");
-  // Conversation preparation is introduced by T007; T003 must not advertise
-  // a capability merely because an unvalidated configuration field exists.
-  capabilities.conversations = false;
+  // Runtime::open validates the operator-owned conversation section and binds
+  // one coordinator.  The prepared package advertises the capability only
+  // when that same frozen configuration carries the section; openConversation
+  // still obtains the coordinator from the Runtime client before use.
+  try {
+    const auto root = nativeParseJson(spec.configurationJson);
+    capabilities.conversations = root.contains("conversation") &&
+      root.at("conversation").is_object();
+  }
+  catch (const std::exception& error) {
+    throw std::runtime_error(std::string("DI_NATIVE_PREPARATION_CONFIGURATION_INVALID: ") + error.what());
+  }
 
   std::size_t retained = 0;
   addSize(retained, catalog.model.canonicalSourceBytes);

@@ -2,6 +2,8 @@
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
 
+#include <functional>
+
 namespace ndnsf::di {
 
 /** Immutable descriptor catalog and encoded task-byte boundary.
@@ -13,9 +15,12 @@ class NativeCatalogModelAdapter final : public NativeModelAdapter
 {
 public:
   enum class Format { OpaqueBytes, JsonBytes };
+  using ConversationTokenEncoder = std::function<std::vector<std::int64_t>(
+    const std::vector<std::uint8_t>&)>;
 
   NativeCatalogModelAdapter(std::vector<NativeModelDescriptor> models,
-                            Format format, std::size_t maxPayloadBytes);
+                            Format format, std::size_t maxPayloadBytes,
+                            ConversationTokenEncoder conversationTokenEncoder = {});
   NativeCatalogModelAdapter& operator=(const NativeCatalogModelAdapter&) = delete;
   NativeCatalogModelAdapter& operator=(NativeCatalogModelAdapter&&) = delete;
   std::string adapterId() const override;
@@ -24,6 +29,8 @@ public:
                                 const std::string& modelDigest) const override;
   std::vector<std::uint8_t> encodeInput(const std::vector<std::uint8_t>& bytes) const override;
   std::vector<std::uint8_t> decodeResult(const std::vector<std::uint8_t>& bytes) const override;
+  std::vector<std::int64_t> conversationInputTokens(
+    const std::vector<std::uint8_t>& applicationInput) const override;
 
   /** Maximum decoded application input accepted by this catalog adapter. */
   std::size_t maxPayloadBytes() const noexcept { return m_maxPayloadBytes; }
@@ -35,6 +42,7 @@ private:
   std::string m_adapterVersion;
   Format m_format;
   std::size_t m_maxPayloadBytes;
+  ConversationTokenEncoder m_conversationTokenEncoder;
 };
 
 } // namespace ndnsf::di

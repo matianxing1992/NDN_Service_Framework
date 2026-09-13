@@ -2329,4 +2329,16 @@ bool NativeInferenceClient::isQuiescent() const noexcept
           m_ioCleanupState->pending.load(std::memory_order_acquire) == 0);
 }
 
+bool NativeInferenceClient::isWorkerThread() const noexcept
+{
+  return m_operationRuntime && m_operationRuntime->isWorkerThread();
+}
+
+std::shared_ptr<NativeConversationCoordinator>
+NativeInferenceClient::conversationCoordinator() const noexcept
+{
+  std::lock_guard<std::mutex> lock(m_mutex);
+  return m_conversations;
+}
+
 } // namespace ndnsf::di

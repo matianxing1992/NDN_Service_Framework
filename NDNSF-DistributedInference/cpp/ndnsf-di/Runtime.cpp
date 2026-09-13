@@ -777,6 +777,7 @@ struct RuntimeState
   std::shared_ptr<ndn_service_framework::ServiceUser> coreUser;
   std::shared_ptr<NativeAuthenticatedGrantClient> grants;
   std::shared_ptr<const NativeOfferAdmission> offerAdmission;
+  std::shared_ptr<NativeConversationCoordinator> conversations;
   std::shared_ptr<NativePlacementStrategyRegistry> placementRegistry;
   // Shared only as an opaque identity token; it never contains request or
   // authorization state and is used to bind placement handles to this State.
@@ -952,6 +953,7 @@ std::shared_ptr<NativeInferenceClient> makeRuntimeClient(
     state->coreUser, runtime.contract.serviceName);
   auto client = std::make_shared<NativeInferenceClient>(
     state->coreUser, package->catalog.preparation->adapters(), runtime,
+    state->conversations,
     std::move(preparation), registration->second.offerAdmission);
   client->retainOwner(state->coreOwner);
   std::weak_ptr<detail::RuntimeState> weakState = state;
@@ -1694,6 +1696,24 @@ std::shared_ptr<Runtime> Runtime::open(RuntimeConfig config)
   state->config.nativeConfigPath = primary.path.string();
   state->baseDirectory = primary.path.parent_path();
   state->models.emplace("default", primary);
+  try {
+    const auto primaryJson = nativeParseJson(primary.canonicalJson);
+    if (primaryJson.contains("conversation")) {
+      if (!primaryJson.at("conversation").is_object())
+        throw DiError("INVALID_RUNTIME_CONFIGURATION", "local", "conversation",
+                      "conversation configuration must be an object");
+      state->conversations = nativeConversationCoordinatorFromConfig(
+        nativeCanonicalJson(primaryJson.at("conversation")), state->baseDirectory,
+        primary.requesterIdentity);
+    }
+  }
+  catch (const DiError&) {
+    throw;
+  }
+  catch (const std::exception& error) {
+    throw DiError("INVALID_RUNTIME_CONFIGURATION", "local", "conversation",
+                  std::string("conversation configuration is invalid: ") + error.what());
+  }
   // The key objects are transferred from freezeConfig.  Runtime never reads
   // operator key paths a second time after validation.
   coreOwner->operationRuntime = ndn_service_framework::OperationRuntime::create();
@@ -1714,6 +1734,19 @@ std::shared_ptr<Runtime> Runtime::open(RuntimeConfig config)
     if (!sameTrustDomain(primary, frozen))
       throw DiError("INVALID_RUNTIME_CONFIGURATION", "local", "identity",
                     "registered model configuration crosses the Runtime trust domain");
+    try {
+      const auto registeredJson = nativeParseJson(frozen.canonicalJson);
+      if (registeredJson.contains("conversation"))
+        throw DiError("INVALID_RUNTIME_CONFIGURATION", "local", "conversation",
+                      "secondary model registrations cannot declare a conversation coordinator");
+    }
+    catch (const DiError&) {
+      throw;
+    }
+    catch (const std::exception& error) {
+      throw DiError("INVALID_RUNTIME_CONFIGURATION", "local", "conversation",
+                    std::string("secondary model configuration is invalid: ") + error.what());
+    }
     state->config.models.push_back({registration.key, frozen.path.string()});
     state->models.emplace(registration.key, frozen);
   }

@@ -6,6 +6,7 @@
 // request values.
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/Conversation.hpp"
 
 // Keep this umbrella dependency-light: the public PreparedModel view imports
 // only value types and does not expose the native planner or Python binding.

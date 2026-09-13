@@ -602,7 +602,7 @@ NdnsfIntegrationEnvironment::flushReorderedPackets()
     if (!pending) {
       return;
     }
-    destination.receive(*pending);
+    deliverInterest(destination, *pending);
     ++m_bridgeStats.forwardedInterests;
     pending.reset();
   };
@@ -610,7 +610,7 @@ NdnsfIntegrationEnvironment::flushReorderedPackets()
     if (!pending) {
       return;
     }
-    destination.receive(*pending);
+    deliverData(destination, *pending);
     ++m_bridgeStats.forwardedData;
     pending.reset();
   };
@@ -619,6 +619,34 @@ NdnsfIntegrationEnvironment::flushReorderedPackets()
   flushData(m_pendingUserData, *m_providerFace);
   flushData(m_pendingProviderData, *m_userFace);
   flushData(m_pendingStreamProviderData, *m_userFace);
+}
+
+void
+NdnsfIntegrationEnvironment::deliverInterest(ndn::DummyClientFace& destination,
+                                             const ndn::Interest& interest)
+{
+  if (!m_profile.deferBridgeDelivery) {
+    destination.receive(interest);
+    return;
+  }
+  // Keep bridge delivery out of the sender's DummyFace callback stack. The
+  // destination face and its io_context are owned by this environment; any
+  // queued callback is either drained by pumpFaces while the environment is
+  // alive or discarded by io_context teardown.
+  destination.getIoContext().post(
+      [&destination, packet = interest] { destination.receive(packet); });
+}
+
+void
+NdnsfIntegrationEnvironment::deliverData(ndn::DummyClientFace& destination,
+                                         const ndn::Data& data)
+{
+  if (!m_profile.deferBridgeDelivery) {
+    destination.receive(data);
+    return;
+  }
+  destination.getIoContext().post(
+      [&destination, packet = data] { destination.receive(packet); });
 }
 
 void
@@ -665,7 +693,7 @@ NdnsfIntegrationEnvironment::forwardInterest(ndn::DummyClientFace& destination,
   if (!faultsEnabled || (!m_activeFaults.dropPackets &&
                          !m_activeFaults.duplicatePackets &&
                          !m_activeFaults.reorderPackets)) {
-    destination.receive(interest);
+    deliverInterest(destination, interest);
     ++m_bridgeStats.forwardedInterests;
     return;
   }
@@ -678,7 +706,7 @@ NdnsfIntegrationEnvironment::forwardInterest(ndn::DummyClientFace& destination,
   }
 
   auto deliver = [&] (const ndn::Interest& packet) {
-    destination.receive(packet);
+    deliverInterest(destination, packet);
     ++m_bridgeStats.forwardedInterests;
   };
   auto deliverWithDuplicate = [&] (const ndn::Interest& packet) {
@@ -727,7 +755,7 @@ NdnsfIntegrationEnvironment::forwardData(ndn::DummyClientFace& destination,
       altered[0] ^= 0x01;
     }
     tampered.setContent(altered);
-    destination.receive(tampered);
+    deliverData(destination, tampered);
     ++m_bridgeStats.forwardedData;
     ++m_bridgeStats.tamperedStreamDataPackets;
     return;
@@ -753,9 +781,9 @@ NdnsfIntegrationEnvironment::forwardData(ndn::DummyClientFace& destination,
       return;
     }
     if (streamEvent->cursor == heldCursor + 1 && m_pendingStreamProviderData) {
-      destination.receive(data);
+      deliverData(destination, data);
       ++m_bridgeStats.forwardedData;
-      destination.receive(*m_pendingStreamProviderData);
+      deliverData(destination, *m_pendingStreamProviderData);
       ++m_bridgeStats.forwardedData;
       m_pendingStreamProviderData.reset();
       ++m_bridgeStats.reorderedPackets;
@@ -767,8 +795,8 @@ NdnsfIntegrationEnvironment::forwardData(ndn::DummyClientFace& destination,
       streamEvent->cursor == m_activeFaults.duplicateStreamDataCursor &&
       m_bridgeStats.duplicatedStreamDataPackets <
         m_activeFaults.duplicateStreamDataCount) {
-    destination.receive(data);
-    destination.receive(data);
+    deliverData(destination, data);
+    deliverData(destination, data);
     m_bridgeStats.forwardedData += 2;
     ++m_bridgeStats.duplicatedPackets;
     ++m_bridgeStats.duplicatedStreamDataPackets;
@@ -777,7 +805,7 @@ NdnsfIntegrationEnvironment::forwardData(ndn::DummyClientFace& destination,
   if (!faultsEnabled || (!m_activeFaults.dropPackets &&
                          !m_activeFaults.duplicatePackets &&
                          !m_activeFaults.reorderPackets)) {
-    destination.receive(data);
+    deliverData(destination, data);
     ++m_bridgeStats.forwardedData;
     return;
   }
@@ -790,7 +818,7 @@ NdnsfIntegrationEnvironment::forwardData(ndn::DummyClientFace& destination,
   }
 
   auto deliver = [&] (const ndn::Data& packet) {
-    destination.receive(packet);
+    deliverData(destination, packet);
     ++m_bridgeStats.forwardedData;
   };
   auto deliverWithDuplicate = [&] (const ndn::Data& packet) {

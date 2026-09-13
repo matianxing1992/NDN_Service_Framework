@@ -96,30 +96,57 @@ void nativeExportPrivateCheckpoint(const std::filesystem::path& destination,
           destination.filename() != "..", "native checkpoint destination invalid");
   const auto parent = destination.parent_path().empty() ? std::filesystem::path(".") : destination.parent_path();
   struct stat existing{};
-  if (::lstat(destination.c_str(), &existing) == 0)
+  const bool hadDestination = ::lstat(destination.c_str(), &existing) == 0;
+  if (hadDestination)
     require(!S_ISLNK(existing.st_mode), "native checkpoint destination symlink rejected");
   else require(errno == ENOENT, "native checkpoint destination stat failed");
+  if (hadDestination)
+    require(S_ISREG(existing.st_mode), "native checkpoint destination is not a regular file");
 
   Fd parentFd(::open(parent.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW));
   require(parentFd.get() >= 0, "native checkpoint parent directory unavailable");
   const auto bytes = nativeCanonicalJson(state);
   Fd temporary;
   const auto temporaryPath = makeTemporaryPath(parent, destination.filename().string(), temporary);
+  Fd backupPlaceholder;
+  std::filesystem::path backupPath;
+  bool movedOld = false;
+  bool renamedNew = false;
   try {
     invoke(options, NativeCheckpointExportStage::BeforeWrite);
     writeAll(temporary.get(), bytes);
     invoke(options, NativeCheckpointExportStage::BeforeFileSync);
     require(::fsync(temporary.get()) == 0, "native checkpoint file sync failed");
     require(::close(temporary.release()) == 0, "native checkpoint file close failed");
+    if (hadDestination) {
+      backupPath = makeTemporaryPath(parent, destination.filename().string() + ".backup",
+                                     backupPlaceholder);
+      backupPlaceholder.reset();
+      require(::unlink(backupPath.c_str()) == 0, "native checkpoint backup placeholder cleanup failed");
+      require(::rename(destination.c_str(), backupPath.c_str()) == 0,
+              "native checkpoint old file backup failed");
+      movedOld = true;
+    }
     invoke(options, NativeCheckpointExportStage::BeforeRename);
     require(::rename(temporaryPath.c_str(), destination.c_str()) == 0,
             "native checkpoint atomic rename failed");
+    renamedNew = true;
     invoke(options, NativeCheckpointExportStage::BeforeDirectorySync);
     require(::fsync(parentFd.get()) == 0, "native checkpoint directory sync failed");
+    if (movedOld) {
+      require(::unlink(backupPath.c_str()) == 0, "native checkpoint backup cleanup failed");
+      movedOld = false;
+    }
   }
   catch (...) {
     if (temporary.get() >= 0) temporary.reset();
     (void)::unlink(temporaryPath.c_str());
+    if (renamedNew)
+      (void)::unlink(destination.c_str());
+    if (movedOld)
+      (void)::rename(backupPath.c_str(), destination.c_str());
+    if (!backupPath.empty())
+      (void)::unlink(backupPath.c_str());
     throw;
   }
 }

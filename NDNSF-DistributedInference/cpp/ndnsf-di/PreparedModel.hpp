@@ -2,6 +2,8 @@
 #define NDNSF_DI_PREPARED_MODEL_HPP
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModelTypes.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/ConversationTypes.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationContinuation.hpp"
 #include "ndn-service-framework/OperationRuntime.hpp"
 
 #include <chrono>
@@ -23,6 +25,8 @@ class CooperativePlacementStrategy;
 struct NativeApplicationInput;
 struct NativeRequestOptions;
 class DiError;
+class Conversation;
+struct ConversationOptions;
 namespace detail { struct RuntimeState; }
 // Test-only seam used by the in-process Provider fixture.  Production callers
 // obtain this binding exclusively through Runtime::prepare; the friend keeps
@@ -224,6 +228,9 @@ public:
   /** Submit and wait using the request's configured deadline. */
   Result run(const Input& input, const RequestOptions& options = {}) const;
 
+  /** Open one model-bound native conversation using the Runtime coordinator. */
+  Conversation openConversation(const ConversationOptions& options = {}) const;
+
 private:
   using ClientFactory = std::function<std::shared_ptr<NativeInferenceClient>(
     const std::shared_ptr<const PreparedModelPackage>&)>;
@@ -232,14 +239,18 @@ private:
                 ClientFactory clientFactory = {});
 
   NativeApplicationInput encodeInput(const Input& input) const;
+  std::vector<std::int64_t> conversationInputTokens(const Input& input) const;
   NativeRequestOptions projectOptions(const RequestOptions& options) const;
   RequestHandle requestInternal(Input input, const RequestOptions& options) const;
+  RequestHandle requestInternal(Input input, const RequestOptions& options,
+                                std::optional<NativeConversationContinuation> continuation) const;
 
   std::shared_ptr<const PreparedModelPackage> m_package;
   PreparationReceipt m_receipt;
   std::shared_ptr<void> m_lease;
   ClientFactory m_clientFactory;
   friend class ModelPreparationCache;
+  friend class Conversation;
   friend struct Spec185PreparedModelTestAccess;
 };
 

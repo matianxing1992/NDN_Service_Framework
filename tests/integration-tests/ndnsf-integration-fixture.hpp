@@ -46,6 +46,10 @@ struct BootstrapProfile
   ndn::Name serviceName{ "/ObjectDetection/YOLOv8" };
   std::string trustSchemaPath{ "examples/trust-any.conf" };
   size_t providerCount = 1;
+  // Queue bridge delivery for fixtures whose sanitizer path cannot tolerate
+  // synchronous DummyFace receive() re-entry. The default preserves the
+  // historical inline bridge used by existing experiment selectors.
+  bool deferBridgeDelivery = false;
 };
 
 struct FaultProfile
@@ -188,6 +192,10 @@ private:
                    const ndn::Data& data,
                    bool userToProvider);
   void clearReorderedPackets();
+  void deliverInterest(ndn::DummyClientFace& destination,
+                       const ndn::Interest& interest);
+  void deliverData(ndn::DummyClientFace& destination,
+                   const ndn::Data& data);
 
 private:
   BootstrapProfile m_profile;

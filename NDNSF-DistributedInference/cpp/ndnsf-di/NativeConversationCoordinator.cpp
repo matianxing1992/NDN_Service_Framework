@@ -37,7 +37,10 @@ NativeConversationRecord recordFromWire(const NativeJson& cp, std::string wire, 
   c.parentContextEpoch = cp.at("parentContextEpoch").get<std::uint64_t>();
   c.successorContextEpoch = cp.at("contextEpoch").get<std::uint64_t>();
   c.prefixDigest = cp.at("logicalPrefixDigest").get<std::string>();
+  c.modelContractDigest = cp.at("modelContractDigest").get<std::string>();
   c.checkpointDigest = cp.at("checkpointDigest").get<std::string>();
+  for (const auto& item : cp.at("roleReceiptDigests").items())
+    c.expectedRoles.push_back(item.key());
   c.wire = std::move(wire); c.transcript = std::move(transcript);
   result.serviceName = cp.at("serviceName").get<std::string>();
   result.planRoleMapDigest = cp.at("planRoleMapDigest").get<std::string>();

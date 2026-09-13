@@ -47,19 +47,25 @@ NativeCanonicalPreparationCatalog::NativeCanonicalPreparationCatalog(
     std::string version;
     NativeCatalogModelAdapter::Format format;
     std::size_t limit;
+    NativeCatalogModelAdapter::ConversationTokenEncoder conversationTokenEncoder;
     std::vector<NativeModelDescriptor> models;
   };
   std::map<std::string, Group> groups;
   for (auto& entry : entries) {
+    const bool entryHasConversationTokenEncoder =
+      static_cast<bool>(entry.conversationTokenEncoder);
     // Validate every model/source before making any publication port available.
     NativeCanonicalRolePreparer roles(entry.model, entry.source, entry.recipe, control, std::move(entry.nodes));
     const auto& model = entry.model.descriptor;
     auto found = groups.find(model.adapterId);
     if (found == groups.end())
-      found = groups.emplace(model.adapterId, Group{model.adapterVersion, entry.format, entry.maxPayloadBytes, {}}).first;
+      found = groups.emplace(model.adapterId, Group{model.adapterVersion, entry.format,
+        entry.maxPayloadBytes, std::move(entry.conversationTokenEncoder), {}}).first;
     auto& group = found->second;
     if (group.version != model.adapterVersion || group.format != entry.format || group.limit != entry.maxPayloadBytes)
       throw std::invalid_argument("native catalog adapter configuration is inconsistent");
+    if (static_cast<bool>(group.conversationTokenEncoder) != entryHasConversationTokenEncoder)
+      throw std::invalid_argument("native catalog conversation tokenization is inconsistent");
     group.models.push_back(model);
     const auto key = model.canonicalJson();
     State::Record record{std::move(entry.model),
@@ -70,7 +76,8 @@ NativeCanonicalPreparationCatalog::NativeCanonicalPreparationCatalog(
   auto registry = std::make_shared<NativeAdapterRegistry>();
   for (auto& group : groups)
     registry->registerAdapter(std::make_shared<NativeCatalogModelAdapter>(
-      std::move(group.second.models), group.second.format, group.second.limit));
+      std::move(group.second.models), group.second.format, group.second.limit,
+      std::move(group.second.conversationTokenEncoder)));
   registry->freeze();
   state->adapters = std::move(registry);
   control.requireActive();

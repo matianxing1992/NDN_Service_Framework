@@ -6,8 +6,10 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderOfferV3.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPlanner.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/ConversationStateBinding.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModelPackage.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/Conversation.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/RuntimeTestAccess.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp"
 #include "ndn-service-framework/PolicyStatus.hpp"
@@ -29,8 +31,10 @@
 #include <memory>
 #include <mutex>
 #include <set>
+#include <sstream>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <unistd.h>
 #include <vector>
 
@@ -52,6 +56,42 @@ std::chrono::seconds testDrainTimeout()
 #  endif
 #endif
   return std::chrono::seconds(2);
+}
+
+template<typename Future>
+void pumpUntilFutureReady(ndn_service_framework::test::NdnsfIntegrationEnvironment& environment,
+                          Future& future,
+                          std::chrono::seconds budget)
+{
+  const auto deadline = std::chrono::steady_clock::now() + budget;
+  while (future.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready &&
+         std::chrono::steady_clock::now() < deadline) {
+    // pumpUntil() is intentionally chunked to keep existing fixture callers
+    // bounded.  Repeat complete chunks while the result future is pending,
+    // and let the fixture stop at the first completed result so it does not
+    // process unrelated queued events after the request's terminal edge.
+    environment.pumpUntil([&future] {
+      return future.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready;
+    });
+  }
+  if (future.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready)
+    throw std::runtime_error("Spec185 conversation result pump deadline expired");
+}
+
+// Keep the synchronous busy-turn exception boundary out of the large
+// integration test frame.  The production Conversation guard remains the
+// subject under test; this helper only keeps the expected exception object
+// and its unwinding in a small, independently protected C++ frame.
+bool conversationRejectsBusyTurn(Conversation& conversation,
+                                 const RequestOptions& options)
+{
+  try {
+    (void)conversation.request(Input::inlineBytes({0x09}), options);
+  }
+  catch (const DiError& error) {
+    return error.code() == "CONVERSATION_TURN_IN_PROGRESS";
+  }
+  return false;
 }
 
 void writeEd25519KeyPair(const std::filesystem::path& privatePath,
@@ -148,7 +188,7 @@ std::string signDigest(const std::shared_ptr<EVP_PKEY>& key, const std::string& 
 class RuntimeFixture
 {
 public:
-  explicit RuntimeFixture(bool streaming = false)
+  explicit RuntimeFixture(bool streaming = false, bool qwenStreaming = false)
     : root(std::filesystem::temp_directory_path() /
            ("spec185-prepared-request-" + std::to_string(::getpid()) + "-" +
             std::to_string(++sequence)))
@@ -173,84 +213,140 @@ public:
     writeEd25519KeyPair(root / "requester.pem", root / "requester-public.pem");
     writeEd25519KeyPair(root / "authority.pem", root / "authority-public.pem");
     writeEd25519KeyPair(root / "offer.pem", root / "offer-public.pem");
-
-    std::ifstream oracleFile("tests/fixtures/spec182/yolo-semantic-oracle.json");
-    if (!oracleFile.good()) throw std::runtime_error("missing YOLO semantic oracle");
-    NativeJson oracle;
-    oracleFile >> oracle;
-    NativeCanonicalSource source;
-    const auto hex = oracle.at("model_hex").get<std::string>();
-    for (std::size_t i = 0; i < hex.size(); i += 2)
-      source.modelBytes.push_back(static_cast<std::uint8_t>(
-        std::stoul(hex.substr(i, 2), nullptr, 16)));
-
-    std::ifstream graphFile("tests/fixtures/spec182/onnx-planning-graph-oracle.json");
-    if (!graphFile.good()) throw std::runtime_error("missing ONNX graph oracle");
-    NativeJson graphOracles;
-    graphFile >> graphOracles;
-    NativeJson graphOracle;
-    for (const auto& item : graphOracles) {
-      if (item.at("model_hex") == hex) {
-        graphOracle = item;
-        break;
-      }
+    {
+      std::ofstream key(root / "conversation.key", std::ios::binary);
+      const std::string bytes(32, 'k');
+      key.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+      key.close();
+      std::filesystem::permissions(root / "conversation.key",
+        std::filesystem::perms::owner_read | std::filesystem::perms::owner_write,
+        std::filesystem::perm_options::replace);
     }
-    if (graphOracle.is_null()) throw std::runtime_error("missing matching graph oracle");
+
+    NativeCanonicalSource source;
+    NativeModelDescriptor descriptor;
+    NativeJson catalog = NativeJson::object();
     const auto control = NativeAssemblyControl{
       std::chrono::steady_clock::now() + std::chrono::seconds(30), [] {},
       1 << 20, 1 << 20};
-    auto descriptor = fixture::completeModel({
-      "yolo26n", nativePlanningDigest("YOLOFixture-content"),
-      nativePlanningDigest("YOLOFixture-semantics"), oracle.at("graph_digest"),
-      "onnx", "float32", "YOLOFixture", "1"});
-    const auto sourceIdentity = canonicalOnnxSourceIdentity(source, control);
-    const auto planning = inspectNativeOnnxSourceGraph(source, descriptor, control);
-    descriptor.graphDigest = planning.graph.graphDigest;
-    if (sourceIdentity.graphDigest != graphOracle.at("canonical_graph_digest"))
-      throw std::runtime_error("fixture graph identity differs from oracle");
-
-    NativeJson catalog = NativeJson::object();
-    catalog["schema"] = "ndnsf-di-native-request-catalog-v1";
-    catalog["model"] = nativeParseJson(descriptor.canonicalJson());
-    catalog["source"] = {
-      {"file", "model.onnx"}, {"data_name", "/fixture/source"},
-      {"digest", nativePlanningDigest(source.modelBytes.data(), source.modelBytes.size())},
-      {"model_manifest_digest", nativePlanningDigest("fixture-manifest")},
-      {"canonical_graph_digest", sourceIdentity.graphDigest} };
-    catalog["recipe"] = NativeJson::object();
-    catalog["recipe"]["artifact_profile_digest"] = nativePlanningDigest("fixture-profile");
-    catalog["recipe"]["assembler_descriptor_digest"] = nativePlanningDigest("fixture-assembler-v1");
-    catalog["recipe"]["backend_abi"] = "fixture-abi";
-    catalog["recipe"]["precision"] = descriptor.precision;
-    catalog["recipe"]["quantization"] = "none";
-    catalog["recipe"]["layout"] = "NCHW";
-    catalog["recipe"]["padding"] = "none";
-    // Keep the prepared role's protected-artifact epoch identical to the
-    // Runtime grant epoch; NativePlanSealer intentionally rejects a plan
-    // whose role recipe and authenticated Core security context diverge.
-    catalog["recipe"]["protection_epoch"] = "epoch-1";
-    catalog["recipe"]["max_source_bytes"] = 1 << 20;
-    catalog["recipe"]["max_assembled_bytes"] = 1 << 20;
-    catalog["recipe"]["max_nodes"] = 100;
-    catalog["publication"] = {{"artifact_root", "/fixture/artifacts"}};
-    // The request fixture exercises the byte-preserving projection boundary;
-    // JSON/schema validation belongs to the adapter-specific contract tests.
-    catalog["input_format"] = "OPAQUE";
-    catalog["max_payload_bytes"] = 32;
-    const NativeJson component = {
-      {"candidate_id", "semantic-v1"}, {"priority", 1},
-      {"roles", {"Front", "Branch", "Merge"}},
-      {"node_names_by_role", NativeJson::object()},
-      {"input_ingress_role", "Front"}, {"result_egress_role", "Merge"},
-      // This request fixture uses the graph's ordinary egress shape.  The
-      // native YOLO postprocess runner and its [1,K,6] contract are covered
-      // by the dedicated spec181-native-plan-closure selector; declaring
-      // NATIVE_POSTPROCESS here would falsely claim that this [1,3] oracle
-      // exercised that runner.
-      {"merge_kind", ""},
-      {"candidate_digest", oracle.at("registered_digest")},
-      {"semantic_partition", oracle.at("partition")} };
-    catalog["splitter"] = { {"kind", "YOLO"}, {"components", {component}} };
+    if (qwenStreaming) {
+      std::ifstream qwenFile("tests/fixtures/spec182/qwen-native-config.onnx", std::ios::binary);
+      if (!qwenFile.good()) throw std::runtime_error("missing Qwen native config fixture");
+      const std::string qwenBytes((std::istreambuf_iterator<char>(qwenFile)),
+                                  std::istreambuf_iterator<char>());
+      source.modelBytes.assign(qwenBytes.begin(), qwenBytes.end());
+      const auto sourceIdentity = canonicalOnnxSourceIdentity(source, control);
+      const std::string role = "/LLM/Pipeline/Stage/0";
+      const std::string manifestDigest = nativePlanningDigest("spec185-qwen-manifest");
+      const std::string protectionEpoch = "epoch-1";
+      // The provider fixture's grant publication source intentionally binds the
+      // shared fixture profile; keep the Qwen source/model identity distinct
+      // while using the same authorized artifact profile at this boundary.
+      const std::string artifactProfileDigest = nativePlanningDigest("fixture-profile");
+      const std::string qwenGraphDigest =
+        "sha256:8f901f484f07440aef844373c95d64b6462bcbc90c0070087b4c85c78a0de2b2";
+      descriptor = fixture::completeModel({
+        "QwenFixture", nativePlanningDigest("spec185-qwen-content"),
+        nativePlanningDigest("spec185-qwen-semantics"), qwenGraphDigest,
+        "onnx", "float32", "qwen", "1"});
+      descriptor.sourceRevision = "pinned-r1";
+      const std::string sourceDigest = nativePlanningDigest(
+        source.modelBytes.data(), source.modelBytes.size());
+      const NativeJson stateInputs = {{role, {{"attention_kv_in", {"attention_kv_in"}},
+        {"recurrent_state_in", {"recurrent_state_in"}},
+        {"convolution_state_in", {"convolution_state_in"}}}}};
+      const NativeJson stateOutputs = {{role, {{"attention_kv_out", {"attention_kv_out"}},
+        {"recurrent_state_out", {"recurrent_state_out"}},
+        {"convolution_state_out", {"convolution_state_out"}}}}};
+      catalog = {
+        {"schema", "ndnsf-di-native-request-catalog-v1"},
+        {"model", nativeParseJson(descriptor.canonicalJson())},
+        {"source", {{"file", "model.onnx"}, {"data_name", "/fixture/qwen/source"},
+          {"digest", sourceDigest}, {"model_manifest_digest", manifestDigest},
+          {"canonical_graph_digest", sourceIdentity.graphDigest}}},
+        {"recipe", {{"artifact_profile_digest", artifactProfileDigest},
+          {"assembler_descriptor_digest", nativePlanningDigest("spec185-qwen-assembler")},
+          {"backend_abi", "fixture-abi"}, {"precision", "float32"},
+          {"quantization", "none"}, {"layout", "native"}, {"padding", "none"},
+          {"protection_epoch", protectionEpoch}, {"max_source_bytes", 1 << 20},
+          {"max_assembled_bytes", 1 << 20}, {"max_nodes", 64}}},
+        {"publication", {{"artifact_root", "/fixture/qwen/artifacts"}}},
+        // The Qwen generation envelope carries tokenizer/state metadata in
+        // addition to the inline input; use the maintained native-config
+        // bound rather than the compact YOLO fixture's 32-byte probe limit.
+        {"input_format", "OPAQUE"}, {"max_payload_bytes", 4096},
+        {"conversation_input", {{"kind", "OPAQUE_BYTE_TOKEN_IDS"}}},
+        {"splitter", {{"kind", "QWEN"},
+          {"layer_ranges", NativeJson::array({NativeJson::array({0, 2})})},
+          {"artifact_digests_by_role", {{role, nativePlanningDigest("spec185-qwen-artifact")}}},
+          {"weight_bytes_by_role", {{role, 1}}}, {"roles", {role}},
+          {"tensor_degrees", {1}}, {"input_ingress_role", role},
+          {"result_egress_role", role}}},
+        {"node_mapping", {{"embedding", {0}}, {"layer-00", {1}},
+          {"layer-01", {2}}, {"final-norm-head", {3, 4, 5, 6}}}},
+        {"state_inputs", stateInputs}, {"state_outputs", stateOutputs}};
+    }
+    else {
+      std::ifstream oracleFile("tests/fixtures/spec182/yolo-semantic-oracle.json");
+      if (!oracleFile.good()) throw std::runtime_error("missing YOLO semantic oracle");
+      NativeJson oracle;
+      oracleFile >> oracle;
+      const auto hex = oracle.at("model_hex").get<std::string>();
+      for (std::size_t i = 0; i < hex.size(); i += 2)
+        source.modelBytes.push_back(static_cast<std::uint8_t>(
+          std::stoul(hex.substr(i, 2), nullptr, 16)));
+      std::ifstream graphFile("tests/fixtures/spec182/onnx-planning-graph-oracle.json");
+      if (!graphFile.good()) throw std::runtime_error("missing ONNX graph oracle");
+      NativeJson graphOracles;
+      graphFile >> graphOracles;
+      NativeJson graphOracle;
+      for (const auto& item : graphOracles) {
+        if (item.at("model_hex") == hex) {
+          graphOracle = item;
+          break;
+        }
+      }
+      if (graphOracle.is_null()) throw std::runtime_error("missing matching graph oracle");
+      descriptor = fixture::completeModel({
+        "yolo26n", nativePlanningDigest("YOLOFixture-content"),
+        nativePlanningDigest("YOLOFixture-semantics"), oracle.at("graph_digest"),
+        "onnx", "float32", "YOLOFixture", "1"});
+      const auto sourceIdentity = canonicalOnnxSourceIdentity(source, control);
+      const auto planning = inspectNativeOnnxSourceGraph(source, descriptor, control);
+      descriptor.graphDigest = planning.graph.graphDigest;
+      if (sourceIdentity.graphDigest != graphOracle.at("canonical_graph_digest"))
+        throw std::runtime_error("fixture graph identity differs from oracle");
+      catalog["schema"] = "ndnsf-di-native-request-catalog-v1";
+      catalog["model"] = nativeParseJson(descriptor.canonicalJson());
+      catalog["source"] = {
+        {"file", "model.onnx"}, {"data_name", "/fixture/source"},
+        {"digest", nativePlanningDigest(source.modelBytes.data(), source.modelBytes.size())},
+        {"model_manifest_digest", nativePlanningDigest("fixture-manifest")},
+        {"canonical_graph_digest", sourceIdentity.graphDigest} };
+      catalog["recipe"] = NativeJson::object();
+      catalog["recipe"]["artifact_profile_digest"] = nativePlanningDigest("fixture-profile");
+      catalog["recipe"]["assembler_descriptor_digest"] = nativePlanningDigest("fixture-assembler-v1");
+      catalog["recipe"]["backend_abi"] = "fixture-abi";
+      catalog["recipe"]["precision"] = descriptor.precision;
+      catalog["recipe"]["quantization"] = "none";
+      catalog["recipe"]["layout"] = "NCHW";
+      catalog["recipe"]["padding"] = "none";
+      catalog["recipe"]["protection_epoch"] = "epoch-1";
+      catalog["recipe"]["max_source_bytes"] = 1 << 20;
+      catalog["recipe"]["max_assembled_bytes"] = 1 << 20;
+      catalog["recipe"]["max_nodes"] = 100;
+      catalog["publication"] = {{"artifact_root", "/fixture/artifacts"}};
+      catalog["input_format"] = "OPAQUE";
+      catalog["max_payload_bytes"] = 32;
+      const NativeJson component = {
+        {"candidate_id", "semantic-v1"}, {"priority", 1},
+        {"roles", {"Front", "Branch", "Merge"}},
+        {"node_names_by_role", NativeJson::object()},
+        {"input_ingress_role", "Front"}, {"result_egress_role", "Merge"},
+        {"merge_kind", ""}, {"candidate_digest", oracle.at("registered_digest")},
+        {"semantic_partition", oracle.at("partition")} };
+      catalog["splitter"] = { {"kind", "YOLO"}, {"components", {component}} };
+    }
 
     std::ofstream model(root / "model.onnx", std::ios::binary);
     model.write(reinterpret_cast<const char*>(source.modelBytes.data()),
@@ -304,7 +400,7 @@ public:
         {"stateInputNames", {"attention_kv_in", "recurrent_state_in", "convolution_state_in"}},
         {"stateOutputNames", {"attention_kv_out", "recurrent_state_out", "convolution_state_out"}}};
     }
-    const auto config = NativeJson{
+    auto config = NativeJson{
       {"schema", "ndnsf-di-native-requester-v1"},
       {"core", {{"requester_identity", "/user"}, {"authority_identity", "/aa"},
         {"group", "/group"}, {"trust_schema_file", "trust.conf"}}},
@@ -316,6 +412,15 @@ public:
       {"limits", {{"bootstrap_ms", 1000}, {"max_source_bytes", 1 << 20},
         {"max_assembled_bytes", 1 << 20}}},
       {"request", request}};
+    if (streaming) {
+      config["conversation"] = {
+        {"schema", "ndnsf-di-native-conversation-v1"},
+        {"journal", {{"state_root", "conversation-state"}, {"identity", "runtime"},
+          {"keys", NativeJson::array({NativeJson{{"id", "k1"}, {"file", "conversation.key"}}})},
+          {"quota_bytes", 1 << 20}, {"test_only_allow_ephemeral_state_root", true}}},
+        {"owner", {{"requester_identity", "/user"}, {"service_name", "/Inference"},
+          {"security_domain_digest", digest}}}};
+    }
     configPath = root / "requester.json";
     std::ofstream output(configPath);
     output << nativeCanonicalJson(config);
@@ -900,6 +1005,387 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughProvider)
   // terminal collaboration cleanup reaches the same external I/O owner.
   auto drainFuture = std::async(std::launch::async, [runtime] {
     return runtime->drain(std::chrono::seconds(2));
+  });
+  environment.pumpUntil([&] {
+    return drainFuture.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready;
+  });
+  BOOST_CHECK(drainFuture.get());
+}
+
+BOOST_AUTO_TEST_CASE(PreparedConversationCommitsTwoNativeTurns)
+{
+  // Conversation exercises the native Qwen generation contract, including
+  // sealed state tensors.  Keep the ordinary streaming probes on the compact
+  // YOLO fixture, but use the source-bound Qwen fixture for real turns.
+  RuntimeFixture fixture(true, true);
+  ndn_service_framework::test::BootstrapProfile profile;
+  profile.groupPrefix = ndn::Name("/group");
+  profile.syncPrefix = ndn::Name("/ndnsf/spec185/t007/sync");
+  profile.userNode = ndn::Name("/ndnsf/spec185/t007/user");
+  profile.providerNode = ndn::Name("/ndnsf/spec185/t007/provider");
+  profile.userIdentity = ndn::Name("/user");
+  profile.providerIdentity = ndn::Name("/provider");
+  profile.attributeAuthority = ndn::Name("/aa");
+  profile.serviceName = ndn::Name("/Inference");
+  profile.deferBridgeDelivery = true;
+  ndn_service_framework::test::NdnsfIntegrationEnvironment environment(profile);
+  environment.bootstrap();
+  auto runtime = Runtime::open(runtimeConfig(fixture));
+  auto prepared = runtime->user().prepare();
+  const auto package = ndnsf::di::Spec185PreparedModelTestAccess::package(prepared);
+  const auto serviceName = environment.profile().serviceName.toUri();
+  const auto requesterName = environment.user().getName().toUri();
+  const auto providerName = environment.provider().getName().toUri();
+  const auto model = package->catalog.model.descriptor;
+  const auto candidates = package->catalog.splitter->enumerate(
+    model, package->catalog.model.graph, NativeCandidateBudget{1, 1000, 1});
+  BOOST_REQUIRE_EQUAL(candidates.size(), 1U);
+  const auto roles = candidates.front().executionPlan.roles;
+  BOOST_REQUIRE(!roles.empty());
+  const auto terminalRole = candidates.front().resultEgressRole;
+  BOOST_REQUIRE(!terminalRole.empty());
+
+  const auto offerKey = deterministicEd25519Key(0x71);
+  const auto offerKeyId = nativePlanningDigest(rawPublicKey(offerKey));
+  NativeProviderOfferV3Config offerConfig;
+  offerConfig.provider = providerName;
+  offerConfig.service = serviceName;
+  offerConfig.bootEpoch = providerName + ":" + environment.provider().getProviderBootEpoch();
+  offerConfig.signerKeyId = offerKeyId;
+  offerConfig.acceptedRoles = roles;
+  offerConfig.backends = {"onnxruntime-cpu"};
+  offerConfig.hasModel = true;
+  offerConfig.signDigest = [offerKey] (const std::string& value) {
+    return signDigest(offerKey, value);
+  };
+  const auto candidatePolicyDigest = nativePlanningDigest("spec185-t007-provider-policy");
+  const auto policy = nativeCanonicalJson(NativeJson{
+    {"schema", "spec180-provider-offer-trust-v1"},
+    {"candidateId", "spec185-t007"}, {"candidateDigest", candidatePolicyDigest},
+    {"trustSchema", "/spec185/t007/trust"},
+    {"entries", NativeJson::array({NativeJson{
+      {"provider", providerName}, {"service", serviceName},
+      {"keyLocatorPrefix", environment.provider().getSigningKeyName().toUri()},
+      {"signerKeyId", offerKeyId},
+      {"certificateName", environment.provider().getSigningCertificateName().toUri()}}})}});
+  auto admission = std::make_shared<NativeOfferAdmission>(
+    policy, std::map<std::string, std::string>{{offerKeyId, publicKeyPem(offerKey)}},
+    candidatePolicyDigest);
+
+  const auto requesterKey = deterministicEd25519Key(0x81);
+  const auto authorityKey = deterministicEd25519Key(0x91);
+  const auto recipientKey = deterministicEd25519Key(0xa1);
+  const auto registration = nativeParseJson(package->registration->configurationJson);
+  const auto protectionEpoch = registration.at("grant").at("protection_epoch").get<std::string>();
+  const auto policyDigest = registration.at("request").at("security_policy_digest").get<std::string>();
+  NativeGrantIssuerConfig issuerConfig;
+  issuerConfig.authorityIdentity = "/aa";
+  issuerConfig.requesterIdentity = requesterName;
+  issuerConfig.protectionEpoch = protectionEpoch;
+  issuerConfig.keyId = "spec185-t007-grant-key";
+  issuerConfig.authorityPrivateKey = authorityKey;
+  issuerConfig.requesterPublicKey = requesterKey;
+  issuerConfig.allowedModelManifests = {package->catalog.model.modelManifestDigest};
+  issuerConfig.publicationSources.emplace(package->catalog.model.modelManifestDigest,
+    NativeGrantPublicationSource{
+      package->catalog.model.descriptor.modelName,
+      package->catalog.model.descriptor.contentDigest,
+      package->catalog.model.canonicalSourceDigest,
+      package->catalog.model.canonicalInitializerObjectDigest,
+      nativePlanningDigest("fixture-profile")});
+  issuerConfig.recipientPublicKeys = {{providerName, recipientKey}};
+  issuerConfig.contentKey = [] (const auto&, const auto&) {
+    return std::vector<std::uint8_t>(32, 0x77);
+  };
+  auto grantIssuer = std::make_shared<NativeArtifactGrantIssuer>(std::move(issuerConfig));
+  NativeAuthenticatedGrantClient::Issue issue = [grantIssuer] (
+    const NativeSignedGrantRequest& request, const std::string& publishedManifest,
+    std::uint64_t expiresAtMs, const NativeGrantControl& control) {
+    control.check();
+    const auto nowMs = static_cast<std::uint64_t>(std::chrono::duration_cast<
+      std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
+    return grantIssuer->issue(request, nowMs, expiresAtMs, publishedManifest);
+  };
+  NativeAuthenticatedGrantClient::Publish publish = [] (
+    const std::string& name, const std::string&, const NativeGrantControl& control) {
+    control.check();
+    return name;
+  };
+  auto grants = std::make_shared<NativeAuthenticatedGrantClient>(
+    requesterName, requesterKey, "/aa", rawPublicKey(authorityKey),
+    protectionEpoch, std::move(issue), std::move(publish));
+
+  auto ackCount = std::make_shared<std::atomic<unsigned>>(0);
+  auto completedTurns = std::make_shared<std::atomic<unsigned>>(0);
+  environment.provider().addCollaborationHandler(
+    ndn::Name(serviceName),
+    [offerConfig, ackCount] (const ndn_service_framework::RequestMessage& request) {
+      ackCount->fetch_add(1, std::memory_order_relaxed);
+      const auto payload = request.getPayload();
+      const auto issued = issueNativeProviderOfferV3(
+        std::vector<std::uint8_t>(payload.begin(), payload.end()), offerConfig,
+        static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::system_clock::now().time_since_epoch()).count()));
+      ndn_service_framework::ServiceProvider::AckDecision decision;
+      if (!issued || !issued->status) {
+        decision.message = issued ? issued->message : "DI_NATIVE_REQUEST_NOT_V3";
+        return decision;
+      }
+      decision.status = true;
+      decision.message = issued->message;
+      decision.payload = ndn::Buffer(issued->payload.begin(), issued->payload.end());
+      decision.pendingStateTtlMs = issued->pendingStateTtlMs;
+      return decision;
+    },
+    [model, serviceName, providerName, policyDigest, terminalRole, completedTurns] (
+      ndn_service_framework::ServiceProvider::CollaborationContext& context,
+      const ndn_service_framework::RequestMessage&) {
+      try {
+        const auto assignment = context.assignment().assignmentPayload;
+        std::istringstream input(std::string(assignment.begin(), assignment.end()));
+        const auto projection = nativeSelectionProjectionV3FromJson(input, context.role());
+        if (!context.isStreamed() || !projection.conversationTurnBinding)
+          throw std::runtime_error("Spec185 T007 conversation stream projection missing");
+        const auto binding = *projection.conversationTurnBinding;
+        const bool terminal = context.role() == terminalRole;
+        const auto publishToken = [&context, &projection] (std::int64_t token,
+                                                            std::uint64_t epoch,
+                                                            const std::string& prefix,
+                                                            const std::string& delta,
+                                                            const std::string& hint) {
+          const auto wire = nativeCanonicalJson(NativeJson{
+            {"schema", "GenerationTokenEventV1"}, {"tokenId", token},
+            {"tokenEpoch", epoch}, {"acceptedPrefixDigest", nativePlanningDigest(prefix)},
+            {"textDelta", delta}, {"finishHint", hint},
+            {"generationId", projection.generationContract.generationId},
+            {"samplingDigest", projection.generationContract.samplingDigest}});
+          if (!context.publishStreamEvent(ndn::Buffer(wire.begin(), wire.end())))
+            throw std::runtime_error("Spec185 T007 token publication failed");
+        };
+        const bool append = binding.parentContextEpoch != 0;
+        const auto nextToken = static_cast<std::int64_t>(binding.parentContextEpoch + 2);
+        if (terminal) {
+          if (append) {
+            const auto token = std::to_string(nextToken);
+            publishToken(nextToken, 1, token, "c", "EOS");
+          }
+          else {
+            publishToken(1, 1, "1", "a", "NONE");
+            publishToken(2, 2, "1,2", "b", "EOS");
+          }
+          const auto final = nativeCanonicalJson(NativeJson{
+            {"schema", "NDNSF-DI-FINAL-V1"},
+            {"tokenIds", append ? NativeJson::array({nextToken}) : NativeJson::array({1, 2})},
+            {"text", append ? "c" : "ab"}, {"finishHint", "EOS"},
+            {"finishReason", "eos"},
+            {"generationId", projection.generationContract.generationId}});
+          if (!context.finishStream(ndn::Buffer(final.begin(), final.end()),
+                                    ndn_service_framework::StreamFinishReason::ApplicationComplete))
+            throw std::runtime_error("Spec185 T007 final publication failed");
+        }
+        ProviderConversationStateReceiptV1 receipt;
+        receipt.conversationId = binding.conversationId;
+        receipt.parentContextEpoch = binding.parentContextEpoch;
+        receipt.successorContextEpoch = binding.successorContextEpoch;
+        receipt.originRequestId = context.sessionId();
+        receipt.originGenerationId = projection.generationContract.generationId;
+        receipt.serviceName = binding.serviceName;
+        receipt.requesterIdentity = context.requesterName().toUri();
+        receipt.securityDomainDigest = policyDigest;
+        receipt.modelDigest = model.intentDigest();
+        receipt.graphSemanticDigest = model.semanticsDigest;
+        receipt.adapterDigest = model.adapter.descriptorDigest();
+        receipt.roleName = context.role();
+        receipt.roleSplitDigest = projection.selectedRole.recipeDigest;
+        receipt.layoutDigest = projection.selectedRole.artifactProfileDigest;
+        receipt.planRoleMapDigest = binding.planRoleMapDigest;
+        receipt.providerIdentity = context.localProvider().toUri();
+        receipt.providerBootId = providerName + "-boot";
+        receipt.cacheEpoch = binding.successorContextEpoch;
+        // The fixture adapter derives one canonical token per inline input
+        // byte. Include those adapter-owned prompt tokens before the
+        // deterministic streamed output in the committed successor prefix.
+        std::vector<std::int64_t> fullTokens;
+        if (!append)
+          fullTokens = {1, 2, 3, 1, 2};
+        else if (binding.parentContextEpoch == 1)
+          fullTokens = {1, 2, 3, 1, 2, 4, 5, 6, 3};
+        else
+          fullTokens = {1, 2, 3, 1, 2, 4, 5, 6, 3, 7, 8, 9, 4};
+        receipt.prefixDigest = nativeConversationPrefixDigest(fullTokens);
+        receipt.prefixTokenCount = static_cast<std::uint32_t>(fullTokens.size());
+        receipt.positionDigest = nativePlanningDigest("spec185-t007-position");
+        receipt.stateSchemaDigest = nativePlanningDigest("spec185-t007-state-schema");
+        receipt.stateComponentDigests = {nativePlanningDigest("spec185-t007-state")};
+        receipt.expiresAtMs = binding.retentionDeadlineMs;
+        receipt.validate();
+        const auto receiptJson = receipt.toJson();
+        context.publish("ndnsf-di-conversation-state-v1",
+                        ndn::Name("/ndnsf-di/conversation/receipt").append(context.role()),
+                        ndn::Buffer(receiptJson.begin(), receiptJson.end()));
+        const auto controlTopic = ndn::Name("/ndnsf-di/conversation/control");
+        const auto commitTopic = ndn::Name("/ndnsf-di/conversation/commit");
+        for (int rounds = 0; rounds < 30; ++rounds) {
+          const auto controls = context.waitFor("ndnsf-di-conversation-state-v1",
+                                                controlTopic, 1, 1000);
+          for (const auto& controlData : controls) {
+            if (controlData.producer != context.requesterName() ||
+                controlData.producerRole != "user-control-v1") continue;
+            const auto control = nativeParseJson(std::string(
+              controlData.payload.begin(), controlData.payload.end()));
+            if (control.value("conversationId", std::string{}) != binding.conversationId ||
+                control.value("successorContextEpoch", std::uint64_t{0}) != binding.successorContextEpoch ||
+                control.value("roleName", std::string{}) != context.role()) continue;
+            const auto action = control.value("action", std::string{});
+            if (action == "FINALIZE" || action == "ROLLBACK") return;
+            if (action != "COMMIT") continue;
+            const auto ack = nativeCanonicalJson(NativeJson{
+              {"schema", "ndnsf-di-provider-conversation-commit-ack-v1"},
+              {"requestId", context.sessionId()}, {"attemptEpoch", projection.attempt},
+              {"generationId", projection.generationContract.generationId},
+              {"planDigest", projection.planDigest}, {"conversationId", binding.conversationId},
+              {"parentContextEpoch", binding.parentContextEpoch},
+              {"successorContextEpoch", binding.successorContextEpoch},
+              {"serviceName", binding.serviceName}, {"planRoleMapDigest", binding.planRoleMapDigest},
+              {"roleName", context.role()}, {"receiptDigest", receipt.computedDigest()},
+              {"checkpointDigest", control.value("checkpointDigest", std::string{})},
+              {"providerIdentity", context.localProvider().toUri()},
+              {"providerBootId", providerName + "-boot"}, {"cacheEpoch", receipt.cacheEpoch},
+              {"committed", true}});
+            context.publish("ndnsf-di-conversation-state-v1", commitTopic,
+                            ndn::Buffer(ack.begin(), ack.end()));
+            if (terminal) completedTurns->fetch_add(1, std::memory_order_relaxed);
+            else if (!context.completeRole())
+              throw std::runtime_error("Spec185 T007 non-terminal role completion failed");
+            return;
+          }
+        }
+        throw std::runtime_error("Spec185 T007 conversation control timeout");
+      }
+      catch (const std::exception& error) {
+        context.fail(std::string("Spec185 T007 handler failure: ") + error.what());
+      }
+    });
+  environment.enableProductionIngressForTest();
+  environment.provider().markHybridResponseKeyWrappedForTest(serviceName);
+  const auto ackKey = environment.provider().prepareHybridSendKeyForTest(serviceName, "ACK");
+  const auto responseKey = environment.provider().prepareHybridSendKeyForTest(serviceName, "RESPONSE");
+  environment.user().cacheHybridReceiveKeyForTest(ackKey.keyId, ackKey.epochId, ackKey.key);
+  environment.user().cacheHybridReceiveKeyForTest(responseKey.keyId, responseKey.epochId, responseKey.key);
+  const auto selectionKey = environment.user().prepareHybridSendKeyForTest(serviceName, "SELECTION");
+  environment.provider().cacheHybridReceiveKeyForTest(selectionKey.keyId, selectionKey.epochId, selectionKey.key);
+  auto environmentUser = std::shared_ptr<ndn_service_framework::ServiceUser>(
+    &environment.user(), [] (ndn_service_framework::ServiceUser*) {});
+  ndnsf::di::detail::RuntimeTestAccess::bindProviderFixture(runtime, environmentUser, grants, admission);
+
+  auto conversation = prepared.openConversation();
+  RequestOptions options;
+  // The three-turn recovery path includes a fresh authenticated preparation
+  // and state promotion.  Keep a bounded margin between the request deadline
+  // and each blocking observation so normal VM scheduling cannot turn a valid
+  // turn into an observation-timeout failure.
+  // The authenticated three-turn path is sensitive to VM scheduling in both
+  // normal and instrumented builds.  Keep one explicit bounded contract so a
+  // valid turn is not made dependent on compiler-specific sanitizer macros.
+  constexpr auto conversationTimeout = std::chrono::seconds(180);
+  constexpr auto conversationResultWait = std::chrono::seconds(120);
+  options.timeout = conversationTimeout;
+  options.ackTimeout = std::chrono::seconds(3);
+  options.generation = GenerationOptions{8};
+  BOOST_CHECK_EXCEPTION(conversation.checkpoint(), DiError,
+                        [] (const DiError& error) {
+                          return error.code() == "CHECKPOINT_NOT_READY";
+                        });
+  auto first = conversation.request(Input::inlineBytes({0x01, 0x02, 0x03}), options);
+  // The first request cannot complete before the test pumps the borrowed Face.
+  // Keep the active-turn negative case in a small helper frame so the
+  // sanitizer observes the production exception boundary without coupling it
+  // to this integration test's large stack frame.
+  BOOST_CHECK(conversationRejectsBusyTurn(conversation, options));
+  auto firstResultFuture = std::async(std::launch::async, [first, conversationResultWait] {
+    return first.result(conversationResultWait);
+  });
+  pumpUntilFutureReady(environment, firstResultFuture, conversationTimeout);
+  const auto firstResult = firstResultFuture.get();
+  BOOST_CHECK(!firstResult.payload.empty());
+  auto checkpoint = conversation.checkpoint();
+  const auto checkpointBytes = checkpoint.bytes();
+  BOOST_REQUIRE(!checkpointBytes.empty());
+  BOOST_CHECK_EQUAL(completedTurns->load(std::memory_order_relaxed), 1U);
+  const auto exportPath = fixture.root / "checkpoint.json";
+  conversation.exportCheckpoint(exportPath);
+  {
+    std::ifstream exported(exportPath, std::ios::binary);
+    const std::string exportedWire((std::istreambuf_iterator<char>(exported)),
+                                   std::istreambuf_iterator<char>());
+    BOOST_CHECK_EQUAL(exportedWire,
+                      std::string(checkpointBytes.begin(), checkpointBytes.end()));
+  }
+  const auto exportedCheckpoint = [&] {
+    std::ifstream input(exportPath, std::ios::binary);
+    const std::string wire((std::istreambuf_iterator<char>(input)),
+                           std::istreambuf_iterator<char>());
+    return ConversationCheckpoint::fromBytes(
+      std::vector<std::uint8_t>(wire.begin(), wire.end()));
+  }();
+  BOOST_CHECK(exportedCheckpoint.bytes() == checkpointBytes);
+
+  auto second = conversation.request(Input::inlineBytes({0x04, 0x05, 0x06}), options);
+  auto secondResultFuture = std::async(std::launch::async, [second, conversationResultWait] {
+    return second.result(conversationResultWait);
+  });
+  pumpUntilFutureReady(environment, secondResultFuture, conversationTimeout);
+  const auto secondResult = secondResultFuture.get();
+  BOOST_CHECK(!secondResult.payload.empty());
+  BOOST_CHECK_EQUAL(completedTurns->load(std::memory_order_relaxed), 2U);
+  BOOST_CHECK(ackCount->load(std::memory_order_relaxed) >= 2U);
+  const auto secondCheckpoint = conversation.checkpoint();
+  const auto secondCheckpointBytes = secondCheckpoint.bytes();
+  const auto recoveryExportPath = fixture.root / "recovery-checkpoint.json";
+  conversation.exportCheckpoint(recoveryExportPath);
+  const auto failedExportPath = fixture.root / "failed-checkpoint.json";
+  {
+    std::ofstream old(failedExportPath, std::ios::binary);
+    old << "old-checkpoint";
+  }
+  const auto symlinkPath = fixture.root / "failed-checkpoint-link.json";
+  std::error_code symlinkError;
+  std::filesystem::create_symlink(failedExportPath, symlinkPath, symlinkError);
+  BOOST_REQUIRE(!symlinkError);
+  BOOST_CHECK_EXCEPTION(conversation.exportCheckpoint(symlinkPath), DiError,
+                        [] (const DiError& error) {
+                          return error.code() == "CHECKPOINT_EXPORT_FAILED" &&
+                                 error.boundary() == "export";
+                        });
+  {
+    std::ifstream old(failedExportPath, std::ios::binary);
+    const std::string oldWire((std::istreambuf_iterator<char>(old)),
+                              std::istreambuf_iterator<char>());
+    BOOST_CHECK_EQUAL(oldWire, "old-checkpoint");
+  }
+
+  ConversationOptions restoredOptions;
+  std::ifstream recoveryInput(recoveryExportPath, std::ios::binary);
+  const std::string recoveryWire((std::istreambuf_iterator<char>(recoveryInput)),
+                                 std::istreambuf_iterator<char>());
+  const auto recoveredCheckpoint = ConversationCheckpoint::fromBytes(
+    std::vector<std::uint8_t>(recoveryWire.begin(), recoveryWire.end()));
+  BOOST_CHECK(recoveredCheckpoint.bytes() == secondCheckpointBytes);
+  restoredOptions.conversationId = nativeParseJson(recoveryWire).at("conversationId").get<std::string>();
+  restoredOptions.checkpoint = recoveredCheckpoint;
+  auto restored = prepared.openConversation(restoredOptions);
+  auto third = restored.request(Input::inlineBytes({0x07, 0x08, 0x09}), options);
+  auto thirdResultFuture = std::async(std::launch::async, [third, conversationResultWait] {
+    return third.result(conversationResultWait);
+  });
+  pumpUntilFutureReady(environment, thirdResultFuture, conversationTimeout);
+  BOOST_CHECK(!thirdResultFuture.get().payload.empty());
+  BOOST_CHECK_EQUAL(completedTurns->load(std::memory_order_relaxed), 3U);
+  restored.close();
+  conversation.close();
+  runtime->close();
+  auto drainFuture = std::async(std::launch::async, [runtime] {
+    return runtime->drain(std::chrono::seconds(3));
   });
   environment.pumpUntil([&] {
     return drainFuture.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready;
