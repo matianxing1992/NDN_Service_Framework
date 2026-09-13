@@ -3618,3 +3618,23 @@ are still unobserved.
 - **Lesson**: a successful Waf configure or pre-existing build output cannot
   establish candidate readiness; all consumers must compile against the same
   NAC-ABE API and packaged runtime identity.
+
+## 2026-09-12 — Spec186 ONNX toolchain and SIF hash boundaries
+
+- **Area**: T006 clean dependency and runtime closure.
+- **First boundaries**: installing the matching NAC-ABE build into
+  `/tmp/spec186-nacabe-install` copied headers and the library but could not
+  update the old root-owned `build/install_manifest.txt` (permission denied).
+  Reconfiguration then stopped because no ONNX 1.17 full-protobuf prefix with
+  `checker.h`, `libonnx.a` and `libonnx_proto.a` exists on this host. Hashing a
+  3.9-GB cached SIF also exceeded the first 30-second command window; the
+  bounded retry completed with SHA-256
+  `2c07a9f14d48fabd9fb58036c1634f3cc3282dd28c6470add9f8a7da0cb829b5`.
+- **Interpretation**: temporary install metadata and hash timing are tooling
+  boundaries; missing ONNX inputs and the cached SIF's unproven source seal
+  are candidate blockers. No artifact is promoted.
+- **Correction**: retain the copied temporary prefix, request/provide a real
+  ONNX 1.17 full-protobuf prefix, and reseal any SIF against the exact Spec186
+  source and dependency tuple before rebuilding.
+- **Lesson**: dependency headers, libraries, RPATH and SIF bytes must be
+  verified together; an old lock digest or a partial install cannot close ABI.
