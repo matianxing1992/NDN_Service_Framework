@@ -29,8 +29,8 @@ RQ1: How can NDNSF discover willing Providers, keep descriptors confidential fro
 \slideentry{7}{Related Work and the Remaining Questions}{
 Prior work What the comparison must acknowledge NFN [6], NFaaS [7] Named computation and function execution/placement RICE [9], NSC [10] Invocation mechanisms; NSC checks signed calls using a Trust Schema DNMP [12] Trust Schema constrains roles and measurement commands CaSCON [15] Service-composition research; requires a feature-level comparison before claiming a new composition mechanism gRPC [17,27] Complete configurations can include discovery/resolver integration, not only fixed addresses Collaboration research: make runtime assignments constrain intermediate Data use. Discovery and authorization are evaluated separately.
 }
-\slideentry{8}{Research Contributions and Current Evidence}{
-Intended contribution Current evidence boundary Discovery / authorization design and tradeoffs Invocation implementation and bounded experiments exist; full alternative lifecycle-cost comparison remains open ACK-derived plan and local input checks Design and implementation work; direct/cache and failure validation remains incomplete Cross-case empirical findings Existing mobility/work-efficiency and small-model results support limited configurations, not all new collaboration claims Proposal status, September 2026: implemented, locally tested, measured, and fully qualified are not interchangeable. [28]
+\slideentry{8}{Proposed Contributions and Current Foundation}{
+Intended contribution Current evidence boundary Discovery / authorization design and tradeoffs Invocation implementation and bounded experiments exist; full alternative lifecycle-cost comparison remains open ACK-derived plan and local input checks Design and implementation work; direct/cache and failure validation remains incomplete Cross-case empirical findings Existing mobility/work-efficiency and small-model results support limited configurations, not all new collaboration claims Existing work supports feasibility. This proposal specifies what remains to be investigated and how the research claims will be tested. [28]
 }
 \slideentry{9}{Participants and Trust Bootstrap}{
 User: requests a service and selects a Provider; the extension also assigns collaboration roles. Provider: offers and executes a service. A node may play both roles. Controller: administers identities and service permissions approved by the organization. Participants use provisioned trust anchors and validation rules for certificates and Controller material. Unknown runtime candidates are not unregistered authorization identities. The User discovers current participation; the Controller does not choose this task’s Providers.
@@ -92,7 +92,7 @@ Existing request ID Proposed task-specific plan rules Identifies the request; re
 \slideentry{28}{Collaboration Recovery Needs Explicit State}{
 Event Required behavior Late ACK Do not silently change the committed plan Duplicate Selection Check whether execution was already authorized; do not repeat a side effect Incomplete dependency Wait within policy/deadline, recover, or fail; do not execute on partial data Provider replacement Authorize a new assignment; reject old execution actions and specify permitted result reuse Cancellation Prevent late messages from reauthorizing cancelled work Network re-retrieval is not task re-execution. Compensation is not an atomic transaction or exactly-once physical action.
 }
-\slideentry{29}{NDNSF-UAV: Application-Level Validation}{
+\slideentry{29}{NDNSF-UAV: Planned Framework Validation}{
 Unmanned aerial vehicle (UAV) application workflows exercise several framework mechanisms. [28] Application function NDNSF validation scope Control, telemetry, mission status Provider/request association, permissions, operation lifecycle Live video and recordings Stream lifecycle, protected delivery, named-object retrieval Detection and multi-view tasks Service provision/consumption, role assignments, dependencies Coverage is broader than one collaboration case. Each claim still needs evidence from the actual NDNSF path; flight safety and image-analysis accuracy need separate validation.
 }
 \slideentry{30}{UAV Collaboration Example: Capture, Analyze and Return}{
@@ -101,7 +101,7 @@ An operator requests ground-area views from nearby UAVs, followed by analysis. 1
 \slideentry{31}{UAV Evaluation: Completion and Correct Input Use}{
 A complete authorized collection--processing--return task before the deadline. Correct handling of unavailable views, delayed images and a failed processing Provider. Reject wrong-role/edge inputs; accept cached images only when they satisfy the same task checks. MiniNDN [22] and PX4 SITL [23] results clearly distinguished from physical-flight evidence. Higher recognition/localization accuracy is a separate claim requiring ground truth and a single-view control. It is not assumed here.
 }
-\slideentry{32}{NDNSF-DI: Application-Level Validation}{
+\slideentry{32}{NDNSF-DI: Planned Framework Validation}{
 Application function NDNSF validation scope Single-Provider inference Discovery, permissions, input and result delivery Model preparation and reuse Readiness, artifact references, named-object retrieval Incremental output and conversa- tion Request state, cancellation, output lifecycle Multi-Provider inference Assignments, dependencies, recovery The application also tests the invocation foundation, without requiring a model split. Interfaces and focused tests exist; complete model/device/recovery qualification remains open. [28]
 }
 \slideentry{33}{DI Collaboration Example: Named Computation Dependencies}{
@@ -116,29 +116,29 @@ Model weights, reusable artifacts, request activations and KV state have differe
 \slideentry{36}{RQ3: Define the Baselines Before Comparing}{
 NSC [10]: named service calls; describe the tested executor, timeout, queue and recovery behavior. gRPC [17]: describe resolver, sequential/parallel policy, deadlines, retry and cancellation. Match Provider count, capacity, task, topology/traces, publication times and measurement windows. Report fixed-list and dynamically discovered configurations as different configurations. An incomplete baseline cannot establish a limitation of the full framework. Historical unmatched data remain diagnostics.
 }
-\slideentry{37}{Mobility: Completion under Different Coverage Conditions}{
+\slideentry{37}{Preliminary Evidence: Mobility and Completion}{
 Ten seeds (62--71), four Providers/system, 2 m/s; mean seed completion rate. [28] AP radius NDNSF gRPC NSC 50 m 54.57\% 53.80\% 55.47\% 100 m 97.97\% 97.97\% 98.33\% 150 m 100.00\% 100.00\% 100.00\% No overall NDNSF advantage is established. The next slide uses a separate holdout campaign (seeds 72--81), not a subset of these runs.
 }
-\slideentry{38}{Mobility: Lower Tail Latency in a Defined Subset}{
+\slideentry{38}{Preliminary Evidence: Switching Latency}{
 Seeds 72--81; four Providers/system; 100 m, 2 m/s; 1,312 aligned switching requests. [28] Comparison Seed-p95 difference 95\% CI NDNSF minus gRPC-SEQ-4 -597 ms [-992, -200] ms NDNSF minus NSC-4 -2618 ms [-2916, -2315] ms Completed: NDNSF 1,311; gRPC 1,297; NSC 1,296 (of 1,312 each). Mean paired seed-p95 differences; each p95 uses that system’s successful requests. Different failures limit the comparison; no general advantage is inferred.
 }
-\slideentry{39}{Fewer Execution Starts than the Parallel Baseline}{
+\slideentry{39}{Preliminary Evidence: Execution Starts}{
 Six-seed, capacity-matched comparison; 1,800 requests per system. [28] Configuration Completed requests Execution starts NDNSF 1,798 / 1,800 1,800 gRPC-PAR-4 1,800 / 1,800 7,180 NSC-4 also completed 1,800/1,800, with 1.002 starts/request (rounded). No work-efficiency advantage over NSC is claimed. Fewer starts than gRPC-PAR-4 is not proof of fewer bytes, less CPU time or lower energy. Similar observed completion is not proven equivalence.
 }
-\slideentry{40}{A Useful Negative Result: Splitting Can Be Slower}{
+\slideentry{40}{Preliminary Diagnostic: Splitting Can Be Slower}{
 Earlier small Qwen-style ONNX model; ten successful runs per layout. [28] Layout Mean latency p95 Shared-backbone distributed layout 259.4 ms 283.9 ms Single Provider 186.8 ms 206.3 ms Do not split merely because several Providers exist. Communication/setup overhead is a candidate explanation, not a causal result established by this measurement. Retained historical diagnostic; raw-run/model provenance remains to be rechecked. Not evidence for the newer distributed design.
 }
-\slideentry{41}{Remaining Experiments Follow the Claims}{
+\slideentry{41}{Proposed Evaluation: Evidence for Each RQ}{
 RQ Required evidence Outcome and cost RQ1 ABE-backed versus DNMP-inspired rules plus encryption; unauthorized call, replay, grant and withdrawal No unauthorized handler start; discovery delay, key/policy size, status delay and rekey traffic RQ2 One UAV and one DI graph; wrong role/edge; direct/cache parity; cancellation/replacement Correct task completion; validation, transfer and recovery cost RQ3 Matched workload and failure schedules; feasible single-device control; cold/warm state Completion plus latency, redundant work, bytes, uncertainty, and cases with no advantage Planned tests are not completed findings. Record all scheduled runs and failure boundaries.
 }
 \slideentry{42}{A Bounded Path to Spring 2027}{
-Internal target Required deliverable September 2026 Agree scope/RQs; freeze one UAV graph and one DI partition; resolve correctness blockers October--November 2026 Complete registered experiments; freeze evidence and write bounded RQ answers December 2026 Complete integrated advisor-review draft January 2027 Committee review and readiness decision; reduce scope or revise timing if core evidence is missing February 2027 Target defense, conditional on evidence and committee approval Committee draft: two weeks before defense. Spring 2027 application/candidacy: February 5; final ProQuest: March 26. Recheck before filing. [29,30]
+Internal target Required deliverable September 2026 Agree scope/RQs; freeze one UAV graph and one DI partition; resolve correctness blockers October--November 2026 Complete registered experiments; freeze evidence and write bounded RQ answers December 2026 Complete integrated advisor-review draft January 2027 Committee review and readiness decision; reduce scope or revise timing if core evidence is missing February 2027 Final dissertation defense, subject to committee approval Committee draft: two weeks before defense. Spring 2027 application/candidacy: February 5; final ProQuest: March 26. Recheck before filing. [29,30]
 }
 \slideentry{43}{Expected Research Outcomes}{
-RQ1 answer: when ABE-backed authorization is preferable to DNMP-inspired role rules plus encryption, accounting for confidentiality, management and withdrawal costs. RQ2 answer: exactly which task-assignment mistakes are rejected and which recovery behavior is supported. RQ3 answer: measured benefits, negative results and deployment limits. Reproducible configurations and evidence linking each conclusion to its tested scope. The outcome is a tested service protocol and an evidence-backed account of when its mechanisms are worth their cost.
+RQ1 answer: when ABE-backed authorization is preferable to DNMP-inspired role rules plus encryption, accounting for confidentiality, management and withdrawal costs. RQ2 answer: exactly which task-assignment mistakes are rejected and which recovery behavior is supported. RQ3 answer: measured benefits, negative results and deployment limits. Reproducible configurations and evidence linking each conclusion to its tested scope. The intended outcome is a tested service protocol and an evidence-backed account of when its mechanisms are worth their cost.
 }
 \slideentry{44}{Discussion: Is This Scope Sufficient and Feasible?}{
-1. Are the three research questions specific enough to support defensible answers? 2. Are the authorization alternatives complete and fairly configured? 3. Are one UAV graph and one supported DI partition sufficient to test the abstraction? 4. Which optional features should be excluded if they delay the core evidence? NDNSF: evaluate runtime discovery and authorized invocation; extend the foundation to role-aware collaboration.
+1. Are the three research questions specific enough to support defensible answers? 2. Are the authorization alternatives complete and fairly configured? 3. Are one UAV graph and one supported DI partition sufficient to test the abstraction? 4. Which optional features should be excluded if they delay the core evidence? Committee feedback sought: research significance, bounded scope, evaluation criteria, and a feasible completion plan.
 }
 \slideentry{45}{Backup: Discovery Configuration Is Not Framework Capability}{
 Provider-transition configuration Completed NDNSF, no pre-registered Provider addresses 357 / 357 Static-list NSC/gRPC configurations 0 / 357 Pre-registered baseline variants 357 / 357 This isolates the configured discovery boundary. Resolver/discovery integration can update candidates; it is not proof that gRPC or NSC cannot do so. [27,28]

@@ -77,7 +77,7 @@ gRPC [17,27] & Complete configurations can include discovery/resolver integratio
 \vspace{2mm}\bluebox{Collaboration research: make runtime assignments constrain intermediate Data use. Discovery and authorization are evaluated separately.}
 \end{frame}
 
-\begin{frame}{Research Contributions and Current Evidence}
+\begin{frame}{Proposed Contributions and Current Foundation}
 \small
 \begin{tabularx}{\linewidth}{p{.38\linewidth}X}
 \toprule Intended contribution & Current evidence boundary\\\midrule
@@ -85,7 +85,7 @@ Discovery / authorization design and tradeoffs & Invocation implementation and b
 ACK-derived plan and local input checks & Design and implementation work; direct/cache and failure validation remains incomplete\\\midrule
 Cross-case empirical findings & Existing mobility/work-efficiency and small-model results support limited configurations, not all new collaboration claims\\\bottomrule
 \end{tabularx}
-\vspace{3mm}\bluebox{Proposal status, September 2026: implemented, locally tested, measured, and fully qualified are not interchangeable. [28]}
+\vspace{3mm}\bluebox{Existing work supports feasibility. This proposal specifies what remains to be investigated and how the research claims will be tested. [28]}
 \end{frame}
 
 \begin{frame}{Participants and Trust Bootstrap}
@@ -302,7 +302,7 @@ Cancellation & Prevent late messages from reauthorizing cancelled work\\\bottomr
 \vspace{3mm}\bluebox{Network re-retrieval is not task re-execution. Compensation is not an atomic transaction or exactly-once physical action.}
 \end{frame}
 
-\begin{frame}{NDNSF-UAV: Application-Level Validation}
+\begin{frame}{NDNSF-UAV: Planned Framework Validation}
 \small Unmanned aerial vehicle (UAV) application workflows exercise several framework mechanisms. [28]
 \begin{tabularx}{\linewidth}{p{.37\linewidth}X}
 \toprule Application function & NDNSF validation scope\\\midrule
@@ -334,7 +334,7 @@ Detection and multi-view tasks & Service provision/consumption, role assignments
 \vspace{3mm}\bluebox{Higher recognition/localization accuracy is a separate claim requiring ground truth and a single-view control. It is not assumed here.}
 \end{frame}
 
-\begin{frame}{NDNSF-DI: Application-Level Validation}
+\begin{frame}{NDNSF-DI: Planned Framework Validation}
 \begin{tabularx}{\linewidth}{p{.38\linewidth}X}
 \toprule Application function & NDNSF validation scope\\\midrule
 Single-Provider inference & Discovery, permissions, input and result delivery\\\midrule
@@ -392,7 +392,7 @@ Multi-Provider inference & Assignments, dependencies, recovery\\\bottomrule
 \bluebox{An incomplete baseline cannot establish a limitation of the full framework. Historical unmatched data remain diagnostics.}
 \end{frame}
 
-\begin{frame}{Mobility: Completion under Different Coverage Conditions}
+\begin{frame}{Preliminary Evidence: Mobility and Completion}
 \small Ten seeds (62--71), four Providers/system, 2 m/s; mean seed completion rate. [28]
 \vspace{4mm}
 \begin{tabularx}{\linewidth}{Xrrr}
@@ -405,7 +405,7 @@ Multi-Provider inference & Assignments, dependencies, recovery\\\bottomrule
 \bluebox{No overall NDNSF advantage is established. The next slide uses a separate holdout campaign (seeds 72--81), not a subset of these runs.}
 \end{frame}
 
-\begin{frame}{Mobility: Lower Tail Latency in a Defined Subset}
+\begin{frame}{Preliminary Evidence: Switching Latency}
 \small
 Seeds 72--81; four Providers/system; 100 m, 2 m/s; 1,312 aligned switching requests. [28]
 \vspace{4mm}
@@ -418,7 +418,7 @@ NDNSF minus NSC-4 & $-2618$ ms & $[-2916,-2315]$ ms\\\bottomrule
 \vspace{2mm}\bluebox{Mean paired seed-p95 differences; each p95 uses that system's successful requests. Different failures limit the comparison; no general advantage is inferred.}
 \end{frame}
 
-\begin{frame}{Fewer Execution Starts than the Parallel Baseline}
+\begin{frame}{Preliminary Evidence: Execution Starts}
 \small Six-seed, capacity-matched comparison; 1,800 requests per system. [28]
 \vspace{4mm}
 \begin{tabularx}{\linewidth}{Xrr}
@@ -430,7 +430,7 @@ gRPC-PAR-4 & 1,800 / 1,800 & 7,180\\\bottomrule
 \vspace{3mm}\bluebox{Fewer starts than gRPC-PAR-4 is not proof of fewer bytes, less CPU time or lower energy. Similar observed completion is not proven equivalence.}
 \end{frame}
 
-\begin{frame}{A Useful Negative Result: Splitting Can Be Slower}
+\begin{frame}{Preliminary Diagnostic: Splitting Can Be Slower}
 \small Earlier small Qwen-style ONNX model; ten successful runs per layout. [28]
 \vspace{4mm}
 \begin{tabularx}{\linewidth}{Xrr}
@@ -442,7 +442,7 @@ Single Provider & 186.8 ms & 206.3 ms\\\bottomrule
 \vspace{2mm}\scriptsize Retained historical diagnostic; raw-run/model provenance remains to be rechecked. Not evidence for the newer distributed design.
 \end{frame}
 
-\begin{frame}{Remaining Experiments Follow the Claims}
+\begin{frame}{Proposed Evaluation: Evidence for Each RQ}
 \small
 \begin{tabularx}{\linewidth}{p{.09\linewidth}XX}
 \toprule RQ & Required evidence & Outcome and cost\\\midrule
@@ -461,7 +461,7 @@ September 2026 & Agree scope/RQs; freeze one UAV graph and one DI partition; res
 October--November 2026 & Complete registered experiments; freeze evidence and write bounded RQ answers\\\midrule
 December 2026 & Complete integrated advisor-review draft\\\midrule
 January 2027 & Committee review and readiness decision; reduce scope or revise timing if core evidence is missing\\\midrule
-February 2027 & Target defense, conditional on evidence and committee approval\\\bottomrule
+February 2027 & Final dissertation defense, subject to committee approval\\\bottomrule
 \end{tabularx}
 \vspace{2mm}\bluebox{Committee draft: two weeks before defense. Spring 2027 application/candidacy: February 5; final ProQuest: March 26. Recheck before filing. [29,30]}
 \end{frame}
@@ -473,7 +473,7 @@ February 2027 & Target defense, conditional on evidence and committee approval\\
 \item \textbf{RQ3 answer:} measured benefits, negative results and deployment limits.
 \item Reproducible configurations and evidence linking each conclusion to its tested scope.
 \end{itemize}
-\bluebox{The outcome is a tested service protocol and an evidence-backed account of when its mechanisms are worth their cost.}
+\bluebox{The intended outcome is a tested service protocol and an evidence-backed account of when its mechanisms are worth their cost.}
 \end{frame}
 
 \begin{frame}{Discussion: Is This Scope Sufficient and Feasible?}
@@ -483,7 +483,7 @@ February 2027 & Target defense, conditional on evidence and committee approval\\
 \item Are one UAV graph and one supported DI partition sufficient to test the abstraction?
 \item Which optional features should be excluded if they delay the core evidence?
 \end{enumerate}
-\vspace{4mm}\bluebox{NDNSF: evaluate runtime discovery and authorized invocation; extend the foundation to role-aware collaboration.}
+\vspace{4mm}\bluebox{Committee feedback sought: research significance, bounded scope, evaluation criteria, and a feasible completion plan.}
 \end{frame}
 
 \appendix

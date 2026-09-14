@@ -22,8 +22,6 @@ Context Mode project health PASS；CodeGraph查找先返回临时源码副本，
 
 新增流程页首轮overfull 24.76523pt，改成紧凑流程图后通过；PPTX首轮被build-directory guard拒绝，使用独立获准目录后通过。失败均为文档工具边界，不归为协议结果。PPTX失败日志保留为`pptx-build.log`，后续成功为`pptx-build-r3.log`；最初排版日志曾被增量构建替换，其首错按工具输出在人工报告记录，最终r3/r4日志独立保留，不声称首轮原日志仍完整存在。
 
-## Remaining Work
-
 ## Local Checkpoint Boundary
 
 首次普通 commit 被 `.git/hooks/pre-commit` 的全索引开发工具引用检查拒绝，HEAD 未改变。该 hook 明确提供 `NDNSF_LOCAL_CHECKPOINT=1`，用于本地 checkpoint 跳过正文引用扫描，同时保留禁止路径检查；按此模式提交，不禁用 hook、不推送远端。本轮索引只含32个文档路径，tasks／failure-log 仅含本轮局部记录，并行源码及进度改动未暂存。

@@ -1,5 +1,9 @@
 # Failure Log and Evidence Index
 
+## 2026-09-14 — Proposal timeline wording overflow (RESOLVED)
+
+Proposal定位修订首轮slides时间线页出现6.76622pt的vbox溢出；失败PDF未晋升。压缩February 2027行后，独立`latex-r2/`目录八入口构建及49页PPTX回读通过，原始日志保留；不属于产品或实验结果。详见[document evidence](../specs/185-prepared-model-runtime/evidence/proposal-structure-20260914.md)。
+
 ## 2026-09-14 — Proposal document layout/export boundaries (RESOLVED)
 
 The advisor-comment revision first produced a 24.76523pt overfull slide and then

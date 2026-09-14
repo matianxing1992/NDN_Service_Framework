@@ -5,6 +5,10 @@
 
 ## Execution Progress
 
+### Proposal Positioning Checkpoint — 2026-09-14
+
+DOCUMENT_PASS：dissertation proposal组织与口径修订完成，独立目录八入口构建、49页PPTX回读、1,006/1,006可编辑文字spans及notes parser 2/2通过；RQ、16个被包含模块及六张实验页正文保持。首轮时间线页溢出修复且原日志保留。仅文档工作，不改变native任务勾选或资格；见[document evidence](evidence/proposal-structure-20260914.md)。
+
 ### Documentation Checkpoint — 2026-09-14
 
 Proposal／slides 批注修订完成：英文50页、中文38页、slides49页；八入口构建与镜像检查、49页PPTX回读、1,006/1,006可编辑文字spans、notes parser 2/2通过。19条PDF／26条PPTX批注逐项记录；研究证据仍开放。本项不变更Spec185源码、API、任务勾选或native qualification。详见 [documentation evidence](evidence/proposal-advisor-review-20260914.md)。

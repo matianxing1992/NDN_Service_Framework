@@ -31,10 +31,12 @@ The thesis to be evaluated is that named, verifiable objects can support runtime
 
 RQ1 evaluates the invocation foundation, including a DNMP-inspired role-authorization alternative paired with content encryption and adapted to the NDNSF workflow. RQ2 investigates the collaboration extension through UAV and distributed-inference dependencies; RQ3 measures both scopes and their applicable failure behavior separately.
 
-\section{Contribution and Evidence Boundary}
+\section{Expected Contributions and Current Foundation}
 The intended contributions are an evaluated discovery/authorization design, a collaboration protocol enforcing runtime role assignments through named-dependency checks, and evidence of their benefits and costs. These build on established NDN, encryption, and computation mechanisms.
 
 Existing invocation experiments do not validate a multi-role plan. The extension adds role and dependency rules without replacing existing request-ID isolation. Later implementation work is not attributed to the initial prototype; collaboration end-to-end evaluation remains incomplete. Chapter~\ref{chap:evaluation} separates available findings from required evidence.
+
+The proposal seeks committee agreement on these research questions, their significance, and a feasible method for answering them. Chapter~\ref{chap:related-work} establishes the background and alternatives. Chapter~\ref{chap:ndnsf} presents the approach, separating the invocation foundation from the proposed extension. Chapter~\ref{chap:applications} defines application scenarios and validation coverage. Chapter~\ref{chap:evaluation} distinguishes preliminary evidence from proposed experiments, and Chapter~\ref{chap:timeline} specifies the remaining work, risks, and timeline. Completed implementation supports feasibility; it does not replace evaluation of the research claims.
 
 \chapter{Related Work and Design Alternatives}
 \label{chap:related-work}
@@ -93,7 +95,7 @@ NDNSF uses ABE for two related purposes: protecting discovery descriptors before
 
 The comparison must include group-key or broadcast-encryption alternatives where appropriate. A stable, small group can make conventional group encryption attractive; known Providers and simple permissions can favor signed invocation with recipient encryption. ABE becomes attractive when recipients are identified by service entitlement before their current identities are known, and multiple entitlements should remain independent of identity-signing credentials. Policy size, membership churn, encryption cost, and authority availability bound this argument.
 
-\chapter{NDNSF System Model and Protocol}
+\chapter{Research Approach: Invocation and Collaboration}
 \label{chap:ndnsf}
 This chapter first describes the invocation and authorization design under evaluation, then introduces the proposed collaboration extension. Later confidentiality and lifecycle refinements are not attributed to every initial-prototype path. The basic invocation selects one Provider; role assignments and named dependency edges belong to the extension.
 
@@ -167,7 +169,7 @@ Assume uncompromised signing keys, correctly enforced trust/authorization checks
 
 These are conditional invariants and implementation proof obligations, not a cryptographic proof of a complete system. Tests should inject a wrong-role object within the same request, an undeclared edge from a correctly signed producer, and a late callback after replacement. Each isolates a property that a request ID alone cannot express. Application result correctness and physical side effects remain outside this argument.
 
-\chapter{Application-Level Validation}
+\chapter{Application Scenarios and Validation Plan}
 \label{chap:applications}
 \section{Validation Strategy: Applications Exercise the Framework}
 We use NDNSF-UAV and NDNSF-DI to evaluate how NDNSF supports service discovery, authorization, data delivery, and execution management across both single-Provider and multi-Provider workflows. Single-Provider operations remain relevant to RQ1 and RQ3; workflows with complementary roles additionally examine RQ2. The multi-view and distributed-model cases below are representative workloads within these broader applications.
@@ -227,7 +229,7 @@ Each evaluated row must identify the concrete application function, production N
 
 The current native implementation has focused and selected cross-process evidence, but the claimed model, device, and recovery configurations are not all qualified. Historical small-model measurements do not validate newer tensor/hybrid, multi-accelerator, or large-language-model recovery paths. The final campaign should cover the claimed mechanism categories using representative application workflows; it need not turn every optional interface or application feature into a separate dissertation completion gate. The broader application scope is preserved while each research conclusion remains tied to the evidence actually obtained.
 
-\chapter{Available Evidence and Required Evaluation}
+\chapter{Preliminary Evidence and Proposed Evaluation}
 \label{chap:evaluation}
 \section{Measured Findings Are Configuration-Specific}
 Invocation campaigns below measure discovery, selection, and execution under their recorded configurations; they do not test a multi-role collaboration plan. The earlier DI diagnostic is separate application evidence, not proof that the initial framework supported role-aware collaboration.
@@ -270,9 +272,9 @@ Each campaign must preserve its source/dependency/model identity, configurations
 
 \input{\proposalroot/en/chapters/evaluation-methods}
 
-\chapter{Research Plan, Risks, and Decision Gates}
+\chapter{Research Plan, Feasibility, and Risks}
 \label{chap:timeline}
-\section{Scope Before More Features}
+\section{Core Research Scope and Feasibility}
 The immediate priority is a frozen, runnable baseline for the final claims, not completion of every development feature. Select one UAV collection--processing graph and one supported DI partition first. Keep pipeline/tensor/hybrid generality, LLM streaming, and sophisticated recovery only where the implementation and evidence can support them. A negative performance result is an acceptable research finding when its conditions and costs are explained.
 
 \begin{table}[htbp]
@@ -280,13 +282,13 @@ The immediate priority is a frozen, runnable baseline for the final claims, not 
 \caption{Revised internal targets; defense is conditional on evidence and committee approval.}
 \begin{tabularx}{\textwidth}{p{.22\textwidth}X}
 \toprule
-Period & Deliverable / decision gate\\\midrule
+Period & Research milestone / decision\\\midrule
 September 2026 & Agree on three RQs and bounded claims; freeze supported application graphs and implementation/evidence baseline; resolve correctness blockers\\\midrule
 October 2026 & Execute registered correctness and matched comparison cases; reduce optional scope if an end-to-end gate remains open\\\midrule
 November 2026 & Freeze accepted results and provenance; write RQ answers, costs, and limitations; keep missing results visibly unverified\\\midrule
-December 2026 & Deliver an integrated complete draft to the advisor; no new optional feature branch in the research argument\\\midrule
+December 2026 & Deliver an integrated dissertation draft to the advisor; prioritize analysis and revision over optional features\\\midrule
 January 2027 & Advisor/committee review, revisions, defense readiness decision, and confirmation of current university submission/notice requirements\\\midrule
-February 2027 & Target defense only after required reviews and evidence closure; allow time for substantive corrections\\\midrule
+February 2027 & Target final dissertation defense after required reviews and evidence closure; allow time for substantive corrections\\\midrule
 Spring 2027 & Complete approved corrections and final submission by the applicable Graduate School deadlines; confirm exact dates separately\\\bottomrule
 \end{tabularx}
 \end{table}
@@ -296,6 +298,6 @@ The February 2027 defense target depends on evidence and committee approval. CS 
 \section{Limits That Must Remain Visible}
 ABE adds authority, computation, and rekeying costs; disconnected revocation has propagation limits. Candidate ACKs do not prove future capacity or honest reporting. Cache availability does not guarantee task completion. Tests confined to one process do not establish distributed failure behavior. UAV safety and perception accuracy need evidence beyond service-message delivery. Findings from selected hardware and models must be interpreted within those configurations.
 
-\chapter{Conclusion}
+\chapter{Expected Outcomes and Proposal Summary}
 \label{chap:conclusion}
-The research builds on NDNSF's initial ability to discover multiple candidates and select one Provider for an invocation. It evaluates that discovery/authorization foundation and investigates an extension for complementary Provider roles and named dependencies. The intended contribution is an evaluated service protocol and design rationale, not a new encryption primitive or the first use of named computation. RQ1 compares ABE-backed authorization with DNMP-inspired role rules paired with content encryption, including their management and withdrawal costs. RQ2 asks how runtime assignments become local rules for accepting named dependencies. RQ3 examines benefits and costs for invocation and collaboration separately. Existing campaigns establish limited invocation findings; the collaboration and cross-application claims still require their declared end-to-end evidence. This separation provides a concrete route from the present proposal to a defensible dissertation.
+The research builds on NDNSF's initial ability to discover multiple candidates and select one Provider for an invocation. It evaluates that discovery/authorization foundation and investigates an extension for complementary Provider roles and named dependencies. The intended contribution is an evaluated service protocol and design rationale, not a new encryption primitive or the first use of named computation. RQ1 compares ABE-backed authorization with DNMP-inspired role rules paired with content encryption, including their management and withdrawal costs. RQ2 asks how runtime assignments become local rules for accepting named dependencies. RQ3 examines benefits and costs for invocation and collaboration separately. Existing campaigns establish limited invocation findings; the collaboration and cross-application claims still require their declared end-to-end evidence. The proposal therefore asks the committee to assess the research scope, comparison designs, validation criteria, and feasibility of the completion plan. The dissertation will report supported answers and limitations, including conditions in which the proposed mechanisms offer no advantage.

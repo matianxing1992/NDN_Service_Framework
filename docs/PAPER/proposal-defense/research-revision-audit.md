@@ -1,5 +1,9 @@
 # Research-first Proposal Revision and Evidence Audit
 
+## 2026-09-14 Dissertation Proposal Positioning
+
+最新结构与口径审查见[proposal review](proposal-structure-review-20260914.md)，当前产物检查见[validation](proposal-structure-validation-20260914.json)。保留逐句与导师批注修订内容，进一步区分已有基础、拟议方法、初步证据和预期成果；以下检查记录按其原checkpoint解释。
+
 ## 2026-09-14 Advisor Comment Reconciliation
 
 最新逐句修订及19条PDF／26条PPTX批注的处置见 [advisor review](advisor-review-20260914.md)，检查见 [current validation](advisor-review-validation-20260914.json)。英文50页、中文38页、slides49页；保留全部原版重要范围和既有实验数字。以下各日期记录保持历史含义；文稿已修订不等于研究证据或导师验收已完成。
