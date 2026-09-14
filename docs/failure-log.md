@@ -4791,6 +4791,21 @@ which differs from the Spec186 handoff seal
   authority for the selected build inputs.
 - **Lesson**: every retry must rebind the lock to the actual checkout before
   rendering; do not force a stale revision through the handoff validator.
+## 2026-09-14 — Spec186 r31 local unsquashfs was older than the template image
+
+- **Area**: T006 bootstrap SIF portability.
+- **Symptom**: the remote v23 SIF passes `apptainer exec` and remote
+  `unsquashfs` 4.4-git.1 extraction, but local Apptainer 1.5.3 with Ubuntu's
+  `unsquashfs` 4.4 (2019) fails zstd decompression on different files such as
+  `usr/lib/gcc/x86_64-linux-gnu/9/lto1`.
+- **Root cause**: the local squashfs-tools build is older than the toolchain
+  used on Tiger and cannot reliably unpack the historical zstd filesystem;
+  the SIF bytes themselves match the verified remote SHA.
+- **Correction**: build a newer squashfs-tools `unsquashfs` from upstream on
+  the local host, install it ahead of `/usr/bin`, and rerun the same v23-based
+  SIF build without changing source or dependency identities.
+- **Lesson**: a matching Apptainer version still needs a compatible
+  squashfs-tools helper; validate the helper version before blaming SIF data.
 ## 2026-09-14 — Spec186 Tiger profile retained login-node Apptainer path
 
 - **Area**: T009/T010 Tiger runtime-version boundary.
