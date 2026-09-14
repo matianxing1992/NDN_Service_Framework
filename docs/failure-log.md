@@ -4614,3 +4614,19 @@ which differs from the Spec186 handoff seal
 - **Lesson**: a multi-stage SIF definition needs a closure assertion for every
   stage that imports inherited Python extensions; a passing builder probe does
   not prove the final image contains its wheel-private DSOs.
+
+## 2026-09-14 — Spec186 r21 handoff selector saw an ignored NAC-ABE certificate
+
+- **Area**: T006 source-sealed handoff preparation.
+- **Symptom**: the handoff preparer stopped before writing a bundle with
+  `HANDOFF_SOURCE_UNTRACKED:examples/example-trust-anchor.cert` even though
+  the pinned NAC-ABE checkout was clean.
+- **Root cause**: NAC-ABE's ignored `*.cert` example artifact existed in the
+  selected `examples` tree. The selector walked filesystem files, while the
+  handoff contract requires every archived source path to be Git-tracked.
+- **Correction**: filter both workspace and dependency selectors against
+  `git ls-files` before archive creation; the ignored certificate is excluded
+  without changing the pinned checkout.
+- **Lesson**: a clean Git status does not mean a recursive source walk contains
+  only source-controlled files; source sealing must enforce tracked membership
+  at selection time.

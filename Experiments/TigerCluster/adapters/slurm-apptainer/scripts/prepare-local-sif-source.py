@@ -96,6 +96,9 @@ def digest(path: Path) -> str:
 
 def selected_files(workspace: Path) -> list[Path]:
     selected: set[Path] = set()
+    tracked = set(subprocess.check_output(
+        ["git", "-C", str(workspace), "ls-files", "-z"],
+        text=False).split(b"\0"))
     for relative in FILES:
         source = workspace / relative
         if not source.exists():
@@ -105,13 +108,16 @@ def selected_files(workspace: Path) -> list[Path]:
             if candidate.is_symlink() or not candidate.is_file():
                 continue
             rel = candidate.relative_to(workspace)
+            if rel.as_posix().encode() not in tracked:
+                continue
             if any(part in EXCLUDED_DIRS or part.endswith(".egg-info") for part in rel.parts):
                 continue
             if candidate.suffix in EXCLUDED_SUFFIXES:
                 continue
             selected.add(rel)
     for candidate in (workspace / "examples").glob("DI_Native*"):
-        if candidate.is_file() and candidate.suffix not in EXCLUDED_SUFFIXES:
+        if (candidate.is_file() and candidate.relative_to(workspace).as_posix().encode() in tracked
+                and candidate.suffix not in EXCLUDED_SUFFIXES):
             selected.add(candidate.relative_to(workspace))
     # Waf loads every bld.recurse() file while constructing the target graph,
     # even when --targets selects only a subset. Seal that graph recursively so
@@ -150,6 +156,9 @@ def selected_files(workspace: Path) -> list[Path]:
 
 def selected_dependency_files(workspace: Path, entries: tuple[str, ...]) -> list[Path]:
     selected: set[Path] = set()
+    tracked = set(subprocess.check_output(
+        ["git", "-C", str(workspace), "ls-files", "-z"],
+        text=False).split(b"\0"))
     for relative in entries:
         source = workspace / relative
         if not source.exists():
@@ -159,6 +168,8 @@ def selected_dependency_files(workspace: Path, entries: tuple[str, ...]) -> list
             if candidate.is_symlink() or not candidate.is_file():
                 continue
             rel = candidate.relative_to(workspace)
+            if rel.as_posix().encode() not in tracked:
+                continue
             if any(part in EXCLUDED_DIRS or part.endswith(".egg-info")
                    for part in rel.parts):
                 continue
