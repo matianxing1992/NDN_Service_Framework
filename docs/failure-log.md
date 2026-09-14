@@ -4839,3 +4839,23 @@ which differs from the Spec186 handoff seal
   before rendering a new definition.
 - **Lesson**: every retry must verify the complete base SIF digest immediately
   before extraction; matching size or an earlier receipt is insufficient.
+
+## 2026-09-14 — Spec186 local zstd helper rejects a valid v23 file block
+
+- **Area**: T006 SIF materialization.
+- **Symptom**: after replacing the drifted bootstrap with the exact remote SHA,
+  local Apptainer 1.5.3 still stopped at
+  `opt/venv/lib/python3.10/site-packages/triton/_C/libtriton.so` with zstd
+  error code 20. Tiger's own `unsquashfs 4.4-git.1` extracts that file and the
+  same full SIF SHA is verified on both hosts.
+- **Root cause**: the local and Tiger extraction environments do not produce
+  the same result for this historical zstd block; changing helper versions or
+  copying the helper alone did not close the difference. The local path is not
+  a trustworthy materialization boundary for this base image.
+- **Correction**: stop local SIF retries and move the complete 1.5.3 build to
+  the Tiger compute environment, where the sealed base was produced and its
+  SquashFS extraction already succeeds. Keep the base digest and source seal
+  unchanged.
+- **Lesson**: a successful small-file probe is insufficient; validate the
+  complete bootstrap extraction in the same 1.5.3 environment that will run
+  the candidate, and record the failing path before switching hosts.
