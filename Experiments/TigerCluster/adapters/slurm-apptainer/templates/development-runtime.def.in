@@ -31,8 +31,8 @@ Stage: builder
     rm -rf /src/ndnsf /src/ndn-svs /src/nac-abe /src/ndn-sd /tmp/nac-abe-build /tmp/ndnsf-build-python /tmp/ndnsf-pc
     rm -rf /opt/ndnsf-stage /opt/ndnsf-candidate /opt/ndnsf-di/replay
     rm -rf /opt/ndnsf-di/current/include/nac-abe /opt/ndnsf-di/current/include/ndn-svs /opt/ndnsf-di/current/include/ndn-service-framework
-    rm -f /opt/ndnsf-di/current/lib/libnac-abe.so* /opt/ndnsf-di/current/lib/libndn-svs.so* /opt/ndnsf-di/current/lib/libndn-service-framework.so*
-    rm -f /opt/ndnsf-di/current/lib/pkgconfig/libnac-abe.pc /opt/ndnsf-di/current/lib/pkgconfig/libndn-svs.pc /opt/ndnsf-di/current/lib/pkgconfig/libndn-service-framework.pc
+    rm -f /opt/ndnsf-di/current/lib/libnac-abe.so* /opt/ndnsf-di/current/lib/libndn-svs.so* /opt/ndnsf-di/current/lib/libndn-service-framework.so* /opt/ndnsf-di/current/lib/libndnsf-distributed-inference.so*
+    rm -f /opt/ndnsf-di/current/lib/pkgconfig/libnac-abe.pc /opt/ndnsf-di/current/lib/pkgconfig/libndn-svs.pc /opt/ndnsf-di/current/lib/pkgconfig/libndn-service-framework.pc /opt/ndnsf-di/current/lib/pkgconfig/ndnsf-distributed-inference.pc
     rm -rf /opt/ndnsf-di/current/include/ndnsd /usr/local/include/ndnsd
     rm -f /opt/ndnsf-di/current/lib/libndnsd.so* /usr/local/lib/libndnsd.so*
     rm -f /opt/ndnsf-di/current/lib/pkgconfig/ndnsd.pc /usr/local/lib/pkgconfig/ndnsd.pc
@@ -200,10 +200,12 @@ PY
     # GCC 9 occasionally ICEs while two large NDNSF translation units are
     # compiled under Apptainer; serialize this largest target set for a
     # deterministic low-memory build.  Dependency builds above remain -j2.
-    ./waf -j1 -v --targets=ndn-service-framework,libndn-service-framework.pc,App_ServiceController,di-native-provider,di-native-fault-provider
+    ./waf -j1 -v --targets=ndn-service-framework,ndnsf-distributed-inference,ndnsf-distributed-inference.pc,libndn-service-framework.pc,App_ServiceController,di-native-provider,di-native-fault-provider
 
     install -m 0755 build/libndn-service-framework.so /opt/ndnsf-stage/lib/libndn-service-framework.so.0.1.0
     ln -s libndn-service-framework.so.0.1.0 /opt/ndnsf-stage/lib/libndn-service-framework.so
+    install -m 0755 build/libndnsf-distributed-inference.so /opt/ndnsf-stage/lib/libndnsf-distributed-inference.so
+    install -m 0644 build/ndnsf-distributed-inference.pc /opt/ndnsf-stage/lib/pkgconfig/ndnsf-distributed-inference.pc
     install -m 0644 build/libndn-service-framework.pc /opt/ndnsf-stage/lib/pkgconfig/libndn-service-framework.pc
     install -m 0755 build/examples/App_ServiceController /opt/ndnsf-stage/bin/App_ServiceController
     install -m 0755 build/examples/di-native-provider /opt/ndnsf-stage/bin/di-native-provider
@@ -212,6 +214,8 @@ PY
     rm -f /opt/ndnsf-di/current/lib/libndn-service-framework.so*
     cp -a /opt/ndnsf-stage/lib/libndn-service-framework.so.0.1.0 /opt/ndnsf-di/current/lib/
     ln -s libndn-service-framework.so.0.1.0 /opt/ndnsf-di/current/lib/libndn-service-framework.so
+    cp -a /opt/ndnsf-stage/lib/libndnsf-distributed-inference.so /opt/ndnsf-di/current/lib/
+    install -m 0644 build/ndnsf-distributed-inference.pc /opt/ndnsf-di/current/lib/pkgconfig/ndnsf-distributed-inference.pc
     install -m 0644 build/libndn-service-framework.pc /opt/ndnsf-di/current/lib/pkgconfig/libndn-service-framework.pc
     /usr/bin/python3 - <<'PY'
 import shutil
@@ -311,7 +315,8 @@ artifacts = [('provider', base / 'bin/di-native-provider', runtime / 'bin/di-nat
              ('controller', base / 'bin/App_ServiceController', runtime / 'bin/App_ServiceController')]
 for name, file in [('framework', 'libndn-service-framework.so.0.1.0'),
                    ('ndn-svs', 'libndn-svs.so.0.1.0'), ('nac-abe', 'libnac-abe.so'),
-                   ('ndn-sd', 'libndnsd.so.0.1.0')]:
+                   ('ndn-sd', 'libndnsd.so.0.1.0'),
+                   ('ndnsf-di', 'libndnsf-distributed-inference.so')]:
     artifacts.append((name, base / 'lib' / file, runtime / 'lib' / file))
 for name, package in [('extension', 'ndnsf'), ('repoExtension', 'py_repoclient')]:
     artifacts.append((name, extensions[package], Path(sysconfig.get_paths()['purelib']) / package / extensions[package].name))
@@ -431,6 +436,8 @@ Stage: final
     /opt/ndnsf-stage/bin/di-native-fault-provider /opt/ndnsf-candidate/bin/di-native-fault-provider
     /opt/ndnsf-stage/bin/App_ServiceController /opt/ndnsf-candidate/bin/App_ServiceController
     /opt/ndnsf-stage/lib/libndn-service-framework.so.0.1.0 /opt/ndnsf-candidate/lib/libndn-service-framework.so.0.1.0
+    /opt/ndnsf-stage/lib/libndnsf-distributed-inference.so /opt/ndnsf-candidate/lib/libndnsf-distributed-inference.so
+    /opt/ndnsf-stage/lib/pkgconfig/ndnsf-distributed-inference.pc /opt/ndnsf-candidate/lib/pkgconfig/ndnsf-distributed-inference.pc
     /opt/ndnsf-stage/lib/libndn-svs.so.0.1.0 /opt/ndnsf-candidate/lib/libndn-svs.so.0.1.0
     /opt/ndnsf-stage/lib/libnac-abe.so /opt/ndnsf-candidate/lib/libnac-abe.so
     /opt/ndnsf-stage/lib/libndnsd.so.0.1.0 /opt/ndnsf-candidate/lib/libndnsd.so.0.1.0
@@ -471,6 +478,8 @@ PY
     rm -f /opt/ndnsf-di/current/bin/di-native-fault-provider
     rm -f /opt/ndnsf-di/current/bin/App_ServiceController
     rm -f /opt/ndnsf-di/current/lib/libndn-service-framework.so*
+    rm -f /opt/ndnsf-di/current/lib/libndnsf-distributed-inference.so*
+    rm -f /opt/ndnsf-di/current/lib/pkgconfig/ndnsf-distributed-inference.pc
     rm -f /opt/ndnsf-di/current/lib/libndn-svs.so*
     rm -f /opt/ndnsf-di/current/lib/libnac-abe.so*
     rm -f /opt/ndnsf-di/current/lib/libndnsd.so* /usr/local/lib/libndnsd.so*
@@ -489,6 +498,8 @@ PY
     install -m 0755 /opt/ndnsf-candidate/bin/App_ServiceController /opt/ndnsf-di/current/bin/App_ServiceController
     install -m 0755 /opt/ndnsf-candidate/lib/libndn-service-framework.so.0.1.0 /opt/ndnsf-di/current/lib/libndn-service-framework.so.0.1.0
     ln -s libndn-service-framework.so.0.1.0 /opt/ndnsf-di/current/lib/libndn-service-framework.so
+    install -m 0755 /opt/ndnsf-candidate/lib/libndnsf-distributed-inference.so /opt/ndnsf-di/current/lib/libndnsf-distributed-inference.so
+    install -m 0644 /opt/ndnsf-candidate/lib/pkgconfig/ndnsf-distributed-inference.pc /opt/ndnsf-di/current/lib/pkgconfig/ndnsf-distributed-inference.pc
     install -m 0755 /opt/ndnsf-candidate/lib/libndn-svs.so.0.1.0 /opt/ndnsf-di/current/lib/libndn-svs.so.0.1.0
     ln -s libndn-svs.so.0.1.0 /opt/ndnsf-di/current/lib/libndn-svs.so
     install -m 0755 /opt/ndnsf-candidate/lib/libnac-abe.so /opt/ndnsf-di/current/lib/libnac-abe.so
@@ -520,7 +531,7 @@ PY
     repo_extension_count=$(find /opt/venv/lib/python3.10/site-packages/py_repoclient -maxdepth 1 -name '_py_repoclient*.so' -type f | wc -l)
     test "$repo_extension_count" -eq 1
     repo_extension_path=$(find /opt/venv/lib/python3.10/site-packages/py_repoclient -maxdepth 1 -name '_py_repoclient*.so' -type f)
-    sha256sum /opt/ndnsf-di/current/lib/libndnsd.so.0.1.0 /opt/ndnsf-di/current/lib/libnac-abe.so "$repo_extension_path" /opt/ndnsf-di/current/bin/di-native-provider /opt/ndnsf-di/current/bin/di-native-fault-provider /opt/ndnsf-di/current/bin/App_ServiceController /opt/ndnsf-di/current/lib/libndn-service-framework.so.0.1.0 /opt/ndnsf-di/current/lib/libndn-svs.so.0.1.0 "$extension_path" > /opt/ndnsf-di/current/manifest/final-native-sha256.txt
+    sha256sum /opt/ndnsf-di/current/lib/libndnsd.so.0.1.0 /opt/ndnsf-di/current/lib/libnac-abe.so /opt/ndnsf-di/current/lib/libndnsf-distributed-inference.so "$repo_extension_path" /opt/ndnsf-di/current/bin/di-native-provider /opt/ndnsf-di/current/bin/di-native-fault-provider /opt/ndnsf-di/current/bin/App_ServiceController /opt/ndnsf-di/current/lib/libndn-service-framework.so.0.1.0 /opt/ndnsf-di/current/lib/libndn-svs.so.0.1.0 "$extension_path" > /opt/ndnsf-di/current/manifest/final-native-sha256.txt
 
     /opt/venv/bin/python /opt/ndnsf-di/current/manifest/verify-native.py final
 

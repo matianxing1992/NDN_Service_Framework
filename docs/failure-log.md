@@ -4477,3 +4477,21 @@ which differs from the Spec186 handoff seal
 - **Lesson**: a successful native compile is not a complete SIF gate; run the
   final Python packaging/import checks inside the exact base image and retain
   the first packaging failure.
+
+## 2026-09-14 — Spec186 r8 SIF omitted the installable DI shared library
+
+- **Area**: T006 exact base-plus-application SIF build, native Python binding closure.
+- **Symptom**: the 50m32s native build reached `[213/213]`, then `pythonWrapper`
+  metadata generation rejected `/opt/ndnsf-di/current/lib` because it did not
+  contain `libndnsf-distributed-inference`.
+- **Root cause**: the runtime definition built the DI sources into the native
+  provider executable but did not request or stage the installable
+  `ndnsf-distributed-inference` shared-library target required by
+  `pythonWrapper/setup.py`.
+- **Correction**: add the DI shared library and pkg-config target to the locked
+  Waf target set, stage/copy it into both builder and final runtime prefixes,
+  include it in the native artifact mapping and final hash manifest, then retry
+  from the same source-sealed base.
+- **Lesson**: compiling a consumer with duplicated implementation objects does
+  not satisfy the shared ABI boundary used by the Python extension; every
+  declared link boundary must be built, staged, and verified as an artifact.
