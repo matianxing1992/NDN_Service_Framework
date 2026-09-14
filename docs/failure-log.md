@@ -4646,3 +4646,18 @@ which differs from the Spec186 handoff seal
 - **Lesson**: every file consumed by a rendered definition must be declared by
   the source lock; a successful handoff manifest is insufficient if its input
   set is smaller than the recipe's runtime contract.
+
+## 2026-09-14 — Spec186 r23 tracked filter dropped a symlinked workload
+
+- **Area**: T006 source-sealed handoff preparation.
+- **Symptom**: after filtering ignored files, r23 failed the SIF preflight at
+  `SPEC175_WORKLOAD_NOT_SEALED:Experiments/TigerCluster/jobs/spec175/workload.json`.
+- **Root cause**: the maintained `packaging/ndnsf-di-container/jobs` path is a
+  compatibility symlink to `Experiments/TigerCluster/jobs`. The new tracked
+  filter checked the symlink spelling against Git's canonical path list and
+  discarded the workload that the build script passes to the preflight.
+- **Correction**: resolve each selected path before tracked-membership and
+  exclusion checks, then archive its canonical repository-relative spelling.
+- **Lesson**: compatibility symlinks must be normalized before source-seal
+  membership checks; otherwise a safety filter can remove a required runtime
+  input while reporting a clean checkout.

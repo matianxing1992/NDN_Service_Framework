@@ -108,17 +108,19 @@ def selected_files(workspace: Path) -> list[Path]:
             if candidate.is_symlink() or not candidate.is_file():
                 continue
             rel = candidate.relative_to(workspace)
-            if rel.as_posix().encode() not in tracked:
+            canonical = (workspace / rel).resolve().relative_to(workspace)
+            if canonical.as_posix().encode() not in tracked:
                 continue
-            if any(part in EXCLUDED_DIRS or part.endswith(".egg-info") for part in rel.parts):
+            if any(part in EXCLUDED_DIRS or part.endswith(".egg-info") for part in canonical.parts):
                 continue
-            if candidate.suffix in EXCLUDED_SUFFIXES:
+            if canonical.suffix in EXCLUDED_SUFFIXES:
                 continue
-            selected.add(rel)
+            selected.add(canonical)
     for candidate in (workspace / "examples").glob("DI_Native*"):
-        if (candidate.is_file() and candidate.relative_to(workspace).as_posix().encode() in tracked
+        canonical = candidate.resolve().relative_to(workspace)
+        if (candidate.is_file() and canonical.as_posix().encode() in tracked
                 and candidate.suffix not in EXCLUDED_SUFFIXES):
-            selected.add(candidate.relative_to(workspace))
+            selected.add(canonical)
     # Waf loads every bld.recurse() file while constructing the target graph,
     # even when --targets selects only a subset. Seal that graph recursively so
     # a missing child wscript cannot survive until the container build.
@@ -168,14 +170,15 @@ def selected_dependency_files(workspace: Path, entries: tuple[str, ...]) -> list
             if candidate.is_symlink() or not candidate.is_file():
                 continue
             rel = candidate.relative_to(workspace)
-            if rel.as_posix().encode() not in tracked:
+            canonical = (workspace / rel).resolve().relative_to(workspace)
+            if canonical.as_posix().encode() not in tracked:
                 continue
             if any(part in EXCLUDED_DIRS or part.endswith(".egg-info")
-                   for part in rel.parts):
+                   for part in canonical.parts):
                 continue
-            if candidate.suffix in EXCLUDED_SUFFIXES:
+            if canonical.suffix in EXCLUDED_SUFFIXES:
                 continue
-            selected.add(rel)
+            selected.add(canonical)
     return sorted(selected, key=lambda value: value.as_posix())
 
 
