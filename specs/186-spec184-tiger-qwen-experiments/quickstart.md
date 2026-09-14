@@ -87,3 +87,21 @@ application bundle and case bundle.
 The submitter MUST verify the immutable candidate and effective profile before transport.
 The collector MUST require fresh protocol, numerical, backend/GPU, process-exit and
 cleanup evidence before recording PASS.
+
+## 5. SIF pre-build gate
+
+Before any full native build, render the locked definition and run the cheap
+cross-check. It verifies the source archive and Waf template, NumPy's private
+wheel libraries and RPATH destination, and imports NumPy from the exact base SIF
+inside a temporary writable overlay:
+
+```bash
+python3 Experiments/TigerCluster/adapters/slurm-apptainer/scripts/preflight-development-sif.py \
+  --definition /absolute/path/to/rendered-runtime.def \
+  --apptainer /usr/local/bin/apptainer \
+  --base-sif /absolute/path/to/base.sif
+```
+
+`SPEC186_PREFLIGHT_PASS` is only a build-input gate. If it fails, preserve the
+diagnostic and fix the definition, sealed input, or base composition before
+compiling. Do not treat it as MiniNDN or Tiger evidence.

@@ -10,6 +10,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[3]
 TEMPLATE = ROOT / "Experiments/TigerCluster/adapters/slurm-apptainer/templates/development-runtime.def.in"
+PREFLIGHT = ROOT / "Experiments/TigerCluster/adapters/slurm-apptainer/scripts/preflight-development-sif.py"
 spec = importlib.util.spec_from_file_location(
     "portable_template_boundary", ROOT / "packaging/ndnsf-di-container/lib/spec170_sif_build_boundary.py")
 boundary = importlib.util.module_from_spec(spec)
@@ -60,3 +61,14 @@ def test_boundary_rejects_a_host_native_payload_counterfactual(tmp_path):
     path.write_text(path.read_text().replace("%files\n", "%files\n    /unavailable/host.so /build-input/host.so\n", 1))
     with pytest.raises(boundary.Spec170BuildBoundaryError, match="WRONG_BUILD_BOUNDARY_HOST_BINARY_INPUT"):
         boundary.validate_definition(path)
+
+
+def test_spec186_preflight_is_wired_before_expensive_build():
+    source = PREFLIGHT.read_text(encoding="utf-8")
+    ast.parse(source, filename=str(PREFLIGHT))
+    assert "WORKSPACE_TARGET_INPUT_MISSING" in source
+    assert "NUMPY_PRIVATE_LIB_SET" in source
+    assert "NUMPY_BASE_IMPORT_PASS" in source
+    build_script = (ROOT / "Experiments/TigerCluster/adapters/slurm-apptainer/scripts/build-local-sif.sh").read_text()
+    assert "preflight-development-sif.py" in build_script
+    assert build_script.index("preflight_json") < build_script.index('echo "LOCAL_SIF_BUILD_START')

@@ -45,7 +45,7 @@ T001–T005、T006.a/b 和 T013 提供可审计的前置或离线收口；T006.c
 
 **Storage**: Git 只存规范、脚本、profile、collector 和小型 fixtures；模型、tokenizer、SIF、private keys 与大日志存于声明的本地或 project storage；运行证据位于 `Experiments/TigerCluster/results/<run-id>` 和 Spec186 evidence。
 
-**Testing**: focused unit/mutation tests → design-code convergence audit → complete unit/integration → MiniNDN → exact-SIF local → Tiger single-node → Tiger two-node → reuse。
+**Testing**: focused unit/mutation tests → design-code convergence audit → cheap source/definition/base-SIF preflight → complete unit/integration → MiniNDN → exact-SIF local → Tiger single-node → Tiger two-node → reuse。
 
 **Target Platform**: 本地 Linux CPU/MiniNDN；TigerCluster Linux compute nodes、Slurm 和 Apptainer 1.5.3。实验主机只保留 `/usr/local/bin/apptainer` 1.5.3；Tiger 登录节点的 1.3.4 仅是元数据入口，不参与 SIF 构建/执行，也不是本机回退版本。物理 GPU、节点和 account 仍记录在 allocation receipt。
 
@@ -129,12 +129,13 @@ source seal
 1. **G0 / T001** — exact baseline、分支意图、host/model/resource inventory；无外部副作用。
 2. **G1 / T002–T004** — portability audit、candidate/profile closure 和 lifecycle/transport adapter；focused tests 可在此阶段执行。
 3. **G2 / T005** — design-code convergence `PASS`；否则停止。
-4. **G3 / T006** — 完整 build/unit/integration 和 runtime/ABI closure。
-5. **G4 / T007–T008** — fresh MiniNDN YOLO 和 Qwen3-0.6B local CPU；分别标记 `LOCAL_CPU_PASS`、`SMOKE_ONLY` 或 `WAITING_EXTERNAL_INPUT`。
-6. **G5 / T009** — exact base+app composition、single-node GPU YOLO。
-7. **G6 / T010** — first two-node normal YOLO 和 dependency-negative boundary；失败保留，负例必须先闭合。
-8. **G7 / T011** — conditional Tiger Qwen experiment；只有模型/backend、资源和 profile 完整时才运行。
-9. **G8 / T012–T013** — independent reuse、离线重算、handoff 和 Spec186 closure；不得掩盖未完成的 external Qwen row。
+4. **G3-pre / T006** — run `preflight-development-sif.py` against the rendered definition, sealed workspace/wheels and exact base SIF; a failure stops before native compilation and receives a failure-log entry.
+5. **G3 / T006** — 完整 build/unit/integration 和 runtime/ABI closure。
+6. **G4 / T007–T008** — fresh MiniNDN YOLO 和 Qwen3-0.6B local CPU；分别标记 `LOCAL_CPU_PASS`、`SMOKE_ONLY` 或 `WAITING_EXTERNAL_INPUT`。
+7. **G5 / T009** — exact base+app composition、single-node GPU YOLO。
+8. **G6 / T010** — first two-node normal YOLO 和 dependency-negative boundary；失败保留，负例必须先闭合。
+9. **G7 / T011** — conditional Tiger Qwen experiment；只有模型/backend、资源和 profile 完整时才运行。
+10. **G8 / T012–T013** — independent reuse、离线重算、handoff 和 Spec186 closure；不得掩盖未完成的 external Qwen row。
 
 ## Project Structure
 

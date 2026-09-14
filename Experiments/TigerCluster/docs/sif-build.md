@@ -14,6 +14,20 @@
 构建入口：`Experiments/TigerCluster/adapters/slurm-apptainer/scripts/build-local-sif.sh`。
 构建前准备源码seal并核对definition、依赖和工具链，沿用 [runtime package](../../../packaging/ndnsf-di-container/README.md) 的原生ABI与候选规则。
 
+在调用构建入口前，先运行同目录的
+`preflight-development-sif.py`。它用秒级检查交叉核对 rendered definition
+的输入文件、sealed `workspace.tar` 中显式 Waf target 的模板、NumPy
+wheel-private DSOs/RPATH，以及基础 SIF 中的 NumPy 导入；`build-local-sif.sh`
+也会自动重复这个门。该门失败时禁止开始完整原生编译，应根据
+`docs/failure-log.md` 的对应条目修复输入后再建立新的候选。
+
+```bash
+python3 Experiments/TigerCluster/adapters/slurm-apptainer/scripts/preflight-development-sif.py \
+  --definition /absolute/path/to/rendered-runtime.def \
+  --apptainer /usr/local/bin/apptainer \
+  --base-sif /absolute/path/to/base.sif
+```
+
 当前三库源码固定、可迁移definition和接收机器步骤见 [source handoff](source-handoff.md)。
 共享操作skill在仓库根 [skills/](../../../skills/README.md)；实际构建仍使用上述唯一入口。
 

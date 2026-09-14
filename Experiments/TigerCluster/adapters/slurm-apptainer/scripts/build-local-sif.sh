@@ -73,6 +73,7 @@ repository_root=$(CDPATH= cd -- "$script_dir/../../../../.." && pwd)
 boundary_validator="$script_dir/../../../lib/spec170_sif_build_boundary.py"
 host_gate_validator="$script_dir/../../../lib/spec175_host_gate.py"
 source_validator="$script_dir/validate-local-sif-source.py"
+preflight_validator="$script_dir/preflight-development-sif.py"
 spec175_preflight="$script_dir/../../../bin/ndnsf-di-spec175-preflight"
 spec175_workload="$script_dir/../../../jobs/spec175/workload.json"
 [ -f "$boundary_validator" ] || {
@@ -266,6 +267,23 @@ fi
 if ! boundary_json=$(python3 "$boundary_validator" --definition "$definition"); then
   exit 4
 fi
+[ -f "$preflight_validator" ] || {
+  echo SPEC186_PREFLIGHT_VALIDATOR_MISSING >&2
+  exit 4
+}
+
+# Cross-check the sealed inputs before starting the expensive container build.
+# This catches missing Waf target inputs and base-venv wheel/RPATH defects in
+# seconds; the final image still runs the complete native closure audit below.
+preflight_args=(--definition "$definition")
+if [ -n "$base_sif" ]; then
+  preflight_args+=(--apptainer "$apptainer_bin" --base-sif "$base_sif")
+fi
+if ! preflight_json=$(python3 "$preflight_validator" "${preflight_args[@]}" 2>&1); then
+  printf '%s\n' "$preflight_json" >&2
+  exit 4
+fi
+echo "LOCAL_SIF_PREFLIGHT $preflight_json"
 
 mkdir -p "$(dirname "$sif")" "$(dirname "$record")"
 partial="$sif.partial"
