@@ -9,7 +9,7 @@ the current `spec186_candidate.py` digest
 collector fields. Each pre-dispatch invocation remained side-effect free.
 That receipt is historical: the static launcher-boundary repair changed the
 collector digest to
-`7788f23b3edf3d814f2f26edfa18494e561aa1b688136e8204cae494980988f4`, which is
+`4db0d68ed22f235bdba8c56ea67e2c048e46e9fc15f56e08f0cb2f973994527d`, which is
 now bound by all eight profiles.
 
 | Profile | Candidate digest | First asset/runtime boundary | SSH/rsync/staging/sbatch |
@@ -26,3 +26,30 @@ now bound by all eight profiles.
 These are current boundary receipts, not runtime results. The previous
 `pre-dispatch-boundary-20260912.md` remains immutable and records the earlier
 stale collector hash. No candidate was submitted.
+
+The executable-contract repair changed the profile-bound collector to
+`sha256:4db0d68ed22f235bdba8c56ea67e2c048e46e9fc15f56e08f0cb2f973994527d` and
+adds role/backend/GPU, endpoint, placeholder-resource and Qwen harness checks.
+A subsequent role-fallback and scheduler cwd/HOME repair changed the current
+profile-bound collector to
+`sha256:847b5261065419bf6467136f9d9739898409bf2cdd05d9a6214644bc40582490`;
+new receipts must be regenerated before any runtime result is considered.
+
+## Current post-19 offline receipt
+
+After the role-fallback, scheduler run-isolation and nested-manifest schema
+repairs, all eight manifests were rebuilt against collector
+`847b5261065419bf6467136f9d9739898409bf2cdd05d9a6214644bc40582490`. Each gate
+returned `ok=false` for declared missing external inputs or the known harness
+contract drift, with `ssh=0`, `rsync=0`, `staging=0`, and `sbatch=0`:
+
+| Profile | Candidate digest | Failure count | First boundary |
+| --- | --- | ---: | --- |
+| `spec184-qwen06b-minindn-cpu` | `051b6cc348036e2d33365c9686229015b66f2c00b8be729ec7a2a3d1917c3bd4` | 13 | missing Qwen model/stage/tokenizer/base SIF; GGUF/llama.cpp versus ONNX harness |
+| `spec184-qwen06b-tiger-experimental` | `fb103816927d146411dba89037e2ab293e46ade78ef22f4ea8731f5149924e87` | 19 | missing app/base/model tuple and native closure |
+| `spec184-yolo-minindn-negative` | `5c0b0e23fce2f8bf311bd4c3812bf430b186f3bd8bb8e0a0d2ea14aff538408b` | 4 | missing base SIF; canonical package/environment and role service map undeclared; model family drift |
+| `spec184-yolo-minindn-normal` | `de3201580a7b05234bd2507c34f311bdfff457a61d13a624de2a0f614e6aa354` | 4 | missing base SIF; canonical package/environment and role service map undeclared; model family drift |
+| `spec184-yolo-tiger-single-gpu` | `659e77af17a8b2cfef977746448239b8cf6e11b83f966857e5902729492adab2` | 13 | missing app/base/model; GPU UUID/signature placeholders |
+| `spec184-yolo-tiger-two-node-negative` | `dc9e5fb7426300d7c3d41060e00d2438fa3d9d2da2d787ff1b446fcf35ad86dc` | 13 | missing app/base/model; GPU UUID/signature placeholders |
+| `spec184-yolo-tiger-two-node-normal` | `70a9712d6355936776ee8891613b87c82a0c588c95c1af82b718481f6cf2a2c1` | 13 | missing app/base/model; GPU UUID/signature placeholders |
+| `spec184-yolo-tiger-two-node-reuse` | `9dbbf44acffacc7feee667838fa2a4d09d1b975f5d5eb6ca3c72459fb0d1f761` | 13 | missing app/base/model; GPU UUID/signature placeholders |

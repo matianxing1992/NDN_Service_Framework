@@ -229,7 +229,111 @@ The maintained YOLO runner still requires a YOLO26n canonical package and
 eleven environment inputs that are absent from the current YOLOv8n profiles.
 Pre-dispatch now reports this mismatch as
 `HARNESS_MODEL_FAMILY_MISMATCH`/`HARNESS_ENVIRONMENT_UNDECLARED` with zero
-remote side effects. Focused Spec186 tests pass (`18 passed`); the collector
-digest was refreshed to `7788f23b...988f4` in all eight profiles. This closes
+remote side effects. Focused Spec186 tests pass (`18 passed`); at that
+historical checkpoint, the intermediate launcher-bound collector digest was
+refreshed to `7788f23b...988f4` in all eight profiles. That checkpoint is
+superseded by the strict profile/terminal boundary repair below, which closes
 the invalid command construction, not the external-input, exact-SIF, CUDA or
 Tiger qualification gates.
+
+## Checkpoint 15 — 2026-09-13 static boundary repair
+
+The second static audit found that malformed nested candidate sections could
+escape the pre-dispatch failure receipt, the terminal collector accepted a
+marker-only `PASS`, and both local and Slurm paths could reuse stale run roots.
+The profile validator now rejects unknown nested fields, off-topology or
+duplicate role identities, fallback-enabled Tiger profiles, inconsistent GPU
+capacity, and mismatched bundle digests. The collector requires one shared
+`runId` plus candidate-bound protocol completion, numerical oracle, observed
+role/backend, process-exit and cleanup objects. The scheduler validates config,
+argv and environment before creating `evidence`, `state`, `security` and
+`home`, and local execution applies the same run-root reservation and removes
+host ABI/Python search-path leakage.
+
+The current collector digest is
+`4db0d68ed22f235bdba8c56ea67e2c048e46e9fc15f56e08f0cb2f973994527d`; all eight
+profiles were refreshed. Focused Spec186 tests pass (`40 passed`) and the
+complete TigerCluster suite passes (`102 passed`). This closes the static
+boundary repair only. The verdict remains `PASS (implementation); BLOCK
+(runtime qualification)` because the source-sealed base SIF, canonical YOLO
+inputs, Qwen3 tuple, MiniNDN runtime and Tiger execution receipts remain open.
+
+## Checkpoint 16 — 2026-09-13 executable-contract static repair
+
+The follow-up audit bound profile semantics that were still only syntactically
+validated. YOLO roles now require their declared service, backend and GPU
+policy;
+Qwen stages require ordered names, services and dependencies; endpoint hosts must
+be unique; and scheduler placeholders are rejected at pre-dispatch. The Qwen
+GGUF/llama.cpp profile is explicitly held because the maintained local entrypoint
+is ONNX/onnxruntime and requires undeclared canonical inputs. Slurm now consumes
+declared memory/GPU resources, run roots use private permissions, and arbitrary
+local command overrides cannot produce a qualification PASS.
+
+The collector digest is
+`4db0d68ed22f235bdba8c56ea67e2c048e46e9fc15f56e08f0cb2f973994527d`. Focused
+Spec186 regressions pass (`40 passed`); the implementation verdict remains
+`PASS`, while exact-SIF, model, MiniNDN, CUDA and Tiger runtime qualification
+remain `BLOCK`/`WAITING_EXTERNAL_INPUT`.
+
+## Checkpoint 17 — 2026-09-13 run isolation and fallback-policy repair
+
+The final static pass found two remaining boundary drifts. Profile roles now
+carry an explicit `allowCpuFallback` value that must match the runtime policy,
+with Tiger roles forced fail-closed. The Slurm payload now changes into the
+reserved run root before `execvpe` and scopes `HOME` to its private child
+directory, so relative evidence and NDN identity state cannot escape or be
+shared across runs.
+
+The current collector digest is
+`847b5261065419bf6467136f9d9739898409bf2cdd05d9a6214644bc40582490`; all eight
+profiles were refreshed. Focused Spec186 regressions pass (`41 passed`) and the
+complete TigerCluster suite passes (`103 passed`). The implementation verdict
+remains `PASS`; exact-SIF, model, MiniNDN, CUDA and Tiger runtime qualification
+remain `BLOCK`/`WAITING_EXTERNAL_INPUT`.
+
+## Checkpoint 18 — 2026-09-13 terminal GPU-role policy repair
+
+The terminal collector now enforces the declared YOLO graph shape when a
+receipt contains GPU evidence: exactly three CUDA model roles (BackboneNeck,
+DetectShard0 and DetectShard1) plus a CPU Merge role are required. This closes
+the remaining gap where a syntactically complete but all-CPU or misassigned
+terminal receipt could be accepted. The mutation is covered by the focused
+regression and leaves pre-dispatch side effects at zero.
+
+The current collector digest remains
+`847b5261065419bf6467136f9d9739898409bf2cdd05d9a6214644bc40582490`; all eight
+profiles bind it. Focused Spec186 regressions pass (`42 passed`) and the
+complete TigerCluster suite passes (`104 passed`). The implementation verdict
+remains `PASS`; exact-SIF, model, MiniNDN, CUDA and Tiger runtime qualification
+remain `BLOCK`/`WAITING_EXTERNAL_INPUT`.
+
+## Checkpoint 19 — 2026-09-13 nested candidate-manifest schema repair
+
+The candidate gate now validates every nested manifest section and asset shape,
+including the generated asset `label`, before checking bytes and candidate
+identity. A manifest with an unexpected nested field cannot preserve an old
+digest and slip through the gate; the rejection remains side-effect free. The
+new mutation regression also caught and closed two validator defects during
+implementation (`NameError` and the profile-versus-manifest asset-key mismatch).
+
+The current collector digest is
+`847b5261065419bf6467136f9d9739898409bf2cdd05d9a6214644bc40582490`; all eight
+profiles bind it. Focused Spec186 regressions pass (`43 passed`) and the
+complete TigerCluster suite passes (`105 passed`). The implementation verdict
+remains `PASS`; exact-SIF, model, MiniNDN, CUDA and Tiger runtime qualification
+remain `BLOCK`/`WAITING_EXTERNAL_INPUT`.
+
+## Checkpoint 20 — 2026-09-13 scheduler identity-environment repair
+
+The scheduler payload now value-binds the reserved run and candidate identity
+environment variables to the effective config before creating any run-owned
+directory. A direct payload invocation with a mismatched identity is rejected
+without side effects, while the renderer's matching values remain accepted.
+
+The collector digest remains
+`847b5261065419bf6467136f9d9739898409bf2cdd05d9a6214644bc40582490`; profile
+collector seals are unchanged. Focused Spec186 regressions pass (`44 passed`)
+and the complete TigerCluster suite passes (`106 passed`). The implementation
+verdict remains `PASS`; exact-SIF, model, MiniNDN, CUDA and Tiger runtime
+qualification remain `BLOCK`/`WAITING_EXTERNAL_INPUT`.

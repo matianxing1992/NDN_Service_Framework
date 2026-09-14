@@ -4282,3 +4282,107 @@ which differs from the Spec186 handoff seal
 - **Lesson**: a static argv string is not an executable contract. Validate the
   interpreter namespace, CLI case, bind application, environment propagation,
   and profile-to-runner model contract before allowing scheduler mutation.
+
+## 2026-09-13 — Spec186 terminal collector accepted marker-only PASS
+
+- **Area**: T004/T005 `runtime/spec186_candidate.py` terminal collection and
+  `jobs/spec184/run.sbatch` scheduler boundary.
+- **Symptom**: a receipt containing only `candidateDigest`, `status=PASS`,
+  `exitCode=0` and `cleanup.reaped=true` was promoted to `PASS`; malformed
+  scheduler argv produced a Python traceback, and an existing run root could
+  be reused. The latter two behaviors also allowed unstable or stale run
+  boundaries.
+- **Root cause**: terminal validation checked identity and process cleanup but
+  did not require protocol completion, numerical oracle, observed role/backend,
+  or process-exit evidence. The shell adapter parsed argv after creating the
+  run directory and used `exist_ok=True` for evidence/state paths.
+- **Correction**: require candidate-bound `runId`, protocol, numerical, role,
+  process and cleanup evidence; validate scheduler config/argv/environment
+  before creating an owned run root; reject root reuse and return stable error
+  codes; create state/security/home directories for both local and scheduler
+  paths; and sanitize local child environments against host ABI/Python path
+  leakage.
+- **Lesson**: a terminal marker and a reaped process are necessary but not
+  sufficient for qualification. Collector and scheduler boundaries must reject
+  incomplete evidence and stale run roots before any execution side effect.
+
+## 2026-09-13 — Spec186 profile fields could drift from executable contracts
+
+- **Area**: T003/T004/T005 profile validation and local/Tiger dispatch.
+- **Symptom**: role GPU assignments were accepted with the wrong backend or
+  service name, duplicate NFD endpoint hosts were accepted, Tiger profiles
+  could carry `REPLACE_ME` allocation/GPU values into a rendered candidate,
+  and the Qwen profile declared GGUF/llama.cpp while its maintained entrypoint
+  only accepts ONNX/onnxruntime inputs. A caller could also pass an arbitrary
+  executable to `local_run` and receive a qualification `PASS` on exit 0.
+- **Root cause**: validation covered field presence and top-level types but did
+  not bind role semantics to topology/model contracts, distinguish reusable
+  templates from scheduler-ready values, or distinguish diagnostic command
+  overrides from the declared launcher.
+- **Correction**: bind role service/backend/GPU policy and Qwen stage
+  dependencies, reject duplicate endpoint hosts, report allocation/GPU
+  placeholders before dispatch, detect Qwen harness format/input drift, add
+  Slurm memory/GPU resource flags, reserve run roots with mode 0700, and mark
+  command overrides `UNQUALIFIED` even when they exit successfully.
+- **Lesson**: a schema that parses is not an executable contract. Every value
+  that affects placement, model format, identity or qualification status must
+  be consumed or rejected before process or scheduler mutation.
+
+## 2026-09-13 — Spec186 scheduler child escaped its run-owned working directory
+
+- **Area**: T004/T005 `Experiments/TigerCluster/jobs/spec184/run.sbatch`.
+- **Symptom**: the scheduler payload created `runRoot/home`, but a child using a
+  relative evidence path wrote into the submission working directory; `HOME`
+  also pointed at a fixed `/tmp/spec186-home` shared by concurrent jobs.
+- **Root cause**: the payload sanitized the child environment without changing
+  directory after run-root creation and used a global temporary home path.
+- **Correction**: change directory into the reserved run root before `execvpe`
+  and set `HOME` to that run's private `home/` child; add a regression that
+  checks both the working directory and home value.
+- **Lesson**: run-root ownership must cover cwd and HOME as well as directory
+  creation, otherwise relative evidence and NDN identity state can cross run
+  boundaries even when the process is reaped.
+
+## 2026-09-13 — Spec186 nested manifest mutation exposed a validator name error
+
+- **Area**: T005 `runtime/spec186_candidate.py` candidate manifest shape gate.
+- **Symptom**: the first focused run after adding strict nested manifest-field
+  checks failed nine cases with `NameError: _ASSET_MANIFEST_KEYS` instead of
+  returning deterministic rejection receipts.
+- **Root cause**: the new validator referred to a non-existent constant; the
+  profile asset schema is named `_ASSET_KEYS`.
+- **Correction**: use the existing asset-key set, retain the nested unknown and
+  missing-field checks, and add a mutation regression that preserves the
+  candidate digest while adding an unexpected nested field.
+- **Lesson**: new fail-closed branches need an immediate focused run before
+  updating candidate seals or evidence counts; an exception at a rejection
+  boundary is itself an executable-contract defect.
+
+## 2026-09-13 — Spec186 manifest asset schema omitted its label field
+
+- **Area**: T005 `runtime/spec186_candidate.py` nested candidate manifest gate.
+- **Symptom**: after fixing the validator name, the new mutation regression
+  still did not report the injected asset field because manifest assets carry
+  the generated `label` alongside `path` and `sha256`.
+- **Root cause**: the first repair reused the profile asset-key set, which is
+  intentionally smaller than the candidate-manifest asset schema.
+- **Correction**: add the explicit three-field manifest asset schema and retain
+  the nested unknown/missing checks; refresh profile collector seals after the
+  source change.
+- **Lesson**: profile and manifest representations are separate contracts;
+  validation must name each wire shape instead of assuming their key sets are
+  interchangeable.
+
+## 2026-09-13 — Spec186 scheduler environment could drift from run identity
+
+- **Area**: T004/T005 `jobs/spec184/run.sbatch` environment boundary.
+- **Symptom**: a directly invoked scheduler payload could supply a valid-looking
+  `SPEC186_CANDIDATE_DIGEST` or `SPEC186_RUN_ID` different from the effective
+  config, allowing a child process to report an identity unrelated to the
+  scheduler record.
+- **Root cause**: the allow-list checked names, types and NUL bytes but did not
+  bind reserved identity variables to the validated config object.
+- **Correction**: reject mismatched reserved identity variables before run-root
+  creation and add a no-side-effect regression.
+- **Lesson**: environment allow-lists need value-level binding for provenance
+  fields; a permitted key is not trustworthy merely because its syntax is safe.

@@ -21,8 +21,10 @@ commit、单一 SIF 或单次测试都不是候选。
 }
 ```
 
-The actual manifest MUST record file sizes, modes, producer, creation command and
-relative evidence references. An application bundle may be an immutable directory;
+The manifest records the candidate paths and content hashes. Gate evidence MUST
+record file sizes, modes, producer, creation command and relative evidence
+references when those observations are available. An application bundle may be
+an immutable directory;
 its digest is the ordered hash of every relative file path and file content, excluding
 the self-referential `bundle-manifest.json`. Private keys, model bytes and SIF bytes stay
 outside Git; only their hashes and declared storage locations are recorded.
@@ -54,3 +56,13 @@ The gate MUST execute with no SSH, rsync, staging, scheduler or campaign call. I
 `PASS` requires the same candidate digest in protocol events, numerical result, role/backend
 records, process exit records and cleanup receipt. A transport, CUDA probe, ACK, READY,
 fixture or partial native failure record cannot be promoted to a terminal PASS.
+
+The Spec186 terminal receipt therefore includes `runId`, `protocol`, `numerical`, `roles`,
+`process` and `cleanup` objects. Each object repeats the candidate digest; `protocol.completed`,
+`protocol.terminalResponse`, `numerical.matched` with `independent=true` and a 64-hex
+`oracleDigest`, every uniquely named role's `observed`/`backend`/`gpu`,
+`process.allExited` with exit code zero, and `cleanup.reaped` must all be present. A marker
+containing only `status`, `exitCode` and `cleanup` is rejected as incomplete evidence.
+Role evidence must cover at least two uniquely named model roles from the declared YOLO
+graph or an ordered `Stage<n>` Qwen pipeline, and a run ID must match the bounded run ID
+syntax used by the scheduler.

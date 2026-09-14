@@ -24,10 +24,12 @@ profiles now bind source commit `6d143d3f0f7a7c627af2c1ef6810d79c0738b52d`,
 source seal `sha256:f4676a0f937c903caebc8374893171890d0d6d0639be42a3ced1b101d7512a00`,
 and r6 application tree digest
 `04c2dd64b4f070cbd909a87f75a0372a0e3d4dae45c7e712641369cf76531d73`. The
-current collector digest is
-`d42d7859bff1838f3293e4925db56e0d8ab46bb72a2b711a7bc7d61073ae9a1d` was the
-pre-repair digest. The current profile-bound collector digest is
-`7788f23b3edf3d814f2f26edfa18494e561aa1b688136e8204cae494980988f4`.
+The pre-repair collector digest
+`d42d7859bff1838f3293e4925db56e0d8ab46bb72a2b711a7bc7d61073ae9a1d` and the
+intermediate launcher-bound digest
+`7788f23b3edf3d814f2f26edfa18494e561aa1b688136e8204cae494980988f4` are
+historical. The current profile-bound collector digest is
+`847b5261065419bf6467136f9d9739898409bf2cdd05d9a6214644bc40582490`.
 Receipts below that bind the earlier digest remain historical and are not
 current candidate identities.
 

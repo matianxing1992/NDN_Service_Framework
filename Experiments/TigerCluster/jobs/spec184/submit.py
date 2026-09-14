@@ -13,17 +13,17 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import signal
 import subprocess
 import sys
-import tempfile
-import time
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 
 HERE = Path(__file__).resolve()
 TIGER_ROOT = HERE.parents[2]
 REPO_ROOT = HERE.parents[4]
+_RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 MODULE_PATH = TIGER_ROOT / "runtime" / "spec186_candidate.py"
 spec = importlib.util.spec_from_file_location("spec186_candidate", MODULE_PATH)
 if spec is None or spec.loader is None:
@@ -69,6 +69,8 @@ def _yolo_case(case: str) -> str:
 def render_effective(profile: Mapping[str, Any], manifest: Mapping[str, Any],
                      run_id: str, run_root: Path) -> Dict[str, Any]:
     """Render all argv/env/binds before a scheduler or process mutation."""
+    if not isinstance(run_id, str) or _RUN_ID_RE.fullmatch(run_id) is None:
+        raise RenderError("RUN_ID_INVALID")
     runtime = profile["runtime"]
     resources = profile["resources"]
     topology = profile["topology"]
@@ -84,9 +86,15 @@ def render_effective(profile: Mapping[str, Any], manifest: Mapping[str, Any],
             "TIGER_HARNESS_INPUTS_UNDECLARED:"
             "SPEC180_WORKLOAD,SPEC180_YOLO_CANONICAL_PACKAGE,"
             "SPEC180_YOLO_CONFIG,provider-args,nfd-config")
+    if (profile["case"] == "qwen06b-minindn-cpu" and
+            (profile["model"]["format"] != "onnx" or
+             profile["model"]["backend"] != "onnxruntime-cpu")):
+        raise RenderError("QWEN_HARNESS_MODEL_CONTRACT_MISMATCH:expected-onnxruntime-cpu")
     role_map = [{"name": role["name"], "identity": role["identity"],
                  "node": role["node"], "gpu": role["gpu"],
-                 "backend": role["backend"]} for role in profile["roles"]]
+                 "backend": role["backend"], "service": role["service"],
+                 "allowCpuFallback": role["allowCpuFallback"]}
+                for role in profile["roles"]]
     gpu_devices = sorted({role["gpu"] for role in profile["roles"] if role["gpu"] >= 0})
     # MiniNDN remains the host orchestration process.  Its child NFD and
     # application commands use the exact SIF through this command-provider
@@ -183,9 +191,19 @@ def offline_check(profile_path: Path, candidate_path: Path) -> Dict[str, Any]:
 
 def submit(profile_path: Path, candidate_path: Path, *, run_id: str,
            run_root: Path) -> Dict[str, Any]:
-    run_root = Path(run_root).resolve()
-    profile = candidate.load_profile(profile_path, repo_root=REPO_ROOT)
-    manifest = _read(candidate_path)
+    try:
+        run_root = Path(run_root).resolve()
+    except (OSError, RuntimeError, ValueError) as exc:
+        return {"schemaVersion": "spec186-submit-v1", "status": "REJECTED",
+                "runId": run_id, "schedulerCalls": 0,
+                "runRootError": "SPEC186_RUN_ROOT_INVALID:" + type(exc).__name__}
+    try:
+        profile = candidate.load_profile(profile_path, repo_root=REPO_ROOT)
+        manifest = _read(candidate_path)
+    except candidate.CandidateError as exc:
+        return {"schemaVersion": "spec186-submit-v1", "status": "REJECTED",
+                "runId": run_id, "schedulerCalls": 0,
+                "error": "CANDIDATE_INPUT_INVALID:" + str(exc)}
     gate = candidate.pre_dispatch(profile_path, candidate_path, repo_root=REPO_ROOT)
     if not gate["ok"]:
         return {"schemaVersion": "spec186-submit-v1", "status": "REJECTED",
@@ -196,14 +214,21 @@ def submit(profile_path: Path, candidate_path: Path, *, run_id: str,
         return {"schemaVersion": "spec186-submit-v1", "status": "REJECTED",
                 "runId": run_id, "preDispatch": gate, "schedulerCalls": 0,
                 "renderError": str(exc)}
+    if run_root.exists() or run_root == run_root.parent:
+        return {"schemaVersion": "spec186-submit-v1", "status": "REJECTED",
+                "runId": run_id, "preDispatch": gate, "schedulerCalls": 0,
+                "runRootError": "SPEC186_RUN_ROOT_EXISTS_OR_INVALID"}
     resources = profile["resources"]
     argv = ["sbatch", "--parsable", "--nodes=" + str(profile["topology"]["nodes"]),
+            "--ntasks-per-node=1",
             "--cpus-per-task=" + str(resources["cpusPerNode"]),
+            "--mem=" + resources["memory"],
             "--partition=" + resources["partition"], "--account=" + resources["account"],
             "--job-name=spec186-" + run_id,
             str(HERE / "run.sbatch")]
+    if resources["gpus"]:
+        argv.insert(4, "--gpus-per-node=" + str(resources["gpus"]))
     env = {"SPEC186_RUN_ID": run_id,
-           "SPEC186_CANDIDATE": str(candidate_path),
            "SPEC186_EFFECTIVE_CONFIG": json.dumps(effective, sort_keys=True),
            "SPEC186_EXEC_ARGV": json.dumps(effective["argv"]),
            "SPEC186_EXEC_ENV": json.dumps(effective["environment"], sort_keys=True),
@@ -225,33 +250,71 @@ def submit(profile_path: Path, candidate_path: Path, *, run_id: str,
 def local_run(profile_path: Path, candidate_path: Path, *, run_id: str,
               run_root: Path, command: Optional[Sequence[str]] = None,
               dry_run: bool = False) -> Dict[str, Any]:
-    run_root = Path(run_root).resolve()
+    try:
+        run_root = Path(run_root).resolve()
+    except (OSError, RuntimeError, ValueError) as exc:
+        return {"schemaVersion": "spec186-local-v1", "status": "REJECTED",
+                "runId": run_id,
+                "runRootError": "SPEC186_RUN_ROOT_INVALID:" + type(exc).__name__,
+                "cleanup": {"reaped": True}}
     gate = candidate.pre_dispatch(profile_path, candidate_path, repo_root=REPO_ROOT)
     if not gate["ok"]:
         return {"schemaVersion": "spec186-local-v1", "status": "REJECTED",
                 "runId": run_id, "preDispatch": gate, "cleanup": {"reaped": True}}
-    profile = candidate.load_profile(profile_path, repo_root=REPO_ROOT)
-    manifest = _read(candidate_path)
+    try:
+        profile = candidate.load_profile(profile_path, repo_root=REPO_ROOT)
+        manifest = _read(candidate_path)
+    except candidate.CandidateError as exc:
+        return {"schemaVersion": "spec186-local-v1", "status": "REJECTED",
+                "runId": run_id, "error": "CANDIDATE_INPUT_INVALID:" + str(exc),
+                "cleanup": {"reaped": True}}
     try:
         effective = render_effective(profile, manifest, run_id, run_root)
     except RenderError as exc:
         return {"schemaVersion": "spec186-local-v1", "status": "REJECTED",
                 "runId": run_id, "preDispatch": gate, "renderError": str(exc),
                 "cleanup": {"reaped": True}}
-    argv = list(command) if command else list(effective["argv"])
+    argv = list(command) if command is not None else list(effective["argv"])
+    if (not argv or any(not isinstance(item, str) or not item or "\x00" in item
+                        for item in argv)):
+        return {"schemaVersion": "spec186-local-v1", "status": "REJECTED",
+                "runId": run_id, "candidateDigest": manifest["candidateDigest"],
+                "error": "SPEC186_LOCAL_ARGV_INVALID",
+                "cleanup": {"reaped": True}, "effective": effective}
     if dry_run:
         return {"schemaVersion": "spec186-local-v1", "status": "DRY_RUN",
                 "runId": run_id, "candidateDigest": manifest["candidateDigest"],
                 "argv": argv, "effective": effective, "cleanup": {"reaped": True}}
-    run_root.mkdir(parents=True, exist_ok=False)
-    (run_root / "evidence").mkdir()
+    if run_root.exists():
+        return {"schemaVersion": "spec186-local-v1", "status": "REJECTED",
+                "runId": run_id, "candidateDigest": manifest["candidateDigest"],
+                "runRootError": "SPEC186_RUN_ROOT_EXISTS",
+                "cleanup": {"reaped": True}}
+    try:
+        run_root.mkdir(mode=0o700, parents=True, exist_ok=False)
+        for child in ("evidence", "state", "security", "home"):
+            (run_root / child).mkdir(mode=0o700)
+    except (OSError, ValueError) as exc:
+        return {"schemaVersion": "spec186-local-v1", "status": "FAILED",
+                "runId": run_id, "candidateDigest": manifest["candidateDigest"],
+                "runRootError": "SPEC186_RUN_ROOT_CREATE_FAILED:" + type(exc).__name__,
+                "cleanup": {"reaped": True}}
     log_path = run_root / "process.log"
     child = None
     exit_code = 125
     forced = False
     try:
         with log_path.open("wb") as log:
-            child_env = dict(os.environ)
+            # Keep the host launcher usable while preventing host ABI and
+            # Python search paths from leaking into the candidate process.
+            child_env = {
+                "PATH": "/usr/local/bin:/usr/bin:/bin",
+                "HOME": str(run_root / "home"),
+                "LC_ALL": "C",
+            }
+            for name in ("USER", "LOGNAME", "SUDO_USER", "TMPDIR"):
+                if os.environ.get(name):
+                    child_env[name] = os.environ[name]
             child_env.update({str(key): str(value)
                               for key, value in effective["environment"].items()})
             child = subprocess.Popen(argv, cwd=str(run_root), env=child_env,
@@ -267,12 +330,23 @@ def local_run(profile_path: Path, candidate_path: Path, *, run_id: str,
                 except subprocess.TimeoutExpired:
                     os.killpg(child.pid, signal.SIGKILL)
                     exit_code = child.wait(timeout=5)
-    finally:
-        if child is not None and child.poll() is None:
-            os.killpg(child.pid, signal.SIGKILL)
-            child.wait(timeout=5)
+            finally:
+                if child is not None and child.poll() is None:
+                    os.killpg(child.pid, signal.SIGKILL)
+                    child.wait(timeout=5)
+    except (OSError, ValueError) as exc:
+        return {"schemaVersion": "spec186-local-v1", "status": "FAILED",
+                "runId": run_id, "candidateDigest": manifest["candidateDigest"],
+                "error": "SPEC186_LOCAL_EXEC_FAILED:" + type(exc).__name__,
+                "cleanup": {"reaped": child is not None and child.poll() is not None,
+                             "forced": forced}, "effective": effective}
+    # A command override is intentionally diagnostic-only.  Treating an
+    # arbitrary executable's zero exit as a qualification PASS would let a
+    # caller bypass the declared MiniNDN/native launcher and candidate gate.
+    status = "UNQUALIFIED" if command is not None and exit_code == 0 else (
+        "PASS" if exit_code == 0 else "FAILED")
     return {"schemaVersion": "spec186-local-v1",
-            "status": "PASS" if exit_code == 0 else "FAILED",
+            "status": status,
             "runId": run_id, "candidateDigest": manifest["candidateDigest"],
             "argv": argv, "exitCode": exit_code,
             "cleanup": {"reaped": child is not None and child.poll() is not None,
@@ -280,7 +354,11 @@ def local_run(profile_path: Path, candidate_path: Path, *, run_id: str,
 
 
 def collect(receipt_paths: Sequence[Path], candidate_digest: str) -> Dict[str, Any]:
-    records: List[Mapping[str, Any]] = [_read(path) for path in receipt_paths]
+    try:
+        records: List[Mapping[str, Any]] = [_read(path) for path in receipt_paths]
+    except candidate.CandidateError as exc:
+        return {"status": "FAILED", "candidateDigest": candidate_digest,
+                "failures": ["RECEIPT_INPUT_INVALID:" + str(exc)]}
     return candidate.validate_terminal(records, candidate_digest)
 
 

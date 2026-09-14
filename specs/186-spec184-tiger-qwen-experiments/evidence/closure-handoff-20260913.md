@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-13
 **Branch:** `SPEC184Experiments`
-**Checkpoint:** `9b433338` — current-source r6 identity and r55 G3 host receipt
+**Checkpoint:** `pending-static-boundary-20` — scheduler identity-environment repair after r55 G3 host receipt
 **Source baseline:** `575b43cc93bbed29932303caf3d09974f1585af7`
 **Current source commit:** `6d143d3f0f7a7c627af2c1ef6810d79c0738b52d`
 **Current source seal:** `sha256:f4676a0f937c903caebc8374893171890d0d6d0639be42a3ced1b101d7512a00`
@@ -15,7 +15,7 @@ not promoted to protocol or GPU qualification.
 
 | State | Current scope | Evidence |
 | --- | --- | --- |
-| Implemented | eight strict profiles, explicit 1.5.3 Apptainer path/version pins, deterministic manifests, zero-side-effect pre-dispatch, lifecycle/cleanup adapters, and explicit dependency-prefix forwarding for native Python binding builds | `tests/test_spec180_native_build.py` (81 passed), `Experiments/TigerCluster/tests` (80 passed), `scripts/spec180_native_build.py`, `evidence/runtime-version-policy-20260913.md`, `evidence/static-wiring-audit-20260913.md` |
+| Implemented | eight strict profiles with nested profile and manifest/resource validation, executable role/backend/GPU contracts, explicit 1.5.3 Apptainer path/version pins, deterministic manifests, zero-side-effect pre-dispatch, candidate-bound terminal evidence, terminal GPU-role policy, scheduler identity-environment binding, lifecycle/run-root cleanup adapters, run-root-scoped scheduler `HOME`/cwd, and explicit dependency-prefix forwarding for native Python binding builds | `tests/python/test_spec180_native_build.py` (81 passed), `Experiments/TigerCluster/tests` (106 passed), `scripts/spec180_native_build.py`, `evidence/runtime-version-policy-20260913.md`, `evidence/static-wiring-audit-20260913.md` |
 | Wired | all eight profiles bind the current-source r6 application bundle; local and remote tree digest is `04c2dd64b4f070cbd909a87f75a0372a0e3d4dae45c7e712641369cf76531d73` | `evidence/application-bundle-r6-20260913.md`; r5 remains immutable local history |
 | Executed | local Apptainer 1.5.3 SIF probe passed; current-source r55 produced a validated G3 host M01 manifest for the four-Provider tiny-ONNX stream; the separate YOLO host gate still needs its own Y-A/Y-B/Y-N runs | `evidence/minindn-stream-collaboration-r53-20260913.md`, `evidence/host-m01-r55-g3-20260913.md`, `evidence/host-m01-r12-route-boundary-20260913.md` |
 | Measured | r55 measured two tokens (`[4,5]`) with six retries and zero duplicates for the tiny-ONNX regression only; no accepted Spec186 YOLO `[1,50,6]` oracle, Qwen3 tuple, Tiger GPU result or two-node reuse result | T006.a/c and T007–T012 remain open or waiting |
@@ -29,6 +29,10 @@ not promoted to protocol or GPU qualification.
 - The r6 application package is staged read-only in project storage. The exact
   source-sealed base SIF is still absent, so all eight pre-dispatch gates fail
   closed before scheduler side effects.
+- The current profile-bound collector digest is
+  `sha256:847b5261065419bf6467136f9d9739898409bf2cdd05d9a6214644bc40582490`.
+  Qwen GGUF/Q3 remains held because the maintained local entrypoint requires
+  an ONNX/onnxruntime model and undeclared canonical inputs.
 - The earlier current-host M01 failure was `REPO_SERVICE_ROUTE_NOT_READY`
   after three bounded `/NDNSF/DistributedRepo/Object/v1/STATUS` timeouts.
   r55 now has a PASS route snapshot and G3 manifest; this is separate from the
