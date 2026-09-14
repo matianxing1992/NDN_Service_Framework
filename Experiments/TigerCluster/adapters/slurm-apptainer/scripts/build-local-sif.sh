@@ -76,6 +76,9 @@ source_validator="$script_dir/validate-local-sif-source.py"
 preflight_validator="$script_dir/preflight-development-sif.py"
 spec175_preflight="$script_dir/../../../bin/ndnsf-di-spec175-preflight"
 spec175_workload="$script_dir/../../../jobs/spec175/workload.json"
+base_sif=''
+base_sif_sha256=''
+base_sif_bytes='0'
 [ -f "$boundary_validator" ] || {
   echo LOCAL_SIF_BUILD_BOUNDARY_VALIDATOR_MISSING >&2
   exit 4
@@ -298,9 +301,6 @@ bootstrap=$(awk -F: '
   tolower($1) ~ /^[[:space:]]*bootstrap[[:space:]]*$/ {
     value=$2; gsub(/^[[:space:]]+|[[:space:]]+$/, "", value); print tolower(value); exit
   }' "$definition")
-base_sif=''
-base_sif_sha256=''
-base_sif_bytes='0'
 if [ "$bootstrap" = localimage ]; then
   base_sif=$(awk -F: '
     tolower($1) ~ /^[[:space:]]*from[[:space:]]*$/ {

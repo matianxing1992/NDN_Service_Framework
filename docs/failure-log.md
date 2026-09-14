@@ -4661,3 +4661,18 @@ which differs from the Spec186 handoff seal
 - **Lesson**: compatibility symlinks must be normalized before source-seal
   membership checks; otherwise a safety filter can remove a required runtime
   input while reporting a clean checkout.
+
+## 2026-09-14 — Spec186 r24 preflight referenced base SIF before initialization
+
+- **Area**: T006 local SIF build preflight.
+- **Symptom**: the r24 build exited before the cheap preflight with
+  `build-local-sif.sh: line 279: base_sif: unbound variable`.
+- **Root cause**: the new preflight hook was inserted before the existing
+  bootstrap parser initialized `base_sif`; `set -u` made this ordering defect
+  deterministic whenever the caller did not export an unrelated shell
+  variable.
+- **Correction**: initialize the base-SIF identity variables alongside the
+  other build inputs before constructing the preflight arguments, and add a
+  static ordering assertion.
+- **Lesson**: a fail-closed preflight must itself be executable under the
+  builder's strict shell mode; validate hook dependencies before invoking it.
