@@ -4676,3 +4676,20 @@ which differs from the Spec186 handoff seal
   static ordering assertion.
 - **Lesson**: a fail-closed preflight must itself be executable under the
   builder's strict shell mode; validate hook dependencies before invoking it.
+## 2026-09-14 — Spec186 r25 serialized GCC provider ICE
+
+- **Area**: T006 exact base-plus-application SIF native build.
+- **Symptom**: the corrected r25 recipe passed its preflight and compiled 120
+  native targets, then GCC 9 terminated while compiling
+  `NativeAuthenticatedGrantClient.cpp` with `internal compiler error: in
+  ggc_set_mark, at ggc-page.c:1547`. Apptainer stopped the builder at
+  `LOCAL_SIF_BUILD_START`; no SIF or build record was promoted.
+- **Root cause**: the host GCC 9 compiler remains unstable for a large NDNSF
+  translation unit even with the largest target serialized at `-j1`.
+- **Correction**: retain this first failure and add the already qualified
+  Clang 10 fallback as an explicit, container-installed compiler input. A
+  fallback build must start from a clean NDNSF build tree and record the
+  selected compiler identity in the candidate manifest.
+- **Lesson**: a lower Waf job count is only a concurrency bound, not a proof
+  that GCC can compile this source. Compiler fallback is part of the sealed
+  build recipe and must be validated before SIF promotion.
