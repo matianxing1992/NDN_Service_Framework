@@ -68,6 +68,7 @@ def test_spec186_preflight_is_wired_before_expensive_build():
     ast.parse(source, filename=str(PREFLIGHT))
     assert "WORKSPACE_TARGET_INPUT_MISSING" in source
     assert "NUMPY_PRIVATE_LIB_SET" in source
+    assert "NUMPY_FINAL_RPATH_RESTORE_MISSING" in source
     assert "NUMPY_BASE_IMPORT_PASS" in source
     build_script = (ROOT / "Experiments/TigerCluster/adapters/slurm-apptainer/scripts/build-local-sif.sh").read_text()
     assert "preflight-development-sif.py" in build_script

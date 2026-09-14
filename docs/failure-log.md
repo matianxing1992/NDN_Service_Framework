@@ -4597,3 +4597,20 @@ which differs from the Spec186 handoff seal
 - **Lesson**: a wheel payload must be placed relative to the package that
   actually owns the importing extension; staging an identical directory in a
   different `sys.path` root does not satisfy an extension RPATH.
+
+## 2026-09-14 — Spec186 r20 final SIF import lost the repaired NumPy DSOs
+
+- **Area**: T006 exact base-plus-application SIF final image closure.
+- **Symptom**: r20 completed all 284 native targets, both Python extension
+  wheels, builder import and native closure checks, but the final `%post`
+  import failed with `libopenblas64_p-r0-0cf96a72.3.23.dev.so` missing.
+- **Root cause**: the r19 repair restored NumPy's private wheel payload only in
+  the builder stage. The final stage starts from the base SIF, copies the
+  staged application packages, and ran its import check before restoring the
+  base venv's `numpy.libs` directory.
+- **Correction**: restore the same hash-locked three-file NumPy payload in the
+  final `%post` before `ldconfig` and the import gate; strengthen the cheap
+  preflight to require both builder and final RPATH restoration sites.
+- **Lesson**: a multi-stage SIF definition needs a closure assertion for every
+  stage that imports inherited Python extensions; a passing builder probe does
+  not prove the final image contains its wheel-private DSOs.

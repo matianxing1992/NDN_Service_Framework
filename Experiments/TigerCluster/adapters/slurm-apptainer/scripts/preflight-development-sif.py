@@ -104,8 +104,9 @@ def check_static_inputs(definition: Path) -> tuple[Path, Path]:
     expected_destination = (
         "destination = Path('/opt/venv/lib/python3.10/site-packages/numpy.libs')"
     )
-    if expected_destination not in text:
-        fail("NUMPY_RPATH_DESTINATION")
+    destination_count = text.count(expected_destination)
+    if destination_count < 2:
+        fail("NUMPY_FINAL_RPATH_RESTORE_MISSING", destination_count)
     if "/opt/ndnsf-stage/python/numpy.libs" in text:
         fail("NUMPY_STAGING_DESTINATION")
     for target in ("ndnsf-distributed-inference", "ndnsf-distributed-inference.pc"):
