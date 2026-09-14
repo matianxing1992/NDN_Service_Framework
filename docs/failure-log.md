@@ -4227,3 +4227,30 @@ which differs from the Spec186 handoff seal
 - **Lesson**: Apptainer version alignment alone does not establish runtime
   compatibility; exact library SONAME, symbol and ONNX Runtime version
   closure must be checked inside the selected SIF before Tiger submission.
+
+## 2026-09-13 — Spec186 complete-builder dependency and base-image boundaries
+
+- **Area**: T006.b/T006.c local source-sealed SIF construction.
+- **First boundaries**: the first complete-builder attempt stopped because
+  Ubuntu focal has no `python3.10-dev` package in the configured repositories;
+  the next attempt stopped because the historical ORT SDK exposed only
+  `libonnxruntime.pc`, then NDNSF stopped on the missing official ONNX
+  1.17 full-protobuf prefix and missing pinned Rust 1.90/Cargo input. After
+  those inputs were made explicit, `OnnxRuntimeModelRunner.cpp` exposed that
+  the ORT pc metadata pointed to `/usr/local` while the SDK headers and
+  library were under `/opt/onnxruntime`. Two parallel GCC 9.4 builds then
+  independently hit internal compiler errors in `ExecutionLease.cpp` and
+  `PolicyStatus.cpp`.
+- **Correction**: use the bundled Python 3.10 headers, require ONNX and Rust
+  inputs inside the base SIF, normalize ORT metadata to `/opt/onnxruntime`,
+  and serialize the largest NDNSF Waf target (`-j1`) while keeping smaller
+  dependency builds at `-j2`.
+- **Base-image finding**: the cached base SIF itself contained unreadable
+  gzip blocks. A readable rootfs was re-packed and verified end-to-end;
+  zstd re-packing exposed a corrupt 510 MiB optional Triton `libtriton.so`,
+  so the provisional YOLO/ORT-only base excludes that component and cannot
+  yet be called a complete Qwen runtime.
+- **Lesson**: a successful `apptainer exec /bin/true`, pkg-config probe, or
+  component build does not prove the full input closure. Every candidate must
+  bind source seal, dependency revisions, compiler/Rust/ONNX/ORT identities,
+  immutable base digest, and a complete SIF extraction plus loader matrix.
