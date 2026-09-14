@@ -4549,3 +4549,19 @@ which differs from the Spec186 handoff seal
   exact match in dpkg's package file lists before declaring a DSO unowned.
 - **Lesson**: closure evidence must tolerate reduced package indexes without
   accepting a basename-only or guessed package mapping.
+
+## 2026-09-14 — Spec186 r16 builder import exposed incomplete NumPy wheel data
+
+- **Area**: T006 exact base-plus-application SIF Python import gate.
+- **Symptom**: the complete 284/284 native build, both wheels, DI staging, and
+  builder native closure audit succeeded, then the in-image import check failed
+  with NumPy's misleading source-tree error; the underlying missing dependency
+  was `libopenblas64_p-r0-0cf96a72.3.23.dev.so`.
+- **Root cause**: the repaired base SIF contained NumPy 1.26.4 and its
+  `_multiarray_umath` extension but an empty `numpy.libs` directory, so its
+  manylinux private OpenBLAS/Fortran DSOs were absent.
+- **Correction**: stage the exact NumPy 1.26.4 `numpy.libs` payload (OpenBLAS,
+  libgfortran, and libquadmath) from the sealed handoff before builder and
+  final import checks.
+- **Lesson**: Python package presence and extension `ldd` closure are separate;
+  wheel-private RPATH assets must be included in the immutable SIF composition.

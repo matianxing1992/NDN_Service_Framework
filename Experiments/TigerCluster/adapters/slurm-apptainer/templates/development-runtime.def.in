@@ -245,6 +245,30 @@ PY
     PYTHONPATH=/tmp/ndnsf-build-python CPLUS_INCLUDE_PATH=/opt/ndnsf-di/current/include NDNSF_LIBRARY_DIR=/opt/ndnsf-di/current/lib /opt/venv/bin/pip install --no-index --no-deps --no-build-isolation --target=/opt/ndnsf-stage/python /src/ndnsf/pythonWrapper
     PYTHONPATH=/tmp/ndnsf-build-python CPLUS_INCLUDE_PATH=/opt/ndnsf-di/current/include NDNSF_LIBRARY_DIR=/opt/ndnsf-di/current/lib /opt/venv/bin/pip install --no-index --no-deps --no-build-isolation --target=/opt/ndnsf-stage/python /src/ndnsf/NDNSF-DistributedRepo/pythonWrapper
     /opt/venv/bin/pip install --no-index --find-links=/build-input/wheels --target=/opt/ndnsf-stage/python 'python-ndn==0.3'
+    # The repaired base SIF retains NumPy's Python package but its wheel's
+    # private manylinux DSOs were omitted.  Restore the exact wheel payload
+    # under the RPATH expected by _multiarray_umath before import checks.
+    /opt/venv/bin/python - <<'PY'
+from pathlib import Path
+from zipfile import ZipFile
+
+wheels = sorted(Path('/build-input/wheels').glob('numpy-1.26.4-*.whl'))
+assert len(wheels) == 1, 'NUMPY_WHEEL_COUNT'
+destination = Path('/opt/ndnsf-stage/python/numpy.libs')
+destination.mkdir(parents=True, exist_ok=True)
+expected = {
+    'libopenblas64_p-r0-0cf96a72.3.23.dev.so',
+    'libgfortran-040039e1.so.5.0.0',
+    'libquadmath-96973f99.so.0.0.0',
+}
+with ZipFile(wheels[0]) as archive:
+    members = {Path(name).name: name for name in archive.namelist()
+               if name.startswith('numpy.libs/') and not name.endswith('/')}
+    assert set(members) == expected, 'NUMPY_WHEEL_PRIVATE_LIB_SET'
+    for name in sorted(expected):
+        (destination / name).write_bytes(archive.read(members[name]))
+        (destination / name).chmod(0o755)
+PY
     rm -rf /src/ndnsf/pythonWrapper/build /src/ndnsf/NDNSF-DistributedRepo/pythonWrapper/build
     cp -a /src/ndnsf/NDNSF-DistributedInference/ndnsf_distributed_inference /opt/ndnsf-stage/python/
     # The Spec180 replay repo mirrors the sealed source for the exact-SIF
