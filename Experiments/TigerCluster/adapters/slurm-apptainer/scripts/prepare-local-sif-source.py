@@ -23,6 +23,7 @@ FILES = (
     ".waf-tools",
     "ndn-service-framework",
     "NDNSF-DistributedInference/cpp",
+    "NDNSF-DistributedInference/ndnsf-distributed-inference.pc.in",
     "NDNSF-DistributedInference/ndnsf_distributed_inference",
     "NDNSF-DistributedInference/packaging/python",
     "NDNSF-DistributedInference/setup.py",

@@ -4495,3 +4495,11 @@ which differs from the Spec186 handoff seal
 - **Lesson**: compiling a consumer with duplicated implementation objects does
   not satisfy the shared ABI boundary used by the Python extension; every
   declared link boundary must be built, staged, and verified as an artifact.
+
+## 2026-09-14 — Spec186 r9 source archive omitted the DI pkg-config template
+
+- **Area**: T006 exact base-plus-application SIF source closure.
+- **Symptom**: the source-sealed r9 build passed dependency compilation, then Waf failed at the explicit target list with `could not find 'NDNSF-DistributedInference/ndnsf-distributed-inference.pc.in'`.
+- **Root cause**: `prepare-local-sif-source.py` selected the DI C++ and Python trees but omitted the tracked `ndnsf-distributed-inference.pc.in` input, so the sealed workspace archive could not materialize the requested pkg-config target.
+- **Correction**: include the tracked pkg-config template in the source selector and regenerate the source-sealed handoff before the next SIF attempt.
+- **Lesson**: every explicit Waf target must have its template input in the immutable source archive; local checkout presence does not prove sealed-build presence.
