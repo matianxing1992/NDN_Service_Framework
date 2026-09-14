@@ -80,7 +80,7 @@ Subscription RuntimeState::drainAsync(std::chrono::milliseconds timeout, DrainDo
 ```
 
 DrainDone是C-07定义的callback签名，实现在头中展开或具名using。bootstrap顺序固定：解析schema/limits→冻结model key与同域配置→取得用户/Provider所需key/trust（不读authority私钥）→创建Core/IO依赖→构建State owner→发布Runtime。source bytes只在prepare取；部分初始化失败逆序清理，不能发布半个Runtime。
-bindRequestRuntime复用`nativeRequestRuntimeFromJson(string,const NativeRequestCatalog&,shared_ptr<const NativeAuthenticatedGrantClient>)`；移动现有runtimeConfiguration逻辑，完整contract/stateMapping/budget不手抄成第二份parser。
+bindRequestRuntime复用`nativeRequestRuntimeFromJson(string,const NativeRequestCatalog&,shared_ptr<const NativeAuthenticatedGrantClient>)`；移动现有runtimeConfiguration逻辑，完整contract/stateMapping/budget不手抄成第二份parser。Runtime首次物化生产`ServiceUser`时，沿用维护native应用的`fetchPermissionsFromController(core.authority_identity)` bootstrap wave；若进程提供成对的`NDN_CLIENT_PIB`/`NDN_CLIENT_TPM`，Runtime复用该外部KeyChain以保持Controller加密的permission/DKEY与requester证书同一身份，否则仅无外部存储的隔离调用者使用memory KeyChain。`NativeInferenceClient`在Core IO线程只读取非阻塞的DKEY、user permission和service-scoped `ControllerVersion` readiness predicate，并通过`OperationRuntime`短定时重试，始终服从原请求deadline。未就绪不得进入`BeginCollaborationWithProviders`，但post-ACK planning/assembly顺序不前移。
 protectionEpoch来源沿用已验证native运行配置/owner，不从Package查；现有请求status/grant验证继续逐request。缓存不使旧epoch自动有效。
 clientFor只在State内缓存client，绑定catalog.makePreparation(user,service)、native grants/admission/conversation owner；模型包只缓存不可变模型事实。
 close先上fence，再取消准备waiter、close所有native client、stop Provider，ticket收尾后停止Core/IO；drain等待F01屏障，C-07 callback快路径及join规则逐条适用。
@@ -133,7 +133,7 @@ RequestHandle PreparedModel::requestInternal(Input input, const RequestOptions& 
   std::optional<NativeConversationContinuation> continuation) const;
 ```
 
-A22：requireOpen→复制owning Input/options→校验capabilities/size/time/placement同Runtime identity→encodeInput→从Package得到modelRef/splitter及State.clientFor→调用requestCooperative→包装同native handle与Package lease。
+A22：requireOpen→复制owning Input/options→校验capabilities/size/time/placement同Runtime identity→encodeInput→从Package得到modelRef/splitter及State.clientFor→调用requestCooperative→包装同native handle与Package lease。生产client的Core begin先经过ServiceUser授权bootstrap readiness；等待通过OperationRuntime定时重试，不阻塞Face线程，不改变ACK_CLOSED之后的planning、grant/seal、Selection和Provider assembly顺序。
 新增入口完整形状：
 ```cpp
 NativeInferenceHandle NativeInferenceClient::requestCooperative(

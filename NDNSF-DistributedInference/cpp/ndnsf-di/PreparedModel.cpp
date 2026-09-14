@@ -6,14 +6,46 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestEnvelope.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCatalogModelAdapter.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
+#include <cstring>
 #include <limits>
+#include <ndn-cxx/name.hpp>
 #include <stdexcept>
 #include <utility>
 
 namespace ndnsf::di {
+
+bool Result::matchesFloat32Tensor(const std::string& tensorName,
+                                  const std::vector<float>& expected,
+                                  double tolerance) const
+{
+  if (tensorName.empty() || expected.empty() || !std::isfinite(tolerance) || tolerance < 0.0)
+    return false;
+  try {
+    const auto tensors = decodeTensorBundle(payload);
+    const auto& tensor = findTensor(tensors, tensorName);
+    if (tensor.elementType != TensorElementType::Float32 ||
+        tensor.payload.size() != expected.size() * sizeof(float))
+      return false;
+    for (std::size_t i = 0; i < expected.size(); ++i) {
+      if (!std::isfinite(expected[i]))
+        return false;
+      float actual = 0.0F;
+      std::memcpy(&actual, tensor.payload.data() + i * sizeof(float), sizeof(float));
+      if (!std::isfinite(actual) ||
+          std::fabs(static_cast<double>(actual) - expected[i]) > tolerance)
+        return false;
+    }
+    return true;
+  }
+  catch (const std::exception&) {
+    return false;
+  }
+}
 
 namespace {
 
@@ -587,6 +619,21 @@ NativeRequestOptions PreparedModel::projectOptions(const RequestOptions& options
   native.taskName = m_package->manifest.taskName;
   native.outputMode = options.outputMode.empty() ? "FULL" : options.outputMode;
   native.applicationRequestId = options.applicationRequestId;
+  for (const auto& providerName : options.providerNames) {
+    try {
+      const ndn::Name parsed(providerName);
+      if (parsed.empty() || providerName.empty() || providerName.front() != '/')
+        throw std::invalid_argument("Provider identity must be an absolute NDN name");
+      native.providerNames.push_back(parsed);
+    }
+    catch (const DiError&) {
+      throw;
+    }
+    catch (const std::exception& error) {
+      throw DiError("INVALID_ARGUMENT", "local", "request",
+                    std::string("invalid provider identity: ") + error.what());
+    }
+  }
   if (native.outputMode != "FULL" && native.outputMode != "TOKEN_STREAMING")
     throw DiError("INVALID_ARGUMENT", "local", "request", "unsupported request output mode");
   bool verifiedStreamingDefault = false;
@@ -605,12 +652,19 @@ NativeRequestOptions PreparedModel::projectOptions(const RequestOptions& options
         throw DiError("INVALID_ARGUMENT", "local", "request",
                       "disabled stream options cannot carry streaming output");
     }
+    else if (options.stream->maxReplacements > 1 ||
+             (options.stream->allowReplacement && options.stream->maxReplacements != 1) ||
+             (!options.stream->allowReplacement && options.stream->maxReplacements != 0))
+      throw DiError("INVALID_ARGUMENT", "local", "request",
+                    "stream replacement options require allowReplacement=true and maxReplacements=1");
     else if (!m_package->capabilities.streaming)
       throw DiError("UNSUPPORTED_CAPABILITY", "local", "request",
                     "verified model does not support streaming");
     else {
       native.stream = ndn_service_framework::StreamRequestOptions{};
       native.outputMode = "TOKEN_STREAMING";
+      native.stream->allowReplacement = options.stream->allowReplacement;
+      native.stream->maxReplacements = options.stream->maxReplacements;
     }
   }
   else if (verifiedStreamingDefault) {
@@ -705,6 +759,32 @@ RequestHandle PreparedModel::requestInternal(
     for (std::size_t i = 0; i < nativeOptions.stream->generationId.size(); ++i) {
       nativeOptions.stream->generationId[i] = static_cast<std::uint8_t>(
         std::stoul(continuation->generationId.substr(i * 2, 2), nullptr, 16));
+    }
+    // Conversation owns the generation identity for every turn.  Legacy
+    // callers may still carry a fixed generationId in application options;
+    // normalize that compatibility field to the freshly allocated native
+    // continuation identity before the authenticated generation contract is
+    // derived.  The caller cannot choose or replay a conversation identity.
+    if (!nativeInput.options.empty()) {
+      try {
+        auto application = nativeParseJson(std::string(nativeInput.options.begin(),
+                                                        nativeInput.options.end()));
+        if (!application.is_object())
+          throw std::invalid_argument("conversation application options must be an object");
+        if (application.contains("generationId"))
+          application["generationId"] = continuation->generationId;
+        if (application.contains("generation_id"))
+          application["generation_id"] = continuation->generationId;
+        const auto canonical = nativeCanonicalJson(application);
+        nativeInput.options.assign(canonical.begin(), canonical.end());
+      }
+      catch (const DiError&) {
+        throw;
+      }
+      catch (const std::exception& error) {
+        throw DiError("INVALID_GENERATION_OPTIONS", "conversation", "request",
+                      std::string("conversation generation options are invalid: ") + error.what());
+      }
     }
   }
   if (nativeOptions.stream && nativeInput.options.empty()) {

@@ -24,7 +24,7 @@
 | [T008 Conversation Recovery Replacement and Export](#t008) | PASS | T007 static | B4 closed; final composition `B4_COMPOSITION_PASS`, normal v26 and ASan/UBSan+LSan v19 builds, conversation r49/r50 and r40/r41, API r51/r52 and r42/r43 all `RC=0`; C++ recovery, export/import and replacement isolation evidence in [b4-conversation](evidence/b4-conversation.md) | 2026-09-13 13:01 -05:00 |
 | [T009 Provider Facade and Authenticated Assembly](#t009) | PARTIAL | B4 exit | B5 T009 static v11, T010 v67 and composition v4 `PASS`; normal compile v22 and authenticated/full runtime v21-v23 `RC=0`; sanitizer compile v3 and full runtime v2-v3 `RC=0`; final composition/closure record pending; [b5-provider](evidence/b5-provider.md#b5-sanitizer-compile-runtime-pass-v3-v2-v3) | 2026-09-14 05:24 -05:00 |
 | [T010 Protected Artifact and Runner Template Reuse](#t010) | PARTIAL | T009 static | B5 T010 static v67 and composition v4 `PASS`; normal compile v22 and full runtime v21-v23 `RC=0`; sanitizer compile v3 and full runtime v2-v3 `RC=0`; final composition/closure record pending; [b5-provider](evidence/b5-provider.md#b5-sanitizer-compile-runtime-pass-v3-v2-v3) | 2026-09-14 05:24 -05:00 |
-| [T011 Native Caller Migration and Compatibility Registry](#t011) | NOT_STARTED | B5 exit | B6 planned; implementation/build/runtime NOT_RUN | 2026-09-12 16:24 -05:00 |
+| [T011 Native Caller Migration and Compatibility Registry](#t011) | PASS | B5 exit | B6 closed; v12 static/composition pass; 359/359 `-j4` build, C++ compatibility selector, in-tree and external installed consumers, public example checks, ELF/no-Python closure, and fresh C++ unary/stream process oracles all pass; full qualification remains B7; [b6-migration](evidence/b6-migration.md) | 2026-09-14 01:00 -05:00 |
 | [T013 Current Candidate Process Qualification](#t013) | NOT_STARTED | B6 exit | B7 planned; implementation/build/runtime NOT_RUN | 2026-09-12 16:24 -05:00 |
 | [T012 Thin Python Prepared Model Facade](#t012) | NOT_STARTED | B7 C++ qualification exit | B8 planned; implementation/build/runtime NOT_RUN | 2026-09-12 16:24 -05:00 |
 | [T014 Design API and Scoped Handoff](#t014) | NOT_STARTED | T012 acceptance | B9 planned; implementation/build/runtime NOT_RUN | 2026-09-12 16:24 -05:00 |
@@ -33,6 +33,13 @@
 
 2026-09-13 22:32 -05:00 B5 closed：v67 修复候选通过官方最终 composition review v5（`B5_COMPOSITION_PASS`，无 P0/P1/P2/P3）；normal compile v22、focused/runtime v21-v23、独立 ASan/UBSan+LSan compile v3/runtime v2-v3 均真实 C++ `RC=0`，8/8 cases 且无 sanitizer 报告。T009/T010 的五 lane、生产调用链和 stop/drain/reaper 出口已闭合，现标为 `[x]`；下一批从依赖满足的 T011 开始。
 2026-09-14 05:24 -05:00 B5 dynamic validation：v67 静态修复候选 normal compile v22 通过，authenticated focused v21 及完整 selector v22/v23 各 8/8 通过；独立 ASan/UBSan+LSan compile v3、完整 selector v2/v3 各 8/8 通过且无 sanitizer 报告。v23 UAF 已由 dedicated provider Face worker 与 deferred bridge fixture 修复验证；B5 最终 composition/closure 尚待只读审查，T009/T010 保持 `PARTIAL`。
+2026-09-14 05:45 -05:00 B6 T011 static v9：官方 `review-agent` 对冻结快照 `.codex-tmp/spec185-t011-review-v9-20260914` 返回 `STATIC_FAIL`（P1）；取消后的 readiness retry 仍可持续排 timer。未构建/运行，已在 v10 修复并保留首个失败边界。
+2026-09-14 05:45 -05:00 B6 T011 static v10：官方 `review-agent` 对冻结快照 `.codex-tmp/spec185-t011-review-v10-20260914` 返回 `STATIC_PASS`，随后 `B6_COMPOSITION_PASS`，无 P0/P1/P2/P3；五 lane 静态覆盖，compile-link/runtime/sanitizer 尚未执行。T011 保持 `PARTIAL`。
+2026-09-14 05:45 -05:00 B6 unary v2/v3：新 Runtime C++ requester 真实进程分别在相同生产边界失败，controller/authority/provider 已启动；首个 requester 失败为 `NATIVE_REQUEST_BEGIN_FAILED`，底层日志是 NAC 解密 readiness 未就绪且 Runtime 未发起 user permission bootstrap。原始运行根目录 `.codex-tmp/spec185-b6/unary-v2/`、`unary-v3/`，已修复生产接线，待 v10 候选 `-j4` 重建和 fresh process 验证；T011 保持 `PARTIAL`。
+2026-09-14 00:49 -05:00 B6 T011 static v12：官方 `review-agent` 对冻结快照 `.codex-tmp/spec185-t011-review-v12-20260914` 返回 `STATIC_PASS`，无 P0/P1/P2/P3；显式 `<cstdlib>`、成对 PIB/TPM 校验、外部 KeyChain 复用、memory fallback、异常清理及 v10 retry/cancel 不变量通过。compile-link/runtime/sanitizer 尚未执行，T011 保持 `PARTIAL`。
+2026-09-14 00:49 -05:00 B6 unary v4：v10 readiness 修复后的真实 C++ requester 已到达 permission bootstrap，但 Controller 使用进程 PIB 证书加密，Runtime 使用不同 memory 证书，解密失败并以 `NATIVE_REQUEST_BOOTSTRAP_TIMEOUT` 结束；无 ACK/Selection，原始根目录 `.codex-tmp/spec185-b6/unary-v4/`，已加入 v12 外部 PIB/TPM 复用修复，待新构建和 fresh unary/stream 验证；T011 保持 `PARTIAL`。
+2026-09-14 00:49 -05:00 B6 unary v5：launcher 使用错误的相对 NAC-ABE 库路径，在 Python wrapper import 阶段缺少 `ndn::nacabe::Consumer::clearCache`，未启动协议进程；原始根目录 `.codex-tmp/spec185-b6/unary-v5/`，已记录为环境边界并修正重试命令；T011 保持 `PARTIAL`。
+2026-09-14 01:00 -05:00 B6 T011 closed：v12 static/composition pass 后，以 `-j4` 对受影响 Core/DI closure 完成 359/359 build（56.675s）；compatibility selector、in-tree/external installed C++ consumers、三个 public example `--help`、ELF/no-Python/nm checks、fresh C++ unary-v6 和 stream-v6 均 `RC=0`，分别发出 numerical/stream oracle pass 与 Provider grant/execution evidence。T011 现标为 `[x]`；B7/T013 继续独立的 failure/cancel/revoke/continuation/replacement qualification。
 
 2026-09-14 03:08 -05:00 B5 dynamic boundary：v63 静态门后 normal `spec185-provider-assembly` compile v21 通过；同一候选完整 selector v19/v20 在 authenticated Provider 用例分别以 `rc=134`/`rc=201` 发生内存破坏，gdb v22 首个信号位于主线程 SVS `ndn::Buffer` shared_ptr 路径，borrowed Face worker 同时泵共享 `io_context`。已写入 [b5-provider](evidence/b5-provider.md#b5-normal-runtime-boundaries-v19-v20) 与 `docs/failure-log.md`；T009/T010 保持 `PARTIAL`，先做 sanitizer/最小化 C++ 诊断。
 
@@ -445,7 +452,7 @@ C-07每行是T015 exposure、T011 C++消费、T012绑定和T014文档的共同�
 
 <a id="t011"></a>
 
-- [ ] T011 [US4] Native Caller Migration and Compatibility Registry — examples/DI_NativeRequester.cpp; examples/wscript; tests/integration-tests/di-prepared-compatibility.t.cpp; contracts/caller-matrix.md
+- [x] T011 [US4] Native Caller Migration and Compatibility Registry — examples/DI_NativeRequester.cpp; examples/wscript; tests/integration-tests/di-prepared-compatibility.t.cpp; contracts/caller-matrix.md
 
   **Batch / Depends**: B6 / B5 exit。
 

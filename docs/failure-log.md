@@ -1,5 +1,48 @@
 # Failure Log and Evidence Index
 
+## 2026-09-14 — Spec185 B6 T011 requester PIB/TPM identity boundary
+
+The first post-readiness-repair C++ unary attempt (`unary-v4`) reached the
+Runtime requester route after Controller, grant authority, and Provider startup,
+but the permission response failed at production decryption:
+`Cannot decrypt PermissionResponse AES key with local KeyChain`. The
+Controller encrypted for the requester certificate in the process PIB, while
+Runtime had created a different `pib-memory:` certificate; the process then
+ended at `NATIVE_REQUEST_BOOTSTRAP_TIMEOUT`. No ACK, Selection, or Provider
+protocol result was observed. Raw evidence is retained at
+`.codex-tmp/spec185-b6/unary-v4/`. The v12 candidate now reuses the paired
+`NDN_CLIENT_PIB`/`NDN_CLIENT_TPM` stores and rejects a partial pair, with the
+memory KeyChain fallback preserved for isolated callers. A fresh `-j4` build
+and unary/stream process attempts are required; this is an authorization
+bootstrap boundary, not a protocol PASS.
+
+## 2026-09-14 — Spec185 B6 T011 launcher library-path boundary
+
+Fresh unary attempt `unary-v5` stopped during Python launcher import before
+Controller, authority, Provider, or requester startup. The command used an
+invalid repository-relative NAC-ABE path in `LD_LIBRARY_PATH`; `_ndnsf.so`
+loaded the candidate Core library and then failed on missing
+`ndn::nacabe::Consumer::clearCache`. Raw launcher logs are retained under
+`.codex-tmp/spec185-b6/unary-v5/`. This is a startup environment failure, not
+a protocol result; the next attempt uses
+`/home/tianxing/NDN/nac-abe-integration-182/install-spec184-r4/lib`.
+
+## 2026-09-14 — Spec185 B6 T011 requester authorization bootstrap boundary
+
+The first fresh C++ unary process attempts (`unary-v2` and `unary-v3`) started
+the Controller, grant authority, and Provider successfully, then reached the
+new `Runtime.open -> User.prepare -> PreparedModel.request` route.  The first
+request boundary was the production `ServiceUser` admission check: NAC-ABE
+decryption was still pending and no Runtime-owned user permission fetch had
+been issued, so `BeginCollaborationWithProviders` rejected the request before
+ACK/Selection.  The requester returned `NATIVE_REQUEST_BEGIN_FAILED`; this is
+not a Provider/protocol result.  Raw run roots are retained at
+`.codex-tmp/spec185-b6/unary-v2/` and `.codex-tmp/spec185-b6/unary-v3/`, with
+launcher records `unary-v2.log/.rc` and `unary-v3.log/.rc`.  Spec185 B6 v10
+adds the controller permission bootstrap and a bounded C++ readiness retry;
+a new static review and fresh process run are required before this boundary
+can be considered resolved.
+
 ## 2026-09-13 — Spec185 B3 T005 native selector bootstrap boundary
 
 The B3 full C++ selector rebuilt successfully, but the first runtime test

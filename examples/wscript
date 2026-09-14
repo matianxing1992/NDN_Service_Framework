@@ -258,6 +258,19 @@ def build(bld):
                 linkflags=['-Wl,-rpath,$ORIGIN/..'],
                 install_path='${BINDIR}')
 
+    # Spec185 B6 public C++ callers. These examples include only the
+    # installed-style ndnsf-di umbrellas; native lifecycle ownership remains
+    # in the distributed-inference library.
+    for name, source in [('DI_PreparedModel', 'DI_PreparedModel.cpp'),
+                         ('DI_PreparedProvider', 'DI_PreparedProvider.cpp')]:
+        bld.program(name=name,
+                    target=name,
+                    source=[source],
+                    includes=['..'],
+                    use='ndnsf-distributed-inference ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD OPENSSL DL',
+                    linkflags=['-Wl,-rpath,$ORIGIN/..'],
+                    install_path='${BINDIR}')
+
     bld.program(name='DI_NativeArtifactAuthority',
                 target='DI_NativeArtifactAuthority',
                 source=['DI_NativeArtifactAuthority.cpp'],
@@ -267,6 +280,12 @@ def build(bld):
                 install_path='${BINDIR}')
 
     di_native_session_sources = bld.path.parent.ant_glob([
+        # Standalone DI process targets compile the request/session path
+        # directly instead of linking the Core shared library.  Keep the
+        # scheduler implementation in this shared closure so OperationState
+        # and NativeInferenceClient references resolve with the same Core
+        # ABI as installable consumers.
+        'ndn-service-framework/OperationRuntime.cpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.cpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/DependencyWaitScheduler.cpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/ExecutionEvidence.cpp',

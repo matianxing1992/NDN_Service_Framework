@@ -23,6 +23,7 @@
 #include <algorithm>
 #include <boost/asio/io_context.hpp>
 #include <cctype>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <limits>
@@ -915,6 +916,13 @@ std::shared_ptr<NativeInferenceClient> makeRuntimeClient(
         state->coreOwner->authorityCertificate,
         primary->second.trustSchema.string(), *state->coreOwner->keyChain);
       serviceUser->init();
+      // Runtime-owned requester identities need the same controller
+      // permission/bootstrap wave as maintained native applications. Queue
+      // it before starting the Face owner; the request path waits
+      // asynchronously for DKEY, permission, and PolicyStatus readiness
+      // without blocking Core I/O or assembling post-ACK state early.
+      serviceUser->fetchPermissionsFromController(
+        ndn::Name(primary->second.coreAuthorityIdentity));
       auto grants = std::make_shared<NativeAuthenticatedGrantClient>(
         primary->second.requesterIdentity, primary->second.requesterPrivateKey,
         primary->second.authorityIdentity, rawPublicKey(primary->second.authorityPublicKey),
@@ -1701,10 +1709,27 @@ std::shared_ptr<Runtime> Runtime::open(RuntimeConfig config)
   coreOwner->face = std::make_shared<ndn::Face>(coreOwner->io);
   const auto primary = freezeConfig(primaryPath, coreOwner->face.get());
   try {
-    // ServiceUser owns its own KeyChain and is created once per Runtime. The
-    // operator's Ed25519 requester key remains the grant signer; these RSA
-    // certificates are the existing Core transport identity boundary.
-    coreOwner->keyChain = std::make_unique<ndn::KeyChain>("pib-memory:", "tpm-memory:");
+    // Runtime owns the KeyChain and creates the Core transport identities
+    // once per Runtime. When the process supplies an NDN PIB/TPM pair (the
+    // normal multi-process/MiniNDN boundary), use those stores so the
+    // requester certificate and private key match the Controller-encrypted
+    // permission/DKEY material. Keep the memory pair only for isolated
+    // in-process callers that deliberately provide no NDN client stores.
+    const char* pibLocator = std::getenv("NDN_CLIENT_PIB");
+    const char* tpmLocator = std::getenv("NDN_CLIENT_TPM");
+    if ((pibLocator != nullptr && *pibLocator != '\0') !=
+        (tpmLocator != nullptr && *tpmLocator != '\0')) {
+      throw DiError("INVALID_RUNTIME_CONFIGURATION", "local", "identity",
+                    "NDN_CLIENT_PIB and NDN_CLIENT_TPM must be configured together");
+    }
+    if (pibLocator != nullptr && tpmLocator != nullptr &&
+        *pibLocator != '\0' && *tpmLocator != '\0') {
+      coreOwner->keyChain = std::make_unique<ndn::KeyChain>(
+        std::string(pibLocator), std::string(tpmLocator));
+    }
+    else {
+      coreOwner->keyChain = std::make_unique<ndn::KeyChain>("pib-memory:", "tpm-memory:");
+    }
     const auto requesterIdentity = coreOwner->keyChain->createIdentity(
       ndn::Name(primary.requesterIdentity), ndn::RsaKeyParams(2048));
     const auto authorityIdentity = coreOwner->keyChain->createIdentity(

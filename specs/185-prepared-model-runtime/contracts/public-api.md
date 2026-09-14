@@ -14,7 +14,15 @@ using RequestId = std::string;
 using ModelId = NativeModelDescriptor;
 class PlacementStrategy; // opaque registered cooperative strategy; C-05
 class Subscription; // move-only cancellation token; C-06
-struct Result { Bytes payload; RequestId requestId; std::string modelDigest; std::string planDigest; };
+struct Result {
+  Bytes payload;
+  RequestId requestId;
+  std::string modelDigest;
+  std::string planDigest;
+  bool matchesFloat32Tensor(const std::string& tensorName,
+                            const std::vector<float>& expected,
+                            double tolerance) const;
+};
 enum class RequestStatus { Pending, Succeeded, Failed, Cancelled };
 struct Event { RequestId requestId; Bytes payload; bool terminal = false; std::uint64_t sequence = 0; };
 struct RequestDiagnostics { std::uint64_t observationDropped = 0; };
@@ -81,11 +89,16 @@ public:
   static Input repository(DataRef reference);
 };
 struct GenerationOptions { std::uint64_t maxNewTokens = 32; };
-struct StreamOptions { bool enabled = true; };
+struct StreamOptions {
+  bool enabled = true;
+  bool allowReplacement = false;
+  std::uint8_t maxReplacements = 0;
+};
 struct RequestOptions {
   Milliseconds timeout{30000};
   Milliseconds ackTimeout{5000};
   std::shared_ptr<const PlacementStrategy> placement; // null = prepared default
+  std::vector<std::string> providerNames;              // absolute NDN identities
   std::string applicationRequestId;       // correlation only, not idempotency
   std::string outputMode = "FULL";
   std::optional<GenerationOptions> generation;
@@ -142,6 +155,7 @@ public:
 普通generation/stream选项由runtime映射到 `NativeInferenceClient.hpp:62-63` 的完整内部类型，
 tokenizer/安全/布局字段不向普通用户开放。GenerationOptions.maxNewTokens必须>0且不超过任务限制，
 其他采样项沿用operator配置；旧完整配置留advanced。StreamOptions.enabled=false等于不请求stream；
+开启replacement时必须同时设置allowReplacement=true与maxReplacements=1，否则由native边界拒绝。
 没指定stream时按已验证任务默认。ModelRegistration、ModelCapabilities、EventReader完整定义见C-05。
 
 ## Symbol Responsibilities and Members

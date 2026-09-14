@@ -126,11 +126,11 @@ serve同一service重复注册报SERVICE_ALREADY_REGISTERED，避免两个token�
 | PreparationReceipt | origin；preparationKeyDigest；manifestDigest；elapsed | origin=CacheHit/JoinedInFlight/Fetched/Refreshed；Python elapsed_s |
 | ModelManifest | modelName/modelRevision/modelDigest/taskName/canonicalGraphDigest/planningGraphDigest/catalogConfigurationDigest/taskContractDigest/preparationKeyDigest | native构造，只读；Python snake_case |
 | ModelCapabilities | inputSchemaJson/outputSchemaJson；inputKinds/outputModes；streaming=false/conversations=false | native构造，只读；能力不是远端资源保证 |
-| RequestOptions | timeout=30000ms；ackTimeout=5000ms；placement=null；applicationRequestId=""；outputMode="FULL"；generation/stream=nullopt | Python timeout_s=30.0、ack_timeout_s=5.0，其余snake_case；会话 token lineage 由 verified native adapter 从 Input 生成 |
+| RequestOptions | timeout=30000ms；ackTimeout=5000ms；placement=null；providerNames=[]（absolute NDN names）；applicationRequestId=""；outputMode="FULL"；generation/stream=nullopt | Python timeout_s=30.0、ack_timeout_s=5.0、provider_names；其余snake_case；会话 token lineage 由 verified native adapter 从 Input 生成 |
 | GenerationOptions | maxNewTokens=32，必须>0且符合任务限制 | Python max_new_tokens |
-| StreamOptions | enabled=true | 未传整体options时使用已验证任务默认 |
+| StreamOptions | enabled=true；allowReplacement=false；maxReplacements=0（开启replacement时必须为1） | Python enabled、allow_replacement、max_replacements；校验由native完成 |
 | RequestStatus | Pending/Succeeded/Failed/Cancelled | deadline映射Failed及结构化code |
-| Result | payload/requestId/modelDigest/planDigest | 成功只读值，payload为bytes；不返回status=false |
+| Result | payload/requestId/modelDigest/planDigest；`matchesFloat32Tensor(name, expected, tolerance)` | 成功只读值，payload为bytes；typed native oracle由C++ codec验证，不在Python重解码；不返回status=false |
 | Event | requestId/payload/terminal=false | best-effort诊断，不是可靠流 |
 | StreamEvent | sequence/payload/terminal=false | 验证后的native顺序，只读 |
 | RequestDiagnostics | observationDropped=0 | 只读计数；Python observation_dropped |

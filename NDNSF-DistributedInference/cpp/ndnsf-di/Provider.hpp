@@ -3,6 +3,8 @@
 
 #include "ndn-service-framework/OperationRuntime.hpp"
 
+#include <ndn-cxx/security/key-chain.hpp>
+
 #if defined(NDNSF_DI_PROVIDER_TEST_SEAM)
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp"
 #endif
@@ -18,7 +20,6 @@
 
 namespace ndn {
 class Face;
-class KeyChain;
 namespace security { class Certificate; }
 }
 

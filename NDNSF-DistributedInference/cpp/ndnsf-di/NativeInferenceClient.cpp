@@ -242,6 +242,7 @@ struct NativeInferenceHandle::Operation
   std::uint64_t attempt = 1;
   std::chrono::steady_clock::time_point deadline{};
   std::function<void()> cancelDeadline;
+  std::function<void()> cancelBootstrapRetry;
   std::uint64_t staleCallbacks = 0;    // late/duplicate terminal attempts: counted, never resurrecting
   std::uint64_t deliveryOverflows = 0; // reliable stream publication failures (internal)
   std::uint64_t nextEventSequence = 0;
@@ -421,6 +422,7 @@ markTerminal(const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
              bool inlineCoreCleanup = false)
 {
   std::function<void()> cancelDeadline;
+  std::function<void()> cancelBootstrapRetry;
   bool cancelCore = false;
   std::vector<std::string> releaseScopes;
   std::shared_ptr<NativeConversationCoordinator> conversations;
@@ -486,6 +488,7 @@ markTerminal(const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
     }
     operation->phase = DiRequestPhase::Terminal;
     cancelDeadline = std::move(operation->cancelDeadline);
+    cancelBootstrapRetry = std::move(operation->cancelBootstrapRetry);
   }
   // Publish the terminal frame before completing the Core state. Core wakes a
   // pending reader during complete/fail; publishing first prevents an EOF
@@ -529,6 +532,7 @@ markTerminal(const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
   }
   unregisterOperation(operation);
   if (cancelDeadline) cancelDeadline();
+  if (cancelBootstrapRetry) cancelBootstrapRetry();
   if (conversations && conversationTurn && !conversationCommitted) {
     try {
       const NativeDiError cancelledError(
@@ -1117,6 +1121,54 @@ void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& o
   const auto coreRequestId = operation->coreRequestId;
   operation->user->postToIo([operation, sourceAttempt, coreRequestId] {
     try {
+      {
+        std::lock_guard<std::mutex> lock(operation->mutex);
+        if (operation->cancelled->load() || operation->phase == DiRequestPhase::Terminal ||
+            operation->attempt != sourceAttempt)
+          return;
+      }
+      // ServiceUser starts NAC-ABE and Controller permission discovery
+      // asynchronously. Do not invoke BeginCollaboration until the
+      // protected requester can pass its admission checks: doing so would
+      // turn a normal bootstrap race into a misleading begin failure. Retry
+      // through the operation owner rather than sleeping or blocking the Face
+      // I/O thread. The original request deadline remains the only budget.
+      if (operation->runtime && !operation->user->isRequestBootstrapReady(
+            ndn::Name(operation->runtime->contract.serviceName),
+            operation->options.providerNames)) {
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= operation->deadline)
+          throw NativeDiError("NATIVE_REQUEST_BOOTSTRAP_TIMEOUT", "authorization",
+            "bootstrap", "Core authorization bootstrap did not become ready before the request deadline",
+            operation->requestId, sourceAttempt);
+        auto ticket = operation->operationRuntime->acquire();
+        auto cancelRetry = operation->operationRuntime->scheduleAt(
+          ticket, std::min(operation->deadline, now + std::chrono::milliseconds(20)),
+          [operation, sourceAttempt] {
+            {
+              std::lock_guard<std::mutex> lock(operation->mutex);
+              // The timer has fired and is no longer cancellable. Clear the
+              // stale cancellation closure before posting the next probe.
+              operation->cancelBootstrapRetry = {};
+              if (operation->cancelled->load() || operation->phase == DiRequestPhase::Terminal ||
+                  operation->attempt != sourceAttempt)
+                return;
+            }
+            beginCoreRequest(operation);
+          });
+        bool retainRetry = false;
+        {
+          std::lock_guard<std::mutex> lock(operation->mutex);
+          if (!operation->cancelled->load() && operation->phase != DiRequestPhase::Terminal &&
+              operation->attempt == sourceAttempt) {
+            operation->cancelBootstrapRetry = cancelRetry;
+            retainRetry = true;
+          }
+        }
+        if (!retainRetry)
+          cancelRetry();
+        return;
+      }
       {
         std::lock_guard<std::mutex> lock(operation->mutex);
         if (operation->cancelled->load() || operation->attempt != sourceAttempt) return;

@@ -11,7 +11,7 @@
       "stability": "stable",
       "target": "ndnsf-distributed-inference",
       "owner": "DI Runtime facade (T001+)",
-      "symbols": ["ndnsf::di::kPreparedModelRuntimeApiVersion", "Runtime", "User", "PreparedModel", "PreparationHandle", "PreparationStatus", "PreparationReceipt", "Input", "RequestHandle", "Subscription", "Result", "Conversation", "DiError", "RuntimeConfig", "UserConfig", "PrepareOptions", "RequestOptions"],
+      "symbols": ["ndnsf::di::kPreparedModelRuntimeApiVersion", "Runtime", "User", "PreparedModel", "PreparationHandle", "PreparationStatus", "PreparationReceipt", "Input", "RequestHandle", "Subscription", "Result", "Result::matchesFloat32Tensor", "Conversation", "DiError", "RuntimeConfig", "UserConfig", "PrepareOptions", "RequestOptions"],
       "replacement": null,
       "transitive_dependencies": [],
       "removal_condition": "none; additive public entry"
