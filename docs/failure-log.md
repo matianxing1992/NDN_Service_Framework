@@ -4776,6 +4776,21 @@ which differs from the Spec186 handoff seal
   SIF before retrying. Recompute its SHA and rerun the cheap preflight first.
 - **Lesson**: SIF metadata and partial extraction are insufficient; validate
   complete bootstrap decompression before spending another native build.
+## 2026-09-14 — Spec186 r31 handoff saw post-r30 documentation commit
+
+- **Area**: T006 source handoff regeneration.
+- **Symptom**: the first r31 handoff rejected the checkout because its lock
+  still named the r30 source revision `18e05f09`, while the working tree now
+  includes the committed runtime-path documentation/profile correction
+  `32e25cdd`.
+- **Root cause**: handoff revision validation correctly requires the lock to
+  match the exact current checkout, even when the selected SIF source files
+  are unchanged.
+- **Correction**: update the candidate-only r31 lock to the current checkout,
+  regenerate the handoff and definition, and keep the source seal as the
+  authority for the selected build inputs.
+- **Lesson**: every retry must rebind the lock to the actual checkout before
+  rendering; do not force a stale revision through the handoff validator.
 ## 2026-09-14 — Spec186 Tiger profile retained login-node Apptainer path
 
 - **Area**: T009/T010 Tiger runtime-version boundary.
