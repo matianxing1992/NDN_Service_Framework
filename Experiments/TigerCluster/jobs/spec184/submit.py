@@ -50,18 +50,49 @@ def build_candidate(profile_path: Path) -> Dict[str, Any]:
     return candidate.build_candidate_manifest(profile, repo_root=REPO_ROOT)
 
 
+class RenderError(ValueError):
+    """Raised when a profile cannot be rendered into an executable command."""
+
+
+def _yolo_case(case: str) -> str:
+    """Map a Spec186 profile to the registered Spec180 case.
+
+    The Spec186 profiles describe the four-provider split graph.  That graph
+    is Y-B; passing Y-A would ask the runner for a single FullModel provider.
+    Negative profiles use the registered Y-N matrix.
+    """
+    if case.endswith("-negative"):
+        return "Y-N"
+    return "Y-B"
+
+
 def render_effective(profile: Mapping[str, Any], manifest: Mapping[str, Any],
                      run_id: str, run_root: Path) -> Dict[str, Any]:
     """Render all argv/env/binds before a scheduler or process mutation."""
     runtime = profile["runtime"]
     resources = profile["resources"]
     topology = profile["topology"]
-    app = runtime["application"]
     launcher = runtime["harness"]["launcher"]
+    if topology["mode"] == "tiger":
+        # The current Spec186 profile has no signed Spec180 workload document,
+        # canonical package/config/key-map inputs, or per-role Tiger argument
+        # files.  The old generic command shape would either import MiniNDN
+        # from a SIF that does not contain it or call the supervisor with the
+        # wrong candidate schema.  Reject before scheduler mutation until a
+        # dedicated Tiger dispatch contract is added to the profile schema.
+        raise RenderError(
+            "TIGER_HARNESS_INPUTS_UNDECLARED:"
+            "SPEC180_WORKLOAD,SPEC180_YOLO_CANONICAL_PACKAGE,"
+            "SPEC180_YOLO_CONFIG,provider-args,nfd-config")
     role_map = [{"name": role["name"], "identity": role["identity"],
                  "node": role["node"], "gpu": role["gpu"],
                  "backend": role["backend"]} for role in profile["roles"]]
     gpu_devices = sorted({role["gpu"] for role in profile["roles"] if role["gpu"] >= 0})
+    # MiniNDN remains the host orchestration process.  Its child NFD and
+    # application commands use the exact SIF through this command-provider
+    # contract.
+    execution_mode = "host-minindn"
+    data_root = str(run_root)
     env = {
         "SPEC186_CASE": profile["case"],
         "SPEC186_RUN_ID": run_id,
@@ -69,28 +100,40 @@ def render_effective(profile: Mapping[str, Any], manifest: Mapping[str, Any],
         "SPEC186_APPTAINER_VERSION": runtime["apptainer"]["version"],
         "NDN_CLIENT_TRANSPORT": "unix:///run/nfd.sock",
         "PYTHONNOUSERSITE": "1",
+        "NDNSF_DI_STATE_ROOT": data_root + "/state",
+        "NDNSF_DI_ENVELOPE_KEY_FILE": data_root + "/security/request-envelope.key",
+        "SPEC180_CASE_OUTPUT_DIR": data_root + "/evidence",
     }
+    env.update({
+        "SPEC180_RUNTIME_SIF": runtime["baseSif"]["path"],
+        "SPEC180_RUNTIME_APPTAINER": runtime["apptainer"]["path"],
+    })
     if gpu_devices:
         env["CUDA_VISIBLE_DEVICES"] = ",".join(str(device) for device in gpu_devices)
     binds = [
         {"source": str(run_root), "target": "/run/spec186", "mode": "rw"},
-        {"source": runtime["baseSif"]["path"], "target": "/runtime/base.sif", "mode": "ro"},
         {"source": runtime["application"]["bundle"]["path"], "target": "/app/bundle", "mode": "ro"},
         {"source": profile["model"]["model"]["path"], "target": "/model/model", "mode": "ro"},
+        {"source": profile["workload"]["input"]["path"], "target": "/inputs/input.json", "mode": "ro"},
+        {"source": profile["workload"]["oracle"]["path"], "target": "/inputs/oracle.json", "mode": "ro"},
+        {"source": profile["security"]["permissions"]["path"], "target": "/inputs/permissions.json", "mode": "ro"},
+        {"source": profile["security"]["identityRoot"], "target": "/identity", "mode": "rw"},
     ]
+    stage_manifest = profile["model"].get("stageManifest")
+    if stage_manifest and stage_manifest.get("path"):
+        binds.append({"source": stage_manifest["path"],
+                      "target": "/model/stage-manifest.json", "mode": "ro"})
     if profile["case"].startswith("yolo-minindn"):
-        case_name = "Y-N" if profile["case"].endswith("negative") else "Y-A"
-        workload_argv = [sys.executable, launcher, "--case", case_name]
+        workload_argv = [sys.executable, launcher, "--case",
+                         _yolo_case(profile["case"])]
     elif profile["case"] == "qwen06b-minindn-cpu":
+        if not stage_manifest or not stage_manifest.get("path"):
+            raise RenderError("QWEN_STAGE_MANIFEST_UNDECLARED")
         workload_argv = [sys.executable, launcher, "--stage-manifest",
-                         profile["model"]["model"]["path"]]
+                         stage_manifest["path"]]
     else:
-        workload_argv = [launcher, "--run-id", run_id,
-                         "--candidate-digest", manifest["candidateDigest"]]
-    argv = [runtime["apptainer"]["path"], "exec", "--cleanenv", "--containall",
-            "--bind", str(run_root) + ":/run/spec186:rw",
-            "--bind", runtime["application"]["bundle"]["path"] + ":/app/bundle:ro",
-            runtime["baseSif"]["path"]] + workload_argv
+        raise RenderError("CASE_NOT_RENDERABLE:" + str(profile["case"]))
+    argv = workload_argv
     return {
         "schemaVersion": "spec186-effective-config-v1",
         "runId": run_id,
@@ -99,6 +142,7 @@ def render_effective(profile: Mapping[str, Any], manifest: Mapping[str, Any],
         "argv": argv,
         "environment": env,
         "binds": binds,
+        "execution": {"mode": execution_mode, "containerLauncher": None},
         "topology": {"mode": topology["mode"], "hosts": topology["hosts"],
                       "nfdEndpoints": topology["nfdEndpoints"]},
         "roles": role_map,
@@ -114,8 +158,17 @@ def offline_prepare(profile_path: Path, *, run_id: str, output: Optional[Path] =
     manifest = candidate.build_candidate_manifest(profile, repo_root=REPO_ROOT)
     if candidate_output:
         _write(candidate_output, manifest)
-    effective = render_effective(profile, manifest, run_id,
-                                 Path("${RUN_ROOT}") / run_id)
+    try:
+        effective = render_effective(profile, manifest, run_id,
+                                     Path("${RUN_ROOT}") / run_id)
+    except RenderError as exc:
+        result = {"schemaVersion": "spec186-prepare-v1", "status": "REJECTED",
+                  "runId": run_id, "renderError": str(exc),
+                  "sideEffects": {"ssh": 0, "rsync": 0,
+                                   "staging": 0, "sbatch": 0}}
+        if output:
+            _write(output, result)
+        return result
     result = {"schemaVersion": "spec186-prepare-v1", "candidate": manifest,
               "effective": effective, "sideEffects": {"ssh": 0, "rsync": 0,
               "staging": 0, "sbatch": 0}}
@@ -130,13 +183,19 @@ def offline_check(profile_path: Path, candidate_path: Path) -> Dict[str, Any]:
 
 def submit(profile_path: Path, candidate_path: Path, *, run_id: str,
            run_root: Path) -> Dict[str, Any]:
+    run_root = Path(run_root).resolve()
     profile = candidate.load_profile(profile_path, repo_root=REPO_ROOT)
     manifest = _read(candidate_path)
     gate = candidate.pre_dispatch(profile_path, candidate_path, repo_root=REPO_ROOT)
     if not gate["ok"]:
         return {"schemaVersion": "spec186-submit-v1", "status": "REJECTED",
                 "runId": run_id, "preDispatch": gate, "schedulerCalls": 0}
-    effective = render_effective(profile, manifest, run_id, run_root)
+    try:
+        effective = render_effective(profile, manifest, run_id, run_root)
+    except RenderError as exc:
+        return {"schemaVersion": "spec186-submit-v1", "status": "REJECTED",
+                "runId": run_id, "preDispatch": gate, "schedulerCalls": 0,
+                "renderError": str(exc)}
     resources = profile["resources"]
     argv = ["sbatch", "--parsable", "--nodes=" + str(profile["topology"]["nodes"]),
             "--cpus-per-task=" + str(resources["cpusPerNode"]),
@@ -147,6 +206,7 @@ def submit(profile_path: Path, candidate_path: Path, *, run_id: str,
            "SPEC186_CANDIDATE": str(candidate_path),
            "SPEC186_EFFECTIVE_CONFIG": json.dumps(effective, sort_keys=True),
            "SPEC186_EXEC_ARGV": json.dumps(effective["argv"]),
+           "SPEC186_EXEC_ENV": json.dumps(effective["environment"], sort_keys=True),
            "SPEC186_EXECUTE": "1"}
     try:
         result = subprocess.run(argv, env={**os.environ, **env}, text=True,
@@ -165,27 +225,37 @@ def submit(profile_path: Path, candidate_path: Path, *, run_id: str,
 def local_run(profile_path: Path, candidate_path: Path, *, run_id: str,
               run_root: Path, command: Optional[Sequence[str]] = None,
               dry_run: bool = False) -> Dict[str, Any]:
+    run_root = Path(run_root).resolve()
     gate = candidate.pre_dispatch(profile_path, candidate_path, repo_root=REPO_ROOT)
     if not gate["ok"]:
         return {"schemaVersion": "spec186-local-v1", "status": "REJECTED",
                 "runId": run_id, "preDispatch": gate, "cleanup": {"reaped": True}}
     profile = candidate.load_profile(profile_path, repo_root=REPO_ROOT)
     manifest = _read(candidate_path)
-    effective = render_effective(profile, manifest, run_id, run_root)
-    argv = list(command) if command else render_effective(
-        profile, manifest, run_id, run_root)["argv"]
+    try:
+        effective = render_effective(profile, manifest, run_id, run_root)
+    except RenderError as exc:
+        return {"schemaVersion": "spec186-local-v1", "status": "REJECTED",
+                "runId": run_id, "preDispatch": gate, "renderError": str(exc),
+                "cleanup": {"reaped": True}}
+    argv = list(command) if command else list(effective["argv"])
     if dry_run:
         return {"schemaVersion": "spec186-local-v1", "status": "DRY_RUN",
                 "runId": run_id, "candidateDigest": manifest["candidateDigest"],
                 "argv": argv, "effective": effective, "cleanup": {"reaped": True}}
     run_root.mkdir(parents=True, exist_ok=False)
+    (run_root / "evidence").mkdir()
     log_path = run_root / "process.log"
     child = None
     exit_code = 125
     forced = False
     try:
         with log_path.open("wb") as log:
-            child = subprocess.Popen(argv, cwd=str(run_root), stdout=log,
+            child_env = dict(os.environ)
+            child_env.update({str(key): str(value)
+                              for key, value in effective["environment"].items()})
+            child = subprocess.Popen(argv, cwd=str(run_root), env=child_env,
+                                     stdin=subprocess.DEVNULL, stdout=log,
                                      stderr=subprocess.STDOUT, start_new_session=True)
             try:
                 exit_code = child.wait(timeout=profile["timeouts"]["requestSeconds"])

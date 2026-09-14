@@ -7,6 +7,10 @@ The profiles were reloaded and their candidate manifests rebuilt after binding
 the current `spec186_candidate.py` digest
 `b9bb5f886fc2ee39ab50f7d85814974c595d866ef1962164968165dad9697291` in both
 collector fields. Each pre-dispatch invocation remained side-effect free.
+That receipt is historical: the static launcher-boundary repair changed the
+collector digest to
+`7788f23b3edf3d814f2f26edfa18494e561aa1b688136e8204cae494980988f4`, which is
+now bound by all eight profiles.
 
 | Profile | Candidate digest | First asset/runtime boundary | SSH/rsync/staging/sbatch |
 | --- | --- | --- | --- |

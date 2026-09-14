@@ -4254,3 +4254,31 @@ which differs from the Spec186 handoff seal
   component build does not prove the full input closure. Every candidate must
   bind source seal, dependency revisions, compiler/Rust/ONNX/ORT identities,
   immutable base digest, and a complete SIF extraction plus loader matrix.
+
+## 2026-09-13 — Spec186 effective launcher rendered an unusable process boundary
+
+- **Area**: T004/T005 `Experiments/TigerCluster/jobs/spec184/` static wiring.
+- **Symptom**: `render_effective` wrapped the host MiniNDN runner in
+  `apptainer exec --cleanenv --containall`, passed a host Python and host
+  launcher path that do not exist inside the image, omitted model/input/
+  identity binds from argv, and sent the YOLO runner an unsupported
+  `--run-id/--candidate-digest` pair. `local_run` also discarded the rendered
+  environment, while Qwen used the weight path where its runner requires the
+  stage manifest.
+- **Root cause**: the generic lifecycle renderer treated host orchestration and
+  in-image execution as one command shape and never made the effective env a
+  child-process input. The profiles also identify YOLOv8n while the maintained
+  Spec180 runner requires a YOLO26n canonical package plus eleven undeclared
+  environment inputs.
+- **Correction**: render MiniNDN as a host command with the exact-SIF command
+  provider variables; map split YOLO profiles to Y-B/Y-N; use Qwen stage
+  manifests; propagate a closed environment through local and Slurm execution;
+  and reject Tiger rendering before scheduler mutation until a dedicated
+  workload document, canonical inputs, and per-role argument files are
+  declared. This avoids importing unavailable MiniNDN from inside the SIF or
+  calling the existing Spec180 supervisor with the incompatible Spec186
+  candidate schema. Pre-dispatch reports explicit harness-family/environment
+  diagnostics until the missing canonical inputs are declared.
+- **Lesson**: a static argv string is not an executable contract. Validate the
+  interpreter namespace, CLI case, bind application, environment propagation,
+  and profile-to-runner model contract before allowing scheduler mutation.

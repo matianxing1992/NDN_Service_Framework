@@ -206,3 +206,30 @@ Apptainer 1.5.3; no local 1.3.4 executable remains, while the login node is
 outside the SIF execution path. Native identity and focused regressions remain
 green. The exact source-sealed 1.5.3 base SIF and composition receipt are still
 the controlling T006.c gate.
+
+## Checkpoint 14 — 2026-09-13 static launcher-boundary repair
+
+Static review of the executable configuration found that the previous
+`render_effective` shape could not run: it put host Python and the host
+MiniNDN launcher behind `--cleanenv --containall`, recorded binds without
+putting them in the argv, sent split YOLO profiles the Y-A case, and omitted
+the rendered environment from both local and Slurm children. Qwen also used
+the weight path instead of its stage manifest.
+
+The renderer now keeps MiniNDN on the host and passes the exact-SIF command
+provider variables to its children. It maps split YOLO normal/negative
+profiles to the registered Y-B/Y-N cases, uses Qwen stage manifests, and
+passes the same allowlist to local and Slurm children. Tiger rendering now
+fails closed because the current profiles do not declare the Spec180 workload
+document, canonical package/config/key-map inputs, or per-role argument files;
+this prevents an invalid in-image MiniNDN command from consuming an
+allocation.
+
+The maintained YOLO runner still requires a YOLO26n canonical package and
+eleven environment inputs that are absent from the current YOLOv8n profiles.
+Pre-dispatch now reports this mismatch as
+`HARNESS_MODEL_FAMILY_MISMATCH`/`HARNESS_ENVIRONMENT_UNDECLARED` with zero
+remote side effects. Focused Spec186 tests pass (`18 passed`); the collector
+digest was refreshed to `7788f23b...988f4` in all eight profiles. This closes
+the invalid command construction, not the external-input, exact-SIF, CUDA or
+Tiger qualification gates.

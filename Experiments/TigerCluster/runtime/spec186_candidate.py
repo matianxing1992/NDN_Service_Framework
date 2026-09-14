@@ -468,6 +468,37 @@ def _check_declared_file(path: Any, expected: Any, label: str,
         failures.append("FILE_READ_FAILED:" + label)
 
 
+def _harness_checks(profile: Mapping[str, Any], failures: list[str]) -> None:
+    """Catch profile/entrypoint contract drift before any dispatch mutation."""
+    launcher = Path(profile["runtime"]["harness"]["launcher"])
+    if not launcher.is_file() or not profile["case"].startswith("yolo-"):
+        return
+    try:
+        source = launcher.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        failures.append("HARNESS_SOURCE_READ_FAILED")
+        return
+    # The maintained Spec180 runner is package/config driven and requires the
+    # canonical YOLO26n package.  Spec186's old profiles describe a bare
+    # YOLOv8n file and declare none of those environment inputs; silently
+    # dispatching them only produces an early ENVIRONMENT_MISSING failure.
+    if "SPEC180_YOLO_CANONICAL_PACKAGE" in source:
+        if profile["model"]["family"] != "YOLO26n":
+            failures.append("HARNESS_MODEL_FAMILY_MISMATCH:expected-YOLO26n")
+        required = (
+            "NDNSF_DI_STATE_ROOT", "NDNSF_DI_ENVELOPE_KEY_FILE",
+            "SPEC180_YOLO_CANONICAL_PACKAGE", "SPEC180_YOLO_CATALOGUE_REGISTRY",
+            "SPEC180_YOLO_CATALOG_DATA_NAME", "SPEC180_YOLO_CATALOG_SIGNER",
+            "SPEC180_YOLO_OFFER_TRUST_ROOT", "SPEC180_YOLO_OFFER_PUBLIC_KEY_MAP",
+            "SPEC180_YOLO_OFFER_PRIVATE_KEY_MAP", "SPEC180_YOLO_TOPOLOGY",
+            "SPEC180_YOLO_CONFIG",
+        )
+        # The current profile schema has no runner environment declaration.
+        # Report this as a deterministic input defect instead of allowing the
+        # job to consume a local or Tiger allocation and fail after startup.
+        failures.append("HARNESS_ENVIRONMENT_UNDECLARED:" + ",".join(required))
+
+
 def _apptainer_checks(profile: Mapping[str, Any], failures: list[str],
                       commands: list[list[str]]) -> None:
     """Require the declared runtime on local SIF execution paths.
@@ -607,6 +638,7 @@ def pre_dispatch(profile_path: Path, candidate_path: Path, *, repo_root: Path,
         launcher = Path(profile["runtime"]["harness"]["launcher"])
         if not launcher.is_file():
             failures.append("FILE_MISSING:harness.launcher")
+        _harness_checks(profile, failures)
         extension = Path(profile["runtime"]["application"]["extension"])
         if not extension.is_file():
             failures.append("FILE_MISSING:application.extension")

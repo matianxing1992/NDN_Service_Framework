@@ -25,7 +25,11 @@ source seal `sha256:f4676a0f937c903caebc8374893171890d0d6d0639be42a3ced1b101d751
 and r6 application tree digest
 `04c2dd64b4f070cbd909a87f75a0372a0e3d4dae45c7e712641369cf76531d73`. The
 current collector digest is
-`d42d7859bff1838f3293e4925db56e0d8ab46bb72a2b711a7bc7d61073ae9a1d`.
+`d42d7859bff1838f3293e4925db56e0d8ab46bb72a2b711a7bc7d61073ae9a1d` was the
+pre-repair digest. The current profile-bound collector digest is
+`7788f23b3edf3d814f2f26edfa18494e561aa1b688136e8204cae494980988f4`.
+Receipts below that bind the earlier digest remain historical and are not
+current candidate identities.
 
 The candidate digests below are the historical r5 offline identities and are
 not valid for the current r6 source/app candidate. Current candidate manifests

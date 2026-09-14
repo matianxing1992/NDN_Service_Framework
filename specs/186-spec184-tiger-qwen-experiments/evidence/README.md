@@ -29,6 +29,7 @@ of the stopping point; it is not a qualification result.
 | `host-m01-r55-g3-20260913.md` | current-source G3 host M01 manifest and validation | r55 M01 manifest `sha256:51039878…27c893a` passes with source/app identity bound; tiny-ONNX host gate only, no YOLO/SIF qualification |
 | `closure-handoff-20260912.md` | immutable prior implemented/wired/executed/measured snapshot | historical boundary retained for audit |
 | `closure-handoff-20260913.md` | current implemented/wired/executed/measured reconciliation | r6 staged and 1.5.3 aligned; branch remains `IN_PROGRESS` at the repository route/base-SIF/model gates |
+| `static-wiring-audit-20260913.md` | static argv/env/bind/profile-to-runner audit and repairs | lifecycle boundary defects fixed; YOLO canonical inputs remain fail-closed external prerequisites |
 
 Runtime receipts belong in `Experiments/TigerCluster/results/<run-id>` or the
 declared project-storage counterpart. Secrets, models, SIFs and large logs do
