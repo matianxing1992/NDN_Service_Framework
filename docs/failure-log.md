@@ -4770,8 +4770,10 @@ which differs from the Spec186 handoff seal
 - **Root cause**: the earlier preflight receipt described a historical compute
   path, but the current Tiger login environment exposes only the 1.3.4 system
   package; the project-owned 1.5.3 executable had not yet been made explicit.
-- **Correction**: stage the verified 1.5.3 binary under the project storage
-  path and change Tiger profiles, runtime policy, quickstart, and tests to use
-  that path. Login remains SSH/Slurm metadata only.
+- **Correction**: the project tools directory rejected the unstripped binary
+  at its per-user quota, so a stripped copy of the same verified 1.5.3 build
+  was staged at `/home/tma1/.local/bin/apptainer-1.5.3` and verified by both
+  version and SHA. Tiger profiles, runtime policy, quickstart, and tests bind
+  that path; login remains SSH/Slurm metadata only.
 - **Lesson**: a version string in a receipt is insufficient; the candidate must
   bind the executable path that the allocated compute node will actually run.

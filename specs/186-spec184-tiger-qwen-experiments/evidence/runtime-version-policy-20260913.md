@@ -9,7 +9,7 @@ for SSH/Slurm metadata and is never an execution fallback.
 | Scope | Explicit executable | Required version | Verification |
 | --- | --- | --- | --- |
 | Local MiniNDN/SIF | `/usr/local/bin/apptainer` | `1.5.3` | `apptainer --version` → `apptainer version 1.5.3` |
-| Tiger compute SIF | `/project/tma1/ndnsf-di/tools/spec186/apptainer-1.5.3` | `1.5.3` | bounded `srun ... /project/tma1/ndnsf-di/tools/spec186/apptainer-1.5.3 --version` → `apptainer version 1.5.3` |
+| Tiger compute SIF | `/home/tma1/.local/bin/apptainer-1.5.3` | `1.5.3` | bounded `srun ... /home/tma1/.local/bin/apptainer-1.5.3 --version` → `apptainer version 1.5.3`; SHA-256 `f7ac8e00b9d9c2e78e4b7bedb549df7868092910227db5e8b91be8a47212af06` |
 | Tiger login | `/usr/bin/apptainer` metadata only | `1.3.4` allowed on control plane | observed `apptainer version 1.3.4-1.el9`; no SIF command is run there |
 
 All eight `spec184-*.json` profiles now carry
@@ -19,7 +19,8 @@ instead of PATH lookup, and local pre-dispatch verifies the executable with
 the bounded `--version` form. The compute preflight rejects any version other
 than the 1.5.3 runtime. The compute path is a project-owned, user-space
 installation because the login node's system package is 1.3.4; the login node
-is never used to execute SIF.
+is never used to execute SIF. The project `tools/spec186` directory is not
+used because its per-user quota cannot hold the executable.
 
 The current-source refresh supersedes the r5 application identity. All eight
 profiles now bind source commit `6d143d3f0f7a7c627af2c1ef6810d79c0738b52d`,

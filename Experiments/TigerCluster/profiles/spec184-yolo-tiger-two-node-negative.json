@@ -81,7 +81,7 @@
     },
     "allowCpuFallback": false,
     "apptainer": {
-      "path": "/project/tma1/ndnsf-di/tools/spec186/apptainer-1.5.3",
+      "path": "/home/tma1/.local/bin/apptainer-1.5.3",
       "version": "1.5.3"
     },
     "application": {

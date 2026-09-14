@@ -65,7 +65,7 @@ weights and a compatible backend. A tiny fixture produces `SMOKE_ONLY`, not mode
 
 For local SIF work, use the profile's explicit `/usr/local/bin/apptainer`
 1.5.3 runtime. Tiger profiles use the project-owned
-`/project/tma1/ndnsf-di/tools/spec186/apptainer-1.5.3` on allocated compute
+`/home/tma1/.local/bin/apptainer-1.5.3` on allocated compute
 nodes. The Tiger login node's `/usr/bin/apptainer` is 1.3.4 and is metadata
 only; it never executes a SIF and is not a fallback.
 
