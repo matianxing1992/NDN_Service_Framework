@@ -27,6 +27,9 @@ Stage: builder
     export LDFLAGS="-B/usr/bin"
     export PYTHONNOUSERSITE=1
     export LD_LIBRARY_PATH=/opt/ndnsf-di/current/lib:/opt/onnxruntime/lib
+    # The minimal bootstrap SIF may omit dpkg's transient state directories.
+    # Recreate them before apt invokes dpkg so the package boundary is stable.
+    install -d /var/lib/dpkg/updates /etc/apt/preferences.d
     # Drop inherited application objects and build trees before using the base.
     rm -rf /src/ndnsf /src/ndn-svs /src/nac-abe /src/ndn-sd /tmp/nac-abe-build /tmp/ndnsf-build-python /tmp/ndnsf-pc
     rm -rf /opt/ndnsf-stage /opt/ndnsf-candidate /opt/ndnsf-di/replay

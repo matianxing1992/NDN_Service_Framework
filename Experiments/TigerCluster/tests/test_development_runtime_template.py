@@ -73,6 +73,7 @@ def test_spec186_preflight_is_wired_before_expensive_build():
     assert "clang-10" in TEMPLATE.read_text()
     assert "rm -rf build" in TEMPLATE.read_text()
     assert "internal compiler error" in TEMPLATE.read_text()
+    assert "/var/lib/dpkg/updates" in TEMPLATE.read_text()
     build_script = (ROOT / "Experiments/TigerCluster/adapters/slurm-apptainer/scripts/build-local-sif.sh").read_text()
     assert "preflight-development-sif.py" in build_script
     assert build_script.index("preflight_json") < build_script.index('echo "LOCAL_SIF_BUILD_START')

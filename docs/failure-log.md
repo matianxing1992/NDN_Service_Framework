@@ -4693,3 +4693,18 @@ which differs from the Spec186 handoff seal
 - **Lesson**: a lower Waf job count is only a concurrency bound, not a proof
   that GCC can compile this source. Compiler fallback is part of the sealed
   build recipe and must be validated before SIF promotion.
+## 2026-09-14 — Spec186 r26 base image missing dpkg updates directory
+
+- **Area**: T006 exact SIF builder dependency installation.
+- **Symptom**: r26 passed the rendered-definition preflight, but the builder
+  stopped before compiling source when `apt-get install clang-10` invoked
+  `dpkg` and reported `cannot scan updates directory
+  '/var/lib/dpkg/updates/': No such file or directory`.
+- **Root cause**: the repaired local bootstrap SIF omits the normal dpkg state
+  directories; the added explicit Clang fallback therefore reached a missing
+  package-manager directory.
+- **Correction**: create `/var/lib/dpkg/updates` (and the optional apt
+  preferences directory) before the first package install, then retry with
+  the same sealed source and dependency inputs.
+- **Lesson**: adding a compiler fallback also requires checking the package
+  manager state of the bootstrap image before consuming a full native build.
