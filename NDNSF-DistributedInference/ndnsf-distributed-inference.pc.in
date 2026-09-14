@@ -6,6 +6,6 @@ includedir=@includedir@
 Name: ndnsf-distributed-inference
 Description: Native NDNSF distributed-inference runtime and adapters
 Version: @VERSION@
-Requires: libndn-service-framework
+Requires: libndn-service-framework libndn-cxx
 Libs: -L${libdir} -lndnsf-distributed-inference
 Cflags: -I${includedir} -I${includedir}/NDNSF-DistributedInference/cpp @EXTRA_INCLUDES@

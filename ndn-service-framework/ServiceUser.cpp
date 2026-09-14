@@ -3833,6 +3833,37 @@ namespace ndn_service_framework
             });
     }
 
+    bool ServiceUser::isRequestBootstrapReady(
+        const ndn::Name& serviceName,
+        const std::vector<ndn::Name>& providers)
+    {
+        if (serviceName.empty()) {
+            return false;
+        }
+        // LocalMock fixtures deliberately install their own authorization and
+        // crypto boundary. Calling this predicate must not replace the
+        // fixture's existing BeginCollaboration checks with a synthetic
+        // production bootstrap.
+        if (m_isLocalMock) {
+            return true;
+        }
+        if (!activeNacConsumer().readyForDecryption() ||
+            !hasUserPermissionForRequest(providers, serviceName)) {
+            return false;
+        }
+        // A configured runtime must also have an accepted service-scoped
+        // ControllerVersion before it publishes a protected Request. A
+        // controller-free production user is not a supported DI path, but
+        // retaining the empty-prefix branch keeps the predicate consistent
+        // with ServiceUser's existing compatibility semantics.
+        std::lock_guard<std::mutex> lock(m_controllerVersionMutex);
+        if (m_controllerPrefix.empty()) {
+            return true;
+        }
+        const auto it = m_revocationStates.find(serviceName.toUri());
+        return it != m_revocationStates.end() && it->second.hasCurrentStatus();
+    }
+
     void ServiceUser::applyPermissionResponse(const PermissionResponse& response)
     {
         if (response.getPermissionKind() != tlv::UserPermission) {

@@ -310,6 +310,30 @@ def build(bld):
                 linkflags=['-Wl,--no-relax'],
                 rpath=[bld.bldnode.abspath()], install_path=None)
 
+    # Spec185 B6 public caller/compatibility selector. It includes no test
+    # seam or private DI header; dynamic protocol qualification is owned by B7.
+    bld.program(target='../spec185-compatibility',
+                name='spec185-compatibility',
+                source=[bld.path.parent.find_node('tests/main.cpp'),
+                        bld.path.find_node('integration-tests/di-prepared-compatibility.t.cpp')],
+                includes=framework_includes,
+                use='ndnsf-distributed-inference ndn-service-framework ' + framework_use,
+                defines=['HAVE_TESTS'],
+                cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
+                linkflags=['-Wl,--no-relax'],
+                rpath=[bld.bldnode.abspath()], install_path=None)
+
+    # Same public short umbrellas, consumed as a standalone-style binary.
+    # The batch repeats this source against the installed prefix without any
+    # repository include path.
+    bld.program(target='../spec185-caller-consumer',
+                name='spec185-caller-consumer',
+                source=[bld.path.find_node('installed-api/spec185-caller-consumer.cpp')],
+                includes=['..', '../ndn-service-framework'],
+                use='ndnsf-distributed-inference ndn-service-framework ' + framework_use,
+                cxxflags=['-fPIC'], linkflags=['-Wl,--no-relax'],
+                rpath=[bld.bldnode.abspath()], install_path=None)
+
     # Exercise the shared native projection and model-specific merge contract
     bld.program(target='../spec181-exact-tensor-transport',
                 name='spec181-exact-tensor-transport',

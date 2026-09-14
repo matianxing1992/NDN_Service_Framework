@@ -498,6 +498,17 @@ namespace ndn_service_framework{
                             StreamSubscriptionOptions options);
 
             void fetchPermissionsFromController(const ndn::Name& controllerPrefix);
+            /**
+             * Return whether a configured production requester has completed
+             * the local authorization bootstrap needed to begin a protected
+             * request. This predicate is intended for the Core request owner
+             * while running on the Face I/O thread; it never waits or performs
+             * network I/O. LocalMock users retain their explicit fixture
+             * boundary and return ready here.
+             */
+            bool isRequestBootstrapReady(
+                const ndn::Name& serviceName,
+                const std::vector<ndn::Name>& providers = {});
             void applyPermissionResponse(const PermissionResponse& response);
             /** Install a Controller-signed policy status after the enclosing
              * Data has passed the configured trust validator. */

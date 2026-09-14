@@ -631,6 +631,12 @@ def build(bld):
     bld.install_files(
         '${INCLUDEDIR}/NDNSF-DistributedInference/cpp/ndnsf-di',
         [bld.path.find_resource(header) for header in di_installed_headers])
+    # Stable short include names for external C++ applications. The nested
+    # historical path remains installed for compatibility.
+    bld.install_files(
+        '${INCLUDEDIR}/ndnsf-di',
+        [bld.path.find_resource('ndnsf-di/api.hpp'),
+         bld.path.find_resource('ndnsf-di/provider.hpp')])
     bld.install_files(
         '${INCLUDEDIR}/NDNSF-DistributedInference/cpp/ndnsf-di',
         bld.path.ant_glob(

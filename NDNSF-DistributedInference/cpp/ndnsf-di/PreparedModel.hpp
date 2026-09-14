@@ -97,6 +97,8 @@ struct GenerationOptions
 struct StreamOptions
 {
   bool enabled = true;
+  bool allowReplacement = false;
+  std::uint8_t maxReplacements = 0;
 };
 
 /** Request options projected from the verified model package. */
@@ -105,6 +107,8 @@ struct RequestOptions
   std::chrono::milliseconds timeout{30'000};
   std::chrono::milliseconds ackTimeout{5'000};
   std::shared_ptr<const PlacementStrategy> placement;
+  /** Optional absolute Provider identities to pin native selection. */
+  std::vector<std::string> providerNames;
   std::string applicationRequestId;
   std::string outputMode = "FULL";
   std::optional<GenerationOptions> generation;
@@ -117,6 +121,11 @@ struct Result
   std::string requestId;
   std::string modelDigest;
   std::string planDigest;
+
+  /** Validate a native float32 tensor oracle without exposing codec internals. */
+  bool matchesFloat32Tensor(const std::string& tensorName,
+                            const std::vector<float>& expected,
+                            double tolerance) const;
 };
 
 enum class RequestStatus { Pending, Succeeded, Failed, Cancelled };
