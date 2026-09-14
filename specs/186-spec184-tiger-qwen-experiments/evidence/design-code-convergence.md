@@ -330,6 +330,8 @@ The scheduler payload now value-binds the reserved run and candidate identity
 environment variables to the effective config before creating any run-owned
 directory. A direct payload invocation with a mismatched identity is rejected
 without side effects, while the renderer's matching values remain accepted.
+The full static-review experiment cycle and all eight pre-dispatch receipts are
+recorded in `evidence/static-experiment-cycle-20260913.md`.
 
 The collector digest remains
 `847b5261065419bf6467136f9d9739898409bf2cdd05d9a6214644bc40582490`; profile
