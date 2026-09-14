@@ -293,6 +293,23 @@ def build(bld):
                 linkflags=['-Wl,--no-relax'],
                 rpath=[bld.bldnode.abspath()], install_path=None)
 
+    # Spec185 B5 provider assembly selector.  The fixture exercises the
+    # public C++ ProviderConfig/Provider façade, Provider-only Runtime role
+    # separation, authenticated identity binding, scoped registration and
+    # idempotent drain/close against the complete DI source closure.
+    bld.program(target='../spec185-provider-assembly',
+                name='spec185-provider-assembly',
+                source=[bld.path.parent.find_node('tests/main.cpp'),
+                        bld.path.find_node('integration-tests/di-prepared-provider.t.cpp'),
+                        bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp')] +
+                       di_integration_sources,
+                includes=framework_includes,
+                use='ndn-service-framework ' + framework_use + ' ONNXRUNTIME',
+                defines=['HAVE_TESTS', 'NDNSF_DI_PROVIDER_TEST_SEAM'],
+                cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
+                linkflags=['-Wl,--no-relax'],
+                rpath=[bld.bldnode.abspath()], install_path=None)
+
     # Exercise the shared native projection and model-specific merge contract
     bld.program(target='../spec181-exact-tensor-transport',
                 name='spec181-exact-tensor-transport',

@@ -3,6 +3,7 @@
 
 #include "ndn-service-framework/OperationRuntime.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/Provider.hpp"
 
 #include <chrono>
 #include <condition_variable>
@@ -190,11 +191,18 @@ public:
    */
   static std::shared_ptr<Runtime> open(RuntimeConfig config);
 
+  /** Open a Provider-only runtime without constructing a User directory. */
+  static std::shared_ptr<Runtime> open(const ProviderConfig& config);
+
   /** Return a User bound to this Runtime's configured principal. */
   User user(UserConfig config = {});
 
   /** Return an opaque strategy registered by this Runtime's frozen registry. */
   std::shared_ptr<const PlacementStrategy> placementStrategy(const std::string& id) const;
+
+  /** Return the configured Provider-only façade. */
+  Provider provider(const ProviderConfig& config);
+  Provider provider();
 
   /**
    * Close this runtime exactly once.  New operations are rejected; work

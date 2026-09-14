@@ -1,0 +1,1343 @@
+/* -*- Mode: C++; c-file-style: "gnu"; indent-tabs-mode:nil -*- */
+
+#include "tests/boost-test.hpp"
+
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/Provider.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/ExecutionEvidence.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedProvider.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp"
+#include "ndnsf-integration-fixture.hpp"
+#include "ndn-service-framework/HybridMessageCrypto.hpp"
+#include "ndn-service-framework/NDNSFMessages.hpp"
+
+#include <boost/test/unit_test.hpp>
+
+#include <openssl/evp.h>
+#include <ndn-cxx/util/sha256.hpp>
+
+#include <chrono>
+#include <cctype>
+#include <condition_variable>
+#include <filesystem>
+#include <fstream>
+#include <cstdlib>
+#include <algorithm>
+#include <iterator>
+#include <mutex>
+#include <atomic>
+#include <map>
+#include <set>
+#include <sstream>
+#include <string>
+#include <vector>
+
+using namespace ndnsf::di;
+using namespace ndn_service_framework;
+
+namespace {
+
+std::filesystem::path
+trustSchema()
+{
+  return std::filesystem::absolute("examples/trust-any.conf").lexically_normal();
+}
+
+ProviderConfig
+makeConfig(const std::string& providerName = "/spec185/provider",
+           const std::string& serviceName = "/Inference/Spec185Provider")
+{
+  const auto trust = trustSchema().string();
+  std::vector<std::string> values{
+    "provider", "--provider", providerName, "--group", "/spec185/group",
+    "--controller", "/spec185/controller", "--trust-schema", trust,
+    "--service", serviceName, "--role", "/Backbone",
+    "--workers", "1"};
+  std::vector<const char*> argv;
+  argv.reserve(values.size());
+  for (const auto& value : values)
+    argv.push_back(value.c_str());
+  return ProviderConfig::fromCommandLine(static_cast<int>(argv.size()), argv.data());
+}
+
+std::shared_ptr<NativeModelRunnerFactory>
+makeProviderOracleRunnerFactory(std::shared_ptr<std::atomic<unsigned>> runs)
+{
+  auto factory = std::make_shared<RegistryNativeModelRunnerFactory>();
+  factory->registerBackend(
+    "onnxruntime",
+    [runs] (const NativeModelRunnerSpec& spec) {
+      ExecutionEvidence evidence;
+      evidence.providerName = spec.metadata.at("provider");
+      evidence.providerBootId = spec.metadata.at("boot");
+      evidence.evidenceEpoch = 1;
+      evidence.runnerKind = RunnerKind::OnnxRuntimeCpu;
+      evidence.realCompute = true;
+      evidence.deviceKind = "cpu";
+      evidence.deviceId = "0";
+      evidence.deviceIds = {"0"};
+      evidence.runtimeVersion = "spec185-provider-oracle";
+      evidence.modelDigest = spec.metadata.at("artifact");
+      evidence.planDigest = spec.metadata.at("plan");
+      evidence.artifactDigests[spec.role] = spec.metadata.at("artifact");
+      evidence.roles = {spec.role};
+      evidence.loadCompleted = true;
+      evidence.warmupCompleted = true;
+      evidence.createdAtMs = 1;
+      evidence.validate();
+      return makeNativeModelRunner(
+        [runs] (const RoleExecutionContext&) {
+          runs->fetch_add(1, std::memory_order_relaxed);
+          const std::string response = "spec185-provider-response";
+          return std::map<std::string, TensorBundle>{
+            {"final-response", TensorBundle{
+              "final-response",
+              std::vector<std::uint8_t>(response.begin(), response.end()),
+              1, response.size()}}};
+        },
+        std::move(evidence));
+    });
+  return factory;
+}
+
+using EvpKey = std::shared_ptr<EVP_PKEY>;
+
+EvpKey
+makeEd25519Key(char seed)
+{
+  const std::string raw(32, seed);
+  return EvpKey(EVP_PKEY_new_raw_private_key(
+    EVP_PKEY_ED25519, nullptr,
+    reinterpret_cast<const unsigned char*>(raw.data()), raw.size()), EVP_PKEY_free);
+}
+
+std::string
+publicKeyBytes(const EvpKey& key)
+{
+  std::string raw(32, '\0');
+  std::size_t size = raw.size();
+  if (!key || EVP_PKEY_get_raw_public_key(
+        key.get(), reinterpret_cast<unsigned char*>(raw.data()), &size) != 1 || size != 32)
+    throw std::runtime_error("provider test key extraction failed");
+  return raw;
+}
+
+EvpKey
+publicKey(const EvpKey& privateKey)
+{
+  const auto raw = publicKeyBytes(privateKey);
+  return EvpKey(EVP_PKEY_new_raw_public_key(
+    EVP_PKEY_ED25519, nullptr,
+    reinterpret_cast<const unsigned char*>(raw.data()), raw.size()), EVP_PKEY_free);
+}
+
+std::filesystem::path
+providerAssemblyFixture()
+{
+  const auto relative = std::filesystem::path(
+    "tests/fixtures/spec175/tiny-causal-lm-v1/two-role/role-0.onnx");
+  for (const auto& root : {std::filesystem::current_path(),
+                           std::filesystem::current_path().parent_path(),
+                           std::filesystem::current_path().parent_path().parent_path()}) {
+    const auto candidate = root / relative;
+    if (std::filesystem::is_regular_file(candidate))
+      return candidate;
+  }
+  return {};
+}
+
+std::vector<std::uint8_t>
+providerAssemblyRead(const std::filesystem::path& path)
+{
+  std::ifstream input(path, std::ios::binary);
+  return std::vector<std::uint8_t>(std::istreambuf_iterator<char>(input),
+                                   std::istreambuf_iterator<char>());
+}
+
+NativeOnnxIdentity
+providerAssemblySourceIdentity(const std::vector<std::uint8_t>& source)
+{
+  NativeCanonicalSource canonicalSource;
+  canonicalSource.modelBytes = source;
+  const NativeAssemblyControl control{
+    std::chrono::steady_clock::now() + std::chrono::seconds(30), [] {},
+    1 << 20, 1 << 20};
+  return canonicalOnnxSourceIdentity(canonicalSource, control);
+}
+
+struct ProviderRequestProbeState
+{
+  std::mutex mutex;
+  bool requestPublished = false;
+  bool selectionSeen = false;
+  bool responseSeen = false;
+  bool terminal = false;
+  std::string failure;
+};
+
+std::string
+providerAssemblyDigest(const std::vector<std::uint8_t>& bytes)
+{
+  ndn::util::Sha256 hash;
+  hash.update(ndn::span<const std::uint8_t>(bytes.data(), bytes.size()));
+  auto value = hash.toString();
+  std::transform(value.begin(), value.end(), value.begin(), [] (unsigned char ch) {
+    return static_cast<char>(std::tolower(ch));
+  });
+  return "sha256:" + value;
+}
+
+NativeOnnxWorkerLocation
+providerAssemblyWorker()
+{
+  std::vector<std::string> candidates;
+  if (const auto* dir = std::getenv("NDNSF_SPEC182_BIN_DIR"); dir && *dir)
+    candidates.emplace_back(std::string(dir) + "/DI_NativeOnnxAssemblyWorker");
+  candidates.emplace_back("build-nac182/DI_NativeOnnxAssemblyWorker");
+  candidates.emplace_back("build/DI_NativeOnnxAssemblyWorker");
+  candidates.emplace_back("build-spec185-b0c-normal/DI_NativeOnnxAssemblyWorker");
+  candidates.emplace_back("../build-nac182/DI_NativeOnnxAssemblyWorker");
+  candidates.emplace_back("../build-spec185-b0c-normal/DI_NativeOnnxAssemblyWorker");
+  candidates.emplace_back("examples/DI_NativeOnnxAssemblyWorker");
+  for (const auto& path : candidates) {
+    if (std::filesystem::is_regular_file(path))
+      return NativeOnnxWorkerLocation{path, ""};
+  }
+  BOOST_FAIL("DI_NativeOnnxAssemblyWorker binary not found");
+  return {};
+}
+
+NativeSelectionProjectionV3
+makeProviderAssemblyProjection(const std::string& rootDigest,
+                               const std::string& profileDigest,
+                               const std::string& graphDigest,
+                               const std::string& initializerDigest)
+{
+  NativeSelectionProjectionV3 projection;
+  projection.provider = "/spec185/provider/assembler";
+  projection.requestId = "/spec185/provider/assembler-request";
+  projection.canonicalArtifactName = "/spec185/provider/assembler/root";
+  projection.plan.serviceName = "/LLM/Qwen";
+  projection.plan.modelName = "spec175-tiny-causal-lm-v1";
+  projection.planDigest = std::string("sha256:") + std::string(64, 'd');
+  projection.deadlineMs = static_cast<std::uint64_t>(
+    std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::system_clock::now().time_since_epoch()).count()) + 60'000;
+  auto& role = projection.assembly;
+  role.role = "/LLM/Pipeline/Stage/0";
+  role.selectedRole = role.role;
+  role.rank = 0;
+  role.layerBegin = 0;
+  role.layerEnd = 2;
+  role.backend = "onnxruntime";
+  role.adapterId = "onnx";
+  role.adapterVersion = "1";
+  role.deviceSet = {"cpu"};
+  role.artifactDigest = std::string("sha256:") + std::string(64, 'c');
+  role.roleKind = "PIPELINE_RANGE";
+  role.modelManifestDigest = rootDigest;
+  role.artifactProfileDigest = profileDigest;
+  role.graphDigest = graphDigest;
+  role.canonicalInitializerDigest = initializerDigest;
+  role.adapterDescriptorDigest = std::string("sha256:") + std::string(64, '1');
+  role.assemblerDescriptorDigest = std::string("sha256:") + std::string(64, '2');
+  role.backendAbi = "onnxruntime-cpu-v1";
+  for (std::uint64_t index = 0; index < 21; ++index)
+    role.nodeIndices.push_back(index);
+  role.expectedInputs = {
+    {"input_ids", "int64", {"1", "sequence"}},
+    {"attention_kv_in", "float32", {"2", "8"}},
+    {"recurrent_state_in", "float32", {"2", "8"}},
+    {"convolution_state_in", "float32", {"2", "8"}}};
+  role.expectedOutputs = {
+    {"hidden_out", "float32", {"1", "sequence", "8"}},
+    {"attention_kv_out", "float32", {"2", "8"}},
+    {"recurrent_state_out", "float32", {"2", "8"}},
+    {"convolution_state_out", "float32", {"2", "8"}}};
+  role.precision = "float32";
+  role.quantization = "none";
+  role.layout = "native";
+  role.padding = "none";
+  role.maxSourceBytes = 1024 * 1024;
+  role.maxAssembledBytes = 1024 * 1024;
+  role.maxNodes = 64;
+  const auto canonicalRecipe = canonicalNativeOnnxRecipeJson(role);
+  role.recipeDigest = providerAssemblyDigest(
+    std::vector<std::uint8_t>(canonicalRecipe.begin(), canonicalRecipe.end()));
+  projection.selectedRole = role;
+  projection.plan.roles = {role.role};
+  projection.executionRole.roleId = role.role;
+  projection.executionRole.stageId = role.role;
+  projection.executionRole.rank = role.rank;
+  projection.executionRole.layerBegin = role.layerBegin;
+  projection.executionRole.layerEnd = role.layerEnd;
+  projection.executionRole.backend = role.backend;
+  projection.executionRole.adapterId = role.adapterId;
+  projection.executionRole.adapterVersion = role.adapterVersion;
+  projection.dataflow.requestId = projection.requestId;
+  projection.dataflow.attempt = projection.attempt;
+  projection.dataflow.planDigest = projection.planDigest;
+  projection.dataflow.role = role.role;
+  projection.dataflow.terminalResponseOwner = true;
+  projection.dataflow.dataflowDigest = graphDigest;
+  projection.deviceBinding.mode = "SINGLE_DEVICE";
+  projection.deviceBinding.provider = projection.provider;
+  projection.deviceBinding.role = role.role;
+  projection.deviceBinding.offerScopedDeviceHandle = "cpu";
+  projection.deviceBinding.offerDigest = projection.planDigest;
+  projection.deviceBinding.topologyProfileDigest = projection.planDigest;
+  projection.deviceBinding.resourceSnapshotDigest = projection.planDigest;
+  projection.deviceBinding.resourceSequence = 1;
+  projection.deviceBinding.sharingPolicy = "exclusive";
+  return projection;
+}
+
+std::string
+providerProjection(const ndn::Name& provider,
+                   const ndn::Name& requestId,
+                   const std::string& planDigest,
+                   const std::string& artifactDigest,
+                   const std::string& protectionEpoch = "plaintext-v1",
+                   const std::string& grantName = {},
+                   const std::string& grantDigest = {})
+{
+  NativeSelectionProjectionV3 projection;
+  projection.provider = provider.toUri();
+  projection.requestId = requestId.toUri();
+  projection.attempt = 1;
+  projection.planCoreDigest = planDigest;
+  projection.planDigest = planDigest;
+  projection.ackClosedDigest = planDigest;
+  projection.offerDigest = planDigest;
+  projection.securityPolicySnapshotDigest = planDigest;
+  projection.deadlineMs = static_cast<std::uint64_t>(
+    std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::system_clock::now().time_since_epoch()).count()) + 60'000;
+  projection.groupCapabilityV1 = "spec185-provider-capability";
+  projection.plan.version = 3;
+  projection.plan.executionPolicy = "DATA_DRIVEN_V2";
+  projection.plan.roles = {"/Backbone"};
+  projection.hasGrantBinding = !grantName.empty() || !grantDigest.empty();
+  projection.grantName = grantName;
+  projection.grantDigest = grantDigest;
+  auto fillRole = [&] (NativeSelectionRoleV3& role) {
+    role.role = "/Backbone";
+    role.selectedRole = "/Backbone";
+    role.rank = 0;
+    role.layerBegin = 0;
+    role.layerEnd = 1;
+    role.backend = "onnxruntime";
+    role.deviceSet = {"cpu"};
+    role.artifactDigest = artifactDigest;
+    role.recipeDigest = planDigest;
+    role.roleKind = "PIPELINE_RANGE";
+    role.adapterId = "onnx";
+    role.adapterVersion = "1";
+    role.modelManifestDigest = planDigest;
+    role.artifactProfileDigest = planDigest;
+    role.graphDigest = planDigest;
+    role.canonicalInitializerDigest = planDigest;
+    role.adapterDescriptorDigest = planDigest;
+    role.assemblerDescriptorDigest = planDigest;
+    role.backendAbi = "onnxruntime-cpu-v1";
+    role.nodeIndices = {0};
+    role.expectedInputs = {{"input_ids", "bytes", {"1"}}};
+    role.expectedOutputs = {{"output", "bytes", {"1"}}};
+    role.precision = "float32";
+    role.quantization = "none";
+    role.layout = "native";
+    role.padding = "none";
+    role.maxSourceBytes = 1024;
+    role.maxAssembledBytes = 1024;
+    role.maxNodes = 1;
+    role.protectionEpoch = protectionEpoch;
+  };
+  fillRole(projection.selectedRole);
+  projection.assembly = projection.selectedRole;
+  projection.executionRole.roleId = "/Backbone";
+  projection.executionRole.stageId = "/Backbone";
+  projection.executionRole.rank = 0;
+  projection.executionRole.layerBegin = 0;
+  projection.executionRole.layerEnd = 1;
+  projection.executionRole.backend = "onnxruntime";
+  projection.executionRole.adapterId = "onnx";
+  projection.executionRole.adapterVersion = "1";
+  projection.dataflow.requestId = projection.requestId;
+  projection.dataflow.attempt = projection.attempt;
+  projection.dataflow.planDigest = projection.planDigest;
+  projection.dataflow.role = "/Backbone";
+  projection.dataflow.terminalResponseOwner = true;
+  projection.dataflow.dataflowDigest = planDigest;
+  projection.deviceBinding.mode = "SINGLE_DEVICE";
+  projection.deviceBinding.provider = projection.provider;
+  projection.deviceBinding.role = "/Backbone";
+  projection.deviceBinding.offerScopedDeviceHandle = "cpu";
+  projection.deviceBinding.offerDigest = planDigest;
+  projection.deviceBinding.topologyProfileDigest = planDigest;
+  projection.deviceBinding.resourceSnapshotDigest = planDigest;
+  projection.deviceBinding.resourceSequence = 1;
+  projection.deviceBinding.sharingPolicy = "exclusive";
+  return nativeSelectionProjectionV3ToJson(projection);
+}
+
+struct ProviderHybridPublication
+{
+  HybridMessageKey key;
+  ndn::Buffer wire;
+};
+
+ProviderHybridPublication
+makeProviderPublication(const ndn::Name& messageName,
+                        const ndn::Name& serviceName,
+                        const ndn::Name& requestId,
+                        const ndn::Name& senderPrefix,
+                        const std::string& messageType,
+                        const ndn::Buffer& plaintext)
+{
+  HybridMessageCrypto crypto;
+  HybridCryptoCounters counters;
+  const auto key = crypto.getOrCreateSendKey(
+    serviceName, senderPrefix,
+    hybridAccessAttributeForName(messageName, serviceName),
+    messageType, counters);
+  const auto associatedData = hybridAssociatedData(
+    messageName, messageType, requestId, serviceName, senderPrefix,
+    key.keyId, key.epochId);
+  const auto encrypted = hybridAesGcmEncrypt(
+    key.key, ndn::span<const std::uint8_t>(plaintext.data(), plaintext.size()),
+    ndn::span<const std::uint8_t>(associatedData.data(), associatedData.size()));
+  HybridMessageEnvelope envelope;
+  envelope.setKeyId(key.keyId);
+  envelope.setEpochId(key.epochId);
+  envelope.setMessageType(messageType);
+  envelope.setNonce(encrypted.nonce);
+  envelope.setCipherText(encrypted.ciphertext);
+  envelope.setAuthTag(encrypted.tag);
+  const auto wire = envelope.WireEncode();
+  return {key, ndn::Buffer(wire.data(), wire.size())};
+}
+
+} // namespace
+
+BOOST_AUTO_TEST_SUITE(Spec185ProviderAssembly)
+
+BOOST_AUTO_TEST_CASE(ProviderConfigUsesOneValidatedCppGrammar)
+{
+  const auto config = makeConfig();
+  BOOST_REQUIRE(config.valid());
+
+  const auto path = std::filesystem::temp_directory_path() /
+                    "spec185-provider-launch-test.json";
+  {
+    std::ofstream output(path);
+    output << "{\n"
+              "  \"schema\": \"ndnsf-di-native-provider-launch-v1\",\n"
+              "  \"arguments\": [\n"
+              "    \"--provider\", \"/spec185/file-provider\",\n"
+              "    \"--group\", \"/spec185/group\",\n"
+              "    \"--controller\", \"/spec185/controller\",\n"
+              "    \"--trust-schema\", \"" << trustSchema().string() << "\",\n"
+              "    \"--service\", \"/Inference/Spec185Provider\",\n"
+              "    \"--role\", \"/Backbone\"\n"
+              "  ],\n"
+              "  \"cache\": {\"max_artifact_entries\": 2}\n"
+              "}\n";
+  }
+  const auto fileConfig = ProviderConfig::fromFile(path);
+  BOOST_CHECK(fileConfig.valid());
+  std::filesystem::remove(path);
+
+  {
+    std::ofstream output(path);
+    output << "{\"schema\":\"ndnsf-di-native-provider-launch-v1\","
+              "\"arguments\":[],\"unexpected\":true}";
+  }
+  BOOST_CHECK_EXCEPTION(ProviderConfig::fromFile(path), std::invalid_argument,
+                        [](const std::invalid_argument& error) {
+                          return std::string(error.what()).find("unknown top-level") !=
+                                 std::string::npos;
+                        });
+  std::filesystem::remove(path);
+}
+
+BOOST_AUTO_TEST_CASE(ProviderOnlyRuntimeServesAndDrainsNativeRegistration)
+{
+  // Explicitly opt this in-process C++ fixture into the local controller
+  // identity fallback; production Provider startup requires an external
+  // controller certificate or --controller-cert.
+  ::setenv("NDNSF_SPEC185_ALLOW_LOCAL_CONTROLLER", "1", 1);
+  const auto config = makeConfig();
+  auto runtime = Runtime::open(config);
+  BOOST_REQUIRE(runtime);
+
+  BOOST_CHECK_EXCEPTION(runtime->user(), DiError,
+                        [](const DiError& error) {
+                          return error.code() == "ROLE_UNAVAILABLE" &&
+                                 error.boundary() == "user";
+                        });
+
+  auto provider = runtime->provider();
+  BOOST_REQUIRE(provider.valid());
+  const auto beforeSelection = provider.counters();
+  BOOST_CHECK_EQUAL(beforeSelection.sourceFetches, 0U);
+  BOOST_CHECK_EQUAL(beforeSelection.assemblies, 0U);
+  BOOST_CHECK_EQUAL(beforeSelection.runnersCreated, 0U);
+  auto conflicting = makeConfig("/spec185/other-provider");
+  BOOST_CHECK_EXCEPTION(runtime->provider(conflicting), DiError,
+                        [](const DiError& error) {
+                          return error.code() == "CONFIG_CONFLICT" &&
+                                 error.boundary() == "provider";
+                        });
+  const ServiceDefinition definition{
+    "/Inference/Spec185Provider", {"/Backbone"}};
+  auto registration = provider.serve(definition);
+  BOOST_REQUIRE(registration.valid());
+  BOOST_CHECK(!registration.closed());
+  BOOST_CHECK_EQUAL(registration.serviceName(), definition.serviceName);
+
+  BOOST_CHECK_EXCEPTION(provider.serve(definition), DiError,
+                        [](const DiError& error) {
+                          return error.code() == "SERVICE_ALREADY_REGISTERED" &&
+                                 error.boundary() == "provider";
+                         });
+  BOOST_CHECK_EXCEPTION(provider.serve({definition.serviceName, {"/OtherRole"}}),
+                        DiError,
+                        [](const DiError& error) {
+                          return error.code() == "INVALID_ARGUMENT" &&
+                                 error.boundary() == "provider" &&
+                                 std::string(error.what()).find("allow-list") !=
+                                 std::string::npos;
+                        });
+
+  bool callbackCalled = false;
+  bool drained = false;
+  std::mutex callbackMutex;
+  std::condition_variable callbackCondition;
+  auto drainSubscription = provider.drainAsync(std::chrono::milliseconds(100),
+                      [&callbackCalled, &drained, &callbackMutex, &callbackCondition](
+                        std::exception_ptr error, bool result) {
+                        {
+                          std::lock_guard<std::mutex> lock(callbackMutex);
+                          callbackCalled = true;
+                          drained = error == nullptr && result;
+                        }
+                        callbackCondition.notify_all();
+                      });
+  std::unique_lock<std::mutex> callbackLock(callbackMutex);
+  BOOST_REQUIRE(callbackCondition.wait_for(
+    callbackLock, std::chrono::seconds(2), [&callbackCalled] { return callbackCalled; }));
+  (void)drainSubscription;
+  BOOST_CHECK(callbackCalled);
+  BOOST_CHECK(drained);
+  const auto afterDrain = provider.counters();
+  BOOST_CHECK_EQUAL(afterDrain.sourceFetches, 0U);
+  BOOST_CHECK_EQUAL(afterDrain.assemblies, 0U);
+  BOOST_CHECK_EQUAL(afterDrain.runnersCreated, 0U);
+  BOOST_CHECK(registration.closed());
+  runtime->close();
+  ::unsetenv("NDNSF_SPEC185_ALLOW_LOCAL_CONTROLLER");
+}
+
+BOOST_AUTO_TEST_CASE(AuthenticatedSelectionRunsProviderAssemblyRunnerAndResponse)
+{
+  // This C++ ingress fixture uses the production Provider::serve path.  The
+  // only test seam injects an already-bootstrapped Core owner and a
+  // deterministic runner factory; Selection, registration, preparation and
+  // Response still traverse the production CollaborationContext.
+  ndn_service_framework::test::BootstrapProfile profile;
+  profile.serviceName = ndn::Name("/Inference/Spec185ProviderOracle");
+  profile.providerRoles = {"/Backbone"};
+  profile.deferBridgeDelivery = true;
+  profile.providerFacesHaveDedicatedIoWorkers = true;
+  ndn_service_framework::test::NdnsfIntegrationEnvironment environment(profile);
+  environment.bootstrap();
+  environment.user().setUseTokens(false);
+  environment.provider().setUseTokens(false);
+
+  const auto serviceName = environment.profile().serviceName;
+  const auto providerName = environment.provider().getName();
+  const auto requesterName = environment.user().getName();
+  auto requestId = ndn::Name("/spec185-provider-positive");
+  const auto planDigest = std::string("sha256:") + std::string(64, 'a');
+  const auto artifactDigest = std::string("sha256:") + std::string(64, 'b');
+  const auto bootId = environment.provider().getProviderBootEpoch();
+  const auto protectionEpoch = std::string("spec185-provider-protected-v1");
+  const auto authorityPrivate = makeEd25519Key('a');
+  const auto requesterPrivate = makeEd25519Key('b');
+  const auto recipientPrivate = makeEd25519Key('c');
+  NativeGrantIssuerConfig issuerConfig;
+  issuerConfig.authorityIdentity = "/spec185/authority";
+  issuerConfig.requesterIdentity = requesterName.toUri();
+  issuerConfig.protectionEpoch = protectionEpoch;
+  issuerConfig.keyId = "spec185-provider-grant";
+  issuerConfig.authorityPrivateKey = authorityPrivate;
+  issuerConfig.requesterPublicKey = publicKey(requesterPrivate);
+  issuerConfig.allowedModelManifests = {planDigest};
+  issuerConfig.recipientPublicKeys.emplace(providerName.toUri(), publicKey(recipientPrivate));
+  issuerConfig.contentKey = [] (const std::string&, const std::string&) {
+    return std::vector<std::uint8_t>(32, 0x42);
+  };
+  NativeSignedGrantRequest grantRequest;
+  grantRequest.providerIdentity = providerName.toUri();
+  grantRequest.requesterIdentity = requesterName.toUri();
+  grantRequest.requestId = requestId.toUri();
+  grantRequest.attempt = 1;
+  grantRequest.planCoreDigest = planDigest;
+  grantRequest.grantViewDigest = planDigest;
+  grantRequest.modelManifestDigest = planDigest;
+  grantRequest.protectionEpoch = protectionEpoch;
+  grantRequest.issuedAtMs = 1;
+  const auto nowMs = static_cast<std::uint64_t>(
+    std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::system_clock::now().time_since_epoch()).count());
+  const auto issuedGrant = NativeArtifactGrantIssuer(issuerConfig).issue(
+    grantRequest.sign(*requesterPrivate), nowMs, nowMs + 60'000);
+  auto assignmentProjection = providerProjection(
+    providerName, requestId, planDigest, artifactDigest, protectionEpoch,
+    issuedGrant.grantName, issuedGrant.grantDigest);
+
+  auto runs = std::make_shared<std::atomic<unsigned>>(0);
+  auto preparationFactory =
+    [planDigest, artifactDigest, bootId] (
+      ndn_service_framework::ServiceProvider::CollaborationContext&,
+      const NativeSelectionProjectionV3& projection,
+      const std::shared_ptr<ProtectedRuntime>& protectedRuntime) {
+      if (!protectedRuntime ||
+          protectedRuntime->state() != ProtectedRuntimeState::GrantVerified ||
+          projection.provider != projection.deviceBinding.provider)
+        throw std::runtime_error("provider oracle preparation binding mismatch");
+      NativeModelRunnerSpec spec;
+      spec.role = "/Backbone";
+      spec.kind = "onnx-model";
+      spec.backend = "onnxruntime";
+      spec.path = "/spec185/provider/model.onnx";
+      const auto& assembly = projection.assembly;
+      // Keep the deterministic runner factory's seam metadata alongside the
+      // production validator identity fields.  The seam reads these values
+      // with at(), so omission would turn a valid assembly into an exception.
+      spec.metadata["provider"] = projection.provider;
+      spec.metadata["boot"] = bootId;
+      spec.metadata["plan"] = planDigest;
+      spec.metadata["artifact"] = artifactDigest;
+      spec.metadata["fragmentDigest"] = assembly.artifactDigest;
+      spec.metadata["recipeDigest"] = assembly.recipeDigest;
+      spec.metadata["modelManifestDigest"] = assembly.modelManifestDigest;
+      spec.metadata["artifactProfileDigest"] = assembly.artifactProfileDigest;
+      spec.metadata["graphDigest"] = assembly.graphDigest;
+      spec.metadata["canonicalInitializerDigest"] =
+        assembly.canonicalInitializerDigest;
+      spec.metadata["adapterDescriptorDigest"] = assembly.adapterDescriptorDigest;
+      spec.metadata["assemblerDescriptorDigest"] = assembly.assemblerDescriptorDigest;
+      spec.metadata["backendAbi"] = assembly.backendAbi;
+      spec.metadata["precision"] = assembly.precision;
+      spec.metadata["quantization"] = assembly.quantization;
+      spec.metadata["layout"] = assembly.layout;
+      spec.metadata["padding"] = assembly.padding;
+      spec.metadata["maxSourceBytes"] = std::to_string(assembly.maxSourceBytes);
+      spec.metadata["maxAssembledBytes"] = std::to_string(assembly.maxAssembledBytes);
+      spec.metadata["maxNodes"] = std::to_string(assembly.maxNodes);
+      return spec;
+    };
+  const auto providerIdentity = environment.keyChain().getPib().getIdentity(providerName);
+  const auto providerCertificate = providerIdentity.getDefaultKey().getDefaultCertificate();
+  auto facade = Provider::fromServiceProviderForTest(
+    environment.providerFace(), environment.provider(), environment.keyChain(),
+    providerCertificate, providerCertificate,
+      makeConfig(providerName.toUri(), serviceName.toUri()),
+    makeProviderOracleRunnerFactory(runs), std::move(preparationFactory),
+    [issuedGrant, authorityPublic = publicKeyBytes(authorityPrivate),
+     recipientSeed = std::string(32, 'c'), protectionEpoch, bootId,
+     verificationTimeMs = nowMs] (
+      ndn_service_framework::ServiceProvider::CollaborationContext&,
+      const NativeSelectionProjectionV3& projection,
+      const std::shared_ptr<ProviderGroupCoordinator>&) {
+      ProtectedRuntimeBindingV1 binding;
+      binding.provider = projection.provider;
+      binding.role = projection.executionRole.roleId;
+      binding.requestId = projection.requestId;
+      binding.attempt = projection.attempt;
+      binding.planCoreDigest = projection.planCoreDigest;
+      binding.planDigest = projection.planDigest;
+      binding.securityPolicySnapshotDigest = projection.securityPolicySnapshotDigest;
+      binding.protectionEpoch = protectionEpoch;
+      binding.grantName = projection.grantName;
+      binding.grantDigest = projection.grantDigest;
+      binding.providerBootId = bootId;
+      binding.fencingToken = ndnsf::di::nativeProtectedFencingToken(
+        projection, bootId, {});
+      binding.expiresAtMs = projection.deadlineMs;
+      NativeProtectedGrantConfig grantConfig;
+      grantConfig.authorityIdentity = "/spec185/authority";
+      grantConfig.authorityPublicKeyRaw = authorityPublic;
+      grantConfig.recipientKey = {
+        NativeRecipientKey::Kind::Ed25519Seed, recipientSeed};
+      grantConfig.modelManifestDigest = projection.selectedRole.modelManifestDigest;
+      grantConfig.fetchGrant = [wire = issuedGrant.wireJson] (const std::string&) {
+        return wire;
+      };
+      auto runtime = std::make_shared<ProtectedRuntime>(binding, std::move(grantConfig));
+      runtime->verifyGrant(binding, verificationTimeMs);
+      return runtime;
+    });
+  environment.enableProductionIngressForTest();
+  auto registration = facade.serve({serviceName.toUri(), {"/Backbone"}});
+  environment.provider().markHybridResponseKeyWrappedForTest(serviceName);
+  const auto ackKey = environment.provider().prepareHybridSendKeyForTest(
+    serviceName, "ACK");
+  const auto responseKey = environment.provider().prepareHybridSendKeyForTest(
+    serviceName, "RESPONSE");
+  environment.user().cacheHybridReceiveKeyForTest(
+    ackKey.keyId, ackKey.epochId, ackKey.key);
+  environment.user().cacheHybridReceiveKeyForTest(
+    responseKey.keyId, responseKey.epochId, responseKey.key);
+  const auto selectionKey = environment.user().prepareHybridSendKeyForTest(
+    serviceName, "SELECTION");
+  environment.provider().cacheHybridReceiveKeyForTest(
+    selectionKey.keyId, selectionKey.epochId, selectionKey.key);
+
+  auto probe = std::make_shared<ProviderRequestProbeState>();
+  std::mutex probeRegistryMutex;
+  std::map<std::string, std::shared_ptr<ProviderRequestProbeState>> probeRegistry;
+  const auto registerProbe = [&] (const ndn::Name& id,
+                                  const std::shared_ptr<ProviderRequestProbeState>& state) {
+    std::lock_guard<std::mutex> lock(probeRegistryMutex);
+    probeRegistry[id.toUri()] = state;
+  };
+  const auto lookupProbe = [&] (const ndn::Name& id) {
+    std::lock_guard<std::mutex> lock(probeRegistryMutex);
+    const auto found = probeRegistry.find(id.toUri());
+    return found == probeRegistry.end() ?
+      std::shared_ptr<ProviderRequestProbeState>() : found->second;
+  };
+  const auto probeDone = [] (const std::shared_ptr<ProviderRequestProbeState>& state) {
+    std::lock_guard<std::mutex> lock(state->mutex);
+    return state->terminal;
+  };
+  const auto probeFailure = [] (const std::shared_ptr<ProviderRequestProbeState>& state) {
+    std::lock_guard<std::mutex> lock(state->mutex);
+    return state->failure;
+  };
+  const auto probeRequestPublished = [] (const std::shared_ptr<ProviderRequestProbeState>& state) {
+    std::lock_guard<std::mutex> lock(state->mutex);
+    return state->requestPublished;
+  };
+  const auto probeSelectionSeen = [] (const std::shared_ptr<ProviderRequestProbeState>& state) {
+    std::lock_guard<std::mutex> lock(state->mutex);
+    return state->selectionSeen;
+  };
+  const auto probeResponseSeen = [] (const std::shared_ptr<ProviderRequestProbeState>& state) {
+    std::lock_guard<std::mutex> lock(state->mutex);
+    return state->responseSeen;
+  };
+  registerProbe(requestId, probe);
+  environment.user().setRequestPublisher(
+    [&, lookupProbe] (const ndn::Name& requestIdForPublish,
+         const ndn::Name& requestName,
+         const std::vector<ndn::Name>& providers,
+         const ndn::Name&, const ndn_service_framework::RequestMessage& request, std::size_t) {
+      const auto requestProbe = lookupProbe(requestIdForPublish);
+      if (!requestProbe)
+        return;
+      if (providers.size() != 1U) {
+        std::lock_guard<std::mutex> lock(requestProbe->mutex);
+        requestProbe->failure = "request publisher provider set mismatch";
+        return;
+      }
+      const auto requestBlock = request.WireEncode();
+      auto publication = makeProviderPublication(
+        requestName, serviceName, requestIdForPublish, requesterName, "REQUEST",
+        ndn::Buffer(requestBlock.data(), requestBlock.size()));
+      environment.provider().cacheHybridReceiveKeyForTest(
+        publication.key.keyId, publication.key.epochId, publication.key.key);
+      environment.userPubSub().publish(
+        requestName,
+        ndn::span<const std::uint8_t>(publication.wire.data(), publication.wire.size()));
+      {
+        std::lock_guard<std::mutex> lock(requestProbe->mutex);
+        requestProbe->requestPublished = true;
+      }
+    });
+  environment.userPubSub().subscribeToProducer(
+    environment.profile().providerNode,
+    [&, serviceName] (const ndn::svs::SVSPubSub::SubscriptionData& publication) {
+      if (const auto ack = ndn_service_framework::parseRequestAckNameV2(publication.name)) {
+        if (ack->serviceName == serviceName) {
+          ndn::Block ackBlock(publication.data);
+          environment.user().handleRequestAckByName(publication.name, ackBlock);
+        }
+        return;
+      }
+      // Response publications remain on ServiceUser's registered OnResponse
+      // subscription, which performs the production HybridMessageEnvelope
+      // decryption before dispatching the RequestService callback.
+    }, true);
+
+  ndn_service_framework::RequestMessage request;
+  const std::string requestPayload = "provider-input";
+  ndn::Buffer requestPayloadBuffer(
+    reinterpret_cast<const std::uint8_t*>(requestPayload.data()),
+    requestPayload.size());
+  request.setPayload(requestPayloadBuffer, requestPayloadBuffer.size());
+  request.setPolicyEpoch(environment.user().getCurrentPolicyEpoch());
+  const auto requestIdForCall = requestId;
+  const auto assignmentProjectionForCall = assignmentProjection;
+  environment.user().RequestService(
+    std::vector<ndn::Name>{providerName}, serviceName, request, 200,
+    ndn_service_framework::ServiceUser::AckCandidatesHandler(
+      [&, probe, requestIdForCall, assignmentProjectionForCall] (
+          const std::vector<ndn_service_framework::AckSelectionCandidate>& candidates) {
+        if (candidates.size() != 1U || candidates.front().providerName != providerName) {
+          std::lock_guard<std::mutex> lock(probe->mutex);
+          probe->failure = "authenticated ACK candidate set mismatch";
+          return std::vector<ndn_service_framework::AckSelectionCandidate>{};
+        }
+        {
+          std::lock_guard<std::mutex> lock(probe->mutex);
+          probe->selectionSeen = true;
+        }
+        ndn_service_framework::CollaborationAssignmentEnvelope assignmentEnvelope;
+        assignmentEnvelope.role = "/Backbone";
+        assignmentEnvelope.assignedArtifact = ndn::Name("/spec185/provider/oracle");
+        assignmentEnvelope.opaquePayload = ndn::Buffer(
+          reinterpret_cast<const std::uint8_t*>(assignmentProjectionForCall.data()),
+          assignmentProjectionForCall.size());
+        if (!environment.user().setSelectionAssignmentPayloadForRequest(
+              requestIdForCall, providerName,
+              ndn_service_framework::encodeCollaborationAssignmentEnvelope(assignmentEnvelope))) {
+          std::lock_guard<std::mutex> lock(probe->mutex);
+          probe->failure = "authenticated assignment payload rejected";
+          return std::vector<ndn_service_framework::AckSelectionCandidate>{};
+        }
+        return candidates;
+      }),
+    4000,
+    [probe] (const ndn::Name&) {
+      std::lock_guard<std::mutex> lock(probe->mutex);
+      if (probe->failure.empty()) probe->failure = "request timed out";
+      probe->terminal = true;
+    },
+    [probe] (const ndn_service_framework::ResponseMessage& response) {
+      std::lock_guard<std::mutex> lock(probe->mutex);
+      if (!response.getStatus() && probe->failure.empty())
+        probe->failure = response.getErrorInfo();
+      probe->responseSeen = response.getStatus();
+      probe->terminal = true;
+    }, ndn_service_framework::tlv::FirstResponding, requestIdForCall);
+
+  environment.pumpUntil([&] {
+    if (!probeDone(probe) || !probeResponseSeen(probe))
+      return false;
+    const auto providerCounters = facade.counters();
+    return runs->load(std::memory_order_relaxed) == 1U &&
+           providerCounters.assemblies == 1U &&
+           providerCounters.runnersCreated == 1U;
+  });
+  BOOST_CHECK(probeRequestPublished(probe));
+  BOOST_CHECK(probeSelectionSeen(probe));
+  const auto positiveFailure = probeFailure(probe);
+  BOOST_CHECK_MESSAGE(positiveFailure.empty(), positiveFailure);
+  BOOST_CHECK(probeResponseSeen(probe));
+  BOOST_CHECK_EQUAL(runs->load(std::memory_order_relaxed), 1U);
+  const auto counters = facade.counters();
+  BOOST_CHECK_EQUAL(counters.sourceFetches, 0U);
+  BOOST_CHECK_EQUAL(counters.assemblies, 1U);
+  BOOST_CHECK_EQUAL(counters.runnersCreated, 1U);
+
+  // The same production ingress is exercised with three authenticated
+  // Selection substitutions.  Each must fail before preparation/runner
+  // creation, leaving the positive counters unchanged.
+  for (const auto mutation : {0, 1, 2}) {
+    // Keep the request ID in one NDN name component.  RequestService uses
+    // the final component boundary when deriving the service name; an
+    // appended component would be interpreted as a service suffix.
+    requestId = ndn::Name("/spec185-provider-reject-" + std::to_string(mutation));
+    const auto requestIdForCall = requestId;
+    const auto projectionProvider = mutation == 0
+      ? ndn::Name("/spec185/other-provider") : providerName;
+    const auto projectionEpoch = mutation == 1
+      ? std::string("spec185-other-epoch") : protectionEpoch;
+    const auto projectionGrantDigest = mutation == 2
+      ? std::string("sha256:") + std::string(64, 'e') : issuedGrant.grantDigest;
+    assignmentProjection = providerProjection(
+      projectionProvider, requestId, planDigest, artifactDigest,
+      projectionEpoch, issuedGrant.grantName, projectionGrantDigest);
+    const auto assignmentProjectionForCall = assignmentProjection;
+    probe = std::make_shared<ProviderRequestProbeState>();
+    registerProbe(requestIdForCall, probe);
+    ndn_service_framework::RequestMessage rejectedRequest;
+    ndn::Buffer rejectedPayloadBuffer(
+      reinterpret_cast<const std::uint8_t*>(requestPayload.data()),
+      requestPayload.size());
+    rejectedRequest.setPayload(rejectedPayloadBuffer, rejectedPayloadBuffer.size());
+    rejectedRequest.setPolicyEpoch(environment.user().getCurrentPolicyEpoch());
+    environment.user().RequestService(
+      std::vector<ndn::Name>{providerName}, serviceName, rejectedRequest, 200,
+      ndn_service_framework::ServiceUser::AckCandidatesHandler(
+        [&, probe, requestIdForCall, assignmentProjectionForCall] (
+          const std::vector<ndn_service_framework::AckSelectionCandidate>& candidates) {
+          if (candidates.size() != 1U || candidates.front().providerName != providerName) {
+            std::lock_guard<std::mutex> lock(probe->mutex);
+            probe->failure = "rejection ACK candidate set mismatch";
+            return std::vector<ndn_service_framework::AckSelectionCandidate>{};
+          }
+          {
+            std::lock_guard<std::mutex> lock(probe->mutex);
+            probe->selectionSeen = true;
+          }
+          ndn_service_framework::CollaborationAssignmentEnvelope assignmentEnvelope;
+          assignmentEnvelope.role = "/Backbone";
+          assignmentEnvelope.assignedArtifact = ndn::Name("/spec185/provider/oracle");
+          assignmentEnvelope.opaquePayload = ndn::Buffer(
+            reinterpret_cast<const std::uint8_t*>(assignmentProjectionForCall.data()),
+            assignmentProjectionForCall.size());
+          if (!environment.user().setSelectionAssignmentPayloadForRequest(
+                requestIdForCall, providerName,
+                ndn_service_framework::encodeCollaborationAssignmentEnvelope(
+                  assignmentEnvelope))) {
+            std::lock_guard<std::mutex> lock(probe->mutex);
+            probe->failure = "rejection assignment payload rejected";
+            return std::vector<ndn_service_framework::AckSelectionCandidate>{};
+          }
+          return candidates;
+        }),
+      500,
+      [probe] (const ndn::Name&) {
+        std::lock_guard<std::mutex> lock(probe->mutex);
+        if (probe->failure.empty()) probe->failure = "request timed out";
+        probe->terminal = true;
+      },
+      [probe] (const ndn_service_framework::ResponseMessage& response) {
+        std::lock_guard<std::mutex> lock(probe->mutex);
+        if (!response.getStatus() && probe->failure.empty())
+          probe->failure = response.getErrorInfo();
+        probe->responseSeen = response.getStatus();
+        probe->terminal = true;
+      }, ndn_service_framework::tlv::FirstResponding, requestIdForCall);
+    environment.pumpUntil([&] { return probeDone(probe); });
+    BOOST_CHECK(probeRequestPublished(probe));
+    BOOST_CHECK(probeSelectionSeen(probe));
+    const auto rejectionFailure = probeFailure(probe);
+    BOOST_CHECK_MESSAGE(!rejectionFailure.empty(), rejectionFailure);
+    const auto rejectedCounters = facade.counters();
+    BOOST_CHECK_EQUAL(rejectedCounters.assemblies, counters.assemblies);
+    BOOST_CHECK_EQUAL(rejectedCounters.runnersCreated, counters.runnersCreated);
+    BOOST_CHECK_EQUAL(runs->load(std::memory_order_relaxed), 1U);
+  }
+
+  registration.close();
+  BOOST_CHECK(registration.closed());
+  // Stop raises the Provider admission fence before the bounded drain.  This
+  // is the public lifecycle sequence used when the native Face is owned by
+  // the caller's integration environment.
+  facade.stop();
+  BOOST_REQUIRE(facade.drain(std::chrono::milliseconds(2000)));
+}
+
+BOOST_AUTO_TEST_CASE(ProductionAssemblerFetchesCanonicalSourceAfterSelection)
+{
+  const auto fixture = providerAssemblyFixture();
+  BOOST_REQUIRE(!fixture.empty());
+  const auto source = providerAssemblyRead(fixture);
+  BOOST_REQUIRE(!source.empty());
+  const auto sourceDigest = providerAssemblyDigest(source);
+  const auto profileDigest = std::string("sha256:") + std::string(64, 'b');
+  const auto sourceIdentity = providerAssemblySourceIdentity(source);
+  const auto sourceName = ndn::Name("/spec185/provider/assembler/source");
+  const auto rootName = ndn::Name("/spec185/provider/assembler/root");
+  const auto rootText = std::string(
+    "{\"artifactProfileDigest\":\"") + profileDigest +
+    "\",\"metadata\":{\"canonicalSourceBytes\":" +
+    std::to_string(source.size()) +
+    ",\"canonicalSourceDataName\":\"" + sourceName.toUri() +
+    "\",\"canonicalSourceDigest\":\"" + sourceDigest +
+    "\"},\"modelIdentityDigest\":\"" +
+    std::string("sha256:") + std::string(64, 'a') +
+    "\",\"modelName\":\"spec175-tiny-causal-lm-v1\","
+    "\"schema\":\"ndnsf-di-canonical-model-manifest-v1\","
+    "\"state\":\"ACTIVE\"}";
+  const std::vector<std::uint8_t> rootPayload(rootText.begin(), rootText.end());
+  const auto rootDigest = providerAssemblyDigest(rootPayload);
+  auto projection = makeProviderAssemblyProjection(
+    rootDigest, profileDigest, sourceIdentity.graphDigest,
+    sourceIdentity.initializerDigest);
+  projection.canonicalArtifactName = rootName.toUri();
+  std::atomic<unsigned> rootFetches{0};
+  std::atomic<unsigned> sourceFetches{0};
+  NativeCanonicalOnnxFetchers fetchers;
+  fetchers.getArtifact = [&] (const ndn::Name& name) -> std::optional<ndn::Buffer> {
+    if (name != rootName)
+      return std::nullopt;
+    rootFetches.fetch_add(1, std::memory_order_relaxed);
+    return ndn::Buffer(rootPayload.data(), rootPayload.size());
+  };
+  fetchers.fetchEncryptedLargeData = [&] (
+      const ndn::Name& name, const ndn::Name& service) -> std::optional<ndn::Buffer> {
+    if (name != sourceName || service != ndn::Name("/LLM/Qwen"))
+      return std::nullopt;
+    sourceFetches.fetch_add(1, std::memory_order_relaxed);
+    return ndn::Buffer(source.data(), source.size());
+  };
+  NativeCanonicalOnnxAssemblerOptions options;
+  options.cacheDir = (std::filesystem::temp_directory_path() /
+                      "spec185-provider-production-assembler").string();
+  std::error_code cleanupError;
+  std::filesystem::remove_all(options.cacheDir, cleanupError);
+  options.providerIdentity = projection.provider;
+  options.workerLocation = providerAssemblyWorker();
+  options.signManifest = [] (const std::string& manifest) {
+    return "spec185-provider-signature-" + providerAssemblyDigest(
+      std::vector<std::uint8_t>(manifest.begin(), manifest.end()));
+  };
+  const auto prepared = prepareNativeCanonicalOnnxRole(fetchers, projection, options);
+  BOOST_CHECK(std::filesystem::is_regular_file(prepared.path));
+  BOOST_CHECK_EQUAL(rootFetches.load(std::memory_order_relaxed), 1U);
+  BOOST_CHECK_EQUAL(sourceFetches.load(std::memory_order_relaxed), 1U);
+  BOOST_CHECK_EQUAL(prepared.metadata.at("assembledFrom"),
+                    "canonical-root-post-selection");
+  BOOST_CHECK_EQUAL(prepared.metadata.at("modelManifestDigest"), rootDigest);
+  BOOST_CHECK(!prepared.metadata.at("assembledModelDigest").empty());
+  std::filesystem::remove_all(options.cacheDir, cleanupError);
+}
+
+BOOST_AUTO_TEST_CASE(ProviderArtifactCachePinsEvictsAndSeparatesIdentity)
+{
+  ProviderArtifactCache cache(ProviderArtifactCacheConfig{128 * 1024, 1,
+                                                           std::chrono::milliseconds(2000)});
+  NativeSelectionProjectionV3 projection;
+  projection.provider = "/spec185/provider/cache";
+  projection.requestId = "/spec185/provider/cache-request";
+  projection.assembly.selectedRole = "/Backbone";
+  projection.assembly.recipeDigest = "sha256:" + std::string(64, '3');
+  projection.assembly.backendAbi = "onnxruntime-cpu-v1";
+  projection.assembly.precision = "float32";
+  projection.assembly.quantization = "none";
+  projection.assembly.protectionEpoch = "epoch-1";
+  projection.assembly.maxSourceBytes = 8;
+  projection.assembly.maxAssembledBytes = 8;
+  NativeRequestControl control;
+  control.requestId = projection.requestId;
+  control.attempt = 1;
+  control.deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+  std::atomic<unsigned> builds{0};
+  const auto makeArtifact = [&] (const NativeRequestControl&) {
+    builds.fetch_add(1, std::memory_order_relaxed);
+    auto artifact = std::make_shared<PreparedProviderArtifact>();
+    artifact->encryptedObjectName = "ciphertext/object";
+    artifact->ciphertextDigest = "sha256:" + std::string(64, 'a');
+    artifact->formatVersion = "test-v1";
+    artifact->canonicalMetadataJson = "{\"schema\":\"test\"}";
+    artifact->ciphertextBytes = 8;
+    auto runner = std::make_shared<NativeModelRunnerSpec>();
+    runner->role = "/Backbone";
+    runner->kind = "immutable-template";
+    return ProviderArtifactCache::BuildResult{std::move(artifact), std::move(runner)};
+  };
+  ProviderArtifactKey key;
+  key.sourceDigest = "sha256:" + std::string(64, '1');
+  key.canonicalGraphDigest = "sha256:" + std::string(64, '2');
+  key.role = "/Backbone";
+  key.recipeDigest = projection.assembly.recipeDigest;
+  key.backendAbi = "onnxruntime-cpu-v1";
+  key.device = "cpu";
+  key.precision = "float32";
+  key.quantization = "none";
+  key.layoutDigest = "sha256:" + std::string(64, '4');
+  key.artifactProfile = "sha256:" + std::string(64, '5');
+  key.securityDomain = "/spec185/group";
+  key.protectionEpoch = "epoch-1";
+  key.protectionIdentity = projection.provider;
+
+  auto first = cache.acquireWithRunner(key, projection, control, makeArtifact);
+  BOOST_REQUIRE(first);
+  BOOST_CHECK(!first.cacheHit());
+  auto second = cache.acquireWithRunner(key, projection, control, makeArtifact);
+  BOOST_REQUIRE(second);
+  BOOST_CHECK(second.cacheHit());
+  BOOST_CHECK_EQUAL(builds.load(std::memory_order_relaxed), 1U);
+  BOOST_CHECK_EQUAL(cache.counters().activeLeases, 2U);
+  BOOST_CHECK(second.runnerSpec());
+  BOOST_CHECK_EQUAL(second.runnerSpec()->role, "/Backbone");
+
+  auto otherRole = key;
+  otherRole.role = "/Head";
+  auto otherProjection = projection;
+  otherProjection.assembly.selectedRole = "/Head";
+  BOOST_CHECK_EXCEPTION(cache.acquireWithRunner(otherRole, otherProjection, control, makeArtifact),
+                        std::runtime_error,
+                        [] (const std::runtime_error& error) {
+                          return std::string(error.what()).find("CACHE_BUDGET_EXCEEDED") !=
+                                 std::string::npos;
+                        });
+  second = {};
+  first = {};
+  BOOST_CHECK_EQUAL(cache.counters().activeLeases, 0U);
+  auto replacement = cache.acquireWithRunner(otherRole, otherProjection, control, makeArtifact);
+  BOOST_REQUIRE(replacement);
+  BOOST_CHECK(!replacement.cacheHit());
+  BOOST_CHECK_EQUAL(builds.load(std::memory_order_relaxed), 2U);
+  replacement = {};
+  cache.stop();
+  BOOST_CHECK_EQUAL(cache.counters().activeLeases, 0U);
+  BOOST_CHECK_EXCEPTION(cache.acquireWithRunner(key, projection, control, makeArtifact),
+                        std::runtime_error,
+                        [] (const std::runtime_error& error) {
+                          return std::string(error.what()).find("RUNTIME_CLOSED") !=
+                                 std::string::npos;
+                        });
+}
+
+BOOST_AUTO_TEST_CASE(ProtectedArtifactCacheColdHitBindsGrantAndRetainsCiphertext)
+{
+  ProviderArtifactCache cache(ProviderArtifactCacheConfig{128 * 1024, 2,
+                                                           std::chrono::milliseconds(2000)});
+  NativeSelectionProjectionV3 projection;
+  projection.provider = "/spec185/provider/protected-cache";
+  projection.requestId = "/spec185/provider/protected-cache-request";
+  projection.hasGrantBinding = true;
+  projection.grantName = "/spec185/grant/epoch-1";
+  projection.grantDigest = "sha256:" + std::string(64, 'a');
+  projection.canonicalArtifactName = "/spec185/protected/root";
+  projection.assembly.selectedRole = "/Backbone";
+  projection.assembly.modelManifestDigest = "sha256:" + std::string(64, 'b');
+  projection.assembly.recipeDigest = "sha256:" + std::string(64, 'c');
+  projection.assembly.backendAbi = "onnxruntime-cpu-v1";
+  projection.assembly.precision = "float32";
+  projection.assembly.quantization = "none";
+  projection.assembly.protectionEpoch = "epoch-1";
+  projection.assembly.maxSourceBytes = 8;
+  projection.assembly.maxAssembledBytes = 8;
+  projection.deadlineMs = static_cast<std::uint64_t>(
+    std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::system_clock::now().time_since_epoch()).count()) + 60'000;
+  NativeRequestControl control;
+  control.requestId = projection.requestId;
+  control.attempt = 1;
+  control.deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+  ProviderArtifactKey key;
+  key.sourceDigest = "sha256:" + std::string(64, 'd');
+  key.canonicalSourceName = "/spec185/protected/source";
+  key.canonicalRootName = projection.canonicalArtifactName;
+  key.canonicalRootDigest = projection.assembly.modelManifestDigest;
+  key.canonicalGraphDigest = "sha256:" + std::string(64, 'e');
+  key.role = projection.assembly.selectedRole;
+  key.recipeDigest = projection.assembly.recipeDigest;
+  key.backendAbi = projection.assembly.backendAbi;
+  key.device = "cpu";
+  key.precision = projection.assembly.precision;
+  key.quantization = projection.assembly.quantization;
+  key.protectionEpoch = projection.assembly.protectionEpoch;
+  key.protectionIdentity = projection.provider + "|" + projection.grantName + "|" +
+    projection.grantDigest;
+  std::atomic<unsigned> builds{0};
+  const auto build = [&] (const NativeRequestControl&) {
+    builds.fetch_add(1, std::memory_order_relaxed);
+    auto artifact = std::make_shared<PreparedProviderArtifact>();
+    artifact->encryptedObjectName = "protected-ciphertext";
+    artifact->ciphertextDigest = "sha256:" + std::string(64, 'f');
+    artifact->formatVersion = "test-protected-v1";
+    artifact->canonicalMetadataJson = "{\"schema\":\"protected\"}";
+    artifact->ciphertext = std::make_shared<const std::vector<std::uint8_t>>(
+      std::vector<std::uint8_t>{1, 2, 3, 4, 5, 6, 7, 8});
+    artifact->ciphertextBytes = artifact->ciphertext->size();
+    auto runner = std::make_shared<NativeModelRunnerSpec>();
+    runner->role = projection.assembly.selectedRole;
+    runner->kind = "protected-template";
+    runner->backend = projection.assembly.backend;
+    runner->path = "/must-not-be-cached/plaintext.onnx";
+    return ProviderArtifactCache::BuildResult{std::move(artifact), std::move(runner)};
+  };
+  auto cold = cache.acquireWithRunner(key, projection, control, build);
+  BOOST_REQUIRE(cold);
+  BOOST_CHECK(!cold.cacheHit());
+  BOOST_CHECK(cold->ciphertext);
+  auto hot = cache.acquireWithRunner(key, projection, control, build);
+  BOOST_REQUIRE(hot);
+  BOOST_CHECK(hot.cacheHit());
+  BOOST_CHECK(hot.runnerSpec());
+  BOOST_CHECK(hot.runnerSpec()->path.empty());
+  BOOST_CHECK_EQUAL(builds.load(std::memory_order_relaxed), 1U);
+  BOOST_CHECK_EQUAL(cache.counters().templateHits, 1U);
+
+  auto wrongGrant = projection;
+  wrongGrant.grantDigest = "sha256:" + std::string(64, '1');
+  BOOST_CHECK_EXCEPTION(cache.acquireWithRunner(key, wrongGrant, control, build),
+                        std::runtime_error,
+                        [] (const std::runtime_error& error) {
+                          return std::string(error.what()).find("KEY_MISMATCH") !=
+                                 std::string::npos;
+                        });
+  auto nextEpoch = projection;
+  nextEpoch.assembly.protectionEpoch = "epoch-2";
+  auto nextKey = key;
+  nextKey.protectionEpoch = "epoch-2";
+  auto next = cache.acquireWithRunner(nextKey, nextEpoch, control, build);
+  BOOST_REQUIRE(next);
+  BOOST_CHECK(!next.cacheHit());
+  BOOST_CHECK_EQUAL(builds.load(std::memory_order_relaxed), 2U);
+  hot = {};
+  cold = {};
+  next = {};
+  cache.stop();
+  BOOST_CHECK_EQUAL(cache.counters().activeLeases, 0U);
+}
+
+BOOST_AUTO_TEST_CASE(ProductionAssemblerCacheColdHitUsesExactArtifact)
+{
+  const auto fixture = providerAssemblyFixture();
+  BOOST_REQUIRE(!fixture.empty());
+  const auto source = providerAssemblyRead(fixture);
+  BOOST_REQUIRE(!source.empty());
+  const auto sourceDigest = providerAssemblyDigest(source);
+  const auto profileDigest = std::string("sha256:") + std::string(64, 'b');
+  const auto sourceIdentity = providerAssemblySourceIdentity(source);
+  const auto sourceName = ndn::Name("/spec185/provider/cache/source");
+  const auto rootName = ndn::Name("/spec185/provider/cache/root");
+  const auto rootText = std::string(
+    "{\"artifactProfileDigest\":\"") + profileDigest +
+    "\",\"metadata\":{\"canonicalSourceBytes\":" +
+    std::to_string(source.size()) +
+    ",\"canonicalSourceDataName\":\"" + sourceName.toUri() +
+    "\",\"canonicalSourceDigest\":\"" + sourceDigest +
+    "\"},\"modelIdentityDigest\":\"" +
+    std::string("sha256:") + std::string(64, 'a') +
+    "\",\"modelName\":\"spec175-tiny-causal-lm-v1\","
+    "\"schema\":\"ndnsf-di-canonical-model-manifest-v1\","
+    "\"state\":\"ACTIVE\"}";
+  const std::vector<std::uint8_t> rootPayload(rootText.begin(), rootText.end());
+  auto projection = makeProviderAssemblyProjection(
+    providerAssemblyDigest(rootPayload), profileDigest, sourceIdentity.graphDigest,
+    sourceIdentity.initializerDigest);
+  projection.canonicalArtifactName = rootName.toUri();
+  const auto cacheDir = (std::filesystem::temp_directory_path() /
+                         "spec185-provider-assembler-cache").string();
+  std::error_code cleanupError;
+  std::filesystem::remove_all(cacheDir, cleanupError);
+  NativeCanonicalOnnxFetchers fetchers;
+  std::atomic<unsigned> sourceFetches{0};
+  fetchers.getArtifact = [rootName, rootPayload] (const ndn::Name& name)
+    -> std::optional<ndn::Buffer> {
+    if (name != rootName)
+      return std::nullopt;
+    return ndn::Buffer(rootPayload.data(), rootPayload.size());
+  };
+  fetchers.fetchEncryptedLargeData = [sourceName, source, &sourceFetches] (
+      const ndn::Name& name, const ndn::Name& service)
+    -> std::optional<ndn::Buffer> {
+    if (name != sourceName || service != ndn::Name("/LLM/Qwen"))
+      return std::nullopt;
+    sourceFetches.fetch_add(1, std::memory_order_relaxed);
+    return ndn::Buffer(source.data(), source.size());
+  };
+  NativeCanonicalOnnxAssemblerOptions options;
+  options.cacheDir = cacheDir;
+  options.providerIdentity = projection.provider;
+  options.workerLocation = providerAssemblyWorker();
+  options.signManifest = [] (const std::string&) { return std::string("fixture-signature-v1"); };
+  ProviderArtifactCache cache(ProviderArtifactCacheConfig{8ULL * 1024 * 1024, 2,
+                                                           std::chrono::milliseconds(30000)});
+  NativeRequestControl control;
+  control.requestId = projection.requestId;
+  control.attempt = 1;
+  control.deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+  ProviderArtifactKey key;
+  key.sourceDigest = sourceDigest;
+  key.canonicalSourceName = sourceName.toUri();
+  key.canonicalRootName = projection.canonicalArtifactName;
+  key.canonicalRootDigest = projection.assembly.modelManifestDigest;
+  key.initializerDigest = projection.assembly.canonicalInitializerDigest;
+  key.canonicalGraphDigest = projection.assembly.graphDigest;
+  key.role = projection.assembly.selectedRole;
+  key.candidateDigest = projection.offerDigest;
+  key.recipeDigest = projection.assembly.recipeDigest;
+  key.backendAbi = projection.assembly.backendAbi;
+  key.device = "cpu";
+  key.precision = projection.assembly.precision;
+  key.quantization = projection.assembly.quantization;
+  key.layoutDigest = projection.assembly.layout;
+  key.artifactProfile = projection.assembly.artifactProfileDigest;
+  key.protectionEpoch = projection.assembly.protectionEpoch;
+  key.protectionIdentity = projection.provider;
+  std::atomic<unsigned> builds{0};
+  const auto build = [&] (const NativeRequestControl&) {
+    builds.fetch_add(1, std::memory_order_relaxed);
+    auto built = prepareNativeCanonicalOnnxRole(fetchers, projection, options);
+    auto artifact = std::make_shared<PreparedProviderArtifact>();
+    artifact->encryptedObjectName = "local-immutable-assembled-artifact";
+    artifact->ciphertextDigest = built.metadata.at("assembledModelDigest");
+    artifact->formatVersion = "ndnsf-di-native-assembled-artifact-v1";
+    artifact->canonicalMetadataJson = "{\"schema\":\"ndnsf-di-provider-artifact-v1\"}";
+    artifact->ciphertextBytes = std::filesystem::file_size(built.path);
+    return ProviderArtifactCache::BuildResult{
+      std::move(artifact), std::make_shared<const NativeModelRunnerSpec>(std::move(built))};
+  };
+  auto cold = cache.acquireWithRunner(key, projection, control, build);
+  BOOST_REQUIRE(cold);
+  BOOST_CHECK(!cold.cacheHit());
+  auto hot = cache.acquireWithRunner(key, projection, control, build);
+  BOOST_REQUIRE(hot);
+  BOOST_CHECK(hot.cacheHit());
+  BOOST_CHECK_EQUAL(builds.load(std::memory_order_relaxed), 1U);
+  BOOST_CHECK_EQUAL(sourceFetches.load(std::memory_order_relaxed), 1U);
+  BOOST_CHECK(cold.runnerSpec());
+  BOOST_CHECK(hot.runnerSpec());
+  BOOST_CHECK(hot.runnerSpec()->path.empty());
+  BOOST_CHECK_EQUAL(cache.counters().activeLeases, 2U);
+  hot = {};
+  cold = {};
+  BOOST_CHECK_EQUAL(cache.counters().activeLeases, 0U);
+  std::filesystem::remove_all(cacheDir, cleanupError);
+}
+
+BOOST_AUTO_TEST_CASE(ProtectedSelectionBindingRejectsProviderEpochAndGrantSubstitution)
+{
+  const auto planDigest = std::string("sha256:") + std::string(64, 'a');
+  const auto grantDigest = std::string("sha256:") + std::string(64, 'd');
+  const auto text = providerProjection(
+    ndn::Name("/spec185/provider"), ndn::Name("/spec185/request"),
+    planDigest, std::string("sha256:") + std::string(64, 'b'),
+    "spec185-provider-protected-v1", "/spec185/grants/one", grantDigest);
+  std::istringstream input(text);
+  const auto projection = nativeSelectionProjectionV3FromJson(input, "/Backbone");
+
+  ProtectedRuntimeBindingV1 binding;
+  binding.provider = projection.provider;
+  binding.role = projection.executionRole.roleId;
+  binding.requestId = projection.requestId;
+  binding.attempt = projection.attempt;
+  binding.planCoreDigest = projection.planCoreDigest;
+  binding.planDigest = projection.planDigest;
+  binding.securityPolicySnapshotDigest = projection.securityPolicySnapshotDigest;
+  binding.protectionEpoch = projection.selectedRole.protectionEpoch;
+  binding.grantName = projection.grantName;
+  binding.grantDigest = projection.grantDigest;
+  binding.providerBootId = "spec185-provider-boot";
+  binding.fencingToken = nativeProtectedFencingToken(
+    projection, binding.providerBootId, {});
+  binding.expiresAtMs = projection.deadlineMs;
+  ProtectedRuntime runtime(binding);
+
+  auto expectMismatch = [&] (const NativeSelectionProjectionV3& candidate) {
+    const auto error = validateProtectedRuntimeBinding(
+      candidate, runtime, {}, binding.providerBootId, binding.fencingToken);
+    BOOST_REQUIRE(error);
+    BOOST_CHECK_EQUAL(*error, "DI_PROTECTED_RUNTIME_BINDING_MISMATCH");
+  };
+  auto wrongProvider = projection;
+  wrongProvider.provider = "/spec185/other-provider";
+  expectMismatch(wrongProvider);
+  auto wrongEpoch = projection;
+  wrongEpoch.selectedRole.protectionEpoch = "spec185-other-epoch";
+  expectMismatch(wrongEpoch);
+  auto wrongGrant = projection;
+  wrongGrant.grantDigest = std::string("sha256:") + std::string(64, 'e');
+  expectMismatch(wrongGrant);
+}
+
+BOOST_AUTO_TEST_SUITE_END()

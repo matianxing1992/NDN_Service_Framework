@@ -14,11 +14,13 @@
 
 #include <boost/asio/io_context.hpp>
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <vector>
@@ -50,6 +52,13 @@ struct BootstrapProfile
   // synchronous DummyFace receive() re-entry. The default preserves the
   // historical inline bridge used by existing experiment selectors.
   bool deferBridgeDelivery = false;
+  // Optional controller-authorized collaboration roles included in the
+  // bootstrap ProviderPermission wave. Empty keeps legacy fixture behavior.
+  std::vector<std::string> providerRoles;
+  // When a native Provider owns a worker for the borrowed provider Face, the
+  // embedding fixture must not call processEvents/restart on that same
+  // io_context from its pump thread.
+  bool providerFacesHaveDedicatedIoWorkers = false;
 };
 
 struct FaultProfile
@@ -150,7 +159,7 @@ public:
   void updateRequestResidue(RequestScope& scope, RequestResidue residue);
   void resetRequest(RequestScope& scope);
   void flushReorderedPackets();
-  const PacketBridgeStats& bridgeStats() const { return m_bridgeStats; }
+  PacketBridgeStats bridgeStats() const;
 
   EnvironmentStatus status() const { return m_status; }
   const EnvironmentSnapshot& snapshot() const { return m_snapshot; }
@@ -224,6 +233,7 @@ private:
   std::vector<std::unique_ptr<ServiceProvider>> m_extraProviders;
   std::unique_ptr<ServiceUser> m_user;
   std::unique_ptr<ServiceProvider> m_provider;
+  mutable std::mutex m_bridgeMutex;
   ndn::signal::ScopedConnection m_userInterestBridge;
   ndn::signal::ScopedConnection m_providerInterestBridge;
   ndn::signal::ScopedConnection m_userDataBridge;
@@ -238,8 +248,8 @@ private:
   std::vector<ndn::signal::ScopedConnection> m_extraProviderAttributeAuthorityInterestBridges;
   std::vector<ndn::signal::ScopedConnection> m_providerPeerInterestBridges;
   std::vector<ndn::signal::ScopedConnection> m_providerPeerDataBridges;
-  size_t m_attributeAuthorityPublicParameterInterests = 0;
-  size_t m_attributeAuthorityPublicParameterData = 0;
+  std::atomic<size_t> m_attributeAuthorityPublicParameterInterests{0};
+  std::atomic<size_t> m_attributeAuthorityPublicParameterData{0};
   FaultProfile m_activeFaults;
   PacketBridgeStats m_bridgeStats;
   std::optional<ndn::Interest> m_pendingUserInterest;
