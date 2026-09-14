@@ -16,6 +16,7 @@ import json
 import os
 from pathlib import Path
 import re
+import secrets
 import sys
 
 try:
@@ -45,6 +46,16 @@ if (not isinstance(argv, list) or not argv or
         any(not isinstance(item, str) or not item or "\x00" in item for item in argv) or
         not os.path.isabs(argv[0])):
     raise SystemExit("SPEC186_EXEC_ARGV_INVALID")
+execution = config.get("execution", {})
+container_launcher = execution.get("containerLauncher") if isinstance(execution, dict) else None
+if container_launcher is not None:
+    if (not isinstance(container_launcher, list) or not container_launcher or
+            any(not isinstance(item, str) or not item or "\x00" in item
+                for item in container_launcher) or
+            not os.path.isabs(container_launcher[0]) or
+            Path(container_launcher[0]).name != "apptainer"):
+        raise SystemExit("SPEC186_CONTAINER_LAUNCHER_INVALID")
+    argv = container_launcher + argv
 try:
     rendered = json.loads(sys.argv[3] or "{}")
 except (TypeError, json.JSONDecodeError) as exc:
@@ -64,6 +75,9 @@ try:
     run_root.mkdir(parents=True, exist_ok=False)
     for child in ("evidence", "state", "security", "home"):
         (run_root / child).mkdir(mode=0o700)
+    envelope_key = run_root / "security" / "request-envelope.key"
+    envelope_key.write_bytes(secrets.token_bytes(32))
+    envelope_key.chmod(0o600)
     os.chdir(run_root)
 except (OSError, ValueError) as exc:
     raise SystemExit("SPEC186_RUN_ROOT_CREATE_FAILED") from exc
@@ -72,7 +86,7 @@ except (OSError, ValueError) as exc:
 # only the allow-listed renderer output.  In particular, host LD_LIBRARY_PATH,
 # PYTHONPATH and HOME must not leak into a clean candidate image.
 child_env = {
-    "PATH": "/usr/local/bin:/usr/bin:/bin",
+    "PATH": "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
     # Keep HOME inside the run-owned root.  A fixed /tmp path would let
     # concurrent jobs share PIB/TPM/client.conf state and would make a reused
     # allocation depend on leftovers from another run.

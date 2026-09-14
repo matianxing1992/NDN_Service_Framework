@@ -15,6 +15,7 @@ import os
 from pathlib import Path
 import re
 import signal
+import secrets
 import subprocess
 import sys
 from typing import Any, Dict, List, Mapping, Optional, Sequence
@@ -57,10 +58,11 @@ class RenderError(ValueError):
 def _yolo_case(case: str) -> str:
     """Map a Spec186 profile to the registered Spec180 case.
 
-    The Spec186 profiles describe the four-provider split graph.  That graph
-    is Y-B; passing Y-A would ask the runner for a single FullModel provider.
-    Negative profiles use the registered Y-N matrix.
+    Atomic profiles use the registered Y-A FullModel case; split profiles use
+    Y-B, and negative profiles use the registered Y-N matrix.
     """
+    if case == "yolo-minindn-atomic" or case == "yolo-tiger-single-gpu":
+        return "Y-A"
     if case.endswith("-negative"):
         return "Y-N"
     return "Y-B"
@@ -75,17 +77,6 @@ def render_effective(profile: Mapping[str, Any], manifest: Mapping[str, Any],
     resources = profile["resources"]
     topology = profile["topology"]
     launcher = runtime["harness"]["launcher"]
-    if topology["mode"] == "tiger":
-        # The current Spec186 profile has no signed Spec180 workload document,
-        # canonical package/config/key-map inputs, or per-role Tiger argument
-        # files.  The old generic command shape would either import MiniNDN
-        # from a SIF that does not contain it or call the supervisor with the
-        # wrong candidate schema.  Reject before scheduler mutation until a
-        # dedicated Tiger dispatch contract is added to the profile schema.
-        raise RenderError(
-            "TIGER_HARNESS_INPUTS_UNDECLARED:"
-            "SPEC180_WORKLOAD,SPEC180_YOLO_CANONICAL_PACKAGE,"
-            "SPEC180_YOLO_CONFIG,provider-args,nfd-config")
     if (profile["case"] == "qwen06b-minindn-cpu" and
             (profile["model"]["format"] != "onnx" or
              profile["model"]["backend"] != "onnxruntime-cpu")):
@@ -99,8 +90,16 @@ def render_effective(profile: Mapping[str, Any], manifest: Mapping[str, Any],
     # MiniNDN remains the host orchestration process.  Its child NFD and
     # application commands use the exact SIF through this command-provider
     # contract.
-    execution_mode = "host-minindn"
+    execution_mode = "host-minindn" if topology["mode"] == "minindn" else "slurm-apptainer"
     data_root = str(run_root)
+    harness_inputs = runtime["harness"].get("inputs", {})
+    case_bundle = harness_inputs.get("caseBundle", {}).get("path") if isinstance(harness_inputs, Mapping) else None
+    if profile["case"].startswith("yolo-"):
+        if not case_bundle:
+            raise RenderError("YOLO_CASE_BUNDLE_UNDECLARED")
+        case_bundle = str(Path(case_bundle))
+        if not harness_inputs.get("catalogueDataName") or not harness_inputs.get("catalogueSigner"):
+            raise RenderError("YOLO_CATALOGUE_IDENTITY_UNDECLARED")
     env = {
         "SPEC186_CASE": profile["case"],
         "SPEC186_RUN_ID": run_id,
@@ -112,10 +111,31 @@ def render_effective(profile: Mapping[str, Any], manifest: Mapping[str, Any],
         "NDNSF_DI_ENVELOPE_KEY_FILE": data_root + "/security/request-envelope.key",
         "SPEC180_CASE_OUTPUT_DIR": data_root + "/evidence",
     }
+    if profile["case"].startswith("yolo-"):
+        env.update({
+            "SPEC180_YOLO_CANONICAL_PACKAGE": case_bundle + "/canonical-package",
+            "SPEC180_YOLO_CATALOGUE_REGISTRY": case_bundle + "/catalogue-registry.json",
+            "SPEC180_YOLO_CATALOG_DATA_NAME": str(harness_inputs["catalogueDataName"]),
+            "SPEC180_YOLO_CATALOG_SIGNER": str(harness_inputs["catalogueSigner"]),
+            "SPEC180_YOLO_OFFER_TRUST_ROOT": case_bundle + "/offer-trust-root.json",
+            "SPEC180_YOLO_OFFER_PUBLIC_KEY_MAP": case_bundle + "/offer-public-key-map.json",
+            "SPEC180_YOLO_OFFER_PRIVATE_KEY_MAP": case_bundle + "/offer-private-key-map.json",
+            "SPEC180_YOLO_TOPOLOGY": case_bundle + "/topology.conf",
+            "SPEC180_YOLO_CONFIG": case_bundle + "/case-config.json",
+            # The native binary is application-owned and is mounted separately
+            # from the stable base SIF.  The runner propagates SPEC180_* into
+            # every native child and its SIF command prefix.
+            "SPEC180_NATIVE_PROVIDER_BINARY": "/app/bundle/" + Path(runtime["application"]["entrypoint"]).name,
+            "SPEC180_RUNTIME_APP_BUNDLE": runtime["application"]["bundle"]["path"],
+            "SPEC180_RUNTIME_APP_LIB": "/app/bundle/lib",
+            "SPEC180_RUNTIME_INPUT_ROOT": case_bundle,
+        })
     env.update({
         "SPEC180_RUNTIME_SIF": runtime["baseSif"]["path"],
         "SPEC180_RUNTIME_APPTAINER": runtime["apptainer"]["path"],
     })
+    if topology["mode"] == "tiger":
+        env["SPEC180_RUNTIME_OUTER"] = "1"
     if gpu_devices:
         env["CUDA_VISIBLE_DEVICES"] = ",".join(str(device) for device in gpu_devices)
     binds = [
@@ -127,11 +147,13 @@ def render_effective(profile: Mapping[str, Any], manifest: Mapping[str, Any],
         {"source": profile["security"]["permissions"]["path"], "target": "/inputs/permissions.json", "mode": "ro"},
         {"source": profile["security"]["identityRoot"], "target": "/identity", "mode": "rw"},
     ]
+    if profile["case"].startswith("yolo-"):
+        binds.append({"source": case_bundle, "target": case_bundle, "mode": "ro"})
     stage_manifest = profile["model"].get("stageManifest")
     if stage_manifest and stage_manifest.get("path"):
         binds.append({"source": stage_manifest["path"],
                       "target": "/model/stage-manifest.json", "mode": "ro"})
-    if profile["case"].startswith("yolo-minindn"):
+    if profile["case"].startswith("yolo-"):
         workload_argv = [sys.executable, launcher, "--case",
                          _yolo_case(profile["case"])]
     elif profile["case"] == "qwen06b-minindn-cpu":
@@ -142,6 +164,30 @@ def render_effective(profile: Mapping[str, Any], manifest: Mapping[str, Any],
     else:
         raise RenderError("CASE_NOT_RENDERABLE:" + str(profile["case"]))
     argv = workload_argv
+    container_launcher = None
+    if topology["mode"] == "tiger":
+        # The compute node executes the sealed replay harness from the base
+        # SIF.  The harness itself disables nested SIF invocation via the
+        # explicit outer marker; native children therefore use this same
+        # composition and the read-only application bundle.
+        container_launcher = [runtime["apptainer"]["path"], "exec", "--cleanenv"]
+        for bind in binds:
+            container_launcher.extend([
+                "--bind", f"{bind['source']}:{bind['target']}:{bind['mode']}"])
+        container_launcher.extend([
+            "--bind",
+            f"{launcher}:/opt/ndnsf-di/replay/repo/Experiments/NDNSF_DI_YoloAckDriven_Minindn.py:ro",
+        ])
+        container_launcher.extend([
+            "--home", f"{run_root / 'home'}:{run_root / 'home'}",
+            "--pwd", "/opt/ndnsf-di/replay/repo",
+            runtime["baseSif"]["path"],
+        ])
+        # The base SIF still supplies the sealed source tree and native
+        # dependencies; only this candidate-hashed harness is overlaid.
+        argv = ["/opt/venv/bin/python",
+                "/opt/ndnsf-di/replay/repo/Experiments/NDNSF_DI_YoloAckDriven_Minindn.py",
+                *workload_argv[2:]]
     return {
         "schemaVersion": "spec186-effective-config-v1",
         "runId": run_id,
@@ -150,7 +196,7 @@ def render_effective(profile: Mapping[str, Any], manifest: Mapping[str, Any],
         "argv": argv,
         "environment": env,
         "binds": binds,
-        "execution": {"mode": execution_mode, "containerLauncher": None},
+        "execution": {"mode": execution_mode, "containerLauncher": container_launcher},
         "topology": {"mode": topology["mode"], "hosts": topology["hosts"],
                       "nfdEndpoints": topology["nfdEndpoints"]},
         "roles": role_map,
@@ -294,6 +340,9 @@ def local_run(profile_path: Path, candidate_path: Path, *, run_id: str,
         run_root.mkdir(mode=0o700, parents=True, exist_ok=False)
         for child in ("evidence", "state", "security", "home"):
             (run_root / child).mkdir(mode=0o700)
+        envelope_key = run_root / "security" / "request-envelope.key"
+        envelope_key.write_bytes(secrets.token_bytes(32))
+        envelope_key.chmod(0o600)
     except (OSError, ValueError) as exc:
         return {"schemaVersion": "spec186-local-v1", "status": "FAILED",
                 "runId": run_id, "candidateDigest": manifest["candidateDigest"],
@@ -308,7 +357,7 @@ def local_run(profile_path: Path, candidate_path: Path, *, run_id: str,
             # Keep the host launcher usable while preventing host ABI and
             # Python search paths from leaking into the candidate process.
             child_env = {
-                "PATH": "/usr/local/bin:/usr/bin:/bin",
+                "PATH": "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
                 "HOME": str(run_root / "home"),
                 "LC_ALL": "C",
             }

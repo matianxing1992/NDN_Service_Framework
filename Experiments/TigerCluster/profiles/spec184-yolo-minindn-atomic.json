@@ -1,11 +1,11 @@
 {
   "schemaVersion": "ndnsf-spec186-experiment-profile-v1",
   "candidate": {
-    "id": "spec186-yolo-local-negative-v1",
+    "id": "spec186-yolo-local-atomic-v1",
     "sourceCommit": "6d143d3f0f7a7c627af2c1ef6810d79c0738b52d",
     "sourceSealSha256": "f4676a0f937c903caebc8374893171890d0d6d0639be42a3ced1b101d7512a00"
   },
-  "case": "yolo-minindn-negative",
+  "case": "yolo-minindn-atomic",
   "topology": {
     "mode": "minindn",
     "nodes": 1,
@@ -15,48 +15,18 @@
     "nfdEndpoints": [
       {
         "host": "local",
-        "port": 6365
+        "port": 6363
       }
     ]
   },
   "roles": [
     {
-      "name": "BackboneNeck",
-      "identity": "/spec186/BackboneNeck",
+      "name": "FullModel",
+      "identity": "/spec186/FullModel",
       "node": "local",
       "gpu": -1,
       "backend": "onnxruntime-cpu",
-      "service": "/AI/YOLO/YOLO26n/BackboneNeck",
-      "binary": "${REPO_ROOT}/.codex-tmp/spec186-app-bundle-r6",
-      "allowCpuFallback": true
-    },
-    {
-      "name": "DetectShard0",
-      "identity": "/spec186/DetectShard0",
-      "node": "local",
-      "gpu": -1,
-      "backend": "onnxruntime-cpu",
-      "service": "/AI/YOLO/YOLO26n/DetectShard0",
-      "binary": "${REPO_ROOT}/.codex-tmp/spec186-app-bundle-r6",
-      "allowCpuFallback": true
-    },
-    {
-      "name": "DetectShard1",
-      "identity": "/spec186/DetectShard1",
-      "node": "local",
-      "gpu": -1,
-      "backend": "onnxruntime-cpu",
-      "service": "/AI/YOLO/YOLO26n/DetectShard1",
-      "binary": "${REPO_ROOT}/.codex-tmp/spec186-app-bundle-r6",
-      "allowCpuFallback": true
-    },
-    {
-      "name": "Merge",
-      "identity": "/spec186/Merge",
-      "node": "local",
-      "gpu": -1,
-      "backend": "onnxruntime-cpu",
-      "service": "/AI/YOLO/YOLO26n/Merge",
+      "service": "/AI/YOLO/YOLO26n/FullModel",
       "binary": "${REPO_ROOT}/.codex-tmp/spec186-app-bundle-r6",
       "allowCpuFallback": true
     }
@@ -96,8 +66,8 @@
       },
       "inputs": {
         "caseBundle": {
-          "path": "/home/tianxing/.config/ndnsf/spec180/spec186-cases-r1/Y-N",
-          "sha256": "086bd3f9d087fdca77cef4a47bca82094401ed199599da70608f417b9013054e"
+          "path": "/home/tianxing/.config/ndnsf/spec180/spec186-cases-r1/Y-A",
+          "sha256": "583b571b2cdedce81156cee3ebc44fdce02dfa41617c724dc86127932cc38bd5"
         },
         "catalogueDataName": "/example/controller/NDNSF/DI/CATALOGUE/spec186",
         "catalogueSigner": "/example/controller"
@@ -109,7 +79,7 @@
     "format": "onnx",
     "backend": "onnxruntime-cpu",
     "model": {
-      "path": "/home/tianxing/.config/ndnsf/spec180/spec186-cases-r1/Y-N/canonical-package/canonical/yolo26n.onnx",
+      "path": "/home/tianxing/.config/ndnsf/spec180/spec186-cases-r1/Y-A/canonical-package/canonical/yolo26n.onnx",
       "sha256": "956ee2aa62f34c1ac035b85a837b70786bfa8da3ae8650e7539abbe572d0dd2a"
     },
     "tokenizer": null
@@ -124,11 +94,11 @@
       "sha256": "3c41178eb44d9c63c1995552e3807b88ec468a25bb33249d243f0fc62cc80cd0"
     },
     "warmup": 1,
-    "measured": 1,
-    "requestMode": "negative"
+    "measured": 3,
+    "requestMode": "normal"
   },
   "security": {
-    "identityRoot": "${REPO_ROOT}/Experiments/TigerCluster/.keys/spec186-local-negative",
+    "identityRoot": "${REPO_ROOT}/Experiments/TigerCluster/.keys/spec186-local",
     "permissions": {
       "path": "${REPO_ROOT}/specs/186-spec184-tiger-qwen-experiments/fixtures/permissions.json",
       "sha256": "65049e14a45d37108688a1f0cb6a1f53608766f549a554b082e31ae8dc0ca8a2"

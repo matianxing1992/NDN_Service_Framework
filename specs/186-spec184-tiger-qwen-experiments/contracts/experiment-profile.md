@@ -29,6 +29,7 @@ values, but pre-dispatch MUST reject those placeholders before scheduler mutatio
 ## Case Values
 
 ```text
+yolo-minindn-atomic
 yolo-minindn-normal
 yolo-minindn-negative
 qwen06b-minindn-cpu
@@ -44,7 +45,8 @@ backend, stage manifest, tokenizer and cluster resource declaration are complete
 
 ## Role And Topology Rules
 
-YOLO roles are exactly `BackboneNeck`, `DetectShard0`, `DetectShard1`, and `Merge`.
+The atomic `Y-A` profiles use one `FullModel` role. Split `Y-B`/`Y-N` profiles use
+exactly `BackboneNeck`, `DetectShard0`, `DetectShard1`, and `Merge`.
 Each role has an identity, node, optional GPU device, binary, service name and expected
 backend. A two-node profile MUST declare two distinct physical hosts and one NFD endpoint
 per host. A local MiniNDN profile MUST declare per-process HOME/PIB/TPM and socket paths.
@@ -72,6 +74,9 @@ allowed.
 - Negative completion budget starts only after all ranks publish the shared readiness barrier.
 - Slurm account, partition, node constraints, GPU type and memory are recorded as effective
   values, not silently inferred from a login host.
+- YOLO profiles MUST declare the immutable case bundle and catalogue data name/signer in
+  `runtime.harness.inputs`; this bundle supplies the canonical package, case config,
+  topology and offer key maps to both the local runner and the Tiger container launcher.
 
 ## Effective Configuration Record
 

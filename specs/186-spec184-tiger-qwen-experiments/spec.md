@@ -7,7 +7,9 @@
 
 ## Scope And Evidence Boundary
 
-Spec186 将以 `575b43cc93bbed29932303caf3d09974f1585af7` 作为唯一初始源码基线，
+Spec186 将以 `575b43cc93bbed29932303caf3d09974f1585af7` 作为唯一初始源码基线；
+静态修复和实验适配提交必须建立在该基线之上，并在 candidate 中固定实际的
+后代 source commit 与 source seal，
 建立 `SPEC184Experiments` 实验分支，验证 Spec184 的 YOLO 路径以及本机可运行的
 Qwen3-0.6B 路径。当前远端 `Experimental` 的更新提交属于 Spec185，不能作为本
 Spec 的隐式基线。
@@ -56,7 +58,7 @@ cleanup 回执的运行都不得记为实验 PASS。
 
 **Acceptance Scenarios**:
 
-1. **Given** 本地没有该提交对象，**When** 操作者获取对象并验证 SHA、父提交和工作树，**Then** 只有精确的 `575b43c` 可用于创建分支。
+1. **Given** 本地没有该提交对象，**When** 操作者获取对象并验证 SHA、父提交和工作树，**Then** 只有精确的 `575b43c` 可用于创建初始分支；修复后的 candidate 必须是该提交的可追溯后代并单独记录 source seal。
 2. **Given** candidate 的任一输入、配置或运行时文件被替换，**When** 执行 pre-dispatch gate，**Then** gate 指出最早重跑阶段，并且没有上传、staging、`sbatch` 或远程变更。
 3. **Given** 只改变应用层文件，**When** 比较变更平面，**Then** 未改变的基础库 SIF 可复用，但应用、harness 和正式运行证据必须生成新的身份。
 
@@ -136,7 +138,7 @@ GPU，再做双节点 YOLO；节点间角色通过 NDN 传递真实依赖，不�
 
 ### Functional Requirements
 
-- **FR-001**: The experiment MUST be based on the exact source commit `575b43cc93bbed29932303caf3d09974f1585af7`; a branch or remote tip with another tree MUST be rejected.
+- **FR-001**: The experiment MUST start from the exact source baseline `575b43cc93bbed29932303caf3d09974f1585af7`. A candidate source commit MUST be that commit or a verifiable descendant with its own source seal; an unrelated branch, remote tip, or unsealed source tree MUST be rejected.
 - **FR-002**: The feature MUST maintain the `SPEC184Experiments` branch intent while storing all new TigerCluster-specific scripts, profiles, schemas, jobs, tests and operating documentation under `Experiments/TigerCluster/`.
 - **FR-003**: The candidate MUST bind source, toolchain/dependencies, base runtime, application bundle, harness, effective profile, model, tokenizer, input, oracle, identities and validation contract with hashes.
 - **FR-004**: A repository-owned pre-dispatch closure gate MUST reject stale, missing, malformed or cross-candidate inputs before upload, staging, scheduler, remote mutation or campaign calls; mutation tests MUST prove zero such side effects.
@@ -168,7 +170,7 @@ GPU，再做双节点 YOLO；节点间角色通过 NDN 传递真实依赖，不�
 
 ### Measurable Outcomes
 
-- **SC-001**: A clean checkout can verify the exact `575b43c` base and produce one deterministic candidate manifest with no undeclared source or artifact plane.
+- **SC-001**: A clean checkout can verify the exact `575b43c` base, verify that the candidate source commit descends from it, and produce one deterministic candidate manifest with no undeclared source or artifact plane.
 - **SC-002**: All registered candidate/profile mutation cases are rejected before external side effects, with zero upload, staging, scheduler or remote-mutation calls.
 - **SC-003**: Fresh local MiniNDN YOLO Y-A, Y-B and Y-N runs produce terminal, numerical and cleanup evidence for the same candidate; old Spec183 evidence is not reused as proof.
 - **SC-004**: When compatible Qwen3-0.6B artifacts are available, local CPU MiniNDN completes one cold request and one follow-up conversation with token/checkpoint/exit/cleanup evidence; otherwise a reproducible `WAITING_EXTERNAL_INPUT` record is produced.

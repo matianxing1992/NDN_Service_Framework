@@ -1,1 +1,1 @@
-{"schema":"spec186-yolo-oracle-v1","method":"independent-reference-required","tolerance":0.000001,"expected":"external-receipt-only"}
+{"method":"independent-reference-required","modelFamily":"YOLO26n","outputDigest":"sha256:ed5a23d73e3cda04677bfc9d895732b44e1455f20d9dc433ae5462eb7b9b7175","outputShape":[1,50,6],"schema":"spec186-yolo-oracle-v1","tolerance":1e-06}

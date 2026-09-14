@@ -4386,3 +4386,94 @@ which differs from the Spec186 handoff seal
   creation and add a no-side-effect regression.
 - **Lesson**: environment allow-lists need value-level binding for provenance
   fields; a permitted key is not trustworthy merely because its syntax is safe.
+
+## 2026-09-13 — Spec186 YOLO case bundle omitted the catalogue authority key
+
+- **Area**: T006/T007 direct MiniNDN package validation for Y-A/Y-B/Y-N.
+- **Symptom**: the first real Y-B `validate_inputs` attempt stopped before
+  topology startup with `CANONICAL_CATALOGUE_VERIFY_FAILED`; the canonical
+  registry referenced `contracts/catalogue-authority.pub`, which was absent
+  from the staged case bundle.
+- **Root cause**: the case-bundle staging step copied the signed package,
+  registry, trust maps and identity maps but treated the package directory as
+  self-contained even though catalogue signature verification resolves the
+  authority key relative to the case bundle.
+- **Correction**: stage the public catalogue authority key at the declared
+  `contracts/catalogue-authority.pub` path for every Y-A/Y-B/Y-N bundle,
+  recompute each immutable bundle digest, and update the profile input seals.
+- **Lesson**: a signed model package is not a runnable experiment input until
+  every verifier-relative trust artifact named by its registry is present in
+  the same sealed bundle.
+
+## 2026-09-13 — Spec186 portable private-key maps were rejected at runtime
+
+- **Area**: T006/T007 case-bundle validation and Provider process construction.
+- **Symptom**: after the catalogue key was staged, the portable Y-B bundle
+  still could not be used by the production runner because its private-key
+  map deliberately contained `keys/<role>.pem` entries while both the
+  preflight and Provider command builder required absolute paths.
+- **Root cause**: portability was implemented for public maps but the private
+  map checks retained an older host-only absolute-path requirement.
+- **Correction**: resolve relative private-key entries against the map file's
+  parent directory in both validation and process construction; retain digest
+  binding and readability checks after resolution.
+- **Lesson**: all path-bearing case-bundle fields need one consistent
+  relative-to-bundle policy across preflight and child-process boundaries.
+
+## 2026-09-14 — Spec186 profile accepted an unrelated source commit
+
+- **Area**: T003/T005 candidate identity closure.
+- **Symptom**: the profile validator checked only that `sourceCommit` was a
+  40-hex value, so a syntactically valid commit unrelated to the requested
+  `575b43c` baseline could reach candidate-manifest construction.
+- **Root cause**: the baseline requirement existed in the Spec text and
+  evidence but was not enforced at the executable profile boundary.
+- **Correction**: require `sourceCommit` to be the baseline or a verifiable
+  descendant using `git merge-base --is-ancestor`; add a mutation regression
+  and clarify the baseline-versus-repaired-candidate rule in spec, plan and
+  quickstart.
+- **Lesson**: source provenance is a validation predicate, not documentation;
+  commit syntax alone cannot establish candidate lineage.
+
+## 2026-09-14 — Spec186 lineage gate skipped subtree callers
+
+- **Area**: T003/T005 source-lineage regression for the TigerCluster profiles.
+- **Symptom**: the new unrelated-commit regression did not raise because the
+  test passed `Experiments/TigerCluster` as `repo_root`, and the validator
+  treated that subtree as a git-less replay archive.
+- **Root cause**: the lineage helper checked only `<repo_root>/.git` instead
+  of resolving the enclosing repository root.
+- **Correction**: walk `repo_root` and its parents for `.git`; keep the
+  git-less Tiger replay behavior that consumes the submit-side sealed identity.
+- **Lesson**: repository-root discovery must be independent of the profile's
+  directory so a static gate cannot be bypassed by a valid subtree path.
+
+## 2026-09-14 — Spec186 MiniNDN child PATH omitted system network tools
+
+- **Area**: T004/T007 local and SIF-wrapped MiniNDN launch environment.
+- **Symptom**: the launcher environment exposed `/usr/local/bin:/usr/bin:/bin`
+  only, so a real MiniNDN start could fail before NFD creation when a host's
+  `ifconfig` or related network utility resolved from `/usr/sbin` or `/sbin`.
+- **Root cause**: the earlier scheduler PATH hardening was not propagated to
+  the local child environment, the SIF Apptainer `--env` vector, or the
+  scheduler allow-listed PATH.
+- **Correction**: add `/usr/sbin:/sbin` consistently at all three process
+  boundaries and retain the bounded child cleanup behavior.
+- **Lesson**: runtime environment closure includes administrative system paths;
+  matching application libraries alone does not make MiniNDN start portable.
+
+## 2026-09-14 — Spec186 r7 SIF final Python packaging failed on base image data
+
+- **Area**: T006 exact base-plus-application SIF build, Python extension stage.
+- **Symptom**: the 1h07m C++/NDNSF build completed through `[213/213]`, then
+  both the application packaging step and its image `%post` stopped during
+  `pip install` with `FileNotFoundError` for
+  `setuptools/_vendor/jaraco/text/Lorem ipsum.txt`.
+- **Root cause**: the pinned base SIF's setuptools installation omitted a
+  package-data file that setuptools imports while generating project metadata.
+- **Correction**: restore the empty package-data file in the tracked runtime
+  definition before pip builds the pybind extensions; the r7 SIF and record
+  remain rejected and are not reused.
+- **Lesson**: a successful native compile is not a complete SIF gate; run the
+  final Python packaging/import checks inside the exact base image and retain
+  the first packaging failure.

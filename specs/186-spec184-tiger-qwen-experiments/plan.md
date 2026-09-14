@@ -5,7 +5,8 @@
 
 ## Summary
 
-本计划把 `575b43cc93bbed29932303caf3d09974f1585af7` 固定为 Spec186 的源码入口，
+本计划把 `575b43cc93bbed29932303caf3d09974f1585af7` 固定为 Spec186 的初始源码入口；
+静态修复后的 candidate 使用该基线的可验证后代 commit，并固定对应 source seal，
 把 Spec184 的 YOLO/Qwen 本地实验和 TigerCluster 运行拆成可复核的证据门。实现只
 增加实验层适配：profile、candidate closure、lifecycle/transport launcher、
 collector、作业模板和文档；业务推理继续由现有 C++ native DI 路径拥有。

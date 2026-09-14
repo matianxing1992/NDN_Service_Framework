@@ -70,10 +70,13 @@ SPEC180_SIF_HOST_PROCESS_FALLBACK = "SPEC180_SIF_HOST_PROCESS_FALLBACK"
 
 def sif_runtime_enabled() -> bool:
     """True only when the sealed candidate image is declared."""
-    return bool(SIF_RUNTIME_SIF)
+    # Tiger runs execute this replay harness inside the declared SIF.  Native
+    # children must use that outer composition directly; otherwise the harness
+    # would recursively invoke Apptainer and lose the compute-node context.
+    return bool(SIF_RUNTIME_SIF) and os.environ.get("SPEC180_RUNTIME_OUTER") != "1"
 
 
-def _sif_bind_args() -> list[str]:
+def _sif_bind_args(base_env: Mapping[str, str] | None = None) -> list[str]:
     """Return data/control-plane bind mounts for the candidate image.
 
     These are data trees, not source overlays: the complete source/runtime is
@@ -87,6 +90,7 @@ def _sif_bind_args() -> list[str]:
     sudo_user = os.environ.get("SUDO_USER", "")
     if sudo_user and os.geteuid() == 0 and (Path("/home") / sudo_user).is_dir():
         operator_home = Path("/home") / sudo_user
+    env = base_env or {}
     bind_roots = [
         ROOT / "results",
         ROOT / "specs",
@@ -102,6 +106,22 @@ def _sif_bind_args() -> list[str]:
             continue
         seen.add(str(path))
         result.extend(["--bind", f"{path}:{path}"])
+    # The application and candidate input layers are immutable external
+    # inputs.  Bind them explicitly into the same absolute path (case inputs)
+    # or the stable /app/bundle mount (application) so child processes cannot
+    # fall back to host libraries or an unsealed checkout.
+    app_bundle = str(env.get("SPEC180_RUNTIME_APP_BUNDLE", "")).strip()
+    if app_bundle:
+        app_path = Path(app_bundle).expanduser().resolve()
+        if app_path.is_dir() and str(app_path) not in seen:
+            seen.add(str(app_path))
+            result.extend(["--bind", f"{app_path}:/app/bundle:ro"])
+    input_root = str(env.get("SPEC180_RUNTIME_INPUT_ROOT", "")).strip()
+    if input_root:
+        input_path = Path(input_root).expanduser().resolve()
+        if input_path.is_dir() and str(input_path) not in seen:
+            seen.add(str(input_path))
+            result.extend(["--bind", f"{input_path}:{input_path}:ro"])
     return result
 
 
@@ -118,7 +138,7 @@ def sif_exec_prefix(base_env: Mapping[str, str] | None = None,
     pieces = [
         shutil.which(SIF_RUNTIME_APPTAINER) or SIF_RUNTIME_APPTAINER,
         "exec", "--cleanenv",
-        *_sif_bind_args(),
+        *_sif_bind_args(env),
     ]
     if home_dir:
         selected_home_path = Path(home_dir).expanduser().resolve()
@@ -127,8 +147,10 @@ def sif_exec_prefix(base_env: Mapping[str, str] | None = None,
         pieces.extend(["--home", '"${HOME:-/tmp/minindn}:${HOME:-/tmp/minindn}"'])
     pieces.extend([
         "--pwd", SIF_RUNTIME_REPO,
-        "--env", "PATH=/opt/venv/bin:/opt/ndnsf-di/current/bin:/usr/local/bin:/usr/bin:/bin",
-        "--env", "LD_LIBRARY_PATH=/opt/ndnsf-di/current/lib:/opt/onnxruntime/lib",
+        "--env", "PATH=/opt/venv/bin:/opt/ndnsf-di/current/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+        "--env", "LD_LIBRARY_PATH=" + ":".join(filter(None, (
+            str(env.get("SPEC180_RUNTIME_APP_LIB", "")).strip(),
+            "/opt/ndnsf-di/current/lib", "/opt/onnxruntime/lib"))),
         "--env", f"PYTHONPATH={SIF_RUNTIME_PYTHONPATH}",
         "--env", "PYTHONNOUSERSITE=1",
     ])
@@ -756,7 +778,12 @@ class MiniNdnCaseRuntime:
             generated_manifest = generated / "service-manifest.json"
             generated_trust_schema = generated / "trust-schema.conf"
             if sif_runtime_enabled():
-                executable = "/opt/ndnsf-di/current/bin/di-native-provider"
+                # Stable base libraries remain in the SIF; the frequently
+                # changing DI/UAV binary comes from the separately mounted
+                # read-only application bundle.
+                executable = os.environ.get(
+                    "SPEC180_NATIVE_PROVIDER_BINARY",
+                    "/opt/ndnsf-di/current/bin/di-native-provider")
             else:
                 executable = os.environ.get(
                     "SPEC180_NATIVE_PROVIDER_BINARY",
@@ -888,11 +915,12 @@ class MiniNdnCaseRuntime:
             if not provider_id or "/" in provider_id:
                 raise RunnerError("CASE_PROCESS_PROVIDER_ID_INVALID:" + identity)
             key_file = private_key_entries.get(identity)
-            if (not isinstance(key_file, str) or not key_file
-                    or not Path(key_file).expanduser().is_absolute()):
+            if not isinstance(key_file, str) or not key_file:
                 raise RunnerError(
                     "CASE_PROCESS_OFFER_PRIVATE_KEY_MISSING:" + identity)
             key_path = Path(key_file).expanduser()
+            if not key_path.is_absolute():
+                key_path = private_key_map.parent / key_path
             if (not key_path.is_file() or not os.access(key_path, os.R_OK)):
                 raise RunnerError(
                     "CASE_PROCESS_OFFER_PRIVATE_KEY_INVALID:" + identity)
@@ -1471,10 +1499,14 @@ def _validate_native_library_closure() -> None:
     if not nfd:
         raise RunnerError("NATIVE_LIBRARY_CLOSURE_NFD_MISSING")
     expected_abi = f"cpython-{sys.version_info.major}{sys.version_info.minor}"
-    extension_candidates = sorted(
-        path for path in (ROOT / "pythonWrapper/ndnsf").glob("_ndnsf*.so")
+    extension_roots = [ROOT / "pythonWrapper/ndnsf"]
+    for site_root in (*site.getsitepackages(), site.getusersitepackages()):
+        extension_roots.append(Path(site_root) / "ndnsf")
+    extension_candidates = sorted({
+        path for extension_root in extension_roots
+        for path in extension_root.glob("_ndnsf*.so")
         if expected_abi in path.name
-    )
+    })
     if not extension_candidates:
         raise RunnerError(
             "NATIVE_LIBRARY_CLOSURE_EXTENSION_MISSING:" + expected_abi)
@@ -1552,7 +1584,10 @@ def _validate_key_map(path: Path) -> dict[str, Path]:
             raise RunnerError("OFFER_KEY_ID_INVALID")
         if not isinstance(key_path, str):
             raise RunnerError("OFFER_KEY_PATH_INVALID:" + key_id)
-        resolved = _absolute_file(key_path, "offer-public-key:" + key_id)
+        candidate = Path(key_path).expanduser()
+        if not candidate.is_absolute():
+            candidate = path.parent / candidate
+        resolved = _absolute_file(str(candidate), "offer-public-key:" + key_id)
         if b"PRIVATE KEY" in resolved.read_bytes():
             raise RunnerError("OFFER_KEY_MAP_CONTAINS_PRIVATE_KEY")
         result[key_id] = resolved
@@ -2301,10 +2336,11 @@ def validate_inputs(case: str, environment: Mapping[str, str]) -> tuple[Path, Ma
     private_key_file_digests: dict[str, str] = {}
     for provider_identity in case_runtime["providerIdentities"]:
         key_value = private_key_map_doc.get(provider_identity)
-        if (not isinstance(key_value, str) or not key_value
-                or not Path(key_value).expanduser().is_absolute()):
+        if not isinstance(key_value, str) or not key_value:
             raise RunnerError("OFFER_PRIVATE_KEY_MISSING:" + provider_identity)
         key_path = Path(key_value).expanduser()
+        if not key_path.is_absolute():
+            key_path = private_key_map_path.parent / key_path
         if not key_path.is_file() or not os.access(key_path, os.R_OK):
             raise RunnerError("OFFER_PRIVATE_KEY_INVALID:" + provider_identity)
         # Bind secret-bearing key files by digest only.  The private bytes stay

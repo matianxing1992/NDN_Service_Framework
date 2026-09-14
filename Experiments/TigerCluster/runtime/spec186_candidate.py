@@ -20,13 +20,15 @@ from typing import Any, Dict, Iterable, Mapping, Optional, Sequence, Tuple
 
 SCHEMA_VERSION = "ndnsf-spec186-experiment-profile-v1"
 CANDIDATE_SCHEMA = "spec186-candidate-v1"
+SPEC186_BASELINE_COMMIT = "575b43cc93bbed29932303caf3d09974f1585af7"
 CASES = (
-    "yolo-minindn-normal", "yolo-minindn-negative", "qwen06b-minindn-cpu",
+    "yolo-minindn-atomic", "yolo-minindn-normal", "yolo-minindn-negative", "qwen06b-minindn-cpu",
     "yolo-tiger-single-gpu", "yolo-tiger-two-node-normal",
     "yolo-tiger-two-node-negative", "yolo-tiger-two-node-reuse",
     "qwen06b-tiger-experimental",
 )
 YOLO_ROLES = ("BackboneNeck", "DetectShard0", "DetectShard1", "Merge")
+YOLO_ATOMIC_ROLES = ("FullModel",)
 _HEX = re.compile(r"^[0-9a-f]{64}$")
 _IDENT = re.compile(r"^[A-Za-z0-9_.:/-]+$")
 _RUN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
@@ -41,7 +43,7 @@ _MANIFEST_SECTION_KEYS = {
     "source": {"commit", "sourceSealSha256"},
     "runtime": {"baseSif", "builder", "abiManifest", "apptainer"},
     "application": {"bundle", "bundleSha256", "entrypoint", "extension", "extensionSha256"},
-    "harness": {"launcher", "launcherSha256", "collector"},
+    "harness": {"launcher", "launcherSha256", "collector", "inputs"},
     "configuration": {"profileSha256", "transportLayoutSha256"},
     "external": {"model", "tokenizer", "stageManifest", "input", "oracle"},
     "security": {"identityRoot", "permissions"},
@@ -69,7 +71,8 @@ _QWEN_ROLE_KEYS = {
     "dependencies", "artifactSha256", "tokenizerSha256", "modelUri",
 }
 _APPLICATION_KEYS = {"bundle", "bundleSha256", "entrypoint", "extension"}
-_HARNESS_KEYS = {"launcher", "collector"}
+_HARNESS_KEYS = {"launcher", "collector", "inputs"}
+_YOLO_HARNESS_INPUT_KEYS = {"caseBundle", "catalogueDataName", "catalogueSigner"}
 _MODEL_KEYS = {"family", "format", "backend", "model", "tokenizer", "stageManifest"}
 _WORKLOAD_KEYS = {"input", "oracle", "warmup", "measured", "requestMode"}
 _SECURITY_KEYS = {"identityRoot", "permissions"}
@@ -196,6 +199,35 @@ def _digest(value: Any, label: str, *, allow_none: bool = False) -> Optional[str
     return value
 
 
+def _verify_source_lineage(source_commit: str, repo_root: Path) -> None:
+    """Require the candidate source to descend from the Spec186 baseline."""
+    # Tiger's replay archive intentionally omits .git.  The submit-side
+    # candidate gate verifies lineage before staging; the git-less runtime
+    # must consume that sealed source identity without attempting host VCS
+    # discovery.
+    # Callers commonly pass the TigerCluster subtree rather than the project
+    # root.  Walk parents so the local static gate cannot silently skip the
+    # check just because the profile lives below the repository root.
+    git_root = next(
+        (candidate for candidate in (repo_root, *repo_root.parents)
+         if (candidate / ".git").exists()),
+        None,
+    )
+    if git_root is None:
+        return
+    try:
+        subprocess.check_call(
+            ["git", "-C", str(git_root), "merge-base", "--is-ancestor",
+             SPEC186_BASELINE_COMMIT, source_commit],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            timeout=5,
+        )
+    except subprocess.CalledProcessError as exc:
+        raise CandidateError("SOURCE_BASELINE_LINEAGE") from exc
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise CandidateError("SOURCE_LINEAGE_UNVERIFIABLE") from exc
+
+
 def _path(value: Any, label: str) -> str:
     path = _string(value, label)
     if not Path(path).is_absolute() or "\x00" in path:
@@ -241,6 +273,7 @@ def load_profile(path: Path, *, repo_root: Optional[Path] = None,
     if not re.fullmatch(r"[0-9a-f]{40}", _string(candidate["sourceCommit"],
                                                     "candidate.sourceCommit")):
         raise CandidateError("INVALID_COMMIT:candidate.sourceCommit")
+    _verify_source_lineage(candidate["sourceCommit"], repo)
     _digest(candidate["sourceSealSha256"], "candidate.sourceSealSha256")
 
     topology = profile["topology"]
@@ -274,7 +307,10 @@ def load_profile(path: Path, *, repo_root: Optional[Path] = None,
         raise CandidateError("NFD_ENDPOINT_HOSTS_NOT_DISTINCT")
     if profile["case"].startswith("yolo-"):
         roles = profile["roles"]
-        if not isinstance(roles, list) or [item.get("name") for item in roles if isinstance(item, Mapping)] != list(YOLO_ROLES):
+        expected_roles = (YOLO_ATOMIC_ROLES if profile["case"] in {
+                              "yolo-minindn-atomic", "yolo-tiger-single-gpu"}
+                          else YOLO_ROLES)
+        if not isinstance(roles, list) or [item.get("name") for item in roles if isinstance(item, Mapping)] != list(expected_roles):
             raise CandidateError("YOLO_ROLE_ORDER")
         for role in roles:
             if not isinstance(role, Mapping):
@@ -293,7 +329,7 @@ def load_profile(path: Path, *, repo_root: Optional[Path] = None,
             _string(role["node"], "role.node")
             backend = _string(role["backend"], "role.backend")
             service = _string(role["service"], "role.service")
-            if service != "/ObjectDetection/YOLOv8/" + role["name"]:
+            if service != "/AI/YOLO/YOLO26n/" + role["name"]:
                 raise CandidateError("ROLE_SERVICE")
             if (role["gpu"] >= 0) != ("cuda" in backend.lower()):
                 raise CandidateError("ROLE_BACKEND_GPU_MISMATCH")
@@ -393,6 +429,19 @@ def load_profile(path: Path, *, repo_root: Optional[Path] = None,
     _required(harness, ("launcher", "collector"), "HARNESS")
     _path(harness["launcher"], "runtime.harness.launcher")
     _asset(harness["collector"], "runtime.harness.collector")
+    if profile["case"].startswith("yolo-"):
+        inputs = harness.get("inputs")
+        if not isinstance(inputs, Mapping):
+            raise CandidateError("HARNESS_INPUTS_NOT_OBJECT")
+        _keys(inputs, _YOLO_HARNESS_INPUT_KEYS, "HARNESS_INPUTS")
+        _required(inputs, _YOLO_HARNESS_INPUT_KEYS, "HARNESS_INPUTS")
+        _asset(inputs["caseBundle"], "runtime.harness.inputs.caseBundle")
+        for key in ("catalogueDataName", "catalogueSigner"):
+            _string(inputs[key], "runtime.harness.inputs." + key)
+        if "/NDNSF/DI/" not in inputs["catalogueDataName"]:
+            raise CandidateError("HARNESS_CATALOGUE_DATA_NAME")
+        if inputs["catalogueSigner"] != inputs["catalogueDataName"].split("/NDNSF/DI/", 1)[0]:
+            raise CandidateError("HARNESS_CATALOGUE_SIGNER")
 
     model = profile["model"]
     if not isinstance(model, Mapping):
@@ -409,7 +458,7 @@ def load_profile(path: Path, *, repo_root: Optional[Path] = None,
         _asset(model.get("stageManifest"), "model.stageManifest")
     elif model.get("stageManifest") is not None:
         raise CandidateError("YOLO_STAGE_MANIFEST_UNEXPECTED")
-    if profile["case"].startswith("yolo") and model["family"] != "YOLOv8n":
+    if profile["case"].startswith("yolo") and model["family"] != "YOLO26n":
         raise CandidateError("YOLO_MODEL_FAMILY_MISMATCH")
     if profile["case"] == "qwen06b-tiger-experimental" and model["format"] not in {"onnx", "gguf-q3"}:
         raise CandidateError("QWEN_FORMAT_UNSUPPORTED")
@@ -511,6 +560,7 @@ def build_candidate_manifest(profile: Mapping[str, Any], *, repo_root: Path) -> 
     launcher_sha = file_digest(launcher_path) if launcher_path.is_file() else "0" * 64
     extension_path = Path(runtime["application"]["extension"])
     extension_sha = file_digest(extension_path) if extension_path.is_file() else "0" * 64
+    harness_inputs = runtime["harness"].get("inputs", {})
     manifest = {
         "schemaVersion": CANDIDATE_SCHEMA,
         "candidateId": profile["candidate"]["id"],
@@ -527,7 +577,14 @@ def build_candidate_manifest(profile: Mapping[str, Any], *, repo_root: Path) -> 
                         "extensionSha256": extension_sha},
         "harness": {"launcher": runtime["harness"]["launcher"],
                      "launcherSha256": launcher_sha,
-                    "collector": _asset_manifest(runtime["harness"]["collector"], "harness.collector")},
+                    "collector": _asset_manifest(runtime["harness"]["collector"], "harness.collector"),
+                    "inputs": {
+                        "caseBundle": _asset_manifest(
+                            harness_inputs["caseBundle"],
+                            "harness.inputs.caseBundle"),
+                        "catalogueDataName": harness_inputs.get("catalogueDataName"),
+                        "catalogueSigner": harness_inputs.get("catalogueSigner"),
+                    } if profile["case"].startswith("yolo-") else {}},
         "configuration": {"profileSha256": canonical_digest(profile),
                           "transportLayoutSha256": canonical_digest(profile["topology"])},
         "external": {"model": _asset_manifest(model["model"], "model"),
@@ -575,6 +632,24 @@ def _validate_manifest_shape(manifest: Mapping[str, Any], failures: list[str]) -
             asset_missing = sorted(_MANIFEST_ASSET_KEYS - set(asset))
             if asset_missing:
                 failures.append("MISSING_CANDIDATE_ASSET_FIELD:" + section + "." + key + ":" + ",".join(asset_missing))
+        if section == "harness":
+            inputs = value.get("inputs")
+            if not isinstance(inputs, Mapping):
+                failures.append("CANDIDATE_HARNESS_INPUTS_NOT_OBJECT")
+                continue
+            if inputs and set(inputs) != _YOLO_HARNESS_INPUT_KEYS:
+                failures.append("CANDIDATE_HARNESS_INPUTS_INVALID")
+            if inputs:
+                case_bundle = inputs.get("caseBundle")
+                if not isinstance(case_bundle, Mapping):
+                    failures.append("CANDIDATE_HARNESS_CASE_BUNDLE_NOT_OBJECT")
+                else:
+                    unknown = sorted(set(case_bundle) - _MANIFEST_ASSET_KEYS)
+                    missing = sorted(_MANIFEST_ASSET_KEYS - set(case_bundle))
+                    if unknown:
+                        failures.append("UNKNOWN_CANDIDATE_ASSET_FIELD:harness.inputs.caseBundle:" + ",".join(unknown))
+                    if missing:
+                        failures.append("MISSING_CANDIDATE_ASSET_FIELD:harness.inputs.caseBundle:" + ",".join(missing))
 
 
 def _profile_placeholder_checks(profile: Mapping[str, Any], failures: list[str]) -> None:
@@ -668,29 +743,25 @@ def _harness_checks(profile: Mapping[str, Any], failures: list[str]) -> None:
         failures.append("HARNESS_SOURCE_READ_FAILED")
         return
     # The maintained Spec180 runner is package/config driven and requires the
-    # canonical YOLO26n package.  Spec186's old profiles describe a bare
-    # YOLOv8n file and declare none of those environment inputs; silently
-    # dispatching them only produces an early ENVIRONMENT_MISSING failure.
+    # canonical YOLO26n package.  Keep that contract explicit in each profile
+    # so a command can be rendered before MiniNDN or a scheduler is started.
     if profile["case"].startswith("yolo-") and "SPEC180_YOLO_CANONICAL_PACKAGE" in source:
         if profile["model"]["family"] != "YOLO26n":
             failures.append("HARNESS_MODEL_FAMILY_MISMATCH:expected-YOLO26n")
-        required = (
-            "NDNSF_DI_STATE_ROOT", "NDNSF_DI_ENVELOPE_KEY_FILE",
-            "SPEC180_YOLO_CANONICAL_PACKAGE", "SPEC180_YOLO_CATALOGUE_REGISTRY",
-            "SPEC180_YOLO_CATALOG_DATA_NAME", "SPEC180_YOLO_CATALOG_SIGNER",
-            "SPEC180_YOLO_OFFER_TRUST_ROOT", "SPEC180_YOLO_OFFER_PUBLIC_KEY_MAP",
-            "SPEC180_YOLO_OFFER_PRIVATE_KEY_MAP", "SPEC180_YOLO_TOPOLOGY",
-            "SPEC180_YOLO_CONFIG",
-        )
-        # The current profile schema has no runner environment declaration.
-        # Report this as a deterministic input defect instead of allowing the
-        # job to consume a local or Tiger allocation and fail after startup.
-        failures.append("HARNESS_ENVIRONMENT_UNDECLARED:" + ",".join(required))
-        # The profile's per-role service strings are descriptive until the
-        # canonical case config maps them into the runner's service namespace.
-        # Keep that mapping an explicit pre-dispatch prerequisite rather than
-        # treating the effective-config metadata as runtime wiring.
-        failures.append("HARNESS_ROLE_SERVICE_MAP_UNDECLARED")
+        inputs = profile["runtime"]["harness"].get("inputs")
+        if not isinstance(inputs, Mapping) or not isinstance(inputs.get("caseBundle"), Mapping):
+            failures.append("HARNESS_ENVIRONMENT_UNDECLARED:caseBundle")
+        else:
+            required = ("NDNSF_DI_STATE_ROOT", "NDNSF_DI_ENVELOPE_KEY_FILE",
+                        "SPEC180_YOLO_CANONICAL_PACKAGE", "SPEC180_YOLO_CATALOGUE_REGISTRY",
+                        "SPEC180_YOLO_CATALOG_DATA_NAME", "SPEC180_YOLO_CATALOG_SIGNER",
+                        "SPEC180_YOLO_OFFER_TRUST_ROOT", "SPEC180_YOLO_OFFER_PUBLIC_KEY_MAP",
+                        "SPEC180_YOLO_OFFER_PRIVATE_KEY_MAP", "SPEC180_YOLO_TOPOLOGY",
+                        "SPEC180_YOLO_CONFIG")
+            # The two run-owned paths are rendered from run_root; the remaining
+            # values are derived from the immutable case bundle below.
+            if not all(inputs.get(key) for key in ("catalogueDataName", "catalogueSigner")):
+                failures.append("HARNESS_ENVIRONMENT_UNDECLARED:" + ",".join(required))
     if profile["case"] == "qwen06b-minindn-cpu":
         # The maintained Qwen entrypoint is an ONNX/onnxruntime native
         # harness.  A GGUF/Q3 profile cannot be passed to it by merely
@@ -843,6 +914,19 @@ def pre_dispatch(profile_path: Path, candidate_path: Path, *, repo_root: Path,
         _check_asset(profile["evidence"]["collector"], "evidence.collector", failures)
         _check_asset(profile["runtime"]["application"]["bundle"],
                      "application.bundle", failures, allow_directory=True)
+        harness_inputs = profile["runtime"]["harness"].get("inputs", {})
+        if isinstance(harness_inputs, Mapping) and isinstance(harness_inputs.get("caseBundle"), Mapping):
+            _check_asset(harness_inputs["caseBundle"],
+                         "harness.inputs.caseBundle", failures,
+                         allow_directory=True)
+        manifest_harness = candidate.get("harness", {})
+        manifest_inputs = (manifest_harness.get("inputs", {})
+                           if isinstance(manifest_harness, Mapping) else {})
+        if isinstance(manifest_inputs, Mapping) and isinstance(
+                manifest_inputs.get("caseBundle"), Mapping):
+            _check_asset(manifest_inputs["caseBundle"],
+                         "candidate.harness.inputs.caseBundle", failures,
+                         allow_directory=True)
         _check_asset(profile["runtime"]["harness"]["collector"], "harness.collector", failures)
         launcher = Path(profile["runtime"]["harness"]["launcher"])
         if not launcher.is_file():
@@ -873,6 +957,10 @@ def pre_dispatch(profile_path: Path, candidate_path: Path, *, repo_root: Path,
             path = Path(value)
             if str(path).startswith(str(repo_root.resolve()) + os.sep) and not _inside(path, repo_root):
                 failures.append("SYMLINK_ESCAPE:" + str(path))
+        if isinstance(harness_inputs, Mapping) and isinstance(harness_inputs.get("caseBundle"), Mapping):
+            bundle_path = Path(harness_inputs["caseBundle"]["path"])
+            if str(bundle_path).startswith(str(repo_root.resolve()) + os.sep) and not _inside(bundle_path, repo_root):
+                failures.append("SYMLINK_ESCAPE:" + str(bundle_path))
         if not _inside(Path(profile["evidence"]["root"]), repo_root) and profile["topology"]["mode"] == "minindn":
             failures.append("EVIDENCE_ROOT_OUTSIDE_REPO")
         _apptainer_checks(profile, failures, commands)

@@ -231,6 +231,11 @@ PY
     export NDNSF_NDN_SVS_SOURCE_TREE=/src/ndn-svs
     export NDNSF_NDN_SVS_BUILD_TREE=/src/ndn-svs/build
 
+    # The pinned base image contains setuptools without package-data files
+    # used by jaraco.text.files().  Restore the harmless data file before pip
+    # imports setuptools so the extension build remains reproducible.
+    install -d "/opt/venv/lib/python3.10/site-packages/setuptools/_vendor/jaraco/text"
+    : > "/opt/venv/lib/python3.10/site-packages/setuptools/_vendor/jaraco/text/Lorem ipsum.txt"
     /opt/venv/bin/pip install --no-index --no-deps --target=/tmp/ndnsf-build-python /build-input/wheels/pybind11-2.13.6-py3-none-any.whl
     PYTHONPATH=/tmp/ndnsf-build-python CPLUS_INCLUDE_PATH=/opt/ndnsf-di/current/include NDNSF_LIBRARY_DIR=/opt/ndnsf-di/current/lib /opt/venv/bin/pip install --no-index --no-deps --no-build-isolation --target=/opt/ndnsf-stage/python /src/ndnsf/pythonWrapper
     PYTHONPATH=/tmp/ndnsf-build-python CPLUS_INCLUDE_PATH=/opt/ndnsf-di/current/include NDNSF_LIBRARY_DIR=/opt/ndnsf-di/current/lib /opt/venv/bin/pip install --no-index --no-deps --no-build-isolation --target=/opt/ndnsf-stage/python /src/ndnsf/NDNSF-DistributedRepo/pythonWrapper

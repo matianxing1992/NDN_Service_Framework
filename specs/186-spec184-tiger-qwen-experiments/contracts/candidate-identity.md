@@ -29,6 +29,11 @@ its digest is the ordered hash of every relative file path and file content, exc
 the self-referential `bundle-manifest.json`. Private keys, model bytes and SIF bytes stay
 outside Git; only their hashes and declared storage locations are recorded.
 
+The Spec186 baseline is `575b43cc93bbed29932303caf3d09974f1585af7`. Candidate source
+commits may be repaired descendants of that baseline, but the submit-side closure gate
+must verify the ancestry before staging; a git-less Tiger replay consumes the already
+sealed source identity and does not rediscover host VCS state.
+
 ## Invalidation
 
 | Change | Earliest invalidated gate | Required action |

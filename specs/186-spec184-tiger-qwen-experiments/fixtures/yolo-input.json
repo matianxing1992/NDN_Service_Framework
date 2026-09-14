@@ -1,1 +1,1 @@
-{"schema":"spec186-yolo-input-v1","image":"yolov8n","shape":[1,3,640,640],"seed":186}
+{"image":"canonical-yolo26n","modelFamily":"YOLO26n","schema":"spec186-yolo-input-v1","seed":186,"shape":[1,3,640,640]}

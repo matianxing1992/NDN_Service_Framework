@@ -50,6 +50,15 @@ def test_apptainer_134_profile_is_rejected(tmp_path):
         candidate.load_profile(path, repo_root=ROOT)
 
 
+def test_source_commit_must_descend_from_spec186_baseline(tmp_path):
+    value = json.loads(profile_path().read_text())
+    value["candidate"]["sourceCommit"] = "0df480f4a0979b697eee820038266eb813ba7c62"
+    path = tmp_path / "unrelated-source.json"
+    path.write_text(json.dumps(value))
+    with pytest.raises(candidate.CandidateError, match="SOURCE_BASELINE_LINEAGE"):
+        candidate.load_profile(path, repo_root=ROOT)
+
+
 def test_role_backend_and_service_are_bound_to_gpu_contract(tmp_path):
     value = json.loads(profile_path().read_text())
     value["roles"][0]["gpu"] = 0
@@ -58,7 +67,7 @@ def test_role_backend_and_service_are_bound_to_gpu_contract(tmp_path):
     path.write_text(json.dumps(value))
     with pytest.raises(candidate.CandidateError, match="ROLE_SERVICE"):
         candidate.load_profile(path, repo_root=ROOT)
-    value["roles"][0]["service"] = "/ObjectDetection/YOLOv8/BackboneNeck"
+    value["roles"][0]["service"] = "/AI/YOLO/YOLO26n/BackboneNeck"
     path.write_text(json.dumps(value))
     with pytest.raises(candidate.CandidateError, match="ROLE_BACKEND_GPU_MISMATCH"):
         candidate.load_profile(path, repo_root=ROOT)
@@ -141,18 +150,18 @@ def test_pre_dispatch_rejects_without_remote_side_effects(tmp_path):
                for item in receipt["failures"])
 
 
-def test_pre_dispatch_exposes_yolo_profile_runner_drift(tmp_path):
+def test_pre_dispatch_has_no_legacy_yolo_runner_drift(tmp_path):
     repository_root = ROOT.parents[1]
     profile = candidate.load_profile(profile_path(), repo_root=repository_root)
     manifest = candidate.build_candidate_manifest(profile, repo_root=repository_root)
     candidate_path = tmp_path / "candidate.json"
     candidate_path.write_text(json.dumps(manifest))
     receipt = candidate.pre_dispatch(profile_path(), candidate_path, repo_root=repository_root)
-    assert any(item.startswith("HARNESS_MODEL_FAMILY_MISMATCH:")
-               for item in receipt["failures"])
-    assert any(item.startswith("HARNESS_ENVIRONMENT_UNDECLARED:")
-               for item in receipt["failures"])
-    assert "HARNESS_ROLE_SERVICE_MAP_UNDECLARED" in receipt["failures"]
+    assert not any(item.startswith("HARNESS_MODEL_FAMILY_MISMATCH:")
+                   for item in receipt["failures"])
+    assert not any(item.startswith("HARNESS_ENVIRONMENT_UNDECLARED:")
+                   for item in receipt["failures"])
+    assert "HARNESS_ROLE_SERVICE_MAP_UNDECLARED" not in receipt["failures"]
     assert receipt["sideEffects"] == {"ssh": 0, "rsync": 0, "staging": 0, "sbatch": 0}
 
 
@@ -401,10 +410,14 @@ def test_effective_config_has_explicit_case_transport_and_candidate():
     assert effective["environment"]["SPEC180_RUNTIME_SIF"].endswith("base-runtime.sif")
     assert effective["argv"][-2:] == ["--case", "Y-B"]
     assert all(role["allowCpuFallback"] is True for role in effective["roles"])
-    assert effective["roles"][0]["service"] == "/ObjectDetection/YOLOv8/BackboneNeck"
+    assert effective["roles"][0]["service"] == "/AI/YOLO/YOLO26n/BackboneNeck"
+    assert effective["environment"]["SPEC180_YOLO_CANONICAL_PACKAGE"].endswith(
+        "/Y-B/canonical-package")
+    assert effective["environment"]["SPEC180_YOLO_CONFIG"].endswith(
+        "/Y-B/case-config.json")
 
 
-def test_tiger_render_rejects_missing_dispatch_contract():
+def test_tiger_render_targets_apptainer_and_yolo_runner():
     submit_spec = importlib.util.spec_from_file_location(
         "spec186_submit_tiger_render_test_module", ROOT / "jobs/spec184/submit.py")
     submit = importlib.util.module_from_spec(submit_spec)
@@ -412,8 +425,13 @@ def test_tiger_render_rejects_missing_dispatch_contract():
     path = ROOT / "profiles" / "spec184-yolo-tiger-single-gpu.json"
     profile = candidate.load_profile(path, repo_root=submit.REPO_ROOT)
     manifest = candidate.build_candidate_manifest(profile, repo_root=submit.REPO_ROOT)
-    with pytest.raises(submit.RenderError, match="TIGER_HARNESS_INPUTS_UNDECLARED"):
-        submit.render_effective(profile, manifest, "tiger-render", Path("/tmp/tiger-render"))
+    effective = submit.render_effective(profile, manifest, "tiger-render", Path("/tmp/tiger-render"))
+    assert effective["execution"]["mode"] == "slurm-apptainer"
+    launcher = effective["execution"]["containerLauncher"]
+    assert launcher[:2] == ["/usr/bin/apptainer", "exec"]
+    assert "/opt/ndnsf-di/replay/repo/Experiments/NDNSF_DI_YoloAckDriven_Minindn.py" in effective["argv"]
+    assert effective["argv"][-2:] == ["--case", "Y-A"]
+    assert effective["environment"]["SPEC180_RUNTIME_OUTER"] == "1"
 
 
 def test_local_passes_rendered_environment_to_child(tmp_path, monkeypatch):
@@ -435,10 +453,12 @@ def test_local_passes_rendered_environment_to_child(tmp_path, monkeypatch):
     result = submit.local_run(
         profile_path(), candidate_path, run_id="env-check", run_root=run_root,
         command=["/usr/bin/python3", "-c",
-                 "from pathlib import Path; import os; Path('env.txt').write_text(os.environ['SPEC186_RUN_ID']); Path('leaks.txt').write_text(os.environ.get('LD_LIBRARY_PATH', '') + '|' + os.environ.get('PYTHONPATH', ''))"])
+                 "from pathlib import Path; import os; Path('env.txt').write_text(os.environ['SPEC186_RUN_ID']); Path('leaks.txt').write_text(os.environ.get('LD_LIBRARY_PATH', '') + '|' + os.environ.get('PYTHONPATH', '')); Path('path.txt').write_text(os.environ['PATH'])"])
     assert result["status"] == "UNQUALIFIED"
     assert (run_root / "env.txt").read_text() == "env-check"
     assert (run_root / "leaks.txt").read_text() == "|"
+    assert "/usr/sbin" in (run_root / "path.txt").read_text()
+    assert "/sbin" in (run_root / "path.txt").read_text()
     assert all((run_root / child).is_dir()
                for child in ("evidence", "state", "security", "home"))
 
