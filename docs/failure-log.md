@@ -4760,6 +4760,22 @@ which differs from the Spec186 handoff seal
   regenerate the sealed definition, and rerun preflight before building.
 - **Lesson**: a successful compiler name/flag match is insufficient; the Waf
   toolchain-root boundary is part of the reusable build recipe.
+## 2026-09-14 — Spec186 r30 bootstrap SIF corrupted CUDA block
+
+- **Area**: T006 exact source-sealed SIF final image assembly.
+- **Symptom**: r30 compiled all 284 native targets, built both Python wheels,
+  passed native import/help/`ldd` checks, then Apptainer failed while
+  re-extracting the bootstrap image: `zstd uncompress failed with error code
+  20` for `usr/local/cuda-12.4/.../libnppist.so.12.2.5.30`.
+- **Root cause**: the reused local bootstrap SIF has a damaged compressed
+  CUDA block. Its SIF table is readable, but full rootfs extraction is not;
+  the image cannot be used as a base even though earlier filtered stages did
+  not touch the damaged file.
+- **Correction**: retain r30 as a failed immutable build attempt and replace
+  the bootstrap input with the verified Spec183 successful-template v23 base
+  SIF before retrying. Recompute its SHA and rerun the cheap preflight first.
+- **Lesson**: SIF metadata and partial extraction are insufficient; validate
+  complete bootstrap decompression before spending another native build.
 ## 2026-09-14 — Spec186 Tiger profile retained login-node Apptainer path
 
 - **Area**: T009/T010 Tiger runtime-version boundary.
