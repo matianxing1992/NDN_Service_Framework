@@ -4725,3 +4725,19 @@ which differs from the Spec186 handoff seal
 - **Lesson**: prior successful SIF/Tiger receipts are reusable design inputs;
   consult them before starting an expensive build, while still revalidating
   every changed source, ABI, SIF, app, model, and node plane.
+## 2026-09-14 — Spec186 r28 stale bootstrap SIF digest
+
+- **Area**: T006 successful-template source handoff render.
+- **Symptom**: the first r28 render rejected the bootstrap input with
+  `HANDOFF_BASE_DIGEST`; the temporary lock retained an older SHA for the
+  local repaired base SIF.
+- **Root cause**: the historical base file was reused without recomputing its
+  bytes after the prior interrupted build series. The file is 3,088,814,080
+  bytes with SHA-256
+  `4182109c0e3d26cf9c52928a571abf2bb0349a3f28682147fb2d80e0fc3da38b`.
+- **Correction**: update the new candidate-only lock with that exact digest,
+  regenerate the handoff and definition, and rerun the preflight before any
+  build.
+- **Lesson**: reuse means revalidate exact bytes, not copy a historical
+  digest; every SIF transfer or file replacement must refresh the candidate
+  identity.
