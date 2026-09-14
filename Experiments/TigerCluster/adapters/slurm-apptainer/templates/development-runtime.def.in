@@ -254,7 +254,11 @@ from zipfile import ZipFile
 
 wheels = sorted(Path('/build-input/wheels').glob('numpy-1.26.4-*.whl'))
 assert len(wheels) == 1, 'NUMPY_WHEEL_COUNT'
-destination = Path('/opt/ndnsf-stage/python/numpy.libs')
+# NumPy itself is supplied by the pinned base SIF in the venv.  Its extension
+# RPATH resolves ``$ORIGIN/../../numpy.libs`` from ``numpy/core``, so the
+# private DSOs must be restored beside that base package rather than beside
+# the staged application packages.
+destination = Path('/opt/venv/lib/python3.10/site-packages/numpy.libs')
 destination.mkdir(parents=True, exist_ok=True)
 expected = {
     'libopenblas64_p-r0-0cf96a72.3.23.dev.so',

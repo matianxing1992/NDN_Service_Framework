@@ -4581,3 +4581,19 @@ which differs from the Spec186 handoff seal
   changing packaging code.
 - **Lesson**: a wheel-stage red must retain the candidate boundary and must not
   be converted into a code fix without the inner compiler diagnostic.
+
+## 2026-09-14 — Spec186 r19 restored NumPy DSOs beside the wrong package tree
+
+- **Area**: T006 exact base-plus-application SIF Python import gate.
+- **Symptom**: r19 completed 284/284 native targets and both Python wheels,
+  then the final import still failed with
+  `libopenblas64_p-r0-0cf96a72.3.23.dev.so: cannot open shared object file`.
+- **Root cause**: the template extracted the exact NumPy wheel-private DSOs
+  into `/opt/ndnsf-stage/python/numpy.libs`, but NumPy 1.26.4 is supplied by
+  the base SIF venv and its RPATH resolves from `/opt/venv/.../numpy/core` to
+  `/opt/venv/.../site-packages/numpy.libs`.
+- **Correction**: extract the same hash-locked DSO set beside the base venv's
+  NumPy package, synchronize the portable handoff template, and retry once.
+- **Lesson**: a wheel payload must be placed relative to the package that
+  actually owns the importing extension; staging an identical directory in a
+  different `sys.path` root does not satisfy an extension RPATH.
