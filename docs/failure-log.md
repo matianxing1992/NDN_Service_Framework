@@ -4503,3 +4503,49 @@ which differs from the Spec186 handoff seal
 - **Root cause**: `prepare-local-sif-source.py` selected the DI C++ and Python trees but omitted the tracked `ndnsf-distributed-inference.pc.in` input, so the sealed workspace archive could not materialize the requested pkg-config target.
 - **Correction**: include the tracked pkg-config template in the source selector and regenerate the source-sealed handoff before the next SIF attempt.
 - **Lesson**: every explicit Waf target must have its template input in the immutable source archive; local checkout presence does not prove sealed-build presence.
+
+## 2026-09-14 — Spec186 r11 native closure audit did not resolve a system DSO symlink
+
+- **Area**: T006 exact base-plus-application SIF final native closure.
+- **Symptom**: after 284/284 native targets and both Python extension wheels succeeded, the builder audit stopped at `SYSTEM_LIBRARY_PACKAGE_UNKNOWN:/lib/x86_64-linux-gnu/libpthread.so.0`.
+- **Root cause**: the audit queried `dpkg-query` only with the `ldd` symlink path; Ubuntu's package database records the resolved `libpthread-2.31.so` target under `libc6`.
+- **Correction**: resolve each system DSO path before package ownership lookup while retaining the original and `/usr` alternate candidates.
+- **Lesson**: dependency closure checks must account for loader-facing symlinks before declaring a system package unowned.
+
+## 2026-09-14 — Spec186 r12 parallel NDNSF build triggered GCC 9 ICE
+
+- **Area**: T006 exact base-plus-application SIF native build.
+- **Symptom**: with the repository ceiling `-j4`, Waf failed while compiling `NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.cpp` with GCC 9 `internal compiler error: Segmentation fault`.
+- **Root cause**: this host's GCC 9/Apptainer combination is unstable when large NDNSF translation units are compiled concurrently; the failure is a compiler resource/concurrency issue, not a source diagnostic.
+- **Correction**: restore the serialized `-j1` largest-target build documented for this host; dependency stages remain bounded at `-j2`.
+- **Lesson**: the TigerCluster `-j4` value is a hard upper bound, while this host's reproducible SIF recipe must use the lower stable parallelism selected by its compiler behavior.
+
+## 2026-09-14 — Spec186 r13 native closure audit hit a stripped dpkg updates directory
+
+- **Area**: T006 exact base-plus-application SIF final native closure.
+- **Symptom**: after 284/284 native targets, both Python wheels, and DI
+  staging succeeded, the builder audit stopped at
+  `SYSTEM_LIBRARY_PACKAGE_UNKNOWN:/lib/x86_64-linux-gnu/libcrypto.so.1.1`.
+- **Root cause**: the minimal base SIF retained dpkg status and file lists but
+  omitted `/var/lib/dpkg/updates`; `dpkg-query -S` exits before scanning any
+  path when that transient directory is absent, so the audit reported a false
+  unowned system library.
+- **Correction**: create the empty transient updates directory immediately
+  before the audit's package-ownership loop, while keeping symlink resolution
+  and `/lib`/`/usr/lib` alternate candidates.
+- **Lesson**: package-closure audits must validate the package-manager state
+  needed by their query tool; a minimal image can make a valid installed DSO
+  appear unowned without any ABI defect.
+
+## 2026-09-14 — Spec186 r14 native closure audit missed a retained Boost file list
+
+- **Area**: T006 exact base-plus-application SIF final native closure.
+- **Symptom**: after the complete native build and both wheels, the audit still
+  stopped at `SYSTEM_LIBRARY_PACKAGE_UNKNOWN:/lib/x86_64-linux-gnu/libboost_filesystem.so.1.71.0`.
+- **Root cause**: this reduced base image retained the Boost package's
+  `/var/lib/dpkg/info/*.list` record but its `dpkg-query -S` path index did not
+  consistently resolve the loader-facing `/lib` spelling.
+- **Correction**: retain strict path and symlink checks, then fall back to an
+  exact match in dpkg's package file lists before declaring a DSO unowned.
+- **Lesson**: closure evidence must tolerate reduced package indexes without
+  accepting a basename-only or guessed package mapping.

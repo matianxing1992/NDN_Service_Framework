@@ -197,9 +197,10 @@ PY
       --nac-abe-prefix=/opt/ndnsf-di/current \
       --ndn-svs-source-tree=/src/ndn-svs --ndn-svs-build-tree=/src/ndn-svs/build \
       --boost-includes=/usr/include --boost-libs=/usr/lib/x86_64-linux-gnu
-    # GCC 9 occasionally ICEs while two large NDNSF translation units are
-    # compiled under Apptainer; serialize this largest target set for a
-    # deterministic low-memory build.  Dependency builds above remain -j2.
+    # GCC 9 on this host can ICE when two large NDNSF translation units are
+    # compiled concurrently; serialize the largest target set for stability.
+    # Dependency builds above remain -j2 and all parallelism stays below the
+    # repository-wide TigerCluster ceiling of -j4.
     ./waf -j1 -v --targets=ndn-service-framework,ndnsf-distributed-inference,ndnsf-distributed-inference.pc,libndn-service-framework.pc,App_ServiceController,di-native-provider,di-native-fault-provider
 
     install -m 0755 build/libndn-service-framework.so /opt/ndnsf-stage/lib/libndn-service-framework.so.0.1.0
@@ -367,16 +368,42 @@ if mode == 'builder':
     python_packages.update(ort_distributions)
     # Record the runtime packages owning selected system DSOs for the final APT stage.
     apt_packages = {}
+    # Minimal base SIFs may omit dpkg's transient updates directory even though
+    # their status and package file lists are present.  dpkg-query exits early
+    # when that directory is absent, so recreate the harmless empty directory
+    # before resolving ownership.
+    Path('/var/lib/dpkg/updates').mkdir(parents=True, exist_ok=True)
     for path in {path for row in rows for path in row['dependencies']}:
         if not path.startswith(('/lib/', '/usr/lib/')):
             continue
-        candidates = [path, path[4:] if path.startswith('/usr/') else '/usr' + path]
+        raw_path = Path(path)
+        resolved_path = raw_path.resolve()
+        path_candidates = [str(raw_path)]
+        if resolved_path != raw_path:
+            path_candidates.append(str(resolved_path))
+        candidates = []
+        for candidate_path in path_candidates:
+            candidates.extend([candidate_path,
+                               candidate_path[4:] if candidate_path.startswith('/usr/')
+                               else '/usr' + candidate_path])
         owner = None
-        for candidate in candidates:
+        for candidate in dict.fromkeys(candidates):
             query = subprocess.run(['dpkg-query', '-S', candidate], capture_output=True, text=True)
             if query.returncode == 0:
                 owner = query.stdout.splitlines()[0].rsplit(': ', 1)[0]
                 break
+        if owner is None:
+            # Some reduced images keep the package file lists but make
+            # dpkg-query's path index incomplete.  Resolve the exact path from
+            # those lists before treating the DSO as unowned.
+            for listing in Path('/var/lib/dpkg/info').glob('*.list'):
+                try:
+                    entries = listing.read_text(encoding='utf-8').splitlines()
+                except OSError:
+                    continue
+                if any(candidate in entries for candidate in dict.fromkeys(candidates)):
+                    owner = listing.name[:-5]
+                    break
         assert owner, 'SYSTEM_LIBRARY_PACKAGE_UNKNOWN:' + path
         apt_packages[owner] = subprocess.check_output(['dpkg-query', '-W', '-f=${Version}', owner], text=True)
     body = {'schemaVersion': 'spec170-container-native-build-v1', 'status': 'PASS',
