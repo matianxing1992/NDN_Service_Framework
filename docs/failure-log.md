@@ -4823,3 +4823,19 @@ which differs from the Spec186 handoff seal
   that path; login remains SSH/Slurm metadata only.
 - **Lesson**: a version string in a receipt is insufficient; the candidate must
   bind the executable path that the allocated compute node will actually run.
+
+## 2026-09-14 — Spec186 local bootstrap copy drifted from the sealed v23 SIF
+
+- **Area**: T006 bootstrap SIF identity.
+- **Symptom**: the local `.codex-tmp/spec186-template-base-v23.sif` retained
+  the expected byte count but its SHA changed from the remote sealed value
+  `44b44d...` to a different digest before the next build attempt. Local
+  `unsquashfs` failures therefore could not be attributed to a verified copy.
+- **Root cause**: the bootstrap path was treated as a mutable scratch input;
+  no immutable pre-build hash check prevented an unnoticed byte change. The
+  exact mutating process was not established.
+- **Correction**: stop the build, discard the drifted input, recopy the v23
+  SIF from Tiger, and require the remote and local SHA-256 values to match
+  before rendering a new definition.
+- **Lesson**: every retry must verify the complete base SIF digest immediately
+  before extraction; matching size or an earlier receipt is insufficient.
