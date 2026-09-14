@@ -305,7 +305,7 @@ PY
     cp -a /src/ndnsf/pythonWrapper /opt/ndnsf-stage/replay/repo/
     cp -a /src/ndnsf/examples/trust-schema.conf /opt/ndnsf-stage/replay/repo/examples/
     cp -a /src/ndnsf/examples/python /opt/ndnsf-stage/replay/repo/examples/
-    cp -a /src/ndnsf/packaging/ndnsf-di-container/jobs/spec180 \
+    cp -a /src/ndnsf/Experiments/TigerCluster/jobs/spec180 \
       /opt/ndnsf-stage/replay/repo/packaging-jobs-spec180
     cp /build-input/source-seal.json /opt/ndnsf-stage/replay/source-seal.json
     # Strip the host .codex-tmp scratch from the sealed replay repo; the

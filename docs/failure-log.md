@@ -1,5 +1,12 @@
 # Failure Log and Evidence Index
 
+## 2026-09-14 — Spec186 r29 replay source path drift
+
+- **Symptom:** r29 compiled all 284 native targets and both Python extensions, then Apptainer `%post` exited at `cp: cannot stat '/src/ndnsf/packaging/ndnsf-di-container/jobs/spec180'`.
+- **Root cause:** the sealed source archive does not contain the compatibility path under `packaging/`; the maintained Spec180 runtime is owned by `Experiments/TigerCluster/jobs/spec180`, even though a host-side compatibility directory exists.
+- **Fix:** point the canonical runtime definition at `Experiments/TigerCluster/jobs/spec180`; add a template regression asserting the canonical path and rejecting the stale source path. Rebuild with a new source handoff because the definition input changed.
+- **Lesson:** validate every `%post` copy source against the extracted sealed archive, not only the host checkout; compatibility paths are not archive guarantees.
+
 ## 2026-09-11 — Proposal Origin expansion build path
 
 首次文档构建驱动将相对输出目录传入改变 cwd 的 latexmk，导致预期 `main.log` 缺失；不是产品协议失败。修复为绝对路径并保留 r2 输出。证据：[proposal expansion](../specs/184-native-di-closure/evidence/proposal-origin-expansion-20260911.md)。

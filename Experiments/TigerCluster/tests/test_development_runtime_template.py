@@ -74,6 +74,8 @@ def test_spec186_preflight_is_wired_before_expensive_build():
     assert "/usr/bin/clang++-10" in TEMPLATE.read_text()
     assert "--toolchain-root=/usr" in TEMPLATE.read_text()
     assert TEMPLATE.read_text().index("export CXX=/usr/bin/clang++-10") < TEMPLATE.read_text().index("./waf -j1 -v --targets=")
+    assert "cp -a /src/ndnsf/Experiments/TigerCluster/jobs/spec180" in TEMPLATE.read_text()
+    assert "cp -a /src/ndnsf/packaging/ndnsf-di-container/jobs/spec180" not in TEMPLATE.read_text()
     assert "/var/lib/dpkg/updates" in TEMPLATE.read_text()
     build_script = (ROOT / "Experiments/TigerCluster/adapters/slurm-apptainer/scripts/build-local-sif.sh").read_text()
     assert "preflight-development-sif.py" in build_script
